@@ -22,8 +22,8 @@ def register_security() -> None:
         return
     import_required("jiuwen_memory.common.security.runtime")  # SecurityRuntimeProducer + standard
     import_required("jiuwen_memory.common.security.authentication.authentication_impl")
-    # PR1 只有 allow_all 占位（Runtime 的必填 authorizer 得有值可填）；做判定的
-    # StandardAuthorizer 随 PR2 合入。
+    # PR2 的 Standard/Routing/SpaceAware Authorizer 与 Store 实现在此注册；
+    # allow_all 仍保留为显式测试替身，但生产装配会拒绝 test-only capability。
     import_required("jiuwen_memory.common.security.authorization.authorization_impl")
     import_required("jiuwen_memory.common.security.protection.protection_impl")
     import_required("jiuwen_memory.common.security.cryptography.cryptography_impl")

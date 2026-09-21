@@ -27,8 +27,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from jiuwen_memory.common.factory.factory import Factory
@@ -129,6 +130,9 @@ class LocalWatchdog(Watchdog):
         self._watch_timers: dict[str, asyncio.TimerHandle] = {}
         self._watcher_initialized = False
         self._closed = False
+        self._sync_condition = threading.Condition()
+        self._active_syncs = 0
+        self._generation = 0
 
     # -- Watchdog 契约 ------------------------------------------------------- #
 
@@ -172,7 +176,7 @@ class LocalWatchdog(Watchdog):
             ) from exc
 
         class _MdFileHandler(FileSystemEventHandler):
-            def __init__(self, owner: "LocalWatchdog") -> None:
+            def __init__(self, owner: LocalWatchdog) -> None:
                 super().__init__()
                 self._owner = owner
 
@@ -220,13 +224,16 @@ class LocalWatchdog(Watchdog):
             self._loop.call_later(_INIT_GRACE_SECONDS, self._set_watcher_initialized)
         logger.info(
             "LocalWatchdog started: watching %s (recursive=True), debounce=%.2fs",
-            watch_dir, self._debounce,
+            watch_dir,
+            self._debounce,
         )
 
     def stop(self) -> None:
-        """停止文件监听 + join Observer；幂等。取消在途 debounce 定时器（全部文件）。"""
-        self._closed = True
-        for timer in self._watch_timers.values():
+        """停止准入、取消定时器，并等待已进入 shadow 的同步线程结束。"""
+        with self._sync_condition:
+            self._closed = True
+            self._generation += 1
+        for timer in tuple(self._watch_timers.values()):
             timer.cancel()
         self._watch_timers.clear()
         if self._observer is not None:
@@ -237,6 +244,9 @@ class LocalWatchdog(Watchdog):
                 logger.warning("LocalWatchdog: observer stop/join failed: %s", exc)
             self._observer = None
         self._watcher_initialized = False
+        with self._sync_condition:
+            while self._active_syncs:
+                self._sync_condition.wait()
         logger.info("LocalWatchdog stopped")
 
     def health(self) -> None:
@@ -252,7 +262,8 @@ class LocalWatchdog(Watchdog):
 
     def _set_watcher_initialized(self) -> None:
         """延迟置 initialized（避开初始扫描风暴，抄 lite）。"""
-        self._watcher_initialized = True
+        if not self._closed:
+            self._watcher_initialized = True
         logger.debug("LocalWatchdog: watcher initialized (post grace period)")
 
     def _schedule_sync(self, abs_path: str, *, deleted: bool = False) -> None:
@@ -270,9 +281,7 @@ class LocalWatchdog(Watchdog):
             return  # 不在 memory 目录下，忽略
         # 携带 deleted 标记：把 (md_filename, deleted) 投递
         try:
-            self._loop.call_soon_threadsafe(
-                self._arm_timer, md_filename, deleted
-            )
+            self._loop.call_soon_threadsafe(self._arm_timer, md_filename, deleted)
         except RuntimeError as exc:
             # 事件循环已关闭（关闭竞态）——静默跳过
             logger.debug("LocalWatchdog: loop closed, skip sync: %s", exc)
@@ -319,13 +328,16 @@ class LocalWatchdog(Watchdog):
         超过 ``MAX_SYNC_DEFERRAL_SECONDS``（写路径 bug 永不关窗）放弃本次，下一个
         md 文件事件会重新触发。
         """
+        generation = self._generation
+        if self._closed:
+            return
         try:
-            logger.debug(
-                "LocalWatchdog: do_sync start %s deleted=%s", md_filename, deleted
-            )
+            logger.debug("LocalWatchdog: do_sync start %s deleted=%s", md_filename, deleted)
             deferred = 0.0
             deferral_logged = False
             while write_window_open():
+                if self._closed or generation != self._generation:
+                    return
                 # 「首次推迟只记一次」用布尔标志，不挂在 deferred 浮点累加值上——
                 # 避免 0.0/0.25 恰好精确可表示这一隐含数值假设，意图也更直白。
                 if not deferral_logged:
@@ -338,16 +350,28 @@ class LocalWatchdog(Watchdog):
                     logger.warning(
                         "LocalWatchdog: write window open for %.0fs, give up this sync "
                         "for %s (next md event will re-trigger)",
-                        deferred, md_filename,
+                        deferred,
+                        md_filename,
                     )
                     return
                 await asyncio.sleep(SYNC_DEFERRAL_POLL_SECONDS)
                 deferred += SYNC_DEFERRAL_POLL_SECONDS
-            await asyncio.to_thread(self._sync_one, md_filename, deleted)
+            await asyncio.to_thread(self._run_sync, md_filename, deleted, generation)
         except Exception as exc:
-            logger.warning(
-                "LocalWatchdog: sync failed for %s: %s", md_filename, exc
-            )
+            logger.warning("LocalWatchdog: sync failed for %s: %s", md_filename, exc)
+
+    def _run_sync(self, md_filename: str, deleted: bool, generation: int) -> None:
+        """线程池准入与 drain 记账独立于 loop，关闭不依赖协程恢复。"""
+        with self._sync_condition:
+            if self._closed or generation != self._generation:
+                return
+            self._active_syncs += 1
+        try:
+            self._sync_one(md_filename, deleted)
+        finally:
+            with self._sync_condition:
+                self._active_syncs -= 1
+                self._sync_condition.notify_all()
 
     # -- 内部：同步逻辑（在 to_thread 线程跑） ------------------------------- #
 
@@ -406,14 +430,14 @@ class LocalWatchdog(Watchdog):
         to_insert_pairs = [(h, c) for h, c in new_pairs if h not in old_hash_set]
 
         if not to_delete and not to_insert_pairs:
-            logger.debug(
-                "LocalWatchdog: no drift, skip sync %s", md_filename
-            )
+            logger.debug("LocalWatchdog: no drift, skip sync %s", md_filename)
             return  # md 与索引一致，无需同步
 
         logger.debug(
             "LocalWatchdog: diff %s to_delete=%d to_insert=%d",
-            md_filename, len(to_delete), len(to_insert_pairs),
+            md_filename,
+            len(to_delete),
+            len(to_insert_pairs),
         )
 
         # delete 分支
@@ -422,7 +446,8 @@ class LocalWatchdog(Watchdog):
             self._shadow.delete_units(scope, del_ids)
             logger.info(
                 "LocalWatchdog: deleted %d unit(s) from %s (md changed/removed)",
-                len(del_ids), md_filename,
+                len(del_ids),
+                md_filename,
             )
 
         # insert 分支：建新 unit（content 原文来自 new_pairs）
@@ -438,7 +463,8 @@ class LocalWatchdog(Watchdog):
             self._shadow.insert_units(scope, units)
             logger.info(
                 "LocalWatchdog: inserted %d unit(s) into %s (md new content)",
-                len(units), md_filename,
+                len(units),
+                md_filename,
             )
 
     def _build_unit(self, md_filename: str, content: str, scope: Scope) -> MemoryUnit:
@@ -455,7 +481,7 @@ class LocalWatchdog(Watchdog):
         """
         project = _project_from_md_path(md_filename)
         memory_class = _class_from_md_path(md_filename)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         unit_id = str(uuid.uuid4())
         return MemoryUnit(
             id=unit_id,
@@ -478,9 +504,7 @@ class LocalWatchdog(Watchdog):
             },
         )
 
-    def _collect_new_contents(
-        self, abs_path: str
-    ) -> list[tuple[str, str]]:
+    def _collect_new_contents(self, abs_path: str) -> list[tuple[str, str]]:
         """读 md 按行遍历，返回 (content_hash, content) 列表（保序、去重）。
 
         供 ``_sync_one`` insert 分支建新 unit 时还原 content 原文——
@@ -488,7 +512,7 @@ class LocalWatchdog(Watchdog):
         """
         result: list[tuple[str, str]] = []
         seen: set[str] = set()
-        with open(abs_path, "r", encoding="utf-8") as fh:
+        with open(abs_path, encoding="utf-8") as fh:
             for line in fh:
                 stripped = line.rstrip("\n")
                 if stripped.startswith("#"):

@@ -26,6 +26,7 @@ from jiuwen_memory.common.security.types import (
     RequestSecurityContext,
     Surface,
     _bind_origin,
+    validate_actor_form,
 )
 
 _REQUEST_ID: ContextVar[str | None] = ContextVar("agent_memory_request_id", default=None)
@@ -68,6 +69,7 @@ def new_request_context(
 
     Round3: _origin 绑定完整 RequestSecurityContext 安全字段，防止 replace(attributes=...) 提权。
     """
+    validate_actor_form(auth.actor)
     # 先构造上下文（_origin 用占位符）
     context = RequestSecurityContext(
         auth=auth,

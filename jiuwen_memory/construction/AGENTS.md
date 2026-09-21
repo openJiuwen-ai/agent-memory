@@ -34,11 +34,16 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
 | `index_builder_impl/` | IndexBuilder 实现目录（forward / fulltext / hybrid / unified / vector / entity + 共享 `_index_ops.py`）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）纯编排，组合 forward / fulltext / vector / entity 四个子 builder；`unified` 全部写委托 DomainStore 领域接口（`add`/`update`/`delete`，`mode` 原样透传，不触碰任何底层端口），构建侧完成两件事——(a) `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed，经 `_index_ops.vectorize_unit` 与 vector builder 共用实现）回填 `MemoryUnit.vectors`（`list[ChunkVector]`）随本体下传（一体化数据面实现消费该字段自建 chunk 级向量索引，CompositeDomainStore 仅随本体落盘）；(b) 把 `index_metadata` 的过滤投影字段（`content_layer`/`t_valid`/`t_event`/`t_invalid` 哨兵与 epoch 毫秒）直接补进 `unit.system_metadata`，一体化后端从 `system_metadata`/`user_metadata` 直接读取建索引、无需 `index_metadata` 投影下传；`forward` 只交付记忆本体（正排 KV），`fulltext`/`vector`/`entity` 只建各自的检索索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。`_index_ops.py` 承载 fulltext / vector 共享的投影与流水线（metadata 投影、scope 分组、端口解析、全文文档构造、向量切片-embed-写库、L0/L1 分层建删），unified 复用其 scope 分组与 `vectorize_unit` 切片-embed 单元管线。写接口用 `IndexWriteMode`（`ALL`/`FORWARD_ONLY`/`RETRIEVAL_ONLY`）表达写入范围，`remove` 用 `IndexRemoveMode`（`SOFT`/`HARD`）表达删除语义：`SOFT` 只移出检索索引、本体保留且 get/list 可读；`HARD` 物理删除。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
-| `dedup_impl/` | Dedup 实现目录（vector / keyword） |
+| `dedup_impl/` | Dedup 实现目录（vector / keyword / shadow）；shadow 显式选配，读取文档机器真源 |
+| `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类 |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
 | `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录 |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
 | `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
+
+注册的 IndexBuilder target 为 forward/fulltext/vector/hybrid/unified/document；EntityIndexBuilder
+是 hybrid 的内部辅助组件，不注册独立 entity target。标题、正文、prompt、模型响应和 Scope
+trace 均使用 common/log 的敏感参数标记，不能因调试文档路径恢复明文日志。
 
 ## 构建链路
 
@@ -54,9 +59,9 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
      ├─ FeatureExtractor → Node → GraphStore
      └─ Associator.associate → Edge → GraphStore（后台 ASSOCIATE 模式）
   ↓
-4. Scheduler.submit(scope, EXTRACT, BACKGROUND) → 提交演进任务
-  ↓
-（后台）Evolver.evolve(units, mode):
+默认直写到此返回，不自动提交后台 EXTRACT。
+infer=true 由 Engine 等待抽取；显式 evolve/dreaming 经 Scheduler 执行：
+Evolver.evolve(units, mode):
   EXTRACT     → [orchestrating] _evolve_extract: extract→route→annotate→_dedup_batch(判定+落盘)
               → [dynamic]     _evolve_extract: extract→route→consolidate(判定)→reflect→落盘
               → [schema]      _evolve_extract: Source-first→属性抽取→属性落盘→Source entities 写回
@@ -95,7 +100,8 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
    算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node，MemoryUnit → KV 记录），持久化由注入的 Store 承担。算子不依赖具体后端。正排与派生索引同此模式——`ForwardIndexBuilder` 写 `manager.kv()`，与 `FulltextIndexBuilder` 写 `manager.fulltext()` 同构；端口名可经 `params.<ns>_store` 具名选择。
 
 5. **scope 原生隔离**
-   构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord.scope` / `Document.scope` / `Node.scope`），使检索得以按 scope 原生隔离。
+   构建侧把来源 MemoryUnit.scope 作为 Store CRUD 的独立入参；索引记录不另含 Scope
+   字段，也不把 Scope 放进 metadata/filters，后端负责命名空间或专用过滤。
 
 6. **Evolver 四阶段独立**
    `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `FORGET`（遗忘/降权）四阶段独立，可单独触发。索引维护不作为 evolve 模式。

@@ -126,6 +126,9 @@ FanOutCandidate(child, require_empty, require_nonempty)  # ④ 枚举源：scope
 ### D7：持续授权 + PEP 边界（鉴权整体上移 API 层）
 
 - **注册表 `DreamingEntry` 记录 `created_by`**（注册者 actor，可持久化）。
+  PR2 接线在该服务端字段附带私有安全快照，保存原角色、到期时间、凭据指纹/issuer/
+  复核能力、委托 ID 和可信环境；不保存 token，不将 actor-only 记录解释为认证结果。
+  编解码归 API 层，Control 只透传数据，不依赖安全类型或承担鉴权。
 - **每 tick 复验**：驱动 Job 以注册者身份复验（与入口同一套 `_authorize`
   组件，判定不漂移）；`PermissionDeniedError` → 注销注册表 + 父定时器
   终态 FAILED（`stopped_reason=permission_denied`，防重启复活）。

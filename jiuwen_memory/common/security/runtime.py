@@ -19,12 +19,9 @@ Runtime **只做三件事**：持有能力引用、执行启动期健康检查�
 fail-open 分支；要么装配真实实现，要么干脆没有这个字段，``None`` 只在「配置了但
 当前部署不启用」时出现。
 
-``authorizer`` 是**必填**的，PR1 也不例外：字段形态由上游接口固定，实装 PR 只填值、
-不改形状。PR1 填的是 ``allow_all`` 占位——它 ``is_test_only()`` 为真（上游契约为这类
-实现预留的 capability），但它不在任何判定路径上——PEP 在 PR2 之前仍走
-``PermissionManager``。**注意：PR1 尚没有装配层据此拒绝启动的守卫**——「生产装配
-据此拒绝启动」是契约声称的语义，代码尚未实现，本文档仅如实陈述占位的 capability，
-不宣称守卫已存在。
+``authorizer`` 是**必填**的，字段形态由上游接口固定，实装 PR 只填值、不改形状。PR2
+默认装配真实 ``StandardAuthorizer``；``is_test_only()`` 为真的实现只用于测试，生产装配
+与 Server 启动均拒绝它。
 
 **运行期共享状态**（撤销缓存、分布式限流连接、key 缓存）通过 Factory 的**具名实例**
 显式共享，不靠模块级单例——谁与谁共享哪个后端，从配置里就能读出来。
@@ -40,14 +37,23 @@ fail-open 分支；要么装配真实实现，要么干脆没有这个字段，`
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security._delegation_binding import _bind_delegations
 from jiuwen_memory.common.security.audit_integrity.base import AuditIntegrityProvider
 from jiuwen_memory.common.security.authentication.base import Authenticator, AuthProducer
+from jiuwen_memory.common.security.authentication.credential_registry import (
+    CredentialStatusRegistry,
+)
 from jiuwen_memory.common.security.authorization.base import AuthorizationProducer, Authorizer
+from jiuwen_memory.common.security.capabilities import (
+    SecurityResourceOwner,
+    credential_sources,
+    validate_authorization_capabilities,
+)
 from jiuwen_memory.common.security.cryptography.base import (
     CryptographyProducer,
     CryptographyProvider,
@@ -121,8 +127,8 @@ class SecurityRuntime:
 
     ``authorizer`` 在这里只是**装配与健康检查**的归口。真正调用它的是 ``MemoryAPI``
     这个唯一 PEP，且由内核装配注入（见 ``api.memory_api_impl.assembly``）——Runtime
-    不代为转发，避免出现第二条能绕开 PEP 的授权入口。PR1 尚无 PEP 消费它（判定仍走
-    ``PermissionManager``），装的是 ``allow_all`` 占位，实装随 PR2 合入。
+    不代为转发，避免出现第二条能绕开 PEP 的授权入口。PR2 起 PEP 直接消费这一实例，旧
+    ``PermissionManager`` 不再进入生产判定路径。
     """
 
     authenticator: Authenticator
@@ -132,6 +138,11 @@ class SecurityRuntime:
     binding_policy: BindingPolicy
     cryptography_provider: CryptographyProvider | None = None
     audit_integrity_provider: AuditIntegrityProvider | None = None
+    _resources: SecurityResourceOwner = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        resources = tuple(capability for _, capability in self._capabilities())
+        object.__setattr__(self, "_resources", SecurityResourceOwner(resources))
 
     def health(self) -> None:
         """启动期健康检查：任一能力不健康即抛出，不返回 bool。
@@ -142,11 +153,18 @@ class SecurityRuntime:
         异常消息只带**能力名**——能力名来自配置、不是秘密；具体原因由各实现自己
         决定暴露多少（F05 §装配不变量 8：不得泄露 key、token 或主体是否存在）。
         """
+        if self._resources.is_closed():
+            raise ValidationError("security Runtime has already been closed")
         for name, capability in self._capabilities():
             try:
                 capability.health()
             except Exception as exc:
                 raise ValidationError(f"security capability {name!r} is unhealthy") from exc
+        validate_authorization_capabilities(self.authorizer)
+        registry = CredentialStatusRegistry()
+        for kind, issuer, store in credential_sources(self.authenticator):
+            registry.register(kind, issuer, store)
+        registry.health()
 
     def close(self) -> None:
         """关闭持有连接的能力。没有 ``close`` 的能力跳过。
@@ -154,14 +172,10 @@ class SecurityRuntime:
         逐个捕获并记录而不是让第一个失败中断后续——关闭路径上放弃剩余能力会漏掉
         连接与文件句柄。
         """
-        for name, capability in self._capabilities():
-            closer = getattr(capability, "close", None)
-            if closer is None:
-                continue
-            try:
-                closer()
-            except Exception:
-                _LOG.error("关闭安全能力 %r 失败", name, exc_info=True)
+        self._resources.close()
+
+    def security_resource_owner(self) -> SecurityResourceOwner:
+        return self._resources
 
     def _capabilities(self) -> list[tuple[str, Any]]:
         pairs = [
@@ -194,27 +208,42 @@ def _build(config) -> SecurityRuntime:
     卡住本地压测与调试脚本。这个分岔由 ``Authenticator.requires_loopback_binding()``
     这个 **capability** 决定，不看 target 名（F05 §依据 capability 做安全决策）。
 
-    ``authorizer`` 默认 ``allow_all``：PR1 没有做判定的实现，而该字段是上游固定的必填
-    项。这个默认不构成 fail-open——PEP 在 PR2 之前不消费它，业务边界仍由
-    ``PermissionManager`` 把守；它 ``is_test_only()`` 为真，是上游契约为这类实现预留的
-    capability。**PR1 尚无装配层据此拒绝启动的守卫**——该语义是契约声称、代码未实现，
-    登记为 PR2 合入 ``StandardAuthorizer`` 时补充的必做项。PR2 合入后默认改为该实现。
+    ``authorizer`` 未显式配置时解析同一装配上下文中的具名 ``default``；没有该命名空间时
+    使用内置 ``StandardAuthorizer``。内核 PEP 与 Runtime 必须持有同一实例；test-only
+    authorizer 在生产装配与 Server 启动时拒绝。
     """
     authenticator = AuthProducer.dep(config, "authenticator")
-    runtime_name = getattr(config, "name", "")
-    if runtime_name:
-        authenticator.bind_instance_name(f"runtime:{runtime_name}")
+    runtime_name = config.name or "default"
+    authenticator.bind_instance_name(f"runtime:{runtime_name}")
     rate_limiter_default = (
         "unlimited" if authenticator.requires_loopback_binding() else "token_bucket"
     )
+    authorizer = _shared_authorizer(config)
+    required = config.ctx.globals.get("require_grant_management", False)
+    if not isinstance(required, bool):
+        raise ValidationError("require_grant_management must be bool")
+    validate_authorization_capabilities(authorizer, required=required)
+    authenticator = _bind_delegations(authenticator, authorizer, config)
     return SecurityRuntime(
         authenticator=authenticator,
-        authorizer=AuthorizationProducer.dep(config, "authorizer", default="allow_all"),
+        authorizer=authorizer,
         rate_limiter=RateLimitProducer.dep(config, "rate_limiter", default=rate_limiter_default),
         workload_guard=WorkloadGuardProducer.dep(config, "workload_guard", default="semaphore"),
         binding_policy=BindingPolicyProducer.dep(config, "binding_policy", default="loopback"),
         cryptography_provider=_optional_cryptography(config),
     )
+
+
+def _shared_authorizer(config) -> Authorizer:
+    """Resolve the named PDP instance shared with the MemoryAPI PEP."""
+    if Factory.cfg_get(config, "authorizer") is not None:
+        return AuthorizationProducer.dep(config, "authorizer")
+    ctx = config.ctx
+    if not ctx.namespaces.get(AuthorizationProducer.TOP_NAME):
+        from jiuwen_memory.config.defaults import default_context
+
+        ctx = default_context()
+    return AuthorizationProducer.build_named("default", ctx)
 
 
 def _optional_cryptography(config) -> CryptographyProvider | None:

@@ -13,8 +13,8 @@
 from __future__ import annotations
 
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
-
 import json
+import logging
 
 import pytest
 
@@ -132,6 +132,32 @@ def test_extracted_title_lands_in_system_metadata() -> None:
     assert derived.system_metadata[MD_TITLE_KEY] == "Coffee preference"
 
 
+def test_title_and_prompt_trace_preserves_data_without_logging_secrets(caplog) -> None:
+    """
+    New document-title trace logs must redact titles, model responses and prompts.
+    """
+    from jiuwen_memory.construction.extractor_impl.llm_extractor import logger
+
+    body = "private-memory-zephyr"
+    title = "private-title-zephyr"
+    response = json.dumps(
+        [{"source_id": "u1", "target": "fact", "content": body, "title": title, "confidence": 1.0}]
+    )
+    extractor = ExtractorImpl(llm=MockLLM(responses=[response]), min_confidence=0.0)
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.INFO, logger=logger.name):
+            derived = extractor.extract([_source("u1", body)])
+    finally:
+        logger.removeHandler(caplog.handler)
+    assert derived[0].content == body
+    assert derived[0].system_metadata[MD_TITLE_KEY] == title
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "trace/extract" in messages
+    assert body not in messages
+    assert title not in messages
+
+
 def test_no_title_leaves_metadata_absent() -> None:
     """LLM 未产 title → 不写 MD_TITLE_KEY，落盘侧兜底 unit.id。"""
     extractor = ExtractorImpl(
@@ -158,3 +184,36 @@ def test_no_title_leaves_metadata_absent() -> None:
     (derived,) = extractor.extract([_source("u1", "Alice 说她喜欢喝咖啡")])
 
     assert MD_TITLE_KEY not in derived.system_metadata
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_consolidation_trace_does_not_log_content_or_response(caplog, batched) -> None:
+    """
+    Both consolidation trace paths keep prompts, content and model responses private.
+    """
+    # pylint: disable=protected-access
+    from jiuwen_memory.api import assemble_runtime
+    from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import logger
+
+    body = "private-candidate-zephyr"
+    hit_body = "private-existing-zephyr"
+    response = json.dumps({"decision": "ADD", "u1": "ADD", "note": "private-model-zephyr"})
+    runtime = assemble_runtime()
+    evolver = runtime.api._engine._evolver
+    evolver._llm = MockLLM(responses=[response])
+    candidate = _source("u1", body)
+    hits = [(_source("u2", hit_body), 0.8)]
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.DEBUG, logger=logger.name):
+            if batched:
+                evolver._llm_dedup_decide_batch([(candidate, hits)])
+            else:
+                evolver._llm_dedup_decide(candidate, hits)
+    finally:
+        logger.removeHandler(caplog.handler)
+        runtime.close()
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "trace/consolidate" in messages
+    for secret in (body, hit_body, "private-model-zephyr"):
+        assert secret not in messages

@@ -229,8 +229,8 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
 }
 
 
-@pytest.fixture
-def kernel(monkeypatch):
+@pytest.fixture(name="kernel")
+def _kernel(monkeypatch):
     """每测试一个全新 OFFLINE 内核（隔离演进任务与调度器状态）。
 
     工具经 ``_invoke`` 在调用时读模块级 ``_SRV``，monkeypatch 即可换芯。
@@ -331,6 +331,8 @@ def test_authenticated_runs_with_mcp_surface_and_dev_identity(kernel, monkeypatc
 
 
 def test_required_mode_assembles_configured_api_key_runtime(monkeypatch) -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
     key = "mcp-configured-root-test-key"
     config = mcp_main.load_config(
         [
@@ -368,6 +370,8 @@ def test_required_mode_assembles_configured_api_key_runtime(monkeypatch) -> None
 
 
 def test_mcp_default_required_has_no_implicit_dev_fallback(monkeypatch) -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
     monkeypatch.delenv(_AUTH_MODE_ENV, raising=False)
     monkeypatch.setattr(sys, "argv", ["mcp"])
     server = _build_server()
@@ -381,6 +385,8 @@ def test_mcp_default_required_has_no_implicit_dev_fallback(monkeypatch) -> None:
 def test_mcp_dev_binding_has_no_environment_bypass(
     kernel, monkeypatch, host, expected_status
 ) -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
     monkeypatch.setenv("JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK", "true")
     monkeypatch.setenv("MCP_HOST", host)
     monkeypatch.setattr(mcp_main, "_TRANSPORT", "http")
@@ -578,27 +584,40 @@ def test_delete_space_rejects_archive_mode(kernel) -> None:
 def test_list_tools_schema_excludes_ctx() -> None:
     tools = asyncio.run(mcp_main.mcp.list_tools())
     assert {t.name for t in tools} == set(TOOL_CASES)
+    missing = object()
     for tool in tools:
         props = (tool.inputSchema or {}).get("properties", {})
         assert "ctx" not in props, f"ctx leaked into {tool.name}: {list(props)}"
-        verb, _payload = TOOL_CASES[tool.name]
+        case = TOOL_CASES.get(tool.name, missing)
+        assert case is not missing, f"{tool.name} has no contract case"
+        verb, _payload = case
         parameters = method_contract(verb).request_parameters
         assert set(props) == set(parameters), f"{tool.name} schema fields drifted"
-        required = {
-            name
-            for name, parameter in parameters.items()
-            if parameter.default is inspect.Parameter.empty
-        }
+        required = set()
+        for name, parameter in parameters.items():
+            if parameter.default is inspect.Parameter.empty:
+                required.add(name)
         assert set(tool.inputSchema.get("required", [])) == required, (
             f"{tool.name} required schema fields drifted"
         )
         for name, parameter in parameters.items():
             if parameter.default is inspect.Parameter.empty:
                 continue
-            assert "default" in props[name], f"{tool.name}.{name} schema default missing"
-            assert props[name].get("default") == parameter.default, (
-                f"{tool.name}.{name} schema default drifted"
-            )
+            prop = props.get(name, missing)
+            assert prop is not missing, f"{tool.name}.{name} schema property missing"
+            default = prop.get("default", missing)
+            assert default is not missing, f"{tool.name}.{name} schema default missing"
+            assert default == parameter.default, f"{tool.name}.{name} schema default drifted"
+
+
+def test_submit_ingest_schema_preserves_flat_required_and_optional_arguments() -> None:
+    tools = asyncio.run(mcp_main.mcp.list_tools())
+    tool = next(tool for tool in tools if tool.name == "memory_submit_ingest")
+    schema = tool.inputSchema or {}
+    expected = {"content", "scope", "source", "payload_id", "source_ref"}
+    optional = {"assets", "tags", "system_metadata", "user_metadata"}
+    assert set(schema.get("properties", {})) == expected | optional
+    assert set(schema.get("required", [])) == expected
 
 
 # --- F. 协议编组层：FastMCP.call_tool 真实调用路径 ------------------------------- #

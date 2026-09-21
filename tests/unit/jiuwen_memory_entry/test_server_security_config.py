@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from dataclasses import replace
 
 import pytest
 
@@ -272,3 +273,143 @@ def test_server_and_encrypted_store_share_named_cryptography_instance() -> None:
         assert srv.security_runtime.cryptography_provider is created[0]
     finally:
         vars(CryptographyProducer)["_registry"].pop("shared_probe", None)
+
+
+# -- Runtime 与 PEP 共享同一 Authorizer 实例（审核 P2-2） ------------------------ #
+
+
+def _server_config(memory_api: dict, security: dict) -> object:
+    """Server.build 的两层形态：security 段住在 ``memory_api`` 里。
+
+    ``Server.build`` 读 ``config.settings["memory_api"]``——那是 profiles 层的 Config
+    （带 ``settings``），与内核装配用的两级命名空间 Config 不是同一个类。
+    """
+    return profiles.load_config([{"memory_api": {**memory_api, "security": security}}])
+
+
+_AUTHOR_INSTANCES = {
+    "authorizer": {
+        "default": {
+            "target": "standard",
+            "params": {"grant_store": "default", "delegation_store": "default"},
+        },
+        "other": {
+            "target": "standard",
+            "params": {"grant_store": "default", "delegation_store": "default"},
+        },
+    },
+    "grant_store": {"default": "memory"},
+    "delegation_store": {"default": "memory"},
+}
+
+
+def test_explicit_non_default_authorizer_forks_the_instances_and_is_rejected() -> None:
+    """``security.params.authorizer`` 指到非 default 具名实例 → 拒绝启动。
+
+    分叉的后果是两份 Grant/DelegationStore 视图：同一次授权在 Runtime 与 PEP 得到
+    不同结论。守卫在启动期按对象 identity 拒绝，比运行期以「判定不一致」暴露早得多。
+    """
+    config = _server_config(
+        _AUTHOR_INSTANCES,
+        {
+            "default": {
+                "target": "standard",
+                "params": {"authenticator": {"target": "dev"}, "authorizer": "other"},
+            }
+        },
+    )
+    with pytest.raises(ValidationError, match="同一实例"):
+        server.Server.build(config)
+
+
+def test_runtime_and_pep_share_the_default_authorizer_instance() -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
+    """默认装配下 identity 校验通过：Runtime 与 PEP 拿到同一个对象。"""
+    config = _server_config(
+        _AUTHOR_INSTANCES,
+        {
+            "default": {
+                "target": "standard",
+                "params": {"authenticator": {"target": "dev"}},
+            }
+        },
+    )
+    built = server.Server.build(config)
+    assert built.security_runtime.authorizer is built.api._authorizer
+
+
+def test_explicit_runtime_with_shared_stores_closes_each_store_once(monkeypatch) -> None:
+    from jiuwen_memory.api import assemble_runtime
+    from jiuwen_memory.common.errors import BackendError
+
+    settings = _dev_config()
+    settings["grant_store"] = {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}}
+    settings["delegation_store"] = {
+        "default": {"target": "sqlite", "params": {"db_path": ":memory:"}}
+    }
+    memory_runtime = assemble_runtime(config=settings)
+    original = build_security_runtime(settings)
+    explicit = original
+    stores = (
+        explicit.authorizer.management_grant_store(),
+        explicit.authorizer.delegation_stores()[0],
+    )
+    events = []
+
+    def tracked_close(store):
+        original_close = store.close
+
+        def close():
+            events.append(id(store))
+            original_close()
+
+        return close
+
+    for store in stores:
+        monkeypatch.setattr(store, "close", tracked_close(store))
+    config = profiles.load_config([profiles.OFFLINE, {"memory_api": settings}])
+    built = None
+    try:
+        built = server.Server.build(config, security_runtime=explicit)
+        built.close()
+        built.close()
+        original.close()
+        for store in stores:
+            assert events.count(id(store)) == 1, "shared Store must have one resource owner"
+            with pytest.raises(BackendError):
+                store.health()
+    finally:
+        if built is not None:
+            built.close()
+        memory_runtime.close()
+        explicit.close()
+
+
+def test_explicit_runtime_cannot_bypass_required_grant_management() -> None:
+    from jiuwen_memory.api import assemble_runtime
+    from jiuwen_memory.common.security.authorization.authorization_impl.memory_stores import (
+        InMemoryDelegationStore,
+    )
+    from jiuwen_memory.common.security.authorization.authorization_impl.standard_authorizer import (
+        StandardAuthorizer,
+    )
+    from tests.unit.api.test_authorization_plugin_contract import PublicReadOnlyStore
+
+    settings = _dev_config()
+    initial = assemble_runtime(config=settings)
+    original = build_security_runtime(settings)
+    explicit = replace(
+        original, authorizer=StandardAuthorizer(PublicReadOnlyStore(), InMemoryDelegationStore())
+    )
+    settings["globals"] = {"require_grant_management": True}
+    config = profiles.load_config([profiles.OFFLINE, {"memory_api": settings}])
+    built = None
+    try:
+        with pytest.raises(ValidationError, match="requires grant management"):
+            built = server.Server.build(config, security_runtime=explicit)
+    finally:
+        if built is not None:
+            built.close()
+        initial.close()
+        explicit.close()

@@ -14,12 +14,14 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import CandidateGroup, CandidateOutcome, FanOutCandidate, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode, EvolveResult
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJob
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 SCOPE = Scope(org="dreaming-test", user="owner")
@@ -32,7 +34,7 @@ def _wait_for(predicate):
         if value:
             return value
         time.sleep(0.01)
-    pytest.fail("timed out waiting for dreaming runtime")
+    return pytest.fail("timed out waiting for dreaming runtime")
 
 
 class _BlockingJob(Job):
@@ -49,10 +51,14 @@ class _BlockingJob(Job):
 
 @pytest.fixture
 def runtime():
-    kernel = _build_kernel(config=Config.from_dict({
-        "permission": {"default": "sqlite"},
-        "scheduler": {"default": {"target": "async_timer", "params": {"tick_interval": 1}}},
-    }))
+    kernel = _build_kernel(
+        config=Config.from_dict(
+            {
+                "permission": {"default": "sqlite"},
+                "scheduler": {"default": {"target": "async_timer", "params": {"tick_interval": 1}}},
+            }
+        )
+    )
     try:
         yield kernel
     finally:
@@ -63,8 +69,12 @@ def runtime():
 
 def _register(runtime, candidate=None):
     return runtime.api._dreaming.register(
-        scope=SCOPE, actor=SCOPE, mode=EvolveMode.EXTRACT,
-        channel=Channel.BACKGROUND, candidate=candidate, interval=1,
+        scope=SCOPE,
+        security=internal_context(ScopedAuthenticator(SCOPE)),
+        mode=EvolveMode.EXTRACT,
+        channel=Channel.BACKGROUND,
+        candidate=candidate,
+        interval=1,
     )
 
 
@@ -80,16 +90,13 @@ def _stop(runtime, reason):
 def _pending_driver(scheduler, parent_id):
     async def snapshot():
         for info in scheduler._jobs.values():
-            if (
-                info.detail.get("parent_timer") == parent_id
-                and info.status == JobStatus.PENDING
-            ):
+            if info.detail.get("parent_timer") == parent_id and info.status == JobStatus.PENDING:
                 return info.id
         return None
 
-    return asyncio.run_coroutine_threadsafe(
-        snapshot(), scheduler._runner.ensure_loop()
-    ).result(timeout=5)
+    return asyncio.run_coroutine_threadsafe(snapshot(), scheduler._runner.ensure_loop()).result(
+        timeout=5
+    )
 
 
 def test_real_tick_executes_evolver_and_returns_string_job_id(runtime):
@@ -213,7 +220,9 @@ def test_cancel_while_evolver_waits_in_thread_pool(runtime):
         async def submit_child():
             asyncio.get_running_loop().set_default_executor(executor)
             child = EvolveJob(
-                scope=SCOPE, kv=runtime.kv, resolver=Resolver(),
+                scope=SCOPE,
+                kv=runtime.kv,
+                resolver=Resolver(),
                 evolver=SimpleNamespace(evolve=lambda units, mode: calls.append(mode)),
             )
             child_id = await scheduler.submit(child, Channel.BACKGROUND)
@@ -222,7 +231,8 @@ def test_cancel_while_evolver_waits_in_thread_pool(runtime):
 
         try:
             child_id = asyncio.run_coroutine_threadsafe(
-                submit_child(), scheduler._runner.ensure_loop(),
+                submit_child(),
+                scheduler._runner.ensure_loop(),
             ).result(timeout=5)
             assert resolved.wait(5)
             scheduler.cancel(parent_id)

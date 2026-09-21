@@ -28,7 +28,7 @@ from jiuwen_memory.common.normalizer.normalizer_impl.video_asr import (
     run_video_asr,
 )
 from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
@@ -46,7 +46,11 @@ from jiuwen_memory.retrieval.retriever_impl.multimodal_retriever import (
     MultimodalRetriever,
 )
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
-from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+from jiuwen_memory_entry.core.legacy_request_adapter import (
+    _scope,
+    build_legacy_dispatch_request,
+)
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 _BOOTSTRAP_CORE = Path(__file__).parents[3] / "jiuwen_memory_entry" / "core"
 if str(_BOOTSTRAP_CORE) not in sys.path:
@@ -56,8 +60,11 @@ handler = importlib.import_module("handler")
 pytestmark = pytest.mark.unit
 
 
-def _dispatch(srv, verb: str, payload: dict[str, Any]):
-    return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload))
+def _dispatch(srv, verb: str, payload: dict[str, Any], *, actor: Scope | None = None):
+    target = _scope(payload)
+    # 身份只来自 security：显式传入时用注入的 actor，否则用业务 target（P1-2）。
+    security = internal_context(ScopedAuthenticator(actor if actor is not None else target))
+    return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload, security=security))
 
 
 def _unexpected_submit_ingest(*_args, **_kwargs):
@@ -97,9 +104,7 @@ def test_dashscope_get_retries_transient_http_errors(monkeypatch) -> None:
                 {
                     "output": {
                         "task_status": "SUCCEEDED",
-                        "result": {
-                            "transcription_url": "https://oss.example/result.json"
-                        },
+                        "result": {"transcription_url": "https://oss.example/result.json"},
                     }
                 },
             ),
@@ -121,9 +126,7 @@ def test_dashscope_get_retries_transient_http_errors(monkeypatch) -> None:
     monkeypatch.setattr(requests, "request", fake_request)
     monkeypatch.setattr(video_asr.time, "sleep", lambda _seconds: None)
 
-    assert _dashscope_asr().transcribe(
-        Path("audio.wav"), language=None, chunk_seconds=600
-    ) == []
+    assert _dashscope_asr().transcribe(Path("audio.wav"), language=None, chunk_seconds=600) == []
     task_calls = [call for call in calls if call[1].endswith("/tasks/task-1")]
     assert len(task_calls) == 3
 
@@ -136,9 +139,7 @@ def test_dashscope_get_retries_transient_http_errors(monkeypatch) -> None:
         _JsonResponse(503, {}),
     ],
 )
-def test_dashscope_post_does_not_retry_ambiguous_failure(
-    monkeypatch, failure
-) -> None:
+def test_dashscope_post_does_not_retry_ambiguous_failure(monkeypatch, failure) -> None:
     calls = 0
 
     def fake_request(*args, **kwargs):
@@ -157,9 +158,7 @@ def test_dashscope_post_does_not_retry_ambiguous_failure(
     )
 
     with pytest.raises(BackendError):
-        _dashscope_asr().transcribe(
-            Path("audio.wav"), language=None, chunk_seconds=600
-        )
+        _dashscope_asr().transcribe(Path("audio.wav"), language=None, chunk_seconds=600)
     assert calls == 1
 
 
@@ -188,9 +187,7 @@ def test_dashscope_result_download_uses_signed_url_without_api_key(monkeypatch) 
                 {
                     "output": {
                         "task_status": "SUCCEEDED",
-                        "result": {
-                            "transcription_url": "https://oss.example/result.json"
-                        },
+                        "result": {"transcription_url": "https://oss.example/result.json"},
                     }
                 },
             )
@@ -198,11 +195,7 @@ def test_dashscope_result_download_uses_signed_url_without_api_key(monkeypatch) 
             200,
             {
                 "transcripts": [
-                    {
-                        "sentences": [
-                            {"begin_time": 0, "end_time": 1000, "text": "hello"}
-                        ]
-                    }
+                    {"sentences": [{"begin_time": 0, "end_time": 1000, "text": "hello"}]}
                 ]
             },
         )
@@ -232,9 +225,7 @@ def test_dashscope_temporary_upload_retries(monkeypatch) -> None:
                 raise _UploadError("temporary upload failure")
             return "oss://temporary/audio.wav"
 
-    monkeypatch.setattr(
-        video_asr, "_dashscope_oss_utils", lambda: (_OssUtils, _UploadError)
-    )
+    monkeypatch.setattr(video_asr, "_dashscope_oss_utils", lambda: (_OssUtils, _UploadError))
     monkeypatch.setattr(video_asr.time, "sleep", lambda _seconds: None)
 
     def fake_request(method: str, url: str, **kwargs: Any) -> _JsonResponse:
@@ -247,9 +238,7 @@ def test_dashscope_temporary_upload_retries(monkeypatch) -> None:
                 {
                     "output": {
                         "task_status": "SUCCEEDED",
-                        "result": {
-                            "transcription_url": "https://oss.example/result.json"
-                        },
+                        "result": {"transcription_url": "https://oss.example/result.json"},
                     }
                 },
             )
@@ -257,9 +246,7 @@ def test_dashscope_temporary_upload_retries(monkeypatch) -> None:
 
     monkeypatch.setattr(requests, "request", fake_request)
 
-    assert _dashscope_asr().transcribe(
-        Path("audio.wav"), language=None, chunk_seconds=600
-    ) == []
+    assert _dashscope_asr().transcribe(Path("audio.wav"), language=None, chunk_seconds=600) == []
     assert _OssUtils.calls == 3
 
 
@@ -270,9 +257,7 @@ def test_dashscope_missing_sdk_is_backend_error(monkeypatch) -> None:
     monkeypatch.setattr(video_asr, "_dashscope_oss_utils", missing_dashscope_sdk)
 
     with pytest.raises(BackendError, match="DashScope SDK is unavailable"):
-        _dashscope_asr().transcribe(
-            Path("audio.wav"), language=None, chunk_seconds=600
-        )
+        _dashscope_asr().transcribe(Path("audio.wav"), language=None, chunk_seconds=600)
 
 
 def test_video_asr_without_audio_skips_remote_service(tmp_path, monkeypatch) -> None:
@@ -578,18 +563,16 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
             encoding="utf-8"
         )
     )["memory_api"]
-    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"][
-        "temp_root"
-    ] = str(tmp_path / "video-work")
+    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]["temp_root"] = str(
+        tmp_path / "video-work"
+    )
     # Pipeline 被 mock，两个模型端口只需用 echo 完成装配。
     settings["llm"]["video_text"]["target"] = "echo"
     settings["llm"]["video_vision"]["target"] = "echo"
 
     def fake_run_pipeline(self, video_path: Path, run_root: Path):
         del self, video_path, run_root
-        return _video_memory_output(
-            RawPayload(id="video-1", scope=Scope(user="user-1"))
-        )
+        return _video_memory_output(RawPayload(id="video-1", scope=Scope(user="user-1")))
 
     monkeypatch.setattr(VideoNormalizer, "_run_pipeline", fake_run_pipeline)
     video_path = tmp_path / "demo.mp4"
@@ -600,7 +583,7 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
         video_path.as_uri(),
         scope,
         Modality.VIDEO,
-        security=legacy_request_context(scope),
+        security=internal_context(ScopedAuthenticator(scope)),
         assets=[video_path.as_uri()],
         system_metadata={
             "infer": "true",
@@ -613,30 +596,26 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
     result = kernel.api.search(
         "deployment",
         Context(scope),
-        security=legacy_request_context(scope),
+        security=internal_context(ScopedAuthenticator(scope)),
         top_k=10,
         with_trajectory=True,
     )
     assert result.items
     assert {item.unit_id for item in result.items}.issubset({unit.id for unit in units})
     assert {
-        step.detail.get("branch")
-        for step in result.trajectory
-        if step.detail.get("branch")
+        step.detail.get("branch") for step in result.trajectory if step.detail.get("branch")
     } >= {"native", "multimodal_clip", "multimodal_event"}
 
 
-def test_video_add_and_prefixed_job_status_share_handler_route(
-    tmp_path, monkeypatch
-) -> None:
+def test_video_add_and_prefixed_job_status_share_handler_route(tmp_path, monkeypatch) -> None:
     settings = yaml.safe_load(
         (Path(__file__).parents[3] / "examples" / "config_multimodal.yml").read_text(
             encoding="utf-8"
         )
     )["memory_api"]
-    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"][
-        "temp_root"
-    ] = str(tmp_path / "video-work")
+    settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]["temp_root"] = str(
+        tmp_path / "video-work"
+    )
     # Pipeline 被 mock，两个模型端口只需用 echo 完成装配。
     settings["llm"]["video_text"]["target"] = "echo"
     settings["llm"]["video_vision"]["target"] = "echo"
@@ -693,9 +672,7 @@ def test_video_add_and_prefixed_job_status_share_handler_route(
         assert status == 200
         assert result["status"] == "succeeded"
         assert result["item_ids"]
-        assert {item["system_metadata"]["video_id"] for item in result["items"]} == {
-            "video-1"
-        }
+        assert {item["system_metadata"]["video_id"] for item in result["items"]} == {"video-1"}
 
         status, reused = _dispatch(
             srv,
@@ -857,16 +834,16 @@ def test_ingest_job_status_uses_memory_api_read_permission() -> None:
     )
     srv = SimpleNamespace(api=kernel.api, ingest_jobs=kernel.ingest_jobs)
     try:
+        # 身份只来自 security（P1-2）：以 outsider 作为已认证 actor，目标为 owner 的 job。
         status, body = _dispatch(
             srv,
             "job",
             {
                 "tenant_id": owner.org,
                 "scope": owner.user,
-                "actor_tenant_id": outsider.org,
-                "actor_scope": outsider.user,
                 "job_id": submission.job.id,
             },
+            actor=outsider,
         )
 
         assert status == 403

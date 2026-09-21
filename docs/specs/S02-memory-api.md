@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-14 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -64,8 +64,8 @@ Scope 或请求体身份回退。HTTP 认证模式按 `--auth-mode`、`JIUWEN_ME
 两种模式都经受控入口生成 `RequestSecurityContext`，仍执行 `MemoryAPI` 授权；
 不能把配置的 role 等同于绕过空间权限。配置位置、字段约束与启动示例统一见
 [Config 指南](../zh/API文档/config.md#33-http-开发测试配置多个身份)。
-仅固定 DEV 且未配置 security/permission 时临时注入 allow_all PermissionManager；
-身份映射模式不注入该兼容项。具名 ADMIN/ROOT 的角色授权随 PR2 接入 Authorizer。
+DEV 与身份映射模式均使用同一 Authorizer 判权，不注入 allow_all PermissionManager。
+具名 ADMIN/ROOT 按安全域角色与目标动作判权，ADMIN 不自动取得空间内容权限。
 dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或生产降级路径。
 
 同步与异步只保留 Python 调用方式的差异。普通 `def` 方法直接调用；`add_async`、
@@ -153,7 +153,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 
 **管什么**：
 - 统一对外 Core API（形态无关）：所有接入形态（SDK/CLI/Skill/MCP/HTTP·gRPC）最终映射到 `MemoryAPI`
-- 鉴权执行点（PEP）：从请求安全上下文取 actor，调用 `PermissionManager.check(security.auth.actor, scope, action)` 做入口鉴权
+- 鉴权执行点（PEP）：从请求安全上下文取 actor，调用 `Authorizer.authorize` 做入口鉴权
 - 入口审计：写审计事件到 `AuditLogger`
 - 参数装配：将调用侧参数装配为控制层可消费的内部结构
 - 鉴权驱动的编排：按 `security.auth.actor` 决定资源可见范围、生成并回注系统谓词、按判权结果决定取数范围。不变量 9（授权路由值回注查询）与 12（分页命中后逐条 READ 鉴权）是这一职责的两处既有形态；跨空间检索的候选空间枚举、逐空间判权与逐空间系统谓词的生成同属此列。**范围以「判权本身及其直接输入输出」为限**，其余属机械计算或 I/O 编排，落控制层 `control/collective/`，本层只提供回调：
@@ -172,7 +172,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 
 ## 不变量
 
-1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权面委托 `PermissionManager`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。API 不实现跨层业务编排，真实处理逻辑由 control 层算子及其下游 construction/retrieval/storage 完成。
+1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权判定委托 `Authorizer`，授权状态管理使用其具名 `GrantStore`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。API 不实现跨层业务编排，真实处理逻辑由 control 层算子及其下游 construction/retrieval/storage 完成。
 2. **调用方身份不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层。
 3. **`security` 为必填安全输入**：类型为 `common.security.types.RequestSecurityContext`，由接入层的 `authenticated()` 产出，调用方不得自行拼装；actor 从 `security.auth.actor` 取。除 `check_write` 为兼容原第二位置参数而保留 `(scope, security, *, ...)` 外，其余方法均为 keyword-only。
 4. **search 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
@@ -180,23 +180,23 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
 7. **`as_of` = valid-time 回溯点**：`search`/`get` 的 `as_of` 沿系统相信时间轴回溯，返回「那时被认为有效」的版本（`get` 沿 `supersedes` 版本链定位）；`None` 表示当前态。
 8. **target scope 兜底**：`delete` 等以 `selector.scope or 根 scope` 为鉴权目标——未限定 scope 的跨范围操作退到根闸门，要求更高权限。
-9. **路由鉴权绑定数据范围**：路由型 PermissionManager 依据请求中的字段选择策略时，
+9. **路由鉴权绑定数据范围**：路由型 Authorizer 依据请求中的字段选择策略时，
    API 必须把同一个授权路由值作为系统过滤谓词回注查询，避免「按 A 类型授权、读取
    B 类型数据」。系统谓词与用户 `filters` 以外层 `AND` 合并。
 10. **space 是租户隔离单元**：`Scope.space` 参与鉴权、存储命名空间、索引过滤和审计 actor/target 过滤；`scope.require_space=true` 时，具体 target scope 缺少 `space` 的数据/治理操作在 API 层拒绝。org 级 `create_space/list_spaces` 使用 `Scope(org=...)` 做管理面鉴权，不受该策略拦截。
-11. **space policy 在 API 边界生效**：已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 提供，API 在调用 `PermissionManager.check` 前写入 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能覆盖 space policy。
+11. **space policy 在 API 边界生效**：已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 提供，API 在授权判定前写入 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能覆盖 space policy。
 12. **list 按实际资源二次鉴权**：请求显式给出的 `memory_types` 先做类型级鉴权；Engine 再以当前分页实际命中的 MemoryUnit 真源元数据返回权限上下文，API 逐条 READ 鉴权，全部通过后才返回内容。extensions 中仅 `routing_fields()` 声明的路由键参与权限路由，且对应路由值必须作为系统过滤条件回注。
 13. **list 过滤和计数在 KV 内完成**：API 复制 `extensions`、规范化 `filters` 后完整下推；返回 `MemoryListResult.items` 当前页和分页前精确 `count`，不以 `len(items)` 代替总数。
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
-15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。过渡期 `common.security.legacy.legacy_request_context()` 是唯一例外（见 F05 §PR2），随实装 PR 一并删除。
-16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；目标形态下 `grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位。接口先行过渡期只固定签名，`GrantStore` 未实装前不生成 ID、不据 ID 判定，撤销语义与 `mem2.0` 一致（见 F05 §5.4）。
+15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。（曾存在的 `legacy_request_context` 过渡桥已随 PR2 删除。）
+16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 F04-1 §5.4）。
 17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式层级请求在 `hierarchy.enabled=false` 时抛 `PolicyError`，不带层级参数的既有操作保持语义。
 18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
-20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权在过渡期委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
+20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
 21. **Space 删除事务在 Control**：`delete_space` 鉴权后调用 `SpaceLifecycleService`（先 `MemoryEngine.purge_space`，再 `SpaceManager.delete`，并把 purge 条数累加进 `deleted_counts` 的 `memory` / `index` / `kv`）。purge 失败则不删 space；purge 成功而 metadata delete 失败时抛 `PartialFailureError`（`retry_action=delete_space`），不得报告完整成功。重试同一入口：purge 对空空间幂等，第二步再删元数据。API 只授权、调用该端口、使 membership 缓存失效并记录入口审计；不得在 API 内联 purge+delete 或实现索引删除/存储遍历。
 22. **业务逻辑下沉可验证**：新增数据面语义时，API 侧只增加契约校验/参数装配/授权映射，具体行为必须在 `MemoryEngine` 或对应 Control/Construction/Retrieval 算子中实现。API 单测应使用 spy/mock 验证委托，Control 单测应覆盖真实行为，禁止只在 API 单测中覆盖业务分支。
-23. **Access 只依赖本包**：`jiuwen_memory_entry/` 与 `jiuwen_memory_adapter/` 只 `import jiuwen_memory.api`，不得 import `jiuwen_memory.api.memory_api_impl` 或其他内核包。协议转换所需的 DTO、枚举、异常、`legacy_request_context` / `Credentials`，以及日志脱敏辅助函数 `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log` 由本包重导出。这四个辅助函数只处理 Python logging 参数，不增加 HTTP DTO 字段，也不改变 `MemoryAPI` 方法签名或响应。公开装配是 `assemble` / `assemble_runtime`（`config=dict | Config | None`），Access composition root（`jiuwen_memory_entry/core/server.py`）不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI` 不是公开导出；`assemble_runtime` 与 `Server` 不暴露 `kv` / `storage` / `space`。
+23. **Access 只依赖本包**：`jiuwen_memory_entry/` 与 `jiuwen_memory_adapter/` 只 `import jiuwen_memory.api`，不得 import `jiuwen_memory.api.memory_api_impl` 或其他内核包。协议转换所需的 DTO、枚举、异常、`internal_context` / `new_request_context` / `build_dev_authenticator` / `Surface` / `Credentials`，以及日志脱敏辅助函数 `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log` 由本包重导出。这四个辅助函数只处理 Python logging 参数，不增加 HTTP DTO 字段，也不改变 `MemoryAPI` 方法签名或响应。公开装配是 `assemble` / `assemble_runtime` / `assemble_server_runtime`（`config=dict | Config | None`），Access composition root（`jiuwen_memory_entry/core/server.py`）不 import `jiuwen_memory.config`，不访问内核实现私有成员。`Kernel` / `build_kernel` / `LocalMemoryAPI` 不是公开导出；公开运行时与 `Server` 不暴露 `kv` / `storage` / `space`。
 
 ## 接口契约
 
@@ -223,7 +223,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 | 治理面（委托 Governor） | `inspect` | 已实现 | [inspect](#inspect) | F01 |
 | 治理面 | `trace` | 已实现 | [trace](#trace) | F01 |
 | 治理面 | `audit` | 已实现 | [audit](#audit) | F01 |
-| 授权面（委托 PermissionManager） | `grant` | 已实现 | [grant](#grant) | F01 |
+| 授权面（委托 Authorizer / GrantStore） | `grant` | 已实现 | [grant](#grant) | F01 |
 | 授权面 | `revoke` | 已实现 | [revoke](#revoke) | F01 |
 | Space 管理面（委托 SpaceManager） | `create_space` | 已实现 | [create_space](#create_space) | F01 |
 | Space 管理面 | `get_space` | 已实现 | [get_space](#get_space) | F01 |
@@ -438,7 +438,7 @@ API 方法的实现顺序应保持为：
 transport input
   → 类型/形状校验与兼容归一化
   → 构造 PermissionContext / 内部请求对象
-  → PermissionManager.check + 审计
+  → Authorizer.authorize + 审计
   → 委托 Control 算子
   → 结果适配与审计
 ```
@@ -452,7 +452,7 @@ API 不得在上述流程中自行执行以下逻辑：
 - MemoryUnit 版本、生命周期或 Storage CRUD；
 - 后台任务拆分、并发策略、重试和调度实现。
 
-管理面直接委托 `PolicyManager`、`PermissionManager`、`SpaceManager` 等 Control 算子是允许的；API 仍只承担鉴权、参数装配、调用顺序和结果适配。
+管理面直接委托 `PolicyManager`、`SpaceManager` 等 Control 算子是允许的；授权管理使用同一 Authorizer 的具名 GrantStore，API 仍只承担鉴权、参数装配、调用顺序和结果适配，不实现多真源事务编排。
 
 ### search
 
@@ -517,7 +517,7 @@ def list(
 宽松 fallback，也避免权限上下文与内容来自两次分页读取。
 
 `extensions` 为 `dict[str, Any]`，API 只复制外层字典并原样透传值；内核不得隐式调用
-`str()`。权限上下文构建只解释 `PermissionManager.routing_fields()` 声明的路由键
+`str()`。权限上下文构建只解释 `Authorizer.routing_fields()` 及入口路由能力声明的路由键
 （extensions 优先、filter 等值兜底，与 search 同一口径），其余扩展键对权限层不透明，
 不进 `PermissionContext.metadata`；只有明确声明需要落盘或跨进程传输的扩展，才由对应
 边界 adapter 使用显式 codec 序列化；未知 key 原样透传。
@@ -539,6 +539,9 @@ def get(
 ```
 
 真源点读：鉴权 READ→委托 Engine。`as_of` 为空时返回该 id 对应的那一条；非空时沿 `supersedes` 版本链回溯，返回 valid 区间含 `as_of` 的那一版。不存在时抛 `NotFoundError`。
+请求 ID 的预检和真源权限检查通过后，返回前还必须按实际选中 MemoryUnit 的同一快照
+执行 READ 鉴权（Scope、作者和类型路由）。不能用当前版本权限代替历史版本权限，
+也不能用预读权限放行同 ID 的后续内容变化。
 
 #### update
 
@@ -610,6 +613,11 @@ def evolve(
 触发演进：鉴权 WRITE→（三态分发）→委托 Engine 纯执行链→返回 job_id。当前代码只接受 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET。调用成功返回 job id，不表示任务已经完成。索引维护不在此（随数据面自动跟进）。
 
 **dreaming 三态**（F04，PEP 边界——三态编排、持续授权、fan-out 逐桶裁决都在 API 层 `DreamingCoordinator`，`api/memory_api_impl/dreaming.py`；Control 层纯执行见 S03 `evolve` 行）：`dreaming=None` 立即跑（入口鉴权 + fan-out 逐桶裁决后提交一次性 EvolveJob，返回 job_id；拒绝桶仅以 `count:N` 脱敏摘要回显）；`dreaming=True` 注册定时（`interval>0` 必填，scheduler 须 `supports_recurring`；candidate 注册前 canonical 校验；注册表记录 `created_by`，驱动 Job 每 tick 复验授权与 leader 租约，被拒或失锁即停摆）；`dreaming=False` 幂等注销（未命中返回 `None`，不退化立即跑）。注销先把注册状态持久化为 `CANCEL_REQUESTED`，再在协调器状态锁外等待 Scheduler，成功后删除；取消失败保留该状态，Driver 在 tick 开头和提交演进前按 `state + generation + job_id` 自停，重启恢复只收口而不复活。注册/注销/恢复由本实例生命周期锁串行，并只允许 leader 修改共享声明；请求落到非 leader 时抛 `RuntimeError`，不会删掉另一实例正在执行的声明。周期实例启动即竞选 leader，空注册表也持锁；恢复结果只在当前 leader 任期内幂等缓存，失锁或主动放锁后必须重扫；恢复每条记录在提交和换绑后均复验租约，中途失锁立即取消本地驱动并中止恢复。空间进入持久不可写状态时，周期任务以 `space_not_writable` 停摆并移除声明。
+
+持续授权使用注册时的可信上下文，不以 `created_by` 中的 actor 五元组代替认证。
+服务端私有注册表保留原角色、认证期限、凭据复核能力、委托与可信环境快照；恢复与
+每 tick 生成受控请求上下文，并重新校验凭据和委托真源，不延长认证期限。旧记录只
+有 actor、或安全快照损坏时不可恢复为有效请求；详见 S10 不变量 35。
 
 所有已实现 evolve 模式均要求 `Action.WRITE`。`EvolveMode.HIERARCHY`
 是目标新增，必须提供
@@ -704,13 +712,15 @@ def audit(
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `verify_audit` | `(*, security, after_sequence=0, page_size=1000, max_samples=20, anchor_policy="if_configured") -> AuditVerificationResult` | 审计链完整性验证：按 `VERIFY_AUDIT` 执行管理面根 scope 闸门，与仍使用 legacy `READ` 的既有 `audit` 是两个独立入口；provider 与专用 `audit_verify_guard` 成对注入，全量验证占独立并发槽，耗尽抛 `RateLimitedError`；此时授权事件保持 `decision=allow`，沿用 `workload_guard=exhausted` 明细区分容量准入失败与鉴权拒绝。guard 准入后必须先记录验证尝试再调用 provider，使 provider 抛出的完整性异常仍可追溯发起者与发生时间。输入只允许服务端验证参数，不接受调用方传入 expected digest / key / proof。`after_sequence=N` 必须从同一稳定快照读取并验证第 N 条 checkpoint proof，扫描固定截至快照链头；并发追加留到下一次，checkpoint/序号缺口/截断导致 `incomplete`，不得从 genesis 盲接。`page_size` / `max_samples` 截到服务端可信 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples`，装配只接受真正的整数（拒绝 `bool` 和字符串），非法类型、范围或超过硬上限统一抛 `ValidationError`；PEP 再保证返回 samples 不超过有效上限。`truncated` 只表示样本列表截断，`high_water_mark` 是本次连续成功验证到的最高 sequence。未装配 provider 时诚实返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信 `security` 后以同名 `/v1/verify_audit` 暴露并递归序列化原返回值；CLI 以同名 `verify_audit` 命令暴露；MCP tool 暂无一等入口（见 F05 §6.4） |
+| `verify_audit` | `(*, security, after_sequence=0, page_size=1000, max_samples=20, anchor_policy="if_configured") -> AuditVerificationResult` | 审计链完整性验证：按 `VERIFY_AUDIT` 执行管理面根 scope 闸门，与使用 `READ_AUDIT` 的既有 `audit` 是两个独立入口；provider 与专用 `audit_verify_guard` 成对注入，全量验证占独立并发槽，耗尽抛 `RateLimitedError`；此时授权事件保持 `decision=allow`，沿用 `workload_guard=exhausted` 明细区分容量准入失败与鉴权拒绝。guard 准入后必须先记录验证尝试再调用 provider，使 provider 抛出的完整性异常仍可追溯发起者与发生时间。输入只允许服务端验证参数，不接受调用方传入 expected digest / key / proof。`after_sequence=N` 必须从同一稳定快照读取并验证第 N 条 checkpoint proof，扫描固定截至快照链头；并发追加留到下一次，checkpoint/序号缺口/截断导致 `incomplete`，不得从 genesis 盲接。`page_size` / `max_samples` 截到服务端可信 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples`，装配只接受真正的整数（拒绝 `bool` 和字符串），非法类型、范围或超过硬上限统一抛 `ValidationError`；PEP 再保证返回 samples 不超过有效上限。`truncated` 只表示样本列表截断，`high_water_mark` 是本次连续成功验证到的最高 sequence。未装配 provider 时诚实返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信 `security` 后以同名 `/v1/verify_audit` 暴露并递归序列化原返回值；CLI 以同名 `verify_audit` 命令暴露；MCP 以 `memory_verify_audit` 工具暴露同一冻结契约（见 F04-1 §6.4） |
 
 ---
 
-### 授权面（委托 PermissionManager）
+### 授权面（委托 Authorizer / GrantStore）
 
-本面对外方法与下列契约一致，无额外尚未实现的 MemoryAPI。`PermissionManager.check` / `routing_fields` 是控制层内部接口，不对外。
+本面对外方法与下列契约一致，无额外尚未实现的 MemoryAPI。MemoryAPI 是唯一 PEP，
+判定委托 Authorizer，授权状态读写使用其具名 GrantStore；旧 PermissionManager
+不进入生产授权路径。
 
 #### grant
 
@@ -720,7 +730,9 @@ def audit(
 def grant(grant: Grant, *, security: RequestSecurityContext) -> Grant: ...
 ```
 
-新增跨 scope 授权。`security.auth.actor` 须有权再授权 `grant.grantor` 范围（当前过渡态鉴权 SHARE）。返回同一个安全域 `Grant`；当前 `PermissionManager` 尚不生成 `grant_id`，目标 `GrantStore` 实装后由服务端生成稳定 ID。
+新增跨 scope 授权。`security.auth.actor` 须有权再授权 `grant.grantor` 范围，按 SHARE
+鉴权并执行授予上界检查。正常路径返回带服务端生成 `grant_id` 的安全域 Grant，授权
+写入与实际 Authorizer 判定同源的 GrantStore；不得双写旧 PermissionManager。
 
 #### revoke
 
@@ -730,7 +742,9 @@ def grant(grant: Grant, *, security: RequestSecurityContext) -> Grant: ...
 def revoke(grant: Grant, *, security: RequestSecurityContext) -> None: ...
 ```
 
-回收授权（幂等）。当前过渡态按 grantor+grantee+action 条件撤销且鉴权 SHARE；目标形态鉴权 `REVOKE_SHARE` 并按 `grant_id` 精确定位。公共签名保持不变。
+回收授权（幂等）。按 `grant_id` 读取真实授权目标并执行 REVOKE_SHARE 鉴权，撤销须
+原子绑定已鉴权的真实 grantor；不得信任请求中自述的 grantor。缺失 ID 拒绝，未知 ID
+幂等无副作用，撤销状态单调，重复调用不改变原撤销时间。公共签名保持不变。
 
 ---
 
@@ -1075,7 +1089,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 `Grant`（frozen）：`grantor`（授权方 scope）/ `grantee`（被授权方 scope）/
 `actions: frozenset[Action]` / `expires_at`（None 为长期）/ `grant_id`（授权的稳定标识，
-构造时默认为空，目标形态由服务端生成）/ `revoked`；`is_active(*, now)` 判定时效。
+构造时默认为空，由服务端生成）/ `revoked`；`is_active(*, now)` 判定时效。
 为兼容既有 `jiuwen_memory.api.Grant` 调用方，构造器继续接受不含 `grant_id` 的旧参数形状，
 并在构造边界把 `list[Action]` 等动作迭代归一为 `frozenset[Action]`；非 `Action` 成员立即
 抛 `TypeError`。`Action`：`READ`/`WRITE`/`UPDATE`/`DELETE`/`SHARE`/
@@ -1083,30 +1097,31 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 `VERIFY_AUDIT`/`ADMINISTER_SYSTEM`。
 
 `control/types.py` 为兼容既有内部与仓外导入路径，再导出同一个安全域 `Grant`/`Action`
-对象，不再维护第二套字段或枚举；API 把同一 `Grant` 实例直接交给过渡期
-`PermissionManager`，不会裁掉 `grant_id` / `revoked`。旧权限实现尚无安全域管理动作的
-角色闸门，因此 API 对五个旧动作之外的 Grant 显式抛 `ValueError`（fail-closed），待
-`Authorizer` 实装后由其完整策略判定。
+对象，不再维护第二套字段或枚举；API 将服务端生成 ID 的 `Grant` 写入与 Authorizer
+同源的 GrantStore，不会裁掉 `grant_id` / `revoked`。唯一 PDP `Authorizer` 执行完整
+角色闸门；普通 Grant 不得越过管理面角色闸门，旧 PermissionManager 不参与生产判定。
 
 ### Space 数据结构（`control/types.py`）
 
 - `PrincipalPath`：`USER_AGENT` / `AGENT_USER`，决定 space 内 owner-cover 字段顺序。
 - `SpaceStatus`：`ACTIVE` / `FROZEN` / `ARCHIVED` / `DELETING` / `DELETED`。
 - `SpacePolicy`：`require_space` / `principal_path` / `storage_isolation_strategy` / `retention` / `quotas` / `index_profiles` / `pipeline_profiles`。
-- `SpaceSpec`：`org` / `space` / `display_name` / `principal_path` / `policy` / `metadata`。
-- `SpaceInfo`：`org` / `space` / `display_name` / `status` / `principal_path` / `policy` / `metadata` / `created_at` / `archived_at`。
+- `SpaceSpec`：`org` / `space` / `display_name` / `principal_path` / `policy` / `metadata` / `owner`。
+- `SpaceInfo`：`org` / `space` / `display_name` / `status` / `principal_path` / `policy` / `metadata` / `created_at` / `archived_at` / `owners`。
 - `SpacePatch`：`display_name` / `status` / `principal_path` / `policy` / `metadata`。
-- `SpaceMember`：`scope` / `role` / `created_at` / `expires_at`。
+- `SpaceMember`：`scope` / `role` / `content_role` / `governance_role` / `created_at` / `expires_at`；旧 `role` 只用于存量读取兼容，实际判权使用内容轴与治理轴。
 - `SpaceUsage`：`org` / `space` / `memory_count` / `message_count` / `index_count` / `storage_bytes` / `audit_count`。当前实现填充 memory/message 数量与 KV bytes；`index_count` / `audit_count` **状态：已设计、尚未实现**。
 - `SpaceDeleteResult`：`org` / `space` / `deleted_counts` / `status` / `audit_event_id`。
 
-> 规划中：`SpaceMember` 增内容轴与治理轴两个角色字段、`SpaceInfo` 增归属主体登记、`SpaceSpec` 增创建者身份，另新增空间授权事实快照类型。见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) 「空间数据结构变更」。
+`SpaceFacts`（frozen）承载 `org` / `space` / `info` / `members`，作为一次调用内的空间事实快照。
+`SpaceSpec.owner` 是归属主体而非认证 actor；身份仍只来自可信上下文。见
+[F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「空间数据结构变更」。
 
 ### AuditEvent（audit 返回，`common/type_def/audit.py`）
 
 `id` / `actor`（操作者 Scope）/ `target`（目标 Scope）/ `action` / `target_id` / `layer`（产生事件的层）/ `occurred_at` / `detail`。`detail` 常见约定包括 `permission_check`、`permission_reason`、`job_id`、`before_unit_id` / `after_unit_id`、`before_unit_ids` / `after_unit_ids`；其中 `before_unit_*` / `after_unit_*` 仅表示记忆单元 id，不用于调度任务 id。审计查询支持 `actor_*` 与 `target_*` scope 字段过滤。
 
-`search/get/inspect/trace` 使用 READ，`add/evolve` 使用 WRITE，`update` 使用 UPDATE，`delete` 使用 DELETE，`grant/revoke` 使用 SHARE。未限定 target scope 的 delete 和全局管理操作退到根 scope 闸门。
+`search/get/inspect/trace` 使用 READ，`add/evolve` 使用 WRITE，`update` 使用 UPDATE，`delete` 使用 DELETE，`grant` 使用 SHARE、`revoke` 使用 REVOKE_SHARE。未限定 target scope 的 delete 和全局管理操作退到根 scope 闸门。
 
 ## 错误语义
 
@@ -1126,16 +1141,45 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 接入层 → authenticated(...) / internal_context(...) → security: RequestSecurityContext
 调用方 → MemoryAPI.method(scope=target, security=security)
   → actor = security.auth.actor
-  → PermissionManager.check(actor=security.auth.actor, target=scope, action=<对应动作>, context=...)
+  → resource = ResourceDescriptor(scope=scope, action=<对应动作>, ...)
+  → Authorizer.authorize(auth=security.auth, resource=resource, environment=environment)
     # list/get/update/delete/inspect/trace 的已有资源上下文来自真源和已鉴权 target scope
     → 通过 → 委托 Engine/Governor/PolicyManager（仅传 scope，不传 security）
     → 拒绝 → 抛 PermissionDeniedError
   → 落审计事件（含 actor + action + target_id + 时间）
 ```
 
-> 目标形态下这一步由安全域 `Authorizer` 承担（策略判定、`AuthorizationEnvironment`、
-> 决策审计）；本期只固定接口，鉴权仍走既有 `PermissionManager`，运行行为不变。
-> 详见 [F05 安全域接口契约](../features/common/F05-security-api-contracts.md)。
+判定使用服务端构造的 `AuthorizationEnvironment`，旧 PermissionManager 不参与生产判定。
+当前能力见 [F04 安全能力总纲](../features/common/F04-security-interfaces-and-encryption.md)，
+公开能力扩展与资源所有权见 [S10 安全规约](S10-security.md)。assemble 返回的 API
+可通过独立 CloseableSecurityCapability 关闭其 MemoryRuntime；冻结的 MemoryAPI
+抽象方法集合不变。多个运行时包装共享资源时，在装配期显式共享安全生命周期根。
+Runtime 的 `close(wait=False)` 只把首次摄入停机请求设为非等待；先停止文件监听与同步准入，
+等待已进入数据面的 watcher 工作结束；最终释放依赖前仍须等待已提交的摄入任务及其
+状态写入完成，再停止 Scheduler、释放 dreaming 锁和自有后台 loop，最后关闭 shadow
+及安全依赖，因此整体 close 可能阻塞。停止接收任务不等于任务全部结束，后续
+`wait=True` 与共享关闭回调不得因已有停机请求而跳过等待；不增加延迟清理线程。
+
+### 公开 Server 装配入口
+
+`assemble_server_runtime(policies=None, config=None, *, security_runtime=AUTO_SECURITY_RUNTIME)
+-> ServerRuntime` 从同一公开 API 包导出；Access 只传普通配置 mapping，不解析内核私有成员。
+`MemoryRuntime` 沿用文档记忆的生命周期协议：`api`、`start()`、异步
+`start_background()` 和 `close(*, wait=True)`。异步宿主显式绑定当前长寿 loop；同步
+宿主显式启动自有 loop，两者不暴露 Store 或任务控制器。默认无 watcher 时启动为 no-op，
+关闭后不得重启；启动故障必须传回调用方。`ServerRuntime` 在该协议上增量提供只读
+`security_runtime` 与 `audit`，转发同一启动/关闭路径。既有 `assemble`、`assemble_runtime`
+和冻结的 `MemoryAPI` 签名不变；历史自定义 Runtime 需适配这两个上游生命周期方法。
+
+装配器在返回前完成 PDP 同源校验、显式 PDP 回绑、部署管理能力/空间路由约束复核和
+认证器实际凭据真源的 Registry 替换。默认哨兵选择配置 Runtime；显式 `None` 不选择
+入口认证，不隐式创建 DEV。显式安全组合若提供 PDP/认证器，必须按对应公开契约完成
+绑定。历史部分组合只适配已有入口能力，不替代完整生产 SecurityRuntime 契约。
+`audit` 与 API 业务审计同源；未装配为 None。句柄不暴露 raw Store、任务控制器等端口。
+
+成功返回的句柄统一管理内核和已选择安全组合的生命周期；共享资源按现有所有者协议
+去重关闭。绑定失败（包括取消）清理本次内核、保留主错误，不接管调用方注入对象。
+Access 只调用公开句柄的 close，不承担二次绑定或检查 API 实现私有字段。
 
 ## 实现注册机制
 
@@ -1143,7 +1187,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 jiuwen_memory/api/memory_api_impl/
     __init__.py             # 重导出实现类
     local_memory_api.py     # LocalMemoryAPI：PEP + 委托
-    assembly.py             # assemble / assemble_runtime / _build_kernel
+    assembly.py             # assemble / assemble_runtime / assemble_server_runtime / _build_kernel
 ```
 
 ## 与其它 spec 的关系

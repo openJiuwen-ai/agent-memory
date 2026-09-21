@@ -62,15 +62,15 @@ def test_runtime_is_frozen() -> None:
         runtime.authenticator = None  # type: ignore[misc]
 
 
-def test_authorizer_defaults_to_a_test_only_placeholder() -> None:
-    """PR1 没有做判定的授权实现，但 ``authorizer`` 是上游固定的必填字段。
+def test_authorizer_defaults_to_a_real_deciding_implementation() -> None:
+    """默认判定实现不得是 test-only 占位——PR2 起 PEP 每次判定都调它。
 
-    默认装的 ``allow_all`` 占位必须自报 ``is_test_only()``——装配层据这个 capability
-    在生产模式拒绝启动，而不是看 target 名（F05 §授权不变量 8）。PR1 的 PEP 仍走
-    ``PermissionManager``，没有代码消费这个 Authorizer，故占位不产生放行后果。
+    PR1 时默认是 ``allow_all``，理由是「没有代码消费这个 Authorizer」；该前提随
+    PR2 接通 PDP 而失效，恒放行占位当默认即等于生产装配默认放行。断言取
+    ``is_test_only()`` 这个 capability 而不是 target 名（F05 §授权不变量 8）：
+    第三方换个实现名照样要被这条线拦住。
     """
-    authorizer = _build().authorizer
-    assert authorizer.is_test_only() is True
+    assert _build().authorizer.is_test_only() is False
 
 
 def test_explicit_authorizer_overrides_the_default() -> None:

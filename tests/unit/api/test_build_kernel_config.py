@@ -15,12 +15,17 @@ from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_ke
 from jiuwen_memory.common.audit.base import AuditProducer
 from jiuwen_memory.common.errors import BackendError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.audit_integrity.base import AuditVerificationLimits
+from jiuwen_memory.common.security.authorization.base import (
+    AuthorizationDecision,
+    AuthorizationProducer,
+    Authorizer,
+)
 from jiuwen_memory.common.security.cryptography.cryptography_impl.local_envelope import (
     LocalEnvelopeCryptographyProvider,
 )
-from jiuwen_memory.common.security.legacy import legacy_request_context
-from jiuwen_memory.common.security.types import AuthContext
+from jiuwen_memory.common.security.types import AuthContext, DenyReason, Role
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
@@ -37,6 +42,7 @@ from jiuwen_memory.control.permission_impl.sqlite_permission_manager import (  #
 from jiuwen_memory.control.types import Action, Grant, PermissionContext
 from jiuwen_memory.storage.kv_impl.encrypted_kv_store import EncryptedKVStore
 from jiuwen_memory.storage.vector import VectorProducer
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 # 本文件验证装配出来的具体权限实现及 Factory 注册完整性，需要读取受保护状态。
 # pylint: disable=protected-access
@@ -87,6 +93,21 @@ def _build_deny(config) -> _DenyAllPermission:
     return _DenyAllPermission()
 
 
+class _DenyAllAuthorizer(Authorizer):
+    """恒拒绝的判定实现：供「配置覆盖确实改变了行为」这一观测点使用。"""
+
+    def authorize(self, *, auth, resource, environment) -> AuthorizationDecision:
+        return AuthorizationDecision.deny(DenyReason.NOT_COVERED, "deny_all_test")
+
+    def health(self) -> None:
+        return None
+
+
+@AuthorizationProducer.register("deny_all_authorizer_test")
+def _build_deny_authorizer(config) -> _DenyAllAuthorizer:
+    return _DenyAllAuthorizer()
+
+
 _ROUTERS_BUILT: list = []
 
 
@@ -100,9 +121,12 @@ def _build_counting_router(config):
 def test_default_assembly_allows_write() -> None:
     """无 config：内置默认 owner-only sqlite ACL，owner 写入放行、可召回。"""
     api = assemble()
-    units = api.add("hello", SCOPE, security=legacy_request_context(SCOPE))
+    units = api.add("hello", SCOPE, security=internal_context(ScopedAuthenticator(SCOPE)))
     assert (
-        units and api.search("hello", Context(SCOPE), security=legacy_request_context(SCOPE)).items
+        units
+        and api.search(
+            "hello", Context(SCOPE), security=internal_context(ScopedAuthenticator(SCOPE))
+        ).items
     )
 
 
@@ -124,10 +148,15 @@ def test_default_assembly_perm_is_sqlite_not_allow_all() -> None:
 def test_default_audit_config_uses_in_memory_sqlite() -> None:
     audit_config = default_config_dict()["audit"]["default"]
     api = assemble()
-    api.add("audit default smoke", SCOPE, security=legacy_request_context(SCOPE))
+    api.add("audit default smoke", SCOPE, security=internal_context(ScopedAuthenticator(SCOPE)))
 
     assert audit_config == {"target": "sqlite", "params": {"db_path": ":memory:"}}
-    events = api.audit({"action": "add"}, security=legacy_request_context(Scope()))
+    events = api.audit(
+        {"action": "add"},
+        security=internal_context(
+            ScopedAuthenticator(Scope(org="system", user="platform-ops"), role=Role.ROOT)
+        ),
+    )
     assert any(event.action == "add" for event in events)
 
 
@@ -199,11 +228,16 @@ def test_assembly_audit_fallback_matches_sqlite_default(monkeypatch) -> None:
 
 
 def test_config_overrides_control_operator() -> None:
-    """覆盖 permission.default=deny_all_test → 合并到默认之上，写入被拒。"""
-    cfg = Config.from_dict({"permission": {"default": "deny_all_test"}})
+    """覆盖 authorizer.default → 合并到默认之上，写入被拒。
+
+    观测点取 ``authorizer`` 而非 ``permission``：内容读写的判定由 PDP 终局，配在
+    ``permission`` 段的恒拒实现在这条路径上没有执行点，写入照样成功——那时通过的
+    就不是「配置覆盖生效」，而是「配置覆盖没被读」。
+    """
+    cfg = Config.from_dict({"authorizer": {"default": "deny_all_authorizer_test"}})
     api = assemble(config=cfg)
     with pytest.raises(PermissionDeniedError):
-        api.add("hello", SCOPE, security=legacy_request_context(SCOPE))
+        api.add("hello", SCOPE, security=internal_context(ScopedAuthenticator(SCOPE)))
 
 
 def test_unknown_operator_target_raises() -> None:

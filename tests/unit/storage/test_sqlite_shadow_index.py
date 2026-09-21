@@ -17,7 +17,7 @@ from __future__ import annotations
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
 import hashlib
 import struct
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -135,13 +135,13 @@ def test_md_filename_of_reads_backfilled_path() -> None:
 
 
 def test_epoch_ms_converts_datetime_and_none() -> None:
-    dt = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    dt = datetime(2026, 9, 1, tzinfo=UTC)
     assert _epoch_ms(dt) == int(dt.timestamp() * 1000)
     assert _epoch_ms(None) is None
 
 
 def test_temporal_projection_uses_sentinels_for_open_ends() -> None:
-    dt = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    dt = datetime(2026, 9, 1, tzinfo=UTC)
     unit = MemoryUnit(id="u1", scope=SCOPE, temporal=Temporal(t_valid=dt))
     assert _t_valid_of(unit) == int(dt.timestamp() * 1000)
     assert _t_invalid_of(unit) == T_INVALID_OPEN  # t_invalid=None → 开放哨兵
@@ -325,7 +325,9 @@ def test_search_fulltext_project_and_conflict_values_yields_empty(tmp_path) -> N
 
 def test_insert_and_get_roundtrip(tmp_path) -> None:
     store = _store(tmp_path)
-    unit = _unit("u1", "hello world", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit(
+        "u1", "hello world", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+    )
 
     store.insert_units(SCOPE, [unit])
 
@@ -356,7 +358,13 @@ def test_update_overwrites_content_and_preserves_project_guard(tmp_path) -> None
     store = _store(tmp_path)
     store.insert_units(
         SCOPE,
-        [_unit("u1", "hello world", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})],
+        [
+            _unit(
+                "u1",
+                "hello world",
+                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+            )
+        ],
     )
     # 读回（无 coords），改 content，再 update
     (read_back,) = store.get_units(SCOPE, ["u1"])
@@ -367,8 +375,12 @@ def test_update_overwrites_content_and_preserves_project_guard(tmp_path) -> None
 
     assert store.get_units(SCOPE, ["u1"])[0].segments[0].content == "updated content"
     # project 仍为 p1（非 default）：按 project 过滤召回应命中
-    hits = store.search_fulltext(SCOPE, TextQuery(text="updated",
-            filters=FilterClause("system_metadata.project", FilterOp.IN, ["p1"])))
+    hits = store.search_fulltext(
+        SCOPE,
+        TextQuery(
+            text="updated", filters=FilterClause("system_metadata.project", FilterOp.IN, ["p1"])
+        ),
+    )
     assert [h.id for h in hits] == ["u1"]
 
 
@@ -437,8 +449,14 @@ def test_update_md_filename_loss_is_not_contagious_across_rounds(tmp_path) -> No
     # 第一轮：new unit 不带 MD_FILENAME_KEY
     store.update_units(
         SCOPE,
-        [MemoryUnit(id="u1", scope=SCOPE, segments=[Segment(content="second")],
-                    system_metadata={MEMORY_CLASS_KEY: "project_memory"})],
+        [
+            MemoryUnit(
+                id="u1",
+                scope=SCOPE,
+                segments=[Segment(content="second")],
+                system_metadata={MEMORY_CLASS_KEY: "project_memory"},
+            )
+        ],
     )
     # 第二轮：读回第一轮结果（作为 old），改 content 再 update
     (round1,) = store.get_units(SCOPE, ["u1"])
@@ -485,8 +503,16 @@ def test_search_fulltext_returns_ranked_hits(tmp_path) -> None:
     store.insert_units(
         SCOPE,
         [
-            _unit("u1", "deploy cluster", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}),
-            _unit("u2", "cluster failure", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}),
+            _unit(
+                "u1",
+                "deploy cluster",
+                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+            ),
+            _unit(
+                "u2",
+                "cluster failure",
+                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+            ),
             _unit("u3", "coffee preference", {MEMORY_CLASS_KEY: "user_memory"}),
         ],
     )
@@ -557,36 +583,35 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
     """
 
     class _MinimalShadow(DocumentShadowIndex):
-
         def insert_units(self, scope, units):
-            ...
+            pass
 
         def get_units(self, scope, unit_ids):
-            ...
+            pass
 
         def update_units(self, scope, units):
-            ...
+            pass
 
         def delete_units(self, scope, unit_ids):
-            ...
+            pass
 
         def list_units(self, scope):
-            ...
+            pass
 
         def list_units_by_md(self, scope, md_filename):
-            ...
+            pass
 
         def latest_scope_by_md(self, scope, md_filename):
-            ...
+            pass
 
         def search_fulltext(self, scope, query):
-            ...
+            pass
 
         def search_vector(self, scope, query):
-            ...
+            pass
 
         def health(self):
-            ...
+            pass
 
     assert _MinimalShadow().vec_enabled is False
 
@@ -596,6 +621,8 @@ def test_vec_load_failure_logs_warning(tmp_path, caplog) -> None:
     向量召回缺一路无从定位（建议 7 修复回归锁）。
     """
     import logging
+
+    from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import logger
 
     class _FakeVecModule:
         @staticmethod
@@ -607,8 +634,13 @@ def test_vec_load_failure_logs_warning(tmp_path, caplog) -> None:
     store._embedder = object()
     store._sqlite_vec = _FakeVecModule()
 
-    with caplog.at_level(logging.WARNING):
-        store._ensure_conn()
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            store._ensure_conn()
+    finally:
+        logger.removeHandler(caplog.handler)
+        store.close()
 
     assert store.vec_enabled is False
     assert any("sqlite_vec load failed" in r.message for r in caplog.records)
@@ -629,10 +661,14 @@ def test_insert_writes_scope_columns(tmp_path) -> None:
     store = _store(tmp_path)
     s = Scope(org="o", space="sp", user="us", agent="ag", session="se")
     store.insert_units(s, [_unit_scope("u1", "hello", s)])
-    row = store._ensure_conn().execute(
-        'SELECT org, space, "user", agent, session FROM memory_unit WHERE unit_id=?',
-        ("u1",),
-    ).fetchone()
+    row = (
+        store._ensure_conn()
+        .execute(
+            'SELECT org, space, "user", agent, session FROM memory_unit WHERE unit_id=?',
+            ("u1",),
+        )
+        .fetchone()
+    )
     assert row == ("o", "sp", "us", "ag", "se")
 
 
