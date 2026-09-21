@@ -15,6 +15,8 @@ from jiuwen_memory.common.security.authentication.authentication_impl.dev_authen
 from jiuwen_memory.common.security.authentication.base import Authenticator
 from jiuwen_memory.common.security.runtime import SecurityRuntime, SecurityRuntimeProducer
 from jiuwen_memory.config import Config
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.defaults import default_context
 
 
 def build_dev_authenticator(*, identities: Mapping[str, Any] | None = None) -> Authenticator:
@@ -32,7 +34,12 @@ def build_configured_security_runtime(
     """
     register_plugins()
     parsed = Config.from_dict(config)
-    ctx = parsed.context(known_top_names=Factory.known_top_names())
+    ctx = default_context().merged(parsed.context(known_top_names=Factory.known_top_names()))
+    return _build_security_runtime(ctx)
+
+
+def _build_security_runtime(ctx: AssemblyContext) -> SecurityRuntime | None:
+    """在内核的同一装配上下文选择运行时，不重置共享实例缓存。"""
     names = sorted(ctx.namespaces.get(SecurityRuntimeProducer.TOP_NAME, {}))
     if not names:
         return None

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction.base import OperatorType
@@ -10,6 +10,7 @@ from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 _INDEX_BUILDERS: dict[str, "RecordingIndexBuilder"] = {}
 
@@ -108,12 +109,12 @@ def _kernel_config() -> Config:
 def test_engine_write_uses_pipeline_profile_from_memory_type() -> None:
     _INDEX_BUILDERS.clear()
     kernel = build_kernel(config=_kernel_config())
-    scope = Scope(user="u1")
+    scope = Scope(org="acme", user="u1")
 
     kernel.api.add(
         "use pytest for this repo",
         scope,
-        security=legacy_request_context(scope),
+        security=internal_context(ScopedAuthenticator(scope)),
         system_metadata={"memory_type": "coding"},
     )
 
@@ -123,12 +124,12 @@ def test_engine_write_uses_pipeline_profile_from_memory_type() -> None:
 
 def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
     kernel = build_kernel(config=_kernel_config())
-    scope = Scope(user="u1")
+    scope = Scope(org="acme", user="u1")
 
     result = kernel.api.search(
         "test strategy",
         Context(scope=scope, extensions={"memory_type": "coding"}),
-        security=legacy_request_context(scope),
+        security=internal_context(ScopedAuthenticator(scope)),
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]
@@ -136,12 +137,12 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
 
 def test_engine_recall_uses_pipeline_profile_from_system_metadata_filter() -> None:
     kernel = build_kernel(config=_kernel_config())
-    scope = Scope(user="u1")
+    scope = Scope(org="acme", user="u1")
 
     result = kernel.api.search(
         "test strategy",
         Context(scope=scope),
-        security=legacy_request_context(scope),
+        security=internal_context(ScopedAuthenticator(scope)),
         filters={"system_metadata.memory_type": "coding"},
     )
 
@@ -150,12 +151,12 @@ def test_engine_recall_uses_pipeline_profile_from_system_metadata_filter() -> No
 
 def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
     kernel = build_kernel(config=_kernel_config())
-    scope = Scope(user="u1")
+    scope = Scope(org="acme", user="u1")
 
     result = kernel.api.search(
         "test strategy",
         Context(scope=scope),
-        security=legacy_request_context(scope),
+        security=internal_context(ScopedAuthenticator(scope)),
         filters={"memory_type": "coding"},
     )
 

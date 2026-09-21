@@ -8,6 +8,7 @@
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
     AuthenticationError,
+    BackendError,
     ConflictError,
     NotFoundError,
     PartialFailureError,
@@ -24,7 +25,7 @@ from jiuwen_memory.common.log import (
     redact_for_log,
     scope_for_log,
 )
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.request_context import (
     get_request_id,
     new_request_context,
@@ -148,7 +149,6 @@ __all__ = [
     "RequestSecurityContext",
     "SECRET_PARAM_KEYS",
     "Surface",
-    "legacy_request_context",
     "new_request_context",
     "reset_request_id",
     "get_request_id",
@@ -159,6 +159,7 @@ __all__ = [
     # Access 错误映射（公开异常，transport 不识别内核内部模块）
     "AgentMemoryError",
     "AuthenticationError",
+    "BackendError",
     "ConflictError",
     "NotFoundError",
     "PartialFailureError",
@@ -168,6 +169,8 @@ __all__ = [
     "UnsupportedCapabilityError",
     "ValidationError",
     "safe_error_message",
+    # 安全上下文构造（access 面需要，替代 legacy_request_context）
+    "internal_context",
     # Access 日志隐私能力（adapter 不直接依赖内核 common 包）
     "install_privacy_filter",
     "metadata_for_log",

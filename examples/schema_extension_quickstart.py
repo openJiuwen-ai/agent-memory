@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
-from jiuwen_memory.api import assemble
+from jiuwen_memory.api import Surface, assemble
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import new_request_context
+from jiuwen_memory.common.security.types import AuthContext, Role
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 
@@ -29,6 +31,24 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"missing required environment variable: {name}")
     return value
+
+
+def _dev_security(actor: Scope):
+    """演示用可信上下文（**开发模式**，仅限无网络对端的进程内示例）。
+
+    示例进程即自己的 composition root，身份由本进程显式声明；生产部署的身份必须
+    由认证边界（API Key / Trusted Gateway）产出，不得自述。
+    """
+    return new_request_context(
+        AuthContext(
+            actor=actor,
+            role=Role.USER,
+            credential_type="internal",
+            auth_method="internal",
+            authenticated_at=datetime.now(timezone.utc),
+        ),
+        surface=Surface.INTERNAL,
+    )
 
 
 def main() -> None:
@@ -73,7 +93,7 @@ def main() -> None:
     units = api.add(
         "speaker=Alice: On 2023-08-03, I started working as a software engineer at Acme.",
         scope,
-        security=legacy_request_context(scope),
+        security=_dev_security(scope),
         system_metadata={"infer": True},
         user_metadata={"example": "schema_extension_quickstart"},
     )

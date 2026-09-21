@@ -18,7 +18,7 @@
 | `pipeline.py` | `MemoryPipeline` 抽象接口——按记忆类型选择构建/查询 profile |
 | `lifecycle.py` | `LifecycleManager` 接口——状态流转（transition）与到期清扫（sweep） |
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
-| `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验 |
+| `permission.py` | `PermissionManager` 历史兼容接口——不参与生产请求授权 |
 | `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度 |
 | `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
@@ -54,19 +54,19 @@
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/存储端口全部由装配注入。**记忆本体的写入一律经 `IndexBuilder`**——engine 不直接向真源写 KV。`InMemoryEngine` 保持 KVStore 读取路径；`CloudEngine` 的 MemoryUnit 读取（点读、列表、`scopes()` 枚举）经注入的 `DomainStore` 完成。禁止绕过存储抽象绑定具体后端或在 engine 内调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `api/` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 items、count 与 contexts 必须来自同一次存储列表查询。禁止在 engine 内部重复 check。**判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（截断规则），判权本身经 `can_write` 回调由 API 层执行；该裁剪的失效方向是未判即不进候选、表现为拒绝而非放行，因此可下沉。本层也不抛权限异常——缺兜底落点时返回空值，由 PEP 抛出。检索侧的逐空间判权循环不适用本条：其循环体就是 `PermissionManager.decide` 本身，移出等于移出 PEP；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。判权之后的部分可以下沉——`collective/cross_space_recall.py` 收已判权的空间目标与 `recall` 回调，做摊配、扇出与合并，不读 `identity`、不做裁决。
+3. **鉴权不在本层执行**：安全域 `Authorizer.authorize` 由 `api/MemoryAPI` 唯一 PEP 调用，engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 items、count 与 contexts 必须来自同一次存储列表查询。禁止在 engine 内部重复 check。**判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（截断规则），判权本身经 `can_write` 回调由 API 层执行；该裁剪的失效方向是未判即不进候选、表现为拒绝而非放行，因此可下沉。本层也不抛权限异常——缺兜底落点时返回空值，由 PEP 抛出。检索侧的逐空间判权循环不适用本条：其循环体就是 `Authorizer.authorize` 本身，移出等于移出 PEP；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。判权之后的部分可以下沉——`collective/cross_space_recall.py` 收已判权的空间目标与 `recall` 回调，做摊配、扇出与合并，不读 `identity`、不做裁决。
 4. **LifecycleManager 只做 Scope 内非破坏式标记**：`transition` / `supersede` 必须接收完整 Scope，只标记该 Scope 下的目标 id，绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 producer 工厂被外部装配消费，不被顶层接口引用。
 6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、巩固、索引、检索算法，不让 construction/retrieval 反向依赖 control。
 7. **PermissionContext 由可信边界构造**：add/search/list 的请求 context 来自 API 入参；list 当前页实际 unit 与 get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
-8. **权限路由与数据范围绑定**：RoutingPermissionManager 只按 PermissionContext 选择
+8. **权限路由与数据范围绑定**：RoutingAuthorizer 只按 PEP 构造的 ResourceDescriptor 选择
    delegate；API 必须把授权所依据的路由字段回注为系统过滤谓词。未知路由值和直接
    policy 名落最小权限 fallback，fallback 不得配置为 allow_all。
-9. **space 是权限硬边界**：`PermissionManager.check` 先按 `org + space` 判断 owner-cover；同 org 跨 space 默认拒绝，只有 `Scope()` 或显式 grant 可跨 space。owner-cover 的主体路径由 `PermissionContext.metadata["principal_path"]` 选择（默认 `user_agent`，可选 `agent_user`）。
+9. **space 是权限硬边界**：Authorizer 按可信角色、`org + space` 和主体路径判断覆盖；空 `Scope()` 不是特权身份。跨 space 必须有符合规则的授权，ROOT 特权只来自可信角色。owner-cover 的主体路径由 PEP 从 space policy 投影到资源属性（默认 `user_agent`，可选 `agent_user`）。
 10. **space policy 是主体路径来源**：`LocalMemoryAPI` 在鉴权前读取目标 space policy，并用其中的 `principal_path` 覆盖 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能临时改变已有 space 的主体路径。
 11. **Space id 全局唯一**：`KVSpaceManager` 在根 Scope 维护全局 Space 注册键；不同 org 创建同一非空 Space id 必须报 `ConflictError`。
-12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
-13. **批量写入保序且不鉴权**：Engine 的 `batch_write` 只接收 API 已前置校验的归一化 item，按输入顺序复用 `write`；不得在 Engine 内并发提交或重复执行 `PermissionManager.check`。
+12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描；返回快照由 API 再逐条执行 READ 判定（含祖先），Governor 不充当 PEP。
+13. **批量写入保序且不鉴权**：Engine 的 `batch_write` 只接收 API 已前置校验的归一化 item，按输入顺序复用 `write`；不得在 Engine 内并发提交或重复执行授权判定。
 14. **Ingest 任务按 Scope 隔离**：任务状态查询为纯读取，不更新进程缓存或
     `payload_id -> job_id` 映射；`_find_existing` 只有在任务 Scope 与请求 Scope
     完全一致后才维护映射，READ 鉴权由 MemoryAPI 执行。

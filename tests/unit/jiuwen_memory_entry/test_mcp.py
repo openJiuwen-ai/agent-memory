@@ -62,8 +62,7 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
     "memory_add": ("add", {"content": "hello", "scope": SCOPE}),
     "memory_add_async": ("add_async", {"content": "hello", "scope": SCOPE}),
     "memory_batch_add": ("batch_add", {"items": [{"content": "a"}], "scope": SCOPE}),
-    "memory_batch_add_async": (
-        "batch_add_async", {"items": [{"content": "a"}], "scope": SCOPE}),
+    "memory_batch_add_async": ("batch_add_async", {"items": [{"content": "a"}], "scope": SCOPE}),
     "memory_search": ("search", {"query": "hello", "context": {"scope": SCOPE}}),
     "memory_list": ("list", {"scope": SCOPE}),
     "memory_get": ("get", {"unit_id": "u1", "scope": SCOPE}),
@@ -76,8 +75,13 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
     "memory_check_write": ("check_write", {"scope": SCOPE}),
     "memory_submit_ingest": (
         "submit_ingest",
-        {"content": "doc", "scope": SCOPE, "source": "text",
-         "payload_id": "p1", "source_ref": "file:///tmp/a.pdf"},
+        {
+            "content": "doc",
+            "scope": SCOPE,
+            "source": "text",
+            "payload_id": "p1",
+            "source_ref": "file:///tmp/a.pdf",
+        },
     ),
     "memory_job_status": ("job_status", {"job_id": "j1"}),
     "memory_job_cancel": ("job_cancel", {"job_id": "j1"}),
@@ -90,13 +94,23 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
     "memory_verify_audit": ("verify_audit", {}),
     "memory_grant": (
         "grant",
-        {"grant": {"grantor": SCOPE, "grantee": {"org": "local", "agent": "helper"},
-                   "actions": ["read"]}},
+        {
+            "grant": {
+                "grantor": SCOPE,
+                "grantee": {"org": "local", "agent": "helper"},
+                "actions": ["read"],
+            }
+        },
     ),
     "memory_revoke": (
         "revoke",
-        {"grant": {"grantor": SCOPE, "grantee": {"org": "local", "agent": "helper"},
-                   "actions": ["read"]}},
+        {
+            "grant": {
+                "grantor": SCOPE,
+                "grantee": {"org": "local", "agent": "helper"},
+                "actions": ["read"],
+            }
+        },
     ),
     "memory_create_space": (
         "create_space",
@@ -112,14 +126,12 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
     "memory_delete_space": ("delete_space", {"org": "local", "space": "team-a"}),
     "memory_export_space": ("export_space", {"org": "local", "space": "team-a"}),
     "memory_space_usage": ("space_usage", {"org": "local", "space": "team-a"}),
-    "memory_get_space_policy": (
-        "get_space_policy", {"org": "local", "space": "team-a"}),
+    "memory_get_space_policy": ("get_space_policy", {"org": "local", "space": "team-a"}),
     "memory_set_space_policy": (
         "set_space_policy",
         {"org": "local", "space": "team-a", "policy": {}},
     ),
-    "memory_list_space_members": (
-        "list_space_members", {"org": "local", "space": "team-a"}),
+    "memory_list_space_members": ("list_space_members", {"org": "local", "space": "team-a"}),
     "memory_add_space_member": (
         "add_space_member",
         {"org": "local", "space": "team-a", "member": {"scope": SCOPE}},
@@ -209,9 +221,7 @@ def test_invoke_fails_closed_without_authenticator(kernel, monkeypatch) -> None:
         asyncio.run(mcp_main.memory_add(content="x", scope=SCOPE))
 
 
-def test_authenticated_runs_with_mcp_surface_and_dev_identity(
-    kernel, monkeypatch
-) -> None:
+def test_authenticated_runs_with_mcp_surface_and_dev_identity(kernel, monkeypatch) -> None:
     captured: dict[str, Any] = {}
     real_authenticated = mcp_main.authenticated
 
@@ -235,12 +245,29 @@ def test_authenticated_runs_with_mcp_surface_and_dev_identity(
 
 
 def test_required_mode_assembles_configured_api_key_runtime(monkeypatch) -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
     key = "mcp-configured-root-test-key"
-    config = mcp_main.load_config([mcp_main.OFFLINE, {"memory_api": {
-        "security": {"default": {"target": "standard", "params": {
-            "authenticator": {"target": "api_key", "params": {"root_api_key": key}},
-        }}},
-    }}])
+    config = mcp_main.load_config(
+        [
+            mcp_main.OFFLINE,
+            {
+                "memory_api": {
+                    "security": {
+                        "default": {
+                            "target": "standard",
+                            "params": {
+                                "authenticator": {
+                                    "target": "api_key",
+                                    "params": {"root_api_key": key},
+                                },
+                            },
+                        }
+                    },
+                }
+            },
+        ]
+    )
     monkeypatch.setenv(_AUTH_MODE_ENV, "required")
     monkeypatch.setattr(sys, "argv", ["mcp"])
     monkeypatch.setattr(mcp_main, "load_config", lambda _layers: config)
@@ -257,6 +284,8 @@ def test_required_mode_assembles_configured_api_key_runtime(monkeypatch) -> None
 
 
 def test_mcp_default_required_has_no_implicit_dev_fallback(monkeypatch) -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
     monkeypatch.delenv(_AUTH_MODE_ENV, raising=False)
     monkeypatch.setattr(sys, "argv", ["mcp"])
     server = mcp_main._build_server()
@@ -267,6 +296,8 @@ def test_mcp_default_required_has_no_implicit_dev_fallback(monkeypatch) -> None:
 
 
 def test_mcp_dev_binding_has_no_environment_bypass(kernel, monkeypatch) -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
     monkeypatch.setenv("JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK", "true")
     mcp_main._check_binding("127.0.0.1")
     with pytest.raises(ValidationError):
@@ -316,9 +347,7 @@ def test_inspect_includes_superseded_history(kernel) -> None:
     new_id = asyncio.run(
         mcp_main.memory_update(unit_id=old_id, scope=SCOPE, patch={"content": "v2"})
     )["id"]
-    inspected = asyncio.run(
-        mcp_main.memory_inspect(unit_ids=[old_id, new_id], scope=SCOPE)
-    )
+    inspected = asyncio.run(mcp_main.memory_inspect(unit_ids=[old_id, new_id], scope=SCOPE))
     assert {u["id"] for u in inspected} == {old_id, new_id}
 
 
@@ -339,9 +368,7 @@ def test_consolidate_produces_derived_unit_with_provenance_chain(kernel) -> None
 
 def test_search_returns_original_result_shape(kernel) -> None:
     asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE))
-    result = asyncio.run(
-        mcp_main.memory_search(query="coffee", context={"scope": SCOPE}, top_k=5)
-    )
+    result = asyncio.run(mcp_main.memory_search(query="coffee", context={"scope": SCOPE}, top_k=5))
     assert isinstance(result, dict)
     assert set(result) == {"items", "errors", "trajectory"}
     assert "hits" not in result
@@ -353,7 +380,7 @@ def test_delete_requires_real_criterion_besides_scope(kernel) -> None:
         asyncio.run(mcp_main.memory_delete(selector={"scope": SCOPE, "mode": "forget"}))
 
 
-# --- E. 模型可见 Schema：恰好 12 工具、ctx 不泄漏 -------------------------------- #
+# --- E. 模型可见 Schema：工具集合与契约一致、ctx 不泄漏 -------------------------- #
 
 
 def test_list_tools_schema_excludes_ctx() -> None:
@@ -362,6 +389,15 @@ def test_list_tools_schema_excludes_ctx() -> None:
     for tool in tools:
         props = (tool.inputSchema or {}).get("properties", {})
         assert "ctx" not in props, f"ctx leaked into {tool.name}: {list(props)}"
+
+
+def test_submit_ingest_schema_preserves_five_flat_business_arguments() -> None:
+    tools = asyncio.run(mcp_main.mcp.list_tools())
+    tool = next(tool for tool in tools if tool.name == "memory_submit_ingest")
+    schema = tool.inputSchema or {}
+    expected = {"content", "scope", "source", "payload_id", "source_ref"}
+    assert set(schema.get("properties", {})) == expected
+    assert set(schema.get("required", [])) == expected
 
 
 # --- F. 协议编组层：FastMCP.call_tool 真实调用路径 ------------------------------- #
@@ -378,8 +414,6 @@ def test_fastmcp_call_tool_marshals_arguments(kernel) -> None:
     assert units[0]["segments"][0]["content"] == "marshalled"
     assert json.loads(blocks[0].text)["id"] == units[0]["id"]
     got = asyncio.run(
-        mcp_main.mcp.call_tool(
-            "memory_get", {"unit_id": units[0]["id"], "scope": SCOPE}
-        )
+        mcp_main.mcp.call_tool("memory_get", {"unit_id": units[0]["id"], "scope": SCOPE})
     )
     assert json.loads(got[0].text)["id"] == units[0]["id"]

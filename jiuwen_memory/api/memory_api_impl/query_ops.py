@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from jiuwen_memory.common.errors import (
@@ -60,6 +60,7 @@ from .local_support import (
     _routing_clauses_of,
     _selector_permission_context,
     _space_denied,
+    _TrustedRequestTarget,
     _unit_lookup_permission_context,
 )
 
@@ -102,17 +103,24 @@ class QueryOpsMixin:
         spaces = _pop_spaces(options)
         coords = _pop_coords(options, enabled=self._routing_enabled())
         reject_kernel_coords(coords)
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.READ, "search", context.scope)
+        )
+        resource_principal = self._resource_principal(security, Action.READ)
         # 坐标折算成第二族收窄谓词的取值，在此算一次、两条路径共用。放进各自分支即
         # 「两处各折算一次」：漏调哪一处，该路径的 agent 维与 session 维整体不再收窄，
         # 失效方向是放宽且不报错。
         narrow = narrow_dims_of(
-            principal.kernel_coords(coords, identity), self._route_table.narrow_dims
+            principal.kernel_coords(coords, resource_principal), self._route_table.narrow_dims
         )
         if spaces is not None:
+            self._require_trusted_context(
+                security, _TrustedRequestTarget(Action.READ, "search", Scope(org=context.scope.org))
+            )
             return self._search_spaces(
                 query,
                 context,
-                identity=identity,
+                security=security,
                 spaces=spaces,
                 filters=filters,
                 as_of=as_of,
@@ -137,10 +145,10 @@ class QueryOpsMixin:
         )
         # 权限上下文与 RetrievalQuery 共用同一规范化后的 FilterExpr（不重复转换）。
         permission_context = _recall_permission_context(
-            context, rq.filters, self._perm.routing_fields()
+            context, rq.filters, self._authorizer.routing_fields()
         )
         auth, auth_context = self._authorize_with_context(
-            identity,
+            security,
             context.scope,
             Action.READ,
             "search",
@@ -148,7 +156,9 @@ class QueryOpsMixin:
         )
         # 用户表达式作整体 child 并入外层 AND（与 lifecycle/时间谓词同一机制），不会被
         # 其内部的 OR 稀释。回注的判据见 _routing_clauses_of。
-        routing_clauses = _routing_clauses_of(permission_context, self._perm.routing_fields())
+        routing_clauses = _routing_clauses_of(
+            permission_context, self._routing_fields_for("search")
+        )
         if routing_clauses:
             rq.filters = and_merge(rq.filters, routing_clauses)
         # 两族谓词与调用方表达式合成一个 AND 一次下推，在 top-k 截断之前生效——
@@ -156,7 +166,7 @@ class QueryOpsMixin:
         # 第二族由归属坐标折算：坐标缺项不生成对应谓词，表现为该维不收窄，失效方向是放宽。
         system_clauses = space_predicates.system_predicates(
             auth_context.space_facts if auth_context is not None else None,
-            identity,
+            resource_principal,
             narrow,
         )
         if system_clauses:
@@ -170,7 +180,7 @@ class QueryOpsMixin:
         query: str,
         context: Context,
         *,
-        identity: Scope,
+        security: RequestSecurityContext,
         spaces: list[str],
         filters: FilterExpr | list[FilterClause] | dict | None,
         as_of: datetime | None,
@@ -192,7 +202,7 @@ class QueryOpsMixin:
         | 步 | 内容 | 落点 |
         |---|---|---|
         | 1 定候选空间 | 显式 ``spaces`` 或主体反查索引 | 本层（反查按 ``identity``） |
-        | 2 逐空间判权与状态校验 | ``PermissionManager.decide`` | 本层（循环体就是 PEP） |
+        | 2 逐空间判权与状态校验 | 唯一 PDP（``_decide_space_entry``） | 本层（循环体就是 PEP） |
         | 2.5 逐空间谓词 | 路由值回注 + 两族系统谓词 | 本层（按 ``identity`` 与空间事实） |
         | 3—5 摊配、扇出、合并 | 取数上界、逐空间召回、轮转合并 | 控制层 ``cross_space_recall`` |
 
@@ -205,15 +215,13 @@ class QueryOpsMixin:
 
         ``context.scope`` 只取 ``org`` 维定组织边界，空间维由候选集给出、传了不生效。
         """
-        # 与单空间路径的鉴权点同一门控（见 :meth:`_authorize_with_context`）：未装配空间
-        # 治理的部署把空身份当运维通道放行，跨空间检索亦然——显式 ``spaces`` 列表的检索
-        # 不经主体反查，空身份点名查几个空间是合法的运维动作。无条件加会收紧既有行为。
-        if self._needs_space_facts():
-            principal.require_principal(identity)
+        identity = security.auth.actor
+        principal.require_principal(identity)
+        resource_principal = self._resource_principal(security, Action.READ)
         org = context.scope.org
         normalized_filters = normalize(filters)
 
-        candidates = self._search_candidates(identity, org, spaces)
+        candidates = self._search_candidates(resource_principal, org, spaces, audit_actor=identity)
         # 收窄谓词的实际取值只在此处成形，下游只能看到条数。缺这一行时「召回为空」
         # 无法区分坐标未传到、判定表未声明该维、以及该维确实过滤掉了全部条目。
         logger.info(
@@ -225,6 +233,7 @@ class QueryOpsMixin:
         )
         targets: list[collective.SpaceRecallTarget] = []
         denied: list[ChannelError] = []
+        backend_failures: list[ChannelError] = []
         for space in candidates:
             target = Scope(org=org, space=space)
             permission_context, facts = self._apply_space_policy_context(
@@ -232,13 +241,18 @@ class QueryOpsMixin:
                 _recall_permission_context(
                     Context(scope=target, extensions=dict(context.extensions)),
                     normalized_filters,
-                    self._perm.routing_fields(),
+                    self._authorizer.routing_fields(),
                 ),
                 entry="search",
             )
             try:
-                outcome = self._perm.decide(
-                    identity, target, Action.READ, context=permission_context
+                outcome = self._decide_space_entry(
+                    security,
+                    target,
+                    Action.READ,
+                    "",
+                    permission_context,
+                    now=datetime.now(timezone.utc),
                 )
                 if outcome.allowed and self._needs_space_facts():
                     # 状态校验与单空间路径同一口径（F07「空间状态校验」）：不补则
@@ -253,7 +267,10 @@ class QueryOpsMixin:
                         "search",
                         info=facts.info if facts is not None else None,
                     )
-            except (PermissionDeniedError, BackendError, NotFoundError, ValidationError) as exc:
+            except BackendError as exc:
+                backend_failures.append(_space_denied(space, type(exc).__name__, str(exc)))
+                continue
+            except (PermissionDeniedError, NotFoundError, ValidationError) as exc:
                 denied.append(_space_denied(space, type(exc).__name__, str(exc)))
                 continue
             if outcome.allowed:
@@ -263,21 +280,21 @@ class QueryOpsMixin:
                 #
                 # 这一步留本层而不随扇出一起下沉：两族谓词由 ``identity`` 与该空间的事实
                 # 生成，是 S02「鉴权驱动的编排」明列的一项（生成并回注系统谓词）。
-                clauses = _routing_clauses_of(permission_context, self._perm.routing_fields())
+                clauses = _routing_clauses_of(
+                    permission_context, self._routing_fields_for("search")
+                )
                 clauses.extend(
                     space_predicates.system_predicates(
-                        permission_context.space_facts, identity, narrow
+                        permission_context.space_facts, resource_principal, narrow
                     )
                 )
-                targets.append(
-                    collective.SpaceRecallTarget(scope=target, clauses=tuple(clauses))
-                )
+                targets.append(collective.SpaceRecallTarget(scope=target, clauses=tuple(clauses)))
             else:
                 denied.append(
                     _space_denied(
                         space,
                         PermissionDeniedError.__name__,
-                        f"read denied: rule={outcome.rule} reason={outcome.reason}",
+                        f"read denied: rule={outcome.rule} reason={outcome.reason_code}",
                     )
                 )
         # 候选集非空而一个都读不到时抛，与单空间路径同一处置：那条路径上无权即
@@ -285,6 +302,8 @@ class QueryOpsMixin:
         # 给出两种结果，且「无权」与「这些空间里没有内容」在调用方看来不可区分。
         # 候选集为空不抛——那是「主体不在任何空间里」，是合法的空结果。
         if candidates and not targets:
+            if backend_failures:
+                raise BackendError("authorization backend unavailable for candidate spaces")
             # 候选来自调用方显式传入时回显空间名（那是他自己的入参，便于排查）；来自主体
             # 反查索引时只给条数。索引按 `context.scope.org` 建桶，而该 org 取自参数袋、
             # 与 `identity.org` 无一致性校验——回显即把另一个组织的空间名交给调用方，而
@@ -327,7 +346,7 @@ class QueryOpsMixin:
         # 不同，而只记审计日志时它们在返回值上是同一形态。三类共用 ChannelError，按
         # source 区分是哪个空间、按 error_type 区分是哪一类。各空间自己的分通道错误
         # （VECTOR / KEYWORD 等）已由控制层的合并并入。
-        merged.errors.extend(denied + space_failures)
+        merged.errors.extend(denied + backend_failures + space_failures)
         self._log(
             identity,
             "search",
@@ -338,13 +357,16 @@ class QueryOpsMixin:
                 "candidate_spaces": str(len(candidates)),
                 "readable_spaces": str(len(targets)),
                 "denied_spaces": str(len(denied)),
+                "authorization_backend_failures": str(len(backend_failures)),
                 "failed_spaces": str(len(space_failures)),
                 "count": str(len(merged.items)),
             },
         )
         return merged
 
-    def _search_candidates(self, identity: Scope, org: str, spaces: list[str]) -> list[str]:
+    def _search_candidates(
+        self, identity: Scope, org: str, spaces: list[str], *, audit_actor: Scope | None = None
+    ) -> list[str]:
         """第 1 步：定候选空间。``spaces`` 非空就用它，为空则取主体反查索引结果。
 
         反查索引是超集契约——不遗漏、允许多给，权限由第 2 步的逐空间判权裁决。截断记
@@ -359,7 +381,7 @@ class QueryOpsMixin:
         limit = self._space_fanout_limit()
         if len(candidates) > limit:
             self._log(
-                identity,
+                audit_actor if audit_actor is not None else identity,
                 "search",
                 org,
                 target_scope=Scope(org=org),
@@ -391,13 +413,13 @@ class QueryOpsMixin:
             memory_types,
             normalized_filters,
             normalized_extensions,
-            self._perm.routing_fields(),
+            self._authorizer.routing_fields(),
         )
         auth: dict[str, str] = {}
         auth_context: PermissionContext | None = None
         for permission_context in permission_contexts:
             auth, auth_context = self._authorize_with_context(
-                identity,
+                security,
                 scope,
                 Action.READ,
                 "list",
@@ -405,14 +427,16 @@ class QueryOpsMixin:
             )
         routing_clauses = _list_routing_clauses(
             permission_contexts,
-            self._perm.routing_fields(),
+            self._routing_fields_for("list"),
             memory_types,
         )
         effective_filters = and_merge(normalized_filters, routing_clauses)
         # list 必须注入第一族，否则个体空间的隔离只在 search 上成立：它是同样按空间返回
         # 条目的批量入口，不注入的后果与 search 同因同向。第二段逐条鉴权不能替代谓词——
         # 逐条鉴权的失败形态是抛异常而非过滤，整次调用失败而不是少返回几条。
-        system_clauses = _first_family_predicate(identity, auth_context)
+        system_clauses = _first_family_predicate(
+            self._resource_principal(security, Action.READ), auth_context
+        )
         if system_clauses:
             effective_filters = and_merge(effective_filters, system_clauses)
         result, unit_contexts = asyncio.run(
@@ -431,7 +455,7 @@ class QueryOpsMixin:
             # 回填期多归属空间中另一归属主体写入的条目都属此列。内容边界由第一族谓词在
             # 取数时承担，本段只判条目真源 scope 的空间归属。
             auth = self._authorize(
-                identity,
+                security,
                 permission_context.scope,
                 Action.READ,
                 "list",
@@ -465,22 +489,20 @@ class QueryOpsMixin:
     ) -> MemoryUnit:
         identity = security.auth.actor
         self._authorize(
-            identity,
+            security,
             scope,
             Action.READ,
             "get",
             unit_id,
             context=_unit_lookup_permission_context(unit_id, scope),
         )
-        permission_context = asyncio.run(
-            self._queries.permission_context_for_unit(unit_id, scope)
-        )
+        permission_context = asyncio.run(self._queries.permission_context_for_unit(unit_id, scope))
         # 第二段的目标取条目真源 scope，不沿用入参（F07「条目级入口分两段鉴权」）：
         # 它是「判定第 8 步不会命中」的两个前置条件之一，与「回填后条目 scope 只有两维」
         # 各兜一重，两条的失效方向相反。沿用入参即把两重约束落在同一个取值上。
         # 与 list / delete 同一口径。
         auth = self._authorize(
-            identity,
+            security,
             permission_context.scope,
             Action.READ,
             "get",
@@ -515,20 +537,18 @@ class QueryOpsMixin:
         _reject_non_scalar_metadata(patch.system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(patch.user_metadata, field_name="user_metadata")
         self._authorize(
-            identity,
+            security,
             scope,
             Action.UPDATE,
             "update",
             unit_id,
             context=_unit_lookup_permission_context(unit_id, scope),
         )
-        permission_context = asyncio.run(
-            self._queries.permission_context_for_unit(unit_id, scope)
-        )
+        permission_context = asyncio.run(self._queries.permission_context_for_unit(unit_id, scope))
         # 第二段的目标取条目真源 scope，理由同 get。随后的 _ensure_space_writable 仍取
         # 入参 scope——它校验的是本次写入落点所在空间，与鉴权目标是两件事。
         auth = self._authorize(
-            identity,
+            security,
             permission_context.scope,
             Action.UPDATE,
             "update",
@@ -543,7 +563,12 @@ class QueryOpsMixin:
         if plan is not None:
             for action, context in self._commands.update_permission_contexts(plan):
                 self._authorize(
-                    identity, context.scope, action, "update", context.unit_id, context=context,
+                    security,
+                    context.scope,
+                    action,
+                    "update",
+                    context.unit_id,
+                    context=context,
                 )
             unit = asyncio.run(self._commands.commit_update(plan))
         else:
@@ -582,10 +607,13 @@ class QueryOpsMixin:
         # 按 selector 的目标 scope 鉴权 DELETE；未限定 scope（如纯按 id/标签的
         # 跨范围删除）则退到根 scope 闸门，要求更高权限。
         target = selector.scope or _ROOT
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.DELETE, "delete", target)
+        )
         selector_context = _selector_permission_context(selector, target)
         if selector.scope is not None or not selector.unit_ids:
             self._authorize(
-                identity,
+                security,
                 target,
                 Action.DELETE,
                 "delete",
@@ -594,7 +622,7 @@ class QueryOpsMixin:
         contexts = asyncio.run(self._queries.permission_contexts_for_delete(selector))
         if not contexts:
             auth = self._authorize(
-                identity,
+                security,
                 target,
                 Action.DELETE,
                 "delete",
@@ -604,7 +632,7 @@ class QueryOpsMixin:
             auth = {"permission_check": "enabled", "permission_reason": "permission check passed"}
             for permission_context in contexts:
                 unit_auth = self._authorize(
-                    identity,
+                    security,
                     permission_context.scope,
                     Action.DELETE,
                     "delete",
@@ -631,7 +659,7 @@ class QueryOpsMixin:
     ) -> str:
         identity = security.auth.actor
         auth = self._authorize(
-            identity,
+            security,
             scope,
             Action.WRITE,
             "evolve",

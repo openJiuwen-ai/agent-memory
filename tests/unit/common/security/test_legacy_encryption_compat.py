@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
+import pytest
+
 from jiuwen_memory.common.security import (
     KeySource,
     SecurityContext,
@@ -28,3 +32,19 @@ def test_legacy_public_names_remain_importable() -> None:
     assert context.metadata == {"source": "legacy"}
     assert context.object_id == ""
     assert _KeySource().fetch_key("key") == b"key"
+
+
+@pytest.mark.unit
+def test_legacy_context_preserves_parent_defaults_and_copies_metadata() -> None:
+    metadata = {"source": "legacy"}
+    scope = Scope(org="acme")
+    context = SecurityContext(scope, "value", metadata)
+    metadata["source"] = "changed"
+    assert context.scope is scope
+    assert context.purpose == "value"
+    assert context.object_id == ""
+    assert context.format_version == 1
+    assert context.metadata == {"source": "legacy"}
+    assert SecurityContext().metadata == {}
+    with pytest.raises(FrozenInstanceError):
+        context.purpose = "changed"

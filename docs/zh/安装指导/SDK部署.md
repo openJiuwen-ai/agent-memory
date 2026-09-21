@@ -58,12 +58,12 @@ python -m pip install -e '.[embed]'
 Fulltext 与 Graph Store，嵌入、LLM 和精排也使用无外部依赖的默认实现。
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, assemble_runtime, build_dev_authenticator, internal_context
 
 runtime = assemble_runtime()
 api = runtime.api
 scope = Scope(org="demo", user="alice")
-security = legacy_request_context(scope)
+security = internal_context(build_dev_authenticator())
 
 try:
     units = api.add(
@@ -86,9 +86,11 @@ finally:
 
 该模式的所有数据都在当前进程内，进程退出后丢失。它不需要 Docker，也不需要模型服务。
 
-示例中的 `legacy_request_context` 仅为接口迁移过渡期的本地测试桥，不验证凭据。
-生产调用应由应用的可信认证边界生成 `RequestSecurityContext`；不能将业务 `scope`
-直接当成已认证身份。HTTP / CLI 已使用独立认证边界，不走这条 legacy 桥。
+示例中的 `build_dev_authenticator()` 仅供进程内调用方在本地测试等场景显式穿过认证边界，
+不验证凭据，产出的是固定开发身份（`local/developer`，ROOT 档）。注意业务 `scope` 只是
+操作目标，不是身份：`internal_context()` 的身份由传入的认证器产出，调用方决定不了自己
+是谁。生产调用应由应用的可信认证边界生成 `RequestSecurityContext`；HTTP / CLI 已使用
+独立认证边界，不走这条本地通道。
 
 ## 4. 方式二：内存存储 + 本地 HTTP 启动器
 
@@ -232,7 +234,7 @@ export ES_HOSTS='http://127.0.0.1:9200'
 配置格式和环境变量展开逻辑，可以这样加载：
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, assemble_runtime, build_dev_authenticator, internal_context
 from jiuwen_memory_entry.core.config_loader import load_layer
 
 layer = load_layer("local-real-storage.yml")
@@ -240,7 +242,7 @@ runtime = assemble_runtime(config=layer["memory_api"])
 api = runtime.api
 
 scope = Scope(org="demo", user="alice")
-security = legacy_request_context(scope)
+security = internal_context(build_dev_authenticator())
 try:
     api.add("需要持久化的记忆", scope, security=security)
     result = api.search("持久化", Context(scope), security=security, top_k=5)

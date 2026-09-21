@@ -54,7 +54,7 @@ jiuwen_memory/
 
 ### control/ — 编排层
 
-`MemoryEngine` 是接口层各语义的编排中枢（异步协程）。`Scheduler` 双通道调度演进任务，`PermissionManager` / `PolicyManager` / `Governor` / `SpaceManager` 管治理面。
+`MemoryEngine` 是接口层各语义的编排中枢（异步协程）。`Scheduler` 双通道调度演进任务，`PolicyManager` / `Governor` / `SpaceManager` 管治理面；授权由 API PEP 调用安全域 Authorizer，旧 PermissionManager 仅保留历史兼容，不参与生产判定。
 
 ### storage/ — 存储层
 

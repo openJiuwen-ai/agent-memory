@@ -18,10 +18,11 @@ from __future__ import annotations
 from jiuwen_memory.common.security.principal import AUTHOR_PRINCIPAL
 from jiuwen_memory.common.security.space_decision import (
     ATTR_PRINCIPAL_PATH,
-    ATTR_SPACE_ACTION,
     ATTR_SPACE_AXIS,
     ATTR_SPACE_ENTRY,
     DecisionOutcome,
+    axes_for,
+    resolve_space_action,
 )
 from jiuwen_memory.common.security.space_decision import (
     decide as decide_axis,
@@ -124,37 +125,15 @@ class SpaceAwarePermissionManager(SQLitePermissionManager):
 
     @staticmethod
     def _axes_for(axis: SpaceAxis, requested: str) -> tuple[SpaceAxis, ...]:
-        """本次要依次尝试哪几条轴。
-
-        ``EITHER`` 的入口返回空间元数据、不含条目内容，内容轴成员与纯治理管理员都应
-        看得到；判定仍是一次一轴，按「治理轴在前」依次尝试。次序不可颠倒：治理轴不查
-        授权记录，且其结论要被空间策略裁剪复用。
-
-        调用方可经属性通道指定只求某一条轴，用于鉴权点分两段判定的场景。
-        """
-        if requested == SpaceAxis.CONTENT.value:
-            return (SpaceAxis.CONTENT,)
-        if requested == SpaceAxis.GOVERNANCE.value:
-            return (SpaceAxis.GOVERNANCE,)
-        if axis is SpaceAxis.EITHER:
-            return (SpaceAxis.GOVERNANCE, SpaceAxis.CONTENT)
-        return (axis,)
+        """本次要依次尝试哪几条轴（判据在 :func:`space_decision.axes_for`）。"""
+        return axes_for(axis, requested)
 
     @staticmethod
     def _space_action(default: SpaceAction, context: PermissionContext | None) -> SpaceAction:
-        """本次要求的动作。
-
-        ``evolve`` 的去重与遗忘两种模式取 ``UPDATE``，由鉴权点经属性通道覆盖入口表的
-        默认动作；两种模式都不放宽到「本人所写」——输入是一批条目，逐条判会使一次调用
-        部分生效部分被拒。
-        """
+        """本次要求的动作（判据在 :func:`space_decision.resolve_space_action`）。"""
         if context is None:
             return default
-        override = context.metadata.get(ATTR_SPACE_ACTION, "")
-        try:
-            return SpaceAction(override) if override else default
-        except ValueError:
-            return default
+        return resolve_space_action(default, context.metadata)
 
     @staticmethod
     def _attr(context: PermissionContext | None, key: str) -> str:

@@ -13,6 +13,11 @@
 | 规范契约 | [S10 安全横切契约](../../specs/S10-security.md) |
 | Refs | — |
 
+> **2026-09-21 PR2 接管状态**：以下 PR1 过渡缺口已在 PR2 关闭：具名角色由唯一
+> Authorizer 消费，SDK/Server 绑定真实凭据源，legacy 与固定 DEV allow_all 注入退场。
+> 私有服务端凭据绑定补齐代理代写，认证 actor 仍为单主体；原 HTTP 成功断言不再 xfail。
+> 当前决策与验证见 [F12](F12-pr2-upstream-integration.md)。正文 PR1 说明保留为历史背景。
+
 > **2026-08-07 PR1 现行落点（2026-08-27 更新：接口已固定、IMPL-01 已落实）。** 本文正文记录 2026-07-29 的第一版认证设计，保留原貌
 > 用于追溯；下列结论与 PR1 的 [S10](../../specs/S10-security.md) 优先于正文：
 >
@@ -62,7 +67,7 @@
 >   `api.build_kernel()` / `api.assemble()` 仍默认
 >   SQLite，显式 security 或 permission 均不覆写，DEV Runtime 仍强制 loopback。
 >   拒绝把 role 回灌 `PermissionManager`、恢复空 Scope 特权或修改公共 Core 默认值；
->   PR2 的 Authorizer 接通 ROOT 角色闸门后删除这项兼容注入。
+>   PR2 的 Authorizer 接通 ROOT 角色闸门后，该兼容注入已删除；当前适配器只补 DEV Runtime。
 >
 > - **上游多身份链路归并（2026-09-20，已确认）**：PR1 保留 HTTP 服务端身份映射、
 >   Bearer/X-API-Key 选择、逐请求身份副本及旧 PermissionManager/SpaceAwarePermissionManager

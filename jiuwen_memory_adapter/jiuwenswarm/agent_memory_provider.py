@@ -12,7 +12,8 @@
 - Rail 调用点：``openjiuwen/harness/rails/memory/external_memory_rail.py``
 
 设计要点（见 ``docs/features/AgentMemory-JiuwenSwarm接入适配分析.md``）：
-- 双模式：``base_url`` 非空 → HTTP（路径 B，全 async，推荐生产）；否则进程内 ``assemble()``（路径 A）
+- 双模式：``base_url`` 非空 → HTTP（路径 B，全 async，推荐生产）；否则进程内
+  ``assemble()``（路径 A）
 - ``prefetch`` 返 Markdown 字符串（Rail 包 ``<memory-context>`` 注入）
 - ``handle_tool_call`` 返 JSON 字符串（Rail ``json.loads``）
 - ``sync_turn`` 只 ``add`` 存原文，EXTRACT 推迟到 ``on_session_end`` 抑制每轮风暴（§4.1.2）
@@ -35,9 +36,9 @@ from jiuwen_memory.api import (
     DisclosureLevel,
     EvolveMode,
     Modality,
+    RequestSecurityContext,
     assemble,
     install_privacy_filter,
-    legacy_request_context,
     metadata_for_log,
     redact_for_log,
     scope_for_log,
@@ -89,9 +90,7 @@ CONCLUDE_SCHEMA: dict[str, Any] = {
     ),
     "parameters": {
         "type": "object",
-        "properties": {
-            "conclusion": {"type": "string", "description": "The fact to store."}
-        },
+        "properties": {"conclusion": {"type": "string", "description": "The fact to store."}},
         "required": ["conclusion"],
     },
 }
@@ -109,7 +108,9 @@ PROCEDURAL_SCHEMA: dict[str, Any] = {
         "properties": {
             "content": {
                 "type": "string",
-                "description": "The conversation/turn content to summarize into a procedural memory.",
+                "description": (
+                    "The conversation/turn content to summarize into a procedural memory."
+                ),
             }
         },
         "required": ["content"],
@@ -141,6 +142,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         user_id: str = "jiuwenswarm-user",
         agent_id: str = "jiuwenswarm",
         space: str = "",
+        security_provider: Any = None,
         **_kwargs: Any,
     ) -> None:
         self._base_url = base_url or ""
@@ -148,6 +150,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._user_id = user_id
         self._agent_id = agent_id
         self._space = space
+        # 进程内模式的可信身份来源：由可信 composition root 注入的
+        # ``() -> RequestSecurityContext``。身份不由本 provider 从 user_id/scope_id
+        # 自述（P1-2）：那些只是业务 target 维度，不是认证结论。
+        self._security_provider = security_provider
 
         # Rail 在 before_invoke 首次调 initialize 时传入，覆盖构造默认
         self._scope_id: str = "__default__"
@@ -189,7 +195,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return query
         for prefix in cls._TUI_ENVELOPE_PREFIXES:
             if query.startswith(prefix):
-                rest = query[len(prefix):].lstrip()
+                prefix_length = len(prefix)
+                rest = query[prefix_length:].lstrip()
                 try:
                     data = json.loads(rest)
                 except json.JSONDecodeError:
@@ -205,12 +212,13 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         """配置就绪探测（契约要求无网络调用）。
 
-        HTTP 模式：``base_url`` 配置就绪即可；进程内模式：``config_path`` 或
-        默认装配可用即可。不真发请求（避免网络）。
+        HTTP 模式：``base_url`` 配置就绪即可；进程内模式还需注入了可信
+        security provider——缺少它 initialize 会 fail-closed，is_available 如实
+        报不可用。不真发请求（避免网络）。
         """
         if self._base_url:
             return True
-        return self._config_path is not None  # 进程内：有配置路径即视为可装配
+        return self._config_path is not None and self._security_provider is not None
 
     async def initialize(self, **kwargs: Any) -> None:
         """Rail ``before_invoke`` 首次调，传 ``user_id``/``scope_id``/``session_id``。
@@ -228,7 +236,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             self._space = kwargs.get("space") or ""
 
         if self._client is None:
-            self._client = _build_client(self._base_url, self._config_path)
+            self._client = _build_client(
+                self._base_url, self._config_path, security_provider=self._security_provider
+            )
         self._initialized = True
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, scope=%s)",
@@ -243,7 +253,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         schemas = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA, PROCEDURAL_SCHEMA]
         logger.info(
             "[AgentMemoryMemoryProvider] get_tool_schemas CALLED -> returning %d schemas: %s",
-            len(schemas), [s.get("name") for s in schemas],
+            len(schemas),
+            [s.get("name") for s in schemas],
         )
         return schemas
 
@@ -265,7 +276,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     logger.info("[AgentMemoryMemoryProvider] agent_memory_profile -> no memories")
                     return json.dumps({"result": "No memories stored yet."})
                 lines = [it["content"] for it in items if it.get("content")]
-                logger.info("[AgentMemoryMemoryProvider] agent_memory_profile -> count=%d", len(lines))
+                logger.info(
+                    "[AgentMemoryMemoryProvider] agent_memory_profile -> count=%d", len(lines)
+                )
                 for idx, line in enumerate(lines):
                     logger.info(
                         "[AgentMemoryMemoryProvider] profile hit[%d]: %s",
@@ -287,8 +300,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     )
                     return json.dumps({"result": "No relevant memories found."})
                 payload = [
-                    {"memory": it.get("content", ""), "score": it.get("score", 0)}
-                    for it in items
+                    {"memory": it.get("content", ""), "score": it.get("score", 0)} for it in items
                 ]
                 logger.info(
                     "[AgentMemoryMemoryProvider] agent_memory_search query=%s -> count=%d",
@@ -337,10 +349,12 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 # 不可报成功（false success）——evolver 吞掉 LLM 失败返回空 EvolveResult，
                 # engine/handler 返回 item_id=None，需如实告知调用方。content 已在上文校验非空。
                 if not item_id:
-                    return json.dumps({
-                        "error": "Procedural memory not stored: extractor produced nothing "
-                                 "(LLM returned unparseable content or no candidates).",
-                    })
+                    return json.dumps(
+                        {
+                            "error": "Procedural memory not stored: extractor produced nothing "
+                            "(LLM returned unparseable content or no candidates).",
+                        }
+                    )
                 return json.dumps({"result": "Procedural memory stored.", "item_id": item_id})
 
             logger.info("[AgentMemoryMemoryProvider] handle_tool_call unknown tool=%s", tool_name)
@@ -377,9 +391,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 scope_for_log(self.bound_scope()),
                 top_k,
             )
-            items = await self._client.search(
-                search_query, self.bound_scope(), top_k=top_k
-            )
+            items = await self._client.search(search_query, self.bound_scope(), top_k=top_k)
             logger.info("[AgentMemoryMemoryProvider] prefetch after search items=%d", len(items))
             lines = [it.get("content", "") for it in items if it.get("content")]
             # [本地修改 2026-06-29] 打印 prefetch 召回的记忆，便于排查外接记忆是否生效。
@@ -398,8 +410,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     redact_for_log(line),
                 )
             return (
-                "## AgentMemory Memory\n" + "\n".join(f"- {line}" for line in lines)
-            ) if lines else ""
+                ("## AgentMemory Memory\n" + "\n".join(f"- {line}" for line in lines))
+                if lines
+                else ""
+            )
         except Exception as exc:
             logger.warning(
                 "[AgentMemoryMemoryProvider] prefetch failed: error_type=%s",
@@ -410,9 +424,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
 
-    async def sync_turn(
-        self, user_msg: str, assistant_msg: str, **kwargs: Any
-    ) -> None:
+    async def sync_turn(self, user_msg: str, assistant_msg: str, **kwargs: Any) -> None:
         """存本轮对话原文并**同步抽取事实**（对齐常见记忆层 ``add(infer=True)``）。
 
         传 ``system_metadata={"infer": "true"}`` 给 AgentMemory ``add``：hot path 同步调
@@ -430,16 +442,17 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         content = f"user: {user_msg}\nassistant: {assistant_msg}"
         system_metadata = {"infer": "true"}
         logger.info(
-            "[AgentMemoryMemoryProvider] sync_turn add system_metadata=%s "
-            "scope=%s content_len=%d",
+            "[AgentMemoryMemoryProvider] sync_turn add system_metadata=%s scope=%s content_len=%d",
             metadata_for_log(system_metadata),
             scope_for_log(self.bound_scope()),
             len(content),
         )
         try:
             await self._client.add(
-                content, self.bound_scope(),
-                tags=["conversation"], system_metadata=system_metadata,
+                content,
+                self.bound_scope(),
+                tags=["conversation"],
+                system_metadata=system_metadata,
             )
             logger.info(
                 "[AgentMemoryMemoryProvider] sync_turn add system_metadata=%s done",
@@ -500,7 +513,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         - ``session_id`` → ``.session``（空则跨会话共享，显式传才隔离）
         - ``scope_id`` → ``.org``（作 tenant；部分记忆层忽略 scope_id，AgentMemory 用作租户）
         - ``space`` → ``.space``（只认显式传入，不从 ``scope_id`` 猜测）
-        identity = target（actor==target，单租户，与 HTTP surface 一致）
+
+        返回值只描述**业务 target**（操作落在哪个范围）。进程内模式的认证 actor 由
+        composition root 注入的 security provider 产出，与本 target 无关（P1-2：
+        target 不构成身份）；HTTP 模式的身份由 API Key 认证决定。
 
         返回内置 _Scope（而非 api.Scope），让 HTTP 模式无需 AgentMemory src 在 path。
         进程内 _InProcessClient 需 api.Scope 时自行转换。
@@ -526,6 +542,7 @@ class _Scope:
     HTTP 模式直接用它的属性拼 payload；进程内模式在 _InProcessClient 里
     转成 api.Scope。这样 HTTP 模式无需 AgentMemory src 在 sys.path。
     """
+
     org: str = ""
     space: str = ""
     user: str = ""
@@ -566,10 +583,12 @@ class _AgentMemoryClient:
         pass
 
 
-def _build_client(base_url: str, config_path: str | None) -> _AgentMemoryClient:
+def _build_client(
+    base_url: str, config_path: str | None, *, security_provider: Any = None
+) -> _AgentMemoryClient:
     if base_url:
         return _HttpClient(base_url)
-    return _InProcessClient(config_path)
+    return _InProcessClient(config_path, security_provider=security_provider)
 
 
 def _semantic_filter():
@@ -638,15 +657,14 @@ class _HttpClient(_AgentMemoryClient):
         data = await self._request("/v1/add", payload, timeout=180.0)
         logger.info(
             "[AgentMemoryMemoryProvider] /v1/add -> %s item_id=%s",
-            data.get("op"), data.get("item_id"),
+            data.get("op"),
+            data.get("item_id"),
         )
         if not data.get("ok"):
             raise RuntimeError(f"add failed: {data.get('error')}")
         return data.get("item_id")
 
-    async def search(
-        self, query, scope, *, top_k=10
-    ) -> list[dict[str, Any]]:
+    async def search(self, query, scope, *, top_k=10) -> list[dict[str, Any]]:
         # HTTP /v1/search 的 hits 不带 tier 字段（RetrievedItem 只有
         # unit_id/score/content），HTTP 模式返回全部命中（含 EPISODIC 原文）。
         payload = self._scope_payload(scope) | {"query": query, "k": top_k}
@@ -685,7 +703,8 @@ class _HttpClient(_AgentMemoryClient):
         data = await self._request("/v1/evolve", payload, timeout=180.0)
         logger.info(
             "[AgentMemoryMemoryProvider] /v1/evolve -> op=%s job_id=%s",
-            data.get("op"), data.get("job_id"),
+            data.get("op"),
+            data.get("job_id"),
         )
         if not data.get("ok"):
             raise RuntimeError(f"evolve failed: {data.get('error')}")
@@ -700,8 +719,11 @@ class _HttpClient(_AgentMemoryClient):
         抛明确的 ``RuntimeError(HTTP <code>...)``，避免 ``r.json()`` 抛误导性的
         ``JSONDecodeError`` 被 prefetch/sync_turn/on_session_end 静默吞掉后无错误线索。
         """
-        r = await self._http.post(path, json=payload, timeout=timeout) if timeout \
+        r = (
+            await self._http.post(path, json=payload, timeout=timeout)
+            if timeout
             else await self._http.post(path, json=payload)
+        )
         if r.is_error:
             raise RuntimeError(f"HTTP {r.status_code} from {path}: {r.text[:200]}")
         try:
@@ -727,16 +749,31 @@ class _InProcessClient(_AgentMemoryClient):
     ``add_async``。
     """
 
-    def __init__(self, config_path: str | None) -> None:
+    def __init__(self, config_path: str | None, *, security_provider: Any = None) -> None:
+        if security_provider is None:
+            # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
+            # 来源时该模式不能作为生产路径——改走 HTTP/API Key，或由可信
+            # composition root 注入 security_provider。
+            raise RuntimeError(
+                "AgentMemory in-process mode requires an injected trusted security "
+                "provider (composition root); production should use HTTP + API key"
+            )
+        self._security_provider = security_provider
         config = None
         if config_path:
             import json as _json
             from pathlib import Path
 
             p = Path(config_path)
-            data = _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
+            data = (
+                _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
+            )
             config = data
         self._api = assemble(config=config)
+
+    def _security(self) -> RequestSecurityContext:
+        """本次调用的可信上下文：由注入的 provider 产出，业务 scope 只作 target。"""
+        return self._security_provider()
 
     @staticmethod
     def _to_api_scope(scope):
@@ -755,17 +792,17 @@ class _InProcessClient(_AgentMemoryClient):
         api_scope = self._to_api_scope(scope)
 
         units = await self._api.add_async(
-            content, api_scope,
-            source=Modality.TEXT, security=legacy_request_context(api_scope),
+            content,
+            api_scope,
+            source=Modality.TEXT,
+            security=self._security(),
             tags=tags,
             system_metadata=system_metadata,
             user_metadata=user_metadata,
         )
         return units[0].id if units else None
 
-    async def search(
-        self, query, scope, *, top_k=10
-    ) -> list[dict[str, Any]]:
+    async def search(self, query, scope, *, top_k=10) -> list[dict[str, Any]]:
         api_scope = self._to_api_scope(scope)
         # 进程内模式经 search 的 tier filter 下推过滤 semantic。
         filters = [_semantic_filter()]
@@ -773,14 +810,13 @@ class _InProcessClient(_AgentMemoryClient):
             self._api.search,
             query,
             Context(scope=api_scope),
-            security=legacy_request_context(api_scope),
+            security=self._security(),
             filters=filters,
             top_k=top_k,
             disclosure=DisclosureLevel.L2,
         )
         return [
-            {"content": it.content, "score": it.score, "item_id": it.unit_id}
-            for it in result.items
+            {"content": it.content, "score": it.score, "item_id": it.unit_id} for it in result.items
         ]
 
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
@@ -788,12 +824,9 @@ class _InProcessClient(_AgentMemoryClient):
         result = await asyncio.to_thread(
             self._api.list,
             api_scope,
-            security=legacy_request_context(api_scope),
+            security=self._security(),
         )
-        return [
-            {"content": unit.content, "item_id": unit.id, "score": 0}
-            for unit in result.items
-        ]
+        return [{"content": unit.content, "item_id": unit.id, "score": 0} for unit in result.items]
 
     async def evolve_extract(self, scope) -> None:
         api_scope = self._to_api_scope(scope)
@@ -804,7 +837,7 @@ class _InProcessClient(_AgentMemoryClient):
             api_scope,
             EvolveMode.EXTRACT,
             Channel.BACKGROUND,
-            security=legacy_request_context(api_scope),
+            security=self._security(),
         )
 
     async def close(self) -> None:
@@ -816,7 +849,9 @@ def _load_yaml(path):
     try:
         import yaml
     except ImportError as exc:
-        raise RuntimeError("PyYAML required to load YAML config; install with `uv sync --extra deploy`") from exc
+        raise RuntimeError(
+            "PyYAML required to load YAML config; install with `uv sync --extra deploy`"
+        ) from exc
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 

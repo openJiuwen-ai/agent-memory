@@ -7,18 +7,25 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.api.memory_api_impl.local_memory_api import _first_family_predicate
-from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.errors import AuthenticationError, PermissionDeniedError, ValidationError
+from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.security.authorization.authorization_impl.standard_authorizer import (
+    _delegation_sources_for,
+)
 from jiuwen_memory.common.security.space_roles import (
     SpaceAuthorizationFacts,
     SpaceContentRole,
     SpaceGovernanceRole,
     SpaceMemberFact,
 )
+from jiuwen_memory.common.security.types import Delegation, Role
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
@@ -36,6 +43,8 @@ from jiuwen_memory.control.types import (
     PermissionContext,
     PrincipalPath,
 )
+from tests.support.scoped_authenticator import ScopedAuthenticator
+from tests.unit.api.fixtures import security_for
 
 pytestmark = pytest.mark.unit
 
@@ -46,7 +55,9 @@ SPACE_CONTEXT = Context(scope=SPACE_SCOPE)
 
 # 运维通道：开通服务预建主空间。组织级入口由角色闸门裁决，过渡期无组织级角色，
 # 该通道保持改造前的形态（空身份）。
-OPS = Scope()
+# 运维主体：建测试空间用。必须具名——PR2 起空 Scope 不再是特权形态，判定实现
+# 的第 2 步直接拒（``empty_actor``），「没填内容的身份即平台管理员」那条线已断。
+OPS = Scope(org=ORG, user="ops")
 ALICE = Scope(org=ORG, user="alice")
 ALICE_VIA_A1 = Scope(org=ORG, user="alice", agent="a1")
 ALICE_VIA_A2 = Scope(org=ORG, user="alice", agent="a2")
@@ -79,6 +90,18 @@ def _kernel():
                 "permission": {
                     "default": {"target": "space_aware", "params": {"db_path": ":memory:"}}
                 },
+                "authorizer": {
+                    "default": {
+                        "target": "space_aware",
+                        "params": {"delegate": "standard"},
+                    },
+                    "standard": {
+                        "target": "standard",
+                        "params": {"grant_store": "default", "delegation_store": "default"},
+                    },
+                },
+                "grant_store": {"default": "memory"},
+                "delegation_store": {"default": "memory"},
             }
         )
     )
@@ -87,9 +110,7 @@ def _kernel():
 @pytest.fixture
 def api():
     kernel = _kernel()
-    kernel.api.create_space(
-        SpaceSpec(org=ORG, space=SPACE, owner=ALICE), security=SEC_OPS
-    )
+    kernel.api.create_space(SpaceSpec(org=ORG, space=SPACE, owner=ALICE), security=SEC_OPS)
     return kernel.api
 
 
@@ -125,7 +146,7 @@ def test_2_2_and_2_3_agents_of_the_same_user_reach_what_the_user_wrote(api) -> N
         assert api.search(
             "深色主题",
             SPACE_CONTEXT,
-            security=legacy_request_context(actor),
+            security=security_for(api, actor),
             top_k=5,
         ).items
 
@@ -150,7 +171,9 @@ def test_2_6_owner_governs_its_own_space_in_person(api) -> None:
 def test_2_5_owner_may_not_dispose_of_the_space_through_an_agent(api) -> None:
     """归属主体不得处置空间：经代理调用治理入口一律拒绝。"""
     with pytest.raises(PermissionDeniedError):
-        api.update_space(ORG, SPACE, SpacePatch(display_name="X"), security=SEC_ALICE_VIA_A1)
+        api.update_space(
+            ORG, SPACE, SpacePatch(display_name="X"), security=security_for(api, ALICE_VIA_A1)
+        )
 
 
 def test_2_7_whole_space_export_is_restricted_to_the_owner_in_person(api) -> None:
@@ -161,21 +184,18 @@ def test_2_7_whole_space_export_is_restricted_to_the_owner_in_person(api) -> Non
     api.add("alice 偏好深色主题", SPACE_SCOPE, security=SEC_ALICE)
     assert api.export_space(ORG, SPACE, security=SEC_ALICE) is not None
     with pytest.raises(PermissionDeniedError):
-        api.export_space(ORG, SPACE, security=SEC_ALICE_VIA_A1)
+        api.export_space(ORG, SPACE, security=security_for(api, ALICE_VIA_A1))
 
 
 def test_space_metadata_is_readable_through_an_agent(api) -> None:
     """归属主体档第二级：覆盖即可，用户经其代理读空间元数据通过。"""
-    assert api.get_space(ORG, SPACE, security=SEC_ALICE_VIA_A1) is not None
+    assert api.get_space(ORG, SPACE, security=security_for(api, ALICE_VIA_A1)) is not None
 
 
 def test_an_identity_without_a_principal_dimension_is_rejected_on_space_entries(api) -> None:
-    """空间级入口的形态校验：主体维全空即拒绝。
-
-    组织级入口不受此限——运维通道正是靠该形态建空间，见 fixture。
-    """
-    with pytest.raises(PermissionDeniedError):
-        api.get_space(ORG, SPACE, security=legacy_request_context(Scope(org=ORG)))
+    """所有受控入口都拒绝无主体身份，运维须使用具名 ROOT/ADMIN。"""
+    with pytest.raises(AuthenticationError):
+        api.get_space(ORG, SPACE, security=internal_context(ScopedAuthenticator(Scope(org=ORG))))
 
 
 # -- 第 1 组：空间内的权限分档，与写入路径的三处防护 ------------------------ #
@@ -185,17 +205,17 @@ CAROL = Scope(org=ORG, user="carol")
 DAVE = Scope(org=ORG, user="dave")
 
 # 接口先行过渡桥接：identity Scope 包成 RequestSecurityContext（安全实装合入后随接口一并改）
-SEC_ALICE = legacy_request_context(ALICE)
-SEC_ALICE_VIA_A1 = legacy_request_context(ALICE_VIA_A1)
-SEC_BOB = legacy_request_context(BOB)
-SEC_CAROL = legacy_request_context(CAROL)
-SEC_OPS = legacy_request_context(OPS)
+SEC_ALICE = internal_context(ScopedAuthenticator(ALICE))
+SEC_BOB = internal_context(ScopedAuthenticator(BOB))
+SEC_CAROL = internal_context(ScopedAuthenticator(CAROL))
+# 建空间走管理面 MANAGE_SPACE 闸门，闸门读的是服务端 role，不看 actor 的 Scope 形状——
+# 过渡件默认给 USER（它有生产调用点，默认 ROOT 会把每个认证请求提到最高权限），
+# 运维档要在调用点显式写出。ADMIN 即够：目标 space 带 org，管辖止于本 org。
+SEC_OPS = internal_context(ScopedAuthenticator(OPS, role=Role.ADMIN))
 
 
 def _member(user: str, content: SpaceContentRole, governance: SpaceGovernanceRole):
-    return SpaceMember(
-        scope=Scope(user=user), content_role=content, governance_role=governance
-    )
+    return SpaceMember(scope=Scope(user=user), content_role=content, governance_role=governance)
 
 
 def test_owner_adds_the_first_member_and_that_member_can_read(api) -> None:
@@ -206,7 +226,9 @@ def test_owner_adds_the_first_member_and_that_member_can_read(api) -> None:
     """
     api.add("alice 偏好深色主题", SPACE_SCOPE, security=SEC_ALICE)
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     assert api.search("深色主题", SPACE_CONTEXT, security=SEC_BOB, top_k=5).items
@@ -215,12 +237,16 @@ def test_owner_adds_the_first_member_and_that_member_can_read(api) -> None:
 def test_1_2_a_content_editor_cannot_manage_members(api) -> None:
     """能读写内容、管不了成员：内容轴 editor + 治理轴 none。"""
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     with pytest.raises(PermissionDeniedError):
         api.add_space_member(
-            ORG, SPACE, _member("carol", SpaceContentRole.VIEWER, SpaceGovernanceRole.NONE),
+            ORG,
+            SPACE,
+            _member("carol", SpaceContentRole.VIEWER, SpaceGovernanceRole.NONE),
             security=SEC_BOB,
         )
 
@@ -229,11 +255,15 @@ def test_1_1_a_governance_manager_cannot_read_content(api) -> None:
     """能管成员、看不到内容：治理轴 manager + 内容轴 none。"""
     api.add("alice 偏好深色主题", SPACE_SCOPE, security=SEC_ALICE)
     api.add_space_member(
-        ORG, SPACE, _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
+        ORG,
+        SPACE,
+        _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
         security=SEC_ALICE,
     )
     api.add_space_member(
-        ORG, SPACE, _member("dave", SpaceContentRole.VIEWER, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("dave", SpaceContentRole.VIEWER, SpaceGovernanceRole.NONE),
         security=SEC_CAROL,
     )
     with pytest.raises(PermissionDeniedError):
@@ -243,16 +273,22 @@ def test_1_1_a_governance_manager_cannot_read_content(api) -> None:
 def test_governance_ceiling_blocks_appointing_an_owner(api) -> None:
     """治理轴授予上界：管理员可增设管理员，不能设立拥有者。"""
     api.add_space_member(
-        ORG, SPACE, _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
+        ORG,
+        SPACE,
+        _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
         security=SEC_ALICE,
     )
     api.add_space_member(
-        ORG, SPACE, _member("dave", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
+        ORG,
+        SPACE,
+        _member("dave", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
         security=SEC_CAROL,
     )
     with pytest.raises(PermissionDeniedError):
         api.add_space_member(
-            ORG, SPACE, _member("dave", SpaceContentRole.NONE, SpaceGovernanceRole.OWNER),
+            ORG,
+            SPACE,
+            _member("dave", SpaceContentRole.NONE, SpaceGovernanceRole.OWNER),
             security=SEC_CAROL,
         )
 
@@ -260,12 +296,15 @@ def test_governance_ceiling_blocks_appointing_an_owner(api) -> None:
 def test_removal_ceiling_blocks_removing_a_higher_grade_member(api) -> None:
     """改前值同受上界约束：管理员不能移除拥有者。"""
     api.add_space_member(
-        ORG, SPACE, _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
+        ORG,
+        SPACE,
+        _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
         security=SEC_ALICE,
     )
     with pytest.raises(PermissionDeniedError):
-        api.remove_space_member(ORG, SPACE, Scope(org=ORG, space=SPACE, user="alice"),
-                                security=SEC_CAROL)
+        api.remove_space_member(
+            ORG, SPACE, Scope(org=ORG, space=SPACE, user="alice"), security=SEC_CAROL
+        )
 
 
 def test_1_5_a_member_record_must_not_raise_the_callers_own_grade(api) -> None:
@@ -275,12 +314,16 @@ def test_1_5_a_member_record_must_not_raise_the_callers_own_grade(api) -> None:
     看不到内容」那一档一次调用即失效。
     """
     api.add_space_member(
-        ORG, SPACE, _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
+        ORG,
+        SPACE,
+        _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
         security=SEC_ALICE,
     )
     with pytest.raises(PermissionDeniedError):
         api.add_space_member(
-            ORG, SPACE, _member("carol", SpaceContentRole.EDITOR, SpaceGovernanceRole.MANAGER),
+            ORG,
+            SPACE,
+            _member("carol", SpaceContentRole.EDITOR, SpaceGovernanceRole.MANAGER),
             security=SEC_CAROL,
         )
 
@@ -288,11 +331,15 @@ def test_1_5_a_member_record_must_not_raise_the_callers_own_grade(api) -> None:
 def test_1_6_configuring_someone_else_is_not_self_promotion(api) -> None:
     """能给别人配内容档：约束的是自提，不是代他人配置。"""
     api.add_space_member(
-        ORG, SPACE, _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
+        ORG,
+        SPACE,
+        _member("carol", SpaceContentRole.NONE, SpaceGovernanceRole.MANAGER),
         security=SEC_ALICE,
     )
     api.add_space_member(
-        ORG, SPACE, _member("dave", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("dave", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_CAROL,
     )
     members = api.list_space_members(ORG, SPACE, security=SEC_ALICE)
@@ -307,7 +354,9 @@ def test_1_4_downgrade_takes_effect_immediately(api) -> None:
     """
     api.add("alice 偏好深色主题", SPACE_SCOPE, security=SEC_ALICE)
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     assert api.search("深色主题", SPACE_CONTEXT, security=SEC_BOB, top_k=5).items
@@ -323,7 +372,9 @@ def test_member_scope_normalisation_matches_the_space_manager(api) -> None:
     且不报错、不留审计差异。
     """
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     stored = [m.scope for m in api.list_space_members(ORG, SPACE, security=SEC_ALICE)]
@@ -501,7 +552,7 @@ def test_list_spaces_lists_a_space_reachable_only_through_an_explicit_grant(api)
         security=SEC_BOB,
     )
     assert "p-x" not in api._membership.spaces_for(dave, ORG)
-    listed = api.list_spaces(ORG, security=legacy_request_context(dave))
+    listed = api.list_spaces(ORG, security=internal_context(ScopedAuthenticator(dave)))
     assert [info.space for info in listed] == ["p-x"]
 
 
@@ -538,7 +589,9 @@ def test_contributor_may_change_its_own_entry_but_not_others(api) -> None:
     ``contributor`` 在第一段即被拒；最终边界由第二段的实际作者比对给出。
     """
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     alice_unit = api.add("alice 写的", SPACE_SCOPE, security=SEC_ALICE)[0]
@@ -564,7 +617,9 @@ def test_forget_and_consolidate_are_denied_to_a_contributor(api) -> None:
     默认动作 ``WRITE`` 若不被覆盖，可贡献档成员即可对他人写入的条目执行遗忘。
     """
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     api.evolve(SPACE_SCOPE, EvolveMode.EXTRACT, security=SEC_BOB)
@@ -584,7 +639,9 @@ def test_job_entries_take_the_action_of_the_mode_that_started_the_job(api) -> No
     取值来自 ``JobInfo.mode``；作业以遗忘模式发起时，查询与取消同样落 ``UPDATE``。
     """
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     extract_job = api.evolve(SPACE_SCOPE, EvolveMode.EXTRACT, security=SEC_BOB)
@@ -640,7 +697,7 @@ def _with_quota(api, identity):
         ORG,
         SPACE,
         SpacePolicy(quotas={"max_units": "10"}),
-        security=legacy_request_context(identity),
+        security=security_for(api, identity),
     )
 
 
@@ -652,7 +709,9 @@ def test_policy_is_trimmed_for_a_caller_who_passes_only_the_content_axis(api) ->
     """
     _with_quota(api, ALICE)
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     assert api.get_space(ORG, SPACE, security=SEC_ALICE).policy.quotas == {"max_units": "10"}
@@ -668,7 +727,9 @@ def test_list_spaces_trims_the_policy_by_the_same_rule(api) -> None:
     """
     _with_quota(api, ALICE)
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     listed = {info.space: info for info in api.list_spaces(ORG, security=SEC_BOB)}
@@ -691,7 +752,9 @@ def test_trimming_keeps_the_principal_path_that_the_top_level_field_already_expo
         security=SEC_ALICE,
     )
     api.add_space_member(
-        ORG, SPACE, _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
     trimmed = api.get_space(ORG, SPACE, security=SEC_BOB)
@@ -711,16 +774,15 @@ def test_a_grant_whose_grantor_has_no_space_dimension_is_not_blocked_by_the_guar
     space 维相同，这条授权本就触达不到任何空间。
     """
     grant = Grant(grantor=ALICE, grantee=BOB, actions=(Action.READ,))
-    api.grant(grant, security=SEC_ALICE)
-    assert api.revoke(grant, security=SEC_ALICE) is None
+    created = api.grant(grant, security=SEC_ALICE)
+    assert api.revoke(created, security=SEC_ALICE) is None
 
 
 def test_the_passing_axis_is_recorded_in_the_audit_detail(api) -> None:
     """通过的轴落审计：裁剪判据须可追溯到具体一次调用。"""
     api.get_space(ORG, SPACE, security=SEC_ALICE)
     axes = [
-        event.detail.get("permission_axis")
-        for event in api._audit.query({"action": "get_space"})
+        event.detail.get("permission_axis") for event in api._audit.query({"action": "get_space"})
     ]
     assert axes and set(axes) == {"governance"}
 
@@ -734,9 +796,380 @@ def test_state_check_reuses_the_facts_read_by_authorization(api, monkeypatch) ->
     独立点读有两项代价：鉴权路径上多一次后端读，且状态与判定事实取自不同快照。把
     独立点读改成抛异常，本用例即固定「该路径不再被走到」。
     """
+
     def _must_not_be_called(_scope):
         raise AssertionError("空间元数据应取自本次鉴权已读的事实，不另发起点读")
 
     monkeypatch.setattr(type(api), "_space_info_if_exists", staticmethod(_must_not_be_called))
     assert api.add("不触发独立点读", SPACE_SCOPE, security=SEC_ALICE)
     api.get_space(ORG, SPACE, security=SEC_ALICE)
+
+
+def test_space_fact_backend_failure_is_not_disguised_as_permission_deny(api, monkeypatch) -> None:
+    """空间事实真源故障原样传播：BackendError（503），不降格为 deny（审核 P2-1）。
+
+    降格的后果是存储故障伪装成越权拒绝——调用方拿着 403 去查权限配置，而问题在
+    后端。修复前 ``_read_space_facts`` 把 ``BackendError`` 吞成 ``None``，判定按
+    「无归属、无成员」拒绝。
+    """
+    from jiuwen_memory.common.errors import BackendError
+
+    def _down(*_args, **_kwargs):
+        raise BackendError("membership backend down")
+
+    monkeypatch.setattr(api._membership, "facts", _down)
+
+    with pytest.raises(BackendError):
+        api.get_space(ORG, SPACE, security=SEC_ALICE)
+
+
+# -- 第 9 步 代操作委托：空间级生命周期 --------------------------------------- #
+#
+# 判据本体的单测在 tests/unit/common/security/；这一组测的是空间链上的端到端行为：
+# 鉴权点带着 delegation_id 进来，判定宿主回同一 DelegationStore 复核有效期、动作、
+# 空间、凭据与会话绑定，再落到第 9 步。
+#
+# BOT 是**第三方 agent**：不带 user 维，因此不覆盖 alice 的归属登记，成员表里也没有
+# 它。这一组的每一条放行都只能来自委托——换成 alice 名下的代理（ALICE_VIA_A1）第 7 步
+# 的作者比对就已经通过，用例测不到第 9 步。
+
+BOT = Scope(org=ORG, agent="bot1")
+
+# 覆盖空间级目标的 delegator 只能是纯空间形状：条目真源 scope 归一为空间级、不带主体
+# 维，而覆盖判定要求主体主维精确相等。与空间链上 Grant 的 grantor 同一约定
+# （见 test_list_spaces_lists_a_space_reachable_only_through_an_explicit_grant）。
+_DELEGATION_CONTENT_ACTIONS = frozenset({Action.READ, Action.WRITE, Action.UPDATE, Action.DELETE})
+
+
+def _delegation(**overrides) -> Delegation:
+    """一条覆盖 alice 主空间内容动作的有效委托，按需改单个字段。
+
+    用 ``dataclasses.replace`` 而不是手写 kwargs 合并：字段名写错时立刻报错，不会静默
+    产出一条与用例意图不同的委托——一条字段名打错的「过期委托」会变成有效委托，用例
+    照样绿。
+    """
+    base = Delegation(
+        delegation_id="d1",
+        delegator=SPACE_SCOPE,
+        delegate=BOT,
+        actions=_DELEGATION_CONTENT_ACTIONS,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    return replace(base, **overrides)
+
+
+def _delegation_store(api):
+    """判定实际查询的那一个 DelegationStore。
+
+    经实现层私有真源接缝取，而不是另建一个存储塞进去：不变量 27 要求实际判定访问
+    同一具名实例，测试若自带存储就测不出接错真源（症状是生产里委托恒不命中，而
+    测试全绿）。
+    """
+    stores = _delegation_sources_for(api._authorizer)
+    assert len(stores) == 1
+    return stores[0]
+
+
+def _bot_security(*, delegation_id: str = "d1", credential_id: str = "", session: str = ""):
+    """声明了委托的 BOT 请求上下文。
+
+    必须经 ``internal_context`` 这个受控入口构造：``delegation_id`` 与 ``credential_id``
+    都进了 ``_bind_origin`` 的 HMAC，在调用点用 ``dataclasses.replace`` 往上下文里塞
+    委托声明会被鉴权点判成伪造。
+    """
+    actor = replace(BOT, session=session) if session else BOT
+    return internal_context(
+        ScopedAuthenticator(actor, delegation_id=delegation_id, credential_id=credential_id)
+    )
+
+
+def test_a_third_party_agent_reaches_nothing_without_a_delegation(api) -> None:
+    """基线：不带委托的第三方 agent 读写皆拒。
+
+    这一条固定的是「后面每一条放行都来自委托」——它若先失败，整组用例的结论都不成立。
+    """
+    api.add("alice 偏好深色主题", SPACE_SCOPE, security=SEC_ALICE)
+    with pytest.raises(PermissionDeniedError):
+        api.add("bot 写的", SPACE_SCOPE, security=_bot_security())
+    with pytest.raises(PermissionDeniedError):
+        api.search("深色主题", SPACE_CONTEXT, security=_bot_security(), top_k=5)
+
+
+def test_a_valid_delegation_lets_the_agent_act_on_content(api) -> None:
+    """有效委托放行内容轴条目动作：写得进、读得到。
+
+    第 9 步的放行分支若不可达（例如委托方一侧的判据要求 delegator 带 user 维，与
+    「delegator 须覆盖空间级目标」互斥），本用例是唯一会失败的一条——合法代操作在
+    启用空间隔离后静默失效，不报错、不落审计异常。
+    """
+    _delegation_store(api).add(_delegation())
+    assert api.add("bot 代 alice 写的", SPACE_SCOPE, security=_bot_security())
+    assert api.search("代 alice", SPACE_CONTEXT, security=_bot_security(), top_k=5).items
+
+
+def test_declared_delegation_is_decided_before_grant_store_access(api, monkeypatch) -> None:
+    """有效委托必须在 Grant 前终局，不得先触达与结论无关的 GrantStore。"""
+    _delegation_store(api).add(_delegation())
+    grant_store = api._authorizer.management_grant_stores()[0]
+
+    def _unexpected_grant_lookup(*_args, **_kwargs):
+        raise AssertionError("GrantStore must not be queried before a declared delegation")
+
+    monkeypatch.setattr(grant_store, "find_active", _unexpected_grant_lookup)
+    assert api.add("委托先于授权", SPACE_SCOPE, security=_bot_security())
+
+
+def test_a_forged_delegation_id_is_rejected(api) -> None:
+    """伪造的委托标识拒绝：真源里没有这条记录。
+
+    「不存在」与「已撤销/已过期」共用同一个拒绝原因：区分它们等于给出一条委托标识的
+    枚举侧信道。
+    """
+    _delegation_store(api).add(_delegation())
+    with pytest.raises(PermissionDeniedError):
+        api.search(
+            "代 alice",
+            SPACE_CONTEXT,
+            security=_bot_security(delegation_id="d-forged"),
+            top_k=5,
+        )
+
+
+def test_an_expired_delegation_is_rejected(api) -> None:
+    """过期委托拒绝。
+
+    ``Delegation.expires_at`` 没有「None = 永久」形态，有效期是必填项；这一条固定的是
+    有效期**每次判定都复核**，而不是只在写入时校验一次。
+    """
+    _delegation_store(api).add(
+        _delegation(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    )
+    with pytest.raises(PermissionDeniedError):
+        api.add("bot 代 alice 写的", SPACE_SCOPE, security=_bot_security())
+
+
+def test_a_revoked_delegation_is_rejected_and_cannot_be_replayed(api) -> None:
+    """撤销即刻生效，且同 id 重放不复活（不变量 27）。
+
+    撤销单调是撤销这件事本身的意义：若同 ``delegation_id`` 的写入能覆盖已撤销的记录，
+    任何持有原委托内容的一方都能把它写回来，撤销就只是一次延迟。
+    """
+    store = _delegation_store(api)
+    store.add(_delegation())
+    assert api.add("撤销前", SPACE_SCOPE, security=_bot_security())
+
+    store.revoke("d1")
+    with pytest.raises(PermissionDeniedError):
+        api.add("撤销后", SPACE_SCOPE, security=_bot_security())
+
+    store.add(_delegation())  # 同 id 重放
+    with pytest.raises(PermissionDeniedError):
+        api.add("重放后", SPACE_SCOPE, security=_bot_security())
+
+
+def _last_deny_rule(api) -> str:
+    """最近一条拒绝审计的判据名。
+
+    绑定类用例断言的是**哪一条**判据拒绝的，不只是「拒了」：每条绑定都有各自的失效
+    形态（守卫漏写、比较取反、比错字段），而它们的现象都是「拒绝」。只断言拒绝的用例
+    在守卫漏写时照样绿——另一条判据顺手拒了它。
+    """
+    denies = [event for event in api._audit.query({}) if event.decision == "deny"]
+    assert denies, "本次调用应落一条 deny 审计"
+    return str(denies[-1].detail.get("permission_rule", ""))
+
+
+def test_a_delegation_confined_to_other_spaces_does_not_reach_this_one(api) -> None:
+    """``allowed_spaces`` 是空间级越界闸门：不含本空间即拒绝。
+
+    正反两侧都测：只测拒绝一侧的用例在「守卫把集合判反」时仍然绿——它会让恰好**不在**
+    清单里的空间成为唯一可达的空间。
+    """
+    store = _delegation_store(api)
+    store.add(_delegation(allowed_spaces=frozenset({"u-someone-else"})))
+    with pytest.raises(PermissionDeniedError):
+        api.add("越界", SPACE_SCOPE, security=_bot_security())
+    assert _last_deny_rule(api) == "delegation_binding"
+
+    store.add(_delegation(allowed_spaces=frozenset({SPACE, "u-someone-else"})))
+    assert api.add("清单内", SPACE_SCOPE, security=_bot_security())
+
+
+def test_a_credential_bound_delegation_only_works_with_that_credential(api) -> None:
+    """绑定凭据后换一把 key 的同一个 agent 用不了这条委托。
+
+    这条绑定把凭据泄露的爆炸半径收敛在单把 key 上；缺它则任何持有该 agent 任一凭据的
+    一方都能用这条委托。
+    """
+    store = _delegation_store(api)
+    store.add(_delegation(bound_credential_id="k1"))
+    with pytest.raises(PermissionDeniedError):
+        api.add("换了 key", SPACE_SCOPE, security=_bot_security(credential_id="k2"))
+    assert _last_deny_rule(api) == "delegation_binding"
+
+    assert api.add("原 key", SPACE_SCOPE, security=_bot_security(credential_id="k1"))
+
+
+def test_a_session_bound_delegation_only_works_in_that_session(api) -> None:
+    """绑定会话后，同一 agent 换一个会话用不了这条委托。
+
+    会话维不参与覆盖判定（判定按主体两维比对），这条绑定是它在授权上唯一的落点——
+    漏写则一条为单次会话签发的委托变成该 agent 的长期权限。
+    """
+    store = _delegation_store(api)
+    store.add(_delegation(bound_session="s1"))
+    with pytest.raises(PermissionDeniedError):
+        api.add("换了会话", SPACE_SCOPE, security=_bot_security(session="s2"))
+    assert _last_deny_rule(api) == "delegation_binding"
+
+    assert api.add("原会话", SPACE_SCOPE, security=_bot_security(session="s1"))
+
+
+def test_an_action_outside_the_allowlist_is_rejected(api) -> None:
+    """动作不在 allowlist 内即拒绝：一条只读委托写不进东西。
+
+    ``permits`` 同时查 allowlist 与 ``DELEGATABLE_ACTIONS``，两个条件缺一不可——只查
+    allowlist 会让一条写坏或被篡改的委托记录直接拿到管理动作。
+    """
+    store = _delegation_store(api)
+    store.add(_delegation())
+    assert api.add("bot 自己写的", SPACE_SCOPE, security=_bot_security())
+
+    store.add(_delegation(actions=frozenset({Action.READ})))
+    # 读侧照常：证明拒绝来自动作 allowlist，而不是这条委托整体失效了。
+    assert api.search("自己写的", SPACE_CONTEXT, security=_bot_security(), top_k=5).items
+    with pytest.raises(PermissionDeniedError):
+        api.add("只读委托写不进", SPACE_SCOPE, security=_bot_security())
+    assert _last_deny_rule(api) == "delegation_action"
+
+
+def test_another_agent_cannot_borrow_a_delegation_id(api) -> None:
+    """委托标识不是凭据：另一个 agent 拿着它用不了。
+
+    委托标识会经上下文在服务间流转，只要它单独可用，泄露一次就等于把被委托方的权限
+    转给了任何看得到它的一方。
+    """
+    _delegation_store(api).add(_delegation())
+    other_bot = internal_context(
+        ScopedAuthenticator(Scope(org=ORG, agent="bot2"), delegation_id="d1")
+    )
+    with pytest.raises(PermissionDeniedError):
+        api.add("借用别人的委托", SPACE_SCOPE, security=other_bot)
+    assert _last_deny_rule(api) == "delegation_binding"
+
+
+def test_an_agent_cannot_re_delegate_to_another_agent(api) -> None:
+    """委托方一侧必须是非 agent 主体：agent 再委托 agent 不成立。
+
+    委托关系一旦能自我复制，撤销就追不上——撤销一条委托时无从知道它派生出了多少条。
+    判据是「委托方不带 agent 维」，与「被委托方必须带 agent 维」配对。
+    """
+    store = _delegation_store(api)
+    store.add(_delegation(delegator=Scope(org=ORG, space=SPACE, agent="bot9")))
+    with pytest.raises(PermissionDeniedError):
+        api.add("agent 转委托", SPACE_SCOPE, security=_bot_security())
+    assert _last_deny_rule(api) == "delegation_principal"
+
+    # 委托方留空同样不成立：一条没写清「委托方是谁」的记录不算成立的委托。
+    store.add(_delegation(delegation_id="d2", delegator=Scope()))
+    with pytest.raises(PermissionDeniedError):
+        api.add("委托方留空", SPACE_SCOPE, security=_bot_security(delegation_id="d2"))
+    assert _last_deny_rule(api) == "delegation_principal"
+
+
+def test_a_delegation_to_a_non_agent_principal_is_rejected(api) -> None:
+    """被委托方必须是 agent/service 这类非人主体。
+
+    委托是「机器代人操作」这一件事的表达；被委托方是自然人时该用的是 Grant，两者的
+    撤销与审计形态不同，混用会让「谁在代谁操作」在审计里无从还原。
+    """
+    _delegation_store(api).add(_delegation(delegate=BOB))
+    with pytest.raises(PermissionDeniedError):
+        api.add("委托给自然人", SPACE_SCOPE, security=_bot_security())
+    assert _last_deny_rule(api) == "delegation_principal"
+
+
+def test_a_failed_delegation_does_not_fall_back_to_an_explicit_grant(api) -> None:
+    """声明了委托就不再回落 Grant：失效委托的拒绝不被另一条规则掩盖。
+
+    两次调用只差「有没有声明委托」这一项，Grant 全程有效：
+    - 不声明委托 → 走 Grant，通过；
+    - 声明一条已撤销的委托 → 拒绝，且拒绝原因指向委托查找，不是 Grant。
+
+    回落的后果不是越权而是**审计失真**：调用方明说「我在代操作」，代操作凭据已经失效，
+    而请求照常通过、审计里记的是 Grant 命中——委托失效过这件事在事后无从还原。
+    """
+    # grant 不在归属主体档的两级清单内，归属主体本人也需要成员记录才授得出去；
+    # 因此先由 alice 指派一位治理 OWNER，再由他授出（同
+    # test_list_spaces_lists_a_space_reachable_only_through_an_explicit_grant）。
+    api.add_space_member(
+        ORG,
+        SPACE,
+        _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.OWNER),
+        security=SEC_ALICE,
+    )
+    api.grant(
+        Grant(grantor=SPACE_SCOPE, grantee=BOT, actions=[Action.READ]),
+        security=SEC_BOB,
+    )
+    # Grant 是活的：不声明委托时同一调用通过（行级可见范围由第一族谓词另行收窄，
+    # 这里要的是「没被拒」）。
+    api.search("任意", SPACE_CONTEXT, security=internal_context(ScopedAuthenticator(BOT)), top_k=5)
+
+    store = _delegation_store(api)
+    store.add(_delegation())
+    store.revoke("d1")
+    with pytest.raises(PermissionDeniedError):
+        api.search("任意", SPACE_CONTEXT, security=_bot_security(), top_k=5)
+    assert _last_deny_rule(api) == "delegation_lookup"
+
+
+def test_a_content_delegation_does_not_reach_governance_or_whole_space_export(api) -> None:
+    """委托不得越到治理轴与「逐维相同」入口（第 7 步两条排除同样约束第 9 步）。
+
+    委托放行的是「代理替人操作」，与第 7 步归属对比同一类情形，适用范围必须相同——
+    否则一条带 UPDATE/DELETE 的内容委托能改策略、删空间，一条带 READ 的能整空间导出，
+    而这三件事对归属主体**本人的代理**都是禁止的（见 test_2_5 与 test_2_7）。
+
+    断言判据名不以 ``delegation`` 开头：这一步在这些入口上**整体不参与**，而不是
+    「参与了、恰好没通过」。后者会随委托内容变化而翻转。
+    """
+    _delegation_store(api).add(_delegation())  # READ/WRITE/UPDATE/DELETE 全给
+    for call in (
+        lambda: api.export_space(ORG, SPACE, security=_bot_security()),
+        lambda: api.update_space(
+            ORG, SPACE, SpacePatch(display_name="X"), security=_bot_security()
+        ),
+        lambda: api.delete_space(ORG, SPACE, security=_bot_security()),
+    ):
+        with pytest.raises(PermissionDeniedError):
+            call()
+        assert not _last_deny_rule(api).startswith("delegation")
+
+
+def test_a_delegation_opens_the_space_gate_but_not_the_row_boundary(api) -> None:
+    """委托放开的是空间级闸门，不放开行级可见范围。
+
+    第一族谓词按调用形态收窄：自主运行的 agent 只看得见自己写的条目（F07「检索两族
+    谓词」）。两层因此是独立的——委托让 agent 进得了这个空间，进来之后能看见哪些条目
+    仍由谓词决定，委托内容再宽也不放宽这一层。
+
+    这一层的失效形态是**静默的**：谓词漏注入时 agent 照常返回结果，只是多了别人的
+    条目，调用方无从察觉。因此这条边界要正面测出来，而不是从「委托测试都绿」推断。
+
+    同时它解释了本组其余用例为何多以 ``add`` 作探针：读侧被这层谓词过滤后，「拒绝」
+    与「通过但没有可见行」在返回值上都是空结果，用读侧当探针分不出这两件事。
+    """
+    _delegation_store(api).add(_delegation())
+    api.add("alice 写的部署笔记", SPACE_SCOPE, security=SEC_ALICE)
+    api.add("bot 写的部署笔记", SPACE_SCOPE, security=_bot_security())
+
+    seen = api.search("部署笔记", SPACE_CONTEXT, security=_bot_security(), top_k=5)
+    assert {item.content for item in seen.items} == {"bot 写的部署笔记"}
+
+    # 归属主体本人不受这条谓词收窄：同一空间内两条都在。
+    by_owner = api.search("部署笔记", SPACE_CONTEXT, security=SEC_ALICE, top_k=5)
+    assert {item.content for item in by_owner.items} == {
+        "alice 写的部署笔记",
+        "bot 写的部署笔记",
+    }

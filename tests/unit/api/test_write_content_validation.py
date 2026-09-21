@@ -10,10 +10,11 @@ import pytest
 
 from jiuwen_memory.api import assemble
 from jiuwen_memory.common.errors import ValidationError
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Modality, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.control import BatchWriteItem
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -34,7 +35,7 @@ def test_add_rejects_invalid_content(content: object) -> None:
             content,  # type: ignore[arg-type]
             _SCOPE,
             source=Modality.TEXT,
-            security=legacy_request_context(_ACTOR),
+            security=internal_context(ScopedAuthenticator(_ACTOR)),
         )
 
 
@@ -42,7 +43,10 @@ def test_add_accepts_non_empty_content() -> None:
     api = _api()
 
     units = api.add(
-        "remember this", _SCOPE, source=Modality.TEXT, security=legacy_request_context(_ACTOR)
+        "remember this",
+        _SCOPE,
+        source=Modality.TEXT,
+        security=internal_context(ScopedAuthenticator(_ACTOR)),
     )
 
     assert units and units[0].content == "remember this"
@@ -52,7 +56,7 @@ def test_check_write_preserves_positional_security_argument() -> None:
     """identity 替换成安全上下文时保留旧第二位置参数，避免无关的签名破坏。"""
     api = _api()
 
-    api.check_write(_SCOPE, legacy_request_context(_ACTOR))
+    api.check_write(_SCOPE, internal_context(ScopedAuthenticator(_ACTOR)))
 
 
 @pytest.mark.parametrize("content", [None, "", "   "])
@@ -63,7 +67,7 @@ def test_batch_add_rejects_invalid_content(content: object) -> None:
     result = api.batch_add(
         [BatchWriteItem(content=content), BatchWriteItem(content="valid")],  # type: ignore[arg-type]
         scope,
-        security=legacy_request_context(scope),
+        security=internal_context(ScopedAuthenticator(scope)),
     )
 
     assert result.outcomes[0].error_type == "ValidationError"

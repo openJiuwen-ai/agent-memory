@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import (
     ValidationError,
@@ -46,9 +47,9 @@ class SpaceOpsMixin:
         target = _space_scope(spec.org, spec.space)
         target_id = _space_target_id(spec.org, spec.space)
         auth = self._authorize(
-            identity,
+            security,
             Scope(org=spec.org),
-            Action.WRITE,
+            Action.MANAGE_SPACE,
             "create_space",
             target_id,
             context=_space_permission_context("space", target),
@@ -67,7 +68,7 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "get_space",
@@ -90,7 +91,7 @@ class SpaceOpsMixin:
         identity = security.auth.actor
         target = Scope(org=org)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "list_spaces",
@@ -104,7 +105,7 @@ class SpaceOpsMixin:
             if limit <= 0:
                 raise ValidationError("limit must be > 0")
             candidates = self._listable_candidates(org, status)
-            spaces = self._readable_spaces(identity, org, candidates)[:limit]
+            spaces = self._readable_spaces(security, org, candidates)[:limit]
             detail["candidate_spaces"] = str(len(candidates))
             if cursor is not None:
                 # F07「``cursor`` 标记废弃」：``limit`` 在鉴权之后生效，偏移量按候选序解释
@@ -133,7 +134,8 @@ class SpaceOpsMixin:
         授权记录接入索引不在本批处置：索引项不带来源标记，``remove_member`` 已需靠
         ``normalized not in info.owners`` 这一显式来源判断才能避免误删归属主体的索引项；
         再加第三类写入方，``revoke`` 与 ``remove_member`` 两个方向都要跨组件判断「该主体
-        是否仍凭另一来源持有该空间」，而授权记录在 :class:`PermissionManager` 里，
+        是否仍凭另一来源持有该空间」，而授权记录在 Authorizer 的
+        :class:`~common.security.authorization.store.GrantStore` 里，
         :class:`SpaceManager` 查不到。判断不全的失效方向是索引遗漏，恰是契约唯一禁止的
         方向。前置条件与遗留事项见 F07「``list_spaces`` 的候选来源」。
 
@@ -150,7 +152,7 @@ class SpaceOpsMixin:
         return infos
 
     def _readable_spaces(
-        self, identity: Scope, org: str, spaces: list[SpaceInfo]
+        self, security: RequestSecurityContext, org: str, spaces: list[SpaceInfo]
     ) -> list[SpaceInfo]:
         """逐空间求值，无权的直接剔除（F07「跨空间检索」末段）。
 
@@ -171,7 +173,14 @@ class SpaceOpsMixin:
                 _space_permission_context("space", target),
                 entry="list_spaces",
             )
-            outcome = self._perm.decide(identity, target, Action.READ, context=context)
+            outcome = self._decide_space_entry(
+                security,
+                target,
+                Action.READ,
+                "",
+                context,
+                now=datetime.now(timezone.utc),
+            )
             if outcome.allowed:
                 axis = outcome.axis.value if outcome.axis is not None else ""
                 readable.append(_trim_space_policy(info, axis))
@@ -189,7 +198,7 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.UPDATE,
             "update_space",
@@ -202,14 +211,12 @@ class SpaceOpsMixin:
         self._log(identity, "update_space", target_id, target_scope=target, detail=auth)
         return info
 
-    def archive_space(
-        self, org: str, space: str, *, security: RequestSecurityContext
-    ) -> SpaceInfo:
+    def archive_space(self, org: str, space: str, *, security: RequestSecurityContext) -> SpaceInfo:
         identity = security.auth.actor
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.UPDATE,
             "archive_space",
@@ -235,7 +242,7 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.DELETE,
             "delete_space",
@@ -269,7 +276,7 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "export_space",
@@ -286,14 +293,12 @@ class SpaceOpsMixin:
         )
         return export_id
 
-    def space_usage(
-        self, org: str, space: str, *, security: RequestSecurityContext
-    ) -> SpaceUsage:
+    def space_usage(self, org: str, space: str, *, security: RequestSecurityContext) -> SpaceUsage:
         identity = security.auth.actor
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "space_usage",
@@ -322,7 +327,7 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "get_space_policy",
@@ -345,7 +350,7 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.UPDATE,
             "set_space_policy",
@@ -370,7 +375,7 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.READ,
             "list_space_members",
@@ -399,14 +404,14 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.SHARE,
             "add_space_member",
             target_id,
             context=_space_permission_context("space_member", target),
         )
-        self._enforce_member_write_ceilings(identity, target, member)
+        self._enforce_member_write_ceilings(security, target, member)
         self._space.add_member(org, space, member)
         self._invalidate_space_facts(org, space)
         self._log(
@@ -429,14 +434,14 @@ class SpaceOpsMixin:
         target = _space_scope(org, space)
         target_id = _space_target_id(org, space)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.SHARE,
             "remove_space_member",
             target_id,
             context=_space_permission_context("space_member", target),
         )
-        self._enforce_member_removal_ceiling(identity, target, member)
+        self._enforce_member_removal_ceiling(security, target, member)
         self._space.remove_member(org, space, member)
         self._invalidate_space_facts(org, space)
         self._log(identity, "remove_space_member", target_id, target_scope=target, detail=auth)

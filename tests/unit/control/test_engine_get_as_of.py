@@ -7,10 +7,17 @@ import pytest
 from jiuwen_memory.api import DeleteMode, DeleteSelector, MemoryPatch, Scope
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import NotFoundError
-from jiuwen_memory.common.security.legacy import legacy_request_context
-from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit, Modality, Segment, Temporal, memory_key
+from jiuwen_memory.common.type_def import (
+    MemoryTier,
+    MemoryUnit,
+    Modality,
+    Segment,
+    Temporal,
+    memory_key,
+)
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from tests.unit.api.fixtures import security_for
 
 
 def test_get_as_of_returns_version_valid_at_that_time() -> None:
@@ -41,13 +48,13 @@ def test_get_as_of_returns_version_valid_at_that_time() -> None:
     before_update = kernel.api.get(
         new.id,
         scope,
-        security=legacy_request_context(actor),
+        security=security_for(kernel.api, actor),
         as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
     )
     after_update = kernel.api.get(
         old.id,
         scope,
-        security=legacy_request_context(actor),
+        security=security_for(kernel.api, actor),
         as_of=datetime(2026, 6, 17, 11, 30, tzinfo=timezone.utc),
     )
 
@@ -63,7 +70,7 @@ def test_get_as_of_handles_historical_update_before_original_write_time() -> Non
     kv = InMemoryKVStore()
     kernel = build_kernel(kv=kv)
 
-    old = kernel.api.add("home is Shanghai", scope, security=legacy_request_context(actor))[0]
+    old = kernel.api.add("home is Shanghai", scope, security=security_for(kernel.api, actor))[0]
     new = kernel.api.update(
         old.id,
         scope,
@@ -71,19 +78,19 @@ def test_get_as_of_handles_historical_update_before_original_write_time() -> Non
             content="home is Beijing",
             t_valid=datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc),
         ),
-        security=legacy_request_context(actor),
+        security=security_for(kernel.api, actor),
     )
 
     before_update = kernel.api.get(
         new.id,
         scope,
-        security=legacy_request_context(actor),
+        security=security_for(kernel.api, actor),
         as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
     )
     after_update = kernel.api.get(
         old.id,
         scope,
-        security=legacy_request_context(actor),
+        security=security_for(kernel.api, actor),
         as_of=datetime(2026, 6, 17, 11, 30, tzinfo=timezone.utc),
     )
 
@@ -120,13 +127,13 @@ def test_get_as_of_does_not_return_forgotten_version() -> None:
     kv.insert(scope, memory_key(new.id), dumps(new))
     kernel.api.delete(
         DeleteSelector(unit_ids=[old.id], scope=scope, mode=DeleteMode.FORGET),
-        security=legacy_request_context(actor),
+        security=security_for(kernel.api, actor),
     )
 
     with pytest.raises(NotFoundError):
         kernel.api.get(
             new.id,
             scope,
-            security=legacy_request_context(actor),
+            security=security_for(kernel.api, actor),
             as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
         )

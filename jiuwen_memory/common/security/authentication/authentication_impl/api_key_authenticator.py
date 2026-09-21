@@ -31,8 +31,7 @@ _FAILED = "authentication failed"
 
 # Root Key 对应的主体。**不是空 ``Scope()``**：ROOT 由 ``role`` 表达，actor 只表达
 # 「是谁」（F05 §授权不变量 1）。它是部署级凭据、不属于任何 org，主体落在保留的
-# ``system`` org 下；该 ``role`` 在 PR1 没有消费点（``PermissionManager`` 不做
-# role/actor 判定），放行语义随 PR2 由 ``Authorizer`` 接管。
+# ``system`` org 下；该 ``role`` 由 PR2 ``Authorizer`` 消费，不依赖 actor 形状表达特权。
 _ROOT_ACTOR = Scope(org="system", user="root")
 
 
@@ -112,6 +111,12 @@ class ApiKeyAuthenticator(Authenticator):
         """匿名内联实例由 SecurityRuntime 绑定稳定 issuer。"""
         if not self._name or self._name == "default":
             self._name = name
+
+    def _credential_sources(self):
+        """返回签发真源，供仓库内部 composition root 调和撤销注册表。"""
+        # 与 authenticate() 产出的 credential_type/credential_issuer 同值：Registry 按
+        # 这对路由键复核撤销，注册的 Store 就是本认证器签发主体 key 的同一实例。
+        return (("api_key", self._name, self._key_store),)
 
     def health(self) -> None:
         self._key_store.health()

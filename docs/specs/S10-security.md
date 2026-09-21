@@ -5,25 +5,32 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-09-20 |
-| 关联特性文档 | `docs/features/common/F04-security-interfaces-and-encryption.md`，`docs/features/common/F10-authentication-kernel.md` |
+| 最近一次修订日期 | 2026-09-21 |
+| 关联特性文档 | `docs/features/common/F04-security-interfaces-and-encryption.md`，`docs/features/common/F10-authentication-kernel.md`，`docs/features/common/F11-authorization-and-isolation.md`，`docs/features/common/F12-pr2-upstream-integration.md`，`docs/features/common/F13-pr2-independent-acceptance-closure.md` |
 
 ## 范围 / 边界
 
-本规约定义 PR1 已落地的请求认证、主体凭据存储、资源保护（限流 / 并发预算 / 绑定策略）、
-静态加密配置与安全运行期装配不变量。授权判定与唯一 PEP 由 PR2 补齐，审计完整性由 PR3 补齐。
+本规约定义请求认证、主体凭据存储、资源保护（限流 / 并发预算 / 绑定策略）、静态加密配置、
+授权判定与安全运行期装配不变量。PR1 已交付认证和加密；PR2 的最新集成与验证边界见
+F12-pr2-upstream-integration；其后独立验收发现的边界修复见 F13，不能用旧版验收结果替代本次验证。
+本页的 PR2 条款是已经冻结的目标契约。
+审计完整性实现仍归 PR3。
 
 安全能力统一归属 `jiuwen_memory/common/security/`，按能力域分子包：
 
 | 子包 | 承载 |
 |---|---|
-| `authentication/` | `Authenticator`、`PrincipalKeyStore` 与三个内置实现 |
+| `authentication/` | `Authenticator`、`PrincipalKeyStore` 与内置实现（api_key / dev / trusted 三种模式）。进程内调用方经 `request_context.internal_context(authenticator)` 显式穿过认证边界——身份由传入的认证器产出，调用方不能自述身份 |
+| `authorization/` | `Authorizer`、`GrantStore`、`DelegationStore`、Scope 覆盖规则与 PR2 实现 |
 | `cryptography/` | `CryptographyProvider`、`KeyProvider`、ENC1 本地信封实现 |
 | `protection/` | `RateLimiter`、`WorkloadGuard`、`BindingPolicy` |
 | `types.py` | `AuthContext`、PR2 预置的 `RequestSecurityContext`、`CryptoContext`、`Role`、`Surface`、`Credentials` |
 | `runtime.py` | `SecurityRuntime`：持有能力引用、启动期健康检查、统一生命周期 |
 
-`authorization/`（PR2）与 `audit_integrity/`（PR3）的**契约**随上游接口分支已在库中，但 PR1 不实装其 `*_impl`，也不创建 F08 授权特性文档。`request_context.py` 的受控构造入口 PR1 已由认证中间件使用（PEP 的 `has_valid_origin()` 校验仍归 PR2 启用）。Runtime 的必填 `authorizer` 字段 PR1 装 `allow_all` 占位（`is_test_only()` 为真，不做任何判定；做判定的 `StandardAuthorizer` 随 PR2 合入）；`audit_integrity_provider` 是 F05 定义的可选装配位，PR1 固定字段与健康检查位、PR3 填实现。
+`authorization/` 的契约随接口分支固定，PR2 提供 `StandardAuthorizer`、
+`RoutingAuthorizer`、`SpaceAwareAuthorizer`、memory / SQLite Store 与 PEP 接线，当前实现已
+完成核心接线；SDK 凭据源与受控代理代写的收口决策见 F12。
+`audit_integrity/`（PR3）本期仍只有固定契约，不实装或激活其 `*_impl`。
 
 > 历史状态：这些能力此前平铺在 `common/authentication/`、`credential_store/`、
 > `admission/`、`encryption/` 与 `type_def/auth.py`。那是迁移前的目录形态，不再作为
@@ -37,26 +44,23 @@
 2. `Authenticator.authenticate` 成功返回 `AuthContext`，失败抛 `AuthenticationError`；不得返回默认身份。
 3. `AuthContext` 是 frozen value object；其 `actor` 使用全局固定的可变 `Scope` 类型，内置
    Authenticator 必须为每次认证返回独立的 Scope 快照，不得复用模块级或 Store 内对象。
-   `RequestSecurityContext` 的来源证明绑定 actor 全部维度，PR2 PEP 启用来源校验后，构造后
-   原地改写 actor 必须导致校验失败。
+   `RequestSecurityContext` 的来源证明绑定 actor 全部维度；构造后原地改写 actor 必须导致
+   PEP 校验失败。
 4. `Authenticator.mode()` 返回**开放字符串**而非封闭枚举。核心不得按该值分支——需要
    分支的行为差异必须由 capability 方法显式声明，第三方实现无需改核心即可接入。
 5. **actor 全局形态不变量（IMPL-01 §1.1）**：`AuthContext.actor` 恒为单主体--`org`
    必须非空（部署级凭据用 `org="system"`）；`user` 与 `agent` 必须且只能有一个非空；
    `session` 若非空必须挂在已确定的主体下。规则对**所有**认证模式统一生效（内置
    API Key / Trusted / DEV / Root Key 与第三方 `Authenticator`），由
-   `security.types.validate_actor_form` 在 `authenticated()` 认证边界统一执行，非法
-   形态 fail-closed 并落入口拒绝审计。`Scope(user=..., agent=...)` 同时非空仍是
+   `security.types.validate_actor_form` 在 `authenticated()` 和受控上下文构造边界
+   `new_request_context`（含 `internal_context`）统一执行，非法形态不得签发来源证明，
+   surface 认证拒绝按入口策略留审计。`Scope(user=..., agent=...)` 同时非空仍是
    资源层 `principal_path` 的合法层级表达，只是不作为认证 actor。
 6. **具名系统主体**：为兼容上游既有开发环境及本地数据，固定 DEV 产出
    `Scope(org="local", user="developer")`；Root API Key 产出
    `Scope(org="system", user="root")`。ROOT 权限只由 `role=Role.ROOT` 表达，不来自
-   actor 形状。**PR1 无 role 执行点**：认证层产出的 role 传递到 `AuthContext` 后，
-   过渡期判定仍走 `PermissionManager.decide`（无 `auth` 参数，退回纯 ACL），
-   `role=Role.ROOT` 在 PR1 无任何放行判定、不具特权——这是已知过渡缺口，随 PR2 由
-   `Authorizer` 接管 role 闸门（见页面末尾「已知过渡缺口」）。`LocalMemoryAPI._authorize`
-   只取 `security.auth.actor` 走原有的 PermissionManager 路径，不读 ContextVar 透传
-   role（该接缝已在 PR1 撤回）。
+   actor 形状。授权时只能由 `Authorizer` 根据显式 `AuthContext.role` 执行 ROOT 闸门；空
+   actor、目标 Scope 形状或 ContextVar 均不得推导出特权。
 
 - **凭据在线复核接缝**：`PrincipalKeyStore.is_revoked` 与 `CredentialStatusRegistry` 已在 PR1
   实现并有镜像单测；`ApiKeyAuthenticator` 在认证期校验 Store 覆盖了撤销查询。
@@ -64,14 +68,47 @@
   `(credential_type, credential_issuer)` 路由到平行 Authenticator 各自的真源。ROOT key、
   trusted gateway 等身份可携带非空 `credential_id` 做审计，但 capability 为 false，不能由
   id 形状猜测撤销语义。声明需要复核却缺少 id 或注册 issuer 时 fail-closed。
-  `AuthContext` 仍是纯数据值对象，不携带 Callable 或 Store 引用。PR1 尚无 Authorizer / PEP
-  消费这个 Registry，因此“撤销前缓存的上下文立即失效”尚未接入请求链路；PR2 由唯一 PEP
-  完成逐请求复核。
+  `AuthContext` 仍是纯数据值对象，不携带 Callable 或 Store 引用。唯一 PEP 必须通过与
+  Authenticator 共用真源的 Registry 逐请求复核，使撤销前缓存的上下文立即失效。
 
-- **PR2 类型接缝**：PR1 已定义 `RequestSecurityContext` 及受控来源标记，`MemoryAPI`
-  公开签名已切到 `security: RequestSecurityContext`（接口先行合入）。受控构造入口的
-  PEP 侧 `has_valid_origin()` 校验、`dispatch` 的 `security=` 签名切换与授权来源校验
-  属于 PR2，不能写成 PR1 已完成能力。
+- **PR2 显式上下文**：`MemoryAPI`、dispatch、HTTP、MCP、CLI、插件和进程内调用都必须显式
+  传递受控构造的 `RequestSecurityContext`。Handler 不得保留 `identity` / `acting_user` 或
+  payload actor 兼容旁路；ContextVar 只用于日志与 trace。
+
+### 授权与资源隔离
+
+23. `MemoryAPI` 是唯一业务 PEP，`Authorizer` 是唯一 PDP。旧 `PermissionManager` 可以为尚未
+    迁移的历史代码保留，但不得处于生产请求判定路径，也不得成为第二套授权真源。
+24. PEP 必须先验证上下文来源、actor 完整性、时效和需在线复核的凭据，再读取空间事实、访问
+    业务 Store、创建 fallback space 或产生任何其他业务副作用。
+25. `Authorizer` 只根据显式的 `AuthContext`、服务端构造的 `ResourceDescriptor` 与 `Environment`
+    判定；不得解析传输协议、读取 ContextVar、读取业务 payload 或自行加载 MemoryUnit。
+26. 判定顺序固定为管理面角色闸门、ROOT、org 硬边界、owner-cover、Delegation、Grant、默认拒绝；
+    非 ROOT 不得跨 org，普通 Grant / Delegation 不得越过管理面角色闸门。
+27. `GrantStore` 与 `DelegationStore` 是授权状态真源。`grant_id` 由服务端生成；撤销按 ID 幂等、
+    单调且同 ID 重放不得复活。公共 grant/revoke 与实际判定必须访问同一具名 Store 实例。
+    撤权须对 ID 对应的真实 grantor 判权，并在执行时原子绑定该目标；不得信任请求 grantor。
+    同 ID 的活动记录更新全部值对象字段；已撤销记录保持原状，不接受重放复活。
+    空间限制必须无损存取；旧格式有歧义或编码损坏时拒绝，不能解释为不限制空间。
+28. 允许结果必须给出 rule，拒绝结果必须给出稳定 `DenyReason`；授权依赖故障必须与正常 403
+    拒绝分开映射，不得吞错并降格为 deny。
+29. RoutingAuthorizer 的路由字段只能来自服务端可信资源属性；未命中必须进入明确的安全
+    fallback；任一可达的 test-only delegate 都使组合 Authorizer 为 test-only，生产装配须拒绝。
+30. `SecurityRuntime.authorizer` 与 PEP 持有的 Authorizer 必须是同一实例；认证、凭据复核、授权
+    判定和授权管理使用的具名能力也必须共享对应真源。
+    此要求同时适用于独立 SDK 和 Server 装配。显式替换认证器时 Registry 只保留新认证器
+    的真源，不得把旧 issuer 的凭据继续当作当前部署有效身份；绑定过程先健康检查再替换。
+31. `AllowAllAuthorizer` 只允许显式测试装配。DEV 业务连续性由受控 `Role.ROOT` 通过真实
+    Authorizer 实现，不得靠旧 permission fallback、空 Scope 或缺省放行。
+32. 受控代理代写保持认证 actor 为真实单主体 agent。被代理用户只能从服务端绑定的
+    Delegation 真源取得，不能从目标 Scope、请求 metadata 或 header 自述取得。
+    凭据绑定与 PDP 共用同一 Store；认证后缓存的上下文仍须逐次复核委托有效期、撤销、
+    动作、凭据/会话和空间限制。代理权限不得超过委托人当前内容权限，治理权不随委托转移。
+    作者标记和检索坐标可以由有效委托派生，审计 actor 不得替换为委托人。
+33. 治理读取 `inspect` / `trace` 的每个返回条目（含祖先）必须按其同一真源快照的
+    Scope、作者和类型路由逐项 READ 判权；请求 Scope 的授权不替代条目级授权。
+34. 空间成员及授权的授予上界必须消费可信角色。ROOT 不受普通成员上界限制；ADMIN
+    不因此自动获得内容权，普通成员的自提禁止和授予上界仍须执行。
 
 ### 依据 capability 做安全决策
 
@@ -100,8 +137,8 @@
   gateway headers，并携带 socket peer；不得回退读取进程级 API Key。
 - Streamable HTTP 的 peer 必须进入认证前 `RateLimiter` 与 `WorkloadGuard`；stdio 没有网络
   对端，不做地址限流。
-- MCP surface 只构造 `Credentials`，不得直接构造 `AuthContext`。PR2 再把认证结果封装为
-  `RequestSecurityContext` 交给 PEP。
+- MCP surface 只构造 `Credentials`，不得直接构造 `AuthContext`；认证中间件把认证结果封装为
+  `RequestSecurityContext` 并显式交给 PEP。
 
 ### 密码学
 
@@ -135,10 +172,11 @@
 
 实现模块必须在配置解析前由 `common.bootstrap.register_plugins()` 或应用自己的注册入口
 import，注册装饰器才会生效。当前核心不自动发现任意外部 Python 包；外部插件应由宿主应用
-在 `Server.build` / `build_kernel` 前显式加载。
+在 `Server.build` / `assemble` / `assemble_runtime` 前显式加载。
 
-顶层段名：`security`、`authenticator`、`key_store`、`rate_limiter`、`workload_guard`、
-`binding_policy`、`cryptography`、`key_provider`。
+顶层段名：`security`、`authenticator`、`key_store`、`authorizer`、`grant_store`、
+`delegation_store`、`rate_limiter`、`workload_guard`、`binding_policy`、`cryptography`、
+`key_provider`。
 
 ```yaml
 security:
@@ -146,6 +184,7 @@ security:
     target: standard
     params:
       authenticator: default          # 必填，无默认实现
+      authorizer: default              # 必填，与 MemoryAPI PEP 使用同一具名实例
       rate_limiter: default
       workload_guard: shared_budget   # 具名引用 = 跨 surface 共享同一份预算
       binding_policy: loopback        # 省略时按 target 名取默认实现
@@ -159,6 +198,18 @@ authenticator:
 key_store:
   default:
     target: memory
+authorizer:
+  default:
+    target: standard
+    params:
+      grant_store: default
+      delegation_store: default
+grant_store:
+  default:
+    target: sqlite
+delegation_store:
+  default:
+    target: sqlite
 rate_limiter:
   default:
     target: token_bucket
@@ -193,22 +244,17 @@ key_provider:
 DEV 时，才用配置适配器补齐完整 SecurityRuntime；MCP（含 stdio）同样默认 required，
 须显式 JIUWEN_MEMORY_MCP_AUTH_MODE=dev 才启用该适配器。未配置认证时均失闭。
 
-### PR1 的 bootstrap DEV 业务连续性例外
+### DEV 业务连续性
 
-公共 Core 入口 `api.build_kernel()` / `api.assemble()` 未显式选择 permission 时，默认仍为
-`SQLitePermissionManager`，不得因为 DEV 认证而改成全放行。
+公共 Core 装配入口是 `api.assemble()` / `api.assemble_runtime()`；`build_kernel` 不再公开。
+默认授权经 StandardAuthorizer 及其具名 Grant/Delegation 真源，不调用旧 PermissionManager。
+未配置认证时不得从资源 Scope 推导身份，也不得因 DEV 配置缺失而全放行。
 
-在 PR2 Authorizer 尚未接管 `role=ROOT` 的过渡期，只有 HTTP/CLI/MCP 的显式固定 DEV 入口可以先调用 `with_local_dev_security()`，向 `memory_api` 配置的副本注入
-`permission.default=allow_all`：
-
-1. composition root 已显式选择固定本地 DEV，且未配置身份映射及 `security` 段；
-2. 用户没有配置 `permission` 段；
-3. DEV 的 `BindingPolicy` 仍限制实际监听地址为 loopback。
-
-任一显式 security 或 permission 配置都必须禁止覆写，原始 `config.settings` 不得被修改。
-该例外只用于保持既有本地 add/get 等业务流程，不得扩散到 Core SDK、API Key 或 Trusted 部署；
-`Server.build()` 本身不得检查 `Authenticator.mode()` 或注入回退。PR2 接通 Authorizer 的 ROOT
-角色闸门后应删除该适配器中的 `allow_all` 权限过渡项。
+HTTP/CLI/MCP 的显式 DEV 入口调用 `with_local_dev_security()`，仅在用户没有
+声明 `security` 时向配置副本补齐完整 DEV Runtime；不修改原始 `config.settings`，也不注入
+`permission.default=allow_all`。PR2 的 `Authorizer` 已接管 `role=ROOT`，DEV 跨组织 add/get
+由真实 PDP 放行；API Key / Trusted 部署仍按 AuthContext 和授权事实判定。DEV 的
+`BindingPolicy` 继续限制实际监听地址为 loopback。
 
 ### 兼容周期
 
@@ -222,8 +268,9 @@ DEV 时，才用配置适配器补齐完整 SecurityRuntime；MCP（含 stdio）
 
 ## 当前扩展边界
 
-- `Authenticator`、`PrincipalKeyStore`、`RateLimiter`、`WorkloadGuard`、`BindingPolicy`、
-  `CryptographyProvider`、`KeyProvider` 均可通过 Producer 注册扩展。
+- `Authenticator`、`PrincipalKeyStore`、`Authorizer`、`GrantStore`、`DelegationStore`、
+  `RateLimiter`、`WorkloadGuard`、`BindingPolicy`、`CryptographyProvider`、`KeyProvider` 均可
+  通过 Producer 注册扩展。
 - `KeyProvider` 是独立 Producer：换 KMS / Vault 不必改加密实现。
 - Server 按 capability 决策绑定和并发保护，不按封闭枚举分支。
 - 认证根装配消费一个最终实例；需要多认证串联时，应注册组合 target，由该 target 通过
@@ -240,7 +287,7 @@ DEV 时，才用配置适配器补齐完整 SecurityRuntime；MCP（含 stdio）
 
 HTTP 显式 DEV 可从 http.dev_identities 读取服务端身份映射，或由已配置的安全 Runtime
 提供身份；配置中的 ADMIN 必须具名（如 org=local,user=ops）。缺失/未知 selector 返回 401。
-映射模式不自动注入 allow_all；原空间、成员、读写隔离仍走 PermissionManager。
-具名 ADMIN/ROOT 的组织权限与 agent 代表 user 的受控委托是 PR2 Authorizer 的职责。
-PR2 必须把这条真实 HTTP 链路纳入唯一认证/鉴权通道，并覆盖内容轴、治理轴、作者标记及
-路由/检索过滤后再删除旧链路和过渡项。不得让新 Authorizer 与旧权限链独立作出相矛盾的裁决。
+映射模式不自动注入 allow_all。当前空间、成员、读写隔离均经 MemoryAPI/Authorizer；
+具名 ADMIN/ROOT 的组织权限与 agent 代表 user 的受控委托使用同一链路，内容轴、治理轴、
+作者标记和路由/检索过滤共同接受验证。旧 PermissionManager 仅为历史兼容类，不参与生产判定。
+PR1 阶段曾暂用旧权限链，那是迁移历史而非当前要求；不得恢复双 PDP。

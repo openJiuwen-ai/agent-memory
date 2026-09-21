@@ -9,8 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwen_memory.api import MemoryAPI, assemble, assemble_runtime
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Scope
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -89,7 +90,7 @@ def test_public_api_does_not_export_kernel_or_impl() -> None:
 def test_assemble_accepts_mapping_without_config_type() -> None:
     api = assemble(config={})
     scope = Scope(org="acme", user="owner")
-    units = api.add("from-dict", scope, security=legacy_request_context(scope))
+    units = api.add("from-dict", scope, security=internal_context(ScopedAuthenticator(scope)))
     assert units[0].content == "from-dict"
     assert isinstance(api, MemoryAPI)
     assert not hasattr(api, "kv")
@@ -99,7 +100,9 @@ def test_assemble_accepts_mapping_without_config_type() -> None:
 def test_assemble_runtime_exposes_api_and_close_not_storage_ports() -> None:
     runtime = assemble_runtime(config={})
     scope = Scope(org="acme", user="owner")
-    units = runtime.api.add("via-runtime", scope, security=legacy_request_context(scope))
+    units = runtime.api.add(
+        "via-runtime", scope, security=internal_context(ScopedAuthenticator(scope))
+    )
     assert units[0].content == "via-runtime"
     assert callable(runtime.close)
     for port in _RUNTIME_FORBIDDEN_PORTS:

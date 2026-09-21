@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
 
 from jiuwen_memory.common.errors import (
@@ -30,12 +31,13 @@ from jiuwen_memory.control.types import (
     Channel,
     JobInfo,
     JobStatus,
+    PermissionContext,
 )
 
 from .local_support import (
     _ROOT,
     _evolve_space_action,
-    _validate_legacy_permission_actions,
+    _TrustedRequestTarget,
 )
 
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
@@ -89,9 +91,10 @@ class AdminOpsMixin:
         scope: Scope | None = None,
     ) -> JobInfo:
         identity = security.auth.actor
-        # 先取任务（含其 scope），再据 identity 对该 scope 的 READ 权放行
-        # （仅可查自身/已授权范围的任务）；status 为只读查询，先取后判权
-        # 不产生副作用。
+        # 来源、时效与凭据复核必须先于任务读取，再对任务真源 scope 判权。
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.READ, "job_status", scope or _ROOT, job_id)
+        )
         if job_id.startswith(INGEST_JOB_PREFIX):
             if scope is None:
                 raise ValidationError("ingest job status requires target scope")
@@ -112,7 +115,7 @@ class AdminOpsMixin:
         else:
             info = self._scheduler.status(job_id)
         auth = self._authorize(
-            identity,
+            security,
             info.scope,
             Action.READ,
             "job_status",
@@ -126,9 +129,12 @@ class AdminOpsMixin:
         identity = security.auth.actor
         # 取消即对该任务范围的写动作，按其 scope 鉴权 WRITE
         # （与 evolve 触发一致）。
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.WRITE, "job_cancel", _ROOT, job_id)
+        )
         info = self._scheduler.status(job_id)
         auth = self._authorize(
-            identity,
+            security,
             info.scope,
             Action.WRITE,
             "job_cancel",
@@ -140,19 +146,19 @@ class AdminOpsMixin:
 
     def admin_get(self, key: str, *, security: RequestSecurityContext) -> str:
         identity = security.auth.actor
-        auth = self._authorize(identity, _ROOT, Action.READ, "admin_get", key)
+        auth = self._authorize(security, _ROOT, Action.ADMINISTER_SYSTEM, "admin_get", key)
         self._log(identity, "admin_get", key, target_scope=_ROOT, detail=auth)
         return self._policy.get(key)
 
     def admin_set(self, key: str, value: str, *, security: RequestSecurityContext) -> None:
         identity = security.auth.actor
-        auth = self._authorize(identity, _ROOT, Action.WRITE, "admin_set", key)
+        auth = self._authorize(security, _ROOT, Action.ADMINISTER_SYSTEM, "admin_set", key)
         self._log(identity, "admin_set", key, target_scope=_ROOT, detail=auth)
         self._policy.set(key, value)
 
     def admin_all(self, *, security: RequestSecurityContext) -> dict[str, str]:
         identity = security.auth.actor
-        auth = self._authorize(identity, _ROOT, Action.READ, "admin_all")
+        auth = self._authorize(security, _ROOT, Action.ADMINISTER_SYSTEM, "admin_all")
         self._log(identity, "admin_all", target_scope=_ROOT, detail=auth)
         return self._policy.all()
 
@@ -160,17 +166,37 @@ class AdminOpsMixin:
         self, unit_ids: list[str], scope: Scope, *, security: RequestSecurityContext
     ) -> list[MemoryUnit]:
         identity = security.auth.actor
-        auth = self._authorize(identity, scope, Action.READ, "inspect")
+        auth = self._authorize(security, scope, Action.READ, "inspect")
+        units = self._governance.inspect(unit_ids, scope)
+        self._authorize_governance_units(units, security, "inspect")
         self._log(identity, "inspect", target_scope=scope, detail=auth)
-        return self._governance.inspect(unit_ids, scope)
+        return units
 
     def trace(
         self, unit_id: str, scope: Scope, *, security: RequestSecurityContext
     ) -> list[MemoryUnit]:
         identity = security.auth.actor
-        auth = self._authorize(identity, scope, Action.READ, "trace", unit_id)
+        auth = self._authorize(security, scope, Action.READ, "trace", unit_id)
+        units = self._governance.trace(unit_id, scope)
+        self._authorize_governance_units(units, security, "trace")
         self._log(identity, "trace", unit_id, target_scope=scope, detail=auth)
-        return self._governance.trace(unit_id, scope)
+        return units
+
+    def _authorize_governance_units(
+        self, units: list[MemoryUnit], security: RequestSecurityContext, entry: str
+    ) -> None:
+        # 只使用本次真源返回的条目，避免二次读取与最终返回内容的快照错位。
+        for unit in units:
+            context = PermissionContext(
+                resource_type="memory_unit",
+                unit_id=unit.id,
+                scope=unit.scope,
+                memory_type=str(unit.system_metadata.get("memory_type", "")).strip(),
+                pipeline=str(unit.system_metadata.get("pipeline", "")).strip(),
+                tags=tuple(unit.tags),
+                metadata={key: str(value) for key, value in unit.system_metadata.items()},
+            )
+            self._authorize(security, unit.scope, Action.READ, entry, unit.id, context=context)
 
     def audit(
         self,
@@ -180,10 +206,9 @@ class AdminOpsMixin:
         limit: int = 100,
     ) -> list[AuditEvent]:
         identity = security.auth.actor
-        # 审计查询跨 scope，继续按既有管理面闸门（根 scope READ）鉴权；存量授权记录
-        # 按 action 精确匹配，本接口 PR 不迁移其语义。READ_AUDIT 的切换须由独立的
-        # 兼容性变更连同授权数据迁移一起完成。查询本身亦留痕。
-        auth = self._authorize(identity, _ROOT, Action.READ, "audit")
+        # 审计查询跨 scope，按管理面角色闸门（根 scope READ_AUDIT）鉴权——授权记录
+        # 按 action 精确匹配，不与普通 READ 互认。查询本身亦留痕。
+        auth = self._authorize(security, _ROOT, Action.READ_AUDIT, "audit")
         self._log(identity, "audit", target_scope=_ROOT, detail=auth)
         return self._governance.audit(filters, limit)
 
@@ -215,7 +240,7 @@ class AdminOpsMixin:
             )
         # 验证审计链完整性：管理面根 scope 闸门使用独立 VERIFY_AUDIT 动作；
         # 验证本身亦留痕。
-        auth = self._authorize(identity, _ROOT, Action.VERIFY_AUDIT, "verify_audit")
+        auth = self._authorize(security, _ROOT, Action.VERIFY_AUDIT, "verify_audit")
         if self._audit_integrity is None:
             # 未装配审计完整性 provider：诚实返回 unsupported，不抛错。
             self._log(identity, "verify_audit", target_scope=_ROOT, detail=auth)
@@ -272,24 +297,46 @@ class AdminOpsMixin:
 
     def grant(self, grant: Grant, *, security: RequestSecurityContext) -> Grant:
         identity = security.auth.actor
-        auth = self._authorize(identity, grant.grantor, Action.SHARE, "grant")
-        self._enforce_grant_ceiling(identity, grant)
-        self._log(identity, "grant", target_scope=grant.grantor, detail=auth)
-        # 旧 PermissionManager 尚不按 grant_id 定位，因此本期不生成 ID
-        #（返回值原样回传，grant_id 保持入参值）。
-        # 服务端生成 ID 与按 ID 定位随 GrantStore 实装一并落地。
-        # PermissionManager 与安全域共用同一 Grant/Action 类型；管理动作在旧实现
-        # 尚无角色闸门，必须先显式拒绝，不能借旧 ACL 语义放行。
-        _validate_legacy_permission_actions(grant)
-        self._perm.grant(grant)
-        return grant
+        auth = self._authorize(security, grant.grantor, Action.SHARE, "grant")
+        self._enforce_grant_ceiling(security, grant)
+        stored = replace(grant, grant_id=uuid.uuid4().hex)
+        self._log(
+            identity,
+            "grant",
+            target_scope=grant.grantor,
+            detail={**auth, "grant_id": stored.grant_id},
+        )
+        # 只写 Authorizer 的授权真源，不双写旧 PermissionManager：双写即第二真源，
+        # revoke 只撤新 Store 时旧 Manager 仍放行（不变量 23 / 27）。
+        for store in self._authorizer.management_grant_stores():
+            store.add(stored)
+        return stored
 
     def revoke(self, grant: Grant, *, security: RequestSecurityContext) -> None:
         identity = security.auth.actor
-        auth = self._authorize(identity, grant.grantor, Action.SHARE, "revoke")
-        self._log(identity, "revoke", target_scope=grant.grantor, detail=auth)
-        # 旧 PermissionManager 按 grantor+grantee+action 条件撤销，不能按 grant_id
-        # 定位。本期不据 grant_id 做任何判定，也不宣称精确撤销；
-        # 契约要求的「按 ID 精确回收」随 GrantStore 实装落地。
-        _validate_legacy_permission_actions(grant)
-        self._perm.revoke(grant)
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.REVOKE_SHARE, "revoke", _ROOT)
+        )
+        if not grant.grant_id:
+            raise ValidationError(
+                "revoke requires a server-issued grant_id; conditional revocation is not supported"
+            )
+        pending = []
+        for store in self._authorizer.management_grant_stores():
+            lookup = getattr(store, "_get_for_revoke", None)
+            revoke = getattr(store, "_revoke_bound", None)
+            if not callable(lookup) or not callable(revoke):
+                raise ValidationError("GrantStore lacks safe revocation binding capability")
+            stored = lookup(grant.grant_id)
+            if stored is None:
+                continue  # 未知 ID 幂等，不根据请求 grantor 猜测真实归属。
+            auth = self._authorize(security, stored.grantor, Action.REVOKE_SHARE, "revoke")
+            pending.append((revoke, stored, auth))
+        for revoke, stored, auth in pending:
+            revoke(stored.grant_id, stored.grantor)
+            self._log(
+                identity,
+                "revoke",
+                target_scope=stored.grantor,
+                detail={**auth, "grant_id": stored.grant_id},
+            )

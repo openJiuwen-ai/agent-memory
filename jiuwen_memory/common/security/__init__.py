@@ -5,9 +5,9 @@
 适配器、Audit）只 import 本包的契约与值对象，不反向被 import。
 
 各能力子包按 F05 目录组织。PR1 已实装 authentication / cryptography / protection；
-authorization 与 audit_integrity 保持 PR2/PR3 固定契约，其中 authorization 仅有
-PR1 过渡期 ``allow_all`` 占位。能力契约从各自子包获取，顶层只导出跨能力共享类型、
-受控请求上下文入口与 Runtime。
+PR2 已由真实 Authorizer 接管判定，``allow_all`` 仅保留为测试替身；audit_integrity 保持
+PR3 固定契约。能力契约从各自子包获取，顶层只导出跨能力共享类型、受控请求上下文入口
+与 Runtime。
 
 存储加密统一使用 ``CryptographyProvider`` / ``KeyProvider``，顶层 ``security`` 配置由
 ``SecurityRuntimeProducer`` 接管。旧 ``SecurityProvider`` / ``SecurityProducer`` /

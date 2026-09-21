@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.llm.base import LLM
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.common.type_def.entity import EntityStoreFilters, hash_entity_text
 from jiuwen_memory.common.type_def.memory_codec import loads
@@ -23,6 +23,7 @@ from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import H
 from jiuwen_memory.control.engine_impl.cloud_engine import CloudEngine
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
 from jiuwen_memory.control.pipeline import PipelineBinding
+from tests.support.scoped_authenticator import ScopedAuthenticator
 from tests.unit.construction.test_entity_linker import InMemoryEntityStore
 
 T0 = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -115,7 +116,8 @@ class SchemaWorld:
             wiring = capture_engine(assembly_patch, engine_kind, self.pipeline)
             capture_constructor(assembly_patch, EntitySchemaExtractor, llm=self.llm)
             capture_constructor(
-                assembly_patch, HybridIndexBuilder,
+                assembly_patch,
+                HybridIndexBuilder,
                 entity_linker=EntityLinkService(entity_store=self.entity_store),
             )
             self.kernel = _build_kernel(
@@ -167,7 +169,7 @@ class SchemaWorld:
         self.evolver = wiring.dependencies.evolver
         self.retriever = wiring.dependencies.retriever
         self.scope = Scope(org="issue208", user="alice")
-        self.security = legacy_request_context(self.scope)
+        self.security = internal_context(ScopedAuthenticator(self.scope))
 
     def add(self, text):
         created = self.api.add(
@@ -202,9 +204,7 @@ class SchemaWorld:
         return dict(self.kernel.kv.scan(self.scope, "/memory/"))
 
     def binding(self, name, index=None, evolver=None):
-        return PipelineBinding(
-            name, index or self.index, self.retriever, evolver or self.evolver
-        )
+        return PipelineBinding(name, index or self.index, self.retriever, evolver or self.evolver)
 
     def route(self, bindings):
         def select(units):

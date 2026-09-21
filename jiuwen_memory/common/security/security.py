@@ -38,11 +38,11 @@ class SecurityContext(CryptoContext):
         purpose: str = "",
         metadata: dict[str, str] | None = None,
     ) -> None:
-        object.__setattr__(self, "scope", scope if scope is not None else Scope())
-        object.__setattr__(self, "purpose", purpose)
-        object.__setattr__(self, "object_id", "")
-        object.__setattr__(self, "format_version", 1)
-        object.__setattr__(self, "metadata", dict(metadata or {}))
+        super().__init__(
+            scope=scope if scope is not None else Scope(),
+            purpose=purpose,
+            metadata=dict(metadata or {}),
+        )
 
 
 __all__ = [

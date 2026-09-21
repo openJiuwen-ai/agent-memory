@@ -158,8 +158,8 @@ def test_http_rejects_invalid_length() -> None:
 def test_http_accepts_normal_request() -> None:
     """正常大小的 body 走完整条链路并返回 200。
 
-    显式 DEV 模式会临时装配 ``allow_all`` permission，以便 PR2 接入前维持本地业务
-    流程。本条只验证 body 长度处理，不验证授权规则。
+    显式 DEV 模式由 PR2 ``Authorizer`` 的 ROOT 角色闸门维持本地业务流程；不再装配
+    ``allow_all`` PermissionManager。本条只验证 body 长度处理，不验证授权规则。
     """
     httpd, port = _start_server()
     try:

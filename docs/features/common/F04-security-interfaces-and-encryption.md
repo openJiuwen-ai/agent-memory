@@ -1,5 +1,10 @@
 ﻿# F04 — 安全架构总纲
 
+> 归档说明（2026-09-21）：本页恢复并保留 PR1 的总纲正文，记录当时的方案与迁移阶段，
+> 不把其中的阶段状态当作当前实现要求。现行契约以 [S10](../../specs/S10-security.md) 为准；
+> PR2 接线与后续验收收口见 [F12](F12-pr2-upstream-integration.md)、
+> [F13](F13-pr2-independent-acceptance-closure.md)。旧 PermissionManager 不再参与生产授权。
+
 ## 元信息
 
 | 项 | 值 |

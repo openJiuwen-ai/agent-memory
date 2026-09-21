@@ -272,3 +272,67 @@ def test_server_and_encrypted_store_share_named_cryptography_instance() -> None:
         assert srv.security_runtime.cryptography_provider is created[0]
     finally:
         vars(CryptographyProducer)["_registry"].pop("shared_probe", None)
+
+
+# -- Runtime 与 PEP 共享同一 Authorizer 实例（审核 P2-2） ------------------------ #
+
+
+def _server_config(memory_api: dict, security: dict) -> object:
+    """Server.build 的两层形态：security 段住在 ``memory_api`` 里。
+
+    ``Server.build`` 读 ``config.settings["memory_api"]``——那是 profiles 层的 Config
+    （带 ``settings``），与内核装配用的两级命名空间 Config 不是同一个类。
+    """
+    return profiles.load_config([{"memory_api": {**memory_api, "security": security}}])
+
+
+_AUTHOR_INSTANCES = {
+    "authorizer": {
+        "default": {
+            "target": "standard",
+            "params": {"grant_store": "default", "delegation_store": "default"},
+        },
+        "other": {
+            "target": "standard",
+            "params": {"grant_store": "default", "delegation_store": "default"},
+        },
+    },
+    "grant_store": {"default": "memory"},
+    "delegation_store": {"default": "memory"},
+}
+
+
+def test_explicit_non_default_authorizer_forks_the_instances_and_is_rejected() -> None:
+    """``security.params.authorizer`` 指到非 default 具名实例 → 拒绝启动。
+
+    分叉的后果是两份 Grant/DelegationStore 视图：同一次授权在 Runtime 与 PEP 得到
+    不同结论。守卫在启动期按对象 identity 拒绝，比运行期以「判定不一致」暴露早得多。
+    """
+    config = _server_config(
+        _AUTHOR_INSTANCES,
+        {
+            "default": {
+                "target": "standard",
+                "params": {"authenticator": {"target": "dev"}, "authorizer": "other"},
+            }
+        },
+    )
+    with pytest.raises(ValidationError, match="同一实例"):
+        server.Server.build(config)
+
+
+def test_runtime_and_pep_share_the_default_authorizer_instance() -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
+    """默认装配下 identity 校验通过：Runtime 与 PEP 拿到同一个对象。"""
+    config = _server_config(
+        _AUTHOR_INSTANCES,
+        {
+            "default": {
+                "target": "standard",
+                "params": {"authenticator": {"target": "dev"}},
+            }
+        },
+    )
+    built = server.Server.build(config)
+    assert built.security_runtime.authorizer is built.api._authorizer

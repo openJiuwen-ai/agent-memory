@@ -29,8 +29,9 @@ def test_registration_is_idempotent() -> None:
     assert AuthProducer.known() == first
 
 
-def test_all_three_modes_registered() -> None:
+def test_all_modes_registered() -> None:
     register_plugins()
+    # P1-2：scoped 已删除——身份自述形态不再注册（tests/ 内保留测试辅助类，不入工厂）。
     assert AuthProducer.known() == ["api_key", "dev", "trusted"]
     assert KeyStoreProducer.known() == ["memory"]
 

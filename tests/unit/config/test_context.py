@@ -180,6 +180,7 @@ def test_legacy_security_migration_preserves_runtime_instances():
     assert ctx.lookup("security", "runtime").target == "standard"
     assert ctx.lookup("cryptography", "old_crypto").target == "local"
 
+
 def test_from_yaml_expands_env(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.yml"
     cfg_path.write_text(
@@ -205,21 +206,21 @@ def test_from_yaml_expands_env(tmp_path, monkeypatch):
     assert spec.params["asr_missing"] == "", "未设置且无默认值时展开为空串"
     assert spec.params["asr_chunk_seconds"] == 600, "非字符串叶子不动"
     assert spec.params["asr_tags"] == ["secret-key", "fixed"], "列表叶子同样展开"
-    assert (
-        spec.params["dsn"] == "postgresql://agent_memory:secret-key@db:5432/app"
-    ), "同一字符串内多个占位符各自展开（默认值与环境变量混排）"
-    assert (
-        spec.params["literal"] == "pass$word and 100% and ${NOT_A_PLACEHOLDER"
-    ), "非法占位符原样保留"
+    assert spec.params["dsn"] == "postgresql://agent_memory:secret-key@db:5432/app", (
+        "同一字符串内多个占位符各自展开（默认值与环境变量混排）"
+    )
+    assert spec.params["literal"] == "pass$word and 100% and ${NOT_A_PLACEHOLDER", (
+        "非法占位符原样保留"
+    )
 
 
 def test_from_dict_does_not_expand_env():
     config = Config.from_dict(
         {"llm": {"default": {"target": "openai", "params": {"llm_api_key": "${UNIT_TEST_KEY}"}}}}
     )
-    assert (
-        config.context().lookup("llm", "default").params["llm_api_key"] == "${UNIT_TEST_KEY}"
-    ), "纯数据入口不展开"
+    assert config.context().lookup("llm", "default").params["llm_api_key"] == "${UNIT_TEST_KEY}", (
+        "纯数据入口不展开"
+    )
 
 
 _YAML_WITH_ENV = (
@@ -240,9 +241,7 @@ def test_from_yaml_str_resolves_args_before_env(monkeypatch):
     monkeypatch.setenv("UNIT_TEST_KEY", "from-env")
     monkeypatch.setenv("UNIT_TEST_URL", "http://from-env:8000/v1")
 
-    params = _llm_params(
-        Config.from_yaml_str(_YAML_WITH_ENV, UNIT_TEST_KEY="from-args")
-    )
+    params = _llm_params(Config.from_yaml_str(_YAML_WITH_ENV, UNIT_TEST_KEY="from-args"))
 
     assert params["llm_api_key"] == "from-args", "args 里的同名值优先于环境变量"
     assert params["llm_base_url"] == "http://from-env:8000/v1", "args 未提供时回落环境变量"
@@ -273,7 +272,7 @@ def test_from_yaml_matches_from_yaml_str(tmp_path, monkeypatch):
 
 def _leaf(value: str) -> str:
     """把一个标量值塞进 YAML 文本，经 from_yaml_str 取回展开结果。"""
-    yaml_text = f"llm:\n  default:\n    target: openai\n    params:\n      v: \"{value}\"\n"
+    yaml_text = f'llm:\n  default:\n    target: openai\n    params:\n      v: "{value}"\n'
     return _llm_params(Config.from_yaml_str(yaml_text))["v"]
 
 
@@ -318,7 +317,7 @@ def test_non_string_override_is_stringified():
 
 
 def test_from_yaml_rejects_malformed_placeholder(tmp_path):
-    yaml_text = "llm:\n  default:\n    target: openai\n    params:\n      v: \"${A:-${B}}\"\n"
+    yaml_text = 'llm:\n  default:\n    target: openai\n    params:\n      v: "${A:-${B}}"\n'
     path = tmp_path / "config.yml"
     path.write_text(yaml_text, encoding="utf-8")
 

@@ -81,7 +81,7 @@ def default_config_dict() -> dict[str, Any]:
                             "kv_store": _D,
                             "preferred_retrieval_pipeline": "recall_get_rank",
                             # 召回路装配：CompositeDomainStore.for_manager 按能力开关
-                            #（vector_enabled / graph_enabled / layers_index_enabled，
+                            # （vector_enabled / graph_enabled / layers_index_enabled，
                             # 回退 globals）启用各 recaller，构建期同步组装。
                             # layers_index_enabled 默认 true（与构建侧对齐：默认建默认
                             # 查）；不在此硬编码，让 get 回退 globals 便于全局关停。
@@ -246,9 +246,9 @@ def default_config_dict() -> dict[str, Any]:
                     "index_builder": _D,
                     "llm": _D,
                     # MiddleToLongJob 业务参数
-                    "middle_max_fetch": 100,    # _list_working_units 取最近 N 条
-                    "middle_batch_size": 10,    # 连续性切批上限
-                    "middle_concurrency": 4,    # 批间并发（1=串行）
+                    "middle_max_fetch": 100,  # _list_working_units 取最近 N 条
+                    "middle_batch_size": 10,  # 连续性切批上限
+                    "middle_concurrency": 4,  # 批间并发（1=串行）
                 },
             }
         },
@@ -259,6 +259,14 @@ def default_config_dict() -> dict[str, Any]:
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
+        "authorizer": {
+            _D: {
+                "target": "standard",
+                "params": {"grant_store": _D, "delegation_store": _D},
+            }
+        },
+        "grant_store": {_D: "memory"},
+        "delegation_store": {_D: "memory"},
         "space": {_D: {"target": "kv", "params": {}}},
         # 空间授权事实的读取与缓存。params 只引用 space：正查（元数据与成员表）与
         # 反查（主体到空间）都在 SpaceManager 契约内，本算子只依赖它一个。
@@ -274,6 +282,7 @@ def default_config_dict() -> dict[str, Any]:
 ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
     "permission": _D,
+    "authorizer": _D,
     "scheduler": _D,
     "ingest_job": _D,
     "policy": _D,
@@ -283,6 +292,7 @@ ROOT_PARAMS: dict[str, str] = {
     "space": _D,
     "membership": _D,
     "config_source": _D,
+    "key_store": _D,
 }
 
 KV_DEFAULT_NAME = _D  # 注入的真源 kv 预置进缓存时用的具名键（与各处引用一致）

@@ -8,10 +8,15 @@ from typing import Any
 import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control import BatchWriteItem, BatchWriteOutcome, BatchWriteResult
 from jiuwen_memory_entry.core import handler
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest
-from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+from jiuwen_memory_entry.core.legacy_request_adapter import (
+    build_legacy_dispatch_request,
+)
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -42,8 +47,12 @@ class _Server:
         self.api = _RecordingBatchApi()
 
 
-def _dispatch(srv, verb: str, payload: dict):
-    return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload))
+def _dispatch(srv, verb: str, payload: dict, *, actor: Scope | None = None):
+    # 测试身份独立于业务 target，不能从 payload 拼装认证主体。
+    security = internal_context(
+        ScopedAuthenticator(actor if actor is not None else Scope(org="acme", user="alice"))
+    )
+    return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload, security=security))
 
 
 def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
@@ -79,7 +88,8 @@ def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
     assert body["ok"] is True
     assert [outcome["input"]["content"] for outcome in body["outcomes"]] == ["first", "second"]
     call = srv.api.calls[0]
-    assert call["security"].auth.actor == handler.Scope(org="acme", space="product", user="writer")
+    # actor 来自固定测试 security，payload 的 actor_scope 已被剥离、不进身份。
+    assert call["security"].auth.actor == handler.Scope(org="acme", user="alice")
     assert call["items"][0].scope == handler.Scope(org="acme", space="product", user="alice")
     assert call["items"][1].scope == handler.Scope(org="acme", space="product", user="bob")
     assert call["items"][1].source == handler.Modality.CODE
@@ -101,6 +111,7 @@ def test_structured_batch_uses_typed_item_target_and_actor() -> None:
             verb="batch_add",
             actor=actor,
             target=default_target,
+            security=internal_context(ScopedAuthenticator(actor)),
             batch_items=(DispatchBatchItem(target=item_target, payload={"content": "remember"}),),
         ),
     )
