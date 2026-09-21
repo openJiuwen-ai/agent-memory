@@ -61,6 +61,7 @@ from jiuwen_memory.api import (
     SpaceStatus,
     Surface,
     UnsupportedCapabilityError,
+    UpdateMode,
     ValidationError,
     legacy_request_context,
 )
@@ -728,6 +729,11 @@ def _update(srv, request: DispatchRequest) -> Body:
         tags=payload.get("tags"),
         system_metadata=payload.get("system_metadata"),
         user_metadata=payload.get("user_metadata"),
+        t_valid=_parse_occurred_at(payload.get("t_valid"), name="update t_valid"),
+        t_invalid=_parse_occurred_at(payload.get("t_invalid"), name="update t_invalid"),
+        mode=_enum_value(UpdateMode, payload.get("mode", "supersede"), name="mode")
+        if payload.get("mode")
+        else UpdateMode.SUPERSEDE,
     )
     unit = srv.api.update(
         _require(payload, "item_id"), scope, patch, security=_request_security(request)
