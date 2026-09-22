@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-09-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -113,6 +113,15 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
 21. **父标注先于持久化和索引**（目标契约，尚未实现）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
     再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
+22. **Schema 事件精度不伪造日期**：Property 的年/月事件时间用
+    `schema_event_start/end/precision` 半开区间表达，`temporal.t_event`
+    保持为空；日/日时精度可同时写 `t_event`。Source 消息时间只能进入
+    Property content 作为 as-of 上下文，不得自动当成事件时间。
+23. **Schema 实体分组可重现、不是独立真源**：同 org/space/user、Schema 名称、
+    实体类型和归一名必须产生相同临时 `schema_entity_key`。Schema Entity Resolver 在落盘前
+    通过名称、别名、语义候选与 LLM CREATE/UPDATE 判断写入 canonical `schema_entity_id`，
+    并将 key 改为该 id。隐藏 Registry 是可由 Property 重建的派生投影，
+    也不替代 `MemoryUnit.entities`。
 
 ## 接口契约
 
@@ -175,11 +184,36 @@ Schema 抽取先选择本轮相关 entity type/property，再使用同一选中�
 属性名、非空事实文本，以及同 Scope 输入中的一个或多个 `source_unit_ids`。
 
 每个合法属性生成一个独立 MemoryUnit。属性 Unit 的 `entities` 为空；Schema 名称、版本、
-实体类型和属性名写系统 metadata。属性成功落盘后，仅实体明文聚合写回相应 Source
-MemoryUnit 的 `entities`，属性名不得进入实体列表；经 `IndexBuilder.update(mode=ALL)`
-同时回写本体和刷新检索索引；
+实体类型、实体名、稳定 `schema_entity_key` 和属性名写入系统 metadata。
+属性成功落盘后，仅实体明文聚合写回相应 Source MemoryUnit 的 `entities`，
+属性名不得进入实体列表；稳定实体 key 另存于系统 metadata，并经
+`IndexBuilder.update(mode=ALL)` 回写本体与刷新检索索引；
 来源业务 metadata 仍按通用派生规则写入 user metadata。
-完整可解析的事件日期/时间可写 `temporal.t_event`，但时间不是属性合法性的必要条件。
+
+Schema 生成上下文须按每个 Source 显式提供 unit id、说话者、角色和
+`temporal.t_message`，使相对时间能绑定到正确来源。时间字段按下列契约投影：
+
+- 年/月/日/日时分别记录 `schema_event_precision`；
+- `schema_event_start` 为包含边界，`schema_event_end` 为不包含边界；
+- 年/月仅写半开区间，日/日时同时把起点写入 `temporal.t_event`；
+- 无事件时间时允许 content 附带 Source message date 作为 as-of 上下文，
+  `temporal.t_message` 保持来源消息时间，`temporal.t_event` 保持为空；
+- 相对时间的 Property content 同时保留 Source message date 和原始相对表达。
+
+时间不是属性合法性的必要条件。不得以 `t_message` 填充缺失的 `t_event`，
+也不得把月/年精度扩展为任意具体日期。
+
+`schema_enabled=true` 时，`IndexBuilderProducer` 在任意具体 IndexBuilder
+target 外包装 Schema Property 反向索引维护器。`FORWARD_ONLY build` 记录排除项，
+避免后续 Scope 回填误纳入未建检索索引的 Property；`FORWARD_ONLY update` 保留已有
+membership，以便软删后仍可保留属性版本历史。
+Property canonical identity 依次取 `schema_entity_id`、`schema_entity_key`、
+`type::name`，且必须具有非空 `schema_property_name`。一个 Scope 首次维护时从该
+Scope 的全部 MemoryUnit 一次性回填 membership/pointer，并以 Scope watermark 作为
+最终提交标记；watermark 缺失或失效时读侧回退 Scope 列表查询。携带 MemoryUnit 的
+硬删和 `remove_with_scope()` 均同步维护索引；维护失败必须使 watermark 失效并恢复
+fallback。没有 KV 端口的一体化/自定义 manager 不装配该索引，读取侧改走 DomainStore
+Scope fallback。该索引可从 MemoryUnit 重建，是派生数据而不是实体真源。
 
 Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选直接 ADD，不进入普通文本
 相似度 Dedup。Extractor 连续重试后仍失败时只放弃 Schema 派生，不回滚已持久化 Source。
@@ -551,7 +585,7 @@ class EvolveResult:
 | `provenance` | list[str] | 演进血缘（多→一）：由哪些 unit 抽取/升华/合并而来 |
 | `supersedes` | str | 版本链（一→一）：本版取代的上一版 id（空=首版） |
 | `tags` | list[str] | 标签（检索前置过滤用） |
-| `system_metadata` / `user_metadata` | dict[str, MetadataValueType] | 系统/用户双命名空间元数据（保留 JSON 标量原生类型，见 F04-memory-metadata-separation） |
+| `system_metadata` / `user_metadata` | dict[str, MetadataValueType] | 系统/用户双命名空间元数据（保留 JSON 标量原生类型）；Schema Property 可用系统字段承载实体分组键与事件精度/区间 |
 | `lifecycle` | LifecycleState | 生命周期状态 |
 | `entities` | list[str] | L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时只消费本字段构造 `EntityMention`，为空时直接跳过该 unit（已砍 spaCy 兜底，无回退抽取，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。默认空，向后兼容 |
 | `vectors` | list[ChunkVector] | content 的 chunk 级向量投影：构建期由 IndexBuilder 在 `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed）填充，`id`/`seq` 与 Chunk 对齐，随本体经 `DomainStore.add/update` 下传；一体化数据面实现消费它自建 chunk 级向量索引（record id 沿用 `{unit_id}-{chunk_id}`），CompositeDomainStore 仅随本体持久化。空列表表示未向量化；codec 加字段兼容演进，`_v` 不升（见 F06-unified-index-builder） |
@@ -599,7 +633,7 @@ jiuwen_memory/construction/<算子>_impl/
 |-----------|------|
 | S01-ingest_access | 本层接收接入层产出的 MemoryUnit 做落盘+索引 |
 | S03-control | Engine.write 路径调用本层 IndexBuilder.build，Engine.evolve 路径调用本层 Evolver |
-| S04-retrieval | 检索层消费本层构建的索引 |
+| S04-retrieval | 检索层消费本层构建的内容索引、Schema 时间投影和 Entity → Property 反向索引 |
 | S06-storage | 本层通过注入的 Store 抽象做真源与索引持久化 |
 | S07-common | 本层消费 Chunker/Tokenizer/Embedder/FeatureExtractor/LLM/Reranker 共享插件 |
 | S08-config | Prompt 文本与模型晚绑定经 ConfigSource；业务入参只传 prompt key |

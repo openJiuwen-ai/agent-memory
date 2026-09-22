@@ -66,6 +66,16 @@
 10. **Schema 是装配期开关**
     `globals.schema_enabled` 默认 `false`；它只在 `build_kernel` 装配期决定是否注册
     Schema target，不是可经 ConfigSource 热切换的运行时能力开关。改值后必须重新装配。
+    开启后默认启用 canonical Entity Resolution，但 Property Merge 仍由
+    `use_property_merge=false` 保持关闭；canonical Entity 使用独立的
+    `vector_store.schema_entities` / `fulltext_store.schema_entities` 命名端口。
+
+11. **Schema TemporalEntity 与 Schema 抽取分别门控**
+    `globals.schema_temporal_enabled` 默认 `false`，仅控制 Retriever 是否装配
+    只读时序选择器；它不隐式开启 Schema 抽取或改写 Extractor/Evolver target。
+    `schema_temporal_auto_enabled` 默认 `false`，否则必须由单次查询的
+    `RetrievalQuery.schema_temporal` 或兼容扩展键显式启用。正式输出按实体投影，
+    Source-first fallback 在最终结果阶段按预算融合。
 
 ## 与其他子目录的边界
 
