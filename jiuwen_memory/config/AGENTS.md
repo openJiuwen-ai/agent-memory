@@ -66,6 +66,9 @@
 10. **Schema 是装配期开关**
     `globals.schema_enabled` 默认 `false`；它只在 `build_kernel` 装配期决定是否注册
     Schema target，不是可经 ConfigSource 热切换的运行时能力开关。改值后必须重新装配。
+    开启后默认启用 canonical Entity Resolution，但 Property Merge 仍由
+    `use_property_merge=false` 保持关闭；canonical Entity 使用独立的
+    `vector_store.schema_entities` / `fulltext_store.schema_entities` 命名端口。
 
 ## 与其他子目录的边界
 
