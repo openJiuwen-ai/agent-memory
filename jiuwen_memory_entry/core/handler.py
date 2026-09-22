@@ -642,7 +642,7 @@ def _search(srv, request: DispatchRequest) -> Body:
     max_tokens = payload.get("max_tokens")
     if max_tokens is not None:
         extensions[EXT_MAX_TOKENS] = str(max_tokens)
-    trace = bool(payload.get("trace"))
+    trace = _bool_value(payload.get("trace"))
     disclosure = _enum_value(DisclosureLevel, payload.get("disclosure", "l0"), name="disclosure")
     res = srv.api.search(
         _require(payload, "query"),
@@ -745,7 +745,7 @@ def _update(srv, request: DispatchRequest) -> Body:
 def _delete(srv, request: DispatchRequest) -> Body:
     payload = request.payload
     scope = _require_target(request)
-    mode = DeleteMode.PURGE if payload.get("hard") else DeleteMode.FORGET
+    mode = DeleteMode.PURGE if _bool_value(payload.get("hard")) else DeleteMode.FORGET
     selector = DeleteSelector(unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode)
     deleted = srv.api.delete(selector, security=_request_security(request))
     return {"ok": True, "op": "delete", "item_id": payload["item_id"], "deleted": deleted}
