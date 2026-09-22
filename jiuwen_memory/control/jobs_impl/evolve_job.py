@@ -14,8 +14,9 @@ import asyncio
 from dataclasses import dataclass
 
 from jiuwen_memory.common.errors import ValidationError
-from jiuwen_memory.common.type_def import Scope
-from jiuwen_memory.construction import EvolveMode, Evolver
+from jiuwen_memory.common.type_def import HierarchyKind, MemoryUnit, Scope
+from jiuwen_memory.common.type_def.hierarchy import TIME_PARENT_ROLES
+from jiuwen_memory.construction import EvolveMode, Evolver, EvolveRequest
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.types import JobInfo, JobStatus
 from jiuwen_memory.storage.kv import KVStore, list_units
@@ -25,7 +26,7 @@ from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_na
 class EvolveJob(Job):
     """通用演进任务。
 
-    list scope 全部 MemoryUnit → ``evolver.evolve(units, mode)``。
+    list scope 全部 MemoryUnit → ``evolver.evolve(EvolveRequest(units, mode))``。
     ``interval=0``：一次性任务（提交后执行一次即完成）。
     """
 
@@ -52,10 +53,10 @@ class EvolveJob(Job):
         units, _ = await asyncio.to_thread(
             list_units, self._kv, self.scope, limit=1_000_000
         )
-        units = [
-            unit for unit in units if unit.system_metadata.get("middle") != "true"
-        ]
-        result = await asyncio.to_thread(self._evolver.evolve, units, self._mode)
+        units = [unit for unit in units if _is_evolve_input(unit)]
+        result = await asyncio.to_thread(
+            self._evolver.evolve, EvolveRequest(units=units, mode=self._mode)
+        )
         return JobInfo(
             scope=self.scope,
             status=JobStatus.SUCCEEDED,
@@ -67,6 +68,17 @@ class EvolveJob(Job):
                 "mode": self._mode.value,
             },
         )
+
+
+def _is_evolve_input(unit: MemoryUnit) -> bool:
+    """排除专用管线负责的中期记忆和 TIME 派生父级，保留权威 SNAPSHOT。"""
+    if unit.system_metadata.get("middle") == "true":
+        return False
+    hierarchy = unit.hierarchy
+    return not (
+        hierarchy.kind is HierarchyKind.TIME
+        and hierarchy.role in TIME_PARENT_ROLES
+    )
 
 
 # -- Spec + builder ------------------------------------------------------- #

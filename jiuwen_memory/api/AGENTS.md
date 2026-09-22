@@ -13,9 +13,10 @@
 | 文件 | 职责 |
 |---|---|
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
-| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
+| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义；search/evolve 保留历史签名，search_v2/evolve_v2 承载请求对象与新增能力 |
+| `search_options.py` | SearchOptions：普通选项、单 kind/role、结构区间、expand_depth 和 rollup；query、Context、security 独立传入，内部 defer_expansion 不对外 |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest |
+| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（api、异步周期启动、close）；内部 `_build_kernel` 才持有 KV/Storage/ingest/scheduler |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
@@ -41,10 +42,24 @@
    身份取自 `security.auth.actor`；鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层/检索层/构建层/存储层。
 
 3. **search 参数拆分在本层边界**
-   `search(query, context, *, security, ...)` 中的 `context: Context` 在本层拆开：
+   历史 `search(query, context, *, security, filters, as_of, top_k, disclosure,
+   with_trajectory)` 只把平铺参数装成 `SearchOptions` 后委托 `search_v2`；
+   `search_v2(query, context, options=None, *, security)` 中的 `context: Context` 在本层拆开：
    - `context.scope` 作独立轴穿透到 Engine
    - `context.extensions["max_tokens"]` 由 API 边界解析为 `RetrievalQuery.max_tokens`
    - 其余 `context.extensions` 写入 `RetrievalQuery.extensions`
+   - `options: SearchOptions` 承载普通与层级选项；V2 不接受旧平铺选项关键字，V1 不开放
+     hierarchy_kind/hierarchy_role/span/expand_depth/rollup；
+     typed 层级条件在 READ 鉴权后检查 `hierarchy.enabled`，不扩大 Scope 或放宽权限谓词。
+     expand_depth 默认为 0，非零要求显式 kind；节点选择、遍历和预算均委托检索层。
+     rollup 默认 False，True 同样要求显式 kind；与展开独立，API 不读取父子边或评分。
+
+3.1 **版本只停留在公开边界**
+   HTTP `/v1/search|evolve` 与 MCP 原工具映射历史 `search/evolve`；HTTP
+   `/v2/search|evolve` 与 MCP `_v2` 工具映射 `search_v2/evolve_v2`。CLI 当前只暴露 V1。
+   V1 在本层装成 `SearchOptions` / `EvolveTaskOptions` 后即与 V2 合流；Control、Engine、
+   Retrieval 和 Construction 不复制 V1/V2 接口。传输层必须使用显式版本映射，不能把
+   `MemoryAPI.__abstractmethods__` 全量自动暴露成每个版本的路由。
 
 4. **admin_* 不经 Engine**  
    `admin_get/set/all` 直达 `PolicyManager`，不经过 `MemoryEngine`（Engine 中对应方法抛 NotImplementedError）。
@@ -130,3 +145,17 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     Space 删除事务经 `SpaceLifecycleService`。PEP、路由谓词回注、逐条鉴权仍在本层。
     不得把 `_purge_space_memories` 或内联 purge+delete 收回本类。
 11. `build_dev_authenticator()` 只供 HTTP / CLI 隔离功能测试装配固定身份或预设身份映射；映射通过可选 `identities` 参数传入，不从业务 scope 推导身份。它不是生产认证 runtime，也不改变 `MemoryAPI` 的授权判定。Access 仍只能从 `jiuwen_memory.api` 取得该能力，不得直接 import `common.security.authentication_impl`。
+12. 历史 `evolve(scope, mode, channel=BACKGROUND, *, security)` 只把 mode/channel 装成
+    `EvolveTaskOptions` 后委托 `evolve_v2`；显式建树和请求对象扩展只由
+    `evolve_v2(scope, options, *, security)` 承载。
+    HIERARCHY 开放显式 TIME snapshot→time_span→scene→event 的连续前缀：校验 scope 等于 tree_home_scope
+    和有界区间，经 WRITE+UPDATE、空间 UPDATE 与可写检查，再检查默认关闭的
+    hierarchy.enabled。路由权限声明非空时拒绝该组合，不用批次 Scope 授权绕过
+    尚未实现的候选逐条 PEP；额外父 metadata 仍拒绝系统保留键与路由标签键。
+    API 深拷贝请求后委托 CommandService，不自行查询、补齐或建边；其余四种模式算法不变。
+13. `MemoryRuntime.start_background_jobs` 是宿主异步生命周期入口，不扩展 MemoryAPI、HTTP、
+    CLI 或 MCP 业务方法。启动经过同一 WRITE+UPDATE、空间可写和路由拒绝边界，再委托
+    CommandService；不创建临时循环，不持有或查询原始记忆。Runtime 只取消自身注册的
+    定时任务，不中断已经运行的建树线程；启动绑定一个持续存活的宿主事件循环。返回
+    `BackgroundJobStartResult`：成功 id 放在 `job_ids`，策略关闭或缺 TIME profile 用
+    `skipped + reason` 明确区分，不以同一个空列表承载多种状态。

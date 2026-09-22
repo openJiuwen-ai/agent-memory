@@ -29,8 +29,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory_codec import dumps
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJob
@@ -58,11 +58,11 @@ class _RecordingEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult:
-        self.calls.append((units, mode))
+    def evolve(self, request: EvolveRequest) -> EvolveResult:
+        self.calls.append((request.units, request.mode))
         if self._fail_on_batches is not None and len(self.calls) <= self._fail_on_batches:
             raise RuntimeError(f"mock evolve fail on batch {len(self.calls)}")
-        return EvolveResult(created_ids=[f"created-{u.id}" for u in units])
+        return EvolveResult(created_ids=[f"created-{u.id}" for u in request.units])
 
 
 class _RecordingLifecycle(LifecycleManager):

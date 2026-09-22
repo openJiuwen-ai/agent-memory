@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.api.memory_api_impl import assemble
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, MemoryTier, Modality, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.control.types import EvolveTaskOptions
 
 DEFAULT_SCOPE = Scope(org="test", user="alice", agent="a1", session="s1")
 DEFAULT_ACTOR = Scope(org="test", user="alice")
@@ -50,11 +52,11 @@ class TestE2EWritePath:
         assert "classify_source" not in units[0].system_metadata
 
         # recall 可召回
-        result = llm_api.search(
+        result = llm_api.search_v2(
             "简洁",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
         assert len(result.items) > 0
         assert any("简洁" in item.content for item in result.items)
@@ -90,11 +92,11 @@ class TestE2EBackgroundExtract:
         assert len(units) == 1
 
         # recall 原始 unit 仍可召回
-        result = llm_api.search(
+        result = llm_api.search_v2(
             "偏好",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=10,
+            options=SearchOptions(top_k=10),
         )
         assert len(result.items) > 0
 
@@ -108,9 +110,9 @@ class TestE2EBackgroundExtract:
             security=legacy_request_context(DEFAULT_ACTOR),
         )
         # 手动触发演进
-        job_id = llm_api.evolve(
+        job_id = llm_api.evolve_v2(
             DEFAULT_SCOPE,
-            EvolveMode.EXTRACT,
+            EvolveTaskOptions(mode=EvolveMode.EXTRACT),
             security=legacy_request_context(DEFAULT_ACTOR),
         )
         assert job_id  # 返回 job_id
@@ -135,11 +137,11 @@ class TestE2EOfflineProfile:
         )
         assert len(units) == 1
 
-        result = offline_api.search(
+        result = offline_api.search_v2(
             "测试",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=5,
+            options=SearchOptions(top_k=5),
         )
         assert len(result.items) > 0
 
@@ -154,10 +156,10 @@ class TestE2EOfflineProfile:
         )
         # background EXTRACT 自动触发（keyword extractor 产出 chunk 类派生 unit）
         # 验证不崩溃即可
-        result = offline_api.search(
+        result = offline_api.search_v2(
             "测试",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
-            top_k=5,
+            options=SearchOptions(top_k=5),
         )
         assert len(result.items) > 0

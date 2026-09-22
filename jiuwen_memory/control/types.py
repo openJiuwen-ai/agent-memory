@@ -22,6 +22,8 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
+from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 
 
 class PrincipalPath(str, Enum):
@@ -260,6 +262,15 @@ class Channel(str, Enum):
     BACKGROUND = "background"  # 离线：异步做重的抽取/升华/重索引
 
 
+@dataclass(frozen=True)
+class EvolveTaskOptions:
+    """显式演进任务请求；Scope 与认证上下文仍由入口分别传入。"""
+
+    mode: EvolveMode
+    channel: Channel = Channel.BACKGROUND
+    hierarchy_options: HierarchyComposeOptions | None = None
+
+
 class JobStatus(str, Enum):
     PENDING = "pending"  # 已提交待执行
     RUNNING = "running"  # 执行中
@@ -278,6 +289,15 @@ class JobInfo:
     scope: Scope = field(default_factory=Scope)  # 演进作用范围
     status: JobStatus = JobStatus.PENDING  # 当前状态
     detail: dict[str, str] = field(default_factory=dict)  # 附加信息（进度/错误原因等）
+
+
+@dataclass
+class BackgroundJobStartResult:
+    """宿主周期任务启动结果；显式区分已注册与按策略跳过。"""
+
+    job_ids: list[str] = field(default_factory=list)
+    skipped: bool = False
+    reason: str = ""
 
 
 class UpdateMode(str, Enum):

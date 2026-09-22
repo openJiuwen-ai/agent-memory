@@ -56,6 +56,8 @@ class JobType(str, Enum):
     """Job 类型枚举——``JobFactory.get_job`` 的必选参数。"""
 
     EVOLVE = "evolve"
+    HIERARCHY = "hierarchy"
+    HIERARCHY_DERIVE = "hierarchy_derive"
     MIDDLE_TO_LONG = "middle_to_long"
 
 

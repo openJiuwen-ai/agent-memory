@@ -32,8 +32,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
@@ -88,7 +88,8 @@ class _NoopEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units, mode: EvolveMode) -> EvolveResult:
+    @staticmethod
+    def evolve(request: EvolveRequest) -> EvolveResult:
         raise AssertionError(
             "_write_middle_path 不应直接调 evolver.evolve（由 MiddleToLongJob 内部调）"
         )
@@ -307,22 +308,22 @@ def test_write_procedural_takes_precedence_over_middle() -> None:
     语义对齐：procedural > infer 互斥逻辑里 procedural 优先，middle 是 infer 下的二级开关，
     procedural 优先级最高，procedural=true 时 middle 标记被忽略（不进 middle 路径）。
     """
-    engine, scheduler, _, kv = _build_engine()
     scope = Scope(org="acme", user="u1")
 
     # procedural + middle 同时为 true——procedural 优先
     # _OkEvolver 把派生结果落到 KV——验证 procedural 路径走通
     class _OkEvolver(_NoopEvolver):
-        def evolve(self, units, mode):
+        @staticmethod
+        def evolve(request: EvolveRequest) -> EvolveResult:
             derived = [
                 MemoryUnit(id=f"derived-{u.id}", scope=u.scope, segments=u.segments)
-                for u in units
+                for u in request.units
             ]
             for d in derived:
                 kv.insert(scope, memory_key(d.id), dumps(d))
             return EvolveResult(created_ids=[d.id for d in derived])
 
-    engine._evolver = _OkEvolver()  # pylint: disable=protected-access
+    engine, scheduler, _, kv = _build_engine(evolver=_OkEvolver())
     units = asyncio.run(
         engine.write(
             "hello",
@@ -405,11 +406,13 @@ def test_write_infer_without_middle_does_not_submit_job() -> None:
     """infer=true 但 middle!=true → 既有同步抽取路径，不走 middle 路径。"""
     # 用 _OkEvolver 让 infer 路径走通——派生结果落 KV
     class _OkEvolver(_NoopEvolver):
-        def evolve(self, units, mode):
-            assert mode == EvolveMode.EXTRACT
+        @staticmethod
+        def evolve(request: EvolveRequest) -> EvolveResult:
+            if request.mode is not EvolveMode.EXTRACT:
+                pytest.fail(f"同步抽取预期 EXTRACT，实际 {request.mode}")
             derived = [
                 MemoryUnit(id=f"derived-{u.id}", scope=u.scope, segments=u.segments)
-                for u in units
+                for u in request.units
             ]
             for d in derived:
                 kv.insert(scope, memory_key(d.id), dumps(d))
@@ -671,7 +674,8 @@ def test_write_middle_with_in_process_scheduler_preserves_originals_on_failure()
     from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 
     class _FailingEvolver(_NoopEvolver):
-        def evolve(self, units, mode):
+        @staticmethod
+        def evolve(request: EvolveRequest) -> EvolveResult:
             raise RuntimeError("evolver down")
 
     scheduler = InProcessScheduler()

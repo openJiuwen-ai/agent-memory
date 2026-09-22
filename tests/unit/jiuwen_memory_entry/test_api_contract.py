@@ -12,16 +12,23 @@ import pytest
 from jiuwen_memory.api import (
     Action,
     BatchWriteItem,
+    Channel,
     Context,
     DeleteMode,
     DeleteSelector,
     DisclosureLevel,
+    EvolveMode,
+    EvolveTaskOptions,
+    HierarchyComposeOptions,
+    HierarchyKind,
+    HierarchyRole,
     MemoryAPI,
     MemoryPatch,
     MemoryTier,
     MemoryUnit,
     Modality,
     Scope,
+    SearchOptions,
     Segment,
     SpaceMember,
     SpaceSpec,
@@ -35,19 +42,56 @@ from jiuwen_memory_entry.core.api_contract import invoke_api
 pytestmark = pytest.mark.unit
 
 
-def test_http_method_registry_exactly_matches_memory_api() -> None:
-    assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
+def _parse_v2(verb: str, payload) -> dict:
+    return api_contract.parse_request(verb, payload, "v2")
+
+
+def test_versioned_method_registries_match_memory_api() -> None:
+    v1_methods = MemoryAPI.__abstractmethods__ - {"search_v2", "evolve_v2"}
+
+    assert api_contract.api_method_names() == v1_methods
     assert len(api_contract.api_method_names()) == 36
+    assert api_contract.api_method_names("v2") == {"search", "evolve"}
     assert api_contract.is_known_verb("add_async") is True
+    assert api_contract.is_known_verb("search", "v2") is True
+    assert api_contract.is_known_verb("add", "v2") is False
     assert api_contract.is_known_verb("does_not_exist") is False
 
 
-@pytest.mark.parametrize("verb", sorted(MemoryAPI.__abstractmethods__))
-def test_http_request_fields_are_derived_from_api_signature(verb: str) -> None:
+@pytest.mark.parametrize("verb", sorted(api_contract.api_method_names()))
+def test_v1_request_fields_are_derived_from_api_signature(verb: str) -> None:
     signature = inspect.signature(getattr(MemoryAPI, verb))
     expected = set(signature.parameters) - {"self", "security"}
 
     assert set(api_contract.method_contract(verb).request_parameters) == expected
+
+
+@pytest.mark.parametrize(
+    ("verb", "target_name"), [("search", "search_v2"), ("evolve", "evolve_v2")]
+)
+def test_v2_request_fields_are_derived_from_api_signature(
+    verb: str, target_name: str
+) -> None:
+    """V2 请求字段由对应的 V2 API 签名生成。"""
+    signature = inspect.signature(getattr(MemoryAPI, target_name))
+    contract = api_contract.method_contract(verb, "v2")
+
+    assert contract.target_name == target_name
+    assert set(contract.request_parameters) == set(signature.parameters) - {"self", "security"}
+
+
+def test_v1_search_and_evolve_keep_flat_arguments() -> None:
+    search = api_contract.parse_request(
+        "search",
+        {"query": "coffee", "context": {"scope": {}}, "top_k": 3},
+    )
+    evolve = api_contract.parse_request(
+        "evolve", {"scope": {"user": "alice"}, "mode": "extract"}
+    )
+
+    assert search["top_k"] == 3
+    assert search["context"] == Context(scope=Scope())
+    assert evolve == {"scope": Scope(user="alice"), "mode": EvolveMode.EXTRACT}
 
 
 def test_add_request_decodes_api_named_fields_and_types() -> None:
@@ -81,6 +125,130 @@ def test_omitted_optional_fields_are_left_to_memory_api_defaults() -> None:
         "content": "remember",
         "scope": Scope(org="acme", user="alice"),
     }
+
+
+def test_evolve_options_decode_defaults_without_transport_override() -> None:
+    arguments = _parse_v2(
+        "evolve",
+        {"scope": {"user": "alice"}, "options": {"mode": "extract"}},
+    )
+
+    assert arguments == {
+        "scope": Scope(user="alice"),
+        "options": EvolveTaskOptions(mode=EvolveMode.EXTRACT),
+    }
+    assert arguments["options"].channel is Channel.BACKGROUND
+    assert arguments["options"].hierarchy_options is None
+
+
+def test_evolve_decodes_nested_hierarchy_scope_enums_and_datetimes() -> None:
+    scope_json = {"org": "acme", "space": "work", "user": "alice", "agent": "bot"}
+    arguments = _parse_v2(
+        "evolve",
+        {
+            "scope": scope_json,
+            "options": {
+                "mode": "hierarchy",
+                "channel": "hot",
+                "hierarchy_options": {
+                    "kind": "time",
+                    "leaf_role": "snapshot",
+                    "parent_roles": ["time_span"],
+                    "tree_home_scope": scope_json,
+                    "span_start": "2026-09-10T09:00:00+08:00",
+                    "span_end": "2026-09-10T10:00:00+08:00",
+                    "metadata": {"request_source": "cli"},
+                },
+            },
+        },
+    )
+
+    home = Scope(org="acme", space="work", user="alice", agent="bot")
+    assert arguments == {
+        "scope": home,
+        "options": EvolveTaskOptions(
+            mode=EvolveMode.HIERARCHY,
+            channel=Channel.HOT,
+            hierarchy_options=HierarchyComposeOptions(
+                kind=HierarchyKind.TIME,
+                leaf_role=HierarchyRole.SNAPSHOT,
+                parent_roles=[HierarchyRole.TIME_SPAN],
+                tree_home_scope=home,
+                span_start=datetime.fromisoformat("2026-09-10T09:00:00+08:00"),
+                span_end=datetime.fromisoformat("2026-09-10T10:00:00+08:00"),
+                metadata={"request_source": "cli"},
+            ),
+        ),
+    }
+
+
+@pytest.mark.parametrize("old_field", ["mode", "channel", "hierarchy_options"])
+def test_evolve_rejects_old_top_level_options(old_field: str) -> None:
+    payload = {
+        "scope": {"user": "alice"},
+        "options": {"mode": "extract"},
+        old_field: "unexpected",
+    }
+    with pytest.raises(ValidationError, match=f"unknown field.*'{old_field}'"):
+        _parse_v2("evolve", payload)
+
+
+@pytest.mark.parametrize(
+    ("options_json", "diagnostic"),
+    [
+        (None, "options must not be null"),
+        ("extract", "options must be an object"),
+        ({}, "missing required field.*options.*mode"),
+        ({"mode": "unknown"}, "options.mode must be one of"),
+        ({"mode": "extract", "channel": "unknown"}, "options.channel must be one of"),
+        ({"mode": "extract", "security": {}}, "unknown field.*options.*security"),
+        ({"mode": "hierarchy", "hierarchy_options": {}}, "missing required field"),
+    ],
+)
+def test_evolve_rejects_invalid_nested_options(options_json, diagnostic: str) -> None:
+    with pytest.raises(ValidationError, match=diagnostic):
+        _parse_v2("evolve", {"scope": {"user": "alice"}, "options": options_json})
+
+
+def test_evolve_requires_options_argument() -> None:
+    with pytest.raises(ValidationError, match="missing required field.*options"):
+        _parse_v2("evolve", {"scope": {"user": "alice"}})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value", "diagnostic"),
+    [
+        ("kind", "future_kind", "hierarchy_options.kind must be one of"),
+        ("leaf_role", "future_role", "hierarchy_options.leaf_role must be one of"),
+        ("parent_roles", "time_span", "hierarchy_options.parent_roles must be an array"),
+        ("tree_home_scope", {"org": 1}, "tree_home_scope.org must be a string"),
+        ("span_start", "not-a-date", "span_start must be an ISO 8601 datetime"),
+        ("span_end", 123, "span_end must be an ISO 8601 datetime"),
+        ("metadata", {"trace": True}, "metadata.trace must be a string"),
+        ("settle_at", "2026-09-10", "unknown field.*hierarchy_options.*settle_at"),
+    ],
+)
+def test_evolve_rejects_malformed_hierarchy_fields(
+    field_name: str, invalid_value, diagnostic: str
+) -> None:
+    """嵌套建树字段继续由共享 dataclass 解码器严格校验。"""
+    hierarchy_json = {
+        "kind": "time",
+        "leaf_role": "snapshot",
+        "parent_roles": ["time_span"],
+        "tree_home_scope": {"user": "alice"},
+        "span_start": "2026-09-10T09:00:00+00:00",
+        "span_end": "2026-09-10T10:00:00+00:00",
+    }
+    hierarchy_json[field_name] = invalid_value
+    with pytest.raises(ValidationError, match=diagnostic):
+        _parse_v2(
+            "evolve",
+            {
+                "scope": {"user": "alice"},
+                "options": {"mode": "hierarchy", "hierarchy_options": hierarchy_json},
+            },
+        )
 
 
 @pytest.mark.parametrize("body", [None, [], "text", 42])
@@ -183,7 +351,7 @@ def test_delete_request_decodes_selector_without_flattening() -> None:
 
 
 def test_search_request_decodes_context_and_keeps_dict_filter_dsl() -> None:
-    arguments = api_contract.parse_request(
+    arguments = _parse_v2(
         "search",
         {
             "query": "coffee",
@@ -191,16 +359,99 @@ def test_search_request_decodes_context_and_keeps_dict_filter_dsl() -> None:
                 "scope": {"org": "acme", "user": "alice"},
                 "extensions": {"language": "zh"},
             },
-            "filters": {"tags": {"contains": "habit"}},
-            "disclosure": "l2",
+            "options": {
+                "filters": {"tags": {"contains": "habit"}},
+                "disclosure": "l2",
+            },
         },
     )
 
     assert arguments["context"] == Context(
         scope=Scope(org="acme", user="alice"), extensions={"language": "zh"}
     )
-    assert arguments["filters"] == {"tags": {"contains": "habit"}}
-    assert arguments["disclosure"] is DisclosureLevel.L2
+    assert arguments["options"].filters == {"tags": {"contains": "habit"}}
+    assert arguments["options"].disclosure is DisclosureLevel.L2
+
+
+def test_search_options_decode_hierarchy_enums_and_independent_times() -> None:
+    arguments = _parse_v2(
+        "search",
+        {
+            "query": "coffee",
+            "context": {"scope": {"user": "alice"}},
+            "options": {
+                "top_k": 3,
+                "disclosure": "l1",
+                "with_trajectory": True,
+                "as_of": "2026-09-11T00:00:00+00:00",
+                "hierarchy_kind": "time",
+                "hierarchy_role": "time_span",
+                "expand_depth": 1,
+                "span_start": "2026-09-10T09:00:00+08:00",
+                "span_end": "2026-09-10T10:00:00+08:00",
+            },
+        },
+    )
+
+    assert arguments["options"] == SearchOptions(
+        top_k=3,
+        disclosure=DisclosureLevel.L1,
+        with_trajectory=True,
+        as_of=datetime.fromisoformat("2026-09-11T00:00:00+00:00"),
+        hierarchy_kind=HierarchyKind.TIME,
+        hierarchy_role=HierarchyRole.TIME_SPAN,
+        expand_depth=1,
+        span_start=datetime.fromisoformat("2026-09-10T09:00:00+08:00"),
+        span_end=datetime.fromisoformat("2026-09-10T10:00:00+08:00"),
+    )
+
+
+@pytest.mark.parametrize("raw_options", [None, {}])
+def test_search_accepts_null_and_empty_options(raw_options) -> None:
+    arguments = _parse_v2(
+        "search",
+        {"query": "coffee", "context": {"scope": {}}, "options": raw_options},
+    )
+
+    expected = None if raw_options is None else SearchOptions()
+    assert arguments["options"] == expected
+
+
+def test_search_omitted_options_use_public_api_default() -> None:
+    arguments = _parse_v2("search", {"query": "coffee", "context": {"scope": {}}})
+
+    assert "options" not in arguments
+
+
+@pytest.mark.parametrize(
+    "old_field", ["filters", "as_of", "top_k", "disclosure", "with_trajectory"]
+)
+def test_search_rejects_top_level_options(old_field: str) -> None:
+    with pytest.raises(ValidationError, match=f"unknown field.*'{old_field}'"):
+        _parse_v2(
+            "search",
+            {"query": "coffee", "context": {"scope": {}}, old_field: "old"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw_options", "diagnostic"),
+    [
+        ([], "options must be an object"),
+        ({"hierarchy_kind": "other"}, "options.hierarchy_kind must be one of"),
+        ({"hierarchy_role": ["snapshot"]}, "options.hierarchy_role must be one of"),
+        ({"span_start": "invalid"}, "options.span_start must be an ISO 8601 datetime"),
+        ({"top_k": True}, "options.top_k must be an integer"),
+        ({"expand": True}, "unknown field.*options.*expand"),
+        ({"expand_depth": True}, "options.expand_depth must be an integer"),
+        ({"defer_expansion": True}, "unknown field.*options.*defer_expansion"),
+    ],
+)
+def test_search_rejects_malformed_nested_options(raw_options, diagnostic: str) -> None:
+    with pytest.raises(ValidationError, match=diagnostic):
+        _parse_v2(
+            "search", {"query": "coffee", "context": {"scope": {}}, "options": raw_options}
+        )
 
 
 def test_grant_request_decodes_nested_scopes_actions_and_datetime() -> None:
@@ -309,3 +560,25 @@ def test_sync_and_async_http_invocation_use_same_named_api_methods() -> None:
     assert sync_result[0]["id"] == "sync"
     assert async_result[0]["id"] == "async"
     assert not any(dataclasses.is_dataclass(result) for result in (sync_result, async_result))
+
+
+def test_v2_invocation_maps_public_verb_to_v2_method() -> None:
+    calls: list[tuple[str, SearchOptions | None]] = []
+
+    class _Api:
+        @staticmethod
+        def search_v2(query, context, options=None, *, security):
+            del context, security
+            calls.append((query, options))
+            return "v2-result"
+
+    result = invoke_api(
+        _Api(),
+        "search",
+        {"query": "coffee", "context": {"scope": {}}, "options": {"top_k": 2}},
+        object(),
+        "v2",
+    )
+
+    assert result == "v2-result"
+    assert calls == [("coffee", SearchOptions(top_k=2))]

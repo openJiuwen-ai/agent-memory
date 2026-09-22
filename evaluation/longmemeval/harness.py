@@ -17,7 +17,13 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
-from jiuwen_memory.api import DeleteMode, DeleteSelector, MemoryRuntime, assemble_runtime
+from jiuwen_memory.api import (
+    DeleteMode,
+    DeleteSelector,
+    MemoryRuntime,
+    SearchOptions,
+    assemble_runtime,
+)
 from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.config.config import Config
 
@@ -164,7 +170,7 @@ class EvalHarness:
 
     def run_query(self, case: QueryCase) -> CaseOutcome:
         """执行一次 recall，把相关性标注 key 映射为物理 id，连同轨迹打包为观测。"""
-        search = getattr(self._api, "search", None) or getattr(self._api, "recall")
+        search = getattr(self._api, "search_v2", None) or getattr(self._api, "recall")
         search_security = self._security_kwargs(search, case.scope)
         # Keep both boundaries explicit:
         # - memory_retrieval_e2e_wall_ms wraps the public MemoryAPI search/recall
@@ -200,11 +206,13 @@ class EvalHarness:
                     case.text,
                     Context(case.scope),
                     **search_security,
-                    filters=list(case.filters) or None,
-                    as_of=case.as_of,
-                    top_k=case.top_k,
-                    disclosure=case.disclosure,
-                    with_trajectory=True,
+                    options=SearchOptions(
+                        filters=list(case.filters) or None,
+                        as_of=case.as_of,
+                        top_k=case.top_k,
+                        disclosure=case.disclosure,
+                        with_trajectory=True,
+                    ),
                 )
             finally:
                 memory_retrieval_e2e_wall_ms = (

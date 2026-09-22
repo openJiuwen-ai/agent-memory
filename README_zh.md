@@ -104,7 +104,7 @@ pip install -e ".[embed]"        # 追加高级 embedding / 重排（torch、BGE
 ### 快速集成（SDK 进程内嵌入）
 
 ```python
-from jiuwen_memory.api import assemble
+from jiuwen_memory.api import SearchOptions, assemble, legacy_request_context
 from jiuwen_memory.config import Config
 from jiuwen_memory.common.type_def import Scope, Context
 
@@ -112,12 +112,16 @@ from jiuwen_memory.common.type_def import Scope, Context
 api = assemble(config=Config.from_yaml("examples/config.yml"))
 
 scope = Scope(org="acme", user="alice", agent="assistant", session="s1")
+security = legacy_request_context(scope)
 
 # 写入记忆
-units = api.add("Alice 喜欢在早上喝美式咖啡，不加糖。", scope, identity=scope, tags=["demo"])
+units = api.add("Alice 喜欢在早上喝美式咖啡，不加糖。", scope, security=security, tags=["demo"])
 
 # 检索记忆（混合召回 + trajectory 可观测）
-res = api.search("咖啡 早上", Context(scope), identity=scope, top_k=3, with_trajectory=True)
+res = api.search(
+    "咖啡 早上", Context(scope),
+    options=SearchOptions(top_k=3, with_trajectory=True), security=security,
+)
 for item in res.items:
     print(item.content)
 ```
@@ -126,7 +130,8 @@ for item in res.items:
 
 ```bash
 scripts/run-server.sh                       # 默认在 http://127.0.0.1:8080 启动
-scripts/run-cli.sh --server http://127.0.0.1:8080 search "coffee" -u alice
+scripts/run-cli.sh --server http://127.0.0.1:8080 search --query "coffee" \
+  --context '{"scope":{"org":"local","user":"developer"}}' --options '{"top_k":3}'
 curl -X POST http://127.0.0.1:8080/v1/add \
   -H "Content-Type: application/json" \
   -d '{"tenant_id": "default", "scope": "alice", "content": "Alice is a Python developer."}'

@@ -46,15 +46,24 @@ jiuwen_memory/
 
 ### construction/ — 构建层
 
-接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。六个可插拔算子：`Extractor` → `Abstractor` → `Classifier` → `Associator` → `IndexBuilder` → `Evolver`（自演进闭环）。
+接收接入层产出的 `MemoryUnit`，统一经 `IndexBuilder` 交付本体并构建索引；
+Extractor、Abstractor、Classifier、Associator、Router、Dedup、LayerAnnotator 与
+Evolver 负责内容演进。内部 `EvolveRequest` 的 HIERARCHY 分支委托
+`HierarchyComposer` 构建和替换 TIME 的 time_span/scene/event 父层；公开显式任务由 Control
+收齐 snapshot 与旧根的完整子树、核对反向引用后调用，不由 Composer 自行查库或鉴权。
 
 ### retrieval/ — 检索层
 
-五步检索链路：`QueryParser`（查询理解）→ `Recaller`（多路召回）→ `Fuser`（融合+重排）→ `Discloser`（渐进式披露 L0→L1→L2）→ `Retriever`（编排+轨迹）。
+由 Retriever 编排：QueryParser → Storage 首选 recall/get/rank 路径（Recaller 归数据面，
+Fuser 负责融合）→ 可选 Reranker → 可选上卷准入/MaxP → 阈值/top_k → Discloser；显式 expand_depth>0
+在最终选根后通过 Expander 只读展开，并共享根/后代披露预算与诊断。
 
 ### control/ — 编排层
 
 `MemoryEngine` 是接口层各语义的编排中枢（异步协程）。`Scheduler` 双通道调度演进任务，`PermissionManager` / `PolicyManager` / `Governor` / `SpaceManager` 管治理面。
+公开演进使用 `EvolveTaskOptions`；HIERARCHY 交给一次性 `HierarchyJob`，读取范围、
+完整分页、旧父子补齐和可选锁在 Control 完成。普通 write 不自动建树；Scheduler
+忠实保留 Job 的终态与失败信息。
 
 ### storage/ — 存储层
 
@@ -86,8 +95,9 @@ jiuwen_memory/
 4. **scope 隔离是存储层的原生职责**  
    检索型 Store 的 `search` 物理约束在 `query.scope` 内，绝不跨 scope 返回。隔离必须在存储层强制，上层不依赖调用纪律。
 
-5. **MemoryUnit 是唯一跨层数据结构**  
-   接入层产出它，构建层落盘并建索引，检索层与控制层读取它。不要在层间传递原始字典或临时结构。
+5. **MemoryUnit 是跨层的记忆载体**
+   接入层产出它，构建层落盘并建索引，检索层与控制层读取它。`EvolveRequest` 等类型化
+   请求只封装已有记忆和调用选项，不另造一套记忆模型，也不以原始字典替代 MemoryUnit。
 
 ## 子模块 AGENTS.md 规则
 
