@@ -300,8 +300,10 @@ async def memory_delete(selector: dict, ctx: Context = None) -> list[str]:
     return await _invoke("delete", {"selector": selector}, context=ctx)
 
 
+# G.FNM.03：参数与公开 MCP/MemoryAPI 的扁平 evolve 契约逐项对齐。改成参数对象会
+# 改变既有工具 schema 和调用报文，因此在此入口做单点豁免，不放宽其他函数。
 @mcp.tool()
-async def memory_evolve(
+async def memory_evolve(  # pylint: disable=huawei-too-many-arguments
     scope: dict,
     mode: str,
     channel: str = "background",

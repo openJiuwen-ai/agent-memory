@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""演进候选源的数据契约（F03 dreaming）。
+"""演进候选源的数据契约（F04 dreaming）。
 
 evolve 的候选不再固定为「list scope 全量」——候选从哪来、怎么筛，由
 ``CandidateSource`` 声明（谓词 / 点名 / 召回 / 扇出四型），由 control 层
@@ -30,7 +30,8 @@ from typing import Any, Callable, ClassVar, NamedTuple
 
 from jiuwen_memory.common.errors import ValidationError
 
-from .filter import FilterExpr, normalize, to_dict
+from .filter import FilterExpr, normalize
+from .filter import to_dict as filter_to_dict
 from .memory import MemoryUnit
 from .scope import Scope
 
@@ -53,7 +54,10 @@ class PredicateCandidate:
     window: int | None = None  # None=不限时间（全量型）；cutoff 每 tick 现算
 
     def __post_init__(self) -> None:
-        if self.window is not None and (
+        if self.window is None:
+            self.filters = normalize(self.filters)
+            return
+        if (
             not isinstance(self.window, int)
             or isinstance(self.window, bool)
             or self.window <= 0
@@ -207,7 +211,7 @@ class _CandidateCodec(NamedTuple):
 
 
 def _predicate_to_dict(source: PredicateCandidate) -> dict:
-    return {"filters": to_dict(source.filters), "window": source.window}
+    return {"filters": filter_to_dict(source.filters), "window": source.window}
 
 
 def _predicate_from_dict(data: dict) -> PredicateCandidate:
@@ -235,7 +239,7 @@ def _recall_to_dict(source: RecallCandidate) -> dict:
         "query": dict(source.query),
         "channels": list(source.channels),
         "top_k": source.top_k,
-        "filters": to_dict(source.filters),
+        "filters": filter_to_dict(source.filters),
     }
 
 
@@ -368,7 +372,5 @@ def candidate_from_dict(data: dict) -> CandidateSource:
         )
     try:
         return codec.from_dict(data)
-    except ValidationError:
-        raise
     except (KeyError, TypeError) as exc:
         raise ValidationError(f"candidate 解析失败：{exc}") from None

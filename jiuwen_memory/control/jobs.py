@@ -49,6 +49,14 @@ class Job(ABC):
         if self._cancel_event.is_set():
             raise JobCancelledError("job cancelled before next execution step")
 
+    def request_cancel(self) -> None:
+        """发出协作式取消信号；由 Scheduler 在其私有循环内调用。"""
+        self._cancel_event.set()
+
+    def inherit_cancellation_from(self, parent: Job) -> None:
+        """与父任务共享取消信号，使取消能传播到已派生但尚未执行的任务。"""
+        self._cancel_event = parent._cancel_event
+
     @abstractmethod
     async def run(self) -> JobInfo:
         """执行任务，返回 JobInfo。"""

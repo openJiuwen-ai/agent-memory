@@ -85,7 +85,8 @@ def _require_within_unit_limit(count: int, scope: Scope) -> None:
 class CandidateResolver(Protocol):
     """统一候选解析接口：产出 :class:`~common.type_def.CandidateOutcome`。"""
 
-    async def resolve(self) -> CandidateOutcome: ...
+    async def resolve(self) -> CandidateOutcome:
+        ...
 
 
 def _effective_filters(filters: FilterExpr | None, window: int | None) -> FilterExpr | None:
@@ -273,15 +274,15 @@ class FanOutResolver:
             # API 层已枚举 + 鉴权完毕——纯执行：桶列表原样进料。
             hit_scopes = self._buckets
         else:
-            hit_scopes = [
-                s for s in await asyncio.to_thread(_scopes, self._kv)
+            hit_scopes = []
+            for candidate_scope in await asyncio.to_thread(_scopes, self._kv):
                 if covered_by(
                     self._scope,
-                    s,
+                    candidate_scope,
                     require_empty=self._require_empty,
                     require_nonempty=self._require_nonempty,
-                )
-            ]
+                ):
+                    hit_scopes.append(candidate_scope)
         if len(hit_scopes) > MAX_FAN_OUT_BUCKETS:
             raise ValidationError(
                 "fan_out 命中桶数超过单次上限 "

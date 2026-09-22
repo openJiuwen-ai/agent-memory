@@ -575,6 +575,8 @@ class DreamingCoordinator:
                 )
                 scheduler.validate(job)
                 job_id = asyncio.run(scheduler.submit(job, channel))
+                if not job_id:
+                    raise RuntimeError("scheduler returned an empty recurring job id")
                 self.check_leadership()
                 self._registry.save(replace(entry, job_id=job_id))
                 self.check_leadership()
@@ -595,7 +597,6 @@ class DreamingCoordinator:
                     _scope_label(entry.scope), entry.mode, type(exc).__name__, exc,
                 )
                 continue
-            assert job_id is not None
             restored.append(job_id)
             self._active_jobs[self._registration_key(entry.scope, entry.mode)] = job_id
         try:

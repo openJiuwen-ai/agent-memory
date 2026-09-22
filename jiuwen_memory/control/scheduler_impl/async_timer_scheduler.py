@@ -230,9 +230,9 @@ class AsyncTimerScheduler(Scheduler):
         if child_job is not None:
             child_job.parent_job_id = parent_job_id
             if parent_job is not None:
-                child_job._cancel_event = parent_job._cancel_event
+                child_job.inherit_cancellation_from(parent_job)
             elif parent.status != JobStatus.RUNNING:
-                child_job._cancel_event.set()
+                child_job.request_cancel()
 
     async def _cancel_on_loop(self, job_id: str) -> None:
         self._cancel_now(job_id)
@@ -249,7 +249,7 @@ class AsyncTimerScheduler(Scheduler):
         for wheel in self._wheels.values():
             for entry in list(wheel.entries):
                 if entry.job_id == job_id:
-                    entry.job._cancel_event.set()
+                    entry.job.request_cancel()
                     self._live_jobs.pop(job_id, None)
                     entry.is_done = True
                     wheel.entries.remove(entry)
@@ -281,7 +281,7 @@ class AsyncTimerScheduler(Scheduler):
         """在私有循环内取消全部 Timer 协程与 drain Task（shutdown 用）。"""
         tasks = [task for task in self._background_tasks if not task.done()]
         for job in self._live_jobs.values():
-            job._cancel_event.set()
+            job.request_cancel()
         for task in tasks:
             task.cancel()
         self._wheels.clear()
@@ -459,7 +459,7 @@ class AsyncTimerScheduler(Scheduler):
                             entry.next_run_at - entry.interval + job.interval
                         )
                     if not was_done:
-                        job._cancel_event = entry.job._cancel_event
+                        job.inherit_cancellation_from(entry.job)
                     entry.job = job
                     self._live_jobs[entry.job_id] = job
                     entry.interval = job.interval
@@ -651,7 +651,7 @@ class AsyncTimerScheduler(Scheduler):
         for wheel in self._wheels.values():
             for entry in wheel.entries:
                 if entry.job_id == parent_timer_id:
-                    entry.job._cancel_event.set()
+                    entry.job.request_cancel()
                     self._live_jobs.pop(parent_timer_id, None)
                     entry.is_done = True
                     return
