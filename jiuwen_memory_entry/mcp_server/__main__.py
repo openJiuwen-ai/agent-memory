@@ -190,8 +190,8 @@ async def memory_add(content: str, scope: dict, tags: list[str] | None = None,
     tags: 可选标签列表。
     source: 来源模态 text/image/audio/video/code/document（默认 text）。
     assets: 可选原模态资产引用列表（如 ["file:///pic.png"]）。
-    occurred_at: 可选 ISO 8601 时间点——内容所述事件的发生时间（event-time），
-        缺省取写入时刻。
+    occurred_at: 可选 ISO 8601 时间点——消息/对话发生时间（写入 temporal.t_message），
+        缺省不填（null）；内容所述事件时间（t_event）由系统从内容提取，不经此参数。
     system_metadata: 可选系统元数据对象（值限标量）；infer/procedural 等调用级
         开关经它下推。
     user_metadata: 可选用户元数据对象（值限标量）；供过滤，检索时用
@@ -225,7 +225,9 @@ async def memory_search(query: str, context: dict, top_k: int = 10,
         {"logic":"and","children":[{...},{...}]}。字段可用 tags/tier/source/
         lifecycle/t_event/t_valid/t_invalid 及 user_metadata.<key>/
         system_metadata.<key>；算子 eq/ne/in/not_in/gt/gte/lt/lte/contains。
-    disclosure: 披露层级——l0 摘要 / l1 片段 / l2 全文 / adaptive 按预算自动。
+    disclosure: 披露主层级——l0 摘要 / l1 片段 / l2 全文 / adaptive 按预算自动。
+        注意三层字段（abstract/overview/content）恒同时返回，本参数只决定 level
+        标记的主层级，不会从返回里去掉全文。
     with_trajectory: true 时附带检索轨迹（各通道召回与融合得分）。
     """
     return await _invoke(
@@ -330,7 +332,8 @@ async def memory_batch_add(items: list[dict], scope: dict | None = None,
     tags: 批级缺省标签。
     source: 批级缺省来源模态（默认 text，取值同 memory_add 的 source）。
     stream_id: 批级缺省流标识（同一条消息流的写入共享它）。
-    occurred_at: 可选 ISO 8601 事件时间（event-time），缺省取写入时刻。
+    occurred_at: 批级缺省消息/对话发生时间（ISO 8601，写入 temporal.t_message），
+        缺省不填（null）。
     system_metadata / user_metadata: 批级缺省元数据对象（值限标量）。
     continue_on_error: true（默认）时单条失败不中断整批。
     返回 {"outcomes": [...]}，每项含 index（与输入顺序对齐）与 units（成功）
@@ -668,8 +671,10 @@ async def memory_add_space_member(org: str, space: str, member: dict,
     """添加或更新 space 成员。member 形如
     {"scope": {"org":"local","user":"bob"}, "content_role": "contributor",
      "governance_role": "none"}；
-    content_role: none/viewer/contributor/editor（只读/可贡献/可编辑）；
-    governance_role: none/manager/owner（管成员与策略/另可删空间）；
+    content_role 内容轴：none 无内容权限；viewer 只读；contributor 可读可写、
+        改删限本人所写；editor 可改删空间内任一条目。
+    governance_role 治理轴：none 无治理权限；manager 管成员与策略；
+        owner 另可删空间。
     member.scope 的 user/agent 至多一维非空。
     """
     return await _invoke(

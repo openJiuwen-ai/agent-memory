@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-09-11 |
 | 影响范围 | `jiuwen_memory_entry/mcp_server/`（`__main__.py`、`transport_security.py`；原 `DESIGN.md` 已并入本文档），`tests/unit/jiuwen_memory_entry/test_mcp.py`、`test_mcp_transport_security.py` |
-| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py`（96 + 5 全绿）；`ruff check` 通过 |
+| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py`（97 + 5 全绿）；`ruff check` 通过 |
 | 备注 | 本文档吸收原 `jiuwen_memory_entry/mcp_server/DESIGN.md`（已删除），模块级设计、方案取舍与已知遗留统一在此维护 |
 
 ## 背景
@@ -196,7 +196,7 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 
 ## 验证
 
-- `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（96 用例：36 工具契约锁
+- `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（97 用例：36 工具契约锁
   （全量相等）+ 旧字段/身份字段拒绝 + 失闭与 Surface.MCP 注入 + 功能闭环含
   evolve→job_status 与 consolidate→trace 血缘链 + get/search 的 as_of valid-time
   回溯 + list memory_types / search filters 收敛 + Schema 无 ctx 泄漏 +
@@ -219,6 +219,7 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
    归属判定、不读 role）时这些操作返回 PermissionDenied（F05 授权链过渡期缺口，
    非缺陷）；待 ROOT role 接入 PermissionManager 后重测。
 4. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。
-5. **OFFLINE 内核 `delete_space` 能力限制**：`InMemoryEngine` 只支持空 space 的
-   purge，非空 space 在授权通过后返回 400 ValidationError；接真后端
-   （CloudEngine）后消除。
+5. **OFFLINE 内核 `delete_space` 能力限制**：`scope.space != ''` 时，授权通过后
+   `InMemoryEngine` 返回 ValidationError（不支持非空 space 维的 purge）；MCP dev
+   身份在授权阶段即被拒（见遗留 3），看不到这条错误。接真后端（CloudEngine）
+   后消除。

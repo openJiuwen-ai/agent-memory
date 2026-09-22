@@ -444,7 +444,7 @@ def test_delete_space_rejects_archive_mode(kernel) -> None:
         )
 
 
-# --- E. 模型可见 Schema：恰好 12 工具、ctx 不泄漏 -------------------------------- #
+# --- E. 模型可见 Schema：36 工具、ctx 不进 schema --------------------------------- #
 
 
 def test_list_tools_schema_excludes_ctx() -> None:
@@ -462,12 +462,24 @@ def test_fastmcp_call_tool_marshals_arguments(kernel) -> None:
     # call_tool(convert_result=True) 的返回形态随工具返回注解分两路：
     # -> list[dict]（如 memory_add）带 structured 输出，返回 (blocks, {"result": ...})；
     # -> dict（如 memory_get）无 structured 输出，直接返回 [TextContent(结果 JSON)]。
+    # occurred_at 走 call_tool 锁两件事：pydantic 编组层按 str 放行 ISO 字符串；
+    # 且按 F07 语义落 temporal.t_message——t_event 由 Extractor 从内容提取，恒 None。
+    occurred_at = "2026-06-17T10:00:00+00:00"
     blocks, structured = asyncio.run(
-        mcp_main.mcp.call_tool("memory_add", {"content": "marshalled", "scope": SCOPE})
+        mcp_main.mcp.call_tool(
+            "memory_add",
+            {"content": "marshalled", "scope": SCOPE, "occurred_at": occurred_at},
+        )
     )
     units = structured["result"]
     assert units[0]["segments"][0]["content"] == "marshalled"
     assert json.loads(blocks[0].text)["id"] == units[0]["id"]
+    assert units[0]["temporal"]["t_message"] == occurred_at, (
+        "occurred_at 应落 temporal.t_message（F07 消息时间语义）"
+    )
+    assert units[0]["temporal"]["t_event"] is None, (
+        "t_event 由内容提取，不经 occurred_at 下传"
+    )
     got = asyncio.run(
         mcp_main.mcp.call_tool(
             "memory_get",
@@ -476,3 +488,16 @@ def test_fastmcp_call_tool_marshals_arguments(kernel) -> None:
         )
     )
     assert json.loads(got[0].text)["id"] == units[0]["id"]
+    # search 的 as_of 也走 call_tool：锁 str 注解——若改回 datetime | None，
+    # pydantic 会把 ISO 字符串收成 datetime 对象、在共享契约边界被拒，此调用即红
+    found = asyncio.run(
+        mcp_main.mcp.call_tool(
+            "memory_search",
+            {"query": "marshalled", "context": {"scope": SCOPE},
+             "as_of": units[0]["temporal"]["t_valid"]},
+        )
+    )
+    search_result = json.loads(found[0].text)
+    assert any(
+        item["unit_id"] == units[0]["id"] for item in search_result["items"]
+    ), "call_tool 路径的 as_of 字符串应正常过编组层并召回"
