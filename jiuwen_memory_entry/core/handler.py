@@ -754,12 +754,45 @@ def _delete(srv, request: DispatchRequest) -> Body:
 # --- 管理面 / 治理 / 演进 verbs ------------------------------------------- #
 
 
+def _parse_dreaming(value: Any) -> bool | None:
+    """dreaming 三态开关（F04 D2）：JSON true/false，缺省 None（立即执行）。"""
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValidationError("dreaming must be a boolean")
+    return value
+
+
+def _parse_candidate(value: Any) -> dict | None:
+    """候选源 dict DSL；kind 合法性由控制层 candidate_from_dict 统一校验。"""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError("candidate must be an object")
+    return value
+
+
 def _evolve(srv, request: DispatchRequest) -> Body:
-    """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。"""
+    """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。
+
+    dreaming 三态（与 MemoryAPI.evolve 契约一致，HTTP/CLI 经 api_contract 已同构）：
+    缺省 = 立即跑一次；true = 注册定时（interval 秒，每 tick 复验授权）；
+    false = 幂等注销。interval>0 的注册态语义校验由 API 层鉴权前 fail fast。
+    """
     payload = request.payload
     scope = _require_target(request)
     mode = EvolveMode(payload.get("mode", "extract"))
-    job_id = srv.api.evolve(scope, mode, security=_request_security(request))
+    dreaming = _parse_dreaming(payload.get("dreaming"))
+    interval = _parse_non_negative_int(payload.get("interval"), name="interval", default=0)
+    candidate = _parse_candidate(payload.get("candidate"))
+    job_id = srv.api.evolve(
+        scope,
+        mode,
+        candidate=candidate,
+        dreaming=dreaming,
+        interval=interval,
+        security=_request_security(request),
+    )
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
 
 

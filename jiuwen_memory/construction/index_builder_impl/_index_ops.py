@@ -125,6 +125,14 @@ def index_metadata(
         if temporal.t_invalid is not None
         else T_INVALID_OPEN
     )
+    # t_ingest 恒写：内核接入路径强制盖章（F04 D5），dreaming 时间窗按
+    # `t_ingest GTE cutoff` 下推依赖该字段；防御未盖章旧数据落 0（与 t_event
+    # 未知哨兵同值，语义为"史前"，不落入任何新近窗口）。
+    metadata["t_ingest"] = (
+        int(temporal.t_ingest.timestamp() * 1000)
+        if temporal.t_ingest is not None
+        else T_EVENT_UNKNOWN
+    )
     return metadata
 
 

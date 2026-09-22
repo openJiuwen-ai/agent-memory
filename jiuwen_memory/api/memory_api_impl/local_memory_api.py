@@ -10,6 +10,7 @@ from __future__ import annotations
 from jiuwen_memory.api.memory_api import MemoryAPI
 from jiuwen_memory.common.audit import AuditLogger
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.lock import LockProvider
 from jiuwen_memory.common.security.audit_integrity.base import (
     AuditIntegrityProvider,
     AuditVerificationLimits,
@@ -24,6 +25,7 @@ from jiuwen_memory.control.application import (
     SpaceLifecycleService,
 )
 from jiuwen_memory.control.engine import MemoryEngine
+from jiuwen_memory.control.engine_impl.dreaming_registry import DreamingRegistry
 from jiuwen_memory.control.governance import Governor
 from jiuwen_memory.control.ingest_job import IngestJobController
 from jiuwen_memory.control.membership import MembershipResolver
@@ -33,6 +35,7 @@ from jiuwen_memory.control.scheduler import Scheduler
 from jiuwen_memory.control.space import SpaceManager
 
 from .admin_ops import AdminOpsMixin
+from .dreaming import DreamingCoordinator
 from .local_support import (
     _first_family_predicate,
     _policy_int,
@@ -75,6 +78,7 @@ class LocalMemoryAPI(
         queries: MemoryQueryService | None = None,
         space_lifecycle: SpaceLifecycleService | None = None,
         governance: GovernanceService | None = None,
+        dreaming_lock: LockProvider | None = None,
     ) -> None:
         if audit_integrity_provider is not None and audit_verify_guard is None:
             raise ValidationError(
@@ -116,6 +120,17 @@ class LocalMemoryAPI(
             else SpaceLifecycleService(engine, space)
         )
         self._governance = governance if governance is not None else GovernanceService(governor)
+        # dreaming 调度服务（F04，PEP 边界）：注册 / 注销 / 恢复 / 持续授权与
+        # fan-out 逐桶裁决都在 API 层——Engine / EvolveJob 是纯执行件。须在全部
+        # 组件装配完成后创建（它反向引用本 API 的鉴权组件、Engine 与 Scheduler）。
+        self._dreaming = DreamingCoordinator(
+            registry=DreamingRegistry(engine.kv, lock=dreaming_lock),
+            scheduler=scheduler,
+            commands=self._commands,
+            authorize=self._authorize,
+            ensure_space_writable=self._ensure_space_writable,
+            scope_supplier=engine.candidate_scopes,
+        )
 
     @property
     def space_governance_enabled(self) -> bool:

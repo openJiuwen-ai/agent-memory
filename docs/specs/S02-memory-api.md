@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-09-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -595,25 +595,18 @@ def evolve(
     channel: Channel = Channel.BACKGROUND,
     *,
     security: RequestSecurityContext,
-) -> str: ...
+    candidate: CandidateSource | dict | None = None,
+    dreaming: bool | None = None,
+    interval: int = 0,
+) -> str | None: ...
 ```
 
-触发演进：鉴权 WRITE→委托 Engine→返回 job_id。当前代码只接受 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET。调用成功返回 job id，不表示任务已经完成。索引维护不在此（随数据面自动跟进）。
+触发演进：鉴权 WRITE→（三态分发）→委托 Engine 纯执行链→返回 job_id。当前代码只接受 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET。调用成功返回 job id，不表示任务已经完成。索引维护不在此（随数据面自动跟进）。
 
-**状态：已设计、尚未实现**（`EvolveMode.HIERARCHY` 与 `hierarchy_options`）
+**dreaming 三态**（F04，PEP 边界——三态编排、持续授权、fan-out 逐桶裁决都在 API 层 `DreamingCoordinator`，`api/memory_api_impl/dreaming.py`；Control 层纯执行见 S03 `evolve` 行）：`dreaming=None` 立即跑（入口鉴权 + fan-out 逐桶裁决后提交一次性 EvolveJob，返回 job_id；拒绝桶仅以 `count:N` 脱敏摘要回显）；`dreaming=True` 注册定时（`interval>0` 必填，scheduler 须 `supports_recurring`；candidate 注册前 canonical 校验；注册表记录 `created_by`，驱动 Job 每 tick 复验授权与 leader 租约，被拒或失锁即停摆）；`dreaming=False` 幂等注销（未命中返回 `None`，不退化立即跑）。注册/注销/恢复与失锁清理在本实例串行，并只允许 leader 修改共享声明；请求落到非 leader 时抛 `RuntimeError`，不会删掉另一实例正在执行的声明。周期实例启动即竞选 leader，空注册表也持锁；恢复结果只在当前 leader 任期内幂等缓存，失锁或主动放锁后必须重扫；恢复每条记录在提交和换绑后均复验租约，中途失锁立即取消本地驱动并中止恢复。空间进入持久不可写状态时，周期任务以 `space_not_writable` 停摆并移除声明。
 
-```python
-def evolve(
-    scope: Scope,
-    mode: EvolveMode,
-    channel: Channel = Channel.BACKGROUND,
-    *,
-    security: RequestSecurityContext,
-    hierarchy_options: HierarchyComposeOptions | None = None,
-) -> str: ...
-```
-
-所有 evolve 模式要求 `Action.WRITE`。`EvolveMode.HIERARCHY` 是目标新增，必须提供
+所有已实现 evolve 模式均要求 `Action.WRITE`。`EvolveMode.HIERARCHY`
+是目标新增，必须提供
 [S05-construction.md](S05-construction.md) 定义的 `HierarchyComposeOptions`。S05 是该
 类型字段与默认值的唯一契约来源，API 层不复制定义。
 
@@ -651,6 +644,8 @@ def job_cancel(job_id: str, *, security: RequestSecurityContext) -> None: ...
 ```
 
 取消尚未完成的演进任务（幂等，委托 Scheduler）。按其任务 scope 鉴权 WRITE（与 evolve 触发一致）。
+
+周期任务注销或本地失锁停摆时，取消信号覆盖其已排队驱动和已关联的派生演进任务；后续演进桶不再开始。已进入的同步 Evolver 调用可以结束，取消不回滚已完成写入，也不提供存储 fencing 保证。
 
 ---
 

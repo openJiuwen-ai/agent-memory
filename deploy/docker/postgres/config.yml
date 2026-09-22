@@ -134,3 +134,13 @@ memory_api:
         embedder: default
         llm: { target: echo }
         rewrite_enabled: false
+
+  # scheduler：生产档显式装配 async_timer（默认 in_process 不支持周期任务，
+  # dreaming 注册会 fail fast 拒绝）。async_timer 自带私有后台事件循环——
+  # Timer 协程不寄生请求循环，HTTP 每请求 asyncio.run 关闭不影响定时任务。
+  # 单实例部署模型：多实例共用同一 KV 会被恢复实例锁拒绝。
+  scheduler:
+    default:
+      target: async_timer
+      params:
+        tick_interval: 10

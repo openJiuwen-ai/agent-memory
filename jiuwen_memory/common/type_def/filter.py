@@ -101,6 +101,7 @@ _BUILTIN_FIELDS = frozenset(
         "t_valid",
         "t_invalid",
         "t_message",
+        "t_ingest",
         "content_layer",
         "seq",
     }
@@ -246,6 +247,24 @@ def from_dict(node: Any) -> FilterExpr:
             raise ValidationError(f"未知算子：{op_str!r}") from None
         return FilterClause(canonical_filter_field(key), op, operand)
     return FilterClause(canonical_filter_field(key), FilterOp.EQ, val)  # {field: value} → EQ
+
+
+def to_dict(expr: FilterExpr | None) -> dict | None:
+    """FilterExpr → dict DSL（:func:`from_dict` 的逆；持久化/回显用）。
+
+    叶子产出 ``{field: {op: value}}``；``AND``/``OR`` 产出 ``{AND: [子节点...]}``；
+    ``NOT`` 产出 ``{NOT: {子节点}}``。expr 须已规范化（``normalize`` 产物）——
+    field 保持原样不再二次 canonical，round-trip ``from_dict(to_dict(e))``
+    语义等价。值为可 JSON 序列化标量（``_normalize_value`` 保证）。
+    """
+    if expr is None:
+        return None
+    if isinstance(expr, FilterClause):
+        return {expr.field: {expr.op.value: expr.value}}
+    if expr.logic is FilterLogic.NOT:
+        return {"NOT": to_dict(expr.children[0])}
+    key = "AND" if expr.logic is FilterLogic.AND else "OR"
+    return {key: [to_dict(child) for child in expr.children]}
 
 
 def normalize(raw: FilterExpr | list[FilterClause] | dict | None) -> FilterExpr | None:

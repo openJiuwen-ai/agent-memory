@@ -19,6 +19,7 @@ from jiuwen_memory.common.security import principal, space_predicates
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
+    CandidateSource,
     ChannelError,
     Context,
     FilterClause,
@@ -627,9 +628,17 @@ class QueryOpsMixin:
         mode: EvolveMode,
         channel: Channel = Channel.BACKGROUND,
         *,
+        candidate: CandidateSource | dict | None = None,
+        dreaming: bool | None = None,
+        interval: int = 0,
         security: RequestSecurityContext,
-    ) -> str:
+    ) -> str | None:
         identity = security.auth.actor
+        # 注册态 interval 语义前置校验（鉴权前 fail fast，避免越权探测报错差异）。
+        if dreaming is True and interval <= 0:
+            raise ValidationError(
+                "dreaming 注册要求 interval > 0（秒）；立即单次演进不传 dreaming"
+            )
         auth = self._authorize(
             identity,
             scope,
@@ -638,6 +647,87 @@ class QueryOpsMixin:
             space_action=_evolve_space_action(mode),
         )
         self._ensure_space_writable(scope)
-        job_id = asyncio.run(self._commands.evolve(scope, mode, channel))
-        self._log(identity, "evolve", target_scope=scope, detail={**auth, "job_id": job_id})
+        # 三态分发（F04 D2）：False=幂等注销（不命中不退化）；True=注册；
+        # None=立即执行。持续授权（每 tick 复验）与 fan-out 逐桶裁决都在 API 层
+        # 的 DreamingCoordinator（PEP 边界，S03）——Engine / EvolveJob 纯执行。
+        if dreaming is False:
+            entry = self._dreaming.unregister(scope, mode)
+            self._log(
+                identity,
+                "evolve",
+                target_scope=scope,
+                detail={
+                    **auth,
+                    "dreaming": "False",
+                    "unregistered": "true" if entry is not None else "absent",
+                },
+            )
+            return None
+        if dreaming is True:
+            job_id = self._dreaming.register(
+                scope=scope,
+                mode=mode,
+                channel=channel,
+                candidate=candidate,
+                interval=interval,
+                actor=identity,
+            )
+            self._log(
+                identity,
+                "evolve",
+                target_scope=scope,
+                detail={
+                    **auth,
+                    "job_id": job_id,
+                    "dreaming": "True",
+                    "interval": str(interval),
+                },
+            )
+            return job_id
+        # 立即执行：fan-out 候选源先逐桶裁决（获准桶 / 拒绝桶标签），再走纯执行链。
+        buckets, denied = self._dreaming.authorize_fan_out(identity, scope, candidate, mode)
+        job_id = asyncio.run(
+            self._commands.evolve(
+                scope,
+                mode,
+                channel,
+                candidate=candidate,
+                buckets=buckets,
+                denied_scopes=denied,
+            )
+        )
+        detail = {
+            **auth,
+            **({"job_id": job_id} if job_id is not None else {}),
+            "dreaming": "None",
+        }
+        if denied:
+            detail["denied_scopes"] = ";".join(denied)
+        self._log(
+            identity,
+            "evolve",
+            target_scope=scope,
+            detail=detail,
+        )
         return job_id
+
+    def restore_dreaming(self) -> list[str]:
+        """重启恢复注册态 dreaming 任务（F04 D8 装配期钩子，非 HTTP verb）。
+
+        启动路径专用（server 启动 / SDK 宿主拉起），不出现在 MemoryAPI 公共
+        契约——恢复会持实例锁，任意请求主体可触发会把部署模型的决定权让渡
+        给调用方。恢复期复验与每 tick 复验同一套鉴权（DreamingCoordinator
+        绑定本 API 的鉴权组件，入口判定与持续判定不漂移）。
+
+        单实例部署模型下锁被他人持有（未过期）抛 :class:`RuntimeError`——
+        部署侧须感知"另一实例在跑"而非静默双跑。
+        """
+        return self._dreaming.restore()
+
+    def release_dreaming_lock(self) -> None:
+        """释放恢复实例锁（优雅关闭路径钩子，非 HTTP verb）。
+
+        owner 匹配删除——本进程从未持锁（如共享 KV 的运维进程 close）或锁
+        已被抢占时不删，避免把运行中实例的锁清掉导致第三实例恢复成功。
+        """
+        self._dreaming.release_lock()

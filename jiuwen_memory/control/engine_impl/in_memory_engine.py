@@ -22,6 +22,7 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.type_def import (
+    CandidateSource,
     FilterExpr,
     LifecycleState,
     MemoryTier,
@@ -40,6 +41,7 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
+from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.schema_update_support import (
@@ -240,6 +242,11 @@ class InMemoryEngine(MemoryEngine):
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
+
+    @property
+    def kv(self) -> KVStore:
+        """真源 KV 端口（API 层 dreaming 编排读注册表用，见 MemoryEngine.kv）。"""
+        return self._kv
 
     def health(self) -> None:
         return None
@@ -767,8 +774,15 @@ class InMemoryEngine(MemoryEngine):
         return [unit.id for unit in purged_units]
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
-    ) -> str:
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        candidate: CandidateSource | dict | None = None,
+        buckets: list[Scope] | None = None,
+        denied_scopes: list[str] | None = None,
+    ) -> str | None:
         _ensure_local_scope(scope)
         if self._job_factory is None:
             raise RuntimeError(
@@ -781,18 +795,20 @@ class InMemoryEngine(MemoryEngine):
             )
         # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，
         # 不允许 Spec 侧自行解析另一套（middle 路径的 index/evolver 同理）。
-        job = self._job_factory.get_job(
-            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
+        # 纯执行（鉴权在 API 层）：candidate→resolver 翻译 + 一次性 EvolveJob 提交。
+        return await submit_evolve(
+            scope=scope,
+            mode=mode,
+            channel=channel,
+            candidate=candidate,
+            kv=self._kv,
+            scheduler=self._scheduler,
+            job_factory=self._job_factory,
+            evolver=self._evolver,
+            retriever=self._retriever,
+            buckets=buckets,
+            denied_scopes=denied_scopes,
         )
-        job_id = await self._scheduler.submit(job, channel)
-        logger.info(
-            "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
-            job_id,
-            scope_for_log(scope),
-            mode.value,
-            channel.value,
-        )
-        return job_id
 
     async def admin_get(self, key: str) -> str:  # 由 API 层直达 PolicyManager
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")

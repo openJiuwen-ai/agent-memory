@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-09-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
 
 ## Schema source 更新准备契约
 
@@ -110,6 +110,7 @@ class ControlOperator(ABC):
 | `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 只接收 API 已归一化并完成鉴权/space 前置校验的项；按输入顺序复用 `write`，归集领域异常及非领域异常（后者为 `InternalError`）；fail-fast 时填充 `Skipped` outcomes |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路（含目标 `expand_depth>0` 时的内部展开） |
 | `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并委托当前实现的存储读入口（InMemoryEngine 为 KVStore，CloudEngine 为 DomainStore）；返回当前页和分页前匹配总数 |
+| `candidate_scopes` | `() -> list[Scope]` | 枚举演进候选数据面已有记忆的 scope；InMemoryEngine 走 KVStore，CloudEngine 走 DomainStore，供 API 层 fan-out 鉴权前枚举 |
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
 | `list_with_permission_contexts` | `async (同 list 参数) -> tuple[MemoryListResult, list[PermissionContext]]` | 从同一次列表查询的当前页构造逐项真源权限上下文，items/count/context 不做二次读取 |
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
@@ -118,7 +119,7 @@ class ControlOperator(ABC):
 | `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删 / 其他委托 LifecycleManager 非破坏式流转；目标需维护受影响层级边 |
 | `purge_space` | `async (org: str, space: str) -> list[str]` | 物理删除该 Space 全部 user/agent/session 子 Scope 的 MemoryUnit 真源与索引，供 offboarding 调用 |
 | `sweep_expired` | `async () -> SweepResult` | 编排到期清扫：`LifecycleManager.sweep()` 纯计算 transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组先 `IndexBuilder.remove(SOFT)` 移出检索索引、成功后 `LifecycleManager.transition` 回写真源；ARCHIVED 组只回写（`include_archived` 召回与 `as_of` 回溯仍需索引，不删）。顺序不变量（先删索引、后回写真源）保证 remove 失败时单元保持 ACTIVE、下轮 sweep 重新发现自愈；任一步失败的组计入 `SweepResult.failed`，不静默当成功。共享编排在 `engine_impl/sweep_support.py`，InMemoryEngine 直调 IndexBuilder，CloudEngine 按各 pipeline 的 builder 分组删除 |
-| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND, *, hierarchy_options=None) -> str` | 提交演进任务到 Scheduler；执行逻辑由构建层 Evolver 完成，返回 job_id；仅目标 HIERARCHY 接受 options。Evolver 由 Engine 经 `get_job(evolver=...)` 注入装配给自身的同一实例（与写入侧同源，不变量 25），Engine 未装配 evolver 时抛 `RuntimeError` |
+| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND, *, candidate=None, buckets=None, denied_scopes=None) -> str \| None` | 纯执行（PEP 边界，F04-dreaming）：只做立即执行链——candidate→resolver→一次性 EvolveJob 提交，返回 job_id；**不鉴权**（入口鉴权与 fan-out 逐桶裁决在 API 层 `DreamingCoordinator`，S02）。`buckets` / `denied_scopes` 为 API 层 fan-out 裁决产物：获准桶直接进料，拒绝只回显 `count:N` 脱敏摘要；`buckets=None` = 内核直调路径。resolver 在 InMemoryEngine 读 KVStore、在 CloudEngine 读 DomainStore；单桶与 fan-out 总量均上限 10000 条，fan-out 上限 1000 桶，显式 ID 和 recall top_k 各上限 10000，超限拒绝。dreaming 三态不在此层。Evolver 由 Engine 经 `get_job(evolver=...)` 注入装配给自身的同一实例，未装配时抛 `RuntimeError` |
 | `admin_get/set/all` | — | 管理面语义由 API 层直达 PolicyManager，Engine 不承载策略存储 |
 
 **write 路径**：
@@ -352,11 +353,19 @@ recall / list 完成权限检查前，API 构造 `PermissionContext` 时从
 
 ### Scheduler（`scheduler.py`）
 
-| 方法 | 签名 | 语义 |
+| 方法 / 属性 | 签名 | 语义 |
 |------|------|------|
-| `submit` | `(scope: Scope, mode: EvolveMode, channel: Channel, *, hierarchy_options: HierarchyComposeOptions | None = None) -> str` | 提交演进任务，返回 job_id；仅 HIERARCHY 接受 options（目标） |
+| `validate` | `(job: Job) -> None` | 提交前校验可调度性（供 Engine 在落盘等副作用前 fail fast，默认无约束） |
+| `supports_recurring` | `property -> bool` | 是否支持周期任务（`interval>0` 真实定时触发）；默认 `False` fail closed。dreaming 注册要求 True，不支持时注册处 `ValidationError`——拒绝"注册了定时任务但实际只同步跑一次"的静默降级 |
+| `submit` | `async (job: Job, channel: Channel) -> str` | 提交任务（`interval=0` 一次性入 per scope FIFO；`interval>0` 注册 per scope 定时），返回 job_id |
 | `status` | `(job_id: str) -> JobInfo` | 查询任务状态 |
 | `cancel` | `(job_id: str) -> None` | 取消尚未完成的任务（幂等） |
+| `link_child` | `(child_job_id: str, parent_job_id: str) -> None` | 周期调度器关联派生任务的观测信息和协作式取消生命周期；子任务执行前完成关联，同一调度循环内 submit 返回后立即调用、不让出循环；不支持周期任务的实现可忽略 |
+| `shutdown` | `() -> None` | 优雅关闭：取消定时/消费协程与私有事件循环，已提交任务的状态记录保留；持久化注册表不受影响（重启经 API 层 `DreamingCoordinator.restore` 重新装配）。默认无协程可关（同步实现） |
+
+**定时去重键**：`Job.schedule_key`（`jobs.py`，默认任务类名）——Scheduler 判定同 scope 内"是不是同一个任务"**只依赖该通用键**，不识别具体 Job 类的业务字段；需要区分业务身份的实现覆写（EvolveJob 含 mode：同 scope 下 EXTRACT 与 FORGET 定时器互不覆盖）。
+
+**周期取消边界**：父定时器取消或永久停摆后，其既有排队实例和已关联派生任务在执行边界检查共享取消信号，转为 CANCELLED；不得继续开始新的演进桶。EvolveJob 在候选解析前、每桶派发前以及工作线程实际调用 Evolver 前检查，运行中同步调用可以结束。取消不会终止同 scope 的消费循环或影响无关任务。注销后重新注册使用独立取消信号；活跃声明的原位更新保留原取消归属。该机制不是存储写入 fencing，检查与同步调用之间不提供跨实例原子性。
 
 **双通道**：HOT（在线低时延：write 返回前完成的轻量索引）；BACKGROUND（离线异步：重的抽取/升华/重索引）。
 
