@@ -105,7 +105,7 @@ consolidate 合并多 source 时会有多个消息时间。合并后的摘要 un
     `t_event GTE/LT` 按缺失字段排他，对含时间词 query 系统性空召回。现索引投影
     恒写 `t_event`（None → 哨兵 `T_EVENT_UNKNOWN=0`），谓词改
     `OR(AND(GTE from, LT to), EQ 0)` 放行未知时间 unit，`memory_filter._field_value`
-    同步把真源 None 投影为 `0` 使后置复核不砍候选。详见 S04 §过滤表达式 / F03 §8。
+    同步把真源 None 投影为 `0` 使后置复核不砍候选。详见 S04 §过滤表达式 / F04 D5。
   - **属性问止血（同 commit）**：`time_parse` 识别属性问关键词（多大/几岁/爱好/
     是谁/住址/名字/生日/年龄…）后清空 `time_from/to`，即便 query 含「今年/昨天」
     也不下推事件窗——属性问本就不是事件时间检索，避免误下推杀 None 派生。
