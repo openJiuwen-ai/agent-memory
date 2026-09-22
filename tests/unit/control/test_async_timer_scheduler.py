@@ -5,24 +5,38 @@
 """
 
 from __future__ import annotations
-# pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
 
+# pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
 import asyncio
 import time
 
 import pytest
 
-from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
     AsyncTimerScheduler,
-    TimerEntry,
     TimerWheel,
 )
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 
 pytestmark = pytest.mark.unit
+
+
+def test_terminal_timer_history_is_bounded() -> None:
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scheduler._max_completed_jobs = 3
+    try:
+        for index in range(8):
+            job = _RecordingJob(Scope(user=f"u{index}"), interval=60)
+            job_id = asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
+            scheduler.cancel(job_id)
+
+        assert len(scheduler._jobs) <= 3
+        assert len(scheduler._completed_ids) <= 3
+    finally:
+        scheduler.shutdown()
 
 
 class _RecordingJob(Job):
@@ -204,6 +218,7 @@ def test_submit_timer_creates_entry_and_starts_timer_loop() -> None:
         return job_id
 
     asyncio.run(_run())
+    scheduler.shutdown()
     # 事件循环关闭后 Task 被取消——不在此断言
 
 
@@ -226,6 +241,7 @@ def test_submit_timer_same_kind_updates_existing_entry() -> None:
     wheel = scheduler._wheels[scope_key]
     assert len(wheel.entries) == 1  # 仍只有一个 entry
     assert wheel.entries[0].interval == 20  # 已更新
+    scheduler.shutdown()
 
 
 def test_submit_timer_same_interval_preserves_next_run_at_when_not_done() -> None:
@@ -256,6 +272,7 @@ def test_submit_timer_same_interval_preserves_next_run_at_when_not_done() -> Non
         )
 
     asyncio.run(_run())
+    scheduler.shutdown()
 
 
 def test_submit_timer_changed_interval_recomputes_next_run_at_from_last_fired() -> None:
@@ -289,12 +306,14 @@ def test_submit_timer_changed_interval_recomputes_next_run_at_from_last_fired() 
         assert entry.interval == 30
 
     asyncio.run(_run())
+    scheduler.shutdown()
 
 
 def test_submit_timer_changed_interval_recomputes_from_submit_time_when_never_fired() -> None:
     """同 kind + interval 变化 + 从未触发 → next_run_at = submit_time + 新 interval。
 
-    首次 submit 后从未触发时 next_run_at = submit_time + 旧 interval，回退得 submit_time 再加新 interval。
+    首次 submit 后从未触发时 next_run_at = submit_time + 旧 interval，
+    回退得 submit_time 再加新 interval。
     """
 
     scheduler = AsyncTimerScheduler(tick_interval=1)
@@ -318,6 +337,7 @@ def test_submit_timer_changed_interval_recomputes_from_submit_time_when_never_fi
         assert entry.interval == 30
 
     asyncio.run(_run())
+    scheduler.shutdown()
 
 
 def test_submit_timer_different_kind_appends_new_entry() -> None:
@@ -347,6 +367,7 @@ def test_submit_timer_different_kind_appends_new_entry() -> None:
     assert len(wheel.entries) == 2
     kinds = {type(e.job).__name__ for e in wheel.entries}
     assert kinds == {"_JobA", "_JobB"}
+    scheduler.shutdown()
 
 
 def test_submit_timer_restarts_dead_timer_task_on_update() -> None:
@@ -392,6 +413,7 @@ def test_submit_timer_restarts_dead_timer_task_on_update() -> None:
         return jid1
 
     asyncio.run(_run())
+    scheduler.shutdown()
 
 
 def test_submit_timer_restarts_dead_timer_task_on_add_new_kind() -> None:
@@ -435,10 +457,11 @@ def test_submit_timer_restarts_dead_timer_task_on_add_new_kind() -> None:
         await scheduler.submit(job_b, Channel.BACKGROUND)
         await asyncio.sleep(0.05)
         new_task = wheel.task
-        assert new_task is not prev_task
+        assert new_task is not None
         assert not new_task.done()
 
     asyncio.run(_run())
+    scheduler.shutdown()
 
 
 def test_timer_loop_triggers_instance_at_next_run_at() -> None:
@@ -469,7 +492,48 @@ def test_timer_loop_triggers_instance_at_next_run_at() -> None:
         return jid
 
     asyncio.run(_run())
+    scheduler.shutdown()
     # 事件循环关闭后不验证（Task 被取消）
+
+
+def test_timer_survives_requester_loop_close() -> None:
+    """回归（HTTP/SDK 形态）：注册循环关闭后定时任务继续触发。
+
+    API 入口是每请求 ``asyncio.run`` 的短命循环——若 Timer 协程寄生在
+    调用方循环上，请求结束循环即关，定时任务静默死掉而注册表仍记录
+    "已注册"。私有后台循环须保证：注册请求的循环关闭后，tick 照常
+    触发实例执行。
+    """
+    _CountingJob.run_count = 0
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scope = Scope(user="u1")
+    job = _CountingJob(scope, interval=1)
+
+    # 模拟一个 HTTP 请求：asyncio.run 起短命循环提交注册，随即关闭
+    asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
+    # 请求循环已关闭——调度器私有循环继续 tick（等 2 个 tick）
+    time.sleep(2.2)
+    assert _CountingJob.run_count >= 1, (
+        "注册请求的循环关闭后定时任务仍须触发——寄生调用方循环的实现会静默停摆"
+    )
+    scheduler.shutdown()
+
+
+def test_shutdown_stops_private_loop() -> None:
+    """shutdown：取消 Scheduler 全部协程；再次调用幂等。"""
+    _CountingJob.run_count = 0
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scope = Scope(user="u1")
+    job = _CountingJob(scope, interval=1)
+
+    asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
+    scheduler.shutdown()
+    assert not scheduler._wheels  # Timer 全部取消清空
+    scheduler.shutdown()  # 幂等：未启动私有循环 / 重复调用不抛
+    # 关闭后不再触发
+    _CountingJob.run_count = 0
+    time.sleep(1.2)
+    assert _CountingJob.run_count == 0
 
 
 # ---- 演进模式随任务记录 ----
@@ -514,6 +578,95 @@ def test_timer_entry_and_fired_instance_both_carry_the_evolve_mode() -> None:
         assert {info.mode for info in fired} == {"forget"}
 
     asyncio.run(_run())
+    scheduler.shutdown()
+
+
+def test_permission_denied_marks_parent_timer_failed_not_succeeded() -> None:
+    """N1：授权拒绝停摆的父定时器终态 FAILED + stopped_reason，不覆写 SUCCEEDED。
+
+    Timer 退出路径只把 RUNNING 标 SUCCEEDED——"被拒停"回显成"成功跑完"自相矛盾，
+    且鉴权点按 JobInfo 状态判定，SUCCEEDED 是错误信号。
+    """
+
+    class _DeniedCountingJob(Job):
+        """run 抛 PermissionDeniedError 的 fake Job——类变量跨 copy.copy 计数。"""
+
+        run_count: int = 0
+
+        def __init__(self, scope: Scope, *, interval: int = 1) -> None:
+            super().__init__(scope=scope, interval=interval)
+
+        async def run(self) -> JobInfo:
+            _DeniedCountingJob.run_count += 1
+            raise PermissionDeniedError("evolve", "denied by test")
+
+    _DeniedCountingJob.run_count = 0
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scope = Scope(user="u1")
+
+    async def _run():
+        jid = await scheduler.submit(
+            _DeniedCountingJob(scope, interval=1), Channel.BACKGROUND
+        )
+        # 首次触发（1 个 interval）→ run 抛 PermissionDeniedError → 父定时器停摆；
+        # 再等一个 tick 让 Timer 循环走到退出路径（曾经在此覆写 SUCCEEDED）。
+        await asyncio.sleep(2.5)
+
+        parent = scheduler._jobs[jid]
+        assert parent.status == JobStatus.FAILED, "被拒停的定时器不能回显成功"
+        assert parent.detail["stopped_reason"] == "permission_denied"
+        assert _DeniedCountingJob.run_count == 1, "拒绝后不再触发"
+
+    asyncio.run(_run())
+    scheduler.shutdown()
+
+
+def test_re_register_within_tick_window_clears_stale_stopped_reason() -> None:
+    """F1：拒绝停摆后一个 tick 窗口内重新注册 → 复活态不得残留停摆痕迹。
+
+    拒绝停摆把父定时器置 FAILED + stopped_reason；entry 清理要等下一个
+    tick，窗口内同 schedule_key 重新 submit 走刷新路径复活 RUNNING——若不
+    清 stopped_reason，job_status 会回显"在跑却带着停摆原因"的矛盾状态。
+    """
+
+    class _SwitchJob(Job):
+        """首次 run 拒绝、后续放行的 fake Job——类变量翻转。"""
+
+        denied = True
+        run_count: int = 0
+
+        def __init__(self, scope: Scope, *, interval: int = 1) -> None:
+            super().__init__(scope=scope, interval=interval)
+
+        async def run(self) -> JobInfo:
+            _SwitchJob.run_count += 1
+            if _SwitchJob.denied:
+                raise PermissionDeniedError("evolve", "denied first")
+            return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED, detail={})
+
+    _SwitchJob.denied = True
+    _SwitchJob.run_count = 0
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scope = Scope(user="u1")
+
+    async def _run():
+        jid = await scheduler.submit(_SwitchJob(scope, interval=1), Channel.BACKGROUND)
+        await asyncio.sleep(1.8)  # 首触即拒 → FAILED + stopped_reason
+        assert scheduler._jobs[jid].status == JobStatus.FAILED
+
+        _SwitchJob.denied = False
+        new_jid = await scheduler.submit(
+            _SwitchJob(scope, interval=1), Channel.BACKGROUND
+        )
+        assert new_jid == jid, "同 schedule_key 走刷新路径复用 job_id"
+
+        info = scheduler._jobs[jid]
+        assert info.status == JobStatus.RUNNING, "复活为 RUNNING"
+        assert "stopped_reason" not in info.detail, "停摆原因不残留"
+        assert "finished_at" not in info.detail, "上一生命周期的完成时间不残留"
+
+    asyncio.run(_run())
+    scheduler.shutdown()
 
 
 # ---- 退出语义 ----
@@ -553,6 +706,7 @@ def test_timer_loop_exits_when_all_entries_done() -> None:
     # wheel 已从 _wheels 移除
     scope_key = scheduler._scope_key(scope)
     assert scope_key not in scheduler._wheels
+    scheduler.shutdown()  # 停私有循环（wheel 已空，只收线程）
 
 
 # ---- 取消 ----
@@ -578,6 +732,7 @@ def test_cancel_timer_marks_entry_done_and_removes() -> None:
     if wheel is not None:
         # entry 应已被移除（cancel 从 entries.remove）
         assert all(e.job_id != jid for e in wheel.entries)
+    scheduler.shutdown()
 
 
 # ---- per scope 串行 / 跨 scope 并行 ----
@@ -690,3 +845,4 @@ def test_timer_loop_skips_tick_when_same_kind_already_queued() -> None:
         await asyncio.sleep(0.1)
 
     asyncio.run(_run())
+    scheduler.shutdown()
