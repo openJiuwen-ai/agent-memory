@@ -469,7 +469,9 @@ def _add(srv, request: DispatchRequest) -> Body:
     security = _request_security(request)
     if "metadata" in payload:
         raise ValidationError("metadata has been removed; use system_metadata and user_metadata")
-    modality = Modality(payload.get("source", payload.get("modality", "text")))
+    modality = _enum_value(
+        Modality, payload.get("source", payload.get("modality", "text")), name="source"
+    )
     if modality == Modality.VIDEO:
         return _submit_video(srv, payload, scope=scope, security=security)
     # metadata 透传：infer 等调用级开关经 metadata 下推到引擎（engine.write 从
@@ -757,7 +759,7 @@ def _evolve(srv, request: DispatchRequest) -> Body:
     """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。"""
     payload = request.payload
     scope = _require_target(request)
-    mode = EvolveMode(payload.get("mode", "extract"))
+    mode = _enum_value(EvolveMode, payload.get("mode", "extract"), name="mode")
     job_id = srv.api.evolve(scope, mode, security=_request_security(request))
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
 
