@@ -126,7 +126,7 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.search(
+    result = kernel.api.search_v2(
         "test strategy",
         Context(scope=scope, extensions={"memory_type": "coding"}),
         security=legacy_request_context(scope),
@@ -139,7 +139,7 @@ def test_engine_recall_uses_pipeline_profile_from_system_metadata_filter() -> No
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.search(
+    result = kernel.api.search_v2(
         "test strategy",
         Context(scope=scope),
         security=legacy_request_context(scope),
@@ -153,7 +153,7 @@ def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.search(
+    result = kernel.api.search_v2(
         "test strategy",
         Context(scope=scope),
         security=legacy_request_context(scope),

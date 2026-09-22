@@ -29,7 +29,7 @@ def test_context_max_tokens_reaches_adaptive_disclosure() -> None:
     api = _api()
     api.add(_TEXT, _SCOPE, source=Modality.TEXT, security=legacy_request_context(_ACTOR))
 
-    res = api.search(
+    res = api.search_v2(
         "coffee",
         Context(_SCOPE, extensions={EXT_MAX_TOKENS: "300"}),
         security=legacy_request_context(_ACTOR),
@@ -44,7 +44,7 @@ def test_context_without_max_tokens_uses_default() -> None:
     api = _api()
     api.add(_TEXT, _SCOPE, source=Modality.TEXT, security=legacy_request_context(_ACTOR))
 
-    res = api.search(
+    res = api.search_v2(
         "coffee",
         Context(_SCOPE),
         security=legacy_request_context(_ACTOR),

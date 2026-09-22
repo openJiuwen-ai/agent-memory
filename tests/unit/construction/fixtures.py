@@ -281,7 +281,7 @@ class MockLLM(LLM):
 
     def __init__(self, responses: list[str] | None = None) -> None:
         """responses: 依次返回的字符串列表，用完循环。"""
-        self._responses = responses or [
+        self.responses = responses or [
             json.dumps(
                 [
                     {
@@ -293,7 +293,7 @@ class MockLLM(LLM):
                 ]
             )
         ]
-        self._call_count = 0
+        self.call_count = 0
 
     def plugin_type(self):
         from jiuwen_memory.common.base import PluginType
@@ -304,8 +304,8 @@ class MockLLM(LLM):
         return None
 
     def chat(self, messages: list[ChatMessage], **options: object) -> str:
-        response = self._responses[self._call_count % len(self._responses)]
-        self._call_count += 1
+        response = self.responses[self.call_count % len(self.responses)]
+        self.call_count += 1
         return response
 
 

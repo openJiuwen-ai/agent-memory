@@ -98,14 +98,14 @@ def test_api_requires_enabled_policy_before_hierarchy_submission(boundary, chann
         ),
     )
     with pytest.raises(PolicyError, match="hierarchy.enabled=false"):
-        boundary.api.evolve(_SCOPE, options, security=_SECURITY)
+        boundary.api.evolve_v2(_SCOPE, options, security=_SECURITY)
 
     assert boundary.scheduler.submissions == []
 
 
 def test_api_non_hierarchy_mode_still_uses_same_scheduler(boundary) -> None:
     options = EvolveTaskOptions(mode=EvolveMode.FORGET, channel=Channel.HOT)
-    job_id = boundary.api.evolve(_SCOPE, options, security=_SECURITY)
+    job_id = boundary.api.evolve_v2(_SCOPE, options, security=_SECURITY)
 
     assert len(boundary.scheduler.submissions) == 1
     submitted, channel = boundary.scheduler.submissions[0]

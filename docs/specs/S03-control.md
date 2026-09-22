@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-09-20 |
+| 最近一次修订日期 | 2026-09-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -194,6 +194,11 @@ EvolveJob；HIERARCHY 不经普通内容抽取任务，不从 messages 重新提
 - 存在旧父时，在范围内再次流式扫描反向引用：区间外节点若仍指向待退役父但未被
   子列表列出，或外部旧父声明占有所选节点，均在写前拒绝，避免留下半棵旧树。
   这会额外扫描一次已授权真源范围，不缓存整个范围，也不扩展 Scope。
+- 当前候选读取成本是 home 范围内 `O(N_home)`：任务先完整分页读取该 home 的全部
+  记忆，再在内存中按 TIME、角色、生命周期和请求区间筛选；请求 span 较短也不会减少
+  首次扫描量。存在旧父时，反向引用核对还会增加一次同范围流式扫描。
+  `max_leaves` 只限制最终参与构建和补齐的节点数量，不限制为找到这些节点而读取的
+  总记录数；大 home 的显式重建与周期派生需要按此成本评估，当前未使用结构索引预筛。
 - 无父新叶与旧父全部子叶的并集受 max_leaves 保护；超限拒绝，不以截断后的输入继续。
   窗口内已挂父的叶也必须能够在选定旧父及补齐子集中闭合。没有候选是成功空操作。
   三层派生父数量最多为 3 × max_leaves；补齐各中间层及无父新叶之和也受 max_leaves
@@ -241,7 +246,13 @@ max_leaves/page_size 要求真正的正整数，lock_wait_ms 要求非负整数�
 `MemoryEngine.start_background_jobs(scope, policy)`；CommandService 只转发已授权 home。
 scope 就是实际 tree_home_scope，不清空 user/agent/session，不自动枚举其它 home。
 enabled 和 auto_derive 均为 true、且绑定 Evolver 提供显式 TIME profile 时才注册；
-关闭或缺 profile 返回空 id 列表。Spec 强制接收同源 Evolver、KV、Policy，不重新装配内容算子。
+关闭时返回 `BackgroundJobStartResult(skipped=True, reason="hierarchy_disabled")`；缺 profile
+返回 `reason="hierarchy_profile_missing"` 并记录错误诊断。成功时 `job_ids` 包含注册或复用的
+定时任务 id。Spec 强制接收同源 Evolver、KV、Policy，不重新装配内容算子。
+
+普通 `EvolveJob` 不处理 TIME 派生父级 `time_span` / `scene` / `event`，避免把建树产物再次
+送入 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 内容演进链；权威 `snapshot` 与无结构记忆仍按原
+模式处理。内容抽取产生的新事实必须从空 `HierarchyRef` 开始，不继承来源节点的树位和边。
 
 HIERARCHY_DERIVE 在 BACKGROUND 注册周期任务，mode 为 hierarchy；Scheduler 必须通过
 `supports_periodic()` 明确声明能力，否则启动失败。默认实现返回 false，周期调度实现返回
@@ -684,6 +695,9 @@ jiuwen_memory/control/<算子>_impl/
 | S08-config | ConfigSource 与 PolicyManager 分工 |
 
 ## 修订记录
+
+- 2026-09-22：明确显式建树与周期派生的候选读取是 home 内 `O(N_home)` 全量分页，
+  `max_leaves` 不限制扫描记录数，旧父反向引用核对可能增加第二次扫描。
 
 - 2026-09-10：阶段 9 增加 HIERARCHY_DERIVE、宿主异步周期注册、同源 profile、逐层未挂父输入与完整水位、迟到/过窗保护和跨轮故障闸；周期 id 暴露最近轮次结果，不接管宿主循环。
 

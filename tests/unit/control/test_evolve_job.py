@@ -10,7 +10,15 @@ import asyncio
 
 import pytest
 
-from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
+from jiuwen_memory.common.type_def import (
+    HierarchyKind,
+    HierarchyRef,
+    HierarchyRole,
+    MemoryUnit,
+    Scope,
+    Segment,
+    memory_key,
+)
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
@@ -165,7 +173,11 @@ def test_run_excludes_middle_marked_units_from_evolver_input() -> None:
     kv.insert(scope, memory_key("long-2"), dumps(_make_unit("long-2", scope, "another long")))
     # 中期记忆原文——应被排除
     kv.insert(scope, memory_key("mid-1"), dumps(_make_middle_unit("mid-1", scope, "middle raw")))
-    kv.insert(scope, memory_key("mid-2"), dumps(_make_middle_unit("mid-2", scope, "another middle")))
+    kv.insert(
+        scope,
+        memory_key("mid-2"),
+        dumps(_make_middle_unit("mid-2", scope, "another middle")),
+    )
     evolver = RecordingEvolver()
 
     job = EvolveJob(scope=scope, kv=kv, evolver=evolver)
@@ -173,6 +185,28 @@ def test_run_excludes_middle_marked_units_from_evolver_input() -> None:
 
     units, _ = evolver.calls[0]
     assert {u.id for u in units} == {"long-1", "long-2"}
+    assert info.status == JobStatus.SUCCEEDED
+
+
+def test_run_excludes_time_parents_but_keeps_snapshot_leaf() -> None:
+    scope = Scope(org="acme", user="u1")
+    kv = InMemoryKVStore()
+    roles = {
+        "snapshot": HierarchyRole.SNAPSHOT,
+        "time-span": HierarchyRole.TIME_SPAN,
+        "scene": HierarchyRole.SCENE,
+        "event": HierarchyRole.EVENT,
+    }
+    for unit_id, role in roles.items():
+        unit = _make_unit(unit_id, scope, unit_id)
+        unit.hierarchy = HierarchyRef(kind=HierarchyKind.TIME, role=role)
+        kv.insert(scope, memory_key(unit_id), dumps(unit))
+    evolver = RecordingEvolver()
+
+    info = asyncio.run(EvolveJob(scope=scope, kv=kv, evolver=evolver).run())
+
+    units, _ = evolver.calls[0]
+    assert [unit.id for unit in units] == ["snapshot"]
     assert info.status == JobStatus.SUCCEEDED
 
 

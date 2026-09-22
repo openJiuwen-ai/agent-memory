@@ -105,7 +105,9 @@ mcp = FastMCP(
 )
 
 
-def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
+def _invoke_blocking(
+    verb: str, payload: dict, *, context: Any = None, version: str = "v1"
+):
     """同步执行体：认证 → 共享契约调用；失败抛错，让 MCP 客户端看到原因。
 
     必须在**无事件循环的线程**里跑——同步 ``MemoryAPI`` 方法在 api 层内部用
@@ -126,12 +128,14 @@ def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
         with authenticated(
             _AUTHENTICATOR, credentials, surface=Surface.MCP, request_id=request_id
         ) as security:
-            return invoke_api(_SRV.api, verb, payload, security)
+            return invoke_api(_SRV.api, verb, payload, security, version)
     except AgentMemoryError as api_error:
         raise RuntimeError(f"{type(api_error).__name__}: {api_error}") from api_error
 
 
-async def _invoke(verb: str, payload: dict, *, context: Any = None):
+async def _invoke(
+    verb: str, payload: dict, *, context: Any = None, version: str = "v1"
+):
     """工具统一入口：执行体放工作线程，结果经 await 回到事件循环。
 
     FastMCP 在事件循环线程**裸调**工具函数（func_metadata 对同步 fn 不做
@@ -140,7 +144,7 @@ async def _invoke(verb: str, payload: dict, *, context: Any = None):
     内部桥接照常工作。认证上下文的工作线程内 set/reset 同线程配对。
     """
     return await asyncio.to_thread(
-        _invoke_blocking, verb, payload, context=context
+        _invoke_blocking, verb, payload, context=context, version=version
     )
 
 
@@ -212,7 +216,7 @@ async def memory_search(query: str, context: dict, top_k: int = 10,
                   as_of: str | None = None, filters: dict | None = None,
                   disclosure: str = "l0", with_trajectory: bool = False,
                   ctx: Context = None) -> dict:
-    """按「语义 + 关键词」双路混合检索记忆。
+    """按 V1 平铺参数执行「语义 + 关键词」双路混合检索。
 
     query: 查询文本。
     context: 检索上下文 {"scope": {...同 memory_add 的归属坐标...}, "extensions": {}}；
@@ -236,6 +240,24 @@ async def memory_search(query: str, context: dict, top_k: int = 10,
          "filters": filters, "disclosure": disclosure,
          "with_trajectory": with_trajectory},
         context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_search_v2(query: str, context: dict, options: dict | None = None,
+                     ctx: Context = None) -> dict:
+    """按 V2 统一选项检索，支持显式 TIME 层级筛选、上卷与下钻。
+
+    query: 查询文本。
+    context: 检索上下文，scope 决定召回范围，extensions 承载调用级扩展。
+    options: SearchOptions JSON；除 top_k 等普通选项外，可传 hierarchy_kind、
+        hierarchy_role、span_start、span_end、expand_depth 和 rollup。
+    """
+    return await _invoke(
+        "search",
+        {"query": query, "context": context, "options": options},
+        context=ctx,
+        version="v2",
     )
 
 
@@ -303,7 +325,7 @@ async def memory_delete(selector: dict, ctx: Context = None) -> list[str]:
 @mcp.tool()
 async def memory_evolve(scope: dict, mode: str, channel: str = "background",
                   ctx: Context = None) -> str:
-    """触发记忆演进，异步执行，返回后台任务 id（job_id），用 memory_job_status 查询进度。
+    """按 V1 平铺参数触发记忆演进，返回后台任务 id。
 
     mode: 必填——extract 抽取派生 / associate 建立关联 / consolidate 巩固升华 /
         forget 清理过期。
@@ -311,6 +333,18 @@ async def memory_evolve(scope: dict, mode: str, channel: str = "background",
     """
     return await _invoke(
         "evolve", {"scope": scope, "mode": mode, "channel": channel}, context=ctx
+    )
+
+
+@mcp.tool()
+async def memory_evolve_v2(scope: dict, options: dict, ctx: Context = None) -> str:
+    """按 V2 统一选项触发内容演进或显式 TIME 建树。
+
+    options: EvolveTaskOptions JSON，包含 mode/channel；HIERARCHY 模式另含
+        hierarchy_options。异步执行并返回 job_id。
+    """
+    return await _invoke(
+        "evolve", {"scope": scope, "options": options}, context=ctx, version="v2"
     )
 
 

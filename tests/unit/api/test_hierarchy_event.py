@@ -41,11 +41,11 @@ def event_runtime_fixture(request):
 @pytest.mark.parametrize(("depth", "count"), [(0, 1), (1, 3), (2, 5), (3, 7)])
 def test_event_search_expands_each_layer_with_existing_depth_option(api, depth, count) -> None:
     leaves = [write_snapshot(api, minute, session=f"session-{minute}") for minute in (0, 1)]
-    job_id = api.evolve(HOME, task_options(parent_roles=list(EVENT_ROLES)), security=SECURITY)
+    job_id = api.evolve_v2(HOME, task_options(parent_roles=list(EVENT_ROLES)), security=SECURITY)
     info = api.job_status(job_id, security=SECURITY)
     assert info.status is JobStatus.SUCCEEDED, info.detail
     assert info.detail["created_parent_count"] == "5"
-    result = api.search("snapshot evidence", Context(HOME), hierarchy_search_options(
+    result = api.search_v2("snapshot evidence", Context(HOME), hierarchy_search_options(
         hierarchy_role=HierarchyRole.EVENT, expand_depth=depth,
     ), security=SECURITY)
     assert len(result.items) == count
@@ -57,14 +57,14 @@ def test_event_search_expands_each_layer_with_existing_depth_option(api, depth, 
 
 def test_event_rollup_and_depth_three_share_search_protocol(api) -> None:
     leaves = [write_snapshot(api, minute, session=f"session-{minute}") for minute in (0, 1)]
-    job_id = api.evolve(HOME, task_options(parent_roles=list(EVENT_ROLES)), security=SECURITY)
+    job_id = api.evolve_v2(HOME, task_options(parent_roles=list(EVENT_ROLES)), security=SECURITY)
     assert api.job_status(job_id, security=SECURITY).status is JobStatus.SUCCEEDED
     result = invoke_api(api, "search", {
         "query": "snapshot evidence",
         "context": {"scope": {"org": HOME.org, "user": HOME.user, "agent": HOME.agent}},
         "options": {"hierarchy_kind": "time", "hierarchy_role": "event",
                     "rollup": True, "expand_depth": 3, "with_trajectory": True},
-    }, SECURITY)
+    }, SECURITY, version="v2")
     assert len(result["items"]) == 7
     assert {item["unit_id"] for item in result["items"][5:]} == {leaf.id for leaf in leaves}
     assert any(step["stage"] == "rollup" for step in result["trajectory"])
@@ -73,11 +73,11 @@ def test_event_rollup_and_depth_three_share_search_protocol(api) -> None:
 
 def test_public_event_gap_rebuild_keeps_every_original_descendant(api) -> None:
     leaves = [write_snapshot(api, minute, session=f"session-{minute}") for minute in (0, 30)]
-    initial = api.evolve(HOME, task_options(
+    initial = api.evolve_v2(HOME, task_options(
         parent_roles=list(EVENT_ROLES), span_end=START + timedelta(minutes=30),
     ), security=SECURITY)
     assert api.job_status(initial, security=SECURITY).status is JobStatus.SUCCEEDED
-    rebuilt = api.evolve(HOME, task_options(
+    rebuilt = api.evolve_v2(HOME, task_options(
         parent_roles=list(EVENT_ROLES), span_start=START + timedelta(minutes=15),
         span_end=START + timedelta(minutes=15),
     ), security=SECURITY)
@@ -85,7 +85,7 @@ def test_public_event_gap_rebuild_keeps_every_original_descendant(api) -> None:
     assert info.status is JobStatus.SUCCEEDED, info.detail
     assert info.detail["replaced_parent_count"] == "5"
     assert info.detail["updated_child_count"] == "2"
-    result = api.search("snapshot evidence", Context(HOME), hierarchy_search_options(
+    result = api.search_v2("snapshot evidence", Context(HOME), hierarchy_search_options(
         hierarchy_role=HierarchyRole.EVENT, expand_depth=3, span_end=START + timedelta(minutes=30),
     ), security=SECURITY)
     assert len(result.items) == 7

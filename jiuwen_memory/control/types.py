@@ -291,6 +291,15 @@ class JobInfo:
     detail: dict[str, str] = field(default_factory=dict)  # 附加信息（进度/错误原因等）
 
 
+@dataclass
+class BackgroundJobStartResult:
+    """宿主周期任务启动结果；显式区分已注册与按策略跳过。"""
+
+    job_ids: list[str] = field(default_factory=list)
+    skipped: bool = False
+    reason: str = ""
+
+
 class UpdateMode(str, Enum):
     """``update`` 的版本语义：决定修正后是否保留旧内容、用同 id 还是新 id。"""
 

@@ -72,7 +72,7 @@ try:
         security=security,
         tags=["preference"],
     )
-    result = api.search(
+    result = api.search_v2(
         "用户喜欢用什么语言",
         Context(scope),
         security=security,
@@ -244,7 +244,7 @@ scope = Scope(org="demo", user="alice")
 security = legacy_request_context(scope)
 try:
     api.add("需要持久化的记忆", scope, security=security)
-    result = api.search(
+    result = api.search_v2(
         "持久化", Context(scope), options=SearchOptions(top_k=5), security=security,
     )
     print([item.content for item in result.items])

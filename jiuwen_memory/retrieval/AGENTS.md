@@ -174,5 +174,8 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 8. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
-   未适配延迟展开前必须显式拒绝非零深度，不能静默截断已经展开的子项。
-   未适配上卷后的分支评分前同样明确拒绝 rollup=True。
+   未适配层级过滤前必须拒绝任何显式 `hierarchy_kind`；不能只拒绝非零展开或上卷后，
+   让普通 typed 层级请求静默走三分支的部分语义。
+9. 普通检索（未指定 `hierarchy_kind`）在索引 top-k 前排除 TIME 的
+   `time_span` / `scene` / `event`，并以真源复核兜底；`snapshot` 与无结构记忆仍可召回。
+   显式 kind 查询保持按 kind/role/status/span 的原有结构语义。

@@ -792,7 +792,7 @@ class _InProcessClient(_AgentMemoryClient):
         # 进程内模式经 search 的 tier filter 下推过滤 semantic。
         filters = [_semantic_filter()]
         result = await asyncio.to_thread(
-            self._api.search,
+            self._api.search_v2,
             query,
             Context(scope=api_scope),
             security=legacy_request_context(api_scope),
@@ -824,7 +824,7 @@ class _InProcessClient(_AgentMemoryClient):
 
         # evolve 是同步+asyncio.run，必须 to_thread
         await asyncio.to_thread(
-            self._api.evolve,
+            self._api.evolve_v2,
             api_scope,
             EvolveTaskOptions(mode=EvolveMode.EXTRACT, channel=Channel.BACKGROUND),
             security=legacy_request_context(api_scope),

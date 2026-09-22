@@ -165,7 +165,8 @@ def _load_hierarchy(value: object, unit_id: str) -> HierarchyRef:
     """JSON 对象 → ``HierarchyRef``，失败一律降级为空结构并留诊断。
 
     缺失或非对象读为空结构；未知字段忽略；未知 kind/role/status 或时间解析失败时
-    **不构造半有效结构**——整个 hierarchy 降级为空，避免坏数据被当成有效树参与建树。
+    整段 hierarchy 降级为空。字段可解析但结构约束不自洽时仍返回引用；本函数不调用
+    ``validate_ref``，合法性由 Composer、检索等消费边界在使用前校验。
     """
     if value is None:
         return HierarchyRef()

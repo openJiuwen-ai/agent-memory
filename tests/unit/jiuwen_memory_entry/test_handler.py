@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.api import EvolveMode, EvolveTaskOptions, Scope
+from jiuwen_memory.api import DisclosureLevel, EvolveMode, Scope
 from jiuwen_memory.common.errors import (
     PartialFailureError,
     RateLimitedError,
@@ -17,13 +17,13 @@ from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatc
 pytestmark = pytest.mark.unit
 
 
-def test_legacy_evolve_wraps_mode_in_task_options() -> None:
+def test_legacy_evolve_uses_v1_flat_mode() -> None:
     calls = []
 
     class RecordingApi:
         @staticmethod
-        def evolve(scope, options, *, security):
-            calls.append((scope, options, security))
+        def evolve(scope, mode, *, security):
+            calls.append((scope, mode, security))
             return "job-legacy"
 
     srv = SimpleNamespace(api=RecordingApi())
@@ -40,8 +40,49 @@ def test_legacy_evolve_wraps_mode_in_task_options() -> None:
     }
     assert len(calls) == 1
     assert calls[0][0] == Scope(org="acme", user="alice")
-    assert calls[0][1] == EvolveTaskOptions(mode=EvolveMode.CONSOLIDATE)
+    assert calls[0][1] is EvolveMode.CONSOLIDATE
     assert calls[0][2].actor == Scope(org="acme", user="alice")
+
+
+def test_legacy_search_uses_v1_flat_options() -> None:
+    calls = []
+
+    class RecordingApi:
+        @staticmethod
+        def search(query, context, **options):
+            calls.append((query, context, options))
+            return SimpleNamespace(items=[], trajectory=[])
+
+    srv = SimpleNamespace(api=RecordingApi())
+    status, body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "search", {"tenant_id": "acme", "scope": "alice", "query": "coffee", "k": 3}
+        ),
+    )
+
+    assert status == 200
+    assert body == {"ok": True, "op": "search", "hits": [], "count": 0}
+    assert calls[0][0] == "coffee"
+    assert calls[0][1].scope == Scope(org="acme", user="alice")
+    assert calls[0][2]["top_k"] == 3
+    assert calls[0][2]["disclosure"] is DisclosureLevel.L0
+
+    status, _ = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "search",
+            {
+                "tenant_id": "acme",
+                "scope": "alice",
+                "query": "coffee",
+                "disclosure": "l2",
+            },
+        ),
+    )
+
+    assert status == 200
+    assert calls[1][2]["disclosure"] is DisclosureLevel.L2
 
 
 def test_rate_limited_error_preserves_legacy_400_mapping() -> None:

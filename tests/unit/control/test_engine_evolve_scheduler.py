@@ -141,7 +141,7 @@ def test_api_evolve_returns_completed_scheduler_job_with_evolve_result_detail() 
     scope = Scope(user="u1")
     kernel.api.add("Alice likes tea", scope, security=legacy_request_context(scope))
 
-    job_id = kernel.api.evolve(
+    job_id = kernel.api.evolve_v2(
         scope, EvolveTaskOptions(mode=EvolveMode.EXTRACT), security=legacy_request_context(scope)
     )
 

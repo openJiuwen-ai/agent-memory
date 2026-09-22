@@ -966,7 +966,7 @@ class ConversationProcessor:
         """
         with _PhaseTimer("search", self.conv_id):
             try:
-                res = self.api.search(
+                res = self.api.search_v2(
                     question, Context(self.scope),
                     security=self.security,
                     options=SearchOptions(

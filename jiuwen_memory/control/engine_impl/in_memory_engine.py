@@ -59,6 +59,7 @@ from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, Pipe
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -812,7 +813,9 @@ class InMemoryEngine(MemoryEngine):
         )
         return job_id
 
-    async def start_background_jobs(self, scope: Scope, policy: PolicyManager) -> list[str]:
+    async def start_background_jobs(
+        self, scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
         """在当前长驻循环注册 home；保留本地 Engine 的 space 限制。"""
         _ensure_local_scope(scope)
         return await start_hierarchy_derivation(scope, policy, BackgroundDependencies(

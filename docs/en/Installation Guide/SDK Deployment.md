@@ -74,7 +74,7 @@ try:
         security=security,
         tags=["preference"],
     )
-    result = api.search(
+    result = api.search_v2(
         "Which language does the user prefer?",
         Context(scope),
         security=security,
@@ -257,7 +257,7 @@ scope = Scope(org="demo", user="alice")
 security = legacy_request_context(scope)
 try:
     api.add("A memory that must be persisted", scope, security=security)
-    result = api.search(
+    result = api.search_v2(
         "persisted memory", Context(scope), options=SearchOptions(top_k=5), security=security,
     )
     print([item.content for item in result.items])

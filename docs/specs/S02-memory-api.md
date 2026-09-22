@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-20 |
+| 最近一次修订日期 | 2026-09-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -35,14 +35,16 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 
 ## HTTP / CLI 与协议适配契约
 
-HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
-`MemoryAPI.__abstractmethods__` 的 36 个公开方法全部按以下规则暴露：
+HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。V1 暴露历史方法集，
+V2 当前只暴露请求对象发生变化的 `search` / `evolve`：
 
 ```text
-POST /v1/<MemoryAPI 方法名>
+POST /v1/<V1 MemoryAPI 方法名>      -> 同名 MemoryAPI 方法
+POST /v2/search                     -> MemoryAPI.search_v2
+POST /v2/evolve                     -> MemoryAPI.evolve_v2
   -> JSON 字段按同名参数反序列化
   -> 注入认证产生的 security
-  -> 调用同名 MemoryAPI 方法
+  -> 调用版本映射后的 MemoryAPI 方法
   -> 原返回值递归序列化为 JSON
 ```
 
@@ -87,10 +89,10 @@ dev 模式默认只能绑定 loopback；容器内监听非 loopback 必须显式
 [写入归属坐标](../zh/安装指导/SDK部署.md#写入归属坐标-coords)。
 此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
-HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
-不再经过 legacy `DispatchRequest` / shared handler。CLI 的 36 个命令与参数直接从
-`MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
-对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
+HTTP、CLI 与 MCP 共用 `jiuwen_memory_entry/core/api_contract.py` 的版本化 JSON 契约和
+调用逻辑，不再让抽象方法集合自动变成传输路由。CLI 只暴露 36 个 V1 命令，方法名原样
+作为命令，参数原样作为 `--<parameter_name>`，对象使用同字段 JSON；不保留
+`--tenant`、`--item-id`、`--k` 等历史转换。
 本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
 `table` / `quiet` 只负责展示，不改变返回契约。
 
@@ -99,8 +101,9 @@ HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约�
 `local/developer` 测试身份，不跳过 API 授权。远程 CLI 发送 Bearer 凭据，
 认证模式由 HTTP 服务端决定。单次本地调用结束后清理上下文，命令结束后关闭 runtime。
 `healthz` 和逐行执行 NDJSON 的 `batch` 是 CLI 辅助命令，不属于 MemoryAPI 方法集，
-后者不等于 API `batch_add`，也不增加事务语义。
-MCP 和其他旧调用方仍可使用 `core/legacy_request_adapter.py`。
+后者不等于 API `batch_add`，也不增加事务语义。MCP 保留 `memory_search` /
+`memory_evolve` 两个 V1 工具，并新增 `memory_search_v2` / `memory_evolve_v2`；其他旧调用方
+仍可使用 `core/legacy_request_adapter.py`。
 
 ### HTTP 错误响应与请求关联
 
@@ -141,7 +144,8 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 日志和审计关联，不参与 actor、target 或权限判定。429 响应额外返回 `Retry-After: 1`，表示
 客户端可按整数秒退避；其他状态不返回该 header。CLI 本地调用与 HTTP 共用
 `core/error_response.py` 的领域错误状态及脱敏规则，本地错误也带独立 request ID；
-命令行参数解析错误仍使用 CLI 退出码。MCP 与旧进程内 legacy dispatch 不受影响。
+命令行参数解析错误仍使用 CLI 退出码。MCP 的工具错误 envelope 与旧进程内
+legacy dispatch 不受影响；MCP V1/V2 工具都复用这套错误映射。
 
 ## 范围 / 边界
 
@@ -184,8 +188,8 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。过渡期 `common.security.legacy.legacy_request_context()` 是唯一例外（见 F05 §PR2），随实装 PR 一并删除。
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；目标形态下 `grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位。接口先行过渡期只固定签名，`GrantStore` 未实装前不生成 ID、不据 ID 判定，撤销语义与 `mem2.0` 一致（见 F05 §5.4）。
-17. **建树默认关闭**：普通 `add` 不建父树；调用方通过 `evolve(scope, EvolveTaskOptions(...), security=...)` 显式发起 TIME 两/三/四层任务。`hierarchy.enabled=false` 时抛 `PolicyError`，普通四种演进模式不受该开关影响。周期增量须由宿主调用 Runtime 异步入口并独立 opt-in；召回时建树仍未实现。
-18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
+17. **建树默认关闭**：普通 `add` 不建父树；调用方通过 `evolve_v2(scope, EvolveTaskOptions(...), security=...)` 显式发起 TIME 两/三/四层任务。`hierarchy.enabled=false` 时抛 `PolicyError`，普通四种演进模式不受该开关影响。周期增量须由宿主调用 Runtime 异步入口并独立 opt-in；召回时建树仍未实现。
+18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search_v2(..., SearchOptions(expand_depth>0))` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权在过渡期委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
 21. **Space 删除事务在 Control**：`delete_space` 鉴权后调用 `SpaceLifecycleService`（先 `MemoryEngine.purge_space`，再 `SpaceManager.delete`，并把 purge 条数累加进 `deleted_counts` 的 `memory` / `index` / `kv`）。purge 失败则不删 space；purge 成功而 metadata delete 失败时抛 `PartialFailureError`（`retry_action=delete_space`），不得报告完整成功。重试同一入口：purge 对空空间幂等，第二步再删元数据。API 只授权、调用该端口、使 membership 缓存失效并记录入口审计；不得在 API 内联 purge+delete 或实现索引删除/存储遍历。
@@ -211,7 +215,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
 | 数据面 | `delete` | 已实现 | [delete](#delete) | 无独立 F；实现见 F01 |
-| 数据面 | `evolve` | 已实现 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET，以及显式 TIME snapshot→time_span 建树；统一请求对象 | [evolve](#evolve) | F01、F02；层级见 F08 |
+| 数据面 | `evolve` / `evolve_v2` | V1 保留 mode/channel；V2 已实现统一请求对象及 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET/HIERARCHY | [evolve](#evolve) | F01、F02；层级见 F08 |
 | 任务面（委托 Scheduler） | `job_status` | 已实现 | [job_status](#job_status) | F01 |
 | 任务面 | `job_cancel` | 已实现 | [job_cancel](#job_cancel) | F01 |
 | 治理面（委托 Governor） | `inspect` | 已实现 | [inspect](#inspect) | F01 |
@@ -454,6 +458,18 @@ API 不得在上述流程中自行执行以下逻辑：
 def search(
     query: str,
     context: Context,
+    *,
+    security: RequestSecurityContext,
+    filters: FilterExpr | list[FilterClause] | dict | None = None,
+    as_of: datetime | None = None,
+    top_k: int = 10,
+    disclosure: DisclosureLevel = DisclosureLevel.L0,
+    with_trajectory: bool = False,
+) -> RetrievalResult: ...
+
+def search_v2(
+    query: str,
+    context: Context,
     options: SearchOptions | None = None,
     *,
     security: RequestSecurityContext,
@@ -474,10 +490,22 @@ class SearchOptions:
     rollup: bool = False
 ```
 
-**状态：阶段 6 已实现**。`SearchOptions` 从 `jiuwen_memory.api` 导入，普通选项、
-四个层级条件、expand_depth 及 rollup 统一装配到 `RetrievalQuery`。省略 options 或传 None 使用默认值；
-旧的平铺 `filters/as_of/top_k/disclosure/with_trajectory` 关键字不再接受。
-HTTP/CLI 将这些字段放在 `options` 对象内；枚举用字符串、datetime 用 ISO 8601：
+**状态：MemoryAPI V1/V2、HTTP V1/V2 与 MCP V1/V2 已实现；CLI 保持 V1**。历史 `search` 保留平铺的
+`filters/as_of/top_k/disclosure/with_trajectory`，内部只负责构造 `SearchOptions` 并委托
+`search_v2`，不能表达层级查询。`search_v2` 从 `jiuwen_memory.api` 接收 `SearchOptions`，
+把普通选项、四个层级条件、expand_depth 及 rollup 统一装配到 `RetrievalQuery`；省略
+options 或传 None 使用默认值，且不再接受旧平铺选项关键字。
+
+HTTP V1 使用平铺 JSON，MCP V1 工具保持平铺参数；HTTP V2 与 MCP V2 使用嵌套
+`options`。CLI 当前只暴露 V1。枚举用字符串、datetime 用 ISO 8601：
+
+```json
+{
+  "query": "数据库迁移",
+  "context": {"scope": {"org": "demo", "user": "alice"}},
+  "top_k": 5
+}
+```
 
 ```json
 {
@@ -518,6 +546,9 @@ top_k 限制根数量，子不占根名额；父子共用 max_tokens，跨空间
 `RetrievedItem.parent_id` 来自真源引用，空串表示根或未挂接节点；结果项不携带完整
 Scope，裸 id 不足以重建跨 Scope 同名节点的树。无公开 MemoryAPI.expand；内部
 defer_expansion 不接受作为 SearchOptions 字段，ensure 仍未开放。
+`parent_id` 是通用 search 响应的向前新增字段，不只在显式层级查询中出现：普通 unit
+也会返回空串。宽松 JSON 客户端可直接忽略；严格 Schema、白名单反序列化或精确字段
+集合校验的客户端必须把该字段加入允许列表，服务端不提供按请求隐藏该字段的兼容开关。
 多模态包装器尚未适配上卷及展开，rollup=True 或非零深度明确拒绝，不静默当成普通 search。
 
 #### list
@@ -629,6 +660,14 @@ HIERARCHY 支持显式 TIME snapshot→time_span→scene→event 四层建树或
 ```python
 def evolve(
     scope: Scope,
+    mode: EvolveMode,
+    channel: Channel = Channel.BACKGROUND,
+    *,
+    security: RequestSecurityContext,
+) -> str: ...
+
+def evolve_v2(
+    scope: Scope,
     options: EvolveTaskOptions,
     *,
     security: RequestSecurityContext,
@@ -640,7 +679,7 @@ def evolve(
 它携带已收齐的 MemoryUnit，不与公开任务请求对象混用。
 
 ```python
-job_id = api.evolve(
+job_id = api.evolve_v2(
     scope,
     EvolveTaskOptions(mode=EvolveMode.EXTRACT),
     security=security,
@@ -661,8 +700,20 @@ parent_roles 为 [TIME_SPAN, SCENE, EVENT] 的非空前缀（枚举、顺序严�
 `span_start/span_end` 必须成对、有界且有序，并要求 `scope == tree_home_scope`。
 策略 `hierarchy.enabled` 默认字符串 `"false"`，未开启时抛 `PolicyError`。
 
-HTTP `POST /v1/evolve`、本地/远程 CLI 使用同一 JSON 形状；认证上下文由接入层提供，
-不写入业务 JSON。以下省略的 Scope 维度按空字符串处理：
+历史 `evolve` 保留 mode/channel 参数，内部只负责构造 `EvolveTaskOptions` 并委托
+`evolve_v2`，因此不开放 `hierarchy_options`；显式建树必须调用 `evolve_v2`。
+
+HTTP `POST /v1/evolve`、CLI `evolve` 和 MCP `memory_evolve` 使用平铺的 `mode/channel`；
+HTTP `POST /v2/evolve` 与 MCP `memory_evolve_v2` 使用下面的嵌套请求对象。认证上下文
+由接入层提供，不写入业务 JSON。以下省略的 Scope 维度按空字符串处理：
+
+```json
+{
+  "scope": {"org": "demo", "space": "memory", "user": "u1"},
+  "mode": "extract",
+  "channel": "background"
+}
+```
 
 ```json
 {
@@ -690,8 +741,10 @@ event 时，系统补齐其全部 scene、time_span 和 snapshot 再整体重建
 `rollup=True` 复用已有 MaxP。两/三层请求继续可用，scene 的原文展开深度仍为 2。
 没有新增召回参数，也不改变普通写入的 infer 路径。
 
-这是有意的破坏性接口迁移：不再接受独立 `mode/channel` 的 Python 旧调用或旧顶层
-JSON 字段。普通模式也必须包装为 `EvolveTaskOptions` / `options`，但其演进算法不变。
+V1 的独立 `mode/channel` Python 调用继续兼容；V2、HTTP `/v2/evolve` 与 MCP
+`memory_evolve_v2` 使用 `EvolveTaskOptions` / `options`，不通过同名方法的动态参数分派
+混合两套调用形状。
+两条入口最终进入同一实现，普通模式的演进算法不变。
 返回 job_id 只表示任务已提交，不替代 `job_status` 的最终结果。默认 in_process 调度器
 会在提交中等待执行；async_timer 的异步执行需要宿主保持事件循环存活，临时
 `asyncio.run()` 的后台任务生命周期不由本阶段修复。索引维护仍随数据面自动跟进，
@@ -709,14 +762,16 @@ JSON 字段。普通模式也必须包装为 `EvolveTaskOptions` / `options`，�
 ```python
 async def start_background_jobs(
     self, scope: Scope, *, security: RequestSecurityContext,
-) -> list[str]:
+) -> BackgroundJobStartResult:
     """在宿主持续存活的事件循环中注册固定 home 的周期任务。"""
 ```
 
 启动时快照 scope，按 WRITE+UPDATE、空间 UPDATE 与可写状态校验，拒绝权限路由字段
 非空的部署，再交 CommandService。API 不读取候选或直接驱动 Composer。
-enabled/auto_derive 默认关闭，关闭或缺显式 TIME profile 返回 []；开启但调度器不支持
-周期则抛 ValidationError。同一 home 重复启动返回相同定时任务 id。
+enabled/auto_derive 默认关闭。返回值的 `job_ids` 是本次注册或复用的定时任务 id；未注册时
+`skipped=True`，并分别用 `hierarchy_disabled`、`hierarchy_profile_missing` 区分开关未开启
+和缺显式 TIME profile，不能再用空列表同时表示多种结果。开启但调度器不支持周期则抛
+ValidationError。同一 home 重复启动返回相同定时任务 id。
 
 调用必须由长驻异步宿主 `await runtime.start_background_jobs(home, security=security)`。
 Runtime 不自动运行，不创建后台循环/线程；同步 `asyncio.run(...)` 返回后循环关闭，
@@ -770,7 +825,7 @@ HIERARCHY 的空间动作映射到 UPDATE。取消能力受 Scheduler 实现约�
 
 ### 治理面（委托 Governor）
 
-本面不增加新的尚未实现对外方法。不变量 18 要求三类遍历分离：树下钻由 `search(..., expand_depth>0)` 完成（已实现，见数据面 search），`trace` 只沿 `provenance`，`get(as_of)` 只沿 `supersedes`；不另设 `MemoryAPI.expand`。
+本面不增加新的尚未实现对外方法。不变量 18 要求三类遍历分离：树下钻由 `search_v2(..., SearchOptions(expand_depth>0))` 完成（已实现，见数据面 search），`trace` 只沿 `provenance`，`get(as_of)` 只沿 `supersedes`；不另设 `MemoryAPI.expand`。
 
 #### inspect
 
@@ -1283,6 +1338,13 @@ jiuwen_memory/api/memory_api_impl/
 | architecture.md §6 | 已实现 MemoryAPI 清单 |
 
 ## 修订记录
+
+- 2026-09-22：补充 `RetrievedItem.parent_id` 对全部 search 响应的兼容与严格 Schema
+  客户端迁移说明。
+
+- 2026-09-22：恢复 `search` / `evolve` 历史 Python 签名，新增 `search_v2` /
+  `evolve_v2` 承载请求对象和层级能力；HTTP 与 MCP 同时保留 V1 并新增 V2 路由/工具，
+  CLI 保持 V1，内部 Control/Construction 继续使用统一请求对象。
 
 - 2026-09-10：阶段 9 增加 Runtime 宿主异步周期启动、双开关、启动鉴权与取消边界，明确长驻循环要求及定时 id 的最近轮次诊断；不扩展 HTTP/CLI/MCP，不修复同步入口循环生命周期。
 

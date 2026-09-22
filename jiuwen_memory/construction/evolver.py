@@ -26,7 +26,7 @@ from .hierarchy_composer import (
 
 
 class EvolveMode(str, Enum):
-    """内容与结构演进模式；HIERARCHY 当前仅用于内部构建调用。
+    """内容与结构演进模式；HIERARCHY 由公开任务入口触发、在构建层执行。
 
     包含记忆内容演进及显式树结构构建；独立索引维护不在此列——它随数据面操作
     （write/update/delete）由 IndexBuilder 增量跟进（build/update/remove），

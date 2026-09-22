@@ -35,7 +35,7 @@
 
 | 路径 | 第一版语义 |
 |---|---|
-| `write` | 构造含 assets 的 `RawPayload` → `Ingestor.ingest`（由 Ingestor 映射 assets）→ Engine 补 tags 等编排字段 → `Classifier.classify` → `IndexBuilder.build`（统一交付 Storage 并构建索引）→ 返回 units。`system_metadata["infer"]=="true"` 时改为同步走 `Evolver.evolve(units, EXTRACT)` 抽取派生记忆（原始不建索引），返回派生单元；默认路径**不再** `Scheduler.submit(EXTRACT, BACKGROUND)`（演进由调用方显式 `evolve()` 触发）。详见 [`F02-write-infer-extract`](../api/F02-write-infer-extract.md) |
+| `write` | 构造含 assets 的 `RawPayload` → `Ingestor.ingest`（由 Ingestor 映射 assets）→ Engine 补 tags 等编排字段 → `Classifier.classify` → `IndexBuilder.build`（统一交付 Storage 并构建索引）→ 返回 units。`system_metadata["infer"]=="true"` 时改为同步走 `Evolver.evolve(EvolveRequest(units=units, mode=EvolveMode.EXTRACT))` 抽取派生记忆（原始不建索引），返回派生单元；默认路径**不再**提交后台 EXTRACT（演进由调用方显式 `evolve()` 触发）。详见 [`F02-write-infer-extract`](../api/F02-write-infer-extract.md) |
 | `recall` | 直接委托 `Retriever.retrieve(scope, query)` |
 | `get` | 从 KV 真源加载；`as_of` 非空时沿 `supersedes` 版本族选 valid-time 命中的版本 |
 | `update` | `SUPERSEDE` 新建新 id、旧版经 `LifecycleManager.supersede` 标记失效；`OVERWRITE` 原地覆写 |
@@ -95,12 +95,12 @@
 
 ### 决策 5：Scheduler 第一版进程内同步执行，但保留任务状态流
 
-**选了什么**：当前 `InProcessScheduler` 注册为 `scheduler: in_process`。`submit` 创建 `JobInfo` 后立即在当前进程调用 `_execute_task`；若注入了 KV 和 Evolver，则加载目标 scope 下的所有 `MemoryUnit` 并调用 `Evolver.evolve(units, mode)`，把结果 id 写入 `job.detail`。
+**选了什么**：当前 `InProcessScheduler` 注册为 `scheduler: in_process`。`submit(job, channel)` 创建 `JobInfo` 后立即在当前进程调用 `job.run()`；内容演进任务由 Engine 通过 `JobFactory` 构造 `EvolveJob`，任务分页读取目标 scope 下的 `MemoryUnit`、过滤中期记忆和 TIME 派生父级，再调用 `Evolver.evolve(EvolveRequest(units=units, mode=mode))`，把结果 id 写入 `job.detail`。HIERARCHY 使用专门的 `HierarchyJob` / `HierarchyDeriveJob`。
 
 | 状态 | 第一版触发 |
 |---|---|
 | `PENDING` | job 创建后进入任务表 |
-| `RUNNING` | `_execute_task` 前设置 |
+| `RUNNING` | `job.run()` 前设置 |
 | `SUCCEEDED` | 执行无异常 |
 | `FAILED` | 捕获异常并记录 `error_type/error` |
 | `CANCELLED` | 仅 pending 任务可被取消；已完成任务取消为幂等 no-op |
@@ -109,7 +109,7 @@
 
 - 第一版不引入线程池、队列或外部 worker，避免调度基础设施压过记忆主链路。
 - 即便同步执行，也保留 job id、状态、时间戳、执行结果详情，API 和 UI 可以先依赖稳定的任务查询契约。
-- 缺少 KV/Evolver 时执行体空转并成功返回，用于极简装配；完整装配中通过 Producer 依赖默认注入 `KvProducer.dep(..., default="memory")` 与 `EvolverProducer.dep(..., default="orchestrating")`。
+- Scheduler 只负责状态流和执行 `Job`，不再直接持有 KV/Evolver；任务依赖由 `JobFactory` 在装配或运行时注入，缺失时显式报错，不静默空转。
 
 > **增量（2026-07，[`F06`](F06-middle-term-memory.md)）**：`Scheduler.submit` 改为 `async def submit(self, job: Job, channel: Channel) -> str`——task 内容由 `Job` 封装，Scheduler 不再决定 mode；InProcessScheduler 不再持 KV/Evolver，签名 `def __init__(self) -> None`，直接 `await job.run()` 执行。原 `_execute_task` 逻辑外提为 `EvolveJob`（`jobs_impl/evolve_job.py`）。`AsyncTimerScheduler` 作为真异步调度实现注册为 `async_timer`，见 F06 决策 2。
 

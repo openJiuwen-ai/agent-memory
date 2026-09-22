@@ -37,7 +37,7 @@ def test_config_template_supports_explicit_four_level_construction() -> None:
         options = task_options(parent_roles=[
             HierarchyRole.TIME_SPAN, HierarchyRole.SCENE, HierarchyRole.EVENT,
         ])
-        job_id = runtime.api.evolve(HOME, options, security=SECURITY)
+        job_id = runtime.api.evolve_v2(HOME, options, security=SECURITY)
         status = runtime.api.job_status(job_id, security=SECURITY)
         parents = runtime.api.list(HOME, security=SECURITY).items
         roles = [parent.hierarchy.role for parent in parents]
@@ -70,7 +70,7 @@ def test_explicit_api_build_and_partial_span_rebuild_preserve_all_old_children(a
     requested = task_options(metadata={"build_source": "explicit-test"})
     original_options = deepcopy(requested)
 
-    job_id = api.evolve(HOME, requested, security=SECURITY)
+    job_id = api.evolve_v2(HOME, requested, security=SECURITY)
     first = api.job_status(job_id, security=SECURITY)
     attached = [api.get(leaf.id, leaf.scope, security=SECURITY) for leaf in leaves]
     parent_id = attached[0].hierarchy.parent_id
@@ -88,7 +88,7 @@ def test_explicit_api_build_and_partial_span_rebuild_preserve_all_old_children(a
         assert leaf.hierarchy.parent_scope == HOME
 
     # 没有新增叶，窗口只覆盖第一条；仍补齐旧父的第二条子叶再重建。
-    second_id = api.evolve(HOME, task_options(span_end=START), security=SECURITY)
+    second_id = api.evolve_v2(HOME, task_options(span_end=START), security=SECURITY)
     second = api.job_status(second_id, security=SECURITY)
     retired = api.get(parent_id, HOME, security=SECURITY)
     rebuilt = [api.get(leaf.id, leaf.scope, security=SECURITY) for leaf in leaves]
@@ -110,7 +110,7 @@ def test_explicit_api_build_and_partial_span_rebuild_preserve_all_old_children(a
 def test_hierarchy_policy_is_disabled_by_default_before_submission(api) -> None:
     leaf = write_snapshot(api, 0)
     with pytest.raises(PolicyError, match="hierarchy.enabled=false"):
-        api.evolve(HOME, task_options(), security=SECURITY)
+        api.evolve_v2(HOME, task_options(), security=SECURITY)
     stored = api.get(leaf.id, leaf.scope, security=SECURITY)
     assert stored.hierarchy.parent_id == ""
 
@@ -119,7 +119,7 @@ def test_one_home_task_can_build_separate_parents_for_multiple_sessions(api) -> 
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     first = write_snapshot(api, 0, "first-session")
     second = write_snapshot(api, 1, "second-session")
-    job_id = api.evolve(HOME, task_options(), security=SECURITY)
+    job_id = api.evolve_v2(HOME, task_options(), security=SECURITY)
     status = api.job_status(job_id, security=SECURITY)
     first_stored = api.get(first.id, first.scope, security=SECURITY)
     second_stored = api.get(second.id, second.scope, security=SECURITY)
@@ -141,14 +141,14 @@ def test_one_home_task_can_build_separate_parents_for_multiple_sessions(api) -> 
 def test_invalid_hierarchy_options_are_rejected_before_submission(api, overrides) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     with pytest.raises(ValidationError):
-        api.evolve(HOME, task_options(**overrides), security=SECURITY)
+        api.evolve_v2(HOME, task_options(**overrides), security=SECURITY)
 
 
 @pytest.mark.parametrize("key", ["author_principal", "memory_class", "parent_id"])
 def test_parent_metadata_cannot_forge_kernel_fields(api, key) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     with pytest.raises(ValidationError, match="内核保留 key"):
-        api.evolve(HOME, task_options(metadata={key: "forged"}), security=SECURITY)
+        api.evolve_v2(HOME, task_options(metadata={key: "forged"}), security=SECURITY)
 
 
 def test_legacy_write_grant_alone_cannot_reparent_another_users_memory(api) -> None:
@@ -156,7 +156,7 @@ def test_legacy_write_grant_alone_cannot_reparent_another_users_memory(api) -> N
     visitor = Scope(org=HOME.org, user="visitor")
     api.grant(Grant(grantor=HOME, grantee=visitor, actions=[Action.WRITE]), security=SECURITY)
     with pytest.raises(PermissionDeniedError):
-        api.evolve(HOME, task_options(), security=legacy_request_context(visitor))
+        api.evolve_v2(HOME, task_options(), security=legacy_request_context(visitor))
 
 
 def test_non_hierarchy_mode_cannot_silently_ignore_hierarchy_options(api) -> None:
@@ -164,12 +164,12 @@ def test_non_hierarchy_mode_cannot_silently_ignore_hierarchy_options(api) -> Non
         mode=EvolveMode.EXTRACT, hierarchy_options=task_options().hierarchy_options,
     )
     with pytest.raises(ValidationError):
-        api.evolve(HOME, options, security=SECURITY)
+        api.evolve_v2(HOME, options, security=SECURITY)
 
 
 def test_no_candidates_is_an_explicit_successful_noop(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
-    job_id = api.evolve(HOME, task_options(), security=SECURITY)
+    job_id = api.evolve_v2(HOME, task_options(), security=SECURITY)
     status = api.job_status(job_id, security=SECURITY)
     assert status.status is JobStatus.SUCCEEDED
     assert status.detail["reason"] == "no candidates"
@@ -187,7 +187,7 @@ def test_api_reports_failed_when_parent_index_write_requires_repair(api, monkeyp
         original_build(builder, units, mode=mode)
 
     monkeypatch.setattr(HybridIndexBuilder, "build", fail_parent_retrieval_index)
-    job_id = api.evolve(HOME, task_options(), security=SECURITY)
+    job_id = api.evolve_v2(HOME, task_options(), security=SECURITY)
     status = api.job_status(job_id, security=SECURITY)
     stored = api.get(leaf.id, leaf.scope, security=SECURITY)
     parent = api.get(stored.hierarchy.parent_id, HOME, security=SECURITY)

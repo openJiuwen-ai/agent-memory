@@ -156,7 +156,7 @@ def _collective(api) -> None:
     #    「调用方可读的全部空间」。一次调用并发召回候选空间，归属坐标转成第二族收窄谓词
     query = "apollo 部署 风格"
     ctx = Context(scope=Scope(org=ORG), extensions={"coords": coords, "spaces": []})
-    alice_results = api.search(
+    alice_results = api.search_v2(
         query, ctx, security=SEC_ALICE, options=SearchOptions(top_k=10)
     )
     mine = {item.content for item in alice_results.items}
@@ -168,10 +168,10 @@ def _collective(api) -> None:
     )
 
     # 4) 隔离：bob 是协作空间的成员，读得到项目事实，读不到 alice 主空间的偏好
-    theirs = {
-        item.content
-        for item in api.search(query, ctx, security=SEC_BOB, options=SearchOptions(top_k=10)).items
-    }
+    bob_results = api.search_v2(
+        query, ctx, security=SEC_BOB, options=SearchOptions(top_k=10)
+    )
+    theirs = {item.content for item in bob_results.items}
     logger.info(
         "  [isolation] bob 命中 %s 条，项目事实可见：%s，alice 的偏好不可见：%s",
         len(theirs),
@@ -216,7 +216,7 @@ def main() -> None:
 
     # 2) search --------------------------------------------------------------
     logger.info("\n[search] query='咖啡 早上'")
-    res = api.search(
+    res = api.search_v2(
         "咖啡 早上",
         Context(scope),
         security=security,
@@ -250,7 +250,9 @@ def main() -> None:
     # 4.5) evolve（构建层闭环：抽取低抽象事实 / 升华画像 / 遗忘被取代的旧版） --
     q = "咖啡 项目 评审"
     before = len(
-        api.search(q, Context(scope), security=security, options=SearchOptions(top_k=20)).items
+        api.search_v2(
+            q, Context(scope), security=security, options=SearchOptions(top_k=20)
+        ).items
     )
     # EXTRACT 派生事实并记血缘；CONSOLIDATE 升华 CORE 画像；ASSOCIATE 发现关联；
     # FORGET 清理 superseded 旧版。统一请求对象保留各模式的默认后台通道。
@@ -260,14 +262,16 @@ def main() -> None:
         EvolveMode.ASSOCIATE,
         EvolveMode.FORGET,
     ):
-        api.evolve(scope, EvolveTaskOptions(mode=evolve_mode), security=security)
+        api.evolve_v2(scope, EvolveTaskOptions(mode=evolve_mode), security=security)
     after = len(
-        api.search(q, Context(scope), security=security, options=SearchOptions(top_k=20)).items
+        api.search_v2(
+            q, Context(scope), security=security, options=SearchOptions(top_k=20)
+        ).items
     )
     logger.info(
         "\n[evolve] 召回命中 %s -> %s（extract 派生 + consolidate 画像入索引）", before, after
     )
-    prof = api.search(
+    prof = api.search_v2(
         "画像综合", Context(scope), security=security, options=SearchOptions(top_k=1)
     ).items
     if prof:

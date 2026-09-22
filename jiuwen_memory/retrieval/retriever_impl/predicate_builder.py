@@ -26,7 +26,12 @@ from jiuwen_memory.common.type_def import (
     FilterLogic,
     FilterOp,
 )
-from jiuwen_memory.common.type_def.hierarchy import HierarchyStatus, span_epoch_ms
+from jiuwen_memory.common.type_def.hierarchy import (
+    TIME_PARENT_ROLES,
+    HierarchyKind,
+    HierarchyStatus,
+    span_epoch_ms,
+)
 from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
 from jiuwen_memory.common.type_def.memory import LifecycleState
 
@@ -42,7 +47,14 @@ def _epoch_ms(dt: datetime) -> int:
 def build_hierarchy_filters(query: HierarchyQuery) -> list[FilterExpr]:
     """层级条件以独立 AND 谓词下推；结构时间使用闭区间相交。"""
     if not query.enabled:
-        return []
+        return [FilterGroup(FilterLogic.NOT, [FilterGroup(FilterLogic.AND, [
+            FilterClause("hierarchy_kind", FilterOp.EQ, HierarchyKind.TIME.value),
+            FilterClause(
+                "hierarchy_role",
+                FilterOp.IN,
+                [role.value for role in TIME_PARENT_ROLES],
+            ),
+        ])])]
     predicates: list[FilterExpr] = [
         FilterClause("hierarchy_kind", FilterOp.EQ, query.hierarchy_kind.value),
         FilterClause("hierarchy_status", FilterOp.EQ, HierarchyStatus.ACTIVE.value),

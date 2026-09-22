@@ -1,5 +1,6 @@
 """三条检索路径均在 top-k 后展开，且使用真实披露字段控制共享预算。"""
 
+from copy import deepcopy
 from dataclasses import replace
 
 import pytest
@@ -89,6 +90,17 @@ def test_deferred_retrieval_only_returns_roots_until_completion() -> None:
     assert not isinstance(result, PreparedRetrievalResult)
 
 
+def test_deferred_completion_uses_stable_root_key_after_item_reconstruction() -> None:
+    tree = make_tree()
+    query = hierarchy_query(expand_depth=1, defer_expansion=True)
+    prepared = tree.base.retriever.retrieve(QUERY_SCOPE, query)
+    selected = replace(prepared, items=[deepcopy(prepared.items[0])])
+
+    result = complete_expansion(selected, [prepared], query)
+
+    assert [item.unit_id for item in result.items] == ["root", "first", "second"]
+
+
 def test_expansion_without_configured_operator_is_not_silently_ignored() -> None:
     base = make_harness(RetrievalPipeline.RECALL_GET_RANK)
     with pytest.raises(UnsupportedCapabilityError, match="Expander"):
@@ -170,4 +182,12 @@ def test_multimodal_wrapper_explicitly_rejects_unadapted_expansion() -> None:
     with pytest.raises(UnsupportedCapabilityError, match="MultimodalRetriever"):
         MultimodalRetriever(tree.base.retriever).retrieve(
             QUERY_SCOPE, hierarchy_query(expand_depth=1),
+        )
+
+
+def test_multimodal_wrapper_rejects_typed_hierarchy_without_expansion() -> None:
+    tree = make_tree()
+    with pytest.raises(UnsupportedCapabilityError, match="hierarchy_kind"):
+        MultimodalRetriever(tree.base.retriever).retrieve(
+            QUERY_SCOPE, hierarchy_query(expand_depth=0),
         )

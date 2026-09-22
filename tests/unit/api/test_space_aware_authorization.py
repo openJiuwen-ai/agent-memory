@@ -112,7 +112,7 @@ def test_2_1_owner_writes_and_reads_its_own_space(api) -> None:
     """本人可达自己的空间：成员表为空，经归属对比放行。"""
     units = api.add("alice 偏好深色主题", SPACE_SCOPE, security=SEC_ALICE)
     assert units
-    result = api.search(
+    result = api.search_v2(
         "深色主题", SPACE_CONTEXT, security=SEC_ALICE, options=SearchOptions(top_k=5)
     )
     assert result.items
@@ -126,7 +126,7 @@ def test_2_2_and_2_3_agents_of_the_same_user_reach_what_the_user_wrote(api) -> N
     """
     api.add("alice 偏好深色主题", SPACE_SCOPE, security=SEC_ALICE)
     for actor in (ALICE_VIA_A1, ALICE_VIA_A2):
-        assert api.search(
+        assert api.search_v2(
             "深色主题",
             SPACE_CONTEXT,
             security=legacy_request_context(actor),
@@ -138,7 +138,7 @@ def test_another_user_cannot_reach_the_space(api) -> None:
     """他人不可达：既不覆盖归属登记，成员表也为空。"""
     api.add("alice 偏好深色主题", SPACE_SCOPE, security=SEC_ALICE)
     with pytest.raises(PermissionDeniedError):
-        api.search("深色主题", SPACE_CONTEXT, security=SEC_BOB, options=SearchOptions(top_k=5))
+        api.search_v2("深色主题", SPACE_CONTEXT, security=SEC_BOB, options=SearchOptions(top_k=5))
 
 
 def test_2_6_owner_governs_its_own_space_in_person(api) -> None:
@@ -215,7 +215,7 @@ def test_owner_adds_the_first_member_and_that_member_can_read(api) -> None:
         _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
-    assert api.search(
+    assert api.search_v2(
         "深色主题", SPACE_CONTEXT, security=SEC_BOB, options=SearchOptions(top_k=5)
     ).items
 
@@ -249,7 +249,7 @@ def test_1_1_a_governance_manager_cannot_read_content(api) -> None:
         security=SEC_CAROL,
     )
     with pytest.raises(PermissionDeniedError):
-        api.search("深色主题", SPACE_CONTEXT, security=SEC_CAROL, options=SearchOptions(top_k=5))
+        api.search_v2("深色主题", SPACE_CONTEXT, security=SEC_CAROL, options=SearchOptions(top_k=5))
 
 
 def test_governance_ceiling_blocks_appointing_an_owner(api) -> None:
@@ -324,12 +324,12 @@ def test_1_4_downgrade_takes_effect_immediately(api) -> None:
         _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
-    assert api.search(
+    assert api.search_v2(
         "深色主题", SPACE_CONTEXT, security=SEC_BOB, options=SearchOptions(top_k=5)
     ).items
     api.remove_space_member(ORG, SPACE, Scope(org=ORG, space=SPACE, user="bob"), security=SEC_ALICE)
     with pytest.raises(PermissionDeniedError):
-        api.search("深色主题", SPACE_CONTEXT, security=SEC_BOB, options=SearchOptions(top_k=5))
+        api.search_v2("深色主题", SPACE_CONTEXT, security=SEC_BOB, options=SearchOptions(top_k=5))
 
 
 def test_member_scope_normalisation_matches_the_space_manager(api) -> None:
@@ -428,7 +428,7 @@ def test_archived_space_allows_reads_and_rejects_writes(api) -> None:
     api.archive_space(ORG, SPACE, security=SEC_ALICE)
 
     assert (
-        api.search("深色主题", SPACE_CONTEXT, security=SEC_ALICE, options=SearchOptions(top_k=5))
+        api.search_v2("深色主题", SPACE_CONTEXT, security=SEC_ALICE, options=SearchOptions(top_k=5))
         is not None
     )
     with pytest.raises(ValidationError):
@@ -588,15 +588,15 @@ def test_forget_and_consolidate_are_denied_to_a_contributor(api) -> None:
         _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
-    api.evolve(SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.EXTRACT), security=SEC_BOB)
+    api.evolve_v2(SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.EXTRACT), security=SEC_BOB)
     for mode in (EvolveMode.FORGET, EvolveMode.CONSOLIDATE):
         with pytest.raises(PermissionDeniedError):
-            api.evolve(SPACE_SCOPE, EvolveTaskOptions(mode=mode), security=SEC_BOB)
+            api.evolve_v2(SPACE_SCOPE, EvolveTaskOptions(mode=mode), security=SEC_BOB)
 
 
 def test_forget_stays_open_to_the_owner(api) -> None:
     """收紧只针对可贡献档：归属主体本人不受影响。"""
-    assert api.evolve(SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.FORGET), security=SEC_ALICE)
+    assert api.evolve_v2(SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.FORGET), security=SEC_ALICE)
 
 
 def test_job_entries_take_the_action_of_the_mode_that_started_the_job(api) -> None:
@@ -610,10 +610,10 @@ def test_job_entries_take_the_action_of_the_mode_that_started_the_job(api) -> No
         _member("bob", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
         security=SEC_ALICE,
     )
-    extract_job = api.evolve(
+    extract_job = api.evolve_v2(
         SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.EXTRACT), security=SEC_BOB
     )
-    forget_job = api.evolve(
+    forget_job = api.evolve_v2(
         SPACE_SCOPE, EvolveTaskOptions(mode=EvolveMode.FORGET), security=SEC_ALICE
     )
 

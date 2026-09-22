@@ -11,6 +11,7 @@ from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.engine import MemoryEngine
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.types import (
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -148,6 +149,8 @@ class MemoryCommandService:
         """原样委托统一演进请求，身份与判权不下沉。"""
         return await self._engine.evolve(scope, options)
 
-    async def start_background_jobs(self, scope: Scope, policy: PolicyManager) -> list[str]:
+    async def start_background_jobs(
+        self, scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
         """转发已鉴权 home 和同源策略，不接管事件循环。"""
         return await self._engine.start_background_jobs(scope, policy)

@@ -8,7 +8,6 @@ from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
-from jiuwen_memory.control.types import EvolveTaskOptions
 
 pytestmark = pytest.mark.unit
 
@@ -65,7 +64,7 @@ def test_evolve_audit_records_job_id_not_unit_id() -> None:
     scope = Scope(org="acme", user="owner")
 
     job_id = api.evolve(
-        scope, EvolveTaskOptions(mode=EvolveMode.EXTRACT), security=legacy_request_context(scope)
+        scope, EvolveMode.EXTRACT, security=legacy_request_context(scope)
     )
     events = api.audit({"action": "evolve"}, security=legacy_request_context(root), limit=10)
 

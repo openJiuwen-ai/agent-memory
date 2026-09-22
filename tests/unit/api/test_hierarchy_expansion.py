@@ -47,10 +47,10 @@ def expansion_runtime_fixture(request):
 def test_public_search_returns_built_parents_and_original_leaf_evidence(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     leaves = [write_snapshot(api, minute) for minute in (0, 1)]
-    job_id = api.evolve(HOME, task_options(), security=SECURITY)
+    job_id = api.evolve_v2(HOME, task_options(), security=SECURITY)
     assert api.job_status(job_id, security=SECURITY).status is JobStatus.SUCCEEDED
     options = hierarchy_search_options(hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1)
-    result = api.search("snapshot evidence", Context(HOME), options, security=SECURITY)
+    result = api.search_v2("snapshot evidence", Context(HOME), options, security=SECURITY)
     assert len(result.items) == 3
     assert {item.unit_id for item in result.items[1:]} == {leaf.id for leaf in leaves}
     assert all(item.parent_id == result.items[0].unit_id for item in result.items[1:])
@@ -59,21 +59,21 @@ def test_public_search_returns_built_parents_and_original_leaf_evidence(api) -> 
 
 def test_expansion_still_requires_enabled_policy(api) -> None:
     with pytest.raises(PolicyError, match="hierarchy.enabled"):
-        api.search("snapshot", Context(HOME), hierarchy_search_options(expand_depth=1),
+        api.search_v2("snapshot", Context(HOME), hierarchy_search_options(expand_depth=1),
                    security=SECURITY)
 
 
 @pytest.mark.parametrize("depth", [-1, True, "1", None])
 def test_invalid_depth_fails_at_public_boundary(api, depth) -> None:
     with pytest.raises(ValidationError, match="expand_depth"):
-        api.search("snapshot", Context(HOME), hierarchy_search_options(expand_depth=depth),
+        api.search_v2("snapshot", Context(HOME), hierarchy_search_options(expand_depth=depth),
                    security=SECURITY)
 
 
 def test_http_cli_shared_contract_serializes_only_flat_public_results(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     leaf = write_snapshot(api, 0)
-    job_id = api.evolve(HOME, task_options(), security=SECURITY)
+    job_id = api.evolve_v2(HOME, task_options(), security=SECURITY)
     assert api.job_status(job_id, security=SECURITY).status is JobStatus.SUCCEEDED
     result = invoke_api(api, "search", {
         "query": "snapshot evidence",
@@ -81,7 +81,7 @@ def test_http_cli_shared_contract_serializes_only_flat_public_results(api) -> No
         "options": {
             "hierarchy_kind": "time", "hierarchy_role": "time_span", "expand_depth": 1,
         },
-    }, SECURITY)
+    }, SECURITY, version="v2")
     assert set(result) == {"items", "trajectory", "errors"}
     assert result["items"][1]["unit_id"] == leaf.id
     assert "expansion_roots" not in result
@@ -103,9 +103,9 @@ def test_real_cross_space_search_keeps_both_parent_evidence_groups() -> None:
             leaf = api.add(f"snapshot evidence {name}", leaf_scope,
                            system_metadata=snapshot_metadata(), security=security)[0]
             leaves.append(leaf)
-            job_id = api.evolve(home, task_options(tree_home_scope=home), security=security)
+            job_id = api.evolve_v2(home, task_options(tree_home_scope=home), security=security)
             assert api.job_status(job_id, security=security).status is JobStatus.SUCCEEDED
-        result = api.search("snapshot evidence", Context(Scope(org=HOME.org), extensions={
+        result = api.search_v2("snapshot evidence", Context(Scope(org=HOME.org), extensions={
             "spaces": ["one", "two"],
         }), hierarchy_search_options(
             hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1, top_k=2,

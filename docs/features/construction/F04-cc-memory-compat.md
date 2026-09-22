@@ -12,8 +12,9 @@
 > 历史归档说明（2026-09-10）：本文保留 2026-07-22 的 cc_memory 方案与评测记录，
 > 其中 `identity`、`Scope(namespace=...)`、平铺搜索参数等示例不是当前分支的可运行 API。
 > 当前分支也未包含本文所述 `jiuwen_memory_adapter/cc_memory` 与 `evaluation/cc_memory`。
-> 当前搜索调用为 `api.search(query, context, options=SearchOptions(...), security=security)`，
-> HTTP/CLI 的检索选项放在 `options` 对象内；现行接口以
+> 当前统一选项调用为 `api.search_v2(query, context, SearchOptions(...), security=security)`；
+> HTTP `/v2/search` 的检索选项放在 `options` 对象内，历史 V1 与 CLI 仍使用平铺普通参数。
+> 现行接口以
 > [S02-memory-api](../../specs/S02-memory-api.md) 为准。
 
 ## 1. 系统目标和边界

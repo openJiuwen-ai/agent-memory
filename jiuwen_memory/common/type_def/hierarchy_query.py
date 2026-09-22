@@ -8,7 +8,14 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from ..errors import ValidationError
-from .hierarchy import HierarchyKind, HierarchyRef, HierarchyRole, HierarchyStatus, validate_ref
+from .hierarchy import (
+    TIME_PARENT_ROLES,
+    HierarchyKind,
+    HierarchyRef,
+    HierarchyRole,
+    HierarchyStatus,
+    validate_ref,
+)
 from .memory import MemoryUnit
 
 
@@ -91,7 +98,12 @@ def validate_rollup(rollup: bool, kind: HierarchyKind | None) -> None:
 def matches_hierarchy(unit: MemoryUnit, query: HierarchyQuery) -> bool:
     """真源复核 kind/role/status 与闭区间；缺失或非法 TIME 区间不能匹配。"""
     if not query.enabled:
-        return True
+        reference = unit.hierarchy
+        return not (
+            isinstance(reference, HierarchyRef)
+            and reference.kind is HierarchyKind.TIME
+            and reference.role in TIME_PARENT_ROLES
+        )
     reference = unit.hierarchy
     if not isinstance(reference, HierarchyRef) or reference.kind is not query.hierarchy_kind:
         return False

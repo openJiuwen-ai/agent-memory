@@ -1,7 +1,7 @@
 # agent-memory架构设计（Architecture）
 
 > 文档性质：总体架构设计（概念、分层、组件与依赖方向）
-> 版本：v0.2 ｜ 日期：2026-09-10
+> 版本：v0.2 ｜ 日期：2026-09-22
 > 关联文档：[愿景 VISION](./vision.md) ｜ [统一 Storage](../features/storage/F05-unified-storage-design.md) ｜ [Storage 检索 Pipeline](../features/retrieval/F05-storage-retrieval-pipelines.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
 > 说明：本文描述系统级架构方向；精确接口契约以 `docs/specs/` 为准，特性取舍与首版实现边界以 `docs/features/` 为准。
 
@@ -85,7 +85,7 @@ MemoryUnit
 
 - `temporal` 借鉴 Zep **双时间模型**，支持有效期与时间点回溯。
 - **内容真相是 `segments[]`**：`content/assets/source` 均为折叠后的只读兼容视图，不是与 `segments[]` 并列写入的第二份数据。`ContentLayers.l0/l1` 已实现，L2 不重复存储，直接取 `MemoryUnit.content`。
-- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；`HierarchyRef` 回答“结构上包含谁、隶属于谁”，当前用于父子树构建及 `search(..., SearchOptions(expand_depth>0))` 显式下钻。三者生命周期、遍历方向和治理动作互不替代。
+- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；`HierarchyRef` 回答“结构上包含谁、隶属于谁”，当前用于父子树构建及 `search_v2(..., SearchOptions(expand_depth>0))` 显式下钻。三者生命周期、遍历方向和治理动作互不替代。
 - `lifecycle` 用「标记失效」而非物理删除（非破坏式更新）。`update` 默认 **SUPERSEDE**（生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链），亦可 **OVERWRITE**（同 id 原地覆写，旧内容仅留审计——非破坏式原则的有意例外）。
 - **多模态**：每个 `Segment` 把可治理文本/结构投影、原模态资产引用与来源模态放在一起；下游索引与检索统一作用于各段合并后的 `content` 视图（详见 §5.1）。
 
@@ -183,9 +183,10 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 > 核心主张是**框架无关**：SDK 提供嵌入，CLI/Skill/MCP/API 提供接入，二者共同支撑「不绑定单一框架」。
 
-当前 HTTP 以 `POST /v1/<MemoryAPI 方法名>` 一对一暴露全部公开方法，请求字段与 API 参数
-同名、同层级，成功响应是原返回值的 JSON 表达；`security` 由认证边界构造并注入。HTTP
-不经过 legacy handler；CLI 使用同名命令、同名参数和相同 JSON 契约，MCP 仍使用 legacy dispatch。
+当前 HTTP 以 `POST /v1/<MemoryAPI V1 方法名>` 保留历史接口，并以 `/v2/search`、
+`/v2/evolve` 暴露统一请求对象；成功响应都是原返回值的 JSON 表达，`security` 由认证边界
+构造并注入。CLI 继续使用 V1 同名命令和参数；MCP 保留 `memory_search/evolve`，并新增
+`memory_search_v2/evolve_v2`。版本分流只在 Access/API 边界，进入 Control 后共用内部对象。
 
 ### 5.1 多模态数据接入与规约
 
@@ -216,7 +217,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；接口先行过渡期由 `PermissionManager` 判定，实装后切到 `Authorizer`。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
 
-本章**只列出当前代码已实现的 36 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
+本章**只列出当前代码已实现的 38 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
 
 | 对外接口方法 | 语义 | 入参 | 出参 |
 | --- | --- | --- | --- |
@@ -226,12 +227,14 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `batch_add_async` | **异步**批量写入：签名/语义同 `batch_add`，串行保序 | 同 `batch_add` | `BatchWriteResult` |
 | `submit_ingest` | 受鉴权的长耗时摄入入队；先校验 WRITE，再委托 Control 创建或复用任务，后台执行 `add` 时再次鉴权。返回提交状态，不表示摄入已完成 | `content: str`；`scope: Scope`；`source: Modality`；`*`；`security: RequestSecurityContext`；`payload_id: str`；`source_ref: str`；`assets: list[str] \| None = None`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `IngestSubmission` |
 | `check_write` | Pre-flight WRITE 鉴权，不落盘。镜像 `add` 的鉴权与 space 可写校验，供长耗时摄入任务入队前拒绝无权限请求 | `scope: Scope`；`security: RequestSecurityContext`；`*`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `None` |
-| `search` | 混合检索召回。Context 提供范围和 max_tokens/coords/spaces；SearchOptions 统一普通选项与 hierarchy_kind/hierarchy_role/span_start/span_end/expand_depth/rollup。默认直接命中；rollup 显式准入祖先并传播 MaxP，正深度按边展开并共用 max_tokens，含 parent_id | `query: str`；`context: Context`；`options: SearchOptions \| None = None`；`*`；`security: RequestSecurityContext` | `RetrievalResult` |
+| `search` | 历史兼容检索入口；把平铺普通选项装为 SearchOptions 后委托 search_v2，不开放层级参数 | `query: str`；`context: Context`；`*`；`security: RequestSecurityContext`；`filters/as_of/top_k/disclosure/with_trajectory` | `RetrievalResult` |
+| `search_v2` | 混合检索召回。Context 提供范围和 max_tokens/coords/spaces；SearchOptions 统一普通选项与 hierarchy_kind/hierarchy_role/span_start/span_end/expand_depth/rollup。默认直接命中；rollup 显式准入父级并传播 MaxP，正深度按边展开并共用 max_tokens，含 parent_id | `query: str`；`context: Context`；`options: SearchOptions \| None = None`；`*`；`security: RequestSecurityContext` | `RetrievalResult` |
 | `list` | 列出 scope 下已建索引记忆（只含 `/memory/`，不含 infer 原文）。支持类型/结构化过滤、自定义透传与分页；`items` 为当前页，`count` 为分页前精确总数。`memory_types` 与 `filters` 取 AND；`org/space/user/agent/session` 不得出现在 filters | `scope: Scope`；`*`；`security: RequestSecurityContext`；`offset: int = 0`；`limit: int = 100`；`memory_types: list[str] \| None = None`；`extensions: dict[str, Any] \| None = None`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None` | `MemoryListResult` |
 | `get` | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` | `unit_id: str`；`scope: Scope`；`*`；`security: RequestSecurityContext`；`as_of: datetime \| None = None` | `MemoryUnit` |
 | `update` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）。`system_metadata` / `user_metadata` 分别合并 | `unit_id: str`；`scope: Scope`；`patch: MemoryPatch`；`*`；`security: RequestSecurityContext` | `MemoryUnit` |
 | `delete` | 按选择器（id / scope / 标签 / 时间，条件取「与」，至少一项）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id。未给 `selector.scope` 时鉴权退到根 scope | `selector: DeleteSelector`；`*`；`security: RequestSecurityContext` | `list[str]` |
-| `evolve` | 显式触发内容演进或 TIME snapshot→time_span→可选 scene→可选 event 建树/重建，经控制层 Scheduler 调度，返回任务 id；不自动建树，索引维护仍随数据面操作跟进 | `scope: Scope`；`options: EvolveTaskOptions`（mode / channel / hierarchy_options）；`*`；`security: RequestSecurityContext` | `str`（job id） |
+| `evolve` | 历史兼容演进入口；把 mode/channel 装为 EvolveTaskOptions 后委托 evolve_v2，不开放建树参数 | `scope: Scope`；`mode: EvolveMode`；`channel: Channel = BACKGROUND`；`*`；`security: RequestSecurityContext` | `str`（job id） |
+| `evolve_v2` | 显式触发内容演进或 TIME snapshot→time_span→可选 scene→可选 event 建树/重建，经控制层 Scheduler 调度，返回任务 id；不自动建树，索引维护仍随数据面操作跟进 | `scope: Scope`；`options: EvolveTaskOptions`（mode / channel / hierarchy_options）；`*`；`security: RequestSecurityContext` | `str`（job id） |
 | `job_status` | 查询演进任务或长耗时 Ingest 任务（委托 Scheduler / Ingest 任务表）。Ingest 任务要求传入 target `scope`；API 对任务真实 Scope 执行 READ 鉴权与审计 | `job_id: str`；`*`；`security: RequestSecurityContext`；`scope: Scope \| None = None` | `JobInfo` |
 | `job_cancel` | 取消尚未完成的演进任务（幂等，委托 Scheduler） | `job_id: str`；`*`；`security: RequestSecurityContext` | `None` |
 | `inspect` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） | `unit_ids: list[str]`；`scope: Scope`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |
@@ -366,7 +369,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 - **写入触发**：新内容写入后，hot path 做低时延落盘与轻量索引；需要重推理的抽取、关联、升华与冲突消解进入 background。
 - **周期触发**：按策略对过期、低价值或长期未访问记忆做降权、归档或遗忘（非破坏式，保留血缘）。
-- **显式触发**：调用方通过 `evolve(scope, EvolveTaskOptions(...), security=...)` 触发指定模式。当前 HIERARCHY 支持 snapshot→time_span→scene→event 的两/三/四层前缀，API 执行 WRITE+UPDATE 与空间 UPDATE 判权，再由 Control 完整收齐有界候选、旧根及其全部父层/叶。旧独立 mode/channel 调用不兼容；请求示例见 S02。
+- **显式触发**：普通演进可继续调用历史 `evolve(scope, mode, channel, security=...)`；请求对象与 HIERARCHY 通过 `evolve_v2(scope, EvolveTaskOptions(...), security=...)` 触发。当前 HIERARCHY 支持 snapshot→time_span→scene→event 的两/三/四层前缀，API 执行 WRITE+UPDATE 与空间 UPDATE 判权，再由 Control 完整收齐有界候选、旧根及其全部父层/叶；请求示例见 S02。
 - **双通道**：
   - **Hot path（在线）**：低时延的即时记忆写入与轻量更新。
   - **Background（离线）**：异步做重的抽取/升华/重索引，不阻塞主链路。
@@ -647,7 +650,7 @@ agent-memory/
 │
 ├── jiuwen_memory_entry/                      # A 调用层（§5）：内核的薄封装（多形态接入），各 surface 共用 core
 │   ├── core/                       #   共享应用核：Server 装配 + legacy dispatch + profiles + config_loader
-│   ├── http_server/                #   HTTP/REST surface（POST /v1/<verb>）
+│   ├── http_server/                #   HTTP/REST surface（V1 全量 + V2 search/evolve）
 │   ├── mcp_server/                 #   MCP surface（FastMCP：记忆 API → MCP 工具）
 │   └── cli/                        #   CLI surface（client + 命令表）
 │
@@ -764,7 +767,7 @@ agent-memory/
 - **共享插件保证两侧一致**：分词/切分/向量化/特征抽取/LLM/规约/重排抽到 `jiuwen_memory/common`，构建侧与检索侧（以及重建/演进路径）注入**同一实现**——同词表、同向量空间、同切分规则、同规约器，是「派生可重建」与召回对齐的前提。
 - **依赖方向**：`jiuwen_memory/common` 承载跨层数据契约与插件；`jiuwen_memory/storage` 只依赖 common，不反向依赖 Retrieval。Retrieval 依赖统一 Storage 和 common，QueryParser/Fuser 等算法仍归 Retrieval。Construction/Control 的目标依赖也是 Storage 契约，但首版仍有直接 Store 依赖待迁移；API 继续作为 control/retrieval/construction 的薄封装。
 - **鉴权/隔离/异常的统一落点**：① `MemoryAPI` 是公开接口 PEP，分离 `security.auth.actor` 与 target `scope`；② `StorageSecurity` 是可插拔的数据面授权边界，默认 allow-all，各 Store Security 负责后端数据保护；③ scope 作为 Storage/Store 专用入参做原生隔离，`FilterExpr` 不承载 scope；④ `common/errors` 提供跨层异常契约；⑤版本链走 `supersedes`，演进血缘走 `provenance`。
-- **一个内核，多形态接入**：`jiuwen_memory_entry/*` 与 `jiuwen_memory_adapter/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑，也不得 import `jiuwen_memory.common` / `control` / `construction` / `retrieval` / `config` / `storage`。`jiuwen_memory_entry/core` 是各 surface 共享的装配核；其中 **`jiuwen_memory_entry/core/server.py` 是 Access composition root**（调用 `jiuwen_memory.api.assemble_runtime` 装配，传入 dict，不解析内核 `Config` 类型，公开面只有 `api` / `dispatch` / lifecycle）。HTTP 与本地 CLI 经 `Server.api` 直接调用同名 `MemoryAPI` 并返回原值；远程 CLI 原样发送 HTTP 参数并接收原响应，MCP/旧进程内调用可继续经 `dispatch` 使用显式 legacy adapter。其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一装配与 `jiuwen_memory/api`。
+- **一个内核，多形态接入**：`jiuwen_memory_entry/*` 与 `jiuwen_memory_adapter/*` 依赖内核、仅做协议/参数转换后调用 `jiuwen_memory/api`，不含业务逻辑，也不得 import `jiuwen_memory.common` / `control` / `construction` / `retrieval` / `config` / `storage`。`jiuwen_memory_entry/core` 是各 surface 共享的装配核；其中 **`jiuwen_memory_entry/core/server.py` 是 Access composition root**（调用 `jiuwen_memory.api.assemble_runtime` 装配，传入 dict，不解析内核 `Config` 类型，公开面只有 `api` / `dispatch` / lifecycle）。HTTP 与本地 CLI 经 `Server.api` 直接调用版本映射后的 `MemoryAPI` 并返回原值；远程 CLI 当前只发送 V1 HTTP 参数，MCP 经共享版本契约分别映射 V1/V2 工具，旧进程内调用继续经 `dispatch` 使用显式 legacy adapter。其上 `http_server`（HTTP/REST）与 `mcp_server`（MCP）作为独立服务对外提供、`sdk` 作为库嵌入、`cli` 作为命令行——四个 surface 彼此解耦，共用同一装配与 `jiuwen_memory/api`。
 - **端/云/混合**靠 `jiuwen_memory/config` 的部署 profile 装配不同后端组合（端侧 SQLite+轻向量，云侧 PG+Milvus+Neo4j），逻辑模型不变。
 
 > 当前状态：主要接口与默认实现已存在。本轮统一 Storage 首版已完成 Retriever 接入；

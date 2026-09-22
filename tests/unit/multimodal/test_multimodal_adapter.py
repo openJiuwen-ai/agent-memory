@@ -609,7 +609,7 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
     )
 
     assert {unit.system_metadata["memory_level"] for unit in units} == {"clm", "elm"}
-    result = kernel.api.search(
+    result = kernel.api.search_v2(
         "deployment",
         Context(scope),
         security=legacy_request_context(scope),

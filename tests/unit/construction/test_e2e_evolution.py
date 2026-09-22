@@ -52,7 +52,7 @@ class TestE2EWritePath:
         assert "classify_source" not in units[0].system_metadata
 
         # recall 可召回
-        result = llm_api.search(
+        result = llm_api.search_v2(
             "简洁",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
@@ -92,7 +92,7 @@ class TestE2EBackgroundExtract:
         assert len(units) == 1
 
         # recall 原始 unit 仍可召回
-        result = llm_api.search(
+        result = llm_api.search_v2(
             "偏好",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
@@ -110,7 +110,7 @@ class TestE2EBackgroundExtract:
             security=legacy_request_context(DEFAULT_ACTOR),
         )
         # 手动触发演进
-        job_id = llm_api.evolve(
+        job_id = llm_api.evolve_v2(
             DEFAULT_SCOPE,
             EvolveTaskOptions(mode=EvolveMode.EXTRACT),
             security=legacy_request_context(DEFAULT_ACTOR),
@@ -137,7 +137,7 @@ class TestE2EOfflineProfile:
         )
         assert len(units) == 1
 
-        result = offline_api.search(
+        result = offline_api.search_v2(
             "测试",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),
@@ -156,7 +156,7 @@ class TestE2EOfflineProfile:
         )
         # background EXTRACT 自动触发（keyword extractor 产出 chunk 类派生 unit）
         # 验证不崩溃即可
-        result = offline_api.search(
+        result = offline_api.search_v2(
             "测试",
             Context(DEFAULT_SCOPE),
             security=legacy_request_context(DEFAULT_ACTOR),

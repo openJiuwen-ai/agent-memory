@@ -49,6 +49,15 @@
 - 顶层接口文件不 import `*_impl/`；`*_impl/` import 顶层接口文件
 - Producer 工厂定义在对应顶层接口文件中（如 `engine.py` 的 `EngineProducer`），不要新增独立 `*_producer.py`
 
+## 与其他子目录的边界
+
+**本模块管**：已鉴权请求后的跨层编排、生命周期与治理策略、任务与调度、空间管理，
+以及按 profile 选择已装配的构建和检索组件。
+
+**不管**：入口认证与 PEP（归 `api`）、记忆抽取/聚合/索引算法（归 `construction`）、
+查询理解与结果融合（归 `retrieval`）、具体存储和单路召回（归 `storage`）。本层通过抽象
+端口或 application/collective 回调协作，不反向实现其他层的算法。
+
 ## 行为铁律
 
 0. **系统控制只读 `system_metadata`**：Engine/Pipeline/PermissionContext 所需的
@@ -96,6 +105,9 @@
 22. **Scheduler 保留 Job 终态**：Job.run 必须返回 SUCCEEDED/FAILED/CANCELLED；返回
     非终态按契约错误记 FAILED。周期停止仍由 is_done 控制，停止后的周期声明继承
     最后实例的真实终态，不强行改成成功。
+23. **普通演进不二次消费 TIME 父级**：`EvolveJob` 排除 `time_span` / `scene` / `event`，
+    保留 `snapshot` 与无结构记忆；建树产物只交给 HIERARCHY 专用任务维护。周期启动返回
+    `BackgroundJobStartResult`，策略关闭和缺 TIME profile 必须给出不同 reason。
 
 ## 双通道调度机制
 

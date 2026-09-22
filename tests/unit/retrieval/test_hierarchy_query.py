@@ -199,18 +199,27 @@ def test_structure_event_and_valid_time_are_independent(pipeline) -> None:
     assert [item.unit_id for item in result.items] == ["chosen"]
 
 
-def test_ordinary_query_does_not_implicitly_enable_hierarchy_filtering() -> None:
+def test_ordinary_query_excludes_time_parents_but_keeps_authoritative_content() -> None:
     harness = make_harness(RetrievalPipeline.RECALL_GET_RANK)
     ordinary = tree_unit("ordinary")
     ordinary.hierarchy = HierarchyRef()
-    dismissed = tree_unit("dismissed")
-    dismissed.hierarchy.status = HierarchyStatus.DISMISSED
-    harness.add([ordinary, dismissed])
+    snapshot = tree_unit("snapshot", HierarchyRole.SNAPSHOT)
+    dismissed_parent = tree_unit("dismissed-parent")
+    dismissed_parent.hierarchy.status = HierarchyStatus.DISMISSED
+    harness.add([ordinary, snapshot, dismissed_parent])
 
     result = harness.retriever.retrieve(QUERY_SCOPE, RetrievalQuery(text="recall"))
 
-    assert {item.unit_id for item in result.items} == {"ordinary", "dismissed"}
-    assert build_hierarchy_filters(HierarchyQuery()) == []
+    assert {item.unit_id for item in result.items} == {"ordinary", "snapshot"}
+    assert build_hierarchy_filters(HierarchyQuery()) == [FilterGroup(
+        FilterLogic.NOT,
+        [FilterGroup(FilterLogic.AND, [
+            FilterClause("hierarchy_kind", FilterOp.EQ, "time"),
+            FilterClause(
+                "hierarchy_role", FilterOp.IN, ["time_span", "scene", "event"],
+            ),
+        ])],
+    )]
 
 
 def test_archived_lifecycle_does_not_override_dismissed_structure() -> None:

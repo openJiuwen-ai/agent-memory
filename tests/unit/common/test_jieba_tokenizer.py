@@ -200,7 +200,7 @@ def test_assemble_with_jieba():
         "用户偏好简洁回答", scope, source=Modality.TEXT, security=legacy_request_context(actor)
     )
     assert len(units) == 1
-    result = api.search(
+    result = api.search_v2(
         "偏好",
         Context(scope),
         security=legacy_request_context(actor),

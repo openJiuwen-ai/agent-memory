@@ -59,6 +59,14 @@ class HierarchyRole(str, Enum):
     NODE = "node"
 
 
+# TIME 树的三类派生父级。SNAPSHOT 是权威叶内容，不在此集合内。
+TIME_PARENT_ROLES = (
+    HierarchyRole.TIME_SPAN,
+    HierarchyRole.SCENE,
+    HierarchyRole.EVENT,
+)
+
+
 class HierarchyStatus(str, Enum):
     """结构修正状态——只表示节点在树里是否算数。
 

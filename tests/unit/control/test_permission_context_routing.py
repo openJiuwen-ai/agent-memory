@@ -130,7 +130,7 @@ def test_search_permission_routes_by_metadata_memory_type_filter() -> None:
     target = Scope(org="acme", user="owner")
 
     with pytest.raises(PermissionDeniedError):
-        api.search(
+        api.search_v2(
             "repo",
             Context(scope=target),
             security=legacy_request_context(actor),
@@ -144,7 +144,7 @@ def test_search_permission_routes_to_lenient_policy_for_declared_type() -> None:
     actor = Scope(org="acme", user="reader")
     target = Scope(org="acme", user="owner")
 
-    api.search(
+    api.search_v2(
         "general",
         Context(scope=target),
         security=legacy_request_context(actor),
@@ -171,7 +171,7 @@ def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> Non
     _seed(api, owner)
 
     with pytest.raises(PermissionDeniedError):
-        api.search(
+        api.search_v2(
             "repo must use pytest",
             Context(scope=owner, extensions={"memory_type": "unknown"}),
             security=legacy_request_context(reader),
@@ -186,7 +186,7 @@ def test_escalation_2_missing_route_value_falls_to_strict_fallback() -> None:
     _seed(api, owner)
 
     with pytest.raises(PermissionDeniedError):
-        api.search(
+        api.search_v2(
             "repo must use pytest", Context(scope=owner), security=legacy_request_context(reader)
         )
 
@@ -198,7 +198,7 @@ def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
     _seed(api, owner)
 
     with pytest.raises(PermissionDeniedError):
-        api.search(
+        api.search_v2(
             "repo must use pytest",
             Context(scope=owner),
             security=legacy_request_context(reader),
@@ -223,7 +223,7 @@ def test_escalation_4_lenient_route_cannot_read_protected_data() -> None:
     owner, reader = Scope(org="acme", user="owner"), Scope(org="acme", user="reader")
     _seed(api, owner)
 
-    result = api.search(
+    result = api.search_v2(
         "repo must use pytest",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
         security=legacy_request_context(reader),
@@ -244,7 +244,7 @@ def test_route_value_injection_still_returns_own_type_data() -> None:
         system_metadata={"memory_type": "episodic"},
     )
 
-    result = api.search(
+    result = api.search_v2(
         "lunch plan tomorrow",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
         security=legacy_request_context(reader),
@@ -266,14 +266,14 @@ def test_unresolved_route_keeps_owner_base_rule() -> None:
     owner = Scope(org="acme", user="owner")
 
     # 未限定 memory_type
-    api.search("general", Context(scope=owner), security=legacy_request_context(owner))
+    api.search_v2("general", Context(scope=owner), security=legacy_request_context(owner))
 
 
 def test_unresolved_route_keeps_root_base_rule() -> None:
     api = build_kernel(config=_routing_config()).api
     owner, root = Scope(org="acme", user="owner"), Scope()
 
-    api.search("general", Context(scope=owner), security=legacy_request_context(root))
+    api.search_v2("general", Context(scope=owner), security=legacy_request_context(root))
 
 
 # -- 已有 unit 的操作按真源元数据鉴权 ------------------------------------------ #

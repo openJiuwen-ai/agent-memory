@@ -249,7 +249,7 @@ def test_extract_batch_size_splits_llm_calls():
     ]
     result = extractor.extract(units)
 
-    assert getattr(llm, "_call_count", 0) == 2, "3 units with batch_size=2 should trigger 2 LLM calls"
+    assert llm.call_count == 2, "3 units with batch_size=2 should trigger 2 LLM calls"
     assert len(result) == 3
 
 
@@ -848,3 +848,23 @@ def test_keyword_procedural_inherits_write_tags():
 
     assert len(result) == 1
     assert result[0].tags == ["devops", "procedural"]
+
+
+def test_keyword_derived_unit_does_not_inherit_tree_membership():
+    """内容派生是新事实，不能沿用来源节点的父子边或树位。"""
+    from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+    from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRef, HierarchyRole
+    from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
+
+    extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=200, overlap_chars=0))
+    source = create_test_unit("u1", "部署完成")
+    source.hierarchy = HierarchyRef(
+        kind=HierarchyKind.TIME,
+        role=HierarchyRole.SNAPSHOT,
+        parent_id="parent",
+    )
+
+    result = extractor.extract([source])
+
+    assert len(result) == 1
+    assert result[0].hierarchy.is_empty

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from jiuwen_memory.api import JobStatus, assemble_runtime
+from jiuwen_memory.api import BackgroundJobStartResult, JobStatus, assemble_runtime
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from tests.unit.api.hierarchy_api_fixtures import (
@@ -25,16 +25,17 @@ pytestmark = pytest.mark.unit
 def test_config_template_registers_and_cancels_a_periodic_timer() -> None:
     runtime = assemble_runtime(config=hierarchy_template_config(periodic=True))
 
-    async def exercise() -> list[str]:
+    async def exercise() -> BackgroundJobStartResult:
         """在同一循环内注册和关闭，不等待模板默认的 1800 秒周期。"""
         try:
             return await runtime.start_background_jobs(HOME, security=SECURITY)
         finally:
             runtime.close()
 
-    timer_ids = asyncio.run(exercise())
-    assert len(timer_ids) == 1
-    info = runtime.api.job_status(timer_ids[0], security=SECURITY)
+    result = asyncio.run(exercise())
+    assert len(result.job_ids) == 1
+    assert not result.skipped and result.reason == ""
+    info = runtime.api.job_status(result.job_ids[0], security=SECURITY)
     assert info.status is JobStatus.CANCELLED
     assert "last_run_id" not in info.detail
 
@@ -43,12 +44,37 @@ def test_config_template_registers_and_cancels_a_periodic_timer() -> None:
 def test_runtime_default_off_and_nonperiodic_scheduler_fails_fast(engine) -> None:
     runtime = assemble_runtime(config=runtime_config(engine))
     try:
-        assert asyncio.run(runtime.start_background_jobs(HOME, security=SECURITY)) == []
+        result = asyncio.run(runtime.start_background_jobs(HOME, security=SECURITY))
+        assert result == BackgroundJobStartResult(
+            skipped=True, reason="hierarchy_disabled",
+        )
         runtime.api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
-        assert asyncio.run(runtime.start_background_jobs(HOME, security=SECURITY)) == []
+        result = asyncio.run(runtime.start_background_jobs(HOME, security=SECURITY))
+        assert result == BackgroundJobStartResult(
+            skipped=True, reason="hierarchy_disabled",
+        )
         runtime.api.admin_set("hierarchy.auto_derive", "true", security=ROOT_SECURITY)
         with pytest.raises(ValidationError, match="periodic Scheduler"):
             asyncio.run(runtime.start_background_jobs(HOME, security=SECURITY))
+    finally:
+        runtime.close()
+
+
+def test_runtime_reports_missing_time_profile_instead_of_empty_success() -> None:
+    config = runtime_config("in_memory")
+    composer_params = config["hierarchy_composer"]["tree"]["params"]
+    composer_params["hierarchy_profiles"] = {}
+    runtime = assemble_runtime(config=config)
+    try:
+        runtime.api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
+        runtime.api.admin_set("hierarchy.auto_derive", "true", security=ROOT_SECURITY)
+
+        result = asyncio.run(runtime.start_background_jobs(HOME, security=SECURITY))
+
+        assert result == BackgroundJobStartResult(
+            skipped=True,
+            reason="hierarchy_profile_missing",
+        )
     finally:
         runtime.close()
 
@@ -74,11 +100,11 @@ def test_live_runtime_runs_once_then_noop_and_close_cancels_future_rounds(engine
     api.admin_set("hierarchy.auto_derive", "true", security=ROOT_SECURITY)
 
     async def exercise() -> None:
-        ids = await runtime.start_background_jobs(HOME, security=SECURITY)
+        result = await runtime.start_background_jobs(HOME, security=SECURITY)
         again = await runtime.start_background_jobs(HOME, security=SECURITY)
-        if ids != again or len(ids) != 1:
-            pytest.fail(f"periodic registration must coalesce, got {ids!r} and {again!r}")
-        timer_id = ids[0]
+        if result != again or len(result.job_ids) != 1:
+            pytest.fail(f"periodic registration must coalesce, got {result!r} and {again!r}")
+        timer_id = result.job_ids[0]
         async with asyncio.timeout(5):
             while "last_run_id" not in api.job_status(timer_id, security=SECURITY).detail:
                 await asyncio.sleep(0.02)

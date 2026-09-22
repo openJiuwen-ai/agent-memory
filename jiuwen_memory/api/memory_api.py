@@ -37,9 +37,11 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
+from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control import (
     BatchWriteItem,
     BatchWriteResult,
+    Channel,
     DeleteMode,
     DeleteSelector,
     EvolveTaskOptions,
@@ -56,7 +58,7 @@ from jiuwen_memory.control import (
     SpaceStatus,
     SpaceUsage,
 )
-from jiuwen_memory.retrieval import RetrievalResult
+from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
 
 from .search_options import SearchOptions
 
@@ -192,6 +194,21 @@ class MemoryAPI(ABC):
         self,
         query: str,
         context: Context,
+        *,
+        security: RequestSecurityContext,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
+        as_of: datetime | None = None,
+        top_k: int = 10,
+        disclosure: DisclosureLevel = DisclosureLevel.L0,
+        with_trajectory: bool = False,
+    ) -> RetrievalResult:
+        """按历史平铺选项检索；层级检索等新增能力使用 :meth:`search_v2`。"""
+
+    @abstractmethod
+    def search_v2(
+        self,
+        query: str,
+        context: Context,
         options: SearchOptions | None = None,
         *,
         security: RequestSecurityContext,
@@ -255,6 +272,17 @@ class MemoryAPI(ABC):
 
     @abstractmethod
     def evolve(
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        security: RequestSecurityContext,
+    ) -> str:
+        """按历史模式与通道触发内容演进；显式建树使用 :meth:`evolve_v2`。"""
+
+    @abstractmethod
+    def evolve_v2(
         self,
         scope: Scope,
         options: EvolveTaskOptions,

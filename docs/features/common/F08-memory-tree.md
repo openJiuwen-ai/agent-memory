@@ -18,6 +18,37 @@
 后文仍保留尚未开放的总体设计。
 后文 P0–P5 是原设计分期，不等同于已经完成的提交阶段。
 
+## 评审修正（2026-09-21 至 2026-09-22）
+
+- 普通检索默认返回权威内容：无显式 `hierarchy_kind` 时，在 top-k 前排除 TIME 的
+  `time_span` / `scene` / `event`，并以真源复核兜底；`snapshot` 与无结构记忆仍参与召回。
+  父级召回继续要求显式 typed 层级请求。
+- 普通 `EvolveJob` 不再把 TIME 派生父级送入内容演进；`KeywordExtractor` 等内容派生单元
+  从空 `HierarchyRef` 开始，避免来源节点的树位和边被深拷贝到新事实。
+- `MemoryRuntime.start_background_jobs` 返回 `BackgroundJobStartResult`，以 `job_ids`、
+  `skipped` 和稳定 `reason` 区分已注册、功能关闭和缺 TIME profile，不再把不同跳过原因
+  都折叠为空列表。
+- `MultimodalRetriever` 尚未实现 typed 层级语义，因此任何显式 `hierarchy_kind` 都直接
+  拒绝；延迟展开根的内部关联改用完整 Scope + unit id，结果项被重建后不再依赖对象地址。
+- 为避免树特性破坏已有 Python 调用，MemoryAPI 恢复历史 `search` 平铺参数和
+  `evolve(mode, channel)`，分别只做适配后委托 `search_v2(SearchOptions)` 与
+  `evolve_v2(EvolveTaskOptions)`。层级能力只在 V2 开放；HTTP 保留 `/v1/search|evolve`
+  并新增 `/v2/search|evolve`，MCP 保留原工具并新增 `_v2` 工具，CLI 继续只暴露 V1。
+  版本分叉止于 Access/API 边界；Control、Engine、Retrieval 与 Construction 仍使用统一对象，
+  不为内部 `Evolver` 增加 V1/V2 双接口。若将来需要兼容外部自定义 Evolver，采用独立适配器，
+  不把传输版本永久扩散到构建层。
+- codec 只保证 hierarchy 字段可解析：未知枚举、坏时间或非法 Scope 会整段降级为空，
+  但 kind/role 只填一侧、TIME 缺区间或区间颠倒等结构错误不会在解码时调用
+  `validate_ref`。Composer、层级检索等消费边界负责在使用前校验，不能把正常反序列化
+  等同于结构合法。
+- 六个裸过滤名 `hierarchy_kind`、`hierarchy_role`、`hierarchy_status`、`parent_id`、
+  `span_start`、`span_end` 现在表示树结构投影。历史上用裸名称查询业务 metadata 的
+  调用方必须迁移到 `user_metadata.<key>`；继续使用裸名称会静默改查结构字段。
+- 显式建树与周期派生按 home 完整分页后才在内存筛选，首次读取成本是
+  `O(N_home)`，短 span 不降低扫描量；旧父反向引用核对还可能再扫描一次。
+  `max_leaves` 限制构建候选，不限制扫描记录数。`RetrievedItem.parent_id` 同时出现在
+  普通与层级 search 的每个结果项中，严格 Schema 客户端需要放行该新增字段。
+
 ### 已交付与决定
 
 - `MemoryUnit` 内嵌默认空的 `HierarchyRef`，包含 kind/role、直接父子引用及可选
@@ -145,10 +176,11 @@ scene/event、其他 kind、层级召回与预算仍未交付。普通 EXTRACT �
 
 ### 决策与交付边界
 
-- 公开演进使用统一 EvolveTaskOptions，模式、通道和可选建树参数归入同一请求对象，
+- 当时的公开演进方案使用统一 EvolveTaskOptions，模式、通道和可选建树参数归入同一请求对象，
   避免继续增加形参。MemoryAPI、CommandService、Engine 以及 HTTP/CLI 同步迁移，
   不保留旧独立 mode/channel 的调用形式；原四种模式的算法不变。内部 EvolveRequest
-  保持原契约，仍由 Job 传入已经收齐的 MemoryUnit，而不是接收外部原始字典。
+  保持原契约，仍由 Job 传入已经收齐的 MemoryUnit，而不是接收外部原始字典。该公开
+  接口决策已由 2026-09-22 的 V1/V2 兼容修正覆盖，控制层内部请求对象不变。
 - 显式建树经过 API 的 WRITE 和 UPDATE 双重授权及空间 UPDATE 判权，并要求空间
   可写、hierarchy.enabled 已开启。默认策略关闭，只改开关不自动提交任务。
   permission.routing_fields() 非空时拒绝公开 HIERARCHY：本阶段尚未提供候选逐条
@@ -178,8 +210,8 @@ scene/event、其他 kind、层级召回与预算仍未交付。普通 EXTRACT �
 
 - 不只增加薄接口却让调用方继续手工传所有 MemoryUnit：公开入口必须承担有界完整
   取数，否则跨窗口旧父的完整性仍取决于外部调用纪律。
-- 不用新的可选形参保留两套公开协议：统一请求对象的兼容性代价明确，Python 与
-  HTTP/CLI 一起迁移，不通过任意 kwargs 隐藏接口或 CodeCheck 参数问题。
+- 当时不保留两套同名公开协议；2026-09-22 评审后改为名称明确的 V1/V2 两个方法，
+  仍不通过任意 kwargs 或运行时参数猜测混合调用形状。
 - 不把父引用当作权限凭证：越出 home 的 child Scope 必须在读取前拒绝；尚不支持
   逐条候选路由权限时明确禁用这一组合，而不是选更宽松的默认策略。
 - 不截断后建树、不忽略 repair：完整性和真实失败比“任务返回成功”更重要。
@@ -221,10 +253,11 @@ EXTRACT 的 hierarchy 继承差异和 IndexBuilder 全量 rebuild 恢复能力�
 
 ### 交付与调用方式
 
-- 公开入口统一为 `search(query, context, options=None, *, security)`；
+- 当时的公开入口统一为 `search(query, context, options=None, *, security)`；
   `SearchOptions` 从 `jiuwen_memory.api` 导入，容纳既有 filters/as_of/top_k/disclosure/
   with_trajectory，以及 hierarchy_kind/hierarchy_role/span_start/span_end。
   旧平铺选项关键字是显式破坏性迁移，HTTP/CLI 使用嵌套 `options`，不维护两套协议。
+  该公开接口决策已由 2026-09-22 的 `search` V1 + `search_v2` 修正覆盖。
 - 四个结构条件经 `RetrievalQuery` 进入检索；Retriever 在 parse 后强制回填，
   自定义 Parser 不能丢失或改写。kind/role 必须为对应枚举，role/span 要求 kind，
   span 必须成对且有序。结构 span、event-time、valid-time 是三条独立时间轴。
@@ -1018,7 +1051,7 @@ Policy，也不自行提交后台任务。
 ### 14. 构建层采用统一 Composer 加 kind pipeline
 
 `HierarchyComposer` 与 `Extractor`/`Abstractor` 等一样，是 `ConstructionOperator`
-实现：由控制层通过 `evolve(scope, EvolveTaskOptions(mode=HIERARCHY, ...))` → Evolver 调度调用，不自行鉴权、
+实现：由控制层通过 `evolve_v2(scope, EvolveTaskOptions(mode=HIERARCHY, ...))` → Evolver 调度调用，不自行鉴权、
 不自行提交后台任务。它是跨 kind 的统一构建入口，负责请求校验、pipeline 选择、
 结构校验、持久化和修复报告；kind 专属算法由可替换 pipeline 承担：
 
@@ -1225,7 +1258,7 @@ CloudEngine 不再回注已消费提示。解析路径自行检查字段，不�
 **建树路径（`EvolveMode.HIERARCHY`）**
 
 ```text
-evolve(scope, EvolveTaskOptions(mode=HIERARCHY, hierarchy_options=...), security=...)
+evolve_v2(scope, EvolveTaskOptions(mode=HIERARCHY, hierarchy_options=...), security=...)
   → API 校验、WRITE+UPDATE 与空间 UPDATE 判权、hierarchy.enabled 闸门
   → CommandService → Engine 注入同源 Evolver/KV → 专用 HierarchyJob → Scheduler
   → Job 可选获取 home+kind 锁 → 完整分页 → 相交旧根全部父层与叶补齐 → 反向引用核对
@@ -1241,7 +1274,7 @@ Runtime 显式异步注册的周期路径，并非从上面的显式任务入口
 **读取展开路径（仍是 `search`，无公开 `expand`）**
 
 ```text
-search(query, context, SearchOptions(hierarchy_kind=..., hierarchy_role=..., expand_depth=N))
+search_v2(query, context, SearchOptions(hierarchy_kind=..., hierarchy_role=..., expand_depth=N))
   → 既有 QueryParser → 多路召回 → Fuser → Reranker → [rollup] 祖先准入/MaxP → 阈值 → top_k
   → Discloser 塑形根；[若 N>0] 内部准备根与来源
   → 单/跨空间最终选根 → 共用 max_tokens 准入根

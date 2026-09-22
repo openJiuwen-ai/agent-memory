@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-09-10 |
+| 最近一次修订日期 | 2026-09-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -112,6 +112,11 @@ QueryParser
 可见活动角色均可参与。过滤后的候选仍走既有融合、重排和阈值链路，因此层级父节点
 不是一条绕过相关性判断的特殊结果通道。空文本仍短路；展开不另做相关性召回、不上卷、
 不建树。后代继承根的分数，不表示后代经过独立相关性评分。
+
+未指定 `hierarchy_kind` 的普通检索在索引截断前排除 TIME 派生父级 `time_span` / `scene` /
+`event`，并在真源复核再次执行同一规则；无结构记忆与权威 `snapshot` 保持可召回。调用方要
+检索父级必须显式指定 kind（以及按需指定 role），避免同一事实的父摘要和叶内容同时占用
+普通检索 `top_k`。
 
 三条路径 `RECALL_GET_RANK` / `RECALL_AND_GET_RANK` / `RETRIEVE` 及关键词实体扩展
 都复核 `MemoryUnit.hierarchy`，不信任索引或 metadata 的陈旧投影。内存全文/向量同样
@@ -256,8 +261,9 @@ depth=0 保持既有 Discloser 行为。预算截断记录 `budget_exhausted`。
 多模态 profile 使用 `MultimodalRetriever` 包装基础 Retriever，并行执行原生文本、CLM
 和 ELM 三个过滤分支后按 RRF 融合。该包装器不扫描 KV 判断多模态记忆是否存在，也不
 依赖具体 Store；没有视频记忆时 CLM/ELM 分支返回空，融合结果由原生分支提供。
-该包装器尚未适配上卷后的分支融合及延迟展开，rollup=True 或非零 expand_depth
-明确抛 `UnsupportedCapabilityError`，
+该包装器尚未适配层级过滤、上卷后的分支融合及延迟展开；只要请求显式设置
+`hierarchy_kind` 就明确抛 `UnsupportedCapabilityError`，而不是让三个分支各自执行一部分
+层级语义后返回看似完整的结果，
 不能视为基础 PipelineRetriever 的三条存储路径不支持展开。
 
 ### QueryParser（`query_parser.py`）
@@ -412,6 +418,10 @@ TEMPORAL 推导 TIME。公共 `HierarchyQuery` 负责参数纯校验与真源匹
 
 `RetrievedItem.parent_id` 由两个 Discloser 从真源引用直接填充，普通 unit 或根节点为
 空串。它不是全局唯一键，也不表示自动读取父节点；父 Scope 仍由真源引用定位。
+这是通用 `RetrievedItem` DTO 的向前新增字段，因此普通 search 与 typed 层级 search
+都会在每个结果项中序列化 `parent_id`，非树节点固定为空串，不提供按请求省略的开关。
+允许未知 JSON 字段的客户端无需调整；使用严格 Schema、白名单反序列化或精确字段集合
+断言的旧客户端必须放行该字段。调用方不得把空串解释为字段缺失或结构读取失败。
 
 ### ExpandRequest / ExpandIssue / ExpandResult（内部契约）
 
@@ -507,7 +517,7 @@ jiuwen_memory/retrieval/<算子>_impl/
 
 | 关联 spec | 关系 |
 |-----------|------|
-| S02-memory_api | MemoryAPI.search → Engine → 本层 Retriever |
+| S02-memory_api | MemoryAPI.search/search_v2 → Engine → 本层 Retriever |
 | S03-control | Engine.recall 委托本层 Retriever |
 | S05-construction | 本层消费构建层产出的索引（向量/全文/图） |
 | S06-storage | Retriever 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；`Recaller` 契约、实现与装配全在存储层数据面（`domain_stores.<name>` 的选择键 → `for_manager` 组装），本层不持有召回路 |
@@ -519,6 +529,7 @@ jiuwen_memory/retrieval/<算子>_impl/
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-22 | 补充 RetrievedItem.parent_id 对所有 search 响应的字段兼容与严格 Schema 迁移说明 |
 | 2026-09-10 | 阶段 6：rollup 统一候选尺度、祖先准入、MaxP、逐边范围/可见性复核及有界诊断；物化披露保留身份；top-M、跨 session 裸 id 召回仍未改造 |
 | 2026-09-10 | 阶段 5：显式 expand_depth、只读 BFS、完整 Scope 身份、跨空间延迟展开、共享主字段预算和诊断；修正目标 DTO 与当前结果字段，rollup/top-M 仍未实现 |
 | 2026-09-10 | 阶段 4：四个结构查询字段、外层 AND 下推、三路径真源复核和 parent_id；区分已实现查询与目标展开/上卷，同步 Recaller 边界和历史版本可见性 |

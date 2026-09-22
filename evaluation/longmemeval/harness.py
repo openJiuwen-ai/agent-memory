@@ -170,7 +170,7 @@ class EvalHarness:
 
     def run_query(self, case: QueryCase) -> CaseOutcome:
         """执行一次 recall，把相关性标注 key 映射为物理 id，连同轨迹打包为观测。"""
-        search = getattr(self._api, "search", None) or getattr(self._api, "recall")
+        search = getattr(self._api, "search_v2", None) or getattr(self._api, "recall")
         search_security = self._security_kwargs(search, case.scope)
         # Keep both boundaries explicit:
         # - memory_retrieval_e2e_wall_ms wraps the public MemoryAPI search/recall

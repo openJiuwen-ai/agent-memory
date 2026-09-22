@@ -50,13 +50,13 @@ class _RecordingApi:
         )
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 
-    def search(self, query, context, options=None, *, security):
-        """记录统一搜索选项与独立认证主体。"""
+    def search(self, query, context, **options):
+        """记录 V1 平铺搜索选项与独立认证主体。"""
         self.search_calls.append(
             {
                 "query": query,
                 "context": context,
-                "identity": security.auth.actor,
+                "identity": options["security"].auth.actor,
                 "options": options,
             }
         )
@@ -145,7 +145,7 @@ def test_search_forwards_filter_dsl_to_api_boundary() -> None:
     )
 
     assert status == 200, body
-    assert srv.api.search_calls[0]["options"].filters == filters
+    assert srv.api.search_calls[0]["options"]["filters"] == filters
 
 
 def test_search_preserves_json_extensions_and_returns_both_metadata_namespaces() -> None:
@@ -153,9 +153,9 @@ def test_search_preserves_json_extensions_and_returns_both_metadata_namespaces()
         def __init__(self) -> None:
             self.context = None
 
-        def search(self, query, context, options=None, *, security):
+        def search(self, query, context, **options):
             """记录上下文并返回双元数据空间的搜索结果。"""
-            del query, security, options
+            del query, options
             self.context = context
             return SimpleNamespace(
                 items=[

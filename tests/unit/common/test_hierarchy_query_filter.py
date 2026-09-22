@@ -125,10 +125,12 @@ def test_time_nodes_without_spans_are_ineligible_even_for_unbounded_query(node) 
     assert matches_hierarchy(node, HierarchyQuery(hierarchy_kind=HierarchyKind.TOPIC))
 
 
-def test_ordinary_query_does_not_require_or_filter_hierarchy(node) -> None:
+def test_ordinary_query_excludes_time_parents_only(node) -> None:
     node.hierarchy.status = HierarchyStatus.DISMISSED
     assert matches_hierarchy(node, HierarchyQuery())
     assert matches_hierarchy(MemoryUnit(id="ordinary"), HierarchyQuery())
+    node.hierarchy.role = HierarchyRole.TIME_SPAN
+    assert not matches_hierarchy(node, HierarchyQuery())
     assert not matches_hierarchy(MemoryUnit(id="ordinary"), HierarchyQuery(
         hierarchy_kind=HierarchyKind.TIME,
     ))

@@ -159,7 +159,8 @@ Evolver.evolve(EvolveRequest(units, mode)):
     派生 L2 只保存紧凑陈述，通过 `source_ref`/`provenance`/`evidence` 回指来源；坏候选
     与坏子批分别隔离，整次抽取无可用候选时才显式失败；动态抽取可隔离单策略失败，但
     全部策略失败必须向上抛错。LLM 分层的重复、越界或遗漏 ID 拒绝整批，单条长度异常
-    只跳过该条，其余合法结果在结构校验完成后写入。
+    只跳过该条，其余合法结果在结构校验完成后写入。内容抽取生成的是新事实单元，必须
+    使用空 `HierarchyRef`，不得从来源深拷贝树位、父子边或结构区间。
 
 16. **结构索引投影只认 HierarchyRef**
     `_index_ops.index_metadata` 为全文与向量路径补结构六键；`UnifiedIndexBuilder`

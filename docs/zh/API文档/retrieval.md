@@ -39,7 +39,7 @@ result: RetrievalResult = retriever.retrieve(
 from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRole
 
-result = api.search(
+result = api.search_v2(
     "数据库迁移", context,
     SearchOptions(top_k=5, hierarchy_kind=HierarchyKind.TIME,
                   hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1),
@@ -47,7 +47,9 @@ result = api.search(
 )
 ```
 
-省略 options 使用默认值；旧平铺选项关键字不再接受。HTTP/CLI 放在 `options` 对象内。
+省略 options 使用默认值。历史 `api.search` 继续接受普通检索的平铺关键字，但不开放层级
+选项；HTTP 保留平铺参数的 V1 路由，并新增以 `options` 对象承载参数的 `/v2/search`；CLI
+当前只暴露 V1。
 typed 层级查询需启用 `hierarchy.enabled`。默认 rollup=False、expand_depth=0，
 只返回直接命中；上例显式取直接子节点，不做第二次相关性召回，不上卷或建树。
 另加 `rollup=True` 可从命中后代找回父：有 role 时取最近该角色祖先，无 role 时保留

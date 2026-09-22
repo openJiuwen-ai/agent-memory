@@ -61,19 +61,19 @@ def test_real_tree_search_returns_only_requested_role_and_parent_ids(api) -> Non
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     leaves = [write_snapshot(api, minute) for minute in (0, 1)]
     outside = write_snapshot(api, 10)
-    job_id = api.evolve(HOME, task_options(), security=SECURITY)
+    job_id = api.evolve_v2(HOME, task_options(), security=SECURITY)
     assert api.job_status(job_id, security=SECURITY).status is JobStatus.SUCCEEDED
     stored = api.get(leaves[0].id, leaves[0].scope, security=SECURITY)
 
-    parents = api.search(
+    parents = api.search_v2(
         "snapshot evidence", Context(HOME),
         hierarchy_search_options(hierarchy_role=HierarchyRole.TIME_SPAN), security=SECURITY,
     )
-    snapshots = api.search(
+    snapshots = api.search_v2(
         "snapshot evidence", Context(leaves[0].scope), hierarchy_search_options(),
         security=SECURITY,
     )
-    all_snapshots = api.search(
+    all_snapshots = api.search_v2(
         "snapshot evidence", Context(leaves[0].scope),
         hierarchy_search_options(span_start=None, span_end=None), security=SECURITY,
     )
@@ -92,13 +92,24 @@ def test_search_disabled_policy_only_blocks_structured_hierarchy_requests(api) -
     ordinary = api.search("snapshot evidence", Context(leaf.scope), security=SECURITY)
     assert [item.unit_id for item in ordinary.items] == [leaf.id]
     with pytest.raises(PolicyError, match="hierarchy.enabled=false"):
-        api.search("snapshot", Context(HOME), hierarchy_search_options(), security=SECURITY)
+        api.search_v2("snapshot", Context(HOME), hierarchy_search_options(), security=SECURITY)
+
+
+def test_ordinary_search_keeps_snapshot_and_excludes_generated_parent(api) -> None:
+    api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
+    leaf = write_snapshot(api, 0, session="")
+    job_id = api.evolve_v2(HOME, task_options(), security=SECURITY)
+    assert api.job_status(job_id, security=SECURITY).status is JobStatus.SUCCEEDED
+
+    result = api.search("snapshot evidence", Context(HOME), security=SECURITY)
+
+    assert [item.unit_id for item in result.items] == [leaf.id]
 
 
 def test_empty_text_does_not_turn_hierarchy_search_into_tree_enumeration(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     write_snapshot(api, 0)
-    result = api.search("", Context(HOME), hierarchy_search_options(), security=SECURITY)
+    result = api.search_v2("", Context(HOME), hierarchy_search_options(), security=SECURITY)
     assert result.items == []
 
 
@@ -111,16 +122,18 @@ def test_empty_text_does_not_turn_hierarchy_search_into_tree_enumeration(api) ->
 ])
 def test_invalid_hierarchy_options_fail_at_public_search_boundary(api, changes) -> None:
     with pytest.raises(ValidationError):
-        api.search(
+        api.search_v2(
             "snapshot", Context(HOME), hierarchy_search_options(**changes), security=SECURITY,
         )
 
 
-def test_public_search_rejects_untyped_request_and_does_not_accept_old_keywords(api) -> None:
+def test_search_v1_accepts_flat_options_and_v2_rejects_them(api) -> None:
+    result = api.search("snapshot", Context(HOME), top_k=1, security=SECURITY)
+    assert result.items == []
     with pytest.raises(ValidationError, match="SearchOptions"):
-        api.search("snapshot", Context(HOME), {"top_k": 1}, security=SECURITY)
+        api.search_v2("snapshot", Context(HOME), {"top_k": 1}, security=SECURITY)
     with pytest.raises(TypeError, match="top_k"):
-        api.search("snapshot", Context(HOME), top_k=1, security=SECURITY)
+        api.search_v2("snapshot", Context(HOME), top_k=1, security=SECURITY)
 
 
 def test_search_options_is_frozen_and_defaults_preserve_ordinary_search() -> None:
@@ -152,7 +165,7 @@ def test_single_space_request_is_copied_and_preserves_typed_and_custom_options(
         return RetrievalResult()
 
     monkeypatch.setattr(MemoryQueryService, "recall", capture_recall)
-    api.search("snapshot", context, options, security=SECURITY)
+    api.search_v2("snapshot", context, options, security=SECURITY)
 
     assert context == before_context and options == before_options
     assert len(received) == 1 and received[0][0] == HOME
@@ -194,14 +207,14 @@ def test_cross_space_hierarchy_search_preserves_permissions_and_denied_details()
         context = Context(Scope(org=HOME.org), extensions={
             "spaces": [readable.space, forbidden.space],
         })
-        result = api.search(
+        result = api.search_v2(
             "snapshot", context, hierarchy_search_options(), security=owner_security,
         )
         assert [item.unit_id for item in result.items] == [allowed.id]
         assert len(result.errors) == 1 and result.errors[0].source == forbidden.space
         assert result.errors[0].error_type == "PermissionDeniedError"
         with pytest.raises(PermissionDeniedError):
-            api.search(
+            api.search_v2(
                 "snapshot", Context(forbidden), hierarchy_search_options(),
                 security=owner_security,
             )
@@ -229,7 +242,7 @@ def test_hierarchy_query_does_not_bypass_permission_routing_filters(monkeypatch)
     monkeypatch.setattr(MemoryQueryService, "recall", capture_recall)
     try:
         runtime.api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
-        runtime.api.search(
+        runtime.api.search_v2(
             "snapshot", Context(HOME),
             hierarchy_search_options(filters={"memory_type": "profile"}), security=SECURITY,
         )
@@ -274,7 +287,7 @@ def test_cross_space_preserves_all_typed_options_and_removes_reserved_extensions
             as_of=START, disclosure=DisclosureLevel.L1, with_trajectory=True, top_k=4,
         )
         original_context = deepcopy(context)
-        api.search("snapshot", context, options, security=legacy_request_context(owner))
+        api.search_v2("snapshot", context, options, security=legacy_request_context(owner))
 
         assert context == original_context
         assert {scope.space for scope, _ in received} == set(requested_spaces)
@@ -316,7 +329,7 @@ def test_runtime_extensions_keep_opaque_plugin_identity(across, monkeypatch) -> 
         })
         if across:
             context.extensions["spaces"] = ["first", "second"]
-        runtime.api.search("snapshot", context, security=legacy_request_context(owner))
+        runtime.api.search_v2("snapshot", context, security=legacy_request_context(owner))
 
         assert len(received) == (2 if across else 1)
         assert all(instance is opaque for instance in received)

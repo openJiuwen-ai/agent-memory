@@ -5,14 +5,17 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from jiuwen_memory.common.errors import PolicyError, ValidationError
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import HierarchyKind, Scope
 from jiuwen_memory.construction.evolver import Evolver
 from jiuwen_memory.control.evolution.validation import scope_contains
 from jiuwen_memory.control.jobs import JobFactory, JobType
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler
-from jiuwen_memory.control.types import Channel
+from jiuwen_memory.control.types import BackgroundJobStartResult, Channel
 from jiuwen_memory.storage.kv import KVStore
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -27,7 +30,7 @@ class BackgroundDependencies:
 
 async def start_hierarchy_derivation(
     scope: Scope, policy: PolicyManager, dependencies: BackgroundDependencies,
-) -> list[str]:
+) -> BackgroundJobStartResult:
     """默认关闭；开启后仅在实际支持周期的 Scheduler 注册一个 home。"""
     scope_contains(scope, scope)
     try:
@@ -36,11 +39,18 @@ async def start_hierarchy_derivation(
     except PolicyError:
         enabled = False
     if not enabled:
-        return []
+        return BackgroundJobStartResult(skipped=True, reason="hierarchy_disabled")
     if dependencies.factory is None or dependencies.evolver is None:
         raise ValidationError("periodic hierarchy requires runtime JobFactory and Evolver")
     if dependencies.evolver.hierarchy_profile(HierarchyKind.TIME) is None:
-        return []
+        logger.error(
+            "periodic hierarchy skipped: TIME profile missing scope=%s",
+            scope_for_log(scope),
+        )
+        return BackgroundJobStartResult(
+            skipped=True,
+            reason="hierarchy_profile_missing",
+        )
     if dependencies.kv is None:
         raise ValidationError("periodic hierarchy requires an injected KV read port")
     if not dependencies.scheduler.supports_periodic():
@@ -50,4 +60,6 @@ async def start_hierarchy_derivation(
         kv=dependencies.kv, policy=policy,
     )
     dependencies.scheduler.validate(job)
-    return [await dependencies.scheduler.submit(job, Channel.BACKGROUND)]
+    return BackgroundJobStartResult(
+        job_ids=[await dependencies.scheduler.submit(job, Channel.BACKGROUND)]
+    )

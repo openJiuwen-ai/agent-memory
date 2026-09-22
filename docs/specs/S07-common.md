@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-09-20 |
+| 最近一次修订日期 | 2026-09-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联树结构特性 | docs/features/common/F08-memory-tree.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
@@ -413,6 +413,12 @@ rollup 由 RetrievalQuery 持有，ParsedQuery 不增加对应字段，由检索
 `matches_filter_value(value, clause)` 复用字段比较语义给内存索引和真源过滤。
 普通过滤别名 `id` 统一规范化为 `unit_id`，显式 `user_metadata.id` 不受影响。
 
+**升级说明**：`hierarchy_kind`、`hierarchy_role`、`hierarchy_status`、`parent_id`、
+`span_start`、`span_end` 已成为内置结构过滤字段。旧版本中用这些裸名称表达业务
+metadata 的过滤条件不会再自动规范化为用户字段；调用方必须改成
+`user_metadata.<key>`（例如 `user_metadata.parent_id`）。继续使用裸名称不会报错，
+但会匹配树结构投影，属于语义变化而不是兼容别名。
+
 `hierarchy_index_metadata(ref)` 只生成 S06 约定的六个索引字段；空结构返回空 dict。
 `HIERARCHY_INDEX_KEYS` 是这六键的共享集合，供独立索引与一体化写路径统一识别旧
 系统投影副本，不作用于用户命名空间。
@@ -451,7 +457,9 @@ F08 阶段 1 将仅索引拥有的 `hierarchy_status`、`parent_id`、`span_star
   `_v<4` 数据被拒绝的边界。hierarchy 未知字段忽略，非对象、未知枚举或无法解析的
   时间、非法引用 Scope 或子 Scope 数量不匹配均整段降级为空结构并记录诊断，不删除
   个别 Scope 后把其余 Scope 错配给其他 child_id；正常解析不等于已通过
-  `validate_ref` / `validate_tree`。
+  `validate_ref` / `validate_tree`。因此 kind/role 只填一侧、TIME 缺区间或区间颠倒等
+  “字段可解析但结构不合法”的引用仍可能被读出并再次序列化；Composer、层级检索等
+  消费边界必须在建树、沿边或结构过滤前执行对应校验，不能把 codec 当作合法性闸门。
 - 只有字段语义或结构发生破坏性变化时才提升 `_v`；增加可选枚举成员或可缺省字段不单独升版。
 
 ### 工厂注册机制（`factory/factory.py`）
@@ -580,6 +588,7 @@ jiuwen_memory/common/<组件>/
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-22 | 明确六个裸层级过滤字段的升级迁移方式，并区分 codec 容错解析与消费边界结构校验 |
 | 2026-09-10 | 阶段 6：rollup 严格布尔及 kind 前置校验；HIERARCHY 诊断覆盖上卷，不扩充树模型 |
 | 2026-09-10 | 阶段 5：展开深度纯校验及 HIERARCHY 诊断值；不改变 HierarchyQuery 四字段或树模型 |
 | 2026-09-10 | 阶段 4：HierarchyQuery、结构真源匹配、ParsedQuery 四字段、统一候选复核及共享字段比较；同步已交付 Composer 校验 |

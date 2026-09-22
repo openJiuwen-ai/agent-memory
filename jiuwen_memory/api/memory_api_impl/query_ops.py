@@ -41,13 +41,15 @@ from jiuwen_memory.construction.router import (
 from jiuwen_memory.control import collective
 from jiuwen_memory.control.evolution.validation import scope_contains, validate_evolve_options
 from jiuwen_memory.control.types import (
+    BackgroundJobStartResult,
+    Channel,
     DeleteSelector,
     EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
 )
-from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
+from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery, RetrievalResult
 
 from .local_support import (
     _ROOT,
@@ -107,6 +109,32 @@ class QueryOpsMixin:
     """Data-plane read/update/delete/evolve after PEP."""
 
     def search(
+        self,
+        query: str,
+        context: Context,
+        *,
+        security: RequestSecurityContext,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
+        as_of: datetime | None = None,
+        top_k: int = 10,
+        disclosure: DisclosureLevel = DisclosureLevel.L0,
+        with_trajectory: bool = False,
+    ) -> RetrievalResult:
+        """把历史平铺选项转换为 V2 请求对象后执行检索。"""
+        return self.search_v2(
+            query,
+            context,
+            SearchOptions(
+                filters=filters,
+                as_of=as_of,
+                top_k=top_k,
+                disclosure=disclosure,
+                with_trajectory=with_trajectory,
+            ),
+            security=security,
+        )
+
+    def search_v2(
         self,
         query: str,
         context: Context,
@@ -644,6 +672,21 @@ class QueryOpsMixin:
     def evolve(
         self,
         scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        security: RequestSecurityContext,
+    ) -> str:
+        """把历史模式与通道转换为 V2 请求对象后提交演进任务。"""
+        return self.evolve_v2(
+            scope,
+            EvolveTaskOptions(mode=mode, channel=channel),
+            security=security,
+        )
+
+    def evolve_v2(
+        self,
+        scope: Scope,
         options: EvolveTaskOptions,
         *,
         security: RequestSecurityContext,
@@ -680,7 +723,7 @@ class QueryOpsMixin:
 
     async def start_background_jobs(
         self, scope: Scope, *, security: RequestSecurityContext,
-    ) -> list[str]:
+    ) -> BackgroundJobStartResult:
         """供 Runtime 在长驻循环中启动已鉴权 home，不作为同步数据面接口。"""
         scope = deepcopy(scope)
         scope_contains(scope, scope)
@@ -692,8 +735,12 @@ class QueryOpsMixin:
                         space_action=_evolve_space_action(EvolveMode.HIERARCHY))
         if self._perm.routing_fields():
             raise ValidationError("周期 HIERARCHY 暂不支持权限路由或逐候选鉴权")
-        job_ids = await self._commands.start_background_jobs(scope, self._policy)
+        result = await self._commands.start_background_jobs(scope, self._policy)
         self._log(identity, "evolve", target_scope=scope, detail={
-            **auth, "trigger": "auto_derive", "job_ids": json.dumps(job_ids),
+            **auth,
+            "trigger": "auto_derive",
+            "job_ids": json.dumps(result.job_ids),
+            "skipped": str(result.skipped).lower(),
+            "reason": result.reason,
         })
-        return job_ids
+        return result

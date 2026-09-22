@@ -33,9 +33,12 @@ result: RetrievalResult = retriever.retrieve(
 
 `scope` is the explicit isolation axis and specifies where to search. `RetrievalQuery` specifies what to search for. They are always passed separately; Scope dimensions must not be placed in `filters`.
 
-For the public MemoryAPI, use `api.search(query, context, SearchOptions(...), security=security)`.
-Import `SearchOptions` from `jiuwen_memory.api`. Omitted options use defaults; old flat option
-keywords are no longer accepted. HTTP/CLI carry the same fields in a nested `options` object.
+For the public MemoryAPI, use
+`api.search_v2(query, context, SearchOptions(...), security=security)` when passing a unified
+options object. Import `SearchOptions` from `jiuwen_memory.api`. Omitted options use defaults.
+The historical `api.search` remains available with flat ordinary-search keywords, but it does not
+accept hierarchy options. HTTP keeps the flat V1 route and adds `/v2/search` with a nested
+`options` object; CLI currently exposes V1 only.
 Typed hierarchy queries require `hierarchy.enabled=true`, retain existing Scope/permissions,
 and default to direct hits only (`rollup=False`, `expand_depth=0`). A positive depth follows child
 references: 1 reads direct children, 2 follows at most two edges. With `rollup=True`, matching

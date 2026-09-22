@@ -56,6 +56,7 @@ from jiuwen_memory.control.permission import PermissionProducer
 from jiuwen_memory.control.policy import PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.space import SpaceManager, SpaceProducer
+from jiuwen_memory.control.types import BackgroundJobStartResult
 from jiuwen_memory.ingest.bootstrap import register_ingestors
 from jiuwen_memory.retrieval.bootstrap import register_operators
 from jiuwen_memory.storage.bootstrap import register_backends
@@ -126,7 +127,7 @@ class MemoryRuntime(Protocol):
 
     async def start_background_jobs(
         self, scope: Scope, *, security: RequestSecurityContext,
-    ) -> list[str]:
+    ) -> BackgroundJobStartResult:
         """在宿主持续运行的事件循环内注册固定 home；默认不开启。"""
         ...
 
@@ -136,27 +137,29 @@ class _MemoryRuntime:
     api: MemoryAPI
     _ingest_jobs: IngestJobController
     _scheduler: Scheduler
-    _start_jobs: Callable[[Scope, RequestSecurityContext], Awaitable[list[str]]]
+    _start_jobs: Callable[
+        [Scope, RequestSecurityContext], Awaitable[BackgroundJobStartResult]
+    ]
     _job_ids: set[str] = field(default_factory=set)
     _loop: asyncio.AbstractEventLoop | None = None
     _closed: bool = False
 
     async def start_background_jobs(
         self, scope: Scope, *, security: RequestSecurityContext,
-    ) -> list[str]:
+    ) -> BackgroundJobStartResult:
         """绑定一个宿主循环并记录本 Runtime 启动的定时任务。"""
         loop = asyncio.get_running_loop()
         if self._closed or (self._loop is not None and self._loop is not loop):
             raise ValidationError("runtime is closed or periodic jobs belong to another event loop")
-        job_ids = await self._start_jobs(scope, security)
+        result = await self._start_jobs(scope, security)
         if self._closed:
-            for job_id in job_ids:
+            for job_id in result.job_ids:
                 self._scheduler.cancel(job_id)
             raise ValidationError("runtime closed during periodic registration")
-        if job_ids:
+        if result.job_ids:
             self._loop = loop
-            self._job_ids.update(job_ids)
-        return job_ids
+            self._job_ids.update(result.job_ids)
+        return result
 
     def close(self, *, wait: bool = True) -> None:
         """取消本 Runtime 的后续周期；wait 只等待摄入任务，不中断正在建树的线程。"""

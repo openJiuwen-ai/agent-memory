@@ -59,6 +59,7 @@ from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, Pipe
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -833,7 +834,9 @@ class CloudEngine(MemoryEngine):
         )
         return job_id
 
-    async def start_background_jobs(self, scope: Scope, policy: PolicyManager) -> list[str]:
+    async def start_background_jobs(
+        self, scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
         """向周期调度器注册显式 home 的建树任务。"""
         return await start_hierarchy_derivation(scope, policy, BackgroundDependencies(
             self._job_factory, self._scheduler, self._evolver, self._hierarchy_kv,

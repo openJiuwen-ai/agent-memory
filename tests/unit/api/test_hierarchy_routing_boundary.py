@@ -82,7 +82,7 @@ def test_hierarchy_refuses_permission_routing_before_submission(
         )
 
         with pytest.raises(ValidationError, match="HIERARCHY 暂不支持权限路由"):
-            runtime.api.evolve(scope, options, security=security)
+            runtime.api.evolve_v2(scope, options, security=security)
 
         scheduler.submit.assert_not_called()
         evolver.evolve.assert_not_called()

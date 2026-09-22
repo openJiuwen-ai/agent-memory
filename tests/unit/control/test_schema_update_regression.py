@@ -78,11 +78,11 @@ def test_issue208_refreshes_entities_properties_and_search(world, mode):
         assert world.get(old_props[0].id).temporal.t_invalid == T1
         assert world.get(updated.id, T0 + timedelta(days=1)).content == source.content
     assert len(world.units()) > 2
-    new_hits = world.api.search(
+    new_hits = world.api.search_v2(
         "李红负责推荐算法迭代", Context(scope=world.scope),
         options=SearchOptions(top_k=2), security=world.security,
     )
-    old_hits = world.api.search(
+    old_hits = world.api.search_v2(
         "陈静", Context(scope=world.scope), options=SearchOptions(top_k=2), security=world.security,
     )
     assert updated.id in {item.unit_id for item in new_hits.items}

@@ -184,21 +184,26 @@ def complete_expansion(
     selected: RetrievalResult, prepared: list[PreparedRetrievalResult], query: RetrievalQuery,
 ) -> RetrievalResult:
     """选中根先消耗预算，随后按根顺序展开；仅返回普通扁平 RetrievalResult。"""
-    roots_by_item: dict[int, ExpansionRoot] = {}
+    roots_by_key: dict[NodeKey, ExpansionRoot] = {}
+    ordered_roots: list[ExpansionRoot] = []
     for result in prepared:
         for root in result.expansion_roots:
-            roots_by_item[id(root.item)] = root
+            key = node_key(root.candidate.unit)
+            roots_by_key[key] = root
+            ordered_roots.append(root)
     output = RetrievalResult(trajectory=list(selected.trajectory), errors=list(selected.errors))
     state = _Completion(query, output, DisclosureBudget(query.max_tokens))
     roots: list[ExpansionRoot] = []
+    claimed: set[NodeKey] = set()
     for item in selected.items:
-        root = roots_by_item.get(id(item))
-        if root is None:
+        key = _resolve_root_key(item, ordered_roots, claimed)
+        if key is None:
             raise UnsupportedCapabilityError(
                 "defer_expansion", "true", "Retriever",
                 "检索实现未提供延迟展开的物化根",
             )
-        key = node_key(root.candidate.unit)
+        root = roots_by_key[key]
+        claimed.add(key)
         if key in state.seen:
             continue
         admitted = state.budget.take(item, query.disclosure)
@@ -213,3 +218,26 @@ def complete_expansion(
     for root in roots:
         state.expand(root)
     return output
+
+
+def _resolve_root_key(
+    item: RetrievedItem,
+    roots: list[ExpansionRoot],
+    claimed: set[NodeKey],
+) -> NodeKey | None:
+    """用稳定的 Scope + unit_id 找回根；允许合并器重建等值结果对象。"""
+    exact: list[NodeKey] = []
+    same_id: list[NodeKey] = []
+    for root in roots:
+        key = node_key(root.candidate.unit)
+        if key in claimed:
+            continue
+        if root.item == item:
+            exact.append(key)
+        if root.item.unit_id == item.unit_id:
+            same_id.append(key)
+    if exact:
+        return exact[0]
+    if len(same_id) == 1:
+        return same_id[0]
+    return None

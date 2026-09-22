@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """CLI 面验证：契约锁、会话内闭环与辅助命令（重建 test_cli.py 消失后的验证证据）。
 
-CLI 命令集由 ``MemoryAPI.__abstractmethods__`` 反射生成（``cli/__main__.py:42``），
+CLI 命令集由 V1 ``api_method_names()`` 反射生成（``cli/__main__.py:42``），
 本文件锁四件事：
 1. 契约锁——36 个方法全部有同名子命令、选项名与 ``api_contract`` 零漂移；
 2. 会话内闭环——同一 client 的 add→search→list→get→update→delete→evolve 全链路；
@@ -128,7 +128,7 @@ def test_client_roundtrip_add_list_search_update_get_delete(dev_client) -> None:
     assert status == 200 and page["items"][0]["id"] == unit_id
 
     status, found = dev_client.call(
-        "search", {"query": "coffee", "context": {"scope": SCOPE}, "options": {"top_k": 3}}
+        "search", {"query": "coffee", "context": {"scope": SCOPE}, "top_k": 3}
     )
     assert status == 200 and found["items"][0]["unit_id"] == unit_id
     assert "hits" not in found
@@ -153,7 +153,7 @@ def test_client_roundtrip_add_list_search_update_get_delete(dev_client) -> None:
 
 def test_client_evolve_job_status_and_cancel_loop(dev_client) -> None:
     dev_client.call("add", {"content": "hello", "scope": SCOPE})
-    status, job_id = dev_client.call("evolve", {"scope": SCOPE, "options": {"mode": "extract"}})
+    status, job_id = dev_client.call("evolve", {"scope": SCOPE, "mode": "extract"})
     assert status == 200 and isinstance(job_id, str) and job_id
 
     import time
@@ -194,7 +194,7 @@ def test_main_batch_two_ops_share_one_session(capsys, monkeypatch) -> None:
         [
             json.dumps({"op": "add", "content": "batch coffee", "scope": SCOPE}),
             json.dumps({"op": "search", "query": "coffee",
-                        "context": {"scope": SCOPE}, "options": {"top_k": 3}}),
+                        "context": {"scope": SCOPE}, "top_k": 3}),
         ]
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(ndjson))
