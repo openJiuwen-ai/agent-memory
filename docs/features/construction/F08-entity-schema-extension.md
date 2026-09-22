@@ -82,6 +82,10 @@ message mapping 或 Episode。
 若事实使用相对时间，content 保留对应 Source 日期与原始相对表达，使下游可核查
 归一化结果。
 
+相对时间校验保留 `just now` 等明确时间短语；独立的 `just` 也可能表示语气强调，
+不作为强制补充事件时间的依据，避免无日期的偏好事实被误判并在纠错重试后丢弃。
+回归测试覆盖强调用法直接保留事实，以及 `just now` 缺少事件时间时仍触发纠错。
+
 ADD 路径中，属性 Unit 成功持久化后，Evolver 按其 `provenance` 找到对应 Source Unit，把
 `schema_entity_name` 去重聚合到 Source 的 `entities`。一个 Source 支持多个实体和多个属性，
 Property Unit 仍通过 `source_ref/provenance` 回指 Source。属性名只保留在 Property Unit 的
