@@ -88,11 +88,11 @@ _invoke_blocking：credentials_for_transport → authenticated(Surface.MCP) → 
 ### 工具与参数
 
 工具集与 `MemoryAPI` 公开方法**全量对齐（36/36）**，命名规则
-`memory_<method>`：数据面 10 个（add/add_async/batch_add/batch_add_async/
+`memory_<method>`：数据面 9 个（add/add_async/batch_add/batch_add_async/
 search/list/get/update/delete）、任务与摄入 5 个（evolve/check_write/
 submit_ingest/job_status/job_cancel）、管理面 3 个（admin_get/set/all）、
 治理面 4 个（inspect/trace/audit/verify_audit）、授权 2 个（grant/revoke）、
-Space 管理 12 个（create/get/list/update/archive/delete_space、export_space、
+Space 管理 13 个（create/get/list/update/archive/delete_space、export_space、
 space_usage、get/set_space_policy、list/add/remove_space_member）。
 
 - 参数名与 `MemoryAPI` 签名严格一致（`unit_id`/`top_k`/`with_trajectory`…），
@@ -218,10 +218,7 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 3. **管理面/治理面/Space 工具鉴权依赖管理动作授权**：dev 身份走旧授权链（按 scope
    归属判定、不读 role）时这些操作返回 PermissionDenied（F05 授权链过渡期缺口，
    非缺陷）；待 ROOT role 接入 PermissionManager 后重测。
-4. **部分参数未透传**（**已于 2026-09-15 补齐**）：工具签名参数集合与契约
-   **全量相等**（见「工具与参数」），契约锁同步升级为相等断言——可选参数缺失
-   不再可能静默漂移。
-5. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。
-6. **OFFLINE 内核 `delete_space` 能力限制**：`InMemoryEngine` 只支持空 space 的
+4. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。
+5. **OFFLINE 内核 `delete_space` 能力限制**：`InMemoryEngine` 只支持空 space 的
    purge，非空 space 在授权通过后返回 400 ValidationError；接真后端
    （CloudEngine）后消除。
