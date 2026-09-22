@@ -23,6 +23,7 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.type_def import (
+    CandidateSource,
     FilterExpr,
     LifecycleState,
     MemoryTier,
@@ -41,6 +42,7 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
+from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.schema_update_support import (
     commit_schema_update,
@@ -69,6 +71,7 @@ from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.domain_store import DomainStore
+from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
@@ -224,6 +227,7 @@ class CloudEngine(MemoryEngine):
         evolver: Evolver,
         lifecycle: LifecycleManager,
         *,
+        kv: KVStore | None = None,
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
         message_type_key: str = "message_type",
@@ -235,6 +239,7 @@ class CloudEngine(MemoryEngine):
         self._index = index_builder
         self._retriever = retriever
         self._domain_store = domain_store
+        self._kv = kv
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -249,6 +254,16 @@ class CloudEngine(MemoryEngine):
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
+
+    @property
+    def kv(self) -> KVStore:
+        """真源 KV 端口（API 层 dreaming 编排读注册表用，见 MemoryEngine.kv）。"""
+        if self._kv is None:
+            raise RuntimeError("CloudEngine dreaming requires a KVStore")
+        return self._kv
+
+    def candidate_scopes(self) -> list[Scope]:
+        return self._domain_store.scopes()
 
     def health(self) -> None:
         return None
@@ -768,9 +783,16 @@ class CloudEngine(MemoryEngine):
         return purged
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
-    ) -> str:
-        """提交 EvolveJob 到 Scheduler——mode/evolver 运行时流入 EvolveJob（不进 Spec 装配）。"""
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        candidate: CandidateSource | dict | None = None,
+        buckets: list[Scope] | None = None,
+        denied_scopes: list[str] | None = None,
+    ) -> str | None:
+        """提交 EvolveJob——一次性演进执行共用件（F04 D3，纯执行）。"""
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
@@ -780,19 +802,21 @@ class CloudEngine(MemoryEngine):
             raise RuntimeError(
                 "CloudEngine.evolve requires an Evolver (装配未注入 evolver)"
             )
-        # E-06：evolve 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
-        job = self._job_factory.get_job(
-            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
+        # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
+        # 纯执行（鉴权在 API 层）：candidate→resolver 翻译 + 一次性 EvolveJob 提交。
+        return await submit_evolve(
+            scope=scope,
+            mode=mode,
+            channel=channel,
+            candidate=candidate,
+            kv=self._domain_store,
+            scheduler=self._scheduler,
+            job_factory=self._job_factory,
+            evolver=self._evolver,
+            retriever=self._retriever,
+            buckets=buckets,
+            denied_scopes=denied_scopes,
         )
-        job_id = await self._scheduler.submit(job, channel)
-        logger.info(
-            "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
-            job_id,
-            scope_for_log(scope),
-            mode.value,
-            channel.value,
-        )
-        return job_id
 
     async def admin_get(self, key: str) -> str:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
@@ -970,16 +994,16 @@ def _optional_job_factory(config) -> JobFactory | None:
 @EngineProducer.register("cloud")
 def _build(config):
     ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
+    manager = StoreManagerProducer.resolve(config)
     return CloudEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        StoreManagerProducer.resolve(config).domain_store(
-            resolve_name(config, "domain_store")
-        ),
+        manager.domain_store(resolve_name(config, "domain_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
+        kv=manager.kv(resolve_name(config, "kv_store")),
         classifier=_optional_classifier(config),
         pipeline=_optional_pipeline(config),
         message_type_key=str(config.get("message_type_key", "message_type")),

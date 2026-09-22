@@ -24,6 +24,7 @@ from datetime import datetime
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
+    CandidateSource,
     FilterExpr,
     MemoryUnit,
     MetadataValueType,
@@ -33,6 +34,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
+from jiuwen_memory.storage.kv import KVStore
 
 from .base import ControlOperator
 from .types import (
@@ -59,6 +61,19 @@ class EngineProducer(Factory):
 
 class MemoryEngine(ControlOperator):
     """编排接口层各语义；本身不实现具体能力，驱动各层算子完成。"""
+
+    @property
+    @abstractmethod
+    def kv(self) -> KVStore:
+        """真源 KV 端口（装配注入 Engine 的同一实例）。
+
+        供 API 层 dreaming 编排读注册表（注册表与真源同 KV 才有恢复语义）；
+        只读用途，不作为写入通道。
+        """
+
+    def candidate_scopes(self) -> list[Scope]:
+        """返回演进候选数据面中已有记忆的作用域。"""
+        return self.kv.scopes()
 
     @abstractmethod
     async def write(
@@ -201,9 +216,25 @@ class MemoryEngine(ControlOperator):
 
     @abstractmethod
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
-    ) -> str:
-        """触发一次演进：委托 Scheduler 提交指定阶段与通道，返回任务 id。"""
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        candidate: CandidateSource | dict | None = None,
+        buckets: list[Scope] | None = None,
+        denied_scopes: list[str] | None = None,
+    ) -> str | None:
+        """触发一次演进执行：委托 Scheduler 提交一次性 EvolveJob，返回任务 id。
+
+        本方法是**纯执行件**——不做鉴权（PEP 边界：入口鉴权与持续授权都在
+        API 层，S03）。``candidate`` 可选指定候选源（谓词/点名/召回/枚举），
+        None=谓词全量源。``buckets`` / ``denied_scopes`` 仅供 fan-out 候选源：
+        API 层逐桶鉴权后传入获准桶列表（None = 内核直调路径，resolver 自行
+        枚举全部命中桶）；``denied_scopes`` 为 API 层鉴权拒绝的桶标签，随
+        JobInfo 回显。dreaming 的注册/注销/恢复编排不在此层（API 层
+        DreamingCoordinator）。
+        """
 
     @abstractmethod
     async def admin_get(self, key: str) -> str:

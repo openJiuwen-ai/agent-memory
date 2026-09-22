@@ -301,16 +301,35 @@ async def memory_delete(selector: dict, ctx: Context = None) -> list[str]:
 
 
 @mcp.tool()
-async def memory_evolve(scope: dict, mode: str, channel: str = "background",
-                  ctx: Context = None) -> str:
-    """触发记忆演进，异步执行，返回后台任务 id（job_id），用 memory_job_status 查询进度。
+async def memory_evolve(
+    scope: dict,
+    mode: str,
+    channel: str = "background",
+    dreaming: bool | None = None,
+    interval: int = 0,
+    candidate: dict | None = None,
+    ctx: Context = None,
+) -> str | None:
+    """触发记忆演进，返回后台任务 id（job_id）；注销时返回 None。
 
     mode: 必填——extract 抽取派生 / associate 建立关联 / consolidate 巩固升华 /
         forget 清理过期。
     channel: background（默认，离线重计算）/ hot（在线低时延轻量更新）。
+    dreaming: 缺省立即执行；true 注册定时；false 幂等注销。
+    interval: 定时周期（秒），dreaming=true 时必须大于 0。
+    candidate: 可选候选源 dict DSL。
     """
     return await _invoke(
-        "evolve", {"scope": scope, "mode": mode, "channel": channel}, context=ctx
+        "evolve",
+        {
+            "scope": scope,
+            "mode": mode,
+            "channel": channel,
+            "dreaming": dreaming,
+            "interval": interval,
+            "candidate": candidate,
+        },
+        context=ctx,
     )
 
 
@@ -705,6 +724,7 @@ def main() -> int:
     except ValidationError as bind_error:
         logger.error("MCP server refused to start: %s", bind_error)
         return 2
+    _SRV.restore_dreaming()
     if _TRANSPORT in ("http", "streamable-http"):
         mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好
     else:

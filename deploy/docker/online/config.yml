@@ -79,6 +79,15 @@ memory_api:
         # ssl_ca_cert 为云厂商控制台下载的 CA 证书路径（容器内可读），开启时必填。
         ssl_verify: "${REDIS_SSL_VERIFY:-false}"
         ssl_ca_cert: "${REDIS_SSL_CA:-}"
+  lock:
+    dreaming:
+      target: redis
+      params:
+        url: "${REDIS_URL:-redis://redis:6379/0}"
+        lease_ms: 30000
+        wait_timeout_ms: 0
+        ssl_verify: "${REDIS_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${REDIS_SSL_CA:-}"
   fulltext_store:
     default:
       target: elasticsearch
@@ -210,3 +219,15 @@ memory_api:
         embedder: default
         llm: { target: echo }
         rewrite_enabled: false
+
+  # scheduler: production profile assembles async_timer explicitly (the default
+  # in_process does not support recurring jobs — dreaming registration fails
+  # fast). async_timer owns a private background event loop: Timer coroutines
+  # do not piggyback on per-request loops, so the per-request asyncio.run close
+  # never kills registered timers. Single-instance deployment model: a second
+  # instance sharing the same KV is rejected by the restore instance lock.
+  scheduler:
+    default:
+      target: async_timer
+      params:
+        tick_interval: 10

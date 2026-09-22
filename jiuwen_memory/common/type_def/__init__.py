@@ -2,6 +2,18 @@
 """跨层共用的结构体定义。"""
 
 from .audit import AuditEvent
+from .candidate import (
+    CandidateGroup,
+    CandidateOutcome,
+    CandidateSource,
+    FanOutCandidate,
+    IdsCandidate,
+    PredicateCandidate,
+    RecallCandidate,
+    candidate_from_dict,
+    candidate_to_dict,
+    register_candidate_codec,
+)
 from .chat import ChatMessage
 from .chunk import Chunk
 from .context import EXT_MAX_TOKENS, EXT_SPACES, Context
@@ -32,6 +44,7 @@ from .filter import (
     from_dict,
     iter_clauses,
     normalize,
+    to_dict,
     validate,
 )
 from .memory import (
@@ -90,6 +103,16 @@ __all__ = [
     "Context",
     "EXT_MAX_TOKENS",
     "EXT_SPACES",
+    "CandidateSource",
+    "PredicateCandidate",
+    "IdsCandidate",
+    "RecallCandidate",
+    "FanOutCandidate",
+    "CandidateGroup",
+    "CandidateOutcome",
+    "candidate_to_dict",
+    "candidate_from_dict",
+    "register_candidate_codec",
     "Modality",
     "MemoryTier",
     "DedupDecision",
@@ -134,6 +157,7 @@ __all__ = [
     "evaluate",
     "extract_required_equality",
     "from_dict",
+    "to_dict",
     "MEMORY_KEY_PREFIX",
     "KERNEL_SYSTEM_METADATA_KEYS",
     "MEMORY_CLASS_KEY",

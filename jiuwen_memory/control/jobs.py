@@ -16,12 +16,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from threading import Event
 from typing import Callable
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
 from .types import JobInfo
+
+
+class JobCancelledError(RuntimeError):
+    """任务收到协作式取消信号，停止尚未开始的执行步骤。"""
 
 
 @dataclass
@@ -36,6 +41,13 @@ class Job(ABC):
 
     scope: Scope = field(default_factory=Scope)
     interval: int = 0  # 0=一次性任务；>0=定时任务声明（秒，须 >= scheduler.tick_interval）
+    parent_job_id: str = ""  # Scheduler 触发的周期实例及其派生任务使用
+    _cancel_event: Event = field(default_factory=Event, init=False, repr=False, compare=False)
+
+    def check_cancelled(self) -> None:
+        """在执行边界检查共享取消信号；已进入的同步调用不受中断。"""
+        if self._cancel_event.is_set():
+            raise JobCancelledError("job cancelled before next execution step")
 
     @abstractmethod
     async def run(self) -> JobInfo:
@@ -50,6 +62,18 @@ class Job(ABC):
         两者的动作不同。
         """
         return ""
+
+    @property
+    def schedule_key(self) -> str:
+        """本任务的调度去重键（同 scope 内判定"是不是同一个任务"）。
+
+        Scheduler 定时任务去重**只依赖这个通用键**，不识别具体 Job 类或其业务
+        字段（mode/interval 等）——否则"同 scope 下不同 mode 的 EvolveJob 共存"
+        这类业务约束会散落到各 Scheduler 实现里各自漂移。默认取任务类名
+        （与旧去重行为等价）；任务实例间可区分业务身份的实现（如 EvolveJob
+        按 mode 区分）覆写本属性。
+        """
+        return type(self).__name__
 
 
 class JobType(str, Enum):

@@ -31,6 +31,7 @@ from jiuwen_memory.common.audit.base import AuditProducer
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.lock import LockProducer
 from jiuwen_memory.common.log import setup_logging
 from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
@@ -51,7 +52,7 @@ from jiuwen_memory.control.ingest_job import IngestJobController, IngestJobProdu
 from jiuwen_memory.control.membership import MembershipProducer
 from jiuwen_memory.control.permission import PermissionProducer
 from jiuwen_memory.control.policy import PolicyProducer
-from jiuwen_memory.control.scheduler import SchedulerProducer
+from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.space import SpaceManager, SpaceProducer
 from jiuwen_memory.ingest.bootstrap import register_ingestors
 from jiuwen_memory.retrieval.bootstrap import register_operators
@@ -107,6 +108,7 @@ class _Kernel:
     ingest_jobs: IngestJobController
     space: SpaceManager | None = None
     config_source: ConfigSource | None = None
+    scheduler: Scheduler | None = None
 
 
 @runtime_checkable
@@ -125,9 +127,20 @@ class MemoryRuntime(Protocol):
 class _MemoryRuntime:
     api: MemoryAPI
     _ingest_jobs: IngestJobController
+    _scheduler: Scheduler | None = None
 
     def close(self, *, wait: bool = True) -> None:
         self._ingest_jobs.close(wait=wait)
+        # 先停调度器，再释放 dreaming leader 锁。反序会允许新实例接管后，
+        # 本实例尚未停下的 Timer / drain 继续执行，形成短暂双跑。
+        if self._scheduler is not None:
+            self._scheduler.shutdown()
+        # dreaming 实例锁（F04 D8 关闭语义）：owner 匹配释放（未持锁幂等，
+        # 不误删他人锁）。锁不属于 MemoryAPI 公共契约（Protocol 上没有），
+        # 经 getattr 探测——只有装配了演进能力的实现才有。
+        release_lock = getattr(self.api, "release_dreaming_lock", None)
+        if callable(release_lock):
+            release_lock()
 
 
 def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:
@@ -255,11 +268,17 @@ def _build_kernel(
             f"{type(ingest_jobs).__name__}"
         )
     space = SpaceProducer.dep(root, default="kv")
+    scheduler = SchedulerProducer.dep(root, default="in_process")
+    lock_specs = root.ctx.namespaces.get(LockProducer.TOP_NAME, {})
+    dreaming_lock = (
+        LockProducer.build_named("dreaming", root.ctx) if "dreaming" in lock_specs else None
+    )
 
     api = LocalMemoryAPI(
         engine=EngineProducer.dep(root, default="in_memory"),
         permission=PermissionProducer.dep(root, default="sqlite"),
-        scheduler=SchedulerProducer.dep(root, default="in_process"),
+        scheduler=scheduler,
+        dreaming_lock=dreaming_lock,
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
         audit_logger=AuditProducer.dep(root, default="sqlite"),
@@ -293,6 +312,7 @@ def _build_kernel(
         ingest_jobs=ingest_jobs,
         space=space,
         config_source=config_source,
+        scheduler=scheduler,
     )
 
 
@@ -332,4 +352,8 @@ def assemble_runtime(
 ) -> MemoryRuntime:
     """装配 Access 运行时：``api`` + ``close``，不暴露存储或任务控制器端口。"""
     kernel = _build_kernel(policies, kv, config)
-    return _MemoryRuntime(api=kernel.api, _ingest_jobs=kernel.ingest_jobs)
+    return _MemoryRuntime(
+        api=kernel.api,
+        _ingest_jobs=kernel.ingest_jobs,
+        _scheduler=kernel.scheduler,
+    )
