@@ -24,7 +24,7 @@ class RawPayload:
     uri: str = ""  # 原始数据的外部引用（文件路径/URL/对象存储 key）
     system_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
-    occurred_at: datetime | None = None  # 发生时间（写入 temporal.t_event）
+    occurred_at: datetime | None = None  # 消息/对话发生时间（写入 temporal.t_message）
     assets: list[str] = field(default_factory=list)  # 待 Ingestor 映射的资产引用
 
 
