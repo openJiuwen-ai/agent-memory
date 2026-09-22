@@ -53,9 +53,14 @@ class Job(ABC):
         """发出协作式取消信号；由 Scheduler 在其私有循环内调用。"""
         self._cancel_event.set()
 
+    @property
+    def cancellation_signal(self) -> Event:
+        """返回共享取消信号；仅供 Job 之间继承，不由 Scheduler 直接操作。"""
+        return self._cancel_event
+
     def inherit_cancellation_from(self, parent: Job) -> None:
         """与父任务共享取消信号，使取消能传播到已派生但尚未执行的任务。"""
-        self._cancel_event = parent._cancel_event
+        self._cancel_event = parent.cancellation_signal
 
     @abstractmethod
     async def run(self) -> JobInfo:
