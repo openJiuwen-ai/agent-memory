@@ -1,6 +1,6 @@
 """API 层 DreamingCoordinator —— 注册 / 注销 / 恢复 / 持续授权 / fan-out 逐桶裁决。
 
-PEP 边界（S03）改造后的 dreaming 编排测试（F03）：
+PEP 边界（S03）改造后的 dreaming 编排测试（F04）：
 
 - 注册（dreaming=True）：调度器周期能力校验 → validate 先于落盘（无残留）→
   注册表写入 dict DSL + created_by（持续授权锚点）；
@@ -14,6 +14,10 @@ PEP 边界（S03）改造后的 dreaming 编排测试（F03）：
 
 控制层纯执行链的测试在 ``tests/unit/control/test_dreaming_dispatch.py``。
 """
+
+# 本文件验证协调器内部状态与失败原子性，白盒访问是测试边界的一部分；
+# Pytest 类只用于分组，测试方法按 pytest 约定保留实例形态。
+# pylint: disable=protected-access,add-staticmethod-or-classmethod-decorator
 
 from __future__ import annotations
 

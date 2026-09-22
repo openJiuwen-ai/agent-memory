@@ -4,6 +4,9 @@
 代码），round-trip 必须无损；非法形态 ValidationError fail fast。
 """
 
+# Pytest 类只用于分组，测试方法按 pytest 约定保留实例形态。
+# pylint: disable=add-staticmethod-or-classmethod-decorator
+
 from __future__ import annotations
 
 import pytest

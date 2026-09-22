@@ -1,5 +1,8 @@
 """真实 Driver → Command → Engine → AsyncTimerScheduler → EvolveJob 回归。"""
 
+# 运行时回归需替换装配后的内部依赖并观察调度器状态，白盒访问限于本测试模块。
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import asyncio
@@ -76,9 +79,13 @@ def _stop(runtime, reason):
 
 def _pending_driver(scheduler, parent_id):
     async def snapshot():
-        return next((info.id for info in scheduler._jobs.values()
-                     if info.detail.get("parent_timer") == parent_id
-                     and info.status == JobStatus.PENDING), None)
+        for info in scheduler._jobs.values():
+            if (
+                info.detail.get("parent_timer") == parent_id
+                and info.status == JobStatus.PENDING
+            ):
+                return info.id
+        return None
 
     return asyncio.run_coroutine_threadsafe(
         snapshot(), scheduler._runner.ensure_loop()

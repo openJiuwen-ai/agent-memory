@@ -5,6 +5,9 @@ scopes()）：筛选下推（含 t_ingest 时间窗）、差集回显、保序�
 覆盖约束。
 """
 
+# Pytest 类只用于分组，测试方法按 pytest 约定保留实例形态。
+# pylint: disable=add-staticmethod-or-classmethod-decorator
+
 from __future__ import annotations
 
 import asyncio
@@ -349,6 +352,7 @@ class TestFanOutResolver:
             asyncio.run(
                 FanOutResolver(parent, kv, PredicateCandidate()).resolve()
             )
+
     def test_buckets_per_covered_scope(self) -> None:
         parent = Scope(org="acme")
         alice, bob = Scope(org="acme", user="alice"), Scope(org="acme", user="bob")

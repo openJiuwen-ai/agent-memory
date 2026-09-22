@@ -1,4 +1,4 @@
-"""evolve 立即执行链 + forget 全链（F03 dreaming，控制层纯执行件）。
+"""evolve 立即执行链 + forget 全链（F04 dreaming，控制层纯执行件）。
 
 PEP 边界（S03）改造后本文件只测控制层：
 
@@ -10,6 +10,9 @@ PEP 边界（S03）改造后本文件只测控制层：
 注册 / 注销 / 恢复 / 持续授权的编排测试在 ``tests/unit/api/test_dreaming_coordinator.py``
 （API 层 DreamingCoordinator）。
 """
+
+# Pytest 类只用于分组，测试方法按 pytest 约定保留实例形态。
+# pylint: disable=add-staticmethod-or-classmethod-decorator
 
 from __future__ import annotations
 
