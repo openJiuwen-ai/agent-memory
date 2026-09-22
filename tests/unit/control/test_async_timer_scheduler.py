@@ -14,7 +14,7 @@ import pytest
 
 from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError
 from jiuwen_memory.common.type_def import Scope
-from jiuwen_memory.control.jobs import Job
+from jiuwen_memory.control.jobs import Job, JobCancelledError
 from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
     AsyncTimerScheduler,
     TimerWheel,
@@ -88,6 +88,21 @@ class _CountingJob(Job):
     async def run(self) -> JobInfo:
         _CountingJob.run_count += 1
         return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED, detail={})
+
+
+# ---- Job 协作式取消信号 ---------------------------------------------------
+
+
+def test_child_inherits_parent_cancellation_signal() -> None:
+    """父任务取消后，继承同一信号的子任务在执行边界观察到取消。"""
+    parent = _RecordingJob(Scope(user="u1"), interval=10)
+    child = _RecordingJob(Scope(user="u1"))
+
+    child.inherit_cancellation_from(parent)
+    parent.request_cancel()
+
+    with pytest.raises(JobCancelledError, match="job cancelled"):
+        child.check_cancelled()
 
 
 # ---- _scope_key（内部方法，但因是新增核心逻辑故直接覆盖） ----
