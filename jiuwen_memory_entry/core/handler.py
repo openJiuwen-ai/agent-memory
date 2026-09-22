@@ -648,7 +648,7 @@ def _search(srv, request: DispatchRequest) -> Body:
         Context(scope, extensions=extensions),
         security=_request_security(request),
         filters=payload.get("filters"),  # dict DSL / 旧 list：由 API 边界 normalize，非法则 400
-        top_k=int(payload.get("k", 10)),
+        top_k=_parse_positive_int(payload.get("k"), name="k", default=10),
         disclosure=disclosure,
         with_trajectory=trace,
     )
