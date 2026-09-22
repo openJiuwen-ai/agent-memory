@@ -64,7 +64,6 @@ _SPEAKER_LABEL_RE = re.compile(
 )
 _RELATIVE_TIME_PATTERNS = (
     (re.compile(r"\bjust now\b", re.IGNORECASE), "today"),
-    (re.compile(r"\bjust\b", re.IGNORECASE), "today"),
     (re.compile(r"\btoday\b", re.IGNORECASE), "today"),
     (re.compile(r"\byesterday\b", re.IGNORECASE), "yesterday"),
     (re.compile(r"\btomorrow\b", re.IGNORECASE), "tomorrow"),
