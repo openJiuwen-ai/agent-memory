@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -60,25 +60,25 @@ def test_delete_selector_matches_before_event_time() -> None:
         "old event",
         scope,
         security=legacy_request_context(actor),
-        occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=UTC),
     )[0]
     new = kernel.api.add(
         "new event",
         scope,
         security=legacy_request_context(actor),
-        occurred_at=datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 6, 17, 12, 0, tzinfo=UTC),
     )[0]
 
     affected = kernel.api.delete(
         DeleteSelector(
             scope=scope,
-            before=datetime(2026, 6, 17, 10, 0, tzinfo=timezone.utc),
+            before=datetime(2026, 6, 17, 10, 0, tzinfo=UTC),
             mode=DeleteMode.FORGET,
         ),
         security=legacy_request_context(actor),
     )
 
-    cutoff = datetime(2026, 6, 17, 10, 0, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 6, 17, 10, 0, tzinfo=UTC)
     assert old.id in affected
     assert new.id not in affected
     assert all(
@@ -111,34 +111,34 @@ def test_delete_selector_combines_conditions_with_and() -> None:
         scope,
         security=legacy_request_context(actor),
         tags=["temp"],
-        occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=UTC),
     )[0]
     wrong_tag = kernel.api.add(
         "old durable",
         scope,
         security=legacy_request_context(actor),
         tags=["durable"],
-        occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=UTC),
     )[0]
     too_new = kernel.api.add(
         "new temp",
         scope,
         security=legacy_request_context(actor),
         tags=["temp"],
-        occurred_at=datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 6, 17, 12, 0, tzinfo=UTC),
     )[0]
 
     affected = kernel.api.delete(
         DeleteSelector(
             scope=scope,
             tags=["temp"],
-            before=datetime(2026, 6, 17, 10, 0, tzinfo=timezone.utc),
+            before=datetime(2026, 6, 17, 10, 0, tzinfo=UTC),
             mode=DeleteMode.FORGET,
         ),
         security=legacy_request_context(actor),
     )
 
-    cutoff = datetime(2026, 6, 17, 10, 0, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 6, 17, 10, 0, tzinfo=UTC)
     assert matching.id in affected
     assert wrong_tag.id not in affected
     assert too_new.id not in affected

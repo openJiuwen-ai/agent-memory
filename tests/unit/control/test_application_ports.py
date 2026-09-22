@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
@@ -34,7 +34,7 @@ from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 pytestmark = pytest.mark.unit
 
 _SCOPE = Scope(org="acme", user="alice", space="coding")
-_NOW = datetime(2026, 9, 2, tzinfo=timezone.utc)
+_NOW = datetime(2026, 9, 2, tzinfo=UTC)
 
 
 def _unit(unit_id: str = "u1") -> MemoryUnit:

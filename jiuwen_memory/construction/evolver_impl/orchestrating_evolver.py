@@ -26,8 +26,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import ConflictError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
@@ -147,10 +146,10 @@ statement. Output ONLY that statement as plain text. No explanation, no labels, 
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-def _route_ctx_of(units: List[MemoryUnit]) -> RouteContext | None:
+def _route_ctx_of(units: list[MemoryUnit]) -> RouteContext | None:
     """取源单元携带的归属判定上下文；未携带即返回 ``None``（整段不判定）。
 
     取第一条携带的：一次写入的源单元来自同一次调用，上下文由 API 层统一装配，各条相同。
@@ -213,7 +212,7 @@ class OrchestratingEvolver(Evolver):
         self._layer_annotator = layer_annotator
         # 归属判定算子：None 表示不判定，派生单元沿用源单元的 scope（向后兼容）。
         self._router = router
-        self.relations: List[Relation] = []  # ASSOCIATE 产物（同时已落图）
+        self.relations: list[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
         # medium/high 阈值留本类做判定档位划分：
@@ -232,7 +231,7 @@ class OrchestratingEvolver(Evolver):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_procedural(units: List[MemoryUnit]) -> bool:
+    def _is_procedural(units: list[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
         return any(
             str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
@@ -251,7 +250,7 @@ class OrchestratingEvolver(Evolver):
 
     def evolve(
         self,
-        units: List[MemoryUnit],
+        units: list[MemoryUnit],
         mode: EvolveMode,
     ) -> EvolveResult:
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
@@ -273,12 +272,12 @@ class OrchestratingEvolver(Evolver):
     # 落盘辅助
     # ------------------------------------------------------------------
 
-    def _persist(self, units: List[MemoryUnit]) -> List[str]:
+    def _persist(self, units: list[MemoryUnit]) -> list[str]:
         # 记忆写入只经 IndexBuilder：正排与派生索引由其统一编排。
         self._index.build(units)
         return [u.id for u in units]
 
-    def _persist_graph(self, units: List[MemoryUnit], relations: List[Relation]) -> None:
+    def _persist_graph(self, units: list[MemoryUnit], relations: list[Relation]) -> None:
         """为涉及关联的单元建节点（幂等）、为每条关联建一条边。"""
         if not units or self._graph is None:
             return
@@ -307,7 +306,7 @@ class OrchestratingEvolver(Evolver):
     # 去重核心方法
     # ------------------------------------------------------------------
 
-    def _dedup_batch(self, candidates: List[MemoryUnit]) -> EvolveResult:
+    def _dedup_batch(self, candidates: list[MemoryUnit]) -> EvolveResult:
         """对一批候选 unit 执行去重判定和后续动作，返回 EvolveResult。
 
         两段式（批量 LLM 优化）：
@@ -321,9 +320,9 @@ class OrchestratingEvolver(Evolver):
         noop_count = 0
 
         # 每条候选的判定上下文：(candidate, best_unit, best_score, hit_units)
-        direct_add: List[Tuple[MemoryUnit, Optional[MemoryUnit], float]] = []
-        direct_noop: List[Tuple[MemoryUnit, MemoryUnit, float]] = []
-        need_llm: List[Tuple[MemoryUnit, MemoryUnit, float, List[Tuple[MemoryUnit, float]]]] = []
+        direct_add: list[tuple[MemoryUnit, MemoryUnit | None, float]] = []
+        direct_noop: list[tuple[MemoryUnit, MemoryUnit, float]] = []
+        need_llm: list[tuple[MemoryUnit, MemoryUnit, float, list[tuple[MemoryUnit, float]]]] = []
 
         # ---- 第一段：逐条 recall + 阈值筛选（不调 LLM）----
         for candidate in candidates:
@@ -392,7 +391,7 @@ class OrchestratingEvolver(Evolver):
         self,
         candidate: MemoryUnit,
         decision: DedupDecision,
-        existing_unit: Optional[MemoryUnit],
+        existing_unit: MemoryUnit | None,
         similarity: float,
         result: EvolveResult,
     ) -> int:
@@ -486,7 +485,7 @@ class OrchestratingEvolver(Evolver):
 
     def _dedup_single(
         self, candidate: MemoryUnit
-    ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         """单条候选的去重判定：Dedup.recall → 阈值短路 → LLM 语义判定。
 
         返回 (decision, most_similar_existing_unit, max_similarity_score)。
@@ -494,7 +493,7 @@ class OrchestratingEvolver(Evolver):
         high/medium 阈值短路与 LLM 判定。
         """
         # Step A+B: 召回已有相似记忆（已滤自身、已按 min_similarity 过滤、已聚合取 max）
-        hit_units: List[Tuple[MemoryUnit, float]] = self._dedup.recall(candidate)
+        hit_units: list[tuple[MemoryUnit, float]] = self._dedup.recall(candidate)
         if not hit_units:
             logger.debug("Evolver._dedup_single: no hits for candidate %s → ADD", candidate.id[:8])
             return (DedupDecision.ADD, None, 0.0)
@@ -534,7 +533,7 @@ class OrchestratingEvolver(Evolver):
     def _llm_dedup_decide(
         self,
         candidate: MemoryUnit,
-        hits: List[Tuple[MemoryUnit, float]],
+        hits: list[tuple[MemoryUnit, float]],
     ) -> DedupDecision:
         """构建去重判定 prompt，LLM.chat() → 解析 JSON → 返回 DedupDecision。"""
         existing_texts = []
@@ -592,7 +591,7 @@ class OrchestratingEvolver(Evolver):
 
     def _llm_dedup_decide_batch(
         self,
-        items: List[Tuple[MemoryUnit, List[Tuple[MemoryUnit, float]]]],
+        items: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]],
     ) -> dict[str, DedupDecision]:
         """批量 LLM 判定：一次调用判多条候选，返回 {candidate_id: decision}。
 
@@ -605,7 +604,7 @@ class OrchestratingEvolver(Evolver):
             return {}
 
         # 构建紧凑批量 prompt
-        blocks: List[str] = []
+        blocks: list[str] = []
         for cand, hits in items:
             cand_block = f"[{cand.id}]: {cand.content}"
             for unit, score in hits[:3]:
@@ -700,7 +699,7 @@ class OrchestratingEvolver(Evolver):
 
     def _fallback_single_decide(
         self,
-        items: List[Tuple[MemoryUnit, List[Tuple[MemoryUnit, float]]]],
+        items: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]],
     ) -> dict[str, DedupDecision]:
         """批量降级：逐条调单条 LLM 判定。某条失败 → 按规则（score 阈值）判定。"""
         results: dict[str, DedupDecision] = {}
@@ -753,7 +752,7 @@ class OrchestratingEvolver(Evolver):
         return f"{old.content}\n{new.content}"
 
     def _maybe_collect_extract_context(
-        self, units: List[MemoryUnit], recent: List[MemoryUnit]
+        self, units: list[MemoryUnit], recent: list[MemoryUnit]
     ) -> ExtractContext | None:
         """EXTRACT 模式下：若本轮 units 标记了 infer=true，收集上下文参考项。
 
@@ -790,7 +789,7 @@ class OrchestratingEvolver(Evolver):
     # 语境补全，条数上限由本类维护。它与索引构建是两件事，故不走 IndexBuilder，也不占
     # Storage 的领域接口，直接用注入的 KVStore。
 
-    def _add_messages(self, scope: Scope, units: List[MemoryUnit]) -> None:
+    def _add_messages(self, scope: Scope, units: list[MemoryUnit]) -> None:
         for unit in units:
             key = messages_key(unit.id)
             value = dumps(unit)
@@ -801,22 +800,22 @@ class OrchestratingEvolver(Evolver):
                 # 失败时 /messages/ 已写入且按契约不回滚，upsert 使重试不再撞 insert 拒重。
                 self._message_store.update(scope, key, value)
 
-    def _list_messages(self, scope: Scope) -> List[MemoryUnit]:
+    def _list_messages(self, scope: Scope) -> list[MemoryUnit]:
         """返回 scope 内全部原文（无序；调用方自行排序）。损坏记录跳过，不阻断整批。"""
-        items: List[MemoryUnit] = []
+        items: list[MemoryUnit] = []
         for _key, raw in self._message_store.scan(scope, prefix=MESSAGES_KEY_PREFIX):
             unit = loads(raw)
             if unit is not None:
                 items.append(unit)
         return items
 
-    def _delete_messages(self, scope: Scope, unit_ids: List[str]) -> None:
+    def _delete_messages(self, scope: Scope, unit_ids: list[str]) -> None:
         for unit_id in unit_ids:
             self._message_store.delete(scope, messages_key(unit_id))
 
     def _persist_and_maintain_messages(
-        self, units: List[MemoryUnit]
-    ) -> List[MemoryUnit]:
+        self, units: list[MemoryUnit]
+    ) -> list[MemoryUnit]:
         """一次扫描完成原文维护：取最近 N 条 → 写入本轮 → 淘汰超出的旧原文。
 
         顺序（只扫一次 ``/messages/``）：
@@ -849,7 +848,7 @@ class OrchestratingEvolver(Evolver):
         ordered = historical + list(units)
         # 2) 一次排序：按 t_ingest 降序（最新在前；本轮刚 ingest 排头部，不会被删）
         ordered.sort(
-            key=lambda u: u.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda u: u.temporal.t_ingest or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
         # 3) recent = 前 N 条历史原文（排除本轮——本轮已是提取来源，不重复进 context）
@@ -874,7 +873,7 @@ class OrchestratingEvolver(Evolver):
                 )
         return recent
 
-    def _related_memories(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+    def _related_memories(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """用 dedup.recall 召回相关记忆（复用去重向量空间，返回完整 MemoryUnit + score）。
 
         对本轮每个 unit 调一次 dedup.recall（它已滤自身、滤非 ACTIVE、按 min_similarity
@@ -903,7 +902,7 @@ class OrchestratingEvolver(Evolver):
     # 分层标注（抽取/升华后、去重落盘前）
     # ------------------------------------------------------------------
 
-    def _annotate_layers(self, units: List[MemoryUnit]) -> None:
+    def _annotate_layers(self, units: list[MemoryUnit]) -> None:
         """对派生候选标注 L0/L1 分层（best effort，不阻断）。
 
         ``layer_annotator`` 为 None 时跳过（向后兼容）。标注在去重落盘前，保证
@@ -927,8 +926,8 @@ class OrchestratingEvolver(Evolver):
     # ------------------------------------------------------------------
 
     def _route(
-        self, sources: List[MemoryUnit], derived: List[MemoryUnit]
-    ) -> List[MemoryUnit]:
+        self, sources: list[MemoryUnit], derived: list[MemoryUnit]
+    ) -> list[MemoryUnit]:
         """按源单元携带的判定上下文改写派生单元的落点与标签，返回保留下来的单元。
 
         判定上下文经源单元的瞬态 metadata 键 ``route_ctx`` 传入，取不到即整段跳过——
@@ -966,7 +965,7 @@ class OrchestratingEvolver(Evolver):
             )
         return kept
 
-    def _evolve_extract(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         """EXTRACT：抽取派生候选 → 分层标注 → 去重判定+落盘（_dedup_batch）。
 
         子类可覆盖本方法切换 EXTRACT 路径（如 DynamicEvolver 走 extract→consolidate→reflect→落盘）。
@@ -1006,7 +1005,7 @@ class OrchestratingEvolver(Evolver):
         self._annotate_layers(extracted)
         return self._dedup_batch(extracted)
 
-    def _evolve_consolidate(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_consolidate(self, units: list[MemoryUnit]) -> EvolveResult:
         """整合分支：不做归属判定，与后台通道同因。
 
         判定上下文经瞬态键 ``route_ctx`` 从写入入口传入，只在该次写入的调用链上存在；整合
@@ -1021,7 +1020,7 @@ class OrchestratingEvolver(Evolver):
         self._annotate_layers(abstracted)
         return self._dedup_batch(abstracted)
 
-    def _evolve_associate(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_associate(self, units: list[MemoryUnit]) -> EvolveResult:
         relations = self._associator.associate(units)
         self.relations.extend(relations)
         self._persist_graph(units, relations)
@@ -1037,7 +1036,7 @@ class OrchestratingEvolver(Evolver):
             )
         return EvolveResult(updated_ids=[relation.target_id for relation in relations])
 
-    def _evolve_forget(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_forget(self, units: list[MemoryUnit]) -> EvolveResult:
         """FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）。
 
         非破坏式：记忆本体留 FORGOTTEN 状态供审计，仅退出检索。状态判定在本方法内完成，

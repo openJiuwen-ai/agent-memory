@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from .types import RunResult
 
 
-def to_json(run: RunResult) -> Dict[str, Any]:
+def to_json(run: RunResult) -> dict[str, Any]:
     """机读结构：指标 + 装配摘要 + 逐 case 命中概览（不含正文，控制体积）。"""
     return {
         "dataset": run.dataset,

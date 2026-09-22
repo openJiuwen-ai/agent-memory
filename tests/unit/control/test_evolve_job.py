@@ -165,7 +165,9 @@ def test_run_excludes_middle_marked_units_from_evolver_input() -> None:
     kv.insert(scope, memory_key("long-2"), dumps(_make_unit("long-2", scope, "another long")))
     # 中期记忆原文——应被排除
     kv.insert(scope, memory_key("mid-1"), dumps(_make_middle_unit("mid-1", scope, "middle raw")))
-    kv.insert(scope, memory_key("mid-2"), dumps(_make_middle_unit("mid-2", scope, "another middle")))
+    kv.insert(
+        scope, memory_key("mid-2"), dumps(_make_middle_unit("mid-2", scope, "another middle"))
+    )
     evolver = RecordingEvolver()
 
     job = EvolveJob(scope=scope, kv=kv, evolver=evolver)

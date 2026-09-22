@@ -97,4 +97,7 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "UP"]
+# UP042（str,Enum → StrEnum）会改变 str(member) 的输出语义（"Class.MEMBER" → 成员值），
+# 现存 45 处 (str, Enum) 枚举不做机械迁移；其余 UP 规则启用以强制 PEP 585/604 类型注解约定。
+ignore = ["UP042"]

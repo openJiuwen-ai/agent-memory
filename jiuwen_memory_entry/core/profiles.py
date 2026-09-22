@@ -11,9 +11,9 @@ the in-memory PolicyManager); a real build would select plugins/storage here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
-OFFLINE: Dict[str, Any] = {"profile": "offline"}
+OFFLINE: dict[str, Any] = {"profile": "offline"}
 
 
 @dataclass
@@ -21,13 +21,13 @@ class Config:
     """Resolved configuration handed to :func:`server.build`."""
 
     profile: str = "offline"
-    policies: Dict[str, str] = field(default_factory=dict)
-    settings: Dict[str, Any] = field(default_factory=dict)
+    policies: dict[str, str] = field(default_factory=dict)
+    settings: dict[str, Any] = field(default_factory=dict)
 
 
-def load_config(layers: List[Dict[str, Any]], spaces: Any = None) -> Config:
+def load_config(layers: list[dict[str, Any]], spaces: Any = None) -> Config:
     """Merge config ``layers`` (nearest-wins) into a single :class:`Config`."""
-    merged: Dict[str, Any] = {}
+    merged: dict[str, Any] = {}
     for layer in layers:
         if layer:
             merged.update(layer)

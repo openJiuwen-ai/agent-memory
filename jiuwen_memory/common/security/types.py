@@ -171,7 +171,7 @@ def _empty_attributes() -> Mapping[str, str]:
 _ORIGIN_KEY = os.urandom(32)
 
 
-def _bind_origin(auth: AuthContext, context: "RequestSecurityContext | None" = None) -> str:
+def _bind_origin(auth: AuthContext, context: RequestSecurityContext | None = None) -> str:
     """计算 auth 及完整安全上下文的来源绑定 token（HMAC-SHA256）。
 
     绑定 actor 五维 + role + credential 字段 + auth 字段，以及完整 RequestSecurityContext

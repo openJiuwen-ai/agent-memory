@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from ..errors import PermissionDeniedError, ValidationError
 from ..type_def import KERNEL_COORD_KEYS, Scope

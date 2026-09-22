@@ -12,7 +12,7 @@ F05 要求这条约束由**统一 Server lifecycle 在实际 socket 绑定前执
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Sequence
+from collections.abc import Sequence
 
 from jiuwen_memory.common.factory.factory import Factory
 

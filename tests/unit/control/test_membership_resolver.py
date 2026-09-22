@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -35,7 +35,7 @@ def test_facts_reports_individual_space_and_filters_expired_members() -> None:
     assert facts.info is not None
     assert facts.info.owners == [Scope(org="acme", space="team", user="alice")]
 
-    past = datetime.now(timezone.utc) - timedelta(days=1)
+    past = datetime.now(UTC) - timedelta(days=1)
     manager.add_member(
         "acme",
         "team",

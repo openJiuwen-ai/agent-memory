@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import Scope
@@ -20,7 +19,7 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.graph import GraphProducer, GraphStore
 from jiuwen_memory.storage.types import Edge, GraphQuery, Node
 
-_ScopeKey = Tuple[str, str, str, str, str]
+_ScopeKey = tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
@@ -31,8 +30,8 @@ class InMemoryGraphStore(GraphStore):
     """纯内存属性图：节点/边按 scope 隔离，BFS 邻域遍历。"""
 
     def __init__(self) -> None:
-        self._nodes: Dict[_ScopeKey, Dict[str, Node]] = defaultdict(dict)
-        self._edges: Dict[_ScopeKey, Dict[str, Edge]] = defaultdict(dict)
+        self._nodes: dict[_ScopeKey, dict[str, Node]] = defaultdict(dict)
+        self._edges: dict[_ScopeKey, dict[str, Edge]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
         return StoreType.GRAPH
@@ -43,8 +42,8 @@ class InMemoryGraphStore(GraphStore):
     def insert(
         self,
         scope: Scope,
-        nodes: Optional[List[Node]] = None,
-        edges: Optional[List[Edge]] = None,
+        nodes: list[Node] | None = None,
+        edges: list[Edge] | None = None,
     ) -> None:
         sk = _skey(scope)
         for n in nodes or []:
@@ -59,8 +58,8 @@ class InMemoryGraphStore(GraphStore):
     def update(
         self,
         scope: Scope,
-        nodes: Optional[List[Node]] = None,
-        edges: Optional[List[Edge]] = None,
+        nodes: list[Node] | None = None,
+        edges: list[Edge] | None = None,
     ) -> None:
         sk = _skey(scope)
         for n in nodes or []:
@@ -75,34 +74,37 @@ class InMemoryGraphStore(GraphStore):
     def delete(
         self,
         scope: Scope,
-        node_ids: Optional[List[str]] = None,
-        edge_ids: Optional[List[str]] = None,
+        node_ids: list[str] | None = None,
+        edge_ids: list[str] | None = None,
     ) -> None:
         sk = _skey(scope)
         for nid in node_ids or []:
             self._nodes[sk].pop(nid, None)
-            for eid in [e.id for e in self._edges[sk].values() if e.source == nid or e.target == nid]:
+            for eid in [
+                e.id for e in self._edges[sk].values()
+                if e.source == nid or e.target == nid
+            ]:
                 self._edges[sk].pop(eid, None)  # 连带删关联边
         for eid in edge_ids or []:
             self._edges[sk].pop(eid, None)
 
-    def get(self, scope: Scope, node_ids: List[str]) -> List[Node]:
+    def get(self, scope: Scope, node_ids: list[str]) -> list[Node]:
         bucket = self._nodes[_skey(scope)]
         return [bucket[i] for i in node_ids if i in bucket]
 
-    def search(self, scope: Scope, query: GraphQuery) -> List[Node]:
+    def search(self, scope: Scope, query: GraphQuery) -> list[Node]:
         sk = _skey(scope)
-        adj: Dict[str, List[str]] = defaultdict(list)
+        adj: dict[str, list[str]] = defaultdict(list)
         for e in self._edges[sk].values():
             if query.relation and e.relation != query.relation:
                 continue
             adj[e.source].append(e.target)  # 无向遍历
             adj[e.target].append(e.source)
-        visited: Set[str] = {query.start_id}
+        visited: set[str] = {query.start_id}
         frontier = [query.start_id]
-        reached: List[str] = []
+        reached: list[str] = []
         for _ in range(max(query.depth, 0)):
-            nxt: List[str] = []
+            nxt: list[str] = []
             for nid in frontier:
                 for nb in adj.get(nid, []):
                     if nb not in visited:
@@ -114,10 +116,10 @@ class InMemoryGraphStore(GraphStore):
         return nodes[: query.limit]
 
     # -- GraphStore 契约：按关键词找种子节点（属性子串命中） ------------------ #
-    def seed_ids(self, scope: Scope, tokens: Set[str]) -> List[str]:
+    def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
         if not tokens:
             return []
-        out: List[str] = []
+        out: list[str] = []
         for nid, node in self._nodes[_skey(scope)].items():
             content = str(node.properties.get("content", ""))
             if any(tok and tok in content for tok in tokens):

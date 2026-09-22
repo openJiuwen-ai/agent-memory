@@ -46,10 +46,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Iterable, Sequence
 
-from jiuwen_memory.api.memory_api_impl.assembly import _Kernel, _build_kernel
+from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel, _Kernel
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger

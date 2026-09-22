@@ -9,7 +9,9 @@
 """
 
 from jiuwen_memory.common.type_def import ContentLayers, Scope
-from jiuwen_memory.construction.index_builder_impl.fulltext_index_builder import FulltextIndexBuilder
+from jiuwen_memory.construction.index_builder_impl.fulltext_index_builder import (
+    FulltextIndexBuilder,
+)
 from jiuwen_memory.construction.index_builder_impl.vector_index_builder import VectorIndexBuilder
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 from tests.unit.construction.fixtures import (
