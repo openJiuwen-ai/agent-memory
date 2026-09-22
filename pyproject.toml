@@ -18,7 +18,7 @@ dependencies = [
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
-    "ruff>=0.8",
+    "ruff>=0.16",
     # 测试套件自身消费的三个未声明依赖（test_outbound_ssl / test_multimodal_adapter /
     # test_middle_e2e_real_llm），缺失会让 pytest 卡在 collection error。
     "httpx>=0.27,<1",
@@ -60,7 +60,7 @@ mcp = [
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
-    "ruff>=0.8",
+    "ruff>=0.16",
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
@@ -101,3 +101,10 @@ select = ["E", "F", "W", "I", "UP"]
 # UP042（str,Enum → StrEnum）会改变 str(member) 的输出语义（"Class.MEMBER" → 成员值），
 # 现存 45 处 (str, Enum) 枚举不做机械迁移；其余 UP 规则启用以强制 PEP 585/604 类型注解约定。
 ignore = ["UP042"]
+
+[tool.ruff.lint.isort]
+# 显式固定 import 成员排序语义：ruff 默认 order-by-type=true（常量/类/函数分组排序），
+# isort 等外部工具默认 false（纯字母序，OFFLINE/load_config 顺序两说不同）。
+# 显式声明以消除工具间解释分歧，避免 lint 结果随环境漂移。
+order-by-type = true
+case-sensitive = false
