@@ -115,7 +115,7 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 
 ## 本地约束
 
-- `AsyncTimerScheduler` 同循环提交也须 await 实际提交体；周期实例浅拷贝与 `link_child` 派生任务通过 `Job.inherit_cancellation_from` 共享父任务取消信号，调度器只经 `Job.request_cancel` 发出取消，不直接访问事件对象。取消/永久停摆后不开始新的执行步骤，`EvolveJob` 每桶在线程内复核，已进入的同步调用不强制中断。活跃 Job 引用随完成清理，一次性与终态周期父任务的历史共用 10000 条有界上限。
+- `AsyncTimerScheduler` 同循环提交也须 await 实际提交体；周期实例浅拷贝与 `link_child` 派生任务通过 `Job.inherit_cancellation_from` 读取父任务的只读 `cancellation_signal` 并共享取消信号，调度器只经 `Job.request_cancel` 发出取消，不直接访问事件对象。取消/永久停摆后不开始新的执行步骤，`EvolveJob` 每桶在线程内复核，已进入的同步调用不强制中断。活跃 Job 引用随完成清理，一次性与终态周期父任务的历史共用 10000 条有界上限。
 - `types.py` 中 `DeleteSelector` 各条件取「与」关系，至少给出一项；Engine 收到空 selector 必须抛 `ValidationError`
 - `UpdateMode.SUPERSEDE`（默认）生成新 id，旧 id 标记 superseded——`update` 返回的记忆 id 可能与传入的 `unit_id` 不同
 - `DeleteMode.PURGE` 是唯一物理删除路径；会删除真源、移除索引，并递归删除 provenance 后代
