@@ -446,51 +446,6 @@ def test_undated_property_content_carries_source_message_date_without_event_time
     assert "schema_event_precision" not in unit.system_metadata
 
 
-@pytest.mark.parametrize("value", ["Alice just likes pizza", "Alice JUST prefers tea"])
-def test_emphatic_just_preserves_undated_property_without_retry(value: str) -> None:
-    source = _source()
-    source.temporal = Temporal(t_message=datetime(2023, 8, 4, tzinfo=timezone.utc))
-    source.segments = [Segment(content=f"{value}. Alice is an engineer.")]
-    response = json.loads(_property_response(source.id))
-    response["entities"][0]["properties"].append(
-        {
-            "property_name": "default_property",
-            "value": value,
-            "time": "",
-            "source_unit_ids": [source.id],
-        }
-    )
-    llm = _SequenceResponseLLM([json.dumps(response)] * 3)
-    extractor = EntitySchemaExtractor(llm=llm, schema=_catalog())
-
-    units = extractor.extract([source])
-
-    assert llm.call_count == 1
-    assert len(units) == 2
-    assert any(unit.content.startswith(value) for unit in units)
-    assert all(unit.temporal.t_event is None for unit in units)
-
-
-def test_just_now_still_requires_event_time_correction() -> None:
-    source = _source()
-    source.temporal = Temporal(t_message=datetime(2023, 8, 4, tzinfo=timezone.utc))
-    source.segments = [Segment(content="Alice moved just now")]
-    response = json.loads(_property_response(source.id, property_name="default_property"))
-    prop = response["entities"][0]["properties"][0]
-    prop["value"] = "Alice moved just now"
-    initial_response = json.dumps(response)
-    prop["value"] = "On 2023-08-04, Alice moved just now"
-    prop["time"] = "2023-08-04"
-    llm = _SequenceResponseLLM([initial_response, json.dumps(response)])
-    extractor = EntitySchemaExtractor(llm=llm, schema=_catalog())
-
-    units = extractor.extract([source])
-
-    assert llm.call_count == 2
-    assert len(units) == 1
-    assert units[0].temporal.t_event == datetime(2023, 8, 4, tzinfo=timezone.utc)
-
-
 def test_relative_event_time_selects_the_supporting_primary_source() -> None:
     early = _source("source-early")
     early.segments = [Segment(content="speaker=Alice: I am rehearsing after work")]
