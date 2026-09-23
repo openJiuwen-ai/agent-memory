@@ -1139,13 +1139,12 @@ def _validate_relative_property_time(
     matching_ids: set[str] | None = None
     for phrase, kind in mentions:
         key = _relative_expression_key(phrase, kind)
-        matching = [
-            source for source in source_units
-            if any(
-                _relative_expression_key(source_phrase, source_kind) == key
-                for source_phrase, source_kind in _relative_time_mentions(source.content)
-            )
-        ]
+        matching = []
+        for source in source_units:
+            for source_phrase, source_kind in _relative_time_mentions(source.content):
+                if _relative_expression_key(source_phrase, source_kind) == key:
+                    matching.append(source)
+                    break
         if not matching:
             return f"has relative time {phrase!r} without a matching supporting source", None
         anchors: set[str] = set()
