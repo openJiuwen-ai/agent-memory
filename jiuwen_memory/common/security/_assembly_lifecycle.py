@@ -14,19 +14,22 @@ from jiuwen_memory.common.security.capabilities import (
     SecurityLifecycleCapability,
     SecurityResourceOwner,
 )
+from jiuwen_memory.config.context import AssemblyContext
 
 _LOG = logging.getLogger(__name__)
 
 
 class _AssemblyLifecycle:
-    def __init__(self) -> None:
+    def __init__(self, ctx: AssemblyContext) -> None:
+        self.ctx = ctx
         self.created: list[object] = []
         self.failure_cleanup: list[Callable[[], None]] = []
 
-    @staticmethod
-    def bind(owner: SecurityResourceOwner) -> None:
-        Factory.bind_cache_lifecycle(owner, _share_owners)
-        owner.add_close_callback(partial(Factory.reset_if_current_epoch, Factory.cache_epoch()))
+    def bind(self, owner: SecurityResourceOwner) -> None:
+        Factory.bind_cache_lifecycle(owner, _share_owners, ctx=self.ctx)
+        owner.add_close_callback(
+            partial(Factory.reset_if_current_epoch, Factory.cache_epoch(ctx=self.ctx), ctx=self.ctx)
+        )
 
     def rollback(self) -> None:
         """只关闭新建对象；不级联包装根而误关其命中的既有共享依赖。"""
@@ -42,7 +45,7 @@ class _AssemblyLifecycle:
                 continue
             if isinstance(resource, CloseableSecurityCapability):
                 self._cleanup(resource.close)
-        Factory.discard_created(tuple(self.created))
+        Factory.discard_created(tuple(self.created), ctx=self.ctx)
 
     @staticmethod
     def _cleanup(cleanup: Callable[[], None]) -> None:
@@ -65,12 +68,12 @@ def _share_owners(left: object, right: object) -> None:
 
 
 @contextmanager
-def _assembly_lifecycle() -> Iterator[_AssemblyLifecycle]:
+def _assembly_lifecycle(ctx: AssemblyContext) -> Iterator[_AssemblyLifecycle]:
     existing = _CURRENT_ASSEMBLY.get()
-    if existing is not None:
+    if existing is not None and existing.ctx is ctx:
         yield existing
         return
-    lifecycle = _AssemblyLifecycle()
+    lifecycle = _AssemblyLifecycle(ctx)
     token = _CURRENT_ASSEMBLY.set(lifecycle)
     try:
         with Factory.observe_builds(lifecycle.created.append):

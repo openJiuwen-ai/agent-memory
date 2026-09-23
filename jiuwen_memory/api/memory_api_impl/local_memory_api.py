@@ -185,6 +185,25 @@ class LocalMemoryAPI(
             raise ValidationError("API has no owning Runtime; use an assembly entry point")
         self._runtime_close()
 
+    def _install_audit_integrity(
+        self,
+        protected_logger: AuditLogger,
+        provider: AuditIntegrityProvider,
+        verify_guard: object,
+    ) -> None:
+        """composition root 在 SecurityRuntime 装配完成后切换到链式完整性审计。
+
+        provider 依赖 Runtime 装配（先于 API 则取不到具名 authorizer/store），故
+        构造期先按普通审计装配，Runtime 就绪后再整体替换：业务/入口审计写入经
+        ``ProtectedAuditLogger`` 走链式追加，``verify_audit`` 经专用 guard 预算执行。
+        guard 与 provider 必须成对注入（与构造期校验同一条不变量）。
+        """
+        if not isinstance(verify_guard, WorkloadGuard):
+            raise ValidationError("audit_verify_guard 必须是 WorkloadGuard 实现")
+        self._audit = protected_logger
+        self._audit_integrity = provider
+        self._audit_verify_guard = verify_guard
+
     @property
     def space_governance_enabled(self) -> bool:
         """本次装配是否启用空间治理，即判定实现是否读空间事实。

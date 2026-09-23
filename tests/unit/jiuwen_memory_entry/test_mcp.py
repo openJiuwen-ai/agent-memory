@@ -393,6 +393,33 @@ def test_mcp_default_required_has_no_implicit_dev_fallback(monkeypatch) -> None:
         server.close()
 
 
+def test_verify_audit_parameters_reach_persistent_chain(tmp_path, monkeypatch) -> None:
+    """上游完整工具参数经真实认证、API 与 SQLite provider 完成增量验证。"""
+    # 只替换模块持有的 Server，使工具使用本测试的持久链；不替换授权或 provider。
+    # pylint: disable=protected-access
+    from tests.integration.test_audit_integrity_flow import _sqlite_cfg
+
+    config = mcp_main.load_config(
+        [mcp_main.OFFLINE, {"memory_api": _sqlite_cfg(str(tmp_path / "mcp.sqlite3"))._data}]
+    )
+    server = mcp_main.Server.build(config)
+    monkeypatch.setattr(mcp_main, "_SRV", server)
+    try:
+        asyncio.run(mcp_main.memory_add(content="first", scope=SCOPE))
+        asyncio.run(mcp_main.memory_add(content="second", scope=SCOPE))
+        result = asyncio.run(
+            mcp_main.memory_verify_audit(
+                after_sequence=2, page_size=1, max_samples=0, anchor_policy="skip"
+            )
+        )
+        assert result["status"] == "clean", result
+        assert result["checked_count"] == result["high_water_mark"] - 1, result
+        assert result["samples"] == [], "零样本预算必须经工具透传"
+        assert result["anchor"]["checked"] is False
+    finally:
+        server.close()
+
+
 @pytest.mark.parametrize("host,expected_status", [("127.0.0.1", 0), ("0.0.0.0", 2)])
 def test_mcp_dev_binding_has_no_environment_bypass(
     kernel, monkeypatch, host, expected_status

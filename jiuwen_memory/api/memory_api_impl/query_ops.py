@@ -612,6 +612,8 @@ class QueryOpsMixin:
             context=permission_context,
         )
         self._ensure_space_writable(scope)
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         before = asyncio.run(self._queries.get(unit_id, scope, None))
         plan = None
         if self._commands.requires_update_preparation(before, patch):
@@ -696,6 +698,8 @@ class QueryOpsMixin:
                     context=permission_context,
                 )
                 auth.update(unit_auth)
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         deleted = asyncio.run(self._commands.delete(selector))
         self._log(
             identity,
@@ -726,6 +730,7 @@ class QueryOpsMixin:
             _reject_route_tag_keys(options.hierarchy_options.metadata, self._route_table.tag_keys)
         else:
             options = replace(options, hierarchy_options=None, reuse_existing=False)
+        self._ensure_audit_integrity_healthy()
         job_id = asyncio.run(self._commands.evolve_v2(scope, options))
         self._log(security.auth.actor, "evolve", target_scope=scope,
                   detail={**auth, "job_id": job_id})
@@ -742,6 +747,7 @@ class QueryOpsMixin:
         self._ensure_space_writable(scope)
         self._authorize(security, scope, Action.UPDATE, "evolve",
                         space_action=_evolve_space_action(EvolveMode.HIERARCHY))
+        self._ensure_audit_integrity_healthy()
         policies = self._policy.all()
         enabled = all(str(policies.get(key, "false")).strip().lower() == "true"
                       for key in ("hierarchy.enabled", "hierarchy.auto_derive"))
@@ -796,6 +802,7 @@ class QueryOpsMixin:
             and self._hierarchy_enabled()
         ):
             raise ValidationError("仅 HIERARCHY 接受 hierarchy_options/reuse_existing")
+        self._ensure_audit_integrity_healthy()
         # 三态分发（F04 D2）：False=幂等注销（不命中不退化）；True=注册；
         # None=立即执行。持续授权（每 tick 复验）与 fan-out 逐桶裁决都在 API 层
         # 的 DreamingCoordinator（PEP 边界，S03）——Engine / EvolveJob 纯执行。

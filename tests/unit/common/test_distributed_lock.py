@@ -51,9 +51,7 @@ async def _acquire_elsewhere(
     同 task 内重复获取一定被判为重入（这是契约），故凡是要验证互斥的用例都必须换 task
     竞争，否则测到的是重入路径而非互斥路径。
     """
-    return await asyncio.create_task(
-        provider.acquire(scope, name, wait_timeout_ms=wait_timeout_ms)
-    )
+    return await asyncio.create_task(provider.acquire(scope, name, wait_timeout_ms=wait_timeout_ms))
 
 
 async def _assert_held(
@@ -233,20 +231,24 @@ def test_stale_release_does_not_free_the_new_holders_lock() -> None:
     asyncio.run(scenario())
 
 
-def test_renew_extends_lease_and_fails_after_loss() -> None:
-    # 租约与 sleep 的余量必须拉大：Windows 事件循环定时器有 ~15.6ms 量化误差，配
-    # 调度抖动后，40ms 的 sleep 常实际跑过 60ms 租约，使续期前租约已过期而 flaky。
-    # 保持侧 sleep 取租约的 1/4（150ms 余量），到期侧 sleep 取租约的 1.5 倍（100ms 余量）。
-    provider = _provider(lease_ms=200)
+def test_renew_extends_lease_and_fails_after_loss(monkeypatch) -> None:
+    # 只控制内存后端的租约时钟；真实 sleep 可能因调度延迟越过 60ms 租约。
+    # 不替换进程级 time.monotonic，避免影响 asyncio 自身的等待与超时。
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
+    provider = _provider(lease_ms=60)
 
     async def scenario() -> None:
         handle = await provider.acquire(_SCOPE, "write")
-        await asyncio.sleep(0.05)
+        now[0] += 0.04
         assert await provider.renew(handle) is True
-        await asyncio.sleep(0.05)
+        now[0] += 0.04
         await _assert_held(provider)  # 续期后仍在租约内
 
-        await asyncio.sleep(0.30)  # 续期后的租约也到期
+        now[0] += 0.08  # 续期后的租约也到期
         stolen = await _acquire_elsewhere(provider)
         assert stolen.token != handle.token
         assert await provider.renew(handle) is False

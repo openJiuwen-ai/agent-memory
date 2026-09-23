@@ -25,6 +25,10 @@ def register_security() -> None:
     # PR2 的 Standard/Routing/SpaceAware Authorizer 与 Store 实现在此注册；
     # allow_all 仍保留为显式测试替身，但生产装配会拒绝 test-only capability。
     import_required("jiuwen_memory.common.security.authorization.authorization_impl")
+    # PR3 的 chained_hmac 审计完整性实现在此注册（chained_hmac 的 builder 又经
+    # AuditProducer/KeyProviderProducer 引用审计后端与审计 key，二者由 common/plugins
+    # 与 cryptography_impl 的注册覆盖）。
+    import_required("jiuwen_memory.common.security.audit_integrity.audit_integrity_impl")
     import_required("jiuwen_memory.common.security.protection.protection_impl")
     import_required("jiuwen_memory.common.security.cryptography.cryptography_impl")
     _REGISTERED = True

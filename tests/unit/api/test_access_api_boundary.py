@@ -172,6 +172,10 @@ def test_server_build_consumes_only_public_assembly_result(monkeypatch) -> None:
             self.events = events
 
         @staticmethod
+        def authenticate(credentials):
+            raise NotImplementedError("SDK authentication is not used by Server")
+
+        @staticmethod
         def start() -> None:
             return None
 

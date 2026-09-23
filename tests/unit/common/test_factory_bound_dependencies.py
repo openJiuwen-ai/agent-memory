@@ -32,13 +32,18 @@ def reset_factory():
 
 
 def context(*, new_instance=False):
-    return AssemblyContext.from_dict({
-        "bound_dependency_test": {"default": {"target": "part"}},
-        "bound_owner_test": {"default": {
-            "target": "owner", "new_instance": new_instance,
-            "params": {"bound_dependency_test": "default"},
-        }},
-    })
+    return AssemblyContext.from_dict(
+        {
+            "bound_dependency_test": {"default": {"target": "part"}},
+            "bound_owner_test": {
+                "default": {
+                    "target": "owner",
+                    "new_instance": new_instance,
+                    "params": {"bound_dependency_test": "default"},
+                }
+            },
+        }
+    )
 
 
 def test_bind_does_not_lookup_or_validate_until_resolved():
@@ -59,28 +64,31 @@ def test_bound_dependencies_config_source_and_put_remain_in_original_assembly(mo
         return item
 
     _BoundOwnerProducer.register("owner")(build)
+    original_ctx = context()
     original_source = DictConfigSource({"name": "A"})
-    ConfigSourceProducer.put("default", original_source)
-    original = _BoundOwnerProducer.bind_named("default", context())
-    written = _BoundOwnerProducer.bind_named("written_by_builder", context())
-    original_part = _BoundDependencyProducer.bind_named("default", context())
+    ConfigSourceProducer.put("default", original_source, ctx=original_ctx)
+    original = _BoundOwnerProducer.bind_named("default", original_ctx)
+    written = _BoundOwnerProducer.bind_named("written_by_builder", original_ctx)
+    original_part = _BoundDependencyProducer.bind_named("default", original_ctx)
     Factory.reset_all()
+    current_ctx = context()
     current_source = DictConfigSource({"name": "B"})
-    ConfigSourceProducer.put("default", current_source)
-    current = _BoundOwnerProducer.build_named("default", context())
+    ConfigSourceProducer.put("default", current_source, ctx=current_ctx)
+    current = _BoundOwnerProducer.build_named("default", current_ctx)
     resolved = original()
     assert resolved.source is original_source
     assert resolved.dependency is original_part()
     assert resolved.dependency is not current.dependency
     assert written() is resolved
-    assert ConfigSourceProducer.get_cached() is current_source
-    assert _BoundOwnerProducer.build_named("written_by_builder", context()) is current
+    assert ConfigSourceProducer.get_cached(ctx=current_ctx) is current_source
+    assert _BoundOwnerProducer.build_named("written_by_builder", current_ctx) is current
 
 
 def test_failure_restores_caller_context_and_can_retry(monkeypatch):
+    original_ctx = context()
     original_source = DictConfigSource({"name": "A"})
-    ConfigSourceProducer.put("default", original_source)
-    resolve = _BoundOwnerProducer.bind_named("default", context())
+    ConfigSourceProducer.put("default", original_source, ctx=original_ctx)
+    resolve = _BoundOwnerProducer.bind_named("default", original_ctx)
     Factory.reset_all()
     current_source = DictConfigSource({"name": "B"})
     ConfigSourceProducer.put("default", current_source)
@@ -108,8 +116,9 @@ def test_concurrent_bound_handles_construct_shared_dependency_once(monkeypatch):
         return object()
 
     _BoundOwnerProducer.register("owner")(build)
-    first = _BoundOwnerProducer.bind_named("default", context())
-    second = _BoundOwnerProducer.bind_named("default", context())
+    ctx = context()
+    first = _BoundOwnerProducer.bind_named("default", ctx)
+    second = _BoundOwnerProducer.bind_named("default", ctx)
     Factory.reset_all()
 
     def resolve_second():
@@ -136,12 +145,15 @@ def test_bound_new_instance_keeps_explicit_nonsharing(monkeypatch):
 
 
 def test_old_bound_build_does_not_expose_its_cache_to_another_thread(monkeypatch):
+    original_ctx = context()
     original_source = DictConfigSource({"name": "A"})
-    ConfigSourceProducer.put("default", original_source)
-    original = _BoundOwnerProducer.bind_named("default", context())
+    ConfigSourceProducer.put("default", original_source, ctx=original_ctx)
+    original = _BoundOwnerProducer.bind_named("default", original_ctx)
     Factory.reset_all()
     current_source = DictConfigSource({"name": "B"})
     ConfigSourceProducer.put("default", current_source)
+    current_ctx = context()
+    ConfigSourceProducer.put("default", current_source, ctx=current_ctx)
     entered, release = Event(), Event()
 
     def build(config):
@@ -157,7 +169,7 @@ def test_old_bound_build_does_not_expose_its_cache_to_another_thread(monkeypatch
         try:
             assert entered.wait(5)
             assert ConfigSourceProducer.get_cached() is current_source
-            assert _BoundOwnerProducer.build_named("default", context()) is current_source
+            assert _BoundOwnerProducer.build_named("default", current_ctx) is current_source
         finally:
             release.set()
         assert pending.result(timeout=5) is original_source
@@ -173,3 +185,18 @@ def test_bound_late_creation_keeps_original_build_observers():
         value = resolve()
     assert original == [value]
     assert later == []
+
+
+def test_same_named_bound_handles_isolate_independent_contexts():
+    _BoundOwnerProducer.register("owner")(lambda config: ConfigSourceProducer.get_cached())
+    left_ctx, right_ctx = context(), context()
+    left_source = DictConfigSource({"name": "A"})
+    right_source = DictConfigSource({"name": "B"})
+    ConfigSourceProducer.put("default", left_source, ctx=left_ctx)
+    ConfigSourceProducer.put("default", right_source, ctx=right_ctx)
+    left = _BoundOwnerProducer.bind_named("default", left_ctx)
+    right = _BoundOwnerProducer.bind_named("default", right_ctx)
+    Factory.reset_all()
+    assert right() is right_source
+    assert left() is left_source
+    assert right() is right_source

@@ -8,6 +8,7 @@ import pytest
 
 from jiuwen_memory.api import Modality, Scope
 from jiuwen_memory.api.memory_api_impl.admin_ops import AdminOpsMixin
+from jiuwen_memory.api.memory_api_impl.pep_ops import PepOpsMixin
 
 pytestmark = pytest.mark.unit
 
@@ -27,10 +28,12 @@ class _IngestJobs:
         return SimpleNamespace(job=SimpleNamespace(id="j1"), reused=False)
 
 
-class _Api(AdminOpsMixin):
+class _Api(AdminOpsMixin, PepOpsMixin):
     def __init__(self) -> None:
         self.ingested = 0
         self._ingest_jobs = _IngestJobs(self)
+        # 普通审计部署也走真实 PEP 预检；不以缺少方法的替身跳过该边界。
+        self._audit_integrity = None
         self.added: list = []
 
     @staticmethod

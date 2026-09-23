@@ -13,9 +13,9 @@ Provider 负责：
 Provider **不**负责普通审计过滤/query，不拥有 MemoryAPI，也不自行读取 YAML、
 环境变量或根密钥--密钥一律经 KeyProvider 的 MAC capability 取得。
 
-**接口先行说明**：本文件只固定契约。``audit_integrity_impl``（版本化规范化 +
-链式 HMAC 实现等）随实装 PR 合入；本期 ``AuditIntegrityProducer`` 无注册 target，
-配置 ``audit_integrity`` 段会因未注册实现而装配失败（fail-closed，不静默降级）。
+**实装状态**：``audit_integrity_impl/chained_hmac``（版本化规范化 + 链式 HMAC）已实装
+并注册为 ``AuditIntegrityProducer`` 的 ``chained_hmac`` target；未配置 ``audit_integrity``
+段时装配普通审计（不静默降级、不伪装支持）。
 """
 
 from __future__ import annotations

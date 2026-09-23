@@ -52,6 +52,8 @@ def test_enabled_registration_requires_periodic_scheduler() -> None:
 def test_registration_survives_caller_loop_and_records_each_round(engine_kind) -> None:
     runtime = assemble_runtime(config=background_config(engine_kind))
     api = runtime.api
+    # 关闭后审计连接也已释放；保留调度器端口观察最终状态，不再发起业务请求。
+    scheduler = api._scheduler  # pylint: disable=protected-access
     assert not hasattr(api, "start_background_jobs"), "后台注册只能通过 Runtime 公开入口"
     security = security_for(api, HOME)
     moment = datetime.now(UTC) - timedelta(minutes=2)
@@ -77,7 +79,7 @@ def test_registration_survives_caller_loop_and_records_each_round(engine_kind) -
         disabled = asyncio.run(wait_for_round(api, job_id, security, second.detail["last_run_id"]))
         assert json.loads(disabled.detail["last_run_detail"])["reason"] == "auto_derive disabled"
         runtime.close()
-        assert api.job_status(job_id, security=security).status is JobStatus.CANCELLED
+        assert scheduler.status(job_id).status is JobStatus.CANCELLED
         with pytest.raises(ValidationError, match="closed"):
             asyncio.run(runtime.start_background_jobs(HOME, security=security))
     finally:

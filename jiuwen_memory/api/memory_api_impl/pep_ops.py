@@ -23,6 +23,7 @@ from jiuwen_memory.common.security._delegation_binding import (
     _effective_principal,
     _stores,
 )
+from jiuwen_memory.common.security.audit_integrity.base import AuditIntegrityError
 from jiuwen_memory.common.security.capabilities import EntryRoutingCapability, needs_space_facts
 from jiuwen_memory.common.security.request_context import get_request_id
 from jiuwen_memory.common.security.space_decision import (
@@ -92,6 +93,10 @@ from .local_support import (
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
 _PEP_OWNED_KEY_SET = frozenset(PEP_OWNED_ATTR_KEYS)
+
+# 审计 detail 的系统保留键（计划 §10）：服务端权威写入，调用方同名键在
+# ``_record_audit`` 先剥再写，不与调用方字段池共享。
+_RESERVED_DETAIL_KEYS = frozenset({"decision", "request_id"})
 
 
 def _strip_pep_owned_keys(metadata: Mapping[str, str]) -> dict[str, str]:
@@ -367,11 +372,14 @@ class PepOpsMixin:
         decision: str = "allow",
         detail: dict[str, str] | None = None,
     ) -> None:
-        payload = dict(detail or {})
-        payload.setdefault("decision", decision)
+        # 系统保留键由服务端权威写入（计划 §10：禁止调用方自带字段覆盖）：decision /
+        # request_id 表达的是服务端判定，调用方 detail 预置同名键会让 deny 事件带上
+        # allow 的假判定，先剥再写。
+        payload = {k: v for k, v in (detail or {}).items() if k not in _RESERVED_DETAIL_KEYS}
+        payload["decision"] = decision
         request_id = get_request_id()
         if request_id:
-            payload.setdefault("request_id", request_id)
+            payload["request_id"] = request_id
         self._audit.record(
             AuditEvent(
                 id=str(uuid.uuid4()),
@@ -385,6 +393,29 @@ class PepOpsMixin:
                 target=target_scope or _ROOT,
             )
         )
+
+    def _ensure_audit_integrity_healthy(self) -> None:
+        """业务 mutation 前的审计完整性预检与故障隔离（计划 §9.3；R3）。
+
+        两个检查都必须在业务副作用**之前**：
+
+        - **degraded 闩**：受保护链已发生追加失败（``ProtectedAuditLogger`` 置位）即
+          Runtime 不健康，后续 mutation 隔离，直到进程重启或运维介入——继续写业务
+          只会让「无法补写证据」的状态扩大；
+        - **health 预检**：schema/链头/密钥损坏由 provider.health 现场核验（R5：运行期
+          不吃初始化缓存）。
+
+        未装配完整性 provider（普通审计部署）不受影响。这不构成业务库与审计库的跨库
+        原子声明——两者本就不是一个事务，预检只把故障挡在扩大之前。
+        """
+        if self._audit_integrity is None:
+            return
+        if getattr(self._audit, "integrity_degraded", False):
+            raise AuditIntegrityError(
+                "audit integrity degraded after a failed protected append; "
+                "mutations are isolated until the runtime is restarted or repaired"
+            )
+        self._audit_integrity.health()
 
     def _apply_space_policy_context(
         self,

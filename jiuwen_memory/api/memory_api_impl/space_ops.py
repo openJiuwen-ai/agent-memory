@@ -55,6 +55,8 @@ class SpaceOpsMixin:
             context=_space_permission_context("space", target),
             require_space=False,
         )
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         info = self._space.create(_resolve_space_owner(spec, identity))
         # 建空间同样要下发失效：事实缓存对「空间不存在」也装填一份（元数据与成员皆空），
         # 建之前任何一次读取（含 get_space 的鉴权路径）都会装填它，不清则新空间在一个
@@ -206,6 +208,8 @@ class SpaceOpsMixin:
             context=_space_permission_context("space", target),
             space_patch=patch,
         )
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         info = self._space.update(org, space, patch)
         self._invalidate_space_facts(org, space)
         self._log(identity, "update_space", target_id, target_scope=target, detail=auth)
@@ -223,6 +227,8 @@ class SpaceOpsMixin:
             target_id,
             context=_space_permission_context("space", target),
         )
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         info = self._space.archive(org, space)
         self._invalidate_space_facts(org, space)
         self._log(identity, "archive_space", target_id, target_scope=target, detail=auth)
@@ -249,6 +255,8 @@ class SpaceOpsMixin:
             target_id,
             context=_space_permission_context("space", target),
         )
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         result, purged = asyncio.run(self._space_lifecycle.delete_space(org, space))
         self._invalidate_space_facts(org, space)
         self._log(
@@ -357,6 +365,8 @@ class SpaceOpsMixin:
             target_id,
             context=_space_permission_context("space_policy", target),
         )
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         updated = self._space.set_policy(org, space, policy)
         self._invalidate_space_facts(org, space)
         self._log(
@@ -412,6 +422,8 @@ class SpaceOpsMixin:
             context=_space_permission_context("space_member", target),
         )
         self._enforce_member_write_ceilings(security, target, member)
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         self._space.add_member(org, space, member)
         self._invalidate_space_facts(org, space)
         self._log(
@@ -442,6 +454,8 @@ class SpaceOpsMixin:
             context=_space_permission_context("space_member", target),
         )
         self._enforce_member_removal_ceiling(security, target, member)
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         self._space.remove_member(org, space, member)
         self._invalidate_space_facts(org, space)
         self._log(identity, "remove_space_member", target_id, target_scope=target, detail=auth)

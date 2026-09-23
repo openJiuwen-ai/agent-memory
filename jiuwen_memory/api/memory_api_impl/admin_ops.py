@@ -70,6 +70,9 @@ class AdminOpsMixin:
             system_metadata=system_metadata,
             user_metadata=user_metadata,
         )
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）：入队本身是副作用，
+        # 任务体内再走的 add 有同一预检，此处先把故障挡在队列出現之前。
+        self._ensure_audit_integrity_healthy()
         return self._ingest_jobs.submit(
             payload_id=payload_id,
             source_ref=source_ref,
@@ -146,6 +149,8 @@ class AdminOpsMixin:
             space_action=_evolve_space_action(info.mode),
         )
         self._log(identity, "job_cancel", job_id, target_scope=info.scope, detail=auth)
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         self._scheduler.cancel(job_id)
 
     def admin_get(self, key: str, *, security: RequestSecurityContext) -> str:
@@ -158,6 +163,8 @@ class AdminOpsMixin:
         identity = security.auth.actor
         auth = self._authorize(security, _ROOT, Action.ADMINISTER_SYSTEM, "admin_set", key)
         self._log(identity, "admin_set", key, target_scope=_ROOT, detail=auth)
+        # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
+        self._ensure_audit_integrity_healthy()
         self._policy.set(key, value)
 
     def admin_all(self, *, security: RequestSecurityContext) -> dict[str, str]:
@@ -270,9 +277,11 @@ class AdminOpsMixin:
             raise RateLimitedError("audit verification workload budget exhausted")
         # 与 audit() 一致，真正读取审计数据前先记录本次已授权且已准入的验证尝试。
         # provider 若因链篡改、schema 损坏等抛 AuditIntegrityError，此记录仍可追溯
-        # 发起者与发生时间；异常继续原样传播，guard 仍由 finally 归还。
-        self._log(identity, "verify_audit", target_scope=_ROOT, detail=auth)
+        # 发起者与发生时间；异常继续原样传播，guard 仍由 finally 归还。尝试日志自身
+        # 追加失败（受保护 logger fail-closed）也必须在 release 的 finally 保护内，
+        # 不能泄漏已占用的并发槽（PR3-07）。
         try:
+            self._log(identity, "verify_audit", target_scope=_ROOT, detail=auth)
             result = self._audit_integrity.verify(
                 after_sequence=after_sequence,
                 page_size=effective_page_size,
@@ -297,6 +306,9 @@ class AdminOpsMixin:
         self._enforce_grant_ceiling(security, grant)
         store = managed_store(self._authorizer)
         stored = replace(grant, grant_id=uuid.uuid4().hex)
+        # Grant/Delegation 变更是关键安全事件（R3，计划 §9.3）：mutation 前预检 +
+        # 故障隔离，写入后审计失败由受保护 logger fail-closed 上抛。
+        self._ensure_audit_integrity_healthy()
         self._log(
             identity,
             "grant",
@@ -322,6 +334,7 @@ class AdminOpsMixin:
         if stored is None:
             return  # 未知 ID 幂等，不根据请求 grantor 猜测真实归属。
         auth = self._authorize(security, stored.grantor, Action.REVOKE_SHARE, "revoke")
+        self._ensure_audit_integrity_healthy()
         store.revoke_if_grantor(stored.grant_id, stored.grantor)
         self._log(
             identity,

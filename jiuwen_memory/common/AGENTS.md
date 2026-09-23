@@ -5,7 +5,9 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
-全局共享的可插拔插件与核心数据类型。提供工厂注册基础设施，定义跨层数据结构，是各层消费的共享依赖。
+跨模块共享的可插拔插件与核心数据类型。提供工厂注册基础设施，定义跨层数据结构，是各层消费的共享依赖。
+
+当前安全能力及部署边界见 [F04](../../docs/features/common/F04-security-interfaces-and-encryption.md)。
 
 ## 模块地图
 
@@ -26,7 +28,7 @@
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，分别序列化 `system_metadata` / `user_metadata`，拒绝未迁移的 `_v<4` MemoryUnit |
 | `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
-| `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
+| `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`；注册表属 Producer，InstanceCache 属 AssemblyContext；builder 内继承缓存上下文，根注入/查询显式传 ctx（配置数据结构在 `config/context.py`） |
 | `loop_runner.py` | 实例持有的后台事件循环线程；惰性启动，`close` 停止循环并回收异步生成器、默认线程池和线程，关闭后不可重启 |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
@@ -35,8 +37,8 @@
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
-| `audit/` | AuditLogger 插件目录；`protected_audit_logger.py` 的 `ProtectedAuditLogger` 把 record 委派审计完整性 provider、query 透传，并在构造时校验 provider chain store 与 logger 是同一对象（PR3 契约，接口先行，PR1 无调用点） |
-| `security/` | 安全能力的唯一归属地（设计维护页 F04，冻结接口备忘 F04-1）。PR1 已实装认证、保护与静态加密；`authentication/` 提供 Authenticator、PrincipalKeyStore 与 CredentialStatusRegistry，唯一实现目录是其内部的 `authentication/authentication_impl/`，包含 api_key / dev / trusted 三种认证器及凭据存储实现。进程内调用方经 `request_context.internal_context(authenticator)` 显式穿过认证边界，身份由传入的认证器产出、调用方不能自述身份（legacy 桥与公共 `ScopedAuthenticator` 均已删除，测试替身在 `tests/support/`）。PR2 在 `authorization/authorization_impl/` 提供 Standard/Routing/SpaceAware Authorizer 及 memory/SQLite GrantStore、DelegationStore；冻结约束是 MemoryAPI/Authorizer 唯一 PEP/PDP、凭据逐请求在线复核且旧 PermissionManager 不进入生产路径。`audit_integrity/` 仍只有 PR3 固定接口，未实装或激活。`request_context.py` 提供受控上下文构造。安全注册入口统一使用 `import_required` 记录并重抛依赖导入错误。另含空间级授权事实与谓词纯函数（见 `docs/features/control/F07-collective-memory-design.md`）。 |
+| `audit/` | AuditLogger 插件目录；内存 / SQLite 后端实现 ChainedAuditStore；`protected_audit_logger.py` 的 `ProtectedAuditLogger` 把 record 委派审计完整性 provider、query 透传，并在构造时校验 provider chain store 与 logger 是同一对象；经内核显式装配，写链失败锁存 degraded，mutation 预检失闭，detail 在写入边界过滤 |
+| `security/` | 安全能力的唯一归属地（设计维护页 F04，公开契约 S10）。PR1 已实装认证、保护与静态加密；`authentication/` 提供 Authenticator、PrincipalKeyStore 与 CredentialStatusRegistry，唯一实现目录是其内部的 `authentication/authentication_impl/`，包含 api_key / dev / trusted 三种认证器及凭据存储实现。进程内调用方经 `request_context.internal_context(authenticator)` 显式穿过认证边界，身份由传入的认证器产出、调用方不能自述身份（legacy 桥与公共 `ScopedAuthenticator` 均已删除，测试替身在 `tests/support/`）。PR2 在 `authorization/authorization_impl/` 提供 Standard/Routing/SpaceAware Authorizer 及 memory/SQLite GrantStore、DelegationStore；冻结约束是 MemoryAPI/Authorizer 唯一 PEP/PDP、凭据逐请求在线复核且旧 PermissionManager 不进入生产路径。`audit_integrity/` 注册可选 chained_hmac provider，提供版本化 HMAC、稳定快照增量验证及有界 CAS。`request_context.py` 提供受控上下文构造。安全注册入口统一使用 `import_required` 记录并重抛依赖导入错误。另含空间级授权事实与谓词纯函数（见 `docs/features/control/F07-collective-memory-design.md`）。 |
 | `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
 | `security/_delegation_binding.py` | 私有服务端装配适配：凭据指纹绑定现有委托 ID，认证 actor 不变，记录与 Authorizer 必须同源；供 PEP/PDP 共用绑定复核，不注册新认证 target、不扩展冻结接口。 |
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
@@ -90,7 +92,7 @@
 - 核心数据类型（MemoryUnit/Scope/Context/Relation/Chunk/AuditEvent 等）
 - 工厂注册基础设施（Factory 基类 + `TOP_NAME` 命名空间 + `build`/`build_named`/`dep` 三接口）
 - 横切接口（Authenticator / PrincipalKeyStore / RateLimiter / WorkloadGuard / BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger / LockProvider）
-- 安全域契约（认证/密码学/保护与 PR2 授权已实装；PR3 审计完整性仅固定接口）
+- 安全域契约（认证/密码学/保护与 PR2 授权已实装；PR3 提供可选链式 HMAC 与审计后端接线）
 - 错误类型
 - 工具函数
 
@@ -140,7 +142,7 @@
     `SecurityProvider` / `SecurityProducer` / `SecurityContext` / `KeySource` 仅保留一个发布周期
     的兼容导出，新代码统一走 `cryptography/` 的 `CryptographyProvider` / `KeyProvider`；契约
     异常从各能力子包取。
-13. `RequestSecurityContext` 只经 `request_context.py` 的 `new_request_context` / `internal_context` 构造，不在各 surface 各自拼装；`auth_middleware.authenticated()` 已走该入口，PR2 PEP 已启用 `has_valid_origin()` 校验。request ID 只由受控适配层或构造入口生成，不得来自客户端 header、query 或业务 payload，请求结束必须 reset。`legacy.py` 与自述身份桥已删除；安全能力与后续更新统一归档到 `docs/features/common/F04-security-interfaces-and-encryption.md`，冻结接口备忘为 F04-1。
+13. `RequestSecurityContext` 只经 `request_context.py` 的 `new_request_context` / `internal_context` 构造，不在各 surface 各自拼装；`auth_middleware.authenticated()` 已走该入口，PR2 PEP 已启用 `has_valid_origin()` 校验。request ID 只由受控适配层或构造入口生成，不得来自客户端 header、query 或业务 payload，请求结束必须 reset。`legacy.py` 与自述身份桥已删除；安全能力与后续更新统一归档到 `docs/features/common/F04-security-interfaces-and-encryption.md`，公开契约见 S10。
 14. 安全域 `Grant` 在构造边界把动作迭代冻结为 `frozenset[Action]` 并拒绝非 `Action` 成员；`grant_id` 默认留空等待服务端生成，公共导出不得要求既有调用方预先提供服务端标识。
     `new_request_context` 复用 `validate_actor_form` 校验所有认证器的输出；缺 org、无主体或
     双主体不得获得来源证明。资源 Scope 的双主体表达不受此约束。
@@ -156,12 +158,17 @@
     add_close_barrier 先停止使用者，失败时保留依赖；add_close_callback 是之后的通知。
     安全资源关闭错误继续处理其余安全清单后传播，失败项可重试，成功项不重复释放。
     Factory 的创建观察和纪元管理辅助不改变原 build/build_named/dep 签名；同纪元视图
-    通过装配根绑定共享所有者，旧根关闭不失效新纪元缓存，不因 health 故障盲重建。
+    通过装配根绑定共享所有者；具名缓存归属 AssemblyContext，独立上下文不复用配置
+    或关闭根。builder 内隐式缓存操作仅使用当前上下文，根操作须显式传 ctx；旧根
+    关闭不失效其他上下文缓存，不因 health 故障盲重建。审计 Store 与完整性 provider
+    声明的链 Store/KeyProvider 纳入同一去重关闭图，普通审计也关闭。
 15. `RoutingFieldsProvider` 提供稳定路由字段声明，`EntryRoutingCapability` 声明入口实际
     采用的字段；子策略需要空间事实不得误抑制外层路由与系统过滤。迁移期
     `PermissionManager` 与 `Authorizer` 可共同实现该查询能力，但生产 PEP 只能把字段交给
     Authorizer 判定，禁止形成两套默认实现或两个终局 PDP。
 16. 审计增量验证必须经 `read_stable_snapshot(after_sequence)` 在同一快照取得精确 checkpoint 与固定链头，并令每页 `scan(..., through_sequence=快照链头)`；缺 checkpoint、序号缺口或未到快照链头都返回 `incomplete`，不得从 genesis 盲接。`AuditVerificationLimits` 是服务端可信单次资源边界，PEP 仍须截断 provider 的超量 samples。`ProtectedAuditLogger` 构造时必须满足 `provider.chain_store() is audit_logger`。
+    detail 词干过滤的非秘密允许列表只按精确键名匹配：credential_id、key_fp、content_id、
+    token_count。未知前后缀或大小写变体不得继承例外；允许字段仍限长并在过滤后入链。
 17. **OpenAI LLM/Embedder/ASR 出站等待策略显式可配**：OpenAI 兼容 LLM、Embedder 与
     `openai_transcription` ASR 必须复用 `read_outbound_call_policy` 并显式传入
     有限 timeout 和重试上限；默认 `300` 秒、`0` 次 SDK 重试，TCP connect 固定 5 秒。
@@ -186,8 +193,9 @@
 
 ### 延迟依赖绑定
 
-Factory.bind_named 捕获本轮实例缓存、锁、配置与创建观察者；reset_all 更换缓存及锁，
-不让旧句柄借用新运行实例的依赖。绑定在 ContextVar 中，退出或异常必须恢复。
+Factory.bind_named 绑定指定 AssemblyContext 与创建观察者；缓存和锁由该上下文持有，
+全局 reset_all 不影响存活上下文，独立上下文的同名句柄互不共享。延迟构造经 build
+继承 builder 的缓存上下文，观察者在退出或异常时必须恢复。
 DeferredEmbedder 在首次调用时解析并共享实际插件，失败不缓存，不改变 Embedder 协议。
 
 ### 层级查询复核

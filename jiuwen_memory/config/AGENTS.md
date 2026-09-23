@@ -57,7 +57,8 @@
 8. **密码学提供者必须经具名引用装配**
    `security` 顶层段属于 `SecurityRuntimeProducer`；加密存储通过
    `params.cryptography` 指向 `cryptography.<name>`，Runtime 若需要同一 provider 也引用同名
-   实例。`build_kernel` 先建立共享 Factory 缓存，Runtime 随后命中该缓存，禁止把同名有状态
+   实例。AssemblyContext 独立持有 Factory 缓存，内核与 Runtime 在同一上下文命中，
+   新装配不全局 reset、不复用其他上下文；禁止把同名有状态
    provider 构造成两份。旧 `security.*.target=local` / `params.security` 只在一个发布周期内由
    `AssemblyContext` 自动迁移并告警。
 

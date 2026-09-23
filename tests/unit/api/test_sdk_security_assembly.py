@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime
 from unittest.mock import Mock
 
 import pytest
@@ -13,16 +15,86 @@ from jiuwen_memory.api import (
     Scope,
     Surface,
     ValidationError,
-    assemble,
     assemble_runtime,
-    build_configured_security_runtime,
+    assemble_server_runtime,
     build_dev_authenticator,
     new_request_context,
 )
-from jiuwen_memory.common.security.authentication.key_store import fingerprint
+from jiuwen_memory.common.errors import AuthenticationError
+from jiuwen_memory.common.security.authentication.base import Authenticator, AuthProducer
+from jiuwen_memory.common.security.authentication.key_store import KeyStoreProducer, fingerprint
 from jiuwen_memory.common.security.types import Role
 
 pytestmark = pytest.mark.unit
+
+
+class PublicPluginAuthenticator(Authenticator):
+    """只通过公开认证、凭据真源和资源依赖契约协作的第三方替身。"""
+
+    def __init__(self, store):
+        self.store = store
+        self.issuer = "public-plugin"
+
+    def mode(self):
+        return self.issuer
+
+    def health(self):
+        self.store.health()
+
+    def authenticate(self, credentials):
+        identity = self.store.resolve(credentials.api_key)
+        if identity is None:
+            raise AuthenticationError("authentication failed")
+        return replace(
+            identity,
+            credential_type="plugin-key",
+            credential_issuer=self.issuer,
+            auth_method=self.mode(),
+            credential_status_required=True,
+            authenticated_at=datetime.now(UTC),
+        )
+
+    def credential_sources(self):
+        return (("plugin-key", self.issuer, self.store),)
+
+    def security_dependencies(self):
+        return (self.store,)
+
+
+def test_public_authenticator_capability_binds_online_revocation(monkeypatch):
+    # Factory 没有生产反注册接口；测试只修改注册表副本，退出后恢复原表。
+    # pylint: disable=protected-access
+    monkeypatch.setattr(AuthProducer, "_registry", dict(AuthProducer._registry))
+    created = []
+
+    @AuthProducer.register("sdk_contract_public")
+    def build(config):
+        authenticator = PublicPluginAuthenticator(KeyStoreProducer.dep(config, default="memory"))
+        created.append(authenticator)
+        return authenticator
+
+    runtime = assemble_runtime(
+        config={
+            "security": {
+                "default": {
+                    "target": "standard",
+                    "params": {"authenticator": {"target": "sdk_contract_public"}},
+                }
+            }
+        }
+    )
+    try:
+        actor = Scope(org="plugin", user="alice")
+        store = created[0].store
+        token = store.issue(actor, Role.USER)
+        security = runtime.authenticate(Credentials(api_key=token))
+        unit = runtime.api.add("public plugin", actor, security=security)[0]
+        assert runtime.api.get(unit.id, actor, security=security).id == unit.id
+        store.revoke(fingerprint(token))
+        with pytest.raises(PermissionDeniedError):
+            runtime.api.get(unit.id, actor, security=security)
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("runtime_name", ["default", "production"])
@@ -44,15 +116,17 @@ def test_sdk_registers_actual_issuer_and_key_store(
     }
     if named_authenticator:
         config["authenticator"] = {"issuer": auth_spec}
-    runtime = assemble_runtime(config=config) if with_runtime else None
-    api = runtime.api if runtime is not None else assemble(config=config)
-    security_runtime = build_configured_security_runtime(config)
+    runtime = (
+        assemble_runtime(config=config) if with_runtime else assemble_server_runtime(config=config)
+    )
+    api = runtime.api
+    security_runtime = (
+        runtime._kernel.security_runtime if with_runtime else runtime.security_runtime
+    )
     authenticator = security_runtime.authenticator
     actor = Scope(org="acme", user="alice")
     token = authenticator.key_store.issue(actor, Role.USER)
-    security = new_request_context(
-        authenticator.authenticate(Credentials(api_key=token)), surface=Surface.SDK
-    )
+    security = runtime.authenticate(Credentials(api_key=token))
     try:
         assert api._authorizer is security_runtime.authorizer
         store_key = (security.auth.credential_type, security.auth.credential_issuer)
@@ -60,20 +134,14 @@ def test_sdk_registers_actual_issuer_and_key_store(
         unit = api.add("private", actor, security=security)[0]
         assert api.get(unit.id, actor, security=security).content == "private"
         stranger_token = authenticator.key_store.issue(Scope(org="acme", user="bob"), Role.USER)
-        stranger = new_request_context(
-            authenticator.authenticate(Credentials(api_key=stranger_token)), surface=Surface.SDK
-        )
+        stranger = runtime.authenticate(Credentials(api_key=stranger_token))
         with pytest.raises(PermissionDeniedError):
             api.get(unit.id, actor, security=stranger)
         authenticator.key_store.revoke(fingerprint(token))
         with pytest.raises(PermissionDeniedError):
             api.get(unit.id, actor, security=security)
     finally:
-        if runtime is not None:
-            runtime.close()
-        else:
-            api._ingest_jobs.close()
-            security_runtime.close()
+        runtime.close()
 
 
 def test_memory_runtime_owns_security_lifecycle(monkeypatch) -> None:
