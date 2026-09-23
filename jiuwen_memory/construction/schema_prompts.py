@@ -93,12 +93,16 @@ Input messages. Every marker contains its authoritative unit_id, message_time, r
    message time.
 2. Resolve an explicit or relative fact-time expression against the message_time belonging to that
    property's supporting source_unit_ids. Use dialogue_timestamp only when the supporting message
-   has message_time=unknown. Never use another message's timestamp.
+   has message_time=unknown. Never use another message's timestamp. When messages describe
+   different events with the same relative phrase, keep only the sources supporting this fact.
 3. Preserve the precision actually supported by the dialogue: YYYY, YYYY-MM, YYYY-MM-DD, or a
    complete ISO-8601 datetime. Never invent a day for a year- or month-level expression.
-4. today and just/just now resolve to the supporting message date. next month resolves to the next
-   calendar month. last week uses supported coarse month precision unless an exact date or weekday
-   is stated. For a future plan, time is the planned execution time, not when the plan was stated.
+4. today, just now, 刚刚, and 刚才 resolve to the supporting message date. Bare "just" does not
+   establish an event date. next month resolves to the next calendar month. last week uses
+   supported coarse month precision unless an exact date or weekday is stated. 上周五 means Friday
+   of the preceding calendar week; last Friday means the most recent earlier Friday. 上个月15号
+   means the 15th day of the preceding month. For a future plan, time is the planned execution
+   time, not when the plan was stated.
 5. If the fact has an explicit or relative time, value must contain the normalized fact/event time.
    Preserve the original relative expression and supporting message date when needed to make the
    result independently understandable.
@@ -111,8 +115,8 @@ Input messages. Every marker contains its authoritative unit_id, message_time, r
 # Relative-time examples
 - message_time=2023-01-20, "perform next month": time="2023-02"; value contains both
   "2023-02" and "next month from 2023-01-20".
-- message_time=2023-01-29, "just launched": time="2023-01-29"; value contains both
-  "2023-01-29" and "just launched".
+- message_time=2023-01-29, "launched just now": time="2023-01-29"; value contains both
+  "2023-01-29" and "just now". "just launched" alone does not establish an event date.
 - message_time=2023-07-09, "noticed last week": time="2023-07"; value contains both
   "2023-07" and "last week from 2023-07-09"; do not invent an exact day.
 - message_time=2023-07-09, "started learning today": time="2023-07-09"; value contains both
