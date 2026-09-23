@@ -84,6 +84,10 @@ message mapping 或 Episode。
 
 相对时间校验保留 `just now` 等明确时间短语；独立的 `just` 也可能表示语气强调，
 不作为强制补充事件时间的依据，避免无日期的偏好事实被误判并在纠错重试后丢弃。
+具体的周几和月内日期优先于周/月粗表达；相对时间只用包含对应表达的 Source 消息日期
+计算，多条候选消息给出冲突日期时进入现有纠错流程。无法可靠确定时保留原始 Source，
+不从无关消息借日期写入 Property。
+模型只给出与具体日一致的月精度时仍可保留 Property；正文中明确写错的日期继续纠错。
 
 ADD 路径中，属性 Unit 成功持久化后，Evolver 按其 `provenance` 找到对应 Source Unit，把
 `schema_entity_name` 去重聚合到 Source 的 `entities`。一个 Source 支持多个实体和多个属性，
