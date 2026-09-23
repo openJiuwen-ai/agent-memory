@@ -8,6 +8,9 @@
 
 统一对外 Core API，所有接入形态（SDK/CLI/MCP/HTTP）最终映射到 `MemoryAPI`。本层是控制层的薄封装：做参数装配与鉴权，编排逻辑全部在 `jiuwen_memory/control`。
 
+审计完整性接线保留返回快照判权、完整工具参数、授权插件能力和 Runtime 生命周期；
+当前能力及部署边界见 [F04](../../docs/features/common/F04-security-interfaces-and-encryption.md)。
+
 ## 模块地图
 
 | 文件 | 职责 |
@@ -15,7 +18,7 @@
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回生命周期句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
+| `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
@@ -125,8 +128,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
    只兼容再导出同一对象，不得定义第二套类型或结构转换。`grant_id` 由服务端生成，`revoke`
    按 ID 精确、幂等、单调撤销；管理入口与实际 Authorizer 判定必须使用同一具名 GrantStore，
    不得双写旧 `PermissionManager`。
-3. 所有数据面方法（add/batch_add/search/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。`LocalMemoryAPI._record_audit()` 在存在受控请求上下文时以 `setdefault` 写入 `AuditEvent.detail["request_id"]`，用于与入口响应和日志关联，不覆盖调用方已经传入的可信 detail 值。
-4. `verify_audit`（审计完整性验证，PR3 接口先行）是独立于 `audit` 的管理面入口：新入口按 `VERIFY_AUDIT` 对根 scope 判权；既有 `audit` 亦按目标动作 `READ_AUDIT` 鉴权（授权记录按 action 精确匹配，不与普通 READ 互认）。验证只收服务端参数（不接受调用方传入 digest/key/proof）；provider 与专用 `audit_verify_guard` 必须成对注入，全量验证占一个独立并发槽，耗尽抛 `RateLimitedError`。guard 耗尽发生在授权通过后，审计事件保持 `decision=allow`，并沿用 `workload_guard=exhausted` 表达容量准入失败，不得混入 `decision=deny` 的鉴权拒绝事件。guard 准入后先落验证尝试审计、再调用 provider，provider 抛完整性异常时仍须能追溯发起者与发生时间；成功或异常路径不重复写完成事件。`page_size` / `max_samples` 截到服务端 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples` 装配出的可信 `AuditVerificationLimits`；装配边界只接受真正的整数（拒绝 `bool` 和字符串），并把非法类型或范围统一翻译成 `ValidationError`。provider 返回 samples 由 PEP 再截到有效上限。未装配 provider 时返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信上下文后通过同名 `/v1/verify_audit` 暴露原返回值，容量限流映射为 429；CLI 通过同名 `verify_audit` 命令和同一 JSON 契约暴露；MCP 经 `memory_verify_audit` 工具暴露同一契约（`after_sequence`/`page_size`/`max_samples`/`anchor_policy` 透传）；legacy handler 暂无一等入口。进程内调用必须显式传安全上下文。
+3. 所有数据面方法（add/batch_add/search/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。`LocalMemoryAPI._record_audit()` 先剥除 detail 中的 decision/request_id，再写入服务端真实判定与受控请求 ID；系统字段不占普通 detail 键数预算。
+4. `verify_audit`（审计完整性验证，可选 provider 实现）是独立于 `audit` 的管理面入口：新入口按 `VERIFY_AUDIT` 对根 scope 判权；既有 `audit` 亦按目标动作 `READ_AUDIT` 鉴权（授权记录按 action 精确匹配，不与普通 READ 互认）。验证只收服务端参数（不接受调用方传入 digest/key/proof）；provider 与专用 `audit_verify_guard` 必须成对注入，全量验证占一个独立并发槽，耗尽抛 `RateLimitedError`。guard 耗尽发生在授权通过后，审计事件保持 `decision=allow`，并沿用 `workload_guard=exhausted` 表达容量准入失败，不得混入 `decision=deny` 的鉴权拒绝事件。guard 准入后先落验证尝试审计、再调用 provider，provider 抛完整性异常时仍须能追溯发起者与发生时间；成功或异常路径不重复写完成事件。`page_size` / `max_samples` 截到服务端 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples` 装配出的可信 `AuditVerificationLimits`；装配边界只接受真正的整数（拒绝 `bool` 和字符串），并把非法类型或范围统一翻译成 `ValidationError`。provider 返回 samples 由 PEP 再截到有效上限。未装配 provider 时返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信上下文后通过同名 `/v1/verify_audit` 暴露原返回值，容量限流映射为 429；CLI 通过同名 `verify_audit` 命令和同一 JSON 契约暴露；MCP 经 `memory_verify_audit` 工具暴露同一契约（`after_sequence`/`page_size`/`max_samples`/`anchor_policy` 透传）；legacy handler 暂无一等入口。进程内调用必须显式传安全上下文。
 5. 装配由 `assembly.assemble` / `assembly.assemble_runtime` / `assembly.assemble_server_runtime`
    完成，内部经 `_build_kernel`
    与各 Producer 的 `dep/build_named/build` 组装；Retriever 的 `domain_store()` 与内部
@@ -157,14 +160,16 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     的显式 DEV 入口通过 `with_local_dev_security()` 补齐完整配置；PR2 的
     `Authorizer` 已消费 ROOT 角色，因此该适配器不再注入 `allow_all` PermissionManager。
     `build_configured_security_runtime()` 从普通 mapping 装配并健康检查
-    Runtime，缺失 `security` 返回 `None`、多实例无 `default` 时拒绝歧义选择。Access 不得
+    Runtime，每次调用建立独立上下文；SDK 直接使用 Runtime.authenticate。缺失 `security`
+    返回 `None`、多实例无 `default` 时拒绝歧义选择。Access 不得
     直接 import `common.security.*_impl` 或 Factory。DEV 身份经真实 Authorizer 放行；显式
     API Key / Trusted 部署仍按其 AuthContext 和授权事实判定。
 12. 配置了 `security` 的 SDK 与 Server 装配均在 `_build_kernel` 内绑定实际认证器的
     issuer/KeyStore，并校验 Runtime 与 PEP 的 PDP 对象一致。Server AUTO 复用内核已建
     Runtime，其 close 由 MemoryRuntime 管理；显式注入另一个 Runtime 时回绑 PDP、替换
     Registry，禁止残留旧 issuer 或关闭已有 router 的空间治理。没有 security 配置时不猜测
-    认证器或 KeyStore，未知 issuer 仍拒绝。MemoryRuntime 沿用上游 api/start/start_background/close。
+    认证器或 KeyStore，未知 issuer 仍拒绝。MemoryRuntime 提供 api/authenticate/start/start_background/close；authenticate 返回
+    SDK 上下文并使用同次装配的认证器与预算，不要求再次构建配置。
     `assemble_server_runtime` 返回增量 ServerRuntime，另公开 security_runtime/audit；
     同源校验、回绑及共享关闭根由本包装配器完成，Server 不访问内核私有成员。旧手工构造
     MemoryRuntime-only 的 Server 不探测私有 audit，额外安全组合按公开 close 能力清理。
@@ -175,7 +180,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 14. `grant/revoke` 通过公开 `GrantManagementCapability` 的 `create_grant/get_grant/
     revoke_if_grantor` 创建或原子绑定真实目标撤销；管理域只有一个 GrantStore，不扇出写入。
     旧只读插件未声明管理能力时返回 UnsupportedCapabilityError，显式完整管理部署在启动期
-    拒绝缺能力。未知 ID 幂等，不回退到仅按 ID 撤权；已有 MemoryAPI 签名不变。
+    拒绝缺能力。未知 ID 幂等，ID 不是授权凭据；已有 MemoryAPI 签名不变，
+    Grant.for_revocation 可构造 ID 引用，其余请求字段不参与定位或归属鉴权。
     空间/入口路由/委托真源通过公开增量能力传递，不探测插件私有状态。
     无 SecurityRuntime 的 SDK 也由 MemoryRuntime 持有安全资源所有者；停止异常不跳过其余
     安全停止动作，未确认停止时保留依赖。与外层同一 SecurityRuntime 不重复关闭资源。assemble 返回的
@@ -198,6 +204,7 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 原 `evolve` 追加 hierarchy_options/reuse_existing，普通模式保留原 candidate/dreaming/
 interval 与授权链。HIERARCHY 保留 WRITE+UPDATE 可信授权及空间可写检查；开启时
 校验树参数、权限路由限制与父 metadata，关闭时忽略树选项并提交成功的跳过任务。
+提交前执行与普通演进相同的审计完整性健康预检，故障不得先产生任务或建树副作用。
 基础校验与树语义校验分离，缺少 hierarchy_options 不阻止关闭状态的成功跳过。
 HTTP/CLI 从 MemoryAPI 反射原方法，MCP 只提供原 memory_evolve。
 

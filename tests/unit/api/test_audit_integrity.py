@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """verify_audit 的 surface 暴露边界与 PEP 契约（PR3 接口文档 §6.1）。
 
-接口先行版：用 stub provider 验证 PEP，不实现任何密码学；真实认证接入前 generic
-dispatch 不注册该管理面 verb，避免把 payload actor 当成可信根身份。
+用 stub provider 验证 PEP 层契约（密码学与链式语义在 provider/store 专项测试覆盖）；
+真实认证接入前 generic dispatch 不注册该管理面 verb，避免把 payload actor 当成可信
+根身份。
 """
 
 from __future__ import annotations
@@ -352,10 +353,16 @@ def test_provider_requires_dedicated_verify_guard() -> None:
         _local_api(provider=_StubProvider())
 
 
-def test_interface_only_audit_integrity_config_fails_closed() -> None:
+def test_audit_integrity_without_security_wiring_fails_closed() -> None:
+    """配置了 audit_integrity 段但 SecurityRuntime 未引用它：拒绝启动。
+
+    接口先行期这段配置因「无注册实现」失败；PR3 实装后失败语义收窄为接线守卫——
+    audit_integrity 只能经 security.params.audit_integrity 显式启用，只配段不接线
+    会让部署以为已启用链式证明，实际仍是普通审计（fail-open），必须拦下。
+    """
     config = Config.from_dict({"audit_integrity": {"default": {"target": "chained_hmac"}}})
 
-    with pytest.raises(ValidationError, match="interface-only"):
+    with pytest.raises(ValidationError, match="没有 SecurityRuntime 引用它"):
         build_kernel(config=config)
 
 
@@ -394,3 +401,23 @@ def test_verify_audit_signature_is_keyword_only_server_side_params() -> None:
     ]
     for name in ("security", "after_sequence", "page_size", "max_samples", "anchor_policy"):
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_verify_audit_releases_guard_when_attempt_log_fails() -> None:
+    """
+    验证尝试的审计追加失败也必须归还 guard 槽位（PR3-07）：尝试日志写在 acquire
+    之后，若不在 release 的 finally 保护内，反复失败会持续占用并发预算，数据库恢复
+    后验证仍被容量拒绝。
+    """
+    provider = _StubProvider()
+    guard = _StubGuard()
+    api, _, audit_logger, _ = _local_api(provider=provider, guard=guard)
+    audit_logger.record.side_effect = AuditIntegrityError("protected audit append failed")
+
+    with pytest.raises(AuditIntegrityError, match="protected audit append failed"):
+        api.verify_audit(
+            security=internal_context(ScopedAuthenticator(Scope(org="acme", user="auditor")))
+        )
+
+    assert guard.acquired == 1
+    assert guard.released == 1

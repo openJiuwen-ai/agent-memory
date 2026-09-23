@@ -8,7 +8,6 @@
 | 影响范围 | `jiuwen_memory/common/security/`、API PEP、各接入形态、存储加密及相关模块规约 |
 | 验证范围 | 安全契约、第三方替换、故障、生命周期及各接入面业务回归；见「验证要求」 |
 | 规范契约 | [S10 安全横切契约](../../specs/S10-security.md)、[S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[S06 存储层](../../specs/S06-storage.md) |
-| 冻结接口备忘 | [F04-1 安全域接口契约](F04-1-security-api-contracts.md)（PR3 合入后删除） |
 | Refs | #143 |
 
 ## 背景与维护边界
@@ -24,8 +23,8 @@
 
 维护约定：安全能力变化时刷新本页现行描述，不因上游合并、基线适配、门禁与验收等工作
 在 `docs/` 新建文档或追加过程笔记。现有 specs 继续承载契约、模块 AGENTS.md 继续承载
-实现地图，涉及它们的事实纠偏同步更新既有文件。F04-1 只是已冻结接口的阶段性备忘，
-不随实现状态滚动更新；PR3 合入时移除它并清理引用，安全能力特性文档只保留 F04。
+实现地图，涉及它们的事实纠偏同步更新既有文件。阶段性接口备忘已整合到既有 specs，
+安全能力特性文档只保留 F04。MemoryAPI 业务签名保持稳定，底层插件契约按公开能力演进。
 本次不合并或删除独立的模型服务 SSL、存储 SSL 等上游专题文档。
 
 源码中的历史 `F05 §...` / `security.md` 简称是早期安全架构来源注记，不指 SSL 文档；
@@ -40,7 +39,7 @@
 | 静态加密（PR1） | local KeyProvider、ENC1 信封、显式 encrypted KV 装饰器 | 不等于全存储加密；FS 加密、KMS/Vault/HSM 不在本分支 |
 | 授权与隔离（PR2） | 唯一 PEP/PDP、Grant/Delegation 真源、角色和空间两轴、代理代写 | 私有委托配置不等于动态管理公开接口 |
 | 审计记录 | 普通 AuditLogger、认证/业务判定留痕、真实 actor 和请求关联 | 普通日志没有链式防篡改保证，保留期由部署方管理 |
-| 审计完整性（PR3） | 仅固定接口、可选装配位及必要入口/授权接缝 | 无 chained_hmac 实现、链式 Store、锚点产品或本地 MAC 实装；未装配返回 unsupported |
+| 审计完整性（PR3） | 可选 chained_hmac、内存 / SQLite 链式 Store、LocalKeyProvider MAC 与受保护审计 | 外部锚点无产品实现；未装配返回 unsupported，本地密钥轮换状态不跨重启保存 |
 
 身份和目标资源必须分开。`AuthContext.actor` 恒为 org 非空、user/agent 恰一的已认证
 单主体；资源 `Scope` 则可以按 `principal_path` 表达 user/agent 层级。资源坐标、URI、
@@ -57,7 +56,13 @@ metadata、业务请求头不能替代认证身份。`Role.ROOT` 来自服务端
 
 认证、授权、防护、密码学能力经 Factory/Producer 和具名依赖组合；差异由 capability
 声明，不按封闭 AuthMode 枚举或 target 白名单在核心分支。宿主须在配置解析前注册插件，
-没有外部 entry-point 自动发现。请求认证在接入边界执行，API 消费其结果；composition
+没有外部 entry-point 自动发现。SDK 一次 `assemble_runtime(config=...)` 即可取得
+`runtime.authenticate(Credentials(...))` 和 `runtime.api`；认证返回 SDK surface 的
+可信上下文，业务方法仍显式传 security。认证使用同次装配的 Authenticator/Registry
+和并发预算；缺少安全配置、已关闭或预算耗尽时明确拒绝，不隐式启用 DEV。
+独立 `build_configured_security_runtime(config)` 每次新建安全图，只用于独立装配或
+显式注入，不能用它再次构建配置来寻找已有 SDK 的安全实例。
+请求认证在接入边界执行，API 消费其结果；composition
 root 装配同源 Runtime 不意味着把协议解析或认证执行塞入 MemoryAPI。
 
 - DEV 无映射时产出 `local/developer` ROOT；Root API Key 产出 `system/root` ROOT。
@@ -138,10 +143,13 @@ Grant 构造边界冻结动作集合，公共导出只有一套值对象，不�
 新旧类型转换。服务端生成 grant_id；公共管理与 PDP 使用同一具名 GrantStore。
 legacy 接入透传 actions 与 expires_at，授权响应返回服务端生成的 grant_id；撤销须携带
 该 ID，不退回按 grantor/grantee 元组匹配，也不从业务 payload 推导调用身份。
+`revoke(grant, *, security)` 保留为适配入口：除 grant_id 外的请求字段均不参与定位或
+鉴权。客户端保存 grant 返回值，或通过 `Grant.for_revocation(grant_id)` 构造 ID 引用；
+旧的无 ID 条件撤销必须改为保存服务端 ID，不能自动恢复宽泛条件匹配。
 
 撤权从真源读 ID 对应的真实 grantor，按 REVOKE_SHARE 判权，再原子检查 grantor
 未变化才执行撤销；不能信任请求带来的 grantor，也不能把随机 ID 当授权凭据。未知 ID
-幂等无副作用，重复撤销不刷新原 SQLite 撤销时间。冻结 Store 没有公开条件更新接口，
+幂等无副作用，重复撤销不刷新原 SQLite 撤销时间。旧 Store ABC 不增加必填方法，
 通过公开 GrantManagementCapability 的 get_grant/revoke_if_grantor 完成；不访问实现
 私有钩子。管理域只允许一个共享 GrantStore，singular/plural 方法是同一真源的两种视图。
 create_grant 在单真源内原子创建：相同 ID/记录重投幂等，冲突或撤销重放拒绝，抛异常
@@ -183,7 +191,9 @@ globals.require_grant_management=true 的完整管理部署在装配期校验，
 该选项默认 false，不能无故阻断既有只读插件。不同 GrantStore 的扇出写入拓扑始终拒绝。
 
 SecurityRuntime 和无认证 SDK 的 MemoryRuntime 都持有明确的安全资源所有者。
-组合对象声明由本装配根拥有的依赖，借用资源不列入；根按对象身份去重，先停止使用者
+组合对象声明由本装配根拥有的依赖，借用资源不列入；授权 Store、原始 AuditLogger
+及完整性 provider 声明的链 Store/KeyProvider 均纳入所有权图。受保护审计 wrapper
+不再单独拥有同一连接；普通审计也必须关闭。根按对象身份去重，先停止使用者
 再关闭依赖，重复关闭幂等。对象只关闭自身，不各自级联关闭同一共享 Store；关闭故障
 记录并传播错误、继续释放其他已确认安全的资源，失败项可由资源所有者再次 close 重试。
 停止未确认时保留使用者依赖与 leader 锁，不把清理通知的 best-effort 语义用于安全屏障。
@@ -196,7 +206,9 @@ Runtime 沿用上游非等待关闭：入口封闭后由单个收尾线程等待
 拓扑/状态短锁与资源清理锁分离。仅有 close 能力的额外注入组合也交由同一所有者释放，
 Server 不在非等待返回后直接关闭它。排队的旧代 watcher 工作不能在关闭后进入数据面。
 创建回滚包含取消/中断；启动失败按创建清单释放本次新建资源，不误关既有借用依赖。
-同装配纪元的句柄显式绑定共同所有者，关闭时失效其缓存，旧根不清空新纪元；拒绝
+具名缓存由 AssemblyContext 持有，只有同一上下文按 producer/name 共享；新装配
+即使名称相同也建立独立实例和生命周期，不能通过全局 reset 打断存活实例。跨上下文
+共享外部 Runtime 必须显式注入并绑定所有者，关闭只失效自己上下文的缓存。拒绝
 将暂时 health 故障当作盲重建理由。插件构造尚未返回的内部资源由插件自己局部清理。
 契约细节和扩展边界见 S10。
 
@@ -240,7 +252,7 @@ policy 或委托人事实。授予上界仅 ROOT 免除普通成员限制；ADMI
 
 注册与 tick 的独立授权检查都保留。Runtime 先停止 watcher、新调度和摄入准入，等待
 摄入与调度器在飞任务收尾后，再释放 dreaming leader 锁、自有 loop、依赖资源，避免双跑。
-公开 MemoryRuntime 沿用上游 start/start_background/close；Server 门面转发而不访问私有端口。
+公开 MemoryRuntime 提供 authenticate 和上游 start/start_background/close；Server 门面转发而不访问私有端口。
 身份上下文留在 API 安全边界，不透传到业务控制/检索/存储端口。
 
 ## 5. 静态加密与生效范围
@@ -283,24 +295,45 @@ DACL 去掉继承和无关显式授权，只保留服务账号。配置脱敏不
 生产可跨重启轮换。KMS/Vault/HSM 和持久化历史代管理尚未实装；需相应 provider 才能
 承担该部署能力。丢失加密根密钥不能靠 API Key 恢复。
 
-## 7. 审计与 PR3 边界
+## 7. 审计与完整性边界
 
 普通审计记录可信 actor、action、target、decision、时间、request_id 及必要安全引用。
 授权不读 ContextVar；业务审计从显式受控上下文取得 actor/角色/凭据引用，代理代写仍记
 实际 agent。认证失败和限流拒绝分开；认证错误对外保持笼统，避免枚举主体。
 不记录原始 API Key/token/password 或消息正文；技术 ID、指纹和必要细节仍须评估隐私。
+detail 的词干过滤保留保守匹配，但将 `credential_id`、`key_fp`、`content_id`、
+`token_count` 列为精确非秘密字段，避免关联 ID 和计数被整值遮蔽而丢失可观测性。
+拒绝按 `_id`/`_count` 后缀或改变词干边界泛化放行，未知扩展和 KDF 材料仍受过滤。
+允许字段仍执行类型/长度限制，过滤后再计算证明，不改变调用方事件或旧链验证语义。
 普通运行日志的通用隐私过滤与独立设计见 [F09](F09-log-privacy.md)，不修改 API 响应。
 文档标题、抽取/巩固 trace 的正文、完整 prompt、模型响应和 Scope 也必须标记脱敏；
 只保留计数、类型和经确认的技术 ID，不改变送入模型或持久化的原始数据。
 
-READ_AUDIT 与 VERIFY_AUDIT 独立授权。verify_audit 入口、资源 guard/返回上限与
-unsupported 返回属于已冻结接缝，不代表审计完整性已启用。PR3 待交付版本化规范化、
-链式 HMAC、原子追加/稳定快照 Store、MAC 用途隔离与可信外部锚点；契约见 S10/F04-1。
-不能用简单“前一行 HMAC”草图宣称能检测尾删/回滚，也不能让 unsupported/incomplete
-等价于 clean。普通 AuditLogger 基类不添加虚假的默认完整性方法。
+READ_AUDIT 与 VERIFY_AUDIT 独立授权。verify_audit 使用独立资源 guard 和服务端验证
+上限，不接受调用方的 digest/key/proof。普通 AuditLogger 基类不增加完整性方法；只有
+security 显式引用 audit_integrity provider 时才启用链式保护，顶层段未被 Runtime 引用
+或 provider 与业务 AuditLogger 不同源时装配拒绝。入口认证事件与 API 业务事件使用同一
+ProtectedAuditLogger，内联 provider 配置也按实际实例接线，不能静默退回普通日志。
 
-PR2 不新增/激活 audit_integrity_impl、chained_hmac 或本地 MAC，不把 ProtectedAuditLogger
-接口存在当成生产启用。PR3 合入后将能力、验证和遗留直接更新到本页，并删除 F04-1。
+chained_hmac 对事件、Scope、UTC 时间、detail 和链上下文做版本化规范化，以用途隔离的
+HMAC 签名，常时间比较摘要，按 proof 自带 KeyRef 验证历史密钥。内存后端只用于显式
+测试选择，SQLite 通过锁内事务与 CAS 原子追加。空库可初始化，旧无签名记录须离线迁移，
+已启用库缺表、缺列、head 不一致或未知 schema 版本均拒绝，不自动修补证据。
+
+增量验证先验证精确 checkpoint，并在同一稳定快照的固定链头内分页；缺 checkpoint、
+缺页、序号缺口、尾删或未知证明版本都不能报告 clean。连续成功水位在首个错误处冻结，
+错误样本受请求值、服务端配置和硬上限约束。密钥变化在链上记录与实际签名一致的轮换
+边界，CAS 和轮换竞争均有界重试；不落盘原始密钥、中间派生材料或自由扩展秘密字段。
+
+mutation（包含 HIERARCHY 演进提交）在副作用前做完整性健康预检；写链失败统一为 AuditIntegrityError，并锁存
+degraded，后续 mutation 不因一次成功自动恢复。授权插件的原子撤权、Runtime 共享资源
+生命周期和 dreaming 三态分发保持原有能力边界，审计预检不能将它们替换为旧执行路径。
+审计 detail 的 decision/request_id 由服务端写入，系统字段不受普通 detail 键数预算挤占。
+
+外部 AuditAnchor 只有固定契约，没有产品实现；required 无锚点时拒绝。无可信外部锚点
+不能识别整个数据库回退到合法历史前缀，本地 rotate 不提供跨重启历史密钥持久化。
+unsupported、incomplete、tampered 和 rollback_suspected 不能等价为 clean。契约见
+S10。
 原 F04 的 90/365 天保留期与每日/100MB 轮换只是规划建议，不是现有框架已执行的策略。
 
 ## 8. 资源保护与部署攻击面
@@ -330,12 +363,12 @@ DEV 不允许 0.0.0.0、:: 或其他非回环绑定；容器转发、代理和 T
 - 客户端自述 actor、目标 Scope 反推被代理用户、ContextVar 暗传身份：破坏可信来源边界。
 - 以空 Scope 表达 ROOT、隐式 DEV、生产 allow_all 或两条 PermissionManager/Authorizer
   判定线：形成默认放行或真源分叉；具名身份和真实角色闸门已替代这些过渡方案。
-- 为修安全缺陷更改 frozen Scope/Authenticator/Authorizer/Store 或新增公共调试方法：
-  已有接口不应被重定义；采用防御性复制和兼容的独立公开能力契约。
+- 为修安全缺陷破坏 Scope/MemoryAPI 的兼容形状或新增公共调试方法：采用防御性复制
+  和兼容的公开 capability；底层插件协作必须完整声明，不以冻结为由依赖私有方法。
 - 仅判断请求 ID/Scope，不检查真实撤权目标和实际返回快照：可绕过作者、路由或版本隔离。
 - 猜测 SQLite 逗号集合、坏编码当无限制、撤销记录被初始化复活：扩大或恢复已撤权限。
 - 缺依赖/密钥时回落明文、provider 内允许旧明文、宣称 KV 加密覆盖索引/FS：掩盖部署风险。
-- 整文件覆盖旧 PR2/上游以消冲突、混入 PR3、删除工具参数或把扁平 schema 改参数袋：
+- 整文件覆盖旧 PR2/上游以消冲突、删除工具参数或把扁平 schema 改参数袋：
   丢失上游能力或跨越冻结边界，必须按语义保留两侧必要接线。
 - 用 xfail、删除故障注入/同源断言、getattr 隐藏私有访问或全局关闭门禁：弱化安全证据。
   必要白盒测试/装配访问只作有理由的局部例外，平台不接受时走例外复核流程。
@@ -353,9 +386,13 @@ DEV 不允许 0.0.0.0、:: 或其他非回环绑定；容器转发、代理和 T
 - 相同 Store 契约在内存、SQLite 和第三方替身上运行；验证授权真源同一、管理动作隔离、
   真实目标原子撤销、创建失败不留有效权限、按 ID 幂等且撤销不复活。
 - 旧 ABC 只读插件可替换；未声明可选能力返回不支持，显式要求管理能力的部署启动拒绝。
+- 测试插件注册在用例结束后恢复；跨测试共享的替身放在无注册副作用的支持模块中，
+  默认目录收集与单独执行均应通过，不能依赖测试模块的导入顺序。
 - 组合策略完整透传委托/空间事实/路由与资源依赖；共享资源只关闭一次，借用资源由其
   所有者关闭，关闭故障不阻止其余清理，SDK 未配置认证时也释放授权 Store。
 - 上游扁平工具参数、正常代理业务、返回快照隔离和 dreaming 持续复核保持回归覆盖。
+- 真实 SQLite 审计链覆盖非默认增量参数、损坏/尾删/轮换/并发快照及写链故障失闭，
+  保护启用后的返回版本快照仍须重新判权；日志脱敏不能挤掉服务端 request_id/decision。
 - Ruff/本地静态检查与华为平台专有门禁分开验收；真实数据库、模型与服务在对应环境验证。
 
 逐次复现、测试结果、环境排除及门禁工作记录只在本地 security-plans 保存，不作为
@@ -372,5 +409,5 @@ DEV 不允许 0.0.0.0、:: 或其他非回环绑定；容器转发、代理和 T
   公共 grant/revoke，须声明原子管理能力；旧逗号空间编码需人工明确迁移。
 - 私有委托装配是过渡，动态委托管理公开接口不在当前冻结接口内；若有新产品需求须
   先评审契约，设计/取舍仍维护本页，不再新建安全 feature。
-- PR3 链式审计/MAC/锚点尚未实装；FS 加密、KMS/Vault/HSM、跨重启轮换、OAuth
+- 外部审计锚点尚未实装；FS 加密、KMS/Vault/HSM、跨重启轮换、OAuth
   资源服务器和分布式限流/公平配额都不能作为本分支已完成能力。

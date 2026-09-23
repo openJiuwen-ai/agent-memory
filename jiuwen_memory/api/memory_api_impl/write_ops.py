@@ -114,6 +114,10 @@ class WriteOpsMixin:
         self._require_trusted_context(
             security, _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org))
         )
+        # mutation 前审计完整性预检与故障隔离（PR3-08/R3，计划 §9.3）：路由解析前执行，
+        # 防止 _write_target → _ensure_fallback_space 在 degraded/损坏状态下创建
+        # fallback 空间（T1：隐式建空间发生在审计预检之前）。
+        self._ensure_audit_integrity_healthy()
         target, system_metadata = self._write_target(
             scope, security, coords, content, system_metadata
         )
@@ -588,6 +592,10 @@ class WriteOpsMixin:
         self._require_trusted_context(
             security, _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org))
         )
+        # T1：审计完整性预检必须早于 _batch_write_targets——后者通过
+        # _route_context → _ensure_fallback_space 隐式创建空间（副作用），
+        # 预检应在任何副作用之前拒绝。
+        self._ensure_audit_integrity_healthy()
 
         outcomes: dict[int, BatchWriteOutcome] = {}
         ready: list[tuple[int, BatchWriteItem]] = []

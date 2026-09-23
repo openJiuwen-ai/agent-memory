@@ -143,6 +143,10 @@ def default_config_dict() -> dict[str, Any]:
         "reranker": {_D: {"target": "overlap", "params": {"tokenizer": _D}}},
         "normalizer": {_D: "passthrough"},
         "audit": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
+        # audit_integrity（链式 HMAC 证明）默认不启用：不配该段 = 普通审计（record/query，
+        # 无链式 proof）。要启用须显式配置 audit_integrity 段（chained_hmac + 独立具名
+        # audit key provider + 实现 ChainedAuditStore 的具名 audit 后端），并经
+        # security.params.audit_integrity 显式接线（S10 §审计完整性）。
         # -- 检索 ------------------------------------------------------------ #
         "recaller": {
             "keyword": {"target": "keyword"},

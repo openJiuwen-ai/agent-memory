@@ -412,17 +412,18 @@ def test_profile_threshold_changes_grouping_and_default_factory_is_registered() 
     assert result.complete
     assert len(result.created_parent_ids) == 2
     assert "default" in HierarchyComposerProducer.known()
-    IndexBuilderProducer.put("composer-test-index", harness.builder)
+    context = AssemblyContext()
+    IndexBuilderProducer.put("composer-test-index", harness.builder, ctx=context)
     try:
         registered = HierarchyComposerProducer.build(
-            "default", {"index_builder": "composer-test-index"}, AssemblyContext()
+            "default", {"index_builder": "composer-test-index"}, context
         )
         assert isinstance(registered, DefaultHierarchyComposer)
         assert registered.index_builder is harness.builder
         assert registered.operator_type() is OperatorType.HIERARCHY_COMPOSER
         registered.health()
     finally:
-        IndexBuilderProducer.reset_instances()
+        IndexBuilderProducer.reset_instances(ctx=context)
 
 
 @pytest.mark.parametrize(

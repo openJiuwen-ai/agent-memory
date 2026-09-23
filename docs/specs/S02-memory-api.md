@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -214,7 +214,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 13. **list 过滤和计数在 KV 内完成**：API 复制 `extensions`、规范化 `filters` 后完整下推；返回 `MemoryListResult.items` 当前页和分页前精确 `count`，不以 `len(items)` 代替总数。
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。（曾存在的 `legacy_request_context` 过渡桥已随 PR2 删除。）
-16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 F04-1 §5.4）。
+16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 S10 的公开授权管理能力）。
 17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=EvolveMode.HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；层级查询由 search 的新增可选参数提供，展开与上卷契约见 S04。
 18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 search 的 expand_depth 参数沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
@@ -771,7 +771,7 @@ def audit(
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `verify_audit` | `(*, security, after_sequence=0, page_size=1000, max_samples=20, anchor_policy="if_configured") -> AuditVerificationResult` | 审计链完整性验证：按 `VERIFY_AUDIT` 执行管理面根 scope 闸门，与使用 `READ_AUDIT` 的既有 `audit` 是两个独立入口；provider 与专用 `audit_verify_guard` 成对注入，全量验证占独立并发槽，耗尽抛 `RateLimitedError`；此时授权事件保持 `decision=allow`，沿用 `workload_guard=exhausted` 明细区分容量准入失败与鉴权拒绝。guard 准入后必须先记录验证尝试再调用 provider，使 provider 抛出的完整性异常仍可追溯发起者与发生时间。输入只允许服务端验证参数，不接受调用方传入 expected digest / key / proof。`after_sequence=N` 必须从同一稳定快照读取并验证第 N 条 checkpoint proof，扫描固定截至快照链头；并发追加留到下一次，checkpoint/序号缺口/截断导致 `incomplete`，不得从 genesis 盲接。`page_size` / `max_samples` 截到服务端可信 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples`，装配只接受真正的整数（拒绝 `bool` 和字符串），非法类型、范围或超过硬上限统一抛 `ValidationError`；PEP 再保证返回 samples 不超过有效上限。`truncated` 只表示样本列表截断，`high_water_mark` 是本次连续成功验证到的最高 sequence。未装配 provider 时诚实返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信 `security` 后以同名 `/v1/verify_audit` 暴露并递归序列化原返回值；CLI 以同名 `verify_audit` 命令暴露；MCP 以 `memory_verify_audit` 工具暴露同一冻结契约（见 F04-1 §6.4） |
+| `verify_audit` | `(*, security, after_sequence=0, page_size=1000, max_samples=20, anchor_policy="if_configured") -> AuditVerificationResult` | 审计链完整性验证：按 `VERIFY_AUDIT` 执行管理面根 scope 闸门，与使用 `READ_AUDIT` 的既有 `audit` 是两个独立入口；provider 与专用 `audit_verify_guard` 成对注入，全量验证占独立并发槽，耗尽抛 `RateLimitedError`；此时授权事件保持 `decision=allow`，沿用 `workload_guard=exhausted` 明细区分容量准入失败与鉴权拒绝。guard 准入后必须先记录验证尝试再调用 provider，使 provider 抛出的完整性异常仍可追溯发起者与发生时间。输入只允许服务端验证参数，不接受调用方传入 expected digest / key / proof。`after_sequence=N` 必须从同一稳定快照读取并验证第 N 条 checkpoint proof，扫描固定截至快照链头；并发追加留到下一次，checkpoint/序号缺口/截断导致 `incomplete`，不得从 genesis 盲接。`page_size` / `max_samples` 截到服务端可信 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples`，装配只接受真正的整数（拒绝 `bool` 和字符串），非法类型、范围或超过硬上限统一抛 `ValidationError`；PEP 再保证返回 samples 不超过有效上限。`truncated` 只表示样本列表截断，`high_water_mark` 是本次连续成功验证到的最高 sequence。未装配 provider 时诚实返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信 `security` 后以同名 `/v1/verify_audit` 暴露并递归序列化原返回值；CLI 以同名 `verify_audit` 命令暴露；MCP 以 `memory_verify_audit` 工具暴露同一冻结契约（见 S10 审计完整性契约） |
 
 ---
 
@@ -1220,16 +1220,38 @@ Runtime 的 `close(wait=False)` 封闭准入并由单个收尾线程完成后台
 共享 SecurityRuntime 直接关闭也执行同一后台停止屏障，不 join 可能等待资源根锁的
 收尾线程。未确认使用者停止时保留依赖和 leader 锁；多个安全清理失败汇总报告。
 
+### SDK 单次装配与认证
+
+```python
+runtime = assemble_runtime(config=config)
+try:
+    security = runtime.authenticate(Credentials(api_key=token))
+    result = runtime.api.list(target_scope, security=security)
+finally:
+    runtime.close()
+```
+
+`authenticate(credentials: Credentials) -> RequestSecurityContext` 使用同次装配的认证器，
+返回 `Surface.SDK` 上下文，业务方法仍显式传 security。缺安全配置、已关闭分别抛
+ValidationError，认证失败抛 AuthenticationError，并发预算耗尽抛 RateLimitedError。
+HTTP/MCP 的 peer、限流和协议解析仍由各入口负责。独立安全构建 helper 每次创建独立
+上下文，不与已经装配的 SDK 隐式共享；共用 Runtime 须由公开 Server 装配入口显式注入。
+
+`revoke(grant: Grant, *, security)` 是按 ID 撤销的兼容入口。其余字段不参与定位、
+归属或鉴权；客户端应保留 `grant(...)` 返回对象，或使用
+`Grant.for_revocation(grant_id)`。旧的无 ID 条件撤销应迁移为保存服务端 ID；缺失 ID
+继续拒绝，不恢复条件匹配。归属从服务端真源读取，并原子绑定检查后撤销。
+
 ### 公开 Server 装配入口
 
 `assemble_server_runtime(policies=None, config=None, *, security_runtime=AUTO_SECURITY_RUNTIME)
 -> ServerRuntime` 从同一公开 API 包导出；Access 只传普通配置 mapping，不解析内核私有成员。
-`MemoryRuntime` 沿用文档记忆的生命周期协议：`api`、`start()`、异步
-`start_background()` 和 `close(*, wait=True)`。异步宿主显式绑定当前长寿 loop；同步
+`MemoryRuntime` 提供 `api`、`authenticate(credentials)`、`start()`、异步
+`start_background()` 和 `close(*, wait=True)`。异步宿主绑定其持续运行的事件循环；同步
 宿主显式启动自有 loop，两者不暴露 Store 或任务控制器。默认无 watcher 时启动为 no-op，
 关闭后不得重启；启动故障必须传回调用方。`ServerRuntime` 在该协议上增量提供只读
 `security_runtime` 与 `audit`，转发同一启动/关闭路径。既有 `assemble`、`assemble_runtime`
-和冻结的 `MemoryAPI` 签名不变；历史自定义 Runtime 需适配这两个上游生命周期方法。
+和冻结的 `MemoryAPI` 签名不变；自定义 Runtime 需实现公开认证与生命周期协议。
 
 装配器在返回前完成 PDP 同源校验、显式 PDP 回绑、部署管理能力/空间路由约束复核和
 认证器实际凭据真源的 Registry 替换。默认哨兵选择配置 Runtime；显式 `None` 不选择

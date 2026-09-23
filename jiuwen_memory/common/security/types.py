@@ -524,6 +524,16 @@ class Grant:
             return False
         return self.expires_at is None or now < self.expires_at
 
+    @classmethod
+    def for_revocation(cls, grant_id: str) -> Grant:
+        """为兼容 ``MemoryAPI.revoke(Grant, ...)`` 构造只含服务端 ID 的引用。
+
+        空主体和动作仅适配旧参数形状；撤销时从真源读取归属，绝不用于条件匹配。
+        """
+        if not isinstance(grant_id, str) or not grant_id.strip():
+            raise ValueError("grant_id must be a non-empty string")
+        return cls(grantor=Scope(), grantee=Scope(), actions=frozenset(), grant_id=grant_id)
+
 
 @dataclass(frozen=True)
 class Delegation:

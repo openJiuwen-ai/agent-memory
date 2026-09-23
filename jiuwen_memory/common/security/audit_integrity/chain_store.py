@@ -18,8 +18,9 @@ target 名判断后端性质；必需 capability 缺失时装配拒绝（F05 §�
 CAS 冲突由完整性协调器（``AuditIntegrityProvider``）重新读取链头并有界重试；超限抛
 :class:`~jiuwen_memory.common.security.audit_integrity.base.ChainConflictError`，不无限自旋。
 
-**接口先行说明**：本文件只固定契约。内存 / SQLite 审计后端叠加实现本 capability
-（以及锚点的具体产品实现）随实装 PR 合入。
+**实装状态**：内存 / SQLite 审计后端（``common/audit/audit_impl/``）已叠加实现本
+capability；锚点的产品级实现（WORM、云审计、KMS/Vault 附加日志）尚未交付，测试用
+fake anchor 只出现在测试中，不注册成生产默认 target。
 """
 
 from __future__ import annotations
@@ -96,10 +97,7 @@ class ChainSnapshot:
             raise ValueError("ChainSnapshot.after_sequence must be a non-negative integer")
         if self.after_sequence == 0 and self.checkpoint is not None:
             raise ValueError("genesis snapshot cannot carry a checkpoint record")
-        if (
-            self.checkpoint is not None
-            and self.checkpoint.proof.sequence != self.after_sequence
-        ):
+        if self.checkpoint is not None and self.checkpoint.proof.sequence != self.after_sequence:
             raise ValueError("checkpoint sequence must equal ChainSnapshot.after_sequence")
 
 
@@ -215,7 +213,8 @@ class ChainedAuditStore(ABC):
 class AnchorRecord:
     """锚点记录的最小结构。
 
-    具体产品实现不在本 PR；本结构供 ``AuditAnchor`` 实现与 conformance/攻击测试使用。
+    产品级实现（WORM、云审计、KMS/Vault）尚未交付；本结构供 ``AuditAnchor`` 实现与
+    conformance/攻击测试使用。
     """
 
     chain_id: str
@@ -231,9 +230,9 @@ class AuditAnchor(ABC):
     """外部可信锚点接口。
 
     本地链式完整性只能检测内容修改与中间删除，**不能**独立证明数据库未被回滚到合法
-    旧快照。需要防尾删与回滚的部署周期性把链头写入独立可信锚点。具体产品（WORM、云
-    审计、KMS/Vault 附加日志）实现不在本 PR；测试用 fake anchor 只进 conformance/攻击
-    测试，不注册成生产默认 target。
+    旧快照。需要防尾删与回滚的部署周期性把链头写入独立可信锚点。产品级实现（WORM、
+    云审计、KMS/Vault 附加日志）尚未交付；测试用 fake anchor 只进测试，不注册成生产
+    默认 target。
     """
 
     @abstractmethod

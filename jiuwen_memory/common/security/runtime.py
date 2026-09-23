@@ -43,7 +43,10 @@ from typing import Any
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.security._delegation_binding import _bind_delegations
-from jiuwen_memory.common.security.audit_integrity.base import AuditIntegrityProvider
+from jiuwen_memory.common.security.audit_integrity.base import (
+    AuditIntegrityProducer,
+    AuditIntegrityProvider,
+)
 from jiuwen_memory.common.security.authentication.base import Authenticator, AuthProducer
 from jiuwen_memory.common.security.authentication.credential_registry import (
     CredentialStatusRegistry,
@@ -121,9 +124,8 @@ class SecurityRuntime:
     ``audit_integrity_provider`` 同样可以是 ``None``：未启用审计完整性时，审计子系统
     退化为普通 AuditLogger（只 record/query，不带链式 proof）。一旦装配了 provider，
     Runtime 的健康检查就覆盖它——健康检查的 provider 必须是实际写审计链的那个。provider
-    自身不持有需要 Runtime 关闭的资源：它持有的 ChainedAuditStore 与 AuditLogger 是
-    同一具名实例，由审计日志的生命周期所有者统一关闭，Runtime 不重复 close。PR1 只
-    固定该装配位，实现（``audit_integrity_impl``）随 PR3 合入。
+    通过公开 security_dependencies 声明链 Store 和密钥依赖；它持有的 ChainedAuditStore
+    与 AuditLogger 是同一具名实例，由显式共享的所有者按对象身份去重关闭。
 
     ``authorizer`` 在这里只是**装配与健康检查**的归口。真正调用它的是 ``MemoryAPI``
     这个唯一 PEP，且由内核装配注入（见 ``api.memory_api_impl.assembly``）——Runtime
@@ -231,6 +233,7 @@ def _build(config) -> SecurityRuntime:
         workload_guard=WorkloadGuardProducer.dep(config, "workload_guard", default="semaphore"),
         binding_policy=BindingPolicyProducer.dep(config, "binding_policy", default="loopback"),
         cryptography_provider=_optional_cryptography(config),
+        audit_integrity_provider=_optional_audit_integrity(config),
     )
 
 
@@ -255,3 +258,28 @@ def _optional_cryptography(config) -> CryptographyProvider | None:
     if Factory.cfg_get(config, "cryptography") is None:
         return None
     return CryptographyProducer.dep(config, "cryptography")
+
+
+def _optional_audit_integrity(config) -> AuditIntegrityProvider | None:
+    """只在显式配置了 ``audit_integrity`` 时装配——没有默认实现。
+
+    不配就是普通审计（record/query，无链式 proof）；要启用审计完整性就得把 provider
+    和它依赖的具名 audit 后端（同时实现 ChainedAuditStore）、具名 audit key provider
+    一起配出来。capability 不足、key 不可用、后端不支持 CAS 等装配期失败由 provider
+    自己的 builder 抛出（F05 §装配不变量 5）。
+
+    仅测试实现（如非持久进程内链）声明 ``is_test_only()``，生产装配拒绝——判据是
+    capability 而非 target 名（与 kernel 装配的 test-only authorizer 拒绝一致，
+    S08 不变量 7）。确需在测试中使用时显式配置 ``allow_test_only_security: true``。
+    """
+    if Factory.cfg_get(config, "audit_integrity") is None:
+        return None
+    provider = AuditIntegrityProducer.dep(config, "audit_integrity")
+    if not isinstance(provider, AuditIntegrityProvider):
+        raise ValidationError("security params.audit_integrity 必须是 AuditIntegrityProvider 实现")
+    if provider.is_test_only() and not Factory.cfg_get(config, "allow_test_only_security"):
+        raise ValidationError(
+            "当前 audit_integrity provider 是仅测试实现（非持久链）；生产装配拒绝启动。"
+            "确需在测试中使用时显式配置 allow_test_only_security: true"
+        )
+    return provider
