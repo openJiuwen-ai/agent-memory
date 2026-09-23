@@ -7,7 +7,7 @@ import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import BoundedSemaphore, RLock
 
 from jiuwen_memory.common.errors import (
@@ -84,7 +84,7 @@ class InProcessIngestJobController(IngestJobController):
         task: IngestTask,
     ) -> IngestSubmission:
         key = _payload_key(scope, payload_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         job = IngestJob(
             id=f"{INGEST_JOB_PREFIX}{uuid.uuid4().hex}",
             payload_id=payload_id,
@@ -205,7 +205,7 @@ class InProcessIngestJobController(IngestJobController):
             updated = replace(
                 current,
                 status=status,
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
                 unit_ids=unit_ids,
                 error=error,
             )
@@ -265,7 +265,7 @@ class InProcessIngestJobController(IngestJobController):
             job = replace(
                 job,
                 status="failed",
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
                 error="ingest job was interrupted by server restart",
             )
             self._persist(job)

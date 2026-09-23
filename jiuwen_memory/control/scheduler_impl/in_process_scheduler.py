@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.log import get_logger, scope_for_log
@@ -113,7 +113,7 @@ class InProcessScheduler(Scheduler):
             )
 
     def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
 
 # -- 注册到 SchedulerProducer（实现自注册，新增无需改 producer/装配入口） -------- #

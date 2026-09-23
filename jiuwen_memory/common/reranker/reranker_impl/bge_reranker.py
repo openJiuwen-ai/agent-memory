@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import HealthCheckError
@@ -48,12 +48,12 @@ class BGEReranker(Reranker):
         except Exception as exc:
             raise HealthCheckError(f"BGEReranker health check failed: {exc}") from exc
 
-    def rerank(self, query: str, texts: List[str]) -> List[float]:
+    def rerank(self, query: str, texts: list[str]) -> list[float]:
         if not texts:
             return []
         self._load_model()
 
-        scores: List[float] = []
+        scores: list[float] = []
         pairs = [[query, text] for text in texts]
         for batch in self._split_batches(pairs):
             batch_scores = self._compute_score(batch)
@@ -85,14 +85,14 @@ class BGEReranker(Reranker):
         self._model = FlagReranker(self._model_name_or_path, use_fp16=self._use_fp16)
         logger.info("BGEReranker: model loaded successfully")
 
-    def _compute_score(self, pairs: List[List[str]]) -> List[float]:
+    def _compute_score(self, pairs: list[list[str]]) -> list[float]:
         try:
             raw_scores = self._model.compute_score(pairs, normalize=self._normalize)
         except TypeError:
             raw_scores = self._model.compute_score(pairs)
         return _coerce_scores(raw_scores)
 
-    def _split_batches(self, pairs: List[List[str]]) -> List[List[List[str]]]:
+    def _split_batches(self, pairs: list[list[str]]) -> list[list[list[str]]]:
         batches = []
         for i in range(0, len(pairs), self._max_batch_size):
             batch_end = i + self._max_batch_size
@@ -100,7 +100,7 @@ class BGEReranker(Reranker):
         return batches
 
 
-def _coerce_scores(raw_scores: Any) -> List[float]:
+def _coerce_scores(raw_scores: Any) -> list[float]:
     if hasattr(raw_scores, "tolist"):
         raw_scores = raw_scores.tolist()
     if isinstance(raw_scores, (int, float)):

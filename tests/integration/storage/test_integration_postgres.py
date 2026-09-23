@@ -291,8 +291,16 @@ def test_pgvector_recall_returns_metadata_in_one_query(pg_vector) -> None:
     store.insert(
         scope,
         [
-            VectorRecord(id="x", vector=_vector(0), metadata={"user_metadata.color": "red", "user_metadata.n": 1}),
-            VectorRecord(id="y", vector=[0.8, 0.2, 0, 0, 0, 0, 0, 0], metadata={"user_metadata.color": "blue"}),
+            VectorRecord(
+                id="x",
+                vector=_vector(0),
+                metadata={"user_metadata.color": "red", "user_metadata.n": 1},
+            ),
+            VectorRecord(
+                id="y",
+                vector=[0.8, 0.2, 0, 0, 0, 0, 0, 0],
+                metadata={"user_metadata.color": "blue"},
+            ),
         ],
     )
 

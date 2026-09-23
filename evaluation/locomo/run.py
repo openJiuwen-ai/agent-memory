@@ -61,7 +61,6 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -561,7 +560,7 @@ _META_ENV_KEYS = (
 _SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 
-def _git_commit() -> Optional[str]:
+def _git_commit() -> str | None:
     """取当前仓库 HEAD 的短 commit，失败返回 None（非 git 环境或未安装 git 都不应中断跑批）。
 
     daily_runner 跑测试前已 fetch+rebase，HEAD 是 rebase 后的顶端（含本 fork 独有 commit，
@@ -581,7 +580,7 @@ def _git_commit() -> Optional[str]:
         return None
 
 
-def _upstream_commit() -> Optional[str]:
+def _upstream_commit() -> str | None:
     """取官方 mem2.0 远端跟踪 ref 的短 commit，失败返回 None。
 
     本地整理仓使用 origin，旧 SSH 环境使用 upstream，因此按该顺序兼容读取。
@@ -607,7 +606,7 @@ def _upstream_commit() -> Optional[str]:
         return None
 
 
-def _file_digest(path: str) -> Optional[str]:
+def _file_digest(path: str) -> str | None:
     """数据集文件的 sha256 前 16 位。事后核对 qa_idx 是否仍指同一批题。"""
     import hashlib
 
@@ -748,7 +747,7 @@ def _infer_reference_date(conv: dict) -> str:
     return "2023"
 
 
-def _parse_dt(date_str: str) -> Optional[datetime]:
+def _parse_dt(date_str: str) -> datetime | None:
     try:
         return datetime.strptime(date_str.strip(), _DATE_FMT)
     except (ValueError, AttributeError):
@@ -1229,7 +1228,7 @@ class ConversationProcessor:
 class TESTLOCOMO:
     @staticmethod
     def get_locomo_data(path: str):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
 
     @staticmethod
@@ -1239,7 +1238,7 @@ class TESTLOCOMO:
             return set()
         completed = set()
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -1264,7 +1263,7 @@ class TESTLOCOMO:
         # 按 cutoff 聚合：agg[cutoff_label] = {"correct": {cat: n}, "total": {cat: n}}
         agg: dict[str, dict] = {}
         total_skipped = 0
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:

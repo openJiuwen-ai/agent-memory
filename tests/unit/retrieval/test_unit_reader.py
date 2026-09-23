@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -28,7 +28,7 @@ from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 pytestmark = pytest.mark.unit
 
-NOW = datetime(2026, 6, 16, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 16, tzinfo=UTC)
 
 
 def test_current_query_allows_active_only(unit_factory) -> None:
@@ -265,7 +265,9 @@ def test_filter_contains_rejects_scalar_even_on_exact_value(unit_factory) -> Non
     assert not matches_filters(
         unit, FilterClause("user_metadata.project", FilterOp.CONTAINS, "homework")
     )
-    assert not matches_filters(unit, FilterClause("user_metadata.project", FilterOp.CONTAINS, "work"))
+    assert not matches_filters(
+        unit, FilterClause("user_metadata.project", FilterOp.CONTAINS, "work")
+    )
 
 
 def test_filter_scalar_ops_do_not_treat_array_as_scalar(unit_factory) -> None:
@@ -289,7 +291,7 @@ def test_current_query_excludes_expired_active(unit_factory) -> None:
     lifecycle 与 valid-time 是两套独立的失效机制。状态清扫尚未执行时，这类中间态
     仍不能被当前态查询当作有效。
     """
-    expired = unit_factory("a", "x", t_invalid=datetime.now(timezone.utc) - timedelta(days=1))
+    expired = unit_factory("a", "x", t_invalid=datetime.now(UTC) - timedelta(days=1))
 
     assert expired.lifecycle == LifecycleState.ACTIVE
     assert not passes(expired, None)
@@ -297,14 +299,14 @@ def test_current_query_excludes_expired_active(unit_factory) -> None:
 
 def test_current_query_excludes_not_yet_valid(unit_factory) -> None:
     """t_valid 尚未到达的记忆同样不属于"当前有效"（经 MemoryPatch.t_valid 可设未来）。"""
-    future = unit_factory("a", "x", t_valid=datetime.now(timezone.utc) + timedelta(days=1))
+    future = unit_factory("a", "x", t_valid=datetime.now(UTC) + timedelta(days=1))
 
     assert not passes(future, None)
 
 
 def test_current_query_keeps_active_within_valid_window(unit_factory) -> None:
     """常规活跃记忆不受影响：t_valid 已过、t_invalid 为空或未到。"""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     open_ended = unit_factory("a", "x", t_valid=now - timedelta(days=1))
     later = unit_factory("b", "x", t_valid=now - timedelta(days=1), t_invalid=now + timedelta(1))
 
@@ -321,7 +323,7 @@ def test_explicit_t_invalid_filter_sees_sentinel_not_none(unit_factory) -> None:
     unit = unit_factory("a", "x")
     assert unit.temporal.t_invalid is None
 
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
     assert matches_filters(unit, FilterClause("t_invalid", FilterOp.GT, now_ms))
     assert matches_filters(unit, FilterClause("t_invalid", FilterOp.EQ, T_INVALID_OPEN))
     assert not matches_filters(unit, FilterClause("t_invalid", FilterOp.LT, now_ms))
@@ -331,7 +333,7 @@ def test_valid_at_reads_source_of_truth_not_sentinel(unit_factory) -> None:
     """valid_at 不受哨兵影响——它直接读真源 None，判"永久有效"。"""
     unit = unit_factory("a", "x")
 
-    assert valid_at(unit, datetime(9999, 1, 1, tzinfo=timezone.utc))
+    assert valid_at(unit, datetime(9999, 1, 1, tzinfo=UTC))
 
 
 def test_valid_at_open_ended_interval_is_valid(unit_factory) -> None:

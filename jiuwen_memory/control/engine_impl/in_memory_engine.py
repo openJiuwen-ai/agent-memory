@@ -13,7 +13,7 @@ import asyncio
 import copy
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
 from jiuwen_memory.common.log import (
@@ -103,7 +103,7 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
@@ -122,7 +122,7 @@ def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
 
 
 def _valid_sort_key(unit: MemoryUnit) -> datetime:
-    return unit.temporal.t_valid or datetime.min.replace(tzinfo=timezone.utc)
+    return unit.temporal.t_valid or datetime.min.replace(tzinfo=UTC)
 
 
 def _downweight_importance(unit: MemoryUnit) -> None:

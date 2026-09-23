@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -94,7 +94,7 @@ def _load_memory_config(path: Path) -> tuple[Config, dict]:
 
 
 def _new_run_id() -> str:
-    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(UTC).astimezone().strftime("%Y%m%d-%H%M%S")
     return f"{timestamp}-{uuid4().hex[:8]}"
 
 

@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from jiuwen_memory.common.errors import (
     PermissionDeniedError,

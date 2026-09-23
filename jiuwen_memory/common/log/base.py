@@ -63,7 +63,11 @@ def setup_logging(config=None) -> None:
         if config is not None
         else "[%(asctime)s] %(name)s %(levelname)s %(message)s"
     )
-    datefmt = config.get("log_datefmt", "%Y-%m-%d %H:%M:%S") if config is not None else "%Y-%m-%d %H:%M:%S"
+    datefmt = (
+        config.get("log_datefmt", "%Y-%m-%d %H:%M:%S")
+        if config is not None
+        else "%Y-%m-%d %H:%M:%S"
+    )
     log_file = config.get("log_file", "") if config is not None else ""
 
     level = logging.getLevelName(level_name)

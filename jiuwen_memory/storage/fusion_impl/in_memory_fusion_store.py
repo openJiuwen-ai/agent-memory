@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.tokenizer import Tokenizer
@@ -29,14 +29,14 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.fusion import FusionProducer, FusionStore
 from jiuwen_memory.storage.types import FusionQuery, FusionRecord, ScoredID
 
-_ScopeKey = Tuple[str, str, str, str, str]
+_ScopeKey = tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
     return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
-def _cosine(a: List[float], b: List[float]) -> float:
+def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -45,7 +45,7 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-def _passes(scalars: Dict[str, Any], clause: FilterClause) -> bool:
+def _passes(scalars: dict[str, Any], clause: FilterClause) -> bool:
     val = scalars.get(filter_field_metadata_key(clause.field))
     if isinstance(val, (list, tuple, set)):
         if clause.op == FilterOp.CONTAINS:
@@ -81,8 +81,8 @@ class InMemoryFusionStore(FusionStore):
 
     def __init__(self, tokenizer: Tokenizer) -> None:
         self._tokenizer = tokenizer
-        self._data: Dict[_ScopeKey, Dict[str, FusionRecord]] = defaultdict(dict)
-        self._tokens: Dict[_ScopeKey, Dict[str, List[str]]] = defaultdict(dict)
+        self._data: dict[_ScopeKey, dict[str, FusionRecord]] = defaultdict(dict)
+        self._tokens: dict[_ScopeKey, dict[str, list[str]]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
         return StoreType.FUSION
@@ -90,7 +90,7 @@ class InMemoryFusionStore(FusionStore):
     def health(self) -> None:
         return None
 
-    def insert(self, scope: Scope, records: List[FusionRecord]) -> None:
+    def insert(self, scope: Scope, records: list[FusionRecord]) -> None:
         sk = _skey(scope)
         for rec in records:
             if rec.id in self._data[sk]:
@@ -98,7 +98,7 @@ class InMemoryFusionStore(FusionStore):
             self._data[sk][rec.id] = rec
             self._index_tokens(sk, rec)
 
-    def update(self, scope: Scope, records: List[FusionRecord]) -> None:
+    def update(self, scope: Scope, records: list[FusionRecord]) -> None:
         sk = _skey(scope)
         for rec in records:
             if rec.id not in self._data[sk]:
@@ -106,20 +106,20 @@ class InMemoryFusionStore(FusionStore):
             self._data[sk][rec.id] = rec
             self._index_tokens(sk, rec)
 
-    def delete(self, scope: Scope, ids: List[str]) -> None:
+    def delete(self, scope: Scope, ids: list[str]) -> None:
         sk = _skey(scope)
         for rec_id in ids:
             self._data[sk].pop(rec_id, None)
             self._tokens[sk].pop(rec_id, None)
 
-    def get(self, scope: Scope, ids: List[str]) -> List[FusionRecord]:
+    def get(self, scope: Scope, ids: list[str]) -> list[FusionRecord]:
         bucket = self._data[_skey(scope)]
         return [bucket[i] for i in ids if i in bucket]
 
-    def search(self, scope: Scope, query: FusionQuery) -> List[ScoredID]:
+    def search(self, scope: Scope, query: FusionQuery) -> list[ScoredID]:
         sk = _skey(scope)
         q_tokens = set(self._tokenizer.tokenize(query.text)) if query.text else set()
-        scored: List[ScoredID] = []
+        scored: list[ScoredID] = []
         for rec_id, rec in self._data[sk].items():
             if not evaluate(query.scalar_filters, lambda c: _passes(rec.scalars, c)):
                 continue

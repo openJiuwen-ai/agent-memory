@@ -11,7 +11,7 @@ from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
-_INDEX_BUILDERS: dict[str, "RecordingIndexBuilder"] = {}
+_INDEX_BUILDERS: dict[str, RecordingIndexBuilder] = {}
 
 
 class RecordingIndexBuilder(IndexBuilder):

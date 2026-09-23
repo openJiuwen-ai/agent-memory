@@ -13,7 +13,7 @@ import pytest
 
 from jiuwen_memory.common.chunker.chunker_impl.fixed_window_chunker import FixedWindowChunker
 from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
-from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (  # noqa: E501
     KeywordFeatureExtractor,
 )
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
@@ -22,14 +22,14 @@ from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import H
 from jiuwen_memory.retrieval.discloser_impl.truncating_discloser import TruncatingDiscloser
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
 from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
-from jiuwen_memory.storage.domain_store_impl.keyword_recaller import KeywordRecaller
-from jiuwen_memory.storage.domain_store_impl.vector_recaller import VectorRecaller
 from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from jiuwen_memory.retrieval.retriever_impl.unit_reader import UnitReader
 from jiuwen_memory.retrieval.types import RecallChannel, RetrievalQuery
+from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+from jiuwen_memory.storage.domain_store_impl.keyword_recaller import KeywordRecaller
+from jiuwen_memory.storage.domain_store_impl.vector_recaller import VectorRecaller
 from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
-from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
 from tests.conftest import make_unit

@@ -18,7 +18,14 @@ import uuid
 import pytest
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
-from jiuwen_memory.common.type_def import T_INVALID_OPEN, FilterClause, FilterGroup, FilterLogic, FilterOp, Scope
+from jiuwen_memory.common.type_def import (
+    T_INVALID_OPEN,
+    FilterClause,
+    FilterGroup,
+    FilterLogic,
+    FilterOp,
+    Scope,
+)
 from jiuwen_memory.storage._support import scope_segments
 from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
 from jiuwen_memory.storage.types import VectorQuery, VectorRecord

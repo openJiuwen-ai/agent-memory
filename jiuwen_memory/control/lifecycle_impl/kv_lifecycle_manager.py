@@ -13,7 +13,7 @@ forgotten），不物理删除。``sweep`` 是**纯计算**——扫描到期（
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
 from jiuwen_memory.common.log import get_logger, scope_for_log
@@ -161,7 +161,7 @@ class KVLifecycleManager(LifecycleManager):
         raise NotFoundError("memory_unit", unit_id)
 
     def sweep(self) -> list[SweepTransition]:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         transitions: list[SweepTransition] = []
         for scope in self._kv.scopes():
             units, _ = list_units(self._kv, scope, limit=1_000_000)

@@ -7,7 +7,7 @@ import base64
 import json
 import uuid
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.log import get_logger, scope_for_log
@@ -67,7 +67,7 @@ _LEGACY_ROLE_MAP: dict[str, tuple[SpaceContentRole, SpaceGovernanceRole]] = {
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _scope(org: str, space: str) -> Scope:

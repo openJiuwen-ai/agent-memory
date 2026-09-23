@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -10,14 +10,14 @@ from jiuwen_memory.retrieval.query_parser_impl.time_parse import parse_time
 
 pytestmark = pytest.mark.unit
 
-NOW = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
 
 
 def test_yesterday_returns_day_bounds() -> None:
     lo, hi = parse_time("昨天的会议", now=NOW)
 
-    assert lo == datetime(2026, 6, 15, tzinfo=timezone.utc)
-    assert hi == datetime(2026, 6, 16, tzinfo=timezone.utc)
+    assert lo == datetime(2026, 6, 15, tzinfo=UTC)
+    assert hi == datetime(2026, 6, 16, tzinfo=UTC)
 
 
 def test_recent_n_days_window_ends_now() -> None:

@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 
@@ -44,7 +45,7 @@ _PLACEHOLDER_RULE = (
 )
 
 
-def _resolve_env(match: "re.Match[str]", overrides: Mapping[str, Any]) -> str:
+def _resolve_env(match: re.Match[str], overrides: Mapping[str, Any]) -> str:
     name, default = match.group(1), match.group(2)
     # 显式传 None 视同调用方没有值（如 API_KEY=os.environ.get(...)），继续走 env > 默认值。
     if overrides.get(name) is not None:
@@ -94,22 +95,22 @@ def _expand_env(obj: Any, overrides: Mapping[str, Any] | None = None) -> Any:
 class Config:
     """一次装配的用户配置（两级命名空间字典，解析后只读）。"""
 
-    def __init__(self, data: Optional[Mapping[str, Any]] = None) -> None:
+    def __init__(self, data: Mapping[str, Any] | None = None) -> None:
         self._data = dict(data or {})
 
     @classmethod
-    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "Config":
+    def from_dict(cls, data: Mapping[str, Any] | None) -> Config:
         """从配置字典构造。"""
         return cls(data or {})
 
     @classmethod
-    def from_yaml(cls, path: str) -> "Config":
+    def from_yaml(cls, path: str) -> Config:
         """从 YAML 文件解析配置，并展开 ``${VAR}`` / ``${VAR:-默认值}``。"""
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             return cls.from_yaml_str(fh.read())
 
     @classmethod
-    def from_yaml_str(cls, yaml_str: str, **args: Any) -> "Config":
+    def from_yaml_str(cls, yaml_str: str, **args: Any) -> Config:
         """从 YAML 文本解析配置，并展开 ``${VAR}`` / ``${VAR:-默认值}``。
 
         ``args`` 按变量名提供覆盖值，优先级高于环境变量：
@@ -119,7 +120,7 @@ class Config:
         """
         return cls.from_dict(_expand_env(_load_yaml(yaml_str), args))
 
-    def context(self, known_top_names: Optional[set] = None) -> AssemblyContext:
+    def context(self, known_top_names: set | None = None) -> AssemblyContext:
         """解析成 :class:`AssemblyContext`；``known_top_names`` 非空时校验顶层段名。"""
         return AssemblyContext.from_dict(self._data, known_top_names=known_top_names)
 

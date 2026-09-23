@@ -201,8 +201,7 @@ class MilvusVectorStore(VectorStore):
                 last_error = exc
             time.sleep(0.5)
         raise BackendError(
-            "MilvusVectorStore: collection %s not loaded within %.1fs"
-            % (self._collection, timeout)
+            f"MilvusVectorStore: collection {self._collection} not loaded within {timeout:.1f}s"
         ) from last_error
 
     # --------------------------------------------------------------- 序列化
@@ -416,7 +415,10 @@ class MilvusVectorStore(VectorStore):
         if output_fields:
             unknown = [f for f in output_fields if f != "metadata"]
             if unknown:
-                logger.info("MilvusVectorStore.recall: output_fields only supports 'metadata', ignoring %s", unknown)
+                logger.info(
+                    "MilvusVectorStore.recall: output_fields only supports 'metadata', ignoring %s",
+                    unknown,
+                )
         expr = self._expr(scope, query.filters)
         milvus_out = ["logical_id", "metadata"] if fetch_meta else ["logical_id"]
         results = self._search_with_not_loaded_retry(
