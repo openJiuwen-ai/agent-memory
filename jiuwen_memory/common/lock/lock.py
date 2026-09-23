@@ -21,9 +21,9 @@ import asyncio
 import random
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
-from typing import AsyncIterator
 
 from .._support import scope_segments
 from ..errors import AgentMemoryError, ValidationError

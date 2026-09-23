@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, List, Tuple
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.tokenizer import Tokenizer
@@ -19,7 +18,7 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.fulltext import FulltextProducer, FulltextStore
 from jiuwen_memory.storage.types import Document, ScoredID, TextQuery
 
-_ScopeKey = Tuple[str, str, str, str, str]
+_ScopeKey = tuple[str, str, str, str, str]
 
 
 def _skey(scope: Scope) -> _ScopeKey:
@@ -32,8 +31,8 @@ class InMemoryFulltextStore(FulltextStore):
 
     def __init__(self, tokenizer: Tokenizer) -> None:
         self._tokenizer = tokenizer
-        self._docs: Dict[_ScopeKey, Dict[str, Document]] = defaultdict(dict)
-        self._tokens: Dict[_ScopeKey, Dict[str, List[str]]] = defaultdict(dict)
+        self._docs: dict[_ScopeKey, dict[str, Document]] = defaultdict(dict)
+        self._tokens: dict[_ScopeKey, dict[str, list[str]]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
         return StoreType.FULLTEXT
@@ -41,7 +40,7 @@ class InMemoryFulltextStore(FulltextStore):
     def health(self) -> None:
         return None
 
-    def insert(self, scope: Scope, docs: List[Document]) -> None:
+    def insert(self, scope: Scope, docs: list[Document]) -> None:
         key = _skey(scope)
         bucket = self._docs[key]
         for doc in docs:
@@ -50,7 +49,7 @@ class InMemoryFulltextStore(FulltextStore):
             bucket[doc.id] = doc
             self._tokens[key][doc.id] = self._tokenizer.tokenize(doc.text)
 
-    def update(self, scope: Scope, docs: List[Document]) -> None:
+    def update(self, scope: Scope, docs: list[Document]) -> None:
         key = _skey(scope)
         bucket = self._docs[key]
         for doc in docs:
@@ -59,23 +58,23 @@ class InMemoryFulltextStore(FulltextStore):
             bucket[doc.id] = doc
             self._tokens[key][doc.id] = self._tokenizer.tokenize(doc.text)
 
-    def delete(self, scope: Scope, ids: List[str]) -> None:
+    def delete(self, scope: Scope, ids: list[str]) -> None:
         key = _skey(scope)
         for doc_id in ids:
             self._docs[key].pop(doc_id, None)
             self._tokens[key].pop(doc_id, None)
 
-    def get(self, scope: Scope, ids: List[str]) -> List[Document]:
+    def get(self, scope: Scope, ids: list[str]) -> list[Document]:
         bucket = self._docs[_skey(scope)]
         return [bucket[i] for i in ids if i in bucket]
 
-    def search(self, scope: Scope, query: TextQuery) -> List[ScoredID]:
+    def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
         key = _skey(scope)
         q_tokens = self._tokenizer.tokenize(query.text)
         if not q_tokens:
             return []
         q_set = set(q_tokens)
-        scored: List[ScoredID] = []
+        scored: list[ScoredID] = []
         for doc_id, tokens in self._tokens[key].items():
             if not tokens:
                 continue

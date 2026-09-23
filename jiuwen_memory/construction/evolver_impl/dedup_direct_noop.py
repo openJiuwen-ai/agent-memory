@@ -8,7 +8,7 @@ score ≥ dedup_high_similarity 时，仅当候选相对已有记忆无实质差
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.type_def import MemoryUnit
 
@@ -32,7 +32,7 @@ def _events_differ(c_event: datetime, e_event: datetime) -> bool:
         if c_event.tzinfo is None and e_event.tzinfo is None:
             return c_event != e_event
         return True
-    return c_event.astimezone(timezone.utc) != e_event.astimezone(timezone.utc)
+    return c_event.astimezone(UTC) != e_event.astimezone(UTC)
 
 
 def _temporal_conflicts(candidate: MemoryUnit, existing: MemoryUnit) -> bool:

@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
-
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.log import get_logger
@@ -32,10 +30,10 @@ class FixedWindowChunker(Chunker):
         return None
 
     def chunk(
-        self, text: str, unit_id: str = "", metadata: Optional[Dict[str, str]] = None
-    ) -> List[Chunk]:
+        self, text: str, unit_id: str = "", metadata: dict[str, str] | None = None
+    ) -> list[Chunk]:
         meta = dict(metadata or {})
-        chunks: List[Chunk] = []
+        chunks: list[Chunk] = []
         for seq, start in enumerate(range(0, max(len(text), 1), self._size)):
             end = start + self._size
             piece = text[start:end]

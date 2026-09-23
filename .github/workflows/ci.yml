@@ -1,0 +1,55 @@
+# CI：lint（ruff）+ 单元测试（pytest -m unit）。
+# GitCode CI 兼容 GitHub Actions 工作流语法（.github/workflows/*.yml）。
+# 依赖声明见 pyproject.toml：`pip install -e ".[dev]"` 后全量收集与单测运行均无需外部服务。
+name: CI
+
+on:
+  push:
+    branches: [main, mem2.0, develop, stable]
+  pull_request:
+
+jobs:
+  lint:
+    name: ruff check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        # 固定版本：ruff 上游发版可能引入新规则/默认值变化，导致 CI 结果漂移变红。
+        run: python -m pip install "ruff==0.16.8"
+
+      - name: Lint
+        run: ruff check .
+
+  unit-tests:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev extras
+        run: python -m pip install -e ".[dev]"
+
+      # -m unit 前的收集阶段会导入全部测试文件：依赖未声明导致的 collection error
+      # 在这里必然失败，保证「干净环境可收集」成为 CI 必过检查。
+      - name: Run unit tests
+        run: pytest -m unit

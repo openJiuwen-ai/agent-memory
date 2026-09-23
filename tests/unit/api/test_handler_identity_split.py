@@ -52,7 +52,12 @@ class _RecordingApi:
         occurred_at=None,
     ):
         self.add_calls.append(
-            {"scope": scope, "identity": security.auth.actor, "modality": modality, "occurred_at": occurred_at}
+            {
+                "scope": scope,
+                "identity": security.auth.actor,
+                "modality": modality,
+                "occurred_at": occurred_at,
+            }
         )
         return [handler.MemoryUnit(id="unit-1", scope=scope, segments=[Segment(content=content)])]
 

@@ -13,7 +13,7 @@ import json
 import uuid
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import ConflictError, PartialFailureError, ValidationError
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
@@ -82,7 +82,7 @@ class SchemaUpdateCoordinator:
             new.id = str(uuid.uuid4())
             new.supersedes = old.id
             new.lifecycle = LifecycleState.ACTIVE
-        boundary = new.temporal.t_valid if supersede else datetime.now(timezone.utc)
+        boundary = new.temporal.t_valid if supersede else datetime.now(UTC)
         if boundary is None:
             raise ValidationError("Schema update requires a validity boundary")
         related = []
