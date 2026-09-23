@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, matches_memory_unit
 from jiuwen_memory.common.type_def.memory_codec import loads
@@ -16,7 +16,7 @@ def _memory_type(unit: MemoryUnit) -> str:
 
 
 def _sort_key(unit: MemoryUnit) -> tuple[datetime, str]:
-    ingested_at = unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc)
+    ingested_at = unit.temporal.t_ingest or datetime.min.replace(tzinfo=UTC)
     return ingested_at, unit.id
 
 

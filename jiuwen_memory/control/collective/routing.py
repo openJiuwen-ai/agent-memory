@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Sequence
+from collections.abc import Sequence
 
 from jiuwen_memory.common.type_def import MemoryUnit, Segment
 from jiuwen_memory.common.type_def.memory import MEMORY_CLASS_KEY

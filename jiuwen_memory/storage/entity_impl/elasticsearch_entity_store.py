@@ -62,7 +62,8 @@ class ElasticsearchEntityStore(EntityStore):
         self._list_limit = list_limit
         self._number_of_shards = number_of_shards
         self._number_of_replicas = number_of_replicas
-        self._options = options  # SSL 等额外构造参数（ca_certs/verify_certs 由 _build 读 SSL 后传入）
+        self._options = options  # SSL 等额外构造参数
+        # （ca_certs/verify_certs 由 _build 读 SSL 后传入）
         self._client: Any = None
         self._index_ready = False
 

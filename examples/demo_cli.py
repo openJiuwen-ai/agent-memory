@@ -15,6 +15,7 @@ import io
 import logging
 import os
 import sys
+from datetime import UTC
 from importlib import import_module
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -90,7 +91,7 @@ def main() -> int:
 
 def _aux_components() -> None:
     """直接演示不在默认装配里的可选/辅助组件。"""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
     from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
@@ -109,7 +110,7 @@ def _aux_components() -> None:
 
     hr("辅助组件（默认装配外，直接演示）")
 
-    src = TextSource(sc, [("从对话源导入的一条记忆", datetime(2026, 1, 1, tzinfo=timezone.utc))])
+    src = TextSource(sc, [("从对话源导入的一条记忆", datetime(2026, 1, 1, tzinfo=UTC))])
     logger.info("  Source.fetch(): %s", [p.data.decode() for p in src.fetch()])
 
     fs = InMemoryFSStore()

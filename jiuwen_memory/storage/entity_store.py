@@ -30,7 +30,9 @@ class EntityStoreProducer(Factory):
 
 
 class EntityStore(BaseStore):
-    """实体反向索引存储抽象。space_id 作显式第一入参（与 VectorStore/FulltextStore 的 scope 模式不同，见模块 docstring）。"""
+    """实体反向索引存储抽象。space_id 作显式第一入参
+    （与 VectorStore/FulltextStore 的 scope 模式不同，见模块 docstring）。
+    """
 
     @abstractmethod
     def ensure_index(self) -> None:

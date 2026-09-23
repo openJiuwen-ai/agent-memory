@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from inspect import signature
 from types import SimpleNamespace
 
@@ -25,8 +25,8 @@ from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
 from jiuwen_memory.control.pipeline import PipelineBinding
 from tests.unit.construction.test_entity_linker import InMemoryEntityStore
 
-T0 = datetime(2020, 1, 1, tzinfo=timezone.utc)
-T1 = datetime(2025, 1, 1, tzinfo=timezone.utc)
+T0 = datetime(2020, 1, 1, tzinfo=UTC)
+T1 = datetime(2025, 1, 1, tzinfo=UTC)
 
 
 def capture_constructor(monkeypatch, component, **overrides):

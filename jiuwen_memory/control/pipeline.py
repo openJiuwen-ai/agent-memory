@@ -40,10 +40,10 @@ class PipelineBinding:
     """一个 pipeline profile 绑定的一组跨层算子。"""
 
     name: str
-    index_builder: "IndexBuilder"
-    retriever: "Retriever"
-    evolver: "Evolver"
-    classifier: "Classifier | None" = None
+    index_builder: IndexBuilder
+    retriever: Retriever
+    evolver: Evolver
+    classifier: Classifier | None = None
 
 
 class MemoryPipeline(ControlOperator):

@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, List
+from typing import Any
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log
@@ -103,7 +103,7 @@ class LLMRouter(Router):
 
             raise HealthCheckError(str(exc)) from exc
 
-    def route(self, units: List[MemoryUnit], ctx: RouteContext) -> List[RouteDecision]:
+    def route(self, units: list[MemoryUnit], ctx: RouteContext) -> list[RouteDecision]:
         if not units:
             return []
         decisions: list[RouteDecision] = []
@@ -114,8 +114,8 @@ class LLMRouter(Router):
         return decisions
 
     def _route_batch(
-        self, units: List[MemoryUnit], ctx: RouteContext
-    ) -> List[RouteDecision]:
+        self, units: list[MemoryUnit], ctx: RouteContext
+    ) -> list[RouteDecision]:
         messages = [
             ChatMessage(role="system", content=self._system_prompt(ctx)),
             ChatMessage(
@@ -178,7 +178,7 @@ class LLMRouter(Router):
         return results
 
     @staticmethod
-    def _ids_unusable(units: List[MemoryUnit]) -> bool:
+    def _ids_unusable(units: list[MemoryUnit]) -> bool:
         """id 是否不足以比对：任一条为空，或存在重复。"""
         ids = [unit.id for unit in units]
         return not all(ids) or len(set(ids)) != len(ids)

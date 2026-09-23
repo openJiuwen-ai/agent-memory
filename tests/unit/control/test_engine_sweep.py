@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -273,7 +273,7 @@ def test_engine_sweep_expired_forgets_and_cleans_derived_index(unit_factory) -> 
         "expired",
         "expired active",
         lifecycle=LifecycleState.ACTIVE,
-        t_invalid=datetime.now(timezone.utc) - timedelta(days=1),
+        t_invalid=datetime.now(UTC) - timedelta(days=1),
     )
     superseded = unit_factory("superseded", "old version", lifecycle=LifecycleState.SUPERSEDED)
     keep = unit_factory("keep", "still active", lifecycle=LifecycleState.ACTIVE)
@@ -300,7 +300,7 @@ def test_engine_sweep_expired_archived_policy_keeps_derived_index(unit_factory) 
         "expired",
         "expired active",
         lifecycle=LifecycleState.ACTIVE,
-        t_invalid=datetime.now(timezone.utc) - timedelta(days=1),
+        t_invalid=datetime.now(UTC) - timedelta(days=1),
     )
     scope = expired.scope
     kv = InMemoryKVStore()

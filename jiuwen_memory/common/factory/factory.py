@@ -20,7 +20,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from collections.abc import Callable
+from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 
@@ -32,10 +33,10 @@ class Factory:
 
     # 该 Producer 的全局唯一顶层命名空间名（如 "kv_store"）；空=未迁移到新模型
     TOP_NAME: str = ""
-    _registry: Dict[str, Builder]
-    _instances: Dict[str, Any]
-    _subclasses: List[type] = []  # 所有 producer 子类（供 reset_all 统一清缓存）
-    _by_top_name: Dict[str, type] = {}  # TOP_NAME -> producer 子类（供 Config 解析期校验顶层段）
+    _registry: dict[str, Builder]
+    _instances: dict[str, Any]
+    _subclasses: list[type] = []  # 所有 producer 子类（供 reset_all 统一清缓存）
+    _by_top_name: dict[str, type] = {}  # TOP_NAME -> producer 子类（供 Config 解析期校验顶层段）
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -176,6 +177,6 @@ class Factory:
             sub.reset_instances()
 
     @classmethod
-    def known(cls) -> List[str]:
+    def known(cls) -> list[str]:
         """已注册的实现名（排序）。"""
         return sorted(cls._registry)

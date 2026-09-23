@@ -9,7 +9,7 @@ import tempfile
 import time
 import urllib.request
 from contextlib import ExitStack
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_id = _argument_value(args, "--run-id")
     if not run_id:
-        timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+        timestamp = datetime.now(UTC).astimezone().strftime("%Y%m%d-%H%M%S")
         run_id = f"{timestamp}-{uuid4().hex[:8]}"
         args.extend(["--run-id", run_id])
     output_raw = _argument_value(args, "--output-dir")

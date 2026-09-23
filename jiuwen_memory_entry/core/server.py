@@ -55,7 +55,7 @@ class Server:
         return self._runtime.api
 
     @classmethod
-    def build(cls, config: Config, spaces: Any = None) -> "Server":
+    def build(cls, config: Config, spaces: Any = None) -> Server:
         """Assemble a runtime from ``config`` and return a ``cls`` instance.
 
         ``config.settings`` 是合并后的完整配置字典，含 profiles 层自有的 ``profile`` /

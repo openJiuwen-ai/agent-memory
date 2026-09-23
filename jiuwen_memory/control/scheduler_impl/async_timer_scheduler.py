@@ -20,7 +20,7 @@ import time
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.log import (
@@ -463,7 +463,7 @@ class AsyncTimerScheduler(Scheduler):
                     return
 
     def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
 
 # -- 注册到 SchedulerProducer（实现自注册） --------------------------------- #

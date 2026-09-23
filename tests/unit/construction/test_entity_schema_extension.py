@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,11 +44,55 @@ from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import (
     _parse_json_object,
 )
 from jiuwen_memory.construction.index_builder_impl.entity_index_builder import EntityLinkService
+from jiuwen_memory.construction.schema_prompts import (
+    ENTITY_GENERATION_PROMPT,
+    SCHEMA_SELECTION_FOR_GENERATION_PROMPT,
+)
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.types import IndexWriteMode
 
 pytestmark = pytest.mark.unit
+
+
+def test_schema_prompts_keep_high_recall_rules_and_minimal_output_contract() -> None:
+    selection_prompt = SCHEMA_SELECTION_FOR_GENERATION_PROMPT.format(
+        dialogue_text="speaker=Alice: I will perform next month",
+        entity_schema="person: plan_event, default_property",
+    )
+    generation_prompt = (
+        ENTITY_GENERATION_PROMPT.replace("{entity_schema}", "person schema")
+        .replace("{dialogue_timestamp}", "2023-01-20")
+        .replace("{chat_chunk}", "unit_id=source-1")
+    )
+
+    assert "{{" not in selection_prompt
+    assert "false negatives are worse" in selection_prompt
+    assert "Zero fact loss check" in generation_prompt
+    assert '"perform next month"' in generation_prompt
+    assert '"entities"' in generation_prompt
+    assert '"edges":' not in generation_prompt
+    assert '"message_mapping":' not in generation_prompt
+
+
+def test_locomo_person_schema_matches_high_recall_profile() -> None:
+    schema_path = Path(__file__).resolve().parents[3] / "examples" / (
+        "entity_schema_locomo_person.json"
+    )
+    catalog = EntitySchemaCatalog.from_file(schema_path)
+    person = catalog.get("person")
+
+    assert catalog.list_types() == ["person"]
+    assert person is not None
+    assert len(person.dynamic_property) == 42
+    assert {
+        "achievement_event",
+        "business_event",
+        "default_property",
+        "recommendation_given",
+        "skills_event",
+        "travel_event",
+    }.issubset(person.dynamic_property)
 
 
 def _catalog() -> EntitySchemaCatalog:
@@ -325,7 +370,29 @@ def test_rendered_entity_generation_prompt_has_no_escaped_json_braces() -> None:
     assert "{{" not in rendered_prompt
 
 
-def test_partial_event_time_does_not_create_private_temporal_metadata() -> None:
+@pytest.mark.parametrize(
+    ("property_time", "expected_precision", "expected_start", "expected_end"),
+    [
+        (
+            "2023",
+            "year",
+            "2023-01-01T00:00:00+00:00",
+            "2024-01-01T00:00:00+00:00",
+        ),
+        (
+            "2023-08",
+            "month",
+            "2023-08-01T00:00:00+00:00",
+            "2023-09-01T00:00:00+00:00",
+        ),
+    ],
+)
+def test_partial_event_time_uses_half_open_metadata_interval(
+    property_time: str,
+    expected_precision: str,
+    expected_start: str,
+    expected_end: str,
+) -> None:
     source = _source()
     response = json.dumps(
         {
@@ -336,8 +403,8 @@ def test_partial_event_time_does_not_create_private_temporal_metadata() -> None:
                     "properties": [
                         {
                             "property_name": "occupation",
-                            "value": "Alice became an engineer in 2023-08",
-                            "time": "2023-08",
+                            "value": f"Alice became an engineer in {property_time}",
+                            "time": property_time,
                             "source_unit_ids": [source.id],
                         }
                     ],
@@ -354,8 +421,227 @@ def test_partial_event_time_does_not_create_private_temporal_metadata() -> None:
 
     assert len(units) == 1
     assert units[0].temporal.t_event is None
-    assert not any(key.startswith("schema_event_time") for key in units[0].system_metadata)
+    assert units[0].system_metadata["schema_event_precision"] == expected_precision
+    assert units[0].system_metadata["schema_event_start"] == expected_start
+    assert units[0].system_metadata["schema_event_end"] == expected_end
     assert units[0].user_metadata == {"dataset": "test"}
+
+
+def test_undated_property_content_carries_source_message_date_without_event_time() -> None:
+    source = _source()
+    source.temporal = Temporal(t_message=datetime(2023, 8, 4, tzinfo=UTC))
+    response = _property_response(source.id)
+    extractor = EntitySchemaExtractor(
+        llm=_ConstantResponseLLM(response),
+        schema=_catalog(),
+    )
+
+    unit = extractor.extract([source])[0]
+
+    assert unit.content == (
+        "Alice is an engineer (Source message date: 2023-08-04; property event time: not stated.)"
+    )
+    assert unit.temporal.t_message == source.temporal.t_message
+    assert unit.temporal.t_event is None
+    assert "schema_event_precision" not in unit.system_metadata
+
+
+def _dated_source(unit_id: str, date: str, content: str) -> MemoryUnit:
+    source = _source(unit_id)
+    source.temporal = Temporal(t_message=datetime.fromisoformat(date).replace(tzinfo=UTC))
+    source.segments = [Segment(content=f"speaker=Alice: {content}")]
+    return source
+
+
+def _extract_relative_property(
+    sources: list[MemoryUnit], value: str, property_time: str
+) -> list[MemoryUnit]:
+    response = json.loads(_property_response(sources[0].id, property_name="default_property"))
+    prop = response["entities"][0]["properties"][0]
+    prop.update(
+        value=value,
+        time=property_time,
+        source_unit_ids=[source.id for source in sources],
+    )
+    extractor = EntitySchemaExtractor(
+        llm=_ConstantResponseLLM(json.dumps(response)),
+        schema=_catalog(),
+        validation_attempts=1,
+    )
+    return extractor.extract(sources)
+
+
+@pytest.mark.parametrize(
+    ("message_date", "source_text", "value", "property_time", "expected_day"),
+    [
+        (
+            "2023-08-04", "上个月15号去了医院",
+            "On 2023-07-15 (上个月15号), Alice went to hospital",
+            "2023-07-15", "2023-07-15",
+        ),
+        (
+            "2023-08-04", "上个月15号去了医院",
+            "On 2023-07-15 (上个月15号), Alice went to hospital",
+            "2023-07", None,
+        ),
+        (
+            "2023-07-15", "上周五去了医院", "On 2023-07-07 (上周五), Alice went to hospital",
+            "2023-07-07", "2023-07-07",
+        ),
+        (
+            "2023-07-15", "last week on Friday I went to hospital",
+            "On 2023-07-07 (last week on Friday), Alice went to hospital",
+            "2023-07-07", "2023-07-07",
+        ),
+        (
+            "2023-07-15", "last Friday I went to hospital",
+            "On 2023-07-14 (last Friday), Alice went to hospital",
+            "2023-07-14", "2023-07-14",
+        ),
+    ],
+)
+def test_specific_relative_time_preserves_supported_precision(
+    message_date: str,
+    source_text: str,
+    value: str,
+    property_time: str,
+    expected_day: str | None,
+) -> None:
+    source = _dated_source("dated-source", message_date, source_text)
+
+    unit = _extract_relative_property([source], value, property_time)[0]
+
+    assert unit.source_ref == source.id
+    assert unit.temporal.t_event == (
+        datetime.fromisoformat(expected_day).replace(tzinfo=UTC)
+        if expected_day else None
+    )
+    if expected_day is None:
+        assert unit.system_metadata["schema_event_precision"] == "month"
+
+
+@pytest.mark.parametrize("property_time", ["2023-07-20", "2023-07"])
+def test_month_day_rejects_a_conflicting_date_even_with_coarse_time(property_time: str) -> None:
+    source = _dated_source("dated-source", "2023-08-04", "上个月15号去了医院")
+    value = "On 2023-07-20 (上个月15号), Alice went to hospital"
+
+    with pytest.raises(InvalidSchemaExtractionError):
+        _extract_relative_property([source], value, property_time)
+
+
+def test_relative_time_uses_the_source_with_matching_expression() -> None:
+    unrelated = _dated_source("unrelated", "2023-01-20", "hello there")
+    supporting = _dated_source("supporting", "2023-03-01", "I will perform tomorrow")
+
+    unit = _extract_relative_property(
+        [unrelated, supporting], "On 2023-03-02 (tomorrow), Alice will perform", "2023-03-02"
+    )[0]
+
+    assert unit.source_ref == supporting.id
+    assert unit.temporal.t_message == supporting.temporal.t_message
+    assert unit.provenance == [unrelated.id, supporting.id]
+
+
+def test_relative_time_cannot_borrow_date_from_unrelated_source() -> None:
+    unrelated = _dated_source("unrelated", "2023-01-20", "hello there")
+    supporting = _dated_source("supporting", "2023-03-01", "I will perform tomorrow")
+
+    with pytest.raises(InvalidSchemaExtractionError):
+        _extract_relative_property(
+            [unrelated, supporting], "On 2023-01-21 (tomorrow), Alice will perform", "2023-01-21"
+        )
+
+
+def test_conflicting_relative_source_dates_require_correction() -> None:
+    early = _dated_source("early", "2023-01-20", "I will perform tomorrow")
+    late = _dated_source("late", "2023-03-01", "I will perform tomorrow")
+
+    with pytest.raises(InvalidSchemaExtractionError):
+        _extract_relative_property(
+            [early, late], "On 2023-03-02 (tomorrow), Alice will perform", "2023-03-02"
+        )
+
+
+def test_bare_just_is_undated_but_just_now_requires_an_event_time() -> None:
+    emphatic = _dated_source("emphatic", "2023-08-04", "I just like pizza")
+    immediate = _dated_source("immediate", "2023-08-04", "I moved just now")
+
+    unit = _extract_relative_property([emphatic], "Alice just likes pizza", "")[0]
+    assert unit.temporal.t_event is None
+    with pytest.raises(InvalidSchemaExtractionError):
+        _extract_relative_property([immediate], "Alice moved just now", "")
+
+
+def test_relative_event_time_selects_the_supporting_primary_source() -> None:
+    early = _source("source-early")
+    early.segments = [Segment(content="speaker=Alice: I am rehearsing after work")]
+    early.temporal = Temporal(t_message=datetime(2023, 1, 1, tzinfo=UTC))
+    supporting = _source("source-supporting")
+    supporting.segments = [
+        Segment(content="speaker=Alice: I will perform at the festival next month")
+    ]
+    supporting.temporal = Temporal(t_message=datetime(2023, 1, 20, tzinfo=UTC))
+    response = json.dumps(
+        {
+            "entities": [
+                {
+                    "name": "Alice",
+                    "entity_type": "person",
+                    "properties": [
+                        {
+                            "property_name": "default_property",
+                            "value": (
+                                "In 2023-02 (next month from 2023-01-20), Alice will perform "
+                                "at the festival"
+                            ),
+                            "time": "2023-02",
+                            "source_unit_ids": [early.id, supporting.id],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    extractor = EntitySchemaExtractor(
+        llm=_ConstantResponseLLM(response),
+        schema=_catalog(),
+    )
+
+    unit = extractor.extract([early, supporting])[0]
+
+    assert unit.source_ref == supporting.id
+    assert unit.temporal.t_message == supporting.temporal.t_message
+    assert "next month from 2023-01-20" in unit.content
+
+
+def test_inconsistent_property_time_is_rejected_instead_of_silently_repaired() -> None:
+    source = _source()
+    response = json.dumps(
+        {
+            "entities": [
+                {
+                    "name": "Alice",
+                    "entity_type": "person",
+                    "properties": [
+                        {
+                            "property_name": "default_property",
+                            "value": "On 2023-08-03, Alice started a new job",
+                            "time": "2022-08",
+                            "source_unit_ids": [source.id],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    extractor = EntitySchemaExtractor(
+        llm=_ConstantResponseLLM(response),
+        schema=_catalog(),
+        validation_attempts=1,
+    )
+
+    with pytest.raises(InvalidSchemaExtractionError, match="inconsistent with value times"):
+        extractor.extract([source])
 
 
 def test_schema_property_does_not_inherit_previous_schema_state() -> None:
@@ -529,7 +815,7 @@ class _Storage:
     def has_graph(name: str = "default") -> bool:
         return False
 
-    def kv(self, name: str = "default") -> "_Storage":
+    def kv(self, name: str = "default") -> _Storage:
         return self
 
     def get(self, scope, key):
@@ -951,5 +1237,3 @@ def test_schema_enabled_assembly_runs_source_first_property_extraction(monkeypat
     assert property_unit.system_metadata["schema_entity_type"] == "user"
     assert property_unit.system_metadata["schema_property_name"] == "position_event"
     assert property_unit.temporal.t_event is not None
-    assert "schema_entity_id" not in property_unit.system_metadata
-    assert "schema_entity_key" not in property_unit.system_metadata
