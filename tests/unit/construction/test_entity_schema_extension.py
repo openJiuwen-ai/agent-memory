@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -429,7 +429,7 @@ def test_partial_event_time_uses_half_open_metadata_interval(
 
 def test_undated_property_content_carries_source_message_date_without_event_time() -> None:
     source = _source()
-    source.temporal = Temporal(t_message=datetime(2023, 8, 4, tzinfo=timezone.utc))
+    source.temporal = Temporal(t_message=datetime(2023, 8, 4, tzinfo=UTC))
     response = _property_response(source.id)
     extractor = EntitySchemaExtractor(
         llm=_ConstantResponseLLM(response),
@@ -448,7 +448,7 @@ def test_undated_property_content_carries_source_message_date_without_event_time
 
 def _dated_source(unit_id: str, date: str, content: str) -> MemoryUnit:
     source = _source(unit_id)
-    source.temporal = Temporal(t_message=datetime.fromisoformat(date).replace(tzinfo=timezone.utc))
+    source.temporal = Temporal(t_message=datetime.fromisoformat(date).replace(tzinfo=UTC))
     source.segments = [Segment(content=f"speaker=Alice: {content}")]
     return source
 
@@ -513,7 +513,7 @@ def test_specific_relative_time_preserves_supported_precision(
 
     assert unit.source_ref == source.id
     assert unit.temporal.t_event == (
-        datetime.fromisoformat(expected_day).replace(tzinfo=timezone.utc)
+        datetime.fromisoformat(expected_day).replace(tzinfo=UTC)
         if expected_day else None
     )
     if expected_day is None:
@@ -575,12 +575,12 @@ def test_bare_just_is_undated_but_just_now_requires_an_event_time() -> None:
 def test_relative_event_time_selects_the_supporting_primary_source() -> None:
     early = _source("source-early")
     early.segments = [Segment(content="speaker=Alice: I am rehearsing after work")]
-    early.temporal = Temporal(t_message=datetime(2023, 1, 1, tzinfo=timezone.utc))
+    early.temporal = Temporal(t_message=datetime(2023, 1, 1, tzinfo=UTC))
     supporting = _source("source-supporting")
     supporting.segments = [
         Segment(content="speaker=Alice: I will perform at the festival next month")
     ]
-    supporting.temporal = Temporal(t_message=datetime(2023, 1, 20, tzinfo=timezone.utc))
+    supporting.temporal = Temporal(t_message=datetime(2023, 1, 20, tzinfo=UTC))
     response = json.dumps(
         {
             "entities": [
