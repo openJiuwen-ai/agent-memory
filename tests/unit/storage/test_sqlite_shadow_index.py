@@ -61,7 +61,6 @@ from jiuwen_memory.storage.types import ScoredID, TextQuery
 _content_of = SqliteDocumentShadowIndex._content_of
 _content_hash = SqliteDocumentShadowIndex._content_hash
 _project_of = SqliteDocumentShadowIndex._project_of
-_projects_from_filters = SqliteDocumentShadowIndex._projects_from_filters
 _has_project_predicate = SqliteDocumentShadowIndex._has_project_predicate
 _category_of = SqliteDocumentShadowIndex._category_of
 _md_filename_of = SqliteDocumentShadowIndex._md_filename_of
@@ -231,28 +230,7 @@ def test_vec_to_blob_is_little_endian_float32() -> None:
     assert _vec_to_blob(vec) == struct.pack("<3f", 1.0, -2.5, 3.0)
 
 
-# -- projects 从 filters 收集 ------------------------------------------------- #
-
-
-def test_projects_from_filters_collects_and_dedups() -> None:
-    filters = FilterGroup(
-        FilterLogic.AND,
-        [
-            FilterClause("system_metadata.project", FilterOp.IN, ["p1", "p2"]),
-            FilterClause("system_metadata.project", FilterOp.IN, ["p2", ""]),
-        ],
-    )
-    # 空串保留：跨项目可见记忆的 project 列值，IN ('', value) 命中空串行
-    assert _projects_from_filters(filters) == ["p1", "p2", ""]
-
-
-def test_projects_from_filters_defaults_when_no_project_predicate() -> None:
-    # 无 project 谓词 → 兜底 [""]（只召回空串行=跨项目可见记忆）
-    assert _projects_from_filters(None) == [""]
-    assert _projects_from_filters(FilterClause("user_metadata.x", FilterOp.EQ, "v")) == [""]
-
-
-# -- project 谓词走编译路径保留 AND/OR（替代 _projects_from_filters 平铺）--------- #
+# -- project 谓词走编译路径保留 AND/OR ----------------------------------------- #
 
 
 def test_project_predicate_compiled_preserves_and_semantics() -> None:

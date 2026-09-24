@@ -192,7 +192,7 @@ def _t_event_of(unit: MemoryUnit) -> int:
 # 索引级生效」的前置谓词下推（predicate_builder.build_system_filters），点读后
 # ``is_retrieval_candidate`` 仍作纵深防御兜底。
 #
-# project 走编译路径而非 ``_projects_from_filters`` 平铺集合：旧实现把过滤树里
+# project 走编译路径而非旧平铺集合（已移除的 ``_projects_from_filters``）：旧实现把过滤树里
 # 所有 project 谓词值 ``iter_clauses`` 平铺进单一集合（丢 AND/OR），
 # 导致「系统收窄 p1 AND 用户过滤 p2）被降级成 OR 并集（p2 越权泄露）。
 # 改走编译路径后 project 谓词与 ``_project_col IN ('', value)`` 或 ``project = value``
@@ -240,7 +240,7 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
     系统谓词可下推。
 
     project 走此路径保留 AND/OR 语义（见 ``_SYSTEM_PREDICATE_COLUMNS`` 注释），
-    替代旧 ``_projects_from_filters`` 的平铺集合下推——后者把多条 project 谓词
+    替代已移除的旧 ``_projects_from_filters`` 平铺集合下推——后者把多条 project 谓词
     合并成单一 ``IN (...)`` 丢失逻辑关系，让系统收窄与用户冲突值时的 AND 降级成 OR。
     """
     if expr is None:
@@ -487,41 +487,6 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         return any(
             c.field == _PROJECT_FILTER_FIELD for c in iter_clauses(filters)
         )
-
-    @staticmethod
-    def _projects_from_filters(filters) -> list[str]:
-        """[已废弃] 从召回谓词平铺收集 project 值（丢 AND/OR，详见 ``_SYSTEM_PREDICATE_COLUMNS``）。
-
-        已被 ``_compile_system_filters`` 统一编译路径替代——后者保留 AND/OR 语义。
-        保留函数体仅为既有测试（``test_projects_from_filters_*``）兼容；召回路径不再调用。
-        """
-        values: list[str] = []
-        seen: set[str] = set()
-        for clause in iter_clauses(filters):
-            if clause.field != _PROJECT_FILTER_FIELD:
-                continue
-            raw = clause.value
-            items = raw if isinstance(raw, (list, tuple)) else [raw]
-            for item in items:
-                v = str(item or "").strip()
-                if v not in seen:
-                    seen.add(v)
-                    values.append(v)
-        values: list[str] = []
-        seen: set[str] = set()
-        for clause in iter_clauses(filters):
-            if clause.field != _PROJECT_FILTER_FIELD:
-                continue
-            raw = clause.value
-            items = raw if isinstance(raw, (list, tuple)) else [raw]
-            for item in items:
-                v = str(item or "").strip()
-                if v not in seen:
-                    seen.add(v)
-                    values.append(v)
-        if not values:
-            return [_DEFAULT_PROJECT]
-        return values
 
     @staticmethod
     def _category_of(unit: MemoryUnit) -> str:
@@ -873,14 +838,14 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     def search_fulltext(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
         """FTS5 倒排召回，BM25 排序。project 谓词经 ``_compile_system_filters`` 编译下推
-        （保留 AND/OR 语义，替代旧 ``_projects_from_filters`` 平铺集合）。
+        （保留 AND/OR 语义，替代已移除的旧平铺集合）。
 
         project 谓词取自 ``query.filters`` 里的 ``system_metadata.project``（上层 coords
         折算下推）：单条 ``IN ["", value]`` 编译成 ``project IN ('', value)``——一条 SQL
         同时搜当前 project + 默认 project（跨项目可见的空串行 + 本项目行），与旧路径等价。
         多条 project 谓词（系统收窄 AND 用户过滤）按 AND/OR 逻辑编译，不再降级成 OR 并集。
         无 project 谓词（未带 coords）→ 兜底 ``project = ''``，只召回跨项目可见的空串行
-        （保留旧 ``_projects_from_filters`` 无谓词返 ``[""]`` 的语义，避免放宽成全库召回）。
+        （保留旧平铺路径无谓词返 ``[""]`` 的语义，避免放宽成全库召回）。
         category 维度不在召回 SQL 过滤——若需按类别收窄，上层应通过 query.filters 显式传
         category 谓词。
 

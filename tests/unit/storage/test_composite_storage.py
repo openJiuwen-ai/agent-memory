@@ -401,12 +401,8 @@ def test_document_mode_update_finds_md_via_old_when_new_unit_lacks_md_filename(t
     storage = _doc_storage(tmp_path)
     storage.add(scope, [_doc_unit(scope, "u1", "old content")])
 
-    md_module = __import__(
-        "jiuwen_memory.storage.markdown_impl.local_markdown_store",
-        fromlist=["LocalMarkdownStore"],
-    )
     calls: list[tuple] = []
-    orig = md_module.LocalMarkdownStore.replace_content
+    orig = LocalMarkdownStore.replace_content
 
     def spy(self, scope_arg, md_filename, old_content, new_content):
         calls.append((md_filename, old_content, new_content))
@@ -419,11 +415,11 @@ def test_document_mode_update_finds_md_via_old_when_new_unit_lacks_md_filename(t
         id=old.id, scope=old.scope, segments=[Segment(content="new content")],
         system_metadata=new_meta,
     )
-    md_module.LocalMarkdownStore.replace_content = spy
+    LocalMarkdownStore.replace_content = spy
     try:
         storage.update(scope, [new_unit])
     finally:
-        md_module.LocalMarkdownStore.replace_content = orig
+        LocalMarkdownStore.replace_content = orig
 
     # md.replace_content 被调用（从 old 取到 md_filename，未被守卫跳过）
     assert calls and calls[0][0] == "memory/p1/MEMORY.md"
@@ -445,12 +441,8 @@ def test_document_mode_supersede_finds_md_via_old_when_new_unit_lacks_md_filenam
     storage = _doc_storage(tmp_path)
     storage.add(scope, [_doc_unit(scope, "u1", "stable content")])
 
-    md_module = __import__(
-        "jiuwen_memory.storage.markdown_impl.local_markdown_store",
-        fromlist=["LocalMarkdownStore"],
-    )
     calls: list[tuple] = []
-    orig = md_module.LocalMarkdownStore.remove_content
+    orig = LocalMarkdownStore.remove_content
 
     def spy(self, scope_arg, md_filename, content):
         calls.append((md_filename, content))
@@ -464,11 +456,11 @@ def test_document_mode_supersede_finds_md_via_old_when_new_unit_lacks_md_filenam
         lifecycle=LifecycleState.SUPERSEDED,
     )
     # composite 内部 L281 重新从 shadow 读 old（add 后默认 ACTIVE），SUPERSEDE 判定成立
-    md_module.LocalMarkdownStore.remove_content = spy
+    LocalMarkdownStore.remove_content = spy
     try:
         storage.update(scope, [new_unit])
     finally:
-        md_module.LocalMarkdownStore.remove_content = orig
+        LocalMarkdownStore.remove_content = orig
 
     assert calls and calls[0][0] == "memory/p1/MEMORY.md"
     assert calls[0][1] == "stable content"

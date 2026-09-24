@@ -98,16 +98,16 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 **CRUD 语义**（对齐 KVStore 惯例）：
 
 - `insert_units`：unit_id 已存在抛 `ConflictError`；同事务写全量 + FTS5 + vec0。
-- `update_units`：id 不存在抛 `NotFoundError`；按 `content_hash` 变化判定投影重建——content 改（OVERWRITE）→ 重建倒排 + 向量；只改状态字段（SUPERSEDE）→ 只覆写 `unit_json`。投影列（lifecycle 等）无论 hash 是否变都覆写（谓词下推依赖）。重建走 DELETE + INSERT 而非原地 UPDATE（vec0 无 UPDATE 语义，FTS5 原地行为依赖实现版本）。**投影列空兜底守卫**：coords 是 TRANSIENT 键（dumps 剥除），读回的 unit 永远没有 coords → `_project_of` 落 default；若不守卫，任何 read-modify-write 循环（SUPERSEDE / dedup / LifecycleManager）都会把原 project 重置为 default，下次按 project 隔离召回即丢失。project / md_filename / category 取到兜底值时保留旧列值。
+- `update_units`：id 不存在抛 `NotFoundError`；按 `content_hash` 变化判定投影重建——content 改（OVERWRITE）→ 重建倒排 + 向量；只改状态字段（SUPERSEDE）→ 只覆写 `unit_json`。投影列（lifecycle 等）无论 hash 是否变都覆写（谓词下推依赖）。重建走 DELETE + INSERT 而非原地 UPDATE（vec0 无 UPDATE 语义，FTS5 原地行为依赖实现版本）。**投影列空兜底守卫**：coords 是 TRANSIENT 键（dumps 剥除），读回的 unit 永远没有 coords → `_project_of` 落 default；若不守卫，任何 read-modify-write 循环（SUPERSEDE / dedup / LifecycleManager）都会把原 project 重置为 default，下次按 project 隔离召回即丢失。project / md_filename / category 取到兜底值时保留旧列值。**守卫值回填 `unit.system_metadata`**：守卫只把旧值兜进投影列局部变量还不够——`dumps(unit)` 序列化的 `unit_json` 会丢键，`get_units` 读回不带键 → 下一轮 read-modify-write 的 `old` 也不带键（传染性丢失）。`md_filename` 守卫后回填进 `unit.system_metadata[MD_FILENAME_KEY]`（落盘键，不在 TRANSIENT 集合），让 `unit_json` 与投影列一致、读回带键、根除传染；就地 mutate 入参 unit（与 `md.write` 回填同款模式），composite update 因与 shadow 同引用、shadow 在 md 调用之前执行而能从 `unit.system_metadata` 取到。
 - `delete_units`：幂等（缺失静默跳过），同事务显式删三表（rowid 关联无级联）。
 - `get_units`：缺失 id 省略不抛错（服务召回物化，命中 id 中途被删应跳过而非整批失败），按输入顺序保序返回。
 - `list_units`：全量拉 `(unit_id, unit_json bytes)`，过滤/排序/分页交上层复用 `list_memory_entries`（与 KV `scan→list` 同构）。
 
-**召回（`search_fulltext` / `search_vector`）**，单批按 project 过滤下推（路径甲：召回只看 project 过滤条件，不再按 category 分批）：
+**召回（`search_fulltext` / `search_vector`）**，project 谓词经 `_compile_system_filters` 编译下推（保留 AND/OR 语义）：
 
-`project IN (...)` 取自 `query.filters` 里的 `system_metadata.project` 谓词（上层 coords 折算下推，`_projects_from_filters` 深度遍历收集、滤空串）：带 coords 时为 `['', value]`（空串行=跨项目可见 + 本项目行），不带 coords 时为 `['']`（只召回跨项目可见的空串行）；无该谓词落 `default`——失效方向是放宽，与坐标缺项语义一致。category 维度不再在召回 SQL 过滤——若需按类别收窄，上层应通过 `query.filters` 显式传 category 谓词。**隔离不走 Scope 字段**：影子索引的 `scope` 入参仅作签名占位对齐契约，写入不落 scope 列。
+project 谓词取自 `query.filters` 里的 `system_metadata.project`（上层 coords 折算下推，`_narrow_predicates` 产 `IN ["", value]`），与其他系统谓词（lifecycle/t_valid/t_invalid/t_event）一起经 `_compile_system_filters` 统一编译成保留 AND/OR 逻辑的 SQL WHERE 下推。单条 `IN ["", value]` 编译成 `project IN ('', value)`——一条 SQL 同时搜当前 project + 默认 project（跨项目可见的空串行 + 本项目行）。多条 project 谓词（系统收窄 AND 用户过滤）按 AND/OR 逻辑编译，不再降级成 OR 并集（已移除的旧平铺路径把多谓词值合并成单一 `IN (...)` 丢 AND/OR，会让「系统收窄 p1 AND 用户 p2」泄露 p2）。无 project 谓词（未带 coords）→ 兜底追加 `project = ''`，只召回跨项目可见的空串行（保留旧无谓词只返空串行语义，避免放宽成全库召回）。category 维度不在召回 SQL 过滤——若需按类别收窄，上层应通过 `query.filters` 显式传 category 谓词。**隔离不走 Scope 字段**：影子索引的 `scope` 入参仅作签名占位对齐契约，写入不落 scope 列。
 
-系统前置谓词（lifecycle/t_valid/t_invalid/t_event）经 `_compile_system_filters` 编译成 SQL WHERE 索引级下推（对齐非文档流程 `build_system_filters`）；OR 组含无约束 child 整体放弃下推、NOT 不产生（点读后 `is_retrieval_candidate` 复核兜底）。
+系统前置谓词（lifecycle/t_valid/t_invalid/t_event/project）经 `_compile_system_filters` 统一编译成保留 AND/OR 的 SQL WHERE 索引级下推（对齐非文档流程 `build_system_filters`）；OR 组含无约束 child 整体放弃下推、NOT 不产生（点读后 `is_retrieval_candidate` 复核兜底）。
 
 FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（jieba）预分词成空格分隔 token 串，unicode61 按空格切分即还原 token；查询侧同样先分词再 MATCH，且 token 间用 **OR 连接**（FTS5 空格是隐式 AND，自然语言查询带疑问词/停用词会让整条 0 命中）。向量召回是 post-filter：按 `k * _DEFAULT_OVERSAMPLE` 过采样兜底召回不足（project 隔离度高时 post-filter 召回不足，§4.4.3）。
 
@@ -133,12 +133,16 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 | 方法 | 正常顺序 | 失败点 | 补偿动作 | 补偿数据来源 |
 |---|---|---|---|---|
 | `add` | `md.write` → `shadow.insert_units` | `shadow.insert_units` 抛错 | 反向循环 `md.remove_content(scope, md_filename, content)` 删 `md.write` 刚写的块 | `unit.system_metadata[MD_FILENAME_KEY]`（md.write 已回填）+ `segments[0].content` |
-| `update` | `get_units(old)` → `shadow.update_units(new)` → `md.replace/remove_content` | `md.*` 抛错 | `shadow.update_units([old])` 把该 unit 改回旧值（content_hash 还原，投影按 hash 变化自动重建回旧态；SUPERSEDE 场景只覆写 unit_json 还原 lifecycle） | `olds[0]`（update_units 之前已 `shadow.get_units` 取的旧快照） |
-| `delete` | `get_units(olds)` → `shadow.delete_units` → 循环 `md.remove_content` | 某个 `md.remove_content` 抛错 | `shadow.insert_units(olds)` 把删的 unit 全部插回（delete 后 id 已释放，insert 不冲突，新 rowid 自洽） | `olds`（delete_units 之前已 `shadow.get_units` 取的旧快照） |
+| `update` | `get_units(old)` → `shadow.update_units(new)` → `md.replace/remove_content` | `md.*` 抛错 | `shadow.update_units([old])` 把该 unit 改回旧值（content_hash 还原，投影按 hash 变化自动重建回旧态；SUPERSEDE 场景只覆写 unit_json 还原 lifecycle）；md 侧由 `replace_content`/`remove_content` 自身 `_safe_restore` 原子写恢复调用前字节态（单块覆盖，无需额外 md 回写） | `olds[0]`（update_units 之前已 `shadow.get_units` 取的旧快照） |
+| `delete` | `get_units(olds)` → `shadow.delete_units` → 循环 `md.remove_content` | 某个 `md.remove_content` 抛错 | `shadow.insert_units(olds)` 把删的 unit 全部插回 + `md.restore_blocks(removed)` 把循环中已成功删除的块按 `md_filename` 追加回 | `olds`（delete_units 之前已 `shadow.get_units` 取的旧快照）；`removed`（循环中成功 `remove_content` 后记录的已删 unit） |
 
-补偿范围：`add` 补偿整个 batch 的 md 块（`md.write` 批量写，失败在 `shadow.insert_units`，所有刚写的块都反向删）；`update` 逐 unit 处理，补偿仅限失败的那个 unit（for 循环里失败即抛出退出，前面成功的 unit 的 md 与 shadow 已一致无需动）；`delete` 补偿整个 `olds`（`shadow.delete_units` 批量一次性删，失败在后续循环 md，回滚须把删的全部插回）。
+补偿范围：`add` 补偿整个 batch 的 md 块（`md.write` 批量写，失败在 `shadow.insert_units`，所有刚写的块都反向删）；`update` 逐 unit 处理，补偿仅限失败的那个 unit（for 循环里失败即抛出退出，前面成功的 unit 的 md 与 shadow 已一致无需动）；`delete` 补偿整个 `olds`（`shadow.delete_units` 批量一次性删，失败在后续循环 md，回滚须把删的全部插回）+ 已成功删除的 md 块（`md.restore_blocks` 按 `md_filename` 追加回，绕过 `md.write` 的 `_md_path`——读回的 unit coords 被 `dumps` 剥除，`_md_path` 落空 project 路径错位）。
+
+**update/delete 的 md_filename 取自 old**：`md.replace_content`/`md.remove_content` 定位文件用的 `md_filename` 从 `old.system_metadata` 取（不从 new `unit.system_metadata` 取）。md_filename 是不可变内部路径（写入时确定，update/delete 改 content/lifecycle 不改归属），从 old 取即"保留旧路径"，不依赖调用方每次重建对象都带回该键——上游 evolver dedup 多源交集（`inherited_system_metadata`）会丢键，从 new 取会让 md 调用被 `if md_filename:` 守卫静默跳过（md 与 shadow 漂移）。`old` 在 `if old is None: continue` 守卫之后必非 None。
 
 **重要边界**：`update` 的两个 md 分支（`replace_content` / `remove_content`）当前"未命中返 False 不抛错"（软失败，交看门狗对账）。补偿**只在 md 调用抛异常时触发**（IO 错误等硬失败），返 False 不触发补偿（那种情况 shadow 已改、md 仅块没找到，不构成需回滚的漂移）。
+
+**md 侧原子写**（`replace_content` / `remove_content` 的 `_safe_restore`）：`open("w")` 截断重写中 `write` 抛错会让旧内容永久丢失——上层补偿（回滚 shadow）救不回 md，"异常等价于未发生"对 md 侧落空。两方法的 `open("w")+write` 包进 try，写失败时先 `_safe_restore(abs_path, text)` 回写读出的旧全文恢复调用前字节态，再重新抛原异常。`_safe_restore` 自身失败只记 warning 不抛（避免掩盖原异常），md 残缺漂移交看门狗。单块 `remove_content` 的写失败由自身原子写恢复；delete 多块循环的中途失败（前 N-1 块已真删、第 N 块抛错）不在单块原子写范围内，由 delete 补偿的 `md.restore_blocks(removed)` 显式回写已删块。
 
 **补偿失败处理**：补偿动作抛错用内层 try/except 吞掉（记 warning），不掩盖原异常。补偿失败 = 原异常照常抛 + md/shadow 漂移留下，交看门狗后续对账（当前看门狗按 content_hash 回灌新 UUID，是已知遗留，见已知遗留「写失败补偿的残留风险」）。补偿动作在 `open_write_window()`/`close_write_window()` 的 try/finally 内执行——补偿期间窗口仍开着，挡住看门狗对补偿过程的并发观察；`finally` 关窗后才放行看门狗对最终状态对账。
 
@@ -254,7 +258,7 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 - **`ShadowRecaller` 模块 docstring 自称「接口骨架」**：与实现现状不符——fulltext/vector/RRF 均已落地，注释滞后待清理。
 - **graph / entity 检索未接文档模式**：graph 路按端口就绪并存；entity 扩展未接（构造器持有的 `_storage` 预留点读真源能力）。
 - **`list_units` 全量拉取**：大表场景全量载入内存过滤分页，与 KV scan 同构但无分页下推；数据量大后需考虑 SQL 级分页。
-- **写失败补偿的残留风险**：三处文档路径加失败补偿（add 反向删 md 块 / update 回滚 shadow / delete 回插 shadow），但补偿路径的 `remove_content`/`replace_content` 仍按 content 首次匹配（受「replace_content / remove_content 首个命中」同款限制），且补偿本身失败无 reconcile 兜底（补偿抛错吞掉、原异常抛出，md/shadow 漂移交看门狗）。彻底闭环需 md 块引入 unit_id 锚点 + 看门狗改 unit_id reconcile（见后续演进）。
+- **写失败补偿的残留风险**：三处文档路径已加失败补偿——`add` 反向删 md 块；`update` 回滚 shadow（md 侧靠 `replace_content`/`remove_content` 自身原子写 `_safe_restore` 恢复调用前字节态）；`delete` 回插 shadow + `md.restore_blocks(removed)` 按 `md_filename` 回写已删块（绕过 `md.write` 的 `_md_path`——读回 unit 的 coords 被 `dumps` 剥除会错算路径）。仍残留：① 补偿路径的 `remove_content`/`replace_content`/`restore_blocks` 均按 content 首次匹配（受「replace_content / remove_content 首个命中」同款限制，重复 content 误删/误改）；② `_safe_restore` 自身失败只记 warning 不抛（md 残缺漂移交看门狗）；③ 补偿整体失败（shadow 回滚失败 + md restore_blocks 失败）无 reconcile 兜底（补偿抛错吞掉、原异常抛出，md/shadow 漂移交看门狗）。彻底闭环需 md 块引入 unit_id 锚点 + 看门狗改 unit_id reconcile（见后续演进）。
 
 ## 后续演进
 
