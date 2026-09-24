@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -8,7 +8,14 @@ from jiuwen_memory.api import DeleteMode, DeleteSelector, MemoryPatch, Scope
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.security.legacy import legacy_request_context
-from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit, Modality, Segment, Temporal, memory_key
+from jiuwen_memory.common.type_def import (
+    MemoryTier,
+    MemoryUnit,
+    Modality,
+    Segment,
+    Temporal,
+    memory_key,
+)
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
@@ -18,8 +25,8 @@ def test_get_as_of_returns_version_valid_at_that_time() -> None:
     actor = scope
     kv = InMemoryKVStore()
     kernel = build_kernel(kv=kv)
-    first_valid = datetime(2026, 6, 17, 10, 0, tzinfo=timezone.utc)
-    second_valid = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
+    first_valid = datetime(2026, 6, 17, 10, 0, tzinfo=UTC)
+    second_valid = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
     old = MemoryUnit(
         id="home-v1",
         scope=scope,
@@ -42,13 +49,13 @@ def test_get_as_of_returns_version_valid_at_that_time() -> None:
         new.id,
         scope,
         security=legacy_request_context(actor),
-        as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
+        as_of=datetime(2026, 6, 17, 10, 30, tzinfo=UTC),
     )
     after_update = kernel.api.get(
         old.id,
         scope,
         security=legacy_request_context(actor),
-        as_of=datetime(2026, 6, 17, 11, 30, tzinfo=timezone.utc),
+        as_of=datetime(2026, 6, 17, 11, 30, tzinfo=UTC),
     )
 
     assert before_update.id == old.id
@@ -69,7 +76,7 @@ def test_get_as_of_handles_historical_update_before_original_write_time() -> Non
         scope,
         MemoryPatch(
             content="home is Beijing",
-            t_valid=datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc),
+            t_valid=datetime(2026, 6, 17, 11, 0, tzinfo=UTC),
         ),
         security=legacy_request_context(actor),
     )
@@ -78,13 +85,13 @@ def test_get_as_of_handles_historical_update_before_original_write_time() -> Non
         new.id,
         scope,
         security=legacy_request_context(actor),
-        as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
+        as_of=datetime(2026, 6, 17, 10, 30, tzinfo=UTC),
     )
     after_update = kernel.api.get(
         old.id,
         scope,
         security=legacy_request_context(actor),
-        as_of=datetime(2026, 6, 17, 11, 30, tzinfo=timezone.utc),
+        as_of=datetime(2026, 6, 17, 11, 30, tzinfo=UTC),
     )
 
     assert before_update.id == old.id
@@ -98,8 +105,8 @@ def test_get_as_of_does_not_return_forgotten_version() -> None:
     actor = scope
     kv = InMemoryKVStore()
     kernel = build_kernel(kv=kv)
-    old_valid = datetime(2026, 6, 17, 10, 0, tzinfo=timezone.utc)
-    new_valid = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
+    old_valid = datetime(2026, 6, 17, 10, 0, tzinfo=UTC)
+    new_valid = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
 
     old = MemoryUnit(
         id="home-v1",
@@ -128,5 +135,5 @@ def test_get_as_of_does_not_return_forgotten_version() -> None:
             new.id,
             scope,
             security=legacy_request_context(actor),
-            as_of=datetime(2026, 6, 17, 10, 30, tzinfo=timezone.utc),
+            as_of=datetime(2026, 6, 17, 10, 30, tzinfo=UTC),
         )

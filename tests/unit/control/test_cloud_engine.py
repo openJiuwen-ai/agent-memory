@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -59,7 +59,7 @@ class _RecordingIngestor(Ingestor):
 
     def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
         units: list[MemoryUnit] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for payload in payloads:
             units.append(
                 MemoryUnit(

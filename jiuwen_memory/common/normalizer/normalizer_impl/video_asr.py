@@ -106,8 +106,7 @@ def _ensure_audio(video_path: Path, output_dir: Path) -> Path:
             "-vn",
             str(audio_path),
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     return audio_path
@@ -125,8 +124,7 @@ def _get_duration(path: Path) -> float:
             "default=noprint_wrappers=1:nokey=1",
             str(path),
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
     )
     try:
@@ -170,8 +168,7 @@ def _split_audio_to_chunks(
                 "asetpts=PTS-STARTPTS",
                 str(chunk_path),
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
         chunks.append((chunk_path, start))

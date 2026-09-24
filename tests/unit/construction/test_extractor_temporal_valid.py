@@ -7,7 +7,7 @@ as_of 时间回溯误命中、版本排序排到最早的版本。
 
 import json
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from jiuwen_memory.common.type_def import (
     MemoryTier,
@@ -32,7 +32,7 @@ def _make_extractor(llm_responses: list[str] | None = None) -> ExtractorImpl:
 
 def _create_source_unit(unit_id: str, content: str) -> MemoryUnit:
     """创建正确设置 temporal 字段的源 MemoryUnit（模拟 ingestor 输出）。"""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return MemoryUnit(
         id=unit_id,
         scope=Scope(org="test", user="alice"),
@@ -74,9 +74,9 @@ def test_infer_true_derived_semantic_unit_must_set_t_valid():
     source = _create_source_unit("u1", "Alice 说她喜欢喝咖啡")
 
     time.sleep(0.01)
-    before_extract = datetime.now(timezone.utc)
+    before_extract = datetime.now(UTC)
     result = extractor.extract([source])
-    after_extract = datetime.now(timezone.utc)
+    after_extract = datetime.now(UTC)
 
     assert len(result) == 1
     derived = result[0]
@@ -91,9 +91,9 @@ def test_infer_true_derived_semantic_unit_must_set_t_valid():
     assert _valid_at(derived, one_hour_before) is False, "回溯到派生创建前不应命中"
 
     assert _valid_at(derived, derived.temporal.t_valid) is True, "创建时刻应该命中"
-    assert _valid_at(derived, datetime.now(timezone.utc)) is True, "当前时刻应该命中"
+    assert _valid_at(derived, datetime.now(UTC)) is True, "当前时刻应该命中"
 
     sort_key = _valid_sort_key(derived)
-    epoch_min = datetime.min.replace(tzinfo=timezone.utc)
+    epoch_min = datetime.min.replace(tzinfo=UTC)
     assert sort_key > epoch_min, "排序key不能是datetime.min"
     assert (sort_key - derived.temporal.t_valid) < timedelta(seconds=1), "排序key应接近t_valid"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import FrozenInstanceError, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -75,7 +75,7 @@ def test_no_expiry_never_expires() -> None:
 
 def test_expiry_boundary_is_inclusive() -> None:
     """到点即失效：``now == expires_at`` 判过期，不留一个刚好等于的放行缝。"""
-    moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
     ctx = AuthContext(actor=Scope(org="acme", user="alice"), expires_at=moment)
     assert ctx.is_expired(now=moment) is True
     assert ctx.is_expired(now=moment - timedelta(seconds=1)) is False
@@ -125,7 +125,7 @@ def test_request_context_origin_binds_credential_status_and_expiry() -> None:
     auth = AuthContext(
         actor=Scope(org="acme", user="alice"),
         credential_status_required=True,
-        expires_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     ctx = new_request_context(auth, surface=Surface.HTTP)
     assert ctx.has_valid_origin()
@@ -133,7 +133,7 @@ def test_request_context_origin_binds_credential_status_and_expiry() -> None:
     without_status_check = replace(ctx, auth=replace(auth, credential_status_required=False))
     extended_expiry = replace(
         ctx,
-        auth=replace(auth, expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc)),
+        auth=replace(auth, expires_at=datetime(2027, 1, 1, tzinfo=UTC)),
     )
     assert not without_status_check.has_valid_origin()
     assert not extended_expiry.has_valid_origin()

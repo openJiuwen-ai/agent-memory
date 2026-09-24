@@ -23,7 +23,8 @@ import logging
 import re
 import ssl
 import threading
-from typing import Any, Coroutine
+from collections.abc import Coroutine
+from typing import Any
 
 from jiuwen_memory.common.errors import (
     AgentMemoryError,

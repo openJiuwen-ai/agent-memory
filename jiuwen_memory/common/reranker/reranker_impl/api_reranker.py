@@ -21,7 +21,8 @@ SDK，故走 httpx——**懒加载**（未装时给明确提示），不在模�
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from collections.abc import Callable
+from typing import Any
 
 from jiuwen_memory.common._support import (
     outbound_verify,
@@ -38,7 +39,7 @@ logger = get_logger(__name__)
 
 
 # 每种方言 = 端点后缀 + body 拼装 + 从响应取 results 列表（项均为 {index, relevance_score}）。
-_DIALECTS: Dict[str, Dict[str, Any]] = {
+_DIALECTS: dict[str, dict[str, Any]] = {
     "cohere": {
         "path": "/rerank",
         "body": lambda model, query, docs: {
@@ -128,11 +129,12 @@ class APIReranker(Reranker):
         except Exception as exc:
             raise HealthCheckError(f"Reranker health check failed: {exc}") from exc
 
-    def rerank(self, query: str, texts: List[str]) -> List[float]:
+    def rerank(self, query: str, texts: list[str]) -> list[float]:
         """对候选文本打相关性分，返回与 ``texts`` 等长、同序的分数列表。
 
         每次调用按 ConfigSource 解析 model/api_key/base_url，再按方言拼端点与 body。
-        空/纯空白的 query 或文本元素不透传后端（整批请求会被网关 400 拒绝），对应分数保持 0.0；返回值仍与 ``texts`` 等长同序。
+        空/纯空白的 query 或文本元素不透传后端（整批请求会被网关 400 拒绝），
+        对应分数保持 0.0；返回值仍与 ``texts`` 等长同序。
         """
         if not texts:
             return []

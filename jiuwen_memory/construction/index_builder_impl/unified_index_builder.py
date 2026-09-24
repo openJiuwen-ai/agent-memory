@@ -73,7 +73,9 @@ class UnifiedIndexBuilder(IndexBuilder):
         self._vector_enabled = vector_enabled
         self._chunker = chunker
         self._embedder = embedder
-        self._entity_builder = EntityIndexBuilder(entity_linker) if entity_linker is not None else None
+        self._entity_builder = (
+            EntityIndexBuilder(entity_linker) if entity_linker is not None else None
+        )
         self._feature_extractor = feature_extractor
 
     def operator_type(self) -> OperatorType:
@@ -220,9 +222,11 @@ def _build(config):
                 )
                 # 装配 feature_extractor，用于 update 路径实体补抽
                 feature_extractor = FeatureExtractorProducer.dep(config, default="keyword")
-        except Exception as exc:
-            logger.warning("UnifiedIndexBuilder entity_linker init skipped, entity_enabled config failed",
-                               exc_info=True)
+        except Exception:
+            logger.warning(
+                "UnifiedIndexBuilder entity_linker init skipped, entity_enabled config failed",
+                exc_info=True,
+            )
             entity_linker = None
             feature_extractor = None
 

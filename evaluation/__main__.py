@@ -6,7 +6,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -41,7 +41,7 @@ def _longmemeval_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
         config_file,
         str(settings.get("output_root", "outputs/longmemeval")),
     )
-    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(UTC).astimezone().strftime("%Y%m%d-%H%M%S")
     run_id = f"{timestamp}-{uuid4().hex[:8]}"
     output_dir = Path(output_root) / run_id
     args = [
@@ -98,7 +98,7 @@ def _longmemeval_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
 
 def _locomo_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
     conversation_ids = settings.get("conversation_ids", [0])
-    timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(UTC).astimezone().strftime("%Y%m%d-%H%M%S")
     run_id = f"{timestamp}-{uuid4().hex[:8]}"
     args = [
         "--data",

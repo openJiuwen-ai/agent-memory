@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/storage/ |
 | 最近一次修订日期 | 2026-09-16 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
 
 索引记录保留 `system_metadata.<key>` 和 `user_metadata.<key>` 的逻辑路径。Milvus 与
@@ -23,7 +23,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 - StorageSecurity 数据面授权和 StoreSecurity 数据保护能力边界
 - 可配置真源（文档/结构化）的 KV 存储抽象
 - KV 加密装饰器（EncryptedKVStore）
-- 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）、实体反向（EntityStore）
+- 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）、实体反向（EntityStore）、markdown 视图（MarkdownStore）、文档影子索引（DocumentShadowIndex）
 - 统一 CRUD 动词（insert / delete / update / get）
 - 检索型存储的 search 查询
 - scope 原生隔离（scope 为显式第一入参，物理约束在该 scope 内）
@@ -70,12 +70,13 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 22. **CRUD 不级联层级关系**：KVStore 的 insert/update/delete 只作用于指定 key。删除父或子
     不会自动改写其他 unit；父子双向边维护、剪枝与修复由 construction/control 调用显式
     CRUD 完成。GraphStore 删除节点时清理关联图边的既有语义不适用于 hierarchy。
-23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY
-    （ENTITY 为 F07 新增第七席）。capability 与 `has_*()` **同源于端口表**——某类存储只要有
+23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY/MARKDOWN/DOCUMENT_SHADOW
+    （ENTITY 为 F07 新增第七席；MARKDOWN/DOCUMENT_SHADOW 为 F08 新增第八、第九席，仅文档模式
+    `write_document=true` 装配，见 F08-document-memory.md）。capability 与 `has_*()` **同源于端口表**——某类存储只要有
     任一端口可用即拥有该 capability，二者不会分叉；
     `has_*(name)` 由集合/命名端口表推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
 24. **端口单一入口且全量自动**：每个 capability 一对 `xxx(name="default")` / `has_xxx(name="default")`
-    方法（无 property 快捷方式、无 `*_port` 后缀双入口）；七类 `*_store` 命名空间下**所有**
+    方法（无 property 快捷方式、无 `*_port` 后缀双入口）；九类 `*_store` 命名空间下**所有**
     具名实例（含 `default`）**声明即端口**，端口名即实例名（encrypted KV 的明文 raw 若以具名
     声明会随之暴露，raw 推荐在 kv 实例 params 内 inline 声明）；上层不得绕过
     `StoreManagerProducer` 直接解析 Store 具名实例。
@@ -136,12 +137,12 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 
 | 类别 | 接口 | 语义 |
 |---|---|---|
-| 端口 | `kv/vector/fulltext/graph/fusion/fs/entity(name="default")` 及 `has_*(name="default")` | 暴露经过统一授权代理的完整 Store 契约；单一入口（无 property、无 `*_port` 后缀）；未声明端口抛 `UnsupportedStorageCapabilityError` |
+| 端口 | `kv/vector/fulltext/graph/fusion/fs/entity/markdown/shadow_index(name="default")` 及 `has_*(name="default")` | 暴露经过统一授权代理的完整 Store 契约；单一入口（无 property、无 `*_port` 后缀）；未声明端口抛 `UnsupportedStorageCapabilityError` |
 | 数据面 | `domain_store(name="default")` / `has_domain_store(name="default")` | 取命名数据面实例；实现需缓存（同名多次返回同一实例） |
 | 能力 | `capabilities()` | 返回不可变标准端口能力集合 |
 | 横切 | `security` / `health()` | 统一授权入口并聚合全部命名端口的健康检查 |
 
-`CompositeStoreManager` 是默认实现（组合七类 Store + 端口表 + `_AuthorizedStoreProxy`，
+`CompositeStoreManager` 是默认实现（组合九类 Store + 端口表 + `_AuthorizedStoreProxy`，
 ENTITY 端口用 `_AuthorizedEntityStoreProxy`），提供两条入口：`__init__` 收**已构造的 Store
 实例**（手工接线与测试路径，每类接单实例或 `{name: store}` 端口表）；`from_config(config)`
 从装配配置内部构造全部 Store 与全部命名数据面（装配路径，注册的 `_build` 即其一行封装）。
@@ -396,6 +397,26 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 **装配期降级**：entity 是增强层，builder 在必填连接参数（`hosts`）未配时返回 `None` 而
 非抛错 → 无 ENTITY 能力 → 两侧消费方跳过（不变量 24 的端口表 None 过滤、不变量 31）。
 这与其余六类"缺必填参 `require_param` 抛错"的约定不同，是有意的差异。
+
+### MarkdownStore / DocumentShadowIndex（文档记忆真源，F08）
+
+文档模式（`globals.write_document=true`）的真源形态：`MarkdownStore` 是人类可读 markdown
+视图（`USER.md` / `MEMORY.md` / `daily_memory/日期.md`，按 `memory_class` + `project` 分流落盘），
+`DocumentShadowIndex` 是机器真源（单 sqlite 文件承载 `memory_unit` 全量 + `memory_fts` 倒排
++ `memory_vec` 向量三表同库，靠隐式 rowid 关联）。二者为 F08 新增的第八、第九 capability
+（MARKDOWN / DOCUMENT_SHADOW），仅文档模式装配，经 `manager.markdown(name)` / `manager.shadow_index(name)`
+取用，与其余七类同构暴露。
+
+两端口是文档记忆的双写对——`CompositeDomainStore.add/update/delete` 文档分支同步写 md 块 +
+shadow 索引，写窗口（`sync_gate`）防护看门狗并发观察，写失败补偿回滚到调用前状态。完整算子
+契约见 F08-document-memory.md（§2 MarkdownStore / §3 影子索引 / §4 写入路径分流 / 决策四写失败
+补偿）。**隔离不走 Scope 字段**：影子索引靠 project+category 列隔离（与 KV 时代 scope 字段
+不同构），`scope` 入参仅作签名占位。
+
+**装配期降级**：embedder 未注入或 sqlite-vec 不可用时，shadow 降级为两表（`memory_unit` +
+`memory_fts`）模式——向量召回返空、倒排与全量存储照常（与 EntityStore 同属增强层降级，但
+shadow 是文档模式必需项而非可选增强，`write_document=true` 下不装配即数据面抛
+`UnsupportedStorageCapabilityError`）。
 
 ## 数据结构
 

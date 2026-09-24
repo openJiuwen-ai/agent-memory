@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from jiuwen_memory.common.type_def import Scope
@@ -68,11 +68,11 @@ ON grants (
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _iso(dt: datetime | None) -> str | None:
-    return None if dt is None else dt.astimezone(timezone.utc).isoformat()
+    return None if dt is None else dt.astimezone(UTC).isoformat()
 
 
 def _scope_tuple(scope: Scope) -> tuple[str, str, str, str, str]:

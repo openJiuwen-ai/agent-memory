@@ -14,11 +14,11 @@ import dataclasses
 import inspect
 import types
 import typing
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Awaitable, Mapping, Sequence, Set
 from datetime import datetime
 from enum import Enum
-from functools import lru_cache
-from typing import Any, Awaitable, get_args, get_origin, get_type_hints
+from functools import cache
+from typing import Any, get_args, get_origin, get_type_hints
 
 from jiuwen_memory.api import MemoryAPI, ValidationError
 
@@ -62,7 +62,7 @@ def is_known_verb(verb: str) -> bool:
     return verb in api_method_names()
 
 
-@lru_cache(maxsize=None)
+@cache
 def method_contract(verb: str) -> MethodContract:
     """Build the transport contract for one public ``MemoryAPI`` method."""
     if not is_known_verb(verb):

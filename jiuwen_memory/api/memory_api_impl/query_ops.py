@@ -90,6 +90,10 @@ class QueryOpsMixin:
 
         ``spaces`` 键不在时本方法与本特性之前逐字一致。判据取键的有无，见 :func:`_pop_spaces`。
         """
+        logger.info(
+            "[trace/api] search IN  | query=%r | scope=%r | extensions=%r | top_k=%s | disclosure=%r | filters=%r",
+            query, context.scope, dict(context.extensions), top_k, disclosure, filters,
+        )
         identity = security.auth.actor
         # Context 在边界处拆包：scope 照旧作独立轴下推（鉴权 + 检索），
         # extensions 写入调用级 options 顺 parser 透传给自定义检索模块；
