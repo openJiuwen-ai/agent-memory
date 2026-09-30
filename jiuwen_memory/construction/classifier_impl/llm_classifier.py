@@ -30,6 +30,7 @@ from jiuwen_memory.construction.common import (
     reject_deprecated_llm_attempt_keys,
     validate_llm_attempt_policy,
 )
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 
 logger = get_logger(__name__)
 
@@ -42,6 +43,12 @@ _CLASSIFY_ALLOWED_TIERS: set[str] = {
 
 # LLM 抽的 tags 上限。
 _MAX_TAGS = 3
+
+# LLM 端口未区分超时异常类型（不同 SDK 超时异常名不同），按异常类名识别：
+# openai.APITimeoutError / httpx.ReadTimeout / 内建 TimeoutError 等。
+_TIMEOUT_EXC_NAMES = frozenset(
+    {"APITimeoutError", "TimeoutError", "ReadTimeout", "ReadTimeoutError"}
+)
 
 # 批量分类的子批大小（单批 LLM 调用上限，超批分多次）。
 _CLASSIFY_BATCH_SIZE = 10
@@ -166,7 +173,12 @@ class LLMClassifier(Classifier):
 
     def _classify_batch(self, units: list[MemoryUnit]) -> None:
         """单批 LLM 分类：拼 prompt → 调 LLM → 解析 → 回写 tier/tags。"""
-        parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
+        # 判定 tier/tags 不需要全文：护栏截断判定输入，防止超大 unit 把同步
+        # 写路径拖进分钟级 LLM 超时（存储/索引仍用全文，检索质量不受影响）。
+        parts = [
+            _SOURCE_PREFIX.format(unit_id=u.id, unit_content=truncate_unit_content(u.content))
+            for u in units
+        ]
         user_text = "\n".join(parts)
         messages = [
             ChatMessage(role="system", content=_CLASSIFY_SYSTEM_PROMPT),
@@ -218,6 +230,11 @@ class LLMClassifier(Classifier):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=4096)
             except Exception as exc:
+                if type(exc).__name__ in _TIMEOUT_EXC_NAMES:
+                    # 超时是确定性失败（prompt 过大或后端饱和），原样重试只会
+                    # 把等待时间叠加成 N×timeout（实测 3×300s=900s 无响应）；
+                    # 直接抛出，走调用方的逐批降级路径。
+                    raise
                 last_exc = exc
                 if attempt == self._max_attempts - 1:
                     break

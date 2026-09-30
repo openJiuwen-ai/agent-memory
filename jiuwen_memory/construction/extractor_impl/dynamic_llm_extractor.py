@@ -21,6 +21,7 @@ from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from jiuwen_memory.construction.prompt_strategy import (
     EXTRACT_PROMPT_PREFIX,
@@ -164,7 +165,8 @@ class DynamicLLMExtractor(Extractor):
             datetime.now(UTC).isoformat(),
         )
         source_text = "\n".join(
-            _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=unit.content) for unit in units
+            _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=truncate_unit_content(unit.content))
+            for unit in units
         )
         context_block = _format_context_block(context)
         user_text = (

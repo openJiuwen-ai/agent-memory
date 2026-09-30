@@ -434,7 +434,10 @@ class CloudEngine(MemoryEngine):
 
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引
         if classifier is not None:
-            classifier.classify(units)
+            # 分类含出站 LLM 调用（秒级~分钟级），必须让出事件循环线程（与下方
+            # index_builder.build 同样处理）；内联同步调用会冻结共享事件循环上的
+            # 所有并发请求。
+            await asyncio.to_thread(classifier.classify, units)
         # 记忆写入只经 IndexBuilder：交付 Storage + 建索引由其统一编排。
         await asyncio.to_thread(index_builder.build, units)
         indexed_metadata = {

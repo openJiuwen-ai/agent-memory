@@ -34,6 +34,15 @@ memory_api:
     llm_ssl_verify: "${LLM_SSL_VERIFY:-false}"
     llm_ssl_ca_cert: "${LLM_SSL_CA:-}"
 
+    # BUG2026092802777 加固：大文本 add 卡死 900s 的三层收口。
+    # llm_timeout：出站 LLM 调用超时（SDK 默认 300s 收敛为 60s，慢模型须显式声明上限）；
+    # classifier_retry_max：分类失败重试上限（默认 3 → 1，超时类失败本来就不重试）；
+    # max_unit_chars：写侧预切分上限，单 unit 内容超过即按段落聚合切分（默认 8000），
+    # 避免 500KB 全文进 LLM prompt。
+    llm_timeout: 60.0
+    classifier_retry_max: 1
+    max_unit_chars: 8000
+
     # Remote bge-m3 embedding service. Base URL must include /v1 because the
     # OpenAI client appends /embeddings. No public default is provided: memory
     # content must only be sent to the endpoint explicitly configured in .env.
