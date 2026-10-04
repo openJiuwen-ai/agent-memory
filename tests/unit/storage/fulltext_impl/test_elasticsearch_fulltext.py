@@ -18,6 +18,7 @@ pytestmark = pytest.mark.unit
 class _FakeIndices:
     def __init__(self, *, exists: bool = False) -> None:
         self._exists = exists
+        self.create_error: Exception | None = None
         self.created: dict | None = None
         self.updated: dict | None = None
         self.analyzed: dict | None = None
@@ -27,6 +28,8 @@ class _FakeIndices:
         return self._exists
 
     def create(self, **kwargs) -> None:
+        if self.create_error is not None:
+            raise self.create_error
         self.created = kwargs
 
     def put_mapping(self, **kwargs) -> None:
@@ -145,6 +148,49 @@ def test_existing_index_gets_array_marker_mapping(monkeypatch: pytest.MonkeyPatc
         "index": "memory_l0",
         "properties": {"metadata_array_fields": {"type": "keyword"}},
     }
+
+
+def test_concurrent_index_creation_tolerates_already_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    client.indices.create_error = RuntimeError(
+        "resource_already_exists_exception: index already exists"
+    )
+
+    def create_client(*_args: object, **_kwargs: object) -> _FakeClient:
+        return client
+
+    elasticsearch = ModuleType("elasticsearch")
+    elasticsearch.Elasticsearch = create_client
+    monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
+
+    store = ElasticsearchFulltextStore(index="memory_l0")
+    assert store.client is client
+    assert client.indices.created is None
+    assert client.indices.updated == {
+        "index": "memory_l0",
+        "properties": {"metadata_array_fields": {"type": "keyword"}},
+    }
+
+
+def test_index_creation_other_error_wraps_backend_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    client.indices.create_error = RuntimeError("connection failed")
+
+    def create_client(*_args: object, **_kwargs: object) -> _FakeClient:
+        return client
+
+    elasticsearch = ModuleType("elasticsearch")
+    elasticsearch.Elasticsearch = create_client
+    monkeypatch.setitem(sys.modules, "elasticsearch", elasticsearch)
+
+    store = ElasticsearchFulltextStore(index="memory_l0")
+    with pytest.raises(BackendError, match="elasticsearch connect: connection failed"):
+        store.client
+    assert client.indices.updated is None
 
 
 def test_source_records_array_metadata_keys_without_exposing_them_as_metadata(

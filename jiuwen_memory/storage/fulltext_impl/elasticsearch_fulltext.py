@@ -323,7 +323,11 @@ class ElasticsearchFulltextStore(FulltextStore):
         return parts
 
     def _ensure_index(self) -> None:
-        if not self._client.indices.exists(index=self._index):
+        if self._client.indices.exists(index=self._index):
+            self._put_array_marker_mapping()
+            return
+
+        try:
             self._client.indices.create(
                 index=self._index,
                 mappings={
@@ -391,7 +395,13 @@ class ElasticsearchFulltextStore(FulltextStore):
                     },
                 },
             )
-            return
+        except Exception as exc:
+            if "resource_already_exists_exception" not in str(exc):
+                raise
+            # exists() 与 create() 之间被并发请求抢先创建，按已存在索引处理。
+            self._put_array_marker_mapping()
+
+    def _put_array_marker_mapping(self) -> None:
         # mapping 可原地增加，但历史文档没有派生标记，仍需重建索引后才能获得
         # 严格的 EQ / CONTAINS 语义。
         self._client.indices.put_mapping(

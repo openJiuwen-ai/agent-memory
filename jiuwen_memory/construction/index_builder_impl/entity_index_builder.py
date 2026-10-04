@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from uuid import uuid4
 
 from jiuwen_memory.common.embedder.base import Embedder
-from jiuwen_memory.common.errors import UnsupportedCapabilityError
+from jiuwen_memory.common.errors import BackendError, UnsupportedCapabilityError
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
     LifecycleState,
@@ -29,6 +29,7 @@ from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
 from jiuwen_memory.common.type_def.scope import space_id_from_scope
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.construction.source_update import STRICT_ENTITY_WRITES
 from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
@@ -543,6 +544,8 @@ class EntityIndexBuilder(IndexBuilder):
         try:
             result = self._linker.link_memories(units)
         except Exception as exc:
+            if STRICT_ENTITY_WRITES.get():
+                raise
             # entity 是增强层（fulltext/vector 已落盘、真源 KV 已在前置 write
             # 落盘），失败不回滚、不阻断 write——与 update 路径同语义（update 的
             # unlink/link 失败也只 log 不抛）。但失败必须可见：用 error 级别 +
@@ -557,6 +560,8 @@ class EntityIndexBuilder(IndexBuilder):
             )
             return
         if result.failed_count:
+            if STRICT_ENTITY_WRITES.get():
+                raise BackendError("Schema update entity linking failed")
             # 部分失败（如查询超时整组 abort）：不阻断 write，但 error 级别可见。
             logger.error(
                 "EntityIndexBuilder: link_memories partial failure for %d units: "
@@ -583,19 +588,27 @@ class EntityIndexBuilder(IndexBuilder):
             if unit.lifecycle == LifecycleState.SUPERSEDED:
                 continue
             try:
-                self._linker.unlink_memory(
+                result = self._linker.unlink_memory(
                     scope=unit.scope,
                     memory_id=unit.id,
                 )
+                if STRICT_ENTITY_WRITES.get() and result.failed_count:
+                    raise BackendError("Schema update entity unlinking failed")
             except Exception as exc:
+                if STRICT_ENTITY_WRITES.get():
+                    raise
                 logger.warning(
                     "EntityIndexBuilder: unlink_memory failed for unit %s: error_type=%s",
                     unit.id[:8],
                     type(exc).__name__,
                 )
         try:
-            self._linker.link_memories(units)
+            result = self._linker.link_memories(units)
+            if STRICT_ENTITY_WRITES.get() and result.failed_count:
+                raise BackendError("Schema update entity linking failed")
         except Exception as exc:
+            if STRICT_ENTITY_WRITES.get():
+                raise
             logger.warning(
                 "EntityIndexBuilder: link_memories failed in update for %d units: error_type=%s",
                 len(units),
@@ -611,11 +624,15 @@ class EntityIndexBuilder(IndexBuilder):
         logger.info("EntityIndexBuilder: removing entity index for %d units", len(units))
         for unit in units:
             try:
-                self._linker.unlink_memory(
+                result = self._linker.unlink_memory(
                     scope=unit.scope,
                     memory_id=unit.id,
                 )
+                if STRICT_ENTITY_WRITES.get() and result.failed_count:
+                    raise BackendError("Schema update entity removal failed")
             except Exception as exc:
+                if STRICT_ENTITY_WRITES.get():
+                    raise
                 logger.warning(
                     "EntityIndexBuilder: unlink_memory failed for unit %s: error_type=%s",
                     unit.id[:8],
