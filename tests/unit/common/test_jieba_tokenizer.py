@@ -184,6 +184,8 @@ def test_producer_unknown_type():
 
 def test_assemble_with_jieba():
     """T-JB-P05: assemble(config) 使用 jieba tokenizer 全链路可运行。"""
+    import logging
+
     from jiuwen_memory.api.memory_api_impl import assemble
     from jiuwen_memory.common.type_def import Context, Modality, Scope
     from jiuwen_memory.config import Config
@@ -191,13 +193,23 @@ def test_assemble_with_jieba():
     # 两级命名空间：覆盖 tokenizer 顶层的 default 实例为 jieba；embedder 沿用默认 hashing，
     # 其 tokenizer 依赖经 default 引用同样取到 jieba → 全链路 jieba。
     config = Config.from_dict({"tokenizer": {"default": "jieba"}})
-    api = assemble(config=config)
-    scope = Scope(org="test", user="alice", agent="a1", session="s1")
-    actor = Scope(org="test", user="alice")
-    # add → jieba 分词建索引 → search
-    units = api.add(
-        "用户偏好简洁回答", scope, source=Modality.TEXT, security=legacy_request_context(actor)
-    )
-    assert len(units) == 1
-    result = api.search("偏好", Context(scope), security=legacy_request_context(actor), top_k=10)
-    assert len(result.items) > 0
+    # assemble() 经 setup_logging() 关闭 agent_memory root logger 的 propagate（避免
+    # 第三方库日志混入）；这是进程级全局状态，不还原会让本测试之后所有依赖 caplog
+    # 的用例静默拿到空日志（stderr 仍有输出，只是不再传播到 pytest 的 caplog handler）。
+    agent_memory_logger = logging.getLogger("agent_memory")
+    old_propagate = agent_memory_logger.propagate
+    try:
+        api = assemble(config=config)
+        scope = Scope(org="test", user="alice", agent="a1", session="s1")
+        actor = Scope(org="test", user="alice")
+        # add → jieba 分词建索引 → search
+        units = api.add(
+            "用户偏好简洁回答", scope, source=Modality.TEXT, security=legacy_request_context(actor)
+        )
+        assert len(units) == 1
+        result = api.search(
+            "偏好", Context(scope), security=legacy_request_context(actor), top_k=10
+        )
+        assert len(result.items) > 0
+    finally:
+        agent_memory_logger.propagate = old_propagate
