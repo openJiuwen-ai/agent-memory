@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
 _REGISTERED = False
 
@@ -22,13 +22,13 @@ def register_backends() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.storage.kv_impl")
-    import_module("jiuwen_memory.storage.vector_impl")
-    import_module("jiuwen_memory.storage.graph_impl")
-    import_module("jiuwen_memory.storage.fulltext_impl")
-    import_module("jiuwen_memory.storage.fusion_impl")
-    import_module("jiuwen_memory.storage.fs_impl")
-    import_module("jiuwen_memory.storage.store_manager_impl")
-    import_module("jiuwen_memory.storage.domain_store_impl")
-    import_module("jiuwen_memory.storage.entity_impl")
+    import_optional("jiuwen_memory.storage.kv_impl")
+    import_optional("jiuwen_memory.storage.vector_impl")
+    import_optional("jiuwen_memory.storage.graph_impl")
+    import_optional("jiuwen_memory.storage.fulltext_impl")
+    import_optional("jiuwen_memory.storage.fusion_impl")
+    import_optional("jiuwen_memory.storage.fs_impl")
+    import_optional("jiuwen_memory.storage.store_manager_impl")
+    import_optional("jiuwen_memory.storage.domain_store_impl")
+    import_optional("jiuwen_memory.storage.entity_impl")
     _REGISTERED = True

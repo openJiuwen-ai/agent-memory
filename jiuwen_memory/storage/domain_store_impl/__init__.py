@@ -7,13 +7,13 @@ Recaller 是数据面的内部件（唯一消费方是 :class:`CompositeDomainSt
 :func:`storage.bootstrap.register_backends` import 本包时统一完成。
 """
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
 from .composite_domain_store import CompositeDomainStore
 from .recaller import Recaller, RecallerProducer
 
-import_module(".graph_recaller", __name__)
-import_module(".keyword_recaller", __name__)
-import_module(".vector_recaller", __name__)
+import_optional(".graph_recaller", __name__)
+import_optional(".keyword_recaller", __name__)
+import_optional(".vector_recaller", __name__)
 
 __all__ = ["CompositeDomainStore", "Recaller", "RecallerProducer"]

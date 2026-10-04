@@ -16,7 +16,7 @@ from copy import deepcopy
 from typing import List
 
 from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
@@ -75,7 +75,7 @@ class KeywordExtractor(Extractor):
                 "KeywordExtractor: extracting from unit id=%s tier=%s content=%s",
                 unit.id[:8],
                 unit.tier.value,
-                unit.content[:200],
+                redact_for_log(unit.content),
             )
             for chunk in self._chunker.chunk(unit.content, unit.id):
                 d = deepcopy(unit)
@@ -97,7 +97,7 @@ class KeywordExtractor(Extractor):
                     d.id[:8],
                     d.tier.value,
                     d.provenance,
-                    d.content[:200],
+                    redact_for_log(d.content),
                 )
         logger.info(
             "KeywordExtractor: produced %d derived units from %d originals",
@@ -137,7 +137,8 @@ class KeywordExtractor(Extractor):
         )
         logger.info(
             "KeywordExtractor._build_procedural: built 1 PROCEDURAL unit id=%s content=%s",
-            unit.id[:8], unit.content[:200],
+            unit.id[:8],
+            redact_for_log(unit.content),
         )
         return [unit]
 

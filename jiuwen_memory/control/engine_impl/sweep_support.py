@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import NamedTuple
 
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Scope
 from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.control.types import SweepResult
@@ -81,7 +81,7 @@ def run_sweep(
             logger.warning(
                 "Engine.sweep_expired group failed (kept for retry): scope=%s target=%s"
                 " count=%d error=%s",
-                scope,
+                scope_for_log(scope),
                 target.value,
                 len(group),
                 exc,

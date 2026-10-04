@@ -17,7 +17,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    scope_for_log,
+)
 from jiuwen_memory.common.type_def import (
     FilterExpr,
     LifecycleState,
@@ -34,9 +38,15 @@ from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.schema_update_support import (
+    commit_schema_update,
+    is_schema_update_candidate,
+    prepare_schema_update,
+)
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -122,7 +132,7 @@ def _downweight_importance(unit: MemoryUnit) -> None:
     raw = unit.system_metadata.get("importance")
     try:
         value = float(raw) if raw is not None else 1.0
-    except ValueError:
+    except (ValueError, TypeError):
         value = 1.0
     unit.system_metadata["importance"] = f"{max(0.0, value * 0.5):g}"
 
@@ -306,11 +316,14 @@ class CloudEngine(MemoryEngine):
             derived = list(result.created_units) or [
                 self._load(scope, unit_id) for unit_id in result.created_ids
             ]
+            procedural_metadata = {"procedural": raw_meta.get("procedural")}
             logger.info(
-                "CloudEngine.write procedural=True: originals=%d derived=%d scope=%s pipeline=%s",
+                "CloudEngine.write system_metadata=%s: originals=%d derived=%d "
+                "scope=%s pipeline=%s",
+                metadata_for_log(procedural_metadata),
                 len(units),
                 len(derived),
-                scope,
+                scope_for_log(scope),
                 pipeline_name,
             )
             return derived
@@ -339,11 +352,14 @@ class CloudEngine(MemoryEngine):
             derived = list(result.created_units) or [
                 self._load(scope, unit_id) for unit_id in result.created_ids
             ]
+            infer_metadata = {"infer": raw_meta.get("infer")}
             logger.info(
-                "CloudEngine.write infer=True: originals=%d derived=%d scope=%s pipeline=%s",
+                "CloudEngine.write system_metadata=%s: originals=%d derived=%d "
+                "scope=%s pipeline=%s",
+                metadata_for_log(infer_metadata),
                 len(units),
                 len(derived),
-                scope,
+                scope_for_log(scope),
                 pipeline_name,
             )
             return derived
@@ -353,12 +369,16 @@ class CloudEngine(MemoryEngine):
             classifier.classify(units)
         # 记忆写入只经 IndexBuilder：交付 Storage + 建索引由其统一编排。
         await asyncio.to_thread(index_builder.build, units)
+        indexed_metadata = {
+            "message_type_key": self._message_type_key,
+            "message_type": meta.get(self._message_type_key, ""),
+            "pipeline": pipeline_name,
+        }
         logger.info(
-            "CloudEngine.write raw_indexed: units=%d scope=%s message_type=%s pipeline=%s",
+            "CloudEngine.write raw_indexed: units=%d scope=%s system_metadata=%s",
             len(units),
-            scope,
-            meta.get(self._message_type_key, ""),
-            pipeline_name,
+            scope_for_log(scope),
+            metadata_for_log(indexed_metadata),
         )
         return units
 
@@ -458,13 +478,16 @@ class CloudEngine(MemoryEngine):
         await asyncio.to_thread(index_builder.build, units)
 
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        middle_metadata = {
+            "middle": units[0].system_metadata.get("middle", "") if units else "",
+            "pipeline": pipeline_name,
+            "middle_interval": middle_interval,
+        }
         logger.info(
-            "CloudEngine.write middle=True: %d originals buffered, scope=%s "
-            "pipeline=%s interval=%s",
+            "CloudEngine.write system_metadata=%s: %d originals buffered, scope=%s",
+            metadata_for_log(middle_metadata),
             len(units),
-            scope,
-            pipeline_name,
-            middle_interval,
+            scope_for_log(scope),
         )
         return units
 
@@ -553,10 +576,42 @@ class CloudEngine(MemoryEngine):
             raise NotFoundError("memory_unit", unit_id)
         return max(candidates, key=_valid_sort_key)
 
+    def requires_update_preparation(self, unit: MemoryUnit, patch: MemoryPatch) -> bool:
+        return is_schema_update_candidate(unit, patch)
+
+    async def prepare_update(
+        self, unit_id: str, scope: Scope, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        old = self._load(scope, unit_id)
+        return await self._prepare_update_from_old(old, patch)
+
+    async def _prepare_update_from_old(
+        self, old: MemoryUnit, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        """Prepare against the same source snapshot used for the eligibility check."""
+        if not self.requires_update_preparation(old, patch):
+            return None
+        new = _apply_patch(old, patch)
+        self._normalize_unit_metadata(new)
+        binding = self._write_binding([new])
+        new.system_metadata["pipeline"] = (
+            binding.name if binding is not None else self._default_pipeline_name
+        )
+        return await prepare_schema_update(self._evolver_for_unit, old, new, patch)
+
+    async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
+        return await commit_schema_update(
+            self._evolver_for_unit, plan, index_for=self._index_for_unit
+        )
+
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
         old = self._load(scope, unit_id)
+        if self.requires_update_preparation(old, patch):
+            plan = await self._prepare_update_from_old(old, patch)
+            if plan is not None:
+                return await self.commit_update(plan)
         new = _apply_patch(old, patch)
         self._normalize_unit_metadata(new)
         new_binding = self._write_binding([new])
@@ -578,11 +633,12 @@ class CloudEngine(MemoryEngine):
                 new_index.update([new], mode=IndexWriteMode.FORWARD_ONLY)
                 old_index.remove([old], mode=IndexRemoveMode.SOFT)
                 new_index.build([new], mode=IndexWriteMode.RETRIEVAL_ONLY)
+            update_metadata = {"pipeline": new_pipeline}
             logger.info(
-                "CloudEngine.update overwrite: unit_id=%s scope=%s pipeline=%s",
+                "CloudEngine.update overwrite: unit_id=%s scope=%s system_metadata=%s",
                 new.id,
-                scope,
-                new_pipeline,
+                scope_for_log(scope),
+                metadata_for_log(update_metadata),
             )
             return new
 
@@ -595,12 +651,14 @@ class CloudEngine(MemoryEngine):
         new_index.build([new])
         old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
         self._update_indexes([old])
+        update_metadata = {"pipeline": new_pipeline}
         logger.info(
-            "CloudEngine.update supersede: old_id=%s new_id=%s scope=%s pipeline=%s",
+            "CloudEngine.update supersede: old_id=%s new_id=%s scope=%s "
+            "system_metadata=%s",
             old.id,
             new.id,
-            scope,
-            new_pipeline,
+            scope_for_log(scope),
+            metadata_for_log(update_metadata),
         )
         return new
 
@@ -730,7 +788,7 @@ class CloudEngine(MemoryEngine):
         logger.info(
             "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
-            scope,
+            scope_for_log(scope),
             mode.value,
             channel.value,
         )
@@ -817,6 +875,10 @@ class CloudEngine(MemoryEngine):
         if self._pipeline is None:
             return None
         return self._pipeline.select_for_write(units)
+
+    def _evolver_for_unit(self, unit: MemoryUnit) -> Evolver | None:
+        binding = self._write_binding([unit])
+        return binding.evolver if binding is not None else self._evolver
 
     def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
         if self._pipeline is None:

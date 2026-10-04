@@ -6,7 +6,7 @@
 （F07 拆分，详见 ``docs/features/storage/F07-storage-manager-domain-store-split.md``）。
 """
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
 from .base import BaseStore, StoreType
 from .domain_store import DomainStore, DomainStoreProducer
@@ -48,7 +48,7 @@ for _module_name in (
     "store_manager_impl",
     "domain_store_impl",
 ):
-    import_module(f"{__name__}.{_module_name}")
+    import_optional(f"{__name__}.{_module_name}")
 
 __all__ = [
     "BaseStore",

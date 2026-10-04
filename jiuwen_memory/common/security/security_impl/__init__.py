@@ -5,10 +5,9 @@ import 各实现模块即触发其 ``@SecurityProducer.register(...)`` 自注册
 本包只对外暴露工厂 SecurityProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.common.security.security import SecurityProducer
 
-import_module(".local_envelope_security_provider", __name__)
+import_optional(".local_envelope_security_provider", __name__)
 
 __all__ = ["SecurityProducer"]

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
 _REGISTERED = False
 
@@ -17,13 +17,13 @@ def register_constructors() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.construction.abstractor_impl")
-    import_module("jiuwen_memory.construction.associator_impl")
-    import_module("jiuwen_memory.construction.classifier_impl")
-    import_module("jiuwen_memory.construction.dedup_impl")
-    import_module("jiuwen_memory.construction.evolver_impl")
-    import_module("jiuwen_memory.construction.extractor_impl")
-    import_module("jiuwen_memory.construction.index_builder_impl")
-    import_module("jiuwen_memory.construction.layer_annotator_impl")
-    import_module("jiuwen_memory.construction.router_impl")
+    import_optional("jiuwen_memory.construction.abstractor_impl")
+    import_optional("jiuwen_memory.construction.associator_impl")
+    import_optional("jiuwen_memory.construction.classifier_impl")
+    import_optional("jiuwen_memory.construction.dedup_impl")
+    import_optional("jiuwen_memory.construction.evolver_impl")
+    import_optional("jiuwen_memory.construction.extractor_impl")
+    import_optional("jiuwen_memory.construction.index_builder_impl")
+    import_optional("jiuwen_memory.construction.layer_annotator_impl")
+    import_optional("jiuwen_memory.construction.router_impl")
     _REGISTERED = True

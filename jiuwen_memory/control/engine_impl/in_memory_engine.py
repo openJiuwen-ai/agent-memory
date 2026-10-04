@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    scope_for_log,
+)
 from jiuwen_memory.common.type_def import (
     FilterExpr,
     LifecycleState,
@@ -33,10 +37,16 @@ from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.schema_update_support import (
+    commit_schema_update,
+    is_schema_update_candidate,
+    prepare_schema_update,
+)
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -119,7 +129,7 @@ def _downweight_importance(unit: MemoryUnit) -> None:
     raw = unit.system_metadata.get("importance")
     try:
         value = float(raw) if raw is not None else 1.0
-    except ValueError:
+    except (ValueError, TypeError):
         value = 1.0
     unit.system_metadata["importance"] = f"{max(0.0, value * 0.5):g}"
 
@@ -317,10 +327,13 @@ class InMemoryEngine(MemoryEngine):
             derived = list(result.created_units) or [
                 self._load(scope, uid) for uid in result.created_ids
             ]
+            procedural_metadata = {"procedural": raw_meta.get("procedural")}
             logger.info(
-                "Engine.write procedural=True: %d originals, %d derived added, scope=%s",
+                "Engine.write system_metadata=%s: %d originals, %d derived added, scope=%s",
+                metadata_for_log(procedural_metadata),
                 len(units),
-                len(derived), scope,
+                len(derived),
+                scope_for_log(scope),
             )
             return derived
 
@@ -347,10 +360,13 @@ class InMemoryEngine(MemoryEngine):
             derived = list(result.created_units) or [
                 self._load(scope, uid) for uid in result.created_ids
             ]
+            infer_metadata = {"infer": raw_meta.get("infer")}
             logger.info(
-                "Engine.write infer=True: %d originals, %d derived added, scope=%s",
+                "Engine.write system_metadata=%s: %d originals, %d derived added, scope=%s",
+                metadata_for_log(infer_metadata),
                 len(units),
-                len(derived), scope,
+                len(derived),
+                scope_for_log(scope),
             )
             return derived
 
@@ -406,11 +422,15 @@ class InMemoryEngine(MemoryEngine):
         await asyncio.to_thread(index_builder.build, units)
 
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
+        middle_metadata = {
+            "middle": units[0].system_metadata.get("middle", "") if units else "",
+            "middle_interval": middle_interval,
+        }
         logger.info(
-            "Engine.write middle=True: %d originals buffered, scope=%s interval=%s",
+            "Engine.write system_metadata=%s: %d originals buffered, scope=%s",
+            metadata_for_log(middle_metadata),
             len(units),
-            scope,
-            middle_interval,
+            scope_for_log(scope),
         )
         return units
 
@@ -549,7 +569,7 @@ class InMemoryEngine(MemoryEngine):
             logger.warning(
                 "Engine.get as_of miss: unit_id=%s scope=%s as_of=%s",
                 unit_id,
-                scope,
+                scope_for_log(scope),
                 as_of,
             )
             raise NotFoundError("memory_unit", unit_id)
@@ -558,21 +578,54 @@ class InMemoryEngine(MemoryEngine):
             "Engine.get as_of hit: unit_id=%s selected_id=%s scope=%s as_of=%s",
             unit_id,
             selected.id,
-            scope,
+            scope_for_log(scope),
             as_of,
         )
         return selected
+
+    def requires_update_preparation(self, unit: MemoryUnit, patch: MemoryPatch) -> bool:
+        return is_schema_update_candidate(unit, patch)
+
+    async def prepare_update(
+        self, unit_id: str, scope: Scope, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        _ensure_local_scope(scope)
+        old = self._load(scope, unit_id)
+        return await self._prepare_update_from_old(old, patch)
+
+    async def _prepare_update_from_old(
+        self, old: MemoryUnit, patch: MemoryPatch
+    ) -> SourceUpdatePlan | None:
+        """Prepare against the same source snapshot used for the eligibility check."""
+        if not self.requires_update_preparation(old, patch):
+            return None
+        return await prepare_schema_update(
+            self._evolver_for_unit, old, _apply_patch(old, patch), patch
+        )
+
+    async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
+        return await commit_schema_update(
+            self._evolver_for_unit, plan, index_for=self._index_for_unit
+        )
 
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
         _ensure_local_scope(scope)
         old = self._load(scope, unit_id)
+        if self.requires_update_preparation(old, patch):
+            plan = await self._prepare_update_from_old(old, patch)
+            if plan is not None:
+                return await self.commit_update(plan)
         new = _apply_patch(old, patch)
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
             self._index.update([new])
-            logger.info("Engine.update overwrite: unit_id=%s scope=%s", new.id, scope)
+            logger.info(
+                "Engine.update overwrite: unit_id=%s scope=%s",
+                new.id,
+                scope_for_log(scope),
+            )
         else:  # SUPERSEDE：新 id、记版本链，旧版标记 superseded
             new.id = str(uuid.uuid4())
             new.supersedes = old.id
@@ -588,7 +641,7 @@ class InMemoryEngine(MemoryEngine):
                 "Engine.update supersede: old_id=%s new_id=%s scope=%s t_valid=%s",
                 old.id,
                 new.id,
-                scope,
+                scope_for_log(scope),
                 new.temporal.t_valid,
             )
         return new
@@ -627,7 +680,7 @@ class InMemoryEngine(MemoryEngine):
             logger.info(
                 "Engine.delete no matches: mode=%s scope=%s",
                 selector.mode.value,
-                selector.scope,
+                scope_for_log(selector.scope),
             )
             return []
 
@@ -645,7 +698,7 @@ class InMemoryEngine(MemoryEngine):
             logger.info(
                 "Engine.delete purge: count=%d scope=%s",
                 len(purged_units),
-                selector.scope,
+                scope_for_log(selector.scope),
             )
             return [unit.id for unit in purged_units]
 
@@ -658,7 +711,7 @@ class InMemoryEngine(MemoryEngine):
             logger.info(
                 "Engine.delete downweight: count=%d scope=%s",
                 len(affected),
-                selector.scope,
+                scope_for_log(selector.scope),
             )
             return affected
 
@@ -687,7 +740,7 @@ class InMemoryEngine(MemoryEngine):
             selector.mode.value,
             _LIFECYCLE_OF_DELETE[selector.mode].value,
             len(affected),
-            selector.scope,
+            scope_for_log(selector.scope),
         )
         return affected
 
@@ -735,7 +788,7 @@ class InMemoryEngine(MemoryEngine):
         logger.info(
             "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
             job_id,
-            scope,
+            scope_for_log(scope),
             mode.value,
             channel.value,
         )
@@ -754,6 +807,14 @@ class InMemoryEngine(MemoryEngine):
         if self._pipeline is None:
             return None
         return self._pipeline.select_for_write(units)
+
+    def _evolver_for_unit(self, unit: MemoryUnit) -> Evolver | None:
+        binding = self._write_binding([unit])
+        return binding.evolver if binding is not None else self._evolver
+
+    def _index_for_unit(self, unit: MemoryUnit) -> IndexBuilder:
+        binding = self._write_binding([unit])
+        return binding.index_builder if binding is not None else self._index
 
     def _recall_binding(self, query: RetrievalQuery) -> PipelineBinding | None:
         if self._pipeline is None:

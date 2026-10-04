@@ -4,11 +4,10 @@
 import 各实现模块即触发其 ``@DedupProducer.register(...)`` 自注册；本包只对外暴露工厂 DedupProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.construction.dedup import DedupProducer
 
-import_module(".keyword_dedup", __name__)
-import_module(".vector_dedup", __name__)
+import_optional(".keyword_dedup", __name__)
+import_optional(".vector_dedup", __name__)
 
 __all__ = ["DedupProducer"]

@@ -18,7 +18,13 @@ from typing import Any, Dict, List, Tuple
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.tokenizer import Tokenizer
 from jiuwen_memory.common.tokenizer.base import TokenizerProducer
-from jiuwen_memory.common.type_def import FilterClause, FilterOp, Scope, evaluate, filter_field_metadata_key
+from jiuwen_memory.common.type_def import (
+    FilterClause,
+    FilterOp,
+    Scope,
+    evaluate,
+    filter_field_metadata_key,
+)
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.fusion import FusionProducer, FusionStore
 from jiuwen_memory.storage.types import FusionQuery, FusionRecord, ScoredID

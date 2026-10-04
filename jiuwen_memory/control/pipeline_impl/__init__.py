@@ -3,6 +3,6 @@
 
 from __future__ import annotations
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
-import_module(".metadata_pipeline", __name__)
+import_optional(".metadata_pipeline", __name__)

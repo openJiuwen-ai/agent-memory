@@ -29,6 +29,7 @@ from jiuwen_memory.common.type_def.entity import (
     EntityOperation,
     EntityOpType,
     EntityRecord,
+    EntitySearchResult,
     EntityStoreFilters,
 )
 from jiuwen_memory.config import AssemblyContext
@@ -98,6 +99,19 @@ class _RecordingEntityStore(EntityStore):
     ) -> EntityBatchResult:
         self.calls.append(("execute_operations", (space_id, operations), {}))
         return EntityBatchResult(successful_ids=[], failed_ids=[])
+
+    def search(
+        self,
+        space_id: str,
+        query_vector: list[float],
+        *,
+        top_k: int,
+        filters: EntityStoreFilters,
+    ) -> list[EntitySearchResult]:
+        self.calls.append(
+            ("search", (space_id, query_vector), {"top_k": top_k, "filters": filters})
+        )
+        return []
 
 
 class _RecordingSecurity(StorageSecurity):

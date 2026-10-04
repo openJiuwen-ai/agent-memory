@@ -47,12 +47,12 @@ class EntityStoreFilters:
     """实体检索的硬隔离字段（term 过滤用），不包含 space_id。
 
     space_id 走 ES routing + 文档字段（同 shard 聚簇），不是 term 过滤的隔离
-    维度——与原设计一致，``ElasticsearchEntityStore._build_filters`` 按
-    actor_id 单段生成 term 子句。agent/session 不作隔离维度：同 user 下跨
-    agent、跨 session 共享实体索引（实体是 user 级知识，不随会话/agent 切换）。
+    维度。 actor_id assistant_id session_id 三维term过滤。
     """
 
     actor_id: str | None = None
+    assistant_id: str | None = None
+    session_id: str | None = None
 
     @classmethod
     def from_scope(cls, scope: Scope) -> "EntityStoreFilters":
@@ -63,11 +63,13 @@ class EntityStoreFilters:
         """
         return cls(
             actor_id=scope.user or None,
+            assistant_id=scope.agent or None,
+            session_id=scope.session or None,
         )
 
     def key(self) -> tuple[str | None, ...]:
-        """分组 key：同 (space_id, actor_id) 的 unit 共享一次 bulk 查询/写入。"""
-        return (self.actor_id,)
+        """分组 key：同 (space_id, actor_id, assistant_id, session_id) 的 unit 共享一次 bulk 查询/写入。"""
+        return (self.actor_id, self.assistant_id, self.session_id)
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,15 @@ class EntityRecord:
     linked_memory_ids: tuple[str, ...]
     filters: EntityStoreFilters
     entity_text_hash: str = ""
+    embedding: list[float] | None = None
+
+
+@dataclass(frozen=True)
+class EntitySearchResult:
+    """实体向量检索的单条结果"""
+
+    record: EntityRecord
+    score: float
 
 
 @dataclass(frozen=True)

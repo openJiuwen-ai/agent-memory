@@ -47,7 +47,11 @@ from enum import Enum
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    redact_for_log,
+)
 from jiuwen_memory.common.type_def import FeatureSet, MemoryUnit, Relation
 from jiuwen_memory.construction.associator import AssociatorProducer
 
@@ -255,7 +259,7 @@ class LLMAssociator(Associator):
                 u.id[:8],
                 u.tier.value,
                 u.provenance,
-                u.content[:200],
+                redact_for_log(u.content),
             )
 
         if len(units) < 2:
@@ -280,7 +284,13 @@ class LLMAssociator(Associator):
             len(vectors),
         )
         for ekey, uid_list in entity_index.items():
-            logger.info("Associator: entity %s → units=%s", ekey, [uid[:8] for uid in uid_list])
+            logger.info(
+                "Associator: entity metadata=%s",
+                metadata_for_log(
+                    {"entity": ekey, "unit_ids": [uid[:8] for uid in uid_list]},
+                    visible_memory_unit_ids=[uid[:8] for uid in uid_list],
+                ),
+            )
 
         # Phase 2: 候选关系生成
         candidates = self._phase2_generate_candidates(units, entity_index, features_map, vectors)
@@ -303,7 +313,7 @@ class LLMAssociator(Associator):
                 r.target_id[:8],
                 r.relation,
                 r.score,
-                {k: v[:50] if isinstance(v, str) else v for k, v in r.metadata.items()},
+                metadata_for_log(r.metadata),
             )
         return relations
 

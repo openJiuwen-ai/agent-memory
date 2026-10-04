@@ -4,11 +4,10 @@
 import 各实现模块即触发其 ``@RetrieverProducer.register(...)`` 自注册；本包只对外暴露工厂 RetrieverProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.retrieval.retriever import RetrieverProducer
 
-import_module(".pipeline_retriever", __name__)
-import_module(".multimodal_retriever", __name__)
+import_optional(".pipeline_retriever", __name__)
+import_optional(".multimodal_retriever", __name__)
 
 __all__ = ["RetrieverProducer"]

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from importlib import import_module
+from jiuwen_memory.common._import_support import import_optional
 
 _REGISTERED = False
 
@@ -17,14 +17,14 @@ def register_controllers() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
-    import_module("jiuwen_memory.control.pipeline_impl")
-    import_module("jiuwen_memory.control.engine_impl")
-    import_module("jiuwen_memory.control.governance_impl")
-    import_module("jiuwen_memory.control.lifecycle_impl")
-    import_module("jiuwen_memory.control.membership_impl")
-    import_module("jiuwen_memory.control.permission_impl")
-    import_module("jiuwen_memory.control.policy_impl")
-    import_module("jiuwen_memory.control.scheduler_impl")
-    import_module("jiuwen_memory.control.job_impl")
-    import_module("jiuwen_memory.control.space_impl")
+    import_optional("jiuwen_memory.control.pipeline_impl")
+    import_optional("jiuwen_memory.control.engine_impl")
+    import_optional("jiuwen_memory.control.governance_impl")
+    import_optional("jiuwen_memory.control.lifecycle_impl")
+    import_optional("jiuwen_memory.control.membership_impl")
+    import_optional("jiuwen_memory.control.permission_impl")
+    import_optional("jiuwen_memory.control.policy_impl")
+    import_optional("jiuwen_memory.control.scheduler_impl")
+    import_optional("jiuwen_memory.control.job_impl")
+    import_optional("jiuwen_memory.control.space_impl")
     _REGISTERED = True

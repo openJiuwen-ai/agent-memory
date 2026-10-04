@@ -83,6 +83,9 @@ class SimpleQueryParser(QueryParser):
                     keywords.append(kw)
                     seen.add(kw)
 
+        if entities:
+            channels.append(RecallChannel.ENTITY)
+
         # 时间约束解析（event-time 窗口）：规则版，留 LLM 钩子（默认不启用）。
         time_from, time_to = parse_time(text)
 

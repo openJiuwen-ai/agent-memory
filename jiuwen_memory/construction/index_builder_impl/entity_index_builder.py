@@ -7,7 +7,9 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from uuid import uuid4
 
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.embedder.base import Embedder
+from jiuwen_memory.common.errors import BackendError, UnsupportedCapabilityError
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
@@ -27,13 +29,14 @@ from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
 from jiuwen_memory.common.type_def.scope import space_id_from_scope
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.construction.source_update import STRICT_ENTITY_WRITES
 from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
 
 _DEFAULT_LIST_LIMIT = 10000
-
+_DEFAULT_SEMANTIC_MATCH_THRESHOLD = 0.95
 
 # ---------------------------------------------------------------------------
 # 准入策略（原 entity_linker/admission.py）
@@ -106,17 +109,6 @@ class EntityLinkService:
     3. **str 化**：``memory_id`` 全程 ``unit.id``（str），
        ``linked_memory_ids`` 存 str，对齐召回侧 ``ScoredUnit.unit_id``。
 
-    **2026-08-12 改造**：
-    - 归并退化为 hash 精确 only。原三级匹配（hash 精确 → 向量语义归并 →
-      INSERT/LINK）砍掉向量语义归并阶段——hash 精确命中 → LINK；未命中 → INSERT
-      当新实体。不再算 entity embedding、不依赖 Embedder。同实体不同表述
-      （"Python" vs "Python 语言"）hash 不同会被建成多条记录，召回质量依赖
-      LLM 抽 entity 的表述稳定性。
-    - **砍掉 spaCy 兜底抽取**：``link_memories`` 只消费 ``unit.entities`` 明文字段
-      构造 ``EntityMention``；``unit.entities`` 为空的 unit 直接跳过（不入实体
-      索引）。不再持有 ``EntityExtractor``，构造函数删除 ``extractor`` 参数。实体
-      抽取职责完全前移到 LLM 写入侧（写入前抽好填进 ``unit.entities``）。
-
     recall 侧的 boost 逻辑迁到 ``EntityRecaller``，本类只管写入侧维护。
     """
 
@@ -124,11 +116,15 @@ class EntityLinkService:
         self,
         *,
         entity_store: EntityStore,
+        embedder: Embedder | None = None,
         admission_policy: EntityIndexAdmissionPolicy | None = None,
+        semantic_match_threshold: float = _DEFAULT_SEMANTIC_MATCH_THRESHOLD,
         list_limit: int = _DEFAULT_LIST_LIMIT,
     ) -> None:
         self._entity_store = entity_store
+        self._embedder = embedder
         self._admission_policy = admission_policy or EntityIndexAdmissionPolicy()
+        self._semantic_match_threshold = semantic_match_threshold
         self._list_limit = list_limit
 
     # ------------------------------------------------------------------
@@ -148,7 +144,9 @@ class EntityLinkService:
                 skipped_count += 1
                 logger.debug(
                     "entity_link_skipped_by_admission unit_id=%s tier=%s reason=%s",
-                    unit.id, unit.tier.value, admission.reason,
+                    unit.id,
+                    unit.tier.value,
+                    admission.reason,
                 )
                 continue
             admitted.append((unit, admission.text))
@@ -208,7 +206,8 @@ class EntityLinkService:
                 failed_count=result.failed_count + group_result.failed_count,
             )
         logger.info(
-            "entity_link_complete unit_count=%d extracted=%d inserted=%d updated=%d deleted=%d failed=%d",
+            "entity_link_complete unit_count=%d extracted=%d inserted=%d "
+            "updated=%d deleted=%d failed=%d",
             len(units), result.extracted_count, result.inserted_count,
             result.updated_count, result.deleted_count, result.failed_count,
         )
@@ -228,8 +227,14 @@ class EntityLinkService:
             entities = self._entity_store.find_by_linked_memory_id(
                 space_id, memory_id, filters=filters,
             )
-        except Exception:
-            logger.warning("entity_unlink_lookup_failed space_id=%s memory_id=%s", space_id, memory_id, exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "entity_unlink_lookup_failed space_id=%s memory_id=%s error_type=%s",
+                redact_for_log(space_id),
+                memory_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
             return EntityLinkResult(failed_count=1)
 
         # Phase 1: 分类——剩余非空则 UNLINK_UPDATE，空则 DELETE
@@ -256,21 +261,92 @@ class EntityLinkService:
         if pending_ops:
             try:
                 batch_result = self._entity_store.execute_operations(space_id, pending_ops)
-            except Exception:
+            except Exception as exc:
                 failed_count = len(pending_ops)
-                logger.warning("entity_unlink_batch_failed space_id=%s memory_id=%s op_count=%d",
-                               space_id, memory_id, len(pending_ops), exc_info=True)
+                logger.warning(
+                    "entity_unlink_batch_failed space_id=%s memory_id=%s "
+                    "op_count=%d error_type=%s",
+                    redact_for_log(space_id),
+                    memory_id,
+                    len(pending_ops),
+                    type(exc).__name__,
+                    exc_info=True,
+                )
             else:
                 failed_count = len(batch_result.failed_ids)
                 for failed_id in batch_result.failed_ids:
                     logger.warning("entity_unlink_failed entity_id=%s space_id=%s memory_id=%s",
-                                   str(failed_id), space_id, memory_id)
+                                   str(failed_id), redact_for_log(space_id), memory_id)
 
-        return EntityLinkResult(updated_count=updated_count, deleted_count=deleted_count, failed_count=failed_count)
+        return EntityLinkResult(
+            updated_count=updated_count, deleted_count=deleted_count, failed_count=failed_count,
+        )
 
     # ------------------------------------------------------------------
     # _link_group：两级匹配（hash 精确 → INSERT/LINK）
     # ------------------------------------------------------------------
+
+    def _semantic_lookup(
+            self,
+            space_id: str,
+            entity_text: str,
+            filters: EntityStoreFilters,
+    ) -> tuple[list[float] | None, EntityRecord | None, bool]:
+        """向量语义归并阶段：返回 (embedding, 匹配记录 | None, 是否临时失败)。
+
+        - embedder 为 None 或文本空 → hash only 模式，返回 (None, None, False)。
+        - 算 embedding 失败 → (None, None, False)，由调用方走 INSERT。
+        - search 抛 UnsupportedCapabilityError → 稳定的后端能力缺失，降级走
+          INSERT，返回 (embedding, None, False)。
+        - search 抛其他异常 → 临时故障，返回 (embedding, None, True)，由调用方
+          计 failed 不中断（不降级 INSERT，避免语义同实体被建成多条记录导致
+          召回 boost 翻倍）。
+        - score ≥ threshold → (embedding, match, False)，调用方走 LINK。
+        - score < threshold → (embedding, None, False)，调用方走 INSERT。
+        """
+        if self._embedder is None or not entity_text:
+            return None, None, False
+
+        try:
+            embedding = self._embedder.embed([entity_text])[0]
+        except Exception:
+            logger.warning(
+                "entity_embedding_failed entity_text=%r space_id=%s",
+                entity_text,
+                space_id,
+                exc_info=True,
+            )
+            return None, None, False
+
+        if embedding is None:
+            return None, None, False
+
+        try:
+            matches = self._entity_store.search(
+                space_id,
+                embedding,
+                top_k=1,
+                filters=filters,
+            )
+            if matches and matches[0].score >= self._semantic_match_threshold:
+                return embedding, matches[0].record, False
+            return embedding, None, False
+        except UnsupportedCapabilityError:
+            logger.debug(
+                "entity_semantic_search_unsupported entity_text=%r space_id=%s "
+                "backend has no kNN, falling back to INSERT",
+                entity_text,
+                space_id,
+            )
+            return None, None, False
+        except Exception:
+            logger.warning(
+                "entity_semantic_search_failed entity_text=%r space_id=%s",
+                entity_text,
+                space_id,
+                exc_info=True,
+            )
+            return embedding, None, True
 
     def _link_group(
         self,
@@ -293,7 +369,9 @@ class EntityLinkService:
                 key = hash_entity_text(normalized)
                 extracted_count += 1
                 if key not in entities_by_key:
-                    entities_by_key[key] = (mention.entity_type, mention.display_name, normalized, {unit.id})
+                    entities_by_key[key] = (
+                        mention.entity_type, mention.display_name, normalized, {unit.id},
+                    )
                 else:
                     entities_by_key[key][3].add(unit.id)  # ← unit.id（str）存进 set
 
@@ -307,15 +385,21 @@ class EntityLinkService:
                 filters=filters, limit=self._list_limit,
             )
             existing_by_hash = {r.entity_text_hash: r for r in existing if r.entity_text_hash}
-        except Exception:
+        except Exception as exc:
             # 查询失败不能降级成"全 INSERT"——查不到不等于不存在。若置
             # existing_by_hash={} 继续走循环，每个实体会走 INSERT 分支，对已
             # 存在的实体新建重复文档（同 hash 多条 EntityRecord，召回侧
             # find_by_entity_text_hash 命中多条，raw_contrib 累加翻倍，打分失真）。
             # 整组 abort + 计 failed：不造重复副作用，失败可见，下次同实体写入
             # 时查询恢复→命中→LINK 自愈。
-            logger.error("entity_exact_lookup_failed space_id=%s entity_count=%d abort group",
-                         space_id, len(entities_by_key), exc_info=True)
+            logger.error(
+                "entity_exact_lookup_failed space_id=%s entity_count=%d "
+                "abort_group error_type=%s",
+                redact_for_log(space_id),
+                len(entities_by_key),
+                type(exc).__name__,
+                exc_info=True,
+            )
             return EntityLinkResult(
                 extracted_count=extracted_count,
                 failed_count=len(entities_by_key),
@@ -328,13 +412,33 @@ class EntityLinkService:
         failed_count = 0
         for key, (entity_type, entity_text, _normalized, memory_ids) in entities_by_key.items():
             try:
+                # 阶段1 命中：hash 精确匹配 → LINK
                 match = existing_by_hash.get(key)
+                if match is None:
+                    # 阶段2: 向量语义归并——hash 未命中时算 embedding，search
+                    # top_k=1，score ≥ threshold 当同实体 LINK。embedder 为 None
+                    # 时 _semantic_lookup 直接返回 (None, None, False) → 走 INSERT。
+                    embedding, semantic_match, search_failed = self._semantic_lookup(
+                        space_id,
+                        entity_text,
+                        filters,
+                    )
+                    if search_failed:
+                        failed_count += 1
+                        continue
+                    match = semantic_match
+
                 if match is not None:
                     # LINK：追加新 unit_id（去重已有）
-                    ids_to_add = tuple(sorted(set(memory_ids) - set(match.linked_memory_ids), key=str))
+                    ids_to_add = tuple(sorted(
+                        set(memory_ids) - set(match.linked_memory_ids), key=str,
+                    ))
                     if ids_to_add:
                         pending_ops.append((
-                            EntityOperation(type=EntityOpType.LINK, record_id=match.id, link_memory_ids=ids_to_add),
+                            EntityOperation(
+                                type=EntityOpType.LINK, record_id=match.id,
+                                link_memory_ids=ids_to_add,
+                            ),
                             key,
                         ))
                         updated_count += 1
@@ -350,16 +454,23 @@ class EntityLinkService:
                             entity_text=entity_text,
                             entity_text_hash=key,
                             entity_type=entity_type,
-                            linked_memory_ids=tuple(sorted(memory_ids, key=str)),  # tuple[str]（unit.id）
+                            linked_memory_ids=tuple(sorted(memory_ids, key=str)),
                             filters=filters,
+                            embedding=embedding,
                         ),
                     ),
                     key,
                 ))
                 inserted_count += 1
-            except Exception:
+            except Exception as exc:
                 failed_count += 1
-                logger.warning("entity_link_failed entity_text_hash=%s space_id=%s", key, space_id, exc_info=True)
+                logger.warning(
+                    "entity_link_failed entity_text_hash=%s space_id=%s error_type=%s",
+                    key,
+                    redact_for_log(space_id),
+                    type(exc).__name__,
+                    exc_info=True,
+                )
 
         # 一次 bulk 提交整组
         if pending_ops:
@@ -370,17 +481,24 @@ class EntityLinkService:
                 hash_by_id[op_id] = key
             try:
                 batch_result = self._entity_store.execute_operations(space_id, ops)
-            except Exception:
+            except Exception as exc:
                 failed_count += len(pending_ops)
                 logger.warning(
-                    "entity_link_batch_failed space_id=%s op_count=%d",
-                    space_id, len(pending_ops), exc_info=True,
+                    "entity_link_batch_failed space_id=%s op_count=%d error_type=%s",
+                    redact_for_log(space_id),
+                    len(pending_ops),
+                    type(exc).__name__,
+                    exc_info=True,
                 )
             else:
                 failed_count += len(batch_result.failed_ids)
                 for failed_id in batch_result.failed_ids:
-                    logger.warning("entity_link_failed entity_text_hash=%s space_id=%s record_id=%s",
-                                   hash_by_id.get(failed_id), space_id, str(failed_id))
+                    logger.warning(
+                        "entity_link_failed entity_text_hash=%s space_id=%s record_id=%s",
+                        hash_by_id.get(failed_id),
+                        redact_for_log(space_id),
+                        str(failed_id),
+                    )
 
         return EntityLinkResult(
             extracted_count=extracted_count,
@@ -424,6 +542,8 @@ class EntityIndexBuilder(IndexBuilder):
         try:
             result = self._linker.link_memories(units)
         except Exception as exc:
+            if STRICT_ENTITY_WRITES.get():
+                raise
             # entity 是增强层（fulltext/vector 已落盘、真源 KV 已在前置 write
             # 落盘），失败不回滚、不阻断 write——与 update 路径同语义（update 的
             # unlink/link 失败也只 log 不抛）。但失败必须可见：用 error 级别 +
@@ -431,11 +551,15 @@ class EntityIndexBuilder(IndexBuilder):
             # 写入时 hash 精确匹配会重新命中并 LINK，有机会自愈。
             logger.error(
                 "EntityIndexBuilder: link_memories failed for %d units (entity index "
-                "stale, will self-heal on next write): %s", len(units), exc,
+                "stale, will self-heal on next write): error_type=%s",
+                len(units),
+                type(exc).__name__,
                 exc_info=True,
             )
             return
         if result.failed_count:
+            if STRICT_ENTITY_WRITES.get():
+                raise BackendError("Schema update entity linking failed")
             # 部分失败（如查询超时整组 abort）：不阻断 write，但 error 级别可见。
             logger.error(
                 "EntityIndexBuilder: link_memories partial failure for %d units: "
@@ -462,16 +586,32 @@ class EntityIndexBuilder(IndexBuilder):
             if unit.lifecycle == LifecycleState.SUPERSEDED:
                 continue
             try:
-                self._linker.unlink_memory(
+                result = self._linker.unlink_memory(
                     scope=unit.scope,
                     memory_id=unit.id,
                 )
+                if STRICT_ENTITY_WRITES.get() and result.failed_count:
+                    raise BackendError("Schema update entity unlinking failed")
             except Exception as exc:
-                logger.warning("EntityIndexBuilder: unlink_memory failed for unit %s: %s", unit.id[:8], exc)
+                if STRICT_ENTITY_WRITES.get():
+                    raise
+                logger.warning(
+                    "EntityIndexBuilder: unlink_memory failed for unit %s: error_type=%s",
+                    unit.id[:8],
+                    type(exc).__name__,
+                )
         try:
-            self._linker.link_memories(units)
+            result = self._linker.link_memories(units)
+            if STRICT_ENTITY_WRITES.get() and result.failed_count:
+                raise BackendError("Schema update entity linking failed")
         except Exception as exc:
-            logger.warning("EntityIndexBuilder: link_memories failed in update for %d units: %s", len(units), exc)
+            if STRICT_ENTITY_WRITES.get():
+                raise
+            logger.warning(
+                "EntityIndexBuilder: link_memories failed in update for %d units: error_type=%s",
+                len(units),
+                type(exc).__name__,
+            )
 
     def remove(
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
@@ -482,12 +622,20 @@ class EntityIndexBuilder(IndexBuilder):
         logger.info("EntityIndexBuilder: removing entity index for %d units", len(units))
         for unit in units:
             try:
-                self._linker.unlink_memory(
+                result = self._linker.unlink_memory(
                     scope=unit.scope,
                     memory_id=unit.id,
                 )
+                if STRICT_ENTITY_WRITES.get() and result.failed_count:
+                    raise BackendError("Schema update entity removal failed")
             except Exception as exc:
-                logger.warning("EntityIndexBuilder: unlink_memory failed for unit %s: %s", unit.id[:8], exc)
+                if STRICT_ENTITY_WRITES.get():
+                    raise
+                logger.warning(
+                    "EntityIndexBuilder: unlink_memory failed for unit %s: error_type=%s",
+                    unit.id[:8],
+                    type(exc).__name__,
+                )
 
     def remove_with_scope(self, unit_ids: list[str], scope: Scope) -> None:
         """已知 scope 时直接清理 entity 反向索引，避免 lookup。
@@ -501,12 +649,18 @@ class EntityIndexBuilder(IndexBuilder):
         """
         if not unit_ids:
             return
-        logger.info("EntityIndexBuilder: removing entity index for %d unit_ids (by scope)", len(unit_ids))
+        logger.info(
+            "EntityIndexBuilder: removing entity index for %d unit_ids (by scope)", len(unit_ids),
+        )
         for unit_id in unit_ids:
             try:
                 self._linker.unlink_memory(scope=scope, memory_id=unit_id)
             except Exception as exc:
-                logger.warning("EntityIndexBuilder: unlink_memory failed for unit_id %s: %s", unit_id[:8], exc)
+                logger.warning(
+                    "EntityIndexBuilder: unlink_memory failed for unit_id %s: error_type=%s",
+                    unit_id[:8],
+                    type(exc).__name__,
+                )
 
     def rebuild(self) -> None:
         return None

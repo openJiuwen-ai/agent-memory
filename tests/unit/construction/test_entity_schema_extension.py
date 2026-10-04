@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
     Temporal,
 )
+from jiuwen_memory.common.type_def.entity import EntitySearchResult
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.defaults import default_config_dict
@@ -693,8 +694,11 @@ def test_schema_properties_are_added_without_ordinary_dedup() -> None:
     assert index.ids == [source.id, property_unit.id]
     assert index.updated_ids == [source.id]
     assert index.update_modes == [IndexWriteMode.ALL]
-    assert storage.units[source.id].entities == ["ExistingEntity", "Alice", "occupation"]
+    # schema_entity_name 写回 source.entities；schema_property_name 刻意排除，
+    # 避免共享属性名被当实体建链（BUG-ERC-1001），它仍保留在 property unit 自身元数据上。
+    assert storage.units[source.id].entities == ["ExistingEntity", "Alice"]
     assert storage.units[property_unit.id].entities == []
+    assert storage.units[property_unit.id].system_metadata["schema_property_name"] == "occupation"
 
 
 class _MemoryEntityStore(EntityStore):
@@ -760,6 +764,17 @@ class _MemoryEntityStore(EntityStore):
                 )
                 successful.append(existing.id)
         return EntityBatchResult(successful_ids=successful, failed_ids=[])
+
+    def search(
+        self,
+        _space_id: str,
+        _query_vector: list[float],
+        *,
+        top_k: int,
+        filters: EntityStoreFilters,
+    ) -> list[EntitySearchResult]:
+        del top_k, filters
+        return []
 
 
 def test_source_entities_feed_the_official_entity_reverse_index() -> None:
@@ -930,7 +945,7 @@ def test_schema_enabled_assembly_runs_source_first_property_extraction(monkeypat
     )
     assert source.system_metadata["schema_source_evidence"] is True
     assert property_unit.content == "On 2023-08-03, Alice became a software engineer"
-    assert source.entities == ["Alice", "position_event"]
+    assert source.entities == ["Alice"]
     assert property_unit.entities == []
     assert property_unit.system_metadata["schema_entity_name"] == "Alice"
     assert property_unit.system_metadata["schema_entity_type"] == "user"

@@ -4,11 +4,10 @@
 import 各实现模块即触发其 ``@FusionProducer.register(...)`` 自注册；本包只对外暴露工厂 FusionProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.storage.fusion import FusionProducer
 
-import_module(".in_memory_fusion_store", __name__)
-import_module(".milvus_graph_fusion", __name__)
+import_optional(".in_memory_fusion_store", __name__)
+import_optional(".milvus_graph_fusion", __name__)
 
 __all__ = ["FusionProducer"]

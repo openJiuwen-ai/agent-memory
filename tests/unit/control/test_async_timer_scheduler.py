@@ -350,39 +350,44 @@ def test_submit_timer_different_kind_appends_new_entry() -> None:
 
 
 def test_submit_timer_restarts_dead_timer_task_on_update() -> None:
-    """回归：sync write 经子线程 asyncio.run 跑完会关闭临时循环，
-    绑定到该循环的 wheel.task 被取消（done()=True）。
+    """回归：Timer task 因故消亡（如旧版临时 loop 关闭、协程异常）后，
+    再次 submit 同 scope 同 kind（update 分支）应通过 ``_ensure_timer_task``
+    重启 Timer 协程——否则 entry 永不再触发。
 
-    之后再次 submit 同 scope 同 kind（update 分支）应通过
-    ``_ensure_timer_task`` 重启 Timer 协程——否则 entry 永不再触发。
-
-    复现：submit 起一个 wheel.task → 显式 cancel + await 让取消传播 →
-    再 submit 同 kind（interval 不同以走 update 分支）→ 新 wheel.task
-    应被创建且 not done。
+    Timer task 现绑定在 Scheduler 的守护 loop 上（与调用方 loop 解耦），
+    模拟 task 消亡须在守护 loop 上取消：经 run_coroutine_threadsafe 在
+    守护 loop 内 cancel + await 让取消传播。
     """
     scheduler = AsyncTimerScheduler(tick_interval=1)
     scope = Scope(user="u1")
     job1 = _RecordingJob(scope, interval=10)
     job2 = _RecordingJob(scope, interval=20)  # 同 kind，走 update 分支
 
+    async def _kill_task_on_daemon_loop(wheel: TimerWheel) -> None:
+        """在守护 loop 上取消 Timer task 并让取消传播。"""
+        task = wheel.task
+        assert task is not None and not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.done()  # 旧 task 已死
+
     async def _run():
         jid1 = await scheduler.submit(job1, Channel.BACKGROUND)
         await asyncio.sleep(0.05)  # 让 Timer 协程起跑
         scope_key = scheduler._scope_key(scope)
         wheel = scheduler._wheels[scope_key]
-        prev_task = wheel.task
-        assert prev_task is not None and not prev_task.done()
-        # 模拟临时循环关闭：取消 Timer task 并让取消传播
-        prev_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await prev_task
-        assert wheel.task.done()  # 旧 task 已死
+        # 在守护 loop 上模拟 task 消亡
+        kill = asyncio.run_coroutine_threadsafe(
+            _kill_task_on_daemon_loop(wheel), scheduler._runner.ensure_loop()
+        )
+        kill.result(timeout=5)
         # 再 submit 同 kind——update 分支应通过 _ensure_timer_task 重启
         jid2 = await scheduler.submit(job2, Channel.BACKGROUND)
         await asyncio.sleep(0.05)
         assert jid1 == jid2  # 复用 entry job_id
         new_task = wheel.task
-        assert new_task is not prev_task  # 新 Task 对象
+        assert new_task is not None
         assert not new_task.done()  # 新 Task 存活
         return jid1
 
@@ -407,17 +412,25 @@ def test_submit_timer_restarts_dead_timer_task_on_add_new_kind() -> None:
     job_a = _JobA(scope, interval=10)
     job_b = _JobB(scope, interval=10)  # 不同 kind，走 add 分支
 
+    async def _kill_task_on_daemon_loop(wheel: TimerWheel) -> None:
+        """在守护 loop 上取消 Timer task 并让取消传播。"""
+        task = wheel.task
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
     async def _run():
         await scheduler.submit(job_a, Channel.BACKGROUND)
         await asyncio.sleep(0.05)
         scope_key = scheduler._scope_key(scope)
         wheel = scheduler._wheels[scope_key]
         prev_task = wheel.task
-        # 模拟临时循环关闭
-        prev_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await prev_task
-        assert wheel.task.done()
+        # 在守护 loop 上模拟 task 消亡
+        kill = asyncio.run_coroutine_threadsafe(
+            _kill_task_on_daemon_loop(wheel), scheduler._runner.ensure_loop()
+        )
+        kill.result(timeout=5)
+        assert prev_task.done()
         # 加不同 kind——else 分支应通过 _ensure_timer_task 重启
         await scheduler.submit(job_b, Channel.BACKGROUND)
         await asyncio.sleep(0.05)

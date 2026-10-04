@@ -4,11 +4,10 @@
 import 各实现模块即触发其 ``@AbstractorProducer.register(...)`` 自注册；本包只对外暴露工厂 AbstractorProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.construction.abstractor import AbstractorProducer
 
-import_module(".concat_abstractor", __name__)
-import_module(".llm_abstractor", __name__)
+import_optional(".concat_abstractor", __name__)
+import_optional(".llm_abstractor", __name__)
 
 __all__ = ["AbstractorProducer"]

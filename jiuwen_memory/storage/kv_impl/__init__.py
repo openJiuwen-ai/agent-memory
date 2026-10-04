@@ -5,14 +5,13 @@ import 各实现模块即触发其 ``@KvProducer.register(...)`` 自注册；
 本包只对外暴露工厂 KvProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.storage.kv import KvProducer
 
-import_module(".in_memory_kv_store", __name__)
-import_module(".sqlite_kv_store", __name__)
-import_module(".redis_kv", __name__)
-import_module(".encrypted_kv_store", __name__)
-import_module(".postgres_kv", __name__)
+import_optional(".in_memory_kv_store", __name__)
+import_optional(".sqlite_kv_store", __name__)
+import_optional(".redis_kv", __name__)
+import_optional(".encrypted_kv_store", __name__)
+import_optional(".postgres_kv", __name__)
 
 __all__ = ["KvProducer"]

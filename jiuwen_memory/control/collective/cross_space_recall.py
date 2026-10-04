@@ -41,7 +41,7 @@ import asyncio
 from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Sequence
 
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
 from jiuwen_memory.common.type_def import ChannelError, FilterClause, Scope, and_merge
 from jiuwen_memory.retrieval.cross_space import allocate_quota, merge, space_error
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -121,8 +121,9 @@ async def recall_spaces(
     # 但融合器是可替换实现，回传非 ``RetrievedItem`` 的对象时直接取属性会在这一行抛
     # AttributeError，把整次跨空间检索带失败。日志不该有让主流程失败的可能。
     logger.info(
-        "cross-space recall: per_space=%s failed=%s returned=%d ids=%s",
-        {space: len(result.items) for space, result in results},
+        "cross-space recall: spaces=%d per_space_counts=%s failed=%s returned=%d ids=%s",
+        len(results),
+        [len(result.items) for _, result in results],
         [error.source for error in failures],
         len(merged.items),
         [str(getattr(item, "unit_id", ""))[:8] for item in merged.items],
@@ -154,9 +155,18 @@ async def _recall_one(
     # 谓词筛空还是本来就召不到——多个召回器同时归零只可能来自共用的谓词，但具体是哪一条
     # 谓词无处可查。
     logger.info(
-        "cross-space recall: space=%s quota=%d clauses=%s",
-        target.scope.space,
+        "cross-space recall: scope=%s quota=%d clauses=%s",
+        scope_for_log(target.scope),
         rq.top_k,
-        [(c.field, getattr(c.op, "value", c.op), c.value) for c in target.clauses],
+        metadata_for_log(
+            [
+                {
+                    "field": clause.field,
+                    "op": getattr(clause.op, "value", clause.op),
+                    "value": clause.value,
+                }
+                for clause in target.clauses
+            ]
+        ),
     )
     return await recall(target.scope, rq)

@@ -4,12 +4,11 @@
 import 各实现模块即触发其 ``@FeatureExtractorProducer.register(...)`` 自注册；本包只对外暴露工厂 FeatureExtractorProducer。
 """
 
-from importlib import import_module
-
+from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractorProducer
 
-import_module(".keyword_feature_extractor", __name__)
-import_module(".spacy_feature_extractor", __name__)
-import_module(".hanlp_feature_extractor", __name__)
+import_optional(".keyword_feature_extractor", __name__)
+import_optional(".spacy_feature_extractor", __name__)
+import_optional(".hanlp_feature_extractor", __name__)
 
 __all__ = ["FeatureExtractorProducer"]

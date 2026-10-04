@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-14 |
+| 最近一次修订日期 | 2026-09-15 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -190,7 +190,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权在过渡期委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
 21. **Space 删除事务在 Control**：`delete_space` 鉴权后调用 `SpaceLifecycleService`（先 `MemoryEngine.purge_space`，再 `SpaceManager.delete`，并把 purge 条数累加进 `deleted_counts` 的 `memory` / `index` / `kv`）。purge 失败则不删 space；purge 成功而 metadata delete 失败时抛 `PartialFailureError`（`retry_action=delete_space`），不得报告完整成功。重试同一入口：purge 对空空间幂等，第二步再删元数据。API 只授权、调用该端口、使 membership 缓存失效并记录入口审计；不得在 API 内联 purge+delete 或实现索引删除/存储遍历。
 22. **业务逻辑下沉可验证**：新增数据面语义时，API 侧只增加契约校验/参数装配/授权映射，具体行为必须在 `MemoryEngine` 或对应 Control/Construction/Retrieval 算子中实现。API 单测应使用 spy/mock 验证委托，Control 单测应覆盖真实行为，禁止只在 API 单测中覆盖业务分支。
-23. **Access 只依赖本包**：`jiuwen_memory_entry/` 与 `jiuwen_memory_adapter/` 只 `import jiuwen_memory.api`，不得 import `jiuwen_memory.api.memory_api_impl` 或其他内核包。协议转换所需的 DTO、枚举、异常、`legacy_request_context` / `Credentials` 由本包重导出。公开装配是 `assemble` / `assemble_runtime`（`config=dict | Config | None`），Access composition root（`jiuwen_memory_entry/core/server.py`）不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI` 不是公开导出；`assemble_runtime` 与 `Server` 不暴露 `kv` / `storage` / `space`。
+23. **Access 只依赖本包**：`jiuwen_memory_entry/` 与 `jiuwen_memory_adapter/` 只 `import jiuwen_memory.api`，不得 import `jiuwen_memory.api.memory_api_impl` 或其他内核包。协议转换所需的 DTO、枚举、异常、`legacy_request_context` / `Credentials`，以及日志脱敏辅助函数 `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log` 由本包重导出。这四个辅助函数只处理 Python logging 参数，不增加 HTTP DTO 字段，也不改变 `MemoryAPI` 方法签名或响应。公开装配是 `assemble` / `assemble_runtime`（`config=dict | Config | None`），Access composition root（`jiuwen_memory_entry/core/server.py`）不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI` 不是公开导出；`assemble_runtime` 与 `Server` 不暴露 `kv` / `storage` / `space`。
 
 ## 接口契约
 
@@ -549,6 +549,15 @@ def update(
 ```
 
 修正记忆：鉴权 UPDATE→委托 Engine。`MemoryPatch` 仅非 None 字段生效：`content` / `tier` / `tags`（整体替换）/ `system_metadata`（合并）/ `user_metadata`（合并）/ `t_valid` / `t_invalid` / `mode`。
+
+Schema source 的正文更新还会同步协调同 scope 的 Schema property 与实体关联，保留
+OVERWRITE/SUPERSEDE 的 ID、版本和有效期语义。接口签名与返回类型不变，`content=""`
+表示替换为空正文；不修改原始对话。普通记忆、直接修改 property 和非正文更新保持原行为。
+源记录继续使用 UPDATE 鉴权；派生记录的覆盖/版本修订、新增和删除分别核验 UPDATE、
+WRITE 和 DELETE，并在首次业务写入前全部完成。配置失效、抽取不完整或匹配歧义报错；
+提交中断返回 `PartialFailureError`，可能留下部分写入；再次操作前需检查受影响记录，
+不承诺断点恢复、固定 ID 重试或原子回滚。
+决策与边界见 [F08](../features/construction/F08-entity-schema-extension.md)。
 
 **状态：已设计、尚未实现**（`MemoryPatch.hierarchy`）
 

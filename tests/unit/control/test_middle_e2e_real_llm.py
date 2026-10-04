@@ -241,7 +241,7 @@ def _sync_write_via_thread(
         content,
         SCOPE,
         security=legacy_request_context(identity),
-        metadata=metadata,
+        system_metadata=metadata,
     )
 
 
@@ -270,7 +270,7 @@ async def _async_write(
         content,
         SCOPE,
         security=legacy_request_context(identity),
-        metadata=metadata,
+        system_metadata=metadata,
     )
 
 
@@ -310,9 +310,11 @@ _STEP4_CONTENT = "dave enjoys hiking on weekends"  # async write middle=true
 _MIDDLE_INTERVAL_ASYNC_TIMER = 30
 _TICK_INTERVAL_ASYNC_TIMER = 2
 
-# 等待 Timer 触发的 sleep 时长——middle_interval=30s + 连续性检测/evolve 约 12-18s；
-# 50s 留余量给 drain 跑完。
-_TIMER_WAIT_SECONDS = 50
+# 等待 Timer 触发的 sleep 时长——middle_interval=30s + 连续性检测/evolve 的 LLM 调用。
+# 预算按"单次 LLM 调用 ~20s"（慢模型如实测 GLM-5.1）估算：Timer t≈30s 触发后，
+# Job 需 1 次连续性检测 + 1-2 次批抽取（串行依赖），最坏 ~60s；sleep 120s 留余量。
+# 快模型（调用 <5s）下本测试更早满足断言，只是多等一会儿。
+_TIMER_WAIT_SECONDS = 120
 
 
 # -- 用例 1: InMemoryEngine + InProcessScheduler ------------------------- #

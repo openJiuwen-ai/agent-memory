@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-09-15 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -17,6 +17,29 @@
 IndexBuilder 以带命名空的逻辑路径投影两类字段。
 
 ## 范围 / 边界
+
+### 可选 Schema source 更新能力
+
+`SourceUpdateSupport` 提供 Schema 配置身份、只读准备及计划提交三个内部契约：
+
+- `source_schema_identity() -> tuple[str, str]`：返回 Schema 名和版本。
+- `prepare_source_update(old, new, *, mode) -> SourceUpdatePlan | None`：
+  使用完整抽取结果产生本次请求的变更计划；不写业务数据或持久化操作状态。
+- `commit_source_update(plan, *, index_for) -> MemoryUnit`：调用方完成全部权限校验后，
+  使用按 unit 路由的 IndexBuilder 提交并返回目标记忆。
+
+`SourceExtraction` 包含独立的 `properties` 和 `entities`，允许实体没有 property。
+`SourceUpdatePlan` 包含操作 ID、source 前后版本及按序 `UnitChange`；
+每个 `UnitChange` 的 before/after 分别可空，表达新增、
+更新或删除。这不是公开 MemoryAPI 参数，不能由外部调用方直接提交任意计划。
+
+更新专用抽取不得采用部分成功结果推断属性消失。实体结果整体替换 source 的列表，
+不混入属性名称。派生写入沿用 source 的更新模式和限定来源，不递归改写其他记忆。
+提交中断通过 `PartialFailureError` 报告，可能留下部分结果；不保存恢复记录，不承诺
+固定 ID 重试、断点续写或跨后端事务，也不拦截后续 ADD 对旧证据的再次抽取。
+关联决策见 [F08](../features/construction/F08-entity-schema-extension.md)。
+
+### 常规范围
 
 **管什么**：
 - 真源落盘（统一经 IndexBuilder 写入记忆单元及派生索引）
@@ -152,8 +175,9 @@ Schema 抽取先选择本轮相关 entity type/property，再使用同一选中�
 属性名、非空事实文本，以及同 Scope 输入中的一个或多个 `source_unit_ids`。
 
 每个合法属性生成一个独立 MemoryUnit。属性 Unit 的 `entities` 为空；Schema 名称、版本、
-实体类型和属性名写系统 metadata。属性成功落盘后，实体明文和属性名聚合写回相应 Source
-MemoryUnit 的 `entities`，并经 `IndexBuilder.update(mode=ALL)` 同时回写本体和刷新检索索引；
+实体类型和属性名写系统 metadata。属性成功落盘后，仅实体明文聚合写回相应 Source
+MemoryUnit 的 `entities`，属性名不得进入实体列表；经 `IndexBuilder.update(mode=ALL)`
+同时回写本体和刷新检索索引；
 来源业务 metadata 仍按通用派生规则写入 user metadata。
 完整可解析的事件日期/时间可写 `temporal.t_event`，但时间不是属性合法性的必要条件。
 

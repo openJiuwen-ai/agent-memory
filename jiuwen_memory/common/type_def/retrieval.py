@@ -24,6 +24,7 @@ class RecallChannel(str, Enum):
     DOCUMENT = "document"
     KEYWORD = "keyword"
     VECTOR = "vector"
+    ENTITY = "entity"
     GRAPH = "graph"
     TEMPORAL = "temporal"
     SPACE = "space"

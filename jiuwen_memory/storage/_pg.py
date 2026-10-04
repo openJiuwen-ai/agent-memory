@@ -31,6 +31,7 @@ from jiuwen_memory.common.errors import (
     HealthCheckError,
     ValidationError,
 )
+from jiuwen_memory.common.log import install_privacy_filter
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterExpr,
@@ -44,6 +45,7 @@ from jiuwen_memory.common.type_def import (
 from ._support import scope_dims
 
 logger = logging.getLogger(__name__)
+install_privacy_filter(logger)
 
 _SCHEMA_LOCK_KEY = "agent-memory:postgres-storage:schema"
 _CMP_OPS = {

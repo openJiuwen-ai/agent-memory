@@ -23,7 +23,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from jiuwen_memory.common.errors import NotFoundError
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import (
+    get_logger,
+    metadata_for_log,
+    scope_for_log,
+)
+from jiuwen_memory.common.loop_runner import LoopRunner
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.jobs import Job
@@ -66,10 +71,19 @@ class AsyncTimerScheduler(Scheduler):
 
     ``tick_interval`` 为 int 秒数——定时精度上限。``interval`` 同样 int，
     与 :class:`~control.jobs.Job` 的 ``interval: int`` 对齐。
+
+    Timer/drain Task 绑定在 Scheduler 自有的常驻守护 loop 上（``LoopRunner``），
+    与调用方 loop 完全解耦——sync 写入经 ``asyncio.run`` 建临时 loop、返回即
+    关闭的历史问题（绑在临时 loop 上的 Timer 随之消亡、中期转换永不触发）
+    由此外科式消除。submit/cancel 跨 loop 提交到守护 loop，所有状态变更
+    收敛到单 loop 单线程，per scope 串行性保证更纯粹。
     """
 
     def __init__(self, tick_interval: int = 10) -> None:
         self._tick_interval = tick_interval
+
+        # 常驻守护 loop——Timer/drain Task 的宿主，随进程存活（daemon 线程）。
+        self._runner = LoopRunner(thread_name="agent-memory-scheduler-loop")
 
         # per scope 三件套：queue（FIFO 队列）+ drain_task（单消费协程）
         # 同 scope 串行性由"per scope 单 drain Task"保证——单线程事件循环 + 单
@@ -109,7 +123,18 @@ class AsyncTimerScheduler(Scheduler):
             )
 
     async def submit(self, job: Job, channel: Channel) -> str:
+        # 先在调用方上下文 fail fast——校验是纯同步逻辑，不依赖 loop。
         self.validate(job)
+        # 跨 loop 提交到守护 loop：_submit_on_loop 内部的 create_task 落在守护
+        # loop 上，Timer/drain 生命周期与调用方 loop（可能是 asyncio.run 的
+        # 临时 loop）解耦。async 调用方经 wrap_future 在自己的 loop 上等待。
+        future = asyncio.run_coroutine_threadsafe(
+            self._submit_on_loop(job, channel), self._runner.ensure_loop()
+        )
+        return await asyncio.wrap_future(future)
+
+    async def _submit_on_loop(self, job: Job, channel: Channel) -> str:
+        """守护 loop 上执行的实际提交逻辑（原 submit 主体）。"""
         scope_key = self._scope_key(job.scope)
         if job.interval > 0:
             return self._submit_timer(scope_key, job, channel)
@@ -126,7 +151,22 @@ class AsyncTimerScheduler(Scheduler):
 
         - 一次性任务：标记 JobInfo.status=CANCELLED（执行中或已完成的忽略）
         - 定时任务：标记 entry.is_done=True + 从 entries 移除（下次 tick 不再触发）
+
+        串行化到守护 loop——cancel 的 entries.remove 与 Timer 协程的
+        entries 原地清理若在不同线程并发执行存在竞态，收敛到单 loop 消除。
+
+        .. warning::
+            本方法**阻塞调用线程**直到守护 loop 上的取消协程完成，**不可从守护
+            loop 自身的协程内调用**（如 drain task 里取消另一个 job）——
+            ``run_coroutine_threadsafe`` 提交的协程要等当前协程让出才能被调度，
+            而当前线程正阻塞在 ``future.result()`` 上，互相等待即死锁。
+            仅支持从守护 loop 之外的外部 sync 上下文调用（HTTP handler 线程、
+            调用方主线程 / 临时请求 loop 等）。在守护 loop 协程内取消请直接
+            ``await self._cancel_on_loop(job_id)``。
         """
+        self._runner.run(self._cancel_on_loop(job_id))
+
+    async def _cancel_on_loop(self, job_id: str) -> None:
         info = self._jobs.get(job_id)
         if info is not None and info.status == JobStatus.PENDING:
             info.status = JobStatus.CANCELLED
@@ -143,7 +183,7 @@ class AsyncTimerScheduler(Scheduler):
                     logger.info(
                         "AsyncTimerScheduler.cancelled timer: job_id=%s scope=%s",
                         job_id,
-                        wheel.scope_key,
+                        scope_for_log(wheel.scope_key),
                     )
                     return
 
@@ -164,7 +204,7 @@ class AsyncTimerScheduler(Scheduler):
         logger.info(
             "AsyncTimerScheduler.submit_once: job_id=%s scope=%s kind=%s",
             job_id,
-            scope_key,
+            scope_for_log(scope_key),
             type(job).__name__,
         )
         return job_id
@@ -199,7 +239,9 @@ class AsyncTimerScheduler(Scheduler):
                 info.status = JobStatus.SUCCEEDED
                 logger.info(
                     "AsyncTimerScheduler.succeeded: job_id=%s kind=%s scope=%s",
-                    job_id, type(job).__name__, scope_key,
+                    job_id,
+                    type(job).__name__,
+                    scope_for_log(scope_key),
                 )
             except asyncio.CancelledError:
                 # 事件循环关闭 / 主动 cancel Task——把状态 + 日志打全再重新 raise，
@@ -208,7 +250,9 @@ class AsyncTimerScheduler(Scheduler):
                 info.detail["cancelled_at"] = self._now_iso()
                 logger.info(
                     "AsyncTimerScheduler.cancelled_by_loop_shutdown: job_id=%s kind=%s scope=%s",
-                    job_id, type(job).__name__, scope_key,
+                    job_id,
+                    type(job).__name__,
+                    scope_for_log(scope_key),
                 )
                 raise
             except Exception as exc:
@@ -216,8 +260,10 @@ class AsyncTimerScheduler(Scheduler):
                 info.detail["error_type"] = type(exc).__name__
                 info.detail["error"] = str(exc)
                 logger.warning(
-                    "AsyncTimerScheduler.failed: job_id=%s kind=%s error_type=%s error=%s",
-                    job_id, type(job).__name__, type(exc).__name__, exc,
+                    "AsyncTimerScheduler.failed: job_id=%s kind=%s error_type=%s",
+                    job_id,
+                    type(job).__name__,
+                    type(exc).__name__,
                 )
             finally:
                 info.detail["finished_at"] = self._now_iso()
@@ -260,14 +306,17 @@ class AsyncTimerScheduler(Scheduler):
                         info.status = JobStatus.RUNNING
                         info.detail["interval"] = str(job.interval)
                     self._ensure_timer_task(wheel)
+                    timer_metadata = {
+                        "effective_interval": job.interval,
+                        "interval_changed": interval_changed,
+                    }
                     logger.info(
-                        "AsyncTimerScheduler: update timer scope=%s kind=%s interval=%s "
-                        "was_done=%s interval_changed=%s",
-                        scope_key,
+                        "AsyncTimerScheduler: update timer scope=%s kind=%s "
+                        "was_done=%s scheduler_metadata=%s",
+                        scope_for_log(scope_key),
                         kind,
-                        job.interval,
                         was_done,
-                        interval_changed,
+                        metadata_for_log(timer_metadata),
                     )
                     return entry.job_id
 
@@ -298,20 +347,22 @@ class AsyncTimerScheduler(Scheduler):
             self._wheels[scope_key] = wheel
             wheel.entries.append(entry)
             wheel.task = asyncio.create_task(self._timer_loop(wheel))
+            timer_metadata = {"effective_interval": job.interval}
             logger.info(
-                "AsyncTimerScheduler: start timer scope=%s kind=%s interval=%s",
-                scope_key,
+                "AsyncTimerScheduler: start timer scope=%s kind=%s scheduler_metadata=%s",
+                scope_for_log(scope_key),
                 kind,
-                job.interval,
+                metadata_for_log(timer_metadata),
             )
         else:
             wheel.entries.append(entry)  # append 原子（GIL），不抢 lock
             self._ensure_timer_task(wheel)
+            timer_metadata = {"effective_interval": job.interval}
             logger.info(
-                "AsyncTimerScheduler: add timer scope=%s kind=%s interval=%s",
-                scope_key,
+                "AsyncTimerScheduler: add timer scope=%s kind=%s scheduler_metadata=%s",
+                scope_for_log(scope_key),
                 kind,
-                job.interval,
+                metadata_for_log(timer_metadata),
             )
         return job_id
 
@@ -322,7 +373,7 @@ class AsyncTimerScheduler(Scheduler):
             wheel.task = asyncio.create_task(self._timer_loop(wheel))
             logger.info(
                 "AsyncTimerScheduler: restart timer scope=%s (was %s)",
-                wheel.scope_key,
+                scope_for_log(wheel.scope_key),
                 "None" if prev is None else "done",
             )
 
@@ -352,7 +403,8 @@ class AsyncTimerScheduler(Scheduler):
                         logger.debug(
                             "AsyncTimerScheduler: skip tick kind=%s scope=%s "
                             "(same kind already queued)",
-                            kind, wheel.scope_key,
+                            kind,
+                            scope_for_log(wheel.scope_key),
                         )
                         continue
                     # 到点——生成一次性实例塞 queue
@@ -377,7 +429,7 @@ class AsyncTimerScheduler(Scheduler):
             if not wheel.entries or all(e.is_done for e in wheel.entries):
                 logger.info(
                     "AsyncTimerScheduler: wheel all done, exit scope=%s",
-                    wheel.scope_key,
+                    scope_for_log(wheel.scope_key),
                 )
                 break
 

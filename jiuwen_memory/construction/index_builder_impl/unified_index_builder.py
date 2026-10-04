@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
+from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     T_EVENT_UNKNOWN,
@@ -36,10 +37,16 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.storage.domain_store import DomainStore
+from jiuwen_memory.storage.entity_store import EntityStoreProducer
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 from ._index_ops import group_units_by_scope, vectorize_unit
+from .entity_index_builder import (
+    EntityIndexAdmissionPolicy,
+    EntityIndexBuilder,
+    EntityLinkService,
+)
 
 logger = get_logger(__name__)
 
@@ -54,16 +61,20 @@ class UnifiedIndexBuilder(IndexBuilder):
         vector_enabled: bool = True,
         chunker: Chunker | None = None,
         embedder: Embedder | None = None,
+        entity_linker: EntityLinkService | None = None,
+        feature_extractor: FeatureExtractor | None = None,
     ) -> None:
         # 向量开关打开就必须有切片/向量化插件：缺了在装配期暴露，不拖到首次写入。
         if vector_enabled and (chunker is None or embedder is None):
             raise ValueError(
-                "UnifiedIndexBuilder: vector_enabled=True 需要注入 chunker 与 embedder"
+                "UnifiedIndexBuilder: vector_enabled=True need chunker and embedder"
             )
         self._domain = domain_store
         self._vector_enabled = vector_enabled
         self._chunker = chunker
         self._embedder = embedder
+        self._entity_builder = EntityIndexBuilder(entity_linker) if entity_linker is not None else None
+        self._feature_extractor = feature_extractor
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
@@ -77,6 +88,10 @@ class UnifiedIndexBuilder(IndexBuilder):
         self._maybe_vectorize(units)
         for scope, scoped_units in group_units_by_scope(units):
             self._domain.add(scope, scoped_units, mode=mode)
+        if self._entity_builder is not None:
+            for unit in units:
+                self._enrich_entities(unit)
+            self._entity_builder.build(units, mode=mode)
 
     def update(
         self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
@@ -91,6 +106,8 @@ class UnifiedIndexBuilder(IndexBuilder):
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
     ) -> None:
         """按 Scope 分组委托 ``DomainStore.delete``；``mode`` 原样下传，同 :meth:`build`。"""
+        if self._entity_builder is not None:
+            self._entity_builder.remove(units, mode=mode)
         for scope, scoped_units in group_units_by_scope(units):
             self._domain.delete(scope, [unit.id for unit in scoped_units], mode=mode)
 
@@ -147,6 +164,31 @@ class UnifiedIndexBuilder(IndexBuilder):
                 for chunk, vector in pairs
             ]
 
+    def _enrich_entities(self, unit: MemoryUnit) -> None:
+        """用 feature_extractor 抽取实体填 ``unit.entities``。
+
+        UPDATE 路径不经 evolver，``unit.entities`` 为空时由本方法补抽。
+        CREATE 路径 evolver 已填充时 ``unit.entities`` 非空，守卫跳过避免重复抽取。
+        """
+        if self._feature_extractor is None or not unit.content:
+            return
+        if unit.entities:
+            return
+        try:
+            feature_set = self._feature_extractor.extract(unit.content)
+        except Exception:
+            logger.warning("entity_enrich_failed unit_id=%s", unit.id, exc_info=True)
+            return
+        entity_texts = [e.text for e in feature_set.entities if e.text]
+        if not entity_texts:
+            return
+        seen: set[str] = set()
+        unique: list[str] = []
+        for t in entity_texts:
+            if t not in seen:
+                seen.add(t)
+                unique.append(t)
+        unit.entities = unique
 
 # -- 注册到 IndexBuilderProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
@@ -159,6 +201,31 @@ def _build(config):
     if vector_enabled:
         chunker = ChunkerProducer.dep(config, default="fixed_window")
         embedder = EmbedderProducer.dep(config, default="hashing")
+
+    # entity_linker 注入：entity_enabled 默认 False（需显式开启 + EntityStore 后端
+    # 可解析）。与 hybrid_index_builder._build 对称——两侧读取同一 globals 开关，
+    # 保证写入侧建索引与召回侧挂 recaller 同时开或同时关，不分裂。
+    entity_linker = None
+    feature_extractor = None
+    if config.get("entity_enabled", False):
+        try:
+            entity_store = EntityStoreProducer.dep(config, default="elasticsearch")
+            if entity_store is not None:
+                entity_embedder = EmbedderProducer.dep(config, default="hashing")
+                entity_linker = EntityLinkService(
+                    entity_store=entity_store,
+                    embedder=entity_embedder,
+                    admission_policy=EntityIndexAdmissionPolicy(),
+                    semantic_match_threshold=config.get("entity_semantic_match_threshold", 0.95),
+                )
+                # 装配 feature_extractor，用于 update 路径实体补抽
+                feature_extractor = FeatureExtractorProducer.dep(config, default="keyword")
+        except Exception as exc:
+            logger.warning("UnifiedIndexBuilder entity_linker init skipped, entity_enabled config failed",
+                               exc_info=True)
+            entity_linker = None
+            feature_extractor = None
+
     return UnifiedIndexBuilder(
         StoreManagerProducer.resolve(config).domain_store(
             resolve_name(config, "domain_store")
@@ -166,4 +233,6 @@ def _build(config):
         vector_enabled=vector_enabled,
         chunker=chunker,
         embedder=embedder,
+        entity_linker=entity_linker,
+        feature_extractor=feature_extractor,
     )

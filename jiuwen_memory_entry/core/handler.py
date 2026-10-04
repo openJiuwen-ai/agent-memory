@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Legacy verb dispatch for MCP and historical in-process callers.
+"""Legacy verb dispatch for historical in-process callers.
 
 ``dispatch(srv, request) -> (status, body)`` routes a structured request to the
 assembled :class:`~server.Server`'s ``MemoryAPI`` and shapes the compatibility
-envelope consumed by legacy surfaces. HTTP and CLI bypass this module and derive their
-JSON contract directly from ``MemoryAPI``. Routing remains a table (A20 "route
+envelope consumed by legacy surfaces. HTTP, CLI and MCP bypass this module and
+derive their JSON contract directly from ``MemoryAPI``
+(``jiuwen_memory_entry/core/api_contract``). Routing remains a table (A20 "route
 by table"), not an if/else ladder; domain exceptions map to status-like codes.
 
 Scope mapping happens before this module through ``legacy_request_adapter``.
@@ -61,6 +62,7 @@ from jiuwen_memory.api import (
     SpaceStatus,
     Surface,
     UnsupportedCapabilityError,
+    UpdateMode,
     ValidationError,
     legacy_request_context,
 )
@@ -641,13 +643,14 @@ def _search(srv, request: DispatchRequest) -> Body:
     if max_tokens is not None:
         extensions[EXT_MAX_TOKENS] = str(max_tokens)
     trace = bool(payload.get("trace"))
+    disclosure = _enum_value(DisclosureLevel, payload.get("disclosure", "l0"), name="disclosure")
     res = srv.api.search(
         _require(payload, "query"),
         Context(scope, extensions=extensions),
         security=_request_security(request),
         filters=payload.get("filters"),  # dict DSL / 旧 list：由 API 边界 normalize，非法则 400
         top_k=int(payload.get("k", 10)),
-        disclosure=DisclosureLevel.L2,
+        disclosure=disclosure,
         with_trajectory=trace,
     )
     hits = [
@@ -710,7 +713,10 @@ def _list(srv, request: DispatchRequest) -> Body:
 def _get(srv, request: DispatchRequest) -> Body:
     payload = request.payload
     scope = _require_target(request)
-    unit = srv.api.get(_require(payload, "item_id"), scope, security=_request_security(request))
+    as_of = _parse_occurred_at(payload.get("as_of"), name="get as_of")
+    unit = srv.api.get(
+        _require(payload, "item_id"), scope, security=_request_security(request), as_of=as_of
+    )
     return {"ok": True, "op": "get", "item": _unit_view(unit)}
 
 
@@ -724,6 +730,11 @@ def _update(srv, request: DispatchRequest) -> Body:
         tags=payload.get("tags"),
         system_metadata=payload.get("system_metadata"),
         user_metadata=payload.get("user_metadata"),
+        t_valid=_parse_occurred_at(payload.get("t_valid"), name="update t_valid"),
+        t_invalid=_parse_occurred_at(payload.get("t_invalid"), name="update t_invalid"),
+        mode=_enum_value(UpdateMode, payload.get("mode", "supersede"), name="mode")
+        if payload.get("mode")
+        else UpdateMode.SUPERSEDE,
     )
     unit = srv.api.update(
         _require(payload, "item_id"), scope, patch, security=_request_security(request)

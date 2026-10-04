@@ -1,36 +1,19 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """EntityStore — 实体反向索引存储端口（与 VectorStore/FulltextStore 平级）。
-
-抽象实体索引的读写能力：hash 精确查询、bulk 变更、反查关联。实现侧
-（``ElasticsearchEntityStore``）走 Elasticsearch，后续可换其他后端。
-
-迁移自原 ``core.ports.entity_store``，签名做两处改造：
-- ``space_id`` 从 ``UUID`` 改 ``str``（当前工程 routing 不要求 UUID，存
-  ``space_id_from_scope`` 的 str 算值）
-- ``find_by_linked_memory_id`` 的 ``memory_id`` 从 ``UUID`` 改 ``str``（存 unit.id）
-
-入参与 ``BaseStore`` 对齐——但 entity 索引不走 scope 原生隔离（它用 space_id
-routing + ``EntityStoreFilters`` actor 单段 term），故这里 space_id 作显式参数，不用
-Scope。理由：entity 索引的隔离维度（space_id routing + actor_id term）和
-VectorStore 的 scope 五段隔离模型不同，强行用 Scope 会丢 space_id 的 routing
-语义。agent/session 不作隔离维度：实体是 user 级知识，同 user 下跨 agent、跨
-session 共享。
-
-**2026-08-12 改造**：归并退化为 hash 精确 only，砍掉向量 kNN 检索能力。
-``search``（向量 kNN）方法删除，entity 索引不再存向量、不再依赖 Embedder。
 """
 
 from __future__ import annotations
 
 from abc import abstractmethod
 
+from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def.entity import (
     EntityBatchResult,
     EntityOperation,
     EntityRecord,
+    EntitySearchResult,
     EntityStoreFilters,
 )
-from jiuwen_memory.common.factory.factory import Factory
 
 from .base import BaseStore
 
@@ -87,3 +70,8 @@ class EntityStore(BaseStore):
         operations: list[EntityOperation],
     ) -> EntityBatchResult:
         """bulk 变更（INSERT/LINK/UNLINK_UPDATE/DELETE 混合），per-item 粒度返回。"""
+
+    @abstractmethod
+    def search(self, space_id: str, query_vector: list[float], *, top_k: int,
+               filters: EntityStoreFilters,) -> list[EntitySearchResult]:
+        """向量 kNN 检索实体记录。"""

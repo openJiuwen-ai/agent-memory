@@ -14,7 +14,7 @@ from jiuwen_memory.common.errors import (
     PermissionDeniedError,
     ValidationError,
 )
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.security import principal, space_predicates
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
@@ -217,11 +217,11 @@ class QueryOpsMixin:
         # 收窄谓词的实际取值只在此处成形，下游只能看到条数。缺这一行时「召回为空」
         # 无法区分坐标未传到、判定表未声明该维、以及该维确实过滤掉了全部条目。
         logger.info(
-            "search cross-space: query=%r coords=%s narrow=%s candidate_spaces=%s",
-            query[:60],
-            coords,
-            narrow,
-            candidates,
+            "search cross-space: query=%s coords=%s narrow=%s candidate_spaces=%s",
+            redact_for_log(query),
+            metadata_for_log(coords),
+            metadata_for_log(narrow),
+            metadata_for_log(candidates),
         )
         targets: list[collective.SpaceRecallTarget] = []
         denied: list[ChannelError] = []
@@ -537,13 +537,35 @@ class QueryOpsMixin:
         )
         self._ensure_space_writable(scope)
         before = asyncio.run(self._queries.get(unit_id, scope, None))
-        unit = asyncio.run(self._commands.update(unit_id, scope, patch))
+        plan = None
+        if self._commands.requires_update_preparation(before, patch):
+            plan = asyncio.run(self._commands.prepare_update(unit_id, scope, patch))
+        if plan is not None:
+            for action, context in self._commands.update_permission_contexts(plan):
+                self._authorize(
+                    identity, context.scope, action, "update", context.unit_id, context=context,
+                )
+            unit = asyncio.run(self._commands.commit_update(plan))
+        else:
+            unit = asyncio.run(self._commands.update(unit_id, scope, patch))
+        update_detail = {}
+        if plan is not None:
+            affected_unit_ids = []
+            for change in plan.changes:
+                if change.before is not None:
+                    affected_unit_ids.append(change.before.id)
+                if change.after is not None:
+                    affected_unit_ids.append(change.after.id)
+            update_detail = {
+                "schema_update_operation_id": plan.operation_id,
+                "affected_unit_ids": list(dict.fromkeys(affected_unit_ids)),
+            }
         self._log(
             identity,
             "update",
             unit_id,
             target_scope=scope,
-            detail={**auth, "before_unit_id": before.id, "after_unit_id": unit.id},
+            detail={**auth, **update_detail, "before_unit_id": before.id, "after_unit_id": unit.id},
         )
         return unit
 

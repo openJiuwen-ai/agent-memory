@@ -14,6 +14,8 @@
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |
 | `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`/`read_ssl_config`/`reject_url_tls_params`）、scope 命名空间渲染（`SCOPE_DIMS`/`scope_segments`）、后端异常归一（`wrap_backend`）；storage、lock 与出站客户端共用，避免各写一份 |
+| `_import_support.py` | 导入容错样板的唯一归属地（`import_optional`/`import_required`/`import_required_attr`）：装配各 `*_impl` 包触发 `@Producer.register` 时逐个隔离可选依赖，单个缺失只让该插件缺席、不连坐同批其他插件、不阻断 `MemoryAPI` 构造。刻意与 `_support.py` 分家——后者讲配置值语义且连带 `type_def`/`Factory`/`errors`，本模块讲导入机制且**只依赖标准库**（51 个 `*_impl`/bootstrap 消费点各自 import 一次，自身须停在零项目依赖）；**不得**引入任何 `jiuwen_memory` 内部对象，以免装配期导入顺序反受各层先后影响。接入侧另有一份 `jiuwen_memory_entry/core/import_support.py`——Access 只允许依赖 `jiuwen_memory.api`（见 `tests/unit/api/test_access_api_boundary.py`），两侧不复用 |
+| `log/` | 统一运行日志入口：`base.py` 提供 `get_logger` / `setup_logging`，`privacy_filter.py` 提供默认全局启用的 `SensitiveDataFilter` 及 `install_privacy_filter` / `redact_for_log` / `metadata_for_log` / `scope_for_log`；普通服务端日志在 Formatter 前脱敏，保留字段结构和经调用点确认的 MemoryUnit 技术 ID，不修改业务对象或正式 API 响应 |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。另有 `KERNEL_COORD_KEYS`——内核自带的归属坐标实体名，三项取值必须是 `Scope` 的字段名，故与该类同处 |
@@ -63,6 +65,11 @@
 8. **Normalizer 能力声明必须可执行**
    `modalities()` 不是说明性信息：显式 routing route 在装配时校验，真实 payload 在规约前校验。装配矛盾抛 `ValidationError`，运行时不支持抛 `UnsupportedCapabilityError`。它只决定“是否支持”，不决定 `RawPayload.data` / `uri` 的载体选择。Passthrough 只允许 TEXT 使用 URI 文本回退；CODE 只接 UTF-8 源码文本，DOCUMENT 与不支持的媒体不得借 URI 回退绕过能力门禁。
 
+9. **普通运行日志默认脱敏**
+   通过 `get_logger()` 获取的 logger 默认安装 `SensitiveDataFilter`；正文、用户身份、Scope
+   实值、标签、模型原始响应和 metadata 叶子值必须先用对应日志标记函数包装。仅 MemoryUnit
+   技术 ID 可由调用点显式列入可见集合；过滤器不得修改业务对象、持久化数据或 API 响应。
+
 ## 与其他子目录的边界
 
 **本模块管**：
@@ -93,7 +100,7 @@
    `<prefix>_ssl_ca_cert`（默认关闭），经 `_support.read_outbound_ssl` 读取。开启时须调
    `require_https` 与 `require_ca_file` 在装配期拦截明文 scheme 和缺失证书，并只在此时
    注入 `http_client`。OpenAI SDK 相关实现必须使用 `openai.DefaultHttpxClient`，不得用
-   裸 `httpx.Client` 覆盖 SDK 的长读取超时、连接池与重定向等默认值。`verify` 取值统一经
+   裸 `httpx.Client` 覆盖 SDK 的连接池与重定向等默认值。`verify` 取值统一经
    `outbound_verify` 翻译，不在各实现里内联。缺证书回落系统 CA 而非报错，这是与
    storage 侧唯一的差异，详见
    [F05-model-service-ssl.md](../../docs/features/common/F05-model-service-ssl.md)。
@@ -111,3 +118,7 @@
 13. 安全域 `Grant` 在构造边界把动作迭代冻结为 `frozenset[Action]` 并拒绝非 `Action` 成员；`grant_id` 默认留空等待服务端生成，公共导出不得要求既有调用方预先提供服务端标识。
 14. `RoutingFieldsProvider` 是授权策略路由字段的单一 capability 契约；接口先行过渡期的 `PermissionManager` 与目标 `Authorizer` 共同继承，禁止各自复制同名默认实现。
 15. 审计增量验证必须经 `read_stable_snapshot(after_sequence)` 在同一快照取得精确 checkpoint 与固定链头，并令每页 `scan(..., through_sequence=快照链头)`；缺 checkpoint、序号缺口或未到快照链头都返回 `incomplete`，不得从 genesis 盲接。`AuditVerificationLimits` 是服务端可信单次资源边界，PEP 仍须截断 provider 的超量 samples。`ProtectedAuditLogger` 构造时必须满足 `provider.chain_store() is audit_logger`。
+16. **OpenAI LLM/Embedder 出站等待策略显式可配**：OpenAI 兼容 LLM 与 Embedder 必须显式传入
+    有限 timeout 和重试上限；默认 `300` 秒、`0` 次 SDK 重试，TCP connect 固定 5 秒。
+    配置键为 `<prefix>_timeout` / `<prefix>_max_retries`，非法值在装配阶段报错；
+    详见 [F05-model-service-ssl.md](../../docs/features/common/F05-model-service-ssl.md) 第八节。

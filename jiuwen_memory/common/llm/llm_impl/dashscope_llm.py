@@ -3,7 +3,14 @@
 
 from __future__ import annotations
 
-from jiuwen_memory.common._support import read_outbound_ssl, require_ca_file, require_https
+from jiuwen_memory.common._support import (
+    DEFAULT_OUTBOUND_MAX_RETRIES,
+    DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+    read_outbound_call_policy,
+    read_outbound_ssl,
+    require_ca_file,
+    require_https,
+)
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LlmProducer
 
@@ -50,6 +57,8 @@ class DashScopeLLM(OpenAILLM):
         api_key: str = "",
         default_temperature: float = 0.0,
         default_max_tokens: int = 4096,
+        timeout: float = DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+        max_retries: int = DEFAULT_OUTBOUND_MAX_RETRIES,
         enable_thinking: bool | None = False,
         ssl_verify: bool = False,
         ssl_ca_cert: str | None = None,
@@ -62,6 +71,8 @@ class DashScopeLLM(OpenAILLM):
             api_key=api_key,
             default_temperature=default_temperature,
             default_max_tokens=default_max_tokens,
+            timeout=timeout,
+            max_retries=max_retries,
             ssl_verify=ssl_verify,
             ssl_ca_cert=ssl_ca_cert,
             config_source=config_source,
@@ -84,6 +95,7 @@ def _build(config):
         config.get("llm_base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
     ssl = read_outbound_ssl(config, "llm")
+    call_policy = read_outbound_call_policy(config, "llm")
     if ssl.verify:
         require_https(base_url, component="dashscope LLM", param="llm")
         require_ca_file(ssl.ca_cert, component="dashscope LLM", param="llm")
@@ -93,6 +105,8 @@ def _build(config):
         api_key=config.get("llm_api_key") or "",
         default_temperature=config.get("llm_temperature", 0.0),
         default_max_tokens=config.get("llm_max_tokens", 4096),
+        timeout=call_policy.timeout,
+        max_retries=call_policy.max_retries,
         enable_thinking=_parse_enable_thinking(config.get("enable_thinking", False)),
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
