@@ -1,18 +1,32 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Generic handler 的既有错误映射回归测试。"""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.api import Channel, DeleteMode, EvolveMode, MemoryTier, Scope
+from jiuwen_memory.api import (
+    Channel,
+    Credentials,
+    DeleteMode,
+    DisclosureLevel,
+    EvolveMode,
+    MemoryTier,
+    MemoryUnit,
+    Scope,
+    Surface,
+    UpdateMode,
+    build_dev_authenticator,
+)
 from jiuwen_memory.common.errors import (
     PartialFailureError,
     RateLimitedError,
     UnsupportedCapabilityError,
 )
 from jiuwen_memory_entry.core import handler
+from jiuwen_memory_entry.core.auth_middleware import authenticated
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
 
 pytestmark = pytest.mark.unit
@@ -296,7 +310,8 @@ def test_search_forwards_top_k() -> None:
 
 
 def test_search_rejects_non_positive_k() -> None:
-    """k 必须是正整数：非法值在边界返回 400，不下发到 API 层。
+    """
+    k 必须是正整数：非法值在边界返回 400，不下发到 API 层。
 
     基线 a456a87 用 _parse_positive_int 收紧了 k。冲突解决若把它退回
     int(payload.get("k", 10))，k=0 会被静默放行，而 k="abc" 会抛裸
@@ -377,7 +392,8 @@ def test_delete_honors_mode() -> None:
 
 
 def test_delete_hard_is_parsed_boolean_not_truthy() -> None:
-    """``hard`` 走 ``_bool_value``：字符串 "false" 不得触发 PURGE。
+    """
+    ``hard`` 走 ``_bool_value``：字符串 "false" 不得触发 PURGE。
 
     冲突解决时若把 ``_bool_value`` 退回 ``payload.get("hard")`` 的真值判断，
     非空字符串 ``"false"`` 会被当成硬删，把可恢复的 FORGET 静默升级成不可
@@ -514,3 +530,96 @@ def test_evolve_forwards_channel() -> None:
         ),
     )
     assert api.calls[1]["channel"] == Channel.BACKGROUND
+
+
+@pytest.fixture
+def authenticated_request():
+    """参数透传回归始终携带真实认证边界产出的上下文。"""
+    with authenticated(
+        build_dev_authenticator(), Credentials(), surface=Surface.INTERNAL
+    ) as security:
+
+        def build(verb, payload):
+            request = build_legacy_dispatch_request(
+                verb, {"tenant_id": "acme", "scope": "alice", **payload}
+            )
+            return replace(request, actor=security.actor, security=security)
+
+        yield build
+
+
+@pytest.mark.parametrize("value", [None, "l0", "l1", "l2", "adaptive"])
+def test_search_forwards_upstream_disclosure_and_authenticated_context(
+    value, authenticated_request
+) -> None:
+    captured = {}
+
+    def search(query, context, **kwargs):
+        captured.update(query=query, context=context, **kwargs)
+        return SimpleNamespace(items=[], trajectory=[])
+
+    payload = {"query": "hello"}
+    if value is not None:
+        payload["disclosure"] = value
+    request = authenticated_request("search", payload)
+
+    status, body = handler.dispatch(SimpleNamespace(api=SimpleNamespace(search=search)), request)
+
+    assert status == 200
+    assert body["hits"] == []
+    assert captured["disclosure"] is DisclosureLevel(value or "l0")
+    assert captured["security"] is request.security
+    assert captured["security"].actor.org == "local"
+    assert captured["context"].scope.org == "acme"
+
+
+@pytest.mark.parametrize("mode", [None, "supersede", "overwrite"])
+def test_update_forwards_upstream_temporal_patch_and_authenticated_context(
+    mode, authenticated_request
+) -> None:
+    captured = {}
+
+    def update(unit_id, scope, patch, *, security):
+        captured.update(unit_id=unit_id, scope=scope, patch=patch, security=security)
+        return MemoryUnit(id=unit_id, scope=scope)
+
+    payload = {
+        "item_id": "u1",
+        "content": "updated",
+        "t_valid": "2026-10-01T00:00:00+00:00",
+        "t_invalid": "2026-11-01T00:00:00+00:00",
+    }
+    if mode is not None:
+        payload["mode"] = mode
+    request = authenticated_request("update", payload)
+
+    status, body = handler.dispatch(SimpleNamespace(api=SimpleNamespace(update=update)), request)
+
+    assert status == 200
+    assert body["item"]["item_id"] == "u1"
+    assert captured["patch"].mode is UpdateMode(mode or "supersede")
+    assert captured["patch"].t_valid == datetime.fromisoformat(payload["t_valid"])
+    assert captured["patch"].t_invalid == datetime.fromisoformat(payload["t_invalid"])
+    assert captured["security"] is request.security
+    assert captured["scope"].org == "acme"
+    assert captured["security"].actor.org == "local"
+
+
+@pytest.mark.parametrize(
+    ("verb", "payload"),
+    [
+        ("search", {"query": "hello", "disclosure": "invalid"}),
+        ("update", {"item_id": "u1", "t_valid": "invalid"}),
+        ("update", {"item_id": "u1", "t_invalid": "invalid"}),
+        ("update", {"item_id": "u1", "mode": "invalid"}),
+    ],
+)
+def test_invalid_upstream_parameters_fail_before_api_call(
+    verb, payload, authenticated_request
+) -> None:
+    status, body = handler.dispatch(
+        SimpleNamespace(api=SimpleNamespace()), authenticated_request(verb, payload)
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"

@@ -8,7 +8,7 @@
 两个入口对应两类调用方：
 
 - :func:`new_request_context` 给**已完成认证**的 surface 用（HTTP / MCP / CLI 经
-  ``bootstrap.core.auth_middleware`` 调它）；
+  ``jiuwen_memory_entry.core.auth_middleware`` 调它）；
 - :func:`internal_context` 给**进程内直连**的调用方用（示例脚本、评测 harness、
   嵌入式插件）——它们没有网络对端，但契约与外部请求完全相同（F05 §进程内调用）。
 """
