@@ -110,7 +110,7 @@ def test_collect_new_contents_skips_titles_blanks_and_dedups(tmp_path) -> None:
 
 def test_build_unit_derives_coords_and_class_from_md_path(tmp_path) -> None:
     wd = _watchdog(tmp_path)
-    unit = wd._build_unit("memory/p1/MEMORY.md", "hello world")
+    unit = wd._build_unit("memory/p1/MEMORY.md", "hello world", SCOPE)
 
     assert unit.scope is SCOPE
     assert unit.segments[0].content == "hello world"
@@ -268,7 +268,39 @@ def test_started_reflects_lifecycle_and_stop_start_resets_closed(tmp_path) -> No
     assert wd.started is False
 
 
-def test_watchdog_build_shares_shadow_with_composite_storage(tmp_path) -> None:
+def test_sync_one_inherits_scope_from_latest(tmp_path) -> None:
+    """sync 补登的 unit 继承该 md 最新一条 unit 的 scope（修正 scope 原生隔离下补登可见性）。
+
+    历史 unit 落 scope_a，手动改 md 加新行 → 看门狗补登的新 unit 应继承 scope_a
+    （非看门狗的空 Scope），scope_a 的召回能拉到补登 unit。
+    """
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment
+
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/p1/MEMORY.md"
+    # 历史 unit 落 scope_a（wd.scope 是 SCOPE=Scope(org="acme")，这里另造一个区分）
+    scope_a = Scope(org="acme", user="a")
+    old = MemoryUnit(
+        id="u-old",
+        scope=scope_a,
+        segments=[Segment(content="old content")],
+        system_metadata={MD_FILENAME_KEY: md_filename},
+    )
+    wd._shadow.insert_units(scope_a, [old])
+    # md 文件加新行（看门狗补登）
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("# t\nold content\nnew line\n\n", encoding="utf-8")
+
+    wd._sync_one(md_filename, deleted=False)
+
+    # 补登的 unit scope 继承 scope_a（非空 Scope）
+    remaining = wd._shadow.list_units_by_md(scope_a, md_filename)
+    new_ids = [uid for uid, _ in remaining if uid != "u-old"]
+    assert len(new_ids) == 1
+    new_unit = wd._shadow.get_units(scope_a, new_ids)[0]
+    assert new_unit.segments[0].content == "new line"
+    assert new_unit.scope == scope_a  # 继承，非空 Scope
     """watchdog 经 StoreManager 端口取 shadow，与 CompositeDomainStore 是同一实例（读写同源）。
 
     换 markdown_store / shadow_index 具名实例不再静默断链；markdown root 来自

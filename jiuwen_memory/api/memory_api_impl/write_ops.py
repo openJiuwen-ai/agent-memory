@@ -14,7 +14,7 @@ from jiuwen_memory.common.errors import (
     PolicyError,
     ValidationError,
 )
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
@@ -72,10 +72,6 @@ class WriteOpsMixin:
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
-        logger.info(
-            "[trace/api] add IN  | content=%r | scope=%r | source=%r | tags=%r | system_metadata=%r | user_metadata=%r",
-            content, scope, source, tags, system_metadata, user_metadata,
-        )
         return asyncio.run(
             self.add_async(
                 content,

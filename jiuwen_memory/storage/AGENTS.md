@@ -60,6 +60,7 @@
 
 1. **scope 原生隔离**  
    `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。`org/space/user/agent/session` 五段 scope 必须参与命名空间或过滤；空 `space` 只匹配空 space 兼容域。隔离必须在存储层强制，上层不依赖调用纪律。
+   **文档影子索引（F08）已同构落地**：`memory_unit` 表加 org/space/user/agent/session 五列，scope 入参拼 WHERE AND 等值下推（对齐 KV 五段等值），与 project（收窄维 `IN ['', value]`）隔离正交。`list_units_by_md`（看门狗跨 scope 诊断）/`delete_units`（幂等按 unit_id）例外不限 scope。
    **唯一例外是 ENTITY 端口**：`EntityStore` 四方法以 `space_id: str`（`space_id_from_scope` 的算值，走后端 routing）+ `EntityStoreFilters.actor_id` 承担隔离——entity 索引的隔离维度与 Scope 五段模型不同构（agent/session 不作隔离维度，实体是 user 级知识）。隔离仍在存储层强制，只是维度表达不同；该端口的授权由 `_AuthorizedEntityStoreProxy` 适配。
 
 2. **记录 id 在 scope 内唯一**

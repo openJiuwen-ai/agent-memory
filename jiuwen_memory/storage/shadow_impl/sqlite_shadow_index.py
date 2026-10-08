@@ -139,6 +139,11 @@ CREATE TABLE IF NOT EXISTS memory_unit (
     content_hash TEXT,
     md_filename  TEXT,
     project      TEXT NOT NULL DEFAULT '{_DEFAULT_PROJECT}',
+    org          TEXT NOT NULL DEFAULT '',
+    space        TEXT NOT NULL DEFAULT '',
+    "user"       TEXT NOT NULL DEFAULT '',
+    agent        TEXT NOT NULL DEFAULT '',
+    session      TEXT NOT NULL DEFAULT '',
     category     TEXT NOT NULL DEFAULT '{_DEFAULT_CLASS}',
     lifecycle    TEXT NOT NULL DEFAULT '{_DEFAULT_LIFECYCLE}',
     t_valid      INTEGER,
@@ -149,6 +154,7 @@ CREATE TABLE IF NOT EXISTS memory_unit (
 CREATE INDEX IF NOT EXISTS idx_content_hash ON memory_unit(content_hash);
 CREATE INDEX IF NOT EXISTS idx_md_filename ON memory_unit(md_filename);
 CREATE INDEX IF NOT EXISTS idx_project_category ON memory_unit(project, category);
+CREATE INDEX IF NOT EXISTS idx_scope ON memory_unit(org, space, "user", agent, session);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     content,
@@ -282,11 +288,18 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
 
 
 def _ensure_system_columns(conn: sqlite3.Connection) -> None:
-    """迁移：旧版 ``memory_unit`` 表缺 lifecycle/t_valid/t_invalid/t_event 投影列时补齐。
+    """迁移：旧版 ``memory_unit`` 表缺投影列时补齐。
 
     F08 实现期 schema 演进——``CREATE TABLE IF NOT EXISTS`` 不会给已存在的旧表加列，
     故用 ``PRAGMA table_info`` 探测 + ``ALTER TABLE ADD COLUMN`` 幂等补齐，不丢已写入
-    unit 数据（对比 DROP 重建）。NOT NULL 列（lifecycle）须带默认值（SQLite 约束）。
+    unit 数据（对比 DROP 重建）。NOT NULL 列须带默认值（SQLite 约束）。
+
+    补齐两类列：
+    - lifecycle/t_valid/t_invalid/t_event：F08 初版投影列；
+    - org/space/user/agent/session：scope 原生隔离五列（对齐 KV 五段等值 WHERE）。
+
+    旧表迁移**不回填**：旧行 scope 五列落 ``DEFAULT ''``，严格等值下只对空 Scope()
+    查询可见——接受此行为（靠看门狗重灌或重建），不回填历史数据。
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_unit)")}
     if "lifecycle" not in cols:
@@ -299,6 +312,21 @@ def _ensure_system_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN t_invalid INTEGER")
     if "t_event" not in cols:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN t_event INTEGER")
+    # scope 原生隔离五列（对齐 KV）。PRAGMA table_info 返回列名不含引号，探测用裸名 "user"。
+    if "org" not in cols:
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN org TEXT NOT NULL DEFAULT ''")
+    if "space" not in cols:
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN space TEXT NOT NULL DEFAULT ''")
+    if "user" not in cols:
+        conn.execute(
+            'ALTER TABLE memory_unit ADD COLUMN "user" TEXT NOT NULL DEFAULT \'\''
+        )
+    if "agent" not in cols:
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN agent TEXT NOT NULL DEFAULT ''")
+    if "session" not in cols:
+        conn.execute(
+            "ALTER TABLE memory_unit ADD COLUMN session TEXT NOT NULL DEFAULT ''"
+        )
 
 
 class SqliteDocumentShadowIndex(DocumentShadowIndex):
@@ -480,6 +508,18 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         return coords.get("project") or _DEFAULT_PROJECT
 
     @staticmethod
+    def _scope_of(unit: MemoryUnit) -> tuple[str, str, str, str, str]:
+        """取 ``unit.scope`` 五段（org/space/user/agent/session），落 ``memory_unit`` scope 列。
+
+        scope 持久化在 ``unit_json``（``memory_codec`` 写成顶层 list，dumps 不剥除），
+        与 coords（TRANSIENT，dumps 剥除）不同——故 scope 无需 read-modify-write 空兜底守卫：
+        读回的 unit 必带完整 scope，update 时 scope 不变（``_validate_units`` 保证
+        ``unit.scope == 方法入参 scope``）。
+        """
+        s = unit.scope
+        return (s.org, s.space, s.user, s.agent, s.session)
+
+    @staticmethod
     def _has_project_predicate(filters) -> bool:
         """filters 里是否存在 ``system_metadata.project`` 谓词。
 
@@ -546,14 +586,20 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         t_event = _t_event_of(unit)
         unit_json = dumps(unit)
 
-        # ① memory_unit（拿隐式 rowid，FTS5/vec0 靠它关联，F07 §11.2 注 A）
+        # ① memory_unit（拿隐式 rowid，FTS5/vec0 靠它关联，F07 §11.2 注 A）。
+        # scope 五列与 project 同级下推：org/space/user/agent/session 严格等值隔离
+        # （对齐 KV 五段等值 WHERE，见 sqlite_kv_store），与 project（收窄维，
+        # IN ['', value]）正交。user_memory 的 project 空串守卫（见上方）不延伸到 scope
+        # ——scope 是身份隔离维，user_memory 的 scope 必须是真实值。
         conn.execute(
             "INSERT INTO memory_unit "
-            "(unit_id, content_hash, md_filename, project, category, "
-            "lifecycle, t_valid, t_invalid, t_event, unit_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (unit.id, content_hash, md_filename, project, category,
-             lifecycle, t_valid, t_invalid, t_event, unit_json),
+            "(unit_id, content_hash, md_filename, project, "
+            'org, space, "user", agent, session, '
+            "category, lifecycle, t_valid, t_invalid, t_event, unit_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (unit.id, content_hash, md_filename, project,
+             *self._scope_of(unit),
+             category, lifecycle, t_valid, t_invalid, t_event, unit_json),
         )
         row = conn.execute(
             "SELECT rowid FROM memory_unit WHERE unit_id=?", (unit.id,)
@@ -582,9 +628,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
     def get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
         """按 ``unit_id`` 点查全量 ``MemoryUnit``（F07 §11.3 / F08 §5.1）。
 
-        ``scope`` 当前不参与过滤——影子索引靠 project+category 隔离（§5 已定，
-        不走 Scope 字段），scope 仅作签名占位对齐契约（与 ``insert_units`` 一致：
-        收着但写入不落 scope 列）。
+        ``scope`` 原生隔离——影子索引靠 scope 五段等值 WHERE 隔离（对齐 KV 五段
+        等值过滤），与 project（收窄维）+ category（落盘键）正交。点查按 scope
+        等值过滤（与 ``insert_units`` 一致：写入落 scope 列，读回按 scope 等值）。
 
         **缺失 id 省略（不抛 NotFoundError）**：与 :class:`~storage.kv.KVStore.get`
         「缺失即报错」是刻意差异——影子索引点查服务召回侧 materialize（§4.2），
@@ -599,8 +645,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             placeholders = ",".join("?" for _ in unit_ids)
             rows = conn.execute(
                 f"SELECT unit_id, unit_json FROM memory_unit "
-                f"WHERE unit_id IN ({placeholders})",
-                tuple(unit_ids),
+                f"WHERE unit_id IN ({placeholders}) "
+                f'AND org=? AND space=? AND "user"=? AND agent=? AND session=?',
+                (*unit_ids, scope.org, scope.space, scope.user, scope.agent, scope.session),
             ).fetchall()
         # 命中 id → MemoryUnit；非 dict/无 id 的 unit_json 经 loads 归 None，过滤掉
         # （memory_codec.loads 对非 MemoryUnit 字节返回 None，见该模块容错演进说明）。
@@ -706,17 +753,21 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         t_event = _t_event_of(unit)
         unit_json = dumps(unit)
 
-        # ① memory_unit 全字段覆写（unit_json + content_hash + md_filename + project + category
-        # + lifecycle/t_valid/t_invalid/t_event 投影列，rowid 不变——FTS5/vec0 靠 rowid 关联，
-        # 换 rowid 会断链）。投影列无论 content_hash 是否变都覆写：SUPERSEDE 旧版只改
-        # lifecycle/t_invalid（content_hash 不变），投影列仍须同步（谓词下推依赖它们）。
+        # ① memory_unit 全字段覆写（unit_json + content_hash + md_filename + project
+        # + scope 五列 + category + lifecycle/t_valid/t_invalid/t_event 投影列，rowid 不变
+        # ——FTS5/vec0 靠 rowid 关联，换 rowid 会断链）。投影列无论 content_hash 是否变都
+        # 覆写：SUPERSEDE 旧版只改 lifecycle/t_invalid（content_hash 不变），投影列仍须同步
+        # （谓词下推依赖它们）。scope 五列由 _scope_of 取值——update 时 scope 不变
+        # （_validate_units 保证 unit.scope == 方法入参 scope），无守卫。
         conn.execute(
             "UPDATE memory_unit "
-            "SET content_hash=?, md_filename=?, project=?, category=?, "
-            "lifecycle=?, t_valid=?, t_invalid=?, t_event=?, unit_json=? "
+            "SET content_hash=?, md_filename=?, project=?, "
+            'org=?, space=?, "user"=?, agent=?, session=?, '
+            "category=?, lifecycle=?, t_valid=?, t_invalid=?, t_event=?, unit_json=? "
             "WHERE unit_id=?",
-            (new_hash, md_filename, project, category,
-             lifecycle, t_valid, t_invalid, t_event, unit_json, unit.id),
+            (new_hash, md_filename, project,
+             *self._scope_of(unit),
+             category, lifecycle, t_valid, t_invalid, t_event, unit_json, unit.id),
         )
 
         # ② 投影重建仅当 content_hash 变（content 改）。content_hash 未变（只改状态字段）
@@ -753,7 +804,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         不会自动清理投影行，故必须显式删。顺序：先删投影（fts/vec，靠 rowid），再删主表
         （靠 unit_id）——先查 rowid 再删，两段独立、顺序不影响结果，但先投影后主表语义清晰。
 
-        ``scope`` 不参与过滤（与 insert/get/update/list 同口径，靠 project+category 隔离）。
+        ``scope`` 不参与过滤——幂等删除按 ``unit_id`` 不限 scope（看门狗删、补偿回滚删
+        依赖跨 scope 幂等）。影子索引其余方法已加 scope 原生隔离，本方法是幂等语义例外。
 
         **降级模式守卫**：``memory_fts`` 降级/完整模式都建（两表模式），无守卫；``memory_vec``
         仅完整模式建（``vec_enabled=True`` 才有表），降级模式 ``DELETE FROM memory_vec`` 会
@@ -796,11 +848,11 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
     def list_units(self, scope: Scope) -> list[tuple[str, bytes]]:
         """全量拉 ``(unit_id, unit_json bytes)``，供 list 接口内存过滤排序分页（F07 §5.3）。
 
-        与 :meth:`get_units` 同口径：``scope`` 不参与过滤——影子索引靠 project+category
-        隔离（§5 已定，不走 Scope 字段），scope 仅作签名占位对齐契约。**过滤/排序/分页
-        不在此做**，交上层 ``CompositeStorage.list`` 文档分流后复用
+        与 :meth:`get_units` 同口径：``scope`` 原生隔离——影子索引靠 scope 五段等值 WHERE
+        隔离（对齐 KV），与 project+category 正交。**过滤/排序/分页不在此做**，交上层
+        ``CompositeStorage.list`` 文档分流后复用
         :func:`kv_impl.memory_list.list_memory_entries`（与 KV ``scan→list_memory_entries``
-        同构：拉全量 raw → 内存过滤 memory_types/filters → 按 t_ingest 稳定排序 → 分页）。
+        同构：拉该 scope raw → 内存过滤 memory_types/filters → 按 t_ingest 稳定排序 → 分页）。
 
         返回 ``list[tuple[str, bytes]]``，与 ``KVMemoryListResult.entries`` 同构——
         上层无需区分来源（KV scan 还是 shadow list_units），统一喂进
@@ -818,7 +870,10 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         with self._lock:
             conn = self._ensure_conn()
             rows = conn.execute(
-                "SELECT unit_id, unit_json FROM memory_unit ORDER BY unit_id"
+                "SELECT unit_id, unit_json FROM memory_unit "
+                'WHERE org=? AND space=? AND "user"=? AND agent=? AND session=? '
+                "ORDER BY unit_id",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session),
             ).fetchall()
         return [(uid, bytes(raw)) for uid, raw in rows]
 
@@ -827,7 +882,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
         返回 ``(unit_id, content_hash)`` 二元组。看门狗比 md 文件现存 unit 与 shadow
         索引登记的 content_hash 判定漂移（F07 §12.3），故只需 ``content_hash`` 不需
-        ``unit_json`` 全量。``scope`` 不参与过滤（同 list_units 口径）。
+        ``unit_json`` 全量。``scope`` 不参与过滤——看门狗跨 scope 诊断（用空 Scope() 占位，
+        加 scope WHERE 会断对账）。md 文件按 memory_class+coords.project 组织、不按 scope
+        组织，单文件可含多 scope unit。影子索引其余方法已加 scope 原生隔离，本方法是看门狗诊断例外。
 
         无 ``md_filename`` 参数校验——空串/None 由 SQL 自然返空（``md_filename`` 列
         写入侧由 ``_md_filename_of`` 兜底，不会存空串，故空串查询必返空，无需特判）。
@@ -839,6 +896,51 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 (md_filename,),
             ).fetchall()
         return [(uid, ch) for uid, ch in rows]
+
+    def latest_scope_by_md(self, scope: Scope, md_filename: str) -> Scope | None:
+        """按 ``md_filename`` 查最新一条 unit 的 scope（rowid DESC LIMIT 1），无历史返 None。
+
+        供看门狗建新 unit 时继承 scope（md 文件不编码 org/space/user/agent/session，按同文件
+        最新归属近似）。不限 scope WHERE（看门狗跨 scope 取该文件最新归属，与
+        ``list_units_by_md`` 同例外——加 scope WHERE 会过滤掉非空 scope 的历史 unit）。
+
+        排序口径 ``rowid DESC``：SQLite 隐式 rowid 单调递增 = 最后插入。``t_ingest`` 不在
+        memory_unit 表上（在 ``unit_json`` 内，无法 ORDER BY）；``t_event``/``t_invalid``
+        哨兵化无区分度；``t_valid`` 允许 NULL 且可被上游回填非 now 值。rowid 是唯一可靠口径。
+        """
+        with self._lock:
+            conn = self._ensure_conn()
+            row = conn.execute(
+                'SELECT org, space, "user", agent, session FROM memory_unit '
+                "WHERE md_filename=? ORDER BY rowid DESC LIMIT 1",
+                (md_filename,),
+            ).fetchone()
+        if row is None:
+            return None
+        org, space, user, agent, session = row
+        return Scope(org=org, space=space, user=user, agent=agent, session=session)
+
+    def scopes(self) -> list[Scope]:
+        """枚举 memory_unit 表已有 Scope（对齐 ``sqlite_kv_store.scopes`` 范式）。
+
+        供文档模式 lifecycle/space sweep（如 ``cloud_engine.purge_space``）枚举 scope。
+        ``SELECT DISTINCT org, space, "user", agent, session`` 返回 list[Scope]。
+        """
+        with self._lock:
+            conn = self._ensure_conn()
+            rows = conn.execute(
+                'SELECT DISTINCT org, space, "user", agent, session FROM memory_unit'
+            ).fetchall()
+        return [
+            Scope(
+                org=org_name,
+                space=space_name,
+                user=user_name,
+                agent=agent_name,
+                session=session_name,
+            )
+            for org_name, space_name, user_name, agent_name, session_name in rows
+        ]
 
     # -- 召回（单批按 project 过滤，路径甲：不再按 category 分批）----------- #
 
@@ -887,15 +989,23 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 )
                 sys_params = [*sys_params, *proj_default_params]
             sys_where = f" AND ({sys_sql})" if sys_sql else ""
+            # scope 原生隔离：与 sys_where（系统前置谓词）并列 AND，scope 不进 query.filters
+            # （predicate_builder 只产 lifecycle/temporal/event，scope 五段是身份隔离维）。
+            # 召回放宽 session 等值——记忆应跨 session 共享（同一 user/agent 在不同 session
+            # 的记忆互通），只对 org/space/user/agent 四段严格等值。session 段不进 WHERE。
+            # 注意：get_units/list_units 仍保留 session 等值（点查/列表不放宽），故跨 session
+            # 召回的 unit 在 list 里看不到、get 点查拉不到——这是召回侧有意放宽的已知边界。
+            scope_where = ' AND org=? AND space=? AND "user"=? AND agent=?'
+            scope_params = [scope.org, scope.space, scope.user, scope.agent]
             k = query.top_k
 
             rows = conn.execute(
                 f"SELECT m.unit_id, bm25(memory_fts) AS score "
                 f"FROM memory_fts JOIN memory_unit m ON m.rowid = memory_fts.rowid "
                 f"WHERE memory_fts MATCH ? "
-                f"{sys_where} "
+                f"{sys_where}{scope_where} "
                 f"ORDER BY score LIMIT ?",
-                (match_expr, *sys_params, k),
+                (match_expr, *sys_params, *scope_params, k),
             ).fetchall()
         # 按 score 升序取 top_k（bm25 是负值，越小越相关 → 升序后最相关在前，取前 k 个）
         merged = list(rows)
@@ -930,6 +1040,10 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 )
                 sys_params = [*sys_params, *proj_default_params]
             sys_where = f" AND ({sys_sql})" if sys_sql else ""
+            # scope 原生隔离：与 sys_where 并列 AND（与 search_fulltext 同口径）。
+            # 召回放宽 session 等值——记忆应跨 session 共享（见 search_fulltext 注释）。
+            scope_where = ' AND org=? AND space=? AND "user"=? AND agent=?'
+            scope_params = [scope.org, scope.space, scope.user, scope.agent]
             k = query.top_k
             qblob = _vec_to_blob(query.vector)
 
@@ -939,9 +1053,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 f"SELECT m.unit_id, v.distance AS score "
                 f"FROM memory_vec v JOIN memory_unit m ON m.rowid = v.rowid "
                 f"WHERE v.embedding MATCH ? AND k = ? "
-                f"{sys_where} "
+                f"{sys_where}{scope_where} "
                 f"ORDER BY v.distance LIMIT ?",
-                (qblob, oversample, *sys_params, k),
+                (qblob, oversample, *sys_params, *scope_params, k),
             ).fetchall()
         merged = list(rows)
         # distance 越小越相关；升序取 top_k

@@ -64,6 +64,7 @@ _project_of = SqliteDocumentShadowIndex._project_of
 _has_project_predicate = SqliteDocumentShadowIndex._has_project_predicate
 _category_of = SqliteDocumentShadowIndex._category_of
 _md_filename_of = SqliteDocumentShadowIndex._md_filename_of
+_scope_of = SqliteDocumentShadowIndex._scope_of
 
 pytestmark = pytest.mark.unit
 
@@ -84,6 +85,21 @@ def _unit(uid: str, content: str, metadata: dict | None = None) -> MemoryUnit:
         segments=[Segment(content=content)],
         system_metadata=dict(metadata or {}),
     )
+
+
+def _unit_scope(uid: str, content: str, scope: Scope, metadata: dict | None = None) -> MemoryUnit:
+    """指定 scope 的 unit（scope 原生隔离用例用，与固定 SCOPE 的 ``_unit`` 区分）。"""
+    return MemoryUnit(
+        id=uid,
+        scope=scope,
+        segments=[Segment(content=content)],
+        system_metadata=dict(metadata or {}),
+    )
+
+
+def _unit_with_md(uid: str, content: str, scope: Scope, md_filename: str) -> MemoryUnit:
+    """带 ``md_filename`` 回填的 unit（list_units_by_md 用例用）。"""
+    return _unit_scope(uid, content, scope, {MD_FILENAME_KEY: md_filename})
 
 
 # -- 静态派生 ---------------------------------------------------------------- #
@@ -560,6 +576,9 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
         def list_units_by_md(self, scope, md_filename):
             ...
 
+        def latest_scope_by_md(self, scope, md_filename):
+            ...
+
         def search_fulltext(self, scope, query):
             ...
 
@@ -593,3 +612,144 @@ def test_vec_load_failure_logs_warning(tmp_path, caplog) -> None:
 
     assert store.vec_enabled is False
     assert any("sqlite_vec load failed" in r.message for r in caplog.records)
+
+
+# -- scope 原生隔离 ---------------------------------------------------------- #
+
+
+def test_scope_of_extracts_five_segments() -> None:
+    """_scope_of 取 unit.scope 五段（org/space/user/agent/session）。"""
+    s = Scope(org="o", space="sp", user="us", agent="ag", session="se")
+    unit = MemoryUnit(id="u1", scope=s, segments=[Segment(content="x")])
+    assert _scope_of(unit) == ("o", "sp", "us", "ag", "se")
+
+
+def test_insert_writes_scope_columns(tmp_path) -> None:
+    """insert 落 scope 五列（原生 SQL 查列值验证五段落库）。"""
+    store = _store(tmp_path)
+    s = Scope(org="o", space="sp", user="us", agent="ag", session="se")
+    store.insert_units(s, [_unit_scope("u1", "hello", s)])
+    row = store._ensure_conn().execute(
+        'SELECT org, space, "user", agent, session FROM memory_unit WHERE unit_id=?',
+        ("u1",),
+    ).fetchone()
+    assert row == ("o", "sp", "us", "ag", "se")
+
+
+def test_get_units_filters_by_scope(tmp_path) -> None:
+    """scope A 插入，scope B 点查 → 空（scope 原生隔离，不跨 scope 返回）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="o", user="a")
+    scope_b = Scope(org="o", user="b")
+    store.insert_units(scope_a, [_unit_scope("u1", "hello", scope_a)])
+    # scope B 点查 scope A 的 unit_id → 空
+    assert store.get_units(scope_b, ["u1"]) == []
+    # scope A 自己点查 → 命中
+    assert [u.id for u in store.get_units(scope_a, ["u1"])] == ["u1"]
+
+
+def test_list_units_filters_by_scope(tmp_path) -> None:
+    """scope A 插入，scope B list → 空（对齐 KV scan 按 scope 物理约束）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="o", user="a")
+    scope_b = Scope(org="o", user="b")
+    store.insert_units(scope_a, [_unit_scope("u1", "hello", scope_a)])
+    assert store.list_units(scope_b) == []
+    assert [uid for uid, _ in store.list_units(scope_a)] == ["u1"]
+
+
+def test_search_fulltext_filters_by_scope(tmp_path) -> None:
+    """scope A 插入，scope B 召回 → 空（scope WHERE 与 sys_where 并列 AND）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="o", user="a")
+    scope_b = Scope(org="o", user="b")
+    store.insert_units(scope_a, [_unit_scope("u1", "alpha", scope_a)])
+    # scope B 召回 → 空
+    assert store.search_fulltext(scope_b, TextQuery(text="alpha", top_k=10)) == []
+    # scope A 召回 → 命中
+    hits = store.search_fulltext(scope_a, TextQuery(text="alpha", top_k=10))
+    assert [h.id for h in hits] == ["u1"]
+
+
+def test_search_fulltext_relaxes_session(tmp_path) -> None:
+    """召回放宽 session 等值——同一 user/agent 不同 session 的记忆跨 session 可召回。
+
+    session 是 scope 五段里最细的会话级，记忆应跨 session 共享（同一 user/agent 在不同
+    session 的记忆互通）。search_fulltext/search_vector 的 scope WHERE 不含 session 等值。
+    注意：get_units/list_units 仍保留 session 等值（点查/列表不放宽），故跨 session 召回的
+    unit 在 list 看不到、get 拉不到——召回侧有意放宽的已知边界。
+    """
+    store = _store(tmp_path)
+    scope_s1 = Scope(org="o", user="u", agent="ag", session="s1")
+    scope_s2 = Scope(org="o", user="u", agent="ag", session="s2")
+    store.insert_units(scope_s1, [_unit_scope("u1", "alpha", scope_s1)])
+    # s2 召回 → 仍命中 s1 写入的 unit（session 不参与等值过滤）
+    hits = store.search_fulltext(scope_s2, TextQuery(text="alpha", top_k=10))
+    assert [h.id for h in hits] == ["u1"]
+    # 对照：get_units 仍按 session 等值 → s2 拉不到 s1 的 unit
+    assert store.get_units(scope_s2, ["u1"]) == []
+
+
+def test_list_units_by_md_does_not_filter_by_scope(tmp_path) -> None:
+    """跨 scope 同 md_filename 两条都能查到（看门狗跨 scope 诊断语义回归锁）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="o", user="a")
+    scope_b = Scope(org="o", user="b")
+    md = "MEMORY.md"
+    store.insert_units(scope_a, [_unit_with_md("u1", "alpha", scope_a, md)])
+    store.insert_units(scope_b, [_unit_with_md("u2", "beta", scope_b, md)])
+    # 空 Scope() 看门狗查 → 两条都见（不限 scope）
+    entries = store.list_units_by_md(Scope(), md)
+    assert {uid for uid, _ in entries} == {"u1", "u2"}
+
+
+def test_delete_units_cross_scope_idempotent(tmp_path) -> None:
+    """scope A 插入，scope B delete → 仍删（幂等按 unit_id 不限 scope）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="o", user="a")
+    scope_b = Scope(org="o", user="b")
+    store.insert_units(scope_a, [_unit_scope("u1", "hello", scope_a)])
+    # scope B 删 scope A 的 unit → 幂等删除（不限 scope）
+    store.delete_units(scope_b, ["u1"])
+    assert store.get_units(scope_a, ["u1"]) == []
+    assert store.list_units(scope_a) == []
+
+
+def test_scopes_enumerates_distinct(tmp_path) -> None:
+    """插入两 scope，scopes() 枚举到两者（对齐 KV scopes 范式）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="o", user="a")
+    scope_b = Scope(org="o", user="b")
+    store.insert_units(scope_a, [_unit_scope("u1", "hello", scope_a)])
+    store.insert_units(scope_b, [_unit_scope("u2", "world", scope_b)])
+    result = store.scopes()
+    assert scope_a in result
+    assert scope_b in result
+
+
+def test_latest_scope_by_md_returns_latest_scope(tmp_path) -> None:
+    """同 md_filename 插两条不同 scope（rowid 后插为新）→ 返回后插的 scope。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="o", user="a")
+    scope_b = Scope(org="o", user="b")
+    md = "MEMORY.md"
+    store.insert_units(scope_a, [_unit_with_md("u1", "alpha", scope_a, md)])
+    store.insert_units(scope_b, [_unit_with_md("u2", "beta", scope_b, md)])
+    result = store.latest_scope_by_md(Scope(), md)
+    assert result == scope_b  # rowid DESC → 后插入的 u2
+
+
+def test_latest_scope_by_md_no_history_returns_none(tmp_path) -> None:
+    """无历史 md_filename → 返 None。"""
+    store = _store(tmp_path)
+    assert store.latest_scope_by_md(Scope(), "no-such.md") is None
+
+
+def test_latest_scope_by_md_does_not_filter_by_scope(tmp_path) -> None:
+    """空 Scope 调用能取到非空 scope 的历史（跨 scope 不限 WHERE，看门狗诊断例外）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="o", user="a")
+    md = "MEMORY.md"
+    store.insert_units(scope_a, [_unit_with_md("u1", "alpha", scope_a, md)])
+    # 空 Scope 调用 → 仍取到 scope_a（不限 scope WHERE）
+    assert store.latest_scope_by_md(Scope(), md) == scope_a

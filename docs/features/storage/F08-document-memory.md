@@ -87,7 +87,7 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 
 | 表 | 角色 |
 |---|---|
-| `memory_unit` | 全量真源（`unit_id` 主键 + `unit_json` BLOB + content_hash/md_filename/project/category/lifecycle/t_valid/t_invalid/t_event 投影列） |
+| `memory_unit` | 全量真源（`unit_id` 主键 + `unit_json` BLOB + content_hash/md_filename/project + org/space/user/agent/session scope 五列 + category/lifecycle/t_valid/t_invalid/t_event 投影列） |
 | `memory_fts` | FTS5 倒排（普通 FTS5 表自存 token 串，非 external content） |
 | `memory_vec` | sqlite-vec `vec0` 向量表（仅完整模式建） |
 
@@ -99,13 +99,13 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 
 - `insert_units`：unit_id 已存在抛 `ConflictError`；同事务写全量 + FTS5 + vec0。
 - `update_units`：id 不存在抛 `NotFoundError`；**shadow 侧**按 `content_hash` 变化判定投影重建——content 改（OVERWRITE）→ 重建倒排 + 向量；只改状态字段（SUPERSEDE）→ 只覆写 `unit_json`（投影列 lifecycle 等无论 hash 是否变都覆写，谓词下推依赖）。注意此行描述的是 shadow 侧投影重建判定，与决策四 `update` 表里 md 侧分流（content 变→`replace_content` 改块；SUPERSEDE→`remove_content` 删旧块）是两侧各自行为，不要混读为「md 也不动」（谓词下推依赖）。重建走 DELETE + INSERT 而非原地 UPDATE（vec0 无 UPDATE 语义，FTS5 原地行为依赖实现版本）。**投影列空兜底守卫**：coords 是 TRANSIENT 键（dumps 剥除），读回的 unit 永远没有 coords → `_project_of` 落 default；若不守卫，任何 read-modify-write 循环（SUPERSEDE / dedup / LifecycleManager）都会把原 project 重置为 default，下次按 project 隔离召回即丢失。project / md_filename / category 取到兜底值时保留旧列值。**守卫值回填 `unit.system_metadata`**：守卫只把旧值兜进投影列局部变量还不够——`dumps(unit)` 序列化的 `unit_json` 会丢键，`get_units` 读回不带键 → 下一轮 read-modify-write 的 `old` 也不带键（传染性丢失）。`md_filename` 守卫后回填进 `unit.system_metadata[MD_FILENAME_KEY]`（落盘键，不在 TRANSIENT 集合），让 `unit_json` 与投影列一致、读回带键、根除传染；就地 mutate 入参 unit（与 `md.write` 回填同款模式），composite update 因与 shadow 同引用、shadow 在 md 调用之前执行而能从 `unit.system_metadata` 取到。
-- `delete_units`：幂等（缺失静默跳过），同事务显式删三表（rowid 关联无级联）。
-- `get_units`：缺失 id 省略不抛错（服务召回物化，命中 id 中途被删应跳过而非整批失败），按输入顺序保序返回。
-- `list_units`：全量拉 `(unit_id, unit_json bytes)`，过滤/排序/分页交上层复用 `list_memory_entries`（与 KV `scan→list` 同构）。
+- `delete_units`：幂等（缺失静默跳过），同事务显式删三表（rowid 关联无级联）。**幂等按 unit_id 不限 scope**（看门狗删、补偿回滚删依赖跨 scope 幂等），是 scope 原生隔离的幂等语义例外。
+- `get_units`：缺失 id 省略不抛错（服务召回物化，命中 id 中途被删应跳过而非整批失败），按输入顺序保序返回。**按 scope 原生隔离**（scope 五段等值 WHERE，不跨 scope 返回）。
+- `list_units`：拉该 scope 的 `(unit_id, unit_json bytes)`，过滤/排序/分页交上层复用 `list_memory_entries`（与 KV `scan→list` 同构）。**按 scope 原生隔离**（对齐 KV scan 按 scope 物理约束）。`list_units_by_md`（看门狗诊断用）例外不限 scope。
 
 **召回（`search_fulltext` / `search_vector`）**，project 谓词经 `_compile_system_filters` 编译下推（保留 AND/OR 语义）：
 
-project 谓词取自 `query.filters` 里的 `system_metadata.project`（上层 coords 折算下推，`_narrow_predicates` 产 `IN ["", value]`），与其他系统谓词（lifecycle/t_valid/t_invalid/t_event）一起经 `_compile_system_filters` 统一编译成保留 AND/OR 逻辑的 SQL WHERE 下推。单条 `IN ["", value]` 编译成 `project IN ('', value)`——一条 SQL 同时搜当前 project + 默认 project（跨项目可见的空串行 + 本项目行）。多条 project 谓词（系统收窄 AND 用户过滤）按 AND/OR 逻辑编译，不再降级成 OR 并集（已移除的旧平铺路径把多谓词值合并成单一 `IN (...)` 丢 AND/OR，会让「系统收窄 p1 AND 用户 p2」泄露 p2）。无 project 谓词（未带 coords）→ 兜底追加 `project = ''`，只召回跨项目可见的空串行（保留旧无谓词只返空串行语义，避免放宽成全库召回）。category 维度不在召回 SQL 过滤——若需按类别收窄，上层应通过 `query.filters` 显式传 category 谓词。**隔离不走 Scope 字段**：影子索引的 `scope` 入参仅作签名占位对齐契约，写入不落 scope 列。
+project 谓词取自 `query.filters` 里的 `system_metadata.project`（上层 coords 折算下推，`_narrow_predicates` 产 `IN ["", value]`），与其他系统谓词（lifecycle/t_valid/t_invalid/t_event）一起经 `_compile_system_filters` 统一编译成保留 AND/OR 逻辑的 SQL WHERE 下推。单条 `IN ["", value]` 编译成 `project IN ('', value)`——一条 SQL 同时搜当前 project + 默认 project（跨项目可见的空串行 + 本项目行）。多条 project 谓词（系统收窄 AND 用户过滤）按 AND/OR 逻辑编译，不再降级成 OR 并集（已移除的旧平铺路径把多谓词值合并成单一 `IN (...)` 丢 AND/OR，会让「系统收窄 p1 AND 用户 p2」泄露 p2）。无 project 谓词（未带 coords）→ 兜底追加 `project = ''`，只召回跨项目可见的空串行（保留旧无谓词只返空串行语义，避免放宽成全库召回）。category 维度不在召回 SQL 过滤——若需按类别收窄，上层应通过 `query.filters` 显式传 category 谓词。**scope 原生隔离**：影子索引 `memory_unit` 表加 org/space/user/agent/session 五列（对齐 KV 五段等值 WHERE），`scope` 入参与 `sys_where`（系统前置谓词）并列 AND 下推——scope 是身份隔离维（严格等值，无空串跨 scope 可见语义），与 project（收窄维，`IN ['', value]`）+ category（落盘键）正交。`list_units_by_md`（看门狗跨 scope 诊断）/ `delete_units`（幂等按 unit_id）例外不限 scope。**召回放宽 session**：`search_fulltext`/`search_vector` 的 scope WHERE 只对 org/space/user/agent 四段严格等值，**不做 session 等值**——记忆应跨 session 共享（同一 user/agent 在不同 session 的记忆互通）。`get_units`/`list_units` 仍保留 session 等值（点查/列表不放宽），故跨 session 召回的 unit 在 list 看不到、get 拉不到——召回侧有意放宽的已知边界。
 
 系统前置谓词（lifecycle/t_valid/t_invalid/t_event/project）经 `_compile_system_filters` 统一编译成保留 AND/OR 的 SQL WHERE 索引级下推（对齐非文档流程 `build_system_filters`）；OR 组含无约束 child 整体放弃下推、NOT 不产生（点读后 `is_retrieval_candidate` 复核兜底）。
 
@@ -184,6 +184,7 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 - **初始宽限期**：启动后延迟 1s 置 `watcher_initialized`，避开 Observer 刚起时对存量文件的初始扫描风暴（存量 md 是写入流程产物，不是「用户手改」）。
 - **写窗口推迟**：见决策四。`_do_sync` 里轮询 `write_window_open()`。
 - **unit_id 策略**：用户改某行 content → 旧 hash 消失 + 新 hash 出现 → 删旧 unit + 建新 unit（**新 uuid**），不保留旧 id（F07 §12.9 风险 5 当前版本策略——改行即断版本链，见已知遗留）。新建 unit 的缺省元数据：tier=SEMANTIC、t_ingest=now、provenance=`["watchdog_sync"]`、project 与 memory_class 从 md 路径反推（`daily_memory/` → team_memory、`MEMORY.md` → project_memory、`USER.md` → user_memory）。
+- **scope 继承**：新建 unit 的 scope 由 `latest_scope_by_md`（按 md_filename 查该文件最新一条 unit 的 scope，`rowid DESC LIMIT 1`，不限 scope WHERE 对齐 `list_units_by_md` 跨 scope 诊断例外）继承——md 文件不编码 org/space/user/agent/session，按同文件最新归属近似；无历史（该 md 文件首次补登）返 None 落看门狗构造期空 Scope 保持现行为。这修正 scope 原生隔离下补登 unit 落空 scope 列、真实 scope 召回不可见的遗留（补登 unit 落真实 scope 列后，真实 scope 的 get/list/search 能拉到它）。
 - **监听目录**：`{root}/memory/` 递归；目录尚不存在时退监听 markdown_root 本身（不能 schedule 不存在的目录）。
 
 **特殊场景与已知限制**（根因：看门狗按 content_hash 集合 diff，content_hash 不可唯一身份标识一个 md 块）：diff 的 `old_by_hash` 是 `content_hash → unit_id` 字典（同 hash 后者覆盖前者只留一个 id）、`_collect_new_contents` 用 `seen` 去重（同 content 第二次出现直接跳过）、diff 是纯集合差集 `old_set − new_set` / `new_set − old_set`。这让「重复 content」类手改失真：

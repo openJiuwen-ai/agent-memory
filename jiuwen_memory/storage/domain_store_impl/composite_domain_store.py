@@ -198,6 +198,8 @@ class CompositeDomainStore(DomainStore):
         return self._preferred_pipeline
 
     def scopes(self, **kwargs: Any) -> list[Scope]:
+        if self.should_write_document():
+            return self._raw_shadow_index().scopes()
         return self._kv().scopes()
 
     def add(
