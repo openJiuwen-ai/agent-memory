@@ -320,8 +320,20 @@ class LocalWatchdog(Watchdog):
         md 文件事件会重新触发。
         """
         try:
+            logger.debug(
+                "LocalWatchdog: do_sync start %s deleted=%s", md_filename, deleted
+            )
             deferred = 0.0
+            deferral_logged = False
             while write_window_open():
+                # 「首次推迟只记一次」用布尔标志，不挂在 deferred 浮点累加值上——
+                # 避免 0.0/0.25 恰好精确可表示这一隐含数值假设，意图也更直白。
+                if not deferral_logged:
+                    logger.debug(
+                        "LocalWatchdog: write window open, deferring sync %s",
+                        md_filename,
+                    )
+                    deferral_logged = True
                 if deferred >= MAX_SYNC_DEFERRAL_SECONDS:
                     logger.warning(
                         "LocalWatchdog: write window open for %.0fs, give up this sync "
@@ -349,9 +361,17 @@ class LocalWatchdog(Watchdog):
             rel = os.path.relpath(abs_path, self._markdown_root)
         except ValueError:
             # Windows 跨盘符 relpath 报错
+            logger.warning(
+                "LocalWatchdog: path outside markdown_root ignored: %s",
+                abs_path,
+            )
             return None
         # 越界（含 ..）忽略
         if rel.startswith(".."):
+            logger.warning(
+                "LocalWatchdog: path outside markdown_root ignored: %s",
+                abs_path,
+            )
             return None
         return rel.replace("\\", "/")
 
@@ -386,7 +406,15 @@ class LocalWatchdog(Watchdog):
         to_insert_pairs = [(h, c) for h, c in new_pairs if h not in old_hash_set]
 
         if not to_delete and not to_insert_pairs:
+            logger.debug(
+                "LocalWatchdog: no drift, skip sync %s", md_filename
+            )
             return  # md 与索引一致，无需同步
+
+        logger.debug(
+            "LocalWatchdog: diff %s to_delete=%d to_insert=%d",
+            md_filename, len(to_delete), len(to_insert_pairs),
+        )
 
         # delete 分支
         if to_delete:

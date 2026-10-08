@@ -223,6 +223,12 @@ class PipelineRetriever(Retriever):
         if self._doc_mode and enabled is not None:
             if RecallChannel.DOCUMENT not in enabled:
                 enabled = [*enabled, RecallChannel.DOCUMENT]
+                # 文档模式召回能否命中的关键：DOCUMENT 缺失即 ShadowRecaller 被
+                # channels 过滤掉 → 召回恒空（F08 §5.6 S14 根因之二）。
+                logger.info(
+                    "PipelineRetriever: DOCUMENT injected into channels "
+                    "(doc_mode=%s)", self._doc_mode,
+                )
         parsed.include_archived = query.include_archived
         parsed.recheck_filters = user_filters
         # 召回超采样（撒宽网）与精排预算（控成本）解耦：

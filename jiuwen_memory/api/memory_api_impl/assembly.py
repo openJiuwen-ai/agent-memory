@@ -129,6 +129,9 @@ class _Kernel:
         """
         if self.watchdog is not None:
             self.watchdog.start()
+            # 与 LocalWatchdog.start 的 info 呼应，确认"确实调了 start"——
+            # close 时若发现"装配但未 start"，本日志可回溯定位漏调点。
+            logger.info("start_background: watchdog.start() called")
 
     def close(self) -> None:
         """关闭需显式释放的后台组件（server shutdown event 调）。
@@ -147,13 +150,14 @@ class _Kernel:
         try:
             if self.storage.has_shadow_index():
                 shadow = self.storage.shadow_index()
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to get shadow index for close: %s", exc)
             shadow = None
         if shadow is not None:
             try:
                 shadow.close()
-            except Exception:  # pragma: no cover - 防御性清理
-                pass
+            except Exception as exc:  # pragma: no cover - 防御性清理
+                logger.debug("shadow.close() failed during shutdown: %s", exc)
 
 
 @runtime_checkable
@@ -409,10 +413,16 @@ def _build_kernel(
     _reject_routing_without_space_authorization(api)
 
     watchdog: Watchdog | None = None
-    if storage.has_shadow_index() and resolve_watch_document(
-            root.get(WATCH_DOCUMENT_KEY, True)
-    ):
+    has_shadow = storage.has_shadow_index()
+    watch_doc = resolve_watch_document(root.get(WATCH_DOCUMENT_KEY, True))
+    if has_shadow and watch_doc:
         watchdog = WatchdogProducer.dep(root, default="watchdog")
+    # "文档看门狗是否启用"的唯一决策点：shadow 端口缺失或 watch_document 关闭
+    # 都会让 assembled=False，此时 md 手改不会被增量同步——出问题时据本日志定位。
+    logger.info(
+        "watchdog assembled=%s (shadow=%s, watch_doc=%s)",
+        watchdog is not None, has_shadow, watch_doc,
+    )
 
     return _Kernel(
         api=api,

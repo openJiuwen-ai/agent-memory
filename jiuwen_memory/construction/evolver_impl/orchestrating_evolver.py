@@ -320,7 +320,7 @@ class OrchestratingEvolver(Evolver):
         """
         result = EvolveResult()
         noop_count = 0
-        logger.info(
+        logger.debug(
             "[trace/consolidate] _dedup_batch ENTER | candidates=%d | dedup_impl=%s",
             len(candidates), type(self._dedup).__name__,
         )
@@ -342,7 +342,7 @@ class OrchestratingEvolver(Evolver):
                 direct_add.append((candidate, None, 0.0))
                 continue
 
-            logger.info(
+            logger.debug(
                 "[trace/dedup] recall | candidate_id=%s | content=%r | hits=%d | dedup_impl=%s | scope=%r",
                 candidate.id[:8],
                 candidate.content[:80],
@@ -411,7 +411,7 @@ class OrchestratingEvolver(Evolver):
         result: EvolveResult,
     ) -> int:
         """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
-        logger.info(
+        logger.debug(
             "[trace/dedup] decision | candidate_id=%s | decision=%s | existing=%s | similarity=%.3f | content=%r",
             candidate.id[:8],
             decision.value,
@@ -583,24 +583,24 @@ class OrchestratingEvolver(Evolver):
         ]
 
         # [trace/consolidate] 单条判定路径：打印待消歧候选 + 召回记忆 + 完整 prompt
-        logger.info(
+        logger.debug(
             "[trace/consolidate] (single) candidate before LLM | candidate_id=%s | content=%r | tier=%s",
             candidate.id[:8], candidate.content, candidate.tier.value,
         )
         for unit, score in hits[:3]:
-            logger.info(
+            logger.debug(
                 "[trace/consolidate]   (single) recalled hit | unit_id=%s " \
                 "| score=%.3f | content=%r | tier=%s | lifecycle=%s",
                 unit.id[:8], score, unit.content, unit.tier.value, unit.lifecycle.value,
             )
-        logger.info(
+        logger.debug(
             "[trace/consolidate] (single) llm_prompt | system_len=%d | user_prompt=%s",
             len(_DEDUP_SYSTEM_PROMPT), user_prompt,
         )
 
         try:
             response = self._llm.chat(messages, temperature=0, max_tokens=256)
-            logger.info(
+            logger.debug(
                 "[trace/consolidate] (single) llm_raw_response | resp_len=%d | raw_response=%s",
                 len(response) if response else 0, response,
             )
@@ -662,24 +662,24 @@ class OrchestratingEvolver(Evolver):
 
         # [trace/consolidate] consolidate 调 LLM 前：打印待消歧候选 + 召回记忆 + 完整 prompt
         for cand, hits in items:
-            logger.info(
+            logger.debug(
                 "[trace/consolidate] candidate before LLM | candidate_id=%s | content=%r | tier=%s",
                 cand.id[:8], cand.content, cand.tier.value,
             )
             for unit, score in hits[:3]:
-                logger.info(
+                logger.debug(
                     "[trace/consolidate]   recalled hit | unit_id=%s" \
                     " | score=%.3f | content=%r | tier=%s | lifecycle=%s",
                     unit.id[:8], score, unit.content, unit.tier.value, unit.lifecycle.value,
                 )
-        logger.info(
+        logger.debug(
             "[trace/consolidate] llm_prompt | system_len=%d | user_prompt=%s",
             len(_DEDUP_BATCH_SYSTEM_PROMPT), user_prompt,
         )
 
         try:
             response = self._llm.chat(messages, temperature=0, max_tokens=1024)
-            logger.info(
+            logger.debug(
                 "[trace/consolidate] llm_raw_response | resp_len=%d | raw_response=%s",
                 len(response) if response else 0, response,
             )

@@ -367,6 +367,35 @@ def test_document_mode_add_writes_md_and_shadow_not_kv(tmp_path) -> None:
     assert "deploy cluster" in md.read_text(encoding="utf-8")
 
 
+def test_document_mode_project_memory_with_empty_coords_lands_at_memory_root(tmp_path) -> None:
+    """coords={} 空字典（无 project）的 project_memory unit 经 storage.add 后 md 落 memory 根下。
+
+    agent-core provider 无 project 时传 coords={} 请求判定；文档模式下 project_memory 的 md
+    落点取 coords.project，空串即落 memory/MEMORY.md（memory 根下，与 USER.md 同目录），非
+    default/ 或 project 子目录。md_filename 回填为 memory 根下路径，影子索引与之一致——一旦
+    _md_path 或 MarkdownStore.write 改成空 project 进 default/ 子目录，这里立即捕获。
+    """
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    unit = MemoryUnit(
+        id="u1",
+        scope=scope,
+        segments=[Segment(content="项目部署在集群 A")],
+        system_metadata={MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {}},
+    )
+    storage.add(scope, [unit])
+
+    # md 落 memory 根下 MEMORY.md，非 default/ 或 p1/ 子目录
+    md = tmp_path / "memory" / "MEMORY.md"
+    assert md.exists()
+    assert "项目部署在集群 A" in md.read_text(encoding="utf-8")
+    assert not (tmp_path / "memory" / "default").exists()
+    assert not (tmp_path / "memory" / "p1").exists()
+    # md_filename 回填为 memory 根下路径
+    (got,) = storage.get(scope, ["u1"])
+    assert got.system_metadata[MD_FILENAME_KEY] == "memory/MEMORY.md"
+
+
 def test_document_mode_add_folds_multiline_content(tmp_path) -> None:
     """文档路径入口把多行 content 折叠单行，md/索引/后续 replace 锚四方一致。"""
     scope = Scope(org="org", user="user")

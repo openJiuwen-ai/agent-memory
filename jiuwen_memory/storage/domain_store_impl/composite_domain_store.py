@@ -25,7 +25,7 @@ from jiuwen_memory.common.errors import (
     ValidationError,
     safe_error_message,
 )
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
     CandidateFuser,
@@ -223,6 +223,9 @@ class CompositeDomainStore(DomainStore):
             # 写窗口：两步写期间 md 与索引短暂不一致，挡住看门狗对账（F07 §12.9 风险 6，
             # sync_gate 模块说明）——insert_units 含逐条 embed（完整模式远端 HTTP），
             # 窗口可达秒级，2s debounce 挡不住。
+            logger.info(
+                "doc add: n=%d scope=%s", len(units), scope_for_log(scope)
+            )
             self._sanitize_document_content(units)
             md = self._raw_markdown()
             shadow = self._raw_shadow_index()
@@ -230,7 +233,8 @@ class CompositeDomainStore(DomainStore):
             try:
                 md.write(scope, units)
                 shadow.insert_units(scope, units)
-            except Exception:
+            except Exception as exc:
+                logger.error("doc add failed: %s", exc)
                 for u in units:
                     fn = (u.system_metadata or {}).get(MD_FILENAME_KEY, "")
                     c = u.segments[0].content if u.segments else ""
@@ -272,6 +276,9 @@ class CompositeDomainStore(DomainStore):
             # update_units（含 OVERWRITE 重建的 re-embed）与 replace_content 之间，索引
             # 已变而 md 还是旧的，看门狗在此插入会「删真 unit + 建幽灵」。整个 for 循环
             # 共持一个窗口（批量 update 中途关窗会出现同类窗口）。
+            logger.info(
+                "doc update: n=%d scope=%s", len(units), scope_for_log(scope)
+            )
             self._sanitize_document_content(units)
             shadow = self._raw_shadow_index()
             md = self._raw_markdown()
@@ -308,8 +315,14 @@ class CompositeDomainStore(DomainStore):
                                 # remove_content 未命中（md 与索引漂移）返 False 不抛错，
                                 # 与 replace_content 同款降级——索引侧已更新，漂移交看门狗对账。
                                 try:
-                                    md.remove_content(scope, md_filename, old_content)
-                                except Exception:
+                                    removed = md.remove_content(
+                                        scope, md_filename, old_content
+                                    )
+                                except Exception as exc:
+                                    logger.error(
+                                        "doc update failed unit=%s: %s",
+                                        unit.id[:8], exc,
+                                    )
                                     try:
                                         shadow.update_units(scope, [old])
                                     except Exception as comp_exc:
@@ -318,6 +331,12 @@ class CompositeDomainStore(DomainStore):
                                             unit.id[:8], comp_exc,
                                         )
                                     raise
+                                if not removed:
+                                    logger.warning(
+                                        "doc update: md block not found, drift "
+                                        "suspected unit=%s md_filename=%s",
+                                        unit.id[:8], md_filename,
+                                    )
                         continue
                     md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
                     if md_filename:
@@ -327,8 +346,13 @@ class CompositeDomainStore(DomainStore):
                         # 已改成 new，回滚 shadow.update_units([old]) 还原旧值（content_hash
                         # 还原，投影按 hash 变化自动重建回旧态）。返 False 不触发补偿。
                         try:
-                            md.replace_content(scope, md_filename, old_content, new_content)
-                        except Exception:
+                            replaced = md.replace_content(
+                                scope, md_filename, old_content, new_content
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                "doc update failed unit=%s: %s", unit.id[:8], exc
+                            )
                             try:
                                 shadow.update_units(scope, [old])
                             except Exception as comp_exc:
@@ -337,6 +361,11 @@ class CompositeDomainStore(DomainStore):
                                     unit.id[:8], comp_exc,
                                 )
                             raise
+                        if not replaced:
+                            logger.warning(
+                                "doc update: md block not found, drift suspected "
+                                "unit=%s md_filename=%s", unit.id[:8], md_filename
+                            )
             finally:
                 close_write_window()
         else:
@@ -370,6 +399,9 @@ class CompositeDomainStore(DomainStore):
             # 写窗口（sync_gate，F07 §12.9 风险 6）：delete 也是「先索引后 md」反序——
             # delete_units 与 remove_content 之间，索引已删而 md 还有行，看门狗在此插入
             # 会把刚删的 unit 以新 uuid 复活（双写）。
+            logger.info(
+                "doc delete: n=%d scope=%s", len(unit_ids), scope_for_log(scope)
+            )
             shadow = self._raw_shadow_index()
             md = self._raw_markdown()
             open_write_window()
@@ -395,9 +427,16 @@ class CompositeDomainStore(DomainStore):
                         if md_filename:
                             # 未命中（md 与索引漂移，如手改 md / 看门狗先删）返 False——不抛错，
                             # 索引侧已删，漂移交看门狗对账，避免 delete 因 md 异常而整体失败。
-                            md.remove_content(scope, md_filename, content)
+                            ok = md.remove_content(scope, md_filename, content)
+                            if not ok:
+                                logger.warning(
+                                    "doc delete: md block not found, drift suspected "
+                                    "unit_id=%s md_filename=%s",
+                                    old.id[:8], md_filename,
+                                )
                             removed.append(old)
-                except Exception:
+                except Exception as exc:
+                    logger.error("doc delete failed: %s", exc)
                     # shadow 回滚：把删的全部插回。
                     try:
                         shadow.insert_units(scope, olds)

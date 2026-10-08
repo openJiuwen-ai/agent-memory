@@ -200,6 +200,7 @@ class LocalMarkdownStore(MarkdownStore):
             root = self._resolved_root()
             abs_path = self._safe_abs_path(root, md_filename)
             if not os.path.isfile(abs_path):
+                logger.debug("md %s not found, skip replace_content", md_filename)
                 return False
             with open(abs_path, "r", encoding="utf-8") as fh:
                 text = fh.read()
@@ -229,6 +230,9 @@ class LocalMarkdownStore(MarkdownStore):
                     new_blocks.append(block)
 
             if not replaced:
+                logger.warning(
+                    "md block not found in %s (drift suspected)", md_filename
+                )
                 return False
 
             # 还原：块间用 \n\n 拼接，末尾补 \n\n（与 _render_block 尾部 \n\n 对齐，
@@ -243,6 +247,10 @@ class LocalMarkdownStore(MarkdownStore):
                 with open(abs_path, "w", encoding="utf-8") as fh:
                     fh.write(out)
             except Exception:
+                logger.warning(
+                    "md atomic write failed %s, restored from snapshot",
+                    md_filename,
+                )
                 _safe_restore(abs_path, text)
                 raise
             return True
@@ -267,6 +275,7 @@ class LocalMarkdownStore(MarkdownStore):
             root = self._resolved_root()
             abs_path = self._safe_abs_path(root, md_filename)
             if not os.path.isfile(abs_path):
+                logger.debug("md %s not found, skip remove_content", md_filename)
                 return False
             with open(abs_path, "r", encoding="utf-8") as fh:
                 text = fh.read()
@@ -294,6 +303,9 @@ class LocalMarkdownStore(MarkdownStore):
                     new_blocks.append(block)
 
             if not removed:
+                logger.warning(
+                    "md block not found in %s (drift suspected)", md_filename
+                )
                 return False
 
             # 还原：剩余块间用 \n\n 拼接，末尾补 \n\n（与 replace_content 口径一致，
@@ -306,6 +318,10 @@ class LocalMarkdownStore(MarkdownStore):
                 with open(abs_path, "w", encoding="utf-8") as fh:
                     fh.write(out)
             except Exception:
+                logger.warning(
+                    "md atomic write failed %s, restored from snapshot",
+                    md_filename,
+                )
                 _safe_restore(abs_path, text)
                 raise
             return True

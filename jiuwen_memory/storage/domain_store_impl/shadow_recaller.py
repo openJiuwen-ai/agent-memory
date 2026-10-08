@@ -44,6 +44,9 @@ class ShadowRecaller(Recaller):
 
     def __init__(self, storage: StoreManager) -> None:
         if not storage.has_shadow_index():
+            logger.error(
+                "ShadowRecaller: shadow index port unavailable, doc recall will be empty"
+            )
             raise UnsupportedStorageCapabilityError(
                 "ShadowRecaller 要求 shadow 端口就绪（文档模式 globals.write_document=true），"
                 "但注入的 StoreManager 无 shadow 端口"
@@ -91,6 +94,10 @@ class ShadowRecaller(Recaller):
         vec_ids: list = []
         if query.vector and self._shadow.vec_enabled:
             vec_ids = self._recall_vector(scope, query, top_k)
+        logger.debug(
+            "ShadowRecaller: vec_enabled=%s vector_path=%s",
+            self._shadow.vec_enabled, bool(query.vector),
+        )
 
         # 两路按名次 RRF 合并（方向/量纲无关，见 _merge_rrf）。
         paths = [scored_ids, vec_ids]
