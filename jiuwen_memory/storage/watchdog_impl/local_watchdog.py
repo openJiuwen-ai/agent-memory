@@ -427,8 +427,12 @@ class LocalWatchdog(Watchdog):
 
         # insert 分支：建新 unit（content 原文来自 new_pairs）
         if to_insert_pairs:
+            # scope 继承：按 md_filename 查该文件最新一条 unit 的 scope（md 不编码 scope，
+            # 按同文件最新归属近似）；无历史返 None 落 self._scope（空 Scope，保持现行为）。
+            # 一次查询供本批次所有新 unit 复用，避免每条 unit 重复查。
+            inherited_scope = self._shadow.latest_scope_by_md(scope, md_filename) or self._scope
             units = [
-                self._build_unit(md_filename, content)
+                self._build_unit(md_filename, content, inherited_scope)
                 for _, content in to_insert_pairs
             ]
             self._shadow.insert_units(scope, units)
@@ -437,11 +441,12 @@ class LocalWatchdog(Watchdog):
                 len(units), md_filename,
             )
 
-    def _build_unit(self, md_filename: str, content: str) -> MemoryUnit:
+    def _build_unit(self, md_filename: str, content: str, scope: Scope) -> MemoryUnit:
         """建新 MemoryUnit（F07 §12.6 缺省元数据）。
 
         缺省值：
-        - scope.project：从 md 路径反推
+        - scope：由调用方传入（继承自 ``latest_scope_by_md`` 或默认空 Scope，见 _sync_one）
+        - scope.project（coords）：从 md 路径反推
         - category(memory_class)：从 md 路径反推（USER.md→user_memory 等）
         - tier：SEMANTIC（与抽取产出的语义记忆一致）
         - temporal：t_ingest=now，其余 None
@@ -454,7 +459,7 @@ class LocalWatchdog(Watchdog):
         unit_id = str(uuid.uuid4())
         return MemoryUnit(
             id=unit_id,
-            scope=self._scope,
+            scope=scope,
             tier=_DEFAULT_TIER,
             segments=[Segment(content=content, source=Modality.TEXT)],
             source_ref=f"watchdog:{md_filename}",
@@ -515,8 +520,8 @@ def _build(config):
     shadow = storage.shadow_index()
     markdown_root = storage.markdown().root or "."
     debounce_ms = int(Factory.cfg_get(config, "debounce_ms", _DEFAULT_DEBOUNCE_MS))
-    # scope：看门狗不按 scope 隔离（影子索引靠 project+category，不走 Scope 字段，
-    # 见 sqlite_shadow_index.list_units_by_md 注释），用空 Scope 占位。
+    # scope：看门狗跨 scope 诊断——list_units_by_md 不限 scope（见该方法注释），
+    # 影子索引其余方法已加 scope 原生隔离；看门狗用空 Scope 占位走不限 scope 的诊断路径。
     scope = Scope()
     return LocalWatchdog(
         shadow=shadow,

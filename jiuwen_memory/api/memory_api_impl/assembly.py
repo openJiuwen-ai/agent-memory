@@ -142,11 +142,6 @@ class _Kernel:
         连接。幂等——重复调不报错（watchdog.stop / shadow.close 自身幂等）。
         """
         if self.watchdog is not None:
-            if not self.watchdog.started:
-                logger.info(
-                    "文档看门狗已装配但从未 start（start_background/start 未调），"
-                    "进程生命周期内 md 手改监听未生效。见 F07 §12.10。"
-                )
             self.watchdog.stop()
         shadow = None
         try:

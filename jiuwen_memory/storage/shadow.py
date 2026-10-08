@@ -68,6 +68,15 @@ class DocumentShadowIndex(BaseStore):
         """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用。返回 ``(unit_id, content_hash)`` 二元组。"""
 
     @abstractmethod
+    def latest_scope_by_md(self, scope: Scope, md_filename: str) -> Scope | None:
+        """按 ``md_filename`` 查该文件最新一条 unit 的 scope，无历史返 None。
+
+        供看门狗建新 unit 时继承 scope（md 文件不编码 scope，按同文件最新归属近似）。
+        不限 scope WHERE（对齐 ``list_units_by_md`` 的看门狗跨 scope 诊断例外）。
+        排序口径 rowid DESC（最近插入）；无历史返 None。
+        """
+
+    @abstractmethod
     def search_fulltext(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
         """FTS5 倒排检索，BM25 排序，返回 top-k ``(unit_id, score)``。
 
@@ -99,6 +108,15 @@ class DocumentShadowIndex(BaseStore):
         「能力不可用」与「零召回」。缺省 False（安全关闭），完整模式实现覆盖为 True。
         """
         return False
+
+    def scopes(self) -> list[Scope]:
+        """枚举影子索引已有 Scope（对齐 :meth:`KVStore.scopes`）。
+
+        供文档模式 lifecycle/space sweep 枚举 scope。缺省空列表（安全关闭）——
+        完整实现覆盖为 ``SELECT DISTINCT`` 五段返回 list[Scope]；未装配文档端口时
+        契约默认空，调用方不应据此推断「无 unit」（应经 ``has_shadow_index`` 判能力）。
+        """
+        return []
 
     def store_type(self) -> StoreType:
         return StoreType.DOCUMENT_SHADOW
