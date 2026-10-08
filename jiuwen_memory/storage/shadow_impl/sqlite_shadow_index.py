@@ -102,6 +102,9 @@ def _try_import_sqlite_vec():
 
         return sqlite_vec
     except ImportError:
+        logger.warning(
+            "sqlite_vec not importable, vector recall disabled (degraded mode)"
+        )
         return None
 
 
@@ -513,8 +516,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 for unit in units:
                     self._insert_one(conn, unit)
                 conn.execute("COMMIT")
-            except Exception:
+            except Exception as exc:
                 conn.execute("ROLLBACK")
+                logger.error("shadow insert failed, rolled back: %s", exc)
                 raise
 
     def _insert_one(self, conn: sqlite3.Connection, unit: MemoryUnit) -> None:
@@ -637,8 +641,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 for unit in units:
                     self._update_one(conn, unit)
                 conn.execute("COMMIT")
-            except Exception:
+            except Exception as exc:
                 conn.execute("ROLLBACK")
+                logger.error("shadow update failed, rolled back: %s", exc)
                 raise
 
     def _update_one(self, conn: sqlite3.Connection, unit: MemoryUnit) -> None:
@@ -783,8 +788,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                         tuple(unit_ids),
                     )
                 conn.execute("COMMIT")
-            except Exception:
+            except Exception as exc:
                 conn.execute("ROLLBACK")
+                logger.error("shadow delete failed, rolled back: %s", exc)
                 raise
 
     def list_units(self, scope: Scope) -> list[tuple[str, bytes]]:
@@ -970,7 +976,7 @@ def _build(config):
     except Exception as e:
         # 未配 markdown_store 是正常状态（走 db_path 兜底），但配置损坏也会走到这里，
         # 打 debug 日志让回退可观测，避免静默行为偏移无迹可查。
-        logger.error("get markdown_store.default failed, shadow sqlite db_path use default path, exception msg: %s", e)
+        logger.debug("get markdown_store.default failed, shadow sqlite db_path use default path, exception msg: %s", e)
     # embedder 可选（降级）：config 显式配了 embedder 才注入，否则传 None → 降级模式。
     # 不用 dep(default=...) 是因为 default=None 会抛 ValidationError（dep 无 default 报错），
     # 这里要的是"未配就 None"而非"未配就报错"。

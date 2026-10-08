@@ -65,6 +65,25 @@ def test_md_path_for_project_memory_scopes_by_project() -> None:
     assert store._md_path(unit) == "memory/p1/MEMORY.md"
 
 
+def test_md_path_for_project_memory_without_project_lands_at_memory_root() -> None:
+    """project_memory + coords={}（无 project）→ 落 memory 根下 MEMORY.md，与 USER.md 同目录。
+
+    agent-core provider 无 project 时传 coords={}（空字典）请求判定；判定为 project_memory 后，
+    md 落点取 coords.project，空串即落 memory 根下（跨项目可见）——不是 default/ 子目录。与
+    user_memory 的 USER.md 同落 memory 根下，是「无 project 同目录」契约的直接守卫：一旦
+    _md_path 改成空 project 进 default/ 或别的子目录，这里立即捕获。
+    """
+    store = _store(None)
+    proj = _unit("u1", "x", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {}})
+    user = _unit("u2", "y", {MEMORY_CLASS_KEY: "user_memory", COORDS_KEY: {}})
+    assert store._md_path(proj) == "memory/MEMORY.md"
+    assert store._md_path(user) == "memory/USER.md"
+    # 同落 memory 根下：路径形如 memory/<file>，不进 default/ 或 project 子目录
+    for path in (store._md_path(proj), store._md_path(user)):
+        assert "default" not in path
+        assert path.startswith("memory/") and path.count("/") == 1
+
+
 def test_md_path_for_team_memory_uses_daily_file() -> None:
     store = _store(None)
     unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "team_memory", COORDS_KEY: {"project": "p1"}})

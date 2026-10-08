@@ -98,7 +98,7 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 **CRUD 语义**（对齐 KVStore 惯例）：
 
 - `insert_units`：unit_id 已存在抛 `ConflictError`；同事务写全量 + FTS5 + vec0。
-- `update_units`：id 不存在抛 `NotFoundError`；按 `content_hash` 变化判定投影重建——content 改（OVERWRITE）→ 重建倒排 + 向量；只改状态字段（SUPERSEDE）→ 只覆写 `unit_json`。投影列（lifecycle 等）无论 hash 是否变都覆写（谓词下推依赖）。重建走 DELETE + INSERT 而非原地 UPDATE（vec0 无 UPDATE 语义，FTS5 原地行为依赖实现版本）。**投影列空兜底守卫**：coords 是 TRANSIENT 键（dumps 剥除），读回的 unit 永远没有 coords → `_project_of` 落 default；若不守卫，任何 read-modify-write 循环（SUPERSEDE / dedup / LifecycleManager）都会把原 project 重置为 default，下次按 project 隔离召回即丢失。project / md_filename / category 取到兜底值时保留旧列值。**守卫值回填 `unit.system_metadata`**：守卫只把旧值兜进投影列局部变量还不够——`dumps(unit)` 序列化的 `unit_json` 会丢键，`get_units` 读回不带键 → 下一轮 read-modify-write 的 `old` 也不带键（传染性丢失）。`md_filename` 守卫后回填进 `unit.system_metadata[MD_FILENAME_KEY]`（落盘键，不在 TRANSIENT 集合），让 `unit_json` 与投影列一致、读回带键、根除传染；就地 mutate 入参 unit（与 `md.write` 回填同款模式），composite update 因与 shadow 同引用、shadow 在 md 调用之前执行而能从 `unit.system_metadata` 取到。
+- `update_units`：id 不存在抛 `NotFoundError`；**shadow 侧**按 `content_hash` 变化判定投影重建——content 改（OVERWRITE）→ 重建倒排 + 向量；只改状态字段（SUPERSEDE）→ 只覆写 `unit_json`（投影列 lifecycle 等无论 hash 是否变都覆写，谓词下推依赖）。注意此行描述的是 shadow 侧投影重建判定，与决策四 `update` 表里 md 侧分流（content 变→`replace_content` 改块；SUPERSEDE→`remove_content` 删旧块）是两侧各自行为，不要混读为「md 也不动」（谓词下推依赖）。重建走 DELETE + INSERT 而非原地 UPDATE（vec0 无 UPDATE 语义，FTS5 原地行为依赖实现版本）。**投影列空兜底守卫**：coords 是 TRANSIENT 键（dumps 剥除），读回的 unit 永远没有 coords → `_project_of` 落 default；若不守卫，任何 read-modify-write 循环（SUPERSEDE / dedup / LifecycleManager）都会把原 project 重置为 default，下次按 project 隔离召回即丢失。project / md_filename / category 取到兜底值时保留旧列值。**守卫值回填 `unit.system_metadata`**：守卫只把旧值兜进投影列局部变量还不够——`dumps(unit)` 序列化的 `unit_json` 会丢键，`get_units` 读回不带键 → 下一轮 read-modify-write 的 `old` 也不带键（传染性丢失）。`md_filename` 守卫后回填进 `unit.system_metadata[MD_FILENAME_KEY]`（落盘键，不在 TRANSIENT 集合），让 `unit_json` 与投影列一致、读回带键、根除传染；就地 mutate 入参 unit（与 `md.write` 回填同款模式），composite update 因与 shadow 同引用、shadow 在 md 调用之前执行而能从 `unit.system_metadata` 取到。
 - `delete_units`：幂等（缺失静默跳过），同事务显式删三表（rowid 关联无级联）。
 - `get_units`：缺失 id 省略不抛错（服务召回物化，命中 id 中途被删应跳过而非整批失败），按输入顺序保序返回。
 - `list_units`：全量拉 `(unit_id, unit_json bytes)`，过滤/排序/分页交上层复用 `list_memory_entries`（与 KV `scan→list` 同构）。
@@ -118,7 +118,7 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 | 方法 | 文档路径 |
 |---|---|
 | `add` | `_sanitize_document_content` → `md.write`（回填 md_filename）→ `shadow.insert_units`；不碰 KV |
-| `update` | 逐条：`shadow.get_units` 取旧 content → `shadow.update_units` 覆写 → content 变时 `md.replace_content`；SUPERSEDE 只改状态字段 content 不变 → md 不动 |
+| `update` | 逐条：`shadow.get_units` 取旧 content → `shadow.update_units` 覆写（OVERWRITE content 变→重建 FTS5/vec0；SUPERSEDE content 不变→只覆写 `unit_json`+lifecycle 投影列）→ content 变时 `md.replace_content` 改块；SUPERSEDE（lifecycle ACTIVE→SUPERSEDED、content 不变）走 `md.remove_content` **删旧块**——md 真源不留"幽灵块"与新块并存，与影子索引 lifecycle 投影列更新同口径（shadow 侧只改投影列，md 侧物理删旧块）|
 | `delete` | `shadow.get_units` 取旧 unit（md_filename + content 定位 md 块）→ `shadow.delete_units` 删三表 → 逐条 `md.remove_content` |
 | `get` | `shadow.get_units`（缺失省略、保序），替代 `kv.mget` |
 | `list` | `shadow.list_units` 全量拉 → 复用 `list_memory_entries` 内存过滤排序分页 |
@@ -128,7 +128,7 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **写窗口防护**（`storage/sync_gate.py`，F07 §12.9 风险 6）：文档路径是两步写（md + 索引），两步之间 md 与索引短暂不一致，看门狗 check-then-act 对账会误判漂移（add 窗口 → 幽灵 unit 双写；update/delete 反序窗口 → 删真 unit / 复活已删 unit）。防护：写入编排层在两步写之前 `open_write_window()`、`finally` 里 `close_write_window()`（精确覆盖含慢 embed 的全过程——完整模式逐条 embed 是远端 HTTP，窗口可达秒级，2s debounce 挡不住）；看门狗 sync 入口查 `write_window_open()`——窗口开着**推迟**本轮对账（0.25s 轮询，窗口一关立即续跑），超过 60s 上限放弃本次（防写路径 bug 永不关窗卡死任务；放弃不丢数据，下一次 md 文件事件会重新触发）。门闸是**深度计数**非布尔位（支持嵌套写路径），模块级单例——composite 与 watchdog 无需互相持有引用，同进程 import 即共享。
 
-**写失败补偿**（S09 第 12 条：真源与派生数据须定义提交顺序/幂等/重试/恢复，部分成功不能报为完整成功）：写窗口只防并发观察，不解决部分成功——后一步失败时前一步已落盘，调用抛异常但 md/shadow 漂移。三处文档路径加失败补偿，失败时回滚到调用前状态，使调用方收到异常即等价于"未发生"：
+**写失败补偿**（S09 第 12 条：真源与派生数据须定义提交顺序/幂等/重试/恢复，部分成功不能报为完整成功）：写窗口只防并发观察，不解决部分成功——后一步失败时前一步已落盘，调用抛异常但 md/shadow 漂移。三处文档路径加失败补偿，失败时**尽力回滚**到调用前状态（shadow 侧回滚到旧快照、md 侧靠 `replace_content`/`remove_content` 自身 `_safe_restore` 原子写恢复调用前字节态）。"等价于未发生"是**尽力而非保证**，存在三处落空（见下方「补偿失败处理」与「已知遗留-写失败补偿的残留风险」）：① `_safe_restore` 自身失败只记 warning 不抛，md 侧恢复落空；② 补偿动作失败被内层吞掉，原异常照常抛但 md/shadow 漂移留下；③ 补偿整体失败无 reconcile 兜底，漂移交看门狗对账。补偿仅在 md 调用**抛异常**时触发（未命中返 False 不触发，见下方「重要边界」）：
 
 | 方法 | 正常顺序 | 失败点 | 补偿动作 | 补偿数据来源 |
 |---|---|---|---|---|
