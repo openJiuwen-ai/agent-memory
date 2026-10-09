@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, matches_memory_unit
-from jiuwen_memory.common.type_def.memory_codec import loads
+from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, Scope, matches_memory_unit
 
+from ..kv import load_memory_unit
 from ..types import KVMemoryListResult
 
 
@@ -22,6 +22,7 @@ def _sort_key(unit: MemoryUnit) -> tuple[datetime, str]:
 
 def list_memory_entries(
     entries: list[tuple[str, bytes]],
+    scope: Scope,
     *,
     offset: int,
     limit: int,
@@ -38,7 +39,7 @@ def list_memory_entries(
             wanted.add(memory_type)
     matches: list[tuple[str, bytes, MemoryUnit]] = []
     for key, raw in entries:
-        unit = loads(raw)
+        unit = load_memory_unit(raw, scope=scope, key=key)
         if unit is None:
             continue
         if wanted and _memory_type(unit) not in wanted:

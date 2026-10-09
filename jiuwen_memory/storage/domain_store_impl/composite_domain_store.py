@@ -42,8 +42,9 @@ from jiuwen_memory.common.type_def import (
     is_retrieval_candidate,
     memory_key,
 )
-from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
+from jiuwen_memory.storage.kv import load_memory_unit
 from jiuwen_memory.storage.security import (
     StorageAccessContext,
     StorageAction,
@@ -232,8 +233,8 @@ class CompositeDomainStore(DomainStore):
             extensions=extensions,
         )
         items: list[MemoryUnit] = []
-        for _, raw in result.entries:
-            unit = loads(raw)
+        for key, raw in result.entries:
+            unit = load_memory_unit(raw, scope=scope, key=key)
             if unit is not None:
                 items.append(unit)
         return MemoryListResult(items=items, count=result.count)
@@ -338,7 +339,7 @@ class CompositeDomainStore(DomainStore):
                     continue
         by_id: dict[str, MemoryUnit] = {}
         for unit_id, raw in loaded:
-            unit = loads(raw)
+            unit = load_memory_unit(raw, scope=scope, key=memory_key(unit_id))
             if unit is not None:
                 by_id[unit_id] = unit
         return [by_id[unit_id] for unit_id in unit_ids if unit_id in by_id]
