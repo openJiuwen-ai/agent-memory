@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-10-14 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -61,6 +61,9 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 16. **层级默认保守**：`expand_depth=0`、`rollup=false`；只返回直接召回命中的节点，不遍历子节点，也不传播后代分数；父优先由显式 `hierarchy_role` 父侧角色过滤实现。
 17. **展开顺序与隔离**：Expander 只沿直接 `child_ids` 向下，且必须保持父节点声明的稳定顺序；跨 org/space 引用不可见；同租户内跨 session/user 的子节点按 `child_scopes`（或缺省父 Scope）解析。
 18. **展开共用既有 token 预算**：`expand_depth>0` 时选子与主披露级分配消耗同一 `RetrievalQuery.max_tokens`（来自 `context.extensions["max_tokens"]`），不另设独立树预算参数；Discloser 仍只负责单个 unit 的内容塑形。`span_start/span_end` 是结构覆盖区间，与 `as_of` 的 valid-time 回溯及 `time_from/time_to` 的 event-time 范围独立。
+19. **可选精排失败可降级**：已配置的 Reranker 在 `rerank` 阶段抛出 `BackendError` 时，
+    Retriever 必须继续使用未精排候选，按未校准阈值路径处理，并在轨迹中记录
+    `skipped=reranker_unavailable` 与脱敏后的 `error`。其他异常不得被该降级路径吞掉。
 
 ## 接口契约
 

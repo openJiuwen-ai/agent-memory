@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-14 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F10-authentication-kernel.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -92,6 +92,10 @@
    有限 timeout 和重试上限；默认 `300` 秒、`0` 次 SDK 重试，TCP connect 固定 5 秒。
    `<prefix>_timeout` 必须是有限正数，`<prefix>_max_retries` 必须是不小于 0 的整数，
    非法值在装配阶段抛 `ValidationError`。
+19. **本地 BGE 模型不在运行时下载**：`bge_m3` 与 `bge_reranker` 的模型参数可以是
+    已部署的本地目录，或只代表已经存在于 HuggingFace 本地缓存中的 repo id。实现必须
+    通过本地目录解析后再交给底层模型库，并以 `local_files_only=True` 查缓存；缓存缺失、
+    依赖缺失或模型加载失败统一报告 `BackendError`，不得通过设置运行时环境变量或在线回退来下载。
 
 ## 接口契约
 

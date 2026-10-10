@@ -28,7 +28,8 @@ globals:
 
 # ---- 本地高级精排（需安装 extra: embed，并准备模型文件）----
 # reranker:
-#   default: { target: bge_reranker, params: { reranker_bge_model: BAAI/bge-reranker-v2-m3 } }
+#   default: { target: bge_reranker, params: { reranker_bge_model: /models-local/bge-reranker-v2-m3 } }
+#   # 仅使用本地目录或已准备好的 HuggingFace 缓存，运行时不会下载权重。
 
 # ---- 多实例 + 引用共享示例：构建侧与召回侧共享同一具名 vector_store ----
 # vector_store:
