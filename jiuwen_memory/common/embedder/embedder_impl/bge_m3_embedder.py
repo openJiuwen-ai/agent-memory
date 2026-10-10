@@ -8,8 +8,8 @@
 L2 归一化在 encode 之后手动完成（而非传 normalize_embeddings 给底层 tokenizer），
 兼容所有 FlagEmbedding / sentence-transformers / transformers 版本。
 
-加载策略：先离线从本地缓存加载（快速、不联网）；缓存不存在时再联网下载。
-本地路径（目录存在）时直接加载，跳过离线/联网逻辑。
+加载策略：本地目录直接加载；repo id 只解析已有的 HuggingFace 本地缓存。
+缓存不存在时快速失败，不在运行时联网下载。
 
 ``use_fp16`` 仅在 CUDA 可用时生效——CPU-only 运行时（如 ``python:3.11-slim`` 容器）
 强制降级 fp32，否则 torch>=2.x 的 meta device 会让权重停留在占位状态，推理时报
@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import math
 
+from jiuwen_memory.common._support import resolve_model_source
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import BackendError, HealthCheckError
 from jiuwen_memory.common.log import get_logger
 
 logger = get_logger(__name__)
@@ -106,19 +107,11 @@ class BGEM3Embedder(Embedder):
     def _load_model(self):
         """延迟加载模型——首次 embed/health 时才初始化，避免 import 时长时间等待。
 
-        加载策略：先离线从本地缓存加载（快速、不联网）；缓存不存在时再联网下载。
-        本地路径（目录存在）时直接加载，跳过离线/联网逻辑。
+        repo id 只从本地 HuggingFace 缓存解析，模型加载过程不联网。
+        本地目录直接加载。
         """
         if self._model is not None:
             return
-        try:
-            from FlagEmbedding import BGEM3FlagModel
-        except ImportError:
-            raise ImportError(
-                "BGEM3Embedder requires the 'FlagEmbedding' package. "
-                "Install it with: pip install FlagEmbedding"
-            ) from None
-
         # CPU 环境下强制 fp32：fp16 是 CUDA tensor 优化，CPU 上 FlagEmbedding 的设备
         # 转移逻辑（torch>=2.x meta device）会令权重停留在 meta 占位状态，推理时报
         # "Cannot copy out of meta tensor; no data!"。无 CUDA 时无视配置强制 fp32。
@@ -136,48 +129,30 @@ class BGEM3Embedder(Embedder):
                     "(would trigger meta-tensor error); falling back to fp32."
                 )
 
-        import os
-
-        is_local_path = os.path.isdir(self._model_name_or_path)
-
-        if not is_local_path:
-            # 先尝试离线加载（HF_HUB_OFFLINE=1 → 只读缓存，不联网，快速失败）
-            logger.info(
-                "BGEM3Embedder: trying offline load from cache for %s", self._model_name_or_path
-            )
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            try:
-                self._model = BGEM3FlagModel(
-                    self._model_name_or_path,
-                    use_fp16=effective_fp16,
-                )
-                logger.info("BGEM3Embedder: model loaded from local cache successfully")
-                os.environ.pop("HF_HUB_OFFLINE", None)
-                return
-            except Exception:
-                # 缓存不存在，清理 offline 标记，回退到联网下载
-                os.environ.pop("HF_HUB_OFFLINE", None)
-                logger.info("BGEM3Embedder: offline load failed, falling back to online download")
-
+        model_source = resolve_model_source(
+            self._model_name_or_path, component="BGEM3Embedder"
+        )
+        try:
+            from FlagEmbedding import BGEM3FlagModel
+        except ImportError as exc:
+            raise BackendError(
+                "BGEM3Embedder requires the 'FlagEmbedding' package. "
+                "Install it with: pip install FlagEmbedding"
+            ) from exc
         logger.info(
-            "BGEM3Embedder: loading model %s (fp16=%s, local=%s)",
-            self._model_name_or_path,
+            "BGEM3Embedder: loading local model %s (fp16=%s)",
+            model_source,
             effective_fp16,
-            is_local_path,
         )
         try:
             self._model = BGEM3FlagModel(
-                self._model_name_or_path,
+                model_source,
                 use_fp16=effective_fp16,
             )
             logger.info("BGEM3Embedder: model loaded successfully")
         except Exception as exc:
-            from jiuwen_memory.common.errors import BackendError
-
             raise BackendError(
-                f"BGEM3Embedder: failed to load model {self._model_name_or_path}: {exc}. "
-                f"Ensure the model files are in the HuggingFace cache or provide "
-                f"a local directory path via config.embedder_bge_m3_model."
+                f"BGEM3Embedder: failed to load model {model_source}: {exc}."
             ) from exc
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:

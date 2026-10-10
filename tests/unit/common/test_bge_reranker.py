@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import BackendError, HealthCheckError
 from jiuwen_memory.common.reranker.reranker_impl import RerankerProducer
 from jiuwen_memory.common.reranker.reranker_impl.bge_reranker import BGEReranker
 from jiuwen_memory.config import AssemblyContext
@@ -132,9 +132,13 @@ def test_health_failure():
         reranker.health()
 
 
-def test_lazy_load_from_flagembedding():
+def test_lazy_load_from_flagembedding(tmp_path, monkeypatch):
     """T-BGE-RR-08: 首次 rerank 时才从 FlagEmbedding 加载模型。"""
     flag_embedding = SimpleNamespace(FlagReranker=MockFlagReranker)
+    monkeypatch.setattr(
+        "jiuwen_memory.common.reranker.reranker_impl.bge_reranker.resolve_model_source",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
     with patch.dict(sys.modules, {"FlagEmbedding": flag_embedding}):
         reranker = BGEReranker(
             model_name_or_path="BAAI/bge-reranker-v2-m3",
@@ -147,15 +151,15 @@ def test_lazy_load_from_flagembedding():
     assert scores == [1.0]
     model = getattr(reranker, "_model")
     assert isinstance(model, MockFlagReranker)
-    assert model.model_name_or_path == "BAAI/bge-reranker-v2-m3"
+    assert model.model_name_or_path == str(tmp_path)
     assert model.use_fp16 is False
 
 
-def test_missing_flagembedding_dependency_reports_clear_error():
-    """T-BGE-RR-09: 缺少 FlagEmbedding 时，选择该后端才抛清晰错误。"""
+def test_missing_flagembedding_dependency_reports_backend_error(tmp_path):
+    """本地模型存在但依赖缺失时，返回稳定的后端错误契约。"""
     with patch.dict(sys.modules, {"FlagEmbedding": None}):
-        reranker = BGEReranker()
-        with pytest.raises(ImportError, match="FlagEmbedding"):
+        reranker = BGEReranker(model_name_or_path=str(tmp_path))
+        with pytest.raises(BackendError, match="FlagEmbedding"):
             reranker.rerank("coffee", ["coffee note"])
 
 
