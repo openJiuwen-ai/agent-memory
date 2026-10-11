@@ -38,6 +38,7 @@ from jiuwen_memory.api import (
     AgentMemoryError,
     AuditEvent,
     BatchWriteItem,
+    Channel,
     ConflictError,
     Context,
     DeleteMode,
@@ -46,6 +47,7 @@ from jiuwen_memory.api import (
     EvolveMode,
     Grant,
     MemoryPatch,
+    MemoryTier,
     MemoryUnit,
     Modality,
     NotFoundError,
@@ -644,11 +646,15 @@ def _search(srv, request: DispatchRequest) -> Body:
         extensions[EXT_MAX_TOKENS] = str(max_tokens)
     trace = _bool_value(payload.get("trace"))
     disclosure = _enum_value(DisclosureLevel, payload.get("disclosure", "l0"), name="disclosure")
+    # as_of 与 _get 同源：缺省时点查询必须落到历史版本，否则调用方拿到的是
+    # “当前状态”而字段本身并未被报错（静默忽略）。
+    as_of = _parse_occurred_at(payload.get("as_of"), name="search as_of")
     res = srv.api.search(
         _require(payload, "query"),
         Context(scope, extensions=extensions),
         security=_request_security(request),
         filters=payload.get("filters"),  # dict DSL / 旧 list：由 API 边界 normalize，非法则 400
+        as_of=as_of,
         top_k=_parse_positive_int(payload.get("k"), name="k", default=10),
         disclosure=disclosure,
         with_trajectory=trace,
@@ -732,6 +738,11 @@ def _update(srv, request: DispatchRequest) -> Body:
         user_metadata=payload.get("user_metadata"),
         t_valid=_parse_occurred_at(payload.get("t_valid"), name="update t_valid"),
         t_invalid=_parse_occurred_at(payload.get("t_invalid"), name="update t_invalid"),
+        # tier 是 MemoryPatch 的一等字段，漏传会让“改分类”的请求 200 成功却
+        # 没有任何效果（重分类直接影响后续召回过滤）。
+        tier=_enum_value(MemoryTier, payload["tier"], name="tier")
+        if payload.get("tier") is not None
+        else None,
         mode=_enum_value(UpdateMode, payload.get("mode", "supersede"), name="mode")
         if payload.get("mode")
         else UpdateMode.SUPERSEDE,
@@ -745,7 +756,12 @@ def _update(srv, request: DispatchRequest) -> Body:
 def _delete(srv, request: DispatchRequest) -> Body:
     payload = request.payload
     scope = _require_target(request)
-    mode = DeleteMode.PURGE if _bool_value(payload.get("hard")) else DeleteMode.FORGET
+    # mode 是 DeleteSelector 的一等参数（forget/archive/downweight/purge），
+    # 只认硬删布尔会把可恢复的 archive/downweight 静默降级成不可恢复的 forget。
+    if payload.get("mode") is not None:
+        mode = _enum_value(DeleteMode, payload["mode"], name="mode")
+    else:
+        mode = DeleteMode.PURGE if _bool_value(payload.get("hard")) else DeleteMode.FORGET
     selector = DeleteSelector(unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode)
     deleted = srv.api.delete(selector, security=_request_security(request))
     return {"ok": True, "op": "delete", "item_id": payload["item_id"], "deleted": deleted}
@@ -788,6 +804,11 @@ def _evolve(srv, request: DispatchRequest) -> Body:
     job_id = srv.api.evolve(
         scope,
         mode,
+        # channel 是 API 契约的一部分，漏传会让调用方指定的演进通道静默
+        # 退化成 BACKGROUND。
+        channel=_enum_value(Channel, payload["channel"], name="channel")
+        if payload.get("channel") is not None
+        else Channel.BACKGROUND,
         candidate=candidate,
         dreaming=dreaming,
         interval=interval,
