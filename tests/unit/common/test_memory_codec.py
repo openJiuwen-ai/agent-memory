@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -28,7 +28,7 @@ def test_scope_space_is_keyword_only_and_old_positional_order_is_preserved() -> 
 
 
 def test_roundtrip_preserves_fields(unit_factory) -> None:
-    t_valid = datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc)
+    t_valid = datetime(2026, 6, 10, 3, 0, tzinfo=UTC)
     unit = unit_factory(
         "u1",
         "alice likes coffee",

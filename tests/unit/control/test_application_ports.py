@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
@@ -34,7 +34,7 @@ from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 pytestmark = pytest.mark.unit
 
 _SCOPE = Scope(org="acme", user="alice", space="coding")
-_NOW = datetime(2026, 9, 2, tzinfo=timezone.utc)
+_NOW = datetime(2026, 9, 2, tzinfo=UTC)
 
 
 def _unit(unit_id: str = "u1") -> MemoryUnit:
@@ -101,7 +101,10 @@ def test_command_batch_update_delete_evolve_delegate_to_engine() -> None:
 
     job_id = asyncio.run(service.evolve(_SCOPE, EvolveMode.EXTRACT, Channel.HOT))
     assert job_id == "job-1"
-    engine.evolve.assert_awaited_once_with(_SCOPE, EvolveMode.EXTRACT, Channel.HOT)
+    engine.evolve.assert_awaited_once_with(
+        _SCOPE, EvolveMode.EXTRACT, Channel.HOT,
+        candidate=None, buckets=None, denied_scopes=None,
+    )
 
 
 def test_command_batch_write_aligned_restores_caller_index_and_item() -> None:

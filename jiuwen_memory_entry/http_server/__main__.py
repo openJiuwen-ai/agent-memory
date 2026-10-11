@@ -261,6 +261,7 @@ class HttpServer(Server):
         httpd = None
         try:
             self._check_binding(host, allow_dev_non_loopback=allow_dev_non_loopback)
+            self.restore_dreaming()
             httpd = ThreadingHTTPServer((host, port), self.handler_cls())
             logger.info(
                 "agent-memory server (profile=%s) on http://%s:%s",
