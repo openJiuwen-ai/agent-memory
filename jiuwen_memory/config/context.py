@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 
@@ -41,7 +41,7 @@ class RawSpec:
     """一个具名实例的纯数据：选哪个实现 + 字面参数 + 是否退出共享。"""
 
     target: str
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     new_instance: bool = False
 
 
@@ -49,15 +49,15 @@ class RawSpec:
 class AssemblyContext:
     """全局装配上下文：所有命名空间（top_name -> name -> RawSpec）+ 跨切面 ``globals``。"""
 
-    globals: Dict[str, Any] = field(default_factory=dict)
-    namespaces: Dict[str, Dict[str, RawSpec]] = field(default_factory=dict)
+    globals: dict[str, Any] = field(default_factory=dict)
+    namespaces: dict[str, dict[str, RawSpec]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(
         cls,
         data: Mapping[str, Any] | None,
         *,
-        known_top_names: Optional[set[str]] = None,
+        known_top_names: set[str] | None = None,
     ) -> "AssemblyContext":
         """从配置字典解析。``known_top_names`` 非空时校验每个顶层段是已注册的 Producer 顶层名。
 
@@ -69,7 +69,7 @@ class AssemblyContext:
         prompts = data.get("prompts")
         if prompts is not None:
             globals_["prompts"] = prompts
-        namespaces: Dict[str, Dict[str, RawSpec]] = {}
+        namespaces: dict[str, dict[str, RawSpec]] = {}
         for top_name, section in data.items():
             if top_name in _RESERVED_TOP_NAMES:
                 continue
@@ -103,7 +103,7 @@ class AssemblyContext:
 
         用于 ``build_kernel`` 把用户配置叠加到内置默认之上——用户只需写要改动的部分。
         """
-        namespaces: Dict[str, Dict[str, RawSpec]] = {
+        namespaces: dict[str, dict[str, RawSpec]] = {
             top: dict(insts) for top, insts in self.namespaces.items()
         }
         for top, insts in other.namespaces.items():
@@ -136,7 +136,7 @@ def _parse_instance(top_name: str, inst_name: str, raw: Any) -> RawSpec:
 class ComponentConfig:
     """传给各 ``_build`` 的配置视图：本实例 ``params`` + 回退 ``globals`` + ``ctx`` 句柄。"""
 
-    params: Dict[str, Any]
+    params: dict[str, Any]
     ctx: AssemblyContext
     target: str = ""
     name: str = ""

@@ -20,7 +20,6 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
 
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
@@ -68,7 +67,7 @@ class ConsolidateDecision:
 
     candidate: MemoryUnit
     decision: DedupDecision
-    existing: Optional[MemoryUnit]
+    existing: MemoryUnit | None
     score: float
 
 
@@ -89,7 +88,7 @@ class DynamicEvolver(OrchestratingEvolver):
         super().__init__(*args, **kwargs)
         self._prompts = prompt_registry or PromptRegistry()
 
-    def _evolve_extract(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         """动态四步：extract → consolidate(判定) → reflect → 落盘。
 
         procedural 路径仍走父类行为（不收集 context、不判定、直接落盘）——
@@ -114,9 +113,9 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _extract_step(
         self,
-        units: List[MemoryUnit],
-        context: Optional[ExtractContext],
-    ) -> List[MemoryUnit]:
+        units: list[MemoryUnit],
+        context: ExtractContext | None,
+    ) -> list[MemoryUnit]:
         extracted = self._extractor.extract(units, context=context)
         logger.info("DynamicEvolver: EXTRACT extractor returned %d units", len(extracted))
         if not extracted:
@@ -137,9 +136,9 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _consolidate_step(
         self,
-        candidates: List[MemoryUnit],
-    ) -> List[ConsolidateDecision]:
-        decisions: List[ConsolidateDecision] = []
+        candidates: list[MemoryUnit],
+    ) -> list[ConsolidateDecision]:
+        decisions: list[ConsolidateDecision] = []
         for candidate in candidates:
             try:
                 hits = self._dedup.recall(candidate)
@@ -164,8 +163,8 @@ class DynamicEvolver(OrchestratingEvolver):
     def _judge(
         self,
         candidate: MemoryUnit,
-        hits: List[Tuple[MemoryUnit, float]],
-    ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+        hits: list[tuple[MemoryUnit, float]],
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         if not hits:
             return DedupDecision.ADD, None, 0.0
         existing, score = max(hits, key=lambda item: item[1])
@@ -188,7 +187,7 @@ class DynamicEvolver(OrchestratingEvolver):
                 return DedupDecision.NOOP, existing, score
             return DedupDecision.ADD, existing, score
 
-    def _resolve_consolidate_prompt(self, candidate: MemoryUnit) -> Optional[str]:
+    def _resolve_consolidate_prompt(self, candidate: MemoryUnit) -> str | None:
         prompts = parse_prompt_strategies(
             candidate.system_metadata, CONSOLIDATION_PROMPT_PREFIX
         )
@@ -207,9 +206,9 @@ class DynamicEvolver(OrchestratingEvolver):
     def _llm_judge(
         self,
         candidate: MemoryUnit,
-        hits: List[Tuple[MemoryUnit, float]],
+        hits: list[tuple[MemoryUnit, float]],
         prompt: str,
-    ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         hit_map = {unit.id: (unit, score) for unit, score in hits[:5]}
         existing_text = "\n\n".join(
             f"[Memory ID: {unit.id}]\nContent: {unit.content}\n"
@@ -244,9 +243,9 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _reflect_step(
         self,
-        candidates: List[MemoryUnit],
-        decisions: List[ConsolidateDecision],
-    ) -> List[MemoryUnit]:
+        candidates: list[MemoryUnit],
+        decisions: list[ConsolidateDecision],
+    ) -> list[MemoryUnit]:
         return candidates
 
     # ------------------------------------------------------------------
@@ -255,8 +254,8 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _persist_decisions(
         self,
-        candidates: List[MemoryUnit],
-        decisions: List[ConsolidateDecision],
+        candidates: list[MemoryUnit],
+        decisions: list[ConsolidateDecision],
     ) -> EvolveResult:
         result = EvolveResult()
         for decision in decisions:
@@ -273,7 +272,7 @@ class DynamicEvolver(OrchestratingEvolver):
         self,
         candidate: MemoryUnit,
         decision: DedupDecision,
-        existing: Optional[MemoryUnit],
+        existing: MemoryUnit | None,
         similarity: float,
         result: EvolveResult,
     ) -> int:

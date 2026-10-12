@@ -32,7 +32,9 @@ def _make_unit(
     tags_override: list[str] | None = None,
     **overrides,
 ) -> MemoryUnit:
-    """构造测试 unit：默认 EPISODIC/ACTIVE，支持 tags_override 与 scope/tier/lifecycle/provenance 覆盖。"""
+    """构造测试 unit：默认 EPISODIC/ACTIVE，
+    支持 tags_override 与 scope/tier/lifecycle/provenance 覆盖。
+    """
     unit = MemoryUnit(
         id=unit_id,
         scope=overrides.get("scope") or Scope(org="test", user="alice"),

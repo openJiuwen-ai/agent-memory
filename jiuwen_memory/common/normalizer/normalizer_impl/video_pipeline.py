@@ -11,7 +11,7 @@ import mimetypes
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -635,7 +635,7 @@ def _judge_event_with_et(
             _append_jsonl(
                 log_path,
                 {
-                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "meta": meta or {},
                     "candidate_source": request.candidate_source,
                     "pre_ET": pre_et_payload,
@@ -654,7 +654,7 @@ def _judge_event_with_et(
             _append_jsonl(
                 log_path,
                 {
-                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "meta": meta or {},
                     "candidate_source": request.candidate_source,
                     "pre_ET": pre_et_payload,
@@ -669,7 +669,7 @@ def _judge_event_with_et(
             _append_jsonl(
                 log_path,
                 {
-                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "meta": meta or {},
                     "candidate_source": request.candidate_source,
                     "pre_ET": pre_et_payload,
@@ -2072,7 +2072,7 @@ def run_video_memory_pipeline_off(
                     _append_jsonl(
                         event_link_log_path,
                         {
-                            "ts": datetime.utcnow().isoformat() + "Z",
+                            "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                             "meta": {
                                 "segment_id": int(seg.get("segment_id", 0) or 0),
                                 "time_range": [start_t, end_t],
@@ -2534,7 +2534,7 @@ def run_video_memory_pipeline_off(
                 _append_jsonl(
                     event_link_log_path,
                     {
-                        "ts": datetime.utcnow().isoformat() + "Z",
+                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                         "meta": {
                             "segment_id": int(seg.get("segment_id", 0) or 0),
                             "time_range": [start_t, end_t],
@@ -2598,7 +2598,7 @@ def run_video_memory_pipeline_off(
                 _append_jsonl(
                     event_link_log_path,
                     {
-                        "ts": datetime.utcnow().isoformat() + "Z",
+                        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                         "meta": {
                             "segment_id": int(seg.get("segment_id", 0) or 0),
                             "time_range": [start_t, end_t],

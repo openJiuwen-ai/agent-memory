@@ -32,8 +32,8 @@ from jiuwen_memory.construction.index_builder_impl.vector_index_builder import V
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
-from tests.conftest import make_storage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, TextQuery, VectorQuery
+from tests.conftest import make_storage
 from tests.unit.construction.fixtures import (
     create_test_plugins,
     create_test_stores,

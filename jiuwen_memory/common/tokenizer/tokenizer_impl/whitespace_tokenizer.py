@@ -31,7 +31,9 @@ class WhitespaceTokenizer(Tokenizer):
 
     def tokenize(self, text: str) -> list[str]:
         tokens = _TOKEN_RE.findall(text.lower())
-        logger.info("WhitespaceTokenizer: tokenized %d chars into %d tokens", len(text), len(tokens))
+        logger.info(
+            "WhitespaceTokenizer: tokenized %d chars into %d tokens", len(text), len(tokens)
+        )
         return tokens
 
 

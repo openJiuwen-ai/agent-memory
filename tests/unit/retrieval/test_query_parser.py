@@ -94,7 +94,9 @@ def test_rewrite_enabled_uses_llm() -> None:
 
     parsed = parser.parse(RetrievalQuery(text="hello world"))
 
-    assert parsed.rewritten == "hello world [rewritten]", "rewrite_enabled=True 时应通过 LLM 改写 query"
+    assert parsed.rewritten == "hello world [rewritten]", (
+        "rewrite_enabled=True 时应通过 LLM 改写 query"
+    )
     assert "rewritten" in parsed.tokens[-1], "tokens 应基于改写后的 query"
 
 

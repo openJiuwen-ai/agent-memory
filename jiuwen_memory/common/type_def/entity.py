@@ -68,7 +68,9 @@ class EntityStoreFilters:
         )
 
     def key(self) -> tuple[str | None, ...]:
-        """分组 key：同 (space_id, actor_id, assistant_id, session_id) 的 unit 共享一次 bulk 查询/写入。"""
+        """分组 key：同 (space_id, actor_id, assistant_id, session_id) 的 unit
+        共享一次 bulk 查询/写入。
+        """
         return (self.actor_id, self.assistant_id, self.session_id)
 
 

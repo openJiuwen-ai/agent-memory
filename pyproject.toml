@@ -15,15 +15,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# httpx / python-dotenv / requests 是被测代码的真实依赖，缺失时对应用例只会跳过或直接
+# 无法收集，CI 会绿在没有覆盖的地方；故一并纳入 dev。
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.8",
-    # 测试套件自身消费的三个未声明依赖（test_outbound_ssl / test_multimodal_adapter /
-    # test_middle_e2e_real_llm），缺失会让 pytest 卡在 collection error。
     "httpx>=0.27,<1",
-    "requests>=2.31",
     "python-dotenv>=1.0",
+    "requests>=2.31",
 ]
 nlp = [
     "spacy>=3.7",
@@ -37,8 +37,12 @@ embed = [
 ]
 multimodal = [
     "dashscope>=1.24.0",
-    # video_asr 归一化经 HTTP 拉取转写结果（函数级惰性 import）。
+    # video_asr 的 DashScope ASR 通路直接用 requests 发起上传与轮询。
     "requests>=2.31",
+]
+# APIReranker 与 jiuwenswarm HTTP 客户端所需的 HTTP 客户端库。
+rerank = [
+    "httpx>=0.27,<1",
 ]
 # 接真后端部署所需的客户端库（Milvus / Elasticsearch / Redis / PostgreSQL）+ YAML 配置解析。
 deploy = [
@@ -62,8 +66,8 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.8",
     "httpx>=0.27,<1",
-    "requests>=2.31",
     "python-dotenv>=1.0",
+    "requests>=2.31",
 ]
 
 [[tool.uv.index]]
@@ -97,4 +101,7 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+# UP006/UP035/UP045 固化 AGENTS.md 的类型标注规约（PEP 585/604：list[X]、dict[K,V]、
+# X | None）。只选这三条而非整个 UP：UP 全量还会带来 str-enum、datetime.UTC 等 200+ 条
+# 与本规约无关的改动，属于独立的风格决策。
+select = ["E", "F", "W", "I", "UP006", "UP035", "UP045"]

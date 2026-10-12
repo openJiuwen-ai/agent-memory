@@ -416,7 +416,10 @@ class MilvusVectorStore(VectorStore):
         if output_fields:
             unknown = [f for f in output_fields if f != "metadata"]
             if unknown:
-                logger.info("MilvusVectorStore.recall: output_fields only supports 'metadata', ignoring %s", unknown)
+                logger.info(
+                    "MilvusVectorStore.recall: output_fields only supports 'metadata', ignoring %s",
+                    unknown,
+                )
         expr = self._expr(scope, query.filters)
         milvus_out = ["logical_id", "metadata"] if fetch_meta else ["logical_id"]
         results = self._search_with_not_loaded_retry(
@@ -467,9 +470,7 @@ class MilvusVectorStore(VectorStore):
         from pymilvus import DataType
 
         schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
-        schema.add_field(
-            "id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len
-        )
+        schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len)
         schema.add_field("logical_id", DataType.VARCHAR, max_length=self._id_len)
         schema.add_field("vector", DataType.FLOAT_VECTOR, dim=self._dim)
         for fld in _SCOPE_FIELDS:
@@ -489,7 +490,7 @@ class MilvusVectorStore(VectorStore):
         self._wait_for_load_complete()
 
     def _scope_expr(self, scope: Scope) -> str:
-        return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
+        return " && ".join(f"scope_{dim} == {_lit(val)}" for dim, val in scope_dims(scope))
 
     def _expr(self, scope: Scope, filters: FilterExpr | None) -> str:
         parts = [self._scope_expr(scope)] if scope_dims(scope) else []

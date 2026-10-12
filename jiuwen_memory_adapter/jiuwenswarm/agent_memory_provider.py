@@ -12,7 +12,8 @@
 - Rail 调用点：``openjiuwen/harness/rails/memory/external_memory_rail.py``
 
 设计要点（见 ``docs/features/AgentMemory-JiuwenSwarm接入适配分析.md``）：
-- 双模式：``base_url`` 非空 → HTTP（路径 B，全 async，推荐生产）；否则进程内 ``assemble()``（路径 A）
+- 双模式：``base_url`` 非空 → HTTP（路径 B，全 async，推荐生产）；
+  否则进程内 ``assemble()``（路径 A）
 - ``prefetch`` 返 Markdown 字符串（Rail 包 ``<memory-context>`` 注入）
 - ``handle_tool_call`` 返 JSON 字符串（Rail ``json.loads``）
 - ``sync_turn`` 只 ``add`` 存原文，EXTRACT 推迟到 ``on_session_end`` 抑制每轮风暴（§4.1.2）
@@ -109,7 +110,9 @@ PROCEDURAL_SCHEMA: dict[str, Any] = {
         "properties": {
             "content": {
                 "type": "string",
-                "description": "The conversation/turn content to summarize into a procedural memory.",
+                "description": (
+                    "The conversation/turn content to summarize into a procedural memory."
+                ),
             }
         },
         "required": ["content"],
@@ -265,7 +268,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     logger.info("[AgentMemoryMemoryProvider] agent_memory_profile -> no memories")
                     return json.dumps({"result": "No memories stored yet."})
                 lines = [it["content"] for it in items if it.get("content")]
-                logger.info("[AgentMemoryMemoryProvider] agent_memory_profile -> count=%d", len(lines))
+                logger.info(
+                    "[AgentMemoryMemoryProvider] agent_memory_profile -> count=%d", len(lines)
+                )
                 for idx, line in enumerate(lines):
                     logger.info(
                         "[AgentMemoryMemoryProvider] profile hit[%d]: %s",
@@ -734,7 +739,9 @@ class _InProcessClient(_AgentMemoryClient):
             from pathlib import Path
 
             p = Path(config_path)
-            data = _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
+            data = (
+                _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
+            )
             config = data
         self._api = assemble(config=config)
 
@@ -816,7 +823,9 @@ def _load_yaml(path):
     try:
         import yaml
     except ImportError as exc:
-        raise RuntimeError("PyYAML required to load YAML config; install with `uv sync --extra deploy`") from exc
+        raise RuntimeError(
+            "PyYAML required to load YAML config; install with `uv sync --extra deploy`"
+        ) from exc
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 

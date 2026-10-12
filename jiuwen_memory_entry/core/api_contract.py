@@ -14,11 +14,11 @@ import dataclasses
 import inspect
 import types
 import typing
-from collections.abc import Mapping, Sequence, Set
+from collections.abc import Awaitable, Mapping, Sequence, Set
 from datetime import datetime
 from enum import Enum
 from functools import lru_cache
-from typing import Any, Awaitable, get_args, get_origin, get_type_hints
+from typing import Any, get_args, get_origin, get_type_hints
 
 from jiuwen_memory.api import MemoryAPI, ValidationError
 

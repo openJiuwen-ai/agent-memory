@@ -279,7 +279,7 @@ class EntityLinkService:
                                    str(failed_id), redact_for_log(space_id), memory_id)
 
         return EntityLinkResult(
-            updated_count=updated_count, deleted_count=deleted_count, failed_count=failed_count,
+            updated_count=updated_count, deleted_count=deleted_count, failed_count=failed_count
         )
 
     # ------------------------------------------------------------------
@@ -370,7 +370,7 @@ class EntityLinkService:
                 extracted_count += 1
                 if key not in entities_by_key:
                     entities_by_key[key] = (
-                        mention.entity_type, mention.display_name, normalized, {unit.id},
+                        mention.entity_type, mention.display_name, normalized, {unit.id}
                     )
                 else:
                     entities_by_key[key][3].add(unit.id)  # ← unit.id（str）存进 set
@@ -430,13 +430,14 @@ class EntityLinkService:
 
                 if match is not None:
                     # LINK：追加新 unit_id（去重已有）
-                    ids_to_add = tuple(sorted(
-                        set(memory_ids) - set(match.linked_memory_ids), key=str,
-                    ))
+                    ids_to_add = tuple(
+                        sorted(set(memory_ids) - set(match.linked_memory_ids), key=str)
+                    )
                     if ids_to_add:
                         pending_ops.append((
                             EntityOperation(
-                                type=EntityOpType.LINK, record_id=match.id,
+                                type=EntityOpType.LINK,
+                                record_id=match.id,
                                 link_memory_ids=ids_to_add,
                             ),
                             key,
@@ -454,6 +455,7 @@ class EntityLinkService:
                             entity_text=entity_text,
                             entity_text_hash=key,
                             entity_type=entity_type,
+                            # tuple[str]（unit.id）
                             linked_memory_ids=tuple(sorted(memory_ids, key=str)),
                             filters=filters,
                             embedding=embedding,
@@ -650,7 +652,7 @@ class EntityIndexBuilder(IndexBuilder):
         if not unit_ids:
             return
         logger.info(
-            "EntityIndexBuilder: removing entity index for %d unit_ids (by scope)", len(unit_ids),
+            "EntityIndexBuilder: removing entity index for %d unit_ids (by scope)", len(unit_ids)
         )
         for unit_id in unit_ids:
             try:

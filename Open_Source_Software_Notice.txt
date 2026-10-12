@@ -13,6 +13,7 @@ Software: transformers 4.57.6
 Software: pymilvus 3.0.0
 Software: elasticsearch 8.19.3
 Software: asyncpg 0.31.0
+Software: requests 2.34.2
 
 License: Apache-2.0
 Apache License
@@ -63,6 +64,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Software: torch 2.12.1
 Software: numpy 2.5.0
+Software: httpx 0.28.1
+Software: python-dotenv 1.2.3
 
 License: BSD 3-Clause
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:

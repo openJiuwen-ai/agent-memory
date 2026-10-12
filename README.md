@@ -108,6 +108,7 @@ pip install -e .                 # Minimal core + SDK
 pip install -e ".[dev]"          # + dev/test dependencies
 pip install -e ".[deploy]"       # + real storage backends (Milvus / ES / Redis / PostgreSQL)
 pip install -e ".[embed]"        # + advanced embedding / reranking (torch, BGE, etc.)
+pip install -e ".[rerank]"       # + httpx, required by the API reranker
 ```
 
 ### Quick Integration (In-Process SDK)

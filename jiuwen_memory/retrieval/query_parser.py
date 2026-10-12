@@ -22,7 +22,8 @@ class QueryParserProducer(Factory):
     """QueryParser 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
 
     ``name`` 即实现名。各实现在 ``query_parser_impl`` 下以 ``@QueryParserProducer.register("<名>")``
-    自注册——注册发生在 import 实现模块时，由 :func:`retrieval.bootstrap.register_operators` 统一触发。
+    自注册——注册发生在 import 实现模块时，由 :func:`retrieval.bootstrap.register_operators`
+    统一触发。
     """
 
     TOP_NAME = "query_parser"
