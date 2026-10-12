@@ -79,7 +79,9 @@ def test_truncating_adaptive_falls_back_to_l0(unit_factory) -> None:
 
 
 def test_structured_l0_returns_memory_card(unit_factory) -> None:
-    unit = unit_factory("u1", "packages/foo should use pnpm for dependency installs.", tags=["repo"])
+    unit = unit_factory(
+        "u1", "packages/foo should use pnpm for dependency installs.", tags=["repo"]
+    )
     unit.system_metadata["summary"] = "packages/foo 使用 pnpm 作为包管理器。"
     discloser = StructuredDiscloser()
     candidates = [

@@ -29,7 +29,8 @@ from jiuwen_memory.api import (
     Grant, Action, Channel,            # 授权 / 演进通道
     SpaceSpec, SpaceInfo, SpacePolicy, # space 管理
     ValidationError, Credentials,      # Access 错误映射 / 凭据
-    legacy_request_context,            # 过渡期安全上下文
+    internal_context, new_request_context,  # 进程内受控安全上下文
+    build_dev_authenticator,           # 本地/开发模式的固定身份认证器
 )
 ```
 

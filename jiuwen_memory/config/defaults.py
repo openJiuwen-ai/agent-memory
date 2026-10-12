@@ -50,12 +50,8 @@ def default_config_dict() -> dict[str, Any]:
         "prompts": _PROMPTS_DEFAULT,
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
-        # 安全 provider：默认声明为 local 信封加密（AES-256-GCM），仅供 opt-in encrypted KV 引用。
-        # F04 §5.4：默认装配不强制包装 EncryptedKVStore；用户配 kv_store.default.target=encrypted
-        # 时由 @KvProducer.register("encrypted") builder 经 SecurityProducer.dep(config) 取此实例。
-        # local provider 的 create_key_file 默认 False：未注入密钥源且 key_file
-        # 不存在时装配 fail-closed。
-        "security": {_D: "local"},
+        # 不声明 security 段：它现由 SecurityRuntime 接管并须由部署显式选择。
+        # 存储加密是独立的 cryptography/key_provider 配置；默认 KV 仍为明文 memory。
         "vector_store": {
             _D: "memory",
             # L0/L1 分表（与构建侧同命名 layers_l0/l1；同后端不同 collection）
@@ -85,7 +81,7 @@ def default_config_dict() -> dict[str, Any]:
                             "kv_store": _D,
                             "preferred_retrieval_pipeline": "recall_get_rank",
                             # 召回路装配：CompositeDomainStore.for_manager 按能力开关
-                            #（vector_enabled / graph_enabled / layers_index_enabled，
+                            # （vector_enabled / graph_enabled / layers_index_enabled，
                             # 回退 globals）启用各 recaller，构建期同步组装。
                             # layers_index_enabled 默认 true（与构建侧对齐：默认建默认
                             # 查）；不在此硬编码，让 get 回退 globals 便于全局关停。
@@ -250,9 +246,9 @@ def default_config_dict() -> dict[str, Any]:
                     "index_builder": _D,
                     "llm": _D,
                     # MiddleToLongJob 业务参数
-                    "middle_max_fetch": 100,    # _list_working_units 取最近 N 条
-                    "middle_batch_size": 10,    # 连续性切批上限
-                    "middle_concurrency": 4,    # 批间并发（1=串行）
+                    "middle_max_fetch": 100,  # _list_working_units 取最近 N 条
+                    "middle_batch_size": 10,  # 连续性切批上限
+                    "middle_concurrency": 4,  # 批间并发（1=串行）
                 },
             }
         },
@@ -263,6 +259,14 @@ def default_config_dict() -> dict[str, Any]:
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
+        "authorizer": {
+            _D: {
+                "target": "standard",
+                "params": {"grant_store": _D, "delegation_store": _D},
+            }
+        },
+        "grant_store": {_D: "memory"},
+        "delegation_store": {_D: "memory"},
         "space": {_D: {"target": "kv", "params": {}}},
         # 空间授权事实的读取与缓存。params 只引用 space：正查（元数据与成员表）与
         # 反查（主体到空间）都在 SpaceManager 契约内，本算子只依赖它一个。
@@ -278,16 +282,17 @@ def default_config_dict() -> dict[str, Any]:
 ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
     "permission": _D,
+    "authorizer": _D,
     "scheduler": _D,
     "ingest_job": _D,
     "policy": _D,
     "governor": _D,
     "audit": _D,
     "kv_store": _D,
-    "security": _D,
     "space": _D,
     "membership": _D,
     "config_source": _D,
+    "key_store": _D,
 }
 
 KV_DEFAULT_NAME = _D  # 注入的真源 kv 预置进缓存时用的具名键（与各处引用一致）

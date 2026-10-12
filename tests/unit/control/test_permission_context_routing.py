@@ -1,5 +1,10 @@
 """权限上下文路由：按 memory_type 选择 delegate，并把路由值绑定到可读数据范围。
 
+判定实现配在 ``authorizer`` 段（``RoutingAuthorizer``）——内容读写的判定由 PDP 终局，
+它是 ``RoutingPermissionManager`` 的对等物，语义一字未改。本文件测的是路由这套机制，
+不是某一侧的实现细节，故随判定宿主迁移；PEP 侧的路由值回注（第 1 道防线）两侧共用
+同一个 ``RoutingFieldsProvider`` capability，见首个用例。
+
 S03 的两条契约在此同时生效——`:135` 查询侧路由取值 extensions 优先、其次等值 filter；
 `:207` routing 只选择 delegate、不改变授权语义（root / owner-cover / Grant 全部由被选中
 的 delegate 判定）。
@@ -19,14 +24,23 @@ import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.authorization import RoutingFieldsProvider
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security.types import Role
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.control.permission import PermissionManager
 from jiuwen_memory.control.types import DeleteMode, DeleteSelector
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
+
+# 最小权限 delegate：两个 Store 引用内置上下文里的具名 default 实例（各自默认
+# memory）。写成 target 名会被当成另一个具名段，而那些名字不在 authorizer 段里。
+_STRICT_AUTHORIZER = {
+    "target": "standard",
+    "params": {"grant_store": "default", "delegation_store": "default"},
+}
 
 
 def test_permission_manager_uses_shared_routing_fields_capability() -> None:
@@ -34,10 +48,16 @@ def test_permission_manager_uses_shared_routing_fields_capability() -> None:
 
 
 def _routing_config() -> Config:
-    """coding 受 strict 保护、episodic 显式放宽；fallback 取最小权限。"""
+    """coding 受 strict 保护、episodic 显式放宽；fallback 取最小权限。
+
+    配在 ``authorizer`` 段：内容读写的判定由 PDP 终局，``RoutingAuthorizer`` 是
+    ``RoutingPermissionManager`` 的对等物（语义一字未改，只是路由依据从
+    ``PermissionContext`` 换成 ``ResourceDescriptor``）。配在旧段上路由表没有执行点，
+    「路由分流」的断言会因判定压根没读它而失败。
+    """
     return Config.from_dict(
         {
-            "permission": {
+            "authorizer": {
                 "default": {
                     "target": "routing",
                     "params": {
@@ -47,7 +67,7 @@ def _routing_config() -> Config:
                     },
                 },
                 "standard": "allow_all",
-                "strict": "sqlite",
+                "strict": _STRICT_AUTHORIZER,
             }
         }
     )
@@ -57,7 +77,7 @@ def test_permissive_fallback_rejected_at_assembly() -> None:
     """fallback 承接路由值缺失的请求（调用方不写 filters 即可触发），不得是 allow_all。"""
     cfg = Config.from_dict(
         {
-            "permission": {
+            "authorizer": {
                 "default": {
                     "target": "routing",
                     "params": {
@@ -67,7 +87,7 @@ def test_permissive_fallback_rejected_at_assembly() -> None:
                     },
                 },
                 "standard": "allow_all",
-                "strict": "sqlite",
+                "strict": _STRICT_AUTHORIZER,
             }
         }
     )
@@ -89,7 +109,7 @@ def test_policy_name_is_not_accepted_as_route_value() -> None:
     api.add(
         "ok",
         victim,
-        security=legacy_request_context(outsider),
+        security=internal_context(ScopedAuthenticator(outsider)),
         system_metadata={"memory_type": "episodic"},
     )
 
@@ -97,7 +117,7 @@ def test_policy_name_is_not_accepted_as_route_value() -> None:
         api.add(
             "secret",
             victim,
-            security=legacy_request_context(outsider),
+            security=internal_context(ScopedAuthenticator(outsider)),
             system_metadata={"memory_type": "standard"},
         )
 
@@ -110,7 +130,7 @@ def test_add_permission_routes_by_memory_type() -> None:
     api.add(
         "general note",
         target,
-        security=legacy_request_context(actor),
+        security=internal_context(ScopedAuthenticator(actor)),
         system_metadata={"memory_type": "episodic"},
     )
 
@@ -118,7 +138,7 @@ def test_add_permission_routes_by_memory_type() -> None:
         api.add(
             "repo must use pytest",
             target,
-            security=legacy_request_context(actor),
+            security=internal_context(ScopedAuthenticator(actor)),
             system_metadata={"memory_type": "coding"},
         )
 
@@ -132,7 +152,7 @@ def test_search_permission_routes_by_metadata_memory_type_filter() -> None:
         api.search(
             "repo",
             Context(scope=target),
-            security=legacy_request_context(actor),
+            security=internal_context(ScopedAuthenticator(actor)),
             filters={"system_metadata.memory_type": "coding"},
         )
 
@@ -146,7 +166,7 @@ def test_search_permission_routes_to_lenient_policy_for_declared_type() -> None:
     api.search(
         "general",
         Context(scope=target),
-        security=legacy_request_context(actor),
+        security=internal_context(ScopedAuthenticator(actor)),
         filters={"system_metadata.memory_type": "episodic"},
     )
 
@@ -158,7 +178,7 @@ def _seed(api, owner: Scope) -> None:
     api.add(
         "repo must use pytest",
         owner,
-        security=legacy_request_context(owner),
+        security=internal_context(ScopedAuthenticator(owner)),
         system_metadata={"memory_type": "coding"},
     )
 
@@ -173,7 +193,7 @@ def test_escalation_1_unknown_extensions_value_falls_to_strict_fallback() -> Non
         api.search(
             "repo must use pytest",
             Context(scope=owner, extensions={"memory_type": "unknown"}),
-            security=legacy_request_context(reader),
+            security=internal_context(ScopedAuthenticator(reader)),
             filters={"system_metadata.memory_type": "coding"},
         )
 
@@ -186,7 +206,9 @@ def test_escalation_2_missing_route_value_falls_to_strict_fallback() -> None:
 
     with pytest.raises(PermissionDeniedError):
         api.search(
-            "repo must use pytest", Context(scope=owner), security=legacy_request_context(reader)
+            "repo must use pytest",
+            Context(scope=owner),
+            security=internal_context(ScopedAuthenticator(reader)),
         )
 
 
@@ -200,7 +222,7 @@ def test_escalation_3_ambiguous_or_filter_falls_to_strict_fallback() -> None:
         api.search(
             "repo must use pytest",
             Context(scope=owner),
-            security=legacy_request_context(reader),
+            security=internal_context(ScopedAuthenticator(reader)),
             filters={
                 "OR": [
                     {"system_metadata.memory_type": "coding"},
@@ -223,7 +245,7 @@ def test_escalation_4_lenient_route_cannot_read_protected_data() -> None:
     result = api.search(
         "repo must use pytest",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
-        security=legacy_request_context(reader),
+        security=internal_context(ScopedAuthenticator(reader)),
         filters={"system_metadata.memory_type": "coding"},
         top_k=10,
     )
@@ -238,14 +260,14 @@ def test_route_value_injection_still_returns_own_type_data() -> None:
     api.add(
         "lunch plan tomorrow",
         owner,
-        security=legacy_request_context(owner),
+        security=internal_context(ScopedAuthenticator(owner)),
         system_metadata={"memory_type": "episodic"},
     )
 
     result = api.search(
         "lunch plan tomorrow",
         Context(scope=owner, extensions={"memory_type": "episodic"}),
-        security=legacy_request_context(reader),
+        security=internal_context(ScopedAuthenticator(reader)),
         top_k=10,
     )
 
@@ -264,14 +286,24 @@ def test_unresolved_route_keeps_owner_base_rule() -> None:
     owner = Scope(org="acme", user="owner")
 
     # 未限定 memory_type
-    api.search("general", Context(scope=owner), security=legacy_request_context(owner))
+    api.search(
+        "general", Context(scope=owner), security=internal_context(ScopedAuthenticator(owner))
+    )
 
 
 def test_unresolved_route_keeps_root_base_rule() -> None:
-    api = build_kernel(config=_routing_config()).api
-    owner, root = Scope(org="acme", user="owner"), Scope()
+    """同上，验的是 ROOT 全局放行这条基础规则同样由 delegate 判定。
 
-    api.search("general", Context(scope=owner), security=legacy_request_context(root))
+    ROOT 档写在 role 上而不是「actor 是空 Scope」这个形状上：PR2 起空 Scope 不再是
+    特权形态，判定实现第 2 步直接拒（``empty_actor``）。
+    """
+    api = build_kernel(config=_routing_config()).api
+    owner = Scope(org="acme", user="owner")
+    root = internal_context(
+        ScopedAuthenticator(Scope(org="system", user="platform-ops"), role=Role.ROOT)
+    )
+
+    api.search("general", Context(scope=owner), security=root)
 
 
 # -- 已有 unit 的操作按真源元数据鉴权 ------------------------------------------ #
@@ -284,12 +316,12 @@ def test_get_permission_uses_stored_memory_type_context() -> None:
     unit = api.add(
         "repo must use pytest",
         owner,
-        security=legacy_request_context(owner),
+        security=internal_context(ScopedAuthenticator(owner)),
         system_metadata={"memory_type": "coding"},
     )[0]
 
     with pytest.raises(PermissionDeniedError):
-        api.get(unit.id, owner, security=legacy_request_context(reader))
+        api.get(unit.id, owner, security=internal_context(ScopedAuthenticator(reader)))
 
 
 def test_delete_permission_checks_each_matched_unit_context() -> None:
@@ -299,7 +331,7 @@ def test_delete_permission_checks_each_matched_unit_context() -> None:
     unit = api.add(
         "repo must use pytest",
         owner,
-        security=legacy_request_context(owner),
+        security=internal_context(ScopedAuthenticator(owner)),
         tags=["repo"],
         system_metadata={"memory_type": "coding"},
     )[0]
@@ -307,5 +339,5 @@ def test_delete_permission_checks_each_matched_unit_context() -> None:
     with pytest.raises(PermissionDeniedError):
         api.delete(
             DeleteSelector(unit_ids=[unit.id], scope=owner, mode=DeleteMode.FORGET),
-            security=legacy_request_context(reader),
+            security=internal_context(ScopedAuthenticator(reader)),
         )

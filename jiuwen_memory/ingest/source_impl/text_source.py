@@ -10,8 +10,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
-from typing import List, Optional, Sequence, Tuple
 
 from jiuwen_memory.common.type_def import Modality, RawPayload, Scope
 from jiuwen_memory.ingest.base import IngestOperatorType
@@ -21,7 +21,7 @@ from jiuwen_memory.ingest.source import Source
 class TextSource(Source):
     """以预置 ``(text, occurred_at)`` 列表模拟的文本信息源。"""
 
-    def __init__(self, scope: Scope, items: Sequence[Tuple[str, datetime]]) -> None:
+    def __init__(self, scope: Scope, items: Sequence[tuple[str, datetime]]) -> None:
         self._scope = scope
         self._items = list(items)
 
@@ -31,11 +31,11 @@ class TextSource(Source):
     def health(self) -> None:
         return None
 
-    def modalities(self) -> List[Modality]:
+    def modalities(self) -> list[Modality]:
         return [Modality.TEXT]
 
-    def fetch(self, since: Optional[datetime] = None) -> List[RawPayload]:
-        out: List[RawPayload] = []
+    def fetch(self, since: datetime | None = None) -> list[RawPayload]:
+        out: list[RawPayload] = []
         for text, occurred_at in self._items:
             if since is not None and occurred_at <= since:
                 continue  # 增量：只取 since 之后

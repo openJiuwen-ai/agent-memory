@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -14,8 +14,8 @@ from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import (
 
 pytestmark = pytest.mark.unit
 
-_MARCH = datetime(2026, 3, 1, tzinfo=timezone.utc)
-_MAY = datetime(2026, 5, 1, tzinfo=timezone.utc)
+_MARCH = datetime(2026, 3, 1, tzinfo=UTC)
+_MAY = datetime(2026, 5, 1, tzinfo=UTC)
 
 
 def _unit(content: str, *, t_event: datetime | None = None) -> MemoryUnit:
@@ -72,7 +72,7 @@ def test_t_event_same_instant_different_tz_no_delta():
     """同一时刻不同 tz 表示 → 无时效冲突。"""
     existing = _unit(
         "公司年度大会举办时间已确认",
-        t_event=datetime(2026, 3, 1, 8, 0, tzinfo=timezone.utc),
+        t_event=datetime(2026, 3, 1, 8, 0, tzinfo=UTC),
     )
     candidate = _unit(
         "公司年度大会举办时间已确认",

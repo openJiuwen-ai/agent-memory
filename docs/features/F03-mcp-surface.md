@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-09-11 |
 | 影响范围 | `jiuwen_memory_entry/mcp_server/`（`__main__.py`、`transport_security.py`；原 `DESIGN.md` 已并入本文档），`tests/unit/jiuwen_memory_entry/test_mcp.py`、`test_mcp_transport_security.py` |
-| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py`（97 + 5 全绿）；`ruff check` 通过 |
+| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py`（2026-10-08：101 + 5 全绿）；`ruff check` 通过 |
 | 备注 | 本文档吸收原 `jiuwen_memory_entry/mcp_server/DESIGN.md`（已删除），模块级设计、方案取舍与已知遗留统一在此维护 |
 
 ## 背景
@@ -52,8 +52,8 @@ FastMCP 工具函数需要面向模型的 docstring 与显式运行时类型注�
 | 像 HTTP/CLI 一样从 `MemoryAPI` 反射生成 MCP 工具 | FastMCP 要求显式装饰器函数与面向模型的 docstring（模型凭它选工具填参），反射无法生成模型可读描述；`Context` 注入还要求保留运行时注解对象 |
 | `submit_ingest` 用 dataclass 参数袋压参（6 → 2） | 会把公开请求从扁平改成嵌套 `{"args": {...}}`——FastMCP 按函数签名生成客户端可见参数结构，协议形状随之改变，既有 MCP 调用方全部失配（S09 第 14 条兼容要求）；仅为「参数数量」指标付出破坏公开协议的代价不成立。契约锁测试同步失败也证明该改动与契约冲突 |
 | `submit_ingest` 维持 6 参数且不做任何豁免说明 | 静态检查报警无法闭环；豁免必须有依据——`ctx` 是框架注入参数、不是业务参数，理由已注释在工具定义处 |
-| dev 模式跳过 MemoryAPI 授权判定 | 会把本地测试习惯带进生产路径；保留授权判定、只固定身份，dev 仍是「同一张授权网下的测试身份」 |
-| 限流 / workload_guard 随生产认证器接入自动生效 | `authenticated` 的 `limiter`/`workload_guard` 是显式参数，MCP 面当前调用链未传——不能在文档里许诺不存在的接线；待生产认证 runtime 接入时一并显式装配（见已知遗留 1） |
+| dev 模式绕过 MemoryAPI 授权判定 | 所有请求仍经过同一 API 授权点；PR1 仅在显式固定 DEV 且用户未配置身份映射、security/permission 时，由入口临时注入 allow_all，PR2 接通角色闸门后删除 |
+| 只装配 Runtime、不显式传递限流与 workload_guard | `authenticated` 的保护组件是显式参数，省略即不生效；PR1 已将共享 Runtime 的限流、并发预算和审计显式传入，stdio 无远端 peer 时不传限流 |
 | `as_of`/`occurred_at` 用 `datetime \| None` 注解 | FastMCP/pydantic 会把客户端 ISO 字符串 coerce 成 `datetime` 对象再进工具函数，而共享契约 `parse_request` 的 `_decode` 只接受 ISO 8601 字符串（JSON 边界无 datetime 类型）——对象在契约边界即被拒。注解用 `str \| None`，ISO 字符串原样进 payload、由契约层 `fromisoformat` 解码，与 HTTP 路径完全一致（代码处有同义注释） |
 
 ## 接入与运行
@@ -117,16 +117,14 @@ space_usage、get/set_space_policy、list/add/remove_space_member）。
 - 认证模式：`JIUWEN_MEMORY_MCP_AUTH_MODE`（required | dev，默认 required，
   失闭）。`required` 未装配生产认证器时业务调用全部拒绝；`dev` 使用固定
   `local/developer` ROOT 测试身份（忽略凭据、保留 MemoryAPI 授权判定），
-  仅供本地功能测试，且只允许绑定回环地址——放开须设
-  `JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK=true`（仅限隔离容器）。
+  仅供本地功能测试，网络传输严格回环绑定，没有非回环环境变量旁路。
+  stdio 也须显式 dev；required 从 memory_api.security 装配完整 Runtime。
 - 凭据按传输归一（`transport_security.credentials_for_transport`）：
   stdio 读 `AGENT_MEMORY_API_KEY`；Streamable HTTP 逐请求读
   `Authorization: Bearer` 与 socket peer（拿不到请求上下文属接线错误，
   fail-closed 不回退环境变量）。
-- 限流与 workload_guard：当前**未接线**——`_invoke_blocking` 调用认证中间件时
-  不传 `limiter`/`workload_guard`（OFFLINE/本地运行时为 None，stdio 无网络
-  对端）。两者是 `authenticated` 的显式参数，接入生产认证 runtime 时需一并
-  构建传入，**不会随认证器自动生效**（见已知遗留 1）。
+- 网络限流、昂贵认证并发预算与入口审计均从同一 Runtime 传入 authenticated。
+  stdio 无网络对端，不传 IP 限流器，但保留昂贵认证并发预算；网络绑定统一经 binding_policy。
 
 ### 启动方式
 
@@ -196,7 +194,7 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 
 ## 验证
 
-- `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（97 用例：36 工具契约锁
+- `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（覆盖 36 工具契约锁
   （全量相等）+ 旧字段/身份字段拒绝 + 失闭与 Surface.MCP 注入 + 功能闭环含
   evolve→job_status 与 consolidate→trace 血缘链 + get/search 的 as_of valid-time
   回溯 + list memory_types / search filters 收敛 + Schema 无 ctx 泄漏 +
@@ -209,17 +207,16 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 
 ## 已知遗留
 
-1. **限流与 workload_guard 未接线**：`_invoke_blocking` 调用 `authenticated` 时不传
-   `limiter`/`workload_guard`，生产认证 runtime 接入时需一并构建传入，不会随认证器
-   自动生效。
+1. **PR1 已接线保护能力**：限流、昂贵认证并发预算及入口审计均来自完整 Runtime。
 2. **`_SRV` 无显式统一关闭**（`__main__.py` 模块级装配、`main()` 阻塞运行）：涉及
    S09 第 13 条生命周期要求，属 cf38c2a 引入的原有待办（非本轮回归），待统一生命
    周期管理时补 stdio/HTTP 两路 shutdown 接线。
 3. **管理面/治理面/Space 工具鉴权依赖管理动作授权**：dev 身份走旧授权链（按 scope
-   归属判定、不读 role）时这些操作返回 PermissionDenied（F05 授权链过渡期缺口，
-   非缺陷）；待 ROOT role 接入 PermissionManager 后重测。
+   归属判定、不读 role）；显式固定 DEV 未配 security/permission 时临时注入 allow_all。
+   具名角色权限随 PR2 Authorizer 接管后重测，不把 role 回灌 PermissionManager。
 4. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。
 5. **OFFLINE 内核 `delete_space` 能力限制**：`scope.space != ''` 时，授权通过后
-   `InMemoryEngine` 返回 ValidationError（不支持非空 space 维的 purge）；MCP dev
-   身份在授权阶段即被拒（见遗留 3），看不到这条错误。接真后端（CloudEngine）
-   后消除。
+   `InMemoryEngine` 返回 ValidationError（不支持非空 space 维的 purge）。
+   显式固定 DEV 使用临时 allow_all 时可通过授权，但仍受该引擎能力限制；
+   使用旧授权链且无管理授权的具名 DEV 在授权阶段先被拒。接真后端（CloudEngine）
+   可消除引擎能力限制。

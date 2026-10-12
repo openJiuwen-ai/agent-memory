@@ -8,8 +8,9 @@ sample is ingested and restores the original method in ``finally``.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 from evaluation.longmemeval.adapter import LONG_TURN_CONTEXT_KEY
 

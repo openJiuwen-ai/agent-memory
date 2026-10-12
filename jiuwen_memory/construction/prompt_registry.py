@@ -53,7 +53,7 @@ class PromptRegistry:
         data: Mapping[str, Any] | None,
         *,
         config_source: ConfigSource | None = None,
-    ) -> "PromptRegistry":
+    ) -> PromptRegistry:
         """从 yml 解析出的 ``prompts`` 段构造；可同时注入 ConfigSource 做运行时覆盖。"""
         if data is None or not isinstance(data, Mapping):
             return cls(config_source=config_source)

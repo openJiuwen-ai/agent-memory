@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from math import isfinite
-from typing import Any
+from typing import Any, NamedTuple
 
 from jiuwen_memory.common.errors import (
     PolicyError,
@@ -20,7 +20,7 @@ from jiuwen_memory.common.security.space_roles import (
     SpaceAxis,
     SpaceMemberFact,
 )
-from jiuwen_memory.common.security.types import Action, Grant
+from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     EXT_SPACES,
@@ -31,6 +31,7 @@ from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterExpr,
     FilterOp,
+    MemoryUnit,
     MetadataValueType,
     Scope,
     canonical_filter_field,
@@ -59,6 +60,17 @@ logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 # 装配下为 no-op。租户数据/治理方法仍按各自的 target scope 鉴权。
 _ROOT = Scope()
 
+
+class _TrustedRequestTarget(NamedTuple):
+    """可信上下文预检的动作、目标和审计信息；仅在 PEP 实现内部传递。"""
+
+    action: Action
+    audit_action: str
+    scope: Scope
+    target_id: str = ""
+    context: PermissionContext | None = None
+
+
 # ``list_spaces`` 取候选时的全库扫描上界。逐空间判权的次数等于候选数，需有一个显式的
 # 天花板；达到该值记 WARNING，不静默截断。
 _SPACE_SCAN_CAP = 10000
@@ -72,19 +84,6 @@ _GRANT_ACTION_BACK: dict[Action, SpaceAction] = {
     Action.DELETE: SpaceAction.DELETE,
     Action.SHARE: SpaceAction.SHARE,
 }
-
-
-_LEGACY_PERMISSION_ACTIONS = frozenset(
-    {Action.READ, Action.WRITE, Action.UPDATE, Action.DELETE, Action.SHARE}
-)
-
-
-def _validate_legacy_permission_actions(grant: Grant) -> None:
-    """旧 PermissionManager 未实现安全域管理动作，过渡期对这些动作 fail-closed。"""
-    unsupported = grant.actions - _LEGACY_PERMISSION_ACTIONS
-    if unsupported:
-        values = ", ".join(sorted(action.value for action in unsupported))
-        raise ValueError(f"legacy PermissionManager does not support actions: {values}")
 
 
 def _parse_max_tokens(raw: str | None) -> int | None:
@@ -235,9 +234,7 @@ def _reject_foreign_routed_scope(scope: Scope, identity: Scope) -> None:
     """
     _reject_foreign_write_scope(scope, identity)
     if scope.org and scope.org != identity.org:
-        raise ValidationError(
-            f"write scope org={scope.org!r} does not match the caller identity"
-        )
+        raise ValidationError(f"write scope org={scope.org!r} does not match the caller identity")
 
 
 def _reject_foreign_write_scope(scope: Scope, identity: Scope) -> None:
@@ -253,9 +250,7 @@ def _reject_foreign_write_scope(scope: Scope, identity: Scope) -> None:
     for dim in ("user", "agent"):
         value = getattr(scope, dim)
         if value and value != getattr(identity, dim):
-            raise ValidationError(
-                f"write scope {dim}={value!r} does not match the caller identity"
-            )
+            raise ValidationError(f"write scope {dim}={value!r} does not match the caller identity")
 
 
 def _space_level_scope(scope: Scope) -> Scope:
@@ -376,8 +371,7 @@ def _reject_non_scalar_metadata(
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             continue
         raise ValidationError(
-            f"{field_name}[{key!r}] 仅支持 JSON 标量或字符串数组，"
-            f"收到 {type(value).__name__}"
+            f"{field_name}[{key!r}] 仅支持 JSON 标量或字符串数组，收到 {type(value).__name__}"
         )
 
 
@@ -627,9 +621,7 @@ def _list_routing_clauses(
             if value:
                 values.add(value)
         if len(values) == 1:
-            clauses.append(
-                FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop())
-            )
+            clauses.append(FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop()))
     return clauses
 
 
@@ -659,6 +651,19 @@ def _selector_permission_context(selector: DeleteSelector, scope: Scope) -> Perm
         scope=scope,
         tags=tuple(selector.tags),
         metadata={"mode": selector.mode.value},
+    )
+
+
+def _unit_snapshot_permission_context(unit: MemoryUnit) -> PermissionContext:
+    """从将要返回的同一真源快照提取权限事实，不再二次读取。"""
+    return PermissionContext(
+        resource_type="memory_unit",
+        unit_id=unit.id,
+        scope=unit.scope,
+        memory_type=str(unit.system_metadata.get("memory_type", "")).strip(),
+        pipeline=str(unit.system_metadata.get("pipeline", "")).strip(),
+        tags=tuple(unit.tags),
+        metadata={key: str(value) for key, value in unit.system_metadata.items()},
     )
 
 
@@ -753,9 +758,7 @@ def _is_status_only(patch: SpacePatch | None) -> bool:
     if patch is None or patch.status is None:
         return False
     return all(
-        getattr(patch, field.name) is None
-        for field in fields(patch)
-        if field.name != "status"
+        getattr(patch, field.name) is None for field in fields(patch) if field.name != "status"
     )
 
 
@@ -778,12 +781,11 @@ def _project_space_facts(facts: SpaceFacts) -> SpaceAuthorizationFacts:
     )
     return SpaceAuthorizationFacts(owners=owners, members=members)
 
+
 __all__ = [
     "_ROOT",
     "_SPACE_SCAN_CAP",
     "_GRANT_ACTION_BACK",
-    "_LEGACY_PERMISSION_ACTIONS",
-    "_validate_legacy_permission_actions",
     "_parse_max_tokens",
     "_context_detail",
     "_required_filter_metadata",
@@ -814,6 +816,7 @@ __all__ = [
     "_routing_clauses_of",
     "_selector_permission_context",
     "_unit_lookup_permission_context",
+    "_unit_snapshot_permission_context",
     "_space_scope",
     "_space_target_id",
     "_space_permission_context",
