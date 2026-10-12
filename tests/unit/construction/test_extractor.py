@@ -249,7 +249,9 @@ def test_extract_batch_size_splits_llm_calls():
     ]
     result = extractor.extract(units)
 
-    assert getattr(llm, "_call_count", 0) == 2, "3 units with batch_size=2 should trigger 2 LLM calls"
+    assert getattr(llm, "_call_count", 0) == 2, (
+        "3 units with batch_size=2 should trigger 2 LLM calls"
+    )
     assert len(result) == 3
 
 

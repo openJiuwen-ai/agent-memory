@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from ..type_def import FilterClause, FilterOp, Scope
 from . import principal

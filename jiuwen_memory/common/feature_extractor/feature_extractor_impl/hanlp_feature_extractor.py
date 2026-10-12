@@ -49,7 +49,8 @@ _HANLP_ENTITY_TYPE_MAP: dict[str, str] = {
 }
 
 # HanLP POS tag → 是否作为关键词
-# PKU 小写 + CTB 大写（与 CTB9_POS_* 对齐）+ 英文 Penn；同语义标签并存，不改变原有小写/英文过滤意图。
+# PKU 小写 + CTB 大写（与 CTB9_POS_* 对齐）+ 英文 Penn；
+# 同语义标签并存，不改变原有小写/英文过滤意图。
 _HANLP_KEYWORD_POS: set[str] = {
     # PKU / 小写风格
     "n",     # 名词
@@ -260,7 +261,11 @@ class HanlpFeatureExtractor(FeatureExtractor):
         if not keywords and pos_tokens:
             for word, pos in pos_tokens:
                 word_stripped = word.strip()
-                if word_stripped and word_stripped not in _STOP_WORDS and word_stripped not in seen_keywords:
+                if (
+                    word_stripped
+                    and word_stripped not in _STOP_WORDS
+                    and word_stripped not in seen_keywords
+                ):
                     seen_keywords.add(word_stripped)
                     keywords.append(word_stripped)
 
