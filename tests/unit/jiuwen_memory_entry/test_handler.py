@@ -219,8 +219,8 @@ class _RecordingSearchApi:
         disclosure=None,
         with_trajectory=False,
     ):
-        del query, context, security, filters, top_k, disclosure, with_trajectory
-        self.calls.append({"as_of": as_of})
+        del query, context, security, filters, disclosure, with_trajectory
+        self.calls.append({"as_of": as_of, "top_k": top_k})
         return SimpleNamespace(items=[], trajectory=[])
 
 
@@ -270,6 +270,64 @@ def test_search_rejects_bad_as_of() -> None:
     assert status == 400
     assert body["error"] == "ValidationError"
     assert api.calls == []
+
+
+def test_search_forwards_top_k() -> None:
+    """k 透传给 API 层，缺省回落 10。"""
+    api = _RecordingSearchApi()
+    srv = SimpleNamespace(api=api)
+
+    status, _body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "search", {"tenant_id": "acme", "scope": "alice", "query": "q", "k": 3}
+        ),
+    )
+    assert status == 200
+    assert api.calls[-1]["top_k"] == 3
+
+    handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "search", {"tenant_id": "acme", "scope": "alice", "query": "q"}
+        ),
+    )
+    assert api.calls[-1]["top_k"] == 10
+
+
+def test_search_rejects_non_positive_k() -> None:
+    """k 必须是正整数：非法值在边界返回 400，不下发到 API 层。
+
+    基线 a456a87 用 _parse_positive_int 收紧了 k。冲突解决若把它退回
+    int(payload.get("k", 10))，k=0 会被静默放行，而 k="abc" 会抛裸
+    ValueError 变成 500。基线与本 PR 两边都没有测试覆盖这条。
+    """
+    api = _RecordingSearchApi()
+    srv = SimpleNamespace(api=api)
+
+    for bad in (0, -5, "abc", "0"):
+        status, body = handler.dispatch(
+            srv,
+            build_legacy_dispatch_request(
+                "search",
+                {"tenant_id": "acme", "scope": "alice", "query": "q", "k": bad},
+            ),
+        )
+        assert status == 400, f"k={bad!r}"
+        assert body["error"] == "ValidationError"
+
+    # 非法值一个都没下发到 API 层
+    assert api.calls == []
+
+    # 显式 null 回落 default=10，仍然成功
+    status, _body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "search", {"tenant_id": "acme", "scope": "alice", "query": "q", "k": None}
+        ),
+    )
+    assert status == 200
+    assert api.calls[-1]["top_k"] == 10
 
 
 class _RecordingDeleteApi:
