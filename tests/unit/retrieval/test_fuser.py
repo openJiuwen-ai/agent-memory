@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.config import AssemblyContext
 from jiuwen_memory.config.defaults import default_context
@@ -233,3 +234,50 @@ def test_score_max_can_be_created_from_config() -> None:
         ],
     )
     assert [su.unit_id for su in fused] == ["u_vec", "u_kw"]
+
+
+# ---------------------------------------------------------------------------
+# channel_weights 通道名解析（三类 Fuser 共用 fuser.to_recall_channel helper）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw_channel", ["vector", "VECTOR", "Vector", "KEYWORD", "keyword"])
+def test_weighted_rrf_channel_name_variants_accepted(raw_channel) -> None:
+    """成员值精确匹配与成员名大小写变体都解析成功，指向同一枚举成员。"""
+    fuser = WeightedRRFFuser(k=0, channel_weights={raw_channel: 2.0})
+
+    expected = "vector=2" if raw_channel.lower() == "vector" else "keyword=2"
+    assert fuser.explain()["channel_weights"] == expected
+
+
+@pytest.mark.parametrize("raw_channel", ["vector", "VECTOR", "Vector"])
+def test_score_max_channel_name_variants_accepted(raw_channel) -> None:
+    fuser = ScoreMaxFuser(channel_weights={raw_channel: 1.5})
+
+    assert fuser.explain()["channel_weights"] == "vector=1.5"
+
+
+@pytest.mark.parametrize("raw_channel", ["vec", "not_a_channel", ""])
+def test_invalid_channel_name_raises_validation_error(raw_channel) -> None:
+    """非法通道名抛 ValidationError（带合法清单），不再裸抛 KeyError。"""
+    with pytest.raises(ValidationError, match="invalid recall channel"):
+        WeightedRRFFuser(k=0, channel_weights={raw_channel: 1.0})
+
+
+@pytest.mark.parametrize("raw_channel", ["vec", "not_a_channel"])
+def test_invalid_channel_name_score_max_raises(raw_channel) -> None:
+    with pytest.raises(ValidationError, match="invalid recall channel"):
+        ScoreMaxFuser(channel_weights={raw_channel: 1.0})
+
+
+def test_non_str_channel_name_raises_validation_error() -> None:
+    """非字符串键（越界输入）同样兜底为 ValidationError，不逸出 AttributeError。"""
+    with pytest.raises(ValidationError, match="recall channel"):
+        WeightedRRFFuser(k=0, channel_weights={123: 1.0})  # type: ignore[dict-item]
+
+
+def test_weighted_rrf_channel_name_variants_still_work() -> None:
+    """大小写变体经回退分支解析，权重正常生效（回退分支一直工作，非死代码）。"""
+    fuser = WeightedRRFFuser(k=0, channel_weights={"KEYWORD": 2.0, "Vector": 1.0})
+
+    assert fuser.explain()["channel_weights"] == "keyword=2,vector=1"

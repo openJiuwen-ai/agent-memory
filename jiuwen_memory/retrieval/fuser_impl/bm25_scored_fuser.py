@@ -32,7 +32,7 @@ from jiuwen_memory.common.tokenizer import Tokenizer
 from jiuwen_memory.common.tokenizer.base import TokenizerProducer
 from jiuwen_memory.common.type_def import ScoredCandidate
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
-from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
+from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer, normalize_channel_weights
 from jiuwen_memory.retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel
 
 from .layered_merge import merge_layered_channels
@@ -95,23 +95,7 @@ class BM25ScoredFuser(Fuser):
         self._b = float(b)
         # 词法轴相对各召回通道的话语权；0 = 关闭本算子的词法项，退化为 score_max。
         self._lexical_weight = float(lexical_weight)
-        self._channel_weights = self._normalize_weights(channel_weights or {})
-
-    @staticmethod
-    def _normalize_weights(
-        weights: Mapping[RecallChannel | str, float | str],
-    ) -> dict[RecallChannel, float]:
-        normalized: dict[RecallChannel, float] = {}
-        for raw_channel, raw_weight in weights.items():
-            if isinstance(raw_channel, RecallChannel):
-                channel = raw_channel
-            else:
-                try:
-                    channel = RecallChannel(raw_channel)
-                except ValueError:
-                    channel = RecallChannel[raw_channel.upper()]
-            normalized[channel] = float(raw_weight)
-        return normalized
+        self._channel_weights = normalize_channel_weights(channel_weights or {})
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.FUSER
