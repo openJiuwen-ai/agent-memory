@@ -55,7 +55,7 @@ class EntityStoreFilters:
     session_id: str | None = None
 
     @classmethod
-    def from_scope(cls, scope: Scope) -> "EntityStoreFilters":
+    def from_scope(cls, scope: Scope) -> EntityStoreFilters:
         """从 Scope 构造隔离字段。
 
         actor_id ← scope.user（用户隔离，唯一 term 过滤维度）
@@ -68,7 +68,9 @@ class EntityStoreFilters:
         )
 
     def key(self) -> tuple[str | None, ...]:
-        """分组 key：同 (space_id, actor_id, assistant_id, session_id) 的 unit 共享一次 bulk 查询/写入。"""
+        """分组 key：同 (space_id, actor_id, assistant_id, session_id) 的 unit
+        共享一次 bulk 查询/写入。
+        """
         return (self.actor_id, self.assistant_id, self.session_id)
 
 

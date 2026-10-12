@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-10-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -87,6 +87,16 @@
    非法值在装配阶段抛 `ValidationError`。
 
 ## 接口契约
+
+### LoopRunner 生命周期
+
+`submit(coro)` 返回跨线程 Future，与 `close` 原子排序；`run(coro, timeout=None)`
+同步等待同一提交入口。关闭后拒绝提交并释放被拒绝的协程，不允许 `ensure_loop`
+重新创建线程。`close(*, wait=True)` 幂等：停止 loop，取消残余协程，清理异步生成器、
+默认 executor 和 loop；`wait=True` 还等待线程结束。`wait=False` 可随后升级为等待。
+`run` 与等待式 `close` 不可在其自有线程中调用，否则抛 `RuntimeError`，防止自等待。
+业务资源所有者须在关闭 Runner 前完成自己的任务收尾；Runner 不决定业务任务的终态。
+见 [F09](../features/control/F09-runtime-scheduler-shutdown.md)。
 
 ### Plugin（基类，`base.py`）
 
@@ -282,7 +292,7 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 | `Chunk` | id / unit_id / seq / text / start / end / token_count / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息；content 为文本或多模态 parts |
 | `RawPayload` | id / scope / modality / data / uri / system_metadata / user_metadata / occurred_at / assets | 原始负载；`assets` 只承载待 Ingestor 映射的资产引用，不规定产出数量或 Segment 位置 |
-| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反 |
+| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反。内置字段白名单（`filter.py` `_BUILTIN_FIELDS`）含 `t_ingest`（摄入时间，epoch 毫秒，恒非空；2026-09-15 入册，dreaming 时间窗下推依赖，见 F04-dreaming.md D5） |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |

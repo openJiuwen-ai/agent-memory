@@ -192,7 +192,10 @@ class KeywordRecaller(Recaller):
         filters = EntityStoreFilters.from_scope(scope)
         try:
             entity_records = self._entity_store.find_by_entity_text_hash(
-                space_id, tuple(hashes), filters=filters, limit=self._entity_list_limit(len(hashes)),
+                space_id,
+                tuple(hashes),
+                filters=filters,
+                limit=self._entity_list_limit(len(hashes)),
             )
         except Exception:
             logger.warning("entity_expansion_lookup_failed space_id=%s", space_id, exc_info=True)

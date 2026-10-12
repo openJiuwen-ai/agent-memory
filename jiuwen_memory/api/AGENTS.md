@@ -15,12 +15,13 @@
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest |
+| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 持有 KV/Storage/ingest/Engine/Scheduler，runtime 负责关闭摄入、Engine 和根 Scheduler |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
-| `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；Schema 更新对 Command 返回的计划逐项鉴权后提交，记录操作 ID 与涉及的 unit ID，不在 API 做抽取/匹配 |
+| `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
+| `memory_api_impl/dreaming.py` | DreamingCoordinator + DreamingDriverJob：dreaming 编排（PEP 边界）——leader-only 注册、`CANCEL_REQUESTED` 持久化幂等注销、generation 隔离旧代 Driver、生命周期操作串行与短状态锁分离、按 leader 任期缓存恢复结果、每 tick 持续授权（`created_by` 复验）、fan-out 逐桶裁决；Coordinator 只持鉴权、提交、调度、注册表、Engine 候选 scope 枚举窄端口，不反向持有完整 API；驱动 Job 每 tick 经 `commands.evolve` 提交一次性 EvolveJob |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
 | `access_security.py` | Access 安全装配辅助：向 HTTP / CLI 入口提供固定身份或预设身份映射的 dev Authenticator，不向接入层暴露 common 实现路径 |
@@ -99,6 +100,13 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 - 策略存储（PolicyManager 实现在 `control`）
 
 ## 本地约束
+
+- dreaming 驱动提交派生任务后须立即调用 `link_child`，两步之间不得让出调度循环，以便执行前绑定父任务取消生命周期。注销先持久化 `CANCEL_REQUESTED`，Driver 在 tick 开头和提交前复核 `state + generation + job_id`；阻塞式 Scheduler 调用不得发生在协调器短状态锁内。
+
+运行时关闭通过各资源的公共 `close` 级联，不读取 Engine 的受保护字段来寻找调度器；
+后台关闭完成前不得释放 dreaming leader 锁，重复调用共享同一次收尾结果。
+即使前一个资源清理抛错，也必须尝试关闭后续资源。装配同名引用可共享调度器，
+因此重复关闭必须安全。需要显式生命周期的嵌入式调用方应使用 `assemble_runtime`。
 
 1. `security` 为必填参数，类型 `common.security.types.RequestSecurityContext`；只能来自 `auth_middleware.authenticated()` 或 `request_context.internal_context()`（过渡期另有 `legacy_request_context()`，实装 PR 删除）。除 `check_write(scope, security, *, ...)` 为兼容旧第二位置参数外，其余公开方法均要求 keyword-only。
 2. 授权面（`grant`/`revoke`）的公共类型是 `common.security.types.Grant`/`Action`；`control.types` 只兼容再导出同一对象，不得定义第二套类型或结构转换。`Grant` 必须兼容旧 `grantor`/`grantee`/`actions` 构造形状，`grant_id` 构造时默认留空，actions 在值对象边界冻结并校验。目标形态下 `grant_id` 服务端生成、`revoke` 按 ID 精确定位；接口先行过渡期撤销语义不变，安全域独有动作在委托旧 `PermissionManager` 前 fail-closed。
