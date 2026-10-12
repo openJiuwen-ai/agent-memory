@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .filter import FilterExpr
 from .memory import LifecycleState, MemoryUnit
@@ -26,7 +26,7 @@ def passes_lifecycle(
         allowed = {LifecycleState.ACTIVE}
         if include_archived:
             allowed.add(LifecycleState.ARCHIVED)
-        return unit.lifecycle in allowed and valid_at(unit, datetime.now(timezone.utc))
+        return unit.lifecycle in allowed and valid_at(unit, datetime.now(UTC))
     return unit.lifecycle != LifecycleState.FORGOTTEN and valid_at(unit, as_of)
 
 

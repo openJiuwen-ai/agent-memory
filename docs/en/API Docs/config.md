@@ -204,6 +204,7 @@ http:
     test-ops:
       actor:
         org: local
+        user: ops
       role: admin
     test-u1:
       actor:
@@ -213,10 +214,9 @@ http:
       actor:
         org: local
         user: u2
-    test-u1-agent:
+    test-agent:
       actor:
         org: local
-        user: u1
         agent: a1
         session: s1
 ```
@@ -248,18 +248,18 @@ Behavior:
   a later `http` section replaces the earlier section in full.
 - Authentication headers select the identity. Changing `scope.user` in the body does not switch the
   caller; `scope` remains the business target.
-- `role: admin/root` does not bypass authorization. Existing rules still govern space creation,
-  membership, writes, and reads. The `test-ops` example uses an org-only actor for organization-level
-  space creation; merely changing an ordinary user's role is not sufficient.
+- Mapped DEV keeps PermissionManager/SpaceAwarePermissionManager checks without automatically
+  injecting allow_all. Named admin/root privileges and agent-on-user delegation await PR2 Authorizer.
+- Actors require a non-empty org and exactly one user or agent; business scopes are separate.
+- Explicit memory_api.security takes precedence over the HTTP DEV convenience configuration.
 
 The standard HTTP launcher reads this configuration. Local CLI `--auth-mode dev` still uses its
 default fixed identity and does not automatically read `http.dev_identities`. Remote CLI can send
 the matching Bearer selector through `AGENT_MEMORY_API_KEY=test-u1`. Programmatic callers can use
 the public `build_dev_authenticator(identities=...)` helper to construct a test authenticator.
 
-Containers use the same configuration: add this section to the mounted file, keep dev mode
-explicitly enabled, and recreate the application container. Loopback restrictions are unchanged.
-Identity mapping is not production authentication; do not expose it to production or unisolated networks.
+DEV is loopback-only with no environment override. Containers requiring 0.0.0.0 must use required
+with an API Key/Trusted runtime declaring remote exposure. Mapping is not production authentication.
 
 ## 4. Basic Configuration Structure
 

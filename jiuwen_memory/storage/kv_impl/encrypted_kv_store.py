@@ -2,9 +2,9 @@
 """EncryptedKVStore — KVStore 加密装饰器。
 
 该实现不包含具体加解密算法，只在 KV 边界统一构造
-``SecurityContext`` / AAD，并委托注入的 ``SecurityProvider``。真实算法位于
-``common.security.security_impl``；本类只负责把所有 KV value 的写前加密、读后解密
-收敛到同一个存储装饰器。
+``CryptoContext`` / AAD，并委托注入的 ``CryptographyProvider``。真实算法位于
+``jiuwen_memory.common.security.cryptography_impl``；本类只负责把所有 KV value 的
+写前加密、读后解密收敛到同一个存储装饰器。
 """
 
 from __future__ import annotations
@@ -13,7 +13,8 @@ import json
 from typing import Any
 
 from jiuwen_memory.common.errors import BackendError, ValidationError
-from jiuwen_memory.common.security import SecurityContext, SecurityProducer, SecurityProvider
+from jiuwen_memory.common.security.cryptography import CryptographyProducer, CryptographyProvider
+from jiuwen_memory.common.security.types import CryptoContext
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KvProducer, KVStore
@@ -56,24 +57,29 @@ def _aad(scope: Scope, key: str, purpose: str) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _security_context(scope: Scope, key: str, purpose: str) -> SecurityContext:
-    return SecurityContext(
+def _crypto_context(scope: Scope, key: str, purpose: str) -> CryptoContext:
+    """对象标识与格式版本走 :class:`CryptoContext` 的专有字段，不再塞 metadata。
+
+    它们是 F05 §信封格式要求 AAD 必须绑定的项，由类型显式承载才能保证每个调用点
+    都带上——放 metadata 里漏掉一个不会有任何提示。
+    """
+    return CryptoContext(
         scope=scope,
         purpose=purpose,
-        metadata={
-            "key": key,
-            "aad_version": str(_AAD_VERSION),
-        },
+        object_id=key,
+        format_version=_AAD_VERSION,
     )
 
 
 class EncryptedKVStore(KVStore):
     """对任意 KVStore 做透明加解密的装饰器。"""
 
-    def __init__(self, raw: KVStore, security: SecurityProvider) -> None:
+    def __init__(self, raw: KVStore, encryption: CryptographyProvider) -> None:
         self._raw = raw
-        self._security = security
-        self._store_security = EnabledStoreSecurity(security.health)
+        self._encryption = encryption
+        # 上游 StoreSecurity 契约：加密 Store 覆写 BaseStore 默认的 passthrough，
+        # 声明「本后端已启用数据保护」，health 检查委托给加密提供方。
+        self._store_security = EnabledStoreSecurity(encryption.health)
 
     @property
     def security(self) -> StoreSecurity:
@@ -84,7 +90,7 @@ class EncryptedKVStore(KVStore):
 
     def health(self) -> None:
         self._raw.health()
-        self._security.health()
+        self._encryption.health()
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         self._raw.insert(scope, key, self._encrypt(scope, key, value), ttl=ttl)
@@ -103,8 +109,7 @@ class EncryptedKVStore(KVStore):
         # 再逐项解密——AAD 绑定 scope+key+purpose，各 key AAD 不同，不能批量统一
         # 解密（与 list 同款逐项解密）。
         return [
-            self._decrypt(scope, key, raw)
-            for key, raw in zip(keys, self._raw.mget(scope, keys))
+            self._decrypt(scope, key, raw) for key, raw in zip(keys, self._raw.mget(scope, keys))
         ]
 
     def exists(self, scope: Scope, key: str) -> bool:
@@ -140,25 +145,21 @@ class EncryptedKVStore(KVStore):
 
     def _encrypt(self, scope: Scope, key: str, plaintext: bytes) -> bytes:
         purpose = _purpose_for_key(key)
-        context = _security_context(scope, key, purpose)
+        context = _crypto_context(scope, key, purpose)
         aad = _aad(scope, key, purpose)
         try:
-            return self._security.encrypt(plaintext, context=context, aad=aad)
+            return self._encryption.encrypt(plaintext, context=context, aad=aad)
         except Exception as exc:
-            raise BackendError(
-                f"kv encryption failed: key={key!r} purpose={purpose!r}"
-            ) from exc
+            raise BackendError(f"kv encryption failed: key={key!r} purpose={purpose!r}") from exc
 
     def _decrypt(self, scope: Scope, key: str, ciphertext: bytes) -> bytes:
         purpose = _purpose_for_key(key)
-        context = _security_context(scope, key, purpose)
+        context = _crypto_context(scope, key, purpose)
         aad = _aad(scope, key, purpose)
         try:
-            return self._security.decrypt(ciphertext, context=context, aad=aad)
+            return self._encryption.decrypt(ciphertext, context=context, aad=aad)
         except Exception as exc:
-            raise BackendError(
-                f"kv decryption failed: key={key!r} purpose={purpose!r}"
-            ) from exc
+            raise BackendError(f"kv decryption failed: key={key!r} purpose={purpose!r}") from exc
 
 
 def _raw_kv_store(config: Any) -> KVStore:
@@ -174,5 +175,5 @@ def _raw_kv_store(config: Any) -> KVStore:
 def _build(config):
     return EncryptedKVStore(
         raw=_raw_kv_store(config),
-        security=SecurityProducer.dep(config),
+        encryption=CryptographyProducer.dep(config),
     )

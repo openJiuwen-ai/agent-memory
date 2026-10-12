@@ -59,11 +59,12 @@ def collective_settings():
     components = (
         "ingestor", "index_builder", "retriever", "kv_store", "scheduler", "evolver", "lifecycle",
     )
-    identities = {"test-ops": {"actor": {"org": "local"}, "role": "admin"}}
+    identities = {"test-ops": {"actor": {"org": "local", "user": "ops"}, "role": "admin"}}
     for user in ("u1", "u2", "u3"):
         identities[f"test-{user}"] = {"actor": {"org": "local", "user": user}}
     identities["test-u1-agent"] = {
-        "actor": {"org": "local", "user": "u1", "agent": "a1", "session": "s1"},
+        # PR2 将通过受控 delegation 关联 u1；认证 actor 本身始终只有一个主体。
+        "actor": {"org": "local", "agent": "a1", "session": "s1"},
     }
     return {
         "http": {"dev_identities": identities},

@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import json
-import logging
 import threading
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from dataclasses import replace
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any
@@ -41,6 +41,7 @@ from jiuwen_memory.control.permission_impl.allow_all_permission_manager import (
     AllowAllPermissionManager,
 )
 from jiuwen_memory.control.types import PermissionContext
+from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.profiles import OFFLINE, load_config
 from jiuwen_memory_entry.http_server import __main__ as http_server_module
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
@@ -583,44 +584,39 @@ def test_dev_authentication_cli_rejects_non_loopback_binding(monkeypatch, bindin
     assert binding_httpd == []
 
 
-def test_dev_authentication_allows_explicit_container_binding(binding_httpd, caplog) -> None:
+def test_dev_authentication_cannot_bypass_binding_policy(binding_httpd) -> None:
     server = HttpServer.build(
         load_config([OFFLINE]), security_runtime=build_dev_security_runtime()
     )
 
-    with caplog.at_level(logging.WARNING, logger="agent-memory.server"):
-        server.serve("0.0.0.0", 8137, allow_dev_non_loopback=True)
-
-    assert binding_httpd[0].address == ("0.0.0.0", 8137)
-    assert binding_httpd[0].served is True
-    assert binding_httpd[0].closed is True
-    assert "development authentication is listening on non-loopback host" in caplog.text
+    with pytest.raises(ValidationError, match="loopback"):
+        server.serve("0.0.0.0", 8137)
+    assert binding_httpd == []
 
 
-def test_dev_binding_environment_override_warns(monkeypatch, binding_httpd, caplog) -> None:
+def test_dev_binding_environment_variable_no_longer_bypasses_policy(
+    monkeypatch, binding_httpd
+) -> None:
     monkeypatch.setenv("JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK", "true")
 
-    with caplog.at_level(logging.WARNING, logger="agent-memory.server"):
-        result = http_server_module.main(
-            ["--auth-mode", "dev", "--host", "0.0.0.0", "--port", "8137"]
-        )
+    result = http_server_module.main(
+        ["--auth-mode", "dev", "--host", "0.0.0.0", "--port", "8137"]
+    )
 
-    assert result == 0
-    assert binding_httpd[0].served is True
-    assert binding_httpd[0].closed is True
-    assert "the deployment boundary must prevent remote access" in caplog.text
+    assert result == 2
+    assert binding_httpd == []
 
 
-@pytest.mark.parametrize("allow_override", [False, True])
 @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
-def test_third_party_binding_error_does_not_suggest_dev_override(
-    host, allow_override, binding_httpd
-) -> None:
-    runtime = SimpleNamespace(authenticator=_LoopbackAuthenticator())
+def test_third_party_loopback_requirement_uses_binding_policy(host, binding_httpd) -> None:
+    runtime = replace(
+        build_dev_security_runtime(),
+        authenticator=_LoopbackAuthenticator(),
+    )
     server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
 
-    with pytest.raises(ValidationError, match="authenticator.*third_party.*loopback") as error:
-        server.serve(host, 8137, allow_dev_non_loopback=allow_override)
+    with pytest.raises(ValidationError, match="loopback") as error:
+        server.serve(host, 8137)
 
     assert "development authentication" not in str(error.value)
     assert "JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK" not in str(error.value)
@@ -628,7 +624,10 @@ def test_third_party_binding_error_does_not_suggest_dev_override(
 
 
 def test_remote_capable_authenticator_binds_without_dev_override(binding_httpd) -> None:
-    runtime = SimpleNamespace(authenticator=_RemoteAuthenticator())
+    runtime = replace(
+        build_dev_security_runtime(),
+        authenticator=_RemoteAuthenticator(),
+    )
     server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
 
     server.serve("0.0.0.0", 8137)
@@ -637,7 +636,7 @@ def test_remote_capable_authenticator_binds_without_dev_override(binding_httpd) 
     assert binding_httpd[0].closed is True
 
 
-def test_binding_policy_denial_is_not_overridden_by_dev_flag(binding_httpd) -> None:
+def test_binding_policy_denial_cannot_be_overridden(binding_httpd) -> None:
     policy = _RejectingBindingPolicy()
     runtime = SimpleNamespace(
         authenticator=build_dev_security_runtime().authenticator,
@@ -646,10 +645,20 @@ def test_binding_policy_denial_is_not_overridden_by_dev_flag(binding_httpd) -> N
     server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
 
     with pytest.raises(ValidationError, match="binding policy rejected host"):
-        server.serve("0.0.0.0", 8137, allow_dev_non_loopback=True)
+        server.serve("0.0.0.0", 8137)
 
     assert policy.calls == [("0.0.0.0", True)]
     assert binding_httpd == []
+
+
+def test_runtime_without_binding_policy_fails_closed(binding_httpd) -> None:
+    runtime = SimpleNamespace(authenticator=_RemoteAuthenticator())
+    server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
+
+    with pytest.raises(ValidationError, match="missing a binding policy"):
+        server.serve("127.0.0.1", 8137)
+    assert binding_httpd == []
+
 
 
 @pytest.mark.parametrize(
@@ -681,6 +690,45 @@ def test_required_mode_does_not_activate_configured_dev_identities(monkeypatch) 
 
     assert http_server_module.main(["--auth-mode", "required", "test-config.json"]) == 0
     assert observed == [None]
+
+
+def test_mapped_dev_keeps_real_permission_checks_and_request_identity() -> None:
+    identities = {
+        "test-u1": {"actor": {"org": "local", "user": "u1"}},
+        "test-u2": {"actor": {"org": "local", "user": "u2"}},
+    }
+    original = load_config([OFFLINE])
+    config = with_local_dev_security(original, identities=identities)
+    assert "permission" not in config.settings["memory_api"]
+    assert "security" not in (original.settings.get("memory_api") or {})
+    server = HttpServer.build(config)
+    with ThreadingHTTPServer(("127.0.0.1", 0), server.handler_cls()) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        url = f"http://127.0.0.1:{httpd.server_port}"
+        payload = {"content": "user one memory", "scope": {"org": "local", "user": "u1"}}
+        try:
+            assert _post(url, payload, key="test-u1")[0] == 200
+            assert _post(url, payload, key="test-u2")[0] == 403
+            assert _post(url, payload, key="unknown")[0] == 401
+            assert _post(url, payload, key="")[0] == 401
+            assert _post(url, payload, key="test-u1")[0] == 200
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=2)
+            server.close(wait=True)
+
+
+def test_dev_composition_preserves_explicit_security_and_permission() -> None:
+    explicit_security = load_config([OFFLINE, {"memory_api": {
+        "security": {"default": {"target": "standard"}},
+    }}])
+    assert with_local_dev_security(explicit_security) is explicit_security
+    permission = {"default": "sqlite"}
+    config = load_config([OFFLINE, {"memory_api": {"permission": permission}}])
+    assert with_local_dev_security(config).settings["memory_api"]["permission"] == permission
+    fixed = with_local_dev_security(load_config([OFFLINE]))
+    assert fixed.settings["memory_api"]["permission"]["default"]["target"] == "allow_all"
 
 
 def test_http_does_not_add_video_specific_add_parameters(http_endpoint) -> None:

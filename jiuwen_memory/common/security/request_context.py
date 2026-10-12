@@ -8,7 +8,7 @@
 两个入口对应两类调用方：
 
 - :func:`new_request_context` 给**已完成认证**的 surface 用（HTTP / MCP / CLI 经
-  ``bootstrap.core.auth_middleware`` 调它）；
+  ``jiuwen_memory_entry.core.auth_middleware`` 调它）；
 - :func:`internal_context` 给**进程内直连**的调用方用（示例脚本、评测 harness、
   嵌入式插件）——它们没有网络对端，但契约与外部请求完全相同（F05 §进程内调用）。
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from contextvars import ContextVar, Token
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.security.types import (
     AuthContext,
@@ -74,7 +74,7 @@ def new_request_context(
         request_id=request_id or uuid.uuid4().hex,
         peer=peer,
         surface=surface,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         attributes=attributes or {},
         _origin="",  # 占位符
     )

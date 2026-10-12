@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
 
 from jiuwen_memory.config.config import Config
 from jiuwen_memory.config.defaults import default_context
@@ -17,7 +17,7 @@ from .harness import EvalHarness
 from .types import CaseOutcome, Dataset, MetricResult, RunResult
 
 # 指标 = 「全体观测 → 一组聚合指标」。无状态、可组合。
-Metric = Callable[[List[CaseOutcome]], List[MetricResult]]
+Metric = Callable[[list[CaseOutcome]], list[MetricResult]]
 
 # 报告摘要字段 → 新两级配置的取值口径：
 #   *_backend：对应 producer 顶层命名空间下 default 实例的 target；
@@ -42,7 +42,7 @@ class Runner:
     def run(
         self,
         dataset: Dataset,
-        config: Optional[Config] = None,
+        config: Config | None = None,
         concurrency: int = 1,
         artifact_dir: str | Path | None = None,
     ) -> RunResult:
@@ -51,7 +51,7 @@ class Runner:
             outcomes = harness.evaluate(dataset, concurrency=concurrency)
         finally:
             harness.close()
-        results: List[MetricResult] = []
+        results: list[MetricResult] = []
         for metric in self._metrics:
             results.extend(metric(outcomes))
         return RunResult(
@@ -63,7 +63,7 @@ class Runner:
         )
 
 
-def _summarize(config: Optional[Config]) -> dict[str, str]:
+def _summarize(config: Config | None) -> dict[str, str]:
     """报告用的配置摘要：与 build_kernel 同口径，把用户配置合并覆盖到内置默认之上读「生效值」。
 
     故无 ``--fuser`` 时也会如实显示生效的默认（fuser_backend=rrf / discloser_backend=truncating），
