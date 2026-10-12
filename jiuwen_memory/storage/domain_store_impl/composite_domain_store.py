@@ -495,6 +495,7 @@ class CompositeDomainStore(DomainStore):
             entries = self._raw_shadow_index().list_units(scope)
             result = list_memory_entries(
                 entries,
+                scope,
                 offset=offset,
                 limit=limit,
                 memory_types=memory_types,
