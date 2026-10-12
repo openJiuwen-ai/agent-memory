@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
@@ -43,6 +43,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.abstractor import AbstractorProducer
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 
 from ..abstractor import Abstractor
 from ..base import OperatorType
@@ -438,7 +439,9 @@ class LLMAbstractor(Abstractor):
         # 构建 user prompt
         parts = []
         for u in units:
-            parts.append(_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content))
+            parts.append(
+                _SOURCE_PREFIX.format(unit_id=u.id, unit_content=truncate_unit_content(u.content))
+            )
         user_text = "\n".join(parts)
 
         from jiuwen_memory.common.type_def import ChatMessage
@@ -627,7 +630,7 @@ class LLMAbstractor(Abstractor):
                 source_ref=primary_source.id,
                 temporal=Temporal(
                     t_event=primary_source.temporal.t_event,
-                    t_ingest=datetime.now(timezone.utc),
+                    t_ingest=datetime.now(UTC),
                     t_message=primary_source.temporal.t_message,
                 ),
                 provenance=valid_source_ids,

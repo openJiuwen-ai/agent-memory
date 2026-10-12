@@ -54,6 +54,7 @@ from jiuwen_memory.common.log import (
 )
 from jiuwen_memory.common.type_def import FeatureSet, MemoryUnit, Relation
 from jiuwen_memory.construction.associator import AssociatorProducer
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 
 from ..associator import Associator
 from ..base import OperatorType
@@ -600,7 +601,9 @@ class LLMAssociator(Associator):
             u = unit_map.get(uid)
             if u:
                 context_parts.append(
-                    _PAIR_CONTEXT_TEMPLATE.format(unit_id=u.id, unit_content=u.content)
+                    _PAIR_CONTEXT_TEMPLATE.format(
+                        unit_id=u.id, unit_content=truncate_unit_content(u.content)
+                    )
                 )
         unit_context = "\n".join(context_parts)
 
@@ -722,7 +725,9 @@ class LLMAssociator(Associator):
             u = unit_map.get(uid)
             if u:
                 context_parts.append(
-                    _PAIR_CONTEXT_TEMPLATE.format(unit_id=u.id, unit_content=u.content)
+                    _PAIR_CONTEXT_TEMPLATE.format(
+                        unit_id=u.id, unit_content=truncate_unit_content(u.content)
+                    )
                 )
         unit_context = "\n".join(context_parts)
 

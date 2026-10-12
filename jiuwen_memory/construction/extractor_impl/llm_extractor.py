@@ -47,7 +47,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
@@ -66,6 +66,7 @@ from jiuwen_memory.common.type_def import (
     inherited_system_metadata,
     inherited_user_metadata,
 )
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 
 from ..base import ExtractContext, OperatorType
 from ..common import merge_unit_tags, parse_tags
@@ -730,7 +731,7 @@ class ExtractorImpl(Extractor):
         )
 
         # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         source = units[0]
         # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
         tags = merge_unit_tags(source.tags, ["procedural"])
@@ -830,7 +831,10 @@ class ExtractorImpl(Extractor):
         from jiuwen_memory.common.type_def import ChatMessage
 
         # 拼 user prompt：每条 unit 带 [ID: unit.id] 前缀
-        parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
+        parts = [
+            _SOURCE_PREFIX.format(unit_id=u.id, unit_content=truncate_unit_content(u.content))
+            for u in units
+        ]
         user_text = "\n".join(parts)
         # 基准时间 observation_date（经 metadata 下推）：LLM 据此把相对时间解析成绝对时间。
         # 取首个含 observation_date 的 unit（同批通常一致）；未传则以当前时间为基准。
@@ -843,7 +847,7 @@ class ExtractorImpl(Extractor):
             "",
         )
         if not observation_date:
-            observation_date = datetime.now(timezone.utc).date().isoformat()
+            observation_date = datetime.now(UTC).date().isoformat()
         # prompt 声明该行形如 "observation_date: YYYY-MM-DD"，且据此把观测日期按日精度写进
         # content。调用方可能下推完整时间戳，故统一截到日——否则 prompt 的日精度约定不成立，
         # LLM 会把时分秒当作源文本给出的精度照抄进条目。
@@ -940,7 +944,7 @@ class ExtractorImpl(Extractor):
                 continue
             seen.add(dedup_key)
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=source.scope,

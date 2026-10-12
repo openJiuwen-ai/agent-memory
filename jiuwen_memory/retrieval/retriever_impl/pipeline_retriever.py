@@ -52,6 +52,12 @@ from .unit_reader import UnitReader
 
 logger = get_logger(__name__)
 
+# 精排输入限长：交叉编码器负载 = query 长度 × 候选数，超长 query（如 10KB）
+# 会把远程 rerank 服务顶到 reranker_timeout（默认 120s）才返回。召回向量化
+# 仍用全量 query，这里只截断送精排的文本；相关性以头部为主，故头部截断。
+_MAX_RERANK_QUERY_CHARS = 2000
+_MAX_RERANK_DOC_CHARS = 4000
+
 
 class PipelineRetriever(Retriever):
     """编排 parse → 谓词 → recall(多路) → fuse → 点读+复核 → rerank → disclose。"""
@@ -315,7 +321,8 @@ class PipelineRetriever(Retriever):
         if do_rerank and self._reranker is not None and survivors:
             t0 = perf_counter()
             scores = self._reranker.rerank(
-                parsed.raw, [units[su.unit_id].content for su in survivors]
+                parsed.raw[:_MAX_RERANK_QUERY_CHARS],
+                [units[su.unit_id].content[:_MAX_RERANK_DOC_CHARS] for su in survivors],
             )
             order = sorted(range(len(survivors)), key=lambda i: scores[i], reverse=True)
             survivors = [replace(survivors[i], score=scores[i]) for i in order]

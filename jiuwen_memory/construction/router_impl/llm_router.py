@@ -16,12 +16,13 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, List
+from typing import Any
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 from jiuwen_memory.construction.router import (
     RouteContext,
     RouteDecision,
@@ -103,7 +104,7 @@ class LLMRouter(Router):
 
             raise HealthCheckError(str(exc)) from exc
 
-    def route(self, units: List[MemoryUnit], ctx: RouteContext) -> List[RouteDecision]:
+    def route(self, units: list[MemoryUnit], ctx: RouteContext) -> list[RouteDecision]:
         if not units:
             return []
         decisions: list[RouteDecision] = []
@@ -114,14 +115,16 @@ class LLMRouter(Router):
         return decisions
 
     def _route_batch(
-        self, units: List[MemoryUnit], ctx: RouteContext
-    ) -> List[RouteDecision]:
+        self, units: list[MemoryUnit], ctx: RouteContext
+    ) -> list[RouteDecision]:
         messages = [
             ChatMessage(role="system", content=self._system_prompt(ctx)),
             ChatMessage(
                 role="user",
                 content="\n".join(
-                    _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=unit.content)
+                    _SOURCE_PREFIX.format(
+                        unit_id=unit.id, unit_content=truncate_unit_content(unit.content)
+                    )
                     for unit in units
                 ),
             ),
@@ -178,7 +181,7 @@ class LLMRouter(Router):
         return results
 
     @staticmethod
-    def _ids_unusable(units: List[MemoryUnit]) -> bool:
+    def _ids_unusable(units: list[MemoryUnit]) -> bool:
         """id 是否不足以比对：任一条为空，或存在重复。"""
         ids = [unit.id for unit in units]
         return not all(ids) or len(set(ids)) != len(ids)

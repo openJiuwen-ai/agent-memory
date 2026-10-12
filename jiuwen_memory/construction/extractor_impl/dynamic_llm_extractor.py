@@ -9,7 +9,7 @@ metadata 只写 prompt 的 **key**（引用 yml ``prompts.extract`` 段的命名
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
@@ -20,6 +20,7 @@ from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from jiuwen_memory.construction.prompt_strategy import (
     EXTRACT_PROMPT_PREFIX,
@@ -160,10 +161,11 @@ class DynamicLLMExtractor(Extractor):
                 for unit in units
                 if unit.system_metadata.get("observation_date")
             ),
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         )
         source_text = "\n".join(
-            _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=unit.content) for unit in units
+            _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=truncate_unit_content(unit.content))
+            for unit in units
         )
         context_block = _format_context_block(context)
         user_text = (
