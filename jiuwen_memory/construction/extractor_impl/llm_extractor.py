@@ -47,7 +47,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
@@ -730,7 +730,7 @@ class ExtractorImpl(Extractor):
         )
 
         # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         source = units[0]
         # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
         tags = merge_unit_tags(source.tags, ["procedural"])
@@ -843,7 +843,7 @@ class ExtractorImpl(Extractor):
             "",
         )
         if not observation_date:
-            observation_date = datetime.now(timezone.utc).date().isoformat()
+            observation_date = datetime.now(UTC).date().isoformat()
         # prompt 声明该行形如 "observation_date: YYYY-MM-DD"，且据此把观测日期按日精度写进
         # content。调用方可能下推完整时间戳，故统一截到日——否则 prompt 的日精度约定不成立，
         # LLM 会把时分秒当作源文本给出的精度照抄进条目。
@@ -940,7 +940,7 @@ class ExtractorImpl(Extractor):
                 continue
             seen.add(dedup_key)
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=source.scope,

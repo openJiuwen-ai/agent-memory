@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(f"配置文件不存在: {config_path}")
     run_id = args.run_id
     if not run_id:
-        timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+        timestamp = datetime.now(UTC).astimezone().strftime("%Y%m%d-%H%M%S")
         run_id = f"{timestamp}-{uuid4().hex[:8]}"
     scope_tag = args.scope_tag.strip()
     if args.skip_write and not scope_tag:

@@ -27,6 +27,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from openai import RateLimitError
+
 from jiuwen_memory_entry.core.api_contract import invoke_api, is_known_verb
 from jiuwen_memory_entry.core.error_response import error_response
 from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
@@ -165,7 +167,7 @@ class HttpServer(Server):
                     self._send_error("AuthenticationError", request_id=request_id)
                 except RateLimitedError:
                     self._send_error("RateLimitedError", request_id=request_id)
-                except AgentMemoryError as api_error:
+                except (AgentMemoryError, RateLimitError) as api_error:
                     self._send_error(type(api_error), api_error, request_id=context_request_id)
                 except Exception as request_error:
                     logger.error(
@@ -261,6 +263,7 @@ class HttpServer(Server):
         httpd = None
         try:
             self._check_binding(host, allow_dev_non_loopback=allow_dev_non_loopback)
+            self.restore_dreaming()
             httpd = ThreadingHTTPServer((host, port), self.handler_cls())
             logger.info(
                 "agent-memory server (profile=%s) on http://%s:%s",

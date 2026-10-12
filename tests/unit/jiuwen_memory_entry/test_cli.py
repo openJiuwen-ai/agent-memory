@@ -13,7 +13,9 @@ from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
 import pytest
+from openai import RateLimitError
 
 from jiuwen_memory.api import MemoryAPI, Scope, build_dev_authenticator
 from jiuwen_memory.common.security.request_context import get_request_id
@@ -209,6 +211,32 @@ def test_local_and_http_await_original_async_result(api_client) -> None:
     assert status == 200, batch
     assert "outcomes" in batch
     assert "job_id" not in batch
+
+
+def test_inprocess_upstream_rate_limit_remains_retryable(monkeypatch) -> None:
+    client = client_module.make_client(None, auth_mode="dev")
+    detail = "api_key=secret-key https://user:secret-password@example.com"
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.com"))
+
+    def failing_search(*args, **kwargs):
+        del args, kwargs
+        raise RateLimitError(detail, response=response, body={"message": detail})
+
+    monkeypatch.setattr(client.server.api, "search", failing_search)
+    try:
+        status, body = client.call("search", {"query": "x", "context": {"scope": SCOPE}})
+    finally:
+        client.close()
+
+    assert status == 429
+    assert body == {
+        "error": "RateLimitError",
+        "message": "too many requests",
+        "retryable": True,
+        "request_id": body["request_id"],
+    }
+    assert body["request_id"]
+    assert get_current() is None
 
 
 def test_inprocess_calls_api_with_independent_security(monkeypatch) -> None:

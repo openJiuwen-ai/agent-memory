@@ -27,7 +27,9 @@ def test_project_assembly_values_includes_globals_and_prompts() -> None:
 
 
 def test_yaml_defaults_config_source_fetch_roundtrip() -> None:
-    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
+    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import (
+        YamlDefaultsConfigSource,
+    )
 
     src = YamlDefaultsConfigSource({"globals.rerank_enabled": "true", "llm.model": "gpt-4o"})
     assert src.fetch("globals.rerank_enabled") == "true"
@@ -48,7 +50,9 @@ def test_dict_config_source_supports_runtime_update() -> None:
 def test_overlay_prefers_primary_then_fallback() -> None:
     from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
     from jiuwen_memory.config.config_source_impl.overlay_config_source import OverlayConfigSource
-    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
+    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import (
+        YamlDefaultsConfigSource,
+    )
 
     base = YamlDefaultsConfigSource({"llm.model": "from-yaml-defaults", "llm.api_key": "k1"})
     overlay = DictConfigSource({"llm.model": "from-overlay"})
@@ -149,7 +153,9 @@ def test_prompt_registry_prefers_config_source() -> None:
 
 def test_build_kernel_exposes_default_config_source() -> None:
     from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import YamlDefaultsConfigSource
+    from jiuwen_memory.config.config_source_impl.yaml_defaults_config_source import (
+        YamlDefaultsConfigSource,
+    )
 
     Factory.reset_all()
     kernel = build_kernel()

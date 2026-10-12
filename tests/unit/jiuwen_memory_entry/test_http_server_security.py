@@ -13,7 +13,9 @@ from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
+from openai import RateLimitError
 
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
@@ -1092,6 +1094,37 @@ def test_http_rate_limit_has_retry_contract(http_endpoint) -> None:
     }
     assert headers["retry-after"] == "1"
     assert headers["x-request-id"] == body["request_id"]
+
+
+@pytest.mark.parametrize(
+    ("method", "payload"),
+    [
+        ("add", {"scope": {"org": "acme", "user": "alice"}, "content": "x"}),
+        ("search", {"context": {"scope": {"org": "acme", "user": "alice"}}, "query": "x"}),
+    ],
+)
+def test_http_upstream_rate_limit_has_retry_contract(http_endpoint, method, payload) -> None:
+    base_url, server = http_endpoint
+    detail = "api_key=secret-key https://user:secret-password@example.com"
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.com"))
+
+    def failing_api(*args, **kwargs):
+        del args, kwargs
+        raise RateLimitError(detail, response=response, body={"message": detail})
+
+    setattr(server.api, method, failing_api)
+    status, body, headers = _request_with_headers(
+        base_url, f"/v1/{method}", json.dumps(payload).encode()
+    )
+
+    assert status == 429
+    assert body == {
+        "error": "RateLimitError",
+        "message": "too many requests",
+        "retryable": True,
+        "request_id": headers["x-request-id"],
+    }
+    assert headers["retry-after"] == "1"
 
 
 @pytest.mark.parametrize(

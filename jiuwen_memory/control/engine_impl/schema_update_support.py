@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import MemoryUnit
@@ -54,7 +54,7 @@ async def prepare_schema_update(
                 "Schema content update requires the same schema at its destination"
             )
     if patch.mode == UpdateMode.SUPERSEDE and patch.t_valid is None:
-        new.temporal.t_valid = datetime.now(timezone.utc)
+        new.temporal.t_valid = datetime.now(UTC)
     return await asyncio.to_thread(
         support.prepare_source_update, old, new, mode=patch.mode.value
     )
