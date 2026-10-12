@@ -37,6 +37,10 @@ from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.retrieval.schema_temporal.pipeline import (
+    SchemaTemporalPipelineExtension,
+    build_schema_temporal_extension,
+)
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
@@ -74,12 +78,14 @@ class PipelineRetriever(Retriever):
         min_results: int = 0,
         *,
         domain_store: DomainStore,
+        schema_temporal_extension: SchemaTemporalPipelineExtension | None = None,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
         self._discloser = discloser
         self._reader = unit_reader
         self._domain = domain_store
+        self._schema_temporal_extension = schema_temporal_extension
         self._reranker = reranker
         # 召回超采样：每路取 max(top_k*factor, floor)，撒宽网喂融合。
         self._over_fetch_factor = max(1, int(over_fetch_factor))
@@ -368,7 +374,20 @@ class PipelineRetriever(Retriever):
             len(items),
             (perf_counter() - started_at) * 1000.0,
         )
-        return RetrievalResult(items=items, trajectory=traj, errors=errors)
+        result = RetrievalResult(items=items, trajectory=traj, errors=errors)
+        if self._schema_temporal_extension is None:
+            return result
+        return self._schema_temporal_extension.apply(
+            scope,
+            query,
+            parsed,
+            list(final),
+            units,
+            result,
+            user_filters=user_filters,
+            record_step=step,
+        )
+
 
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
@@ -379,17 +398,20 @@ def _build(config):
     # 组装）；这里只取 manager 与其 domain_store——非 Composite 实现自带检索路径。
     manager = StoreManagerProducer.resolve(config)
     kv_name = resolve_name(config, "kv_store")
+    kv = manager.kv(kv_name) if manager.has_kv(kv_name) else None
+    domain = manager.domain_store(resolve_name(config, "domain_store"))
     # 精排器与 UnitReader 的真源 kv 与索引/构建侧共享同一实例。
     reranker = (
         RerankerProducer.dep(config, default="overlap")
         if config.get("rerank_enabled", True)
         else None
     )
+    discloser = DiscloserProducer.dep(config, default="truncating")
     return PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
         FuserProducer.dep(config, default="rrf"),
-        DiscloserProducer.dep(config, default="truncating"),
-        UnitReader(manager.kv(kv_name)) if manager.has_kv(kv_name) else None,
+        discloser,
+        UnitReader(kv) if kv is not None else None,
         reranker,
         over_fetch_factor=int(Factory.cfg_get(config, "over_fetch_factor", 4)),
         over_fetch_floor=int(Factory.cfg_get(config, "over_fetch_floor", 60)),
@@ -403,7 +425,14 @@ def _build(config):
             Factory.cfg_get(config, "min_score_ratio_uncalibrated", 0.0)
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
-        domain_store=manager.domain_store(resolve_name(config, "domain_store")),
+        domain_store=domain,
+        schema_temporal_extension=build_schema_temporal_extension(
+            config,
+            manager,
+            domain,
+            reranker,
+            discloser,
+        ),
     )
 
 
