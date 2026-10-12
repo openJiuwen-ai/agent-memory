@@ -483,6 +483,7 @@ async def memory_submit_ingest(content: str, scope: dict, source: str,
                          tags: list[str] | None = None,
                          system_metadata: dict | None = None,
                          user_metadata: dict | None = None,
+                         occurred_at: str | None = None,
                          ctx: Context = None) -> dict:
     """提交长耗时摄入任务（文档/视频等多模态内容），返回任务信息。
 
@@ -490,6 +491,7 @@ async def memory_submit_ingest(content: str, scope: dict, source: str,
     payload_id: 原文缓存标识。source_ref: 源资产引用（如 file:///...）。
     assets: 可选资产引用列表。tags: 可选标签。
     system_metadata / user_metadata: 可选元数据对象（值限标量）。
+    occurred_at: 可选 ISO 8601 消息发生时间，后台写入时原样传递。
     后台 add 会再鉴权一次；用 memory_job_status 查任务进度。
     """
     return await _invoke(
@@ -497,7 +499,7 @@ async def memory_submit_ingest(content: str, scope: dict, source: str,
         {"content": content, "scope": scope, "source": source,
          "payload_id": payload_id, "source_ref": source_ref, "assets": assets,
          "tags": tags, "system_metadata": system_metadata,
-         "user_metadata": user_metadata},
+         "user_metadata": user_metadata, "occurred_at": occurred_at},
         context=ctx,
     )
 

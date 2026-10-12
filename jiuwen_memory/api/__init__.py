@@ -31,6 +31,10 @@ from jiuwen_memory.common.security.request_context import (
     reset_request_id,
     set_request_id,
 )
+from jiuwen_memory.common.security.space_roles import (
+    SpaceContentRole,
+    SpaceGovernanceRole,
+)
 from jiuwen_memory.common.security.types import (
     Action,
     Credentials,
@@ -53,6 +57,7 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
     Segment,
+    normalize,
 )
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control import (
@@ -120,6 +125,8 @@ __all__ = [
     "SpaceInfo",
     "SpacePatch",
     "SpaceMember",
+    "SpaceContentRole",
+    "SpaceGovernanceRole",
     "SpaceUsage",
     "SpaceDeleteResult",
     # 检索（retrieval）
@@ -131,6 +138,7 @@ __all__ = [
     "FilterClause",
     "FilterExpr",
     "FilterOp",
+    "normalize",
     # 演进 + 任务调度（construction / control）
     "EvolveMode",
     "Channel",
