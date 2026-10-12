@@ -33,6 +33,8 @@ def default_config_dict() -> dict[str, Any]:
     return {
         "globals": {
             "schema_enabled": False,
+            "schema_entity_resolution_enabled": True,
+            "schema_entity_merge_decision_enabled": True,
             "vector_enabled": True,
             "graph_enabled": True,
             "rerank_enabled": True,
@@ -58,6 +60,7 @@ def default_config_dict() -> dict[str, Any]:
         "security": {_D: "local"},
         "vector_store": {
             _D: "memory",
+            "schema_entities": "memory",
             # L0/L1 分表（与构建侧同命名 layers_l0/l1；同后端不同 collection）
             "layers_l0": "memory",
             "layers_l1": "memory",
@@ -65,6 +68,7 @@ def default_config_dict() -> dict[str, Any]:
         "graph_store": {_D: "memory"},
         "fulltext_store": {
             _D: {"target": "memory", "params": {"tokenizer": _D}},
+            "schema_entities": {"target": "memory", "params": {"tokenizer": _D}},
             # L0/L1 分表（与构建侧同命名 layers_l0/l1）
             "layers_l0": {"target": "memory", "params": {"tokenizer": _D}},
             "layers_l1": {"target": "memory", "params": {"tokenizer": _D}},

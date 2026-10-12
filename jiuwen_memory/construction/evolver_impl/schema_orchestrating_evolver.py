@@ -11,6 +11,8 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable
 
+from jiuwen_memory.common._support import as_bool
+from jiuwen_memory.common.embedder.base import EmbedderProducer
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
@@ -24,6 +26,8 @@ from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
     _resolve_message_store,
 )
+from jiuwen_memory.construction.evolver_impl.schema_entity_registry import SchemaEntityRegistry
+from jiuwen_memory.construction.evolver_impl.schema_entity_resolver import SchemaEntityResolver
 from jiuwen_memory.construction.evolver_impl.schema_update import SchemaUpdateCoordinator
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -59,6 +63,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         dedup: Dedup,
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
+        schema_entity_resolver: SchemaEntityResolver | None = None,
         *,
         kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
@@ -79,6 +84,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         )
         # IndexBuilder owns memory writes; KV is used only to read source/property records.
         self._source_kv = storage.kv(kv_name)
+        self._schema_entity_resolver = schema_entity_resolver
         self._updates = SchemaUpdateCoordinator(self._source_kv, self._extract_source_update)
 
     def _extract_source_update(self, source: MemoryUnit) -> SourceExtraction:
@@ -207,7 +213,18 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
 
         copy_consolidation_prompts(units, extracted)
         self._annotate_layers(extracted)
+        if self._schema_entity_resolver is not None:
+            self._schema_entity_resolver.resolve(extracted)
         property_ids = self._persist(extracted)
+        if self._schema_entity_resolver is not None:
+            try:
+                self._schema_entity_resolver.sync(extracted)
+            except Exception as exc:
+                logger.warning(
+                    "SchemaOrchestratingEvolver: entity registry sync failed; "
+                    "properties remain durable: %s",
+                    exc,
+                )
         source_writeback_ids = self._write_schema_entities_to_sources(units, extracted)
         existing_source_updates = [
             source_id for source_id in source_writeback_ids if source_id not in source_ids
@@ -237,6 +254,39 @@ def _build(config):
     index_default = "hybrid" if vector_on else "fulltext"
     dedup_default = "vector" if vector_on else "keyword"
     storage = StoreManagerProducer.resolve(config)
+    kv_name = resolve_name(config, "kv_store")
+    kv = storage.kv(kv_name)
+    embedder = EmbedderProducer.dep(config, default="hashing")
+    llm = LlmProducer.dep(config, default="echo")
+    registry = SchemaEntityRegistry(
+        kv,
+        vector_store=(
+            storage.vector("schema_entities")
+            if storage.has_vector("schema_entities")
+            else None
+        ),
+        fulltext_store=(
+            storage.fulltext("schema_entities")
+            if storage.has_fulltext("schema_entities")
+            else None
+        ),
+        embedder=embedder,
+    )
+    resolver = None
+    if as_bool(config.get("schema_entity_resolution_enabled"), default=True):
+        resolver = SchemaEntityResolver(
+            kv=kv,
+            registry=registry,
+            embedder=embedder,
+            llm=llm,
+            enable_merge_decision=as_bool(
+                config.get("schema_entity_merge_decision_enabled"),
+                default=True,
+            ),
+            recall_top_k=int(config.get("schema_entity_recall_top_k", 15)),
+            max_merge_retries=int(config.get("schema_entity_merge_max_retries", 8)),
+            fallback_limit=int(config.get("schema_entity_fallback_limit", 1000)),
+        )
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -245,9 +295,10 @@ def _build(config):
         storage=storage,
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dedup_default),
-        llm=LlmProducer.dep(config, default="echo"),
+        llm=llm,
         layer_annotator=_optional_layer_annotator(config),
-        kv_name=resolve_name(config, "kv_store"),
+        schema_entity_resolver=resolver,
+        kv_name=kv_name,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
     )
