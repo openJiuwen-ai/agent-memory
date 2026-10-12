@@ -234,7 +234,8 @@ class _RecordingSpaceApi:
         del org, space, security
         return self.members
 
-    def list_spaces(self, org, *, security, status=None, limit=100, cursor=None):
+    @staticmethod
+    def list_spaces(org, *, security, status=None, limit=100, cursor=None):
         del org, security, status, limit, cursor
         return []
 

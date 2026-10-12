@@ -816,7 +816,15 @@ def _delete(srv, request: DispatchRequest) -> Body:
     tags = _parse_string_list(payload.get("tags"), name="delete tags")
     before = _parse_occurred_at(payload.get("before"), name="delete before")
     filters = normalize_filters(payload.get("filters"))
-    if unit_id is None and not tags and before is None and filters is None:
+    # 四类条件各自独立判定后聚合：写成单个复合条件既难读，也会触发
+    # 「条件语句包含过多条件」的编码规范告警。
+    provided_criteria = (
+        unit_id is not None,
+        bool(tags),
+        before is not None,
+        filters is not None,
+    )
+    if not any(provided_criteria):
         raise ValidationError("delete requires at least one of: item_id, tags, before, filters")
     selector = DeleteSelector(
         unit_ids=[] if unit_id is None else [str(unit_id)],
