@@ -21,6 +21,7 @@
 | `security.py` | StorageSecurity 通用授权与 StoreSecurity 数据保护能力标识 |
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
+| `_schema_property_index.py` | Schema Entity → Property MemoryUnit ID 的 KV 派生反向索引；以 Scope watermark 作为全量回填提交标记，membership/pointer 支持幂等更新与硬删；canonical identity 按 `schema_entity_id` → `schema_entity_key` → `type::name` 解析且要求非空 `schema_property_name` |
 | `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 两件——`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤）与 `list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
@@ -220,3 +221,18 @@
     回写 `memory_key`+`dumps` 同 ForwardIndexBuilder 模式）——均不注入 DomainStore（运行期持
     最小接口，F07 决策 10 修订并推进到 control 面）。DomainStore 消费方只有检索路径
     （`PipelineRetriever`）与一体化写路径（`UnifiedIndexBuilder`）。
+
+18. **Schema Property 反向索引不是真源**
+    `schema_enabled=true` 时，`IndexBuilderProducer` 在任意具体 target 外统一
+    包装反向索引维护器。`FORWARD_ONLY build` 记录排除项，避免未来 Scope 回填把未建
+    检索索引的新 Property 纳入；`FORWARD_ONLY update` 不改变已有 membership，供随后
+    的软删继续支持属性版本历史。
+    canonical identity 依次取 `schema_entity_id`、`schema_entity_key`、`type::name`，且
+    只有带非空 `schema_property_name` 的 Schema Property 才可进入索引。一个 Scope
+    首次维护时须先从该 Scope 的全部 MemoryUnit 一次性回填 membership/pointer，再将
+    Scope watermark 作为最终提交标记；watermark 缺失或失效时读侧回退 Scope 列表查询，
+    watermark 有效时 membership 才是权威结果。携带 MemoryUnit 的硬删以及
+    `remove_with_scope()` 均须同步维护 membership/pointer。任一维护步骤失败都必须使
+    watermark 失效，使读取回到可恢复的兼容 fallback；没有 KV 端口的一体化/自定义
+    manager 不装配该派生索引，读侧直接使用 DomainStore Scope fallback。真实属性始终由
+    MemoryUnit 点读复核。

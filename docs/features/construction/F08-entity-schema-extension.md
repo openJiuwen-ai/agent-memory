@@ -4,16 +4,17 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-16 |
-| 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/config/`、`jiuwen_memory/construction/`、`jiuwen_memory/control/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S08-config.md` |
-| 测试基线 | `tests/unit/construction/test_entity_schema_extension.py`；source 更新与主线隔离验证见下文 |
+| 日期 | 2026-09-18 |
+| 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory/config/`、`jiuwen_memory/construction/`、`jiuwen_memory/control/`、`jiuwen_memory/storage/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S08-config.md` |
+| 测试基线 | `tests/unit/construction/test_entity_schema_extension.py`、`tests/unit/construction/test_schema_entity_identity.py`、`tests/unit/construction/test_schema_property_merge.py`、`tests/unit/control/test_schema_update_regression.py`、`tests/unit/storage/test_schema_property_index.py` |
 | Refs | #208 |
 
 ## 背景
 
 通用抽取器能生成自由文本记忆，但无法保证实体类型、属性名称和输出粒度符合业务约束。
-另一方面，mem2.0 已有 `MemoryUnit.entities`、EntityLinkService 和 EntityStore，不应再建立一套
-Schema 专用实体真源、实体 ID 或索引协议。
+另一方面，mem2.0 已有 `MemoryUnit.entities`、EntityLinkService 和 EntityStore，Source 的
+通用实体反向索引应继续复用该链路。Schema Property 的跨轮身份统一另需 canonical id，但
+其 Registry 只能是可由 Property 重建的派生投影，不能成为第二套属性事实真源。
 
 本特性的目标是增加一条显式启用的 Schema 属性抽取路径：调用方提供实体类型及候选属性，
 抽取器只生成白名单内的属性事实。ADD 路径中，属性成功落盘后，其所属实体名写回相应 Source
@@ -49,6 +50,16 @@ Schema 发送给属性生成 Prompt。Normalizer 使用同一个选中 Schema �
 不会扩展成全量 Schema。Schema Selection 调用或根 JSON 解析失败时降级为完整 Schema；
 合法的 `selected_entities=[]` 表示本轮没有可抽取类型，不再调用属性生成 LLM。
 
+生成 Prompt 采用高召回属性抽取规则：Schema Selection 对不确定候选倾向保留，生成阶段
+执行 zero-fact-loss 检查，强调完整主语、具体名称、数值、地点、建议和相对时间来源。
+Prompt 的输出契约仍按本特性边界收敛为 `entities[].properties[]`；不要求输出未持久化的
+`edges`、`message_mapping` 或 Episode。因此，对齐的是产生检索收益的 Property 抽取语义，
+不是引入图或 Episode 数据结构。
+
+`examples/entity_schema_locomo_person.json` 提供 LoCoMo 使用的 person-only 高覆盖候选属性集，
+包含 2 个静态属性和 42 个动态属性。它是显式选择的评测/示例配置，不替换通用
+`examples/persona.json`，也不改变 Schema 默认关闭的装配行为。
+
 模型响应必须是单个根 JSON 对象。属性逐条校验 entity type、property name、来源
 `source_unit_ids`、Scope 和显式说话者绑定。未知 entity type 不会被自动改成某个已选类型。
 所有这些错误都会进入同一个纠错 Prompt，默认最多尝试三次；重试耗尽后，保留某次
@@ -61,9 +72,17 @@ Schema 发送给属性生成 Prompt。Normalizer 使用同一个选中 Schema �
 
 - `content`：包含明确主语的属性事实文本；
 - `entities=[]`：Property Unit 本身不进入实体反向索引；
-- `system_metadata`：只保存 Schema 名称、版本、实体类型、实体明文和属性名；
+- `system_metadata`：保存 Schema 名称/版本、实体类型/明文/稳定 key、属性名，
+  以及可用的 event precision/start/end；
 - `source_ref` 与 `provenance`：回指支持该事实的原始消息；
-- `temporal.t_event`：仅在属性具有可完整解析的日期或时间时填写。
+- `temporal.t_event`：仅在日或日时精度可完整解析时填写；年/月使用
+  `schema_event_start/end/precision` 半开区间，不伪造具体日期。
+
+生成 Prompt 按每个 Source 显式传入 unit id、说话者、角色与
+`temporal.t_message`。若事实没有明确的事件时间，Property content 可追加
+`Source message date` 和 `property event time: not stated`，但 `t_event` 保持为空。
+若事实使用相对时间，content 保留对应 Source 日期与原始相对表达，使下游
+可核查其归一化结果。`delete` 指令不追加该上下文，避免改变旧事实匹配语义。
 
 ADD 路径中，属性 Unit 成功持久化后，Evolver 按其 `provenance` 找到对应 Source Unit，把
 `schema_entity_name` 去重聚合到 Source 的 `entities`。一个 Source 支持多个实体和多个属性，
@@ -82,30 +101,43 @@ Property Unit 仍通过 `source_ref/provenance` 回指 Source。属性名只保�
        └─ 失败：记录降级原因，保留 Source MemoryUnit
 ```
 
-Schema 属性绕过普通相似度 Dedup，避免通用文本相似度把不同属性错误地 UPDATE 或
-SUPERSEDE。ADD 路径采用 append-only：每次成功抽取的属性都作为新 MemoryUnit 写入；
-显式 Source update 按下文的匹配与版本规则处理旧属性。
+Schema 属性绕过普通相似度 Dedup，改由属性专用 Planner 处理。`use_property_merge=false`
+时维持 append 语义，但显式 `delete` 始终被消费且不会作为正向事实落盘；开启
+`use_property_merge=true` 后，Planner 只在完全冗余、明确取代或同属性同事件时间纠错时
+产生 update/archive，模型失败则保守追加全部新事实。显式 Source update 则由
+`SchemaUpdateCoordinator` 对本次更新关联的旧属性进行匹配、撤回和版本处理。
 
-### 5. 复用既有实体链路
+### 5. 临时观察 key 经 Entity Resolver 统一为 canonical entity id
 
-Schema Extractor 不生成自定义 `schema_entity_id`，也不维护 Schema Entity Registry。
-ADD 路径中，Evolver 通过 Storage 只读加载 Source MemoryUnit，合并实体名后调用
+Schema Extractor 先生成确定性的临时 `schema_entity_key`。属性落盘前，Entity Resolver
+按 Scope/Schema 读取派生 Entity Registry 和已有 Property，依次执行同类型名称/别名精确
+匹配、语义候选召回、LLM `create/update` 判断以及写入前二次精确检查。最终把
+`schema_entity_id` 和 `schema_entity_key` 统一改成 canonical UUID，并记录观察名、别名与
+resolution action。显式具名人物不能与 User/Assistant 等泛化角色合并，不同显式说话者
+也不能因属性相似而合并。
+
+隐藏 `/schema/entities/` Registry 是可由 Property MemoryUnit 重建的派生身份投影，不是
+第二套属性事实真源。Registry 同步失败不会回滚已经成功写入的 Source/Property；下一轮
+Resolver 仍可从 Property 真源重建候选。
+
+Extractor 首先生成临时实体 key，Entity Resolver/Registry 再把名称、别名和已有实体统一为
+稳定 `schema_entity_key`。ADD 路径中，Evolver 通过 Storage 只读加载 Source MemoryUnit，
+仅合并实体名后调用
 `IndexBuilder.update(mode=ALL)`，由 IndexBuilder 统一回写 Source 本体并刷新检索索引。
 IndexBuilder 看到 Source 的 `entities` 后，按现有配置调用 EntityLinkService；该服务负责
 名称归一化、EntityRecord upsert 以及实体名→Source MemoryUnit 的反向链接。
 
-因此，是否建立实体索引仍由 mem2.0 原有 `entity_enabled` 和 EntityStore 配置决定。Schema
-功能本身不新增 `schema_entities` collection/index，也不要求自定义 Storage。
+Source `entities` 的标准反向索引仍由 mem2.0 原有 EntityLinkService/EntityStore 负责；
+canonical Schema identity 则服务于 Property 分组、版本合并与反向索引，两者
+职责不同。
 
 ### 6. 功能边界
 
-本特性包含 Schema Selection、属性抽取与校验、每属性一个 MemoryUnit、Source-first 降级、
-标准实体字段接入，以及显式 Source update 的属性与索引同步。不包含：
+本期包含 Schema Selection、属性抽取与严格校验、每属性一个 MemoryUnit、Source-first、
+Entity Identity/Registry、可选 Property Merge、显式删除、Source update 属性同步、标准实体字段接入，
+以及可复用的实体分组和时间投影。本期仍不包含：
 
-- 自定义 Entity Identity、Entity Registry 或别名合并；
-- ADD 路径的通用 Property Merge；Source update 内的属性撤回与版本处理见下文；
 - relation/edge MemoryUnit、图投影和图查询；
-- Schema 时间线、snapshot/range/history 查询；
 - episode、higher-order property 或动态 property 生成。
 
 ### 7. Source update 显式启用，与普通更新隔离
@@ -176,17 +208,16 @@ Schema Source 记录所用 Schema 名和版本。已有数据缺此记录时，�
 
 ## 拒绝的方案
 
-### 建立 Schema 专用 Entity Registry 和独立 Storage
+### 把 Entity Registry 当作属性事实真源
 
-拒绝。mem2.0 已有 `MemoryUnit.entities` 和 EntityLinkService。再维护
-`schema_entity_id/schema_entity_key`、隐藏 KV 和 `schema_composite` 会形成两套实体真源，
-增加装配、重建和一致性成本。
+拒绝。Registry 只保存可重建的 canonical identity 投影；Property MemoryUnit 仍是唯一事实
+真源，Source `entities` 仍走官方 EntityLinkService。
 
-### 在 ADD 路径实现通用 Property Merge
+### 使用普通文本 Dedup 代替 Property Merge
 
-拒绝。可靠合并依赖稳定实体身份、按实体属性召回和明确的版本生命周期。ADD 路径先保证
-抽取结果不丢失并接入标准实体链路；通用 Dedup 不适合代替属性级合并，因此属性采用直接
-ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展为全局属性合并。
+拒绝。通用相似度不能表达“同一实体、同一属性、同一事件时间”的约束，也不能安全实现
+显式 delete。Schema 使用独立 Planner，并在不确定或 LLM 失败时保留全部信息。
+Source update 另只协调本次显式更新涉及的关联属性，不代替 ADD 路径的 Planner。
 
 ### 把 Schema 行为塞进官方 Evolver
 
@@ -211,7 +242,14 @@ ADD。Source update 只协调本次显式更新涉及的关联属性，不扩展
 
 - 验证选中属性白名单、空选择语义、严格根 JSON、来源绑定和事件时间映射；
 - 验证来源绑定与实体类型错误参与三次纠错，且未知类型不会被静默改型；
-- 验证一个实体的多个属性生成多个 Unit，Property Unit 的 `entities` 为空，只有实体名写回 Source；
+- 验证一个实体的多个属性生成多个 Unit，Property Unit 的 `entities` 为空，仅实体名写回 Source；
+- 验证同 Scope/Schema/实体生成稳定 `schema_entity_key`，不同实体不混组；
+- 验证别名复用 canonical entity id，且不同显式说话者不会被 LLM 相似度误合并；
+- 验证 merge 关闭时保持追加、同属性同事件可 supersede、显式 delete 只 archive 命中事实；
+- 验证年/月/日/日时 precision 和半开区间，且年/月不伪造 `t_event`；
+- 验证缺失、非法或与 value 矛盾的 property time 进入纠错重试而非静默清空；
+- 验证无事件时间时 content 携带 Source message date，而 `t_event` 保持为空；
+- 验证 Source update 重新抽取完整属性集，并按 update/supersede 语义同步旧属性与索引；
 - 验证 Schema 抽取失败后 Source MemoryUnit 仍可读取和检索；
 - 验证 Schema 属性不进入普通 Dedup；
 - 验证标准 EntityLinkService 能从更新后的 Source Unit 建立 EntityRecord 及反向链接；
@@ -297,12 +335,12 @@ provenance，空 provenance 时回退 source_ref，多源处理语义没有取�
 
 ## 已知遗留
 
-1. 当前实体统一完全依赖现有 EntityLinkService 的名称归一化能力，不处理复杂别名或同名消歧；
-2. ADD 路径的属性采用 append-only，尚未提供全局按实体和属性的版本合并；Source update
-   只处理本次更新涉及的关联属性；
-3. ADD 路径的 Source `entities` 合并属性所属实体名，不额外写属性值中提及的其他实体；
-   Source update 则整体替换为新抽取的实体名，两条路径均不加入 property 名；
-4. 关系、图和 Schema 时序检索留待独立特性设计；
+1. Entity Resolver 支持名称、别名和 LLM 候选判断，但没有外部主数据 ID 时，真正同名的
+   不同人物仍只能依赖上下文与保守 CREATE；
+2. ADD 路径的 Property Merge 仅在显式开启时生效；Source update 只处理本次更新涉及的关联属性；
+3. ADD 路径的 Source `entities` 合并属性所属实体名，Source update 则整体替换为新抽取的实体名；
+   两条路径均不加入 property 名，也不额外写属性值中提及的其他实体；
+4. 关系、图与 episode 仍未进入 Schema 时序检索；
 5. `SchemaOrchestratingEvolver` 当前尚未接入 `Router`。启用群体记忆归属判定时，Schema
    派生属性仍沿用 Source MemoryUnit 的 Scope；未配置 Router 时不影响 Schema 抽取、属性
    落盘及 Source `entities` 写回。
