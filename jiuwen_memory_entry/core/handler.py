@@ -18,9 +18,9 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 
@@ -470,7 +470,9 @@ def _add(srv, request: DispatchRequest) -> Body:
     security = _request_security(request)
     if "metadata" in payload:
         raise ValidationError("metadata has been removed; use system_metadata and user_metadata")
-    modality = Modality(payload.get("source", payload.get("modality", "text")))
+    modality = _enum_value(
+        Modality, payload.get("source", payload.get("modality", "text")), name="source"
+    )
     if modality == Modality.VIDEO:
         return _submit_video(srv, payload, scope=scope, security=security)
     # metadata 透传：infer 等调用级开关经 metadata 下推到引擎（engine.write 从
@@ -541,10 +543,11 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
     default_tags = defaults.get("tags")
     if default_tags is not None and not isinstance(default_tags, list):
         raise ValidationError("batch_add defaults.tags must be an array")
-    try:
-        default_source = Modality(defaults.get("source", defaults.get("modality", "text")))
-    except (TypeError, ValueError) as exc:
-        raise ValidationError(f"invalid batch_add default source: {exc}") from exc
+    default_source = _enum_value(
+        Modality,
+        defaults.get("source", defaults.get("modality", "text")),
+        name="batch_add defaults.source",
+    )
     default_occurred_at = _parse_occurred_at(
         defaults.get("occurred_at"), name="batch_add defaults.occurred_at"
     )
@@ -560,12 +563,16 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
                 "batch item metadata has been removed; use system_metadata and user_metadata"
             )
         item_scope = dispatch_item.target or default_scope
-        raw_source = raw_item.get("source", raw_item.get("modality"))
-        try:
-            item_source = Modality(raw_source) if raw_source is not None else None
-        except (TypeError, ValueError):
-            items.append(raw_item)
-            continue
+        if "source" in raw_item or "modality" in raw_item:
+            # 与 _add 对齐：显式传 source/modality 时非法值（含 null）→ 400，
+            # 不再静默跳过该项。
+            item_source = _enum_value(
+                Modality,
+                raw_item.get("source", raw_item.get("modality")),
+                name="batch item source",
+            )
+        else:
+            item_source = None  # 未声明 → api 层回落 default_source
         try:
             item_occurred_at = _parse_occurred_at(
                 raw_item.get("occurred_at"), name="batch_add item occurred_at"
@@ -754,12 +761,45 @@ def _delete(srv, request: DispatchRequest) -> Body:
 # --- 管理面 / 治理 / 演进 verbs ------------------------------------------- #
 
 
+def _parse_dreaming(value: Any) -> bool | None:
+    """dreaming 三态开关（F04 D2）：JSON true/false，缺省 None（立即执行）。"""
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValidationError("dreaming must be a boolean")
+    return value
+
+
+def _parse_candidate(value: Any) -> dict | None:
+    """候选源 dict DSL；kind 合法性由控制层 candidate_from_dict 统一校验。"""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError("candidate must be an object")
+    return value
+
+
 def _evolve(srv, request: DispatchRequest) -> Body:
-    """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。"""
+    """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。
+
+    dreaming 三态（与 MemoryAPI.evolve 契约一致，HTTP/CLI 经 api_contract 已同构）：
+    缺省 = 立即跑一次；true = 注册定时（interval 秒，每 tick 复验授权）；
+    false = 幂等注销。interval>0 的注册态语义校验由 API 层鉴权前 fail fast。
+    """
     payload = request.payload
     scope = _require_target(request)
-    mode = EvolveMode(payload.get("mode", "extract"))
-    job_id = srv.api.evolve(scope, mode, security=_request_security(request))
+    mode = _enum_value(EvolveMode, payload.get("mode", "extract"), name="mode")
+    dreaming = _parse_dreaming(payload.get("dreaming"))
+    interval = _parse_non_negative_int(payload.get("interval"), name="interval", default=0)
+    candidate = _parse_candidate(payload.get("candidate"))
+    job_id = srv.api.evolve(
+        scope,
+        mode,
+        candidate=candidate,
+        dreaming=dreaming,
+        interval=interval,
+        security=_request_security(request),
+    )
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
 
 
