@@ -15,7 +15,7 @@ import uuid
 import pytest
 
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import HealthCheckError, ValidationError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit, Scope, Segment
 from jiuwen_memory.construction.base import OperatorType
@@ -104,7 +104,7 @@ def _unit(content: str) -> MemoryUnit:
 
 def _router(*responses: object, retries: int = 3) -> tuple[LLMRouter, _ScriptedLLM]:
     llm = _ScriptedLLM(*responses)
-    return LLMRouter(llm, _table(), retry_max_retries=retries, retry_backoff_ms=0), llm
+    return LLMRouter(llm, _table(), max_attempts=retries, retry_backoff_ms=0), llm
 
 
 def _reply(unit: MemoryUnit, memory_class: str = "user_memory", **extra: object) -> str:
@@ -350,12 +350,22 @@ def test_the_last_failure_is_raised_after_the_retries_are_used_up() -> None:
     assert len(llm.calls) == 3
 
 
-def test_a_zero_retry_budget_is_a_configuration_error() -> None:
-    """``retry_max_retries=0`` 时一次都不调用，报配置错而不是静默返回空。"""
-    router, llm = _router(retries=0)
-    with pytest.raises(RuntimeError, match="retry_max_retries"):
-        router.route([_unit("我偏好深色主题")], _ctx(_table()))
-    assert llm.calls == []
+def test_a_zero_attempt_budget_is_a_configuration_error() -> None:
+    """``max_attempts=0`` 时在构造期失败。"""
+    with pytest.raises(ValidationError, match="max_attempts"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=0, retry_backoff_ms=0)
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "bad"])
+def test_invalid_attempt_budget_is_rejected(value: object) -> None:
+    with pytest.raises(ValidationError, match="max_attempts"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=value, retry_backoff_ms=0)
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "bad"])
+def test_invalid_backoff_is_rejected(value: object) -> None:
+    with pytest.raises(ValidationError, match="retry_backoff_ms"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=1, retry_backoff_ms=value)
 
 
 # -- 算子契约 -------------------------------------------------------------- #

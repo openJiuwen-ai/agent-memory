@@ -30,7 +30,10 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
-from jiuwen_memory.construction.common import merge_unit_tags
+from jiuwen_memory.construction.common import (
+    merge_unit_tags,
+    reject_deprecated_llm_attempt_keys,
+)
 from jiuwen_memory.construction.entity_schema import EntitySchemaCatalog
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
@@ -259,7 +262,7 @@ class EntitySchemaExtractor(Extractor):
         validation_attempts: int = _DEFAULT_VALIDATION_ATTEMPTS,
         max_entities_per_conversation: int = _DEFAULT_MAX_ENTITIES,
         max_properties_per_entity: int = _DEFAULT_MAX_PROPERTIES,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         if batch_size < 1:
@@ -286,7 +289,7 @@ class EntitySchemaExtractor(Extractor):
         )
         self._helper = ExtractorImpl(
             llm=llm,
-            retry_max_retries=retry_max_retries,
+            max_attempts=max_attempts,
             retry_backoff_ms=retry_backoff_ms,
         )
 
@@ -866,6 +869,7 @@ def _dedupe_units(units: list[MemoryUnit]) -> list[MemoryUnit]:
 
 @ExtractorProducer.register("entity_schema")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     schema_path = str(config.get("schema_path") or "").strip()
     if not schema_path:
         raise ValueError("entity_schema extractor requires schema_path")
@@ -886,6 +890,6 @@ def _build(config):
         max_properties_per_entity=int(
             config.get("max_properties_per_entity", _DEFAULT_MAX_PROPERTIES)
         ),
-        retry_max_retries=int(config.get("extractor_retry_max", 3)),
-        retry_backoff_ms=int(config.get("extractor_retry_backoff", 1000)),
+        max_attempts=config.get("extractor_max_attempts", 3),
+        retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
     )

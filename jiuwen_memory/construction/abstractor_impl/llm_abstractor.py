@@ -46,6 +46,7 @@ from jiuwen_memory.construction.abstractor import AbstractorProducer
 
 from ..abstractor import Abstractor
 from ..base import OperatorType
+from ..common import reject_deprecated_llm_attempt_keys, validate_llm_attempt_policy
 
 logger = get_logger(__name__)
 
@@ -194,7 +195,7 @@ class LLMAbstractor(Abstractor):
         min_group_size_portrait: int = 5,
         max_groups_per_batch: int = 4,
         max_context_tokens: int = 180000,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         self._llm = llm
@@ -205,8 +206,9 @@ class LLMAbstractor(Abstractor):
         self._min_group_size_portrait = min_group_size_portrait
         self._max_groups_per_batch = max_groups_per_batch
         self._max_context_tokens = max_context_tokens
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts, retry_backoff_ms,
+        )
         # 估算 token 系数：4 chars ≈ 1 token（中英文混合场景）
         self._chars_per_token = 4
 
@@ -511,24 +513,24 @@ class LLMAbstractor(Abstractor):
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
-        last_exc = None
-        for attempt in range(self._retry_max_retries):
+        last_exc: Exception | None = None
+        for attempt in range(self._max_attempts):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=4096)
             except Exception as exc:
                 last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "Abstractor: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1,
-                        wait,
-                    )
-                    time.sleep(wait)
-        # 所有重试都失败（retry_max_retries <= 0 时未进入循环，last_exc 仍为 None）
-        if last_exc is None:
-            raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
-        raise last_exc
+                if attempt == self._max_attempts - 1:
+                    break
+                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
+                logger.warning(
+                    "Abstractor: LLM call failed (attempt %d), retrying in %.1fs",
+                    attempt + 1,
+                    wait,
+                )
+                time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Abstractor: LLM call did not execute")
 
     def _parse_llm_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON，失败时尝试提取 JSON 核心部分。"""
@@ -663,6 +665,7 @@ class LLMAbstractor(Abstractor):
 
 @AbstractorProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "abstractor")
     return LLMAbstractor(
         llm=LlmProducer.dep(config, default="echo"),
         feature_extractor=FeatureExtractorProducer.dep(config, default="keyword"),
@@ -672,6 +675,6 @@ def _build(config):
         min_group_size_portrait=config.get("abstractor_min_group_size_portrait", 5),
         max_groups_per_batch=config.get("abstractor_max_groups_per_batch", 4),
         max_context_tokens=config.get("abstractor_max_context_tokens", 180000),
-        retry_max_retries=config.get("abstractor_retry_max", 3),
+        max_attempts=config.get("abstractor_max_attempts", 3),
         retry_backoff_ms=config.get("abstractor_retry_backoff", 1000),
     )

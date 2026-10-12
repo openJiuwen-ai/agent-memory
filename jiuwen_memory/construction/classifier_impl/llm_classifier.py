@@ -25,7 +25,11 @@ from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_lo
 from jiuwen_memory.common.type_def import ChatMessage, LifecycleState, MemoryTier, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
-from jiuwen_memory.construction.common import parse_tags
+from jiuwen_memory.construction.common import (
+    parse_tags,
+    reject_deprecated_llm_attempt_keys,
+    validate_llm_attempt_policy,
+)
 
 logger = get_logger(__name__)
 
@@ -101,12 +105,13 @@ class LLMClassifier(Classifier):
     def __init__(
         self,
         llm: LLM,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         self._llm = llm
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts, retry_backoff_ms,
+        )
 
     @staticmethod
     def _strip_non_json(text: str) -> str:
@@ -208,22 +213,23 @@ class LLMClassifier(Classifier):
     def _call_llm_with_retry(self, messages: list) -> str:
         import time
 
-        last_exc = None
-        for attempt in range(self._retry_max_retries):
+        last_exc: Exception | None = None
+        for attempt in range(self._max_attempts):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=4096)
             except Exception as exc:
                 last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2 ** attempt) / 1000.0
-                    logger.warning(
-                        "LLMClassifier: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1, wait,
-                    )
-                    time.sleep(wait)
-        if last_exc is None:
-            raise RuntimeError("LLMClassifier: LLM 调用未执行（retry_max_retries 必须 >= 1）")
-        raise last_exc
+                if attempt == self._max_attempts - 1:
+                    break
+                wait = self._retry_backoff_ms * (2 ** attempt) / 1000.0
+                logger.warning(
+                    "LLMClassifier: LLM call failed (attempt %d), retrying in %.1fs",
+                    attempt + 1, wait,
+                )
+                time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("LLMClassifier: LLM call did not execute")
 
     def _parse_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON 数组（容错 markdown fence/单对象）。"""
@@ -256,8 +262,9 @@ class LLMClassifier(Classifier):
 
 @ClassifierProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "classifier")
     return LLMClassifier(
         llm=LlmProducer.dep(config, default="echo"),
-        retry_max_retries=config.get("classifier_retry_max", 3),
+        max_attempts=config.get("classifier_max_attempts", 3),
         retry_backoff_ms=config.get("classifier_retry_backoff", 1000),
     )

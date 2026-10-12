@@ -304,7 +304,7 @@ constructor:             # Producer.TOP_NAME
 | `target` | 实现类 | 功能 | 依赖与主要参数 |
 |---|---|---|---|
 | `keyword` | `KeywordExtractor` | 按 Chunker 切分原文，生成带血缘的 SEMANTIC 单元；procedural 时合并为一条过程记忆 | `chunker`，默认 `fixed_window` |
-| `llm` | `ExtractorImpl` | LLM 结构化抽取，校验来源、置信度、tier 和 tags | `llm`；`extractor_min_confidence`、`extractor_retry_max`、`extractor_retry_backoff`、`extract_batch_size` |
+| `llm` | `ExtractorImpl` | LLM 结构化抽取，校验来源、置信度、tier 和 tags | `llm`；`extractor_min_confidence`、`extractor_max_attempts`、`extractor_retry_backoff`、`extract_batch_size` |
 | `dynamic_llm` | `DynamicLLMExtractor` | 按 `_extract_prompt_<strategy>` 逐策略抽取；无策略时委托 fallback | `llm`、`fallback`、`prompts`；参数同 `llm` |
 | `video_memory` | `VideoMemoryExtractor` | 将视频规约结果转换为 CLM/ELM 多模态 MemoryUnit | 无配置依赖；输入需包含约定的视频 metadata |
 
@@ -317,7 +317,7 @@ constructor:             # Producer.TOP_NAME
 | `associator` | `keyword` | `KeywordAssociator` | 共享关键词数达到阈值时生成 `related` 关系 | `feature_extractor`；当前配置 builder 使用默认 `min_overlap=2` |
 | `associator` | `llm` | `LLMAssociator` | 向量、关键词、实体三层发现并可用 LLM 深度验证 | `llm`、`feature_extractor`、`embedder`；相似度、确认区间、批大小和重试参数 |
 | `classifier` | `keyword` | `KeywordClassifier` | 关键词启发式设置 tier 和主题标签 | 无 |
-| `classifier` | `llm` | `LLMClassifier` | 一次 LLM 调用批量生成 tier 与 tags | `llm`；`classifier_retry_max`、`classifier_retry_backoff` |
+| `classifier` | `llm` | `LLMClassifier` | 一次 LLM 调用批量生成 tier 与 tags | `llm`；`classifier_max_attempts`、`classifier_retry_backoff` |
 
 纯离线默认 LLM 为 `echo`，不具备真实结构化推理能力。若希望 `llm` Classifier/Extractor/Abstractor/Associator 产出有效结果，应配置能够满足其 JSON 契约的真实 LLM。
 
@@ -515,7 +515,7 @@ rebuild() -> None
 | 参数 | 类型 | 默认值 | 适用实现 | 作用/约束 |
 |---|---|---:|---|---|
 | `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` | 过滤低置信抽取候选 |
-| `extractor_retry_max` | `int` | `3` | `llm` / `dynamic_llm` | LLM 最大尝试次数，应大于等于 `1` |
+| `extractor_max_attempts` | `int` | `3` | `llm` / `dynamic_llm` | LLM 总调用次数；`1` 表示不重试 |
 | `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` | 重试退避，毫秒 |
 | `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` | 单次 LLM 抽取的原文条数上限 |
 | `abstractor_min_confidence` | `float` | `0.5` | `abstractor.llm` | 最低置信度 |
@@ -524,7 +524,7 @@ rebuild() -> None
 | `abstractor_min_group_size_portrait` | `int` | `5` | `abstractor.llm` | portrait 分组下限 |
 | `abstractor_max_groups_per_batch` | `int` | `4` | `abstractor.llm` | 单次 LLM 最大分组数 |
 | `abstractor_max_context_tokens` | `int` | `180000` | `abstractor.llm` | 上下文 token 预算 |
-| `abstractor_retry_max` | `int` | `3` | `abstractor.llm` | LLM 最大尝试次数 |
+| `abstractor_max_attempts` | `int` | `3` | `abstractor.llm` | LLM 总调用次数；`1` 表示不重试 |
 | `abstractor_retry_backoff` | `int` | `1000` | `abstractor.llm` | 重试退避，毫秒 |
 | `associator_similarity_threshold` | `float` | `0.7` | `associator.llm` | 向量候选相似度阈值 |
 | `associator_keyword_jaccard_threshold` | `float` | `0.3` | `associator.llm` | 关键词 Jaccard 阈值 |
@@ -536,9 +536,9 @@ rebuild() -> None
 | `associator_max_pairs_per_llm_call` | `int` | `10` | `associator.llm` | 单次 LLM 候选对上限 |
 | `associator_ann_threshold` | `int` | `50` | `associator.llm` | 切换 ANN 候选发现的数量阈值 |
 | `associator_max_units_per_associate` | `int` | `200` | `associator.llm` | 单次关联单元上限 |
-| `associator_retry_max` | `int` | `3` | `associator.llm` | LLM 最大尝试次数 |
+| `associator_max_attempts` | `int` | `3` | `associator.llm` | LLM 总调用次数；`1` 表示不重试 |
 | `associator_retry_backoff` | `int` | `1000` | `associator.llm` | 重试退避，毫秒 |
-| `classifier_retry_max` | `int` | `3` | `classifier.llm` | LLM 最大尝试次数 |
+| `classifier_max_attempts` | `int` | `3` | `classifier.llm` | LLM 总调用次数；`1` 表示不重试 |
 | `classifier_retry_backoff` | `int` | `1000` | `classifier.llm` | 重试退避，毫秒 |
 | `dedup_min_similarity` | `float` | `0.5` | 两种 Dedup | 最低相似度 |
 | `dedup_top_k` | `int` | `5` | 两种 Dedup | 候选上限 |
@@ -548,8 +548,10 @@ rebuild() -> None
 | `dedup_high_similarity` | `float` | `0.9` | 两种 Evolver | 高相似判定阈值，应不小于 medium |
 | `layer_annotator_threshold` | `int` | `512` | 两种 LayerAnnotator | 只标注 content 长度超过阈值的单元 |
 | `layer_annotator_l1_chars` | `int` | `200` | `layer_annotator.keyword` | L1 截取字符数 |
-| `layer_annotator_retry_max` | `int` | `3` | `layer_annotator.llm` | LLM 标注最大尝试次数 |
+| `layer_annotator_max_attempts` | `int` | `3` | `layer_annotator.llm` | LLM 标注总调用次数；`1` 表示不重试 |
 | `layer_annotator_retry_backoff` | `int` | `1000` | `layer_annotator.llm` | 重试退避，毫秒 |
+| `router_max_attempts` | `int` | `3` | `router.llm` | LLM 总调用次数 |
+| `router_retry_backoff` | `int` | `1000` | `router.llm` | 重试退避，毫秒 |
 | `layers_index_enabled` | `bool` | `true` | fulltext/vector/hybrid | 是否写入 L0/L1 独立索引 |
 | `entity_enabled` | `bool` | `false` | `hybrid` | 是否尝试装配 EntityStore |
 | `vector_enabled` | `bool` | `true` | Evolver builder | 决定未显式指定时的 IndexBuilder/Dedup 默认组合 |

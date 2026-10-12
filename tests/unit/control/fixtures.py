@@ -145,7 +145,7 @@ class SchemaWorld:
                             "params": {
                                 "schema_path": str(schema_path),
                                 "schema_validation_attempts": 1,
-                                "extractor_retry_max": 1,
+                                "extractor_max_attempts": 1,
                                 "extractor_retry_backoff": 0,
                             },
                         }

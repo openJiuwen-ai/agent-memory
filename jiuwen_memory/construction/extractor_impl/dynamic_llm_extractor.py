@@ -19,6 +19,7 @@ from jiuwen_memory.common.log import (
 from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
+from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from jiuwen_memory.construction.prompt_strategy import (
@@ -56,7 +57,7 @@ class DynamicLLMExtractor(Extractor):
         *,
         prompt_registry: PromptRegistry | None = None,
         min_confidence: float = 0.5,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
         extract_batch_size: int = _DEFAULT_EXTRACT_BATCH_SIZE,
     ) -> None:
@@ -66,7 +67,7 @@ class DynamicLLMExtractor(Extractor):
         self._helper = ExtractorImpl(
             llm=llm,
             min_confidence=min_confidence,
-            retry_max_retries=retry_max_retries,
+            max_attempts=max_attempts,
             retry_backoff_ms=retry_backoff_ms,
             extract_batch_size=extract_batch_size,
         )
@@ -194,6 +195,7 @@ class DynamicLLMExtractor(Extractor):
 @ExtractorProducer.register("dynamic_llm")
 def _build(config):
     """装配 DynamicLLMExtractor；PromptRegistry 挂接共享 ConfigSource 以支持 prompt 晚绑定。"""
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     prompts_data = config.get("prompts")
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
@@ -208,7 +210,7 @@ def _build(config):
         fallback=ExtractorProducer.dep(config, "fallback", default="keyword"),
         prompt_registry=registry,
         min_confidence=config.get("extractor_min_confidence", 0.5),
-        retry_max_retries=config.get("extractor_retry_max", 3),
+        max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
     )

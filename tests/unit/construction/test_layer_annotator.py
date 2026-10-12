@@ -122,7 +122,7 @@ def _llm_annotator(responses: list[str]) -> LLMLayerAnnotator:
     return LLMLayerAnnotator(
         llm=MockLLM(responses=responses),
         layers_threshold=50,
-        retry_max_retries=3,
+        max_attempts=3,
         retry_backoff_ms=1000,
     )
 
