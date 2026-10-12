@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -158,7 +158,7 @@ def test_update_request_decodes_complete_memory_patch() -> None:
     assert arguments["patch"] == MemoryPatch(
         content="updated",
         tier=MemoryTier.SEMANTIC,
-        t_valid=datetime(2026, 9, 4, tzinfo=timezone.utc),
+        t_valid=datetime(2026, 9, 4, tzinfo=UTC),
         mode=UpdateMode.OVERWRITE,
     )
 
@@ -220,7 +220,7 @@ def test_grant_request_decodes_nested_scopes_actions_and_datetime() -> None:
     assert grant.grantor == Scope(org="acme", user="owner")
     assert grant.grantee == Scope(org="acme", user="reader")
     assert grant.actions == frozenset({Action.READ, Action.WRITE})
-    assert grant.expires_at == datetime(2026, 10, 1, tzinfo=timezone.utc)
+    assert grant.expires_at == datetime(2026, 10, 1, tzinfo=UTC)
 
 
 def test_space_request_decodes_domain_objects_with_their_defaults() -> None:

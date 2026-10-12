@@ -72,6 +72,12 @@ class UnitOnlyStoreManager(StoreManager):
     def entity(self, name: str = "default") -> Any:
         self._unsupported(name, "entity")
 
+    def markdown(self, name: str = "default") -> Any:
+        self._unsupported(name, "markdown")
+
+    def shadow_index(self, name: str = "default") -> Any:
+        self._unsupported(name, "document_shadow")
+
     def health(self) -> None:
         return None
 
@@ -148,12 +154,27 @@ def test_base_named_ports_raise_unsupported_capability() -> None:
         (manager.fusion, "hybrid"),
         (manager.fs, "assets"),
         (manager.entity, "entities"),
+        (manager.markdown, "docs"),
+        (manager.shadow_index, "shadow"),
     ):
         with pytest.raises(UnsupportedStorageCapabilityError):
             port(name)
 
     with pytest.raises(UnsupportedStorageCapabilityError):
         manager.domain_store()
+
+
+def test_base_document_mode_defaults_are_safe_off() -> None:
+    """文档模式缺省契约：manager 未装配 markdown/shadow 端口时 has_markdown /
+    has_shadow_index 推导为 False——未装配文档真源分流的 manager 走非文档路径或得到
+    有语义的能力错误，而非 AttributeError（AGENTS.md 不变量 12 收口）。
+    """
+    manager = UnitOnlyStoreManager()
+
+    assert manager.has_markdown() is False
+    assert manager.has_shadow_index() is False
+    assert manager.has_markdown("docs") is False
+    assert manager.has_shadow_index("shadow") is False
 
 
 def test_domain_store_without_ports_serves_memory_units() -> None:

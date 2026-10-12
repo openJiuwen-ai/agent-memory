@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -18,7 +18,7 @@ from jiuwen_memory.retrieval.retriever_impl.predicate_builder import build_syste
 
 pytestmark = pytest.mark.unit
 
-NOW = datetime(2026, 6, 16, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 16, tzinfo=UTC)
 
 
 def test_current_query_emits_active_in() -> None:

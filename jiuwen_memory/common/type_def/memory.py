@@ -234,7 +234,25 @@ COORDS_KEY = "coords"
 TRANSIENT_SYSTEM_METADATA_KEYS = frozenset({ROUTE_CTX_KEY, COORDS_KEY})
 
 # 归属判定命中的类别名，落条目 system_metadata（见 KERNEL_SYSTEM_METADATA_KEYS 内的同名项）。
+# 文档记忆（F08）复用此值作 md 文件分流依据：memory_class → md 路径映射（F08 §3）。
+# 它是落盘键（不在 TRANSIENT_SYSTEM_METADATA_KEYS 内），dumps 保留，影子索引 unit_json
+# 反序列化后可读；md 写入与影子索引 insert_units 均从 unit.system_metadata 取此值。
 MEMORY_CLASS_KEY = "memory_class"
+
+# md 文件相对路径指针：文档记忆（F08）下 ``MarkdownStore.write`` 落盘后回填进
+# ``unit.system_metadata[MD_FILENAME_KEY]``（值如 ``memory/my_app/daily_memory/2026-08-29.md``），
+# 供影子索引 ``memory_unit.md_filename`` 列落库（F07 §11.2 / F08 §4 步骤4）。
+# 它是普通字符串键，不进瞬态集合——落盘进 unit_json 与表列两处冗余但无害：
+# 表列用于召回查询，unit_json 内的用于反序列化兜底。
+MD_FILENAME_KEY = "md_filename"
+
+# md 块标题：LLM 抽取时与 tier/tags 同一 prompt 一并产出（F08 §8），构建派生 unit 时写入
+# ``unit.system_metadata[MD_TITLE_KEY]``，``MarkdownStore.write`` 渲染标题行时读取——
+# daily 文件（team_memory/兜底类）不用它（用 coords.team 标识来源），其余 md 文件用它，
+# 缺失兜底 ``# {unit.id}``（infer=false 直写与看门狗重建路径无 LLM 标题）。
+# 与 MD_FILENAME_KEY 同类：内核写入的普通字符串键，不进瞬态集合（落 unit_json，召回物化可读），
+# 不进 KERNEL_SYSTEM_METADATA_KEYS（调用方写了也只是无害冗余，渲染有兜底，不构成伪造面）。
+MD_TITLE_KEY = "md_title"
 
 # ``system_metadata`` 里由内核写入并参与判定的键，调用方不得经该入参赋值。
 #

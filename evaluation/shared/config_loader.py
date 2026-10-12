@@ -15,7 +15,7 @@ import re
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
-def _sub_env(m: "re.Match[str]") -> str:
+def _sub_env(m: re.Match[str]) -> str:
     name, default = m.group(1), m.group(2)
     return os.environ.get(name, default if default is not None else "")
 
@@ -33,7 +33,7 @@ def expand_env(obj):
 
 def load_layer(path: str) -> dict:
     """读一层配置文件：``.yml/.yaml`` 走 YAML，其余按 JSON；读后做环境变量展开。"""
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         text = fh.read()
     if path.endswith((".yml", ".yaml")):
         import yaml  # 部署镜像已装 PyYAML（见 pyproject 的 deploy extra）

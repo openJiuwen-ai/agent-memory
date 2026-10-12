@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, List
+from typing import Any
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log
@@ -40,6 +40,15 @@ _ROUTE_BATCH_SIZE = 10
 _SYSTEM_PROMPT = """\
 You assign each memory below to exactly one ownership class, and answer one yes/no question \
 per narrowing dimension.
+
+OWNERSHIP COORDINATES: {coords}
+
+These are the concrete entities (user / project / team) the current interaction belongs to. \
+Use them to decide ownership: a memory stating a fact or decision ABOUT the named project is \
+project_memory (even if the user said it); a memory stating a fact, preference or habit ABOUT \
+the user is user_memory; a memory about how the named team collaborates is team_memory. The \
+narrowing dimensions are secondary — decide the class first from ownership, then answer the \
+narrow questions. When no class clearly fits, use the class marked FALLBACK.
 
 Output ONLY a JSON array. No explanation, no markdown fences. One entry per input memory, in \
 the SAME order as input. Each entry:
@@ -103,7 +112,7 @@ class LLMRouter(Router):
 
             raise HealthCheckError(str(exc)) from exc
 
-    def route(self, units: List[MemoryUnit], ctx: RouteContext) -> List[RouteDecision]:
+    def route(self, units: list[MemoryUnit], ctx: RouteContext) -> list[RouteDecision]:
         if not units:
             return []
         decisions: list[RouteDecision] = []
@@ -114,8 +123,8 @@ class LLMRouter(Router):
         return decisions
 
     def _route_batch(
-        self, units: List[MemoryUnit], ctx: RouteContext
-    ) -> List[RouteDecision]:
+        self, units: list[MemoryUnit], ctx: RouteContext
+    ) -> list[RouteDecision]:
         messages = [
             ChatMessage(role="system", content=self._system_prompt(ctx)),
             ChatMessage(
@@ -178,7 +187,7 @@ class LLMRouter(Router):
         return results
 
     @staticmethod
-    def _ids_unusable(units: List[MemoryUnit]) -> bool:
+    def _ids_unusable(units: list[MemoryUnit]) -> bool:
         """id 是否不足以比对：任一条为空，或存在重复。"""
         ids = [unit.id for unit in units]
         return not all(ids) or len(set(ids)) != len(ids)
@@ -199,7 +208,8 @@ class LLMRouter(Router):
             )
             for dim in ctx.narrow_dims
         ) or "- (none)"
-        return _SYSTEM_PROMPT.format(classes=classes, dims=dims)
+        coords = ", ".join(f"{k}={v}" for k, v in ctx.coords.items()) or "(none)"
+        return _SYSTEM_PROMPT.format(classes=classes, dims=dims, coords=coords)
 
     def _call_llm_with_retry(self, messages: list) -> str:
         last_exc: Exception | None = None

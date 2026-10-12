@@ -1,7 +1,8 @@
 """中期记忆 mem2.0 端到端集成测试——Engine + AsyncTimerScheduler + MiddleToLongJob 联调。
 
 覆盖设计文档 §8.3 核心场景：
-1. write(infer=true, middle=true) → 原文落盘 + tier=WORKING + index 立即可检索 + submit MiddleToLongJob；
+1. write(infer=true, middle=true) → 原文落盘 + tier=WORKING + index 立即可检索
+   + submit MiddleToLongJob；
 2. Timer 触发 → MiddleToLongJob.run → evolver.evolve → 原文 ARCHIVED + index.remove；
 3. 候选转完后 Timer 退出 → _wheels 移除该 scope → 长生命 job_id 标 SUCCEEDED；
 4. 下次 write 重启 Timer（scope 已退出后再次 write(middle=true) → 重新起 Timer 协程）；
@@ -132,7 +133,8 @@ class _KvBackedLifecycle(LifecycleManager):
     """真实落 KV 的 LifecycleManager——transition 把 lifecycle 字段写回 KV。
 
     真实 KVBasedLifecycleManager 行为：transition(scope, ids, target) 从 KV 读 unit、
-    改 lifecycle、写回 KV。本替身简化为只改 lifecycle 字段，不重索引（由 IndexBuilder.remove 负责）。
+    改 lifecycle、写回 KV。本替身简化为只改 lifecycle 字段，
+    不重索引（由 IndexBuilder.remove 负责）。
     """
 
     def __init__(self, kv: InMemoryKVStore) -> None:
@@ -171,7 +173,9 @@ def _build_engine(
     *,
     evolver=None,
     middle_concurrency: int = 1,
-) -> tuple[InMemoryEngine, AsyncTimerScheduler, _RecordingIndex, InMemoryKVStore, _KvBackedLifecycle]:
+) -> tuple[
+    InMemoryEngine, AsyncTimerScheduler, _RecordingIndex, InMemoryKVStore, _KvBackedLifecycle
+]:
     """构造最小可测 Engine + AsyncTimerScheduler（短 tick_interval=1）。
 
     mem2.0 重构后：llm 与 middle_* 业务参数经 JobFactory 固化到
@@ -251,7 +255,7 @@ def test_e2e_write_middle_persists_originals_and_submits_job() -> None:
         assert wheel.task is not None and not wheel.task.done()
         return units
 
-    units = asyncio.run(_run())
+    asyncio.run(_run())
 
 
 # ---- 场景 2：Timer 触发 → 转长期 → 原文 ARCHIVED + index.remove ----
@@ -297,7 +301,6 @@ def test_e2e_timer_exits_when_no_candidates_left() -> None:
     """场景 3：候选转完后再次 tick 返回 is_done=true → Timer 退出 + _wheels 移除 scope。"""
     engine, scheduler, index, kv, _ = _build_engine()
     scope = Scope(org="acme", user="u1")
-    scope_key = scheduler._scope_key(scope)  # pylint: disable=protected-access
     jid_holder: dict[str, str] = {}
 
     async def _run():

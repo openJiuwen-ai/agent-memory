@@ -54,8 +54,16 @@ class Server:
     def api(self):
         return self._runtime.api
 
+    async def start_background(self) -> None:
+        """异步面宿主调用：起看门狗等后台组件（绑当前 loop，F07 §12.10）。"""
+        await self._runtime.start_background()
+
+    def start(self) -> None:
+        """同步面宿主调用：daemon 线程自持 loop 起后台组件（F07 §12.10）。"""
+        self._runtime.start()
+
     @classmethod
-    def build(cls, config: Config, spaces: Any = None) -> "Server":
+    def build(cls, config: Config, spaces: Any = None) -> Server:
         """Assemble a runtime from ``config`` and return a ``cls`` instance.
 
         ``config.settings`` 是合并后的完整配置字典，含 profiles 层自有的 ``profile`` /
@@ -97,6 +105,20 @@ class Server:
     def close(self, *, wait: bool = True) -> None:
         """Release the Control-owned ingest worker pool."""
         self._runtime.close(wait=wait)
+
+    def restore_dreaming(self) -> None:
+        """重启恢复注册态 dreaming 任务（F04 D8）——**长命 surface** 启动时调用。
+
+        短命进程（CLI 命令、一次性脚本）不得调用：恢复会取实例锁并把注册表
+        全部任务装配进本进程调度器，短命进程退出等于全部定时任务停摆（锁靠
+        owner 匹配释放，但任务已死）。锁被他人持有（未过期）时
+        :class:`RuntimeError` 直接 fail fast——单实例部署模型下这是部署错误。
+        ``restore_dreaming`` 不属于 MemoryAPI 公共契约（任意主体可触发的恢复
+        会把部署模型决定权让渡给调用方），经 getattr 探测。
+        """
+        restore = getattr(self.api, "restore_dreaming", None)
+        if callable(restore):
+            restore()
 
 
 def default_spaces() -> dict[str, Any]:

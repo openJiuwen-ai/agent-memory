@@ -21,7 +21,7 @@
 | `security.py` | StorageSecurity 通用授权与 StoreSecurity 数据保护能力标识 |
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
-| `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 两件——`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤）与 `list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
+| `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 三件——`load_memory_unit(raw, scope, key)` 解码隔离（坏字节记 warning 后返 `None`），`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤），`list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
 | `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
@@ -60,6 +60,7 @@
 
 1. **scope 原生隔离**  
    `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。`org/space/user/agent/session` 五段 scope 必须参与命名空间或过滤；空 `space` 只匹配空 space 兼容域。隔离必须在存储层强制，上层不依赖调用纪律。
+   **文档影子索引（F08）已同构落地**：`memory_unit` 表加 org/space/user/agent/session 五列，scope 入参拼 WHERE AND 等值下推（对齐 KV 五段等值），与 project（收窄维 `IN ['', value]`）隔离正交。`list_units_by_md`（看门狗跨 scope 诊断）/`delete_units`（幂等按 unit_id）例外不限 scope。
    **唯一例外是 ENTITY 端口**：`EntityStore` 四方法以 `space_id: str`（`space_id_from_scope` 的算值，走后端 routing）+ `EntityStoreFilters.actor_id` 承担隔离——entity 索引的隔离维度与 Scope 五段模型不同构（agent/session 不作隔离维度，实体是 user 级知识）。隔离仍在存储层强制，只是维度表达不同；该端口的授权由 `_AuthorizedEntityStoreProxy` 适配。
 
 2. **记录 id 在 scope 内唯一**
@@ -187,6 +188,11 @@
     漏写引用键 → 该能力静默消失」的陷阱（配置合并是实例级整体覆盖，部署一旦覆写
     `store_manager.default.params` 就得全量抄写其全部键）。代价：manager params 里 inline
     声明 Store（`kv_store: {target: ...}`）的写法失效，后端一律经命名空间声明。
+    文档模式（F07）的 markdown / shadow 端口同此范式（`has_markdown(name)` / `markdown(name)` /
+    `has_shadow_index(name)` / `shadow_index(name)`），均为 `StoreManager` ABC 契约方法带缺省
+    实现——未装配文档端口时 `has_*` 返 False、端口方法抛
+    `UnsupportedStorageCapabilityError`；数据面的 `should_write_document()` 是
+    `CompositeDomainStore` 实例属性（装配期经 `document_flag` 归一固化），非 manager 契约。
 13. 连接型后端须支持 ConfigSource 晚绑定（S08 / F01 §2.1.4）：在取客户端/连接路径
     `fetch` 对应 key，值变化则重建连接（同实现换 Redis URL / db_path 走此路径，不必多实例）。
     异质 Store 级 `*.active` 切换由 `config.routing.Routing*Store` 承担（F01）；

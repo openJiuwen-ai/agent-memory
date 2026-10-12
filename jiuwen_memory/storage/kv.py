@@ -15,12 +15,15 @@ from abc import abstractmethod
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, Scope
+from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
+from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, MemoryUnit, Scope
 from jiuwen_memory.common.type_def.memory import memory_key
 from jiuwen_memory.common.type_def.memory_codec import loads
 
 from .base import BaseStore
 from .types import KVMemoryListResult
+
+logger = get_logger(__name__)
 
 
 class KvProducer(Factory):
@@ -101,6 +104,21 @@ class KVStore(BaseStore):
 # 共享读 helper（点读 load_units / 列表读 list_units）
 # ---------------------------------------------------------------------------
 
+def load_memory_unit(raw: bytes, *, scope: Scope, key: str) -> MemoryUnit | None:
+    """反序列化一条 MemoryUnit；字节级损坏时隔离该记录并保留定位日志。"""
+    try:
+        return loads(raw)
+    except UnicodeDecodeError as exc:
+        unit_id = key.removeprefix(MEMORY_KEY_PREFIX)
+        logger.warning(
+            "MemoryUnit decode failed; skipped record scope=%s unit_id=%s bytes=%d error=%s",
+            scope_for_log(scope),
+            metadata_for_log({"unit_id": unit_id}, visible_memory_unit_ids={unit_id}),
+            len(raw),
+            type(exc).__name__,
+        )
+        return None
+
 
 def list_units(
     kv: KVStore,
@@ -129,8 +147,8 @@ def list_units(
         extensions=extensions,
     )
     items: list[MemoryUnit] = []
-    for _, raw in result.entries:
-        unit = loads(raw)
+    for key, raw in result.entries:
+        unit = load_memory_unit(raw, scope=scope, key=key)
         if unit is not None:
             items.append(unit)
     return items, result.count
@@ -157,7 +175,7 @@ def load_units(kv: KVStore, scope: Scope, unit_ids: list[str]) -> list[MemoryUni
             raw = kv.get(scope, memory_key(unit_id))
         except NotFoundError:
             continue
-        unit = loads(raw)
+        unit = load_memory_unit(raw, scope=scope, key=memory_key(unit_id))
         if unit is not None:
             units.append(unit)
     return units

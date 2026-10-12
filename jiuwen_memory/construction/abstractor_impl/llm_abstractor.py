@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
@@ -627,7 +627,7 @@ class LLMAbstractor(Abstractor):
                 source_ref=primary_source.id,
                 temporal=Temporal(
                     t_event=primary_source.temporal.t_event,
-                    t_ingest=datetime.now(timezone.utc),
+                    t_ingest=datetime.now(UTC),
                     t_message=primary_source.temporal.t_message,
                 ),
                 provenance=valid_source_ids,
