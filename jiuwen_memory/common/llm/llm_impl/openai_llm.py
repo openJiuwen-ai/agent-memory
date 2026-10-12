@@ -90,7 +90,7 @@ class OpenAILLM(LLM):
         self._client_fingerprint: tuple[str, str | None, bool, str | None] | None = None
 
     @property
-    def client(self) -> "openai.OpenAI":
+    def client(self) -> openai.OpenAI:
         """
         惰性创建 OpenAI 客户端：装配期不连、不校验凭证——缺 key 也能装配成功，
         只有真正 chat/health 时才要求凭证（与存储后端惰性连接的约定一致）。

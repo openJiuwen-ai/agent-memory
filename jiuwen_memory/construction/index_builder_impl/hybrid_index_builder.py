@@ -74,7 +74,9 @@ class HybridIndexBuilder(IndexBuilder):
             layers_enabled=layers_enabled,
         )
         # entity 子 builder：None 表示不建实体索引（entity_enabled=False 或未注入 linker）
-        self._entity_builder = EntityIndexBuilder(entity_linker) if entity_linker is not None else None
+        self._entity_builder = (
+            EntityIndexBuilder(entity_linker) if entity_linker is not None else None
+        )
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER

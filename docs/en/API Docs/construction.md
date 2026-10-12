@@ -346,7 +346,7 @@ required. In HTTP/deployment configuration, these sections are nested under `mem
 | `target` | Implementation | Function | Dependencies and primary parameters |
 |---|---|---|---|
 | `keyword` | `KeywordExtractor` | Splits source text with a Chunker and produces SEMANTIC units with lineage; combines procedural content into one procedural memory | `chunker`, default `fixed_window` |
-| `llm` | `ExtractorImpl` | Performs structured LLM extraction and validates source, confidence, tier, and tags | `llm`; `extractor_min_confidence`, `extractor_retry_max`, `extractor_retry_backoff`, `extract_batch_size` |
+| `llm` | `ExtractorImpl` | Performs structured LLM extraction and validates source, confidence, tier, and tags | `llm`; `extractor_min_confidence`, `extractor_max_attempts`, `extractor_retry_backoff`, `extract_batch_size` |
 | `dynamic_llm` | `DynamicLLMExtractor` | Extracts once per `_extract_prompt_<strategy>`; delegates to fallback when no strategy is present | `llm`, `fallback`, `prompts`; same parameters as `llm` |
 | `video_memory` | `VideoMemoryExtractor` | Converts video normalization results into CLM/ELM multimodal MemoryUnit objects | No configuration dependency; input must contain the expected video metadata |
 
@@ -359,7 +359,7 @@ required. In HTTP/deployment configuration, these sections are nested under `mem
 | `associator` | `keyword` | `KeywordAssociator` | Produces a `related` relation when the number of shared keywords reaches a threshold | `feature_extractor`; the current builder uses default `min_overlap=2` |
 | `associator` | `llm` | `LLMAssociator` | Uses vector, keyword, and entity discovery with optional deep LLM verification | `llm`, `feature_extractor`, `embedder`; similarity, confirmation-range, batch-size, and retry parameters |
 | `classifier` | `keyword` | `KeywordClassifier` | Sets tier and topic tags using keyword heuristics | None |
-| `classifier` | `llm` | `LLMClassifier` | Produces tier and tags for a batch in one LLM call | `llm`; `classifier_retry_max`, `classifier_retry_backoff` |
+| `classifier` | `llm` | `LLMClassifier` | Produces tier and tags for a batch in one LLM call | `llm`; `classifier_max_attempts`, `classifier_retry_backoff` |
 
 The pure offline default LLM is `echo`, which does not perform genuine structured reasoning. To
 obtain meaningful results from the `llm` Classifier, Extractor, Abstractor, or Associator, configure
@@ -570,7 +570,7 @@ Producer rules above.
 | Parameter | Type | Default | Applicable implementation | Purpose/constraint |
 |---|---|---:|---|---|
 | `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` | Filters low-confidence extraction candidates |
-| `extractor_retry_max` | `int` | `3` | `llm` / `dynamic_llm` | Maximum LLM attempts; must be at least `1` |
+| `extractor_max_attempts` | `int` | `3` | `llm` / `dynamic_llm` | Total LLM call attempts; `1` means no retry |
 | `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` | Retry backoff in milliseconds |
 | `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` | Maximum source units per LLM extraction call |
 | `abstractor_min_confidence` | `float` | `0.5` | `abstractor.llm` | Minimum confidence |
@@ -579,7 +579,7 @@ Producer rules above.
 | `abstractor_min_group_size_portrait` | `int` | `5` | `abstractor.llm` | Minimum portrait group size |
 | `abstractor_max_groups_per_batch` | `int` | `4` | `abstractor.llm` | Maximum groups per LLM call |
 | `abstractor_max_context_tokens` | `int` | `180000` | `abstractor.llm` | Context-token budget |
-| `abstractor_retry_max` | `int` | `3` | `abstractor.llm` | Maximum LLM attempts |
+| `abstractor_max_attempts` | `int` | `3` | `abstractor.llm` | Total LLM call attempts; `1` means no retry |
 | `abstractor_retry_backoff` | `int` | `1000` | `abstractor.llm` | Retry backoff in milliseconds |
 | `associator_similarity_threshold` | `float` | `0.7` | `associator.llm` | Vector-candidate similarity threshold |
 | `associator_keyword_jaccard_threshold` | `float` | `0.3` | `associator.llm` | Keyword Jaccard threshold |
@@ -591,9 +591,9 @@ Producer rules above.
 | `associator_max_pairs_per_llm_call` | `int` | `10` | `associator.llm` | Maximum candidate pairs per LLM call |
 | `associator_ann_threshold` | `int` | `50` | `associator.llm` | Unit-count threshold for switching to ANN discovery |
 | `associator_max_units_per_associate` | `int` | `200` | `associator.llm` | Maximum units per association call |
-| `associator_retry_max` | `int` | `3` | `associator.llm` | Maximum LLM attempts |
+| `associator_max_attempts` | `int` | `3` | `associator.llm` | Total LLM call attempts; `1` means no retry |
 | `associator_retry_backoff` | `int` | `1000` | `associator.llm` | Retry backoff in milliseconds |
-| `classifier_retry_max` | `int` | `3` | `classifier.llm` | Maximum LLM attempts |
+| `classifier_max_attempts` | `int` | `3` | `classifier.llm` | Total LLM call attempts; `1` means no retry |
 | `classifier_retry_backoff` | `int` | `1000` | `classifier.llm` | Retry backoff in milliseconds |
 | `dedup_min_similarity` | `float` | `0.5` | Both Dedup implementations | Minimum similarity |
 | `dedup_top_k` | `int` | `5` | Both Dedup implementations | Candidate limit |
@@ -603,8 +603,10 @@ Producer rules above.
 | `dedup_high_similarity` | `float` | `0.9` | Both Evolvers | High-similarity threshold; must not be below medium |
 | `layer_annotator_threshold` | `int` | `512` | Both LayerAnnotators | Annotates only units whose content length exceeds this threshold |
 | `layer_annotator_l1_chars` | `int` | `200` | `layer_annotator.keyword` | Number of characters retained for L1 |
-| `layer_annotator_retry_max` | `int` | `3` | `layer_annotator.llm` | Maximum LLM annotation attempts |
+| `layer_annotator_max_attempts` | `int` | `3` | `layer_annotator.llm` | Total LLM annotation calls; `1` means no retry |
 | `layer_annotator_retry_backoff` | `int` | `1000` | `layer_annotator.llm` | Retry backoff in milliseconds |
+| `router_max_attempts` | `int` | `3` | `router.llm` | Total LLM call attempts |
+| `router_retry_backoff` | `int` | `1000` | `router.llm` | Retry backoff in milliseconds |
 | `layers_index_enabled` | `bool` | `true` | fulltext/vector/hybrid | Writes independent L0/L1 indexes when enabled |
 | `entity_enabled` | `bool` | `false` | `hybrid` | Attempts to assemble EntityStore when enabled |
 | `vector_enabled` | `bool` | `true` | Evolver builder | Selects the default IndexBuilder/Dedup combination when targets are not explicit |

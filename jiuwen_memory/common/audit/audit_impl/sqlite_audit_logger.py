@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
-from typing import Iterable, NamedTuple
+from typing import NamedTuple
 
 from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
 from jiuwen_memory.common.type_def import AuditEvent, Scope

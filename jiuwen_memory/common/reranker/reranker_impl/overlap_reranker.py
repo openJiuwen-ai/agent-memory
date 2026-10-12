@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
 from jiuwen_memory.common.tokenizer import Tokenizer
@@ -28,11 +26,11 @@ class OverlapReranker(Reranker):
     def health(self) -> None:
         return None
 
-    def rerank(self, query: str, texts: List[str]) -> List[float]:
+    def rerank(self, query: str, texts: list[str]) -> list[float]:
         q = set(self._tokenizer.tokenize(query))
         if not q:
             return [0.0 for _ in texts]
-        scores: List[float] = []
+        scores: list[float] = []
         for text in texts:
             toks = self._tokenizer.tokenize(text)
             hits = sum(1 for t in toks if t in q)

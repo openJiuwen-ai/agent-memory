@@ -14,9 +14,9 @@ Job 封装"做什么 + 怎么找数据 + 怎么调 evolver + 怎么后处理"，
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope

@@ -20,10 +20,11 @@ scope 之外的额外谓词；:func:`validate` 会拒绝 scope 字段混入。
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from math import isfinite
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 
