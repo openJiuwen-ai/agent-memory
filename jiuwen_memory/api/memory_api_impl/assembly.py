@@ -27,16 +27,30 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from jiuwen_memory.common._support import as_bool
-from jiuwen_memory.common.audit.base import AuditProducer
+from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
+from jiuwen_memory.common.audit.protected_audit_logger import ProtectedAuditLogger
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import setup_logging
+from jiuwen_memory.common.log import get_logger, setup_logging
 from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
     DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
     AuditVerificationLimits,
 )
+from jiuwen_memory.common.security.audit_integrity.chain_store import ChainedAuditStore
+from jiuwen_memory.common.security.authentication.credential_registry import (
+    CredentialStatusRegistry,
+)
+from jiuwen_memory.common.security.authorization.base import (
+    AuthorizationProducer,
+    Authorizer,
+)
+from jiuwen_memory.common.security.protection.workload_guard import (
+    WorkloadGuard,
+    WorkloadGuardProducer,
+)
+from jiuwen_memory.common.security.runtime import SecurityRuntime
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl import register_config_sources
@@ -49,7 +63,7 @@ from jiuwen_memory.control.engine import EngineProducer
 from jiuwen_memory.control.governance import GovernorProducer
 from jiuwen_memory.control.ingest_job import IngestJobController, IngestJobProducer
 from jiuwen_memory.control.membership import MembershipProducer
-from jiuwen_memory.control.permission import PermissionProducer
+from jiuwen_memory.control.permission import PermissionManager, PermissionProducer
 from jiuwen_memory.control.policy import PolicyProducer
 from jiuwen_memory.control.scheduler import SchedulerProducer
 from jiuwen_memory.control.space import SpaceManager, SpaceProducer
@@ -63,8 +77,11 @@ from jiuwen_memory.storage.store_manager import (
     resolve_name,
 )
 
+from ..access_security import _build_security_runtime
 from ..memory_api import MemoryAPI
 from .local_memory_api import LocalMemoryAPI
+
+logger = get_logger(__name__)
 
 _SCHEMA_TARGETS = frozenset(
     {
@@ -98,6 +115,8 @@ class _Kernel:
         storage: 上层统一使用的 StoreManager（默认 CompositeStoreManager；数据面
             领域操作经 ``storage.domain_store()``；配置段名 ``store_manager:``）
         space: SpaceManager（若装配）
+        audit: 装配好的审计器；供 surface 记录发生在 API 外的认证事件。启用审计
+            完整性时是 :class:`ProtectedAuditLogger`（入口事件与 API 业务事件同链）
         config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
     """
 
@@ -106,7 +125,9 @@ class _Kernel:
     storage: StoreManager
     ingest_jobs: IngestJobController
     space: SpaceManager | None = None
+    audit: AuditLogger | None = None
     config_source: ConfigSource | None = None
+    security_runtime: SecurityRuntime | None = None
 
 
 @runtime_checkable
@@ -115,9 +136,11 @@ class MemoryRuntime(Protocol):
 
     @property
     def api(self) -> MemoryAPI:
+        """返回运行时的公共 API。"""
         ...
 
     def close(self, *, wait: bool = True) -> None:
+        """释放运行时持有的资源。"""
         ...
 
 
@@ -125,9 +148,13 @@ class MemoryRuntime(Protocol):
 class _MemoryRuntime:
     api: MemoryAPI
     _ingest_jobs: IngestJobController
+    _audit: AuditLogger | None = None
+    _security_runtime: SecurityRuntime | None = None
 
     def close(self, *, wait: bool = True) -> None:
         self._ingest_jobs.close(wait=wait)
+        if self._security_runtime is not None:
+            self._security_runtime.close()
 
 
 def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:
@@ -137,19 +164,18 @@ def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:
     if isinstance(config, Mapping):
         return Config.from_dict(config)
     raise TypeError(
-        "assemble config must be Config, mapping, or None, "
-        f"got {type(config).__name__}"
+        f"assemble config must be Config, mapping, or None, got {type(config).__name__}"
     )
 
 
 def _register_all() -> None:
     """组装前按层触发自注册（句柄在接口、注册靠 import 实现；各 bootstrap 幂等）。"""
-    register_plugins()       # common 共享插件
-    register_backends()      # storage
-    register_operators()     # retrieval
-    register_ingestors()     # ingest
+    register_plugins()  # common 共享插件
+    register_backends()  # storage
+    register_operators()  # retrieval
+    register_ingestors()  # ingest
     register_constructors()  # construction
-    register_controllers()   # control
+    register_controllers()  # control
     register_config_sources()  # ConfigSource：yaml_defaults / dict / overlay
 
 
@@ -182,6 +208,23 @@ def _audit_verify_limits(root: ComponentConfig) -> AuditVerificationLimits:
         raise ValidationError(f"invalid audit verification limits: {exc}") from None
 
 
+def _audit_verify_guard(ctx: AssemblyContext) -> WorkloadGuard:
+    """verify_audit 的专用 WorkloadGuard 预算（F05 §Protection §WorkloadGuard）。
+
+    引用名经 ``security.<name>.params.audit_verify_guard`` 指向 workload_guard 命名
+    空间下的具名实例；未配置时匿名新建 semaphore（与 Runtime 其余 guard 的保守默认
+    一致）。不与请求路径的 security_budget 共享预算——审计全量验证是重操作，与认证
+    风暴互挤槽位会让一边饿死另一边（F05 §WorkloadGuard：审计验证必须使用专用实例）。
+    """
+    names = sorted(ctx.namespaces.get("security", {}))
+    if not names:
+        return WorkloadGuardProducer.build("semaphore", {}, ctx)
+    name = "default" if "default" in names else names[0]
+    spec = ctx.namespaces["security"][name]
+    config = ComponentConfig(params=dict(spec.params), ctx=ctx, target=spec.target, name=name)
+    return WorkloadGuardProducer.dep(config, "audit_verify_guard", default="semaphore")
+
+
 def _build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
@@ -196,12 +239,6 @@ def _build_kernel(
     - ``kv``：显式注入真源后端，覆盖配置的 kv_store 选择（如传 ``SQLiteKVStore`` 即落盘）。
     """
     config = _coerce_config(config)
-    if config is not None and not config.is_empty():
-        requested = config.context()
-        if "audit_integrity" in requested.namespaces:
-            raise ValidationError(
-                "audit_integrity is interface-only: no implementation target is registered"
-            )
     _register_all()
     Factory.reset_all()  # 每次组装前清空具名实例缓存以隔离多次装配
 
@@ -228,6 +265,9 @@ def _build_kernel(
     # 根组件（LocalMemoryAPI）经 ROOT_PARAMS 引用各命名空间下的 default 实例。
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
+
+    # API 业务审计与 surface 入口审计必须共用同一个具名实例。
+    audit_logger = AuditProducer.dep(root, default="sqlite")
 
     # ConfigSource 须先于 engine/evolver 装配，供 PromptRegistry / 插件晚绑定共享。
     config_source = ConfigSourceProducer.dep(root, default="yaml_defaults")
@@ -256,13 +296,25 @@ def _build_kernel(
         )
     space = SpaceProducer.dep(root, default="kv")
 
+    authorizer = AuthorizationProducer.dep(root, default="standard")
+    if not isinstance(authorizer, Authorizer):
+        raise ValidationError(
+            f"authorizer namespace assembled a non-Authorizer value: {type(authorizer).__name__}"
+        )
+    _reject_test_only_authorizer(authorizer, config)
+
+    # 在同一装配纪元建立 Registry，随后从实际认证器绑定签发真源；SDK 与 Server 同路。
+    credential_registry = CredentialStatusRegistry()
+    engine = EngineProducer.dep(root, default="in_memory")
+    permission = PermissionProducer.dep(root, default="sqlite")
+
     api = LocalMemoryAPI(
-        engine=EngineProducer.dep(root, default="in_memory"),
-        permission=PermissionProducer.dep(root, default="sqlite"),
+        engine=engine,
+        permission=permission,
         scheduler=SchedulerProducer.dep(root, default="in_process"),
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
-        audit_logger=AuditProducer.dep(root, default="sqlite"),
+        audit_logger=audit_logger,
         space=space,
         ingest_jobs=ingest_jobs,
         # 单次扫描量/返回样本量是可信服务端配置，不从请求 payload 读取。即使完整性
@@ -284,15 +336,78 @@ def _build_kernel(
         # 表算，两者错位。判定表不另设解析路径的理由见 F07「归属判定算子」，那一条约束的
         # 是同一实例内不出现两份表，跨实例的一致由本处的配置写法决定。
         router=optional_router(root),
+        authorizer=authorizer,
+        credential_registry=credential_registry,
     )
     _reject_routing_without_space_authorization(api)
+    _warn_inert_permission_namespace(permission, api, config)
+    security_runtime = _build_security_runtime(ctx)
+    if security_runtime is not None:
+        if security_runtime.authorizer is not authorizer:
+            raise ValidationError("security Runtime 与内核 PEP 的 authorizer 必须是同一实例")
+        # 同包装配接缝；不为初始化凭据真源扩充冻结的 MemoryAPI。
+        api._bind_credential_sources(security_runtime.authenticator)  # pylint: disable=protected-access
+
+    # 审计完整性接线（计划 §8.2 阶段 C）：仅当显式配置并经 security 段引用时启用。
+    # Runtime 在 API 之后装配（其 authorizer 复用内核具名实例），故这里经内部接缝把
+    # 已按普通审计装配的 API 切换到受保护审计：provider 先做对象 identity 校验，
+    # ProtectedAuditLogger 包装后注入 PEP 与 Kernel.audit（surface 入口事件同链）。
+    audit_integrity_provider = (
+        security_runtime.audit_integrity_provider if security_runtime is not None else None
+    )
+    # 以实际 provider 为准接线（PR3-06）：security.params.audit_integrity 支持 Factory
+    # 内联组件写法，此时顶层具名段不存在但 provider 已构建；只看顶层段会把这类配置
+    # 静默降级回普通审计。仍保留 fail-closed：配了顶层段却没有 Runtime 引用时拒绝启动。
+    if audit_integrity_provider is not None:
+        if not isinstance(audit_logger, ChainedAuditStore):
+            raise ValidationError(
+                "audit_integrity 要求 audit 后端同时实现 ChainedAuditStore；"
+                f"得到 {type(audit_logger).__name__}"
+            )
+        # §8.2 不变量 3：provider 的 store 与 audit_logger 必须是同一具名实例。
+        # chained_hmac._build 经 AuditProducer.dep(config, "audit") 取具名 audit 实例，
+        # Factory 类级缓存保证命中同一对象——这里用对象 identity 复核，不靠配置假定。
+        if audit_integrity_provider.chain_store() is not audit_logger:
+            raise ValidationError(
+                "audit integrity provider 与 AuditLogger 必须使用同一具名后端实例"
+                "（audit_integrity.params.audit 应引用 audit 命名空间下的同一实例名）"
+            )
+        audit_logger = ProtectedAuditLogger(audit_integrity_provider, audit_logger)
+        api._install_audit_integrity(  # pylint: disable=protected-access
+            audit_logger,
+            audit_integrity_provider,
+            _audit_verify_guard(ctx),
+        )
+    elif "audit_integrity" in (ctx.namespaces or {}):
+        raise ValidationError(
+            "配置了 audit_integrity 段，但没有 SecurityRuntime 引用它。审计完整性"
+            "必须经 security 段的 params.audit_integrity 显式启用（不配该段 = 普通审计）；"
+            "只配 audit_integrity 而不接线，部署会以为已启用链式证明，实际仍是普通审计。"
+        )
     return _Kernel(
         api=api,
         kv=kv_store,
         storage=storage,
         ingest_jobs=ingest_jobs,
         space=space,
+        audit=audit_logger,
         config_source=config_source,
+        security_runtime=security_runtime,
+    )
+
+
+def _reject_test_only_authorizer(authorizer: Authorizer, config: Config | None) -> None:
+    """Reject a test-only PDP from an explicitly secured production assembly."""
+    if not authorizer.is_test_only():
+        return
+    if config is None or config.is_empty():
+        return
+    if not config.context(known_top_names=Factory.known_top_names()).namespaces.get("security"):
+        return
+    raise ValidationError(
+        "配置了 security 段（生产装配）但 authorizer 是仅限测试的恒放行实现。"
+        "请把 authorizer.default.target 配成 standard（或 routing）并配齐 grant_store "
+        "与 delegation_store。"
     )
 
 
@@ -310,9 +425,45 @@ def _reject_routing_without_space_authorization(api: LocalMemoryAPI) -> None:
         return
     raise ValidationError(
         "配置了 router 判定表但未开启空间治理。改法二选一："
-        "把 permission.default.target 配成 space_aware，或删掉 router 命名空间。"
+        "把 authorizer.default.target 配成 space_aware（params.delegate 指向具名 "
+        "standard），或删掉 router 命名空间。"
         "原因：判定表把写入分流进协作空间，而当前的判定实现不读空间事实，"
         "这些协作空间没有任何权限边界——写入成功、检索也拿得到，只是拿得到的人多了。"
+    )
+
+
+def _warn_inert_permission_namespace(
+    permission: PermissionManager, api: LocalMemoryAPI, config: Config | None
+) -> None:
+    """permission 段与 authorizer 的空间语义一致性守卫。
+
+    空间级判定已收敛到 authorizer（F11 决策 2），permission 段在内容读写路径上不再
+    被调用。两个处置分支：
+
+    - permission 段显式选了声明 ``requires_space_facts`` 的管理器（如 space_aware），
+      而 authorizer 不提供空间语义：**拒绝启动**。该组合意味着调用方以为装了空间
+      判定，实际空间级入口整体回落标准链——成员记录、归属主体档与两轴求值全部
+      静默失效，失效方向是放宽。
+    - 其余显式选择的 permission 实现不被调用：降为 WARNING，方向不构成越权。
+    """
+    if config is None or config.is_empty():
+        return
+    if not config.context(known_top_names=Factory.known_top_names()).namespaces.get("permission"):
+        return
+    permission_requires = getattr(permission, "requires_space_facts", None)
+    needs_space_facts = api.space_governance_enabled
+    if callable(permission_requires) and permission_requires() and not needs_space_facts:
+        raise ValidationError(
+            "permission 段选了 space_aware 判定，但 authorizer 不提供空间语义"
+            "（requires_space_facts() 为假）。空间级入口会整体回落标准链，"
+            "成员记录与归属主体档静默失效。请把 authorizer.default.target 配成 "
+            "space_aware（params.delegate 指向具名 standard），或改回非空间判定。"
+        )
+    if needs_space_facts:
+        return
+    logger.warning(
+        "配置了 permission 段，但该判定实现不再处于内容读写路径——"
+        "空间级与主体面判定均由 authorizer 终局（不变量 23）。"
     )
 
 
@@ -332,4 +483,9 @@ def assemble_runtime(
 ) -> MemoryRuntime:
     """装配 Access 运行时：``api`` + ``close``，不暴露存储或任务控制器端口。"""
     kernel = _build_kernel(policies, kv, config)
-    return _MemoryRuntime(api=kernel.api, _ingest_jobs=kernel.ingest_jobs)
+    return _MemoryRuntime(
+        api=kernel.api,
+        _ingest_jobs=kernel.ingest_jobs,
+        _audit=kernel.audit,
+        _security_runtime=kernel.security_runtime,
+    )

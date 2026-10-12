@@ -18,7 +18,7 @@ from jiuwen_memory.common.errors import (
     PartialFailureError,
     PermissionDeniedError,
 )
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.types import Action, Grant
 from jiuwen_memory.common.type_def import Context, EntityBatchResult, LifecycleState, Scope
 from jiuwen_memory.construction.evolver_impl import schema_update
@@ -28,6 +28,7 @@ from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import (
 from jiuwen_memory.construction.source_update import STRICT_ENTITY_WRITES
 from jiuwen_memory.control.engine_impl import in_memory_engine
 from jiuwen_memory.control.types import MemoryPatch, UpdateMode
+from tests.support.scoped_authenticator import ScopedAuthenticator
 from tests.unit.control.fixtures import T0, T1, SchemaWorld, capture_engine
 
 pytestmark = pytest.mark.unit
@@ -60,7 +61,8 @@ def test_issue208_refreshes_entities_properties_and_search(world, mode):
     assert dict(world.kernel.kv.scan(world.scope, "/messages/")) == raw_messages
     assert world.kernel.kv.scan(world.scope, "/schema_updates/") == []
     props = [
-        u for u in world.units()
+        u
+        for u in world.units()
         if u.provenance == [updated.id] and u.system_metadata.get("schema_entity_name") == "李红"
     ]
     assert len(props) == 1 and props[0].entities == []
@@ -132,7 +134,7 @@ def test_update_only_grant_cannot_create_or_delete_properties(world, denied_acti
             source.id,
             world.scope,
             MemoryPatch(content=content, mode=UpdateMode.OVERWRITE),
-            security=legacy_request_context(actor),
+            security=internal_context(ScopedAuthenticator(actor)),
         )
     assert world.snapshot() == before
     assert world.linked("陈静") == {source.id}
@@ -189,9 +191,11 @@ def test_schema_update_does_not_repeat_source_reads(world, monkeypatch, mode, en
 def test_commit_still_rejects_changed_inputs_before_writing(world, mode, change):
     source, props = world.add("陈静负责推荐算法迭代")
     world.llm.facts = [("李红", "occupation", "李红负责算法", "")]
-    plan = asyncio.run(world.engine.prepare_update(
-        source.id, world.scope, MemoryPatch(content="李红负责算法", mode=mode, t_valid=T1)
-    ))
+    plan = asyncio.run(
+        world.engine.prepare_update(
+            source.id, world.scope, MemoryPatch(content="李红负责算法", mode=mode, t_valid=T1)
+        )
+    )
     if change == "source_deleted":
         world.index.remove([source])
     else:
@@ -224,7 +228,7 @@ def test_schema_disabled_keeps_original_update_path(engine_kind, mode, monkeypat
     try:
         api, engine = kernel.api, wiring.instance
         scope = Scope(org="ordinary", user="alice")
-        security = legacy_request_context(scope)
+        security = internal_context(ScopedAuthenticator(scope))
         source = api.add("Original", scope, security=security)[0]
         route.reset_mock()
         prepare = Mock(side_effect=AssertionError("ordinary update must bypass Schema preparation"))

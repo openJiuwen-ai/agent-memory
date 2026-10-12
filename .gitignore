@@ -40,4 +40,22 @@ deploy/docker/.venv-modelscope/
 .claude/skills/gitcode-config.json
 CLAUDE.md
 opencode.json
+
+# 安全模块
+# 开发子plan
+/security-plans/**
+# 保留原已入库的四份验收/交付材料；其余开发记录和本地备份继续忽略。
+!/security-plans/archived/
+!/security-plans/archived/05-pr2-authorization/
+!/security-plans/archived/05-pr2-authorization/reports/
+!/security-plans/archived/05-pr2-authorization/reports/2026-09-08-sec-isolation-final-acceptance.md
+!/security-plans/archived/06-pr3-audit-integrity/
+!/security-plans/archived/06-pr3-audit-integrity/reports/
+!/security-plans/archived/06-pr3-audit-integrity/reports/2026-09-23-pr3-seventh-acceptance.md
+!/security-plans/archived/06-pr3-audit-integrity/evidence/
+!/security-plans/archived/06-pr3-audit-integrity/evidence/2026-09-23-pr3-seventh-contracts.json
+!/security-plans/archived/07-delivery-and-backups/
+!/security-plans/archived/07-delivery-and-backups/reports/
+!/security-plans/archived/07-delivery-and-backups/reports/2026-09-23-pr3-delivery.md
+
 .claude/

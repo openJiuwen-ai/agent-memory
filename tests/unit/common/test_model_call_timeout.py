@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -24,6 +25,17 @@ from jiuwen_memory.common.llm.llm_impl import LlmProducer
 from jiuwen_memory.common.llm.llm_impl.openai_llm import OpenAILLM
 from jiuwen_memory.common.type_def import ChatMessage
 from jiuwen_memory.config import AssemblyContext
+
+
+@pytest.fixture(autouse=True)
+def _capture_library_logs(caplog):
+    """直接捕获库 logger，避免先前 assemble 关闭 propagate 后断言读不到日志。"""
+    logger = logging.getLogger("agent_memory")
+    logger.addHandler(caplog.handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 def _record_openai_client(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:

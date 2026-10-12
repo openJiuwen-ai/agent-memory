@@ -8,7 +8,7 @@
 两个入口对应两类调用方：
 
 - :func:`new_request_context` 给**已完成认证**的 surface 用（HTTP / MCP / CLI 经
-  ``bootstrap.core.auth_middleware`` 调它）；
+  ``jiuwen_memory_entry.core.auth_middleware`` 调它）；
 - :func:`internal_context` 给**进程内直连**的调用方用（示例脚本、评测 harness、
   嵌入式插件）——它们没有网络对端，但契约与外部请求完全相同（F05 §进程内调用）。
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from contextvars import ContextVar, Token
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.security.types import (
     AuthContext,
@@ -26,6 +26,7 @@ from jiuwen_memory.common.security.types import (
     RequestSecurityContext,
     Surface,
     _bind_origin,
+    validate_actor_form,
 )
 
 _REQUEST_ID: ContextVar[str | None] = ContextVar("agent_memory_request_id", default=None)
@@ -68,13 +69,14 @@ def new_request_context(
 
     Round3: _origin 绑定完整 RequestSecurityContext 安全字段，防止 replace(attributes=...) 提权。
     """
+    validate_actor_form(auth.actor)
     # 先构造上下文（_origin 用占位符）
     context = RequestSecurityContext(
         auth=auth,
         request_id=request_id or uuid.uuid4().hex,
         peer=peer,
         surface=surface,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         attributes=attributes or {},
         _origin="",  # 占位符
     )

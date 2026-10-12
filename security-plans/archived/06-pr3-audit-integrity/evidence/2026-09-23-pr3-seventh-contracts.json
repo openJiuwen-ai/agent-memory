@@ -1,0 +1,10 @@
+{
+  "jiuwen_memory/api/memory_api.py": true,
+  "jiuwen_memory/api/__init__.py": true,
+  "jiuwen_memory/common/audit/base.py": true,
+  "jiuwen_memory/common/security/audit_integrity/base.py": true,
+  "jiuwen_memory/common/security/audit_integrity/chain_store.py": true,
+  "jiuwen_memory/common/security/audit_integrity/__init__.py": true,
+  "jiuwen_memory/common/security/cryptography/key_provider.py": true,
+  "jiuwen_memory/common/type_def/audit.py": true
+}
