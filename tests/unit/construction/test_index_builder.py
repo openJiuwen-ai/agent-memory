@@ -5,7 +5,7 @@
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -32,8 +32,8 @@ from jiuwen_memory.construction.index_builder_impl.vector_index_builder import V
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
-from tests.conftest import make_storage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, TextQuery, VectorQuery
+from tests.conftest import make_storage
 from tests.unit.construction.fixtures import (
     create_test_plugins,
     create_test_stores,
@@ -317,7 +317,7 @@ def test_unified_builder_enriches_t_valid_when_set():
 
     builder, storage, _, _ = _make_unified_builder(vector_enabled=False)
     scope = Scope(org="test", user="alice")
-    t_valid = datetime(2026, 8, 31, 0, 0, 0, tzinfo=timezone.utc)
+    t_valid = datetime(2026, 8, 31, 0, 0, 0, tzinfo=UTC)
     unit = create_test_unit("u1", "x", scope=scope)
     unit.temporal = Temporal(t_valid=t_valid)
 
@@ -418,7 +418,7 @@ def test_index_builders_write_sentinel_for_open_ended_t_invalid():
     scope = Scope(org="test", user="alice")
     open_unit = create_test_unit("u_open", "open ended", scope=scope)
     closed_unit = create_test_unit("u_closed", "already invalid", scope=scope)
-    invalid_at = datetime(2026, 6, 16, tzinfo=timezone.utc)
+    invalid_at = datetime(2026, 6, 16, tzinfo=UTC)
     closed_unit.temporal.t_invalid = invalid_at
 
     fulltext_builder, fulltext_stores, _ = _make_fulltext_builder()
@@ -449,7 +449,7 @@ def test_index_builders_write_sentinel_for_unknown_t_event():
     scope = Scope(org="test", user="alice")
     unknown_unit = create_test_unit("u_unknown", "no event date", scope=scope)
     known_unit = create_test_unit("u_known", "has event date", scope=scope)
-    event_at = datetime(2026, 6, 16, tzinfo=timezone.utc)
+    event_at = datetime(2026, 6, 16, tzinfo=UTC)
     known_unit.temporal.t_event = event_at
 
     fulltext_builder, fulltext_stores, _ = _make_fulltext_builder()

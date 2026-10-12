@@ -28,7 +28,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
 | `source_update.py` | 可选 Schema source 更新能力、完整抽取结果、请求内变更计划与严格实体写入上下文；不依赖 control |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
-| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；video_memory 将视频规约结果转换为 CLM/ELM |
+| `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；entity_schema 保留 Source 时间上下文与事件精度/区间；video_memory 将视频规约结果转换为 CLM/ELM |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
@@ -150,6 +150,12 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
     与坏子批分别隔离，整次抽取无可用候选时才显式失败；动态抽取可隔离单策略失败，但
     全部策略失败必须向上抛错。LLM 分层的重复、越界或遗漏 ID 拒绝整批，单条长度异常
     只跳过该条，其余合法结果在结构校验完成后写入。
+
+15. **Schema 时间投影保留精度与来源语义**
+    年/月精度用 `schema_event_start/end/precision` 半开区间表达，
+    不伪造 `t_event`。Source `t_message` 可写入 Property content 作为
+    as-of 上下文，但不得当成事件时间。相对时间必须绑定实际
+    `source_unit_ids` 对应的 Source 日期。
 
 ## 与其他子目录的边界
 
