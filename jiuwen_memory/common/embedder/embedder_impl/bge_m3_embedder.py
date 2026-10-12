@@ -21,7 +21,6 @@ L2 归一化在 encode 之后手动完成（而非传 normalize_embeddings 给�
 from __future__ import annotations
 
 import math
-from typing import List
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
@@ -31,7 +30,7 @@ from jiuwen_memory.common.log import get_logger
 logger = get_logger(__name__)
 
 
-def _l2_normalize(vec: List[float]) -> List[float]:
+def _l2_normalize(vec: list[float]) -> list[float]:
     """L2 归一化：缩放为单位长度，不依赖底层 tokenizer 参数。
 
     NaN/Inf 防御：fp16 推理下短文本/特殊字符可能产出含 NaN/Inf 的向量（注意力
@@ -47,7 +46,7 @@ def _l2_normalize(vec: List[float]) -> List[float]:
     return [v / norm for v in vec]
 
 
-def _sanitize_vector(vec: List[float]) -> List[float]:
+def _sanitize_vector(vec: list[float]) -> list[float]:
     """把 NaN/Inf 替换为 0（不做归一化），用于未开归一化路径，防 Milvus 拒收。"""
     return [0.0 if math.isnan(v) or math.isinf(v) else float(v) for v in vec]
 
@@ -89,12 +88,12 @@ class BGEM3Embedder(Embedder):
     def dimension(self) -> int:
         return self._dimension
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         self._load_model()
         try:
-            all_vectors: List[List[float]] = []
+            all_vectors: list[list[float]] = []
             for batch in self._split_batches(texts):
                 vectors = self._embed_batch(batch)
                 all_vectors.extend(vectors)
@@ -181,7 +180,7 @@ class BGEM3Embedder(Embedder):
                 f"a local directory path via config.embedder_bge_m3_model."
             ) from exc
 
-    def _embed_batch(self, texts: List[str]) -> List[List[float]]:
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         # normalize_embeddings 不传给底层 tokenizer（避免版本兼容问题），
         # 而在 encode 之后手动做 L2 归一化。
         result = self._model.encode(
@@ -206,7 +205,7 @@ class BGEM3Embedder(Embedder):
             vectors = [_sanitize_vector(v) for v in vectors]
         return vectors
 
-    def _split_batches(self, texts: List[str]) -> List[List[str]]:
+    def _split_batches(self, texts: list[str]) -> list[list[str]]:
         batches = []
         for i in range(0, len(texts), self._max_batch_size):
             batch_end = i + self._max_batch_size

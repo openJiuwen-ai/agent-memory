@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Legacy verb dispatch for MCP and historical in-process callers.
+"""Legacy verb dispatch for historical in-process callers.
 
 ``dispatch(srv, request) -> (status, body)`` routes a structured request to the
 assembled :class:`~server.Server`'s ``MemoryAPI`` and shapes the compatibility
-envelope consumed by legacy surfaces. HTTP and CLI bypass this module and derive their
-JSON contract directly from ``MemoryAPI``. Routing remains a table (A20 "route
+envelope consumed by legacy surfaces. HTTP, CLI and MCP bypass this module and
+derive their JSON contract directly from ``MemoryAPI``
+(``jiuwen_memory_entry/core/api_contract``). Routing remains a table (A20 "route
 by table"), not an if/else ladder; domain exceptions map to status-like codes.
 
 Scope mapping happens before this module through ``legacy_request_adapter``.
@@ -17,9 +18,9 @@ from __future__ import annotations
 import os
 import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 
@@ -648,7 +649,7 @@ def _search(srv, request: DispatchRequest) -> Body:
     max_tokens = payload.get("max_tokens")
     if max_tokens is not None:
         extensions[EXT_MAX_TOKENS] = str(max_tokens)
-    trace = bool(payload.get("trace"))
+    trace = _bool_value(payload.get("trace"))
     disclosure = _enum_value(DisclosureLevel, payload.get("disclosure", "l0"), name="disclosure")
     res = srv.api.search(
         _require(payload, "query"),
@@ -751,7 +752,7 @@ def _update(srv, request: DispatchRequest) -> Body:
 def _delete(srv, request: DispatchRequest) -> Body:
     payload = request.payload
     scope = _require_target(request)
-    mode = DeleteMode.PURGE if payload.get("hard") else DeleteMode.FORGET
+    mode = DeleteMode.PURGE if _bool_value(payload.get("hard")) else DeleteMode.FORGET
     selector = DeleteSelector(unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode)
     deleted = srv.api.delete(selector, security=_request_security(request))
     return {"ok": True, "op": "delete", "item_id": payload["item_id"], "deleted": deleted}
@@ -760,12 +761,45 @@ def _delete(srv, request: DispatchRequest) -> Body:
 # --- 管理面 / 治理 / 演进 verbs ------------------------------------------- #
 
 
+def _parse_dreaming(value: Any) -> bool | None:
+    """dreaming 三态开关（F04 D2）：JSON true/false，缺省 None（立即执行）。"""
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValidationError("dreaming must be a boolean")
+    return value
+
+
+def _parse_candidate(value: Any) -> dict | None:
+    """候选源 dict DSL；kind 合法性由控制层 candidate_from_dict 统一校验。"""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError("candidate must be an object")
+    return value
+
+
 def _evolve(srv, request: DispatchRequest) -> Body:
-    """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。"""
+    """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。
+
+    dreaming 三态（与 MemoryAPI.evolve 契约一致，HTTP/CLI 经 api_contract 已同构）：
+    缺省 = 立即跑一次；true = 注册定时（interval 秒，每 tick 复验授权）；
+    false = 幂等注销。interval>0 的注册态语义校验由 API 层鉴权前 fail fast。
+    """
     payload = request.payload
     scope = _require_target(request)
     mode = _enum_value(EvolveMode, payload.get("mode", "extract"), name="mode")
-    job_id = srv.api.evolve(scope, mode, security=_request_security(request))
+    dreaming = _parse_dreaming(payload.get("dreaming"))
+    interval = _parse_non_negative_int(payload.get("interval"), name="interval", default=0)
+    candidate = _parse_candidate(payload.get("candidate"))
+    job_id = srv.api.evolve(
+        scope,
+        mode,
+        candidate=candidate,
+        dreaming=dreaming,
+        interval=interval,
+        security=_request_security(request),
+    )
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
 
 

@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
@@ -53,7 +51,7 @@ class KeywordLayerAnnotator(LayerAnnotator):
     def health(self) -> None:
         return None
 
-    def annotate(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+    def annotate(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         logger.info("KeywordLayerAnnotator: received %d units", len(units))
         annotated = 0
         for unit in units:

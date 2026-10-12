@@ -3,8 +3,9 @@
 
 :class:`Server` is the **base class** every protocol surface builds on: it holds
 one assembled runtime (config + api + ingest lifecycle) and exposes :attr:`api`
-plus :meth:`dispatch`. MCP and historical in-process callers use the legacy
-verb router; HTTP and CLI call the same-named ``MemoryAPI`` method directly. A concrete
+plus :meth:`dispatch`. ``dispatch`` serves historical in-process callers of the
+legacy envelope; HTTP, CLI and MCP all call the same-named ``MemoryAPI`` method
+directly through ``api_contract.invoke_api``. A concrete
 surface subclasses this class and adds its transport (see
 :class:`jiuwen_memory_entry.http_server.__main__.HttpServer` for the HTTP/socket
 surface); the CLI's ``InProcessClient`` uses the base directly.
@@ -54,7 +55,7 @@ class Server:
         return self._runtime.api
 
     @classmethod
-    def build(cls, config: Config, spaces: Any = None) -> "Server":
+    def build(cls, config: Config, spaces: Any = None) -> Server:
         """Assemble a runtime from ``config`` and return a ``cls`` instance.
 
         ``config.settings`` 是合并后的完整配置字典，含 profiles 层自有的 ``profile`` /
@@ -78,9 +79,9 @@ class Server:
     ) -> tuple[int, dict[str, Any]]:
         """Route a legacy request through the shared handler.
 
-        ``identity`` is an adapter-supplied actor. MCP retains this
-        compatibility path; HTTP and CLI inject their authenticated security context
-        while calling ``api`` directly.
+        ``identity`` is an adapter-supplied actor. This compatibility path serves
+        historical in-process callers; HTTP, CLI and MCP inject their authenticated
+        security context while calling ``api`` directly.
         """
         from handler import dispatch as _dispatch
 
@@ -96,6 +97,20 @@ class Server:
     def close(self, *, wait: bool = True) -> None:
         """Release the Control-owned ingest worker pool."""
         self._runtime.close(wait=wait)
+
+    def restore_dreaming(self) -> None:
+        """重启恢复注册态 dreaming 任务（F04 D8）——**长命 surface** 启动时调用。
+
+        短命进程（CLI 命令、一次性脚本）不得调用：恢复会取实例锁并把注册表
+        全部任务装配进本进程调度器，短命进程退出等于全部定时任务停摆（锁靠
+        owner 匹配释放，但任务已死）。锁被他人持有（未过期）时
+        :class:`RuntimeError` 直接 fail fast——单实例部署模型下这是部署错误。
+        ``restore_dreaming`` 不属于 MemoryAPI 公共契约（任意主体可触发的恢复
+        会把部署模型决定权让渡给调用方），经 getattr 探测。
+        """
+        restore = getattr(self.api, "restore_dreaming", None)
+        if callable(restore):
+            restore()
 
 
 def default_spaces() -> dict[str, Any]:

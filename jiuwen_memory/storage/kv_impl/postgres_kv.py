@@ -185,6 +185,7 @@ class PostgresKVStore(PgStoreBase, KVStore):
     ) -> KVMemoryListResult:
         return list_memory_entries(
             self.scan(scope, MEMORY_KEY_PREFIX),
+            scope,
             offset=offset,
             limit=limit,
             memory_types=memory_types,

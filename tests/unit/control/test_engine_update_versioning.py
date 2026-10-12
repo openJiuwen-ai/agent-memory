@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.api import MemoryPatch, Scope
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
@@ -72,7 +72,7 @@ def test_supersede_uses_patch_valid_time_as_new_version_boundary() -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
     actor = scope
     kernel = build_kernel()
-    valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
+    valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
 
     old = kernel.api.add("home is Shanghai", scope, security=legacy_request_context(actor))[0]
     new = kernel.api.update(
@@ -94,7 +94,7 @@ def test_update_supersede_delegates_old_version_lifecycle_to_manager() -> None:
     kernel = build_kernel(kv=kv)
     lifecycle = RecordingLifecycle(kv)
     setattr(getattr(kernel.api, "_engine"), "_lifecycle", lifecycle)
-    valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
+    valid_from = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
 
     old = kernel.api.add("home is Shanghai", scope, security=legacy_request_context(actor))[0]
     new = kernel.api.update(

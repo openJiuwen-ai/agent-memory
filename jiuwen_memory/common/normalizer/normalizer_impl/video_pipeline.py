@@ -11,7 +11,7 @@ import mimetypes
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -349,6 +349,11 @@ def _resolve_video_path(video_path: Path) -> Path:
     )
 
 
+def _utc_now_iso() -> str:
+    """当前 UTC 时刻的 ISO-8601 字符串（``Z`` 后缀，与历史 ``utcnow`` 输出格式一致）。"""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
 def _append_jsonl(path: Path, item: dict[str, Any]) -> None:
     def _drop_embeddings(obj: Any) -> Any:
         if isinstance(obj, dict):
@@ -387,9 +392,7 @@ def _get_clip_duration(clip_path: Path) -> float:
         "default=noprint_wrappers=1:nokey=1",
         str(clip_path),
     ]
-    res = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
-    )
+    res = subprocess.run(cmd, capture_output=True, check=True)
     out = res.stdout.decode().strip()
     try:
         return float(out)
@@ -635,7 +638,7 @@ def _judge_event_with_et(
             _append_jsonl(
                 log_path,
                 {
-                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "ts": _utc_now_iso(),
                     "meta": meta or {},
                     "candidate_source": request.candidate_source,
                     "pre_ET": pre_et_payload,
@@ -654,7 +657,7 @@ def _judge_event_with_et(
             _append_jsonl(
                 log_path,
                 {
-                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "ts": _utc_now_iso(),
                     "meta": meta or {},
                     "candidate_source": request.candidate_source,
                     "pre_ET": pre_et_payload,
@@ -669,7 +672,7 @@ def _judge_event_with_et(
             _append_jsonl(
                 log_path,
                 {
-                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "ts": _utc_now_iso(),
                     "meta": meta or {},
                     "candidate_source": request.candidate_source,
                     "pre_ET": pre_et_payload,
@@ -1041,8 +1044,7 @@ def _extract_video_subclip(
     try:
         subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
             timeout=int(timeout_s),
         )
@@ -1229,7 +1231,7 @@ def run_video_memory_pipeline_off(
     reused_asr = False
     if asr_save_path.exists() and asr_save_path.is_file():
         try:
-            with open(asr_save_path, "r", encoding="utf-8") as f:
+            with open(asr_save_path, encoding="utf-8") as f:
                 cached = json.load(f)
             if isinstance(cached, list) and cached:
                 asr_segments = cached
@@ -1285,7 +1287,7 @@ def run_video_memory_pipeline_off(
     reused_chapters = False
     if chapter_out_path.exists() and chapter_out_path.is_file():
         try:
-            with open(chapter_out_path, "r", encoding="utf-8") as f:
+            with open(chapter_out_path, encoding="utf-8") as f:
                 cached_chapters = json.load(f)
             if isinstance(cached_chapters, dict) and isinstance(
                 cached_chapters.get("chapters"), list
@@ -1435,7 +1437,7 @@ def run_video_memory_pipeline_off(
         rows: list[dict[str, Any]] = []
         if not path.exists() or not path.is_file():
             return rows
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             for raw in f:
                 line = raw.strip()
                 if not line:
@@ -2072,7 +2074,7 @@ def run_video_memory_pipeline_off(
                     _append_jsonl(
                         event_link_log_path,
                         {
-                            "ts": datetime.utcnow().isoformat() + "Z",
+                            "ts": _utc_now_iso(),
                             "meta": {
                                 "segment_id": int(seg.get("segment_id", 0) or 0),
                                 "time_range": [start_t, end_t],
@@ -2534,7 +2536,7 @@ def run_video_memory_pipeline_off(
                 _append_jsonl(
                     event_link_log_path,
                     {
-                        "ts": datetime.utcnow().isoformat() + "Z",
+                        "ts": _utc_now_iso(),
                         "meta": {
                             "segment_id": int(seg.get("segment_id", 0) or 0),
                             "time_range": [start_t, end_t],
@@ -2598,7 +2600,7 @@ def run_video_memory_pipeline_off(
                 _append_jsonl(
                     event_link_log_path,
                     {
-                        "ts": datetime.utcnow().isoformat() + "Z",
+                        "ts": _utc_now_iso(),
                         "meta": {
                             "segment_id": int(seg.get("segment_id", 0) or 0),
                             "time_range": [start_t, end_t],
