@@ -41,7 +41,10 @@ _HANDLER_PATH = _REPO / "jiuwen_memory_entry" / "core" / "handler.py"
 class _Derived:
     """由适配器或请求目标组装，legacy 扁平面不出现对应键。"""
 
-    def __repr__(self) -> str:  # pragma: no cover - 仅供断言消息可读
+    # 哨兵本身无实例状态，故按静态方法声明（G.CLS.07 类的方法不需要访问实例
+    # 时建议定义为 staticmethod）；repr()/f-string 均按特殊方法查找正常调用它。
+    @staticmethod
+    def __repr__() -> str:  # pragma: no cover - 仅供断言消息可读
         return "DERIVED"
 
 
