@@ -318,6 +318,58 @@ def test_delete_honors_mode() -> None:
     assert api.selectors[2].mode == DeleteMode.FORGET
 
 
+def test_delete_hard_is_parsed_boolean_not_truthy() -> None:
+    """``hard`` 走 ``_bool_value``：字符串 "false" 不得触发 PURGE。
+
+    冲突解决时若把 ``_bool_value`` 退回 ``payload.get("hard")`` 的真值判断，
+    非空字符串 ``"false"`` 会被当成硬删，把可恢复的 FORGET 静默升级成不可
+    恢复的 PURGE，且不报任何错。
+    """
+    api = _RecordingDeleteApi()
+    srv = SimpleNamespace(api=api)
+
+    for hard, expected in (
+        (False, DeleteMode.FORGET),
+        (True, DeleteMode.PURGE),
+        ("false", DeleteMode.FORGET),
+        ("0", DeleteMode.FORGET),
+        ("true", DeleteMode.PURGE),
+        ("yes", DeleteMode.PURGE),
+    ):
+        status, body = handler.dispatch(
+            srv,
+            build_legacy_dispatch_request(
+                "delete",
+                {"tenant_id": "acme", "scope": "alice", "item_id": "u1", "hard": hard},
+            ),
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert api.selectors[-1].mode == expected, f"hard={hard!r}"
+
+
+def test_delete_mode_takes_priority_over_hard() -> None:
+    """``mode`` 是一等参数，显式给出时覆盖 ``hard``。"""
+    api = _RecordingDeleteApi()
+    srv = SimpleNamespace(api=api)
+
+    status, _body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "delete",
+            {
+                "tenant_id": "acme",
+                "scope": "alice",
+                "item_id": "u1",
+                "mode": "archive",
+                "hard": True,
+            },
+        ),
+    )
+    assert status == 200
+    assert api.selectors[-1].mode == DeleteMode.ARCHIVE
+
+
 def test_delete_rejects_unknown_mode() -> None:
     """非法 mode 在边界返回 400，不下发到 API 层。"""
     api = _RecordingDeleteApi()
