@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from typing import Any
 
 import openai
@@ -30,6 +31,15 @@ from jiuwen_memory.common.reranker.base import RerankerProducer
 from jiuwen_memory.config import AssemblyContext
 
 pytestmark = pytest.mark.unit
+
+# 只有 reranker 这条链真的把 httpx.Client 拿来 monkeypatch 并断言其 kwargs；LLM 与
+# embedder 用例走 openai SDK，缺 httpx 也照跑。故按用例精确跳过，不做模块级
+# importorskip——那会把今天能跑的 LLM/embedder 用例一起跳掉。
+# httpx 已进 [dev]，CI 里这些用例照常执行；此处只兜住裸 `pip install -e .` 的 checkout。
+_HAS_HTTPX = importlib.util.find_spec("httpx") is not None
+_needs_httpx = pytest.mark.skipif(
+    not _HAS_HTTPX, reason="APIReranker 需要 httpx（[rerank] extra）"
+)
 
 register_plugins()
 
@@ -122,7 +132,7 @@ _HTTPS = "https://m/v1"
         (LlmProducer, "openai", "llm", {"llm_api_key": "k"}),
         (LlmProducer, "dashscope", "llm", {"llm_api_key": "k"}),
         (EmbedderProducer, "openai", "embedder", {"embedder_api_key": "k"}),
-        (RerankerProducer, "api", "reranker", {}),
+        pytest.param(RerankerProducer, "api", "reranker", {}, marks=_needs_httpx),
     ],
 )
 class TestComponentAssembly:
@@ -220,6 +230,7 @@ def test_openai_components_keep_sdk_default_http_client(
     assert recorded["openai_kwargs"]["base_url"] == _HTTPS
 
 
+@_needs_httpx
 def test_reranker_passes_verify_to_httpx(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     cert = tmp_path / "ca.pem"
     cert.write_text("x", encoding="utf-8")
@@ -245,6 +256,7 @@ def test_reranker_passes_verify_to_httpx(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert recorded["verify"] == str(cert)
 
 
+@_needs_httpx
 def test_reranker_omits_verify_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """关闭时不传 verify，保持 httpx 默认行为不被干预。"""
     recorded: dict[str, Any] = {}

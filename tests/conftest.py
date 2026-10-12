@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional
@@ -183,3 +184,20 @@ def unit_factory() -> Callable[..., MemoryUnit]:
 @pytest.fixture
 def index_unit_fn() -> Callable[[RetrievalWorld, MemoryUnit], None]:
     return index_unit
+
+
+@pytest.fixture(autouse=True)
+def _restore_agent_memory_log_propagation():
+    """还原 ``agent_memory`` root logger 的 ``propagate``，防止跨用例日志污染。
+
+    ``assemble()`` / ``build_kernel()`` 经 ``setup_logging()`` 关闭该 logger 的
+    propagate（避免第三方库日志混入），是进程级全局状态。装配类测试遍布全仓库
+    （``tests/unit/api/`` 等），任一用例调用装配后不还原，会让其后所有依赖
+    ``caplog`` 的用例静默拿到空日志——stderr 仍有输出，只是不再传播到 pytest 的
+    caplog handler，断言会在看似无关的测试里莫名其妙失败。自动用 autouse 在每个
+    用例前后保存/还原，一次性堵住所有现有与未来的装配类测试。
+    """
+    logger = logging.getLogger("agent_memory")
+    old_propagate = logger.propagate
+    yield
+    logger.propagate = old_propagate

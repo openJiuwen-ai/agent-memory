@@ -50,7 +50,10 @@ uv sync --extra embed
 python -m pip install -e .
 python -m pip install -e '.[deploy]'
 python -m pip install -e '.[embed]'
+python -m pip install -e '.[rerank]'
 ```
+
+`rerank` extra 提供 `APIReranker` 所需的 `httpx`；`deploy` 已包含该依赖，部署安装无需单独追加。
 
 ## 3. 方式一：内存存储 + 直接调用 MemoryAPI
 
