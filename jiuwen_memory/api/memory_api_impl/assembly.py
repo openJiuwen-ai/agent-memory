@@ -181,13 +181,12 @@ class MemoryRuntime(Protocol):
 class _MemoryRuntime:
     """``assemble_runtime`` 的产物：api + 生命周期。
 
-    ``_kernel`` 私有持有（不暴露 kv/storage/space 等端口——S02 边界）；start 语义按
-    调用方的并发模型二选一，watchdog 绑的长寿 loop 必须活到进程退出。
+    ``_kernel`` 私有持有全部端口（不暴露 kv/storage/space/scheduler/ingest_jobs 等——
+    S02 边界）；close 时经 ``_kernel`` 访问各端口，start 语义按调用方的并发模型二选一，
+    watchdog 绑的长寿 loop 必须活到进程退出。
     """
 
     api: MemoryAPI
-    _ingest_jobs: IngestJobController
-    _scheduler: Scheduler | None = None
     _kernel: _Kernel
 
     async def start_background(self) -> None:
@@ -224,15 +223,19 @@ class _MemoryRuntime:
         started.wait()
 
     def close(self, *, wait: bool = True) -> None:
-        # 顺序：先停看门狗（不再监听文件事件），再停专属 loop（若有），最后关任务池。
+        # 顺序：先停看门狗（不再监听文件事件），再停专属 loop（若有），
+        # 再关任务池，最后停调度器并释放 dreaming leader 锁。端口统一经
+        # ``_kernel`` 访问——散字段（``_ingest_jobs``/``_scheduler``）是 rebase
+        # 前 mem2.0 的旧形态，markdown 重构后端口已收进 ``_Kernel``。
+        # scheduler 必须先于 dreaming lock 释放——反序会允许新实例接管后，
+        # 本实例尚未停下的 Timer / drain 继续执行，形成短暂双跑。
         self._kernel.close()
         loop, self._loop = self._loop, None
         if loop is not None and loop.is_running():
             loop.call_soon_threadsafe(loop.stop)
-        # 先停调度器，再释放 dreaming leader 锁。反序会允许新实例接管后，
-        # 本实例尚未停下的 Timer / drain 继续执行，形成短暂双跑。
-        if self._scheduler is not None:
-            self._scheduler.shutdown()
+        self._kernel.ingest_jobs.close(wait=wait)
+        if self._kernel.scheduler is not None:
+            self._kernel.scheduler.shutdown()
         # dreaming 实例锁（F04 D8 关闭语义）：owner 匹配释放（未持锁幂等，
         # 不误删他人锁）。锁不属于 MemoryAPI 公共契约（Protocol 上没有），
         # 经 getattr 探测——只有装配了演进能力的实现才有。

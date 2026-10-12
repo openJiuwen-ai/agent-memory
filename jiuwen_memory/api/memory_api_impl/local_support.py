@@ -36,7 +36,7 @@ from jiuwen_memory.common.type_def import (
     canonical_filter_field,
     extract_required_equality,
     filter_field_metadata_key,
-    iter_clauses,
+    iter_clauses, MemoryUnit,
 )
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control.policy import PolicyManager
