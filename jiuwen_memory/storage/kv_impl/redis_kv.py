@@ -195,6 +195,7 @@ class RedisKVStore(KVStore):
         """按记忆列表协议分页枚举 ``scope`` 下条目。"""
         return list_memory_entries(
             self.scan(scope, MEMORY_KEY_PREFIX),
+            scope,
             offset=offset,
             limit=limit,
             memory_types=memory_types,

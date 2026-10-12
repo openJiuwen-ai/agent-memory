@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-09-22 |
+| 最近一次修订日期 | 2026-10-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -393,7 +393,7 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 真源 KVStore 存**字节**，`MemoryUnit` 对象只在写入（`dumps`）与产出结果（`loads`）两处出现。编解码与 `MemoryUnit` 同住 `common/type_def`，纯函数、无存储后端依赖。
 
 - `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。字段含 `segments`、`layers`（`{l0, l1}`）。
-- `loads(raw) -> MemoryUnit | None`：逆 `dumps`；非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。
+- `loads(raw) -> MemoryUnit | None`：逆 `dumps`；严格 UTF-8 解码，非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。`UnicodeDecodeError` 不在 codec 内吞掉；存储读取层经 `load_memory_unit` 记日志并按不可解码记录隔离。
 - **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=4`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`；`_v=4` 将混合 metadata 拆分为 `system_metadata` / `user_metadata`，`_v<4` 数据须离线迁移）。
 - `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
 - 目标树结构尚未进入当前 `MemoryUnit` 和 codec；`hierarchy` 的读取降级及写入校验规则见
