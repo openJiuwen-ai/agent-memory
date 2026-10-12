@@ -7,6 +7,8 @@ L0=50-100 字概要、L1=200-500 字要点 overview。L2 不存（``unit.content
 与 Extractor/Abstractor 的边界：本算子不产出新记忆，只给已有 unit 写 ``layers``。
 生成时机由 Evolver 编排——EXTRACT/CONSOLIDATE 抽取（或升华）产出派生候选后、
 去重落盘前调用本算子，保证落盘的 unit 已带 layers（见 F01-memory-layer）。
+HierarchyComposer 也可显式注入本算子：结构和父摘要完成后、持久化前只标注新父副本，
+不标注或改写 snapshot；只有合法 layers 被采纳，正文和结构修改不会被拷回。
 
 实现按 ``layers_threshold`` 筛选：仅对 ``len(content) > threshold`` 的 unit 标注
 （短 content 不调 LLM、不硬凑摘要，留空由披露端 fallback）。两实现：

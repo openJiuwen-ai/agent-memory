@@ -21,8 +21,9 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.config.config import Config
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.evolver import EvolveMode, EvolverProducer
+from jiuwen_memory.construction.evolver import EvolveMode, EvolveRequest, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import EvolverDependencies
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
@@ -176,15 +177,17 @@ def _make_evolver(
     dedup = _Dedup(dedup_hits)
     registry = PromptRegistry.from_dict(prompts or {})
     evolver = DynamicEvolver(
-        extractor=extractor,
-        abstractor=object(),  # EXTRACT 路径不触发 abstractor
-        associator=object(),  # EXTRACT 路径不触发 associator
-        index_builder=index,
-        storage=storage,
-        message_store=storage.kv(),
-        dedup=dedup,
-        llm=llm or _ScriptedLLM(),
-        layer_annotator=None,
+        EvolverDependencies(
+            extractor=extractor,
+            abstractor=object(),  # EXTRACT 路径不触发 abstractor
+            associator=object(),  # EXTRACT 路径不触发 associator
+            index_builder=index,
+            storage=storage,
+            message_store=storage.kv(),
+            dedup=dedup,
+            llm=llm or _ScriptedLLM(),
+            layer_annotator=None,
+        ),
         prompt_registry=registry,
     )
     return evolver, kv, index
@@ -407,7 +410,7 @@ def test_dynamic_evolver_adds_candidate_when_no_hit():
     evolver, kv, index = _make_evolver()
     candidate = _unit("candidate", "新事实")
 
-    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[candidate], mode=EvolveMode.EXTRACT))
 
     assert result.created_ids == ["candidate"]
     assert loads(kv.get(candidate.scope, memory_key(candidate.id))).content == "新事实"
@@ -438,19 +441,21 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
         },
     )
     evolver = DynamicEvolver(
-        extractor=extractor,
-        abstractor=object(),
-        associator=object(),
-        index_builder=index,
-        storage=storage,
-        message_store=storage.kv(),
-        dedup=dedup,
-        llm=llm,
-        layer_annotator=None,
+        EvolverDependencies(
+            extractor=extractor,
+            abstractor=object(),
+            associator=object(),
+            index_builder=index,
+            storage=storage,
+            message_store=storage.kv(),
+            dedup=dedup,
+            llm=llm,
+            layer_annotator=None,
+        ),
         prompt_registry=registry,
     )
 
-    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[candidate], mode=EvolveMode.EXTRACT))
 
     assert result.created_ids == ["candidate"]
     assert result.superseded_ids == ["existing"]
@@ -481,19 +486,21 @@ def test_dynamic_evolver_update_empty_merge_falls_back_to_concatenation():
         {"_extraction_strategy": "episodic", "_consolidation_prompt_episodic": "episodic"},
     )
     evolver = DynamicEvolver(
-        extractor=_FallbackExtractor(),
-        abstractor=object(),
-        associator=object(),
-        index_builder=index,
-        storage=storage,
-        message_store=storage.kv(),
-        dedup=dedup,
-        llm=llm,
-        layer_annotator=None,
+        EvolverDependencies(
+            extractor=_FallbackExtractor(),
+            abstractor=object(),
+            associator=object(),
+            index_builder=index,
+            storage=storage,
+            message_store=storage.kv(),
+            dedup=dedup,
+            llm=llm,
+            layer_annotator=None,
+        ),
         prompt_registry=registry,
     )
 
-    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[candidate], mode=EvolveMode.EXTRACT))
 
     # UPDATE 照常执行，但 content 为降级拼接（非空串）
     assert result.updated_ids == ["existing"]
@@ -515,7 +522,7 @@ def test_dynamic_evolver_invalid_llm_response_falls_back_to_add():
         {"_consolidation_prompt_custom": "custom"},
     )
 
-    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[candidate], mode=EvolveMode.EXTRACT))
 
     assert result.created_ids == ["candidate"]
 
@@ -526,7 +533,7 @@ def test_dynamic_evolver_high_similarity_skips_llm_judge():
     evolver, kv, _ = _make_evolver(dedup_hits=[(existing, 0.95)])
     candidate = _unit("candidate", "完全相同的记忆")
 
-    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[candidate], mode=EvolveMode.EXTRACT))
 
     assert result.created_ids == []
     assert result.superseded_ids == []
@@ -573,7 +580,7 @@ def test_dynamic_evolver_procedural_falls_back_to_parent():
     evolver, kv, _ = _make_evolver()
     candidate = _unit("candidate", "做了X", {"procedural": "true"})
 
-    result = evolver.evolve([candidate], EvolveMode.EXTRACT)
+    result = evolver.evolve(EvolveRequest(units=[candidate], mode=EvolveMode.EXTRACT))
 
     # procedural 路径：extractor 产 1 条直接落盘（不走 consolidate/reflect）
     assert len(result.created_ids) >= 1

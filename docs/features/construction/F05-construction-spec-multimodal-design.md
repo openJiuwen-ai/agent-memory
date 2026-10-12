@@ -194,7 +194,7 @@ result = self._dedup_batch(extracted)
 ```
 
 `system_metadata.infer=true` 时，`MemoryEngine.write()` 在 Ingest 后调用
-`evolver.evolve(units, EvolveMode.EXTRACT)`。因此一次视频提交只调用一次
+`evolver.evolve(EvolveRequest(units=units, mode=EvolveMode.EXTRACT))`。因此一次视频提交只调用一次
 `MemoryAPI.add()`，CLM/ELM 不逐条重新进入 Engine write。
 
 ### 5. 存储与索引

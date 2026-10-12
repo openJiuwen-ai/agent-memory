@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""CLI and HTTP use identical MemoryAPI arguments and original JSON results."""
+"""CLI keeps V1 arguments; local and HTTP clients also verify V2 routing."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwen_memory.api import MemoryAPI, Scope, build_dev_authenticator
+from jiuwen_memory.api import MemoryAPI, Scope, build_dev_authenticator, legacy_request_context
 from jiuwen_memory.common.security.request_context import get_request_id
 from jiuwen_memory.common.security.types import get_current
 from jiuwen_memory_entry.cli import __main__ as cli
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.unit
 SCOPE = {"org": "local", "user": "developer"}
 
 
-@pytest.mark.parametrize("method", sorted(MemoryAPI.__abstractmethods__))
+@pytest.mark.parametrize("method", sorted(api_contract.api_method_names()))
 def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> None:
     registered = []
     recorder = SimpleNamespace(
@@ -68,6 +68,7 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
     [
         ("add", {"content": "hello", "scope": SCOPE, "source": "text", "tags": ["a"]}),
         ("search", {"query": "hello", "context": {"scope": SCOPE}, "top_k": 3}),
+        ("search", {"query": "hello", "context": {"scope": SCOPE}}),
         ("get", {"unit_id": "u1", "scope": SCOPE}),
         ("update", {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "new"}}),
         ("delete", {"selector": {"scope": SCOPE, "unit_ids": ["u1"], "mode": "purge"}}),
@@ -77,6 +78,7 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
         ),
         ("admin_set", {"key": "test", "value": "false"}),
         ("list", {"scope": SCOPE, "extensions": None}),
+        ("evolve", {"scope": SCOPE, "mode": "extract", "channel": "hot"}),
     ],
 )
 def test_cli_builds_same_request_without_defaults(method: str, payload: dict) -> None:
@@ -85,7 +87,7 @@ def test_cli_builds_same_request_without_defaults(method: str, payload: dict) ->
     for name, value in payload.items():
         encoded = value if contract.type_hints[name] is str else json.dumps(value)
         # Enum parameters use their string values on the command line.
-        if name == "source":
+        if name in {"source", "mode", "channel", "disclosure"}:
             encoded = value
         argv.extend([f"--{name}", encoded])
     args = cli.build_parser().parse_args(argv)
@@ -104,6 +106,48 @@ def test_cli_rejects_legacy_options(old_option: str, monkeypatch) -> None:
     status, message = exit_mock.call_args.args
     assert status == 2
     assert f"unrecognized arguments: {old_option} old" in message
+
+
+def test_cli_evolve_rejects_v2_options_object(monkeypatch) -> None:
+    exit_mock = Mock(side_effect=RuntimeError("parser exit"))
+    monkeypatch.setattr(argparse.ArgumentParser, "exit", exit_mock)
+    with pytest.raises(RuntimeError, match="^parser exit$"):
+        cli.build_parser().parse_args(
+            [
+                "evolve",
+                "--scope",
+                json.dumps(SCOPE),
+                "--mode",
+                "extract",
+                "--options",
+                '{"mode":"extract"}',
+            ]
+        )
+    exit_mock.assert_called_once()
+    attempted_status, diagnostic = exit_mock.call_args.args
+    assert attempted_status == 2
+    assert 'unrecognized arguments: --options {"mode":"extract"}' in diagnostic
+
+
+def test_cli_search_rejects_v2_options_object(monkeypatch) -> None:
+    exit_mock = Mock(side_effect=RuntimeError("parser exit"))
+    monkeypatch.setattr(argparse.ArgumentParser, "exit", exit_mock)
+    with pytest.raises(RuntimeError, match="^parser exit$"):
+        cli.build_parser().parse_args(
+            [
+                "search",
+                "--query",
+                "coffee",
+                "--context",
+                json.dumps({"scope": SCOPE}),
+                "--options",
+                '{"top_k":3}',
+            ]
+        )
+    exit_mock.assert_called_once()
+    attempted_status, diagnostic = exit_mock.call_args.args
+    assert attempted_status == 2
+    assert 'unrecognized arguments: --options {"top_k":3}' in diagnostic
 
 
 @pytest.mark.parametrize("body", [None, [], "job-1", {"items": [], "count": 0}])
@@ -131,8 +175,16 @@ def test_http_client_preserves_payload_and_original_response(monkeypatch, body) 
 
 @pytest.fixture(params=["local", "http"])
 def api_client(request, monkeypatch):
+    mode, hierarchy_enabled = (
+        request.param if isinstance(request.param, tuple) else (request.param, False)
+    )
     local = client_module.InProcessClient(authenticator=build_dev_authenticator())
-    if request.param == "local":
+    if hierarchy_enabled:
+        local.server.api.admin_set(
+            "hierarchy.enabled", "true",
+            security=legacy_request_context(Scope()),
+        )
+    if mode == "local":
         try:
             yield local
         finally:
@@ -196,6 +248,70 @@ def test_local_and_http_complete_same_api_crud(api_client) -> None:
     )
     assert status == 200, deleted
     assert deleted == [updated["id"]]
+
+
+@pytest.mark.parametrize("raw_options", [None, {}])
+def test_both_clients_search_with_default_options(api_client, raw_options) -> None:
+    status, units = api_client.call("add", {"content": "default coffee", "scope": SCOPE})
+    assert status == 200, units
+    status, result = api_client.call_v2(
+        "search",
+        {"query": "coffee", "context": {"scope": SCOPE}, "options": raw_options},
+    )
+
+    assert status == 200, result
+    assert result["items"][0]["unit_id"] == units[0]["id"]
+
+
+@pytest.mark.parametrize("api_client", [("local", True), ("http", True)], indirect=True)
+def test_both_clients_search_snapshot_by_structural_time(api_client) -> None:
+    status, units = api_client.call(
+        "add",
+        {
+            "content": "structured coffee",
+            "scope": SCOPE,
+            "system_metadata": {
+                "hierarchy_kind": "time",
+                "hierarchy_role": "snapshot",
+                "hierarchy_span_start": "2026-09-10T09:00:00+00:00",
+                "hierarchy_span_end": "2026-09-10T10:00:00+00:00",
+            },
+        },
+    )
+    assert status == 200, units
+    status, result = api_client.call_v2(
+        "search",
+        {
+            "query": "coffee",
+            "context": {"scope": SCOPE},
+            "options": {
+                "hierarchy_kind": "time",
+                "hierarchy_role": "snapshot",
+                "span_start": "2026-09-10T09:30:00+00:00",
+                "span_end": "2026-09-10T10:30:00+00:00",
+                "top_k": 1,
+                "disclosure": "l2",
+            },
+        },
+    )
+
+    assert status == 200, result
+    assert result["items"][0]["unit_id"] == units[0]["id"]
+    assert result["items"][0]["content"] == "structured coffee"
+    assert result["items"][0]["parent_id"] == ""
+
+
+@pytest.mark.parametrize(
+    "old_field", ["filters", "as_of", "top_k", "disclosure", "with_trajectory"]
+)
+def test_both_clients_reject_top_level_search_options(api_client, old_field: str) -> None:
+    status, body = api_client.call_v2(
+        "search", {"query": "coffee", "context": {"scope": SCOPE}, old_field: "old"}
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert f"unknown field for MemoryAPI.search_v2: '{old_field}'" in body["message"]
 
 
 def test_local_and_http_await_original_async_result(api_client) -> None:
@@ -263,6 +379,42 @@ def test_inprocess_preserves_original_returns(monkeypatch, method, payload, expe
         assert client.call(method, payload) == (200, expected)
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("old_field", ["mode", "channel", "hierarchy_options"])
+def test_both_clients_reject_top_level_evolve_options(api_client, old_field: str) -> None:
+    status, body = api_client.call_v2(
+        "evolve",
+        {"scope": SCOPE, "options": {"mode": "extract"}, old_field: "old"},
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert f"unknown field for MemoryAPI.evolve_v2: '{old_field}'" in body["message"]
+
+
+def test_both_clients_decode_hierarchy_options_before_policy_gate(api_client) -> None:
+    status, body = api_client.call_v2(
+        "evolve",
+        {
+            "scope": SCOPE,
+            "options": {
+                "mode": "hierarchy",
+                "hierarchy_options": {
+                    "kind": "time",
+                    "leaf_role": "snapshot",
+                    "parent_roles": ["time_span"],
+                    "tree_home_scope": SCOPE,
+                    "span_start": "2026-09-10T09:00:00+00:00",
+                    "span_end": "2026-09-10T10:00:00+00:00",
+                },
+            },
+        },
+    )
+
+    assert status == 400
+    assert body["error"] == "PolicyError"
+    assert "hierarchy.enabled=false" in body["message"]
 
 
 @pytest.mark.parametrize("option", [["--auth-mode", "dev"], ["--config", "local.yaml"]])

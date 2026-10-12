@@ -5,15 +5,17 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-09-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/common/F08-memory-tree.md |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md |
 ## Metadata 转换契约
 
-`RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空。
-Ingestor 必须分别复制两个 dict，不得合并、解释或在两者之间 fallback。
+`RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空间。
+Ingestor 分别复制两个 dict，不得合并或在两者之间 fallback。系统命名空间中的四个
+层级叶提示按下文映射到 `MemoryUnit.hierarchy` 后移除；其余系统键继续透传。
+`user_metadata` 不解释，即使包含同名 `hierarchy_` 键也不参与结构映射。
 
 ## 范围 / 边界
 
@@ -74,6 +76,7 @@ class IngestOperator(ABC):
 ```
 Source.fetch() → list[RawPayload]
 → 校验 payload.modality 属于 Normalizer.modalities()
+→ 校验并提取 system_metadata 中的层级叶提示（如有）
 → Normalizer.normalize(payload) → content 文本投影
 → Ingestor 组装 MemoryUnit，并将 payload.assets 映射到产出的 Segment
 → 返回 list[MemoryUnit]
@@ -94,6 +97,36 @@ Source.fetch() → list[RawPayload]
 | `user_metadata` | dict[str, MetadataValueType] | 用户自定义元数据，接入链路只透传 |
 | `occurred_at` | datetime \| None | 事件发生时间 |
 | `assets` | list[str] | 待 Ingestor 映射到产出 Segment 的资产引用；列表长度不隐含 MemoryUnit/Segment 数量 |
+
+### 层级叶提示（阶段 1 已实现）
+
+接入侧只接受 `RawPayload.system_metadata` 中下列四个键，不接收任意父子边：
+
+| 键 | 类型 | 语义 |
+|---|---|---|
+| `hierarchy_kind` | str | `time` / `topic` / `directory` / `cluster` / `custom` |
+| `hierarchy_role` | str | TIME 只接受 `snapshot`；其他 kind 只接受 `node` |
+| `hierarchy_span_start` | ISO 8601 str | 结构覆盖区间起点 |
+| `hierarchy_span_end` | ISO 8601 str | 结构覆盖区间终点 |
+
+kind/role 必须同时出现；区间必须成对且起点不晚于终点，TIME 必须带区间，其他 kind
+可以省略。无提示时使用空 `HierarchyRef`。有效提示只填充 kind、role 和 span，
+父子引用保持空、结构状态为 `ACTIVE`，不生成父节点。
+
+未知 `hierarchy_` 前缀键（包括父子边提示）、非法枚举、父侧角色、无效时间或不完整
+提示均抛 `ValidationError`。已消费的四个键不再留在产出 unit 的 `system_metadata`
+中；不得由 Engine 在接入返回后重新回注。输入 payload 的两个 metadata dict 不被修改。
+
+叶提示不是索引投影的任意写入口。仅索引拥有的 `hierarchy_status`、`parent_id`、
+`span_start`、`span_end` 已列入系统保留键，公开 add/update 在既有参数校验中拒绝
+调用方赋值；业务同名字段应放 `user_metadata`，仍原样透传，不接受后再静默删除。
+`hierarchy_kind` / `hierarchy_role` 兼作合法叶提示，不能一并禁用；接入时间提示是
+`hierarchy_span_start/end`，与索引的 `span_start/end` 不是同一组输入键。
+
+本阶段的叶提示解析自行检查字段，不调用 `validate_ref` / `validate_tree`，也不查询
+存储或验证全树；这两个纯函数的边界见 S07。普通 `infer` 分流保持不变，不保证所有
+Extractor 都把源 unit 的 hierarchy 继承到新派生 unit，不能把“提示接入成功”视为
+“infer 后派生记忆一定保留叶身份”。
 
 ### Modality（`jiuwen_memory/common/type_def/memory.py`）
 
@@ -134,3 +167,9 @@ jiuwen_memory/ingest/ingestor_impl/
 | S05-construction | 构建层接收本层产出的 MemoryUnit 做落盘+索引+演进 |
 | S07-common | Normalizer/Tokenizer 等共享插件由本层消费 |
 | architecture.md §10 | 多模态信息源接入与规约投影 |
+
+## 修订记录
+
+| 日期 | 内容 |
+|---|---|
+| 2026-09-10 | 同步 F08 阶段 1：系统元数据叶提示映射、拒绝边/父角色、消费后不回注及 infer 继承边界；不引入建树或落盘职责 |

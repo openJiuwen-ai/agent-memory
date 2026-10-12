@@ -79,6 +79,7 @@ from jiuwen_memory.api import (  # noqa: E402
     DeleteMode,
     DeleteSelector,
     MemoryAPI,
+    SearchOptions,
     assemble_runtime,
 )
 from jiuwen_memory.common.security.types import (  # noqa: E402
@@ -965,11 +966,14 @@ class ConversationProcessor:
         """
         with _PhaseTimer("search", self.conv_id):
             try:
-                res = self.api.search(
+                res = self.api.search_v2(
                     question, Context(self.scope),
-                    security=self.security, top_k=RECALL_TOP_K,
-                    disclosure=DisclosureLevel.L2,  # 测试参考.md: 返回完整 MemoryUnit 内容
-                    with_trajectory=True,          # 测试参考.md: 返回召回阶段轨迹
+                    security=self.security,
+                    options=SearchOptions(
+                        top_k=RECALL_TOP_K,
+                        disclosure=DisclosureLevel.L2,  # 返回完整 MemoryUnit 内容
+                        with_trajectory=True,  # 返回召回阶段轨迹
+                    ),
                 )
             except Exception as e:
                 import openai as _oa

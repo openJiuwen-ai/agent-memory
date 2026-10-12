@@ -32,8 +32,8 @@ from jiuwen_memory.construction.index_builder_impl.vector_index_builder import V
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
-from tests.conftest import make_storage
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, TextQuery, VectorQuery
+from tests.conftest import make_storage
 from tests.unit.construction.fixtures import (
     create_test_plugins,
     create_test_stores,
@@ -303,7 +303,7 @@ def test_unified_builder_enriches_index_metadata_into_system_metadata():
     assert sm["content_layer"] == "l2", "content 索引层恒为 l2"
     assert sm["t_event"] == T_EVENT_UNKNOWN, "t_event None 落哨兵（恒写）"
     assert sm["t_invalid"] == T_INVALID_OPEN, "t_invalid None 落哨兵（恒写）"
-    assert "t_valid" not in sm, "t_valid None 不写（下推用 LTE 放行）"
+    assert "t_valid" not in sm, "t_valid None 不写（下推用 NOT(GT as_of) 放行）"
     # 持久化往返保留：DomainStore.add 经 dumps/loads 保留补齐字段
     persisted = storage.get(scope, ["u1"])[0]
     assert persisted.system_metadata["content_layer"] == "l2"

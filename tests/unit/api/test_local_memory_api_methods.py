@@ -92,6 +92,8 @@ def test_local_memory_api_has_no_duplicate_class_methods() -> None:
         owners = combined.get(name, [])
         assert len(owners) == 1, f"{name} must have exactly one definition, got {owners}"
     assert "add" in combined and "add_async" in combined
+    assert "search" in combined and "search_v2" in combined
+    assert "evolve" in combined and "evolve_v2" in combined
     assert "_purge_space_memories" not in combined, (
         "Space purge+delete moved to SpaceLifecycleService; API must not keep the helper"
     )

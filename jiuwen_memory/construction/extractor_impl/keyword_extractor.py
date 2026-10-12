@@ -18,6 +18,7 @@ from typing import List
 from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
+    HierarchyRef,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
@@ -86,6 +87,7 @@ class KeywordExtractor(Extractor):
                 ]
                 d.provenance = [unit.id]
                 d.supersedes = ""
+                d.hierarchy = HierarchyRef()
                 d.system_metadata = inherited_system_metadata([unit])
                 d.user_metadata = inherited_user_metadata([unit])
                 if "extracted" not in d.tags:

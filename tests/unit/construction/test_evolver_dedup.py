@@ -31,14 +31,17 @@ from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.construction.abstractor import Abstractor
 from jiuwen_memory.construction.associator import Associator
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.evolver import EvolveMode
-from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+from jiuwen_memory.construction.evolver import EvolveMode, EvolveRequest
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    EvolverDependencies,
+    EvolverOptions,
+    OrchestratingEvolver,
+)
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
-from tests.conftest import make_storage
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -46,6 +49,7 @@ from jiuwen_memory.storage.types import (
     VectorRecord,
 )
 from jiuwen_memory.storage.vector import VectorStore
+from tests.conftest import make_storage
 
 pytestmark = pytest.mark.unit
 
@@ -337,11 +341,9 @@ def _make_evolver(
     llm: LLM,
     **dedup_kwargs,
 ) -> OrchestratingEvolver:
-    """创建 OrchestratingEvolver 实例（注入 mock 算子）。
-
-    去重召回侧由 VectorDedup 承担（向量召回），阈值拆分：min/top_k/tier/scope
-    下沉 recaller，medium/high 留 evolver。
-    """
+    """创建注入 mock 算子的 OrchestratingEvolver。"""
+    # 去重召回侧由 VectorDedup 承担：min/top_k/tier/scope 下沉 recaller，
+    # medium/high 阈值保留在 EvolverOptions。
     from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
 
     recaller_kwargs = {
@@ -358,15 +360,17 @@ def _make_evolver(
     storage = make_storage(kv=kv, vector=vector_store, graph=NoopGraphStore())
     dedup = VectorDedup(storage=storage, embedder=embedder, **recaller_kwargs)
     return OrchestratingEvolver(
-        extractor=NoopExtractor(),
-        abstractor=NoopAbstractor(),
-        associator=NoopAssociator(),
-        index_builder=NoopIndexBuilder(storage.domain_store()),
-        storage=storage,
-        message_store=storage.kv(),
-        dedup=dedup,
-        llm=llm,
-        **evolver_kwargs,
+        EvolverDependencies(
+            extractor=NoopExtractor(),
+            abstractor=NoopAbstractor(),
+            associator=NoopAssociator(),
+            index_builder=NoopIndexBuilder(storage.domain_store()),
+            storage=storage,
+            message_store=storage.kv(),
+            dedup=dedup,
+            llm=llm,
+        ),
+        EvolverOptions(**evolver_kwargs),
     )
 
 
@@ -1026,14 +1030,16 @@ class TestDedupEvolveExtract:
             kv=stores["kv"], vector=stores["vector"], graph=NoopGraphStore()
         )
         evolver = OrchestratingEvolver(
-            extractor=SimpleExtractor(),
-            abstractor=NoopAbstractor(),
-            associator=NoopAssociator(),
-            index_builder=NoopIndexBuilder(storage.domain_store()),
-            storage=storage,
-            message_store=storage.kv(),
-            dedup=dedup,
-            llm=plugins["llm"],
+            EvolverDependencies(
+                extractor=SimpleExtractor(),
+                abstractor=NoopAbstractor(),
+                associator=NoopAssociator(),
+                index_builder=NoopIndexBuilder(storage.domain_store()),
+                storage=storage,
+                message_store=storage.kv(),
+                dedup=dedup,
+                llm=plugins["llm"],
+            ),
         )
 
         # 输入两条原始 unit
@@ -1042,7 +1048,7 @@ class TestDedupEvolveExtract:
             _make_unit("u2", "用户讨论了 Python GIL"),
         ]
 
-        result = evolver.evolve(input_units, EvolveMode.EXTRACT)
+        result = evolver.evolve(EvolveRequest(units=input_units, mode=EvolveMode.EXTRACT))
 
         # Extractor 产出的两条候选走去重，无已有记忆 → 全部 ADD
         assert len(result.created_ids) == 2

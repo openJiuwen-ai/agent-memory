@@ -2,9 +2,10 @@
 """HTTP surface — a direct JSON transport over :class:`MemoryAPI`.
 
 ``HttpServer`` extends the base :class:`Server` for runtime assembly and adds
-``POST /v1/<MemoryAPI method>`` plus ``GET /healthz``. Request fields and return
-values are mechanically converted from the public API contract; this surface
-does not use the legacy shared dispatch envelope. CLI uses the same API contract.
+``POST /v1/<MemoryAPI method>`` plus V2 ``search`` / ``evolve`` routes and
+``GET /healthz``. Request fields and return values are mechanically converted
+from the versioned public API contract; this surface does not use the legacy
+shared dispatch envelope. CLI continues to use the V1 contract.
 
 One assembled runtime is held for the server lifetime so state persists across
 requests. Authentication supplies the sole non-JSON API argument, ``security``.
@@ -62,6 +63,13 @@ _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 
 
+def _parse_api_route(path: str) -> tuple[str, str] | None:
+    parts = path.strip("/").split("/")
+    if len(parts) != 2 or parts[0] not in {"v1", "v2"} or not parts[1]:
+        return None
+    return parts[0], parts[1]
+
+
 def _read_env_flag(name: str) -> bool:
     raw = os.getenv(name, "").strip().lower()
     if raw in _TRUE_VALUES:
@@ -113,12 +121,12 @@ class HttpServer(Server):
 
             def handle_post(self) -> None:
                 request_id = uuid.uuid4().hex
-                if not self.path.startswith("/v1/"):
+                route = _parse_api_route(self.path)
+                if route is None:
                     self._send_error("NotFound", self.path, request_id=request_id)
                     return
-                prefix_len = len("/v1/")
-                verb = self.path[prefix_len:].strip("/")
-                if not is_known_verb(verb):
+                version, verb = route
+                if not is_known_verb(verb, version):
                     self._send_error("UnknownVerb", verb, request_id=request_id)
                     return
                 try:
@@ -159,7 +167,7 @@ class HttpServer(Server):
                                 request_id=security.request_id,
                             )
                             return
-                        body = invoke_api(srv.api, verb, payload, security)
+                        body = invoke_api(srv.api, verb, payload, security, version)
                         self._send(200, body, request_id=security.request_id)
                 except AuthenticationError:
                     self._send_error("AuthenticationError", request_id=request_id)

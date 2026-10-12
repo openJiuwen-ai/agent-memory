@@ -30,16 +30,17 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
-from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 
 from .base import ControlOperator
+from .policy import PolicyManager
 from .types import (
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteResult,
-    Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -201,9 +202,16 @@ class MemoryEngine(ControlOperator):
 
     @abstractmethod
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
+        self, scope: Scope, options: EvolveTaskOptions
     ) -> str:
         """触发一次演进：委托 Scheduler 提交指定阶段与通道，返回任务 id。"""
+
+    @staticmethod
+    async def start_background_jobs(
+        scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
+        """在宿主持有的循环注册已鉴权 home 的周期任务；默认实现不支持。"""
+        raise NotImplementedError("this engine does not support periodic hierarchy derivation")
 
     @abstractmethod
     async def admin_get(self, key: str) -> str:

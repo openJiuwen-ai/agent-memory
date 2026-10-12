@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Context, Scope
@@ -125,7 +126,7 @@ def test_engine_recall_uses_pipeline_profile_from_context_extensions() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.search(
+    result = kernel.api.search_v2(
         "test strategy",
         Context(scope=scope, extensions={"memory_type": "coding"}),
         security=legacy_request_context(scope),
@@ -138,11 +139,11 @@ def test_engine_recall_uses_pipeline_profile_from_system_metadata_filter() -> No
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.search(
+    result = kernel.api.search_v2(
         "test strategy",
         Context(scope=scope),
         security=legacy_request_context(scope),
-        filters={"system_metadata.memory_type": "coding"},
+        options=SearchOptions(filters={"system_metadata.memory_type": "coding"}),
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]
@@ -152,11 +153,11 @@ def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
     kernel = build_kernel(config=_kernel_config())
     scope = Scope(user="u1")
 
-    result = kernel.api.search(
+    result = kernel.api.search_v2(
         "test strategy",
         Context(scope=scope),
         security=legacy_request_context(scope),
-        filters={"memory_type": "coding"},
+        options=SearchOptions(filters={"memory_type": "coding"}),
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]

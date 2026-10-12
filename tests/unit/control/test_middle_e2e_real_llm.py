@@ -35,7 +35,6 @@ Timer 协程继续转。
 """
 
 from __future__ import annotations
-# pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
 
 import asyncio
 import os
@@ -43,6 +42,8 @@ import os
 import pytest
 from dotenv import load_dotenv
 
+# pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
+from jiuwen_memory.api import SearchOptions
 from jiuwen_memory.common.security.legacy import legacy_request_context
 
 # 模块导入时加载项目根 .env——把 .env 内的 OPENAI_API_KEY 等塞进 os.environ。
@@ -51,8 +52,7 @@ load_dotenv()
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import Context, LifecycleState, MemoryTier, Scope, memory_key
-from jiuwen_memory.common.type_def.memory_codec import loads
+from jiuwen_memory.common.type_def import Context, LifecycleState, MemoryTier, Scope
 
 logger = get_logger(__name__)
 from jiuwen_memory.config.config import Config
@@ -195,7 +195,11 @@ def _list_via_thread(api, scope: Scope = SCOPE, *, identity: Scope = SCOPE):
 def _recall_via_thread(api, query: str, ctx: Context, *, identity: Scope = SCOPE, top_k: int = 30):
     """在 async 测试函数里调同步 api.search——同 _list_via_thread。"""
     return asyncio.to_thread(
-        api.search, query, ctx, security=legacy_request_context(identity), top_k=top_k
+        api.search,
+        query,
+        ctx,
+        security=legacy_request_context(identity),
+        options=SearchOptions(top_k=top_k),
     )
 
 
@@ -298,7 +302,7 @@ def _extract_prompt_for_episodic() -> str:
 
 
 # 4 步骤的 content——人物主语 + 不同事件主题（便于 recall 时按主语区分）
-_STEP1_CONTENT = "alice likes green tea"          # sync write middle=false
+_STEP1_CONTENT = "alice likes green tea"  # sync write middle=false
 _STEP2_CONTENT = "bob visited kyoto last summer"  # sync write middle=true
 _STEP3_CONTENT = "carol works on python projects"  # async write middle=false
 _STEP4_CONTENT = "dave enjoys hiking on weekends"  # async write middle=true

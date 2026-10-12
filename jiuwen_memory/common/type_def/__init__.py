@@ -34,6 +34,19 @@ from .filter import (
     normalize,
     validate,
 )
+from .hierarchy import (
+    HIERARCHY_INDEX_KEYS,
+    LEAF_ROLE_BY_KIND,
+    HierarchyKind,
+    HierarchyRef,
+    HierarchyRole,
+    HierarchyStatus,
+    hierarchy_index_metadata,
+    span_epoch_ms,
+    validate_ref,
+    validate_tree,
+)
+from .hierarchy_query import HierarchyQuery, matches_hierarchy
 from .memory import (
     COORDS_KEY,
     KERNEL_SYSTEM_METADATA_KEYS,
@@ -57,7 +70,7 @@ from .memory import (
     inherited_user_metadata,
     memory_key,
 )
-from .memory_filter import matches_memory_unit
+from .memory_filter import matches_filter_value, matches_memory_unit
 from .normalizer import EntityNormalizer
 from .raw import MESSAGES_KEY_PREFIX, RawPayload, messages_key
 from .retrieval import (
@@ -101,6 +114,18 @@ __all__ = [
     "ContentLayers",
     "inherited_system_metadata",
     "inherited_user_metadata",
+    "HIERARCHY_INDEX_KEYS",
+    "HierarchyKind",
+    "HierarchyRole",
+    "HierarchyStatus",
+    "HierarchyRef",
+    "HierarchyQuery",
+    "matches_hierarchy",
+    "LEAF_ROLE_BY_KIND",
+    "hierarchy_index_metadata",
+    "span_epoch_ms",
+    "validate_ref",
+    "validate_tree",
     "RawPayload",
     "Chunk",
     "ChunkVector",
@@ -146,6 +171,7 @@ __all__ = [
     "memory_key",
     "messages_key",
     "matches_memory_unit",
+    "matches_filter_value",
     "RecallChannel",
     "ParsedQuery",
     "ChannelEvidence",

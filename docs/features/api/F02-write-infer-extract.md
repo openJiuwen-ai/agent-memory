@@ -50,7 +50,7 @@ Engine 构造 RawPayload（含 assets）→ Ingestor.ingest（自行映射 asset
 
 `write` 据 `system_metadata["infer"]` 真值（`str(...).strip().lower() == "true"`，大小写/空白不敏感）分两路：
 
-- **`infer="true"`**：原始单元只落 KV 真源**不建索引**；hot path 同步调 `self._evolver.evolve(units, EvolveMode.EXTRACT)` 走 Evolver EXTRACT 全链路——`Extractor.extract` 抽取派生记忆 → `_dedup_batch` 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。**不提交** background EXTRACT（已同步抽取，避免重复）。返回**派生单元列表**（从 `EvolveResult.created_ids` 反查 KV 读回，对齐 mem0 `add(infer=True)` 返回派生事实）。
+- **`infer="true"`**：原始单元只落 KV 真源**不建索引**；hot path 同步调 `self._evolver.evolve(EvolveRequest(units=units, mode=EvolveMode.EXTRACT))` 走 Evolver EXTRACT 全链路——`Extractor.extract` 抽取派生记忆 → `_dedup_batch` 判定+落盘+建索引（ADD/UPDATE/SUPERSEDE/NOOP）。**不提交** background EXTRACT（已同步抽取，避免重复）。返回**派生单元列表**（优先使用 `EvolveResult.created_units`，为空时再按 `created_ids` 反查 KV，对齐 mem0 `add(infer=True)` 返回派生事实）。
 - **缺省 / 非 `"true"`**：决策 1 的默认路径——原始落盘 + 建索引，不自动提交演进。
 
 **为何经 Evolver 而非独立 Extractor**：`infer=true` 仍必须走 Evolver 的 `_dedup_batch`，否则每轮写入都新增派生记忆、不去重，记忆迅速膨胀。Evolver 自带 extractor，engine 不重复注入独立 Extractor（避免双实例 + 双装配）。
@@ -158,7 +158,7 @@ unit 真源在 KVStore 里的 key 由裸 `{unit.id}` 改为带前缀，按「是
 
 ### 决策7：infer=true 上下文增强抽取（原文做指代消解、召回记忆做去重）
 
-infer=true 同步抽取时，**evolver 内部**收集两类上下文参考项（evolve 接口签名不变，仍 `evolve(units, mode)`）：
+infer=true 同步抽取时，**evolver 内部**收集两类上下文参考项（通过统一的 `evolve(EvolveRequest(...))` 接口传入本轮单元与模式）：
 
 - `recent_originals`：最近 10 条 infer=true 原始消息（MemoryUnit，落 `/messages/`）。**用于指代/代词消解与语境丰富**——让 extractor 理解"它/他/那个"指什么、对话背景。只拼进 extractor prompt，**不参与去重**。
 - `related_memories`：用 `dedup.recall` 召回的 10 条相关记忆（MemoryUnit，落 `/memory/`）。**用于去重**——拼进 extractor prompt 告知大模型已有这些记忆、不要再抽重复的。
@@ -239,7 +239,7 @@ procedural 分支。直接调用 HTTP `/v1/add` 时传同名 `system_metadata` �
 
 - 原文落 `/memory/{id}`（与建索引记忆同前缀，不走 `/messages/`）+ 建索引（原文立即可检索）+ 打 `tier=WORKING` 与 `system_metadata["middle"]="true"` 标记。
 - 提交 `MiddleToLongJob` 给 Scheduler——`interval` 经 `factory.get_job(interval=...)` 注入：write 入参 `metadata["middle_interval"]` 在入口经 `parse_middle_interval` 校验（非法值落盘前抛 `ValidationError`），缺省由 `MiddleToLongJobSpec.interval` 装配期默认兜底。Scheduler 把它注册到 per scope TimerWheel，Timer 协程周期生成实例入队，每个实例跑一次 `run()` 即返回。
-- MiddleToLongJob 内做：list 候选（`tier=WORKING + lifecycle=ACTIVE + system_metadata["middle"]=="true"`）→ 连续性检测切批 → `evolver.evolve(batch, EXTRACT)` → 原文归档（`lifecycle.transition(ARCHIVED) + index.remove`）。
+- MiddleToLongJob 内做：list 候选（`tier=WORKING + lifecycle=ACTIVE + system_metadata["middle"]=="true"`）→ 连续性检测切批 → `evolver.evolve(EvolveRequest(units=batch, mode=EvolveMode.EXTRACT))` → 原文归档（`lifecycle.transition(ARCHIVED) + index.remove`）。
 
 **为何 middle 是 infer 的二级开关**：middle 路径要原文立即可检索（落 `/memory/` + 建索引），与 infer=true 同步抽取语义冲突（infer 原文不建索引、走 `/messages/`）。故 middle=true 必须在 infer=true 下生效，且走自己的子分支——分支内不再调 infer 的同步抽取，原文只落 KV 不抽取，抽取由后台 MiddleToLongJob 周期触发。
 

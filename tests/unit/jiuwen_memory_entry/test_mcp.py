@@ -92,6 +92,8 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
          "filters": {"field": "tags", "op": "contains", "value": "a"},
          "disclosure": "l2"},
     ),
+    "memory_search_v2": (
+        "search", {"query": "hello", "context": {"scope": SCOPE}, "options": {}}),
     "memory_list": (
         "list",
         {"scope": SCOPE, "memory_types": ["episodic"],
@@ -108,6 +110,8 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
     "memory_delete": ("delete", {"selector": {"unit_ids": ["u1"], "scope": SCOPE}}),
     "memory_evolve": ("evolve", {"scope": SCOPE, "mode": "extract",
                                  "channel": "background"}),
+    "memory_evolve_v2": (
+        "evolve", {"scope": SCOPE, "options": {"mode": "extract"}}),
     "memory_check_write": (
         "check_write",
         {"scope": SCOPE, "tags": ["t"], "system_metadata": {"k": "v"},
@@ -177,6 +181,7 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
         "remove_space_member", {"org": "local", "space": "team-a", "member": SCOPE},
     ),
 }
+V2_TOOLS = frozenset({"memory_search_v2", "memory_evolve_v2"})
 
 
 @pytest.fixture
@@ -207,15 +212,17 @@ def _wait_job_terminal(job_id: str, scope: dict[str, Any]) -> dict[str, Any]:
 def test_mcp_tool_registry_covers_expected_verbs() -> None:
     registered = {name for name in dir(mcp_main) if name.startswith("memory_")}
     assert registered == set(TOOL_CASES), registered ^ set(TOOL_CASES)
-    for _tool_name, (verb, _payload) in TOOL_CASES.items():
-        assert is_known_verb(verb), verb
+    for tool_name, (verb, _payload) in TOOL_CASES.items():
+        version = "v2" if tool_name in V2_TOOLS else "v1"
+        assert is_known_verb(verb, version), (version, verb)
 
 
 @pytest.mark.parametrize("tool_name", list(TOOL_CASES))
 def test_tool_signature_matches_api_contract(tool_name: str) -> None:
     verb, _payload = TOOL_CASES[tool_name]
+    version = "v2" if tool_name in V2_TOOLS else "v1"
     tool_params = set(inspect.signature(getattr(mcp_main, tool_name)).parameters) - {"ctx"}
-    contract = method_contract(verb)
+    contract = method_contract(verb, version)
     api_params = set(contract.request_parameters)
     # 全量相等锁：as_of 漂移的教训——此前的子集锁会放行可选参数静默缺失，
     # MCP 客户端经工具 schema 感知不到该参数。工具面与契约的任何参数差异
@@ -229,7 +236,8 @@ def test_tool_signature_matches_api_contract(tool_name: str) -> None:
 @pytest.mark.parametrize("tool_name", list(TOOL_CASES))
 def test_tool_representative_payload_parses(tool_name: str) -> None:
     verb, payload = TOOL_CASES[tool_name]
-    decoded = parse_request(verb, payload)
+    version = "v2" if tool_name in V2_TOOLS else "v1"
+    decoded = parse_request(verb, payload, version)
     assert isinstance(decoded, dict)  # admin_all/verify_audit 等无参工具合法为空
     for key in payload:
         assert key in decoded
@@ -317,6 +325,17 @@ def test_evolve_job_status_and_cancel_loop(kernel) -> None:
     info = _wait_job_terminal(job_id, SCOPE)
     assert info["status"] == "succeeded", info
     asyncio.run(mcp_main.memory_job_cancel(job_id=job_id))  # 幂等：已完成任务不报错
+
+
+@pytest.mark.usefixtures("kernel")
+def test_evolve_v2_uses_nested_options() -> None:
+    asyncio.run(mcp_main.memory_add(content="hello", scope=SCOPE))
+    job_id = asyncio.run(
+        mcp_main.memory_evolve_v2(scope=SCOPE, options={"mode": "extract"})
+    )
+
+    assert isinstance(job_id, str) and job_id
+    assert _wait_job_terminal(job_id, SCOPE)["status"] == "succeeded"
 
 
 def test_inspect_includes_superseded_history(kernel) -> None:
@@ -429,6 +448,20 @@ def test_search_filters_narrow_results(kernel) -> None:
     assert contents == {"hello tea"}, f"filters 应收敛到带 leaf 标签的记忆: {contents}"
 
 
+@pytest.mark.usefixtures("kernel")
+def test_search_v2_uses_nested_options() -> None:
+    unit_id = asyncio.run(
+        mcp_main.memory_add(content="hello coffee", scope=SCOPE)
+    )[0]["id"]
+    result = asyncio.run(
+        mcp_main.memory_search_v2(
+            query="coffee", context={"scope": SCOPE}, options={"top_k": 1}
+        )
+    )
+
+    assert result["items"][0]["unit_id"] == unit_id
+
+
 def test_delete_requires_real_criterion_besides_scope(kernel) -> None:
     # scope 只是范围限定符、不是选择条件——单独给它必须被拒绝
     with pytest.raises(RuntimeError, match="unit_ids, tags, before, or filters"):
@@ -444,7 +477,7 @@ def test_delete_space_rejects_archive_mode(kernel) -> None:
         )
 
 
-# --- E. 模型可见 Schema：36 工具、ctx 不进 schema --------------------------------- #
+# --- E. 模型可见 Schema：工具集精确、ctx 不泄漏 ------------------------------------ #
 
 
 def test_list_tools_schema_excludes_ctx() -> None:

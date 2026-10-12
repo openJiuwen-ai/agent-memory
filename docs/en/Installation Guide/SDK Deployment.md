@@ -60,7 +60,7 @@ combines the in-process KV, Vector, Fulltext, and Graph Store implementations. E
 and reranking also use default implementations with no external dependencies.
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, SearchOptions, assemble_runtime, legacy_request_context
 
 runtime = assemble_runtime()
 api = runtime.api
@@ -74,11 +74,11 @@ try:
         security=security,
         tags=["preference"],
     )
-    result = api.search(
+    result = api.search_v2(
         "Which language does the user prefer?",
         Context(scope),
         security=security,
-        top_k=5,
+        options=SearchOptions(top_k=5),
     )
     print(units[0].id)
     print([item.content for item in result.items])
@@ -128,7 +128,7 @@ curl -X POST http://127.0.0.1:8137/v1/add \
 
 curl -X POST http://127.0.0.1:8137/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"query":"Which language does the user prefer","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"top_k":5}'
+  -d '{"query":"Which language does the user prefer","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"options":{"top_k":5}}'
 ```
 
 HTTP authentication mode is selected in this order: `--auth-mode`, the
@@ -246,7 +246,7 @@ both the HTTP configuration format and its environment-variable expansion, load 
 follows:
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, SearchOptions, assemble_runtime, legacy_request_context
 from jiuwen_memory_entry.core.config_loader import load_layer
 
 layer = load_layer("local-real-storage.yml")
@@ -257,7 +257,9 @@ scope = Scope(org="demo", user="alice")
 security = legacy_request_context(scope)
 try:
     api.add("A memory that must be persisted", scope, security=security)
-    result = api.search("persisted memory", Context(scope), security=security, top_k=5)
+    result = api.search_v2(
+        "persisted memory", Context(scope), options=SearchOptions(top_k=5), security=security,
+    )
     print([item.content for item in result.items])
 finally:
     runtime.close(wait=True)

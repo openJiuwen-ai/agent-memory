@@ -159,7 +159,7 @@ curl -X POST http://localhost:8137/v1/add \
 
 curl -X POST http://localhost:8137/v1/search \
   -H 'Content-Type: application/json' \
-  -d '{"query":"Which language does the user prefer","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"top_k":5}'
+  -d '{"query":"Which language does the user prefer","context":{"scope":{"org":"local","space":"","user":"developer","agent":"","session":""},"extensions":{}},"options":{"top_k":5}}'
 ```
 
 For multiple test identities, add

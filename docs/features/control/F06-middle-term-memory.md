@@ -25,9 +25,9 @@ mem2.0 把这件事拆回控制层标准范式：
 
 - **Engine 只编排**：write 路径只做"原文落 KV + 建索引 + 提交一个 Job"，后台业务逻辑全在 Job 里。
 - **Scheduler 只调度**：周期触发与串行执行由 `AsyncTimerScheduler` 承担，Engine 不自起 `asyncio.Task`。
-- **Job 封装"做什么 + 怎么找数据 + 怎么调 evolver + 怎么后处理"**：`MiddleToLongJob` 内完成 list 候选 → 连续性检测切批 → 调 `evolver.evolve(batch, EXTRACT)` → 归档原文。
+- **Job 封装"做什么 + 怎么找数据 + 怎么调 evolver + 怎么后处理"**：`MiddleToLongJob` 内完成 list 候选 → 连续性检测切批 → 调 `evolver.evolve(EvolveRequest(units=batch, mode=EvolveMode.EXTRACT))` → 归档原文。
 - **非破坏式归档**：原文走 `lifecycle.transition(ARCHIVED)` + `index.remove(units)`，可审计可恢复。
-- **Evolver 一行不改**：`evolve(units, EXTRACT)` 入口与现有实现完全一致，MiddleToLongJob 只是在它周围做了切批与归档。
+- **Evolver 保持统一请求接口**：MiddleToLongJob 仍通过 `evolve(EvolveRequest(...))` 进入现有 EXTRACT 算法，只在调用外围增加切批与归档。
 
 ---
 
@@ -67,7 +67,7 @@ mem2.0 把这件事拆回控制层标准范式：
 1. **list 候选**：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 → 过滤 `tier=WORKING + lifecycle=ACTIVE + metadata["middle"]="true"` → 按 `t_ingest` 升序取最老 max_fetch 条（默认 100）。
 2. **空候选退出**：返回 `is_done="true"`，Scheduler 的 `_merge_info` 标记 parent entry `is_done`，下次 tick 跳过；entries 全 `is_done` 时 Timer 协程退出。
 3. **连续性检测切批**：LLM 判相邻候选是否语义连续（3 次重试，失败默认连续），连续且当前批未达 `batch_size` 则留在当前批，否则切批。首条直接入首批。
-4. **批执行**：`concurrency<=1` 串行；`>1` 用 `asyncio.Semaphore` 限流 + `asyncio.gather(return_exceptions=True)` 并发，每批调 `evolver.evolve(batch, EXTRACT)`。失败批次隔离（不收集 unit），原文保留 ACTIVE+WORKING 下轮重试。
+4. **批执行**：`concurrency<=1` 串行；`>1` 用 `asyncio.Semaphore` 限流 + `asyncio.gather(return_exceptions=True)` 并发，每批调 `evolver.evolve(EvolveRequest(units=batch, mode=EvolveMode.EXTRACT))`。失败批次隔离（不收集 unit），原文保留 ACTIVE+WORKING 下轮重试。
 5. **归档原文**：转换成功的原文走 `lifecycle.transition(scope, unit_ids, ARCHIVED)` + `index.remove(units)`——非破坏式，可审计可恢复。
 
 **关键权衡**：
@@ -94,7 +94,7 @@ mem2.0 把这件事拆回控制层标准范式：
 
 ### 决策 5：`EvolveJob` —— 通用演进入口（替代原 InProcessScheduler._execute_task）
 
-`jiuwen_memory/control/jobs_impl/evolve_job.py` 注册到 `JobType.EVOLVE`。`run()` 流程：`kv.scan(scope, MEMORY_KEY_PREFIX)` → 反序列化 + 过滤 `metadata["middle"]!="true"`（中期记忆由 MiddleToLongJob 专门处理，避免同一原文被两次处理）→ `evolver.evolve(units, mode)`。`mode` 由构造参数注入，支持 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 任意值，忠实于原 `submit(scope, mode, channel)` 的 mode 语义。
+`jiuwen_memory/control/jobs_impl/evolve_job.py` 注册到 `JobType.EVOLVE`。`run()` 流程：分页读取 scope 下的记忆 → 过滤 `metadata["middle"]!="true"`（中期记忆由 MiddleToLongJob 专门处理，避免同一原文被两次处理）和 TIME 派生父级 → `evolver.evolve(EvolveRequest(units=units, mode=mode))`。`mode` 由构造参数注入，普通内容演进使用 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET；HIERARCHY 由专用 `HierarchyJob` / `HierarchyDeriveJob` 构造带 `hierarchy_options` 的请求，不走通用 `EvolveJob`。
 
 `Engine.evolve` 不再直接 new EvolveJob，走 `JobFactory.get_job(JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver)`——与 MiddleToLongJob 创建路径统一。`evolver=` 是 E-06 收口（[`F08`](F08-engine-job-builder-alignment.md)）新增的必传注入：Engine 侧缺 evolver 装配时抛 `RuntimeError`，`EvolveJobSpec` 不再自行解析 default。
 

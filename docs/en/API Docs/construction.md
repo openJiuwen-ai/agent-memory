@@ -245,14 +245,17 @@ does not block write, update, or evolve.
 ## 10. Evolver API
 
 ```python
-from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.evolver import EvolveMode, EvolveRequest, EvolveResult
 
-result = evolver.evolve(units, EvolveMode.EXTRACT)
+request = EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
+result = evolver.evolve(request)
 ```
 
-### `evolve(units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult`
+### `evolve(request: EvolveRequest) -> EvolveResult`
 
-Runs the selected memory-content evolution stage:
+Runs a content-evolution or hierarchy-construction stage. Applications normally submit the task
+through `MemoryAPI.evolve_v2`; Control/Job then assembles the selected units and options into the
+construction-layer `EvolveRequest`:
 
 | `EvolveMode` | Purpose |
 |---|---|
@@ -260,6 +263,7 @@ Runs the selected memory-content evolution stage:
 | `ASSOCIATE` | Discovers associations and maintains graph relationships |
 | `CONSOLIDATE` | Abstracts, merges, or resolves conflicts |
 | `FORGET` | Selects low-value or superseded memories, writes back lifecycle state, and removes them from retrieval |
+| `HIERARCHY` | Explicitly builds or rebuilds a hierarchy using `hierarchy_options`; it does not enter the ordinary content-evolution path |
 
 Index maintenance is not a separate EvolveMode; indexes are maintained along with
 `IndexBuilder.build/update/remove`.
@@ -272,10 +276,12 @@ Index maintenance is not a separate EvolveMode; indexes are maintained along wit
 | `updated_ids` | IDs of memories updated in place |
 | `superseded_ids` | IDs of old memories replaced by newer versions |
 | `forgotten_ids` | IDs marked as forgotten |
+| `created_units` | Newly persisted units, retained for callers after cross-Scope routing |
+| `hierarchy_result` | Hierarchy construction result for HIERARCHY mode; empty for content modes |
 
 `OrchestratingEvolver` and `DynamicEvolver` are peer targets. `DynamicEvolver` inherits the former
 and only replaces `EXTRACT` with `extract -> consolidate (decision) -> reflect -> persist`; it uses
-the parent implementation for the other three modes.
+the parent implementation for the other modes.
 
 ## 11. PromptRegistry and Dynamic Prompts
 
@@ -547,7 +553,7 @@ rebuildable memory record first, but does not wrap writes to multiple backends i
 |---|---|---|---|
 | `Dedup.recall(candidate)` | Read-only recall | Descending `(MemoryUnit, float)` pairs after filtering the candidate itself and non-ACTIVE units | Built-in implementations swallow backend exceptions and return an empty list |
 | `LayerAnnotator.annotate(units)` | Mutates `unit.layers` in place | Returns processed units; short text may retain empty layers | Built-in implementations annotate per unit/batch on a best-effort basis and do not block the main write flow |
-| `Evolver.evolve(units, mode)` | May read originals, recall for deduplication, and persist through IndexBuilder | Returns ID categories for completed work | Non-best-effort extraction/write failures propagate; completed multi-Store side effects are not rolled back automatically |
+| `Evolver.evolve(EvolveRequest)` | May read originals, recall for deduplication, and persist through IndexBuilder; HIERARCHY delegates to Composer | Returns `EvolveResult`, including completed ID categories and an optional hierarchy result | Non-best-effort extraction/write failures propagate; completed multi-Store side effects are not rolled back automatically |
 
 `EvolveResult` field types and defaults:
 

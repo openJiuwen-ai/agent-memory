@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from inspect import signature
 from types import SimpleNamespace
@@ -47,8 +48,21 @@ def capture_constructor(monkeypatch, component, **overrides):
 
 
 def capture_engine(monkeypatch, engine_kind, pipeline):
-    component = CloudEngine if engine_kind == "cloud" else InMemoryEngine
-    return capture_constructor(monkeypatch, component, pipeline=pipeline)
+    """Capture each engine through its current dependency-injection boundary."""
+    if engine_kind != "cloud":
+        return capture_constructor(monkeypatch, InMemoryEngine, pipeline=pipeline)
+
+    constructor = CloudEngine.__init__
+    captured = SimpleNamespace()
+
+    def initialize(instance, dependencies, options=None):
+        injected = replace(dependencies, pipeline=pipeline)
+        constructor(instance, injected, options)
+        captured.instance = instance
+        captured.dependencies = injected
+
+    monkeypatch.setattr(CloudEngine, "__init__", initialize)
+    return captured
 
 
 class SchemaReplyLLM(LLM):

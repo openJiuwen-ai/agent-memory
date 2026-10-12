@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from .hierarchy import HierarchyRef
 from .scope import Scope
 
 MetadataValueType = str | int | float | bool | None | list[str]
@@ -183,6 +184,9 @@ class MemoryUnit:
     # Storage.add/update 下传；一体化 Storage 消费它自建向量索引，CompositeStorage
     # 仅随本体持久化。空列表表示未向量化。
     vectors: list[ChunkVector] = field(default_factory=list)
+    # 跨 unit 树结构引用（F08），与披露层/多模态粒度/tier 正交。
+    # 追加字段以保留既有 MemoryUnit 的位置参数顺序；空结构表示未挂树。
+    hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 
     @property
     def content(self) -> str:
@@ -258,6 +262,11 @@ KERNEL_SYSTEM_METADATA_KEYS = frozenset(
         "t_invalid",
         "t_message",
         "seq",
+        # 树结构投影由 HierarchyRef 生成；kind/role 兼作合法叶提示，不能在此禁止。
+        "hierarchy_status",
+        "parent_id",
+        "span_start",
+        "span_end",
         # -- 群体记忆（F07）：内核按调用方身份写入并参与判定 --------------------
         # 作者主体：user:<id> 或 agent:<id>，由内核从身份推导，调用方不可赋值
         "author_principal",

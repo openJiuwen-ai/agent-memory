@@ -31,6 +31,10 @@ class EngineClient(Protocol):
         """Invoke an API method with JSON parameters."""
         ...
 
+    def call_v2(self, verb: str, payload: dict[str, Any]) -> tuple[int, Any]:
+        """Invoke a V2 API method with JSON parameters."""
+        ...
+
     def healthz(self) -> tuple[int, dict[str, Any]]:
         """Return the liveness status and its JSON value."""
         ...
@@ -58,19 +62,26 @@ class InProcessClient:
         return self._srv
 
     def call(self, verb: str, payload: dict[str, Any]) -> tuple[int, Any]:
-        """Decode parameters, authenticate, and call the same-named API method."""
+        """Decode parameters, authenticate, and call the V1 API method."""
+        return self._call("v1", verb, payload)
+
+    def call_v2(self, verb: str, payload: dict[str, Any]) -> tuple[int, Any]:
+        """Decode parameters, authenticate, and call the V2 API method."""
+        return self._call("v2", verb, payload)
+
+    def _call(self, version: str, verb: str, payload: dict[str, Any]) -> tuple[int, Any]:
         request_id = uuid.uuid4().hex
         error: object = "SecurityUnavailable"
         detail: object = ""
         try:
-            if not is_known_verb(verb):
+            if not is_known_verb(verb, version):
                 error = "UnknownVerb"
             elif self._authenticator is not None:
                 credentials = Credentials(api_key=os.environ.get("AGENT_MEMORY_API_KEY", ""))
                 with authenticated(
                     self._authenticator, credentials, surface=Surface.CLI, request_id=request_id
                 ) as security:
-                    return 200, invoke_api(self._srv.api, verb, payload, security)
+                    return 200, invoke_api(self._srv.api, verb, payload, security, version)
         except AgentMemoryError as exc:
             error, detail = type(exc), exc
         except Exception as exc:
@@ -109,6 +120,13 @@ class HttpClient:
             status, body, _ = error_response("UnknownVerb")
             return status, body
         return self._request("POST", f"/v1/{verb}", payload)
+
+    def call_v2(self, verb: str, payload: dict[str, Any]) -> tuple[int, Any]:
+        """Send one V2 request; currently only search and evolve are exposed."""
+        if not is_known_verb(verb, "v2"):
+            status, body, _ = error_response("UnknownVerb")
+            return status, body
+        return self._request("POST", f"/v2/{verb}", payload)
 
     def healthz(self) -> tuple[int, dict[str, Any]]:
         return self._request("GET", "/healthz", None)

@@ -213,14 +213,16 @@ annotated = annotator.annotate(units)
 ## 10. Evolver API
 
 ```python
-from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.evolver import EvolveMode, EvolveRequest, EvolveResult
 
-result = evolver.evolve(units, EvolveMode.EXTRACT)
+request = EvolveRequest(units=units, mode=EvolveMode.EXTRACT)
+result = evolver.evolve(request)
 ```
 
-### `evolve(units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult`
+### `evolve(request: EvolveRequest) -> EvolveResult`
 
-执行指定的记忆内容演进阶段：
+执行指定的内容演进或结构构建阶段。应用层通常通过 `MemoryAPI.evolve_v2` 提交任务，
+Control/Job 再把候选单元和选项组装为构建层 `EvolveRequest`：
 
 | `EvolveMode` | 作用 |
 |---|---|
@@ -228,6 +230,7 @@ result = evolver.evolve(units, EvolveMode.EXTRACT)
 | `ASSOCIATE` | 发现关联并维护图关系 |
 | `CONSOLIDATE` | 抽象、合并或冲突消解 |
 | `FORGET` | 筛选低价值或被替代记忆，回写生命周期并移出检索 |
+| `HIERARCHY` | 使用 `hierarchy_options` 显式构建或重建树结构；不进入普通内容演进分支 |
 
 索引维护不是独立 EvolveMode；索引随 `IndexBuilder.build/update/remove` 维护。
 
@@ -239,8 +242,10 @@ result = evolver.evolve(units, EvolveMode.EXTRACT)
 | `updated_ids` | 原地更新记忆 ID |
 | `superseded_ids` | 被新版本取代的旧记忆 ID |
 | `forgotten_ids` | 被标记遗忘的记忆 ID |
+| `created_units` | 实际落盘的新单元，供跨 Scope 写入后的调用链继续使用 |
+| `hierarchy_result` | HIERARCHY 模式的结构构建结果；普通内容模式为空 |
 
-`OrchestratingEvolver` 和 `DynamicEvolver` 是平级 target。`DynamicEvolver` 继承前者，只替换 `EXTRACT` 为 `extract -> consolidate（判定）-> reflect -> 落盘`；其他三种模式沿用父类实现。
+`OrchestratingEvolver` 和 `DynamicEvolver` 是平级 target。`DynamicEvolver` 继承前者，只替换 `EXTRACT` 为 `extract -> consolidate（判定）-> reflect -> 落盘`；其他模式沿用父类实现。
 
 ## 11. PromptRegistry 与动态 prompt
 
@@ -493,7 +498,7 @@ rebuild() -> None
 |---|---|---|---|
 | `Dedup.recall(candidate)` | 只读召回 | 按分数降序的 `(MemoryUnit, float)`；过滤 candidate 自身和非 ACTIVE 单元 | 内置实现吞掉后端异常并返回空列表 |
 | `LayerAnnotator.annotate(units)` | 原地更新 `unit.layers` | 返回已处理单元；短文本可保持空 layers | 内置实现按单条/单批 best effort，标注失败不阻断主写入 |
-| `Evolver.evolve(units, mode)` | 可读原文、召回去重并通过 IndexBuilder 落盘 | 返回本次已完成的 ID 分类 | 非 best-effort 的抽取/写入失败向上抛出；已完成的多 Store 副作用不自动回滚 |
+| `Evolver.evolve(EvolveRequest)` | 可读原文、召回去重并通过 IndexBuilder 落盘；HIERARCHY 委托 Composer | 返回 `EvolveResult`，包括已完成的 ID 分类及可选结构结果 | 非 best-effort 的抽取/写入失败向上抛出；已完成的多 Store 副作用不自动回滚 |
 
 `EvolveResult` 的字段类型和默认值：
 

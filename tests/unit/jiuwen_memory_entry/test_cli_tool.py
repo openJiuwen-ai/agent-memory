@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """CLI 面验证：契约锁、会话内闭环与辅助命令（重建 test_cli.py 消失后的验证证据）。
 
-CLI 命令集由 ``MemoryAPI.__abstractmethods__`` 反射生成（``cli/__main__.py:42``），
+CLI 命令集由 V1 ``api_method_names()`` 反射生成（``cli/__main__.py:42``），
 本文件锁四件事：
 1. 契约锁——36 个方法全部有同名子命令、选项名与 ``api_contract`` 零漂移；
 2. 会话内闭环——同一 client 的 add→search→list→get→update→delete→evolve 全链路；

@@ -77,6 +77,9 @@
 
 6. **检索型 Store 的 search 物理约束在 scope 内**
    `FulltextStore.search(scope, query)` / `VectorStore.search(scope, query)` / `GraphStore.search(scope, query)` 绝不跨 scope 返回。
+   全文/向量（包括内存实现）先应用 FilterExpr 再截断 top_k；结构六键为保留裸字段，
+   用户同名字段须显式写 `user_metadata.<key>`。图召回现有接口只在物化后复核结构，
+   不能保证被图侧 limit 截断的有效候选重新进入结果。
 
 7. **后端不可用统一抛 BackendError**
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
@@ -215,8 +218,7 @@
     接线。跨 Store 集的整栈切换走 Routing，不属命名数据面语义。
 17. **纯点读/列表读注入 KVStore 端口**：Dedup `_load_unit` / Governor `_find` / Evolver
     源读 / KeywordRecaller 实体扩展等纯点读场景注入 `manager.kv(name)` + `load_units`；
-    control 面（Engine×2 / LifecycleManager / EvolveJob / MiddleToLongJob）真源读写全部直连
-    `manager.kv(name)`（点读 `load_units` / 列表 `list_units` / 枚举 `kv.scopes()`，lifecycle
-    回写 `memory_key`+`dumps` 同 ForwardIndexBuilder 模式）——均不注入 DomainStore（运行期持
-    最小接口，F07 决策 10 修订并推进到 control 面）。DomainStore 消费方只有检索路径
+    InMemoryEngine、LifecycleManager 与各演进 Job 继续使用 `manager.kv(name)`；
+    CloudEngine 的 MemoryUnit 点读、列表与 Scope 枚举经 DomainStore 完成，仅向建树
+    Job 转交专用 KV 端口。DomainStore 同时服务 CloudEngine、检索路径
     （`PipelineRetriever`）与一体化写路径（`UnifiedIndexBuilder`）。

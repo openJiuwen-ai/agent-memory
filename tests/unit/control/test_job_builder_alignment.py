@@ -25,8 +25,8 @@ from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer impo
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, memory_key
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory_codec import dumps
-from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveRequest, EvolveResult
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
@@ -34,7 +34,7 @@ from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
 from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
-from jiuwen_memory.control.types import Channel, JobStatus
+from jiuwen_memory.control.types import Channel, EvolveTaskOptions, JobStatus
 from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
@@ -111,8 +111,20 @@ class _StubEvolver(Evolver):
     def health(self) -> None:
         return None
 
-    def evolve(self, units, mode: EvolveMode) -> EvolveResult:
-        return EvolveResult(created_ids=[f"derived-{unit.id}" for unit in units])
+    @staticmethod
+    def evolve(request: EvolveRequest) -> EvolveResult:
+        return EvolveResult(created_ids=[f"derived-{unit.id}" for unit in request.units])
+
+
+class _ObservedEvolver(_StubEvolver):
+    """记录真实 Job 调用，验证运行时 Evolver 注入。"""
+
+    def __init__(self) -> None:
+        self.requests: list[EvolveRequest] = []
+
+    def evolve(self, request: EvolveRequest) -> EvolveResult:
+        self.requests.append(request)
+        return super().evolve(request)
 
 
 class _ContinuityLLM(LLM):
@@ -205,7 +217,7 @@ def _evolve_job_factory() -> JobFactory:
 
 def test_engine_evolve_injects_own_evolver_into_job() -> None:
     """Engine.evolve 提交的 EvolveJob 持有 Engine 装配的同一 Evolver。"""
-    evolver = _StubEvolver()
+    evolver = _ObservedEvolver()
     scheduler = _RecordingScheduler()
     engine = InMemoryEngine(
         ingestor=None,
@@ -218,11 +230,15 @@ def test_engine_evolve_injects_own_evolver_into_job() -> None:
         job_factory=_evolve_job_factory(),
     )
 
-    asyncio.run(engine.evolve(_SCOPE, EvolveMode.CONSOLIDATE, Channel.HOT))
+    options = EvolveTaskOptions(mode=EvolveMode.CONSOLIDATE, channel=Channel.HOT)
+    asyncio.run(engine.evolve(_SCOPE, options))
 
     assert len(scheduler.calls) == 1
     job, _ = scheduler.calls[0]
-    assert job._evolver is evolver  # pylint: disable=protected-access
+    assert evolver.requests == []
+    info = asyncio.run(job.run())
+    assert info.status is JobStatus.SUCCEEDED
+    assert evolver.requests == [EvolveRequest(units=[], mode=EvolveMode.CONSOLIDATE)]
 
 
 def test_engine_evolve_without_evolver_raises() -> None:
@@ -239,7 +255,9 @@ def test_engine_evolve_without_evolver_raises() -> None:
     )
 
     with pytest.raises(RuntimeError, match="requires an Evolver"):
-        asyncio.run(engine.evolve(_SCOPE, EvolveMode.EXTRACT, Channel.HOT))
+        asyncio.run(engine.evolve(
+            _SCOPE, EvolveTaskOptions(mode=EvolveMode.EXTRACT, channel=Channel.HOT)
+        ))
 
 
 # ---- 端到端：双 Builder 下 Job 始终用 Engine 的 ----
