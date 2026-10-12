@@ -173,14 +173,8 @@ def test_batch_add_malformed_item_does_not_raise_internal_error() -> None:
     assert body["outcomes"][1]["ok"] is True
 
 
-@pytest.mark.parametrize(
-    "item",
-    [
-        {"content": "invalid modality", "source": "unknown"},
-        {"content": "invalid time", "occurred_at": "not-a-datetime"},
-    ],
-)
-def test_batch_add_invalid_item_fields_return_structured_outcome(item: dict[str, str]) -> None:
+def test_batch_add_invalid_item_source_returns_validation_error() -> None:
+    """item 显式声明非法 source/modality → 与 _add 对齐：整个请求 400。"""
     class _KernelServer:
         def __init__(self) -> None:
             self.api = build_kernel().api
@@ -190,7 +184,33 @@ def test_batch_add_invalid_item_fields_return_structured_outcome(item: dict[str,
         "batch_add",
         {
             "defaults": {"tenant_id": "acme", "scope": "alice"},
-            "items": [item, {"content": "valid"}],
+            "items": [
+                {"content": "invalid modality", "source": "unknown"},
+                {"content": "valid"},
+            ],
+        },
+    )
+
+    assert status == 400, body
+    assert body["error"] == "ValidationError"
+    assert "batch item source must be one of" in body["message"]
+
+
+def test_batch_add_invalid_item_occurred_at_returns_structured_outcome() -> None:
+    """item 非法 occurred_at → 保持原行为：200 + per-item 结构化 outcome。"""
+    class _KernelServer:
+        def __init__(self) -> None:
+            self.api = build_kernel().api
+
+    status, body = _dispatch(
+        _KernelServer(),
+        "batch_add",
+        {
+            "defaults": {"tenant_id": "acme", "scope": "alice"},
+            "items": [
+                {"content": "invalid time", "occurred_at": "not-a-datetime"},
+                {"content": "valid"},
+            ],
         },
     )
 
