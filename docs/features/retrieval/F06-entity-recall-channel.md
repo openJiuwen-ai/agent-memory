@@ -96,7 +96,7 @@ entity 索引的隔离维度：`space_id`（`space_id_from_scope`）走 ES routi
 `FulltextStore.search` 返回 `ScoredID(id, score, metadata)`，score 由后端给出：
 
 - **ES 后端**（`elasticsearch_fulltext.py`）：`match` 查询的 BM25 相关性得分（`_score`）。
-- **内存后端**（`in_memory_fulltext_store.py`）：词重叠率 `hits / len(tokens)`，模拟 BM25 的"命中词占比"。
+- **内存后端**（`in_memory_fulltext_store.py`）：`common.bm25.bm25_scores` 计算的原始 BM25 分。
 
 两种后端绝对分值不同，但语义一致——**分越大越相关**。`aggregate_to_units` 把同 `unit_id` 的多条命中（全文按 unit 建索引时为恒等映射，通常 1:1）按 **MaxP**（取最高分）归并到 unit 粒度，产出 batch 1 的 `list[ScoredUnit]`，记其分值集合为 `S1`。
 

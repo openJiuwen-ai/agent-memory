@@ -22,11 +22,10 @@ IDF 与 avgdl 取自候选池而非全库——``Fuser`` 接口能拿到的最�
 
 from __future__ import annotations
 
-import math
-from collections import Counter
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Mapping
 
+from jiuwen_memory.common.bm25 import bm25_scores
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.tokenizer import Tokenizer
 from jiuwen_memory.common.tokenizer.base import TokenizerProducer
@@ -38,45 +37,6 @@ from jiuwen_memory.retrieval.types import ChannelEvidence, ParsedQuery, RecallCh
 from .layered_merge import merge_layered_channels
 
 logger = get_logger(__name__)
-
-
-def _bm25_scores(
-    corpus: list[list[str]], query_tokens: list[str], k1: float, b: float
-) -> list[float]:
-    """Okapi BM25（Lucene ``BM25Similarity`` 公式），返回与 ``corpus`` 同序的得分::
-
-        idf(t)   = log(1 + (N - df(t) + 0.5) / (df(t) + 0.5))
-        score(d) = Σ_t  idf(t) × freq(t,d) × (k1 + 1) / (freq(t,d) + k1 × norm(d))
-        norm(d)  = 1 - b + b × dl(d) / avgdl
-
-    与旧的词重叠表达式 ``hits / len(tokens)`` 的三点差异：IDF 加权（罕见词与停用词
-    不再等权）、词频饱和（第 10 次命中不等价于第 1 次）、长度归一强度可调（``b``）。
-    """
-    n = len(corpus)
-    if not n or not query_tokens:
-        return [0.0] * n
-    freqs = [Counter(doc) for doc in corpus]
-    df: Counter[str] = Counter()
-    for freq in freqs:
-        df.update(freq.keys())
-    total = sum(len(doc) for doc in corpus)
-    # 空批 / 全空文档：avgdl 退化为 1.0，长度归一项恒为 1，不触发除零。
-    avgdl = (total / n) if total else 1.0
-    idf = {
-        term: math.log(1.0 + (n - df.get(term, 0) + 0.5) / (df.get(term, 0) + 0.5))
-        for term in set(query_tokens)
-    }
-    scores: list[float] = []
-    for doc, freq in zip(corpus, freqs):
-        norm = k1 * (1.0 - b + b * len(doc) / avgdl)
-        score = 0.0
-        # query 内重复词按重复次数计入（与 Lucene 的 query 端行为一致）。
-        for term in query_tokens:
-            tf = freq.get(term, 0)
-            if tf:
-                score += idf[term] * tf * (k1 + 1.0) / (tf + norm)
-        scores.append(score)
-    return scores
 
 
 class BM25ScoredFuser(Fuser):
@@ -161,7 +121,7 @@ class BM25ScoredFuser(Fuser):
             )
             return {}
         order = list(texts)
-        raw = _bm25_scores(
+        raw = bm25_scores(
             [self._tokenizer.tokenize(texts[uid]) for uid in order],
             q_tokens,
             self._k1,

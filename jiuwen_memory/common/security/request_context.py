@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from contextvars import ContextVar, Token
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.security.types import (
     AuthContext,
@@ -74,7 +74,7 @@ def new_request_context(
         request_id=request_id or uuid.uuid4().hex,
         peer=peer,
         surface=surface,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         attributes=attributes or {},
         _origin="",  # 占位符
     )

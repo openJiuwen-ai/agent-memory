@@ -38,7 +38,6 @@ from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
-from tests.conftest import make_storage
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -46,6 +45,7 @@ from jiuwen_memory.storage.types import (
     VectorRecord,
 )
 from jiuwen_memory.storage.vector import VectorStore
+from tests.conftest import make_storage
 
 pytestmark = pytest.mark.unit
 
@@ -965,9 +965,11 @@ class TestDedupMiddleFilter:
         from jiuwen_memory.storage.types import Document
 
         kv = _MemoryKVStore()
-        fulltext = InMemoryFulltextStore(tokenizer=WhitespaceTokenizer())
+        tokenizer = WhitespaceTokenizer()
+        fulltext = InMemoryFulltextStore(tokenizer=tokenizer)
         dedup = KeywordDedup(
             storage=make_storage(kv=kv, fulltext=fulltext),
+            tokenizer=tokenizer,
             min_similarity=0.0,
             top_k=10,
             tier_filter=False,

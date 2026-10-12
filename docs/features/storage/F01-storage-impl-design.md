@@ -7,7 +7,7 @@
 | 日期 | 2026-06-24 |
 | 影响范围 | jiuwen_memory/storage/{kv,vector,fulltext,fusion,graph,fs}_impl/，docs/specs/S06-storage.md（如有） |
 | 测试基线 | `pytest tests/unit/storage tests/integration/storage` 全绿（真实后端 redis/milvus/es/nano-graphrag/postgres 未配置或不可达时按约定 skip；PostgreSQL 真库由 `AGENT_MEMORY_TEST_PG_DSN` 启用） |
-| Refs | —（如有 issue 补 `Refs: #<n>`） |
+| Refs | #227（内存全文排序与去重相似度修复） |
 
 > 本文档归档**存储层各后端实现的规约**：每个 `*_impl/` 实现对应哪个接口契约、注册名（`target`）、必填/可选参数、scope 隔离方式、CRUD/search 语义与各自取舍。接口契约本身（方法签名、错误语义、不变量）归 `docs/specs/S06-storage.md`；本文聚焦「当前有哪几种后端、各自怎么落地、为什么这样选」。
 
@@ -67,8 +67,24 @@
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
-| `memory` | `InMemoryFulltextStore` | 进程内词重叠计分 | — | 依赖 `tokenizer`（`dep`，缺省 `whitespace`） | scope 折五段命名空间键 | 分词复用注入的 `Tokenizer`（与构建侧同实例=同词表）；`score`=命中词数/文档词数模拟 BM25；降序 top-k |
+| `memory` | `InMemoryFulltextStore` | 进程内 BM25 计分 | — | 依赖 `tokenizer`（`dep`，缺省 `whitespace`） | scope 折五段命名空间键 | 分词复用注入的 `Tokenizer`（与构建侧同实例=同词表）；`score`=`common.bm25.bm25_scores` 原始 BM25 分（k1=1.2、b=0.75）；过滤正分、降序 top-k |
 | `elasticsearch` | `ElasticsearchFulltextStore` | Elasticsearch（`elasticsearch-py` 8.x 惰性导入） | `hosts` | `index`(`agent_memory_fulltext`)/`username`+`password` 或 `api_key`/`text_field`(`text`)/`refresh`(`false`) | scope 落文档 `scope.{dim}` 嵌套 keyword，`term` 过滤非空维 | 首次连接 `_ensure_index`：`metadata.*` 字符串**动态映射为 keyword**（精确等值/集合/包含；text 分析器会拆词小写化导致匹配不上），数值/布尔动态推断支持 range；`insert`=bulk `create`（409→`ConflictError`），`update` 先 mget 查缺→`NotFoundError` 再 bulk `index`，`delete`=bulk `delete` 按物理 `_id` 精确删（实时可见，scope 隔离由 `_doc_id` 五段编码保证）；`refresh: wait_for` 让写入对随后 search 立即可见；`search`=`match` + scope/filters，`score`=BM25 `_score` |
+
+#### 内存全文排序与去重相似度（#227）
+
+旧实现 `hits / len(tokens)` 缺少 IDF 与词频饱和，短文档被过度加权；查询
+`S1SMOKE-01` 时，仅共享 `s1smoke` 的短记忆可能排在包含完整标识的长记忆之前。
+因此将既有 `BM25ScoredFuser` 的 Lucene/Okapi 公式抽取到
+`jiuwen_memory.common.bm25.bm25_scores`，供融合器与内存全文后端共同使用，避免存储层依赖检索层私有函数。
+
+全文后端以当前 scope 内缓存的 token 列表为 corpus，返回原始 BM25 分，固定
+`k1=1.2`、`b=0.75`，只保留正分并降序截断 `top_k`，不新增配置项。
+`WhitespaceTokenizer` 的连字符切词规则保持不变。
+
+BM25 只负责召回排序，不是去重相似度：单文档完全重复可能低于 `0.5`，部分词重叠也可能超过
+`0.9`。`KeywordDedup` 加载真实 unit 后，使用共享 Tokenizer 计算 token-set Jaccard，
+再用于 `min_similarity` 过滤和 Evolver 阈值判定。默认装配使用 `dedup.vector` 与
+`dedup.keyword`；Evolver 未显式配置 `params.dedup` 时按 `vector_enabled` 选择。
 
 ### FusionStore（`storage/fusion.py` · `FusionProducer` · TOP_NAME=`fusion_store`）
 
@@ -103,6 +119,9 @@
 
 ## 拒绝的方案
 
+- **Storage 引用 Retrieval 的私有 BM25 函数**：跨层耦合不必要；公式抽取到 `common` 供两个调用方复用。
+- **归一化 BM25 到 `[0, 1]` 或直接用于去重阈值**：批次最高分归一为 `1` 仍是相对相关性，不能解释重复程度；保留原始 BM25 排序，由 `KeywordDedup` 单独计算有界 Jaccard。
+- **增加 query 覆盖率阈值、短语匹配或修改连字符分词**：会引入匹配策略、误杀风险或全局分词语义变更；本次只修复排序与去重分数量纲。
 - **`import nano_graphrag` 直接用其图存储**：被拒。包 `__init__` 急切拉起整条 GraphRAG 流水线（openai/tiktoken/graspologic/dspy/hnswlib/neo4j），在新版 Python 上多无法构建。改用 `PathFinder` + stub 占位，只加载 `_storage.gdb_networkx` 子模块。
 - **重依赖后端缺失即 import 失败 / 连坐默认实现**：被拒。改为惰性导入——未装 redis/pymilvus/es/nano-graphrag 仍可 `import jiuwen_memory.storage` 并完成工厂注册，只有真正访问后端才抛 `BackendError`；可选后端在 `jiuwen_memory/storage/*_impl/__init__.py` 用 `try/except ImportError` 包裹，互不连坐。
 - **必填连接参数（url/uri/hosts/root/working_dir）惰性校验**：被拒。改为 `Factory.require_param` 在 **build 阶段**即报错，而非拖到首次连接才暴露。
@@ -119,12 +138,18 @@
 - `pytest tests/unit/storage tests/integration/storage` 全绿（exit 0）。
 - 真实后端（redis 落盘已装、milvus@19530 / nano-graphrag fusion 未连通）按现有 integration 约定 **自动 skip**；`redis` lazy-missing 路径在已装 redis 的环境下亦 skip。
 - 内存实现（memory/sqlite/local/networkx-shim）在无外部服务下全程可跑，是 CI 的常驻覆盖面。
+- #227 目标测试 57 passed，全量 unit 通过（8 skipped），`ruff check` 通过。验证覆盖：
+  - `tests/unit/storage/fulltext_impl/test_in_memory_fulltext_store.py`：目标长文档优先、无词面命中不返回、分数降序。
+  - `tests/unit/retrieval/test_bm25_scored_fuser.py`：公式抽取不改变融合行为。
+  - `tests/unit/construction/dedup_impl/test_keyword_dedup.py`：完全重复、部分重叠、固定后端分替换、无命中与空 token union，确保去重阈值不依赖 BM25。
+  - `tests/unit/construction/test_evolver_dedup.py` 与 `tests/unit/api/test_build_kernel_config.py`：去重回归，以及 fulltext-only 默认 orchestrating/dynamic 选择 `KeywordDedup`、向量默认选择 `VectorDedup`、关键词去重与全文索引共享 tokenizer。
 
 ---
 
 ## 已知遗留
 
+- **部分词干命中仍可获得正 BM25 分**：完整短语或标识匹配应作为独立策略设计，不混入排序修复。
+- **Jaccard 忽略 token 频率与顺序**：完全重复为 `1.0`，部分重叠具有稳定口径；语义级相似度由向量路或 Evolver 的 LLM 判定承担。
 - **`milvus_graph` 融合不支持 text/BM25 通道**：`FusionQuery.text` / `vector_weight` 仅 `InMemoryFusionStore` 实现，Milvus 融合形态聚焦「向量→图」，文本只随记录存储供 get 回读。
 - **`milvus_graph` update 不移除旧链边**：`update` 走 upsert 追加新边，移除旧链需 `delete + insert`。
-- **`InMemoryFulltextStore` 计分非真 BM25**：词重叠比值近似，仅用于离线/测试；生产全文走 ES。
 - **`nano_graphrag` 单边模型**：同一对端点至多一条边，多重关系无法并存（再插按冲突处理）。

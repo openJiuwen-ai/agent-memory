@@ -68,7 +68,6 @@ memory_api:
         index_builder: default
         kv_store: default
         graph_store: default
-        dedup: default
         llm: default
         layer_annotator: null  # 视频 profile 显式禁用 L0/L1 标注，对齐 F05（CLM/ELM 用 memory_level 区分层级）
 

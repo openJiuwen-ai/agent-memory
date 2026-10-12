@@ -184,10 +184,14 @@ def default_config_dict() -> dict[str, Any]:
             }
         },
         "dedup": {
-            _D: {
+            "vector": {
                 "target": "vector",
                 "params": {"embedder": _D},
-            }
+            },
+            "keyword": {
+                "target": "keyword",
+                "params": {"tokenizer": _D},
+            },
         },
         "evolver": {
             _D: {
@@ -201,7 +205,6 @@ def default_config_dict() -> dict[str, Any]:
                     # （/messages/ 与 /memory/ 靠 key 前缀分离）。要物理拆开，
                     # 声明另一个 kv_store 具名实例并把此处改成它的名字。
                     "message_store": _D,
-                    "dedup": _D,
                     "llm": _D,
                 },
             },
@@ -218,7 +221,6 @@ def default_config_dict() -> dict[str, Any]:
                     # （/messages/ 与 /memory/ 靠 key 前缀分离）。要物理拆开，
                     # 声明另一个 kv_store 具名实例并把此处改成它的名字。
                     "message_store": _D,
-                    "dedup": _D,
                     "llm": _D,
                 },
             },

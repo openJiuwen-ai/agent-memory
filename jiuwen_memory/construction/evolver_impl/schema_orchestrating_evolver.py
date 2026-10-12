@@ -18,7 +18,7 @@ from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.common import merge_unit_tags
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer
+from jiuwen_memory.construction.dedup import Dedup, resolve_dedup
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
@@ -235,7 +235,6 @@ def _optional_layer_annotator(config):
 def _build(config):
     vector_on = config.get("vector_enabled", True)
     index_default = "hybrid" if vector_on else "fulltext"
-    dedup_default = "vector" if vector_on else "keyword"
     storage = StoreManagerProducer.resolve(config)
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
@@ -244,7 +243,7 @@ def _build(config):
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=index_default),
         storage=storage,
         message_store=_resolve_message_store(config),
-        dedup=DedupProducer.dep(config, default=dedup_default),
+        dedup=resolve_dedup(config, vector_enabled=vector_on),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_optional_layer_annotator(config),
         kv_name=resolve_name(config, "kv_store"),

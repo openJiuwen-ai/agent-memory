@@ -135,7 +135,7 @@
 ## 已知遗留
 
 - **LLM 改写 / 时间解析默认关闭**：缺省走 `echo` + 规则版，真正的 query 改写与复杂时间解析需显式注入 LLM 并承担延迟/漂移。
-- **InMemory 召回为近似计分**：内存向量走暴力余弦、内存全文走词重叠比值近似 BM25，仅供离线/测试；生产召回走 milvus / es。
+- **InMemory 召回供离线/测试**：内存向量走暴力余弦，内存全文走原始 BM25；生产召回走 milvus / es。
 - **图召回依赖已建图**：`graph` 通道依赖构建层 ASSOCIATE 已建关联图，图为空时该路无产出。
 - **FusionStore 未接入 pipeline**：`PipelineRetriever` 走分离的多路 `recaller` + `Fuser`；向量·倒排·正排合一的 `fusion_store` 形态（见存储层规约）是另一条尚未编排进检索链路的路径。
 - **`structured_discloser` 字段约定待打磨**：结构化输出面向特定 Agent 消费约定，通用性与稳定性仍需迭代。

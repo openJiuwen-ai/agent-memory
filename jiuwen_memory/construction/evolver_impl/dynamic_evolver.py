@@ -19,8 +19,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
@@ -36,7 +35,7 @@ from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.abstractor import AbstractorProducer
 from jiuwen_memory.construction.associator import AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext
-from jiuwen_memory.construction.dedup import DedupProducer
+from jiuwen_memory.construction.dedup import resolve_dedup
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
@@ -68,7 +67,7 @@ class ConsolidateDecision:
 
     candidate: MemoryUnit
     decision: DedupDecision
-    existing: Optional[MemoryUnit]
+    existing: MemoryUnit | None
     score: float
 
 
@@ -89,7 +88,7 @@ class DynamicEvolver(OrchestratingEvolver):
         super().__init__(*args, **kwargs)
         self._prompts = prompt_registry or PromptRegistry()
 
-    def _evolve_extract(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         """动态四步：extract → consolidate(判定) → reflect → 落盘。
 
         procedural 路径仍走父类行为（不收集 context、不判定、直接落盘）——
@@ -114,9 +113,9 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _extract_step(
         self,
-        units: List[MemoryUnit],
-        context: Optional[ExtractContext],
-    ) -> List[MemoryUnit]:
+        units: list[MemoryUnit],
+        context: ExtractContext | None,
+    ) -> list[MemoryUnit]:
         extracted = self._extractor.extract(units, context=context)
         logger.info("DynamicEvolver: EXTRACT extractor returned %d units", len(extracted))
         if not extracted:
@@ -137,9 +136,9 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _consolidate_step(
         self,
-        candidates: List[MemoryUnit],
-    ) -> List[ConsolidateDecision]:
-        decisions: List[ConsolidateDecision] = []
+        candidates: list[MemoryUnit],
+    ) -> list[ConsolidateDecision]:
+        decisions: list[ConsolidateDecision] = []
         for candidate in candidates:
             try:
                 hits = self._dedup.recall(candidate)
@@ -164,8 +163,8 @@ class DynamicEvolver(OrchestratingEvolver):
     def _judge(
         self,
         candidate: MemoryUnit,
-        hits: List[Tuple[MemoryUnit, float]],
-    ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+        hits: list[tuple[MemoryUnit, float]],
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         if not hits:
             return DedupDecision.ADD, None, 0.0
         existing, score = max(hits, key=lambda item: item[1])
@@ -188,7 +187,7 @@ class DynamicEvolver(OrchestratingEvolver):
                 return DedupDecision.NOOP, existing, score
             return DedupDecision.ADD, existing, score
 
-    def _resolve_consolidate_prompt(self, candidate: MemoryUnit) -> Optional[str]:
+    def _resolve_consolidate_prompt(self, candidate: MemoryUnit) -> str | None:
         prompts = parse_prompt_strategies(
             candidate.system_metadata, CONSOLIDATION_PROMPT_PREFIX
         )
@@ -207,9 +206,9 @@ class DynamicEvolver(OrchestratingEvolver):
     def _llm_judge(
         self,
         candidate: MemoryUnit,
-        hits: List[Tuple[MemoryUnit, float]],
+        hits: list[tuple[MemoryUnit, float]],
         prompt: str,
-    ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         hit_map = {unit.id: (unit, score) for unit, score in hits[:5]}
         existing_text = "\n\n".join(
             f"[Memory ID: {unit.id}]\nContent: {unit.content}\n"
@@ -244,9 +243,9 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _reflect_step(
         self,
-        candidates: List[MemoryUnit],
-        decisions: List[ConsolidateDecision],
-    ) -> List[MemoryUnit]:
+        candidates: list[MemoryUnit],
+        decisions: list[ConsolidateDecision],
+    ) -> list[MemoryUnit]:
         return candidates
 
     # ------------------------------------------------------------------
@@ -255,8 +254,8 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _persist_decisions(
         self,
-        candidates: List[MemoryUnit],
-        decisions: List[ConsolidateDecision],
+        candidates: list[MemoryUnit],
+        decisions: list[ConsolidateDecision],
     ) -> EvolveResult:
         result = EvolveResult()
         for decision in decisions:
@@ -273,7 +272,7 @@ class DynamicEvolver(OrchestratingEvolver):
         self,
         candidate: MemoryUnit,
         decision: DedupDecision,
-        existing: Optional[MemoryUnit],
+        existing: MemoryUnit | None,
         similarity: float,
         result: EvolveResult,
     ) -> int:
@@ -324,7 +323,7 @@ class DynamicEvolver(OrchestratingEvolver):
         )
         self._index.build([candidate])
         existing.lifecycle = LifecycleState.SUPERSEDED
-        existing.temporal.t_invalid = datetime.now(timezone.utc)
+        existing.temporal.t_invalid = datetime.now(UTC)
         self._index.update([existing])
         result.created_ids.append(candidate.id)
         result.created_units.append(candidate)
@@ -386,7 +385,6 @@ def _build(config):
     """
     vector_on = config.get("vector_enabled", True)
     ib_default = "hybrid" if vector_on else "fulltext"
-    dr_default = "vector" if vector_on else "keyword"
 
     def _opt_annotator():
         from jiuwen_memory.construction.layer_annotator import LayerAnnotatorProducer
@@ -415,7 +413,7 @@ def _build(config):
         index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         storage=StoreManagerProducer.resolve(config),
         message_store=_resolve_message_store(config),
-        dedup=DedupProducer.dep(config, default=dr_default),
+        dedup=resolve_dedup(config, vector_enabled=vector_on),
         llm=LlmProducer.dep(config, default="echo"),
         layer_annotator=_opt_annotator(),
         router=optional_router(config),

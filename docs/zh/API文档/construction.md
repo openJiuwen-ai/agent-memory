@@ -194,6 +194,8 @@ similar = dedup.recall(candidate)
 4. 按 unit 聚合取最大分；
 5. 应用 `min_similarity`。
 
+向量路返回 cosine；关键词路返回 token-set Jaccard。FulltextStore 的 BM25/`_score` 只用于召回候选池排序。
+
 Dedup 只召回，不决定 `ADD/UPDATE/SUPERSEDE/NOOP`。判定与落盘由 Evolver 负责。去重是 best effort，内置实现遇到异常会返回空列表而不是阻断演进。
 
 ## 9. LayerAnnotator API
@@ -338,7 +340,7 @@ constructor:             # Producer.TOP_NAME
 | 命名空间 | `target` | 实现类 | 功能 | 依赖与主要参数 |
 |---|---|---|---|---|
 | `dedup` | `vector` | `VectorDedup` | Embedder + Vector Store 相似召回 | `storage`、`embedder`；`dedup_min_similarity`、`dedup_top_k`、`dedup_tier_filter`、`dedup_scope_filter` |
-| `dedup` | `keyword` | `KeywordDedup` | Fulltext Store 召回后用词重叠率计分 | `storage`；参数同 vector |
+| `dedup` | `keyword` | `KeywordDedup` | Fulltext Store 召回后计算 token-set Jaccard | `storage`、`tokenizer`；参数同 vector |
 | `layer_annotator` | `keyword` | `KeywordLayerAnnotator` | 规则生成 L0/L1 | `layer_annotator_threshold`、`layer_annotator_l1_chars` |
 | `layer_annotator` | `llm` | `LLMLayerAnnotator` | LLM 批量生成并严格校验 L0/L1 | `llm`；阈值与重试参数 |
 | `evolver` | `orchestrating` | `OrchestratingEvolver` | legacy 四模式；EXTRACT 中去重判定与落盘耦合 | extractor、abstractor、associator、index_builder、storage、message_store、dedup、llm；可用 `params.layer_annotator` 选择、禁用标注器 |
@@ -357,7 +359,8 @@ constructor:             # Producer.TOP_NAME
 | `associator.default` | `keyword` | 关键词关联 |
 | `classifier.default` | `llm` | 使用共享 `llm.default`；离线默认为 echo |
 | `constructor.default` | `hybrid` | storage + chunker + embedder |
-| `dedup.default` | `vector` | storage + embedder |
+| `dedup.vector` | `vector` | storage + embedder；`vector_enabled=true` 时默认选择 |
+| `dedup.keyword` | `keyword` | storage + tokenizer；`vector_enabled=false` 时默认选择 |
 | `evolver.default` | `orchestrating` | 默认 legacy EXTRACT |
 | `evolver.dynamic` | `dynamic` | 已声明具名实例，但不会自动替代 default |
 | `layer_annotator` | 未默认声明 | Evolver 未找到具名 default 时不标注 |
@@ -401,7 +404,7 @@ evolver:
       index_builder: default
       storage: default
       message_store: default
-      dedup: default
+      dedup: vector
       llm: default
       dedup_medium_similarity: 0.7
       dedup_high_similarity: 0.9

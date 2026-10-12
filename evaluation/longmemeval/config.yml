@@ -67,7 +67,7 @@ memory_api:
         index_builder: default
         kv_store: default
         graph_store: default
-        dedup: default
+        dedup: vector
         llm: default
 
   kv_store:

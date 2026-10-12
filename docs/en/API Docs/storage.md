@@ -579,7 +579,7 @@ matches the PostgreSQL KV implementation.
 
 | `target` | Implementation class | Function | Required parameters | Main optional parameters |
 |---|---|---|---|---|
-| `memory` | `InMemoryFulltextStore` | In-process term-hit scoring based on a Tokenizer. | None | `tokenizer` (named reference; default is an anonymous `whitespace` tokenizer) |
+| `memory` | `InMemoryFulltextStore` | In-process raw BM25 search based on a Tokenizer. | None | `tokenizer` (named reference; default is an anonymous `whitespace` tokenizer) |
 | `elasticsearch` | `ElasticsearchFulltextStore` | Elasticsearch document CRUD plus `match`/BM25 search, with pushed-down Scope and FilterExpr. | `hosts` | `index`, `username`, `password`, `api_key`, `text_field`, `text_analyzer`, `refresh`, `ssl_verify`, `ssl_ca_cert` |
 
 ```yaml

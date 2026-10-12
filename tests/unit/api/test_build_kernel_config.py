@@ -293,3 +293,64 @@ def test_security_namespace_params_apply_on_encrypted_kv_target() -> None:
     getattr(encrypted, "_raw").insert(SCOPE, "plain_key", b"hello-plaintext")
     with pytest.raises(BackendError):
         kernel.kv.get(SCOPE, "plain_key")
+
+
+def test_dedup_default_assembly_follows_vector_switch(monkeypatch) -> None:
+    """fulltext-only 默认链路必须真正切换到 KeywordDedup。"""
+    from jiuwen_memory.common.tokenizer.base import TokenizerProducer
+    from jiuwen_memory.config.defaults import default_context
+    from jiuwen_memory.construction.dedup_impl.keyword_dedup import KeywordDedup
+    from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
+    from jiuwen_memory.construction.evolver import EvolverProducer
+    from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+    from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+    from jiuwen_memory.storage.fulltext import FulltextProducer
+    from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
+
+    evolver_dependencies = []
+    keyword_tokenizers = {}
+    fulltext_tokenizers = {}
+    evolver_init = OrchestratingEvolver.__init__
+    keyword_init = KeywordDedup.__init__
+    fulltext_init = InMemoryFulltextStore.__init__
+
+    def capture_evolver(self, *args, **kwargs):
+        evolver_init(self, *args, **kwargs)
+        evolver_dependencies.append((self, kwargs["dedup"]))
+
+    def capture_keyword(self, *args, **kwargs):
+        keyword_init(self, *args, **kwargs)
+        keyword_tokenizers[self] = kwargs["tokenizer"]
+
+    def capture_fulltext(self, tokenizer):
+        fulltext_init(self, tokenizer)
+        fulltext_tokenizers[self] = tokenizer
+
+    monkeypatch.setattr(OrchestratingEvolver, "__init__", capture_evolver)
+    monkeypatch.setattr(KeywordDedup, "__init__", capture_keyword)
+    monkeypatch.setattr(InMemoryFulltextStore, "__init__", capture_fulltext)
+
+    build_kernel(config=Config.from_dict({"globals": {"vector_enabled": False}}))
+    assert len(evolver_dependencies) == 1
+    evolver, keyword = evolver_dependencies[0]
+    assert isinstance(evolver, OrchestratingEvolver)
+    assert isinstance(keyword, KeywordDedup)
+    shared_tokenizer = TokenizerProducer.build_named("default", default_context())
+    fulltext = FulltextProducer.build_named("default", default_context())
+    assert keyword_tokenizers[keyword] is shared_tokenizer
+    assert fulltext_tokenizers[fulltext] is shared_tokenizer
+
+    ctx = default_context()
+    ctx.globals["vector_enabled"] = False
+    dynamic = EvolverProducer.build_named("dynamic", ctx)
+    assert len(evolver_dependencies) == 2
+    dynamic_instance, dynamic_dedup = evolver_dependencies[1]
+    assert dynamic_instance is dynamic
+    assert isinstance(dynamic, DynamicEvolver)
+    assert dynamic_dedup is keyword
+
+    build_kernel()
+    assert len(evolver_dependencies) == 3
+    vector_evolver, vector_dedup = evolver_dependencies[2]
+    assert isinstance(vector_evolver, OrchestratingEvolver)
+    assert isinstance(vector_dedup, VectorDedup)

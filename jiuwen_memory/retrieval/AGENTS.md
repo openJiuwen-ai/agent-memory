@@ -23,7 +23,7 @@
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
 | `retriever.py` | Retriever 接口：检索层入口，编排完整链路 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
-| `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
+| `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max / BM25_scored_fuser）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
 | `retriever_impl/` | Retriever 实现目录；pipeline 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；multimodal 组合原生、CLM、ELM 三个过滤分支并执行 RRF 融合 |
 | `bootstrap.py` | 统一触发所有检索算子注册 |

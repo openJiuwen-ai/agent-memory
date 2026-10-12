@@ -8,7 +8,7 @@ Evolver 的 EXTRACT/CONSOLIDATE 模式需判定候选是否与已有记忆重复
 - 向量开 → :class:`~construction.dedup_impl.vector_dedup.VectorDedup`
   （Embedder → VectorStore.search，cosine 计分）
 - 只倒排 → :class:`~construction.dedup_impl.keyword_dedup.KeywordDedup`
-  （FulltextStore.search，词重叠率计分，与 cosine 同为 0~1 量纲）
+  （FulltextStore.search 召回，token-set Jaccard 计分）
 
 判定（中/高阈值 + LLM 语义判定）仍留在 Evolver——本接口只产出
 ``list[(MemoryUnit, score)]``（已加载、已滤自身、已按 ``min_similarity`` 过滤、
@@ -18,6 +18,7 @@ Evolver 的 EXTRACT/CONSOLIDATE 模式需判定候选是否与已有记忆重复
 from __future__ import annotations
 
 from abc import abstractmethod
+from typing import Any
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
@@ -45,7 +46,7 @@ class Dedup(ConstructionOperator):
 
     实现负责：组装底层 Store 的检索查询 → 召回 top-k → 加载 unit → 过滤自身与
     非 ACTIVE → 按 unit 聚合取 max score → 按 ``min_similarity`` 过滤低分项。
-    返回结果按 score 降序，score 量纲 0~1（向量=cosine，倒排=词重叠率），供 Evolver
+    返回结果按 score 降序；向量路为 cosine，倒排路为 token-set Jaccard，供 Evolver
     做统一的阈值 + LLM 判定。
     """
 
@@ -88,6 +89,19 @@ class Dedup(ConstructionOperator):
         except Exception:
             logger.warning("Dedup._load_unit: failed to load unit %s", unit_id)
             return None
+
+
+def resolve_dedup(config: Any, *, vector_enabled: bool) -> Dedup:
+    """Resolve an evolver's Dedup dependency.
+
+    An explicit ``params.dedup`` reference or inline configuration always wins. When it
+    is absent, the vector switch selects the shared named ``vector`` or ``keyword``
+    instance.
+    """
+    if "dedup" in config.params:
+        return DedupProducer.dep(config)
+    name = "vector" if vector_enabled else "keyword"
+    return DedupProducer.build_named(name, config.ctx)
 
 
 def same_scope(a, b) -> bool:

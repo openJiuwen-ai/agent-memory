@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""倒排去重召回：FulltextStore.search → 加载 unit → 过滤聚合。
+"""倒排去重召回：FulltextStore.search → 加载 unit → Jaccard 相似度过滤聚合。
 
 只配倒排索引（``vector_enabled=False``）时装配选本路——VectorStore 恒空会使
-向量去重失效，倒排召回用词重叠率计分（0~1，与 cosine 同量纲），阈值直接复用。
+向量去重失效。FulltextStore 后端相关性分只决定候选池排序；``KeywordDedup``
+对加载后的记忆内容计算 token-set Jaccard，供 Evolver 的相似度阈值使用。
 
 FulltextStore 按 unit 建索引（Document.id = unit.id），故召回命中 id 直接是
 unit_id，无需解析 chunk 复合 id。``InMemoryFulltextStore.search`` 不消费
@@ -12,6 +13,8 @@ unit_id，无需解析 chunk 复合 id。``InMemoryFulltextStore.search`` 不消
 from __future__ import annotations
 
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.tokenizer import Tokenizer
+from jiuwen_memory.common.tokenizer.base import TokenizerProducer
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
@@ -26,11 +29,12 @@ logger = get_logger(__name__)
 
 
 class KeywordDedup(Dedup):
-    """倒排/关键词去重召回路（包一个 FulltextStore）。"""
+    """倒排/关键词去重召回路（FulltextStore 召回 + Jaccard 相似度）。"""
 
     def __init__(
         self,
         storage: StoreManager,
+        tokenizer: Tokenizer,
         *,
         fulltext_name: str = "default",
         kv_name: str = "default",
@@ -47,6 +51,7 @@ class KeywordDedup(Dedup):
             scope_filter=scope_filter,
         )
         self._fulltext = storage.fulltext(fulltext_name)
+        self._tokenizer = tokenizer
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EVOLVER
@@ -55,7 +60,7 @@ class KeywordDedup(Dedup):
         return None
 
     def recall(self, candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]:
-        # 召回已有相似记忆：用候选 content 做关键词检索
+        # FulltextStore 只负责召回候选；后端相关性分不进入相似度阈值。
         query = TextQuery(text=candidate.content, top_k=self._top_k)
         scope = candidate.scope
         try:
@@ -72,11 +77,18 @@ class KeywordDedup(Dedup):
         if not hits:
             return []
 
-        # 加载 unit → dict 聚合取 MaxP（O(1) 查找/更新，替代旧 O(n²) 列表扫描）
+        try:
+            candidate_tokens = set(self._tokenizer.tokenize(candidate.content))
+        except Exception as exc:
+            logger.warning(
+                "KeywordDedup: tokenizer failed for candidate %s, recall empty: %s",
+                candidate.id[:8], exc,
+            )
+            return []
+
+        # 加载 unit → 计算 Jaccard → dict 聚合取 MaxP。
         aggregated: dict[str, tuple[MemoryUnit, float]] = {}
         for scored_id in hits:
-            if scored_id.score < self._min_similarity:
-                continue
             unit = self._load_unit(scored_id.id, scope)
             if unit is None or unit.lifecycle != LifecycleState.ACTIVE:
                 continue
@@ -90,9 +102,21 @@ class KeywordDedup(Dedup):
             # 触发 NOOP 丢派生。dedup 只查"派生是否与已沉淀长期记忆重复"。
             if unit.system_metadata.get("middle") == "true":
                 continue
-            # dict MaxP 聚合
-            if unit.id not in aggregated or scored_id.score > aggregated[unit.id][1]:
-                aggregated[unit.id] = (unit, scored_id.score)
+            try:
+                existing_tokens = set(self._tokenizer.tokenize(unit.content))
+            except Exception as exc:
+                logger.warning(
+                    "KeywordDedup: tokenizer failed for unit %s, skip it: %s",
+                    unit.id[:8], exc,
+                )
+                continue
+
+            union = candidate_tokens | existing_tokens
+            similarity = len(candidate_tokens & existing_tokens) / len(union) if union else 0.0
+            if similarity < self._min_similarity:
+                continue
+            if unit.id not in aggregated or similarity > aggregated[unit.id][1]:
+                aggregated[unit.id] = (unit, similarity)
 
         hit_units = sorted(aggregated.values(), key=lambda x: x[1], reverse=True)
         return hit_units
@@ -106,6 +130,7 @@ class KeywordDedup(Dedup):
 def _build(config):
     return KeywordDedup(
         storage=StoreManagerProducer.resolve(config),
+        tokenizer=TokenizerProducer.dep(config, default="whitespace"),
         fulltext_name=resolve_name(config, "fulltext_store"),
         kv_name=resolve_name(config, "kv_store"),
         min_similarity=config.get("dedup_min_similarity", 0.5),

@@ -557,7 +557,7 @@ vector_store:
 
 | `target` | 实现类 | 功能 | 必填参数 | 主要可选参数 |
 |---|---|---|---|---|
-| `memory` | `InMemoryFulltextStore` | 进程内基于 Tokenizer 的词项命中计分 | 无 | `tokenizer`（具名引用，默认匿名 `whitespace`） |
+| `memory` | `InMemoryFulltextStore` | 进程内基于 Tokenizer 的原始 BM25 检索 | 无 | `tokenizer`（具名引用，默认匿名 `whitespace`） |
 | `elasticsearch` | `ElasticsearchFulltextStore` | Elasticsearch 文档 CRUD + `match`/BM25 检索，Scope 和 FilterExpr 下推 | `hosts` | `index`、`username`、`password`、`api_key`、`text_field`、`text_analyzer`、`refresh`、`ssl_verify`、`ssl_ca_cert` |
 
 ```yaml

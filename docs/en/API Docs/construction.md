@@ -221,6 +221,9 @@ descending score order. Built-in implementations:
 4. aggregate by unit using the maximum score; and
 5. apply `min_similarity`.
 
+The vector path returns cosine similarity; the keyword path returns token-set Jaccard similarity.
+FulltextStore BM25/`_score` values only order the recall candidate pool.
+
 Dedup only recalls candidates; it does not decide `ADD/UPDATE/SUPERSEDE/NOOP`. The Evolver makes
 that decision and persists it. Deduplication is best effort: built-in implementations return an
 empty list instead of blocking evolution when an exception occurs.
@@ -385,7 +388,7 @@ continue to operate.
 | Namespace | `target` | Implementation | Function | Dependencies and primary parameters |
 |---|---|---|---|---|
 | `dedup` | `vector` | `VectorDedup` | Similarity recall through Embedder + Vector Store | `storage`, `embedder`; `dedup_min_similarity`, `dedup_top_k`, `dedup_tier_filter`, `dedup_scope_filter` |
-| `dedup` | `keyword` | `KeywordDedup` | Fulltext Store recall scored by token overlap | `storage`; same parameters as vector |
+| `dedup` | `keyword` | `KeywordDedup` | Fulltext Store recall followed by token-set Jaccard | `storage`, `tokenizer`; same parameters as vector |
 | `layer_annotator` | `keyword` | `KeywordLayerAnnotator` | Rule-based L0/L1 generation | `layer_annotator_threshold`, `layer_annotator_l1_chars` |
 | `layer_annotator` | `llm` | `LLMLayerAnnotator` | Batch LLM generation with strict L0/L1 validation | `llm`; threshold and retry parameters |
 | `evolver` | `orchestrating` | `OrchestratingEvolver` | Legacy four-mode flow; EXTRACT couples dedup decisions with persistence | extractor, abstractor, associator, index_builder, storage, message_store, dedup, llm; `params.layer_annotator` can select or disable annotation |
@@ -406,7 +409,8 @@ Without user configuration, Construction uses these default instances:
 | `associator.default` | `keyword` | Keyword association |
 | `classifier.default` | `llm` | Uses shared `llm.default`; offline default is echo |
 | `constructor.default` | `hybrid` | storage + chunker + embedder |
-| `dedup.default` | `vector` | storage + embedder |
+| `dedup.vector` | `vector` | storage + embedder; selected by default when `vector_enabled=true` |
+| `dedup.keyword` | `keyword` | storage + tokenizer; selected by default when `vector_enabled=false` |
 | `evolver.default` | `orchestrating` | Default legacy EXTRACT |
 | `evolver.dynamic` | `dynamic` | Declared named instance, but does not automatically replace default |
 | `layer_annotator` | Not declared by default | Evolver does not annotate when no named default exists |
@@ -450,7 +454,7 @@ evolver:
       index_builder: default
       storage: default
       message_store: default
-      dedup: default
+      dedup: vector
       llm: default
       dedup_medium_similarity: 0.7
       dedup_high_similarity: 0.9

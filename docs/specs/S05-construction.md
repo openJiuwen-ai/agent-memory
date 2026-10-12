@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-10-08 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md, docs/features/storage/F01-storage-impl-design.md |
 
 ## Metadata 派生与索引契约
 
@@ -528,11 +528,11 @@ class EvolveResult:
 |------|------|------|
 | `recall` | `(candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]` | 对候选召回已有相似记忆，返回 (unit, score) 列表（按 score 降序）；已完成过滤自身、过滤非 ACTIVE、按 unit 聚合取 max、按 min_similarity 过滤低分。空列表 → 调用方判 ADD |
 
-**score 量纲 0~1**：向量路=cosine，倒排路=词重叠率，阈值统一复用。
+**score 量纲由召回路决定**：向量路=cosine；倒排路=token-set Jaccard，取值 `[0, 1]`。FulltextStore 的 BM25/`_score` 只决定召回候选池排序，不进入 `min_similarity` 或 Evolver 的 medium/high 阈值。
 
 **两个实现**（装配按 `vector_enabled` 选）：
 - `VectorDedup`（`vector`）— Embedder → VectorStore.search，cosine；record_id 为 `{unit_id}-{chunk_id}` 需解析
-- `KeywordDedup`（`keyword`）— FulltextStore.search，词重叠率；Document.id = unit.id 恒等无需解析
+- `KeywordDedup`（`keyword`）— FulltextStore.search 召回后加载 unit，再按共享 Tokenizer 计算 token-set Jaccard；Document.id = unit.id 恒等无需解析
 
 **降级契约**：实现内部任何异常（Embedder/Store 失败）都吞掉并返回空列表——去重是尽力而为，不可阻断演进。
 
