@@ -17,7 +17,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
@@ -306,7 +306,7 @@ class MiddleToLongJob(Job):
             candidates.append(u)
         candidates.sort(
             key=lambda unit: (
-                unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
+                unit.temporal.t_ingest or datetime.min.replace(tzinfo=UTC),
                 unit.id,
             )
         )

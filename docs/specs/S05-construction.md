@@ -1,14 +1,30 @@
 # S05 — 构建层（Construction Layer）
 
+## LLM-native Wiki construction contract
+
+The evaluation-side open-domain Wiki path accepts `SemanticSource` records and
+produces provenance-preserving `SemanticMemory` records. The supported memory
+ontology is `entity`, `fact`, `event`, `preference`, `skill`, `relationship`,
+`decision`, `constraint`, `context`, and `artifact`.
+
+`WikiBuilder(llm=None, mode="llm")` uses the LLM extractor, entity resolver,
+consolidator, and profile/timeline/decision synthesis when an LLM is injected.
+With no model, or after an LLM failure, it falls back to the deterministic
+`TemplateExtractor`; retained benchmark adapters may continue using their
+historical deterministic renderer for exact regression compatibility. Every
+generated page carries evidence, provenance, metadata, stable IDs, and source
+links. Query understanding is optional and must not replace the deterministic
+qmd retrieval path.
+
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-09-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/F02-wikimem-compat.md, docs/features/construction/F04-wikimem-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
 
@@ -138,8 +154,7 @@ class ConstructionOperator(ABC):
 |------|------|------|
 | `extract` | `(units: list[MemoryUnit], *, context: ExtractContext \| None = None) -> list[MemoryUnit]` | 从一批原始记忆单元中提取零或多条低抽象粒度的派生单元；context 只作 prompt 参考 |
 
-派生单元的 `tier` 由 LLM 在抽取时产出；`tags` 为源 unit 的 write tags ∪ LLM 主题
-tags ∪ 系统标记（`extracted` / `procedural`）。`layers`（L0/L1 分层标注）不由 Extractor
+派生单元的 `tier`/`tags` 由 LLM 在抽取时产出。`layers`（L0/L1 分层标注）不由 Extractor
 产出——由 Evolver 抽取后委托 `LayerAnnotator` 生成（见下文 LayerAnnotator 节 + F01-memory-layer）。
 
 LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 只保存紧凑抽取陈述，

@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from ..common.type_def import ChannelError, RecallChannel
 from .types import RetrievalResult

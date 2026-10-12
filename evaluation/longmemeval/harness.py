@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from inspect import signature
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from jiuwen_memory.api import DeleteMode, DeleteSelector, MemoryRuntime, assemble_runtime
 from jiuwen_memory.common.type_def import Context
@@ -51,7 +51,7 @@ class EvalHarness:
 
     def __init__(
         self,
-        config: Optional[Config] = None,
+        config: Config | None = None,
         artifact_dir: str | Path | None = None,
     ) -> None:
         runtime = assemble_runtime(config=config)
@@ -59,7 +59,7 @@ class EvalHarness:
         try:
             self._api = runtime.api
             self._kv = _shared_evaluation_kv(self._api)
-            self._key2ids: Dict[str, List[str]] = {}
+            self._key2ids: dict[str, list[str]] = {}
             self._artifact_dir = Path(artifact_dir) if artifact_dir else None
             self._pre_dedup_calls: list[dict] = []
             self._retrieval_audits: list[dict] = []
@@ -140,7 +140,7 @@ class EvalHarness:
 
         setattr(extractor, "_build_units", captured_build_units)
 
-    def ingest(self, seeds: List[MemorySeed]) -> None:
+    def ingest(self, seeds: list[MemorySeed]) -> None:
         """逐条写入语料，捕获每个数据集 key 对应的真实 unit_id（可为多条：规约/切分）。"""
         add = getattr(self._api, "add", None) or getattr(self._api, "write")
         metadata_arg = (
@@ -231,8 +231,8 @@ class EvalHarness:
                     "trajectory": to_jsonable(result.trajectory),
                 }
             )
-        unit_message_dates: Dict[str, str] = {}
-        unit_event_dates: Dict[str, str] = {}
+        unit_message_dates: dict[str, str] = {}
+        unit_event_dates: dict[str, str] = {}
         unit_ids = [item.unit_id for item in result.items if item.unit_id]
         if unit_ids:
             units = self._api.inspect(
@@ -249,7 +249,7 @@ class EvalHarness:
                 )
                 unit_event_dates[unit.id] = event_at.isoformat() if event_at else ""
         relevant_ids = set()
-        relevant_key_unit_ids: Dict[str, List[str]] = {}
+        relevant_key_unit_ids: dict[str, list[str]] = {}
         for key in case.relevant_keys:
             unit_ids = list(self._key2ids.get(key, []))
             relevant_ids.update(unit_ids)
@@ -289,7 +289,7 @@ class EvalHarness:
             relevant_key_unit_ids=relevant_key_unit_ids,
         )
 
-    def evaluate(self, dataset: Dataset, concurrency: int = 1) -> List[CaseOutcome]:
+    def evaluate(self, dataset: Dataset, concurrency: int = 1) -> list[CaseOutcome]:
         """按 scope 隔离执行 write→recall；可并行不同 sample 的 scope。"""
         if concurrency <= 0:
             raise ValueError(f"evaluation concurrency must be positive, got {concurrency}")
@@ -462,7 +462,7 @@ class EvalHarness:
         )
 
 
-def purge_run_data(dataset: Dataset, config: Optional[Config] = None) -> dict[str, int]:
+def purge_run_data(dataset: Dataset, config: Config | None = None) -> dict[str, int]:
     """Reassemble the official runtime and purge one completed evaluation run."""
     harness = EvalHarness(config=config)
     try:

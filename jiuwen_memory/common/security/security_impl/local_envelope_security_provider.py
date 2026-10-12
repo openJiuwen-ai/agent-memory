@@ -193,7 +193,8 @@ class LocalKeyProvider:
             "(4) security.default.params.key_file=<path> to existing file; "
             "(5) security.default.params.create_key_file=true for dev/single-node auto-generation. "
             "Generate a key with: openssl rand -hex 32. "
-            "Refusing to assemble: encryption cannot proceed without a key (fail-closed per F04 §5)."
+            "Refusing to assemble: encryption cannot proceed without a key "
+            "(fail-closed per F04 §5)."
         )
 
     def _create_key_file(self) -> bytes:

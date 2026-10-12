@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
 
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Scope

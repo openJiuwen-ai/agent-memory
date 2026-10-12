@@ -24,6 +24,7 @@ logs/
 automated_testing/data/
 evaluation/benchmark/data/
 results.json
+tmp/
 
 # 预下载的本地模型（GB 级二进制；用 deploy/docker/download-models.sh 自行拉取，不入库）
 deploy/docker/models/
