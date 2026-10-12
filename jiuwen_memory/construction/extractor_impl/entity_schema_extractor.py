@@ -13,7 +13,7 @@ import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from jiuwen_memory.common._support import as_bool
@@ -572,7 +572,7 @@ class EntitySchemaExtractor(Extractor):
         for candidate in candidates:
             source_units = [source_map[source_id] for source_id in candidate.source_unit_ids]
             primary = source_units[0]
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             source_tags = [tag for source in source_units for tag in source.tags]
             metadata = _inherited_schema_system_metadata(source_units)
             metadata.update(
@@ -690,7 +690,7 @@ def _dialogue_timestamp(units: list[MemoryUnit]) -> str:
     for unit in units:
         if unit.temporal.t_event is not None:
             return unit.temporal.t_event.isoformat()
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def _scope_identity(unit: MemoryUnit) -> tuple[str, str, str, str, str]:
@@ -715,7 +715,7 @@ def _parse_complete_event_time(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _normalize_property_time(raw_time: Any, value: str) -> str:

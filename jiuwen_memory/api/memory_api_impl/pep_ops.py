@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import (
     BackendError,
@@ -290,7 +290,7 @@ class PepOpsMixin:
                 target_id=target_id,
                 layer="api",
                 decision=decision,
-                occurred_at=datetime.now(timezone.utc),
+                occurred_at=datetime.now(UTC),
                 detail=payload,
                 target=target_scope or _ROOT,
             )

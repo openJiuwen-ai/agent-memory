@@ -9,7 +9,7 @@ metadata 只写 prompt 的 **key**（引用 yml ``prompts.extract`` 段的命名
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
@@ -160,7 +160,7 @@ class DynamicLLMExtractor(Extractor):
                 for unit in units
                 if unit.system_metadata.get("observation_date")
             ),
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         )
         source_text = "\n".join(
             _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=unit.content) for unit in units

@@ -29,6 +29,7 @@ from jiuwen_memory.common.security.audit_integrity.base import (
 from jiuwen_memory.common.security.types import Grant, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     AuditEvent,
+    CandidateSource,
     Context,
     FilterClause,
     FilterExpr,
@@ -285,12 +286,20 @@ class MemoryAPI(ABC):
         mode: EvolveMode,
         channel: Channel = Channel.BACKGROUND,
         *,
+        candidate: CandidateSource | dict | None = None,
+        dreaming: bool | None = None,
+        interval: int = 0,
         security: RequestSecurityContext,
-    ) -> str:
+    ) -> str | None:
         """触发演进（extract/associate/consolidate/forget）：``scope`` 为演进
         目标范围、``security`` 为本次请求的安全上下文（本层据二者鉴权）；返回任务
         id，状态用 :meth:`job_status` 查询。索引维护不在此——它随 add/update/delete
         自动跟进。
+
+        F04 dreaming 三态：``dreaming=None`` 立即跑（一次性任务，``candidate``
+        可选四类候选源，缺省谓词全量源）；``dreaming=True`` 注册定时
+        （``interval>0``，KV 持久化，重启恢复）；``dreaming=False`` 注销
+        （命中 (scope, mode) 注册则取消并删除，返回 None）。
         """
 
     @abstractmethod

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -61,7 +61,7 @@ def test_transition_rejects_reactivating_superseded_memory(unit_factory) -> None
 
 
 def test_supersede_sets_state_and_invalid_time(unit_factory) -> None:
-    invalid_at = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
+    invalid_at = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
     unit = unit_factory("u1", "old version", lifecycle=LifecycleState.ACTIVE)
     kv, lifecycle = _store(unit)
 
@@ -76,7 +76,7 @@ def test_supersede_sets_state_and_invalid_time(unit_factory) -> None:
 
 
 def test_supersede_rejects_invalid_lifecycle_state(unit_factory) -> None:
-    invalid_at = datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc)
+    invalid_at = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
     unit = unit_factory("u1", "archived version", lifecycle=LifecycleState.ARCHIVED)
     kv, lifecycle = _store(unit)
 
@@ -95,7 +95,7 @@ def test_supersede_raises_not_found_for_missing_unit() -> None:
         lifecycle.supersede(
             Scope(),
             "missing",
-            datetime(2026, 6, 17, 11, 0, tzinfo=timezone.utc),
+            datetime(2026, 6, 17, 11, 0, tzinfo=UTC),
         )
 
 
@@ -118,7 +118,7 @@ def test_targeted_transition_does_not_mutate_same_id_in_another_scope(unit_facto
 
 
 def test_sweep_returns_pending_transitions_without_mutating_units(unit_factory) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expired = unit_factory(
         "expired",
         "expired active",
@@ -164,7 +164,7 @@ def test_sweep_returns_empty_list_when_no_units_are_changed(unit_factory) -> Non
 
 
 def test_sweep_uses_policy_targets_for_expired_active_and_superseded(unit_factory) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expired = unit_factory(
         "expired",
         "expired active",
@@ -193,7 +193,7 @@ def test_sweep_uses_policy_targets_for_expired_active_and_superseded(unit_factor
 
 
 def test_sweep_rejects_invalid_policy_target(unit_factory) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expired = unit_factory(
         "expired",
         "expired active",
@@ -257,7 +257,7 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
         "expired-policy-smoke",
         "expired active",
         lifecycle=LifecycleState.ACTIVE,
-        t_invalid=datetime.now(timezone.utc) - timedelta(days=1),
+        t_invalid=datetime.now(UTC) - timedelta(days=1),
     )
     kv.insert(scope, memory_key(expired.id), dumps(expired))
 

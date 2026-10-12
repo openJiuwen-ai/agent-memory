@@ -27,7 +27,6 @@ from jiuwen_memory.common.type_def import (
     Scope,
     memory_key,
 )
-from jiuwen_memory.common.type_def.memory_codec import loads
 from jiuwen_memory.common.type_def.retrieval_filter import (
     in_event_window as _in_event_window,
 )
@@ -38,7 +37,7 @@ from jiuwen_memory.common.type_def.retrieval_filter import (
 from jiuwen_memory.common.type_def.retrieval_filter import (
     valid_at as _valid_at,
 )
-from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.kv import KVStore, load_memory_unit
 
 
 def valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
@@ -115,7 +114,12 @@ class UnitReader:
         unique = list(dict.fromkeys(unit_ids))
         keys = [memory_key(uid) for uid in unique]
         try:
-            return {uid: loads(data) for uid, data in zip(unique, self._kv.mget(scope, keys))}
+            loaded: dict[str, MemoryUnit] = {}
+            for uid, key, data in zip(unique, keys, self._kv.mget(scope, keys)):
+                unit = load_memory_unit(data, scope=scope, key=key)
+                if unit is not None:
+                    loaded[uid] = unit
+            return loaded
         except NotFoundError:
             # 索引↔真源短暂不一致（个别 id 尚未落盘）：退回逐条，仅跳过缺失。
             return self._load_missing_fallback(scope, unique)
@@ -127,7 +131,12 @@ class UnitReader:
         out: dict[str, MemoryUnit] = {}
         for uid in unique:
             try:
-                out[uid] = loads(self._kv.get(scope, memory_key(uid)))
+                key = memory_key(uid)
+                unit = load_memory_unit(
+                    self._kv.get(scope, key), scope=scope, key=key
+                )
+                if unit is not None:
+                    out[uid] = unit
             except NotFoundError:
                 continue
         return out

@@ -8,6 +8,8 @@ EvolveJob/MiddleToLongJob 候选拉取、list_page 分页）——契约：缺�
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from jiuwen_memory.common.type_def import FilterClause, FilterOp, MemoryUnit, Scope
@@ -58,6 +60,35 @@ def test_list_units_skips_non_memory_unit_records() -> None:
 
     assert {unit.id for unit in items} == {"u1", "u2", "u3"}, "非 MemoryUnit 记录被过滤"
     assert count == 3, "count 与 KVStore.list 对齐：非 MemoryUnit 记录不计入匹配总数"
+
+
+def test_list_units_skips_undecodable_record_and_logs_context() -> None:
+    """坏字节是记录级损坏：不阻断整批 list，并留下可定位 warning。"""
+    scope = Scope(org="acme", user="u1")
+    kv = InMemoryKVStore()
+    _seed(kv, scope)
+    kv.insert(scope, "/memory/bad", "中文".encode("gbk"))
+
+    records: list[str] = []
+
+    class _Recorder(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record.getMessage())
+
+    logger = logging.getLogger("agent_memory.storage.kv")
+    handler = _Recorder(level=logging.WARNING)
+    logger.addHandler(handler)
+    try:
+        items, count = list_units(kv, scope, limit=100)
+    finally:
+        logger.removeHandler(handler)
+
+    assert {unit.id for unit in items} == {"u1", "u2", "u3"}, "坏记录只被隔离"
+    assert count == 3, "坏记录不应计入 MemoryUnit 匹配总数"
+    warning = next(record for record in records if "decode failed" in record)
+    assert "unit_id={'unit_id': 'bad'}" in warning, "日志须包含技术 unit_id"
+    assert "error=UnicodeDecodeError" in warning, "日志须包含异常类型"
+    assert "中文" not in warning, "日志不得泄漏原始坏字节内容"
 
 
 def test_list_units_passes_memory_types_and_filters_through() -> None:
@@ -118,3 +149,14 @@ def test_load_units_supports_duplicate_ids_and_empty_input() -> None:
         "重复 id 各自返回，不去重"
     )
     assert load_units(kv, scope, []) == [], "空入参直接返回空列表"
+
+
+def test_load_units_skips_undecodable_record() -> None:
+    scope = Scope(org="acme", user="u1")
+    kv = InMemoryKVStore()
+    _seed(kv, scope)
+    kv.insert(scope, memory_key("bad"), "中文".encode("gbk"))
+
+    units = load_units(kv, scope, ["u1", "bad", "u2"])
+
+    assert [unit.id for unit in units] == ["u1", "u2"], "坏记录只被隔离"
