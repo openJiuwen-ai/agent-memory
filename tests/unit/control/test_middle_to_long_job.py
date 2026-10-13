@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 import pytest
 
 from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.errors import BackendError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import (
     LifecycleState,
@@ -356,13 +357,13 @@ def test_check_continuity_succeeds_on_second_attempt() -> None:
 
 
 def test_check_continuity_retries_on_network_exception_then_defaults_true() -> None:
-    """LLM 调用抛网络异常（APITimeoutError 等）→ 纳入重试兜底，最终默认 "true"。"""
+    """LLM 调用抛插件层转换的 BackendError（超时/连接类）→ 重试兜底，默认 "true"。"""
     scope = Scope(user="u1")
     job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
     llm._responses = [  # pylint: disable=protected-access
-        ConnectionError("simulated timeout"),
-        ConnectionError("simulated connection reset"),
-        ConnectionError("simulated dns failure"),
+        BackendError("simulated timeout"),
+        BackendError("simulated connection reset"),
+        BackendError("simulated dns failure"),
     ]
     prev = _make_unit("p", scope, "p")
     cur = _make_unit("c", scope, "c")
@@ -388,16 +389,52 @@ def test_check_continuity_handles_none_response() -> None:
 
 
 def test_check_continuity_handles_dict_response() -> None:
-    """后端返回 dict（而非 str）→ json.dumps 转为合法 JSON，正确解析。"""
+    """后端返回 dict（含干扰字段 note="true"）→ json.dumps 保留结构正确解析。
+
+    str(resp) 的单引号表示会让 json.loads 失败、正则兜底误取干扰值 "true"；
+    json.dumps 才能取到真实结果 "false"——本用例可防止归一化退回 str()。
+    """
     scope = Scope(user="u1")
     job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
-    llm._responses = [{"results": ["true"]}]  # pylint: disable=protected-access
+    llm._responses = [{"note": "true", "results": ["false"]}]  # pylint: disable=protected-access
     prev = _make_unit("p", scope, "p")
     cur = _make_unit("c", scope, "c")
 
     result = asyncio.run(job._check_continuity(prev, cur))  # pylint: disable=protected-access
 
-    assert result == "true"
+    assert result == "false"
+    assert len(llm.chat_calls) == 1
+
+
+def test_check_continuity_recovers_after_backend_errors() -> None:
+    """前两次后端瞬时故障、第三次成功 → 返回真实结果，不默认 "true"。"""
+    scope = Scope(user="u1")
+    job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
+    llm._responses = [  # pylint: disable=protected-access
+        BackendError("transient 1"),
+        BackendError("transient 2"),
+        '{"results":["false"]}',
+    ]
+    prev = _make_unit("p", scope, "p")
+    cur = _make_unit("c", scope, "c")
+
+    result = asyncio.run(job._check_continuity(prev, cur))  # pylint: disable=protected-access
+
+    assert result == "false"
+    assert len(llm.chat_calls) == 3
+
+
+def test_check_continuity_unretryable_error_propagates() -> None:
+    """不可重试异常（程序错误/认证类）→ 直接传播，不重试不降级（S09）。"""
+    scope = Scope(user="u1")
+    job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
+    llm._responses = [RuntimeError("boom")]  # pylint: disable=protected-access
+    prev = _make_unit("p", scope, "p")
+    cur = _make_unit("c", scope, "c")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(job._check_continuity(prev, cur))  # pylint: disable=protected-access
+
     assert len(llm.chat_calls) == 1
 
 

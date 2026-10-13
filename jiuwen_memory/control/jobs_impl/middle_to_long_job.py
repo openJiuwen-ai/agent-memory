@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import BackendError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.lock import LockProducer, LockProvider, LockTimeoutError
 from jiuwen_memory.common.log import get_logger, scope_for_log
@@ -224,6 +224,9 @@ class MiddleToLongJob(Job):
 
         小模型可能返回单引号、无引号 key 或带 Markdown 包装的伪 JSON，
         ``json.loads`` 失败时用正则 fallback 提取首个 true/false。
+
+        可重试：畸形 JSON + 插件层转换的 :class:`BackendError`（超时/连接/
+        限流/5xx）；认证/权限等不可降级异常与程序错误直接传播（S09）。
         """
         prompt = _CONTINUITY_SYSTEM_PROMPT.replace(
             "{old_conversation}", self._format_for_continuity(prev)
@@ -260,9 +263,15 @@ class MiddleToLongJob(Job):
                     if m:
                         return m.group(1)
                     raise
-                # 网络/超时/连接类异常（openai APITimeoutError/APIConnectionError 等）
-                # 同样纳入重试兜底——网络抖动是 LLM 调用最常见失败模式，不应中断任务。
-            except Exception as e:
+            # 可重试：畸形 JSON + 插件层转换的 BackendError（超时/连接/限流/5xx）。
+            # 认证/权限等不可降级异常与程序错误不在白名单内，直接传播（S09）。
+            except (
+                json.JSONDecodeError,
+                KeyError,
+                IndexError,
+                TypeError,
+                BackendError,
+            ) as e:
                 if attempt < _MAX_RETRIES - 1:
                     continue
                 logger.warning(

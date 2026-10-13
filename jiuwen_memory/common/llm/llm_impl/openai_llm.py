@@ -29,7 +29,7 @@ from jiuwen_memory.common._support import (
     require_https,
 )
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import BackendError, HealthCheckError
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import ChatMessage
@@ -171,7 +171,7 @@ class OpenAILLM(LLM):
         started_at = time.monotonic()
         try:
             response = self.client.chat.completions.create(**create_kwargs)
-        except openai.APITimeoutError:
+        except openai.APITimeoutError as exc:
             logger.error(
                 "OpenAILLM chat timed out: model=%s elapsed=%.3fs timeout=%.3fs "
                 "max_retries=%d",
@@ -180,11 +180,21 @@ class OpenAILLM(LLM):
                 self._timeout,
                 self._max_retries,
             )
-            raise
+            # 瞬时后端故障（超时/连接/限流/5xx）统一转换为 BackendError，
+            # SDK 异常类型不越过插件边界；调用方可据此区分可重试故障。
+            raise BackendError(f"LLM chat timed out: model={model}") from exc
         except openai.APIConnectionError as exc:
             logger.error("OpenAILLM: connection error — %s", exc)
-            raise
+            raise BackendError(f"LLM chat connection error: {exc}") from exc
+        except openai.RateLimitError as exc:
+            logger.error("OpenAILLM: rate limited — %s", exc)
+            raise BackendError(f"LLM chat rate limited: {exc}") from exc
+        except openai.InternalServerError as exc:
+            logger.error("OpenAILLM: server error — %s", exc)
+            raise BackendError(f"LLM chat server error: {exc}") from exc
         except openai.APIError as exc:
+            # 认证/权限/参数类（4xx）不转换、不重试：直接传播（S09：
+            # 安全或校验失败不得降级或重试）。
             logger.error("OpenAILLM: API error — %s", exc)
             raise
 
