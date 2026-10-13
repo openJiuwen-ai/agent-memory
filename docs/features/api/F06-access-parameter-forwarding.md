@@ -7,7 +7,7 @@
 | 日期 | 2026-10-13 |
 | 影响范围 | `jiuwen_memory/api/`、`jiuwen_memory_entry/core/`、`jiuwen_memory_entry/mcp_server/`、`docs/specs/S02-memory-api.md`、`docs/design/architecture.md` |
 | 测试基线 | `ruff check` 通过；`tests/unit/jiuwen_memory_entry` + `tests/unit/api` 835 项通过；全量 `tests/unit -m unit` 通过；`test_http_server_security.py` 为既有 Windows socket 时序 flaky，单独重跑通过，与本特性无关 |
-| Refs | #221、#226；#246 的四处透传由 PR #358 单独负责 |
+| Refs | #221、#226；#246 的四处透传由 PR #358 负责（已合入 mem2.0，e6805dd） |
 
 ## 背景
 
@@ -73,6 +73,9 @@ MCP 工具侧该参数注解为 `str | None`，与本仓既有约定一致：Fas
 `search.as_of`、`delete.mode`、`update.tier`、`evolve.channel` 由 PR #358 负责，本次不改，
 避免两边同时修改同一函数体造成合并冲突。这四处在覆盖锁中以 `gap(...)` 显式登记。
 
+> 进展：PR #358 已合入 mem2.0（e6805dd）。本特性分支合并后，四处透传来自 #358 的实现
+> 与本分支的其余加固共存；覆盖锁中的 4 行 `gap(...)` 已按设计删除并登记为已支持。
+
 ## 拒绝的方案
 
 - **为 HTTP / CLI 再维护一份独立参数表**：接口增加可选参数时容易再次遗漏；签名派生契约
@@ -99,11 +102,10 @@ MCP 工具侧该参数注解为 `str | None`，与本仓既有约定一致：Fas
 
 ## 已知遗留
 
-1. **#246 的四处透传**仍缺失，待 PR #358 合入；覆盖锁中的 `gap(...)` 行届时会失败，强制删除。
-2. **`revoke` 不传 `actions` 时仍只撤只读**：缺省语义保持向后兼容；若当初以 `actions: ["write"]`
+1. **`revoke` 不传 `actions` 时仍只撤只读**：缺省语义保持向后兼容；若当初以 `actions: ["write"]`
    授权，撤销时须显式带上 `actions`。目标形态按 `grant_id` 精确定位（`GrantStore` 未实装，
    见 F05 §5.4）。
-3. **`Grant.actions` 为显式空数组时，`PermissionManager` 是静默 no-op**：本特性只收紧了 legacy
+2. **`Grant.actions` 为显式空数组时，`PermissionManager` 是静默 no-op**：本特性只收紧了 legacy
    入口的解析（显式空值报错），HTTP 路径仍会把空集合传到 `grant()` 而不报错。该差异属于
    安全域接口边界问题，不在本特性范围内。
-4. jiuwenSwarm 的参数适配按范围约束暂不处理。
+3. jiuwenSwarm 的参数适配按范围约束暂不处理。

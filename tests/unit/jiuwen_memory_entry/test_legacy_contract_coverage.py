@@ -114,8 +114,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
         "query": "query",
         "context": DERIVED,
         "filters": "filters",
-        # #246：时点检索参数，legacy 面尚未透传（由 PR #358 负责）。
-        "as_of": gap("#246：待 PR #358 合入后删除本行"),
+        "as_of": "as_of",
         "top_k": "k",
         "disclosure": "disclosure",
         "with_trajectory": "trace",
@@ -143,8 +142,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
             "t_invalid": "t_invalid",
             "t_valid": "t_valid",
             "tags": "tags",
-            # #246：重分类参数，legacy 面尚未透传（由 PR #358 负责）。
-            "tier": gap("#246：待 PR #358 合入后删除本行"),
+            "tier": "tier",
             "user_metadata": "user_metadata",
         },
     },
@@ -155,15 +153,13 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
             "tags": "tags",
             "before": "before",
             "filters": "filters",
-            # #246：删除模式（forget/archive/downweight/purge），legacy 面只认 hard 布尔。
-            "mode": gap("#246：待 PR #358 合入后删除本行"),
+            "mode": "mode",
         },
     },
     "evolve": {
         "scope": DERIVED,
         "mode": "mode",
-        # #246：演进通道，legacy 面尚未透传（由 PR #358 负责）。
-        "channel": gap("#246：待 PR #358 合入后删除本行"),
+        "channel": "channel",
         "candidate": "candidate",
         "dreaming": "dreaming",
         "interval": "interval",
