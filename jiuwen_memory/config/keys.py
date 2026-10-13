@@ -1,7 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """ConfigSource 稳定 key 约定（S08 推荐路径的常量与拼接辅助）。
 
-业务配置与加密密钥（:class:`~common.security.key_source.KeySource`）分属不同抽象：
+业务配置与加密密钥（:class:`~common.security.cryptography.key_provider.KeyProvider`，
+随 PR1 实装已并入安全域）分属不同抽象：
 本模块只服务 ConfigSource 的字符串 key（``globals.*`` / ``prompts.*`` / ``llm.model`` 等）。
 """
 

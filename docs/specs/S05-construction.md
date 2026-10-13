@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-10-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -506,6 +506,26 @@ class EvolveResult:
 ```
 
 `hierarchy_result` 只在 HIERARCHY 模式返回结构结果与修复报告，其他 mode 为 `None`。
+
+### LLM 调用尝试策略
+
+Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`：
+
+- `max_attempts` 表示本次逻辑调用允许的 **LLM 总调用次数**，必须是大于等于 `1`
+  的整数；`1` 表示只调用一次，不重试。默认值为 `3`。
+- `retry_backoff_ms` 表示两次调用之间的指数退避初始值，必须是不小于 `0` 的整数，
+  默认值为 `1000`。
+- 适用配置键分别为 `extractor_max_attempts`、`abstractor_max_attempts`、
+  `associator_max_attempts`、`classifier_max_attempts`、`layer_annotator_max_attempts`
+  和 `router_max_attempts`；对应退避键为各自的 `*_retry_backoff`，Router 使用
+  `router_retry_backoff`。
+- `max_attempts` 非法时在算子构造期抛出 `ValidationError`，不得等到第一次 LLM
+  调用时才失败；最后一次调用失败时原始异常向上抛出。
+
+这与 common 层的 `llm_max_retries` 不同：后者表示 SDK 在一次出站请求中的自动重试次数，
+因此 `N` 次 SDK 重试最多产生 `N + 1` 次底层请求。Construction 层不再读取
+`retry_max_retries` 或各组件的 `*_retry_max` 旧键；装配期发现旧键时直接抛出
+`ValidationError` 并提示对应的新键名，避免升级后静默回落默认值。
 
 各模式对 hierarchy 的行为：
 

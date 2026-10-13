@@ -57,6 +57,7 @@ from jiuwen_memory.construction.associator import AssociatorProducer
 
 from ..associator import Associator
 from ..base import OperatorType
+from ..common import reject_deprecated_llm_attempt_keys, validate_llm_attempt_policy
 
 logger = get_logger(__name__)
 
@@ -192,7 +193,7 @@ class LLMAssociator(Associator):
         ann_threshold: int = 50,
         max_units_per_associate: int = 200,
         # LLM 重试
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         self._llm = llm
@@ -208,8 +209,9 @@ class LLMAssociator(Associator):
         self._max_pairs_per_llm_call = max_pairs_per_llm_call
         self._ann_threshold = ann_threshold
         self._max_units_per_associate = max_units_per_associate
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts, retry_backoff_ms,
+        )
 
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -798,24 +800,24 @@ class LLMAssociator(Associator):
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
-        last_exc = None
-        for attempt in range(self._retry_max_retries):
+        last_exc: Exception | None = None
+        for attempt in range(self._max_attempts):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=4096)
             except Exception as exc:
                 last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "Associator: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1,
-                        wait,
-                    )
-                    time.sleep(wait)
-        # 所有重试都失败（retry_max_retries <= 0 时未进入循环，last_exc 仍为 None）
-        if last_exc is None:
-            raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
-        raise last_exc
+                if attempt == self._max_attempts - 1:
+                    break
+                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
+                logger.warning(
+                    "Associator: LLM call failed (attempt %d), retrying in %.1fs",
+                    attempt + 1,
+                    wait,
+                )
+                time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Associator: LLM call did not execute")
 
     def _parse_llm_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON，失败时尝试提取 JSON 核心部分。"""
@@ -899,6 +901,7 @@ class LLMAssociator(Associator):
 
 @AssociatorProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "associator")
     return LLMAssociator(
         llm=LlmProducer.dep(config, default="echo"),
         feature_extractor=FeatureExtractorProducer.dep(config, default="keyword"),
@@ -913,6 +916,6 @@ def _build(config):
         max_pairs_per_llm_call=config.get("associator_max_pairs_per_llm_call", 10),
         ann_threshold=config.get("associator_ann_threshold", 50),
         max_units_per_associate=config.get("associator_max_units_per_associate", 200),
-        retry_max_retries=config.get("associator_retry_max", 3),
+        max_attempts=config.get("associator_max_attempts", 3),
         retry_backoff_ms=config.get("associator_retry_backoff", 1000),
     )

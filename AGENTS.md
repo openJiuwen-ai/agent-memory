@@ -73,7 +73,7 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 三条强制约束，提交时必查（由 `.githooks/pre-commit` 检查，**默认未启用**：先跑 `git config core.hooksPath .githooks` 才会生效）：
 
-1. **影响公开接口、跨模块协调或有多方案取舍的特性必须归档特性文档，特性代码、测试代码、文档拆成三个连续提交**：在 `docs/features/` 下新增 `FNN-<slug>.md`，记录决策、拒绝的方案、验证基线、已知遗留。落地顺序**固定为三个紧邻的提交**——提交 1 落特性代码（`feat(memory): ...`），提交 2 落单测（`test(memory): ...`），提交 3 落文档（`docs(memory): ...`，含 features 新增、受影响 specs 修订日期更新、受影响模块 AGENTS.md 更新）。特性代码、测试、文档不再混进同一次 commit——既不让大段文档 diff 淹没代码评审，也让测试改动独立可审，还避免文档归档拖延导致设计上下文随时间漂移。commit message 只写 what，features 文档负责写 why / why-not。
+1. **影响公开接口、跨模块协调或有多方案取舍的特性必须归档特性文档；每个实现 PR 最终交付一个合并提交**：在 `docs/features/` 下新增 `FNN-<slug>.md`，记录决策、拒绝的方案、验证基线、已知遗留。特性代码、测试代码和相关文档统一纳入该 PR 的一个合并提交，包含 features 新增、受影响 specs 修订日期更新、受影响模块 AGENTS.md 更新，不再要求拆成三次提交。代码、测试与文档必须同步完成。commit message 只写 what，features 文档负责写 why / why-not。
 
 2. **跨模块规约变动必须更新 specs 文档**：接口契约、跨模块协议、不变量、公共 API 发生变化时，同步修订 `docs/specs/SNN-<slug>.md`；新规约 = 新 spec 文件。规约变了但 specs 没改，下次读 spec 的人就被误导——这是设计债，不是文档懒。
 
@@ -105,4 +105,4 @@ commit message scope 固定用 `memory`（如 `feat(memory): ...`、`fix(memory)
 
 footer 用 `Refs: #<issue>` 关联 issue；issue 号无法从上下文确认时必须先询问用户，不要臆造。
 
-涉及文档更新的特性改动，特性代码、测试、文档拆成三个连续提交，细则见上文「设计文档归档与双向同步」约束 #1。
+每个实现 PR 最终交付一个合并提交，统一包含实现代码、测试和相关文档，细则见上文「设计文档归档与双向同步」约束 #1。

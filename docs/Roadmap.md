@@ -2,7 +2,7 @@
 
 > Agent-memory在1.0版本上进行了全量的架构升级，版本规划从 **V0.2.0** 起编号。下面按照版本记录每个版本交付的主要新特性；后续版本为规划草案，随立项与 Issue 调整，不构成实现承诺。
 >
-> 最近一次修订日期：2026-09-13
+> 最近一次修订日期：2026-10-10
 
 ---
 
@@ -93,6 +93,24 @@
 ## V0.2.1 （规划中）
 
 本版本计划构建或增强以下特性：
+
+### 配置升级说明
+
+Construction 层 LLM 尝试次数配置键已统一改名。旧键不再读取，配置中出现旧键时会在装配期
+抛出 `ValidationError`，请按下表更新配置：
+
+| 旧键 | 新键 |
+|---|---|
+| `extractor_retry_max` | `extractor_max_attempts` |
+| `abstractor_retry_max` | `abstractor_max_attempts` |
+| `associator_retry_max` | `associator_max_attempts` |
+| `classifier_retry_max` | `classifier_max_attempts` |
+| `layer_annotator_retry_max` | `layer_annotator_max_attempts` |
+| `retry_max_retries` | `router_max_attempts` |
+| `retry_backoff_ms` | `router_retry_backoff` |
+
+`max_attempts` 表示一次逻辑调用的 LLM 总调用次数；common 层的 `llm_max_retries`
+仍表示 SDK 自动重试次数，语义不变。
 
 ### **记忆存储**
 

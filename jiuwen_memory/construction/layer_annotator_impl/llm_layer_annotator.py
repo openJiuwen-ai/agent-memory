@@ -16,6 +16,10 @@ import re
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.construction.common import (
+    reject_deprecated_llm_attempt_keys,
+    validate_llm_attempt_policy,
+)
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 
 logger = get_logger(__name__)
@@ -116,13 +120,14 @@ class LLMLayerAnnotator(LayerAnnotator):
         llm: LLM,
         *,
         layers_threshold: int = 512,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         super().__init__(layers_threshold=layers_threshold)
         self._llm = llm
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts, retry_backoff_ms,
+        )
 
     def health(self) -> None:
         try:
@@ -224,22 +229,23 @@ class LLMLayerAnnotator(LayerAnnotator):
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
-        last_exc = None
-        for attempt in range(self._retry_max_retries):
+        last_exc: Exception | None = None
+        for attempt in range(self._max_attempts):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
             except Exception as exc:
                 last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "LLMLayerAnnotator: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1, wait,
-                    )
-                    time.sleep(wait)
-        if last_exc is None:
-            raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
-        raise last_exc
+                if attempt == self._max_attempts - 1:
+                    break
+                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
+                logger.warning(
+                    "LLMLayerAnnotator: LLM call failed (attempt %d), retrying in %.1fs",
+                    attempt + 1, wait,
+                )
+                time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("LLMLayerAnnotator: LLM call did not execute")
 
 
 # -- 注册到 LayerAnnotatorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
@@ -247,9 +253,10 @@ class LLMLayerAnnotator(LayerAnnotator):
 
 @LayerAnnotatorProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "layer_annotator")
     return LLMLayerAnnotator(
         llm=LlmProducer.dep(config, default="echo"),
         layers_threshold=config.get("layer_annotator_threshold", 512),
-        retry_max_retries=config.get("layer_annotator_retry_max", 3),
+        max_attempts=config.get("layer_annotator_max_attempts", 3),
         retry_backoff_ms=config.get("layer_annotator_retry_backoff", 1000),
     )

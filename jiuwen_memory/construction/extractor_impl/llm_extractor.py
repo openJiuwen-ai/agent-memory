@@ -66,9 +66,10 @@ from jiuwen_memory.common.type_def import (
     inherited_system_metadata,
     inherited_user_metadata,
 )
+from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
 
 from ..base import ExtractContext, OperatorType
-from ..common import merge_unit_tags, parse_tags
+from ..common import merge_unit_tags, parse_tags, validate_llm_attempt_policy
 from ..extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
@@ -364,14 +365,15 @@ class ExtractorImpl(Extractor):
         self,
         llm: LLM,
         min_confidence: float = 0.5,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
         extract_batch_size: int = _DEFAULT_EXTRACT_BATCH_SIZE,
     ) -> None:
         self._llm = llm
         self._min_confidence = min_confidence
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts, retry_backoff_ms,
+        )
         self._extract_batch_size = max(1, int(extract_batch_size))
 
     # ------------------------------------------------------------------
@@ -884,24 +886,24 @@ class ExtractorImpl(Extractor):
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
-        last_exc = None
-        for attempt in range(self._retry_max_retries):
+        last_exc: Exception | None = None
+        for attempt in range(self._max_attempts):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
             except Exception as exc:
                 last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "Extractor: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1,
-                        wait,
-                    )
-                    time.sleep(wait)
-        # 所有重试都失败（retry_max_retries <= 0 时未进入循环，last_exc 仍为 None）
-        if last_exc is None:
-            raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
-        raise last_exc
+                if attempt == self._max_attempts - 1:
+                    break
+                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
+                logger.warning(
+                    "Extractor: LLM call failed (attempt %d), retrying in %.1fs",
+                    attempt + 1,
+                    wait,
+                )
+                time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Extractor: LLM call did not execute")
 
     def _build_units(
         self,
@@ -989,10 +991,11 @@ class ExtractorImpl(Extractor):
 
 @ExtractorProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     return ExtractorImpl(
         llm=LlmProducer.dep(config, default="echo"),
         min_confidence=config.get("extractor_min_confidence", 0.5),
-        retry_max_retries=config.get("extractor_retry_max", 3),
+        max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
     )

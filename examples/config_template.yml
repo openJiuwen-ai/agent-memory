@@ -176,7 +176,8 @@ globals:
 #       # narrow_dims 每项 4 个字段：entity 与 tag_key 必填（tag_key 不得重复），
 #       #   applies_to 默认对全部类别生效，question 默认空（判定时问模型的那句话）。
 #       # 以上约束在装配期校验，配错即 ValidationError，不会留到运行时。
-#       # target: llm 时另可配 retry_max_retries（默认 3）、retry_backoff_ms（默认 1000）。
+#       # target: llm 时另可配 router_max_attempts（默认 3）、
+#       # router_retry_backoff（默认 1000）。
 #       # 接入方的产品概念，内核只作字典键透传；内核自带 user/agent/session 三项，
 #       # 取值以调用方身份为准、不接受覆盖，因此这里不得与那三项重名。
 #       coord_entities: [project, team]
