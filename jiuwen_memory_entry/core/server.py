@@ -64,6 +64,14 @@ class Server:
     def api(self):
         return self._runtime.api
 
+    async def start_background(self) -> None:
+        """异步面宿主调用：起看门狗等后台组件（绑当前 loop，F07 §12.10）。"""
+        await self._runtime.start_background()
+
+    def start(self) -> None:
+        """同步面宿主调用：daemon 线程自持 loop 起后台组件（F07 §12.10）。"""
+        self._runtime.start()
+
     @property
     def audit(self):
         """返回供认证边界记录入口事件的共享审计器。"""

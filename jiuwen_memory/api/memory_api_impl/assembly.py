@@ -15,15 +15,16 @@
 
 - **默认装配**：无 config 时用内置默认上下文（:mod:`config.defaults`）——离线进程内栈，用
   显式具名 + 引用复刻共享拓扑；用户 config **合并覆盖**到其上（只写要改动的部分）。
-- **真源 kv 注入**：``kv`` 入参经 ``KvProducer.put`` 预置进缓存，覆盖配置选择并被各处共享。
 
 注册靠 import 各实现模块触发，组装前由各层 bootstrap 统一拉起（句柄住在接口层）。
 """
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from jiuwen_memory.common._support import as_bool
@@ -32,7 +33,7 @@ from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.lock import LockProducer
-from jiuwen_memory.common.log import setup_logging
+from jiuwen_memory.common.log import get_logger, setup_logging
 from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
     DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
@@ -43,6 +44,10 @@ from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProduce
 from jiuwen_memory.config.config_source_impl import register_config_sources
 from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 from jiuwen_memory.config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
+from jiuwen_memory.config.document_flag import (
+    WATCH_DOCUMENT_KEY,
+    resolve_watch_document,
+)
 from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.construction.router import optional_router
 from jiuwen_memory.control.bootstrap import register_controllers
@@ -63,9 +68,12 @@ from jiuwen_memory.storage.store_manager import (
     StoreManagerProducer,
     resolve_name,
 )
+from jiuwen_memory.storage.watchdog import Watchdog, WatchdogProducer
 
 from ..memory_api import MemoryAPI
 from .local_memory_api import LocalMemoryAPI
+
+logger = get_logger(__name__)
 
 _SCHEMA_TARGETS = frozenset(
     {
@@ -111,14 +119,59 @@ class _Kernel:
     audit: AuditLogger | None = None
     config_source: ConfigSource | None = None
     scheduler: Scheduler | None = None
+    watchdog: Watchdog | None = None
+
+    async def start_background(self) -> None:
+        """启动需事件循环就绪的后台组件。
+
+        ``build_kernel`` 是同步函数，装配期无 running loop，故看门狗的 ``start``
+        （内部 ``asyncio.get_running_loop`` 取 loop 绑 Observer 桥接）延后到此。
+        由 server startup event 调用。无 watchdog 时为 no-op。
+        """
+        if self.watchdog is not None:
+            self.watchdog.start()
+            # 与 LocalWatchdog.start 的 info 呼应，确认"确实调了 start"——
+            # close 时若发现"装配但未 start"，本日志可回溯定位漏调点。
+            logger.info("start_background: watchdog.start() called")
+
+    def close(self) -> None:
+        """关闭需显式释放的后台组件（server shutdown event 调）。
+
+        顺序：先停看门狗 Observer（不再监听后续文件变更），再关影子索引 sqlite
+        连接。幂等——重复调不报错（watchdog.stop / shadow.close 自身幂等）。
+        """
+        if self.watchdog is not None:
+            self.watchdog.stop()
+        shadow = None
+        try:
+            if self.storage.has_shadow_index():
+                shadow = self.storage.shadow_index()
+        except Exception as exc:
+            logger.warning("failed to get shadow index for close: %s", exc)
+            shadow = None
+        if shadow is not None:
+            try:
+                shadow.close()
+            except Exception as exc:  # pragma: no cover - 防御性清理
+                logger.debug("shadow.close() failed during shutdown: %s", exc)
 
 
 @runtime_checkable
 class MemoryRuntime(Protocol):
-    """Access composition root 使用的运行时句柄：只有 API 与关闭语义。"""
+    """Access composition root 使用的运行时句柄：API + 生命周期语义。
+
+    ``start_background``（异步面，watchdog 绑当前 loop）与 ``start``（同步面，daemon
+    线程自持 loop）由各协议面按自己的并发模型择一显式调；不调则文档看门狗不启动。
+    """
 
     @property
     def api(self) -> MemoryAPI:
+        ...
+
+    async def start_background(self) -> None:
+        ...
+
+    def start(self) -> None:
         ...
 
     def close(self, *, wait: bool = True) -> None:
@@ -127,23 +180,72 @@ class MemoryRuntime(Protocol):
 
 @dataclass
 class _MemoryRuntime:
+    """``assemble_runtime`` 的产物：api + 生命周期。
+
+    ``_kernel`` 私有持有全部端口（不暴露 kv/storage/space/scheduler/ingest_jobs 等——
+    S02 边界）；close 时经 ``_kernel`` 访问各端口，start 语义按调用方的并发模型二选一，
+    watchdog 绑的长寿 loop 必须活到进程退出。
+    """
+
     api: MemoryAPI
-    _ingest_jobs: IngestJobController
-    _audit: AuditLogger | None = None
-    _scheduler: Scheduler | None = None
+    _kernel: _Kernel
+
+    async def start_background(self) -> None:
+        """异步面（FastAPI lifespan / MCP / SDK provider）：watchdog 绑当前 loop。"""
+        await self._kernel.start_background()
+
+    def start(self) -> None:
+        """同步面（http_server 等无事件循环的宿主）：daemon 线程自持专属 loop。
+
+        装配期无 running loop 是既定铁律，故 watchdog 的 start 在此线程内
+        ``call_soon`` 后 ``run_forever``。close 时先停 watchdog 再停 loop。
+        """
+        if self._kernel.watchdog is None or self._loop_thread is not None:
+            return  # 无看门狗（no-op）或已启动（幂等）
+        started = threading.Event()
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+
+        def _run() -> None:
+            # 局部引用：close() 清 _loop 后这里不再读共享字段（run_forever 退出
+            # 与 close 并发，读 self._loop 会撞 None）。
+            asyncio.set_event_loop(loop)
+            loop.call_soon(self._kernel.watchdog.start)
+            started.set()
+            try:
+                loop.run_forever()
+            finally:
+                loop.close()
+
+        self._loop_thread = threading.Thread(
+            target=_run, name="memory-runtime-loop", daemon=True
+        )
+        self._loop_thread.start()
+        started.wait()
 
     def close(self, *, wait: bool = True) -> None:
-        self._ingest_jobs.close(wait=wait)
-        # 先停调度器，再释放 dreaming leader 锁。反序会允许新实例接管后，
+        # 顺序：先停看门狗（不再监听文件事件），再停专属 loop（若有），
+        # 再关任务池，最后停调度器并释放 dreaming leader 锁。端口统一经
+        # ``_kernel`` 访问——散字段（``_ingest_jobs``/``_scheduler``）是 rebase
+        # 前 mem2.0 的旧形态，markdown 重构后端口已收进 ``_Kernel``。
+        # scheduler 必须先于 dreaming lock 释放——反序会允许新实例接管后，
         # 本实例尚未停下的 Timer / drain 继续执行，形成短暂双跑。
-        if self._scheduler is not None:
-            self._scheduler.shutdown()
+        self._kernel.close()
+        loop, self._loop = self._loop, None
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        self._kernel.ingest_jobs.close(wait=wait)
+        if self._kernel.scheduler is not None:
+            self._kernel.scheduler.shutdown()
         # dreaming 实例锁（F04 D8 关闭语义）：owner 匹配释放（未持锁幂等，
         # 不误删他人锁）。锁不属于 MemoryAPI 公共契约（Protocol 上没有），
         # 经 getattr 探测——只有装配了演进能力的实现才有。
         release_lock = getattr(self.api, "release_dreaming_lock", None)
         if callable(release_lock):
             release_lock()
+
+    _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
+    _loop_thread: threading.Thread | None = field(default=None, repr=False)
 
 
 def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:
@@ -311,6 +413,19 @@ def _build_kernel(
         router=optional_router(root),
     )
     _reject_routing_without_space_authorization(api)
+
+    watchdog: Watchdog | None = None
+    has_shadow = storage.has_shadow_index()
+    watch_doc = resolve_watch_document(root.get(WATCH_DOCUMENT_KEY, True))
+    if has_shadow and watch_doc:
+        watchdog = WatchdogProducer.dep(root, default="watchdog")
+    # "文档看门狗是否启用"的唯一决策点：shadow 端口缺失或 watch_document 关闭
+    # 都会让 assembled=False，此时 md 手改不会被增量同步——出问题时据本日志定位。
+    logger.info(
+        "watchdog assembled=%s (shadow=%s, watch_doc=%s)",
+        watchdog is not None, has_shadow, watch_doc,
+    )
+
     return _Kernel(
         api=api,
         kv=kv_store,
@@ -320,6 +435,7 @@ def _build_kernel(
         audit=audit_logger,
         config_source=config_source,
         scheduler=scheduler,
+        watchdog=watchdog,
     )
 
 
@@ -359,9 +475,4 @@ def assemble_runtime(
 ) -> MemoryRuntime:
     """装配 Access 运行时：``api`` + ``close``，不暴露存储或任务控制器端口。"""
     kernel = _build_kernel(policies, kv, config)
-    return _MemoryRuntime(
-        api=kernel.api,
-        _ingest_jobs=kernel.ingest_jobs,
-        _scheduler=kernel.scheduler,
-        _audit=kernel.audit,
-    )
+    return _MemoryRuntime(api=kernel.api, _kernel=kernel)
