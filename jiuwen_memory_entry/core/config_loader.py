@@ -79,9 +79,12 @@ def load_layer(path: str) -> dict:
         else:
             data = json.loads(text) if text.strip() else {}
     except ValueError as exc:  # json.JSONDecodeError；yaml.YAMLError 不是 ValueError
-        raise ValidationError(f"配置文件 {path} 不是合法的 JSON：{exc}") from exc
+        raise ValidationError(f"config file {path} is not valid JSON: {exc}") from exc
     except Exception as exc:  # yaml.YAMLError 及其他解析器错误，统一转白名单类型
-        raise ValidationError(f"配置文件 {path} 解析失败：{exc}") from exc
+        raise ValidationError(f"config file {path} could not be parsed: {exc}") from exc
     if not isinstance(data, dict):
-        raise ValidationError(f"配置文件 {path} 顶层必须是对象，实际是 {type(data).__name__}")
+        raise ValidationError(
+            f"config file {path} must be a JSON/YAML object at the top level, "
+            f"got {type(data).__name__}"
+        )
     return expand_env(data)

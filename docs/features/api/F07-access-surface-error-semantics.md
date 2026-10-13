@@ -1,4 +1,4 @@
-# F07 — 接入层错误语义与严格边界
+# F07 — 接入层错误语义一致性
 
 ## 元信息
 
@@ -7,27 +7,37 @@
 | 日期 | 2026-10-13 |
 | 影响范围 | `jiuwen_memory_entry/mcp_server/`、`jiuwen_memory_entry/cli/`、`jiuwen_memory_entry/core/config_loader.py`、`jiuwen_memory_entry/http_server/__main__.py`、`jiuwen_memory/control/engine_impl/in_memory_engine.py` |
 | 测试基线 | `ruff check` 通过；`tests/unit/jiuwen_memory_entry/test_mcp.py`（含新增 37 项严格边界用例）通过；`tests/unit/jiuwen_memory_entry/test_cli.py`、`test_config_loader.py`（含新增回归）通过；`tests/unit/api/test_space_api.py` 与 `tests/integration/test_dev_fallback_business_continuity.py`（OFFLINE 空间治理往返）通过 |
-| Refs | MR #359 合入前复测反馈的五个问题；均非该 MR 引入（存量缺陷） |
+| Refs | 与 F06 同属接入层补全；本特性各项均非同一 MR 引入（存量），在 MR #359 合入前复测中集中暴露 |
 
 ## 背景
 
-对 MR #359 提交版本的复测发现五处接入层缺陷，共同模式是**错误被静默吞掉或误报成功**：
+接入层还有第三项职责：**失败必须是显式的**。调用方判断成败依靠的信号并不多——HTTP 状态码、CLI 退出码、stderr、MCP 抛出的异常——一旦接入层吞掉错误、把非结果当成功、或把错误详情压缩成空行，调用方就失去了全部依据，只能看到「返回 200」这种无信息量的假成功。
 
-1. **MCP 静默忽略额外参数**：客户端传入 `security` 等契约外字段，FastMCP 的
-   `ArgModelBase` 未配置 `extra`（pydantic 默认 ignore），字段在进入工具函数前被丢弃；
-   而同一请求走 HTTP/CLI 会被 `parse_request` 以 400 拒绝——三条路径严格性不一致。
-2. **OFFLINE 删除空间失败**：`InMemoryEngine.purge_space` 开头按 `scope.space` 守卫拒绝，
-   而 `delete_space` 两步事务先置 `DELETING` 再 purge——删除必败且重试同败，空间永久卡在
-   删除中。
-3. **CLI 误报成功**：HTTP 返回 200 但响应体不是合法 JSON 时，`_read_json` 生成
-   `BadResponse` 错误体却沿用 200 状态；`_write` 只看状态决定退出码——输出错误体、
-   退出码却是 0。
-4. **quiet 模式吞掉错误详情**：`_render_quiet` 只提取 `id` / `unit_id`，认证失败、
-   记忆不存在等错误体被渲染成空行。
-5. **损坏配置触发 traceback**：`load_layer` 把 `JSONDecodeError` / `YAMLError` 裸抛，
-   CLI `main()` 只捕 `CliError` / `OSError`，直接崩溃；HTTP 侧配置加载也在 try 块之外。
-   附带发现：顶层是数组（如 `[]`）的配置层在合并循环中被**静默跳过**，调用方以为
-   配置生效了实际没有。
+本特性把「错误如何呈现」固化为契约，覆盖三件事：**失败显式化**（错误一律转为公开面白名单异常，不裸抛解析器异常、不静默跳过）、**报文与退出码语义**（状态码与退出码反映真实结果，而非传输状态的字面值）、**各接入路径同口径**（同一种错误在 HTTP / CLI / MCP 上得到同一处置，不出现「某条路径静默接受」）。[F06](F06-access-parameter-forwarding.md) 保证的是参数能否无损到达，本特性保证的是失败能否被明确看见——两者互补，共同构成接入层的完整契约。
+
+## 交付的保证
+
+以下行为是调用方可以依赖的契约，也是本特性的验收点。
+
+### E1 协议层故障不被当作成功
+
+HTTP 2xx 但响应体不是合法 JSON，属于**协议层故障**：CLI 输出错误体、退出码非 0。已是失败的错误响应若非 JSON，保留原状态码（信息更有用）。
+
+### E2 契约外输入在边界处被拒，且各路径同口径
+
+未知字段在进入业务逻辑前被拒；HTTP / CLI / MCP 三条路径判定一致，不存在「某条路径静默丢字段、另两条报错」的分叉。
+
+### E3 错误详情不被输出模式压缩
+
+quiet 只压缩**成功结果**的输出。失败时错误体必须完整可见（`error: <类型>: <message>`），不能因为选了精简模式就只打出一个空行。
+
+### E4 配置错误走白名单异常
+
+损坏的 `--config` 层（JSON/YAML 解析失败、顶层非对象）报一行错误并给出退出码，不打印 traceback；三个 surface 走同一种公开异常类型，调用方可统一 `except`。
+
+### E5 空间治理在 OFFLINE 装配下闭环
+
+`create_space` → `delete_space` → `get_space` 必须闭环（末步 404）。删除是两步事务，任一环节失败都会让空间永久卡在删除中，因此该链路不得依赖仅在生产装配下成立的前提。
 
 ## 决策
 
@@ -35,10 +45,10 @@
 
 工具全部注册后，对每个工具的 `arg_model` **子类化覆盖** `model_config` 为
 `extra="forbid"`（`mcp_server/__main__.py::_tighten_tool_arg_models`）。收紧前后字段
-集合与 JSON Schema 必须一致（实现内断言），仅拒绝契约外字段。三条接入路径（HTTP /
+集合与 JSON Schema 必须一致（实现内校验），仅拒绝契约外字段。三条接入路径（HTTP /
 CLI / MCP）自此同口径：契约外字段一律报错，不再有「MCP 静默丢、HTTP 报 400」的分叉。
 
-### 2. `InMemoryEngine.purge_space` 去掉 space 守卫
+### 2. `InMemoryEngine.purge_space` 不设 space 守卫
 
 本引擎**写路径**全部经 `_ensure_local_scope` 拒绝 space scope——引擎内不可能存在空间
 记忆，purge 天然是 no-op（返回 `[]`），元数据删除正常完成。OFFLINE 装配下空间治理
@@ -47,9 +57,9 @@ CLI / MCP）自此同口径：契约外字段一律报错，不再有「MCP 静�
 
 ### 3. CLI 退出码由「真实结果」决定，不由传输状态字面值决定
 
-HTTP 2xx + 非 JSON 体是**协议层故障**：`_read_json` 解码失败映射为 502（错误响应体本身
-非 JSON 时保留原状态码，信息更有用）。退出码 1、错误体走 stderr——不再出现「输出
-BadResponse 却报成功」。
+HTTP 2xx + 非 JSON 体在 `_read_json` 解码失败时映射为 502（错误响应体本身非 JSON 时
+保留原状态码，信息更有用）。退出码 1、错误体走 stderr——不再出现「输出 BadResponse
+却报成功」。
 
 ### 4. quiet 只压缩成功结果，错误体完整可见
 
@@ -64,6 +74,9 @@ BadResponse 却报成功」。
 - HTTP：配置加载移入 `main()` 的 try 块，报一行错误、退出码 2；
 - CLI：`main()` 的捕获列表加入 `ValidationError`，与 `CliError` 同口径；
 - MCP：模块级装配路径不变（启动失败即退出）。
+
+错误文案统一为英文（`config file <path> is not valid JSON: ...` 等），与其余接入层
+错误面一致。
 
 ## 拒绝的方案
 
