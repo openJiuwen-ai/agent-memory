@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
@@ -23,7 +23,7 @@ _DEFAULT_MAX_ENTRIES = 4096
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class KVMembershipResolver(MembershipResolver):

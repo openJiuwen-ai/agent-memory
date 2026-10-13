@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-10-13 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
 ## Metadata 检索契约
 
@@ -190,11 +190,19 @@ parent_score = max(parent_recall_score, selected_descendant_scores)
 |------|------|------|
 | `parse` | `(query: RetrievalQuery) -> ParsedQuery` | 将检索请求解析为结构化查询表示 |
 
-**产出**：raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions。
+**产出**：raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions/rewrite_status/rewrite_fallback_reason。
 
 `raw` 表示进入检索链路的规范化 query 文本，不要求逐字等于调用方传入的
 `RetrievalQuery.text`。默认 `simple` 实现会先剥除上游包装噪声（如 UTC 时间戳、
 `Sender (untrusted metadata)` 元数据行），再基于清洗后的文本产生分词、向量和时间窗。
+
+默认 `simple` 实现的 LLM 改写关闭。显式开启后，LLM 只接收 sanitized raw 并按
+`{"rewritten": "..."}` 单对象契约返回；非法输出或调用失败回退 sanitized raw。
+`rewritten` 的字符级上限是 `max(512, len(sanitized raw))`；QueryParser 不设置任务级
+`max_tokens`，由 LLM 后端的 `llm_max_tokens` 统一控制。
+软召回信号由 `rewritten` 驱动，硬过滤、`as_of` 和 event-time 窗仍来自调用方输入与
+raw 文本。`parse` 轨迹用 `detail["rewrite"]` 记录 `off/used/fallback`，fallback 时用
+`detail["fallback_reason"]` 记录原因，不记录 query 文本或模型原始输出。
 
 ### 过滤表达式
 
@@ -299,6 +307,8 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `channels` | list[RecallChannel] | 建议启用的通道 |
 | `include_archived` | bool | 当前态真源复核是否允许 archived |
 | `extensions` | dict[str, Any] | 透传配置 |
+| `rewrite_status` | str | 改写状态：`off` / `used` / `fallback` |
+| `rewrite_fallback_reason` | str | 改写回退原因；成功或关闭时为空 |
 
 1. `top_k > 0`，`expand_depth >= 0`；非空 `max_tokens` 必须大于 0。
 2. `hierarchy_role`、任一 span、`expand_depth > 0` 或 `rollup=true` 都要求显式 `hierarchy_kind`。

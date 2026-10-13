@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-09-16 |
+| 最近一次修订日期 | 2026-10-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
 ## Metadata 物理存储契约
@@ -238,7 +238,10 @@ globals，inline dict 拒绝），缺省 `"default"`。注意与跨切面开关�
 S04 的「scope 是独立轴」同一条铁律。召回分数统一「分越大越相关」，chunk→unit 归并由
 同目录 `unit_aggregation.aggregate_to_units` 按 `metadata['unit_id']` 取 MaxP。
 
-### 共享读 helper（`kv.py::load_units` / `list_units`）
+
+### 共享读 helper（`kv.py::load_memory_unit` / `load_units` / `list_units`）
+
+`load_memory_unit(raw, scope=..., key=...)` 是字节级损坏的隔离口：`loads` 保持严格 UTF-8，`UnicodeDecodeError` 记 warning（含脱敏 scope、可见 MemoryUnit id、字节数和异常类型）并返回 `None`，调用方同其他非 MemoryUnit 记录一样过滤。`load_units` / `list_units`、DomainStore `get` / `list`、`UnitReader` 与 KV list 兼容实现都经它读取；get/list 对存在但不可解码的记录按缺失省略，search/recall 不因单条坏记录中断。
 
 `load_units(kv, scope, unit_ids) -> list[MemoryUnit]`：按 unit_id 从 KV 真源点读
 MemoryUnit 列表（`memory_key` + `loads`）——缺失省略、按输入顺序返回、重复 id 各自返回、

@@ -13,7 +13,9 @@ from unittest.mock import patch
 import pytest
 
 from jiuwen_memory.common.type_def import MemoryUnit
-from jiuwen_memory.construction.layer_annotator_impl.keyword_layer_annotator import KeywordLayerAnnotator
+from jiuwen_memory.construction.layer_annotator_impl.keyword_layer_annotator import (
+    KeywordLayerAnnotator,
+)
 from jiuwen_memory.construction.layer_annotator_impl.llm_layer_annotator import LLMLayerAnnotator
 from tests.unit.construction.fixtures import (
     MockLLM,
@@ -120,7 +122,7 @@ def _llm_annotator(responses: list[str]) -> LLMLayerAnnotator:
     return LLMLayerAnnotator(
         llm=MockLLM(responses=responses),
         layers_threshold=50,
-        retry_max_retries=3,
+        max_attempts=3,
         retry_backoff_ms=1000,
     )
 

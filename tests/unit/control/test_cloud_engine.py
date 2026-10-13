@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -59,7 +59,7 @@ class _RecordingIngestor(Ingestor):
 
     def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
         units: list[MemoryUnit] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for payload in payloads:
             units.append(
                 MemoryUnit(
@@ -389,6 +389,7 @@ def _engine(ingestor: Ingestor | None = None):
             scheduler=InProcessScheduler(),
             evolver=chat_evolver,
             lifecycle=_NoopLifecycle(),
+            kv=kv,
             classifier=chat_classifier,
             pipeline=_MessageTypePipeline(profiles),
             default_message_type="chat",
@@ -700,6 +701,7 @@ def _engine_with_job_factory(
         scheduler=scheduler,
         evolver=chat_evolver,
         lifecycle=lifecycle,
+        kv=kv,
         classifier=_RecordingClassifier("chat"),
         pipeline=_MessageTypePipeline(profiles),
         default_message_type="chat",

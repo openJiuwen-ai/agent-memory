@@ -87,7 +87,7 @@ def collective_settings():
                     {"entity": "session", "tag_key": "session_id"},
                     {"entity": "team", "tag_key": "team_id"},
                 ],
-                "retry_max_retries": 1,
+                "router_max_attempts": 1,
             }}},
         },
     }

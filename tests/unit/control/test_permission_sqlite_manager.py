@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -109,7 +109,7 @@ def test_expired_grant_is_rejected(tmp_path) -> None:
         grantor=Scope(org="acme", user="owner"),
         grantee=Scope(org="acme", user="reader"),
         actions=[Action.READ],
-        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
 
     mgr.grant(grant)
@@ -133,7 +133,7 @@ def test_expired_grant_does_not_block_regrant(tmp_path) -> None:
             grantor=grantor,
             grantee=grantee,
             actions=[Action.READ],
-            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
         )
     )
     mgr.grant(
@@ -141,7 +141,7 @@ def test_expired_grant_does_not_block_regrant(tmp_path) -> None:
             grantor=grantor,
             grantee=grantee,
             actions=[Action.READ],
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
         )
     )
 

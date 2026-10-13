@@ -193,7 +193,10 @@ class PipelineRetriever(Retriever):
         # 调用方自定义透传配置随 parsed 下达各召回路（自定义 Recaller 按约定读取）；
         # 在此统一接力，无需各 parser 实现感知。
         parsed.extensions = dict(query.extensions)
-        step("parse", t0, n=len(parsed.tokens))
+        parse_detail = {"rewrite": parsed.rewrite_status}
+        if parsed.rewrite_fallback_reason:
+            parse_detail["fallback_reason"] = parsed.rewrite_fallback_reason
+        step("parse", t0, n=len(parsed.tokens), detail=parse_detail)
 
         # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
         #      用户表达式作整体 child——绝不摊平，防其 OR 稀释 lifecycle 等安全谓词。

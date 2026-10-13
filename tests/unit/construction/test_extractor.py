@@ -39,7 +39,7 @@ def _make_extractor(
     kwargs: dict = {
         "llm": MockLLM(responses=llm_responses),
         "min_confidence": 0.5,
-        "retry_max_retries": 3,
+        "max_attempts": 3,
         "retry_backoff_ms": 1000,
     }
     if extract_batch_size is not None:
@@ -249,7 +249,9 @@ def test_extract_batch_size_splits_llm_calls():
     ]
     result = extractor.extract(units)
 
-    assert getattr(llm, "_call_count", 0) == 2, "3 units with batch_size=2 should trigger 2 LLM calls"
+    assert getattr(llm, "_call_count", 0) == 2, (
+        "3 units with batch_size=2 should trigger 2 LLM calls"
+    )
     assert len(result) == 3
 
 
