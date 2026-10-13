@@ -15,7 +15,6 @@
 
 - **默认装配**：无 config 时用内置默认上下文（:mod:`config.defaults`）——离线进程内栈，用
   显式具名 + 引用复刻共享拓扑；用户 config **合并覆盖**到其上（只写要改动的部分）。
-- **真源 kv 注入**：``kv`` 入参经 ``KvProducer.put`` 预置进缓存，覆盖配置选择并被各处共享。
 
 注册靠 import 各实现模块触发，组装前由各层 bootstrap 统一拉起（句柄住在接口层）。
 """
@@ -189,9 +188,6 @@ class _MemoryRuntime:
     """
 
     api: MemoryAPI
-    _ingest_jobs: IngestJobController
-    _audit: AuditLogger | None = None
-    _scheduler: Scheduler | None = None
     _kernel: _Kernel
 
     async def start_background(self) -> None:
@@ -479,10 +475,4 @@ def assemble_runtime(
 ) -> MemoryRuntime:
     """装配 Access 运行时：``api`` + ``close``，不暴露存储或任务控制器端口。"""
     kernel = _build_kernel(policies, kv, config)
-    return _MemoryRuntime(
-        api=kernel.api,
-        _ingest_jobs=kernel.ingest_jobs,
-        _scheduler=kernel.scheduler,
-        _audit=kernel.audit,
-        _kernel=kernel
-    )
+    return _MemoryRuntime(api=kernel.api, _kernel=kernel)
