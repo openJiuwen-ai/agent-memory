@@ -89,7 +89,9 @@ class InMemoryFulltextStore(FulltextStore):
 
 
 
-@FulltextProducer.register("memory")
+@FulltextProducer.register(
+    "memory", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build(config):
     # Tokenizer 经 TokenizerProducer 自取（缺省 whitespace），与索引/查询侧共享同一实例。
     return InMemoryFulltextStore(TokenizerProducer.dep(config, default="whitespace"))

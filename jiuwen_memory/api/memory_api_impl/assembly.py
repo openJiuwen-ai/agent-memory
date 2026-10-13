@@ -48,6 +48,10 @@ from jiuwen_memory.config.document_flag import (
     WATCH_DOCUMENT_KEY,
     resolve_watch_document,
 )
+from jiuwen_memory.config.encryption import (
+    EncryptionBoundConfigSource,
+    deployment_bindings,
+)
 from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.construction.router import optional_router
 from jiuwen_memory.control.bootstrap import register_controllers
@@ -103,7 +107,7 @@ class _Kernel:
         api: 形态无关的 MemoryAPI 入口
         kv: 真源 KV（全局 StoreManager 的 KV 端口，与 ``kv_store.default`` 具名实例
             同源——外部注入的 kv 经 ``KvProducer.put`` 预置缓存后被各处共享；
-            F04 §5.4 默认 raw，opt-in encrypted target 才包装）
+            默认 raw；显式 encrypted target 或统一静态加密开关启用保护）
         storage: 上层统一使用的 StoreManager（默认 CompositeStoreManager；数据面
             领域操作经 ``storage.domain_store()``；配置段名 ``store_manager:``）
         space: SpaceManager（若装配）
@@ -328,6 +332,7 @@ def _build_kernel(
         ctx = ctx.merged(config.context(known_top_names=Factory.known_top_names()))
     if policies is not None:
         ctx.globals["policies"] = dict(policies)
+    protected_bindings = deployment_bindings(ctx)
     schema_enabled = as_bool(ctx.globals.get("schema_enabled"), default=False)
     configured_schema_targets = _configured_schema_targets(ctx)
     if configured_schema_targets and not schema_enabled:
@@ -356,6 +361,8 @@ def _build_kernel(
         raise ValidationError(
             f"config_source 装配结果不是 ConfigSource: {type(config_source).__name__}"
         )
+    if protected_bindings:
+        config_source = EncryptionBoundConfigSource(config_source, protected_bindings)
     ConfigSourceProducer.put("default", config_source)
 
     storage = StoreManagerProducer.resolve(root)

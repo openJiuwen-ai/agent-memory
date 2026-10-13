@@ -3,6 +3,8 @@ profile: docker-postgres
 
 memory_api:
   globals:
+    # PR1-1: start via deploy/encryption/compose.py when enabling encryption.
+    storage_encryption_enabled: "${STORAGE_ENCRYPTION_ENABLED:-false}"
     vector_enabled: true
     graph_enabled: false
     rerank_enabled: true

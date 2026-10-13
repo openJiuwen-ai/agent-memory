@@ -18,7 +18,7 @@
 | `pipeline.py` | `MemoryPipeline` 抽象接口——按记忆类型选择构建/查询 profile |
 | `lifecycle.py` | `LifecycleManager` 接口——状态流转（transition）与到期清扫（sweep） |
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
-| `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验 |
+| `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验；各 permission_impl 自注册 at_rest_locations，SQLite/space_aware 声明 db_path（含仅免部署证明的 :memory:，见 S08），allow_all/routing 声明自身无落盘，routing 的具名依赖仍逐实例检查 |
 | `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度；`supports_recurring` 周期能力、`link_child` 父子任务观测关联、`RecurringJobStoppedError` 永久停摆信号、`shutdown` 优雅关闭 |
 | `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |

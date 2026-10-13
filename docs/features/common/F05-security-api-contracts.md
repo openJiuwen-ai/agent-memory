@@ -1,5 +1,10 @@
 # 安全域接口契约
 
+> 2026-10-13 后续状态：PR1-1 已扩展全后端静态加密与统一开关，当前分支为
+> `sec/storage-encryption`。本文正文记录 PR1 范围；后续实现以
+> [storage/F02](../storage/F02-encrypted-storage.md) 与 S06/S08 为准。
+
+
 ## 元信息
 
 | 项 | 值 |

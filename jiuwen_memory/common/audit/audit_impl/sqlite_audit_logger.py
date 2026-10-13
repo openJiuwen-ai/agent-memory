@@ -13,6 +13,7 @@ from typing import NamedTuple
 
 from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
 from jiuwen_memory.common.type_def import AuditEvent, Scope
+from jiuwen_memory.config.encryption import AtRestLocation
 
 
 class AuditRow(NamedTuple):
@@ -124,8 +125,7 @@ class SqliteAuditLogger(AuditLogger):
             }
             if "actor_space" not in columns:
                 self._conn.execute(
-                    "ALTER TABLE audit_events "
-                    "ADD COLUMN actor_space TEXT NOT NULL DEFAULT ''"
+                    "ALTER TABLE audit_events ADD COLUMN actor_space TEXT NOT NULL DEFAULT ''"
                 )
             for column in (
                 "target_org",
@@ -158,7 +158,17 @@ class SqliteAuditLogger(AuditLogger):
             )
 
 
-@AuditProducer.register("sqlite")
+@AuditProducer.register(
+    "sqlite",
+    config_inspectors={
+        "at_rest_locations": lambda config: {
+            "db_path": AtRestLocation(
+                config.get("db_path", ":memory:"),
+                requires_declaration=config.get("db_path", ":memory:") != ":memory:",
+            )
+        }
+    },
+)
 def _build(config):
     return SqliteAuditLogger(config.get("db_path", ":memory:"))
 

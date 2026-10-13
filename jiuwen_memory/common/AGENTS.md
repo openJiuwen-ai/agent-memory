@@ -25,7 +25,7 @@
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，分别序列化 `system_metadata` / `user_metadata`，拒绝未迁移的 `_v<4` MemoryUnit |
 | `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
-| `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
+| `factory/factory.py` | Factory 基类：`TOP_NAME` 注册、插件 config_inspectors（与 builder 同步替换）、公开命名空间/配置检查查询、registration_scope 临时注册隔离 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
 | `tokenizer/` | Tokenizer 插件目录 |
@@ -33,7 +33,7 @@
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
-| `audit/` | AuditLogger 插件目录；`protected_audit_logger.py` 的 `ProtectedAuditLogger` 把 record 委派审计完整性 provider、query 透传，并在构造时校验 provider chain store 与 logger 是同一对象（PR3 契约，接口先行，PR1 无调用点） |
+| `audit/` | AuditLogger 插件目录；sqlite 自注册 db_path 位置声明（含仅免部署证明的 :memory:，见 S08）；`protected_audit_logger.py` 的 `ProtectedAuditLogger` 把 record 委派审计完整性 provider、query 透传，并在构造时校验 provider chain store 与 logger 是同一对象（PR3 契约，接口先行，PR1 无调用点） |
 | `security/` | 安全能力的唯一归属地（F05）。**PR1 已实装**：`types.py`（Credentials/AuthContext/RequestSecurityContext/CryptoContext/Role/Surface，ContextVar 传播 AuthContext）、`runtime.py`（SecurityRuntime 装配根）、`authentication/`（Authenticator + PrincipalKeyStore + CredentialStatusRegistry，内置 dev/trusted/api_key + memory Argon2id；`credential_status_required` 显式声明撤销 capability，Registry 按 `(credential_type, credential_issuer)` 路由平行真源，逐请求在线复核接线归 PR2）、`protection/`（RateLimiter/WorkloadGuard/BindingPolicy，内置 token_bucket/unlimited/semaphore/loopback）、`cryptography/`（CryptographyProvider + KeyProvider（含 `rotate` 轮换契约），内置 `local` ENC1 AES-GCM）。注册入口 `security/bootstrap.py::register_security()`；使用统一 `import_required` 记录并重抛安全依赖导入错误，不静默跳过。**接口先行、PR1 不实装**：`authorization/`（Authorizer/GrantStore/DelegationStore/scope_rules，PR2）、`audit_integrity/`（PR3；其 `SecurityRuntime.audit_integrity_provider` 可选装配位与健康检查位 PR1 已固定）、过渡桥 `legacy.py`（PR2 与其全部调用点一并删除）。`request_context.py` 的受控构造入口 PR1 已由认证中间件使用，PEP 侧来源校验归 PR2。另含空间级授权判据：`space_roles.py` 两轴角色与动作矩阵、`space_decision.py` 判定链纯函数、`principal.py` 主体推导与作者标记及内核归属坐标折算、`space_predicates.py` 检索两族系统谓词的生成（收 `actor`、不访问存储，与 `space_decision.py` 的分工：后者判能否进入空间，前者定进入后可见哪些条目）（见 `docs/features/control/F07-collective-memory-design.md`） |
 | `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
 
@@ -47,7 +47,11 @@
    每个插件的 Producer 工厂定义在其接口模块（`base.py`）中，与抽象契约同处一地。
 
 3. **注册靠 import 触发**
-   实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数，`*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发（安全域转交 `security/bootstrap.py::register_security()`）。
+   实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数；可随注册声明无副作用的
+   config_inspectors，替换 target 必须同时替换检查器，不继承旧插件能力声明。
+   临时替换测试通过 Producer.registration_scope 保存并恢复 builder 与检查器，不读取私有注册表；
+   该边界不隔离实例缓存，也不提供并发注册事务。
+   `*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发（安全域转交 `security/bootstrap.py::register_security()`）。
 
 4. **type_def 不依赖能力实现**
    `type_def/*.py` 只定义跨层数据与 ContextVar，可在 `type_def` 内部引用基础类型

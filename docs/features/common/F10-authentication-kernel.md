@@ -1,5 +1,10 @@
 ﻿# F10 — 认证、凭据保护与静态加密
 
+> 2026-10-13 后续状态：PR1-1 已扩展全后端静态加密与统一开关，当前分支为
+> `sec/storage-encryption`。本文正文记录 PR1 范围；后续实现以
+> [storage/F02](../storage/F02-encrypted-storage.md) 与 S06/S08 为准。
+
+
 ## 元信息
 
 | 项 | 值 |
@@ -100,7 +105,7 @@
   认证前保护和 BindingPolicy。DEV 非回环旁路不恢复，管理员仍使用具名身份快照。
 - 旧 `security/security_impl/local_envelope_security_provider.py` 的上游变化仅是
   类型注解规范迁移，保持该旧实现删除；实际加密仍由 `cryptography/` 唯一实现。
-  FS 加密装饰器仍仅保存在 `sec/fs-encryption`，不并入 PR1。
+  FS 未并入 PR1，现已纳入 PR1-1 的 `sec/storage-encryption`，见 storage/F02。
 - 保留上游历史 handler 的 disclosure 与 update 的 t_valid/t_invalid/mode 透传，
   补充带可信认证上下文的参数回归；新增参数不能覆盖认证主体。
 - 按上游启用的 Ruff UP 规则迁移 PR1 特有代码；开发依赖沿用上游 Ruff 最低版本，
@@ -396,8 +401,8 @@ acquire 成功后用 `finally` 释放。默认上限 4（按「给认证留 512 
 不占读 body 预算）。release 在处理线程结束（`_process_and_release`）而非 spawn 后，
 否则限不住。慢上传与超限连接测试见 `test_http_body_limits.py` / `test_http_slow_upload.py`。
 
-> FS 加密装饰器及其文件大小边界已从 PR1 拆出，保存在 `sec/fs-encryption`，待独立 PR
-> 评审时再归档设计与验证基线，不能在本 PR 文档中声明已经落地。
+> FS 加密装饰器及其文件大小边界已从 PR1 拆出，后续纳入 `sec/storage-encryption` 的 PR1-1。
+> 设计与验证基线见 storage/F02；它不属于本文记录的 PR1 交付范围。
 
 ### 决策 16：保持固定的可变 `Scope` 接口，在认证边界创建身份快照
 

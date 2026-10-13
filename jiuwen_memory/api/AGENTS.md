@@ -15,7 +15,7 @@
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest。Runtime 保留共享 audit 快照，close 依次关闭 ingest、停止 Scheduler、释放 dreaming leader 锁，禁止提前释放锁造成双跑 |
+| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest。PR1-1 在建组件前核查加密部署声明并安装受保护连接的 ConfigSource 门禁；公共 StoreManagerProducer.resolve 统一验证替代 manager 的保护清单。Runtime 保留共享 audit 快照，close 依次关闭 ingest、停止 Scheduler、释放 dreaming leader 锁，禁止提前释放锁造成双跑 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
@@ -112,7 +112,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
    `store_manager.default`）。顺序铁律：
    ConfigSource → `store_manager.default`（composite 再 dep 各 Store，含 `kv_store.default`；
    若 default 为 encrypted target 则其 raw 指向具名实例）→ `_Kernel.kv = manager.kv(端口名)`。
-   `RoutingKVStore` 须作为 raw 落在加密层内；同实现换 Redis
+   统一静态加密开关开启时，resolve 验证 manager 完整保护清单与 KV/FS 保护健康，
+   替代 manager 缺少保护契约必须拒绝启动。`RoutingKVStore` 须作为 raw 落在加密层内；同实现换 Redis
    用 `kv_store.url` 晚绑定，不要为换 URL 预装多套 Routing 槽位（F01 §2.1.5 / S08）。
 6. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
 7. `job_status` 统一查询 Scheduler 和长耗时 Ingest 任务；Ingest 任务必须显式传入

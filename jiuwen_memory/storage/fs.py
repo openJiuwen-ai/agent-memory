@@ -12,6 +12,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import BinaryIO
 
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
@@ -31,6 +32,14 @@ class FsProducer(Factory):
 
 
 class FSStore(BaseStore):
+    def object_id(self, scope: Scope, key_or_ref: str, *, for_insert: bool = False) -> str:
+        """返回稳定对象标识；insert key、返回 ref 与后续别名须解析到同一标识。
+
+        加密装饰器使用此标识绑定 AAD。支持此能力的后端必须保证 update 返回的
+        引用仍指向同一对象；未知后端默认拒绝，而不猜测 key 等于 ref。
+        """
+        raise UnsupportedCapabilityError("FS backend does not provide stable object identifiers")
+
     @abstractmethod
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
         """在 ``scope`` 下的 ``key`` 写入新文件，返回规范引用 ref；已存在时报冲突。"""

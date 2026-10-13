@@ -18,7 +18,11 @@ from jiuwen_memory.common.security.types import CryptoContext
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KvProducer, KVStore
-from jiuwen_memory.storage.security import EnabledStoreSecurity, StoreSecurity
+from jiuwen_memory.storage.security import (
+    EnabledStoreSecurity,
+    StoreEncryptionBinding,
+    StoreSecurity,
+)
 from jiuwen_memory.storage.types import KVMemoryListResult
 
 from .memory_list import list_memory_entries
@@ -79,7 +83,9 @@ class EncryptedKVStore(KVStore):
         self._encryption = encryption
         # 上游 StoreSecurity 契约：加密 Store 覆写 BaseStore 默认的 passthrough，
         # 声明「本后端已启用数据保护」，health 检查委托给加密提供方。
-        self._store_security = EnabledStoreSecurity(encryption.health)
+        self._store_security = EnabledStoreSecurity(
+            encryption.health, binding=StoreEncryptionBinding(raw, encryption, "ENC1/kv/aad-v1")
+        )
 
     @property
     def security(self) -> StoreSecurity:

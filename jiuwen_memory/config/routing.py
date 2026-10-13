@@ -50,8 +50,8 @@ from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.markdown import MarkdownStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageSecurity
-from jiuwen_memory.storage.store_manager import StorageCapability, StoreManager
 from jiuwen_memory.storage.shadow import DocumentShadowIndex
+from jiuwen_memory.storage.store_manager import StorageCapability, StoreManager
 from jiuwen_memory.storage.types import (
     Document,
     Edge,
@@ -395,6 +395,9 @@ class RoutingFSStore(FSStore):
 
     def health(self) -> None:
         self._router.get().health()
+
+    def object_id(self, scope: Scope, key_or_ref: str, *, for_insert: bool = False) -> str:
+        return self._router.get().object_id(scope, key_or_ref, for_insert=for_insert)
 
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
         return self._router.get().insert(scope, key, data)

@@ -35,7 +35,9 @@ class InMemoryAuditLogger(AuditLogger):
 # -- 注册到 AuditProducer（实现自注册，新增无需改 producer/make_plugins） ------ #
 
 
-@AuditProducer.register("in_memory")
+@AuditProducer.register(
+    "in_memory", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build(config):
     return InMemoryAuditLogger()
 

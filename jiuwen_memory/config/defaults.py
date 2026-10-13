@@ -32,6 +32,10 @@ def default_config_dict() -> dict[str, Any]:
     """返回内置默认配置（两级命名空间字典）。"""
     return {
         "globals": {
+            "storage_encryption_enabled": False,
+            "storage_encryption_cryptography": "default",
+        "storage_encryption_kv": {"target": "encrypted"},
+        "storage_encryption_fs": {"target": "encrypted"},
             "schema_enabled": False,
             "vector_enabled": True,
             "graph_enabled": True,

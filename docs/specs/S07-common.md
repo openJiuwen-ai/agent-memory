@@ -5,8 +5,8 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-12 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 最近一次修订日期 | 2026-10-15 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/storage/F02-encrypted-storage.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F10-authentication-kernel.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -446,7 +446,10 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `register(target)` | `@classmethod (target: str) -> Callable` | 装饰器：注册某实现的 `_build` 函数（接口 1 的实现体） |
+| `register(target, *, config_inspectors=None)` | `@classmethod -> Callable` | 注册 builder 与可选的具名配置检查器；替换 target 同时替换全部检查器，未声明的不继承 |
+| `registration_scope()` | `@classmethod -> ContextManager[None]` | 临时注册边界；正常/异常退出均恢复该 Producer 的 builder 与检查器快照，支持嵌套；不恢复实例缓存，不作为并发注册事务 |
+| `for_namespace(namespace)` | `@classmethod -> type[Factory]` | 查命名空间的 Producer；未知命名空间抛 ValidationError，不构建实例 |
+| `inspect_config(target, inspector, config)` | `@classmethod -> Any` | 执行插件注册的无副作用配置检查器；缺失能力抛 ValidationError，返回值契约由消费方定义 |
 | `build(target, params, ctx, *, name="")` | `@classmethod -> T` | **接口 1（匿名）**：按 `target` 新建，**不入缓存** |
 | `build_named(name, ctx)` | `@classmethod -> T` | **接口 2（具名/共享）**：按具名实例名取/建，按 `new_instance` 决定是否缓存共享 |
 | `dep(config, param_name=None, default=None)` | `@classmethod -> T` | builder 内取依赖：引用名(str)→`build_named`（共享）/ 内联(dict)→`build`（匿名）/ 缺省(None)→`build(default)`（匿名默认） |

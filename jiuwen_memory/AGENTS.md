@@ -16,7 +16,7 @@ jiuwen_memory/
 ├── control/        # 编排层：MemoryEngine + application ports + Scheduler/Permission/Policy/Governance/Space
 ├── ingest/         # 接入层：多模态 → 文本投影 + MemoryUnit，不落盘
 ├── retrieval/      # 检索层：scope 过滤 → 多路召回 → 融合重排 → 渐进式披露
-└── storage/        # 存储层：StoreManager 管理面 + DomainStore 数据面 + 六类 Store，scope 原生隔离
+└── storage/        # 存储层：StoreManager 管理面 + DomainStore 数据面 + 九类 Store，scope 原生隔离
 ```
 
 ## 数据流
@@ -29,7 +29,7 @@ jiuwen_memory/
   control/MemoryEngine ─── 跨层编排中枢
        │
        ├─ write ──→ ingest/Ingestor（规约）→ construction/（落盘 + 索引）→ storage/*Store
-       ├─ recall ─→ retrieval/Retriever → storage/Storage → storage/*Store.search
+       ├─ recall ─→ retrieval/Retriever → storage/StoreManager → storage/*Store.search
        ├─ evolve ─→ control/Scheduler → construction/Evolver → storage/*Store
        └─ get/update/delete ──→ storage/*Store（点读 + 非破坏式修正）
 ```
@@ -60,7 +60,7 @@ jiuwen_memory/
 
 存储层分管理面 `StoreManager`（能力发现、命名端口、统一授权代理）与数据面 `DomainStore`
 （MemoryUnit 领域操作与检索适配）两个 ABC，默认 `CompositeStoreManager` +
-`CompositeDomainStore` 组合六类 Store；全局唯一 manager 由 `globals.store_manager` 指名
+`CompositeDomainStore` 组合九类 Store；全局唯一 manager 由 `globals.store_manager` 指名
 （F07）。底层 Store 统一 CRUD 动词（insert/delete/update/get），检索型 Store 额外提供
 `search`。scope 隔离是存储层原生职责。
 

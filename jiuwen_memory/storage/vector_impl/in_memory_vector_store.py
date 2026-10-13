@@ -118,6 +118,8 @@ class InMemoryVectorStore(VectorStore):
 # -- 注册到 VectorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-@VectorProducer.register("memory")
+@VectorProducer.register(
+    "memory", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build(config):
     return InMemoryVectorStore()

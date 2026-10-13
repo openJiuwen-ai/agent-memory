@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-15 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -163,7 +163,7 @@ params 显式覆盖 → `globals.store_manager` → `"default"` 三级链解析�
 `ValidationError`，不做匿名兜底构建。消费者不再逐个声明 `storage` 引用。
 
 **数据面装配参数归位（F07）**：`store_manager.<inst>.params` **不承载任何数据面配置**——
-七类端口由命名空间全量聚合（声明即端口），与 params 无关。数据面的全部装配参数住在
+九类端口由命名空间全量聚合（声明即端口），与 params 无关。数据面的全部装配参数住在
 `store_manager.<inst>.params.domain_stores: {<name>: {...}}`：`preferred_retrieval_pipeline`
 / `kv_store` / `domain_store_target` / 七个 `*_recaller` 选择键。`default` 可显式声明且
 **必建**（整段缺省时按全默认构造）。
@@ -373,12 +373,19 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 | `delete` | `(scope, ref) -> None` | 删除 scope 下 ref 处的文件（幂等） |
 | `get` | `(scope, ref) -> BinaryIO` | 打开 scope 下 ref 处的文件用于读取，由调用方负责关闭 |
 | `stat` | `(scope, ref) -> FileStat` | 返回 scope 下 ref 处文件的元信息 |
+| `object_id` | `(scope, key_or_ref, *, for_insert=False) -> str` | 可选能力；返回稳定对象标识，默认抛 UnsupportedCapabilityError；insert key、返回 ref、别名及 update 均须指向同一标识 |
 
-#### 加密 FS 装饰器契约
+#### 加密 FS 装饰器契约（PR1-1）
+
+`encrypted` FS target 属于 PR1-1；inner 必须提供 object_id 能力，不能假定其返回 key。
+未提供该能力时 encrypted 装配拒绝，raw 后端不受影响。update 可以返回新引用字符串，
+但 object_id 必须保持不变，违反时抛 BackendError。LocalFS 规范化别名，InMemoryFS
+将 insert key 转为规范 fs:// 引用；AAD 格式版本为 1，绑定完整 Scope、稳定对象标识与 fs_object 用途。
 
 `encrypted` FS target 包装任意 inner FSStore，写入时整体加密文件内容，读取时有界读完整
-密文后整体解密；`delete` 与 `stat` 委托 inner。`ref` 与 Scope 保持可寻址的明文，但二者
-必须进入 AAD。`FileStat.size` 表示 inner 中的密文长度，不承诺等于明文长度。
+密文后整体解密；`delete` 与 `stat` 委托 inner。`ref` 与 Scope 保持可寻址的明文，
+完整 Scope 与 ref 所指的稳定对象标识必须进入 AAD。`FileStat.size` 表示 inner 中的密文长度，
+不承诺等于明文长度。
 
 装配参数：
 
@@ -386,16 +393,47 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 |------|------|
 | `inner` | 必填，指向被装饰的 FSStore 具名实例或内联配置；不得指向当前实例自身 |
 | `cryptography` | 必填，指向 CryptographyProvider 具名实例或内联配置 |
-| `max_plaintext_bytes` | 单文件明文硬上限，必须大于等于 1 |
-| `max_ciphertext_bytes` | 密文读取上限；`0` 表示按明文上限加 provider 无关的安全余量计算，负数非法 |
+| `max_plaintext_bytes` | 默认 64 MiB，单文件明文硬上限，必须大于等于 1；bool/浮点数非法 |
+| `max_ciphertext_bytes` | 默认 0，密文读写上限；`0` 表示明文上限加 4 KiB 安全余量，负数/bool/浮点数非法 |
 
-大小检查必须同时覆盖：写入时循环有界读取明文、读取前按 `stat` 快速早拒、真正读取时
+大小检查必须同时覆盖：写入时循环有界读取明文、落盘前检查生成密文、读取前按 `stat` 快速早拒、真正读取时
 循环有界读取密文，以及解密后再次校验明文。`stat` 不能作为唯一边界，因为它与随后
 `get` 之间存在 TOCTOU 窗口。
+
+#### 全后端静态加密装配
+
+标准 API/StoreManager 装配以 globals.storage_encryption_enabled 为统一开关，默认 false。
+开启后全部具名 KV/FS（含注入 KV 与 public raw 端口）统一保护，并更新 Producer 共享缓存；
+既有显式 encrypted 不双包，同 raw 端口沿用其既有 provider。关闭时不拆除显式 encrypted。
+应用字节加密仍保留 key/Scope/路径等寻址元数据；完整落盘文件的保护由加密卷/后端承担。
+
+全文、向量、图、融合、实体、Markdown 与文件型影子索引/audit/permission SQLite
+的静态加密采用部署卷/后端。
+启用时逐具名实例核查 params.at_rest 声明与位置绑定，契约见 S08 和 storage/F02。内存后端及
+SQLite :memory: 无落盘要求，但仍必须固定连接位置，拒绝初始覆盖及运行时切盘（S08）；
+声明是运营方核查责任，不能冒充应用验证了远端磁盘。
+StoreSecurity.enabled() 仍表达 Store 内部保护，索引的外部保护通过部署声明与宿主检查表达。
+查询接口、BM25/ANN/原生过滤不变；本 PR 不新增密态检索或应用层全量解密检索路径。
+
+`StoreSecurity.encryption_binding` 是公开的可选装饰依赖契约，返回
+`StoreEncryptionBinding(inner, provider, format)`；原生保护实现可返回 None。
+绑定须指向实际原始 Store、实际 CryptographyProvider 及非空的兼容格式标识。
+同 raw 的 provider/format 冲突必须拒绝；自动保护不得依赖具体装饰器类或私有字段。
+自动包装由对应 Producer 选择配置的 target，显式注入原始具名引用与共享 cryptography；
+返回保护对象必须声明相同依赖并通过健康检查。已保护的显式端口及 raw 别名复用现有对象。
+
+`StoreManager.encryption_inventory() -> dict[StorageCapability, dict[str, object]]`
+返回所有数据面实际使用的完整端口快照，capability 与 `capabilities()` 一致；每个对象须与
+对应公开端口方法返回的对象一致，且不得隐藏领域数据面使用的可写 raw。统一开关开启时，
+`StoreManagerProducer.resolve` 在公共边界验证全部 manager 插件的清单：配置的 KV/FS
+具名端口不得遗漏，其保护须启用且健康；额外未配置的索引端口须声明内部保护。
+配置的索引端口必须实际对应同名配置及插件声明的持久化位置，不得冒用内存配置。
+缺失或不完整的保护能力抛 ValidationError，关闭开关时不要求旧插件实现该可选契约。
+
 ### EntityStore（`entity_store.py`）
 
 实体反向索引（实体 → 关联的 memory）。F07 起是 `StorageCapability` 第七席 ENTITY，经
-`manager.entity(name)` 取用，与其余六类同构。
+`manager.entity(name)` 取用，与其他能力同构。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -406,8 +444,9 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 
 **隔离模型是本层唯一的 scope 契约偏离**：第一入参是 `space_id: str`（`space_id_from_scope`
 的算值：`scope.space` → `scope.org` → 字面量 `"default"` 三级降级，走后端 routing）而非
-`Scope`；额外的隔离维度是 `EntityStoreFilters.actor_id`（= `scope.user`）单段 term。
-agent/session **不作**隔离维度——实体是 user 级知识，同 user 下跨 agent、跨 session 共享。
+`Scope`；额外的隔离维度由 `EntityStoreFilters` 中非空的 `actor_id` / `assistant_id` /
+`session_id` 分别生成 term。`from_scope` 将 user / agent / session 映射到这三项；空值
+不生成该维过滤。后端按显式 filters 决定范围，不承诺同 user 下必然跨 agent/session 共享。
 隔离仍由存储层强制（不变量 1），只是维度表达与五段模型不同构；代价由授权代理承担
 （不变量 26 的有损 scope 近似）。
 
@@ -417,7 +456,7 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 
 **装配期降级**：entity 是增强层，builder 在必填连接参数（`hosts`）未配时返回 `None` 而
 非抛错 → 无 ENTITY 能力 → 两侧消费方跳过（不变量 24 的端口表 None 过滤、不变量 31）。
-这与其余六类"缺必填参 `require_param` 抛错"的约定不同，是有意的差异。
+这是可选增强层的降级策略；其他连接型后端缺必填参数时通常由 `require_param` 拒绝构建。
 
 ### MarkdownStore / DocumentShadowIndex（文档记忆真源，F08）
 
@@ -426,7 +465,10 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 `DocumentShadowIndex` 是机器真源（单 sqlite 文件承载 `memory_unit` 全量 + `memory_fts` 倒排
 + `memory_vec` 向量三表同库，靠隐式 rowid 关联）。二者为 F08 新增的第八、第九 capability
 （MARKDOWN / DOCUMENT_SHADOW），仅文档模式装配，经 `manager.markdown(name)` / `manager.shadow_index(name)`
-取用，与其余七类同构暴露。
+取用，与其余七类同构暴露。`StorageCapability.namespace` / `port_method` 公开能力对应的
+配置命名空间与端口方法，其中 DOCUMENT_SHADOW 对应 shadow_index（非 document_shadow_store）。
+统一静态加密启用时，Markdown root 与影子 SQLite db_path 由插件声明并绑定部署保护；
+两者要求显式位置，SQLite :memory: 仅免部署证明，位置仍固定，详见 F02。
 
 两端口是文档记忆的双写对——`CompositeDomainStore.add/update/delete` 文档分支同步写 md 块 +
 shadow 索引，写窗口（`sync_gate`）防护看门狗并发观察，写失败补偿回滚到调用前状态。完整算子
@@ -544,7 +586,8 @@ jiuwen_memory/storage/domain_store_impl/    # 数据面实现（CompositeDomainS
 
 各 Producer：`StoreManagerProducer` / `DomainStoreProducer` / `RecallerProducer` / `KvProducer` /
 `FulltextProducer` / `VectorProducer` / `GraphProducer` / `FusionProducer` / `FsProducer` /
-`EntityStoreProducer`。
+`EntityStoreProducer` / `MarkdownProducer` / `ShadowIndexProducer`；文档看门狗使用
+`WatchdogProducer`。
 注册由 `storage.bootstrap.register_backends` 统一触发。`DomainStoreProducer` 不是平级
 YAML 入口——domain_store 由 manager 工厂内构建（manager 是唯一装配入口）。
 

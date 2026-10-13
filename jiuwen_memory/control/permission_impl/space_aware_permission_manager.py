@@ -32,6 +32,7 @@ from jiuwen_memory.common.security.space_roles import (
     SpaceAxis,
 )
 from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config.encryption import AtRestLocation
 from jiuwen_memory.control.permission import PermissionProducer
 from jiuwen_memory.control.types import Action, PermissionContext
 
@@ -192,7 +193,17 @@ class SpaceAwarePermissionManager(SQLitePermissionManager):
         return frozenset()
 
 
-@PermissionProducer.register("space_aware")
+@PermissionProducer.register(
+    "space_aware",
+    config_inspectors={
+        "at_rest_locations": lambda config: {
+            "db_path": AtRestLocation(
+                config.get("db_path", ":memory:"),
+                requires_declaration=config.get("db_path", ":memory:") != ":memory:",
+            )
+        }
+    },
+)
 def _build(config):
     db_path = config.get("db_path", ":memory:")
     return SpaceAwarePermissionManager(str(db_path))

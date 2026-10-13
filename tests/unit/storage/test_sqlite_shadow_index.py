@@ -17,7 +17,7 @@ from __future__ import annotations
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
 import hashlib
 import struct
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -135,13 +135,13 @@ def test_md_filename_of_reads_backfilled_path() -> None:
 
 
 def test_epoch_ms_converts_datetime_and_none() -> None:
-    dt = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    dt = datetime(2026, 9, 1, tzinfo=UTC)
     assert _epoch_ms(dt) == int(dt.timestamp() * 1000)
     assert _epoch_ms(None) is None
 
 
 def test_temporal_projection_uses_sentinels_for_open_ends() -> None:
-    dt = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    dt = datetime(2026, 9, 1, tzinfo=UTC)
     unit = MemoryUnit(id="u1", scope=SCOPE, temporal=Temporal(t_valid=dt))
     assert _t_valid_of(unit) == int(dt.timestamp() * 1000)
     assert _t_invalid_of(unit) == T_INVALID_OPEN  # t_invalid=None → 开放哨兵
@@ -325,7 +325,9 @@ def test_search_fulltext_project_and_conflict_values_yields_empty(tmp_path) -> N
 
 def test_insert_and_get_roundtrip(tmp_path) -> None:
     store = _store(tmp_path)
-    unit = _unit("u1", "hello world", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit(
+        "u1", "hello world", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+    )
 
     store.insert_units(SCOPE, [unit])
 
@@ -356,7 +358,12 @@ def test_update_overwrites_content_and_preserves_project_guard(tmp_path) -> None
     store = _store(tmp_path)
     store.insert_units(
         SCOPE,
-        [_unit("u1", "hello world", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})],
+        [
+            _unit(
+                "u1", "hello world",
+                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+            )
+        ],
     )
     # 读回（无 coords），改 content，再 update
     (read_back,) = store.get_units(SCOPE, ["u1"])
@@ -485,8 +492,14 @@ def test_search_fulltext_returns_ranked_hits(tmp_path) -> None:
     store.insert_units(
         SCOPE,
         [
-            _unit("u1", "deploy cluster", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}),
-            _unit("u2", "cluster failure", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}),
+            _unit(
+                "u1", "deploy cluster",
+                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+            ),
+            _unit(
+                "u2", "cluster failure",
+                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+            ),
             _unit("u3", "coffee preference", {MEMORY_CLASS_KEY: "user_memory"}),
         ],
     )
@@ -591,7 +604,7 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
     assert _MinimalShadow().vec_enabled is False
 
 
-def test_vec_load_failure_logs_warning(tmp_path, caplog) -> None:
+def test_vec_load_failure_logs_warning(tmp_path, caplog, monkeypatch) -> None:
     """``sqlite_vec.load`` 失败须打 warning（可观测）——否则「插件缺失」被静默吞掉，
     向量召回缺一路无从定位（建议 7 修复回归锁）。
     """
@@ -607,6 +620,8 @@ def test_vec_load_failure_logs_warning(tmp_path, caplog) -> None:
     store._embedder = object()
     store._sqlite_vec = _FakeVecModule()
 
+    # Application setup disables propagation; make capture independent of test order.
+    monkeypatch.setattr(logging.getLogger("agent_memory"), "propagate", True)
     with caplog.at_level(logging.WARNING):
         store._ensure_conn()
 

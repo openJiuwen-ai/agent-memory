@@ -1,5 +1,10 @@
 ﻿# F04 — 安全架构总纲
 
+> 2026-10-13 后续状态：PR1-1 已扩展全后端静态加密与统一开关，当前分支为
+> `sec/storage-encryption`。本文正文记录 PR1 范围；后续实现以
+> [storage/F02](../storage/F02-encrypted-storage.md) 与 S06/S08 为准。
+
+
 ## 元信息
 
 | 项 | 值 |
@@ -7,7 +12,7 @@
 | 日期 | 2026-07-27 |
 | 最近更新 | 2026-08-27 |
 | 影响范围 | `jiuwen_memory/common/security/`（认证、加密、防护与 PR2 类型接缝）、`jiuwen_memory/storage/kv_impl/`、`jiuwen_memory/control/engine_impl/`、`docs/specs/S06-storage.md`、`docs/specs/S07-common.md`、`docs/specs/S10-security.md` |
-| 测试基线 | 认证、凭据存储、防护、`local` CryptographyProvider 与 `EncryptedKVStore` 的镜像单测通过；FS 加密装饰器后续单独合入 |
+| 测试基线 | 认证、凭据存储、防护、`local` CryptographyProvider 与 `EncryptedKVStore` 的镜像单测通过；PR1-1 的 FS 与全后端静态加密设计统一见 storage/F02 |
 | 关联特性文档 | [F10 认证与加密](F10-authentication-kernel.md)；F08 属 PR2，PR1 不创建 |
 | 规范契约 | [S10 安全横切契约](../../specs/S10-security.md) |
 | Refs | — |
@@ -36,7 +41,7 @@
 
 PR1 **不实装** `Authorizer`、Grant / Delegation Store，也不写 F08：`authorization/` 与 `request_context.py` 的契约随上游接口分支已在库中，但 PR1 只用到 `request_context` 的受控构造入口（中间件），授权判定仍走 `PermissionManager`。公开 `MemoryAPI` 公开签名已在 PR1 切到 `security: RequestSecurityContext`（接口先行合入），但 `dispatch` 与进程内调用方仍收 `Scope`，用 `legacy_request_context` 过渡桥包装；`dispatch` 的 `security=` 签名切换与授权来源校验属于 PR2。
 
-ENC1 写出 v2（含 key id / epoch），读取兼容 v1，且无明文回退。`LocalKeyProvider.rotate()` 支持进程内多代轮换，但轮换状态不能跨重启持久化；KMS / Vault 尚未实现。PR1 只包含显式选择的加密 KV 装饰器；FS 加密装饰器后续单独合入。
+ENC1 写出 v2（含 key id / epoch），读取兼容 v1，且无明文回退。`LocalKeyProvider.rotate()` 支持进程内多代轮换，但轮换状态不能跨重启持久化；KMS / Vault 尚未实现。PR1 只包含显式选择的加密 KV 装饰器；PR1-1 的 FS 与全后端静态加密设计统一见 storage/F02。
 
 本文以下正文是迁移前历史设计输入，路径、类名、伪代码及标为「实现注记」的段落也只代表当期状态；它们不覆盖上面的 PR1 当前事实与 S10。旧平铺路径（`common/encryption`、`common/authentication`、`common/credential_store`、`common/admission`、`type_def/auth.py`）不再作为新代码约束。
 
@@ -1065,8 +1070,8 @@ async def decrypt(self, org_id: str, raw: bytes) -> bytes:
 >   底层存储，或者配置被改坏了。宽松模式下这两种情况都会被静默放行——而这正是
 >   降级攻击的着力点：攻击者只要能往底层写明文，就能让读路径完全跳过解密。
 >
-> 现行实现没有该开关：PR1 的 KV 加密装饰器读写都严格 fail-closed。FS 加密装饰器已拆出，
-> 待其独立 PR 再归档对应设计和测试。
+> 现行实现没有明文回退开关：KV 与 PR1-1 的 FS 加密装饰器读写都严格 fail-closed。
+> PR1-1 的装配期开关及全后端设计和测试见 storage/F02，不改变明文回退策略。
 
 ### 5.2 Key Provider 抽象
 

@@ -3,7 +3,8 @@
 一个 sqlite 文件承载三张表
 
 - ``memory_unit``：全量 + 按 key 查（普通表，``unit_id`` TEXT 主键 + ``unit_json`` BLOB）
-- ``memory_fts``：FTS5 倒排表（普通 FTS5 表，自存 token 串），靠隐式 ``rowid`` 关联回 ``memory_unit``
+- ``memory_fts``：FTS5 倒排表（普通 FTS5 表，自存 token 串），
+  靠隐式 ``rowid`` 关联回 ``memory_unit``
 - ``memory_vec``：sqlite-vec ``vec0`` 向量表，``rowid`` 与 ``memory_unit`` 对齐
 
 三表同库、同连接、同事务写入，靠 ``unit_id`` / 隐式 ``rowid`` 关联。
@@ -49,13 +50,15 @@ from jiuwen_memory.common.type_def import (
     iter_clauses,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.encryption import AtRestLocation
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
 from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
 _DEFAULT_PROJECT = ""  # 无 coords 时的 project 兜底值：空串=跨项目可见（IN ['', value] 命中）
 _DEFAULT_CLASS = "team_memory"
-_DEFAULT_LIFECYCLE = "active"  # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
+# memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
+_DEFAULT_LIFECYCLE = "active"
 _DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，F07 §4.4.3）
 
 # project 作为配置声明的收窄维，coords 折算后以 ``system_metadata.project`` 谓词
@@ -83,6 +86,7 @@ def _has_word_char(token: str) -> bool:
     """token 含字母/数字/汉字才保留——纯标点 token 在 FTS5 表达式里既无召回贡献
     又会触发语法错误。"""
     import re
+
     global _WORD_CHAR_RE
     if _WORD_CHAR_RE is None:
         _WORD_CHAR_RE = re.compile(r"[A-Za-z0-9一-鿿]")
@@ -102,9 +106,7 @@ def _try_import_sqlite_vec():
 
         return sqlite_vec
     except ImportError:
-        logger.warning(
-            "sqlite_vec not importable, vector recall disabled (degraded mode)"
-        )
+        logger.warning("sqlite_vec not importable, vector recall disabled (degraded mode)")
         return None
 
 
@@ -184,13 +186,13 @@ def _t_valid_of(unit: MemoryUnit) -> int | None:
 
 
 def _t_invalid_of(unit: MemoryUnit) -> int:
-    """``t_invalid=None`` → 哨兵 ``T_INVALID_OPEN``（与 ``memory_filter._field_value`` 投影对称）。"""
+    """``t_invalid=None`` → 哨兵 ``T_INVALID_OPEN``；对齐 memory_filter 投影。"""
     v = _epoch_ms(unit.temporal.t_invalid)
     return T_INVALID_OPEN if v is None else v
 
 
 def _t_event_of(unit: MemoryUnit) -> int:
-    """``t_event=None`` → 哨兵 ``T_EVENT_UNKNOWN``（与 ``memory_filter._field_value`` 投影对称）。"""
+    """``t_event=None`` → 哨兵 ``T_EVENT_UNKNOWN``；对齐 memory_filter 投影。"""
     v = _epoch_ms(unit.temporal.t_event)
     return T_EVENT_UNKNOWN if v is None else v
 
@@ -303,9 +305,7 @@ def _ensure_system_columns(conn: sqlite3.Connection) -> None:
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_unit)")}
     if "lifecycle" not in cols:
-        conn.execute(
-            "ALTER TABLE memory_unit ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'"
-        )
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'")
     if "t_valid" not in cols:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN t_valid INTEGER")
     if "t_invalid" not in cols:
@@ -318,15 +318,11 @@ def _ensure_system_columns(conn: sqlite3.Connection) -> None:
     if "space" not in cols:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN space TEXT NOT NULL DEFAULT ''")
     if "user" not in cols:
-        conn.execute(
-            'ALTER TABLE memory_unit ADD COLUMN "user" TEXT NOT NULL DEFAULT \'\''
-        )
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN \"user\" TEXT NOT NULL DEFAULT ''")
     if "agent" not in cols:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN agent TEXT NOT NULL DEFAULT ''")
     if "session" not in cols:
-        conn.execute(
-            "ALTER TABLE memory_unit ADD COLUMN session TEXT NOT NULL DEFAULT ''"
-        )
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN session TEXT NOT NULL DEFAULT ''")
 
 
 class SqliteDocumentShadowIndex(DocumentShadowIndex):
@@ -440,7 +436,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         SQLiteKVStore 的差异：开连接后、建表前必须
         ``enable_load_extension(True) + sqlite_vec.load(conn)``，且连接重开时每次都要重新 load
         （否则查 vec0 报 ``no such module: vec0``）。
-        另：默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/.shadow/shadow.db``，含子目录，连接前需确保父目录存在。
+        另：默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/.shadow/shadow.db``，
+        含子目录，连接前需确保父目录存在。
         """
         path = self._resolved_db_path()
         if self._conn is not None and self._conn_path == path:
@@ -527,9 +524,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         不能因走编译路径径而无谓词即放宽成全库召回。存在性判断用 ``iter_clauses``
         平铺（仅判存在、不合并值），逻辑安全。
         """
-        return any(
-            c.field == _PROJECT_FILTER_FIELD for c in iter_clauses(filters)
-        )
+        return any(c.field == _PROJECT_FILTER_FIELD for c in iter_clauses(filters))
 
     @staticmethod
     def _category_of(unit: MemoryUnit) -> str:
@@ -543,7 +538,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _md_filename_of(unit: MemoryUnit) -> str:
-        """从 ``system_metadata[MD_FILENAME_KEY]`` 读 md 相对路径（由 md.write 回填，F07 §11.3）。"""
+        """从 ``system_metadata[MD_FILENAME_KEY]`` 读 md 路径（md.write 回填）。"""
         return (unit.system_metadata or {}).get(MD_FILENAME_KEY) or ""
 
     # -- DocumentShadowIndex 契约 ------------------------------------------- #
@@ -563,9 +558,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     def _insert_one(self, conn: sqlite3.Connection, unit: MemoryUnit) -> None:
         # 冲突预检：unit_id 已存在报 ConflictError（对齐 KVStore.insert 语义，F07 §11.3）
-        existing = conn.execute(
-            "SELECT 1 FROM memory_unit WHERE unit_id=?", (unit.id,)
-        ).fetchone()
+        existing = conn.execute("SELECT 1 FROM memory_unit WHERE unit_id=?", (unit.id,)).fetchone()
         if existing is not None:
             raise ConflictError("shadow", unit.id)
 
@@ -597,16 +590,25 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             'org, space, "user", agent, session, '
             "category, lifecycle, t_valid, t_invalid, t_event, unit_json) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (unit.id, content_hash, md_filename, project,
-             *self._scope_of(unit),
-             category, lifecycle, t_valid, t_invalid, t_event, unit_json),
+            (
+                unit.id,
+                content_hash,
+                md_filename,
+                project,
+                *self._scope_of(unit),
+                category,
+                lifecycle,
+                t_valid,
+                t_invalid,
+                t_event,
+                unit_json,
+            ),
         )
-        row = conn.execute(
-            "SELECT rowid FROM memory_unit WHERE unit_id=?", (unit.id,)
-        ).fetchone()
+        row = conn.execute("SELECT rowid FROM memory_unit WHERE unit_id=?", (unit.id,)).fetchone()
         rowid = row[0]
 
-        # ② memory_fts：注入 tokenizer 预分词成 token 串，FTS5 tokenize='simple' 不二次分词（F07 §11.5）
+        # ② memory_fts：注入 tokenizer 预分词成 token 串；
+        # FTS5 tokenize='simple' 不二次分词（F07 §11.5）。
         tokens = self._tokenizer.tokenize(content)
         fts_content = " ".join(tokens)
         conn.execute(
@@ -765,9 +767,19 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             'org=?, space=?, "user"=?, agent=?, session=?, '
             "category=?, lifecycle=?, t_valid=?, t_invalid=?, t_event=?, unit_json=? "
             "WHERE unit_id=?",
-            (new_hash, md_filename, project,
-             *self._scope_of(unit),
-             category, lifecycle, t_valid, t_invalid, t_event, unit_json, unit.id),
+            (
+                new_hash,
+                md_filename,
+                project,
+                *self._scope_of(unit),
+                category,
+                lifecycle,
+                t_valid,
+                t_invalid,
+                t_event,
+                unit_json,
+                unit.id,
+            ),
         )
 
         # ② 投影重建仅当 content_hash 变（content 改）。content_hash 未变（只改状态字段）
@@ -984,9 +996,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             if not self._has_project_predicate(query.filters):
                 proj_default = "project = ?"
                 proj_default_params: list = [_DEFAULT_PROJECT]
-                sys_sql = (
-                    f"({sys_sql}) AND {proj_default}" if sys_sql else proj_default
-                )
+                sys_sql = f"({sys_sql}) AND {proj_default}" if sys_sql else proj_default
                 sys_params = [*sys_params, *proj_default_params]
             sys_where = f" AND ({sys_sql})" if sys_sql else ""
             # scope 原生隔离：与 sys_where（系统前置谓词）并列 AND，scope 不进 query.filters
@@ -1035,9 +1045,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             if not self._has_project_predicate(query.filters):
                 proj_default = "project = ?"
                 proj_default_params: list = [_DEFAULT_PROJECT]
-                sys_sql = (
-                    f"({sys_sql}) AND {proj_default}" if sys_sql else proj_default
-                )
+                sys_sql = f"({sys_sql}) AND {proj_default}" if sys_sql else proj_default
                 sys_params = [*sys_params, *proj_default_params]
             sys_where = f" AND ({sys_sql})" if sys_sql else ""
             # scope 原生隔离：与 sys_where 并列 AND（与 search_fulltext 同口径）。
@@ -1076,7 +1084,16 @@ def _vec_to_blob(vec: list[float]) -> bytes:
 logger = get_logger(__name__)
 
 
-@ShadowIndexProducer.register("sqlite")
+@ShadowIndexProducer.register(
+    "sqlite",
+    config_inspectors={
+        "at_rest_locations": lambda config: {
+            "db_path": AtRestLocation(
+                config.get("db_path"), requires_declaration=config.get("db_path") != ":memory:"
+            )
+        }
+    },
+)
 def _build(config):
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
@@ -1090,7 +1107,11 @@ def _build(config):
     except Exception as e:
         # 未配 markdown_store 是正常状态（走 db_path 兜底），但配置损坏也会走到这里，
         # 打 debug 日志让回退可观测，避免静默行为偏移无迹可查。
-        logger.debug("get markdown_store.default failed, shadow sqlite db_path use default path, exception msg: %s", e)
+        logger.debug(
+            "get markdown_store.default failed, shadow sqlite db_path use default path, "
+            "exception msg: %s",
+            e,
+        )
     # embedder 可选（降级）：config 显式配了 embedder 才注入，否则传 None → 降级模式。
     # 不用 dep(default=...) 是因为 default=None 会抛 ValidationError（dep 无 default 报错），
     # 这里要的是"未配就 None"而非"未配就报错"。
