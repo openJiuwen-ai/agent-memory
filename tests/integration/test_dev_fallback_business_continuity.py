@@ -433,3 +433,37 @@ def test_sdk_cross_principal_via_sqlite_is_permission_denied() -> None:
 
     with pytest.raises(PermissionDeniedError):
         api.get(item_id, _ALICE, security=legacy_request_context(_MALLORY))
+
+
+# -- OFFLINE 空间治理对称性：create 成功则 delete 必须能完成 -------------------- #
+
+
+def test_dev_offline_delete_space_round_trip(dev_srv) -> None:
+    """OFFLINE+DEV 装配下 create_space → delete_space 必须闭环。
+
+    回归：``InMemoryEngine.purge_space`` 曾对非空 space 名守卫拒绝，而
+    ``delete_space`` 两步事务先置 ``DELETING`` 再 purge——删除必败，且重试同败，
+    空间永久卡在删除中。引擎写路径本就拒绝 space scope，purge 是天然 no-op，
+    守卫只会破坏空间治理的对称性。
+    """
+    from auth_middleware import authenticated
+
+    space = "dev-delete-roundtrip"
+    auth = _dev_context()
+
+    with authenticated(auth, Credentials()) as security:
+        status, body = _dispatch(
+            dev_srv, "create_space", {"org": "acme", "space": space}, security=security
+        )
+        assert status == 200, body
+
+        status, body = _dispatch(
+            dev_srv, "delete_space", {"org": "acme", "space": space}, security=security
+        )
+        assert status == 200, body
+
+        # 删除完成后空间不可再读：不是卡在 deleting，而是彻底不存在。
+        status, body = _dispatch(
+            dev_srv, "get_space", {"org": "acme", "space": space}, security=security
+        )
+        assert status == 404, body

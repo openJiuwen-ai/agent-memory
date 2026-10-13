@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import MagicMock
+
 import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
@@ -8,6 +11,8 @@ from jiuwen_memory.common.security.legacy import legacy_request_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.control import PrincipalPath, SpaceMember, SpacePolicy, SpaceSpec, SpaceStatus
+from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 pytestmark = pytest.mark.unit
 
@@ -154,3 +159,26 @@ def test_in_memory_engine_rejects_non_empty_space() -> None:
 
     with pytest.raises(ValidationError, match="InMemoryEngine"):
         api.add("cloud scoped memory", scope, security=legacy_request_context(scope))
+
+
+def test_in_memory_engine_purge_space_is_noop_for_any_space() -> None:
+    """OFFLINE 空间治理回归：purge_space 不得守卫拒绝非空 space 名。
+
+    ``delete_space`` 两步事务先置 ``DELETING`` 再 purge。写路径已拒绝 space
+    scope，本引擎内不可能存在空间记忆，purge 天然是 no-op——若在此处按
+    ``scope.space`` 守卫，OFFLINE 下删除必败且空间永久卡在 DELETING。
+    （API 级 create→delete 往返由
+    ``tests/integration/test_dev_fallback_business_continuity.py`` 的
+    ``test_dev_offline_delete_space_round_trip`` 钉住。）
+    """
+    engine = InMemoryEngine(
+        ingestor=None,
+        index_builder=MagicMock(),
+        retriever=None,
+        kv=InMemoryKVStore(),
+        scheduler=None,
+        evolver=None,
+        lifecycle=None,
+    )
+
+    assert asyncio.run(engine.purge_space("acme", "demo")) == []

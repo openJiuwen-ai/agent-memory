@@ -822,6 +822,38 @@ async def memory_remove_space_member(
     )
 
 
+def _tighten_tool_arg_models() -> None:
+    """把每个工具的参数模型收紧为 extra=forbid，与 HTTP/CLI 严格契约对齐。
+
+    FastMCP 的 ``ArgModelBase`` 未配置 ``extra``，pydantic 默认 ignore：客户端传入
+    ``security`` 等契约外字段会在进入工具函数**之前**被静默丢弃——工具面与
+    ``api_contract.parse_request``（未知字段 400 拒绝）的严格性不一致，模型侧
+    感知不到自己填了无效参数。子类化覆盖 ``model_config``，不改 SDK 源码；
+    字段集合与 JSON Schema 不变，仅拒绝契约外字段。
+    """
+    from pydantic import ConfigDict
+
+    for tool in mcp._tool_manager.list_tools():  # pylint: disable=protected-access,huawei-protected-access
+        base = tool.fn_metadata.arg_model
+        strict = type(
+            base.__name__,
+            (base,),
+            {"model_config": ConfigDict(arbitrary_types_allowed=True, extra="forbid")},
+        )
+        # 收紧前后字段集合必须一致——只改 extra 行为，不增删参数。
+        # G.TES.01：业务代码不用 assert，优化字节码下被剥离会导致守卫失效。
+        if set(strict.model_json_schema()["properties"]) != set(
+            base.model_json_schema()["properties"]
+        ):
+            raise RuntimeError(
+                f"tightened arg model of {tool.name} changed the tool field set"
+            )
+        tool.fn_metadata.arg_model = strict
+
+
+_tighten_tool_arg_models()
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s] %(name)s %(levelname)s %(message)s"

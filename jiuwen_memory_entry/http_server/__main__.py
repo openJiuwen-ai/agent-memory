@@ -341,10 +341,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.auth_mode not in _AUTH_MODES:
         parser.error(f"invalid {_AUTH_MODE_ENV}: {args.auth_mode!r}")
     layers = [OFFLINE]
-    for path in args.config:
-        layers.append(load_layer(path))
-    config = load_config(layers)
     try:
+        for path in args.config:
+            layers.append(load_layer(path))
+        config = load_config(layers)
         if args.auth_mode == "dev":
             http_settings = config.settings.get("http", {})
             if not isinstance(http_settings, dict):

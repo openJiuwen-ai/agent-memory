@@ -114,3 +114,22 @@ def test_entry_and_kernel_reject_same_malformed_input(tmp_path, monkeypatch) -> 
 def test_validation_error_is_the_same_class() -> None:
     """接入层不得为了绕开边界铁律而自造异常类型，否则调用方无法统一 except。"""
     assert config_loader.ValidationError is ValidationError
+
+
+# --- 损坏配置必须报白名单错误，不得裸抛解析器异常 / 静默跳过 --------------------- #
+
+
+@pytest.mark.parametrize(
+    "name,text", [("config.json", "{not json"), ("config.yml", "a: [unclosed")]
+)
+def test_load_layer_wraps_parse_errors_as_validation_error(tmp_path, name, text) -> None:
+    """JSON/YAML 解析失败统一转 ValidationError（surface 白名单），不裸抛。"""
+    with pytest.raises(ValidationError, match="配置文件"):
+        config_loader.load_layer(_write(tmp_path, text, name=name))
+
+
+@pytest.mark.parametrize("text", ["[]", '"just a string"', "42"])
+def test_load_layer_rejects_non_object_top_level(tmp_path, text) -> None:
+    """顶层非对象的配置层直接报错，不再静默跳过（调用方以为配置生效了）。"""
+    with pytest.raises(ValidationError, match="顶层必须是对象"):
+        config_loader.load_layer(_write(tmp_path, text, name="config.json"))

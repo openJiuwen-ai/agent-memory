@@ -153,19 +153,27 @@ class HttpClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return response.status, _read_json(response)
+                return _read_json(response, transport_status=response.status)
         except urllib.error.HTTPError as exc:
-            return exc.code, _read_json(exc)
+            return _read_json(exc, transport_status=exc.code)
         except urllib.error.URLError as exc:
             return 0, {"error": "ConnectionError", "message": str(exc.reason)}
 
 
-def _read_json(response) -> Any:
+def _read_json(response, *, transport_status: int) -> tuple[int, Any]:
+    """Decode the body; a non-JSON body is a protocol-level failure, never a success.
+
+    HTTP 2xx 但响应体不是合法 JSON 时，不能沿用 2xx 状态——``_write`` 只看状态
+    决定退出码与输出流，200 会让 CLI 报成功（退出码 0）却只打出 BadResponse
+    错误体。此类故障映射为 502（协议层错误）；HTTP 错误响应本身非 JSON 时保留
+    原状态码（已是失败，信息更有用）。
+    """
     raw = response.read()
     try:
-        return json.loads(raw)
+        return transport_status, json.loads(raw)
     except ValueError:
-        return {"error": "BadResponse", "message": "server returned invalid JSON"}
+        status = transport_status if transport_status >= 400 else 502
+        return status, {"error": "BadResponse", "message": "server returned invalid JSON"}
 
 
 def make_client(

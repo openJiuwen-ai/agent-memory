@@ -48,12 +48,19 @@ finally:
     else:
         os.environ[_AUTH_MODE_ENV] = _ORIG_AUTH_MODE
 
+from pydantic import ValidationError as PydanticValidationError  # noqa: E402
+
 from jiuwen_memory.api import Credentials, Surface, ValidationError  # noqa: E402
 from jiuwen_memory_entry.core.api_contract import (  # noqa: E402
     is_known_verb,
     method_contract,
     parse_request,
 )
+
+try:  # mcp 版本差异防御：旧版无 ToolError 导出时降级为 RuntimeError
+    from mcp.server.fastmcp.exceptions import ToolError  # noqa: E402
+except ImportError:  # pragma: no cover
+    ToolError = RuntimeError  # type: ignore[assignment,misc]
 
 pytestmark = pytest.mark.unit
 
@@ -648,3 +655,45 @@ def test_fastmcp_call_tool_marshals_arguments(kernel) -> None:
     assert any(item["unit_id"] == units[0]["id"] for item in search_result["items"]), (
         "call_tool 路径的 as_of 字符串应正常过编组层并召回"
     )
+
+
+# --- F. 严格参数边界：契约外字段在工具边界被拒绝 --------------------------------- #
+
+
+@pytest.mark.parametrize("tool_name", list(TOOL_CASES))
+def test_tool_arg_model_rejects_extra_fields(tool_name: str) -> None:
+    """收紧后的 arg_model 拒绝契约外字段（extra=forbid），与 parse_request 同口径。
+
+    回归：FastMCP 的 ``ArgModelBase`` 未配置 ``extra``，pydantic 默认 ignore——
+    客户端传入 ``security`` 等契约外字段会在进入工具函数前被静默丢弃，与
+    HTTP/CLI 路径 ``parse_request``（未知字段 400）的严格性不一致。
+    """
+    verb, payload = TOOL_CASES[tool_name]
+    tool = mcp_main.mcp._tool_manager.get_tool(  # pylint: disable=protected-access,huawei-protected-access
+        tool_name
+    )
+    assert tool is not None, tool_name
+    with pytest.raises(PydanticValidationError, match="security"):
+        tool.fn_metadata.arg_model.model_validate({**payload, "security": {"actor": "spoof"}})
+
+
+def test_tool_run_rejects_extra_fields_before_dispatch(monkeypatch) -> None:
+    """完整 tool.run 路径：额外字段在校验层被拒，不触达业务派发。
+
+    FastMCP 的 ``Tool.run`` 会把底层异常包成 :class:`ToolError`，此处断言
+    异常链根因是 pydantic 的 extra 字段拒绝，且 ``_invoke`` 从未被调用。
+    """
+    tool = mcp_main.mcp._tool_manager.get_tool(  # pylint: disable=protected-access,huawei-protected-access
+        "memory_add"
+    )
+    assert tool is not None
+    monkeypatch.setattr(
+        mcp_main, "_invoke", lambda *args, **kwargs: pytest.fail("不应触达 _invoke")
+    )
+    with pytest.raises(ToolError, match="Extra inputs are not permitted"):
+        asyncio.run(
+            tool.run(
+                {"content": "x", "scope": SCOPE, "security": {"actor": "spoof"}},
+                context=None,
+            )
+        )

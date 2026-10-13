@@ -8,6 +8,7 @@ import inspect
 import io
 import json
 import threading
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
@@ -332,3 +333,69 @@ def test_text_and_quiet_render_api_fields(capsys) -> None:
     args.output = "quiet"
     assert commands.emit(200, body, args) == 0
     assert capsys.readouterr().out == "u1\n"
+
+
+# --- 协议与配置错误不得误报成功、不得吞掉错误详情 --------------------------------- #
+
+
+def test_http_client_non_json_200_body_reports_failure(monkeypatch, capsys) -> None:
+    """回归：HTTP 200 + 非 JSON 体曾沿用 200 状态，CLI 退出码 0 却输出 BadResponse。
+
+    现在映射为 502（协议层错误）：退出码 1、错误体走 stderr。
+    """
+
+    class Response(io.BytesIO):
+        status = 200
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda request, *, timeout: Response(b"<html>proxy</html>")
+    )
+    client = client_module.HttpClient("http://example.test")
+    status, body = client.call("list", {"scope": SCOPE})
+
+    assert status == 502
+    assert body["error"] == "BadResponse"
+    assert commands.emit(status, body, SimpleNamespace(output="json", pretty=False)) == 1
+    assert "BadResponse" in capsys.readouterr().err
+
+
+def test_http_client_non_json_error_body_keeps_original_status(monkeypatch) -> None:
+    """HTTP 错误响应体非 JSON：保留原状态码（已是失败，信息更有用）。"""
+
+    def urlopen(request, *, timeout):
+        raise urllib.error.HTTPError(
+            "http://example.test/v1/list", 503, "Service Unavailable", None, io.BytesIO(b"<html/>")
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    client = client_module.HttpClient("http://example.test")
+    status, body = client.call("list", {"scope": SCOPE})
+
+    assert status == 503
+    assert body["error"] == "BadResponse"
+
+
+def test_quiet_mode_still_shows_error_details(capsys) -> None:
+    """回归：quiet 模式曾把错误体渲染成空行（认证失败、记忆不存在时无任何输出）。"""
+    body = {"error": "PermissionDeniedError", "message": "authentication failed"}
+    result = commands.emit(403, body, SimpleNamespace(output="quiet", pretty=False))
+
+    assert result == 1
+    err = capsys.readouterr().err
+    assert "PermissionDeniedError" in err
+    assert "authentication failed" in err
+
+
+def test_cli_reports_corrupt_config_layer_without_traceback(tmp_path, capsys) -> None:
+    """回归：损坏的 --config 层曾以 JSONDecodeError traceback 崩溃。
+
+    现在 load_layer 转成 ValidationError，main() 按 CliError 同口径输出一行
+    错误、退出码 2。
+    """
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    result = cli.main(
+        ["--config", str(bad), "--auth-mode", "dev", "list", "--scope", json.dumps(SCOPE)]
+    )
+
+    assert result == 2
