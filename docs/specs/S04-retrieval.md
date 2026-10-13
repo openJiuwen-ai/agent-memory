@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/retrieval/ |
 | 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
 ## Metadata 检索契约
 
@@ -169,7 +169,7 @@ QueryParser.parse(query) → ParsedQuery
 → Fuser 前物化候选并完成 lifecycle/valid-time/event-time/filters 真源复核
 → Fuser.fuse(parsed_query, candidates) → list[ScoredMemoryUnit]
 → 截断精排预算
-→ 可选 Reranker 精排 → [rollup=True] 祖先准入及 MaxP
+→ 可选 Reranker 以 ParsedQuery.rewritten 精排 → [rollup=True] 祖先准入及 MaxP
 → 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
 → Discloser 塑形；若 expand_depth>0，内部准备阶段暂不分配预算、不读后代
 → [展开请求] 最终选根后，共享预算准入根，再执行 Expander + Discloser
@@ -274,11 +274,24 @@ depth=0 保持既有 Discloser 行为。预算截断记录 `budget_exhausted`。
 |------|------|------|
 | `parse` | `(query: RetrievalQuery) -> ParsedQuery` | 将检索请求解析为结构化查询表示 |
 
-**产出**：raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions。
+**产出**：raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions/rewrite_status/rewrite_fallback_reason。
 
 `raw` 表示进入检索链路的规范化 query 文本，不要求逐字等于调用方传入的
 `RetrievalQuery.text`。默认 `simple` 实现会先剥除上游包装噪声（如 UTC 时间戳、
 `Sender (untrusted metadata)` 元数据行），再基于清洗后的文本产生分词、向量和时间窗。
+
+默认 `simple` 实现的 LLM 改写关闭。显式开启且注入 LLM 时，parser 将 sanitized raw
+放入 `<current_query>`，把规范化后的可选 `query_context` 放入 `<recent_context>`，
+并要求 `{"rewritten": "..." | null}` 单对象输出。分区内容会转义 `&` 与 `<`；
+上下文最多保留最近 5 项、8192 字符尾部。非空字符串驱动软召回信号与 Reranker 精排；
+显式 null 表示当前消息明确无检索意图，产出空软信号并在 Retriever 进入 DomainStore
+前短路。Reranker 使用 `ParsedQuery.rewritten`；关闭或 fallback 时该值即 sanitized raw。
+缺字段、空串、非法 JSON、超长输出或模型异常回退 sanitized raw。
+`rewritten` 的字符级上限是 `max(512, len(sanitized raw))`；QueryParser 不设置任务级
+`max_tokens`，由 LLM 后端的 `llm_max_tokens` 统一控制。硬过滤、`as_of` 和
+event-time 窗仍来自调用方输入与 raw 文本。`parse` 轨迹用
+`detail["rewrite"]` 记录 `off/used/fallback/no_intent`，fallback 时用
+`detail["fallback_reason"]` 记录原因，不记录 query、上下文或模型原始输出。
 
 ### 过滤表达式
 
@@ -363,13 +376,14 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `span_end` | datetime \| None | `None` | 结构区间终点 |
 | `expand_depth` | int | `0` | 后代最大边深度；0 不展开 |
 | `rollup` | bool | `False` | 是否启用后代分数向父传播 |
+| `query_context` | tuple[str, ...] \| None | `None` | 可选最近上下文；由 API 从 `Context.extensions["query_context"]` 校验并转换，仅上下文感知改写 parser 消费 |
 
 ### ParsedQuery
 
 | 字段 | 类型 | 语义 |
 |------|------|------|
 | `raw` | str | 进入检索链路的规范化 query；默认实现会先做保守去噪 |
-| `rewritten` | str | LLM 改写后的 query |
+| `rewritten` | str | LLM 改写后的 query；`no_intent` 时为空 |
 | `intent` | str | 意图标签 |
 | `tokens` | list[str] | 分词结果 |
 | `keywords` | list[str] | 抽取的关键词 |
@@ -383,6 +397,8 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `channels` | list[RecallChannel] | 建议启用的通道 |
 | `include_archived` | bool | 当前态真源复核是否允许 archived |
 | `extensions` | dict[str, Any] | 透传配置 |
+| `rewrite_status` | str | 改写状态：`off` / `used` / `fallback` / `no_intent` |
+| `rewrite_fallback_reason` | str | 改写回退原因；成功、关闭或 no-intent 时为空 |
 
 1. `top_k > 0`，`expand_depth >= 0`；非空 `max_tokens` 必须大于 0。
 2. `hierarchy_role`、任一 span、`expand_depth > 0` 或 `rollup=true` 都要求显式 `hierarchy_kind`。

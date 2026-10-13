@@ -49,6 +49,7 @@
    - `context.scope` 作独立轴穿透到 Engine
    - `context.extensions["max_tokens"]` 由 API 边界解析为 `RetrievalQuery.max_tokens`
    - 其余 `context.extensions` 写入 `RetrievalQuery.extensions`
+   - `context.extensions["query_context"]` 校验为字符串序列、转为 tuple 后写入 `RetrievalQuery.query_context`；该 key 移除后不参与鉴权、硬过滤或插件透传
 
 4. **admin_* 不经 Engine**  
    `admin_get/set/all` 直达 `PolicyManager`，不经过 `MemoryEngine`（Engine 中对应方法抛 NotImplementedError）。
