@@ -112,6 +112,16 @@ The main `ParsedQuery` fields are:
 | `channels` | Logical recall channels recommended by the parser |
 | `include_archived` | Whether archived memories are included |
 | `extensions` | Custom pass-through options |
+| `rewrite_status` | Rewrite state: `off`, `used`, or `fallback` |
+| `rewrite_fallback_reason` | Rewrite fallback reason; empty when off or successful |
+
+Built-in LLM rewriting is disabled by default. When explicitly enabled, `simple` sends only
+the sanitized raw query to the LLM and requires `{"rewritten": "..."}` JSON output. Invalid,
+empty, overlong, or failed model output falls back to the sanitized raw query. An output is
+considered overlong only when it exceeds `max(512, len(sanitized raw))` characters.
+QueryParser does not set a task-specific `max_tokens`; the LLM backend configuration owns it.
+Rewritten output cannot modify `scalar_filters`, `as_of`, or the event-time window. The parse trajectory records
+the rewrite state and fallback reason, but not query text.
 
 The query-side Tokenizer, Embedder, and FeatureExtractor should use the same instances or compatible configuration as index construction. Otherwise, the vocabulary, vector space, or feature semantics may diverge.
 
@@ -331,7 +341,7 @@ included is controlled by `vector_enabled`, `graph_enabled`, `layers_index_enabl
 
 | `target` | Implementation class | Function | Dependencies and parameters |
 |---|---|---|---|
-| `simple` | `SimpleQueryParser` | The only built-in parser. It can perform conservative sanitization, LLM rewriting, Tokenizer tokenization, FeatureExtractor keyword/entity extraction, Embedder vectorization, and rule-based time parsing. | Depends on `tokenizer`, `embedder`, `llm`, and `feature_extractor`; `sanitize_enabled` (default `true`), `sanitize_strip_code` (default `false`); when `vector_enabled=false`, no Embedder is assembled |
+| `simple` | `SimpleQueryParser` | The only built-in parser. It can perform conservative sanitization, optional strict LLM rewriting, Tokenizer tokenization, FeatureExtractor keyword/entity extraction, Embedder vectorization, and rule-based time parsing. | Depends on `tokenizer`, `embedder`, `llm`, and `feature_extractor`; `sanitize_enabled` (default `true`), `sanitize_strip_code` (default `false`), `rewrite_enabled` (default `false`); when `vector_enabled=false`, no Embedder is assembled |
 
 ```yaml
 query_parser:
@@ -347,9 +357,9 @@ query_parser:
       sanitize_strip_code: false
 ```
 
-The built-in default target is `simple`. Its default LLM target is `echo`, so it does not rewrite
-the query. If another LLM is referenced, `simple` uses the result of `llm.generate(text)` directly
-as `rewritten`.
+The built-in default target is `simple`. Its default LLM target is `echo`, and
+`rewrite_enabled=false`, so rewriting is not invoked. When explicitly enabled with a rewrite-capable
+LLM, `simple` consumes strict JSON output from `llm.chat()` and falls back to the raw query on failure.
 
 ### 12.3 Recaller Implementations
 
@@ -558,6 +568,8 @@ Fuser:
 | `channels` | `list[RecallChannel]` | `[]` | Logical channels suggested by Parser |
 | `include_archived` | `bool` | `false` | Includes ARCHIVED units in current-state queries |
 | `extensions` | `dict[str, Any]` | `{}` | Extension parameters passed to custom retrieval components |
+| `rewrite_status` | `str` | `"off"` | `off`, `used`, or `fallback` |
+| `rewrite_fallback_reason` | `str` | `""` | Fallback reason: `llm_error`, `invalid_json`, `empty_output`, or `output_too_long` |
 
 PipelineRetriever adds lifecycle, valid-time, and event-time system predicates to `scalar_filters`.
 `recheck_filters` preserves the user filter for source-of-truth verification. A custom Parser must

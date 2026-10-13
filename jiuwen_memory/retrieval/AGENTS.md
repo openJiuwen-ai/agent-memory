@@ -77,6 +77,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 3. **query 原文先规范化再召回**
    默认 `SimpleQueryParser` 在分词、向量化和时间解析前做保守去噪，剥除 UTC 时间戳与 `Sender (untrusted metadata)` 等上游包装噪声；`ParsedQuery.raw` 是进入检索链路的规范化文本。清洗后为空时，`PipelineRetriever` 必须在召回前短路返回空结果。
+   LLM 改写默认关闭；显式开启后只把 sanitized raw 交给 strict JSON 改写任务，解析失败或模型异常回退 sanitized raw。软召回信号可基于 `rewritten`，硬过滤、`as_of` 与 event-time 窗不被 LLM 输出改写。parse 轨迹记录 `off/used/fallback` 与 fallback 原因，不记录 query 或模型输出。
 
 4. **通道到物理 Store 非 1:1**
    一路可对应一个 Store（如 VectorStore），多路也可合到一个 Store（如 FusionStore 同时支持向量+关键词），TEMPORAL 通常是叠加在其他通道上的时间过滤。

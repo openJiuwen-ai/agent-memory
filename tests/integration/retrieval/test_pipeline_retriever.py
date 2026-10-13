@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from time import perf_counter, sleep
 from types import SimpleNamespace
 
@@ -15,9 +16,16 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (  # noqa: E501
     KeywordFeatureExtractor,
 )
+from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
-from jiuwen_memory.common.type_def import FilterClause, FilterOp, RetrievalPipeline, memory_key
+from jiuwen_memory.common.type_def import (
+    ChatMessage,
+    FilterClause,
+    FilterOp,
+    RetrievalPipeline,
+    memory_key,
+)
 from jiuwen_memory.common.type_def.memory import LifecycleState
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.common.type_def.scope import Scope
@@ -49,6 +57,30 @@ from jiuwen_memory.storage.vector import VectorProducer
 from tests.conftest import DEFAULT_SCOPE, index_unit, make_unit, make_world
 
 pytestmark = pytest.mark.integration
+
+
+class RecordingLLM(LLM):
+    """记录 prompt / options 并按脚本返回的确定性 LLM 桩。"""
+
+    def __init__(self, response: str | None = None, *, error: Exception | None = None) -> None:
+        self.response = response
+        self.error = error
+        self.calls = 0
+
+    def plugin_type(self) -> PluginType:
+        return PluginType.LLM
+
+    def health(self) -> None:
+        return None
+
+    def chat(self, messages: list[ChatMessage], **options: object) -> str:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        if self.response is not None:
+            return self.response
+        query = messages[-1].content.removeprefix("Query: ")
+        return json.dumps({"rewritten": query}, ensure_ascii=False)
 
 
 class FailingRecaller(Recaller):
@@ -189,6 +221,71 @@ def test_invalid_top_k_raises(indexed_world, scope) -> None:
     with pytest.raises(ValidationError):
         indexed_world.retriever.retrieve(scope, RetrievalQuery(text="coffee", top_k=0))
 
+
+def _rewrite_retriever(world, llm, *, rewrite_enabled: bool = True) -> PipelineRetriever:
+    """构造接入改写 parser 的真实内存检索栈。"""
+    parser = SimpleQueryParser(
+        world.tokenizer,
+        world.embedder,
+        feature_extractor=KeywordFeatureExtractor(world.tokenizer),
+        llm=llm,
+        rewrite_enabled=rewrite_enabled,
+    )
+    return PipelineRetriever(
+        parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=_storage_for(world, [world.keyword, world.vector_recaller]),
+    )
+
+
+def test_rewrite_used_end_to_end(indexed_world, scope) -> None:
+    llm = RecordingLLM(json.dumps({"rewritten": "alice coffee"}, ensure_ascii=False))
+    retriever = _rewrite_retriever(indexed_world, llm)
+
+    result = retriever.retrieve(
+        scope,
+        RetrievalQuery(
+            text="do you remember where alice likes coffee?",
+            top_k=5,
+            with_trajectory=True,
+        )
+    )
+
+    parse_step = [step for step in result.trajectory if step.stage == "parse"][0]
+    assert "u1" in [item.unit_id for item in result.items], "改写后的 query 应命中候选"
+    assert llm.calls == 1, "改写启用时应只调用一次 LLM"
+    assert parse_step.detail["rewrite"] == "used", "轨迹应记录改写状态 used"
+
+
+def test_rewrite_fallback_end_to_end(indexed_world, scope) -> None:
+    llm = RecordingLLM("not json")
+    retriever = _rewrite_retriever(indexed_world, llm)
+
+    result = retriever.retrieve(
+        scope, RetrievalQuery(text="coffee", top_k=5, with_trajectory=True)
+    )
+
+    parse_step = [step for step in result.trajectory if step.stage == "parse"][0]
+    assert "u1" in [item.unit_id for item in result.items], "改写失败应回退 raw query"
+    assert llm.calls == 1, "改写失败时不应在 parser 内重试"
+    assert parse_step.detail["rewrite"] == "fallback", "轨迹应记录 fallback"
+    assert parse_step.detail["fallback_reason"] == "invalid_json", "轨迹应记录 fallback 原因"
+
+
+def test_rewrite_off_default_end_to_end(indexed_world, scope) -> None:
+    llm = RecordingLLM()
+    retriever = _rewrite_retriever(indexed_world, llm, rewrite_enabled=False)
+
+    result = retriever.retrieve(
+        scope, RetrievalQuery(text="coffee", top_k=5, with_trajectory=True)
+    )
+
+    parse_step = [step for step in result.trajectory if step.stage == "parse"][0]
+    assert "u1" in [item.unit_id for item in result.items], "默认链路应正常检索"
+    assert llm.calls == 0, "rewrite 关闭时不应调用 LLM"
+    assert parse_step.detail["rewrite"] == "off", "轨迹应记录 rewrite off"
 
 def test_invalid_max_tokens_raises(indexed_world, scope) -> None:
     with pytest.raises(ValidationError):

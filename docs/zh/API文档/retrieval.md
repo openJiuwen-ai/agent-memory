@@ -112,6 +112,15 @@ parsed = parser.parse(query)
 | `channels` | parser 建议的逻辑召回通道 |
 | `include_archived` | 是否包含 archived 记忆 |
 | `extensions` | 自定义透传选项 |
+| `rewrite_status` | 改写状态：`off`、`used` 或 `fallback` |
+| `rewrite_fallback_reason` | 改写回退原因；成功或关闭时为空 |
+
+内置 LLM 改写默认关闭。显式开启后，`simple` 只向 LLM 发送 sanitized raw，并要求
+`{"rewritten": "..."}` JSON 输出；输出非法、为空、超长或模型异常时回退 sanitized raw。
+超长判定使用动态上限 `max(512, sanitized raw 字符数)`；QueryParser 不设置任务级
+`max_tokens`，由 LLM 后端配置统一控制。
+LLM 输出不会修改 `scalar_filters`、`as_of` 或 event-time 时间窗。轨迹 `parse` 阶段
+记录 `rewrite` 状态和 fallback 原因，不记录 query 文本。
 
 查询侧的 Tokenizer、Embedder 和 FeatureExtractor 应与构建索引时使用同一套实例或兼容配置，否则可能出现词表、向量空间或特征口径不一致。
 
@@ -318,7 +327,7 @@ fuser:                   # FuserProducer.TOP_NAME
 
 | `target` | 实现类 | 功能 | 依赖与参数 |
 |---|---|---|---|
-| `simple` | `SimpleQueryParser` | 当前唯一内置 parser；可完成保守去噪、LLM 改写、Tokenizer 分词、FeatureExtractor 关键词/实体抽取、Embedder 向量化和规则时间解析 | 依赖 `tokenizer`、`embedder`、`llm`、`feature_extractor`；`sanitize_enabled`（默认 `true`），`sanitize_strip_code`（默认 `false`）；`vector_enabled=false` 时不装配 Embedder |
+| `simple` | `SimpleQueryParser` | 当前唯一内置 parser；可完成保守去噪、可选 strict LLM 改写、Tokenizer 分词、FeatureExtractor 关键词/实体抽取、Embedder 向量化和规则时间解析 | 依赖 `tokenizer`、`embedder`、`llm`、`feature_extractor`；`sanitize_enabled`（默认 `true`），`sanitize_strip_code`（默认 `false`），`rewrite_enabled`（默认 `false`）；`vector_enabled=false` 时不装配 Embedder |
 
 ```yaml
 query_parser:
@@ -334,7 +343,9 @@ query_parser:
       sanitize_strip_code: false
 ```
 
-内置默认 target 为 `simple`。其默认 LLM target 为 `echo`，因此不改写查询；如果引用其他 LLM，`simple` 会直接使用 `llm.generate(text)` 的结果作为 `rewritten`。
+内置默认 target 为 `simple`。其默认 LLM target 为 `echo`，且 `rewrite_enabled=false`，
+因此不调用改写。显式设为 `true` 并注入具备改写能力的 LLM 后，`simple` 使用
+`llm.chat()` 的 strict JSON 输出；失败时回退 raw。
 
 ### 12.3 Recaller 实现
 
@@ -534,6 +545,8 @@ def search_memory(retriever: Retriever, scope: Scope) -> list[str]:
 | `channels` | `list[RecallChannel]` | `[]` | Parser 建议的逻辑通道 |
 | `include_archived` | `bool` | `false` | 当前态查询是否包含 ARCHIVED |
 | `extensions` | `dict[str, Any]` | `{}` | 透传给自定义检索组件的扩展参数 |
+| `rewrite_status` | `str` | `"off"` | `off`、`used` 或 `fallback` |
+| `rewrite_fallback_reason` | `str` | `""` | fallback 原因：`llm_error`、`invalid_json`、`empty_output` 或 `output_too_long` |
 
 `scalar_filters` 在 PipelineRetriever 内会加上 lifecycle/valid-time/event-time 系统谓词；
 `recheck_filters` 保留用户过滤用于真源复核。两者不应被自定义 Parser 混为一个可被 OR 稀释的表达式。
