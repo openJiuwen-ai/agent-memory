@@ -66,7 +66,7 @@ def _extractor() -> ExtractorImpl:
     return ExtractorImpl(
         llm=MockLLM(),
         min_confidence=0.0,
-        retry_max_retries=1,
+        max_attempts=1,
         retry_backoff_ms=1,
     )
 
@@ -123,7 +123,7 @@ def test_extracted_title_lands_in_system_metadata() -> None:
             ]
         ),
         min_confidence=0.0,
-        retry_max_retries=1,
+        max_attempts=1,
         retry_backoff_ms=1,
     )
 
@@ -151,7 +151,7 @@ def test_no_title_leaves_metadata_absent() -> None:
             ]
         ),
         min_confidence=0.0,
-        retry_max_retries=1,
+        max_attempts=1,
         retry_backoff_ms=1,
     )
 
