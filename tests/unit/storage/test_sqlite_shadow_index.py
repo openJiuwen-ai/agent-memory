@@ -115,9 +115,15 @@ def test_content_hash_is_sha256_of_raw_content() -> None:
     assert _content_hash("hello") != _content_hash("hello ")
 
 
-def test_project_of_reads_coords_or_defaults() -> None:
+def test_project_of_reads_scalar_or_coords() -> None:
+    # agent 场景：project 作标量直传 system_metadata（coords dict 会被标量校验拒）
+    assert _project_of(_unit("u1", "x", {"project": "p1"})) == "p1"
+    assert _project_of(_unit("u1", "x", {"project": ""})) == ""
+    # router 场景：coords.project（_route 回写）
     assert _project_of(_unit("u1", "x", {COORDS_KEY: {"project": "p1"}})) == "p1"
     assert _project_of(_unit("u1", "x", {})) == ""  # 空串兜底（跨项目可见）
+    # scalar 优先于 coords（两者并有时标量胜出）
+    assert _project_of(_unit("u1", "x", {"project": "s", COORDS_KEY: {"project": "c"}})) == "s"
 
 
 def test_category_of_reads_memory_class_or_defaults() -> None:
@@ -601,6 +607,9 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
         def list_units_by_md(self, scope, md_filename):
             pass
 
+        def find_unit_ids_by_content_hash(self, scope, content_hash):
+            ...
+
         def latest_scope_by_md(self, scope, md_filename):
             pass
 
@@ -789,3 +798,44 @@ def test_latest_scope_by_md_does_not_filter_by_scope(tmp_path) -> None:
     store.insert_units(scope_a, [_unit_with_md("u1", "alpha", scope_a, md)])
     # 空 Scope 调用 → 仍取到 scope_a（不限 scope WHERE）
     assert store.latest_scope_by_md(Scope(), md) == scope_a
+
+
+# -- find_unit_ids_by_content_hash（F08 §D3）--------------------------------- #
+
+
+def test_find_unit_ids_by_content_hash_returns_matching_ids(tmp_path) -> None:
+    """content_hash 命中 → 返回对应 unit_id 列表。"""
+    store = _store(tmp_path)
+    store.insert_units(SCOPE, [_unit("u1", "hello")])
+    ch = _content_hash("hello")
+    ids = store.find_unit_ids_by_content_hash(SCOPE, ch)
+    assert ids == ["u1"], f"expect ['u1'], got {ids}"
+
+
+def test_find_unit_ids_by_content_hash_returns_empty_on_no_match(tmp_path) -> None:
+    """无命中返回空列表（不抛异常）。"""
+    store = _store(tmp_path)
+    ids = store.find_unit_ids_by_content_hash(SCOPE, _content_hash("nonexistent"))
+    assert ids == []
+
+
+def test_find_unit_ids_by_content_hash_is_scope_isolated(tmp_path) -> None:
+    """scope 5 维等值隔离：他 scope 同 content_hash 的 unit 查不到（F08 铁律 1）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="acme", user="u1")
+    scope_b = Scope(org="acme", user="u2")
+    store.insert_units(scope_a, [_unit_scope("u1", "shared content", scope_a)])
+    store.insert_units(scope_b, [_unit_scope("u2", "shared content", scope_b)])
+    ch = _content_hash("shared content")
+    # scope_a 只查到自己的 u1，不含 scope_b 的 u2
+    assert store.find_unit_ids_by_content_hash(scope_a, ch) == ["u1"]
+    assert store.find_unit_ids_by_content_hash(scope_b, ch) == ["u2"]
+
+
+def test_find_unit_ids_by_content_hash_handles_multiple_units_same_content(tmp_path) -> None:
+    """同 scope 下多条同 content_hash 的 unit 全部返回（去重前）。"""
+    store = _store(tmp_path)
+    store.insert_units(SCOPE, [_unit("u1", "dup")])
+    store.insert_units(SCOPE, [_unit("u2", "dup")])
+    ids = store.find_unit_ids_by_content_hash(SCOPE, _content_hash("dup"))
+    assert set(ids) == {"u1", "u2"}, f"expect both u1 and u2, got {ids}"

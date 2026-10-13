@@ -55,7 +55,7 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
 from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
-_DEFAULT_PROJECT = ""  # 无 coords 时的 project 兜底值：空串=跨项目可见（IN ['', value] 命中）
+_DEFAULT_PROJECT = ""  # 无 project 时的兜底值：空串=跨项目可见（IN ['', value] 命中）
 _DEFAULT_CLASS = "team_memory"
 # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）。
 _DEFAULT_LIFECYCLE = "active"
@@ -507,8 +507,16 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _project_of(unit: MemoryUnit) -> str:
-        """从 ``coords`` 读 project，空落 ``default``（F08 §1.2/§3）。"""
-        coords = (unit.system_metadata or {}).get(COORDS_KEY) or {}
+        """取 project：``system_metadata.project``（agent 场景标量直传）优先，
+        ``coords.project``（router 场景 ``_route`` 回写）兜底，空落 ``default``
+        （F08 §1.2/§3）。与召回侧 ``_PROJECT_FILTER_FIELD`` 同 key 口径一致——
+        召回按 ``system_metadata.project`` 谓词下推，写入侧同此 key 取值。
+        """
+        metadata = unit.system_metadata or {}
+        project = metadata.get("project")
+        if isinstance(project, str) and project.strip():
+            return project.strip()
+        coords = metadata.get(COORDS_KEY) or {}
         return coords.get("project") or _DEFAULT_PROJECT
 
     @staticmethod
@@ -664,6 +672,45 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # 按输入顺序保序组装，缺失/非法的下标直接省略（不补 None，不抛错）。
         return [hits[uid] for uid in unit_ids if uid in hits]
 
+    def find_unit_ids_by_content_hash(
+        self, scope: Scope, content_hash: str
+    ) -> list[str]:
+        """按 ``content_hash`` 在 scope 内反查 ``unit_id``（F08 §D3）。
+
+        ``read_md_file`` / ``edit_md_file`` 的 hash 反查落点：读 md 按块算
+        ``content_hash``（与 :meth:`_content_hash` 同口径 ``sha256`` 不归一化）后，用
+        本方法反查命中的 ``unit_id``，再经 :meth:`get_units` 取完整 ``MemoryUnit``。
+
+        scope 5 段等值隔离——与 :meth:`get_units` 同口径（``org``/``space``/``user``/
+        ``agent``/``session`` 五段 AND 等值），**非** :meth:`list_units_by_md` 的跨 scope
+        例外口径。read/edit 是用户态接口须严格按 scope 隔离：同一 content_hash 在不同
+        scope 下是不同 unit（同文件不同用户写入相同正文行），跨 scope 返回会泄漏。
+        看门狗诊断（``list_units_by_md``）才跨 scope，本方法不沿用其例外。
+
+        走已有 ``idx_content_hash`` 索引（建表 DDL 第 154 行），``WHERE content_hash=?
+        AND <scope 5 段等值>`` 是索引前缀点查，O(log n)。
+
+        返回顺序：SQLite 默认 rowid 升序（插入顺序），未显式 ``ORDER BY``——调用方
+        （``read_md_file``）按 md 块解析顺序逐 hash 反查再 :meth:`get_units` 组装，
+        不依赖本方法返回顺序。同 ``content_hash`` 同 scope 下可命中多个 unit（不同
+        md 文件写了相同正文行），返回全部命中；空命中返回空列表。
+        """
+        with self._lock:
+            conn = self._ensure_conn()
+            rows = conn.execute(
+                "SELECT unit_id FROM memory_unit WHERE content_hash=? "
+                'AND org=? AND space=? AND "user"=? AND agent=? AND session=?',
+                (
+                    content_hash,
+                    scope.org,
+                    scope.space,
+                    scope.user,
+                    scope.agent,
+                    scope.session,
+                ),
+            ).fetchall()
+        return [uid for uid, in rows]
+
     def update_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """覆写全量 ``unit_json``，按 ``content_hash`` 变化判定投影是否重建（F07 §11.3）。
 
@@ -716,10 +763,12 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         category = self._category_of(unit)
         project = self._project_of(unit)
         # 投影列空兜底守卫：coords 是 TRANSIENT 键（dumps 剥除，memory_codec），
-        # 从影子索引读回的 unit 永远没有 coords → _project_of 落空串兜底。若不
-        # 守卫，任何 read-modify-write 循环（SUPERSEDE 改 lifecycle、dedup UPDATE
-        # 合并、LifecycleManager.transition/sweep——unit 都取自读回）都会把原
-        # project="p_xxx" 的行重置为空串，下次按 project 隔离召回即丢失。
+        # 从影子索引读回的 unit 无 coords；system_metadata.project 非 TRANSIENT 可
+        # 留存，_project_of 优先读它——agent 场景写入的 unit 读回仍能取到 project。
+        # 仅 coords-only 的 unit（router/watchdog）读回落空串兜底。若不守卫，任何
+        # read-modify-write 循环（SUPERSEDE 改 lifecycle、dedup UPDATE 合并、
+        # LifecycleManager.transition/sweep——unit 都取自读回）都会把原 project="p_xxx"
+        # 的行重置为空串，下次按 project 隔离召回即丢失。
         # 取到兜底值时保留旧列值：project 是写入时确定的归属坐标（F07 语义下
         # 不可变），读到兜底只可能是"上游丢了瞬态上下文"而非"调用方想改归属"。
         # md_filename 同理（md.write 回填的内部指针，重建 unit 对象的上游可能

@@ -10,6 +10,7 @@ from jiuwen_memory.construction.extractor import ExtractorProducer
 
 import_optional(".keyword_extractor", __name__)
 import_optional(".llm_extractor", __name__)
+import_optional(".agent_llm_extractor", __name__)
 import_optional(".dynamic_llm_extractor", __name__)
 import_optional(".video_memory_extractor", __name__)
 

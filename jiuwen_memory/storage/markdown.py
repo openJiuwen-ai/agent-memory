@@ -108,3 +108,88 @@ class MarkdownStore(BaseStore):
         **并发**：复用 ``write`` 同款锁（进程内串行化），路径安全由实现的
         realpath 前缀校验收口（``md_filename`` 逃逸 ``..`` / 绝对路径抛错，与 ``write`` 同口径）。
         """
+
+    @abstractmethod
+    def read_content(
+        self,
+        scope: Scope,
+        md_basename: str,
+        *,
+        project: str = "",
+        line_range: tuple[int, int] | None = None,
+    ) -> str:
+        """读 md 文件原文（按 basename + project 解析路径），返回可选行切片后的全文。
+
+        ``read_md_file`` 的存储层落点（F08 §D1）：``md_basename``（如 ``USER.md`` /
+        ``MEMORY.md`` / ``2026-09-30.md``）+ ``project`` 经实现的 ``_resolve_md_path``
+        映射为与 :meth:`_md_path`（按 memory_class 映射）**同口径**的相对路径，再经
+        ``_safe_abs_path`` 收口为 root 内绝对路径读全文。
+
+        ``line_range`` 为 ``(start, end)`` **1-based 闭区间**（``start=1, end=5`` 返回第
+        1~5 行），``None`` 表示整文件，越界自动 clamp 到文件实际行数（超界返回空串）。
+        切片按行（``splitlines(keepends=True)``）保行尾换行，切片结果拼回保持原文字节态。
+
+        文件不存在返回空串（容错，不抛 ``NotFoundError``）——``read_md_file`` 上层按空串
+        无正文块解析出空 unit list，与「文件无内容」语义一致；区分「不存在」与「空文件」
+        由调用方先做判断。``md_basename`` 逃逸 ``..`` / 绝对路径由 ``_safe_abs_path`` 抛
+        ``ValidationError``（与 ``write`` / ``replace_content`` 同口径）。
+        """
+
+    @abstractmethod
+    def edit_content(
+        self,
+        scope: Scope,
+        md_basename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        project: str = "",
+    ) -> None:
+        """在 md 文件内对 ``old_text`` 做唯一替换为 ``new_text``（F08 §D5 / R5）。
+
+        ``edit_md_file`` 的存储层落点：basename + project 解析路径后，读全文 →
+        ``str.count(old_text)`` 校验唯一性 → ``replace(old_text, new_text, 1)`` 精确
+        替换一处 → 整文件原子写。语义对齐 agent-core ``EditMemoryTool``：
+
+        - ``old_text`` 不存在（count == 0）抛 ``NotFoundError``；
+        - ``old_text`` 不唯一（count > 1）抛 ``ValidationError("not unique")``——
+          与 :meth:`replace_content` 「重复 content 只改第一处」不同，edit 要求调用方
+          提供唯一锚点（agent-core edit_memory 契约），首版取 fail-closed；
+        - 文件不存在抛 ``NotFoundError``（edit 须有可改之物）；
+        - 原子写：``open("w")`` 截断后 ``write`` 抛错时经 ``_safe_restore`` 回写读出的
+          旧全文，与 :meth:`replace_content` / :meth:`remove_content` 同款补偿，让
+          「异常等价于未发生」对 md 侧成立。
+
+        ``old_text`` 任意文本（块内片段 / 跨多块均可），不强制对齐块边界——文件级
+        子串替换，块结构重组（合并/拆分）由上层 ``_supersede_shadow_for_md`` 同步 shadow
+        时按块解析处理。md 侧只保证文件级文本替换的原子性与唯一性。
+        """
+
+    @staticmethod
+    def _resolve_md_path(md_basename: str, project: str) -> str:
+        """basename + project → md 文件相对根路径（F08 §3 标准映射）。
+
+        ``read_content`` / ``edit_content`` 内部用本方法把 basename + project 映射为
+        相对路径（再经 ``_safe_abs_path`` 收口）；:class:`~storage.domain_store.DomainStore`
+        经本 ABC 契约调用拿 ``rel_path``（供 ``shadow_index.list_units_by_md`` 等），
+        不耦合具体实现（``LocalMarkdownStore``）。与实现的 ``_md_path``（按 memory_class
+        映射）产出同一路径，但入参是 basename + project（不依赖完整 MemoryUnit）：
+
+        - ``USER.md`` → ``memory/USER.md``（跨 project 用户画像，不进 project 子目录）；
+        - ``MEMORY.md`` → project 非空 ``memory/{project}/MEMORY.md``，空
+          ``memory/MEMORY.md``（跨项目可见）；
+        - 其余（daily 文件名，如 ``2026-09-30.md``）→ project 非空
+          ``memory/{project}/daily_memory/{basename}``，空 ``memory/daily_memory/{basename}``。
+
+        不做路径安全校验——逃逸 ``..`` / 绝对路径由调用方 ``_safe_abs_path`` 收口
+        抛 ``ValidationError``。
+        """
+        if md_basename == "USER.md":
+            return "memory/USER.md"
+        if md_basename == "MEMORY.md":
+            return f"memory/{project}/MEMORY.md" if project else "memory/MEMORY.md"
+        return (
+            f"memory/{project}/daily_memory/{md_basename}"
+            if project
+            else f"memory/daily_memory/{md_basename}"
+        )

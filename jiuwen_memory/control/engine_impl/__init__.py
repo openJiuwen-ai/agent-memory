@@ -10,5 +10,6 @@ from jiuwen_memory.control.engine import EngineProducer
 
 import_optional(".in_memory_engine", __name__)
 import_optional(".cloud_engine", __name__)
+import_optional(".agent_engine", __name__)
 
 __all__ = ["EngineProducer"]

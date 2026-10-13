@@ -48,6 +48,24 @@ class DocumentShadowIndex(BaseStore):
         """按 ``unit_id`` 点查全量 ``MemoryUnit``（从 ``unit_json`` 列反序列化）。缺失 id 省略。"""
 
     @abstractmethod
+    def find_unit_ids_by_content_hash(
+        self, scope: Scope, content_hash: str
+    ) -> list[str]:
+        """按 ``content_hash`` 在 scope 内反查 ``unit_id`` 列表（F08 §D3）。
+
+        ``read_md_file`` / ``edit_md_file`` 的 hash 反查落点：读 md 按块算
+        ``content_hash``（与 ``_content_hash`` 同口径 ``sha256`` 不归一化）后，用本方法
+        反查命中的 ``unit_id``，再经 :meth:`get_units` 取完整 ``MemoryUnit``。
+
+        scope 5 段等值隔离（与 :meth:`get_units` 同口径，**非** :meth:`list_units_by_md`
+        的跨 scope 例外口径）——read/edit 是用户态接口须严格按 scope 隔离，看门狗诊断
+        才跨 scope。走已有 ``idx_content_hash`` 索引（O(log n) 点查）。
+
+        返回值未保证顺序（SQLite 默认 rowid 升序）；同 ``content_hash`` 在同 scope 下
+        可命中多个 unit（不同 md 文件写了相同正文行），返回全部命中。空命中返回空列表。
+        """
+
+    @abstractmethod
     def update_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """覆写全量 ``unit_json``。id 不存在报缺失。
 

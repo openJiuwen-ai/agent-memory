@@ -25,7 +25,6 @@ unit 约束——一行正文 = 一个 content = 一个 hash 候选）。
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import threading
 import uuid
@@ -45,6 +44,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
     Temporal,
 )
+from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks
 from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
 from jiuwen_memory.storage.sync_gate import (
@@ -68,11 +68,6 @@ _FILE_NAME_TO_CLASS: dict[str, str] = {
 _DEFAULT_TIER = MemoryTier.SEMANTIC
 _DEFAULT_DEBOUNCE_MS = 2000
 _INIT_GRACE_SECONDS = 1.0  # 启动后延迟置 watcher_initialized，避开初始扫描风暴
-
-
-def _content_hash(content: str) -> str:
-    """content 整段 sha256，与影子索引 ``_content_hash`` 同口径（sqlite_shadow_index.py）。"""
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _project_from_md_path(md_filename: str) -> str:
@@ -416,13 +411,17 @@ class LocalWatchdog(Watchdog):
             old_by_hash[ch] = unit_id
         old_hash_set = set(old_by_hash.keys())
 
-        # ② 新 (content_hash, content) list（按行遍历 md，保留 content 原文供建 unit）
+        # ② 新 (content_hash, content) list（按行遍历 md，保留 content 原文供建 unit）。
+        # collect_md_blocks 返回三元组 (hash, content, block_index)，看门狗只取前两元
+        # （block_index 供 DomainStore._supersede_shadow_for_md 跨块对齐用，看门狗「删旧建新」
+        # 不按位置继承、不需要 block_index）。口径与原 _collect_new_contents 完全一致
+        # （逐行遍历、跳过标题/空行、sha256、保序去重），只是定义移到共享 _md_blocks。
         new_pairs: list[tuple[str, str]] = []  # (hash, content) 保序、去重
         new_hash_set: set[str] = set()
         if not deleted:
             abs_path = os.path.join(self._markdown_root, md_filename)
             if os.path.isfile(abs_path):
-                new_pairs = self._collect_new_contents(abs_path)
+                new_pairs = [(h, c) for h, c, _ in collect_md_blocks(abs_path)]
                 new_hash_set = {h for h, _ in new_pairs}
 
         # ③ diff
@@ -503,28 +502,6 @@ class LocalWatchdog(Watchdog):
                 MD_FILENAME_KEY: md_filename,
             },
         )
-
-    def _collect_new_contents(self, abs_path: str) -> list[tuple[str, str]]:
-        """读 md 按行遍历，返回 (content_hash, content) 列表（保序、去重）。
-
-        供 ``_sync_one`` insert 分支建新 unit 时还原 content 原文——
-        ``_build_unit`` 需要 content 而非 hash。
-        """
-        result: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        with open(abs_path, encoding="utf-8") as fh:
-            for line in fh:
-                stripped = line.rstrip("\n")
-                if stripped.startswith("#"):
-                    continue
-                if not stripped.strip():
-                    continue
-                ch = _content_hash(stripped)
-                if ch not in seen:
-                    seen.add(ch)
-                    result.append((ch, stripped))
-        return result
-
 
 # -- 注册到 WatchdogProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 

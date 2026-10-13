@@ -22,7 +22,7 @@ import datetime
 import os
 import threading
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import NotFoundError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
@@ -40,15 +40,21 @@ from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
 # memory_class → (子路径模板, 是否进 project 子目录)
 # user_memory 不进 project 子目录（跨项目用户画像）；project/team 进 project 子目录。
 # 详见 F08 §3 映射表。
+# 后三键是 agent_llm 抽取产出的 agent 场景类别名（F09）：与前三个 Router 判定类名
+# 语义一一对应、共享同一路径——user_profile↔user_memory、long_term_memory↔
+# project_memory、daily_memory↔team_memory。看门狗路径反推（_class_from_md_path）
+# 不区分两套名：路径一致即落盘行为一致，仅影子索引 category 列按旧名回写。
 _PATH_MAP: dict[str, tuple[str, bool]] = {
     "user_memory": ("USER.md", False),
     "project_memory": ("MEMORY.md", True),
     "team_memory": ("daily_memory", True),  # daily_memory/ 下再拼 YYYY-MM-DD.md
+    "user_profile": ("USER.md", False),
+    "long_term_memory": ("MEMORY.md", True),
+    "daily_memory": ("daily_memory", True),
 }
 
 _DEFAULT_CLASS = "team_memory"
-# 无 coords 时兜底空串：project_memory/team_memory 落 memory 根下（跨项目可见）。
-_DEFAULT_PROJECT = ""
+_DEFAULT_PROJECT = ""  # 无 project 时兜底空串：project_memory/team_memory 落 memory 根下（跨项目可见）
 
 logger = get_logger(__name__)
 
@@ -147,11 +153,12 @@ class LocalMarkdownStore(MarkdownStore):
     def restore_blocks(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """补偿专用：按各 unit 的 ``md_filename``（system_metadata 保留键）直接追加块。
 
-        与 ``write`` 的差别：``write`` 用 ``_md_path`` 重算路径（读 coords.project），
-        但补偿回写的 unit 是从影子索引 ``get_units`` 读回的——``dumps`` 剥除 coords
-        （TRANSIENT 键），读回的 unit 无 coords → ``_md_path`` 落空 project → 路径错位
-        （原 ``memory/p1/MEMORY.md`` 错算成 ``memory/MEMORY.md``）。``md_filename`` 是
-        ``write`` 时回填的相对路径（非 TRANSIENT，读回保留），直接用它定位文件绕过 coords。
+        与 ``write`` 的差别：``write`` 用 ``_md_path`` 重算路径（读 system_metadata.project
+        或 coords.project），但补偿回写的 unit 是从影子索引 ``get_units`` 读回的——``dumps``
+        剥除 coords（TRANSIENT 键），读回的 unit 无 coords；``system_metadata.project`` 非
+        TRANSIENT 可留存，但仅 coords.project 的 unit（router/watchdog）读回仍落空 project →
+        路径错位（原 ``memory/p1/MEMORY.md`` 错算成 ``memory/MEMORY.md``）。``md_filename`` 是
+        ``write`` 时回填的相对路径（非 TRANSIENT，读回保留），直接用它定位文件绕过 project 取值。
 
         供 delete 多块补偿中途失败时回写已成功删除的块：循环 ``remove_content`` 第 N 块
         抛错时，前 N-1 块已真删，补偿 ``insert_units`` 回滚 shadow 后须把已删块追加回 md，
@@ -203,7 +210,7 @@ class LocalMarkdownStore(MarkdownStore):
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, skip replace_content", md_filename)
                 return False
-            with open(abs_path, encoding="utf-8") as fh:
+            with open(abs_path, "r", encoding="utf-8") as fh:
                 text = fh.read()
 
             # 块序列：按 \n\n 切（与 _render_block 尾部 \n\n 对齐，块间以此为界）。
@@ -278,7 +285,7 @@ class LocalMarkdownStore(MarkdownStore):
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, skip remove_content", md_filename)
                 return False
-            with open(abs_path, encoding="utf-8") as fh:
+            with open(abs_path, "r", encoding="utf-8") as fh:
                 text = fh.read()
 
             # 块序列：按 \n\n 切（与 _render_block 尾部 \n\n 对齐，块间以此为界）。
@@ -295,7 +302,7 @@ class LocalMarkdownStore(MarkdownStore):
                 if len(parts) != 2:
                     new_blocks.append(block)
                     continue
-                body = parts[1]
+                title, body = parts[0], parts[1]
                 if body == content and not removed:
                     # 命中：删除该块（不加入新块序列）。删除首个命中，与 replace_content
                     # 首版「取首个」同款语义（content 重复时只删第一处）。
@@ -327,14 +334,113 @@ class LocalMarkdownStore(MarkdownStore):
                 raise
             return True
 
+    # -- 文件级读写（read_md_file / edit_md_file 存储层落点，F08 §D1）--------- #
+
+    def read_content(
+        self,
+        scope: Scope,
+        md_basename: str,
+        *,
+        project: str = "",
+        line_range: tuple[int, int] | None = None,
+    ) -> str:
+        """读 md 文件原文，按 ``line_range`` 行切片（越界 clamp，1-based 闭区间）。
+
+        basename + project 经 :meth:`_resolve_md_path`（与 :meth:`_md_path` 同口径）映射为
+        相对路径，``_safe_abs_path`` 收口为 root 内绝对路径后读全文。``line_range`` 为
+        ``None`` 返回整文件；否则按 ``splitlines(keepends=True)`` 切片，``[start-1:end]``
+        取行，越界 clamp 到 ``[0, len(lines)]``——``start`` 超界或 ``end <= start`` 返回
+        空串。文件不存在返回空串（容错，见契约 :meth:`MarkdownStore.read_content`）。
+        """
+        with self._lock:
+            root = self._resolved_root()
+            rel_path = self._resolve_md_path(md_basename, project)
+            abs_path = self._safe_abs_path(root, rel_path)
+            if not os.path.isfile(abs_path):
+                logger.debug("md %s not found, read_content returns empty", rel_path)
+                return ""
+            with open(abs_path, encoding="utf-8") as fh:
+                text = fh.read()
+            if line_range is None:
+                return text
+            start, end = line_range
+            lines = text.splitlines(keepends=True)
+            # 1-based 闭区间 → 0-based 半开 [start-1, end)，越界 clamp 到 [0, len]。
+            lo = max(start - 1, 0)
+            hi = min(end, len(lines))
+            if lo >= hi:
+                return ""
+            return "".join(lines[lo:hi])
+
+    def edit_content(
+        self,
+        scope: Scope,
+        md_basename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        project: str = "",
+    ) -> None:
+        """文件级唯一子串替换 + 整文件原子写（F08 §D5 / R5）。
+
+        basename + project 解析路径后，读全文 → ``str.count(old_text)`` 校验唯一性 →
+        ``replace(old_text, new_text, 1)`` 精确替换一处 → ``open("w")`` 原子写。与
+        :meth:`replace_content` 的差别：本方法做**文件级任意子串替换**（不按 ``\\n\\n``
+        切块、不要求 old_text 是整块正文），且**校验唯一性**（不唯一抛 ValidationError，
+        非首版「取首个」）。对齐 agent-core edit_memory 契约（old_text 任意文本、跨块均可、
+        必须唯一）。块结构重组（合并/拆分）交由上层 ``_supersede_shadow_for_md`` 按块解析
+        处理，md 侧只保证文件级替换的原子性与唯一性。
+
+        失败语义：文件不存在 / old_text 未找到抛 ``NotFoundError``；old_text 不唯一抛
+        ``ValidationError``；原子写失败经 :func:`_safe_restore` 回写读出的旧全文后重抛
+        （与 :meth:`replace_content` 同款补偿，让「异常等价于未发生」对 md 成立）。
+        """
+        with self._lock:
+            root = self._resolved_root()
+            rel_path = self._resolve_md_path(md_basename, project)
+            abs_path = self._safe_abs_path(root, rel_path)
+            if not os.path.isfile(abs_path):
+                raise NotFoundError(
+                    f"md file not found for edit: {md_basename!r} (project={project!r})"
+                )
+            with open(abs_path, encoding="utf-8") as fh:
+                text = fh.read()
+
+            count = text.count(old_text)
+            if count == 0:
+                raise NotFoundError(
+                    f"old_text not found in {md_basename!r}: {old_text!r}"
+                )
+            if count > 1:
+                raise ValidationError(
+                    f"old_text not unique in {md_basename!r} "
+                    f"(found {count} occurrences): {old_text!r}"
+                )
+            out = text.replace(old_text, new_text, 1)
+
+            # 原子写（见 replace_content 同款）：open("w") 截断后 write 抛错会让旧内容
+            # 永久丢失——补偿路径（_supersede_shadow_for_md 回滚 shadow）救不回 md。
+            # 写失败先回写读出的旧全文 text 恢复调用前状态，再重抛原异常。
+            try:
+                with open(abs_path, "w", encoding="utf-8") as fh:
+                    fh.write(out)
+            except Exception:
+                logger.warning(
+                    "md atomic write failed %s, restored from snapshot",
+                    md_basename,
+                )
+                _safe_restore(abs_path, text)
+                raise
+
     # -- 路径计算 ------------------------------------------------------------ #
 
     def _md_path(self, unit: MemoryUnit) -> str:
         """按 F08 §3 映射算 md 文件相对根目录的路径。
 
-        读 memory_class（空兜底 team_memory）+ coords.project（空兜底空串）。
-        无 coords（project 为空串）的 project_memory/team_memory 落 memory 根下
-        （与 USER.md 同级），与影子索引 project 列空串 = 跨项目可见的语义对齐：
+        读 memory_class（空兜底 team_memory）+ project（system_metadata.project
+        标量优先，coords.project 兜底，空落空串）。无 project 的
+        project_memory/team_memory 落 memory 根下（与 USER.md 同级），与影子索引
+        project 列空串 = 跨项目可见的语义对齐：
         ``memory/MEMORY.md``、``memory/daily_memory/YYYY-MM-DD.md``。
         """
         metadata = unit.system_metadata or {}
@@ -348,8 +454,8 @@ class LocalMarkdownStore(MarkdownStore):
             # user_memory：跨 project 放 memory 根下
             return f"memory/{sub}"
 
-        # project_memory / team_memory：无 coords（project 空串）时落 memory 根下
-        # （跨项目可见），有 coords 时进 project 子目录。
+        # project_memory ：无 project（空串）时落 memory 根下
+        # （跨项目可见），有 project 时进 project 子目录。
         if not project:
             if sub == "daily_memory":
                 date = datetime.date.today().isoformat()
@@ -423,13 +529,10 @@ class LocalMarkdownStore(MarkdownStore):
         else:
             title = str((unit.system_metadata or {}).get(MD_TITLE_KEY) or "").strip()
         logger.info(
-            "[trace/md] render block | title=%r | memory_class=%s "
-            "| md_title_key=%s | team=%r | unit_id=%s",
+            "[trace/md] render block | title=%r | memory_class=%s | md_title_key=%s | team=%r | unit_id=%s",
             title, memory_class,
             str((unit.system_metadata or {}).get(MD_TITLE_KEY) or ""),
-            (
-                coords.get("team") if isinstance(coords, dict) else None
-            ) if memory_class == "team_memory" else None,
+            (coords.get("team") if isinstance(coords, dict) else None) if memory_class == "team_memory" else None,
             unit.id[:8],
         )
         return f"# {title}\n{content}\n\n"
@@ -441,8 +544,9 @@ class LocalMarkdownStore(MarkdownStore):
         """md_filename → 受限 root 内的绝对路径；逃逸输入抛 ``ValidationError``。
 
         安全模型（F07 §5 路径安全）：``md_filename`` 可能源于调用方可写的
-        ``system_metadata``（replace/remove 从旧 unit 读回、write 由 coords.project
-        参与拼路径），不可信。``os.path.join`` 无防护——``..`` 穿透与绝对路径整体
+        ``system_metadata``（replace/remove 从旧 unit 读回、write 由 project
+        （system_metadata.project 或 coords.project）参与拼路径），不可信。
+        ``os.path.join`` 无防护——``..`` 穿透与绝对路径整体
         替换（join 遇绝对路径丢弃 root）都能逃出 root，故在此统一收口：
 
         - 绝对路径直接拒绝（防 join 静默丢 root）；

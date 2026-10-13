@@ -16,7 +16,11 @@
 
 from __future__ import annotations
 
+import copy
+import os
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from jiuwen_memory.common.errors import (
@@ -28,6 +32,7 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
+    MEMORY_CLASS_KEY,
     CandidateFuser,
     ChannelError,
     FilterExpr,
@@ -42,6 +47,8 @@ from jiuwen_memory.common.type_def import (
     Scope,
     ScoredMemoryUnit,
     ScoredUnit,
+    Segment,
+    Temporal,
     is_retrieval_candidate,
     memory_key,
 )
@@ -50,11 +57,17 @@ from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_
 from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
 from jiuwen_memory.storage.kv import load_memory_unit
 from jiuwen_memory.storage.kv_impl.memory_list import list_memory_entries
+from jiuwen_memory.storage.markdown import MarkdownStore
+from jiuwen_memory.storage.markdown_impl._md_blocks import (
+    collect_blocks_from_text,
+    content_hash,
+)
 from jiuwen_memory.storage.security import (
     StorageAccessContext,
     StorageAction,
     StorageSecurity,
 )
+from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -186,11 +199,11 @@ class CompositeDomainStore(DomainStore):
         """运行期直接读实例属性，不查 config（装配期已固化，见 ``__init__``）。"""
         return self._write_document
 
-    def _raw_markdown(self) -> Any:
+    def _raw_markdown(self) -> MarkdownStore:
         """取 markdown 端口；文档模式未装配时 manager 抛 UnsupportedStorageCapabilityError。"""
         return self._manager.markdown()
 
-    def _raw_shadow_index(self) -> Any:
+    def _raw_shadow_index(self) -> DocumentShadowIndex:
         """取 shadow 端口；文档模式未装配时 manager 抛 UnsupportedStorageCapabilityError。"""
         return self._manager.shadow_index()
 
@@ -571,6 +584,199 @@ class CompositeDomainStore(DomainStore):
             filtered.append(candidates)
         ranked = fuser.fuse(query, filtered)[:rank_limit]
         return RankedStorageResult(candidates=ranked, errors=materialized.errors)
+
+    # -- md 文件级接口（read_md_file / edit_md_file，F08 §D1/§D4）----------------- #
+
+    def read_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        *,
+        project: str = "",
+        line_range: tuple[int, int] | None = None,
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        """读 md 文件原文，按块算 content_hash 反查 shadow 取 MemoryUnit（F08 §D1）。
+
+        ``read_content`` 读 md 切片 → ``collect_blocks_from_text`` 按块算 hash →
+        ``find_unit_ids_by_content_hash``（scope 隔离）反查 → ``get_units`` 取完整 unit。
+        被行切片切断的不完整块 hash 匹配不上 shadow 完整块，自然跳过（F08 已知遗留 6）。
+        """
+        self._authorize(access, scope, StorageAction.GET, "memory_unit")
+        if not self.should_write_document():
+            raise ValidationError(
+                "read_md_file requires document mode (write_document=true)"
+            )
+        md = self._raw_markdown()
+        shadow = self._raw_shadow_index()
+        text = md.read_content(scope, md_basename, project=project, line_range=line_range)
+        blocks = collect_blocks_from_text(text)
+        unit_ids: list[str] = []
+        for ch, _, _ in blocks:
+            unit_ids.extend(shadow.find_unit_ids_by_content_hash(scope, ch))
+        return shadow.get_units(scope, unit_ids)
+
+    def edit_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        project: str = "",
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        """md 文件级唯一替换 + 继承式 SUPERSEDE 同步 shadow，返回新 unit（F08 §D4/§D5）。
+
+        写窗保护下：edit 前后读全文算块（精确 diff）→ ``edit_content`` 原子替换 md →
+        ``_supersede_shadow_for_md`` 同步 shadow（md 侧零触碰，只动 shadow 表）→
+        用新 content_hash 反查新 unit_id 返回。非文档模式抛 ``ValidationError``。
+        """
+        self._authorize(access, scope, StorageAction.ADD, "memory_unit")
+        if not self.should_write_document():
+            raise ValidationError(
+                "edit_md_file requires document mode (write_document=true)"
+            )
+        md = self._raw_markdown()
+        shadow = self._raw_shadow_index()
+        rel_path = MarkdownStore._resolve_md_path(md_basename, project)
+        open_write_window()
+        try:
+            # edit 前后全文块（含跨 scope），用于精确 diff：truly_inserted = new - old
+            # 只含 edit 真正新增的块（不含跨 scope 已有块——其 hash 在 old_full 里），
+            # 避免 list_units_by_md 跨 scope 导致当前 scope edit 误标/误插他 scope unit。
+            old_full = collect_blocks_from_text(
+                md.read_content(scope, md_basename, project=project)
+            )
+            # md 原子替换（唯一性校验 + 原子写；失败抛 NotFoundError/ValidationError）
+            md.edit_content(scope, md_basename, old_text, new_text, project=project)
+            new_full = collect_blocks_from_text(
+                md.read_content(scope, md_basename, project=project)
+            )
+            new_unit_ids = self._supersede_shadow_for_md(
+                scope, rel_path, old_full, new_full, shadow
+            )
+            return shadow.get_units(scope, new_unit_ids)
+        finally:
+            close_write_window()
+
+    def _supersede_shadow_for_md(
+        self,
+        scope: Scope,
+        rel_path: str,
+        old_full: list[tuple[str, str, int]],
+        new_full: list[tuple[str, str, int]],
+        shadow: DocumentShadowIndex,
+    ) -> list[str]:
+        """继承式 SUPERSEDE 同步 shadow（F08 §D4）：md 已改好，只动 shadow 表。
+
+        md 侧零触碰（``edit_content`` 已原子改好整个文件）——不复用 ``add``（会重复写
+        md 块）或 ``update``（它假设 md 还没改、自己改 md）。与现有 ``update`` SUPERSEDE
+        「先改 shadow 再改 md」的根本差异：edit_md_file 是「md 已改，只同步 shadow」。
+
+        落库动作（D4）：
+        1. 拿当前 scope 旧 unit（``list_units_by_md`` 跨 scope + ``get_units`` scope 过滤）；
+        2. edit 前后全文块 diff（精确，跨 scope 无关）——truly_inserted/superseded 只含
+           edit 真正产生/消失的块；
+        3. 构造 inserted 新 unit + ``insert_units``（先落新版，deepcopy 未改的 old 继承
+           元数据；D4.1 对齐按 block_index 继承 / 不对齐退化兜底）；
+        4. 标 superseded 旧 unit SUPERSEDED + ``update_units``（废旧版，在新版落地之后）。
+
+        顺序「先 insert 新版再 update 旧版」对齐 cloud_engine SUPERSEDE 范式
+        （``cloud_engine.py``：``new_index.build([new])`` 先落，再 ``old.lifecycle=SUPERSEDED``
+        标旧）——任何时刻都有一个可读版本。
+        """
+        # 1. 当前 scope 旧 unit（list_units_by_md 跨 scope 诊断口径，get_units 只返当前
+        #    scope 命中——跨 scope 的 uid 因 scope WHERE 不匹配被省略，实现 scope 隔离）。
+        old_pairs = shadow.list_units_by_md(scope, rel_path)
+        old_units = shadow.get_units(scope, [uid for uid, _ in old_pairs])
+        old_by_hash: dict[str, MemoryUnit] = {}
+        for u in old_units:
+            ch = content_hash(u.segments[0].content if u.segments else "")
+            old_by_hash[ch] = u
+
+        # 2. edit 前后全文 diff（精确，跨 scope 无关）。
+        old_full_hashes = {h for h, _, _ in old_full}
+        new_full_hashes = {h for h, _, _ in new_full}
+        truly_inserted_hashes = new_full_hashes - old_full_hashes
+        truly_superseded_full_hashes = old_full_hashes - new_full_hashes
+        # 当前 scope 旧 unit 中块消失的（superseded），与 edit 新增的块（inserted）。
+        superseded_units = [
+            u for h, u in old_by_hash.items() if h in truly_superseded_full_hashes
+        ]
+        inserted_blocks = [
+            (h, c, idx) for h, c, idx in new_full if h in truly_inserted_hashes
+        ]
+
+        now = datetime.now(UTC)
+        new_unit_ids: list[str] = []
+
+        # 3. 构造 inserted 新 unit + insert（先落新版；deepcopy 此时未改的 old 继承元数据）。
+        if inserted_blocks and len(superseded_units) == len(inserted_blocks):
+            # D4.1 对齐：块数一致，按 block_index 一一继承对应旧 unit 全部元数据。
+            old_block_idx = {h: idx for h, _, idx in old_full}
+            superseded_sorted = sorted(
+                superseded_units,
+                key=lambda u: old_block_idx.get(
+                    content_hash(u.segments[0].content if u.segments else ""), 0
+                ),
+            )
+            inserted_sorted = sorted(inserted_blocks, key=lambda b: b[2])
+            for old, (_, new_c, _) in zip(superseded_sorted, inserted_sorted):
+                new = copy.deepcopy(old)  # old 此时 ACTIVE（未标 SUPERSEDED），继承全部元数据
+                new.id = str(uuid.uuid4())
+                new.supersedes = old.id
+                new.segments = [Segment(content=new_c)]
+                new.lifecycle = LifecycleState.ACTIVE
+                new.temporal.t_valid = now
+                shadow.insert_units(scope, [new])
+                new_unit_ids.append(new.id)
+        elif inserted_blocks:
+            # D4.1 不对齐退化兜底：跨块合并/拆分，无法明确继承源。scope 取当前 scope
+            # （edit 发起者，有明确 scope 上下文；不沿用看门狗 latest_scope_by_md 近似——
+            # 那是看门狗无 scope 时的兜底，edit 有 scope 应落发起者），project/memory_class
+            # 从 md 路径反推（与看门狗 _project_from_md_path / _class_from_md_path 同口径），
+            # provenance 标 md_edit_fallback，不保留 supersedes（无明确继承源）。
+            parts = rel_path.replace("\\", "/").split("/")
+            fb_project = (
+                parts[1]
+                if len(parts) >= 2 and parts[0] == "memory" and parts[1] != "USER.md"
+                else "default"
+            )
+            normalized = rel_path.replace("\\", "/")
+            if "daily_memory/" in normalized:
+                fb_class = "team_memory"
+            else:
+                base = os.path.basename(normalized)
+                fb_class = {"USER.md": "user_memory", "MEMORY.md": "project_memory"}.get(
+                    base, "team_memory"
+                )
+            for _, new_c, _ in inserted_blocks:
+                new = MemoryUnit(
+                    id=str(uuid.uuid4()),
+                    scope=scope,
+                    segments=[Segment(content=new_c)],
+                    lifecycle=LifecycleState.ACTIVE,
+                    temporal=Temporal(t_valid=now),
+                    system_metadata={
+                        "project": fb_project,
+                        MEMORY_CLASS_KEY: fb_class,
+                        MD_FILENAME_KEY: rel_path,
+                    },
+                    provenance=["md_edit_fallback"],
+                )
+                shadow.insert_units(scope, [new])
+                new_unit_ids.append(new.id)
+
+        # 4. 标 superseded 旧 unit SUPERSEDED + update（废旧版，在新版落地之后；D4.1：
+        #    消失的旧块一律标记，无论对齐与否）。content_hash 不变 → update_units 只覆写
+        #    unit_json + lifecycle 投影列，不重建 FTS5/vec0（sqlite_shadow_index._update_one）。
+        for old in superseded_units:
+            old.lifecycle = LifecycleState.SUPERSEDED
+            old.temporal.t_invalid = now
+            shadow.update_units(scope, [old])
+
+        return new_unit_ids
 
     def health(self) -> None:
         # 数据面无独立资源（recallers 是被注入的，非健康检查对象）；委托 manager 聚合。

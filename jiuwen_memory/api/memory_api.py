@@ -326,6 +326,59 @@ class MemoryAPI(ABC):
         """
 
     @abstractmethod
+    def read_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        *,
+        security: RequestSecurityContext,
+        line_range: tuple[int, int] | None = None,
+    ) -> list[MemoryUnit]:
+        """按 ``md_filename`` + 行范围读 md 文件原文，返回命中的 MemoryUnit 列表（F08）。
+
+        入参形态与 :meth:`search` 一致（用 ``context: Context``）：``context.scope``
+        携带归属五维，``context.extensions["coords"]["project"]`` 决定从哪个 project
+        子目录读（project 解析在 Engine 层，本层不拆 Context）。``md_filename`` 接受
+        basename（``USER.md`` / ``MEMORY.md`` / ``YYYY-MM-DD.md``）。
+
+        ``line_range`` 为 ``(start, end)`` 1-based 闭区间，``None`` 表示整文件，越界
+        自动 clamp。返回值与 :meth:`add` / :meth:`search` 同构为 ``list[MemoryUnit]``；
+        ``MdFileContent`` 的格式转换放 provider 层。
+
+        本层据 ``context.scope`` 鉴权 ``READ``（单段，与 :meth:`get` / :meth:`list`
+        同口径，F08 D5）。文档模式真源是 md + 影子索引，非文档模式无 md 文件——
+        ``InMemoryEngine`` 抛 :class:`~common.errors.ValidationError`。
+        """
+
+    @abstractmethod
+    def edit_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        security: RequestSecurityContext,
+    ) -> list[MemoryUnit]:
+        """按 ``md_filename`` + ``old_text`` 在文件内做唯一替换，返回受影响的新
+        MemoryUnit 列表（F08）。
+
+        语义对齐 agent-core ``edit_memory``：``old_text`` 在文件内必须唯一（``count > 1``
+        抛 :class:`~common.errors.ValidationError`），不存在抛
+        :class:`~common.errors.NotFoundError`，``replace(old, new, 1)`` 精确替换一处后
+        原子写回。``old_text`` 任意文本（块内片段 / 跨多块均可），不强制对齐块边界。
+
+        与 :meth:`update` 的差别：``update`` 按 ``unit_id`` 做 SUPERSEDE/OVERWRITE
+        （替换整个 unit.content）；本方法按文件内 ``old_text`` 做局部文本替换，保留文件
+        其他部分。edit 走「继承式 SUPERSEDE」——新 unit 继承旧 unit 的元数据 + 新 id +
+        ``supersedes`` 指向旧 id + 旧版标记 SUPERSEDED（F08 D4）。返回新 unit（旧版已
+        失效，返回它会让调用方误用失效 id）。
+
+        本层据 ``context.scope`` 鉴权 ``WRITE``（单段，与 :meth:`add` 同口径——edit 本质
+        是写入新记忆，语义对齐 ``add`` 而非 ``update``，F08 D5 / R6）。
+        """
+
+    @abstractmethod
     def check_write(
         self,
         scope: Scope,
