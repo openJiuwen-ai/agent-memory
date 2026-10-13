@@ -4,23 +4,20 @@
 本包是安全能力的**唯一归属地**。消费方（Bootstrap/Surface、MemoryAPI、Storage
 适配器、Audit）只 import 本包的契约与值对象，不反向被 import。
 
-各能力子包按 F05 目录组织（``audit_integrity/`` 契约已由 PR3 固定）。本模块只再导出
-跨能力共享的公共类型、``RequestSecurityContext`` 的受控构造入口与 Runtime--各能力的契约从
-其子包取（``common.security.authentication`` 等），避免顶层 ``__init__`` 变成什么都有
-的入口而在装配前意外触发全部 import。
+各能力子包按 F05 目录组织。PR1 已实装 authentication / cryptography / protection；
+authorization 与 audit_integrity 保持 PR2/PR3 固定契约，其中 authorization 仅有
+PR1 过渡期 ``allow_all`` 占位。能力契约从各自子包获取，顶层只导出跨能力共享类型、
+受控请求上下文入口与 Runtime。
 
-**接口先行过渡期**：本仓库当前合入 F05 契约层（types / 各能力 base / runtime）和仅供本地
-功能测试的 ``authentication_impl.DevAuthenticator``；其余 ``*_impl`` 实现包暂缓合入。
-旧加密模块 :mod:`common.security.security`
-（``SecurityProvider`` 系，服务于存储加密装配）在实现 PR 落地前继续从本顶层
-导出，避免破坏既有消费方；新契约的同名异常（如
-:class:`~common.security.cryptography.base.AuthenticationFailedError`）从各自子包
-取，不与本顶层旧导出冲突。
+存储加密统一使用 ``CryptographyProvider`` / ``KeyProvider``，顶层 ``security`` 配置由
+``SecurityRuntimeProducer`` 接管。旧 ``SecurityProvider`` / ``SecurityProducer`` /
+``SecurityContext`` / ``KeySource`` 保留一个发布周期的兼容导出，不再拥有独立实现或配置
+命名空间。
 """
 
 from .key_source import KeySource
 from .request_context import internal_context, new_request_context
-from .runtime import SecurityRuntime
+from .runtime import SecurityRuntime, SecurityRuntimeProducer
 from .security import (
     AuthenticationFailedError,
     CorruptedCiphertextError,
@@ -58,6 +55,7 @@ __all__ = [
     "SecurityProducer",
     "SecurityProvider",
     "SecurityRuntime",
+    "SecurityRuntimeProducer",
     "Surface",
     "internal_context",
     "new_request_context",

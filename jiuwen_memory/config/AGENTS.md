@@ -54,9 +54,12 @@
    动态选用（F02/F07）；不注册默认 YAML `target: routing`。各实例内部的 Store 级 Routing /
    url 晚绑定仍归 F01。
 
-8. **安全提供者必须经根引用装配**
-   `ROOT_PARAMS["security"]` 指向 `security.default`；`build_kernel` 创建加密 KV 时必须通过该
-   具名引用取 provider，确保用户的 `security` 参数可覆盖默认配置。
+8. **密码学提供者必须经具名引用装配**
+   `security` 顶层段属于 `SecurityRuntimeProducer`；加密存储通过
+   `params.cryptography` 指向 `cryptography.<name>`，Runtime 若需要同一 provider 也引用同名
+   实例。`build_kernel` 先建立共享 Factory 缓存，Runtime 随后命中该缓存，禁止把同名有状态
+   provider 构造成两份。旧 `security.*.target=local` / `params.security` 只在一个发布周期内由
+   `AssemblyContext` 自动迁移并告警。
 
 9. **启用 Encrypted 时 RoutingKV 须在加密层之内**
    EncryptedKV 为 F04 opt-in（`build_kernel` 不强制外包）。产品启用加密时：

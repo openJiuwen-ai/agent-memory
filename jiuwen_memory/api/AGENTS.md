@@ -15,7 +15,7 @@
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest |
+| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest。Runtime 保留共享 audit 快照，close 依次关闭 ingest、停止 Scheduler、释放 dreaming leader 锁，禁止提前释放锁造成双跑 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
@@ -24,7 +24,7 @@
 | `memory_api_impl/dreaming.py` | DreamingCoordinator + DreamingDriverJob：dreaming 编排（PEP 边界）——leader-only 注册、`CANCEL_REQUESTED` 持久化幂等注销、generation 隔离旧代 Driver、生命周期操作串行与短状态锁分离、按 leader 任期缓存恢复结果、每 tick 持续授权（`created_by` 复验）、fan-out 逐桶裁决；Coordinator 只持鉴权、提交、调度、注册表、Engine 候选 scope 枚举窄端口，不反向持有完整 API；驱动 Job 每 tick 经 `commands.evolve` 提交一次性 EvolveJob |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
-| `access_security.py` | Access 安全装配辅助：向 HTTP / CLI 入口提供固定身份或预设身份映射的 dev Authenticator，不向接入层暴露 common 实现路径 |
+| `access_security.py` | Access 安全装配辅助：提供 dev Authenticator，并从普通 mapping 选择、健康检查已配置的 SecurityRuntime；不向接入层暴露 common 实现路径 |
 
 ## 行为铁律
 
@@ -131,4 +131,10 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 10. 数据面写经 `MemoryCommandService`，查询经 `MemoryQueryService`，治理经 `GovernanceService`，
     Space 删除事务经 `SpaceLifecycleService`。PEP、路由谓词回注、逐条鉴权仍在本层。
     不得把 `_purge_space_memories` 或内联 purge+delete 收回本类。
-11. `build_dev_authenticator()` 只供 HTTP / CLI 隔离功能测试装配固定身份或预设身份映射；映射通过可选 `identities` 参数传入，不从业务 scope 推导身份。它不是生产认证 runtime，也不改变 `MemoryAPI` 的授权判定。Access 仍只能从 `jiuwen_memory.api` 取得该能力，不得直接 import `common.security.authentication_impl`。
+11. `build_dev_authenticator(identities=...)` 构造固定或映射 DEV 身份，不是生产 runtime。
+    HTTP / CLI / MCP 均须显式 DEV，`with_local_dev_security()` 补齐完整运行时配置；
+    仅固定 DEV、且未声明 security/permission 时临时注入 allow_all PermissionManager。
+    映射 DEV 保留原权限判定，绝不自动全放行；具名管理员与委托能力留待 PR2。
+    `build_configured_security_runtime()` 从普通 mapping 装配并健康检查 Runtime：
+    无 security 返回 None，多实例无 default 拒绝歧义选择。Access 不得直接 import
+    common.security 的实现或 Factory。PR2 必须统一接管旧 HTTP 多身份和空间权限链路。

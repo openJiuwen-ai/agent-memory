@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from jiuwen_memory.common._support import as_bool
-from jiuwen_memory.common.audit.base import AuditProducer
+from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
@@ -99,6 +99,7 @@ class _Kernel:
         storage: 上层统一使用的 StoreManager（默认 CompositeStoreManager；数据面
             领域操作经 ``storage.domain_store()``；配置段名 ``store_manager:``）
         space: SpaceManager（若装配）
+        audit: 装配好的审计器；供 surface 记录发生在 API 外的认证事件
         config_source: 运行时晚绑定配置来源（默认 YamlDefaultsConfigSource）
     """
 
@@ -107,6 +108,7 @@ class _Kernel:
     storage: StoreManager
     ingest_jobs: IngestJobController
     space: SpaceManager | None = None
+    audit: AuditLogger | None = None
     config_source: ConfigSource | None = None
     scheduler: Scheduler | None = None
 
@@ -127,6 +129,7 @@ class MemoryRuntime(Protocol):
 class _MemoryRuntime:
     api: MemoryAPI
     _ingest_jobs: IngestJobController
+    _audit: AuditLogger | None = None
     _scheduler: Scheduler | None = None
 
     def close(self, *, wait: bool = True) -> None:
@@ -242,6 +245,9 @@ def _build_kernel(
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
 
+    # API 业务审计与 surface 入口审计必须共用同一个具名实例。
+    audit_logger = AuditProducer.dep(root, default="sqlite")
+
     # ConfigSource 须先于 engine/evolver 装配，供 PromptRegistry / 插件晚绑定共享。
     config_source = ConfigSourceProducer.dep(root, default="yaml_defaults")
     if not isinstance(config_source, ConfigSource):
@@ -281,7 +287,7 @@ def _build_kernel(
         dreaming_lock=dreaming_lock,
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
-        audit_logger=AuditProducer.dep(root, default="sqlite"),
+        audit_logger=audit_logger,
         space=space,
         ingest_jobs=ingest_jobs,
         # 单次扫描量/返回样本量是可信服务端配置，不从请求 payload 读取。即使完整性
@@ -311,6 +317,7 @@ def _build_kernel(
         storage=storage,
         ingest_jobs=ingest_jobs,
         space=space,
+        audit=audit_logger,
         config_source=config_source,
         scheduler=scheduler,
     )
@@ -356,4 +363,5 @@ def assemble_runtime(
         api=kernel.api,
         _ingest_jobs=kernel.ingest_jobs,
         _scheduler=kernel.scheduler,
+        _audit=kernel.audit,
     )
