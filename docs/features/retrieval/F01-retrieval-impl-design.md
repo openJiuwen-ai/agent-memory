@@ -41,7 +41,7 @@
 
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
-| `simple` | `SimpleQueryParser` | `tokenizer`（`dep`，缺省 `whitespace`）；`embedder`（`dep`，缺省 `hashing`，仅 `vector_enabled` 时接入）；`llm`（`dep`，缺省 `echo`）；`feature_extractor`（`dep`，缺省 `keyword`） | `ParsedQuery` | 默认先按 `params.sanitize_enabled=true` 做保守去噪（UTC 时间戳、`Sender (untrusted metadata)` 元数据行；代码围栏默认保留，可用 `params.sanitize_strip_code=true` 剥除），`ParsedQuery.raw` 为清洗后文本；用注入的 `Tokenizer` 分词（与索引侧同实例 = 同词表）；`llm` 非 `echo` 时改写 query（`rewritten`）；接了 `embedder` 时对 query 向量化（同向量空间）并启用 VECTOR 通道；`feature_extractor` 抽实体与补充关键词供图召回使用；`filters` 透传为硬过滤、`as_of` 透传为 valid-time 回溯点；文本时间约束经 `time_parse` 规则解析为 event-time 窗 |
+| `simple` | `SimpleQueryParser` | `tokenizer`（`dep`，缺省 `whitespace`）；`embedder`（`dep`，缺省 `hashing`，仅 `vector_enabled` 时接入）；`llm`（`dep`，缺省 `echo`）；`feature_extractor`（`dep`，缺省 `keyword`） | `ParsedQuery` | 默认先按 `params.sanitize_enabled=true` 做保守去噪（UTC 时间戳、`Sender (untrusted metadata)` 元数据行；代码围栏默认保留，可用 `params.sanitize_strip_code=true` 剥除），`ParsedQuery.raw` 为清洗后文本；用注入的 `Tokenizer` 分词（与索引侧同实例 = 同词表）；`params.rewrite_enabled=true` 且注入可用 LLM 时执行 strict JSON 改写并驱动软召回信号，失败回退 raw（见 `F08`）；接了 `embedder` 时对 query 向量化（同向量空间）并启用 VECTOR 通道；`feature_extractor` 抽实体与补充关键词供图召回使用；`filters` 透传为硬过滤、`as_of` 透传为 valid-time 回溯点；文本时间约束经 `time_parse` 规则解析为 event-time 窗 |
 
 **`sanitize.py`（子模块）**：规则版 query 去噪——剥除上游包装产生的 UTC 方括号时间戳与 `Sender (untrusted metadata)` 元数据整行；默认保护三反引号代码围栏内部格式，只折叠围栏外空白；输入为空或清洗后为空时返回空串。
 
@@ -134,7 +134,7 @@
 
 ## 已知遗留
 
-- **LLM 改写 / 时间解析默认关闭**：缺省走 `echo` + 规则版，真正的 query 改写与复杂时间解析需显式注入 LLM 并承担延迟/漂移。
+- **LLM 改写 / 时间解析默认关闭**：query 改写已提供 opt-in 的 strict JSON 实现（见 `F08`）；缺省仍走 `echo`，复杂时间解析仍是规则版。真实模型的效果、延迟与漂移需部署侧按需验证。
 - **InMemory 召回为近似计分**：内存向量走暴力余弦、内存全文走词重叠比值近似 BM25，仅供离线/测试；生产召回走 milvus / es。
 - **图召回依赖已建图**：`graph` 通道依赖构建层 ASSOCIATE 已建关联图，图为空时该路无产出。
 - **FusionStore 未接入 pipeline**：`PipelineRetriever` 走分离的多路 `recaller` + `Fuser`；向量·倒排·正排合一的 `fusion_store` 形态（见存储层规约）是另一条尚未编排进检索链路的路径。

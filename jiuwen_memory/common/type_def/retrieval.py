@@ -60,6 +60,8 @@ class ParsedQuery:
     channels: list[RecallChannel] = field(default_factory=list)
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    rewrite_status: str = "off"
+    rewrite_fallback_reason: str = ""
 
 
 @dataclass
