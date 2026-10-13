@@ -990,10 +990,18 @@ def _admin(srv, request: DispatchRequest) -> Body:
 
 
 def _parse_actions(value: Any) -> frozenset[Action]:
-    """解析 ``actions``：缺省沿用历史兼容的只读授权。"""
+    """解析 ``actions``：**缺省**沿用历史兼容的只读授权。
+
+    缺省（键缺失/``None``）与显式空值必须分开：``[]`` / ``""`` / ``[" "]`` 若回落
+    成 READ，一次「动作没写清」的调用会静默变成只读授权（grant），撤销时也只撤掉
+    只读那一条（revoke）——两者都返回 200，调用方无从察觉。故显式空值直接报错，
+    不替调用方猜意图。
+    """
+    if value is None:
+        return frozenset({Action.READ})
     raw = _parse_string_list(value, name="actions")
     if not raw:
-        return frozenset({Action.READ})
+        raise ValidationError("actions must not be empty")
     return frozenset(_enum_value(Action, item, name="actions") for item in raw)
 
 

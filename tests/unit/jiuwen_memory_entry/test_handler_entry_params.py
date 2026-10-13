@@ -537,3 +537,42 @@ def test_revoke_forwards_actions_and_expiry() -> None:
 
     assert status == 200, body
     assert seen[0].actions == frozenset({Action.WRITE})
+
+
+@pytest.mark.parametrize("verb", ["grant", "revoke"])
+@pytest.mark.parametrize("empty", [[], "", [" "], ["", "  "]])
+def test_actions_reject_explicitly_empty_value(verb, empty) -> None:
+    """显式空 ``actions`` 不得回落成 READ。
+
+    ``actions: ""`` 这类写错/写空的入参若回落成只读，grant 会静默授出读权限、
+    revoke 只撤掉只读那一条，两者都返回 200 而语义与调用方意图不符；显式空值
+    必须报错，而不是替调用方猜意图。
+    """
+    calls: list = []
+    api = SimpleNamespace(**{verb: lambda grant, *, security: calls.append(grant)})
+
+    status, body = _dispatch(
+        api,
+        verb,
+        {**_TARGET, "grantee": {"org": "acme", "user": "reader"}, "actions": empty},
+    )
+
+    assert status == 400, body
+    assert body["error"] == "ValidationError"
+    assert calls == []
+
+
+@pytest.mark.parametrize("verb", ["grant", "revoke"])
+@pytest.mark.parametrize("omit_actions", [True, False])
+def test_actions_absent_or_null_keeps_default_read(verb, omit_actions) -> None:
+    """缺省（键缺失或显式 ``null``）仍沿用只读授权——与显式空值区分开。"""
+    seen: list = []
+    api = SimpleNamespace(**{verb: lambda grant, *, security: seen.append(grant)})
+    payload = {**_TARGET, "grantee": {"org": "acme", "user": "reader"}}
+    if not omit_actions:
+        payload["actions"] = None
+
+    status, body = _dispatch(api, verb, payload)
+
+    assert status == 200, body
+    assert seen[0].actions == frozenset({Action.READ})

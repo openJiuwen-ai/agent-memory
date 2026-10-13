@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-09-30 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 最近一次修订日期 | 2026-10-13 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -18,7 +18,7 @@
 | [architecture.md §6](../design/architecture.md) | **已实现**接口的清单（方法 / 语义 / 入参 / 出参） |
 | `jiuwen_memory/api/` | **已实现**接口的代码（`memory_api.py` 契约，`memory_api_impl/` 实现） |
 | 本文（S02） | 对外接口的详细介绍与用法：含已实现，以及已设计但尚未实现的增量；尚未实现处用 **状态：已设计、尚未实现** 标明。方法总览同时指向对应特性文档 |
-| `docs/features/api/`（F01–F05） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
+| `docs/features/api/`（F01–F06） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
 
 已设计但尚未实现的接口完成代码开发上库时：去掉本文（及受影响 F 文档）中的尚未实现标注，并把该方法（或增量入参）补进 architecture.md §6。
 ## Metadata 公共 API 契约
@@ -205,7 +205,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 | 数据面 | `batch_add` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `batch_add_async` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
-| 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05 |
+| 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05；`occurred_at` 见 F06 |
 | 数据面 | `search` | 已实现；层级增量参数尚未实现 | [search](#search) | F01、F04；层级见 F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
@@ -416,10 +416,13 @@ def submit_ingest(
     tags: list[str] | None = None,
     system_metadata: dict[str, MetadataValueType] | None = None,
     user_metadata: dict[str, MetadataValueType] | None = None,
+    occurred_at: datetime | None = None,
 ) -> IngestSubmission: ...
 ```
 
 受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；Access / `assemble_runtime()` 不得持有 `IngestJobController`。后台实际 `add` 仍再鉴权一次。
+
+`occurred_at` 为消息发生时间，随任务原样交给后台 `add`，语义与 `add` 的同名参数一致（见 [F06](../features/api/F06-access-parameter-forwarding.md)）；该字段属于消息时间轴，不借 `metadata` 旁路传递。
 
 #### search
 
