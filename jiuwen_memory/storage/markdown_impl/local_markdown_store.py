@@ -39,7 +39,8 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
 
 # memory_class → (子路径模板, 是否进 project 子目录)
-# user_profile 不进 project 子目录（跨项目用户画像，落 root 顶层）；long_term/daily 进 project 子目录。
+# user_profile 不进 project 子目录（跨项目用户画像，落 root 顶层）；
+# long_term/daily 进 project 子目录。
 # 详见 F08 §3 映射表。
 # memory_class 取值域（F09）：user_profile / long_term_memory / daily_memory——agent_llm
 # 抽取产出的归属类别，也是文档模式 md 落盘分流键。看门狗路径反推（_class_from_md_path）
@@ -75,7 +76,8 @@ def _safe_restore(abs_path: str, original_text: str) -> None:
     except Exception as restore_exc:
         logger.warning(
             "md 原子写回滚失败 path=%s: %s（md 已残缺，漂移交看门狗对账）",
-            abs_path, restore_exc,
+            abs_path,
+            restore_exc,
         )
 
 
@@ -207,7 +209,7 @@ class LocalMarkdownStore(MarkdownStore):
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, skip replace_content", md_filename)
                 return False
-            with open(abs_path, "r", encoding="utf-8") as fh:
+            with open(abs_path, encoding="utf-8") as fh:
                 text = fh.read()
 
             # 块序列：按 \n\n 切（与 _render_block 尾部 \n\n 对齐，块间以此为界）。
@@ -235,9 +237,7 @@ class LocalMarkdownStore(MarkdownStore):
                     new_blocks.append(block)
 
             if not replaced:
-                logger.warning(
-                    "md block not found in %s (drift suspected)", md_filename
-                )
+                logger.warning("md block not found in %s (drift suspected)", md_filename)
                 return False
 
             # 还原：块间用 \n\n 拼接，末尾补 \n\n（与 _render_block 尾部 \n\n 对齐，
@@ -282,7 +282,7 @@ class LocalMarkdownStore(MarkdownStore):
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, skip remove_content", md_filename)
                 return False
-            with open(abs_path, "r", encoding="utf-8") as fh:
+            with open(abs_path, encoding="utf-8") as fh:
                 text = fh.read()
 
             # 块序列：按 \n\n 切（与 _render_block 尾部 \n\n 对齐，块间以此为界）。
@@ -299,7 +299,7 @@ class LocalMarkdownStore(MarkdownStore):
                 if len(parts) != 2:
                     new_blocks.append(block)
                     continue
-                title, body = parts[0], parts[1]
+                body = parts[1]
                 if body == content and not removed:
                     # 命中：删除该块（不加入新块序列）。删除首个命中，与 replace_content
                     # 首版「取首个」同款语义（content 重复时只删第一处）。
@@ -308,9 +308,7 @@ class LocalMarkdownStore(MarkdownStore):
                     new_blocks.append(block)
 
             if not removed:
-                logger.warning(
-                    "md block not found in %s (drift suspected)", md_filename
-                )
+                logger.warning("md block not found in %s (drift suspected)", md_filename)
                 return False
 
             # 还原：剩余块间用 \n\n 拼接，末尾补 \n\n（与 replace_content 口径一致，
@@ -405,9 +403,7 @@ class LocalMarkdownStore(MarkdownStore):
 
             count = text.count(old_text)
             if count == 0:
-                raise NotFoundError(
-                    f"old_text not found in {md_basename!r}: {old_text!r}"
-                )
+                raise NotFoundError(f"old_text not found in {md_basename!r}: {old_text!r}")
             if count > 1:
                 raise ValidationError(
                     f"old_text not unique in {md_basename!r} "
@@ -558,10 +554,14 @@ class LocalMarkdownStore(MarkdownStore):
         else:
             title = str((unit.system_metadata or {}).get(MD_TITLE_KEY) or "").strip()
         logger.info(
-            "[trace/md] render block | title=%r | memory_class=%s | md_title_key=%s | team=%r | unit_id=%s",
-            title, memory_class,
+            "[trace/md] render block | title=%r | memory_class=%s | md_title_key=%s "
+            "| team=%r | unit_id=%s",
+            title,
+            memory_class,
             str((unit.system_metadata or {}).get(MD_TITLE_KEY) or ""),
-            (coords.get("team") if isinstance(coords, dict) else None) if memory_class == "daily_memory" else None,
+            (coords.get("team") if isinstance(coords, dict) else None)
+            if memory_class == "daily_memory"
+            else None,
             unit.id[:8],
         )
         return f"# {title}\n{content}\n\n"
@@ -600,9 +600,7 @@ class LocalMarkdownStore(MarkdownStore):
             # Windows 跨盘符（如 root 在 E: 而目标在 C:）——不在同一树内，视为逃逸。
             under_root = False
         if not under_root:
-            raise ValidationError(
-                f"md_filename escapes markdown root {root!r}: {md_filename!r}"
-            )
+            raise ValidationError(f"md_filename escapes markdown root {root!r}: {md_filename!r}")
         return real_path
 
     def _resolved_root(self) -> str:
@@ -624,7 +622,9 @@ class LocalMarkdownStore(MarkdownStore):
 # -- 注册到 MarkdownProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-@MarkdownProducer.register("local")
+@MarkdownProducer.register(
+    "local", config_inspectors={"at_rest_locations": lambda config: {"root": config.get("root")}}
+)
 def _build(config):
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 

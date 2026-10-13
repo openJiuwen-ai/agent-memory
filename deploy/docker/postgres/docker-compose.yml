@@ -53,6 +53,8 @@ services:
     restart: unless-stopped
 
   agent-memory:
+    environment:
+      STORAGE_ENCRYPTION_ENABLED: "${STORAGE_ENCRYPTION_ENABLED:-false}"
     build:
       context: ../../..
       dockerfile: deploy/docker/postgres/Dockerfile

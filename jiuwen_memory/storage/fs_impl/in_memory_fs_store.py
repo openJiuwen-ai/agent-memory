@@ -13,7 +13,7 @@ import time
 from collections import defaultdict
 from typing import BinaryIO
 
-from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.fs import FsProducer, FSStore
@@ -51,6 +51,13 @@ class InMemoryFSStore(FSStore):
 
     def health(self) -> None:
         return None
+
+    def object_id(self, scope: Scope, key_or_ref: str, *, for_insert: bool = False) -> str:
+        if for_insert:
+            return _ref(scope, key_or_ref)
+        if not key_or_ref.startswith(_ref(scope, "")):
+            raise ValidationError("FS reference does not belong to the supplied scope")
+        return key_or_ref
 
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
         ref = _ref(scope, key)

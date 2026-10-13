@@ -43,6 +43,7 @@ from jiuwen_memory.common.security.audit_integrity.chain_store import (
     Proof,
 )
 from jiuwen_memory.common.type_def import AuditEvent, Scope
+from jiuwen_memory.config.encryption import AtRestLocation
 
 # PRAGMA user_version 标记：0 = 普通审计库（无 proof），2 = 完整性 schema v1。
 INTEGRITY_SCHEMA_VERSION = 2
@@ -615,7 +616,17 @@ class SqliteAuditLogger(AuditLogger, ChainedAuditStore):
             self._conn.close()
 
 
-@AuditProducer.register("sqlite")
+@AuditProducer.register(
+    "sqlite",
+    config_inspectors={
+        "at_rest_locations": lambda config: {
+            "db_path": AtRestLocation(
+                config.get("db_path", ":memory:"),
+                requires_declaration=config.get("db_path", ":memory:") != ":memory:",
+            )
+        }
+    },
+)
 def _build(config):
     return SqliteAuditLogger(config.get("db_path", ":memory:"))
 

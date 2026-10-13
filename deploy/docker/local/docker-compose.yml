@@ -106,6 +106,8 @@ services:
 
   # ---------------- 应用：agent-memory HTTP 服务 ----------------
   agent-memory:
+    environment:
+      STORAGE_ENCRYPTION_ENABLED: "${STORAGE_ENCRYPTION_ENABLED:-false}"
     build:
       context: ../../..
       dockerfile: deploy/docker/local/Dockerfile

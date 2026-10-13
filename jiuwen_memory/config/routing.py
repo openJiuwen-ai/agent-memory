@@ -396,6 +396,9 @@ class RoutingFSStore(FSStore):
     def health(self) -> None:
         self._router.get().health()
 
+    def object_id(self, scope: Scope, key_or_ref: str, *, for_insert: bool = False) -> str:
+        return self._router.get().object_id(scope, key_or_ref, for_insert=for_insert)
+
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
         return self._router.get().insert(scope, key, data)
 

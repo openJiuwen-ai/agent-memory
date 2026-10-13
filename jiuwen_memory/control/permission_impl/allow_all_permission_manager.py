@@ -48,6 +48,8 @@ class AllowAllPermissionManager(PermissionManager):
 # -- 注册到 PermissionProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-@PermissionProducer.register("allow_all")
+@PermissionProducer.register(
+    "allow_all", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build(config):
     return AllowAllPermissionManager()

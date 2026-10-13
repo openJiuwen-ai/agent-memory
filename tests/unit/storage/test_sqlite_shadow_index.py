@@ -127,7 +127,9 @@ def test_project_of_reads_scalar_or_coords() -> None:
 
 
 def test_category_of_reads_memory_class_or_defaults() -> None:
-    assert _category_of(_unit("u1", "x", {MEMORY_CLASS_KEY: "long_term_memory"})) == "long_term_memory"
+    assert (
+        _category_of(_unit("u1", "x", {MEMORY_CLASS_KEY: "long_term_memory"})) == "long_term_memory"
+    )
     assert _category_of(_unit("u1", "x", {})) == "long_term_memory"
 
 
@@ -455,7 +457,7 @@ def test_update_md_filename_loss_is_not_contagious_across_rounds(tmp_path) -> No
     # 第一轮：new unit 不带 MD_FILENAME_KEY
     store.update_units(
         SCOPE,
-[
+        [
             MemoryUnit(
                 id="u1",
                 scope=SCOPE,
@@ -509,7 +511,7 @@ def test_search_fulltext_returns_ranked_hits(tmp_path) -> None:
     store.insert_units(
         SCOPE,
         [
-_unit(
+            _unit(
                 "u1",
                 "deploy cluster",
                 {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}},
@@ -608,7 +610,7 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
             pass
 
         def find_unit_ids_by_content_hash(self, scope, content_hash):
-            ...
+            pass
 
         def latest_scope_by_md(self, scope, md_filename):
             pass
@@ -625,7 +627,7 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
     assert _MinimalShadow().vec_enabled is False
 
 
-def test_vec_load_failure_logs_warning(tmp_path, caplog) -> None:
+def test_vec_load_failure_logs_warning(tmp_path, caplog, monkeypatch) -> None:
     """``sqlite_vec.load`` 失败须打 warning（可观测）——否则「插件缺失」被静默吞掉，
     向量召回缺一路无从定位（建议 7 修复回归锁）。
     """

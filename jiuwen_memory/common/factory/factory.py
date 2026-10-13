@@ -64,11 +64,13 @@ class Factory:
     # 该 Producer 的全局唯一顶层命名空间名（如 "kv_store"）；空=未迁移到新模型
     TOP_NAME: str = ""
     _registry: dict[str, Builder]
+    _config_inspectors: dict[str, dict[str, Builder]]
     _by_top_name: dict[str, type] = {}  # TOP_NAME -> producer 子类（供 Config 解析期校验顶层段）
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls._registry = {}  # 每个 producer 子类一张独立注册表
+        cls._config_inspectors = {}
         top = cls.__dict__.get("TOP_NAME", "")  # 仅认本类显式声明的（不继承父类）
         if top:
             prev = Factory._by_top_name.get(top)
@@ -109,14 +111,52 @@ class Factory:
         return set(Factory._by_top_name)
 
     @classmethod
-    def register(cls, target: str) -> Callable[[Builder], Builder]:
+    def register(
+        cls, target: str, *, config_inspectors: dict[str, Builder] | None = None
+    ) -> Callable[[Builder], Builder]:
         """装饰器：把一个 builder 以实现名 ``target`` 注册进本 producer。"""
 
         def deco(builder: Builder) -> Builder:
             cls._registry[target] = builder
+            # 替换同名插件时不得继承旧实现的能力声明。
+            cls._config_inspectors[target] = dict(config_inspectors or {})
             return builder
 
         return deco
+
+    @classmethod
+    @contextmanager
+    def registration_scope(cls) -> Iterator[None]:
+        """Temporarily register plugins; restore builders and inspectors even on failure.
+
+        This is an assembly/test isolation boundary, not a concurrent registry transaction.
+        Instance caches have their existing reset_all lifecycle.
+        """
+        builders = dict(cls._registry)
+        inspectors = {target: dict(checks) for target, checks in cls._config_inspectors.items()}
+        try:
+            yield
+        finally:
+            cls._registry = builders
+            cls._config_inspectors = inspectors
+
+    @classmethod
+    def for_namespace(cls, namespace: str) -> type[Factory]:
+        """从公开命名空间查 Producer，不构建插件实例。"""
+        producer = Factory._by_top_name.get(namespace)
+        if producer is None:
+            raise ValidationError(f"unknown producer namespace: {namespace!r}")
+        return producer
+
+    @classmethod
+    def inspect_config(cls, target: str, inspector: str, config: Any) -> Any:
+        """执行插件注册的无副作用配置能力检查；未声明能力时明确拒绝。"""
+        inspect = cls._config_inspectors.get(target, {}).get(inspector)
+        if inspect is None:
+            raise ValidationError(
+                f"{cls.TOP_NAME}.{config.name}: {inspector} contract is unknown for {target!r}"
+            )
+        return inspect(config)
 
     # ====================================================================== #
     # 装配模型（两级命名空间）：接口 1 匿名 build / 接口 2 具名 build_named /

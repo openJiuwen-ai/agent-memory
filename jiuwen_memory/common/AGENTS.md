@@ -46,6 +46,11 @@
 
 ## 行为铁律
 
+- **静态保护能力注册**：Factory 的 config_inspectors 随 target 注册或替换，
+  registration_scope 同时恢复 builder 与检查器，不改变 AssemblyContext 的缓存所有权。
+  audit/permission 与 Grant/Delegation 的 SQLite 插件声明 db_path；内存 SQLite 仅免
+  部署证明，其他持久化位置须匹配 at_rest。纯内存 Grant/Delegation 明确声明无持久化位置。
+
 - **意外退出后的关闭**：工作循环已关闭时，LoopRunner.close 仍须允许等待线程退出；只忽略检查与停止请求之间循环刚好关闭的 RuntimeError，其他停止错误必须透出。
 
 - **LoopRunner 显式释放**：持有者负责先完成业务任务收尾，再关闭 Runner；等待退出不能发生在所属线程内。关闭后不得通过查询或提交隐式重启线程。循环在工作线程内由标准库 `asyncio.Runner` 创建和释放，就绪信号覆盖初始化成功/失败；外层线程池上下文保证已进入的同步调用完成后线程才退出。
@@ -58,7 +63,11 @@
    每个插件的 Producer 工厂定义在其接口模块（`base.py`）中，与抽象契约同处一地。
 
 3. **注册靠 import 触发**
-   实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数，`*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发（安全域转交 `security/bootstrap.py::register_security()`）。
+   实现文件尾部 `@XxxProducer.register("name")` 注册 _build 函数；可随注册声明无副作用的
+   config_inspectors，替换 target 必须同时替换检查器，不继承旧插件能力声明。
+   临时替换测试通过 Producer.registration_scope 保存并恢复 builder 与检查器，不读取私有注册表；
+   该边界不隔离实例缓存，也不提供并发注册事务。
+   `*_impl/__init__.py` import 各实现模块触发注册，`bootstrap.py::register_plugins()` 在装配前统一触发（安全域转交 `security/bootstrap.py::register_security()`）。
 
 4. **type_def 不依赖能力实现**
    `type_def/*.py` 只定义跨层数据与 ContextVar，可在 `type_def` 内部引用基础类型

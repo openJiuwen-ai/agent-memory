@@ -36,7 +36,7 @@
 |---|---|---|
 | 认证与凭据（PR1） | 已合入上游；dev / api_key / trusted、memory KeyStore 与凭据状态 Registry | OAuth 资源服务器、持久化 PrincipalKeyStore 未实装 |
 | 资源保护（PR1） | loopback BindingPolicy、令牌桶/不限流、信号量 WorkloadGuard、有界 HTTP | 令牌桶与并发预算是进程内状态，不提供跨副本总配额 |
-| 静态加密（PR1） | local KeyProvider、ENC1 信封、显式 encrypted KV 装饰器 | 不等于全存储加密；FS 加密、KMS/Vault/HSM 不在本分支 |
+| 静态加密（PR1 / PR1-1） | local KeyProvider、ENC1 KV/FS 装饰器、统一装配开关及索引部署保护契约 | 索引依赖加密卷或后端加密；远端依赖部署方核查；KMS/Vault/HSM 未实装 |
 | 授权与隔离（PR2） | 唯一 PEP/PDP、Grant/Delegation 真源、角色和空间两轴、代理代写 | 私有委托配置不等于动态管理公开接口 |
 | 审计记录 | 普通 AuditLogger、认证/业务判定留痕、真实 actor 和请求关联 | 普通日志没有链式防篡改保证，保留期由部署方管理 |
 | 审计完整性（PR3） | 可选 chained_hmac、内存 / SQLite 链式 Store、LocalKeyProvider MAC 与受保护审计 | 外部锚点无产品实现；未装配返回 unsupported，本地密钥轮换状态不跨重启保存 |
@@ -270,12 +270,78 @@ KeyRef；跨资源复制或篡改头部不能成为合法解密。v1 按旧派�
 allow_plaintext 开关，不把解密失败返回为明文或密文。旧明文须离线迁移或显式使用
 未加密 Store，不能在同一加密 provider 中静默降级。
 
-加密是 opt-in 的 KV 装饰器，没有全局 enabled 开关。业务 KV 必须实际指向 encrypted
-包装，并以具名 raw_kv_store 与 cryptography 组合；RoutingKVStore 应在加密层内。
-只装配 provider 不会自动加密数据。实现边界与存储组合见
-[加密存储说明](../storage/F02-encrypted-storage.md)。
-本分支不提供 FS 全读/append/mv 的加密保证，不声称向量、索引、资产或所有 Store 密文落盘；
-应用、LLM 与检索消费侧仍处理明文。备份与原始后端权限必须另行保护。
+### 5.1 KV/FS 应用层保护
+
+加密在字节存储边界完成，避免在 add/search/get 等业务入口重复接线。显式选择
+encrypted target 仍受支持；`globals.storage_encryption_enabled` 默认 false，开启后
+统一保护全部具名 KV/FS 端口、消息 KV、外部注入 KV 及 raw 别名。开关严格接受 bool
+或 true/false 字符串；关闭不拆除显式 encrypted，也不迁移旧数据。只装配 provider
+不会自动加密数据。RoutingKVStore 应在加密层内。
+
+KV 只加密 value，key/Scope 保持可寻址；get/mget/scan 解密后返回，list 解密后按原
+MemoryUnit 语义过滤、计数和分页。FS 的 key、返回 ref 和后续别名须映射至稳定
+object_id，更新不能换对象标识；未提供该能力的后端不能包装为 encrypted。
+FS 绑定完整 Scope、用途、对象标识与版本作为 AAD；整对象有界读写，默认明文上限
+64 MiB，密文有独立上限。get 支持字节或流；篡改、明文、错误密钥、越限和无效流均拒绝。
+不提供 append/mv 的额外保证、分块加密或 MemoryAPI 资产上传/下载流程。
+
+公共 StoreManager 解析边界检查完整 encryption_inventory 与公开端口对象一致性，
+不允许替代 manager 绕过保护开关。插件通过公开 StoreEncryptionBinding 声明底层依赖、
+provider 和格式，自动包装按 Producer/config 选择实现并按对象身份复用，避免重包 raw
+别名。缺少保护清单或无法证明全部可切换端口受保护的动态 manager 拒绝装配。
+具名依赖使用同一 AssemblyContext 缓存；包装回填不污染其他装配，启动失败仍由上游
+资源所有权机制关闭本次新建依赖，外部注入的借用后端不转为隐式所有。
+
+### 5.2 索引及治理数据库的部署保护
+
+全文、向量、图、融合、实体索引、Markdown 真源、SQLite 文档影子索引以及审计、
+权限、Grant/Delegation SQLite 库采用部署侧磁盘、卷或后端静态加密。直接把索引字段
+套 AES-GCM 会破坏分词、ANN、排序和过滤，因此保持现有检索算法，不实现密态检索，
+也不引入应用层全库解密再检索流程。运行中的应用、ES、LLM 与检索消费侧仍处理明文。
+
+插件注册 at_rest_locations 声明实际持久化位置，不使用配置层 target 白名单；未知
+能力、替换插件未重新声明或位置不明均拒绝。每个具名实例的 at_rest 声明包含
+method（volume/backend）、reference 和匹配实际配置的 bindings。AtRestLocation
+将部署证明与位置约束分开：SQLite :memory: 可免部署证明，db_path 仍固定；ConfigSource
+初始覆盖及运行时位置变化拒绝，重新核查后重装配。Markdown/shadow 须显式指定 root/db_path。
+
+Linux 启动器验证 LUKS2/dm-crypt、ext4 内部 journal、完整块设备加密路径及本机 Docker
+daemon，将 local/online/postgres 的持久化 named volumes 替换为加密挂载下的 bind，
+并生成应用配置及保护声明。ES 数据目录、Milvus 的 etcd/MinIO 依赖、Postgres WAL 等
+须随实际数据布局一起覆盖。普通目录、远端 daemon 和 Docker Desktop VM 不借用本机
+挂载证明。初始化、解锁与离线迁移由管理员显式执行，不自动格式化旧盘或覆盖既有密钥。
+操作说明见已有 [部署 README](../../../deploy/encryption/README.md)。
+
+远端服务及其他操作系统由部署方实施静态加密并提供核查记录。应用只验证声明及位置，
+不将布尔声明冒充远端磁盘的密码学证明，也不持续监控管理员替换宿主挂载。
+卷密钥与应用根密钥分别管理。备份、快照、导出及临时数据离开保护卷后须独立保护；
+开启开关不会自动迁移明文，关闭也不能让 raw 端口读懂旧 ENC1 数据。
+
+```yaml
+memory_api:
+  globals:
+    storage_encryption_enabled: true
+    storage_encryption_cryptography: default
+    storage_encryption_kv: {target: encrypted}
+    storage_encryption_fs: {target: encrypted, params: {max_plaintext_bytes: 67108864}}
+  cryptography:
+    default:
+      target: local
+      params: {key_provider: default}
+  key_provider:
+    default:
+      target: local
+      params: {key_file: /secure/application.key, create_key_file: false}
+  fulltext_store:
+    default:
+      target: elasticsearch
+      params:
+        hosts: https://es.internal:9200
+        at_rest:
+          method: backend
+          reference: operator:es-volume-verification
+          bindings: {hosts: 'https://es.internal:9200'}
+```
 
 ## 6. 密钥管理与分发
 
@@ -395,6 +461,10 @@ DEV 不允许 0.0.0.0、:: 或其他非回环绑定；容器转发、代理和 T
 - 真实 SQLite 审计链覆盖非默认增量参数、损坏/尾删/轮换/并发快照及写链故障失闭，
   保护启用后的返回版本快照仍须重新判权；日志脱敏不能挤掉服务端 request_id/decision。
 - Ruff/本地静态检查与华为平台专有门禁分开验收；真实数据库、模型与服务在对应环境验证。
+- KV/FS 真实密文落盘、重装配读取、AAD/错密钥/篡改拒绝及有界流；替代 manager 与
+  第三方包装器均服从统一开关，独立上下文不串缓存，关闭开关兼容旧插件。
+- SQLite 内存位置的初始覆盖及连接建立前后切盘拒绝，原数据保留且不产生磁盘文件；
+  持久化索引和治理数据库逐实例声明、未知能力拒绝，部署布局覆盖全部持久化依赖。
 
 逐次复现、测试结果、环境排除及门禁工作记录只在本地 security-plans 保存，不作为
 本页的章节追加；本地笔记不纳入 PR，也不成为正式文档的链接依赖。
@@ -403,6 +473,8 @@ DEV 不允许 0.0.0.0、:: 或其他非回环绑定；容器转发、代理和 T
 
 - 本地静态检查不替代华为专有规则验收；平台规则重扫、局部例外认可和 Windows
   早拒绝连接中止的连续回归须在对应平台验证。
+- 真实 Linux LUKS + Docker 全栈的结果一致性、重开卷及性能需在完整部署环境验收；
+  Windows/macOS 尚无自动卷加密部署检查，远端保护仍依赖运营方核查。
 - 真实数据库/缓存、ML 模型、LLM 服务与部署环境未全覆盖；按对应 CI/部署补跑，不能
   把跳过解释为功能已验收。healthz 的配置名称暴露与认证失败细分审计仍需独立评估。
 - memory PrincipalKeyStore 重启丢状态；memory 授权 Store 亦如此。选择 SQLite

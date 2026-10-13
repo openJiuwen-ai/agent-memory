@@ -511,7 +511,9 @@ class MilvusVectorStore(VectorStore):
 # -- 注册到 VectorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-@VectorProducer.register("milvus")
+@VectorProducer.register(
+    "milvus", config_inspectors={"at_rest_locations": lambda config: {"uri": config.get("uri")}}
+)
 def _build(config):
     # 三方库后端：uri 必填；dim 取本组件 params.dim，回退到内核共享的 embedder_dim。
     # 其余构造参数（host/port/一致性/字段长度等）均有默认值，可经 params 覆盖。

@@ -31,9 +31,9 @@
   原生承担（不再由上层拼前缀）。
 
 ``entity`` 是「scope 显式第一入参」的**唯一例外**：它以 ``space_id: str``
-（``space_id_from_scope`` 的算值，走后端 routing）+ ``EntityStoreFilters.actor_id``
-承担隔离，隔离维度与 Scope 五段模型不同构（agent/session 不作隔离维度，实体是
-user 级知识）。理由见 :mod:`storage.entity_store` 模块 docstring；该端口的授权由
+（``space_id_from_scope`` 的算值，走后端 routing）+ ``EntityStoreFilters``
+承担隔离，非空 user/agent/session 分别映射 actor_id/assistant_id/session_id 下推过滤。
+该端口的授权由
 ``_AuthorizedEntityStoreProxy`` 专门适配（scope 为有损近似，见其类 docstring）。
 """
 

@@ -161,11 +161,13 @@ class InMemoryDelegationStore(DelegationStore):
         return None
 
 
-@GrantStoreProducer.register("memory")
+@GrantStoreProducer.register("memory", config_inspectors={"at_rest_locations": lambda config: {}})
 def _build_grant_store(config) -> InMemoryGrantStore:
     return InMemoryGrantStore()
 
 
-@DelegationStoreProducer.register("memory")
+@DelegationStoreProducer.register(
+    "memory", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build_delegation_store(config) -> InMemoryDelegationStore:
     return InMemoryDelegationStore()

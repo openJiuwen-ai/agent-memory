@@ -17,6 +17,8 @@ profile: docker
 memory_api:
   # ---- 跨切面参数（写一处，各组件经 globals 读到；具名实例 params 可覆盖）----
   globals:
+    # PR1-1: start via deploy/encryption/compose.py when enabling encryption.
+    storage_encryption_enabled: "${STORAGE_ENCRYPTION_ENABLED:-false}"
     vector_enabled: true        # 向量索引 + 向量召回路（Milvus）
     graph_enabled: false        # 不启用图召回路
     rerank_enabled: true        # 披露前精排（本地 bge reranker）
