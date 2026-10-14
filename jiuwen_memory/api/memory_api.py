@@ -330,9 +330,11 @@ class MemoryAPI(ABC):
         tags: list[str] | None = None,
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
     ) -> IngestSubmission:
         """受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；
-        调用方拿不到 ``IngestJobController``。后台 ``add`` 仍再鉴权一次。
+        调用方拿不到 ``IngestJobController``。后台 ``add`` 仍再鉴权一次，并原样接收
+        ``occurred_at`` 作为消息发生时间——该字段属于消息时间轴，不借 metadata 旁路传递。
         """
 
     @abstractmethod

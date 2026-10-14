@@ -567,6 +567,7 @@ async def memory_submit_ingest(  # pylint: disable=too-many-arguments,huawei-too
     tags: list[str] | None = None,
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
+    occurred_at: str | None = None,
     ctx: Context = None,
 ) -> dict:
     """
@@ -576,6 +577,7 @@ async def memory_submit_ingest(  # pylint: disable=too-many-arguments,huawei-too
     payload_id: 原文缓存标识。source_ref: 源资产引用（如 file:///...）。
     assets: 可选资产引用列表。tags: 可选标签。
     system_metadata / user_metadata: 可选元数据对象（值限标量）。
+    occurred_at: 可选 ISO 8601 消息发生时间，后台写入时原样传递。
     后台 add 会再鉴权一次；用 memory_job_status 查任务进度。
     """
     return await _invoke(
@@ -590,6 +592,7 @@ async def memory_submit_ingest(  # pylint: disable=too-many-arguments,huawei-too
             "tags": tags,
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
+            "occurred_at": occurred_at,
         },
         context=ctx,
     )
@@ -829,6 +832,38 @@ async def memory_remove_space_member(
         {"org": org, "space": space, "member": member},
         context=ctx,
     )
+
+
+def _tighten_tool_arg_models() -> None:
+    """把每个工具的参数模型收紧为 extra=forbid，与 HTTP/CLI 严格契约对齐。
+
+    FastMCP 的 ``ArgModelBase`` 未配置 ``extra``，pydantic 默认 ignore：客户端传入
+    ``security`` 等契约外字段会在进入工具函数**之前**被静默丢弃——工具面与
+    ``api_contract.parse_request``（未知字段 400 拒绝）的严格性不一致，模型侧
+    感知不到自己填了无效参数。子类化覆盖 ``model_config``，不改 SDK 源码；
+    字段集合与 JSON Schema 不变，仅拒绝契约外字段。
+    """
+    from pydantic import ConfigDict
+
+    for tool in mcp._tool_manager.list_tools():  # pylint: disable=protected-access,huawei-protected-access
+        base = tool.fn_metadata.arg_model
+        strict = type(
+            base.__name__,
+            (base,),
+            {"model_config": ConfigDict(arbitrary_types_allowed=True, extra="forbid")},
+        )
+        # 收紧前后字段集合必须一致——只改 extra 行为，不增删参数。
+        # G.TES.01：业务代码不用 assert，优化字节码下被剥离会导致守卫失效。
+        if set(strict.model_json_schema()["properties"]) != set(
+            base.model_json_schema()["properties"]
+        ):
+            raise RuntimeError(
+                f"tightened arg model of {tool.name} changed the tool field set"
+            )
+        tool.fn_metadata.arg_model = strict
+
+
+_tighten_tool_arg_models()
 
 
 def main() -> int:

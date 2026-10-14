@@ -762,7 +762,10 @@ class InMemoryEngine(MemoryEngine):
         )
 
     async def purge_space(self, org: str, space: str) -> list[str]:
-        _ensure_local_scope(Scope(org=org, space=space))
+        # 空间治理（create/delete_space）在 OFFLINE 装配下同样可用，而本引擎的
+        # 写路径全部经 _ensure_local_scope 拒绝 space scope——引擎里不可能存在
+        # 空间记忆，purge 天然是 no-op。此处不能再守卫：delete_space 的两步事务
+        # 先置 DELETING 再 purge，守卫会让删除必败、空间永久卡在 DELETING。
         purged_units: list[MemoryUnit] = []
         for scope in [
             candidate

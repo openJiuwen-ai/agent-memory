@@ -45,6 +45,27 @@ def _scope(payload: Mapping[str, Any], prefix: str = "", base: Scope | None = No
     )
 
 
+def _nested_scope(payload: Mapping[str, Any], base: Scope) -> Scope:
+    """Decode a nested typed Scope while retaining legacy aliases."""
+
+    def _value(name: str, legacy: str, default: str) -> str:
+        if name in payload:
+            raw = payload[name]
+        elif legacy in payload:
+            raw = payload[legacy]
+        else:
+            return default
+        return "" if raw is None else str(raw)
+
+    return Scope(
+        org=_value("org", "tenant_id", base.org),
+        space=_value("space", "space_id", base.space),
+        user=_value("user", "scope", base.user),
+        agent=_value("agent", "agent", base.agent),
+        session=_value("session", "session", base.session),
+    )
+
+
 def _actor(payload: Mapping[str, Any], target: Scope) -> Scope:
     if not any(key in payload for key in _ACTOR_KEYS):
         return target
@@ -88,6 +109,8 @@ def build_legacy_dispatch_request(
         grantee = (
             Scope(org=target.org, space=target.space, user=str(grantee_raw))
             if isinstance(grantee_raw, str)
+            else _nested_scope(grantee_raw, target)
+            if isinstance(grantee_raw, Mapping)
             else _scope(payload, "grantee_", target)
         )
     member = None
@@ -96,6 +119,9 @@ def build_legacy_dispatch_request(
         member = (
             Scope(org=target.org, space=target.space, user=str(member_raw))
             if isinstance(member_raw, str)
+            else _nested_scope(member_raw.get("scope", member_raw), target)
+            if isinstance(member_raw, Mapping)
+            and isinstance(member_raw.get("scope", member_raw), Mapping)
             else _scope(payload, "member_", target)
         )
 
@@ -116,6 +142,13 @@ def build_legacy_dispatch_request(
         )
 
     business = _business_payload(payload)
+    # 嵌套 ``member`` 里的角色与时间是一等字段：``member`` 属非业务键，若不在此
+    # 上提，``_space_member`` 只能看到扁平键，成员永远建成最低档且无有效期。
+    if verb == "add_space_member" and isinstance(payload.get("member"), Mapping):
+        nested_member = payload["member"]
+        for key in ("role", "content_role", "governance_role", "created_at", "expires_at"):
+            if key in nested_member and key not in business:
+                business[key] = nested_member[key]
     return DispatchRequest(
         verb=verb,
         actor=actor,

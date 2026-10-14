@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 
+from jiuwen_memory.api import ValidationError
 from jiuwen_memory_entry.cli import commands
 from jiuwen_memory_entry.cli.client import make_client
 from jiuwen_memory_entry.core.api_contract import api_method_names
@@ -71,7 +72,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "batch":
             return commands.run_batch(client, args)
         return commands.run_command(client, args.command, args)
-    except (commands.CliError, OSError) as exc:
+    except (commands.CliError, ValidationError, OSError) as exc:
+        # ValidationError：损坏/非法的 --config 层由 load_layer 转成白名单错误，
+        # 与 CliError 同口径给一行提示、退出码 2，而不是 traceback。
         logger.error("error: %s", exc)
         return 2
     finally:

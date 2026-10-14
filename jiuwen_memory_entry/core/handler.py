@@ -57,6 +57,8 @@ from jiuwen_memory.api import (
     PrincipalPath,
     RequestSecurityContext,
     Scope,
+    SpaceContentRole,
+    SpaceGovernanceRole,
     SpaceMember,
     SpacePatch,
     SpacePolicy,
@@ -68,6 +70,7 @@ from jiuwen_memory.api import (
     ValidationError,
     legacy_request_context,
 )
+from jiuwen_memory.api import normalize as normalize_filters
 
 Body = Mapping[str, Any]
 
@@ -85,6 +88,11 @@ _STATUS = {
 def _parse_positive_int(value: Any, *, name: str, default: int) -> int:
     if value is None:
         return default
+    # 显式拒绝 bool / float：``int(True) == 1``、``int(1.9) == 1`` 会把畸形输入
+    # 静默截断成合法整数（``limit: true`` 变成 1、``limit: 1.9`` 变成 1），
+    # 调用方拿到成功响应却执行了另一个语义。
+    if isinstance(value, (bool, float)):
+        raise ValidationError(f"{name} must be a positive integer")
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -97,6 +105,8 @@ def _parse_positive_int(value: Any, *, name: str, default: int) -> int:
 def _parse_non_negative_int(value: Any, *, name: str, default: int) -> int:
     if value is None:
         return default
+    if isinstance(value, (bool, float)):
+        raise ValidationError(f"{name} must be a non-negative integer")
     try:
         parsed = int(value)
     except (TypeError, ValueError):
@@ -106,7 +116,7 @@ def _parse_non_negative_int(value: Any, *, name: str, default: int) -> int:
     return parsed
 
 
-def _parse_string_list(value: Any) -> list[str] | None:
+def _parse_string_list(value: Any, *, name: str = "memory_types") -> list[str] | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -114,7 +124,7 @@ def _parse_string_list(value: Any) -> list[str] | None:
     elif isinstance(value, list):
         items = [str(part).strip() for part in value]
     else:
-        raise ValidationError("memory_types must be a list or comma-separated string")
+        raise ValidationError(f"{name} must be a list or comma-separated string")
     return [item for item in items if item]
 
 
@@ -244,15 +254,39 @@ def _bool_value(value: Any, *, default: bool = False) -> bool:
         return default
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    # 未识别的取值必须报错：旧实现把 ``"maybe"`` / 任意字符串一律当 False 返回，
+    # 请求 200 成功却执行了与调用方本意相反的分支，且返回体看不出差异。
+    raise ValidationError("expected a boolean")
 
 
 def _enum_value(enum_cls: Any, value: Any, *, name: str) -> Any:
+    if isinstance(value, enum_cls):
+        return value
     try:
-        return enum_cls(str(value))
-    except ValueError:
+        # 不做 ``str()`` 归一：``str(None)`` → ``"None"``、``str(3)`` → ``"3"``
+        # 会把类型错误伪装成「取值不在枚举里」，也会让报错文案指向一个没人传过的值。
+        return enum_cls(value)
+    except (TypeError, ValueError):
         allowed = ", ".join(item.value for item in enum_cls)
         raise ValidationError(f"{name} must be one of: {allowed}") from None
+
+
+def _scope_value(value: Any, *, name: str) -> Scope | None:
+    """解析形如 ``{"org": ..., "user": ...}`` 的嵌套主体；``None`` 原样透传。"""
+    if value is None or isinstance(value, Scope):
+        return value
+    if not isinstance(value, Mapping):
+        raise ValidationError(f"{name} must be an object")
+    allowed = {"org", "space", "user", "agent", "session"}
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValidationError(f"{name} has unknown field: {sorted(unknown)[0]}")
+    return Scope(**{key: str(raw) for key, raw in value.items() if raw is not None})
 
 
 def _space_policy(payload: Body) -> SpacePolicy:
@@ -284,6 +318,7 @@ def _space_info_view(info) -> Body:
         "metadata": dict(info.metadata),
         "created_at": info.created_at.isoformat() if info.created_at else None,
         "archived_at": info.archived_at.isoformat() if info.archived_at else None,
+        "owners": [_scope_view(owner) for owner in info.owners],
     }
 
 
@@ -303,7 +338,25 @@ def _space_member(request: DispatchRequest) -> SpaceMember:
     member = request.member
     if member is None:
         raise ValidationError("missing required field: 'member'")
-    return SpaceMember(scope=member, role=str(request.payload.get("role", "member")) or "member")
+    payload = request.payload
+    # F07 两轴角色才是判定的实际依据（``SpaceMember.role`` 仅为存量兼容），
+    # 漏传会把成员永远建成最低档，成员时间同样决定记录是否参与判定。
+    return SpaceMember(
+        scope=member,
+        role=str(payload.get("role", "member")) or "member",
+        content_role=_enum_value(
+            SpaceContentRole,
+            payload.get("content_role", SpaceContentRole.CONTRIBUTOR.value),
+            name="content_role",
+        ),
+        governance_role=_enum_value(
+            SpaceGovernanceRole,
+            payload.get("governance_role", SpaceGovernanceRole.NONE.value),
+            name="governance_role",
+        ),
+        created_at=_parse_occurred_at(payload.get("created_at"), name="member created_at"),
+        expires_at=_parse_occurred_at(payload.get("expires_at"), name="member expires_at"),
+    )
 
 
 def _member_scope(request: DispatchRequest) -> Scope:
@@ -314,6 +367,8 @@ def _member_view(member) -> Body:
     return {
         "scope": _scope_view(member.scope),
         "role": member.role,
+        "content_role": member.content_role.value,
+        "governance_role": member.governance_role.value,
         "created_at": member.created_at.isoformat() if member.created_at else None,
         "expires_at": member.expires_at.isoformat() if member.expires_at else None,
     }
@@ -400,7 +455,11 @@ def _submit_video(
     user_metadata = dict(raw_user_metadata or {})
     system_metadata.update({"infer": "true", "pipeline": "video", "payload_id": payload_id})
     requested_assets = payload.get("assets")
-    extras = requested_assets if isinstance(requested_assets, list) else []
+    # 非 list 的畸形 assets（字符串/对象）必须报错：旧实现静默降级为空列表，
+    # 请求 200 成功但附加资产全部丢失。
+    if requested_assets is not None and not isinstance(requested_assets, list):
+        raise ValidationError("assets must be a list")
+    extras = requested_assets or []
     assets = [uri, *(str(item) for item in extras if str(item) != uri)]
 
     # P1-2: 提交前完成 WRITE 鉴权 + 输入合法性校验，后台 add() 仍保留一次鉴权作防御层。
@@ -416,6 +475,9 @@ def _submit_video(
         tags=payload.get("tags"),
         system_metadata=system_metadata,
         user_metadata=user_metadata,
+        # 消息发生时间统一走 ``occurred_at``，不塞进 system_metadata（下游 add 不会
+        # 把 metadata 里的同名字段当作消息时间，且会污染元数据命名空间）。
+        occurred_at=_parse_occurred_at(payload.get("occurred_at"), name="add occurred_at"),
     )
     job = submission.job
     return {
@@ -472,7 +534,9 @@ def _add(srv, request: DispatchRequest) -> Body:
     security = _request_security(request)
     if "metadata" in payload:
         raise ValidationError("metadata has been removed; use system_metadata and user_metadata")
-    modality = Modality(payload.get("source", payload.get("modality", "text")))
+    modality = _enum_value(
+        Modality, payload.get("source", payload.get("modality", "text")), name="source"
+    )
     if modality == Modality.VIDEO:
         return _submit_video(srv, payload, scope=scope, security=security)
     # metadata 透传：infer 等调用级开关经 metadata 下推到引擎（engine.write 从
@@ -743,8 +807,8 @@ def _update(srv, request: DispatchRequest) -> Body:
         tier=_enum_value(MemoryTier, payload["tier"], name="tier")
         if payload.get("tier") is not None
         else None,
-        mode=_enum_value(UpdateMode, payload.get("mode", "supersede"), name="mode")
-        if payload.get("mode")
+        mode=_enum_value(UpdateMode, payload["mode"], name="mode")
+        if payload.get("mode") is not None
         else UpdateMode.SUPERSEDE,
     )
     unit = srv.api.update(
@@ -762,9 +826,32 @@ def _delete(srv, request: DispatchRequest) -> Body:
         mode = _enum_value(DeleteMode, payload["mode"], name="mode")
     else:
         mode = DeleteMode.PURGE if _bool_value(payload.get("hard")) else DeleteMode.FORGET
-    selector = DeleteSelector(unit_ids=[_require(payload, "item_id")], scope=scope, mode=mode)
+    # 选择器是一等结构：只支持按 id 单条删除会把 tags/before/filters 三种条件
+    # 静默吃掉（调用方以为按标签批量删了，实际什么都没删或删错）。
+    unit_id = payload.get("item_id")
+    tags = _parse_string_list(payload.get("tags"), name="delete tags")
+    before = _parse_occurred_at(payload.get("before"), name="delete before")
+    filters = normalize_filters(payload.get("filters"))
+    # 四类条件各自独立判定后聚合：写成单个复合条件既难读，也会触发
+    # 「条件语句包含过多条件」的编码规范告警。
+    provided_criteria = (
+        unit_id is not None,
+        bool(tags),
+        before is not None,
+        filters is not None,
+    )
+    if not any(provided_criteria):
+        raise ValidationError("delete requires at least one of: item_id, tags, before, filters")
+    selector = DeleteSelector(
+        unit_ids=[] if unit_id is None else [str(unit_id)],
+        scope=scope,
+        tags=tags or [],
+        before=before,
+        filters=filters,
+        mode=mode,
+    )
     deleted = srv.api.delete(selector, security=_request_security(request))
-    return {"ok": True, "op": "delete", "item_id": payload["item_id"], "deleted": deleted}
+    return {"ok": True, "op": "delete", "item_id": unit_id, "deleted": deleted}
 
 
 # --- 管理面 / 治理 / 演进 verbs ------------------------------------------- #
@@ -797,7 +884,7 @@ def _evolve(srv, request: DispatchRequest) -> Body:
     """
     payload = request.payload
     scope = _require_target(request)
-    mode = EvolveMode(payload.get("mode", "extract"))
+    mode = _enum_value(EvolveMode, payload.get("mode", "extract"), name="mode")
     dreaming = _parse_dreaming(payload.get("dreaming"))
     interval = _parse_non_negative_int(payload.get("interval"), name="interval", default=0)
     candidate = _parse_candidate(payload.get("candidate"))
@@ -923,13 +1010,37 @@ def _admin(srv, request: DispatchRequest) -> Body:
     return {"ok": True, "op": "admin", "policies": srv.api.admin_all(security=security)}
 
 
+def _parse_actions(value: Any) -> frozenset[Action]:
+    """解析 ``actions``：**缺省**沿用历史兼容的只读授权。
+
+    缺省（键缺失/``None``）与显式空值必须分开：``[]`` / ``""`` / ``[" "]`` 若回落
+    成 READ，一次「动作没写清」的调用会静默变成只读授权（grant），撤销时也只撤掉
+    只读那一条（revoke）——两者都返回 200，调用方无从察觉。故显式空值直接报错，
+    不替调用方猜意图。
+    """
+    if value is None:
+        return frozenset({Action.READ})
+    raw = _parse_string_list(value, name="actions")
+    if not raw:
+        raise ValidationError("actions must not be empty")
+    return frozenset(_enum_value(Action, item, name="actions") for item in raw)
+
+
 def _grant(srv, request: DispatchRequest) -> Body:
     """跨 scope 授权（PermissionManager）。"""
+    payload = request.payload
     scope = _require_target(request)
     grantee = request.grantee
     if grantee is None:
         raise ValidationError("missing required field: 'grantee'")
-    grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
+    # actions / expires_at 是公共 ``Grant``（S02 §Grant）的一等字段：写死
+    # ``[Action.READ]`` 会把「授写权限」「授有限期」静默落成「授永久只读」。
+    grant = Grant(
+        grantor=scope,
+        grantee=grantee,
+        actions=_parse_actions(payload.get("actions")),
+        expires_at=_parse_occurred_at(payload.get("expires_at"), name="grant expires_at"),
+    )
     srv.api.grant(grant, security=_request_security(request))
     return {
         "ok": True,
@@ -941,11 +1052,19 @@ def _grant(srv, request: DispatchRequest) -> Body:
 
 def _revoke(srv, request: DispatchRequest) -> Body:
     """Cross-scope revoke (PermissionManager)."""
+    payload = request.payload
     scope = _require_target(request)
     grantee = request.grantee
     if grantee is None:
         raise ValidationError("missing required field: 'grantee'")
-    grant = Grant(grantor=scope, grantee=grantee, actions=[Action.READ])
+    # 撤销按 grantor+grantee+action 匹配，action 集合必须与授权时同源，
+    # 否则写死 READ 的撤销会匹配不到写授权。
+    grant = Grant(
+        grantor=scope,
+        grantee=grantee,
+        actions=_parse_actions(payload.get("actions")),
+        expires_at=_parse_occurred_at(payload.get("expires_at"), name="grant expires_at"),
+    )
     srv.api.revoke(grant, security=_request_security(request))
     return {
         "ok": True,
@@ -968,6 +1087,11 @@ def _create_space(srv, request: DispatchRequest) -> Body:
             principal_path=policy.principal_path,
             policy=policy,
             metadata=_string_map(payload.get("metadata")),
+            # owner 是调用方填写的一等字段（``None`` = 由 API 层按调用方身份推导）；
+            # 漏传会让「替某主体登记主空间」静默失效。
+            owner=_scope_value(payload.get("owner"), name="owner")
+            if "owner" in payload
+            else None,
         ),
         security=_request_security(request),
     )
@@ -984,7 +1108,8 @@ def _list_spaces(srv, request: DispatchRequest) -> Body:
     payload = request.payload
     org = _require_target(request).org
     raw_status = payload.get("status")
-    status = _enum_value(SpaceStatus, raw_status, name="status") if raw_status else None
+    # ``is not None`` 而非真值判断：空串是非法枚举，必须报错而不是被静默忽略。
+    status = _enum_value(SpaceStatus, raw_status, name="status") if raw_status is not None else None
     spaces = srv.api.list_spaces(
         org,
         security=_request_security(request),
@@ -1005,14 +1130,18 @@ def _update_space(srv, request: DispatchRequest) -> Body:
     org = _require_target(request).org
     patch = SpacePatch(
         display_name=payload.get("display_name"),
+        # 真值判断会把 ``status=""`` / ``policy={}`` / ``metadata={}`` 当成「未提供」：
+        # 「清空策略」「清空元数据」这类合法请求 200 成功却毫无效果。仅 ``None`` 表示未提供。
         status=_enum_value(SpaceStatus, payload["status"], name="status")
-        if payload.get("status")
+        if payload.get("status") is not None
         else None,
         principal_path=_enum_value(PrincipalPath, payload["principal_path"], name="principal_path")
-        if payload.get("principal_path")
+        if payload.get("principal_path") is not None
         else None,
-        policy=_space_policy(payload) if payload.get("policy") else None,
-        metadata=_string_map(payload.get("metadata")) if payload.get("metadata") else None,
+        policy=_space_policy(payload) if payload.get("policy") is not None else None,
+        metadata=_string_map(payload.get("metadata"))
+        if payload.get("metadata") is not None
+        else None,
     )
     info = srv.api.update_space(
         org, _require_space(request), patch, security=_request_security(request)

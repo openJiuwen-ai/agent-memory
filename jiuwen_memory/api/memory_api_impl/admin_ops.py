@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 
 from jiuwen_memory.common.errors import (
     RateLimitedError,
@@ -57,6 +58,7 @@ class AdminOpsMixin:
         tags: list[str] | None = None,
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
     ) -> IngestSubmission:
         self.check_write(
             scope,
@@ -78,6 +80,7 @@ class AdminOpsMixin:
                 tags=tags,
                 system_metadata=system_metadata,
                 user_metadata=user_metadata,
+                occurred_at=occurred_at,
             ),
         )
 

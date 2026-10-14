@@ -23,7 +23,9 @@ FastMCP 工具函数需要面向模型的 docstring 与显式运行时类型注�
 
 1. **工具集与 `MemoryAPI` 全量对齐（36/36）**，命名 `memory_<method>`：与 HTTP/CLI
    共享同一套 `api_contract` 参数校验（`parse_request`）与调用桥（`invoke_api`），
-   MCP 面只做协议翻译、零业务编排。
+   MCP 面只做协议翻译、零业务编排。工具参数模型另收紧为 `extra=forbid`，使契约外字段
+   与前两条路径同口径报错（见 F07 决策 1）——FastMCP 的 `ArgModelBase` 默认
+   `extra=ignore`，否则字段会在到达 `parse_request` 之前被丢弃。
 2. **async 工具 + `asyncio.to_thread` 隔离**：FastMCP 在事件循环线程裸调工具函数，
    而同步 `MemoryAPI` 方法在 api 层内部用 `asyncio.run` 桥接协程——两者相遇必抛
    "cannot be called from a running event loop"。执行体放入工作线程（无运行中循环，
@@ -215,8 +217,10 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
    归属判定、不读 role）；显式固定 DEV 未配 security/permission 时临时注入 allow_all。
    具名角色权限随 PR2 Authorizer 接管后重测，不把 role 回灌 PermissionManager。
 4. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。
-5. **OFFLINE 内核 `delete_space` 能力限制**：`scope.space != ''` 时，授权通过后
-   `InMemoryEngine` 返回 ValidationError（不支持非空 space 维的 purge）。
-   显式固定 DEV 使用临时 allow_all 时可通过授权，但仍受该引擎能力限制；
-   使用旧授权链且无管理授权的具名 DEV 在授权阶段先被拒。接真后端（CloudEngine）
-   可消除引擎能力限制。
+5. **OFFLINE 空间删除能力限制已消除**（原记录：`scope.space != ''` 时，授权通过后
+   `InMemoryEngine` 返回 ValidationError，不支持非空 space 维的 purge）：`purge_space`
+   不再对 space scope 设守卫——本引擎写路径本就拒绝 space scope，不存在空间记忆可清，
+   purge 属天然 no-op；而 `delete_space` 是「先置 DELETING 再 purge」的两步事务，旧守卫
+   会让删除必败、空间永久卡在 `deleting`。OFFLINE 装配下 create → delete → get(404)
+   自此闭环（见 F07 决策 2）。授权侧差异不变：显式固定 DEV 用临时 allow_all 可通过授权，
+   走旧授权链且无管理授权的具名 DEV 在授权阶段先被拒。
