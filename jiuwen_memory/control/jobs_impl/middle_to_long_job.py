@@ -17,9 +17,9 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import BackendError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.lock import LockProducer, LockProvider, LockTimeoutError
 from jiuwen_memory.common.log import get_logger, scope_for_log
@@ -224,6 +224,9 @@ class MiddleToLongJob(Job):
 
         小模型可能返回单引号、无引号 key 或带 Markdown 包装的伪 JSON，
         ``json.loads`` 失败时用正则 fallback 提取首个 true/false。
+
+        可重试：畸形 JSON + 插件层转换的 :class:`BackendError`（超时/连接/
+        限流/5xx）；认证/权限等不可降级异常与程序错误直接传播（S09）。
         """
         prompt = _CONTINUITY_SYSTEM_PROMPT.replace(
             "{old_conversation}", self._format_for_continuity(prev)
@@ -240,17 +243,35 @@ class MiddleToLongJob(Job):
                     temperature=0,
                     max_tokens=32,
                 )
+                # 后端异常时可能返回 None 或非字符串——安全归一化，避免 .lower() 抛
+                # AttributeError 逃出重试兜底。dict/list 等结构化对象经 json.dumps
+                # 转为合法 JSON 字符串（而非 Python repr 的单引号），使后续
+                # json.loads 能正确解析。
+                if isinstance(resp, str):
+                    text = resp
+                elif resp is None:
+                    text = ""
+                else:
+                    text = json.dumps(resp)
                 try:
-                    result = json.loads(resp)
+                    result = json.loads(text)
                     # LLM 偶尔返回 {"results":[true]}（bool）而非字符串——强制 str
                     # 归一化，否则后续 `cont == "true"` 比较会错误切批。
                     return str(result["results"][0]).lower()
                 except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                    m = re.search(r"\b(true|false)\b", resp.lower())
+                    m = re.search(r"\b(true|false)\b", text.lower())
                     if m:
                         return m.group(1)
                     raise
-            except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
+            # 可重试：畸形 JSON + 插件层转换的 BackendError（超时/连接/限流/5xx）。
+            # 认证/权限等不可降级异常与程序错误不在白名单内，直接传播（S09）。
+            except (
+                json.JSONDecodeError,
+                KeyError,
+                IndexError,
+                TypeError,
+                BackendError,
+            ) as e:
                 if attempt < _MAX_RETRIES - 1:
                     continue
                 logger.warning(
@@ -306,7 +327,7 @@ class MiddleToLongJob(Job):
             candidates.append(u)
         candidates.sort(
             key=lambda unit: (
-                unit.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
+                unit.temporal.t_ingest or datetime.min.replace(tzinfo=UTC),
                 unit.id,
             )
         )

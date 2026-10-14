@@ -19,7 +19,7 @@ from jiuwen_memory.common._support import (
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.embedder_impl import EmbedderProducer
 from jiuwen_memory.common.embedder.embedder_impl.openai_embedder import OpenAIEmbedder
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import BackendError, ValidationError
 from jiuwen_memory.common.llm.llm_impl import LlmProducer
 from jiuwen_memory.common.llm.llm_impl.openai_llm import OpenAILLM
 from jiuwen_memory.common.type_def import ChatMessage
@@ -189,7 +189,7 @@ def test_openai_llm_start_log_omits_content(caplog) -> None:
 
 
 def test_openai_llm_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) -> None:
-    """LLM 超时异常单独记录后原样抛出。"""
+    """LLM 超时异常记录后转换为统一的 BackendError 抛出（SDK 类型不越插件边界）。"""
 
     class FakeAPITimeoutError(Exception):
         pass
@@ -200,7 +200,7 @@ def test_openai_llm_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) -> None
 
     with (
         caplog.at_level("ERROR", logger="agent_memory.common.llm.llm_impl.openai_llm"),
-        pytest.raises(FakeAPITimeoutError),
+        pytest.raises(BackendError),
     ):
         llm.chat([ChatMessage(role="user", content="secret prompt")])
 
@@ -235,7 +235,7 @@ def test_openai_embedder_start_log_omits_text(caplog, monkeypatch: pytest.Monkey
 
 
 def test_openai_embedder_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Embedder 超时异常单独记录后原样抛出。"""
+    """Embedder 超时异常记录后转换为统一的 BackendError 抛出（与 LLM 同构）。"""
 
     class FakeAPITimeoutError(Exception):
         pass
@@ -251,7 +251,7 @@ def test_openai_embedder_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) ->
         caplog.at_level(
             "ERROR", logger="agent_memory.common.embedder.embedder_impl.openai_embedder"
         ),
-        pytest.raises(FakeAPITimeoutError),
+        pytest.raises(BackendError),
     ):
         embedder.embed(["secret text"])
 

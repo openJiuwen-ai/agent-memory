@@ -13,7 +13,9 @@ from unittest.mock import patch
 import pytest
 
 from jiuwen_memory.common.type_def import MemoryUnit
-from jiuwen_memory.construction.layer_annotator_impl.keyword_layer_annotator import KeywordLayerAnnotator
+from jiuwen_memory.construction.layer_annotator_impl.keyword_layer_annotator import (
+    KeywordLayerAnnotator,
+)
 from jiuwen_memory.construction.layer_annotator_impl.llm_layer_annotator import LLMLayerAnnotator
 from tests.unit.construction.fixtures import (
     MockLLM,

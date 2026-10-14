@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-from typing import Dict
-
 from jiuwen_memory.common.errors import PolicyError
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
@@ -17,8 +15,8 @@ from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 class DictPolicyManager(PolicyManager):
     """内存策略表：仅允许改已知键，未知键抛 :class:`PolicyError`。"""
 
-    def __init__(self, policies: Dict[str, str] | None = None) -> None:
-        self._policies: Dict[str, str] = dict(policies or {})
+    def __init__(self, policies: dict[str, str] | None = None) -> None:
+        self._policies: dict[str, str] = dict(policies or {})
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.POLICY
@@ -36,7 +34,7 @@ class DictPolicyManager(PolicyManager):
             raise PolicyError(f"unknown policy key: {key!r}")
         self._policies[key] = value
 
-    def all(self) -> Dict[str, str]:
+    def all(self) -> dict[str, str]:
         return dict(self._policies)
 
 

@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.errors import BackendError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import (
     LifecycleState,
@@ -132,13 +133,18 @@ class _ScriptedLLM(LLM):
         return None
 
     def chat(self, messages: list[ChatMessage], **options: object) -> str:
+        """返回预设响应；Exception 抛出模拟失败，None/dict 模拟非 str 后端。
+
+        返回类型标注为 ``str`` 以满足 ``LLM`` 契约，但测试刻意注入 None / dict
+        以验证 ``_check_continuity`` 的非 str 安全归一化。
+        """
         self.chat_calls.append(messages)
         if not self._responses:
             return '{"results":["true"]}'
         r = self._responses.pop(0)
         if isinstance(r, Exception):
             raise r
-        return r
+        return r  # type: ignore[return-value]
 
 
 # ---- 工厂 ----
@@ -239,9 +245,9 @@ def test_list_working_units_sorted_by_t_ingest_ascending() -> None:
     """按 t_ingest 升序——早的在前。"""
     scope = Scope(user="u1")
     kv = InMemoryKVStore()
-    t1 = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-    t2 = datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc)
-    t3 = datetime(2026, 7, 1, 11, 0, tzinfo=timezone.utc)  # 最早
+    t1 = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+    t2 = datetime(2026, 7, 1, 13, 0, tzinfo=UTC)
+    t3 = datetime(2026, 7, 1, 11, 0, tzinfo=UTC)  # 最早
     kv.insert(scope, memory_key("u1"), dumps(_make_unit("u1", scope, "c1", t_ingest=t1)))
     kv.insert(scope, memory_key("u2"), dumps(_make_unit("u2", scope, "c2", t_ingest=t2)))
     kv.insert(scope, memory_key("u3"), dumps(_make_unit("u3", scope, "c3", t_ingest=t3)))
@@ -262,7 +268,7 @@ def test_list_working_units_truncates_to_max_fetch() -> None:
             memory_key(f"u{i}"),
             dumps(
                 _make_unit(
-                    f"u{i}", scope, f"c{i}", t_ingest=datetime(2026, 1, 1, i, 0, tzinfo=timezone.utc)
+                    f"u{i}", scope, f"c{i}", t_ingest=datetime(2026, 1, 1, i, 0, tzinfo=UTC)
                 )
             ),
         )
@@ -350,6 +356,88 @@ def test_check_continuity_succeeds_on_second_attempt() -> None:
     assert len(llm.chat_calls) == 2
 
 
+def test_check_continuity_retries_on_network_exception_then_defaults_true() -> None:
+    """LLM 调用抛插件层转换的 BackendError（超时/连接类）→ 重试兜底，默认 "true"。"""
+    scope = Scope(user="u1")
+    job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
+    llm._responses = [  # pylint: disable=protected-access
+        BackendError("simulated timeout"),
+        BackendError("simulated connection reset"),
+        BackendError("simulated dns failure"),
+    ]
+    prev = _make_unit("p", scope, "p")
+    cur = _make_unit("c", scope, "c")
+
+    result = asyncio.run(job._check_continuity(prev, cur))  # pylint: disable=protected-access
+
+    assert result == "true"
+    assert len(llm.chat_calls) == 3  # 重试 3 次
+
+
+def test_check_continuity_handles_none_response() -> None:
+    """LLM 返回 None → 安全归一化为空串，走正则兜底失败后默认 "true"。"""
+    scope = Scope(user="u1")
+    job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
+    llm._responses = [None, None, None]  # pylint: disable=protected-access
+    prev = _make_unit("p", scope, "p")
+    cur = _make_unit("c", scope, "c")
+
+    result = asyncio.run(job._check_continuity(prev, cur))  # pylint: disable=protected-access
+
+    assert result == "true"
+    assert len(llm.chat_calls) == 3
+
+
+def test_check_continuity_handles_dict_response() -> None:
+    """后端返回 dict（含干扰字段 note="true"）→ json.dumps 保留结构正确解析。
+
+    str(resp) 的单引号表示会让 json.loads 失败、正则兜底误取干扰值 "true"；
+    json.dumps 才能取到真实结果 "false"——本用例可防止归一化退回 str()。
+    """
+    scope = Scope(user="u1")
+    job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
+    llm._responses = [{"note": "true", "results": ["false"]}]  # pylint: disable=protected-access
+    prev = _make_unit("p", scope, "p")
+    cur = _make_unit("c", scope, "c")
+
+    result = asyncio.run(job._check_continuity(prev, cur))  # pylint: disable=protected-access
+
+    assert result == "false"
+    assert len(llm.chat_calls) == 1
+
+
+def test_check_continuity_recovers_after_backend_errors() -> None:
+    """前两次后端瞬时故障、第三次成功 → 返回真实结果，不默认 "true"。"""
+    scope = Scope(user="u1")
+    job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
+    llm._responses = [  # pylint: disable=protected-access
+        BackendError("transient 1"),
+        BackendError("transient 2"),
+        '{"results":["false"]}',
+    ]
+    prev = _make_unit("p", scope, "p")
+    cur = _make_unit("c", scope, "c")
+
+    result = asyncio.run(job._check_continuity(prev, cur))  # pylint: disable=protected-access
+
+    assert result == "false"
+    assert len(llm.chat_calls) == 3
+
+
+def test_check_continuity_unretryable_error_propagates() -> None:
+    """不可重试异常（程序错误/认证类）→ 直接传播，不重试不降级（S09）。"""
+    scope = Scope(user="u1")
+    job, _, _, _, llm = _build_job(scope, InMemoryKVStore())
+    llm._responses = [RuntimeError("boom")]  # pylint: disable=protected-access
+    prev = _make_unit("p", scope, "p")
+    cur = _make_unit("c", scope, "c")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(job._check_continuity(prev, cur))  # pylint: disable=protected-access
+
+    assert len(llm.chat_calls) == 1
+
+
 # ---- _split_by_continuity ----
 
 
@@ -358,7 +446,8 @@ def test_split_by_continuity_continuous_within_batch_size() -> None:
     scope = Scope(user="u1")
     job, _, _, _, _ = _build_job(scope, InMemoryKVStore(), batch_size=10)
     # 注入 LLM 响应——连续 true
-    job._llm._responses = ['{"results":["true"]}'] * 5  # 6 个 unit → 5 次比较  # pylint: disable=protected-access
+    # 6 个 unit → 5 次比较
+    job._llm._responses = ['{"results":["true"]}'] * 5  # pylint: disable=protected-access
     units = [_make_unit(f"u{i}", scope, f"c{i}") for i in range(6)]
 
     batches = asyncio.run(job._split_by_continuity(units))  # pylint: disable=protected-access
@@ -371,7 +460,8 @@ def test_split_by_continuity_breaks_on_false() -> None:
     """连续 false → 切批（每个 unit 独立成批）。"""
     scope = Scope(user="u1")
     job, _, _, _, _ = _build_job(scope, InMemoryKVStore())
-    job._llm._responses = ['{"results":["false"]}'] * 3  # 4 个 unit → 3 次比较全 false  # pylint: disable=protected-access
+    # 4 个 unit → 3 次比较全 false
+    job._llm._responses = ['{"results":["false"]}'] * 3  # pylint: disable=protected-access
     units = [_make_unit(f"u{i}", scope, f"c{i}") for i in range(4)]
 
     batches = asyncio.run(job._split_by_continuity(units))  # pylint: disable=protected-access
@@ -389,7 +479,8 @@ def test_split_by_continuity_respects_batch_size_upper_bound() -> None:
     """
     scope = Scope(user="u1")
     job, _, _, _, _ = _build_job(scope, InMemoryKVStore(), batch_size=3)
-    job._llm._responses = ['{"results":["true"]}'] * 5  # 全部连续  # pylint: disable=protected-access
+    # 全部连续
+    job._llm._responses = ['{"results":["true"]}'] * 5  # pylint: disable=protected-access
     units = [_make_unit(f"u{i}", scope, f"c{i}") for i in range(6)]
 
     batches = asyncio.run(job._split_by_continuity(units))  # pylint: disable=protected-access
@@ -460,7 +551,8 @@ def test_run_serial_path_calls_evolver_and_archives_processed() -> None:
     job, evolver, lifecycle, index, _ = _build_job(
         scope, kv, concurrency=1, batch_size=10
     )
-    job._llm._responses = ['{"results":["true"]}']  # 2 unit → 1 次比较  # pylint: disable=protected-access
+    # 2 unit → 1 次比较
+    job._llm._responses = ['{"results":["true"]}']  # pylint: disable=protected-access
 
     info = asyncio.run(job.run())
 

@@ -13,8 +13,8 @@ Answer generation prompt adapted from:
     https://github.com/xiaowu0162/LongMemEval/blob/main/src/generation/run_generation.py
 """
 
-from datetime import datetime as _datetime, timezone as _timezone
-from typing import List, Dict, Any
+from datetime import datetime as _datetime, timezone as _timezone, UTC
+from typing import Any
 
 
 # ===============================================================================
@@ -164,7 +164,7 @@ def _to_human_date(iso_str: str) -> str:
     for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z"):
         try:
             dt = _datetime.strptime(iso_str.replace("Z", "+0000"), fmt)
-            dt_utc = dt.astimezone(_timezone.utc)
+            dt_utc = dt.astimezone(UTC)
             return dt_utc.strftime("%A, %B %d, %Y")
         except ValueError:
             continue
@@ -178,21 +178,21 @@ def _to_human_date(iso_str: str) -> str:
 
 
 def sort_search_results_newest_first(
-    search_results: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    search_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Sort a selected Top-K by message time without changing its membership.
 
     Dated memories are newest-first. Missing or malformed dates remain at the
     end in their original retrieval order; ties also preserve retrieval order.
     """
-    dated: list[tuple[float, Dict[str, Any]]] = []
-    undated: list[Dict[str, Any]] = []
+    dated: list[tuple[float, dict[str, Any]]] = []
+    undated: list[dict[str, Any]] = []
     for result in search_results:
         created_at = str(result.get("created_at", "") or "").strip()
         try:
             parsed = _datetime.fromisoformat(created_at.replace("Z", "+00:00"))
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=_timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
             dated.append((parsed.timestamp(), result))
         except (TypeError, ValueError, OverflowError):
             undated.append(result)
@@ -230,7 +230,7 @@ def _format_user_profile(user_profile: dict) -> str:
 
 def get_answer_generation_prompt(
     question: str,
-    search_results: List[Dict[str, Any]],
+    search_results: list[dict[str, Any]],
     question_date: str,
     user_profile: dict = None,
 ) -> str:

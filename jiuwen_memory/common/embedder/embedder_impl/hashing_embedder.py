@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import math
-from typing import List
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
@@ -45,9 +44,9 @@ class HashingEmbedder(Embedder):
     def dimension(self) -> int:
         return self._dim
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(self, texts: list[str]) -> list[list[float]]:
         logger.info("HashingEmbedder: embedding %d texts (dim=%d)", len(texts), self._dim)
-        out: List[List[float]] = []
+        out: list[list[float]] = []
         for text in texts:
             vec = [0.0] * self._dim
             for tok in self._tokenizer.tokenize(text):

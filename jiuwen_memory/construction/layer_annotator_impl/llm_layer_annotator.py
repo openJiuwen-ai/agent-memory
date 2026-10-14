@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import List
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
@@ -132,7 +131,7 @@ class LLMLayerAnnotator(LayerAnnotator):
             from jiuwen_memory.common.errors import HealthCheckError
             raise HealthCheckError(str(exc)) from exc
 
-    def annotate(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+    def annotate(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         logger.info("LLMLayerAnnotator: received %d units", len(units))
         # 仅超阈 content 的 unit 进 LLM 批次
         long_units = [u for u in units if self._should_annotate(u)]
@@ -158,7 +157,7 @@ class LLMLayerAnnotator(LayerAnnotator):
         )
         return units
 
-    def _annotate_batch(self, units: List[MemoryUnit]) -> None:
+    def _annotate_batch(self, units: list[MemoryUnit]) -> None:
         """单批 L0/L1 生成：拼 prompt → 调 LLM → 解析 JSON → 回填 unit.layers。"""
         from jiuwen_memory.common.type_def import ChatMessage
 
