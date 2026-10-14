@@ -30,7 +30,7 @@ from jiuwen_memory.common._support import (
 )
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import EmbedderProducer
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import BackendError, HealthCheckError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.config.binding import resolve_endpoint
 from jiuwen_memory.config.keys import NS_EMBEDDER
@@ -185,7 +185,7 @@ class OpenAIEmbedder(Embedder):
         started_at = time.monotonic()
         try:
             response = client.embeddings.create(**create_kwargs)
-        except openai.APITimeoutError:
+        except openai.APITimeoutError as exc:
             logger.error(
                 "OpenAIEmbedder embed timed out: model=%s items=%d elapsed=%.3fs "
                 "timeout=%.3fs max_retries=%d",
@@ -195,11 +195,21 @@ class OpenAIEmbedder(Embedder):
                 self._timeout,
                 self._max_retries,
             )
-            raise
+            # 瞬时后端故障（超时/连接/限流/5xx）统一转换为 BackendError，
+            # 与 openai_llm 同构：SDK 异常类型不越过插件边界。
+            raise BackendError(f"embedder embed timed out: model={model}") from exc
         except openai.APIConnectionError as exc:
             logger.error("OpenAIEmbedder: connection error — %s", exc)
-            raise
+            raise BackendError(f"embedder embed connection error: {exc}") from exc
+        except openai.RateLimitError as exc:
+            logger.error("OpenAIEmbedder: rate limited — %s", exc)
+            raise BackendError(f"embedder embed rate limited: {exc}") from exc
+        except openai.InternalServerError as exc:
+            logger.error("OpenAIEmbedder: server error — %s", exc)
+            raise BackendError(f"embedder embed server error: {exc}") from exc
         except openai.APIError as exc:
+            # 认证/权限/参数类（4xx）不转换、不重试：直接传播（S09：
+            # 安全或校验失败不得降级或重试）。
             logger.error("OpenAIEmbedder: API error — %s", exc)
             raise
 

@@ -235,7 +235,7 @@ def test_openai_embedder_start_log_omits_text(caplog, monkeypatch: pytest.Monkey
 
 
 def test_openai_embedder_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Embedder 超时异常单独记录后原样抛出。"""
+    """Embedder 超时异常记录后转换为统一的 BackendError 抛出（与 LLM 同构）。"""
 
     class FakeAPITimeoutError(Exception):
         pass
@@ -251,7 +251,7 @@ def test_openai_embedder_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) ->
         caplog.at_level(
             "ERROR", logger="agent_memory.common.embedder.embedder_impl.openai_embedder"
         ),
-        pytest.raises(FakeAPITimeoutError),
+        pytest.raises(BackendError),
     ):
         embedder.embed(["secret text"])
 
