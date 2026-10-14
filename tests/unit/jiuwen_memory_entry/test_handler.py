@@ -623,3 +623,95 @@ def test_invalid_upstream_parameters_fail_before_api_call(
 
     assert status == 400
     assert body["error"] == "ValidationError"
+
+
+# ---- _add / _evolve 枚举参数 fail-fast（_enum_value 校验路径） ----
+
+
+def test_add_invalid_source_returns_400() -> None:
+    """_add 显式传非法 source → 边界 400，不下沉到 API 层。"""
+
+    class _Api:
+        @staticmethod
+        def add(*_args, **_kwargs):
+            raise AssertionError("非法 source 应在入口边界拒绝，不应到达 API 层")
+
+    srv = SimpleNamespace(api=_Api())
+
+    status, body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "add",
+            {
+                "tenant_id": "acme",
+                "scope": "alice",
+                "content": "hello",
+                "source": "unknown",
+            },
+        ),
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert "source must be one of" in body["message"]
+
+
+def test_add_null_source_returns_400() -> None:
+    """_add source=null（键存在值为 null）→ 与非法值同构 400，不回落默认 text。"""
+
+    class _Api:
+        @staticmethod
+        def add(*_args, **_kwargs):
+            raise AssertionError("null source 应在入口边界拒绝，不应到达 API 层")
+
+    srv = SimpleNamespace(api=_Api())
+
+    status, body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "add",
+            {"tenant_id": "acme", "scope": "alice", "content": "hello", "source": None},
+        ),
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert "source must be one of" in body["message"]
+
+
+def test_evolve_invalid_mode_returns_400() -> None:
+    """_evolve 显式传非法 mode → 边界 400，不触发 API 层 evolve。"""
+    api = _RecordingEvolveApi(job_id="job-1")
+    srv = SimpleNamespace(api=api)
+
+    status, body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "evolve",
+            {"tenant_id": "acme", "scope": "alice", "mode": "unknown"},
+        ),
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert "mode must be one of" in body["message"]
+    assert api.calls == [], "非法 mode 不应触达 API 层"
+
+
+def test_evolve_null_mode_returns_400() -> None:
+    """_evolve mode=null（键存在值为 null）→ 400，不回落 extract 缺省。"""
+    api = _RecordingEvolveApi(job_id="job-1")
+    srv = SimpleNamespace(api=api)
+
+    status, body = handler.dispatch(
+        srv,
+        build_legacy_dispatch_request(
+            "evolve",
+            {"tenant_id": "acme", "scope": "alice", "mode": None},
+        ),
+    )
+
+    assert status == 400
+    assert body["error"] == "ValidationError"
+    assert "mode must be one of" in body["message"]
+    assert api.calls == [], "null mode 不应触达 API 层"
