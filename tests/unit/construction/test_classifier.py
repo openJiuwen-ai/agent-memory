@@ -32,7 +32,8 @@ def _make_unit(
     tags_override: list[str] | None = None,
     **overrides,
 ) -> MemoryUnit:
-    """构造测试 unit：默认 EPISODIC/ACTIVE，支持 tags_override 与 scope/tier/lifecycle/provenance 覆盖。"""
+    """构造测试 unit：默认 EPISODIC/ACTIVE，支持 tags_override 与
+    scope/tier/lifecycle/provenance 覆盖。"""
     unit = MemoryUnit(
         id=unit_id,
         scope=overrides.get("scope") or Scope(org="test", user="alice"),
@@ -50,7 +51,7 @@ def _make_unit(
 def _make_classifier(llm_responses: list[str] | None = None) -> LLMClassifier:
     return LLMClassifier(
         llm=MockLLM(responses=llm_responses),
-        retry_max_retries=3,
+        max_attempts=3,
         retry_backoff_ms=1000,
     )
 

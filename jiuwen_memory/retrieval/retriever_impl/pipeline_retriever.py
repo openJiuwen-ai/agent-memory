@@ -16,7 +16,7 @@ from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
 
-from jiuwen_memory.common.errors import ValidationError, safe_error_message
+from jiuwen_memory.common.errors import BackendError, ValidationError, safe_error_message
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
@@ -314,13 +314,26 @@ class PipelineRetriever(Retriever):
         reranked = False
         if do_rerank and self._reranker is not None and survivors:
             t0 = perf_counter()
-            scores = self._reranker.rerank(
-                parsed.raw, [units[su.unit_id].content for su in survivors]
-            )
-            order = sorted(range(len(survivors)), key=lambda i: scores[i], reverse=True)
-            survivors = [replace(survivors[i], score=scores[i]) for i in order]
-            step("rerank", t0, n=len(survivors))
-            reranked = True
+            try:
+                scores = self._reranker.rerank(
+                    parsed.raw, [units[su.unit_id].content for su in survivors]
+                )
+            except BackendError as exc:
+                detail = {
+                    "skipped": "reranker_unavailable",
+                    "error": safe_error_message(exc),
+                }
+                logger.warning(
+                    "Retriever.rerank unavailable: trace_id=%s error=%s",
+                    trace_id,
+                    redact_for_log(detail["error"]),
+                )
+                record_step("rerank", (perf_counter() - t0) * 1000.0, len(survivors), detail=detail)
+            else:
+                order = sorted(range(len(survivors)), key=lambda i: scores[i], reverse=True)
+                survivors = [replace(survivors[i], score=scores[i]) for i in order]
+                step("rerank", t0, n=len(survivors))
+                reranked = True
         elif do_rerank and self._reranker is None:
             # 显式要求精排但装配未注入 reranker：记轨迹让降级可见（阈值走未校准路径）。
             record_step(

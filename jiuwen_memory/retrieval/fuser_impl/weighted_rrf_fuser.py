@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Mapping
 
 from jiuwen_memory.common.type_def import ScoredCandidate
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
-from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
+from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer, normalize_channel_weights
 from jiuwen_memory.retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel
 
 from .layered_merge import merge_layered_channels
@@ -27,23 +27,7 @@ class WeightedRRFFuser(Fuser):
         channel_weights: Mapping[RecallChannel | str, float | str] | None = None,
     ) -> None:
         self._k = k
-        self._channel_weights = self._normalize_weights(channel_weights or {})
-
-    @staticmethod
-    def _normalize_weights(
-        weights: Mapping[RecallChannel | str, float | str],
-    ) -> dict[RecallChannel, float]:
-        normalized: dict[RecallChannel, float] = {}
-        for raw_channel, raw_weight in weights.items():
-            if isinstance(raw_channel, RecallChannel):
-                channel = raw_channel
-            else:
-                try:
-                    channel = RecallChannel(raw_channel)
-                except ValueError:
-                    channel = RecallChannel[raw_channel.upper()]
-            normalized[channel] = float(raw_weight)
-        return normalized
+        self._channel_weights = normalize_channel_weights(channel_weights or {})
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.FUSER

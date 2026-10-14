@@ -13,7 +13,7 @@ import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from jiuwen_memory.common._support import as_bool
@@ -30,7 +30,10 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
-from jiuwen_memory.construction.common import merge_unit_tags
+from jiuwen_memory.construction.common import (
+    merge_unit_tags,
+    reject_deprecated_llm_attempt_keys,
+)
 from jiuwen_memory.construction.entity_schema import EntitySchemaCatalog
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
@@ -259,7 +262,7 @@ class EntitySchemaExtractor(Extractor):
         validation_attempts: int = _DEFAULT_VALIDATION_ATTEMPTS,
         max_entities_per_conversation: int = _DEFAULT_MAX_ENTITIES,
         max_properties_per_entity: int = _DEFAULT_MAX_PROPERTIES,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         if batch_size < 1:
@@ -286,7 +289,7 @@ class EntitySchemaExtractor(Extractor):
         )
         self._helper = ExtractorImpl(
             llm=llm,
-            retry_max_retries=retry_max_retries,
+            max_attempts=max_attempts,
             retry_backoff_ms=retry_backoff_ms,
         )
 
@@ -572,7 +575,7 @@ class EntitySchemaExtractor(Extractor):
         for candidate in candidates:
             source_units = [source_map[source_id] for source_id in candidate.source_unit_ids]
             primary = source_units[0]
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             source_tags = [tag for source in source_units for tag in source.tags]
             metadata = _inherited_schema_system_metadata(source_units)
             metadata.update(
@@ -690,7 +693,7 @@ def _dialogue_timestamp(units: list[MemoryUnit]) -> str:
     for unit in units:
         if unit.temporal.t_event is not None:
             return unit.temporal.t_event.isoformat()
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def _scope_identity(unit: MemoryUnit) -> tuple[str, str, str, str, str]:
@@ -715,7 +718,7 @@ def _parse_complete_event_time(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _normalize_property_time(raw_time: Any, value: str) -> str:
@@ -866,6 +869,7 @@ def _dedupe_units(units: list[MemoryUnit]) -> list[MemoryUnit]:
 
 @ExtractorProducer.register("entity_schema")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     schema_path = str(config.get("schema_path") or "").strip()
     if not schema_path:
         raise ValueError("entity_schema extractor requires schema_path")
@@ -886,6 +890,6 @@ def _build(config):
         max_properties_per_entity=int(
             config.get("max_properties_per_entity", _DEFAULT_MAX_PROPERTIES)
         ),
-        retry_max_retries=int(config.get("extractor_retry_max", 3)),
-        retry_backoff_ms=int(config.get("extractor_retry_backoff", 1000)),
+        max_attempts=config.get("extractor_max_attempts", 3),
+        retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
     )

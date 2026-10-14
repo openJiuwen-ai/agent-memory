@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -70,7 +70,7 @@ def test_audit_query_filters_each_exact_match_field(
     mismatch: str,
 ) -> None:
     logger = _logger(tmp_path, backend)
-    occurred_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    occurred_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     matching_actor = Scope(
         org="acme",
         space="product",
@@ -150,9 +150,9 @@ def test_audit_query_filters_each_exact_match_field(
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
 def test_audit_query_filters_can_combine_structured_fields(tmp_path, backend: str) -> None:
     logger = _logger(tmp_path, backend)
-    matching_time = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    too_old = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
-    too_new = datetime(2026, 1, 1, 14, 0, tzinfo=timezone.utc)
+    matching_time = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    too_old = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+    too_new = datetime(2026, 1, 1, 14, 0, tzinfo=UTC)
     actor = Scope(org="acme", space="product", user="alice", agent="agent-a", session="s1")
     target = Scope(org="acme", space="product", user="alice", agent="agent-a", session="s1")
 
@@ -221,7 +221,7 @@ def test_audit_query_filters_can_combine_structured_fields(tmp_path, backend: st
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
 def test_audit_query_time_filters_compare_instants(tmp_path, backend: str) -> None:
     logger = _logger(tmp_path, backend)
-    occurred_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    occurred_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     logger.record(
         _event(
             "same-instant",
@@ -243,7 +243,7 @@ def test_audit_query_time_filters_compare_instants(tmp_path, backend: str) -> No
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
 def test_audit_query_time_filters_treat_naive_iso_as_utc(tmp_path, backend: str) -> None:
     logger = _logger(tmp_path, backend)
-    occurred_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    occurred_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     logger.record(
         _event(
             "same-instant",
@@ -265,7 +265,7 @@ def test_audit_query_time_filters_treat_naive_iso_as_utc(tmp_path, backend: str)
 def test_sqlite_audit_logger_records_many_events(tmp_path) -> None:
     logger = SqliteAuditLogger(str(tmp_path / "audit.sqlite3"))
     actor = Scope(org="acme", user="alice")
-    occurred_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    occurred_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
     logger.record(_event("first", actor=actor, occurred_at=occurred_at))
     logger.record(_event("second", actor=actor, occurred_at=occurred_at))

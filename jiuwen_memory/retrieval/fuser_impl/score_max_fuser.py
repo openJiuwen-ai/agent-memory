@@ -19,12 +19,12 @@ CombMAX 与 CombSUM/CombMNZ 同出 Fox & Shaw (TREC-2, 1994)；后者在"多系�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Mapping
 
 from jiuwen_memory.common.type_def import ScoredCandidate
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
-from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
+from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer, normalize_channel_weights
 from jiuwen_memory.retrieval.types import ChannelEvidence, ParsedQuery, RecallChannel
 
 from .layered_merge import merge_layered_channels
@@ -39,23 +39,7 @@ class ScoreMaxFuser(Fuser):
     ) -> None:
         # 通道权重可选：默认全 1.0（不偏好任何通道）。用于人工压制/抬升某一路，
         # 不参与归一化——归一化基准始终是该通道自身的最高分。
-        self._channel_weights = self._normalize_weights(channel_weights or {})
-
-    @staticmethod
-    def _normalize_weights(
-        weights: Mapping[RecallChannel | str, float | str],
-    ) -> dict[RecallChannel, float]:
-        normalized: dict[RecallChannel, float] = {}
-        for raw_channel, raw_weight in weights.items():
-            if isinstance(raw_channel, RecallChannel):
-                channel = raw_channel
-            else:
-                try:
-                    channel = RecallChannel(raw_channel)
-                except ValueError:
-                    channel = RecallChannel[raw_channel.upper()]
-            normalized[channel] = float(raw_weight)
-        return normalized
+        self._channel_weights = normalize_channel_weights(channel_weights or {})
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.FUSER

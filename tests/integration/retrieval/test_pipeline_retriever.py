@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from time import perf_counter, sleep
 from types import SimpleNamespace
-from typing import List
 
 import pytest
 
@@ -13,7 +12,7 @@ from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.embedder.base import EmbedderProducer
 from jiuwen_memory.common.errors import BackendError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (  # noqa: E501
     KeywordFeatureExtractor,
 )
 from jiuwen_memory.common.reranker.base import Reranker
@@ -61,7 +60,7 @@ class FailingRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return RecallChannel.VECTOR
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         raise BackendError("simulated backend outage")
 
 
@@ -70,12 +69,12 @@ class StaticRecaller(Recaller):
 
     def __init__(
         self,
-        candidates: List[ScoredUnit],
+        candidates: list[ScoredUnit],
         channel: RecallChannel = RecallChannel.KEYWORD,
     ) -> None:
         self._candidates = candidates
         self._channel = channel
-        self.calls: List[int] = []
+        self.calls: list[int] = []
 
     def health(self) -> None:
         return None
@@ -83,7 +82,7 @@ class StaticRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return self._channel
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         self.calls.append(top_k)
         return self._candidates[:top_k]
 
@@ -91,7 +90,7 @@ class StaticRecaller(Recaller):
 class StaticReranker(Reranker):
     """Deterministic reranker returning predefined scores in input order."""
 
-    def __init__(self, scores: List[float]) -> None:
+    def __init__(self, scores: list[float]) -> None:
         self._scores = scores
 
     def plugin_type(self) -> PluginType:
@@ -100,7 +99,7 @@ class StaticReranker(Reranker):
     def health(self) -> None:
         return None
 
-    def rerank(self, query: str, texts: List[str]) -> List[float]:
+    def rerank(self, query: str, texts: list[str]) -> list[float]:
         return self._scores[: len(texts)]
 
 
@@ -118,7 +117,7 @@ class SlowRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return self._channel
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         sleep(self._delay_seconds)
         return [ScoredUnit(self._unit_id, 1.0, self._channel)]
 

@@ -19,8 +19,8 @@ from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
 from jiuwen_memory.retrieval.bootstrap import register_operators
-from jiuwen_memory.storage.domain_store_impl.recaller import RecallerProducer
 from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.domain_store_impl.recaller import RecallerProducer
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
 pytestmark = pytest.mark.unit

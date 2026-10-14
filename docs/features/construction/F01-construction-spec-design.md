@@ -40,6 +40,12 @@
 4. **去重召回与判定分离**：去重召回抽象成独立 `Dedup` 接口，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。两路 score 同为 0~1 量纲（cosine / 词重叠率），medium/high 阈值统一复用。
 5. **SUPERSEDE 不经 LifecycleManager**：Evolver 标记旧版 SUPERSEDED 直接 `KVStore.update`，不经 control 层 LifecycleManager（construction → control 严禁）。版本链由 `supersedes` 字段记录，非破坏式、保留血缘。
 6. **去重不用 Reranker**：LLM 直接做最终语义判定，Reranker 中间层不增精度只增开销。若未来需降 LLM 调用成本，可考虑在 LLM 前加 Reranker 过滤器。
+7. **LLM 上限按总尝试次数命名**：Construction 层统一使用 `max_attempts` 表示
+   一次逻辑调用的总 LLM 调用次数，默认 `3`、最小 `1`；`retry_backoff_ms` 只表示
+   指数退避初始值。这样保留现有故障预算，同时避免与 common 层 `llm_max_retries`
+   （SDK 重试次数）混淆。拒绝把现有值静默改成“重试次数”，也拒绝继续使用
+   `retry_max_retries` 这类名字；旧配置键不兼容读取，装配期发现旧键时直接抛出
+   `ValidationError` 并提示对应的新键名，避免升级后静默回落默认值。
 
 ### Extractor（`extractor.py` · `ExtractorProducer`）
 

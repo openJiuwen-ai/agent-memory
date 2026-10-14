@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+from unittest.mock import patch
+
 import pytest
 
-from jiuwen_memory.common.errors import StorageRetrievalError, ValidationError
+from jiuwen_memory.common.errors import BackendError, StorageRetrievalError, ValidationError
+from jiuwen_memory.common.reranker.base import Reranker
+from jiuwen_memory.common.reranker.reranker_impl.bge_reranker import BGEReranker
 from jiuwen_memory.common.type_def import (
     MemoryUnit,
     ParsedQuery,
@@ -90,6 +95,22 @@ class SimpleDiscloser(Discloser):
         ]
 
 
+class FailingReranker(Reranker):
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def plugin_type(self):
+        from jiuwen_memory.common.base import PluginType
+
+        return PluginType.RERANKER
+
+    def health(self) -> None:
+        return None
+
+    def rerank(self, query: str, texts: list[str]) -> list[float]:
+        raise self.error
+
+
 class CountingKVStore(InMemoryKVStore):
     """统计真源读取量：点读与批读合并计 key 数，不绑定具体读取方法。"""
 
@@ -109,6 +130,8 @@ class CountingKVStore(InMemoryKVStore):
 def _build_retriever(
     pipeline: RetrievalPipeline,
     recallers: list[Recaller],
+    reranker: Reranker | None = None,
+    min_score: float = 0.0,
 ) -> tuple[PipelineRetriever, CompositeDomainStore, CountingKVStore, Scope]:
     scope = Scope(org="org", space="space", user="user")
     kv = CountingKVStore()
@@ -125,7 +148,9 @@ def _build_retriever(
         RRFFuser(),
         SimpleDiscloser(),
         UnitReader(kv),
+        reranker,
         rerank_max=10,
+        min_score=min_score,
         domain_store=domain_store,
     )
     return retriever, domain_store, kv, scope
@@ -201,3 +226,60 @@ def test_explicit_empty_channels_are_invalid() -> None:
 
     with pytest.raises(ValidationError):
         retriever.retrieve(scope, RetrievalQuery(text="one", channels=[]))
+
+
+def test_backend_reranker_failure_degrades_to_uncalibrated_results() -> None:
+    reranker = FailingReranker(BackendError("model unavailable"))
+    retriever, _, _, scope = _build_retriever(
+        RetrievalPipeline.RECALL_GET_RANK,
+        [IdRecaller(RecallChannel.KEYWORD, "u1")],
+        reranker=reranker,
+        min_score=0.99,
+    )
+
+    result = retriever.retrieve(
+        scope, RetrievalQuery(text="one", top_k=1, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1"]
+    rerank_step = next(step for step in result.trajectory if step.stage == "rerank")
+    assert rerank_step.detail["skipped"] == "reranker_unavailable"
+    assert rerank_step.detail["error"] == "model unavailable"
+    assert isinstance(rerank_step.detail["error"], str)
+    threshold_step = next(step for step in result.trajectory if step.stage == "threshold")
+    assert threshold_step.detail["calibrated"] == "False"
+
+
+def test_missing_flagembedding_dependency_degrades_reranker(tmp_path):
+    """本地模型存在但 FlagEmbedding 缺失时，检索走未精排降级。"""
+    reranker = BGEReranker(model_name_or_path=str(tmp_path))
+    retriever, _, _, scope = _build_retriever(
+        RetrievalPipeline.RECALL_GET_RANK,
+        [IdRecaller(RecallChannel.KEYWORD, "u1")],
+        reranker=reranker,
+        min_score=0.99,
+    )
+
+    with patch.dict(sys.modules, {"FlagEmbedding": None}):
+        result = retriever.retrieve(
+            scope, RetrievalQuery(text="one", top_k=1, with_trajectory=True)
+        )
+
+    assert [item.unit_id for item in result.items] == ["u1"]
+    rerank_step = next(step for step in result.trajectory if step.stage == "rerank")
+    assert rerank_step.detail["skipped"] == "reranker_unavailable"
+    assert "FlagEmbedding" in rerank_step.detail["error"]
+    threshold_step = next(step for step in result.trajectory if step.stage == "threshold")
+    assert threshold_step.detail["calibrated"] == "False"
+
+
+def test_non_backend_reranker_failure_is_not_swallowed() -> None:
+    reranker = FailingReranker(ValueError("invalid reranker output"))
+    retriever, _, _, scope = _build_retriever(
+        RetrievalPipeline.RECALL_GET_RANK,
+        [IdRecaller(RecallChannel.KEYWORD, "u1")],
+        reranker=reranker,
+    )
+
+    with pytest.raises(ValueError, match="invalid reranker output"):
+        retriever.retrieve(scope, RetrievalQuery(text="one", top_k=1))

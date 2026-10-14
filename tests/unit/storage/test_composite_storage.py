@@ -108,6 +108,20 @@ def test_memory_unit_crud_and_list_preserve_scope_and_count() -> None:
     assert domain_store.get(scope, ["u1"]) == []
 
 
+def test_get_and_list_skip_undecodable_record() -> None:
+    """一条历史坏字节不应让 get/list（进而 recall 物化）整批失败。"""
+    scope = Scope(org="org")
+    kv = InMemoryKVStore()
+    domain_store = make_storage(kv=kv).domain_store()
+    domain_store.add(scope, [_unit(scope, "good")])
+    kv.insert(scope, memory_key("bad"), "中文".encode("gbk"))
+
+    assert [unit.id for unit in domain_store.get(scope, ["good", "bad"])] == ["good"]
+    page = domain_store.list(scope)
+    assert [unit.id for unit in page.items] == ["good"]
+    assert page.count == 1, "坏记录不计入 list 匹配总数"
+
+
 def test_soft_delete_is_noop_and_body_stays_readable() -> None:
     """SOFT 软删除：无检索索引可移除，CompositeDomainStore 空操作，本体仍可读。"""
     scope = Scope(org="org", space="space", user="user")
