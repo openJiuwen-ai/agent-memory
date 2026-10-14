@@ -6,7 +6,13 @@ from __future__ import annotations
 from datetime import datetime
 
 from jiuwen_memory.common.security.types import Action
-from jiuwen_memory.common.type_def import MemoryUnit, MetadataValueType, Modality, Scope
+from jiuwen_memory.common.type_def import (
+    CandidateSource,
+    MemoryUnit,
+    MetadataValueType,
+    Modality,
+    Scope,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.engine import MemoryEngine
@@ -143,6 +149,25 @@ class MemoryCommandService:
         return await self._engine.delete(selector)
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
-    ) -> str:
-        return await self._engine.evolve(scope, mode, channel)
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        candidate: CandidateSource | dict | None = None,
+        buckets: list[Scope] | None = None,
+        denied_scopes: list[str] | None = None,
+    ) -> str | None:
+        """提交一次性 EvolveJob（纯执行链）。
+
+        ``buckets`` / ``denied_scopes`` 为 API 层 fan-out 逐桶裁决的产物
+        （PEP 边界：鉴权在 API 层，本端口只转发已获准的命令）。
+        """
+        return await self._engine.evolve(
+            scope,
+            mode,
+            channel,
+            candidate=candidate,
+            buckets=buckets,
+            denied_scopes=denied_scopes,
+        )

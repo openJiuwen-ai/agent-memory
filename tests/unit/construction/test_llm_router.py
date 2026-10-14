@@ -15,7 +15,7 @@ import uuid
 import pytest
 
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import HealthCheckError, ValidationError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit, Scope, Segment
 from jiuwen_memory.construction.base import OperatorType
@@ -104,7 +104,7 @@ def _unit(content: str) -> MemoryUnit:
 
 def _router(*responses: object, retries: int = 3) -> tuple[LLMRouter, _ScriptedLLM]:
     llm = _ScriptedLLM(*responses)
-    return LLMRouter(llm, _table(), retry_max_retries=retries, retry_backoff_ms=0), llm
+    return LLMRouter(llm, _table(), max_attempts=retries, retry_backoff_ms=0), llm
 
 
 def _reply(unit: MemoryUnit, memory_class: str = "user_memory", **extra: object) -> str:
@@ -350,12 +350,22 @@ def test_the_last_failure_is_raised_after_the_retries_are_used_up() -> None:
     assert len(llm.calls) == 3
 
 
-def test_a_zero_retry_budget_is_a_configuration_error() -> None:
-    """``retry_max_retries=0`` 时一次都不调用，报配置错而不是静默返回空。"""
-    router, llm = _router(retries=0)
-    with pytest.raises(RuntimeError, match="retry_max_retries"):
-        router.route([_unit("我偏好深色主题")], _ctx(_table()))
-    assert llm.calls == []
+def test_a_zero_attempt_budget_is_a_configuration_error() -> None:
+    """``max_attempts=0`` 时在构造期失败。"""
+    with pytest.raises(ValidationError, match="max_attempts"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=0, retry_backoff_ms=0)
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "bad"])
+def test_invalid_attempt_budget_is_rejected(value: object) -> None:
+    with pytest.raises(ValidationError, match="max_attempts"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=value, retry_backoff_ms=0)
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "bad"])
+def test_invalid_backoff_is_rejected(value: object) -> None:
+    with pytest.raises(ValidationError, match="retry_backoff_ms"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=1, retry_backoff_ms=value)
 
 
 # -- 算子契约 -------------------------------------------------------------- #
@@ -386,3 +396,31 @@ def test_the_system_prompt_carries_the_classes_and_dimensions() -> None:
     assert "user_memory (FALLBACK)" in prompt
     assert "project_memory" in prompt
     assert "agent_id" in prompt and "session_id" in prompt
+
+
+def test_the_system_prompt_carries_ownership_coordinates() -> None:
+    """归属坐标必须进 prompt：模型据此决定 project/user/team 归属（F08 §1.2 复用 coords）。
+
+    漏掉坐标即模型只按收窄维猜归属——project 级事实可能落 user_memory，召回按 project
+    隔离时丢失。
+    """
+    table = _table()
+    ctx = _ctx(table, project="p1")
+    unit = _unit("项目 p1 部署在集群 A")
+    router, llm = _router(_reply(unit))
+    router.route([unit], ctx)
+    prompt = llm.calls[0][0].content
+    assert "OWNERSHIP COORDINATES" in prompt
+    assert "project=p1" in prompt
+    assert "user=alice" in prompt
+
+
+def test_the_system_prompt_coordinates_default_to_none() -> None:
+    """无坐标时显示 ``(none)``，不因缺项把 prompt 格式化炸掉。"""
+    table = _table()
+    ctx = _ctx(table, user="", agent="", session="")
+    unit = _unit("我偏好深色主题")
+    router, llm = _router(_reply(unit))
+    router.route([unit], ctx)
+    prompt = llm.calls[0][0].content
+    assert "OWNERSHIP COORDINATES" in prompt

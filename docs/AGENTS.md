@@ -116,13 +116,9 @@ features/ FNN-<slug>.md     （如 F01-memory-lifecycle-manage.md）
 
 ## 提交约定
 
-影响公开接口、跨模块协调或有多方案取舍的特性，固定**三个连续提交**：
-
-1. `feat(memory): <实现>` — 功能代码
-2. `test(memory): <测试>` — 测试代码
-3. `docs(memory): <归档>` — `features/FNN-*.md` 新增 + 受影响 `specs/SNN-*.md` 修订日期更新 + 受影响 `jiuwen_memory/<subdir>/AGENTS.md` 更新
-
-纯内部小改动允许提交 1+2 合并，但提交 3（文档）仍然必须。
+每个实现 PR 最终交付**一个合并提交**，统一包含功能代码、测试及相关文档：
+`features/FNN-*.md` 新增或同步更新、受影响 `specs/SNN-*.md` 修订日期更新、
+受影响 `jiuwen_memory/<subdir>/AGENTS.md` 更新。不再要求拆成三个连续提交。
 
 footer 用 `Refs: #<issue>` 关联 issue；issue 号无法确认时先询问，不要臆造。
 

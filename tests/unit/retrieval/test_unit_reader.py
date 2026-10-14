@@ -439,3 +439,15 @@ def test_unit_reader_load_empty_ids_returns_empty(scope) -> None:
 
 def test_unit_reader_load_all_missing_returns_empty(scope) -> None:
     assert UnitReader(InMemoryKVStore()).load(scope, ["ghost"]) == {}
+
+
+def test_unit_reader_load_skips_undecodable_record(scope, unit_factory) -> None:
+    kv = InMemoryKVStore()
+    kv.insert(scope, memory_key("good"), dumps(unit_factory("good", "one")))
+    kv.insert(scope, memory_key("bad"), "中文".encode("gbk"))
+    reader = UnitReader(kv)
+
+    loaded = reader.load(scope, ["good", "bad", "missing"])
+
+    assert set(loaded) == {"good"}, "坏记录不阻断检索正排物化"
+    assert loaded["good"].content == "one"

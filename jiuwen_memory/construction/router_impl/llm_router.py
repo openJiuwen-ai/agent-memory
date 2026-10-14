@@ -22,6 +22,10 @@ from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.common import (
+    reject_deprecated_llm_attempt_keys,
+    validate_llm_attempt_policy,
+)
 from jiuwen_memory.construction.router import (
     RouteContext,
     RouteDecision,
@@ -40,6 +44,15 @@ _ROUTE_BATCH_SIZE = 10
 _SYSTEM_PROMPT = """\
 You assign each memory below to exactly one ownership class, and answer one yes/no question \
 per narrowing dimension.
+
+OWNERSHIP COORDINATES: {coords}
+
+These are the concrete entities (user / project / team) the current interaction belongs to. \
+Use them to decide ownership: a memory stating a fact or decision ABOUT the named project is \
+project_memory (even if the user said it); a memory stating a fact, preference or habit ABOUT \
+the user is user_memory; a memory about how the named team collaborates is team_memory. The \
+narrowing dimensions are secondary — decide the class first from ownership, then answer the \
+narrow questions. When no class clearly fits, use the class marked FALLBACK.
 
 Output ONLY a JSON array. No explanation, no markdown fences. One entry per input memory, in \
 the SAME order as input. Each entry:
@@ -80,13 +93,14 @@ class LLMRouter(Router):
         llm: LLM,
         table: RouteTable,
         *,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         self._llm = llm
         self._table = table
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts, retry_backoff_ms,
+        )
 
     @property
     def table(self) -> RouteTable:
@@ -199,26 +213,28 @@ class LLMRouter(Router):
             )
             for dim in ctx.narrow_dims
         ) or "- (none)"
-        return _SYSTEM_PROMPT.format(classes=classes, dims=dims)
+        coords = ", ".join(f"{k}={v}" for k, v in ctx.coords.items()) or "(none)"
+        return _SYSTEM_PROMPT.format(classes=classes, dims=dims, coords=coords)
 
     def _call_llm_with_retry(self, messages: list) -> str:
         last_exc: Exception | None = None
-        for attempt in range(self._retry_max_retries):
+        for attempt in range(self._max_attempts):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=4096)
             except Exception as exc:  # noqa: BLE001 —— 重试后仍失败即上抛
                 last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "LLMRouter: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1,
-                        wait,
-                    )
-                    time.sleep(wait)
-        if last_exc is None:
-            raise RuntimeError("LLMRouter: LLM 调用未执行（retry_max_retries 必须 >= 1）")
-        raise last_exc
+                if attempt == self._max_attempts - 1:
+                    break
+                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
+                logger.warning(
+                    "LLMRouter: LLM call failed (attempt %d), retrying in %.1fs",
+                    attempt + 1,
+                    wait,
+                )
+                time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("LLMRouter: LLM call did not execute")
 
 
 def _parse_response(response: str) -> list[dict]:
@@ -242,6 +258,7 @@ def _parse_response(response: str) -> list[dict]:
 
 @RouterProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "router")
     return LLMRouter(
         LlmProducer.dep(config, default="echo"),
         parse_route_table(
@@ -251,6 +268,6 @@ def _build(config):
                 "narrow_dims": config.get("narrow_dims"),
             }
         ),
-        retry_max_retries=int(config.get("retry_max_retries", 3)),
-        retry_backoff_ms=int(config.get("retry_backoff_ms", 1000)),
+        max_attempts=config.get("router_max_attempts", 3),
+        retry_backoff_ms=config.get("router_retry_backoff", 1000),
     )

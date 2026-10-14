@@ -17,14 +17,18 @@ from datetime import UTC, datetime
 from typing import Any
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
     scope_for_log,
 )
 from jiuwen_memory.common.type_def import (
+    COORDS_KEY,
+    CandidateSource,
     FilterExpr,
     LifecycleState,
+    MD_FILENAME_KEY,
     MemoryTier,
     MemoryUnit,
     MetadataValueType,
@@ -41,6 +45,7 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
+from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.schema_update_support import (
     commit_schema_update,
@@ -69,6 +74,7 @@ from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.domain_store import DomainStore
+from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
@@ -107,6 +113,35 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
     if patch.t_invalid is not None:
         new.temporal.t_invalid = patch.t_invalid
     return new
+
+
+def _restore_coords_from_md_filename(new: MemoryUnit, old: MemoryUnit) -> None:
+    """文档模式 supersede：从 old 的 ``md_filename``（落盘键，dumps 不剥除）反推
+    project，回写进 ``new.system_metadata[COORDS_KEY]``。
+
+    背景：old 经 ``shadow.get_units`` 读回，``coords`` 是 TRANSIENT 键（dumps 剥除），
+    读回的 old 无 coords → deepcopy 的 new 也无 → ``domain_store.add`` 内
+    ``_md_path._project_of`` 读 coords 落空 → md_filename 重算成 ``memory/default/``，
+    新版与旧版不同文件、project 维丢失。md_filename 形如 ``memory/{project}/MEMORY.md``
+    或 ``memory/{project}/daily_memory/YYYY-MM-DD.md``（user_memory 是 ``memory/USER.md``
+    无 project 段，不回写）。已在 new.system_metadata 有 coords 时不覆盖。
+    """
+    meta = dict(new.system_metadata or {})
+    if isinstance(meta.get(COORDS_KEY), dict) and meta[COORDS_KEY]:
+        return  # new 已带 coords，无需回写
+    old_meta = old.system_metadata or {}
+    md_filename = str(old_meta.get(MD_FILENAME_KEY) or "")
+    if not md_filename:
+        return
+    # memory/{project}/MEMORY.md | memory/{project}/daily_memory/... | memory/USER.md
+    parts = md_filename.split("/")
+    if len(parts) >= 3 and parts[0] == "memory" and parts[1] not in ("USER.md",):
+        project = parts[1]
+        old_coords = old_meta.get(COORDS_KEY)
+        coords = dict(old_coords) if isinstance(old_coords, dict) else {}
+        coords["project"] = project
+        meta[COORDS_KEY] = coords
+        new.system_metadata = meta
 
 
 def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
@@ -224,6 +259,7 @@ class CloudEngine(MemoryEngine):
         evolver: Evolver,
         lifecycle: LifecycleManager,
         *,
+        kv: KVStore | None = None,
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
         message_type_key: str = "message_type",
@@ -235,6 +271,7 @@ class CloudEngine(MemoryEngine):
         self._index = index_builder
         self._retriever = retriever
         self._domain_store = domain_store
+        self._kv = kv
         self._scheduler = scheduler
         self._evolver = evolver
         self._lifecycle = lifecycle
@@ -249,6 +286,16 @@ class CloudEngine(MemoryEngine):
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
+
+    @property
+    def kv(self) -> KVStore:
+        """真源 KV 端口（API 层 dreaming 编排读注册表用，见 MemoryEngine.kv）。"""
+        if self._kv is None:
+            raise RuntimeError("CloudEngine dreaming requires a KVStore")
+        return self._kv
+
+    def candidate_scopes(self) -> list[Scope]:
+        return self._domain_store.scopes()
 
     def health(self) -> None:
         return None
@@ -647,10 +694,31 @@ class CloudEngine(MemoryEngine):
         new.lifecycle = LifecycleState.ACTIVE
         if patch.t_valid is None:
             new.temporal.t_valid = _now()
+        # 文档模式 supersede：old 经 shadow.get_units 读回，coords 是 TRANSIENT 键
+        # （dumps 剥除），读回的 old.system_metadata 无 coords → deepcopy 的 new 也无 →
+        # domain_store.add 内 _md_path._project_of 读 coords 落空 → md_filename 重算成
+        # memory/default/MEMORY.md（丢失 project 维）。从 old 的 md_filename（落盘键，
+        # 不剥除）反推 project 回写 new 的 coords，让新版落进与旧版同一文件（版本链
+        # 同文件追加，F08 §5.2.1）。非文档模式无此问题（KV 不走 md 分流）。
+        if self._domain_store.should_write_document():
+            _restore_coords_from_md_filename(new, old)
         # 新版先落地再废旧版：任何时刻都有一个可读版本（同 InMemoryEngine）。
         new_index.build([new])
-        old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
-        self._update_indexes([old])
+        # 文档模式（write_document=true）走与 dedup 同构的路径标记旧版 SUPERSEDED：
+        # 直接改 old 的 lifecycle 字段，经 index_builder.update 落 shadow
+        # （content_hash 不变→shadow.update_units 只覆写 unit_json+lifecycle 投影列，
+        # F08 决策三）。绕开 ``self._lifecycle.supersede``——它是 KV LifecycleManager
+        # （LifecycleProducer 默认 target=kv），supersede/transition/sweep 都从 KVStore
+        # 取 unit，而文档模式真源已切 md+shadow、KV 不再持有 MemoryUnit，走它必
+        # NotFoundError（doc-mode-supersede-kv-lifecycle-break）。dedup 的 SUPERSEDE
+        # 决策（orchestrating_evolver._apply_decision）正是用这条路径，已有测试覆盖。
+        if self._domain_store.should_write_document():
+            old.lifecycle = LifecycleState.SUPERSEDED
+            old.temporal.t_invalid = new.temporal.t_valid or _now()
+            new_index.update([old])
+        else:
+            old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
+            self._update_indexes([old])
         update_metadata = {"pipeline": new_pipeline}
         logger.info(
             "CloudEngine.update supersede: old_id=%s new_id=%s scope=%s "
@@ -768,9 +836,16 @@ class CloudEngine(MemoryEngine):
         return purged
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
-    ) -> str:
-        """提交 EvolveJob 到 Scheduler——mode/evolver 运行时流入 EvolveJob（不进 Spec 装配）。"""
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        candidate: CandidateSource | dict | None = None,
+        buckets: list[Scope] | None = None,
+        denied_scopes: list[str] | None = None,
+    ) -> str | None:
+        """提交 EvolveJob——一次性演进执行共用件（F04 D3，纯执行）。"""
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
@@ -780,19 +855,21 @@ class CloudEngine(MemoryEngine):
             raise RuntimeError(
                 "CloudEngine.evolve requires an Evolver (装配未注入 evolver)"
             )
-        # E-06：evolve 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
-        job = self._job_factory.get_job(
-            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
+        # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
+        # 纯执行（鉴权在 API 层）：candidate→resolver 翻译 + 一次性 EvolveJob 提交。
+        return await submit_evolve(
+            scope=scope,
+            mode=mode,
+            channel=channel,
+            candidate=candidate,
+            kv=self._domain_store,
+            scheduler=self._scheduler,
+            job_factory=self._job_factory,
+            evolver=self._evolver,
+            retriever=self._retriever,
+            buckets=buckets,
+            denied_scopes=denied_scopes,
         )
-        job_id = await self._scheduler.submit(job, channel)
-        logger.info(
-            "CloudEngine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
-            job_id,
-            scope_for_log(scope),
-            mode.value,
-            channel.value,
-        )
-        return job_id
 
     async def admin_get(self, key: str) -> str:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
@@ -969,17 +1046,20 @@ def _optional_job_factory(config) -> JobFactory | None:
 
 @EngineProducer.register("cloud")
 def _build(config):
-    ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
+    # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
+    # 三处消费方（engine/evolver/job_factory）必须共用本函数，否则缺省判定分叉会让
+    # 同一份装配拿到不一致的 IndexBuilder（见 config.document_flag docstring）。
+    ib_default = resolve_index_builder_default(config)
+    manager = StoreManagerProducer.resolve(config)
     return CloudEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
         RetrieverProducer.dep(config, default="pipeline"),
-        StoreManagerProducer.resolve(config).domain_store(
-            resolve_name(config, "domain_store")
-        ),
+        manager.domain_store(resolve_name(config, "domain_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
+        kv=manager.kv(resolve_name(config, "kv_store")),
         classifier=_optional_classifier(config),
         pipeline=_optional_pipeline(config),
         message_type_key=str(config.get("message_type_key", "message_type")),

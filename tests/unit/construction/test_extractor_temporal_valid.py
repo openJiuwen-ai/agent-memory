@@ -25,7 +25,7 @@ def _make_extractor(llm_responses: list[str] | None = None) -> ExtractorImpl:
     return ExtractorImpl(
         llm=MockLLM(responses=llm_responses),
         min_confidence=0.0,
-        retry_max_retries=1,
+        max_attempts=1,
         retry_backoff_ms=1,
     )
 

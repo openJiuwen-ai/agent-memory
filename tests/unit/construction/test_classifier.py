@@ -51,7 +51,7 @@ def _make_unit(
 def _make_classifier(llm_responses: list[str] | None = None) -> LLMClassifier:
     return LLMClassifier(
         llm=MockLLM(responses=llm_responses),
-        retry_max_retries=3,
+        max_attempts=3,
         retry_backoff_ms=1000,
     )
 
