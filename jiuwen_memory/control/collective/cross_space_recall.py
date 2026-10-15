@@ -38,8 +38,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Awaitable, Callable, Sequence
 
 from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
 from jiuwen_memory.common.type_def import ChannelError, FilterClause, Scope, and_merge

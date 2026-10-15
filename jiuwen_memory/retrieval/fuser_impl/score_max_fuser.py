@@ -19,8 +19,8 @@ CombMAX 与 CombSUM/CombMNZ 同出 Fox & Shaw (TREC-2, 1994)；后者在"多系�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Mapping
 
 from jiuwen_memory.common.type_def import ScoredCandidate
 from jiuwen_memory.retrieval.base import RetrievalOperatorType

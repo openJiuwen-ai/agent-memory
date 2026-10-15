@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -30,7 +30,7 @@ class _RewriteLLM(LLM):
 
 
 def test_parser_transfers_filters_and_as_of(world) -> None:
-    as_of = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    as_of = datetime(2026, 6, 10, tzinfo=UTC)
     filters = [FilterClause("tags", FilterOp.CONTAINS, "x")]
 
     query = RetrievalQuery(text="hello world", filters=filters, as_of=as_of)
@@ -94,7 +94,9 @@ def test_rewrite_enabled_uses_llm() -> None:
 
     parsed = parser.parse(RetrievalQuery(text="hello world"))
 
-    assert parsed.rewritten == "hello world [rewritten]", "rewrite_enabled=True 时应通过 LLM 改写 query"
+    assert (
+        parsed.rewritten == "hello world [rewritten]"
+    ), "rewrite_enabled=True 时应通过 LLM 改写 query"
     assert "rewritten" in parsed.tokens[-1], "tokens 应基于改写后的 query"
 
 
