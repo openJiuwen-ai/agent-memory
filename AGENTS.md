@@ -59,7 +59,7 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 ## 代码风格
 
-- **类型注解**：使用 PEP 585 内置泛型（`list[X]`、`dict[K, V]`）和 PEP 604 联合类型（`X | Y`、`X | None`）；禁止从 `typing` 导入 `List` / `Dict` / `Set` / `Optional` / `Union` 等已被内置语法替代的别名。`Callable`、`Awaitable`、`TYPE_CHECKING`、`Any` 等无内置等价物的仍从 `typing` 导入。
+- **类型注解**：使用 PEP 585 内置泛型（`list[X]`、`dict[K, V]`）和 PEP 604 联合类型（`X | Y`、`X | None`）；禁止从 `typing` 导入 `List` / `Dict` / `Set` / `Optional` / `Union` / `Tuple` 等已被内置语法替代的别名。`Callable`、`Awaitable`、`Mapping`、`Sequence`、`Iterator` 等抽象基类从 `collections.abc` 导入（UP035 强制）；仅 `TYPE_CHECKING`、`Any` 等无等价物的仍从 `typing` 导入。由 ruff `UP` 规则集强制（`UP042` StrEnum 迁移除外，见 `pyproject.toml`）。
 - **Linter**：`ruff`（行长 100，target Python 3.11）；提交前运行 `ruff check --fix` 修复，`ruff check` 验证。
 
 ## 设计文档归档与双向同步

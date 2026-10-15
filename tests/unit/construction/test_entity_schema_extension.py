@@ -529,7 +529,7 @@ class _Storage:
     def has_graph(name: str = "default") -> bool:
         return False
 
-    def kv(self, name: str = "default") -> "_Storage":
+    def kv(self, name: str = "default") -> _Storage:
         return self
 
     def get(self, scope, key):

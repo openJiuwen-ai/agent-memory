@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import ast
-import io
 from pathlib import Path
 
 import pytest
@@ -80,7 +79,7 @@ def _layer_calls(path: Path, package: str) -> set[str]:
     ``route_batch``，因此该名字同时登记为属性链前缀。类型名以同样方式登记，其上的属性
     调用（如 ``RouteDecision.from_x()``）也随之纳入扫描，与逐个开例外的判据一致。
     """
-    src = io.open(path, encoding="utf-8").read()
+    src = open(path, encoding="utf-8").read()
     tree = ast.parse(src)
     imported: set[str] = set()
     module_prefixes: set[str] = set()
