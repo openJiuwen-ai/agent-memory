@@ -97,11 +97,13 @@ def test_cancel_during_continuity_check_prevents_retry() -> None:
             return super().chat(messages, **options)
 
     llm = CancellingLLM(["malformed", '{"results":["true"]}'])
-    job, *_ = _build_job(scope, InMemoryKVStore(), llm=llm)
+    kv = InMemoryKVStore()
+    for uid, content in (("a", "first"), ("b", "second")):
+        unit = _make_unit(uid, scope, content)
+        kv.insert(scope, memory_key(uid), dumps(unit))
+    job, *_ = _build_job(scope, kv, llm=llm)
     with pytest.raises(JobCancelledError):
-        asyncio.run(job._check_continuity(
-            _make_unit("a", scope, "first"), _make_unit("b", scope, "second")
-        ))
+        asyncio.run(job.run())
     assert len(llm.chat_calls) == 1, "shutdown must prevent the next model retry"
 
 

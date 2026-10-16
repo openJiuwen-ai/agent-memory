@@ -1,5 +1,7 @@
 """#235：实例关闭后停调度、回收线程且不影响其他实例。"""
 
+# pylint: disable=protected-access  # 白盒检查队列、循环和线程回收，限定于本测试模块
+
 import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor

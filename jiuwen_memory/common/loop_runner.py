@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 
@@ -45,28 +46,43 @@ class LoopRunner:
                         f"loop thread {self._thread_name!r} is alive but event loop is missing"
                     )
                 return self._loop
-            self._loop = asyncio.new_event_loop()
+            ready = threading.Event()
+            startup_errors: list[Exception] = []
+            self._loop = None
             self._thread = threading.Thread(
-                target=self._run_loop, name=self._thread_name, daemon=True
+                name=self._thread_name,
+                daemon=True,
+                target=self._run_loop,
+                args=(ready, startup_errors),
             )
             self._thread.start()
+            # 循环在所属线程内创建；就绪信号同时覆盖初始化失败，避免调用方永等。
+            ready.wait()
+            if startup_errors:
+                self._thread.join()
+                raise RuntimeError("LoopRunner failed to start") from startup_errors[0]
+            if self._loop is None:
+                raise RuntimeError("LoopRunner started without an event loop")
             return self._loop
 
-    def _run_loop(self) -> None:
-        loop = self._loop
-        assert loop is not None
-        asyncio.set_event_loop(loop)
+    def _run_loop(self, ready: threading.Event, startup_errors: list[Exception]) -> None:
+        """Runner 管理循环资源；外层线程池上下文确保所有同步调用真正退出。"""
         try:
-            loop.run_forever()
+            with (
+                ThreadPoolExecutor(thread_name_prefix=self._thread_name) as executor,
+                asyncio.Runner() as runtime,
+            ):
+                loop = runtime.get_loop()
+                loop.set_default_executor(executor)
+                self._loop = loop
+                ready.set()
+                loop.run_forever()
+        except Exception as exc:
+            if ready.is_set():
+                raise
+            startup_errors.append(exc)
         finally:
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
-                task.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.run_until_complete(loop.shutdown_default_executor())
-            loop.close()
+            ready.set()
 
     def close(self, *, wait: bool = True) -> None:
         """幂等停止；wait=True 等待线程池及循环线程退出，禁止线程等待自身。"""

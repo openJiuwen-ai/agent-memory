@@ -1,5 +1,7 @@
 """LoopRunner 显式释放与线程池收尾。"""
 
+# pylint: disable=protected-access  # 白盒验证线程退出和循环关闭，不为测试扩展生产接口
+
 import asyncio
 import threading
 
@@ -55,3 +57,67 @@ def test_own_thread_cannot_block_waiting_for_itself() -> None:
         runner.run(attempt(), timeout=3)
     finally:
         runner.close()
+
+
+def test_loop_is_created_in_its_worker_thread(monkeypatch) -> None:
+    created_in: list[threading.Thread] = []
+    original = asyncio.events.new_event_loop
+
+    def create_loop():
+        created_in.append(threading.current_thread())
+        return original()
+
+    monkeypatch.setattr(asyncio.events, "new_event_loop", create_loop)
+    runner = LoopRunner()
+    try:
+        runner.run(asyncio.sleep(0), timeout=3)
+        assert created_in == [runner._thread], "loop must be owned by its worker from creation"
+    finally:
+        runner.close()
+
+
+def test_loop_start_failure_reaches_caller_and_does_not_hang(monkeypatch) -> None:
+    def fail():
+        raise OSError("loop creation failed")
+
+    monkeypatch.setattr(asyncio.events, "new_event_loop", fail)
+    runner = LoopRunner()
+    try:
+        with pytest.raises(RuntimeError, match="failed to start") as caught:
+            runner.run(asyncio.sleep(0), timeout=3)
+        assert isinstance(caught.value.__cause__, OSError), "preserve the startup failure cause"
+        assert not runner._thread.is_alive(), "failed startup must not leave a thread behind"
+    finally:
+        runner.close()
+
+
+def test_close_finalizes_pending_tasks_and_async_generators() -> None:
+    runner = LoopRunner()
+    cancelled, finalized = threading.Event(), threading.Event()
+
+    async def stream():
+        try:
+            yield 1
+        finally:
+            finalized.set()
+
+    async def pending() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def launch():
+        generator = stream()
+        await anext(generator)
+        task = asyncio.create_task(pending())
+        await asyncio.sleep(0)
+        return generator, task
+
+    try:
+        generator, task = runner.run(launch(), timeout=3)
+    finally:
+        runner.close()
+    assert cancelled.is_set() and task.cancelled(), "Runner must cancel remaining tasks"
+    assert finalized.is_set(), "Runner must finalize open asynchronous generators"
+    assert generator.ag_frame is None, "generator cleanup must complete before thread exits"
