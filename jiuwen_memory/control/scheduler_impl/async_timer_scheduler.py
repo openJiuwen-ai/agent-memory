@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import copy
+import threading
 import time
 import uuid
 from collections import defaultdict, deque
@@ -95,8 +96,12 @@ class AsyncTimerScheduler(Scheduler):
     def __init__(self, tick_interval: int = 10) -> None:
         self._tick_interval = tick_interval
 
-        # 常驻守护 loop——Timer/drain Task 的宿主，随进程存活（daemon 线程）。
+        # Timer/drain Task 的宿主，由 shutdown 显式回收。
         self._runner = LoopRunner(thread_name="agent-memory-scheduler-loop")
+        self._lifecycle_lock = threading.RLock()
+        self._closing = False
+        self._stopped = False
+        self._shutdown_future: concurrent.futures.Future | None = None
 
         # per scope 三件套：queue（FIFO 队列）+ drain_task（单消费协程）
         # 同 scope 串行性由"per scope 单 drain Task"保证——单线程事件循环 + 单
@@ -149,7 +154,14 @@ class AsyncTimerScheduler(Scheduler):
     async def submit(self, job: Job, channel: Channel) -> str:
         # 先在调用方上下文 fail fast——校验是纯同步逻辑，不依赖 loop。
         self.validate(job)
-        loop = self._runner.ensure_loop()
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("Scheduler is shut down")
+            loop = self._runner.ensure_loop()
+            if not self._runner.in_loop_thread():
+                future = asyncio.run_coroutine_threadsafe(
+                    self._submit_on_loop(job, channel), loop
+                )
         # DriverJob 会在守护 loop 内提交派生 EvolveJob。此时必须直接 await 实际
         # 提交体；再用 run_coroutine_threadsafe 会让当前 loop 等待自己而死锁。
         if asyncio.get_running_loop() is loop:
@@ -157,23 +169,35 @@ class AsyncTimerScheduler(Scheduler):
         # 跨 loop 提交到守护 loop：_submit_on_loop 内部的 create_task 落在守护
         # loop 上，Timer/drain 生命周期与调用方 loop（可能是 asyncio.run 的
         # 临时 loop）解耦。async 调用方经 wrap_future 在自己的 loop 上等待。
-        future = asyncio.run_coroutine_threadsafe(
-            self._submit_on_loop(job, channel), loop
-        )
         return await asyncio.wrap_future(future)
 
     async def _submit_on_loop(self, job: Job, channel: Channel) -> str:
         """守护 loop 上执行的实际提交逻辑（原 submit 主体）。"""
-        scope_key = self._scope_key(job.scope)
-        if job.interval > 0:
-            return self._submit_timer(scope_key, job, channel)
-        return self._submit_once(scope_key, job, channel)
+        with self._lifecycle_lock:
+            if self._closing:
+                raise RuntimeError("Scheduler is shut down")
+            scope_key = self._scope_key(job.scope)
+            if job.interval > 0:
+                return self._submit_timer(scope_key, job, channel)
+            return self._submit_once(scope_key, job, channel)
 
     def status(self, job_id: str) -> JobInfo:
-        return self._runner.run(self._status_snapshot(job_id), timeout=10)
+        if self._runner.in_loop_thread():
+            return self._status_snapshot_now(job_id)
+        with self._lifecycle_lock:
+            if self._stopped or not self._runner.started:
+                return self._status_snapshot_now(job_id)
+            future: concurrent.futures.Future = concurrent.futures.Future()
 
-    async def _status_snapshot(self, job_id: str) -> JobInfo:
-        return self._status_snapshot_now(job_id)
+            def snapshot() -> None:
+                try:
+                    future.set_result(self._status_snapshot_now(job_id))
+                except Exception as exc:
+                    future.set_exception(exc)
+
+            # 同步 callback 在 stop 前执行完，不创建可能来不及运行的协程。
+            self._runner.ensure_loop().call_soon_threadsafe(snapshot)
+        return future.result(timeout=10)
 
     def _status_snapshot_now(self, job_id: str) -> JobInfo:
         if job_id not in self._jobs:
@@ -190,30 +214,34 @@ class AsyncTimerScheduler(Scheduler):
         串行化到守护 loop——cancel 的 entries.remove 与 Timer 协程的
         entries 原地清理若在不同线程并发执行存在竞态，收敛到单 loop 消除。
 
-        .. warning::
-            本方法**阻塞调用线程**直到守护 loop 上的取消协程完成，**不可从守护
-            loop 自身的协程内调用**（如 drain task 里取消另一个 job）——
-            ``run_coroutine_threadsafe`` 提交的协程要等当前协程让出才能被调度，
-            而当前线程正阻塞在 ``future.result()`` 上，互相等待即死锁。
-            仅支持从守护 loop 之外的外部 sync 上下文调用（HTTP handler 线程、
-            调用方主线程 / 临时请求 loop 等）。在守护 loop 协程内取消请直接
-            ``await self._cancel_on_loop(job_id)``。
+        外部线程阻塞等待取消完成；守护 loop 自身直接执行取消，避免等待自己。
+        关闭期间取消已由 shutdown 统一处理，本方法不再启动循环。
         """
-        self._runner.run(self._cancel_on_loop(job_id), timeout=10)
+        if self._runner.in_loop_thread():
+            self._cancel_now(job_id)
+            return
+        with self._lifecycle_lock:
+            if self._closing or not self._runner.started:
+                return
+            future = asyncio.run_coroutine_threadsafe(
+                self._cancel_on_loop(job_id), self._runner.ensure_loop()
+            )
+        future.result(timeout=10)
 
     def link_child(self, child_job_id: str, parent_job_id: str) -> None:
         # DriverJob 在守护 loop 内调用；同 loop 路径必须同步完成关联，保证子任务
         # 尚未开始前已继承父任务的取消信号。
-        try:
-            current = asyncio.get_running_loop()
-        except RuntimeError:
-            current = None
-        if current is self._runner.ensure_loop():
+        if self._runner.in_loop_thread():
             self._link_child_now(child_job_id, parent_job_id)
         else:
-            self._runner.run(
-                self._link_child_on_loop(child_job_id, parent_job_id), timeout=10
-            )
+            with self._lifecycle_lock:
+                if self._closing:
+                    raise RuntimeError("Scheduler is shut down")
+                future = asyncio.run_coroutine_threadsafe(
+                    self._link_child_on_loop(child_job_id, parent_job_id),
+                    self._runner.ensure_loop(),
+                )
+            future.result(timeout=10)
 
     async def _link_child_on_loop(self, child_job_id: str, parent_job_id: str) -> None:
         self._link_child_now(child_job_id, parent_job_id)
@@ -262,34 +290,65 @@ class AsyncTimerScheduler(Scheduler):
                     )
                     return
 
-    def shutdown(self) -> None:
-        """优雅关闭：在守护循环上取消全部 Timer / drain 协程。
+    def validate_shutdown(self, *, wait: bool = True) -> None:
+        if wait and self._runner.in_loop_thread():
+            raise RuntimeError("cannot wait for Scheduler shutdown on its own loop")
 
-        ``Task.cancel`` 非线程安全——必须 marshal 到私有循环执行，不能从
-        调用线程直接 cancel。正在跑的实例进入 CANCELLED（CancelledError 分支
-        已把状态与日志打全）；``_jobs`` / ``_wheels`` 状态记录保留至进程退出，
-        注册表在 KV 里的持久化不受影响——重启后 ``restore_dreaming`` 重新装配。
-        LoopRunner 的 daemon 线程由进程管理，本方法只清理由 Scheduler 创建的任务。幂等。
+    def shutdown(self, *, wait: bool = True) -> None:
+        """拒绝新提交、停止周期触发并协作式取消；wait 等待在飞任务及线程收尾。
+
+        wait=False 只安排收尾，已进入的调用仍可完成；后续 wait=True 可等待完成。
+        私有循环内只允许 wait=False，避免线程等待自身。关闭后保留任务历史。
         """
+        self.validate_shutdown(wait=wait)
+        with self._lifecycle_lock:
+            if not self._closing:
+                self._closing = True
+                if not self._runner.started:
+                    self._runner.close(wait=False)
+                else:
+                    self._shutdown_future = asyncio.run_coroutine_threadsafe(
+                        self._shutdown_on_loop(), self._runner.ensure_loop()
+                    )
+        if wait:
+            self._runner.wait_closed()
+            if self._shutdown_future is not None:
+                self._shutdown_future.result()
+
+    async def _shutdown_on_loop(self) -> None:
         try:
-            self._runner.run(self._cancel_all_tasks(), timeout=10)
-        except concurrent.futures.TimeoutError:
-            logger.error("AsyncTimerScheduler.shutdown timed out waiting for tasks")
-        logger.info("AsyncTimerScheduler.shutdown: timers and drains cancelled")
+            await self._cancel_all_tasks()
+        finally:
+            with self._lifecycle_lock:
+                self._stopped = True
+                self._runner.close(wait=False)
 
     async def _cancel_all_tasks(self) -> None:
-        """在私有循环内取消全部 Timer 协程与 drain Task（shutdown 用）。"""
+        """取消 Timer 与排队任务，通知在飞任务协作式收尾后等待 drain 完成。"""
         tasks = [task for task in self._background_tasks if not task.done()]
+        drains = set(self._scope_drain_tasks.values())
         for job in self._live_jobs.values():
             job.request_cancel()
+        timer_ids = {
+            entry.job_id for wheel in self._wheels.values() for entry in wheel.entries
+        }
+        for info in list(self._jobs.values()):
+            if info.status == JobStatus.PENDING or (
+                info.status == JobStatus.RUNNING and info.id in timer_ids
+            ):
+                info.status = JobStatus.CANCELLED
+                if info.id in timer_ids:
+                    self._remember_completed(info.id)
         for task in tasks:
-            task.cancel()
+            if task not in drains:
+                task.cancel()
         self._wheels.clear()
         self._scope_drain_tasks.clear()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.clear()
         self._live_jobs.clear()
+        self._scope_queues.clear()
 
     # ---- 一次性任务路径 ----
 
@@ -334,11 +393,13 @@ class AsyncTimerScheduler(Scheduler):
         while queue:
             job_id, job = queue.popleft()
             info = self._jobs[job_id]
-            if info.status == JobStatus.CANCELLED:
-                self._live_jobs.pop(job_id, None)
-                self._remember_completed(job_id)
-                continue
-            info.status = JobStatus.RUNNING
+            with self._lifecycle_lock:
+                if info.status == JobStatus.CANCELLED or self._closing:
+                    info.status = JobStatus.CANCELLED
+                    self._live_jobs.pop(job_id, None)
+                    self._remember_completed(job_id)
+                    continue
+                info.status = JobStatus.RUNNING
             info.detail["started_at"] = self._now_iso()
             try:
                 job.check_cancelled()
@@ -346,10 +407,11 @@ class AsyncTimerScheduler(Scheduler):
                 self._merge_info(info, result)
                 info.status = JobStatus.SUCCEEDED
                 logger.info(
-                    "AsyncTimerScheduler.succeeded: job_id=%s kind=%s scope=%s",
+                    "AsyncTimerScheduler.finished: job_id=%s kind=%s scope=%s status=%s",
                     job_id,
                     type(job).__name__,
                     scope_for_log(scope_key),
+                    info.status.value,
                 )
             except JobCancelledError as exc:
                 info.detail.update(exc.detail)
@@ -562,65 +624,70 @@ class AsyncTimerScheduler(Scheduler):
 
         - 固定 tick_interval 轮询——不依赖最小堆、不依赖 Event 唤醒；
         - 遍历前 snapshot 一份 entries（避免并发迭代器失效）；
-        - Timer 协程不持 lock——只做 deque.append（原子），执行由
-          ``_drain_queue`` 负责；一次性任务能在 tick 间隙跑；
+        - Timer 扫描持短生命周期锁，与 shutdown 的关闭标记互斥；
+          实际执行由 ``_drain_queue`` 负责，不在锁内运行 Job；
         - 所有 entry 都 is_done 时退出循环——释放协程，从 _wheels 移除。
         """
         while True:
             await asyncio.sleep(self._tick_interval)
-            now = int(time.monotonic())
+            if self._closing:
+                return
+            with self._lifecycle_lock:
+                if self._closing:
+                    return
+                now = int(time.monotonic())
 
-            # snapshot——遍历中 submit 路径若 append 不影响本帧
-            for entry in list(wheel.entries):
-                if entry.is_done:
-                    continue
-                if now >= entry.next_run_at:
-                    # 同 scope queue 已有同 schedule_key 实例排队（未开始跑）→ 跳过
-                    # 本次触发，防止 run 时长 > interval 时 queue 堆积多个实例串行重跑。
-                    # 跳过判定与 _submit_timer 去重键同口径（schedule_key）：同 scope
-                    # 排队的 EXTRACT 实例不挡 FORGET 触发。
-                    queue = self._scope_queues[wheel.scope_key]
-                    if any(
-                        j.schedule_key == entry.job.schedule_key
-                        for _, j in queue
-                    ):
-                        logger.debug(
-                            "AsyncTimerScheduler: skip tick kind=%s scope=%s "
-                            "(same task already queued)",
-                            type(entry.job).__name__,
-                            scope_for_log(wheel.scope_key),
-                        )
+                # snapshot——遍历中 submit 路径若 append 不影响本帧
+                for entry in list(wheel.entries):
+                    if entry.is_done:
                         continue
-                    # 到点——生成一次性实例塞 queue
-                    instance = copy.copy(entry.job)
-                    instance.interval = 0
-                    instance.parent_job_id = entry.job_id
-                    instance_id = str(uuid.uuid4())
-                    self._live_jobs[instance_id] = instance
-                    self._jobs[instance_id] = JobInfo(
-                        id=instance_id,
-                        # 到点生成的实例继承声明时的演进模式，否则遗忘类任务的实例
-                        # 会因取值不可解析而回落到 WRITE 动作，比应取的 UPDATE 宽松。
-                        mode=instance.mode or type(instance).__name__,
-                        scope=instance.scope,
-                        status=JobStatus.PENDING,
-                        detail={"parent_timer": entry.job_id},
+                    if now >= entry.next_run_at:
+                        # 同 scope queue 已有同 schedule_key 实例排队（未开始跑）→ 跳过
+                        # 本次触发，防止 run 时长 > interval 时 queue 堆积多个实例串行重跑。
+                        # 跳过判定与 _submit_timer 去重键同口径（schedule_key）：同 scope
+                        # 排队的 EXTRACT 实例不挡 FORGET 触发。
+                        queue = self._scope_queues[wheel.scope_key]
+                        if any(
+                            j.schedule_key == entry.job.schedule_key
+                            for _, j in queue
+                        ):
+                            logger.debug(
+                                "AsyncTimerScheduler: skip tick kind=%s scope=%s "
+                                "(same task already queued)",
+                                type(entry.job).__name__,
+                                scope_for_log(wheel.scope_key),
+                            )
+                            continue
+                        # 到点——生成一次性实例塞 queue
+                        instance = copy.copy(entry.job)
+                        instance.interval = 0
+                        instance.parent_job_id = entry.job_id
+                        instance_id = str(uuid.uuid4())
+                        self._live_jobs[instance_id] = instance
+                        self._jobs[instance_id] = JobInfo(
+                            id=instance_id,
+                            # 到点生成的实例继承声明时的演进模式，否则遗忘类任务的实例
+                            # 会因取值不可解析而回落到 WRITE 动作，比应取的 UPDATE 宽松。
+                            mode=instance.mode or type(instance).__name__,
+                            scope=instance.scope,
+                            status=JobStatus.PENDING,
+                            detail={"parent_timer": entry.job_id},
+                        )
+                        self._scope_queues[wheel.scope_key].append((instance_id, instance))
+                        self._ensure_drain_task(wheel.scope_key)
+                        # 重置下次触发时间
+                        entry.next_run_at = now + entry.interval
+
+                # 所有 entry 都 is_done（或 entries 空）——退出
+                if not wheel.entries or all(e.is_done for e in wheel.entries):
+                    logger.info(
+                        "AsyncTimerScheduler: wheel all done, exit scope=%s",
+                        scope_for_log(wheel.scope_key),
                     )
-                    self._scope_queues[wheel.scope_key].append((instance_id, instance))
-                    self._ensure_drain_task(wheel.scope_key)
-                    # 重置下次触发时间
-                    entry.next_run_at = now + entry.interval
+                    break
 
-            # 所有 entry 都 is_done（或 entries 空）——退出
-            if not wheel.entries or all(e.is_done for e in wheel.entries):
-                logger.info(
-                    "AsyncTimerScheduler: wheel all done, exit scope=%s",
-                    scope_for_log(wheel.scope_key),
-                )
-                break
-
-            # 清理已 is_done 的 entry——原地修改保持 list 对象引用不失效
-            wheel.entries[:] = [e for e in wheel.entries if not e.is_done]
+                # 清理已 is_done 的 entry——原地修改保持 list 对象引用不失效
+                wheel.entries[:] = [e for e in wheel.entries if not e.is_done]
 
         # Timer 自然退出——标完成。只覆盖 RUNNING：FAILED / CANCELLED 等终态
         # 由产生它们的路径负责（授权拒绝停摆的 entry 在 _drain_queue 的

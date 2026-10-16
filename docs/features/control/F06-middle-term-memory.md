@@ -382,15 +382,15 @@ job_factory:
 
 6. **`JobFactory` 自注册靠显式 import**：`bootstrap.register_controllers` 不 import `jobs_impl`；`Engine._opt_job_factory` 内显式 `import jiuwen_memory.control.jobs_impl as _ji` 触发 `@JobFactoryProducer.register("default")` 装饰器执行。若调用方未配 `job_factory` 命名空间，`_opt_job_factory` 返回 None，evolve/middle 路径报错——向后兼容但容易让人误以为"配了 job_factory 就能用"。
 
-7. **`AsyncTimerScheduler` 与同步 API `asyncio.run` 桥接不兼容**（架构债）：`LocalMemoryAPI.add` 同步桥接用 `asyncio.run(add_async(...))`，临时事件循环关闭后 Timer 协程被取消——同步 API 路径提交的 middle Job 永远不会转换为长期记忆。**触发条件**：用户显式配 `scheduler=async_timer` + 用同步 `api.add(...)`。**默认配置无影响**（默认 `in_process`，submit 即跑完 Job，原文立即 ARCHIVED）。**目标终态**：Kernel 级长生命周期 `AsyncRuntime` + 生产形态独立持久化 Worker——已单独立 issue 跟进，不在本次 PR 范围。**当前可用方式**：(a) 用默认 `in_process` scheduler（同步执行，与 mem1.0 行为等价）；(b) 用 `add_async` 全链路 await + 长生命周期事件循环。
+7. **同步 API 临时循环兼容问题已解决**：`AsyncTimerScheduler` 将 Timer/drain 托管到自有 `LoopRunner`，同步 API 的临时 `asyncio.run` 循环关闭不影响定时任务。实例关闭由 `MemoryRuntime.close` 级联 `Scheduler.shutdown`，等待语义见 S02/S03；进程退出不再是释放私有线程的唯一路径。
 
-8. **`InProcessScheduler` 不支持 `interval > 0` 周期语义**（架构债）：`submit` 不读 `job.interval`，直接 `await job.run()` 一次性执行——周期 Job 被静默退化为同步立即执行。**当前影响**：默认配置下 middle write 同步执行 evolver + 归档，与 mem1.0 同步抽取派生行为等价，无功能丢失。**目标终态**：Scheduler capability 声明（`supports_periodic` / `supports_background`）+ 装配期 fail fast 校验——单独立 issue 跟进。
+8. **`InProcessScheduler` 不支持 `interval > 0` 的真实周期触发**：middle 提交仍只同步执行一次。当前已通过 `supports_recurring=False` 声明能力，dreaming 周期注册会 fail fast；需要真实周期转换时显式配置 `async_timer`。
 
-9. **同 Scope 多 profile middle 候选混扫**（架构债）：`MiddleToLongJob._list_working_units` 扫该 Scope 全部 middle 候选，不按 `metadata.message_type` / profile 过滤；`AsyncTimerScheduler` 用 `Scope + type(job).__name__` 作 Timer 合并键。**触发条件**：同 scope 内先用 profile A 写 middle、Timer 未跑完前又用 profile B 写 middle——后一次写入会接管 Timer 并用 profile B 的 evolver/index 处理 profile A 的候选。**实际场景罕见**：多 profile 同 scope 写 middle 在生产 CloudEngine 才出现。**目标终态**：`MiddlePartitionKey = Scope + stream_id + profile_id` 重构 Timer 合并键、Job 扫描过滤、串行队列三层——单独立 issue 跟进。
+9. **同 Scope 多 profile middle 候选混扫**（架构债）：`MiddleToLongJob._list_working_units` 扫该 Scope 全部 middle 候选，不按 `system_metadata.message_type` / profile 过滤；`AsyncTimerScheduler` 用 `Scope + job.schedule_key`（MiddleToLongJob 默认键为类名） 作 Timer 合并键。**触发条件**：同 scope 内先用 profile A 写 middle、Timer 未跑完前又用 profile B 写 middle——后一次写入会接管 Timer 并用 profile B 的 evolver/index 处理 profile A 的候选。**实际场景罕见**：多 profile 同 scope 写 middle 在生产 CloudEngine 才出现。**目标终态**：`MiddlePartitionKey = Scope + stream_id + profile_id` 重构 Timer 合并键、Job 扫描过滤、串行队列三层——单独立 issue 跟进。
 
 10. **转长期流程最终一致性未写完整规格**（文档债）：`lifecycle.transition(ARCHIVED)` + `index.remove(units)` 跨 KV/索引无强事务——index.remove 失败时索引残留（默认 Retriever 经 KV lifecycle 复核仍能保证召回正确性）；派生已写、归档失败时下轮重复派生（dedup 可缓解）。**当前实现已具备 at-least-once 重试**（evolver 失败时原文保留 ACTIVE 下轮重试），无 reconcile 工具。**目标终态**：ConversionTask 状态机 + 稳定幂等键 + reconcile 工具——单独立 issue 跟进。
 
-11. **`EvolveJobSpec` 不支持运行时覆盖入参**（架构债，对称缺失）：`MiddleToLongJobSpec.with_scope` 已支持 `evolver=` / `index=` 运行时覆盖入参，但 `EvolveJobSpec.with_scope` 仍只持 default Evolver——多 profile evolve 场景下 Job 用 default evolver。**当前影响**：`CloudEngine.evolve(scope, mode)` 经 JobFactory 取 EvolveJob 实例后，Job 内 `self._evolver` 是 Spec 装配期固化的 default，非 binding 的。**目标终态**：与 MiddleToLongJobSpec 对称，`EvolveJobSpec.with_scope` 增 `evolver=` 覆盖入参支持——改动量约 10-20 行，可下个 PR 跟进。
+11. **`EvolveJobSpec` 运行时覆盖已实现**：`with_scope` 优先采用运行时传入的 `evolver=`，缺省才回退 Spec 参数；两者都缺失时显式报错，不再自行解析另一个默认 Evolver。
 
 12. **多 Timer entry 父 Job 状态永久 RUNNING**（小 bug，触发条件苛刻）：`AsyncTimerScheduler` 一个 wheel 有多个 entry 时，先达 done 的 entry 父 JobInfo 仍是 RUNNING，wheel 退出时才统一标 SUCCEEDED。**触发条件**：同 scope 同 JobType 多个 entry——但当前 MiddleToLongJob 同 scope 后续 submit 会替换旧 Job，实际很难触发。**修复成本**：约 10 行，每个 entry done 时立即标 SUCCEEDED。低优先级遗留。
 

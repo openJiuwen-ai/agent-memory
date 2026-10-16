@@ -232,7 +232,7 @@ scheduler:
 
 1. **Permission 仍是 allow-all**：当前只适合本地 demo/单租户测试。真实多租户部署必须实现 scope 包含、Grant 匹配、过期校验、逐 action revoke 与审计。
 
-2. **Scheduler 不是真异步**（**部分解决，仍有遗留**，见 [`F06`](F06-middle-term-memory.md)）：原 `InProcessScheduler.submit` 在当前进程同步执行 Evolver，add 后提交的 background EXTRACT 仍可能拖慢调用链。`F06` 新增 `AsyncTimerScheduler`（target=`async_timer`）作为异步 + 定时调度器，per scope FIFO 队列 + 单 drain Task + per scope TimerWheel，Job 提交后不再阻塞 add 路径。**但有两处遗留**：(a) `defaults.py` 默认装配仍配 `in_process`——需用户显式覆盖为 `async_timer` 才走异步；(b) `AsyncTimerScheduler` 依赖长生命周期事件循环，与同步 `LocalMemoryAPI.add` 内的 `asyncio.run` 桥接不兼容（同步 API 返回后临时循环关闭、Timer 协程被取消）——生产部署需配独立 Scheduler Runtime 或改用 `add_async` 全链路 await。详见 F06 已知遗留。
+2. **默认 Scheduler 同步执行**：`defaults.py` 默认装配 `in_process`，需要异步周期任务时显式配置 `async_timer`。`AsyncTimerScheduler` 的 per scope Timer/drain 托管于自有 `LoopRunner`，不再受同步 API 临时事件循环关闭影响；实例结束时通过 Runtime 级联关闭并回收线程，见 S02/S03。
 
 3. **Policy 未持久化、未审计**：`DictPolicyManager` 只存在于进程内，重启丢失；`set` 也未直接产生日志/审计事件。后续应接持久化后端并补 admin 审计。
 

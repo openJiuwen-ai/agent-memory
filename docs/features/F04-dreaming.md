@@ -190,8 +190,9 @@ FanOutCandidate(child, require_empty, require_nonempty)  # ④ 枚举源：scope
   `stopped_reason` / `finished_at` 残留。
 - 更新现有 schedule_key 时若 registry.save 失败，恢复旧 Job 声明；只有首次
   新建失败才 cancel，避免复用 job_id 时误杀原健康任务。
-- Scheduler 的 cancel/status 均 marshal 到私有循环；shutdown cancel 后 await
-  全部 Timer/drain 协程再关闭循环。父周期任务汇总最近运行状态；一次性
+- Scheduler 的 cancel/status 在运行期由私有循环串行化，停止后查询只读历史；
+  shutdown 取消 Timer/排队任务，通知在飞任务协作式收尾，等待 drain 后回收循环与线程。
+  正常完成的任务保留 SUCCEEDED，响应取消提前结束的任务为 CANCELLED。父周期任务汇总最近运行状态；一次性
   任务与已终止父周期任务共用有界 JobInfo 历史，最多保留 10000 条。
 - 同步 Evolver 返回后先合并 `created_ids/updated_ids/superseded_ids/forgotten_ids`
   再响应取消。若写入后收到取消，JobInfo 为 `CANCELLED`，同时回显

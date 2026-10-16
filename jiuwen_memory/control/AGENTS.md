@@ -19,7 +19,7 @@
 | `lifecycle.py` | `LifecycleManager` 接口——状态流转（transition）与到期清扫（sweep） |
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
 | `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验 |
-| `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度；`supports_recurring` 周期能力、`link_child` 父子任务观测关联、`RecurringJobStoppedError` 永久停摆信号、`shutdown` 优雅关闭 |
+| `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度；`supports_recurring` 周期能力、`link_child` 父子任务观测关联、`RecurringJobStoppedError` 永久停摆信号、`validate_shutdown` 关闭上下文校验、`shutdown` 优雅关闭 |
 | `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
 | `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/`begin_delete`/删除/导出/用量/策略/成员 |
@@ -47,6 +47,8 @@
 - Producer 工厂定义在对应顶层接口文件中（如 `engine.py` 的 `EngineProducer`），不要新增独立 `*_producer.py`
 
 ## 行为铁律
+
+- **调度器关闭必须释放线程**：`AsyncTimerScheduler` 用短生命周期锁串行化关闭标记、提交和 tick 入队；关闭后拒绝提交，取消排队任务，通知在飞任务协作式收尾，再释放 Runner。保留任务历史，查询/取消不得重启线程。中期转换取消后停止新批次，已成功抽取的批次仍完成归档并保留结果 ID。摄入控制器重复关闭时仍须允许等待此前未等待的线程池收尾。
 
 0. **系统控制只读 `system_metadata`**：Engine/Pipeline/PermissionContext 所需的
    `infer` / `procedural` / `middle` / 路由和内部状态不得从 `user_metadata`

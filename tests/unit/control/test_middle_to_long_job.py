@@ -33,6 +33,7 @@ from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.jobs import JobCancelledError
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJob
 from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.control.types import JobStatus
@@ -40,6 +41,68 @@ from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("concurrency", [1, 2])
+def test_cancel_stops_new_batches_but_archives_completed_results(concurrency: int) -> None:
+    scope = Scope(user="cancel-middle")
+    kv = InMemoryKVStore()
+    for index in range(6):
+        unit = _make_unit(f"u{index}", scope, f"message {index}")
+        kv.insert(scope, memory_key(unit.id), dumps(unit))
+
+    class CancellingEvolver(_RecordingEvolver):
+        def evolve(self, units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult:
+            result = super().evolve(units, mode)
+            job.request_cancel()
+            return result
+
+    evolver = CancellingEvolver()
+    job, _, lifecycle, index, _ = _build_job(
+        scope, kv, evolver=evolver, batch_size=1, concurrency=concurrency
+    )
+    with pytest.raises(JobCancelledError) as caught:
+        asyncio.run(job.run())
+    assert 1 <= len(evolver.calls) <= concurrency
+    completed = [unit for units, _ in evolver.calls for unit in units]
+    assert {unit.id for unit in index.removed} == {unit.id for unit in completed}
+    assert lifecycle.transition_calls
+    assert set(caught.value.detail["created_ids"].split(",")) == {
+        f"created-{unit.id}" for unit in completed
+    }
+
+
+def test_cancelled_middle_job_does_not_scan_or_call_model(monkeypatch) -> None:
+    job, evolver, lifecycle, index, llm = _build_job(Scope(), InMemoryKVStore())
+
+    async def unexpected_scan():
+        raise AssertionError("cancelled job must not scan storage")
+
+    monkeypatch.setattr(job, "_list_working_units", unexpected_scan)
+    job.request_cancel()
+    with pytest.raises(JobCancelledError):
+        asyncio.run(job.run())
+    assert not evolver.calls
+    assert not lifecycle.transition_calls
+    assert not index.removed
+    assert not llm.chat_calls
+
+
+def test_cancel_during_continuity_check_prevents_retry() -> None:
+    scope = Scope(user="cancel-continuity")
+
+    class CancellingLLM(_ScriptedLLM):
+        def chat(self, messages: list[ChatMessage], **options: object) -> str:
+            job.request_cancel()
+            return super().chat(messages, **options)
+
+    llm = CancellingLLM(["malformed", '{"results":["true"]}'])
+    job, *_ = _build_job(scope, InMemoryKVStore(), llm=llm)
+    with pytest.raises(JobCancelledError):
+        asyncio.run(job._check_continuity(
+            _make_unit("a", scope, "first"), _make_unit("b", scope, "second")
+        ))
+    assert len(llm.chat_calls) == 1, "shutdown must prevent the next model retry"
 
 
 # ---- 测试替身 ----

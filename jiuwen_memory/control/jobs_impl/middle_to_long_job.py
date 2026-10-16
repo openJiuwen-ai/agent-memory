@@ -16,8 +16,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
@@ -32,7 +34,13 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction import EvolveMode, Evolver
 from jiuwen_memory.construction.index_builder import IndexBuilder
-from jiuwen_memory.control.jobs import Job, JobFactory, JobFactoryProducer, JobType
+from jiuwen_memory.control.jobs import (
+    Job,
+    JobCancelledError,
+    JobFactory,
+    JobFactoryProducer,
+    JobType,
+)
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.types import JobInfo, JobStatus
 from jiuwen_memory.storage.kv import KVStore, list_units
@@ -155,7 +163,9 @@ class MiddleToLongJob(Job):
 
     async def _run_inner(self) -> JobInfo:
         """临界区主体：list 候选 → 连续性检测切批 → evolve 抽取 → 归档原文。"""
+        self.check_cancelled()
         candidates = await self._list_working_units()
+        self.check_cancelled()
         if not candidates:
             # 候选转完——通知 Scheduler 停止下一轮触发
             logger.info(
@@ -176,6 +186,7 @@ class MiddleToLongJob(Job):
         )
 
         batches = await self._split_by_continuity(candidates)
+        self.check_cancelled()
 
         created_ids: list[str] = []
         processed_units: list[MemoryUnit] = []
@@ -183,17 +194,23 @@ class MiddleToLongJob(Job):
         if self._concurrency <= 1:
             # 串行：失败批次隔离（不收集 unit），原文保留 ACTIVE+WORKING 下轮重试
             for batch in batches:
+                if self.cancellation_signal.is_set():
+                    break
                 try:
                     r = await asyncio.to_thread(
-                        self._evolver.evolve, batch, EvolveMode.EXTRACT
+                        self._call_if_active, self._evolver.evolve, batch, EvolveMode.EXTRACT
                     )
                     created_ids.extend(r.created_ids)
                     processed_units.extend(batch)
+                except JobCancelledError:
+                    break
                 except Exception as e:
                     logger.warning("middle batch failed, originals preserved: %s", e)
         else:
             results = await self._gather_batches(batches)
             for batch, r in zip(batches, results):
+                if isinstance(r, JobCancelledError):
+                    continue
                 if isinstance(r, Exception):
                     logger.warning("middle batch failed, originals preserved: %s", r)
                     continue
@@ -204,7 +221,7 @@ class MiddleToLongJob(Job):
         if processed_units:
             await self._archive_originals(processed_units)
 
-        return JobInfo(
+        result = JobInfo(
             scope=self.scope,
             status=JobStatus.SUCCEEDED,
             detail={
@@ -215,6 +232,17 @@ class MiddleToLongJob(Job):
                 "mode": EvolveMode.EXTRACT.value,
             },
         )
+        if self.cancellation_signal.is_set():
+            raise JobCancelledError(
+                "middle conversion cancelled after completed batches were archived",
+                detail=result.detail,
+            )
+        return result
+
+    def _call_if_active(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """在线程实际执行前复核取消；已成功抽取的批次仍完成归档收尾。"""
+        self.check_cancelled()
+        return func(*args, **kwargs)
 
     async def _check_continuity(self, prev: MemoryUnit, cur: MemoryUnit) -> str:
         """单次连续性检测：返回 'true' / 'false'。3 次重试，失败默认 'true'（合并）。
@@ -232,9 +260,11 @@ class MiddleToLongJob(Job):
         )
 
         for attempt in range(_MAX_RETRIES):
+            self.check_cancelled()
             resp = None
             try:
                 resp = await asyncio.to_thread(
+                    self._call_if_active,
                     self._llm.chat,
                     [ChatMessage(role="user", content=prompt)],
                     temperature=0,
@@ -321,7 +351,7 @@ class MiddleToLongJob(Job):
         async def _run_one(batch):
             async with sem:
                 return await asyncio.to_thread(
-                    self._evolver.evolve, batch, EvolveMode.EXTRACT
+                    self._call_if_active, self._evolver.evolve, batch, EvolveMode.EXTRACT
                 )
 
         return await asyncio.gather(

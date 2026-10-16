@@ -26,6 +26,7 @@
 | `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`（配置数据结构 `ComponentConfig`/`AssemblyContext`/`RawSpec` 在 `config/context.py`） |
+| `loop_runner.py` | 实例持有的后台事件循环线程；惰性启动，`close` 停止循环并回收异步生成器、默认线程池和线程，关闭后不可重启 |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
 | `tokenizer/` | Tokenizer 插件目录 |
@@ -38,6 +39,8 @@
 | `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
 
 ## 行为铁律
+
+- **LoopRunner 显式释放**：持有者负责先完成业务任务收尾，再关闭 Runner；等待退出不能发生在所属线程内。关闭后不得通过查询或提交隐式重启线程。
 
 1. **插件接口与实现严格分离**
    接口模块（`<plugin>/base.py`）定义抽象契约 + Producer 工厂类，零依赖实现。实现模块（`<plugin>/<plugin>_impl/*.py`）具体实现 + 尾部 `@XxxProducer.register("name")` 自注册。消费方只 import 接口层，不触达 `*_impl`。

@@ -152,8 +152,6 @@ class InProcessIngestJobController(IngestJobController):
 
     def close(self, *, wait: bool = True) -> None:
         with self._lock:
-            if self._closed:
-                return
             self._closed = True
         if self._executor is not None:
             self._executor.shutdown(wait=wait, cancel_futures=False)

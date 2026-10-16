@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-16 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -361,7 +361,12 @@ recall / list 完成权限检查前，API 构造 `PermissionContext` 时从
 | `status` | `(job_id: str) -> JobInfo` | 查询任务状态 |
 | `cancel` | `(job_id: str) -> None` | 取消尚未完成的任务（幂等） |
 | `link_child` | `(child_job_id: str, parent_job_id: str) -> None` | 周期调度器关联派生任务的观测信息和协作式取消生命周期；子任务执行前完成关联，同一调度循环内 submit 返回后立即调用、不让出循环；不支持周期任务的实现可忽略 |
-| `shutdown` | `() -> None` | 优雅关闭：取消定时/消费协程与私有事件循环，已提交任务的状态记录保留；持久化注册表不受影响（重启经 API 层 `DreamingCoordinator.restore` 重新装配）。默认无协程可关（同步实现） |
+| `validate_shutdown` | `(*, wait: bool = True) -> None` | 关闭前检查调用上下文，不改变生命周期状态；异步实现拒绝在所属循环内同步等待自身关闭，供 Runtime 在启动后台收尾前 fail fast。默认无约束 |
+| `shutdown` | `(*, wait: bool = True) -> None` | 幂等关闭：异步调度器立即拒绝新提交并停止新一轮触发，取消排队任务，通知在飞任务协作式收尾。`wait=True` 等待任务、默认线程池及私有循环线程退出；`wait=False` 安排后台收尾，之后可再次用 True 等待。任务历史保留，持久化注册表不受影响。同步实现默认无后台资源可关 |
+
+**关闭与任务终态**：排队而未执行的任务取消；在飞任务正常返回则保持 SUCCEEDED，响应
+协作式取消提前结束则为 CANCELLED，真实执行错误仍为 FAILED。进入关闭状态本身不覆盖
+任务的实际执行结果，已有结果 ID 保留。
 
 **定时去重键**：`Job.schedule_key`（`jobs.py`，默认任务类名）——Scheduler 判定同 scope 内"是不是同一个任务"**只依赖该通用键**，不识别具体 Job 类的业务字段；需要区分业务身份的实现覆写（EvolveJob 含 mode：同 scope 下 EXTRACT 与 FORGET 定时器互不覆盖）。
 

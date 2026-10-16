@@ -15,7 +15,7 @@
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（仅 api+close）；内部 `_build_kernel` 才持有 KV/Storage/ingest。Runtime 保留共享 audit 快照，close 依次关闭 ingest、停止 Scheduler、释放 dreaming leader 锁，禁止提前释放锁造成双跑 |
+| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（api 与 start/start_background/close 生命周期入口）；内部 `_build_kernel` 才持有 KV/Storage/ingest。close 先停看门狗及新调度/摄入，再等待任务收尾，之后释放 dreaming leader 锁与影子索引，最后回收自有看门狗循环；不等待时由单个收尾线程完成同一流程 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
@@ -27,6 +27,8 @@
 | `access_security.py` | Access 安全装配辅助：提供 dev Authenticator，并从普通 mapping 选择、健康检查已配置的 SecurityRuntime；不向接入层暴露 common 实现路径 |
 
 ## 行为铁律
+
+- **关闭失败必须可观察**：Runtime 在变更状态前校验 Scheduler 关闭上下文，逐步隔离收尾错误。无法确认后台组件停止时不释放 leader 锁或存储；确认停止后，锁释放失败仍继续存储清理。等待关闭汇报单个异常或 ExceptionGroup，影子索引清理失败不得静默吞掉。
 
 0. **写入 metadata 明确分区**
    add/batch/update 入口只接收 `system_metadata` 和 `user_metadata`。两者分别校验、
