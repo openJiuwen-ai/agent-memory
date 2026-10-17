@@ -7,6 +7,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 _CORE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "jiuwen_memory_entry", "core")
 )
@@ -14,6 +16,8 @@ if _CORE_DIR not in sys.path:
     sys.path.append(_CORE_DIR)
 
 import profiles
+
+from jiuwen_memory.api import ValidationError
 
 
 def test_config_repr_redacts_secrets() -> None:
@@ -35,3 +39,15 @@ def test_config_repr_redacts_secrets() -> None:
     assert cfg.settings["memory_api"]["authenticator"]["primary"]["params"]["root_api_key"] == (
         "sk-plaintext-root-123"
     )
+
+
+def test_empty_policies_section_is_an_empty_map() -> None:
+    """``policies:``（空 YAML 段）与缺省同义，装配期不得抛 TypeError。"""
+    cfg = profiles.load_config([{"profile": "offline", "policies": None}])
+
+    assert cfg.policies == {}
+
+
+def test_non_object_policies_is_a_validation_error() -> None:
+    with pytest.raises(ValidationError, match="policies must be an object"):
+        profiles.load_config([{"policies": ["scope.require_space"]}])
