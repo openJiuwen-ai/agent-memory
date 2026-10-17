@@ -80,7 +80,7 @@ def _write_unit(
         id=uid,
         scope=scope,
         segments=[Segment(content=content)],
-        system_metadata=dict(metadata or {MEMORY_CLASS_KEY: "project_memory"}),
+        system_metadata=dict(metadata or {MEMORY_CLASS_KEY: "long_term_memory"}),
     )
     ds.add(scope, [unit])
     return unit
@@ -154,7 +154,7 @@ def test_edit_md_file_aligned_inherits_metadata_and_supersedes(tmp_path) -> None
         "u1",
         "hello world",
         metadata={
-            MEMORY_CLASS_KEY: "project_memory",
+            MEMORY_CLASS_KEY: "long_term_memory",
             COORDS_KEY: {"project": ""},
             "user_key": "preserved",
         },

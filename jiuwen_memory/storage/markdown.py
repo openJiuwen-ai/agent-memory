@@ -49,7 +49,7 @@ class MarkdownStore(BaseStore):
         """解析后的 markdown 根目录（md 文件落盘与看门狗监听的基路径）。
 
         从 ConfigSource 晚绑定读 ``markdown_store.root``，缺失回退构造期默认值。
-        供影子索引（派生 ``.shadow/shadow.db`` 路径）与看门狗（监听 ``{root}/memory/``）
+        供影子索引（派生 ``memory/.shadow/shadow.db`` 路径）与看门狗（监听 ``{root}/``）
         从**实例**读取，而非各自跨 namespace 摸 ``markdown_store`` 的 ``params.root``
         ——后者在 root 经 ConfigSource 晚绑定时读到的是过期的配置字面量。
         """
@@ -68,7 +68,7 @@ class MarkdownStore(BaseStore):
         system_metadata 读取后落 ``memory_unit.md_filename`` 列，也供看门狗据此定位
         文件变化。
 
-        ``memory_class`` 为空时在此兜底赋 ``team_memory``（F08 §2），保证 md 路径与
+        ``memory_class`` 为空时在此兜底赋 ``daily_memory``（F08 §2），保证 md 路径与
         影子索引 ``category`` 列落值一致。
         """
 
@@ -175,7 +175,7 @@ class MarkdownStore(BaseStore):
         不耦合具体实现（``LocalMarkdownStore``）。与实现的 ``_md_path``（按 memory_class
         映射）产出同一路径，但入参是 basename + project（不依赖完整 MemoryUnit）：
 
-        - ``USER.md`` → ``memory/USER.md``（跨 project 用户画像，不进 project 子目录）；
+        - ``USER.md`` → ``USER.md``（跨 project 用户画像，落 root 顶层，不进 memory/ 也无 project 段）；
         - ``MEMORY.md`` → project 非空 ``memory/{project}/MEMORY.md``，空
           ``memory/MEMORY.md``（跨项目可见）；
         - 其余（daily 文件名，如 ``2026-09-30.md``）→ project 非空
@@ -185,7 +185,7 @@ class MarkdownStore(BaseStore):
         抛 ``ValidationError``。
         """
         if md_basename == "USER.md":
-            return "memory/USER.md"
+            return "USER.md"
         if md_basename == "MEMORY.md":
             return f"memory/{project}/MEMORY.md" if project else "memory/MEMORY.md"
         return (

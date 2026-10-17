@@ -233,7 +233,7 @@ class CompositeDomainStore(DomainStore):
         if self.should_write_document():
             # 文档路径：写 md + 建影子索引，不碰 KV（F07 §3.1 互斥路径）。
             # md.write 内部按文件分组批量写、回填 unit.system_metadata["md_filename"]
-            # + 兜底 memory_class（空落 team_memory，F08 §2）；shadow.insert_units
+            # + 兜底 memory_class（空落 daily_memory，F08 §2）；shadow.insert_units
             # 从 system_metadata 读 md_filename 建 three-table 索引。
             # 写窗口：两步写期间 md 与索引短暂不一致，挡住看门狗对账（F07 §12.9 风险 6，
             # sync_gate 模块说明）——insert_units 含逐条 embed（完整模式远端 HTTP），
@@ -745,11 +745,11 @@ class CompositeDomainStore(DomainStore):
             )
             normalized = rel_path.replace("\\", "/")
             if "daily_memory/" in normalized:
-                fb_class = "team_memory"
+                fb_class = "daily_memory"
             else:
                 base = os.path.basename(normalized)
-                fb_class = {"USER.md": "user_memory", "MEMORY.md": "project_memory"}.get(
-                    base, "team_memory"
+                fb_class = {"USER.md": "user_profile", "MEMORY.md": "long_term_memory"}.get(
+                    base, "daily_memory"
                 )
             for _, new_c, _ in inserted_blocks:
                 new = MemoryUnit(

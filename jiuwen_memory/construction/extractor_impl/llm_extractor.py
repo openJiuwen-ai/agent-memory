@@ -663,7 +663,7 @@ class ExtractorImpl(Extractor):
             event_date = str(item.get("event_date", "") or "").strip()
             # memory_class（归属类别）由 LLM 判定（F09 agent_llm）；基类只透传不校验值域，
             # 值域约束归消费侧——agent_llm 子类兜底自己的枚举，文档模式落盘对未知值静默
-            # 兜底 team_memory（F08 §3.1）。llm 基线 prompt 不输出该字段，恒空即零影响。
+            # 兜底 daily_memory（F08 §3.1）。llm 基线 prompt 不输出该字段，恒空即零影响。
             memory_class = str(item.get("memory_class", "") or "").strip()
             candidates.append(ExtractionCandidate(
                 target=target,

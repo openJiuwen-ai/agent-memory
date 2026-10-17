@@ -56,9 +56,8 @@ from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProduce
 from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
 _DEFAULT_PROJECT = ""  # 无 project 时的兜底值：空串=跨项目可见（IN ['', value] 命中）
-_DEFAULT_CLASS = "team_memory"
-# memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）。
-_DEFAULT_LIFECYCLE = "active"
+_DEFAULT_CLASS = "daily_memory"
+_DEFAULT_LIFECYCLE = "active"  # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
 _DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，F07 §4.4.3）
 
 # project 作为配置声明的收窄维，coords 折算后以 ``system_metadata.project`` 谓词
@@ -68,8 +67,8 @@ _DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 
 _PROJECT_FILTER_FIELD = "system_metadata.project"
 
 # 召回按 project 过滤单批下推，不再按 category 分批（路径甲：召回只看过滤条件，
-# 不用记忆类型判断召回范围）。project 列空串 = 跨项目可见（user_memory 恒落空串，
-# 无 coords 的 project_memory/team_memory 兜底空串），带 coords 召回时
+# 不用记忆类型判断召回范围）。project 列空串 = 跨项目可见（user_profile 恒落空串，
+# 无 coords 的 long_term_memory/daily_memory 兜底空串），带 coords 召回时
 # IN ['', value] 一并命中空串行与本项目行。
 # category 维度不再在召回 SQL 过滤——若需按类别收窄，上层应通过 query.filters
 # 显式传 category 谓词（当前 narrow_dims 未配 category 维，故不收窄）。
@@ -119,7 +118,7 @@ def _build_schema(vec_dim: int | None) -> str:
     降级场景下向量召回缺一路，倒排与全量存储照常。
 
     ``memory_unit.category`` 列名保留（不改表结构），但 F08 复用 memory_class 后落的
-    是 memory_class 值（如 ``team_memory``），默认值取 F08 §2 兜底 ``team_memory``——
+    是 memory_class 值（如 ``daily_memory``），默认值取 F08 §2 兜底 ``daily_memory``——
     非 F07 原设计的 ``diary``。
 
     FTS5 ``tokenize``： ``'simple'``（"不二次分词，分词归 jieba 预处理"），
@@ -401,12 +400,13 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         """解析 db_path：
 
         1. ``shadow_index.db_path`` 显式配置（最高优先级，覆盖一切）
-        2. ``markdown_store.root`` 派生：``{markdown_root}/.shadow/shadow.db``
-           （md 与影子索引同根伴生，影子索引是 md 的机器索引，物理位置应跟随 md 根目录）
+        2. ``markdown_store.root`` 派生：``{markdown_root}/memory/.shadow/shadow.db``
+           （md 与影子索引同根伴生，影子索引是 md 的机器索引，物理位置应跟随 md 根目录下
+           的 memory/ 子目录——root 顶层只留 USER.md，其余结构含 .shadow 整体收进 memory/）
         3. 构造期 fallback（兜底，当 markdown root 也未配置时）
 
         优先级 2 让 db 自动跟随 markdown 根目录移动而无需重复配置——
-        用户只配 ``markdown_store.root`` 一处，shadow db 自动落其下 ``.shadow/`` 子目录。
+        用户只配 ``markdown_store.root`` 一处，shadow db 自动落其 ``memory/.shadow/`` 子目录。
         """
         from jiuwen_memory.config.binding import resolve_connection_url
 
@@ -431,9 +431,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             fallback=self._fallback_markdown_root,
         )
         if markdown_root:
-            return os.path.join(markdown_root, ".shadow", "shadow.db")
-        # markdown root 也未配 → cwd 下 .shadow/shadow.db 兜底（极少见：未配 markdown_store）
-        return self._fallback_db_path or ".shadow/shadow.db"
+            return os.path.join(markdown_root, "memory", ".shadow", "shadow.db")
+        # markdown root 也未配 → cwd 下 memory/.shadow/shadow.db 兜底（极少见：未配 markdown_store）
+        return self._fallback_db_path or "memory/.shadow/shadow.db"
 
     def _ensure_conn(self) -> sqlite3.Connection:
         """按当前 ``db_path`` 惰性打开连接；路径变化则重建。调用方须已持 ``_lock``。
@@ -443,8 +443,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         SQLiteKVStore 的差异：开连接后、建表前必须
         ``enable_load_extension(True) + sqlite_vec.load(conn)``，且连接重开时每次都要重新 load
         （否则查 vec0 报 ``no such module: vec0``）。
-        默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/.shadow/shadow.db``，
-        含子目录，连接前需确保父目录存在。
+另：默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/memory/.shadow/shadow.db``，含子目录，连接前需确保父目录存在。
         """
         path = self._resolved_db_path()
         if self._conn is not None and self._conn_path == path:
@@ -508,8 +507,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
     @staticmethod
     def _project_of(unit: MemoryUnit) -> str:
         """取 project：``system_metadata.project``（agent 场景标量直传）优先，
-        ``coords.project``（router 场景 ``_route`` 回写）兜底，空落 ``default``
-        （F08 §1.2/§3）。与召回侧 ``_PROJECT_FILTER_FIELD`` 同 key 口径一致——
+        ``coords.project``（router 场景 ``_route`` 回写）兜底，空落空串
+        （``_DEFAULT_PROJECT``，跨项目可见；F08 §1.2/§3）。与召回侧
+        ``_PROJECT_FILTER_FIELD`` 同 key 口径一致——
         召回按 ``system_metadata.project`` 谓词下推，写入侧同此 key 取值。
         """
         metadata = unit.system_metadata or {}
@@ -545,7 +545,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _category_of(unit: MemoryUnit) -> str:
-        """落 memory_class 值，空落 ``team_memory``（F08 §2/§5）。
+        """落 memory_class 值，空落 ``daily_memory``（F08 §2/§5）。
 
         md.write 已在写入 md 前兜底回填 memory_class（F08 §4 步骤6 关键细节），
         故此处一般非空；留兜底是为防直接调 ``insert_units``（不经 md.write）的场景。
@@ -586,11 +586,11 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         md_filename = self._md_filename_of(unit)
         category = self._category_of(unit)
         project = self._project_of(unit)
-        # user_memory 无 project 归属（md 走 USER.md 全局单文件，不进 project 子目录），
+        # user_profile 无 project 归属（md 走 USER.md 全局单文件，落 root 顶层不进 project 子目录），
         # 影子索引 project 列恒落空串——召回按 project IN ('', value) 时空串行跨项目可见。
-        # 不强制则带 coords 写入的 user_memory 会落具体 project 值，撤掉 category 分批后
+        # 不强制则带 coords 写入的 user_profile 会落具体 project 值，撤掉 category 分批后
         # 不带 coords 召回（IN ('')）召不回它，全局可见性丢失。
-        if category == "user_memory":
+        if category == "user_profile":
             project = _DEFAULT_PROJECT
         lifecycle = _lifecycle_of(unit)
         t_valid = _t_valid_of(unit)
@@ -601,8 +601,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # ① memory_unit（拿隐式 rowid，FTS5/vec0 靠它关联，F07 §11.2 注 A）。
         # scope 五列与 project 同级下推：org/space/user/agent/session 严格等值隔离
         # （对齐 KV 五段等值 WHERE，见 sqlite_kv_store），与 project（收窄维，
-        # IN ['', value]）正交。user_memory 的 project 空串守卫（见上方）不延伸到 scope
-        # ——scope 是身份隔离维，user_memory 的 scope 必须是真实值。
+        # IN ['', value]）正交。user_profile 的 project 空串守卫（见上方）不延伸到 scope
+        # ——scope 是身份隔离维，user_profile 的 scope 必须是真实值。
         conn.execute(
             "INSERT INTO memory_unit "
             "(unit_id, content_hash, md_filename, project, "
@@ -778,10 +778,10 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # （SUPERSEDE 改的就是它们），且 t_valid=None 是合法值非兜底。
         if project == _DEFAULT_PROJECT and old_project:
             project = old_project
-        # user_memory 无 project 归属，project 列恒落空串（与 insert_units 同口径，
-        # 见写入侧守卫）。放兜底守卫之后，覆盖其结果——防旧数据 user_memory 的
+        # user_profile 无 project 归属，project 列恒落空串（与 insert_units 同口径，
+        # 见写入侧守卫）。放兜底守卫之后，覆盖其结果——防旧数据 user_profile 的
         # old_project 为具体值时被兜底守卫错误保留。
-        if category == "user_memory":
+        if category == "user_profile":
             project = _DEFAULT_PROJECT
         if not md_filename and old_md_filename:
             md_filename = old_md_filename

@@ -693,7 +693,7 @@ class CloudEngine(MemoryEngine):
         # 文档模式 supersede：old 经 shadow.get_units 读回，coords 是 TRANSIENT 键
         # （dumps 剥除），读回的 old.system_metadata 无 coords → deepcopy 的 new 也无 →
         # domain_store.add 内 _md_path._project_of 读 coords 落空 → md_filename 重算成
-        # memory/default/MEMORY.md（丢失 project 维）。从 old 的 md_filename（落盘键，
+        # memory/MEMORY.md（丢失 project 维）。从 old 的 md_filename（落盘键，
         # 不剥除）反推 project 回写 new 的 coords，让新版落进与旧版同一文件（版本链
         # 同文件追加，F08 §5.2.1）。非文档模式无此问题（KV 不走 md 分流）。
         if self._domain_store.should_write_document():

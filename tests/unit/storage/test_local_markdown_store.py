@@ -51,54 +51,55 @@ def _unit(uid: str, content: str, metadata: dict | None = None) -> MemoryUnit:
 # -- 路径映射（F08 §3） ------------------------------------------------------ #
 
 
-def test_md_path_for_user_memory_ignores_project() -> None:
-    """user_memory 跨 project 放 memory 根下 USER.md。"""
+def test_md_path_for_user_profile_ignores_project() -> None:
+    """user_profile 跨 project 落 root 顶层 USER.md（不进 memory/、无 project 段）。"""
     store = _store(None)
-    unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "user_memory", COORDS_KEY: {"project": "p1"}})
-    assert store._md_path(unit) == "memory/USER.md"
+    unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "user_profile", COORDS_KEY: {"project": "p1"}})
+    assert store._md_path(unit) == "USER.md"
 
 
-def test_md_path_for_project_memory_scopes_by_project() -> None:
+def test_md_path_for_long_term_memory_scopes_by_project() -> None:
     store = _store(None)
-    unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}})
     assert store._md_path(unit) == "memory/p1/MEMORY.md"
 
 
-def test_md_path_for_project_memory_without_project_lands_at_memory_root() -> None:
-    """project_memory + coords={}（无 project）→ 落 memory 根下 MEMORY.md，与 USER.md 同目录。
+def test_md_path_for_long_term_memory_without_project_lands_at_memory_root() -> None:
+    """long_term_memory + coords={}（无 project）→ 落 memory 根下 MEMORY.md（跨项目可见）。
 
-    agent-core provider 无 project 时传 coords={}（空字典）请求判定；判定为 project_memory 后，
-    md 落点取 coords.project，空串即落 memory 根下（跨项目可见）——不是 default/ 子目录。与
-    user_memory 的 USER.md 同落 memory 根下，是「无 project 同目录」契约的直接守卫：一旦
-    _md_path 改成空 project 进 default/ 或别的子目录，这里立即捕获。
+    agent-core provider 无 project 时传 coords={}（空字典）请求判定；判定为 long_term_memory 后，
+    md 落点取 coords.project，空串即落 memory 根下（跨项目可见）——不是 default/ 子目录。
+    user_profile 的 USER.md 落 root 顶层（不进 memory/），二者不再同目录——USER.md 上移后
+    这是「无 project 落 memory 根下」契约的直接守卫：一旦 _md_path 改成空 project 进
+    default/ 或别的子目录，这里立即捕获。
     """
     store = _store(None)
-    proj = _unit("u1", "x", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {}})
-    user = _unit("u2", "y", {MEMORY_CLASS_KEY: "user_memory", COORDS_KEY: {}})
+    proj = _unit("u1", "x", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {}})
+    user = _unit("u2", "y", {MEMORY_CLASS_KEY: "user_profile", COORDS_KEY: {}})
     assert store._md_path(proj) == "memory/MEMORY.md"
-    assert store._md_path(user) == "memory/USER.md"
-    # 同落 memory 根下：路径形如 memory/<file>，不进 default/ 或 project 子目录
-    for path in (store._md_path(proj), store._md_path(user)):
-        assert "default" not in path
-        assert path.startswith("memory/") and path.count("/") == 1
+    assert store._md_path(user) == "USER.md"
+    # long_term_memory 无 project 落 memory 根下（memory/MEMORY.md，跨项目可见）
+    proj_path = store._md_path(proj)
+    assert "default" not in proj_path
+    assert proj_path.startswith("memory/") and proj_path.count("/") == 1
 
 
-def test_md_path_for_team_memory_uses_daily_file() -> None:
+def test_md_path_for_daily_memory_uses_daily_file() -> None:
     store = _store(None)
-    unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "team_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "daily_memory", COORDS_KEY: {"project": "p1"}})
     today = datetime.date.today().isoformat()
     assert store._md_path(unit) == f"memory/p1/daily_memory/{today}.md"
 
 
 def test_md_path_defaults_missing_class_and_project() -> None:
-    """空 memory_class → team_memory；空 project → 落 memory 根下（跨项目可见）。"""
+    """空 memory_class → daily_memory；空 project → 落 memory 根下（跨项目可见）。"""
     store = _store(None)
     unit = _unit("u1", "x", {})
     today = datetime.date.today().isoformat()
     assert store._md_path(unit) == f"memory/daily_memory/{today}.md"
 
 
-def test_unknown_memory_class_falls_back_to_team_memory() -> None:
+def test_unknown_memory_class_falls_back_to_daily_memory() -> None:
     store = _store(None)
     unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "weird", COORDS_KEY: {"project": "p1"}})
     today = datetime.date.today().isoformat()
@@ -106,10 +107,10 @@ def test_unknown_memory_class_falls_back_to_team_memory() -> None:
 
 
 def test_md_path_for_agent_llm_classes_share_routes() -> None:
-    """agent_llm 抽取产出的三类（F09）与 Router 判定三类共享同一路径。
+    """agent_llm 抽取产出的三类（F09）收敛后单一命名口径，各自映射到对应 md 路径。
 
-    user_profile↔user_memory（跨 project USER.md）、long_term_memory↔project_memory
-    （{project}/MEMORY.md，无 project 落 memory 根下）、daily_memory↔team_memory
+    user_profile（跨 project USER.md，落 root 顶层）、long_term_memory
+    （{project}/MEMORY.md，无 project 落 memory 根下）、daily_memory
     （{project}/daily_memory/日期.md）。
     """
     store = _store(None)
@@ -120,18 +121,18 @@ def test_md_path_for_agent_llm_classes_share_routes() -> None:
     )
     long_term_root = _unit("u3", "z", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {}})
     daily = _unit("u4", "w", {MEMORY_CLASS_KEY: "daily_memory", COORDS_KEY: {"project": "p1"}})
-    assert store._md_path(profile) == "memory/USER.md"
+    assert store._md_path(profile) == "USER.md"
     assert store._md_path(long_term) == "memory/p1/MEMORY.md"
     assert store._md_path(long_term_root) == "memory/MEMORY.md"
     assert store._md_path(daily) == f"memory/p1/daily_memory/{today}.md"
 
 
-def test_resolved_memory_class_defaults_to_team_memory() -> None:
-    assert LocalMarkdownStore._resolved_memory_class({}) == "team_memory"
-    assert LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: ""}) == "team_memory"
+def test_resolved_memory_class_defaults_to_daily_memory() -> None:
+    assert LocalMarkdownStore._resolved_memory_class({}) == "daily_memory"
+    assert LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: ""}) == "daily_memory"
     assert (
-        LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: "project_memory"})
-        == "project_memory"
+        LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: "long_term_memory"})
+        == "long_term_memory"
     )
 
 
@@ -159,7 +160,7 @@ def test_project_of_reads_scalar_or_coords() -> None:
 
 def test_render_block_uses_md_title_for_non_daily_files() -> None:
     unit = _unit("u1", "hello", {MD_TITLE_KEY: "Frontend framework"})
-    block = LocalMarkdownStore._render_block(unit, "hello", "project_memory")
+    block = LocalMarkdownStore._render_block(unit, "hello", "long_term_memory")
     assert block == "# Frontend framework\nhello\n\n"
 
 
@@ -167,20 +168,20 @@ def test_render_block_falls_back_to_empty_title_when_no_title() -> None:
     # 空标题不再用 unit_id 兜底——标题行保留作 block 结构锚点（split("\n",1)），
     # 内容空串；read-back 路径不解析标题内容，shadow 不存标题，无副作用。
     unit = _unit("u1", "hello", {})
-    block = LocalMarkdownStore._render_block(unit, "hello", "project_memory")
+    block = LocalMarkdownStore._render_block(unit, "hello", "long_term_memory")
     assert block == "# \nhello\n\n"
 
 
 def test_render_block_uses_team_coord_for_daily_files() -> None:
     unit = _unit("u1", "hello", {COORDS_KEY: {"team": "infra"}})
-    block = LocalMarkdownStore._render_block(unit, "hello", "team_memory")
+    block = LocalMarkdownStore._render_block(unit, "hello", "daily_memory")
     assert block == "# infra\nhello\n\n"
 
 
 def test_render_block_falls_back_to_empty_title_when_no_team() -> None:
-    # team_memory 无 team 坐标 → 标题空串（不用 unit_id 兜底）
+    # daily_memory 无 team 坐标 → 标题空串（不用 unit_id 兜底）
     unit = _unit("u1", "hello", {})
-    block = LocalMarkdownStore._render_block(unit, "hello", "team_memory")
+    block = LocalMarkdownStore._render_block(unit, "hello", "daily_memory")
     assert block == "# \nhello\n\n"
 
 
@@ -189,13 +190,13 @@ def test_render_block_falls_back_to_empty_title_when_no_team() -> None:
 
 def test_write_persists_blocks_and_backfills_md_filename(tmp_path) -> None:
     store = _store(tmp_path)
-    unit = _unit("u1", "hello", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit("u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}})
 
     store.write(SCOPE, [unit])
 
     assert unit.system_metadata[MD_FILENAME_KEY] == "memory/p1/MEMORY.md"
     # 兜底后的 memory_class 写回
-    assert unit.system_metadata[MEMORY_CLASS_KEY] == "project_memory"
+    assert unit.system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
     written = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
     assert "# \nhello\n\n" in written
 
@@ -206,16 +207,17 @@ def test_write_backfills_default_class_when_missing(tmp_path) -> None:
 
     store.write(SCOPE, [unit])
 
-    assert unit.system_metadata[MEMORY_CLASS_KEY] == "team_memory"
+    assert unit.system_metadata[MEMORY_CLASS_KEY] == "daily_memory"
     today = datetime.date.today().isoformat()
     assert unit.system_metadata[MD_FILENAME_KEY] == f"memory/daily_memory/{today}.md"
 
 
 def test_write_groups_same_file_units_into_one_append(tmp_path) -> None:
     store = _store(tmp_path)
+    meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
     units = [
-        _unit("u1", "first", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}),
-        _unit("u2", "second", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}),
+        _unit("u1", "first", meta),
+        _unit("u2", "second", meta),
     ]
 
     store.write(SCOPE, units)
@@ -230,7 +232,7 @@ def test_write_groups_same_file_units_into_one_append(tmp_path) -> None:
 
 def test_replace_content_replaces_matching_block(tmp_path) -> None:
     store = _store(tmp_path)
-    unit = _unit("u1", "old", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit("u1", "old", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}})
     store.write(SCOPE, [unit])
 
     replaced = store.replace_content(SCOPE, "memory/p1/MEMORY.md", "old", "new")
@@ -243,7 +245,7 @@ def test_replace_content_replaces_matching_block(tmp_path) -> None:
 
 def test_replace_content_returns_false_when_no_match(tmp_path) -> None:
     store = _store(tmp_path)
-    unit = _unit("u1", "hello", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit("u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}})
     store.write(SCOPE, [unit])
 
     assert store.replace_content(SCOPE, "memory/p1/MEMORY.md", "not there", "x") is False
@@ -263,10 +265,10 @@ def test_remove_content_deletes_matching_block(tmp_path) -> None:
         SCOPE,
         [
             _unit(
-                "u1", "keep", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+                "u1", "keep", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
             ),
             _unit(
-                "u2", "drop", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+                "u2", "drop", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
             ),
         ],
     )
@@ -283,7 +285,7 @@ def test_remove_content_returns_false_when_no_match(tmp_path) -> None:
     store = _store(tmp_path)
     store.write(
         SCOPE,
-        [_unit("u1", "hello", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}})],
+        [_unit("u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}})],
     )
 
     assert store.remove_content(SCOPE, "memory/p1/MEMORY.md", "missing") is False
@@ -357,9 +359,9 @@ def test_write_rejects_project_coord_escape(tmp_path) -> None:
 
     store = _store(tmp_path)
     unit = _unit(
-        "u1",
+"u1",
         "evil",
-        {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "../../evil"}},
+        {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "../../evil"}},
     )
 
     with pytest.raises(ValidationError):
@@ -411,8 +413,8 @@ def test_resolve_md_path_maps_basename_and_project() -> None:
     """
     from jiuwen_memory.storage.markdown import MarkdownStore
 
-    assert MarkdownStore._resolve_md_path("USER.md", "p1") == "memory/USER.md"
-    assert MarkdownStore._resolve_md_path("USER.md", "") == "memory/USER.md"
+    assert MarkdownStore._resolve_md_path("USER.md", "p1") == "USER.md"
+    assert MarkdownStore._resolve_md_path("USER.md", "") == "USER.md"
     assert MarkdownStore._resolve_md_path("MEMORY.md", "p1") == "memory/p1/MEMORY.md"
     assert MarkdownStore._resolve_md_path("MEMORY.md", "") == "memory/MEMORY.md"
     assert (
@@ -431,7 +433,7 @@ def test_read_content_returns_full_file_when_no_line_range(tmp_path) -> None:
     store.write(
         SCOPE,
         [_unit("u1", "hello world", {
-            MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": ""},
+            MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": ""},
         })],
     )
     text = store.read_content(SCOPE, "MEMORY.md", project="")
@@ -441,13 +443,14 @@ def test_read_content_returns_full_file_when_no_line_range(tmp_path) -> None:
 def test_read_content_slices_by_line_range_1_based_closed(tmp_path) -> None:
     """``line_range=(start, end)`` 1-based 闭区间切片。"""
     store = _store(tmp_path)
+    meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": ""}}
     store.write(
         SCOPE,
-        [_unit("u1", "line A", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": ""}})],
+        [_unit("u1", "line A", meta)],
     )
     store.write(
         SCOPE,
-        [_unit("u2", "line B", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": ""}})],
+        [_unit("u2", "line B", meta)],
     )
     # memory/MEMORY.md 内容：`# \nline A\n\n# \nline B\n\n`（标题行 + 正文 + 块分隔）
     text = store.read_content(SCOPE, "MEMORY.md", project="", line_range=(1, 2))
@@ -461,7 +464,7 @@ def test_read_content_clamps_out_of_range(tmp_path) -> None:
     store.write(
         SCOPE,
         [_unit("u1", "only line", {
-            MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": ""},
+            MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": ""},
         })],
     )
     # start 远超文件行数 → lo >= hi → 空串
@@ -500,7 +503,7 @@ def test_edit_content_replaces_unique_substring(tmp_path) -> None:
     store.write(
         SCOPE,
         [_unit("u1", "hello world", {
-            MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": ""},
+            MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": ""},
         })],
     )
     store.edit_content(SCOPE, "MEMORY.md", "hello", "goodbye", project="")
@@ -512,7 +515,7 @@ def test_edit_content_replaces_unique_substring(tmp_path) -> None:
 def test_edit_content_accepts_cross_block_text(tmp_path) -> None:
     """old_text 任意文本（跨块均可），不强制对齐块边界。"""
     store = _store(tmp_path)
-    meta = {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": ""}}
+    meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": ""}}
     store.write(SCOPE, [_unit("u1", "alpha", meta)])
     store.write(SCOPE, [_unit("u2", "beta", meta)])
     # 跨块子串（含块间 ``\n\n`` + 标题行）
@@ -533,7 +536,7 @@ def test_edit_content_raises_not_found_when_old_text_absent(tmp_path) -> None:
     store = _store(tmp_path)
     store.write(
         SCOPE,
-        [_unit("u1", "hello", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": ""}})],
+        [_unit("u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": ""}})],
     )
     with pytest.raises(NotFoundError):
         store.edit_content(SCOPE, "MEMORY.md", "nonexistent", "x", project="")
@@ -544,7 +547,7 @@ def test_edit_content_raises_validation_when_old_text_not_unique(tmp_path) -> No
     from jiuwen_memory.common.errors import ValidationError
 
     store = _store(tmp_path)
-    meta = {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": ""}}
+    meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": ""}}
     store.write(SCOPE, [_unit("u1", "dup", meta)])
     store.write(SCOPE, [_unit("u2", "dup", meta)])
     with pytest.raises(ValidationError):
@@ -566,7 +569,7 @@ def test_edit_content_resolves_project_subdir(tmp_path) -> None:
     store.write(
         SCOPE,
         [_unit("u1", "project content", {
-            MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"},
+            MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"},
         })],
     )
     store.edit_content(SCOPE, "MEMORY.md", "project content", "edited", project="p1")

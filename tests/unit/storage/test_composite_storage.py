@@ -323,7 +323,7 @@ def _doc_unit(scope: Scope, unit_id: str, content: str, project: str = "p1") -> 
         scope=scope,
         segments=[Segment(content=content)],
         system_metadata={
-            MEMORY_CLASS_KEY: "project_memory",
+            MEMORY_CLASS_KEY: "long_term_memory",
             COORDS_KEY: {"project": project},
         },
     )
@@ -372,10 +372,10 @@ def test_document_mode_add_writes_md_and_shadow_not_kv(tmp_path) -> None:
     assert "deploy cluster" in md.read_text(encoding="utf-8")
 
 
-def test_document_mode_project_memory_with_empty_coords_lands_at_memory_root(tmp_path) -> None:
-    """coords={} 空字典（无 project）的 project_memory unit 经 storage.add 后 md 落 memory 根下。
+def test_document_mode_long_term_memory_with_empty_coords_lands_at_memory_root(tmp_path) -> None:
+    """coords={} 空字典（无 project）的 long_term_memory unit 经 storage.add 后 md 落 memory 根下。
 
-    agent-core provider 无 project 时传 coords={} 请求判定；文档模式下 project_memory 的 md
+    agent-core provider 无 project 时传 coords={} 请求判定；文档模式下 long_term_memory 的 md
     落点取 coords.project，空串即落 memory/MEMORY.md（memory 根下，与 USER.md 同目录），非
     default/ 或 project 子目录。md_filename 回填为 memory 根下路径，影子索引与之一致——一旦
     _md_path 或 MarkdownStore.write 改成空 project 进 default/ 子目录，这里立即捕获。
@@ -386,7 +386,7 @@ def test_document_mode_project_memory_with_empty_coords_lands_at_memory_root(tmp
         id="u1",
         scope=scope,
         segments=[Segment(content="项目部署在集群 A")],
-        system_metadata={MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {}},
+        system_metadata={MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {}},
     )
     storage.add(scope, [unit])
 

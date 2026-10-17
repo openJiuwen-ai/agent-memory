@@ -127,8 +127,8 @@ def test_project_of_reads_scalar_or_coords() -> None:
 
 
 def test_category_of_reads_memory_class_or_defaults() -> None:
-    assert _category_of(_unit("u1", "x", {MEMORY_CLASS_KEY: "project_memory"})) == "project_memory"
-    assert _category_of(_unit("u1", "x", {})) == "team_memory"
+    assert _category_of(_unit("u1", "x", {MEMORY_CLASS_KEY: "long_term_memory"})) == "long_term_memory"
+    assert _category_of(_unit("u1", "x", {})) == "daily_memory"
 
 
 def test_md_filename_of_reads_backfilled_path() -> None:
@@ -301,8 +301,8 @@ def test_search_fulltext_no_project_predicate_defaults_to_empty_string(tmp_path)
     """无 project 谓词 → 兜底 project=''（只召回跨项目可见空串行，不放宽成全库）。"""
     store = _store(tmp_path)
     # 空串 project（跨项目可见）+ 具体 project 各一条
-    store.insert_units(SCOPE, [_unit("u-empty", "alpha", {MEMORY_CLASS_KEY: "team_memory"})])
-    p1_meta = {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+    store.insert_units(SCOPE, [_unit("u-empty", "alpha", {MEMORY_CLASS_KEY: "daily_memory"})])
+    p1_meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
     store.insert_units(SCOPE, [_unit("u-p1", "alpha", p1_meta)])
     # 无 project 谓词召回
     hits = store.search_fulltext(SCOPE, TextQuery(text="alpha", top_k=10))
@@ -314,8 +314,8 @@ def test_search_fulltext_no_project_predicate_defaults_to_empty_string(tmp_path)
 def test_search_fulltext_project_and_conflict_values_yields_empty(tmp_path) -> None:
     """系统 p1 AND 用户 p2（冲突）→ 召回空集（AND 语义正确，P1 修复回归）。"""
     store = _store(tmp_path)
-    p1_meta = {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
-    p2_meta = {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p2"}}
+    p1_meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
+    p2_meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p2"}}
     store.insert_units(SCOPE, [_unit("u-p1", "alpha", p1_meta)])
     store.insert_units(SCOPE, [_unit("u-p2", "alpha", p2_meta)])
 
@@ -332,7 +332,7 @@ def test_search_fulltext_project_and_conflict_values_yields_empty(tmp_path) -> N
 def test_insert_and_get_roundtrip(tmp_path) -> None:
     store = _store(tmp_path)
     unit = _unit(
-        "u1", "hello world", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+        "u1", "hello world", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
     )
 
     store.insert_units(SCOPE, [unit])
@@ -368,7 +368,7 @@ def test_update_overwrites_content_and_preserves_project_guard(tmp_path) -> None
             _unit(
                 "u1",
                 "hello world",
-                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+                {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}},
             )
         ],
     )
@@ -422,7 +422,7 @@ def test_update_preserves_md_filename_in_unit_json_when_new_unit_lacks_it(tmp_pa
     md = "memory/p1/MEMORY.md"
     store.insert_units(
         SCOPE,
-        [_unit("u1", "hello world", {MD_FILENAME_KEY: md, MEMORY_CLASS_KEY: "project_memory"})],
+        [_unit("u1", "hello world", {MD_FILENAME_KEY: md, MEMORY_CLASS_KEY: "long_term_memory"})],
     )
     # 构造 new unit：同 id、改 content，但**不带** MD_FILENAME_KEY（模拟 evolver dedup
     # 多源交集丢键 / 上游重建对象丢键）。
@@ -430,7 +430,7 @@ def test_update_preserves_md_filename_in_unit_json_when_new_unit_lacks_it(tmp_pa
         id="u1",
         scope=SCOPE,
         segments=[Segment(content="updated content")],
-        system_metadata={MEMORY_CLASS_KEY: "project_memory"},  # 故意无 MD_FILENAME_KEY
+        system_metadata={MEMORY_CLASS_KEY: "long_term_memory"},  # 故意无 MD_FILENAME_KEY
     )
     store.update_units(SCOPE, [new_unit])
 
@@ -450,17 +450,17 @@ def test_update_md_filename_loss_is_not_contagious_across_rounds(tmp_path) -> No
     md = "memory/p1/MEMORY.md"
     store.insert_units(
         SCOPE,
-        [_unit("u1", "first", {MD_FILENAME_KEY: md, MEMORY_CLASS_KEY: "project_memory"})],
+        [_unit("u1", "first", {MD_FILENAME_KEY: md, MEMORY_CLASS_KEY: "long_term_memory"})],
     )
     # 第一轮：new unit 不带 MD_FILENAME_KEY
     store.update_units(
         SCOPE,
-        [
+[
             MemoryUnit(
                 id="u1",
                 scope=SCOPE,
                 segments=[Segment(content="second")],
-                system_metadata={MEMORY_CLASS_KEY: "project_memory"},
+                system_metadata={MEMORY_CLASS_KEY: "long_term_memory"},
             )
         ],
     )
@@ -509,17 +509,17 @@ def test_search_fulltext_returns_ranked_hits(tmp_path) -> None:
     store.insert_units(
         SCOPE,
         [
-            _unit(
+_unit(
                 "u1",
                 "deploy cluster",
-                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+                {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}},
             ),
             _unit(
                 "u2",
                 "cluster failure",
-                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+                {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}},
             ),
-            _unit("u3", "coffee preference", {MEMORY_CLASS_KEY: "user_memory"}),
+            _unit("u3", "coffee preference", {MEMORY_CLASS_KEY: "user_profile"}),
         ],
     )
 

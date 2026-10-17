@@ -57,12 +57,12 @@ from jiuwen_memory.storage.watchdog import Watchdog, WatchdogProducer
 logger = get_logger(__name__)
 
 # md 路径 → memory_class 反推映射（与 LocalMarkdownStore._PATH_MAP 对称，F08 §3）。
-# _PATH_MAP: user_memory→USER.md / project_memory→MEMORY.md / team_memory→daily_memory。
-# 反推：按文件名/子目录判 category——daily_memory/ 下 → team_memory，MEMORY.md →
-# project_memory，USER.md → user_memory。
+# _PATH_MAP: user_profile→USER.md / long_term_memory→MEMORY.md / daily_memory→daily_memory/。
+# 反推：按文件名/子目录判 category——daily_memory/ 下 → daily_memory，
+# USER.md → user_profile，MEMORY.md → long_term_memory。
 _FILE_NAME_TO_CLASS: dict[str, str] = {
-    "USER.md": "user_memory",
-    "MEMORY.md": "project_memory",
+    "USER.md": "user_profile",
+    "MEMORY.md": "long_term_memory",
 }
 
 _DEFAULT_TIER = MemoryTier.SEMANTIC
@@ -74,11 +74,16 @@ def _project_from_md_path(md_filename: str) -> str:
     """从 md 相对路径反推 project（F08 §3 路径规则）。
 
     路径形如 ``memory/{project}/daily_memory/2026-09-01.md`` 或
-    ``memory/{project}/MEMORY.md``；``USER.md`` 在 memory 根下无 project 段 → ``default``。
+    ``memory/{project}/MEMORY.md``；``USER.md`` 落 root 顶层（跨 project 用户画像，
+    无 project 段），无论是否带 ``memory/`` 前缀都 → ``default``。
     """
-    parts = md_filename.replace("\\", "/").split("/")
-    # 期望 ["memory", <project?>, ...]；USER.md 形如 memory/USER.md（无 project 段）
-    if len(parts) >= 2 and parts[0] == "memory" and parts[1] != "USER.md":
+    normalized = md_filename.replace("\\", "/")
+    # USER.md 是跨 project 全局文件，basename 命中即落 default（不取 path 段作 project）
+    if os.path.basename(normalized) == "USER.md":
+        return "default"
+    parts = normalized.split("/")
+    # 期望 ["memory", <project>, ...]；USER.md 形如 USER.md（root 顶层，len=1）落 default
+    if len(parts) >= 2 and parts[0] == "memory":
         return parts[1]
     return "default"
 
@@ -87,12 +92,12 @@ def _class_from_md_path(md_filename: str) -> str:
     """从 md 相对路径反推 memory_class（F08 §3 映射，对称 LocalMarkdownStore._PATH_MAP）。"""
     normalized = md_filename.replace("\\", "/")
     if "daily_memory/" in normalized:
-        return "team_memory"
+        return "daily_memory"
     base = os.path.basename(normalized)
     if base in _FILE_NAME_TO_CLASS:
         return _FILE_NAME_TO_CLASS[base]
-    # 未知路径兜底 team_memory（与 LocalMarkdownStore._DEFAULT_CLASS 一致）
-    return "team_memory"
+    # 未知路径兜底 daily_memory（与 LocalMarkdownStore._DEFAULT_CLASS 一致）
+    return "daily_memory"
 
 
 class LocalWatchdog(Watchdog):
@@ -200,13 +205,12 @@ class LocalWatchdog(Watchdog):
                     return
                 self._owner.schedule_sync(event.src_path, deleted=True)
 
-        watch_dir = os.path.join(self._markdown_root, "memory")
+        # 监听整个 markdown_root（recursive=True）：USER.md 落 root 顶层（不在 memory/ 下），
+        # memory/ 下的其余 md 由 recursive 监听自然捕获。memory/ 子目录由写入侧
+        # _ensure_dir 自动创建，创建后其下变更即被监听。不能 schedule 不存在的目录。
+        watch_dir = self._markdown_root
         if not os.path.isdir(watch_dir):
-            # memory 目录尚不存在：监听根目录，用户创建 memory 后事件自然来。
-            # 不能 schedule 不存在的目录（Observer 会报错），退监听 markdown_root 本身。
-            watch_dir = self._markdown_root
-            if not os.path.isdir(watch_dir):
-                os.makedirs(watch_dir, exist_ok=True)
+            os.makedirs(watch_dir, exist_ok=True)
 
         self._observer = Observer()
         handler = _MdFileHandler(self)
@@ -472,7 +476,7 @@ class LocalWatchdog(Watchdog):
         缺省值：
         - scope：由调用方传入（继承自 ``latest_scope_by_md`` 或默认空 Scope，见 _sync_one）
         - scope.project（coords）：从 md 路径反推
-        - category(memory_class)：从 md 路径反推（USER.md→user_memory 等）
+        - category(memory_class)：从 md 路径反推（USER.md→user_profile 等）
         - tier：SEMANTIC（与抽取产出的语义记忆一致）
         - temporal：t_ingest=now，其余 None
         - provenance：标记 "watchdog_sync"

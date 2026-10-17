@@ -56,6 +56,7 @@ def test_content_hash_matches_shadow_index_sha256() -> None:
 
 def test_project_from_md_path_for_user_file_is_default() -> None:
     assert _project_from_md_path("memory/USER.md") == "default"
+    assert _project_from_md_path("USER.md") == "default"  # root 顶层（USER.md 上移后实际形态）
 
 
 @pytest.mark.parametrize(
@@ -78,10 +79,11 @@ def test_project_from_md_path_unknown_shape_defaults() -> None:
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        ("memory/p1/daily_memory/x.md", "team_memory"),
-        ("memory/USER.md", "user_memory"),
-        ("memory/p1/MEMORY.md", "project_memory"),
-        ("memory/p1/unknown.md", "team_memory"),  # 未知兜底
+        ("memory/p1/daily_memory/x.md", "daily_memory"),
+        ("memory/USER.md", "user_profile"),
+        ("USER.md", "user_profile"),  # root 顶层（USER.md 上移后实际形态）
+        ("memory/p1/MEMORY.md", "long_term_memory"),
+        ("memory/p1/unknown.md", "daily_memory"),  # 未知兜底
     ],
 )
 def test_class_from_md_path_maps_file_to_memory_class(path: str, expected: str) -> None:
@@ -116,7 +118,7 @@ def test_build_unit_derives_coords_and_class_from_md_path(tmp_path) -> None:
     assert unit.scope is SCOPE
     assert unit.segments[0].content == "hello world"
     assert unit.system_metadata[COORDS_KEY] == {"project": "p1"}
-    assert unit.system_metadata[MEMORY_CLASS_KEY] == "project_memory"
+    assert unit.system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
     assert unit.system_metadata[MD_FILENAME_KEY] == "memory/p1/MEMORY.md"
     assert unit.provenance == ["watchdog_sync"]
 

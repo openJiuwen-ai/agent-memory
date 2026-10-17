@@ -396,7 +396,7 @@ _OBSERVATION_DATE_PREFIX_EN = (
 )
 
 # memory_class 三类（F09）：agent 场景的归属类别，文档模式 md 落盘分流键的取值域。
-# 语义与 Router 判定的 user_memory/project_memory/team_memory 三类一一对应、共享
+# 语义与 Router 判定的 user_profile/long_term_memory/daily_memory 三类一一对应、共享
 # 同一路径（F08 §3 _PATH_MAP 加同名映射）。默认 long_term_memory——三类里最宽的
 # 桶，拿不准时宁可长期保留，不按天丢弃。
 _MEMORY_CLASSES = frozenset({"user_profile", "long_term_memory", "daily_memory"})

@@ -4,10 +4,11 @@ md 文件是文档记忆（F08）的人类可读视图——只记 ``segments[0]
 不记元数据。落盘路径按 ``memory_class``（归属类别）+ ``project``（coords 坐标）映射
 （F08 §3）：
 
-    user_memory  → {root}/memory/USER.md                          （跨 project，memory 根下）
-    project_memory → {root}/memory/{project|default}/MEMORY.md    （单文件，块追加）
-    team_memory  → {root}/memory/{project|default}/daily_memory/YYYY-MM-DD.md  （按天聚合）
-    空（兜底）  → 同 team_memory（F08 §2）
+    user_profile → {root}/USER.md                                （跨 project，root 顶层）
+    long_term_memory → {root}/memory/{project}/MEMORY.md         （单文件，块追加）
+    daily_memory → {root}/memory/{project}/daily_memory/YYYY-MM-DD.md
+    project 为空 → 落 memory 根下（memory/MEMORY.md / memory/daily_memory/...，跨项目可见）
+    空 memory_class（兜底）→ 同 daily_memory（F08 §2）
 
 ``write`` 落盘后就地回填 ``unit.system_metadata[MD_FILENAME_KEY]``（相对根路径），
 供影子索引 ``insert_units`` 从 system_metadata 读取后落 ``memory_unit.md_filename`` 列。
@@ -38,23 +39,19 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
 
 # memory_class → (子路径模板, 是否进 project 子目录)
-# user_memory 不进 project 子目录（跨项目用户画像）；project/team 进 project 子目录。
+# user_profile 不进 project 子目录（跨项目用户画像，落 root 顶层）；long_term/daily 进 project 子目录。
 # 详见 F08 §3 映射表。
-# 后三键是 agent_llm 抽取产出的 agent 场景类别名（F09）：与前三个 Router 判定类名
-# 语义一一对应、共享同一路径——user_profile↔user_memory、long_term_memory↔
-# project_memory、daily_memory↔team_memory。看门狗路径反推（_class_from_md_path）
-# 不区分两套名：路径一致即落盘行为一致，仅影子索引 category 列按旧名回写。
+# memory_class 取值域（F09）：user_profile / long_term_memory / daily_memory——agent_llm
+# 抽取产出的归属类别，也是文档模式 md 落盘分流键。看门狗路径反推（_class_from_md_path）
+# 按 basename/子目录反查，与本表对称。
 _PATH_MAP: dict[str, tuple[str, bool]] = {
-    "user_memory": ("USER.md", False),
-    "project_memory": ("MEMORY.md", True),
-    "team_memory": ("daily_memory", True),  # daily_memory/ 下再拼 YYYY-MM-DD.md
     "user_profile": ("USER.md", False),
     "long_term_memory": ("MEMORY.md", True),
     "daily_memory": ("daily_memory", True),
 }
 
-_DEFAULT_CLASS = "team_memory"
-_DEFAULT_PROJECT = ""  # 无 project 时兜底空串：project_memory/team_memory 落 memory 根下（跨项目可见）
+_DEFAULT_CLASS = "daily_memory"
+_DEFAULT_PROJECT = ""  # 无 project 时兜底空串：long_term/daily_memory 落 memory 根下（跨项目可见）
 
 logger = get_logger(__name__)
 
@@ -189,7 +186,7 @@ class LocalMarkdownStore(MarkdownStore):
 
         块结构 ``<标题>\\n<正文>\\n\\n``（见 :meth:`_render_block`）。按 ``\\n\\n`` 切块，
         逐块比对「块首行（标题）后的正文」== ``old_content`` 命中——正文单行（§12.4），
-        故块 = ``# {标题}\\n{content}``（标题由 :meth:`_render_block` 生成：team_memory
+        故块 = ``# {标题}\\n{content}``（标题由 :meth:`_render_block` 生成：daily_memory
         用 coords.team，其余用 MD_TITLE_KEY；与 unit_id 无关；尾部 ``\\n\\n`` 是块间
         分隔，切块后余下），正文 = 块去首行（标题）+ 去前导换行后的剩余单行。
 
@@ -437,9 +434,10 @@ class LocalMarkdownStore(MarkdownStore):
     def _md_path(self, unit: MemoryUnit) -> str:
         """按 F08 §3 映射算 md 文件相对根目录的路径。
 
-        读 memory_class（空兜底 team_memory）+ project（system_metadata.project
-        标量优先，coords.project 兜底，空落空串）。无 project 的
-        project_memory/team_memory 落 memory 根下（与 USER.md 同级），与影子索引
+        读 memory_class（空兜底 daily_memory）+ project（system_metadata.project
+        标量优先，coords.project 兜底，空落空串）。user_profile 落 root 顶层
+        ``USER.md``（跨 project 用户画像，不进 memory/）；无 project 的
+        long_term_memory/daily_memory 落 memory 根下，与影子索引
         project 列空串 = 跨项目可见的语义对齐：
         ``memory/MEMORY.md``、``memory/daily_memory/YYYY-MM-DD.md``。
         """
@@ -447,14 +445,14 @@ class LocalMarkdownStore(MarkdownStore):
         memory_class = self._resolved_memory_class(metadata)
         project = self._project_of(unit)
 
-        # 未知 memory_class 走 team_memory 兜底（F08 §3.1 首版策略）
+        # 未知 memory_class 走 daily_memory 兜底（F08 §3.1 首版策略）
         sub, into_project = _PATH_MAP.get(memory_class, _PATH_MAP[_DEFAULT_CLASS])
 
         if not into_project:
-            # user_memory：跨 project 放 memory 根下
-            return f"memory/{sub}"
+            # user_profile：跨 project 用户画像落 root 顶层（不进 memory/，无 project 段）
+            return sub
 
-        # project_memory ：无 project（空串）时落 memory 根下
+        # long_term_memory / daily_memory：无 project（空串）时落 memory 根下
         # （跨项目可见），有 project 时进 project 子目录。
         if not project:
             if sub == "daily_memory":
@@ -465,12 +463,12 @@ class LocalMarkdownStore(MarkdownStore):
         if sub == "daily_memory":
             date = datetime.date.today().isoformat()
             return f"memory/{project}/daily_memory/{date}.md"
-        # project_memory
+        # long_term_memory
         return f"memory/{project}/{sub}"
 
     @staticmethod
     def _resolved_memory_class(metadata: dict) -> str:
-        """读 memory_class，空兜底 team_memory（F08 §2）。
+        """读 memory_class，空兜底 daily_memory（F08 §2）。
 
         write 与 _md_path 共用此方法，保证 md 路径算值与回填进 system_metadata
         的值（进而影子索引 category 列）口径一致。
@@ -479,8 +477,18 @@ class LocalMarkdownStore(MarkdownStore):
 
     @staticmethod
     def _project_of(unit: MemoryUnit) -> str:
-        """从 coords 取 project，空落空串。coords 是 dict[str, str]。"""
+        """取 project：``system_metadata.project``（agent 场景标量直传）优先，
+        ``coords.project``（router 场景 ``_route`` 回写）兜底，空落空串。
+
+        project 不入 KERNEL / TRANSIENT / NON_PROPAGATED 保留集——agent 场景无
+        router，coords 是 dict 会被 ``_reject_non_scalar_metadata`` 拒，故 project
+        作标量直传 system_metadata，经 ``inherited_system_metadata`` 继承到派生
+        unit。两路同 key 取值，与召回侧 shadow ``_PROJECT_FILTER_FIELD`` 口径一致。
+        """
         metadata = unit.system_metadata or {}
+        project = str(metadata.get("project") or "").strip()
+        if project:
+            return project
         coords = metadata.get(COORDS_KEY)
         if isinstance(coords, dict):
             project = str(coords.get("project") or "").strip()
@@ -503,7 +511,7 @@ class LocalMarkdownStore(MarkdownStore):
 
         标题分流（F08 §8.2）：
 
-        - daily 文件（team_memory / 兜底类，落 ``daily_memory/日期.md``）：
+        - daily 文件（daily_memory / 兜底类，落 ``daily_memory/日期.md``）：
           标题 = ``coords["team"]``——daily 按天聚合多人多来源的记忆，标题行用 team 名
           标识本条记忆的来源团队；team 坐标缺失时标题留空。
         - 其余文件（USER.md / MEMORY.md）：标题 = ``system_metadata["md_title"]``
@@ -519,7 +527,7 @@ class LocalMarkdownStore(MarkdownStore):
         标题行在任何读回路径中不被解析（看门狗跳过 ``#`` 行、replace/remove 按正文
         定位块、影子索引不存标题），标题内容变化对机器路径零影响。
         """
-        if memory_class == "team_memory":
+        if memory_class == "daily_memory":
             metadata = unit.system_metadata or {}
             coords = metadata.get(COORDS_KEY)
             team = ""
@@ -532,7 +540,7 @@ class LocalMarkdownStore(MarkdownStore):
             "[trace/md] render block | title=%r | memory_class=%s | md_title_key=%s | team=%r | unit_id=%s",
             title, memory_class,
             str((unit.system_metadata or {}).get(MD_TITLE_KEY) or ""),
-            (coords.get("team") if isinstance(coords, dict) else None) if memory_class == "team_memory" else None,
+            (coords.get("team") if isinstance(coords, dict) else None) if memory_class == "daily_memory" else None,
             unit.id[:8],
         )
         return f"# {title}\n{content}\n\n"
