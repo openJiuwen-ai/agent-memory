@@ -327,3 +327,26 @@ def test_from_yaml_rejects_malformed_placeholder(tmp_path):
         Config.from_yaml(str(path))
     with pytest.raises(ValidationError, match="不支持嵌套占位符"):
         Config.from_yaml_str(yaml_text)
+
+
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [("- 1\n- 2\n", "list"), ("hello\n", "str"), ("42\n", "int")],
+)
+def test_from_yaml_str_rejects_non_mapping_top_level(text: str, kind: str) -> None:
+    """YAML 合法但顶层不是映射时，应按配置错误报 ValidationError，而不是 dict() 的裸 TypeError。"""
+    with pytest.raises(ValidationError, match=rf"top level, got {kind}"):
+        Config.from_yaml_str(text)
+
+
+def test_from_yaml_rejects_non_mapping_file(tmp_path) -> None:
+    cfg_path = tmp_path / "memory-api.yml"
+    cfg_path.write_text("- 1\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="top level, got list"):
+        Config.from_yaml(str(cfg_path))
+
+
+@pytest.mark.parametrize("text", ["", "# 只有注释\n", "---\n"])
+def test_from_yaml_str_accepts_empty_document(text: str) -> None:
+    """空 YAML 文档仍是合法配置：解析为空 dict，而不是报错。"""
+    assert Config.from_yaml_str(text).is_empty()
