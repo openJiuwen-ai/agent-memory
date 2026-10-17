@@ -20,11 +20,15 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.16",
     "argon2-cffi>=23.1",
-    # 测试套件自身消费的三个未声明依赖（test_outbound_ssl / test_multimodal_adapter /
+    # 测试套件自身消费的未声明依赖（test_outbound_ssl / test_multimodal_adapter /
     # test_middle_e2e_real_llm），缺失会让 pytest 卡在 collection error。
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
+    # 看门狗用例（test_local_watchdog / test_memory_runtime_lifecycle）会真正
+    # LocalWatchdog.start()；watchdog 原本只在 deploy extras 里，仅装 dev 的 CI
+    # 会让 start 抛 RuntimeError，故 dev 一并声明。
+    "watchdog>=4.0",
 ]
 nlp = [
     "spacy>=3.7",
@@ -79,6 +83,7 @@ dev = [
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
+    "watchdog>=4.0",
 ]
 
 [[tool.uv.index]]

@@ -607,8 +607,19 @@ def test_vec_load_failure_logs_warning(tmp_path, caplog) -> None:
     store._embedder = object()
     store._sqlite_vec = _FakeVecModule()
 
-    with caplog.at_level(logging.WARNING):
-        store._ensure_conn()
+    # caplog 的 handler 只挂在 root 上；而 assemble 入口的 setup_logging 会把
+    # agent_memory 的 propagate 置 False（common/log/base.py 刻意阻断向上传播）。
+    # 同进程先跑过任一装配用例后，这里就经 root 捕获不到，断言随执行顺序变红。
+    # 把 handler 直接挂到产生记录的 logger，使本用例与全局传播状态无关。
+    module_logger = logging.getLogger(
+        "agent_memory.storage.shadow_impl.sqlite_shadow_index"
+    )
+    module_logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.WARNING):
+            store._ensure_conn()
+    finally:
+        module_logger.removeHandler(caplog.handler)
 
     assert store.vec_enabled is False
     assert any("sqlite_vec load failed" in r.message for r in caplog.records)
