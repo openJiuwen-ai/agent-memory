@@ -83,6 +83,17 @@ def _read_body(rfile, length: int) -> bytes:
     return rfile.read(length) if length else b""
 
 
+def _server_port(value: str) -> int:
+    """argparse 端口类型：拒绝越界值，避免 socket 层抛裸 OverflowError。"""
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("port must be an integer") from None
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 0 and 65535")
+    return port
+
+
 class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """限制并发处理线程，避免慢连接无界耗尽进程资源。"""
 
@@ -331,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser = argparse.ArgumentParser(prog="agent-memory-server")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8137)
+    parser.add_argument("--port", type=_server_port, default=8137)
     parser.add_argument(
         "--auth-mode",
         choices=sorted(_AUTH_MODES),
@@ -360,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         srv = HttpServer.build(config)
         srv.serve(args.host, args.port)
-    except ValidationError as exc:
+    except (ValidationError, OSError) as exc:
         logger.error("HTTP server refused to start: %s", exc)
         return 2
     return 0
