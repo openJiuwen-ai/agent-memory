@@ -17,6 +17,14 @@ def _memory_type(unit: MemoryUnit) -> str:
 
 def _sort_key(unit: MemoryUnit) -> tuple[datetime, str]:
     ingested_at = unit.temporal.t_ingest or datetime.min.replace(tzinfo=UTC)
+    # Temporal timestamps are datetime | None and callers may store naive
+    # datetimes (e.g. imported units created with datetime.now()). Mixing
+    # those with aware timestamps in one scope makes the tuple sort raise
+    # TypeError, turning list() into a 500. Compare in UTC.
+    if ingested_at.tzinfo is None:
+        ingested_at = ingested_at.replace(tzinfo=UTC)
+    else:
+        ingested_at = ingested_at.astimezone(UTC)
     return ingested_at, unit.id
 
 
