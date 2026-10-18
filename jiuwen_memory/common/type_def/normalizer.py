@@ -10,10 +10,15 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 
 class EntityNormalizer:
     """归一化实体文本生成稳定 key，用于去重和精确匹配。"""
 
     @staticmethod
     def normalize(text: str) -> str:
-        return " ".join(text.strip().lower().split())
+        # NFKC folds full-width forms and compatibility characters; casefold
+        # (not lower) makes e.g. "Straße" and "STRASSE" the same dedup key.
+        folded = unicodedata.normalize("NFKC", text).strip().casefold()
+        return " ".join(folded.split())
