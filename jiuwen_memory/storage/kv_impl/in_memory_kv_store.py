@@ -88,7 +88,9 @@ class InMemoryKVStore(KVStore, ConditionalKV):
 
     def delete(self, scope: Scope, key: str) -> None:
         with self._lock:
-            self._data[_skey(scope)].pop(key, None)
+            bucket = self._data.get(_skey(scope))
+            if bucket is not None:
+                bucket.pop(key, None)
 
     def get(self, scope: Scope, key: str) -> bytes:
         with self._lock:
@@ -117,8 +119,11 @@ class InMemoryKVStore(KVStore, ConditionalKV):
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         with self._lock:
             sk = _skey(scope)
+            bucket = self._data.get(sk)
+            if not bucket:
+                return []
             out: list[tuple[str, bytes]] = []
-            for key in list(self._data[sk].keys()):  # list(...) 固化键，便于惰性删除
+            for key in list(bucket.keys()):  # list(...) 固化键，便于惰性删除
                 value = self._live(sk, key)
                 if value is not None and key.startswith(prefix):
                     out.append((key, value))
@@ -148,7 +153,8 @@ class InMemoryKVStore(KVStore, ConditionalKV):
         with self._lock:
             return [
                 Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4])
-                for k in self._data
+                for k, bucket in self._data.items()
+                if bucket
             ]
 
     def migration_scan_supported(self) -> bool:
@@ -252,12 +258,15 @@ class InMemoryKVStore(KVStore, ConditionalKV):
 
     def _live(self, sk: _ScopeKey, key: str) -> bytes | None:
         """返回未过期的值；已过期则惰性删除并返回 None。"""
-        rec = self._data[sk].get(key)
+        bucket = self._data.get(sk)
+        if not bucket:
+            return None
+        rec = bucket.get(key)
         if rec is None:
             return None
         value, expires_at = rec
         if expires_at is not None and expires_at <= time.time():
-            del self._data[sk][key]
+            del bucket[key]
             return None
         return value
 
