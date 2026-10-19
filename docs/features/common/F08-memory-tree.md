@@ -6,8 +6,13 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 目标设计与 specs 已同步完成，待设计评审；树结构代码尚未实现，无 pytest 结果 |
+| 测试基线 | 结构模型、编解码、索引基础已实现；相关确定性回归 888 passed（2026-10-19） |
 | Refs | — |
+
+## 当前实现边界
+
+当前已实现结构模型、完整 Scope 引用校验、兼容编解码与索引基础。
+后文建树、重建、查询展开、周期维护等描述仍是目标设计，不代表当前可调用能力。
 
 ## 背景
 
@@ -601,7 +606,7 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 ## 验证
 
-目标设计和 specs 同步已完成，代码尚未实现，设计评审待完成。不得用现有 pytest
+以下是后续完整特性的目标验收，尚未全部实现。不得用现有 pytest
 结果替代本特性的实现验证。分阶段验收如下：
 
 设计验收之后，实施验收依次对应决策 19 的 P0–P5：阶段 1 对应 P0，阶段 2 对应 P1，
@@ -688,3 +693,14 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 F01 的同 unit 披露设计与实现历史见
 [F01-memory-layer.md](F01-memory-layer.md)。
+
+## 结构模型与存储交付记录（2026-10-19）
+
+- 采用内嵌 `HierarchyRef`，保留既有字段位置与 `_v=4`，历史无树记录无需迁移。
+- 完整事实另存 `tree_memory`，避免将原文材料混入可检索摘要而改变召回；此处仅提供材料存储，不生成事实或父节点。
+- 父子身份是完整 Scope + id，默认允许跨 session，org/space 硬隔离。集合外引用不因缺邻居而绕过已知边界检查。
+- 索引六字段统一投影；区间使用 UTC epoch 毫秒。拒绝最初的 ISO 字符串索引方案，因为范围谓词要求有限数值。退树和清空区间清理旧投影，用户同名字段保留独立命名空间。
+- 校验由消费边界调用，不在 codec 中执行整树验证；损坏结构降级时保留正文，损坏完整事实整组作废。
+- 验证覆盖字段约束、完整身份、跨范围边、双向关系、环、微秒边界、codec 往返、各索引层及退树、事实与检索隔离、过滤前置于 top-k。等价字段非法输入合并为参数化测试。
+- 验证结果：构建、检索、过滤、codec 与结构校验相关确定性回归 888 passed；ruff 检查和 git diff --check 通过。完整目录基线因缺少安全/部署依赖及已有日志断言失败未全绿，未把它当成本次通过基线。
+- 遗留：Snapshot 自动接入、事实继承以及父节点生成、层级查询和后台维护在后续独立交付中接入。

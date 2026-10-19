@@ -287,7 +287,7 @@ F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `MemoryUnit` | id / scope / tier / layers / segments / source_ref / temporal / provenance / supersedes / tags / system_metadata / user_metadata / lifecycle / entities / vectors | 记忆单元；id 在完整 Scope 内唯一；`content` / `assets` / `source` 是从 `segments` 折叠得到的只读视图；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder）。尚未实现的 `hierarchy` 见下文“树结构（目标契约，尚未实现）” |
+| `MemoryUnit` | id / scope / tier / layers / segments / source_ref / temporal / provenance / supersedes / tags / system_metadata / user_metadata / lifecycle / entities / vectors / hierarchy / tree_memory | 记忆单元；id 在完整 Scope 内唯一；`content` / `assets` / `source` 是从 `segments` 折叠得到的只读视图；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder）。`hierarchy` 与 `tree_memory` 见下文“树结构” |
 | `ContentLayers` | l0 / l1 | 分层披露标注（l0=50-100 字概要、l1=200-500 字要点 overview）；默认空串，extractor 对超阈 content 产出 |
 | `Segment` | content / assets / source | 内容段；文本投影、原模态资产引用和来源模态一一对应 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid / t_message | 事件、摄入、有效期与消息时间字段 |
@@ -303,6 +303,7 @@ F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 
 | `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反。内置字段白名单（`filter.py` `_BUILTIN_FIELDS`）含 `t_ingest`（摄入时间，epoch 毫秒，恒非空；2026-09-15 入册，dreaming 时间窗下推依赖，见 F04-dreaming.md D5） |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
+| `matches_filter_value` | `(object, FilterClause) -> bool` | 真源与内存索引共用的标量/数组/缺值比较 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |
 | `AuditEvent` | id / actor / target / action / target_id / layer / decision / occurred_at / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤；`detail` 可承载 `acting_user` / `role` / `credential_id` / `auth_method` 等认证审计字段 |
 
@@ -326,10 +327,10 @@ F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 
 | `Modality` | TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT |
 | `LifecycleState` | ACTIVE / SUPERSEDED / ARCHIVED / FORGOTTEN |
 
-目标新增的 `HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
+`HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
 避免摘要表与精确枚举并存后发生漂移。
 
-### 树结构（目标契约，尚未实现）
+### 树结构
 
 ```python
 class HierarchyKind(str, Enum):
@@ -375,18 +376,25 @@ class HierarchyRef:
     ordinal: int = 0
     status: HierarchyStatus = HierarchyStatus.ACTIVE
 
-# MemoryUnit 的目标增量字段；其余既有字段保持不变
+# MemoryUnit 末尾追加字段，保留已有位置参数顺序
 hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
+tree_memory: TreeMemoryData | None = None
 ```
 
-`HierarchyStatus` 只描述结构节点是否有效、被结构修正排除或等待确认，不包含
+`HierarchyStatus` 只描述结构节点有效或被结构修正排除，不包含
 `ARCHIVED`/`FORGOTTEN`；归档、遗忘与版本失效继续由 `LifecycleState` 表达。
 `parent_id=""` 表示根或尚未挂接，`child_ids` 是直接子节点的稳定有序列表，
 `ordinal` 是同一父节点下的排序提示。非 TIME kind 可以不声明区间；一旦声明，仍须满足
 成对、顺序和父覆盖约束。TIME 的区间是结构覆盖范围，不替代
 `MemoryUnit.temporal` 的双时间，也不替代 `RecallChannel.TEMPORAL` 的召回过滤。
 
-目标实现必须满足以下校验不变量：
+`validate_ref` 与 `validate_tree` 提供无副作用校验；消费边界须在使用结构前调用。
+`validate_tree` 先校验全部字段，再检查非空结构；集合外引用仍校验身份和边界，
+仅跳过依赖外部节点内容的双向边、环与覆盖核对。默认允许跨 session，
+非空 user/agent 不同须显式设置 `allow_cross_user=True`；org/space 始终不可跨。
+时间比较按 UTC（朴素时间亦按 UTC），保留微秒精度。
+
+校验不变量：
 
 - 所有父子引用必须解析到**同 org + 同 space** 的 `MemoryUnit`；禁止跨 org / 跨 space
   结构边；禁止自环、祖先环。
@@ -397,7 +405,7 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 - 同一 kind 下每个节点最多一个非空 `parent_id`；当前契约不支持同 kind 多父。
 - 对每条边 `P -> C`，`C.parent_id == P.id` 当且仅当 `C.id` 在 `P.child_ids` 中；若使用
   scope 覆盖，则 `C` 侧 `parent_scope`（或缺省的本 unit scope）必须与 `P` 的驻留 Scope 一致。
-- `child_ids` 不重复；TIME 按区间起点或事件时间稳定排序，其他 kind 按 `ordinal`
+- 子引用以完整 Scope + id 去重，同名 id 可驻留不同 Scope；TIME 的构建顺序约定按区间起点或事件时间，其他 kind 按 `ordinal`
   与领域稳定顺序排序。
 - 空结构定义为 `kind is None and role is None`；此时 `parent_id=""`、`child_ids=[]`、
   `child_scopes=[]`、`parent_scope is None`，且不得携带非空父子 id 或 span。旧数据没有
@@ -426,8 +434,8 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 - `loads(raw) -> MemoryUnit | None`：逆 `dumps`；严格 UTF-8 解码，非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。`UnicodeDecodeError` 不在 codec 内吞掉；存储读取层经 `load_memory_unit` 记日志并按不可解码记录隔离。
 - **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=4`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`；`_v=4` 将混合 metadata 拆分为 `system_metadata` / `user_metadata`，`_v<4` 数据须离线迁移）。
 - `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
-- 目标树结构尚未进入当前 `MemoryUnit` 和 codec；`hierarchy` 的读取降级及写入校验规则见
-  上文“树结构（目标契约，尚未实现）”，不得将其描述为当前 `_v=4` 已具备的能力。
+- 空 `hierarchy` 不写出，缺失读为空；未知枚举、坏时间和坏 Scope 引用使整段结构降级为空并记诊断，正文保留。未知字段忽略；可解析但不自洽的结构交消费边界校验，codec 不调用 `validate_ref`。
+- `TreeFact(source_id, source_scope, text)` 保存完整 Scope 的来源事实；`TreeMemoryData(facts)` 是独立构建材料，不进入正文、全文/向量投影或披露。`tree_memory=None` 表示未保存材料，空列表表示已保存但无事实；坏材料整组降级为 None，不能保留部分列表冒充完整事实。两字段保持 `_v=4`。
 - 只有字段语义或结构发生破坏性变化时才提升 `_v`；增加可选枚举成员或可缺省字段不单独升版。
 
 ### 工厂注册机制（`factory/factory.py`）

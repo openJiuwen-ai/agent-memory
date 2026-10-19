@@ -199,3 +199,9 @@ Evolver.evolve(units, mode):
 9. `DynamicLLMExtractor` 子类只覆盖 `parse_response` 完成响应解析与构建；策略遍历、fallback、
    `_extraction_strategy` 标记和 consolidation/reflect prompt key 透传由基类统一执行。
 10. `PromptRegistry` 由装配从 `ctx.globals["prompts"]` 加载；`DynamicEvolver._build` 用 `config.get("prompts")` 取该段（params 无 prompts 时回退 globals）构造注册表。
+
+### 树结构索引投影
+
+`_index_ops.index_metadata` 与 `UnifiedIndexBuilder` 共用 `hierarchy_index_metadata`。
+结构变化后清理旧六字段，禁止复制陈旧系统投影；用户同名字段照常保留。
+`tree_memory.facts` 只随真源持久化，不参与全文、切片、向量化或披露正文。

@@ -165,3 +165,10 @@
     有限 timeout 和重试上限；默认 `300` 秒、`0` 次 SDK 重试，TCP connect 固定 5 秒。
     配置键为 `<prefix>_timeout` / `<prefix>_max_retries`，非法值在装配阶段报错；
     详见 [F05-model-service-ssl.md](../../docs/features/common/F05-model-service-ssl.md) 第八节。
+
+### 树结构基础
+
+- `type_def/hierarchy.py` 提供结构枚举、`HierarchyRef`、纯校验与索引六字段投影；不依赖存储与构建实现。
+- `MemoryUnit.hierarchy` 与 `tree_memory` 追加在已有字段末尾；后者仅存完整事实，不作为正文或索引输入。
+- codec 保持 `_v=4`，坏结构整段降级，坏事实整组降级；完整 Scope 引用不可因损坏而重定向到 owner。
+- 裸结构过滤字段读 HierarchyRef，显式 metadata 路径保持独立；数组/标量比较沿用现有过滤契约。

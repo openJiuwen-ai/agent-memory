@@ -12,7 +12,12 @@ from collections import defaultdict
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.common.type_def import (
+    Scope,
+    evaluate,
+    filter_field_metadata_key,
+    matches_filter_value,
+)
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from jiuwen_memory.storage.vector import VectorProducer, VectorStore
@@ -72,15 +77,19 @@ class InMemoryVectorStore(VectorStore):
 
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
         bucket = self._data[_skey(scope)]
-        scored = [
-            ScoredID(
-                id=rec.id,
-                score=_cosine(query.vector, rec.vector),
-                metadata=dict(rec.metadata) if query.return_metadata else None,
-            )
-            for rec in bucket.values()
-        ]
-        scored = [s for s in scored if s.score > 0.0]
+        scored: list[ScoredID] = []
+        for rec in bucket.values():
+            if not evaluate(query.filters, lambda clause: matches_filter_value(
+                rec.metadata.get(filter_field_metadata_key(clause.field)), clause
+            )):
+                continue
+            score = _cosine(query.vector, rec.vector)
+            if score > 0.0:
+                scored.append(ScoredID(
+                    id=rec.id,
+                    score=score,
+                    metadata=dict(rec.metadata) if query.return_metadata else None,
+                ))
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[: query.top_k]
 
@@ -101,6 +110,10 @@ class InMemoryVectorStore(VectorStore):
         bucket = self._data[_skey(scope)]
         scored: list[ScoredHit] = []
         for rec in bucket.values():
+            if not evaluate(query.filters, lambda clause: matches_filter_value(
+                rec.metadata.get(filter_field_metadata_key(clause.field)), clause
+            )):
+                continue
             sim = _cosine(query.vector, rec.vector)
             if sim <= 0.0:
                 continue
