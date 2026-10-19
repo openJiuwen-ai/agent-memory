@@ -318,21 +318,11 @@ def _agent_default_config() -> dict[str, Any]:
             "embedder_max_batch": int(os.getenv("EMBED_MAX_BATCH", "64")),
         },
         # ---- 存储 -------------------------------------------------------- #
-        # document 模式下 KV 仍保留：vector chunk_tracking 硬依赖它
+        # document 模式下 KV 不再持有 MemoryUnit（真源在 md+shadow），但端口必须保留：
+        # dreaming 注册表读写、lifecycle policy/sweep 数据源、装配期 manager.kv() 硬依赖。
         "kv_store": {"default": "memory"},
-        # L2 向量索引，in_memory 重启即失（文档模式真索引在 shadow）
-        "vector_store": {"default": "memory"},
-        # 文档模式召回走 shadow FTS5，此端口闲置备用
-        "fulltext_store": {"default": {"target": "elasticsearch", "params": {
-            "hosts": ["http://1.94.231.141:8537"],
-            "index": "agent_memory_fulltext",
-            "username": "elastic",
-            "password": "Huawei@234",
-            "text_field": "text",
-            "refresh": "false",
-        }}},
-        # graph_enabled=false 不实际用，留默认避免装配报错
-        "graph_store": {"default": "memory"},
+        # vector / fulltext / graph 三个 KV 时代索引端口已删除：文档模式召回统一走
+        # shadow（FTS5 + vec0），这三路无消费者——回落内核 defaults 的内存版（同样闲置）。
         # md 真源 root
         "markdown_store": {"default": {"target": "local", "params": {
             "root": "e:/02_memory/agent-memory/_md_store",
@@ -441,6 +431,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
       **可选**——[本地修改 2026-10-17] 缺省时用内置 agent 场景默认装配
       ``_agent_default_config()``（F09 文档真源：md + shadow 索引 + agent_llm
       抽取，即 serve-doc 的代码化副本）；外部 yml 传入则覆盖内置默认。
+    - ``config_dict``：进程内模式的完整两级命名空间配置 dict（对齐
+      ``config.serve-doc.yml`` 字面），**优先于 ``config_path`` 与内置默认**。
+      宿主（jiuwenswarm）从 config.yaml 读完整 dict 直传，内核经
+      ``AssemblyContext.merged(defaults)`` 补齐未写的命名空间。
     - ``user_id``/``agent_id``：兼容常见记忆层隔离键（默认约定一致）。
     - ``security_provider``：进程内模式的可信身份来源——由可信 composition root
       注入的 ``() -> RequestSecurityContext``（P1-2 角色感知授权）。身份不由本
@@ -457,6 +451,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         *,
         base_url: str | None = None,
         config_path: str | None = None,
+        config_dict: dict[str, Any] | None = None,
         user_id: str = "jiuwenswarm-user",
         agent_id: str = "jiuwenswarm",
         space: str = "",
@@ -468,6 +463,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     ) -> None:
         self._base_url = base_url or ""
         self._config_path = config_path
+        self._config_dict = config_dict
         self._user_id = user_id
         self._agent_id = agent_id
         self._space = space
@@ -584,6 +580,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 self._base_url,
                 self._config_path,
                 security_provider=self._security_provider,
+                config_dict=self._config_dict,
                 api_key=self._api_key,
                 identity_org=self._identity_org,
                 identity_user=self._identity_user,
@@ -593,7 +590,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, config=%s, scope=%s)",
             "http" if self._base_url else "in-process",
-            self._base_url or self._config_path or "builtin-agent-default",
+            self._base_url or (self._config_dict and "direct-dict") or self._config_path or "builtin-agent-default",
             scope_for_log(self.bound_scope()),
         )
 
@@ -1175,11 +1172,12 @@ def _build_client(
     config_path: str | None,
     *,
     security_provider: Any = None,
+    config_dict: dict[str, Any] | None = None,
     api_key: str = "",
     identity_org: str = "local",
     identity_user: str = "developer",
 ) -> _AgentMemoryClient:
-    """按优先级构建客户端：HTTP > 外部配置文件 > 内置 agent 默认装配。
+    """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
     [本地修改 2026-10-17] 进程内分支缺省不再回落 ``assemble_runtime(None)``（echo LLM +
     内存 KV 的通用内核缺省），而是用 ``_agent_default_config()``（agent 场景 F09
@@ -1196,6 +1194,8 @@ def _build_client(
             identity_org=identity_org,
             identity_user=identity_user,
         )
+    if config_dict:
+        return _InProcessClient(None, config_dict=config_dict, security_provider=security_provider)
     if config_path:
         return _InProcessClient(config_path, security_provider=security_provider)
     return _InProcessClient(

@@ -405,10 +405,14 @@ _DEFAULT_MEMORY_CLASS = "long_term_memory"
 
 class AgentLlmExtractor(ExtractorImpl):
     """llm 的 agent 方向版：管线与输出契约继承，prompt 指令面按场景（user↔agent）
-    重定向、按 language 切换；抽取时同步判定 memory_class（三类归属类别，替代
-    Router 判定的一次独立 LLM 调用，F09）。"""
+       重定向、按 language 切换；抽取时同步判定 memory_class（三类归属类别，替代
+       Router 判定的一次独立 LLM 调用，F09）。
+    """
 
     def __init__(self, language: str = "cn", **kwargs: object) -> None:
+        # 覆写基类 ExtractorImpl 的 prompt 类属性（全大写常量名受基类契约约束，
+        # 不可改 snake_case）；pylint 误判 self.XXX= 为新建实例属性。
+        # pylint: disable=invalid-name,huawei-invalid-name
         super().__init__(**kwargs)
         lang = language if language in {"cn", "en"} else "cn"
         if lang == "cn":

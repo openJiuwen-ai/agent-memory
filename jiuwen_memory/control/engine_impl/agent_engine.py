@@ -274,13 +274,15 @@ class AgentEngine(MemoryEngine):
         """真源 KV 端口（API 层 dreaming 编排读注册表用，见 MemoryEngine.kv）。
 
         文档模式下 KV 不持有 MemoryUnit（真源在 shadow），本端口仅供 dreaming 注册表
-        读写（注册表 key 非 MemoryUnit）；MemoryUnit 读取经 ``_domain_store``。"""
+        读写（注册表 key 非 MemoryUnit）；MemoryUnit 读取经 ``_domain_store``。
+        """
         return self._kv
 
     def candidate_scopes(self) -> list[Scope]:
         """返回演进候选数据面中已有记忆的作用域（对齐 CloudEngine，经 DomainStore）。
 
-        文档模式下 KV 不持有 MemoryUnit，默认实现走 ``self.kv.scopes()`` 会漏 scope。"""
+        文档模式下 KV 不持有 MemoryUnit，默认实现走 ``self.kv.scopes()`` 会漏 scope。
+        """
         return self._domain_store.scopes()
 
     def health(self) -> None:
