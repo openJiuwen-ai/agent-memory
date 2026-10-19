@@ -14,10 +14,22 @@ PYTHONPATH，provider 以**顶层模块**被 import（``agent_memory_provider``�
 等）且只把 core **追加**到 sys.path 尾部——本机 site-packages 预置了同名 ``server``
 目录时会抢先命中（现有 ``tests/integration/jiuwen_memory_entry`` 在本机同样受影响，
 CI 无此包不受影响）。故这里把 core 目录**前置**，保证 flat import 命中正确模块。
+
+异步驱动：不依赖 ``pytest-asyncio``——参照 ``test_jiuwenswarm_access.py`` 用
+``asyncio.run`` 驱动。HTTP 客户端的 ``httpx.AsyncClient`` 绑定创建时的事件循环，
+故每个测试在**同一个** ``asyncio.run`` 内完成 ``initialize → 操作 → shutdown`` 全
+生命周期（不能跨多个 ``asyncio.run`` 复用同一 provider）；``_scoped_provider``
+async 上下文管理器封装该生命周期，在 ``asyncio.run`` 内 ``async with`` 使用。
 """
+
+# 契约测试直取 provider/client 受保护成员（_client / _scope_payload / _post_verb）
+# 以锁死 HTTP 表面行为。
+# pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -26,15 +38,18 @@ from pathlib import Path
 from queue import Queue
 
 import pytest
-import pytest_asyncio
 
 # 本文件 -> tests/integration/jiuwen_memory_adapter -> tests/integration -> tests -> 仓库根
+# append（而非 insert(0)）：避免模块重名告警；仓库内 flat import 的 server 等模块
+# 在 CI/codecheck 环境无 site-packages 同名包冲突，尾部追加即命中（参照
+# test_identity_forgery_rejected.py / test_dev_fallback_business_continuity.py 同样
+# 加载 entry core 目录均用 append）。本机若有同名 server 包污染，见文件头注释。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ADAPTER_DIR = _REPO_ROOT / "jiuwen_memory_adapter" / "jiuwenswarm"
 _ENTRY_CORE_DIR = _REPO_ROOT / "jiuwen_memory_entry" / "core"
 for _dir in (_ADAPTER_DIR, _ENTRY_CORE_DIR):
     if _dir.is_dir() and str(_dir) not in sys.path:
-        sys.path.insert(0, str(_dir))
+        sys.path.append(str(_dir))
 
 # ruff: noqa: E402
 from agent_memory_provider import AgentMemoryMemoryProvider
@@ -44,7 +59,7 @@ from jiuwen_memory_entry.core.profiles import OFFLINE, load_config
 from jiuwen_memory_entry.http_server import __main__ as http_server_module
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+pytestmark = pytest.mark.integration
 
 ENVELOPE_ZH = '你收到一条消息：\n{"source": "tui", "content": "记住常用语言是 Python"}'
 
@@ -77,19 +92,18 @@ def memory_http_url_fixture():
             server.close(wait=True)
 
 
-@pytest_asyncio.fixture(name="make_provider")
-async def make_provider_fixture(memory_http_url):
-    """按测试隔离需要构造 provider（每个测试用独立 user_id 隔离写入命名空间）。"""
-    made: list[AgentMemoryMemoryProvider] = []
+@contextlib.asynccontextmanager
+async def _scoped_provider(memory_http_url: str, user_id: str):
+    """构造并初始化 provider，用完 shutdown（保证 ``httpx.AsyncClient`` 与当前事件循环绑定）。
 
-    async def _make(user_id: str) -> AgentMemoryMemoryProvider:
-        provider = AgentMemoryMemoryProvider(base_url=memory_http_url)
-        await provider.initialize(user_id=user_id, scope_id="tenant-http", session_id="")
-        made.append(provider)
-        return provider
-
-    yield _make
-    for provider in made:
+    每个测试在 ``asyncio.run`` 内 ``async with`` 使用：``initialize → 操作 → shutdown``
+    全程同一事件循环，避免 ``AsyncClient`` 跨循环失效。``user_id`` 隔离写入命名空间。
+    """
+    provider = AgentMemoryMemoryProvider(base_url=memory_http_url)
+    await provider.initialize(user_id=user_id, scope_id="tenant-http", session_id="")
+    try:
+        yield provider
+    finally:
         await provider.shutdown()
 
 
@@ -98,61 +112,81 @@ async def make_provider_fixture(memory_http_url):
 # --------------------------------------------------------------------------- #
 
 
-async def test_add_returns_result_with_content_rebuilt_from_segments(make_provider):
-    provider = await make_provider("user-add-rebuild")
-    client = provider._client
-    result = await client.add(
-        "契约测试：add 响应无顶层 content，需从 segments 重建",
-        provider.bound_scope(),
-        tags=["contract"],
-    )
-    assert result is not None
-    assert result.item_id
-    assert result.content == "契约测试：add 响应无顶层 content，需从 segments 重建"
-    # offline 栈直写路径（无 infer）默认 EPISODIC——design doc §8.2.1 探针 2b 已实测
-    assert result.tier == "episodic"
+def test_add_returns_result_with_content_rebuilt_from_segments(memory_http_url):
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-add-rebuild") as provider:
+            client = provider._client
+            result = await client.add(
+                "契约测试：add 响应无顶层 content，需从 segments 重建",
+                provider.bound_scope(),
+                tags=["contract"],
+            )
+            assert result is not None
+            assert result.item_id
+            assert result.content == "契约测试：add 响应无顶层 content，需从 segments 重建"
+            # offline 栈直写路径（无 infer）默认 EPISODIC——design doc §8.2.1 探针 2b 已实测
+            assert result.tier == "episodic"
+
+    asyncio.run(_run())
 
 
-async def test_conclude_then_search_tool_roundtrip(make_provider):
-    provider = await make_provider("user-roundtrip")
-    result = json.loads(
-        await provider.handle_tool_call("agent_memory_conclude", {"conclusion": "用户偏好深色主题"})
-    )
-    assert result["result"] == "Fact stored."
-    assert result["item_id"]
+def test_conclude_then_search_tool_roundtrip(memory_http_url):
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-roundtrip") as provider:
+            result = json.loads(
+                await provider.handle_tool_call(
+                    "agent_memory_conclude", {"conclusion": "用户偏好深色主题"}
+                )
+            )
+            assert result["result"] == "Fact stored."
+            assert result["item_id"]
 
-    result = json.loads(
-        await provider.handle_tool_call("agent_memory_search", {"query": "深色主题"})
-    )
-    assert result["count"] >= 1
-    assert any("深色主题" in item["memory"] for item in result["results"])
+            result = json.loads(
+                await provider.handle_tool_call("agent_memory_search", {"query": "深色主题"})
+            )
+            assert result["count"] >= 1
+            assert any("深色主题" in item["memory"] for item in result["results"])
 
-
-async def test_unregistered_profile_tool_still_callable(make_provider):
-    """未注册 ≠ 删除：profile 不在 get_tool_schemas（LLM 不可见），但
-    handle_tool_call 直调仍走真实实现（list 经 /v1/list 闭环）。"""
-    provider = await make_provider("user-profile")
-    registered = [s["name"] for s in provider.get_tool_schemas()]
-    assert "agent_memory_profile" not in registered
-
-    await provider.handle_tool_call(
-        "agent_memory_conclude", {"conclusion": "profile 工具应能列出本条"}
-    )
-    result = json.loads(await provider.handle_tool_call("agent_memory_profile", {}))
-    assert "profile 工具应能列出本条" in result["result"]
+    asyncio.run(_run())
 
 
-async def test_read_md_file_client_error_propagates(make_provider):
-    """offline 栈非文档模式：read_md_file 被服务端 400 拒绝，错误经
-    AgentMemoryClientError 透出（区别于传输失败降级的 unavailable）。"""
-    provider = await make_provider("user-md-reject")
-    result = json.loads(
-        await provider.handle_tool_call(
-            "agent_memory_read_md_file", {"md_filename": "MEMORY.md"}
-        )
-    )
-    assert "rejected" in result["error"]
-    assert "unavailable" not in result["error"]
+def test_unregistered_profile_tool_still_callable(memory_http_url):
+    """未注册 ≠ 删除：profile 不在 get_tool_schemas（LLM 不可见）。
+
+    但 handle_tool_call 直调仍走真实实现（list 经 /v1/list 闭环）。
+    """
+
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-profile") as provider:
+            registered = [s["name"] for s in provider.get_tool_schemas()]
+            assert "agent_memory_profile" not in registered
+
+            await provider.handle_tool_call(
+                "agent_memory_conclude", {"conclusion": "profile 工具应能列出本条"}
+            )
+            result = json.loads(await provider.handle_tool_call("agent_memory_profile", {}))
+            assert "profile 工具应能列出本条" in result["result"]
+
+    asyncio.run(_run())
+
+
+def test_read_md_file_client_error_propagates(memory_http_url):
+    """offline 栈非文档模式：read_md_file 被服务端 400 拒绝。
+
+    错误经 AgentMemoryClientError 透出（区别于传输失败降级的 unavailable）。
+    """
+
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-md-reject") as provider:
+            result = json.loads(
+                await provider.handle_tool_call(
+                    "agent_memory_read_md_file", {"md_filename": "MEMORY.md"}
+                )
+            )
+            assert "rejected" in result["error"]
+            assert "unavailable" not in result["error"]
+
+    asyncio.run(_run())
 
 
 # --------------------------------------------------------------------------- #
@@ -160,24 +194,27 @@ async def test_read_md_file_client_error_propagates(make_provider):
 # --------------------------------------------------------------------------- #
 
 
-async def test_prefetch_excludes_episodic_originals_while_search_tool_finds_them(
-    make_provider,
-):
-    provider = await make_provider("user-tier-filter")
-    # conclude 走直写路径 → episodic 原文（建索引）
-    await provider.handle_tool_call(
-        "agent_memory_conclude", {"conclusion": "唯一的深色主题偏好锚点"}
-    )
+def test_prefetch_excludes_episodic_originals_while_search_tool_finds_them(memory_http_url):
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-tier-filter") as provider:
+            # conclude 走直写路径 → episodic 原文（建索引）
+            await provider.handle_tool_call(
+                "agent_memory_conclude", {"conclusion": "唯一的深色主题偏好锚点"}
+            )
 
-    # prefetch 只召回 semantic/core/procedural → episodic 原文被排除
-    prefetch = await provider.prefetch("深色主题偏好")
-    assert "深色主题" not in prefetch
+            # prefetch 只召回 semantic/core/procedural → episodic 原文被排除
+            prefetch = await provider.prefetch("深色主题偏好")
+            assert "深色主题" not in prefetch
 
-    # search 工具不过滤 tier → 命中原文
-    result = json.loads(
-        await provider.handle_tool_call("agent_memory_search", {"query": "深色主题偏好锚点"})
-    )
-    assert any("深色主题" in item["memory"] for item in result["results"])
+            # search 工具不过滤 tier → 命中原文
+            result = json.loads(
+                await provider.handle_tool_call(
+                    "agent_memory_search", {"query": "深色主题偏好锚点"}
+                )
+            )
+            assert any("深色主题" in item["memory"] for item in result["results"])
+
+    asyncio.run(_run())
 
 
 # --------------------------------------------------------------------------- #
@@ -185,18 +222,21 @@ async def test_prefetch_excludes_episodic_originals_while_search_tool_finds_them
 # --------------------------------------------------------------------------- #
 
 
-async def test_sync_turn_strips_envelope_before_storing(make_provider):
-    provider = await make_provider("user-envelope")
-    await provider.sync_turn(ENVELOPE_ZH, "好的，已记住。")
+def test_sync_turn_strips_envelope_before_storing(memory_http_url):
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-envelope") as provider:
+            await provider.sync_turn(ENVELOPE_ZH, "好的，已记住。")
 
-    # 显式检索（无 tier 过滤）命中后，内容不得包含信封壳
-    result = json.loads(
-        await provider.handle_tool_call("agent_memory_search", {"query": "常用语言"})
-    )
-    assert result["count"] >= 1
-    for item in result["results"]:
-        assert "你收到一条消息" not in item["memory"]
-    assert any("Python" in item["memory"] for item in result["results"])
+            # 显式检索（无 tier 过滤）命中后，内容不得包含信封壳
+            result = json.loads(
+                await provider.handle_tool_call("agent_memory_search", {"query": "常用语言"})
+            )
+            assert result["count"] >= 1
+            for item in result["results"]:
+                assert "你收到一条消息" not in item["memory"]
+            assert any("Python" in item["memory"] for item in result["results"])
+
+    asyncio.run(_run())
 
 
 # --------------------------------------------------------------------------- #
@@ -204,18 +244,21 @@ async def test_sync_turn_strips_envelope_before_storing(make_provider):
 # --------------------------------------------------------------------------- #
 
 
-async def test_identity_covering_scope_write_read_roundtrip(make_provider):
-    provider = await make_provider("user-identity-scope")
-    client = provider._client
-    payload = client._scope_payload(provider.bound_scope())
-    assert payload["org"] == "local"
-    assert payload["user"] == "developer"
-    assert payload["session"] == "user-identity-scope"
+def test_identity_covering_scope_write_read_roundtrip(memory_http_url):
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-identity-scope") as provider:
+            client = provider._client
+            payload = client._scope_payload(provider.bound_scope())
+            assert payload["org"] == "local"
+            assert payload["user"] == "developer"
+            assert payload["session"] == "user-identity-scope"
 
-    result = await client.add("身份覆盖式 scope 写入", provider.bound_scope())
-    assert result is not None and result.item_id
-    hits = await client.search("身份覆盖式", provider.bound_scope(), top_k=5)
-    assert any("身份覆盖式" in hit["content"] for hit in hits)
+            result = await client.add("身份覆盖式 scope 写入", provider.bound_scope())
+            assert result is not None and result.item_id
+            hits = await client.search("身份覆盖式", provider.bound_scope(), top_k=5)
+            assert any("身份覆盖式" in hit["content"] for hit in hits)
+
+    asyncio.run(_run())
 
 
 # --------------------------------------------------------------------------- #
@@ -223,25 +266,35 @@ async def test_identity_covering_scope_write_read_roundtrip(make_provider):
 # --------------------------------------------------------------------------- #
 
 
-async def test_evolve_extract_returns_job_id(make_provider):
-    provider = await make_provider("user-evolve")
-    client = provider._client
-    payload = {"scope": client._scope_payload(provider.bound_scope()), "mode": "extract"}
-    job_id = await client._post_verb("evolve", payload, write=True)
-    assert isinstance(job_id, str) and job_id
+def test_evolve_extract_returns_job_id(memory_http_url):
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-evolve") as provider:
+            client = provider._client
+            payload = {
+                "scope": client._scope_payload(provider.bound_scope()),
+                "mode": "extract",
+            }
+            job_id = await client._post_verb("evolve", payload, write=True)
+            assert isinstance(job_id, str) and job_id
+
+    asyncio.run(_run())
 
 
-async def test_legacy_flat_payload_is_rejected_by_server(make_provider):
+def test_legacy_flat_payload_is_rejected_by_server(memory_http_url):
     """回归锚：旧版客户端的扁平 payload（k / tenant_id）被服务端 400 拒收。"""
-    provider = await make_provider("user-legacy-reject")
-    client = provider._client
-    legacy_payload = {
-        "query": "q",
-        "k": 5,
-        "tenant_id": "tenant-http",
-        "scope": "user-legacy-reject",
-    }
-    assert await client._post_verb("search", legacy_payload) is None
+
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-legacy-reject") as provider:
+            client = provider._client
+            legacy_payload = {
+                "query": "q",
+                "k": 5,
+                "tenant_id": "tenant-http",
+                "scope": "user-legacy-reject",
+            }
+            assert await client._post_verb("search", legacy_payload) is None
+
+    asyncio.run(_run())
 
 
 # --------------------------------------------------------------------------- #
@@ -249,17 +302,22 @@ async def test_legacy_flat_payload_is_rejected_by_server(make_provider):
 # --------------------------------------------------------------------------- #
 
 
-async def test_breaker_opens_after_consecutive_failures(make_provider):
-    provider = await make_provider("user-breaker")
-    client = provider._client
-    for _ in range(5):
-        assert await client._post_verb("no_such_verb", {}) is None
+def test_breaker_opens_after_consecutive_failures(memory_http_url):
+    async def _run() -> None:
+        async with _scoped_provider(memory_http_url, "user-breaker") as provider:
+            client = provider._client
+            for _ in range(5):
+                assert await client._post_verb("no_such_verb", {}) is None
 
-    assert client.is_unavailable() is True
+            assert client.is_unavailable() is True
 
-    # 熔断开启：工具调用立即返回暂不可用，不再触网
-    result = json.loads(await provider.handle_tool_call("agent_memory_search", {"query": "x"}))
-    assert "unavailable" in result["error"]
+            # 熔断开启：工具调用立即返回暂不可用，不再触网
+            result = json.loads(
+                await provider.handle_tool_call("agent_memory_search", {"query": "x"})
+            )
+            assert "unavailable" in result["error"]
 
-    # 读路径同样短路降级（不抛错）
-    assert await client.search("x", provider.bound_scope()) == []
+            # 读路径同样短路降级（不抛错）
+            assert await client.search("x", provider.bound_scope()) == []
+
+    asyncio.run(_run())

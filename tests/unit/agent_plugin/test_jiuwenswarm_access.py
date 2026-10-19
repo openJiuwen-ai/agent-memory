@@ -204,8 +204,10 @@ def test_tool_schemas_hide_profile_procedural_and_add_md_file_tools() -> None:
 
 
 def test_unregistered_profile_tool_remains_callable() -> None:
-    """未注册 ≠ 删除：profile 不在 get_tool_schemas，但 handle_tool_call 直调
-    仍走真实实现（非 Unknown tool），保留内部排查入口。"""
+    """未注册 ≠ 删除：profile 不在 get_tool_schemas。
+
+    但 handle_tool_call 直调仍走真实实现（非 Unknown tool），保留内部排查入口。
+    """
     provider = _load_provider()
     adapter = provider.AgentMemoryMemoryProvider(
         user_id="owner",
@@ -220,9 +222,11 @@ def test_unregistered_profile_tool_remains_callable() -> None:
 
 
 def test_md_file_tools_reject_non_document_mode_in_process() -> None:
-    """非文档模式（write_document 缺省 False）：read/edit_md_file 的
-    ValidationError 须经 client 透出为 ``{"error": ...}``——LLM 需要「文档模式
-    未开」信号，不得降级成空结果或 unavailable。"""
+    """非文档模式：read/edit_md_file 的 ValidationError 须经 client 透出。
+
+    write_document 缺省 False（未开文档模式）：LLM 需要「文档模式未开」信号，
+    不得降级成空结果或 unavailable。
+    """
     provider = _load_provider()
     adapter = provider.AgentMemoryMemoryProvider(
         user_id="owner",

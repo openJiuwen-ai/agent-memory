@@ -50,7 +50,14 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from openjiuwen.core.memory.external.provider import MemoryProvider
+try:
+    # openjiuwen 是可选依赖（见 pyproject ``[project.optional-dependencies].agent``）：
+    # 仅 jiuwenswarm 宿主驱动 ExternalMemoryRail 时需要作为 ABC 基类被继承。本仓库
+    # 单元/集成测试不依赖宿主，未安装时降级为 object，保证 _prepare / _recall_filters
+    # / _HttpClient / scope 映射等纯逻辑可被独立测试（生产环境装上后继承真正的 ABC）。
+    from openjiuwen.core.memory.external.provider import MemoryProvider
+except ImportError:
+    MemoryProvider = object
 
 from jiuwen_memory.api import (
     Channel,
@@ -514,7 +521,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return query
         for prefix in cls._TUI_ENVELOPE_PREFIXES:
             if query.startswith(prefix):
-                rest = query[len(prefix) :].lstrip()
+                rest = query[len(prefix):].lstrip()
                 try:
                     data = json.loads(rest)
                 except json.JSONDecodeError:
@@ -1163,7 +1170,8 @@ class _AgentMemoryClient:
     async def close(self) -> None:
         pass
 
-    def is_unavailable(self) -> bool:
+    @staticmethod
+    def is_unavailable() -> bool:
         return False
 
 

@@ -10,8 +10,15 @@ PYTHONPATH，provider 以**顶层模块**被 import（``agent_memory_provider``�
 按同一形态装配 sys.path，保证被测的就是部署时执行的那份模块身份。
 """
 
+# Pytest 类只用于分组，测试方法按 pytest 约定保留实例形态。
+# pylint: disable=add-staticmethod-or-classmethod-decorator
+# 测试直取 provider/client 受保护成员（_prepare / _scope_payload / _client）以断言内部接线行为。
+# pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
+# 前置 sys.path 对齐部署形态的顶层模块 import（详见下方 _ADAPTER_DIR 说明）。
+
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -19,15 +26,54 @@ from pathlib import Path
 import pytest
 
 # 本文件 -> tests/unit/jiuwen_memory_adapter -> tests/unit -> tests -> 仓库根
+# append（而非 insert(0)）：避免模块重名告警；adapter 作为顶层模块 agent_memory_provider
+# 被加载，仓库内无同名包冲突，尾部追加即命中（参照 test_jiuwenswarm_access.py）。
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ADAPTER_DIR = _REPO_ROOT / "jiuwen_memory_adapter" / "jiuwenswarm"
 if _ADAPTER_DIR.is_dir() and str(_ADAPTER_DIR) not in sys.path:
-    sys.path.insert(0, str(_ADAPTER_DIR))
+    sys.path.append(str(_ADAPTER_DIR))
 
 # ruff: noqa: E402
 from agent_memory_provider import AgentMemoryMemoryProvider, _HttpClient, _recall_filters
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _offline_in_process_config(tmp_path, monkeypatch):
+    """TestSdkMode 走进程内默认装配 ``_agent_default_config()``——生产字面量连真实
+    deepseek LLM / siliconflow embedder / 远端 ES，且 md root 写真实磁盘
+    ``e:/02_memory/agent-memory/_md_store``。测试环境无 LLM 凭证会令 search 的
+    query_parser 抛 OpenAIError，且会污染生产 md 目录。换全离线栈跑通：
+
+    - ``llm`` → echo（回显桩，无网络；query 改写=原文、classifier/extractor 解析
+      失败时内核降级，conclude 原样存 infer=False 仍成功）
+    - ``embedder`` → hashing（确定性 hash 词袋向量，dim=64，与 globals 对齐）
+    - ``fulltext_store`` → memory（不连远端 ES；document 模式召回走 shadow FTS5）
+    - ``markdown_store`` root → tmp_path（隔离写盘，不污染生产 md 目录）
+    - ``watch_document`` → False（不起文件监听线程，避免测试后残留）
+
+    仅影响实际 ``initialize`` SDK client 的 TestSdkMode；TestPrepareEnvelope /
+    TestRecallFilters / TestHttpScopePayload / TestAvailability 不装配 client，
+    不受影响。
+    """
+    import agent_memory_provider as _amp
+
+    _orig = _amp._agent_default_config
+
+    def _offline() -> dict:
+        cfg = _orig()
+        cfg["globals"]["embedder_dim"] = 64
+        cfg["globals"]["watch_document"] = False
+        cfg["llm"] = {"default": "echo"}
+        cfg["embedder"] = {"default": {"target": "hashing", "params": {"tokenizer": "default"}}}
+        cfg["fulltext_store"] = {"default": {"target": "memory"}}
+        cfg["markdown_store"] = {"default": {"target": "local", "params": {"root": str(tmp_path)}}}
+        return cfg
+
+    monkeypatch.setattr(_amp, "_agent_default_config", _offline)
+    yield
+
 
 ENVELOPE_ZH = '你收到一条消息：\n{"source": "tui", "content": "记住常用语言是 Python"}'
 ENVELOPE_EN = 'You receive a new message:\n{"source": "tui", "content": "remember dark theme"}'
@@ -128,9 +174,11 @@ class TestAvailability:
         provider = AgentMemoryMemoryProvider(config_path="/nonexistent/config.yaml")
         assert provider.is_available() is True
 
-    def test_default_construction_unavailable(self):
+    def test_default_construction_available(self):
+        # [本地修改 2026-10-17] 进程内模式恒可用：默认构造走内置 agent 场景默认装配
+        # （_agent_default_config），is_available() 不再返回 False。
         provider = AgentMemoryMemoryProvider()
-        assert provider.is_available() is False
+        assert provider.is_available() is True
 
 
 # --------------------------------------------------------------------------- #
@@ -139,47 +187,53 @@ class TestAvailability:
 
 
 class TestSdkMode:
-    @pytest.mark.asyncio
-    async def test_conclude_then_search_tool_roundtrip(self):
-        provider = AgentMemoryMemoryProvider()
-        await provider.initialize(user_id="sdk-unit-user", scope_id="tenant-sdk")
-        try:
-            result = json.loads(
-                await provider.handle_tool_call(
-                    "agent_memory_conclude", {"conclusion": "用户偏好深色主题"}
+    def test_conclude_then_search_tool_roundtrip(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider()
+            await provider.initialize(user_id="sdk-unit-user", scope_id="tenant-sdk")
+            try:
+                result = json.loads(
+                    await provider.handle_tool_call(
+                        "agent_memory_conclude", {"conclusion": "用户偏好深色主题"}
+                    )
                 )
-            )
-            assert result["result"] == "Fact stored."
-            assert result["item_id"]
+                assert result["result"] == "Fact stored."
+                assert result["item_id"]
 
-            result = json.loads(
-                await provider.handle_tool_call("agent_memory_search", {"query": "深色主题"})
-            )
-            assert any("深色主题" in item["memory"] for item in result["results"]), result
-        finally:
-            await provider.shutdown()
+                result = json.loads(
+                    await provider.handle_tool_call("agent_memory_search", {"query": "深色主题"})
+                )
+                assert any("深色主题" in item["memory"] for item in result["results"]), result
+            finally:
+                await provider.shutdown()
 
-    @pytest.mark.asyncio
-    async def test_sync_turn_with_envelope_neither_raises_nor_stores_shell(self):
-        provider = AgentMemoryMemoryProvider()
-        await provider.initialize(user_id="sdk-envelope-user", scope_id="tenant-sdk")
-        try:
-            # 只验证不抛错与不崩溃——infer 派生质量取决于装配的 extractor，
-            # 契约层面的完整断言在集成测试（真实服务同栈行为已实测）。
-            await provider.sync_turn(ENVELOPE_ZH, "好的，已记住。")
-            assert provider.is_initialized
-        finally:
-            await provider.shutdown()
+        asyncio.run(_run())
 
-    @pytest.mark.asyncio
-    async def test_sdk_add_returns_add_result_with_rebuilt_content(self):
-        provider = AgentMemoryMemoryProvider()
-        await provider.initialize(user_id="sdk-add-user", scope_id="tenant-sdk")
-        try:
-            client = provider._client
-            result = await client.add("SDK 原文直写", provider.bound_scope(), tags=["t"])
-            assert result is not None
-            assert result.item_id
-            assert result.content == "SDK 原文直写"
-        finally:
-            await provider.shutdown()
+    def test_sync_turn_with_envelope_neither_raises_nor_stores_shell(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider()
+            await provider.initialize(user_id="sdk-envelope-user", scope_id="tenant-sdk")
+            try:
+                # 只验证不抛错与不崩溃——infer 派生质量取决于装配的 extractor，
+                # 契约层面的完整断言在集成测试（真实服务同栈行为已实测）。
+                await provider.sync_turn(ENVELOPE_ZH, "好的，已记住。")
+                assert provider.is_initialized
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    def test_sdk_add_returns_add_result_with_rebuilt_content(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider()
+            await provider.initialize(user_id="sdk-add-user", scope_id="tenant-sdk")
+            try:
+                client = provider._client
+                result = await client.add("SDK 原文直写", provider.bound_scope(), tags=["t"])
+                assert result is not None
+                assert result.item_id
+                assert result.content == "SDK 原文直写"
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
