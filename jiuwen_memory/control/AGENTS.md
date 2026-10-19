@@ -134,3 +134,10 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - `PolicyManager` 只管理运行时可变策略；未知 key 或试图新增 key 必须抛 `PolicyError`
 - 所有算子必须实现 `operator_type()` 和 `health()`（继承自 `ControlOperator`）
 - 跨模块规则（如 scope 隔离、MemoryUnit 跨层传递）见 `docs/specs/`，不在本文件重复
+
+### Snapshot 自动接入
+
+两个 Engine 的可选 policy 依赖由 Producer 解析共享的 policy.default；每次 write 按
+hierarchy.enabled 调用 ingest 的纯补齐函数，再交 Ingestor。DictPolicyManager 的装配
+合并内置策略与用户覆盖，hierarchy.enabled 默认 false；不在 config/defaults.py 堆叠查询参数。
+CloudEngine 不回填已消费的叶提示。此流程不提交父节点构建任务。

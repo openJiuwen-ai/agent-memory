@@ -424,18 +424,19 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 | `add_member` | `(org: str, space: str, member: SpaceMember) -> None` | 添加或更新成员角色；成员 scope 的 org/space 归一为目标 space |
 | `remove_member` | `(org: str, space: str, member: Scope) -> None` | 移除成员 |
 
-目标层级策略键：
+层级策略键：当前仅 `hierarchy.enabled` 已实现，其余仍为目标设计。
 
 | 键 | 类型与默认 | 语义 |
 |---|---|---|
-| `hierarchy.enabled` | bool，`false` | 层级总开关 |
+| `hierarchy.enabled` | bool 字符串，`false` | 已实现：层级总开关，当前用于自动 Snapshot 接入 |
 | `hierarchy.auto_derive` | bool，`false` | write 后是否后台派生 |
 | `hierarchy.ensure_on_recall` | bool，`false` | 是否对显式有界层级 recall 阻塞确保结构 |
 | `hierarchy.score_propagation` | str，默认 `maxp` | rollup 算法；当前仅接受 `maxp` |
 | `hierarchy.expand_default_depth` | int，`1` | 仅供未显式给 `expand_depth` 的内部/接入形态默认值；公开 recall 默认仍为 0 |
 | `hierarchy.expand_top_m` | int \| None，`None` | 每个父最多保留的直接子数；必须 > 0；`None` 表示不额外裁剪（仍受 depth 与 `max_tokens` 约束） |
 
-`enabled=false` 优先于其他层级键。修改策略不回写已有 unit，不触发隐式重建。未知值或越界值抛 `PolicyError`。
+修改当前总开关不回写已有 unit，不触发隐式重建；只有规范化后等于 `true` 的值开启自动接入。
+后续目标策略中，`enabled=false` 优先于其他层级键，未知或越界值应拒绝；当前未声明键仍由 PolicyManager 抛 `PolicyError`。
 
 #### 群体记忆带来的控制层变更（F07）
 
@@ -546,3 +547,20 @@ jiuwen_memory/control/<算子>_impl/
 | architecture.md §12 | 横切可观测/治理——Governor.audit 消费 `common/audit/AuditLogger` 记录的审计事件 |
 | architecture.md §13.4 | PolicyManager 是少量已知策略键的 admin 落点；六类动态配置见 S08 ConfigSource |
 | S08-config | ConfigSource 与 PolicyManager 分工 |
+
+## Snapshot 自动接入（当前交付）
+
+`hierarchy.enabled` 是 PolicyManager 内置已知键，默认字符串 `false`；默认策略与
+配置的 policies 覆盖合并。Engine 与 API 管理入口共享 `policy.default` 的同一实例，
+每次 write 读取当前开关，不在测试框架中判断是否开启。既有策略和权限入口保持不变。
+
+开启时，未声明层级提示，或只声明 TIME/snapshot 双身份时，使用本次 `occurred_at`
+同时构造 span_start/span_end。完整显式提示优先；缺时间、单边区间和非法提示拒绝写入，
+不从写入时钟或用户 metadata 猜时间。批量写入逐项使用其有效 occurred_at。
+补齐只改变结构提示，不将消息时间写成 t_event；t_message 继续保持消息时间。
+CloudEngine 回注 metadata 时跳过已被 Ingestor 消费的叶提示。
+
+当前普通 write 只产出叶及原有抽取结果，不触发父节点生成或后台建树。
+本节未实现的层级查询、ensure、周期建树策略不能通过 admin_set 直接使用。
+手工构造 Engine 时 policy 是新增的可选末尾参数，缺省保持旧行为；Evolver 的
+`evolve(units, mode)` 签名不变。

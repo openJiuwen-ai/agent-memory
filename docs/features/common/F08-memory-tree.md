@@ -6,12 +6,12 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 结构模型、编解码、索引基础已实现；相关确定性回归 888 passed（2026-10-19） |
+| 测试基线 | 模型、索引及 Snapshot 接入/继承已实现；相关验证结果见交付记录（2026-10-19） |
 | Refs | — |
 
 ## 当前实现边界
 
-当前已实现结构模型、完整 Scope 引用校验、兼容编解码与索引基础。
+当前已实现结构模型、完整 Scope 引用校验、兼容编解码与索引基础，以及 Snapshot 自动接入与同步 infer 继承。
 后文建树、重建、查询展开、周期维护等描述仍是目标设计，不代表当前可调用能力。
 
 ## 背景
@@ -704,3 +704,29 @@ F01 的同 unit 披露设计与实现历史见
 - 验证覆盖字段约束、完整身份、跨范围边、双向关系、环、微秒边界、codec 往返、各索引层及退树、事实与检索隔离、过滤前置于 top-k。等价字段非法输入合并为参数化测试。
 - 验证结果：构建、检索、过滤、codec 与结构校验相关确定性回归 888 passed；ruff 检查和 git diff --check 通过。完整目录基线因缺少安全/部署依赖及已有日志断言失败未全绿，未把它当成本次通过基线。
 - 遗留：Snapshot 自动接入、事实继承以及父节点生成、层级查询和后台维护在后续独立交付中接入。
+
+## Snapshot 接入与抽取继承交付记录（2026-10-19）
+
+- 将自动补时放在 Engine 调用的接入纯函数中，策略由共享 PolicyManager 管理，默认关闭；调用方继续使用原 add/batch_add。
+- `occurred_at` 同时作为 Snapshot 起止时间，显式完整提示优先。拒绝写入时钟兜底，避免导入历史消息时产生错误时间分组。t_message/t_event 保持原语义。
+- 在 Evolver 抽取后、Router 前按完整 Scope 与来源唯一匹配，只复制叶安全字段；不增加额外原文 Snapshot，因此 infer 的记忆数量和抽取去重流程保持原口径。
+- 拒绝多来源时猜测最新区间、合并区间和复制父子边。已挂树节点的去重修改需要维护父摘要与边，此次明确拒绝 UPDATE/SUPERSEDE，NOOP 继续允许；无新提示保留旧叶结构。
+- 适配目标仓库已有 Evolver 参数与直接 NOOP 判定，保留认证、文档记忆、DomainStore 读取和 dreaming 调度；此处不移入后续请求对象或父节点构造逻辑。
+- 验证：叶提示非法输入参数化；两种 Engine、两种 IndexBuilder、两种 Evolver 的真实内存存储流程；涵盖显式提示/自动补齐、运行时开关、单条/批量、infer、来源歧义、四种去重决策和拒绝前不修改存储。
+- 遗留：本次尚不提供父节点生成、重建、树查询或后台维护；Schema/procedural 和多源抽取没有隐式 Snapshot 继承。开启自动补时后没有消息时间的写入会报错，需显式提供完整叶提示或关闭开关。
+
+### Snapshot 交付验证结果
+
+- 新增 Snapshot 用例 190 passed（两类 Engine、两类 Evolver、显式/自动接入与去重保护）。
+- 扩大至 common/construction/ingest/api/control/retrieval/storage：2706 passed、8 skipped、62 deselected，1 个既有顺序相关的日志捕获断言失败；之后补充的策略配置覆盖用例单独通过。
+- 失败项 `test_vec_load_failure_logs_warning` 单独执行通过；在迁移前代码中先执行 `test_author_marks.py` 再执行该用例，可复现同样失败。原因是 API 装配设置日志不向根 logger 传播，已有 caplog 断言无法捕获；未修改无关日志实现或测试。
+- 广泛回归未纳入真实 LLM、当前环境缺依赖的 watchdog/asyncpg 相关用例，以及基线已有的模型超时日志断言。安全依赖从本机安装复用到 /tmp，未改项目依赖或运行配置。
+- Ruff 与 git diff --check 通过。没有移入评测框架或拆分计划文档。
+
+### PR CI 修复与补充验证（2026-10-19）
+
+- 内存检索后端开始执行前置过滤后，公共 `index_unit` 夹具手写的全文/向量记录缺少 `lifecycle` 等过滤元数据，导致检索集成测试 8 项失败。夹具改用正式 `HybridIndexBuilder` 建索引，保持索引投影与真源一致；不放宽过滤条件或修改检索断言。
+- Snapshot 决策测试改从公开 `evolve(EXTRACT)` 入口运行，通过构造参数注入抽取器、去重召回及确定性模型响应。保留四种决策、来源匹配、旧记忆保护和拒绝前不写入的断言；调用次数包含去重判定，UPDATE 另有一次正文合并。无目标场景分别验证叶校验接受各写入决策，以及公开演进链路直接 ADD。
+- 测试模型提供公开只读调用计数，消除测试对 Evolver 和模型受保护成员的直接访问；补齐顶层函数空行。业务代码仅将来源筛选的复杂推导式改为等价循环，Snapshot 继承语义和公开接口不变。
+- 验证命令：`pytest tests/unit/construction tests/unit/storage tests/unit/retrieval tests/integration/retrieval`，结果 **1109 passed、2 skipped**；其中 Snapshot 继承 63 项、检索集成文件 32 项全部通过。本地缺少的 watchdog 仅安装至临时测试目录，项目依赖配置未改动。
+- 变更 Python 文件的 Ruff、函数空行检查及 `git diff --check` 通过。CI 报告的 17 处静态问题已按位置修正；本地未运行云端静态规则引擎，最终状态以 CI 重跑为准。

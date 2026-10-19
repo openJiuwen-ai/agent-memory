@@ -70,6 +70,10 @@ from jiuwen_memory.construction.router import (
     optional_router,
     route_batch,
 )
+from jiuwen_memory.construction.snapshot_inheritance import (
+    inherit_infer_snapshots,
+    snapshot_for_decision,
+)
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
@@ -422,6 +426,7 @@ class OrchestratingEvolver(Evolver):
         result: EvolveResult,
     ) -> int:
         """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
+        snapshot = snapshot_for_decision(candidate, decision, existing_unit)
         logger.debug(
             "[trace/dedup] decision | candidate_id=%s | decision=%s | existing=%s "
             "| similarity=%.3f | content=%r",
@@ -482,6 +487,8 @@ class OrchestratingEvolver(Evolver):
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
             # existing_unit 是已建索引的记忆，经 IndexBuilder 统一回写。
+            if snapshot is not None:
+                existing_unit.hierarchy = snapshot
             self._index.update([existing_unit])
             result.updated_ids.append(existing_unit.id)
 
@@ -1082,6 +1089,7 @@ class OrchestratingEvolver(Evolver):
         recent = self._persist_and_maintain_messages(units)
         context = self._maybe_collect_extract_context(units, recent)
         extracted = self._extractor.extract(units, context=context)
+        inherit_infer_snapshots(units, extracted)
         logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
         if not extracted:
             return EvolveResult()

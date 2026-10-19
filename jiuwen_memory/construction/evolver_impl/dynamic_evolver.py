@@ -57,6 +57,10 @@ from jiuwen_memory.construction.prompt_strategy import (
     parse_prompt_strategies,
 )
 from jiuwen_memory.construction.router import optional_router
+from jiuwen_memory.construction.snapshot_inheritance import (
+    inherit_infer_snapshots,
+    snapshot_for_decision,
+)
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
 logger = get_logger(__name__)
@@ -118,6 +122,7 @@ class DynamicEvolver(OrchestratingEvolver):
         context: ExtractContext | None,
     ) -> list[MemoryUnit]:
         extracted = self._extractor.extract(units, context=context)
+        inherit_infer_snapshots(units, extracted)
         logger.info("DynamicEvolver: EXTRACT extractor returned %d units", len(extracted))
         if not extracted:
             return []
@@ -278,6 +283,7 @@ class DynamicEvolver(OrchestratingEvolver):
         result: EvolveResult,
     ) -> int:
         """执行单条决策，返回 noop 计数（0 或 1，与父类签名一致）。"""
+        snapshot = snapshot_for_decision(candidate, decision, existing)
         if decision == DedupDecision.ADD or (
             decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE}
             and existing is None
@@ -308,6 +314,8 @@ class DynamicEvolver(OrchestratingEvolver):
                     "dedup_merged_from": candidate.id,
                 }
             )
+            if snapshot is not None:
+                existing.hierarchy = snapshot
             self._index.update([existing])
             result.updated_ids.append(existing.id)
             return 0

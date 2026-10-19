@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-10-19 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -13,7 +13,7 @@
 ## Metadata 转换契约
 
 `RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空。
-Ingestor 必须分别复制两个 dict，不得合并、解释或在两者之间 fallback。
+Ingestor 必须分别复制两个 dict，不得合并或在两者之间 fallback。系统侧的四个层级叶提示会被消费为 `HierarchyRef`，其余字段复制透传；用户侧同名提示保持业务数据。
 
 ## 范围 / 边界
 
@@ -74,6 +74,7 @@ class IngestOperator(ABC):
 ```
 Source.fetch() → list[RawPayload]
 → 校验 payload.modality 属于 Normalizer.modalities()
+→ 校验系统侧 hierarchy 叶提示（失败不调用 Normalizer）
 → Normalizer.normalize(payload) → content 文本投影
 → Ingestor 组装 MemoryUnit，并将 payload.assets 映射到产出的 Segment
 → 返回 list[MemoryUnit]
@@ -134,3 +135,15 @@ jiuwen_memory/ingest/ingestor_impl/
 | S05-construction | 构建层接收本层产出的 MemoryUnit 做落盘+索引+演进 |
 | S07-common | Normalizer/Tokenizer 等共享插件由本层消费 |
 | architecture.md §10 | 多模态信息源接入与规约投影 |
+
+## 树结构叶提示
+
+系统侧仅允许 `hierarchy_kind`、`hierarchy_role`、`hierarchy_span_start`、
+`hierarchy_span_end`。kind/role 同在，TIME 只接受 snapshot 且必须有双区间；
+其他 kind 只接受 node，区间可整体省略。时间为 ISO 8601 字符串，比较按 UTC，
+朴素时间也按 UTC 解读，保持微秒精度。未知 hierarchy_ 键、父角色、父子边声明、
+未知枚举、单边/逆序区间均抛 ValidationError；任一非法提示拒绝整条 payload。
+
+提示只声明叶身份，不创建边。返回结构为 ACTIVE、无父无子；提示从系统 metadata 移除，
+不改变输入字典。是否按 occurred_at 自动补齐由 Engine 根据策略调用纯补齐函数决定，
+Ingestor 本身不访问 PolicyManager。关闭自动接入时仍允许显式合法叶提示。

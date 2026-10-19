@@ -121,8 +121,7 @@ def index_metadata(
         if temporal.t_event is not None
         else T_EVENT_UNKNOWN
     )
-    # t_valid 仍有值才写：None 表示无生效起始界；检索用 NOT(GT as_of) 放行缺值，
-    # 不能用直接 LTE（通用范围比较会排除缺字段）。真源仍保留 None。
+    # t_valid 仍有值才写；本次结构投影不改变既有有效时间过滤策略。
     if temporal.t_valid is not None:
         metadata["t_valid"] = int(temporal.t_valid.timestamp() * 1000)
     # 消息时间是独立的显式过滤字段，保持真源 epoch 毫秒口径；未知时不写哨兵。
