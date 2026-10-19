@@ -407,22 +407,22 @@ def test_safe_abs_path_allows_normal_relative_path(tmp_path) -> None:
 
 
 def test_resolve_md_path_maps_basename_and_project() -> None:
-    """``_resolve_md_path``（ABC 静态法）：basename + project → 相对路径。
+    """``resolve_md_path``（ABC 静态法）：basename + project → 相对路径。
 
     与 ``_md_path`` 同口径。
     """
     from jiuwen_memory.storage.markdown import MarkdownStore
 
-    assert MarkdownStore._resolve_md_path("USER.md", "p1") == "USER.md"
-    assert MarkdownStore._resolve_md_path("USER.md", "") == "USER.md"
-    assert MarkdownStore._resolve_md_path("MEMORY.md", "p1") == "memory/p1/MEMORY.md"
-    assert MarkdownStore._resolve_md_path("MEMORY.md", "") == "memory/MEMORY.md"
+    assert MarkdownStore.resolve_md_path("USER.md", "p1") == "USER.md"
+    assert MarkdownStore.resolve_md_path("USER.md", "") == "USER.md"
+    assert MarkdownStore.resolve_md_path("MEMORY.md", "p1") == "memory/p1/MEMORY.md"
+    assert MarkdownStore.resolve_md_path("MEMORY.md", "") == "memory/MEMORY.md"
     assert (
-        MarkdownStore._resolve_md_path("2026-10-15.md", "p1")
+        MarkdownStore.resolve_md_path("2026-10-15.md", "p1")
         == "memory/p1/daily_memory/2026-10-15.md"
     )
     assert (
-        MarkdownStore._resolve_md_path("2026-10-15.md", "")
+        MarkdownStore.resolve_md_path("2026-10-15.md", "")
         == "memory/daily_memory/2026-10-15.md"
     )
 
@@ -482,7 +482,7 @@ def test_read_content_returns_empty_when_file_missing(tmp_path) -> None:
 def test_read_content_rejects_path_escape(tmp_path) -> None:
     """basename 逃逸 ``..`` 足够深（逃出 root）由 ``_safe_abs_path`` 拒绝。
 
-    ``_resolve_md_path`` 会拼出 ``memory/daily_memory/<basename>``，basename 的 ``..``
+    ``resolve_md_path`` 会拼出 ``memory/daily_memory/<basename>``，basename 的 ``..``
     若层数足够会逃出 root——``_safe_abs_path`` 的 realpath + commonpath 收口拒绝。
     层数不足（``../../etc`` 经 daily_memory 消化回 root 内）不逃逸，是预期边界。
     """

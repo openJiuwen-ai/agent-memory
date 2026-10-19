@@ -343,7 +343,7 @@ class LocalMarkdownStore(MarkdownStore):
     ) -> str:
         """读 md 文件原文，按 ``line_range`` 行切片（越界 clamp，1-based 闭区间）。
 
-        basename + project 经 :meth:`_resolve_md_path`（与 :meth:`_md_path` 同口径）映射为
+        basename + project 经 :meth:`resolve_md_path`（与 :meth:`_md_path` 同口径）映射为
         相对路径，``_safe_abs_path`` 收口为 root 内绝对路径后读全文。``line_range`` 为
         ``None`` 返回整文件；否则按 ``splitlines(keepends=True)`` 切片，``[start-1:end]``
         取行，越界 clamp 到 ``[0, len(lines)]``——``start`` 超界或 ``end <= start`` 返回
@@ -351,7 +351,7 @@ class LocalMarkdownStore(MarkdownStore):
         """
         with self._lock:
             root = self._resolved_root()
-            rel_path = self._resolve_md_path(md_basename, project)
+            rel_path = self.resolve_md_path(md_basename, project)
             abs_path = self._safe_abs_path(root, rel_path)
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, read_content returns empty", rel_path)
@@ -394,7 +394,7 @@ class LocalMarkdownStore(MarkdownStore):
         """
         with self._lock:
             root = self._resolved_root()
-            rel_path = self._resolve_md_path(md_basename, project)
+            rel_path = self.resolve_md_path(md_basename, project)
             abs_path = self._safe_abs_path(root, rel_path)
             if not os.path.isfile(abs_path):
                 raise NotFoundError(

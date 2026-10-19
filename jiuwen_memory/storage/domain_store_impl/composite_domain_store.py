@@ -639,7 +639,7 @@ class CompositeDomainStore(DomainStore):
             )
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
-        rel_path = MarkdownStore._resolve_md_path(md_basename, project)
+        rel_path = MarkdownStore.resolve_md_path(md_basename, project)
         open_write_window()
         try:
             # edit 前后全文块（含跨 scope），用于精确 diff：truly_inserted = new - old

@@ -121,7 +121,7 @@ class MarkdownStore(BaseStore):
         """读 md 文件原文（按 basename + project 解析路径），返回可选行切片后的全文。
 
         ``read_md_file`` 的存储层落点（F08 §D1）：``md_basename``（如 ``USER.md`` /
-        ``MEMORY.md`` / ``2026-09-30.md``）+ ``project`` 经实现的 ``_resolve_md_path``
+        ``MEMORY.md`` / ``2026-09-30.md``）+ ``project`` 经实现的 ``resolve_md_path``
         映射为与 :meth:`_md_path`（按 memory_class 映射）**同口径**的相对路径，再经
         ``_safe_abs_path`` 收口为 root 内绝对路径读全文。
 
@@ -166,7 +166,7 @@ class MarkdownStore(BaseStore):
         """
 
     @staticmethod
-    def _resolve_md_path(md_basename: str, project: str) -> str:
+    def resolve_md_path(md_basename: str, project: str) -> str:
         """basename + project → md 文件相对根路径（F08 §3 标准映射）。
 
         ``read_content`` / ``edit_content`` 内部用本方法把 basename + project 映射为

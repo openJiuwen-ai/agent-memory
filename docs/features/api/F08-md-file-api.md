@@ -174,7 +174,7 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 | 层 | 改动 |
 |---|---|
 | 存储 ABC | `markdown.py` +`read_content` / `edit_content`；`shadow.py` +`find_unit_ids_by_content_hash`；`domain_store.py` +`read_md_file` / `edit_md_file` |
-| 存储实现 | `local_markdown_store.py` +`_resolve_md_path`（basename+project→路径，与 `_md_path` 同口径）/ `read_content`（行切片 clamp）/ `edit_content`（唯一性校验 + 原子写）；`sqlite_shadow_index.py` +`find_unit_ids_by_content_hash`；`composite_domain_store.py` +`read_md_file` / `edit_md_file` / `_supersede_shadow_for_md`（继承式 SUPERSEDE 同步，写窗保护，见 D4 落库动作） |
+| 存储实现 | `local_markdown_store.py` +`resolve_md_path`（basename+project→路径，与 `_md_path` 同口径）/ `read_content`（行切片 clamp）/ `edit_content`（唯一性校验 + 原子写）；`sqlite_shadow_index.py` +`find_unit_ids_by_content_hash`；`composite_domain_store.py` +`read_md_file` / `edit_md_file` / `_supersede_shadow_for_md`（继承式 SUPERSEDE 同步，写窗保护，见 D4 落库动作） |
 | 存储共享 | 新建 `markdown_impl/_md_blocks.py`，提取块解析逻辑（`collect_md_blocks` 返回 `[(content_hash, content, block_index)]`），看门狗 + DomainStore 共用，避免重复 |
 | 编排 ABC | `engine.py` +`read_md_file` / `edit_md_file` 协程 |
 | 编排实现 | `cloud_engine.py` / `agent_engine.py` +实现 +`_project_from_context`（从 `context.extensions["coords"]["project"]` 取 project）；`in_memory_engine.py` 抛 `ValidationError`（非文档模式） |
@@ -184,7 +184,7 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 
 ### md 路径解析（basename + project → 磁盘路径）
 
-`_resolve_md_path` 与现有 `_md_path`（`local_markdown_store.py:339-371`，按 memory_class 映射）产出同一路径，但入参是 basename + project（不依赖完整 MemoryUnit）：
+`resolve_md_path` 与现有 `_md_path`（`local_markdown_store.py:339-371`，按 memory_class 映射）产出同一路径，但入参是 basename + project（不依赖完整 MemoryUnit）：
 
 | basename | project | 路径 |
 |---|---|---|
@@ -225,7 +225,7 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 
 | 测试文件 | 覆盖 |
 |---|---|
-| `tests/unit/storage/test_local_markdown_store.py` | `read_content` 行切片 / clamp；`edit_content` 唯一性校验 / NotFound / 原子写回滚；`_resolve_md_path` 4 种 basename×project 组合与 `_md_path` 一致性 |
+| `tests/unit/storage/test_local_markdown_store.py` | `read_content` 行切片 / clamp；`edit_content` 唯一性校验 / NotFound / 原子写回滚；`resolve_md_path` 4 种 basename×project 组合与 `_md_path` 一致性 |
 | `tests/unit/storage/test_sqlite_shadow_index.py` | `find_unit_ids_by_content_hash` scope 隔离（5 段等值）、索引命中、跨 scope 不泄漏 |
 | `tests/unit/storage/test_composite_domain_store.py` | `read_md_file` 块→hash→unit 反查；`edit_md_file` 继承式 SUPERSEDE（元数据继承 + 版本链 `supersedes` + 旧版标记 SUPERSEDED）+ shadow 同步 + 写窗保护；跨块对齐场景（块数一致按 index 继承）+ 不对齐退化兜底场景（合并/拆分）；非文档模式拒绝 |
 | `tests/unit/api/test_local_memory_api_md_ops.py` | 鉴权（READ / WRITE）、拒绝非文档模式、剥瞬态键、`MdOpsMixin` 无同名方法重复 |
