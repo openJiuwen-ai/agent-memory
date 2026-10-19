@@ -1237,3 +1237,5 @@ def test_schema_enabled_assembly_runs_source_first_property_extraction(monkeypat
     assert property_unit.system_metadata["schema_entity_type"] == "user"
     assert property_unit.system_metadata["schema_property_name"] == "position_event"
     assert property_unit.temporal.t_event is not None
+    assert "schema_entity_id" not in property_unit.system_metadata
+    assert "schema_entity_key" not in property_unit.system_metadata
