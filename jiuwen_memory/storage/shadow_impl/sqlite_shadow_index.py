@@ -520,6 +520,26 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         return coords.get("project") or _DEFAULT_PROJECT
 
     @staticmethod
+    def _sync_project_metadata(unit: MemoryUnit, project: str) -> None:
+        """把派生的 ``project`` 持久化进 ``system_metadata.project``，与投影列 ``project`` 对齐。
+
+        投影列取值自 ``system_metadata.project``（agent 抽取路径）或 ``coords.project``
+        （watchdog/router 路径，TRANSIENT，``dumps`` 剥除）。二者只在写入瞬间可读；
+        ``unit_json`` 若不显式回填 project，watchdog 同步的 unit 读回后 system_metadata
+        无 project 键，retrieval 复核 ``memory_filter._field_value`` 返 None、
+        ``IN ['', project]`` 判 False 被误滤；LLM 抽取的 user_profile 带具体 project 值，
+        仅同 project 查询可见。回填后持久化值与投影列一致，召回（project 列）与复核
+        （system_metadata.project）两侧对齐。``project`` 参数由调用方决定：user_profile
+        传空串（跨项目可见），其余传具体项目值。
+        """
+        sm = unit.system_metadata or {}
+        if sm.get("project") == project:
+            return
+        sm = dict(sm)
+        sm["project"] = project
+        unit.system_metadata = sm
+
+    @staticmethod
     def _scope_of(unit: MemoryUnit) -> tuple[str, str, str, str, str]:
         """取 ``unit.scope`` 五段（org/space/user/agent/session），落 ``memory_unit`` scope 列。
 
@@ -592,6 +612,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # 不带 coords 召回（IN ('')）召不回它，全局可见性丢失。
         if category == "user_profile":
             project = _DEFAULT_PROJECT
+        self._sync_project_metadata(unit, project)
         lifecycle = _lifecycle_of(unit)
         t_valid = _t_valid_of(unit)
         t_invalid = _t_invalid_of(unit)
@@ -638,11 +659,11 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     # -- 查询类：get_units/update_units/delete_units/list_units/list_units_by_md 已全部落地 -- #
 
-    def get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+    def get_units(self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False) -> list[MemoryUnit]:
         """按 ``unit_id`` 点查全量 ``MemoryUnit``（F07 §11.3 / F08 §5.1）。
 
-        ``scope`` 原生隔离——影子索引靠 scope 五段等值 WHERE 隔离（对齐 KV 五段
-        等值过滤），与 project（收窄维）+ category（落盘键）正交。点查按 scope
+        ``scope`` 原生隔离——影子索引靠 scope 保等值 WHERE 隔离（对齐 KV 保等值
+        过滤），与 project（收窄维）+ category（落盘键）正交。点查按 scope
         等值过滤（与 ``insert_units`` 一致：写入落 scope 列，读回按 scope 等值）。
 
         **缺失 id 省略（不抛 NotFoundError）**：与 :class:`~storage.kv.KVStore.get`
@@ -650,17 +671,31 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         命中的 ``unit_id`` 来自 ``search_fulltext``/``search_vector`` 的 ``ScoredID``,
         若中途被删应静默跳过而非整批失败。返回列表按下标对应**输入顺序**组装
         （与 ``KVStore.mget`` 保序一致），便于调用方按下标对位。
+
+        **session 放宽（``relax_session=True``）**：仅检索物化侧使用——召回
+        （``search_fulltext``/``search_vector``）放宽 session 等值到 org/space/user/
+        agent 四段，故跨 session 召回的 unit（如 user_profile 记忆跨 session 共享）
+        回读时若仍按 session 五段等值会被过滤掉，命中却拉不到（MissingMemoryUnit）。
+        点查/列表等用户态接口保持 ``relax_session=False``（严格 session 等值）。
         """
         if not unit_ids:
             return []
+        # session 段缺省严格等值（点查口径）；relax_session=True 时放 session 段
+        # 进 WHERE，只对 org/space/user/agent 四段等值——与 recall 的放宽口径对齐。
+        scope_params = [scope.org, scope.space, scope.user, scope.agent]
+        if relax_session:
+            session_where = ""
+        else:
+            scope_params.append(scope.session)
+            session_where = " AND session=?"
         with self._lock:
             conn = self._ensure_conn()
             placeholders = ",".join("?" for _ in unit_ids)
             rows = conn.execute(
                 f"SELECT unit_id, unit_json FROM memory_unit "
                 f"WHERE unit_id IN ({placeholders}) "
-                f'AND org=? AND space=? AND "user"=? AND agent=? AND session=?',
-                (*unit_ids, scope.org, scope.space, scope.user, scope.agent, scope.session),
+                f'AND org=? AND space=? AND "user"=? AND agent=?{session_where}',
+                (*unit_ids, *scope_params),
             ).fetchall()
         # 命中 id → MemoryUnit；非 dict/无 id 的 unit_json 经 loads 归 None，过滤掉
         # （memory_codec.loads 对非 MemoryUnit 字节返回 None，见该模块容错演进说明）。
@@ -783,6 +818,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # old_project 为具体值时被兜底守卫错误保留。
         if category == "user_profile":
             project = _DEFAULT_PROJECT
+        self._sync_project_metadata(unit, project)
         if not md_filename and old_md_filename:
             md_filename = old_md_filename
         if category == _DEFAULT_CLASS and old_category:

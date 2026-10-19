@@ -70,9 +70,9 @@ SUPERSEDE 范式），不选 lifecycle 数据源根治（见「拒绝的方案�
 
 背景：old 经 `shadow.get_units` 读回，`coords` 是 TRANSIENT 键（`dumps` 剥除），读回的
 old 无 coords → deepcopy 的 new 也无 → `domain_store.add` 内 `_md_path._project_of` 读
-coords 落空 → md_filename 重算成 `memory/default/`，新版与旧版不同文件、project 维丢失。
+coords 落空 → md_filename 重算成 `memory/MEMORY.md`（memory 根下，跨项目可见），新版与旧版不同文件、project 维丢失。
 `md_filename` 是落盘键（非 TRANSIENT，读回保留），从 old 的 `md_filename`
-（`memory/{project}/MEMORY.md` 或 `.../daily_memory/...`，`memory/USER.md` 无 project 段
+（`memory/{project}/MEMORY.md` 或 `.../daily_memory/...`，`USER.md` 落 root 顶层无 project 段
 不回写）反推 project 回写进 new 的 coords。
 
 ### 决策 4：evolve 传 domain_store

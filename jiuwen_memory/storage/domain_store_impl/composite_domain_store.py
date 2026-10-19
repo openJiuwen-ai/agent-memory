@@ -803,7 +803,7 @@ class CompositeDomainStore(DomainStore):
         # 端口缺失时 manager 抛 UnsupportedStorageCapabilityError 并指明缺失端口。
         return cast(Any, self._manager.kv(self._kv_name))
 
-    def _get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+    def _get_units(self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False) -> list[MemoryUnit]:
         """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
 
         文档模式（``write_document=true``）走影子索引 ``shadow.get_units``——
@@ -813,12 +813,15 @@ class CompositeDomainStore(DomainStore):
         非文档模式走 KV：``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``
         （见 :meth:`KVStore.mget`），故去重与「索引↔真源短暂不一致」的兜底
         都由本方法承担。影子索引路径无此问题——缺失 id 在 SQL 层自然省略。
+
+        ``relax_session=True`` 仅检索物化侧使用：召回放宽了 session 等值（四段），
+        物化回读须同口径放 session 等值，否则跨 session 命中的 unit 拉不到。
         """
         if not unit_ids:
             return []
         if self.should_write_document():
             shadow = self._raw_shadow_index()
-            by_id = {unit.id: unit for unit in shadow.get_units(scope, unit_ids)}
+            by_id = {unit.id: unit for unit in shadow.get_units(scope, unit_ids, relax_session=relax_session)}
             # shadow.get_units 按 IN 查询返回唯一行，对重复 id 复用同一份 unit 对象，
             # 与 KV 路径「重复 id 各自返回」行为一致（召回物化侧已 seen 去重，实际无重复）。
             return [by_id[uid] for uid in unit_ids if uid in by_id]
@@ -903,7 +906,7 @@ class CompositeDomainStore(DomainStore):
                 if candidate.unit_id not in seen:
                     seen.add(candidate.unit_id)
                     unit_ids.append(candidate.unit_id)
-        units = {unit.id: unit for unit in self._get_units(scope, unit_ids)}
+        units = {unit.id: unit for unit in self._get_units(scope, unit_ids, relax_session=True)}
         batches = []
         errors = list(recalled.errors)
         for batch in recalled.batches:

@@ -44,8 +44,12 @@ class DocumentShadowIndex(BaseStore):
         """
 
     @abstractmethod
-    def get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
-        """按 ``unit_id`` 点查全量 ``MemoryUnit``（从 ``unit_json`` 列反序列化）。缺失 id 省略。"""
+    def get_units(self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False) -> list[MemoryUnit]:
+        """按 ``unit_id`` 点查全量 ``MemoryUnit``（从 ``unit_json`` 列反序列化）。缺失 id 省略。
+
+        ``relax_session=True`` 放 session 段等值（仅检索物化侧），与
+        ``search_fulltext``/``search_vector`` 的召回放宽口径对齐，加载跨 session 命中的 unit。
+        """
 
     @abstractmethod
     def find_unit_ids_by_content_hash(
