@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """AgentMemory 外接记忆 provider —— 适配 JiuwenSwarm ExternalMemoryRail。
 
-把 AgentMemory 的 ``MemoryAPI``（进程内 ``assemble()`` 或 HTTP ``/v1/<verb>``）
+把 AgentMemory 的 ``MemoryAPI``（进程内 ``assemble_runtime()`` 或 HTTP ``/v1/<verb>``）
 适配成 openjiuwen ``MemoryProvider`` ABC 的实现，供 ``ExternalMemoryRail`` /
 ``JiuwenMemoryRail`` 驱动。
 
@@ -18,7 +18,7 @@
 - 参考实现：同目录 ``mem2_provider.py``（== openjiuwen 的 ``jiuwen_memory_provider.py``）。
 
 设计要点（详见 ``jiuwen_memory_rail_design.md`` §6.2）：
-- 双模式：``base_url`` 非空 → HTTP（全 async，推荐生产）；否则进程内 ``assemble()``。
+- 双模式：``base_url`` 非空 → HTTP（全 async，推荐生产）；否则进程内 ``assemble_runtime()``。
 - [本地修改 2026-10-17] 进程内默认装配：``config_path`` 缺省时不再要求外部配置文件，
   直接用内置的 agent 场景（F09）默认配置 ``_agent_default_config()``（即
   ``config.serve-doc.yml`` 的代码化副本：md 真源 + shadow 索引 + agent engine +
@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -58,7 +59,7 @@ from jiuwen_memory.api import (
     EvolveMode,
     Modality,
     RequestSecurityContext,
-    assemble,
+    assemble_runtime,
     install_privacy_filter,
     metadata_for_log,
     redact_for_log,
@@ -133,6 +134,13 @@ SEARCH_SCHEMA: dict[str, Any] = {
                 "type": "integer",
                 "description": "Max results (default: 10, max: 50).",
             },
+            "project": {
+                "type": "string",
+                "description": (
+                    "Project coordinate; omit to search across all projects. When "
+                    "set, recalls this project's memories plus cross-project memories."
+                ),
+            },
         },
         "required": ["query"],
     },
@@ -144,14 +152,32 @@ CONCLUDE_SCHEMA: dict[str, Any] = {
         # [本地修改 2026-10-17] 原描述含 "corrections"，会把「修改个人信息」类指令
         # 路由到 conclude（append 式写入）而非 edit_md_file（原地替换），产生新旧
         # 矛盾事实共存。改为明确 append-only + 把更正路由到 edit_md_file。
-        "Store a NEW durable fact about the user — appends verbatim, no extraction. "
-        "It NEVER modifies or removes existing memories. To change or correct what is "
-        "already stored, use agent_memory_edit_md_file (read the file first to locate "
-        "the exact text)."
+        # 新增 infer/tags/project 三开关，缺省
+        # 仍是原文 append（infer=false）；infer=true 触发 LLM 抽取+去重。
+        "Store a durable memory. By default it appends verbatim with no extraction; "
+        "set infer=true to extract and dedup self-contained facts instead. It NEVER "
+        "modifies or removes existing memories — to change or correct what is already "
+        "stored, use agent_memory_edit_md_file (read the file first to locate the "
+        "exact text)."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"conclusion": {"type": "string", "description": "The fact to store."}},
+        "properties": {
+            "conclusion": {"type": "string", "description": "The fact/memory to store."},
+            "infer": {
+                "type": "boolean",
+                "description": "Run LLM extraction + dedup on the content (default: false).",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional labels for later filtering.",
+            },
+            "project": {
+                "type": "string",
+                "description": "Project coordinate; omit for cross-project storage.",
+            },
+        },
         "required": ["conclusion"],
     },
 }
@@ -254,7 +280,7 @@ def _agent_default_config() -> dict[str, Any]:
     """[本地修改 2026-10-17] 进程内默认装配——agent 场景（F09）内核配置。
 
     ``config.serve-doc.yml`` 的代码化副本（逐段对应，凭证与端点按该文件字面值
-    写死），供 ``config_path`` 缺省时的进程内分支直接 ``assemble()``：
+    写死），供 ``config_path`` 缺省时的进程内分支直接 ``assemble_runtime()``：
 
     - 真源 = document（md 文件 + sqlite3/sqlite-vec 影子索引，watchdog 监听手改）；
       md 按 memory_class × coords.project 分流（user_profile→USER.md；
@@ -367,7 +393,9 @@ def _agent_default_config() -> dict[str, Any]:
         "extractor": {"default": {"target": "agent_llm",
                                   "params": {"llm": "default", "extractor_language": "cn"}}},
         "abstractor": {"default": "concat"},
-        "associator": {"default": {"target": "keyword", "params": {"feature_extractor": "default"}}},
+        "associator": {
+            "default": {"target": "keyword", "params": {"feature_extractor": "default"}}
+        },
         "classifier": {"default": "llm"},
         # 文档模式（write_document=true）：IndexBuilder 全委托 domain_store.add 文档分流
         "constructor": {"default": {"target": "document", "params": {"domain_store": "default"}}},
@@ -678,8 +706,16 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 # dict.get 的缺省值不生效，int(None) 直接 TypeError。用 or 同时覆盖
                 # 「key 缺省」与「显式 null」（top_k=0 无意义，同样回落缺省）。
                 top_k = min(int(args.get("top_k") or _DEFAULT_SEARCH_TOP_K), _MAX_TOP_K)
+                # [本地修改 2026-10-19] 对齐 mem2_search：project 走 filters 下推为
+                # system_metadata.project 谓词，与写入侧 add（project 作标量
+                # system_metadata["project"]）同口径；IN ['', project] 同时召回跨项目
+                # 可见记忆与同 project 记忆。
+                project = str(args.get("project") or "").strip()
+                filters = (
+                    {"system_metadata.project": {"in": ["", project]}} if project else None
+                )
                 # 显式检索不过滤 tier（§6.2-F）：LLM 主动检索允许命中 EPISODIC 原文。
-                items = await self._client.search(query, scope, top_k=top_k)
+                items = await self._client.search(query, scope, top_k=top_k, filters=filters)
                 if not items:
                     logger.info(
                         "[AgentMemoryMemoryProvider] agent_memory_search query=%s -> no relevant",
@@ -707,13 +743,33 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 conclusion = args.get("conclusion", "")
                 if not conclusion:
                     return json.dumps({"error": "Missing required parameter: conclusion"})
-                # 原样存（对齐常见记忆层 infer=False）；add 会走缺省路径原文落盘 + 建索引。
-                data = await self._client.add(conclusion, scope, tags=["conclude"])
+                # infer 缺省 False（原文 append，保住
+                # 「永不修改/只新增」语义），显式 true 走 LLM 抽取+去重；project 作标量
+                # system_metadata["project"] 直传（agent 场景无 router，coords 嵌套 dict
+                # 会被 _reject_non_scalar_metadata 拒）。
+                infer = bool(args.get("infer", False))
+                tags = args.get("tags") or ["conclude"]
+                project = str(args.get("project") or "").strip()
+                system_metadata: dict[str, str] = {}
+                if infer:
+                    system_metadata["infer"] = "true"
+                if project:
+                    system_metadata["project"] = project
+                data = await self._client.add(
+                    conclusion,
+                    scope,
+                    tags=tags,
+                    system_metadata=system_metadata or None,
+                )
                 if data is None:
                     return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
                 logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_conclude stored=%s",
+                    "[AgentMemoryMemoryProvider] agent_memory_conclude stored=%s "
+                    "infer=%s tags=%s project=%s",
                     redact_for_log(conclusion),
+                    infer,
+                    tags,
+                    project or "",
                 )
                 if data.item_id is None:
                     return json.dumps({"result": "Fact stored (deduped, no new unit)."})
@@ -1125,7 +1181,7 @@ def _build_client(
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 外部配置文件 > 内置 agent 默认装配。
 
-    [本地修改 2026-10-17] 进程内分支缺省不再回落 ``assemble(None)``（echo LLM +
+    [本地修改 2026-10-17] 进程内分支缺省不再回落 ``assemble_runtime(None)``（echo LLM +
     内存 KV 的通用内核缺省），而是用 ``_agent_default_config()``（agent 场景 F09
     文档真源装配，serve-doc 的代码化副本）。
 
@@ -1554,7 +1610,7 @@ class _InProcessClient(_AgentMemoryClient):
 
     配置来源优先级（[本地修改 2026-10-17]）：``config_dict``（调用方在内存里
     缝合/内置的配置，如 provider 的 agent 默认装配）> ``config_path``（外部
-    yml/json 文件）> 两者皆空 → ``assemble(None)`` 通用内核缺省（保留兼容，
+    yml/json 文件）> 两者皆空 → ``assemble_runtime(None)`` 通用内核缺省（保留兼容，
     provider 正常路径不会再走到）。
 
     注意（§4.6）：``MemoryAPI`` 的 ``search``/``list``/``evolve`` 是同步方法
@@ -1593,15 +1649,29 @@ class _InProcessClient(_AgentMemoryClient):
                 _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
             )
             config = data
-        self._api = assemble(config=config)
+        # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
+        # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
+        # 索引），close 释放 shadow sqlite。
+        self._runtime = assemble_runtime(config=config)
+        self._api = self._runtime.api
 
     def _security(self) -> RequestSecurityContext:
         """本次调用的可信上下文：由注入的 provider 产出，业务 scope 只作 target。"""
         return self._security_provider()
 
     async def initialize(self) -> None:
-        # 内核已在 __init__ 装配完成；无网络资源要建。
-        return None
+        # 内核已在 __init__ 装配完成；无网络资源要建。文档模式（watch_document=true）
+        # 下起看门狗（监听 md 手改同步影子索引），须在 initialize 的 async 上下文调
+        # （看门狗内部 asyncio.get_running_loop 绑 agent 主循环）；无文档模式时 no-op。
+        try:
+            await self._runtime.start_background()
+        except Exception as exc:
+            # 看门狗起不来不阻塞记忆主链路（add/search 不依赖监听），仅监听不可用。
+            logger.warning(
+                "[AgentMemoryMemoryProvider/in-process] start_background failed "
+                "(document watch unavailable): %s",
+                exc,
+            )
 
     @staticmethod
     def _to_api_scope(scope):
@@ -1764,8 +1834,16 @@ class _InProcessClient(_AgentMemoryClient):
             )
 
     async def close(self) -> None:
-        # LocalMemoryAPI 无显式 close；释放由 GC 处理
-        pass
+        # 停看门狗/释放 shadow sqlite（文档模式），幂等；runtime.close 是同步方法。
+        if self._runtime is not None:
+            try:
+                self._runtime.close()
+            except Exception as exc:
+                logger.warning(
+                    "[AgentMemoryMemoryProvider/in-process] runtime close failed: %s",
+                    exc,
+                )
+            self._runtime = None
 
 
 def _load_yaml(path):
