@@ -42,6 +42,36 @@ def _submit(scheduler: AsyncTimerScheduler, job: Job) -> str:
     return asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
 
 
+def test_submit_on_private_loop_creates_exactly_one_job() -> None:
+    scheduler = AsyncTimerScheduler()
+    job = _GatedJob()
+    job.release.set()
+
+    async def submit_on_loop() -> str:
+        return await scheduler.submit(job, Channel.BACKGROUND)
+
+    try:
+        job_id = scheduler._runner.run(submit_on_loop(), timeout=3)
+        scheduler.shutdown()
+        assert set(scheduler._jobs) == {job_id}, "same-loop submit must execute only once"
+    finally:
+        scheduler.shutdown()
+
+
+def test_submit_rejects_inconsistent_same_thread_foreign_loop(monkeypatch) -> None:
+    scheduler = AsyncTimerScheduler()
+    scheduler._runner.ensure_loop()
+    try:
+        # 标准 asyncio 不支持同线程嵌套运行循环；故障注入验证异常上下文的明确报错。
+        with monkeypatch.context() as patch:
+            patch.setattr(scheduler._runner, "in_loop_thread", lambda: True)
+            with pytest.raises(RuntimeError, match="different loop on the Scheduler thread"):
+                _submit(scheduler, _GatedJob())
+        assert not scheduler._jobs, "invalid loop context must not enqueue a job"
+    finally:
+        scheduler.shutdown()
+
+
 @pytest.mark.parametrize("wait", [True, False])
 def test_inflight_job_that_finishes_normally_remains_succeeded(wait: bool) -> None:
     scheduler = AsyncTimerScheduler()

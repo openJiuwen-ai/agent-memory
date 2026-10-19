@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-16 |
+| 最近一次修订日期 | 2026-10-19 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -367,6 +367,12 @@ recall / list 完成权限检查前，API 构造 `PermissionContext` 时从
 **关闭与任务终态**：排队而未执行的任务取消；在飞任务正常返回则保持 SUCCEEDED，响应
 协作式取消提前结束则为 CANCELLED，真实执行错误仍为 FAILED。进入关闭状态本身不覆盖
 任务的实际执行结果，已有结果 ID 保留。
+
+**等待期限与 Job 扩展约束**：`shutdown(wait=True)` 不设整体关闭超时，须等在飞任务和
+所属线程实际收尾后返回。自定义 Job 应能正常结束，或在执行步骤边界响应取消信号；
+未检查取消但能正常结束的 Job 仍允许完成。模型、存储等外部同步调用应配置调用超时。
+`request_cancel` 不强制中断已进入的同步调用；永久阻塞的调用可能使等待关闭持续阻塞。
+需要不等待收尾时使用 `wait=False`，其返回不代表在飞调用已停止，不得提前释放依赖资源。
 
 **定时去重键**：`Job.schedule_key`（`jobs.py`，默认任务类名）——Scheduler 判定同 scope 内"是不是同一个任务"**只依赖该通用键**，不识别具体 Job 类的业务字段；需要区分业务身份的实现覆写（EvolveJob 含 mode：同 scope 下 EXTRACT 与 FORGET 定时器互不覆盖）。
 

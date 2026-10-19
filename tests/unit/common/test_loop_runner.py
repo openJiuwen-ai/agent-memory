@@ -4,12 +4,62 @@
 
 import asyncio
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwen_memory.common.loop_runner import LoopRunner
 
 pytestmark = pytest.mark.unit
+
+
+def test_close_after_worker_has_already_exited() -> None:
+    runner = LoopRunner()
+    loop = runner.ensure_loop()
+    worker = runner._thread
+    try:
+        loop.call_soon_threadsafe(loop.stop)
+        worker.join(timeout=5)
+        assert not worker.is_alive() and loop.is_closed(), "simulate an out-of-band loop exit"
+        runner.close()
+        runner.close()
+        assert not worker.is_alive(), "close must not restart an already exited worker"
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize("closed_before_check", [True, False])
+def test_close_waits_even_if_loop_is_closed_before_or_during_stop(
+    closed_before_check: bool,
+) -> None:
+    calls: list[str] = []
+    state = {"closed": closed_before_check}
+
+    def stop(callback) -> None:
+        calls.append("stop")
+        state["closed"] = True
+        raise RuntimeError("Event loop is closed")
+
+    runner = LoopRunner()
+    runner._loop = SimpleNamespace(
+        is_closed=lambda: state["closed"], stop=lambda: None, call_soon_threadsafe=stop
+    )
+    runner._thread = SimpleNamespace(join=lambda: calls.append("join"))
+    runner.close()
+    expected = ["join"] if closed_before_check else ["stop", "join"]
+    assert calls == expected, "closed-loop handling must still wait for the worker"
+
+
+def test_close_does_not_hide_other_runtime_errors() -> None:
+    def stop(callback) -> None:
+        raise RuntimeError("unexpected stop failure")
+
+    runner = LoopRunner()
+    runner._loop = SimpleNamespace(
+        is_closed=lambda: False, stop=lambda: None, call_soon_threadsafe=stop
+    )
+    with pytest.raises(RuntimeError, match="unexpected stop failure"):
+        runner.close()
 
 
 def test_close_without_start_does_not_create_thread() -> None:

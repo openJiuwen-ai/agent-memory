@@ -91,8 +91,13 @@ class LoopRunner:
         with self._lock:
             if not self._closed:
                 self._closed = True
-                if self._loop is not None:
-                    self._loop.call_soon_threadsafe(self._loop.stop)
+                if self._loop is not None and not self._loop.is_closed():
+                    try:
+                        self._loop.call_soon_threadsafe(self._loop.stop)
+                    except RuntimeError:
+                        # Runner 可能恰在检查后完成关闭；只容忍这一竞态。
+                        if not self._loop.is_closed():
+                            raise
         if wait:
             self.wait_closed()
 

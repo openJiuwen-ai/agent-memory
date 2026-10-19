@@ -158,13 +158,17 @@ class AsyncTimerScheduler(Scheduler):
             if self._closing:
                 raise RuntimeError("Scheduler is shut down")
             loop = self._runner.ensure_loop()
-            if not self._runner.in_loop_thread():
+            if asyncio.get_running_loop() is loop:
+                future = None
+            elif self._runner.in_loop_thread():
+                raise RuntimeError("cannot submit from a different loop on the Scheduler thread")
+            else:
                 future = asyncio.run_coroutine_threadsafe(
                     self._submit_on_loop(job, channel), loop
                 )
         # DriverJob 会在守护 loop 内提交派生 EvolveJob。此时必须直接 await 实际
         # 提交体；再用 run_coroutine_threadsafe 会让当前 loop 等待自己而死锁。
-        if asyncio.get_running_loop() is loop:
+        if future is None:
             return await self._submit_on_loop(job, channel)
         # 跨 loop 提交到守护 loop：_submit_on_loop 内部的 create_task 落在守护
         # loop 上，Timer/drain 生命周期与调用方 loop（可能是 asyncio.run 的
@@ -299,6 +303,8 @@ class AsyncTimerScheduler(Scheduler):
 
         wait=False 只安排收尾，已进入的调用仍可完成；后续 wait=True 可等待完成。
         私有循环内只允许 wait=False，避免线程等待自身。关闭后保留任务历史。
+        wait=True 不设整体等待期限；Job 须能正常结束或响应协作式取消，外部调用
+        应配置超时。取消协程不能强制停止已进入的同步调用，不能以超时代替收尾完成。
         """
         self.validate_shutdown(wait=wait)
         with self._lifecycle_lock:
