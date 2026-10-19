@@ -383,7 +383,7 @@ _CONTEXT_SECTION_TEMPLATES_EN = {
 # ---------------------------------------------------------------------------
 
 _OBSERVATION_DATE_PREFIX_CN = (
-    "观测日期: {date}\n"
+    "observation_date: {date}\n"
     "（以该日期为基准，把 \"昨天\"/\"上周\"/\"明天\" 之类的相对时间表达"
     "解析为 content 与 event_date 中的绝对日期。）\n\n"
 )

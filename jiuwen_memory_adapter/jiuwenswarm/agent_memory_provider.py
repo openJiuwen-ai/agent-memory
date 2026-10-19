@@ -1770,9 +1770,11 @@ class _InProcessClient(_AgentMemoryClient):
         project 经 ``extensions["coords"]["project"]`` 下传（``COORDS_KEY`` 常量
         与内核一致）；缺失/空串 → 跨项目的 memory 根目录。
         """
-        from jiuwen_memory.common.type_def import COORDS_KEY
-
-        extensions = {COORDS_KEY: {"project": project}} if project else {}
+        # COORDS_KEY = "coords"（jiuwen_memory.common.type_def）——access 层
+        # （boundary 契约 A-01）只允许 import jiuwen_memory.api，不能直接 import
+        # 内核 common.type_def。该常量是稳定字面量 "coords"，与内核一致地写死，
+        # 由 Context.extensions 透传给 Engine 层 _project_from_context 解析。
+        extensions = {"coords": {"project": project}} if project else {}
         return Context(scope=api_scope, extensions=extensions)
 
     async def read_md_file(

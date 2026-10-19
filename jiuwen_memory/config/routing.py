@@ -709,6 +709,33 @@ class RoutingDomainStore(DomainStore):
             **kwargs,
         )
 
+    def read_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        *,
+        project: str = "",
+        line_range: tuple[int, int] | None = None,
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        return self._active_domain().read_md_file(
+            scope, md_basename, project=project, line_range=line_range, access=access
+        )
+
+    def edit_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        project: str = "",
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        return self._active_domain().edit_md_file(
+            scope, md_basename, old_text, new_text, project=project, access=access
+        )
+
     def health(self) -> None:
         self._active_domain().health()
 

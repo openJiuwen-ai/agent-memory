@@ -131,6 +131,14 @@ class UnitOnlyDomainStore(DomainStore):
     ) -> RankedStorageResult:
         return RankedStorageResult(candidates=[], errors=[])
 
+    def read_md_file(self, scope, md_basename, *, project="", line_range=None, access=None):
+        # 纯领域 fake 不经底层 Store——文档模式 md 接口本就不支持，抛能力不支持异常
+        # （与 UnitOnlyStoreManager 命名端口异常语义一致）。
+        raise UnsupportedStorageCapabilityError("markdown", md_basename)
+
+    def edit_md_file(self, scope, md_basename, old_text, new_text, *, project="", access=None):
+        raise UnsupportedStorageCapabilityError("markdown", md_basename)
+
     def health(self) -> None:
         return None
 
