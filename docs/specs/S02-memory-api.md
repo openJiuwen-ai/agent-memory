@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-16 |
+| 最近一次修订日期 | 2026-10-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -156,6 +156,7 @@ HTTP edge 将成功或失败响应统一写入 JSON；错误响应固定包含�
 | `ConflictError` | 409 | `false` | `resource conflict` |
 | `PartialFailureError` | 409 | `false` | 脱敏后的失败原因，并保留 `completed` / `failed` / `retry_action` |
 | `RateLimitedError` | 429 | `true` | `too many requests` |
+| OpenAI SDK `RateLimitError`（上游模型或向量服务限流） | 429 | `true` | `too many requests` |
 | `BackendError` / `HealthCheckError` | 503 | `true` | `service temporarily unavailable` |
 | 请求体超过限制 | 413 | `false` | `request body is too large` |
 | 未预期异常 | 500 | `false` | `internal server error` |
@@ -167,6 +168,11 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 客户端可按整数秒退避；其他状态不返回该 header。CLI 本地调用与 HTTP 共用
 `core/error_response.py` 的领域错误状态及脱敏规则，本地错误也带独立 request ID；
 命令行参数解析错误仍使用 CLI 退出码。MCP 与旧进程内 legacy dispatch 不受影响。
+
+HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `error` 为
+`RateLimitError`，不转换为 `InternalError` 或领域 `RateLimitedError`。消息使用上表固定
+文案，不回传上游错误详情；HTTP 沿用 `Retry-After: 1`，不透传供应商的重试头。
+其他未映射 SDK 异常仍按未预期异常处理。本契约不增加自动重试或修改现有重试配置。
 
 ## 范围 / 边界
 

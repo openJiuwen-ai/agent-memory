@@ -46,6 +46,7 @@ from jiuwen_memory_entry.core.profiles import OFFLINE, load_config
 from jiuwen_memory_entry.http_server import __main__ as http_server_module
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
 from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
+from tests.unit.jiuwen_memory_entry.fixtures import upstream_api_error
 
 pytestmark = pytest.mark.unit
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -1276,6 +1277,39 @@ def test_http_unexpected_error_is_generic_and_not_retryable(http_endpoint) -> No
     assert headers["x-request-id"] == body["request_id"]
     assert "secret-token" not in json.dumps(body)
     assert "secret-password" not in json.dumps(body)
+
+
+@pytest.mark.parametrize("method", ["add", "search"])
+@pytest.mark.parametrize("upstream_status", [429, 400, 500])
+def test_http_upstream_error_response(http_endpoint, method: str, upstream_status: int) -> None:
+    base_url, server = http_endpoint
+    error = upstream_api_error(upstream_status)
+
+    def fail(*args, **kwargs):
+        raise error
+
+    setattr(server.api, method, fail)
+    payload = (
+        {"scope": {"org": "acme", "user": "alice"}, "content": "x"}
+        if method == "add"
+        else {"context": {"scope": {"org": "acme", "user": "alice"}}, "query": "x"}
+    )
+    status, body, headers = _request_with_headers(
+        base_url, f"/v1/{method}", json.dumps(payload).encode()
+    )
+    limited = upstream_status == 429
+    assert status == (429 if limited else 500)
+    assert body == {
+        "error": "RateLimitError" if limited else "InternalError",
+        "message": "too many requests" if limited else "internal server error",
+        "retryable": limited,
+        "request_id": headers["x-request-id"],
+    }
+    assert body["request_id"]
+    if limited:
+        assert headers["retry-after"] == "1"
+    else:
+        assert "retry-after" not in headers
 
 
 def test_http_validation_error_is_redacted(http_endpoint) -> None:
