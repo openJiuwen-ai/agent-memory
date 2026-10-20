@@ -5,10 +5,27 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+
+## 乱序陈述的修改型决策契约
+
+关联决策与验证见 [F09](../features/construction/F09-out-of-order-fact-invalidation.md)。
+
+- UPDATE/SUPERSEDE 必须指向当前判定可见的 existing_id；legacy 仅一个候选时兼容缺省 ID，
+  dynamic 仍要求显式 ID。多候选缺省或 ID 越界时转 ADD，不得默认修改最高相似记录。
+- `t_message` 仅表示陈述先后，`t_event` 表示事件时间，`[t_valid, t_invalid)` 表示已有有效期；
+  三者不得互相兜底。只有双方有时区且不在未来的消息时间才可排序；同刻或缺失时保守 ADD。
+- 旧 SUPERSEDE 候选落盘并退出当前态，existing 不变；旧 UPDATE 候选独立保留，禁止旧值合并覆盖。
+  不相交或非法有效期不自动截断，不从消息时间回填 t_valid，不重建缺乏事实生效依据的业务历史。
+- 反向失效的候选同时计入 created_ids/created_units 和 superseded_ids；后者表示本次被标为
+  SUPERSEDED 的记录，可能就是刚创建的候选。不新增 expired_ids 或生命周期枚举。
+- 未来 valid-time 保留真实边界；旧现任在截止点前仍 ACTIVE，新版在起点前由有效期过滤。
+- 修改前复核目标真源；批内新写入记录参与后续候选重判。该复核不构成跨请求原子事务。
+- 抽取日期依据逐来源确定：显式 observation_date、aware t_message 的当地日期、当前 UTC 日期。
+  不允许整批借用首条消息的日期。调用方不传消息时间时，不承诺自动解决陈述乱序。
 
 ## Metadata 派生与索引契约
 
@@ -50,7 +67,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 - 候选落盘前巩固（ADD/UPDATE/SUPERSEDE/NOOP）
 - 多形式索引构建（文档/关键词/向量/图，按配置启用）
 - 记忆自演进（抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权）
-- 树结构派生、区间重建与双向边维护（目标契约，尚未实现）
+- 树结构派生、区间重建与双向边维护（显式 HIERARCHY 模式）
 
 **不管什么**：
 - 不做鉴权（由 `jiuwen_memory/api` 层负责）
@@ -107,11 +124,11 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     读写不分叉。
 18. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会
     留下孤儿派生索引，而删除路径的扫描源正是正排，此后无法清理。
-19. **叶权威、父可重建**（目标契约，尚未实现）：普通写入或来源转换产生的叶是权威事实；
+19. **叶权威、父可重建**：普通写入或来源转换产生的叶是权威事实；
     `HierarchyComposer` 生成的父节点是派生物。重建父层不得删除、改写或归档权威叶内容。
-20. **层级边双向一致**（目标契约，尚未实现）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
+20. **层级边双向一致**：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
     并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
-21. **父标注先于持久化和索引**（目标契约，尚未实现）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
+21. **父标注先于持久化和索引**：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
     再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
 22. **Schema 事件精度不伪造日期**：Property 的年/月事件时间用
     `schema_event_start/end/precision` 半开区间表达，`temporal.t_event`
@@ -483,6 +500,7 @@ class EvolveResult:
     updated_ids: list[str] = field(default_factory=list)
     superseded_ids: list[str] = field(default_factory=list)
     forgotten_ids: list[str] = field(default_factory=list)
+    created_units: list[MemoryUnit] = field(default_factory=list)
     hierarchy_result: HierarchyComposeResult | None = None
 ```
 
@@ -548,7 +566,7 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 | `tier` | MemoryTier | 认知角色（working/core/episodic/semantic/procedural/archival） |
 | `segments` | list[Segment] | 内容段列表（多段内容投影，每段含 content+assets+source） |
 | `source_ref` | str | 来源引用（RawPayload id / 会话 id 等，可溯源） |
-| `temporal` | Temporal | 时间：t_event / t_ingest / t_valid / t_invalid |
+| `temporal` | Temporal | 时间：t_event / t_ingest / t_valid / t_invalid / t_message |
 | `provenance` | list[str] | 演进血缘（多→一）：由哪些 unit 抽取/升华/合并而来 |
 | `supersedes` | str | 版本链（一→一）：本版取代的上一版 id（空=首版） |
 | `tags` | list[str] | 标签（检索前置过滤用） |

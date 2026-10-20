@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import UTC, datetime
 
 import pytest
 
@@ -388,7 +389,9 @@ def _make_unit(
         tier=tier,
         segments=[Segment(content=content, source=Modality.TEXT)],
         lifecycle=LifecycleState.ACTIVE,
-        temporal=Temporal(),
+        temporal=Temporal(
+            t_message=datetime(2026, 1, 1 if unit_id.startswith("e") else 2, tzinfo=UTC)
+        ),
     )
     return unit
 

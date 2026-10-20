@@ -95,7 +95,7 @@ class BatchWriteResult:
 | `assets` | 本条原始资产引用列表，例如图片 URL、音频路径、PDF 对象存储地址 | 通常逐 item，不默认外提 |
 | `tags` | 标签，参与过滤、权限上下文和治理 | 可由顶层公共 tags 与 item tags 合并 |
 | `metadata` | 调用级/记忆级元数据，包含 `infer`、`procedural`、`memory_type`、`message_type`、动态 prompt key 等 | 可由顶层公共 metadata 与 item metadata 合并 |
-| `occurred_at` | 事件发生时间，进入 `RawPayload.occurred_at` / `Temporal.t_event` | 可由 `batch_add(..., occurred_at=...)` 提供默认值 |
+| `occurred_at` | 消息发生时间，进入 `RawPayload.occurred_at` / `Temporal.t_message`；不直接填入 `Temporal.t_event` | 可由 `batch_add(..., occurred_at=...)` 提供默认值 |
 | `stream_id` | 一组必须保序的写入流，例如会话、回放或导入任务 | 常重复，可由 `batch_add(..., stream_id=...)` 提供默认值 |
 | `sequence` | stream 内顺序号 | 不外提，必须逐 item |
 | `idempotency_key` | 单条写入幂等键 | 不外提，必须逐 item |

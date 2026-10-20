@@ -38,6 +38,8 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类 |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
 | `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录 |
+| `evolver_impl/temporal_validity.py` | UPDATE/SUPERSEDE 的时间护栏纯函数；只以显式 aware `t_message` 排陈述先后，已有 valid-time 区间独立校验 |
+| `extractor_impl/observation_time.py` | legacy/dynamic 抽取共用的逐来源日期上下文，显式 observation_date 优先，其次来源消息的当地日期 |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
 | `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
 
@@ -73,7 +75,7 @@ Evolver.evolve(units, mode):
 ```
 
 三个 Evolver 同属 `evolver` 顶层命名空间。`DynamicEvolver` 与显式启用的
-`SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract`；
+`SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，通过覆盖 `_evolve_extract` 切换抽取路径；
 其他模式（含 HIERARCHY）继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
 
 ## 行为铁律
@@ -120,6 +122,11 @@ Evolver.evolve(units, mode):
    SUPERSEDE/FORGET 标记由 `OrchestratingEvolver`/`DynamicEvolver` 经
    `IndexBuilder.update` 完成，不经 `LifecycleManager`（construction → control 严禁）。
 
+   legacy/dynamic 共用父类 `_apply_decision`；修改前经同 profile 的 DomainStore 重新读取目标，
+   在副本上裁决。旧 SUPERSEDE 候选自行退出当前态；旧 UPDATE 候选单独保留，不覆盖新内容。
+   缺时间、naive 时间、同刻冲突和不相交区间均保守 ADD；不从 t_event 推导陈述先后，
+   不把 t_message 回填为 t_valid。批内 ADD 提交前重新召回，dynamic 重判仍走其配置 prompt。
+
 9. **Dedup 与 IndexBuilder 共享底层 Store**
    去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
 
@@ -151,7 +158,7 @@ Evolver.evolve(units, mode):
     真源仍保留 None，禁止为适配后端改写 MemoryUnit；`memory_filter._field_value`
     对 `t_event` / `t_invalid` 的 None 同步投影为对应哨兵，使后置复核与下推不分叉。
 
-14. **抽取与分层优先保证完整性**
+15. **抽取与分层优先保证完整性**
     派生 L2 只保存紧凑陈述，通过 `source_ref`/`provenance`/`evidence` 回指来源；坏候选
     与坏子批分别隔离，整次抽取无可用候选时才显式失败；动态抽取可隔离单策略失败，但
     全部策略失败必须向上抛错。LLM 分层的重复、越界或遗漏 ID 拒绝整批，单条长度异常
@@ -200,7 +207,7 @@ Evolver.evolve(units, mode):
 4. Evolver 返回 `EvolveResult`（created_ids / updated_ids / superseded_ids / forgotten_ids）。
 5. Dedup 必须实现 `recall(candidate) -> list[(MemoryUnit, score)]`；实现内部异常吞掉返回空列表，不阻断演进。
 6. 算子内部调用共享插件（Chunker/Embedder/Tokenizer/FeatureExtractor/LLM）必须使用注入的实例，不自行构造。
-7. `DynamicEvolver` 继承 `OrchestratingEvolver`，复用父类全部依赖（extractor/abstractor/associator/index_builder/kv/graph/dedup/llm/layer_annotator），额外注入 `PromptRegistry`；只覆盖 `_evolve_extract`，其他模式（含 HIERARCHY）继承父类。
+7. `DynamicEvolver` 继承 `OrchestratingEvolver`，复用父类全部依赖（extractor/abstractor/associator/index_builder/kv/graph/dedup/llm/layer_annotator），额外注入 `PromptRegistry`；覆盖 `_evolve_extract` 切换抽取路径，其他模式（含 HIERARCHY）继承父类。
 8. `DynamicEvolver` 与 IndexBuilder/KVStore/Dedup 必须使用同一 profile 的共享实例；pipeline profile 选 evolver 实现名（`orchestrating` / `dynamic`）即切换 EXTRACT 路径。
 9. `DynamicLLMExtractor` 子类只覆盖 `parse_response` 完成响应解析与构建；策略遍历、fallback、
    `_extraction_strategy` 标记和 consolidation/reflect prompt key 透传由基类统一执行。

@@ -44,6 +44,13 @@ def _events_differ(c_event: datetime, e_event: datetime) -> bool:
 
 
 def _temporal_conflicts(candidate: MemoryUnit, existing: MemoryUnit) -> bool:
+    if candidate.temporal.t_invalid != existing.temporal.t_invalid:
+        return True
+    now = datetime.now(UTC)
+    for unit in (candidate, existing):
+        start = unit.temporal.t_valid
+        if start is not None and (start.utcoffset() is None or start > now):
+            return True
     c_event = candidate.temporal.t_event
     e_event = existing.temporal.t_event
     if c_event is None:
