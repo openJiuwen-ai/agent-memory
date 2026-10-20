@@ -134,7 +134,7 @@ def test_ambiguous_sources_fail_without_partially_annotating_candidates(bad_refe
         second.source_ref = sources[0].id
         second.scope = replace(second.scope, user="unknown")
 
-    with pytest.raises(ValidationError, match="唯一且同 Scope"):
+    with pytest.raises(ValidationError, match="来源引用"):
         inherit_infer_snapshots(sources, [first, second])
 
     assert first.hierarchy.is_empty and second.hierarchy.is_empty
@@ -181,7 +181,7 @@ def test_decisions_preserve_memory_semantics_and_update_only_snapshot(harness_fa
         assert harness.llm.call_count == 2, "去重判定一次、正文合并一次"
         document = harness.world.fulltext.get(old.scope, [old.id])[0]
         expected_start = int(candidate.hierarchy.span_start.timestamp() * 1000)
-        assert document.metadata["span_start"] == expected_start
+        assert document.metadata["tree_span_start"] == expected_start
         assert document.metadata["hierarchy_role"] == "snapshot"
     elif decision is DedupDecision.NOOP:
         assert stored == before and count == 1
@@ -351,3 +351,45 @@ def test_invalid_new_snapshot_is_rejected_before_add(harness_factory, invalid):
         harness.evolver.evolve([candidate], EvolveMode.EXTRACT)
 
     assert harness.world.kv.list(candidate.scope).count == 0
+
+
+@pytest.mark.parametrize("ordinary_kind", ["no-infer", "no-hints"])
+@pytest.mark.parametrize("direct_source", [False, True])
+def test_mixed_batch_preserves_ordinary_multi_source_candidates(ordinary_kind, direct_source):
+    tree = snapshot_test_unit("tree")
+    tree.system_metadata["infer"] = True
+    ordinary = [snapshot_test_unit("plain-a"), snapshot_test_unit("plain-b")]
+    for source in ordinary:
+        source.system_metadata["infer"] = ordinary_kind == "no-hints"
+        if ordinary_kind == "no-hints":
+            source.hierarchy = HierarchyRef()
+    leaf, merged = create_test_unit("leaf"), create_test_unit("merged")
+    leaf.source_ref = tree.id
+    merged.provenance = [source.id for source in ordinary]
+    if direct_source:
+        merged.source_ref = ordinary[0].id
+        merged.provenance.append(tree.id)  # 明确的直接来源优先于 provenance。
+    before = deepcopy(merged)
+
+    inherit_infer_snapshots([tree, *ordinary], [leaf, merged])
+
+    assert leaf.hierarchy.span_start == tree.hierarchy.span_start
+    assert merged == before, "普通来源不因同批存在 opt-in 来源而被改写或拒绝"
+
+
+@pytest.mark.parametrize("bad_source", ["tree", "unknown", "other-scope"])
+def test_mixed_batch_rejects_ambiguous_or_unresolved_sources_atomically(bad_source):
+    tree = snapshot_test_unit("tree")
+    tree.system_metadata["infer"] = True
+    ordinary, extra = create_test_unit("plain"), create_test_unit("extra")
+    good, bad = create_test_unit("good"), create_test_unit("bad")
+    good.source_ref = tree.id
+    if bad_source == "other-scope":
+        extra.scope = replace(extra.scope, session="different")
+    reference = {"tree": tree.id, "unknown": "missing", "other-scope": extra.id}[bad_source]
+    bad.provenance = [ordinary.id, reference]
+
+    with pytest.raises(ValidationError, match="来源引用"):
+        inherit_infer_snapshots([tree, ordinary, extra], [good, bad])
+
+    assert good.hierarchy.is_empty and bad.hierarchy.is_empty

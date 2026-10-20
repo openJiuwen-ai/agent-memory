@@ -3,7 +3,8 @@
 一个 sqlite 文件承载三张表
 
 - ``memory_unit``：全量 + 按 key 查（普通表，``unit_id`` TEXT 主键 + ``unit_json`` BLOB）
-- ``memory_fts``：FTS5 倒排表（普通 FTS5 表，自存 token 串），靠隐式 ``rowid`` 关联回 ``memory_unit``
+- ``memory_fts``：FTS5 倒排表（普通 FTS5 表，自存 token 串），
+  靠隐式 ``rowid`` 关联回 ``memory_unit``
 - ``memory_vec``：sqlite-vec ``vec0`` 向量表，``rowid`` 与 ``memory_unit`` 对齐
 
 三表同库、同连接、同事务写入，靠 ``unit_id`` / 隐式 ``rowid`` 关联。
@@ -34,6 +35,7 @@ from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.time_utils import epoch_ms
 from jiuwen_memory.common.tokenizer.base import Tokenizer, TokenizerProducer
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
@@ -55,7 +57,8 @@ from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
 _DEFAULT_PROJECT = ""  # 无 coords 时的 project 兜底值：空串=跨项目可见（IN ['', value] 命中）
 _DEFAULT_CLASS = "team_memory"
-_DEFAULT_LIFECYCLE = "active"  # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
+# memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）。
+_DEFAULT_LIFECYCLE = "active"
 _DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，F07 §4.4.3）
 
 # project 作为配置声明的收窄维，coords 折算后以 ``system_metadata.project`` 谓词
@@ -172,7 +175,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
 
 def _epoch_ms(value: datetime | None) -> int | None:
     """datetime → epoch 毫秒；None 保持 None（与 ``memory_filter._epoch_ms`` 同口径）。"""
-    return None if value is None else int(value.timestamp() * 1000)
+    return None if value is None else epoch_ms(value)
 
 
 def _lifecycle_of(unit: MemoryUnit) -> str:
@@ -184,13 +187,13 @@ def _t_valid_of(unit: MemoryUnit) -> int | None:
 
 
 def _t_invalid_of(unit: MemoryUnit) -> int:
-    """``t_invalid=None`` → 哨兵 ``T_INVALID_OPEN``（与 ``memory_filter._field_value`` 投影对称）。"""
+    """``t_invalid=None`` → ``T_INVALID_OPEN``，与真源过滤投影对称。"""
     v = _epoch_ms(unit.temporal.t_invalid)
     return T_INVALID_OPEN if v is None else v
 
 
 def _t_event_of(unit: MemoryUnit) -> int:
-    """``t_event=None`` → 哨兵 ``T_EVENT_UNKNOWN``（与 ``memory_filter._field_value`` 投影对称）。"""
+    """``t_event=None`` → ``T_EVENT_UNKNOWN``，与真源过滤投影对称。"""
     v = _epoch_ms(unit.temporal.t_event)
     return T_EVENT_UNKNOWN if v is None else v
 
@@ -440,7 +443,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         SQLiteKVStore 的差异：开连接后、建表前必须
         ``enable_load_extension(True) + sqlite_vec.load(conn)``，且连接重开时每次都要重新 load
         （否则查 vec0 报 ``no such module: vec0``）。
-        另：默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/.shadow/shadow.db``，含子目录，连接前需确保父目录存在。
+        默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/.shadow/shadow.db``，
+        含子目录，连接前需确保父目录存在。
         """
         path = self._resolved_db_path()
         if self._conn is not None and self._conn_path == path:
@@ -543,7 +547,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _md_filename_of(unit: MemoryUnit) -> str:
-        """从 ``system_metadata[MD_FILENAME_KEY]`` 读 md 相对路径（由 md.write 回填，F07 §11.3）。"""
+        """读取 md.write 回填的 ``system_metadata[MD_FILENAME_KEY]`` 相对路径。"""
         return (unit.system_metadata or {}).get(MD_FILENAME_KEY) or ""
 
     # -- DocumentShadowIndex 契约 ------------------------------------------- #
@@ -606,7 +610,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         ).fetchone()
         rowid = row[0]
 
-        # ② memory_fts：注入 tokenizer 预分词成 token 串，FTS5 tokenize='simple' 不二次分词（F07 §11.5）
+        # ② memory_fts：注入 tokenizer 预分词成 token 串，
+        # FTS5 tokenize='simple' 不二次分词（F07 §11.5）。
         tokens = self._tokenizer.tokenize(content)
         fts_content = " ".join(tokens)
         conn.execute(
@@ -1090,7 +1095,10 @@ def _build(config):
     except Exception as e:
         # 未配 markdown_store 是正常状态（走 db_path 兜底），但配置损坏也会走到这里，
         # 打 debug 日志让回退可观测，避免静默行为偏移无迹可查。
-        logger.debug("get markdown_store.default failed, shadow sqlite db_path use default path, exception msg: %s", e)
+        logger.debug(
+            "get markdown_store.default failed, shadow sqlite db_path use default path, "
+            "exception msg: %s", e,
+        )
     # embedder 可选（降级）：config 显式配了 embedder 才注入，否则传 None → 降级模式。
     # 不用 dep(default=...) 是因为 default=None 会抛 ValidationError（dep 无 default 报错），
     # 这里要的是"未配就 None"而非"未配就报错"。

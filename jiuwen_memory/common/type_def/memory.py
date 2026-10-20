@@ -300,9 +300,9 @@ KERNEL_SYSTEM_METADATA_KEYS = frozenset(
         "seq",
         # 树结构投影由 HierarchyRef 生成；kind/role 兼作合法叶提示，不能在此禁止。
         "hierarchy_status",
-        "parent_id",
-        "span_start",
-        "span_end",
+        "tree_parent_id",
+        "tree_span_start",
+        "tree_span_end",
         # -- 群体记忆（F07）：内核按调用方身份写入并参与判定 --------------------
         # 作者主体：user:<id> 或 agent:<id>，由内核从身份推导，调用方不可赋值
         "author_principal",

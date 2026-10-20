@@ -10,7 +10,6 @@ from jiuwen_memory.common.security.types import DELEGATABLE_ACTIONS, Delegation,
 from jiuwen_memory.common.type_def import Scope
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
-
 HOME = Scope(org="hierarchy-org", user="alice", agent="assistant")
 ROOT_SECURITY = internal_context(
     ScopedAuthenticator(Scope(org="system", user="platform-ops"), role=Role.ROOT)

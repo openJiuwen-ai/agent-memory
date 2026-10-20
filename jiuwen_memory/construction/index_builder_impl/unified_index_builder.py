@@ -29,6 +29,7 @@ from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.time_utils import epoch_ms
 from jiuwen_memory.common.type_def import (
     HIERARCHY_INDEX_KEYS,
     T_EVENT_UNKNOWN,
@@ -149,14 +150,14 @@ class UnifiedIndexBuilder(IndexBuilder):
             sm["content_layer"] = "l2"
             temporal = unit.temporal
             sm["t_event"] = (
-                int(temporal.t_event.timestamp() * 1000)
+                epoch_ms(temporal.t_event)
                 if temporal.t_event is not None
                 else T_EVENT_UNKNOWN
             )
             if temporal.t_valid is not None:
-                sm["t_valid"] = int(temporal.t_valid.timestamp() * 1000)
+                sm["t_valid"] = epoch_ms(temporal.t_valid)
             sm["t_invalid"] = (
-                int(temporal.t_invalid.timestamp() * 1000)
+                epoch_ms(temporal.t_invalid)
                 if temporal.t_invalid is not None
                 else T_INVALID_OPEN
             )

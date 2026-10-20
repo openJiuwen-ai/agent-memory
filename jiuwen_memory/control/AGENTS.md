@@ -139,5 +139,6 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 
 两个 Engine 的可选 policy 依赖由 Producer 解析共享的 policy.default；每次 write 按
 hierarchy.enabled 调用 ingest 的纯补齐函数，再交 Ingestor。DictPolicyManager 的装配
-合并内置策略与用户覆盖，hierarchy.enabled 默认 false；不在 config/defaults.py 堆叠查询参数。
+未配置 policies 时使用默认表（hierarchy.enabled=false），显式表完整替换，空表保留为空；
+Engine 缺少树开关时按关闭处理，不在 config/defaults.py 堆叠查询参数。
 CloudEngine 不回填已消费的叶提示。此流程不提交父节点构建任务。

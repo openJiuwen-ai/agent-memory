@@ -23,7 +23,7 @@ _HINTS = {
     "hierarchy_span_start": _MOMENT,
     "hierarchy_span_end": _MOMENT,
 }
-_KERNEL_PROJECTION_KEYS = ("hierarchy_status", "parent_id", "span_start", "span_end")
+_KERNEL_PROJECTION_KEYS = ("hierarchy_status", "tree_parent_id", "tree_span_start", "tree_span_end")
 
 
 @pytest.fixture(name="builder_kind", params=["default", "unified"])
@@ -88,9 +88,9 @@ def test_add_persists_one_unattached_leaf_without_enabling_infer(
         "hierarchy_kind": stored.hierarchy.kind.value,
         "hierarchy_role": stored.hierarchy.role.value,
         "hierarchy_status": stored.hierarchy.status.value,
-        "parent_id": stored.hierarchy.parent_id,
-        "span_start": int(stored.hierarchy.span_start.timestamp() * 1000),
-        "span_end": int(stored.hierarchy.span_end.timestamp() * 1000),
+        "tree_parent_id": stored.hierarchy.parent_id,
+        "tree_span_start": int(stored.hierarchy.span_start.timestamp() * 1000),
+        "tree_span_end": int(stored.hierarchy.span_end.timestamp() * 1000),
     }
     projection = {
         key: stored.system_metadata[key]
@@ -194,4 +194,32 @@ def test_projection_names_remain_user_metadata_for_add_and_update(api, with_hint
     reloaded = api.get(updated.id, _SCOPE, security=security_for(api, HOME))
 
     assert reloaded.user_metadata == changed
+    assert reloaded.hierarchy == stored.hierarchy
+
+
+@pytest.mark.parametrize("with_hints", [False, True], ids=["ordinary", "leaf"])
+def test_generic_tree_names_remain_business_metadata(api, with_hints):
+    keys = ("parent_id", "span_start", "span_end")
+    metadata = {key: f"system-{key}" for key in keys}
+    unit = api.add(
+        "business evidence", _SCOPE, security=security_for(api, HOME),
+        system_metadata={**(_HINTS if with_hints else {}), **metadata},
+        user_metadata={key: f"user-{key}" for key in keys},
+    )[0]
+    stored = api.get(unit.id, _SCOPE, security=security_for(api, HOME))
+    assert all(stored.system_metadata[key] == value for key, value in metadata.items())
+    for key in keys:
+        assert api.list(
+            _SCOPE, security=security_for(api, HOME), filters={key: f"user-{key}"},
+        ).count == 1
+        assert api.list(
+            _SCOPE, security=security_for(api, HOME),
+            filters={f"system_metadata.{key}": f"system-{key}"},
+        ).count == 1
+    changed = {key: f"updated-{key}" for key in keys}
+    updated = api.update(
+        unit.id, _SCOPE, MemoryPatch(system_metadata=changed), security=security_for(api, HOME),
+    )
+    reloaded = api.get(updated.id, _SCOPE, security=security_for(api, HOME))
+    assert all(reloaded.system_metadata[key] == value for key, value in changed.items())
     assert reloaded.hierarchy == stored.hierarchy

@@ -108,9 +108,9 @@ _BUILTIN_FIELDS = frozenset(
         "hierarchy_kind",
         "hierarchy_role",
         "hierarchy_status",
-        "parent_id",
-        "span_start",
-        "span_end",
+        "tree_parent_id",
+        "tree_span_start",
+        "tree_span_end",
     }
 )
 

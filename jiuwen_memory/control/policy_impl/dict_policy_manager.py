@@ -53,4 +53,4 @@ _DEFAULT_POLICIES = {
 
 @PolicyProducer.register("dict")
 def _build(config):
-    return DictPolicyManager({**_DEFAULT_POLICIES, **dict(config.get("policies", {}))})
+    return DictPolicyManager(dict(config.get("policies", _DEFAULT_POLICIES)))

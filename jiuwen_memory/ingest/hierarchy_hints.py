@@ -13,9 +13,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import (
     LEAF_ROLE_BY_KIND,
     HierarchyKind,
@@ -120,8 +121,8 @@ def extract_hierarchy_hints(
     span_start = _parse_time(raw_start, HINT_SPAN_START)
     span_end = _parse_time(raw_end, HINT_SPAN_END)
     # 与索引口径一致：朴素时间按 UTC 比较，但保留输入的原时间表示与微秒精度。
-    comparable_start = span_start if span_start.tzinfo else span_start.replace(tzinfo=UTC)
-    comparable_end = span_end if span_end.tzinfo else span_end.replace(tzinfo=UTC)
+    comparable_start = as_utc(span_start)
+    comparable_end = as_utc(span_end)
     if comparable_start > comparable_end:
         raise ValidationError(f"{HINT_SPAN_START} 不得晚于 {HINT_SPAN_END}")
 

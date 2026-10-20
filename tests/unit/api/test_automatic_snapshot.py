@@ -8,8 +8,10 @@ from datetime import timedelta
 import pytest
 
 from jiuwen_memory.api import assemble_runtime
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import PolicyError, ValidationError
 from jiuwen_memory.common.type_def import HierarchyRole
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.control.policy import PolicyProducer
 from jiuwen_memory.control.types import BatchWriteItem
 from tests.unit.api.fixtures import (
     HOME,
@@ -94,22 +96,51 @@ def test_explicit_complete_spans_win_and_partial_spans_fail(api):
     assert unit.hierarchy.span_end == START + timedelta(hours=1)
     del hints["hierarchy_span_end"]
     with pytest.raises(ValidationError):
-        api.add("partial", HOME, security=security_for(api, HOME), occurred_at=START, system_metadata=hints)
+        api.add(
+            "partial", HOME, security=security_for(api, HOME),
+            occurred_at=START, system_metadata=hints,
+        )
     assert api.list(HOME, security=security_for(api, HOME)).count == 1
 
 
 @pytest.mark.parametrize("engine_kind", ["in_memory", "cloud"])
-def test_configured_policy_overlay_retains_defaults(engine_kind):
+def test_configured_policy_table_replaces_defaults(engine_kind):
     config = runtime_config(engine_kind)
     config["globals"] = {"policies": {"rerank.enabled": "false", "hierarchy.enabled": "true"}}
     runtime = assemble_runtime(config=config)
     try:
         api = runtime.api
         assert api.admin_get("rerank.enabled", security=ROOT_SECURITY) == "false"
-        assert api.admin_get("scope.require_space", security=ROOT_SECURITY) == "false"
+        with pytest.raises(PolicyError, match="unknown policy key"):
+            api.admin_get("scope.require_space", security=ROOT_SECURITY)
         unit = api.add("configured", HOME, security=security_for(api, HOME), occurred_at=START)[0]
         assert unit.hierarchy.role is HierarchyRole.SNAPSHOT
         api.admin_set("hierarchy.enabled", "false", security=ROOT_SECURITY)
         assert api.add("plain", HOME, security=security_for(api, HOME))[0].hierarchy.is_empty
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("policies", [None, {}, {"rerank.enabled": "false"}])
+def test_policy_builder_keeps_omitted_empty_and_custom_tables_distinct(policies):
+    config = {} if policies is None else {"policies": policies}
+    manager = PolicyProducer.build("dict", config, AssemblyContext())
+    if policies is None:
+        assert manager.get("hierarchy.enabled") == "false"
+        assert manager.get("rerank.enabled") == "true"
+    else:
+        assert manager.all() == policies
+        with pytest.raises(PolicyError, match="unknown policy key"):
+            manager.set("hierarchy.enabled", "true")
+
+
+@pytest.mark.parametrize("policies", [{}, {"rerank.enabled": "false"}])
+def test_custom_policy_without_tree_key_keeps_ordinary_writes(policies):
+    config = runtime_config("in_memory")
+    config["globals"] = {"policies": policies}
+    runtime = assemble_runtime(config=config)
+    try:
+        unit = runtime.api.add("ordinary", HOME, security=security_for(runtime.api, HOME))[0]
+        assert unit.hierarchy.is_empty
     finally:
         runtime.close()

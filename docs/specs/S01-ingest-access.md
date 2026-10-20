@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-10-19 |
+| 最近一次修订日期 | 2026-10-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -147,3 +147,7 @@ jiuwen_memory/ingest/ingestor_impl/
 提示只声明叶身份，不创建边。返回结构为 ACTIVE、无父无子；提示从系统 metadata 移除，
 不改变输入字典。是否按 occurred_at 自动补齐由 Engine 根据策略调用纯补齐函数决定，
 Ingestor 本身不访问 PolicyManager。关闭自动接入时仍允许显式合法叶提示。
+
+`occurred_at` 原样作为消息时间；自动补齐 Snapshot 时，两端保留同一时间表示。
+业务偏移只来自显式时间运算，不得附加服务器时区偏移。比较和索引转换统一遵守 S07：
+无时区时间按 UTC 解释，有时区时间保持实际时刻，均不改写真源。

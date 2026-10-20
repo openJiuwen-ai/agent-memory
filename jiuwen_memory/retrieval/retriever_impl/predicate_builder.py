@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from jiuwen_memory.common.time_utils import epoch_ms
 from jiuwen_memory.common.type_def import (
     T_EVENT_UNKNOWN,
     FilterClause,
@@ -34,7 +35,7 @@ _ACTIVE_ARCHIVED = [LifecycleState.ACTIVE.value, LifecycleState.ARCHIVED.value]
 
 
 def _epoch_ms(dt: datetime) -> int:
-    return int(dt.timestamp() * 1000)
+    return epoch_ms(dt)
 
 
 def build_system_filters(

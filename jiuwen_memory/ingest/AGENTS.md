@@ -83,3 +83,5 @@
 
 8. `SimpleIngestor` 在 normalize 前校验并消费叶提示，不创建父子边；无提示保持空结构。
 9. `enrich_snapshot_hints` 由 Engine 传入开关；补齐只用 occurred_at，完整提示优先，不掩盖非法输入。
+
+10. 叶区间比较复用 common/time_utils.as_utc；补齐与解析保留输入时间表示。

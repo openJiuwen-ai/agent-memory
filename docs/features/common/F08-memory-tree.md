@@ -730,3 +730,48 @@ F01 的同 unit 披露设计与实现历史见
 - 测试模型提供公开只读调用计数，消除测试对 Evolver 和模型受保护成员的直接访问；补齐顶层函数空行。业务代码仅将来源筛选的复杂推导式改为等价循环，Snapshot 继承语义和公开接口不变。
 - 验证命令：`pytest tests/unit/construction tests/unit/storage tests/unit/retrieval tests/integration/retrieval`，结果 **1109 passed、2 skipped**；其中 Snapshot 继承 63 项、检索集成文件 32 项全部通过。本地缺少的 watchdog 仅安装至临时测试目录，项目依赖配置未改动。
 - 变更 Python 文件的 Ruff、函数空行检查及 `git diff --check` 通过。CI 报告的 17 处静态问题已按位置修正；本地未运行云端静态规则引擎，最终状态以 CI 重跑为准。
+
+
+## 评审修复与兼容说明（2026-10-20）
+
+### 决策与取舍
+
+- 时间转换统一为无时区按 UTC、有时区保留实际时刻，真源仍保留输入表示。修复普通 temporal
+  投影隐式依赖本地时区而与树区间分叉的问题；查询谓词、真源比较/过滤和 SQLite 影子索引同步。
+  拒绝将树时间改成本地时区解释，避免旧树评测的 session 时间整体偏移；也不强制 aware 入参，
+  保持现有 strptime 调用兼容。普通事件窗对未知/naive 的既有宽松兜底保持不变。
+- 树索引/保留/过滤键改为 tree_parent_id、tree_span_start、tree_span_end；结构模型和 codec
+  的 parent_id/span_start/span_end 不改。通用同名 system_metadata 不再被拒绝；不保留旧树过滤
+  别名，避免继续占用业务字段。此前将通用键纳入保留集合会破坏存量调用兼容，本次撤回该征用。
+- Snapshot 继承只对涉及 opt-in 来源的候选要求唯一来源；明确全部来自非参与来源的候选允许
+  多源合并。缺失、无法完整解析或跨 Scope 的引用仍拒绝，保留整批校验后统一赋值。
+  拒绝直接跳过所有歧义候选，防止静默丢失应继承的树信息。
+- DictPolicyManager 恢复 policies 完整替换默认表的既有语义，未配置才取默认表；显式空表保持
+  为空。此前合并默认策略会使调用方无法去掉默认键，本次撤回该变化。Engine 缺少树键按关闭
+  处理；自定义部署若需 admin 动态开启，应在自定义表中显式声明 hierarchy.enabled。
+
+### 升级与评测边界
+
+- 本次不自动修改已有数据或索引。旧树索引需从 MemoryUnit 真源重新投影并配套更新过滤字段；
+  旧 Unified 写入的通用名投影副本需按来源识别，不能盲删调用方同名业务 metadata。
+- 旧非 UTC 部署写入的 naive 普通 temporal 索引需按新规则刷新，查询时间范围若以旧本地口径
+  手工生成也应同步更新。当前 IndexBuilder.rebuild() 仍为 no-op，不应据此宣称已完成存量迁移。
+- 保留 LoCoMo 的 occurred_at、Snapshot 时间基准及框架代码；普通时间过滤纠偏可能改变召回。
+  直接复用旧索引的 SKIP_WRITE 评测不构成等价验证，本次不承诺历史评测分数完全不变。
+
+### 验证范围
+
+- API 回归复用上游的显式认证与同源委托夹具访问双主体 Scope；系统策略管理使用 ROOT
+  认证上下文，不再依赖已移除的 legacy 身份桥接，树功能与时间一致性断言保持不变。
+- 跨 UTC、UTC+8 与夏令时时区验证 add/infer 持久化、明确秒偏移、结构区间、普通/统一/影子
+  索引投影和查询过滤一致；覆盖 naive 与正负显式偏移，保留微秒比较和毫秒索引边界。
+- 覆盖通用 metadata 写入/更新/过滤、树保留字段拒绝、普通多源混合批次、树来源歧义与引用
+  不完整时不部分赋值，以及默认/自定义/空策略表和缺少树键时的普通写入。
+
+### 验证结果
+
+- 确定性回归：construction/storage/retrieval/control/ingest 单测、common 的 hierarchy/filter/codec、
+  两组 Snapshot API 用例和 retrieval 集成测试，共 **1791 passed、7 skipped**。
+- 其中跨进程时区专项 **45 passed**，涵盖两种 Engine、infer 开关及三类时间表示。
+- 变更 Python 文件 Ruff、E302 空行检查与 git diff --check 通过；未运行云端静态规则引擎。
+- 未重跑 LoCoMo 模型评测，未迁移历史数据/索引，未修改评测框架。

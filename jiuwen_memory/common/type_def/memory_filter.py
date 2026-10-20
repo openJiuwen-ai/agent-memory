@@ -5,13 +5,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from jiuwen_memory.common.time_utils import epoch_ms
+
 from .filter import FilterClause, FilterExpr, FilterOp, evaluate, filter_field_metadata_key
 from .hierarchy import HIERARCHY_INDEX_KEYS, hierarchy_index_metadata
 from .memory import T_EVENT_UNKNOWN, T_INVALID_OPEN, MemoryUnit
 
 
 def _epoch_ms(value: datetime | None) -> int | None:
-    return None if value is None else int(value.timestamp() * 1000)
+    return None if value is None else epoch_ms(value)
 
 
 def _field_value(unit: MemoryUnit, field: str):

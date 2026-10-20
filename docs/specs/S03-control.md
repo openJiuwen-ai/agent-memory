@@ -550,8 +550,9 @@ jiuwen_memory/control/<算子>_impl/
 
 ## Snapshot 自动接入（当前交付）
 
-`hierarchy.enabled` 是 PolicyManager 内置已知键，默认字符串 `false`；默认策略与
-配置的 policies 覆盖合并。Engine 与 API 管理入口共享 `policy.default` 的同一实例，
+`hierarchy.enabled` 在默认策略表中为字符串 `false`。未配置 policies 时使用默认表；
+显式配置时完整替换默认表，空字典表示空表。缺少树开关时 Engine 按关闭处理；
+自定义表若需通过 admin 动态开启，必须预先声明该键。Engine 与 API 管理入口共享 `policy.default` 的同一实例，
 每次 write 读取当前开关，不在测试框架中判断是否开启。既有策略和权限入口保持不变。
 
 开启时，未声明层级提示，或只声明 TIME/snapshot 双身份时，使用本次 `occurred_at`

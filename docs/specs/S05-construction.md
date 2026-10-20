@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-19 |
+| 最近一次修订日期 | 2026-10-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -629,8 +629,10 @@ jiuwen_memory/construction/<算子>_impl/
 ## 同步 infer 的 Snapshot 继承
 
 Orchestrating/Dynamic Evolver 在抽取后、归属路由前，仅为明确 infer=true 的 TIME/Snapshot
-来源传递叶身份。匹配要求完整 Scope 相同，优先唯一 source_ref，无法解析时使用唯一
-provenance 来源；多个来源或缺失/跨 Scope 引用不得猜测区间。先验证整批候选再赋值，
+来源传递叶身份。匹配要求完整 Scope 相同，优先唯一 source_ref，无法解析时完整解析
+provenance。涉及参与继承的来源时必须唯一；明确全部来自非参与来源的候选允许多源，
+保持普通抽取行为。缺失、无法解析或跨 Scope 的来源引用仍拒绝，不能猜测是否参与继承。
+先验证整批候选再赋值，
 避免引用失败留下半批结构。独立 Extractor、procedural、Schema 与普通后台 EXTRACT
 不自动获得该继承语义。KeywordExtractor 清除 deepcopy 带出的结构，防止沿用来源父子边。
 

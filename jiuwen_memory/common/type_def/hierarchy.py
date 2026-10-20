@@ -22,11 +22,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..errors import ValidationError
+from ..time_utils import as_utc, epoch_ms
 from .scope import Scope
 
 if TYPE_CHECKING:  # 仅用于注解：运行时只读 .id/.scope/.hierarchy，避免与 memory 循环导入
@@ -79,7 +80,10 @@ class HierarchyStatus(str, Enum):
 
 # 结构索引副本的完整键集合；所有索引入口用同一集合清理陈旧投影。
 HIERARCHY_INDEX_KEYS = frozenset(
-    {"hierarchy_kind", "hierarchy_role", "hierarchy_status", "parent_id", "span_start", "span_end"}
+    {
+        "hierarchy_kind", "hierarchy_role", "hierarchy_status",
+        "tree_parent_id", "tree_span_start", "tree_span_end",
+    }
 )
 
 
@@ -153,11 +157,11 @@ def hierarchy_index_metadata(ref: HierarchyRef) -> dict[str, object]:
         "hierarchy_kind": ref.kind.value if ref.kind is not None else "",
         "hierarchy_role": ref.role.value if ref.role is not None else "",
         "hierarchy_status": ref.status.value,
-        "parent_id": ref.parent_id,
+        "tree_parent_id": ref.parent_id,
     }
     if ref.span_start is not None and ref.span_end is not None:
-        metadata["span_start"] = span_epoch_ms(ref.span_start)
-        metadata["span_end"] = span_epoch_ms(ref.span_end)
+        metadata["tree_span_start"] = span_epoch_ms(ref.span_start)
+        metadata["tree_span_end"] = span_epoch_ms(ref.span_end)
     return metadata
 
 
@@ -166,7 +170,7 @@ def span_epoch_ms(value: datetime) -> int:
 
     索引投影与检索谓词共用本函数，两侧口径不会漂移。
     """
-    return int(_as_utc(value).timestamp() * 1000)
+    return epoch_ms(value)
 
 
 def validate_ref(ref: HierarchyRef, *, unit_id: str = "") -> None:
@@ -185,7 +189,7 @@ def validate_ref(ref: HierarchyRef, *, unit_id: str = "") -> None:
     if (ref.span_start is None) != (ref.span_end is None):
         raise ValidationError(f"hierarchy 区间必须成对出现{where}")
     if ref.span_start is not None and ref.span_end is not None:
-        if _as_utc(ref.span_start) > _as_utc(ref.span_end):
+        if as_utc(ref.span_start) > as_utc(ref.span_end):
             raise ValidationError(f"hierarchy span_start 不得晚于 span_end{where}")
     elif ref.kind is HierarchyKind.TIME:
         raise ValidationError(f"HierarchyKind.TIME 的所有节点必须有区间{where}")
@@ -242,13 +246,6 @@ class _NodeKey(NamedTuple):
     agent: str
     session: str
     unit_id: str
-
-
-def _as_utc(value: datetime) -> datetime:
-    """返回用于比较的 UTC 时间，朴素时间按 UTC 解读且不截断微秒。"""
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 def _key(scope: Scope, unit_id: str) -> _NodeKey:
@@ -379,7 +376,7 @@ def _validate_span_coverage(nodes: list[MemoryUnit], index: dict[_NodeKey, Memor
         ref = parent.hierarchy
         if ref.span_start is None or ref.span_end is None:
             continue
-        parent_start, parent_end = _as_utc(ref.span_start), _as_utc(ref.span_end)
+        parent_start, parent_end = as_utc(ref.span_start), as_utc(ref.span_end)
         for position, child_id in enumerate(ref.child_ids):
             child = index.get(_key(ref.child_scope_at(position, parent.scope), child_id))
             if child is None:
@@ -388,7 +385,7 @@ def _validate_span_coverage(nodes: list[MemoryUnit], index: dict[_NodeKey, Memor
             if child_ref.span_start is None or child_ref.span_end is None:
                 continue
             if (
-                _as_utc(child_ref.span_start) < parent_start
-                or _as_utc(child_ref.span_end) > parent_end
+                as_utc(child_ref.span_start) < parent_start
+                or as_utc(child_ref.span_end) > parent_end
             ):
                 raise ValidationError(f"父 {parent.id} 的区间未覆盖子 {child_id} 的区间")

@@ -83,15 +83,15 @@ def test_array_scalar_and_incomparable_types_keep_shared_semantics(backend, case
 @pytest.mark.parametrize("backend", ["fulltext", "vector-search", "vector-recall"])
 def test_or_range_and_missing_field_behavior_are_shared(backend) -> None:
     metadata = [
-        {"span_start": 1, "span_end": 4},
-        {"span_start": 9, "span_end": 10},
-        {"span_start": [1], "span_end": [10]},
+        {"tree_span_start": 1, "tree_span_end": 4},
+        {"tree_span_start": 9, "tree_span_end": 10},
+        {"tree_span_start": [1], "tree_span_end": [10]},
         {"user_metadata.allowed": True},
     ]
     expr = FilterGroup(FilterLogic.OR, [
         FilterGroup(FilterLogic.AND, [
-            FilterClause("span_start", FilterOp.LTE, 4),
-            FilterClause("span_end", FilterOp.GTE, 4),
+            FilterClause("tree_span_start", FilterOp.LTE, 4),
+            FilterClause("tree_span_end", FilterOp.GTE, 4),
         ]),
         FilterClause("user_metadata.allowed", FilterOp.EQ, True),
     ])
@@ -106,8 +106,8 @@ def test_no_filter_preserves_original_stable_order(backend) -> None:
 
 @pytest.mark.parametrize(("field", "value"), [
     ("hierarchy_kind", "time"), ("hierarchy_role", "snapshot"),
-    ("hierarchy_status", "active"), ("parent_id", "parent"),
-    ("span_start", 0), ("span_end", 0), ("id", "leaf"),
+    ("hierarchy_status", "active"), ("tree_parent_id", "parent"),
+    ("tree_span_start", 0), ("tree_span_end", 0), ("id", "leaf"),
 ])
 def test_tree_filter_reads_canonical_truth_instead_of_metadata(field, value) -> None:
     from datetime import UTC, datetime

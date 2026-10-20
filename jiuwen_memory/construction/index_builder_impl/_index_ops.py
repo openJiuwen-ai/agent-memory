@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from jiuwen_memory.common.chunker.base import Chunker
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.log import get_logger, redact_for_log, scope_for_log
+from jiuwen_memory.common.time_utils import epoch_ms
 from jiuwen_memory.common.type_def import (
     HIERARCHY_INDEX_KEYS,
     T_EVENT_UNKNOWN,
@@ -117,20 +118,20 @@ def index_metadata(
     # 事件窗下推按缺失字段排他——含时间词 query 对这批 unit 系统性空召回。
     # 哨兵与谓词、memory_filter 三处同改（见 common.type_def.T_EVENT_UNKNOWN）。
     metadata["t_event"] = (
-        int(temporal.t_event.timestamp() * 1000)
+        epoch_ms(temporal.t_event)
         if temporal.t_event is not None
         else T_EVENT_UNKNOWN
     )
     # t_valid 仍有值才写；本次结构投影不改变既有有效时间过滤策略。
     if temporal.t_valid is not None:
-        metadata["t_valid"] = int(temporal.t_valid.timestamp() * 1000)
+        metadata["t_valid"] = epoch_ms(temporal.t_valid)
     # 消息时间是独立的显式过滤字段，保持真源 epoch 毫秒口径；未知时不写哨兵。
     if temporal.t_message is not None:
-        metadata["t_message"] = int(temporal.t_message.timestamp() * 1000)
+        metadata["t_message"] = epoch_ms(temporal.t_message)
     # t_invalid 恒写：空（永久有效）落哨兵值，否则该字段缺失会被 `t_invalid > as_of`
     # 的下推按缺失字段排他——那批正是回溯查询最该命中的活跃记忆。
     metadata["t_invalid"] = (
-        int(temporal.t_invalid.timestamp() * 1000)
+        epoch_ms(temporal.t_invalid)
         if temporal.t_invalid is not None
         else T_INVALID_OPEN
     )
@@ -138,7 +139,7 @@ def index_metadata(
     # `t_ingest GTE cutoff` 下推依赖该字段；防御未盖章旧数据落 0（与 t_event
     # 未知哨兵同值，语义为"史前"，不落入任何新近窗口）。
     metadata["t_ingest"] = (
-        int(temporal.t_ingest.timestamp() * 1000)
+        epoch_ms(temporal.t_ingest)
         if temporal.t_ingest is not None
         else T_EVENT_UNKNOWN
     )

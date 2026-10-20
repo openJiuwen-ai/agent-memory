@@ -41,8 +41,9 @@ def _leaf_copy(unit: MemoryUnit) -> HierarchyRef:
 def inherit_infer_snapshots(sources: list[MemoryUnit], candidates: list[MemoryUnit]) -> None:
     """仅将明确 infer=true 来源的叶安全字段传给对应候选。
 
-    source_ref 优先；没有可解析的直接引用时使用唯一 provenance 来源。多源不能猜测
-    最新来源或合并区间。匹配在 Router 前完成，用完整 Scope 防止同 id 串线。
+    source_ref 优先；没有可解析的直接引用时完整解析同 Scope 的 provenance 来源。
+    涉及 opt-in 来源时必须唯一；仅含普通来源的候选保留多源合并语义。来源无法
+    完整解析时拒绝，不能猜测最新来源或合并区间。匹配在 Router 前完成。
     Extractor 本身仍生成空结构，普通/后台 EXTRACT 不因此改变行为。
     """
     opted_in = []
@@ -58,12 +59,18 @@ def inherit_infer_snapshots(sources: list[MemoryUnit], candidates: list[MemoryUn
         scoped = [source for source in sources if source.scope == candidate.scope]
         matched = [source for source in scoped if source.id == candidate.source_ref]
         if not matched:
-            matched = [source for source in scoped if source.id in candidate.provenance]
+            references = set(candidate.provenance)
+            matched = [source for source in scoped if source.id in references]
+            if not references or {source.id for source in matched} != references:
+                raise ValidationError("抽取候选来源引用缺失、无法解析或跨 Scope")
+        elif len(matched) != 1:
+            raise ValidationError("抽取候选的直接来源引用不唯一")
+        # 只有完整解析后确认不涉及 opt-in 来源，才允许普通候选保留多源合并语义。
+        if not any(source in opted_in for source in matched):
+            continue
         if len(matched) != 1:
             raise ValidationError("infer snapshot 候选必须有唯一且同 Scope 的来源引用")
-        source = matched[0]
-        if source in opted_in:
-            pending.append((candidate, _leaf_copy(source)))
+        pending.append((candidate, _leaf_copy(matched[0])))
     for candidate, snapshot in pending:
         candidate.hierarchy = snapshot
 

@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-19 |
+| 最近一次修订日期 | 2026-10-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -65,9 +65,9 @@
     以 `LockHandle.lost` 为准。后端不可用时 fail-closed 抛 `BackendError`，不静默降级为无锁。
 14. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
     多模态 CLM/ELM（`system_metadata["memory_level"]` + `provenance`）表示单媒体源构建粒度；
-    `MemoryTier` 表示认知角色；目标契约中的 `HierarchyRef` 表示跨 unit 的树结构包含。
-    树结构尚未实现；实现后任一轴不得推导或代替另外三轴。
-15. **树结构引用一致**（目标契约，尚未实现）：`kind` 与 `role` 必须同时设置或同时缺省；
+    `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。
+    结构模型与纯校验已提供；父节点构造与树遍历尚未接入。任一轴不得推导或代替另外三轴。
+15. **树结构引用一致**：`kind` 与 `role` 必须同时设置或同时缺省；
    空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
    严格树；父 `child_ids` 与子 `parent_id` 双向一致且子列表不得重复。
    **结构边的 scope 规则（非五维全等）**：
@@ -80,8 +80,8 @@
    - **引用可解析**：因 `MemoryUnit.id` 仅在完整 Scope 内唯一，当子（或父）与持有边的
      unit 完整 Scope 不完全相同时，边必须携带可定位的子/父 Scope（见下方
      `child_scopes` / `parent_scope`）；二者皆缺省时退化为「与本 unit 完整 Scope 相同」。
-16. **层级区间有效**（目标契约，尚未实现）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
-17. **引用语义分离**（目标契约，尚未实现）：`provenance` 只表示演进来源，`supersedes`
+16. **层级区间有效**：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
+17. **引用语义分离**：`provenance` 只表示演进来源，`supersedes`
     只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归
     `HierarchyStatus`。
 18. **Scope 保持固定的可变 dataclass 契约**：`Scope` 是跨模块公共结构，PR1/PR2/PR3
@@ -574,3 +574,14 @@ CryptographyProvider 与 `local` KeyProvider。
 | S08-config | 插件晚绑定 model/api_key/url 等由 ConfigSource 提供；装配拓扑仍走 Factory |
 | F07-collective-memory | 保留键与瞬态键集合扩充（已落地）；两轴角色与身份推导落 `security/space_roles.py` 与 `security/principal.py`（已落地）；空间授权事实经安全层资源描述对象的结构化字段传入判定实现 |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |
+
+## 记忆时间的统一解释
+
+消息时间、树区间、普通 temporal 索引字段与查询边界使用同一规则：无时区 datetime
+按 UTC 解释；带时区 datetime 转为 UTC 时保持实际时刻。该约定不推测无时区输入的
+真实地理时区，不读取部署机器本地时区。需要表达当地时刻的调用方应显式携带时区。
+
+真源保留输入表示，业务派生仅包含明确的时间偏移；比较保留 datetime 微秒精度，
+索引转换为 epoch 毫秒。缺值与未知/开放区间哨兵由字段自身契约决定。
+自动生成的点状 Snapshot 满足 occurred_at、t_message、span_start、span_end 同值，
+其时间索引也必须相等；显式传入的更宽区间不受点状约束。

@@ -37,9 +37,9 @@ _TREE_METADATA = {
     "hierarchy_kind": "time",
     "hierarchy_role": "snapshot",
     "hierarchy_status": "active",
-    "parent_id": "tree-parent",
-    "span_start": 1787011200123,
-    "span_end": 1787014800123,
+    "tree_parent_id": "tree-parent",
+    "tree_span_start": 1787011200123,
+    "tree_span_end": 1787014800123,
 }
 
 
@@ -127,11 +127,11 @@ def test_unified_projects_hierarchy_and_clears_stale_fields_on_update() -> None:
     unit.hierarchy = HierarchyRef(kind=HierarchyKind.TOPIC, role=HierarchyRole.NODE)
     builder.update([unit])
     persisted = domain.get(unit.scope, [unit.id])[0]
-    assert "span_start" not in persisted.system_metadata
-    assert "span_end" not in persisted.system_metadata
+    assert "tree_span_start" not in persisted.system_metadata
+    assert "tree_span_end" not in persisted.system_metadata
     assert persisted.system_metadata["hierarchy_kind"] == "topic"
     assert persisted.system_metadata["hierarchy_role"] == "node"
-    assert persisted.system_metadata["parent_id"] == ""
+    assert persisted.system_metadata["tree_parent_id"] == ""
 
     unit.hierarchy = HierarchyRef()
     builder.update([unit])
@@ -221,7 +221,7 @@ def test_index_update_discards_unified_hierarchy_copies(
             "hierarchy_kind": "topic",
             "hierarchy_role": "node",
             "hierarchy_status": "active",
-            "parent_id": "",
+            "tree_parent_id": "",
         }
     builder.update([persisted])
 

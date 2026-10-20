@@ -629,11 +629,11 @@ def test_index_metadata_projects_six_keys() -> None:
         "hierarchy_kind": "time",
         "hierarchy_role": "time_span",
         "hierarchy_status": "active",
-        "parent_id": "scene-1",
+        "tree_parent_id": "scene-1",
         # epoch 毫秒而非 ISO 文本：FilterClause 的范围算子只接受有限数值，
         # 字符串做 LTE/GTE 会被校验拒绝，各召回路静默降级为空。
-        "span_start": int(at(0).timestamp() * 1000),
-        "span_end": int(at(2).timestamp() * 1000),
+        "tree_span_start": int(at(0).timestamp() * 1000),
+        "tree_span_end": int(at(2).timestamp() * 1000),
     }
 
 
@@ -646,7 +646,7 @@ def test_index_metadata_always_writes_status() -> None:
     projected = hierarchy_index_metadata(ref)
 
     assert projected["hierarchy_status"] == "dismissed"
-    assert "span_start" not in projected, "未声明区间时不投影 span"
+    assert "tree_span_start" not in projected, "未声明区间时不投影 span"
 
 
 def test_index_metadata_normalises_span_to_utc() -> None:
@@ -659,7 +659,7 @@ def test_index_metadata_normalises_span_to_utc() -> None:
         span_end=datetime(2026, 8, 18, 17, 0, tzinfo=eastern_eight),
     )
 
-    assert hierarchy_index_metadata(ref)["span_start"] == int(at(0).timestamp() * 1000)
+    assert hierarchy_index_metadata(ref)["tree_span_start"] == int(at(0).timestamp() * 1000)
 
 
 def test_index_metadata_reads_naive_span_as_utc() -> None:
@@ -670,7 +670,7 @@ def test_index_metadata_reads_naive_span_as_utc() -> None:
         span_end=datetime(2026, 8, 18, 9, 0),
     )
 
-    assert hierarchy_index_metadata(ref)["span_end"] == int(at(0).timestamp() * 1000)
+    assert hierarchy_index_metadata(ref)["tree_span_end"] == int(at(0).timestamp() * 1000)
 
 
 def test_index_metadata_span_is_numeric_for_range_operators() -> None:
@@ -685,6 +685,6 @@ def test_index_metadata_span_is_numeric_for_range_operators() -> None:
     )
     projected = hierarchy_index_metadata(ref)
 
-    assert isinstance(projected["span_start"], int)
+    assert isinstance(projected["tree_span_start"], int)
     # 构造范围谓词不抛错即证明取值类型合法（字符串会被 normalize 拒绝）
-    FilterClause("span_start", FilterOp.LTE, projected["span_start"])
+    FilterClause("tree_span_start", FilterOp.LTE, projected["tree_span_start"])
