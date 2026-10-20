@@ -60,9 +60,17 @@ class Scheduler(ControlOperator):
         """
         return False
 
-    def shutdown(self) -> None:
+    def validate_shutdown(self, *, wait: bool = True) -> None:
+        """关闭前检查调用上下文，不改变状态；禁止同步等待所属工作线程自身。"""
+        return None
+
+    def shutdown(self, *, wait: bool = True) -> None:
         """优雅关闭：取消定时/消费协程，已提交任务的状态记录保留。
 
+        wait=True 等待在飞任务、事件循环和线程收尾；wait=False 安排后台收尾，
+        已进入的调用仍可完成。关闭幂等，异步实现关闭后拒绝新提交。
+        wait=True 不设整体等待期限；Job 应能正常结束或响应协作式取消，
+        外部同步调用应配置超时；不响应取消但能结束的 Job 仍允许正常完成。
         默认无协程可关（同步实现）。注册态任务的**持久化注册表不受影响**——
         重启后经 ``restore_dreaming`` 重新装配。
         """

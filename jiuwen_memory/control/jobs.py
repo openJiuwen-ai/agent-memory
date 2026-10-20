@@ -41,6 +41,9 @@ class Job(ABC):
     周期由 Scheduler 的 Timer 协程负责。``run`` 为 ``async`` 接口——Job 内部
     若需调同步阻塞算子（evolver.evolve / LLM.chat）应包
     ``await asyncio.to_thread(...)`` 避免阻塞事件循环。
+    自定义 Job 须能正常结束，或在执行步骤边界通过 check_cancelled 响应取消；
+    外部模型/存储调用应配置超时。shutdown(wait=True) 不设整体等待期限，
+    request_cancel 不会强制中断已经进入的同步调用。
     """
 
     scope: Scope = field(default_factory=Scope)

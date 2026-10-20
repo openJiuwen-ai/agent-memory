@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -142,18 +142,10 @@ class _Kernel:
         """
         if self.watchdog is not None:
             self.watchdog.stop()
-        shadow = None
-        try:
-            if self.storage.has_shadow_index():
-                shadow = self.storage.shadow_index()
-        except Exception as exc:
-            logger.warning("failed to get shadow index for close: %s", exc)
-            shadow = None
-        if shadow is not None:
-            try:
+        if self.storage.has_shadow_index():
+            shadow = self.storage.shadow_index()
+            if shadow is not None:
                 shadow.close()
-            except Exception as exc:  # pragma: no cover - 防御性清理
-                logger.debug("shadow.close() failed during shutdown: %s", exc)
 
 
 @runtime_checkable
@@ -184,7 +176,7 @@ class _MemoryRuntime:
 
     ``_kernel`` 私有持有全部端口（不暴露 kv/storage/space/scheduler/ingest_jobs 等——
     S02 边界）；close 时经 ``_kernel`` 访问各端口，start 语义按调用方的并发模型二选一，
-    watchdog 绑的长寿 loop 必须活到进程退出。
+    watchdog 绑的长寿 loop 在 Runtime 关闭时回收。
     """
 
     api: MemoryAPI
@@ -192,7 +184,10 @@ class _MemoryRuntime:
 
     async def start_background(self) -> None:
         """异步面（FastAPI lifespan / MCP / SDK provider）：watchdog 绑当前 loop。"""
-        await self._kernel.start_background()
+        with self._close_lock:
+            if self._close_thread is not None:
+                raise RuntimeError("MemoryRuntime is closed")
+            await self._kernel.start_background()
 
     def start(self) -> None:
         """同步面（http_server 等无事件循环的宿主）：daemon 线程自持专属 loop。
@@ -200,6 +195,8 @@ class _MemoryRuntime:
         装配期无 running loop 是既定铁律，故 watchdog 的 start 在此线程内
         ``call_soon`` 后 ``run_forever``。close 时先停 watchdog 再停 loop。
         """
+        if self._close_thread is not None:
+            raise RuntimeError("MemoryRuntime is closed")
         if self._kernel.watchdog is None or self._loop_thread is not None:
             return  # 无看门狗（no-op）或已启动（幂等）
         started = threading.Event()
@@ -224,28 +221,95 @@ class _MemoryRuntime:
         started.wait()
 
     def close(self, *, wait: bool = True) -> None:
-        # 顺序：先停看门狗（不再监听文件事件），再停专属 loop（若有），
-        # 再关任务池，最后停调度器并释放 dreaming leader 锁。端口统一经
-        # ``_kernel`` 访问——散字段（``_ingest_jobs``/``_scheduler``）是 rebase
-        # 前 mem2.0 的旧形态，markdown 重构后端口已收进 ``_Kernel``。
-        # scheduler 必须先于 dreaming lock 释放——反序会允许新实例接管后，
-        # 本实例尚未停下的 Timer / drain 继续执行，形成短暂双跑。
-        self._kernel.close()
-        loop, self._loop = self._loop, None
-        if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(loop.stop)
-        self._kernel.ingest_jobs.close(wait=wait)
+        """停止新调度；按 wait 等待后台任务收尾后再释放依赖资源与 leader 锁。"""
+        if wait and threading.current_thread() is self._loop_thread:
+            raise RuntimeError("cannot wait for MemoryRuntime from its own loop thread")
         if self._kernel.scheduler is not None:
-            self._kernel.scheduler.shutdown()
-        # dreaming 实例锁（F04 D8 关闭语义）：owner 匹配释放（未持锁幂等，
-        # 不误删他人锁）。锁不属于 MemoryAPI 公共契约（Protocol 上没有），
-        # 经 getattr 探测——只有装配了演进能力的实现才有。
-        release_lock = getattr(self.api, "release_dreaming_lock", None)
-        if callable(release_lock):
-            release_lock()
+            self._kernel.scheduler.validate_shutdown(wait=wait)
+        with self._close_lock:
+            if self._close_thread is None:
+                if self._kernel.watchdog is not None:
+                    self._watchdog_stopped = self._close_step(
+                        "watchdog.stop", self._kernel.watchdog.stop
+                    )
+                if self._kernel.scheduler is not None:
+                    self._close_step(
+                        "scheduler.shutdown(wait=False)",
+                        lambda: self._kernel.scheduler.shutdown(wait=False),
+                    )
+                self._close_step(
+                    "ingest_jobs.close(wait=False)",
+                    lambda: self._kernel.ingest_jobs.close(wait=False),
+                )
+                self._close_thread = threading.Thread(
+                    target=self._finish_close, name="memory-runtime-close", daemon=True
+                )
+                self._close_thread.start()
+            thread = self._close_thread
+        if wait:
+            thread.join()
+            if self._close_error is not None:
+                raise self._close_error
+
+    def _close_step(self, name: str, action: Callable[[], None]) -> bool:
+        try:
+            action()
+        except Exception as exc:
+            exc.add_note(f"MemoryRuntime.close step: {name}")
+            self._close_errors.append(exc)
+            logger.exception("MemoryRuntime.close failed at %s", name)
+            return False
+        return True
+
+    def _finish_close(self) -> None:
+        try:
+            if not self._watchdog_stopped and self._kernel.watchdog is not None:
+                self._watchdog_stopped = self._close_step(
+                    "watchdog.stop retry", self._kernel.watchdog.stop
+                )
+            ingest_stopped = self._close_step(
+                "ingest_jobs.close(wait=True)", lambda: self._kernel.ingest_jobs.close(wait=True)
+            )
+            scheduler_stopped = True
+            if self._kernel.scheduler is not None:
+                scheduler_stopped = self._close_step(
+                    "scheduler.shutdown(wait=True)",
+                    lambda: self._kernel.scheduler.shutdown(wait=True),
+                )
+            # 旧任务完全停止后才允许新实例接管，避免释放锁后的双跑。
+            # 停止失败时保留锁与存储；锁释放失败不阻断已经安全的存储清理。
+            if ingest_stopped and scheduler_stopped and self._watchdog_stopped:
+                release_lock = getattr(self.api, "release_dreaming_lock", None)
+                if callable(release_lock):
+                    self._close_step("release_dreaming_lock", release_lock)
+                self._close_step("kernel.close", self._kernel.close)
+        except Exception as exc:
+            self._close_errors.append(exc)
+            logger.exception("MemoryRuntime.close encountered an unexpected failure")
+        finally:
+            if self._watchdog_stopped:
+                loop = self._loop
+                stop_requested = True
+                if loop is not None and not loop.is_closed():
+                    stop_requested = self._close_step(
+                        "runtime loop.stop", lambda: loop.call_soon_threadsafe(loop.stop)
+                    )
+                if stop_requested:
+                    self._loop = None
+                    if self._loop_thread is not None:
+                        self._close_step("runtime loop.join", self._loop_thread.join)
+            if len(self._close_errors) == 1:
+                self._close_error = self._close_errors[0]
+            elif self._close_errors:
+                self._close_error = ExceptionGroup("MemoryRuntime.close failed", self._close_errors)
 
     _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
     _loop_thread: threading.Thread | None = field(default=None, repr=False)
+    _close_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _close_thread: threading.Thread | None = field(default=None, repr=False)
+    _close_error: Exception | None = field(default=None, repr=False)
+    _close_errors: list[Exception] = field(default_factory=list, repr=False)
+    _watchdog_stopped: bool = field(default=True, repr=False)
 
 
 def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-13 |
+| 最近一次修订日期 | 2026-10-16 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F05-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -21,6 +21,22 @@
 | `docs/features/api/`（F01–F07） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
 
 已设计但尚未实现的接口完成代码开发上库时：去掉本文（及受影响 F 文档）中的尚未实现标注，并把该方法（或增量入参）补进 architecture.md §6。
+## Runtime 关闭契约
+
+`MemoryRuntime.close(*, wait: bool = True)` 幂等。关闭时先停止看门狗和新调度/摄入，
+在飞任务收尾之后才释放 dreaming leader 锁及影子索引，最后回收 Runtime 自有循环线程。
+`wait=True` 等待上述流程完成；`wait=False` 安排后台收尾，已进入的同步调用和必要的归档
+收尾仍可能继续执行，后续可再次调用 `close(wait=True)` 等待全部完成。关闭后不允许重新
+启动 Runtime。不得在 Runtime 自有循环线程或调度器所属循环内阻塞等待自身关闭。
+异步调度器的详细关闭契约见 S03；直接使用 MemoryAPI 的业务方法不代替 Runtime 生命周期管理。
+
+关闭前先校验是否会等待所属工作线程自身；校验失败不启动收尾。资源清理按步骤隔离异常：
+一个步骤失败不跳过其他安全的停止动作。无法确认看门狗、摄入或调度任务停止时，保留
+leader 锁与存储；确认停止后，锁释放失败不阻断存储清理。影子索引获取或关闭失败不得
+静默忽略。`wait=True` 等待本次安全清理尝试结束后报告失败，多项失败通过 ExceptionGroup
+汇总；先 False 后 True 同样可获知后台异常，重复关闭不重复执行清理。自有循环停止请求
+失败时，不继续阻塞等待其线程退出，也不宣称循环已关闭。
+
 ## Metadata 公共 API 契约
 
 `add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收

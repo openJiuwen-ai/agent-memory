@@ -536,15 +536,18 @@ def test_timer_survives_requester_loop_close() -> None:
 
 
 def test_shutdown_stops_private_loop() -> None:
-    """shutdown：取消 Scheduler 全部协程；再次调用幂等。"""
+    """shutdown：停止 Scheduler 协程、事件循环与线程；再次调用幂等。"""
     _CountingJob.run_count = 0
     scheduler = AsyncTimerScheduler(tick_interval=1)
     scope = Scope(user="u1")
     job = _CountingJob(scope, interval=1)
 
     asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
+    thread = scheduler._runner._thread
     scheduler.shutdown()
     assert not scheduler._wheels  # Timer 全部取消清空
+    assert thread is not None and not thread.is_alive()
+    assert scheduler._runner._loop.is_closed()
     scheduler.shutdown()  # 幂等：未启动私有循环 / 重复调用不抛
     # 关闭后不再触发
     _CountingJob.run_count = 0
