@@ -216,3 +216,12 @@ Evolver.evolve(units, mode):
 无边 Snapshot 叶提示缺少时间时，继承/去重保留已有端点和 None，不用机器时间或单边时间
 补齐；已挂树节点保护不放宽。现有 Evolver 构造参数、evolve(units, mode)、去重直接 NOOP
 判据保持不变。
+
+
+### TIME 分组与摘要
+
+`hierarchy_composer.py` 定义构建请求、结果与配置；`hierarchy_composer_impl/` 中
+`time_pipeline`、`scene_pipeline`、`event_pipeline` 负责分组和结构父生成，
+`time_hierarchy_pipeline` 按层完成摘要后再向上分组，`parent_enrichment` 传递完整
+事实并生成父摘要/L0/L1，`profile_config` 严格解析配置。纯流水线不读取或写入存储。
+时间比较经 common/time_utils 统一，复制叶后仅变更 hierarchy，事实不从摘要反推。
