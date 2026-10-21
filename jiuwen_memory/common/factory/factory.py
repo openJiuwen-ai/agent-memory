@@ -20,12 +20,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 
 Builder = Callable[..., Any]
+_BUILD_OBSERVERS: ContextVar[tuple[Callable[[object], None], ...]] = ContextVar(
+    "factory_build_observers", default=()
+)
 
 
 class Factory:
@@ -37,6 +42,8 @@ class Factory:
     _instances: dict[str, Any]
     _subclasses: list[type] = []  # 所有 producer 子类（供 reset_all 统一清缓存）
     _by_top_name: dict[str, type] = {}  # TOP_NAME -> producer 子类（供 Config 解析期校验顶层段）
+    _cache_epoch: object = object()
+    _cache_lifecycle: object | None = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -113,7 +120,10 @@ class Factory:
                 f"{cls.__name__}: 未注册的实现 {target!r}（已注册：{cls.known()}）"
             )
         config = ComponentConfig(params=dict(params or {}), ctx=ctx, target=target, name=name)
-        return builder(config)
+        instance = builder(config)
+        for observer in _BUILD_OBSERVERS.get():
+            observer(instance)
+        return instance
 
     @classmethod
     def build_named(cls, name: str, ctx: Any) -> Any:
@@ -173,8 +183,56 @@ class Factory:
     @classmethod
     def reset_all(cls) -> None:
         """清空所有 producer 的具名实例缓存。"""
+        Factory._cache_epoch = object()
+        Factory._cache_lifecycle = None
         for sub in Factory._subclasses:
             sub.reset_instances()
+
+    @staticmethod
+    def cache_epoch() -> object:
+        """返回当前缓存装配纪元的 opaque 标识，不暴露实例私有状态。"""
+        return Factory._cache_epoch
+
+    @classmethod
+    def reset_if_current_epoch(cls, epoch: object) -> None:
+        """只失效仍属于本次装配的缓存，旧所有者不得清空较新装配。"""
+        if Factory._cache_epoch is epoch:
+            cls.reset_all()
+
+    @staticmethod
+    def bind_cache_lifecycle(owner: object, share: Callable[[object, object], None]) -> None:
+        """装配根显式绑定本纪元所有者；同一具名图的新增视图按给定协议共享。"""
+        if Factory._cache_lifecycle is None:
+            Factory._cache_lifecycle = owner
+        else:
+            share(Factory._cache_lifecycle, owner)
+
+    @classmethod
+    def discard_created(cls, instances: tuple[object, ...]) -> None:
+        """失败装配仅移除新建对象的缓存项；既有借用实例保持原样。"""
+        # 本工厂统一管理各 Producer 的缓存；不是探测第三方插件私有能力。
+        # pylint: disable=protected-access
+        identities = {id(instance) for instance in instances}
+        for producer in Factory._subclasses:
+            retained = {}
+            for name, instance in producer._instances.items():
+                if id(instance) not in identities:
+                    retained[name] = instance
+            producer._instances = retained
+
+    @staticmethod
+    @contextmanager
+    def observe_builds(observer: Callable[[object], None]) -> Iterator[None]:
+        """装配根观察本作用域新建对象（含匿名依赖），不报告缓存命中/put 借用。
+
+        嵌套作用域同时通知外层观察者；结束或异常时恢复原观察集合。
+        ContextVar 仅隔离同步装配记录，不承载认证身份或业务请求上下文。
+        """
+        token = _BUILD_OBSERVERS.set((*_BUILD_OBSERVERS.get(), observer))
+        try:
+            yield
+        finally:
+            _BUILD_OBSERVERS.reset(token)
 
     @classmethod
     def known(cls) -> list[str]:

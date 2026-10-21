@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from threading import Event
+from threading import Event, Thread
 
 import pytest
 
@@ -11,6 +11,48 @@ from jiuwen_memory.control.job_impl.ingest_job import InProcessIngestJobControll
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 pytestmark = pytest.mark.unit
+
+
+def test_nonwaiting_ingest_close_can_be_upgraded_to_waiting_drain() -> None:
+    controller = InProcessIngestJobController(max_workers=1)
+    started = Event()
+    release = Event()
+    completed = Event()
+    joining = Event()
+    drained = Event()
+    scope = Scope(org="acme", user="alice")
+
+    def task():
+        started.set()
+        assert release.wait(5)
+        completed.set()
+        return []
+
+    def drain():
+        joining.set()
+        controller.close(wait=True)
+        drained.set()
+
+    waiter = Thread(target=drain)
+    try:
+        job = controller.submit(
+            payload_id="active", source_ref="test:active", scope=scope, task=task
+        )
+        assert started.wait(2)
+        controller.close(wait=False)
+        assert not completed.is_set()
+        waiter.start()
+        assert joining.wait(2)
+        assert not drained.wait(0.1), "closed admission does not mean the executor has drained"
+        release.set()
+        assert drained.wait(3)
+        assert completed.is_set()
+        assert controller.status(job.job.id, scope=scope).status == "succeeded"
+    finally:
+        release.set()
+        if waiter.ident is not None:
+            waiter.join(timeout=3)
+        controller.close(wait=True)
 
 
 def test_ingest_job_runs_in_background_and_reuses_payload() -> None:

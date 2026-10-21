@@ -73,11 +73,23 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 三条强制约束，提交时必查（由 `.githooks/pre-commit` 检查，**默认未启用**：先跑 `git config core.hooksPath .githooks` 才会生效）：
 
-1. **影响公开接口、跨模块协调或有多方案取舍的特性必须归档特性文档；每个实现 PR 最终交付一个合并提交**：在 `docs/features/` 下新增 `FNN-<slug>.md`，记录决策、拒绝的方案、验证基线、已知遗留。特性代码、测试代码和相关文档统一纳入该 PR 的一个合并提交，包含 features 新增、受影响 specs 修订日期更新、受影响模块 AGENTS.md 更新，不再要求拆成三次提交。代码、测试与文档必须同步完成。commit message 只写 what，features 文档负责写 why / why-not。
+1. **影响公开接口、跨模块协调或有多方案取舍的特性必须归档特性文档；每个实现 PR 最终交付一个合并提交**：通常在 `docs/features/` 下新增 `FNN-<slug>.md`，记录决策、拒绝的方案、验证基线、已知遗留；安全能力使用下方「安全文档单一维护约定」，只更新已有 F04。特性代码、测试代码和相关文档统一纳入该 PR 的一个合并提交，包含 features 新增或更新、受影响 specs 修订日期更新、受影响模块 AGENTS.md 更新，不再要求拆成三次提交。代码、测试与文档必须同步完成。commit message 只写 what，features 文档负责写 why / why-not。
 
 2. **跨模块规约变动必须更新 specs 文档**：接口契约、跨模块协议、不变量、公共 API 发生变化时，同步修订 `docs/specs/SNN-<slug>.md`；新规约 = 新 spec 文件。规约变了但 specs 没改，下次读 spec 的人就被误导——这是设计债，不是文档懒。
 
 3. **双向同步：读到与代码不一致的描述必须当场修文档**。以代码为准刷新文档，在同一次改动里落地；不要把过时表述当作新约束执行。任何一份 `AGENTS.md` / `docs/specs/*` / `docs/features/*` 里读到的接口名、枚举值、truth table 行数、文件路径、不变量等只要与当前代码不符，**不要**把过时表述当作新约束去执行、也不要原样转述给用户；先 `grep` 代码、以代码为准刷新文档，在同一次改动里落地。`AGENTS.md` 里每条点名了"X 个分支 / Y 路 dispatch / Z 方法"的句子都是契约的一部分。**更新目标是 `AGENTS.md`，不是 `CLAUDE.md`**——`CLAUDE.md` 现在只是指向 `AGENTS.md` 的只读指针壳，编辑它没有任何意义；所有内容变更一律落到对应目录的 `AGENTS.md`。
+
+### 安全文档单一维护约定
+
+- 本项目现有安全能力总纲统一维护在 `docs/features/common/F04-security-interfaces-and-encryption.md`。
+  能力改变时刷新现行设计，不将 F04 当执行记事本；合并上游、基线适配、门禁/验收的逐次
+  复现、执行结果和工作笔记放本地 `security-plans/`，不纳入实现 PR。不得因此在 `docs/`
+  新增安全文档。原 F10～F14 已整合，不恢复它们或为后续同步重新编号。
+- `docs/features/common/F04-1-security-api-contracts.md` 是原安全 F05 的冻结接口备忘，
+  不随实现变动滚动更新；PR3 合入后删除并清理引用，安全能力特性文档只保留 F04。
+- 既有 specs 与模块 AGENTS.md 的职责和双向同步要求不变，更新现有文件，不另建重复
+  设计页。冻结接口不因文档整理而改变；本地 `security-plans/problems/` 工作记录不纳入
+  实现 PR。此次约定不删除或合并上游独立的 SSL 等非本轮安全专题文档。
 
 **pre-commit hook 行为**（`.githooks/pre-commit`，需手动 `git config core.hooksPath .githooks` 启用）：
 - 非交互环境（无 TTY，如 CI）直接 `exit 0`，不做任何检查；交互终端下会逐项询问

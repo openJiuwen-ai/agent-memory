@@ -9,12 +9,15 @@ from typing import Any
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.security._assembly_lifecycle import _assembly_lifecycle
 from jiuwen_memory.common.security.authentication.authentication_impl.dev_authenticator import (
     DevAuthenticator,
 )
 from jiuwen_memory.common.security.authentication.base import Authenticator
 from jiuwen_memory.common.security.runtime import SecurityRuntime, SecurityRuntimeProducer
 from jiuwen_memory.config import Config
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.defaults import default_context
 
 
 def build_dev_authenticator(*, identities: Mapping[str, Any] | None = None) -> Authenticator:
@@ -32,7 +35,18 @@ def build_configured_security_runtime(
     """
     register_plugins()
     parsed = Config.from_dict(config)
-    ctx = parsed.context(known_top_names=Factory.known_top_names())
+    ctx = default_context().merged(parsed.context(known_top_names=Factory.known_top_names()))
+    with _assembly_lifecycle() as lifecycle:
+        runtime = _build_security_runtime(ctx, rebuild_closed=True)
+        if runtime is not None:
+            lifecycle.bind(runtime.security_resource_owner())
+        return runtime
+
+
+def _build_security_runtime(
+    ctx: AssemblyContext, *, rebuild_closed: bool = False
+) -> SecurityRuntime | None:
+    """在内核的同一装配上下文选择运行时，不重置共享实例缓存。"""
     names = sorted(ctx.namespaces.get(SecurityRuntimeProducer.TOP_NAME, {}))
     if not names:
         return None
@@ -46,5 +60,11 @@ def build_configured_security_runtime(
             "安全组件选择存在歧义，拒绝启动。"
         )
     runtime = SecurityRuntimeProducer.build_named(name, ctx)
+    if runtime.security_resource_owner().is_closed():
+        if not rebuild_closed:
+            raise ValidationError("selected security Runtime has already been closed")
+        # 新独立装配不能复用缓存中的关闭句柄/依赖；存活句柄仍走原共享路径。
+        Factory.reset_all()
+        runtime = SecurityRuntimeProducer.build_named(name, ctx)
     runtime.health()
     return runtime

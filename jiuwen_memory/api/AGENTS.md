@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 >
-> **文档分工**：`docs/design/architecture.md` §6 = 已实现接口清单；本目录 = 已实现代码；S02 = 详细用法与方法总览（含尚未实现标注）；`docs/features/api/`（F01–F05）= 特性决策。尚未实现接口上库后须同步 S02 与 §6。
+> **文档分工**：`docs/design/architecture.md` §6 = 已实现接口清单；本目录 = 已实现代码；S02 = 详细用法与方法总览（含尚未实现标注）；`docs/features/api/`（F01–F07）= 特性决策。尚未实现接口上库后须同步 S02 与 §6。
 
 统一对外 Core API，所有接入形态（SDK/CLI/MCP/HTTP）最终映射到 `MemoryAPI`。本层是控制层的薄封装：做参数装配与鉴权，编排逻辑全部在 `jiuwen_memory/control`。
 
@@ -15,16 +15,17 @@
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：`assemble(config) -> MemoryAPI`、`assemble_runtime(config) -> MemoryRuntime`（api 与 start/start_background/close 生命周期入口）；内部 `_build_kernel` 才持有 KV/Storage/ingest。close 先停看门狗及新调度/摄入，再等待任务收尾，之后释放 dreaming leader 锁与影子索引，最后回收自有看门狗循环；不等待时由单个收尾线程完成同一流程 |
+| `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回生命周期句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
-| `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数 |
+| `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
 | `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
 | `memory_api_impl/dreaming.py` | DreamingCoordinator + DreamingDriverJob：dreaming 编排（PEP 边界）——leader-only 注册、`CANCEL_REQUESTED` 持久化幂等注销、generation 隔离旧代 Driver、生命周期操作串行与短状态锁分离、按 leader 任期缓存恢复结果、每 tick 持续授权（`created_by` 复验）、fan-out 逐桶裁决；Coordinator 只持鉴权、提交、调度、注册表、Engine 候选 scope 枚举窄端口，不反向持有完整 API；驱动 Job 每 tick 经 `commands.evolve` 提交一次性 EvolveJob |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
+| `memory_api_impl/dreaming_security.py` | 私有注册身份快照编码；只消费受控上下文和服务端注册表，不接业务 payload、不保存原始凭据、不续期认证 |
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
-| `access_security.py` | Access 安全装配辅助：提供 dev Authenticator，并从普通 mapping 选择、健康检查已配置的 SecurityRuntime；不向接入层暴露 common 实现路径 |
+| `access_security.py` | Access 安全装配辅助：提供 dev Authenticator；私有 `_build_security_runtime` 从同一装配上下文选择、健康检查 Runtime，公开 mapping helper 复用它；不暴露 common 实现路径 |
 
 ## 行为铁律
 
@@ -58,8 +59,9 @@
 6. **space 必须在 API 边界执行策略校验**
    `scope.require_space=true` 时，具体 target scope 缺少 `space` 的数据面/治理面操作必须在 `LocalMemoryAPI._authorize` 拒绝并记录 deny audit；`Scope()` 根管理面与 org 级 `list_spaces/create_space` 鉴权目标不受此策略影响。
 
-7. **space policy 在 API 边界注入权限上下文**
-   已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 提供，`LocalMemoryAPI._authorize` 在调用 `PermissionManager.check` 前写入 `PermissionContext.metadata["principal_path"]`；调用侧 metadata 不覆盖 space policy。
+7. **space policy 在 API 边界注入可信资源事实**
+   已创建 space 的 `principal_path` 由 `SpaceManager.get_policy` 提供，`LocalMemoryAPI` 在调用
+   `Authorizer` 前把它写入服务端构造的授权资源描述；调用侧 metadata 不得覆盖 space policy。
 
 8. **list 对实际返回资源逐条鉴权**
    请求级 `memory_types` 鉴权通过后，API 必须调用 Engine 的
@@ -67,6 +69,10 @@
    不得把未指定类型解释为可绕过类型路由，也不得用两次分页分别读取上下文和内容。
    API 在委托前复制 `extensions`、规范化 `filters`，并把权限路由值作为系统过滤条件
    与用户过滤做外层 AND；返回 `MemoryListResult` 的 count 为分页前匹配总数。
+   `inspect` / `trace` 同样逐条 READ 判权（包含每个祖先），权限上下文必须由本次返回
+   MemoryUnit 的同一快照构造，不能另读一次上下文后返回旧内容。
+   `get` 保留请求 ID 的前置鉴权，并在引擎选定版本后对实际返回快照再次 READ 判权；
+   `as_of` 选中另一版本或同 ID 内容变化时，不能沿用预读的作者、Scope 或类型路由。
 
 9. **Space 删除覆盖全部子 Scope**
    `delete_space` 鉴权后调用 `SpaceLifecycleService`：先 `MemoryEngine.purge_space`
@@ -79,8 +85,9 @@
 ```
 MemoryAPI.method(scope=target, security=RequestSecurityContext)
   → identity = security.auth.actor（actor 只能来自这里，不来自业务 payload）
+  → 校验上下文来源、完整性、时效与需在线复核的凭据（必须先于任何业务端口访问）
   → 构造 PermissionContext（add/search/list 请求条件来自入参；list 实际 unit 与 get/update/delete 来自 Engine 真源元数据）
-  → PermissionManager.check(actor=identity, target=scope, action=<对应动作>, context=...)
+  → Authorizer.authorize(auth=security.auth, resource=<服务端事实>, action=<对应动作>, env=...)
     → 通过 → 委托 Command/Query/Governance/SpaceLifecycle 端口或 PolicyManager/Scheduler（仅传已鉴权 scope，不传 identity）
     → 拒绝 → 抛 PermissionDeniedError
   → 落审计事件（含 identity + action + target_id + 时间）
@@ -104,11 +111,23 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 ## 本地约束
 
 - dreaming 驱动提交派生任务后须立即调用 `link_child`，两步之间不得让出调度循环，以便执行前绑定父任务取消生命周期。注销先持久化 `CANCEL_REQUESTED`，Driver 在 tick 开头和提交前复核 `state + generation + job_id`；阻塞式 Scheduler 调用不得发生在协调器短状态锁内。
-1. `security` 为必填参数，类型 `common.security.types.RequestSecurityContext`；只能来自 `auth_middleware.authenticated()` 或 `request_context.internal_context()`（过渡期另有 `legacy_request_context()`，实装 PR 删除）。除 `check_write(scope, security, *, ...)` 为兼容旧第二位置参数外，其余公开方法均要求 keyword-only。
-2. 授权面（`grant`/`revoke`）的公共类型是 `common.security.types.Grant`/`Action`；`control.types` 只兼容再导出同一对象，不得定义第二套类型或结构转换。`Grant` 必须兼容旧 `grantor`/`grantee`/`actions` 构造形状，`grant_id` 构造时默认留空，actions 在值对象边界冻结并校验。目标形态下 `grant_id` 服务端生成、`revoke` 按 ID 精确定位；接口先行过渡期撤销语义不变，安全域独有动作在委托旧 `PermissionManager` 前 fail-closed。
+- dreaming 的 `created_by` 保留五维 actor，并由 API 写入私有 `_request_context_v1` 字符串快照。
+  恢复只从服务端注册表读快照，保留原角色、到期时间、凭据复核能力及委托 ID；每 tick
+  生成新的受控请求上下文，再走唯一 PEP。只有 actor 的旧记录跳过恢复，不能补猜身份。
+1. `security` 为必填参数，类型 `common.security.types.RequestSecurityContext`；只能来自
+   `auth_middleware.authenticated()` 或 `request_context.internal_context()`。不得从 payload
+   或目标 Scope 自述身份（legacy 自述入口已删除，进程内调用方一律走
+   `internal_context(authenticator)`——身份由认证器产出，`scope` 只作操作目标）。除
+   `check_write(scope, security, *, ...)`
+   为兼容旧第二位置参数外，其余公开方法均要求 keyword-only。
+2. 授权面（`grant`/`revoke`）的公共类型是 `common.security.types.Grant`/`Action`；`control.types`
+   只兼容再导出同一对象，不得定义第二套类型或结构转换。`grant_id` 由服务端生成，`revoke`
+   按 ID 精确、幂等、单调撤销；管理入口与实际 Authorizer 判定必须使用同一具名 GrantStore，
+   不得双写旧 `PermissionManager`。
 3. 所有数据面方法（add/batch_add/search/list/get/update/delete/evolve）都需要鉴权，治理面（inspect/trace/audit）也需要鉴权。`LocalMemoryAPI._record_audit()` 在存在受控请求上下文时以 `setdefault` 写入 `AuditEvent.detail["request_id"]`，用于与入口响应和日志关联，不覆盖调用方已经传入的可信 detail 值。
-4. `verify_audit`（审计完整性验证，PR3 接口先行）是独立于 `audit` 的管理面入口：新入口按 `VERIFY_AUDIT` 对根 scope 判权；既有 `audit` 为兼容存量按 action 精确匹配的授权记录，仍使用 legacy `READ`，迁移到目标动作 `READ_AUDIT` 不属于本 PR。验证只收服务端参数（不接受调用方传入 digest/key/proof）；provider 与专用 `audit_verify_guard` 必须成对注入，全量验证占一个独立并发槽，耗尽抛 `RateLimitedError`。guard 耗尽发生在授权通过后，审计事件保持 `decision=allow`，并沿用 `workload_guard=exhausted` 表达容量准入失败，不得混入 `decision=deny` 的鉴权拒绝事件。guard 准入后先落验证尝试审计、再调用 provider，provider 抛完整性异常时仍须能追溯发起者与发生时间；成功或异常路径不重复写完成事件。`page_size` / `max_samples` 截到服务端 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples` 装配出的可信 `AuditVerificationLimits`；装配边界只接受真正的整数（拒绝 `bool` 和字符串），并把非法类型或范围统一翻译成 `ValidationError`。provider 返回 samples 由 PEP 再截到有效上限。未装配 provider 时返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信上下文后通过同名 `/v1/verify_audit` 暴露原返回值，容量限流映射为 429；CLI 通过同名 `verify_audit` 命令和同一 JSON 契约暴露；MCP 经 `memory_verify_audit` 工具暴露同一契约（`after_sequence`/`page_size`/`max_samples`/`anchor_policy` 透传）；legacy handler 暂无一等入口。进程内调用必须显式传安全上下文。
-5. 装配由 `assembly.assemble` / `assembly.assemble_runtime` 完成，内部经 `_build_kernel`
+4. `verify_audit`（审计完整性验证，PR3 接口先行）是独立于 `audit` 的管理面入口：新入口按 `VERIFY_AUDIT` 对根 scope 判权；既有 `audit` 亦按目标动作 `READ_AUDIT` 鉴权（授权记录按 action 精确匹配，不与普通 READ 互认）。验证只收服务端参数（不接受调用方传入 digest/key/proof）；provider 与专用 `audit_verify_guard` 必须成对注入，全量验证占一个独立并发槽，耗尽抛 `RateLimitedError`。guard 耗尽发生在授权通过后，审计事件保持 `decision=allow`，并沿用 `workload_guard=exhausted` 表达容量准入失败，不得混入 `decision=deny` 的鉴权拒绝事件。guard 准入后先落验证尝试审计、再调用 provider，provider 抛完整性异常时仍须能追溯发起者与发生时间；成功或异常路径不重复写完成事件。`page_size` / `max_samples` 截到服务端 `globals.audit_verify_max_page_size` / `globals.audit_verify_max_samples` 装配出的可信 `AuditVerificationLimits`；装配边界只接受真正的整数（拒绝 `bool` 和字符串），并把非法类型或范围统一翻译成 `ValidationError`。provider 返回 samples 由 PEP 再截到有效上限。未装配 provider 时返回 `unsupported`，不降级成 clean。HTTP 在认证中间件产出可信上下文后通过同名 `/v1/verify_audit` 暴露原返回值，容量限流映射为 429；CLI 通过同名 `verify_audit` 命令和同一 JSON 契约暴露；MCP 经 `memory_verify_audit` 工具暴露同一契约（`after_sequence`/`page_size`/`max_samples`/`anchor_policy` 透传）；legacy handler 暂无一等入口。进程内调用必须显式传安全上下文。
+5. 装配由 `assembly.assemble` / `assembly.assemble_runtime` / `assembly.assemble_server_runtime`
+   完成，内部经 `_build_kernel`
    与各 Producer 的 `dep/build_named/build` 组装；Retriever 的 `domain_store()` 与内部
    `_Kernel.storage` 引用同一个全局 manager（`globals.store_manager` 指名，默认
    `store_manager.default`）。顺序铁律：
@@ -121,10 +140,10 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
    target `scope`，由 API 对任务真实 Scope 执行 READ 鉴权并记录审计。
 8. Access（`jiuwen_memory_entry/`、`jiuwen_memory_adapter/`）只 `import jiuwen_memory.api`，
    且不得 import `jiuwen_memory.api.memory_api_impl`。本包重导出协议转换所需的 DTO /
-   枚举 / 异常 / `legacy_request_context` / `Credentials`，以及 Access 日志脱敏所需的
+   枚举 / 异常 / `Credentials`，以及 Access 日志脱敏所需的
    `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`。
    公开装配是
-   `assemble` / `assemble_runtime`（接受 `dict | Config | None`），Access composition
+   `assemble` / `assemble_runtime` / `assemble_server_runtime`（接受 `dict | Config | None`），Access composition
    root 不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI`
    不是公开包导出；`assemble_runtime` 不带 `kv` / `storage` / `space`。
 9. `LocalMemoryAPI` 类体内禁止同名方法重复定义（后定义会静默覆盖先定义）。
@@ -133,10 +152,41 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 10. 数据面写经 `MemoryCommandService`，查询经 `MemoryQueryService`，治理经 `GovernanceService`，
     Space 删除事务经 `SpaceLifecycleService`。PEP、路由谓词回注、逐条鉴权仍在本层。
     不得把 `_purge_space_memories` 或内联 purge+delete 收回本类。
-11. `build_dev_authenticator(identities=...)` 构造固定或映射 DEV 身份，不是生产 runtime。
-    HTTP / CLI / MCP 均须显式 DEV，`with_local_dev_security()` 补齐完整运行时配置；
-    仅固定 DEV、且未声明 security/permission 时临时注入 allow_all PermissionManager。
-    映射 DEV 保留原权限判定，绝不自动全放行；具名管理员与委托能力留待 PR2。
-    `build_configured_security_runtime()` 从普通 mapping 装配并健康检查 Runtime：
-    无 security 返回 None，多实例无 default 拒绝歧义选择。Access 不得直接 import
-    common.security 的实现或 Factory。PR2 必须统一接管旧 HTTP 多身份和空间权限链路。
+11. `build_dev_authenticator(identities=...)` 构造固定或预设映射开发身份，不是生产 runtime。HTTP / CLI / MCP
+    的显式 DEV 入口通过 `with_local_dev_security()` 补齐完整配置；PR2 的
+    `Authorizer` 已消费 ROOT 角色，因此该适配器不再注入 `allow_all` PermissionManager。
+    `build_configured_security_runtime()` 从普通 mapping 装配并健康检查
+    Runtime，缺失 `security` 返回 `None`、多实例无 `default` 时拒绝歧义选择。Access 不得
+    直接 import `common.security.*_impl` 或 Factory。DEV 身份经真实 Authorizer 放行；显式
+    API Key / Trusted 部署仍按其 AuthContext 和授权事实判定。
+12. 配置了 `security` 的 SDK 与 Server 装配均在 `_build_kernel` 内绑定实际认证器的
+    issuer/KeyStore，并校验 Runtime 与 PEP 的 PDP 对象一致。Server AUTO 复用内核已建
+    Runtime，其 close 由 MemoryRuntime 管理；显式注入另一个 Runtime 时回绑 PDP、替换
+    Registry，禁止残留旧 issuer 或关闭已有 router 的空间治理。没有 security 配置时不猜测
+    认证器或 KeyStore，未知 issuer 仍拒绝。MemoryRuntime 沿用上游 api/start/start_background/close。
+    `assemble_server_runtime` 返回增量 ServerRuntime，另公开 security_runtime/audit；
+    同源校验、回绑及共享关闭根由本包装配器完成，Server 不访问内核私有成员。旧手工构造
+    MemoryRuntime-only 的 Server 不探测私有 audit，额外安全组合按公开 close 能力清理。
+13. 代理代写不得改写 `AuthContext.actor` 或从目标 Scope 推导用户。PEP 通过私有
+    `_resource_principal` 回委托真源推导作者与资源坐标，真实 actor 用于审计；
+    `_delegator.` 前缀属性仅允许 PEP 从空间事实投影，调用方同名 metadata 必须剥离。
+    委托人的当前内容权由唯一 PDP 复核，治理轴不借用委托，委托不自动创建 fallback 空间。
+14. `grant/revoke` 通过公开 `GrantManagementCapability` 的 `create_grant/get_grant/
+    revoke_if_grantor` 创建或原子绑定真实目标撤销；管理域只有一个 GrantStore，不扇出写入。
+    旧只读插件未声明管理能力时返回 UnsupportedCapabilityError，显式完整管理部署在启动期
+    拒绝缺能力。未知 ID 幂等，不回退到仅按 ID 撤权；已有 MemoryAPI 签名不变。
+    空间/入口路由/委托真源通过公开增量能力传递，不探测插件私有状态。
+    无 SecurityRuntime 的 SDK 也由 MemoryRuntime 持有安全资源所有者；停止异常不跳过其余
+    安全停止动作，未确认停止时保留依赖。与外层同一 SecurityRuntime 不重复关闭资源。assemble 返回的
+    API 通过独立关闭能力委托其 Runtime；显式 Runtime 替换在装配期共享安全生命周期根，
+    已关闭 Runtime 不再用于健康启动，配置辅助的新装配不得复用关闭句柄。
+    PEP 保存本部署完整管理能力要求，显式替换 PDP 也复核；_build_kernel 在解析依赖前
+    建立创建回滚作用域。失败清理不关闭借用实例；后台停止与共享关闭保持幂等和先后顺序。
+    close(wait=False) 封闭准入并启动单个收尾线程，先请求 Scheduler 与摄入停机，再等待
+    在飞任务结束；`_background_drained` 只在全部使用者及自有 loop 确认停止后置位。
+    close(wait=True) 等待同一结果并报告异常；共享关闭通过独立屏障等待使用者，不 join
+    可能正在等待资源根锁的收尾线程。额外注入的仅 close 组合也纳入同一资源根。
+    文档模式同样先停止 watcher 准入与数据面工作；所有具名 shadow 端口列入共同所有者，
+    后台线程不再访问连接后才释放 shadow。同步启动将 Observer 故障传回调用方，关闭后拒绝重启。
+15. 成员/Grant 授予上界接收完整可信上下文，只有 ROOT 免除普通成员上界；不得从 actor
+    的 Scope 形状推导特权。路由写入和跨空间查询必须区分后端故障与正常权限拒绝。

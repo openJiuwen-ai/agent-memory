@@ -127,3 +127,69 @@ def test_dep_missing_without_default_raises():
     config = ComponentConfig(params={}, ctx=cfg_ctx)
     with pytest.raises(ValidationError, match="未配置且无默认实现"):
         _PartProducer.dep(config)  # 无默认、无配置
+
+
+def test_creation_observer_reports_nested_and_anonymous_dependencies_not_cache_hits():
+    ctx = AssemblyContext.from_dict({"part": {"borrowed": "simple"}})
+    borrowed = _PartProducer.build_named("borrowed", ctx)
+    _PartProducer.put("injected", borrowed)
+    created = []
+    with Factory.observe_builds(created.append):
+        assert _PartProducer.build_named("borrowed", ctx) is borrowed
+        assert _PartProducer.build_named("injected", ctx) is borrowed
+        holder = _HolderProducer.build("h", {}, ctx)
+    assert created == [holder.part, holder]
+
+
+def test_creation_observer_restores_outer_scope_after_failure():
+    outer = []
+    inner = []
+    ctx = AssemblyContext()
+    with Factory.observe_builds(outer.append):
+        with pytest.raises(ValidationError):
+            with Factory.observe_builds(inner.append):
+                first = _PartProducer.build("simple", {}, ctx)
+                raise ValidationError("injected observer scope failure")
+        second = _PartProducer.build("simple", {}, ctx)
+    _PartProducer.build("simple", {}, ctx)
+    assert outer == [first, second]
+    assert inner == [first]
+
+
+def test_discard_created_keeps_preexisting_named_instances():
+    ctx = AssemblyContext.from_dict({"part": {"borrowed": "simple", "new": "simple"}})
+    borrowed = _PartProducer.build_named("borrowed", ctx)
+    created = []
+    with Factory.observe_builds(created.append):
+        original = _PartProducer.build_named("new", ctx)
+    Factory.discard_created(tuple(created))
+    assert _PartProducer.build_named("borrowed", ctx) is borrowed
+    assert _PartProducer.build_named("new", ctx) is not original
+
+
+def test_cache_invalidation_does_not_discard_a_newer_epoch():
+    old_epoch = Factory.cache_epoch()
+    Factory.reset_all()
+    current_epoch = Factory.cache_epoch()
+    ctx = AssemblyContext.from_dict({"part": {"current": "simple"}})
+    current = _PartProducer.build_named("current", ctx)
+    Factory.reset_if_current_epoch(old_epoch)
+    assert _PartProducer.build_named("current", ctx) is current
+    Factory.reset_if_current_epoch(current_epoch)
+    assert Factory.cache_epoch() is not current_epoch
+    assert _PartProducer.build_named("current", ctx) is not current
+
+
+def test_cache_lifecycle_binding_is_explicit_and_resets_with_epoch():
+    bindings = []
+    left, right = object(), object()
+
+    def share(first, second):
+        bindings.append((first, second))
+
+    Factory.bind_cache_lifecycle(left, share)
+    Factory.bind_cache_lifecycle(right, share)
+    assert bindings == [(left, right)]
+    Factory.reset_all()
+    Factory.bind_cache_lifecycle(right, share)
+    assert bindings == [(left, right)]

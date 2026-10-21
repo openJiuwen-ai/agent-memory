@@ -13,7 +13,7 @@ from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_ke
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import (
     ChatMessage,
     EntityBatchResult,
@@ -46,6 +46,7 @@ from jiuwen_memory.construction.index_builder_impl.entity_index_builder import E
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.types import IndexWriteMode
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -934,7 +935,7 @@ def test_schema_enabled_assembly_runs_source_first_property_extraction(monkeypat
     created = kernel.api.add(
         "speaker=Alice: On 2023-08-03, I became a software engineer.",
         scope,
-        security=legacy_request_context(scope),
+        security=internal_context(ScopedAuthenticator(scope)),
         system_metadata={"infer": True},
     )
 

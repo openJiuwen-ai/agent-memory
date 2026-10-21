@@ -182,8 +182,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
             "expires_at": "expires_at",
             "grantor": DERIVED,
             "grantee": DERIVED,
-            # GrantStore 未实装 grant_id 生成，撤销按 grantor+grantee+action 定位。
-            "grant_id": gap("GrantStore 未实装 grant_id；撤销按主体+动作定位"),
+            "grant_id": gap("授权 ID 由服务端生成并返回，不接受请求侧指定"),
             "revoked": gap("撤销由 revoke 动作表达，不由 legacy 扁平面设置"),
         },
     },
@@ -193,7 +192,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
             "expires_at": "expires_at",
             "grantor": DERIVED,
             "grantee": DERIVED,
-            "grant_id": gap("GrantStore 未实装 grant_id；撤销按主体+动作定位"),
+            "grant_id": "grant_id",
             "revoked": gap("撤销由 revoke 动作表达，不由 legacy 扁平面设置"),
         },
     },
@@ -308,11 +307,7 @@ def _route_verbs() -> dict[str, str]:
 
 
 def _module_functions() -> dict[str, ast.FunctionDef]:
-    return {
-        node.name: node
-        for node in _handler_tree().body
-        if isinstance(node, ast.FunctionDef)
-    }
+    return {node.name: node for node in _handler_tree().body if isinstance(node, ast.FunctionDef)}
 
 
 def _payload_reads(func_name: str) -> tuple[set[str], set[str]]:
@@ -340,9 +335,7 @@ def _payload_reads(func_name: str) -> tuple[set[str], set[str]]:
                     pending.append(target.id)
             elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
                 _record_read(node.value, node.slice.value, payload_keys, any_keys)
-            elif isinstance(node, ast.Compare) and any(
-                isinstance(op, ast.In) for op in node.ops
-            ):
+            elif isinstance(node, ast.Compare) and any(isinstance(op, ast.In) for op in node.ops):
                 for comparator in node.comparators:
                     if isinstance(node.left, ast.Constant) and isinstance(comparator, ast.Name):
                         _record_read(comparator, node.left.value, payload_keys, any_keys)

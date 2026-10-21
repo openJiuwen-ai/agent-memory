@@ -6,6 +6,7 @@
 grant actions / 视频 occurred_at / 整数与对象类型校验。
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -15,22 +16,30 @@ from jiuwen_memory.api import (
     Action,
     DeleteMode,
     EvolveMode,
+    Grant,
     Modality,
     Scope,
     SpaceContentRole,
     SpaceGovernanceRole,
     SpaceInfo,
+    internal_context,
 )
 from jiuwen_memory_entry.core import handler
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
 _TARGET = {"tenant_id": "acme", "scope": "alice"}
 
 
+def _request(verb, payload):
+    security = internal_context(ScopedAuthenticator(Scope(org="acme", user="alice")))
+    return build_legacy_dispatch_request(verb, payload, security=security)
+
+
 def _dispatch(api, verb, payload):
-    return handler.dispatch(SimpleNamespace(api=api), build_legacy_dispatch_request(verb, payload))
+    return handler.dispatch(SimpleNamespace(api=api), _request(verb, payload))
 
 
 # --- #221 布尔参数 ----------------------------------------------------------- #
@@ -331,9 +340,7 @@ def test_add_space_member_forwards_roles_and_timestamps() -> None:
     assert member.governance_role is SpaceGovernanceRole.MANAGER
     assert member.expires_at == datetime(2027, 1, 1, tzinfo=UTC)
 
-    status, body = _dispatch(
-        api, "list_space_members", {"tenant_id": "acme", "space": "team"}
-    )
+    status, body = _dispatch(api, "list_space_members", {"tenant_id": "acme", "space": "team"})
     assert status == 200, body
     assert body["members"][0]["content_role"] == "viewer"
     assert body["members"][0]["governance_role"] == "manager"
@@ -463,14 +470,12 @@ def test_video_add_forwards_occurred_at_and_rejects_bad_assets() -> None:
         "occurred_at": occurred_at,
     }
 
-    status, body = handler.dispatch(srv, build_legacy_dispatch_request("add", base))
+    status, body = handler.dispatch(srv, _request("add", base))
 
     assert status == 200, body
     assert calls[0]["occurred_at"] == datetime(2025, 3, 4, 5, 6, 7, tzinfo=UTC)
 
-    status, body = handler.dispatch(
-        srv, build_legacy_dispatch_request("add", {**base, "assets": {"bad": "shape"}})
-    )
+    status, body = handler.dispatch(srv, _request("add", {**base, "assets": {"bad": "shape"}}))
 
     assert status == 400
     assert body["error"] == "ValidationError"
@@ -480,10 +485,22 @@ def test_video_add_forwards_occurred_at_and_rejects_bad_assets() -> None:
 # --- grant / revoke --------------------------------------------------------- #
 
 
+class _RecordingGrantApi:
+    def __init__(self, records: list[Grant]) -> None:
+        self.records = records
+
+    def grant(self, grant: Grant, *, security) -> Grant:
+        self.records.append(grant)
+        return replace(grant, grant_id="server-issued-grant")
+
+    def revoke(self, grant: Grant, *, security) -> None:
+        self.records.append(grant)
+
+
 def test_grant_forwards_actions_and_expiry() -> None:
     """``actions`` / ``expires_at`` 写死会让「授写权限」「授有限期」静默落成永久只读。"""
     seen: list = []
-    api = SimpleNamespace(grant=lambda grant, *, security: seen.append(grant))
+    api = _RecordingGrantApi(seen)
 
     status, body = _dispatch(
         api,
@@ -499,11 +516,12 @@ def test_grant_forwards_actions_and_expiry() -> None:
     assert status == 200, body
     assert seen[0].actions == frozenset({Action.READ, Action.WRITE})
     assert seen[0].expires_at == datetime(2026, 10, 1, tzinfo=UTC)
+    assert body["grant_id"] == "server-issued-grant"
 
 
 def test_grant_defaults_to_read_and_rejects_unknown_action() -> None:
     seen: list = []
-    api = SimpleNamespace(grant=lambda grant, *, security: seen.append(grant))
+    api = _RecordingGrantApi(seen)
 
     status, body = _dispatch(
         api, "grant", {**_TARGET, "grantee": {"org": "acme", "user": "reader"}}
@@ -511,7 +529,7 @@ def test_grant_defaults_to_read_and_rejects_unknown_action() -> None:
     assert status == 200, body
     assert seen[0].actions == frozenset({Action.READ})
 
-    api = SimpleNamespace(grant=lambda grant, *, security: seen.append(grant))
+    api = _RecordingGrantApi(seen)
     status, body = _dispatch(
         api,
         "grant",
@@ -532,11 +550,13 @@ def test_revoke_forwards_actions_and_expiry() -> None:
             **_TARGET,
             "grantee": {"org": "acme", "user": "reader"},
             "actions": "write",
+            "grant_id": "server-issued-grant",
         },
     )
 
     assert status == 200, body
     assert seen[0].actions == frozenset({Action.WRITE})
+    assert seen[0].grant_id == "server-issued-grant"
 
 
 @pytest.mark.parametrize("verb", ["grant", "revoke"])
@@ -554,7 +574,12 @@ def test_actions_reject_explicitly_empty_value(verb, empty) -> None:
     status, body = _dispatch(
         api,
         verb,
-        {**_TARGET, "grantee": {"org": "acme", "user": "reader"}, "actions": empty},
+        {
+            **_TARGET,
+            "grantee": {"org": "acme", "user": "reader"},
+            "actions": empty,
+            "grant_id": "server-issued-grant",
+        },
     )
 
     assert status == 400, body
@@ -567,8 +592,12 @@ def test_actions_reject_explicitly_empty_value(verb, empty) -> None:
 def test_actions_absent_or_null_keeps_default_read(verb, omit_actions) -> None:
     """缺省（键缺失或显式 ``null``）仍沿用只读授权——与显式空值区分开。"""
     seen: list = []
-    api = SimpleNamespace(**{verb: lambda grant, *, security: seen.append(grant)})
-    payload = {**_TARGET, "grantee": {"org": "acme", "user": "reader"}}
+    api = _RecordingGrantApi(seen)
+    payload = {
+        **_TARGET,
+        "grantee": {"org": "acme", "user": "reader"},
+        "grant_id": "server-issued-grant",
+    }
     if not omit_actions:
         payload["actions"] = None
 
