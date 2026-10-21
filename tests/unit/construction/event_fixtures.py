@@ -38,10 +38,6 @@ def event_profiles(**options: str) -> dict[HierarchyKind, HierarchyComposeProfil
     }})
 
 
-
-
-
-
 def summary_grouping_case(
     role: HierarchyRole, *, fallback: bool = False,
 ) -> tuple[dict[HierarchyKind, HierarchyComposeProfile], list[str | Exception]]:

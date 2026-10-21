@@ -173,7 +173,6 @@ class MemoryCommandService:
             denied_scopes=denied_scopes,
         )
 
-
     async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
         """透传已鉴权的显式建树请求。"""
         return await self._engine.evolve_v2(scope, options)

@@ -102,7 +102,7 @@ def test_upper_grouping_uses_completed_child_summaries(role):
 
 
 @pytest.mark.parametrize("response", ["not json", "[]", '{}', '{"summary":""}',
-                                     '{"summary":3}', RuntimeError("timeout")])
+                                      '{"summary":3}', RuntimeError("timeout")])
 def test_invalid_summary_preserves_structural_evidence(response):
     pipeline = TimeHierarchyPipeline(
         merger=TimeSpanMergerOptions(summary_mode="llm"),

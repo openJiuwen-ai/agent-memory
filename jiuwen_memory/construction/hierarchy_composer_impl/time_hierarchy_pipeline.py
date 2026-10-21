@@ -71,7 +71,6 @@ class TimeHierarchyPipeline:
         annotate_parents(parents, self.models.layer_annotator)
         return parents, children
 
-
     def _effective_segmenter(self) -> SceneSegmenterOptions:
         return replace(
             self.segmenter,

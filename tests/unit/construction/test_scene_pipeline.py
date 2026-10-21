@@ -88,8 +88,10 @@ def test_similarity_equal_threshold_does_not_split() -> None:
     assert len(segmenter.segment([make_span("a"), make_span("b")])) == 1
 
 
-@pytest.mark.parametrize("vectors", [[], [[1, 0]], [[1, 0], [1]], [[0, 0], [1, 0]],
-                                   [[float("nan"), 0], [1, 0]], [[True, 0], [1, 0]]])
+@pytest.mark.parametrize("vectors", [
+    [], [[1, 0]], [[1, 0], [1]], [[0, 0], [1, 0]],
+    [[float("nan"), 0], [1, 0]], [[True, 0], [1, 0]],
+])
 def test_invalid_vectors_fail_instead_of_silently_changing_groups(vectors) -> None:
     segmenter = SceneSegmenter(SceneSegmenterOptions(similarity_threshold=0.5),
                                RecordingEmbedder(vectors))

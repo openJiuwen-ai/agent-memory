@@ -159,7 +159,6 @@ class Factory:
                 instances[name] = instance
             return instance
 
-
     @classmethod
     def _instance_cache(cls) -> dict[str, Any]:
         """具名缓存的统一入口，兼容装配内与已绑定的延迟解析。"""
@@ -185,10 +184,14 @@ class Factory:
         bound = _bound_instances.get()
         if bound is None:
             with Factory._instance_lock:
+                # Factory 统一管理自己注册的子类缓存，须保留原字典引用。
+                # 与 discard_created 相同，这是工厂内部管理，不是访问外部插件私有状态。
+                # pylint: disable=protected-access
                 bound = _InstanceBinding(
                     {producer: producer._instances for producer in Factory._subclasses},
                     Factory._instance_lock,
                 )
+                # pylint: enable=protected-access
 
         observers = _BUILD_OBSERVERS.get()
 

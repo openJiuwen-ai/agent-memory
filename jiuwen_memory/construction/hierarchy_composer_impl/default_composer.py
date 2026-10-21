@@ -116,7 +116,6 @@ class DefaultHierarchyComposer(HierarchyComposer):
         """返回独立配置快照，调用方不能修改 Composer 配置。"""
         return deepcopy(self.profiles.get(kind))
 
-
     def _validate_request(self, request: HierarchyComposeRequest) -> None:
         if not isinstance(request, HierarchyComposeRequest):
             raise ValidationError("request 必须是 HierarchyComposeRequest")
@@ -231,8 +230,6 @@ def _validate_options(options: HierarchyComposeOptions) -> None:
             raise ValidationError("metadata 必须是 dict[str, str]")
 
 
-
-
 def _validate_unit(
     unit: MemoryUnit, expected_role: HierarchyRole | tuple[HierarchyRole, ...],
 ) -> None:
@@ -315,8 +312,6 @@ def _intersects(unit: MemoryUnit, options: HierarchyComposeOptions) -> bool:
         _as_utc(unit.hierarchy.span_start) <= _as_utc(options.span_end)
         and _as_utc(unit.hierarchy.span_end) >= _as_utc(options.span_start)
     )
-
-
 
 
 def _scope_key(scope: Scope) -> ScopeKey:

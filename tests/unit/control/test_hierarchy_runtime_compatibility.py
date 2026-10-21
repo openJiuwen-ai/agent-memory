@@ -30,6 +30,7 @@ def test_cloud_engine_reads_domain_source_and_completes_outside_window_children(
     harness = job_harness(leaves)
     assert asyncio.run(harness.job().run()).status is JobStatus.SUCCEEDED
     domain = Mock(spec=DomainStore)
+
     def list_units(scope, *, offset=0, limit=100):
         page = harness.kv.list(scope, offset=offset, limit=limit)
         return MemoryListResult(items=[loads(raw) for _, raw in page.entries], count=page.count)

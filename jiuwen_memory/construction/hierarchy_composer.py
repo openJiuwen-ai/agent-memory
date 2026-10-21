@@ -49,8 +49,6 @@ class HierarchyComposeOptions:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
-
-
 @dataclass
 class HierarchyComposeRequest:
     """完整输入；替换时须包含相交旧根的全部父层和 snapshot，Composer 不查询补齐。"""
