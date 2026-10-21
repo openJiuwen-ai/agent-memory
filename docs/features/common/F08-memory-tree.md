@@ -6,8 +6,13 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 目标设计与 specs 已同步完成，待设计评审；树结构代码尚未实现，无 pytest 结果 |
+| 测试基线 | 模型、索引及 Snapshot 接入/继承已实现；相关验证结果见交付记录（2026-10-19） |
 | Refs | — |
+
+## 当前实现边界
+
+当前已实现结构模型、完整 Scope 引用校验、兼容编解码与索引基础，以及 Snapshot 自动接入与同步 infer 继承。
+后文建树、重建、查询展开、周期维护等描述仍是目标设计，不代表当前可调用能力。
 
 ## 背景
 
@@ -494,7 +499,7 @@ Policy 键、默认值和校验由
 
 ## ingest 接入层 （层级叶提示）
 
-Source adapter 可以在 `RawPayload.metadata` 中提供以下保留键：
+Source adapter 可以在 `RawPayload.system_metadata` 中提供以下保留键：
 
 | 键 | 类型 | 语义 |
 |---|---|---|
@@ -503,23 +508,23 @@ Source adapter 可以在 `RawPayload.metadata` 中提供以下保留键：
 | `hierarchy_span_start` | ISO 8601 str | 可选覆盖区间起点 |
 | `hierarchy_span_end` | ISO 8601 str | 可选覆盖区间终点 |
 
-Ingestor 只允许把一组完整且有效的提示映射到当前 unit 的叶安全字段：
+Ingestor 将合法身份与已给时间映射到当前 unit 的叶安全字段，TIME 叶提示可缺时：
 `kind`、`role`、`span_start`、`span_end`。映射后的 `parent_id` 必须为空，
 `child_ids` 必须为空，`status` 使用 `ACTIVE`。未提供任何保留键时，
 `hierarchy` 保持默认空结构。
 
 校验是确定性的：
 
-1. kind/role 必须同时提供；区间必须同时提供或同时缺省。
+1. kind/role 必须同时提供；TIME 叶允许缺少一个或两个时间端点，其他 kind 的区间须成对或同缺。
 2. 枚举值必须精确匹配，时间必须可按 ISO 8601 解析，且起点不得晚于终点。
-3. `HierarchyKind.TIME` 必须提供区间；其他 kind 可省略区间。
+3. TIME/Snapshot 的缺时叶提示可保存，已有端点原样保留；实际参与建树仍须有完整区间。
 4. 接入提示只接受叶角色：TIME 只接受 `snapshot`；DIRECTORY、TOPIC、CLUSTER、CUSTOM
    只接受 `node`。`time_span`、`scene`、`event`、`profile`、`root` 等父侧
    角色必须由构建层创建。
 5. `hierarchy_parent_id`、`hierarchy_child_ids` 或其他试图建立边的保留前缀键一律以
    `ValidationError` 拒绝，不作为普通 metadata 静默保留。
-6. 任一叶提示无效时拒绝该 payload 的转换，不产出半有效 `HierarchyRef`；非
-   `hierarchy_` 前缀的 metadata 继续原样透传。
+6. 非法身份、时间格式、逆序区间或边提示拒绝该 payload；单纯缺时不再拒绝。
+   非 `hierarchy_` 前缀的系统 metadata 与用户 metadata 继续原样透传。
 
 这些提示只是来源对当前 unit 结构身份的声明，不证明边存在。父子边只能由构建或控制
 契约在持久化阶段校验并维护。
@@ -601,7 +606,7 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 ## 验证
 
-目标设计和 specs 同步已完成，代码尚未实现，设计评审待完成。不得用现有 pytest
+以下是后续完整特性的目标验收，尚未全部实现。不得用现有 pytest
 结果替代本特性的实现验证。分阶段验收如下：
 
 设计验收之后，实施验收依次对应决策 19 的 P0–P5：阶段 1 对应 P0，阶段 2 对应 P1，
@@ -688,3 +693,119 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 F01 的同 unit 披露设计与实现历史见
 [F01-memory-layer.md](F01-memory-layer.md)。
+
+## 结构模型与存储交付记录（2026-10-19）
+
+- 采用内嵌 `HierarchyRef`，保留既有字段位置与 `_v=4`，历史无树记录无需迁移。
+- 完整事实另存 `tree_memory`，避免将原文材料混入可检索摘要而改变召回；此处仅提供材料存储，不生成事实或父节点。
+- 父子身份是完整 Scope + id，默认允许跨 session，org/space 硬隔离。集合外引用不因缺邻居而绕过已知边界检查。
+- 索引六字段统一投影；区间使用 UTC epoch 毫秒。拒绝最初的 ISO 字符串索引方案，因为范围谓词要求有限数值。退树和清空区间清理旧投影，用户同名字段保留独立命名空间。
+- 校验由消费边界调用，不在 codec 中执行整树验证；损坏结构降级时保留正文，损坏完整事实整组作废。
+- 验证覆盖字段约束、完整身份、跨范围边、双向关系、环、微秒边界、codec 往返、各索引层及退树、事实与检索隔离、过滤前置于 top-k。等价字段非法输入合并为参数化测试。
+- 验证结果：构建、检索、过滤、codec 与结构校验相关确定性回归 888 passed；ruff 检查和 git diff --check 通过。完整目录基线因缺少安全/部署依赖及已有日志断言失败未全绿，未把它当成本次通过基线。
+- 遗留：Snapshot 自动接入、事实继承以及父节点生成、层级查询和后台维护在后续独立交付中接入。
+
+## Snapshot 接入与抽取继承交付记录（2026-10-19）
+
+- 将自动补时放在 Engine 调用的接入纯函数中，策略由共享 PolicyManager 管理，默认关闭；调用方继续使用原 add/batch_add。
+- `occurred_at` 同时作为 Snapshot 起止时间，显式完整提示优先。拒绝写入时钟兜底，避免导入历史消息时产生错误时间分组。t_message/t_event 保持原语义。
+- 在 Evolver 抽取后、Router 前按完整 Scope 与来源唯一匹配，只复制叶安全字段；不增加额外原文 Snapshot，因此 infer 的记忆数量和抽取去重流程保持原口径。
+- 拒绝多来源时猜测最新区间、合并区间和复制父子边。已挂树节点的去重修改需要维护父摘要与边，此次明确拒绝 UPDATE/SUPERSEDE，NOOP 继续允许；无新提示保留旧叶结构。
+- 适配目标仓库已有 Evolver 参数与直接 NOOP 判定，保留认证、文档记忆、DomainStore 读取和 dreaming 调度；此处不移入后续请求对象或父节点构造逻辑。
+- 验证：叶提示非法输入参数化；两种 Engine、两种 IndexBuilder、两种 Evolver 的真实内存存储流程；涵盖显式提示/自动补齐、运行时开关、单条/批量、infer、来源歧义、四种去重决策和拒绝前不修改存储。
+- 遗留：本次尚不提供父节点生成、重建、树查询或后台维护；Schema/procedural 和多源抽取没有隐式 Snapshot 继承。缺时写入语义已按下述 2026-10-21 评审修复调整，不再仅因没有消息时间而拒绝写入。
+
+### Snapshot 交付验证结果
+
+- 新增 Snapshot 用例 190 passed（两类 Engine、两类 Evolver、显式/自动接入与去重保护）。
+- 扩大至 common/construction/ingest/api/control/retrieval/storage：2706 passed、8 skipped、62 deselected，1 个既有顺序相关的日志捕获断言失败；之后补充的策略配置覆盖用例单独通过。
+- 失败项 `test_vec_load_failure_logs_warning` 单独执行通过；在迁移前代码中先执行 `test_author_marks.py` 再执行该用例，可复现同样失败。原因是 API 装配设置日志不向根 logger 传播，已有 caplog 断言无法捕获；未修改无关日志实现或测试。
+- 广泛回归未纳入真实 LLM、当前环境缺依赖的 watchdog/asyncpg 相关用例，以及基线已有的模型超时日志断言。安全依赖从本机安装复用到 /tmp，未改项目依赖或运行配置。
+- Ruff 与 git diff --check 通过。没有移入评测框架或拆分计划文档。
+
+### PR CI 修复与补充验证（2026-10-19）
+
+- 内存检索后端开始执行前置过滤后，公共 `index_unit` 夹具手写的全文/向量记录缺少 `lifecycle` 等过滤元数据，导致检索集成测试 8 项失败。夹具改用正式 `HybridIndexBuilder` 建索引，保持索引投影与真源一致；不放宽过滤条件或修改检索断言。
+- Snapshot 决策测试改从公开 `evolve(EXTRACT)` 入口运行，通过构造参数注入抽取器、去重召回及确定性模型响应。保留四种决策、来源匹配、旧记忆保护和拒绝前不写入的断言；调用次数包含去重判定，UPDATE 另有一次正文合并。无目标场景分别验证叶校验接受各写入决策，以及公开演进链路直接 ADD。
+- 测试模型提供公开只读调用计数，消除测试对 Evolver 和模型受保护成员的直接访问；补齐顶层函数空行。业务代码仅将来源筛选的复杂推导式改为等价循环，Snapshot 继承语义和公开接口不变。
+- 验证命令：`pytest tests/unit/construction tests/unit/storage tests/unit/retrieval tests/integration/retrieval`，结果 **1109 passed、2 skipped**；其中 Snapshot 继承 63 项、检索集成文件 32 项全部通过。本地缺少的 watchdog 仅安装至临时测试目录，项目依赖配置未改动。
+- 变更 Python 文件的 Ruff、函数空行检查及 `git diff --check` 通过。CI 报告的 17 处静态问题已按位置修正；本地未运行云端静态规则引擎，最终状态以 CI 重跑为准。
+
+
+## 评审修复与兼容说明（2026-10-20）
+
+### 决策与取舍
+
+- 时间转换统一为无时区按 UTC、有时区保留实际时刻，真源仍保留输入表示。修复普通 temporal
+  投影隐式依赖本地时区而与树区间分叉的问题；查询谓词、真源比较/过滤和 SQLite 影子索引同步。
+  拒绝将树时间改成本地时区解释，避免旧树评测的 session 时间整体偏移；也不强制 aware 入参，
+  保持现有 strptime 调用兼容。普通事件窗对未知/naive 的既有宽松兜底保持不变。
+- 树索引/保留/过滤键改为 tree_parent_id、tree_span_start、tree_span_end；结构模型和 codec
+  的 parent_id/span_start/span_end 不改。通用同名 system_metadata 不再被拒绝；不保留旧树过滤
+  别名，避免继续占用业务字段。此前将通用键纳入保留集合会破坏存量调用兼容，本次撤回该征用。
+- Snapshot 继承只对涉及 opt-in 来源的候选要求唯一来源；明确全部来自非参与来源的候选允许
+  多源合并。缺失、无法完整解析或跨 Scope 的引用仍拒绝，保留整批校验后统一赋值。
+  拒绝直接跳过所有歧义候选，防止静默丢失应继承的树信息。
+- DictPolicyManager 恢复 policies 完整替换默认表的既有语义，未配置才取默认表；显式空表保持
+  为空。此前合并默认策略会使调用方无法去掉默认键，本次撤回该变化。Engine 缺少树键按关闭
+  处理；自定义部署若需 admin 动态开启，应在自定义表中显式声明 hierarchy.enabled。
+
+### 升级与评测边界
+
+- 本次不自动修改已有数据或索引。旧树索引需从 MemoryUnit 真源重新投影并配套更新过滤字段；
+  旧 Unified 写入的通用名投影副本需按来源识别，不能盲删调用方同名业务 metadata。
+- 旧非 UTC 部署写入的 naive 普通 temporal 索引需按新规则刷新，查询时间范围若以旧本地口径
+  手工生成也应同步更新。当前 IndexBuilder.rebuild() 仍为 no-op，不应据此宣称已完成存量迁移。
+- 保留 LoCoMo 的 occurred_at、Snapshot 时间基准及框架代码；普通时间过滤纠偏可能改变召回。
+  直接复用旧索引的 SKIP_WRITE 评测不构成等价验证，本次不承诺历史评测分数完全不变。
+
+### 验证范围
+
+- API 回归复用上游的显式认证与同源委托夹具访问双主体 Scope；系统策略管理使用 ROOT
+  认证上下文，不再依赖已移除的 legacy 身份桥接，树功能与时间一致性断言保持不变。
+- 跨 UTC、UTC+8 与夏令时时区验证 add/infer 持久化、明确秒偏移、结构区间、普通/统一/影子
+  索引投影和查询过滤一致；覆盖 naive 与正负显式偏移，保留微秒比较和毫秒索引边界。
+- 覆盖通用 metadata 写入/更新/过滤、树保留字段拒绝、普通多源混合批次、树来源歧义与引用
+  不完整时不部分赋值，以及默认/自定义/空策略表和缺少树键时的普通写入。
+
+### 验证结果
+
+- 确定性回归：construction/storage/retrieval/control/ingest 单测、common 的 hierarchy/filter/codec、
+  两组 Snapshot API 用例和 retrieval 集成测试，共 **1791 passed、7 skipped**。
+- 其中跨进程时区专项 **45 passed**，涵盖两种 Engine、infer 开关及三类时间表示。
+- 变更 Python 文件 Ruff、E302 空行检查与 git diff --check 通过；未运行云端静态规则引擎。
+- 未重跑 LoCoMo 模型评测，未迁移历史数据/索引，未修改评测框架。
+
+
+## 缺时写入评审修复（2026-10-21）
+
+### 决策与取舍
+
+- 树开关开启后，缺少 occurred_at 的无提示写入保持空 hierarchy；显式 TIME/Snapshot
+  缺少区间端点则保留身份、已有端点和缺失的 None。单边区间即使有 occurred_at 也不修补。
+- 原有完整时间路径不变：无提示或仅声明 TIME/Snapshot 身份且有 occurred_at 时，生成
+  两端相等的点区间；完整显式区间优先。保持既有统一时区转换、tree_ 索引键、策略表替换
+  以及混合来源继承修复，不覆盖之前的评审修改。
+- infer 继承与去重允许无边缺时叶，继续使用原来的来源匹配、正文合并和版本决策。
+  已挂树节点的 UPDATE/SUPERSEDE 保护不放宽，默认 validate_ref/validate_tree 仍严格。
+- 拒绝用机器时间、observation_date 或一个端点猜测另一个端点；不丢弃显式身份或时间，
+  不引入额外 raw Snapshot、永久跳过标记或 codec 版本升级。
+
+### 验证与范围
+
+- 覆盖两类 Engine 的单条、异步、批量、infer 写入及原值读回；两类 Evolver 的缺时继承、
+  部分叶更新为完整叶和完整叶更新为部分叶；Unified 和普通索引保留部分区间真源。
+- 时间格式、逆序、非法角色/边继续拒绝；实际树的严格校验不因写入允许缺时而放宽。
+- 当前分支只交付模型、Snapshot 接入和继承，尚无显式/后台建树 Job。因此本次 PR
+  不引入后续建树模块；后续移植建树时须同时接入缺时叶筛选、复用检查和跳过诊断。
+  不能仅放宽写入后仍把这些叶传给严格 Composer。
+- 不修改测试框架、既有分组/查询算法或历史数据；未运行真实 LoCoMo 测评。
+
+### 本次 PR 修复验证结果
+
+- 修改涉及的五个单测文件 **241 passed**，覆盖双 Engine、双 Evolver 与严格结构校验。
+- 扩大回归 construction/storage/retrieval/control/ingest、common 模型/过滤/codec、Snapshot
+  API 和 retrieval 集成：1822 passed、7 skipped；唯一失败为环境缺少可选 watchdog。
+  使用已有临时依赖目录后，相关 watchdog 模块复测 **22 passed**，未修改项目依赖配置。
+- 变更 Python 文件 Ruff、E302、语法及测试受保护成员访问检查、git diff --check 均通过。
+  未运行云端 CodeCheck 或真实 LoCoMo 模型评测。

@@ -105,6 +105,12 @@ _BUILTIN_FIELDS = frozenset(
         "t_ingest",
         "content_layer",
         "seq",
+        "hierarchy_kind",
+        "hierarchy_role",
+        "hierarchy_status",
+        "tree_parent_id",
+        "tree_span_start",
+        "tree_span_end",
     }
 )
 
@@ -117,6 +123,8 @@ def canonical_filter_field(name: str) -> str:
     """把兼容字段名转换为内核规范名。"""
     if name in _SCOPE_FIELDS or name.startswith("scope_"):
         return name
+    if name == "id":
+        return "unit_id"
     if name == "memory_type":
         return MEMORY_TYPE_FILTER_FIELD
     if "." not in name and name not in _BUILTIN_FIELDS:

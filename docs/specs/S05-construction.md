@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-10 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -625,3 +625,21 @@ jiuwen_memory/construction/<算子>_impl/
 | S08-config | Prompt 文本与模型晚绑定经 ConfigSource；业务入参只传 prompt key |
 | F07-collective-memory | `Router` 是本层承担的归属判定算子；判定表配置、生效范围与失败方向由该规约定义 |
 | architecture.md §4/§6/§8 | 分层记忆结构 / 多形式索引 / 记忆自演进 |
+
+## 同步 infer 的 Snapshot 继承
+
+Orchestrating/Dynamic Evolver 在抽取后、归属路由前，仅为明确 infer=true 的 TIME/Snapshot
+来源传递叶身份。匹配要求完整 Scope 相同，优先唯一 source_ref，无法解析时完整解析
+provenance。涉及参与继承的来源时必须唯一；明确全部来自非参与来源的候选允许多源，
+保持普通抽取行为。缺失、无法解析或跨 Scope 的来源引用仍拒绝，不能猜测是否参与继承。
+先验证整批候选再赋值，
+避免引用失败留下半批结构。独立 Extractor、procedural、Schema 与普通后台 EXTRACT
+不自动获得该继承语义。KeywordExtractor 清除 deepcopy 带出的结构，防止沿用来源父子边。
+
+继承只复制 kind/role/span 和 ACTIVE 状态，不复制边、ordinal、tree_memory 或修改 temporal。
+对于未挂树的 TIME/Snapshot，缺失时间端点保留 None，不在继承或去重时自动补齐。
+写入缺时提示的容忍不改变默认结构校验；后续建树应筛选完整候选，再严格校验树。
+去重 ADD 保持一条候选；NOOP 不修改已有节点；UPDATE 用新叶区间替换，不做区间并集，
+缺少新提示则保留旧结构；SUPERSEDE 保留原版本替换规则。UPDATE/SUPERSEDE 涉及已挂树
+节点或其他树角色时，在正文合并和存储写入前拒绝，避免产生未经维护的父摘要/边。
+这些检查不构成批量事务；它们保护当前决策涉及的记忆，之前成功的独立决策不会回滚。

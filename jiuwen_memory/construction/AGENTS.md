@@ -199,3 +199,20 @@ Evolver.evolve(units, mode):
 9. `DynamicLLMExtractor` 子类只覆盖 `parse_response` 完成响应解析与构建；策略遍历、fallback、
    `_extraction_strategy` 标记和 consolidation/reflect prompt key 透传由基类统一执行。
 10. `PromptRegistry` 由装配从 `ctx.globals["prompts"]` 加载；`DynamicEvolver._build` 用 `config.get("prompts")` 取该段（params 无 prompts 时回退 globals）构造注册表。
+
+### 树结构索引投影
+
+`_index_ops.index_metadata` 与 `UnifiedIndexBuilder` 共用 `hierarchy_index_metadata`。
+结构变化后清理当前六字段，禁止复制陈旧系统投影；三个 tree_ 索引键不占用原通用键。
+普通时间和树区间投影共用 common/time_utils.py，真源时间表示不变。
+`tree_memory.facts` 只随真源持久化，不参与全文、切片、向量化或披露正文。
+
+### Snapshot 继承
+
+`snapshot_inheritance.py` 提供叶安全复制和去重前校验。Orchestrating/Dynamic 在 Router
+前匹配 infer 来源；仅涉及 opt-in 来源的候选要求单源，普通多源需完整解析后放行，
+缺失或跨 Scope 来源仍拒绝。KeywordExtractor 显式清空 deepcopy 的 hierarchy。UPDATE/SUPERSEDE
+的结构检查必须早于正文合并与 IndexBuilder 写入。Schema/procedural 不加入自动继承。
+无边 Snapshot 叶提示缺少时间时，继承/去重保留已有端点和 None，不用机器时间或单边时间
+补齐；已挂树节点保护不放宽。现有 Evolver 构造参数、evolve(units, mode)、去重直接 NOOP
+判据保持不变。

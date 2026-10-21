@@ -22,6 +22,7 @@ from jiuwen_memory.common.tokenizer.base import Tokenizer
 from jiuwen_memory.common.type_def import (
     ChatMessage,
     Chunk,
+    DedupDecision,
     Entity,
     FeatureSet,
     LifecycleState,
@@ -33,6 +34,7 @@ from jiuwen_memory.common.type_def import (
     Temporal,
 )
 from jiuwen_memory.common.type_def.audit import AuditEvent
+from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.kv import KVStore
@@ -295,6 +297,11 @@ class MockLLM(LLM):
         ]
         self._call_count = 0
 
+    @property
+    def call_count(self) -> int:
+        """已完成的模型调用次数，供测试验证判定与正文合并的边界。"""
+        return self._call_count
+
     def plugin_type(self):
         from jiuwen_memory.common.base import PluginType
 
@@ -520,3 +527,79 @@ def create_test_unit(
         lifecycle=lifecycle,
         temporal=Temporal(),
     )
+
+
+def snapshot_test_unit(unit_id: str, day: int = 1) -> MemoryUnit:
+    """创建带来源时间但尚未挂树的 TIME 叶。"""
+    from datetime import UTC, datetime
+
+    from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRef, HierarchyRole
+
+    unit = create_test_unit(unit_id, f"snapshot evidence {unit_id}")
+    moment = datetime(2026, 9, day, tzinfo=UTC)
+    unit.hierarchy = HierarchyRef(
+        kind=HierarchyKind.TIME, role=HierarchyRole.SNAPSHOT,
+        span_start=moment, span_end=moment,
+    )
+    unit.temporal.t_message = moment
+    return unit
+
+
+def make_snapshot_test_harness(
+    evolver_kind: str,
+    *,
+    extractor: Extractor | None = None,
+    candidate: MemoryUnit | None = None,
+    existing: MemoryUnit | None = None,
+    decision: DedupDecision = DedupDecision.ADD,
+):
+    """两套真实 Evolver 共用内存 KV/全文/向量索引，只替换外部模型和去重结果。"""
+    from types import SimpleNamespace
+
+    from jiuwen_memory.common.chunker.chunker_impl.fixed_window_chunker import FixedWindowChunker
+    from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+    from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+        OrchestratingEvolver,
+    )
+    from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
+    from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import (
+        HybridIndexBuilder,
+    )
+    from jiuwen_memory.construction.prompt_registry import PromptRegistry
+    from jiuwen_memory.construction.prompt_strategy import CONSOLIDATION_PROMPT_PREFIX
+    from tests.conftest import make_storage, make_world
+
+    world = make_world()
+    storage = make_storage(kv=world.kv, vector=world.vector, fulltext=world.fulltext)
+    index = HybridIndexBuilder(
+        storage, FixedWindowChunker(), world.embedder, layers_enabled=False,
+    )
+    if extractor is None:
+        extractor = KeywordExtractor(RecursiveChunker(chunk_size_chars=200, overlap_chars=0))
+        if candidate is not None:
+            extractor = SimpleNamespace(extract=lambda units, **kwargs: [candidate])
+    responses = ["merged old and new"]
+    if candidate is not None:
+        candidate.system_metadata[f"{CONSOLIDATION_PROMPT_PREFIX}fact"] = "snapshot-test"
+        response = {
+            "candidate_id": candidate.id,
+            "decision": decision.value,
+            "existing_id": existing.id if existing is not None else "",
+        }
+        payload = [response] if evolver_kind == "orchestrating" else response
+        responses.insert(0, json.dumps(payload))
+    llm = MockLLM(responses)
+    hits = [(existing, 0.8)] if existing is not None else []
+    options = {}
+    if evolver_kind == "dynamic":
+        options["prompt_registry"] = PromptRegistry.from_dict(
+            {"consolidate": {"snapshot-test": "Judge the candidate memory"}},
+        )
+    kind = OrchestratingEvolver if evolver_kind == "orchestrating" else DynamicEvolver
+    evolver = kind(
+        extractor=extractor,
+        abstractor=object(), associator=object(), index_builder=index, storage=storage,
+        message_store=world.kv, dedup=SimpleNamespace(recall=lambda candidate: hits), llm=llm,
+        **options,
+    )
+    return SimpleNamespace(evolver=evolver, world=world, index=index, llm=llm)

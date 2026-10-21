@@ -228,3 +228,13 @@
     CloudEngine 的记忆 get/list/scopes 及其权限事实由 DomainStore 真源提供；文档写入经
     DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。Schema/middle/lifecycle
     的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。
+
+### 内存索引过滤
+
+内存全文 `search`、向量 `search/recall` 在 top-k 前执行 FilterExpr，比较复用
+`common.type_def.matches_filter_value`；与 KV 真源复核保持相同的标量/数组/缺值语义。
+层级六字段读取索引投影，显式 metadata 命名空间独立，Scope 仍由端口原生隔离。
+
+### 时间投影
+
+SQLite 影子索引的 temporal 列复用 common/time_utils.epoch_ms，与构建投影和真源过滤一致；缺值哨兵保持字段原有契约。

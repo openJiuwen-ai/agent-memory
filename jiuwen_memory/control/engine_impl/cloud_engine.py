@@ -17,7 +17,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
-from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
@@ -25,10 +24,10 @@ from jiuwen_memory.common.log import (
 )
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
+    MD_FILENAME_KEY,
     CandidateSource,
     FilterExpr,
     LifecycleState,
-    MD_FILENAME_KEY,
     MemoryTier,
     MemoryUnit,
     MetadataValueType,
@@ -38,6 +37,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
 )
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
@@ -56,6 +56,7 @@ from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
     BatchWriteItem,
@@ -70,6 +71,7 @@ from jiuwen_memory.control.types import (
     SweepResult,
     UpdateMode,
 )
+from jiuwen_memory.ingest.hierarchy_hints import ALLOWED_HINTS, enrich_snapshot_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -266,6 +268,7 @@ class CloudEngine(MemoryEngine):
         default_message_type: str = "chat",
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
+        policy: PolicyManager | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -283,6 +286,7 @@ class CloudEngine(MemoryEngine):
         self._default_message_type = default_message_type.strip()
         self._default_pipeline_name = default_pipeline_name.strip()
         self._job_factory = job_factory
+        self._policy = policy
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -312,7 +316,14 @@ class CloudEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
-        raw_meta = dict(system_metadata or {})
+        raw_meta = enrich_snapshot_hints(
+            system_metadata, occurred_at,
+            enabled=(
+                self._policy is not None
+                and str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower()
+                == "true"
+            ),
+        )
         procedural = _truthy(raw_meta, "procedural")
         infer = _truthy(raw_meta, "infer")
         middle = _truthy(raw_meta, "middle")  # 二级开关（仅在 infer=true 下生效）
@@ -939,7 +950,16 @@ class CloudEngine(MemoryEngine):
     ) -> None:
         for unit in units:
             self._ensure_unit_scope(unit, scope)
-            unit.system_metadata.update(system_metadata)
+            # 已被 Ingestor 消费的叶提示不再回写为普通 metadata。
+            consumed_hints = (
+                ALLOWED_HINTS - unit.system_metadata.keys()
+                if not unit.hierarchy.is_empty
+                else frozenset()
+            )
+            unit.system_metadata.update(
+                (key, value) for key, value in system_metadata.items()
+                if key not in consumed_hints
+            )
             unit.tags = list(tags or [])
 
     def _stamp_pipeline(self, units: list[MemoryUnit], pipeline_name: str) -> None:
@@ -1066,4 +1086,5 @@ def _build(config):
         default_message_type=str(config.get("default_message_type", "chat")),
         default_pipeline_name=str(config.get("default_pipeline_name", "default")),
         job_factory=_optional_job_factory(config),
+        policy=PolicyProducer.build_named("default", config.ctx),
     )
