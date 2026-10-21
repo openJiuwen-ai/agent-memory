@@ -47,13 +47,25 @@ from .filter import (
     to_dict,
     validate,
 )
+from .hierarchy import (
+    HIERARCHY_INDEX_KEYS,
+    LEAF_ROLE_BY_KIND,
+    HierarchyKind,
+    HierarchyRef,
+    HierarchyRole,
+    HierarchyStatus,
+    hierarchy_index_metadata,
+    span_epoch_ms,
+    validate_ref,
+    validate_tree,
+)
 from .memory import (
     COORDS_KEY,
     KERNEL_SYSTEM_METADATA_KEYS,
-    MEMORY_CLASS_KEY,
-    MEMORY_KEY_PREFIX,
     MD_FILENAME_KEY,
     MD_TITLE_KEY,
+    MEMORY_CLASS_KEY,
+    MEMORY_KEY_PREFIX,
     ROUTE_CTX_KEY,
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
@@ -68,11 +80,13 @@ from .memory import (
     Modality,
     Segment,
     Temporal,
+    TreeFact,
+    TreeMemoryData,
     inherited_system_metadata,
     inherited_user_metadata,
     memory_key,
 )
-from .memory_filter import matches_memory_unit
+from .memory_filter import matches_filter_value, matches_memory_unit
 from .normalizer import EntityNormalizer
 from .raw import MESSAGES_KEY_PREFIX, RawPayload, messages_key
 from .retrieval import (
@@ -99,6 +113,19 @@ from .retrieval_filter import (
 from .scope import KERNEL_COORD_KEYS, Scope, space_id_from_scope
 
 __all__ = [
+    "HIERARCHY_INDEX_KEYS",
+    "LEAF_ROLE_BY_KIND",
+    "HierarchyKind",
+    "HierarchyRef",
+    "HierarchyRole",
+    "HierarchyStatus",
+    "hierarchy_index_metadata",
+    "span_epoch_ms",
+    "validate_ref",
+    "validate_tree",
+    "TreeFact",
+    "TreeMemoryData",
+
     "KERNEL_COORD_KEYS",
     "Scope",
     "space_id_from_scope",
@@ -174,6 +201,7 @@ __all__ = [
     "memory_key",
     "messages_key",
     "matches_memory_unit",
+    "matches_filter_value",
     "RecallChannel",
     "ParsedQuery",
     "ChannelEvidence",

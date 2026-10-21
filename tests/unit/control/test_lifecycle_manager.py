@@ -8,15 +8,23 @@ import pytest
 from jiuwen_memory.api import Scope
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.security.types import Role
 from jiuwen_memory.common.type_def import LifecycleState, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.config.config import Config
 from jiuwen_memory.control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
 from jiuwen_memory.control.policy_impl.dict_policy_manager import DictPolicyManager
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
+
+# 平台运维主体：调 admin_* 用。必须具名且带 ROOT——空 Scope 在 PR2 已不是特权形态
+# （判定实现第 2 步 ``empty_actor`` 直接拒），全局配置属系统级资源，闸门只认 ROOT。
+SEC_PLATFORM_OPS = internal_context(
+    ScopedAuthenticator(Scope(org="system", user="platform-ops"), role=Role.ROOT)
+)
 
 _TEST_KEY_HEX = "00" * 32
 
@@ -218,39 +226,24 @@ def test_sweep_rejects_invalid_policy_target(unit_factory) -> None:
 
 def test_default_kernel_exposes_lifecycle_policy_keys() -> None:
     api = build_kernel().api
-    root = Scope()
 
     assert (
-        api.admin_get("lifecycle.expired_active.target", security=legacy_request_context(root))
-        == "forgotten"
+        api.admin_get("lifecycle.expired_active.target", security=SEC_PLATFORM_OPS) == "forgotten"
     )
-    assert (
-        api.admin_get("lifecycle.superseded.target", security=legacy_request_context(root))
-        == "forgotten"
-    )
+    assert api.admin_get("lifecycle.superseded.target", security=SEC_PLATFORM_OPS) == "forgotten"
 
-    api.admin_set(
-        "lifecycle.expired_active.target", "archived", security=legacy_request_context(root)
-    )
-    assert (
-        api.admin_get("lifecycle.expired_active.target", security=legacy_request_context(root))
-        == "archived"
-    )
+    api.admin_set("lifecycle.expired_active.target", "archived", security=SEC_PLATFORM_OPS)
+    assert api.admin_get("lifecycle.expired_active.target", security=SEC_PLATFORM_OPS) == "archived"
 
 
 def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> None:
     scope = Scope(org="acme", user="u1", agent="a1", session="s1")
-    root = Scope()
     kv = InMemoryKVStore()
     kernel = build_kernel(
         kv=kv,
         config=Config.from_dict(
-            {
-                "security": {
-                    "default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}
-                }
-            }
-        )
+            {"security": {"default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}}}
+        ),
     )
     api = kernel.api
     expired = unit_factory(
@@ -261,9 +254,7 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
     )
     kv.insert(scope, memory_key(expired.id), dumps(expired))
 
-    api.admin_set(
-        "lifecycle.expired_active.target", "archived", security=legacy_request_context(root)
-    )
+    api.admin_set("lifecycle.expired_active.target", "archived", security=SEC_PLATFORM_OPS)
     engine = api._engine  # pylint: disable=protected-access
     result = asyncio.run(engine.sweep_expired())
 

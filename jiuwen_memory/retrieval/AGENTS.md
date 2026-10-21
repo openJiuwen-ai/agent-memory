@@ -140,3 +140,5 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 8. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
+
+9. 查询时间边界的 epoch 投影复用 common/time_utils.epoch_ms；真源时间比较复用 as_utc。

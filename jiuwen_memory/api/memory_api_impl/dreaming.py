@@ -29,7 +29,7 @@ from typing import Any
 
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.security.types import Action
+from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     FanOutCandidate,
@@ -43,8 +43,6 @@ from jiuwen_memory.control.engine_impl.dreaming_registry import (
     DreamingEntry,
     DreamingEntryState,
     DreamingRegistry,
-    actor_from_dict,
-    actor_to_dict,
 )
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.jobs_impl.candidate_resolver import (
@@ -54,6 +52,7 @@ from jiuwen_memory.control.jobs_impl.candidate_resolver import (
 from jiuwen_memory.control.scheduler import RecurringJobStoppedError, Scheduler
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 
+from .dreaming_security import _registration_identity, _restored_security
 from .local_support import _evolve_space_action
 
 logger = get_logger(__name__)
@@ -105,7 +104,7 @@ class DreamingDriverJob(Job):
         mode: EvolveMode,
         channel: Channel,
         candidate: CandidateSource | dict | None,
-        actor: Scope,
+        security: RequestSecurityContext,
         interval: int,
         generation: int,
     ) -> None:
@@ -114,7 +113,7 @@ class DreamingDriverJob(Job):
         self._mode = mode
         self._channel = channel
         self._candidate = candidate
-        self._actor = actor
+        self._security = security
         self._generation = generation
 
     @property
@@ -142,7 +141,8 @@ class DreamingDriverJob(Job):
         )
         # 1) 每 tick 复验（持续授权）——拒绝即注销 + 抛错（调度器停父定时器）。
         try:
-            coordinator.check_authorization(self._actor, self.scope, self._mode)
+            security = _restored_security(_registration_identity(self._security))
+            coordinator.check_authorization(security, self.scope, self._mode)
         except PermissionDeniedError:
             coordinator.remove_registration(
                 self.scope,
@@ -158,12 +158,10 @@ class DreamingDriverJob(Job):
                 generation=self._generation,
                 job_id=self.parent_job_id or None,
             )
-            raise RecurringJobStoppedError(
-                "space_not_writable", str(exc)
-            ) from exc
+            raise RecurringJobStoppedError("space_not_writable", str(exc)) from exc
         # 2) fan-out 逐桶裁决（API 层）：获准桶下发给 Engine，拒绝桶回显。
         buckets, denied = coordinator.authorize_fan_out(
-            self._actor, self.scope, self._candidate, self._mode
+            security, self.scope, self._candidate, self._mode
         )
         # 3) 提交一次性 EvolveJob（唯一执行链条）——演进在 EvolveJob 内发生。
         self.check_cancelled()
@@ -280,9 +278,7 @@ class DreamingCoordinator:
         if self._registry.owns_instance_lock:
             return
         if not self._registry.acquire_instance_lock():
-            raise RuntimeError(
-                "dreaming 实例锁被其他实例持有：当前实例不是 leader，拒绝操作"
-            )
+            raise RuntimeError("dreaming 实例锁被其他实例持有：当前实例不是 leader，拒绝操作")
 
     def check_leadership(self) -> None:
         if not self._registry.owns_instance_lock:
@@ -337,7 +333,9 @@ class DreamingCoordinator:
 
     # ---- 授权（入口 / 持续 / 恢复复用同一套，判定不漂移） ------------------ #
 
-    def check_authorization(self, actor: Scope, scope: Scope, mode: EvolveMode | str) -> None:
+    def check_authorization(
+        self, security: RequestSecurityContext, scope: Scope, mode: EvolveMode | str
+    ) -> None:
         """以 actor 复验演进授权：WRITE + 演进空间动作 + 空间可写。
 
         mode 取值无法解析（存量任务记录的自由字符串）时按 WRITE 基础动作判——
@@ -350,7 +348,7 @@ class DreamingCoordinator:
         except ValueError:
             mode_value = mode
         self._authorize(
-            actor,
+            security,
             scope,
             Action.WRITE,
             "evolve",
@@ -360,7 +358,7 @@ class DreamingCoordinator:
 
     def authorize_fan_out(
         self,
-        actor: Scope,
+        security: RequestSecurityContext,
         scope: Scope,
         candidate: CandidateSource | dict | None,
         mode: EvolveMode,
@@ -393,11 +391,10 @@ class DreamingCoordinator:
             matched_count += 1
             if matched_count > MAX_FAN_OUT_BUCKETS:
                 raise ValidationError(
-                    "fan_out 命中桶数超过单次上限 "
-                    f"{MAX_FAN_OUT_BUCKETS}；请收窄父 scope 或形状约束"
+                    f"fan_out 命中桶数超过单次上限 {MAX_FAN_OUT_BUCKETS}；请收窄父 scope 或形状约束"
                 )
             try:
-                self.check_authorization(actor, child, mode)
+                self.check_authorization(security, child, mode)
             except (PermissionDeniedError, ValidationError):
                 # 不把调用者无权读取的真实 scope 名称写进用户可见 JobInfo，
                 # 否则 fan-out 可被用来枚举资源存在性。
@@ -416,7 +413,7 @@ class DreamingCoordinator:
         channel: Channel,
         candidate: CandidateSource | dict | None,
         interval: int,
-        actor: Scope,
+        security: RequestSecurityContext,
     ) -> str:
         """注册定时演进（dreaming=True）：能力校验 → submit → 注册表落盘。
 
@@ -432,6 +429,8 @@ class DreamingCoordinator:
                 "dreaming 注册要求支持周期任务的调度器（如 async_timer）；"
                 "当前装配的调度器不支持，注册被拒绝"
             )
+        self.check_authorization(security, scope, mode)
+        identity = _registration_identity(security)
         dsl = _candidate_dsl(candidate)
         with self._serialize_mutation(scope, mode):
             self._ensure_leader()
@@ -444,7 +443,7 @@ class DreamingCoordinator:
                 mode=mode,
                 channel=channel,
                 candidate=dsl,
-                actor=actor,
+                security=security,
                 interval=interval,
                 generation=generation,
             )
@@ -461,7 +460,7 @@ class DreamingCoordinator:
                             candidate=dsl,
                             job_id=job_id,
                             channel=channel.value,
-                            created_by=actor_to_dict(actor),
+                            created_by=identity,
                             state=DreamingEntryState.ACTIVE.value,
                             generation=generation,
                         )
@@ -477,8 +476,8 @@ class DreamingCoordinator:
                 if old_entry is None:
                     scheduler.cancel(job_id)
                 elif self._registry.owns_instance_lock:
-                    old_actor = actor_from_dict(old_entry.created_by)
-                    if old_actor is not None:
+                    old_security = _restored_security(old_entry.created_by)
+                    if old_security is not None:
                         try:
                             old_job = DreamingDriverJob(
                                 self,
@@ -486,13 +485,11 @@ class DreamingCoordinator:
                                 mode=EvolveMode(old_entry.mode),
                                 channel=Channel(old_entry.channel),
                                 candidate=old_entry.candidate,
-                                actor=old_actor,
+                                security=old_security,
                                 interval=old_entry.interval,
                                 generation=old_entry.generation,
                             )
-                            asyncio.run(
-                                scheduler.submit(old_job, Channel(old_entry.channel))
-                            )
+                            asyncio.run(scheduler.submit(old_job, Channel(old_entry.channel)))
                         except Exception:
                             logger.exception(
                                 "dreaming register rollback could not restore previous timer"
@@ -612,8 +609,7 @@ class DreamingCoordinator:
             return []
         if not scheduler.supports_recurring:
             raise ValidationError(
-                "dreaming 恢复要求支持周期任务的调度器（如 async_timer）；"
-                "当前装配的调度器不支持"
+                "dreaming 恢复要求支持周期任务的调度器（如 async_timer）；当前装配的调度器不支持"
             )
         self._ensure_leader()
         # 必须在持锁后重新读取，避免 load → acquire 窗口漏掉并发注册。
@@ -640,11 +636,13 @@ class DreamingCoordinator:
                         self._registry.remove(entry.scope, entry.mode)
                 continue
             try:
-                actor = actor_from_dict(entry.created_by)
-                if actor is None:
+                security = _restored_security(entry.created_by)
+                if security is None:
                     logger.warning(
-                        "dreaming restore skip legacy entry without created_by: "
-                        "scope=%s mode=%s", _scope_label(entry.scope), entry.mode,
+                        "dreaming restore skip legacy entry without trusted security: "
+                        "scope=%s mode=%s",
+                        _scope_label(entry.scope),
+                        entry.mode,
                     )
                     continue
                 mode = EvolveMode(entry.mode)
@@ -653,25 +651,29 @@ class DreamingCoordinator:
                 logger.warning(
                     "dreaming restore skip entry with bad actor/mode/channel: "
                     "scope=%s mode=%s channel=%s",
-                    _scope_label(entry.scope), entry.mode, entry.channel,
+                    _scope_label(entry.scope),
+                    entry.mode,
+                    entry.channel,
                 )
                 continue
             try:
-                self.check_authorization(actor, entry.scope, entry.mode)
+                self.check_authorization(security, entry.scope, entry.mode)
             except PermissionDeniedError:
                 with self._mutation_lock:
                     self._registry.remove(entry.scope, entry.mode)
                 logger.warning(
-                    "dreaming restore unregister revoked entry: "
-                    "scope=%s mode=%s", _scope_label(entry.scope), entry.mode,
+                    "dreaming restore unregister revoked entry: scope=%s mode=%s",
+                    _scope_label(entry.scope),
+                    entry.mode,
                 )
                 continue
             except ValidationError:
                 with self._mutation_lock:
                     self._registry.remove(entry.scope, entry.mode)
                 logger.warning(
-                    "dreaming restore unregister non-writable entry: "
-                    "scope=%s mode=%s", _scope_label(entry.scope), entry.mode,
+                    "dreaming restore unregister non-writable entry: scope=%s mode=%s",
+                    _scope_label(entry.scope),
+                    entry.mode,
                 )
                 continue
             try:
@@ -682,7 +684,7 @@ class DreamingCoordinator:
                     mode=mode,
                     channel=channel,
                     candidate=candidate,
-                    actor=actor,
+                    security=security,
                     interval=entry.interval,
                     generation=entry.generation + 1,
                 )
@@ -713,9 +715,11 @@ class DreamingCoordinator:
                 if job_id is not None:
                     scheduler.cancel(job_id)
                 logger.warning(
-                    "dreaming restore skip invalid/failed entry: "
-                    "scope=%s mode=%s error=%s: %s",
-                    _scope_label(entry.scope), entry.mode, type(exc).__name__, exc,
+                    "dreaming restore skip invalid/failed entry: scope=%s mode=%s error=%s: %s",
+                    _scope_label(entry.scope),
+                    entry.mode,
+                    type(exc).__name__,
+                    exc,
                 )
                 continue
             restored.append(job_id)

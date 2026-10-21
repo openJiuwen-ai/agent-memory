@@ -12,6 +12,7 @@
 |---|---|
 | `base.py` | IngestOperator 基类：所有接入层算子的自描述契约（operator_type / health） |
 | `source.py` | Source 接口：多模态信息源连接器（fetch 拉取原始数据 → RawPayload） |
+| `hierarchy_hints.py` | 纯叶提示解析与消息时间补齐；不读策略或存储，拒绝边与父角色 |
 | `ingestor.py` | Ingestor 接口：编排 Source → Normalizer → 组装 MemoryUnit |
 | `ingestor_impl/simple_ingestor.py` | SimpleIngestor：对每个 RawPayload 产出单 MemoryUnit/单 Segment，并把该 payload 的全部 assets 复制到该 Segment |
 | `source_impl/` | Source 实现目录 |
@@ -20,9 +21,9 @@
 
 ## 行为铁律
 
-0. **双 metadata 原样转换**
+0. **双 metadata 分离转换**
    `RawPayload.system_metadata` / `user_metadata` 分别复制到 `MemoryUnit`，不合并、
-   不解释、不彼此 fallback。
+   不彼此 fallback。系统侧四个 hierarchy 叶提示消费为结构，用户侧同名键原样保留。
 
 1. **接入层不落盘**  
    `Ingestor.ingest` 返回 `list[MemoryUnit]` 后，真源写入与索引构建全部由 `construction` 层调用 `storage` 完成。本层禁止 import storage。
@@ -79,3 +80,10 @@
 5. 当前 `SimpleIngestor` 把一个 payload 的全部 assets 防御性复制到其产出的单 Segment；这是 `simple` 实现行为，不是 Ingestor 接口的数量契约。
 6. `SimpleIngestor` 在任何 Normalizer 调用前执行 `ensure_normalizer_supports`；自定义 Normalizer 只需正确实现 `modalities()` 即可参与同一门禁。
 7. 默认 `PassthroughNormalizer` 只接已经是 UTF-8 文本的 TEXT/CODE；DOCUMENT 原件必须配置专用解析型 Normalizer，不能把文件 URI 当作解析后的正文。
+
+8. `SimpleIngestor` 在 normalize 前校验并消费叶提示，不创建父子边；无提示保持空结构。
+9. `enrich_snapshot_hints` 由 Engine 传入开关；补齐只用 occurred_at，完整提示优先。
+   无 occurred_at 时保持原输入；显式 TIME/Snapshot 单边区间不自动修补，已有端点原样保存。
+   缺时不使写入失败，非法身份、时间格式、逆序区间或边提示仍拒绝。
+
+10. 叶区间比较复用 common/time_utils.as_utc；补齐与解析保留输入时间表示。

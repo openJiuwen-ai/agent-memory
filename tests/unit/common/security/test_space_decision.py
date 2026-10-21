@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwen_memory.common.security.space_decision import DenyReason, decide
+from jiuwen_memory.common.security.space_decision import (
+    DecisionOutcome,
+    DenyReason,
+    decide,
+    on_behalf_paths_apply,
+)
 from jiuwen_memory.common.security.space_roles import (
     SpaceAction,
     SpaceAuthorizationFacts,
@@ -70,7 +75,10 @@ def test_1_1_governance_manager_cannot_read_content() -> None:
     facts = _shared(_member(BOB, governance=SpaceGovernanceRole.MANAGER))
     # 治理动作通过
     assert _decide(
-        BOB, facts=facts, entry="add_space_member", action=SpaceAction.SHARE,
+        BOB,
+        facts=facts,
+        entry="add_space_member",
+        action=SpaceAction.SHARE,
         axis=SpaceAxis.GOVERNANCE,
     ).allowed
     # 内容读取不通过
@@ -82,7 +90,10 @@ def test_1_2_content_editor_cannot_manage_members() -> None:
     facts = _shared(_member(BOB, content=SpaceContentRole.EDITOR))
     assert _decide(BOB, facts=facts, action=SpaceAction.WRITE).allowed
     assert not _decide(
-        BOB, facts=facts, entry="add_space_member", action=SpaceAction.SHARE,
+        BOB,
+        facts=facts,
+        entry="add_space_member",
+        action=SpaceAction.SHARE,
         axis=SpaceAxis.GOVERNANCE,
     ).allowed
 
@@ -91,11 +102,17 @@ def test_1_3_contributor_may_only_change_its_own_entries() -> None:
     """只能改自己写的：contributor 的 UPDATE / DELETE 限本人所写。"""
     facts = _shared(_member(BOB, content=SpaceContentRole.CONTRIBUTOR))
     own = _decide(
-        BOB, facts=facts, entry="update", action=SpaceAction.UPDATE,
+        BOB,
+        facts=facts,
+        entry="update",
+        action=SpaceAction.UPDATE,
         author_principal="user:bob",
     )
     others = _decide(
-        BOB, facts=facts, entry="update", action=SpaceAction.UPDATE,
+        BOB,
+        facts=facts,
+        entry="update",
+        action=SpaceAction.UPDATE,
         author_principal="user:alice",
     )
     assert own.allowed
@@ -103,7 +120,10 @@ def test_1_3_contributor_may_only_change_its_own_entries() -> None:
     # editor 不受本人所写限制
     facts_editor = _shared(_member(BOB, content=SpaceContentRole.EDITOR))
     assert _decide(
-        BOB, facts=facts_editor, entry="update", action=SpaceAction.UPDATE,
+        BOB,
+        facts=facts_editor,
+        entry="update",
+        action=SpaceAction.UPDATE,
         author_principal="user:alice",
     ).allowed
 
@@ -112,7 +132,10 @@ def test_axis_matrices_do_not_leak_across_axes() -> None:
     """治理轴的 DELETE 指删空间，不因内容轴 editor 而取得。"""
     facts = _shared(_member(BOB, content=SpaceContentRole.EDITOR))
     assert not _decide(
-        BOB, facts=facts, entry="delete_space", action=SpaceAction.DELETE,
+        BOB,
+        facts=facts,
+        entry="delete_space",
+        action=SpaceAction.DELETE,
         axis=SpaceAxis.GOVERNANCE,
     ).allowed
 
@@ -191,11 +214,17 @@ def test_multi_owner_space_blocks_the_first_grade_but_keeps_the_second() -> None
         )
     )
     assert not _decide(
-        ALICE, facts=facts, entry="delete_space", action=SpaceAction.DELETE,
+        ALICE,
+        facts=facts,
+        entry="delete_space",
+        action=SpaceAction.DELETE,
         axis=SpaceAxis.GOVERNANCE,
     ).allowed
     assert _decide(
-        ALICE, facts=facts, entry="get_space", action=SpaceAction.READ,
+        ALICE,
+        facts=facts,
+        entry="get_space",
+        action=SpaceAction.READ,
         axis=SpaceAxis.GOVERNANCE,
     ).allowed
 
@@ -252,8 +281,12 @@ def test_explicit_grant_is_ignored_on_the_governance_axis() -> None:
     """显式授权只在内容轴参与求值：治理权只由成员记录与归属主体档决定。"""
     facts = _shared(_member(BOB, content=SpaceContentRole.EDITOR))
     outcome = _decide(
-        ALICE, facts=facts, entry="add_space_member", action=SpaceAction.SHARE,
-        axis=SpaceAxis.GOVERNANCE, granted_actions=frozenset({SpaceAction.SHARE}),
+        ALICE,
+        facts=facts,
+        entry="add_space_member",
+        action=SpaceAction.SHARE,
+        axis=SpaceAxis.GOVERNANCE,
+        granted_actions=frozenset({SpaceAction.SHARE}),
     )
     assert not outcome.allowed
 
@@ -298,7 +331,126 @@ def test_principal_path_reverses_which_dimension_is_primary() -> None:
 
 def test_org_axis_is_not_evaluated_here() -> None:
     """组织级入口由角色闸门终局裁决，不落两轴求值。"""
-    outcome = _decide(ALICE, entry="create_space", action=SpaceAction.MANAGE_SPACE,
-                      axis=SpaceAxis.ORG)
+    outcome = _decide(
+        ALICE, entry="create_space", action=SpaceAction.MANAGE_SPACE, axis=SpaceAxis.ORG
+    )
     assert not outcome.allowed
     assert outcome.reason is DenyReason.CONTEXT_MISMATCH
+
+
+# -- 第 9 步 代操作委托：本步只收判定结论，复核由宿主回真源做 ------------------ #
+#
+# 委托记录的有效期、动作、绑定复核都在宿主侧（见 tests/unit/api/ 的空间级生命周期用例）。
+# 本组测的是这一步在判定链里的**位置与适用范围**：它拦得住什么、让位给什么。
+
+_DELEGATION_ALLOW = DecisionOutcome(allowed=True, rule="delegation")
+_DELEGATION_DENY = DecisionOutcome(
+    allowed=False, rule="delegation_lookup", reason=DenyReason.DELEGATION_INVALID
+)
+
+
+def test_a_delegation_lets_a_non_member_agent_through_on_the_content_axis() -> None:
+    """内容轴上委托放行非成员 agent：既不覆盖归属登记、成员表也没有它。
+
+    ``AGENT_A1`` 不带 user 维，第 7 步的作者比对与第 8 步的覆盖都不成立，第 10 步两级
+    也都没有它——本用例的通过只能来自第 9 步。
+    """
+    outcome = _decide(AGENT_A1, delegation=_DELEGATION_ALLOW)
+    assert outcome.allowed
+    assert outcome.rule == "delegation"
+
+
+def test_a_failed_delegation_is_terminal_and_does_not_fall_back() -> None:
+    """委托失效即终局：不回落第 10 步的成员记录与显式授权。
+
+    回落的后果是审计失真——调用方明说在代操作、代操作凭据已失效，而请求经另一条规则
+    通过，「委托失效过」这件事事后无从还原。这里连显式授权一起给足，仍须拒绝。
+    """
+    outcome = _decide(
+        AGENT_A1,
+        facts=_shared(_member(AGENT_A1, content=SpaceContentRole.EDITOR)),
+        delegation=_DELEGATION_DENY,
+        granted_actions=frozenset({SpaceAction.READ}),
+    )
+    assert not outcome.allowed
+    assert outcome.rule == "delegation_lookup"
+    assert outcome.reason is DenyReason.DELEGATION_INVALID
+
+
+def test_the_owner_in_person_is_judged_before_the_delegation_step() -> None:
+    """本人直接调用排在委托之前：一条失效委托声明不该拖累本人自己的调用。
+
+    次序若反过来，任何带上失效 ``delegation_id`` 的请求都会被拒——包括归属主体本人在
+    自己空间里的读写。
+    """
+    assert _decide(ALICE, delegation=_DELEGATION_DENY).allowed
+
+
+def test_the_delegation_step_does_not_apply_to_governance_or_same_dims_entries() -> None:
+    """治理轴与「逐维相同」入口不适用委托（与第 7 步同两条排除）。
+
+    这两类入口对归属主体**本人的代理**都是禁止的；委托同样是代理替人操作，适用范围
+    必须相同，否则一条内容委托就能改策略、删空间、导出整个空间。
+
+    断言判据名不以 ``delegation`` 开头：本步在这些入口上**整体不参与**，而不是
+    「参与了、恰好没通过」——后者会随委托内容变化而翻转。
+    """
+    governance = _decide(
+        AGENT_A1,
+        entry="update_space",
+        action=SpaceAction.UPDATE,
+        axis=SpaceAxis.GOVERNANCE,
+        delegation=_DELEGATION_ALLOW,
+    )
+    assert not governance.allowed
+    assert not governance.rule.startswith("delegation")
+
+    export = _decide(AGENT_A1, entry="export_space", delegation=_DELEGATION_ALLOW)
+    assert not export.allowed
+    assert not export.rule.startswith("delegation")
+
+
+def test_a_declared_delegation_outside_its_scope_leaves_the_chain_unchanged() -> None:
+    """不适用时本步整体让位：结论与「未声明委托」逐字段相同。
+
+    「不适用」与「声明了但没通过」是两件事：前者该当作没声明处理，后者是终局拒绝。
+    两者混同会让治理入口的拒绝原因变成 ``delegation_*``，掩盖真实的拒绝理由。
+    """
+    facts = _shared(_member(BOB, governance=SpaceGovernanceRole.OWNER))
+    params = {
+        "facts": facts,
+        "entry": "update_space",
+        "action": SpaceAction.UPDATE,
+        "axis": SpaceAxis.GOVERNANCE,
+    }
+    baseline = _decide(BOB, **params)
+    for declared in (_DELEGATION_ALLOW, _DELEGATION_DENY):
+        assert _decide(BOB, delegation=declared, **params) == baseline
+
+
+@pytest.mark.parametrize(
+    ("entry", "axis", "applies"),
+    [
+        ("search", SpaceAxis.CONTENT, True),
+        ("add", SpaceAxis.CONTENT, True),
+        ("update", SpaceAxis.CONTENT, True),
+        ("delete", SpaceAxis.CONTENT, True),
+        # 内容轴读动作，但按「逐维相同」裁决：导出物是脱离后续判定的全量副本。
+        ("export_space", SpaceAxis.CONTENT, False),
+        ("update_space", SpaceAxis.GOVERNANCE, False),
+        ("delete_space", SpaceAxis.GOVERNANCE, False),
+        ("add_space_member", SpaceAxis.GOVERNANCE, False),
+        # 两轴任一的入口在治理轴上同样不适用；内容轴那一次调用才适用。
+        ("get_space", SpaceAxis.GOVERNANCE, False),
+        ("get_space", SpaceAxis.CONTENT, True),
+    ],
+)
+def test_the_on_behalf_scope_is_the_content_axis_minus_the_same_dims_entries(
+    entry: str, axis: SpaceAxis, applies: bool
+) -> None:
+    """「代人操作」类判据的适用范围：内容轴，扣掉按「逐维相同」裁决的入口。
+
+    第 7 步归属对比与第 9 步代操作委托共用这一份判据，因此它的边界在这里逐项固定：
+    两步中任一步私自放宽范围，本组用例即失败。
+    """
+    assert on_behalf_paths_apply(entry, axis) is applies

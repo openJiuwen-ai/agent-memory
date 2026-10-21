@@ -28,11 +28,15 @@ from jiuwen_memory.common.errors import (
     UnsupportedCapabilityError,
     ValidationError,
 )
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.authentication.base import Authenticator
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security.authorization.authorization_impl.allow_all_authorizer import (
+    AllowAllAuthorizer,
+)
 from jiuwen_memory.common.security.types import (
     Action,
     AuthContext,
+    Role,
     get_current,
 )
 from jiuwen_memory.common.type_def import Scope
@@ -46,6 +50,7 @@ from jiuwen_memory_entry.core.profiles import OFFLINE, load_config
 from jiuwen_memory_entry.http_server import __main__ as http_server_module
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
 from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
+from tests.support.scoped_authenticator import ScopedAuthenticator
 from tests.unit.jiuwen_memory_entry.fixtures import upstream_api_error
 
 pytestmark = pytest.mark.unit
@@ -53,14 +58,21 @@ _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class _Authenticator:
-    def __init__(self, actor: Scope | None = None, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        actor: Scope | None = None,
+        *,
+        role: Role = Role.USER,
+        fail: bool = False,
+    ) -> None:
         self.actor = actor or Scope(org="acme", user="alice")
+        self.role = role
         self.fail = fail
 
     def authenticate(self, credentials):
         if self.fail or not credentials.api_key:
             raise AuthenticationError("authentication failed")
-        return AuthContext(actor=self.actor, auth_method="test")
+        return AuthContext(actor=self.actor, role=self.role, auth_method="test")
 
     @staticmethod
     def mode() -> str:
@@ -238,11 +250,32 @@ def dev_http_endpoint():
         server.close(wait=True)
 
 
+def test_explicit_security_runtime_authorizer_is_the_pep_authorizer() -> None:
+    # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
+    # pylint: disable=protected-access
+    """显式 Runtime 也只能有一个 PDP，不能因装配纪元不同而分叉 Store 视图。"""
+    runtime = build_dev_security_runtime()
+    server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
+    try:
+        assert server.api._authorizer is runtime.authorizer
+    finally:
+        server.close(wait=True)
+
+
+def test_explicit_test_only_authorizer_is_rejected() -> None:
+    runtime = SimpleNamespace(
+        authenticator=_Authenticator(),
+        authorizer=AllowAllAuthorizer(),
+    )
+    with pytest.raises(ValidationError, match="test-only authorizer"):
+        HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
+
+
 @pytest.fixture
 def http_endpoint_with_recording_permission():
     _RECORDING_PERMISSION_MANAGERS.clear()
     runtime = SimpleNamespace(
-        authenticator=_Authenticator(),
+        authenticator=_Authenticator(role=Role.ROOT),
         rate_limiter=None,
         workload_guard=None,
         audit=None,
@@ -366,7 +399,7 @@ def test_http_uses_authenticated_actor_and_api_scope(http_endpoint) -> None:
     assert "request_id" not in body[0]
     actor = Scope(org="acme", user="alice")
     items = server.api.list(
-        Scope(org="acme", user="alice"), security=legacy_request_context(actor)
+        Scope(org="acme", user="alice"), security=internal_context(ScopedAuthenticator(actor))
     ).items
     assert len(items) == 1
     assert items[0].scope == Scope(org="acme", user="alice")
@@ -389,7 +422,7 @@ def test_http_rejects_actor_claim_before_api_call(http_endpoint) -> None:
     assert (
         server.api.list(
             Scope(org="acme", user="alice"),
-            security=legacy_request_context(Scope(org="acme", user="alice")),
+            security=internal_context(ScopedAuthenticator(Scope(org="acme", user="alice"))),
         ).items
         == []
     )
@@ -749,7 +782,7 @@ def test_dev_composition_preserves_explicit_security_and_permission() -> None:
     config = load_config([OFFLINE, {"memory_api": {"permission": permission}}])
     assert with_local_dev_security(config).settings["memory_api"]["permission"] == permission
     fixed = with_local_dev_security(load_config([OFFLINE]))
-    assert fixed.settings["memory_api"]["permission"]["default"]["target"] == "allow_all"
+    assert "permission" not in fixed.settings["memory_api"]
 
 
 def test_http_does_not_add_video_specific_add_parameters(http_endpoint) -> None:
@@ -836,7 +869,7 @@ def test_http_none_return_value_is_serialized_as_json_null(http_endpoint, monkey
     assert body is None
 
 
-def test_http_api_call_keeps_actor_and_target_separate_in_permission_and_audit(
+def test_http_api_call_keeps_actor_and_target_separate_in_authorization_and_audit(
     http_endpoint_with_recording_permission,
 ) -> None:
     """Authenticated actor and API target remain independent through MemoryAPI."""
@@ -851,8 +884,10 @@ def test_http_api_call_keeps_actor_and_target_separate_in_permission_and_audit(
     )
 
     assert status == 200, body
-    assert _RECORDING_PERMISSION_MANAGERS[-1].checks[-1] == (actor, target, Action.WRITE)
-    events = server.api.audit({"action": "add"}, security=legacy_request_context(actor))
+    assert _RECORDING_PERMISSION_MANAGERS[-1].checks == []
+    events = server.api.audit(
+        {"action": "add"}, security=internal_context(ScopedAuthenticator(actor, role=Role.ROOT))
+    )
     event = next(event for event in events if event.action == "add")
     assert event.actor == actor
     assert event.target == target
@@ -886,10 +921,11 @@ def test_http_cross_scope_denial_uses_authenticated_actor(
     assert status == 403
     assert body["error"] == "PermissionDeniedError"
     assert body["message"] == "permission denied"
-    assert _DENYING_PERMISSION_MANAGERS[-1].checks[-1] == (actor, target, Action.WRITE)
+    # 非空间级记忆由 PR2 Authorizer 终局，旧 PermissionManager 不再参与判定。
+    assert _DENYING_PERMISSION_MANAGERS[-1].checks == []
     events = server.api.audit(
         {"action": "add", "decision": "deny"},
-        security=legacy_request_context(actor),
+        security=internal_context(ScopedAuthenticator(actor, role=Role.ROOT)),
     )
     event = next(event for event in events if event.target == target)
     assert event.actor == actor
@@ -1355,7 +1391,9 @@ def test_http_audit_detail_contains_response_request_id(
     assert headers["x-request-id"]
     events = server.api.audit(
         {"action": "add"},
-        security=legacy_request_context(Scope(org="acme", user="alice")),
+        security=internal_context(
+            ScopedAuthenticator(Scope(org="acme", user="audit-reader"), role=Role.ROOT)
+        ),
     )
     event = next(event for event in events if event.action == "add")
     assert event.detail["request_id"] == headers["x-request-id"]

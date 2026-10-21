@@ -34,6 +34,7 @@ from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
     redact_for_log,
+    scope_for_log,
 )
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
@@ -68,6 +69,10 @@ from jiuwen_memory.construction.router import (
     degraded_reasons,
     optional_router,
     route_batch,
+)
+from jiuwen_memory.construction.snapshot_inheritance import (
+    inherit_infer_snapshots,
+    snapshot_for_decision,
 )
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.store_manager import (
@@ -236,8 +241,7 @@ class OrchestratingEvolver(Evolver):
     def _is_procedural(units: list[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
         return any(
-            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
-            for u in units
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true" for u in units
         )
 
     def operator_type(self) -> OperatorType:
@@ -257,9 +261,14 @@ class OrchestratingEvolver(Evolver):
     ) -> EvolveResult:
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
-            logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
-                         u.id[:8], u.tier.value, u.lifecycle.value, u.provenance,
-                         redact_for_log(u.content))
+            logger.info(
+                "Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
+                u.id[:8],
+                u.tier.value,
+                u.lifecycle.value,
+                u.provenance,
+                redact_for_log(u.content),
+            )
         if mode == EvolveMode.EXTRACT:
             return self._evolve_extract(units)
         if mode == EvolveMode.CONSOLIDATE:
@@ -322,7 +331,8 @@ class OrchestratingEvolver(Evolver):
         noop_count = 0
         logger.debug(
             "[trace/consolidate] _dedup_batch ENTER | candidates=%d | dedup_impl=%s",
-            len(candidates), type(self._dedup).__name__,
+            len(candidates),
+            type(self._dedup).__name__,
         )
 
         # 每条候选的判定上下文：(candidate, best_unit, best_score, hit_units)
@@ -337,18 +347,20 @@ class OrchestratingEvolver(Evolver):
             except Exception as exc:
                 logger.warning(
                     "Evolver._dedup: recall failed for %s, fallback ADD: %s",
-                    candidate.id[:8], exc,
+                    candidate.id[:8],
+                    exc,
                 )
                 direct_add.append((candidate, None, 0.0))
                 continue
 
             logger.debug(
-                "[trace/dedup] recall | candidate_id=%s | content=%r | hits=%d | dedup_impl=%s | scope=%r",
+                "[trace/dedup] recall | candidate_id=%s | content=%r | hits=%d "
+                "| dedup_impl=%s | scope=%r",
                 candidate.id[:8],
-                candidate.content[:80],
+                redact_for_log(candidate.content[:80]),
                 len(hit_units),
                 type(self._dedup).__name__,
-                candidate.scope,
+                scope_for_log(candidate.scope),
             )
 
             if not hit_units:
@@ -389,16 +401,19 @@ class OrchestratingEvolver(Evolver):
 
         for candidate, best_unit, best_score, _ in need_llm:
             decision = decisions.get(candidate.id, DedupDecision.ADD)
-            noop_count += self._apply_decision(
-                candidate, decision, best_unit, best_score, result
-            )
+            noop_count += self._apply_decision(candidate, decision, best_unit, best_score, result)
 
         logger.info(
             "Evolver._dedup: total=%d add=%d update=%d supersede=%d noop=%d "
             "(direct_noop=%d, need_llm=%d, llm_batches=%d)",
-            len(candidates), len(result.created_ids), len(result.updated_ids),
-            len(result.superseded_ids), noop_count,
-            len(direct_noop), len(need_llm), 1 if need_llm else 0,
+            len(candidates),
+            len(result.created_ids),
+            len(result.updated_ids),
+            len(result.superseded_ids),
+            noop_count,
+            len(direct_noop),
+            len(need_llm),
+            1 if need_llm else 0,
         )
         return result
 
@@ -411,13 +426,15 @@ class OrchestratingEvolver(Evolver):
         result: EvolveResult,
     ) -> int:
         """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
+        snapshot = snapshot_for_decision(candidate, decision, existing_unit)
         logger.debug(
-            "[trace/dedup] decision | candidate_id=%s | decision=%s | existing=%s | similarity=%.3f | content=%r",
+            "[trace/dedup] decision | candidate_id=%s | decision=%s | existing=%s "
+            "| similarity=%.3f | content=%r",
             candidate.id[:8],
             decision.value,
             existing_unit.id[:8] if existing_unit else None,
             similarity,
-            candidate.content[:80],
+            redact_for_log(candidate.content[:80]),
         )
         decision_ids_for_log = {candidate.id[:8]}
         if existing_unit is not None:
@@ -438,8 +455,7 @@ class OrchestratingEvolver(Evolver):
         # ADD，或 UPDATE/SUPERSEDE 缺 existing_unit 时降级为 ADD（LLM 误判但 recall
         # 无命中——宁可重复不丢失，避免 None.segments/.id 抛 AttributeError）。
         if decision == DedupDecision.ADD or (
-            decision in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE)
-            and existing_unit is None
+            decision in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE) and existing_unit is None
         ):
             if decision != DedupDecision.ADD:
                 logger.warning(
@@ -465,25 +481,21 @@ class OrchestratingEvolver(Evolver):
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
             # 合并 metadata
-            existing_unit.system_metadata = inherited_system_metadata(
-                [existing_unit, candidate]
-            )
-            existing_unit.user_metadata = inherited_user_metadata(
-                [existing_unit, candidate]
-            )
+            existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
+            existing_unit.user_metadata = inherited_user_metadata([existing_unit, candidate])
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
             # existing_unit 是已建索引的记忆，经 IndexBuilder 统一回写。
+            if snapshot is not None:
+                existing_unit.hierarchy = snapshot
             self._index.update([existing_unit])
             result.updated_ids.append(existing_unit.id)
 
         elif decision == DedupDecision.SUPERSEDE:
             # 新版落盘
             candidate.supersedes = existing_unit.id
-            candidate.provenance = list(
-                set(candidate.provenance) | {existing_unit.id}
-            )
+            candidate.provenance = list(set(candidate.provenance) | {existing_unit.id})
             candidate.system_metadata["dedup_decision"] = "supersede"
             candidate.system_metadata["dedup_similarity"] = str(similarity)
             candidate.system_metadata["dedup_superseded"] = existing_unit.id
@@ -525,9 +537,7 @@ class OrchestratingEvolver(Evolver):
         best_unit, best_score = max(hit_units, key=lambda x: x[1])
 
         # Step D: 语义判定
-        if should_direct_noop(
-            best_score, self._dedup_high_similarity, candidate, best_unit
-        ):
+        if should_direct_noop(best_score, self._dedup_high_similarity, candidate, best_unit):
             return (DedupDecision.NOOP, best_unit, best_score)
 
         # 低相似 → ADD（新事实，不值得深度判定）
@@ -540,13 +550,12 @@ class OrchestratingEvolver(Evolver):
         except Exception as exc:
             logger.warning(
                 "Evolver._dedup_single: LLM dedup failed for %s, fallback rule-based: %s",
-                candidate.id[:8], exc,
+                candidate.id[:8],
+                exc,
             )
             # 降级策略与 _llm_dedup_decide 一致：宁可重复不丢失。
             # high 相似且无实质差异 → NOOP；否则 ADD（不覆盖已有）。
-            if should_direct_noop(
-                best_score, self._dedup_high_similarity, candidate, best_unit
-            ):
+            if should_direct_noop(best_score, self._dedup_high_similarity, candidate, best_unit):
                 decision = DedupDecision.NOOP
             else:
                 decision = DedupDecision.ADD
@@ -573,8 +582,7 @@ class OrchestratingEvolver(Evolver):
             f"[Memory ID: {candidate.id}]\n"
             f"Content: {candidate.content}\n"
             f"Tier: {candidate.tier.value}\n\n"
-            f"Existing similar memories:\n"
-            + "\n\n".join(existing_texts)
+            f"Existing similar memories:\n" + "\n\n".join(existing_texts)
         )
 
         messages = [
@@ -584,25 +592,34 @@ class OrchestratingEvolver(Evolver):
 
         # [trace/consolidate] 单条判定路径：打印待消歧候选 + 召回记忆 + 完整 prompt
         logger.debug(
-            "[trace/consolidate] (single) candidate before LLM | candidate_id=%s | content=%r | tier=%s",
-            candidate.id[:8], candidate.content, candidate.tier.value,
+            "[trace/consolidate] (single) candidate before LLM "
+            "| candidate_id=%s | content=%r | tier=%s",
+            candidate.id[:8],
+            redact_for_log(candidate.content),
+            candidate.tier.value,
         )
         for unit, score in hits[:3]:
             logger.debug(
-                "[trace/consolidate]   (single) recalled hit | unit_id=%s " \
+                "[trace/consolidate]   (single) recalled hit | unit_id=%s "
                 "| score=%.3f | content=%r | tier=%s | lifecycle=%s",
-                unit.id[:8], score, unit.content, unit.tier.value, unit.lifecycle.value,
+                unit.id[:8],
+                score,
+                redact_for_log(unit.content),
+                unit.tier.value,
+                unit.lifecycle.value,
             )
         logger.debug(
             "[trace/consolidate] (single) llm_prompt | system_len=%d | user_prompt=%s",
-            len(_DEDUP_SYSTEM_PROMPT), user_prompt,
+            len(_DEDUP_SYSTEM_PROMPT),
+            redact_for_log(user_prompt),
         )
 
         try:
             response = self._llm.chat(messages, temperature=0, max_tokens=256)
             logger.debug(
                 "[trace/consolidate] (single) llm_raw_response | resp_len=%d | raw_response=%s",
-                len(response) if response else 0, response,
+                len(response) if response else 0,
+                redact_for_log(response),
             )
         except Exception as exc:
             raise RuntimeError(f"LLM dedup call failed: {exc}") from exc
@@ -664,24 +681,32 @@ class OrchestratingEvolver(Evolver):
         for cand, hits in items:
             logger.debug(
                 "[trace/consolidate] candidate before LLM | candidate_id=%s | content=%r | tier=%s",
-                cand.id[:8], cand.content, cand.tier.value,
+                cand.id[:8],
+                redact_for_log(cand.content),
+                cand.tier.value,
             )
             for unit, score in hits[:3]:
                 logger.debug(
-                    "[trace/consolidate]   recalled hit | unit_id=%s" \
+                    "[trace/consolidate]   recalled hit | unit_id=%s"
                     " | score=%.3f | content=%r | tier=%s | lifecycle=%s",
-                    unit.id[:8], score, unit.content, unit.tier.value, unit.lifecycle.value,
+                    unit.id[:8],
+                    score,
+                    redact_for_log(unit.content),
+                    unit.tier.value,
+                    unit.lifecycle.value,
                 )
         logger.debug(
             "[trace/consolidate] llm_prompt | system_len=%d | user_prompt=%s",
-            len(_DEDUP_BATCH_SYSTEM_PROMPT), user_prompt,
+            len(_DEDUP_BATCH_SYSTEM_PROMPT),
+            redact_for_log(user_prompt),
         )
 
         try:
             response = self._llm.chat(messages, temperature=0, max_tokens=1024)
             logger.debug(
                 "[trace/consolidate] llm_raw_response | resp_len=%d | raw_response=%s",
-                len(response) if response else 0, response,
+                len(response) if response else 0,
+                redact_for_log(response),
             )
         except Exception as exc:
             logger.warning(
@@ -755,7 +780,8 @@ class OrchestratingEvolver(Evolver):
         if missing:
             logger.warning(
                 "Evolver._llm_dedup_decide_batch: %d candidates missing in LLM response, "
-                "fallback to per-candidate single", len(missing),
+                "fallback to per-candidate single",
+                len(missing),
             )
             results.update(self._fallback_single_decide(missing))
 
@@ -787,10 +813,7 @@ class OrchestratingEvolver(Evolver):
 
     def _merge_content(self, old: MemoryUnit, new: MemoryUnit) -> str:
         """UPDATE 场景：LLM 合成新旧 content 为一条完整陈述。"""
-        user_prompt = (
-            f"Old version:\n{old.content}\n\n"
-            f"New version:\n{new.content}"
-        )
+        user_prompt = f"Old version:\n{old.content}\n\nNew version:\n{new.content}"
 
         messages = [
             ChatMessage(role="system", content=_CONTENT_MERGE_SYSTEM_PROMPT),
@@ -805,12 +828,15 @@ class OrchestratingEvolver(Evolver):
             logger.warning(
                 "Evolver._merge_content: LLM merge returned empty for %s→%s, "
                 "fallback concatenation",
-                old.id[:8], new.id[:8],
+                old.id[:8],
+                new.id[:8],
             )
         except Exception as exc:
             logger.warning(
                 "Evolver._merge_content: LLM merge failed for %s→%s, fallback concatenation: %s",
-                old.id[:8], new.id[:8], exc,
+                old.id[:8],
+                new.id[:8],
+                exc,
             )
         # 降级：简单拼接新旧内容
         return f"{old.content}\n{new.content}"
@@ -828,19 +854,15 @@ class OrchestratingEvolver(Evolver):
         任一步失败降级为空列表，不阻断（仍靠 prompt + _dedup_batch）。非 infer 返回 None。
         """
         infer = any(
-            str(u.system_metadata.get("infer", "")).strip().lower() == "true"
-            for u in units
+            str(u.system_metadata.get("infer", "")).strip().lower() == "true" for u in units
         )
         if not infer:
             return None
         related = self._related_memories(units)
-        ctx = ExtractContext(
-            recent_originals=list(recent), related_memories=related
-        )
+        ctx = ExtractContext(recent_originals=list(recent), related_memories=related)
         infer_metadata = {"infer": True}
         logger.info(
-            "Evolver._maybe_collect_extract_context: system_metadata=%s, "
-            "recent=%d related=%d",
+            "Evolver._maybe_collect_extract_context: system_metadata=%s, recent=%d related=%d",
             metadata_for_log(infer_metadata),
             len(recent),
             len(related),
@@ -877,9 +899,7 @@ class OrchestratingEvolver(Evolver):
         for unit_id in unit_ids:
             self._message_store.delete(scope, messages_key(unit_id))
 
-    def _persist_and_maintain_messages(
-        self, units: list[MemoryUnit]
-    ) -> list[MemoryUnit]:
+    def _persist_and_maintain_messages(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """一次扫描完成原文维护：取最近 N 条 → 写入本轮 → 淘汰超出的旧原文。
 
         顺序（只扫一次 ``/messages/``）：
@@ -916,24 +936,24 @@ class OrchestratingEvolver(Evolver):
             reverse=True,
         )
         # 3) recent = 前 N 条历史原文（排除本轮——本轮已是提取来源，不重复进 context）
-        recent = [
-            u for u in ordered if u.id not in current_ids
-        ][: self._recent_originals_limit]
+        keep_count = self._recent_originals_limit
+        recent = [u for u in ordered if u.id not in current_ids][:keep_count]
         # 4) 落本轮新原文 + 淘汰超出 N 条的旧原文（尾部最多 len(ordered)-N 条）
         self._add_messages(scope, units)
-        evicted_ids = [u.id for u in ordered[self._recent_originals_limit:]]
+        evicted_ids = [u.id for u in ordered[keep_count:]]
         if evicted_ids:
             try:
                 self._delete_messages(scope, evicted_ids)
                 logger.info(
-                    "Evolver._persist_and_maintain_messages: %d old originals evicted "
-                    "(kept %d)",
-                    len(evicted_ids), self._recent_originals_limit,
+                    "Evolver._persist_and_maintain_messages: %d old originals evicted (kept %d)",
+                    len(evicted_ids),
+                    self._recent_originals_limit,
                 )
             except Exception as exc:
                 logger.warning(
                     "Evolver._persist_and_maintain_messages: evict %d originals failed: %s",
-                    len(evicted_ids), exc,
+                    len(evicted_ids),
+                    exc,
                 )
         return recent
 
@@ -950,7 +970,8 @@ class OrchestratingEvolver(Evolver):
             except Exception as exc:
                 logger.warning(
                     "Evolver._related_memories: dedup.recall failed for %s: %s",
-                    unit.id[:8], exc,
+                    unit.id[:8],
+                    exc,
                 )
                 continue
             for hit_unit, _score in hits:
@@ -989,9 +1010,7 @@ class OrchestratingEvolver(Evolver):
     # 归属判定（抽取后、分层标注与去重之前）
     # ------------------------------------------------------------------
 
-    def _route(
-        self, sources: list[MemoryUnit], derived: list[MemoryUnit]
-    ) -> list[MemoryUnit]:
+    def _route(self, sources: list[MemoryUnit], derived: list[MemoryUnit]) -> list[MemoryUnit]:
         """按源单元携带的判定上下文改写派生单元的落点与标签，返回保留下来的单元。
 
         判定上下文经源单元的瞬态 metadata 键 ``route_ctx`` 传入，取不到即整段跳过——
@@ -1070,6 +1089,7 @@ class OrchestratingEvolver(Evolver):
         recent = self._persist_and_maintain_messages(units)
         context = self._maybe_collect_extract_context(units, recent)
         extracted = self._extractor.extract(units, context=context)
+        inherit_infer_snapshots(units, extracted)
         logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
         if not extracted:
             return EvolveResult()
@@ -1127,7 +1147,7 @@ class OrchestratingEvolver(Evolver):
         for u in targets:
             u.lifecycle = LifecycleState.FORGOTTEN
         self._index.update(targets, mode=IndexWriteMode.FORWARD_ONLY)  # 只回写本体 FORGOTTEN
-        self._index.remove(targets, mode=IndexRemoveMode.SOFT)         # 检索索引移出检索
+        self._index.remove(targets, mode=IndexRemoveMode.SOFT)  # 检索索引移出检索
 
         forgotten = [u.id for u in targets]
         logger.info("Evolver: FORGET marked %d units as forgotten", len(forgotten))
@@ -1135,7 +1155,6 @@ class OrchestratingEvolver(Evolver):
 
 
 # -- 注册到 EvolverProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
-
 
 
 def _resolve_message_store(config) -> KVStore:

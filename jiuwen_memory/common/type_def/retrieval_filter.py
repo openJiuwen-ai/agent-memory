@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from ..time_utils import as_utc
 from .filter import FilterExpr
 from .memory import LifecycleState, MemoryUnit
 from .memory_filter import matches_memory_unit
@@ -12,9 +13,10 @@ from .memory_filter import matches_memory_unit
 
 def valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
     temporal = unit.temporal
-    if temporal.t_valid is not None and as_of < temporal.t_valid:
+    as_of = as_utc(as_of)
+    if temporal.t_valid is not None and as_of < as_utc(temporal.t_valid):
         return False
-    if temporal.t_invalid is not None and as_of >= temporal.t_invalid:
+    if temporal.t_invalid is not None and as_of >= as_utc(temporal.t_invalid):
         return False
     return True
 
@@ -38,9 +40,10 @@ def in_event_window(
     event_time = unit.temporal.t_event
     if event_time is None or event_time.tzinfo is None:
         return True
-    if time_from is not None and event_time < time_from:
+    event_time = as_utc(event_time)
+    if time_from is not None and event_time < as_utc(time_from):
         return False
-    return time_to is None or event_time < time_to
+    return time_to is None or event_time < as_utc(time_to)
 
 
 def matches_retrieval_filters(unit: MemoryUnit, filters: FilterExpr | None) -> bool:

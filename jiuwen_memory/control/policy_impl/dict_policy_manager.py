@@ -47,6 +47,7 @@ _DEFAULT_POLICIES = {
     "lifecycle.expired_active.target": "forgotten",
     "lifecycle.superseded.target": "forgotten",
     "scope.require_space": "false",
+    "hierarchy.enabled": "false",  # 树记忆总开关；默认保持普通写入。
 }
 
 

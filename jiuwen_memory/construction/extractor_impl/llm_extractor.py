@@ -57,9 +57,9 @@ from jiuwen_memory.common.log import (
     redact_for_log,
 )
 from jiuwen_memory.common.type_def import (
+    MD_TITLE_KEY,
     Entity,
     LifecycleState,
-    MD_TITLE_KEY,
     MemoryTier,
     MemoryUnit,
     Segment,
@@ -364,8 +364,7 @@ def _format_context_block(context: ExtractContext | None) -> str:
             parts.append(
                 "## Recent conversation context "
                 "(for coreference / pronoun resolution only — do NOT extract from these, "
-                "do NOT point source_id at these):\n"
-                + "\n".join(lines)
+                "do NOT point source_id at these):\n" + "\n".join(lines)
             )
     if context.related_memories:
         lines = [f"- {u.content}" for u in context.related_memories if u.content]
@@ -376,8 +375,7 @@ def _format_context_block(context: ExtractContext | None) -> str:
                 "However, a line that CONTRADICTS, CORRECTS or REVISES an existing "
                 "memory is NOT a duplicate: extract it as a new item so the conflict "
                 "can be resolved downstream. Do NOT return [] merely because the topic "
-                "matches an existing memory.)\n"
-                + "\n".join(lines)
+                "matches an existing memory.)\n" + "\n".join(lines)
             )
     return "\n\n".join(parts)
 
@@ -405,7 +403,8 @@ class ExtractorImpl(Extractor):
         self._llm = llm
         self._min_confidence = min_confidence
         self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
-            max_attempts, retry_backoff_ms,
+            max_attempts,
+            retry_backoff_ms,
         )
         self._extract_batch_size = max(1, int(extract_batch_size))
 
@@ -417,8 +416,7 @@ class ExtractorImpl(Extractor):
     def _is_procedural(units: list[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
         return any(
-            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
-            for u in units
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true" for u in units
         )
 
     @staticmethod
@@ -497,7 +495,8 @@ class ExtractorImpl(Extractor):
         successful_batches = 0
         failed_batches: list[tuple[int, int, Exception]] = []
         for start in range(0, len(accepted), self._extract_batch_size):
-            sub_batch = accepted[start:start + self._extract_batch_size]
+            end = start + self._extract_batch_size
+            sub_batch = accepted[start:end]
             try:
                 batch_candidates = self._llm_extract_batch(sub_batch, context=context)
             except Exception as exc:
@@ -605,8 +604,12 @@ class ExtractorImpl(Extractor):
             # title 由 LLM 生成（F08 §8），清洗保单行 + 截断；空串=无标题（落盘兜底 unit.id）
             title = _parse_title(item.get("title"))
             logger.info(
-                "[trace/extract] title parse | raw_title=%r | parsed_title=%r | item_keys=%s | source_id=%s",
-                item.get("title"), title, list(item.keys()), source_id[:8],
+                "[trace/extract] title parse | raw_title=%r | parsed_title=%r "
+                "| item_keys=%s | source_id=%s",
+                redact_for_log(item.get("title")),
+                redact_for_log(title),
+                redact_for_log(list(item.keys())),
+                source_id[:8],
             )
 
             # tags 由 LLM 抽，清洗 + 去重 + 截断到 ≤3
@@ -620,17 +623,19 @@ class ExtractorImpl(Extractor):
                 continue
 
             event_date = str(item.get("event_date", "") or "").strip()
-            candidates.append(ExtractionCandidate(
-                target=target,
-                content=content.strip(),
-                source_unit_id=source_id,
-                confidence=confidence,
-                evidence=evidence,
-                event_date=event_date,
-                tier=tier,
-                title=title,
-                tags=tags,
-            ))
+            candidates.append(
+                ExtractionCandidate(
+                    target=target,
+                    content=content.strip(),
+                    source_unit_id=source_id,
+                    confidence=confidence,
+                    evidence=evidence,
+                    event_date=event_date,
+                    tier=tier,
+                    title=title,
+                    tags=tags,
+                )
+            )
             logger.info(
                 "Extractor: candidate — source_unit_id=%s tier=%s metadata=%s",
                 source_id[:8],
@@ -655,8 +660,7 @@ class ExtractorImpl(Extractor):
             if not candidates:
                 raise InvalidExtractionCandidateError(details)
             logger.warning(
-                "Extractor: skipped %d invalid candidates while preserving %d valid "
-                "candidates: %s",
+                "Extractor: skipped %d invalid candidates while preserving %d valid candidates: %s",
                 len(invalid_reasons),
                 len(candidates),
                 details,
@@ -761,7 +765,8 @@ class ExtractorImpl(Extractor):
         content, title = self._parse_procedural_response(response)
         logger.info(
             "[trace/extract] procedural title | parsed_title=%r | content_len=%d",
-            title, len(content) if content else 0,
+            redact_for_log(title),
+            len(content) if content else 0,
         )
         if not content:
             logger.info("Extractor._extract_procedural: empty content parsed, return []")
@@ -906,9 +911,8 @@ class ExtractorImpl(Extractor):
         user_text = (
             f"observation_date: {observation_date}\n"
             f"(Use this as the reference point to resolve relative time expressions "
-            f"like \"yesterday\"/\"last week\"/\"tomorrow\" into absolute dates in content "
-            f"and event_date.)\n\n"
-            + user_text
+            f'like "yesterday"/"last week"/"tomorrow" into absolute dates in content '
+            f"and event_date.)\n\n" + user_text
         )
         # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
         context_block = _format_context_block(context)
@@ -930,7 +934,7 @@ class ExtractorImpl(Extractor):
             "[trace/extract] llm_prompt | system_len=%d | user_len=%d | user_preview=%r",
             len(system_prompt),
             len(user_text),
-            user_text,
+            redact_for_log(user_text),
         )
 
         # 调用 LLM（含重试）
@@ -939,7 +943,7 @@ class ExtractorImpl(Extractor):
             "[trace/extract] llm_raw_response | units=%d | resp_len=%d | resp_preview=%r",
             len(units),
             len(response) if response else 0,
-            (response or "")[:400],
+            redact_for_log((response or "")[:400]),
         )
 
         # 解析 JSON。
@@ -1042,7 +1046,9 @@ class ExtractorImpl(Extractor):
             result.append(unit)
             logger.info(
                 "[trace/extract] unit title flow | c.title=%r | md_title_in_meta=%s | unit_id=%s",
-                c.title, MD_TITLE_KEY in (unit.system_metadata or {}), unit.id[:8],
+                redact_for_log(c.title),
+                MD_TITLE_KEY in (unit.system_metadata or {}),
+                unit.id[:8],
             )
             logger.info(
                 "Extractor: built unit id=%s tier=%s tags=%s provenance=%s content=%s",

@@ -37,6 +37,8 @@ from jiuwen_memory.api import (
     Action,
     AgentMemoryError,
     AuditEvent,
+    AuthenticationError,
+    BackendError,
     BatchWriteItem,
     Channel,
     ConflictError,
@@ -64,11 +66,9 @@ from jiuwen_memory.api import (
     SpacePolicy,
     SpaceSpec,
     SpaceStatus,
-    Surface,
     UnsupportedCapabilityError,
     UpdateMode,
     ValidationError,
-    legacy_request_context,
 )
 from jiuwen_memory.api import normalize as normalize_filters
 
@@ -76,7 +76,9 @@ Body = Mapping[str, Any]
 
 _STATUS = {
     NotFoundError: 404,
+    AuthenticationError: 401,
     PermissionDeniedError: 403,
+    BackendError: 503,
     ConflictError: 409,
     PartialFailureError: 409,
     UnsupportedCapabilityError: 400,
@@ -146,15 +148,11 @@ def _require_target(request: DispatchRequest) -> Scope:
 
 
 def _request_security(request: DispatchRequest) -> RequestSecurityContext:
-    """Return the trusted request context, adapting only legacy internal calls."""
+    """Return the trusted request context, validating actor consistency."""
     security = request.security
-    if security is not None:
-        if security.actor != request.actor:
-            raise ValidationError("request security actor does not match request actor")
-        return security
-    if request.surface == Surface.HTTP:
-        raise ValidationError("HTTP request missing security context")
-    return legacy_request_context(request.actor, surface=request.surface)
+    if security.actor != request.actor:
+        raise ValidationError("request security actor does not match request actor")
+    return security
 
 
 def _require_space(request: DispatchRequest) -> str:
@@ -436,9 +434,7 @@ def _ensure_video_chain(srv) -> None:
         raise ValidationError("video ingest requires a configured video evolver")
 
 
-def _submit_video(
-    srv, payload: Body, *, scope: Scope, security: RequestSecurityContext
-) -> Body:
+def _submit_video(srv, payload: Body, *, scope: Scope, security: RequestSecurityContext) -> Body:
     """Submit a video write through the Control-managed ingest queue."""
     uri = str(_require(payload, "uri")).strip()
     if not uri:
@@ -551,9 +547,7 @@ def _add(srv, request: DispatchRequest) -> Body:
         raise ValidationError("system_metadata must be an object")
     if raw_user_metadata is not None and not isinstance(raw_user_metadata, dict):
         raise ValidationError("user_metadata must be an object")
-    occurred_at = _parse_occurred_at(
-        payload.get("occurred_at"), name="add occurred_at"
-    )
+    occurred_at = _parse_occurred_at(payload.get("occurred_at"), name="add occurred_at")
     units = srv.api.add(
         _require(payload, "content"),
         scope,
@@ -938,9 +932,7 @@ def _trace(srv, request: DispatchRequest) -> Body:
     """血缘回溯：沿 supersedes 版本链 → Governor。"""
     payload = request.payload
     scope = _require_target(request)
-    chain = srv.api.trace(
-        _require(payload, "item_id"), scope, security=_request_security(request)
-    )
+    chain = srv.api.trace(_require(payload, "item_id"), scope, security=_request_security(request))
     return {"ok": True, "op": "trace", "items": [_unit_view(u) for u in chain]}
 
 
@@ -1014,9 +1006,8 @@ def _parse_actions(value: Any) -> frozenset[Action]:
     """解析 ``actions``：**缺省**沿用历史兼容的只读授权。
 
     缺省（键缺失/``None``）与显式空值必须分开：``[]`` / ``""`` / ``[" "]`` 若回落
-    成 READ，一次「动作没写清」的调用会静默变成只读授权（grant），撤销时也只撤掉
-    只读那一条（revoke）——两者都返回 200，调用方无从察觉。故显式空值直接报错，
-    不替调用方猜意图。
+    成 READ，一次「动作没写清」的调用会静默变成只读授权。显式空值直接报错，
+    不替调用方猜意图；撤销仍只按 grant_id 定位，不按此动作集合匹配记录。
     """
     if value is None:
         return frozenset({Action.READ})
@@ -1027,7 +1018,7 @@ def _parse_actions(value: Any) -> frozenset[Action]:
 
 
 def _grant(srv, request: DispatchRequest) -> Body:
-    """跨 scope 授权（PermissionManager）。"""
+    """跨 scope 授权并返回服务端生成的 grant_id。"""
     payload = request.payload
     scope = _require_target(request)
     grantee = request.grantee
@@ -1041,25 +1032,27 @@ def _grant(srv, request: DispatchRequest) -> Body:
         actions=_parse_actions(payload.get("actions")),
         expires_at=_parse_occurred_at(payload.get("expires_at"), name="grant expires_at"),
     )
-    srv.api.grant(grant, security=_request_security(request))
+    created = srv.api.grant(grant, security=_request_security(request))
     return {
         "ok": True,
         "op": "grant",
         "grantor": {"space": scope.space, "user": scope.user},
         "grantee": {"space": grantee.space, "user": grantee.user},
+        "grant_id": created.grant_id,
     }
 
 
 def _revoke(srv, request: DispatchRequest) -> Body:
-    """Cross-scope revoke (PermissionManager)."""
+    """Cross-scope revoke by the server-issued grant_id."""
     payload = request.payload
     scope = _require_target(request)
     grantee = request.grantee
     if grantee is None:
         raise ValidationError("missing required field: 'grantee'")
-    # 撤销按 grantor+grantee+action 匹配，action 集合必须与授权时同源，
-    # 否则写死 READ 的撤销会匹配不到写授权。
+    # 按服务端 grant_id 撤销，目标以存储中的真实 grantor 为准。
+    grant_id = str(_require(payload, "grant_id"))
     grant = Grant(
+        grant_id=grant_id,
         grantor=scope,
         grantee=grantee,
         actions=_parse_actions(payload.get("actions")),
@@ -1071,6 +1064,7 @@ def _revoke(srv, request: DispatchRequest) -> Body:
         "op": "revoke",
         "grantor": {"space": scope.space, "user": scope.user},
         "grantee": {"space": grantee.space, "user": grantee.user},
+        "grant_id": grant_id,
     }
 
 
@@ -1089,9 +1083,7 @@ def _create_space(srv, request: DispatchRequest) -> Body:
             metadata=_string_map(payload.get("metadata")),
             # owner 是调用方填写的一等字段（``None`` = 由 API 层按调用方身份推导）；
             # 漏传会让「替某主体登记主空间」静默失效。
-            owner=_scope_value(payload.get("owner"), name="owner")
-            if "owner" in payload
-            else None,
+            owner=_scope_value(payload.get("owner"), name="owner") if "owner" in payload else None,
         ),
         security=_request_security(request),
     )

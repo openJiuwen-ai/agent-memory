@@ -34,6 +34,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
 )
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
@@ -53,6 +54,7 @@ from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
     BatchWriteItem,
@@ -67,7 +69,7 @@ from jiuwen_memory.control.types import (
     SweepResult,
     UpdateMode,
 )
-from jiuwen_memory.config.document_flag import resolve_index_builder_default
+from jiuwen_memory.ingest.hierarchy_hints import enrich_snapshot_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -227,6 +229,7 @@ class InMemoryEngine(MemoryEngine):
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
+        policy: PolicyManager | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -240,6 +243,7 @@ class InMemoryEngine(MemoryEngine):
         # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
         self._classifier = classifier
         self._job_factory = job_factory
+        self._policy = policy
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -276,7 +280,14 @@ class InMemoryEngine(MemoryEngine):
         # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
         # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
         # middle / middle_interval 是调用级开关，不是 unit 持久属性——下面从 meta 剥除。
-        raw_meta = dict(system_metadata or {})
+        raw_meta = enrich_snapshot_hints(
+            system_metadata, occurred_at,
+            enabled=(
+                self._policy is not None
+                and str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower()
+                == "true"
+            ),
+        )
 
         def _is_true(key: str) -> bool:
             return str(raw_meta.get(key, "")).strip().lower() == "true"
@@ -929,4 +940,5 @@ def _build(config):
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),
+        policy=PolicyProducer.build_named("default", config.ctx),
     )

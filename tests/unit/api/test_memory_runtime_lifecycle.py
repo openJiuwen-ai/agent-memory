@@ -99,7 +99,8 @@ def test_lock_release_failure_still_closes_shadow_and_reports_all_errors() -> No
     shadow = SimpleNamespace(close=lambda: fail("shadow"))
     api = SimpleNamespace(release_dreaming_lock=lambda: fail("leader"))
     kernel = _Kernel(
-        api=api, kv=None,
+        api=api,
+        kv=None,
         storage=SimpleNamespace(has_shadow_index=lambda: True, shadow_index=lambda: shadow),
         ingest_jobs=SimpleNamespace(close=lambda wait=True: None),
     )
@@ -136,7 +137,8 @@ def test_failed_loop_stop_does_not_join_a_potentially_running_thread() -> None:
     runtime = _MemoryRuntime(
         api=SimpleNamespace(),
         _kernel=SimpleNamespace(
-            watchdog=None, scheduler=None,
+            watchdog=None,
+            scheduler=None,
             ingest_jobs=SimpleNamespace(close=lambda wait=True: None),
             close=lambda: events.append("resources"),
         ),
@@ -146,7 +148,7 @@ def test_failed_loop_stop_does_not_join_a_potentially_running_thread() -> None:
     runtime._loop_thread = SimpleNamespace(join=lambda: events.append("join"))
     with pytest.raises(RuntimeError, match="stop failed"):
         runtime.close()
-    assert events == ["resources", "stop"], "failed stop must not block forever in thread.join"
+    assert events == ["stop"], "unconfirmed loop stop must retain resources and skip thread.join"
     assert runtime._loop is loop, "retain the loop reference when its stop is unconfirmed"
 
 
@@ -204,7 +206,8 @@ def test_assembled_runtimes_have_independent_scheduler_lifetimes() -> None:
         job_id = asyncio.run(second._kernel.scheduler.submit(Once(), Channel.BACKGROUND))
         second.close()
         assert second._kernel.scheduler.status(job_id).status in {
-            JobStatus.SUCCEEDED, JobStatus.CANCELLED,
+            JobStatus.SUCCEEDED,
+            JobStatus.CANCELLED,
         }
         for runtime in (first, second):
             assert not runtime._kernel.scheduler._runner._thread.is_alive()

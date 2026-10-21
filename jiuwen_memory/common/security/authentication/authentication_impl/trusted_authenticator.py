@@ -108,6 +108,9 @@ class TrustedAuthenticator(Authenticator):
     def health(self) -> None:
         self._key_store.health()
 
+    def security_dependencies(self) -> tuple[object, ...]:
+        return (self._key_store,)
+
 
 def _truthy(value) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}

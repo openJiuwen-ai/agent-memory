@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-12 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -462,16 +462,21 @@ shadow 是文档模式必需项而非可选增强，`write_document=true` 下不
 | `VectorRecord` | id / vector: list[float] / metadata |
 | `VectorQuery` | vector: list[float] / top_k / filters: FilterExpr \| None / extensions: dict[str, Any] |
 
-目标层级索引 metadata 在既有 `unit_id`、`content_layer`、`tier`、`lifecycle`、`seq`
+层级索引 metadata 在既有 `unit_id`、`content_layer`、`tier`、`lifecycle`、`seq`
 基础上增加：
 
 | 键 | 表示 |
 |---|---|
 | `hierarchy_kind` | kind 的字符串值；空 hierarchy 时缺省 |
 | `hierarchy_role` | role 的字符串值；空 hierarchy 时缺省 |
-| `parent_id` | 直接父 id；根或未挂接时为空串 |
-| `span_start` | ISO 8601 区间起点；未声明区间时缺省 |
-| `span_end` | ISO 8601 区间终点；未声明区间时缺省 |
+| `hierarchy_status` | 非空结构恒写 active/dismissed |
+| `tree_parent_id` | 直接父 id；根或未挂接时为空串 |
+| `tree_span_start` | UTC epoch 毫秒区间起点；未声明区间时缺省 |
+| `tree_span_end` | UTC epoch 毫秒区间终点；未声明区间时缺省 |
+
+三个 tree_ 字段是索引/过滤名；HierarchyRef 内部字段及序列化键仍为 parent_id/span_start/span_end。
+这些通用名称不再属于树保留键，system_metadata 同名业务值继续接受；不提供旧树字段别名。
+裸通用过滤键按原有规则归 user_metadata，显式 system_metadata 路径仍读取系统业务值。
 
 同一 unit 的 L0/L1/L2 VectorRecord 必须携带相同的 hierarchy metadata；现有记录 id
 格式保持不变。
@@ -483,21 +488,24 @@ shadow 是文档模式必需项而非可选增强，`write_document=true` 下不
 | `Document` | id / text / metadata |
 | `TextQuery` | text / top_k / filters: FilterExpr \| None / extensions: dict[str, Any] |
 
-Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保留既有
+Document 使用与 VectorRecord 相同的六个 hierarchy metadata 键，并保留既有
 `content_layer`。L0/L1/L2 文档的当前 id 规则保持不变；增加 metadata 不改变主键。
 
-### 层级过滤与区间表示（目标契约，尚未实现）
+### 层级过滤与区间表示
 
 层级过滤继续使用现有 `FilterClause(field, op, value)`，不新增查询结构：
 
 - kind/role/parent 精确过滤使用 `EQ`，例如
-  `field="hierarchy_kind"`、`field="parent_id"`。
+  `field="hierarchy_kind"`、`field="tree_parent_id"`。
 - 区间相交 `[query_start, query_end]` 表示为
-  `span_start <= query_end AND span_end >= query_start`，即分别使用 `LTE` 与 `GTE`。
-- 时间值统一写为 ISO 8601 字符串；同一索引内必须规范到可按时间顺序比较的统一时区格式。
+  `tree_span_start <= query_end AND tree_span_end >= query_start`，即分别使用 `LTE` 与 `GTE`。
+- 树区间与普通 temporal 字段的时间投影统一写为 UTC epoch 毫秒，朴素 datetime 按 UTC
+  解释；带时区值保留实际时刻，不使用服务器本地时区。真源保留原时间表示；
+  没有区间时不落时间哨兵，普通字段的既有缺值与哨兵规则保持不变。
 - filters 只承载 scope 之外的谓词，scope 仍是 Store 方法的显式第一参数。
 
 后端若不能原生执行区间谓词，可以在同 scope 候选上做等价后过滤，但不得放宽结果语义。
+裸结构字段只读 `HierarchyRef` 真源，用户同名 metadata 不覆盖它。索引更新先清旧结构投影，再生成当前值；Unified 写到 system_metadata 的结构副本不得被其他 builder 当成旧值再次索引。
 索引重建必须枚举 KV 真源的 MemoryUnit，重新生成内容层与 hierarchy metadata；不得从
 旧索引反推 hierarchy。
 
@@ -530,6 +538,15 @@ Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保�
 | `ScoredHit` | id / score / metadata |
 
 **注**：所有 `metadata` / `filters` / `scalar_filters` 只承载 scope 之外的额外谓词，scope 作为显式第一入参，不混进这些结构体。
+
+## 文档后台组件生命周期
+
+Watchdog 不属于存储 capability，由装配根持有并显式启动。start 必须在长寿事件循环
+就绪后调用；stop 幂等地停止事件/任务准入、取消定时器并等待已进入数据面的同步工作，
+返回后不得再访问 shadow。此等待不得依赖调用方事件循环继续执行。
+排队但尚未进入数据面的工作在停止后不得访问依赖，旧代工作不得因重新启动而复活。
+装配根在 watcher、摄入和调度使用者停止后，按共享所有权去重关闭 shadow 等连接；
+失败装配只回滚本次新建资源，不关闭借用对象。
 
 ## 实现注册机制
 

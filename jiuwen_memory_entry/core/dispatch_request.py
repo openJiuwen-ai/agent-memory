@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from jiuwen_memory.api import RequestSecurityContext, Scope, Surface
+from jiuwen_memory.api import RequestSecurityContext, Scope
 
 
 @dataclass(frozen=True)
@@ -31,10 +31,9 @@ class DispatchRequest:
     verb: str
     actor: Scope
     target: Scope | None
+    security: RequestSecurityContext
     payload: Mapping[str, Any] = field(default_factory=dict)
-    surface: Surface = Surface.INTERNAL
     request_id: str = ""
-    security: RequestSecurityContext | None = None
     grantee: Scope | None = None
     member: Scope | None = None
     batch_items: tuple[DispatchBatchItem, ...] = ()

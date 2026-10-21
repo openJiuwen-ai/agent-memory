@@ -34,11 +34,28 @@ from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.lock import LockProducer
 from jiuwen_memory.common.log import get_logger, setup_logging
+from jiuwen_memory.common.security._assembly_lifecycle import _assembly_lifecycle
 from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
     DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
     AuditVerificationLimits,
 )
+from jiuwen_memory.common.security.authentication.credential_registry import (
+    CredentialStatusRegistry,
+)
+from jiuwen_memory.common.security.authorization.base import (
+    AuthorizationProducer,
+    Authorizer,
+)
+from jiuwen_memory.common.security.capabilities import (
+    CloseableSecurityCapability,
+    SecurityLifecycleCapability,
+    SecurityResourceOwner,
+    needs_space_facts,
+    share_security_lifecycle,
+    validate_authorization_capabilities,
+)
+from jiuwen_memory.common.security.runtime import SecurityRuntime
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl import register_config_sources
@@ -55,7 +72,7 @@ from jiuwen_memory.control.engine import EngineProducer
 from jiuwen_memory.control.governance import GovernorProducer
 from jiuwen_memory.control.ingest_job import IngestJobController, IngestJobProducer
 from jiuwen_memory.control.membership import MembershipProducer
-from jiuwen_memory.control.permission import PermissionProducer
+from jiuwen_memory.control.permission import PermissionManager, PermissionProducer
 from jiuwen_memory.control.policy import PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.space import SpaceManager, SpaceProducer
@@ -70,10 +87,13 @@ from jiuwen_memory.storage.store_manager import (
 )
 from jiuwen_memory.storage.watchdog import Watchdog, WatchdogProducer
 
+from ..access_security import _build_security_runtime
 from ..memory_api import MemoryAPI
 from .local_memory_api import LocalMemoryAPI
 
 logger = get_logger(__name__)
+
+AUTO_SECURITY_RUNTIME = object()
 
 _SCHEMA_TARGETS = frozenset(
     {
@@ -120,6 +140,8 @@ class _Kernel:
     config_source: ConfigSource | None = None
     scheduler: Scheduler | None = None
     watchdog: Watchdog | None = None
+    security_runtime: SecurityRuntime | None = None
+    security_resources: SecurityResourceOwner | None = None
 
     async def start_background(self) -> None:
         """启动需事件循环就绪的后台组件。
@@ -135,14 +157,12 @@ class _Kernel:
             logger.info("start_background: watchdog.start() called")
 
     def close(self) -> None:
-        """关闭需显式释放的后台组件（server shutdown event 调）。
-
-        顺序：先停看门狗 Observer（不再监听后续文件变更），再关影子索引 sqlite
-        连接。幂等——重复调不报错（watchdog.stop / shadow.close 自身幂等）。
-        """
-        if self.watchdog is not None:
-            self.watchdog.stop()
-        if self.storage.has_shadow_index():
+        """后台屏障成功后，统一释放自有 shadow 与安全资源。"""
+        if self.security_runtime is not None:
+            self.security_runtime.close()
+        elif self.security_resources is not None:
+            self.security_resources.close()
+        elif self.storage.has_shadow_index():
             shadow = self.storage.shadow_index()
             if shadow is not None:
                 shadow.close()
@@ -158,89 +178,153 @@ class MemoryRuntime(Protocol):
 
     @property
     def api(self) -> MemoryAPI:
+        """返回运行时的公共 API。"""
         ...
 
     async def start_background(self) -> None:
+        """Bind optional background components to the caller's long-lived event loop."""
         ...
 
     def start(self) -> None:
+        """Start optional background components on a Runtime-owned event loop."""
         ...
 
     def close(self, *, wait: bool = True) -> None:
+        """幂等关闭；wait=False 后台收尾，wait=True 等待同一清理尝试。
+
+        后台任务和状态写入结束后才释放依赖；等待关闭可取得后台清理异常。
+        """
         ...
+
+
+@runtime_checkable
+class ServerRuntime(MemoryRuntime, Protocol):
+    """公开 Server 装配结果；安全绑定与资源所有权已在内核完成。"""
+
+    @property
+    def security_runtime(self) -> Any:
+        """返回入口认证/保护能力组合；未选择认证时为 None。"""
+        ...
+
+    @property
+    def audit(self) -> AuditLogger | None:
+        """返回与 API 业务审计同源的入口审计器。"""
+        ...
+
+
+@dataclass(frozen=True)
+class _ServerRuntime:
+    _runtime: MemoryRuntime
+    security_runtime: Any
+    audit: AuditLogger | None
+
+    @property
+    def api(self) -> MemoryAPI:
+        return self._runtime.api
+
+    async def start_background(self) -> None:
+        await self._runtime.start_background()
+
+    def start(self) -> None:
+        self._runtime.start()
+
+    def close(self, *, wait: bool = True) -> None:
+        self._runtime.close(wait=wait)
 
 
 @dataclass
 class _MemoryRuntime:
-    """``assemble_runtime`` 的产物：api + 生命周期。
-
-    ``_kernel`` 私有持有全部端口（不暴露 kv/storage/space/scheduler/ingest_jobs 等——
-    S02 边界）；close 时经 ``_kernel`` 访问各端口，start 语义按调用方的并发模型二选一，
-    watchdog 绑的长寿 loop 在 Runtime 关闭时回收。
-    """
+    """Runtime 生命周期：后台使用者全部停止之后才释放共享依赖。"""
 
     api: MemoryAPI
     _kernel: _Kernel
+    _resources: SecurityResourceOwner | None = field(default=None, repr=False)
+    _shutdown_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
+    _drain_lock: Any = field(default_factory=threading.Lock, init=False, repr=False)
+    _closing: bool = field(default=False, init=False, repr=False)
+    _drain_attempted: bool = field(default=False, init=False, repr=False)
+    _background_drained: bool = field(default=False, init=False, repr=False)
+    _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
+    _loop_thread: threading.Thread | None = field(default=None, repr=False)
+    _close_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _close_error: BaseException | None = field(default=None, init=False, repr=False)
+    _close_errors: list[BaseException] = field(default_factory=list, init=False, repr=False)
+    _watchdog_stopped: bool = field(default=True, init=False, repr=False)
 
     async def start_background(self) -> None:
-        """异步面（FastAPI lifespan / MCP / SDK provider）：watchdog 绑当前 loop。"""
-        with self._close_lock:
-            if self._close_thread is not None:
-                raise RuntimeError("MemoryRuntime is closed")
+        """在异步宿主的长寿循环中启动；关闭后拒绝重启。"""
+        self._validate_resources()
+        with self._shutdown_lock:
+            self._validate_start()
             await self._kernel.start_background()
 
     def start(self) -> None:
-        """同步面（http_server 等无事件循环的宿主）：daemon 线程自持专属 loop。
+        """同步宿主使用自有循环；启动异常传回调用方。"""
+        self._validate_resources()
+        with self._shutdown_lock:
+            self._validate_start()
+            self._start_loop()
 
-        装配期无 running loop 是既定铁律，故 watchdog 的 start 在此线程内
-        ``call_soon`` 后 ``run_forever``。close 时先停 watchdog 再停 loop。
-        """
-        if self._close_thread is not None:
-            raise RuntimeError("MemoryRuntime is closed")
+    def _validate_start(self) -> None:
+        if self._closing:
+            raise ValidationError("cannot start a closed MemoryRuntime")
+
+    def _validate_resources(self) -> None:
+        if self._resources is not None and self._resources.is_closed():
+            raise ValidationError("cannot start a closed MemoryRuntime")
+
+    def _start_loop(self) -> None:
         if self._kernel.watchdog is None or self._loop_thread is not None:
-            return  # 无看门狗（no-op）或已启动（幂等）
+            return
         started = threading.Event()
         loop = asyncio.new_event_loop()
         self._loop = loop
+        errors: list[BaseException] = []
 
-        def _run() -> None:
-            # 局部引用：close() 清 _loop 后这里不再读共享字段（run_forever 退出
-            # 与 close 并发，读 self._loop 会撞 None）。
+        def run() -> None:
             asyncio.set_event_loop(loop)
-            loop.call_soon(self._kernel.watchdog.start)
-            started.set()
             try:
+                try:
+                    loop.run_until_complete(self._kernel.start_background())
+                except BaseException as exc:
+                    errors.append(exc)
+                    return
+                finally:
+                    started.set()
                 loop.run_forever()
             finally:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_default_executor())
                 loop.close()
 
-        self._loop_thread = threading.Thread(
-            target=_run, name="memory-runtime-loop", daemon=True
-        )
+        self._loop_thread = threading.Thread(target=run, name="memory-runtime-loop", daemon=True)
         self._loop_thread.start()
         started.wait()
+        if errors:
+            self._loop_thread.join()
+            self._loop_thread = None
+            self._loop = None
+            raise errors[0]
 
-    def close(self, *, wait: bool = True) -> None:
-        """停止新调度；按 wait 等待后台任务收尾后再释放依赖资源与 leader 锁。"""
+    def _validate_shutdown(self, *, wait: bool) -> None:
         if wait and threading.current_thread() is self._loop_thread:
             raise RuntimeError("cannot wait for MemoryRuntime from its own loop thread")
         if self._kernel.scheduler is not None:
             self._kernel.scheduler.validate_shutdown(wait=wait)
-        with self._close_lock:
+
+    def close(self, *, wait: bool = True) -> None:
+        """False 启动单个后台收尾；True 等待同一清理尝试并报告异常。"""
+        self._validate_shutdown(wait=wait)
+        # 根锁先于 Runtime 锁，避免与外层 SecurityRuntime 的关闭屏障形成锁反转。
+        if self._resources is not None:
+            self._resources.begin_close()
+        with self._shutdown_lock:
+            self._request_stop()
             if self._close_thread is None:
-                if self._kernel.watchdog is not None:
-                    self._watchdog_stopped = self._close_step(
-                        "watchdog.stop", self._kernel.watchdog.stop
-                    )
-                if self._kernel.scheduler is not None:
-                    self._close_step(
-                        "scheduler.shutdown(wait=False)",
-                        lambda: self._kernel.scheduler.shutdown(wait=False),
-                    )
-                self._close_step(
-                    "ingest_jobs.close(wait=False)",
-                    lambda: self._kernel.ingest_jobs.close(wait=False),
-                )
                 self._close_thread = threading.Thread(
                     target=self._finish_close, name="memory-runtime-close", daemon=True
                 )
@@ -251,18 +335,40 @@ class _MemoryRuntime:
             if self._close_error is not None:
                 raise self._close_error
 
+    def _request_stop(self) -> None:
+        with self._shutdown_lock:
+            if self._closing:
+                return
+            self._closing = True
+            if self._kernel.watchdog is not None:
+                self._watchdog_stopped = self._close_step(
+                    "watchdog.stop", self._kernel.watchdog.stop
+                )
+            if self._kernel.scheduler is not None:
+                self._close_step(
+                    "scheduler.shutdown(wait=False)",
+                    lambda: self._kernel.scheduler.shutdown(wait=False),
+                )
+            self._close_step(
+                "ingest_jobs.close(wait=False)", lambda: self._kernel.ingest_jobs.close(wait=False)
+            )
+
     def _close_step(self, name: str, action: Callable[[], None]) -> bool:
         try:
             action()
-        except Exception as exc:
+        except BaseException as exc:
             exc.add_note(f"MemoryRuntime.close step: {name}")
             self._close_errors.append(exc)
             logger.exception("MemoryRuntime.close failed at %s", name)
             return False
         return True
 
-    def _finish_close(self) -> None:
-        try:
+    def _drain_background(self) -> bool:
+        self._request_stop()
+        with self._drain_lock:
+            if self._drain_attempted:
+                return self._background_drained
+            self._drain_attempted = True
             if not self._watchdog_stopped and self._kernel.watchdog is not None:
                 self._watchdog_stopped = self._close_step(
                     "watchdog.stop retry", self._kernel.watchdog.stop
@@ -276,40 +382,55 @@ class _MemoryRuntime:
                     "scheduler.shutdown(wait=True)",
                     lambda: self._kernel.scheduler.shutdown(wait=True),
                 )
-            # 旧任务完全停止后才允许新实例接管，避免释放锁后的双跑。
-            # 停止失败时保留锁与存储；锁释放失败不阻断已经安全的存储清理。
-            if ingest_stopped and scheduler_stopped and self._watchdog_stopped:
-                release_lock = getattr(self.api, "release_dreaming_lock", None)
-                if callable(release_lock):
-                    self._close_step("release_dreaming_lock", release_lock)
+            stopped = self._watchdog_stopped and ingest_stopped and scheduler_stopped
+            if stopped:
+                # 锁释放失败不阻断已安全的资源清理；停止不确定时不释放锁或资源。
+                release = getattr(self.api, "release_dreaming_lock", None)
+                if callable(release):
+                    self._close_step("release_dreaming_lock", release)
+            loop_stopped = self._stop_loop() if self._watchdog_stopped else False
+            self._background_drained = stopped and loop_stopped
+            return self._background_drained
+
+    def _stop_loop(self) -> bool:
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            if not self._close_step(
+                "runtime loop.stop", lambda: loop.call_soon_threadsafe(loop.stop)
+            ):
+                return False
+        if self._loop_thread is not None:
+            if not self._close_step("runtime loop.join", self._loop_thread.join):
+                return False
+        self._loop = None
+        self._loop_thread = None
+        return True
+
+    def _stop_for_shared_close(self) -> None:
+        """只等待后台屏障，不 join 收尾线程（它可能正在等资源根锁）。"""
+        self._validate_shutdown(wait=True)
+        if not self._drain_background():
+            raise BaseExceptionGroup("MemoryRuntime background stop failed", self._close_errors)
+
+    def _finish_close(self) -> None:
+        try:
+            if self._drain_background():
                 self._close_step("kernel.close", self._kernel.close)
-        except Exception as exc:
+        except BaseException as exc:
             self._close_errors.append(exc)
             logger.exception("MemoryRuntime.close encountered an unexpected failure")
         finally:
-            if self._watchdog_stopped:
-                loop = self._loop
-                stop_requested = True
-                if loop is not None and not loop.is_closed():
-                    stop_requested = self._close_step(
-                        "runtime loop.stop", lambda: loop.call_soon_threadsafe(loop.stop)
-                    )
-                if stop_requested:
-                    self._loop = None
-                    if self._loop_thread is not None:
-                        self._close_step("runtime loop.join", self._loop_thread.join)
             if len(self._close_errors) == 1:
                 self._close_error = self._close_errors[0]
             elif self._close_errors:
-                self._close_error = ExceptionGroup("MemoryRuntime.close failed", self._close_errors)
+                self._close_error = BaseExceptionGroup(
+                    "MemoryRuntime.close failed", self._close_errors
+                )
 
-    _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
-    _loop_thread: threading.Thread | None = field(default=None, repr=False)
-    _close_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    _close_thread: threading.Thread | None = field(default=None, repr=False)
-    _close_error: Exception | None = field(default=None, repr=False)
-    _close_errors: list[Exception] = field(default_factory=list, repr=False)
-    _watchdog_stopped: bool = field(default=True, repr=False)
+    def security_resource_owner(self) -> SecurityResourceOwner:
+        if self._resources is None:
+            raise ValidationError("MemoryRuntime has no security resource owner")
+        return self._resources
 
 
 def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:
@@ -319,19 +440,18 @@ def _coerce_config(config: Config | Mapping[str, Any] | None) -> Config | None:
     if isinstance(config, Mapping):
         return Config.from_dict(config)
     raise TypeError(
-        "assemble config must be Config, mapping, or None, "
-        f"got {type(config).__name__}"
+        f"assemble config must be Config, mapping, or None, got {type(config).__name__}"
     )
 
 
 def _register_all() -> None:
     """组装前按层触发自注册（句柄在接口、注册靠 import 实现；各 bootstrap 幂等）。"""
-    register_plugins()       # common 共享插件
-    register_backends()      # storage
-    register_operators()     # retrieval
-    register_ingestors()     # ingest
+    register_plugins()  # common 共享插件
+    register_backends()  # storage
+    register_operators()  # retrieval
+    register_ingestors()  # ingest
     register_constructors()  # construction
-    register_controllers()   # control
+    register_controllers()  # control
     register_config_sources()  # ConfigSource：yaml_defaults / dict / overlay
 
 
@@ -386,6 +506,23 @@ def _build_kernel(
             )
     _register_all()
     Factory.reset_all()  # 每次组装前清空具名实例缓存以隔离多次装配
+    with _assembly_lifecycle() as lifecycle:
+        kernel = _assemble_kernel(policies, kv, config)
+        owner = (
+            kernel.security_runtime.security_resource_owner()
+            if kernel.security_runtime is not None
+            else kernel.security_resources
+        )
+        lifecycle.bind(owner)
+        return kernel
+
+
+def _assemble_kernel(
+    policies: dict[str, str] | None,
+    kv: KVStore | None,
+    config: Config | None,
+) -> _Kernel:
+    """在创建观察作用域内解析依赖，失败由外层按本次拥有关系回滚。"""
 
     ctx = default_context()
     if config is not None and not config.is_empty():
@@ -441,14 +578,32 @@ def _build_kernel(
         )
     space = SpaceProducer.dep(root, default="kv")
     scheduler = SchedulerProducer.dep(root, default="in_process")
+    with _assembly_lifecycle() as lifecycle:
+        lifecycle.failure_cleanup.append(scheduler.shutdown)
     lock_specs = root.ctx.namespaces.get(LockProducer.TOP_NAME, {})
     dreaming_lock = (
         LockProducer.build_named("dreaming", root.ctx) if "dreaming" in lock_specs else None
     )
 
+    authorizer = AuthorizationProducer.dep(root, default="standard")
+    if not isinstance(authorizer, Authorizer):
+        raise ValidationError(
+            f"authorizer namespace assembled a non-Authorizer value: {type(authorizer).__name__}"
+        )
+    _reject_test_only_authorizer(authorizer, config)
+    required = ctx.globals.get("require_grant_management", False)
+    if not isinstance(required, bool):
+        raise ValidationError("require_grant_management must be bool")
+    validate_authorization_capabilities(authorizer, required=required)
+
+    # 在同一装配纪元建立 Registry，随后从实际认证器绑定签发真源；SDK 与 Server 同路。
+    credential_registry = CredentialStatusRegistry()
+    engine = EngineProducer.dep(root, default="in_memory")
+    permission = PermissionProducer.dep(root, default="sqlite")
+
     api = LocalMemoryAPI(
-        engine=EngineProducer.dep(root, default="in_memory"),
-        permission=PermissionProducer.dep(root, default="sqlite"),
+        engine=engine,
+        permission=permission,
         scheduler=scheduler,
         dreaming_lock=dreaming_lock,
         policy=PolicyProducer.dep(root, default="dict"),
@@ -475,9 +630,10 @@ def _build_kernel(
         # 表算，两者错位。判定表不另设解析路径的理由见 F07「归属判定算子」，那一条约束的
         # 是同一实例内不出现两份表，跨实例的一致由本处的配置写法决定。
         router=optional_router(root),
+        authorizer=authorizer,
+        credential_registry=credential_registry,
     )
     _reject_routing_without_space_authorization(api)
-
     watchdog: Watchdog | None = None
     has_shadow = storage.has_shadow_index()
     watch_doc = resolve_watch_document(root.get(WATCH_DOCUMENT_KEY, True))
@@ -487,9 +643,28 @@ def _build_kernel(
     # 都会让 assembled=False，此时 md 手改不会被增量同步——出问题时据本日志定位。
     logger.info(
         "watchdog assembled=%s (shadow=%s, watch_doc=%s)",
-        watchdog is not None, has_shadow, watch_doc,
+        watchdog is not None,
+        has_shadow,
+        watch_doc,
     )
 
+    # 同包 PEP 装配：最终 PDP 替换仍须满足本部署的完整管理要求。
+    api._bind_authorizer(authorizer, required=required)  # pylint: disable=protected-access
+    _warn_inert_permission_namespace(permission, api, config)
+    security_runtime = _build_security_runtime(ctx)
+    if security_runtime is not None:
+        if security_runtime.authorizer is not authorizer:
+            raise ValidationError("security Runtime 与内核 PEP 的 authorizer 必须是同一实例")
+        # 同包装配接缝；不为初始化凭据真源扩充冻结的 MemoryAPI。
+        api._bind_credential_sources(security_runtime.authenticator)  # pylint: disable=protected-access
+    shadow_names = {"default", *ctx.namespaces.get("shadow_index", {})}
+    shadows = []
+    for name in sorted(shadow_names):
+        if storage.has_shadow_index(name):
+            shadows.append(storage.shadow_index(name))
+    resources = SecurityResourceOwner((authorizer, *shadows))
+    if security_runtime is not None:
+        resources.share_with(security_runtime.security_resource_owner())
     return _Kernel(
         api=api,
         kv=kv_store,
@@ -500,6 +675,23 @@ def _build_kernel(
         config_source=config_source,
         scheduler=scheduler,
         watchdog=watchdog,
+        security_runtime=security_runtime,
+        security_resources=resources,
+    )
+
+
+def _reject_test_only_authorizer(authorizer: Authorizer, config: Config | None) -> None:
+    """Reject a test-only PDP from an explicitly secured production assembly."""
+    if not authorizer.is_test_only():
+        return
+    if config is None or config.is_empty():
+        return
+    if not config.context(known_top_names=Factory.known_top_names()).namespaces.get("security"):
+        return
+    raise ValidationError(
+        "配置了 security 段（生产装配）但 authorizer 是仅限测试的恒放行实现。"
+        "请把 authorizer.default.target 配成 standard（或 routing）并配齐 grant_store "
+        "与 delegation_store。"
     )
 
 
@@ -517,9 +709,44 @@ def _reject_routing_without_space_authorization(api: LocalMemoryAPI) -> None:
         return
     raise ValidationError(
         "配置了 router 判定表但未开启空间治理。改法二选一："
-        "把 permission.default.target 配成 space_aware，或删掉 router 命名空间。"
+        "把 authorizer.default.target 配成 space_aware（params.delegate 指向具名 "
+        "standard），或删掉 router 命名空间。"
         "原因：判定表把写入分流进协作空间，而当前的判定实现不读空间事实，"
         "这些协作空间没有任何权限边界——写入成功、检索也拿得到，只是拿得到的人多了。"
+    )
+
+
+def _warn_inert_permission_namespace(
+    permission: PermissionManager, api: LocalMemoryAPI, config: Config | None
+) -> None:
+    """permission 段与 authorizer 的空间语义一致性守卫。
+
+    空间级判定已收敛到 authorizer（F04 §3.1），permission 段在内容读写路径上不再
+    被调用。两个处置分支：
+
+    - permission 段显式选了声明 ``requires_space_facts`` 的管理器（如 space_aware），
+      而 authorizer 不提供空间语义：**拒绝启动**。该组合意味着调用方以为装了空间
+      判定，实际空间级入口整体回落标准链——成员记录、归属主体档与两轴求值全部
+      静默失效，失效方向是放宽。
+    - 其余显式选择的 permission 实现不被调用：降为 WARNING，方向不构成越权。
+    """
+    if config is None or config.is_empty():
+        return
+    if not config.context(known_top_names=Factory.known_top_names()).namespaces.get("permission"):
+        return
+    space_authorization = api.space_governance_enabled
+    if needs_space_facts(permission) and not space_authorization:
+        raise ValidationError(
+            "permission 段选了 space_aware 判定，但 authorizer 不提供空间语义"
+            "（requires_space_facts() 为假）。空间级入口会整体回落标准链，"
+            "成员记录与归属主体档静默失效。请把 authorizer.default.target 配成 "
+            "space_aware（params.delegate 指向具名 standard），或改回非空间判定。"
+        )
+    if space_authorization:
+        return
+    logger.warning(
+        "配置了 permission 段，但该判定实现不再处于内容读写路径——"
+        "空间级与主体面判定均由 authorizer 终局（不变量 23）。"
     )
 
 
@@ -529,7 +756,7 @@ def assemble(
     config: Config | Mapping[str, Any] | None = None,
 ) -> MemoryAPI:
     """装配出一个可用的 ``MemoryAPI``。普通调用方只应使用本函数。"""
-    return _build_kernel(policies, kv, config).api
+    return assemble_runtime(policies, kv, config).api
 
 
 def assemble_runtime(
@@ -539,4 +766,76 @@ def assemble_runtime(
 ) -> MemoryRuntime:
     """装配 Access 运行时：``api`` + ``close``，不暴露存储或任务控制器端口。"""
     kernel = _build_kernel(policies, kv, config)
-    return _MemoryRuntime(api=kernel.api, _kernel=kernel)
+    return _runtime_from_kernel(kernel)
+
+
+def _runtime_from_kernel(kernel: _Kernel) -> _MemoryRuntime:
+    """私有装配工作对象转换为公共生命周期句柄。"""
+    runtime = _MemoryRuntime(
+        api=kernel.api,
+        _kernel=kernel,
+        _resources=kernel.security_resources,
+    )
+    # 本包 facade 持有委托闭包，不将 Runtime/Store 端口公开给业务层。
+    # pylint: disable=protected-access
+    kernel.api._runtime_close = runtime.close
+    runtime.security_resource_owner().add_close_barrier(runtime._stop_for_shared_close)
+    return runtime
+
+
+def assemble_server_runtime(
+    policies: dict[str, str] | None = None,
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    security_runtime: Any = AUTO_SECURITY_RUNTIME,
+) -> ServerRuntime:
+    """装配 Server 门面，Access 无需访问 MemoryRuntime/API 的私有成员。
+
+    默认复用配置的安全 Runtime，显式 None 不选择入口认证；显式组合覆盖入口能力，
+    若包含 PDP/Authenticator 则在内核回绑并校验。成功返回后统一负责已选择能力的
+    生命周期；失败只关闭本次内核，不接管调用方注入对象。
+    """
+    kernel = _build_kernel(policies=policies, config=config)
+    runtime = _runtime_from_kernel(kernel)
+    try:
+        auto_security = security_runtime is AUTO_SECURITY_RUNTIME
+        selected = kernel.security_runtime if auto_security else security_runtime
+        _bind_server_security(kernel, selected, auto_security=auto_security)
+        facade = _ServerRuntime(runtime, selected, kernel.audit)
+        share_security_lifecycle(runtime, selected)
+        if isinstance(selected, CloseableSecurityCapability) and not isinstance(
+            selected, SecurityLifecycleCapability
+        ):
+            runtime.security_resource_owner().share_with(SecurityResourceOwner((selected,)))
+        # 同包 facade 委托统一关闭，不将安全装配接缝交给 Access。
+        kernel.api._runtime_close = facade.close  # pylint: disable=protected-access
+        return facade
+    except BaseException as assembly_error:
+        try:
+            runtime.close(wait=True)
+        except BaseException as cleanup_error:
+            raise assembly_error from cleanup_error
+        raise
+
+
+def _bind_server_security(kernel: _Kernel, selected: Any, *, auto_security: bool) -> None:
+    """同包内完成 PDP、认证签发源的最终调和，保留旧部分能力组合适配。"""
+    if selected is None:
+        return
+    # SecurityRuntime 的公开健康契约；旧部分组合没有整体 health，仍逐项校验绑定能力。
+    health = getattr(selected, "health", None)
+    if callable(health):
+        health()
+    authorizer = getattr(selected, "authorizer", None)
+    if authorizer is not None:
+        # AUTO 的身份一致性已在 _assemble_kernel 发布前校验。
+        if authorizer.is_test_only():
+            raise ValidationError(
+                "Server refuses a test-only authorizer; configure a production PDP"
+            )
+        if not auto_security:
+            # LocalMemoryAPI 私有接缝只允许本包的装配器使用。
+            kernel.api._bind_authorizer(authorizer)  # pylint: disable=protected-access
+    authenticator = getattr(selected, "authenticator", None)
+    if authenticator is not None:
+        kernel.api._bind_credential_sources(authenticator)  # pylint: disable=protected-access

@@ -7,7 +7,7 @@
 存储层分**管理面**（`StoreManager`：能力发现、命名端口暴露、统一授权代理、健康聚合）
 与**数据面**（`DomainStore`：MemoryUnit 领域 CRUD 与检索适配）两个独立 ABC；默认实现
 `CompositeStoreManager` + `CompositeDomainStore`。全局唯一 manager 由 `globals.store_manager`
-指名（F07）。管理面暴露七类 Store 端口（KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY）与
+指名（F07）。管理面暴露九类 Store 端口（KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY/MARKDOWN/DOCUMENT_SHADOW）与
 命名数据面，二者是同层级的受管成员（同构的 `xxx(name)` / `has_xxx(name)` 入口）。
 底层 Store 统一 CRUD 动词（insert/delete/update/get）和检索型 `search`。
 **scope 隔离是存储层的原生职责**（ENTITY 端口以 space_id + actor 表达，见铁律 1）。
@@ -39,7 +39,9 @@
 | `entity_impl/` | EntityStore 实现目录（elasticsearch）；经 manager 装配为 ENTITY 端口（params 引用 → `entity_store.default` 兜底）；`hosts` 未配时 builder 返 None → 无 ENTITY 能力（增强层装配期降级，不报错）；`hosts` 晚绑定 |
 | `store_manager_impl/` | 管理面实现目录；`CompositeStoreManager` 以 `composite` target 自注册。双入口：`__init__` 收已构造的 Store 实例（手工/测试），`from_config` 从配置内部构造七类 Store 与全部命名数据面（装配路径，`_build` 即其一行封装）。含 `_AuthorizedStoreProxy` + ENTITY 专用的 `_AuthorizedEntityStoreProxy` 授权代理、七类端口全量聚合、`_build_domain_stores`（`domain_stores` 段逐套装配，`default` 必建且是命名实例的 overlay base）。**manager 段 params 不承载数据面配置**：端口来自命名空间聚合，数据面参数全在 `domain_stores.<name>` |
 | `domain_store_impl/` | 数据面实现目录；`CompositeDomainStore`（`recallers` property + `bind_recallers` 手工接线口 + `for_manager(manager, config)` 供 manager 装配期直接构造——profile 派生、召回路组装与绑定一次完成；真源 KV 端口名由装配期指名，非硬编码 default）、`_assemble_recallers`（F06 内收设计）与**召回路全家**：契约 `recaller.py`（`Recaller` + `RecallerProducer`，`TOP_NAME=recaller`）+ 实现 `keyword_recaller.py` / `vector_recaller.py` / `graph_recaller.py` + 共用的 `unit_aggregation.py`（chunk→unit MaxP 归并）。Recaller 是数据面内部件而非检索层算子，不继承 `RetrievalOperator`（F07） |
-| `bootstrap.py` | 统一触发七类 Store 后端与 Storage 实现注册 |
+| `markdown.py` / `shadow.py` | 文档视图与机器真源接口及 Producer；local Markdown 与 SQLite shadow 可选装配 |
+| `watchdog.py` / `watchdog_impl/` | 文件监听公共生命周期；LocalWatchdog 停止准入后通过线程条件等待已进入 shadow 的工作，排队旧代不再访问依赖；不等待调用方 loop 恢复协程 |
+| `bootstrap.py` | 统一触发九类 Store 后端、watchdog 与 Storage 实现注册 |
 
 ## 统一 CRUD 动词
 
@@ -100,7 +102,7 @@
    运行期——调用方以为受保护而实际未校验，比明文更危险。
 
 11. **Storage capability 是端口能力的唯一事实来源**
-   capability 只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY（ENTITY 为 F07 新增第七席）。
+   capability 只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY/MARKDOWN/DOCUMENT_SHADOW。
    **capability 与 `has_*()` 同源于端口表**：某类存储只要有任一端口可用即拥有该 capability，
    二者不会分叉（此前 capability 由「default 端口是否存在」推导而 `has_*()` 查端口表，
    只声明具名端口时会出现「capabilities() 说没有、has_xxx(name) 说有」的矛盾）。
@@ -190,8 +192,8 @@
     `store_manager.default.params` 就得全量抄写其全部键）。代价：manager params 里 inline
     声明 Store（`kv_store: {target: ...}`）的写法失效，后端一律经命名空间声明。
     文档模式（F07）的 markdown / shadow 端口同此范式（`has_markdown(name)` / `markdown(name)` /
-    `has_shadow_index(name)` / `shadow_index(name)`），均为 `StoreManager` ABC 契约方法带缺省
-    实现——未装配文档端口时 `has_*` 返 False、端口方法抛
+    `has_shadow_index(name)` / `shadow_index(name)`）；端口方法是 StoreManager ABC 的抽象契约，
+    has 方法由 capability 判断默认端口，具名判断由实现提供；未装配时 has 返 False、端口抛
     `UnsupportedStorageCapabilityError`；数据面的 `should_write_document()` 是
     `CompositeDomainStore` 实例属性（装配期经 `document_flag` 归一固化），非 manager 契约。
 13. 连接型后端须支持 ConfigSource 晚绑定（S08 / F01 §2.1.4）：在取客户端/连接路径
@@ -222,8 +224,17 @@
     接线。跨 Store 集的整栈切换走 Routing，不属命名数据面语义。
 17. **纯点读/列表读注入 KVStore 端口**：Dedup `_load_unit` / Governor `_find` / Evolver
     源读 / KeywordRecaller 实体扩展等纯点读场景注入 `manager.kv(name)` + `load_units`；
-    control 面（Engine×2 / LifecycleManager / EvolveJob / MiddleToLongJob）真源读写全部直连
-    `manager.kv(name)`（点读 `load_units` / 列表 `list_units` / 枚举 `kv.scopes()`，lifecycle
-    回写 `memory_key`+`dumps` 同 ForwardIndexBuilder 模式）——均不注入 DomainStore（运行期持
-    最小接口，F07 决策 10 修订并推进到 control 面）。DomainStore 消费方只有检索路径
-    （`PipelineRetriever`）与一体化写路径（`UnifiedIndexBuilder`）。
+    InMemoryEngine、LifecycleManager、EvolveJob/MiddleToLongJob 的部分路径仍使用 KV。
+    CloudEngine 的记忆 get/list/scopes 及其权限事实由 DomainStore 真源提供；文档写入经
+    DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。Schema/middle/lifecycle
+    的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。
+
+### 内存索引过滤
+
+内存全文 `search`、向量 `search/recall` 在 top-k 前执行 FilterExpr，比较复用
+`common.type_def.matches_filter_value`；与 KV 真源复核保持相同的标量/数组/缺值语义。
+层级六字段读取索引投影，显式 metadata 命名空间独立，Scope 仍由端口原生隔离。
+
+### 时间投影
+
+SQLite 影子索引的 temporal 列复用 common/time_utils.epoch_ms，与构建投影和真源过滤一致；缺值哨兵保持字段原有契约。
