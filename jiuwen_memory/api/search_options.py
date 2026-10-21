@@ -21,3 +21,5 @@ class SearchOptions:
     hierarchy_role: HierarchyRole | None = None
     span_start: datetime | None = None
     span_end: datetime | None = None
+    expand_depth: int = 0
+    rollup: bool = False

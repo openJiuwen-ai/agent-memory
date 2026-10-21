@@ -207,4 +207,4 @@ HTTP/CLI 从 MemoryAPI 契约反射该方法；MCP 使用同名 memory_evolve_v2
 - 两入口共用已有来源校验、委托身份、Authorizer、空间事实与审计，不能恢复旧 PermissionManager。
 - 显式层级查询仅在 hierarchy.enabled=true 时准入；缺少开关键按关闭处理。
 - Context 和选项快照不反向污染调用者；extensions 标准容器复制，不透明插件保留对象身份。
-- 当前只接受单 kind、可选 role 和成对结构区间；默认普通查询，尚不隐式展开或上卷。
+- 单 kind、可选 role 和成对结构区间之外，支持 expand_depth 与 rollup；默认仍为普通查询。

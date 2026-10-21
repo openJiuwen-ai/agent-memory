@@ -29,6 +29,7 @@ class RecallChannel(str, Enum):
     GRAPH = "graph"
     TEMPORAL = "temporal"
     SPACE = "space"
+    HIERARCHY = "hierarchy"  # 结构遍历诊断，不参与召回融合
 
 
 @dataclass

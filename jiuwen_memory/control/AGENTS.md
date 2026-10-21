@@ -23,7 +23,7 @@
 | `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
 | `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/`begin_delete`/删除/导出/用量/策略/成员 |
-| `collective/` | 群体记忆的控制层纯逻辑子包，三个模块均非算子（无 Producer 注册、不访问存储与模型），不由 `bootstrap` 触发注册。`routing.py`：结论直写路径的归属判定调用，API 层传入成品 `RouteContext`（含已鉴权候选集）与 `Router` 实例，本模块调 `route_batch` 并归一结果，存在的理由是分层边界——判定由构建层承担、判定输入由 API 层的鉴权点构造，二者之间的调用不能落在 API 层（S02「不调用构建」）。`write_targets.py`：写入候选空间集合的渲染、排序、截断与取交，收 `can_write` 回调而不收 `identity`。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与轮转合并，收 `recall` 回调与 API 层判权后给出的空间目标（含逐空间谓词）；只 import `retrieval/cross_space.py` 的三个纯函数，不持有引擎、不持有检索算子；空间级扇出失败与判权剔除分两路交回，不并进 `merged.errors`。三者共同形态是「裁决留 PEP，裁决之后的机械换算与 I/O 编排落本层」，上下之间经回调或成品数据衔接。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
+| `collective/` | 群体记忆的控制层纯逻辑子包，三个模块均非算子（无 Producer 注册、不访问存储与模型），不由 `bootstrap` 触发注册。`routing.py`：结论直写路径的归属判定调用，API 层传入成品 `RouteContext`（含已鉴权候选集）与 `Router` 实例，本模块调 `route_batch` 并归一结果，存在的理由是分层边界——判定由构建层承担、判定输入由 API 层的鉴权点构造，二者之间的调用不能落在 API 层（S02「不调用构建」）。`write_targets.py`：写入候选空间集合的渲染、排序、截断与取交，收 `can_write` 回调而不收 `identity`。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与轮转合并，收 `recall` 回调与 API 层判权后给出的空间目标（含逐空间谓词）；使用 `retrieval/cross_space.py` 合并，并将选中的物化根交给 `retrieval/expansion.py` 统一收尾；不持有引擎、不依赖检索实现；空间级扇出失败与判权剔除分两路交回，不并进 `merged.errors`。三者共同形态是「裁决留 PEP，裁决之后的机械换算与 I/O 编排落本层」，上下之间经回调或成品数据衔接。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
 | `application/` | 按用例划分的 typed application ports，四个模块均非算子（无 Producer、不执行 PEP、不接收 `identity`）。`command.py`：`MemoryCommandService` 包装 Engine 的 write/batch_write/update/delete/evolve/evolve_v2，并提供 `batch_write_aligned` / `collect_batch_result` 做鉴权后的下标回填。`query.py`：`MemoryQueryService` 包装 recall/list/get 与鉴权元数据读取。`space_lifecycle.py`：`SpaceLifecycleService` 先 `begin_delete` 标 `DELETING`，再 purge + `SpaceManager.delete` + `deleted_counts` 汇总；第二步失败抛 `PartialFailureError`，重试入口仍是 `delete_space`。`governance_service.py`：`GovernanceService` 包装 Governor 的 inspect/trace/audit。由已注入的算子组成，不引入 Service Locator；SDK/HTTP/MCP 经 `LocalMemoryAPI` 共用。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
 | `membership.py` | `MembershipResolver` 接口——读空间授权事实（成员表与归属登记）供鉴权点判定，带短 TTL 缓存；正查与反查都只依赖 `SpaceManager` 一个契约 |
 | `__init__.py` | 公开导出全部接口类与数据类型 |
@@ -154,3 +154,9 @@ CloudEngine 不回填已消费的叶提示。此流程不提交父节点构建�
 - Job 支持上游协作取消；已经进入的同步工作先结束并记录结果，不提前释放锁。
   `scheduler_impl/job_outcome.py` 校验终态，两个 Scheduler 均保留真实业务失败。
 - 本模块只接入显式单次 HIERARCHY；不把它注册为普通 dreaming 或周期建树。
+
+### 跨空间树查询
+
+recall_spaces 扇出时设置内部 defer_expansion，先按既有规则全局选根，再交检索层完成
+共享预算展开；未选根不读后代。自定义 Retriever 返回非空结果但不提供准备协议时，
+记录该空间能力错误，不能静默绕过共享预算。身份与逐空间判权仍只由 API 处理。

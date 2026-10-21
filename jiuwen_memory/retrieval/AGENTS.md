@@ -158,3 +158,16 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - Discloser 优先使用 ScoredMemoryUnit 自带本体，避免跨完整 Scope 的相同 id 覆盖；
   普通查询不披露父引用，显式层级请求的 parent_id 来自 HierarchyRef。
 - MultimodalRetriever 尚不支持层级组合，显式拒绝，不静默退回普通多模态搜索。
+
+### 上卷与展开
+
+- `retriever_impl/hierarchy_rollup.py` 在融合/精排之后、阈值/top_k 之前上卷；父与后代
+  共用评分池。MaxP 取最大值，不累加，不为新准入父伪造通道证据。
+- `expander.py` 定义内部只读契约；`expander_impl/default_expander.py` 只使用注入的
+  同源 DomainStore，按完整 Scope 和有序父子边 BFS，不扫描、不写树。
+- `expansion.py` 在单空间或跨空间全局选根后统一分配披露预算和节点上限；
+  PreparedRetrievalResult 只在内部传递，不序列化、不直接返回公开调用者。
+- 越权 Scope 在点读前拒绝；kind、状态、双向引用、区间覆盖和可见性逐边复核。
+  缺节点、坏结构、读失败及截断用 HIERARCHY 诊断表示，不泄露被排除内容。
+- 基础展开收尾即限制父子总数为 top_k，后续父子排序在同一收尾处截断之前接入。
+- 保留文档模式与可选 Reranker 的 BackendError 降级路径，不用原分支旧实现覆盖。

@@ -104,3 +104,21 @@ def matches_hierarchy(unit: MemoryUnit, query: HierarchyQuery) -> bool:
         as_utc(reference.span_start) <= query.span_end
         and as_utc(reference.span_end) >= query.span_start
     )
+
+
+def validate_expand_depth(depth: int, kind: HierarchyKind | None) -> None:
+    """展开只接受非负整数深度，非零深度必须显式指定结构 kind。"""
+    if isinstance(depth, bool) or not isinstance(depth, int):
+        raise ValidationError("expand_depth 必须是非负整数，不能是 bool")
+    if depth < 0:
+        raise ValidationError("expand_depth 必须是非负整数，不能是 bool")
+    if depth and kind is None:
+        raise ValidationError("非零 expand_depth 要求显式 hierarchy_kind")
+
+
+def validate_rollup(rollup: bool, kind: HierarchyKind | None) -> None:
+    """上卷是显式布尔选项，开启时必须指定单一结构 kind。"""
+    if not isinstance(rollup, bool):
+        raise ValidationError("rollup 必须是 bool")
+    if rollup and kind is None:
+        raise ValidationError("rollup 要求显式 hierarchy_kind")

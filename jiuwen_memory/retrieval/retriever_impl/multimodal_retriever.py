@@ -53,6 +53,12 @@ class MultimodalRetriever(Retriever):
         self._base.health()
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        if query.rollup:
+            raise UnsupportedCapabilityError("rollup", "true", "MultimodalRetriever")
+        if query.expand_depth:
+            raise UnsupportedCapabilityError(
+                "expand_depth", str(query.expand_depth), "MultimodalRetriever",
+            )
         if query.hierarchy_kind is not None:
             raise UnsupportedCapabilityError(
                 "hierarchy_kind", query.hierarchy_kind.value, "MultimodalRetriever",
