@@ -52,7 +52,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 ## HTTP / CLI 与协议适配契约
 
 HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
-`MemoryAPI.__abstractmethods__` 的 36 个公开方法全部按以下规则暴露：
+`MemoryAPI.__abstractmethods__` 的 38 个公开方法全部按以下规则暴露：
 
 ```text
 POST /v1/<MemoryAPI 方法名>
@@ -105,7 +105,7 @@ dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或�
 此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
 HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
-不再经过 legacy `DispatchRequest` / shared handler。CLI 的 36 个命令与参数直接从
+不再经过 legacy `DispatchRequest` / shared handler。CLI 的 38 个命令与参数直接从
 `MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
 对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
 本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
@@ -209,7 +209,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。（曾存在的 `legacy_request_context` 过渡桥已随 PR2 删除。）
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 F04-1 §5.4）。
-17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；尚未实现的树查询规则另见 S04，不带层级参数的既有操作保持语义。
+17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve_v2(..., options=EvolveTaskOptions(...))` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；显式层级查询由 search_v2 提供，尚未交付的展开与上卷见 S04。
 18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
@@ -231,7 +231,8 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 | 数据面 | `batch_add_async` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
 | 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05；`occurred_at` 见 F06 |
-| 数据面 | `search` | 已实现；层级增量参数尚未实现 | [search](#search) | F01、F04；层级见 F08 |
+| 数据面 | `search_v2` | 已实现；统一 SearchOptions | [search](#search) | 层级见 F08 |
+| 数据面 | `search` | 已实现；平铺参数转发 search_v2 | [search](#search) | F01、F04；层级见 F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
@@ -495,23 +496,26 @@ def search(
 
 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine。`filters/as_of/top_k/disclosure/with_trajectory` 和 `context.extensions["max_tokens"]` 的既有处理不变。
 
-**状态：已设计、尚未实现**（层级增量参数；不另设公开 `MemoryAPI.expand`）
+`search` 保留既有平铺参数并转发到以下统一入口；新接口不接受 top_k 等平铺关键字。
 
 ```python
-# 目标增量，尚未出现在 MemoryAPI.search 签名中
-hierarchy_kind: HierarchyKind | None = None
-hierarchy_role: HierarchyRole | None = None
-span_start: datetime | None = None
-span_end: datetime | None = None
-expand_depth: int = 0
-rollup: bool = False
+def search_v2(query: str, context: Context, options: SearchOptions | None = None,
+              *, security: RequestSecurityContext) -> RetrievalResult: ...
 ```
 
-新增参数原样装配到 `RetrievalQuery`。`expand_depth=0`、`rollup=false` 保证默认只返回直接召回命中的节点，不展开后代、不把后代分数上卷；调用方通过 `hierarchy_role` 指定父侧角色时，即形成父节点优先召回。省略 role 时，同 kind 下所有活动角色均可参与召回。span 是 `HierarchyRef` 结构区间，不替代查询文本解析得到的 event-time。
+SearchOptions 为冻结 dataclass，包含 filters/as_of/top_k/disclosure/with_trajectory，
+以及 hierarchy_kind/hierarchy_role/span_start/span_end；普通选项默认值与 search 一致。
+role 或任一 span 要求显式 kind；span 必须成对，按 UTC 规范化，闭区间相交。
+结构时间独立于事件时间和有效时间。只指定 kind 时召回该 kind 下的合法活动角色；
+TIME 节点自身仍须具有完整有效区间。
 
-`expand_depth>0` 时，Retriever 在同一次 search 内沿命中父节点展开子证据（单 kind）；**不另设公开 `MemoryAPI.expand`**。展开选子与父命中共用既有 `max_tokens` 上下文预算，不另设独立预算参数。
+两入口共用现有来源校验、READ 鉴权、委托资源主体、空间事实及路由谓词；
+跨空间逐空间授权后分发同一选项。请求快照不修改调用者输入，运行时插件保留身份。
+hierarchy.enabled 缺失或关闭时，显式层级查询抛 PolicyError，普通查询保持可用并排除
+生成的 TIME 父。当前尚不启用默认树预设、祖先上卷或展开；这些是后续交付。
 
-校验和闭区间相交语义以 [S04-retrieval.md](S04-retrieval.md) 为准。任一显式 hierarchy 参数、非零展开深度或 rollup 都构成层级请求；功能关闭时抛 `PolicyError`。普通 search 不因 hierarchy 关闭而失败。
+HTTP/CLI 使用与 Core API 相同的方法名和字段；MCP 增加 memory_search_v2。
+不新增公开 expand 接口，不改写 search 的原参数格式。
 
 #### list
 

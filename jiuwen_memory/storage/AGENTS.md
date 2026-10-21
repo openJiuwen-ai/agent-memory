@@ -238,3 +238,8 @@
 ### 时间投影
 
 SQLite 影子索引的 temporal 列复用 common/time_utils.epoch_ms，与构建投影和真源过滤一致；缺值哨兵保持字段原有契约。
+
+### 结构查询消费
+
+CompositeDomainStore 与 KeywordRecaller 的真源候选检查传入完整 ParsedQuery；
+不得仅传时间字段，否则会遗漏结构过滤。API 负责鉴权，数据面消费已授权的 Scope 与谓词。

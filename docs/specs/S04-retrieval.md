@@ -15,6 +15,11 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 内部系统谓词，两者不 fallback。`RetrievedItem` 同时返回两个命名空间；接入层可按
 信任边界裁剪 `system_metadata`，但 Core API 的检索结果保留完整字段。
 
+## 当前交付边界
+
+显式 kind/role/span 检索与父引用披露已实现；下文标为目标的展开、ensure 和上卷
+暂未接入。结构索引字段为 tree_parent_id/tree_span_start/tree_span_end，模型字段保持原名。
+
 ## 范围 / 边界
 
 **管什么**：
@@ -276,10 +281,10 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 | `rerank` | bool \| None | `None` | 覆盖重排开关 |
 | `include_archived` | bool | `False` | 是否纳入归档 unit |
 | `extensions` | dict[str, Any] | `{}` | 调用级透传配置；本地调用可携带运行时对象 |
-| `hierarchy_kind`（目标） | HierarchyKind \| None | `None` | 单一结构 kind |
-| `hierarchy_role`（目标） | HierarchyRole \| None | `None` | 父层角色过滤 |
-| `span_start`（目标） | datetime \| None | `None` | 结构区间起点 |
-| `span_end`（目标） | datetime \| None | `None` | 结构区间终点 |
+| `hierarchy_kind` | HierarchyKind \| None | `None` | 单一结构 kind |
+| `hierarchy_role` | HierarchyRole \| None | `None` | 父层角色过滤 |
+| `span_start` | datetime \| None | `None` | 结构区间起点 |
+| `span_end` | datetime \| None | `None` | 结构区间终点 |
 | `expand_depth`（目标） | int | `0` | 后代最大边深度；0 不展开 |
 | `rollup`（目标） | bool | `False` | 是否启用后代分数向父传播 |
 
@@ -314,7 +319,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 |------|----------|
 | `ScoredUnit` | unit_id / score / channel / evidence: list[ChannelEvidence] |
 | `ChannelEvidence` | channel / rank / score / weight / contribution |
-| `RetrievedItem` | unit_id / score / content / user_metadata / system_metadata / level: DisclosureLevel |
+| `RetrievedItem` | unit_id / score / content / user_metadata / system_metadata / parent_id / level: DisclosureLevel |
 | `TrajectoryStep` | stage / channel / candidate_count / cost_ms / detail |
 | `ScoredMemoryUnit` | unit: MemoryUnit / score / channel / evidence |
 | `ChannelError` | channel / source / error_type / message |
@@ -322,7 +327,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 
 ### ParsedQuery
 
-`ParsedQuery` 保留既有 `raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions`，目标增加与 `RetrievalQuery` 同名的 hierarchy 字段。Parser 不把 hierarchy span 改写成 event-time，也不从 TEMPORAL 通道推导 TIME kind。
+`ParsedQuery` 保留既有 `raw/rewritten/intent/tokens/keywords/entities/vector/scalar_filters/as_of/time_from/time_to/channels/extensions`，已包含与 `RetrievalQuery` 同名的 kind/role/span 字段。Parser 不把 hierarchy span 改写成 event-time，也不从 TEMPORAL 通道推导 TIME kind。
 
 ### ExpandRequest / ExpandIssue / ExpandResult（目标契约，尚未实现）
 
@@ -433,4 +438,7 @@ FilterExpr 复核仍按统一时间投影判定；不改变未知时间哨兵和
 
 普通召回在索引 top-k 前排除 TIME 的 time_span/scene/event，并在真源物化时
 独立复核。Snapshot 与无结构记忆保持原有召回行为；get/list 点读能力不受此规则影响。
-这是父节点持久化后的兼容约束，完整层级查询另行交付。
+显式 kind 查询使用活动结构、可选角色及结构区间条件替代普通父隔离，仍复核本体。
+
+结构查询的真源复核保留微秒精度，索引毫秒投影只负责前置筛选。
+valid-time 起点为空表示无下界：前置使用 NOT(t_valid > as_of)，真源按半开区间复核。

@@ -60,6 +60,8 @@ from jiuwen_memory.control import (
 from jiuwen_memory.control.types import EvolveTaskOptions
 from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
 
+from .search_options import SearchOptions
+
 
 class MemoryAPI(ABC):
     """统一记忆接口（§9 语义，不含 link——关联由构建层 Associator 在演进中维护）。
@@ -244,6 +246,17 @@ class MemoryAPI(ABC):
         ``/messages/`` 下的 infer 原文缓存。``security`` 为本次请求的安全上下文，
         本层据 ``scope`` 鉴权 READ 后委托 Engine。返回当前页 items 和分页前匹配总数 count。
         """
+
+    @abstractmethod
+    def search_v2(
+        self,
+        query: str,
+        context: Context,
+        options: SearchOptions | None = None,
+        *,
+        security: RequestSecurityContext,
+    ) -> RetrievalResult:
+        """按统一选项检索；Context 指定范围、跨空间候选与调用级扩展。"""
 
     @abstractmethod
     def get(

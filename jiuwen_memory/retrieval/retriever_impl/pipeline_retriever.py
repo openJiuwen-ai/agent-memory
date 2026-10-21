@@ -32,6 +32,7 @@ from jiuwen_memory.common.type_def import (
     and_merge,
     is_retrieval_candidate,
 )
+from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
 from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
@@ -48,7 +49,7 @@ from jiuwen_memory.retrieval.types import (
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
-from .predicate_builder import build_ordinary_hierarchy_filters, build_system_filters
+from .predicate_builder import build_hierarchy_filters, build_system_filters
 from .unit_reader import UnitReader
 
 logger = get_logger(__name__)
@@ -127,6 +128,7 @@ class PipelineRetriever(Retriever):
         return None
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        hierarchy = HierarchyQuery.from_query(query)
         # 入参校验：top_k 非法直接拒绝（可预期的调用错误）。
         if query.top_k <= 0:
             raise ValidationError(f"top_k must be positive, got {query.top_k}")
@@ -195,7 +197,11 @@ class PipelineRetriever(Retriever):
 
         # [2] 查询理解
         t0 = perf_counter()
-        parsed = self._parser.parse(query)
+        parsed = self._parser.parse(replace(query))
+        parsed.hierarchy_kind = hierarchy.hierarchy_kind
+        parsed.hierarchy_role = hierarchy.hierarchy_role
+        parsed.span_start = hierarchy.span_start
+        parsed.span_end = hierarchy.span_end
         if not parsed.raw.strip():
             step("parse", t0, detail={"skipped": "empty_after_parse"})
             return RetrievalResult(items=[], trajectory=traj)
@@ -206,7 +212,7 @@ class PipelineRetriever(Retriever):
 
         # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
         #      用户表达式作整体 child——绝不摊平，防其 OR 稀释 lifecycle 等安全谓词。
-        sys_filters = build_ordinary_hierarchy_filters() + build_system_filters(
+        sys_filters = build_hierarchy_filters(hierarchy) + build_system_filters(
             parsed.as_of, parsed.time_from, parsed.time_to, query.include_archived
         )
         user_filters = parsed.scalar_filters  # parser 已 normalize 的用户表达式（供 §6 复核）
@@ -270,7 +276,9 @@ class PipelineRetriever(Retriever):
                 recall_limit=recall_k,
                 rank_limit=budget_n,
             )
-            fused = ranked.candidates
+            fused = [
+                candidate for candidate in ranked.candidates if _passes_recheck(candidate, parsed)
+            ]
             errors = ranked.errors
 
         for error in errors:
@@ -603,9 +611,6 @@ def _filter_materialized(
 def _passes_recheck(candidate: ScoredMemoryUnit, query) -> bool:
     return is_retrieval_candidate(
         candidate.unit,
-        as_of=query.as_of,
-        time_from=query.time_from,
-        time_to=query.time_to,
+        query,
         filters=query.recheck_filters,
-        include_archived=query.include_archived,
     )

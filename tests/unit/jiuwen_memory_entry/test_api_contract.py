@@ -37,7 +37,7 @@ pytestmark = pytest.mark.unit
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
-    assert len(api_contract.api_method_names()) == 37
+    assert len(api_contract.api_method_names()) == 38
     assert api_contract.is_known_verb("add_async") is True
     assert api_contract.is_known_verb("does_not_exist") is False
 
@@ -331,3 +331,39 @@ def test_evolve_v2_decodes_nested_hierarchy_options_without_changing_legacy_evol
     assert options.hierarchy_options.tree_home_scope == parsed["scope"]
     legacy = api_contract.parse_request("evolve", {"scope": scope, "mode": "extract"})
     assert legacy["mode"] is EvolveMode.EXTRACT and "options" not in legacy
+
+
+@pytest.mark.parametrize("verb", ["search", "search_v2"])
+def test_search_transport_preserves_flat_and_typed_contracts(verb):
+    from jiuwen_memory.api import HierarchyKind, HierarchyRole, SearchOptions
+
+    raw = {"query": "evidence", "context": {"scope": {"org": "acme"}}}
+    if verb == "search":
+        raw["top_k"] = 3
+        assert api_contract.parse_request(verb, raw)["top_k"] == 3
+        raw["options"] = {}
+    else:
+        raw["options"] = {
+            "hierarchy_kind": "time", "hierarchy_role": "time_span", "top_k": 3,
+            "span_start": "2026-09-10T09:00:00", "span_end": "2026-09-10T09:00:01",
+        }
+        options = api_contract.parse_request(verb, raw)["options"]
+        assert isinstance(options, SearchOptions)
+        assert options.hierarchy_kind is HierarchyKind.TIME
+        assert options.hierarchy_role is HierarchyRole.TIME_SPAN
+        assert options.span_start.tzinfo is None
+        assert options.top_k == 3
+        raw["top_k"] = 5
+    with pytest.raises(ValidationError, match="unknown field"):
+        api_contract.parse_request(verb, raw)
+
+
+@pytest.mark.parametrize("options", [None, {}, {"hierarchy_kind": "invalid"}, {"unknown": 1}])
+def test_search_v2_transport_decodes_optional_options(options):
+    raw = {"query": "evidence", "context": {"scope": {"org": "acme"}}, "options": options}
+    if options:
+        with pytest.raises(ValidationError):
+            api_contract.parse_request("search_v2", raw)
+    else:
+        decoded = api_contract.parse_request("search_v2", raw)
+        assert (decoded["options"] is None) == (options is None)

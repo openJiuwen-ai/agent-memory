@@ -113,6 +113,7 @@ from .memory_api_impl import (
 )
 
 __all__ = [
+    "SearchOptions",
     "EvolveTaskOptions", "HierarchyComposeOptions", "HierarchyKind", "HierarchyRole",
     "MemoryAPI",
     "assemble",
@@ -206,3 +207,5 @@ __all__ = [
     "redact_for_log",
     "scope_for_log",
 ]
+
+from .search_options import SearchOptions

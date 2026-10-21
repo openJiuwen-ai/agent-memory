@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 
-from jiuwen_memory.common.type_def import HierarchyRef, HierarchyRole, and_merge
+from jiuwen_memory.common.type_def import HierarchyRef, HierarchyRole, ParsedQuery, and_merge
 from jiuwen_memory.common.type_def.retrieval_filter import is_retrieval_candidate
 from jiuwen_memory.retrieval.retriever_impl.predicate_builder import (
     build_ordinary_hierarchy_filters,
@@ -34,5 +34,5 @@ def test_truth_recheck_does_not_trust_stale_index_metadata(role, accepted):
     unit.hierarchy = HierarchyRef() if role is None else unit.hierarchy
     if role is not None:
         unit.hierarchy.role = role
-    assert is_retrieval_candidate(unit, as_of=None, time_from=None, time_to=None,
-                                  filters=None, include_archived=True) is accepted
+    result = is_retrieval_candidate(unit, ParsedQuery(include_archived=True), filters=None)
+    assert result is accepted

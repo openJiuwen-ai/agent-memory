@@ -14,6 +14,7 @@ from jiuwen_memory.common.type_def import (
     HierarchyRef,
     HierarchyRole,
     MemoryUnit,
+    ParsedQuery,
     Segment,
     Temporal,
     is_retrieval_candidate,
@@ -121,8 +122,9 @@ def test_time_projection_and_filters_agree_across_storage_paths(
             )
             assert matches_memory_unit(unit, filters)
             assert is_retrieval_candidate(
-                unit, as_of=start, time_from=start, time_to=start + timedelta(seconds=3),
-                filters=filters, include_archived=False,
+                unit,
+                ParsedQuery(as_of=start, time_from=start, time_to=start + timedelta(seconds=3)),
+                filters=filters,
             )
             hits = shadow.search_fulltext(HOME, TextQuery(text="alpha", filters=filters))
             assert [hit.id for hit in hits] == [unit.id]

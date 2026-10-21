@@ -6,7 +6,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     FilterClause,
@@ -53,6 +53,10 @@ class MultimodalRetriever(Retriever):
         self._base.health()
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        if query.hierarchy_kind is not None:
+            raise UnsupportedCapabilityError(
+                "hierarchy_kind", query.hierarchy_kind.value, "MultimodalRetriever",
+            )
         queries = {
             "native": _with_filters(
                 query,

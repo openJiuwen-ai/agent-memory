@@ -258,6 +258,16 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
 
 
 @mcp.tool()
+async def memory_search_v2(
+    query: str, context: dict, options: dict | None = None, ctx: Context = None,
+) -> dict:
+    """按统一选项检索；options 可包含层级、结构时间和普通搜索选项。"""
+    return await _invoke(
+        "search_v2", {"query": query, "context": context, "options": options}, context=ctx,
+    )
+
+
+@mcp.tool()
 async def memory_list(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     scope: dict,
     offset: int = 0,

@@ -245,11 +245,8 @@ class KeywordRecaller(Recaller):
                 continue
             if not is_retrieval_candidate(
                 units[uid],
-                as_of=query.as_of,
-                time_from=query.time_from,
-                time_to=query.time_to,
+                query,
                 filters=query.scalar_filters,
-                include_archived=query.include_archived,
             ):
                 continue
             eligible.append((uid, raw))

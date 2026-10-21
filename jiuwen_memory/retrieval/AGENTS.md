@@ -146,6 +146,15 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 ### 普通召回的树父隔离
 
-`predicate_builder.build_ordinary_hierarchy_filters` 在 PipelineRetriever 召回前
-排除生成的 TIME 父；common 的 is_retrieval_candidate 在真源层重复检查。
+`predicate_builder.build_hierarchy_filters` 对无 kind 请求复用普通父隔离；显式 kind
+则下推结构状态、角色与闭区间条件。common 的 is_retrieval_candidate 在真源层复核。
 不得仅做返回后过滤，否则父节点会抢占普通叶的候选名额。
+
+### 显式层级召回
+
+- PipelineRetriever 保真传递 kind/role/span，不依赖自定义 Parser 识别新字段。
+- 结构条件与用户条件以外层 AND 合并；结构时间索引使用 tree_span_start/tree_span_end。
+- recall/get/rank、recall_and_get/rank 和 retrieve 三路都复核本体；索引旧值不能授权命中。
+- Discloser 优先使用 ScoredMemoryUnit 自带本体，避免跨完整 Scope 的相同 id 覆盖；
+  普通查询不披露父引用，显式层级请求的 parent_id 来自 HierarchyRef。
+- MultimodalRetriever 尚不支持层级组合，显式拒绝，不静默退回普通多模态搜索。

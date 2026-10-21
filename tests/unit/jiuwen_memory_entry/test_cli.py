@@ -68,6 +68,8 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
     [
         ("add", {"content": "hello", "scope": SCOPE, "source": "text", "tags": ["a"]}),
         ("search", {"query": "hello", "context": {"scope": SCOPE}, "top_k": 3}),
+        ("search_v2", {"query": "hello", "context": {"scope": SCOPE},
+                       "options": {"hierarchy_kind": "time", "top_k": 3}}),
         ("get", {"unit_id": "u1", "scope": SCOPE}),
         ("update", {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "new"}}),
         ("delete", {"selector": {"scope": SCOPE, "unit_ids": ["u1"], "mode": "purge"}}),

@@ -187,3 +187,10 @@
 Factory.bind_named 捕获本轮实例缓存、锁、配置与创建观察者；reset_all 更换缓存及锁，
 不让旧句柄借用新运行实例的依赖。绑定在 ContextVar 中，退出或异常必须恢复。
 DeferredEmbedder 在首次调用时解析并共享实际插件，失败不缓存，不改变 Embedder 协议。
+
+### 层级查询复核
+
+`type_def/hierarchy_query.py` 定义纯查询校验与 matches_hierarchy；结构区间复用
+common.time_utils.as_utc，naive 按 UTC 解释，不改变原输入对象。
+`is_retrieval_candidate(unit, query, *, filters)` 接受 ParsedQuery，在三条存储路径
+共用 lifecycle、valid/event-time、结构字段及用户过滤的真源复核。

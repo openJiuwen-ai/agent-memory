@@ -199,3 +199,12 @@ HIERARCHY 校验请求后做 WRITE+UPDATE 可信授权及空间可写检查；�
 Authorizer.routing_fields，不能读取已退出生产判定的 PermissionManager。
 父 metadata 拒绝内核保留键与路由标签；范围、候选和开关分流委托控制层。
 HTTP/CLI 从 MemoryAPI 契约反射该方法；MCP 使用同名 memory_evolve_v2 适配。
+
+### 统一搜索选项
+
+- `search_options.py` 定义不可变 SearchOptions；`search` 保留平铺签名，包装后转发
+  `search_v2`。HTTP/CLI 按同名方法反射，MCP 显式提供 memory_search_v2。
+- 两入口共用已有来源校验、委托身份、Authorizer、空间事实与审计，不能恢复旧 PermissionManager。
+- 显式层级查询仅在 hierarchy.enabled=true 时准入；缺少开关键按关闭处理。
+- Context 和选项快照不反向污染调用者；extensions 标准容器复制，不透明插件保留对象身份。
+- 当前只接受单 kind、可选 role 和成对结构区间；默认普通查询，尚不隐式展开或上卷。
