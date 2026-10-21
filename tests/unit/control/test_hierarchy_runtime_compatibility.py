@@ -35,11 +35,12 @@ def test_cloud_engine_reads_domain_source_and_completes_outside_window_children(
         page = harness.kv.list(scope, offset=offset, limit=limit)
         return MemoryListResult(items=[loads(raw) for _, raw in page.entries], count=page.count)
 
+    def get_units(scope, ids):
+        return [harness.composition.read(scope, uid) for uid in reversed(ids)]
+
     domain.scopes.side_effect = harness.kv.scopes
     domain.list.side_effect = list_units
-    domain.get.side_effect = lambda scope, ids: [
-        harness.composition.read(scope, uid) for uid in reversed(ids)
-    ]
+    domain.get.side_effect = get_units
     unrelated_kv = Mock(spec=KVStore)
     unrelated_kv.list.side_effect = AssertionError("cloud must read DomainStore")
     unrelated_kv.scopes.side_effect = AssertionError("cloud must enumerate DomainStore")

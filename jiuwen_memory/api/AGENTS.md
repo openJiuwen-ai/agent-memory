@@ -207,4 +207,11 @@ HTTP/CLI 从 MemoryAPI 契约反射该方法；MCP 使用同名 memory_evolve_v2
 - 两入口共用已有来源校验、委托身份、Authorizer、空间事实与审计，不能恢复旧 PermissionManager。
 - 显式层级查询仅在 hierarchy.enabled=true 时准入；缺少开关键按关闭处理。
 - Context 和选项快照不反向污染调用者；extensions 标准容器复制，不透明插件保留对象身份。
-- 单 kind、可选 role 和成对结构区间之外，支持 expand_depth 与 rollup；默认仍为普通查询。
+- 单 kind、可选 role 和成对结构区间之外，支持 expand_depth 与 rollup；显式组选项优先。
+
+### 树查询接口预设
+
+`memory_api_impl/search_defaults.py` 只在树开关启用且调用者未指定结构组选项时，
+补 TIME/time_span/rollup=True/expand_depth=1；普通参数原值不变。预设不放入 defaults.py。
+显式 False/0 与非法选项不得被预设覆盖或修补；类型默认值本身仍是 None/False/0。
+无有效 TimeSpan 时保持严格查询，不回退到未挂树叶；查询不触发建树。

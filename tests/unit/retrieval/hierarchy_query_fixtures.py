@@ -110,6 +110,7 @@ class HierarchyHarness:
     manager: CompositeStoreManager
     keyword_builder: FulltextIndexBuilder
     vector_builder: VectorIndexBuilder
+    discloser: TruncatingDiscloser
 
     def add(self, units: list[MemoryUnit]) -> None:
         self.domain.add(QUERY_SCOPE, units)
@@ -135,16 +136,18 @@ def make_harness(
     manager.bind_domain_store(domain)
     parser = LegacyParser()
     embedder = ConstantEmbedder()
+    discloser = TruncatingDiscloser()
     retriever = PipelineRetriever(
         parser,
         RRFFuser(),
-        TruncatingDiscloser(),
+        discloser,
         None,
         over_fetch_factor=1,
         over_fetch_floor=1,
         recall_max=recall_limit,
         domain_store=domain,
     )
+    retriever.bind_embedder(embedder)
     return HierarchyHarness(
         retriever,
         domain,
@@ -152,6 +155,7 @@ def make_harness(
         manager,
         FulltextIndexBuilder(manager),
         VectorIndexBuilder(manager, FixedWindowChunker(), embedder),
+        discloser,
     )
 
 

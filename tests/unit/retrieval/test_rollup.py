@@ -29,6 +29,7 @@ from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery
 from tests.unit.retrieval.expansion_fixtures import link
 from tests.unit.retrieval.hierarchy_query_fixtures import (
     QUERY_SCOPE,
+    ConstantEmbedder,
     hierarchy_query,
     make_harness,
     tree_unit,
@@ -154,6 +155,7 @@ def test_same_id_promoted_parents_keep_content_and_expansion_source(discloser_ty
         harness.parser, RRFFuser(), discloser_type(), None, domain_store=harness.domain,
     )
     retriever.bind_expander(DefaultExpander(harness.domain))
+    retriever.bind_embedder(ConstantEmbedder())
     result = retriever.retrieve(QUERY_SCOPE, hierarchy_query(
         rollup=True, expand_depth=depth, disclosure=DisclosureLevel.ADAPTIVE, max_tokens=10000,
     ))

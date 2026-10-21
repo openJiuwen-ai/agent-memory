@@ -230,5 +230,8 @@ globals:
 # info = api.job_status(job_id, security=security)
 # async_timer 需等到终态；默认 in_process 在提交中完成。
 # 内置构建预设：TimeSpan 累计跨度 2 小时、Scene 最大跨度 14 天、Event 相似阈值 0.65。
+# 开启树后普通 search 使用接口预设 TIME/time_span、rollup=true、expand_depth=1。
+# 可通过 search_v2 的 SearchOptions 显式覆盖；父子返回总数不超过 top_k。
+# 查询前须完成 evolve_v2 显式建树，无有效 TimeSpan 时不自动回退。
 # 如需覆盖，在现有 globals 段内添加 hierarchy_profiles；不要重复声明 globals。
 # 查询展开、父优先排序和后台自动建树尚未接入，本配置不隐式开启这些能力。

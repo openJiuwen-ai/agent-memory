@@ -16,6 +16,8 @@ from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
 
+from jiuwen_memory.common.embedder import DeferredEmbedder
+from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.errors import (
     BackendError,
     UnsupportedCapabilityError,
@@ -101,6 +103,7 @@ class PipelineRetriever(Retriever):
         self._reader = unit_reader
         self._domain = domain_store
         self._expander: Expander | None = None
+        self._embedder: Embedder | None = None
         # 文档模式标志：ShadowRecaller.channel()=DOCUMENT，但 parser 产出的
         # parsed.channels 默认含 [KEYWORD, GRAPH]（+VECTOR）不含 DOCUMENT。
         # _domain.recall 用 `r.channel() in channels` 过滤 recaller——DOCUMENT 不在
@@ -141,6 +144,10 @@ class PipelineRetriever(Retriever):
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
+
+    def bind_embedder(self, embedder: Embedder | None) -> None:
+        """装配共享子排序依赖；不在构造参数中再增加一个模型配置轴。"""
+        self._embedder = embedder
 
     def bind_expander(self, expander: Expander) -> None:
         """装配阶段绑定同源的展开算子，不引入第二份存储配置。"""
@@ -488,6 +495,7 @@ class PipelineRetriever(Retriever):
             ),
             expander=self._expander,
             discloser=self._discloser,
+            embedder=self._embedder,
         )
         prepared = prepare_expansion(result, source, final)
         if query.defer_expansion:
@@ -536,6 +544,11 @@ def _build(config):
         doc_mode=doc_mode,
     )
     retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))
+    retriever.bind_embedder(
+        EmbedderProducer.dep(config)
+        if config.params.get("embedder") is not None
+        else DeferredEmbedder(EmbedderProducer.bind_named("default", config.ctx))
+    )
     return retriever
 
 

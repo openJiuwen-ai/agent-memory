@@ -10,7 +10,7 @@ from jiuwen_memory.retrieval.types import DisclosureLevel
 
 @dataclass(frozen=True)
 class SearchOptions:
-    """统一普通与显式层级检索选项；身份和 Context 独立传入。"""
+    """显式层级选项默认不遍历；普通请求由 API 按树策略预设，身份和 Context 独立。"""
 
     filters: FilterExpr | list[FilterClause] | dict | None = None
     as_of: datetime | None = None

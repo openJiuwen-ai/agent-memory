@@ -66,7 +66,7 @@ def validate_evolve_options(scope: Scope, options: EvolveTaskOptions) -> None:
         raise ValidationError("evolve 要求 EvolveTaskOptions，必须为 EvolveTaskOptions")
     if not isinstance(options.mode, EvolveMode) or not isinstance(options.channel, Channel):
         raise ValidationError("EvolveTaskOptions 要求合法的 EvolveMode 和 Channel")
-    if type(options.reuse_existing) is not bool:
+    if not isinstance(options.reuse_existing, bool):
         raise ValidationError("reuse_existing 必须是 bool")
     if options.reuse_existing and options.mode is not EvolveMode.HIERARCHY:
         raise ValidationError("仅 HIERARCHY 接受 reuse_existing=true")

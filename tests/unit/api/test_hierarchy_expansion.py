@@ -1,6 +1,8 @@
 """公开写入→显式建树→展开证据，以及公开请求/序列化边界。"""
 
 
+from dataclasses import replace
+
 import pytest
 
 from jiuwen_memory.api import (
@@ -8,6 +10,8 @@ from jiuwen_memory.api import (
     HierarchyRole,
     JobStatus,
     PolicyError,
+    Scope,
+    SpaceSpec,
     ValidationError,
     assemble_runtime,
 )
@@ -22,6 +26,8 @@ from tests.unit.api.hierarchy_api_fixtures import (
 )
 from tests.unit.api.hierarchy_search_fixtures import (
     hierarchy_search_options,
+    snapshot_metadata,
+    space_search_config,
 )
 
 pytestmark = pytest.mark.unit
@@ -105,8 +111,67 @@ def test_each_built_level_expands_to_original_evidence(engine, depth, role):
         )
         result = api.search_v2("snapshot evidence", Context(HOME), options, security=security)
         assert len(result.items) == depth + len(leaves)
-        assert {item.unit_id for item in result.items[-2:]} == {leaf.id for leaf in leaves}
+        assert {leaf.id for leaf in leaves} <= {item.unit_id for item in result.items[1:]}
         assert not result.errors
     finally:
         runtime.close()
         Factory.reset_all()
+
+
+def test_real_cross_space_search_applies_one_total_limit_after_expansion() -> None:
+    runtime = assemble_runtime(config=space_search_config())
+    api = runtime.api
+    owner = Scope(org=HOME.org, user=HOME.user)
+    security = security_for(api, owner)
+    leaves = []
+    try:
+        api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
+        for name in ("one", "two"):
+            api.create_space(SpaceSpec(org=HOME.org, space=name, owner=owner),
+                             security=ROOT_SECURITY)
+            home = Scope(org=HOME.org, space=name)
+            leaf_scope = replace(home, session="conversation")
+            leaf = api.add(f"snapshot evidence {name}", leaf_scope,
+                           system_metadata=snapshot_metadata(), security=security)[0]
+            leaves.append(leaf)
+            job_id = api.evolve_v2(home, task_options(tree_home_scope=home), security=security)
+            assert api.job_status(job_id, security=security).status is JobStatus.SUCCEEDED
+        result = api.search_v2("snapshot evidence", Context(Scope(org=HOME.org), extensions={
+            "spaces": ["one", "two"],
+        }), hierarchy_search_options(
+            hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1, top_k=2,
+        ), security=security)
+        assert len(result.items) == 2
+        assert not {item.unit_id for item in result.items} & {leaf.id for leaf in leaves}
+        assert result.errors == []
+    finally:
+        runtime.close()
+        Factory.reset_all()
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+@pytest.mark.parametrize("top_k", [1, 2])
+def test_public_tree_search_caps_total_without_changing_qa_prefix(api, legacy, top_k):
+    api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
+    for minute in (0, 1):
+        write_snapshot(api, minute)
+    job_id = api.evolve_v2(HOME, task_options(), security=security_for(api, HOME))
+    assert api.job_status(job_id, security=security_for(api, HOME)).status is JobStatus.SUCCEEDED
+
+    def search(limit):
+        if legacy:
+            return api.search(
+                "snapshot evidence", Context(HOME), top_k=limit, security=security_for(api, HOME),
+            )
+        options = hierarchy_search_options(
+            hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1, rollup=True, top_k=limit,
+        )
+        return api.search_v2(
+            "snapshot evidence", Context(HOME), options, security=security_for(api, HOME),
+        )
+
+    full = search(10)
+    limited = search(top_k)
+    assert len(full.items) == 3
+    assert len(limited.items) == top_k
+    assert limited.items == full.items[:top_k], "旧入口和 V2 都必须保留 QA 使用的前缀"

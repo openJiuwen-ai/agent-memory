@@ -72,6 +72,7 @@ from .local_support import (
     _unit_lookup_permission_context,
     _unit_snapshot_permission_context,
 )
+from .search_defaults import with_hierarchy_defaults
 
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
@@ -140,7 +141,15 @@ class QueryOpsMixin:
             options = SearchOptions()
         elif not isinstance(options, SearchOptions):
             raise ValidationError("options 必须是 SearchOptions")
-        options = deepcopy(options)
+        # 读取默认策略也是业务组件访问，须先验证请求上下文来源。
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.READ, "search", context.scope)
+        )
+        options = with_hierarchy_defaults(
+            deepcopy(options),
+            enabled=str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower()
+            == "true",
+        )
         hierarchy = HierarchyQuery.from_query(options)
         identity = security.auth.actor
         # Context 在边界处拆包：scope 照旧作独立轴下推（鉴权 + 检索），
@@ -154,9 +163,6 @@ class QueryOpsMixin:
         spaces = _pop_spaces(extensions)
         coords = _pop_coords(extensions, enabled=self._routing_enabled())
         reject_kernel_coords(coords)
-        self._require_trusted_context(
-            security, _TrustedRequestTarget(Action.READ, "search", context.scope)
-        )
         resource_principal = self._resource_principal(security, Action.READ)
         # 坐标折算成第二族收窄谓词的取值，在此算一次、两条路径共用。放进各自分支即
         # 「两处各折算一次」：漏调哪一处，该路径的 agent 维与 session 维整体不再收窄，

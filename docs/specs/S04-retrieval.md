@@ -18,7 +18,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 ## 当前交付边界
 
 显式层级检索、祖先准入/MaxP、向下展开与共享预算已实现；ensure 和自动修复
-未接入。接口默认预设与全局子候选排序后续交付。结构索引字段为 tree_parent_id/tree_span_start/tree_span_end，模型字段保持原名。
+未接入。接口默认预设、父优先和全局子候选排序已经接入。结构索引字段为 tree_parent_id/tree_span_start/tree_span_end，模型字段保持原名。
 
 ## 范围 / 边界
 
@@ -63,7 +63,9 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
     入口失败抛 `StorageRetrievalError`。显式空 channels 是无效输入。
 14. **结构轴正交**：`ContentLayers`/`DisclosureLevel` 是 unit 内披露，`HierarchyRef` 是跨 unit 结构；CLM/ELM、`MemoryUnit.temporal` 与 `RecallChannel.TEMPORAL` 均不替代 `HierarchyKind.TIME`。
 15. **单 kind 层级请求**：一次层级请求只处理一个 `HierarchyKind.TIME|TOPIC|DIRECTORY|CLUSTER|CUSTOM`，不隐式跨 kind。
-16. **层级默认保守**：`expand_depth=0`、`rollup=false`；只返回直接召回命中的节点，不遍历子节点，也不传播后代分数；父优先由显式 `hierarchy_role` 父侧角色过滤实现。
+16. **类型默认与接口预设分离**：显式结构组选项默认 expand_depth=0、rollup=False；
+    API 在树开关启用且结构组未指定时预设 TIME/time_span/rollup=True/expand_depth=1。
+    内部 RetrievalQuery 不独立应用预设，显式选项及关闭开关时的普通行为保持。
 17. **展开顺序与隔离**：Expander 只沿直接 `child_ids` 向下，且必须保持父节点声明的稳定顺序；跨 org/space 引用不可见；同租户内跨 session/user 的子节点按 `child_scopes`（或缺省父 Scope）解析。
 18. **展开共用既有 token 预算**：`expand_depth>0` 时选子与主披露级分配消耗同一 `RetrievalQuery.max_tokens`（来自 `context.extensions["max_tokens"]`），不另设独立树预算参数；Discloser 仍只负责单个 unit 的内容塑形。`span_start/span_end` 是结构覆盖区间，与 `as_of` 的 valid-time 回溯及 `time_from/time_to` 的 event-time 范围独立。
 19. **可选精排失败可降级**：已配置的 Reranker 在 `rerank` 阶段抛出 `BackendError` 时，
@@ -219,11 +221,29 @@ boosted、visited、target_role、complete 和 issues。
 因此宽 Scope 索引命中不能据此保证跨 session 叶被物化。原始候选及 Fuser 的裸 id
 归并未在本阶段改造；新增祖先的完整身份隔离不等于原始跨 Scope 同 id 召回已解决。
 
+### 父优先与子相关性排序
+
+TIME 的 time_span/scene/event 查询在最终选根、展开及预算准入完成后统一排序：
+全部根保持原顺序排在前面。若准入根数量不足请求的 `top_k` 且存在准入后代，使用
+构建/索引共用的 Embedder 对 `[调用方原始问题, 后代完整正文...]` 同批向量化，
+后代全局按余弦相似度降序稳定排序，同分保留原展开顺序。不得复用可能经过改写、
+清洗或 query 专用前缀处理的 Parser 向量，不将继承的根分当作子相关性。
+
+排序前按真源完整正文排除空白根/后代；在预算准入之后处理且不回填预算，空白根
+仍可以展开有正文的后代。不能用可能被 L0 披露器省略的返回 content 判断空白。
+排序不重新召回、不放宽过滤、不再分配预算，不按父分配子配额。完成排序后统一
+截取前 `top_k` 项，父子合计不超过该上限；不得在子相关性排序前裁剪候选。
+根已足够、没有后代、Snapshot 或未指定 TIME 父角色时跳过
+额外向量化。`RetrievedItem.score` 保持原根分或继承分；排名不要求该字段全局单调。
+子排序所需 Embedder 缺失时报告 UnsupportedCapabilityError，数量、维度、有限值
+或非零范数校验失败时报告 BackendError，不静默退回 BFS。单空间和跨空间共用
+最终展开收尾，跨空间先保持既有全局选根及权限过滤，再对其后代统一排序。
+
 ### 展开准入与预算
 
 `top_k` 限制选中根数量及最终父子返回总数。展开子节点不改变先前的选根名额，
 但必须与根共享最终返回名额。先按最终顺序为所有根分配预算，
-然后逐根 BFS；准入先按根顺序及各根 BFS 顺序进行，父优先的子相关性排序将在后续接入，
+然后逐根 BFS；准入先按根顺序及各根 BFS 顺序进行，之后按上述父优先规则重排已准入后代，
 最后截取前 `top_k` 项。节点访问、披露预算及轨迹计数反映裁剪前实际工作，不回退或回填。
 每个根的选子预算不足时停止该根；根自身不足时停止后续根准入，结果可少于 top_k。
 跨空间选根沿用既有合并/去重规则，后代阶段按完整 Scope + id 去重。

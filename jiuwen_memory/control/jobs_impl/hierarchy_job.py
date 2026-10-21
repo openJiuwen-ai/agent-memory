@@ -62,7 +62,7 @@ class HierarchyJob(Job):
         self._options = captured_options
         self._mode = EvolveMode.HIERARCHY
         self._limits = limits or HierarchyJobLimits()
-        if type(reuse_existing) is not bool:
+        if not isinstance(reuse_existing, bool):
             raise ValidationError("reuse_existing 必须是 bool")
         self._reuse_existing = reuse_existing
 

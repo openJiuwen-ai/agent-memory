@@ -12,14 +12,18 @@ import json
 from dataclasses import asdict, dataclass, field, replace
 from time import perf_counter
 
+from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import BackendError, UnsupportedCapabilityError
 from jiuwen_memory.common.type_def import (
+    HierarchyKind,
     MemoryUnit,
     ParsedQuery,
     Scope,
     ScoredMemoryUnit,
 )
+from jiuwen_memory.common.type_def.hierarchy import TIME_PARENT_ROLES
 
+from .child_ranking import child_cosine_order
 from .discloser import Discloser
 from .expander import MAX_EXPANSION_NODES, Expander, ExpandRequest, ExpandResult, NodeKey, node_key
 from .types import (
@@ -41,6 +45,7 @@ class ExpansionSource:
     query: ParsedQuery
     expander: Expander
     discloser: Discloser
+    embedder: Embedder | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,13 @@ class _Completion:
     budget: DisclosureBudget
     seen: set[NodeKey] = field(default_factory=set)
     remaining_nodes: int = MAX_EXPANSION_NODES
+    children: list[tuple[RetrievedItem, str]] = field(default_factory=list)
+
+    def is_parent_query(self) -> bool:
+        return (
+            self.query.hierarchy_kind is HierarchyKind.TIME
+            and self.query.hierarchy_role in TIME_PARENT_ROLES
+        )
 
     def select(self, root: ExpansionRoot, unit: MemoryUnit, depth: int) -> bool:
         """逐节点塑形避免跨 Scope 同 id 覆盖；展开分数仅继承根，不伪造通道证据。"""
@@ -135,9 +147,43 @@ class _Completion:
         if item is None:
             return False
         self.seen.add(node_key(unit))
+        # 与历史树评测一致：预算准入后排除空正文，不回填已消耗预算。
+        # 必须看真源全文；自定义 L0 披露器可能不返回 item.content。
+        if self.is_parent_query() and not unit.content.strip():
+            return True
         item = replace(item, score=root.item.score)
         self.result.items.append(item)
+        self.children.append((item, unit.content))
         return True
+
+    def rank_children(self, roots: list[ExpansionRoot], parent_count: int) -> None:
+        """全局选根与预算准入后重排，不改变候选集合、根分数或披露预算。"""
+        if (
+            not self.is_parent_query()
+            or parent_count >= self.query.top_k
+            or not self.children
+        ):
+            return
+        embedder = roots[0].source.embedder
+        if embedder is None:
+            raise UnsupportedCapabilityError(
+                "embedder", "child_ranking", "Retriever",
+                "树查询父节点不足时需要装配共享 Embedder 进行子节点排序",
+            )
+        started = perf_counter()
+        order = child_cosine_order(
+            self.query.text, [content for _, content in self.children], embedder,
+        )
+        self.result.items[parent_count:] = [self.children[index][0] for index in order]
+        if self.query.with_trajectory:
+            self.result.trajectory.append(TrajectoryStep(
+                stage="child_rank", cost_ms=(perf_counter() - started) * 1000,
+                candidate_count=len(self.children), detail={
+                    "algorithm": "parent_search_order_then_child_cosine",
+                    "parent_count": str(parent_count),
+                    "ranking_cutoff": str(self.query.top_k),
+                },
+            ))
 
     def expand(self, root: ExpansionRoot) -> None:
         """根按最终命中顺序执行 BFS；共享节点上限和预算不会在空间边界重置。"""
@@ -192,7 +238,7 @@ class _Completion:
 def complete_expansion(
     selected: RetrievalResult, prepared: list[PreparedRetrievalResult], query: RetrievalQuery,
 ) -> RetrievalResult:
-    """选中根先消耗预算，再沿边展开后代；父子返回总数不超过 top_k。"""
+    """选中根先消耗预算，展开并排序后按 top_k 限制父子返回总数。"""
     roots_by_key: dict[NodeKey, ExpansionRoot] = {}
     ordered_roots: list[ExpansionRoot] = []
     for result in prepared:
@@ -221,11 +267,15 @@ def complete_expansion(
             outcome.exclude("budget_exhausted", truncated=True)
             state.record(root, outcome, 0.0)
             break
-        output.items.append(admitted)
+        if not state.is_parent_query() or root.candidate.unit.content.strip():
+            output.items.append(admitted)
+        # 空正文父仍按原预算与边约束展开，不能连带丢掉有正文的后代。
         roots.append(root)
         state.seen.add(key)
+    parent_count = len(output.items)
     for root in roots:
         state.expand(root)
+    state.rank_children(roots, parent_count)
     output.items = output.items[:query.top_k]
     return output
 

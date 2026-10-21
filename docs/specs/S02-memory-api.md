@@ -210,7 +210,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。（曾存在的 `legacy_request_context` 过渡桥已随 PR2 删除。）
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 F04-1 §5.4）。
 17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve_v2(..., options=EvolveTaskOptions(...))` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；显式层级查询由 search_v2 提供，展开与上卷契约见 S04。
-18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
+18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 search_v2 的 expand_depth 选项沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
 21. **Space 删除事务在 Control**：`delete_space` 鉴权后调用 `SpaceLifecycleService`（先 `MemoryEngine.purge_space`，再 `SpaceManager.delete`，并把 purge 条数累加进 `deleted_counts` 的 `memory` / `index` / `kv`）。purge 失败则不删 space；purge 成功而 metadata delete 失败时抛 `PartialFailureError`（`retry_action=delete_space`），不得报告完整成功。重试同一入口：purge 对空空间幂等，第二步再删元数据。API 只授权、调用该端口、使 membership 缓存失效并记录入口审计；不得在 API 内联 purge+delete 或实现索引删除/存储遍历。
@@ -453,7 +453,7 @@ def submit_ingest(
 
 #### search
 
-**状态：已实现**（下列签名为当前代码）。层级过滤 / 展开 / rollup 为已设计增量，见本节末。
+**状态：已实现**（下列签名为当前代码）。层级过滤、展开与 rollup 已通过 search_v2 的 SearchOptions 提供。
 #### 薄封装职责
 
 API 方法的实现顺序应保持为：
@@ -513,7 +513,10 @@ TIME 节点自身仍须具有完整有效区间。
 两入口共用现有来源校验、READ 鉴权、委托资源主体、空间事实及路由谓词；
 跨空间逐空间授权后分发同一选项。请求快照不修改调用者输入，运行时插件保留身份。
 hierarchy.enabled 缺失或关闭时，显式层级查询抛 PolicyError，普通查询保持可用并排除
-生成的 TIME 父。显式选项可开启祖先上卷与展开；尚不启用默认树预设和子候选相关性排序。
+生成的 TIME 父。显式选项可开启祖先上卷与展开。开关启用且无显式结构组选项时，API 预设
+TIME/time_span/rollup=True/expand_depth=1；普通参数不变，显式 False/0 不覆盖。
+无有效 TimeSpan 时不回退到未挂树叶，也不在搜索时建树。TIME 父角色查询按父原序、
+子相关性全局排序后截断，父子返回总数不超过 top_k，细则见 S04。
 
 HTTP/CLI 使用与 Core API 相同的方法名和字段；MCP 增加 memory_search_v2。
 不新增公开 expand 接口，不改写 search 的原参数格式。
@@ -712,7 +715,7 @@ def job_cancel(job_id: str, *, security: RequestSecurityContext) -> None: ...
 
 ### 治理面（委托 Governor）
 
-本面不增加新的尚未实现对外方法。不变量 16 要求三类遍历分离：树下钻由 `search(..., expand_depth>0)` 完成（见数据面 search 的尚未实现增量），`trace` 只沿 `provenance`，`get(as_of)` 只沿 `supersedes`；不另设 `MemoryAPI.expand`。
+本面不增加新的尚未实现对外方法。不变量 16 要求三类遍历分离：树下钻由 search_v2 的 expand_depth 选项完成，`trace` 只沿 `provenance`，`get(as_of)` 只沿 `supersedes`；不另设 `MemoryAPI.expand`。
 
 #### inspect
 
@@ -964,7 +967,7 @@ def remove_space_member(
 
 ### 运行时策略面（直达 PolicyManager，不经 Engine）
 
-`hierarchy.enabled` 已作为运行时策略键用于 Snapshot 接入及显式建树；自定义策略表必须预先声明该键才能 admin_set。其余树查询、ensure 和自动维护策略尚未交付。admin_set 不扩展为任意配置树，详见 S08。
+`hierarchy.enabled` 已作为运行时策略键用于 Snapshot 接入及显式建树；自定义策略表必须预先声明该键才能 admin_set。该开关也控制树查询及接口默认预设；ensure 和自动维护策略尚未交付。admin_set 不扩展为任意配置树，详见 S08。
 
 #### admin_get
 

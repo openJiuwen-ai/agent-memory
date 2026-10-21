@@ -99,12 +99,13 @@ def test_search_disabled_policy_only_blocks_structured_hierarchy_requests(api) -
         api.search_v2("snapshot", Context(HOME), hierarchy_search_options(), security=auth(api))
 
 
-def test_ordinary_search_keeps_snapshot_and_excludes_generated_parent(api) -> None:
+def test_disabled_search_keeps_snapshot_and_excludes_generated_parent(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     leaf = write_snapshot(api, 0, session="")
     job_id = api.evolve_v2(HOME, task_options(), security=auth(api))
     assert api.job_status(job_id, security=auth(api)).status is JobStatus.SUCCEEDED
 
+    api.admin_set("hierarchy.enabled", "false", security=ROOT_SECURITY)
     result = api.search("snapshot evidence", Context(HOME), security=auth(api))
 
     assert [item.unit_id for item in result.items] == [leaf.id]
