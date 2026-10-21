@@ -5,7 +5,6 @@
 适配成 openjiuwen ``MemoryProvider`` ABC 的实现，供 ``ExternalMemoryRail`` /
 ``JiuwenMemoryRail`` 驱动。
 
-契约来源（2026-10-14 代码核实 + 本地实测，见同目录 ``jiuwen_memory_rail_design.md``）：
 - ABC：``openjiuwen/core/memory/external/provider.py`` 的 ``MemoryProvider``
 - HTTP 表面：``jiuwen_memory_entry/core/api_contract.py``（F05 对齐后）——
   ``POST /v1/<MemoryAPI 方法名>``（verb 集自动镜像抽象方法集），请求字段与方法
@@ -74,7 +73,7 @@ from jiuwen_memory.api import (
 )
 from jiuwen_memory.api import Scope as ApiScope
 
-# [本地修改 2026-06-29] provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
+# provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
 # __name__="agent_memory_provider" 不在 jiuwenswarm/openjiuwen 的 logger 树下，INFO 默认不落文件。
 # 挂到 jiuwenswarm logger 树，让 prefetch 召回日志能进 agent_server.log / full.log。
 logger = logging.getLogger(
@@ -159,22 +158,16 @@ CONCLUDE_SCHEMA: dict[str, Any] = {
         # [本地修改 2026-10-17] 原描述含 "corrections"，会把「修改个人信息」类指令
         # 路由到 conclude（append 式写入）而非 edit_md_file（原地替换），产生新旧
         # 矛盾事实共存。改为明确 append-only + 把更正路由到 edit_md_file。
-        # 新增 infer/tags/project 三开关，缺省
-        # 仍是原文 append（infer=false）；infer=true 触发 LLM 抽取+去重。
-        "Store a durable memory. By default it appends verbatim with no extraction; "
-        "set infer=true to extract and dedup self-contained facts instead. It NEVER "
-        "modifies or removes existing memories — to change or correct what is already "
-        "stored, use agent_memory_edit_md_file (read the file first to locate the "
-        "exact text)."
+        # [本地修改] infer 恢复为 true：conclude 走 LLM 抽取并分类落盘，但语义仍是
+        # 新增不改已有（更正仍路由到 edit_md_file）。
+        "Store a new durable memory (extracted and classified). It NEVER modifies or "
+        "removes existing memories — to change or correct what is already stored, use "
+        "agent_memory_edit_md_file (read the file first to locate the exact text)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "conclusion": {"type": "string", "description": "The fact/memory to store."},
-            "infer": {
-                "type": "boolean",
-                "description": "Run LLM extraction + dedup on the content (default: false).",
-            },
             "tags": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -214,8 +207,6 @@ PROCEDURAL_SCHEMA: dict[str, Any] = {
 EDIT_MD_SCHEMA: dict[str, Any] = {
     "name": "agent_memory_edit_md_file",
     "description": (
-        # [本地修改 2026-10-17] 强化「修改/更正」路由：这是唯一能改动已存记忆的
-        # 工具，先用 read_md_file 定位原文再替换。
         "Modify or correct an EXISTING memory — the only way to change what is already "
         "stored: replaces old_text with new_text in place (old_text must appear exactly "
         "once in the file, an error otherwise; the edit supersedes the affected memory "
@@ -284,11 +275,7 @@ def _recall_filters() -> dict[str, Any]:
 
 
 def _agent_default_config() -> dict[str, Any]:
-    """[本地修改 2026-10-17] 进程内默认装配——agent 场景（F09）内核配置。
-
-    ``config.serve-doc.yml`` 的代码化副本（逐段对应，凭证与端点按该文件字面值
-    写死），供 ``config_path`` 缺省时的进程内分支直接 ``assemble_runtime()``：
-
+    """ 进程内默认装配——agent 场景（F09）内核配置。
     - 真源 = document（md 文件 + sqlite3/sqlite-vec 影子索引，watchdog 监听手改）；
       md 按 memory_class × coords.project 分流（user_profile→USER.md；
       long_term→{project}/MEMORY.md；daily→daily_memory/日期.md）
@@ -296,8 +283,6 @@ def _agent_default_config() -> dict[str, Any]:
       recall_and_get_rank pipeline（文档模式必须），召回统一走 shadow recaller
     - fulltext = elasticsearch（文档模式召回走 shadow FTS5，此端口闲置备用）
     - 每次调用返回**全新字面量**——无共享可变状态，调用方（装配/改写）互不影响
-
-    用户仍可通过 ``config_path`` 传外部 yml/json 覆盖本默认（两级命名空间同构）。
     """
     return {
         "globals": {
@@ -318,6 +303,9 @@ def _agent_default_config() -> dict[str, Any]:
             "llm_model": os.getenv("JIUWEN_MEMORY_MODEL", "deepseek-v4-pro"),
             "llm_temperature": float(os.getenv("JIUWEN_MEMORY_TEMPERATURE", "0.0")),
             "llm_max_tokens": int(os.getenv("JIUWEN_MEMORY_MAX_TOKENS", "4096")),
+            # 单次 LLM 出站等待上限（秒）：内核默认 300s，agent 场景收紧到与 HTTP
+            # 写超时（_WRITE_TIMEOUT=120）对齐，避免 infer=true 抽取卡死时占满线程池。
+            "llm_timeout": float(os.getenv("JIUWEN_MEMORY_TIMEOUT", "120")),
             # 只填到 /v1；SDK 会自动拼 /embeddings
             "embedder_base_url": os.getenv("EMBED_API_BASE", "https://api.siliconflow.cn/v1"),
             "embedder_api_key": os.getenv("EMBED_API_KEY", ""),
@@ -332,7 +320,7 @@ def _agent_default_config() -> dict[str, Any]:
         # shadow（FTS5 + vec0），这三路无消费者——回落内核 defaults 的内存版（同样闲置）。
         # md 真源 root
         "markdown_store": {"default": {"target": "local", "params": {
-            "root": "e:/02_memory/agent-memory/_md_store",
+            "root": "",
         }}},
         # 影子索引（document 真源的机器索引：sqlite3 + sqlite-vec 复合）
         "shadow_index": {"default": {"target": "sqlite", "params": {"embedder": "default"}}},
@@ -427,6 +415,34 @@ def _agent_default_config() -> dict[str, Any]:
     }
 
 
+def _merge_config_over_default(config_dict: dict[str, Any]) -> dict[str, Any]:
+    """[本地修改 2026-10-20] 把上层 ``config_dict`` 深合并到内置 agent 默认装配之上。
+
+    进程内 ``config_dict`` 的语义从「整体替换」改为「以 ``_agent_default_config()``
+    （F09 文档真源：md + shadow + agent engine + agent_llm 抽取）为基准深合并」：
+    dict 对 dict 递归合并，标量/列表由上层值覆盖。这样宿主只传要覆盖的片段——
+    凭证注入面（globals 的 ``llm_*`` / ``embedder_*`` 共 9 键）、
+    ``globals.embedder_dim``、``markdown_store.default.params.root`` 等——未提及的
+    agent 栈缺省（``write_document=true``、``engine=agent``、``shadow_index``、
+    ``store_manager``、``recaller`` 等）原样保留，而不是掉回内核 defaults.py 的
+    通用缺省（in_memory/echo/dynamic_llm/vector dedup 一路劣化）。
+
+    合并发生在 provider 层而非内核层：若把部分 dict 直接投给 ``assemble_runtime``，
+    内核 ``AssemblyContext.merged`` 的补全基准是 ``defaults.py``（不是 agent 默认），
+    缺失的 F09 命名空间会被通用缺省补齐。返回值是 ``_agent_default_config()`` 的
+    全新字面量被就地改写后的结果，默认配置本身每次调用都重建、无跨调用共享状态。
+    """
+
+    def _merge(base: Any, override: Any) -> Any:
+        if isinstance(base, dict) and isinstance(override, dict):
+            for key, value in override.items():
+                base[key] = _merge(base[key], value) if key in base else value
+            return base
+        return override
+
+    return _merge(_agent_default_config(), config_dict)
+
+
 class AgentMemoryMemoryProvider(MemoryProvider):
     """AgentMemory 适配 ``MemoryProvider`` ABC。
 
@@ -438,10 +454,12 @@ class AgentMemoryMemoryProvider(MemoryProvider):
       **可选**——[本地修改 2026-10-17] 缺省时用内置 agent 场景默认装配
       ``_agent_default_config()``（F09 文档真源：md + shadow 索引 + agent_llm
       抽取，即 serve-doc 的代码化副本）；外部 yml 传入则覆盖内置默认。
-    - ``config_dict``：进程内模式的完整两级命名空间配置 dict（对齐
-      ``config.serve-doc.yml`` 字面），**优先于 ``config_path`` 与内置默认**。
-      宿主（jiuwenswarm）从 config.yaml 读完整 dict 直传，内核经
-      ``AssemblyContext.merged(defaults)`` 补齐未写的命名空间。
+    - ``config_dict``：进程内模式的两级命名空间配置 dict，**优先于
+      ``config_path`` 与内置默认**。[本地修改 2026-10-20] 传给进程内分支时不再
+      整体替换内置默认，而是经 ``_merge_config_over_default()`` 深合并到
+      ``_agent_default_config()`` 之上——上层只需传要覆盖的片段（globals 凭证
+      /端点、``globals.embedder_dim``、``markdown_store.default.params.root``
+      等），未提及的 agent 栈缺省原样保留。
     - ``user_id``/``agent_id``：兼容常见记忆层隔离键（默认约定一致）。
     - ``security_provider``：进程内模式的可信身份来源——由可信 composition root
       注入的 ``() -> RequestSecurityContext``（P1-2 角色感知授权）。身份不由本
@@ -597,7 +615,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, config=%s, scope=%s)",
             "http" if self._base_url else "in-process",
-            self._base_url or (self._config_dict and "direct-dict") or self._config_path or "builtin-agent-default",
+            self._base_url
+            or (self._config_dict and "merged-dict")
+            or self._config_path
+            or "builtin-agent-default",
             scope_for_log(self.bound_scope()),
         )
 
@@ -747,31 +768,27 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 conclusion = args.get("conclusion", "")
                 if not conclusion:
                     return json.dumps({"error": "Missing required parameter: conclusion"})
-                # infer 缺省 False（原文 append，保住
-                # 「永不修改/只新增」语义），显式 true 走 LLM 抽取+去重；project 作标量
-                # system_metadata["project"] 直传（agent 场景无 router，coords 嵌套 dict
-                # 会被 _reject_non_scalar_metadata 拒）。
-                infer = bool(args.get("infer", False))
+                # infer=true：conclude 走 LLM 抽取（与 sync_turn 同口径），抽取派生的
+                # 记忆按 memory_class + project 分流落盘。project 作标量
+                # system_metadata["project"] 直传（agent 场景无 router，coords 嵌套
+                # dict 会被 _reject_non_scalar_metadata 拒）。
                 tags = args.get("tags") or ["conclude"]
                 project = str(args.get("project") or "").strip()
-                system_metadata: dict[str, str] = {}
-                if infer:
-                    system_metadata["infer"] = "true"
+                system_metadata: dict[str, str] = {"infer": "true"}
                 if project:
                     system_metadata["project"] = project
                 data = await self._client.add(
                     conclusion,
                     scope,
                     tags=tags,
-                    system_metadata=system_metadata or None,
+                    system_metadata=system_metadata,
                 )
                 if data is None:
                     return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
                 logger.info(
                     "[AgentMemoryMemoryProvider] agent_memory_conclude stored=%s "
-                    "infer=%s tags=%s project=%s",
+                    "tags=%s project=%s",
                     redact_for_log(conclusion),
-                    infer,
                     tags,
                     project or "",
                 )
@@ -945,7 +962,12 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if not user_msg:
             return
         content = f"user: {user_msg}\nassistant: {assistant_msg}"
-        system_metadata = {"infer": "true"}
+        system_metadata: dict[str, str] = {"infer": "true"}
+        # rail 经 _resolve_project 传入 project；与 conclude 分支同口径直传标量
+        # system_metadata["project"]，让 md 落盘按 memory/{project}/... 分流。
+        project = str(kwargs.get("project") or "").strip()
+        if project:
+            system_metadata["project"] = project
         logger.info(
             "[AgentMemoryMemoryProvider] sync_turn add system_metadata=%s scope=%s content_len=%d",
             metadata_for_log(system_metadata),
@@ -1190,6 +1212,8 @@ def _build_client(
     [本地修改 2026-10-17] 进程内分支缺省不再回落 ``assemble_runtime(None)``（echo LLM +
     内存 KV 的通用内核缺省），而是用 ``_agent_default_config()``（agent 场景 F09
     文档真源装配，serve-doc 的代码化副本）。
+    [本地修改 2026-10-20] ``config_dict`` 分支经 ``_merge_config_over_default()``
+    深合并到内置默认之上（而非整体替换）：上层传部分片段时保留 agent 栈缺省。
 
     进程内分支统一携带 ``security_provider``——身份由可信 composition root 注入
     而非从业务 scope 自述（P1-2）；HTTP 分支的身份由 API Key 认证决定，与本参数
@@ -1203,7 +1227,14 @@ def _build_client(
             identity_user=identity_user,
         )
     if config_dict:
-        return _InProcessClient(None, config_dict=config_dict, security_provider=security_provider)
+        # [本地修改 2026-10-20] 上层 config_dict 深合并到内置 agent 默认装配之上，
+        # 而非整体替换——宿主只传要覆盖的片段（globals 凭证/端点、embedder_dim、
+        # markdown_store.default.params.root），未提及的 F09 栈缺省原样保留。
+        return _InProcessClient(
+            None,
+            config_dict=_merge_config_over_default(config_dict),
+            security_provider=security_provider,
+        )
     if config_path:
         return _InProcessClient(config_path, security_provider=security_provider)
     return _InProcessClient(

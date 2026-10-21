@@ -165,6 +165,29 @@ class MarkdownStore(BaseStore):
         时按块解析处理。md 侧只保证文件级文本替换的原子性与唯一性。
         """
 
+    @abstractmethod
+    def restore_content(
+        self,
+        scope: Scope,
+        md_basename: str,
+        text: str,
+        *,
+        project: str = "",
+    ) -> None:
+        """把 md 文件内容**精确回写**为给定全文（补偿用，不做存在性/唯一性/子串校验）。
+
+        ``edit_md_file`` 的 md 侧失败补偿落点：``edit_content`` 已把 md 改成 new 态、
+        shadow 同步（``_supersede_shadow_for_md``）失败时，上层用本方法把 md 回写到
+        编辑前旧全文快照，让「异常等价于未发生」对 md 侧也成立（shadow 侧由
+        ``_supersede_shadow_for_md`` 自身回滚）。与 :meth:`edit_content` 校验路径不同，
+        本方法直接整文件覆盖，不解析、不比对子串——补偿必须无条件还原，不能因
+        ``new_text`` 回写后不唯一等子串歧义再次失败。
+
+        复用实现侧 ``_safe_restore``：回写本身失败只记 warning 不抛（避免掩盖原始
+        异常），md 残缺漂移交看门狗对账（与 replace/edit 原子写补偿同款口径）。
+        仅补偿路径调用，正常路径不调用。
+        """
+
     @staticmethod
     def resolve_md_path(md_basename: str, project: str) -> str:
         """basename + project → md 文件相对根路径（F08 §3 标准映射）。

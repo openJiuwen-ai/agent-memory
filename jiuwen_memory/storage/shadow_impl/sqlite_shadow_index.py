@@ -56,7 +56,7 @@ from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProduce
 from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
 _DEFAULT_PROJECT = ""  # 无 project 时的兜底值：空串=跨项目可见（IN ['', value] 命中）
-_DEFAULT_CLASS = "daily_memory"
+_DEFAULT_CLASS = "long_term_memory"  # 空/未知 memory_class 兜底 long_term_memory，与 LocalMarkdownStore 口径一致
 _DEFAULT_LIFECYCLE = "active"  # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
 _DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，F07 §4.4.3）
 

@@ -46,8 +46,10 @@ def _offline_in_process_config(tmp_path, monkeypatch):
     ``e:/02_memory/agent-memory/_md_store``。测试环境无 LLM 凭证会令 search 的
     query_parser 抛 OpenAIError，且会污染生产 md 目录。换全离线栈跑通：
 
-    - ``llm`` → echo（回显桩，无网络；query 改写=原文、classifier/extractor 解析
-      失败时内核降级，conclude 原样存 infer=False 仍成功）
+    - ``llm`` → echo（回显桩，无网络；query 改写=原文）
+    - ``extractor`` → keyword（离线抽取：chunk 提升 SEMANTIC，不调 LLM——conclude
+      现走 infer=true 同步抽取，echo LLM 回显非 JSON 会被 agent_llm extractor
+      re-raise，故把 extractor 一并换成无 LLM 依赖的 keyword）
     - ``embedder`` → hashing（确定性 hash 词袋向量，dim=64，与 globals 对齐）
     - ``fulltext_store`` → memory（不连远端 ES；document 模式召回走 shadow FTS5）
     - ``markdown_store`` root → tmp_path（隔离写盘，不污染生产 md 目录）
@@ -66,6 +68,7 @@ def _offline_in_process_config(tmp_path, monkeypatch):
         cfg["globals"]["embedder_dim"] = 64
         cfg["globals"]["watch_document"] = False
         cfg["llm"] = {"default": "echo"}
+        cfg["extractor"] = {"default": "keyword"}
         cfg["embedder"] = {"default": {"target": "hashing", "params": {"tokenizer": "default"}}}
         cfg["fulltext_store"] = {"default": {"target": "memory"}}
         cfg["markdown_store"] = {"default": {"target": "local", "params": {"root": str(tmp_path)}}}
@@ -237,3 +240,40 @@ class TestSdkMode:
                 await provider.shutdown()
 
         asyncio.run(_run())
+
+
+# --------------------------------------------------------------------------- #
+# _merge_config_over_default：上层 config_dict 深合并到内置 agent 默认装配
+# --------------------------------------------------------------------------- #
+
+
+class TestMergeConfigOverDefault:
+    def test_globals_creds_override_preserves_agent_stack(self, monkeypatch):
+        import agent_memory_provider as _amp
+
+        monkeypatch.setattr(_amp, "_agent_default_config", lambda: {
+            "globals": {"write_document": True, "embedder_dim": 1024, "llm_api_key": ""},
+            "markdown_store": {"default": {"target": "local", "params": {"root": ""}}},
+            "engine": {"default": {"target": "agent"}},
+        })
+        merged = _amp._merge_config_over_default({
+            "globals": {"llm_api_key": "sk-cred", "embedder_dim": 64},
+            "markdown_store": {"default": {"params": {"root": "/data/md"}}},
+        })
+        assert merged["globals"]["llm_api_key"] == "sk-cred", "globals 凭证键覆盖"
+        assert merged["globals"]["embedder_dim"] == 64, "globals.embedder_dim 覆盖"
+        assert merged["globals"]["write_document"] is True, "未提及的 globals 键保留"
+        md_default = merged["markdown_store"]["default"]
+        assert md_default["target"] == "local", "只改 root 不应丢 target"
+        assert md_default["params"]["root"] == "/data/md", "params.root 覆盖"
+        assert merged["engine"]["default"]["target"] == "agent", "未提及 namespace 保留"
+
+    def test_each_call_returns_fresh_dict(self, monkeypatch):
+        import agent_memory_provider as _amp
+
+        monkeypatch.setattr(_amp, "_agent_default_config", lambda: {"globals": {"a": 1}})
+        first = _amp._merge_config_over_default({"globals": {"b": 2}})
+        second = _amp._merge_config_over_default({"globals": {"c": 3}})
+        assert first is not second, "每次返回全新字面量"
+        assert first["globals"] == {"a": 1, "b": 2}, "首次合并结果"
+        assert second["globals"] == {"a": 1, "c": 3}, "无跨调用可变状态污染"

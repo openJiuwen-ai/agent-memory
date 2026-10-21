@@ -642,20 +642,34 @@ class CompositeDomainStore(DomainStore):
         rel_path = MarkdownStore.resolve_md_path(md_basename, project)
         open_write_window()
         try:
+            # edit 前旧全文快照（md 侧失败补偿用：shadow 同步失败时回写整个文件到编辑前
+            # 字节态）。同一次读既算块 diff 又留快照，避免二次读文件。
+            raw_old = md.read_content(scope, md_basename, project=project)
             # edit 前后全文块（含跨 scope），用于精确 diff：truly_inserted = new - old
             # 只含 edit 真正新增的块（不含跨 scope 已有块——其 hash 在 old_full 里），
             # 避免 list_units_by_md 跨 scope 导致当前 scope edit 误标/误插他 scope unit。
-            old_full = collect_blocks_from_text(
-                md.read_content(scope, md_basename, project=project)
-            )
-            # md 原子替换（唯一性校验 + 原子写；失败抛 NotFoundError/ValidationError）
-            md.edit_content(scope, md_basename, old_text, new_text, project=project)
-            new_full = collect_blocks_from_text(
-                md.read_content(scope, md_basename, project=project)
-            )
-            new_unit_ids = self._supersede_shadow_for_md(
-                scope, rel_path, old_full, new_full, shadow
-            )
+            old_full = collect_blocks_from_text(raw_old)
+            try:
+                # md 原子替换（唯一性校验 + 原子写；失败抛 NotFoundError/ValidationError）
+                md.edit_content(scope, md_basename, old_text, new_text, project=project)
+                new_full = collect_blocks_from_text(
+                    md.read_content(scope, md_basename, project=project)
+                )
+                new_unit_ids = self._supersede_shadow_for_md(
+                    scope, rel_path, old_full, new_full, shadow
+                )
+            except Exception:
+                # md 侧补偿：md 已改成 new 态、shadow 同步失败时，回写旧全文让 md 回到
+                # 编辑前字节态（shadow 侧由 _supersede_shadow_for_md 自身回滚）。restore
+                # 是无条件整文件覆盖——edit_content 抛 NotFoundError/ValidationError 时
+                # md 本就未变，回写相同内容幂等无害。补偿失败只记 warning 不掩盖原异常。
+                try:
+                    md.restore_content(scope, md_basename, raw_old, project=project)
+                except Exception as restore_exc:
+                    logger.warning(
+                        "edit_md_file md 回滚失败 %s: %s", md_basename, restore_exc
+                    )
+                raise
             return shadow.get_units(scope, new_unit_ids)
         finally:
             close_write_window()
@@ -709,9 +723,12 @@ class CompositeDomainStore(DomainStore):
         ]
 
         now = datetime.now(UTC)
-        new_unit_ids: list[str] = []
+        inserted_units: list[MemoryUnit] = []
 
-        # 3. 构造 inserted 新 unit + insert（先落新版；deepcopy 此时未改的 old 继承元数据）。
+        # 3. 构造 inserted 新 unit（纯内存，不落库；deepcopy 此时未改的 old 继承元数据）。
+        #    统一先算齐整批，再一次性落库——把原「逐条 insert + 逐条 update」的 N+M 个
+        #    独立事务收进 2 个事务，失败中间态从「插一半/标一半」降到「要么全插/全标、
+        #    要么全没插/全没标」（见下方自回滚）。
         if inserted_blocks and len(superseded_units) == len(inserted_blocks):
             # D4.1 对齐：块数一致，按 block_index 一一继承对应旧 unit 全部元数据。
             old_block_idx = {h: idx for h, _, idx in old_full}
@@ -729,8 +746,7 @@ class CompositeDomainStore(DomainStore):
                 new.segments = [Segment(content=new_c)]
                 new.lifecycle = LifecycleState.ACTIVE
                 new.temporal.t_valid = now
-                shadow.insert_units(scope, [new])
-                new_unit_ids.append(new.id)
+                inserted_units.append(new)
         elif inserted_blocks:
             # D4.1 不对齐退化兜底：跨块合并/拆分，无法明确继承源。scope 取当前 scope
             # （edit 发起者，有明确 scope 上下文；不沿用看门狗 latest_scope_by_md 近似——
@@ -765,16 +781,33 @@ class CompositeDomainStore(DomainStore):
                     },
                     provenance=["md_edit_fallback"],
                 )
-                shadow.insert_units(scope, [new])
-                new_unit_ids.append(new.id)
+                inserted_units.append(new)
 
-        # 4. 标 superseded 旧 unit SUPERSEDED + update（废旧版，在新版落地之后；D4.1：
-        #    消失的旧块一律标记，无论对齐与否）。content_hash 不变 → update_units 只覆写
-        #    unit_json + lifecycle 投影列，不重建 FTS5/vec0（sqlite_shadow_index._update_one）。
+        # 4. 落库：先批量插新（单事务）再批量标旧（单事务），对齐 cloud_engine SUPERSEDE
+        #    「先 insert 新版再 update 旧版」范式——任何时刻都有一个可读版本。D4.1：消失的
+        #    旧块一律标记，无论对齐与否。content_hash 不变 → update_units 只覆写 unit_json
+        #    + lifecycle 投影列，不重建 FTS5/vec0（sqlite_shadow_index._update_one）。
+        #    失败补偿（S09 第 12 条，F08 写失败补偿）：insert 单事务失败 → shadow 无变化，
+        #    无需回滚；update 单事务失败 → 新 unit 已落、旧 unit 因回滚天然保持 ACTIVE，
+        #    只需 delete 掉刚插的新 unit（幂等删三表）即「shadow 等价于未发生」。md 侧回滚
+        #    由调用方 edit_md_file 负责。补偿失败只记 warning，漂移交看门狗对账。
+        if inserted_units:
+            shadow.insert_units(scope, inserted_units)
+        new_unit_ids = [u.id for u in inserted_units]
         for old in superseded_units:
             old.lifecycle = LifecycleState.SUPERSEDED
             old.temporal.t_invalid = now
-            shadow.update_units(scope, [old])
+        try:
+            if superseded_units:
+                shadow.update_units(scope, superseded_units)
+        except Exception:
+            try:
+                shadow.delete_units(scope, new_unit_ids)
+            except Exception as rb_exc:
+                logger.warning(
+                    "edit_md_file shadow 补偿回滚失败 (rel_path=%s): %s", rel_path, rb_exc
+                )
+            raise
 
         return new_unit_ids
 

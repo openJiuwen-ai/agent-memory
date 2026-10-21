@@ -96,8 +96,8 @@ def _class_from_md_path(md_filename: str) -> str:
     base = os.path.basename(normalized)
     if base in _FILE_NAME_TO_CLASS:
         return _FILE_NAME_TO_CLASS[base]
-    # 未知路径兜底 daily_memory（与 LocalMarkdownStore._DEFAULT_CLASS 一致）
-    return "daily_memory"
+    # 未知路径兜底 long_term_memory（与 LocalMarkdownStore._DEFAULT_CLASS 一致）
+    return "long_term_memory"
 
 
 class LocalWatchdog(Watchdog):

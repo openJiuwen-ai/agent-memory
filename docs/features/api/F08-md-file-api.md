@@ -83,21 +83,23 @@ edit 的语义是「只改 segments 内容」，元数据理应保留——md �
    inserted   = new_hashes - old_hashes    # 新块出现 → 插入新 unit（继承元数据）
    unchanged  = old_hashes & new_hashes    # 块不变 → 跳过
 
-4. 对每个 superseded 旧 unit：
-   old.lifecycle = SUPERSEDED; old.t_invalid = now
-   shadow.update_units(scope, [old])   # content_hash 不变→只覆写 unit_json+lifecycle（sqlite_shadow_index.py:785）
-   （md 侧不删块——edit_content 已移除旧块，md 已是最终态）
+4. 纯内存构造 inserted_units 整批（见 D4.1 跨块对齐策略决定继承源）：
+   new = deepcopy(继承源旧 unit); new.id = uuid4(); new.supersedes = 继承源旧 unit.id
+   new.segments = [Segment(content=新content)]; new.lifecycle = ACTIVE; new.t_valid = now
+   （不落库，先算齐整批——见下方写失败补偿）
 
-5. 对每个 inserted 新块（见 D4.1 跨块对齐策略决定继承源）：
-   new = deepcopy(继承源旧 unit)
-   new.id = uuid4(); new.supersedes = 继承源旧 unit.id
-   new.segments = [Segment(content=新content)]
-   new.lifecycle = ACTIVE; new.temporal.t_valid = now
-   shadow.insert_units(scope, [new])   # 新 content_hash→建 FTS5/vec0 投影
-   （md 侧不写块——edit_content 已写入新块）
+5. 批量落库（2 个单事务，替代原逐条 insert/update 的 N+M 个事务）：
+   shadow.insert_units(scope, inserted_units)   # 事务 1：全部新 unit（新 content_hash→建 FTS5/vec0）
+   对每个 superseded 旧 unit：old.lifecycle = SUPERSEDED; old.t_invalid = now
+   shadow.update_units(scope, superseded_units) # 事务 2：全部标旧（content_hash 不变→只覆写 unit_json+lifecycle）
+   （md 侧都不动块——edit_content 已把 md 改成最终态）
 
-6. 返回：用新 content_hash 反查新 unit_id（find_unit_ids_by_content_hash）→ get_units 拿新 MemoryUnit list
+6. 返回：new_unit_ids = [u.id for u in inserted_units] → get_units 拿新 MemoryUnit list
 ```
+
+**写失败补偿**（S09 第 12 条，对齐 `add`/`update`/`delete` 三路的 F08 写失败补偿）：`edit_content` 已把 md 改成 new 态、后续 shadow 同步失败时须回滚两处，让「异常等价于未发生」、同一 `old_text` 可重试（否则 retry 因 old_text 消失报 NotFoundError）——shadow 侧：insert 单事务失败则 shadow 无变化无需回滚，update 单事务失败则 `delete_units(new_unit_ids)` 删刚插的新 unit（幂等，旧 unit 因事务回滚天然 ACTIVE）；md 侧：调用方 `edit_md_file` 在 `edit_content` 前 `read_content` 抓旧全文快照，失败时 `md.restore_content(raw_old)` 回写旧全文（新增契约方法，无条件整文件覆盖、复用 `_safe_restore`，不做子串/唯一性假设）。补偿失败只记 warning、不掩盖原异常，漂移交看门狗对账。
+
+**取舍（拒绝的方案）**：① 拒绝「可恢复提交（journal）」——md（文件）与 shadow（sqlite）跨资源做不到真原子，journal 记录 + 重放复杂度高，收益不抵成本；② 拒绝「反向 `edit_content(new_text→old_text)` 回滚 md」——`new_text` 替换后在文件里可能不唯一，反向 `str.count` 会误抛 `ValidationError`，故新增 `restore_content` 无条件整文件覆盖，不做子串/唯一性假设。
 
 **与现有 `domain_store.update` SUPERSEDE 路径的差异**：现有 `update` 是「先改 shadow 再改 md」（`composite_domain_store.py:289-336`，`shadow.update_units` + `md.replace_content`/`remove_content`）；edit_md_file 是「md 已改，只同步 shadow」——因 `edit_content` 已原子改好整个 md 文件，shadow 同步无需再动 md。故 edit_md_file 在 DomainStore 走专用同步路径，不复用 `domain_store.add`（会重复写 md 块）或 `domain_store.update`（它假设 md 还没改、自己改 md）。
 
@@ -173,8 +175,8 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 
 | 层 | 改动 |
 |---|---|
-| 存储 ABC | `markdown.py` +`read_content` / `edit_content`；`shadow.py` +`find_unit_ids_by_content_hash`；`domain_store.py` +`read_md_file` / `edit_md_file` |
-| 存储实现 | `local_markdown_store.py` +`resolve_md_path`（basename+project→路径，与 `_md_path` 同口径）/ `read_content`（行切片 clamp）/ `edit_content`（唯一性校验 + 原子写）；`sqlite_shadow_index.py` +`find_unit_ids_by_content_hash`；`composite_domain_store.py` +`read_md_file` / `edit_md_file` / `_supersede_shadow_for_md`（继承式 SUPERSEDE 同步，写窗保护，见 D4 落库动作） |
+| 存储 ABC | `markdown.py` +`read_content` / `edit_content` / `restore_content`（补偿回写旧全文）；`shadow.py` +`find_unit_ids_by_content_hash`；`domain_store.py` +`read_md_file` / `edit_md_file` |
+| 存储实现 | `local_markdown_store.py` +`resolve_md_path`（basename+project→路径，与 `_md_path` 同口径）/ `read_content`（行切片 clamp）/ `edit_content`（唯一性校验 + 原子写）/ `restore_content`（整文件覆盖，复用 `_safe_restore`）；`sqlite_shadow_index.py` +`find_unit_ids_by_content_hash`；`composite_domain_store.py` +`read_md_file` / `edit_md_file`（md 快照 + 失败回滚）/ `_supersede_shadow_for_md`（继承式 SUPERSEDE 同步，批量落库 + 自回滚，写窗保护，见 D4 落库动作） |
 | 存储共享 | 新建 `markdown_impl/_md_blocks.py`，提取块解析逻辑（`collect_md_blocks` 返回 `[(content_hash, content, block_index)]`），看门狗 + DomainStore 共用，避免重复 |
 | 编排 ABC | `engine.py` +`read_md_file` / `edit_md_file` 协程 |
 | 编排实现 | `cloud_engine.py` / `agent_engine.py` +实现 +`_project_from_context`（从 `context.extensions["coords"]["project"]` 取 project）；`in_memory_engine.py` 抛 `ValidationError`（非文档模式） |
@@ -208,16 +210,18 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 
 1. 解析 basename + project → md 路径
 2. `open_write_window()`
-3. `md.edit_content(...)` 文件级唯一替换（原子写）——md 文件已改为最终态
-4. `_supersede_shadow_for_md(scope, rel_path)` 同步重建（继承式 SUPERSEDE，见 D4 落库动作）：
+3. `md.read_content(...)` 读旧全文做快照（既算块 diff 又留 md 补偿数据）
+4. `md.edit_content(...)` 文件级唯一替换（原子写）——md 文件已改为最终态
+5. `_supersede_shadow_for_md(scope, rel_path)` 同步重建（继承式 SUPERSEDE，见 D4 落库动作）：
    - `list_units_by_md` 拿旧 (id, hash) → `get_units` 拿旧 unit 完整对象（含元数据）
    - 读改后 md 按块算新 (hash, content, block_index)
-   - diff：superseded（旧块消失）→ `update_units` 标记旧版 SUPERSEDED（content_hash 不变只覆写 lifecycle）；inserted（新块出现）→ 按 D4.1 跨块对齐策略继承旧 unit 元数据 + 插入新版（uuid4 新 id，supersedes 指向继承源）
+   - diff：superseded（旧块消失）→ 标 SUPERSEDED；inserted（新块出现）→ 按 D4.1 跨块对齐策略继承旧 unit 元数据构造新版（uuid4 新 id，supersedes 指向继承源）
+   - 纯内存构造整批 inserted_units → 批量 `insert_units`（单事务）→ 批量 `update_units`（单事务）
    - md 侧不再触碰（edit_content 已改好）
-5. 读改后 md → 算新 content_hash → `find_unit_ids_by_content_hash` 反查新 unit_id → `get_units` 返回新 MemoryUnit list
-6. `close_write_window()`（finally）
+6. shadow 同步失败时补偿（见 D4 写失败补偿）：shadow 侧 `delete_units(new_unit_ids)` 删已插新 unit；md 侧 `restore_content(raw_old)` 回写旧全文；再重抛原异常
+7. 成功返回 `get_units(new_unit_ids)`；`close_write_window()`（finally）
 
-> **md 侧零触碰**：步骤 3 后 md 已是最终态，步骤 4 只动 shadow 表（标旧版 + 插新版），不再调 `md.write`/`md.replace_content`/`md.remove_content`——这是与现有 `domain_store.update` SUPERSEDE 路径（先改 shadow 再改 md）的根本差异，因 edit_md_file 的 md 改动在 edit_content 阶段就完成了。
+> **md 侧零触碰**：步骤 4 后 md 已是最终态，步骤 5 只动 shadow 表（标旧版 + 插新版），不再调 `md.write`/`md.replace_content`/`md.remove_content`——这是与现有 `domain_store.update` SUPERSEDE 路径（先改 shadow 再改 md）的根本差异，因 edit_md_file 的 md 改动在 edit_content 阶段就完成了。
 
 ## 验证
 

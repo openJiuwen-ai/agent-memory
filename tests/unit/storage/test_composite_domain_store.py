@@ -264,3 +264,40 @@ def test_edit_md_file_write_window_protects_against_watchdog(tmp_path) -> None:
     assert not write_window_open(), "window should be closed before edit"
     ds.edit_md_file(SCOPE, "MEMORY.md", "hello", "world", project="")
     assert not write_window_open(), "window must be closed after edit (finally)"
+
+
+def test_edit_md_file_rolls_back_on_shadow_failure(tmp_path, monkeypatch) -> None:
+    """shadow 同步失败 → md 回滚 + shadow 自回滚，等价未发生（S09 §12 写失败补偿）。
+
+    注入 shadow.update_units 抛错（模拟标旧事务失败：新 unit 已落、旧 unit 因事务回滚
+    仍 ACTIVE）——应删除刚插的新 unit + md 回写旧全文，且同一 old_text 可重试
+    （检视意见 P1：修复前 md 已改、shadow 残留、重试因 old_text 消失报 NotFoundError）。
+    """
+    ds = _build_doc_store(tmp_path)
+    _write_unit(ds, "u1", "hello world")
+    shadow = ds._raw_shadow_index()
+
+    def _boom(_scope: Scope, _units: list[MemoryUnit]) -> None:
+        raise RuntimeError("injected shadow update failure")
+
+    monkeypatch.setattr(shadow, "update_units", _boom)
+
+    with pytest.raises(RuntimeError, match="injected"):
+        ds.edit_md_file(SCOPE, "MEMORY.md", "hello world", "hello NEW", project="")
+
+    # md 回滚：旧全文恢复、new 内容不残留
+    md_text = ds._raw_markdown().read_content(SCOPE, "MEMORY.md", project="")
+    assert "hello world" in md_text, f"md not rolled back: {md_text!r}"
+    assert "hello NEW" not in md_text, f"new content leaked into md: {md_text!r}"
+
+    # shadow 自回滚：该 md 文件下只剩旧 unit u1（刚插的新 unit 已删）
+    ids = [uid for uid, _ in shadow.list_units_by_md(SCOPE, "memory/MEMORY.md")]
+    assert ids == ["u1"], f"new unit not rolled back: {ids}"
+
+    # 旧 unit 仍 ACTIVE（标旧事务回滚，未被 SUPERSEDED）
+    assert shadow.get_units(SCOPE, ["u1"])[0].lifecycle is LifecycleState.ACTIVE
+
+    # 撤销注入后重试可用：补偿后同一 old_text 再次唯一命中
+    monkeypatch.undo()
+    new_units = ds.edit_md_file(SCOPE, "MEMORY.md", "hello world", "hello NEW", project="")
+    assert new_units[0].segments[0].content == "hello NEW"

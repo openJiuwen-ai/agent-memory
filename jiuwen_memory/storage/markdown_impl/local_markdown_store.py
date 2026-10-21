@@ -50,7 +50,7 @@ _PATH_MAP: dict[str, tuple[str, bool]] = {
     "daily_memory": ("daily_memory", True),
 }
 
-_DEFAULT_CLASS = "daily_memory"
+_DEFAULT_CLASS = "long_term_memory"  # 空/未知 memory_class 兜底 long_term_memory（MEMORY.md）
 _DEFAULT_PROJECT = ""  # 无 project 时兜底空串：long_term/daily_memory 落 memory 根下（跨项目可见）
 
 logger = get_logger(__name__)
@@ -428,6 +428,27 @@ class LocalMarkdownStore(MarkdownStore):
                 )
                 _safe_restore(abs_path, text)
                 raise
+
+    def restore_content(
+        self,
+        scope: Scope,
+        md_basename: str,
+        text: str,
+        *,
+        project: str = "",
+    ) -> None:
+        """把 md 文件内容精确回写为 ``text``（edit_md_file 的 md 侧失败补偿，见契约）。
+
+        与 :meth:`edit_content` 同口径解析 basename + project 为相对路径 → ``_safe_abs_path``
+        收口 → ``_safe_restore`` 整文件覆盖。不做存在性/唯一性/子串校验——补偿必须
+        无条件还原成编辑前旧全文，不能因子串歧义再失败。`_safe_restore` 回写失败只记
+        warning 不抛，md 残缺漂移交看门狗。
+        """
+        with self._lock:
+            root = self._resolved_root()
+            rel_path = self.resolve_md_path(md_basename, project)
+            abs_path = self._safe_abs_path(root, rel_path)
+            _safe_restore(abs_path, text)
 
     # -- 路径计算 ------------------------------------------------------------ #
 
