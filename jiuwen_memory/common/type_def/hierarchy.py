@@ -9,7 +9,8 @@
 本模块只放结构定义与纯函数校验——无副作用、不依赖存储后端，第一阶段提供校验工具，
 后续 construction 在保存候选子树前接入；ingest 使用独立的叶提示校验。
 
-字段校验要求 kind/role 同空同在、空结构不带边或区间、区间成对且有序，TIME 必须有区间。
+默认字段校验要求 kind/role 同空同在、空结构不带边或区间、区间成对且有序，TIME 有区间。
+写入/继承可显式容忍无边 Snapshot 缺时，但树校验始终严格。
 子引用按完整 Scope + id 去重；未声明显式 Scope 的引用与 owner 同 Scope，可直接判断
 自指。显式 Scope 与 owner 的身份比较留给 ``validate_tree``，不把跨 Scope 同名 ID 误判。
 
@@ -112,8 +113,8 @@ class HierarchyRef:
     child_ids: list[str] = field(default_factory=list)  # 直接子的稳定有序列表
     child_scopes: list[Scope] = field(default_factory=list)  # 与 child_ids 等长或为空
     parent_scope: Scope | None = None  # None 表示与本 unit 同 Scope
-    span_start: datetime | None = None  # 结构覆盖区间起点（TIME 必填）
-    span_end: datetime | None = None  # 结构覆盖区间终点（TIME 必填）
+    span_start: datetime | None = None  # TIME 建树必填；未挂树叶提示可缺省
+    span_end: datetime | None = None  # TIME 建树必填；未挂树叶提示可缺省
     ordinal: int = 0  # 同父下的排序提示（非 TIME kind 用）
     status: HierarchyStatus = HierarchyStatus.ACTIVE
 
@@ -173,9 +174,27 @@ def span_epoch_ms(value: datetime) -> int:
     return epoch_ms(value)
 
 
-def validate_ref(ref: HierarchyRef, *, unit_id: str = "") -> None:
-    """校验单节点字段及无需 owner Scope 即可确定的重复引用和自指。"""
+def is_incomplete_snapshot(ref: HierarchyRef) -> bool:
+    """尚未挂树且缺少时间的 Snapshot 提示；带任何边的结构不适用。"""
+    return (
+        ref.kind is HierarchyKind.TIME
+        and ref.role is HierarchyRole.SNAPSHOT
+        and ref.status is HierarchyStatus.ACTIVE
+        and not (ref.parent_id or ref.parent_scope is not None or ref.child_ids or ref.child_scopes)
+        and (ref.span_start is None or ref.span_end is None)
+    )
+
+
+def validate_ref(
+    ref: HierarchyRef, *, unit_id: str = "", allow_incomplete_snapshot: bool = False,
+) -> None:
+    """默认严格校验树节点；写入/继承可显式接受无边且时间不完整的 Snapshot 提示。"""
     where = f"（unit={unit_id}）" if unit_id else ""
+    if allow_incomplete_snapshot and is_incomplete_snapshot(ref):
+        for value in (ref.span_start, ref.span_end):
+            if value is not None and not isinstance(value, datetime):
+                raise ValidationError(f"Snapshot 时间必须是 datetime{where}")
+        return
     if (ref.kind is None) != (ref.role is None):
         raise ValidationError(f"hierarchy kind 与 role 必须同时设置或同时缺省{where}")
     if ref.is_empty:

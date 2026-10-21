@@ -82,6 +82,8 @@
 7. 默认 `PassthroughNormalizer` 只接已经是 UTF-8 文本的 TEXT/CODE；DOCUMENT 原件必须配置专用解析型 Normalizer，不能把文件 URI 当作解析后的正文。
 
 8. `SimpleIngestor` 在 normalize 前校验并消费叶提示，不创建父子边；无提示保持空结构。
-9. `enrich_snapshot_hints` 由 Engine 传入开关；补齐只用 occurred_at，完整提示优先，不掩盖非法输入。
+9. `enrich_snapshot_hints` 由 Engine 传入开关；补齐只用 occurred_at，完整提示优先。
+   无 occurred_at 时保持原输入；显式 TIME/Snapshot 单边区间不自动修补，已有端点原样保存。
+   缺时不使写入失败，非法身份、时间格式、逆序区间或边提示仍拒绝。
 
 10. 叶区间比较复用 common/time_utils.as_utc；补齐与解析保留输入时间表示。

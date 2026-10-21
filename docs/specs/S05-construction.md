@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-20 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -637,6 +637,8 @@ provenance。涉及参与继承的来源时必须唯一；明确全部来自非�
 不自动获得该继承语义。KeywordExtractor 清除 deepcopy 带出的结构，防止沿用来源父子边。
 
 继承只复制 kind/role/span 和 ACTIVE 状态，不复制边、ordinal、tree_memory 或修改 temporal。
+对于未挂树的 TIME/Snapshot，缺失时间端点保留 None，不在继承或去重时自动补齐。
+写入缺时提示的容忍不改变默认结构校验；后续建树应筛选完整候选，再严格校验树。
 去重 ADD 保持一条候选；NOOP 不修改已有节点；UPDATE 用新叶区间替换，不做区间并集，
 缺少新提示则保留旧结构；SUPERSEDE 保留原版本替换规则。UPDATE/SUPERSEDE 涉及已挂树
 节点或其他树角色时，在正文合并和存储写入前拒绝，避免产生未经维护的父摘要/边。

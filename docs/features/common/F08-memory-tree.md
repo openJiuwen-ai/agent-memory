@@ -499,7 +499,7 @@ Policy 键、默认值和校验由
 
 ## ingest 接入层 （层级叶提示）
 
-Source adapter 可以在 `RawPayload.metadata` 中提供以下保留键：
+Source adapter 可以在 `RawPayload.system_metadata` 中提供以下保留键：
 
 | 键 | 类型 | 语义 |
 |---|---|---|
@@ -508,23 +508,23 @@ Source adapter 可以在 `RawPayload.metadata` 中提供以下保留键：
 | `hierarchy_span_start` | ISO 8601 str | 可选覆盖区间起点 |
 | `hierarchy_span_end` | ISO 8601 str | 可选覆盖区间终点 |
 
-Ingestor 只允许把一组完整且有效的提示映射到当前 unit 的叶安全字段：
+Ingestor 将合法身份与已给时间映射到当前 unit 的叶安全字段，TIME 叶提示可缺时：
 `kind`、`role`、`span_start`、`span_end`。映射后的 `parent_id` 必须为空，
 `child_ids` 必须为空，`status` 使用 `ACTIVE`。未提供任何保留键时，
 `hierarchy` 保持默认空结构。
 
 校验是确定性的：
 
-1. kind/role 必须同时提供；区间必须同时提供或同时缺省。
+1. kind/role 必须同时提供；TIME 叶允许缺少一个或两个时间端点，其他 kind 的区间须成对或同缺。
 2. 枚举值必须精确匹配，时间必须可按 ISO 8601 解析，且起点不得晚于终点。
-3. `HierarchyKind.TIME` 必须提供区间；其他 kind 可省略区间。
+3. TIME/Snapshot 的缺时叶提示可保存，已有端点原样保留；实际参与建树仍须有完整区间。
 4. 接入提示只接受叶角色：TIME 只接受 `snapshot`；DIRECTORY、TOPIC、CLUSTER、CUSTOM
    只接受 `node`。`time_span`、`scene`、`event`、`profile`、`root` 等父侧
    角色必须由构建层创建。
 5. `hierarchy_parent_id`、`hierarchy_child_ids` 或其他试图建立边的保留前缀键一律以
    `ValidationError` 拒绝，不作为普通 metadata 静默保留。
-6. 任一叶提示无效时拒绝该 payload 的转换，不产出半有效 `HierarchyRef`；非
-   `hierarchy_` 前缀的 metadata 继续原样透传。
+6. 非法身份、时间格式、逆序区间或边提示拒绝该 payload；单纯缺时不再拒绝。
+   非 `hierarchy_` 前缀的系统 metadata 与用户 metadata 继续原样透传。
 
 这些提示只是来源对当前 unit 结构身份的声明，不证明边存在。父子边只能由构建或控制
 契约在持久化阶段校验并维护。
@@ -713,7 +713,7 @@ F01 的同 unit 披露设计与实现历史见
 - 拒绝多来源时猜测最新区间、合并区间和复制父子边。已挂树节点的去重修改需要维护父摘要与边，此次明确拒绝 UPDATE/SUPERSEDE，NOOP 继续允许；无新提示保留旧叶结构。
 - 适配目标仓库已有 Evolver 参数与直接 NOOP 判定，保留认证、文档记忆、DomainStore 读取和 dreaming 调度；此处不移入后续请求对象或父节点构造逻辑。
 - 验证：叶提示非法输入参数化；两种 Engine、两种 IndexBuilder、两种 Evolver 的真实内存存储流程；涵盖显式提示/自动补齐、运行时开关、单条/批量、infer、来源歧义、四种去重决策和拒绝前不修改存储。
-- 遗留：本次尚不提供父节点生成、重建、树查询或后台维护；Schema/procedural 和多源抽取没有隐式 Snapshot 继承。开启自动补时后没有消息时间的写入会报错，需显式提供完整叶提示或关闭开关。
+- 遗留：本次尚不提供父节点生成、重建、树查询或后台维护；Schema/procedural 和多源抽取没有隐式 Snapshot 继承。缺时写入语义已按下述 2026-10-21 评审修复调整，不再仅因没有消息时间而拒绝写入。
 
 ### Snapshot 交付验证结果
 
@@ -775,3 +775,37 @@ F01 的同 unit 披露设计与实现历史见
 - 其中跨进程时区专项 **45 passed**，涵盖两种 Engine、infer 开关及三类时间表示。
 - 变更 Python 文件 Ruff、E302 空行检查与 git diff --check 通过；未运行云端静态规则引擎。
 - 未重跑 LoCoMo 模型评测，未迁移历史数据/索引，未修改评测框架。
+
+
+## 缺时写入评审修复（2026-10-21）
+
+### 决策与取舍
+
+- 树开关开启后，缺少 occurred_at 的无提示写入保持空 hierarchy；显式 TIME/Snapshot
+  缺少区间端点则保留身份、已有端点和缺失的 None。单边区间即使有 occurred_at 也不修补。
+- 原有完整时间路径不变：无提示或仅声明 TIME/Snapshot 身份且有 occurred_at 时，生成
+  两端相等的点区间；完整显式区间优先。保持既有统一时区转换、tree_ 索引键、策略表替换
+  以及混合来源继承修复，不覆盖之前的评审修改。
+- infer 继承与去重允许无边缺时叶，继续使用原来的来源匹配、正文合并和版本决策。
+  已挂树节点的 UPDATE/SUPERSEDE 保护不放宽，默认 validate_ref/validate_tree 仍严格。
+- 拒绝用机器时间、observation_date 或一个端点猜测另一个端点；不丢弃显式身份或时间，
+  不引入额外 raw Snapshot、永久跳过标记或 codec 版本升级。
+
+### 验证与范围
+
+- 覆盖两类 Engine 的单条、异步、批量、infer 写入及原值读回；两类 Evolver 的缺时继承、
+  部分叶更新为完整叶和完整叶更新为部分叶；Unified 和普通索引保留部分区间真源。
+- 时间格式、逆序、非法角色/边继续拒绝；实际树的严格校验不因写入允许缺时而放宽。
+- 当前分支只交付模型、Snapshot 接入和继承，尚无显式/后台建树 Job。因此本次 PR
+  不引入后续建树模块；后续移植建树时须同时接入缺时叶筛选、复用检查和跳过诊断。
+  不能仅放宽写入后仍把这些叶传给严格 Composer。
+- 不修改测试框架、既有分组/查询算法或历史数据；未运行真实 LoCoMo 测评。
+
+### 本次 PR 修复验证结果
+
+- 修改涉及的五个单测文件 **241 passed**，覆盖双 Engine、双 Evolver 与严格结构校验。
+- 扩大回归 construction/storage/retrieval/control/ingest、common 模型/过滤/codec、Snapshot
+  API 和 retrieval 集成：1822 passed、7 skipped；唯一失败为环境缺少可选 watchdog。
+  使用已有临时依赖目录后，相关 watchdog 模块复测 **22 passed**，未修改项目依赖配置。
+- 变更 Python 文件 Ruff、E302、语法及测试受保护成员访问检查、git diff --check 均通过。
+  未运行云端 CodeCheck 或真实 LoCoMo 模型评测。

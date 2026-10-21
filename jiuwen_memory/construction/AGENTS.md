@@ -213,4 +213,6 @@ Evolver.evolve(units, mode):
 前匹配 infer 来源；仅涉及 opt-in 来源的候选要求单源，普通多源需完整解析后放行，
 缺失或跨 Scope 来源仍拒绝。KeywordExtractor 显式清空 deepcopy 的 hierarchy。UPDATE/SUPERSEDE
 的结构检查必须早于正文合并与 IndexBuilder 写入。Schema/procedural 不加入自动继承。
-现有 Evolver 构造参数、evolve(units, mode)、去重直接 NOOP 判据保持不变。
+无边 Snapshot 叶提示缺少时间时，继承/去重保留已有端点和 None，不用机器时间或单边时间
+补齐；已挂树节点保护不放宽。现有 Evolver 构造参数、evolve(units, mode)、去重直接 NOOP
+判据保持不变。

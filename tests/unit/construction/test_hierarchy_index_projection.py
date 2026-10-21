@@ -124,6 +124,13 @@ def test_unified_projects_hierarchy_and_clears_stale_fields_on_update() -> None:
 
     persisted = domain.get(unit.scope, [unit.id])[0]
     assert {key: persisted.system_metadata[key] for key in _TREE_METADATA} == _TREE_METADATA
+    unit.hierarchy.parent_id = ""
+    unit.hierarchy.span_end = None
+    builder.update([unit])
+    persisted = domain.get(unit.scope, [unit.id])[0]
+    assert persisted.hierarchy == unit.hierarchy, "不完整叶时间必须经 Unified 和 codec 原样往返"
+    assert "tree_span_start" not in persisted.system_metadata
+    assert "tree_span_end" not in persisted.system_metadata
     unit.hierarchy = HierarchyRef(kind=HierarchyKind.TOPIC, role=HierarchyRole.NODE)
     builder.update([unit])
     persisted = domain.get(unit.scope, [unit.id])[0]

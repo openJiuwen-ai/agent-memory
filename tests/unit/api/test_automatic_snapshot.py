@@ -8,7 +8,7 @@ from datetime import timedelta
 import pytest
 
 from jiuwen_memory.api import assemble_runtime
-from jiuwen_memory.common.errors import PolicyError, ValidationError
+from jiuwen_memory.common.errors import PolicyError
 from jiuwen_memory.common.type_def import HierarchyRole
 from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.control.policy import PolicyProducer
@@ -53,7 +53,7 @@ def test_switch_controls_snapshot_and_preserves_message_time(api):
     assert api.add("ordinary again", HOME, security=security_for(api, HOME))[0].hierarchy.is_empty
 
 
-def test_batch_uses_each_effective_occurred_at_and_reports_missing_time(api):
+def test_batch_preserves_each_time_and_accepts_missing_time(api):
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     result = api.batch_add([
         BatchWriteItem(content="one", occurred_at=START),
@@ -62,8 +62,12 @@ def test_batch_uses_each_effective_occurred_at_and_reports_missing_time(api):
     ], HOME, security=security_for(api, HOME))
     assert len(result.outcomes) == 3
     units = api.list(HOME, security=security_for(api, HOME)).items
-    assert {unit.hierarchy.span_start for unit in units} == {START, START + timedelta(seconds=1)}
-    assert result.outcomes[2].error_type == "ValidationError"
+    assert {unit.hierarchy.span_start for unit in units} == {
+        START, START + timedelta(seconds=1), None,
+    }
+    assert all(not outcome.error_type for outcome in result.outcomes)
+    missing = next(unit for unit in units if unit.content == "missing")
+    assert missing.hierarchy.is_empty and missing.temporal.t_message is None
 
 
 @pytest.mark.parametrize("infer", [False, True])
@@ -77,17 +81,30 @@ def test_infer_facts_inherit_time_without_extra_raw_snapshot(api, infer):
     assert api.list(HOME, security=security_for(api, HOME)).count == len(units)
 
 
-@pytest.mark.parametrize("hints", [
-    {}, {"hierarchy_kind": "time", "hierarchy_role": "snapshot"},
-])
-def test_missing_spans_require_message_time(api, hints):
+@pytest.mark.parametrize("infer", [False, True])
+@pytest.mark.parametrize("span", ["plain", "neither", "start", "end"])
+def test_missing_time_preserves_input_through_write_and_infer(api, infer, span):
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
-    with pytest.raises(ValidationError, match="occurred_at"):
-        api.add("missing", HOME, security=security_for(api, HOME), system_metadata=hints)
-    assert api.list(HOME, security=security_for(api, HOME)).count == 0
+    hints = {"infer": infer}
+    if span != "plain":
+        hints.update(hierarchy_kind="time", hierarchy_role="snapshot")
+    if span in ("start", "end"):
+        hints[f"hierarchy_span_{span}"] = START.isoformat()
+    before = deepcopy(hints)
+    units = api.add(
+        "Alice likes climbing", HOME, security=security_for(api, HOME), system_metadata=hints,
+    )
+    assert units and hints == before
+    for unit in units:
+        stored = api.get(unit.id, HOME, security=security_for(api, HOME))
+        assert stored.hierarchy.is_empty == (span == "plain")
+        assert stored.hierarchy.span_start == (START if span == "start" else None)
+        assert stored.hierarchy.span_end == (START if span == "end" else None)
+        assert stored.temporal.t_message is None
+        assert stored.hierarchy.parent_id == "" and stored.hierarchy.child_ids == []
 
 
-def test_explicit_complete_spans_win_and_partial_spans_fail(api):
+def test_explicit_spans_win_and_occurred_at_does_not_repair_partial_input(api):
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     hints = {"hierarchy_kind": "time", "hierarchy_role": "snapshot",
              "hierarchy_span_start": START.isoformat(),
@@ -95,12 +112,12 @@ def test_explicit_complete_spans_win_and_partial_spans_fail(api):
     unit = api.add("explicit", HOME, security=security_for(api, HOME), system_metadata=hints)[0]
     assert unit.hierarchy.span_end == START + timedelta(hours=1)
     del hints["hierarchy_span_end"]
-    with pytest.raises(ValidationError):
-        api.add(
-            "partial", HOME, security=security_for(api, HOME),
-            occurred_at=START, system_metadata=hints,
-        )
-    assert api.list(HOME, security=security_for(api, HOME)).count == 1
+    partial = api.add("partial", HOME, security=security_for(api, HOME),
+                      occurred_at=START + timedelta(seconds=5), system_metadata=hints)[0]
+    stored = api.get(partial.id, HOME, security=security_for(api, HOME))
+    assert stored.hierarchy.span_start == START and stored.hierarchy.span_end is None
+    assert stored.temporal.t_message == START + timedelta(seconds=5)
+    assert api.list(HOME, security=security_for(api, HOME)).count == 2
 
 
 @pytest.mark.parametrize("engine_kind", ["in_memory", "cloud"])

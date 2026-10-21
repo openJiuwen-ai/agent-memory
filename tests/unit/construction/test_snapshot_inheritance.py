@@ -140,12 +140,13 @@ def test_ambiguous_sources_fail_without_partially_annotating_candidates(bad_refe
     assert first.hierarchy.is_empty and second.hierarchy.is_empty
 
 
-@pytest.mark.parametrize("bad_span", ["missing", "reversed", "dismissed"])
+@pytest.mark.parametrize("bad_span", ["missing-attached", "reversed", "dismissed"])
 def test_invalid_source_leaf_is_not_propagated(bad_span):
     source = snapshot_test_unit("source", 2)
     source.system_metadata["infer"] = True
-    if bad_span == "missing":
+    if bad_span == "missing-attached":
         source.hierarchy.span_end = None
+        source.hierarchy.parent_id = "parent"
     elif bad_span == "reversed":
         source.hierarchy.span_end = snapshot_test_unit("earlier").hierarchy.span_start
     else:
@@ -288,8 +289,11 @@ def test_snapshot_without_existing_target_is_valid_and_added(harness_factory, de
     assert harness.llm.call_count == 0, "无召回目标时直接新增，不调用模型"
 
 
-def test_infer_evolve_transfers_snapshot_through_real_keyword_extractor(harness):
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_infer_evolve_transfers_snapshot_through_real_keyword_extractor(harness, incomplete):
     source = snapshot_test_unit("source")
+    if incomplete:
+        source.hierarchy.span_end = None
     source.source_ref = "raw-payload-id"
     source.system_metadata["infer"] = True
     before = deepcopy(source)
@@ -336,7 +340,7 @@ def test_infer_evolve_transfers_snapshot_through_real_llm_extractors(
     assert harness.world.kv.list(source.scope).count == 1
 
 
-@pytest.mark.parametrize("invalid", ["edges", "dismissed", "missing-span"])
+@pytest.mark.parametrize("invalid", ["edges", "dismissed", "reversed-span"])
 def test_invalid_new_snapshot_is_rejected_before_add(harness_factory, invalid):
     candidate = snapshot_test_unit("new")
     if invalid == "edges":
@@ -344,7 +348,7 @@ def test_invalid_new_snapshot_is_rejected_before_add(harness_factory, invalid):
     elif invalid == "dismissed":
         candidate.hierarchy.status = HierarchyStatus.DISMISSED
     else:
-        candidate.hierarchy.span_start = None
+        candidate.hierarchy.span_start = snapshot_test_unit("later", 20).hierarchy.span_start
 
     harness = harness_factory(candidate=candidate)
     with pytest.raises(ValidationError):
@@ -393,3 +397,20 @@ def test_mixed_batch_rejects_ambiguous_or_unresolved_sources_atomically(bad_sour
         inherit_infer_snapshots([tree, ordinary, extra], [good, bad])
 
     assert good.hierarchy.is_empty and bad.hierarchy.is_empty
+
+
+@pytest.mark.parametrize("missing_side", ["old", "new"])
+def test_update_accepts_partial_leaf_and_preserves_incoming_time(harness_factory, missing_side):
+    old, candidate = snapshot_test_unit("old"), snapshot_test_unit("new", 20)
+    incomplete = old if missing_side == "old" else candidate
+    incomplete.hierarchy.span_end = None
+    harness = harness_factory(candidate=candidate, existing=old, decision=DedupDecision.UPDATE)
+    harness.index.build([old])
+
+    result = harness.evolver.evolve([candidate], EvolveMode.EXTRACT)
+
+    stored = loads(harness.world.kv.get(old.scope, memory_key(old.id)))
+    assert result.updated_ids == [old.id] and stored.hierarchy == candidate.hierarchy
+    assert harness.world.kv.list(old.scope).count == 1
+    document = harness.world.fulltext.get(old.scope, [old.id])[0]
+    assert ("tree_span_end" in document.metadata) == (candidate.hierarchy.span_end is not None)

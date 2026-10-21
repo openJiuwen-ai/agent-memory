@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-20 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -80,7 +80,8 @@
    - **引用可解析**：因 `MemoryUnit.id` 仅在完整 Scope 内唯一，当子（或父）与持有边的
      unit 完整 Scope 不完全相同时，边必须携带可定位的子/父 Scope（见下方
      `child_scopes` / `parent_scope`）；二者皆缺省时退化为「与本 unit 完整 Scope 相同」。
-16. **层级区间有效**：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
+16. **层级区间有效**：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；参与树的 `HierarchyKind.TIME` 节点必须有完整区间。
+    未挂树的 ACTIVE Snapshot 允许保存缺时叶提示，默认结构校验仍拒绝此类不完整节点。
 17. **引用语义分离**：`provenance` 只表示演进来源，`supersedes`
     只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归
     `HierarchyStatus`。
@@ -389,6 +390,10 @@ tree_memory: TreeMemoryData | None = None
 `MemoryUnit.temporal` 的双时间，也不替代 `RecallChannel.TEMPORAL` 的召回过滤。
 
 `validate_ref` 与 `validate_tree` 提供无副作用校验；消费边界须在使用结构前调用。
+`is_incomplete_snapshot(ref)` 仅识别 TIME/Snapshot、ACTIVE、无任何父子引用且缺少一个
+或两个时间端点的形态，不能证明没有外部父引用。`validate_ref` 的关键字参数
+`allow_incomplete_snapshot=False` 默认严格；显式启用时仅允许该形态的时间缺失，
+仍校验已有端点为 datetime，不补齐或转换时间。`validate_tree` 始终使用默认严格校验。
 `validate_tree` 先校验全部字段，再检查非空结构；集合外引用仍校验身份和边界，
 仅跳过依赖外部节点内容的双向边、环与覆盖核对。默认允许跨 session，
 非空 user/agent 不同须显式设置 `allow_cross_user=True`；org/space 始终不可跨。

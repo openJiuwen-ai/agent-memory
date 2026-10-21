@@ -27,7 +27,7 @@ def _has_edges(ref: HierarchyRef) -> bool:
 
 
 def _leaf_copy(unit: MemoryUnit) -> HierarchyRef:
-    validate_ref(unit.hierarchy, unit_id=unit.id)
+    validate_ref(unit.hierarchy, unit_id=unit.id, allow_incomplete_snapshot=True)
     if unit.hierarchy.status is not HierarchyStatus.ACTIVE:
         raise ValidationError("snapshot 传递只接受 ACTIVE 叶提示")
     return HierarchyRef(
@@ -103,5 +103,5 @@ def snapshot_for_decision(
         )
     if not existing.hierarchy.is_empty and not _is_snapshot(existing):
         raise ValidationError("snapshot 去重不得覆盖其他树角色")
-    validate_ref(existing.hierarchy, unit_id=existing.id)
+    validate_ref(existing.hierarchy, unit_id=existing.id, allow_incomplete_snapshot=True)
     return replacement

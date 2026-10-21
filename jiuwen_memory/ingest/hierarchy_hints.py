@@ -5,8 +5,9 @@
 构建层在持久化阶段校验并维护。因此本模块只产出叶安全字段（``kind``/``role``/
 ``span_start``/``span_end``），``parent_id``/``child_ids`` 恒为空、``status`` 恒为 ACTIVE。
 
-提示是"来源对自身结构身份的声明"，不证明边存在。任一提示无效即拒绝整条 payload 的
-转换，不产出半有效结构；非 ``hierarchy_`` 前缀的 metadata 原样透传。
+提示是"来源对自身结构身份的声明"，不证明边存在。缺失时间的叶提示原样保留，
+是否参与建树交由候选筛选决定；非法身份、时间格式或结构边仍拒绝转换；
+非 ``hierarchy_`` 前缀的 metadata 原样透传。
 未提供提示时返回空结构与系统元数据副本；非法提示抛 ValidationError，由调用方拒绝
 该 payload。朴素时间在比较时按 UTC 解释，返回值仍保留输入的时间表示。
 """
@@ -55,16 +56,14 @@ def enrich_snapshot_hints(
         and metadata[HINT_KIND] == HierarchyKind.TIME.value
         and metadata[HINT_ROLE] == HierarchyRole.SNAPSHOT.value
     )
-    if implicit or missing_span:
-        if not isinstance(occurred_at, datetime):
-            raise ValidationError("自动 Snapshot 时间需要 occurred_at，不能用写入时间代替")
+    if (implicit or missing_span) and isinstance(occurred_at, datetime):
         metadata.update({
             HINT_KIND: HierarchyKind.TIME.value,
             HINT_ROLE: HierarchyRole.SNAPSHOT.value,
             HINT_SPAN_START: occurred_at.isoformat(),
             HINT_SPAN_END: occurred_at.isoformat(),
         })
-    # 先校验再交给 Ingestor 消费，不用自动补齐掩盖单边区间或未知保留键。
+    # 单边区间原样保留，不用 occurred_at 自动修补；非法提示仍在接入前拒绝。
     extract_hierarchy_hints(metadata)
     return metadata
 
@@ -91,14 +90,11 @@ def extract_hierarchy_hints(
     raw_start = reserved.get(HINT_SPAN_START)
     raw_end = reserved.get(HINT_SPAN_END)
 
-    # 规则 1：kind/role 同在；区间同在或同缺
+    # 规则 1：kind/role 同在；TIME 叶提示可缺少一个或两个时间端点
     if (raw_kind is None) != (raw_role is None):
         raise ValidationError(f"{HINT_KIND} 与 {HINT_ROLE} 必须同时提供")
     if raw_kind is None:
         raise ValidationError(f"提供了区间提示却缺少 {HINT_KIND}/{HINT_ROLE}")
-    if (raw_start is None) != (raw_end is None):
-        raise ValidationError(f"{HINT_SPAN_START} 与 {HINT_SPAN_END} 必须同时提供")
-
     # 规则 2：枚举精确匹配
     kind = _parse_enum(HierarchyKind, raw_kind, HINT_KIND)
     role = _parse_enum(HierarchyRole, raw_role, HINT_ROLE)
@@ -111,20 +107,15 @@ def extract_hierarchy_hints(
             f"实际 {role.value}——父侧角色必须由构建层创建"
         )
 
-    # 规则 3：TIME 必须提供区间
-    if raw_start is None:
-        if kind is HierarchyKind.TIME:
-            raise ValidationError(f"{HierarchyKind.TIME.value} 必须提供区间提示")
-        return HierarchyRef(kind=kind, role=role, status=HierarchyStatus.ACTIVE), rest
-
-    # 规则 2：时间可解析且起点不晚于终点
-    span_start = _parse_time(raw_start, HINT_SPAN_START)
-    span_end = _parse_time(raw_end, HINT_SPAN_END)
-    # 与索引口径一致：朴素时间按 UTC 比较，但保留输入的原时间表示与微秒精度。
-    comparable_start = as_utc(span_start)
-    comparable_end = as_utc(span_end)
-    if comparable_start > comparable_end:
-        raise ValidationError(f"{HINT_SPAN_START} 不得晚于 {HINT_SPAN_END}")
+    # 仅放宽 TIME 叶提示的时间缺失；其他 kind 保持原有成对约束。
+    if kind is not HierarchyKind.TIME and (raw_start is None) != (raw_end is None):
+        raise ValidationError(f"{HINT_SPAN_START} 与 {HINT_SPAN_END} 必须同时提供")
+    span_start = _parse_time(raw_start, HINT_SPAN_START) if raw_start is not None else None
+    span_end = _parse_time(raw_end, HINT_SPAN_END) if raw_end is not None else None
+    if span_start is not None and span_end is not None:
+        # 复用统一 UTC 比较口径，不改变输入时间表示与微秒精度。
+        if as_utc(span_start) > as_utc(span_end):
+            raise ValidationError(f"{HINT_SPAN_START} 不得晚于 {HINT_SPAN_END}")
 
     return (
         HierarchyRef(

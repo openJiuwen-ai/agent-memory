@@ -127,12 +127,13 @@ def test_rule2_rejects_mixed_timezone_span_reversed_in_utc(start: str, end: str)
         extract_hierarchy_hints(time_leaf(hierarchy_span_start=start, hierarchy_span_end=end))
 
 
-# -- 规则 3：TIME 必须提供区间，其他 kind 可省 ------------------------------ #
+# -- 规则 3：TIME 叶提示允许缺时，其他 kind 可省 ------------------------------ #
 
 
-def test_rule3_requires_span_for_time_kind() -> None:
-    with pytest.raises(ValidationError, match="必须提供区间提示"):
-        extract_hierarchy_hints({"hierarchy_kind": "time", "hierarchy_role": "snapshot"})
+def test_rule3_preserves_time_identity_without_span() -> None:
+    ref, _ = extract_hierarchy_hints({"hierarchy_kind": "time", "hierarchy_role": "snapshot"})
+    assert ref.kind is HierarchyKind.TIME and ref.role is HierarchyRole.SNAPSHOT
+    assert ref.span_start is None and ref.span_end is None
 
 
 def test_rule3_allows_missing_span_for_other_kinds() -> None:

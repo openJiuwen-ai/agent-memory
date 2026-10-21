@@ -688,3 +688,17 @@ def test_index_metadata_span_is_numeric_for_range_operators() -> None:
     assert isinstance(projected["tree_span_start"], int)
     # 构造范围谓词不抛错即证明取值类型合法（字符串会被 normalize 拒绝）
     FilterClause("tree_span_start", FilterOp.LTE, projected["tree_span_start"])
+
+
+def test_incomplete_snapshot_permission_does_not_relax_tree_validation() -> None:
+    ref = HierarchyRef(kind=HierarchyKind.TIME, role=HierarchyRole.SNAPSHOT, span_start=at(0))
+    validate_ref(ref, allow_incomplete_snapshot=True)
+    with pytest.raises(ValidationError):
+        validate_ref(ref)
+    with pytest.raises(ValidationError):
+        validate_tree([MemoryUnit(id="leaf", scope=scope(), hierarchy=ref)])
+    for changed in (replace(ref, parent_id="parent"), replace(ref, parent_scope=scope()),
+                    replace(ref, child_ids=["child"]), replace(ref, child_scopes=[scope()]),
+                    replace(ref, role=HierarchyRole.TIME_SPAN), replace(ref, span_start="bad")):
+        with pytest.raises(ValidationError):
+            validate_ref(changed, allow_incomplete_snapshot=True)
