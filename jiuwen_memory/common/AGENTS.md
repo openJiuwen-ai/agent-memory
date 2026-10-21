@@ -176,3 +176,7 @@
 - `MemoryUnit.hierarchy` 与 `tree_memory` 追加在已有字段末尾；后者仅存完整事实，不作为正文或索引输入。
 - codec 保持 `_v=4`，坏结构整段降级，坏事实整组降级；完整 Scope 引用不可因损坏而重定向到 owner。
 - 裸结构过滤字段读 HierarchyRef，显式 metadata 路径保持独立；数组/标量比较沿用现有过滤契约。
+
+
+普通查询的 `type_def/retrieval_filter.is_retrieval_candidate` 排除 TIME 生成父；
+该约束覆盖 Storage 和 Retrieval 的共用真源复核，不改变 get/list。

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from ..time_utils import as_utc
 from .filter import FilterExpr
+from .hierarchy import TIME_PARENT_ROLES, HierarchyKind
 from .memory import LifecycleState, MemoryUnit
 from .memory_filter import matches_memory_unit
 
@@ -60,7 +61,9 @@ def is_retrieval_candidate(
     include_archived: bool,
 ) -> bool:
     return (
-        passes_lifecycle(unit, as_of, include_archived)
+        not (unit.hierarchy.kind is HierarchyKind.TIME
+             and unit.hierarchy.role in TIME_PARENT_ROLES)
+        and passes_lifecycle(unit, as_of, include_archived)
         and in_event_window(unit, time_from, time_to)
         and matches_retrieval_filters(unit, filters)
     )

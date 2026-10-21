@@ -142,3 +142,10 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
 
 9. 查询时间边界的 epoch 投影复用 common/time_utils.epoch_ms；真源时间比较复用 as_utc。
+
+
+### 普通召回的树父隔离
+
+`predicate_builder.build_ordinary_hierarchy_filters` 在 PipelineRetriever 召回前
+排除生成的 TIME 父；common 的 is_retrieval_candidate 在真源层重复检查。
+不得仅做返回后过滤，否则父节点会抢占普通叶的候选名额。

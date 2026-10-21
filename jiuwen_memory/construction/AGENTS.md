@@ -225,3 +225,8 @@ Evolver.evolve(units, mode):
 `time_hierarchy_pipeline` 按层完成摘要后再向上分组，`parent_enrichment` 传递完整
 事实并生成父摘要/L0/L1，`profile_config` 严格解析配置。纯流水线不读取或写入存储。
 时间比较经 common/time_utils 统一，复制叶后仅变更 hierarchy，事实不从摘要反推。
+
+
+`hierarchy_composer_impl/default_composer.py` 注册 default Composer；所有本体、
+父边、归档和索引维护经 IndexBuilder。候选完整性由调用方取数后和 Composer
+写入前分别验证；索引失败与本体失败必须保留可观察的部分结果。

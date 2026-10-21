@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-10-20 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -427,3 +427,10 @@ jiuwen_memory/retrieval/<算子>_impl/
 valid-time 真源复核及有事件时间的边界比较也使用该规则，避免混合时间表示抛错。
 保留既有 `in_event_window` 对未知/无时区事件时间的宽松兜底，索引前置过滤与显式
 FilterExpr 复核仍按统一时间投影判定；不改变未知时间哨兵和半开区间边界。
+
+
+## 普通召回与生成父节点
+
+普通召回在索引 top-k 前排除 TIME 的 time_span/scene/event，并在真源物化时
+独立复核。Snapshot 与无结构记忆保持原有召回行为；get/list 点读能力不受此规则影响。
+这是父节点持久化后的兼容约束，完整层级查询另行交付。

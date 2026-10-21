@@ -48,7 +48,7 @@ from jiuwen_memory.retrieval.types import (
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
-from .predicate_builder import build_system_filters
+from .predicate_builder import build_ordinary_hierarchy_filters, build_system_filters
 from .unit_reader import UnitReader
 
 logger = get_logger(__name__)
@@ -206,7 +206,7 @@ class PipelineRetriever(Retriever):
 
         # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
         #      用户表达式作整体 child——绝不摊平，防其 OR 稀释 lifecycle 等安全谓词。
-        sys_filters = build_system_filters(
+        sys_filters = build_ordinary_hierarchy_filters() + build_system_filters(
             parsed.as_of, parsed.time_from, parsed.time_to, query.include_archived
         )
         user_filters = parsed.scalar_filters  # parser 已 normalize 的用户表达式（供 §6 复核）

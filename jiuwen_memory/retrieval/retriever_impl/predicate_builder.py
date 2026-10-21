@@ -26,7 +26,9 @@ from jiuwen_memory.common.type_def import (
     FilterGroup,
     FilterLogic,
     FilterOp,
+    HierarchyKind,
 )
+from jiuwen_memory.common.type_def.hierarchy import TIME_PARENT_ROLES
 from jiuwen_memory.common.type_def.memory import LifecycleState
 
 # 当前态查询允许的 lifecycle；时间点回溯时排除的 lifecycle。
@@ -87,3 +89,11 @@ def build_system_filters(
         )
 
     return out
+
+
+def build_ordinary_hierarchy_filters() -> list[FilterExpr]:
+    """生成父节点不进入普通召回；在候选 top-k 前排除。"""
+    return [FilterGroup(FilterLogic.NOT, [FilterGroup(FilterLogic.AND, [
+        FilterClause("hierarchy_kind", FilterOp.EQ, HierarchyKind.TIME.value),
+        FilterClause("hierarchy_role", FilterOp.IN, [role.value for role in TIME_PARENT_ROLES]),
+    ])])]

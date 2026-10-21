@@ -658,3 +658,12 @@ Event 不设时间跨度窗口。会话、上下文、结束信号、语义判�
 每层先生成结构与摘要，再进行上一层分组。完整事实独立于摘要逐层传播，
 结构摘录数量/长度上限仅约束回退正文。摘要失败保留结构摘录，父 L0/L1 标注失败
 保留空层；模型缺依赖属于配置错误。时间比较统一使用 common 的 UTC 解释规则。
+
+
+### 显式构建持久化契约
+
+`HierarchyComposer.build(request)` 拒绝已有父边；`replace_in_span(request)` 要求
+有界时间范围和相交旧根的全部父层、叶节点。两者返回 HierarchyComposeResult，
+包含 created_parent_ids/updated_child_ids/replaced_parent_ids/repair_required/complete。
+新父与子边写入前严格校验，正文与来源不通过树构建修改。部分失败不保证回滚，
+调用方不得将 complete=False 或非空 repair_required 当作完整成功。
