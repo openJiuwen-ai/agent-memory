@@ -69,6 +69,9 @@ SCOPE = {"org": "local", "user": "developer"}
 # 工具名 → (MemoryAPI 方法名, 代表性最小合法 payload)。payload 同时锁「形状可过
 # parse_request」——工具转发给 _invoke 的键名集合必须与这里给出的契约一致。
 TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
+    "memory_evolve_v2": (
+        "evolve_v2", {"scope": SCOPE, "options": {"mode": "extract"}},
+    ),
     "memory_add": (
         "add",
         {

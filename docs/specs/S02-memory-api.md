@@ -209,7 +209,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。（曾存在的 `legacy_request_context` 过渡桥已随 PR2 删除。）
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 F04-1 §5.4）。
-17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式层级请求在 `hierarchy.enabled=false` 时抛 `PolicyError`，不带层级参数的既有操作保持语义。
+17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；尚未实现的树查询规则另见 S04，不带层级参数的既有操作保持语义。
 18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
@@ -236,7 +236,8 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
 | 数据面 | `delete` | 已实现 | [delete](#delete) | 无独立 F；实现见 F01 |
-| 数据面 | `evolve` | 已实现 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET；`HIERARCHY` 尚未实现 | [evolve](#evolve) | F01、F02；层级见 F08 |
+| 数据面 | `evolve` | 原有四种演进与 dreaming | [evolve](#evolve) | F01、F02 |
+| 数据面 | `evolve_v2` | 类型化演进请求，含显式 TIME 建树 | [evolve_v2](#evolve_v2) | F08 |
 | 任务面（委托 Scheduler） | `job_status` | 已实现 | [job_status](#job_status) | F01 |
 | 任务面 | `job_cancel` | 已实现 | [job_cancel](#job_cancel) | F01 |
 | 治理面（委托 Governor） | `inspect` | 已实现 | [inspect](#inspect) | F01 |
@@ -617,7 +618,7 @@ def delete(selector: DeleteSelector, *, security: RequestSecurityContext) -> lis
 
 #### evolve
 
-**状态：已实现**（`EXTRACT` / `ASSOCIATE` / `CONSOLIDATE` / `FORGET`）。`HIERARCHY` 与 `hierarchy_options` 为已设计增量。
+**状态：已实现**。普通四种模式保留原接口；显式建树走下述 `evolve_v2`。
 
 ```python
 def evolve(
@@ -641,20 +642,39 @@ def evolve(
 每 tick 生成受控请求上下文，并重新校验凭据和委托真源，不延长认证期限。旧记录只
 有 actor、或安全快照损坏时不可恢复为有效请求；详见 S10 不变量 35。
 
-所有已实现 evolve 模式均要求 `Action.WRITE`。`EvolveMode.HIERARCHY`
-是目标新增，必须提供
-[S05-construction.md](S05-construction.md) 定义的 `HierarchyComposeOptions`。S05 是该
-类型字段与默认值的唯一契约来源，API 层不复制定义。
+#### evolve_v2
 
-仅 HIERARCHY 接受 `hierarchy_options`；其他模式提供 options 时抛 `ValidationError`。
-HIERARCHY 缺 options 或 options 违反 S05 的 span、role 序列、`replace_existing`
-约束时抛 `ValidationError`。功能关闭时抛 `PolicyError`。建树任务仍走已实现的 `job_status` / `job_cancel`，不另开 MemoryAPI。
+**状态：已实现**。新增兼容入口，旧 `evolve` 的 candidate/dreaming/interval 行为不变。
 
----
+```python
+def evolve_v2(scope: Scope, options: EvolveTaskOptions,
+              *, security: RequestSecurityContext) -> str | None: ...
+```
 
-### 任务面（委托 Scheduler）
+`EvolveTaskOptions` 为 frozen dataclass：mode 必填，channel 默认 BACKGROUND，
+hierarchy_options 默认 None，reuse_existing 默认 False；另有 candidate=None、
+dreaming=None、interval=0，与旧普通演进参数同义。普通模式委托旧 evolve，
+不能携带 hierarchy_options 或 reuse_existing=True。旧 evolve 不接受 HIERARCHY。
 
-本面不增加新的尚未实现对外方法。`evolve(HIERARCHY)` 落地后，建树任务仍走本面已实现的 `job_status` / `job_cancel`（S03 `Scheduler.submit(..., hierarchy_options=...)` 为控制层目标，不另开 MemoryAPI）。
+HIERARCHY 要求有界时间、TIME/Snapshot 和合法父层前缀，scope 必须精确等于
+hierarchy_options.tree_home_scope。只做单次任务，不接受 candidate/dreaming/interval。
+入口校验可信上下文、WRITE 和 UPDATE 权限及空间可写状态；启用逐记忆权限路由时
+明确拒绝。父 metadata 不能覆盖内核保留键或路由标签。
+
+`EvolveTaskOptions.time_hierarchy(scope, *, span_start, span_end, reuse_existing=False)`
+预设 Snapshot→TimeSpan→Scene→Event。构建参数见 S05；开关由内核读取。
+树关闭或自定义策略表缺少 hierarchy.enabled 时返回成功跳过的 job_id，不读候选、
+不调用建树模型。请求错误仍先报错。开启时由同一 Scheduler 提交显式建树。
+
+reuse_existing=True：纯新合格叶首次构建；完整现有树直接复用；完整旧树与新叶混合、
+缺失请求父层或损坏结构拒绝隐式重建。False：备齐区间相交旧根的完整子树后重建，
+可以同时包含新叶和旧叶。缺时且未挂树的叶仅跳过，保持原输入。
+
+### 任务面
+
+建树与普通演进共用 job_status / job_cancel。返回 ID 不代表已完成；调用者读取任务
+终态，SUCCEEDED 且 complete=true 才表示构建完成或合法复用/跳过。默认 in_process
+在提交内完成；async_timer 在后台执行，需通过 job_status 等待终态。
 
 #### job_status
 
@@ -939,7 +959,7 @@ def remove_space_member(
 
 ### 运行时策略面（直达 PolicyManager，不经 Engine）
 
-本面不增加新的尚未实现对外方法。S03 目标层级策略键（`hierarchy.enabled` / `hierarchy.auto_derive` / `hierarchy.ensure_on_recall` / `hierarchy.score_propagation` / `hierarchy.expand_default_depth`）尚未作为可 `admin_set` 的运行时键落地；S08 规定能力开关等动态配置走 `ConfigSource`，不经 `admin_set` 扩展为任意配置树。层级请求关闭时的 `PolicyError` 见数据面尚未实现的 `search`/`evolve`。
+`hierarchy.enabled` 已作为运行时策略键用于 Snapshot 接入及显式建树；自定义策略表必须预先声明该键才能 admin_set。其余树查询、ensure 和自动维护策略尚未交付。admin_set 不扩展为任意配置树，详见 S08。
 
 #### admin_get
 
@@ -1027,7 +1047,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | `system_metadata` | dict[str, MetadataValueType] | 系统扩展字段（infer / procedural / pipeline / prompt key 等） |
 | `user_metadata` | dict[str, MetadataValueType] | 用户业务元数据；保留 JSON 标量原生类型，也可使用字符串数组 |
 | `lifecycle` | LifecycleState | 生命周期状态 |
-| `hierarchy` | HierarchyRef | **状态：已设计、尚未实现**。目标树结构；为空时不启用层级 |
+| `hierarchy` | HierarchyRef | 已实现：树结构，空值兼容普通记忆；细节见 S07 |
 
 `Segment`：`content`（可治理文本/结构投影，索引与检索对象）、`assets`（本段原模态资产引用）、`source`（本段来源 Modality）。便捷只读折叠属性：`unit.content`（各段换行连接）、`unit.assets`（各段扁平合并）、`unit.source`（首段模态）——返回新对象，勿就地 `append`。
 
@@ -1098,7 +1118,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
 
 - `Channel`：`HOT`（在线低时延）/ `BACKGROUND`（离线异步，默认）。
-- `EvolveMode`：`EXTRACT`（抽取低抽象事实）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（升华画像）/ `FORGET`（遗忘/清理）。**状态：已设计、尚未实现**：`HIERARCHY`（显式建树/区间替换）。
+- `EvolveMode`：`EXTRACT`（抽取低抽象事实）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（升华画像）/ `FORGET`（遗忘/清理）。`HIERARCHY`（显式建树/区间替换，经 evolve_v2）。
 - `JobInfo`（`job_status` 返回）：`id` / `channel` / `mode` / `scope` / `status`（`JobStatus`：PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED）/ `detail`。
 
 ### Modality / MemoryTier / LifecycleState（`common/type_def/memory.py`）

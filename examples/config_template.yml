@@ -15,6 +15,7 @@ globals:
   chunk_size: 120
   policies:                   # 运行时可变策略（交 PolicyManager；值保持字符串）
     rerank.enabled: "true"
+    hierarchy.enabled: "false"   # 开启后自动接入 Snapshot，显式 evolve_v2 才生成父树
 
 # ---- 换存储后端：覆盖各命名空间下的 default 实例（三方后端必填参数在 build 期即校验）----
 # kv_store:
@@ -217,3 +218,17 @@ globals:
 #           tag_key: project_id
 #           applies_to: [user_memory]    # 只对这些类别生效；不写则对全部类别生效
 #           question: 这条记忆是否与某个具体项目相关？
+
+
+# ---- 显式 TIME 建树 ----
+# 在上述 globals.policies 中将 hierarchy.enabled 设为 "true"；自定义 policies 完整替换
+# 默认策略表，需自行保留所用键。写完后调用 API（security 使用正常认证上下文）：
+# options = EvolveTaskOptions.time_hierarchy(
+#     home, span_start=start, span_end=end, reuse_existing=True,
+# )
+# job_id = api.evolve_v2(home, options, security=security)
+# info = api.job_status(job_id, security=security)
+# async_timer 需等到终态；默认 in_process 在提交中完成。
+# 内置构建预设：TimeSpan 累计跨度 2 小时、Scene 最大跨度 14 天、Event 相似阈值 0.65。
+# 如需覆盖，在现有 globals 段内添加 hierarchy_profiles；不要重复声明 globals。
+# 查询展开、父优先排序和后台自动建树尚未接入，本配置不隐式开启这些能力。

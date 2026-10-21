@@ -113,7 +113,7 @@ class DefaultHierarchyComposer(HierarchyComposer):
         return self._compose(request)
 
     def get_profile(self, kind: HierarchyKind) -> HierarchyComposeProfile | None:
-        """返回独立配置快照，周期任务不猜默认链、不修改 Composer 配置。"""
+        """返回独立配置快照，调用方不能修改 Composer 配置。"""
         return deepcopy(self.profiles.get(kind))
 
 

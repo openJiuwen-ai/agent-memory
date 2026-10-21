@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 
@@ -35,9 +36,11 @@ from jiuwen_memory.construction.router import (
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
+from jiuwen_memory.control.evolution.validation import validate_evolve_options
 from jiuwen_memory.control.types import (
     Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -661,6 +664,33 @@ class QueryOpsMixin:
         )
         return deleted
 
+    def evolve_v2(
+        self, scope: Scope, options: EvolveTaskOptions, *, security: RequestSecurityContext,
+    ) -> str | None:
+        """新增结构任务入口；普通演进继续使用原有候选源与 dreaming 鉴权链。"""
+        scope, options = deepcopy(scope), deepcopy(options)
+        validate_evolve_options(scope, options)
+        if options.mode is not EvolveMode.HIERARCHY:
+            return self.evolve(
+                scope, options.mode, options.channel, candidate=options.candidate,
+                dreaming=options.dreaming, interval=options.interval, security=security,
+            )
+        auth = self._authorize(
+            security, scope, Action.WRITE, "evolve",
+            space_action=_evolve_space_action(options.mode),
+        )
+        self._ensure_space_writable(scope)
+        self._authorize(security, scope, Action.UPDATE, "evolve",
+                        space_action=_evolve_space_action(options.mode))
+        if self._authorizer.routing_fields():
+            raise ValidationError("HIERARCHY 暂不支持权限路由或逐候选鉴权")
+        _reject_kernel_system_metadata(options.hierarchy_options.metadata)
+        _reject_route_tag_keys(options.hierarchy_options.metadata, self._route_table.tag_keys)
+        job_id = asyncio.run(self._commands.evolve_v2(scope, options))
+        self._log(security.auth.actor, "evolve", target_scope=scope,
+                  detail={**auth, "job_id": job_id})
+        return job_id
+
     def evolve(
         self,
         scope: Scope,
@@ -672,6 +702,8 @@ class QueryOpsMixin:
         interval: int = 0,
         security: RequestSecurityContext,
     ) -> str | None:
+        if mode is EvolveMode.HIERARCHY:
+            raise ValidationError("显式建树请调用 evolve_v2 并提供 hierarchy_options")
         identity = security.auth.actor
         # 注册态 interval 语义前置校验（鉴权前 fail fast，避免越权探测报错差异）。
         if dreaming is True and interval <= 0:

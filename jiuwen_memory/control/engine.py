@@ -42,6 +42,7 @@ from .types import (
     BatchWriteResult,
     Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -235,6 +236,10 @@ class MemoryEngine(ControlOperator):
         JobInfo 回显。dreaming 的注册/注销/恢复编排不在此层（API 层
         DreamingCoordinator）。
         """
+
+    async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
+        """一次性显式建树；普通 evolve 的候选源与 dreaming 执行契约保持。"""
+        raise NotImplementedError("当前 Engine 未实现显式树构建")
 
     @abstractmethod
     async def admin_get(self, key: str) -> str:

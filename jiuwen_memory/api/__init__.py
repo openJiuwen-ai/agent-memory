@@ -58,6 +58,8 @@ from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterExpr,
     FilterOp,
+    HierarchyKind,
+    HierarchyRole,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
@@ -67,6 +69,7 @@ from jiuwen_memory.common.type_def import (
     normalize,
 )
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
     BatchWriteItem,
     BatchWriteOutcome,
@@ -90,6 +93,7 @@ from jiuwen_memory.control import (
     SpaceUsage,
     UpdateMode,
 )
+from jiuwen_memory.control.types import EvolveTaskOptions
 from jiuwen_memory.retrieval import (
     DisclosureLevel,
     RetrievalResult,
@@ -109,6 +113,7 @@ from .memory_api_impl import (
 )
 
 __all__ = [
+    "EvolveTaskOptions", "HierarchyComposeOptions", "HierarchyKind", "HierarchyRole",
     "MemoryAPI",
     "assemble",
     "assemble_runtime",

@@ -180,3 +180,10 @@
 
 普通查询的 `type_def/retrieval_filter.is_retrieval_candidate` 排除 TIME 生成父；
 该约束覆盖 Storage 和 Retrieval 的共用真源复核，不改变 get/list。
+
+
+### 延迟依赖绑定
+
+Factory.bind_named 捕获本轮实例缓存、锁、配置与创建观察者；reset_all 更换缓存及锁，
+不让旧句柄借用新运行实例的依赖。绑定在 ContextVar 中，退出或异常必须恢复。
+DeferredEmbedder 在首次调用时解析并共享实际插件，失败不缓存，不改变 Embedder 协议。

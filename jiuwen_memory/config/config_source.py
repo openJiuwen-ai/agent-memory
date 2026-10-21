@@ -29,7 +29,7 @@ class ConfigSourceProducer(Factory):
         供 PromptRegistry 等在组件 ``_build`` 时挂接同一 ConfigSource，
         避免直接摸 ``_instances`` 私有表。
         """
-        inst = cls._instances.get(name)
+        inst = cls._instance_cache().get(name)
         return inst if isinstance(inst, ConfigSource) else None
 
 

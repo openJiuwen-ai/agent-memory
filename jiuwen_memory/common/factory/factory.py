@@ -20,9 +20,11 @@
 
 from __future__ import annotations
 
+from _thread import RLock
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
@@ -30,6 +32,19 @@ from jiuwen_memory.common.errors import ValidationError
 Builder = Callable[..., Any]
 _BUILD_OBSERVERS: ContextVar[tuple[Callable[[object], None], ...]] = ContextVar(
     "factory_build_observers", default=()
+)
+
+
+@dataclass
+class _InstanceBinding:
+    """持有装配时的缓存原对象；后续 reset 只替换全局引用。"""
+
+    caches: dict[type, dict[str, Any]]
+    lock: RLock
+
+
+_bound_instances: ContextVar[_InstanceBinding | None] = ContextVar(
+    "factory_bound_instances", default=None,
 )
 
 
@@ -42,6 +57,7 @@ class Factory:
     _instances: dict[str, Any]
     _subclasses: list[type] = []  # 所有 producer 子类（供 reset_all 统一清缓存）
     _by_top_name: dict[str, type] = {}  # TOP_NAME -> producer 子类（供 Config 解析期校验顶层段）
+    _instance_lock = RLock()
     _cache_epoch: object = object()
     _cache_lifecycle: object | None = None
 
@@ -133,13 +149,59 @@ class Factory:
         :meth:`build` 新建。``new_instance`` 为假则存入缓存供共享，为真则不存（每次新建）。
         命名空间由 ``cls.TOP_NAME`` 决定——故只需传具名实例名。
         """
-        if name in cls._instances:
-            return cls._instances[name]
-        spec = ctx.lookup(cls.TOP_NAME, name)
-        instance = cls.build(spec.target, spec.params, ctx, name=name)
-        if not spec.new_instance:
-            cls._instances[name] = instance
-        return instance
+        with cls._cache_lock():
+            instances = cls._instance_cache()
+            if name in instances:
+                return instances[name]
+            spec = ctx.lookup(cls.TOP_NAME, name)
+            instance = cls.build(spec.target, spec.params, ctx, name=name)
+            if not spec.new_instance:
+                instances[name] = instance
+            return instance
+
+
+    @classmethod
+    def _instance_cache(cls) -> dict[str, Any]:
+        """具名缓存的统一入口，兼容装配内与已绑定的延迟解析。"""
+        bound = _bound_instances.get()
+        if bound is None:
+            return cls._instances
+        # 晚注册的 Producer 在旧装配内也不能借用新装配的缓存。
+        return bound.caches.setdefault(cls, {})
+
+    @classmethod
+    def _cache_lock(cls) -> RLock:
+        bound = _bound_instances.get()
+        return bound.lock if bound is not None else Factory._instance_lock
+
+    @classmethod
+    def bind_named(cls, name: str, ctx: Any) -> Callable[[], Any]:
+        """绑定本轮装配的具名依赖，首次调用前不查配置、不创建组件。
+
+        保留本轮各 Producer 缓存的引用，因此后续 ``reset_all`` 不会改变本句柄的
+        嵌套依赖及 ConfigSource 来源；同轮句柄共用锁与缓存，首次并发解析仍共享实例。
+        ``new_instance`` 语义与 ``build_named`` 一致，失败不缓存且恢复调用方上下文。
+        """
+        bound = _bound_instances.get()
+        if bound is None:
+            with Factory._instance_lock:
+                bound = _InstanceBinding(
+                    {producer: producer._instances for producer in Factory._subclasses},
+                    Factory._instance_lock,
+                )
+
+        observers = _BUILD_OBSERVERS.get()
+
+        def resolve() -> Any:
+            token = _bound_instances.set(bound)
+            observer_token = _BUILD_OBSERVERS.set(observers)
+            try:
+                return cls.build_named(name, ctx)
+            finally:
+                _BUILD_OBSERVERS.reset(observer_token)
+                _bound_instances.reset(token)
+
+        return resolve
 
     @classmethod
     def dep(cls, config: Any, param_name: str | None = None, default: str | None = None) -> Any:
@@ -173,7 +235,7 @@ class Factory:
     @classmethod
     def put(cls, name: str, instance: Any) -> None:
         """把一个外部实例以 ``name`` 预置进缓存（如显式注入的真源后端）。"""
-        cls._instances[name] = instance
+        cls._instance_cache()[name] = instance
 
     @classmethod
     def reset_instances(cls) -> None:
@@ -183,10 +245,12 @@ class Factory:
     @classmethod
     def reset_all(cls) -> None:
         """清空所有 producer 的具名实例缓存。"""
-        Factory._cache_epoch = object()
-        Factory._cache_lifecycle = None
-        for sub in Factory._subclasses:
-            sub.reset_instances()
+        with Factory._instance_lock:
+            Factory._cache_epoch = object()
+            Factory._cache_lifecycle = None
+            for sub in Factory._subclasses:
+                sub.reset_instances()
+            Factory._instance_lock = RLock()
 
     @staticmethod
     def cache_epoch() -> object:

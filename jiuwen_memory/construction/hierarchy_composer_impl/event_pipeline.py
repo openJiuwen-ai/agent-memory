@@ -3,7 +3,7 @@
 
 无时长限制，不跨过中间场景重组。实体重叠取去重集合交集除以较小集合大小；任侧
 为空时不据此切分。默认所有判据关闭，整个选定范围形成一组，不证明它们属于同一任务。
-PROCEDURAL 仅为 event 的分类，不表示已验证可复用技能；settle_seconds 仅供增量尾组封口。
+PROCEDURAL 仅为 event 的分类，不表示已验证可复用技能。
 """
 
 from __future__ import annotations

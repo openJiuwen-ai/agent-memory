@@ -369,6 +369,12 @@ async def memory_evolve(  # pylint: disable=too-many-arguments,huawei-too-many-a
 
 
 @mcp.tool()
+async def memory_evolve_v2(scope: dict, options: dict, ctx: Context = None) -> str | None:
+    """显式建树或普通演进；options 为 EvolveTaskOptions，返回可查询的 job_id。"""
+    return await _invoke("evolve_v2", {"scope": scope, "options": options}, context=ctx)
+
+
+@mcp.tool()
 async def memory_batch_add(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     items: list[dict],
     scope: dict | None = None,

@@ -57,6 +57,7 @@ from jiuwen_memory.control import (
     SpaceStatus,
     SpaceUsage,
 )
+from jiuwen_memory.control.types import EvolveTaskOptions
 from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
 
 
@@ -300,6 +301,12 @@ class MemoryAPI(ABC):
         （``interval>0``，KV 持久化，重启恢复）；``dreaming=False`` 注销
         （命中 (scope, mode) 注册则取消并删除，返回 None）。
         """
+
+    @abstractmethod
+    def evolve_v2(
+        self, scope: Scope, options: EvolveTaskOptions, *, security: RequestSecurityContext,
+    ) -> str | None:
+        """提交结构或普通演进；建树使用显式区间，普通模式沿用 evolve 的所有参数。"""
 
     @abstractmethod
     def check_write(

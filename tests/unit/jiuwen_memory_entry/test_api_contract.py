@@ -37,7 +37,7 @@ pytestmark = pytest.mark.unit
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
-    assert len(api_contract.api_method_names()) == 36
+    assert len(api_contract.api_method_names()) == 37
     assert api_contract.is_known_verb("add_async") is True
     assert api_contract.is_known_verb("does_not_exist") is False
 
@@ -309,3 +309,25 @@ def test_sync_and_async_http_invocation_use_same_named_api_methods() -> None:
     assert sync_result[0]["id"] == "sync"
     assert async_result[0]["id"] == "async"
     assert not any(dataclasses.is_dataclass(result) for result in (sync_result, async_result))
+
+
+def test_evolve_v2_decodes_nested_hierarchy_options_without_changing_legacy_evolve():
+    from jiuwen_memory.api import EvolveMode, EvolveTaskOptions, HierarchyRole
+
+    scope = {"org": "acme", "user": "alice"}
+    span = "2026-10-21T09:00:00+08:00"
+    parsed = api_contract.parse_request("evolve_v2", {
+        "scope": scope,
+        "options": {"mode": "hierarchy", "reuse_existing": True, "hierarchy_options": {
+            "kind": "time", "leaf_role": "snapshot", "parent_roles": ["time_span"],
+            "tree_home_scope": scope, "span_start": span, "span_end": span,
+        }},
+    })
+    options = parsed["options"]
+    assert isinstance(options, EvolveTaskOptions) and options.mode is EvolveMode.HIERARCHY
+    assert options.reuse_existing is True
+    assert options.hierarchy_options.parent_roles == [HierarchyRole.TIME_SPAN]
+    assert options.hierarchy_options.span_start == datetime.fromisoformat(span)
+    assert options.hierarchy_options.tree_home_scope == parsed["scope"]
+    legacy = api_contract.parse_request("evolve", {"scope": scope, "mode": "extract"})
+    assert legacy["mode"] is EvolveMode.EXTRACT and "options" not in legacy

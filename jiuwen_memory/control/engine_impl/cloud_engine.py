@@ -53,6 +53,10 @@ from jiuwen_memory.control.engine_impl.schema_update_support import (
     prepare_schema_update,
 )
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.evolution.hierarchy_submission import (
+    HierarchySubmissionDependencies,
+    submit_hierarchy,
+)
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -65,6 +69,7 @@ from jiuwen_memory.control.types import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -880,6 +885,14 @@ class CloudEngine(MemoryEngine):
             retriever=self._retriever,
             buckets=buckets,
             denied_scopes=denied_scopes,
+        )
+
+    async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
+        """提交建树任务，沿用本 Engine 同源真源与构建器。"""
+        return await submit_hierarchy(
+            scope, options, HierarchySubmissionDependencies(
+                self._policy, self._scheduler, self._job_factory, self._evolver, self._domain_store,
+            ),
         )
 
     async def admin_get(self, key: str) -> str:
