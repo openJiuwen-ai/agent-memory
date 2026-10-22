@@ -716,3 +716,13 @@ def test_tool_run_rejects_extra_fields_before_dispatch(monkeypatch) -> None:
                 context=None,
             )
         )
+
+
+def test_lifespan_is_an_async_context_manager() -> None:
+    """FastMCP 用 ``async with lifespan(app)`` 包裹会话；裸 async generator 会 TypeError。
+
+    SDK 的 ``FastMCP.run()` 在启动时执行 ``async with lifespan(app)``，
+    ``@asynccontextmanager`` 装饰后返回的对象才实现 ``__aenter__/__aexit__``。
+    """
+    lifespan = mcp_main._lifespan(None)
+    assert isinstance(lifespan, contextlib.AbstractAsyncContextManager)

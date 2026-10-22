@@ -24,6 +24,7 @@ import os
 import sys
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from importlib import import_module
 from typing import Any
 
@@ -91,6 +92,7 @@ def _build_server():
 _SRV = _build_server()
 
 
+@asynccontextmanager
 async def _lifespan(_app: Any) -> AsyncIterator[None]:
     """FastMCP 会话生命周期：起看门狗（文档模式，绑本协程的 loop，F07 §12.10）。"""
     await _SRV.start_background()
