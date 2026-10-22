@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -50,7 +50,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 - 候选落盘前巩固（ADD/UPDATE/SUPERSEDE/NOOP）
 - 多形式索引构建（文档/关键词/向量/图，按配置启用）
 - 记忆自演进（抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权）
-- 树结构派生、区间重建与双向边维护（目标契约，尚未实现）
+- 树结构派生、区间重建与双向边维护（已实现 TIME）
 
 **不管什么**：
 - 不做鉴权（由 `jiuwen_memory/api` 层负责）
@@ -107,11 +107,11 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     读写不分叉。
 18. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会
     留下孤儿派生索引，而删除路径的扫描源正是正排，此后无法清理。
-19. **叶权威、父可重建**（目标契约，尚未实现）：普通写入或来源转换产生的叶是权威事实；
+19. **叶权威、父可重建**（已实现 TIME）：普通写入或来源转换产生的叶是权威事实；
     `HierarchyComposer` 生成的父节点是派生物。重建父层不得删除、改写或归档权威叶内容。
-20. **层级边双向一致**（目标契约，尚未实现）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
+20. **层级边双向一致**（已实现 TIME）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
     并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
-21. **父标注先于持久化和索引**（目标契约，尚未实现）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
+21. **父标注先于持久化和索引**（已实现 TIME）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
     再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
 22. **Schema 事件精度不伪造日期**：Property 的年/月事件时间用
     `schema_event_start/end/precision` 半开区间表达，`temporal.t_event`
@@ -440,8 +440,8 @@ EventBuilder。时间以 hierarchy 区间比较，naive 按 UTC、aware 按实�
 旧父本体保留 ARCHIVED，旧索引软删除。无事务回滚保证；失败返回真实完成项及
 repair_required，调用方须报告 FAILED。当前没有自动修复或事务恢复执行器。
 
-逐层分组、完整事实和摘要契约见本文末尾交付部分。ensure、自动追加和多 kind
-构建尚未实现，不作为本接口的隐式行为。
+逐层分组、完整事实和摘要契约见本文末尾交付部分。单层增量通过内部上下文驱动，
+后台注册与候选扫描后续接入；ensure、多 kind 构建和自动修复尚未实现。
 
 ### Evolver（`evolver.py`）
 
@@ -648,3 +648,20 @@ Event 不设时间跨度窗口。会话、上下文、结束信号、语义判�
 包含 created_parent_ids/updated_child_ids/replaced_parent_ids/repair_required/complete。
 新父与子边写入前严格校验，正文与来源不通过树构建修改。部分失败不保证回滚，
 调用方不得将 complete=False 或非空 repair_required 当作完整成功。
+
+
+### TIME 单层增量构建与封口
+
+`HierarchyComposeRequest.incremental` 是可选的内部 `HierarchyIncrementalContext`，
+包含 `settle_at`（本轮时间）、`ready_before`（下层待定最早起点）与
+`supporting_units`（输入根的完整后代）。只允许 profile 中相邻的一层，输入根不得已挂父。
+`build` 处理增量；`replace_in_span` 拒绝增量上下文。既有显式请求语义保持。
+
+非尾组按已形成的边界尝试封口；尾组要求本轮时间减组最大结束时间严格大于
+`settle_seconds`。TimeSpan/Scene 未配置静默时回退至各自分组跨度，Event 默认三天。
+待提交组不能越过下层待定起点，也不能与后续待定组重叠，只提交安全连续前缀。
+未封口组不生成摘要、不写父节点。静默不改变显式分组结果。
+
+新增 `HierarchyComposeResult.deferred_child_count` 和 `pending_before` 表达等待数量
+与最早待定时间。已挂下层子树保持正文、披露层与直接子边，仅为本轮输入根补父边；
+完整证据与双向引用必须校验通过，部分写入仍返回 repair_required。
