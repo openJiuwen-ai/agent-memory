@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import copy
+import json
 import threading
 import time
 import uuid
@@ -491,6 +492,10 @@ class AsyncTimerScheduler(Scheduler):
                 parent_id = info.detail.get("parent_timer")
                 parent = self._jobs.get(parent_id) if parent_id else None
                 if parent is not None:
+                    parent.detail.update(
+                        last_run_id=info.id,
+                        last_run_detail=json.dumps(info.detail, ensure_ascii=False),
+                    )
                     parent.detail["last_run_at"] = info.detail["finished_at"]
                     parent.detail["last_run_status"] = info.status.value
                     if info.status == JobStatus.SUCCEEDED:

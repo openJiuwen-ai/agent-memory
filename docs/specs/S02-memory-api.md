@@ -209,7 +209,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。（曾存在的 `legacy_request_context` 过渡桥已随 PR2 删除。）
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 F04-1 §5.4）。
-17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=EvolveMode.HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；层级查询由 search 的新增可选参数提供，展开与上卷契约见 S04。
+17. **层级能力默认关闭**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=EvolveMode.HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；层级查询由 search 的新增可选参数提供，展开与上卷契约见 S04。
 18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 search 的 expand_depth 参数沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
@@ -964,7 +964,7 @@ def remove_space_member(
 
 ### 运行时策略面（直达 PolicyManager，不经 Engine）
 
-`hierarchy.enabled` 已作为运行时策略键用于 Snapshot 接入及显式建树；自定义策略表必须预先声明该键才能 admin_set。该开关也控制树查询及接口默认预设；ensure 和自动维护策略尚未交付。admin_set 不扩展为任意配置树，详见 S08。
+`hierarchy.enabled` 已作为运行时策略键用于 Snapshot 接入及显式建树；自定义策略表必须预先声明该键才能 admin_set。该开关也控制树查询及接口默认预设；hierarchy.auto_derive 默认关闭，开启后须经 Runtime 显式注册周期任务；ensure 尚未交付。admin_set 不扩展为任意配置树，详见 S08。
 
 #### admin_get
 
@@ -1217,7 +1217,7 @@ Runtime 的 `close(wait=False)` 封闭准入并由单个收尾线程完成后台
 宿主显式启动自有 loop，两者不暴露 Store 或任务控制器。默认无 watcher 时启动为 no-op，
 关闭后不得重启；启动故障必须传回调用方。`ServerRuntime` 在该协议上增量提供只读
 `security_runtime` 与 `audit`，转发同一启动/关闭路径。既有 `assemble`、`assemble_runtime`
-和冻结的 `MemoryAPI` 签名不变；历史自定义 Runtime 需适配这两个上游生命周期方法。
+和冻结的 `MemoryAPI` 签名不变；历史自定义 Runtime 需适配上述生命周期方法及下述周期注册端口。
 
 装配器在返回前完成 PDP 同源校验、显式 PDP 回绑、部署管理能力/空间路由约束复核和
 认证器实际凭据真源的 Registry 替换。默认哨兵选择配置 Runtime；显式 `None` 不选择
@@ -1249,3 +1249,40 @@ jiuwen_memory/api/memory_api_impl/
 | S08-config | 六类动态配置经 ConfigSource；不经本层业务入参写入 |
 | F07-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词的生成与注入均落在本层。多空间读写编排按「是否读 `security`」拆开——判权与谓词生成留本层，写入候选集的计算与跨空间的召回扇出落控制层 `control/collective/` |
 | architecture.md §6 | 已实现 MemoryAPI 清单 |
+
+
+### Runtime 自动建树注册
+
+```python
+async def start_background_jobs(
+    scope: Scope, *, security: RequestSecurityContext,
+) -> BackgroundJobStartResult: ...
+```
+
+这是 `MemoryRuntime` / `ServerRuntime` 的宿主启动接口，不增加 MemoryAPI、HTTP、CLI 或 MCP
+方法。`scope` 即 tree home：org/space 精确匹配，非空 user/agent/session 限定输入范围；
+新父驻留完整 home，不自行发现 home 或扩大到别的主体。注册前校验可信上下文、home 的
+WRITE/UPDATE 权限和空间可写状态；当前不支持按 metadata 路由的逐候选授权。
+
+`BackgroundJobStartResult` 包含 `job_ids: list[str]`、`skipped: bool`、`reason: str`。
+树总开关或自动开关关闭/缺失时返回 skipped、空 job_ids 和 `hierarchy_disabled`；未绑定
+TIME profile 时 reason 为 `hierarchy_profile_missing`。开启却未配置周期 Scheduler，或
+缺少运行依赖、调度配置非法时明确报错，不降级为一次性任务。
+
+```python
+runtime = assemble_runtime(config=config)  # 配置示例见 examples/config_template.yml
+result = await runtime.start_background_jobs(home, security=security)
+if not result.skipped:
+    info = runtime.api.job_status(result.job_ids[0], security=security)
+    # 停止此 home 的任务：runtime.api.job_cancel(result.job_ids[0], security=security)
+```
+
+注册只等待任务登记，不等待首次构建；首轮在调度间隔到达后执行。同一 Runtime、同一
+完整 home 的活跃注册复用定时任务 ID；取消后重新注册创建新任务，故障保护状态仍共享。
+AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.run` 完成注册；宿主进程
+须持续运行。结束时调用 `runtime.close()`，停止周期及排队任务并等待在飞构建收尾。
+关闭后拒绝再次注册；watchdog 的 `start` / `start_background` 生命周期不变。
+
+父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
+`last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
+诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。

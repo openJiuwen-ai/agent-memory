@@ -163,7 +163,7 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     issuer/KeyStore，并校验 Runtime 与 PEP 的 PDP 对象一致。Server AUTO 复用内核已建
     Runtime，其 close 由 MemoryRuntime 管理；显式注入另一个 Runtime 时回绑 PDP、替换
     Registry，禁止残留旧 issuer 或关闭已有 router 的空间治理。没有 security 配置时不猜测
-    认证器或 KeyStore，未知 issuer 仍拒绝。MemoryRuntime 沿用上游 api/start/start_background/close。
+    认证器或 KeyStore，未知 issuer 仍拒绝。MemoryRuntime 保留 api/start/start_background/close，并提供固定 home 的 start_background_jobs。
     `assemble_server_runtime` 返回增量 ServerRuntime，另公开 security_runtime/audit；
     同源校验、回绑及共享关闭根由本包装配器完成，Server 不访问内核私有成员。旧手工构造
     MemoryRuntime-only 的 Server 不探测私有 audit，额外安全组合按公开 close 能力清理。
@@ -210,3 +210,11 @@ HTTP/CLI 从 MemoryAPI 反射原方法，MCP 只提供原 memory_evolve。
 - 单/跨空间查询共用已归一化参数，不在后续分支重复读取树开关。
 - 不再提供公开 search_v2/evolve_v2；HTTP/CLI/MCP 使用原接口和新增可选参数。
 - 无有效 TimeSpan 时严格返回空结果，不回退到未挂树叶；搜索不触发建树。
+
+
+### Runtime 周期注册
+
+assembly 的 MemoryRuntime / ServerRuntime 提供异步 start_background_jobs，关闭屏障前后
+检查注册状态，不在持锁时 await 调度器。QueryOps 的对应内部入口只做固定 home 的
+可信来源、WRITE/UPDATE、空间可写与权限路由校验，随后委托 Command；不增加 MemoryAPI
+抽象方法或 Access 路由。周期由现有 Scheduler 自有循环承担，不改 watchdog 宿主循环。

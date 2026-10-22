@@ -77,7 +77,7 @@ evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽�
     系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 16. **目标操作使用完整 Scope**：MemoryUnit id 仅在 Scope 内唯一。LifecycleManager、Governor 与 IndexBuilder 的目标修改/读取/删除不得依赖全局 `id -> scope` 猜测，调用方必须显式提供 Scope 或携带 Scope 的 MemoryUnit。
 17. **Engine 部署边界明确**：`InMemoryEngine` 只接受空 `space` 兼容域；具名非空 space 的数据面操作使用 `CloudEngine`。`CloudEngine` 仍兼容空 space，但生产多租户配置应开启 `scope.require_space=true`。
-18. **普通 write 默认不建树（目标）**：`hierarchy.auto_derive` 是独立、默认关闭的后台策略；显式建树关闭时生成成功跳过任务；尚未实现的层级 recall/update 规则仍属目标设计，普通非层级行为兼容。
+18. **普通 write 不同步建父树**：`hierarchy.auto_derive` 是独立、默认关闭的后台策略；通过 Runtime 注册后周期执行，显式建树不受自动开关控制。总开关关闭时显式建树生成成功跳过任务；层级 update 仍属目标设计。
 19. **树结构一致性（目标）**：同一 kind 的父子边必须同 `org+space`、无环、单父、双向一致且顺序稳定；`user`/`agent`/`session` 可按 compose profile 放宽（跨细粒度 scope 时边须可解析定位）；`HierarchyStatus` 只允许 ACTIVE/DISMISSED，且与 `LifecycleState` 分离。
 20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
 21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
@@ -567,7 +567,7 @@ jiuwen_memory/control/<算子>_impl/
 CloudEngine 回注 metadata 时跳过已被 Ingestor 消费的叶提示。
 
 当前普通 write 只产出叶及原有抽取结果，不触发父节点生成或后台建树。
-本节未实现的层级查询、ensure、周期建树策略不能通过 admin_set 直接使用。
+hierarchy.enabled 同时控制树查询，hierarchy.auto_derive 控制已注册的周期建树；ensure 尚未交付。
 手工构造 Engine 时 policy 是新增的可选末尾参数，缺省保持旧行为；Evolver 的
 `evolve(units, mode)` 签名不变。
 
@@ -586,7 +586,7 @@ False 允许完整旧树与新叶一起重建。整个操作使用请求副本�
 
 可选 hierarchy 锁覆盖读取、验证和同步构建。协作取消在步骤边界检查；在飞同步
 构建先收尾，记录已完成写入，再报告取消；不提前释放锁或声称回滚。普通 dreaming
-的持续授权、注册/注销、调度器关闭规则保持。没有新增周期建树任务。
+的持续授权、注册/注销、调度器关闭规则保持；自动建树使用下述独立任务。
 
 
 ### 增量候选收集
@@ -600,4 +600,45 @@ False 允许完整旧树与新叶一起重建。整个操作使用请求副本�
 选中根的完整后代不受回看窗口限制；按当前真源端口读取，兼容 KVStore 与 DomainStore。
 完整分页、身份、双向引用、读取中变化和数量限制仍验证。诊断按互斥原因计数，
 每轮样例最多 20 条；needs_rebuild_count 是迟到与过窗计数之和，不表示整轮失败。
-不持久化跳过标记、不自动重建旧树。周期驱动在后续接入。
+不持久化跳过标记、不自动重建旧树。周期驱动复用本候选规则。
+
+
+### 自动增量周期任务
+
+API 的 Runtime 注册入口完成 PEP 后，经 Command→Engine 注册 HIERARCHY_DERIVE Job。
+Engine 注入同一 Evolver、PolicyManager 与读源（本地 KVStore / 云端 DomainStore）；
+Job 通过 Evolver 的 TIME profile 快照获知层级和分组配置，不重新装配内容算子。
+默认 `hierarchy.auto_derive=false`；自定义 policies 仍完整替换默认表，缺键视为关闭。
+
+每轮流程：
+
+1. 检查协作取消、固定 home、实时双开关及该 home 的故障保护状态。
+2. 取得可选 `hierarchy:time` 锁，与显式建树共用；锁覆盖本轮读取、验证和写入。
+3. 按 profile 顺序处理 Snapshot→TimeSpan、TimeSpan→Scene、Scene→Event。
+   每层读取目标父水位、选择候选与完整后代，交给同一 Evolver/Composer 单层增量构建。
+4. 当前层立即持久化；下一层重新扫描，允许同轮使用新父。未来输入与未封口组最早起点
+   向上传递，阻止上层水位越过未完成的下层。分组和严格静默边界见 S05。
+5. 汇总结果与跳过样例，释放锁，交由 Scheduler 记录本轮终态及父定时任务的最近结果。
+
+正常无候选返回成功；全为缺时叶时另记 `skipped=true, reason=no_eligible_candidates`。
+迟到、过窗只增加跳过计数和 needs_rebuild_count，不使任务失败或阻塞正常候选。
+候选超限、读取漂移、缺失子节点、双向引用损坏仍失败；一层失败即不进入更高层。
+
+`JobInfo.detail` 的计数为字符串：created_parent_count、updated_child_count、
+deferred_child_count、skipped_incomplete_time_count、skipped_late_count、
+skipped_outside_window_count、needs_rebuild_count、repair_required_count。
+skipped_samples 与 repair_required 为 JSON 字符串；pending_before 是 ISO 时间或空字符串。
+complete 表示本轮已选候选的执行完整性，不承诺所有历史输入都已建树。
+
+进入写入后若结果不完整、有 repair_required、丢锁或无法确认执行结果，设置该 home 的
+内存故障保护状态。后续轮次返回失败和原诊断，不再读写推进；定时器本身仍在运行。
+取消/重新注册同 home 不清除此状态。须人工核对/修复，重新装配 Runtime 后再注册；
+这不是持久化检查点、自动修复或事务回滚。
+
+协作取消在读取及每层构建边界检查；同步构建线程一旦开始先等待结束，合并已返回
+计数再报告取消，不继续上层，也不提前释放锁。若本层结果已确认完整，普通协作取消
+不会额外触发故障保护；强制取消而无法核对结果时保守阻止后续推进。
+
+当前注册不持久化、不自动发现 home，不复用 dreaming 的持续授权/恢复注册表。
+宿主负责注册范围及其权限生命周期；动态关闭策略只让后续轮次跳过，不中断已经开始
+的本轮写入。需要停止任务时使用 job_cancel 或 Runtime.close。

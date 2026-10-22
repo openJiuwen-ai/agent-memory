@@ -24,7 +24,7 @@
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
 | `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/`begin_delete`/删除/导出/用量/策略/成员 |
 | `collective/` | 群体记忆的控制层纯逻辑子包，三个模块均非算子（无 Producer 注册、不访问存储与模型），不由 `bootstrap` 触发注册。`routing.py`：结论直写路径的归属判定调用，API 层传入成品 `RouteContext`（含已鉴权候选集）与 `Router` 实例，本模块调 `route_batch` 并归一结果，存在的理由是分层边界——判定由构建层承担、判定输入由 API 层的鉴权点构造，二者之间的调用不能落在 API 层（S02「不调用构建」）。`write_targets.py`：写入候选空间集合的渲染、排序、截断与取交，收 `can_write` 回调而不收 `identity`。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与轮转合并，收 `recall` 回调与 API 层判权后给出的空间目标（含逐空间谓词）；使用 `retrieval/cross_space.py` 合并，并将选中的物化根交给 `retrieval/expansion.py` 统一收尾；不持有引擎、不依赖检索实现；空间级扇出失败与判权剔除分两路交回，不并进 `merged.errors`。三者共同形态是「裁决留 PEP，裁决之后的机械换算与 I/O 编排落本层」，上下之间经回调或成品数据衔接。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
-| `application/` | 按用例划分的 typed application ports，四个模块均非算子（无 Producer、不执行 PEP、不接收 `identity`）。`command.py`：`MemoryCommandService` 包装 Engine 的 write/batch_write/update/delete/evolve/evolve_v2，并提供 `batch_write_aligned` / `collect_batch_result` 做鉴权后的下标回填。`query.py`：`MemoryQueryService` 包装 recall/list/get 与鉴权元数据读取。`space_lifecycle.py`：`SpaceLifecycleService` 先 `begin_delete` 标 `DELETING`，再 purge + `SpaceManager.delete` + `deleted_counts` 汇总；第二步失败抛 `PartialFailureError`，重试入口仍是 `delete_space`。`governance_service.py`：`GovernanceService` 包装 Governor 的 inspect/trace/audit。由已注入的算子组成，不引入 Service Locator；SDK/HTTP/MCP 经 `LocalMemoryAPI` 共用。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
+| `application/` | 按用例划分的 typed application ports，四个模块均非算子（无 Producer、不执行 PEP、不接收 `identity`）。`command.py`：`MemoryCommandService` 包装 Engine 的 write/batch_write/update/delete/evolve/evolve_v2/start_background_jobs，并提供 `batch_write_aligned` / `collect_batch_result` 做鉴权后的下标回填。`query.py`：`MemoryQueryService` 包装 recall/list/get 与鉴权元数据读取。`space_lifecycle.py`：`SpaceLifecycleService` 先 `begin_delete` 标 `DELETING`，再 purge + `SpaceManager.delete` + `deleted_counts` 汇总；第二步失败抛 `PartialFailureError`，重试入口仍是 `delete_space`。`governance_service.py`：`GovernanceService` 包装 Governor 的 inspect/trace/audit。由已注入的算子组成，不引入 Service Locator；SDK/HTTP/MCP 经 `LocalMemoryAPI` 共用。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
 | `membership.py` | `MembershipResolver` 接口——读空间授权事实（成员表与归属登记）供鉴权点判定，带短 TTL 缓存；正查与反查都只依赖 `SpaceManager` 一个契约 |
 | `__init__.py` | 公开导出全部接口类与数据类型 |
 | `engine_impl/` | MemoryEngine 实现目录：`in_memory_engine.py`（本地最小实现）/ `cloud_engine.py`（云侧 message_type/profile 编排）/ `evolve_dispatch.py`（evolve 纯执行共用件：candidate→resolver 装配 + 一次性 EvolveJob 提交；三态分发 / 持续授权在 API 层 DreamingCoordinator）/ `dreaming_registry.py`（定时任务 KV 注册表：`created_by` 持续授权档案、`state + generation` 注销/旧代隔离状态、单实例锁 acquire/release；由 API 层 DreamingCoordinator 持有驱动） |
@@ -35,7 +35,7 @@
 | `space_impl/` | SpaceManager 实现目录（kv） |
 | `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化与 payload 幂等） |
 | `jobs.py` | `Job` 抽象（scope + interval 标识，`run() -> JobInfo` 唯一执行入口，不自带循环；`schedule_key` 调度去重键——默认类名，Scheduler 只按此通用键去重，业务身份区分由子类覆写，如 EvolveJob 含 mode）+ `JobFactory`（按 job_type + scope + 运行时参数生成实例）+ `JobType` 枚举 + `JobFactoryProducer` |
-| `evolution/` | 显式建树请求验证、树开关分流与任务提交，不鉴权、不做分组算法 |
+| `evolution/` | 显式建树请求验证、树开关分流与任务提交，以及 background 周期注册，不鉴权、不做分组算法 |
 | `jobs_impl/` | 后台 Job 实现目录：`evolve_job.py`（EvolveJob + EvolveJobSpec）、`middle_to_long_job.py`（MiddleToLongJob + MiddleToLongJobSpec + default JobFactory 装配）。Spec 装配期固化业务参数与 storage/lifecycle/llm 依赖；index/evolver 不在装配期解析（行为铁律 17） |
 
 ## 文件关系
@@ -167,3 +167,13 @@ recall_spaces 扇出时设置内部 defer_expansion，先按既有规则全局�
 `jobs_impl/hierarchy_incremental` 负责水位、未挂父输入与有界跳过诊断；
 `hierarchy_candidates.collect_root_subtrees` 只补齐已选根的完整后代并复核外部反向引用，
 不重新吸纳游离候选。沿用 KV/DomainStore 双读端口、公共 UTC 转换与缺时叶判据。
+
+
+### 自动增量调度
+
+`evolution/background.py` 校验双开关、绑定 profile、周期能力及同源依赖，提交
+`jobs_impl/hierarchy_derive_job.py`。JobFactory 首次注册时延迟构造 derive spec；同一
+完整 Scope 共享故障保护状态，不因重复注册清零。自动 Job 每轮重新读取策略，逐层
+候选→构建→记录结果；使用与显式建树相同的 hierarchy:time 锁。
+AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘要，不实现树算法。
+周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。

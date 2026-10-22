@@ -36,10 +36,11 @@ def _select(harness, *, role=HierarchyRole.SNAPSHOT, now=None, limit=5000, domai
             page = harness.kv.list(scope, offset=offset, limit=limit)
             return MemoryListResult(items=[loads(raw) for _, raw in page.entries], count=page.count)
 
+        def get_units(scope, ids):
+            return [harness.composition.read(scope, uid) for uid in reversed(ids)]
+
         store.list.side_effect = list_units
-        store.get.side_effect = lambda scope, ids: [
-            harness.composition.read(scope, uid) for uid in reversed(ids)
-        ]
+        store.get.side_effect = get_units
     return collect_incremental(store, options, tuple(EVENT_ROLES),
                                HierarchyJobLimits(max_leaves=limit, page_size=2))
 

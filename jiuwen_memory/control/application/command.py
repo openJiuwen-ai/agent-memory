@@ -16,7 +16,9 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.engine import MemoryEngine
+from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.types import (
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -176,3 +178,9 @@ class MemoryCommandService:
     async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
         """透传已鉴权的显式建树请求。"""
         return await self._engine.evolve_v2(scope, options)
+
+    async def start_background_jobs(
+        self, scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
+        """注册已鉴权 home 的后台任务；不在控制层重新判权。"""
+        return await self._engine.start_background_jobs(scope, policy)

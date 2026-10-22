@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -185,12 +185,13 @@ ConfigSource
 | architecture.md §13 | 可配置化分层与落点 |
 
 
-## 显式 TIME 构建预设
+## TIME 构建与自动任务配置
 
 `globals.hierarchy_profiles.time` 是构建配置：Snapshot→TimeSpan→Scene→Event，
 TimeSpan 累计跨度 7200 秒，Scene 最大跨度 1209600 秒，Event 相似阈值 0.65；
 各层 summary_mode=llm。摘录限额不截断完整事实或 LLM 输入，不能当作分组限制。
-这份预设不包含查询参数、自动维护周期或静默阈值。
+内置尾组静默为 TimeSpan 7200 秒、Scene 86400 秒、Event 259200 秒；
+Scene 最大分组跨度与静默独立。该预设不包含查询参数或调度周期。
 
 未指定 Evolver.params.hierarchy_composer 时，使用内置预设的延迟 Composer，
 复用该 Evolver 的 IndexBuilder/LLM；embedder.default 在首次需要时解析。
@@ -200,3 +201,24 @@ TimeSpan 累计跨度 7200 秒，Scene 最大跨度 1209600 秒，Event 相似�
 Factory.bind_named 捕获原装配配置、缓存、锁及创建观察者；后续 reset_all 创建
 新缓存/锁，不改变旧实例的延迟依赖。并发首次解析共享同轮具名实例，失败不缓存。
 ConfigSource.get_cached 同样遵循绑定上下文，不串用后续装配的配置源。
+
+
+| 配置位置 | 参数 | 默认值与含义 |
+|---|---|---|
+| globals.policies | hierarchy.enabled | "false"；树总开关 |
+| globals.policies | hierarchy.auto_derive | "false"；仅控制后台增量任务 |
+| scheduler.default | target | 默认 in_process；自动建树须改为支持周期的 async_timer |
+| scheduler.default.params | tick_interval | async_timer 默认 10 秒；任务间隔不得小于它 |
+| job_factory.default.params | hierarchy_derive_interval | 1800 秒；正整数，后台运行间隔 |
+| job_factory.default.params | hierarchy_derive_lookback | 604800 秒；正整数，仅筛选未挂父 Snapshot |
+| job_factory.default.params | hierarchy_max_leaves / hierarchy_page_size | 5000 / 200；沿用显式候选限额和分页保护 |
+| job_factory.default.params | lock / hierarchy_lock_wait_ms | 可选具名锁 / 30000 毫秒；沿用显式构建互斥 |
+| hierarchy_profiles.time.stage_options.TimeSpanMerger | settle_seconds | 内置 7200；自定义 profile 省略时沿用 gap_seconds |
+| hierarchy_profiles.time.stage_options.SceneSegmenter | settle_seconds | 内置 86400；自定义 profile 省略时沿用 max_duration_seconds |
+| hierarchy_profiles.time.stage_options.EventBuilder | settle_seconds | 259200；尾组静默 |
+
+分组与静默参数属于构建 profile，可在 `globals.hierarchy_profiles` 内置预设或显式
+Composer 的 `params.hierarchy_profiles` 配置；显式 Composer 不自动合并内置 profile。
+静默仅影响自动尾组封口，显式建树不等待静默。周期/回看参数归 JobFactory，首次启用
+注册时校验；双开关未开启时不解析未使用的自动任务参数。
+策略可动态设置；调度间隔、回看和 profile 是装配配置，修改后重新装配并注册。

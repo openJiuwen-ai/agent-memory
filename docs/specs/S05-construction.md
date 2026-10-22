@@ -379,7 +379,7 @@ MemoryUnit
 metadata 一致投影到已启用的 L0/L1/L2 索引记录；索引是派生物，必须可从 KV 中的
 `MemoryUnit` 重建。
 
-### HierarchyComposer（已实现的显式 TIME 构建）
+### HierarchyComposer（已实现的显式与增量 TIME 构建）
 
 与 Extractor / Abstractor 并列，消费备齐的 MemoryUnit，经 IndexBuilder 持久化，
 不自行查库、鉴权或调度。控制层 evolve_v2(HIERARCHY) 通过 Evolver 委托本算子。
@@ -466,11 +466,12 @@ class EvolveRequest:
     mode: EvolveMode
     metadata: dict[str, str] = field(default_factory=dict)
     hierarchy_options: HierarchyComposeOptions | None = None
+    hierarchy_incremental: HierarchyIncrementalContext | None = None
 ```
 
 `metadata` 承载 correlation id、触发来源等请求级透传信息，不写回 unit 核心字段。
 仅 `HIERARCHY` 接受 `hierarchy_options`，且必须提供 kind、leaf_role、parent_roles 与
-tree_home_scope 与 TIME 所需 span；其他 mode 提供该 options 时拒绝。继续兼容
+tree_home_scope 与 TIME 所需 span；其他 mode 提供该 options 或 incremental 时拒绝。继续兼容
 `evolve(units, mode)` 作为兼容入口，其语义等价于构造不带 metadata/options 的请求；
 该入口不能触发 HIERARCHY。
 
@@ -665,3 +666,10 @@ Event 不设时间跨度窗口。会话、上下文、结束信号、语义判�
 新增 `HierarchyComposeResult.deferred_child_count` 和 `pending_before` 表达等待数量
 与最早待定时间。已挂下层子树保持正文、披露层与直接子边，仅为本轮输入根补父边；
 完整证据与双向引用必须校验通过，部分写入仍返回 repair_required。
+
+
+Evolver 的可选能力 `hierarchy_profile(kind) -> HierarchyComposeProfile | None` 返回其
+绑定 Composer 的配置快照；默认 None，不为自动任务构造另一套模型依赖。
+`EvolveRequest.hierarchy_incremental` 仅供内部周期任务使用：非空时以相邻单层请求
+委托 Composer.build；为空时沿用显式 replace_in_span。Dynamic/Schema Evolver 继承该
+委托路径，原 `evolve(units, mode)`、显式分组和重建行为保持。

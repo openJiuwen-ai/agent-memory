@@ -120,7 +120,12 @@ def collect_incremental(
     if initial:
         complete = collect_root_subtrees(kv, scopes, list(initial.values()), options, limits)
         nodes = {**complete.leaves, **complete.parents}
-        selection.inputs = [nodes[key] for key in initial]
+        try:
+            selection.inputs = [nodes[key] for key in initial]
+        except KeyError as error:
+            raise ValidationError(
+                "incremental subtree collection omitted a selected root"
+            ) from error
         selection.supporting_units = [unit for key, unit in nodes.items() if key not in initial]
     if observed_parents != _home_parents(kv, options, limits):
         raise ValidationError("incremental watermark changed during collection")

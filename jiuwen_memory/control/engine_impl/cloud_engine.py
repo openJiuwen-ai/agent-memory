@@ -53,6 +53,10 @@ from jiuwen_memory.control.engine_impl.schema_update_support import (
     prepare_schema_update,
 )
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.evolution.background import (
+    BackgroundDependencies,
+    start_hierarchy_derivation,
+)
 from jiuwen_memory.control.evolution.hierarchy_submission import (
     HierarchySubmissionDependencies,
     submit_hierarchy,
@@ -63,6 +67,7 @@ from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, Pipe
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -894,6 +899,14 @@ class CloudEngine(MemoryEngine):
                 self._policy, self._scheduler, self._job_factory, self._evolver, self._domain_store,
             ),
         )
+
+    async def start_background_jobs(
+        self, scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
+        """将同源真源与 Evolver 注入后台任务，周期由 Scheduler 管理。"""
+        return await start_hierarchy_derivation(scope, policy, BackgroundDependencies(
+            self._job_factory, self._scheduler, self._evolver, self._domain_store,
+        ))
 
     async def admin_get(self, key: str) -> str:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")

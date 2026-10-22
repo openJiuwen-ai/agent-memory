@@ -56,6 +56,8 @@ from jiuwen_memory.common.security.capabilities import (
     validate_authorization_capabilities,
 )
 from jiuwen_memory.common.security.runtime import SecurityRuntime
+from jiuwen_memory.common.security.types import RequestSecurityContext
+from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl import register_config_sources
@@ -76,6 +78,7 @@ from jiuwen_memory.control.permission import PermissionManager, PermissionProduc
 from jiuwen_memory.control.policy import PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.space import SpaceManager, SpaceProducer
+from jiuwen_memory.control.types import BackgroundJobStartResult
 from jiuwen_memory.ingest.bootstrap import register_ingestors
 from jiuwen_memory.retrieval.bootstrap import register_operators
 from jiuwen_memory.storage.bootstrap import register_backends
@@ -181,6 +184,12 @@ class MemoryRuntime(Protocol):
         """返回运行时的公共 API。"""
         ...
 
+    async def start_background_jobs(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> BackgroundJobStartResult:
+        """注册固定 home 的自动建树；需开启树与自动开关及支持周期的调度器。"""
+        ...
+
     async def start_background(self) -> None:
         """Bind optional background components to the caller's long-lived event loop."""
         ...
@@ -222,6 +231,11 @@ class _ServerRuntime:
     def api(self) -> MemoryAPI:
         return self._runtime.api
 
+    async def start_background_jobs(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> BackgroundJobStartResult:
+        return await self._runtime.start_background_jobs(scope, security=security)
+
     async def start_background(self) -> None:
         await self._runtime.start_background()
 
@@ -250,6 +264,22 @@ class _MemoryRuntime:
     _close_error: BaseException | None = field(default=None, init=False, repr=False)
     _close_errors: list[BaseException] = field(default_factory=list, init=False, repr=False)
     _watchdog_stopped: bool = field(default=True, init=False, repr=False)
+
+    async def start_background_jobs(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> BackgroundJobStartResult:
+        """注册工作委托现有 Scheduler，自有循环与关闭屏障保持统一。"""
+        self._validate_resources()
+        with self._shutdown_lock:
+            self._validate_start()
+        result = await self._kernel.api.start_background_jobs(scope, security=security)
+        with self._shutdown_lock:
+            closed = self._closing
+        if closed:
+            for job_id in result.job_ids:
+                self._kernel.scheduler.cancel(job_id)
+            raise ValidationError("runtime closed during periodic registration")
+        return result
 
     async def start_background(self) -> None:
         """在异步宿主的长寿循环中启动；关闭后拒绝重启。"""

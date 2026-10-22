@@ -83,4 +83,4 @@ def test_server_api_close_delegates_to_complete_facade() -> None:
 
 def test_memory_runtime_public_contract_matches_upstream_lifecycle() -> None:
     public = {name for name in vars(MemoryRuntime) if not name.startswith("_")}
-    assert public == {"api", "start", "start_background", "close"}
+    assert public == {"api", "start", "start_background", "start_background_jobs", "close"}

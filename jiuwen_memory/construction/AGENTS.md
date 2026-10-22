@@ -241,7 +241,8 @@ Evolver.evolve(units, mode):
 ### 显式建树演进入口
 
 `Evolver.evolve(units, mode)` 保持兼容；新增 EvolveRequest 时，HIERARCHY 委托
-可选 Composer.replace_in_span。未装配 Composer 明确拒绝，不回落普通抽取。
+可选 Composer.replace_in_span；内部单层增量委托 Composer.build。
+未装配 Composer 明确拒绝，不回落普通抽取；hierarchy_profile 提供绑定配置快照。
 `hierarchy_assembly.py` 处理显式依赖及内置预设选择；`lazy_hierarchy_composer.py`
 复用本 Evolver 的 IndexBuilder/LLM 与绑定原装配的延迟 Embedder，不自行取候选。
 
