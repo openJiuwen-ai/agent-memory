@@ -37,7 +37,6 @@ from jiuwen_memory.api import (
     EvolveMode,
     Modality,
     RequestSecurityContext,
-    SearchOptions,
     assemble,
     install_privacy_filter,
     metadata_for_log,
@@ -808,13 +807,11 @@ class _InProcessClient(_AgentMemoryClient):
         # 进程内模式经 search 的 tier filter 下推过滤 semantic。
         filters = [_semantic_filter()]
         result = await asyncio.to_thread(
-            self._api.search_v2,
+            self._api.search,
             query,
             Context(scope=api_scope),
             security=self._security(),
-            options=SearchOptions(
-                filters=filters, top_k=top_k, disclosure=DisclosureLevel.L2,
-            ),
+            filters=filters, top_k=top_k, disclosure=DisclosureLevel.L2,
         )
         return [
             {"content": it.content, "score": it.score, "item_id": it.unit_id} for it in result.items

@@ -139,7 +139,7 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 ### Snapshot 自动接入
 
 两个 Engine 的可选 policy 依赖由 Producer 解析共享的 policy.default；每次 write 按
-hierarchy.enabled 调用 ingest 的纯补齐函数，再交 Ingestor。DictPolicyManager 的装配
+hierarchy.enabled 调用 ingest 的纯补齐函数：开启时补齐，关闭时移除合法叶提示，再交 Ingestor。DictPolicyManager 的装配
 未配置 policies 时使用默认表（hierarchy.enabled=false），显式表完整替换，空表保留为空；
 Engine 缺少树开关时按关闭处理，不在 config/defaults.py 堆叠查询参数。
 CloudEngine 不回填已消费的叶提示。此流程不提交父节点构建任务。
@@ -153,6 +153,7 @@ CloudEngine 不回填已消费的叶提示。此流程不提交父节点构建�
   已挂树损坏报错；复用检查不修改内容。可选锁覆盖取数到同步写入收尾。
 - Job 支持上游协作取消；已经进入的同步工作先结束并记录结果，不提前释放锁。
   `scheduler_impl/job_outcome.py` 校验终态，两个 Scheduler 均保留真实业务失败。
+- 提交先校验基础请求，关闭时成功跳过且不校验树选项，开启后再验证区间与父层链。
 - 本模块只接入显式单次 HIERARCHY；不把它注册为普通 dreaming 或周期建树。
 
 ### 跨空间树查询

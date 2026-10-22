@@ -60,19 +60,26 @@ def validate_hierarchy_options(scope: Scope, options: HierarchyComposeOptions) -
             raise ValidationError("hierarchy metadata 必须是 dict[str, str]")
 
 
-def validate_evolve_options(scope: Scope, options: EvolveTaskOptions) -> None:
-    """校验公开请求对象，禁止在普通模式携带建树参数。"""
+def validate_evolve_request(scope: Scope, options: EvolveTaskOptions) -> None:
+    """开关分流前只校验基础请求，不要求提供树参数。"""
     if not isinstance(options, EvolveTaskOptions):
         raise ValidationError("evolve 要求 EvolveTaskOptions，必须为 EvolveTaskOptions")
     if not isinstance(options.mode, EvolveMode) or not isinstance(options.channel, Channel):
         raise ValidationError("EvolveTaskOptions 要求合法的 EvolveMode 和 Channel")
+    if options.mode is EvolveMode.HIERARCHY:
+        _validate_scope(scope)
+        if options.candidate is not None or options.dreaming is not None or options.interval != 0:
+            raise ValidationError("显式 HIERARCHY 不接受 candidate/dreaming/interval")
+
+
+def validate_evolve_options(scope: Scope, options: EvolveTaskOptions) -> None:
+    """开启树功能后校验树选项，禁止在普通模式携带建树参数。"""
+    validate_evolve_request(scope, options)
     if not isinstance(options.reuse_existing, bool):
         raise ValidationError("reuse_existing 必须是 bool")
     if options.reuse_existing and options.mode is not EvolveMode.HIERARCHY:
         raise ValidationError("仅 HIERARCHY 接受 reuse_existing=true")
     if options.mode is EvolveMode.HIERARCHY:
-        if options.candidate is not None or options.dreaming is not None or options.interval != 0:
-            raise ValidationError("显式 HIERARCHY 不接受 candidate/dreaming/interval")
         validate_hierarchy_options(scope, options.hierarchy_options)
     elif options.hierarchy_options is not None:
         raise ValidationError("仅 HIERARCHY 接受 hierarchy_options")

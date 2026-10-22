@@ -3,12 +3,13 @@
 
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
 
 from jiuwen_memory.api import assemble_runtime
-from jiuwen_memory.common.errors import PolicyError
+from jiuwen_memory.common.errors import PolicyError, ValidationError
 from jiuwen_memory.common.type_def import HierarchyRole
 from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.control.policy import PolicyProducer
@@ -161,3 +162,38 @@ def test_custom_policy_without_tree_key_keeps_ordinary_writes(policies):
         assert unit.hierarchy.is_empty
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("infer", [False, True])
+@pytest.mark.parametrize("partial", [False, True])
+def test_disabled_write_ignores_leaf_hints_without_changing_input(api, infer, partial):
+    hints = {"hierarchy_kind": "time", "hierarchy_role": "snapshot",
+             "hierarchy_span_start": START.isoformat(), "infer": infer,
+             "parent_id": "business-parent", "span_start": "business-start"}
+    if not partial:
+        hints["hierarchy_span_end"] = START.isoformat()
+    before = deepcopy(hints)
+    security = security_for(api, HOME)
+    plain = api.add("Alice likes climbing", replace(HOME, session="baseline"),
+                    security=security, occurred_at=START,
+                    system_metadata={key: value for key, value in hints.items()
+                                     if not key.startswith("hierarchy_")})
+    units = api.add("Alice likes climbing", HOME, security=security, occurred_at=START,
+                    system_metadata=hints)
+    assert units and hints == before
+    assert all(unit.hierarchy.is_empty for unit in units)
+    assert [unit.temporal.t_message for unit in units] == [
+        unit.temporal.t_message for unit in plain
+    ]
+    assert all(not key.startswith("hierarchy_") for unit in units for key in unit.system_metadata)
+    if not infer:
+        assert units[0].temporal.t_message == START
+        assert units[0].system_metadata["parent_id"] == "business-parent"
+        assert units[0].system_metadata["span_start"] == "business-start"
+
+
+@pytest.mark.parametrize("key", ["hierarchy_parent_id", "hierarchy_child_ids", "tree_parent_id",
+                                 "hierarchy_status", "tree_span_start", "tree_span_end"])
+def test_disabled_write_still_rejects_structural_and_projection_fields(api, key):
+    with pytest.raises(ValidationError):
+        api.add("forged", HOME, security=security_for(api, HOME), system_metadata={key: "fake"})

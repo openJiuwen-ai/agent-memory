@@ -37,7 +37,7 @@ pytestmark = pytest.mark.unit
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
-    assert len(api_contract.api_method_names()) == 38
+    assert len(api_contract.api_method_names()) == 36
     assert api_contract.is_known_verb("add_async") is True
     assert api_contract.is_known_verb("does_not_exist") is False
 
@@ -311,59 +311,47 @@ def test_sync_and_async_http_invocation_use_same_named_api_methods() -> None:
     assert not any(dataclasses.is_dataclass(result) for result in (sync_result, async_result))
 
 
-def test_evolve_v2_decodes_nested_hierarchy_options_without_changing_legacy_evolve():
-    from jiuwen_memory.api import EvolveMode, EvolveTaskOptions, HierarchyRole
+def test_evolve_decodes_hierarchy_options_without_changing_normal_modes():
+    from jiuwen_memory.api import EvolveMode, HierarchyRole
 
     scope = {"org": "acme", "user": "alice"}
     span = "2026-10-21T09:00:00+08:00"
-    parsed = api_contract.parse_request("evolve_v2", {
-        "scope": scope,
-        "options": {"mode": "hierarchy", "reuse_existing": True, "hierarchy_options": {
+    parsed = api_contract.parse_request("evolve", {
+        "scope": scope, "mode": "hierarchy", "reuse_existing": True,
+        "hierarchy_options": {
             "kind": "time", "leaf_role": "snapshot", "parent_roles": ["time_span"],
             "tree_home_scope": scope, "span_start": span, "span_end": span,
-        }},
+        },
     })
-    options = parsed["options"]
-    assert isinstance(options, EvolveTaskOptions) and options.mode is EvolveMode.HIERARCHY
-    assert options.reuse_existing is True
-    assert options.hierarchy_options.parent_roles == [HierarchyRole.TIME_SPAN]
-    assert options.hierarchy_options.span_start == datetime.fromisoformat(span)
-    assert options.hierarchy_options.tree_home_scope == parsed["scope"]
-    legacy = api_contract.parse_request("evolve", {"scope": scope, "mode": "extract"})
-    assert legacy["mode"] is EvolveMode.EXTRACT and "options" not in legacy
+    assert parsed["mode"] is EvolveMode.HIERARCHY and parsed["reuse_existing"] is True
+    options = parsed["hierarchy_options"]
+    assert options.parent_roles == [HierarchyRole.TIME_SPAN]
+    assert options.span_start == datetime.fromisoformat(span)
+    assert options.tree_home_scope == parsed["scope"]
+    ordinary = api_contract.parse_request("evolve", {"scope": scope, "mode": "extract"})
+    assert ordinary["mode"] is EvolveMode.EXTRACT and "options" not in ordinary
 
 
-@pytest.mark.parametrize("verb", ["search", "search_v2"])
-def test_search_transport_preserves_flat_and_typed_contracts(verb):
-    from jiuwen_memory.api import HierarchyKind, HierarchyRole, SearchOptions
+def test_search_transport_decodes_flat_hierarchy_parameters():
+    from jiuwen_memory.api import HierarchyKind, HierarchyRole
 
-    raw = {"query": "evidence", "context": {"scope": {"org": "acme"}}}
-    if verb == "search":
-        raw["top_k"] = 3
-        assert api_contract.parse_request(verb, raw)["top_k"] == 3
-        raw["options"] = {}
-    else:
-        raw["options"] = {
-            "hierarchy_kind": "time", "hierarchy_role": "time_span", "top_k": 3,
-            "span_start": "2026-09-10T09:00:00", "span_end": "2026-09-10T09:00:01",
-        }
-        options = api_contract.parse_request(verb, raw)["options"]
-        assert isinstance(options, SearchOptions)
-        assert options.hierarchy_kind is HierarchyKind.TIME
-        assert options.hierarchy_role is HierarchyRole.TIME_SPAN
-        assert options.span_start.tzinfo is None
-        assert options.top_k == 3
-        raw["top_k"] = 5
+    raw = {
+        "query": "evidence", "context": {"scope": {"org": "acme"}}, "top_k": 3,
+        "hierarchy_kind": "time", "hierarchy_role": "time_span",
+        "span_start": "2026-09-10T09:00:00", "span_end": "2026-09-10T09:00:01",
+        "expand_depth": 0, "rollup": False,
+    }
+    parsed = api_contract.parse_request("search", raw)
+    assert parsed["hierarchy_kind"] is HierarchyKind.TIME
+    assert parsed["hierarchy_role"] is HierarchyRole.TIME_SPAN
+    assert parsed["span_start"].tzinfo is None and parsed["top_k"] == 3
+    assert parsed["expand_depth"] == 0 and parsed["rollup"] is False
     with pytest.raises(ValidationError, match="unknown field"):
-        api_contract.parse_request(verb, raw)
+        api_contract.parse_request("search", {**raw, "options": {}})
 
 
-@pytest.mark.parametrize("options", [None, {}, {"hierarchy_kind": "invalid"}, {"unknown": 1}])
-def test_search_v2_transport_decodes_optional_options(options):
-    raw = {"query": "evidence", "context": {"scope": {"org": "acme"}}, "options": options}
-    if options:
-        with pytest.raises(ValidationError):
-            api_contract.parse_request("search_v2", raw)
-    else:
-        decoded = api_contract.parse_request("search_v2", raw)
-        assert (decoded["options"] is None) == (options is None)
+@pytest.mark.parametrize("verb", ["search_v2", "evolve_v2"])
+def test_parallel_public_methods_are_not_exposed(verb):
+    assert verb not in api_contract.api_method_names()
+    with pytest.raises(ValidationError, match="unknown MemoryAPI method"):
+        api_contract.parse_request(verb, {})

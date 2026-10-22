@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""公开检索选项；身份、目标 Context 与查询正文分别由入口接收。"""
+"""内部检索参数载体；公开默认值由 MemoryAPI.search 签名声明。"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +10,7 @@ from jiuwen_memory.retrieval.types import DisclosureLevel
 
 @dataclass(frozen=True)
 class SearchOptions:
-    """显式层级选项默认不遍历；普通请求由 API 按树策略预设，身份和 Context 独立。"""
+    """中性参数载体；API 显式传入签名默认值，关闭树开关后归一化为空结构。"""
 
     filters: FilterExpr | list[FilterClause] | dict | None = None
     as_of: datetime | None = None

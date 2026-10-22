@@ -118,6 +118,9 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
         "top_k": "k",
         "disclosure": "disclosure",
         "with_trajectory": "trace",
+        "hierarchy_kind": "hierarchy_kind", "hierarchy_role": "hierarchy_role",
+        "span_start": "span_start", "span_end": "span_end",
+        "expand_depth": "expand_depth", "rollup": "rollup",
     },
     "list": {
         "scope": DERIVED,
@@ -163,6 +166,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
         "candidate": "candidate",
         "dreaming": "dreaming",
         "interval": "interval",
+        "hierarchy_options": "hierarchy_options", "reuse_existing": "reuse_existing",
     },
     "inspect": {
         "unit_ids": "item_ids",

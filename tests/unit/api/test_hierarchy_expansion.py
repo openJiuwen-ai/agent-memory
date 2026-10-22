@@ -9,7 +9,6 @@ from jiuwen_memory.api import (
     Context,
     HierarchyRole,
     JobStatus,
-    PolicyError,
     Scope,
     SpaceSpec,
     ValidationError,
@@ -46,11 +45,11 @@ def expansion_runtime_fixture(request):
 def test_public_search_returns_built_parents_and_original_leaf_evidence(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     leaves = [write_snapshot(api, minute) for minute in (0, 1)]
-    job_id = api.evolve_v2(HOME, task_options(), security=security_for(api, HOME))
+    job_id = api.evolve(HOME, **vars(task_options()), security=security_for(api, HOME))
     assert api.job_status(job_id, security=security_for(api, HOME)).status is JobStatus.SUCCEEDED
     options = hierarchy_search_options(hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1)
-    result = api.search_v2(
-        "snapshot evidence", Context(HOME), options, security=security_for(api, HOME),
+    result = api.search(
+        "snapshot evidence", Context(HOME), **vars(options), security=security_for(api, HOME),
     )
     assert len(result.items) == 3
     assert {item.unit_id for item in result.items[1:]} == {leaf.id for leaf in leaves}
@@ -58,20 +57,19 @@ def test_public_search_returns_built_parents_and_original_leaf_evidence(api) -> 
     assert result.errors == []
 
 
-def test_expansion_still_requires_enabled_policy(api) -> None:
+def test_disabled_search_ignores_expansion(api) -> None:
     api.admin_set("hierarchy.enabled", "false", security=ROOT_SECURITY)
-    with pytest.raises(PolicyError, match="hierarchy.enabled"):
-        api.search_v2(
-            "snapshot", Context(HOME), hierarchy_search_options(expand_depth=1),
-            security=security_for(api, HOME),
-        )
+    api.search(
+        "snapshot", Context(HOME), **vars(hierarchy_search_options(expand_depth=1)),
+        security=security_for(api, HOME),
+    )
 
 
 @pytest.mark.parametrize("depth", [-1, True, "1", None])
 def test_invalid_depth_fails_at_public_boundary(api, depth) -> None:
     with pytest.raises(ValidationError, match="expand_depth"):
-        api.search_v2(
-            "snapshot", Context(HOME), hierarchy_search_options(expand_depth=depth),
+        api.search(
+            "snapshot", Context(HOME), **vars(hierarchy_search_options(expand_depth=depth)),
             security=security_for(api, HOME),
         )
 
@@ -79,12 +77,12 @@ def test_invalid_depth_fails_at_public_boundary(api, depth) -> None:
 def test_http_cli_shared_contract_serializes_only_flat_public_results(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     leaf = write_snapshot(api, 0)
-    job_id = api.evolve_v2(HOME, task_options(), security=security_for(api, HOME))
+    job_id = api.evolve(HOME, **vars(task_options()), security=security_for(api, HOME))
     assert api.job_status(job_id, security=security_for(api, HOME)).status is JobStatus.SUCCEEDED
-    result = invoke_api(api, "search_v2", {
+    result = invoke_api(api, "search", {
         "query": "snapshot evidence",
         "context": {"scope": {"org": HOME.org, "user": HOME.user, "agent": HOME.agent}},
-        "options": {
+        **{
             "hierarchy_kind": "time", "hierarchy_role": "time_span", "expand_depth": 1,
         },
     }, security_for(api, HOME))
@@ -103,13 +101,13 @@ def test_each_built_level_expands_to_original_evidence(engine, depth, role):
     try:
         leaves = [write_snapshot(api, minute) for minute in (0, 1)]
         security = security_for(api, HOME)
-        job_id = api.evolve_v2(HOME, task_options(depth), security=security)
+        job_id = api.evolve(HOME, **vars(task_options(depth)), security=security)
         info = api.job_status(job_id, security=security)
         assert info.status is JobStatus.SUCCEEDED, info.detail
         options = hierarchy_search_options(
             hierarchy_role=role, expand_depth=depth, rollup=True,
         )
-        result = api.search_v2("snapshot evidence", Context(HOME), options, security=security)
+        result = api.search("snapshot evidence", Context(HOME), **vars(options), security=security)
         assert len(result.items) == depth + len(leaves)
         assert {leaf.id for leaf in leaves} <= {item.unit_id for item in result.items[1:]}
         assert not result.errors
@@ -134,13 +132,13 @@ def test_real_cross_space_search_applies_one_total_limit_after_expansion() -> No
             leaf = api.add(f"snapshot evidence {name}", leaf_scope,
                            system_metadata=snapshot_metadata(), security=security)[0]
             leaves.append(leaf)
-            job_id = api.evolve_v2(home, task_options(tree_home_scope=home), security=security)
+            job_id = api.evolve(home, **vars(task_options(tree_home_scope=home)), security=security)
             assert api.job_status(job_id, security=security).status is JobStatus.SUCCEEDED
-        result = api.search_v2("snapshot evidence", Context(Scope(org=HOME.org), extensions={
+        result = api.search("snapshot evidence", Context(Scope(org=HOME.org), extensions={
             "spaces": ["one", "two"],
-        }), hierarchy_search_options(
+        }), **vars(hierarchy_search_options(
             hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1, top_k=2,
-        ), security=security)
+        )), security=security)
         assert len(result.items) == 2
         assert not {item.unit_id for item in result.items} & {leaf.id for leaf in leaves}
         assert result.errors == []
@@ -149,29 +147,29 @@ def test_real_cross_space_search_applies_one_total_limit_after_expansion() -> No
         Factory.reset_all()
 
 
-@pytest.mark.parametrize("legacy", [True, False])
+@pytest.mark.parametrize("use_defaults", [True, False])
 @pytest.mark.parametrize("top_k", [1, 2])
-def test_public_tree_search_caps_total_without_changing_qa_prefix(api, legacy, top_k):
+def test_public_tree_search_caps_total_without_changing_qa_prefix(api, use_defaults, top_k):
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     for minute in (0, 1):
         write_snapshot(api, minute)
-    job_id = api.evolve_v2(HOME, task_options(), security=security_for(api, HOME))
+    job_id = api.evolve(HOME, **vars(task_options()), security=security_for(api, HOME))
     assert api.job_status(job_id, security=security_for(api, HOME)).status is JobStatus.SUCCEEDED
 
     def search(limit):
-        if legacy:
+        if use_defaults:
             return api.search(
                 "snapshot evidence", Context(HOME), top_k=limit, security=security_for(api, HOME),
             )
         options = hierarchy_search_options(
             hierarchy_role=HierarchyRole.TIME_SPAN, expand_depth=1, rollup=True, top_k=limit,
         )
-        return api.search_v2(
-            "snapshot evidence", Context(HOME), options, security=security_for(api, HOME),
+        return api.search(
+            "snapshot evidence", Context(HOME), **vars(options), security=security_for(api, HOME),
         )
 
     full = search(10)
     limited = search(top_k)
     assert len(full.items) == 3
     assert len(limited.items) == top_k
-    assert limited.items == full.items[:top_k], "旧入口和 V2 都必须保留 QA 使用的前缀"
+    assert limited.items == full.items[:top_k], "默认和显式参数都必须保留 QA 使用的前缀"

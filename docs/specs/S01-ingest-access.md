@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -147,7 +147,9 @@ jiuwen_memory/ingest/ingestor_impl/
 
 提示只声明叶身份，不创建边。返回结构为 ACTIVE、无父无子；提示从系统 metadata 移除，
 不改变输入字典。是否按 occurred_at 自动补齐由 Engine 根据策略调用纯补齐函数决定，
-Ingestor 本身不访问 PolicyManager。关闭自动接入时仍允许显式合法叶提示。
+Ingestor 本身不访问 PolicyManager。Engine 在 hierarchy.enabled 关闭或缺失时移除本次
+输入副本中的四个合法叶提示，不补时间、不生成 Snapshot，occurred_at 与其他业务数据
+保持原有语义。未知结构键、父子边及内核投影键仍拒绝；不清理已有树或调用方字典。
 开启时，无提示或仅声明 TIME/Snapshot 身份且有 occurred_at 才自动生成等值双端点；
 没有 occurred_at 时不猜测时间，无提示保留空 hierarchy，显式身份保留其已有字段。
 只提供一个端点时即使有 occurred_at 也不修补。完整显式区间优先。

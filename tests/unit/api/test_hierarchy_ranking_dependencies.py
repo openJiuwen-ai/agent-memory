@@ -20,7 +20,7 @@ def test_default_tree_ranking_keeps_original_assembly_dependency_after_factory_r
     try:
         leaves = [write_snapshot(api, minute) for minute in (0, 1)]
         security = security_for(api, HOME)
-        api.evolve_v2(HOME, task_options(), security=security)
+        api.evolve(HOME, **vars(task_options()), security=security)
         Factory.reset_all()
 
         build = Mock(side_effect=AssertionError("old runtime must retain its embedder"))

@@ -634,3 +634,36 @@ def test_backend_error_maps_to_503_not_400_or_500() -> None:
 
     assert status == 503
     assert body == {"error": "BackendError", "message": "store down"}
+
+
+@pytest.mark.parametrize("verb", ["search", "evolve"])
+def test_legacy_forwards_explicit_tree_parameters_through_shared_contract(verb):
+    from jiuwen_memory.api import HierarchyComposeOptions, HierarchyKind, HierarchyRole
+
+    captured = {}
+
+    def call(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(items=[], trajectory=[]) if verb == "search" else "tree-job"
+
+    payload = {"tenant_id": "acme", "scope": "alice"}
+    if verb == "search":
+        payload.update(query="evidence", hierarchy_kind="time", hierarchy_role="scene",
+                       expand_depth=0, rollup=False, span_start=None, span_end=None)
+    else:
+        payload.update(mode="hierarchy", reuse_existing=True, hierarchy_options={
+            "kind": "time", "leaf_role": "snapshot", "parent_roles": ["time_span"],
+            "tree_home_scope": {"org": "acme", "user": "alice"},
+            "span_start": "2026-10-01T00:00:00", "span_end": "2026-10-02T00:00:00",
+        })
+    srv = SimpleNamespace(api=SimpleNamespace(**{verb: call}))
+    status, body = handler.dispatch(srv, _dispatch_request(verb, payload))
+    assert status == 200, body
+    if verb == "search":
+        assert captured["hierarchy_kind"] is HierarchyKind.TIME
+        assert captured["hierarchy_role"] is HierarchyRole.SCENE
+        assert captured["expand_depth"] == 0 and captured["rollup"] is False
+    else:
+        assert isinstance(captured["hierarchy_options"], HierarchyComposeOptions)
+        assert captured["hierarchy_options"].span_start == datetime(2026, 10, 1)
+        assert captured["reuse_existing"] is True

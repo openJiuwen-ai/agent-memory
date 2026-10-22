@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -177,7 +177,7 @@ QueryParser.parse(query) → ParsedQuery
 → 组装 RetrievalResult（items + trajectory + errors）
 ```
 
-Expander 是 Retriever 内部算子，仅由 `search_v2(..., options=SearchOptions(expand_depth>0, ...))` 触发；**不另设公开 `MemoryAPI.expand`**。
+Expander 是 Retriever 内部算子，仅由 `search(..., expand_depth>0, ...)`（树开关开启） 触发；**不另设公开 `MemoryAPI.expand`**。
 `ExpandRequest.query` 由 recall 内部装配，保留原调用 filters 与解析后 filters 的 AND，
 以及生命周期、时间可见性。它不依赖 Parser 理解 expand_depth，不为子另查索引。
 
@@ -389,7 +389,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 3. span 必须成对出现且 `span_start <= span_end`。
 4. 区间采用闭区间相交：节点满足 `node.span_start <= query.span_end AND node.span_end >= query.span_start`；端点相等算相交。没有 span 的节点不匹配有 span 的查询。
 5. `hierarchy_kind=HierarchyKind.TIME` 的查询可以省略 query span，此时查询已有 TIME 结构的全部范围；但每个匹配节点自身必须具有有效 span。阻塞 ensure 仍要求 query span 有界。这不改变对 `MemoryUnit.temporal.t_event` 的普通时间过滤。
-6. hierarchy 功能关闭时，任何显式层级字段、非零展开深度或 `rollup=true` 都抛 `PolicyError`；没有层级请求的召回不受影响。
+6. hierarchy 功能关闭时，API 将本次层级类型、角色、结构区间清为空，展开深度归零、上卷关闭；显式树参数同样忽略，再执行普通召回，普通参数与权限约束保持原语义。
 
 | 类型 | 关键字段 |
 |------|----------|
@@ -470,7 +470,7 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 |---|---|
 | `ValidationError` | 深度、预算、span 或 kind/role 组合非法；root kind 不匹配 |
 | `NotFoundError` | 展开 root 不存在或不在请求 scope |
-| `PolicyError` | 显式层级召回或展开在 hierarchy 关闭时发起 |
+| 树开关关闭 | API 忽略树参数并执行普通召回；不因传入合法树参数抛 PolicyError |
 | `BackendError` | 召回或点读后端失败，且不能按 issue 规则局部处理 |
 
 ## 实现注册机制

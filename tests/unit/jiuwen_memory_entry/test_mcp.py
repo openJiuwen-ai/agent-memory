@@ -69,12 +69,6 @@ SCOPE = {"org": "local", "user": "developer"}
 # 工具名 → (MemoryAPI 方法名, 代表性最小合法 payload)。payload 同时锁「形状可过
 # parse_request」——工具转发给 _invoke 的键名集合必须与这里给出的契约一致。
 TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
-    "memory_search_v2": (
-        "search_v2", {"query": "coffee", "context": {"scope": SCOPE}, "options": None},
-    ),
-    "memory_evolve_v2": (
-        "evolve_v2", {"scope": SCOPE, "options": {"mode": "extract"}},
-    ),
     "memory_add": (
         "add",
         {
@@ -155,6 +149,7 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "channel": "background",
             "dreaming": None,
             "interval": 0,
+            "hierarchy_options": None, "reuse_existing": False,
             "candidate": {"type": "predicate", "limit": 10},
         },
     ),
@@ -722,3 +717,24 @@ def test_tool_run_rejects_extra_fields_before_dispatch(monkeypatch) -> None:
                 context=None,
             )
         )
+
+
+@pytest.mark.parametrize("overrides,depth,rollup", [
+    ({}, 1, True), ({"expand_depth": 0}, 0, True), ({"rollup": False}, 1, False),
+])
+def test_search_forwards_tree_defaults_and_explicit_zero_false(
+    kernel, monkeypatch, overrides, depth, rollup,
+):
+    from jiuwen_memory.api import HierarchyKind, HierarchyRole, RetrievalResult
+
+    captured = {}
+
+    def search(query, context, **kwargs):
+        captured.update(kwargs)
+        return RetrievalResult()
+
+    monkeypatch.setattr(kernel.api, "search", search)
+    asyncio.run(mcp_main.memory_search(query="evidence", context={"scope": SCOPE}, **overrides))
+    assert captured["hierarchy_kind"] is HierarchyKind.TIME
+    assert captured["hierarchy_role"] is HierarchyRole.TIME_SPAN
+    assert captured["expand_depth"] == depth and captured["rollup"] is rollup

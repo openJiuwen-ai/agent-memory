@@ -13,14 +13,14 @@
 | 文件 | 职责 |
 |---|---|
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
-| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/evolve_v2/admin/inspect/trace/audit/grant/revoke/space 管理） |
+| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回生命周期句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
-| `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve/evolve_v2，鉴权后走 Query/Command；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
+| `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
 | `memory_api_impl/dreaming.py` | DreamingCoordinator + DreamingDriverJob：dreaming 编排（PEP 边界）——leader-only 注册、`CANCEL_REQUESTED` 持久化幂等注销、generation 隔离旧代 Driver、生命周期操作串行与短状态锁分离、按 leader 任期缓存恢复结果、每 tick 持续授权（`created_by` 复验）、fan-out 逐桶裁决；Coordinator 只持鉴权、提交、调度、注册表、Engine 候选 scope 枚举窄端口，不反向持有完整 API；驱动 Job 每 tick 经 `commands.evolve` 提交一次性 EvolveJob |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/dreaming_security.py` | 私有注册身份快照编码；只消费受控上下文和服务端注册表，不接业务 payload、不保存原始凭据、不续期认证 |
@@ -194,24 +194,19 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 
 ### 显式建树边界
 
-`evolve_v2` 普通模式委托原 evolve，保留 candidate/dreaming/interval 与原授权链。
-HIERARCHY 校验请求后做 WRITE+UPDATE 可信授权及空间可写检查；权限路由依据当前
-Authorizer.routing_fields，不能读取已退出生产判定的 PermissionManager。
-父 metadata 拒绝内核保留键与路由标签；范围、候选和开关分流委托控制层。
-HTTP/CLI 从 MemoryAPI 契约反射该方法；MCP 使用同名 memory_evolve_v2 适配。
+原 `evolve` 追加 hierarchy_options/reuse_existing，普通模式保留原 candidate/dreaming/
+interval 与授权链。HIERARCHY 保留 WRITE+UPDATE 可信授权及空间可写检查；开启时
+校验树参数、权限路由限制与父 metadata，关闭时忽略树选项并提交成功的跳过任务。
+基础校验与树语义校验分离，缺少 hierarchy_options 不阻止关闭状态的成功跳过。
+HTTP/CLI 从 MemoryAPI 反射原方法，MCP 只提供原 memory_evolve。
 
-### 统一搜索选项
+### 查询参数与树总开关
 
-- `search_options.py` 定义不可变 SearchOptions；`search` 保留平铺签名，包装后转发
-  `search_v2`。HTTP/CLI 按同名方法反射，MCP 显式提供 memory_search_v2。
-- 两入口共用已有来源校验、委托身份、Authorizer、空间事实与审计，不能恢复旧 PermissionManager。
-- 显式层级查询仅在 hierarchy.enabled=true 时准入；缺少开关键按关闭处理。
-- Context 和选项快照不反向污染调用者；extensions 标准容器复制，不透明插件保留对象身份。
-- 单 kind、可选 role 和成对结构区间之外，支持 expand_depth 与 rollup；显式组选项优先。
-
-### 树查询接口预设
-
-`memory_api_impl/search_defaults.py` 只在树开关启用且调用者未指定结构组选项时，
-补 TIME/time_span/rollup=True/expand_depth=1；普通参数原值不变。预设不放入 defaults.py。
-显式 False/0 与非法选项不得被预设覆盖或修补；类型默认值本身仍是 None/False/0。
-无有效 TimeSpan 时保持严格查询，不回退到未挂树叶；查询不触发建树。
+- 原 search 末尾追加树参数，签名直接声明 TIME/time_span/expand_depth=1/rollup=True。
+  `_search` 使用内部 SearchOptions 参数载体，不再补默认值；显式 0/False 原样生效。
+- 在可信来源校验后读取 hierarchy.enabled；关闭或缺失时先清除六个树参数再验证树语义，
+  普通 filters/as_of/top_k/Scope/权限保持不变，普通召回仍排除生成的 TIME 父。
+- Context 与参数快照不污染调用者；extensions 标准容器复制，不透明插件保留身份。
+- 单/跨空间查询共用已归一化参数，不在后续分支重复读取树开关。
+- 不再提供公开 search_v2/evolve_v2；HTTP/CLI/MCP 使用原接口和新增可选参数。
+- 无有效 TimeSpan 时严格返回空结果，不回退到未挂树叶；搜索不触发建树。

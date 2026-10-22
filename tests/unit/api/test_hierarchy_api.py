@@ -34,7 +34,7 @@ def test_explicit_api_build_and_partial_span_rebuild_preserve_all_old_children(a
     requested = task_options(metadata={"build_source": "explicit-test"})
     original_options = deepcopy(requested)
 
-    job_id = api.evolve_v2(HOME, requested, security=security_for(api, HOME))
+    job_id = api.evolve(HOME, **vars(requested), security=security_for(api, HOME))
     first = api.job_status(job_id, security=security_for(api, HOME))
     attached = [api.get(leaf.id, leaf.scope, security=security_for(api, HOME)) for leaf in leaves]
     parent_id = attached[0].hierarchy.parent_id
@@ -52,7 +52,8 @@ def test_explicit_api_build_and_partial_span_rebuild_preserve_all_old_children(a
         assert leaf.hierarchy.parent_scope == HOME
 
     # 没有新增叶，窗口只覆盖第一条；仍补齐旧父的第二条子叶再重建。
-    second_id = api.evolve_v2(HOME, task_options(span_end=START), security=security_for(api, HOME))
+    second_id = api.evolve(HOME, **vars(task_options(span_end=START)),
+                           security=security_for(api, HOME))
     second = api.job_status(second_id, security=security_for(api, HOME))
     retired = api.get(parent_id, HOME, security=security_for(api, HOME))
     rebuilt = [api.get(leaf.id, leaf.scope, security=security_for(api, HOME)) for leaf in leaves]
@@ -75,7 +76,7 @@ def test_one_home_task_can_build_separate_parents_for_multiple_sessions(api) -> 
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     first = write_snapshot(api, 0, "first-session")
     second = write_snapshot(api, 1, "second-session")
-    job_id = api.evolve_v2(HOME, task_options(), security=security_for(api, HOME))
+    job_id = api.evolve(HOME, **vars(task_options()), security=security_for(api, HOME))
     status = api.job_status(job_id, security=security_for(api, HOME))
     first_stored = api.get(first.id, first.scope, security=security_for(api, HOME))
     second_stored = api.get(second.id, second.scope, security=security_for(api, HOME))
@@ -97,15 +98,15 @@ def test_one_home_task_can_build_separate_parents_for_multiple_sessions(api) -> 
 def test_invalid_hierarchy_options_are_rejected_before_submission(api, overrides) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     with pytest.raises(ValidationError):
-        api.evolve_v2(HOME, task_options(**overrides), security=security_for(api, HOME))
+        api.evolve(HOME, **vars(task_options(**overrides)), security=security_for(api, HOME))
 
 
 @pytest.mark.parametrize("key", ["author_principal", "memory_class", "tree_parent_id"])
 def test_parent_metadata_cannot_forge_kernel_fields(api, key) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     with pytest.raises(ValidationError, match="内核保留 key"):
-        api.evolve_v2(HOME, task_options(metadata={key: "forged"}),
-                      security=security_for(api, HOME))
+        api.evolve(HOME, **vars(task_options(metadata={key: "forged"})),
+                   security=security_for(api, HOME))
 
 
 def test_non_hierarchy_mode_cannot_silently_ignore_hierarchy_options(api) -> None:
@@ -113,12 +114,12 @@ def test_non_hierarchy_mode_cannot_silently_ignore_hierarchy_options(api) -> Non
         mode=EvolveMode.EXTRACT, hierarchy_options=task_options().hierarchy_options,
     )
     with pytest.raises(ValidationError):
-        api.evolve_v2(HOME, options, security=security_for(api, HOME))
+        api.evolve(HOME, **vars(options), security=security_for(api, HOME))
 
 
 def test_no_candidates_is_an_explicit_successful_noop(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
-    job_id = api.evolve_v2(HOME, task_options(), security=security_for(api, HOME))
+    job_id = api.evolve(HOME, **vars(task_options()), security=security_for(api, HOME))
     status = api.job_status(job_id, security=security_for(api, HOME))
     assert status.status is JobStatus.SUCCEEDED
     assert status.detail["reason"] == "no candidates"
@@ -136,7 +137,7 @@ def test_api_reports_failed_when_parent_index_write_requires_repair(api, monkeyp
         original_build(builder, units, mode=mode)
 
     monkeypatch.setattr(HybridIndexBuilder, "build", fail_parent_retrieval_index)
-    job_id = api.evolve_v2(HOME, task_options(), security=security_for(api, HOME))
+    job_id = api.evolve(HOME, **vars(task_options()), security=security_for(api, HOME))
     status = api.job_status(job_id, security=security_for(api, HOME))
     stored = api.get(leaf.id, leaf.scope, security=security_for(api, HOME))
     parent = api.get(stored.hierarchy.parent_id, HOME, security=security_for(api, HOME))
@@ -158,20 +159,23 @@ def test_build_reuse_and_explicit_mixed_rebuild(engine_kind, depth):
         options = task_options(depth)
         options = replace(options, reuse_existing=True)
         security = security_for(api, HOME)
-        first = api.job_status(api.evolve_v2(HOME, options, security=security), security=security)
+        first = api.job_status(api.evolve(HOME, **vars(options), security=security),
+                               security=security)
         assert first.status is JobStatus.SUCCEEDED, first.detail
         assert int(first.detail["created_parent_count"]) == depth + 1
-        reused = api.job_status(api.evolve_v2(HOME, options, security=security), security=security)
+        reused = api.job_status(api.evolve(HOME, **vars(options), security=security),
+                                security=security)
         assert reused.status is JobStatus.SUCCEEDED, reused.detail
         assert reused.detail["reused"] == "true" and reused.detail["built"] == "false"
         assert reused.detail["created_parent_count"] == "0"
         leaves.append(write_snapshot(api, 1, "c"))
-        rejected_id = api.evolve_v2(HOME, options, security=security)
+        rejected_id = api.evolve(HOME, **vars(options), security=security)
         rejected = api.job_status(rejected_id, security=security)
         assert rejected.status is JobStatus.FAILED
         assert "混合" in rejected.detail["error"]
         options = replace(options, reuse_existing=False)
-        rebuilt = api.job_status(api.evolve_v2(HOME, options, security=security), security=security)
+        rebuilt = api.job_status(api.evolve(HOME, **vars(options), security=security),
+                                 security=security)
         assert rebuilt.status is JobStatus.SUCCEEDED, rebuilt.detail
         assert int(rebuilt.detail["replaced_parent_count"]) == depth + 1
         for leaf in leaves:
@@ -194,7 +198,7 @@ def test_incomplete_time_is_preserved_and_only_skipped_during_build(api, with_va
     eligible = write_snapshot(api, 0) if with_valid else None
     options = task_options()
     options = replace(options, reuse_existing=True)
-    info = api.job_status(api.evolve_v2(HOME, options, security=security), security=security)
+    info = api.job_status(api.evolve(HOME, **vars(options), security=security), security=security)
     assert info.status is JobStatus.SUCCEEDED, info.detail
     assert info.detail["skipped_incomplete_time_count"] == "2"
     assert info.detail["created_parent_count"] == ("1" if with_valid else "0")
@@ -222,17 +226,20 @@ def test_disabled_or_missing_switch_skips_before_optional_model_resolution(polic
         api = runtime.api
         security = security_for(api, HOME)
         options = task_options()
-        info = api.job_status(api.evolve_v2(HOME, options, security=security), security=security)
+        info = api.job_status(api.evolve(HOME, **vars(options), security=security),
+                              security=security)
         assert info.status is JobStatus.SUCCEEDED
         assert info.detail["reason"] == "hierarchy_disabled"
-        with pytest.raises(ValidationError):
-            api.evolve_v2(HOME, task_options(span_start=None), security=security)
+        for tree_options in (None, task_options(span_start=None).hierarchy_options):
+            job_id = api.evolve(HOME, EvolveMode.HIERARCHY, hierarchy_options=tree_options,
+                                security=security)
+            assert api.job_status(job_id, security=security).detail["skipped"] == "true"
         if "hierarchy.enabled" not in policies:
             return
         api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
         write_snapshot(api, 0, "a")
         write_snapshot(api, 1, "b")
-        failed = api.job_status(api.evolve_v2(HOME, task_options(3), security=security),
+        failed = api.job_status(api.evolve(HOME, **vars(task_options(3)), security=security),
                                 security=security)
         assert failed.status is JobStatus.FAILED
         assert "not_installed_optional_embedder" in failed.detail["error"]
@@ -240,18 +247,22 @@ def test_disabled_or_missing_switch_skips_before_optional_model_resolution(polic
         runtime.close()
 
 
-def test_normal_v2_keeps_legacy_candidate_and_dreaming_arguments(api, monkeypatch):
+@pytest.mark.parametrize("enabled", [False, True])
+def test_normal_evolve_keeps_legacy_candidate_and_dreaming_arguments(api, monkeypatch, enabled):
     from unittest.mock import Mock
 
-    legacy = Mock(return_value="existing-job")
-    monkeypatch.setattr(api, "evolve", legacy)
+    from jiuwen_memory.api.memory_api_impl.dreaming import DreamingCoordinator
+
+    api.admin_set("hierarchy.enabled", str(enabled).lower(), security=ROOT_SECURITY)
+    register = Mock(return_value="existing-job")
+    monkeypatch.setattr(DreamingCoordinator, "register", register)
     security = security_for(api, HOME)
-    options = EvolveTaskOptions(EvolveMode.EXTRACT, candidate={"source": "custom"},
-                                dreaming=True, interval=60)
-    assert api.evolve_v2(HOME, options, security=security) == "existing-job"
-    legacy.assert_called_once_with(HOME, EvolveMode.EXTRACT, options.channel,
-                                   candidate=options.candidate, dreaming=True,
-                                   interval=60, security=security)
+    candidate = {"source": "custom"}
+    assert api.evolve(HOME, EvolveMode.EXTRACT, candidate=candidate, dreaming=True,
+                      interval=60, security=security) == "existing-job"
+    assert register.call_args.kwargs["candidate"] == candidate
+    assert register.call_args.kwargs["interval"] == 60
+    assert register.call_args.kwargs["security"] is security
 
 
 def test_hierarchy_uses_current_authorizer_routing_boundary():
@@ -267,19 +278,22 @@ def test_hierarchy_uses_current_authorizer_routing_boundary():
     runtime = assemble_runtime(config=config)
     try:
         with pytest.raises(ValidationError, match="权限路由"):
-            runtime.api.evolve_v2(HOME, task_options(), security=security_for(runtime.api, HOME))
+            runtime.api.evolve(HOME, **vars(task_options()),
+                               security=security_for(runtime.api, HOME))
     finally:
         runtime.close()
 
 
-def test_write_grant_without_update_cannot_reparent(api):
+@pytest.mark.parametrize("enabled", [False, True])
+def test_write_grant_without_update_cannot_reparent(api, enabled):
     from jiuwen_memory.api import Action, Grant, PermissionDeniedError
 
+    api.admin_set("hierarchy.enabled", str(enabled).lower(), security=ROOT_SECURITY)
     visitor = Scope(org=HOME.org, user="visitor")
     api.grant(Grant(grantor=HOME, grantee=visitor, actions=[Action.WRITE]),
               security=ROOT_SECURITY)
     with pytest.raises(PermissionDeniedError):
-        api.evolve_v2(HOME, task_options(), security=security_for(api, visitor))
+        api.evolve(HOME, **vars(task_options()), security=security_for(api, visitor))
 
 
 @pytest.mark.parametrize("scheduler_kind", ["in_process", "async_timer"])
@@ -298,7 +312,7 @@ def test_builtin_four_layer_request_and_job_status(scheduler_kind):
         options = EvolveTaskOptions.time_hierarchy(
             HOME, span_start=START, span_end=START + timedelta(minutes=1), reuse_existing=True,
         )
-        job_id = api.evolve_v2(HOME, options, security=security)
+        job_id = api.evolve(HOME, **vars(options), security=security)
         deadline = time.monotonic() + 5
         while True:
             info = api.job_status(job_id, security=security)
@@ -313,3 +327,37 @@ def test_builtin_four_layer_request_and_job_status(scheduler_kind):
             assert stored.hierarchy.parent_id and stored.temporal == leaf.temporal
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("provided", [False, True])
+def test_disabled_hierarchy_ignores_options_and_preserves_existing_tree(api, provided):
+    security = security_for(api, HOME)
+    leaf = write_snapshot(api, 0)
+    api.evolve(HOME, **vars(task_options()), security=security)
+    before = api.list(HOME, security=security).items
+    api.admin_set("hierarchy.enabled", "false", security=ROOT_SECURITY)
+    options = task_options(span_start=None).hierarchy_options if provided else None
+    original = deepcopy(options)
+    job_id = api.evolve(HOME, EvolveMode.HIERARCHY, hierarchy_options=options,
+                        reuse_existing="ignored while disabled", security=security)
+    info = api.job_status(job_id, security=security)
+    assert info.status is JobStatus.SUCCEEDED and info.detail["skipped"] == "true"
+    assert api.list(HOME, security=security).items == before
+    assert options == original
+    assert api.get(leaf.id, leaf.scope, security=security).hierarchy.parent_id
+
+
+def test_disabled_normal_evolve_ignores_tree_parameters(api, monkeypatch):
+    from unittest.mock import Mock
+
+    from jiuwen_memory.api.memory_api_impl.dreaming import DreamingCoordinator
+
+    api.admin_set("hierarchy.enabled", "false", security=ROOT_SECURITY)
+    register = Mock(return_value="normal-job")
+    monkeypatch.setattr(DreamingCoordinator, "register", register)
+    result = api.evolve(HOME, EvolveMode.EXTRACT, dreaming=True, interval=60,
+                        hierarchy_options=task_options().hierarchy_options,
+                        reuse_existing=True, security=security_for(api, HOME))
+    assert result == "normal-job"
+    assert register.call_args.kwargs["mode"] is EvolveMode.EXTRACT
+    assert "hierarchy_options" not in register.call_args.kwargs

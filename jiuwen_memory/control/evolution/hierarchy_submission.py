@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.construction.evolver import EvolveMode, Evolver
-from jiuwen_memory.control.evolution.validation import validate_evolve_options
+from jiuwen_memory.control.evolution.validation import (
+    validate_evolve_options,
+    validate_evolve_request,
+)
 from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler
@@ -38,7 +41,7 @@ class SkippedHierarchyJob(Job):
 def skipped_hierarchy_job(
     scope: Scope, options: EvolveTaskOptions, policy: PolicyManager | None,
 ) -> SkippedHierarchyJob | None:
-    """调用者先校验请求；关闭分支先于真实 JobFactory/Evolver/KV 的读取。"""
+    """调用者先校验基础请求；关闭分支先于树参数及构建依赖的校验。"""
     if options.mode is not EvolveMode.HIERARCHY:
         return None
     if policy is not None and (
@@ -64,12 +67,13 @@ async def submit_hierarchy(
 ) -> str:
     """显式建树在普通演进链旁分流，关闭时不读取候选或解析构建依赖。"""
     scope, options = deepcopy(scope), deepcopy(options)
-    validate_evolve_options(scope, options)
+    validate_evolve_request(scope, options)
     if options.mode is not EvolveMode.HIERARCHY:
         raise ValidationError("建树提交只接受 HIERARCHY 模式")
     skipped = skipped_hierarchy_job(scope, options, dependencies.policy)
     if skipped is not None:
         return await dependencies.scheduler.submit(skipped, options.channel)
+    validate_evolve_options(scope, options)
     if dependencies.job_factory is None or dependencies.evolver is None:
         raise ValidationError("建树需要配置 JobFactory 与 Evolver")
     job = dependencies.job_factory.get_job(

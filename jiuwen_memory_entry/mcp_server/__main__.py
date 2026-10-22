@@ -222,6 +222,13 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
     disclosure: str = "l0",
     with_trajectory: bool = False,
     ctx: Context = None,
+    *,
+    hierarchy_kind: str | None = "time",
+    hierarchy_role: str | None = "time_span",
+    span_start: str | None = None,
+    span_end: str | None = None,
+    expand_depth: int = 1,
+    rollup: bool = True,
 ) -> dict:
     """
     按「语义 + 关键词」双路混合检索记忆。
@@ -241,6 +248,10 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
         注意三层字段（abstract/overview/content）恒同时返回，本参数只决定 level
         标记的主层级，不会从返回里去掉全文。
     with_trajectory: true 时附带检索轨迹（各通道召回与融合得分）。
+    hierarchy_kind/hierarchy_role: 树类型与目标层级，默认 time/time_span。
+    span_start/span_end: 可选成对 ISO 8601 结构时间区间。
+    expand_depth: 子树展开深度，默认 1，0 不展开。
+    rollup: 是否将子节点分数上卷，默认 true。关闭 hierarchy.enabled 时忽略所有树参数。
     """
     return await _invoke(
         "search",
@@ -252,18 +263,11 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
             "filters": filters,
             "disclosure": disclosure,
             "with_trajectory": with_trajectory,
+            "hierarchy_kind": hierarchy_kind, "hierarchy_role": hierarchy_role,
+            "span_start": span_start, "span_end": span_end,
+            "expand_depth": expand_depth, "rollup": rollup,
         },
         context=ctx,
-    )
-
-
-@mcp.tool()
-async def memory_search_v2(
-    query: str, context: dict, options: dict | None = None, ctx: Context = None,
-) -> dict:
-    """按统一选项检索；options 可包含层级、结构时间和普通搜索选项。"""
-    return await _invoke(
-        "search_v2", {"query": query, "context": context, "options": options}, context=ctx,
     )
 
 
@@ -353,16 +357,22 @@ async def memory_evolve(  # pylint: disable=too-many-arguments,huawei-too-many-a
     interval: int = 0,
     candidate: dict | None = None,
     ctx: Context = None,
+    *,
+    hierarchy_options: dict | None = None,
+    reuse_existing: bool = False,
 ) -> str | None:
     """
     触发记忆演进，返回后台任务 id（job_id）；注销时返回 None。
 
     mode: 必填——extract 抽取派生 / associate 建立关联 / consolidate 巩固升华 /
-        forget 清理过期。
+        forget 清理过期 / hierarchy 显式建树。
     channel: background（默认，离线重计算）/ hot（在线低时延轻量更新）。
     dreaming: 缺省立即执行；true 注册定时；false 幂等注销。
     interval: 定时周期（秒），dreaming=true 时必须大于 0。
     candidate: 可选候选源 dict DSL。
+    hierarchy_options: hierarchy 模式的建树选项，含 kind/leaf_role/parent_roles/
+        tree_home_scope/span_start/span_end。树开关关闭时忽略并成功跳过。
+    reuse_existing: 是否复用完整旧树，默认 false；仅树开关开启的 hierarchy 模式生效。
     """
     return await _invoke(
         "evolve",
@@ -373,15 +383,10 @@ async def memory_evolve(  # pylint: disable=too-many-arguments,huawei-too-many-a
             "dreaming": dreaming,
             "interval": interval,
             "candidate": candidate,
+            "hierarchy_options": hierarchy_options, "reuse_existing": reuse_existing,
         },
         context=ctx,
     )
-
-
-@mcp.tool()
-async def memory_evolve_v2(scope: dict, options: dict, ctx: Context = None) -> str | None:
-    """显式建树或普通演进；options 为 EvolveTaskOptions，返回可查询的 job_id。"""
-    return await _invoke("evolve_v2", {"scope": scope, "options": options}, context=ctx)
 
 
 @mcp.tool()

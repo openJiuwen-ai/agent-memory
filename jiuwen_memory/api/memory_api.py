@@ -32,12 +32,15 @@ from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
     FilterExpr,
+    HierarchyKind,
+    HierarchyRole,
     MemoryUnit,
     MetadataValueType,
     Modality,
     Scope,
 )
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
     BatchWriteItem,
     BatchWriteResult,
@@ -57,10 +60,7 @@ from jiuwen_memory.control import (
     SpaceStatus,
     SpaceUsage,
 )
-from jiuwen_memory.control.types import EvolveTaskOptions
 from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
-
-from .search_options import SearchOptions
 
 
 class MemoryAPI(ABC):
@@ -190,7 +190,8 @@ class MemoryAPI(ABC):
         """异步批量写入；语义与 :meth:`batch_add` 一致。"""
 
     @abstractmethod
-    def search(
+    # 平铺参数保留公开接口兼容性；内部通过 SearchOptions 聚合。
+    def search(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         query: str,
         context: Context,
@@ -201,6 +202,12 @@ class MemoryAPI(ABC):
         top_k: int = 10,
         disclosure: DisclosureLevel = DisclosureLevel.L0,
         with_trajectory: bool = False,
+        hierarchy_kind: HierarchyKind | None = HierarchyKind.TIME,
+        hierarchy_role: HierarchyRole | None = HierarchyRole.TIME_SPAN,
+        span_start: datetime | None = None,
+        span_end: datetime | None = None,
+        expand_depth: int = 1,
+        rollup: bool = True,
     ) -> RetrievalResult:
         """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。
 
@@ -223,6 +230,8 @@ class MemoryAPI(ABC):
         - 时延：随候选空间数线性增长。召回按并发写就，但引擎侧 ``recall`` 当前是同步实现、
           实际顺序执行，候选集上限（``space.fanout_limit``）因而同时是时延上界的约束项。
 
+        树参数默认 TIME/time_span、一级展开与上卷；显式 0/False 原样生效。
+        hierarchy.enabled 关闭或缺失时忽略所有树参数，执行普通查询；保留已有过滤和权限。
         取同步形态：多空间召回在实现内部完成，不向调用方暴露异步契约。
         """
 
@@ -246,17 +255,6 @@ class MemoryAPI(ABC):
         ``/messages/`` 下的 infer 原文缓存。``security`` 为本次请求的安全上下文，
         本层据 ``scope`` 鉴权 READ 后委托 Engine。返回当前页 items 和分页前匹配总数 count。
         """
-
-    @abstractmethod
-    def search_v2(
-        self,
-        query: str,
-        context: Context,
-        options: SearchOptions | None = None,
-        *,
-        security: RequestSecurityContext,
-    ) -> RetrievalResult:
-        """按统一选项检索；Context 指定范围、跨空间候选与调用级扩展。"""
 
     @abstractmethod
     def get(
@@ -293,7 +291,8 @@ class MemoryAPI(ABC):
         """
 
     @abstractmethod
-    def evolve(
+    # 树选项追加在旧参数之后；不改变原有位置参数与默认值。
+    def evolve(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         scope: Scope,
         mode: EvolveMode,
@@ -303,23 +302,23 @@ class MemoryAPI(ABC):
         dreaming: bool | None = None,
         interval: int = 0,
         security: RequestSecurityContext,
+        hierarchy_options: HierarchyComposeOptions | None = None,
+        reuse_existing: bool = False,
     ) -> str | None:
         """触发演进（extract/associate/consolidate/forget）：``scope`` 为演进
         目标范围、``security`` 为本次请求的安全上下文（本层据二者鉴权）；返回任务
         id，状态用 :meth:`job_status` 查询。索引维护不在此——它随 add/update/delete
         自动跟进。
 
+        HIERARCHY 使用 hierarchy_options 和 reuse_existing 显式建树，不接受普通模式的
+        candidate/dreaming/interval。树开关关闭时忽略树选项并返回成功跳过任务；基础请求
+        校验、WRITE/UPDATE 授权和空间可写检查仍执行。
+
         F04 dreaming 三态：``dreaming=None`` 立即跑（一次性任务，``candidate``
         可选四类候选源，缺省谓词全量源）；``dreaming=True`` 注册定时
         （``interval>0``，KV 持久化，重启恢复）；``dreaming=False`` 注销
         （命中 (scope, mode) 注册则取消并删除，返回 None）。
         """
-
-    @abstractmethod
-    def evolve_v2(
-        self, scope: Scope, options: EvolveTaskOptions, *, security: RequestSecurityContext,
-    ) -> str | None:
-        """提交结构或普通演进；建树使用显式区间，普通模式沿用 evolve 的所有参数。"""
 
     @abstractmethod
     def check_write(

@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,7 +15,6 @@ from jiuwen_memory.common.errors import (
     BackendError,
     NotFoundError,
     PermissionDeniedError,
-    PolicyError,
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
@@ -28,6 +27,8 @@ from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
     FilterExpr,
+    HierarchyKind,
+    HierarchyRole,
     MemoryUnit,
     Scope,
     and_merge,
@@ -35,12 +36,16 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.construction.router import (
     narrow_dims_of,
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
-from jiuwen_memory.control.evolution.validation import validate_evolve_options
+from jiuwen_memory.control.evolution.validation import (
+    validate_evolve_options,
+    validate_evolve_request,
+)
 from jiuwen_memory.control.types import (
     Channel,
     DeleteSelector,
@@ -72,7 +77,6 @@ from .local_support import (
     _unit_lookup_permission_context,
     _unit_snapshot_permission_context,
 )
-from .search_defaults import with_hierarchy_defaults
 
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
@@ -108,7 +112,8 @@ def _copy_search_extensions(extensions: dict[str, Any]) -> dict[str, Any]:
 class QueryOpsMixin:
     """Data-plane read/update/delete/evolve after PEP."""
 
-    def search(
+    # 与公开 MemoryAPI 保持平铺签名，内部以选项对象传递。
+    def search(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         query: str,
         context: Context,
@@ -119,17 +124,25 @@ class QueryOpsMixin:
         top_k: int = 10,
         disclosure: DisclosureLevel = DisclosureLevel.L0,
         with_trajectory: bool = False,
+        hierarchy_kind: HierarchyKind | None = HierarchyKind.TIME,
+        hierarchy_role: HierarchyRole | None = HierarchyRole.TIME_SPAN,
+        span_start: datetime | None = None,
+        span_end: datetime | None = None,
+        expand_depth: int = 1,
+        rollup: bool = True,
     ) -> RetrievalResult:
         """将原有平铺参数装成选项，委托统一查询入口。"""
-        return self.search_v2(
+        return self._search(
             query, context, SearchOptions(
                 filters=filters, as_of=as_of, top_k=top_k, disclosure=disclosure,
                 with_trajectory=with_trajectory,
+                hierarchy_kind=hierarchy_kind, hierarchy_role=hierarchy_role,
+                span_start=span_start, span_end=span_end, expand_depth=expand_depth, rollup=rollup,
             ), security=security,
         )
 
-    def search_v2(
-        self, query: str, context: Context, options: SearchOptions | None = None,
+    def _search(
+        self, query: str, context: Context, options: SearchOptions,
         *, security: RequestSecurityContext,
     ) -> RetrievalResult:
         """按统一选项检索；保留现有单空间与跨空间授权链路。"""
@@ -137,19 +150,16 @@ class QueryOpsMixin:
             scope=deepcopy(context.scope),
             extensions=_copy_search_extensions(dict(context.extensions)),
         )
-        if options is None:
-            options = SearchOptions()
-        elif not isinstance(options, SearchOptions):
-            raise ValidationError("options 必须是 SearchOptions")
         # 读取默认策略也是业务组件访问，须先验证请求上下文来源。
         self._require_trusted_context(
             security, _TrustedRequestTarget(Action.READ, "search", context.scope)
         )
-        options = with_hierarchy_defaults(
-            deepcopy(options),
-            enabled=str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower()
-            == "true",
-        )
+        options = deepcopy(options)
+        if not self._hierarchy_enabled():
+            options = replace(
+                options, hierarchy_kind=None, hierarchy_role=None,
+                span_start=None, span_end=None, expand_depth=0, rollup=False,
+            )
         hierarchy = HierarchyQuery.from_query(options)
         identity = security.auth.actor
         # Context 在边界处拆包：scope 照旧作独立轴下推（鉴权 + 检索），
@@ -214,7 +224,6 @@ class QueryOpsMixin:
         )
         if system_clauses:
             rq.filters = and_merge(rq.filters, system_clauses)
-        self._ensure_hierarchy_search_enabled(rq)
         result = asyncio.run(self._queries.recall(context.scope, rq))
         self._log(identity, "search", target_scope=context.scope, detail=auth)
         return result
@@ -346,7 +355,6 @@ class QueryOpsMixin:
         # 查询骨架装配一次，逐空间只差取数上界与本空间谓词，两项都由控制层补齐。
         # 逐空间构造 RetrievalQuery 的循环本身就是取数编排，不留本层。
         # 同步桥接留本层（S02「同步/异步桥接」）：控制层给协程，本层 asyncio.run。
-        self._ensure_hierarchy_search_enabled(retrieval_query)
         merged, space_failures = asyncio.run(
             collective.recall_spaces(
                 targets,
@@ -389,12 +397,9 @@ class QueryOpsMixin:
         )
         return merged
 
-    def _ensure_hierarchy_search_enabled(self, retrieval_query: RetrievalQuery) -> None:
-        """层级条件仅在特性开启时生效；普通查询不读取此开关。"""
-        if retrieval_query.hierarchy_kind is None:
-            return
-        if str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower() != "true":
-            raise PolicyError("hierarchy.enabled=false：层级检索功能未开启")
+    def _hierarchy_enabled(self) -> bool:
+        """仅在可信请求通过校验后读取运行时树总开关。"""
+        return str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower() == "true"
 
     def _search_candidates(
         self, identity: Scope, org: str, spaces: list[str], *, audit_actor: Scope | None = None
@@ -691,17 +696,12 @@ class QueryOpsMixin:
         )
         return deleted
 
-    def evolve_v2(
+    def _evolve_hierarchy(
         self, scope: Scope, options: EvolveTaskOptions, *, security: RequestSecurityContext,
     ) -> str | None:
-        """新增结构任务入口；普通演进继续使用原有候选源与 dreaming 鉴权链。"""
+        """建树保留 WRITE/UPDATE 授权；关闭后只提交成功的跳过任务。"""
         scope, options = deepcopy(scope), deepcopy(options)
-        validate_evolve_options(scope, options)
-        if options.mode is not EvolveMode.HIERARCHY:
-            return self.evolve(
-                scope, options.mode, options.channel, candidate=options.candidate,
-                dreaming=options.dreaming, interval=options.interval, security=security,
-            )
+        validate_evolve_request(scope, options)
         auth = self._authorize(
             security, scope, Action.WRITE, "evolve",
             space_action=_evolve_space_action(options.mode),
@@ -709,16 +709,21 @@ class QueryOpsMixin:
         self._ensure_space_writable(scope)
         self._authorize(security, scope, Action.UPDATE, "evolve",
                         space_action=_evolve_space_action(options.mode))
-        if self._authorizer.routing_fields():
-            raise ValidationError("HIERARCHY 暂不支持权限路由或逐候选鉴权")
-        _reject_kernel_system_metadata(options.hierarchy_options.metadata)
-        _reject_route_tag_keys(options.hierarchy_options.metadata, self._route_table.tag_keys)
+        if self._hierarchy_enabled():
+            validate_evolve_options(scope, options)
+            if self._authorizer.routing_fields():
+                raise ValidationError("HIERARCHY 暂不支持权限路由或逐候选鉴权")
+            _reject_kernel_system_metadata(options.hierarchy_options.metadata)
+            _reject_route_tag_keys(options.hierarchy_options.metadata, self._route_table.tag_keys)
+        else:
+            options = replace(options, hierarchy_options=None, reuse_existing=False)
         job_id = asyncio.run(self._commands.evolve_v2(scope, options))
         self._log(security.auth.actor, "evolve", target_scope=scope,
                   detail={**auth, "job_id": job_id})
         return job_id
 
-    def evolve(
+    # 新选项追加在旧参数之后，保持公开签名兼容。
+    def evolve(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         scope: Scope,
         mode: EvolveMode,
@@ -728,9 +733,17 @@ class QueryOpsMixin:
         dreaming: bool | None = None,
         interval: int = 0,
         security: RequestSecurityContext,
+        hierarchy_options: HierarchyComposeOptions | None = None,
+        reuse_existing: bool = False,
     ) -> str | None:
         if mode is EvolveMode.HIERARCHY:
-            raise ValidationError("显式建树请调用 evolve_v2 并提供 hierarchy_options")
+            return self._evolve_hierarchy(
+                scope, EvolveTaskOptions(
+                    mode=mode, channel=channel, candidate=candidate, dreaming=dreaming,
+                    interval=interval, hierarchy_options=hierarchy_options,
+                    reuse_existing=reuse_existing,
+                ), security=security,
+            )
         identity = security.auth.actor
         # 注册态 interval 语义前置校验（鉴权前 fail fast，避免越权探测报错差异）。
         if dreaming is True and interval <= 0:
@@ -743,6 +756,11 @@ class QueryOpsMixin:
             space_action=_evolve_space_action(mode),
         )
         self._ensure_space_writable(scope)
+        if (
+            (hierarchy_options is not None or reuse_existing is not False)
+            and self._hierarchy_enabled()
+        ):
+            raise ValidationError("仅 HIERARCHY 接受 hierarchy_options/reuse_existing")
         # 三态分发（F04 D2）：False=幂等注销（不命中不退化）；True=注册；
         # None=立即执行。持续授权（每 tick 复验）与 fan-out 逐桶裁决都在 API 层
         # 的 DreamingCoordinator（PEP 边界，S03）——Engine / EvolveJob 纯执行。
