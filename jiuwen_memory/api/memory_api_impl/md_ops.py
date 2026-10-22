@@ -36,7 +36,7 @@ class MdOpsMixin:
         依据，不是条目属性），与 ``add`` 出口同处置。
         """
         identity = security.auth.actor
-        auth = self._authorize(identity, context.scope, Action.READ, "read_md_file")
+        auth = self._authorize(security, context.scope, Action.READ, "read_md_file")
         units = asyncio.run(
             self._queries.read_md_file(context, md_filename, line_range=line_range)
         )
@@ -61,7 +61,7 @@ class MdOpsMixin:
         新 unit（旧版已标 SUPERSEDED）并剥瞬态键。
         """
         identity = security.auth.actor
-        auth = self._authorize(identity, context.scope, Action.WRITE, "edit_md_file")
+        auth = self._authorize(security, context.scope, Action.WRITE, "edit_md_file")
         self._ensure_space_writable(context.scope)
         units = asyncio.run(
             self._commands.edit_md_file(context, md_filename, old_text, new_text)

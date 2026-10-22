@@ -20,10 +20,12 @@ from jiuwen_memory.api import assemble
 from jiuwen_memory.api.memory_api import MemoryAPI
 from jiuwen_memory.api.memory_api_impl.local_memory_api import LocalMemoryAPI
 from jiuwen_memory.api.memory_api_impl.md_ops import MdOpsMixin
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.errors import PermissionDeniedError
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.space_roles import ENTRY_RULES, SpaceAction, SpaceAxis
 from jiuwen_memory.common.type_def import COORDS_KEY, Context, MemoryUnit, Scope, Segment
 from jiuwen_memory.control.application import MemoryCommandService, MemoryQueryService
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -120,7 +122,7 @@ def test_no_duplicate_method_names_in_class_body() -> None:
 def test_read_md_file_authorizes_read_and_delegates() -> None:
     """PEP READ 通过 → 委托 _queries.read_md_file → 返回 MemoryUnit list。"""
     api, fake = _api_with_fake_engine()
-    security = legacy_request_context(SCOPE)
+    security = internal_context(ScopedAuthenticator(SCOPE))
     units = api.read_md_file(_context(), "MEMORY.md", security=security, line_range=(1, 5))
 
     assert len(units) == 1
@@ -132,7 +134,7 @@ def test_read_md_file_authorizes_read_and_delegates() -> None:
 def test_read_md_file_strips_transient_metadata() -> None:
     """返回前剥瞬态键：coords 剥除（路径解析依据，不是条目属性），非瞬态键保留。"""
     api, _ = _api_with_fake_engine()
-    security = legacy_request_context(SCOPE)
+    security = internal_context(ScopedAuthenticator(SCOPE))
     units = api.read_md_file(_context(), "MEMORY.md", security=security)
 
     meta = units[0].system_metadata or {}
@@ -143,7 +145,7 @@ def test_read_md_file_strips_transient_metadata() -> None:
 def test_read_md_file_default_line_range_none() -> None:
     """line_range 默认 None 透传。"""
     api, fake = _api_with_fake_engine()
-    security = legacy_request_context(SCOPE)
+    security = internal_context(ScopedAuthenticator(SCOPE))
     api.read_md_file(_context(), "USER.md", security=security)
     assert fake.calls[-1] == ("read", "USER.md", None)
 
@@ -154,7 +156,7 @@ def test_read_md_file_default_line_range_none() -> None:
 def test_edit_md_file_authorizes_write_and_delegates() -> None:
     """PEP WRITE 通过 + _ensure_space_writable → 委托 _commands.edit_md_file → 返回新 unit。"""
     api, fake = _api_with_fake_engine()
-    security = legacy_request_context(SCOPE)
+    security = internal_context(ScopedAuthenticator(SCOPE))
     units = api.edit_md_file(
         _context(), "MEMORY.md", "hello", "hello NEW", security=security
     )
@@ -168,25 +170,24 @@ def test_edit_md_file_authorizes_write_and_delegates() -> None:
 def test_edit_md_file_strips_transient_metadata() -> None:
     """edit 返回前同样剥瞬态键（与 add 出口同处置）。"""
     api, _ = _api_with_fake_engine()
-    security = legacy_request_context(SCOPE)
+    security = internal_context(ScopedAuthenticator(SCOPE))
     units = api.edit_md_file(_context(), "MEMORY.md", "hello", "x", security=security)
 
     meta = units[0].system_metadata or {}
     assert COORDS_KEY not in meta, f"transient coords not stripped on edit: {meta}"
 
 
-def test_read_md_file_denies_without_security_actor() -> None:
-    """鉴权是必经环节：无 actor 的 security 无法通过 READ（allow_all 仍需 actor 合法）。
+def test_read_md_file_denies_without_authorization() -> None:
+    """鉴权是必经环节：跨主体 READ 被 PEP 拒绝，且拒绝时不委托 Engine。
 
-    用一个不可达 scope（不同 org）验证鉴权轴是 context.scope——allow_all 放行所有，
-    但这里验证调用链路在鉴权后才到委托（fake.calls 为空说明鉴权先于委托）。
-    用真实 allow_all 装配时跨 scope 也放行，故本用例验证的是「鉴权执行过」而非「拒绝」：
-    让 fake 记录调用，确认鉴权通过后才委托。
+    mem2.0 起 assemble() 装配的是真实角色鉴权（非旧版 allow-all）：一个 user 读不到
+    另一个 user 的 scope。用不同 user（不同 org）验证跨主体读取被拒，且拒绝发生在
+    委托之前（fake.calls 为空说明 PEP 先于委托拦截）。
     """
     api, fake = _api_with_fake_engine()
-    security = legacy_request_context(Scope(org="other-org"))
-    # allow_all 放行跨 org，但验证鉴权后委托发生
-    api.read_md_file(
-        Context(scope=Scope(org="other-org"), extensions={}), "MEMORY.md", security=security
-    )
-    assert len(fake.calls) == 1, "delegation should happen after PEP passes"
+    security = internal_context(ScopedAuthenticator(Scope(org="other-org", user="u2")))
+    with pytest.raises(PermissionDeniedError):
+        api.read_md_file(
+            Context(scope=SCOPE, extensions={}), "MEMORY.md", security=security
+        )
+    assert len(fake.calls) == 0, "PEP 拒绝时不得委托 Engine"

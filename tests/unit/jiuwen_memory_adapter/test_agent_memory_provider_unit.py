@@ -21,9 +21,15 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+
+from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory.api import Surface
+from jiuwen_memory.common.security import new_request_context
+from jiuwen_memory.common.security.types import AuthContext, Role
 
 # 本文件 -> tests/unit/jiuwen_memory_adapter -> tests/unit -> tests -> 仓库根
 # append（而非 insert(0)）：避免模块重名告警；adapter 作为顶层模块 agent_memory_provider
@@ -37,6 +43,26 @@ if _ADAPTER_DIR.is_dir() and str(_ADAPTER_DIR) not in sys.path:
 from agent_memory_provider import AgentMemoryMemoryProvider, _HttpClient, _recall_filters
 
 pytestmark = pytest.mark.unit
+
+
+def _security_provider(actor: ApiScope, *, role: Role = Role.USER):
+    """测试用可信 security provider：模拟已完成认证的 composition root。
+
+    mem2.0 起进程内模式不从业务 scope 自述身份——actor 只能由注入的可信 provider
+    产出（生产等价物是 API Key / Trusted Gateway 的认证结论）。返回的 callable
+    每次调用给出同一份已认证上下文，与业务 target 无关。
+    """
+    context = new_request_context(
+        AuthContext(
+            actor=actor,
+            role=role,
+            credential_type="internal",
+            auth_method="internal",
+            authenticated_at=datetime.now(UTC),
+        ),
+        surface=Surface.INTERNAL,
+    )
+    return lambda: context
 
 
 @pytest.fixture(autouse=True)
@@ -173,15 +199,27 @@ class TestAvailability:
         provider = AgentMemoryMemoryProvider(base_url="http://127.0.0.1:8137")
         assert provider.is_available() is True
 
-    def test_sdk_mode_needs_config_path(self):
-        provider = AgentMemoryMemoryProvider(config_path="/nonexistent/config.yaml")
+    def test_sdk_mode_needs_config_path_and_security_provider(self):
+        provider = AgentMemoryMemoryProvider(
+            config_path="/nonexistent/config.yaml",
+            security_provider=_security_provider(ApiScope(org="acme", user="alice")),
+        )
         assert provider.is_available() is True
 
-    def test_default_construction_available(self):
+    def test_default_construction_available_with_security_provider(self):
         # [本地修改 2026-10-17] 进程内模式恒可用：默认构造走内置 agent 场景默认装配
-        # （_agent_default_config），is_available() 不再返回 False。
-        provider = AgentMemoryMemoryProvider()
+        # （_agent_default_config）。mem2.0 起还需注入可信 security_provider——
+        # 缺少它 is_available 如实报不可用（fail-closed，见下一测试）。
+        provider = AgentMemoryMemoryProvider(
+            security_provider=_security_provider(ApiScope(org="acme", user="alice")),
+        )
         assert provider.is_available() is True
+
+    def test_in_process_unavailable_without_security_provider(self):
+        # fail-closed：无可信 security provider 的进程内模式不可用（P1-2），
+        # 不得从业务 user_id/scope_id 自述身份降级为可用。
+        provider = AgentMemoryMemoryProvider()
+        assert provider.is_available() is False
 
 
 # --------------------------------------------------------------------------- #
@@ -192,7 +230,11 @@ class TestAvailability:
 class TestSdkMode:
     def test_conclude_then_search_tool_roundtrip(self):
         async def _run() -> None:
-            provider = AgentMemoryMemoryProvider()
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-unit-user"), role=Role.ROOT
+                ),
+            )
             await provider.initialize(user_id="sdk-unit-user", scope_id="tenant-sdk")
             try:
                 result = json.loads(
@@ -214,7 +256,11 @@ class TestSdkMode:
 
     def test_sync_turn_with_envelope_neither_raises_nor_stores_shell(self):
         async def _run() -> None:
-            provider = AgentMemoryMemoryProvider()
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-envelope-user"), role=Role.ROOT
+                ),
+            )
             await provider.initialize(user_id="sdk-envelope-user", scope_id="tenant-sdk")
             try:
                 # 只验证不抛错与不崩溃——infer 派生质量取决于装配的 extractor，
@@ -228,7 +274,11 @@ class TestSdkMode:
 
     def test_sdk_add_returns_add_result_with_rebuilt_content(self):
         async def _run() -> None:
-            provider = AgentMemoryMemoryProvider()
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-add-user"), role=Role.ROOT
+                ),
+            )
             await provider.initialize(user_id="sdk-add-user", scope_id="tenant-sdk")
             try:
                 client = provider._client
