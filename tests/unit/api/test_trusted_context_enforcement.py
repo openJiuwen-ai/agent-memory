@@ -51,6 +51,7 @@ from jiuwen_memory.control import (
     SpacePolicy,
     SpaceSpec,
 )
+from jiuwen_memory.control.types import EvolveTaskOptions
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
@@ -405,6 +406,7 @@ def test_every_public_entry_rejects_before_business_access(
         "patch": SpacePatch() if entry == "update_space" else MemoryPatch(),
         "selector": DeleteSelector(unit_ids=["unknown"]),
         "mode": EvolveMode.EXTRACT,
+        "options": EvolveTaskOptions(mode=EvolveMode.EXTRACT),
         "payload_id": "payload",
         "source_ref": "source",
         "job_id": "unknown",

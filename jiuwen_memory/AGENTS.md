@@ -47,7 +47,7 @@ jiuwen_memory/
 ### construction/ — 构建层
 
 接收接入层产出的 MemoryUnit，经 IndexBuilder 交付本体和索引。可插拔能力包含 Extractor、
-Abstractor、Classifier、Associator、IndexBuilder、Router、Dedup、LayerAnnotator 与 Evolver。
+Abstractor、Classifier、Associator、IndexBuilder、Router、Dedup、LayerAnnotator、Evolver 与 HierarchyComposer。
 
 ### retrieval/ — 检索层
 

@@ -35,6 +35,7 @@ def builder_kind_fixture(request):
 def hierarchy_api_fixture(request, builder_kind):
     components = ("ingestor", "index_builder", "retriever", "scheduler", "evolver", "lifecycle")
     config = {
+        "globals": {"policies": {"hierarchy.enabled": "true"}},
         "engine": {
             "default": {
                 "target": request.param,

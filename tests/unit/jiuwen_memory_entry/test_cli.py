@@ -68,6 +68,8 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
     [
         ("add", {"content": "hello", "scope": SCOPE, "source": "text", "tags": ["a"]}),
         ("search", {"query": "hello", "context": {"scope": SCOPE}, "top_k": 3}),
+        ("search", {"query": "hello", "context": {"scope": SCOPE},
+                    "hierarchy_kind": "time", "top_k": 3}),
         ("get", {"unit_id": "u1", "scope": SCOPE}),
         ("update", {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "new"}}),
         ("delete", {"selector": {"scope": SCOPE, "unit_ids": ["u1"], "mode": "purge"}}),
@@ -85,7 +87,7 @@ def test_cli_builds_same_request_without_defaults(method: str, payload: dict) ->
     for name, value in payload.items():
         encoded = value if contract.type_hints[name] is str else json.dumps(value)
         # Enum parameters use their string values on the command line.
-        if name == "source":
+        if name in {"source", "hierarchy_kind"}:
             encoded = value
         argv.extend([f"--{name}", encoded])
     args = cli.build_parser().parse_args(argv)

@@ -142,3 +142,42 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
 
 9. 查询时间边界的 epoch 投影复用 common/time_utils.epoch_ms；真源时间比较复用 as_utc。
+
+
+### 普通召回的树父隔离
+
+`predicate_builder.build_hierarchy_filters` 对无 kind 请求复用普通父隔离；显式 kind
+则下推结构状态、角色与闭区间条件。common 的 is_retrieval_candidate 在真源层复核。
+不得仅做返回后过滤，否则父节点会抢占普通叶的候选名额。
+
+### 显式层级召回
+
+- PipelineRetriever 保真传递 kind/role/span，不依赖自定义 Parser 识别新字段。
+- 结构条件与用户条件以外层 AND 合并；结构时间索引使用 tree_span_start/tree_span_end。
+- recall/get/rank、recall_and_get/rank 和 retrieve 三路都复核本体；索引旧值不能授权命中。
+- Discloser 优先使用 ScoredMemoryUnit 自带本体，避免跨完整 Scope 的相同 id 覆盖；
+  普通查询不披露父引用，显式层级请求的 parent_id 来自 HierarchyRef。
+- MultimodalRetriever 尚不支持层级组合，显式拒绝，不静默退回普通多模态搜索。
+
+### 上卷与展开
+
+- `retriever_impl/hierarchy_rollup.py` 在融合/精排之后、阈值/top_k 之前上卷；父与后代
+  共用评分池。MaxP 取最大值，不累加，不为新准入父伪造通道证据。
+- `expander.py` 定义内部只读契约；`expander_impl/default_expander.py` 只使用注入的
+  同源 DomainStore，按完整 Scope 和有序父子边 BFS，不扫描、不写树。
+- `expansion.py` 在单空间或跨空间全局选根后统一分配披露预算和节点上限；
+  PreparedRetrievalResult 只在内部传递，不序列化、不直接返回公开调用者。
+- 越权 Scope 在点读前拒绝；kind、状态、双向引用、区间覆盖和可见性逐边复核。
+  缺节点、坏结构、读失败及截断用 HIERARCHY 诊断表示，不泄露被排除内容。
+- 基础展开收尾即限制父子总数为 top_k，后续父子排序在同一收尾处截断之前接入。
+- 保留文档模式与可选 Reranker 的 BackendError 降级路径，不用原分支旧实现覆盖。
+
+### 父子结果整理
+
+`child_ranking.py` 使用共享 Embedder 对原始问题和准入后代完整正文同批向量化，
+校验数量、维度、有限值和范数后按余弦稳定排序，不复用 Parser 改写向量。
+`expansion.py` 中 TIME 父角色查询保留根原序，再全局排列子候选，最后截断到 top_k。
+空正文在预算准入后按真源排除、不退还预算；空父仍可展开。无剩余名额、无子或非父角色
+时跳过额外 embedding。打分字段仍为原根分或继承分，不伪装成子相关分。
+PipelineRetriever.bind_embedder 只负责依赖注入；默认延迟句柄绑定原装配缓存与配置，
+Factory.reset_all 后也不能借用另一运行实例的依赖。

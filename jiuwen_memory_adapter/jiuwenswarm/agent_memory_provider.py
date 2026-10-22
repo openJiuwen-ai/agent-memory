@@ -811,9 +811,7 @@ class _InProcessClient(_AgentMemoryClient):
             query,
             Context(scope=api_scope),
             security=self._security(),
-            filters=filters,
-            top_k=top_k,
-            disclosure=DisclosureLevel.L2,
+            filters=filters, top_k=top_k, disclosure=DisclosureLevel.L2,
         )
         return [
             {"content": it.content, "score": it.score, "item_id": it.unit_id} for it in result.items

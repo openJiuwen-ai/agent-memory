@@ -77,7 +77,7 @@ evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽�
     系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 16. **目标操作使用完整 Scope**：MemoryUnit id 仅在 Scope 内唯一。LifecycleManager、Governor 与 IndexBuilder 的目标修改/读取/删除不得依赖全局 `id -> scope` 猜测，调用方必须显式提供 Scope 或携带 Scope 的 MemoryUnit。
 17. **Engine 部署边界明确**：`InMemoryEngine` 只接受空 `space` 兼容域；具名非空 space 的数据面操作使用 `CloudEngine`。`CloudEngine` 仍兼容空 space，但生产多租户配置应开启 `scope.require_space=true`。
-18. **普通 write 默认不建树（目标）**：`hierarchy.auto_derive` 是独立、默认关闭的后台策略；显式层级 recall/evolve/update 在 `hierarchy.enabled=false` 时抛 `PolicyError`，普通非层级行为兼容。
+18. **普通 write 默认不建树（目标）**：`hierarchy.auto_derive` 是独立、默认关闭的后台策略；显式建树关闭时生成成功跳过任务；尚未实现的层级 recall/update 规则仍属目标设计，普通非层级行为兼容。
 19. **树结构一致性（目标）**：同一 kind 的父子边必须同 `org+space`、无环、单父、双向一致且顺序稳定；`user`/`agent`/`session` 可按 compose profile 放宽（跨细粒度 scope 时边须可解析定位）；`HierarchyStatus` 只允许 ACTIVE/DISMISSED，且与 `LifecycleState` 分离。
 20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
 21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
@@ -380,7 +380,12 @@ recall / list 完成权限检查前，API 构造 `PermissionContext` 时从
 
 **双通道**：HOT（在线低时延：write 返回前完成的轻量索引）；BACKGROUND（离线异步：重的抽取/升华/重索引）。
 
-目标 HIERARCHY 任务必须在 `JobInfo.detail` 中提供稳定字符串键：`hierarchy_kind`、`span_start`/`span_end`、`trigger`（`explicit`/`ensure_on_recall`/`auto_derive`）、`created_parent_count`、`updated_child_count`、`replaced_parent_count`、`repair_required_count`、`complete`、`error`。`detail["repair_required_count"]` 等于 `HierarchyComposeResult.repair_required` 的元素数量。目标 `JobInfo` 增加 `result: EvolveResult | None = None`（结构见 S05）；`complete=false` 或非空 `repair_required` 不得标记 SUCCEEDED。ensure 等待终态；auto derive 不等待。
+显式 HIERARCHY 的 JobInfo.detail 使用字符串键：mode、kind、span_start/span_end、
+trigger=explicit、created_parent_count、updated_child_count、replaced_parent_count、
+repair_required_count、complete、built、reused、skipped、skipped_incomplete_time_count。
+失败附 error，部分持久化附 JSON repair_required。JobInfo 不新增 result 字段。
+complete=false 或 repair_required 非空必须 FAILED；Scheduler 保留 Job 返回的
+SUCCEEDED/FAILED/CANCELLED，非终态返回视为错误。ensure/auto derive 尚未实现。
 
 ### IngestJobController（`ingest_job.py`）
 
@@ -428,7 +433,7 @@ space 元数据、space policy、成员、用量与 offboarding 状态管理。
 
 | 键 | 类型与默认 | 语义 |
 |---|---|---|
-| `hierarchy.enabled` | bool 字符串，`false` | 已实现：层级总开关，当前用于自动 Snapshot 接入 |
+| `hierarchy.enabled` | bool 字符串，`false` | 已实现：层级总开关，用于自动 Snapshot 接入及显式建树 |
 | `hierarchy.auto_derive` | bool，`false` | write 后是否后台派生 |
 | `hierarchy.ensure_on_recall` | bool，`false` | 是否对显式有界层级 recall 阻塞确保结构 |
 | `hierarchy.score_propagation` | str，默认 `maxp` | rollup 算法；当前仅接受 `maxp` |
@@ -556,7 +561,7 @@ jiuwen_memory/control/<算子>_impl/
 每次 write 读取当前开关，不在测试框架中判断是否开启。既有策略和权限入口保持不变。
 
 开启时，未声明层级提示，或只声明 TIME/snapshot 双身份时，使用本次 `occurred_at`
-同时构造 span_start/span_end。完整显式提示优先；缺时间、单边区间和非法提示拒绝写入，
+同时构造 span_start/span_end。完整显式提示优先；缺时间、单边区间保持原输入且允许写入；格式错误、逆序、非法身份/边仍拒绝，
 不从写入时钟或用户 metadata 猜时间。批量写入逐项使用其有效 occurred_at。
 补齐只改变结构提示，不将消息时间写成 t_event；t_message 继续保持消息时间。
 CloudEngine 回注 metadata 时跳过已被 Ingestor 消费的叶提示。
@@ -565,3 +570,20 @@ CloudEngine 回注 metadata 时跳过已被 Ingestor 消费的叶提示。
 本节未实现的层级查询、ensure、周期建树策略不能通过 admin_set 直接使用。
 手工构造 Engine 时 policy 是新增的可选末尾参数，缺省保持旧行为；Evolver 的
 `evolve(units, mode)` 签名不变。
+
+
+## 显式建树任务（当前交付）
+
+API 完成鉴权后，经 Command→Engine→HierarchyJob→Evolver→Composer。
+Engine 注入当前 Evolver 和读源：本地 KVStore，云端 DomainStore。候选范围按
+org/space 精确匹配，home 中非空 user/agent/session 限定；父驻留精确 home。
+逐页读取校验 count、重复键与身份，超过 max_leaves 报错，不截断候选后假报完整。
+相交旧父需补齐所有后代并复核反向边；缺子、双向边不一致或越界引用明确失败。
+
+未挂树缺时叶允许写入，仅在候选阶段跳过并计数；已有树不享受该豁免。
+reuse_existing=True 仅复用完整请求层级或对纯新叶首次构建，混合输入拒绝隐式重建；
+False 允许完整旧树与新叶一起重建。整个操作使用请求副本。
+
+可选 hierarchy 锁覆盖读取、验证和同步构建。协作取消在步骤边界检查；在飞同步
+构建先收尾，记录已完成写入，再报告取消；不提前释放锁或声称回滚。普通 dreaming
+的持续授权、注册/注销、调度器关闭规则保持。没有新增周期建树任务。

@@ -45,7 +45,7 @@ from jiuwen_memory.common.type_def import (
     is_retrieval_candidate,
     memory_key,
 )
-from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
 from jiuwen_memory.storage.kv import load_memory_unit
@@ -297,7 +297,7 @@ class CompositeDomainStore(DomainStore):
                     # lifecycle ACTIVE→SUPERSEDED）走 remove_content 删旧块——md 真源
                     # 不能留"幽灵块"让用户看到新旧两条都在，必须物理删旧块与影子索引
                     # lifecycle 投影列更新同口径（下方 line 见 remove_content 分支）。
-                    # 对比口径用 segments[0].content（与 md/影子索引 _content_of 同源，§12.4 单段）。
+                    # 对比使用 segments[0].content，与 md/影子索引 _content_of 同源。
                     if old is None:
                         continue
                     old_content = old.segments[0].content if old.segments else ""
@@ -724,11 +724,8 @@ class CompositeDomainStore(DomainStore):
 def _passes(unit: MemoryUnit, query: ParsedQuery) -> bool:
     return is_retrieval_candidate(
         unit,
-        as_of=query.as_of,
-        time_from=query.time_from,
-        time_to=query.time_to,
+        query,
         filters=query.recheck_filters,
-        include_archived=query.include_archived,
     )
 
 

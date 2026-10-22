@@ -45,9 +45,13 @@ def enrich_snapshot_hints(
     *,
     enabled: bool,
 ) -> dict[str, MetadataValueType]:
-    """启用 TIME 树时按消息时间补齐叶提示；已有完整提示优先，非法提示不修复。"""
+    """开启时按发生时间补齐叶提示，关闭时移除合法提示；不修改输入。"""
     metadata = dict(system_metadata or {})
     if not enabled:
+        for key in ALLOWED_HINTS:
+            metadata.pop(key, None)
+        # 未定义的结构/边字段仍非法；只忽略允许外部声明的四个叶提示。
+        extract_hierarchy_hints(metadata)
         return metadata
     reserved = {key for key in metadata if key.startswith(HINT_PREFIX)}
     implicit = not reserved

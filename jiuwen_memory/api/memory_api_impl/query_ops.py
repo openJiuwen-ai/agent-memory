@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from jiuwen_memory.api.search_options import SearchOptions
 from jiuwen_memory.common.errors import (
     BackendError,
     NotFoundError,
@@ -24,20 +27,29 @@ from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
     FilterExpr,
+    HierarchyKind,
+    HierarchyRole,
     MemoryUnit,
     Scope,
     and_merge,
     normalize,
 )
+from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.construction.router import (
     narrow_dims_of,
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
+from jiuwen_memory.control.evolution.validation import (
+    validate_evolve_options,
+    validate_evolve_request,
+)
 from jiuwen_memory.control.types import (
     Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -69,10 +81,39 @@ from .local_support import (
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
 
+@dataclass(frozen=True)
+class _SearchAccess:
+    spaces: list[str]
+    coords: dict[str, str] | None
+    narrow: dict[str, str]
+
+
+def _copy_search_extensions(extensions: dict[str, Any]) -> dict[str, Any]:
+    """复制标准容器，但保留不透明运行时插件对象的身份与不可复制资源。"""
+    memo: dict[int, Any] = {}
+    visited: set[int] = set()
+    pending: list[Any] = [extensions]
+    while pending:
+        current = pending.pop()
+        object_id = id(current)
+        if object_id in visited:
+            continue
+        visited.add(object_id)
+        if isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple, set, frozenset)):
+            pending.extend(current)
+        else:
+            memo[object_id] = current
+    return deepcopy(extensions, memo)
+
+
 class QueryOpsMixin:
     """Data-plane read/update/delete/evolve after PEP."""
 
-    def search(
+    # 与公开 MemoryAPI 保持平铺签名，内部以选项对象传递。
+    def search(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         query: str,
         context: Context,
@@ -83,16 +124,43 @@ class QueryOpsMixin:
         top_k: int = 10,
         disclosure: DisclosureLevel = DisclosureLevel.L0,
         with_trajectory: bool = False,
+        hierarchy_kind: HierarchyKind | None = HierarchyKind.TIME,
+        hierarchy_role: HierarchyRole | None = HierarchyRole.TIME_SPAN,
+        span_start: datetime | None = None,
+        span_end: datetime | None = None,
+        expand_depth: int = 1,
+        rollup: bool = True,
     ) -> RetrievalResult:
-        """执行检索；``extensions`` 带 ``spaces`` 键时转为跨空间形态（F07「多空间读写」）。
+        """将原有平铺参数装成选项，委托统一查询入口。"""
+        return self._search(
+            query, context, SearchOptions(
+                filters=filters, as_of=as_of, top_k=top_k, disclosure=disclosure,
+                with_trajectory=with_trajectory,
+                hierarchy_kind=hierarchy_kind, hierarchy_role=hierarchy_role,
+                span_start=span_start, span_end=span_end, expand_depth=expand_depth, rollup=rollup,
+            ), security=security,
+        )
 
-        单空间与跨空间是同一个入口的两条路径，不是两个接口：跨空间不是新的检索算法，是在
-        单空间召回之上套的一层编排（定候选空间 → 逐空间判权 → 各自召回 → 轮转合并），
-        两族谓词与召回都复用同一份实现。分成两个接口即同一件事有两处契约，接入方须先判断
-        部署形态才知道该调哪个。
-
-        ``spaces`` 键不在时本方法与本特性之前逐字一致。判据取键的有无，见 :func:`_pop_spaces`。
-        """
+    def _search(
+        self, query: str, context: Context, options: SearchOptions,
+        *, security: RequestSecurityContext,
+    ) -> RetrievalResult:
+        """按统一选项检索；保留现有单空间与跨空间授权链路。"""
+        context = Context(
+            scope=deepcopy(context.scope),
+            extensions=_copy_search_extensions(dict(context.extensions)),
+        )
+        # 读取默认策略也是业务组件访问，须先验证请求上下文来源。
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.READ, "search", context.scope)
+        )
+        options = deepcopy(options)
+        if not self._hierarchy_enabled():
+            options = replace(
+                options, hierarchy_kind=None, hierarchy_role=None,
+                span_start=None, span_end=None, expand_depth=0, rollup=False,
+            )
+        hierarchy = HierarchyQuery.from_query(options)
         identity = security.auth.actor
         # Context 在边界处拆包：scope 照旧作独立轴下推（鉴权 + 检索），
         # extensions 写入调用级 options 顺 parser 透传给自定义检索模块；
@@ -100,14 +168,11 @@ class QueryOpsMixin:
         # 避免与内核已解释的字段重复：max_tokens（自适应披露预算）解析为 typed int
         # 写入 RetrievalQuery，coords（归属坐标）折算成第二族收窄谓词，spaces（候选空间）
         # 决定走单空间还是跨空间编排。
-        options = dict(context.extensions)
-        max_tokens = _parse_max_tokens(options.pop(EXT_MAX_TOKENS, None))
-        spaces = _pop_spaces(options)
-        coords = _pop_coords(options, enabled=self._routing_enabled())
+        extensions = dict(context.extensions)
+        max_tokens = _parse_max_tokens(extensions.pop(EXT_MAX_TOKENS, None))
+        spaces = _pop_spaces(extensions)
+        coords = _pop_coords(extensions, enabled=self._routing_enabled())
         reject_kernel_coords(coords)
-        self._require_trusted_context(
-            security, _TrustedRequestTarget(Action.READ, "search", context.scope)
-        )
         resource_principal = self._resource_principal(security, Action.READ)
         # 坐标折算成第二族收窄谓词的取值，在此算一次、两条路径共用。放进各自分支即
         # 「两处各折算一次」：漏调哪一处，该路径的 agent 维与 session 维整体不再收窄，
@@ -115,36 +180,22 @@ class QueryOpsMixin:
         narrow = narrow_dims_of(
             principal.kernel_coords(coords, resource_principal), self._route_table.narrow_dims
         )
+        rq = RetrievalQuery(
+            text=query, filters=options.filters, as_of=options.as_of,
+            top_k=options.top_k, disclosure=options.disclosure,
+            max_tokens=max_tokens, with_trajectory=options.with_trajectory,
+            extensions=extensions, hierarchy_kind=hierarchy.hierarchy_kind,
+            hierarchy_role=hierarchy.hierarchy_role,
+            span_start=hierarchy.span_start, span_end=hierarchy.span_end,
+            expand_depth=options.expand_depth, rollup=options.rollup,
+        )
         if spaces is not None:
             self._require_trusted_context(
                 security, _TrustedRequestTarget(Action.READ, "search", Scope(org=context.scope.org))
             )
             return self._search_spaces(
-                query,
-                context,
-                security=security,
-                spaces=spaces,
-                filters=filters,
-                as_of=as_of,
-                top_k=top_k,
-                disclosure=disclosure,
-                with_trajectory=with_trajectory,
-                options=options,
-                max_tokens=max_tokens,
-                coords=coords,
-                narrow=narrow,
+                context, rq, _SearchAccess(spaces, coords, narrow), security=security,
             )
-        rq = RetrievalQuery(
-            text=query,
-            # RetrievalQuery 边界统一 normalize 旧 list、clause 与 dict DSL。
-            filters=filters,
-            as_of=as_of,
-            top_k=top_k,
-            disclosure=disclosure,
-            max_tokens=max_tokens,
-            with_trajectory=with_trajectory,
-            extensions=options,
-        )
         # 权限上下文与 RetrievalQuery 共用同一规范化后的 FilterExpr（不重复转换）。
         permission_context = _recall_permission_context(
             context, rq.filters, self._authorizer.routing_fields()
@@ -178,21 +229,8 @@ class QueryOpsMixin:
         return result
 
     def _search_spaces(
-        self,
-        query: str,
-        context: Context,
-        *,
-        security: RequestSecurityContext,
-        spaces: list[str],
-        filters: FilterExpr | list[FilterClause] | dict | None,
-        as_of: datetime | None,
-        top_k: int,
-        disclosure: DisclosureLevel,
-        with_trajectory: bool,
-        options: dict[str, Any],
-        max_tokens: int | None,
-        coords: dict[str, str] | None,
-        narrow: dict[str, str],
+        self, context: Context, retrieval_query: RetrievalQuery, access: _SearchAccess,
+        *, security: RequestSecurityContext,
     ) -> RetrievalResult:
         """跨空间检索：本层做前两步半，后三步下沉控制层（F07「多空间读写」）。
 
@@ -217,18 +255,19 @@ class QueryOpsMixin:
 
         ``context.scope`` 只取 ``org`` 维定组织边界，空间维由候选集给出、传了不生效。
         """
+        spaces, coords, narrow = access.spaces, access.coords, access.narrow
         identity = security.auth.actor
         principal.require_principal(identity)
         resource_principal = self._resource_principal(security, Action.READ)
         org = context.scope.org
-        normalized_filters = normalize(filters)
+        normalized_filters = retrieval_query.filters
 
         candidates = self._search_candidates(resource_principal, org, spaces, audit_actor=identity)
         # 收窄谓词的实际取值只在此处成形，下游只能看到条数。缺这一行时「召回为空」
         # 无法区分坐标未传到、判定表未声明该维、以及该维确实过滤掉了全部条目。
         logger.info(
             "search cross-space: query=%s coords=%s narrow=%s candidate_spaces=%s",
-            redact_for_log(query),
+            redact_for_log(retrieval_query.text),
             metadata_for_log(coords),
             metadata_for_log(narrow),
             metadata_for_log(candidates),
@@ -319,16 +358,8 @@ class QueryOpsMixin:
         merged, space_failures = asyncio.run(
             collective.recall_spaces(
                 targets,
-                RetrievalQuery(
-                    text=query,
-                    filters=normalized_filters,
-                    as_of=as_of,
-                    disclosure=disclosure,
-                    max_tokens=max_tokens,
-                    with_trajectory=with_trajectory,
-                    extensions=options,
-                ),
-                top_k=top_k,
+                retrieval_query,
+                top_k=retrieval_query.top_k,
                 recall=self._queries.recall,
             )
         )
@@ -365,6 +396,10 @@ class QueryOpsMixin:
             },
         )
         return merged
+
+    def _hierarchy_enabled(self) -> bool:
+        """仅在可信请求通过校验后读取运行时树总开关。"""
+        return str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower() == "true"
 
     def _search_candidates(
         self, identity: Scope, org: str, spaces: list[str], *, audit_actor: Scope | None = None
@@ -661,7 +696,34 @@ class QueryOpsMixin:
         )
         return deleted
 
-    def evolve(
+    def _evolve_hierarchy(
+        self, scope: Scope, options: EvolveTaskOptions, *, security: RequestSecurityContext,
+    ) -> str | None:
+        """建树保留 WRITE/UPDATE 授权；关闭后只提交成功的跳过任务。"""
+        scope, options = deepcopy(scope), deepcopy(options)
+        validate_evolve_request(scope, options)
+        auth = self._authorize(
+            security, scope, Action.WRITE, "evolve",
+            space_action=_evolve_space_action(options.mode),
+        )
+        self._ensure_space_writable(scope)
+        self._authorize(security, scope, Action.UPDATE, "evolve",
+                        space_action=_evolve_space_action(options.mode))
+        if self._hierarchy_enabled():
+            validate_evolve_options(scope, options)
+            if self._authorizer.routing_fields():
+                raise ValidationError("HIERARCHY 暂不支持权限路由或逐候选鉴权")
+            _reject_kernel_system_metadata(options.hierarchy_options.metadata)
+            _reject_route_tag_keys(options.hierarchy_options.metadata, self._route_table.tag_keys)
+        else:
+            options = replace(options, hierarchy_options=None, reuse_existing=False)
+        job_id = asyncio.run(self._commands.evolve_v2(scope, options))
+        self._log(security.auth.actor, "evolve", target_scope=scope,
+                  detail={**auth, "job_id": job_id})
+        return job_id
+
+    # 新选项追加在旧参数之后，保持公开签名兼容。
+    def evolve(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         scope: Scope,
         mode: EvolveMode,
@@ -671,7 +733,17 @@ class QueryOpsMixin:
         dreaming: bool | None = None,
         interval: int = 0,
         security: RequestSecurityContext,
+        hierarchy_options: HierarchyComposeOptions | None = None,
+        reuse_existing: bool = False,
     ) -> str | None:
+        if mode is EvolveMode.HIERARCHY:
+            return self._evolve_hierarchy(
+                scope, EvolveTaskOptions(
+                    mode=mode, channel=channel, candidate=candidate, dreaming=dreaming,
+                    interval=interval, hierarchy_options=hierarchy_options,
+                    reuse_existing=reuse_existing,
+                ), security=security,
+            )
         identity = security.auth.actor
         # 注册态 interval 语义前置校验（鉴权前 fail fast，避免越权探测报错差异）。
         if dreaming is True and interval <= 0:
@@ -684,6 +756,11 @@ class QueryOpsMixin:
             space_action=_evolve_space_action(mode),
         )
         self._ensure_space_writable(scope)
+        if (
+            (hierarchy_options is not None or reuse_existing is not False)
+            and self._hierarchy_enabled()
+        ):
+            raise ValidationError("仅 HIERARCHY 接受 hierarchy_options/reuse_existing")
         # 三态分发（F04 D2）：False=幂等注销（不命中不退化）；True=注册；
         # None=立即执行。持续授权（每 tick 复验）与 fan-out 逐桶裁决都在 API 层
         # 的 DreamingCoordinator（PEP 边界，S03）——Engine / EvolveJob 纯执行。

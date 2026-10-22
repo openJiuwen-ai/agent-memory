@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-10-13 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -183,3 +183,20 @@ ConfigSource
 | S06-storage | `store_manager` 选择统一实现（globals.store_manager 指名），Store 命名空间配置其下层端口与命名端口；连接/`active` 晚绑定不做迁移 |
 | S07-common | 插件实现与 Factory 注册；配置数据在 `jiuwen_memory/config` |
 | architecture.md §13 | 可配置化分层与落点 |
+
+
+## 显式 TIME 构建预设
+
+`globals.hierarchy_profiles.time` 是构建配置：Snapshot→TimeSpan→Scene→Event，
+TimeSpan 累计跨度 7200 秒，Scene 最大跨度 1209600 秒，Event 相似阈值 0.65；
+各层 summary_mode=llm。摘录限额不截断完整事实或 LLM 输入，不能当作分组限制。
+这份预设不包含查询参数、自动维护周期或静默阈值。
+
+未指定 Evolver.params.hierarchy_composer 时，使用内置预设的延迟 Composer，
+复用该 Evolver 的 IndexBuilder/LLM；embedder.default 在首次需要时解析。
+显式引用或内联 Composer 配置优先；None/空字符串显式禁用装配。构建是否执行
+仍由 policy 中 hierarchy.enabled 控制。自定义 policies 完整替换默认表，缺键关闭。
+
+Factory.bind_named 捕获原装配配置、缓存、锁及创建观察者；后续 reset_all 创建
+新缓存/锁，不改变旧实例的延迟依赖。并发首次解析共享同轮具名实例，失败不缓存。
+ConfigSource.get_cached 同样遵循绑定上下文，不串用后续装配的配置源。

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -209,8 +209,8 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。（曾存在的 `legacy_request_context` 过渡桥已随 PR2 删除。）
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 F04-1 §5.4）。
-17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式层级请求在 `hierarchy.enabled=false` 时抛 `PolicyError`，不带层级参数的既有操作保持语义。
-18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 `search(..., expand_depth>0)` 沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
+17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=EvolveMode.HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；层级查询由 search 的新增可选参数提供，展开与上卷契约见 S04。
+18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 search 的 expand_depth 参数沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
 21. **Space 删除事务在 Control**：`delete_space` 鉴权后调用 `SpaceLifecycleService`（先 `MemoryEngine.purge_space`，再 `SpaceManager.delete`，并把 purge 条数累加进 `deleted_counts` 的 `memory` / `index` / `kv`）。purge 失败则不删 space；purge 成功而 metadata delete 失败时抛 `PartialFailureError`（`retry_action=delete_space`），不得报告完整成功。重试同一入口：purge 对空空间幂等，第二步再删元数据。API 只授权、调用该端口、使 membership 缓存失效并记录入口审计；不得在 API 内联 purge+delete 或实现索引删除/存储遍历。
@@ -231,12 +231,12 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 | 数据面 | `batch_add_async` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
 | 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05；`occurred_at` 见 F06 |
-| 数据面 | `search` | 已实现；层级增量参数尚未实现 | [search](#search) | F01、F04；层级见 F08 |
+| 数据面 | `search` | 已实现；平铺参数包含可选层级查询 | [search](#search) | F01、F04；层级见 F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
 | 数据面 | `delete` | 已实现 | [delete](#delete) | 无独立 F；实现见 F01 |
-| 数据面 | `evolve` | 已实现 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET；`HIERARCHY` 尚未实现 | [evolve](#evolve) | F01、F02；层级见 F08 |
+| 数据面 | `evolve` | 原有四种演进与 dreaming | [evolve](#evolve) | F01、F02 |
 | 任务面（委托 Scheduler） | `job_status` | 已实现 | [job_status](#job_status) | F01 |
 | 任务面 | `job_cancel` | 已实现 | [job_cancel](#job_cancel) | F01 |
 | 治理面（委托 Governor） | `inspect` | 已实现 | [inspect](#inspect) | F01 |
@@ -451,7 +451,7 @@ def submit_ingest(
 
 #### search
 
-**状态：已实现**（下列签名为当前代码）。层级过滤 / 展开 / rollup 为已设计增量，见本节末。
+**状态：已实现**（下列签名为当前代码）。层级过滤、展开与 rollup 作为原 search 末尾的可选参数提供。
 #### 薄封装职责
 
 API 方法的实现顺序应保持为：
@@ -489,28 +489,39 @@ def search(
     top_k: int = 10,
     disclosure: DisclosureLevel = DisclosureLevel.L0,
     with_trajectory: bool = False,
+    hierarchy_kind: HierarchyKind | None = HierarchyKind.TIME,
+    hierarchy_role: HierarchyRole | None = HierarchyRole.TIME_SPAN,
+    span_start: datetime | None = None,
+    span_end: datetime | None = None,
+    expand_depth: int = 1,
+    rollup: bool = True,
 ) -> RetrievalResult: ...
 ```
 
 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine。`filters/as_of/top_k/disclosure/with_trajectory` 和 `context.extensions["max_tokens"]` 的既有处理不变。
 
-**状态：已设计、尚未实现**（层级增量参数；不另设公开 `MemoryAPI.expand`）
+树参数的默认值直接体现在签名中，不使用内部二次补默认值。开启树功能时，省略参数
+即使用 TIME/time_span、一级展开和 MaxP 上卷；显式 `expand_depth=0` 或 `rollup=False`
+原样生效，即使只传其中一项。
 
-```python
-# 目标增量，尚未出现在 MemoryAPI.search 签名中
-hierarchy_kind: HierarchyKind | None = None
-hierarchy_role: HierarchyRole | None = None
-span_start: datetime | None = None
-span_end: datetime | None = None
-expand_depth: int = 0
-rollup: bool = False
-```
+`hierarchy.enabled` 关闭或缺失时，在树语义校验前将 kind/role/span 清为 None、
+expand_depth 清为 0、rollup 清为 False，显式树参数同样被忽略。普通过滤、as_of、
+top_k、披露、Scope 与权限不变；普通召回可命中已有 Snapshot，并排除生成的 TIME 父。
+基础请求/传输类型校验与鉴权仍执行，不修改调用方对象或已有树数据。
 
-新增参数原样装配到 `RetrievalQuery`。`expand_depth=0`、`rollup=false` 保证默认只返回直接召回命中的节点，不展开后代、不把后代分数上卷；调用方通过 `hierarchy_role` 指定父侧角色时，即形成父节点优先召回。省略 role 时，同 kind 下所有活动角色均可参与召回。span 是 `HierarchyRef` 结构区间，不替代查询文本解析得到的 event-time。
+开启时，role、span、展开或上卷要求有效 kind；span 成对、按 UTC 比较、闭区间相交。
+结构时间独立于事件时间和有效时间。查询全部角色须显式 `hierarchy_role=None`；
+开启状态下主动使用普通查询须显式传 hierarchy_kind=None、hierarchy_role=None、expand_depth=0、rollup=False，
+并省略 span。内部 SearchOptions 只是参数载体，其默认值不作为公开接口预设。
 
-`expand_depth>0` 时，Retriever 在同一次 search 内沿命中父节点展开子证据（单 kind）；**不另设公开 `MemoryAPI.expand`**。展开选子与父命中共用既有 `max_tokens` 上下文预算，不另设独立预算参数。
+无有效 TimeSpan 时不回退到未挂树叶，也不在搜索时建树。TIME 父角色查询按父原序、
+子相关性全局排序后截断，父子返回总数不超过 top_k，细则见 S04。
+统一入口保留来源校验、READ 鉴权、委托资源主体、空间事实及路由谓词；跨空间按原权限
+逐空间分发。请求快照不修改调用者输入，运行时插件保留身份。
 
-校验和闭区间相交语义以 [S04-retrieval.md](S04-retrieval.md) 为准。任一显式 hierarchy 参数、非零展开深度或 rollup 都构成层级请求；功能关闭时抛 `PolicyError`。普通 search 不因 hierarchy 关闭而失败。
+HTTP/CLI 仅暴露原 search，MCP 仅暴露 memory_search；参数与 SDK 同义。
+历史进程内 handler 仅在显式提供树字段时按同一类型契约解码并转发，省略字段不补默认值。
+不再提供公开 search_v2/evolve_v2 或对应 MCP 工具，不新增公开 expand。
 
 #### list
 
@@ -617,7 +628,7 @@ def delete(selector: DeleteSelector, *, security: RequestSecurityContext) -> lis
 
 #### evolve
 
-**状态：已实现**（`EXTRACT` / `ASSOCIATE` / `CONSOLIDATE` / `FORGET`）。`HIERARCHY` 与 `hierarchy_options` 为已设计增量。
+**状态：已实现**。原 evolve 同时支持普通四种模式和显式 HIERARCHY 建树。
 
 ```python
 def evolve(
@@ -625,14 +636,16 @@ def evolve(
     mode: EvolveMode,
     channel: Channel = Channel.BACKGROUND,
     *,
-    security: RequestSecurityContext,
     candidate: CandidateSource | dict | None = None,
     dreaming: bool | None = None,
     interval: int = 0,
+    security: RequestSecurityContext,
+    hierarchy_options: HierarchyComposeOptions | None = None,
+    reuse_existing: bool = False,
 ) -> str | None: ...
 ```
 
-触发演进：鉴权 WRITE→（三态分发）→委托 Engine 纯执行链→返回 job_id。当前代码只接受 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET。调用成功返回 job id，不表示任务已经完成。索引维护不在此（随数据面自动跟进）。
+触发演进：鉴权 WRITE→（三态分发）→委托 Engine 纯执行链→返回 job_id。普通模式 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 继续使用原演进链路；HIERARCHY 使用显式建树链路。调用成功返回 job id，不表示任务已经完成。索引维护不在此（随数据面自动跟进）。
 
 **dreaming 三态**（F04，PEP 边界——三态编排、持续授权、fan-out 逐桶裁决都在 API 层 `DreamingCoordinator`，`api/memory_api_impl/dreaming.py`；Control 层纯执行见 S03 `evolve` 行）：`dreaming=None` 立即跑（入口鉴权 + fan-out 逐桶裁决后提交一次性 EvolveJob，返回 job_id；拒绝桶仅以 `count:N` 脱敏摘要回显）；`dreaming=True` 注册定时（`interval>0` 必填，scheduler 须 `supports_recurring`；candidate 注册前 canonical 校验；注册表记录 `created_by`，驱动 Job 每 tick 复验授权与 leader 租约，被拒或失锁即停摆）；`dreaming=False` 幂等注销（未命中返回 `None`，不退化立即跑）。注销先把注册状态持久化为 `CANCEL_REQUESTED`，再在协调器状态锁外等待 Scheduler，成功后删除；取消失败保留该状态，Driver 在 tick 开头和提交演进前按 `state + generation + job_id` 自停，重启恢复只收口而不复活。注册/注销/恢复由本实例生命周期锁串行，并只允许 leader 修改共享声明；请求落到非 leader 时抛 `RuntimeError`，不会删掉另一实例正在执行的声明。周期实例启动即竞选 leader，空注册表也持锁；恢复结果只在当前 leader 任期内幂等缓存，失锁或主动放锁后必须重扫；恢复每条记录在提交和换绑后均复验租约，中途失锁立即取消本地驱动并中止恢复。空间进入持久不可写状态时，周期任务以 `space_not_writable` 停摆并移除声明。
 
@@ -641,20 +654,32 @@ def evolve(
 每 tick 生成受控请求上下文，并重新校验凭据和委托真源，不延长认证期限。旧记录只
 有 actor、或安全快照损坏时不可恢复为有效请求；详见 S10 不变量 35。
 
-所有已实现 evolve 模式均要求 `Action.WRITE`。`EvolveMode.HIERARCHY`
-是目标新增，必须提供
-[S05-construction.md](S05-construction.md) 定义的 `HierarchyComposeOptions`。S05 是该
-类型字段与默认值的唯一契约来源，API 层不复制定义。
+#### 显式建树参数
 
-仅 HIERARCHY 接受 `hierarchy_options`；其他模式提供 options 时抛 `ValidationError`。
-HIERARCHY 缺 options 或 options 违反 S05 的 span、role 序列、`replace_existing`
-约束时抛 `ValidationError`。功能关闭时抛 `PolicyError`。建树任务仍走已实现的 `job_status` / `job_cancel`，不另开 MemoryAPI。
+新增参数追加在原参数之后：`hierarchy_options=None` 指定树类型、父层链、父驻留 Scope
+和构建时间区间；`reuse_existing=False` 控制复用与重建。公开入口不接收 EvolveTaskOptions
+参数袋；该类型继续用于内部类型化提交。原 candidate/dreaming/interval 语义不变。
 
----
+开启树功能后，HIERARCHY 要求有界时间、TIME/Snapshot 和合法父层前缀，scope 必须
+精确等于 hierarchy_options.tree_home_scope。普通模式不得携带建树选项。
+HIERARCHY 只做单次任务，不接受 candidate/dreaming/interval；入口保留可信上下文、
+WRITE+UPDATE 授权及空间可写检查。启用逐记忆权限路由时不支持实际建树；父 metadata
+不能覆盖内核保留键或路由标签。构建参数详见 S05。
 
-### 任务面（委托 Scheduler）
+关闭或缺失 hierarchy.enabled 时，忽略 hierarchy_options/reuse_existing；HIERARCHY
+返回成功跳过的 job_id，即使未提供选项或时间不完整也不做树语义校验，不读候选、不调用
+建树模型。基础 mode/channel/Scope、普通参数组合和权限检查仍执行；HTTP/CLI/MCP
+仍执行原有报文与字段类型解码。普通模式继续原有演进。
 
-本面不增加新的尚未实现对外方法。`evolve(HIERARCHY)` 落地后，建树任务仍走本面已实现的 `job_status` / `job_cancel`（S03 `Scheduler.submit(..., hierarchy_options=...)` 为控制层目标，不另开 MemoryAPI）。
+reuse_existing=True：纯新合格叶首次构建；完整现有树直接复用；完整旧树与新叶混合、
+缺失请求父层或损坏结构拒绝隐式重建。False：备齐区间相交旧根的完整子树后重建，
+可以同时包含新叶和旧叶。缺时且未挂树的叶仅跳过，保持原输入。
+
+### 任务面
+
+建树与普通演进共用 job_status / job_cancel。返回 ID 不代表已完成；调用者读取任务
+终态，SUCCEEDED 且 complete=true 才表示构建完成或合法复用/跳过。默认 in_process
+在提交内完成；async_timer 在后台执行，需通过 job_status 等待终态。
 
 #### job_status
 
@@ -687,7 +712,7 @@ def job_cancel(job_id: str, *, security: RequestSecurityContext) -> None: ...
 
 ### 治理面（委托 Governor）
 
-本面不增加新的尚未实现对外方法。不变量 16 要求三类遍历分离：树下钻由 `search(..., expand_depth>0)` 完成（见数据面 search 的尚未实现增量），`trace` 只沿 `provenance`，`get(as_of)` 只沿 `supersedes`；不另设 `MemoryAPI.expand`。
+本面不增加新的尚未实现对外方法。不变量 16 要求三类遍历分离：树下钻由 search 的 expand_depth 参数完成，`trace` 只沿 `provenance`，`get(as_of)` 只沿 `supersedes`；不另设 `MemoryAPI.expand`。
 
 #### inspect
 
@@ -939,7 +964,7 @@ def remove_space_member(
 
 ### 运行时策略面（直达 PolicyManager，不经 Engine）
 
-本面不增加新的尚未实现对外方法。S03 目标层级策略键（`hierarchy.enabled` / `hierarchy.auto_derive` / `hierarchy.ensure_on_recall` / `hierarchy.score_propagation` / `hierarchy.expand_default_depth`）尚未作为可 `admin_set` 的运行时键落地；S08 规定能力开关等动态配置走 `ConfigSource`，不经 `admin_set` 扩展为任意配置树。层级请求关闭时的 `PolicyError` 见数据面尚未实现的 `search`/`evolve`。
+`hierarchy.enabled` 已作为运行时策略键用于 Snapshot 接入及显式建树；自定义策略表必须预先声明该键才能 admin_set。该开关也控制树查询及接口默认预设；ensure 和自动维护策略尚未交付。admin_set 不扩展为任意配置树，详见 S08。
 
 #### admin_get
 
@@ -1027,7 +1052,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | `system_metadata` | dict[str, MetadataValueType] | 系统扩展字段（infer / procedural / pipeline / prompt key 等） |
 | `user_metadata` | dict[str, MetadataValueType] | 用户业务元数据；保留 JSON 标量原生类型，也可使用字符串数组 |
 | `lifecycle` | LifecycleState | 生命周期状态 |
-| `hierarchy` | HierarchyRef | **状态：已设计、尚未实现**。目标树结构；为空时不启用层级 |
+| `hierarchy` | HierarchyRef | 已实现：树结构，空值兼容普通记忆；细节见 S07 |
 
 `Segment`：`content`（可治理文本/结构投影，索引与检索对象）、`assets`（本段原模态资产引用）、`source`（本段来源 Modality）。便捷只读折叠属性：`unit.content`（各段换行连接）、`unit.assets`（各段扁平合并）、`unit.source`（首段模态）——返回新对象，勿就地 `append`。
 
@@ -1098,7 +1123,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
 
 - `Channel`：`HOT`（在线低时延）/ `BACKGROUND`（离线异步，默认）。
-- `EvolveMode`：`EXTRACT`（抽取低抽象事实）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（升华画像）/ `FORGET`（遗忘/清理）。**状态：已设计、尚未实现**：`HIERARCHY`（显式建树/区间替换）。
+- `EvolveMode`：`EXTRACT`（抽取低抽象事实）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（升华画像）/ `FORGET`（遗忘/清理）。`HIERARCHY`（显式建树/区间替换，经 evolve(mode=HIERARCHY)）。
 - `JobInfo`（`job_status` 返回）：`id` / `channel` / `mode` / `scope` / `status`（`JobStatus`：PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED）/ `detail`。
 
 ### Modality / MemoryTier / LifecycleState（`common/type_def/memory.py`）
@@ -1153,7 +1178,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 | `NotFoundError` | `get`、`update` 目标在已鉴权 scope 内不可见 |
 | `ValidationError` | 入参非法（如 `search` 的 `top_k <= 0`；`add`/`batch_add` 的 `content` 非 `str`、空串或纯空白；目标层级的 span、深度、预算、options 或 patch 形状非法） |
 | `UnsupportedCapabilityError` | 请求的 `source` 模态不在当前 Normalizer 声明的能力集合内；在规约、落盘和建索引前失败 |
-| `PolicyError` | `admin_set` 的键未知或为不可变配置；层级功能关闭时发起显式目标层级操作 |
+| `PolicyError` | `admin_set` 的键未知或为不可变配置；树开关关闭时忽略树参数，不因此抛 PolicyError |
 | `ConflictError` | 写入冲突（如 id 重复）或目标结构前置条件与当前状态冲突 |
 | `BackendError` / `HealthCheckError` | 后端故障 / 健康探测失败 |
 

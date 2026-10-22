@@ -176,3 +176,21 @@
 - `MemoryUnit.hierarchy` 与 `tree_memory` 追加在已有字段末尾；后者仅存完整事实，不作为正文或索引输入。
 - codec 保持 `_v=4`，坏结构整段降级，坏事实整组降级；完整 Scope 引用不可因损坏而重定向到 owner。
 - 裸结构过滤字段读 HierarchyRef，显式 metadata 路径保持独立；数组/标量比较沿用现有过滤契约。
+
+
+普通查询的 `type_def/retrieval_filter.is_retrieval_candidate` 排除 TIME 生成父；
+该约束覆盖 Storage 和 Retrieval 的共用真源复核，不改变 get/list。
+
+
+### 延迟依赖绑定
+
+Factory.bind_named 捕获本轮实例缓存、锁、配置与创建观察者；reset_all 更换缓存及锁，
+不让旧句柄借用新运行实例的依赖。绑定在 ContextVar 中，退出或异常必须恢复。
+DeferredEmbedder 在首次调用时解析并共享实际插件，失败不缓存，不改变 Embedder 协议。
+
+### 层级查询复核
+
+`type_def/hierarchy_query.py` 定义纯查询校验与 matches_hierarchy；结构区间复用
+common.time_utils.as_utc，naive 按 UTC 解释，不改变原输入对象。
+`is_retrieval_candidate(unit, query, *, filters)` 接受 ParsedQuery，在三条存储路径
+共用 lifecycle、valid/event-time、结构字段及用户过滤的真源复核。

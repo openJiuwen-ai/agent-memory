@@ -190,3 +190,23 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     后台线程不再访问连接后才释放 shadow。同步启动将 Observer 故障传回调用方，关闭后拒绝重启。
 15. 成员/Grant 授予上界接收完整可信上下文，只有 ROOT 免除普通成员上界；不得从 actor
     的 Scope 形状推导特权。路由写入和跨空间查询必须区分后端故障与正常权限拒绝。
+
+
+### 显式建树边界
+
+原 `evolve` 追加 hierarchy_options/reuse_existing，普通模式保留原 candidate/dreaming/
+interval 与授权链。HIERARCHY 保留 WRITE+UPDATE 可信授权及空间可写检查；开启时
+校验树参数、权限路由限制与父 metadata，关闭时忽略树选项并提交成功的跳过任务。
+基础校验与树语义校验分离，缺少 hierarchy_options 不阻止关闭状态的成功跳过。
+HTTP/CLI 从 MemoryAPI 反射原方法，MCP 只提供原 memory_evolve。
+
+### 查询参数与树总开关
+
+- 原 search 末尾追加树参数，签名直接声明 TIME/time_span/expand_depth=1/rollup=True。
+  `_search` 使用内部 SearchOptions 参数载体，不再补默认值；显式 0/False 原样生效。
+- 在可信来源校验后读取 hierarchy.enabled；关闭或缺失时先清除六个树参数再验证树语义，
+  普通 filters/as_of/top_k/Scope/权限保持不变，普通召回仍排除生成的 TIME 父。
+- Context 与参数快照不污染调用者；extensions 标准容器复制，不透明插件保留身份。
+- 单/跨空间查询共用已归一化参数，不在后续分支重复读取树开关。
+- 不再提供公开 search_v2/evolve_v2；HTTP/CLI/MCP 使用原接口和新增可选参数。
+- 无有效 TimeSpan 时严格返回空结果，不回退到未挂树叶；搜索不触发建树。

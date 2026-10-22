@@ -309,3 +309,49 @@ def test_sync_and_async_http_invocation_use_same_named_api_methods() -> None:
     assert sync_result[0]["id"] == "sync"
     assert async_result[0]["id"] == "async"
     assert not any(dataclasses.is_dataclass(result) for result in (sync_result, async_result))
+
+
+def test_evolve_decodes_hierarchy_options_without_changing_normal_modes():
+    from jiuwen_memory.api import EvolveMode, HierarchyRole
+
+    scope = {"org": "acme", "user": "alice"}
+    span = "2026-10-21T09:00:00+08:00"
+    parsed = api_contract.parse_request("evolve", {
+        "scope": scope, "mode": "hierarchy", "reuse_existing": True,
+        "hierarchy_options": {
+            "kind": "time", "leaf_role": "snapshot", "parent_roles": ["time_span"],
+            "tree_home_scope": scope, "span_start": span, "span_end": span,
+        },
+    })
+    assert parsed["mode"] is EvolveMode.HIERARCHY and parsed["reuse_existing"] is True
+    options = parsed["hierarchy_options"]
+    assert options.parent_roles == [HierarchyRole.TIME_SPAN]
+    assert options.span_start == datetime.fromisoformat(span)
+    assert options.tree_home_scope == parsed["scope"]
+    ordinary = api_contract.parse_request("evolve", {"scope": scope, "mode": "extract"})
+    assert ordinary["mode"] is EvolveMode.EXTRACT and "options" not in ordinary
+
+
+def test_search_transport_decodes_flat_hierarchy_parameters():
+    from jiuwen_memory.api import HierarchyKind, HierarchyRole
+
+    raw = {
+        "query": "evidence", "context": {"scope": {"org": "acme"}}, "top_k": 3,
+        "hierarchy_kind": "time", "hierarchy_role": "time_span",
+        "span_start": "2026-09-10T09:00:00", "span_end": "2026-09-10T09:00:01",
+        "expand_depth": 0, "rollup": False,
+    }
+    parsed = api_contract.parse_request("search", raw)
+    assert parsed["hierarchy_kind"] is HierarchyKind.TIME
+    assert parsed["hierarchy_role"] is HierarchyRole.TIME_SPAN
+    assert parsed["span_start"].tzinfo is None and parsed["top_k"] == 3
+    assert parsed["expand_depth"] == 0 and parsed["rollup"] is False
+    with pytest.raises(ValidationError, match="unknown field"):
+        api_contract.parse_request("search", {**raw, "options": {}})
+
+
+@pytest.mark.parametrize("verb", ["search_v2", "evolve_v2"])
+def test_parallel_public_methods_are_not_exposed(verb):
+    assert verb not in api_contract.api_method_names()
+    with pytest.raises(ValidationError, match="unknown MemoryAPI method"):
+        api_contract.parse_request(verb, {})

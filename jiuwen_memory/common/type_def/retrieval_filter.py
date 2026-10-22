@@ -7,8 +7,10 @@ from datetime import UTC, datetime
 
 from ..time_utils import as_utc
 from .filter import FilterExpr
+from .hierarchy_query import HierarchyQuery, matches_hierarchy
 from .memory import LifecycleState, MemoryUnit
 from .memory_filter import matches_memory_unit
+from .retrieval import ParsedQuery
 
 
 def valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
@@ -51,16 +53,12 @@ def matches_retrieval_filters(unit: MemoryUnit, filters: FilterExpr | None) -> b
 
 
 def is_retrieval_candidate(
-    unit: MemoryUnit,
-    *,
-    as_of: datetime | None,
-    time_from: datetime | None,
-    time_to: datetime | None,
-    filters: FilterExpr | None,
-    include_archived: bool,
+    unit: MemoryUnit, query: ParsedQuery, *, filters: FilterExpr | None,
 ) -> bool:
+    """复用解析查询复核候选，同时保留调用路径选择的真源过滤表达式。"""
     return (
-        passes_lifecycle(unit, as_of, include_archived)
-        and in_event_window(unit, time_from, time_to)
+        passes_lifecycle(unit, query.as_of, query.include_archived)
+        and in_event_window(unit, query.time_from, query.time_to)
+        and matches_hierarchy(unit, HierarchyQuery.from_query(query))
         and matches_retrieval_filters(unit, filters)
     )

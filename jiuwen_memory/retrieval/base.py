@@ -30,6 +30,7 @@ class RetrievalOperatorType(str, Enum):
     QUERY_PARSER = "query_parser"
     FUSER = "fuser"
     DISCLOSER = "discloser"
+    EXPANDER = "expander"
     RETRIEVER = "retriever"
 
 

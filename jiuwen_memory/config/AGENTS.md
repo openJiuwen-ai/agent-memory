@@ -75,3 +75,11 @@
 **本模块管**：装配合并、ConfigSource 契约与默认实现、active/晚绑定解析辅助、多实例 Routing（`Routing*` / `RoutingStoreManager`/`RoutingDomainStore`）。
 
 **本模块不管**：业务编排、Policy 策略语义、调用级 options、Store 数据迁移、配置中心 invalidate API。
+
+
+### 显式 TIME 预设
+
+`defaults.py` 只新增构建 profile，不包含查询参数或后台调度规则。
+层级总开关仍由 policy 控制，自定义 policies 完整替换默认表。
+ConfigSourceProducer.get_cached 必须走 Factory 绑定缓存上下文，确保旧运行实例
+在延迟解析树模型时仍读取原配置源。装配期不强制解析未用的可选 Embedder。

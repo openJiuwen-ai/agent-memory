@@ -71,6 +71,7 @@ from jiuwen_memory.api import (
     ValidationError,
 )
 from jiuwen_memory.api import normalize as normalize_filters
+from jiuwen_memory_entry.core.api_contract import parse_request  # noqa: E402
 
 Body = Mapping[str, Any]
 
@@ -686,6 +687,14 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
     }
 
 
+def _tree_parameters(verb: str, required: dict, supplied: dict) -> dict:
+    """仅解码显式树参数；沿用统一类型契约，省略字段继续使用 API 默认值。"""
+    if not supplied:
+        return {}
+    decoded = parse_request(verb, {**required, **supplied})
+    return {name: decoded[name] for name in supplied}
+
+
 def _search(srv, request: DispatchRequest) -> Body:
     payload = request.payload
     scope = _require_target(request)
@@ -707,6 +716,16 @@ def _search(srv, request: DispatchRequest) -> Body:
     # as_of 与 _get 同源：缺省时点查询必须落到历史版本，否则调用方拿到的是
     # “当前状态”而字段本身并未被报错（静默忽略）。
     as_of = _parse_occurred_at(payload.get("as_of"), name="search as_of")
+    tree_values = {
+        "hierarchy_kind": payload.get("hierarchy_kind"),
+        "hierarchy_role": payload.get("hierarchy_role"),
+        "span_start": payload.get("span_start"), "span_end": payload.get("span_end"),
+        "expand_depth": payload.get("expand_depth"), "rollup": payload.get("rollup"),
+    }
+    tree_options = _tree_parameters(
+        "search", {"query": _require(payload, "query"), "context": {"scope": _scope_view(scope)}},
+        {key: value for key, value in tree_values.items() if key in payload},
+    )
     res = srv.api.search(
         _require(payload, "query"),
         Context(scope, extensions=extensions),
@@ -716,6 +735,7 @@ def _search(srv, request: DispatchRequest) -> Body:
         top_k=_parse_positive_int(payload.get("k"), name="k", default=10),
         disclosure=disclosure,
         with_trajectory=trace,
+        **tree_options,
     )
     hits = [
         {
@@ -882,6 +902,14 @@ def _evolve(srv, request: DispatchRequest) -> Body:
     dreaming = _parse_dreaming(payload.get("dreaming"))
     interval = _parse_non_negative_int(payload.get("interval"), name="interval", default=0)
     candidate = _parse_candidate(payload.get("candidate"))
+    tree_values = {
+        "hierarchy_options": payload.get("hierarchy_options"),
+        "reuse_existing": payload.get("reuse_existing"),
+    }
+    tree_options = _tree_parameters(
+        "evolve", {"scope": _scope_view(scope), "mode": mode.value},
+        {key: value for key, value in tree_values.items() if key in payload},
+    )
     job_id = srv.api.evolve(
         scope,
         mode,
@@ -894,6 +922,7 @@ def _evolve(srv, request: DispatchRequest) -> Body:
         dreaming=dreaming,
         interval=interval,
         security=_request_security(request),
+        **tree_options,
     )
     return {"ok": True, "op": "evolve", "mode": mode.value, "job_id": job_id}
 

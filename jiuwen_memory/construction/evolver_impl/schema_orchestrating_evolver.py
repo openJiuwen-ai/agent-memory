@@ -27,6 +27,8 @@ from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
 )
 from jiuwen_memory.construction.evolver_impl.schema_update import SchemaUpdateCoordinator
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
@@ -61,6 +63,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
         *,
+        hierarchy_composer: HierarchyComposer | None = None,
         kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -75,6 +78,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             dedup=dedup,
             llm=llm,
             layer_annotator=layer_annotator,
+            hierarchy_composer=hierarchy_composer,
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
         )
@@ -241,15 +245,20 @@ def _build(config):
     index_default = resolve_index_builder_default(config)
     dedup_default = "vector" if vector_on else "keyword"
     storage = StoreManagerProducer.resolve(config)
+    hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=index_default)
+    hierarchy_llm = LlmProducer.dep(config, default="echo")
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=index_default),
+        index_builder=hierarchy_index,
         storage=storage,
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dedup_default),
-        llm=LlmProducer.dep(config, default="echo"),
+        llm=hierarchy_llm,
+        hierarchy_composer=optional_hierarchy_composer(
+            config, index_builder=hierarchy_index, llm=hierarchy_llm,
+        ),
         layer_annotator=_optional_layer_annotator(config),
         kv_name=resolve_name(config, "kv_store"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),

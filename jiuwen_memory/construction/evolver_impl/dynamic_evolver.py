@@ -44,6 +44,7 @@ from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     _resolve_message_store,
 )
 from jiuwen_memory.construction.extractor import ExtractorProducer
+from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
 from jiuwen_memory.construction.prompt_registry import (
     PHASE_CONSOLIDATE,
@@ -416,15 +417,20 @@ def _build(config):
         else PromptRegistry(config_source=config_source)
     )
 
+    hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
+    hierarchy_llm = LlmProducer.dep(config, default="echo")
     return DynamicEvolver(
         extractor=ExtractorProducer.dep(config, default="dynamic_llm"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+        index_builder=hierarchy_index,
         storage=StoreManagerProducer.resolve(config),
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),
-        llm=LlmProducer.dep(config, default="echo"),
+        llm=hierarchy_llm,
+        hierarchy_composer=optional_hierarchy_composer(
+            config, index_builder=hierarchy_index, llm=hierarchy_llm,
+        ),
         layer_annotator=_opt_annotator(),
         router=optional_router(config),
         prompt_registry=registry,

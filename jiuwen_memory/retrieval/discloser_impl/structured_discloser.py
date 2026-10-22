@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from jiuwen_memory.common.type_def import MemoryUnit, ScoredCandidate
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
-from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
+from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer, candidate_unit
 from jiuwen_memory.retrieval.types import DisclosureLevel, ParsedQuery, RetrievedItem
 
 _L0_LIMIT = 120
@@ -56,13 +56,14 @@ class StructuredDiscloser(Discloser):
         level: DisclosureLevel,
         max_tokens: int | None = None,
     ) -> list[RetrievedItem]:
+        """按披露粒度生成结构化内容，并保留真源父引用。"""
         if level == DisclosureLevel.ADAPTIVE:
             return self._adaptive_disclose(query, candidates, units, max_tokens)
 
         items: list[RetrievedItem] = []
         keywords = self._keywords(query)
         for su in candidates:
-            unit = units.get(su.unit_id)
+            unit = candidate_unit(su, units)
             if unit is None:
                 continue
             abstract, _ = self._render(su, unit, DisclosureLevel.L0, keywords)
@@ -78,6 +79,7 @@ class StructuredDiscloser(Discloser):
                     user_metadata=dict(unit.user_metadata),
                     level=level,
                     system_metadata=dict(unit.system_metadata),
+                    parent_id=unit.hierarchy.parent_id,
                 )
             )
         return items
@@ -92,7 +94,7 @@ class StructuredDiscloser(Discloser):
         keywords = self._keywords(query)
         variants = []
         for scored_unit in candidates:
-            unit = units.get(scored_unit.unit_id)
+            unit = candidate_unit(scored_unit, units)
             if unit is not None:
                 variants.append(self._variants(scored_unit, unit, keywords))
         selected_levels = [DisclosureLevel.L0 for _ in variants]
@@ -127,6 +129,7 @@ class StructuredDiscloser(Discloser):
                     user_metadata=dict(variant.unit.user_metadata),
                     level=actual_level,
                     system_metadata=dict(variant.unit.system_metadata),
+                    parent_id=variant.unit.hierarchy.parent_id,
                 )
             )
         return items
@@ -159,7 +162,8 @@ class StructuredDiscloser(Discloser):
         if budget is None or self._total_tokens(variants, proposed) <= budget:
             selected_levels[idx] = target_level
 
-    def _can_upgrade_top_to_l2(self, variants: list[_DisclosureVariant]) -> bool:
+    @staticmethod
+    def _can_upgrade_top_to_l2(variants: list[_DisclosureVariant]) -> bool:
         if not variants:
             return False
         if len(variants) == 1:

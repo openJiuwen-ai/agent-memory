@@ -33,6 +33,33 @@ def default_config_dict() -> dict[str, Any]:
     return {
         "globals": {
             "schema_enabled": False,
+            # 算法预设；是否执行仍由 hierarchy.enabled 控制。
+            "hierarchy_profiles": {
+                "time": {
+                    "leaf_role": "snapshot",
+                    "parent_roles": ["time_span", "scene", "event"],
+                    "stage_options": {
+                        "TimeSpanMerger": {
+                            "gap_seconds": 7200,
+                            "summary_mode": "llm",
+                            "summary_max_leaves": 20,
+                            "summary_max_chars_per_leaf": 60,
+                        },
+                        "SceneSegmenter": {
+                            "max_duration_seconds": 1209600,
+                            "summary_mode": "llm",
+                            "summary_max_children": 20,
+                            "summary_max_chars_per_child": 80,
+                        },
+                        "EventBuilder": {
+                            "similarity_threshold": 0.65,
+                            "summary_mode": "llm",
+                            "summary_max_children": 20,
+                            "summary_max_chars_per_child": 300,
+                        },
+                    },
+                },
+            },
             "vector_enabled": True,
             "graph_enabled": True,
             "rerank_enabled": True,

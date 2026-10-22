@@ -15,6 +15,7 @@ from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.jobs import Job, JobCancelledError
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
+from jiuwen_memory.control.scheduler_impl.job_outcome import terminal_job_status
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 
 logger = get_logger(__name__)
@@ -57,9 +58,9 @@ class InProcessScheduler(Scheduler):
             result = await job.run()
             for k, v in result.detail.items():
                 info.detail[k] = v
-            info.status = JobStatus.SUCCEEDED
+            info.status = terminal_job_status(result)
             logger.info(
-                "InProcessScheduler.succeeded: job_id=%s kind=%s scope=%s",
+                "InProcessScheduler.finished: job_id=%s kind=%s scope=%s",
                 job_id,
                 type(job).__name__,
                 scope_for_log(job.scope),

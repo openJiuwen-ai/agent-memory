@@ -28,7 +28,7 @@ import re
 import uuid
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import ConflictError
+from jiuwen_memory.common.errors import ConflictError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
     get_logger,
@@ -40,6 +40,7 @@ from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
+    HierarchyRef,
     LifecycleState,
     MemoryUnit,
     Relation,
@@ -56,9 +57,21 @@ from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer
-from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
+from jiuwen_memory.construction.evolver import (
+    EvolveMode,
+    Evolver,
+    EvolveRequest,
+    EvolveResult,
+    EvolverProducer,
+)
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
+from jiuwen_memory.construction.hierarchy_composer import (
+    HierarchyComposeOptions,
+    HierarchyComposer,
+    HierarchyComposeRequest,
+)
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
@@ -201,6 +214,7 @@ class OrchestratingEvolver(Evolver):
         layer_annotator: LayerAnnotator | None = None,
         router: Router | None = None,
         *,
+        hierarchy_composer: HierarchyComposer | None = None,
         graph_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -219,6 +233,7 @@ class OrchestratingEvolver(Evolver):
         self._layer_annotator = layer_annotator
         # 归属判定算子：None 表示不判定，派生单元沿用源单元的 scope（向后兼容）。
         self._router = router
+        self._hierarchy_composer = hierarchy_composer
         self.relations: list[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
@@ -256,9 +271,22 @@ class OrchestratingEvolver(Evolver):
 
     def evolve(
         self,
-        units: list[MemoryUnit],
-        mode: EvolveMode,
+        units: list[MemoryUnit] | EvolveRequest,
+        mode: EvolveMode | None = None,
     ) -> EvolveResult:
+        if isinstance(units, EvolveRequest):
+            request = units
+            if mode is not None:
+                raise ValidationError("EvolveRequest 不可同时传入 mode")
+            if not isinstance(request.mode, EvolveMode):
+                raise ValidationError("EvolveRequest.mode 必须是 EvolveMode")
+            if request.mode is EvolveMode.HIERARCHY:
+                return self._evolve_hierarchy(request)
+            if request.hierarchy_options is not None:
+                raise ValidationError("仅 HIERARCHY 模式接受 hierarchy_options")
+            units, mode = request.units, request.mode
+        if not isinstance(mode, EvolveMode) or mode is EvolveMode.HIERARCHY:
+            raise ValidationError("HIERARCHY 必须使用含有界区间的 EvolveRequest")
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
             logger.info(
@@ -282,6 +310,32 @@ class OrchestratingEvolver(Evolver):
     # ------------------------------------------------------------------
     # 落盘辅助
     # ------------------------------------------------------------------
+
+    def _evolve_hierarchy(self, request: EvolveRequest) -> EvolveResult:
+        """只委托 Composer，不进入抽取、去重或内容合并。"""
+        options = request.hierarchy_options
+        if not isinstance(options, HierarchyComposeOptions):
+            raise ValidationError("HIERARCHY 要求 hierarchy_options")
+        if self._hierarchy_composer is None:
+            raise ValidationError("未装配 HierarchyComposer，无法执行 HIERARCHY")
+        if not isinstance(request.units, list) or not isinstance(options.parent_roles, list):
+            raise ValidationError("HIERARCHY 的 units 与 parent_roles 必须是列表")
+        leaves: list[MemoryUnit] = []
+        parents: list[MemoryUnit] = []
+        for unit in request.units:
+            if not isinstance(unit, MemoryUnit) or not isinstance(unit.hierarchy, HierarchyRef):
+                raise ValidationError("HIERARCHY 要求具有 HierarchyRef 的 MemoryUnit")
+            if unit.hierarchy.role is options.leaf_role:
+                leaves.append(unit)
+            elif unit.hierarchy.role in options.parent_roles:
+                parents.append(unit)
+            else:
+                raise ValidationError(f"节点 {unit.id} 的角色不属于本次建树请求")
+        compose_request = HierarchyComposeRequest(
+            leaves=leaves, options=options, existing_parents=parents,
+        )
+        result = self._hierarchy_composer.replace_in_span(compose_request)
+        return EvolveResult(hierarchy_result=result)
 
     def _persist(self, units: list[MemoryUnit]) -> list[str]:
         # 记忆写入只经 IndexBuilder：正排与派生索引由其统一编排。
@@ -1211,15 +1265,20 @@ def _build(config):
             return None
         return LayerAnnotatorProducer.build_named("default", ctx)
 
+    hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
+    hierarchy_llm = LlmProducer.dep(config, default="echo")
     return OrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="keyword"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+        index_builder=hierarchy_index,
         storage=StoreManagerProducer.resolve(config),
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),
-        llm=LlmProducer.dep(config, default="echo"),
+        llm=hierarchy_llm,
+        hierarchy_composer=optional_hierarchy_composer(
+            config, index_builder=hierarchy_index, llm=hierarchy_llm,
+        ),
         layer_annotator=_opt_annotator(),
         router=optional_router(config),
         graph_name=resolve_name(config, "graph_store"),

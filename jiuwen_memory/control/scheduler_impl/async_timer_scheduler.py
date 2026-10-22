@@ -47,6 +47,7 @@ from jiuwen_memory.control.scheduler import (
     Scheduler,
     SchedulerProducer,
 )
+from jiuwen_memory.control.scheduler_impl.job_outcome import terminal_job_status
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 
 logger = get_logger(__name__)
@@ -411,7 +412,7 @@ class AsyncTimerScheduler(Scheduler):
                 job.check_cancelled()
                 result = await job.run()
                 self._merge_info(info, result)
-                info.status = JobStatus.SUCCEEDED
+                info.status = terminal_job_status(result)
                 logger.info(
                     "AsyncTimerScheduler.finished: job_id=%s kind=%s scope=%s status=%s",
                     job_id,

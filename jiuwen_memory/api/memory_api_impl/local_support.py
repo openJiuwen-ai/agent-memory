@@ -767,7 +767,7 @@ def _evolve_space_action(mode: EvolveMode | str) -> SpaceAction:
         resolved = EvolveMode(mode)
     except ValueError:
         return SpaceAction.WRITE
-    if resolved in (EvolveMode.CONSOLIDATE, EvolveMode.FORGET):
+    if resolved in (EvolveMode.CONSOLIDATE, EvolveMode.FORGET, EvolveMode.HIERARCHY):
         return SpaceAction.UPDATE
     return SpaceAction.WRITE
 
