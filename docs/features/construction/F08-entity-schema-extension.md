@@ -52,12 +52,11 @@ Schema 发送给属性生成 Prompt。Normalizer 使用同一个选中 Schema �
 
 生成 Prompt 采用高召回属性抽取规则：Schema Selection 对不确定候选倾向保留，生成阶段
 执行 zero-fact-loss 检查，强调完整主语、具体名称、数值、地点、建议和相对时间来源。
-Prompt 的输出契约仍按本特性边界收敛为 `entities[].properties[]`；不要求输出未持久化的
-`edges`、`message_mapping` 或 Episode。因此，对齐的是产生检索收益的 Property 抽取语义，
-不是引入图或 Episode 数据结构。
+Prompt 的输出契约仍收敛为 `entities[].properties[]`，不要求输出未持久化的 edges、
+message mapping 或 Episode。
 
 `examples/entity_schema_locomo_person.json` 提供 LoCoMo 使用的 person-only 高覆盖候选属性集，
-包含 2 个静态属性和 42 个动态属性。它是显式选择的评测/示例配置，不替换通用
+包含静态属性和动态事件属性。它是显式选择的评测/示例配置，不替换通用
 `examples/persona.json`，也不改变 Schema 默认关闭的装配行为。
 
 模型响应必须是单个根 JSON 对象。属性逐条校验 entity type、property name、来源
@@ -81,8 +80,18 @@ Prompt 的输出契约仍按本特性边界收敛为 `entities[].properties[]`�
 生成 Prompt 按每个 Source 显式传入 unit id、说话者、角色与
 `temporal.t_message`。若事实没有明确的事件时间，Property content 可追加
 `Source message date` 和 `property event time: not stated`，但 `t_event` 保持为空。
-若事实使用相对时间，content 保留对应 Source 日期与原始相对表达，使下游
-可核查其归一化结果。`delete` 指令不追加该上下文，避免改变旧事实匹配语义。
+若事实使用相对时间，content 保留对应 Source 日期与原始相对表达，使下游可核查
+归一化结果。
+
+相对时间校验保留 `just now` 等明确时间短语；独立的 `just` 也可能表示语气强调，
+不作为强制补充事件时间的依据，避免无日期的偏好事实被误判并在纠错重试后丢弃。
+具体的周几和月内日期优先于周/月粗表达；相对时间只用包含对应表达的 Source 消息日期
+计算，多条候选消息给出冲突日期时进入现有纠错流程。无法可靠确定时保留原始 Source，
+不从无关消息借日期写入 Property。
+模型只给出与具体日一致的月精度时仍可保留 Property；正文中明确写错的日期继续纠错。
+上周/下周跨月时，有来源支持的具体日期按七天范围校验，不先限定到月锚点。
+上周末/下周末作为完整短语识别，日期须落在对应自然周的周六或周日。
+显式 `delete` 指令不追加时间上下文，避免改变旧事实匹配语义。
 
 ADD 路径中，属性 Unit 成功持久化后，Evolver 按其 `provenance` 找到对应 Source Unit，把
 `schema_entity_name` 去重聚合到 Source 的 `entities`。一个 Source 支持多个实体和多个属性，

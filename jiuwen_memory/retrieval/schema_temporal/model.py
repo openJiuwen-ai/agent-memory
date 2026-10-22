@@ -6,7 +6,7 @@ from __future__ import annotations
 import bisect
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -205,6 +205,7 @@ class SchemaPropertyEntry:
             "supersedes": self.supersedes,
             "provenance": list(self.provenance),
         }
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SchemaPropertyEntry:
         return cls(
@@ -242,7 +243,7 @@ def schema_unit_known_at(unit: MemoryUnit, query: SchemaTemporalQuery) -> bool:
                 LifecycleState.ARCHIVED,
                 LifecycleState.SUPERSEDED,
             }
-        knowledge_time = datetime.now(timezone.utc)
+        knowledge_time = datetime.now(UTC)
     else:
         knowledge_time = query.knowledge_as_of
     temporal = unit.temporal
@@ -513,7 +514,7 @@ class TemporalEntity:
             include_archived=query.include_archived,
             include_undated=True,
         )
-        return self._copy(properties=properties)
+        return self.copy(properties=properties)
 
     def event_filtered(self, query: SchemaTemporalQuery) -> TemporalEntity:
         """Return a copy whose timelines match the requested event-time view."""
@@ -526,7 +527,7 @@ class TemporalEntity:
             if query.mode in fallback_modes:
                 properties = known.properties
                 fallback_used = bool(properties)
-        return known._copy(properties=properties, fallback_used=fallback_used)
+        return known.copy(properties=properties, fallback_used=fallback_used)
 
     def selected_payload(
         self,
@@ -574,7 +575,7 @@ class TemporalEntity:
                 include_undated=include_undated,
             )
             fallback_used = bool(properties)
-        return self._copy(properties=properties, fallback_used=fallback_used)
+        return self.copy(properties=properties, fallback_used=fallback_used)
 
     def filter_by_timepoints(
         self,
@@ -600,7 +601,7 @@ class TemporalEntity:
                     matches.append(entry)
             if matches:
                 properties[name] = matches
-        return self._copy(properties=properties)
+        return self.copy(properties=properties)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -641,7 +642,7 @@ class TemporalEntity:
                     entity.add(SchemaPropertyEntry.from_dict(item))
         return entity
 
-    def _copy(
+    def copy(
         self,
         *,
         properties: dict[str, list[SchemaPropertyEntry]] | None = None,
@@ -698,8 +699,8 @@ def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _knowledge_time(entry: SchemaPropertyEntry) -> datetime:
@@ -707,12 +708,12 @@ def _knowledge_time(entry: SchemaPropertyEntry) -> datetime:
         entry.valid_from
         or entry.ingest_time
         or entry.message_time
-        or datetime.min.replace(tzinfo=timezone.utc)
+        or datetime.min.replace(tzinfo=UTC)
     )
 
 
 def _entry_sort_key(entry: SchemaPropertyEntry) -> tuple[int, datetime, datetime, str]:
-    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    epoch = datetime.min.replace(tzinfo=UTC)
     anchor = _event_anchor(entry)
     return (
         1 if anchor is not None else 0,
@@ -836,7 +837,7 @@ def _known_at(
         return False
     if knowledge_as_of is None:
         if entry.lifecycle is LifecycleState.ACTIVE:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             starts_before_now = entry.valid_from is None or entry.valid_from <= now
             ends_after_now = entry.valid_to is None or entry.valid_to > now
             return starts_before_now and ends_after_now

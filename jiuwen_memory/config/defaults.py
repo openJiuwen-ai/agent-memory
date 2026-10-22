@@ -40,6 +40,33 @@ def default_config_dict() -> dict[str, Any]:
             # TemporalEntity 是 Schema Property 的只读检索视图；默认不装配，
             # 不影响普通召回。启用后仍需 query extension 或自动时间分支命中。
             "schema_temporal_enabled": False,
+            # 算法预设；是否执行仍由 hierarchy.enabled 控制。
+            "hierarchy_profiles": {
+                "time": {
+                    "leaf_role": "snapshot",
+                    "parent_roles": ["time_span", "scene", "event"],
+                    "stage_options": {
+                        "TimeSpanMerger": {
+                            "gap_seconds": 7200,
+                            "summary_mode": "llm",
+                            "summary_max_leaves": 20,
+                            "summary_max_chars_per_leaf": 60,
+                        },
+                        "SceneSegmenter": {
+                            "max_duration_seconds": 1209600,
+                            "summary_mode": "llm",
+                            "summary_max_children": 20,
+                            "summary_max_chars_per_child": 80,
+                        },
+                        "EventBuilder": {
+                            "similarity_threshold": 0.65,
+                            "summary_mode": "llm",
+                            "summary_max_children": 20,
+                            "summary_max_chars_per_child": 300,
+                        },
+                    },
+                },
+            },
             "vector_enabled": True,
             "graph_enabled": True,
             "rerank_enabled": True,
@@ -50,6 +77,16 @@ def default_config_dict() -> dict[str, Any]:
             # space/job/ingest_job 等）不再逐个声明 storage 引用，统一经
             # StoreManagerProducer.resolve 读此键取全局共享实例。
             "store_manager": _D,
+            # 文档记忆总开关。false=真源写 KV（默认）；true=真源写影子索引
+            # + md 人类视图，不写 KV。装配期由各消费方 _build 经 config.get 读取并
+            # 归一固化进实例属性（见 should_write_document），运行期方法不再查 config。
+            "write_document": False,
+            # 文档看门狗开关：仅 write_document=true 下有意义；默认随文档开启
+            # （未显式配置取 True）。与装配点 root.get(WATCH_DOCUMENT_KEY, True) 及
+            # resolve_watch_document(None→True) 三处语义一致——用户开 write_document
+            # 但不配本键时，合并保留本默认 True，看门狗随文档启动；用户显式 false 关闭。
+            # 非文档模式 has_shadow_index() 短路，本 True 无副作用。
+            "watch_document": True,
         },
         # 顶层 prompts 段：按 phase（consolidate/reflect）→ key → prompt 文本。
         # 与 globals 同级，由 AssemblyContext 抽取到 globals["prompts"] 供
@@ -57,12 +94,8 @@ def default_config_dict() -> dict[str, Any]:
         "prompts": _PROMPTS_DEFAULT,
         # -- 存储（有状态，必须对象共享）-------------------------------------- #
         "kv_store": {_D: "memory"},
-        # 安全 provider：默认声明为 local 信封加密（AES-256-GCM），仅供 opt-in encrypted KV 引用。
-        # F04 §5.4：默认装配不强制包装 EncryptedKVStore；用户配 kv_store.default.target=encrypted
-        # 时由 @KvProducer.register("encrypted") builder 经 SecurityProducer.dep(config) 取此实例。
-        # local provider 的 create_key_file 默认 False：未注入密钥源且 key_file
-        # 不存在时装配 fail-closed。
-        "security": {_D: "local"},
+        # 不声明 security 段：它现由 SecurityRuntime 接管并须由部署显式选择。
+        # 存储加密是独立的 cryptography/key_provider 配置；默认 KV 仍为明文 memory。
         "vector_store": {
             _D: "memory",
             # Canonical Schema Entity 与 Property MemoryUnit 使用不同物理端口。
@@ -95,7 +128,7 @@ def default_config_dict() -> dict[str, Any]:
                             "kv_store": _D,
                             "preferred_retrieval_pipeline": "recall_get_rank",
                             # 召回路装配：CompositeDomainStore.for_manager 按能力开关
-                            #（vector_enabled / graph_enabled / layers_index_enabled，
+                            # （vector_enabled / graph_enabled / layers_index_enabled，
                             # 回退 globals）启用各 recaller，构建期同步组装。
                             # layers_index_enabled 默认 true（与构建侧对齐：默认建默认
                             # 查）；不在此硬编码，让 get 回退 globals 便于全局关停。
@@ -284,9 +317,9 @@ def default_config_dict() -> dict[str, Any]:
                     "index_builder": _D,
                     "llm": _D,
                     # MiddleToLongJob 业务参数
-                    "middle_max_fetch": 100,    # _list_working_units 取最近 N 条
-                    "middle_batch_size": 10,    # 连续性切批上限
-                    "middle_concurrency": 4,    # 批间并发（1=串行）
+                    "middle_max_fetch": 100,  # _list_working_units 取最近 N 条
+                    "middle_batch_size": 10,  # 连续性切批上限
+                    "middle_concurrency": 4,  # 批间并发（1=串行）
                 },
             }
         },
@@ -297,6 +330,14 @@ def default_config_dict() -> dict[str, Any]:
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D}}},
         "permission": {_D: {"target": "sqlite", "params": {"db_path": ":memory:"}}},
+        "authorizer": {
+            _D: {
+                "target": "standard",
+                "params": {"grant_store": _D, "delegation_store": _D},
+            }
+        },
+        "grant_store": {_D: "memory"},
+        "delegation_store": {_D: "memory"},
         "space": {_D: {"target": "kv", "params": {}}},
         # 空间授权事实的读取与缓存。params 只引用 space：正查（元数据与成员表）与
         # 反查（主体到空间）都在 SpaceManager 契约内，本算子只依赖它一个。
@@ -312,16 +353,17 @@ def default_config_dict() -> dict[str, Any]:
 ROOT_PARAMS: dict[str, str] = {
     "engine": _D,
     "permission": _D,
+    "authorizer": _D,
     "scheduler": _D,
     "ingest_job": _D,
     "policy": _D,
     "governor": _D,
     "audit": _D,
     "kv_store": _D,
-    "security": _D,
     "space": _D,
     "membership": _D,
     "config_source": _D,
+    "key_store": _D,
 }
 
 KV_DEFAULT_NAME = _D  # 注入的真源 kv 预置进缓存时用的具名键（与各处引用一致）

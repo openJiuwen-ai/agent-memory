@@ -6,7 +6,7 @@ import copy
 import json
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.llm.base import LLM
@@ -353,7 +353,7 @@ def _replacement(operation: SchemaPropertyMergeUpdate) -> MemoryUnit:
         replacement.tags,
         [tag for source in operation.sources for tag in source.tags],
     )
-    replacement.temporal.t_valid = datetime.now(timezone.utc)
+    replacement.temporal.t_valid = datetime.now(UTC)
     replacement.temporal.t_invalid = None
     replacement.temporal.t_message = _latest_message_time(operation.target, operation.sources)
     replacement.system_metadata["schema_property_operation"] = "update"
@@ -367,7 +367,7 @@ def _replacement(operation: SchemaPropertyMergeUpdate) -> MemoryUnit:
 def _retired(unit: MemoryUnit, lifecycle: LifecycleState) -> MemoryUnit:
     result = copy.deepcopy(unit)
     result.lifecycle = lifecycle
-    result.temporal.t_invalid = datetime.now(timezone.utc)
+    result.temporal.t_invalid = datetime.now(UTC)
     result.system_metadata["property_merge_action"] = lifecycle.value
     return result
 

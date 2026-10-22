@@ -15,6 +15,7 @@ globals:
   chunk_size: 120
   policies:                   # 运行时可变策略（交 PolicyManager；值保持字符串）
     rerank.enabled: "true"
+    hierarchy.enabled: "false"   # 开启后自动接入 Snapshot，显式 evolve(HIERARCHY) 才生成父树
 
 # ---- 换存储后端：覆盖各命名空间下的 default 实例（三方后端必填参数在 build 期即校验）----
 # kv_store:
@@ -43,7 +44,8 @@ globals:
 
 # ---- 本地高级精排（需安装 extra: embed，并准备模型文件）----
 # reranker:
-#   default: { target: bge_reranker, params: { reranker_bge_model: BAAI/bge-reranker-v2-m3 } }
+#   default: { target: bge_reranker, params: { reranker_bge_model: /models-local/bge-reranker-v2-m3 } }
+#   # 仅使用本地目录或已准备好的 HuggingFace 缓存，运行时不会下载权重。
 
 # ---- 跨实例分布式锁（横切原语，当前无消费方，配了也只在有人 dep 时才实例化）----
 # 不设默认实现：要用就必须显式配，避免「忘了配 Redis」静默退化成不跨实例的单机锁。
@@ -176,7 +178,8 @@ globals:
 #       # narrow_dims 每项 4 个字段：entity 与 tag_key 必填（tag_key 不得重复），
 #       #   applies_to 默认对全部类别生效，question 默认空（判定时问模型的那句话）。
 #       # 以上约束在装配期校验，配错即 ValidationError，不会留到运行时。
-#       # target: llm 时另可配 retry_max_retries（默认 3）、retry_backoff_ms（默认 1000）。
+#       # target: llm 时另可配 router_max_attempts（默认 3）、
+#       # router_retry_backoff（默认 1000）。
 #       # 接入方的产品概念，内核只作字典键透传；内核自带 user/agent/session 三项，
 #       # 取值以调用方身份为准、不接受覆盖，因此这里不得与那三项重名。
 #       coord_entities: [project, team]
@@ -215,3 +218,24 @@ globals:
 #           tag_key: project_id
 #           applies_to: [user_memory]    # 只对这些类别生效；不写则对全部类别生效
 #           question: 这条记忆是否与某个具体项目相关？
+
+
+# ---- 显式 TIME 建树 ----
+# 在上述 globals.policies 中将 hierarchy.enabled 设为 "true"；自定义 policies 完整替换
+# 默认策略表，需自行保留所用键。写完后调用 API（security 使用正常认证上下文）：
+# options = EvolveTaskOptions.time_hierarchy(
+#     home, span_start=start, span_end=end, reuse_existing=True,
+# )
+# job_id = api.evolve(
+#     home, options.mode, hierarchy_options=options.hierarchy_options,
+#     reuse_existing=options.reuse_existing, security=security,
+# )
+# info = api.job_status(job_id, security=security)
+# async_timer 需等到终态；默认 in_process 在提交中完成。
+# 内置构建预设：TimeSpan 累计跨度 2 小时、Scene 最大跨度 14 天、Event 相似阈值 0.65。
+# 开启树后普通 search 使用接口预设 TIME/time_span、rollup=true、expand_depth=1。
+# 可在 search 上显式传 expand_depth=0、rollup=False 等覆盖；父子总数不超过 top_k。
+# 查询前须完成 evolve(HIERARCHY) 显式建树，无有效 TimeSpan 时不自动回退。
+# 关闭树开关会忽略合法叶提示、树查询和建树选项；普通写入/查询/演进照常执行。
+# 如需覆盖，在现有 globals 段内添加 hierarchy_profiles；不要重复声明 globals。
+# 查询展开与父优先排序已接入；后台自动建树尚未接入。

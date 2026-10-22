@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from jiuwen_memory.common.time_utils import epoch_ms
 from jiuwen_memory.common.type_def import (
     T_EVENT_UNKNOWN,
     FilterClause,
@@ -25,7 +26,10 @@ from jiuwen_memory.common.type_def import (
     FilterGroup,
     FilterLogic,
     FilterOp,
+    HierarchyKind,
 )
+from jiuwen_memory.common.type_def.hierarchy import TIME_PARENT_ROLES, HierarchyStatus
+from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
 from jiuwen_memory.common.type_def.memory import LifecycleState
 
 # 当前态查询允许的 lifecycle；时间点回溯时排除的 lifecycle。
@@ -34,7 +38,7 @@ _ACTIVE_ARCHIVED = [LifecycleState.ACTIVE.value, LifecycleState.ARCHIVED.value]
 
 
 def _epoch_ms(dt: datetime) -> int:
-    return int(dt.timestamp() * 1000)
+    return epoch_ms(dt)
 
 
 def build_system_filters(
@@ -56,7 +60,8 @@ def build_system_filters(
     else:
         out.append(FilterClause("lifecycle", FilterOp.NE, LifecycleState.FORGOTTEN.value))
         t = _epoch_ms(as_of)
-        out.append(FilterClause("t_valid", FilterOp.LTE, t))
+        # 缺少 t_valid 表示没有起始界；NOT(GT) 保留缺值与小于等于边界的记录。
+        out.append(FilterGroup(FilterLogic.NOT, [FilterClause("t_valid", FilterOp.GT, t)]))
         # 依赖索引投影的哨兵约定：真源 t_invalid 为空（永久有效）时索引里落
         # ``T_INVALID_OPEN``，故本谓词对开放区间同样成立。若哪天索引改回"空则不写"，
         # 这一行会把活跃记忆整批排他——两处必须同改（见 common.type_def.T_INVALID_OPEN）。
@@ -86,3 +91,29 @@ def build_system_filters(
         )
 
     return out
+
+
+def build_ordinary_hierarchy_filters() -> list[FilterExpr]:
+    """生成父节点不进入普通召回；在候选 top-k 前排除。"""
+    return [FilterGroup(FilterLogic.NOT, [FilterGroup(FilterLogic.AND, [
+        FilterClause("hierarchy_kind", FilterOp.EQ, HierarchyKind.TIME.value),
+        FilterClause("hierarchy_role", FilterOp.IN, [role.value for role in TIME_PARENT_ROLES]),
+    ])])]
+
+
+def build_hierarchy_filters(query: HierarchyQuery) -> list[FilterExpr]:
+    """层级条件以独立 AND 谓词下推；结构时间使用闭区间相交。"""
+    if not query.enabled:
+        return build_ordinary_hierarchy_filters()
+    predicates: list[FilterExpr] = [
+        FilterClause("hierarchy_kind", FilterOp.EQ, query.hierarchy_kind.value),
+        FilterClause("hierarchy_status", FilterOp.EQ, HierarchyStatus.ACTIVE.value),
+    ]
+    if query.hierarchy_role is not None:
+        predicates.append(FilterClause("hierarchy_role", FilterOp.EQ, query.hierarchy_role.value))
+    if query.span_start is not None and query.span_end is not None:
+        predicates.extend([
+            FilterClause("tree_span_start", FilterOp.LTE, epoch_ms(query.span_end)),
+            FilterClause("tree_span_end", FilterOp.GTE, epoch_ms(query.span_start)),
+        ])
+    return predicates

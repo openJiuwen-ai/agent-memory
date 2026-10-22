@@ -10,13 +10,13 @@
 ```
 jiuwen_memory/
 ├── api/            # 接口层：统一 Core API（add/search/get/update/delete/evolve/admin），形态无关
-├── common/         # 跨层共享插件（Tokenizer/Chunker/Embedder/FeatureExtractor/LLM/Normalizer/Reranker）+ type_def/
+├── common/         # 跨层共享插件、security/（认证/资源保护/密码学）、审计 + type_def/
 ├── config/         # 配置加载/合并 + ConfigSource 晚绑定（见 S08）
 ├── construction/   # 构建层：落盘 + 多形式索引构建 + 自演进闭环
 ├── control/        # 编排层：MemoryEngine + application ports + Scheduler/Permission/Policy/Governance/Space
 ├── ingest/         # 接入层：多模态 → 文本投影 + MemoryUnit，不落盘
 ├── retrieval/      # 检索层：scope 过滤 → 多路召回 → 融合重排 → 渐进式披露
-└── storage/        # 存储层：StoreManager 管理面 + DomainStore 数据面 + 六类 Store，scope 原生隔离
+└── storage/        # 存储层：StoreManager 管理面 + DomainStore 数据面 + 九类 Store，Scope 隔离
 ```
 
 ## 数据流
@@ -29,7 +29,7 @@ jiuwen_memory/
   control/MemoryEngine ─── 跨层编排中枢
        │
        ├─ write ──→ ingest/Ingestor（规约）→ construction/（落盘 + 索引）→ storage/*Store
-       ├─ recall ─→ retrieval/Retriever → storage/Storage → storage/*Store.search
+       ├─ recall ─→ retrieval/Retriever → storage/DomainStore → 领域召回与真源复核
        ├─ evolve ─→ control/Scheduler → construction/Evolver → storage/*Store
        └─ get/update/delete ──→ storage/*Store（点读 + 非破坏式修正）
 ```
@@ -46,27 +46,32 @@ jiuwen_memory/
 
 ### construction/ — 构建层
 
-接收接入层产出的 `MemoryUnit`，调用 `storage` 落盘，在其上构建多形式索引。六个可插拔算子：`Extractor` → `Abstractor` → `Classifier` → `Associator` → `IndexBuilder` → `Evolver`（自演进闭环）。
+接收接入层产出的 MemoryUnit，经 IndexBuilder 交付本体和索引。可插拔能力包含 Extractor、
+Abstractor、Classifier、Associator、IndexBuilder、Router、Dedup、LayerAnnotator、Evolver 与 HierarchyComposer。
 
 ### retrieval/ — 检索层
 
-五步检索链路：`QueryParser`（查询理解）→ `Recaller`（多路召回）→ `Fuser`（融合+重排）→ `Discloser`（渐进式披露 L0→L1→L2）→ `Retriever`（编排+轨迹）。
+Retriever 编排 QueryParser → DomainStore 召回/真源物化与复核 → Fuser → Reranker → Discloser。
+Recaller 属于 storage 数据面内部，不是 retrieval 的公共算子。
 
 ### control/ — 编排层
 
-`MemoryEngine` 是接口层各语义的编排中枢（异步协程）。`Scheduler` 双通道调度演进任务，`PermissionManager` / `PolicyManager` / `Governor` / `SpaceManager` 管治理面。
+`MemoryEngine` 是接口层各语义的编排中枢（异步协程）。`Scheduler` 双通道调度演进任务，`PolicyManager` / `Governor` / `SpaceManager` 管治理面；授权由 API PEP 调用安全域 Authorizer，旧 PermissionManager 仅保留历史兼容，不参与生产判定。
 
 ### storage/ — 存储层
 
 存储层分管理面 `StoreManager`（能力发现、命名端口、统一授权代理）与数据面 `DomainStore`
 （MemoryUnit 领域操作与检索适配）两个 ABC，默认 `CompositeStoreManager` +
-`CompositeDomainStore` 组合六类 Store；全局唯一 manager 由 `globals.store_manager` 指名
+`CompositeDomainStore` 组合九类 Store（含可选 Markdown/shadow）；全局唯一 manager 由 `globals.store_manager` 指名
 （F07）。底层 Store 统一 CRUD 动词（insert/delete/update/get），检索型 Store 额外提供
 `search`。scope 隔离是存储层原生职责。
 
 ### common/ — 共享插件 + 类型
 
-七个无状态插件协议（构建侧与检索侧必须共用同一实例）。`type_def/` 定义跨层数据类型：`MemoryUnit`（原子载体）、`Scope`（隔离模型）、`FilterClause`、`AuditEvent` 等。`errors.py` 统一异常体系。
+共享插件协议与横切能力均采用 `base.py + *_impl + Producer`，由 YAML 选择已注册 target。
+安全能力（认证、凭据存储、资源保护、密码学）统一归 `common/security/`，其请求身份与
+加密上下文类型住 `security/types.py`；`type_def/` 定义 `MemoryUnit`、`Scope`、
+`AuditEvent` 等跨层类型，`errors.py` 统一异常体系。
 
 ### config/ — 配置层
 
@@ -137,7 +142,7 @@ jiuwen_memory/
 （本目录内部需要遵守的约束与不变量；跨模块的规则落到 docs/specs/，不写在这里）
 ```
 
-**更新规则**：以下三种情况必须在同一次 docs 提交里更新此文件：
+**更新规则**：以下三种情况必须在同一次实现 PR 的合并提交里更新此文件：
 - 目录内文件增删改名
 - 公开入口（类/函数）增删改名
 - 文件间调用关系发生变化

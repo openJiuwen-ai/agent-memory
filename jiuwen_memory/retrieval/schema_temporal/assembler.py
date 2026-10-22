@@ -11,8 +11,8 @@ from .model import SchemaPropertyEntry, TemporalEntity
 class TemporalEntityAssembler:
     """Assemble one read-only entity view without creating another truth source."""
 
+    @staticmethod
     def assemble(
-        self,
         entity_id: str,
         property_units: list[MemoryUnit],
         *,

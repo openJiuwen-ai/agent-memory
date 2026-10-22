@@ -20,10 +20,11 @@ scope 之外的额外谓词；:func:`validate` 会拒绝 scope 字段混入。
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from math import isfinite
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
 
@@ -101,8 +102,15 @@ _BUILTIN_FIELDS = frozenset(
         "t_valid",
         "t_invalid",
         "t_message",
+        "t_ingest",
         "content_layer",
         "seq",
+        "hierarchy_kind",
+        "hierarchy_role",
+        "hierarchy_status",
+        "tree_parent_id",
+        "tree_span_start",
+        "tree_span_end",
     }
 )
 
@@ -115,6 +123,8 @@ def canonical_filter_field(name: str) -> str:
     """把兼容字段名转换为内核规范名。"""
     if name in _SCOPE_FIELDS or name.startswith("scope_"):
         return name
+    if name == "id":
+        return "unit_id"
     if name == "memory_type":
         return MEMORY_TYPE_FILTER_FIELD
     if "." not in name and name not in _BUILTIN_FIELDS:
@@ -246,6 +256,24 @@ def from_dict(node: Any) -> FilterExpr:
             raise ValidationError(f"未知算子：{op_str!r}") from None
         return FilterClause(canonical_filter_field(key), op, operand)
     return FilterClause(canonical_filter_field(key), FilterOp.EQ, val)  # {field: value} → EQ
+
+
+def to_dict(expr: FilterExpr | None) -> dict | None:
+    """FilterExpr → dict DSL（:func:`from_dict` 的逆；持久化/回显用）。
+
+    叶子产出 ``{field: {op: value}}``；``AND``/``OR`` 产出 ``{AND: [子节点...]}``；
+    ``NOT`` 产出 ``{NOT: {子节点}}``。expr 须已规范化（``normalize`` 产物）——
+    field 保持原样不再二次 canonical，round-trip ``from_dict(to_dict(e))``
+    语义等价。值为可 JSON 序列化标量（``_normalize_value`` 保证）。
+    """
+    if expr is None:
+        return None
+    if isinstance(expr, FilterClause):
+        return {expr.field: {expr.op.value: expr.value}}
+    if expr.logic is FilterLogic.NOT:
+        return {"NOT": to_dict(expr.children[0])}
+    key = "AND" if expr.logic is FilterLogic.AND else "OR"
+    return {key: [to_dict(child) for child in expr.children]}
 
 
 def normalize(raw: FilterExpr | list[FilterClause] | dict | None) -> FilterExpr | None:

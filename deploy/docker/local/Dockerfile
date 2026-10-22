@@ -22,6 +22,7 @@ RUN apt-get update \
 # 只保留指向 /app/jiuwen_memory 的链接；compose 挂载 jiuwen_memory 后会被同一个链接读取。
 COPY pyproject.toml ./
 COPY jiuwen_memory ./jiuwen_memory
+COPY jiuwen_memory_entry ./jiuwen_memory_entry
 # 先从 PyTorch CPU 索引装 CPU 版 torch（x86_64/aarch64 均有 +cpu wheel），避免默认拉 CUDA
 # 版 torch 连带 nvidia(~2.9G)+triton(~652M) 等 GPU 库——本服务为纯 CPU 推理，这些用不上。
 # torch 满足后，下面 .[embed,deploy] 不会再装 CUDA 变体。CPU 约束只落在部署镜像：pyproject
@@ -35,7 +36,6 @@ ENV HF_HOME=/models \
     HF_ENDPOINT=https://huggingface.co
 
 # 调用层（HTTP surface）与脚本
-COPY jiuwen_memory_entry ./jiuwen_memory_entry
 COPY scripts ./scripts
 
 EXPOSE 8137

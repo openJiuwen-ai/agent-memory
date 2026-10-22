@@ -15,9 +15,10 @@ from __future__ import annotations
 import pytest
 
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.tokenizer.tokenizer_impl import TokenizerProducer
 from jiuwen_memory.common.tokenizer.tokenizer_impl.jieba_tokenizer import JiebaTokenizer
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 # ---------------------------------------------------------------------------
 # Tests: Core interface
@@ -196,8 +197,13 @@ def test_assemble_with_jieba():
     actor = Scope(org="test", user="alice")
     # add → jieba 分词建索引 → search
     units = api.add(
-        "用户偏好简洁回答", scope, source=Modality.TEXT, security=legacy_request_context(actor)
+        "用户偏好简洁回答",
+        scope,
+        source=Modality.TEXT,
+        security=internal_context(ScopedAuthenticator(actor)),
     )
     assert len(units) == 1
-    result = api.search("偏好", Context(scope), security=legacy_request_context(actor), top_k=10)
+    result = api.search(
+        "偏好", Context(scope), security=internal_context(ScopedAuthenticator(actor)), top_k=10
+    )
     assert len(result.items) > 0

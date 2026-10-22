@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from jiuwen_memory.common.type_def import (
@@ -27,7 +27,8 @@ from .recall import is_schema_property, schema_entity_id
 class PropertyIdLookup(Protocol):
     """Minimal reverse-index lookup accepted by the temporal reader."""
 
-    def __call__(self, scope: Scope, entity_id: str) -> Any: ...
+    def __call__(self, scope: Scope, entity_id: str) -> Any:
+        ...
 
 
 class SchemaTemporalReader:
@@ -89,11 +90,14 @@ class SchemaTemporalReader:
         scope: Scope,
         properties: list[MemoryUnit],
     ) -> dict[str, MemoryUnit]:
-        source_ids = list(
-            dict.fromkeys(
-                source_id for unit in properties for source_id in unit.provenance if source_id
-            )
-        )
+        source_ids = []
+        seen = set()
+        for unit in properties:
+            for source_id in unit.provenance:
+                if not source_id or source_id in seen:
+                    continue
+                seen.add(source_id)
+                source_ids.append(source_id)
         return self.load_units(scope, source_ids)
 
     def _read_entity(
@@ -128,14 +132,12 @@ class SchemaTemporalReader:
             return None
         unit_ids = list(getattr(lookup, "unit_ids", lookup or []))
         units = list(self.load_units(scope, unit_ids).values())
-        matched = [
-            unit
-            for unit in units
-            if schema_entity_id(unit) == entity_id
-            and is_schema_property(unit)
-            and matches_memory_unit(unit, filters)
-            and _knowledge_visible(unit, query)
-        ]
+        matched = []
+        for unit in units:
+            if schema_entity_id(unit) != entity_id or not is_schema_property(unit):
+                continue
+            if matches_memory_unit(unit, filters) and _knowledge_visible(unit, query):
+                matched.append(unit)
         return _sort_units(matched), len(matched)
 
     def _list_properties(
@@ -159,13 +161,12 @@ class SchemaTemporalReader:
         )
         limit = max(1, query.per_entity_limit)
         result = self._domain.list(scope, offset=0, limit=limit, filters=effective)
-        matched = [
-            unit
-            for unit in result.items
-            if schema_entity_id(unit) == entity_id
-            and is_schema_property(unit)
-            and _knowledge_visible(unit, query)
-        ]
+        matched = []
+        for unit in result.items:
+            if schema_entity_id(unit) != entity_id or not is_schema_property(unit):
+                continue
+            if _knowledge_visible(unit, query):
+                matched.append(unit)
         return _sort_units(matched), result.count
 
 
@@ -201,13 +202,13 @@ def _knowledge_visible(unit: MemoryUnit, query: SchemaTemporalQuery) -> bool:
 
 
 def _sort_units(units: list[MemoryUnit]) -> list[MemoryUnit]:
-    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    epoch = datetime.min.replace(tzinfo=UTC)
 
     def _anchor(unit: MemoryUnit) -> datetime:
         value = unit.temporal.t_event or unit.temporal.t_message or unit.temporal.t_ingest or epoch
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     return sorted(
         units,

@@ -17,6 +17,7 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit
 
 from .base import ConstructionOperator
+from .hierarchy_composer import HierarchyComposeOptions, HierarchyComposeResult
 
 
 class EvolveMode(str, Enum):
@@ -31,6 +32,17 @@ class EvolveMode(str, Enum):
     ASSOCIATE = "associate"
     CONSOLIDATE = "consolidate"
     FORGET = "forget"
+    HIERARCHY = "hierarchy"
+
+
+@dataclass
+class EvolveRequest:
+    """一次演进的输入；metadata 仅作请求上下文，不写回记忆。"""
+
+    units: list[MemoryUnit]
+    mode: EvolveMode
+    metadata: dict[str, str] = field(default_factory=dict)
+    hierarchy_options: HierarchyComposeOptions | None = None
 
 
 @dataclass
@@ -47,6 +59,7 @@ class EvolveResult:
     superseded_ids: list[str] = field(default_factory=list)
     forgotten_ids: list[str] = field(default_factory=list)
     created_units: list[MemoryUnit] = field(default_factory=list)
+    hierarchy_result: HierarchyComposeResult | None = None
 
 
 class EvolverProducer(Factory):
@@ -61,5 +74,7 @@ class EvolverProducer(Factory):
 
 class Evolver(ConstructionOperator):
     @abstractmethod
-    def evolve(self, units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult:
+    def evolve(
+        self, units: list[MemoryUnit] | EvolveRequest, mode: EvolveMode | None = None,
+    ) -> EvolveResult:
         """对一批记忆单元执行指定阶段的演进，返回变更结果。"""

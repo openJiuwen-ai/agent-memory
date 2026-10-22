@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
@@ -242,7 +242,7 @@ def _entity_record(
             ),
         ]
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     record = copy.deepcopy(existing) if existing is not None else MemoryUnit()
     record.id = entity_id
     record.scope = representative.scope

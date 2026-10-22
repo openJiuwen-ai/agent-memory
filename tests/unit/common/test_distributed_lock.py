@@ -361,7 +361,7 @@ def test_guard_without_auto_renew_starts_no_task() -> None:
 class _FakeScript:
     """模拟 redis-py 的 Script 对象；按脚本源码分派到对应的 CAS 语义。"""
 
-    def __init__(self, backing: "_FakeRedis", source: str) -> None:
+    def __init__(self, backing: _FakeRedis, source: str) -> None:
         self._backing = backing
         self._source = source
 

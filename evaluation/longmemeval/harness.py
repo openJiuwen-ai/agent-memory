@@ -15,16 +15,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from inspect import signature
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from jiuwen_memory.api import DeleteMode, DeleteSelector, MemoryRuntime, assemble_runtime
+from jiuwen_memory.api import (
+    DeleteMode,
+    DeleteSelector,
+    MemoryRuntime,
+    assemble_runtime,
+    build_dev_authenticator,
+    internal_context,
+)
 from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.config.config import Config
-
-try:
-    from jiuwen_memory.common.security.legacy import legacy_request_context
-except ImportError:  # Older Mem2.0 commits still accept identity= directly.
-    legacy_request_context = None
 
 from .artifacts import sha256_file, to_jsonable, write_json
 from .no_source import assert_no_source, no_source_extraction
@@ -51,15 +53,17 @@ class EvalHarness:
 
     def __init__(
         self,
-        config: Optional[Config] = None,
+        config: Config | None = None,
         artifact_dir: str | Path | None = None,
     ) -> None:
         runtime = assemble_runtime(config=config)
         self._runtime: MemoryRuntime | None = runtime
+        # 本地评测是受控 composition root；身份固定，数据集 scope 只作目标。
+        self._authenticator = build_dev_authenticator()
         try:
             self._api = runtime.api
             self._kv = _shared_evaluation_kv(self._api)
-            self._key2ids: Dict[str, List[str]] = {}
+            self._key2ids: dict[str, list[str]] = {}
             self._artifact_dir = Path(artifact_dir) if artifact_dir else None
             self._pre_dedup_calls: list[dict] = []
             self._retrieval_audits: list[dict] = []
@@ -106,16 +110,9 @@ class EvalHarness:
                 )
         return {"scopes": len(scopes), "memory_units": deleted_count}
 
-    @staticmethod
-    def _security_kwargs(method, identity) -> dict:
-        """Bridge the legacy identity= API and the current security= API."""
-        if "security" not in signature(method).parameters:
-            return {"identity": identity}
-        if legacy_request_context is None:
-            raise RuntimeError(
-                "Mem2.0 requires security= but legacy_request_context is unavailable"
-            )
-        return {"security": legacy_request_context(identity)}
+    def _security_kwargs(self, _method, _target) -> dict:
+        """每次调用生成新上下文，不从数据集目标推导 actor。"""
+        return {"security": internal_context(self._authenticator)}
 
     def _install_pre_dedup_capture(self) -> None:
         """Observe extractor output before Evolver dedup without changing it."""
@@ -140,13 +137,11 @@ class EvalHarness:
 
         setattr(extractor, "_build_units", captured_build_units)
 
-    def ingest(self, seeds: List[MemorySeed]) -> None:
+    def ingest(self, seeds: list[MemorySeed]) -> None:
         """逐条写入语料，捕获每个数据集 key 对应的真实 unit_id（可为多条：规约/切分）。"""
         add = getattr(self._api, "add", None) or getattr(self._api, "write")
         metadata_arg = (
-            "system_metadata"
-            if "system_metadata" in signature(add).parameters
-            else "metadata"
+            "system_metadata" if "system_metadata" in signature(add).parameters else "metadata"
         )
         for seed in seeds:
             kwargs = {
@@ -207,15 +202,12 @@ class EvalHarness:
                     with_trajectory=True,
                 )
             finally:
-                memory_retrieval_e2e_wall_ms = (
-                    perf_counter() - retrieval_started
-                ) * 1000.0
+                memory_retrieval_e2e_wall_ms = (perf_counter() - retrieval_started) * 1000.0
         finally:
             storage.recall = original_recall
         if len(recall_durations_ms) != 1:
             raise RuntimeError(
-                "expected exactly one storage recall call, got "
-                f"{len(recall_durations_ms)}"
+                f"expected exactly one storage recall call, got {len(recall_durations_ms)}"
             )
         storage_recall_wall_ms = recall_durations_ms[0]
         if self._artifact_dir is not None:
@@ -231,8 +223,8 @@ class EvalHarness:
                     "trajectory": to_jsonable(result.trajectory),
                 }
             )
-        unit_message_dates: Dict[str, str] = {}
-        unit_event_dates: Dict[str, str] = {}
+        unit_message_dates: dict[str, str] = {}
+        unit_event_dates: dict[str, str] = {}
         unit_ids = [item.unit_id for item in result.items if item.unit_id]
         if unit_ids:
             units = self._api.inspect(
@@ -244,23 +236,17 @@ class EvalHarness:
                 temporal = getattr(unit, "temporal", None)
                 message_at = getattr(temporal, "t_message", None)
                 event_at = getattr(temporal, "t_event", None)
-                unit_message_dates[unit.id] = (
-                    message_at.isoformat() if message_at else ""
-                )
+                unit_message_dates[unit.id] = message_at.isoformat() if message_at else ""
                 unit_event_dates[unit.id] = event_at.isoformat() if event_at else ""
         relevant_ids = set()
-        relevant_key_unit_ids: Dict[str, List[str]] = {}
+        relevant_key_unit_ids: dict[str, list[str]] = {}
         for key in case.relevant_keys:
             unit_ids = list(self._key2ids.get(key, []))
             relevant_ids.update(unit_ids)
-        source_keys = case.relevant_source_keys or {
-            key: {key} for key in case.relevant_keys
-        }
+        source_keys = case.relevant_source_keys or {key: {key} for key in case.relevant_keys}
         for source_key, keys in source_keys.items():
             relevant_key_unit_ids[source_key] = [
-                unit_id
-                for key in keys
-                for unit_id in self._key2ids.get(key, [])
+                unit_id for key in keys for unit_id in self._key2ids.get(key, [])
             ]
         return CaseOutcome(
             query_id=case.query_id,
@@ -271,17 +257,14 @@ class EvalHarness:
             # ``context_dates`` remains the effective conversation date for
             # older evaluators: latest t_message first, legacy t_event fallback.
             context_dates=[
-                unit_message_dates.get(item.unit_id, "")
-                or unit_event_dates.get(item.unit_id, "")
+                unit_message_dates.get(item.unit_id, "") or unit_event_dates.get(item.unit_id, "")
                 for item in result.items
             ],
             trajectory=list(result.trajectory),
             context_message_dates=[
                 unit_message_dates.get(item.unit_id, "") for item in result.items
             ],
-            context_event_dates=[
-                unit_event_dates.get(item.unit_id, "") for item in result.items
-            ],
+            context_event_dates=[unit_event_dates.get(item.unit_id, "") for item in result.items],
             memory_retrieval_e2e_wall_ms=memory_retrieval_e2e_wall_ms,
             storage_recall_wall_ms=storage_recall_wall_ms,
             expected_answer=case.expected_answer,
@@ -289,7 +272,7 @@ class EvalHarness:
             relevant_key_unit_ids=relevant_key_unit_ids,
         )
 
-    def evaluate(self, dataset: Dataset, concurrency: int = 1) -> List[CaseOutcome]:
+    def evaluate(self, dataset: Dataset, concurrency: int = 1) -> list[CaseOutcome]:
         """按 scope 隔离执行 write→recall；可并行不同 sample 的 scope。"""
         if concurrency <= 0:
             raise ValueError(f"evaluation concurrency must be positive, got {concurrency}")
@@ -387,9 +370,7 @@ class EvalHarness:
         if self._artifact_dir is None:
             raise RuntimeError("artifact directory is required for artifact output")
         candidate_count = sum(len(call["candidates"]) for call in self._pre_dedup_calls)
-        memory_unit_count = sum(
-            len(call["memory_units"]) for call in self._pre_dedup_calls
-        )
+        memory_unit_count = sum(len(call["memory_units"]) for call in self._pre_dedup_calls)
         pre_dedup_path = self._artifact_dir / "pre_dedup_candidates.json"
         persisted_path = self._artifact_dir / "persisted_memory_units.json"
         retrieval_path = self._artifact_dir / "retrieval_audit.json"
@@ -436,8 +417,7 @@ class EvalHarness:
                 "pre_dedup_memory_unit_count": memory_unit_count,
                 "persisted_memory_unit_count": len(persisted_units),
                 "storage_recall_call_count": sum(
-                    audit["storage_recall_call_count"]
-                    for audit in self._retrieval_audits
+                    audit["storage_recall_call_count"] for audit in self._retrieval_audits
                 ),
                 "files": {
                     path.name: {
@@ -462,7 +442,7 @@ class EvalHarness:
         )
 
 
-def purge_run_data(dataset: Dataset, config: Optional[Config] = None) -> dict[str, int]:
+def purge_run_data(dataset: Dataset, config: Config | None = None) -> dict[str, int]:
     """Reassemble the official runtime and purge one completed evaluation run."""
     harness = EvalHarness(config=config)
     try:

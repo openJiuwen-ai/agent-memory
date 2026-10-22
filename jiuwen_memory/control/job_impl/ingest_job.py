@@ -7,7 +7,7 @@ import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import BoundedSemaphore, RLock
 
 from jiuwen_memory.common.errors import (
@@ -68,6 +68,7 @@ class InProcessIngestJobController(IngestJobController):
         self._job_id_by_payload: dict[_PayloadKey, str] = {}
         self._lock = RLock()
         self._closed = False
+        self._drained = False
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.INGEST_JOB
@@ -84,7 +85,7 @@ class InProcessIngestJobController(IngestJobController):
         task: IngestTask,
     ) -> IngestSubmission:
         key = _payload_key(scope, payload_id)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         job = IngestJob(
             id=f"{INGEST_JOB_PREFIX}{uuid.uuid4().hex}",
             payload_id=payload_id,
@@ -152,11 +153,17 @@ class InProcessIngestJobController(IngestJobController):
 
     def close(self, *, wait: bool = True) -> None:
         with self._lock:
-            if self._closed:
+            if self._drained:
                 return
             self._closed = True
-        if self._executor is not None:
-            self._executor.shutdown(wait=wait, cancel_futures=False)
+            executor = self._executor
+        # 不在状态锁内 join：任务结束时还要取得该锁持久化最终状态。
+        # admission 已封闭仍允许后续 wait=True 升级为等待已提交任务全部结束。
+        if executor is not None:
+            executor.shutdown(wait=wait, cancel_futures=False)
+        if wait or executor is None:
+            with self._lock:
+                self._drained = True
 
     def _find_existing(
         self,
@@ -205,7 +212,7 @@ class InProcessIngestJobController(IngestJobController):
             updated = replace(
                 current,
                 status=status,
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
                 unit_ids=unit_ids,
                 error=error,
             )
@@ -245,9 +252,7 @@ class InProcessIngestJobController(IngestJobController):
         if self._kv is None or not self._kv.exists(scope, _job_storage_key(job_id)):
             return None
         try:
-            data = json.loads(
-                self._kv.get(scope, _job_storage_key(job_id)).decode("utf-8")
-            )
+            data = json.loads(self._kv.get(scope, _job_storage_key(job_id)).decode("utf-8"))
             job = IngestJob(
                 id=str(data["id"]),
                 payload_id=str(data["payload_id"]),
@@ -265,7 +270,7 @@ class InProcessIngestJobController(IngestJobController):
             job = replace(
                 job,
                 status="failed",
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
                 error="ingest job was interrupted by server restart",
             )
             self._persist(job)

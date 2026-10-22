@@ -8,6 +8,7 @@
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
     AuthenticationError,
+    BackendError,
     ConflictError,
     NotFoundError,
     PartialFailureError,
@@ -24,14 +25,23 @@ from jiuwen_memory.common.log import (
     redact_for_log,
     scope_for_log,
 )
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.security.capabilities import (
+    CloseableSecurityCapability,
+    share_security_lifecycle,
+)
 from jiuwen_memory.common.security.request_context import (
     get_request_id,
     new_request_context,
     reset_request_id,
     set_request_id,
 )
+from jiuwen_memory.common.security.space_roles import (
+    SpaceContentRole,
+    SpaceGovernanceRole,
+)
 from jiuwen_memory.common.security.types import (
+    SECRET_PARAM_KEYS,
     Action,
     Credentials,
     Grant,
@@ -39,6 +49,7 @@ from jiuwen_memory.common.security.types import (
     Surface,
     reset_current,
     set_current,
+    validate_actor_form,
 )
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
@@ -47,14 +58,18 @@ from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterExpr,
     FilterOp,
+    HierarchyKind,
+    HierarchyRole,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
     Modality,
     Scope,
     Segment,
+    normalize,
 )
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
     BatchWriteItem,
     BatchWriteOutcome,
@@ -78,6 +93,7 @@ from jiuwen_memory.control import (
     SpaceUsage,
     UpdateMode,
 )
+from jiuwen_memory.control.types import EvolveTaskOptions
 from jiuwen_memory.retrieval import (
     DisclosureLevel,
     RetrievalResult,
@@ -85,16 +101,31 @@ from jiuwen_memory.retrieval import (
     TrajectoryStep,
 )
 
-from .access_security import build_dev_authenticator
+from .access_security import build_configured_security_runtime, build_dev_authenticator
 from .memory_api import MemoryAPI
-from .memory_api_impl import MemoryRuntime, assemble, assemble_runtime
+from .memory_api_impl import (
+    AUTO_SECURITY_RUNTIME,
+    MemoryRuntime,
+    ServerRuntime,
+    assemble,
+    assemble_runtime,
+    assemble_server_runtime,
+)
 
 __all__ = [
+    "SearchOptions",
+    "EvolveTaskOptions", "HierarchyComposeOptions", "HierarchyKind", "HierarchyRole",
     "MemoryAPI",
     "assemble",
     "assemble_runtime",
+    "share_security_lifecycle",
+    "CloseableSecurityCapability",
     "MemoryRuntime",
+    "ServerRuntime",
+    "assemble_server_runtime",
+    "AUTO_SECURITY_RUNTIME",
     "build_dev_authenticator",
+    "build_configured_security_runtime",
     # 数据模型（common.type_def）
     "Scope",
     "Context",
@@ -120,6 +151,8 @@ __all__ = [
     "SpaceInfo",
     "SpacePatch",
     "SpaceMember",
+    "SpaceContentRole",
+    "SpaceGovernanceRole",
     "SpaceUsage",
     "SpaceDeleteResult",
     # 检索（retrieval）
@@ -131,6 +164,7 @@ __all__ = [
     "FilterClause",
     "FilterExpr",
     "FilterOp",
+    "normalize",
     # 演进 + 任务调度（construction / control）
     "EvolveMode",
     "Channel",
@@ -143,17 +177,19 @@ __all__ = [
     "Action",
     "Credentials",
     "RequestSecurityContext",
+    "SECRET_PARAM_KEYS",
     "Surface",
-    "legacy_request_context",
     "new_request_context",
     "reset_request_id",
     "get_request_id",
     "set_request_id",
     "set_current",
     "reset_current",
+    "validate_actor_form",
     # Access 错误映射（公开异常，transport 不识别内核内部模块）
     "AgentMemoryError",
     "AuthenticationError",
+    "BackendError",
     "ConflictError",
     "NotFoundError",
     "PartialFailureError",
@@ -163,9 +199,13 @@ __all__ = [
     "UnsupportedCapabilityError",
     "ValidationError",
     "safe_error_message",
+    # 安全上下文构造（access 面需要，替代 legacy_request_context）
+    "internal_context",
     # Access 日志隐私能力（adapter 不直接依赖内核 common 包）
     "install_privacy_filter",
     "metadata_for_log",
     "redact_for_log",
     "scope_for_log",
 ]
+
+from .search_options import SearchOptions

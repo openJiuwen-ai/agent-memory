@@ -9,17 +9,18 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
 from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Temporal
 from jiuwen_memory.ingest.base import IngestOperatorType
+from jiuwen_memory.ingest.hierarchy_hints import extract_hierarchy_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class SimpleIngestor(Ingestor):
@@ -41,6 +42,8 @@ class SimpleIngestor(Ingestor):
         for payload in payloads:
             ensure_normalizer_supports(self._normalizer, payload.modality)
             now = _now()
+            # 叶提示只声明结构身份；在规约前校验，不允许输入声明父子边。
+            hierarchy, system_metadata = extract_hierarchy_hints(payload.system_metadata)
             units.append(
                 MemoryUnit(
                     id=str(uuid.uuid4()),
@@ -59,8 +62,9 @@ class SimpleIngestor(Ingestor):
                         t_valid=now,
                         t_message=payload.occurred_at,
                     ),
-                    system_metadata=dict(payload.system_metadata),
+                    system_metadata=system_metadata,
                     user_metadata=dict(payload.user_metadata),
+                    hierarchy=hierarchy,
                 )
             )
         return units

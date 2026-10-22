@@ -47,7 +47,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
@@ -57,6 +57,7 @@ from jiuwen_memory.common.log import (
     redact_for_log,
 )
 from jiuwen_memory.common.type_def import (
+    MD_TITLE_KEY,
     Entity,
     LifecycleState,
     MemoryTier,
@@ -66,9 +67,10 @@ from jiuwen_memory.common.type_def import (
     inherited_system_metadata,
     inherited_user_metadata,
 )
+from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
 
 from ..base import ExtractContext, OperatorType
-from ..common import merge_unit_tags, parse_tags
+from ..common import merge_unit_tags, parse_tags, validate_llm_attempt_policy
 from ..extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
@@ -110,6 +112,7 @@ class ExtractionCandidate:
     evidence: str = ""
     event_date: str = ""  # LLM 解析出的绝对事件时间（ISO 8601），写入 temporal.t_event
     tier: MemoryTier = MemoryTier.SEMANTIC  # LLM 判定的认知角色（非法值兜底 SEMANTIC）
+    title: str = ""  # LLM 生成的 md 块标题（F08 §8，命名「这件事」非类别；清洗后单行 ≤50 字符）
     tags: list[str] = field(default_factory=list)  # LLM 抽的 1-3 个主题标签
     keywords: list[str] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
     entities: list[Entity] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
@@ -199,6 +202,11 @@ Fields:
   emit below 0.5.
 - "tier": "episodic" happened at a point in time; "semantic" a fact, concept or
   preference; "procedural" how something is done. When unsure, "semantic".
+- "title": a short heading naming THE MATTER this item records (e.g. "Frontend framework
+  choice" / "Licence renewed"), in the content's language, about 20 characters or fewer.
+  It names the specific matter, never a category - "Fact" or "Preference" is wrong.
+  It is not a tag: exactly one title per item, and it may differ from every tag. Avoid
+  repeating the same title across items of this batch when the matters differ.
 - "tags": 1-3 short lowercase labels for the topic, in the content's language, not
   repeating words already central to the content.
 
@@ -208,6 +216,7 @@ Output schema:
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "tier": "episodic" | "semantic" | "procedural",
   "content": "one self-contained statement, every specific kept",
+  "title": "short heading naming the matter",
   "tags": ["tag1", "tag2"],
   "confidence": 0.5~1.0,
   "event_date": "2026-03-14"
@@ -241,7 +250,9 @@ Output ONLY a JSON object (no array, no markdown fences). Schema:
 the goal/task, the key steps taken, and the outcome/result. Structured but as a single \
 coherent statement; inline markers such as Goal:/Steps:/Result: are optional, and must be \
 written in the source's language when used. Write the whole statement in the SAME \
-language as the source text. Cover the whole turn, not just one fact."
+language as the source text. Cover the whole turn, not just one fact.",
+  "title": "a short heading naming what this turn accomplished, in the source's \
+language, about 20 characters or fewer. Names the specific matter, never a category."
 }
 
 Rules:
@@ -318,12 +329,31 @@ def _parse_tier(raw) -> MemoryTier:
     return MemoryTier.SEMANTIC
 
 
+# md 块标题长度上限（F08 §8.4）：块格式是「标题行\n正文行」，看门狗按行遍历——
+# 清洗保证标题恒单行；长度截断是显示层约束（prompt 约束 ~20 字，这里兜 50 防长标题）。
+_MAX_TITLE_LEN = 50
+
+
+def _parse_title(raw) -> str:
+    """解析 LLM 输出的 title：strip + 去内部换行（保单行）+ 截断 ≤50 字符。
+
+    非 str / 空串容错为空串——空串表示本条无 LLM 标题，落盘侧兜底 ``# {unit.id}``。
+    与 ``_parse_tier`` 同款「解析端兜底」：prompt 已约束，这里防模型违约破坏块格式。
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    s = " ".join(s.split())  # 折叠所有空白（含换行）为单空格——标题恒单行
+    return s[:_MAX_TITLE_LEN]
+
+
 def _format_context_block(context: ExtractContext | None) -> str:
     """把 ExtractContext 拼成 user prompt 末尾的参考段（无 context 返回空串）。
 
     - Recent conversation context：做指代/代词消解与语境，明示「不从中提取、
       source_id 不指向这些」。
-    - Existing related memories：已有事实，明示「不要重复产出已涵盖的信息」。
+    - Existing related memories：已有事实，明示「不要重复产出已涵盖的信息」，
+      但矛盾/修正不算重复——必须照常产出，交由下游去重消解。
     """
     if context is None:
         return ""
@@ -334,16 +364,18 @@ def _format_context_block(context: ExtractContext | None) -> str:
             parts.append(
                 "## Recent conversation context "
                 "(for coreference / pronoun resolution only — do NOT extract from these, "
-                "do NOT point source_id at these):\n"
-                + "\n".join(lines)
+                "do NOT point source_id at these):\n" + "\n".join(lines)
             )
     if context.related_memories:
         lines = [f"- {u.content}" for u in context.related_memories if u.content]
         if lines:
             parts.append(
                 "## Existing related memories "
-                "(already-known facts — do NOT duplicate information these cover):\n"
-                + "\n".join(lines)
+                "(already-known facts — do NOT duplicate information these cover.\n"
+                "However, a line that CONTRADICTS, CORRECTS or REVISES an existing "
+                "memory is NOT a duplicate: extract it as a new item so the conflict "
+                "can be resolved downstream. Do NOT return [] merely because the topic "
+                "matches an existing memory.)\n" + "\n".join(lines)
             )
     return "\n\n".join(parts)
 
@@ -364,14 +396,16 @@ class ExtractorImpl(Extractor):
         self,
         llm: LLM,
         min_confidence: float = 0.5,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
         extract_batch_size: int = _DEFAULT_EXTRACT_BATCH_SIZE,
     ) -> None:
         self._llm = llm
         self._min_confidence = min_confidence
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts,
+            retry_backoff_ms,
+        )
         self._extract_batch_size = max(1, int(extract_batch_size))
 
     # ------------------------------------------------------------------
@@ -382,8 +416,7 @@ class ExtractorImpl(Extractor):
     def _is_procedural(units: list[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
         return any(
-            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
-            for u in units
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true" for u in units
         )
 
     @staticmethod
@@ -462,7 +495,8 @@ class ExtractorImpl(Extractor):
         successful_batches = 0
         failed_batches: list[tuple[int, int, Exception]] = []
         for start in range(0, len(accepted), self._extract_batch_size):
-            sub_batch = accepted[start:start + self._extract_batch_size]
+            end = start + self._extract_batch_size
+            sub_batch = accepted[start:end]
             try:
                 batch_candidates = self._llm_extract_batch(sub_batch, context=context)
             except Exception as exc:
@@ -567,6 +601,17 @@ class ExtractorImpl(Extractor):
             # tier 由 LLM 判定，限定 episodic/semantic/procedural；非法值兜底 SEMANTIC
             tier = _parse_tier(item.get("tier"))
 
+            # title 由 LLM 生成（F08 §8），清洗保单行 + 截断；空串=无标题（落盘兜底 unit.id）
+            title = _parse_title(item.get("title"))
+            logger.info(
+                "[trace/extract] title parse | raw_title=%r | parsed_title=%r "
+                "| item_keys=%s | source_id=%s",
+                redact_for_log(item.get("title")),
+                redact_for_log(title),
+                redact_for_log(list(item.keys())),
+                source_id[:8],
+            )
+
             # tags 由 LLM 抽，清洗 + 去重 + 截断到 ≤3
             tags = parse_tags(item.get("tags"))
 
@@ -578,16 +623,19 @@ class ExtractorImpl(Extractor):
                 continue
 
             event_date = str(item.get("event_date", "") or "").strip()
-            candidates.append(ExtractionCandidate(
-                target=target,
-                content=content.strip(),
-                source_unit_id=source_id,
-                confidence=confidence,
-                evidence=evidence,
-                event_date=event_date,
-                tier=tier,
-                tags=tags,
-            ))
+            candidates.append(
+                ExtractionCandidate(
+                    target=target,
+                    content=content.strip(),
+                    source_unit_id=source_id,
+                    confidence=confidence,
+                    evidence=evidence,
+                    event_date=event_date,
+                    tier=tier,
+                    title=title,
+                    tags=tags,
+                )
+            )
             logger.info(
                 "Extractor: candidate — source_unit_id=%s tier=%s metadata=%s",
                 source_id[:8],
@@ -612,8 +660,7 @@ class ExtractorImpl(Extractor):
             if not candidates:
                 raise InvalidExtractionCandidateError(details)
             logger.warning(
-                "Extractor: skipped %d invalid candidates while preserving %d valid "
-                "candidates: %s",
+                "Extractor: skipped %d invalid candidates while preserving %d valid candidates: %s",
                 len(invalid_reasons),
                 len(candidates),
                 details,
@@ -715,22 +762,30 @@ class ExtractorImpl(Extractor):
             logger.warning("Extractor._extract_procedural: LLM call failed, return []: %s", exc)
             return []
 
-        content = self._parse_procedural_response(response)
+        content, title = self._parse_procedural_response(response)
+        logger.info(
+            "[trace/extract] procedural title | parsed_title=%r | content_len=%d",
+            redact_for_log(title),
+            len(content) if content else 0,
+        )
         if not content:
             logger.info("Extractor._extract_procedural: empty content parsed, return []")
             return []
 
         # procedural 路径固定产 PROCEDURAL tier，不走 LLM tier/tags 判定、不走富化。
+        # title 与 content 同一 prompt 产出（F08 §8 决策3）：落 daily 文件时渲染用
+        # coords.team 不用它，但字段存着备规则调整（shadow unit_json 可查）。
         candidate = ExtractionCandidate(
             target=ExtractionTarget.CONTEXT,
             content=content,
             source_unit_id=units[0].id,
             confidence=1.0,
             tier=MemoryTier.PROCEDURAL,
+            title=title,
         )
 
         # 构建 1 条 PROCEDURAL MemoryUnit，provenance 回指全部本轮 unit
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         source = units[0]
         # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
         tags = merge_unit_tags(source.tags, ["procedural"])
@@ -754,6 +809,7 @@ class ExtractorImpl(Extractor):
                 "confidence": str(candidate.confidence),
                 "target": candidate.target.value,
             }
+            | ({MD_TITLE_KEY: candidate.title} if candidate.title else {})
             | candidate.metadata,
             user_metadata=inherited_user_metadata(units),
             lifecycle=LifecycleState.ACTIVE,
@@ -766,11 +822,12 @@ class ExtractorImpl(Extractor):
         )
         return [unit]
 
-    def _parse_procedural_response(self, response: str) -> str:
-        """解析 LLM 返回的 {"content": "..."} JSON，取 content 字段。
+    def _parse_procedural_response(self, response: str) -> tuple[str, str]:
+        """解析 LLM 返回的 {"content": "...", "title": "..."} JSON，取 (content, title)。
 
         多级兜底：直接解析 → 剥 markdown fence 再解析 → 整个响应当 content。
-        任一路径解析出 dict 即取 content 返回；都不成则返回原文（保证产 1 条）。
+        任一路径解析出 dict 即取字段返回；都不成则返回原文当 content（保证产 1 条）。
+        title 走 :func:`_parse_title` 清洗（保单行 + 截断），缺失为空串——落盘侧兜底。
         """
         for candidate_text in (response.strip(), self._strip_non_json(response)):
             try:
@@ -778,12 +835,14 @@ class ExtractorImpl(Extractor):
             except json.JSONDecodeError:
                 continue
             if isinstance(parsed, dict):
-                return str(parsed.get("content", "")).strip()
+                content = str(parsed.get("content", "")).strip()
+                title = _parse_title(parsed.get("title"))
+                return content, title
         logger.warning(
             "Extractor._parse_procedural_response: cannot parse as JSON, use raw response: %s",
             redact_for_log(response),
         )
-        return response.strip()
+        return response.strip(), ""
 
     def _preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """过滤 lifecycle≠ACTIVE / 空 content / 派生单元（provenance 非空）。"""
@@ -843,7 +902,7 @@ class ExtractorImpl(Extractor):
             "",
         )
         if not observation_date:
-            observation_date = datetime.now(timezone.utc).date().isoformat()
+            observation_date = datetime.now(UTC).date().isoformat()
         # prompt 声明该行形如 "observation_date: YYYY-MM-DD"，且据此把观测日期按日精度写进
         # content。调用方可能下推完整时间戳，故统一截到日——否则 prompt 的日精度约定不成立，
         # LLM 会把时分秒当作源文本给出的精度照抄进条目。
@@ -852,9 +911,8 @@ class ExtractorImpl(Extractor):
         user_text = (
             f"observation_date: {observation_date}\n"
             f"(Use this as the reference point to resolve relative time expressions "
-            f"like \"yesterday\"/\"last week\"/\"tomorrow\" into absolute dates in content "
-            f"and event_date.)\n\n"
-            + user_text
+            f'like "yesterday"/"last week"/"tomorrow" into absolute dates in content '
+            f"and event_date.)\n\n" + user_text
         )
         # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
         context_block = _format_context_block(context)
@@ -872,36 +930,54 @@ class ExtractorImpl(Extractor):
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=user_text),
         ]
+        logger.info(
+            "[trace/extract] llm_prompt | system_len=%d | user_len=%d | user_preview=%r",
+            len(system_prompt),
+            len(user_text),
+            redact_for_log(user_text),
+        )
 
         # 调用 LLM（含重试）
         response = self._call_llm_with_retry(messages)
+        logger.info(
+            "[trace/extract] llm_raw_response | units=%d | resp_len=%d | resp_preview=%r",
+            len(units),
+            len(response) if response else 0,
+            redact_for_log((response or "")[:400]),
+        )
 
         # 解析 JSON。
         items = self.parse_llm_response(response)
+        logger.info(
+            "[trace/extract] parsed_items | units=%d | items=%d | item_types=%s",
+            len(units),
+            len(items),
+            [type(it).__name__ for it in items],
+        )
         return self.build_candidates(items, units)
 
     def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         """调用 LLM.chat()，含重试逻辑。"""
         import time
 
-        last_exc = None
-        for attempt in range(self._retry_max_retries):
+        last_exc: Exception | None = None
+        for attempt in range(self._max_attempts):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
             except Exception as exc:
                 last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "Extractor: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1,
-                        wait,
-                    )
-                    time.sleep(wait)
-        # 所有重试都失败（retry_max_retries <= 0 时未进入循环，last_exc 仍为 None）
-        if last_exc is None:
-            raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
-        raise last_exc
+                if attempt == self._max_attempts - 1:
+                    break
+                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
+                logger.warning(
+                    "Extractor: LLM call failed (attempt %d), retrying in %.1fs",
+                    attempt + 1,
+                    wait,
+                )
+                time.sleep(wait)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("Extractor: LLM call did not execute")
 
     def _build_units(
         self,
@@ -940,7 +1016,7 @@ class ExtractorImpl(Extractor):
                 continue
             seen.add(dedup_key)
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=source.scope,
@@ -962,11 +1038,18 @@ class ExtractorImpl(Extractor):
                     "evidence": c.evidence,
                     "extracted_statement": statement,
                 }
+                | ({MD_TITLE_KEY: c.title} if c.title else {})
                 | c.metadata,
                 user_metadata=inherited_user_metadata([source]),
                 lifecycle=LifecycleState.ACTIVE,
             )
             result.append(unit)
+            logger.info(
+                "[trace/extract] unit title flow | c.title=%r | md_title_in_meta=%s | unit_id=%s",
+                redact_for_log(c.title),
+                MD_TITLE_KEY in (unit.system_metadata or {}),
+                unit.id[:8],
+            )
             logger.info(
                 "Extractor: built unit id=%s tier=%s tags=%s provenance=%s content=%s",
                 unit.id[:8],
@@ -989,10 +1072,11 @@ class ExtractorImpl(Extractor):
 
 @ExtractorProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     return ExtractorImpl(
         llm=LlmProducer.dep(config, default="echo"),
         min_confidence=config.get("extractor_min_confidence", 0.5),
-        retry_max_retries=config.get("extractor_retry_max", 3),
+        max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
     )

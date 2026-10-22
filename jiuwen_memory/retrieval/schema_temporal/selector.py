@@ -221,18 +221,14 @@ def _property_candidates(
     units: dict[str, MemoryUnit],
     existing: dict[str, ScoredMemoryUnit],
 ) -> list[ScoredMemoryUnit]:
-    entity_score_by_unit = {
-        entry.unit_id: result.entity_scores.get(entity.entity_id, 0.0)
-        for entity in result.entities
-        for timeline in entity.properties.values()
-        for entry in timeline
-    }
-    property_name_by_unit = {
-        entry.unit_id: property_name
-        for entity in result.entities
-        for property_name, timeline in entity.properties.items()
-        for entry in timeline
-    }
+    entity_score_by_unit = {}
+    property_name_by_unit = {}
+    for entity in result.entities:
+        entity_score = result.entity_scores.get(entity.entity_id, 0.0)
+        for property_name, timeline in entity.properties.items():
+            for entry in timeline:
+                entity_score_by_unit[entry.unit_id] = entity_score
+                property_name_by_unit[entry.unit_id] = property_name
     output: list[ScoredMemoryUnit] = []
     for rank, unit_id in enumerate(unit_ids, start=1):
         unit = units.get(unit_id)
@@ -349,9 +345,9 @@ def _merge_property_and_source_candidates(
     property_budget = limit - source_budget
     merged = [*properties[:property_budget], *sources[:source_budget]]
     if len(merged) < limit:
-        merged.extend(properties[property_budget : property_budget + limit - len(merged)])
+        merged.extend(properties[property_budget:property_budget + limit - len(merged)])
     if len(merged) < limit:
-        merged.extend(sources[source_budget : source_budget + limit - len(merged)])
+        merged.extend(sources[source_budget:source_budget + limit - len(merged)])
     return _deduplicate_and_sort(merged)[:limit]
 
 

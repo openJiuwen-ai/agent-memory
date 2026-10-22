@@ -35,6 +35,7 @@ class OperatorType(str, Enum):
     EVOLVER = "evolver"
     LAYER_ANNOTATOR = "layer_annotator"
     ROUTER = "router"
+    HIERARCHY_COMPOSER = "hierarchy_composer"
 
 
 class ConstructionOperator(ABC):

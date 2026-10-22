@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.type_def import (
     LifecycleState,
@@ -60,7 +60,7 @@ def _property(
         scope=Scope(org="org", user="user"),
         tier=MemoryTier.SEMANTIC,
         segments=[Segment(content=f"{name} is an engineer")],
-        temporal=Temporal(t_valid=datetime.now(timezone.utc)),
+        temporal=Temporal(t_valid=datetime.now(UTC)),
         system_metadata=metadata,
         lifecycle=LifecycleState.ACTIVE,
     )

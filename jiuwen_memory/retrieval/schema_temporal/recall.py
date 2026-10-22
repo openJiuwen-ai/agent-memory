@@ -351,7 +351,7 @@ def _fuse_property_batches(
                 candidate=rescored,
                 entity_id=schema_entity_id(candidate.unit),
                 property_name=str(candidate.unit.system_metadata.get("schema_property_name") or ""),
-                channels=tuple(sorted(channels[unit_id], key=lambda value: value.value)),
+                channels=tuple(sorted(channels.get(unit_id, set()), key=lambda value: value.value)),
             )
         )
     hits.sort(key=lambda hit: (-hit.score, hit.unit_id))

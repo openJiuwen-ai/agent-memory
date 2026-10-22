@@ -39,11 +39,13 @@ from jiuwen_memory.storage.fulltext import FulltextProducer, FulltextStore
 from jiuwen_memory.storage.fusion import FusionProducer, FusionStore
 from jiuwen_memory.storage.graph import GraphProducer, GraphStore
 from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
 from jiuwen_memory.storage.security import (
     AllowAllStorageSecurity,
     StorageAction,
     StorageSecurity,
 )
+from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
 from jiuwen_memory.storage.store_manager import (
     StorageCapability,
     StoreManager,
@@ -215,6 +217,8 @@ class CompositeStoreManager(StoreManager):
         fusion: FusionStore | dict[str, FusionStore] | None = None,
         fs: FSStore | dict[str, FSStore] | None = None,
         entity: EntityStore | dict[str, EntityStore] | None = None,
+        markdown: MarkdownStore | dict[str, MarkdownStore] | None = None,
+        shadow_index: DocumentShadowIndex | dict[str, DocumentShadowIndex] | None = None,
         security: StorageSecurity | None = None,
     ) -> None:
         self._named_stores: dict[StorageCapability, dict[str, Any]] = {
@@ -225,6 +229,8 @@ class CompositeStoreManager(StoreManager):
             StorageCapability.FUSION: _as_ports(fusion),
             StorageCapability.FS: _as_ports(fs),
             StorageCapability.ENTITY: _as_ports(entity),
+            StorageCapability.MARKDOWN: _as_ports(markdown),
+            StorageCapability.DOCUMENT_SHADOW: _as_ports(shadow_index),
         }
         # capability = 该类存储至少有一个端口可用（与 has_*() 同源，二者不会分叉）。
         self._capabilities = frozenset(
@@ -274,6 +280,8 @@ class CompositeStoreManager(StoreManager):
             fusion=_collect_ports(FusionProducer, config),
             fs=_collect_ports(FsProducer, config),
             entity=_collect_ports(EntityStoreProducer, config),
+            markdown=_collect_ports(MarkdownProducer, config),
+            shadow_index=_collect_ports(ShadowIndexProducer, config),
         )
         if config.name:
             storage_ref = config.name
@@ -327,6 +335,12 @@ class CompositeStoreManager(StoreManager):
     def entity(self, name: str = "default") -> EntityStore:
         return cast(EntityStore, self._port(StorageCapability.ENTITY, name))
 
+    def markdown(self, name: str = "default") -> MarkdownStore:
+        return cast(MarkdownStore, self._port(StorageCapability.MARKDOWN, name))
+
+    def shadow_index(self, name: str = "default") -> DocumentShadowIndex:
+        return cast(DocumentShadowIndex, self._port(StorageCapability.DOCUMENT_SHADOW, name))
+
     def has_kv(self, name: str = "default") -> bool:
         return self._has_port(StorageCapability.KV, name)
 
@@ -347,6 +361,12 @@ class CompositeStoreManager(StoreManager):
 
     def has_entity(self, name: str = "default") -> bool:
         return self._has_port(StorageCapability.ENTITY, name)
+
+    def has_markdown(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.MARKDOWN, name)
+
+    def has_shadow_index(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.DOCUMENT_SHADOW, name)
 
     def health(self) -> None:
         self._security.health()

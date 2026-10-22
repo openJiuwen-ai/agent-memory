@@ -19,6 +19,7 @@ from .types import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     Grant,
     JobInfo,
     JobStatus,
@@ -39,6 +40,7 @@ from .types import (
 )
 
 __all__ = [
+    "EvolveTaskOptions",
     "ControlOperator",
     "ControlOperatorType",
     "MemoryEngine",

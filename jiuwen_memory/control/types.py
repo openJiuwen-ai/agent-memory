@@ -15,13 +15,18 @@ from jiuwen_memory.common.security.space_roles import (
 from jiuwen_memory.common.security.types import Action as Action
 from jiuwen_memory.common.security.types import Grant as Grant
 from jiuwen_memory.common.type_def import (
+    CandidateSource,
     FilterExpr,
+    HierarchyKind,
+    HierarchyRole,
     MemoryTier,
     MemoryUnit,
     MetadataValueType,
     Modality,
     Scope,
 )
+from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 
 
 class PrincipalPath(str, Enum):
@@ -258,6 +263,37 @@ class Channel(str, Enum):
 
     HOT = "hot"  # 在线：低时延的即时写入与轻量更新
     BACKGROUND = "background"  # 离线：异步做重的抽取/升华/重索引
+
+
+@dataclass(frozen=True)
+class EvolveTaskOptions:
+    """显式演进任务请求；Scope 与认证上下文仍由入口分别传入。"""
+
+    mode: EvolveMode
+    channel: Channel = Channel.BACKGROUND
+    hierarchy_options: HierarchyComposeOptions | None = None
+    reuse_existing: bool = False  # HIERARCHY：完整树复用，纯新叶构建，部分树拒绝
+
+    candidate: CandidateSource | dict | None = None
+    dreaming: bool | None = None
+    interval: int = 0
+
+    @classmethod
+    def time_hierarchy(
+        cls, scope: Scope, *, span_start: datetime, span_end: datetime,
+        reuse_existing: bool = False,
+    ) -> EvolveTaskOptions:
+        """内置 TIME 四层请求；调用方仍显式提供已授权 Scope 和有界时间范围。"""
+        from copy import deepcopy
+
+        return cls(
+            mode=EvolveMode.HIERARCHY, reuse_existing=reuse_existing,
+            hierarchy_options=HierarchyComposeOptions(
+                kind=HierarchyKind.TIME, leaf_role=HierarchyRole.SNAPSHOT,
+                parent_roles=[HierarchyRole.TIME_SPAN, HierarchyRole.SCENE, HierarchyRole.EVENT],
+                tree_home_scope=deepcopy(scope), span_start=span_start, span_end=span_end,
+            ),
+        )
 
 
 class JobStatus(str, Enum):

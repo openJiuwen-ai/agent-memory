@@ -17,6 +17,7 @@ from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.common import merge_unit_tags
@@ -34,6 +35,8 @@ from jiuwen_memory.construction.evolver_impl.schema_property_merge import (
 )
 from jiuwen_memory.construction.evolver_impl.schema_update import SchemaUpdateCoordinator
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
@@ -70,6 +73,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         schema_entity_resolver: SchemaEntityResolver | None = None,
         schema_property_merge_planner: SchemaPropertyMergePlanner | None = None,
         *,
+        hierarchy_composer: HierarchyComposer | None = None,
         kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -84,6 +88,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             dedup=dedup,
             llm=llm,
             layer_annotator=layer_annotator,
+            hierarchy_composer=hierarchy_composer,
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
         )
@@ -282,7 +287,10 @@ def _optional_layer_annotator(config):
 @EvolverProducer.register("schema_orchestrating")
 def _build(config):
     vector_on = config.get("vector_enabled", True)
-    index_default = "hybrid" if vector_on else "fulltext"
+    # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
+    # 三处消费方（engine/evolver/job_factory）必须共用本函数，否则缺省判定分叉会让
+    # 同一份装配拿到不一致的 IndexBuilder（见 config.document_flag docstring）。
+    index_default = resolve_index_builder_default(config)
     dedup_default = "vector" if vector_on else "keyword"
     storage = StoreManagerProducer.resolve(config)
     kv_name = resolve_name(config, "kv_store")
@@ -326,15 +334,19 @@ def _build(config):
         fallback_limit=int(config.get("schema_property_merge_fallback_limit", 1000)),
         merge_enabled=as_bool(config.get("use_property_merge"), default=False),
     )
+    hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=index_default)
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=index_default),
+        index_builder=hierarchy_index,
         storage=storage,
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dedup_default),
         llm=llm,
+        hierarchy_composer=optional_hierarchy_composer(
+            config, index_builder=hierarchy_index, llm=llm,
+        ),
         layer_annotator=_optional_layer_annotator(config),
         schema_entity_resolver=resolver,
         schema_property_merge_planner=property_merge,

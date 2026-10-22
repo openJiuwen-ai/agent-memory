@@ -13,7 +13,7 @@ import asyncio
 import copy
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
 from jiuwen_memory.common.log import (
@@ -22,6 +22,7 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.type_def import (
+    CandidateSource,
     FilterExpr,
     LifecycleState,
     MemoryTier,
@@ -33,6 +34,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
 )
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
@@ -40,6 +42,7 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
+from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.schema_update_support import (
@@ -48,9 +51,14 @@ from jiuwen_memory.control.engine_impl.schema_update_support import (
     prepare_schema_update,
 )
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.evolution.hierarchy_submission import (
+    HierarchySubmissionDependencies,
+    submit_hierarchy,
+)
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
     BatchWriteItem,
@@ -59,12 +67,14 @@ from jiuwen_memory.control.types import (
     Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
     SweepResult,
     UpdateMode,
 )
+from jiuwen_memory.ingest.hierarchy_hints import enrich_snapshot_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -103,7 +113,7 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
@@ -122,7 +132,7 @@ def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
 
 
 def _valid_sort_key(unit: MemoryUnit) -> datetime:
-    return unit.temporal.t_valid or datetime.min.replace(tzinfo=timezone.utc)
+    return unit.temporal.t_valid or datetime.min.replace(tzinfo=UTC)
 
 
 def _downweight_importance(unit: MemoryUnit) -> None:
@@ -224,6 +234,7 @@ class InMemoryEngine(MemoryEngine):
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
+        policy: PolicyManager | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -237,9 +248,15 @@ class InMemoryEngine(MemoryEngine):
         # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
         self._classifier = classifier
         self._job_factory = job_factory
+        self._policy = policy
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
+
+    @property
+    def kv(self) -> KVStore:
+        """真源 KV 端口（API 层 dreaming 编排读注册表用，见 MemoryEngine.kv）。"""
+        return self._kv
 
     def health(self) -> None:
         return None
@@ -268,7 +285,14 @@ class InMemoryEngine(MemoryEngine):
         # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
         # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
         # middle / middle_interval 是调用级开关，不是 unit 持久属性——下面从 meta 剥除。
-        raw_meta = dict(system_metadata or {})
+        raw_meta = enrich_snapshot_hints(
+            system_metadata, occurred_at,
+            enabled=(
+                self._policy is not None
+                and str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower()
+                == "true"
+            ),
+        )
 
         def _is_true(key: str) -> bool:
             return str(raw_meta.get(key, "")).strip().lower() == "true"
@@ -754,7 +778,10 @@ class InMemoryEngine(MemoryEngine):
         )
 
     async def purge_space(self, org: str, space: str) -> list[str]:
-        _ensure_local_scope(Scope(org=org, space=space))
+        # 空间治理（create/delete_space）在 OFFLINE 装配下同样可用，而本引擎的
+        # 写路径全部经 _ensure_local_scope 拒绝 space scope——引擎里不可能存在
+        # 空间记忆，purge 天然是 no-op。此处不能再守卫：delete_space 的两步事务
+        # 先置 DELETING 再 purge，守卫会让删除必败、空间永久卡在 DELETING。
         purged_units: list[MemoryUnit] = []
         for scope in [
             candidate
@@ -767,8 +794,15 @@ class InMemoryEngine(MemoryEngine):
         return [unit.id for unit in purged_units]
 
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
-    ) -> str:
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        candidate: CandidateSource | dict | None = None,
+        buckets: list[Scope] | None = None,
+        denied_scopes: list[str] | None = None,
+    ) -> str | None:
         _ensure_local_scope(scope)
         if self._job_factory is None:
             raise RuntimeError(
@@ -781,18 +815,29 @@ class InMemoryEngine(MemoryEngine):
             )
         # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，
         # 不允许 Spec 侧自行解析另一套（middle 路径的 index/evolver 同理）。
-        job = self._job_factory.get_job(
-            JobType.EVOLVE, scope=scope, mode=mode, evolver=self._evolver
+        # 纯执行（鉴权在 API 层）：candidate→resolver 翻译 + 一次性 EvolveJob 提交。
+        return await submit_evolve(
+            scope=scope,
+            mode=mode,
+            channel=channel,
+            candidate=candidate,
+            kv=self._kv,
+            scheduler=self._scheduler,
+            job_factory=self._job_factory,
+            evolver=self._evolver,
+            retriever=self._retriever,
+            buckets=buckets,
+            denied_scopes=denied_scopes,
         )
-        job_id = await self._scheduler.submit(job, channel)
-        logger.info(
-            "Engine.evolve submitted: job_id=%s scope=%s mode=%s channel=%s",
-            job_id,
-            scope_for_log(scope),
-            mode.value,
-            channel.value,
+
+    async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
+        """提交建树任务，沿用本 Engine 同源真源与构建器。"""
+        _ensure_local_scope(scope)
+        return await submit_hierarchy(
+            scope, options, HierarchySubmissionDependencies(
+                self._policy, self._scheduler, self._job_factory, self._evolver, self._kv,
+            ),
         )
-        return job_id
 
     async def admin_get(self, key: str) -> str:  # 由 API 层直达 PolicyManager
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
@@ -859,15 +904,13 @@ class InMemoryEngine(MemoryEngine):
 # -- 注册到 EngineProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-
-
-
-
 @EngineProducer.register("in_memory")
 def _build(config):
-    # index_builder 缺省随 vector_enabled 在 hybrid/fulltext 间择一。
-    # 与 evolver 一致，共享同一实例。
-    ib_default = "hybrid" if config.get("vector_enabled", True) else "fulltext"
+    # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
+    # 薄编排层（全委托 storage.add 文档分流，写真源 md + 影子索引，不碰 KV）；非文档
+    # 模式随 vector_enabled 在 hybrid/fulltext 间择一。evolver / job_factory 共用同一
+    # 函数，避免缺省判定分叉导致三处拿到不一致的 IndexBuilder。
+    ib_default = resolve_index_builder_default(config)
     # classifier 可选：config 声明了 classifier 命名空间具名实例则注入，None 时跳过（向后兼容）。
     # infer=false 默认路径用它给原文打 tier+tags；infer=true 由 extractor 产出不经 classifier。
 
@@ -907,4 +950,5 @@ def _build(config):
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),
+        policy=PolicyProducer.build_named("default", config.ctx),
     )

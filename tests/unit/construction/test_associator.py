@@ -69,7 +69,7 @@ def _make_llm_associator(
         min_auto_confirm=params["min_auto_confirm"],
         max_auto_confirm=params["max_auto_confirm"],
         deep_discovery=params["deep_discovery"],
-        retry_max_retries=3,
+        max_attempts=3,
         retry_backoff_ms=1000,
     )
 

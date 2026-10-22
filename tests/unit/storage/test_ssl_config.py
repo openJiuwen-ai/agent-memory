@@ -199,7 +199,7 @@ class _FakeRedis:
     last_kwargs: dict[str, Any] = {}
 
     @classmethod
-    def from_url(cls, url: str, **kwargs: Any) -> "_FakeRedis":
+    def from_url(cls, url: str, **kwargs: Any) -> _FakeRedis:
         cls.last_kwargs = {"url": url, **kwargs}
         return cls()
 
@@ -343,8 +343,8 @@ def _write_ca_pem(tmp_path: Path) -> str:
         .issuer_name(name)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
-        .not_valid_after(datetime.datetime(2040, 1, 1, tzinfo=datetime.timezone.utc))
+        .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC))
+        .not_valid_after(datetime.datetime(2040, 1, 1, tzinfo=datetime.UTC))
         .sign(key, hashes.SHA256())
     )
     path = tmp_path / "ca.pem"

@@ -69,23 +69,23 @@
 
 ### 决策 3：治理算子只负责「看」，不负责改
 
-**选了什么**：当前 `InMemoryGovernor` 注册为 `governor: in_memory`。它依赖同一份 KV 真源和内存审计事件列表，提供 inspect / trace / audit。
+**选了什么**：当前 `InMemoryGovernor` 注册为 `governor: in_memory`。它依赖同一份 KV 真源和注入的 AuditLogger，提供 inspect / trace / audit。
 
-| 方法 | 第一版语义 |
+| 方法 | 当前语义 |
 |---|---|
-| `inspect(unit_ids)` | 跨 scope 查找 id，返回能找到的 `MemoryUnit`，包括已失效版本 |
-| `trace(unit_id)` | 沿 `provenance` 递归向上回溯来源链，循环用 `seen` 防止重复 |
+| `inspect(unit_ids, scope)` | 在 API 已鉴权的完整 Scope 内点读 MemoryUnit，包括已失效版本 |
+| `trace(unit_id, scope)` | 在同一 Scope 内沿 `provenance` 递归回溯来源链，使用 `seen` 防止重复 |
 | `audit(filters, limit)` | 当前支持按 `action`、`layer`、`decision`、`target_id`、actor scope、target scope 与时间区间过滤审计事件，按插入顺序取前 `limit` 条 |
 
 **关键权衡**：
 
 - 治理层只做可检视、可回溯、可审计；编辑和遗忘仍走 API 的 update/delete，以便统一鉴权和审计。
 - `trace` 只沿 `provenance`，不沿 `supersedes`。前者表示「这条记忆从哪些来源演进而来」，后者表示版本替换链，服务 `get(as_of)`。
-- 第一版跨 scope 查找依赖 KVStore 的 `scopes()` + `scan()` 能力，适合治理后台；生产环境若需要更细粒度授权，应在 API 层和真实 Governor 后端补访问控制。
+- Governor 不跨 Scope 扫描，也不执行 PEP；API 对每个实际返回快照再次鉴权，安全能力见 F04/S10。
 
 ### 决策 4：权限第一版用 allow-all 占位，保留 Grant 记录形状
 
-**选了什么**：当前 `AllowAllPermissionManager` 注册为 `permission: allow_all`。`check` 恒返回 `True`，`grant` 把授权对象追加到内存列表，`revoke` 按 `grantor + grantee` 移除。
+**历史方案**：早期 `AllowAllPermissionManager` 注册为 `permission: allow_all`，以恒放行与内存记录占位。PR2 后 PermissionManager 只保留历史兼容，不进入生产判定或授权管理路径；当前安全能力统一见 F04/S10。
 
 **关键权衡**：
 
@@ -230,16 +230,16 @@ scheduler:
 
 ## 已知遗留
 
-1. **Permission 仍是 allow-all**：当前只适合本地 demo/单租户测试。真实多租户部署必须实现 scope 包含、Grant 匹配、过期校验、逐 action revoke 与审计。
+1. **权限占位已替换**：生产请求由 MemoryAPI/Authorizer 唯一 PEP/PDP 判定，授权真源为具名 GrantStore；不再依赖 allow-all PermissionManager。能力与部署边界见 F04/S10。
 
-2. **Scheduler 不是真异步**（**部分解决，仍有遗留**，见 [`F06`](F06-middle-term-memory.md)）：原 `InProcessScheduler.submit` 在当前进程同步执行 Evolver，add 后提交的 background EXTRACT 仍可能拖慢调用链。`F06` 新增 `AsyncTimerScheduler`（target=`async_timer`）作为异步 + 定时调度器，per scope FIFO 队列 + 单 drain Task + per scope TimerWheel，Job 提交后不再阻塞 add 路径。**但有两处遗留**：(a) `defaults.py` 默认装配仍配 `in_process`——需用户显式覆盖为 `async_timer` 才走异步；(b) `AsyncTimerScheduler` 依赖长生命周期事件循环，与同步 `LocalMemoryAPI.add` 内的 `asyncio.run` 桥接不兼容（同步 API 返回后临时循环关闭、Timer 协程被取消）——生产部署需配独立 Scheduler Runtime 或改用 `add_async` 全链路 await。详见 F06 已知遗留。
+2. **默认 Scheduler 同步执行**：`defaults.py` 默认装配 `in_process`，需要异步周期任务时显式配置 `async_timer`。`AsyncTimerScheduler` 的 per scope Timer/drain 托管于自有 `LoopRunner`，不再受同步 API 临时事件循环关闭影响；实例结束时通过 Runtime 级联关闭并回收线程，见 S02/S03。
 
 3. **Policy 未持久化、未审计**：`DictPolicyManager` 只存在于进程内，重启丢失；`set` 也未直接产生日志/审计事件。后续应接持久化后端并补 admin 审计。
 
 4. **Governor.audit 过滤能力仍是结构化精确匹配**：当前已支持 action/layer/decision/target_id、actor scope、target scope 与时间区间；更复杂的模糊查询、聚合统计和长期审计保留策略仍需后续补齐。
 
-5. **Lifecycle.transition 按 id 跨 scope 扫描**：便于治理/测试，但大规模后端成本高；生产实现应利用索引或把 scope 纳入调用条件。
+5. **Lifecycle 按完整 Scope 隔离**：transition 与 supersede 都显式接收完整 Scope，不能按裸 id 跨 Scope 修改。
 
-6. **Engine.delete 的 DOWNWEIGHT 只改 importance**：当前把 `metadata.importance` 乘 0.5，未通知检索层访问频次/重要度模型，也没有独立降权索引字段。
+6. **Engine.delete 的 DOWNWEIGHT 只改 importance**：当前把 `system_metadata.importance` 乘 0.5，未通知检索层访问频次/重要度模型，也没有独立降权索引字段。
 
 7. **admin_* 在 Engine 抛 NotImplementedError**：这是当前架构选择（API 直达 PolicyManager），但如果未来所有管理面都要统一走 Engine，需要重新修订 S03 与 API 文档。

@@ -25,7 +25,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `index_builder.py` | IndexBuilder 接口：多形式索引构建（文档/关键词/向量/图） |
 | `router.py` | Router 接口与判定表：按归属坐标判定条目落哪个空间，产出候选空间集合与收窄维标签；另含归属坐标的入口校验 `reject_kernel_coords` 与折算 `narrow_dims_of`（后者入参须为已以身份覆盖过内核三项的坐标，本层不接收 `identity`）。内核三项坐标名 `KERNEL_COORD_KEYS` 在 `common/type_def/scope.py`，本模块引用 |
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
-| `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘）+ EvolveMode + EvolveResult |
+| `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘/显式建树）+ EvolveMode/EvolveRequest/EvolveResult |
 | `source_update.py` | 可选 Schema source 更新能力、完整抽取结果、请求内变更计划与严格实体写入上下文；不依赖 control |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
 | `extractor_impl/` | Extractor 实现目录（keyword / llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；entity_schema 为 Property 产出稳定实体分组 key、Source 时间上下文与事件精度/区间；video_memory 将视频规约结果转换为 CLM/ELM |
@@ -34,7 +34,8 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
 | `index_builder_impl/` | IndexBuilder 实现目录（forward / fulltext / hybrid / unified / vector / entity + 共享 `_index_ops.py`）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）纯编排，组合 forward / fulltext / vector / entity 四个子 builder；`unified` 全部写委托 DomainStore 领域接口（`add`/`update`/`delete`，`mode` 原样透传，不触碰任何底层端口），构建侧完成两件事——(a) `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed，经 `_index_ops.vectorize_unit` 与 vector builder 共用实现）回填 `MemoryUnit.vectors`（`list[ChunkVector]`）随本体下传（一体化数据面实现消费该字段自建 chunk 级向量索引，CompositeDomainStore 仅随本体落盘）；(b) 把 `index_metadata` 的过滤投影字段（`content_layer`/`t_valid`/`t_event`/`t_invalid` 哨兵与 epoch 毫秒）直接补进 `unit.system_metadata`，一体化后端从 `system_metadata`/`user_metadata` 直接读取建索引、无需 `index_metadata` 投影下传；`forward` 只交付记忆本体（正排 KV），`fulltext`/`vector`/`entity` 只建各自的检索索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。`_index_ops.py` 承载 fulltext / vector 共享的投影与流水线（metadata 投影、scope 分组、端口解析、全文文档构造、向量切片-embed-写库、L0/L1 分层建删），unified 复用其 scope 分组与 `vectorize_unit` 切片-embed 单元管线。写接口用 `IndexWriteMode`（`ALL`/`FORWARD_ONLY`/`RETRIEVAL_ONLY`）表达写入范围，`remove` 用 `IndexRemoveMode`（`SOFT`/`HARD`）表达删除语义：`SOFT` 只移出检索索引、本体保留且 get/list 可读；`HARD` 物理删除。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
-| `dedup_impl/` | Dedup 实现目录（vector / keyword） |
+| `dedup_impl/` | Dedup 实现目录（vector / keyword / shadow）；shadow 显式选配，读取文档机器真源 |
+| `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类 |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
 | `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录 |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
@@ -43,6 +44,9 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 `schema_enabled=true` 时，`IndexBuilderProducer` 会在任意具体
 IndexBuilder target 外包装 Entity → Property MemoryUnit ID 的 KV 派生反向索引维护器；
 写入、更新和硬删都经同一包装处理，软删保留关联以支持属性版本历史。
+注册的 IndexBuilder target 为 forward/fulltext/vector/hybrid/unified/document；EntityIndexBuilder
+是 hybrid 的内部辅助组件，不注册独立 entity target。标题、正文、prompt、模型响应和 Scope
+trace 均使用 common/log 的敏感参数标记，不能因调试文档路径恢复明文日志。
 
 ## 构建链路
 
@@ -58,9 +62,9 @@ IndexBuilder target 外包装 Entity → Property MemoryUnit ID 的 KV 派生反
      ├─ FeatureExtractor → Node → GraphStore
      └─ Associator.associate → Edge → GraphStore（后台 ASSOCIATE 模式）
   ↓
-4. Scheduler.submit(scope, EXTRACT, BACKGROUND) → 提交演进任务
-  ↓
-（后台）Evolver.evolve(units, mode):
+默认直写到此返回，不自动提交后台 EXTRACT。
+infer=true 由 Engine 等待抽取；显式 evolve/dreaming 经 Scheduler 执行：
+Evolver.evolve(units, mode):
   EXTRACT     → [orchestrating] _evolve_extract: extract→route→annotate→_dedup_batch(判定+落盘)
               → [dynamic]     _evolve_extract: extract→route→consolidate(判定)→reflect→落盘
               → [schema]      _evolve_extract: Source-first→属性抽取→属性落盘→Source entities 写回
@@ -73,7 +77,7 @@ IndexBuilder target 外包装 Entity → Property MemoryUnit ID 的 KV 派生反
 
 三个 Evolver 同属 `evolver` 顶层命名空间。`DynamicEvolver` 与显式启用的
 `SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract`；
-其余三模式继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
+其他模式（含 HIERARCHY）继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
 
 ## 行为铁律
 
@@ -99,10 +103,11 @@ IndexBuilder target 外包装 Entity → Property MemoryUnit ID 的 KV 派生反
    算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node，MemoryUnit → KV 记录），持久化由注入的 Store 承担。算子不依赖具体后端。正排与派生索引同此模式——`ForwardIndexBuilder` 写 `manager.kv()`，与 `FulltextIndexBuilder` 写 `manager.fulltext()` 同构；端口名可经 `params.<ns>_store` 具名选择。
 
 5. **scope 原生隔离**
-   构建索引记录时把来源 `MemoryUnit.scope` 落到记录的专用 `scope` 字段（`VectorRecord.scope` / `Document.scope` / `Node.scope`），使检索得以按 scope 原生隔离。
+   构建侧把来源 MemoryUnit.scope 作为 Store CRUD 的独立入参；索引记录不另含 Scope
+   字段，也不把 Scope 放进 metadata/filters，后端负责命名空间或专用过滤。
 
-6. **Evolver 四阶段独立**
-   `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `FORGET`（遗忘/降权）四阶段独立，可单独触发。索引维护不作为 evolve 模式。
+6. **Evolver 内容演进与结构演进独立**
+   `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `FORGET`（遗忘/降权）四种内容模式独立，可单独触发。HIERARCHY 只委托 Composer，不进入抽取/去重。索引维护不作为 evolve 模式。
 
 7. **去重召回与判定分离**
    `Dedup` 接口只管召回（向量化/分词 → Store.search → 加载 → 聚合取 max），判定
@@ -216,8 +221,47 @@ IndexBuilder target 外包装 Entity → Property MemoryUnit ID 的 KV 派生反
 4. Evolver 返回 `EvolveResult`（created_ids / updated_ids / superseded_ids / forgotten_ids）。
 5. Dedup 必须实现 `recall(candidate) -> list[(MemoryUnit, score)]`；实现内部异常吞掉返回空列表，不阻断演进。
 6. 算子内部调用共享插件（Chunker/Embedder/Tokenizer/FeatureExtractor/LLM）必须使用注入的实例，不自行构造。
-7. `DynamicEvolver` 继承 `OrchestratingEvolver`，复用父类全部依赖（extractor/abstractor/associator/index_builder/kv/graph/dedup/llm/layer_annotator），额外注入 `PromptRegistry`；只覆盖 `_evolve_extract`，其余三模式继承父类。
+7. `DynamicEvolver` 继承 `OrchestratingEvolver`，复用父类全部依赖（extractor/abstractor/associator/index_builder/kv/graph/dedup/llm/layer_annotator），额外注入 `PromptRegistry`；只覆盖 `_evolve_extract`，其他模式（含 HIERARCHY）继承父类。
 8. `DynamicEvolver` 与 IndexBuilder/KVStore/Dedup 必须使用同一 profile 的共享实例；pipeline profile 选 evolver 实现名（`orchestrating` / `dynamic`）即切换 EXTRACT 路径。
 9. `DynamicLLMExtractor` 子类只覆盖 `parse_response` 完成响应解析与构建；策略遍历、fallback、
    `_extraction_strategy` 标记和 consolidation/reflect prompt key 透传由基类统一执行。
 10. `PromptRegistry` 由装配从 `ctx.globals["prompts"]` 加载；`DynamicEvolver._build` 用 `config.get("prompts")` 取该段（params 无 prompts 时回退 globals）构造注册表。
+
+### 树结构索引投影
+
+`_index_ops.index_metadata` 与 `UnifiedIndexBuilder` 共用 `hierarchy_index_metadata`。
+结构变化后清理当前六字段，禁止复制陈旧系统投影；三个 tree_ 索引键不占用原通用键。
+普通时间和树区间投影共用 common/time_utils.py，真源时间表示不变。
+`tree_memory.facts` 只随真源持久化，不参与全文、切片、向量化或披露正文。
+
+### Snapshot 继承
+
+`snapshot_inheritance.py` 提供叶安全复制和去重前校验。Orchestrating/Dynamic 在 Router
+前匹配 infer 来源；仅涉及 opt-in 来源的候选要求单源，普通多源需完整解析后放行，
+缺失或跨 Scope 来源仍拒绝。KeywordExtractor 显式清空 deepcopy 的 hierarchy。UPDATE/SUPERSEDE
+的结构检查必须早于正文合并与 IndexBuilder 写入。Schema/procedural 不加入自动继承。
+无边 Snapshot 叶提示缺少时间时，继承/去重保留已有端点和 None，不用机器时间或单边时间
+补齐；已挂树节点保护不放宽。现有 Evolver 构造参数、evolve(units, mode)、去重直接 NOOP
+判据保持不变。
+
+
+### TIME 分组与摘要
+
+`hierarchy_composer.py` 定义构建请求、结果与配置；`hierarchy_composer_impl/` 中
+`time_pipeline`、`scene_pipeline`、`event_pipeline` 负责分组和结构父生成，
+`time_hierarchy_pipeline` 按层完成摘要后再向上分组，`parent_enrichment` 传递完整
+事实并生成父摘要/L0/L1，`profile_config` 严格解析配置。纯流水线不读取或写入存储。
+时间比较经 common/time_utils 统一，复制叶后仅变更 hierarchy，事实不从摘要反推。
+
+
+`hierarchy_composer_impl/default_composer.py` 注册 default Composer；所有本体、
+父边、归档和索引维护经 IndexBuilder。候选完整性由调用方取数后和 Composer
+写入前分别验证；索引失败与本体失败必须保留可观察的部分结果。
+
+
+### 显式建树演进入口
+
+`Evolver.evolve(units, mode)` 保持兼容；新增 EvolveRequest 时，HIERARCHY 委托
+可选 Composer.replace_in_span。未装配 Composer 明确拒绝，不回落普通抽取。
+`hierarchy_assembly.py` 处理显式依赖及内置预设选择；`lazy_hierarchy_composer.py`
+复用本 Evolver 的 IndexBuilder/LLM 与绑定原装配的延迟 Embedder，不自行取候选。

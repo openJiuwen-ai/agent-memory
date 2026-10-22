@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-09-18 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
 
 ## 范围 / 边界
@@ -72,6 +72,10 @@
 - `ComponentConfig.get`：实例 params > globals > 代码默认
 
 装配拓扑（选哪个 `target`、有哪些具名实例、依赖引用）仍由上述机制在 **`build_kernel` 时**确定。
+具名缓存属于该次装配纪元，根关闭后不得复用其中已关闭的依赖。失败装配的回滚只能
+清理本次新建对象，不能关闭先前借用的存活依赖；旧根关闭不能失效较新装配的缓存。
+同纪元视图由装配根显式绑定生命周期共享协议；纪元与创建观察规则见 S07。此机制仅
+服务装配/关闭，不将 health 故障解释为拓扑切换，也不增加 ConfigSource 热切换键。
 `globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
 再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
 
@@ -227,3 +231,20 @@ ConfigSource
 | S06-storage | `store_manager` 选择统一实现（globals.store_manager 指名），Store 命名空间配置其下层端口与命名端口；连接/`active` 晚绑定不做迁移 |
 | S07-common | 插件实现与 Factory 注册；配置数据在 `jiuwen_memory/config` |
 | architecture.md §13 | 可配置化分层与落点 |
+
+
+## 显式 TIME 构建预设
+
+`globals.hierarchy_profiles.time` 是构建配置：Snapshot→TimeSpan→Scene→Event，
+TimeSpan 累计跨度 7200 秒，Scene 最大跨度 1209600 秒，Event 相似阈值 0.65；
+各层 summary_mode=llm。摘录限额不截断完整事实或 LLM 输入，不能当作分组限制。
+这份预设不包含查询参数、自动维护周期或静默阈值。
+
+未指定 Evolver.params.hierarchy_composer 时，使用内置预设的延迟 Composer，
+复用该 Evolver 的 IndexBuilder/LLM；embedder.default 在首次需要时解析。
+显式引用或内联 Composer 配置优先；None/空字符串显式禁用装配。构建是否执行
+仍由 policy 中 hierarchy.enabled 控制。自定义 policies 完整替换默认表，缺键关闭。
+
+Factory.bind_named 捕获原装配配置、缓存、锁及创建观察者；后续 reset_all 创建
+新缓存/锁，不改变旧实例的延迟依赖。并发首次解析共享同轮具名实例，失败不缓存。
+ConfigSource.get_cached 同样遵循绑定上下文，不串用后续装配的配置源。

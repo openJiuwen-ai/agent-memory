@@ -9,7 +9,8 @@ from .model import EventTimePrecision, SchemaPropertyEntry, TemporalEntity
 class SchemaTemporalFormatter:
     """Render each entity independently while preserving time precision."""
 
-    def format_entity(self, entity: TemporalEntity) -> str:
+    @staticmethod
+    def format_entity(entity: TemporalEntity) -> str:
         lines = [f"Entity: {entity.name or entity.entity_id}"]
         if entity.entity_type:
             lines.append(f"Type: {entity.entity_type}")

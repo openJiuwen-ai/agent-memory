@@ -8,7 +8,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from jiuwen_memory.common.llm.base import LLM
@@ -106,7 +106,7 @@ class SchemaTimeExtractor:
         self._llm = llm
         self._llm_enabled = bool(llm_enabled)
         self._min_window = max(0.0, float(min_window_days))
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._now = now or (lambda: datetime.now(UTC))
 
     def extract(self, text: str) -> ExtractedTimeWindow:
         now = _aware(self._now())
@@ -133,7 +133,7 @@ class SchemaTimeExtractor:
                 return ExtractedTimeWindow()
             precision = EventTimePrecision(str(data["precision"]))
             return ExtractedTimeWindow(start, end, precision, TemporalIntentSource.LLM)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (TypeError, ValueError) as exc:
             logger.warning("schema temporal LLM time extraction rejected: %s", exc)
             return ExtractedTimeWindow()
         except Exception as exc:
@@ -246,7 +246,7 @@ def _absolute_range(text: str) -> ExtractedTimeWindow:
 
     year = re.search(r"(?<![\d-])((?:19|20|21)\d{2})(?![\d-])", text)
     if year:
-        start = datetime(int(year.group(1)), 1, 1, tzinfo=timezone.utc)
+        start = datetime(int(year.group(1)), 1, 1, tzinfo=UTC)
         return ExtractedTimeWindow(
             start,
             _next_year(start),
@@ -372,22 +372,22 @@ def _date_parts(
     day: int | None,
 ) -> tuple[datetime, EventTimePrecision]:
     if day is not None:
-        return datetime(year, month or 1, day, tzinfo=timezone.utc), EventTimePrecision.DAY
+        return datetime(year, month or 1, day, tzinfo=UTC), EventTimePrecision.DAY
     if month is not None:
-        return datetime(year, month, 1, tzinfo=timezone.utc), EventTimePrecision.MONTH
-    return datetime(year, 1, 1, tzinfo=timezone.utc), EventTimePrecision.YEAR
+        return datetime(year, month, 1, tzinfo=UTC), EventTimePrecision.MONTH
+    return datetime(year, 1, 1, tzinfo=UTC), EventTimePrecision.YEAR
 
 
 def _month_or_year_start(year: str, month: str | None) -> datetime:
-    return datetime(int(year), int(month or 1), 1, tzinfo=timezone.utc)
+    return datetime(int(year), int(month or 1), 1, tzinfo=UTC)
 
 
 def _parse_partial_date(value: str) -> tuple[datetime | None, EventTimePrecision]:
     try:
         if len(value) == 7:
-            parsed = datetime.strptime(value, "%Y-%m").replace(tzinfo=timezone.utc)
+            parsed = datetime.strptime(value, "%Y-%m").replace(tzinfo=UTC)
             return parsed, EventTimePrecision.MONTH
-        parsed = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        parsed = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
         return parsed, EventTimePrecision.DAY
     except ValueError:
         return None, EventTimePrecision.UNKNOWN
@@ -426,5 +426,5 @@ def _parse_datetime(value: object) -> datetime | None:
 
 def _aware(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

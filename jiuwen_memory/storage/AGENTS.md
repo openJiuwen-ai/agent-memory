@@ -7,7 +7,7 @@
 存储层分**管理面**（`StoreManager`：能力发现、命名端口暴露、统一授权代理、健康聚合）
 与**数据面**（`DomainStore`：MemoryUnit 领域 CRUD 与检索适配）两个独立 ABC；默认实现
 `CompositeStoreManager` + `CompositeDomainStore`。全局唯一 manager 由 `globals.store_manager`
-指名（F07）。管理面暴露七类 Store 端口（KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY）与
+指名（F07）。管理面暴露九类 Store 端口（KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY/MARKDOWN/DOCUMENT_SHADOW）与
 命名数据面，二者是同层级的受管成员（同构的 `xxx(name)` / `has_xxx(name)` 入口）。
 底层 Store 统一 CRUD 动词（insert/delete/update/get）和检索型 `search`。
 **scope 隔离是存储层的原生职责**（ENTITY 端口以 space_id + actor 表达，见铁律 1）。
@@ -22,7 +22,7 @@
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
 | `_schema_property_index.py` | Schema Entity → Property MemoryUnit ID 的 KV 派生反向索引；以 Scope watermark 作为全量回填提交标记，membership/pointer 支持幂等更新与硬删；canonical identity 按 `schema_entity_id` → `schema_entity_key` → `type::name` 解析且要求非空 `schema_property_name` |
-| `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 两件——`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤）与 `list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
+| `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 三件——`load_memory_unit(raw, scope, key)` 解码隔离（坏字节记 warning 后返 `None`），`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤），`list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
 | `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
@@ -36,11 +36,13 @@
 | `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag）；`working_dir` 晚绑定 |
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
-| `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定 |
+| `fs_impl/` | FSStore 实现目录（local）；`root` 晚绑定。FS 加密装饰器不在 PR1，后续单独合入 |
 | `entity_impl/` | EntityStore 实现目录（elasticsearch）；经 manager 装配为 ENTITY 端口（params 引用 → `entity_store.default` 兜底）；`hosts` 未配时 builder 返 None → 无 ENTITY 能力（增强层装配期降级，不报错）；`hosts` 晚绑定 |
 | `store_manager_impl/` | 管理面实现目录；`CompositeStoreManager` 以 `composite` target 自注册。双入口：`__init__` 收已构造的 Store 实例（手工/测试），`from_config` 从配置内部构造七类 Store 与全部命名数据面（装配路径，`_build` 即其一行封装）。含 `_AuthorizedStoreProxy` + ENTITY 专用的 `_AuthorizedEntityStoreProxy` 授权代理、七类端口全量聚合、`_build_domain_stores`（`domain_stores` 段逐套装配，`default` 必建且是命名实例的 overlay base）。**manager 段 params 不承载数据面配置**：端口来自命名空间聚合，数据面参数全在 `domain_stores.<name>` |
 | `domain_store_impl/` | 数据面实现目录；`CompositeDomainStore`（`recallers` property + `bind_recallers` 手工接线口 + `for_manager(manager, config)` 供 manager 装配期直接构造——profile 派生、召回路组装与绑定一次完成；真源 KV 端口名由装配期指名，非硬编码 default）、`_assemble_recallers`（F06 内收设计）与**召回路全家**：契约 `recaller.py`（`Recaller` + `RecallerProducer`，`TOP_NAME=recaller`）+ 实现 `keyword_recaller.py` / `vector_recaller.py` / `graph_recaller.py` + 共用的 `unit_aggregation.py`（chunk→unit MaxP 归并）。Recaller 是数据面内部件而非检索层算子，不继承 `RetrievalOperator`（F07） |
-| `bootstrap.py` | 统一触发七类 Store 后端与 Storage 实现注册 |
+| `markdown.py` / `shadow.py` | 文档视图与机器真源接口及 Producer；local Markdown 与 SQLite shadow 可选装配 |
+| `watchdog.py` / `watchdog_impl/` | 文件监听公共生命周期；LocalWatchdog 停止准入后通过线程条件等待已进入 shadow 的工作，排队旧代不再访问依赖；不等待调用方 loop 恢复协程 |
+| `bootstrap.py` | 统一触发九类 Store 后端、watchdog 与 Storage 实现注册 |
 
 ## 统一 CRUD 动词
 
@@ -61,6 +63,7 @@
 
 1. **scope 原生隔离**  
    `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。`org/space/user/agent/session` 五段 scope 必须参与命名空间或过滤；空 `space` 只匹配空 space 兼容域。隔离必须在存储层强制，上层不依赖调用纪律。
+   **文档影子索引（F08）已同构落地**：`memory_unit` 表加 org/space/user/agent/session 五列，scope 入参拼 WHERE AND 等值下推（对齐 KV 五段等值），与 project（收窄维 `IN ['', value]`）隔离正交。`list_units_by_md`（看门狗跨 scope 诊断）/`delete_units`（幂等按 unit_id）例外不限 scope。
    **唯一例外是 ENTITY 端口**：`EntityStore` 四方法以 `space_id: str`（`space_id_from_scope` 的算值，走后端 routing）+ `EntityStoreFilters.actor_id` 承担隔离——entity 索引的隔离维度与 Scope 五段模型不同构（agent/session 不作隔离维度，实体是 user 级知识）。隔离仍在存储层强制，只是维度表达不同；该端口的授权由 `_AuthorizedEntityStoreProxy` 适配。
 
 2. **记录 id 在 scope 内唯一**
@@ -83,9 +86,10 @@
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
 
 8. **EncryptedKVStore 只做装饰，不做算法**
-   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用 `common.security.SecurityProvider`
-   做 value 加解密；`list` 必须在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
-   真实加密算法不放在 storage 层。
+   `encrypted` KV target 必须显式包装一个 raw KVStore，并调用
+   `common.security.cryptography` 的 `CryptographyProvider` 做 value 加解密
+   （旧 `SecurityProvider` 只保留一个发布周期的兼容导出）；`list` 必须在解密后执行
+   MemoryUnit 过滤，不能把过滤下推到密文 raw KV。真实加密算法不放在 storage 层。
 
 9. **过滤保持 metadata 形态语义**
    `EQ` / `IN` 的正向匹配只命中标量，`CONTAINS` 只命中数组成员；`NE` / `NOT_IN`
@@ -99,7 +103,7 @@
    运行期——调用方以为受保护而实际未校验，比明文更危险。
 
 11. **Storage capability 是端口能力的唯一事实来源**
-   capability 只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY（ENTITY 为 F07 新增第七席）。
+   capability 只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY/MARKDOWN/DOCUMENT_SHADOW。
    **capability 与 `has_*()` 同源于端口表**：某类存储只要有任一端口可用即拥有该 capability，
    二者不会分叉（此前 capability 由「default 端口是否存在」推导而 `has_*()` 查端口表，
    只声明具名端口时会出现「capabilities() 说没有、has_xxx(name) 说有」的矛盾）。
@@ -188,6 +192,11 @@
     漏写引用键 → 该能力静默消失」的陷阱（配置合并是实例级整体覆盖，部署一旦覆写
     `store_manager.default.params` 就得全量抄写其全部键）。代价：manager params 里 inline
     声明 Store（`kv_store: {target: ...}`）的写法失效，后端一律经命名空间声明。
+    文档模式（F07）的 markdown / shadow 端口同此范式（`has_markdown(name)` / `markdown(name)` /
+    `has_shadow_index(name)` / `shadow_index(name)`）；端口方法是 StoreManager ABC 的抽象契约，
+    has 方法由 capability 判断默认端口，具名判断由实现提供；未装配时 has 返 False、端口抛
+    `UnsupportedStorageCapabilityError`；数据面的 `should_write_document()` 是
+    `CompositeDomainStore` 实例属性（装配期经 `document_flag` 归一固化），非 manager 契约。
 13. 连接型后端须支持 ConfigSource 晚绑定（S08 / F01 §2.1.4）：在取客户端/连接路径
     `fetch` 对应 key，值变化则重建连接（同实现换 Redis URL / db_path 走此路径，不必多实例）。
     异质 Store 级 `*.active` 切换由 `config.routing.Routing*Store` 承担（F01）；
@@ -216,23 +225,22 @@
     接线。跨 Store 集的整栈切换走 Routing，不属命名数据面语义。
 17. **纯点读/列表读注入 KVStore 端口**：Dedup `_load_unit` / Governor `_find` / Evolver
     源读 / KeywordRecaller 实体扩展等纯点读场景注入 `manager.kv(name)` + `load_units`；
-    control 面（Engine×2 / LifecycleManager / EvolveJob / MiddleToLongJob）真源读写全部直连
-    `manager.kv(name)`（点读 `load_units` / 列表 `list_units` / 枚举 `kv.scopes()`，lifecycle
-    回写 `memory_key`+`dumps` 同 ForwardIndexBuilder 模式）——均不注入 DomainStore（运行期持
-    最小接口，F07 决策 10 修订并推进到 control 面）。DomainStore 消费方只有检索路径
-    （`PipelineRetriever`）与一体化写路径（`UnifiedIndexBuilder`）。
+    InMemoryEngine、LifecycleManager、EvolveJob/MiddleToLongJob 的部分路径仍使用 KV。
+    CloudEngine 的记忆 get/list/scopes 及其权限事实由 DomainStore 真源提供；文档写入经
+    DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。Schema/middle/lifecycle
+    的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。
 
-18. **Schema Property 反向索引不是真源**
-    `schema_enabled=true` 时，`IndexBuilderProducer` 在任意具体 target 外统一
-    包装反向索引维护器。`FORWARD_ONLY build` 记录排除项，避免未来 Scope 回填把未建
-    检索索引的新 Property 纳入；`FORWARD_ONLY update` 不改变已有 membership，供随后
-    的软删继续支持属性版本历史。
-    canonical identity 依次取 `schema_entity_id`、`schema_entity_key`、`type::name`，且
-    只有带非空 `schema_property_name` 的 Schema Property 才可进入索引。一个 Scope
-    首次维护时须先从该 Scope 的全部 MemoryUnit 一次性回填 membership/pointer，再将
-    Scope watermark 作为最终提交标记；watermark 缺失或失效时读侧回退 Scope 列表查询，
-    watermark 有效时 membership 才是权威结果。携带 MemoryUnit 的硬删以及
-    `remove_with_scope()` 均须同步维护 membership/pointer。任一维护步骤失败都必须使
-    watermark 失效，使读取回到可恢复的兼容 fallback；没有 KV 端口的一体化/自定义
-    manager 不装配该派生索引，读侧直接使用 DomainStore Scope fallback。真实属性始终由
-    MemoryUnit 点读复核。
+### 内存索引过滤
+
+内存全文 `search`、向量 `search/recall` 在 top-k 前执行 FilterExpr，比较复用
+`common.type_def.matches_filter_value`；与 KV 真源复核保持相同的标量/数组/缺值语义。
+层级六字段读取索引投影，显式 metadata 命名空间独立，Scope 仍由端口原生隔离。
+
+### 时间投影
+
+SQLite 影子索引的 temporal 列复用 common/time_utils.epoch_ms，与构建投影和真源过滤一致；缺值哨兵保持字段原有契约。
+
+### 结构查询消费
+
+CompositeDomainStore 与 KeywordRecaller 的真源候选检查传入完整 ParsedQuery；
+不得仅传时间字段，否则会遗漏结构过滤。API 负责鉴权，数据面消费已授权的 Scope 与谓词。

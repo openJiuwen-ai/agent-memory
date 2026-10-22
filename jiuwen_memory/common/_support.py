@@ -209,6 +209,28 @@ def outbound_verify(ca_cert: str | None) -> bool | str:
     return (ca_cert or "").strip() or True
 
 
+def resolve_model_source(model_name_or_path: str, *, component: str) -> str:
+    """Resolve a model path or repo id to a local directory without downloading."""
+    if os.path.isdir(model_name_or_path):
+        return model_name_or_path
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise BackendError(
+            f"{component}: resolving HuggingFace cache requires huggingface_hub. "
+            "Install it with: pip install huggingface_hub"
+        ) from exc
+
+    try:
+        return str(snapshot_download(repo_id=model_name_or_path, local_files_only=True))
+    except Exception as exc:
+        raise BackendError(
+            f"{component}: model {model_name_or_path} is not available locally. "
+            "Ensure the HuggingFace cache is complete or provide a local model directory."
+        ) from exc
+
+
 def read_ssl_config(config: Any, *, backend: str) -> SslConfig:
     """读本组件 ``params`` 下的 ``ssl_verify`` / ``ssl_ca_cert``。
 

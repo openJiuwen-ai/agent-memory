@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timezone
-from typing import Callable, Protocol
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Protocol
 
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.type_def import ParsedQuery
@@ -143,8 +144,8 @@ class SchemaTemporalShrinker:
         )
         return result
 
+    @staticmethod
     def restore_direct_hits(
-        self,
         result: SchemaTemporalResult,
         full_entities: dict[str, TemporalEntity],
         query: SchemaTemporalQuery,
@@ -220,12 +221,10 @@ class SchemaTemporalShrinker:
             if entity_id in retained
         }
         prior = result.shrink_diagnostics or SchemaShrinkDiagnostics()
-        visible_ids = {
-            entry.unit_id
-            for entity in visible
-            for timeline in entity.properties.values()
-            for entry in timeline
-        }
+        visible_ids = set()
+        for entity in visible:
+            for timeline in entity.properties.values():
+                visible_ids.update(entry.unit_id for entry in timeline)
         result.shrink_diagnostics = SchemaShrinkDiagnostics(
             entries_before=prior.entries_before,
             entries_after=sum(_entry_count(entity) for entity in visible),
@@ -290,15 +289,9 @@ def _rank_entries(
         except Exception as exc:
             relevance = list(lexical)
             degraded_error = type(exc).__name__
-    ranked = [
-        (score, lexical_score, name, entry)
-        for (name, entry), score, lexical_score in zip(
-            entries,
-            relevance,
-            lexical,
-            strict=True,
-        )
-    ]
+    ranked = []
+    for (name, entry), score, lexical_score in zip(entries, relevance, lexical, strict=True):
+        ranked.append((score, lexical_score, name, entry))
     ranked.sort(key=lambda item: (-item[0], -item[1], item[2], item[3].unit_id))
     return ranked, reranked, degraded_error
 
@@ -313,7 +306,7 @@ def _entry_count(entity: TemporalEntity) -> int:
 
 
 def _sort_timelines(properties: dict[str, list[SchemaPropertyEntry]]) -> None:
-    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    epoch = datetime.min.replace(tzinfo=UTC)
     for timeline in properties.values():
         timeline.sort(
             key=lambda entry: (

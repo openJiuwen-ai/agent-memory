@@ -1,11 +1,11 @@
-# F05 — 模型服务 SSL 配置
+# F05 — 模型服务 SSL 与本地模型加载
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-08-01 |
-| 影响范围 | `jiuwen_memory/common/_support.py`（新增，含从 storage 与 security 下沉的公共件）、LLM（openai / dashscope）、embedder（openai）、reranker（api）四个 builder、`deploy/docker/online/`、`deploy/docker/postgres/`、OpenAI 兼容出站调用等待策略 |
+| 日期 | 2026-10-14 |
+| 影响范围 | `jiuwen_memory/common/_support.py`、LLM（openai / dashscope）、embedder（openai / bge_m3）、reranker（api / bge_reranker）、`deploy/docker/online/`、`deploy/docker/postgres/`、OpenAI 兼容出站调用等待策略、本地 BGE 模型离线加载与精排降级 |
 | 测试基线 | `tests/unit/common/test_outbound_ssl.py` 44 passed；`tests/unit/common/test_model_call_timeout.py` 29 passed；`pytest -m unit` 1835 passed、8 skipped；全量 `tests/unit` 925 passed、2 failed、2 skipped（失败因环境缺少 `torch`，与本特性无关） |
 | Refs | [S07-common.md](../../specs/S07-common.md)、[F04-storage-ssl.md](../storage/F04-storage-ssl.md) |
 
@@ -134,6 +134,25 @@ TCP connect 固定为 5 秒，避免连接阶段的失败被放大。
 
 五格中四格一致，仅第 4 格按场景先验分化。
 
+### 九、本地 BGE 模型离线加载与精排降级
+
+本地 BGE 模型的部署契约收敛为：部署期提供本地目录或完整 HuggingFace 缓存，
+运行时只解析本地来源，不做自动下载。`BGEM3Embedder` 与 `BGEReranker` 统一经
+`resolve_model_source()` 解析来源后再交给 FlagEmbedding。repo id 只代表已存在的
+本地缓存，不再通过运行时环境变量切换在线/离线模式。
+
+精排是可选增强能力：已配置 reranker 但其 `rerank()` 抛 `BackendError` 时，检索
+继续使用未精排候选并走未校准阈值路径，同时在轨迹中记录
+`reranker_unavailable` 和脱敏后的错误；其他异常继续抛出，避免掩盖编程错误。
+FlagEmbedding 依赖缺失也归入 `BackendError`，避免本地模型目录已经就绪时检索仍被依赖问题中断。
+
+拒绝的方案：
+- **运行时自动下载权重**：离线环境必然长时间重试，且模型下载属于部署与制品管理职责。
+- **运行时设置 `HF_HUB_OFFLINE`**：相关依赖在 import 时读取并缓存该状态，不能可靠改变
+  已导入库的行为，还会污染进程全局环境。
+- **捕获所有 Reranker 异常并降级**：会掩盖分数长度错误、数据错误和程序缺陷；只对
+  `BackendError` 这一明确的后端不可用契约降级。
+
 ## 拒绝的方案
 
 | 方案 | 拒绝理由 |
@@ -156,6 +175,8 @@ TCP connect 固定为 5 秒，避免连接阶段的失败被放大。
 - reranker 侧经注入假 httpx.Client 断言 `verify` 的最终取值，并验证关闭时不传该参数。
 - OpenAI LLM / Embedder 经替身工厂断言使用 `openai.DefaultHttpxClient`，自定义 CA 不再
   把 SDK 的网络默认值退化为裸 httpx 默认值；测试类方法均满足 G.CLS.07。
+- 本地 BGE 测试使用临时目录与 mock，覆盖 `snapshot_download(local_files_only=True)`、
+  `BackendError` 降级轨迹和普通异常继续抛出，不加载真实权重。
 
 ## 已知遗留
 
@@ -164,3 +185,4 @@ TCP connect 固定为 5 秒，避免连接阶段的失败被放大。
 - **embedder 在装配期即构造客户端**：与 LLM 的惰性构造不一致（缺 `api_key` 时装配即
   失败）。属既有行为，本次未改动。
 - **ASR 仍使用 SDK 默认 timeout/retry**：同类风险需要后续单独修复。
+- **模型权重仍由部署层准备**：运行时只解析本地目录或已存在的 HuggingFace 缓存，不负责下载。

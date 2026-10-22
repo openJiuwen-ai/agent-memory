@@ -10,8 +10,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
@@ -37,7 +35,7 @@ class KeywordClassifier(Classifier):
     def health(self) -> None:
         return None
 
-    def classify(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+    def classify(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         logger.info("KeywordClassifier: received %d units", len(units))
         for unit in units:
             old_tier = unit.tier.value

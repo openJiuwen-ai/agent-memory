@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.type_def import (
     LifecycleState,
@@ -85,7 +85,7 @@ def _property(
         scope=Scope(org="org", user="user"),
         tier=MemoryTier.SEMANTIC,
         segments=[Segment(content=f"{name} is an engineer")],
-        temporal=Temporal(t_event=event_time, t_valid=datetime.now(timezone.utc)),
+        temporal=Temporal(t_event=event_time, t_valid=datetime.now(UTC)),
         system_metadata=metadata,
         lifecycle=LifecycleState.ACTIVE,
     )
@@ -139,9 +139,9 @@ def test_explicit_delete_archives_matching_property_through_index_builder() -> N
 
 def test_same_event_update_creates_replacement_and_supersedes_old() -> None:
     kv = MemoryKVStore()
-    event = datetime(2023, 8, 3, tzinfo=timezone.utc)
-    old_message_time = datetime(2023, 8, 3, 9, tzinfo=timezone.utc)
-    new_message_time = datetime(2023, 8, 3, 11, tzinfo=timezone.utc)
+    event = datetime(2023, 8, 3, tzinfo=UTC)
+    old_message_time = datetime(2023, 8, 3, 9, tzinfo=UTC)
+    new_message_time = datetime(2023, 8, 3, 11, tzinfo=UTC)
     existing = _property("old", "Alice", entity_id="entity-1", event_time=event)
     incoming = _property("new", "Alice", entity_id="entity-1", event_time=event)
     existing.source_ref = "source-old"
@@ -183,7 +183,7 @@ def test_same_event_update_creates_replacement_and_supersedes_old() -> None:
 
 def test_one_existing_property_is_replaced_at_most_once_per_batch() -> None:
     kv = MemoryKVStore()
-    event = datetime(2023, 8, 3, tzinfo=timezone.utc)
+    event = datetime(2023, 8, 3, tzinfo=UTC)
     existing = _property("old", "Alice", entity_id="entity-1", event_time=event)
     incoming = _property("new", "Alice", entity_id="entity-1", event_time=event)
     kv.insert(existing.scope, memory_key(existing.id), dumps(existing))

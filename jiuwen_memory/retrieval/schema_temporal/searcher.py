@@ -368,7 +368,7 @@ def _group_property_hits(
         entity_id: sum(values) / len(values) for entity_id, values in score_lists.items() if values
     }
     ordered = sorted(unit_ids, key=lambda entity_id: (-scores.get(entity_id, 0.0), entity_id))
-    return {entity_id: unit_ids[entity_id] for entity_id in ordered}, scores
+    return {entity_id: unit_ids.get(entity_id, []) for entity_id in ordered}, scores
 
 
 def _merge_direct_properties(

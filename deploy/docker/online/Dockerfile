@@ -18,6 +18,7 @@ RUN apt-get update \
 
 COPY pyproject.toml ./
 COPY jiuwen_memory ./jiuwen_memory
+COPY jiuwen_memory_entry ./jiuwen_memory_entry
 
 # [deploy] provides Milvus / Elasticsearch / Redis / YAML clients (incl. httpx
 # for the outbound api_reranker calls).
@@ -25,7 +26,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
     && pip install -e ".[deploy]"
 
-COPY jiuwen_memory_entry ./jiuwen_memory_entry
 COPY scripts ./scripts
 
 EXPOSE 8137

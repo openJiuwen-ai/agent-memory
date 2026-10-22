@@ -2,5 +2,6 @@
 """Embedder 插件：向量化能力。"""
 
 from .base import Embedder
+from .deferred import DeferredEmbedder
 
-__all__ = ["Embedder"]
+__all__ = ["Embedder", "DeferredEmbedder"]

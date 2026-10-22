@@ -26,19 +26,21 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import ConflictError
+from jiuwen_memory.common.errors import ConflictError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
     redact_for_log,
+    scope_for_log,
 )
 from jiuwen_memory.common.type_def import (
+    COORDS_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
+    HierarchyRef,
     LifecycleState,
     MemoryUnit,
     Relation,
@@ -50,13 +52,26 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory import ROUTE_CTX_KEY, Segment
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer
-from jiuwen_memory.construction.evolver import EvolveMode, Evolver, EvolveResult, EvolverProducer
+from jiuwen_memory.construction.evolver import (
+    EvolveMode,
+    Evolver,
+    EvolveRequest,
+    EvolveResult,
+    EvolverProducer,
+)
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
+from jiuwen_memory.construction.hierarchy_composer import (
+    HierarchyComposeOptions,
+    HierarchyComposer,
+    HierarchyComposeRequest,
+)
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
@@ -67,6 +82,10 @@ from jiuwen_memory.construction.router import (
     degraded_reasons,
     optional_router,
     route_batch,
+)
+from jiuwen_memory.construction.snapshot_inheritance import (
+    inherit_infer_snapshots,
+    snapshot_for_decision,
 )
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.store_manager import (
@@ -147,10 +166,10 @@ statement. Output ONLY that statement as plain text. No explanation, no labels, 
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-def _route_ctx_of(units: List[MemoryUnit]) -> RouteContext | None:
+def _route_ctx_of(units: list[MemoryUnit]) -> RouteContext | None:
     """取源单元携带的归属判定上下文；未携带即返回 ``None``（整段不判定）。
 
     取第一条携带的：一次写入的源单元来自同一次调用，上下文由 API 层统一装配，各条相同。
@@ -195,6 +214,7 @@ class OrchestratingEvolver(Evolver):
         layer_annotator: LayerAnnotator | None = None,
         router: Router | None = None,
         *,
+        hierarchy_composer: HierarchyComposer | None = None,
         graph_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -213,7 +233,8 @@ class OrchestratingEvolver(Evolver):
         self._layer_annotator = layer_annotator
         # 归属判定算子：None 表示不判定，派生单元沿用源单元的 scope（向后兼容）。
         self._router = router
-        self.relations: List[Relation] = []  # ASSOCIATE 产物（同时已落图）
+        self._hierarchy_composer = hierarchy_composer
+        self.relations: list[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
         # medium/high 阈值留本类做判定档位划分：
@@ -232,11 +253,10 @@ class OrchestratingEvolver(Evolver):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_procedural(units: List[MemoryUnit]) -> bool:
+    def _is_procedural(units: list[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
         return any(
-            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
-            for u in units
+            str(u.system_metadata.get("procedural", "")).strip().lower() == "true" for u in units
         )
 
     def operator_type(self) -> OperatorType:
@@ -251,14 +271,32 @@ class OrchestratingEvolver(Evolver):
 
     def evolve(
         self,
-        units: List[MemoryUnit],
-        mode: EvolveMode,
+        units: list[MemoryUnit] | EvolveRequest,
+        mode: EvolveMode | None = None,
     ) -> EvolveResult:
+        if isinstance(units, EvolveRequest):
+            request = units
+            if mode is not None:
+                raise ValidationError("EvolveRequest 不可同时传入 mode")
+            if not isinstance(request.mode, EvolveMode):
+                raise ValidationError("EvolveRequest.mode 必须是 EvolveMode")
+            if request.mode is EvolveMode.HIERARCHY:
+                return self._evolve_hierarchy(request)
+            if request.hierarchy_options is not None:
+                raise ValidationError("仅 HIERARCHY 模式接受 hierarchy_options")
+            units, mode = request.units, request.mode
+        if not isinstance(mode, EvolveMode) or mode is EvolveMode.HIERARCHY:
+            raise ValidationError("HIERARCHY 必须使用含有界区间的 EvolveRequest")
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
-            logger.info("Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
-                         u.id[:8], u.tier.value, u.lifecycle.value, u.provenance,
-                         redact_for_log(u.content))
+            logger.info(
+                "Evolver: input unit id=%s tier=%s lifecycle=%s provenance=%s content=%s",
+                u.id[:8],
+                u.tier.value,
+                u.lifecycle.value,
+                u.provenance,
+                redact_for_log(u.content),
+            )
         if mode == EvolveMode.EXTRACT:
             return self._evolve_extract(units)
         if mode == EvolveMode.CONSOLIDATE:
@@ -273,12 +311,38 @@ class OrchestratingEvolver(Evolver):
     # 落盘辅助
     # ------------------------------------------------------------------
 
-    def _persist(self, units: List[MemoryUnit]) -> List[str]:
+    def _evolve_hierarchy(self, request: EvolveRequest) -> EvolveResult:
+        """只委托 Composer，不进入抽取、去重或内容合并。"""
+        options = request.hierarchy_options
+        if not isinstance(options, HierarchyComposeOptions):
+            raise ValidationError("HIERARCHY 要求 hierarchy_options")
+        if self._hierarchy_composer is None:
+            raise ValidationError("未装配 HierarchyComposer，无法执行 HIERARCHY")
+        if not isinstance(request.units, list) or not isinstance(options.parent_roles, list):
+            raise ValidationError("HIERARCHY 的 units 与 parent_roles 必须是列表")
+        leaves: list[MemoryUnit] = []
+        parents: list[MemoryUnit] = []
+        for unit in request.units:
+            if not isinstance(unit, MemoryUnit) or not isinstance(unit.hierarchy, HierarchyRef):
+                raise ValidationError("HIERARCHY 要求具有 HierarchyRef 的 MemoryUnit")
+            if unit.hierarchy.role is options.leaf_role:
+                leaves.append(unit)
+            elif unit.hierarchy.role in options.parent_roles:
+                parents.append(unit)
+            else:
+                raise ValidationError(f"节点 {unit.id} 的角色不属于本次建树请求")
+        compose_request = HierarchyComposeRequest(
+            leaves=leaves, options=options, existing_parents=parents,
+        )
+        result = self._hierarchy_composer.replace_in_span(compose_request)
+        return EvolveResult(hierarchy_result=result)
+
+    def _persist(self, units: list[MemoryUnit]) -> list[str]:
         # 记忆写入只经 IndexBuilder：正排与派生索引由其统一编排。
         self._index.build(units)
         return [u.id for u in units]
 
-    def _persist_graph(self, units: List[MemoryUnit], relations: List[Relation]) -> None:
+    def _persist_graph(self, units: list[MemoryUnit], relations: list[Relation]) -> None:
         """为涉及关联的单元建节点（幂等）、为每条关联建一条边。"""
         if not units or self._graph is None:
             return
@@ -307,7 +371,7 @@ class OrchestratingEvolver(Evolver):
     # 去重核心方法
     # ------------------------------------------------------------------
 
-    def _dedup_batch(self, candidates: List[MemoryUnit]) -> EvolveResult:
+    def _dedup_batch(self, candidates: list[MemoryUnit]) -> EvolveResult:
         """对一批候选 unit 执行去重判定和后续动作，返回 EvolveResult。
 
         两段式（批量 LLM 优化）：
@@ -319,11 +383,16 @@ class OrchestratingEvolver(Evolver):
         """
         result = EvolveResult()
         noop_count = 0
+        logger.debug(
+            "[trace/consolidate] _dedup_batch ENTER | candidates=%d | dedup_impl=%s",
+            len(candidates),
+            type(self._dedup).__name__,
+        )
 
         # 每条候选的判定上下文：(candidate, best_unit, best_score, hit_units)
-        direct_add: List[Tuple[MemoryUnit, Optional[MemoryUnit], float]] = []
-        direct_noop: List[Tuple[MemoryUnit, MemoryUnit, float]] = []
-        need_llm: List[Tuple[MemoryUnit, MemoryUnit, float, List[Tuple[MemoryUnit, float]]]] = []
+        direct_add: list[tuple[MemoryUnit, MemoryUnit | None, float]] = []
+        direct_noop: list[tuple[MemoryUnit, MemoryUnit, float]] = []
+        need_llm: list[tuple[MemoryUnit, MemoryUnit, float, list[tuple[MemoryUnit, float]]]] = []
 
         # ---- 第一段：逐条 recall + 阈值筛选（不调 LLM）----
         for candidate in candidates:
@@ -332,10 +401,21 @@ class OrchestratingEvolver(Evolver):
             except Exception as exc:
                 logger.warning(
                     "Evolver._dedup: recall failed for %s, fallback ADD: %s",
-                    candidate.id[:8], exc,
+                    candidate.id[:8],
+                    exc,
                 )
                 direct_add.append((candidate, None, 0.0))
                 continue
+
+            logger.debug(
+                "[trace/dedup] recall | candidate_id=%s | content=%r | hits=%d "
+                "| dedup_impl=%s | scope=%r",
+                candidate.id[:8],
+                redact_for_log(candidate.content[:80]),
+                len(hit_units),
+                type(self._dedup).__name__,
+                scope_for_log(candidate.scope),
+            )
 
             if not hit_units:
                 direct_add.append((candidate, None, 0.0))
@@ -375,16 +455,19 @@ class OrchestratingEvolver(Evolver):
 
         for candidate, best_unit, best_score, _ in need_llm:
             decision = decisions.get(candidate.id, DedupDecision.ADD)
-            noop_count += self._apply_decision(
-                candidate, decision, best_unit, best_score, result
-            )
+            noop_count += self._apply_decision(candidate, decision, best_unit, best_score, result)
 
         logger.info(
             "Evolver._dedup: total=%d add=%d update=%d supersede=%d noop=%d "
             "(direct_noop=%d, need_llm=%d, llm_batches=%d)",
-            len(candidates), len(result.created_ids), len(result.updated_ids),
-            len(result.superseded_ids), noop_count,
-            len(direct_noop), len(need_llm), 1 if need_llm else 0,
+            len(candidates),
+            len(result.created_ids),
+            len(result.updated_ids),
+            len(result.superseded_ids),
+            noop_count,
+            len(direct_noop),
+            len(need_llm),
+            1 if need_llm else 0,
         )
         return result
 
@@ -392,11 +475,21 @@ class OrchestratingEvolver(Evolver):
         self,
         candidate: MemoryUnit,
         decision: DedupDecision,
-        existing_unit: Optional[MemoryUnit],
+        existing_unit: MemoryUnit | None,
         similarity: float,
         result: EvolveResult,
     ) -> int:
         """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
+        snapshot = snapshot_for_decision(candidate, decision, existing_unit)
+        logger.debug(
+            "[trace/dedup] decision | candidate_id=%s | decision=%s | existing=%s "
+            "| similarity=%.3f | content=%r",
+            candidate.id[:8],
+            decision.value,
+            existing_unit.id[:8] if existing_unit else None,
+            similarity,
+            redact_for_log(candidate.content[:80]),
+        )
         decision_ids_for_log = {candidate.id[:8]}
         if existing_unit is not None:
             decision_ids_for_log.add(existing_unit.id[:8])
@@ -416,8 +509,7 @@ class OrchestratingEvolver(Evolver):
         # ADD，或 UPDATE/SUPERSEDE 缺 existing_unit 时降级为 ADD（LLM 误判但 recall
         # 无命中——宁可重复不丢失，避免 None.segments/.id 抛 AttributeError）。
         if decision == DedupDecision.ADD or (
-            decision in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE)
-            and existing_unit is None
+            decision in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE) and existing_unit is None
         ):
             if decision != DedupDecision.ADD:
                 logger.warning(
@@ -443,25 +535,21 @@ class OrchestratingEvolver(Evolver):
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
             # 合并 metadata
-            existing_unit.system_metadata = inherited_system_metadata(
-                [existing_unit, candidate]
-            )
-            existing_unit.user_metadata = inherited_user_metadata(
-                [existing_unit, candidate]
-            )
+            existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
+            existing_unit.user_metadata = inherited_user_metadata([existing_unit, candidate])
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
             # existing_unit 是已建索引的记忆，经 IndexBuilder 统一回写。
+            if snapshot is not None:
+                existing_unit.hierarchy = snapshot
             self._index.update([existing_unit])
             result.updated_ids.append(existing_unit.id)
 
         elif decision == DedupDecision.SUPERSEDE:
             # 新版落盘
             candidate.supersedes = existing_unit.id
-            candidate.provenance = list(
-                set(candidate.provenance) | {existing_unit.id}
-            )
+            candidate.provenance = list(set(candidate.provenance) | {existing_unit.id})
             candidate.system_metadata["dedup_decision"] = "supersede"
             candidate.system_metadata["dedup_similarity"] = str(similarity)
             candidate.system_metadata["dedup_superseded"] = existing_unit.id
@@ -486,7 +574,7 @@ class OrchestratingEvolver(Evolver):
 
     def _dedup_single(
         self, candidate: MemoryUnit
-    ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         """单条候选的去重判定：Dedup.recall → 阈值短路 → LLM 语义判定。
 
         返回 (decision, most_similar_existing_unit, max_similarity_score)。
@@ -494,7 +582,7 @@ class OrchestratingEvolver(Evolver):
         high/medium 阈值短路与 LLM 判定。
         """
         # Step A+B: 召回已有相似记忆（已滤自身、已按 min_similarity 过滤、已聚合取 max）
-        hit_units: List[Tuple[MemoryUnit, float]] = self._dedup.recall(candidate)
+        hit_units: list[tuple[MemoryUnit, float]] = self._dedup.recall(candidate)
         if not hit_units:
             logger.debug("Evolver._dedup_single: no hits for candidate %s → ADD", candidate.id[:8])
             return (DedupDecision.ADD, None, 0.0)
@@ -503,9 +591,7 @@ class OrchestratingEvolver(Evolver):
         best_unit, best_score = max(hit_units, key=lambda x: x[1])
 
         # Step D: 语义判定
-        if should_direct_noop(
-            best_score, self._dedup_high_similarity, candidate, best_unit
-        ):
+        if should_direct_noop(best_score, self._dedup_high_similarity, candidate, best_unit):
             return (DedupDecision.NOOP, best_unit, best_score)
 
         # 低相似 → ADD（新事实，不值得深度判定）
@@ -518,13 +604,12 @@ class OrchestratingEvolver(Evolver):
         except Exception as exc:
             logger.warning(
                 "Evolver._dedup_single: LLM dedup failed for %s, fallback rule-based: %s",
-                candidate.id[:8], exc,
+                candidate.id[:8],
+                exc,
             )
             # 降级策略与 _llm_dedup_decide 一致：宁可重复不丢失。
             # high 相似且无实质差异 → NOOP；否则 ADD（不覆盖已有）。
-            if should_direct_noop(
-                best_score, self._dedup_high_similarity, candidate, best_unit
-            ):
+            if should_direct_noop(best_score, self._dedup_high_similarity, candidate, best_unit):
                 decision = DedupDecision.NOOP
             else:
                 decision = DedupDecision.ADD
@@ -534,7 +619,7 @@ class OrchestratingEvolver(Evolver):
     def _llm_dedup_decide(
         self,
         candidate: MemoryUnit,
-        hits: List[Tuple[MemoryUnit, float]],
+        hits: list[tuple[MemoryUnit, float]],
     ) -> DedupDecision:
         """构建去重判定 prompt，LLM.chat() → 解析 JSON → 返回 DedupDecision。"""
         existing_texts = []
@@ -551,8 +636,7 @@ class OrchestratingEvolver(Evolver):
             f"[Memory ID: {candidate.id}]\n"
             f"Content: {candidate.content}\n"
             f"Tier: {candidate.tier.value}\n\n"
-            f"Existing similar memories:\n"
-            + "\n\n".join(existing_texts)
+            f"Existing similar memories:\n" + "\n\n".join(existing_texts)
         )
 
         messages = [
@@ -560,8 +644,37 @@ class OrchestratingEvolver(Evolver):
             ChatMessage(role="user", content=user_prompt),
         ]
 
+        # [trace/consolidate] 单条判定路径：打印待消歧候选 + 召回记忆 + 完整 prompt
+        logger.debug(
+            "[trace/consolidate] (single) candidate before LLM "
+            "| candidate_id=%s | content=%r | tier=%s",
+            candidate.id[:8],
+            redact_for_log(candidate.content),
+            candidate.tier.value,
+        )
+        for unit, score in hits[:3]:
+            logger.debug(
+                "[trace/consolidate]   (single) recalled hit | unit_id=%s "
+                "| score=%.3f | content=%r | tier=%s | lifecycle=%s",
+                unit.id[:8],
+                score,
+                redact_for_log(unit.content),
+                unit.tier.value,
+                unit.lifecycle.value,
+            )
+        logger.debug(
+            "[trace/consolidate] (single) llm_prompt | system_len=%d | user_prompt=%s",
+            len(_DEDUP_SYSTEM_PROMPT),
+            redact_for_log(user_prompt),
+        )
+
         try:
             response = self._llm.chat(messages, temperature=0, max_tokens=256)
+            logger.debug(
+                "[trace/consolidate] (single) llm_raw_response | resp_len=%d | raw_response=%s",
+                len(response) if response else 0,
+                redact_for_log(response),
+            )
         except Exception as exc:
             raise RuntimeError(f"LLM dedup call failed: {exc}") from exc
 
@@ -592,7 +705,7 @@ class OrchestratingEvolver(Evolver):
 
     def _llm_dedup_decide_batch(
         self,
-        items: List[Tuple[MemoryUnit, List[Tuple[MemoryUnit, float]]]],
+        items: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]],
     ) -> dict[str, DedupDecision]:
         """批量 LLM 判定：一次调用判多条候选，返回 {candidate_id: decision}。
 
@@ -605,7 +718,7 @@ class OrchestratingEvolver(Evolver):
             return {}
 
         # 构建紧凑批量 prompt
-        blocks: List[str] = []
+        blocks: list[str] = []
         for cand, hits in items:
             cand_block = f"[{cand.id}]: {cand.content}"
             for unit, score in hits[:3]:
@@ -618,8 +731,37 @@ class OrchestratingEvolver(Evolver):
             ChatMessage(role="user", content=user_prompt),
         ]
 
+        # [trace/consolidate] consolidate 调 LLM 前：打印待消歧候选 + 召回记忆 + 完整 prompt
+        for cand, hits in items:
+            logger.debug(
+                "[trace/consolidate] candidate before LLM | candidate_id=%s | content=%r | tier=%s",
+                cand.id[:8],
+                redact_for_log(cand.content),
+                cand.tier.value,
+            )
+            for unit, score in hits[:3]:
+                logger.debug(
+                    "[trace/consolidate]   recalled hit | unit_id=%s"
+                    " | score=%.3f | content=%r | tier=%s | lifecycle=%s",
+                    unit.id[:8],
+                    score,
+                    redact_for_log(unit.content),
+                    unit.tier.value,
+                    unit.lifecycle.value,
+                )
+        logger.debug(
+            "[trace/consolidate] llm_prompt | system_len=%d | user_prompt=%s",
+            len(_DEDUP_BATCH_SYSTEM_PROMPT),
+            redact_for_log(user_prompt),
+        )
+
         try:
             response = self._llm.chat(messages, temperature=0, max_tokens=1024)
+            logger.debug(
+                "[trace/consolidate] llm_raw_response | resp_len=%d | raw_response=%s",
+                len(response) if response else 0,
+                redact_for_log(response),
+            )
         except Exception as exc:
             logger.warning(
                 "Evolver._llm_dedup_decide_batch: LLM call failed, "
@@ -692,7 +834,8 @@ class OrchestratingEvolver(Evolver):
         if missing:
             logger.warning(
                 "Evolver._llm_dedup_decide_batch: %d candidates missing in LLM response, "
-                "fallback to per-candidate single", len(missing),
+                "fallback to per-candidate single",
+                len(missing),
             )
             results.update(self._fallback_single_decide(missing))
 
@@ -700,7 +843,7 @@ class OrchestratingEvolver(Evolver):
 
     def _fallback_single_decide(
         self,
-        items: List[Tuple[MemoryUnit, List[Tuple[MemoryUnit, float]]]],
+        items: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]],
     ) -> dict[str, DedupDecision]:
         """批量降级：逐条调单条 LLM 判定。某条失败 → 按规则（score 阈值）判定。"""
         results: dict[str, DedupDecision] = {}
@@ -724,10 +867,7 @@ class OrchestratingEvolver(Evolver):
 
     def _merge_content(self, old: MemoryUnit, new: MemoryUnit) -> str:
         """UPDATE 场景：LLM 合成新旧 content 为一条完整陈述。"""
-        user_prompt = (
-            f"Old version:\n{old.content}\n\n"
-            f"New version:\n{new.content}"
-        )
+        user_prompt = f"Old version:\n{old.content}\n\nNew version:\n{new.content}"
 
         messages = [
             ChatMessage(role="system", content=_CONTENT_MERGE_SYSTEM_PROMPT),
@@ -742,18 +882,21 @@ class OrchestratingEvolver(Evolver):
             logger.warning(
                 "Evolver._merge_content: LLM merge returned empty for %s→%s, "
                 "fallback concatenation",
-                old.id[:8], new.id[:8],
+                old.id[:8],
+                new.id[:8],
             )
         except Exception as exc:
             logger.warning(
                 "Evolver._merge_content: LLM merge failed for %s→%s, fallback concatenation: %s",
-                old.id[:8], new.id[:8], exc,
+                old.id[:8],
+                new.id[:8],
+                exc,
             )
         # 降级：简单拼接新旧内容
         return f"{old.content}\n{new.content}"
 
     def _maybe_collect_extract_context(
-        self, units: List[MemoryUnit], recent: List[MemoryUnit]
+        self, units: list[MemoryUnit], recent: list[MemoryUnit]
     ) -> ExtractContext | None:
         """EXTRACT 模式下：若本轮 units 标记了 infer=true，收集上下文参考项。
 
@@ -765,19 +908,15 @@ class OrchestratingEvolver(Evolver):
         任一步失败降级为空列表，不阻断（仍靠 prompt + _dedup_batch）。非 infer 返回 None。
         """
         infer = any(
-            str(u.system_metadata.get("infer", "")).strip().lower() == "true"
-            for u in units
+            str(u.system_metadata.get("infer", "")).strip().lower() == "true" for u in units
         )
         if not infer:
             return None
         related = self._related_memories(units)
-        ctx = ExtractContext(
-            recent_originals=list(recent), related_memories=related
-        )
+        ctx = ExtractContext(recent_originals=list(recent), related_memories=related)
         infer_metadata = {"infer": True}
         logger.info(
-            "Evolver._maybe_collect_extract_context: system_metadata=%s, "
-            "recent=%d related=%d",
+            "Evolver._maybe_collect_extract_context: system_metadata=%s, recent=%d related=%d",
             metadata_for_log(infer_metadata),
             len(recent),
             len(related),
@@ -790,7 +929,7 @@ class OrchestratingEvolver(Evolver):
     # 语境补全，条数上限由本类维护。它与索引构建是两件事，故不走 IndexBuilder，也不占
     # Storage 的领域接口，直接用注入的 KVStore。
 
-    def _add_messages(self, scope: Scope, units: List[MemoryUnit]) -> None:
+    def _add_messages(self, scope: Scope, units: list[MemoryUnit]) -> None:
         for unit in units:
             key = messages_key(unit.id)
             value = dumps(unit)
@@ -801,22 +940,20 @@ class OrchestratingEvolver(Evolver):
                 # 失败时 /messages/ 已写入且按契约不回滚，upsert 使重试不再撞 insert 拒重。
                 self._message_store.update(scope, key, value)
 
-    def _list_messages(self, scope: Scope) -> List[MemoryUnit]:
+    def _list_messages(self, scope: Scope) -> list[MemoryUnit]:
         """返回 scope 内全部原文（无序；调用方自行排序）。损坏记录跳过，不阻断整批。"""
-        items: List[MemoryUnit] = []
+        items: list[MemoryUnit] = []
         for _key, raw in self._message_store.scan(scope, prefix=MESSAGES_KEY_PREFIX):
             unit = loads(raw)
             if unit is not None:
                 items.append(unit)
         return items
 
-    def _delete_messages(self, scope: Scope, unit_ids: List[str]) -> None:
+    def _delete_messages(self, scope: Scope, unit_ids: list[str]) -> None:
         for unit_id in unit_ids:
             self._message_store.delete(scope, messages_key(unit_id))
 
-    def _persist_and_maintain_messages(
-        self, units: List[MemoryUnit]
-    ) -> List[MemoryUnit]:
+    def _persist_and_maintain_messages(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """一次扫描完成原文维护：取最近 N 条 → 写入本轮 → 淘汰超出的旧原文。
 
         顺序（只扫一次 ``/messages/``）：
@@ -849,32 +986,32 @@ class OrchestratingEvolver(Evolver):
         ordered = historical + list(units)
         # 2) 一次排序：按 t_ingest 降序（最新在前；本轮刚 ingest 排头部，不会被删）
         ordered.sort(
-            key=lambda u: u.temporal.t_ingest or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda u: u.temporal.t_ingest or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
         # 3) recent = 前 N 条历史原文（排除本轮——本轮已是提取来源，不重复进 context）
-        recent = [
-            u for u in ordered if u.id not in current_ids
-        ][: self._recent_originals_limit]
+        keep_count = self._recent_originals_limit
+        recent = [u for u in ordered if u.id not in current_ids][:keep_count]
         # 4) 落本轮新原文 + 淘汰超出 N 条的旧原文（尾部最多 len(ordered)-N 条）
         self._add_messages(scope, units)
-        evicted_ids = [u.id for u in ordered[self._recent_originals_limit:]]
+        evicted_ids = [u.id for u in ordered[keep_count:]]
         if evicted_ids:
             try:
                 self._delete_messages(scope, evicted_ids)
                 logger.info(
-                    "Evolver._persist_and_maintain_messages: %d old originals evicted "
-                    "(kept %d)",
-                    len(evicted_ids), self._recent_originals_limit,
+                    "Evolver._persist_and_maintain_messages: %d old originals evicted (kept %d)",
+                    len(evicted_ids),
+                    self._recent_originals_limit,
                 )
             except Exception as exc:
                 logger.warning(
                     "Evolver._persist_and_maintain_messages: evict %d originals failed: %s",
-                    len(evicted_ids), exc,
+                    len(evicted_ids),
+                    exc,
                 )
         return recent
 
-    def _related_memories(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+    def _related_memories(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """用 dedup.recall 召回相关记忆（复用去重向量空间，返回完整 MemoryUnit + score）。
 
         对本轮每个 unit 调一次 dedup.recall（它已滤自身、滤非 ACTIVE、按 min_similarity
@@ -887,7 +1024,8 @@ class OrchestratingEvolver(Evolver):
             except Exception as exc:
                 logger.warning(
                     "Evolver._related_memories: dedup.recall failed for %s: %s",
-                    unit.id[:8], exc,
+                    unit.id[:8],
+                    exc,
                 )
                 continue
             for hit_unit, _score in hits:
@@ -903,7 +1041,7 @@ class OrchestratingEvolver(Evolver):
     # 分层标注（抽取/升华后、去重落盘前）
     # ------------------------------------------------------------------
 
-    def _annotate_layers(self, units: List[MemoryUnit]) -> None:
+    def _annotate_layers(self, units: list[MemoryUnit]) -> None:
         """对派生候选标注 L0/L1 分层（best effort，不阻断）。
 
         ``layer_annotator`` 为 None 时跳过（向后兼容）。标注在去重落盘前，保证
@@ -926,9 +1064,7 @@ class OrchestratingEvolver(Evolver):
     # 归属判定（抽取后、分层标注与去重之前）
     # ------------------------------------------------------------------
 
-    def _route(
-        self, sources: List[MemoryUnit], derived: List[MemoryUnit]
-    ) -> List[MemoryUnit]:
+    def _route(self, sources: list[MemoryUnit], derived: list[MemoryUnit]) -> list[MemoryUnit]:
         """按源单元携带的判定上下文改写派生单元的落点与标签，返回保留下来的单元。
 
         判定上下文经源单元的瞬态 metadata 键 ``route_ctx`` 传入，取不到即整段跳过——
@@ -945,6 +1081,17 @@ class OrchestratingEvolver(Evolver):
             return derived
         decisions = route_batch(self._router, derived, ctx)
         kept = apply_decisions(decisions)
+        # apply_decisions 改 scope/tags/memory_class 但不回写 coords。
+        # 派生 unit 经 inherited_system_metadata 继承源单元 metadata，而源单元的 coords
+        # 已被 API 层 _take_coords 取出、不在 metadata 里 → 派生 unit 也无 coords →
+        # md._project_of 读不到 coords.project 兜底 "default"。从 ctx.coords 回写，
+        # 让文档路径按 project 分流（coords 是 TRANSIENT 键，dumps 进 unit_json 时剥除，
+        # 但 md.write/shadow._project_of 在 dumps 之前从 unit 对象读，路径计算不受影响）。
+        if ctx.coords:
+            for unit in kept:
+                metadata = dict(unit.system_metadata or {})
+                metadata[COORDS_KEY] = dict(ctx.coords)
+                unit.system_metadata = metadata
         spaces = sorted({unit.scope.space for unit in kept})
         degraded = degraded_reasons(decisions)
         if degraded:
@@ -966,7 +1113,7 @@ class OrchestratingEvolver(Evolver):
             )
         return kept
 
-    def _evolve_extract(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         """EXTRACT：抽取派生候选 → 分层标注 → 去重判定+落盘（_dedup_batch）。
 
         子类可覆盖本方法切换 EXTRACT 路径（如 DynamicEvolver 走 extract→consolidate→reflect→落盘）。
@@ -996,6 +1143,7 @@ class OrchestratingEvolver(Evolver):
         recent = self._persist_and_maintain_messages(units)
         context = self._maybe_collect_extract_context(units, recent)
         extracted = self._extractor.extract(units, context=context)
+        inherit_infer_snapshots(units, extracted)
         logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
         if not extracted:
             return EvolveResult()
@@ -1006,7 +1154,7 @@ class OrchestratingEvolver(Evolver):
         self._annotate_layers(extracted)
         return self._dedup_batch(extracted)
 
-    def _evolve_consolidate(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_consolidate(self, units: list[MemoryUnit]) -> EvolveResult:
         """整合分支：不做归属判定，与后台通道同因。
 
         判定上下文经瞬态键 ``route_ctx`` 从写入入口传入，只在该次写入的调用链上存在；整合
@@ -1021,7 +1169,7 @@ class OrchestratingEvolver(Evolver):
         self._annotate_layers(abstracted)
         return self._dedup_batch(abstracted)
 
-    def _evolve_associate(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_associate(self, units: list[MemoryUnit]) -> EvolveResult:
         relations = self._associator.associate(units)
         self.relations.extend(relations)
         self._persist_graph(units, relations)
@@ -1037,7 +1185,7 @@ class OrchestratingEvolver(Evolver):
             )
         return EvolveResult(updated_ids=[relation.target_id for relation in relations])
 
-    def _evolve_forget(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_forget(self, units: list[MemoryUnit]) -> EvolveResult:
         """FORGET 作用于 SUPERSEDED 旧版（建索引记忆，在 /memory/）。
 
         非破坏式：记忆本体留 FORGOTTEN 状态供审计，仅退出检索。状态判定在本方法内完成，
@@ -1053,7 +1201,7 @@ class OrchestratingEvolver(Evolver):
         for u in targets:
             u.lifecycle = LifecycleState.FORGOTTEN
         self._index.update(targets, mode=IndexWriteMode.FORWARD_ONLY)  # 只回写本体 FORGOTTEN
-        self._index.remove(targets, mode=IndexRemoveMode.SOFT)         # 检索索引移出检索
+        self._index.remove(targets, mode=IndexRemoveMode.SOFT)  # 检索索引移出检索
 
         forgotten = [u.id for u in targets]
         logger.info("Evolver: FORGET marked %d units as forgotten", len(forgotten))
@@ -1061,7 +1209,6 @@ class OrchestratingEvolver(Evolver):
 
 
 # -- 注册到 EvolverProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
-
 
 
 def _resolve_message_store(config) -> KVStore:
@@ -1092,11 +1239,13 @@ def _build(config):
     （``kv_store`` / ``index_builder`` / ``dedup`` / ``graph_store`` / ``llm`` …）与
     ``InMemoryEngine``、``HybridIndexBuilder`` 等共享同一实例，保证去重检索的是已索引的内容。
     """
-    # index_builder / dedup 缺省都随 vector_enabled：向量开走 hybrid+vector，
-    # 只倒排走 fulltext+keyword（去重仍可用——向量路在 fulltext-only 下 VectorStore 恒空，
-    # 会使去重失效，故此时改用倒排召回）。
+    # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
+    # （全委托 storage，与 engine / job_factory 三处一致，避免缺省判定分叉拿到不一致
+    # 的 IndexBuilder）；非文档模式随 vector_enabled 在 hybrid/fulltext 间择一。
+    # dedup 缺省仍随 vector_enabled：向量开走 vector，fulltext-only 下 VectorStore 恒空
+    # 使去重失效，改用倒排召回（keyword）。
     vector_on = config.get("vector_enabled", True)
-    ib_default = "hybrid" if vector_on else "fulltext"
+    ib_default = resolve_index_builder_default(config)
     dr_default = "vector" if vector_on else "keyword"
     # layer_annotator 可选：本 evolver params 显式声明 ``layer_annotator`` 时按它取
     # （None/空串 → 显式禁用，视频 profile 用此关闭 L0/L1 标注，对齐 F05；
@@ -1116,15 +1265,20 @@ def _build(config):
             return None
         return LayerAnnotatorProducer.build_named("default", ctx)
 
+    hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
+    hierarchy_llm = LlmProducer.dep(config, default="echo")
     return OrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="keyword"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+        index_builder=hierarchy_index,
         storage=StoreManagerProducer.resolve(config),
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),
-        llm=LlmProducer.dep(config, default="echo"),
+        llm=hierarchy_llm,
+        hierarchy_composer=optional_hierarchy_composer(
+            config, index_builder=hierarchy_index, llm=hierarchy_llm,
+        ),
         layer_annotator=_opt_annotator(),
         router=optional_router(config),
         graph_name=resolve_name(config, "graph_store"),

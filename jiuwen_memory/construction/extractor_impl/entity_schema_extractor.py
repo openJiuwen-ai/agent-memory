@@ -13,7 +13,7 @@ import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from jiuwen_memory.common._support import as_bool
@@ -30,7 +30,10 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
-from jiuwen_memory.construction.common import merge_unit_tags
+from jiuwen_memory.construction.common import (
+    merge_unit_tags,
+    reject_deprecated_llm_attempt_keys,
+)
 from jiuwen_memory.construction.entity_schema import EntitySchemaCatalog
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
@@ -62,9 +65,23 @@ _SPEAKER_LABEL_RE = re.compile(
     r"^\s*(?:speaker=(?P<speaker>[^\r\n:]{1,100})|\[(?P<bracket>[^\]\r\n]{1,100})\])\s*:",
     flags=re.IGNORECASE,
 )
+_ENGLISH_WEEKDAY_PATTERN = r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
 _RELATIVE_TIME_PATTERNS = (
+    (
+        re.compile(
+            rf"\b(?:last|next) week(?:\s+on)?\s+{_ENGLISH_WEEKDAY_PATTERN}\b",
+            re.IGNORECASE,
+        ),
+        "week_day",
+    ),
+    (re.compile(rf"\blast\s+{_ENGLISH_WEEKDAY_PATTERN}\b", re.IGNORECASE), "last_weekday"),
+    (re.compile(r"(?:上周|上个星期|下周|下个星期)[一二三四五六日天]"), "week_day"),
+    (re.compile(r"\blast weekend\b", re.IGNORECASE), "last_weekend"),
+    (re.compile(r"\bnext weekend\b", re.IGNORECASE), "next_weekend"),
+    (re.compile(r"上周末|上个星期末"), "last_weekend"),
+    (re.compile(r"下周末|下个星期末"), "next_weekend"),
+    (re.compile(r"(?:上个月|下个月)\s*\d{1,2}[号日]"), "month_day"),
     (re.compile(r"\bjust now\b", re.IGNORECASE), "today"),
-    (re.compile(r"\bjust\b", re.IGNORECASE), "today"),
     (re.compile(r"\btoday\b", re.IGNORECASE), "today"),
     (re.compile(r"\byesterday\b", re.IGNORECASE), "yesterday"),
     (re.compile(r"\btomorrow\b", re.IGNORECASE), "tomorrow"),
@@ -78,8 +95,8 @@ _RELATIVE_TIME_PATTERNS = (
     (re.compile(r"今天"), "today"),
     (re.compile(r"昨天"), "yesterday"),
     (re.compile(r"明天"), "tomorrow"),
-    (re.compile(r"上周|上个星期"), "last_week"),
-    (re.compile(r"下周|下个星期"), "next_week"),
+    (re.compile(r"(?:上周|上个星期)(?![一二三四五六日天末])"), "last_week"),
+    (re.compile(r"(?:下周|下个星期)(?![一二三四五六日天末])"), "next_week"),
     (re.compile(r"上个月"), "last_month"),
     (re.compile(r"下个月"), "next_month"),
     (re.compile(r"去年"), "last_year"),
@@ -135,6 +152,7 @@ class SchemaPropertyCandidate:
     property_operation: str
     source_unit_ids: list[str]
     identity_kind: str = ""
+    time_source_id: str | None = None
 
 
 class SchemaExtractionNormalizer:
@@ -293,7 +311,7 @@ class SchemaExtractionNormalizer:
                         errors.append(f"entity {name!r} property {property_name!r} {source_ids}")
                         continue
                     prop["source_unit_ids"] = source_ids
-                    relative_time_error = _validate_relative_property_time(
+                    relative_time_error, time_source_id = _validate_relative_property_time(
                         prop["value"],
                         property_time,
                         [source_map[source_id] for source_id in source_ids],
@@ -304,6 +322,7 @@ class SchemaExtractionNormalizer:
                             f"entity {name!r} property {property_name!r} {relative_time_error}"
                         )
                         continue
+                    prop["_time_source_id"] = time_source_id
                 prepared_properties.append(prop)
             if len(prepared_properties) > self._max_properties:
                 if strict:
@@ -334,7 +353,7 @@ class EntitySchemaExtractor(Extractor):
         validation_attempts: int = _DEFAULT_VALIDATION_ATTEMPTS,
         max_entities_per_conversation: int = _DEFAULT_MAX_ENTITIES,
         max_properties_per_entity: int = _DEFAULT_MAX_PROPERTIES,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         if batch_size < 1:
@@ -361,7 +380,7 @@ class EntitySchemaExtractor(Extractor):
         )
         self._helper = ExtractorImpl(
             llm=llm,
-            retry_max_retries=retry_max_retries,
+            max_attempts=max_attempts,
             retry_backoff_ms=retry_backoff_ms,
         )
 
@@ -642,6 +661,7 @@ class EntitySchemaExtractor(Extractor):
                         property_operation=str(prop.get("operation") or "set").strip().lower(),
                         source_unit_ids=source_ids,
                         identity_kind=identity_kind,
+                        time_source_id=prop.get("_time_source_id"),
                     )
                 )
 
@@ -656,13 +676,17 @@ class EntitySchemaExtractor(Extractor):
         result: list[MemoryUnit] = []
         for candidate in candidates:
             source_units = [source_map[source_id] for source_id in candidate.source_unit_ids]
-            primary = _primary_source_for_candidate(candidate, source_units)
+            primary = (
+                source_map[candidate.time_source_id]
+                if candidate.time_source_id
+                else _primary_source_for_candidate(candidate, source_units)
+            )
             property_content = _self_contained_property_content(
                 candidate,
-                source_units,
+                [primary] if candidate.time_source_id else source_units,
                 primary_source=primary,
             )
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             source_tags = [tag for source in source_units for tag in source.tags]
             metadata = _inherited_schema_system_metadata(source_units)
             entity_key = _schema_entity_key(
@@ -794,7 +818,7 @@ def _dialogue_timestamp(units: list[MemoryUnit]) -> str:
     for unit in units:
         if unit.temporal.t_event is not None:
             return unit.temporal.t_event.isoformat()
-    return datetime.now(timezone.utc).date().isoformat()
+    return datetime.now(UTC).date().isoformat()
 
 
 def _format_source_messages(units: list[MemoryUnit]) -> str:
@@ -853,7 +877,89 @@ def _parse_message_datetime(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _source_role(unit: MemoryUnit) -> str:
+    for key in ("message_role", "role"):
+        value = str(unit.system_metadata.get(key) or "").strip()
+        if value:
+            return value
+    speaker = _source_speaker_name(unit)
+    normalized = _normalize_entity_name(speaker)
+    if normalized in {"user", "assistant", "system", "tool"}:
+        return normalized
+    return "named_speaker" if speaker else ""
+
+
+def _source_speaker_name(unit: MemoryUnit) -> str:
+    for key in ("message_speaker", "speaker", "speaker_name"):
+        value = " ".join(str(unit.system_metadata.get(key) or "").strip().split())
+        if value:
+            return value
+    match = _SPEAKER_LABEL_RE.match(unit.content)
+    if not match:
+        return ""
+    return " ".join((match.group("speaker") or match.group("bracket")).strip().split())
+
+
+def _format_source_messages(units: list[MemoryUnit]) -> str:
+    """Render every source with its own message time and speaker context."""
+
+    blocks: list[str] = []
+    for index, unit in enumerate(units):
+        blocks.append(
+            "\n".join(
+                [
+                    f"[message_index={index}]",
+                    f"[unit_id={unit.id}]",
+                    f"[message_time={_source_message_time_text(unit) or 'unknown'}]",
+                    f"[role={_source_role(unit) or 'unknown'}]",
+                    f"[speaker={_source_speaker_name(unit) or 'unknown'}]",
+                    unit.content,
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+def _source_message_time_text(unit: MemoryUnit) -> str:
+    if unit.temporal.t_message is not None:
+        return unit.temporal.t_message.isoformat()
+    observation_date = str(unit.system_metadata.get("observation_date") or "").strip()
+    if observation_date:
+        return observation_date
+    if unit.temporal.t_event is not None:
+        return unit.temporal.t_event.isoformat()
+    return ""
+
+
+def _source_message_datetime(
+    unit: MemoryUnit,
+    fallback_timestamp: str = "",
+) -> datetime | None:
+    if unit.temporal.t_message is not None:
+        return unit.temporal.t_message
+    observation_date = str(unit.system_metadata.get("observation_date") or "").strip()
+    parsed = _parse_message_datetime(observation_date)
+    if parsed is not None:
+        return parsed
+    if unit.temporal.t_event is not None:
+        return unit.temporal.t_event
+    return _parse_message_datetime(fallback_timestamp)
+
+
+def _parse_message_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+\([^)]*\)\s*$", "", text)
+    normalized = f"{text[:-1]}+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _source_role(unit: MemoryUnit) -> str:
@@ -917,12 +1023,12 @@ def _event_time_metadata(value: str) -> dict[str, str]:
     if not text:
         return {}
     if re.fullmatch(r"\d{4}", text):
-        start = datetime(int(text), 1, 1, tzinfo=timezone.utc)
+        start = datetime(int(text), 1, 1, tzinfo=UTC)
         end = start.replace(year=start.year + 1)
         precision = "year"
     elif re.fullmatch(r"\d{4}-\d{2}", text):
         try:
-            start = datetime.strptime(text, "%Y-%m").replace(tzinfo=timezone.utc)
+            start = datetime.strptime(text, "%Y-%m").replace(tzinfo=UTC)
         except ValueError:
             return {}
         end = (
@@ -954,7 +1060,7 @@ def _parse_complete_event_time(value: str) -> datetime | None:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _normalize_property_time(raw_time: Any, value: str) -> tuple[str, str | None]:
@@ -979,7 +1085,16 @@ def _normalize_property_time(raw_time: Any, value: str) -> tuple[str, str | None
         return "", f"has invalid time {time_text!r}; expected YYYY, YYYY-MM, or ISO 8601"
     if not value_times:
         return "", f"has time {time_text!r} but value contains no ISO time anchor"
-    if not any(_property_times_compatible(time_text, item) for item in value_times):
+    matches_value_time = any(_property_times_compatible(time_text, item) for item in value_times)
+    has_specific_relative_time = any(
+        kind in {"week_day", "last_weekday", "month_day", "last_weekend", "next_weekend"}
+        for _phrase, kind in _relative_time_mentions(value)
+    )
+    if not matches_value_time and has_specific_relative_time and len(time_text) == 7:
+        matches_value_time = any(
+            len(item) == 10 and item.startswith(time_text) for item in value_times
+        )
+    if not matches_value_time:
         return "", f"has time {time_text!r} inconsistent with value times {value_times!r}"
     return time_text, None
 
@@ -1051,23 +1166,70 @@ def _speaker_for_property(value: str, speakers: list[str]) -> str:
 
 
 def _relative_time_mentions(value: str) -> list[tuple[str, str]]:
-    matches: list[tuple[int, str, str]] = []
+    matches: list[tuple[int, int, str, str]] = []
     for pattern, kind in _RELATIVE_TIME_PATTERNS:
-        matches.extend((match.start(), match.group(0), kind) for match in pattern.finditer(value))
-    matches.sort(key=lambda item: (item[0], -len(item[1])))
+        matches.extend(
+            (match.start(), match.end(), match.group(0), kind)
+            for match in pattern.finditer(value)
+        )
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
 
     mentions: list[tuple[str, str]] = []
-    occupied_starts: set[int] = set()
-    for start, phrase, kind in matches:
-        if start in occupied_starts:
+    occupied: list[tuple[int, int]] = []
+    for start, end, phrase, kind in matches:
+        if any(start < prior_end and prior_start < end for prior_start, prior_end in occupied):
             continue
-        occupied_starts.add(start)
+        occupied.append((start, end))
         mentions.append((phrase, kind))
     return mentions
 
 
-def _relative_time_anchor(kind: str, message_time: datetime) -> str:
+_WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_CHINESE_WEEKDAYS = {character: index for index, character in enumerate("一二三四五六日")}
+_CHINESE_WEEKDAYS["天"] = 6
+
+
+def _relative_expression_key(phrase: str, kind: str) -> tuple[str, int | None, str]:
+    if kind == "month_day":
+        day_match = re.search(r"(\d{1,2})[号日]$", phrase)
+        direction = "last" if phrase.startswith("上") else "next"
+        return kind, int(day_match.group(1)) if day_match else None, direction
+    if kind in {"week_day", "last_weekday"}:
+        weekday = (
+            _CHINESE_WEEKDAYS[phrase[-1]]
+            if phrase[-1] in _CHINESE_WEEKDAYS
+            else _WEEKDAY_NAMES.index(phrase.split()[-1].casefold())
+        )
+        direction = (
+            "last" if phrase.startswith("上") or phrase.casefold().startswith("last") else "next"
+        )
+        return kind, weekday, direction
+    return kind, None, ""
+
+
+def _relative_time_anchor(kind: str, message_time: datetime, phrase: str = "") -> str | None:
     message_date = message_time.date()
+    if kind in {"last_weekend", "next_weekend"}:
+        offset = -1 if kind == "last_weekend" else 1
+        weekend_start = message_date - timedelta(days=message_date.weekday())
+        return (weekend_start + timedelta(weeks=offset, days=5)).strftime("%Y-%m")
+    if kind in {"week_day", "last_weekday", "month_day"}:
+        _kind, day, direction = _relative_expression_key(phrase, kind)
+        if day is None:
+            return None
+        if kind == "month_day":
+            try:
+                return _shift_month(message_time, -1 if direction == "last" else 1).replace(
+                    day=day
+                ).date().isoformat()
+            except ValueError:
+                return None
+        if kind == "last_weekday":
+            days_back = (message_date.weekday() - day) % 7 or 7
+            return (message_date - timedelta(days=days_back)).isoformat()
+        week_start = message_date - timedelta(days=message_date.weekday())
+        week_offset = -1 if direction == "last" else 1
+        return (week_start + timedelta(weeks=week_offset, days=day)).isoformat()
     if kind == "today":
         return message_date.isoformat()
     if kind == "yesterday":
@@ -1100,10 +1262,10 @@ def _validate_relative_property_time(
     property_time: str,
     source_units: list[MemoryUnit],
     fallback_timestamp: str,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     mentions = _relative_time_mentions(value)
     if not mentions:
-        return None
+        return None, None
     if not property_time:
         # A relative phrase can only be normalized when the supporting message carries a real
         # timestamp.  ``dialogue_timestamp`` may be today's compatibility fallback, which must
@@ -1112,27 +1274,103 @@ def _validate_relative_property_time(
             _source_message_datetime(source) is not None for source in source_units
         )
         if not has_source_time:
-            return None
+            return None, None
         phrases = [phrase for phrase, _kind in mentions]
-        return f"has relative time {phrases!r} but an empty event time"
+        return f"has relative time {phrases!r} but an empty event time", None
 
-    expected: list[str] = []
-    for source in source_units:
-        message_time = _source_message_datetime(source, fallback_timestamp)
-        if message_time is None:
-            continue
-        for _phrase, kind in mentions:
-            anchor = _relative_time_anchor(kind, message_time)
-            if anchor not in expected:
-                expected.append(anchor)
-            if _property_times_compatible(property_time, anchor):
-                return None
-    if not expected:
-        return "contains relative time but no supporting source has a message timestamp"
-    return (
-        f"has time {property_time!r} inconsistent with relative time and supporting "
-        f"message times; expected one of {expected!r}"
-    )
+    matching_ids: set[str] | None = None
+    for phrase, kind in mentions:
+        key = _relative_expression_key(phrase, kind)
+        matching = []
+        for source in source_units:
+            for source_phrase, source_kind in _relative_time_mentions(source.content):
+                if _relative_expression_key(source_phrase, source_kind) == key:
+                    matching.append(source)
+                    break
+        if not matching:
+            return f"has relative time {phrase!r} without a matching supporting source", None
+        anchors: set[str] = set()
+        for source in matching:
+            message_time = _source_message_datetime(source, fallback_timestamp)
+            if message_time is None:
+                continue
+            anchor = _relative_time_anchor(kind, message_time, phrase)
+            if anchor is None:
+                return f"has invalid relative time {phrase!r} for supporting message date", None
+            anchors.add(anchor)
+            if kind in {"week_day", "last_weekday", "month_day"} and len(property_time) == 7:
+                value_dates = [
+                    token for token in _property_time_tokens(value)
+                    if len(token) == 10 and token.startswith(property_time)
+                ]
+                if value_dates and anchor not in value_dates:
+                    return f"has value date {value_dates!r} inconsistent with {phrase!r}", None
+            if not _relative_anchor_compatible(property_time, anchor, kind, source, message_time):
+                return (
+                    f"has time {property_time!r} inconsistent with relative time {phrase!r} "
+                    f"and supporting message time; expected {anchor!r}", None
+                )
+        if not anchors:
+            return "contains relative time but no supporting source has a message timestamp", None
+        if len(anchors) > 1:
+            return f"has ambiguous supporting message times for relative time {phrase!r}", None
+        source_ids = {source.id for source in matching}
+        matching_ids = source_ids if matching_ids is None else matching_ids & source_ids
+    if not matching_ids:
+        return "relative time expressions do not share a supporting source", None
+    return None, next(source.id for source in source_units if source.id in matching_ids)
+
+
+def _relative_anchor_compatible(
+    property_time: str,
+    anchor: str,
+    kind: str,
+    source: MemoryUnit,
+    message_time: datetime,
+) -> bool:
+    if kind in {"last_week", "next_week", "last_weekend", "next_weekend"}:
+        offset = -1 if kind.startswith("last") else 1
+        week_start = message_time.date() - timedelta(days=message_time.weekday())
+        period_start = week_start + timedelta(weeks=offset)
+        period_end = period_start + timedelta(days=7)
+        if kind.endswith("weekend"):
+            period_start += timedelta(days=5)
+        source_dates = []
+        for token in _property_time_tokens(source.content):
+            if len(token) != 10:
+                continue
+            try:
+                source_date = datetime.fromisoformat(token).date()
+            except ValueError:
+                continue
+            if period_start <= source_date < period_end:
+                source_dates.append(token)
+        if len(property_time) == 10:
+            if kind.endswith("week") and property_time not in source_dates:
+                return False
+            if kind.endswith("weekend") and source_dates and property_time not in source_dates:
+                return False
+            event_date = datetime.fromisoformat(property_time).date()
+            return period_start <= event_date < period_end
+        if len(property_time) == 7 and source_dates:
+            return any(token.startswith(property_time) for token in source_dates)
+        if kind.endswith("weekend") and len(property_time) == 7:
+            saturday_month = period_start.strftime("%Y-%m")
+            sunday_month = (period_start + timedelta(days=1)).strftime("%Y-%m")
+            return property_time in {saturday_month, sunday_month}
+    if _property_times_compatible(property_time, anchor):
+        return True
+    if len(anchor) == 10 and len(property_time) == 7:
+        return kind in {"week_day", "last_weekday", "month_day"} and anchor.startswith(
+            property_time
+        )
+    if len(anchor) != 7 or len(property_time) != 10:
+        return False
+    if not property_time.startswith(anchor):
+        return False
+    if property_time not in _property_time_tokens(source.content):
+        return False
+    return kind in {"last_month", "next_month"}
 
 
 def _primary_source_for_candidate(
@@ -1153,9 +1391,11 @@ def _primary_source_for_candidate(
         message_time = _source_message_datetime(source)
         if message_time is None:
             continue
-        for _phrase, kind in _relative_time_mentions(source.content):
-            anchor = _relative_time_anchor(kind, message_time)
-            if _property_times_compatible(candidate.property_time, anchor):
+        for phrase, kind in _relative_time_mentions(source.content):
+            anchor = _relative_time_anchor(kind, message_time, phrase)
+            if anchor and _relative_anchor_compatible(
+                candidate.property_time, anchor, kind, source, message_time
+            ):
                 return source
     return source_units[0]
 
@@ -1185,8 +1425,10 @@ def _self_contained_property_content(
             continue
         reference_date = message_time.date().isoformat()
         for phrase, kind in _relative_time_mentions(source.content):
-            anchor = _relative_time_anchor(kind, message_time)
-            if not _property_times_compatible(candidate.property_time, anchor):
+            anchor = _relative_time_anchor(kind, message_time, phrase)
+            if not anchor or not _relative_anchor_compatible(
+                candidate.property_time, anchor, kind, source, message_time
+            ):
                 continue
             if reference_date in value and phrase.casefold() in value.casefold():
                 return value
@@ -1283,6 +1525,7 @@ def _dedupe_units(units: list[MemoryUnit]) -> list[MemoryUnit]:
 
 @ExtractorProducer.register("entity_schema")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     schema_path = str(config.get("schema_path") or "").strip()
     if not schema_path:
         raise ValueError("entity_schema extractor requires schema_path")
@@ -1303,6 +1546,6 @@ def _build(config):
         max_properties_per_entity=int(
             config.get("max_properties_per_entity", _DEFAULT_MAX_PROPERTIES)
         ),
-        retry_max_retries=int(config.get("extractor_retry_max", 3)),
-        retry_backoff_ms=int(config.get("extractor_retry_backoff", 1000)),
+        max_attempts=config.get("extractor_max_attempts", 3),
+        retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
     )

@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from time import perf_counter
-from typing import Callable
 
 from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.errors import safe_error_message
@@ -42,6 +42,14 @@ logger = get_logger(__name__)
 RecordStep = Callable[..., None]
 
 
+@dataclass(slots=True)
+class OrdinaryRetrieval:
+    """Validated ordinary result and the candidates that produced it."""
+
+    candidates: list[ScoredMemoryUnit]
+    result: RetrievalResult
+
+
 class SchemaTemporalPipelineExtension:
     """Run schema-temporal retrieval after the ordinary public result exists.
 
@@ -72,15 +80,15 @@ class SchemaTemporalPipelineExtension:
         scope: Scope,
         query: RetrievalQuery,
         parsed: ParsedQuery,
-        ordinary_candidates: list[ScoredMemoryUnit],
-        ordinary_units: dict[str, MemoryUnit],
-        ordinary_result: RetrievalResult,
+        ordinary: OrdinaryRetrieval,
         *,
         user_filters: FilterExpr | None,
         record_step: RecordStep,
     ) -> RetrievalResult:
         """Replace the public result only when the temporal branch is selected."""
 
+        ordinary_candidates = ordinary.candidates
+        ordinary_result = ordinary.result
         if query.schema_temporal is not None:
             parsed.extensions["schema_temporal"] = query.schema_temporal
         if not self._selector.should_select(parsed):
@@ -387,12 +395,12 @@ def _merge_temporal_and_source_items(
     remaining = result_limit - len(selected_temporal) - len(selected_sources)
     if remaining > 0:
         selected_temporal.extend(
-            temporal_items[len(selected_temporal) : len(selected_temporal) + remaining]
+            temporal_items[len(selected_temporal):len(selected_temporal) + remaining]
         )
         remaining = result_limit - len(selected_temporal) - len(selected_sources)
     if remaining > 0:
         selected_sources.extend(
-            source_items[len(selected_sources) : len(selected_sources) + remaining]
+            source_items[len(selected_sources):len(selected_sources) + remaining]
         )
     return _interleave_items(
         selected_temporal,
