@@ -68,7 +68,7 @@ class MarkdownStore(BaseStore):
         system_metadata 读取后落 ``memory_unit.md_filename`` 列，也供看门狗据此定位
         文件变化。
 
-        ``memory_class`` 为空时在此兜底赋 ``daily_memory``（F08 §2），保证 md 路径与
+        ``memory_class`` 为空时在此兜底赋 ``long_term_memory``（MEMORY.md），保证 md 路径与
         影子索引 ``category`` 列落值一致。
         """
 

@@ -92,18 +92,16 @@ def test_md_path_for_daily_memory_uses_daily_file() -> None:
 
 
 def test_md_path_defaults_missing_class_and_project() -> None:
-    """空 memory_class → daily_memory；空 project → 落 memory 根下（跨项目可见）。"""
+    """空 memory_class → long_term_memory；空 project → 落 memory 根下（跨项目可见）。"""
     store = _store(None)
     unit = _unit("u1", "x", {})
-    today = datetime.date.today().isoformat()
-    assert store._md_path(unit) == f"memory/daily_memory/{today}.md"
+    assert store._md_path(unit) == "memory/MEMORY.md"
 
 
-def test_unknown_memory_class_falls_back_to_daily_memory() -> None:
+def test_unknown_memory_class_falls_back_to_long_term_memory() -> None:
     store = _store(None)
     unit = _unit("u1", "x", {MEMORY_CLASS_KEY: "weird", COORDS_KEY: {"project": "p1"}})
-    today = datetime.date.today().isoformat()
-    assert store._md_path(unit) == f"memory/p1/daily_memory/{today}.md"
+    assert store._md_path(unit) == "memory/p1/MEMORY.md"
 
 
 def test_md_path_for_agent_llm_classes_share_routes() -> None:
@@ -127,9 +125,9 @@ def test_md_path_for_agent_llm_classes_share_routes() -> None:
     assert store._md_path(daily) == f"memory/p1/daily_memory/{today}.md"
 
 
-def test_resolved_memory_class_defaults_to_daily_memory() -> None:
-    assert LocalMarkdownStore._resolved_memory_class({}) == "daily_memory"
-    assert LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: ""}) == "daily_memory"
+def test_resolved_memory_class_defaults_to_long_term_memory() -> None:
+    assert LocalMarkdownStore._resolved_memory_class({}) == "long_term_memory"
+    assert LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: ""}) == "long_term_memory"
     assert (
         LocalMarkdownStore._resolved_memory_class({MEMORY_CLASS_KEY: "long_term_memory"})
         == "long_term_memory"
@@ -207,9 +205,8 @@ def test_write_backfills_default_class_when_missing(tmp_path) -> None:
 
     store.write(SCOPE, [unit])
 
-    assert unit.system_metadata[MEMORY_CLASS_KEY] == "daily_memory"
-    today = datetime.date.today().isoformat()
-    assert unit.system_metadata[MD_FILENAME_KEY] == f"memory/daily_memory/{today}.md"
+    assert unit.system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
+    assert unit.system_metadata[MD_FILENAME_KEY] == "memory/MEMORY.md"
 
 
 def test_write_groups_same_file_units_into_one_append(tmp_path) -> None:

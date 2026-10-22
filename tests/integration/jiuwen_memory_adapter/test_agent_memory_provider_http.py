@@ -197,10 +197,15 @@ def test_read_md_file_client_error_propagates(memory_http_url):
 def test_prefetch_excludes_episodic_originals_while_search_tool_finds_them(memory_http_url):
     async def _run() -> None:
         async with _scoped_provider(memory_http_url, "user-tier-filter") as provider:
-            # conclude 走直写路径 → episodic 原文（建索引）
-            await provider.handle_tool_call(
-                "agent_memory_conclude", {"conclusion": "唯一的深色主题偏好锚点"}
+            client = provider._client
+            # 直写路径（无 infer）→ episodic 原文（建索引）。conclude 走 infer=true 会经
+            # keyword 抽取产出 semantic 派生单元（§6.2-F 收进来），测不出 tier 过滤效果。
+            added = await client.add(
+                "唯一的深色主题偏好锚点",
+                provider.bound_scope(),
+                tags=["tier-filter"],
             )
+            assert added is not None and added.tier == "episodic"
 
             # prefetch 只召回 semantic/core/procedural → episodic 原文被排除
             prefetch = await provider.prefetch("深色主题偏好")

@@ -65,7 +65,6 @@ from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 from jiuwen_memory.config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
 from jiuwen_memory.config.document_flag import (
     WATCH_DOCUMENT_KEY,
-    WRITE_DOCUMENT_KEY,
     resolve_watch_document,
 )
 from jiuwen_memory.construction.bootstrap import register_constructors
@@ -574,9 +573,6 @@ def _assemble_kernel(
         ctx = ctx.merged(config.context(known_top_names=Factory.known_top_names()))
     if policies is not None:
         ctx.globals["policies"] = dict(policies)
-    # agent engine 的文档模式默认注入——必须在 storage 装配（StoreManagerProducer.resolve）
-    # 之前：storage 的 _build 届时读取 write_document 并固化 md+shadow vs KV 决策。
-    _inject_agent_engine_document_default(ctx, config)
     schema_enabled = as_bool(ctx.globals.get("schema_enabled"), default=False)
     configured_schema_targets = _configured_schema_targets(ctx)
     if configured_schema_targets and not schema_enabled:
@@ -796,31 +792,6 @@ def _warn_inert_permission_namespace(
         "配置了 permission 段，但该判定实现不再处于内容读写路径——"
         "空间级与主体面判定均由 authorizer 终局（不变量 23）。"
     )
-
-
-def _inject_agent_engine_document_default(
-    ctx: AssemblyContext, config: Config | None
-) -> None:
-    """agent engine 的文档模式默认：engine 选 agent 且用户未显式配 write_document
-    时置 true（开箱即文档模式）。
-
-    时机铁律：只允许在 storage 装配（``StoreManagerProducer.resolve``）之前调用——
-    storage 的 ``_build`` 届时读取 write_document 并固化 md+shadow vs KV 决策，
-    晚于该时机的注入会让 engine / index_builder 与 storage 的文档模式判定分叉。
-
-    "用户显式配 false"与"默认 false"必须回看用户原始配置区分：合并后的
-    ``ctx.globals`` 恒含 ``write_document=False``（defaults 已填）。显式配置一律
-    尊重：false 时 agent engine 跑 KV 栈（与 CloudEngine 行为一致），本函数不改写。
-    """
-    if config is None or config.is_empty():
-        return
-    engine_name = ROOT_PARAMS.get("engine", "default")
-    spec = ctx.namespaces.get(EngineProducer.TOP_NAME, {}).get(engine_name)
-    if spec is None or spec.target != "agent":
-        return
-    if WRITE_DOCUMENT_KEY in (config.context().globals or {}):
-        return
-    ctx.globals[WRITE_DOCUMENT_KEY] = True
 
 
 def assemble(

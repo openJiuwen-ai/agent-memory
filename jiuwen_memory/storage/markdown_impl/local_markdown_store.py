@@ -8,7 +8,7 @@ md 文件是文档记忆（F08）的人类可读视图——只记 ``segments[0]
     long_term_memory → {root}/memory/{project}/MEMORY.md         （单文件，块追加）
     daily_memory → {root}/memory/{project}/daily_memory/YYYY-MM-DD.md
     project 为空 → 落 memory 根下（memory/MEMORY.md / memory/daily_memory/...，跨项目可见）
-    空 memory_class（兜底）→ 同 daily_memory（F08 §2）
+    空 memory_class（兜底）→ 同 long_term_memory（MEMORY.md）
 
 ``write`` 落盘后就地回填 ``unit.system_metadata[MD_FILENAME_KEY]``（相对根路径），
 供影子索引 ``insert_units`` 从 system_metadata 读取后落 ``memory_unit.md_filename`` 列。
@@ -455,7 +455,7 @@ class LocalMarkdownStore(MarkdownStore):
     def _md_path(self, unit: MemoryUnit) -> str:
         """按 F08 §3 映射算 md 文件相对根目录的路径。
 
-        读 memory_class（空兜底 daily_memory）+ project（system_metadata.project
+        读 memory_class（空兜底 long_term_memory）+ project（system_metadata.project
         标量优先，coords.project 兜底，空落空串）。user_profile 落 root 顶层
         ``USER.md``（跨 project 用户画像，不进 memory/）；无 project 的
         long_term_memory/daily_memory 落 memory 根下，与影子索引
@@ -466,7 +466,7 @@ class LocalMarkdownStore(MarkdownStore):
         memory_class = self._resolved_memory_class(metadata)
         project = self._project_of(unit)
 
-        # 未知 memory_class 走 daily_memory 兜底（F08 §3.1 首版策略）
+        # 未知 memory_class 走 long_term_memory 兜底（MEMORY.md）
         sub, into_project = _PATH_MAP.get(memory_class, _PATH_MAP[_DEFAULT_CLASS])
 
         if not into_project:
@@ -489,7 +489,7 @@ class LocalMarkdownStore(MarkdownStore):
 
     @staticmethod
     def _resolved_memory_class(metadata: dict) -> str:
-        """读 memory_class，空兜底 daily_memory（F08 §2）。
+        """读 memory_class，空兜底 long_term_memory（MEMORY.md）。
 
         write 与 _md_path 共用此方法，保证 md 路径算值与回填进 system_metadata
         的值（进而影子索引 category 列）口径一致。
@@ -532,7 +532,7 @@ class LocalMarkdownStore(MarkdownStore):
 
         标题分流（F08 §8.2）：
 
-        - daily 文件（daily_memory / 兜底类，落 ``daily_memory/日期.md``）：
+        - daily 文件（daily_memory，落 ``daily_memory/日期.md``）：
           标题 = ``coords["team"]``——daily 按天聚合多人多来源的记忆，标题行用 team 名
           标识本条记忆的来源团队；team 坐标缺失时标题留空。
         - 其余文件（USER.md / MEMORY.md）：标题 = ``system_metadata["md_title"]``

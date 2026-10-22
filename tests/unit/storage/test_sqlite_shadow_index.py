@@ -128,7 +128,7 @@ def test_project_of_reads_scalar_or_coords() -> None:
 
 def test_category_of_reads_memory_class_or_defaults() -> None:
     assert _category_of(_unit("u1", "x", {MEMORY_CLASS_KEY: "long_term_memory"})) == "long_term_memory"
-    assert _category_of(_unit("u1", "x", {})) == "daily_memory"
+    assert _category_of(_unit("u1", "x", {})) == "long_term_memory"
 
 
 def test_md_filename_of_reads_backfilled_path() -> None:

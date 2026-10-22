@@ -118,7 +118,7 @@ def _build_schema(vec_dim: int | None) -> str:
     降级场景下向量召回缺一路，倒排与全量存储照常。
 
     ``memory_unit.category`` 列名保留（不改表结构），但 F08 复用 memory_class 后落的
-    是 memory_class 值（如 ``daily_memory``），默认值取 F08 §2 兜底 ``daily_memory``——
+    是 memory_class 值（如 ``daily_memory``），默认值取 F08 §2 兜底 ``long_term_memory``——
     非 F07 原设计的 ``diary``。
 
     FTS5 ``tokenize``： ``'simple'``（"不二次分词，分词归 jieba 预处理"），
@@ -565,7 +565,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _category_of(unit: MemoryUnit) -> str:
-        """落 memory_class 值，空落 ``daily_memory``（F08 §2/§5）。
+        """落 memory_class 值，空落 ``long_term_memory``（F08 §2/§5）。
 
         md.write 已在写入 md 前兜底回填 memory_class（F08 §4 步骤6 关键细节），
         故此处一般非空；留兜底是为防直接调 ``insert_units``（不经 md.write）的场景。

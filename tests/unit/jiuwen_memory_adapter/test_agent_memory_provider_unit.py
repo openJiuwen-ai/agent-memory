@@ -40,6 +40,7 @@ if _ADAPTER_DIR.is_dir() and str(_ADAPTER_DIR) not in sys.path:
     sys.path.append(str(_ADAPTER_DIR))
 
 # ruff: noqa: E402
+# pylint: disable=wrong-import-order  # 顶层模块须晚于 sys.path.append，无法按 first/third-party 排序
 from agent_memory_provider import AgentMemoryMemoryProvider, _HttpClient, _recall_filters
 
 pytestmark = pytest.mark.unit

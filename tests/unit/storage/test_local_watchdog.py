@@ -83,7 +83,7 @@ def test_project_from_md_path_unknown_shape_defaults() -> None:
         ("memory/USER.md", "user_profile"),
         ("USER.md", "user_profile"),  # root 顶层（USER.md 上移后实际形态）
         ("memory/p1/MEMORY.md", "long_term_memory"),
-        ("memory/p1/unknown.md", "daily_memory"),  # 未知兜底
+        ("memory/p1/unknown.md", "long_term_memory"),  # 未知兜底
     ],
 )
 def test_class_from_md_path_maps_file_to_memory_class(path: str, expected: str) -> None:
