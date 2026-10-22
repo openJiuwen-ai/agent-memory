@@ -230,16 +230,19 @@ def test_stale_release_does_not_free_the_new_holders_lock() -> None:
 
 
 def test_renew_extends_lease_and_fails_after_loss() -> None:
-    provider = _provider(lease_ms=60)
+    # 租约与 sleep 的余量必须拉大：Windows 事件循环定时器有 ~15.6ms 量化误差，配
+    # 告度抖动后，40ms 的 sleep 常实际跑过 60ms 租约，使续期前租约已过期而 flaky。
+    # 保持侧 sleep 取租约的 1/4（150ms 余量），到期侧 sleep 取租约的 1.5 倍（100ms 余量）。
+    provider = _provider(lease_ms=200)
 
     async def scenario() -> None:
         handle = await provider.acquire(_SCOPE, "write")
-        await asyncio.sleep(0.04)
+        await asyncio.sleep(0.05)
         assert await provider.renew(handle) is True
-        await asyncio.sleep(0.04)
+        await asyncio.sleep(0.05)
         await _assert_held(provider)  # 续期后仍在租约内
 
-        await asyncio.sleep(0.08)  # 续期后的租约也到期
+        await asyncio.sleep(0.30)  # 续期后的租约也到期
         stolen = await _acquire_elsewhere(provider)
         assert stolen.token != handle.token
         assert await provider.renew(handle) is False
