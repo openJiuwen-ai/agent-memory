@@ -529,6 +529,69 @@ def test_month_day_rejects_a_conflicting_date_even_with_coarse_time(property_tim
         _extract_relative_property([source], value, property_time)
 
 
+@pytest.mark.parametrize(
+    ("message_date", "phrase", "event_date"),
+    [
+        ("2023-07-03", "上周", "2023-07-01"),
+        ("2023-07-03", "last week", "2023-07-01"),
+        ("2023-07-30", "next week", "2023-08-01"),
+    ],
+)
+def test_week_accepts_source_supported_date_across_month_boundary(
+    message_date: str, phrase: str, event_date: str
+) -> None:
+    source_text = (
+        f"{phrase} I went to hospital on {event_date}"
+        if phrase.isascii() else f"{phrase}去了医院，日期是 {event_date}"
+    )
+    source = _dated_source("source", message_date, source_text)
+    value = f"On {event_date} ({phrase}), Alice went to hospital"
+
+    unit = _extract_relative_property([source], value, event_date)[0]
+
+    assert unit.temporal.t_event == datetime.fromisoformat(event_date).replace(tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("phrase", "event_date"),
+    [("上周末", "2023-07-08"), ("上周末", "2023-07-09"), ("last weekend", "2023-07-09")],
+)
+def test_last_weekend_accepts_either_weekend_day(phrase: str, event_date: str) -> None:
+    source_text = "上周末去了医院" if phrase == "上周末" else "last weekend I went to hospital"
+    source = _dated_source("source", "2023-07-10", source_text)
+    value = f"On {event_date} ({phrase}), Alice went to hospital"
+
+    unit = _extract_relative_property([source], value, event_date)[0]
+
+    assert unit.temporal.t_event == datetime.fromisoformat(event_date).replace(tzinfo=UTC)
+
+
+def test_last_weekend_rejects_a_weekday() -> None:
+    source = _dated_source("source", "2023-07-10", "上周末去了医院")
+
+    with pytest.raises(InvalidSchemaExtractionError):
+        _extract_relative_property(
+            [source], "On 2023-07-07 (上周末), Alice went to hospital", "2023-07-07"
+        )
+
+
+def test_next_weekend_uses_following_calendar_week() -> None:
+    source = _dated_source("source", "2023-07-10", "下周末去医院")
+
+    unit = _extract_relative_property(
+        [source], "On 2023-07-22 (下周末), Alice will visit hospital", "2023-07-22"
+    )[0]
+
+    assert unit.temporal.t_event == datetime(2023, 7, 22, tzinfo=UTC)
+
+
+def test_week_rejects_month_conflicting_with_source_date() -> None:
+    source = _dated_source("source", "2023-07-03", "上周去了医院，日期是 2023-07-01")
+
+    with pytest.raises(InvalidSchemaExtractionError):
+        _extract_relative_property([source], "In 2023-06 (上周), Alice went to hospital", "2023-06")
+
+
 def test_relative_time_uses_the_source_with_matching_expression() -> None:
     unrelated = _dated_source("unrelated", "2023-01-20", "hello there")
     supporting = _dated_source("supporting", "2023-03-01", "I will perform tomorrow")

@@ -76,6 +76,10 @@ _RELATIVE_TIME_PATTERNS = (
     ),
     (re.compile(rf"\blast\s+{_ENGLISH_WEEKDAY_PATTERN}\b", re.IGNORECASE), "last_weekday"),
     (re.compile(r"(?:上周|上个星期|下周|下个星期)[一二三四五六日天]"), "week_day"),
+    (re.compile(r"\blast weekend\b", re.IGNORECASE), "last_weekend"),
+    (re.compile(r"\bnext weekend\b", re.IGNORECASE), "next_weekend"),
+    (re.compile(r"上周末|上个星期末"), "last_weekend"),
+    (re.compile(r"下周末|下个星期末"), "next_weekend"),
     (re.compile(r"(?:上个月|下个月)\s*\d{1,2}[号日]"), "month_day"),
     (re.compile(r"\bjust now\b", re.IGNORECASE), "today"),
     (re.compile(r"\btoday\b", re.IGNORECASE), "today"),
@@ -91,8 +95,8 @@ _RELATIVE_TIME_PATTERNS = (
     (re.compile(r"今天"), "today"),
     (re.compile(r"昨天"), "yesterday"),
     (re.compile(r"明天"), "tomorrow"),
-    (re.compile(r"上周|上个星期"), "last_week"),
-    (re.compile(r"下周|下个星期"), "next_week"),
+    (re.compile(r"(?:上周|上个星期)(?![一二三四五六日天末])"), "last_week"),
+    (re.compile(r"(?:下周|下个星期)(?![一二三四五六日天末])"), "next_week"),
     (re.compile(r"上个月"), "last_month"),
     (re.compile(r"下个月"), "next_month"),
     (re.compile(r"去年"), "last_year"),
@@ -952,7 +956,7 @@ def _normalize_property_time(raw_time: Any, value: str) -> tuple[str, str | None
         return "", f"has time {time_text!r} but value contains no ISO time anchor"
     matches_value_time = any(_property_times_compatible(time_text, item) for item in value_times)
     has_specific_relative_time = any(
-        kind in {"week_day", "last_weekday", "month_day"}
+        kind in {"week_day", "last_weekday", "month_day", "last_weekend", "next_weekend"}
         for _phrase, kind in _relative_time_mentions(value)
     )
     if not matches_value_time and has_specific_relative_time and len(time_text) == 7:
@@ -1074,6 +1078,10 @@ def _relative_expression_key(phrase: str, kind: str) -> tuple[str, int | None, s
 
 def _relative_time_anchor(kind: str, message_time: datetime, phrase: str = "") -> str | None:
     message_date = message_time.date()
+    if kind in {"last_weekend", "next_weekend"}:
+        offset = -1 if kind == "last_weekend" else 1
+        weekend_start = message_date - timedelta(days=message_date.weekday())
+        return (weekend_start + timedelta(weeks=offset, days=5)).strftime("%Y-%m")
     if kind in {"week_day", "last_weekday", "month_day"}:
         _kind, day, direction = _relative_expression_key(phrase, kind)
         if day is None:
@@ -1189,6 +1197,36 @@ def _relative_anchor_compatible(
     source: MemoryUnit,
     message_time: datetime,
 ) -> bool:
+    if kind in {"last_week", "next_week", "last_weekend", "next_weekend"}:
+        offset = -1 if kind.startswith("last") else 1
+        week_start = message_time.date() - timedelta(days=message_time.weekday())
+        period_start = week_start + timedelta(weeks=offset)
+        period_end = period_start + timedelta(days=7)
+        if kind.endswith("weekend"):
+            period_start += timedelta(days=5)
+        source_dates = []
+        for token in _property_time_tokens(source.content):
+            if len(token) != 10:
+                continue
+            try:
+                source_date = datetime.fromisoformat(token).date()
+            except ValueError:
+                continue
+            if period_start <= source_date < period_end:
+                source_dates.append(token)
+        if len(property_time) == 10:
+            if kind.endswith("week") and property_time not in source_dates:
+                return False
+            if kind.endswith("weekend") and source_dates and property_time not in source_dates:
+                return False
+            event_date = datetime.fromisoformat(property_time).date()
+            return period_start <= event_date < period_end
+        if len(property_time) == 7 and source_dates:
+            return any(token.startswith(property_time) for token in source_dates)
+        if kind.endswith("weekend") and len(property_time) == 7:
+            saturday_month = period_start.strftime("%Y-%m")
+            sunday_month = (period_start + timedelta(days=1)).strftime("%Y-%m")
+            return property_time in {saturday_month, sunday_month}
     if _property_times_compatible(property_time, anchor):
         return True
     if len(anchor) == 10 and len(property_time) == 7:
@@ -1201,13 +1239,6 @@ def _relative_anchor_compatible(
         return False
     if property_time not in _property_time_tokens(source.content):
         return False
-    if kind in {"last_week", "next_week"}:
-        event_date = datetime.fromisoformat(property_time).date()
-        week_start = message_time.date() - timedelta(days=message_time.weekday())
-        offset = -1 if kind == "last_week" else 1
-        return week_start + timedelta(weeks=offset) <= event_date < week_start + timedelta(
-            weeks=offset + 1
-        )
     return kind in {"last_month", "next_month"}
 
 

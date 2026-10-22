@@ -99,7 +99,10 @@ Input messages. Every marker contains its authoritative unit_id, message_time, r
    complete ISO-8601 datetime. Never invent a day for a year- or month-level expression.
 4. today, just now, 刚刚, and 刚才 resolve to the supporting message date. Bare "just" does not
    establish an event date. next month resolves to the next calendar month. last week uses
-   supported coarse month precision unless an exact date or weekday is stated. 上周五 means Friday
+   supported coarse month precision unless an exact date or weekday is stated. A supported exact
+   day within last/next week remains valid even when that week crosses a month boundary. 上周末 and
+   last weekend cover the preceding calendar week's Saturday and Sunday; 下周末 and next weekend
+   cover the following calendar week's Saturday and Sunday. 上周五 means Friday
    of the preceding calendar week; last Friday means the most recent earlier Friday. 上个月15号
    means the 15th day of the preceding month. For a future plan, time is the planned execution
    time, not when the plan was stated.
