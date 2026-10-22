@@ -345,6 +345,24 @@ def collect_candidates(
     return collected
 
 
+def collect_root_subtrees(
+    kv: KVStore | DomainStore, scopes: dict[ScopeKey, Scope], roots: list[MemoryUnit],
+    options: HierarchyComposeOptions, limits: HierarchyJobLimits,
+) -> HierarchyCandidates:
+    """只补齐已筛选增量根的后代；证据不受窗口限制，也不吸纳其它游离候选。"""
+    collected = HierarchyCandidates()
+    for root in roots:
+        target = collected.leaves if root.hierarchy.role is HierarchyRole.SNAPSHOT else (
+            collected.parents
+        )
+        target[node_key(root)] = root
+    _check_limit(collected, limits.max_leaves)
+    _complete_children(kv, collected, options, limits)
+    # 即使只有 Snapshot，也复核初读版本和其它父节点的反向声明。
+    _validate_reverse_claims(kv, scopes, collected, limits.page_size)
+    return collected
+
+
 def _validate_reverse_claims(
     kv: KVStore | DomainStore, scopes: dict[ScopeKey, Scope],
     candidates: HierarchyCandidates, page_size: int,

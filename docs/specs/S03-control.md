@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -587,3 +587,17 @@ False 允许完整旧树与新叶一起重建。整个操作使用请求副本�
 可选 hierarchy 锁覆盖读取、验证和同步构建。协作取消在步骤边界检查；在飞同步
 构建先收尾，记录已完成写入，再报告取消；不提前释放锁或声称回滚。普通 dreaming
 的持续授权、注册/注销、调度器关闭规则保持。没有新增周期建树任务。
+
+
+### 增量候选收集
+
+按固定 home 的完整 Scope 范围扫描，目标父层所有有效节点的最大 span_end 作为水位。
+只选 ACTIVE TIME 且未挂父的输入。起点不晚于水位记为迟到；仅 Snapshot 应用
+回看窗口（起点严格早于窗口时跳过），TimeSpan/Scene 可跨窗口等待上挂。
+无完整业务时间的未挂树叶计数后跳过，已有树缺子或引用损坏仍报错。
+未来输入保留 pending_before；迟到、过窗和缺时节点不占正常候选限额或待定边界。
+
+选中根的完整后代不受回看窗口限制；按当前真源端口读取，兼容 KVStore 与 DomainStore。
+完整分页、身份、双向引用、读取中变化和数量限制仍验证。诊断按互斥原因计数，
+每轮样例最多 20 条；needs_rebuild_count 是迟到与过窗计数之和，不表示整轮失败。
+不持久化跳过标记、不自动重建旧树。周期驱动在后续接入。

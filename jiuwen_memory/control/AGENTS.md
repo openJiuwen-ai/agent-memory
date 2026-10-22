@@ -161,3 +161,9 @@ CloudEngine 不回填已消费的叶提示。此流程不提交父节点构建�
 recall_spaces 扇出时设置内部 defer_expansion，先按既有规则全局选根，再交检索层完成
 共享预算展开；未选根不读后代。自定义 Retriever 返回非空结果但不提供准备协议时，
 记录该空间能力错误，不能静默绕过共享预算。身份与逐空间判权仍只由 API 处理。
+
+### 增量候选读取
+
+`jobs_impl/hierarchy_incremental` 负责水位、未挂父输入与有界跳过诊断；
+`hierarchy_candidates.collect_root_subtrees` 只补齐已选根的完整后代并复核外部反向引用，
+不重新吸纳游离候选。沿用 KV/DomainStore 双读端口、公共 UTC 转换与缺时叶判据。
