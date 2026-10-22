@@ -77,14 +77,18 @@ def test_top_name_is_a_known_config_section() -> None:
 
 
 def test_memory_builder_applies_lease_and_timeout() -> None:
+    # lease_ms 与 wait_timeout_ms 的差值必须拉大：竞争者 task 从 create_task 到首次
+    # 尝试的调度延迟 ε 一旦 ≥ lease-wait（原 50-30=20ms），锁就在 30ms 等待窗口内过期、
+    # 被竞争者拿到而不抛 LockTimeoutError（CI 高负载下 ε 超 20ms 很常见）。lease-wait
+    # 拉到 170ms，等待窗口远早于租约到期结束，恒超时。第 2 步 sleep 相应放大到 >租约。
     provider = LockProducer.build(
-        "memory", {"lease_ms": 50, "wait_timeout_ms": 30}, AssemblyContext()
+        "memory", {"lease_ms": 200, "wait_timeout_ms": 30}, AssemblyContext()
     )
     assert isinstance(provider, InMemoryLockProvider)
 
     async def scenario() -> None:
         await provider.acquire(_SCOPE, "write")
-        await asyncio.sleep(0.08)
+        await asyncio.sleep(0.30)  # 超过租约，锁过期，他人可获取
         fresh = await _acquire_elsewhere(provider)
         await provider.release(fresh)
 
@@ -231,7 +235,7 @@ def test_stale_release_does_not_free_the_new_holders_lock() -> None:
 
 def test_renew_extends_lease_and_fails_after_loss() -> None:
     # 租约与 sleep 的余量必须拉大：Windows 事件循环定时器有 ~15.6ms 量化误差，配
-    # 告度抖动后，40ms 的 sleep 常实际跑过 60ms 租约，使续期前租约已过期而 flaky。
+    # 调度抖动后，40ms 的 sleep 常实际跑过 60ms 租约，使续期前租约已过期而 flaky。
     # 保持侧 sleep 取租约的 1/4（150ms 余量），到期侧 sleep 取租约的 1.5 倍（100ms 余量）。
     provider = _provider(lease_ms=200)
 
