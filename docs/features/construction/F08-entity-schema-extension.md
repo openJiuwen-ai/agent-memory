@@ -88,6 +88,8 @@ message mapping 或 Episode。
 计算，多条候选消息给出冲突日期时进入现有纠错流程。无法可靠确定时保留原始 Source，
 不从无关消息借日期写入 Property。
 模型只给出与具体日一致的月精度时仍可保留 Property；正文中明确写错的日期继续纠错。
+上周/下周跨月时，有来源支持的具体日期按七天范围校验，不先限定到月锚点。
+上周末/下周末作为完整短语识别，日期须落在对应自然周的周六或周日。
 
 ADD 路径中，属性 Unit 成功持久化后，Evolver 按其 `provenance` 找到对应 Source Unit，把
 `schema_entity_name` 去重聚合到 Source 的 `entities`。一个 Source 支持多个实体和多个属性，
