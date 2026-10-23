@@ -16,7 +16,11 @@ from typing import Any
 import openai
 
 from jiuwen_memory.common._support import (
+    DEFAULT_OUTBOUND_MAX_RETRIES,
+    DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+    OUTBOUND_CONNECT_TIMEOUT_SECONDS,
     outbound_verify,
+    read_outbound_call_policy,
     read_outbound_ssl,
     require_ca_file,
     require_https,
@@ -249,7 +253,7 @@ def run_video_asr(video_path: str | Path, config: VideoAsrConfig) -> list[dict[s
 
 
 class OpenAITranscriptionVideoAsr(VideoAsrService):
-    """OpenAI-compatible remote ASR client, including vLLM Whisper servers."""
+    """OpenAI-compatible ASR with explicit per-request timeout and SDK retry limits."""
 
     def __init__(
         self,
@@ -257,6 +261,8 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
         model_name: str,
         base_url: str,
         api_key: str = "",
+        timeout: float = DEFAULT_OUTBOUND_TIMEOUT_SECONDS,
+        max_retries: int = DEFAULT_OUTBOUND_MAX_RETRIES,
         ssl_verify: bool = False,
         ssl_ca_cert: str | None = None,
         config_source: Any | None = None,
@@ -265,6 +271,8 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
         self._fallback_model = model_name
         self._fallback_base_url = base_url
         self._fallback_api_key = api_key
+        self._timeout = timeout
+        self._max_retries = max_retries
         self._ssl_verify = ssl_verify
         self._ssl_ca_cert = ssl_ca_cert
         self._config_source = config_source
@@ -291,7 +299,13 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
         endpoint = self._endpoint()
         fingerprint = (endpoint.api_key, endpoint.base_url, self._ssl_verify, self._ssl_ca_cert)
         if self._client is None or self._client_fingerprint != fingerprint:
-            kwargs: dict[str, Any] = {"api_key": endpoint.api_key}
+            kwargs: dict[str, Any] = {
+                "api_key": endpoint.api_key,
+                "timeout": openai.Timeout(
+                    timeout=self._timeout, connect=OUTBOUND_CONNECT_TIMEOUT_SECONDS
+                ),
+                "max_retries": self._max_retries,
+            }
             if endpoint.base_url:
                 kwargs["base_url"] = endpoint.base_url
             if self._ssl_verify:
@@ -658,6 +672,7 @@ def _transcription_payload(response: Any) -> dict[str, Any]:
 def _build_openai_transcription(config: Mapping[str, Any]) -> VideoAsrService:
     base_url = Factory.require_param(config, "asr_base_url", backend="remote ASR")
     ssl = read_outbound_ssl(config, "asr")
+    call_policy = read_outbound_call_policy(config, "asr")
     if ssl.verify:
         require_https(base_url, component="remote ASR", param="asr")
         require_ca_file(ssl.ca_cert, component="remote ASR", param="asr")
@@ -667,6 +682,8 @@ def _build_openai_transcription(config: Mapping[str, Any]) -> VideoAsrService:
         model_name=Factory.require_param(config, "asr_model", backend="remote ASR"),
         base_url=base_url,
         api_key=str(config.get("asr_api_key", "")),
+        timeout=call_policy.timeout,
+        max_retries=call_policy.max_retries,
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),

@@ -24,6 +24,7 @@ from jiuwen_memory_entry.cli import client as client_module
 from jiuwen_memory_entry.cli import commands
 from jiuwen_memory_entry.core import api_contract
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
+from tests.unit.jiuwen_memory_entry.fixtures import upstream_api_error
 
 pytestmark = pytest.mark.unit
 SCOPE = {"org": "local", "user": "developer"}
@@ -243,6 +244,38 @@ def test_inprocess_fails_closed_without_authentication() -> None:
         status, body = client.call("add", {"content": "x", "scope": SCOPE})
         assert status == 503
         assert body["error"] == "SecurityUnavailable"
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("method", ["add", "search"])
+@pytest.mark.parametrize("upstream_status", [429, 400, 500])
+def test_inprocess_upstream_error_response(method: str, upstream_status: int, monkeypatch) -> None:
+    client = client_module.InProcessClient(dev_authentication=True)
+    error = upstream_api_error(upstream_status)
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(client.server.api, method, fail)
+    payload = (
+        {"scope": SCOPE, "content": "x"}
+        if method == "add"
+        else {"context": {"scope": SCOPE}, "query": "x"}
+    )
+    limited = upstream_status == 429
+    try:
+        status, body = client.call(method, payload)
+        assert status == (429 if limited else 500)
+        assert body == {
+            "error": "RateLimitError" if limited else "InternalError",
+            "message": "too many requests" if limited else "internal server error",
+            "retryable": limited,
+            "request_id": body["request_id"],
+        }
+        assert body["request_id"]
+        assert get_current() is None
+        assert get_request_id() is None
     finally:
         client.close()
 

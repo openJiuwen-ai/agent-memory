@@ -13,6 +13,8 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Protocol
 
+from openai import RateLimitError
+
 from jiuwen_memory.api import AgentMemoryError, Credentials, Surface
 from jiuwen_memory_entry.core.api_contract import invoke_api, is_known_verb
 from jiuwen_memory_entry.core.auth_middleware import authenticated
@@ -97,7 +99,7 @@ class InProcessClient:
                         request_id=request_id,
                     ) as security:
                         return 200, invoke_api(self._srv.api, verb, payload, security)
-        except AgentMemoryError as exc:
+        except (AgentMemoryError, RateLimitError) as exc:
             error, detail = type(exc), exc
         except Exception as exc:
             error = "InternalError"

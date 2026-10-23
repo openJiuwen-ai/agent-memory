@@ -162,9 +162,11 @@
     `PermissionManager` 与 `Authorizer` 可共同实现该查询能力，但生产 PEP 只能把字段交给
     Authorizer 判定，禁止形成两套默认实现或两个终局 PDP。
 16. 审计增量验证必须经 `read_stable_snapshot(after_sequence)` 在同一快照取得精确 checkpoint 与固定链头，并令每页 `scan(..., through_sequence=快照链头)`；缺 checkpoint、序号缺口或未到快照链头都返回 `incomplete`，不得从 genesis 盲接。`AuditVerificationLimits` 是服务端可信单次资源边界，PEP 仍须截断 provider 的超量 samples。`ProtectedAuditLogger` 构造时必须满足 `provider.chain_store() is audit_logger`。
-17. **OpenAI LLM/Embedder 出站等待策略显式可配**：OpenAI 兼容 LLM 与 Embedder 必须显式传入
+17. **OpenAI LLM/Embedder/ASR 出站等待策略显式可配**：OpenAI 兼容 LLM、Embedder 与
+    `openai_transcription` ASR 必须复用 `read_outbound_call_policy` 并显式传入
     有限 timeout 和重试上限；默认 `300` 秒、`0` 次 SDK 重试，TCP connect 固定 5 秒。
-    配置键为 `<prefix>_timeout` / `<prefix>_max_retries`，非法值在装配阶段报错；
+    配置键为 `<prefix>_timeout` / `<prefix>_max_retries`（前缀 `llm`/`embedder`/`asr`），
+    非法值在装配阶段报错；ASR 同一客户端的探活与各分片转写共用该策略；
     详见 [F05-model-service-ssl.md](../../docs/features/common/F05-model-service-ssl.md) 第八节。
 
 ### 树结构基础

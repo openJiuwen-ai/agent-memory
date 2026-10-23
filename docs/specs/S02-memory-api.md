@@ -156,6 +156,7 @@ HTTP edge 将成功或失败响应统一写入 JSON；错误响应固定包含�
 | `ConflictError` | 409 | `false` | `resource conflict` |
 | `PartialFailureError` | 409 | `false` | 脱敏后的失败原因，并保留 `completed` / `failed` / `retry_action` |
 | `RateLimitedError` | 429 | `true` | `too many requests` |
+| OpenAI SDK `RateLimitError`（上游模型或向量服务限流） | 429 | `true` | `too many requests` |
 | `BackendError` / `HealthCheckError` | 503 | `true` | `service temporarily unavailable` |
 | 请求体超过限制 | 413 | `false` | `request body is too large` |
 | 未预期异常 | 500 | `false` | `internal server error` |
@@ -167,6 +168,11 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 客户端可按整数秒退避；其他状态不返回该 header。CLI 本地调用与 HTTP 共用
 `core/error_response.py` 的领域错误状态及脱敏规则，本地错误也带独立 request ID；
 命令行参数解析错误仍使用 CLI 退出码。MCP 与旧进程内 legacy dispatch 不受影响。
+
+HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `error` 为
+`RateLimitError`，不转换为 `InternalError` 或领域 `RateLimitedError`。消息使用上表固定
+文案，不回传上游错误详情；HTTP 沿用 `Retry-After: 1`，不透传供应商的重试头。
+其他未映射 SDK 异常仍按未预期异常处理。本契约不增加自动重试或修改现有重试配置。
 
 ## 范围 / 边界
 

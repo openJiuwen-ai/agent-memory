@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -89,10 +89,13 @@
     接口固定后不得在实现 PR 中改成 frozen 或可哈希。安全组件不得跨信任边界复用传入的
     Scope 引用：认证器、凭据 Store 和请求上下文必须按需创建防御性副本/来源绑定，防止
     「签发 key 后改原 actor，使已签发身份跟着变」的跨请求污染。
-19. **OpenAI 出站等待策略显式可配**：OpenAI 兼容 LLM 与 Embedder 必须显式传入
+19. **OpenAI 出站等待策略显式可配**：OpenAI 兼容 LLM、Embedder 与 `openai_transcription`
+   ASR 必须显式传入
    有限 timeout 和重试上限；默认 `300` 秒、`0` 次 SDK 重试，TCP connect 固定 5 秒。
    `<prefix>_timeout` 必须是有限正数，`<prefix>_max_retries` 必须是不小于 0 的整数，
-   非法值在装配阶段抛 `ValidationError`。
+   非法值在装配阶段抛 `ValidationError`。ASR 对应 `asr_timeout` / `asr_max_retries`，
+   同时用于探活和每个分片转写请求，不表示整段视频的总耗时上限。
+   显式启用重试时采用 SDK 的退避策略，不保证配额恢复；本层不叠加长退避或并发限流。
 20. **本地 BGE 模型不在运行时下载**：`bge_m3` 与 `bge_reranker` 的模型参数可以是
     已部署的本地目录，或只代表已经存在于 HuggingFace 本地缓存中的 repo id。实现必须
     通过本地目录解析后再交给底层模型库，并以 `local_files_only=True` 查缓存；缓存缺失、
