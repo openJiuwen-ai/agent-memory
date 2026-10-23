@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """DynamicEvolver：EXTRACT 走动态 prompt 四步编排的 Evolver 实现。
 
-继承 :class:`OrchestratingEvolver`，只覆盖 ``_evolve_extract``：
-``extract → consolidate(判定) → reflect → 落盘``。其余三模式
-（CONSOLIDATE/ASSOCIATE/FORGET）继承父类行为。
+继承 :class:`OrchestratingEvolver`，通过覆盖 ``_evolve_extract`` 切换抽取路径：
+``extract → consolidate(判定) → reflect → 落盘``。其他模式
+（含 HIERARCHY）继承父类行为。
 
 与父类 legacy EXTRACT（``_dedup_batch`` 判定+落盘耦合）的区别：
 - consolidate 步只产出 :class:`ConsolidateDecision`，不落盘；
@@ -19,17 +19,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     DedupDecision,
-    LifecycleState,
     MemoryUnit,
-    Segment,
-    inherited_system_metadata,
-    inherited_user_metadata,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
@@ -43,6 +38,7 @@ from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
     _resolve_message_store,
 )
+from jiuwen_memory.construction.evolver_impl.temporal_validity import time_context
 from jiuwen_memory.construction.extractor import ExtractorProducer
 from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
@@ -60,7 +56,6 @@ from jiuwen_memory.construction.prompt_strategy import (
 from jiuwen_memory.construction.router import optional_router
 from jiuwen_memory.construction.snapshot_inheritance import (
     inherit_infer_snapshots,
-    snapshot_for_decision,
 )
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
@@ -219,7 +214,7 @@ class DynamicEvolver(OrchestratingEvolver):
         hit_map = {unit.id: (unit, score) for unit, score in hits[:5]}
         existing_text = "\n\n".join(
             f"[Memory ID: {unit.id}]\nContent: {unit.content}\n"
-            f"Tier: {unit.tier.value}\nSimilarity: {score:.3f}"
+            f"Tier: {unit.tier.value}\nSimilarity: {score:.3f}\n{time_context(unit)}"
             for unit, score in hits[:5]
         )
         messages = [
@@ -228,7 +223,7 @@ class DynamicEvolver(OrchestratingEvolver):
                 role="user",
                 content=(
                     f"Candidate ID: {candidate.id}\n"
-                    f"Candidate content: {candidate.content}\n\n"
+                    f"Candidate content: {candidate.content}\n{time_context(candidate)}\n\n"
                     f"Existing memories:\n{existing_text or '(none)'}"
                 ),
             ),
@@ -275,70 +270,14 @@ class DynamicEvolver(OrchestratingEvolver):
             )
         return result
 
-    def _apply_decision(
-        self,
-        candidate: MemoryUnit,
-        decision: DedupDecision,
-        existing: MemoryUnit | None,
-        similarity: float,
-        result: EvolveResult,
-    ) -> int:
-        """执行单条决策，返回 noop 计数（0 或 1，与父类签名一致）。"""
-        snapshot = snapshot_for_decision(candidate, decision, existing)
-        if decision == DedupDecision.ADD or (
-            decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE}
-            and existing is None
-        ):
-            self._index.build([candidate])
-            result.created_ids.append(candidate.id)
-            result.created_units.append(candidate)
-            return 0
-        if decision == DedupDecision.NOOP:
-            return 1
-        if decision == DedupDecision.UPDATE:
-            if existing is None:
-                raise ValueError("UPDATE 决策必须提供 existing memory")
-            merged = self._merge_content(existing, candidate)
-            if existing.segments:
-                existing.segments[0].content = merged
-            else:
-                existing.segments = [Segment(content=merged)]
-            existing.provenance = list(
-                set(existing.provenance) | set(candidate.provenance) | {candidate.id}
-            )
-            existing.system_metadata = inherited_system_metadata([existing, candidate])
-            existing.user_metadata = inherited_user_metadata([existing, candidate])
-            existing.system_metadata.update(
-                {
-                    "dedup_decision": "update",
-                    "dedup_similarity": str(similarity),
-                    "dedup_merged_from": candidate.id,
-                }
-            )
-            if snapshot is not None:
-                existing.hierarchy = snapshot
-            self._index.update([existing])
-            result.updated_ids.append(existing.id)
-            return 0
-        if existing is None:
-            raise ValueError("SUPERSEDE 决策必须提供 existing memory")
-        candidate.supersedes = existing.id
-        candidate.provenance = list(set(candidate.provenance) | {existing.id})
-        candidate.system_metadata.update(
-            {
-                "dedup_decision": "supersede",
-                "dedup_similarity": str(similarity),
-                "dedup_superseded": existing.id,
-            }
-        )
-        self._index.build([candidate])
-        existing.lifecycle = LifecycleState.SUPERSEDED
-        existing.temporal.t_invalid = datetime.now(UTC)
-        self._index.update([existing])
-        result.created_ids.append(candidate.id)
-        result.created_units.append(candidate)
-        result.superseded_ids.append(existing.id)
-        return 0
+    def _recheck_candidate(
+        self, candidate: MemoryUnit
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
+        try:
+            return self._judge(candidate, self._dedup.recall(candidate))
+        except Exception as exc:
+            logger.warning("DynamicEvolver batch recheck failed: %s", type(exc).__name__)
+            return DedupDecision.ADD, None, 0.0
 
     def _merge_content(self, old: MemoryUnit, new: MemoryUnit) -> str:
         user_prompt = f"Old:\n{old.content}\n\nNew:\n{new.content}"

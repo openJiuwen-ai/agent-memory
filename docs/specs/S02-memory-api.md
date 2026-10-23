@@ -1072,7 +1072,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | `tier` | MemoryTier | 认知角色分类 |
 | `segments` | list[Segment] | 多段内容投影（每段 = content + assets + source） |
 | `source_ref` | str | 来源引用（RawPayload id / 会话 id，可溯源） |
-| `temporal` | Temporal | 双时间：`t_event`/`t_ingest`/`t_valid`/`t_invalid` |
+| `temporal` | Temporal | 时间：`t_event`/`t_ingest`/`t_valid`/`t_invalid`/`t_message`；`occurred_at` 进入消息时间 `t_message` |
 | `provenance` | list[str] | 演进血缘（多→一合成）：由哪些 unit 提取/升华/合并而来 |
 | `supersedes` | str | 版本链（一→一更替）：本版本取代的上一版 id；空表示首版 |
 | `tags` | list[str] | 标签（检索前置过滤用） |
