@@ -26,6 +26,7 @@ from jiuwen_memory.construction.common import (
     reject_deprecated_llm_attempt_keys,
     validate_llm_attempt_policy,
 )
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 from jiuwen_memory.construction.router import (
     RouteContext,
     RouteDecision,
@@ -135,7 +136,9 @@ class LLMRouter(Router):
             ChatMessage(
                 role="user",
                 content="\n".join(
-                    _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=unit.content)
+                    _SOURCE_PREFIX.format(
+                        unit_id=unit.id, unit_content=truncate_unit_content(unit.content)
+                    )
                     for unit in units
                 ),
             ),

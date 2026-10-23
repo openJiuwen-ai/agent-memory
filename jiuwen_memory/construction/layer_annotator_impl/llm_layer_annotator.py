@@ -21,6 +21,7 @@ from jiuwen_memory.construction.common import (
     validate_llm_attempt_policy,
 )
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 
 logger = get_logger(__name__)
 
@@ -168,7 +169,7 @@ class LLMLayerAnnotator(LayerAnnotator):
 
         # 每条 unit 用数字索引标记 [ID: N]，LLM 在输出里用 "id": N 回指
         items = [
-            f"---\n[ID: {i}]\n{u.content}\n---"
+            f"---\n[ID: {i}]\n{truncate_unit_content(u.content)}\n---"
             for i, u in enumerate(units)
         ]
         user_text = "\n".join(items)

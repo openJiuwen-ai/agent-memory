@@ -43,6 +43,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.abstractor import AbstractorProducer
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 
 from ..abstractor import Abstractor
 from ..base import OperatorType
@@ -440,7 +441,9 @@ class LLMAbstractor(Abstractor):
         # 构建 user prompt
         parts = []
         for u in units:
-            parts.append(_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content))
+            parts.append(
+                _SOURCE_PREFIX.format(unit_id=u.id, unit_content=truncate_unit_content(u.content))
+            )
         user_text = "\n".join(parts)
 
         from jiuwen_memory.common.type_def import ChatMessage
