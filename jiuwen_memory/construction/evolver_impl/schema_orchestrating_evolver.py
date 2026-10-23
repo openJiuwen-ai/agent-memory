@@ -243,12 +243,11 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             property_ids = self._persist(extracted)
             superseded_ids = []
             archived_ids = []
-        persisted_observations = [
-            unit
-            for unit in extracted
-            if str(unit.system_metadata.get("schema_property_operation") or "set").casefold()
-            != "delete"
-        ]
+        persisted_observations: list[MemoryUnit] = []
+        for unit in extracted:
+            operation = str(unit.system_metadata.get("schema_property_operation") or "set")
+            if operation.casefold() != "delete":
+                persisted_observations.append(unit)
         if self._schema_entity_resolver is not None:
             try:
                 self._schema_entity_resolver.sync(persisted_observations)
