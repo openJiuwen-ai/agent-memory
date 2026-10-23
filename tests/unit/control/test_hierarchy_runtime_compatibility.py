@@ -3,6 +3,7 @@
 
 import asyncio
 from dataclasses import replace
+from datetime import timedelta
 from threading import Event
 from unittest.mock import Mock
 
@@ -19,7 +20,9 @@ from jiuwen_memory.control.types import EvolveTaskOptions, JobStatus
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.types import MemoryListResult
-from tests.unit.construction.hierarchy_fixtures import make_leaf
+from tests.unit.construction.event_fixtures import event_profiles
+from tests.unit.construction.hierarchy_fixtures import ORIGIN, make_leaf
+from tests.unit.control.hierarchy_derive_fixtures import DeriveClock, derive_job
 from tests.unit.control.hierarchy_job_fixtures import ObservedLock, job_harness
 
 pytestmark = pytest.mark.unit
@@ -62,10 +65,11 @@ def test_cloud_engine_reads_domain_source_and_completes_outside_window_children(
     assert len(parent_ids) == 1
 
 
-def test_cooperative_cancel_before_work_leaves_storage_untouched():
+@pytest.mark.parametrize("incremental", [False, True])
+def test_cooperative_cancel_before_work_leaves_storage_untouched(incremental):
     leaf = make_leaf("first")
     harness = job_harness([leaf])
-    job = harness.job()
+    job = derive_job(harness, DeriveClock(ORIGIN)) if incremental else harness.job()
     job.request_cancel()
     with pytest.raises(JobCancelledError):
         asyncio.run(job.run())
@@ -73,12 +77,16 @@ def test_cooperative_cancel_before_work_leaves_storage_untouched():
     assert harness.read(leaf) == leaf
 
 
-def test_cooperative_cancel_waits_for_worker_and_preserves_completed_write_diagnostics():
+@pytest.mark.parametrize("incremental", [False, True])
+def test_cooperative_cancel_waits_for_worker_and_preserves_completed_write_diagnostics(incremental):
     leaf = make_leaf("first")
-    harness = job_harness([leaf])
+    harness = job_harness([leaf], profiles=event_profiles(settle_seconds="1"))
     started, release = Event(), Event()
     lock = ObservedLock()
     job = harness.job(lock=lock)
+    if incremental:
+        job = derive_job(harness, DeriveClock(ORIGIN + timedelta(minutes=5)))
+        job.dependencies.hierarchy = replace(job.dependencies.hierarchy, lock=lock)
 
     def pause():
         started.set()
@@ -101,3 +109,7 @@ def test_cooperative_cancel_waits_for_worker_and_preserves_completed_write_diagn
     detail = asyncio.run(run())
     assert detail["created_parent_count"] == "1" and detail["updated_child_count"] == "1"
     assert harness.read(leaf).hierarchy.parent_id
+
+    if incremental:
+        assert len(harness.evolver.requests) == 1, "取消后不能进入上层构建"
+        assert not job.state.needs_repair, "完整结果已核对，协作取消不应触发损坏闸门"

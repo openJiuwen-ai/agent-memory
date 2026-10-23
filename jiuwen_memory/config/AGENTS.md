@@ -87,9 +87,10 @@
 **本模块不管**：业务编排、Policy 策略语义、调用级 options、Store 数据迁移、配置中心 invalidate API。
 
 
-### 显式 TIME 预设
+### TIME 构建预设
 
-`defaults.py` 只新增构建 profile，不包含查询参数或后台调度规则。
+`defaults.py` 提供构建 profile 与各层静默预设，不包含查询参数或后台调度周期。
+周期和 Snapshot 回看归 JobFactory，双开关归 PolicyManager；显式构建不使用静默封口。
 层级总开关仍由 policy 控制，自定义 policies 完整替换默认表。
 ConfigSourceProducer.get_cached 必须走 Factory 绑定缓存上下文，确保旧运行实例
 在延迟解析树模型时仍读取原配置源。装配期不强制解析未用的可选 Embedder。

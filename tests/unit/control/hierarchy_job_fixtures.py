@@ -54,6 +54,11 @@ class ObservedEvolver(Evolver):
     def health() -> None:
         return None
 
+    def hierarchy_profile(self, kind: HierarchyKind) -> HierarchyComposeProfile | None:
+        if self.delegate is None:
+            return None
+        return self.delegate.hierarchy_profile(kind)
+
     def evolve(self, request: EvolveRequest) -> EvolveResult:
         self.requests.append(deepcopy(request))
         if self.before_evolve is not None:

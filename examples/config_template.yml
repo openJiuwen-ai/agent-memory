@@ -15,7 +15,8 @@ globals:
   chunk_size: 120
   policies:                   # 运行时可变策略（交 PolicyManager；值保持字符串）
     rerank.enabled: "true"
-    hierarchy.enabled: "false"   # 开启后自动接入 Snapshot，显式 evolve(HIERARCHY) 才生成父树
+    hierarchy.enabled: "false"   # 开启后自动接入 Snapshot，显式或已注册后台任务生成父树
+    hierarchy.auto_derive: "false"  # 自动任务的独立开关，开启后仍须调用 Runtime 注册
 
 # ---- 换存储后端：覆盖各命名空间下的 default 实例（三方后端必填参数在 build 期即校验）----
 # kv_store:
@@ -235,7 +236,46 @@ globals:
 # 内置构建预设：TimeSpan 累计跨度 2 小时、Scene 最大跨度 14 天、Event 相似阈值 0.65。
 # 开启树后普通 search 使用接口预设 TIME/time_span、rollup=true、expand_depth=1。
 # 可在 search 上显式传 expand_depth=0、rollup=False 等覆盖；父子总数不超过 top_k。
-# 查询前须完成 evolve(HIERARCHY) 显式建树，无有效 TimeSpan 时不自动回退。
+# 查询前须完成显式或后台建树；无有效 TimeSpan 时不自动回退。
 # 关闭树开关会忽略合法叶提示、树查询和建树选项；普通写入/查询/演进照常执行。
 # 如需覆盖，在现有 globals 段内添加 hierarchy_profiles；不要重复声明 globals。
-# 查询展开与父优先排序已接入；后台自动建树尚未接入。
+# 查询展开与父优先排序已接入；后台配置及注册见下文。
+
+
+# ---- 可选后台自动增量建树 ----
+# 在现有 globals.policies 中同时开启 hierarchy.enabled 和 hierarchy.auto_derive。
+# 下列段若已存在请合并，避免同名 YAML 键覆盖已有配置；不需改 add/search/evolve 调用。
+# scheduler:
+#   default:
+#     target: async_timer
+#     params:
+#       tick_interval: 10
+# job_factory:
+#   default:
+#     target: default
+#     params:
+#       hierarchy_derive_interval: 1800   # 秒，不得小于 tick_interval
+#       hierarchy_derive_lookback: 604800 # 秒，仅限制未挂父 Snapshot
+#       hierarchy_max_leaves: 5000  # 完整候选保护上限，不是每轮截取的批大小
+#       hierarchy_page_size: 200
+#       # lock: default        # 可选，引用已配置的具名锁；与显式建树共用
+#       hierarchy_lock_wait_ms: 30000
+# 每层未挂父候选与未来输入合计受 max_leaves 限制，尚未封口的尾组也占额度。
+# 补齐完整子树仍受叶子上限限制；home 中活动父节点另有 3 * max_leaves 上限。
+# 超限本轮失败，不截断候选、不进入持续故障保护；下轮仍尝试，已完成的下层保留。
+# 数量持续超限可能连续失败；显式建树也受限，需调高上限或在保留完整旧子树的前提下
+# 分范围处理。调高上限需评估内存/读取成本并重新装配 Runtime；详见 S08 配置规约。
+# 内置 profile：TimeSpan 累计跨度/静默 2 小时；Scene 最大跨度 14 天、静默 1 天；
+# Event 按语义分组、静默 3 天。静默只用于自动尾组封口，不改变显式建树分组。
+# runtime = assemble_runtime(config=config)
+# home = Scope(org="org1", space="space1", user="user1", agent="agent1", session="")
+# started = await runtime.start_background_jobs(home, security=security)
+# home 是树驻留范围 tree_home_scope；不是目录或树 ID，可包含多棵树。
+# org/space 精确匹配，非空主体字段限制候选，父写到 home，叶保留原 Scope。
+# if not started.skipped:
+#     info = runtime.api.job_status(started.job_ids[0], security=security)
+#     # info.detail["last_run_status"] / json.loads(info.detail["last_run_detail"])
+# 宿主进程保持运行，退出时 runtime.close()；单个 home 可通过 api.job_cancel 停止。
+# 缺时/迟到/过窗输入只记录跳过，正常输入继续；确认本层未写入的准备失败可在下轮重试。
+# 部分写入或写入结果不确定（含写入后失锁）需要先核对并修复，
+# 不能把完整性故障当作普通跳过；后台不自动修树，不持久化注册记录。

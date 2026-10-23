@@ -43,10 +43,12 @@ from jiuwen_memory.construction.router import (
 )
 from jiuwen_memory.control import collective
 from jiuwen_memory.control.evolution.validation import (
+    scope_contains,
     validate_evolve_options,
     validate_evolve_request,
 )
 from jiuwen_memory.control.types import (
+    BackgroundJobStartResult,
     Channel,
     DeleteSelector,
     EvolveTaskOptions,
@@ -728,6 +730,32 @@ class QueryOpsMixin:
         self._log(security.auth.actor, "evolve", target_scope=scope,
                   detail={**auth, "job_id": job_id})
         return job_id
+
+    async def _start_background_jobs(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> BackgroundJobStartResult:
+        """Runtime 专用注册入口，复用当前 PEP 和树开关，不扩展 MemoryAPI。"""
+        scope = deepcopy(scope)
+        scope_contains(scope, scope)
+        auth = self._authorize(security, scope, Action.WRITE, "evolve",
+                               space_action=_evolve_space_action(EvolveMode.HIERARCHY))
+        self._ensure_space_writable(scope)
+        self._authorize(security, scope, Action.UPDATE, "evolve",
+                        space_action=_evolve_space_action(EvolveMode.HIERARCHY))
+        policies = self._policy.all()
+        enabled = all(str(policies.get(key, "false")).strip().lower() == "true"
+                      for key in ("hierarchy.enabled", "hierarchy.auto_derive"))
+        if not enabled:
+            result = BackgroundJobStartResult(skipped=True, reason="hierarchy_disabled")
+        else:
+            if self._authorizer.routing_fields():
+                raise ValidationError("周期 HIERARCHY 暂不支持权限路由或逐候选鉴权")
+            result = await self._commands.start_background_jobs(scope, self._policy)
+        self._log(security.auth.actor, "evolve", target_scope=scope, detail={
+            **auth, "trigger": "auto_derive", "job_ids": json.dumps(result.job_ids),
+            "skipped": str(result.skipped).lower(), "reason": result.reason,
+        })
+        return result
 
     # 新选项追加在旧参数之后，保持公开签名兼容。
     def evolve(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments

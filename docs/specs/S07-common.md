@@ -66,7 +66,7 @@
 14. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
     多模态 CLM/ELM（`system_metadata["memory_level"]` + `provenance`）表示单媒体源构建粒度；
     `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。
-    结构模型与纯校验已提供；父节点构造与树遍历尚未接入。任一轴不得推导或代替另外三轴。
+    结构模型、纯校验、TIME 父节点构造与树遍历已接入。任一轴不得推导或代替另外三轴。
 15. **树结构引用一致**：`kind` 与 `role` 必须同时设置或同时缺省；
    空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
    严格树；父 `child_ids` 与子 `parent_id` 双向一致且子列表不得重复。

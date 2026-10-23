@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -24,6 +26,21 @@ TIME_CHILD_ROLES = {
     HierarchyRole.SCENE: HierarchyRole.TIME_SPAN,
     HierarchyRole.EVENT: HierarchyRole.SCENE,
 }
+
+
+class HierarchyPreparationError(ValidationError):
+    """内部增量契约：本层准备失败，尚未调用持久化；不得用于写入后的异常。"""
+
+
+@contextmanager
+def hierarchy_preparation(*, incremental: bool = True) -> Iterator[None]:
+    """仅包围无写入的准备段；显式构建保留原异常，未知写入结果不得经此转换。"""
+    try:
+        yield
+    except Exception as error:
+        if not incremental or isinstance(error, HierarchyPreparationError):
+            raise
+        raise HierarchyPreparationError(f"{type(error).__name__}: {error}") from error
 
 
 @dataclass(frozen=True)
@@ -50,12 +67,22 @@ class HierarchyComposeOptions:
 
 
 @dataclass
+class HierarchyIncrementalContext:
+    """内部单层增量上下文；封口时刻、下层未完成边界与完整子树证据。"""
+
+    settle_at: datetime
+    ready_before: datetime | None = None
+    supporting_units: list[MemoryUnit] = field(default_factory=list)
+
+
+@dataclass
 class HierarchyComposeRequest:
     """完整输入；替换时须包含相交旧根的全部父层和 snapshot，Composer 不查询补齐。"""
 
     leaves: list[MemoryUnit]
     options: HierarchyComposeOptions
     existing_parents: list[MemoryUnit] = field(default_factory=list)
+    incremental: HierarchyIncrementalContext | None = None
 
 
 def validate_time_parent_roles(roles: list[HierarchyRole]) -> None:
@@ -86,6 +113,8 @@ class HierarchyComposeResult:
     replaced_parent_ids: list[str] = field(default_factory=list)
     repair_required: list[HierarchyRepair] = field(default_factory=list)
     complete: bool = True
+    deferred_child_count: int = 0
+    pending_before: datetime | None = None
 
 
 class HierarchyComposerProducer(Factory):
@@ -99,7 +128,7 @@ class HierarchyComposer(ConstructionOperator):
 
     @staticmethod
     def get_profile(kind: HierarchyKind) -> HierarchyComposeProfile | None:
-        """返回显式配置快照；未配置 profile 的实现返回 None。"""
+        """返回显式配置快照；未声明增量能力的实现不提供默认 profile。"""
         return None
 
     @abstractmethod
