@@ -69,8 +69,13 @@ def load_layer(path: str) -> dict:
     顶层是数组等非映射时曾**静默跳过**该层（合并循环只认 dict），调用方以为
     配置生效了实际没有——此处直接报错。
     """
-    with open(path, encoding="utf-8") as fh:
-        text = fh.read()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise ValidationError(f"config file {path} could not be read: {exc}") from exc
+    except UnicodeError as exc:
+        raise ValidationError(f"config file {path} is not valid UTF-8: {exc}") from exc
     try:
         if path.endswith((".yml", ".yaml")):
             import yaml  # 部署镜像已装 PyYAML（见 pyproject 的 deploy extra）
