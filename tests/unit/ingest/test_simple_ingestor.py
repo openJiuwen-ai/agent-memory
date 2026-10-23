@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from jiuwen_memory.common.base import PluginType
@@ -80,3 +82,46 @@ def test_simple_ingestor_accepts_custom_normalizer_declared_modality() -> None:
 
     assert normalizer.payloads == [payload]
     assert units[0].content == "recognized image"
+
+
+# -- 缺口B（issue #252）：默认直存链路应从 content 抽取事件时间写入 t_event ----- #
+# 此前 t_event 硬编码 None，时间窗谓词的哨兵分支使日期过滤永远空转。
+
+
+def _text_payload(content: str) -> RawPayload:
+    return RawPayload(
+        id="payload-date",
+        scope=Scope(org="acme", user="alice"),
+        modality=Modality.TEXT,
+        data=content.encode("utf-8"),
+    )
+
+
+def test_simple_ingestor_extracts_event_time_from_content() -> None:
+    units = SimpleIngestor(PassthroughNormalizer()).ingest(
+        [_text_payload("2026年6月8日我和小王去了湘菜馆吃饭")]
+    )
+
+    assert units[0].temporal.t_event == datetime(2026, 6, 8, tzinfo=UTC)
+
+
+def test_simple_ingestor_event_time_infers_year_from_ingest_time() -> None:
+    units = SimpleIngestor(PassthroughNormalizer()).ingest(
+        [_text_payload("6月8日我和小王去了湘菜馆吃饭")]
+    )
+
+    t_event = units[0].temporal.t_event
+    assert t_event is not None
+    assert (t_event.year, t_event.month, t_event.day) == (
+        datetime.now(UTC).year,
+        6,
+        8,
+    )
+
+
+def test_simple_ingestor_without_date_keeps_t_event_none() -> None:
+    units = SimpleIngestor(PassthroughNormalizer()).ingest(
+        [_text_payload("我今天中午吃了麦当劳")]
+    )
+
+    assert units[0].temporal.t_event is None

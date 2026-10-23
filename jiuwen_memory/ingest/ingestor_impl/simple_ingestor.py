@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
+from jiuwen_memory.common.time_utils import first_absolute_date
 from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Temporal
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.hierarchy_hints import extract_hierarchy_hints
@@ -44,20 +45,24 @@ class SimpleIngestor(Ingestor):
             now = _now()
             # 叶提示只声明结构身份；在规约前校验，不允许输入声明父子边。
             hierarchy, system_metadata = extract_hierarchy_hints(payload.system_metadata)
+            content = self._normalizer.normalize(payload)
             units.append(
                 MemoryUnit(
                     id=str(uuid.uuid4()),
                     scope=payload.scope,
                     segments=[
                         Segment(
-                            content=self._normalizer.normalize(payload),
+                            content=content,
                             assets=list(payload.assets),
                             source=payload.modality,
                         )
                     ],
                     source_ref=payload.id,
                     temporal=Temporal(
-                        t_event=None,
+                        # 默认直存链路从 content 抽取事件时间（首个绝对日期，无则 None）。
+                        # 与查询侧共用 common.time_utils 的同一份规则——否则写入侧标注的
+                        # 日期与查询侧解析的窗口对不上，时间窗谓词依旧空转（issue #252）。
+                        t_event=first_absolute_date(content, now),
                         t_ingest=now,
                         t_valid=now,
                         t_message=payload.occurred_at,
