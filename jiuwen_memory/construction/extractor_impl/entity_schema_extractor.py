@@ -142,11 +142,16 @@ class SchemaPropertyCandidate:
     """Extractor 内部的一条实体属性候选。"""
 
     entity_name: str
+    normalized_entity_name: str
     entity_type: str
+    entity_description: str
+    aliases: list[str]
     property_name: str
     value: str
     property_time: str
+    property_operation: str
     source_unit_ids: list[str]
+    identity_kind: str = ""
     time_source_id: str | None = None
 
 
@@ -218,6 +223,16 @@ class SchemaExtractionNormalizer:
                 continue
             entity["name"] = name
 
+            description = str(entity.get("description") or "").strip()
+            aliases = entity.get("aliases", [])
+            if not isinstance(aliases, list) or any(
+                not isinstance(alias, str) for alias in aliases
+            ):
+                errors.append(f"entity {name!r} aliases must be a string array")
+                continue
+            entity["description"] = description
+            entity["aliases"] = _dedupe_strings(aliases)
+
             entity_type = str(entity.get("entity_type") or "").strip()
             if entity_type not in valid_types:
                 if entity_type in catalog_types:
@@ -269,6 +284,14 @@ class SchemaExtractionNormalizer:
                     )
                     continue
                 prop["value"] = value.strip()
+                operation = str(prop.get("operation") or "set").strip().lower()
+                if operation not in {"set", "delete"}:
+                    errors.append(
+                        f"entity {name!r} property {property_name!r} has unsupported "
+                        f"operation {operation!r}"
+                    )
+                    continue
+                prop["operation"] = operation
                 property_time, time_error = _normalize_property_time(
                     prop.get("time", _MISSING_PROPERTY_TIME),
                     prop["value"],
@@ -567,6 +590,8 @@ class EntitySchemaExtractor(Extractor):
                 continue
             entity_name = str(entity.get("name") or "").strip()
             entity_type = str(entity.get("entity_type") or "").strip()
+            entity_description = str(entity.get("description") or "").strip()
+            aliases = _dedupe_strings(entity.get("aliases", []))
             for prop in entity.get("properties", []):
                 if not isinstance(prop, dict):
                     continue
@@ -617,14 +642,25 @@ class EntitySchemaExtractor(Extractor):
                 if speaker_name:
                     if _is_generic_entity_name(entity_name):
                         resolved_name = speaker_name
+                identity_kind = ""
+                if speaker_name and _normalize_entity_name(resolved_name) == _normalize_entity_name(
+                    speaker_name
+                ):
+                    identity_kind = "explicit_speaker"
+
                 candidates.append(
                     SchemaPropertyCandidate(
                         entity_name=resolved_name,
+                        normalized_entity_name=_normalize_entity_name(resolved_name),
                         entity_type=entity_type,
+                        entity_description=entity_description,
+                        aliases=aliases,
                         property_name=property_name,
                         value=property_value,
                         property_time=str(prop.get("time") or ""),
+                        property_operation=str(prop.get("operation") or "set").strip().lower(),
                         source_unit_ids=source_ids,
+                        identity_kind=identity_kind,
                         time_source_id=prop.get("_time_source_id"),
                     )
                 )
@@ -653,16 +689,29 @@ class EntitySchemaExtractor(Extractor):
             now = datetime.now(UTC)
             source_tags = [tag for source in source_units for tag in source.tags]
             metadata = _inherited_schema_system_metadata(source_units)
+            entity_key = _schema_entity_key(
+                primary,
+                schema_name=self._catalog.schema_name,
+                entity_type=candidate.entity_type,
+                normalized_name=candidate.normalized_entity_name,
+            )
             metadata.update(
                 {
                     "extraction_mode": "schema",
                     "schema_name": self._catalog.schema_name,
                     "schema_version": self._catalog.schema_version,
+                    "schema_entity_key": entity_key,
                     "schema_entity_name": candidate.entity_name,
+                    "schema_entity_normalized_name": candidate.normalized_entity_name,
                     "schema_entity_type": candidate.entity_type,
+                    "schema_entity_description": candidate.entity_description,
+                    "schema_entity_aliases": candidate.aliases,
                     "schema_property_name": candidate.property_name,
+                    "schema_property_operation": candidate.property_operation,
                 }
             )
+            if candidate.identity_kind:
+                metadata["schema_entity_identity_kind"] = candidate.identity_kind
             metadata.update(_event_time_metadata(candidate.property_time))
             event_fields = _event_time_fields(candidate.property_time)
             result.append(
@@ -770,6 +819,88 @@ def _dialogue_timestamp(units: list[MemoryUnit]) -> str:
         if unit.temporal.t_event is not None:
             return unit.temporal.t_event.isoformat()
     return datetime.now(UTC).date().isoformat()
+
+
+def _format_source_messages(units: list[MemoryUnit]) -> str:
+    """Render every source with its own message time and speaker context."""
+
+    blocks: list[str] = []
+    for index, unit in enumerate(units):
+        blocks.append(
+            "\n".join(
+                [
+                    f"[message_index={index}]",
+                    f"[unit_id={unit.id}]",
+                    f"[message_time={_source_message_time_text(unit) or 'unknown'}]",
+                    f"[role={_source_role(unit) or 'unknown'}]",
+                    f"[speaker={_source_speaker_name(unit) or 'unknown'}]",
+                    unit.content,
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+def _source_message_time_text(unit: MemoryUnit) -> str:
+    if unit.temporal.t_message is not None:
+        return unit.temporal.t_message.isoformat()
+    observation_date = str(unit.system_metadata.get("observation_date") or "").strip()
+    if observation_date:
+        return observation_date
+    if unit.temporal.t_event is not None:
+        return unit.temporal.t_event.isoformat()
+    return ""
+
+
+def _source_message_datetime(
+    unit: MemoryUnit,
+    fallback_timestamp: str = "",
+) -> datetime | None:
+    if unit.temporal.t_message is not None:
+        return unit.temporal.t_message
+    observation_date = str(unit.system_metadata.get("observation_date") or "").strip()
+    parsed = _parse_message_datetime(observation_date)
+    if parsed is not None:
+        return parsed
+    if unit.temporal.t_event is not None:
+        return unit.temporal.t_event
+    return _parse_message_datetime(fallback_timestamp)
+
+
+def _parse_message_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+\([^)]*\)\s*$", "", text)
+    normalized = f"{text[:-1]}+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _source_role(unit: MemoryUnit) -> str:
+    for key in ("message_role", "role"):
+        value = str(unit.system_metadata.get(key) or "").strip()
+        if value:
+            return value
+    speaker = _source_speaker_name(unit)
+    normalized = _normalize_entity_name(speaker)
+    if normalized in {"user", "assistant", "system", "tool"}:
+        return normalized
+    return "named_speaker" if speaker else ""
+
+
+def _source_speaker_name(unit: MemoryUnit) -> str:
+    for key in ("message_speaker", "speaker", "speaker_name"):
+        value = " ".join(str(unit.system_metadata.get(key) or "").strip().split())
+        if value:
+            return value
+    match = _SPEAKER_LABEL_RE.match(unit.content)
+    if not match:
+        return ""
+    return " ".join((match.group("speaker") or match.group("bracket")).strip().split())
 
 
 def _format_source_messages(units: list[MemoryUnit]) -> str:
@@ -1278,6 +1409,8 @@ def _self_contained_property_content(
     """Add source-time context without manufacturing a property event time."""
 
     value = candidate.value
+    if candidate.property_operation == "delete":
+        return value
     if not candidate.property_time:
         message_time = _source_message_datetime(primary_source)
         if message_time is None:
@@ -1304,6 +1437,26 @@ def _self_contained_property_content(
                 f'original relative time: "{phrase}".)'
             )
     return value
+
+
+def _schema_entity_key(
+    source: MemoryUnit,
+    *,
+    schema_name: str,
+    entity_type: str,
+    normalized_name: str,
+) -> str:
+    material = "|".join(
+        [
+            source.scope.org,
+            source.scope.space,
+            source.scope.user,
+            schema_name,
+            entity_type.strip().casefold(),
+            normalized_name,
+        ]
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, material))
 
 
 def _inherited_schema_system_metadata(

@@ -15,6 +15,7 @@ from .types import (
     RetrievalQuery,
     RetrievalResult,
     RetrievedItem,
+    SchemaTemporalRetrievalResult,
     ScoredUnit,
     TrajectoryStep,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "DisclosureLevel",
     "TrajectoryStep",
     "RetrievalResult",
+    "SchemaTemporalRetrievalResult",
     "TOTAL_FETCH_CAP",
     "allocate_quota",
     "merge",

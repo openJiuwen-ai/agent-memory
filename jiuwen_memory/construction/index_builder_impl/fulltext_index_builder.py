@@ -11,7 +11,7 @@ metadata 投影、文档构造与分层索引写删与其他 IndexBuilder 实现
 from __future__ import annotations
 
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
-from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.storage.fulltext import FulltextStore
@@ -124,6 +124,14 @@ class FulltextIndexBuilder(IndexBuilder):
     def rebuild(self) -> None:
         # 最小实现：索引与真源同生命周期，无独立重建路径。
         return None
+
+    def remove_with_scope(self, unit_ids: list[str], scope: Scope) -> None:
+        """已知 scope 时直接删除全文与分层索引，避免 lookup。"""
+
+        if self._store is not None:
+            self._store.delete(scope, list(dict.fromkeys(unit_ids)))
+        for unit_id in dict.fromkeys(unit_ids):
+            delete_layer_documents(self._layer_ports(), unit_id, scope)
 
     # ------------------------------------------------------------------
     # L0/L1 分层索引辅助

@@ -47,7 +47,8 @@ _PATH_MAP: dict[str, tuple[str, bool]] = {
 }
 
 _DEFAULT_CLASS = "team_memory"
-_DEFAULT_PROJECT = ""  # 无 coords 时兜底空串：project_memory/team_memory 落 memory 根下（跨项目可见）
+# 无 coords 时兜底空串：project_memory/team_memory 落 memory 根下（跨项目可见）。
+_DEFAULT_PROJECT = ""
 
 logger = get_logger(__name__)
 
@@ -202,7 +203,7 @@ class LocalMarkdownStore(MarkdownStore):
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, skip replace_content", md_filename)
                 return False
-            with open(abs_path, "r", encoding="utf-8") as fh:
+            with open(abs_path, encoding="utf-8") as fh:
                 text = fh.read()
 
             # 块序列：按 \n\n 切（与 _render_block 尾部 \n\n 对齐，块间以此为界）。
@@ -277,7 +278,7 @@ class LocalMarkdownStore(MarkdownStore):
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, skip remove_content", md_filename)
                 return False
-            with open(abs_path, "r", encoding="utf-8") as fh:
+            with open(abs_path, encoding="utf-8") as fh:
                 text = fh.read()
 
             # 块序列：按 \n\n 切（与 _render_block 尾部 \n\n 对齐，块间以此为界）。
@@ -294,7 +295,7 @@ class LocalMarkdownStore(MarkdownStore):
                 if len(parts) != 2:
                     new_blocks.append(block)
                     continue
-                title, body = parts[0], parts[1]
+                body = parts[1]
                 if body == content and not removed:
                     # 命中：删除该块（不加入新块序列）。删除首个命中，与 replace_content
                     # 首版「取首个」同款语义（content 重复时只删第一处）。
@@ -422,10 +423,13 @@ class LocalMarkdownStore(MarkdownStore):
         else:
             title = str((unit.system_metadata or {}).get(MD_TITLE_KEY) or "").strip()
         logger.info(
-            "[trace/md] render block | title=%r | memory_class=%s | md_title_key=%s | team=%r | unit_id=%s",
+            "[trace/md] render block | title=%r | memory_class=%s "
+            "| md_title_key=%s | team=%r | unit_id=%s",
             title, memory_class,
             str((unit.system_metadata or {}).get(MD_TITLE_KEY) or ""),
-            (coords.get("team") if isinstance(coords, dict) else None) if memory_class == "team_memory" else None,
+            (
+                coords.get("team") if isinstance(coords, dict) else None
+            ) if memory_class == "team_memory" else None,
             unit.id[:8],
         )
         return f"# {title}\n{content}\n\n"

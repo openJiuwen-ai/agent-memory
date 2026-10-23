@@ -177,7 +177,8 @@ class ShadowDedup(Dedup):
                 )
 
         logger.info(
-            "[trace/dedup] shadow_recall | candidate_id=%s | vec_enabled=%s | ft_hits=%d | vec_hits=%d",
+            "[trace/dedup] shadow_recall | candidate_id=%s | vec_enabled=%s "
+            "| ft_hits=%d | vec_hits=%d",
             candidate.id[:8], self._shadow.vec_enabled, len(ft_ids), len(vec_ids),
         )
 

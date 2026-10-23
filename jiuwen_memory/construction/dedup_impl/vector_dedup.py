@@ -93,7 +93,8 @@ class VectorDedup(Dedup):
             return []
 
         logger.info(
-            "[trace/dedup] vector_recall | candidate_id=%s | vector_store=%s | scope=%r | raw_hits=%d",
+            "[trace/dedup] vector_recall | candidate_id=%s | vector_store=%s "
+            "| scope=%r | raw_hits=%d",
             candidate.id[:8],
             type(self._vector_store).__name__,
             scope,

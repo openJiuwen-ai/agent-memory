@@ -57,6 +57,11 @@ from jiuwen_memory.retrieval.expansion import (
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.retrieval.schema_temporal.pipeline import (
+    OrdinaryRetrieval,
+    SchemaTemporalPipelineExtension,
+    build_schema_temporal_extension,
+)
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
@@ -95,6 +100,7 @@ class PipelineRetriever(Retriever):
         min_results: int = 0,
         *,
         domain_store: DomainStore,
+        schema_temporal_extension: SchemaTemporalPipelineExtension | None = None,
         doc_mode: bool = False,
     ) -> None:
         self._parser = parser
@@ -102,6 +108,7 @@ class PipelineRetriever(Retriever):
         self._discloser = discloser
         self._reader = unit_reader
         self._domain = domain_store
+        self._schema_temporal_extension = schema_temporal_extension
         self._expander: Expander | None = None
         self._embedder: Embedder | None = None
         # 文档模式标志：ShadowRecaller.channel()=DOCUMENT，但 parser 产出的
@@ -500,25 +507,34 @@ class PipelineRetriever(Retriever):
             (perf_counter() - started_at) * 1000.0,
         )
         result = RetrievalResult(items=items, trajectory=traj, errors=errors)
-        if not query.expand_depth:
+        if query.expand_depth:
+            parsed_filters = [] if parsed.recheck_filters is None else [parsed.recheck_filters]
+            child_filters = and_merge(query.filters, parsed_filters)
+            source = ExpansionSource(
+                scope=scope,
+                query=replace(
+                    parsed, hierarchy_role=None,
+                    scalar_filters=child_filters,
+                    recheck_filters=child_filters,
+                ),
+                expander=self._expander,
+                discloser=self._discloser,
+                embedder=self._embedder,
+            )
+            prepared = prepare_expansion(result, source, final)
+            if query.defer_expansion:
+                return prepared
+            result = complete_expansion(result, [prepared], query)
+        if self._schema_temporal_extension is None:
             return result
-        parsed_filters = [] if parsed.recheck_filters is None else [parsed.recheck_filters]
-        child_filters = and_merge(query.filters, parsed_filters)
-        source = ExpansionSource(
-            scope=scope,
-            query=replace(
-                parsed, hierarchy_role=None,
-                scalar_filters=child_filters,
-                recheck_filters=child_filters,
-            ),
-            expander=self._expander,
-            discloser=self._discloser,
-            embedder=self._embedder,
+        return self._schema_temporal_extension.apply(
+            scope,
+            query,
+            parsed,
+            OrdinaryRetrieval(list(final), result),
+            user_filters=user_filters,
+            record_step=step,
         )
-        prepared = prepare_expansion(result, source, final)
-        if query.defer_expansion:
-            return prepared
-        return complete_expansion(result, [prepared], query)
 
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
@@ -529,21 +545,22 @@ def _build(config):
     # 组装）；这里只取 manager 与其 domain_store——非 Composite 实现自带检索路径。
     manager = StoreManagerProducer.resolve(config)
     kv_name = resolve_name(config, "kv_store")
+    domain = manager.domain_store(resolve_name(config, "domain_store"))
     # 精排器与 UnitReader 的真源 kv 与索引/构建侧共享同一实例。
     reranker = (
         RerankerProducer.dep(config, default="overlap")
         if config.get("rerank_enabled", True)
         else None
     )
+    discloser = DiscloserProducer.dep(config, default="truncating")
     doc_mode = should_write_document(config.get(WRITE_DOCUMENT_KEY, False))
     unit_reader = None if doc_mode else (
         UnitReader(manager.kv(kv_name)) if manager.has_kv(kv_name) else None
     )
-    domain = manager.domain_store(resolve_name(config, "domain_store"))
     retriever = PipelineRetriever(
         QueryParserProducer.dep(config, default="simple"),
         FuserProducer.dep(config, default="rrf"),
-        DiscloserProducer.dep(config, default="truncating"),
+        discloser,
         unit_reader,
         reranker,
         over_fetch_factor=int(Factory.cfg_get(config, "over_fetch_factor", 4)),
@@ -559,6 +576,13 @@ def _build(config):
         ),
         min_results=int(Factory.cfg_get(config, "min_results", 0)),
         domain_store=domain,
+        schema_temporal_extension=build_schema_temporal_extension(
+            config,
+            manager,
+            domain,
+            reranker,
+            discloser,
+        ),
         doc_mode=doc_mode,
     )
     retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
-
 from typing import Any
 
 import pytest
@@ -15,14 +14,25 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
-from jiuwen_memory.common.type_def import MemoryUnit, RetrievalPipeline, Scope, Segment, memory_key
+from jiuwen_memory.common.type_def import (
+    COORDS_KEY,
+    MD_FILENAME_KEY,
+    MEMORY_CLASS_KEY,
+    MemoryUnit,
+    RetrievalPipeline,
+    Scope,
+    Segment,
+    memory_key,
+)
 from jiuwen_memory.config import AssemblyContext
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
 from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import InMemoryFulltextStore
 from jiuwen_memory.storage.kv import KvProducer
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageAction, StorageSecurity
+from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
 from jiuwen_memory.storage.store_manager import StorageCapability, StoreManagerProducer
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 from jiuwen_memory.storage.types import IndexRemoveMode, KVMemoryListResult
@@ -293,11 +303,6 @@ def test_domain_store_uses_named_kv_port_from_config() -> None:
 # 验证 add/update/delete/get/list 的分流，不 mock 算子——md 落盘与影子索引三表
 # 是文档记忆的核心契约。
 
-from jiuwen_memory.common.type_def import COORDS_KEY, MD_FILENAME_KEY, MEMORY_CLASS_KEY
-from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
-from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
-
-
 def _doc_storage(tmp_path) -> CompositeDomainStore:
     manager = CompositeStoreManager(
         markdown=LocalMarkdownStore(root=str(tmp_path)),
@@ -529,7 +534,10 @@ def test_document_mode_delete_batch_removes_all_md_blocks(tmp_path) -> None:
     """
     scope = Scope(org="org", user="user")
     storage = _doc_storage(tmp_path)
-    storage.add(scope, [_doc_unit(scope, "u1", "first content"), _doc_unit(scope, "u2", "second content")])
+    storage.add(
+        scope,
+        [_doc_unit(scope, "u1", "first content"), _doc_unit(scope, "u2", "second content")],
+    )
 
     storage.delete(scope, ["u1", "u2"])
 
@@ -870,7 +878,6 @@ def test_delete_compensation_restores_removed_md_blocks(tmp_path, monkeypatch) -
     """delete 多块：第 2 块 remove 失败 → shadow 全插回 + 已删第 1 块 md.write 回写。"""
     scope = Scope(org="org", user="user")
     storage = _doc_storage(tmp_path)
-    shadow = storage._raw_shadow_index()
     md = storage._raw_markdown()
 
     storage.add(scope, [_doc_unit(scope, "u1", "block one")])

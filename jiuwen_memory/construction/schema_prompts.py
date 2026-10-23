@@ -112,6 +112,8 @@ Input messages. Every marker contains its authoritative unit_id, message_time, r
 6. If the fact itself has no explicit or relative time anchor, use an empty time string. Do not
    copy message_time or dialogue_timestamp into time. The system will add message-date/as-of
    context to the stored Property without fabricating t_event.
+8. operation MUST be "set" or "delete". Use "delete" only when the dialogue explicitly retracts
+   or removes an existing fact; the value must identify the fact to remove.
 7. A different ISO date in value is allowed only when clearly labeled as a supporting message or
    reference date; it is not a second event time.
 
@@ -148,11 +150,14 @@ supported property fact.
     {
       "name": "Jon",
       "entity_type": "person",
+      "description": "Dance performer",
+      "aliases": [],
       "properties": [
         {
           "property_name": "plan_event",
           "value": "In 2023-02 (next month from 2023-01-20), Jon plans to perform at a festival",
           "time": "2023-02",
+          "operation": "set",
           "source_unit_ids": ["unit-id-from-input"]
         }
       ]
@@ -162,7 +167,279 @@ supported property fact.
 """
 
 
+SINGLE_ENTITY_MERGE_PROMPT = """
+You are a memory integration expert. Decide whether this newly extracted entity should CREATE a
+new entry or UPDATE an existing one.
+
+## New Entity
+- Name: {entity_name}
+- Type: {entity_type}
+- Description: {entity_description}
+
+## Existing Entity Candidates (from vector search)
+{existing_entities}
+
+## Decision Criteria
+
+### Use UPDATE when (PREFERRED — default choice unless clearly wrong):
+1. The entity name matches or is similar to an existing candidate (same person, thing, or event)
+2. The entity could plausibly be the same real-world entity as an existing candidate
+3. Same name with additional context. For example, new facts about Jon's dancing and old facts
+   about Jon's job normally describe the same person.
+4. The target_entity name MUST be one of the candidates listed above
+
+### ⚠️ CRITICAL: Base-Name Matching Rule
+When the new entity and a candidate share the same base name (the part before a parenthetical
+qualifier), they are almost certainly the same entity even when qualifiers differ.
+- "Toby(German Shepherd)" and "Toby(golden retriever)" → **UPDATE**.
+- "Fox Hollow(hiking trail)" and "Fox Hollow(nature reserve)" → **UPDATE**.
+- "Ferrari(sports car)" and "Ferrari(488 GTB)" → **UPDATE**.
+
+**Why:** Parenthetical qualifiers are descriptive annotations, not identity-defining features.
+Conflicting qualifiers usually indicate imprecise descriptions rather than distinct entities.
+
+**Same-speaker context strengthens merge confidence:** If both observations occur in conversations
+between the same speakers, that is strong evidence for the same real-world entity.
+
+### Use CREATE only when:
+1. No candidate in the existing list could possibly match this entity
+2. Explicit evidence identifies different entities, such as different full names and locations.
+3. The entity type is fundamentally incompatible, such as a person versus an organization.
+4. Different parenthetical qualifiers alone are not sufficient evidence for CREATE.
+
+## Output Format (JSON object, NOT array)
+
+For CREATE:
+```json
+{{
+    "action": "create",
+    "relation_candidates": [
+        {{"target_entity": "Existing entity name", "relation": "Relationship description"}}
+    ]
+}}
+```
+
+For UPDATE:
+```json
+{{
+    "action": "update",
+    "target_entity": "Existing entity name to update (MUST be in candidate list above)"
+}}
+```
+
+## Rules
+1. Output exactly ONE decision
+2. When uncertain, prefer UPDATE for the same name unless explicit evidence says otherwise.
+3. Use CREATE only with concrete evidence of a genuinely different identity.
+4. Same base name and entity type means UPDATE; qualifiers do not justify CREATE.
+5. For relation_candidates, only include entities with clear relationships
+6. If no clear relations exist, relation_candidates can be empty []
+7. For UPDATE, target_entity MUST exactly match a name from the candidate list
+
+Output only JSON, no extra text.
+"""
+
+PROPERTY_MERGE_DECISION_PROMPT = """
+You are a memory property merge expert. Decide how to handle new properties relative to similar
+existing ones.
+
+## Entity: {entity_name} ({entity_type})
+
+## Existing Properties (from memory)
+{existing_properties}
+
+## New Properties (to be added)
+{new_properties}
+
+## IMPORTANT: Default Behavior
+In most cases both lists should be empty: keep existing properties and add new properties as-is.
+Only output an item for a clear, justified reason. Do not over-merge or over-delete.
+
+**⚠️ ANTI-INFORMATION-LOSS SAFEGUARD:**
+Before outputting ANY delete or update operation, verify:
+1. **Delete existing**: Every old fact must be preserved elsewhere. Keep any unique name, date,
+   location, or detail.
+2. **Delete new**: Every new fact must already occur in an existing property. Keep any unique
+   name, date, location, number, or detail.
+3. **Update/merge**: The merged value must contain all facts from both values.
+4. **When in doubt**: Keep both. Redundancy is safer than permanent information loss.
+
+Properties should only be changed when:
+- **Explicit redundancy**: Every new fact already appears in an existing property.
+- **Explicit supersession**: A new fact clearly makes an old fact obsolete.
+- **Incomplete information**: Another property completes a vague or unresolved property.
+
+Properties should NOT be changed when:
+- Two properties describe different events or times, even when their topics are similar.
+- A property contains ANY unique detail not present in the other, even if they overlap partially
+- You are unsure — when in doubt, keep both (output nothing)
+
+## Rules
+For each existing property (p1, p2, ...):
+- **delete**: Only when a new property explicitly supersedes the old value and preserves it.
+- **update**: Only when a new property completes the old value. Output the merged `value`.
+- *(no output)*: Keep as-is. This is the default.
+
+For each new property (n1, n2, ...):
+- **delete**: Only when every new fact already appears in an existing property.
+- **update**: Merge into an existing property and provide `target` plus merged `value`.
+- *(no output)*: Add as-is. This is the default.
+
+## Output Format
+```json
+{{
+  "existing": [],
+  "new": []
+}}
+```
+
+When changes are needed (rare):
+```json
+{{
+  "existing": [
+    {{"id": "p1", "op": "delete"}},
+    {{"id": "p2", "op": "update", "value": "merged value"}}
+  ],
+  "new": [
+    {{"id": "n1", "op": "delete"}},
+    {{"id": "n2", "op": "update", "target": "p3", "value": "merged value"}}
+  ]
+}}
+```
+
+## Examples
+
+### Example 1: All different facts — no changes (MOST COMMON CASE)
+Existing:
+p1: [hobby_activity] time=2023-05, value="On 2023-05-06, Andrew hiked at Blue Ridge"
+p2: [mood_event] time=2023-05, value="On 2023-05-03, Andrew felt peaceful outdoors"
+New:
+n1: [hobby_activity] time=2023-06, value="On 2023-06-11, Andrew tried rock climbing"
+n2: [plan_event] time=2023-06, value="On 2023-06-13, Andrew plans to try kayaking"
+Output:
+```json
+{{"existing": [], "new": []}}
+```
+Reason: All four describe different events/facts. Keep all.
+
+### Example 2: Similar topic but different events — no changes
+Existing:
+p1: [hobby_activity] time=2023-05-06, value="On 2023-05-06, Andrew hiked at Blue Ridge"
+New:
+n1: [hobby_activity] time=2023-06-23, value="On 2023-06-23, Andrew hiked and took photos"
+Output:
+```json
+{{"existing": [], "new": []}}
+```
+Reason: Two different hikes on different dates. Both have unique details. Keep both.
+
+### Example 3: New is fully redundant — delete new
+Existing:
+p1: [hobby_activity] time=2023-06-05, value="On 2023-06-05, Andrew hiked and took photos"
+New:
+n1: [hobby_activity] time=2023-06, value="As of 2023-06, Andrew went hiking recently"
+Output:
+```json
+{{"existing": [], "new": [{{"id": "n1", "op": "delete"}}]}}
+```
+Reason: n1 contains zero information beyond what p1 already captures.
+
+### Example 4: Plan executed — delete old plan
+Existing:
+p1: [plan_event] time=2023-06, value="On 2023-06-13, Andrew plans to try kayaking"
+New:
+n1: [experience] time=2023-07, value="On 2023-07-05, Andrew tried kayaking"
+Output:
+```json
+{{"existing": [{{"id": "p1", "op": "delete"}}], "new": []}}
+```
+Reason: The plan (p1) was executed — n1 supersedes it with the actual event. p1 is obsolete.
+
+### Example 5: Evolving state — merge into existing
+Existing:
+p1: [default_property] time=2023-06-02, value="Andrew is searching for an apartment"
+New:
+n1: [default_property] time=2023-08, value="Andrew is still searching and feels determined"
+Output:
+```json
+{{
+  "existing": [],
+  "new": [
+    {{
+      "id": "n1",
+      "op": "update",
+      "target": "p1",
+      "value": "From 2023-06-02 to 2023-08, Andrew searched and remained determined"
+    }}
+  ]
+}}
+```
+Reason: Same ongoing state across time. Merging preserves the full timeline without duplication.
+
+### Example 6: New adds context to vague old property — update existing
+Existing:
+p1: [default_property] time=2023-03, value="Andrew experienced a job change"
+New:
+n1: [position_event] time=2023-03, value="Andrew started as a Financial Analyst"
+Output:
+```json
+{{
+  "existing": [
+    {{"id": "p1", "op": "update", "value": "Andrew changed jobs to Financial Analyst"}}
+  ],
+  "new": [{{"id": "n1", "op": "delete"}}]
+}}
+```
+Reason: n1 provides the specific detail that p1 was missing. Merge into p1 and skip n1.
+
+Output only JSON, no extra text.
+"""
+
+PROPERTY_DELETE_DECISION_PROMPT = """
+You are validating an explicit request to remove an existing schema property fact.
+
+Entity: {entity_name} ({entity_type})
+Delete request: [{property_name}] time={delete_time}, value="{delete_value}"
+Active candidates:
+{existing_properties}
+
+Return exactly one JSON object:
+{{"archive": ["p1", "p2"]}}
+
+Rules:
+1. Archive only candidates that express the same entity property fact requested for deletion.
+2. If the request has a known event time, the candidate must describe that same event time.
+3. Do not archive merely related, newer, older, broader, or narrower facts.
+4. When uncertain, return {{"archive": []}}. Preserving information is safer than deleting it.
+5. Output JSON only.
+"""
+
+AGENT_MEMORY_ENTITY_MERGE_APPENDIX = """
+## Agent Memory identity boundaries (take precedence)
+1. Generic roles such as User, Assistant, Speaker, or Participant are not aliases for a named
+   person. Never UPDATE a named entity to a generic-role candidate or the reverse.
+2. Different explicit speaker labels identify different people and must CREATE, even if their
+   properties are semantically similar.
+3. Exact explicit speaker names are stronger identity evidence than semantic similarity.
+"""
+
+AGENT_MEMORY_PROPERTY_MERGE_APPENDIX = """
+## Agent Memory update constraint (take precedence)
+- An update is valid only for the same schema property at the same known event time.
+- Complete date/datetime facts must have identical t_event.
+- Year/month facts count as the same event only when precision and half-open interval are identical.
+- Never merge different event times into one MemoryUnit. Keep both as separate historical facts.
+- The planner may still conservatively delete a fully redundant new item or archive a fully
+  superseded existing item, but when uncertain it must keep both.
+"""
+
+
 __all__ = [
+    "AGENT_MEMORY_ENTITY_MERGE_APPENDIX",
+    "AGENT_MEMORY_PROPERTY_MERGE_APPENDIX",
     "ENTITY_GENERATION_PROMPT",
+    "PROPERTY_DELETE_DECISION_PROMPT",
+    "PROPERTY_MERGE_DECISION_PROMPT",
     "SCHEMA_SELECTION_FOR_GENERATION_PROMPT",
+    "SINGLE_ENTITY_MERGE_PROMPT",
 ]

@@ -25,6 +25,8 @@ dev = [
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
+    # 单测中的 LocalWatchdog.start 需要真实 watchdog 模块。
+    "watchdog>=4.0",
 ]
 nlp = [
     "spacy>=3.7",

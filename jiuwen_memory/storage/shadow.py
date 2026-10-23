@@ -65,7 +65,10 @@ class DocumentShadowIndex(BaseStore):
 
     @abstractmethod
     def list_units_by_md(self, scope: Scope, md_filename: str) -> list[tuple[str, str]]:
-        """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用。返回 ``(unit_id, content_hash)`` 二元组。"""
+        """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用。
+
+        返回 ``(unit_id, content_hash)`` 二元组。
+        """
 
     @abstractmethod
     def latest_scope_by_md(self, scope: Scope, md_filename: str) -> Scope | None:

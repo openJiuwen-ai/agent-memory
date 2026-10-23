@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
-
 import hashlib
 import os
 
@@ -147,7 +146,8 @@ def test_sync_one_inserts_new_lines(tmp_path) -> None:
 
     wd._sync_one("memory/p1/MEMORY.md", deleted=False)
 
-    units = wd._shadow.get_units(SCOPE, [u[0] for u in wd._shadow.list_units_by_md(SCOPE, "memory/p1/MEMORY.md")])
+    indexed = wd._shadow.list_units_by_md(SCOPE, "memory/p1/MEMORY.md")
+    units = wd._shadow.get_units(SCOPE, [unit_id for unit_id, _hash in indexed])
     assert [u.segments[0].content for u in units] == ["hello world"]
 
 
@@ -225,10 +225,14 @@ def test_sync_one_deleted_flag_drops_all_units(tmp_path) -> None:
     wd._shadow.insert_units(
         SCOPE,
         [
-            MemoryUnit(id="u1", scope=SCOPE, 
-                       segments=[Segment(content="a")], system_metadata={MD_FILENAME_KEY: md_filename}),
-            MemoryUnit(id="u2", scope=SCOPE, 
-                       segments=[Segment(content="b")], system_metadata={MD_FILENAME_KEY: md_filename}),
+            MemoryUnit(
+                id="u1", scope=SCOPE, segments=[Segment(content="a")],
+                system_metadata={MD_FILENAME_KEY: md_filename},
+            ),
+            MemoryUnit(
+                id="u2", scope=SCOPE, segments=[Segment(content="b")],
+                system_metadata={MD_FILENAME_KEY: md_filename},
+            ),
         ],
     )
 

@@ -50,8 +50,8 @@ from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.markdown import MarkdownStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageSecurity
-from jiuwen_memory.storage.store_manager import StorageCapability, StoreManager
 from jiuwen_memory.storage.shadow import DocumentShadowIndex
+from jiuwen_memory.storage.store_manager import StorageCapability, StoreManager
 from jiuwen_memory.storage.types import (
     Document,
     Edge,
