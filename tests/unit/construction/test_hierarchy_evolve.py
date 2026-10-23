@@ -212,8 +212,6 @@ def test_factory_selected_profile_and_shared_index_builder_are_effective(target,
     context = make_factory_context()
     leaves = [make_leaf("first"), make_leaf("second", 20)]
     composition = make_harness(leaves)
-    StoreManagerProducer.put("default", composition.manager)
-    IndexBuilderProducer.put("shared", composition.builder)
     configured = AssemblyContext.from_dict({
         "hierarchy_composer": {
             "selected": {
@@ -229,6 +227,8 @@ def test_factory_selected_profile_and_shared_index_builder_are_effective(target,
         },
     })
     context = context.merged(configured)
+    StoreManagerProducer.put("default", composition.manager, ctx=context)
+    IndexBuilderProducer.put("shared", composition.builder, ctx=context)
     evolver = EvolverProducer.build(target, {
         "extractor": {"target": "keyword"},
         "dedup": {"target": "keyword"},

@@ -14,10 +14,9 @@
 模块结构::
 
     audit_integrity/
-    ├── base.py              # Provider/Producer、proof/result/status、错误
-    └── chain_store.py       # ChainStore capability、链头、锚点契约
-
-``audit_integrity_impl``（版本化规范化 + 链式 HMAC 实现等）随实装 PR 合入。
+    ├── base.py                     # Provider/Producer、proof/result/status、错误
+    ├── chain_store.py              # ChainStore capability、链头、锚点契约
+    └── audit_integrity_impl/       # chained_hmac 实现（版本化规范化 + 链式 HMAC）
 """
 
 from .base import (

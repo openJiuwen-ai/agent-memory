@@ -466,6 +466,8 @@ class MemoryAPI(ABC):
         """
         回收一条授权（幂等）；本层据 ``security`` 鉴权 ``REVOKE_SHARE``。
         按 ``grant.grant_id`` 精确定位；未知 ID 幂等无副作用，缺失 ID 拒绝。
+        其余字段不参与定位或归属鉴权。保存 grant 返回值后直接传回，或使用
+        ``Grant.for_revocation(grant_id)``；旧的无 ID 条件撤销须迁移到服务端 ID。
         """
 
     # -- Space 管理（委托 SpaceManager） ------------------------------------ #

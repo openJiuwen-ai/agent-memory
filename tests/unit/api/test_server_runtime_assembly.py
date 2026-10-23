@@ -36,7 +36,12 @@ def test_server_runtime_auto_uses_configured_runtime() -> None:
     assert selected is not None
     try:
         selected.health()
-        assert selected is build_configured_security_runtime(_DEV_CONFIG)
+        independent = build_configured_security_runtime(_DEV_CONFIG)
+        try:
+            assert selected is not independent
+        finally:
+            independent.close()
+        selected.health()
     finally:
         runtime.close()
     assert selected.security_resource_owner().is_closed()
@@ -81,6 +86,6 @@ def test_server_api_close_delegates_to_complete_facade() -> None:
     assert events == ["selected"], "API shutdown must not bypass the selected security runtime"
 
 
-def test_memory_runtime_public_contract_matches_upstream_lifecycle() -> None:
+def test_memory_runtime_public_contract_includes_sdk_authentication() -> None:
     public = {name for name in vars(MemoryRuntime) if not name.startswith("_")}
-    assert public == {"api", "start", "start_background", "close"}
+    assert public == {"api", "authenticate", "start", "start_background", "close"}

@@ -21,6 +21,8 @@
 from __future__ import annotations
 
 import binascii
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -197,6 +199,34 @@ class LocalKeyProvider(KeyProvider):
     def health(self) -> None:
         self._load_root_key()
 
+    # -- MAC capability（审计完整性用，F05 §Audit Integrity）--------------- #
+
+    def supports_mac(self) -> bool:
+        return True
+
+    def mac(self, message: bytes, *, purpose: str) -> tuple[bytes, KeyRef]:
+        # KeyRef 与根密钥取自同一代的原子快照（与 wrap 同理，见 _lock 字段注释）；
+        # 快照后活动密钥被 rotate 的竞态由调用方（provider 的有界重签循环）处理。
+        with self._lock:
+            ref = self.active_key()
+            root_key = self._load_root_key()
+        mac_key = self._derive_mac_key(purpose=purpose, root_key=root_key)
+        return _hmac_sha256(mac_key, message), ref
+
+    def verify_mac(self, message: bytes, tag: bytes, *, purpose: str, ref: KeyRef) -> bool:
+        # 按 ref.epoch 选取历史材料；找不到即抛 KeyMismatchError，不回退活动密钥试验
+        # （同 unwrap 的 epoch 绑定语义）。canonical payload 自带 key_id/epoch，拿错
+        # 材料算出的 tag 与真值不匹配，返回 False 即拒绝。
+        with self._lock:
+            root_key = self._root_key_for_epoch(ref)
+        if root_key is None:
+            raise KeyMismatchError(
+                "message was MACed by a different key generation "
+                f"(epoch {ref.epoch}); no retained key material for it"
+            )
+        mac_key = self._derive_mac_key(purpose=purpose, root_key=root_key)
+        return hmac.compare_digest(_hmac_sha256(mac_key, message), tag)
+
     # -- v1 只读兼容 ------------------------------------------------------- #
 
     def unwrap_legacy_v1(self, wrapped: WrappedKey, *, org: str) -> bytes:
@@ -257,6 +287,17 @@ class LocalKeyProvider(KeyProvider):
             info=b"agent-memory:security:kek:v1:" + org_id.encode("utf-8"),
             length=DATA_KEY_SIZE,
         )
+
+    def _derive_mac_key(self, *, purpose: str, root_key: bytes) -> bytes:
+        """按 purpose 派生 MAC 密钥——与包裹密钥（kek:v2）出自不同 info 标签，
+        用途隔离（F05 §密钥隔离）：审计完整性的派生材料不参与任何加解密路径。
+        长度前缀防歧义，与 ``_derive_wrapping_key`` 同构。
+        """
+        purpose_bytes = purpose.encode("utf-8")
+        info = (
+            b"agent-memory:security:mac:v1:" + len(purpose_bytes).to_bytes(4, "big") + purpose_bytes
+        )
+        return self._hkdf(info=info, length=DATA_KEY_SIZE, root_key=root_key)
 
     def _hkdf(self, *, info: bytes, length: int, root_key: bytes | None = None) -> bytes:
         hkdf_type = HKDF
@@ -584,6 +625,10 @@ def _aes_decrypt(key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes) -> byt
 
 def _is_invalid_tag(exc: Exception) -> bool:
     return InvalidTag is not None and isinstance(exc, InvalidTag)
+
+
+def _hmac_sha256(key: bytes, message: bytes) -> bytes:
+    return hmac.new(key, message, hashlib.sha256).digest()
 
 
 # ====================================================================== #

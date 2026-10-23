@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -541,8 +541,9 @@ Document 使用与 VectorRecord 相同的六个 hierarchy metadata 键，并保�
 
 ## 文档后台组件生命周期
 
-Watchdog 不属于存储 capability，由装配根持有并显式启动。start 必须在长寿事件循环
-就绪后调用；stop 幂等地停止事件/任务准入、取消定时器并等待已进入数据面的同步工作，
+Watchdog 不属于存储 capability，由装配根持有并显式启动。start 必须在事件循环
+就绪后调用，且该循环须持续运行到 Watchdog 停止；stop 幂等地停止事件/任务准入、
+取消定时器并等待已进入数据面的同步工作，
 返回后不得再访问 shadow。此等待不得依赖调用方事件循环继续执行。
 排队但尚未进入数据面的工作在停止后不得访问依赖，旧代工作不得因重新启动而复活。
 装配根在 watcher、摄入和调度使用者停止后，按共享所有权去重关闭 shadow 等连接；

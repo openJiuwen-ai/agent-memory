@@ -88,6 +88,43 @@ def test_audit_integrity_is_an_optional_slot_absent_until_configured() -> None:
     assert _build().audit_integrity_provider is None
 
 
+_IN_MEMORY_CHAIN = {
+    "target": "chained_hmac",
+    "params": {
+        "key_provider": {"target": "local", "params": {"key_hex": "44" * 32}},
+        "audit": {"target": "in_memory"},
+    },
+}
+
+
+def test_test_only_audit_integrity_rejected_without_opt_in() -> None:
+    """非持久链声明 is_test_only()，装配期拒绝（判据是 capability 而非 target 名）。
+
+    in_memory 链非持久 -> provider.is_test_only()=True；未打开 allow_test_only_security
+    时 _optional_audit_integrity 抛 ValidationError。
+    """
+    with pytest.raises(ValidationError, match="仅测试实现"):
+        _build({"audit_integrity": _IN_MEMORY_CHAIN})
+
+
+def test_test_only_audit_integrity_allowed_with_opt_in() -> None:
+    """打开 allow_test_only_security 后，非持久 provider 可装配（用于 dev/测试）。"""
+    runtime = _build({"audit_integrity": _IN_MEMORY_CHAIN, "allow_test_only_security": True})
+    assert runtime.audit_integrity_provider is not None
+    assert runtime.audit_integrity_provider.is_test_only() is True
+    runtime.health()
+
+
+def test_audit_integrity_health_covers_real_provider() -> None:
+    """真实 provider 装配后纳入 _capabilities()（health 与 close 路径）。"""
+    # 白盒故障/篡改注入或内部状态断言需要私有接缝，不扩展生产接口。
+    # pylint: disable=protected-access
+    runtime = _build({"audit_integrity": _IN_MEMORY_CHAIN, "allow_test_only_security": True})
+    runtime.health()  # 健康：不抛
+    names = [name for name, _ in runtime._capabilities()]  # noqa: SLF001
+    assert "audit_integrity" in names
+
+
 # -- 默认值取保守侧 ---------------------------------------------------------- #
 
 

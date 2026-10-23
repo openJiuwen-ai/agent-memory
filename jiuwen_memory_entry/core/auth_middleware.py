@@ -204,9 +204,17 @@ def _record_denial(audit, authenticator, credentials, action) -> None:
 
 
 def _record_auth_success(audit, ctx, credentials, surface, request_id) -> None:
-    """记录不含明文凭据的认证成功事件，并与请求 ID 关联。"""
+    """记录不含明文凭据的认证成功事件，并与请求 ID 关联。
+
+    受保护审计（链式完整性）对**任何**写入失败 fail-closed（PR3-08/R1）：按
+    ``integrity_protected`` 标记区分受保护与普通审计，不依赖「正好抛了某个异常
+    类型」——后端真实故障（如 SQLite 写失败）同样拒绝请求进入业务主体。「认证成功」
+    本身就是安全边界的一部分，静默放行会让边界事件脱离完整性保护。普通审计后端的
+    既有吞错语义保持不变：普通审计是「尽力而为」的部署约定，与链式完整性不同契约。
+    """
     if audit is None:
         return
+    protected = getattr(audit, "integrity_protected", False)
     try:
         surface_name = (
             str(getattr(surface, "value", surface)) if surface is not None else "internal"
@@ -229,5 +237,7 @@ def _record_auth_success(audit, ctx, credentials, surface, request_id) -> None:
                 },
             )
         )
-    except Exception:  # pragma: no cover - 审计故障不应把已认证请求变成 500
-        pass
+    except Exception:
+        if protected:
+            raise
+        # pragma: no cover - 普通审计后端故障不应把已认证请求变成 500

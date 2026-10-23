@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -66,7 +66,9 @@
 - `ComponentConfig.get`：实例 params > globals > 代码默认
 
 装配拓扑（选哪个 `target`、有哪些具名实例、依赖引用）仍由上述机制在 **`build_kernel` 时**确定。
-具名缓存属于该次装配纪元，根关闭后不得复用其中已关闭的依赖。失败装配的回滚只能
+每个 AssemblyContext 持有独立具名缓存；同上下文显式引用才共享，新上下文即使
+名称相同也不得复用旧配置的有状态实例。不得在装配入口全局 reset 破坏已有实例。
+缓存属于该上下文的装配纪元，根关闭后不得复用其中已关闭的依赖。失败装配的回滚只能
 清理本次新建对象，不能关闭先前借用的存活依赖；旧根关闭不能失效较新装配的缓存。
 同纪元视图由装配根显式绑定生命周期共享协议；纪元与创建观察规则见 S07。此机制仅
 服务装配/关闭，不将 health 故障解释为拓扑切换，也不增加 ConfigSource 热切换键。
@@ -197,6 +199,7 @@ TimeSpan 累计跨度 7200 秒，Scene 最大跨度 1209600 秒，Event 相似�
 显式引用或内联 Composer 配置优先；None/空字符串显式禁用装配。构建是否执行
 仍由 policy 中 hierarchy.enabled 控制。自定义 policies 完整替换默认表，缺键关闭。
 
-Factory.bind_named 捕获原装配配置、缓存、锁及创建观察者；后续 reset_all 创建
-新缓存/锁，不改变旧实例的延迟依赖。并发首次解析共享同轮具名实例，失败不缓存。
+Factory.bind_named 绑定原 AssemblyContext 和创建观察者；缓存与锁归该上下文持有，
+全局 reset_all 不影响旧实例，独立上下文不复用同名依赖。并发首次解析共享同一
+上下文的具名实例，失败不缓存并恢复调用者上下文。
 ConfigSource.get_cached 同样遵循绑定上下文，不串用后续装配的配置源。

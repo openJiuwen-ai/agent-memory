@@ -8,7 +8,7 @@
 | 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## Metadata 领域模型契约
 
@@ -47,7 +47,7 @@
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
 7. **CryptographyProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，也不决定数据是否应该加密——是否启用由上层选择不同的存储适配器表达。
-8. **授权域已接管、审计完整性接口先行**：认证 / 密码学 / 保护 / 授权四域已实装；`audit_integrity/` 实装归 PR3。PR2 的 Authorizer 消费 DEV 的 ROOT 角色维持本地业务流程，不再注入 `allow_all` PermissionManager。HTTP / CLI 默认 `required`，只有显式选择 dev 才启用固定本地 ROOT 身份。
+8. **授权域已接管、审计完整性可选装配**：认证 / 密码学 / 保护 / 授权四域已实装；审计完整性须经安全 Runtime 显式引用 provider，并与业务及入口使用同一审计后端。未装配返回 unsupported，不能降级为 clean；已装配时写入故障必须失闭。PR2 的 Authorizer 消费 DEV 的 ROOT 角色维持本地业务流程，不再注入 `allow_all` PermissionManager。HTTP / CLI 默认 `required`，只有显式选择 dev 才启用固定本地 ROOT 身份。
 9. **`RequestSecurityContext` 的受控构造入口**：`security/request_context.py` 的 `new_request_context` / `internal_context` 是唯一构造点——`request_id` 由服务端或受控适配层生成、`started_at` 取服务端时钟、`attributes` 只由系统组件写入；请求结束必须 reset。PEP 来源校验的正式接管归 PR2。
 10. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 11. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
@@ -257,9 +257,8 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 ### 安全域契约（`security/`）
 
 F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 / 审计完整性 / Runtime 与公共安全值对象）。
-认证 / 密码学 / 保护已实装并接入 Server lifecycle；授权（PR2）已实装，审计完整性（PR3）
-仍只固定接口。现有安全能力见 F04；冻结接口备忘见
-`docs/features/common/F04-1-security-api-contracts.md`。
+认证 / 密码学 / 保护 / 授权已实装并接入 Server lifecycle；审计完整性已有可选的链式实现。
+现有安全能力与部署边界见 F04；公开接口及插件协作契约见 S10。
 
 | 子包/模块 | 契约 | 语义 |
 |---|---|---|
@@ -470,29 +469,33 @@ tree_memory: TreeMemoryData | None = None
 | `register(target)` | `@classmethod (target: str) -> Callable` | 装饰器：注册某实现的 `_build` 函数（接口 1 的实现体） |
 | `build(target, params, ctx, *, name="")` | `@classmethod -> T` | **接口 1（匿名）**：按 `target` 新建，**不入缓存** |
 | `build_named(name, ctx)` | `@classmethod -> T` | **接口 2（具名/共享）**：按具名实例名取/建，按 `new_instance` 决定是否缓存共享 |
+| `bind_named(name, ctx)` | `@classmethod -> Callable[[], T]` | 绑定指定装配上下文，首次调用前不查配置或创建组件；沿用该上下文的缓存、锁和绑定时的创建观察者，失败可重试 |
 | `dep(config, param_name=None, default=None)` | `@classmethod -> T` | builder 内取依赖：引用名(str)→`build_named`（共享）/ 内联(dict)→`build`（匿名）/ 缺省(None)→`build(default)`（匿名默认） |
 | `cfg_get` / `require_param` | `@staticmethod (config, key, ...)` | 读本组件参数（缺失给默认 / 必填缺失即抛 `ValidationError`） |
-| `reset_all()` | `@classmethod () -> None` | 清空所有工厂的实例缓存（装配前调用，隔离多次装配） |
-| `put(name, instance)` | `@classmethod -> None` | 把外部实例预置进缓存（如显式注入的真源 kv） |
+| `reset_all(*, ctx=None)` | `@classmethod -> None` | 只清指定装配缓存；省略 ctx 时使用当前 builder 上下文，builder 外仅清旧式默认缓存 |
+| `put(name, instance, *, ctx=None)` | `@classmethod -> None` | 把外部实例预置进缓存（如显式注入的真源 kv） |
+| `get_cached(name, *, ctx=None)` | `@classmethod -> T or None` | 只读指定上下文中的已有实例；builder 内缺省继承当前上下文 |
 | `observe_builds(observer)` | `(Callable[[object], None]) -> context manager` | 观察本作用域由标准 build 新建的实例（含匿名子依赖）；不报告缓存命中/put；嵌套观察者均收到通知 |
-| `cache_epoch()` / `reset_if_current_epoch(epoch)` | `() -> object` / `(object) -> None` | opaque 装配纪元；reset_all 切换纪元，旧所有者只能失效自己的当前纪元 |
-| `bind_cache_lifecycle(owner, share)` | `(object, Callable[[object, object], None]) -> None` | 装配根声明本纪元生命周期所有者，同一具名图的新增视图显式调用给定共享协议，不跨独立纪元隐式去重 |
-| `discard_created(instances)` | `(tuple[object, ...]) -> None` | 失败装配只移除新建对象的缓存条目，保留先前借用的缓存实例 |
+| `cache_epoch(*, ctx=None)` / `reset_if_current_epoch(epoch, *, ctx=None)` | `() -> object` / `(object) -> None` | opaque 装配纪元；reset_all 切换纪元，旧所有者只能失效自己的当前纪元 |
+| `bind_cache_lifecycle(owner, share, *, ctx=None)` | `(object, Callable[[object, object], None]) -> None` | 装配根声明本纪元生命周期所有者，同一具名图的新增视图显式调用给定共享协议，不跨独立纪元隐式去重 |
+| `discard_created(instances, *, ctx=None)` | `(tuple[object, ...]) -> None` | 失败装配只移除新建对象的缓存条目，保留先前借用的缓存实例 |
 
 - **接口 1（匿名）`build`**：查 `_registry[target]`，把 `params` 包成 `ComponentConfig` 交给注册的 `_build`，返回**新实例、不入缓存**。
-- **接口 2（具名/共享）`build_named`**：命中 `cls._instances[name]` → 返回缓存共享实例；否则 `spec = ctx.lookup(cls.TOP_NAME, name)`（用自己的 `TOP_NAME` 定位命名空间）→ `build(spec.target, spec.params, ctx)`；`spec.new_instance` 为假则存入缓存供共享、为真则每次新建。
+- **接口 2（具名/共享）`build_named`**：命中 `ctx.instance_cache` 中 producer/name 对应的实例 → 返回缓存共享实例；否则 `spec = ctx.lookup(cls.TOP_NAME, name)`（用自己的 `TOP_NAME` 定位命名空间）→ `build(spec.target, spec.params, ctx)`；`spec.new_instance` 为假则存入缓存供共享、为真则每次新建。
 - **`dep`** 的 `param_name` 缺省取 `cls.TOP_NAME`，仅当 builder 入参名与依赖 Producer 顶层名不一致时显式传。
 - 装配根通过创建观察维护失败回滚清单，不在失败后探测具体插件的私有状态。成功发布后
   按具名依赖的公开所有权契约关闭；观察通知不能代替插件自身构造失败时的局部资源清理。
   关闭本纪元根失效其缓存，不能影响后来已重建的独立纪元。ContextVar 仅用于隔离装配
-  观察作用域，不承载认证身份，不改变业务安全输入或 ConfigSource 晚绑定协议。
+  观察作用域与 builder 的缓存上下文，不承载认证身份，不改变业务安全输入。
+  注册表仍属 Producer，缓存和生命周期属 AssemblyContext；独立上下文不隐式共享。
+  同上下文的具名并发构建串行发布，嵌套依赖可重入；全局 reset 不影响存活的上下文。
 
 #### 配置数据结构（`config/context.py`）
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
 | `RawSpec` | target / params / new_instance | 一个具名实例的纯数据 |
-| `AssemblyContext` | globals / namespaces（`top_name → name → RawSpec`） | 全局装配上下文；`lookup(top_name, name) -> RawSpec` 取具名配置 |
+| `AssemblyContext` | globals / namespaces（`top_name → name → RawSpec`）/ instance_cache | 单次装配上下文；`lookup(top_name, name) -> RawSpec` 取具名配置，缓存不跨上下文共享 |
 | `ComponentConfig` | params / ctx / target / name | 传给每个 `_build` 的 config 视图；`get(key, default)` 先查本实例 `params`，缺失回退 `ctx.globals`，最终给 `default` |
 
 - `ComponentConfig.get` 实现跨切面参数「写一处、处处读到」：`embedder_dim` / `vector_enabled` 等写在 `globals`，具名实例 `params` 可覆盖。
@@ -527,7 +530,7 @@ def _build(config: ComponentConfig) -> Embedder:
 - 具名实例默认**共享**：多处 `build_named("main_vec", ctx)` 命中同一缓存键 → 同一实例
 - 配 `new_instance: true` 的具名实例退出共享（每次引用都新建）
 - 匿名 `build` 与内联实例（dict 依赖）天然不共享
-- `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
+- `reset_all(ctx=ctx)` 只清该上下文缓存；独立装配天然隔离，不以全局 reset 实现隔离
 
 各 Producer 继承 `Factory`：
 - `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer`，以及 `common/security/` 下的安全域 Producer（见 S10）
