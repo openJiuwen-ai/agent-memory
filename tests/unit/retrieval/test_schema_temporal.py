@@ -735,6 +735,77 @@ def test_pipeline_temporal_extension_returns_one_formal_entity_item() -> None:
     assert temporal.schema_temporal.entities[0].entity_id == "entity-alice"
 
 
+@pytest.mark.parametrize(
+    "extension",
+    [
+        {"mode": "unknown"},
+        {"mode": "snapshot"},
+        {"fallback_policy": "unknown-policy"},
+    ],
+)
+def test_invalid_temporal_extension_degrades_to_ordinary_results(extension: dict) -> None:
+    source = _source("source", "entity-alice")
+    domain = _FakeDomain([source], recalled_ids=[source.id])
+    retriever = PipelineRetriever(
+        _StaticParser(),
+        RRFFuser(),
+        _PlainDiscloser(),
+        None,
+        domain_store=domain,
+        schema_temporal_extension=SchemaTemporalPipelineExtension(
+            TemporalEntitySelector(domain), _PlainDiscloser()
+        ),
+    )
+
+    result = retriever.retrieve(
+        _SCOPE,
+        RetrievalQuery(text="Alice", top_k=1, extensions={"schema_temporal": extension}),
+    )
+
+    assert [item.unit_id for item in result.items] == [source.id]
+    assert not hasattr(result, "schema_temporal")
+    assert len(result.errors) == 1
+    assert result.errors[0].channel is RecallChannel.TEMPORAL
+    assert result.errors[0].error_type == "ValueError"
+
+
+def test_temporal_entity_keeps_single_slot_when_source_fallback_exists() -> None:
+    source = _source("source", "entity-alice")
+    property_unit = _property(
+        "property",
+        value="Alice visited Paris in 2023",
+        provenance=[source.id],
+    )
+    domain = _FakeDomain(
+        [source, property_unit],
+        recalled_ids=[source.id, property_unit.id],
+    )
+    selector = TemporalEntitySelector(domain)
+    retriever = PipelineRetriever(
+        _StaticParser(),
+        RRFFuser(),
+        _PlainDiscloser(),
+        None,
+        domain_store=domain,
+        schema_temporal_extension=SchemaTemporalPipelineExtension(
+            selector, _PlainDiscloser()
+        ),
+    )
+
+    result = retriever.retrieve(
+        _SCOPE,
+        RetrievalQuery(
+            text="Paris",
+            top_k=1,
+            extensions={"schema_temporal": {"mode": "history"}},
+        ),
+    )
+
+    assert [item.unit_id for item in result.items] == ["entity-alice"]
+    assert result.items[0].system_metadata["retrieval_view"] == "schema_temporal_entity"
+    assert [candidate.unit_id for candidate in selector.last_source_candidates] == [source.id]
+
+
 @pytest.mark.parametrize("formatting_enabled", [False, True])
 def test_pipeline_accepts_explicit_schema_temporal_query_field(
     formatting_enabled: bool,

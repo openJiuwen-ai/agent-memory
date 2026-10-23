@@ -92,11 +92,10 @@ class SchemaTemporalPipelineExtension:
         ordinary_result = ordinary.result
         if query.schema_temporal is not None:
             parsed.extensions["schema_temporal"] = query.schema_temporal
-        if not self._selector.should_select(parsed):
-            return ordinary_result
-
         started_at = perf_counter()
         try:
+            if not self._selector.should_select(parsed):
+                return ordinary_result
             self._selector.select(
                 scope,
                 parsed,
@@ -396,7 +395,7 @@ def _merge_temporal_and_source_items(
     if result_limit > 1:
         source_budget = min(source_budget, result_limit - 1)
     else:
-        return source_items[:1]
+        return temporal_items[:1]
     temporal_budget = result_limit - source_budget
     selected_temporal = temporal_items[:temporal_budget]
     selected_sources = source_items[:source_budget]
