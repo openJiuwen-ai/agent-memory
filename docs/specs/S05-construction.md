@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -441,7 +441,13 @@ EventBuilder。时间以 hierarchy 区间比较，naive 按 UTC、aware 按实�
 repair_required，调用方须报告 FAILED。当前没有自动修复或事务恢复执行器。
 
 逐层分组、完整事实和摘要契约见本文末尾交付部分。单层增量通过内部上下文驱动，
-后台注册与候选扫描后续接入；ensure、多 kind 构建和自动修复尚未实现。
+后台注册、候选扫描与逐层增量已接入，调度契约见 S03；ensure、多 kind 构建和自动修复尚未实现。
+
+内部增量准备段（Evolver 请求校验与 Composer 分组、摘要、候选树验证）尚未调用持久化时，
+异常以 HierarchyPreparationError（ValidationError 子类）保留原原因并向上传递。
+该信号仅证明当前层未写入，不否认此前已完成的下层。显式建树保留原异常类型。
+持久化调用必须在准备段之外：部分写入按 complete/repair_required 报告，未分类的
+插件异常不声明无写入；控制层据此保守处理。模型摘要已有的摘录回退策略保持不变。
 
 ### Evolver（`evolver.py`）
 
@@ -558,7 +564,7 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 | `entities` | list[str] | L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时只消费本字段构造 `EntityMention`，为空时直接跳过该 unit（已砍 spaCy 兜底，无回退抽取，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。默认空，向后兼容 |
 | `vectors` | list[ChunkVector] | content 的 chunk 级向量投影：构建期由 IndexBuilder 在 `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed）填充，`id`/`seq` 与 Chunk 对齐，随本体经 `DomainStore.add/update` 下传；一体化数据面实现消费它自建 chunk 级向量索引（record id 沿用 `{unit_id}-{chunk_id}`），CompositeDomainStore 仅随本体持久化。空列表表示未向量化；codec 加字段兼容演进，`_v` 不升（见 F06-unified-index-builder） |
 
-构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。目标父节点复用既有
+构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。TIME 父节点复用既有
 segments、layers、tier 和 metadata 槽位，结构边只写 hierarchy；`content/assets/source`
 仍是基于 segments 的只读合并视图。精确类型与默认值见 [S07-common.md](S07-common.md)。
 
@@ -620,7 +626,7 @@ provenance。涉及参与继承的来源时必须唯一；明确全部来自非�
 
 继承只复制 kind/role/span 和 ACTIVE 状态，不复制边、ordinal、tree_memory 或修改 temporal。
 对于未挂树的 TIME/Snapshot，缺失时间端点保留 None，不在继承或去重时自动补齐。
-写入缺时提示的容忍不改变默认结构校验；后续建树应筛选完整候选，再严格校验树。
+写入缺时提示的容忍不改变默认结构校验；显式和自动建树已在候选层跳过未挂树缺时叶，再严格校验树。
 去重 ADD 保持一条候选；NOOP 不修改已有节点；UPDATE 用新叶区间替换，不做区间并集，
 缺少新提示则保留旧结构；SUPERSEDE 保留原版本替换规则。UPDATE/SUPERSEDE 涉及已挂树
 节点或其他树角色时，在正文合并和存储写入前拒绝，避免产生未经维护的父摘要/边。

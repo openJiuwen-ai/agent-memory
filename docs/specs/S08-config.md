@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
 
 ## 范围 / 边界
@@ -206,7 +206,7 @@ ConfigSource.get_cached 同样遵循绑定上下文，不串用后续装配的�
 | 配置位置 | 参数 | 默认值与含义 |
 |---|---|---|
 | globals.policies | hierarchy.enabled | "false"；树总开关 |
-| globals.policies | hierarchy.auto_derive | "false"；仅控制后台增量任务 |
+| globals.policies | hierarchy.auto_derive | "false"；与总开关共同控制后台注册及每轮执行，开启后仍须 Runtime 显式注册 |
 | scheduler.default | target | 默认 in_process；自动建树须改为支持周期的 async_timer |
 | scheduler.default.params | tick_interval | async_timer 默认 10 秒；任务间隔不得小于它 |
 | job_factory.default.params | hierarchy_derive_interval | 1800 秒；正整数，后台运行间隔 |

@@ -263,11 +263,14 @@ globals:
 # 内置 profile：TimeSpan 累计跨度/静默 2 小时；Scene 最大跨度 14 天、静默 1 天；
 # Event 按语义分组、静默 3 天。静默只用于自动尾组封口，不改变显式建树分组。
 # runtime = assemble_runtime(config=config)
+# home = Scope(org="org1", space="space1", user="user1", agent="agent1", session="")
 # started = await runtime.start_background_jobs(home, security=security)
-# home 是具体 Scope，不是文件目录；父写到 home，候选受其非空主体字段限制。
+# home 是树驻留范围 tree_home_scope；不是目录或树 ID，可包含多棵树。
+# org/space 精确匹配，非空主体字段限制候选，父写到 home，叶保留原 Scope。
 # if not started.skipped:
 #     info = runtime.api.job_status(started.job_ids[0], security=security)
 #     # info.detail["last_run_status"] / json.loads(info.detail["last_run_detail"])
 # 宿主进程保持运行，退出时 runtime.close()；单个 home 可通过 api.job_cancel 停止。
-# 缺时/迟到/过窗输入只记录跳过，正常输入继续；部分写入或失锁需要先核对并修复，
+# 缺时/迟到/过窗输入只记录跳过，正常输入继续；确认本层未写入的准备失败可在下轮重试。
+# 部分写入或写入结果不确定（含写入后失锁）需要先核对并修复，
 # 不能把完整性故障当作普通跳过；后台不自动修树，不持久化注册记录。

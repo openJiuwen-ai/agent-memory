@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -66,7 +66,7 @@
 14. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
     多模态 CLM/ELM（`system_metadata["memory_level"]` + `provenance`）表示单媒体源构建粒度；
     `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。
-    结构模型与纯校验已提供；父节点构造与树遍历尚未接入。任一轴不得推导或代替另外三轴。
+    结构模型、纯校验、TIME 父节点构造与树遍历已接入。任一轴不得推导或代替另外三轴。
 15. **树结构引用一致**：`kind` 与 `role` 必须同时设置或同时缺省；
    空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
    严格树；父 `child_ids` 与子 `parent_id` 双向一致且子列表不得重复。

@@ -252,3 +252,6 @@ Evolver.evolve(units, mode):
 `incremental_pipeline` 复用现有分组及父增强，在独立静默、下层边界和重叠保护后
 只持久化安全前缀；旧子正文及直接子边不重建，完整下层证据参与结构校验。
 各 stage 的 `settle_seconds` 仅用于自动尾组封口，不影响显式分组。
+周期执行和故障保护由 control 承担；内部 hierarchy_preparation 只包围增量请求的
+无写入准备段，异常转为 HierarchyPreparationError；持久化必须在该边界之外，
+显式请求保留原异常语义。

@@ -41,6 +41,7 @@ from jiuwen_memory.construction.hierarchy_composer import (
     HierarchyComposerProducer,
     HierarchyIncrementalContext,
     HierarchyRepair,
+    hierarchy_preparation,
     validate_time_parent_roles,
 )
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -122,16 +123,19 @@ class DefaultHierarchyComposer(HierarchyComposer):
         return deepcopy(self.profiles.get(kind))
 
     def _build_incremental(self, request: HierarchyComposeRequest) -> HierarchyComposeResult:
-        profile = self.get_profile(HierarchyKind.TIME)
-        _validate_incremental(request, profile, self.allow_cross_user)
-        candidate = deepcopy(request)
-        batch = self._pipeline().build_incremental(candidate, profile.parent_roles)
-        if not batch.children:
-            return HierarchyComposeResult(
-                deferred_child_count=len(candidate.leaves), pending_before=batch.pending_before,
+        with hierarchy_preparation():
+            profile = self.get_profile(HierarchyKind.TIME)
+            _validate_incremental(request, profile, self.allow_cross_user)
+            candidate = deepcopy(request)
+            batch = self._pipeline().build_incremental(candidate, profile.parent_roles)
+            if not batch.children:
+                return HierarchyComposeResult(
+                    deferred_child_count=len(candidate.leaves), pending_before=batch.pending_before,
+                )
+            validate_tree(
+                [*batch.parents, *batch.children, *candidate.incremental.supporting_units],
+                allow_cross_user=self.allow_cross_user,
             )
-        validate_tree([*batch.parents, *batch.children, *candidate.incremental.supporting_units],
-                      allow_cross_user=self.allow_cross_user)
         result = self._persist(batch.parents, batch.children, [])
         result.deferred_child_count = len(candidate.leaves) - len(batch.children)
         result.pending_before = batch.pending_before

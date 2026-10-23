@@ -37,10 +37,10 @@ def test_registration_close_preserves_error_and_attempts_all_cancellations(has_s
         runtime._closing = True
         return BackgroundJobStartResult(job_ids=["first", "second"])
 
-    api = SimpleNamespace(start_background_jobs=register)
+    api = SimpleNamespace()
     runtime = _MemoryRuntime(api=api, _kernel=SimpleNamespace(
         api=api, scheduler=SimpleNamespace(cancel=cancel) if has_scheduler else None,
-    ))
+    ), _register_background_jobs=register)
     with pytest.raises(ValidationError, match="runtime closed during periodic registration"):
         asyncio.run(runtime.start_background_jobs(Scope(), security=ROOT_SECURITY))
     assert cancelled == (["first", "second"] if has_scheduler else [])

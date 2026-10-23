@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -601,6 +601,11 @@ WRITE 和 DELETE，并在首次业务写入前全部完成。配置失效、抽�
 不承诺断点恢复、固定 ID 重试或原子回滚。
 决策与边界见 [F08](../features/construction/F08-entity-schema-extension.md)。
 
+**当前限制：普通记忆后补 Snapshot 暂不支持。** `update` 不重新执行摄入层的叶提示转换；
+向 `system_metadata` 补写 `hierarchy_kind`、`hierarchy_role`、`hierarchy_span_start`、
+`hierarchy_span_end` 不会更新真实 `MemoryUnit.hierarchy`，也不会把普通记忆变成可建树叶。
+不要把这组 metadata 更新作为修复用法；结构索引保留键同样不能绕过 API 直接覆盖。
+
 **状态：已设计、尚未实现**（`MemoryPatch.hierarchy`）
 
 `MemoryPatch` 的既有非空字段为 `content/tier/tags/system_metadata/user_metadata/t_valid/t_invalid/mode`，目标增加：
@@ -674,6 +679,16 @@ WRITE+UPDATE 授权及空间可写检查。启用逐记忆权限路由时不支�
 reuse_existing=True：纯新合格叶首次构建；完整现有树直接复用；完整旧树与新叶混合、
 缺失请求父层或损坏结构拒绝隐式重建。False：备齐区间相交旧根的完整子树后重建，
 可以同时包含新叶和旧叶。缺时且未挂树的叶仅跳过，保持原输入。
+
+默认 False 不是去重开关：重复提交相同范围，即使没有新叶，也会重建相交旧树。
+成功后新父使用新 ID，子边切换到新父，旧父归档并移除检索索引；权威叶内容保持。
+请求区间是候选选择边界，不是严格修改边界。例如旧 Event 覆盖 09:00–10:00，
+请求重建 09:10–09:20，仍须收齐该旧根的全部后代再重建，包括区间外子叶。
+不相交的旧树不变；不得用更短父层链重建含更高父层的旧树。
+
+后台增量不使用 reuse_existing：已有父边的节点不重复参与该层构建，但未挂上层的
+TimeSpan/Scene 可继续生成上层。即使通过其他维护途径补齐了真实 Snapshot，历史节点
+也可能因迟到或超出回看范围被跳过；不能承诺下一轮自动挂树。公开补 Snapshot 仍不支持。
 
 ### 任务面
 
@@ -1260,8 +1275,11 @@ async def start_background_jobs(
 ```
 
 这是 `MemoryRuntime` / `ServerRuntime` 的宿主启动接口，不增加 MemoryAPI、HTTP、CLI 或 MCP
-方法。`scope` 即 tree home：org/space 精确匹配，非空 user/agent/session 限定输入范围；
-新父驻留完整 home，不自行发现 home 或扩大到别的主体。注册前校验可信上下文、home 的
+方法，具体 API 对象也不暴露同名公开方法。Runtime 经装配期绑定的内部回调完成 PEP 和提交。
+`scope` 是树驻留范围（`HierarchyComposeOptions.tree_home_scope`，简称 home）：
+org/space 精确匹配，非空 user/agent/session 限定输入范围，空维度允许覆盖其子范围。
+新父驻留完整 home，叶保留原 Scope；同一个 home 可包含多棵树，不是树 ID 或文件目录。
+不会自动发现 home 或扩大到其他主体。注册前校验可信上下文、home 的
 WRITE/UPDATE 权限和空间可写状态；当前不支持按 metadata 路由的逐候选授权。
 
 `BackgroundJobStartResult` 包含 `job_ids: list[str]`、`skipped: bool`、`reason: str`。
@@ -1271,6 +1289,8 @@ TIME profile 时 reason 为 `hierarchy_profile_missing`。开启却未配置周�
 
 ```python
 runtime = assemble_runtime(config=config)  # 配置示例见 examples/config_template.yml
+# 当前身份有权访问的范围；空 session 表示涵盖这个 user/agent 下的各个 session。
+home = Scope(org="org1", space="space1", user="user1", agent="agent1", session="")
 result = await runtime.start_background_jobs(home, security=security)
 if not result.skipped:
     info = runtime.api.job_status(result.job_ids[0], security=security)

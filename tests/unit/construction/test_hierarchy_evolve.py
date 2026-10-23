@@ -2,6 +2,7 @@
 """EvolveRequest 的结构分派、真实替换和具名 Factory 兼容性。"""
 
 from copy import deepcopy
+from datetime import UTC, datetime
 from unittest.mock import Mock
 
 import pytest
@@ -20,6 +21,8 @@ from jiuwen_memory.construction.hierarchy_composer import (
     HierarchyComposer,
     HierarchyComposeResult,
     HierarchyComposerProducer,
+    HierarchyIncrementalContext,
+    HierarchyPreparationError,
     HierarchyRepair,
 )
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
@@ -148,13 +151,16 @@ def test_dispatch_separates_leaves_and_old_parents_and_preserves_incomplete_repo
         ("invalid_parent_roles", "parent_roles.*列表"),
     ],
 )
-def test_invalid_hierarchy_dispatch_is_zero_write(invalid_case, message) -> None:
+@pytest.mark.parametrize("incremental", [False, True])
+def test_invalid_hierarchy_dispatch_is_zero_write(invalid_case, message, incremental) -> None:
     leaf = make_leaf("leaf")
     composition = make_harness([leaf])
     composer = Mock(spec=HierarchyComposer)
     selected = None if invalid_case == "missing_composer" else composer
     harness = make_evolver_harness(composition, selected)
     request = make_evolve_request([leaf])
+    if incremental:
+        request.hierarchy_incremental = HierarchyIncrementalContext(settle_at=datetime.now(UTC))
     if invalid_case == "missing_options":
         request.hierarchy_options = None
     elif invalid_case == "invalid_options_type":
@@ -175,7 +181,10 @@ def test_invalid_hierarchy_dispatch_is_zero_write(invalid_case, message) -> None
         request.hierarchy_options.parent_roles = tuple(request.hierarchy_options.parent_roles)
     before = deepcopy(request)
 
-    with pytest.raises(ValidationError, match=message):
+    expected = (HierarchyPreparationError
+                if incremental and invalid_case not in {"plain_request", "invalid_mode"}
+                else ValidationError)
+    with pytest.raises(expected, match=message):
         harness.evolver.evolve(request)
 
     assert request == before

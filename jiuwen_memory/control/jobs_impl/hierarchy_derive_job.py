@@ -23,6 +23,7 @@ from jiuwen_memory.construction.hierarchy_composer import (
     HierarchyComposeProfile,
     HierarchyComposeResult,
     HierarchyIncrementalContext,
+    HierarchyPreparationError,
     validate_time_parent_roles,
 )
 from jiuwen_memory.control.evolution.validation import scope_contains
@@ -140,6 +141,13 @@ class HierarchyDeriveJob(Job):
         except JobCancelledError as error:
             error.detail.update(detail)
             raise
+        except HierarchyPreparationError as error:
+            # 仅本层确认未持久化的失败可重试；已完成的下层仍保留。
+            self.state.needs_repair = False
+            self.state.failure_detail.clear()
+            detail.update(complete="false", retryable="true",
+                          error=f"{type(error).__name__}: {error}")
+            return self._info(JobStatus.FAILED, detail)
         except Exception as error:
             detail.update(complete="false", error=f"{type(error).__name__}: {error}")
             if self.state.needs_repair and not self.state.failure_detail:

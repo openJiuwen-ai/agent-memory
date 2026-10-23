@@ -724,7 +724,7 @@ class QueryOpsMixin:
                   detail={**auth, "job_id": job_id})
         return job_id
 
-    async def start_background_jobs(
+    async def _start_background_jobs(
         self, scope: Scope, *, security: RequestSecurityContext,
     ) -> BackgroundJobStartResult:
         """Runtime 专用注册入口，复用当前 PEP 和树开关，不扩展 MemoryAPI。"""

@@ -6,9 +6,11 @@ import json
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import timedelta
+from unittest.mock import Mock
 
 import pytest
 
+from jiuwen_memory.common.embedder import Embedder
 from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRef, HierarchyRole
 from jiuwen_memory.control.jobs_impl.hierarchy_job import HierarchyJobLimits
 from jiuwen_memory.control.types import JobStatus
@@ -45,6 +47,65 @@ def test_invalid_snapshot_links_fail_before_evolve_without_latching(invalid_link
     recovered = asyncio.run(job.run())
     assert recovered.status is JobStatus.SUCCEEDED, recovered.detail
     assert recovered.detail["created_parent_count"] == "3"
+
+
+@pytest.mark.parametrize("prebuilt", [False, True])
+def test_preparation_failure_retries_without_rebuilding_committed_lower_layer(prebuilt) -> None:
+    leaves = [make_leaf("a"), make_leaf("b", 30)]
+    harness = job_harness(leaves, profiles=event_profiles(settle_seconds="1"))
+    if prebuilt:
+        assert asyncio.run(harness.job().run()).status is JobStatus.SUCCEEDED
+    embedder = Mock(spec=Embedder)
+    embedder.embed.side_effect = RuntimeError("embedding temporarily unavailable")
+    composer = harness.composition.composer
+    composer.models.embedder = embedder
+    composer.profiles[HierarchyKind.TIME].stage_options["SceneSegmenter"].update(
+        similarity_threshold="0.5",
+    )
+    job = derive_job(harness, DeriveClock(ORIGIN + timedelta(hours=1)))
+    first = asyncio.run(job.run())
+    assert first.status is JobStatus.FAILED, first.detail
+    assert first.detail["retryable"] == "true"
+    assert "embedding temporarily unavailable" in first.detail["error"]
+    assert first.detail["created_parent_count"] == ("0" if prebuilt else "2")
+    assert not job.state.needs_repair and not job.state.failure_detail
+    spans = [harness.composition.read(harness.home, harness.read(leaf).hierarchy.parent_id)
+             for leaf in leaves]
+    assert all(not span.hierarchy.parent_id for span in spans)
+    written = len(harness.composition.builder.calls)
+    second = asyncio.run(job.run())
+    assert second.status is JobStatus.FAILED and second.detail["retryable"] == "true"
+    assert len(harness.composition.builder.calls) == written
+    assert embedder.embed.call_count == 2
+
+    embedder.embed.side_effect = None
+    embedder.embed.return_value = [[1.0, 0.0], [1.0, 0.0]]
+    recovered = asyncio.run(job.run())
+    assert recovered.status is JobStatus.SUCCEEDED, recovered.detail
+    assert recovered.detail["created_parent_count"] == "3"
+    for leaf, span in zip(leaves, spans):
+        path = read_event_path(harness, leaf)
+        assert path[1].id == span.id
+        assert path[1].segments == span.segments
+    assert not job.state.needs_repair
+
+
+def test_unclassified_evolver_error_remains_latched() -> None:
+    harness = job_harness(profiles=event_profiles(settle_seconds="1"))
+    job = derive_job(harness, DeriveClock(ORIGIN + timedelta(minutes=5)))
+
+    def fail_unknown() -> None:
+        raise RuntimeError("custom evolver write state unknown")
+
+    harness.evolver.before_evolve = fail_unknown
+    first = asyncio.run(job.run())
+    assert first.status is JobStatus.FAILED and job.state.needs_repair
+    assert "retryable" not in first.detail
+    harness.evolver.before_evolve = None
+    second = asyncio.run(job.run())
+    assert second.status is JobStatus.FAILED
+    assert second.detail["paused_reason"] == "repair before runtime restart"
+    assert len(harness.evolver.requests) == 1
 
 
 def test_many_expired_snapshots_do_not_use_candidate_quota_or_block_healthy_chain() -> None:

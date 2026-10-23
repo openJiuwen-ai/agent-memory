@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -253,6 +253,9 @@ class _MemoryRuntime:
     api: MemoryAPI
     _kernel: _Kernel
     _resources: SecurityResourceOwner | None = field(default=None, repr=False)
+    _register_background_jobs: Callable[..., Awaitable[BackgroundJobStartResult]] | None = field(
+        default=None, repr=False,
+    )
     _shutdown_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
     _drain_lock: Any = field(default_factory=threading.Lock, init=False, repr=False)
     _closing: bool = field(default=False, init=False, repr=False)
@@ -272,7 +275,10 @@ class _MemoryRuntime:
         self._validate_resources()
         with self._shutdown_lock:
             self._validate_start()
-        result = await self._kernel.api.start_background_jobs(scope, security=security)
+        register = self._register_background_jobs
+        if register is None:
+            raise ValidationError("runtime background registration is not assembled")
+        result = await register(scope, security=security)
         with self._shutdown_lock:
             closed = self._closing
         if closed:
@@ -817,6 +823,7 @@ def _runtime_from_kernel(kernel: _Kernel) -> _MemoryRuntime:
     # 本包 facade 持有委托闭包，不将 Runtime/Store 端口公开给业务层。
     # pylint: disable=protected-access
     kernel.api._runtime_close = runtime.close
+    runtime._register_background_jobs = kernel.api._start_background_jobs
     runtime.security_resource_owner().add_close_barrier(runtime._stop_for_shared_close)
     return runtime
 

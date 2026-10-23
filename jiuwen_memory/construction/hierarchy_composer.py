@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -24,6 +26,21 @@ TIME_CHILD_ROLES = {
     HierarchyRole.SCENE: HierarchyRole.TIME_SPAN,
     HierarchyRole.EVENT: HierarchyRole.SCENE,
 }
+
+
+class HierarchyPreparationError(ValidationError):
+    """内部增量契约：本层准备失败，尚未调用持久化；不得用于写入后的异常。"""
+
+
+@contextmanager
+def hierarchy_preparation(*, incremental: bool = True) -> Iterator[None]:
+    """仅包围无写入的准备段；显式构建保留原异常，未知写入结果不得经此转换。"""
+    try:
+        yield
+    except Exception as error:
+        if not incremental or isinstance(error, HierarchyPreparationError):
+            raise
+        raise HierarchyPreparationError(f"{type(error).__name__}: {error}") from error
 
 
 @dataclass(frozen=True)

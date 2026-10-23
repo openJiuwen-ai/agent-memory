@@ -52,6 +52,7 @@ def test_enabled_registration_requires_periodic_scheduler() -> None:
 def test_registration_survives_caller_loop_and_records_each_round(engine_kind) -> None:
     runtime = assemble_runtime(config=background_config(engine_kind))
     api = runtime.api
+    assert not hasattr(api, "start_background_jobs"), "后台注册只能通过 Runtime 公开入口"
     security = security_for(api, HOME)
     moment = datetime.now(UTC) - timedelta(minutes=2)
     scope = Scope(org=HOME.org, user=HOME.user, agent=HOME.agent, session="live")
