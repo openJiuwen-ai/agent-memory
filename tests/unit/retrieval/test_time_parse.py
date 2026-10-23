@@ -113,3 +113,19 @@ def test_relative_time_still_wins_over_absolute_date() -> None:
 
     assert lo == NOW - timedelta(days=3)
     assert hi == NOW
+
+
+def test_absolute_date_followed_by_time_digits() -> None:
+    """日期后紧跟时间数字（6月8日14点）仍应解析出当日窗口。"""
+    lo, hi = parse_time("我6月8日14点的记忆有什么", now=NOW)
+
+    assert lo == datetime(2026, 6, 8, tzinfo=UTC)
+    assert hi == datetime(2026, 6, 9, tzinfo=UTC)
+
+
+def test_year_insertion_form_resolves_explicit_year() -> None:
+    """「2025年的6月8日」显式年份不得被 now.year 静默顶替。"""
+    lo, hi = parse_time("2025年的6月8日的行程", now=NOW)
+
+    assert lo == datetime(2025, 6, 8, tzinfo=UTC)
+    assert hi == datetime(2025, 6, 9, tzinfo=UTC)
