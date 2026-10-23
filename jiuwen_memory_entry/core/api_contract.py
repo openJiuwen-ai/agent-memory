@@ -21,6 +21,7 @@ from functools import cache
 from typing import Any, get_args, get_origin, get_type_hints
 
 from jiuwen_memory.api import MemoryAPI, ValidationError
+from jiuwen_memory.retrieval.types import RetrievalResult
 
 _RESERVED_SECURITY_FIELDS = {
     "security",
@@ -142,9 +143,12 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        fields = dataclasses.fields(value)
+        if isinstance(value, RetrievalResult) and value.schema_temporal is None:
+            fields = tuple(field for field in fields if field.name != "schema_temporal")
         return {
             field.name: to_jsonable(getattr(value, field.name))
-            for field in dataclasses.fields(value)
+            for field in fields
             if not field.name.startswith("_")
         }
     if isinstance(value, Mapping):

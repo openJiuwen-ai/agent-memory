@@ -29,6 +29,8 @@ from jiuwen_memory.api import (
     ValidationError,
 )
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
+from jiuwen_memory.retrieval.schema_temporal.model import SchemaTemporalMode, SchemaTemporalResult
+from jiuwen_memory.retrieval.types import RetrievalResult
 from jiuwen_memory_entry.core import api_contract
 from jiuwen_memory_entry.core.api_contract import invoke_api
 
@@ -282,6 +284,17 @@ def test_json_serializer_preserves_dataclass_fields_and_wire_values() -> None:
     assert result[0]["tier"] == "semantic"
     assert result[0]["segments"] == [{"content": "coffee", "assets": [], "source": "text"}]
     assert "item_id" not in result[0]
+
+
+def test_search_serializer_only_emits_schema_temporal_when_present() -> None:
+    ordinary = api_contract.to_jsonable(RetrievalResult())
+    temporal = api_contract.to_jsonable(
+        RetrievalResult(schema_temporal=SchemaTemporalResult(mode=SchemaTemporalMode.HISTORY))
+    )
+
+    assert set(ordinary) == {"items", "trajectory", "errors"}
+    assert set(temporal) == {"items", "trajectory", "errors", "schema_temporal"}
+    assert temporal["schema_temporal"]["mode"] == "history"
 
 
 def test_sync_and_async_http_invocation_use_same_named_api_methods() -> None:
