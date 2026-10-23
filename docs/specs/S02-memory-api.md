@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/api/ |
 | 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -200,7 +200,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权判定委托 `Authorizer`，授权状态管理使用其具名 `GrantStore`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。API 不实现跨层业务编排，真实处理逻辑由 control 层算子及其下游 construction/retrieval/storage 完成。
 2. **调用方身份不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层。
 3. **`security` 为必填安全输入**：类型为 `common.security.types.RequestSecurityContext`，由接入层的 `authenticated()` 产出，调用方不得自行拼装；actor 从 `security.auth.actor` 取。除 `check_write` 为兼容原第二位置参数而保留 `(scope, security, *, ...)` 外，其余方法均为 keyword-only。
-4. **search 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
+4. **search 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；约定 key `context.extensions["query_context"]` 校验为字符串序列、转为 tuple 后写入 `RetrievalQuery.query_context`，同样从透传 extensions 中移除，只作为 parser 输入，不参与鉴权或硬过滤；`Context` 对象本身不进控制层。
 5. **admin 不经 Engine**：admin_get/set/all 直达 PolicyManager。
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
 7. **`as_of` = valid-time 回溯点**：`search`/`get` 的 `as_of` 沿系统相信时间轴回溯，返回「那时被认为有效」的版本（`get` 沿 `supersedes` 版本链定位）；`None` 表示当前态。
@@ -237,7 +237,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `batch_add_async` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
 | 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05；`occurred_at` 见 F06 |
-| 数据面 | `search` | 已实现；平铺参数包含可选层级查询 | [search](#search) | F01、F04；层级见 F08 |
+| 数据面 | `search` | 已实现；平铺参数包含可选层级查询与 query rewrite | [search](#search) | F01、F04、retrieval/F08；层级见 common/F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
@@ -509,6 +509,12 @@ def search(
 树参数的默认值直接体现在签名中，不使用内部二次补默认值。开启树功能时，省略参数
 即使用 TIME/time_span、一级展开和 MaxP 上卷；显式 `expand_depth=0` 或 `rollup=False`
 原样生效，即使只传其中一项。
+
+最近上下文经 `context.extensions["query_context"]` 传入，取值是 `list[str]` 或
+`tuple[str, ...]`，顺序由调用方保证；key 不存在与空序列均表示无上下文。API 边界将其
+校验并转为 `RetrievalQuery.query_context`，供支持上下文感知改写的 parser 消费；非法值
+抛 `ValidationError`，且 key 移除后不进入 filters、scope、权限上下文或
+`ParsedQuery.extensions`。
 
 `hierarchy.enabled` 关闭或缺失时，在树语义校验前将 kind/role/span 清为 None、
 expand_depth 清为 0、rollup 清为 False，显式树参数同样被忽略。普通过滤、as_of、

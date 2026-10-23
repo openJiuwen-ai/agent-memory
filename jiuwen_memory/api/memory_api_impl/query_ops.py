@@ -65,6 +65,7 @@ from .local_support import (
     _normalize_list_extensions,
     _parse_max_tokens,
     _pop_coords,
+    _pop_query_context,
     _pop_spaces,
     _recall_permission_context,
     _reject_kernel_system_metadata,
@@ -145,7 +146,11 @@ class QueryOpsMixin:
         self, query: str, context: Context, options: SearchOptions,
         *, security: RequestSecurityContext,
     ) -> RetrievalResult:
-        """按统一选项检索；保留现有单空间与跨空间授权链路。"""
+        """按统一选项检索；保留单空间、跨空间与树检索链路。
+
+        ``query_context`` 经 ``Context.extensions`` 进入 API 边界，校验并转换为
+        ``RetrievalQuery.query_context``，供支持上下文感知改写的 parser 消费。
+        """
         context = Context(
             scope=deepcopy(context.scope),
             extensions=_copy_search_extensions(dict(context.extensions)),
@@ -164,12 +169,13 @@ class QueryOpsMixin:
         identity = security.auth.actor
         # Context 在边界处拆包：scope 照旧作独立轴下推（鉴权 + 检索），
         # extensions 写入调用级 options 顺 parser 透传给自定义检索模块；
-        # Context 对象本身不进内核。三个约定 key 在此解释并从透传 options 中移除，
+        # Context 对象本身不进内核。约定 key 在此解释并从透传 options 中移除，
         # 避免与内核已解释的字段重复：max_tokens（自适应披露预算）解析为 typed int
         # 写入 RetrievalQuery，coords（归属坐标）折算成第二族收窄谓词，spaces（候选空间）
-        # 决定走单空间还是跨空间编排。
+        # 决定走单空间还是跨空间编排，query_context 转为 typed tuple 供改写 parser 消费。
         extensions = dict(context.extensions)
         max_tokens = _parse_max_tokens(extensions.pop(EXT_MAX_TOKENS, None))
+        query_context = _pop_query_context(extensions)
         spaces = _pop_spaces(extensions)
         coords = _pop_coords(extensions, enabled=self._routing_enabled())
         reject_kernel_coords(coords)
@@ -188,6 +194,7 @@ class QueryOpsMixin:
             hierarchy_role=hierarchy.hierarchy_role,
             span_start=hierarchy.span_start, span_end=hierarchy.span_end,
             expand_depth=options.expand_depth, rollup=options.rollup,
+            query_context=query_context,
         )
         if spaces is not None:
             self._require_trusted_context(

@@ -49,7 +49,12 @@ Every retrieval operator inherits `RetrievalOperator` and implements:
 
 `RetrievalOperatorType` contains `QUERY_PARSER`, `RECALLER`, `FUSER`, `DISCLOSER`, and `RETRIEVER`.
 
-## 3. RetrievalQuery Request Type
+## 3. RetrievalQuery Typed Request
+
+This section documents the typed request consumed by the Retrieval layer. It is not the
+`MemoryAPI.search` signature: at the MemoryAPI boundary, callers provide recent context
+through `Context.extensions["query_context"]`; the API validates it and populates
+`RetrievalQuery.query_context` before delegating to Retrieval.
 
 ```python
 @dataclass
@@ -65,6 +70,7 @@ class RetrievalQuery:
     rerank: bool | None = None
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    query_context: tuple[str, ...] | None = None
 ```
 
 | Field | Description |
@@ -80,6 +86,7 @@ class RetrievalQuery:
 | `rerank` | Per-call reranking override; `None` uses the assembly default |
 | `include_archived` | Whether an as-current query may include archived memories as candidates |
 | `extensions` | Custom options passed through to `ParsedQuery.extensions`; the kernel does not interpret their keys |
+| `query_context` | Typed recent-context field populated by the MemoryAPI boundary from `Context.extensions["query_context"]`; it is not a top-level `MemoryAPI.search` argument and is consumed only by context-aware parsers. `None` and an empty tuple both mean no context |
 
 `as_of` asks what was visible at a particular system valid-time point. `ParsedQuery.time_from/time_to` describe the time range in which an event in the content occurred. These are independent time axes.
 
@@ -112,6 +119,22 @@ The main `ParsedQuery` fields are:
 | `channels` | Logical recall channels recommended by the parser |
 | `include_archived` | Whether archived memories are included |
 | `extensions` | Custom pass-through options |
+| `rewrite_status` | Rewrite state: `off`, `used`, `fallback`, or `no_intent` |
+| `rewrite_fallback_reason` | Rewrite fallback reason; empty for used, off, or no_intent |
+
+Built-in LLM rewriting is disabled by default. When explicitly enabled with a capable LLM,
+`simple` places the sanitized raw query in `<current_query>` and optional normalized
+`query_context` in `<recent_context>`, then requires
+`{"rewritten": "..." | null}` JSON output. A non-empty string drives soft recall and reranking;
+explicit null means the current message clearly has no retrieval intent and short-circuits before
+DomainStore. The optional Reranker receives `ParsedQuery.rewritten`; when rewriting is off
+or falls back, that value is the sanitized raw query. Invalid, empty, overlong, or failed output
+falls back to the sanitized raw query. An output is overlong only when it exceeds
+`max(512, len(sanitized raw))` characters.
+QueryParser does not set a task-specific `max_tokens`; the LLM backend owns that setting.
+Context keeps at most the latest five items and the final 8192 characters, and cannot modify
+`scalar_filters`, `as_of`, or the event-time window. The parse and rerank trajectories record
+rewrite state, fallback reason, and query source, but not query text, context, or raw model output.
 
 The query-side Tokenizer, Embedder, and FeatureExtractor should use the same instances or compatible configuration as index construction. Otherwise, the vocabulary, vector space, or feature semantics may diverge.
 
@@ -331,7 +354,7 @@ included is controlled by `vector_enabled`, `graph_enabled`, `layers_index_enabl
 
 | `target` | Implementation class | Function | Dependencies and parameters |
 |---|---|---|---|
-| `simple` | `SimpleQueryParser` | The only built-in parser. It can perform conservative sanitization, LLM rewriting, Tokenizer tokenization, FeatureExtractor keyword/entity extraction, Embedder vectorization, and rule-based time parsing. | Depends on `tokenizer`, `embedder`, `llm`, and `feature_extractor`; `sanitize_enabled` (default `true`), `sanitize_strip_code` (default `false`); when `vector_enabled=false`, no Embedder is assembled |
+| `simple` | `SimpleQueryParser` | The only built-in parser. It can perform conservative sanitization, optional strict LLM rewriting, Tokenizer tokenization, FeatureExtractor keyword/entity extraction, Embedder vectorization, and rule-based time parsing. | Depends on `tokenizer`, `embedder`, `llm`, and `feature_extractor`; `sanitize_enabled` (default `true`), `sanitize_strip_code` (default `false`), `rewrite_enabled` (default `false`); when `vector_enabled=false`, no Embedder is assembled |
 
 ```yaml
 query_parser:
@@ -347,9 +370,11 @@ query_parser:
       sanitize_strip_code: false
 ```
 
-The built-in default target is `simple`. Its default LLM target is `echo`, so it does not rewrite
-the query. If another LLM is referenced, `simple` uses the result of `llm.generate(text)` directly
-as `rewritten`.
+The built-in default target is `simple`. Its default LLM target is `echo`, and
+`rewrite_enabled=false`, so rewriting is not invoked. When explicitly enabled with a rewrite-capable
+LLM, `simple` consumes strict JSON output from `llm.chat()` and may consume
+`RetrievalQuery.query_context` populated from `Context.extensions["query_context"]`; failures
+fall back to the sanitized raw query and explicit null short-circuits recall.
 
 ### 12.3 Recaller Implementations
 
@@ -558,6 +583,8 @@ Fuser:
 | `channels` | `list[RecallChannel]` | `[]` | Logical channels suggested by Parser |
 | `include_archived` | `bool` | `false` | Includes ARCHIVED units in current-state queries |
 | `extensions` | `dict[str, Any]` | `{}` | Extension parameters passed to custom retrieval components |
+| `rewrite_status` | `str` | `"off"` | `off`, `used`, `fallback`, or `no_intent` |
+| `rewrite_fallback_reason` | `str` | `""` | Fallback reason: `llm_error`, `invalid_json`, `empty_output`, or `output_too_long` |
 
 PipelineRetriever adds lifecycle, valid-time, and event-time system predicates to `scalar_filters`.
 `recheck_filters` preserves the user filter for source-of-truth verification. A custom Parser must

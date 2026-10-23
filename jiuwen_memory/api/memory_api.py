@@ -233,6 +233,11 @@ class MemoryAPI(ABC):
         树参数默认 TIME/time_span、一级展开与上卷；显式 0/False 原样生效。
         hierarchy.enabled 关闭或缺失时忽略所有树参数，执行普通查询；保留已有过滤和权限。
         取同步形态：多空间召回在实现内部完成，不向调用方暴露异步契约。
+
+        最近上下文经 ``context.extensions["query_context"]`` 传入，取值为
+        ``list[str]`` 或 ``tuple[str, ...]``；API 边界校验并转换为
+        ``RetrievalQuery.query_context``，供支持上下文感知改写的 parser 消费。该 key
+        移除后不进入插件透传、权限路由或硬过滤；非法取值抛 ``ValidationError``。
         """
 
     @abstractmethod

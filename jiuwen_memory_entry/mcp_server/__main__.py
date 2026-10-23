@@ -235,7 +235,8 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
 
     query: 查询文本。
     context: 检索上下文 {"scope": {...同 memory_add 的归属坐标...}, "extensions": {}}；
-        其中 scope 决定在哪个范围内召回。
+        其中 scope 决定在哪个范围内召回；context.extensions.query_context 可传入
+        字符串数组，作为上下文感知改写的最近对话片段。
     top_k: 返回条数上限。
     as_of: 可选 ISO 8601 时间点（如 "2026-06-17T10:30:00+00:00"）——valid-time
         回溯，只召回该时刻有效的记忆版本；缺省检索当前状态。
