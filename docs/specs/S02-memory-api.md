@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/api/ |
 | 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -156,6 +156,7 @@ HTTP edge 将成功或失败响应统一写入 JSON；错误响应固定包含�
 | `ConflictError` | 409 | `false` | `resource conflict` |
 | `PartialFailureError` | 409 | `false` | 脱敏后的失败原因，并保留 `completed` / `failed` / `retry_action` |
 | `RateLimitedError` | 429 | `true` | `too many requests` |
+| OpenAI SDK `RateLimitError`（上游模型或向量服务限流） | 429 | `true` | `too many requests` |
 | `BackendError` / `HealthCheckError` | 503 | `true` | `service temporarily unavailable` |
 | 请求体超过限制 | 413 | `false` | `request body is too large` |
 | 未预期异常 | 500 | `false` | `internal server error` |
@@ -167,6 +168,11 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 客户端可按整数秒退避；其他状态不返回该 header。CLI 本地调用与 HTTP 共用
 `core/error_response.py` 的领域错误状态及脱敏规则，本地错误也带独立 request ID；
 命令行参数解析错误仍使用 CLI 退出码。MCP 与旧进程内 legacy dispatch 不受影响。
+
+HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `error` 为
+`RateLimitError`，不转换为 `InternalError` 或领域 `RateLimitedError`。消息使用上表固定
+文案，不回传上游错误详情；HTTP 沿用 `Retry-After: 1`，不透传供应商的重试头。
+其他未映射 SDK 异常仍按未预期异常处理。本契约不增加自动重试或修改现有重试配置。
 
 ## 范围 / 边界
 
@@ -194,7 +200,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 1. **本层是薄封装 + PEP**：数据面委托 `MemoryEngine`，治理面委托 `Governor`，授权判定委托 `Authorizer`，授权状态管理使用其具名 `GrantStore`，调度面委托 `Scheduler`，策略面直达 `PolicyManager`。API 不实现跨层业务编排，真实处理逻辑由 control 层算子及其下游 construction/retrieval/storage 完成。
 2. **调用方身份不下沉**：鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层。
 3. **`security` 为必填安全输入**：类型为 `common.security.types.RequestSecurityContext`，由接入层的 `authenticated()` 产出，调用方不得自行拼装；actor 从 `security.auth.actor` 取。除 `check_write` 为兼容原第二位置参数而保留 `(scope, security, *, ...)` 外，其余方法均为 keyword-only。
-4. **search 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；`Context` 对象本身不进控制层。
+4. **search 参数拆分**：`context: Context` 在本层边界拆开——`context.scope` 作独立轴穿透，`context.extensions` 写入调用级 options；约定 key `context.extensions["max_tokens"]` 由 API 边界解析为 int 后写入 `RetrievalQuery.max_tokens`，并从透传 extensions 中移除；约定 key `context.extensions["query_context"]` 校验为字符串序列、转为 tuple 后写入 `RetrievalQuery.query_context`，同样从透传 extensions 中移除，只作为 parser 输入，不参与鉴权或硬过滤；`Context` 对象本身不进控制层。
 5. **admin 不经 Engine**：admin_get/set/all 直达 PolicyManager。
 6. **管理面闸门 = 根 scope**：无具体 target scope 的方法（admin_*、全局 audit）以根 scope `Scope()` 为鉴权目标——「能对根 scope 行权」即管理员闸门；租户数据/治理方法仍按各自 target scope 鉴权。
 7. **`as_of` = valid-time 回溯点**：`search`/`get` 的 `as_of` 沿系统相信时间轴回溯，返回「那时被认为有效」的版本（`get` 沿 `supersedes` 版本链定位）；`None` 表示当前态。
@@ -209,7 +215,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 14. **六类动态配置不走业务入参**：能力开关、prompt 全文、LLM/Embedder/Reranker 的 model/api_key/url、Store 连接或 `*.active` 等由 `ConfigSource.fetch` 提供（见 S08）；`add`/`search`/`evolve`/`list` 不得把上述值解释为配置写入。调用侧可传 prompt **key**、`memory_type`/pipeline 等业务选择子。
 15. **安全输入唯一且不可自造**：`security` 只能来自受控构造入口——接入形态经 `jiuwen_memory_entry.core.auth_middleware.authenticated()`，进程内直连经 `common.security.request_context.internal_context(authenticator)`。请求 payload 不得声明 actor / request_id / surface。（曾存在的 `legacy_request_context` 过渡桥已随 PR2 删除。）
 16. **授权面使用安全域授权类型**：`grant`/`revoke` 的公共类型是 `common.security.types.Grant` / `Action`；`grant_id` 由服务端生成、`revoke` 按 `grant_id` 精确定位——缺失 ID 拒绝，未知 ID 幂等无副作用，授权状态真源是 Authorizer 的具名 `GrantStore`（见 F04-1 §5.4）。
-17. **层级能力默认关闭（目标）**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=EvolveMode.HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；层级查询由 search 的新增可选参数提供，展开与上卷契约见 S04。
+17. **层级能力默认关闭**：普通 `add` 默认不建父树；只由显式 `evolve(..., mode=EvolveMode.HIERARCHY, hierarchy_options=...)` 或启用的后台策略触发。显式建树在 `hierarchy.enabled=false` 时生成成功跳过任务；层级查询由 search 的新增可选参数提供，展开与上卷契约见 S04。
 18. **三类遍历严格分离（目标）**：`trace` 只沿 `provenance`；树下钻由 search 的 expand_depth 参数沿 `HierarchyRef` 完成；`get(as_of)` 只沿 `supersedes`/valid-time；L0/L1/L2 仅表示同一 unit 的披露层。
 19. **API 与 Control 的职责边界**：API 只负责协议边界工作——输入形状和兼容参数校验、请求对象装配、`security.auth.actor`/target `scope` 的 PEP 鉴权、权限路由过滤回注、入口审计以及同步/异步桥接。API 不得调用 LLM、Extractor、Classifier、IndexBuilder、Retriever 或 Store，也不得实现写入、去重、版本、生命周期、检索排序和后台任务编排。
 20. **委托对象按职责分流**：数据面 add/search/list/get/update/delete/evolve 经 `MemoryCommandService` / `MemoryQueryService` 委托 `MemoryEngine`；治理操作经 `GovernanceService` 委托 `Governor`；`delete_space` 的 purge+delete 事务经 `SpaceLifecycleService`；任务状态和取消委托 `Scheduler`/`IngestJobController`；跨 scope 授权委托 `Authorizer` / `GrantStore`；策略读写委托 `PolicyManager`；space 普通 CRUD 委托 `SpaceManager`。这些是控制层 typed 端口或算子的直接委托，不属于 API 自行实现业务逻辑。
@@ -231,7 +237,7 @@ header 返回；客户端提交的同名 header 会被忽略。错误响应同�
 | 数据面 | `batch_add_async` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
 | 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05；`occurred_at` 见 F06 |
-| 数据面 | `search` | 已实现；平铺参数包含可选层级查询 | [search](#search) | F01、F04；层级见 F08 |
+| 数据面 | `search` | 已实现；平铺参数包含可选层级查询与 query rewrite | [search](#search) | F01、F04、retrieval/F08；层级见 common/F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
@@ -504,6 +510,12 @@ def search(
 即使用 TIME/time_span、一级展开和 MaxP 上卷；显式 `expand_depth=0` 或 `rollup=False`
 原样生效，即使只传其中一项。
 
+最近上下文经 `context.extensions["query_context"]` 传入，取值是 `list[str]` 或
+`tuple[str, ...]`，顺序由调用方保证；key 不存在与空序列均表示无上下文。API 边界将其
+校验并转为 `RetrievalQuery.query_context`，供支持上下文感知改写的 parser 消费；非法值
+抛 `ValidationError`，且 key 移除后不进入 filters、scope、权限上下文或
+`ParsedQuery.extensions`。
+
 `hierarchy.enabled` 关闭或缺失时，在树语义校验前将 kind/role/span 清为 None、
 expand_depth 清为 0、rollup 清为 False，显式树参数同样被忽略。普通过滤、as_of、
 top_k、披露、Scope 与权限不变；普通召回可命中已有 Snapshot，并排除生成的 TIME 父。
@@ -601,6 +613,11 @@ WRITE 和 DELETE，并在首次业务写入前全部完成。配置失效、抽�
 不承诺断点恢复、固定 ID 重试或原子回滚。
 决策与边界见 [F08](../features/construction/F08-entity-schema-extension.md)。
 
+**当前限制：普通记忆后补 Snapshot 暂不支持。** `update` 不重新执行摄入层的叶提示转换；
+向 `system_metadata` 补写 `hierarchy_kind`、`hierarchy_role`、`hierarchy_span_start`、
+`hierarchy_span_end` 不会更新真实 `MemoryUnit.hierarchy`，也不会把普通记忆变成可建树叶。
+不要把这组 metadata 更新作为修复用法；结构索引保留键同样不能绕过 API 直接覆盖。
+
 **状态：已设计、尚未实现**（`MemoryPatch.hierarchy`）
 
 `MemoryPatch` 的既有非空字段为 `content/tier/tags/system_metadata/user_metadata/t_valid/t_invalid/mode`，目标增加：
@@ -674,6 +691,16 @@ WRITE+UPDATE 授权及空间可写检查。启用逐记忆权限路由时不支�
 reuse_existing=True：纯新合格叶首次构建；完整现有树直接复用；完整旧树与新叶混合、
 缺失请求父层或损坏结构拒绝隐式重建。False：备齐区间相交旧根的完整子树后重建，
 可以同时包含新叶和旧叶。缺时且未挂树的叶仅跳过，保持原输入。
+
+默认 False 不是去重开关：重复提交相同范围，即使没有新叶，也会重建相交旧树。
+成功后新父使用新 ID，子边切换到新父，旧父归档并移除检索索引；权威叶内容保持。
+请求区间是候选选择边界，不是严格修改边界。例如旧 Event 覆盖 09:00–10:00，
+请求重建 09:10–09:20，仍须收齐该旧根的全部后代再重建，包括区间外子叶。
+不相交的旧树不变；不得用更短父层链重建含更高父层的旧树。
+
+后台增量不使用 reuse_existing：已有父边的节点不重复参与该层构建，但未挂上层的
+TimeSpan/Scene 可继续生成上层。即使通过其他维护途径补齐了真实 Snapshot，历史节点
+也可能因迟到或超出回看范围被跳过；不能承诺下一轮自动挂树。公开补 Snapshot 仍不支持。
 
 ### 任务面
 
@@ -964,7 +991,7 @@ def remove_space_member(
 
 ### 运行时策略面（直达 PolicyManager，不经 Engine）
 
-`hierarchy.enabled` 已作为运行时策略键用于 Snapshot 接入及显式建树；自定义策略表必须预先声明该键才能 admin_set。该开关也控制树查询及接口默认预设；ensure 和自动维护策略尚未交付。admin_set 不扩展为任意配置树，详见 S08。
+`hierarchy.enabled` 已作为运行时策略键用于 Snapshot 接入及显式建树；自定义策略表必须预先声明该键才能 admin_set。该开关也控制树查询及接口默认预设；hierarchy.auto_derive 默认关闭，开启后须经 Runtime 显式注册周期任务；ensure 尚未交付。admin_set 不扩展为任意配置树，详见 S08。
 
 #### admin_get
 
@@ -1217,7 +1244,7 @@ Runtime 的 `close(wait=False)` 封闭准入并由单个收尾线程完成后台
 宿主显式启动自有 loop，两者不暴露 Store 或任务控制器。默认无 watcher 时启动为 no-op，
 关闭后不得重启；启动故障必须传回调用方。`ServerRuntime` 在该协议上增量提供只读
 `security_runtime` 与 `audit`，转发同一启动/关闭路径。既有 `assemble`、`assemble_runtime`
-和冻结的 `MemoryAPI` 签名不变；历史自定义 Runtime 需适配这两个上游生命周期方法。
+和冻结的 `MemoryAPI` 签名不变；历史自定义 Runtime 需适配上述生命周期方法及下述周期注册端口。
 
 装配器在返回前完成 PDP 同源校验、显式 PDP 回绑、部署管理能力/空间路由约束复核和
 认证器实际凭据真源的 Registry 替换。默认哨兵选择配置 Runtime；显式 `None` 不选择
@@ -1249,3 +1276,45 @@ jiuwen_memory/api/memory_api_impl/
 | S08-config | 六类动态配置经 ConfigSource；不经本层业务入参写入 |
 | F07-collective-memory | 本层是空间治理的鉴权点：入口到轴与动作的映射、空间事实一次读取、检索两族谓词的生成与注入均落在本层。多空间读写编排按「是否读 `security`」拆开——判权与谓词生成留本层，写入候选集的计算与跨空间的召回扇出落控制层 `control/collective/` |
 | architecture.md §6 | 已实现 MemoryAPI 清单 |
+
+
+### Runtime 自动建树注册
+
+```python
+async def start_background_jobs(
+    scope: Scope, *, security: RequestSecurityContext,
+) -> BackgroundJobStartResult: ...
+```
+
+这是 `MemoryRuntime` / `ServerRuntime` 的宿主启动接口，不增加 MemoryAPI、HTTP、CLI 或 MCP
+方法，具体 API 对象也不暴露同名公开方法。Runtime 经装配期绑定的内部回调完成 PEP 和提交。
+`scope` 是树驻留范围（`HierarchyComposeOptions.tree_home_scope`，简称 home）：
+org/space 精确匹配，非空 user/agent/session 限定输入范围，空维度允许覆盖其子范围。
+新父驻留完整 home，叶保留原 Scope；同一个 home 可包含多棵树，不是树 ID 或文件目录。
+不会自动发现 home 或扩大到其他主体。注册前校验可信上下文、home 的
+WRITE/UPDATE 权限和空间可写状态；当前不支持按 metadata 路由的逐候选授权。
+
+`BackgroundJobStartResult` 包含 `job_ids: list[str]`、`skipped: bool`、`reason: str`。
+树总开关或自动开关关闭/缺失时返回 skipped、空 job_ids 和 `hierarchy_disabled`；未绑定
+TIME profile 时 reason 为 `hierarchy_profile_missing`。开启却未配置周期 Scheduler，或
+缺少运行依赖、调度配置非法时明确报错，不降级为一次性任务。
+
+```python
+runtime = assemble_runtime(config=config)  # 配置示例见 examples/config_template.yml
+# 当前身份有权访问的范围；空 session 表示涵盖这个 user/agent 下的各个 session。
+home = Scope(org="org1", space="space1", user="user1", agent="agent1", session="")
+result = await runtime.start_background_jobs(home, security=security)
+if not result.skipped:
+    info = runtime.api.job_status(result.job_ids[0], security=security)
+    # 停止此 home 的任务：runtime.api.job_cancel(result.job_ids[0], security=security)
+```
+
+注册只等待任务登记，不等待首次构建；首轮在调度间隔到达后执行。同一 Runtime、同一
+完整 home 的活跃注册复用定时任务 ID；取消后重新注册创建新任务，故障保护状态仍共享。
+AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.run` 完成注册；宿主进程
+须持续运行。结束时调用 `runtime.close()`，停止周期及排队任务并等待在飞构建收尾。
+关闭后拒绝再次注册；watchdog 的 `start` / `start_background` 生命周期不变。
+
+父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
+`last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
+诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。

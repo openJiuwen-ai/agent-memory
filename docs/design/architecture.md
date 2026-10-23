@@ -78,14 +78,14 @@ MemoryUnit
 ├── temporal        时间：t_event(发生) / t_ingest(摄入) / t_valid / t_invalid
 ├── provenance      演进血缘（多→一合成）：由哪些 unit 抽取/升华/合并而来（来源可仍有效）
 ├── supersedes      版本链（一→一更替）：本版取代的上一版 id（update SUPERSEDE 模式产生；空=首版）
-├── hierarchy       HierarchyRef：跨 unit 树结构（设计目标，尚未实现）
+├── hierarchy       HierarchyRef：跨 unit 树结构（已接入 TIME 构建与查询）
 ├── tags/metadata   标签、命名空间、置信度、重要度等
 └── lifecycle       状态：active / superseded(被取代) / archived / forgotten
 ```
 
 - `temporal` 借鉴 Zep **双时间模型**，支持有效期与时间点回溯。
 - **内容真相是 `segments[]`**：`content/assets/source` 均为折叠后的只读兼容视图，不是与 `segments[]` 并列写入的第二份数据。`ContentLayers.l0/l1` 已实现，L2 不重复存储，直接取 `MemoryUnit.content`。
-- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；目标 `HierarchyRef` 回答“结构上包含谁、隶属于谁”，供父子树构建与 `search(..., expand_depth>0)` 下钻。三者生命周期、遍历方向和治理动作互不替代。
+- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；`HierarchyRef` 回答“结构上包含谁、隶属于谁”，供父子树构建与 `search(..., expand_depth>0)` 下钻。三者生命周期、遍历方向和治理动作互不替代。
 - `lifecycle` 用「标记失效」而非物理删除（非破坏式更新）。`update` 默认 **SUPERSEDE**（生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链），亦可 **OVERWRITE**（同 id 原地覆写，旧内容仅留审计——非破坏式原则的有意例外）。
 - **多模态**：每个 `Segment` 把可治理文本/结构投影、原模态资产引用与来源模态放在一起；下游索引与检索统一作用于各段合并后的 `content` 视图（详见 §5.1）。
 
@@ -333,8 +333,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | **多维分类**  | 按主题/认知角色/来源/重要度等多维度归类      | 认知角色（working/core/episodic/semantic/procedural/archival）是其中一维，决定常驻上下文 or 按需检索 |
 || **同 unit 内容层标注** | `LayerAnnotator` 生成 L0 概要 / L1 片段；L2 复用全文                    | 当前已接 EXTRACT/CONSOLIDATE 派生 unit，必须在其持久化与索引前完成；普通 write 尚未接入 |
 | **时间字段**         | 有效期、时间点、事件先后                                                 | 双时间模型，支持历史回溯与非破坏式更新                                                           |
-| **树结构构建（目标）**    | `HierarchyComposer` 从权威叶生成父摘要与双向父子引用                         | 所有 kind 共享树校验、叶权威与单 kind 遍历约束 |
-| **TIME 树管线（目标）** | `TimeHierarchyPipeline` 按区间构建 snapshot/time_span/scene/event | `MemoryUnit.temporal` 提供叶事件时间，`HierarchyRef.span_*` 表示父覆盖区间 |
+| **树结构构建**    | `HierarchyComposer` 从权威叶生成父摘要与双向父子引用                         | 当前构建仅支持 TIME；其他 kind 复用模型与协议，构建尚未交付 |
+| **TIME 树管线** | `TimeHierarchyPipeline` 按区间构建 snapshot/time_span/scene/event | `MemoryUnit.temporal` 提供叶事件时间，`HierarchyRef.span_*` 表示父覆盖区间 |
 
 ### 9.2 多形式索引：文档 / 关键词 / 向量 / 图
 
@@ -441,7 +441,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 > `IntegratedStorage` 是已定义的实现方向，尚未提供仓内实现。精确契约见
 > [S06-storage.md](../specs/S06-storage.md)，设计取舍见
 > [F05-unified-storage-design.md](../features/storage/F05-unified-storage-design.md)。
-> **hierarchy 存储边界（目标）**：首期 `HierarchyRef` 内嵌于 KV 真源的 `MemoryUnit`；kind/role/span 等字段投影到全文/向量索引 metadata 供前置过滤，目标索引可从 KV 重建（当前 rebuild 实现缺口见 §9.2）。GraphStore 只表达实体、因果、引用等非包含关系，不作为首期父子树真源；当同 kind 多父、丰富边属性或跨 kind 组合查询成为主路径时，再评估独立边存储。
+> **hierarchy 存储边界**：首期 `HierarchyRef` 内嵌于 KV 真源的 `MemoryUnit`；kind/role/span 等字段投影到全文/向量索引 metadata 供前置过滤，目标索引可从 KV 重建（当前 rebuild 实现缺口见 §9.2）。GraphStore 只表达实体、因果、引用等非包含关系，不作为首期父子树真源；当同 kind 多父、丰富边属性或跨 kind 组合查询成为主路径时，再评估独立边存储。
 
 ---
 
@@ -506,7 +506,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | **真源形态**（§10.1） | 文档 / 结构化 | 按 profile | 切轻量真源降存储与运维 |
 | **索引类型**（§9.2） | 文档 / 关键词 / 向量 / 图 各自开关 | 关键词+向量（图/文档按需启用） | 关图/向量大幅降写入与存储成本 |
 | **检索策略**（§8） | Storage 首选 pipeline、召回通道、重排 on/off、渐进披露层级、`as_of` | 按 Storage 实现选择 + 混合召回 | 关重排/单通道降时延 |
-| **树结构**（§4/§8） | 见 [S03 PolicyManager 目标层级策略键](../specs/S03-control.md)（`hierarchy.enabled` / `auto_derive` / `ensure_on_recall` / `score_propagation` / `expand_default_depth` / `expand_top_m`）；建树装配见 [S05 HierarchyComposeProfile](../specs/S05-construction.md)；决策与取值语义见 [F08](../features/common/F08-memory-tree.md) | 默认关闭；开启后普通 search 应用接口 TimeSpan 预设，search 末尾的可选参数支持显式覆盖；关闭时忽略树参数 | 关闭建树/展开可保持 F01 基线成本 |
+| **树结构**（§4/§8） | 见 [S03 层级策略](../specs/S03-control.md)（当前 `hierarchy.enabled` / `hierarchy.auto_derive`；ensure 等仍未交付；自动建树还需 Runtime 注册）；建树装配见 [S05 HierarchyComposeProfile](../specs/S05-construction.md)；决策与取值语义见 [F08](../features/common/F08-memory-tree.md) | 默认关闭；开启后普通 search 应用接口 TimeSpan 预设，search 末尾的可选参数支持显式覆盖；关闭时忽略树参数 | 关闭建树/展开可保持 F01 基线成本 |
 | **自演进**（§9.3） | 总开关、阶段（extract/associate/consolidate/forget）、hot/background、控制模式 | 全闭环+双通道 | 仅 extract 或纯离线，降在线时延与 LLM 成本 |
 | **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭可省去历史时间维护，适合无回溯需求 |
 | **多模态规约**（§5.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
@@ -696,7 +696,7 @@ agent-memory/
     │   ├── fuser.py                #   物化候选融合（分层 MaxP + 跨通道融合；不含 Reranker）
     │   ├── discloser.py            #   渐进式披露：disclose(query, …) L0 摘要 → L1 片段 → L2 全文
     │   ├── retriever.py            #   检索入口接口：retrieve(scope, query)
-    │   ├── hierarchy_expander.py   #   [planned] Retriever 内部算子：expand_depth>0 时单 kind 展开（共用 max_tokens）
+    │   ├── expander.py             #   Retriever 内部算子：expand_depth>0 时单 kind 展开（共用 max_tokens）；实现位于 expander_impl/
     │   └── retriever_impl/         #   PipelineRetriever：按 Storage 首选值编排三条 pipeline
     │
     ├── storage/                    # F 记忆存储层（§10）：StoreManager 管理面 + DomainStore 数据面 + 六类标准 Store

@@ -16,7 +16,7 @@ from .candidate import (
 )
 from .chat import ChatMessage
 from .chunk import Chunk
-from .context import EXT_MAX_TOKENS, EXT_SPACES, Context
+from .context import EXT_MAX_TOKENS, EXT_QUERY_CONTEXT, EXT_SPACES, Context
 from .entity import (
     EntityBatchResult,
     EntityLinkResult,
@@ -132,6 +132,7 @@ __all__ = [
     "Context",
     "EXT_MAX_TOKENS",
     "EXT_SPACES",
+    "EXT_QUERY_CONTEXT",
     "CandidateSource",
     "PredicateCandidate",
     "IdsCandidate",

@@ -66,6 +66,8 @@ class ParsedQuery:
     hierarchy_role: HierarchyRole | None = None
     span_start: datetime | None = None
     span_end: datetime | None = None
+    rewrite_status: str = "off"  # off / used / fallback / no_intent
+    rewrite_fallback_reason: str = ""  # 仅 fallback 状态有值
 
 
 @dataclass

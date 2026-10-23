@@ -97,7 +97,7 @@ openai SDK 自建的客户端保留大连接池与自动重定向等默认参数
 |---|---|---|
 | `as_bool`、`SslConfig`、`build_ssl_config` | `read_outbound_ssl`（按 `<prefix>_` 前缀读） | `read_ssl_config`（缺证书即报错） |
 | `require_tls_scheme`、`require_ca_file`、`outbound_verify` | `require_https`（薄封装，`allow_empty=True`） | `reject_url_tls_params`（redis-py 特有） |
-| `OutboundCallPolicy`、`read_outbound_call_policy` | OpenAI 兼容 LLM / Embedder builder 按前缀读等待策略 | — |
+| `OutboundCallPolicy`、`read_outbound_call_policy` | OpenAI 兼容 LLM / Embedder / ASR builder 按前缀读等待策略 | — |
 
 `require_tls_scheme` 的 `allow_empty` 参数即为本特性引入：`base_url` 未配置时要回落
 SDK 内置端点，而 storage 侧不允许空连接串。
@@ -107,16 +107,28 @@ SDK 内置端点，而 storage 侧不允许空连接串。
 
 ### 八、OpenAI 兼容调用等待策略
 
-LLM 与 Embedder 的 OpenAI 兼容实现（含 DashScope LLM）显式传入有限等待策略：
+LLM 与 Embedder 的 OpenAI 兼容实现（含 DashScope LLM）及 `openai_transcription`
+ASR 显式传入有限等待策略：
 
 | 配置键 | 默认值 | 校验 |
 |---|---|---|
 | `llm_timeout` / `embedder_timeout` | `300.0` 秒 | 有限正数 |
 | `llm_max_retries` / `embedder_max_retries` | `0` 次 | 不小于 0 的整数 |
+| `asr_timeout` | `300.0` 秒 | 有限正数 |
+| `asr_max_retries` | `0` 次 | 不小于 0 的整数 |
 
 配置可写在 `globals` 或对应具名实例 `params`。装配期校验失败抛 `ValidationError`。
 客户端使用 `openai.Timeout(timeout=..., connect=5.0)`：300 秒约束读/写/池等待，
 TCP connect 固定为 5 秒，避免连接阶段的失败被放大。
+
+ASR 探活与各分片转写共用同一客户端策略；本项不改变 `dashscope_filetrans` 的轮询与
+任务超时。这里的 timeout 约束单次请求的读/写/池等待，不是整段视频或含重试调用的
+总耗时上限；慢转写服务需显式设置 `asr_timeout`。
+
+默认不重试，由调用方按公开的可重试错误语义决定退避。显式设置 `max_retries > 0`
+表示启用 SDK 策略：SDK 可采用有效的服务端 `Retry-After`，否则按指数退避和抖动等待。
+它不保证供应商的秒级 RPS、分钟级配额或长期额度限制会恢复。应用层长退避与集中并发
+控制需要独立的延迟预算、跨实例配额与写操作幂等设计，本次补齐 ASR 策略时不叠加实现。
 
 每次 chat/embed 发起时记录模型、批量大小、timeout 和 retries；不记录 message、输入
 文本或模型原始响应。`APITimeoutError` 单独记录 elapsed、配置上限与重试数后原样抛出。

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwen_memory.api import (
+    BackgroundJobStartResult,
     MemoryAPI,
     ServerRuntime,
     assemble,
@@ -177,6 +178,10 @@ def test_server_build_consumes_only_public_assembly_result(monkeypatch) -> None:
         @staticmethod
         async def start_background() -> None:
             return None
+
+        @staticmethod
+        async def start_background_jobs(scope, *, security) -> BackgroundJobStartResult:
+            return BackgroundJobStartResult(skipped=True)
 
         def close(self, *, wait: bool = True) -> None:
             self.events.append(wait)

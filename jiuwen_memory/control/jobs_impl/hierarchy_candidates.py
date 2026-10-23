@@ -143,6 +143,14 @@ def read_scope_units(
             raise ValidationError("hierarchy pagination stopped before the declared count")
 
 
+def validate_snapshot_links(unit: MemoryUnit) -> None:
+    """显式及增量候选共用 Snapshot 引用校验，不修补或跳过损坏结构。"""
+    if unit.hierarchy.child_ids or unit.hierarchy.child_scopes:
+        raise ValidationError("snapshot must not contain child references")
+    if not unit.hierarchy.parent_id and unit.hierarchy.parent_scope is not None:
+        raise ValidationError("snapshot has parent_scope without parent_id")
+
+
 def _select(
     unit: MemoryUnit, candidates: HierarchyCandidates, options: HierarchyComposeOptions,
 ) -> None:
@@ -152,12 +160,9 @@ def _select(
     if not _intersects(unit, options):
         return
     if unit.hierarchy.role is HierarchyRole.SNAPSHOT:
-        if unit.hierarchy.child_ids or unit.hierarchy.child_scopes:
-            raise ValidationError("snapshot must not contain child references")
+        validate_snapshot_links(unit)
         if unit.hierarchy.parent_id:
             candidates.attached[node_key(unit)] = unit
-        elif unit.hierarchy.parent_scope is not None:
-            raise ValidationError("snapshot has parent_scope without parent_id")
         else:
             candidates.leaves[node_key(unit)] = unit
     elif unit.hierarchy.role in TIME_PARENT_ROLES and (
@@ -342,6 +347,24 @@ def collect_candidates(
     _complete_children(kv, collected, options, limits)
     if collected.parents:
         _validate_reverse_claims(kv, scoped, collected, limits.page_size)
+    return collected
+
+
+def collect_root_subtrees(
+    kv: KVStore | DomainStore, scopes: dict[ScopeKey, Scope], roots: list[MemoryUnit],
+    options: HierarchyComposeOptions, limits: HierarchyJobLimits,
+) -> HierarchyCandidates:
+    """只补齐已筛选增量根的后代；证据不受窗口限制，也不吸纳其它游离候选。"""
+    collected = HierarchyCandidates()
+    for root in roots:
+        target = collected.leaves if root.hierarchy.role is HierarchyRole.SNAPSHOT else (
+            collected.parents
+        )
+        target[node_key(root)] = root
+    _check_limit(collected, limits.max_leaves)
+    _complete_children(kv, collected, options, limits)
+    # 即使只有 Snapshot，也复核初读版本和其它父节点的反向声明。
+    _validate_reverse_claims(kv, scopes, collected, limits.page_size)
     return collected
 
 

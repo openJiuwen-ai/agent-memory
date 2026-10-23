@@ -6,14 +6,20 @@
 |---|---|
 | 日期 | 2026-08-15 |
 | 影响范围 | jiuwen_memory/api/、jiuwen_memory/common/、jiuwen_memory/construction/、jiuwen_memory/control/、jiuwen_memory/ingest/、jiuwen_memory/retrieval/、jiuwen_memory/storage/；docs/specs/S01–S07；关联 [`F05-construction-spec-multimodal-design`](../construction/F05-construction-spec-multimodal-design.md) |
-| 测试基线 | 基础接入、显式建树与完整树查询已交付；验证结果见交付记录（2026-10-21） |
+| 测试基线 | 基础接入、显式建树、完整树查询与自动增量已交付；验证结果见末尾交付记录 |
 | Refs | — |
 
 ## 当前实现边界
 
 当前已实现结构模型、完整 Scope 引用校验、兼容编解码与索引基础，以及 Snapshot 自动接入与同步 infer 继承。
-已通过 evolve 的 HIERARCHY 模式接入显式建树、完整树复用及区间重建。已通过 search 的可选参数接入显式层级查询；祖先上卷、向下展开与共享预算已接入；默认 TimeSpan 查询预设及父子排序已接入；周期维护待交付。
-下文早期决策中的 ensure/auto derive/结构治理为目标方向，当前 API 与失败语义以 S02/S03/S05 和末尾交付记录为准。
+已通过 evolve 的 HIERARCHY 模式接入显式建树、完整树复用及区间重建。已通过 search 的可选参数接入显式层级查询；祖先上卷、向下展开与共享预算已接入；默认 TimeSpan 查询预设及父子排序已接入；固定 home 的后台自动增量已接入。
+ensure、完整结构治理、普通记忆后补 Snapshot 和自动修复仍未交付；多 kind 只提供基础模型与协议，当前构建仅支持 TIME。
+当前行为见下文决策及 S02/S03/S05。带日期的交付记录保留当时的范围和验证结果，不作为当前能力缺失的依据。
+
+- 对外只使用原 search/evolve；树开关开启时 search 签名中的 TIME/TimeSpan、一级展开及上卷预设生效，关闭时清除树参数。
+- 自动建树须双开关开启并经 Runtime 显式注册；普通写入和查询都不触发父树构建。
+- 显式 reuse_existing=False（默认）允许重建，True 仅首次构建纯新叶或复用完整旧树；自动增量不重建已有父边。
+- 本层写入前准备失败允许下一周期重试；部分写入或结果无法确认时保留 home 故障保护。
 
 ## 背景
 
@@ -99,8 +105,9 @@
 `ACTIVE/DISMISSED`；归档、遗忘和版本失效完全由 `LifecycleState`
 管理，不进入结构状态。
 
-TIME 节点必须声明有效 span，非 TIME 节点可选；任何已声明的 span 都必须成对、有效且
-满足父覆盖直接子。首期仍坚持**同 org+space**、单 kind 严格树、双向一致、无环、稳定
+参与建树的 TIME 节点必须声明完整有效 span，非 TIME 节点可选；已挂树节点必须
+满足父覆盖直接子。接入允许未挂树 Snapshot 缺少一个或两个端点并保留原输入，
+显式和自动候选阶段跳过这些叶，不放宽已挂树节点的完整性校验。首期仍坚持**同 org+space**、单 kind 严格树、双向一致、无环、稳定
 顺序和叶权威；`user`/`agent`/`session` 可按 compose profile 放宽（见决策 2b），默认展开
 不隐式跨 kind。具体字段类型、默认值、完整不变量与错误语义见
 [S07-common.md](../../specs/S07-common.md)、[S03-control.md](../../specs/S03-control.md)
@@ -118,8 +125,10 @@ TIME 节点必须声明有效 span，非 TIME 节点可选；任何已声明的 
 | `session` | **默认可跨**：同 user（或 profile 允许的主体）下连续多 session 可挂同一 TIME 树  |
 | `user` / `agent` | **默认不可跨**；同 org+space 跨 user/agent 建树须 compose profile 显式开启 |
 
-父节点通常写在 build 请求的 **tree home scope**（例如清空 `session` 的用户级归属，或
-策略开启时的 space 级归属）；权威叶可仍驻留在更细的 session scope。因 id 只在完整
+父节点写在请求的**树驻留范围 `tree_home_scope`（简称 home）**；这是完整 Scope，
+不是文件目录或单棵树 ID。同一个 home 可以容纳多棵树。org/space 精确匹配，home 中
+非空 user/agent/session 限定候选；空 session 可涵盖该主体下各 session，叶仍保留原 Scope。
+例如 Scope(org="o", space="s", user="u", agent="a", session="") 覆盖 u/a 的各 session。因 id 只在完整
 Scope 内唯一，跨细粒度 scope 的边必须携带 `child_scopes` / `parent_scope`（见 S07），
 缺省时仍表示与持有边的 unit 完整 Scope 相同。
 
@@ -188,7 +197,8 @@ role 表示树位，tier 表示认知角色，两者不做硬编码等价。默�
 普通 `write` 继续负责写入权威叶或调用方明确提供的单节点，不同步构建整棵树。
 叶可以没有 `HierarchyRef`，也可以显式标记为某个 kind 的叶角色。
 
-父节点及父子边由显式或后台的 `evolve(HIERARCHY)` 构建。构建过程读取目标范围内
+父节点及父子边由显式 evolve(HIERARCHY) 或 Runtime 注册的周期增量任务构建。
+两条路径共用 Evolver/Composer，候选读取由控制层负责。构建过程读取目标范围内
 的权威叶，生成父节点正文与可选 `ContentLayers`，写入有序子引用，并回写子节点
 的直接父引用。默认写路径保持轻量，也让父节点能够按区间重新推导。
 
@@ -199,13 +209,11 @@ role 表示树位，tier 表示认知角色，两者不做硬编码等价。默�
 
 ### 7. 演进模式不隐式混写 hierarchy
 
-普通 `write` 与 `EXTRACT/ASSOCIATE/CONSOLIDATE` 不因产生 unit、血缘或图关系而自动
-挂树；`HIERARCHY` 才负责创建或重建父节点和双向直接边。`FORGET` 必须同时断开遗忘
-节点的直接父边和全部直接子边：从父 `child_ids` 移除该节点、清空该节点
-`parent_id`，并清空其 `child_ids` 及所有直接子的对应 `parent_id`；这些节点保留且
-不发生级联删除。逐模式字段行为和删除顺序以
-[S05-construction.md](../../specs/S05-construction.md) 与
-[S03-control.md](../../specs/S03-control.md) 为准。
+普通 write 与 EXTRACT/ASSOCIATE/CONSOLIDATE 不因产生 unit、血缘或图关系而自动
+挂接父树；树开关开启时接入及同步 infer 可以保留合法 Snapshot 叶身份。
+HIERARCHY 和后台增量才负责创建或重建父节点及双向直接边。
+FORGET、SUPERSEDE、删除后的结构联动与自动修复仍属目标能力，当前不能承诺这些
+普通操作会自动修复父子引用；不要将目标治理流程视为已交付保证。
 
 ### 8. `replace_in_span` 以叶权威为边界
 
@@ -218,9 +226,18 @@ TIME 父节点会因切分策略、修正或新增叶而重算。`replace_in_spa
 [S06-storage.md](../../specs/S06-storage.md)。
 
 替换区间若切过一个旧父节点中部，构建器只能扩大替换集至该旧父的完整覆盖范围，
-或者在任何写入前拒绝请求；不得保留“半个旧父”。断开旧边后尚未重挂的子节点只清空
-`parent_id` 成为未挂接节点，仍是可检索、可再次建树的权威节点，不进入 FORGOTTEN，
-也不因空父回收而被删除。
+或者在任何写入前拒绝请求；不得保留“半个旧父”。当前控制层补齐相交旧根的完整子树，
+所以子区间请求也可能重建区间外后代。例如旧 Event 跨 09:00–10:00，请求 09:10–09:20，
+仍需包含该根全部后代；不相交旧树保持。成功后新父使用新 ID，叶切换父边，旧父归档断边。
+失败不承诺回滚，保留已完成项及 repair_required。
+
+reuse_existing=False 是默认值，相同范围重复调用即使没有新叶也可重建。
+True 对纯新叶首次构建、对满足请求层级的完整旧树复用；旧树与新叶混合时拒绝隐式重建。
+自动增量只使用没有父边的当前层节点；它可继续给 TimeSpan/Scene 建上层，不重建其已有子树。
+
+普通记忆后补 Snapshot 暂无公开支持。update 仅合并 metadata 提示不会生成真实 hierarchy，
+不能据此参与建树；即使由其他维护途径补齐真实结构，历史叶也可能被自动任务按迟到或
+过窗跳过，不能承诺自动挂树。公开转换能力留待独立设计。
 
 ### 9. 检索支持按父侧 role 优先召回，再按需展开
 
@@ -233,13 +250,13 @@ TIME 父节点会因切分策略、修正或新增叶而重算。`replace_in_spa
    子节点；展开默认不跨 kind。
 
 父优先使粗粒度摘要成为稳定入口，同时保留“先看概要、再取证据”的交互方式。
-叶命中向父上卷是可选策略，默认关闭，避免单个噪声叶把整棵父树带入候选。
+叶命中向父上卷是可选策略；公开 search 在树开关开启时默认 rollup=True、expand_depth=1，显式 False/0 可关闭，内部 RetrievalQuery 不自行补该预设。
 检索轨迹必须区分父层命中与子树展开阶段，并记录根节点、展开深度、返回节点数和预算
 截断原因，使父→子的证据路径可审计。
 
 `RetrievedItem` 保持扁平，不嵌套 `child_ids` 或树容器。调用方在同一次 `search` 中通过
 非零 `expand_depth` 展开；**不另设公开 `MemoryAPI.expand`**。`rollup` 只把后代相关性
-传播到目标父角色，默认不展开后代；“父命中”“分数上卷”和“内容展开”是三个可独立启用的动作。
+传播到目标父角色，本身不执行展开；“父命中”“分数上卷”和“内容展开”是三个可独立启用的动作。
 
 层级过滤、展开和结果结构的精确公开契约已写入
 [S02-memory-api.md](../../specs/S02-memory-api.md) 与
@@ -296,7 +313,7 @@ TIME 的主要约束是：
 - `HierarchyKind.CLUSTER`：聚类父节点包含成员节点；
 - `HierarchyKind.CUSTOM`：由调用方或插件定义的包含结构。
 
-每种 kind 可以拥有自己的构建策略和排序规则，但共享树校验、父优先召回、展开、
+当前构建只实现 TIME。其他 kind 的构建策略仍属扩展目标，可共享树校验、父优先召回、展开、
 分数传播与预算机制。首期默认单 kind 遍历；同一节点的多 kind、多父或图关系不做
 隐式合并，非包含关系继续由 GraphStore 表达。
 
@@ -310,7 +327,7 @@ TIME 的主要约束是：
 | `storage` | KV 真源、索引 metadata、scope 隔离 CRUD | 解释父子业务语义或级联 |
 | `construction` | `HierarchyComposer`（构建算子，由 Evolver/`evolve(HIERARCHY)` 调用）、kind pipeline、父内容生成、索引更新 | 鉴权和召回 |
 | `retrieval` | 结构过滤、Retriever 内 Expander、MaxP、与 `max_tokens` 共用的展开准入、轨迹 | 建树和修复 |
-| `control` | 策略闸门、任务调度、结构事务（落在既有治理/Engine）、ensure、生命周期联动 | kind 专属切分算法 |
+| `control` | 策略闸门、任务调度、候选收集与完整性检查；结构事务、ensure、生命周期联动仍属目标 | kind 专属切分算法 |
 | `api` | 参数装配、PEP、错误透传 | 数据面编排 |
 | `ingest` | 把可信来源提示映射为无边叶身份 | 建父、查父或回写边 |
 
@@ -327,7 +344,7 @@ control 或 Scheduler；control 负责提交任务，construction 只执行构�
 ingest 与 api 可以在公共契约稳定后并行实现。jiuwen_memory_entry 和 jiuwen_memory_adapter 只做薄适配，
 不承载内核建树算法。
 
-结构事务的业务编排归 control：它负责 scope/kind/span 并发闸门、任务终态，以及
+目标结构事务的业务编排归 control，尚未完整交付：它负责 scope/kind/span 并发闸门、任务终态，以及
 update/delete/FORGET/SUPERSEDE 路径。construction 的 `HierarchyComposer` 负责生成并
 校验候选子树，并通过不含鉴权和 Policy 的提交端口完成 KV/索引写入。control 调度
 evolve/replace 并以 `HierarchyComposeResult.complete` 判断终态；Composer 不读取运行时
@@ -382,7 +399,7 @@ snapshot → TimeSpanMerger → time_span
 
 | stage | 输入 | 边界判定 | 输出内容 |
 |---|---|---|---|
-| `TimeSpanMerger` | 连续 snapshot | 设备/会话硬边界、配置的上下文键变化、事件间隔超过阈值时切断；其余相邻叶合并 | 一个连续活动片段，子为 snapshots |
+| `TimeSpanMerger` | 连续 snapshot | session 边界、配置上下文键变化、结束信号或组累计跨度超过 gap_seconds 时切分；默认跨度 7200 秒 | 一个连续活动片段，子为 snapshots |
 | `SceneSegmenter` | 有序 time_spans | 明确上下文切换为硬边界；主题/任务相似度、最大持续时间和显式结束信号形成软边界 | 一个可回顾场景，子为 time_spans |
 | `EventBuilder` | 有序 scenes | 按任务目标、动作序列和实体重合聚合；不得为了相似度打乱时间顺序或让 scene 多父 | 一个任务流程或可复用模式，子为 scenes |
 
@@ -429,14 +446,13 @@ Composer 创建父节点时按下列顺序处理：
 由来源 unit 合成，且这条血缘在脱离层级关系后仍然成立。`metadata` 只接收该 kind
 约定的领域键（见决策 4），不得覆盖 id、scope、temporal、lifecycle 或 hierarchy。
 
-`replace_in_span` 在步骤 1 前先读取所有相交旧派生父并扩大替换边界，然后计算“旧边
-断开、旧父退役、新父写入、新边挂接”的完整变更集。只有新树整体可验证时才开始写。
+控制层在调用 replace_in_span 前读取相交旧派生父、补齐完整子树；Composer 不自行查库。
+只有新树整体可验证时才开始写，生成过程仅操作输入副本。
 索引始终后于 KV；索引失败不会把索引提升为真源，但操作必须返回不完整状态并进入修复。
 
-支持事务的 KV 后端应原子提交全部受影响 unit。不支持事务的后端采用可恢复顺序：
-先持久化无活动边的新父，再按稳定顺序切换子边，最后退役旧父；任何中断返回
-`complete=false` 和 `repair_required`，任务不得标记成功。修复以 KV 中可见 unit
-重新计算双向边和索引，不从旧索引反推真源。
+当前没有结构事务或自动恢复执行器。写入顺序为新父本体（由根向下）→子父边→旧父归档
+断边→旧检索索引移除→新父与子索引刷新；任何部分失败返回 complete=false 和
+repair_required，任务不得标记成功。人工修复应以真源为准，不从旧索引反推结构。
 
 ### 17. 运行时 Policy 与不可变 compose profile 分离
 
@@ -444,25 +460,18 @@ Composer 创建父节点时按下列顺序处理：
 
 | 分类 | 内容 | 变更语义 |
 |---|---|---|
-| 运行时 Policy | 总开关、auto derive、ensure、MaxP、内部/接入形态默认展开深度、top-M | 可以治理时调整；不回写已有树 |
-| compose profile | kind、leaf role、parent role 序列、stage 启用、硬边界键、阈值、模型/提示版本 | 装配期固定；变更后通过显式 rebuild 生效 |
+| 运行时 Policy | hierarchy.enabled、hierarchy.auto_derive | 可以治理时调整；不回写已有树 |
+| compose profile | kind、leaf role、parent role 序列、各 stage 参数 | 装配期固定；变更后通过显式重建生效 |
 
-首期所有运行时能力默认关闭：普通 add 和 search 行为不变。`auto_derive` 只在叶成功
-写入且 profile 能确定有界 span 时提交 BACKGROUND 任务，不阻塞 hot path。
-`ensure_on_recall` 只服务显式 kind+有界 span 的召回，并阻塞等待构建终态，避免调用方
-请求“确保后召回”却拿到静默的无结构结果。
+两个开关默认关闭。auto_derive 只控制已注册周期任务，须由宿主显式调用
+runtime.start_background_jobs(home, security=...)；不在每次 write 后提交任务。
+每轮重新检查双开关，显式建树只受总开关控制。查询预设在 search 签名上声明，不由 Policy 补齐。
 
-compose profile 至少定义 `leaf_role`、从近叶到远叶的 `parent_roles` 和每个 stage 的
-算法配置。role 序列不放入可随时修改的 PolicyManager，避免运行中改变树形导致同一
-scope 出现两套半成品结构。profile 缺失时 ensure 抛 `PolicyError`，auto derive 记录
-跳过原因；两者都不得猜测默认 role 序列。
-
-`hierarchy.expand_default_depth` 只供未显式给 depth 的内部或接入形态使用；公开
-recall 的默认值始终是 `expand_depth=0`，Policy 不得隐式改写该公开默认。
-
-Policy 键、默认值和校验由
-[S03-control.md](../../specs/S03-control.md) 定义；构建请求字段由
-[S05-construction.md](../../specs/S05-construction.md) 定义。
+compose profile 定义 leaf_role、近叶到远叶的 parent_roles 和各 stage 配置；
+role 序列不放入可随时修改的 PolicyManager。缺少绑定 TIME profile 时后台注册明确跳过，
+不猜测角色链。内置 profile 是默认装配预设；显式替换装配的配置仍须完整有效。
+ensure_on_recall 与原 expand_default_depth/expand_top_m 等策略键仍未交付，不能作为现有配置使用。
+Policy 与装配配置见 S03/S08，构建请求见 S05，公开查询默认值见 S02。
 
 ### 18. 失败、降级与并发决策
 
@@ -472,18 +481,20 @@ Policy 键、默认值和校验由
 | HIERARCHY 部分写入失败 | `complete=false` 并返回逐项 `repair_required`；任务状态不得为 SUCCEEDED |
 | `replace_in_span` 中断 | 不删除权威叶；根据 KV 重算未完成边，修复前不宣称替换完成 |
 | expand 遇到缺子、跨 kind、环或不可见节点 | 跳过该分支、记录 issue、`complete=false`；不让一个坏分支使所有有效结果失败 |
-| ensure 任务失败、取消或超时 | recall 抛 `BackendError`，不降级为普通无层级召回 |
-| auto derive 提交失败 | 不回滚已成功写入的叶；记录任务和审计错误 |
+| ensure 任务失败、取消或超时（目标，未实现） | 目标为 recall 抛 BackendError，不降级为无层级召回 |
+| 后台注册失败 | 向宿主报告错误；不影响已完成的普通写入 |
+| 增量本层准备失败，确认未写入 | 本轮 FAILED、retryable=true，下一周期可重试；保留已完成下层 |
+| 增量部分写入或结果不确定 | 记录原诊断并阻止该 home 后续推进；人工核对修复后重新装配 Runtime |
 
-同一 `scope + kind` 下存在重叠 span 的 build、replace、update、FORGET 或 PURGE 必须
+以下为尚未完整交付的结构治理目标：同一 `scope + kind` 下存在重叠 span 的 build、replace、update、FORGET 或 PURGE 必须
 串行化，或者由后端乐观版本条件检测冲突。并发 write 可以先完成叶写入；若其 span 与
 正在替换区间相交，当前 replace 不能悄悄吸收未参与初始快照的叶，必须冲突重试或由
 后续增量任务补建。这样保证一次构建的输入快照和结果可解释。
 
-`HierarchyRepair` 只报告结构差异，不借用 provenance trace。修复器重读当前 KV、
+`HierarchyRepair` 只报告结构差异，不借用 provenance trace。目标修复器（尚未实现）重读当前 KV、
 重建期望双向边并重建派生索引；无法确定唯一父时停止并返回冲突，不凭 id 顺序猜测。
 
-### 19. 分阶段落地与兼容边界
+### 19. 初始路线图与兼容边界（历史规划，当前交付状态见文首）
 
 | 阶段 | 交付范围 | 进入下一阶段的条件 |
 |---|---|---|
@@ -538,17 +549,16 @@ Ingestor 将合法身份与已给时间映射到当前 unit 的叶安全字段�
 **建树路径（`EvolveMode.HIERARCHY`）**
 
 ```text
-evolve(..., mode=HIERARCHY, hierarchy_options=...)
-  → Engine 策略闸门（hierarchy.enabled）
-  → Evolver 委托 HierarchyComposer（ConstructionOperator）
-  → 读权威叶 → stage 生成父 → LayerAnnotator(best-effort)
-  → 结构校验 → KV 写父并回写直接子 parent_id/child_ids
-  → IndexBuilder 投影 hierarchy metadata
-  → HierarchyComposeResult / EvolveResult.hierarchy_result
+evolve(..., mode=HIERARCHY, hierarchy_options=..., reuse_existing=...)
+  → API 鉴权和树开关 → Command/Engine → HierarchyJob
+  → 权威候选读取及完整旧子树补齐 → 复用检查或 Evolver → Composer
+  → stage 分组与摘要 → 候选树校验 → 本体、结构边及索引写入
+  → HierarchyComposeResult → JobInfo（job_status 查询终态）
 ```
 
-普通 add 默认不建树；仅当 `hierarchy.auto_derive=true` 且 compose profile/span 完备时，
-write 成功后向 BACKGROUND 提交等价的 HIERARCHY 任务（`replace_existing=true`）。
+普通 add 不提交父树任务。后台路径为 Runtime 显式注册→Scheduler 周期触发→
+HierarchyDeriveJob 检查双开关→逐层读取未挂父候选→封口→Evolver/Composer 单层构建。
+两种入口共用构建算子；显式建树不等待尾组静默，后台不重建已有父边。
 
 **读取展开路径（仍是 `search`，无公开 `expand`）**
 
@@ -649,7 +659,7 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 ### 阶段 4：调度、策略与修复
 
 - [ ] ensure 阻塞等待任务终态；失败、取消或超时抛 `BackendError`，不静默降级。
-- [ ] auto derive 不阻塞 write，提交失败不回滚已成功写入的叶。
+- [ ] auto derive 经 Runtime 注册后周期运行，不阻塞 write；注册或执行失败不回滚已成功写入的叶。
 - [ ] `complete=false` 或存在 `repair_required` 时任务为 FAILED，修复项可观测。
 - [ ] compose profile 变更只通过显式重建生效，不产生两套半成品 role 序列。
 
@@ -665,7 +675,7 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 - [ ] 重叠 span 并发冲突和展开性能达到已设基线。
 - [ ] `profile` 不进入 TIME 主树，也不把 TIME 节点挂为结构子。
 
-### 实现测试矩阵
+### 完整目标测试矩阵（含未交付治理与修复能力）
 
 | 测试层 | 必测内容 |
 |---|---|
@@ -682,11 +692,13 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 ## 已知遗留
 
+**结构维护缺口**：ensure、普通记忆后补 Snapshot、生命周期结构联动和自动修复尚未交付；当前通过显式重建与人工核对处理已有树。
+
 1. **独立边存储迁移阈值**：多父、多 kind 共节点和边属性复杂度达到何种规模时迁移，
    需要以真实查询与一致性成本评估。
 2. **并发一致性**：父子双向更新、`replace_in_span` 与并发 write 的后端事务能力和
    故障恢复仍需实现验证。
-3. **父摘要生成质量**：不同 kind 的摘要器、失败降级与幂等性仍需实现阶段验证。
+3. **父摘要生成质量**：TIME 摘要与失败回退已有确定性测试；真实模型质量和其他 kind 摘要器仍需评测或实现。
 4. **树预算策略**：多父候选间的公平性与深度偏置需要基准评测。
 5. **TIME 切分算法**：time_span、scene、event 的边界与置信度策略需要数据集和人工评审。
 6. **多 kind 交叉查询**：首期只保证单 kind 遍历，跨 kind 联合过滤与结果合并后置。
@@ -694,6 +706,12 @@ search(..., hierarchy_kind=..., hierarchy_role=?, expand_depth=N, rollup=?)
 
 F01 的同 unit 披露设计与实现历史见
 [F01-memory-layer.md](F01-memory-layer.md)。
+
+## 交付记录阅读说明
+
+以下带日期的记录保留当时的交付范围、验证数量及遗留；其中“尚未接入”“后续提交”
+仅指对应日期。旧公开 search_v2/evolve_v2 已由原接口可选参数替代；当前后台增量已交付。
+现行用法及失败边界见文首、决策和 S02/S03/S05，不将历史中间状态作为当前接口契约。
 
 ## 结构模型与存储交付记录（2026-10-19）
 
@@ -1007,3 +1025,85 @@ search/search_v2 应用 TIME、TimeSpan、上卷及一级展开；显式组选�
 未运行远端 CodeCheck 和真实 LoCoMo 模型测评。
 原目录 LoCoMo 使用其旧版本 API；接入本版本时需将建树调用改为 evolve(HIERARCHY)，
 查询仍可使用原 search。后台自动增量迁移、结构维护和自动修复不在本次修改范围。
+
+
+## 增量构建交付：安全封口（2026-10-22）
+
+复用现有四层分组、完整事实和摘要能力，内部请求增加单层增量上下文。
+尾组静默与最大分组跨度解耦；非尾组可以先交付，但下层待定起点和重叠区间
+会阻止上层水位越过尚未完成的事实。只对已封口组生成父摘要，旧子树内容保持。
+
+拒绝用查询触发建树、按写入机器时间补齐缺失业务时间、或把静默时长改成显式
+分组窗口。后台候选扫描和调度在后续提交接入，本次不引入自动修复。
+
+验证覆盖严格静默边界、安全前缀、相邻层请求及完整子树校验、旧正文保持，
+并比较不同静默配置下显式建树与完整树复用的结果。
+
+本次回归 292 项通过；变更 Python 的 Ruff、PEP8、Pylint 增量告警和 Python 3.11 语法检查通过。
+
+
+## 增量候选交付：异常容错（2026-10-22）
+
+迟到、过窗及未挂树缺时叶记录后跳过，正常输入继续处理；未挂父中间层与其完整
+后代不受 Snapshot 回看窗口限制。选择结果提供有界样例与计数，不写跳过标记。
+拒绝把完整性异常当成普通候选跳过，缺子、外部父认领、读取漂移仍失败。
+读取复用目标基线 KV/DomainStore 适配，避免 CloudEngine 绕过真实数据面。
+
+验证覆盖混合批次与配额、等水位和迟到、跨窗口子树、未来输入与缺子保护。
+周期执行和故障停止将在调度提交中接入；跳过数据仍需显式重建补齐。
+
+本次候选与显式任务兼容回归 63 项通过；新增静态告警清零。
+
+
+## 自动增量周期调度交付（2026-10-22）
+
+### 决策
+
+- Runtime 显式注册具体 home，API 层复用当前可信来源和授权链路；调度交给现有自有
+  循环 Scheduler，不让临时 asyncio.run 结束周期任务，也不改普通 MemoryAPI 方法。
+- 双开关默认关闭，开启后每轮从真实存储逐层选根、封口、写入；显式建树不等待静默。
+  复用现有 Composer/Evolver，不重新装配另一份模型、索引或读源。
+- 保留缺时叶写入、tree_ 索引键、统一 UTC 与自定义 policies 替换语义；上层等待与
+  Snapshot 回看解耦，旧 TimeSpan/Scene 可继续上挂，迟到/过窗不阻塞健康输入。
+- 适配当前基线的 DomainStore、协作取消和 Runtime 关闭屏障。已开始的同步写入先收尾，
+  再合并结果并停止更高层；无法确认完整性的写入触发同 home 的内存故障保护。
+- 最近运行结果附到父周期任务，用户可沿 last_run_id 查看具体轮次。故障保护不抹掉
+  已写结果，也不因取消后重新注册而解除。
+- Snapshot 非法引用在候选收集阶段拒绝，避免尚未写入的输入错误触发持续故障暂停；
+  不把结构损坏降级为普通跳过，修正输入后下一轮可重新尝试。
+- 本层持久化前的校验、分组或模型准备失败，通过内部无写入信号解除本次故障保护，
+  下一轮可重试；部分写入、未分类插件异常和无法确认结果的强制取消继续保守暂停。
+  不用空 created IDs 推断无写入，也不自动回滚下层成功结果。
+- 具体 API 的注册方法收为内部入口，由装配回调交给 Runtime；公开注册仅经 Runtime
+  生命周期屏障，保留原有 PEP、开关与审计检查，不增加 HTTP/CLI/MCP 接口。
+- 注册与关闭交错时逐个隔离取消异常，保留关闭错误与资源释放屏障；最近结果的诊断
+  序列化失败仅记录日志并回退为空对象，不改变任务终态或阻断收尾。
+
+### 拒绝的方案与边界
+
+不在搜索时建树，不在写入时同步生成父节点，不自动发现/扩大 home，不复用旧目录的
+legacy 鉴权或长寿宿主循环限制。不把缺时/迟到/过窗升级成永久停止，也不把缺子/坏边
+降级为普通跳过。查询排序、显式建树与 LoCoMo 框架本身均不修改。
+
+注册和故障状态只在进程内；不含持久化检查点、自动修树、跨实例恢复或 dreaming 的
+持续授权注册表。权限生命周期由宿主管理。发生部分写入后须人工核对/修复，再重启
+Runtime 注册；跳过的历史数据需要显式补建。线上模型输出与真实 LoCoMo 分数未重测。
+
+### 验证
+
+覆盖持续输入分组、严格尾组静默、下层阻挡上层、多轮复用、跨窗口中间层与完整后代、
+异常候选混合容错、真实双引擎注册/执行、调用循环退出、动态关闭、重复注册/取消、
+任务故障保护及取消等待。契约测试同步 Runtime 新方法，MemoryAPI/HTTP/CLI/MCP 入口保持。
+
+扩大回归覆盖 3133 项：首轮 3127 通过、5 项外部依赖用例跳过；唯一失败为旧 Runtime
+协议夹具缺少新增方法，补齐后相关 50 项复测全部通过。另补自动开关关闭时的权限路由
+兼容用例，相关 33 项通过。变更 Python 通过 Ruff、PEP8、Pylint 增量规则与 Python 3.11
+语法检查；未触发远端 CodeCheck，未运行真实 LoCoMo 模型评测。
+
+
+### 评审修复验证（2026-10-23）
+
+增量本层准备失败可重试、下层成果保留、未分类异常仍暂停及 Runtime 注册边界已补回归。
+相关构建、候选、显式重建、树查询、双引擎 API、生命周期与调度测试共 595 项通过。
+变更 Python 的 Ruff、PEP8/Pylint 增量规则、Python 3.11 语法及差异空白检查通过；
+未触发远端 CodeCheck，未运行真实 LoCoMo 测评。普通记忆后补 Snapshot 仅明确限制，未新增能力。

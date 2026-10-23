@@ -471,7 +471,10 @@ def _build_middle_to_long_job_spec(config) -> MiddleToLongJobSpec:
 @JobFactoryProducer.register("default")
 def _build_job_factory(config):
     """装配 JobFactory 并注册各 Job 类型的 Spec。"""
+    from threading import Lock
+
     from jiuwen_memory.control.jobs_impl.evolve_job import _build_evolve_job_spec
+    from jiuwen_memory.control.jobs_impl.hierarchy_derive_job import build_derive_spec
     from jiuwen_memory.control.jobs_impl.hierarchy_job import build_spec
 
     factory = JobFactory()
@@ -484,4 +487,17 @@ def _build_job_factory(config):
         _build_evolve_job_spec(config).with_scope,
     )
     factory.register(JobType.HIERARCHY, build_spec(config).with_scope)
+    # 自动任务首次注册时才解析周期/回看参数，避免未启用功能的无效配置阻断普通装配。
+    # 锁保护首次构造及 with_scope 的状态共享；同一 home 的故障状态不随重新注册清零。
+    derive_spec = None
+    derive_lock = Lock()
+
+    def derive_job(scope, **kwargs):
+        nonlocal derive_spec
+        with derive_lock:
+            if derive_spec is None:
+                derive_spec = build_derive_spec(config)
+            return derive_spec.with_scope(scope, **kwargs)
+
+    factory.register(JobType.HIERARCHY_DERIVE, derive_job)
     return factory

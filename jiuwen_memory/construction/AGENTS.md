@@ -248,6 +248,17 @@ Evolver.evolve(units, mode):
 ### 显式建树演进入口
 
 `Evolver.evolve(units, mode)` 保持兼容；新增 EvolveRequest 时，HIERARCHY 委托
-可选 Composer.replace_in_span。未装配 Composer 明确拒绝，不回落普通抽取。
+可选 Composer.replace_in_span；内部单层增量委托 Composer.build。
+未装配 Composer 明确拒绝，不回落普通抽取；hierarchy_profile 提供绑定配置快照。
 `hierarchy_assembly.py` 处理显式依赖及内置预设选择；`lazy_hierarchy_composer.py`
 复用本 Evolver 的 IndexBuilder/LLM 与绑定原装配的延迟 Embedder，不自行取候选。
+
+### TIME 增量构建
+
+`HierarchyComposeRequest.incremental` 将单层增量与显式区间重建分开。
+`incremental_pipeline` 复用现有分组及父增强，在独立静默、下层边界和重叠保护后
+只持久化安全前缀；旧子正文及直接子边不重建，完整下层证据参与结构校验。
+各 stage 的 `settle_seconds` 仅用于自动尾组封口，不影响显式分组。
+周期执行和故障保护由 control 承担；内部 hierarchy_preparation 只包围增量请求的
+无写入准备段，异常转为 HierarchyPreparationError；持久化必须在该边界之外，
+显式请求保留原异常语义。

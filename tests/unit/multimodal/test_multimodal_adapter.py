@@ -541,9 +541,11 @@ def test_multimodal_retriever_builds_three_filtered_branches() -> None:
         RetrievalQuery(
             text="video",
             filters=FilterClause("tags", FilterOp.CONTAINS, "keep"),
+            query_context=("用户：video",),
         ),
     )
     assert len(base.queries) == 3
+    assert {query.query_context for query in base.queries} == {("用户：video",)}
     fields = [{clause.field for clause in iter_clauses(query.filters)} for query in base.queries]
     assert {"tags", "source"} in fields
     assert {

@@ -120,7 +120,10 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
         "search",
         {
             "query": "hello",
-            "context": {"scope": SCOPE},
+                "context": {
+                    "scope": SCOPE,
+                    "extensions": {"query_context": ["用户：hello", "助手：hi"]},
+                },
             "as_of": "2026-06-17T10:30:00+00:00",
             "filters": {"field": "tags", "op": "contains", "value": "a"},
             "disclosure": "l2",

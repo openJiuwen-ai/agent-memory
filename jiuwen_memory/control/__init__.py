@@ -13,6 +13,7 @@ from .scheduler import Scheduler
 from .space import SpaceManager
 from .types import (
     Action,
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -71,6 +72,7 @@ __all__ = [
     "JobInfo",
     "MemoryPatch",
     "MemoryListResult",
+    "BackgroundJobStartResult",
     "BatchWriteItem",
     "BatchWriteOutcome",
     "BatchWriteResult",

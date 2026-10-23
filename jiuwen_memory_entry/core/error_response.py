@@ -17,6 +17,7 @@ _HTTP_ERROR_POLICIES = {
     "ConflictError": (409, False, "resource conflict"),
     "PartialFailureError": (409, False, None),
     "RateLimitedError": (429, True, "too many requests"),
+    "RateLimitError": (429, True, "too many requests"),
     "BackendError": (503, True, "service temporarily unavailable"),
     "HealthCheckError": (503, True, "service temporarily unavailable"),
     "SecurityUnavailable": (503, False, "HTTP authentication is not configured"),

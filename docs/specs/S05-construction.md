@@ -67,7 +67,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 - 候选落盘前巩固（ADD/UPDATE/SUPERSEDE/NOOP）
 - 多形式索引构建（文档/关键词/向量/图，按配置启用）
 - 记忆自演进（抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权）
-- 树结构派生、区间重建与双向边维护（显式 HIERARCHY 模式）
+- 树结构派生、区间重建与双向边维护（已实现 TIME）
 
 **不管什么**：
 - 不做鉴权（由 `jiuwen_memory/api` 层负责）
@@ -124,11 +124,11 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     读写不分叉。
 18. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会
     留下孤儿派生索引，而删除路径的扫描源正是正排，此后无法清理。
-19. **叶权威、父可重建**：普通写入或来源转换产生的叶是权威事实；
+19. **叶权威、父可重建**（已实现 TIME）：普通写入或来源转换产生的叶是权威事实；
     `HierarchyComposer` 生成的父节点是派生物。重建父层不得删除、改写或归档权威叶内容。
-20. **层级边双向一致**：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
+20. **层级边双向一致**（已实现 TIME）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
     并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
-21. **父标注先于持久化和索引**：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
+21. **父标注先于持久化和索引**（已实现 TIME）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
     再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
 22. **Schema 事件精度不伪造日期**：Property 的年/月事件时间用
     `schema_event_start/end/precision` 半开区间表达，`temporal.t_event`
@@ -396,7 +396,7 @@ MemoryUnit
 metadata 一致投影到已启用的 L0/L1/L2 索引记录；索引是派生物，必须可从 KV 中的
 `MemoryUnit` 重建。
 
-### HierarchyComposer（已实现的显式 TIME 构建）
+### HierarchyComposer（已实现的显式与增量 TIME 构建）
 
 与 Extractor / Abstractor 并列，消费备齐的 MemoryUnit，经 IndexBuilder 持久化，
 不自行查库、鉴权或调度。控制层 evolve_v2(HIERARCHY) 通过 Evolver 委托本算子。
@@ -457,8 +457,14 @@ EventBuilder。时间以 hierarchy 区间比较，naive 按 UTC、aware 按实�
 旧父本体保留 ARCHIVED，旧索引软删除。无事务回滚保证；失败返回真实完成项及
 repair_required，调用方须报告 FAILED。当前没有自动修复或事务恢复执行器。
 
-逐层分组、完整事实和摘要契约见本文末尾交付部分。ensure、自动追加和多 kind
-构建尚未实现，不作为本接口的隐式行为。
+逐层分组、完整事实和摘要契约见本文末尾交付部分。单层增量通过内部上下文驱动，
+后台注册、候选扫描与逐层增量已接入，调度契约见 S03；ensure、多 kind 构建和自动修复尚未实现。
+
+内部增量准备段（Evolver 请求校验与 Composer 分组、摘要、候选树验证）尚未调用持久化时，
+异常以 HierarchyPreparationError（ValidationError 子类）保留原原因并向上传递。
+该信号仅证明当前层未写入，不否认此前已完成的下层。显式建树保留原异常类型。
+持久化调用必须在准备段之外：部分写入按 complete/repair_required 报告，未分类的
+插件异常不声明无写入；控制层据此保守处理。模型摘要已有的摘录回退策略保持不变。
 
 ### Evolver（`evolver.py`）
 
@@ -483,11 +489,12 @@ class EvolveRequest:
     mode: EvolveMode
     metadata: dict[str, str] = field(default_factory=dict)
     hierarchy_options: HierarchyComposeOptions | None = None
+    hierarchy_incremental: HierarchyIncrementalContext | None = None
 ```
 
 `metadata` 承载 correlation id、触发来源等请求级透传信息，不写回 unit 核心字段。
 仅 `HIERARCHY` 接受 `hierarchy_options`，且必须提供 kind、leaf_role、parent_roles 与
-tree_home_scope 与 TIME 所需 span；其他 mode 提供该 options 时拒绝。继续兼容
+tree_home_scope 与 TIME 所需 span；其他 mode 提供该 options 或 incremental 时拒绝。继续兼容
 `evolve(units, mode)` 作为兼容入口，其语义等价于构造不带 metadata/options 的请求；
 该入口不能触发 HIERARCHY。
 
@@ -575,7 +582,7 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 | `entities` | list[str] | L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时只消费本字段构造 `EntityMention`，为空时直接跳过该 unit（已砍 spaCy 兜底，无回退抽取，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。默认空，向后兼容 |
 | `vectors` | list[ChunkVector] | content 的 chunk 级向量投影：构建期由 IndexBuilder 在 `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed）填充，`id`/`seq` 与 Chunk 对齐，随本体经 `DomainStore.add/update` 下传；一体化数据面实现消费它自建 chunk 级向量索引（record id 沿用 `{unit_id}-{chunk_id}`），CompositeDomainStore 仅随本体持久化。空列表表示未向量化；codec 加字段兼容演进，`_v` 不升（见 F06-unified-index-builder） |
 
-构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。目标父节点复用既有
+构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。TIME 父节点复用既有
 segments、layers、tier 和 metadata 槽位，结构边只写 hierarchy；`content/assets/source`
 仍是基于 segments 的只读合并视图。精确类型与默认值见 [S07-common.md](S07-common.md)。
 
@@ -637,7 +644,7 @@ provenance。涉及参与继承的来源时必须唯一；明确全部来自非�
 
 继承只复制 kind/role/span 和 ACTIVE 状态，不复制边、ordinal、tree_memory 或修改 temporal。
 对于未挂树的 TIME/Snapshot，缺失时间端点保留 None，不在继承或去重时自动补齐。
-写入缺时提示的容忍不改变默认结构校验；后续建树应筛选完整候选，再严格校验树。
+写入缺时提示的容忍不改变默认结构校验；显式和自动建树已在候选层跳过未挂树缺时叶，再严格校验树。
 去重 ADD 保持一条候选；NOOP 不修改已有节点；UPDATE 用新叶区间替换，不做区间并集，
 缺少新提示则保留旧结构；SUPERSEDE 保留原版本替换规则。UPDATE/SUPERSEDE 涉及已挂树
 节点或其他树角色时，在正文合并和存储写入前拒绝，避免产生未经维护的父摘要/边。
@@ -666,3 +673,27 @@ Event 不设时间跨度窗口。会话、上下文、结束信号、语义判�
 包含 created_parent_ids/updated_child_ids/replaced_parent_ids/repair_required/complete。
 新父与子边写入前严格校验，正文与来源不通过树构建修改。部分失败不保证回滚，
 调用方不得将 complete=False 或非空 repair_required 当作完整成功。
+
+
+### TIME 单层增量构建与封口
+
+`HierarchyComposeRequest.incremental` 是可选的内部 `HierarchyIncrementalContext`，
+包含 `settle_at`（本轮时间）、`ready_before`（下层待定最早起点）与
+`supporting_units`（输入根的完整后代）。只允许 profile 中相邻的一层，输入根不得已挂父。
+`build` 处理增量；`replace_in_span` 拒绝增量上下文。既有显式请求语义保持。
+
+非尾组按已形成的边界尝试封口；尾组要求本轮时间减组最大结束时间严格大于
+`settle_seconds`。TimeSpan/Scene 未配置静默时回退至各自分组跨度，Event 默认三天。
+待提交组不能越过下层待定起点，也不能与后续待定组重叠，只提交安全连续前缀。
+未封口组不生成摘要、不写父节点。静默不改变显式分组结果。
+
+新增 `HierarchyComposeResult.deferred_child_count` 和 `pending_before` 表达等待数量
+与最早待定时间。已挂下层子树保持正文、披露层与直接子边，仅为本轮输入根补父边；
+完整证据与双向引用必须校验通过，部分写入仍返回 repair_required。
+
+
+Evolver 的可选能力 `hierarchy_profile(kind) -> HierarchyComposeProfile | None` 返回其
+绑定 Composer 的配置快照；默认 None，不为自动任务构造另一套模型依赖。
+`EvolveRequest.hierarchy_incremental` 仅供内部周期任务使用：非空时以相邻单层请求
+委托 Composer.build；为空时沿用显式 replace_in_span。Dynamic/Schema Evolver 继承该
+委托路径，原 `evolve(units, mode)`、显式分组和重建行为保持。

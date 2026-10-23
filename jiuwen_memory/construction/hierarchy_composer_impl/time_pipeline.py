@@ -35,6 +35,7 @@ DEFAULT_GAP_SECONDS = 7200
 _SUPPORTED_OPTIONS = frozenset(
     {
         "gap_seconds",
+        "settle_seconds",
         "boundary_metadata_keys",
         "carry_metadata_keys",
         "summary_max_leaves",
@@ -67,6 +68,14 @@ def positive_int(stage_options: dict[str, str], key: str, fallback: int) -> int:
     return parsed
 
 
+def optional_positive_int(stage_options: dict[str, str], key: str) -> int | None:
+    """未配置时保留 None，供自动封口兼容原有分组阈值。"""
+    raw = stage_options.get(key)
+    if raw is None or str(raw).strip() == "":
+        return None
+    return positive_int(stage_options, key, 1)
+
+
 def split_keys(raw: str | None) -> tuple[str, ...]:
     """解析去重后的系统元数据键。"""
     if raw is None or raw == "":
@@ -85,7 +94,7 @@ def split_keys(raw: str | None) -> tuple[str, ...]:
 class TimeSpanMergerOptions:
     """不可变的两层 TIME 分组与摘录选项，未实现选项一律拒绝。"""
 
-    # 保留既有配置名：分组使用累计跨度上限。
+    # 保留既有配置名：分组使用累计跨度上限；静默时长未配置时回退到此值。
     gap_seconds: int = DEFAULT_GAP_SECONDS
     boundary_metadata_keys: tuple[str, ...] = ()
     carry_metadata_keys: tuple[str, ...] = ()
@@ -93,12 +102,17 @@ class TimeSpanMergerOptions:
     summary_max_chars_per_leaf: int = 60
     summary_mode: str = "structural"
     end_signal_metadata_keys: tuple[str, ...] = ()
+    settle_seconds: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("gap_seconds", "summary_max_leaves", "summary_max_chars_per_leaf"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValidationError(f"{name} 必须是正整数，实际 {value!r}")
+        if self.settle_seconds is not None and (
+            type(self.settle_seconds) is not int or self.settle_seconds <= 0
+        ):
+            raise ValidationError("settle_seconds 必须是正整数或 None")
         if self.summary_mode not in ("structural", "llm"):
             raise ValidationError("summary_mode 必须是 structural 或 llm")
         for name in ("boundary_metadata_keys", "carry_metadata_keys", "end_signal_metadata_keys"):
@@ -120,6 +134,7 @@ class TimeSpanMergerOptions:
         summary_mode = stage_options.get("summary_mode", "structural")
         return cls(
             gap_seconds=positive_int(stage_options, "gap_seconds", DEFAULT_GAP_SECONDS),
+            settle_seconds=optional_positive_int(stage_options, "settle_seconds"),
             boundary_metadata_keys=split_keys(stage_options.get("boundary_metadata_keys")),
             carry_metadata_keys=split_keys(stage_options.get("carry_metadata_keys")),
             summary_max_leaves=positive_int(stage_options, "summary_max_leaves", 20),

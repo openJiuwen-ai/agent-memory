@@ -41,6 +41,7 @@ from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
+    HierarchyKind,
     HierarchyRef,
     LifecycleState,
     MemoryUnit,
@@ -75,8 +76,10 @@ from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
 from jiuwen_memory.construction.hierarchy_composer import (
     HierarchyComposeOptions,
+    HierarchyComposeProfile,
     HierarchyComposer,
     HierarchyComposeRequest,
+    hierarchy_preparation,
 )
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
@@ -292,8 +295,10 @@ class OrchestratingEvolver(Evolver):
                 raise ValidationError("EvolveRequest.mode 必须是 EvolveMode")
             if request.mode is EvolveMode.HIERARCHY:
                 return self._evolve_hierarchy(request)
-            if request.hierarchy_options is not None:
-                raise ValidationError("仅 HIERARCHY 模式接受 hierarchy_options")
+            if request.hierarchy_options is not None or request.hierarchy_incremental is not None:
+                raise ValidationError(
+                    "仅 HIERARCHY 模式接受 hierarchy_options/hierarchy_incremental"
+                )
             units, mode = request.units, request.mode
         if not isinstance(mode, EvolveMode) or mode is EvolveMode.HIERARCHY:
             raise ValidationError("HIERARCHY 必须使用含有界区间的 EvolveRequest")
@@ -321,30 +326,41 @@ class OrchestratingEvolver(Evolver):
     # 落盘辅助
     # ------------------------------------------------------------------
 
+    def hierarchy_profile(self, kind: HierarchyKind) -> HierarchyComposeProfile | None:
+        """提供绑定 Composer 的快照，不为后台任务重装内容算子。"""
+        if self._hierarchy_composer is None:
+            return None
+        return self._hierarchy_composer.get_profile(kind)
+
     def _evolve_hierarchy(self, request: EvolveRequest) -> EvolveResult:
         """只委托 Composer，不进入抽取、去重或内容合并。"""
-        options = request.hierarchy_options
-        if not isinstance(options, HierarchyComposeOptions):
-            raise ValidationError("HIERARCHY 要求 hierarchy_options")
-        if self._hierarchy_composer is None:
-            raise ValidationError("未装配 HierarchyComposer，无法执行 HIERARCHY")
-        if not isinstance(request.units, list) or not isinstance(options.parent_roles, list):
-            raise ValidationError("HIERARCHY 的 units 与 parent_roles 必须是列表")
-        leaves: list[MemoryUnit] = []
-        parents: list[MemoryUnit] = []
-        for unit in request.units:
-            if not isinstance(unit, MemoryUnit) or not isinstance(unit.hierarchy, HierarchyRef):
-                raise ValidationError("HIERARCHY 要求具有 HierarchyRef 的 MemoryUnit")
-            if unit.hierarchy.role is options.leaf_role:
-                leaves.append(unit)
-            elif unit.hierarchy.role in options.parent_roles:
-                parents.append(unit)
-            else:
-                raise ValidationError(f"节点 {unit.id} 的角色不属于本次建树请求")
-        compose_request = HierarchyComposeRequest(
-            leaves=leaves, options=options, existing_parents=parents,
-        )
-        result = self._hierarchy_composer.replace_in_span(compose_request)
+        with hierarchy_preparation(incremental=request.hierarchy_incremental is not None):
+            options = request.hierarchy_options
+            if not isinstance(options, HierarchyComposeOptions):
+                raise ValidationError("HIERARCHY 要求 hierarchy_options")
+            if self._hierarchy_composer is None:
+                raise ValidationError("未装配 HierarchyComposer，无法执行 HIERARCHY")
+            if not isinstance(request.units, list) or not isinstance(options.parent_roles, list):
+                raise ValidationError("HIERARCHY 的 units 与 parent_roles 必须是列表")
+            leaves: list[MemoryUnit] = []
+            parents: list[MemoryUnit] = []
+            for unit in request.units:
+                if not isinstance(unit, MemoryUnit) or not isinstance(unit.hierarchy, HierarchyRef):
+                    raise ValidationError("HIERARCHY 要求具有 HierarchyRef 的 MemoryUnit")
+                if unit.hierarchy.role is options.leaf_role:
+                    leaves.append(unit)
+                elif unit.hierarchy.role in options.parent_roles:
+                    parents.append(unit)
+                else:
+                    raise ValidationError(f"节点 {unit.id} 的角色不属于本次建树请求")
+            compose_request = HierarchyComposeRequest(
+                leaves=leaves, options=options, existing_parents=parents,
+                incremental=request.hierarchy_incremental,
+            )
+        if request.hierarchy_incremental is not None:
+            result = self._hierarchy_composer.build(compose_request)
+        else:
+            result = self._hierarchy_composer.replace_in_span(compose_request)
         return EvolveResult(hierarchy_result=result)
 
     def _persist(self, units: list[MemoryUnit]) -> list[str]:

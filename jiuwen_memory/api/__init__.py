@@ -53,6 +53,7 @@ from jiuwen_memory.common.security.types import (
 )
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
+    EXT_QUERY_CONTEXT,
     AuditEvent,
     Context,
     FilterClause,
@@ -71,6 +72,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -130,6 +132,7 @@ __all__ = [
     "Scope",
     "Context",
     "EXT_MAX_TOKENS",
+    "EXT_QUERY_CONTEXT",
     "Modality",
     "MemoryTier",
     "LifecycleState",
@@ -138,6 +141,7 @@ __all__ = [
     # 写入/修正/删除（control）
     "MemoryPatch",
     "MemoryListResult",
+    "BackgroundJobStartResult",
     "BatchWriteItem",
     "BatchWriteOutcome",
     "BatchWriteResult",
