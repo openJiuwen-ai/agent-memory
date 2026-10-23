@@ -39,6 +39,7 @@ __all__ = [
     "RecallChannel",
     "RetrievalQuery",
     "RetrievalResult",
+    "SchemaTemporalRetrievalResult",
     "RetrievedItem",
     "ScoredMemoryUnit",
     "ScoredUnit",
@@ -141,5 +142,10 @@ class RetrievalResult:
         default_factory=list
     )  # 检索轨迹（with_trajectory 时返回）
     errors: list[ChannelError] = field(default_factory=list)  # 部分通道失败，不依赖轨迹开关
-    # Schema Temporal 分支的结构化结果；普通检索固定为 None。
-    schema_temporal: SchemaTemporalResult | None = None
+
+
+@dataclass
+class SchemaTemporalRetrievalResult(RetrievalResult):
+    """仅在 Schema Temporal 产生结构化视图时扩展公开检索结果。"""
+
+    schema_temporal: SchemaTemporalResult = field(kw_only=True)

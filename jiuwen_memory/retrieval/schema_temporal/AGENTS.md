@@ -2,7 +2,7 @@
 
 本目录把持久化的 Schema Property `MemoryUnit` 在查询期间组装为只读实体时间线。
 `TemporalEntity` 只承担查询时组装与计算，不是新的持久化真源。正式检索按实体投影为
-`RetrievedItem`，同时保留结构化 `RetrievalResult.schema_temporal`；必要的 Source
+`RetrievedItem`，同时仅在 `SchemaTemporalRetrievalResult.schema_temporal` 中保留结构化视图；普通结果无此字段。必要的 Source
 fallback 仍来自真实 `MemoryUnit`。
 
 ## 模块地图

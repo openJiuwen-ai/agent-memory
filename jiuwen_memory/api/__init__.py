@@ -98,6 +98,7 @@ from jiuwen_memory.retrieval import (
     DisclosureLevel,
     RetrievalResult,
     RetrievedItem,
+    SchemaTemporalRetrievalResult,
     TrajectoryStep,
 )
 
@@ -158,6 +159,7 @@ __all__ = [
     # 检索（retrieval）
     "DisclosureLevel",
     "RetrievalResult",
+    "SchemaTemporalRetrievalResult",
     "RetrievedItem",
     "TrajectoryStep",
     # 前置过滤（common.type_def）

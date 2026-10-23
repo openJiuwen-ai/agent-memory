@@ -28,6 +28,7 @@ from jiuwen_memory.retrieval.types import (
     RetrievalQuery,
     RetrievalResult,
     RetrievedItem,
+    SchemaTemporalRetrievalResult,
 )
 from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
 from jiuwen_memory.storage.domain_store import DomainStore
@@ -125,8 +126,15 @@ class SchemaTemporalPipelineExtension:
             )
             return replace(ordinary_result, errors=[*ordinary_result.errors, error])
 
-        if temporal is None or not self._formatting_enabled:
-            return replace(ordinary_result, errors=errors, schema_temporal=temporal)
+        if temporal is None:
+            return replace(ordinary_result, errors=errors)
+        if not self._formatting_enabled:
+            return SchemaTemporalRetrievalResult(
+                items=ordinary_result.items,
+                trajectory=ordinary_result.trajectory,
+                errors=errors,
+                schema_temporal=temporal,
+            )
 
         projected = _project_schema_temporal_items(
             temporal,
@@ -164,7 +172,7 @@ class SchemaTemporalPipelineExtension:
                 "source_fallbacks": str(len(source_items)),
             },
         )
-        return RetrievalResult(
+        return SchemaTemporalRetrievalResult(
             items=output_items,
             trajectory=ordinary_result.trajectory,
             errors=errors,

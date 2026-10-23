@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -75,8 +75,8 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 20. **TemporalEntity 不是记忆真源**：Schema 时序检索在读取期组装临时实体视图，
     Property/Source 必须先完成点读与有效性复核。正式结果可把每个实体格式化为
     一个 `RetrievedItem`，其 id 是 Entity id；该项不是 synthetic MemoryUnit，
-    不支持按 MemoryUnit id 点读。结构化结果同时返回在
-    `RetrievalResult.schema_temporal`。
+    不支持按 MemoryUnit id 点读。结构化结果仅由
+    `SchemaTemporalRetrievalResult.schema_temporal` 返回；普通结果无此字段。
 21. **Schema 时序两轴先后有序**：`knowledge_as_of` 仅过滤
     `[t_valid, t_invalid)` 知识版本，`event_at/event_from/event_to` 仅选择
     事件时间。年/月精度通过半开区间运算，不补造 `t_event`。
@@ -144,10 +144,10 @@ Entity 路径的名额不得剪掉已直接命中的 Property；直达属性按 
 不允许因一个实体到达全局上限而中止后续实体。Source fallback 只作为结构化
 Property 缺失或不完整时的证据保全通道，不扫描并平铺整个 Scope。
 
-该链路以可选字段 `RetrievalResult.schema_temporal` 返回结构化时间线，并将
+该链路以 `SchemaTemporalRetrievalResult.schema_temporal` 返回结构化时间线，并将
 `items` 替换为实体级视图与必要 Source。未启用硬门、未指定
 `RetrievalQuery.schema_temporal`/`extensions["schema_temporal"]` 且未命中自动
-条件时，必须执行既有链路且 `schema_temporal=None`。
+条件时，必须执行既有链路，普通 `RetrievalResult` 不包含 `schema_temporal`。
 
 ### QueryParser / Fuser
 
@@ -503,7 +503,8 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 | `ChannelEvidence` | `channel` / `rank` / `score` / `weight` / `contribution` |
 | `RetrievedItem` | `unit_id` / `score` / `abstract` / `overview` / `content` / `user_metadata` / `system_metadata` / `level` |
 | `TrajectoryStep` | `stage` / `channel` / `candidate_count` / `cost_ms` / `detail` |
-| `RetrievalResult` | `items` / `trajectory` / `errors` / `schema_temporal` |
+| `RetrievalResult` | `items` / `trajectory` / `errors` |
+| `SchemaTemporalRetrievalResult` | 继承 `RetrievalResult`，仅在有结构化结果时增加 `schema_temporal` |
 
 不得向既有 `RetrievedItem` 增加 `child_ids` 或把 `content` 改作树容器。
 

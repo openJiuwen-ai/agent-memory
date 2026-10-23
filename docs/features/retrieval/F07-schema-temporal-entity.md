@@ -33,7 +33,8 @@ identity 组装；identity 依次取 `schema_entity_id`、`schema_entity_key`、
 
 Schema Temporal 正式输出按实体投影：每个 `TemporalEntity` 对应一个
 `RetrievedItem`，其 `unit_id` 是稳定 Entity id，`content` 是保留时间精度的完整实体
-时间线；结构化视图同时保存在 `RetrievalResult.schema_temporal`。必要的 Source-first
+时间线；结构化视图仅由 `SchemaTemporalRetrievalResult.schema_temporal` 返回，普通
+`RetrievalResult` 无此字段。必要的 Source-first
 兜底仍使用真实 MemoryUnit id。调用方不得把 Entity 视图项的 `unit_id` 当作
 MemoryUnit id 点读；Property/Source 仍是唯一持久化真源。
 
@@ -171,8 +172,8 @@ as-of 上下文，但 `t_event` 必须保持为空。
 - 验证直达 Property 不受 Entity 名额截断，并扩展非 `default_property` 同属性
   前后各 3 条；
 - 验证属性缺失时 Source-first 证据仍能进入候选；
-- 验证每个 Entity 只返回一个格式化 `RetrievedItem`，并保留结构化
-  `RetrievalResult.schema_temporal`；
+- 验证每个 Entity 只返回一个格式化 `RetrievedItem`，并由扩展结果保留结构化
+  `SchemaTemporalRetrievalResult.schema_temporal`；
 - 验证必要 Source 在最终投影后保留且显式携带消息时间；
 - 验证反向索引的增、改、携带 MemoryUnit 的硬删、权威空集和存量回退语义。
 

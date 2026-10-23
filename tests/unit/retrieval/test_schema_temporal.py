@@ -721,6 +721,7 @@ def test_pipeline_temporal_extension_returns_one_formal_entity_item() -> None:
     )
 
     assert [item.unit_id for item in ordinary.items] == [source.id, property_unit.id]
+    assert not hasattr(ordinary, "schema_temporal")
     assert "schema_temporal" not in [step.stage for step in ordinary.trajectory]
     temporal_stages = [step.stage for step in temporal.trajectory]
     assert temporal_stages.index("disclose") < temporal_stages.index("schema_temporal")
@@ -734,7 +735,10 @@ def test_pipeline_temporal_extension_returns_one_formal_entity_item() -> None:
     assert temporal.schema_temporal.entities[0].entity_id == "entity-alice"
 
 
-def test_pipeline_accepts_explicit_schema_temporal_query_field() -> None:
+@pytest.mark.parametrize("formatting_enabled", [False, True])
+def test_pipeline_accepts_explicit_schema_temporal_query_field(
+    formatting_enabled: bool,
+) -> None:
     property_unit = _property(
         "property",
         value="Alice visited Paris in 2023",
@@ -743,6 +747,7 @@ def test_pipeline_accepts_explicit_schema_temporal_query_field() -> None:
     extension = SchemaTemporalPipelineExtension(
         TemporalEntitySelector(domain),
         _PlainDiscloser(),
+        formatting_enabled=formatting_enabled,
     )
     retriever = PipelineRetriever(
         _StaticParser(),
@@ -762,7 +767,9 @@ def test_pipeline_accepts_explicit_schema_temporal_query_field() -> None:
         ),
     )
 
-    assert [item.unit_id for item in result.items] == ["entity-alice"]
+    assert [item.unit_id for item in result.items] == [
+        "entity-alice" if formatting_enabled else property_unit.id
+    ]
     assert result.schema_temporal is not None
 
 

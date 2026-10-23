@@ -107,8 +107,8 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 11. **Schema TemporalEntity 只读但正式返回**
    临时视图不持久化，所有 Property/Source 必须先经过点读和生命周期复核。
-   每个 Entity 可投影为一个 `RetrievedItem` 并写入
-   `RetrievalResult.schema_temporal`；其 id 是 Entity id，不得伪装成可点读的
+   每个 Entity 可投影为一个 `RetrievedItem`，结构化视图仅写入
+   `SchemaTemporalRetrievalResult.schema_temporal`；普通结果无此字段。其 id 是 Entity id，不得伪装成可点读的
    MemoryUnit。必要 Source fallback 仍保留真实 MemoryUnit id。
 
 12. **Schema TemporalEntity 保持两条时间轴**
