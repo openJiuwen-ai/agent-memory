@@ -49,7 +49,11 @@ from jiuwen_memory.retrieval.base import RetrievalOperator, RetrievalOperatorTyp
 
 `RetrievalOperatorType` 包含 `QUERY_PARSER`、`RECALLER`、`FUSER`、`DISCLOSER`、`RETRIEVER`。
 
-## 3. RetrievalQuery 请求类型
+## 3. RetrievalQuery 类型化请求
+
+本节描述 Retrieval 层消费的类型化请求，并非 `MemoryAPI.search` 的方法签名。在
+MemoryAPI 边界，调用方通过 `Context.extensions["query_context"]` 传入最近上下文；
+API 校验后填充 `RetrievalQuery.query_context`，再委托 Retrieval 层处理。
 
 ```python
 @dataclass
@@ -65,6 +69,7 @@ class RetrievalQuery:
     rerank: bool | None = None
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    query_context: tuple[str, ...] | None = None
 ```
 
 | 字段 | 说明 |
@@ -80,6 +85,7 @@ class RetrievalQuery:
 | `rerank` | 调用级精排开关；`None` 使用装配默认 |
 | `include_archived` | 当前态查询是否允许 archived 记忆进入候选 |
 | `extensions` | 透传给 `ParsedQuery.extensions` 的自定义选项；内核不解释其 key |
+| `query_context` | 由 MemoryAPI 边界从 `Context.extensions["query_context"]` 转换得到的类型化上下文字段；它不是 `MemoryAPI.search` 的顶层参数，仅由支持上下文改写的 parser 消费，`None` 与空 tuple 均表示无上下文 |
 
 `as_of` 表示“在某个系统有效时间点看到什么”。`ParsedQuery.time_from/time_to` 则表示内容中事件发生的时间范围，两者是独立时间轴。
 
@@ -112,6 +118,19 @@ parsed = parser.parse(query)
 | `channels` | parser 建议的逻辑召回通道 |
 | `include_archived` | 是否包含 archived 记忆 |
 | `extensions` | 自定义透传选项 |
+| `rewrite_status` | 改写状态：`off`、`used`、`fallback` 或 `no_intent` |
+| `rewrite_fallback_reason` | 改写回退原因；成功、关闭或 no-intent 时为空 |
+
+内置 LLM 改写默认关闭。显式开启且注入可用 LLM 后，`simple` 将 sanitized raw 放入
+`<current_query>`，并把规范化后的可选 `query_context` 放入 `<recent_context>`；要求
+`{"rewritten": "..." | null}` JSON 输出。非空字符串驱动软召回与 Reranker 精排；显式 null 表示
+当前消息明确无检索意图，产出空软信号并在 DomainStore 前短路。Reranker 使用
+`ParsedQuery.rewritten`；关闭或 fallback 时该值即 sanitized raw。输出非法、为空、
+超长或模型异常时回退 sanitized raw。
+超长判定使用动态上限 `max(512, sanitized raw 字符数)`；QueryParser 不设置任务级
+`max_tokens`，由 LLM 后端配置统一控制。上下文最多保留最近 5 项、8192 字符尾部，
+且不会修改 `scalar_filters`、`as_of` 或 event-time 时间窗。parse/rerank 轨迹记录 rewrite
+状态、fallback 原因和精排 query source，不记录 query、上下文或模型输出。
 
 查询侧的 Tokenizer、Embedder 和 FeatureExtractor 应与构建索引时使用同一套实例或兼容配置，否则可能出现词表、向量空间或特征口径不一致。
 
@@ -318,7 +337,7 @@ fuser:                   # FuserProducer.TOP_NAME
 
 | `target` | 实现类 | 功能 | 依赖与参数 |
 |---|---|---|---|
-| `simple` | `SimpleQueryParser` | 当前唯一内置 parser；可完成保守去噪、LLM 改写、Tokenizer 分词、FeatureExtractor 关键词/实体抽取、Embedder 向量化和规则时间解析 | 依赖 `tokenizer`、`embedder`、`llm`、`feature_extractor`；`sanitize_enabled`（默认 `true`），`sanitize_strip_code`（默认 `false`）；`vector_enabled=false` 时不装配 Embedder |
+| `simple` | `SimpleQueryParser` | 当前唯一内置 parser；可完成保守去噪、可选 strict LLM 改写、Tokenizer 分词、FeatureExtractor 关键词/实体抽取、Embedder 向量化和规则时间解析 | 依赖 `tokenizer`、`embedder`、`llm`、`feature_extractor`；`sanitize_enabled`（默认 `true`），`sanitize_strip_code`（默认 `false`），`rewrite_enabled`（默认 `false`）；`vector_enabled=false` 时不装配 Embedder |
 
 ```yaml
 query_parser:
@@ -334,7 +353,10 @@ query_parser:
       sanitize_strip_code: false
 ```
 
-内置默认 target 为 `simple`。其默认 LLM target 为 `echo`，因此不改写查询；如果引用其他 LLM，`simple` 会直接使用 `llm.generate(text)` 的结果作为 `rewritten`。
+内置默认 target 为 `simple`。其默认 LLM target 为 `echo`，且 `rewrite_enabled=false`，
+因此不调用改写。显式设为 `true` 并注入具备改写能力的 LLM 后，`simple` 使用
+`llm.chat()` 的 strict JSON 输出，并可消费由 `Context.extensions["query_context"]`
+转换出的 `RetrievalQuery.query_context`；失败时回退 sanitized raw，显式 null 则短路召回。
 
 ### 12.3 Recaller 实现
 
@@ -534,6 +556,8 @@ def search_memory(retriever: Retriever, scope: Scope) -> list[str]:
 | `channels` | `list[RecallChannel]` | `[]` | Parser 建议的逻辑通道 |
 | `include_archived` | `bool` | `false` | 当前态查询是否包含 ARCHIVED |
 | `extensions` | `dict[str, Any]` | `{}` | 透传给自定义检索组件的扩展参数 |
+| `rewrite_status` | `str` | `"off"` | `off`、`used`、`fallback` 或 `no_intent` |
+| `rewrite_fallback_reason` | `str` | `""` | fallback 原因：`llm_error`、`invalid_json`、`empty_output` 或 `output_too_long` |
 
 `scalar_filters` 在 PipelineRetriever 内会加上 lifecycle/valid-time/event-time 系统谓词；
 `recheck_filters` 保留用户过滤用于真源复核。两者不应被自定义 Parser 混为一个可被 OR 稀释的表达式。

@@ -8,6 +8,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import (
     ChannelError,
     ChannelEvidence,
@@ -89,6 +90,8 @@ class RetrievalQuery:
     expand_depth: int = 0
     defer_expansion: bool = False  # 跨空间先全局选根，再统一展开；不向公开选项暴露
     rollup: bool = False
+    # 可选最近上下文，仅供支持上下文感知改写的 QueryParser 消费。
+    query_context: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。
@@ -98,6 +101,11 @@ class RetrievalQuery:
         validate_rollup(self.rollup, hierarchy.hierarchy_kind)
         self.span_start = hierarchy.span_start
         self.span_end = hierarchy.span_end
+        if self.query_context is not None:
+            if not isinstance(self.query_context, tuple):
+                raise ValidationError("query_context must be None or a tuple of strings")
+            if any(not isinstance(item, str) for item in self.query_context):
+                raise ValidationError("query_context items must be strings")
 
 
 @dataclass

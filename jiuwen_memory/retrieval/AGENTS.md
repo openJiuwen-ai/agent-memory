@@ -43,7 +43,7 @@
 4. Fuser 前完成真源复核，再对 ScoredMemoryUnit 做分层归并和跨通道融合
 5. 截断精排预算 budget = fused[:max(rerank_max, top_k)]
      ↓
-6. 可选 Reranker 精排（记 calibrated 标志）
+6. 可选 Reranker 用 `ParsedQuery.rewritten` 精排（记 calibrated 标志；fallback/off 时该值即 sanitized raw）
      ↓
 7. 相关性阈值：绝对 min_score（仅校准路径）+ 相对 ratio（校准/未校准两路，默认关闭）
      ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
@@ -80,6 +80,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 3. **query 原文先规范化再召回**
    默认 `SimpleQueryParser` 在分词、向量化和时间解析前做保守去噪，剥除 UTC 时间戳与 `Sender (untrusted metadata)` 等上游包装噪声；`ParsedQuery.raw` 是进入检索链路的规范化文本。清洗后为空时，`PipelineRetriever` 必须在召回前短路返回空结果。
+   LLM 改写默认关闭；显式开启后把 sanitized raw 与 API 边界传入的 typed `query_context` 交给 strict JSON 改写任务。非空 `rewritten` 驱动软召回与 Reranker 精排；显式 null 表示 no-intent，产出空软信号并在 DomainStore 前短路；解析失败或模型异常回退 sanitized raw。硬过滤、`as_of` 与 event-time 窗不被 LLM 输出或上下文改写。parse/rerank 轨迹记录 `off/used/fallback/no_intent`、fallback 原因和 rerank query source，不记录 query、上下文或模型输出。
 
 4. **通道到物理 Store 非 1:1**
    一路可对应一个 Store（如 VectorStore），多路也可合到一个 Store（如 FusionStore 同时支持向量+关键词），TEMPORAL 通常是叠加在其他通道上的时间过滤。

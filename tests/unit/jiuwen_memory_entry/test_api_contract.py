@@ -191,7 +191,7 @@ def test_search_request_decodes_context_and_keeps_dict_filter_dsl() -> None:
             "query": "coffee",
             "context": {
                 "scope": {"org": "acme", "user": "alice"},
-                "extensions": {"language": "zh"},
+                "extensions": {"language": "zh", "query_context": ["用户：coffee", "助手：latte"]},
             },
             "filters": {"tags": {"contains": "habit"}},
             "disclosure": "l2",
@@ -199,10 +199,23 @@ def test_search_request_decodes_context_and_keeps_dict_filter_dsl() -> None:
     )
 
     assert arguments["context"] == Context(
-        scope=Scope(org="acme", user="alice"), extensions={"language": "zh"}
+        scope=Scope(org="acme", user="alice"),
+        extensions={"language": "zh", "query_context": ["用户：coffee", "助手：latte"]},
     )
     assert arguments["filters"] == {"tags": {"contains": "habit"}}
     assert arguments["disclosure"] is DisclosureLevel.L2
+
+
+def test_search_top_level_query_context_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="unknown field"):
+        api_contract.parse_request(
+            "search",
+            {
+                "query": "coffee",
+                "context": {"scope": {"org": "acme", "user": "alice"}},
+                "query_context": ["用户：coffee"],
+            },
+        )
 
 
 def test_grant_request_decodes_nested_scopes_actions_and_datetime() -> None:

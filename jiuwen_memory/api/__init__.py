@@ -53,6 +53,7 @@ from jiuwen_memory.common.security.types import (
 )
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
+    EXT_QUERY_CONTEXT,
     AuditEvent,
     Context,
     FilterClause,
@@ -131,6 +132,7 @@ __all__ = [
     "Scope",
     "Context",
     "EXT_MAX_TOKENS",
+    "EXT_QUERY_CONTEXT",
     "Modality",
     "MemoryTier",
     "LifecycleState",

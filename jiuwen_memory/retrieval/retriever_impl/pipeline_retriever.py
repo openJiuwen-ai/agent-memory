@@ -256,7 +256,20 @@ class PipelineRetriever(Retriever):
         parsed.extensions = dict(query.extensions)
         if query.rollup and query.as_of is not None:
             parsed.as_of = query.as_of
-        step("parse", t0, n=len(parsed.tokens))
+        parse_detail = {"rewrite": parsed.rewrite_status}
+        if parsed.rewrite_fallback_reason:
+            parse_detail["fallback_reason"] = parsed.rewrite_fallback_reason
+        if parsed.rewrite_status == "no_intent":
+            parse_detail["skipped"] = "no_retrieval_intent"
+        step("parse", t0, n=len(parsed.tokens), detail=parse_detail)
+
+        if parsed.rewrite_status == "no_intent":
+            logger.debug(
+                "Retriever.retrieve no retrieval intent: trace_id=%s scope_dims=%s",
+                trace_id,
+                scope_dims,
+            )
+            return RetrievalResult(items=[], trajectory=traj)
 
         # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
         #      用户表达式作整体 child——绝不摊平，防其 OR 稀释 lifecycle 等安全谓词。
@@ -389,14 +402,14 @@ class PipelineRetriever(Retriever):
                 len(survivors),
             )
 
-        # [7] 可选重排：内容已物化，按与 query 的相关性精排
+        # [7] 可选重排：内容已物化，按 ParsedQuery.rewritten 的相关性精排
         do_rerank = query.rerank if query.rerank is not None else (self._reranker is not None)
         reranked = False
         if do_rerank and self._reranker is not None and survivors:
             t0 = perf_counter()
             try:
                 scores = self._reranker.rerank(
-                    parsed.raw, [candidate.unit.content for candidate in survivors]
+                    parsed.rewritten, [candidate.unit.content for candidate in survivors]
                 )
             except BackendError as exc:
                 detail = {
@@ -412,7 +425,12 @@ class PipelineRetriever(Retriever):
             else:
                 order = sorted(range(len(survivors)), key=lambda i: scores[i], reverse=True)
                 survivors = [replace(survivors[i], score=scores[i]) for i in order]
-                step("rerank", t0, n=len(survivors))
+                step(
+                    "rerank",
+                    t0,
+                    n=len(survivors),
+                    detail={"query_source": "parsed.rewritten", "rewrite": parsed.rewrite_status},
+                )
                 reranked = True
         elif do_rerank and self._reranker is None:
             # 显式要求精排但装配未注入 reranker：记轨迹让降级可见（阈值走未校准路径）。

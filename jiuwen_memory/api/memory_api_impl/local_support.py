@@ -23,6 +23,7 @@ from jiuwen_memory.common.security.space_roles import (
 from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
+    EXT_QUERY_CONTEXT,
     EXT_SPACES,
     KERNEL_SYSTEM_METADATA_KEYS,
     TRANSIENT_SYSTEM_METADATA_KEYS,
@@ -316,6 +317,28 @@ def _pop_spaces(options: dict[str, Any]) -> list[str] | None:
     return list(raw)
 
 
+def _pop_query_context(options: dict[str, Any]) -> tuple[str, ...] | None:
+    """取出检索上下文改写的最近对话片段；key 不存在时返回 ``None``。
+
+    key 已存在即表示调用方显式依赖本次上下文，非法取值必须 fail-fast；静默按无上下文
+    检索会隐藏调用方 bug，并让结果语义从「带上下文」退化为「孤立 query」。错误文案只
+    描述 key 与期望类型，不回显上下文内容。
+    """
+    if EXT_QUERY_CONTEXT not in options:
+        return None
+    raw = options.pop(EXT_QUERY_CONTEXT)
+    if raw is None:
+        raise ValidationError(
+            "query_context must not be null; "
+            "omit the key or provide a list or tuple of strings"
+        )
+    if not isinstance(raw, (list, tuple)):
+        raise ValidationError("query_context must be a list or tuple of strings")
+    if not all(isinstance(item, str) for item in raw):
+        raise ValidationError("query_context items must be strings")
+    return tuple(raw)
+
+
 def _space_denied(space: str, error_type: str, message: str) -> ChannelError:
     """把一个被判权剔除的候选空间记成结果对象上的结构化错误。
 
@@ -527,8 +550,9 @@ def _recall_permission_context(
     routed_metadata = _required_filter_metadata(filters)
     # S03「MemoryPipeline 路由规则」——extensions 优先。
     for key in routing_fields:
-        # 归属坐标与候选空间列表不是策略路由值：前者是判定输入、后者是编排开关。
-        if key in (COORDS_KEY, EXT_SPACES):
+        # 归属坐标、候选空间列表与检索上下文不是策略路由值：前两者是判定/编排开关，
+        # query_context 只服务 parser 的软召回增强。
+        if key in (COORDS_KEY, EXT_SPACES, EXT_QUERY_CONTEXT):
             continue
         override = context.extensions.get(key)
         if override is None:

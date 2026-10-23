@@ -239,9 +239,50 @@ class _RecordingSearchApi:
         disclosure=None,
         with_trajectory=False,
     ):
-        del query, context, security, filters, disclosure, with_trajectory
-        self.calls.append({"as_of": as_of, "top_k": top_k})
+        del query, security, filters, disclosure, with_trajectory
+        self.calls.append({"as_of": as_of, "top_k": top_k, "context": context})
         return SimpleNamespace(items=[], trajectory=[])
+
+
+def test_search_forwards_query_context() -> None:
+    api = _RecordingSearchApi()
+    srv = SimpleNamespace(api=api)
+
+    handler.dispatch(
+        srv,
+        _dispatch_request(
+            "search",
+            {
+                "tenant_id": "acme",
+                "scope": "alice",
+                "query": "hello",
+                "extensions": {"query_context": ["用户：hello", "助手：hi"]},
+            },
+        ),
+    )
+
+    assert api.calls[0]["context"].extensions == {"query_context": ["用户：hello", "助手：hi"]}
+
+
+def test_search_top_level_query_context_is_ignored_by_legacy_handler() -> None:
+    api = _RecordingSearchApi()
+    srv = SimpleNamespace(api=api)
+
+    status, _body = handler.dispatch(
+        srv,
+        _dispatch_request(
+            "search",
+            {
+                "tenant_id": "acme",
+                "scope": "alice",
+                "query": "hello",
+                "query_context": ["用户：hello"],
+            },
+        ),
+    )
+
+    assert status == 200
+    assert "query_context" not in api.calls[0]["context"].extensions
 
 
 def test_search_forwards_as_of() -> None:
