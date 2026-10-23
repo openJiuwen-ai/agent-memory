@@ -52,12 +52,16 @@ class SchemaEntityRegistry:
         """Load active canonical entities for one schema and scope."""
 
         result: list[MemoryUnit] = []
-        for _key, raw in self._kv.scan(scope, SCHEMA_ENTITY_KEY_PREFIX)[:limit]:
+        if limit <= 0:
+            return result
+        for _key, raw in self._kv.scan(scope, SCHEMA_ENTITY_KEY_PREFIX):
             entity = loads(raw)
             if entity is None or entity.lifecycle is not LifecycleState.ACTIVE:
                 continue
             if str(entity.system_metadata.get("schema_name") or "") == schema_name:
                 result.append(entity)
+                if len(result) >= limit:
+                    break
         return result
 
     def sync(self, observations: list[MemoryUnit]) -> list[MemoryUnit]:

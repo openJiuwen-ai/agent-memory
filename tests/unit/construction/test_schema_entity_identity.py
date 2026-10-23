@@ -119,3 +119,47 @@ def test_different_explicit_speakers_cannot_merge() -> None:
     assert second.system_metadata["schema_entity_id"] != first.system_metadata["schema_entity_id"]
     assert second.system_metadata["schema_entity_resolution"] == "create"
     assert malicious.calls == 0
+
+
+def test_registry_limit_counts_only_active_entities_in_requested_schema() -> None:
+    kv = MemoryKVStore()
+    registry = SchemaEntityRegistry(kv)
+    unrelated = _property("p1", "Other", entity_id="other")
+    unrelated.system_metadata.update(schema_name="other", schema_entity_id="other")
+    first = _property("p2", "Caroline", entity_id="first")
+    first.system_metadata["schema_entity_id"] = "first"
+    second = _property("p3", "Melanie", entity_id="second")
+    second.system_metadata["schema_entity_id"] = "second"
+    registry.sync([unrelated, first, second])
+
+    found = registry.list(first.scope, "persona", limit=2)
+
+    assert [unit.id for unit in found] == ["first", "second"]
+
+
+def test_overlapping_alias_does_not_merge_incompatible_explicit_speakers() -> None:
+    kv = MemoryKVStore()
+    llm = _LLM({"action": "create"})
+    resolver = _resolver(kv, llm)
+    first = _property(
+        "p1",
+        "Caroline",
+        entity_id="temporary-1",
+        identity_kind="explicit_speaker",
+        aliases=["Caro"],
+    )
+    resolver.resolve([first])
+    resolver.sync([first])
+    second = _property(
+        "p2",
+        "Melanie",
+        entity_id="temporary-2",
+        identity_kind="explicit_speaker",
+        aliases=["Caro"],
+    )
+
+    resolver.resolve([second])
+
+    assert second.system_metadata["schema_entity_id"] != first.system_metadata["schema_entity_id"]
+    assert second.system_metadata["schema_entity_resolution"] == "create"
+    assert llm.calls == 0

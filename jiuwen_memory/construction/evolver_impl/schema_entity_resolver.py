@@ -118,9 +118,6 @@ class SchemaEntityResolver:
         selected = self._llm_target(observation, recalled)
         if selected is not None:
             return selected, "update"
-        exact = _exact(observation, existing)
-        if exact is not None:
-            return exact, "exact"
         return (
             _EntityView(
                 entity_id=str(uuid.uuid4()),

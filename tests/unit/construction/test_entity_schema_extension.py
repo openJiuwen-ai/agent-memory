@@ -37,6 +37,7 @@ from jiuwen_memory.construction.evolver import EvolveMode
 from jiuwen_memory.construction.evolver_impl.schema_orchestrating_evolver import (
     SchemaOrchestratingEvolver,
 )
+from jiuwen_memory.construction.evolver_impl.schema_property_merge import SchemaPropertyMergePlan
 from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import (
     EntitySchemaExtractor,
     InvalidSchemaExtractionError,
@@ -936,7 +937,7 @@ class _SchemaEvolverHarness(SchemaOrchestratingEvolver):
         return None
 
 
-def _evolver(extractor) -> tuple[SchemaOrchestratingEvolver, _Storage, _Index]:
+def _evolver(extractor, **options) -> tuple[SchemaOrchestratingEvolver, _Storage, _Index]:
     storage = _Storage()
     index = _Index(storage)
     evolver = _SchemaEvolverHarness(
@@ -948,6 +949,7 @@ def _evolver(extractor) -> tuple[SchemaOrchestratingEvolver, _Storage, _Index]:
         message_store=SimpleNamespace(),
         dedup=SimpleNamespace(),
         llm=SimpleNamespace(),
+        **options,
     )
     return evolver, storage, index
 
@@ -1049,6 +1051,71 @@ def test_schema_properties_are_added_without_ordinary_dedup() -> None:
     assert storage.units[source.id].entities == ["ExistingEntity", "Alice"]
     assert storage.units[property_unit.id].entities == []
     assert storage.units[property_unit.id].system_metadata["schema_property_name"] == "occupation"
+
+
+def test_delete_command_is_not_synced_to_entity_registry() -> None:
+    source = _source()
+    set_unit = MemoryUnit(
+        id="set-property",
+        scope=source.scope,
+        tier=MemoryTier.SEMANTIC,
+        segments=[Segment(content="Alice is an engineer")],
+        provenance=[source.id],
+        system_metadata={
+            "extraction_mode": "schema",
+            "schema_entity_name": "Alice",
+            "schema_property_name": "occupation",
+        },
+    )
+    delete_command = MemoryUnit(
+        id="delete-command",
+        scope=source.scope,
+        tier=MemoryTier.SEMANTIC,
+        segments=[Segment(content="Alice no longer has the old occupation")],
+        provenance=[source.id],
+        system_metadata={
+            "extraction_mode": "schema",
+            "schema_entity_name": "Alice",
+            "schema_entity_description": "Obsolete description from delete command",
+            "schema_property_name": "occupation",
+            "schema_property_operation": "delete",
+        },
+    )
+
+    class Extractor:
+        @staticmethod
+        def extract(_units, *, context=None):
+            del context
+            return [set_unit, delete_command]
+
+    class Resolver:
+        def __init__(self) -> None:
+            self.synced_ids: list[str] = []
+
+        @staticmethod
+        def resolve(_units) -> None:
+            return None
+
+        def sync(self, units) -> None:
+            self.synced_ids.extend(unit.id for unit in units)
+
+    class Planner:
+        @staticmethod
+        def plan(_units) -> SchemaPropertyMergePlan:
+            return SchemaPropertyMergePlan(additions=[set_unit])
+
+    resolver = Resolver()
+    evolver, storage, _index = _evolver(
+        Extractor(),
+        schema_entity_resolver=resolver,
+        schema_property_merge_planner=Planner(),
+    )
+
+    result = evolver.evolve([source], EvolveMode.EXTRACT)
+
+    assert result.created_ids == [source.id, set_unit.id]
+    assert set(storage.units) == {source.id, set_unit.id}
+    assert resolver.synced_ids == [set_unit.id]
 
 
 class _MemoryEntityStore(EntityStore):

@@ -243,20 +243,21 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             property_ids = self._persist(extracted)
             superseded_ids = []
             archived_ids = []
+        persisted_observations = [
+            unit
+            for unit in extracted
+            if str(unit.system_metadata.get("schema_property_operation") or "set").casefold()
+            != "delete"
+        ]
         if self._schema_entity_resolver is not None:
             try:
-                self._schema_entity_resolver.sync(extracted)
+                self._schema_entity_resolver.sync(persisted_observations)
             except Exception as exc:
                 logger.warning(
                     "SchemaOrchestratingEvolver: entity registry sync failed; "
                     "properties remain durable: %s",
                     exc,
                 )
-        persisted_observations = [
-            unit
-            for unit in extracted
-            if str(unit.system_metadata.get("schema_property_operation") or "set") != "delete"
-        ]
         source_writeback_ids = self._write_schema_entities_to_sources(
             units,
             persisted_observations,
