@@ -256,10 +256,15 @@ globals:
 #     params:
 #       hierarchy_derive_interval: 1800   # 秒，不得小于 tick_interval
 #       hierarchy_derive_lookback: 604800 # 秒，仅限制未挂父 Snapshot
-#       hierarchy_max_leaves: 5000
+#       hierarchy_max_leaves: 5000  # 完整候选保护上限，不是每轮截取的批大小
 #       hierarchy_page_size: 200
 #       # lock: default        # 可选，引用已配置的具名锁；与显式建树共用
 #       hierarchy_lock_wait_ms: 30000
+# 每层未挂父候选与未来输入合计受 max_leaves 限制，尚未封口的尾组也占额度。
+# 补齐完整子树仍受叶子上限限制；home 中活动父节点另有 3 * max_leaves 上限。
+# 超限本轮失败，不截断候选、不进入持续故障保护；下轮仍尝试，已完成的下层保留。
+# 数量持续超限可能连续失败；显式建树也受限，需调高上限或在保留完整旧子树的前提下
+# 分范围处理。调高上限需评估内存/读取成本并重新装配 Runtime；详见 S08 配置规约。
 # 内置 profile：TimeSpan 累计跨度/静默 2 小时；Scene 最大跨度 14 天、静默 1 天；
 # Event 按语义分组、静默 3 天。静默只用于自动尾组封口，不改变显式建树分组。
 # runtime = assemble_runtime(config=config)

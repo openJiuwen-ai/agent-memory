@@ -211,7 +211,7 @@ ConfigSource.get_cached 同样遵循绑定上下文，不串用后续装配的�
 | scheduler.default.params | tick_interval | async_timer 默认 10 秒；任务间隔不得小于它 |
 | job_factory.default.params | hierarchy_derive_interval | 1800 秒；正整数，后台运行间隔 |
 | job_factory.default.params | hierarchy_derive_lookback | 604800 秒；正整数，仅筛选未挂父 Snapshot |
-| job_factory.default.params | hierarchy_max_leaves / hierarchy_page_size | 5000 / 200；沿用显式候选限额和分页保护 |
+| job_factory.default.params | hierarchy_max_leaves / hierarchy_page_size | 5000 / 200；完整候选保护上限 / 读取分页大小，容量语义见下文 |
 | job_factory.default.params | lock / hierarchy_lock_wait_ms | 可选具名锁 / 30000 毫秒；沿用显式构建互斥 |
 | hierarchy_profiles.time.stage_options.TimeSpanMerger | settle_seconds | 内置 7200；自定义 profile 省略时沿用 gap_seconds |
 | hierarchy_profiles.time.stage_options.SceneSegmenter | settle_seconds | 内置 86400；自定义 profile 省略时沿用 max_duration_seconds |
@@ -222,3 +222,16 @@ Composer 的 `params.hierarchy_profiles` 配置；显式 Composer 不自动合�
 静默仅影响自动尾组封口，显式建树不等待静默。周期/回看参数归 JobFactory，首次启用
 注册时校验；双开关未开启时不解析未使用的自动任务参数。
 策略可动态设置；调度间隔、回看和 profile 是装配配置，修改后重新装配并注册。
+
+`hierarchy_max_leaves` 是完整读取的容量保护，不是分批处理数量，也不是分组切分阈值：
+
+- 每层自动候选满足 `len(initial) + len(pending) <= max_leaves`。initial 包含当前时间内
+  未挂父的合格输入（含尚未满足尾组静默条件的输入）；pending 专指 span_end 晚于本轮
+  当前时间的输入。被跳过的缺时、迟到、过窗叶不占这项额度。
+- 补齐候选的完整后代时，Snapshot 叶数量也受 max_leaves 约束；完整子树读取还有逐层
+  子引用数量保护。父节点数量上限为 3 * max_leaves，自动水位扫描同样限制 home 中
+  全部活动 TIME 父节点的数量，不只统计本轮新增父节点。
+- 超限在候选收集阶段报告 FAILED，不截断后继续、不触发持续故障保护。下一周期仍会
+  尝试，数量持续超限时可能连续失败；本轮此前成功持久化的下层结果保留。
+- 显式建树也使用这些限额，不能保证一次重建就解除容量问题。可评估内存和读取成本后
+  调高上限并重新装配，或合理划分处理范围；相交旧树仍须补齐全部后代，不得截断旧子树。

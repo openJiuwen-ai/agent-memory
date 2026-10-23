@@ -487,6 +487,8 @@ def _build_job_factory(config):
         _build_evolve_job_spec(config).with_scope,
     )
     factory.register(JobType.HIERARCHY, build_spec(config).with_scope)
+    # 自动任务首次注册时才解析周期/回看参数，避免未启用功能的无效配置阻断普通装配。
+    # 锁保护首次构造及 with_scope 的状态共享；同一 home 的故障状态不随重新注册清零。
     derive_spec = None
     derive_lock = Lock()
 
