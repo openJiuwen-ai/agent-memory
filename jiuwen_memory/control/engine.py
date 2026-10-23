@@ -33,6 +33,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
+from jiuwen_memory.control.policy import PolicyManager
+from jiuwen_memory.control.types import BackgroundJobStartResult
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.kv import KVStore
 
@@ -240,6 +242,12 @@ class MemoryEngine(ControlOperator):
     async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
         """一次性显式建树；普通 evolve 的候选源与 dreaming 执行契约保持。"""
         raise NotImplementedError("当前 Engine 未实现显式树构建")
+
+    async def start_background_jobs(
+        self, scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
+        """注册已鉴权 home 的后台任务；不在控制层重新判权。"""
+        raise NotImplementedError("当前 Engine 未实现自动建树")
 
     @abstractmethod
     async def admin_get(self, key: str) -> str:

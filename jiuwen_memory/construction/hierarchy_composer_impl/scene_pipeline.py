@@ -33,6 +33,7 @@ from .grouping_support import adjacent_similarities, semantic_text
 from .time_pipeline import (
     as_utc,
     excerpt,
+    optional_positive_int,
     positive_int,
     shared_metadata,
     split_keys,
@@ -54,6 +55,7 @@ class SceneSegmenterOptions:
     summary_mode: str = "structural"
     summary_max_children: int = 20
     summary_max_chars_per_child: int = 80
+    settle_seconds: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("max_duration_seconds", "summary_max_children", "summary_max_chars_per_child"):
@@ -62,6 +64,10 @@ class SceneSegmenterOptions:
                 raise ValidationError(f"{name} 必须是正整数")
             if value <= 0:
                 raise ValidationError(f"{name} 必须是正整数")
+        if self.settle_seconds is not None and (
+            type(self.settle_seconds) is not int or self.settle_seconds <= 0
+        ):
+            raise ValidationError("settle_seconds 必须是正整数或 None")
         threshold = self.similarity_threshold
         if threshold is not None:
             if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
@@ -92,6 +98,7 @@ class SceneSegmenterOptions:
             raise ValidationError("similarity_threshold 不能是 bool")
         return cls(
             max_duration_seconds=positive_int(values, "max_duration_seconds", 86400),
+            settle_seconds=optional_positive_int(values, "settle_seconds"),
             similarity_threshold=threshold,
             boundary_metadata_keys=split_keys(values.get("boundary_metadata_keys")),
             end_signal_metadata_keys=split_keys(values.get("end_signal_metadata_keys")),

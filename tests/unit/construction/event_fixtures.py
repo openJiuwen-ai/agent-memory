@@ -1,7 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Event 测试输入与四层配置，均通过公开构建接口生成。"""
 
+from __future__ import annotations
+
 import json
+from typing import TYPE_CHECKING
 
 from jiuwen_memory.common.type_def import HierarchyKind, HierarchyRole, MemoryUnit
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeProfile
@@ -12,6 +15,10 @@ from jiuwen_memory.construction.hierarchy_composer_impl.scene_pipeline import (
 )
 from tests.unit.construction.scene_fixtures import make_span
 from tests.unit.construction.time_pipeline_fixtures import TREE_HOME_SCOPE
+
+if TYPE_CHECKING:
+    from tests.unit.control.hierarchy_job_fixtures import HierarchyJobHarness
+
 
 EVENT_ROLES = [HierarchyRole.TIME_SPAN, HierarchyRole.SCENE, HierarchyRole.EVENT]
 
@@ -59,3 +66,14 @@ def summary_grouping_case(
     if fallback:
         responses[-2:] = ["invalid json", RuntimeError("summary unavailable")]
     return profiles, responses
+
+
+def read_event_path(harness: HierarchyJobHarness, original: MemoryUnit) -> list[MemoryUnit]:
+    """沿完整父引用读取 snapshot、time_span、scene、event。"""
+    path = [harness.read(original)]
+    for _ in range(3):
+        child = path[-1]
+        path.append(harness.composition.read(
+            child.hierarchy.resolved_parent_scope(child.scope), child.hierarchy.parent_id,
+        ))
+    return path

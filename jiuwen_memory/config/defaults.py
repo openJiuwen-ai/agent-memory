@@ -41,18 +41,21 @@ def default_config_dict() -> dict[str, Any]:
                     "stage_options": {
                         "TimeSpanMerger": {
                             "gap_seconds": 7200,
+                            "settle_seconds": 7200,
                             "summary_mode": "llm",
                             "summary_max_leaves": 20,
                             "summary_max_chars_per_leaf": 60,
                         },
                         "SceneSegmenter": {
                             "max_duration_seconds": 1209600,
+                            "settle_seconds": 86400,
                             "summary_mode": "llm",
                             "summary_max_children": 20,
                             "summary_max_chars_per_child": 80,
                         },
                         "EventBuilder": {
                             "similarity_threshold": 0.65,
+                            "settle_seconds": 259200,
                             "summary_mode": "llm",
                             "summary_max_children": 20,
                             "summary_max_chars_per_child": 300,

@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import copy
+import json
 import threading
 import time
 import uuid
@@ -51,6 +52,18 @@ from jiuwen_memory.control.scheduler_impl.job_outcome import terminal_job_status
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 
 logger = get_logger(__name__)
+
+
+def _serialize_job_detail(detail: dict[str, str]) -> str:
+    """诊断序列化失败不影响任务终态、清理或后续队列消费。"""
+    try:
+        return json.dumps(detail, ensure_ascii=False, default=str)
+    except Exception as error:
+        logger.warning(
+            "AsyncTimerScheduler.detail serialization failed: error_type=%s",
+            type(error).__name__,
+        )
+        return "{}"
 
 
 @dataclass
@@ -491,6 +504,10 @@ class AsyncTimerScheduler(Scheduler):
                 parent_id = info.detail.get("parent_timer")
                 parent = self._jobs.get(parent_id) if parent_id else None
                 if parent is not None:
+                    parent.detail.update(
+                        last_run_id=info.id,
+                        last_run_detail=_serialize_job_detail(info.detail),
+                    )
                     parent.detail["last_run_at"] = info.detail["finished_at"]
                     parent.detail["last_run_status"] = info.status.value
                     if info.status == JobStatus.SUCCEEDED:
