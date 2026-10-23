@@ -23,34 +23,40 @@
 配置的通用组织与引用规则见 [Config 配置与装配指南](config.md)，控制层与存储层接口见
 [Control 层 API](control.md) 和 [Storage 层 API](storage.md)。
 
-## 1. 适用版本与能力状态
+## 1. 使用前确认支持的能力
 
-> 本文档分支以已合入 PR1 的上游版本为基础。PR2、PR1-1 和 PR3 的配置分别按对应
-> 实现分支核对；不能把不同分支的配置直接拼成一个部署。运行示例前，先核对下面的
-> 版本要求：在本文档分支可测试 PR1 的 HTTP 认证与本地网关；PR2/PR1-1/PR3 示例
-> 需要相应实现代码，单独复制本文档不会提供这些能力。
+调用服务前，准备服务地址、本人可用的 Key 和允许访问的 Scope。使用已有服务时，
+由服务管理员提供这些信息，并确认已启用哪些安全能力；无需查阅代码修改记录。
+自行部署时，按下表确认所用版本支持相应能力，再执行对应章节的配置。
 
-| 版本或分支 | 已实现内容 | 使用边界 |
-|---|---|---|
-| 上游 `mem2.0`（PR1） | DEV/API Key/Trusted 认证、主体凭据、入口保护、密码学与显式加密 KV、普通审计、基础日志脱敏 | API 业务授权仍使用旧 PermissionManager；SecurityRuntime 的 Authorizer 占位不执行终局判定 |
-| `sec/isolation`（PR2） | 唯一 PEP/PDP、Grant/Delegation、空间两轴、返回快照隔离、代理代写、公开 Server 装配及关闭屏障 | 本文业务授权和 `assemble_server_runtime` 示例的主线版本；尚未合入上游 |
-| `sec/storage-encryption`（PR1-1） | 全后端静态加密策略、KV/FS 应用加密、索引与控制库及 Markdown/shadow 部署保护 | 独立版本；不包含 PR2/PR3 的完整能力 |
-| `sec/audit`（PR3） | 链式审计、完整性验证与本地 MAC；已同步 PR2 的公开 Server 装配入口 | 独立版本；不包含 PR1-1 全后端静态加密 |
-
-| 能力 | 启用条件或当前限制 |
+| 能力 | 使用前提与限制 |
 |---|---|
-| PR1 认证、主体凭据、入口保护、显式 KV 加密 | 已合入上游；是否启用由配置决定 |
-| PR2 业务授权与隔离 | 需要 `sec/isolation` 的实现，不能仅在上游添加 Authorizer 配置 |
-| 普通审计记录与查询 | 已合入上游；默认 SQLite `:memory:`，持久路径须显式配置 |
-| PR1-1 全后端静态加密 | 需要 `sec/storage-encryption`；上游及 PR2 尚无统一开关或 EncryptedFS |
-| PR3 审计完整性 | 需要 `sec/audit`；PR2 未装配 provider 时返回 `unsupported` |
-| PR3 外部锚点 | 有核对契约，但无内置 WORM/KMS/云锚点产品、YAML target 或自动发布链头作业 |
-| 主体 Key 与动态委托的网络管理接口 | 尚无 HTTP/CLI/MCP 签发、角色变更或动态委托管理产品入口 |
-| Markdown/shadow 静态加密 | PR1-1 对 Markdown 根目录和 shadow SQLite 使用部署保护声明与位置绑定，不对 Markdown 文件正文做 ENC1 包装 |
+| 基础认证 | 支持 DEV、API Key 或 Trusted；生产环境选择 API Key 或 Trusted，配置见第 5 节 |
+| 业务授权与隔离 | 服务需支持并启用 Authorizer；用于限制普通用户的访问范围，见第 6 节；仅配置认证不代表已有这项能力 |
+| 主体 Key | 内置 memory 注册表重启失效；没有 HTTP/CLI/MCP 主体 Key 签发与角色管理接口，需受信服务端代码初始化，见第 5.2 节 |
+| 普通审计 | 默认 SQLite `:memory:` 不持久；需保留记录时显式配置文件路径，见第 11.1 节 |
+| KV 内容加密 | 需要配置加密 KV 端口与根密钥；不自动覆盖索引与其他文件，见第 9 节 |
+| 全后端静态加密 | 需要支持统一加密策略的实现；KV/FS 使用应用加密，索引与控制文件使用部署保护，见第 10 节 |
+| Markdown/shadow 静态保护 | 支持统一加密策略时核查 Markdown 根目录和 shadow SQLite 的部署保护与位置绑定；不对 Markdown 正文做 ENC1 包装 |
+| 审计完整性 | 需要启用完整性 provider；未装配时验证返回 `unsupported`，不代表验证通过，见第 11.2 节 |
+| 外部审计锚点 | 只有集成契约，没有内置 WORM/KMS/云锚点产品或自动发布作业；由部署方完成集成 |
 
-后续安全 PR 合入时更新本页的适用状态、配置和使用示例。特性设计、决策与遗留维护在
-`docs/features/common/F04-security-interfaces-and-encryption.md`；本文是使用指南，不另建
-安全特性总纲，也不修改冻结接口。
+不同部署可能只提供部分能力。增加一段配置不会使不支持该能力的版本自动具备实现，
+也不能将多个独立实现的配置直接拼接为一个服务。
+
+<details>
+<summary>维护参考：本文示例对应的实现分支</summary>
+
+此表供部署维护人员核对示例兼容性，普通调用者只需向服务管理员确认上表中的能力。
+
+| 实现 | 对应源码 | 兼容性说明 |
+|---|---|---|
+| 基础认证与加密 | 本文档基于 `mem2.0` 已合入的基础安全实现 | 业务授权仍使用旧 PermissionManager；安全运行时中的 Authorizer 占位不参与业务判定 |
+| 授权与隔离 | `sec/isolation` | 业务授权、委托、空间权限与公开 Server 装配示例的参考实现 |
+| 全后端静态加密 | `sec/storage-encryption` | 独立实现；不包含授权隔离与审计完整性的全部能力 |
+| 审计完整性 | `sec/audit` | 已包含公开 Server 装配入口；不包含全后端静态加密策略 |
+
+</details>
 
 ## 2. 一次请求如何经过安全检查
 
@@ -59,13 +65,13 @@
 若数据已加密，存储层在读取时解密，正常 API 响应仍是可读正文。审计记录这次调用。
 
 客户端提交的 Scope 只表示“想访问哪里”，不会把调用者变成该 Scope 的主人。
-例如 Bob 把请求改成 Alice 的 Scope，PR2 仍会按 Bob 的真实身份检查权限。
+例如 Bob 把请求改成 Alice 的 Scope，启用业务授权后，服务仍会按 Bob 的真实身份检查权限。
 
 <details>
 <summary>需要排查实现时，展开查看请求链路与模块位置</summary>
 
-下图是 PR2 的完整请求链路。当前上游 PR1 只消费入口认证与保护，业务判定仍走
-PermissionManager；不能把图中的 Authorizer、来源复核与同源关闭屏障视为上游已启用。
+下图展示已启用业务授权的完整请求链路。只支持基础认证的实现仍走旧 PermissionManager；
+配置认证不代表图中的 Authorizer、上下文复核与共享资源关闭屏障都已启用。
 图中的 PEP 是执行权限检查的入口，PDP 是作出权限判定的组件；具名实例指配置中
 有名字、可被其他组件引用的同一份对象。
 
@@ -79,7 +85,7 @@ flowchart TB
     PDP --> Control["授权通过后委托 Control\n只下传已鉴权 target，不下传 actor"]
     Control --> Storage["DomainStore / StoreManager / 原生 Scope 隔离"]
     Storage --> ENC["可选 encrypted KV\nENC1 / AES-GCM / KeyProvider"]
-    Edge -.入口审计.-> Audit["AuditLogger + request_id\n普通审计，不是 PR3 完整性链"]
+    Edge -.入口审计.-> Audit["AuditLogger + request_id\n普通审计；完整性链需另行启用"]
     PEP -.允许与拒绝审计.-> Audit
 ```
 
@@ -115,9 +121,9 @@ pip install -e ".[dev,security]"
 # 需要 MCP 时另外安装：pip install -e ".[mcp]"
 ```
 
-### 3.1 HTTP 与 CLI（上游 PR1 可用）
+### 3.1 HTTP 与 CLI
 
-以下固定 DEV 命令也适用于当前上游 PR1；仅用于回环开发测试。
+以下命令使用固定 DEV 身份，仅用于本机回环开发测试。
 
 ```bash
 scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8137
@@ -135,7 +141,7 @@ scripts/run-cli.sh --auth-mode dev add \
 
 CLI 默认本地内存配置一条命令一个进程，第二条命令不会自动看见第一条的记忆或内存 Key。需要持久 Store、NDJSON batch 的同一会话，或者长命 HTTP 服务。
 
-### 3.2 Python SDK（需要 PR2）
+### 3.2 Python SDK（需要业务授权能力）
 
 下面是仅供本地开发的完整 Python 例子。使用默认内存数据面与 echo/hashing，不需要模型或外部数据库。DEV 无映射时固定身份为 `org=local,user=developer,role=ROOT`，并不适用于生产。
 
@@ -201,7 +207,8 @@ memory_api:
         authenticator: {target: dev}
 ```
 
-Python `assemble_runtime(config=...)`（上游）和 `assemble_server_runtime(config=...)`（PR2）只传内层 mapping。不能把 profile/http/memory_api 的整个服务配置当成内核两级命名空间。
+Python 的基础装配入口 `assemble_runtime(config=...)` 和支持业务授权的
+`assemble_server_runtime(config=...)` 都只传内层 mapping。不能把 profile/http/memory_api 的整个服务配置当成内核两级命名空间。
 
 需要特别检查以下三种行为：
 
@@ -218,8 +225,18 @@ Python `assemble_runtime(config=...)`（上游）和 `assemble_server_runtime(co
 
 以第 5.2 节 API Key 服务配置为例，将其保存为 `security.yml`。先在**启动服务的终端**
 设置 `AGENT_MEMORY_ROOT_API_KEY`；下面以 Root Key 做一次本地运维验证。
-本例目标 Scope 使用 Root 身份自身的 `system/root`，使 PR1 的旧权限管理也可通过。
-普通用户接入应使用服务端签发的主体 Key；认证成功后能访问哪些范围，仍取决于业务授权。
+本例目标 Scope 使用 Root 身份自身的 `system/root`，兼容基础认证实现中的旧权限管理。
+这两个环境变量分别用于服务端和客户端：
+
+- `AGENT_MEMORY_ROOT_API_KEY`：由服务端 YAML 的 `root_api_key` 引用，保存部署级 Root 凭据。
+- `AGENT_MEMORY_API_KEY`：由 CLI 等客户端读取，作为请求的 Bearer 凭据发送给服务端。
+
+**本节的本地 Root 测试中，两者使用同一个值，需要显式赋值；程序不会自动同步，
+也没有根据 Root Key 派生客户端 Key 的步骤。** 客户端提交这个值时，以 Root 身份认证。
+
+普通用户接入时，由服务端受信代码通过 `key_store.issue(actor, role)` 独立随机签发主体
+Key（见第 5.2.1 节），再把返回值提供给客户端的 `AGENT_MEMORY_API_KEY`。主体 Key
+不由 Root Key 计算得到，此时两个变量的值不同。认证成功后能访问哪些范围，仍取决于业务授权。
 
 ```bash
 # Bash：生成本次本地测试的随机 Root Key，不输出其值。
@@ -235,10 +252,13 @@ $env:PYTHONPATH = "$($PWD.Path);$($PWD.Path)\jiuwen_memory_entry\core"
 python -m jiuwen_memory_entry.http_server security.yml --host 127.0.0.1 --port 8137
 ```
 
-服务运行时另开终端发请求。此终端不会自动继承刚才终端新设置的变量；应通过受保护的
-渠道提供同一把测试 Key。下面假设调用终端的 `AGENT_MEMORY_API_KEY` 已设为该 Key。
+服务运行时另开终端发请求。新终端不会自动继承启动终端刚设置的变量；先通过受保护
+渠道，将服务端使用的同一把测试 Root Key 设置为调用终端的 `AGENT_MEMORY_ROOT_API_KEY`，
+再按下面命令赋给 `AGENT_MEMORY_API_KEY`。不要在调用终端重新生成另一把随机 Root Key。
 
 ```bash
+export AGENT_MEMORY_API_KEY="$AGENT_MEMORY_ROOT_API_KEY"
+
 curl -i -X POST http://127.0.0.1:8137/v1/add \
   -H "Authorization: Bearer ${AGENT_MEMORY_API_KEY}" \
   -H 'Content-Type: application/json' \
@@ -251,6 +271,8 @@ scripts/run-cli.sh --server http://127.0.0.1:8137 add \
 PowerShell 可避免手写 JSON 引号转义：
 
 ```powershell
+$env:AGENT_MEMORY_API_KEY = $env:AGENT_MEMORY_ROOT_API_KEY
+
 $body = @{content='security parameter demo'; scope=@{org='system'; user='root'}} | ConvertTo-Json
 Invoke-RestMethod -Uri 'http://127.0.0.1:8137/v1/add' -Method Post `
   -Headers @{Authorization="Bearer $env:AGENT_MEMORY_API_KEY"} `
@@ -267,7 +289,7 @@ HTTP 服务的配置路径是位置参数；CLI 本地执行才使用 `--config 
 
 ### 4.3 SDK 如何传 `security=`
 
-第 5.2.2 节有完整可运行示例，核心步骤如下（PR2）：
+第 5.2.2 节有完整可运行示例；以下核心步骤要求所用版本支持业务授权：
 
 ```python
 # runtime 是 assemble_server_runtime 返回的对象，token 是同源注册表签发的 Key。
@@ -313,8 +335,8 @@ actor 的 org 必须非空，user 与 agent 恰好一个非空；session 挂在�
 
 ### 5.2 API Key
 
-认证与主体 KeyStore 已在上游 PR1 实现。下面的服务配置只使用 PR1 能力；业务访问是否获准
-仍取决于该版本的 PermissionManager。完整的角色、撤权和资源授权链路需要 PR2。
+下面配置启用 API Key 认证与主体凭据注册表。基础认证实现的业务访问仍由旧
+PermissionManager 判定；完整的角色、在线撤权和资源授权还需要服务支持业务授权能力。
 
 内置 API Key 认证支持部署级 Root Key，以及由 PrincipalKeyStore 管理的主体 Key。
 
@@ -353,12 +375,12 @@ Root Key 认证为 `system/root` ROOT；它不由主体 Store 签发，主体 is
 
 当前只有内置 memory 主体 KeyStore，重启失效。配置 SQLite Grant/Delegation 不会让主体 Key 变持久。生产若需要可靠凭据持久化，应实现遵守契约及在线撤销能力的插件和受信管理入口，不能用探测 `_records` 的临时脚本冒充产品方案。
 
-#### 5.2.1 受信凭据管理（上游 PR1）
+#### 5.2.1 受信凭据管理
 
 下面是服务端受信凭据管理示例，不是 HTTP endpoint，也不是要求 Access 层 import 内核实现。Role/fingerprint 来自公共安全契约；key_store property 是内置 ApiKeyAuthenticator 的公开属性，不是所有第三方 Authenticator 的必备成员。
 
 下面只验证当前上游已经实现的签发、认证和撤销。示例使用公开装配辅助，不访问私有
-Factory、注册表字段或 Runtime 内核字段；它不宣称 PR1 已完成缓存上下文的业务撤权。
+Factory、注册表字段或 Runtime 内核字段；仅凭这个示例不能证明已缓存的业务上下文也会被在线撤权；该验证见下一节。
 
 ```python
 import secrets
@@ -392,10 +414,10 @@ finally:
     runtime.close()
 ```
 
-#### 5.2.2 缓存上下文的在线撤销（PR2）
+#### 5.2.2 缓存上下文的在线撤销（需支持在线撤权）
 
-以下示例同时验证已签发的请求上下文在撤权后不能继续读记忆，需要 PR2 的公开
-`assemble_server_runtime` 与 PEP 在线复核能力。
+以下示例同时验证已签发的请求上下文在撤权后不能继续读记忆，需要公开
+`assemble_server_runtime` 装配入口与业务层在线凭据复核能力。
 
 ```python
 import secrets
@@ -436,7 +458,7 @@ finally:
 
 不要打印 token/Root Key/验证 hash。真实生产材料从 secret 管理渠道获取；随机示例只在本进程有效。
 
-PR2 中，通用插件通过公开 CredentialSourcesCapability 声明 `(credential_type, issuer, Store)`，PEP Registry 绑定认证器实际签发真源。更换认证器会替换旧 issuer 注册，不能额外创建一套同名但不同对象的 KeyStore。
+支持业务授权时，通用插件通过公开 CredentialSourcesCapability 声明 `(credential_type, issuer, Store)`，PEP Registry 绑定认证器实际签发真源。更换认证器会替换旧 issuer 注册，不能额外创建一套同名但不同对象的 KeyStore。
 
 当前没有 `/v1/issue_key`、`list_keys`、`set_role` 等 HTTP/CLI/MCP 方法。MANAGE_PRINCIPAL 枚举也不能证明这些入口存在。Store 的受信公共方法包括 issue/resolve/revoke/get_role；同主体活跃 Key 角色不一致时拒绝新签发，管理方需保存指纹清单并先撤销旧 Key，再签发新角色。
 
@@ -493,9 +515,10 @@ memory_api:
 不使用该方法返回的主体 Key。初始化与接收请求必须使用**同一个服务进程中的同一个 Store**；
 在另一进程先运行签发脚本，再单独启动后端，后端不会获得那些内存记录。
 
-#### 5.3.2 本机搭建最小测试网关（PR1）
+#### 5.3.2 本机搭建最小测试网关
 
-适用于本文档分支所基于的上游 PR1，验证网关认证协议。第 6 节的业务授权测试另需 PR2。
+本例基于基础认证实现，用于验证网关协议；不验证第 6 节的业务授权。已启用业务授权
+的部署应使用相应的受控装配入口，不将此测试脚本作为生产服务启动器。
 安装第 3 节依赖后，保存下方脚本为仓库根目录的 `gateway_demo.py`。脚本同时启动：
 
 - 测试网关：`127.0.0.1:8139`，只接受 `/v1/add`；一个客户端测试 Key 固定对应 `demo/alice`。
@@ -544,7 +567,7 @@ def main():
     if not client_key:
         raise ValueError("DEMO_CLIENT_KEY must not be empty")
     gateway_key = secrets.token_urlsafe(32)
-    # PR1 的内存注册表没有 YAML 导入入口；先用公开属性完成同进程初始化。
+    # 基础认证实现的内存注册表没有 YAML 导入入口；先用公开属性完成同进程初始化。
     config = {"memory_api": {
         "security": {"default": {"target": "standard", "params": {
             "authenticator": "bootstrap",
@@ -678,9 +701,12 @@ Bearer，不自动生成 Trusted 身份头；不要让它拿着网关共享 Key 
 
 真实 peer 来自 socket，不采信 X-Forwarded-For/X-Real-IP。反代后 peer 可能集中到代理地址，影响限流桶，这需要部署容量规划，不应通过信任客户端转发头绕过。
 
-PR2 中 Root Key 与 Trusted 的 credential_status_required=false；有指纹不等于 PrincipalKeyStore.revoke 能废弃它们所有旧上下文。轮换需重新装配相应认证器，并复核长寿后台注册身份的处置。
+在业务授权链路中，Root Key 与 Trusted 的 credential_status_required=false；有指纹不等于 PrincipalKeyStore.revoke 能废弃它们所有旧上下文。轮换需重新装配相应认证器，并复核长寿后台注册身份的处置。
 
-## 6. 授权和隔离（PR2）
+## 6. 授权和隔离
+
+本节要求服务支持并启用业务授权。使用已有服务时，由管理员确认你的角色、可访问的
+Scope 和已授予的权限。
 
 ### 6.1 标准判定与可信上下文
 
@@ -765,7 +791,7 @@ POST `/v1/grant`，Bearer 在 header 中。revoke 请求仍有 grant 对象并�
 
 ### 6.3 空间两轴与最小空间示例
 
-启用空间内容治理需要 `authorizer.default=space_aware` 包装具名 standard，并选择支持非空 space 的 CloudEngine。不能在 PR2 里仅配置旧 `permission=space_aware` 就认为内容授权生效。
+启用空间内容治理需要 `authorizer.default=space_aware` 包装具名 standard，并选择支持非空 space 的 CloudEngine。仅配置旧 `permission=space_aware` 不会启用该内容授权链路。
 
 | 轴 | 角色 | 作用 |
 |---|---|---|
@@ -871,11 +897,14 @@ list 在本次返回分页的同一真源快照逐条 READ；get 对最终 as_of
 
 系统 Scope/权限过滤与用户 filters 外层 AND，不能被 OR 覆盖。无权资源、未知类型路由、跨 org 或失效委托不能通过搜索参数扩大范围。debug 时先看实际返回快照与系统谓词，不先把 filter 或权限兜底改成放行。
 
-## 7. 受控代理代写（PR2）
+## 7. 受控代理代写
+
+本节需要服务支持代理委托，由受信服务端代码配置。普通客户端使用已分配的凭据，
+不自行声明被代理用户。
 
 当前采用私有可信服务端装配过渡，不增加冻结网络接口。已认证凭据的指纹绑定既有 DelegationStore 记录，由 PEP/PDP 逐次复核。真实 actor 仍是单主体 agent，不改成被代理用户；作者归属可从有效委托派生，审计始终记录真实 actor。
 
-此配置是空间示例的增量片段，不能单独启动；适用于 PR2。在空间示例中添加 DEV 映射 `demo-agent`，actor 为 `{org: demo, agent: agent1, session: session1}`、role=user；在 `security.default.params` 加以下字段。指纹是公开测试 selector `demo-agent` 的 SHA-256，不是真实生产 token：
+此配置是空间示例的增量片段，不能单独启动；需要支持业务授权与代理委托。在空间示例中添加 DEV 映射 `demo-agent`，actor 为 `{org: demo, agent: agent1, session: session1}`、role=user；在 `security.default.params` 加以下字段。指纹是公开测试 selector `demo-agent` 的 SHA-256，不是真实生产 token：
 
 ```yaml
 delegation_store: default
@@ -960,9 +989,10 @@ local `rotate()` 生成新随机根密钥并推进 epoch，但新钥和旧代集
 
 明文迁移要离线明确执行、备份与验证，不能通过关闭校验或无密钥重新装配来修复。AAD 中 Scope 或 ID 变化也不是简单移动 bytes。
 
-## 10. 全后端静态加密（PR1-1）
+## 10. 全后端静态加密
 
-本节仅适用于 `sec/storage-encryption`；本文档分支没有该分支的统一开关与部署脚本。
+本节要求所用服务版本支持全后端静态加密，并提供对应的部署工具。仅支持第 9 节
+加密 KV 的版本不能直接使用本节的统一开关。
 **仓库内置的全后端 Docker 加密部署只支持 Linux 宿主机，并要求 Docker daemon
 与加密卷在同一宿主。Windows、macOS 和 Docker Desktop 的宿主目录挂载不适用于这套启动器。**
 Windows 测试人员可以验证 KV/FS 应用加密；ES 等后端的完整加密部署应安排在满足
@@ -1007,7 +1037,7 @@ ES 数据目录自动变成加密卷。应用不会内置开启某个 ES 产品�
 BM25、ANN、过滤、融合仍由原后端执行；解锁后的数据库/应用进程仍可读取明文。
 `StoreSecurity.enabled()` 是应用层 Store 能力，不是对远端磁盘的密码学证明。
 Markdown 根目录与 shadow SQLite 的部署声明也会核查并绑定真实位置；它们保存的
-文件仍需部署侧加密。PR2 的新 Grant/Delegation Store 不能从本节直接推导为已覆盖。
+文件仍需部署侧加密。业务授权使用的 Grant/Delegation Store 应另外核查实际存储保护，不能仅从本节推导为已覆盖。
 
 ### 10.1 统一开关和本地 API 示例
 
@@ -1023,9 +1053,9 @@ $env:AGENT_MEMORY_ENCRYPTION_ROOT_KEY = python -c "import secrets; print(secrets
 ```
 
 这些命令每次会生成不同的密钥，不能用于重启后读取原有持久数据。持久部署应保留并
-安全备份同一把密钥。以下内核 YAML 保存为 `pr1-1-encryption.yml`。
+安全备份同一把密钥。以下内核 YAML 保存为 `storage-encryption.yml`。
 它选择默认内存业务数据面，`permission.allow_all` **仅用于本地离线验证**；
-不是生产授权方案，也不能与 PR2 的配置语义混用。
+不是生产授权方案，也不能用于替代第 6 节的业务授权配置。
 
 ```yaml
 globals:
@@ -1045,7 +1075,7 @@ key_provider:
       key_file: ""
       create_key_file: false
 permission:
-  default: allow_all  # 仅本地离线验证；该分支仍为 PR1 授权链。
+  default: allow_all  # 仅本地离线验证；本例使用基础认证实现的旧权限管理。
 ```
 
 ```python
@@ -1055,7 +1085,7 @@ from jiuwen_memory.api import (
     assemble_runtime, build_dev_authenticator, new_request_context,
 )
 
-with open("pr1-1-encryption.yml", encoding="utf-8") as config_file:
+with open("storage-encryption.yml", encoding="utf-8") as config_file:
     config = yaml.safe_load(config_file)
 runtime = assemble_runtime(config=config)
 try:
@@ -1145,7 +1175,7 @@ fs_store:
 
 ### 10.4 在 Linux 测试机部署与验收
 
-以下命令在 **PR1-1 实现分支的仓库根目录、Linux 宿主机终端**执行，不在容器内执行。
+以下命令在**支持全后端静态加密的仓库根目录、Linux 宿主机终端**执行，不在容器内执行。
 先准备 Python >=3.11、PyYAML、同宿主 Docker Compose，以及 `cryptsetup`、
 `findmnt`、`lsblk`、`mkfs.ext4`、`tune2fs`。运维需提供两份独立的私密文件，
 权限为 600：`/secure/volume.key` 用来解锁磁盘卷；`/secure/application.key` 存放
@@ -1208,7 +1238,7 @@ encrypted 端口写入，不能只复制明文字节。备份、导出、swap、
 各自保护。运行期间应用不持续监控管理员是否替换了挂载。
 
 配置声明与离线 API 验证不能替代真实 LUKS+Docker 部署验收。生产部署还需核查实际
-挂载、迁移及恢复路径。该分支源码入口为
+挂载、迁移及恢复路径。部署与加密相关源码入口为
 `config/encryption.py`、`storage/encryption.py`、`storage/fs_impl/encrypted_fs_store.py`
 及 `deploy/encryption/`。本地 provider 的跨重启轮换限制仍然适用。
 
@@ -1220,22 +1250,23 @@ encrypted 端口写入，不能只复制明文字节。备份、导出、swap、
 
 默认 AuditLogger 为 SQLite `:memory:`，进程重启不会保留；需要持久审计时明确配 audit.default.params.db_path 及保留、访问、备份政策。普通审计记录不是防篡改链，审计库也不会由日志脱敏自动匿名化。
 
-verify_audit 按独立 VERIFY_AUDIT 判权。当前 PR2 无 PR3 provider 时返回验证 DTO 的 `status="unsupported"`；HTTP 可为 200，因为调用成功地报告不支持，而不是“验证 clean”或“接口不存在”。该分支的 provider/专用 guard/参数上限接缝不等于已启用完整性，独立 PR3 的实装方式见下节。
+`verify_audit` 按独立 VERIFY_AUDIT 权限判定。未装配完整性 provider 时，验证结果
+中的 `status` 为 `unsupported`；HTTP 可以返回 200，表示请求已处理，不代表审计记录
+已经通过完整性验证。启用与检查方法见下一节。
 
-PR1 已提供普通日志脱敏；PR2 在结构化参数与敏感字段标记处继续补齐调用点。普通业务日志不应包含 token、
-密钥、hash、完整正文/prompt，debug 材料也应脱敏。PR2 对文档记忆新增的标题、原文、
-Evolver prompt/content/Scope 与模型响应 trace 补齐敏感标记；
-业务数据不因此改变。该结论仅属于当前 PR2，不表示上游原树所有日志均已安全。
+日志脱敏需要在实际日志调用处标记敏感参数，不能自动识别任意字符串。普通业务日志
+不应包含 token、密钥、验证 hash、完整正文或模型 prompt；排障材料也应脱敏。
+日志脱敏不改变业务数据，也不替代审计库的访问与保存策略。
 
-### 11.2 审计完整性（PR3）
+### 11.2 审计完整性
 
-`sec/audit` 已实装的链是：入口/API 审计 → ProtectedAuditLogger → chained_hmac
+启用完整性审计后的写入链路是：入口/API 审计 → ProtectedAuditLogger → chained_hmac
 Provider → 同一具名 AuditLogger/ChainedAuditStore。事件全部受保护字段经版本化
 规范化，HMAC-SHA256 绑定前序 digest、sequence 与 key epoch。SQLite 原子 CAS
 追加与稳定快照/分页验证避免并发分叉；LocalKeyProvider 提供 MAC capability，
 用途标签与 ENC1 加密派生隔离。它不是对外不可否认性证明，也不是审计库静态加密。
 
-以下是此分支的**服务配置**，外层 memory_api 保留。先准备 state 目录、专用审计
+以下是启用完整性审计的**服务配置**，外层 memory_api 保留。先准备 state 目录、专用审计
 根密钥和认证 Root Key。普通 dict 不展开 ${...}；通过已有入口配置加载器解析 YAML。
 审计根密钥必须使用独立具名实例及独立真实材料，不与认证 Key、ENC1 根密钥共用。
 
@@ -1288,7 +1319,7 @@ memory_api:
     audit_verify_max_samples: 20
 ```
 
-该分支 defaults 提供 authorizer.default；也可显式配置 standard 和对应 Grant/
+完整性审计参考实现的默认配置提供 authorizer.default；也可显式配置 standard 和对应 Grant/
 Delegation Store。memory KeyStore 仍有新进程凭据初始化边界，部署 Root Key 是
 受控运维凭据，不供普通用户长期共享。AGENT_MEMORY_AUDIT_ROOT_KEY 必须可解码为
 32 字节 hex/base64。只有顶层 audit_integrity、没有 security 引用时拒绝启动；
@@ -1314,7 +1345,8 @@ ADMIN 不够。下面请求体没有 scope，也不接受调用方提供 digest/
 HTTP 认证放 Bearer header；CLI 的业务参数是
 `verify_audit --after-sequence 0 --page-size 1000 --max-samples 20 --anchor-policy if_configured`。
 进程内调用沿用已经取得的受控 security 上下文，对 `api.verify_audit` 传相同四个
-关键字参数。PR3 已提供 `assemble_server_runtime`/`ServerRuntime`，SDK 可按第 4.3 节
+关键字参数。支持完整性审计的版本提供 `assemble_server_runtime`/`ServerRuntime`，
+SDK 可按第 4.3 节
 从实际 Runtime 的认证器构造上下文；不要另造一个凭据 Store 来认证。
 
 | status/字段 | 使用时的含义 |
@@ -1329,7 +1361,7 @@ HTTP 认证放 Bearer header；CLI 的业务参数是
 
 增量 after_sequence>0 会验证 checkpoint；不存在时 incomplete，不从 genesis
 猜接。判断成功必须读 DTO，tampered/incomplete 的正常返回也可能是 HTTP 200。
-当前独立 PR3 的审计错误族没有专用 HTTP 映射，通常按 AgentMemoryError 返回 400，
+当前参考实现的审计错误族没有专用 HTTP 映射，通常按 AgentMemoryError 返回 400，
 不能套用“完整性故障一律 503”。
 
 外部 AuditAnchor 契约和 Provider 核对已实装，但没有 WORM/KMS/云锚点产品、YAML
@@ -1350,7 +1382,7 @@ lagging 只保证匹配的历史前缀，未锚定的最新后缀不获得相同
   degraded 闩不会因下一条成功自动清除，修复后重建 Runtime，不改私有标记。
 - local MAC 历史轮换材料只在内存，重启可能失去旧 epoch；需持久托管 provider
   才能设计生产轮换。链完整性不替代审计库访问权限、静态加密及备份策略。
-- PR3 的链式审计与 PR1-1 的全后端静态加密仍需分别核对实现版本；启用链式审计
+- 链式审计与全后端静态加密分别启用，需确认部署同时支持两项能力；启用链式审计
   不会自动加密审计 SQLite 文件，部署时仍需检查其磁盘、访问和备份保护。
 
 关键实现为 `common/audit/protected_audit_logger.py`、
@@ -1360,7 +1392,8 @@ lagging 只保证匹配的历史前缀，未锚定的最新后缀不获得相同
 
 ## 12. MCP、后台任务与关闭
 
-MCP 的传输认证已在 PR1 实现；本节后半的持续授权与共享关闭屏障需要 PR2。
+MCP 认证配置适用于基础认证能力；本节后半的持续授权与共享关闭屏障需要服务支持
+业务授权。普通调用者只需使用部署方提供的 MCP 配置与凭据。
 
 ```bash
 # 显式本地 DEV；仅供隔离开发环境。
@@ -1397,14 +1430,15 @@ close(wait=False)
 
 使用完自己拥有的 Runtime 调公开 close；不要探测 `_security_runtime/_authorizer/_conn` 来管理生命周期。成功注入的共享安全组合由公开装配句柄统一管理；错误地关闭某个共享视图会关闭共同根，不能继续当健康 Runtime 使用。外部借用资源应明确所有者，不把多个独立包装都当唯一主人。
 
-当前 PR2 已沿用 start/start_background 公开生命周期，ServerRuntime 转发同一入口。
+支持业务授权的 Runtime 使用 start/start_background 公开生命周期，ServerRuntime 转发同一入口。
 watcher.stop 不仅停 Observer/timers，还等待已进入数据面的 worker；排队旧代工作在停止后
 不访问 shadow，等待不依赖宿主 loop 恢复协程。共享安全视图关闭也执行同一屏障。
 同步启动失败传回宿主，关闭后拒绝重启，不通过私有 Kernel/Store 字段管理这些资源。
 
 ## 13. 错误与排障
 
-下表以 PR2 完整安全链路为主；PR1、PR1-1 和 PR3 的行为差异按前文适用版本核对。
+下表覆盖认证、业务授权、加密与审计的常见问题。先向服务管理员确认实际启用的能力，
+再根据错误排查；某项能力尚未提供时，不能只靠更改客户端参数启用。
 
 | 现象 | 优先检查 | 不应采用的绕过 |
 |---|---|---|
@@ -1417,7 +1451,7 @@ watcher.stop 不仅停 Observer/timers，还等待已进入数据面的 worker�
 | 503 BackendError | 授权/业务后端、连接关闭、队列容量、原异常链 | 将故障变成 403 或“确实无结果” |
 | 503 SecurityUnavailable | required 无 security；多文件外层覆盖掉安全段 | 自动 fallback DEV |
 | 413 或上传超时 | body 上限、读取超时、认证前准入 | 未认证先读全部正文 |
-| verify_audit unsupported | 当前未启用 PR3，是明确状态 | 将 unsupported 写成 clean/防篡改完成 |
+| verify_audit unsupported | 服务未提供或未装配审计完整性 provider | 将 unsupported 写成 clean/防篡改完成 |
 | SQLite closed database | 是否持已关闭 Runtime；共享根是否被其它视图关闭；drain 是否完成 | 访问 `_conn` 重开，跳过共享关闭回调 |
 | 加密读取失败/503 | 原根密钥/epoch、AAD Scope/ID、信封格式、轮换重启、明文混入 | 新建另一把钥、allow_plaintext、关闭 tag 校验 |
 | healthz 200 但业务失败 | healthz 只证明存活；单独查认证、PDP 和实际后端 | 把 healthz 当全链路健康或安全验收 |
@@ -1427,7 +1461,7 @@ watcher.stop 不仅停 Observer/timers，还等待已进入数据面的 worker�
 新 bug 的最小记录模板：
 
 ```text
-源码分支与版本：
+服务版本与已启用的安全能力：
 部署形态及认证模式：
 实际装配 target / 具名实例 / 持久文件：
 脱敏 actor、role、target Scope、action：
@@ -1446,7 +1480,7 @@ request_id / job_id / unit_id / grant_id / delegation_id：
 
 上线前至少检查以下项目：
 
-1. 确认使用版本与所需安全能力一致，不把独立分支的实现状态当作已合入上游。
+1. 确认部署版本支持所需安全能力，且相关配置已经启用。
 2. 核对安全、认证器、凭据 Store、授权器和审计器的实际具名引用，避免分成两套真源。
 3. 生产禁用 DEV；API Key/Trusted 的公网入口使用 TLS，并限制后端直接访问。
 4. 通过完整请求测试凭据撤销、授权拒绝、跨 Scope 隔离、委托到期和空间权限下降。
@@ -1455,6 +1489,5 @@ request_id / job_id / unit_id / grant_id / delegation_id：
 7. 密钥轮换必须验证跨重启读取与恢复；local provider 的内存轮换不等于生产持久轮换。
 8. 对完整性验证读取 DTO 的状态与锚点检查结果，不以 HTTP 200 代替验证成功。
 
-本页随安全实现 PR 和使用反馈同步维护配置、API、能力状态及排障说明。
-详细复现、验收和临时执行记录不写入本文；接口契约变更仍同步对应 specs，设计决策仍维护
-F04。安全 PR 合入目标分支后，应实际验证示例与跨层链路，再移除本页相应的版本限制。
+服务升级或调整安全配置后，应重新验证凭据、授权、加密读写与审计结果，并核对
+本页各示例的启用条件。部署中暂未提供的能力，由服务管理员向使用者说明。
