@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Budgeted property shrinking and post-shrink direct-hit restoration."""
+"""Budgeted, query-aware shrinking of entity property timelines."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from jiuwen_memory.common.type_def import ParsedQuery
 from .model import (
     SchemaPropertyEntry,
     SchemaShrinkDiagnostics,
-    SchemaTemporalQuery,
     SchemaTemporalResult,
     TemporalEntity,
 )
@@ -144,97 +143,6 @@ class SchemaTemporalShrinker:
         )
         return result
 
-    @staticmethod
-    def restore_direct_hits(
-        result: SchemaTemporalResult,
-        full_entities: dict[str, TemporalEntity],
-        query: SchemaTemporalQuery,
-        *,
-        extension_step: int = 3,
-    ) -> SchemaTemporalResult:
-        """Late-fuse direct Property hits and same-property timeline neighbors.
-
-        ``full_entities`` must be the knowledge-visible view captured before
-        shrinking. Event-time selection is reapplied after restoration.
-        """
-
-        step = max(0, int(extension_step))
-        current = {entity.entity_id: entity for entity in result.entities}
-        direct_retained: set[str] = set()
-        neighbors_added: set[str] = set()
-        for entity_id, unit_ids in result.direct_property_unit_ids.items():
-            source = full_entities.get(entity_id)
-            if source is None:
-                continue
-            target = current.get(entity_id)
-            if target is None:
-                target = _empty_entity(source)
-                current[entity_id] = target
-            locations = _entry_locations(source)
-            ordered_ids = sorted(
-                unit_ids,
-                key=lambda unit_id: (-result.direct_property_scores.get(unit_id, 0.0), unit_id),
-            )
-            for unit_id in ordered_ids:
-                location = locations.get(unit_id)
-                if location is None:
-                    continue
-                property_name, index = location
-                timeline = source.properties[property_name]
-                direct = timeline[index]
-                target.add(direct)
-                direct_retained.add(direct.unit_id)
-                if property_name == "default_property" or step == 0:
-                    continue
-                start = max(0, index - step)
-                end = min(len(timeline), index + step + 1)
-                for entry in timeline[start:end]:
-                    if entry.unit_id == direct.unit_id:
-                        continue
-                    if _add_if_missing(target, entry):
-                        neighbors_added.add(entry.unit_id)
-
-        visible: list[TemporalEntity] = []
-        for entity in current.values():
-            selected = entity.event_filtered(query)
-            if selected.properties:
-                visible.append(selected)
-        position = {entity.entity_id: index for index, entity in enumerate(result.entities)}
-        visible.sort(
-            key=lambda entity: (
-                position.get(entity.entity_id, len(position)),
-                -result.entity_scores.get(entity.entity_id, 0.0),
-                entity.entity_id,
-            )
-        )
-        result.entities = visible
-        result.selected = {
-            entity.entity_id: entity.selected_payload(result.mode) for entity in visible
-        }
-        retained = {entity.entity_id for entity in visible}
-        result.fallback_entity_ids = [
-            entity.entity_id for entity in visible if entity.fallback_used
-        ]
-        result.entity_scores = {
-            entity_id: score
-            for entity_id, score in result.entity_scores.items()
-            if entity_id in retained
-        }
-        prior = result.shrink_diagnostics or SchemaShrinkDiagnostics()
-        visible_ids = set()
-        for entity in visible:
-            for timeline in entity.properties.values():
-                visible_ids.update(entry.unit_id for entry in timeline)
-        result.shrink_diagnostics = SchemaShrinkDiagnostics(
-            entries_before=prior.entries_before,
-            entries_after=sum(_entry_count(entity) for entity in visible),
-            entities_reranked=prior.entities_reranked,
-            direct_entries_retained=len(direct_retained & visible_ids),
-            timeline_neighbors_added=len(neighbors_added & visible_ids),
-            degraded_errors=prior.degraded_errors,
-        )
-        return result
-
     def _allocate_budgets(self, entry_counts: list[int]) -> list[int]:
         if not entry_counts:
             return []
@@ -314,31 +222,3 @@ def _sort_timelines(properties: dict[str, list[SchemaPropertyEntry]]) -> None:
                 entry.unit_id,
             )
         )
-
-
-def _entry_locations(entity: TemporalEntity) -> dict[str, tuple[str, int]]:
-    locations: dict[str, tuple[str, int]] = {}
-    for property_name, timeline in entity.properties.items():
-        for index, entry in enumerate(timeline):
-            locations[entry.unit_id] = (property_name, index)
-    return locations
-
-
-def _empty_entity(source: TemporalEntity) -> TemporalEntity:
-    return TemporalEntity(
-        entity_id=source.entity_id,
-        name=source.name,
-        entity_type=source.entity_type,
-        description=source.description,
-        aliases=list(source.aliases),
-        search_fields=list(source.search_fields),
-        truncated=source.truncated,
-    )
-
-
-def _add_if_missing(entity: TemporalEntity, entry: SchemaPropertyEntry) -> bool:
-    timeline = entity.properties.get(entry.property_name, [])
-    if any(current.unit_id == entry.unit_id for current in timeline):
-        return False
-    entity.add(entry)
-    return True
