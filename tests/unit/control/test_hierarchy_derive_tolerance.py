@@ -20,6 +20,33 @@ from tests.unit.control.hierarchy_job_fixtures import job_harness
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize("invalid_link", ["children", "parent_scope"])
+def test_invalid_snapshot_links_fail_before_evolve_without_latching(invalid_link) -> None:
+    leaf = make_leaf("invalid-links")
+    harness = job_harness([leaf], profiles=event_profiles(settle_seconds="1"))
+    broken = deepcopy(leaf)
+    if invalid_link == "children":
+        broken.hierarchy.child_ids = ["unexpected-child"]
+        broken.hierarchy.child_scopes = [deepcopy(leaf.scope)]
+    else:
+        broken.hierarchy.parent_scope = deepcopy(harness.home)
+    harness.overwrite(broken)
+    job = derive_job(harness, DeriveClock(ORIGIN + timedelta(minutes=5)))
+    assert asyncio.run(harness.job().run()).status is JobStatus.FAILED
+    for _ in range(2):
+        result = asyncio.run(job.run())
+        assert result.status is JobStatus.FAILED, result.detail
+        assert "snapshot" in result.detail["error"]
+        assert "paused_reason" not in result.detail
+    assert not harness.evolver.requests and not harness.composition.builder.calls
+    assert not job.state.needs_repair
+    assert harness.read(leaf) == broken
+    harness.overwrite(leaf)
+    recovered = asyncio.run(job.run())
+    assert recovered.status is JobStatus.SUCCEEDED, recovered.detail
+    assert recovered.detail["created_parent_count"] == "3"
+
+
 def test_many_expired_snapshots_do_not_use_candidate_quota_or_block_healthy_chain() -> None:
     old = [make_leaf(f"expired-{index}") for index in range(25)]
     normal = make_leaf("normal", 8 * 1440)

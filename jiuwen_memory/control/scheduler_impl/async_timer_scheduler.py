@@ -54,6 +54,18 @@ from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 logger = get_logger(__name__)
 
 
+def _serialize_job_detail(detail: dict[str, str]) -> str:
+    """诊断序列化失败不影响任务终态、清理或后续队列消费。"""
+    try:
+        return json.dumps(detail, ensure_ascii=False, default=str)
+    except Exception as error:
+        logger.warning(
+            "AsyncTimerScheduler.detail serialization failed: error_type=%s",
+            type(error).__name__,
+        )
+        return "{}"
+
+
 @dataclass
 class TimerEntry:
     """一条定时任务在 TimerWheel 内的注册项。
@@ -494,7 +506,7 @@ class AsyncTimerScheduler(Scheduler):
                 if parent is not None:
                     parent.detail.update(
                         last_run_id=info.id,
-                        last_run_detail=json.dumps(info.detail, ensure_ascii=False),
+                        last_run_detail=_serialize_job_detail(info.detail),
                     )
                     parent.detail["last_run_at"] = info.detail["finished_at"]
                     parent.detail["last_run_status"] = info.status.value

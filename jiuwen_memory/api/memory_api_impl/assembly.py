@@ -276,8 +276,16 @@ class _MemoryRuntime:
         with self._shutdown_lock:
             closed = self._closing
         if closed:
-            for job_id in result.job_ids:
-                self._kernel.scheduler.cancel(job_id)
+            scheduler = self._kernel.scheduler
+            if scheduler is not None:
+                for job_id in result.job_ids:
+                    try:
+                        scheduler.cancel(job_id)
+                    except Exception:
+                        logger.exception(
+                            "MemoryRuntime.cancel during periodic registration failed: job_id=%s",
+                            job_id,
+                        )
             raise ValidationError("runtime closed during periodic registration")
         return result
 

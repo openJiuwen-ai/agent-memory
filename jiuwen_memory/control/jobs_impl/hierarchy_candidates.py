@@ -143,6 +143,14 @@ def read_scope_units(
             raise ValidationError("hierarchy pagination stopped before the declared count")
 
 
+def validate_snapshot_links(unit: MemoryUnit) -> None:
+    """显式及增量候选共用 Snapshot 引用校验，不修补或跳过损坏结构。"""
+    if unit.hierarchy.child_ids or unit.hierarchy.child_scopes:
+        raise ValidationError("snapshot must not contain child references")
+    if not unit.hierarchy.parent_id and unit.hierarchy.parent_scope is not None:
+        raise ValidationError("snapshot has parent_scope without parent_id")
+
+
 def _select(
     unit: MemoryUnit, candidates: HierarchyCandidates, options: HierarchyComposeOptions,
 ) -> None:
@@ -152,12 +160,9 @@ def _select(
     if not _intersects(unit, options):
         return
     if unit.hierarchy.role is HierarchyRole.SNAPSHOT:
-        if unit.hierarchy.child_ids or unit.hierarchy.child_scopes:
-            raise ValidationError("snapshot must not contain child references")
+        validate_snapshot_links(unit)
         if unit.hierarchy.parent_id:
             candidates.attached[node_key(unit)] = unit
-        elif unit.hierarchy.parent_scope is not None:
-            raise ValidationError("snapshot has parent_scope without parent_id")
         else:
             candidates.leaves[node_key(unit)] = unit
     elif unit.hierarchy.role in TIME_PARENT_ROLES and (

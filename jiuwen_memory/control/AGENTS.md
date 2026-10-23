@@ -154,7 +154,7 @@ CloudEngine 不回填已消费的叶提示。此流程不提交父节点构建�
 - Job 支持上游协作取消；已经进入的同步工作先结束并记录结果，不提前释放锁。
   `scheduler_impl/job_outcome.py` 校验终态，两个 Scheduler 均保留真实业务失败。
 - 提交先校验基础请求，关闭时成功跳过且不校验树选项，开启后再验证区间与父层链。
-- 本模块只接入显式单次 HIERARCHY；不把它注册为普通 dreaming 或周期建树。
+- 显式 HIERARCHY 是单次任务；自动建树独立使用 HIERARCHY_DERIVE，不复用普通 dreaming。
 
 ### 跨空间树查询
 
@@ -167,6 +167,8 @@ recall_spaces 扇出时设置内部 defer_expansion，先按既有规则全局�
 `jobs_impl/hierarchy_incremental` 负责水位、未挂父输入与有界跳过诊断；
 `hierarchy_candidates.collect_root_subtrees` 只补齐已选根的完整后代并复核外部反向引用，
 不重新吸纳游离候选。沿用 KV/DomainStore 双读端口、公共 UTC 转换与缺时叶判据。
+显式与增量候选共用 `validate_snapshot_links` 校验 Snapshot 引用；非法子引用或孤立
+parent_scope 在进入 Evolver 前报错，不触发写入阶段的故障暂停，也不静默跳过。
 
 
 ### 自动增量调度
@@ -176,4 +178,5 @@ recall_spaces 扇出时设置内部 defer_expansion，先按既有规则全局�
 完整 Scope 共享故障保护状态，不因重复注册清零。自动 Job 每轮重新读取策略，逐层
 候选→构建→记录结果；使用与显式建树相同的 hierarchy:time 锁。
 AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘要，不实现树算法。
+诊断详情序列化失败时记录日志并回退为 JSON 空对象，不中断完成记录、活跃引用清理或队列。
 周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。

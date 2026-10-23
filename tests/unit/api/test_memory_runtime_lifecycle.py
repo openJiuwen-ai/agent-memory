@@ -12,14 +12,38 @@ import pytest
 
 from jiuwen_memory.api import assemble_runtime
 from jiuwen_memory.api.memory_api_impl.assembly import _Kernel, _MemoryRuntime
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.job_impl.ingest_job import InProcessIngestJobController
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
 from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
-from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
+from jiuwen_memory.control.types import BackgroundJobStartResult, Channel, JobInfo, JobStatus
+from tests.unit.api.fixtures import ROOT_SECURITY
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("has_scheduler", [False, True])
+def test_registration_close_preserves_error_and_attempts_all_cancellations(has_scheduler) -> None:
+    cancelled = []
+
+    def cancel(job_id):
+        cancelled.append(job_id)
+        if job_id == "first":
+            raise RuntimeError("cancel failed")
+
+    async def register(scope, *, security):
+        runtime._closing = True
+        return BackgroundJobStartResult(job_ids=["first", "second"])
+
+    api = SimpleNamespace(start_background_jobs=register)
+    runtime = _MemoryRuntime(api=api, _kernel=SimpleNamespace(
+        api=api, scheduler=SimpleNamespace(cancel=cancel) if has_scheduler else None,
+    ))
+    with pytest.raises(ValidationError, match="runtime closed during periodic registration"):
+        asyncio.run(runtime.start_background_jobs(Scope(), security=ROOT_SECURITY))
+    assert cancelled == (["first", "second"] if has_scheduler else [])
 
 
 @pytest.mark.parametrize("failed_step", ["watchdog", "scheduler_start", "ingest_start"])

@@ -218,3 +218,5 @@ assembly 的 MemoryRuntime / ServerRuntime 提供异步 start_background_jobs，
 检查注册状态，不在持锁时 await 调度器。QueryOps 的对应内部入口只做固定 home 的
 可信来源、WRITE/UPDATE、空间可写与权限路由校验，随后委托 Command；不增加 MemoryAPI
 抽象方法或 Access 路由。周期由现有 Scheduler 自有循环承担，不改 watchdog 宿主循环。
+注册完成时若已关闭，逐个尝试取消返回的任务；取消异常只记录日志，仍报告注册期间关闭，
+资源释放继续受既有后台停止屏障保护。

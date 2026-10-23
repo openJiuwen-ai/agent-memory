@@ -27,6 +27,7 @@ from jiuwen_memory.control.jobs_impl.hierarchy_candidates import (
     node_key,
     read_scope_units,
     scope_key,
+    validate_snapshot_links,
 )
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore
@@ -101,6 +102,8 @@ def collect_incremental(
             if not _active(unit) or unit.hierarchy.role is not options.leaf_role:
                 continue
             validate_ref(unit.hierarchy, unit_id=unit.id)
+            if unit.hierarchy.role is HierarchyRole.SNAPSHOT:
+                validate_snapshot_links(unit)
             if unit.hierarchy.parent_id:
                 continue
             if options.leaf_role is not HierarchyRole.SNAPSHOT and unit.scope != home:

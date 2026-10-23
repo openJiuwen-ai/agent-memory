@@ -8,7 +8,9 @@ from __future__ import annotations
 
 # pylint: disable=protected-access  # 测试代码需要访问受保护成员以断言装配链行为
 import asyncio
+import json
 import time
+from datetime import UTC, datetime
 
 import pytest
 
@@ -91,6 +93,33 @@ class _CountingJob(Job):
 
 
 # ---- Job 协作式取消信号 ---------------------------------------------------
+
+
+@pytest.mark.parametrize("circular", [False, True])
+def test_invalid_detail_preserves_cleanup_and_following_jobs(circular) -> None:
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    scope = Scope(user="u1")
+    scope_key = scheduler._scope_key(scope)
+    moment = datetime(2026, 10, 23, tzinfo=UTC)
+    detail = {"date": moment}
+    if circular:
+        detail["cycle"] = detail
+    scheduler._jobs["timer"] = JobInfo(id="timer", scope=scope)
+    for job_id, payload in (("child", detail), ("next", {})):
+        job = _RecordingJob(scope, detail=payload)
+        scheduler._jobs[job_id] = JobInfo(
+            id=job_id, scope=scope,
+            detail={"parent_timer": "timer"} if job_id == "child" else {},
+        )
+        scheduler._live_jobs[job_id] = job
+        scheduler._scope_queues[scope_key].append((job_id, job))
+    asyncio.run(scheduler._drain_queue(scope_key))
+    assert not scheduler._live_jobs
+    assert {"child", "next"} <= scheduler._completed_id_set
+    assert all(scheduler.status(job_id).status is JobStatus.SUCCEEDED
+               for job_id in ("child", "next"))
+    recorded = json.loads(scheduler.status("timer").detail["last_run_detail"])
+    assert recorded == {} if circular else recorded["date"] == str(moment)
 
 
 def test_child_inherits_parent_cancellation_signal() -> None:
