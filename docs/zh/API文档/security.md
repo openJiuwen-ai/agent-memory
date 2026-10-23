@@ -1,12 +1,9 @@
 # Security 安全功能使用指南
 
-最近一次修订日期：2026-10-14
+最近一次修订日期：2026-10-23
 
-安全功能覆盖入口认证、业务授权、Scope 隔离、凭据撤销、资源保护、静态加密、审计和日志脱敏。
-本文说明各项能力在哪一层生效、如何配置与调用，以及出现拒绝、撤权、加密或关闭问题时如何排查。
-
-认证、授权、加密和审计分别保护不同边界，并不是一个默认全开的开关。
-DEV、加密 KV 或 `healthz` 成功都不能代表生产安全能力已经完整启用。
+<details>
+<summary>开发与排障参考：源码入口</summary>
 
 配置与接口以对应版本源码为准，主要入口包括：
 
@@ -21,21 +18,24 @@ DEV、加密 KV 或 `healthz` 成功都不能代表生产安全能力已经完�
 - [加密 KV 实现](../../../jiuwen_memory/storage/kv_impl/encrypted_kv_store.py)
 - [接入认证中间件](../../../jiuwen_memory_entry/core/auth_middleware.py)
 
+</details>
+
 配置的通用组织与引用规则见 [Config 配置与装配指南](config.md)，控制层与存储层接口见
 [Control 层 API](control.md) 和 [Storage 层 API](storage.md)。
 
 ## 1. 适用版本与能力状态
 
-> 当前上游 `mem2.0` 已合入 PR1。PR2、PR1-1 和 PR3 已在各自实现分支落地，但尚未共同
-> 合入上游。本文保留这些已实现能力的使用说明，并在章节标注适用版本；不能把不同分支的
-> 配置合在一起当作一个已交付的安全发行版。
+> 本文档分支以已合入 PR1 的上游版本为基础。PR2、PR1-1 和 PR3 的配置分别按对应
+> 实现分支核对；不能把不同分支的配置直接拼成一个部署。运行示例前，先核对下面的
+> 版本要求：在本文档分支可测试 PR1 的 HTTP 认证与本地网关；PR2/PR1-1/PR3 示例
+> 需要相应实现代码，单独复制本文档不会提供这些能力。
 
 | 版本或分支 | 已实现内容 | 使用边界 |
 |---|---|---|
 | 上游 `mem2.0`（PR1） | DEV/API Key/Trusted 认证、主体凭据、入口保护、密码学与显式加密 KV、普通审计、基础日志脱敏 | API 业务授权仍使用旧 PermissionManager；SecurityRuntime 的 Authorizer 占位不执行终局判定 |
 | `sec/isolation`（PR2） | 唯一 PEP/PDP、Grant/Delegation、空间两轴、返回快照隔离、代理代写、公开 Server 装配及关闭屏障 | 本文业务授权和 `assemble_server_runtime` 示例的主线版本；尚未合入上游 |
-| `sec/storage-encryption`（PR1-1） | 全后端静态加密策略、KV/FS 应用加密、索引与控制库部署保护 | 独立版本，不含当前 PR2、PR3 或最新文档模式 |
-| `sec/audit`（PR3） | 链式审计、完整性验证与本地 MAC | 独立版本仍基于较早 PR2，不含当前 PR2 后续整改、PR1-1 或最新文档模式 |
+| `sec/storage-encryption`（PR1-1） | 全后端静态加密策略、KV/FS 应用加密、索引与控制库及 Markdown/shadow 部署保护 | 独立版本；不包含 PR2/PR3 的完整能力 |
+| `sec/audit`（PR3） | 链式审计、完整性验证与本地 MAC；已同步 PR2 的公开 Server 装配入口 | 独立版本；不包含 PR1-1 全后端静态加密 |
 
 | 能力 | 启用条件或当前限制 |
 |---|---|
@@ -46,16 +46,28 @@ DEV、加密 KV 或 `healthz` 成功都不能代表生产安全能力已经完�
 | PR3 审计完整性 | 需要 `sec/audit`；PR2 未装配 provider 时返回 `unsupported` |
 | PR3 外部锚点 | 有核对契约，但无内置 WORM/KMS/云锚点产品、YAML target 或自动发布链头作业 |
 | 主体 Key 与动态委托的网络管理接口 | 尚无 HTTP/CLI/MCP 签发、角色变更或动态委托管理产品入口 |
-| Markdown/shadow 静态加密 | 新文档模式未与 PR1-1 合并，不在全后端加密的已覆盖范围 |
+| Markdown/shadow 静态加密 | PR1-1 对 Markdown 根目录和 shadow SQLite 使用部署保护声明与位置绑定，不对 Markdown 文件正文做 ENC1 包装 |
 
 后续安全 PR 合入时更新本页的适用状态、配置和使用示例。特性设计、决策与遗留维护在
 `docs/features/common/F04-security-interfaces-and-encryption.md`；本文是使用指南，不另建
 安全特性总纲，也不修改冻结接口。
 
-## 2. 生效层与模块
+## 2. 一次请求如何经过安全检查
+
+以 Alice 读取自己的记忆为例：入口先检查她提交的 Key，得到服务端认可的身份；
+再根据请求中的 Scope 找到目标数据，检查 Alice 是否有读取权；通过后才读取数据。
+若数据已加密，存储层在读取时解密，正常 API 响应仍是可读正文。审计记录这次调用。
+
+客户端提交的 Scope 只表示“想访问哪里”，不会把调用者变成该 Scope 的主人。
+例如 Bob 把请求改成 Alice 的 Scope，PR2 仍会按 Bob 的真实身份检查权限。
+
+<details>
+<summary>需要排查实现时，展开查看请求链路与模块位置</summary>
 
 下图是 PR2 的完整请求链路。当前上游 PR1 只消费入口认证与保护，业务判定仍走
 PermissionManager；不能把图中的 Authorizer、来源复核与同源关闭屏障视为上游已启用。
+图中的 PEP 是执行权限检查的入口，PDP 是作出权限判定的组件；具名实例指配置中
+有名字、可被其他组件引用的同一份对象。
 
 ```mermaid
 flowchart TB
@@ -92,7 +104,9 @@ flowchart TB
 | 日志脱敏 | common/log 及各消费点 | 标记敏感参数并过滤；不是自动清除一切任意字符串日志 |
 | 资源关闭 | MemoryRuntime、SecurityRuntime、SecurityResourceOwner、IngestJobController | 先完成后台使用者，再关闭共享依赖；重复释放按 identity 去重 |
 
-## 3. 本地快速开始（PR2）
+</details>
+
+## 3. 本地快速开始
 
 安装按仓库根布局，不往空 src 目录放代码。
 
@@ -100,6 +114,28 @@ flowchart TB
 pip install -e ".[dev,security]"
 # 需要 MCP 时另外安装：pip install -e ".[mcp]"
 ```
+
+### 3.1 HTTP 与 CLI（上游 PR1 可用）
+
+以下固定 DEV 命令也适用于当前上游 PR1；仅用于回环开发测试。
+
+```bash
+scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8137
+
+curl -i -X POST http://127.0.0.1:8137/v1/add \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"local demo","scope":{"org":"local","user":"developer"}}'
+
+scripts/run-cli.sh --auth-mode dev add \
+  --content "local demo" \
+  --scope '{"org":"local","user":"developer"}'
+```
+
+这是固定 DEV 身份，不需要 token，但服务必须限制回环。Windows 可在 PowerShell 中使用仓库 venv，并设置 `$env:PYTHONPATH` 为“仓库根;jiuwen_memory_entry/core”，再执行对应 `python -m jiuwen_memory_entry.http_server` 或 CLI 模块；HTTP JSON 引号按所用 shell 转义。
+
+CLI 默认本地内存配置一条命令一个进程，第二条命令不会自动看见第一条的记忆或内存 Key。需要持久 Store、NDJSON batch 的同一会话，或者长命 HTTP 服务。
+
+### 3.2 Python SDK（需要 PR2）
 
 下面是仅供本地开发的完整 Python 例子。使用默认内存数据面与 echo/hashing，不需要模型或外部数据库。DEV 无映射时固定身份为 `org=local,user=developer,role=ROOT`，并不适用于生产。
 
@@ -134,27 +170,24 @@ finally:
 
 同步 add 等方法有内部异步桥接；已有 asyncio loop 时使用已提供的 add_async/batch_add_async 等异步入口。不存在公共 search_async 方法，不要凭命名推导接口。
 
-### 3.1 HTTP 与 CLI
+## 4. 安全参数填在哪里
 
-以下固定 DEV 命令也适用于当前上游 PR1；仅用于回环开发测试。
+先分清“启动服务时配置什么”和“每次调用时发送什么”。服务端选择认证、授权、
+加密和审计方式；客户端通常只提交自己的凭据，以及要操作的数据与 Scope。
 
-```bash
-scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8137
+| 参数 | 谁来提供 | 放在哪里 | 示例或说明 |
+|---|---|---|---|
+| 认证模式、限流、加密组件 | 部署人员 | 服务 YAML 的 `memory_api` 内 | `security.default.params.authenticator: issuer` |
+| 认证 Root Key | 部署人员 | 服务进程环境变量，再由 YAML 引用 | `${AGENT_MEMORY_ROOT_API_KEY}`；名称由配置引用决定 |
+| 网关共享 Key | 网关与服务部署人员 | 服务配置 `gateway_key`；网关发给后端的请求头 | 不发给普通客户端 |
+| 加密根密钥 | 部署人员 | `key_provider` 指定的环境变量或私密文件 | 默认环境变量 `AGENT_MEMORY_ENCRYPTION_ROOT_KEY`；不放请求正文 |
+| 调用凭据 | 客户端 | HTTP `Authorization: Bearer <Key>`，兼容 `X-API-Key` | CLI/stdio MCP 通常从 `AGENT_MEMORY_API_KEY` 读取 |
+| 网关确认的身份 | 可信网关 | 后端请求头 `X-Org-Id`、`X-Principal-Type`、`X-Principal-Id` | 第 5.3 节说明如何生成与验证 |
+| 目标数据范围 | 客户端 | 业务 JSON 的 `scope`，CLI 的 `--scope`，SDK 的 `Scope` | `{"org":"demo","user":"alice"}`；不代表调用者身份 |
+| 请求安全上下文 | SDK 的受信接入代码 | Python 方法的 `security=` 关键字参数 | 先认证，再用 `new_request_context` 构造；不能用普通 dict 替代 |
+| 调用者角色 | 服务端 | DEV 测试映射或主体凭据注册表 | 不能通过 JSON 的 `role` 或 `X-Role` 自行指定 |
 
-curl -i -X POST http://127.0.0.1:8137/v1/add \
-  -H 'Content-Type: application/json' \
-  -d '{"content":"local demo","scope":{"org":"local","user":"developer"}}'
-
-scripts/run-cli.sh --auth-mode dev add \
-  --content "local demo" \
-  --scope '{"org":"local","user":"developer"}'
-```
-
-这是固定 DEV 身份，不需要 token，但服务必须限制回环。Windows 可在 PowerShell 中使用仓库 venv，并设置 `$env:PYTHONPATH` 为“仓库根;jiuwen_memory_entry/core”，再执行对应 `python -m jiuwen_memory_entry.http_server` 或 CLI 模块；HTTP JSON 引号按所用 shell 转义。
-
-CLI 默认本地内存配置一条命令一个进程，第二条命令不会自动看见第一条的记忆或内存 Key。需要持久 Store、NDJSON batch 的同一会话，或者长命 HTTP 服务。
-
-## 4. 配置的两层包装
+### 4.1 配置文件的外层与内层
 
 服务配置文件使用外层 `memory_api`，例如：
 
@@ -178,7 +211,85 @@ Python `assemble_runtime(config=...)`（上游）和 `assemble_server_runtime(co
 
 拓扑由 Producer 注册 target 和具名引用决定，不接受任意 Python import path。没有 security 配置时不自动创建 DEV；required 入口业务请求失闭。
 
+这里的 `target` 是组件实现名称，`params` 是传给该组件的参数。`issuer`、`principals`
+等是本配置自己起的实例名：定义后还要被引用才会使用。第 5.2 节给出了完整引用关系。
+
+### 4.2 从服务配置到一次 HTTP/CLI 调用
+
+以第 5.2 节 API Key 服务配置为例，将其保存为 `security.yml`。先在**启动服务的终端**
+设置 `AGENT_MEMORY_ROOT_API_KEY`；下面以 Root Key 做一次本地运维验证。
+本例目标 Scope 使用 Root 身份自身的 `system/root`，使 PR1 的旧权限管理也可通过。
+普通用户接入应使用服务端签发的主体 Key；认证成功后能访问哪些范围，仍取决于业务授权。
+
+```bash
+# Bash：生成本次本地测试的随机 Root Key，不输出其值。
+export AGENT_MEMORY_ROOT_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+scripts/run-server.sh security.yml --host 127.0.0.1 --port 8137
+```
+
+PowerShell 中的等价启动方式（仓库根目录，使用已安装依赖的 Python）：
+
+```powershell
+$env:AGENT_MEMORY_ROOT_API_KEY = python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:PYTHONPATH = "$($PWD.Path);$($PWD.Path)\jiuwen_memory_entry\core"
+python -m jiuwen_memory_entry.http_server security.yml --host 127.0.0.1 --port 8137
+```
+
+服务运行时另开终端发请求。此终端不会自动继承刚才终端新设置的变量；应通过受保护的
+渠道提供同一把测试 Key。下面假设调用终端的 `AGENT_MEMORY_API_KEY` 已设为该 Key。
+
+```bash
+curl -i -X POST http://127.0.0.1:8137/v1/add \
+  -H "Authorization: Bearer ${AGENT_MEMORY_API_KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"security parameter demo","scope":{"org":"system","user":"root"}}'
+
+scripts/run-cli.sh --server http://127.0.0.1:8137 add \
+  --content 'security parameter demo' --scope '{"org":"system","user":"root"}'
+```
+
+PowerShell 可避免手写 JSON 引号转义：
+
+```powershell
+$body = @{content='security parameter demo'; scope=@{org='system'; user='root'}} | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://127.0.0.1:8137/v1/add' -Method Post `
+  -Headers @{Authorization="Bearer $env:AGENT_MEMORY_API_KEY"} `
+  -ContentType 'application/json' -Body $body
+```
+
+正确 Key 预期返回 200；删去认证头或换成错误 Key，预期返回 401。此处验证的是认证与
+参数传递，不能用 Root Key 测试普通用户之间的隔离。Root Key 测试会话结束后停止服务。
+
+注意：设置环境变量本身不会自动创建认证配置。`AGENT_MEMORY_API_KEY` 是客户端读取
+的变量，`AGENT_MEMORY_ROOT_API_KEY` 在本例中由服务 YAML 引用，二者职责不同。
+HTTP 服务的配置路径是位置参数；CLI 本地执行才使用 `--config security.yml`，
+远程 `--server` 调用不接收本地服务配置。CLI 没有通用的 `--security` 或 `--api-key` 参数。
+
+### 4.3 SDK 如何传 `security=`
+
+第 5.2.2 节有完整可运行示例，核心步骤如下（PR2）：
+
+```python
+# runtime 是 assemble_server_runtime 返回的对象，token 是同源注册表签发的 Key。
+auth = runtime.security_runtime.authenticator.authenticate(Credentials(api_key=token))
+security = new_request_context(auth, surface=Surface.SDK)
+target = Scope(org="demo", user="alice")
+unit = runtime.api.add("private demo", target, security=security)[0]
+```
+
+`security` 表示“经认证的调用者”，`target` 表示“目标数据归属”。HTTP/CLI/MCP 入口会
+替调用者完成上下文构造，不需要、也不接受客户端把这个 Python 对象序列化到 JSON。
+
 ## 5. 三种认证模式
+
+| 模式 | 适合什么场景 | 调用方提供什么 |
+|---|---|---|
+| DEV | 本机功能调试、模拟 Alice/Bob 等测试身份 | 固定 DEV 不需 Key；映射 DEV 提交服务端预设 selector |
+| API Key | 客户端直接调用记忆服务 | 服务端认可的 Key |
+| Trusted | 企业已有网关或统一认证系统 | 客户端向网关认证；网关向记忆服务提供专用 Key 和身份头 |
+
+“认证通过”只说明身份有效。普通用户是否能访问某条记忆，还要由对应版本的业务授权
+决定。测试隔离时用普通用户身份，不使用固定 DEV 的 ROOT 或部署 Root Key。
 
 ### 5.1 DEV
 
@@ -329,9 +440,41 @@ PR2 中，通用插件通过公开 CredentialSourcesCapability 声明 `(credenti
 
 当前没有 `/v1/issue_key`、`list_keys`、`set_role` 等 HTTP/CLI/MCP 方法。MANAGE_PRINCIPAL 枚举也不能证明这些入口存在。Store 的受信公共方法包括 issue/resolve/revoke/get_role；同主体活跃 Key 角色不一致时拒绝新签发，管理方需保存指纹清单并先撤销旧 Key，再签发新角色。
 
-### 5.3 Trusted 网关
+### 5.3 Trusted 网关：先理解两次认证
 
-把 authenticator target 配为 trusted，引用 principals KeyStore，并配置 gateway_key。身份由受信网关注入：
+网关是客户端与记忆服务之间的一层服务。客户端先向网关证明身份，网关确认后，再向
+记忆服务发送身份头和网关专用 Key。因此这里有两种不同凭据：
+
+```text
+客户端 ── 客户端凭据 ──> 网关 ── gateway_key + 已确认的身份头 ──> 记忆服务
+                         验证身份                              查注册角色
+```
+
+记忆服务内置的是网关请求的接收与校验逻辑，**不会自动创建上游网关、登录页或 SSO 服务**。
+生产网关由接入方部署；没有现成网关时，可先用本节的本地模拟网关测试协议。
+
+#### 5.3.1 后端需要收到哪些参数
+
+后端使用以下**完整服务配置**。主体注册还需受信初始化代码，不能只靠这份 YAML 完成。
+
+```yaml
+memory_api:
+  security:
+    default:
+      target: standard
+      params: {authenticator: gateway}
+  authenticator:
+    gateway:
+      target: trusted
+      params:
+        key_store: principals
+        gateway_key: ${AGENT_MEMORY_GATEWAY_KEY}
+  key_store:
+    principals: {target: memory}
+```
+
+`AGENT_MEMORY_GATEWAY_KEY` 由后端与网关部署人员通过受保护渠道提供相同值。
+普通客户端不持有它。网关验证客户端后，新建发往后端的请求：
 
 | Header | 内容 |
 |---|---|
@@ -340,16 +483,196 @@ PR2 中，通用插件通过公开 CredentialSourcesCapability 声明 `(credenti
 | X-Principal-Type | user 或 agent |
 | X-Principal-Id | 该主体 ID |
 
-角色从服务端注册表查，不接受 X-Role 或 payload 的 role。主体必须预先注册；网关 Key 不对或主体未注册均拒绝。
+角色从服务端注册表查，不接受 X-Role 或 payload 的 role。主体必须预先注册；网关 Key 不对或主体未注册均返回 401。
 
-```yaml
-authenticator:
-  issuer:
-    target: trusted
-    params:
-      key_store: principals
-      gateway_key: ${AGENT_MEMORY_GATEWAY_KEY}
+网关必须根据自己验证出的身份生成这些头，清除或覆盖客户端原有的同名头、`X-Role` 和
+客户端 Authorization。仅把客户端的 `X-Principal-Id` 原样转发，会让客户端自行选择身份。
+
+内置 memory 注册表没有 YAML 主体导入或网络注册接口。受信代码调用
+`PrincipalKeyStore.issue(actor, role)` 时会同时登记角色；Trusted 认证只查询这个注册表，
+不使用该方法返回的主体 Key。初始化与接收请求必须使用**同一个服务进程中的同一个 Store**；
+在另一进程先运行签发脚本，再单独启动后端，后端不会获得那些内存记录。
+
+#### 5.3.2 本机搭建最小测试网关（PR1）
+
+适用于本文档分支所基于的上游 PR1，验证网关认证协议。第 6 节的业务授权测试另需 PR2。
+安装第 3 节依赖后，保存下方脚本为仓库根目录的 `gateway_demo.py`。脚本同时启动：
+
+- 测试网关：`127.0.0.1:8139`，只接受 `/v1/add`；一个客户端测试 Key 固定对应 `demo/alice`。
+- 记忆后端：`127.0.0.1:8137`，同进程预注册 Alice，使用随机生成且不输出的独立网关 Key。
+
+先停止占用这两个端口的旧测试服务。Bash 启动命令如下：
+
+```bash
+export DEMO_CLIENT_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export PYTHONPATH="$PWD:$PWD/jiuwen_memory_entry/core"
+python gateway_demo.py
 ```
+
+PowerShell 启动命令：
+
+```powershell
+$env:DEMO_CLIENT_KEY = python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:PYTHONPATH = "$($PWD.Path);$($PWD.Path)\jiuwen_memory_entry\core"
+python gateway_demo.py
+```
+
+<details>
+<summary>展开复制完整 gateway_demo.py（仅用于回环测试，无需安装额外网关软件）</summary>
+
+```python
+import hmac
+import os
+import secrets
+import threading
+from dataclasses import replace
+from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from profiles import load_config
+
+from jiuwen_memory.api import Scope
+from jiuwen_memory.common.security.authentication.authentication_impl.trusted_authenticator import (
+    TrustedAuthenticator,
+)
+from jiuwen_memory.common.security.types import Role
+from jiuwen_memory_entry.http_server.__main__ import HttpServer
+
+
+def main():
+    client_key = os.environ["DEMO_CLIENT_KEY"]
+    if not client_key:
+        raise ValueError("DEMO_CLIENT_KEY must not be empty")
+    gateway_key = secrets.token_urlsafe(32)
+    # PR1 的内存注册表没有 YAML 导入入口；先用公开属性完成同进程初始化。
+    config = {"memory_api": {
+        "security": {"default": {"target": "standard", "params": {
+            "authenticator": "bootstrap",
+        }}},
+        "authenticator": {"bootstrap": {"target": "api_key", "params": {
+            "key_store": "principals", "root_api_key": secrets.token_urlsafe(32),
+        }}},
+        "key_store": {"principals": {"target": "memory"}},
+    }}
+    service = HttpServer.build(load_config([config]))
+    store = service.authenticator.key_store
+    store.issue(Scope(org="demo", user="alice"), Role.USER)
+    # issue 同时注册主体角色；返回的主体 Key 在此测试中不使用、不输出。
+    service.security_runtime = replace(
+        service.security_runtime,
+        authenticator=TrustedAuthenticator(store, gateway_key=gateway_key),
+    )
+    backend = ThreadingHTTPServer(("127.0.0.1", 8137), service.handler_cls())
+    backend.daemon_threads = True
+
+    class Gateway(BaseHTTPRequestHandler):
+        timeout = 10
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            if self.path != "/v1/add":
+                self.send_error(404)
+                return
+            supplied = self.headers.get("Authorization", "").encode()
+            expected = f"Bearer {client_key}".encode()
+            if not hmac.compare_digest(supplied, expected):
+                self.send_error(401)
+                return
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self.send_error(400)
+                return
+            if not 0 < size <= 65536:
+                self.send_error(413)
+                return
+            body = self.rfile.read(size)
+            # 重新建立头部，不转发客户端自述的身份、角色或后端 Key。
+            headers = {
+                "Authorization": f"Bearer {gateway_key}",
+                "X-Org-Id": "demo",
+                "X-Principal-Type": "user",
+                "X-Principal-Id": "alice",
+                "Content-Type": "application/json",
+            }
+            connection = HTTPConnection("127.0.0.1", 8137, timeout=10)
+            try:
+                connection.request("POST", "/v1/add", body=body, headers=headers)
+                response = connection.getresponse()
+                data = response.read()
+                self.send_response(response.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            finally:
+                connection.close()
+
+    gateway = ThreadingHTTPServer(("127.0.0.1", 8139), Gateway)
+    gateway.daemon_threads = True
+    worker = threading.Thread(target=backend.serve_forever, daemon=True)
+    worker.start()
+    try:
+        gateway.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        gateway.server_close()
+        backend.shutdown()
+        backend.server_close()
+        worker.join()
+        service.close(wait=True)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+</details>
+
+脚本先用公开 API Key 认证器的 `key_store` 属性初始化内存主体，再通过公开构造器
+切换到 `TrustedAuthenticator`；这一步是测试服务的受信装配代码，不是客户端调用流程。
+它不会把内存注册表变为可持久化产品。脚本只使用本地默认数据面，不需要真实模型或数据库。
+
+#### 5.3.3 请求与验收结果
+
+另开终端，通过受保护渠道设置与启动终端相同的 `DEMO_CLIENT_KEY`，然后执行：
+
+```bash
+curl -i -X POST http://127.0.0.1:8139/v1/add \
+  -H "Authorization: Bearer ${DEMO_CLIENT_KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"gateway demo","scope":{"org":"demo","user":"alice"}}'
+```
+
+PowerShell 请求：
+
+```powershell
+$body = @{content='gateway demo'; scope=@{org='demo'; user='alice'}} | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://127.0.0.1:8139/v1/add' -Method Post `
+  -Headers @{Authorization="Bearer $env:DEMO_CLIENT_KEY"} `
+  -ContentType 'application/json' -Body $body
+```
+
+每次只改变下表中的条件，其他请求参数保持相同：
+
+| 测试条件 | 预期结果 | 说明 |
+|---|---|---|
+| 正确客户端 Key，经 8139 访问 | 200，返回写入的记忆列表 | 两次认证均通过 |
+| 缺失或错误客户端 Key，经 8139 访问 | 401，由测试网关拒绝 | 不应到达后端业务接口 |
+| 正确客户端 Key，额外发送 `X-Principal-Id: bob`、`X-Role: root` | 请求仍按 Alice 身份转发 | 网关代码重新建立身份头；可结合后端审计核对 actor |
+| 用客户端 Key 直接访问 8137，即使填全身份头 | 401，由记忆后端拒绝 | 客户端 Key 不是网关 Key |
+| 受信网关向后端发送未注册主体 | 401 | 正确网关 Key 也不会自动注册或授予角色 |
+
+最后一项由测试部署人员修改脚本中转发的 `X-Principal-Id` 为未注册值后重启验证，
+不是让客户端选择身份。客户端和网关的错误 Key 不要同时修改，以免无法定位是哪一跳失败。
+
+测试结束在启动终端按 Ctrl+C，两个监听器随之关闭，内存数据和主体记录丢弃。
+此脚本只演示固定身份、单接口和有限正文的本地链路；生产网关需接入真实认证系统、
+TLS 与网络隔离，限制直接访问后端，并按受信身份生成头部。普通 CLI 的远程客户端只发送
+Bearer，不自动生成 Trusted 身份头；不要让它拿着网关共享 Key 直连后端冒充网关。
 
 默认缺 gateway_key 拒绝装配。`allow_no_gateway_key=true` 只表示明确选择由可信反代/mTLS/网络隔离承担边界，不是推荐默认；否则任何能直连的人可自述网关身份。
 
@@ -592,6 +915,10 @@ API_KEY 能监听非回环不代表可通过明文 HTTP 把 token 公开传输�
 
 ## 9. KV 静态加密
 
+KV 可以理解为按“键”保存“值”的存储。这里加密的是值，例如记忆正文；键和路径仍可见。
+应用在写入前加密、读取后解密，因此正常调用 API 仍返回可读内容。此功能没有 Linux
+专属部署工具的限制；需要 Python 依赖与支持的存储后端。第 10 节另行说明 Linux 卷加密。
+
 启用加密必须让实际 KV 端口使用 encrypted 装饰器，仅配置 SecurityRuntime.cryptography 不会自动加密数据。
 
 ```yaml
@@ -617,7 +944,11 @@ key_provider:
 
 local 根密钥优先 key_hex → key_b64 → key_env → key_file，必须 32 bytes；环境支持 hex/base64。缺钥默认拒绝；单机开发明确选择 create_key_file=true 才允许创建，不能把丢失旧钥后生成新钥当恢复。
 
-信封为 ENC1 v2、AES-256-GCM，绑定用途、org/Scope、object_id、格式及 key epoch 的 AAD；v1 仅只读兼容。非信封、错误 Scope/object_id、tag 或密钥不对均失败，不存在 allow_plaintext/tag 校验关闭选项。
+应用密文使用 ENC1 格式（当前 v2，v1 仅只读兼容），算法为 AES-256-GCM。
+可以把“信封”理解为带格式版本、密钥代号和校验信息的密文包。校验同时绑定用途、
+org/Scope 与对象 ID（这些绑定信息称为 AAD），用于防止把一份密文搬给另一用户或对象。
+密钥错误、密文被改动、归属不匹配或混入明文都会读取失败；没有关闭校验或自动读取
+明文的 `allow_plaintext` 选项。
 
 | 受到保护 | 不自动覆盖 |
 |---|---|
@@ -631,8 +962,39 @@ local `rotate()` 生成新随机根密钥并推进 epoch，但新钥和旧代集
 
 ## 10. 全后端静态加密（PR1-1）
 
-本节仅适用于 `sec/storage-encryption`。它把“所有已知持久化后端必须有静态保护”
-收敛为装配策略，但不是把所有索引字段加密，更不是密态检索。
+本节仅适用于 `sec/storage-encryption`；本文档分支没有该分支的统一开关与部署脚本。
+**仓库内置的全后端 Docker 加密部署只支持 Linux 宿主机，并要求 Docker daemon
+与加密卷在同一宿主。Windows、macOS 和 Docker Desktop 的宿主目录挂载不适用于这套启动器。**
+Windows 测试人员可以验证 KV/FS 应用加密；ES 等后端的完整加密部署应安排在满足
+第 10.4 节条件的 Linux 测试机上。
+
+“全后端”使用两种配合的保护方式：KV/FS 内容在应用中加密；ES 等需要执行查询的
+索引及其他持久文件放在加密磁盘或卷上。统一开关要求已知持久化位置都有对应保护，
+不会把所有索引字段转换为应用密文，也不提供密态检索。
+
+### ES（Elasticsearch）到底怎样加密
+
+ES 是全文检索后端。应用需要让 ES 分词、建立索引和执行查询，因此 ES 运行时仍会
+接收和处理明文。仓库方案加密的是 **ES 数据目录所在的磁盘/卷**，不是查询接口或字段：
+
+```text
+记忆正文 ── 应用 ENC1 加密 ──> KV 后端保存密文
+检索内容 ── ES 分词与索引 ──> ES 数据文件 ── Linux 加密卷 ──> 磁盘保存密文
+```
+
+Linux 内置方案用 LUKS2 管理加密卷、dm-crypt 执行块设备加解密，卷内使用 ext4。
+解锁挂载后，ES 像使用普通目录一样读取文件；卸载并关闭卷后，直接取得磁盘或镜像
+不能按普通 ES 数据目录读取。**通过正常 ES 查询仍能返回正文，这是预期行为，不能
+据此认定静态加密失败。** 它也不防止已经获得运行中 ES 访问权限的人查询数据。
+
+| 方式 | 需要做什么 | 平台与限制 |
+|---|---|---|
+| KV/FS 应用加密 | 配 ENC1 provider 与根密钥，使用加密端口或统一开关 | 不依赖 Linux 加密卷；只能证明这些内容端口的保护 |
+| 本仓库 ES/Docker 全后端部署 | 准备加密卷，使用第 10.4 节启动器替换持久化挂载 | 仅同宿主 Linux Docker；还需管理权限与系统工具 |
+| 连接已有远端 ES/数据库 | 由运维确认远端磁盘或服务端静态加密，再填写第 10.2 节声明 | 平台支持由远端方案决定；本地声明不能替远端开启加密 |
+
+仅设置 HTTPS 保护的是传输；仅填写 `at_rest` 记录的是部署声明；两者都不会把普通
+ES 数据目录自动变成加密卷。应用不会内置开启某个 ES 产品的原生加密功能。
 
 | 数据面 | 保护方式与生效位置 |
 |---|---|
@@ -644,13 +1006,24 @@ local `rotate()` 生成新随机根密钥并推进 epoch，但新钥和旧代集
 
 BM25、ANN、过滤、融合仍由原后端执行；解锁后的数据库/应用进程仍可读取明文。
 `StoreSecurity.enabled()` 是应用层 Store 能力，不是对远端磁盘的密码学证明。
-Markdown/shadow/watchdog 和 PR2 的新 Grant/Delegation Store 尚未与本分支合并，
-不能从“全后端”标题推导它们已完成覆盖。
+Markdown 根目录与 shadow SQLite 的部署声明也会核查并绑定真实位置；它们保存的
+文件仍需部署侧加密。PR2 的新 Grant/Delegation Store 不能从本节直接推导为已覆盖。
 
 ### 10.1 统一开关和本地 API 示例
 
 先用安全方式给进程设置 `AGENT_MEMORY_ENCRYPTION_ROOT_KEY`，值为专用 32 字节
-根密钥的 64 字符 hex；不要打印或提交。以下内核 YAML 保存为 `pr1-1-encryption.yml`。
+根密钥的 64 字符 hex；不要打印或提交。仅做本次内存示例时，可在同一终端生成测试密钥：
+
+```bash
+export AGENT_MEMORY_ENCRYPTION_ROOT_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+```
+
+```powershell
+$env:AGENT_MEMORY_ENCRYPTION_ROOT_KEY = python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+这些命令每次会生成不同的密钥，不能用于重启后读取原有持久数据。持久部署应保留并
+安全备份同一把密钥。以下内核 YAML 保存为 `pr1-1-encryption.yml`。
 它选择默认内存业务数据面，`permission.allow_all` **仅用于本地离线验证**；
 不是生产授权方案，也不能与 PR2 的配置语义混用。
 
@@ -709,6 +1082,16 @@ finally:
 
 ### 10.2 持久化索引的部署声明
 
+如果使用第 10.4 节内置 Linux 启动器，它会在核查挂载后生成声明。
+如果自己部署或连接远端服务，则由部署人员先落实加密，再在应用配置中记录：
+
+| 字段 | 应填写的内容 |
+|---|---|
+| `method: volume` | 数据目录位于已核查的加密磁盘/卷上 |
+| `method: backend` | 远端后端或服务提供方已经落实静态加密 |
+| `reference` | 可供核查的运维记录编号或位置；示例值没有证明作用 |
+| `bindings` | 这份核查记录对应的实际连接地址或目录，必须与组件配置一致 |
+
 下例是**运营方已经核查远端静态加密后**填写的服务端配置片段；必须换成真实
 地址和核查记录，不能靠复制 reference 来宣称后端安全。
 
@@ -760,27 +1143,69 @@ fs_store:
 实际流和解密后长度。明文、篡改、跨 Scope/对象搬运和错误密钥均失败关闭。
 路径、Scope 和 KV key 仍可见。
 
-### 10.4 Linux 部署与迁移
+### 10.4 在 Linux 测试机部署与验收
 
-真实入口是 `deploy/encryption/volume.py` 的 init/open/check/close，以及
-`deploy/encryption/compose.py --profile local|online|postgres --action check|up|ps|down`。
-需同宿主 Linux Docker daemon、cryptsetup、findmnt/lsblk、ext4 工具；Windows/
-Docker Desktop VM 的宿主挂载不能作为该部署模型的证据。
+以下命令在 **PR1-1 实现分支的仓库根目录、Linux 宿主机终端**执行，不在容器内执行。
+先准备 Python >=3.11、PyYAML、同宿主 Docker Compose，以及 `cryptsetup`、
+`findmnt`、`lsblk`、`mkfs.ext4`、`tune2fs`。运维需提供两份独立的私密文件，
+权限为 600：`/secure/volume.key` 用来解锁磁盘卷；`/secure/application.key` 存放
+64 字符 hex 应用根密钥，用于 KV/FS ENC1。它们不能互相替代，也不等于认证 Key。
 
-1. 运维准备新的 LUKS2 镜像或已满足要求的 ext4/dm-crypt 挂载。init 只创建不存在的
-   新镜像，不能拿已有数据路径当初始化对象；卷密钥与 ENC1 应用密钥是两份私密文件。
-2. 用 volume.py check 核对指定根路径的实际挂载、设备各分支与内部 journal；
-   实际使用的数据子目录和控制文件由后续 compose.py 逐项核查，不是根路径检查的递归保证。
-3. 目标 profile 的 .env 设置 STORAGE_ENCRYPTION_ENABLED=true、
-   STORAGE_ENCRYPTION_ROOT、STORAGE_ENCRYPTION_APPLICATION_KEY_FILE；
-   应用密钥文件保存专用的 64 字符 hex。使用加密 launcher，不是直接原 docker compose up。
-4. 先运行 compose.py 的 check，再执行 up。注意其 check 也会准备目录、生成配置和
-   应用密钥文件，并检查真实 Compose model，**不是纯只读命令**。
-5. 首次全新布局 up 要求 --fresh-data。已有 named-volume/KV/FS 数据先停写、备份、
-   离线迁移；不能用 --fresh-data 掩盖旧数据尚未迁移。raw 明文转 ENC1 必须读 raw、
-   再经 encrypted 写入，不能复制明文字节到新布局。
-6. 停服务后再 close 卷。备份、导出、swap、快照和密钥备份需各自保护；应用不持续
-   监控管理员在运行中替换挂载的行为。
+**步骤一：准备新测试卷。** 下面以全新 20 GiB 测试镜像为例；路径必须不存在。
+若已经有符合要求的挂载，可跳过 init/open，直接 check。init 失败留下的同名镜像
+应先由运维排查，不能对已有镜像或数据目录重新格式化。
+
+```bash
+sudo python -m deploy.encryption.volume init \
+  --image /srv/agent-memory.luks --key-file /secure/volume.key --size-gib 20
+sudo python -m deploy.encryption.volume open \
+  --image /srv/agent-memory.luks --key-file /secure/volume.key \
+  --mountpoint /srv/agent-memory-encrypted
+sudo python -m deploy.encryption.volume check /srv/agent-memory-encrypted
+```
+
+**步骤二：配置并启动。** 以 `online` profile 为例，将
+`deploy/docker/online/.env.example` 复制为同目录 `.env`，按该 profile 的部署说明
+填写模型等原有参数，再添加：
+
+```dotenv
+STORAGE_ENCRYPTION_ENABLED=true
+STORAGE_ENCRYPTION_ROOT=/srv/agent-memory-encrypted
+STORAGE_ENCRYPTION_APPLICATION_KEY_FILE=/secure/application.key
+```
+
+这三个变量由部署启动器读取，不是 HTTP 参数。启动器会生成应用所需的
+`globals.storage_encryption_enabled`、provider 和后端保护声明；只修改 `.env`
+再直接运行原 `docker compose up` 不会给旧 named volumes 加密。
+
+```bash
+# 准备后端镜像，检查器需要读取镜像中实际运行用户的 UID。
+docker compose --project-directory deploy/docker/online \
+  -f deploy/docker/online/docker-compose.yml pull
+sudo python -m deploy.encryption.compose --profile online --action check
+# 仅首次、确认是全新数据布局时使用 --fresh-data；不执行旧数据迁移。
+sudo python -m deploy.encryption.compose --profile online --action up --fresh-data
+sudo python -m deploy.encryption.compose --profile online --action ps
+```
+
+`check` 会准备目录、配置与应用密钥文件，不是纯只读命令。它检查 ES 等实际使用的
+子目录和 Compose 挂载，而不只是根路径是否加密。后续启动去掉 `--fresh-data`；
+换用 `local` 或 `postgres` 时，同步替换 profile、目录和该 profile 的原有参数。
+
+**步骤三：验收并关闭。** 正常写入、检索应可读；停止服务、重新打开同一卷并重启后，
+原有数据仍应可读。把加密根目录换成普通目录时，部署检查应拒绝启动。ES 正常查询
+返回明文不能用于判断磁盘是否加密；部署人员还应核对实际 ES 挂载，并验证关闭卷后
+镜像不能按普通文件系统读取。不要在运行中的数据库目录上删除或改写文件做测试。
+
+```bash
+sudo python -m deploy.encryption.compose --profile online --action down
+sudo python -m deploy.encryption.volume close --mountpoint /srv/agent-memory-encrypted
+```
+
+已有 named-volume/KV/FS 数据应先停写、备份，再离线迁移，不能用 `--fresh-data`
+掩盖旧数据尚未迁移。索引文件迁入加密卷；KV/FS 明文则必须从 raw 端口读取、经
+encrypted 端口写入，不能只复制明文字节。备份、导出、swap、快照和密钥备份也需
+各自保护。运行期间应用不持续监控管理员是否替换了挂载。
 
 配置声明与离线 API 验证不能替代真实 LUKS+Docker 部署验收。生产部署还需核查实际
 挂载、迁移及恢复路径。该分支源码入口为
@@ -889,9 +1314,8 @@ ADMIN 不够。下面请求体没有 scope，也不接受调用方提供 digest/
 HTTP 认证放 Bearer header；CLI 的业务参数是
 `verify_audit --after-sequence 0 --page-size 1000 --max-samples 20 --anchor-policy if_configured`。
 进程内调用沿用已经取得的受控 security 上下文，对 `api.verify_audit` 传相同四个
-关键字参数。此分支实际公开的装配入口是 assemble_runtime；没有当前 PR2 新增的
-assemble_server_runtime/ServerRuntime，不能照抄主线新门面或另造一个凭据 Store
-来认证。生产接入优先使用该版本现有入口的完整装配流程。
+关键字参数。PR3 已提供 `assemble_server_runtime`/`ServerRuntime`，SDK 可按第 4.3 节
+从实际 Runtime 的认证器构造上下文；不要另造一个凭据 Store 来认证。
 
 | status/字段 | 使用时的含义 |
 |---|---|
@@ -926,8 +1350,8 @@ lagging 只保证匹配的历史前缀，未锚定的最新后缀不获得相同
   degraded 闩不会因下一条成功自动清除，修复后重建 Runtime，不改私有标记。
 - local MAC 历史轮换材料只在内存，重启可能失去旧 epoch；需持久托管 provider
   才能设计生产轮换。链完整性不替代审计库访问权限、静态加密及备份策略。
-- 此 PR3 仍叠旧 PR2，未包含最新能力契约、Server 门面、Grant 原子收口和关闭屏障。
-  重新基于当前 PR2 时须逐项合并验收，不继承主线已闭环结论。
+- PR3 的链式审计与 PR1-1 的全后端静态加密仍需分别核对实现版本；启用链式审计
+  不会自动加密审计 SQLite 文件，部署时仍需检查其磁盘、访问和备份保护。
 
 关键实现为 `common/audit/protected_audit_logger.py`、
 `common/audit/audit_impl/sqlite_audit_logger.py`、
