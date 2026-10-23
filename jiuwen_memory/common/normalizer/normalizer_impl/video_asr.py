@@ -215,6 +215,7 @@ def run_video_asr(video_path: str | Path, config: VideoAsrConfig) -> list[dict[s
     source_path = Path(video_path)
     output_json = Path(config.output_json) if config.output_json else None
     cleaned_txt = Path(config.cleaned_txt_path) if config.cleaned_txt_path else None
+    owns_temp_dir = config.temp_work_dir is None
     temp_dir = (
         Path(config.temp_work_dir)
         if config.temp_work_dir
@@ -245,7 +246,10 @@ def run_video_asr(video_path: str | Path, config: VideoAsrConfig) -> list[dict[s
             _write_cleaned_segments(segments, cleaned_txt)
         return segments
     finally:
-        if config.cleanup:
+        # Only remove a directory this call created. A caller-supplied
+        # temp_work_dir may also hold output_json/cleaned_txt_path or other
+        # files; deleting it whole loses data the caller owns.
+        if config.cleanup and owns_temp_dir:
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             except OSError as exc:
