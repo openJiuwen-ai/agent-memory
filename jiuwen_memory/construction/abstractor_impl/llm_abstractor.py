@@ -43,7 +43,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.abstractor import AbstractorProducer
-from jiuwen_memory.construction.prompt_guard import truncate_unit_content
+from jiuwen_memory.construction.prompt_guard import CONTENT_MAX_UNIT_CHARS, truncate_unit_content
 
 from ..abstractor import Abstractor
 from ..base import OperatorType
@@ -442,7 +442,10 @@ class LLMAbstractor(Abstractor):
         parts = []
         for u in units:
             parts.append(
-                _SOURCE_PREFIX.format(unit_id=u.id, unit_content=truncate_unit_content(u.content))
+                _SOURCE_PREFIX.format(
+                    unit_id=u.id,
+                    unit_content=truncate_unit_content(u.content, limit=CONTENT_MAX_UNIT_CHARS),
+                )
             )
         user_text = "\n".join(parts)
 

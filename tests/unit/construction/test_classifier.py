@@ -311,3 +311,15 @@ def test_transient_failure_recovers_within_retries():
     assert llm.call_count == 3
     assert unit.tier == MemoryTier.SEMANTIC
     assert "ok" in [t.lower() for t in unit.tags]
+
+
+def test_timeout_subclass_is_not_retried():
+    """类名不在清单内的内建 TimeoutError 子类，经 isinstance 兜底同样不重试。"""
+    class SdkTimeoutSubclass(TimeoutError):
+        """模拟 SDK 自定义超时类型（类名不在 _TIMEOUT_EXC_NAMES 内）。"""
+
+    llm = _FailingLLM(SdkTimeoutSubclass("sdk timeout subclass"))
+    clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
+    unit = _make_unit("u1", "content")
+    clf.classify([unit])
+    assert llm.call_count == 1

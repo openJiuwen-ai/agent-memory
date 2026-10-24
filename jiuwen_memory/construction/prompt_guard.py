@@ -13,8 +13,13 @@
 
 from __future__ import annotations
 
-# 单个 unit 进 prompt 的默认字符上限（约 2-3K token）。
+# 判定类任务（分类/路由/关联/分层标注）只依赖主题与结构特征，不需要全文。
 DEFAULT_MAX_UNIT_CHARS = 4000
+
+# 内容型任务（抽取/抽象）的事实分布覆盖全篇，中段截断等于静默漏抽——上限必须
+# ≥ ingest 预切分上限（SimpleIngestor 默认 8000），预切分产物才能完整进入
+# 抽取/抽象 prompt。两处阈值改任一处须同步（docs/features/F08 归档该约束）。
+CONTENT_MAX_UNIT_CHARS = 8000
 
 
 def truncate_unit_content(content: str, limit: int = DEFAULT_MAX_UNIT_CHARS) -> str:

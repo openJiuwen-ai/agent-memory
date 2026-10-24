@@ -230,10 +230,16 @@ class LLMClassifier(Classifier):
             try:
                 return self._llm.chat(messages, temperature=0, max_tokens=4096)
             except Exception as exc:
-                if type(exc).__name__ in _TIMEOUT_EXC_NAMES:
+                if type(exc).__name__ in _TIMEOUT_EXC_NAMES or isinstance(
+                    exc, TimeoutError
+                ):
                     # 超时是确定性失败（prompt 过大或后端饱和），原样重试只会
                     # 把等待时间叠加成 N×timeout（实测 3×300s=900s 无响应）；
                     # 直接抛出，走调用方的逐批降级路径。
+                    # 识别口径：SDK 超时类型不共享基类，主路径按异常类名匹配
+                    # （_TIMEOUT_EXC_NAMES），另以内建 TimeoutError 的 isinstance
+                    # 兜底捕获其子类。取舍：httpx.ConnectTimeout 等连接建立
+                    # 超时不在名单内——连接失败可能是瞬时抖动，保留重试。
                     raise
                 last_exc = exc
                 if attempt == self._max_attempts - 1:

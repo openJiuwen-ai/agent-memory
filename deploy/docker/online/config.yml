@@ -38,11 +38,13 @@ memory_api:
 
     # BUG2026092802777 加固：大文本 add 卡死 900s 的三层收口。
     # llm_timeout：出站 LLM 调用超时（SDK 默认 300s 收敛为 60s，慢模型须显式声明上限）；
-    # classifier_retry_max：分类失败重试上限（默认 3 → 1，超时类失败本来就不重试）；
+    # classifier_max_attempts：分类总尝试次数（默认 3 → 1，超时类失败本来就不重试）。
+    # 注意上游 !352 已禁用旧键名 classifier_retry_max（装配期 ValidationError，
+    # 服务无法启动），不要改回旧键；
     # max_unit_chars：写侧预切分上限，单 unit 内容超过即按段落聚合切分（默认 8000），
     # 避免 500KB 全文进 LLM prompt。
     llm_timeout: 60.0
-    classifier_retry_max: 1
+    classifier_max_attempts: 1
     max_unit_chars: 8000
 
     # Remote bge-m3 embedding service. Base URL must include /v1 because the

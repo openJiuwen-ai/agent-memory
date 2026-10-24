@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
 from jiuwen_memory.common.time_utils import first_absolute_date
@@ -56,11 +57,16 @@ class SimpleIngestor(Ingestor):
             # 写入侧标注的日期与查询侧解析的窗口对不上，时间窗谓词依旧空转（issue #252）。
             t_event = first_absolute_date(content, now)
             # 每个分片继承同一份（消毒后的）结构提示与元数据；多片时记 _part/_parts。
+            # 这两个键是 simple 实现的内部序号约定，不对输入开放：用户注入的同名键
+            # 一律剔除——多片时强制覆盖为真实序号（setdefault 会让注入值污染全部
+            # 分片），单片时不残留。
             for part, piece in enumerate(pieces, start=1):
                 system_metadata = dict(base_system_metadata)
+                system_metadata.pop("_part", None)
+                system_metadata.pop("_parts", None)
                 if total > 1:
-                    system_metadata.setdefault("_part", part)
-                    system_metadata.setdefault("_parts", total)
+                    system_metadata["_part"] = part
+                    system_metadata["_parts"] = total
                 units.append(
                     MemoryUnit(
                         id=str(uuid.uuid4()),
@@ -87,29 +93,33 @@ class SimpleIngestor(Ingestor):
         return units
 
     def _split(self, content: str) -> list[str]:
-        """按段落边界聚合为 ≤ max_unit_chars 的片段（无信息丢失，可逆拼接）。
+        """按段落边界聚合为 ≤ max_unit_chars 的片段。
 
-        max_unit_chars <= 0 或文本未超限时返回单片段；单段超长时硬切兜底，
-        硬切点可能引入一个段落分隔（不影响记忆语义）。
+        段落聚合路径无损可逆：``"\\n\\n".join(pieces)`` 严格还原原文（含首部
+        空段落与冲刷边界上的空段落分隔符）；单段超长时硬切兜底，硬切点拼接会
+        引入一个段落分隔（不影响记忆语义）。max_unit_chars <= 0 或文本未超限
+        时返回单片段。
         """
         limit = self._max_unit_chars
         if limit <= 0 or len(content) <= limit:
             return [content]
         pieces: list[str] = []
-        buf = ""
+        buf: str | None = None  # None=尚未缓冲段落；"" 是合法缓冲（空段落）
         for para in content.split("\n\n"):
-            candidate = f"{buf}\n\n{para}" if buf else para
+            candidate = para if buf is None else f"{buf}\n\n{para}"
             if len(candidate) <= limit:
                 buf = candidate
                 continue
-            if buf:
+            if buf is not None:
                 pieces.append(buf)
-                buf = ""
+                buf = None
+            # while 用严格 > 截切，残段恒非空；para 本身可为空段落（空串），
+            # 原样缓冲以保留分隔符。
             while len(para) > limit:
                 pieces.append(para[:limit])
                 para = para[limit:]
             buf = para
-        if buf:
+        if buf is not None:
             pieces.append(buf)
         return pieces
 
@@ -117,12 +127,27 @@ class SimpleIngestor(Ingestor):
 # -- 注册到 IngestorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
+def _parse_max_unit_chars(raw: object) -> int:
+    """校验 max_unit_chars 配置：缺省（None）取出厂默认 8000。
+
+    显式 null/空串/非整数值直接拒绝——``or 0`` 式兜底会把它们静默归零、反向
+    关闭预切分，与加固意图相反。0 或负数是文档化的关闭开关，不属于非法值。
+    """
+    if raw is None:
+        return 8000
+    if isinstance(raw, bool):
+        raise ValidationError(f"max_unit_chars 需为整数，得到布尔值 {raw!r}")
+    try:
+        return int(str(raw).strip())
+    except ValueError as exc:
+        raise ValidationError(f"max_unit_chars 需为整数，得到 {raw!r}") from exc
+
 
 @IngestorProducer.register("simple")
 def _build(config):
     # Normalizer 经 NormalizerProducer 自取（缺省 passthrough）；max_unit_chars
-    # 经 globals 下发（与 chunk_size / embedder_max_batch 同通道）。
+    # 经 globals 下发（与 chunk_size / embedder_max_batch 同通道），非法值显式拒绝。
     return SimpleIngestor(
         NormalizerProducer.dep(config, default="passthrough"),
-        max_unit_chars=int(config.get("max_unit_chars", 8000) or 0),
+        max_unit_chars=_parse_max_unit_chars(config.get("max_unit_chars")),
     )

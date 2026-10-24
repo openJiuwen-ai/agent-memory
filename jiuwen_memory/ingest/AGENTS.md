@@ -14,7 +14,7 @@
 | `source.py` | Source 接口：多模态信息源连接器（fetch 拉取原始数据 → RawPayload） |
 | `hierarchy_hints.py` | 纯叶提示解析与消息时间补齐；不读策略或存储，拒绝边与父角色 |
 | `ingestor.py` | Ingestor 接口：编排 Source → Normalizer → 组装 MemoryUnit |
-| `ingestor_impl/simple_ingestor.py` | SimpleIngestor：对每个 RawPayload 产出单 MemoryUnit/单 Segment，并把该 payload 的全部 assets 复制到该 Segment |
+| `ingestor_impl/simple_ingestor.py` | SimpleIngestor：规约后按 `max_unit_chars` 预切分——超限文本产出多个 MemoryUnit（每 unit 单 Segment，`system_metadata` 记 `_part`/`_parts` 序号），未超限产出单个；该 payload 的全部 assets 复制到每个 Segment |
 | `source_impl/` | Source 实现目录 |
 | `source_impl/text_source.py` | TextSource：纯文本信息源（当前唯一实现） |
 | `bootstrap.py` | 统一触发 Ingestor 实现注册 |
@@ -38,7 +38,7 @@
    如需 caption/ASR/摘要等，由注入的 Normalizer 插件内部调用 LLM。Ingestor 只负责编排流水线。
 
 5. **Ingestor 拥有资产映射责任**
-   `RawPayload.assets` 是输入资产引用；具体 Ingestor 决定其在产出 `MemoryUnit.segments` 中的位置。不把 RawPayload、MemoryUnit、Segment 之间的数量关系写成接口不变量。
+   `RawPayload.assets` 是输入资产引用；具体 Ingestor 决定其在产出 `MemoryUnit.segments` 中的位置。不把 RawPayload、MemoryUnit、Segment 之间的数量关系写成接口不变量。当前 `SimpleIngestor` 把 payload 的全部 assets 防御性复制到它产出的每个 Segment：超限切分时 N 片各带全量资产引用（复制的是引用而非资产本体，N 倍引用放大是 simple 实现的既定映射策略——分片可独立检索与披露，不维护分片→资产的精确子集映射）；这是 `simple` 实现行为，不是 Ingestor 接口的数量契约。
 
 6. **Ingestor 在规约前执行模态门禁**
    调用 `Normalizer.normalize` 前先以 `Normalizer.modalities()` 校验当前 `RawPayload.modality`；不支持时抛 `UnsupportedCapabilityError`，不产生 MemoryUnit、不进入落盘和建索引。
@@ -82,9 +82,10 @@
 7. 默认 `PassthroughNormalizer` 只接已经是 UTF-8 文本的 TEXT/CODE；DOCUMENT 原件必须配置专用解析型 Normalizer，不能把文件 URI 当作解析后的正文。
 
 8. `SimpleIngestor` 在 normalize 前校验并消费叶提示，不创建父子边；无提示保持空结构。
-9. `enrich_snapshot_hints` 由 Engine 传入开关；补齐只用 occurred_at，完整提示优先。
+9. 预切分 `_part`/`_parts` 是 `SimpleIngestor` 的内部序号约定，不对输入开放：payload `system_metadata` 携带的同名键一律剔除，多片时强制覆盖为真实序号，单片时不残留。`max_unit_chars` 缺省 8000；显式 null/空串/非整数在装配期显式拒绝（`or 0` 式兜底会静默关闭切分），0/负数是文档化的关闭开关。段落聚合路径 `"\\n\\n".join(pieces)` 严格还原原文；单段超长硬切兜底，硬切点拼接引入一个段落分隔（不影响记忆语义）。设计取舍见 [F08](../../docs/features/F08-large-content-guardrails.md)。
+10. `enrich_snapshot_hints` 由 Engine 传入开关；补齐只用 occurred_at，完整提示优先。
    无 occurred_at 时保持原输入；显式 TIME/Snapshot 单边区间不自动修补，已有端点原样保存。
    开启时缺时不使写入失败，非法身份、时间格式、逆序区间或边提示仍拒绝。
    关闭时只移除四个合法叶提示，不补齐时间；未知结构键和边提示仍拒绝，原输入不修改。
 
-10. 叶区间比较复用 common/time_utils.as_utc；补齐与解析保留输入时间表示。
+11. 叶区间比较复用 common/time_utils.as_utc；补齐与解析保留输入时间表示。

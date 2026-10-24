@@ -69,7 +69,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
-from jiuwen_memory.construction.prompt_guard import truncate_unit_content
+from jiuwen_memory.construction.prompt_guard import CONTENT_MAX_UNIT_CHARS, truncate_unit_content
 
 from ..base import ExtractContext, OperatorType
 from ..common import merge_unit_tags, parse_tags, validate_llm_attempt_policy
@@ -932,7 +932,10 @@ class ExtractorImpl(Extractor):
 
         # 拼 user prompt：每条 unit 带 [ID: unit.id] 前缀
         parts = [
-            _SOURCE_PREFIX.format(unit_id=u.id, unit_content=truncate_unit_content(u.content))
+            _SOURCE_PREFIX.format(
+                unit_id=u.id,
+                unit_content=truncate_unit_content(u.content, limit=CONTENT_MAX_UNIT_CHARS),
+            )
             for u in units
         ]
         user_text = "\n".join(parts)
