@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from jiuwen_memory.common.type_def import FilterExpr, MemoryUnit, Scope
+from jiuwen_memory.common.type_def import Context, FilterExpr, MemoryUnit, Scope
 from jiuwen_memory.control.engine import MemoryEngine
 from jiuwen_memory.control.types import DeleteSelector, MemoryListResult, PermissionContext
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
@@ -57,3 +57,18 @@ class MemoryQueryService:
         self, selector: DeleteSelector
     ) -> list[PermissionContext]:
         return await self._engine.permission_contexts_for_delete(selector)
+
+    async def read_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        *,
+        line_range: tuple[int, int] | None = None,
+    ) -> list[MemoryUnit]:
+        """薄包装：委托 ``MemoryEngine.read_md_file``（F08 md 文件级读接口）。
+
+        与 :meth:`recall` 同构——已鉴权 scope 上的查询转发，project 解析在 Engine 层
+        （:func:`project_from_context`），本端口不拆 Context。鉴权（READ）在 API 层
+        PEP 完成后才进入本端口，与 ``get`` / ``list`` 的鉴权后委托模式一致。
+        """
+        return await self._engine.read_md_file(context, md_filename, line_range=line_range)

@@ -270,7 +270,7 @@ MD_FILENAME_KEY = "md_filename"
 
 # md 块标题：LLM 抽取时与 tier/tags 同一 prompt 一并产出（F08 §8），构建派生 unit 时写入
 # ``unit.system_metadata[MD_TITLE_KEY]``，``MarkdownStore.write`` 渲染标题行时读取——
-# daily 文件（team_memory/兜底类）不用它（用 coords.team 标识来源），其余 md 文件用它，
+# daily 文件（daily_memory）不用它（用 coords.team 标识来源），其余 md 文件用它，
 # 缺失兜底 ``# {unit.id}``（infer=false 直写与看门狗重建路径无 LLM 标题）。
 # 与 MD_FILENAME_KEY 同类：内核写入的普通字符串键，不进瞬态集合（落 unit_json，召回物化可读），
 # 不进 KERNEL_SYSTEM_METADATA_KEYS（调用方写了也只是无害冗余，渲染有兜底，不构成伪造面）。

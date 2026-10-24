@@ -79,20 +79,20 @@ ROUTE_TABLE = {
     "coord_entities": ["project", "team"],
     "memory_classes": [
         {
-            "name": "user_memory",
+            "name": "user_profile",
             "owner": "user",
             "space_template": "u_{user}",
             "fallback": True,
             "description": "facts about the user",
         },
         {
-            "name": "project_memory",
+            "name": "long_term_memory",
             "owner": "project",
             "space_template": "p_{project}",
             "cross_user": True,
             "members": "project participants",
         },
-        {"name": "team_memory", "owner": "team", "record_only": True},
+        {"name": "daily_memory", "owner": "team", "record_only": True},
     ],
     "narrow_dims": [
         {"entity": "agent", "tag_key": "agent_id"},
@@ -142,11 +142,11 @@ class _KeywordRouter(Router):
         decisions = []
         for unit in units:
             if "项目" in unit.content:
-                name = "project_memory"
+                name = "long_term_memory"
             elif "团队" in unit.content:
-                name = "team_memory"
+                name = "daily_memory"
             else:
-                name = "user_memory"
+                name = "user_profile"
             hits = tuple(dim.tag_key for dim in ctx.narrow_dims)
             decisions.append(build_decision(unit, name, hits, ctx))
         return decisions
@@ -266,14 +266,14 @@ def test_an_omitted_scope_is_routed_into_the_project_space(api) -> None:
     api.add("项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1)
     landed = _units_in(api, PROJECT_SPACE, ALICE)
     assert [unit.content for unit in landed] == ["项目部署在集群 A"]
-    assert landed[0].system_metadata["memory_class"] == "project_memory"
+    assert landed[0].system_metadata["memory_class"] == "long_term_memory"
     assert not _units_in(api, ALICE_SPACE, ALICE)
 
 
 def test_a_user_fact_lands_in_the_individual_space(api) -> None:
     api.add("偏好深色主题", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1)
     landed = _units_in(api, ALICE_SPACE, ALICE)
-    assert [unit.system_metadata["memory_class"] for unit in landed] == ["user_memory"]
+    assert [unit.system_metadata["memory_class"] for unit in landed] == ["user_profile"]
 
 
 def test_a_record_only_class_lands_in_fallback_and_keeps_its_tag(api) -> None:
@@ -285,7 +285,7 @@ def test_a_record_only_class_lands_in_fallback_and_keeps_its_tag(api) -> None:
         system_metadata={"coords": {"team": "t1"}},
     )
     landed = _units_in(api, ALICE_SPACE, ALICE)
-    assert landed[0].system_metadata["memory_class"] == "team_memory"
+    assert landed[0].system_metadata["memory_class"] == "daily_memory"
     assert landed[0].system_metadata["team_id"] == "t1"
 
 
@@ -535,7 +535,7 @@ def test_the_derived_units_of_an_infer_write_are_routed_in_the_construction_laye
         system_metadata={"infer": "true", "coords": {"project": "p1"}},
     )
     assert [unit.scope.space for unit in units] == [PROJECT_SPACE]
-    assert [unit.system_metadata["memory_class"] for unit in units] == ["project_memory"]
+    assert [unit.system_metadata["memory_class"] for unit in units] == ["long_term_memory"]
     landed = _units_in(api, PROJECT_SPACE, ALICE)
     assert [unit.content for unit in landed] == [unit.content for unit in units]
 
@@ -656,7 +656,7 @@ def test_stored_unit_carries_coords_for_md_routing_while_echo_stays_clean(api) -
 
     coords 在 API 入口被 _take_coords 取出、判定产物只回写标签与类别。不塞回则
     MarkdownStore._md_path 与影子索引 _project_of 都读不到 coords.project，
-    project_memory 全落 memory/default/。两半约束：
+    long_term_memory 全落 memory/MEMORY.md。两半约束：
 
     - 存储侧（dumps 之前的 unit 对象）带 coords——路径计算在序列化之前发生；
     - 回显给调用方的返回值不带——coords 是判定输入不是条目属性，且是嵌套字典，

@@ -52,7 +52,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 ## HTTP / CLI 与协议适配契约
 
 HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
-`MemoryAPI.__abstractmethods__` 的 36 个公开方法全部按以下规则暴露：
+`MemoryAPI.__abstractmethods__` 的 38 个公开方法全部按以下规则暴露：
 
 ```text
 POST /v1/<MemoryAPI 方法名>
@@ -105,7 +105,7 @@ dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或�
 此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
 HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
-不再经过 legacy `DispatchRequest` / shared handler。CLI 的 36 个命令与参数直接从
+不再经过 legacy `DispatchRequest` / shared handler。CLI 的 38 个命令与参数直接从
 `MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
 对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
 本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
@@ -243,6 +243,8 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
 | 数据面 | `delete` | 已实现 | [delete](#delete) | 无独立 F；实现见 F01 |
 | 数据面 | `evolve` | 原有四种演进与 dreaming | [evolve](#evolve) | F01、F02 |
+| 数据面（文档模式，经 Engine 窄端口） | `read_md_file` | 已实现；仅文档模式可用 | [read_md_file](#read_md_file) | F08 |
+| 数据面（文档模式） | `edit_md_file` | 已实现；仅文档模式可用 | [edit_md_file](#edit_md_file) | F08 |
 | 任务面（委托 Scheduler） | `job_status` | 已实现 | [job_status](#job_status) | F01 |
 | 任务面 | `job_cancel` | 已实现 | [job_cancel](#job_cancel) | F01 |
 | 治理面（委托 Governor） | `inspect` | 已实现 | [inspect](#inspect) | F01 |
@@ -457,7 +459,7 @@ def submit_ingest(
 
 #### search
 
-**状态：已实现**（下列签名为当前代码）。层级过滤、展开与 rollup 作为原 search 末尾的可选参数提供。
+**状态：已实现**（下列签名为当前代码）。层级过滤 / 展开 / rollup 为已设计增量，见本节末。
 #### 薄封装职责
 
 API 方法的实现顺序应保持为：
@@ -687,6 +689,46 @@ WRITE+UPDATE 授权及空间可写检查。启用逐记忆权限路由时不支�
 返回成功跳过的 job_id，即使未提供选项或时间不完整也不做树语义校验，不读候选、不调用
 建树模型。基础 mode/channel/Scope、普通参数组合和权限检查仍执行；HTTP/CLI/MCP
 仍执行原有报文与字段类型解码。普通模式继续原有演进。
+#### read_md_file
+
+**状态：已实现**（F08，仅文档模式可用——非文档模式 `InMemoryEngine` 抛 `ValidationError`）。
+
+```python
+def read_md_file(
+    context: Context,
+    md_filename: str,
+    *,
+    security: RequestSecurityContext,
+    line_range: tuple[int, int] | None = None,
+) -> list[MemoryUnit]: ...
+```
+
+按 `md_filename`（basename：`USER.md` / `MEMORY.md` / `YYYY-MM-DD.md`）+ 行范围读 md 文件原文，返回命中的 MemoryUnit 列表。入参形态与 `search` 一致（`context: Context`）：`context.scope` 携带归属五维，`context.extensions["coords"]["project"]` 决定从哪个 project 子目录读（project 解析在 Engine 层 `project_from_context`，API 层不拆 Context）。`line_range` 为 `(start, end)` 1-based 闭区间，`None` 表示整文件，越界自动 clamp。
+
+返回值与 `add` / `search` 同构为 `list[MemoryUnit]`——按块算 content_hash 在影子索引反查 unit_id 后取完整 MemoryUnit；`MdFileContent` 的格式转换放 provider 层。鉴权 `READ` 对 `context.scope` 单段（与 `get` / `list` 同口径，F08 D5）。返回前剥瞬态键（`coords` 等是路径解析依据，不是条目属性）。
+
+#### edit_md_file
+
+**状态：已实现**（F08，仅文档模式可用——非文档模式 `InMemoryEngine` 抛 `ValidationError`）。
+
+```python
+def edit_md_file(
+    context: Context,
+    md_filename: str,
+    old_text: str,
+    new_text: str,
+    *,
+    security: RequestSecurityContext,
+) -> list[MemoryUnit]: ...
+```
+
+按 `md_filename` + `old_text` 在文件内做唯一替换，返回受影响的新 MemoryUnit 列表。语义对齐 agent-core `edit_memory`：`old_text` 在文件内必须唯一（`count > 1` 抛 `ValidationError`），不存在抛 `NotFoundError`，`replace(old, new, 1)` 精确替换一处后原子写回。`old_text` 任意文本（块内片段 / 跨多块均可），不强制对齐块边界。
+
+与 `update` 的差别：`update` 按 `unit_id` 做 SUPERSEDE/OVERWRITE（替换整个 unit.content）；本方法按文件内 `old_text` 做局部文本替换，保留文件其他部分。edit 走「继承式 SUPERSEDE」——新 unit 继承旧 unit 的元数据 + 新 id + `supersedes` 指向旧 id + 旧版标记 SUPERSEDED（F08 D4）。返回新 unit（旧版已失效，返回它会让调用方误用失效 id）。
+
+鉴权 `WRITE` 对 `context.scope` 单段（与 `add` 同口径——edit 本质是写入新记忆，语义对齐 `add` 而非 `update`，F08 D5 / R6）。写入前置状态校验经 `_ensure_space_writable`（与 `add` 同，装配空间级判定时由 `ENTRY_RULES` 登记 `edit_md_file` 触发 `_ensure_space_state_allows`）。返回前剥瞬态键。
+
+---
 
 reuse_existing=True：纯新合格叶首次构建；完整现有树直接复用；完整旧树与新叶混合、
 缺失请求父层或损坏结构拒绝隐式重建。False：备齐区间相交旧根的完整子树后重建，

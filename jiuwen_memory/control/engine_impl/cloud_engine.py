@@ -23,9 +23,8 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.type_def import (
-    COORDS_KEY,
-    MD_FILENAME_KEY,
     CandidateSource,
+    Context,
     FilterExpr,
     LifecycleState,
     MemoryTier,
@@ -45,6 +44,10 @@ from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderP
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
+from jiuwen_memory.control.engine_impl.doc_mode_support import (
+    project_from_context,
+    restore_coords_from_md_filename,
+)
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.schema_update_support import (
@@ -126,34 +129,6 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
         new.temporal.t_invalid = patch.t_invalid
     return new
 
-
-def _restore_coords_from_md_filename(new: MemoryUnit, old: MemoryUnit) -> None:
-    """文档模式 supersede：从 old 的 ``md_filename``（落盘键，dumps 不剥除）反推
-    project，回写进 ``new.system_metadata[COORDS_KEY]``。
-
-    背景：old 经 ``shadow.get_units`` 读回，``coords`` 是 TRANSIENT 键（dumps 剥除），
-    读回的 old 无 coords → deepcopy 的 new 也无 → ``domain_store.add`` 内
-    ``_md_path._project_of`` 读 coords 落空 → md_filename 重算成 ``memory/default/``，
-    新版与旧版不同文件、project 维丢失。md_filename 形如 ``memory/{project}/MEMORY.md``
-    或 ``memory/{project}/daily_memory/YYYY-MM-DD.md``（user_memory 是 ``memory/USER.md``
-    无 project 段，不回写）。已在 new.system_metadata 有 coords 时不覆盖。
-    """
-    meta = dict(new.system_metadata or {})
-    if isinstance(meta.get(COORDS_KEY), dict) and meta[COORDS_KEY]:
-        return  # new 已带 coords，无需回写
-    old_meta = old.system_metadata or {}
-    md_filename = str(old_meta.get(MD_FILENAME_KEY) or "")
-    if not md_filename:
-        return
-    # memory/{project}/MEMORY.md | memory/{project}/daily_memory/... | memory/USER.md
-    parts = md_filename.split("/")
-    if len(parts) >= 3 and parts[0] == "memory" and parts[1] not in ("USER.md",):
-        project = parts[1]
-        old_coords = old_meta.get(COORDS_KEY)
-        coords = dict(old_coords) if isinstance(old_coords, dict) else {}
-        coords["project"] = project
-        meta[COORDS_KEY] = coords
-        new.system_metadata = meta
 
 
 def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
@@ -718,11 +693,11 @@ class CloudEngine(MemoryEngine):
         # 文档模式 supersede：old 经 shadow.get_units 读回，coords 是 TRANSIENT 键
         # （dumps 剥除），读回的 old.system_metadata 无 coords → deepcopy 的 new 也无 →
         # domain_store.add 内 _md_path._project_of 读 coords 落空 → md_filename 重算成
-        # memory/default/MEMORY.md（丢失 project 维）。从 old 的 md_filename（落盘键，
+        # memory/MEMORY.md（丢失 project 维）。从 old 的 md_filename（落盘键，
         # 不剥除）反推 project 回写 new 的 coords，让新版落进与旧版同一文件（版本链
         # 同文件追加，F08 §5.2.1）。非文档模式无此问题（KV 不走 md 分流）。
         if self._domain_store.should_write_document():
-            _restore_coords_from_md_filename(new, old)
+            restore_coords_from_md_filename(new, old)
         # 新版先落地再废旧版：任何时刻都有一个可读版本（同 InMemoryEngine）。
         new_index.build([new])
         # 文档模式（write_document=true）走与 dedup 同构的路径标记旧版 SUPERSEDED：
@@ -916,6 +891,50 @@ class CloudEngine(MemoryEngine):
 
     async def admin_all(self) -> dict[str, str]:
         raise NotImplementedError("admin 经 API 层直达 PolicyManager")
+
+    async def read_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        *,
+        line_range: tuple[int, int] | None = None,
+    ) -> list[MemoryUnit]:
+        """异步协程：委托 DomainStore.read_md_file（``asyncio.to_thread``），F08。
+
+        Engine 层拆 project（:func:`project_from_context` 从 ``context.extensions``
+        读 coords.project），显式传给 DomainStore（Context 不下沉存储层）。
+        scope 从 ``context.scope`` 取（鉴权轴）。非文档模式 DomainStore 内部抛
+        ``ValidationError``（Engine 信任 DomainStore 的文档模式判定，不重复检查）。
+        """
+        return await asyncio.to_thread(
+            self._domain_store.read_md_file,
+            context.scope,
+            md_filename,
+            project=project_from_context(context),
+            line_range=line_range,
+        )
+
+    async def edit_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        old_text: str,
+        new_text: str,
+    ) -> list[MemoryUnit]:
+        """异步协程：委托 DomainStore.edit_md_file（``asyncio.to_thread``），F08。
+
+        project 从 ``context.extensions["coords"]["project"]`` 拆出（见
+        :func:`project_from_context`），scope 从 ``context.scope`` 取。DomainStore
+        内部完成写窗保护 + edit_content 原子替换 + 继承式 SUPERSEDE 同步 shadow。
+        """
+        return await asyncio.to_thread(
+            self._domain_store.edit_md_file,
+            context.scope,
+            md_filename,
+            old_text,
+            new_text,
+            project=project_from_context(context),
+        )
 
     def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
         units = self._domain_store.get(scope, [unit_id])

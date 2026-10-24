@@ -130,24 +130,24 @@ globals:
 #       # 一个类别 = 一个归属维 + 一个空间名模板。
 #       # 判据是「换掉哪个坐标这条记忆就不成立，那个坐标即它的归属维」。
 #       memory_classes:
-#         - name: user_memory
+#         - name: user_profile
 #           # description 会拼进判定 prompt，模型据它选类别，写清楚这一类是什么
 #           description: 关于用户本人的事实、偏好与习惯，换一个用户就不成立
 #           owner: user                  # 归属维实体名
 #           space_template: "u_{user}"   # 空间名模板，必须引用该类别的 owner
 #           fallback: true               # 兜底落点，有且仅有一个，且不得 cross_user
-#         - name: project_memory
+#         - name: long_term_memory
 #           description: 关于某个项目的事实、决定与约定，换一个项目就不成立
 #           owner: project
 #           space_template: "p_{project}"
 #           cross_user: true             # 该类别的空间跨用户可见，是设计意图
 #           members: 项目参与者           # cross_user 必须给出成员来源或声明 sanitized
-#         - name: team_memory
+#         - name: daily_memory
 #           description: 关于某个 agent-team 的协作方式，换一个 team 就不成立
 #           owner: team
 #           # record_only：不落独立空间，命中该类别的条目落 fallback 空间，归属实体
 #           # 只记成一个标签。该形态下团队记忆不在团队内共享——标签只在作者自己的
-#           # 空间内起收窄作用。要在团队内共享就删掉本行并按 project_memory 的写法配。
+#           # 空间内起收窄作用。要在团队内共享就删掉本行并按 long_term_memory 的写法配。
 #           record_only: true
 #           tag_key: team_id             # 不写则按 <owner>_id 生成
 #       # 收窄维：命中即在条目上打标签，检索按同一组标签收窄
@@ -160,5 +160,5 @@ globals:
 #           question: 这条记忆是否只在这一次会话内有意义？
 #         - entity: project
 #           tag_key: project_id
-#           applies_to: [user_memory]    # 只对这些类别生效；不写则对全部类别生效
+#           applies_to: [user_profile]    # 只对这些类别生效；不写则对全部类别生效
 #           question: 这条记忆是否与某个具体项目相关？

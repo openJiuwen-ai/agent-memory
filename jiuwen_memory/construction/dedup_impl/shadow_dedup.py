@@ -66,6 +66,45 @@ def _active_lifecycle_filter() -> FilterExpr | None:
     )
 
 
+def _candidate_project(candidate: MemoryUnit) -> str:
+    """读候选 project，与写入侧 ``SQLiteShadowIndex._project_of`` 同口径。
+
+    agent 场景 project 是 ``system_metadata.project`` 标量直传；``coords.project``
+    兜底覆盖 router 场景（``_route`` 回写）。空落空串 = 跨项目可见。
+    """
+    metadata = candidate.system_metadata or {}
+    project = metadata.get("project")
+    if isinstance(project, str) and project.strip():
+        return project.strip()
+    coords = metadata.get("coords") or {}
+    return coords.get("project") or ""
+
+
+def _dedup_recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
+    """去重召回谓词：``lifecycle='active'`` AND（候选 project 非空时）``project IN ['', project]``。
+
+    去重须跨 memory_class 对照：候选 project 非空时，既召回同 project 的
+    long_term/daily 记忆，也召回 project='' 的 user_profile 记忆（跨项目可见），
+    取并集。若只给 lifecycle 谓词，``search_fulltext``/``search_vector`` 会在无
+    project 谓词时兜底 ``project=''``（``_has_project_predicate`` 返回 False），
+    只召回 user_profile，漏掉同 project 记忆 → 同项目内相似记忆不去重，重复写入
+    MEMORY.md / daily_memory。
+
+    候选 project 为空（user_profile）时保持 lifecycle-only：兜底 ``project=''``
+    恰好召回全部可对照的跨项目记忆，语义正确。
+    """
+    project = _candidate_project(candidate)
+    if not project:
+        return _active_lifecycle_filter()
+    return and_merge(
+        None,
+        [
+            FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value]),
+            FilterClause("system_metadata.project", FilterOp.IN, ["", project]),
+        ],
+    )
+
+
 def _cosine(a: list[float], b: list[float]) -> float:
     """两向量的 cosine 相似度（自行归一化，不依赖 embedder 是否归一化）。
 
@@ -135,10 +174,10 @@ class ShadowDedup(Dedup):
 
         scope = candidate.scope
 
-        # lifecycle='active' 谓词下推进 SQL WHERE：SUPERSEDED/FORGOTTEN 旧版本在
-        # 倒排/向量召回阶段即排除，不占 top_k 名额（否则 Step C 的 Python 层过滤虽
-        # 能剔掉，名额已被占 → 漏召回真正的 ACTIVE 冲突记忆）。
-        lifecycle_filter = _active_lifecycle_filter()
+        # lifecycle='active' + project 谓词下推进 SQL WHERE：SUPERSEDED/FORGOTTEN
+        # 旧版本在倒排/向量召回阶段即排除，不占 top_k 名额；project 谓词让去重跨
+        # memory_class 召回同 project 记忆（否则兜底 project='' 只召回 user_profile）。
+        recall_filter = _dedup_recall_filter(candidate)
 
         # Step B: 两路并跑取并集（与 ShadowRecaller 同设计）。
         # fulltext 必跑（FTS5 BM25，捕捉近乎逐字重叠如"喜欢/不喜欢"只差一字）；
@@ -152,7 +191,7 @@ class ShadowDedup(Dedup):
                 TextQuery(
                     text=candidate.content,
                     top_k=self._top_k,
-                    filters=lifecycle_filter,
+                    filters=recall_filter,
                 ),
             )
         except Exception as exc:
@@ -167,7 +206,7 @@ class ShadowDedup(Dedup):
                     VectorQuery(
                         vector=candidate_vector,
                         top_k=self._top_k,
-                        filters=lifecycle_filter,
+                        filters=recall_filter,
                     ),
                 )
             except Exception as exc:

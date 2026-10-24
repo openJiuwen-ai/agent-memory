@@ -24,11 +24,11 @@ from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
     WhitespaceTokenizer,
 )
 from jiuwen_memory.common.type_def import COORDS_KEY, MD_FILENAME_KEY, MEMORY_CLASS_KEY, Scope
+from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks, content_hash
 from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
 from jiuwen_memory.storage.watchdog_impl.local_watchdog import (
     LocalWatchdog,
     _class_from_md_path,
-    _content_hash,
     _project_from_md_path,
 )
 
@@ -51,11 +51,12 @@ def _watchdog(tmp_path) -> LocalWatchdog:
 
 
 def test_content_hash_matches_shadow_index_sha256() -> None:
-    assert _content_hash("hello") == hashlib.sha256(b"hello").hexdigest()
+    assert content_hash("hello") == hashlib.sha256(b"hello").hexdigest()
 
 
 def test_project_from_md_path_for_user_file_is_default() -> None:
     assert _project_from_md_path("memory/USER.md") == "default"
+    assert _project_from_md_path("USER.md") == "default"  # root 顶层（USER.md 上移后实际形态）
 
 
 @pytest.mark.parametrize(
@@ -78,10 +79,11 @@ def test_project_from_md_path_unknown_shape_defaults() -> None:
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        ("memory/p1/daily_memory/x.md", "team_memory"),
-        ("memory/USER.md", "user_memory"),
-        ("memory/p1/MEMORY.md", "project_memory"),
-        ("memory/p1/unknown.md", "team_memory"),  # 未知兜底
+        ("memory/p1/daily_memory/x.md", "daily_memory"),
+        ("memory/USER.md", "user_profile"),
+        ("USER.md", "user_profile"),  # root 顶层（USER.md 上移后实际形态）
+        ("memory/p1/MEMORY.md", "long_term_memory"),
+        ("memory/p1/unknown.md", "long_term_memory"),  # 未知兜底
     ],
 )
 def test_class_from_md_path_maps_file_to_memory_class(path: str, expected: str) -> None:
@@ -96,12 +98,14 @@ def test_collect_new_contents_skips_titles_blanks_and_dedups(tmp_path) -> None:
     md.parent.mkdir(parents=True)
     md.write_text("# title\nhello\n\n# title2\nhello\n\nworld\n", encoding="utf-8")
 
-    wd = _watchdog(tmp_path)
-    result = wd._collect_new_contents(str(md))
+    # collect_md_blocks 返回三元组 (hash, content, block_index)，取前两元保持与原
+    # _collect_new_contents 返回形态一致；口径（跳过标题/空行、去重、保序）完全不变。
+    result = collect_md_blocks(str(md))
+    pairs = [(h, c) for h, c, _ in result]
 
     # 标题行跳过；空行跳过；重复 content 去重；保序
-    assert [content for _, content in result] == ["hello", "world"]
-    assert [h for h, _ in result] == [_content_hash("hello"), _content_hash("world")]
+    assert [content for _, content in pairs] == ["hello", "world"]
+    assert [h for h, _ in pairs] == [content_hash("hello"), content_hash("world")]
 
 
 # -- 建 unit 缺省元数据 ------------------------------------------------------ #
@@ -114,7 +118,7 @@ def test_build_unit_derives_coords_and_class_from_md_path(tmp_path) -> None:
     assert unit.scope is SCOPE
     assert unit.segments[0].content == "hello world"
     assert unit.system_metadata[COORDS_KEY] == {"project": "p1"}
-    assert unit.system_metadata[MEMORY_CLASS_KEY] == "project_memory"
+    assert unit.system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
     assert unit.system_metadata[MD_FILENAME_KEY] == "memory/p1/MEMORY.md"
     assert unit.provenance == ["watchdog_sync"]
 

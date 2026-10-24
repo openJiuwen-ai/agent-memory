@@ -52,6 +52,7 @@ from .local_support import (
     _policy_int,
     _resolve_space_owner,
 )
+from .md_ops import MdOpsMixin
 from .pep_ops import PepOpsMixin
 from .query_ops import QueryOpsMixin
 from .space_ops import SpaceOpsMixin
@@ -63,6 +64,7 @@ __all__ = ["LocalMemoryAPI", "_first_family_predicate", "_resolve_space_owner"]
 class LocalMemoryAPI(
     WriteOpsMixin,
     QueryOpsMixin,
+    MdOpsMixin,
     AdminOpsMixin,
     SpaceOpsMixin,
     PepOpsMixin,

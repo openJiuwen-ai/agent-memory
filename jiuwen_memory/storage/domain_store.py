@@ -203,5 +203,43 @@ class DomainStore(ABC):
         ...
 
     @abstractmethod
+    def read_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        *,
+        project: str = "",
+        line_range: tuple[int, int] | None = None,
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        """按 md 文件 basename + project + 行范围读 md 原文，返回命中的 MemoryUnit 列表（F08）。
+
+        文档模式专用接口：经 ``MarkdownStore.read_content`` 读 md 切片 → 按块算
+        ``content_hash`` → ``shadow_index.find_unit_ids_by_content_hash`` 反查 →
+        ``get_units`` 取完整 MemoryUnit。非文档模式（``should_write_document()=False``）
+        抛 ``ValidationError``（无 md 文件）。``project`` 显式参数（Context 不下沉存储层，
+        由 Engine 层 ``_project_from_context`` 从 ``context.extensions`` 拆出）。
+        """
+
+    @abstractmethod
+    def edit_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        project: str = "",
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        """按 md 文件 basename + old_text 做唯一替换，返回受影响的新 MemoryUnit 列表（F08）。
+
+        文档模式专用接口：写窗保护下经 ``MarkdownStore.edit_content`` 原子替换 md →
+        ``_supersede_shadow_for_md`` 同步 shadow（继承式 SUPERSEDE：旧版标记 SUPERSEDED +
+        新版 deepcopy 旧 unit 继承元数据 + D4.1 跨块对齐/退化兜底）→ 用新 content_hash 反查
+        新 unit_id 返回。非文档模式抛 ``ValidationError``。
+        """
+
+    @abstractmethod
     def health(self) -> None:
         ...
