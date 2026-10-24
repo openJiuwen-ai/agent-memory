@@ -87,6 +87,16 @@ _MAX_RERANK_QUERY_CHARS = 2000
 _MAX_RERANK_DOC_CHARS = 4000
 
 
+def _truncate_rerank_inputs(
+    query: str, docs: list[str], query_limit: int, doc_limit: int
+) -> tuple[str, list[str]]:
+    """精排输入限长：query/doc 超长会把远程 rerank 顶满 reranker_timeout。"""
+    return (
+        query[:query_limit],
+        [doc[:doc_limit] for doc in docs],
+    )
+
+
 class PipelineRetriever(Retriever):
     """编排 parse → 谓词 → recall(多路) → fuse → 点读+复核 → rerank → disclose。"""
 
@@ -153,13 +163,6 @@ class PipelineRetriever(Retriever):
         # 精排输入限长上限（护栏旋钮，上调须自行承担精排超时风险）。
         self._rerank_max_query_chars = max(1, int(rerank_max_query_chars))
         self._rerank_max_doc_chars = max(1, int(rerank_max_doc_chars))
-
-    def _truncate_rerank_inputs(self, query: str, docs: list[str]) -> tuple[str, list[str]]:
-        """精排输入限长：query/doc 超长会把远程 rerank 顶满 reranker_timeout。"""
-        return (
-            query[: self._rerank_max_query_chars],
-            [doc[: self._rerank_max_doc_chars] for doc in docs],
-        )
 
     @property
     def storage(self) -> DomainStore:
@@ -431,9 +434,11 @@ class PipelineRetriever(Retriever):
             try:
                 # rerank 输入截断护栏：query/doc 超长会把精排请求卡满 120s 超时
                 # （issue #231 实测 124.9s）；rewrite 后的 query 可能更长，同样截断。
-                query_text, doc_texts = self._truncate_rerank_inputs(
+                query_text, doc_texts = _truncate_rerank_inputs(
                     parsed.rewritten,
                     [candidate.unit.content for candidate in survivors],
+                    self._rerank_max_query_chars,
+                    self._rerank_max_doc_chars,
                 )
                 scores = self._reranker.rerank(query_text, doc_texts)
             except BackendError as exc:
