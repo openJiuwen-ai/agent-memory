@@ -2,8 +2,8 @@
 """显式本地 DEV 模式的配置适配。
 
 DEV 是 composition root 的显式选择，不是安全能力内部的运行期分支。本模块只在用户没有
-声明 ``security`` 时补齐一个完整的 DEV SecurityRuntime 配置；显式配置始终优先。PR2 已由
-``Authorizer`` 消费 ``role=ROOT``，不再注入旧 ``allow_all`` PermissionManager 过渡项。
+声明 ``security`` 时补齐默认 USER 的 DEV SecurityRuntime 配置；显式配置始终优先。
+ROOT 须在认证器配置中显式选择；权限始终由 Authorizer 判定，不注入 allow_all 过渡项。
 """
 
 from __future__ import annotations

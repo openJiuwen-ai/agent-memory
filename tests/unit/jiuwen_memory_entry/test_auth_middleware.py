@@ -127,7 +127,7 @@ def test_context_is_set_inside_and_cleared_outside() -> None:
     with authenticated(DevAuthenticator(), Credentials()) as ctx:
         # ContextVar 挂 AuthContext（日志/trace 用），yield 的是 RequestSecurityContext
         assert get_current() is ctx.auth
-        assert ctx.auth.role is Role.ROOT
+        assert ctx.auth.role is Role.USER
     assert get_current() is None
 
 
@@ -263,7 +263,7 @@ def test_no_limiter_means_no_limiting() -> None:
 
 def test_passing_limiter_does_not_change_the_allowed_path() -> None:
     with authenticated(DevAuthenticator(), _peer(), None, _Open()) as ctx:
-        assert ctx.auth.role is Role.ROOT
+        assert ctx.auth.role is Role.USER
     assert get_current() is None
 
 

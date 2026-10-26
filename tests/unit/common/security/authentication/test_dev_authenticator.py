@@ -11,13 +11,15 @@ from jiuwen_memory.common.errors import AuthenticationError, ValidationError
 from jiuwen_memory.common.security.authentication.authentication_impl.dev_authenticator import (
     DevAuthenticator,
 )
+from jiuwen_memory.common.security.authentication.base import AuthProducer
 from jiuwen_memory.common.security.types import Credentials, Role
 from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config.defaults import default_context
 
 pytestmark = pytest.mark.unit
 
 
-def test_dev_authenticator_ignores_credentials_and_returns_named_root() -> None:
+def test_dev_authenticator_ignores_credentials_and_returns_named_user() -> None:
     authenticator = DevAuthenticator()
 
     missing = authenticator.authenticate(Credentials())
@@ -28,7 +30,7 @@ def test_dev_authenticator_ignores_credentials_and_returns_named_root() -> None:
     assert missing.credential_type == supplied.credential_type
     assert missing.auth_method == supplied.auth_method
     assert missing.actor == Scope(org="local", user="developer")
-    assert missing.role is Role.ROOT
+    assert missing.role is Role.USER
     assert missing.credential_type == "dev"
     assert missing.auth_method == "dev"
     assert isinstance(missing.authenticated_at, datetime)
@@ -36,6 +38,29 @@ def test_dev_authenticator_ignores_credentials_and_returns_named_root() -> None:
     assert isinstance(supplied.authenticated_at, datetime)
     assert supplied.authenticated_at.tzinfo is UTC
     assert missing.actor != Scope()
+
+
+@pytest.mark.parametrize("role", [Role.USER, Role.ADMIN, Role.ROOT])
+def test_fixed_dev_role_requires_explicit_server_configuration(role) -> None:
+    authenticator = AuthProducer.build("dev", {"role": role.value}, default_context())
+    context = authenticator.authenticate(Credentials(headers={"x-role": "root"}, api_key="ignored"))
+    assert context.role is role
+    assert context.actor == Scope(org="local", user="developer")
+    assert authenticator.requires_loopback_binding() is True
+
+
+@pytest.mark.parametrize("role", [None, "", "ROOT", "superuser", False, 1, [], {}])
+def test_fixed_dev_rejects_invalid_configured_role(role) -> None:
+    with pytest.raises(ValidationError, match="role"):
+        AuthProducer.build("dev", {"role": role}, default_context())
+
+
+@pytest.mark.parametrize("role", ["user", "admin", "root"])
+def test_dev_rejects_mixing_fixed_role_and_identity_map(role) -> None:
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        AuthProducer.build(
+            "dev", {"role": role, "identities": _identity_config()}, default_context()
+        )
 
 
 def test_dev_authenticator_declares_local_lightweight_capabilities() -> None:
@@ -101,9 +126,14 @@ def test_dev_identity_map_copies_configuration_and_each_returned_actor() -> None
 @pytest.mark.parametrize(
     "identities",
     [
-        {}, [], "test-u1", {"": {"actor": {"org": "local"}}},
+        {},
+        [],
+        "test-u1",
+        {"": {"actor": {"org": "local"}}},
         {"bad key": {"actor": {"org": "local"}}},
-        {"token": None}, {"token": {}}, {"token": {"actor": None}},
+        {"token": None},
+        {"token": {}},
+        {"token": {"actor": None}},
         {"token": {"actor": {}}},
         {"token": {"actor": {"org": "local"}}},
         {"token": {"actor": {"org": "local", "user": "u1", "agent": "a1"}}},
@@ -123,8 +153,9 @@ def test_dev_identity_map_and_fixed_actor_are_mutually_exclusive() -> None:
         DevAuthenticator(Scope(org="local", user="fixed"), identities=_identity_config())
 
 
-@pytest.mark.parametrize("actor", [Scope(), Scope(org="local"),
-                                  Scope(org="local", user="u1", agent="a1")])
+@pytest.mark.parametrize(
+    "actor", [Scope(), Scope(org="local"), Scope(org="local", user="u1", agent="a1")]
+)
 def test_fixed_dev_actor_also_requires_named_single_principal(actor) -> None:
     with pytest.raises(ValidationError):
         DevAuthenticator(actor)

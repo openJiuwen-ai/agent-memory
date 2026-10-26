@@ -17,6 +17,7 @@ def test_harness_uses_fixed_dev_identity_for_different_targets() -> None:
         first = harness._security_kwargs(harness._api.add, Scope(org="one", user="alice"))
         second = harness._security_kwargs(harness._api.add, Scope(org="two", user="bob"))
         assert first["security"].auth.actor == Scope(org="local", user="developer")
+        assert first["security"].auth.role.value == "root"
         assert second["security"].auth.actor == first["security"].auth.actor
         assert first["security"].request_id != second["security"].request_id
         assert first["security"].has_valid_origin()

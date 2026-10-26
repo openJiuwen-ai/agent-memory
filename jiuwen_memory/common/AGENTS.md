@@ -121,6 +121,8 @@
 8. 安全能力一律落 `security/<能力域>/`，不新开顶层目录。核心不得按 target 名或
    `mode()` 字符串分支——需要区分的行为差异由 capability 方法（如
    `requires_loopback_binding()`）显式声明，详见 S10。
+   DevAuthenticator 固定身份默认 USER，配置 params.role 才能提权；非法角色启动拒绝。
+   固定 actor/role 与 identities 映射互斥，映射每项独立决定角色，任何请求材料不能提权。
 9. 出站 HTTP 客户端（LLM / ASR / Embedder / Reranker）统一接受 `<prefix>_ssl_verify` /
    `<prefix>_ssl_ca_cert`（默认关闭），经 `_support.read_outbound_ssl` 读取。开启时须调
    `require_https` 与 `require_ca_file` 在装配期拦截明文 scheme 和缺失证书，并只在此时

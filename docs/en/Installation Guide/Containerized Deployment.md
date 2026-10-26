@@ -147,10 +147,12 @@ HTTP_BIND_ADDRESS=127.0.0.1
 docker compose up -d --force-recreate agent-memory
 ```
 
-Without `http.dev_identities`, dev ignores authentication headers and uses the fixed `local/developer` ROOT identity,
-while still running `MemoryAPI` authorization. The process listens on `0.0.0.0` inside the container,
-but `HTTP_BIND_ADDRESS=127.0.0.1` publishes the host port only on loopback. Then use these requests
-to verify an add/search round trip:
+Without `http.dev_identities`, dev ignores authentication headers and defaults to the fixed
+`local/developer` USER identity. Cross-org/user requests return 403 unless separately authorized;
+ROOT requires explicit configuration in the [configuration guide](<../API Docs/config.md#33-http-development-tests-multiple-identities>).
+DEV also enforces the process bind address: `0.0.0.0` inside a container is rejected, even if the host
+publishes only on loopback. Test in a local environment where the loopback listener is reachable;
+use trusted authentication for container services. Once reachable, verify an own-scope round trip:
 
 ```bash
 curl -X POST http://localhost:8137/v1/add \

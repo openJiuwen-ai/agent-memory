@@ -45,9 +45,15 @@ JSON 规则，领域错误共用 `core/error_response.py` 的状态映射和脱�
 不会从 scope 或 payload 生成身份。程序内可通过
 `InProcessClient(authenticator=...)` 注入认证器；凭据读取 `AGENT_MEMORY_API_KEY`。
 
-本地功能测试显式使用 `--auth-mode dev`：固定身份为 `local/developer`，
+本地功能测试显式使用 `--auth-mode dev`：固定身份默认 `local/developer` USER，ROOT 须额外配置，
 仅跳过凭据校验，不跳过 MemoryAPI 授权。每次调用由受控入口生成独立 request ID，
 设置 `Surface.CLI`，请求结束后清理安全上下文；测试身份不能用于生产。
+默认 USER 的 `audit`、`verify_audit`、`admin_get/set/all` 返回 403，必须显式 ROOT；
+`create_space` 可由本组织 ADMIN 执行。空间成员/策略管理仍需真实治理权，不按 ADMIN 全放行。
+将角色配置写进 `memory_api.security.default.params.authenticator.params.role` 后，
+用 `--auth-mode dev --config dev-management.yaml audit --filters '{}'` 加载并调用；
+程序化对应 `InProcessClient(["dev-management.yaml"], dev_authentication=True)`。
+完整受影响入口和 root/admin 选择见 [配置指南](../../docs/zh/API文档/config.md#默认-user-的管理入口迁移)。
 
 ```bash
 scripts/run-cli.sh --auth-mode dev add \

@@ -38,7 +38,7 @@ FastMCP 工具函数需要面向模型的 docstring 与显式运行时类型注�
    设计约束。不改变公开请求形状 `{"content", "scope", ...}`。
 4. **认证 fail-closed**：`JIUWEN_MEMORY_MCP_AUTH_MODE`（required | dev，默认
    required）。`required` 未装配生产认证器时业务调用全部拒绝；`dev` 使用固定
-   `local/developer` ROOT 测试身份、仅允许回环绑定。身份只经
+   `local/developer` USER 测试身份、仅允许回环绑定，ROOT 须显式配置。身份只经
    `auth_middleware.authenticated`（`Surface.MCP`）注入 `security`，payload 中的
    `security/identity/actor` 等保留字段在契约边界直接拒绝。
 5. **契约锁测试**：`test_mcp.py` 对 36 个工具锁「工具签名参数 **==** 契约参数
@@ -118,7 +118,7 @@ space_usage、get/set_space_policy、list/add/remove_space_member）。
 
 - 认证模式：`JIUWEN_MEMORY_MCP_AUTH_MODE`（required | dev，默认 required，
   失闭）。`required` 未装配生产认证器时业务调用全部拒绝；`dev` 使用固定
-  `local/developer` ROOT 测试身份（忽略凭据、保留 MemoryAPI 授权判定），
+  `local/developer` USER 测试身份（忽略凭据、保留 MemoryAPI 授权判定；ROOT 须显式配置），
   仅供本地功能测试，网络传输严格回环绑定，没有非回环环境变量旁路。
   stdio 也须显式 dev；required 从 memory_api.security 装配完整 Runtime。
 - 凭据按传输归一（`transport_security.credentials_for_transport`）：

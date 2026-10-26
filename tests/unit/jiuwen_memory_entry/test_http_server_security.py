@@ -51,7 +51,12 @@ from jiuwen_memory_entry.http_server import __main__ as http_server_module
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
 from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
 from tests.support.scoped_authenticator import ScopedAuthenticator
-from tests.unit.jiuwen_memory_entry.fixtures import upstream_api_error
+from tests.unit.jiuwen_memory_entry.fixtures import (
+    DEV_MANAGEMENT_CASES,
+    fixed_dev_management_config,
+    seed_dev_management_space,
+    upstream_api_error,
+)
 
 pytestmark = pytest.mark.unit
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -589,6 +594,97 @@ def test_dev_authentication_accepts_request_without_credentials(dev_http_endpoin
     assert status == 200, body
     assert body[0]["scope"]["org"] == "local"
     assert body[0]["scope"]["user"] == "developer"
+
+
+@pytest.mark.parametrize("role", [None, "root"], ids=["default-user", "explicit-root"])
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"org": "other-org-acc52", "user": "developer"},
+        {"org": "local", "user": "other-user-acc52"},
+    ],
+    ids=["cross-org", "cross-user"],
+)
+def test_fixed_dev_scope_boundary_requires_explicit_root(role, scope) -> None:
+    """Issue #254：原无认证头请求默认 403，显式服务端 ROOT 才允许跨范围。"""
+    layers = [OFFLINE]
+    if role is not None:
+        layers.append(
+            {
+                "memory_api": {
+                    "security": {
+                        "default": {
+                            "target": "standard",
+                            "params": {
+                                "authenticator": {
+                                    "target": "dev",
+                                    "params": {"role": role},
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        )
+    server = HttpServer.build(with_local_dev_security(load_config(layers)))
+    with ThreadingHTTPServer(("127.0.0.1", 0), server.handler_cls()) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            for method, payload in (
+                ("add", {"content": "issue254 boundary", "scope": scope}),
+                ("search", {"query": "issue254", "context": {"scope": scope}, "top_k": 10}),
+            ):
+                status, body, _ = _request(
+                    base_url, f"/v1/{method}", json.dumps(payload).encode(), key=None
+                )
+                assert status == (200 if role == "root" else 403), body
+            assert server.security_runtime.authenticator.requires_loopback_binding() is True
+            with pytest.raises(ValidationError, match="loopback"):
+                server.security_runtime.binding_policy.check("0.0.0.0", requires_loopback=True)
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=2)
+            server.close(wait=True)
+
+
+def test_default_dev_cannot_elevate_via_request_material(dev_http_endpoint) -> None:
+    base_url, _ = dev_http_endpoint
+    status, body, _ = _request(
+        base_url,
+        "/v1/add",
+        json.dumps({"content": "no elevation", "scope": {"org": "other-org"}}).encode(),
+        key="root",
+        headers={"X-Role": "root", "X-Principal-Id": "root"},
+    )
+    assert status == 403, body
+
+
+@pytest.mark.parametrize("role", [None, "admin", "root"], ids=["default-user", "admin", "root"])
+def test_fixed_dev_management_role_boundaries(role) -> None:
+    """同一真实 HTTP 入口覆盖审计、空间、成员、策略及系统管理的角色迁移。"""
+    config = with_local_dev_security(load_config([OFFLINE, fixed_dev_management_config(role)]))
+    server = HttpServer.build(config)
+    seed_dev_management_space(server.api)
+    with ThreadingHTTPServer(("127.0.0.1", 0), server.handler_cls()) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for method, payload, allowed_roles in DEV_MANAGEMENT_CASES:
+                status, body, _ = _request(
+                    f"http://127.0.0.1:{httpd.server_port}",
+                    f"/v1/{method}",
+                    json.dumps(payload).encode(),
+                    key=None,
+                )
+                assert status == (200 if role in allowed_roles else 403), (method, body)
+                if method == "verify_audit" and status == 200:
+                    assert body["status"] == "unsupported", body
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=2)
+            server.close(wait=True)
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::"])

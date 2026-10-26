@@ -16,6 +16,13 @@ from jiuwen_memory.common.type_def.scope import Scope
 _ACTOR_FIELDS = frozenset(field.name for field in fields(Scope))
 
 
+def _parse_role(value: Any) -> Role:
+    try:
+        return Role(value)
+    except (TypeError, ValueError):
+        raise ValidationError("dev identity role must be user, admin or root") from None
+
+
 def _parse_identity(spec: Any) -> AuthContext:
     if not isinstance(spec, Mapping) or set(spec) - {"actor", "role"}:
         raise ValidationError("dev identity must contain only actor and optional role")
@@ -27,15 +34,10 @@ def _parse_identity(spec: Any) -> AuthContext:
             raise ValidationError("dev identity actor fields must be strings")
     if not raw_actor.get("org", "").strip():
         raise ValidationError("dev identity actor must specify a non-empty org")
-    try:
-        role = Role(spec.get("role", "user"))
-    except (TypeError, ValueError):
-        raise ValidationError("dev identity role must be user, admin or root") from None
+    role = _parse_role(spec.get("role", "user"))
     actor = Scope(**raw_actor)
     _validate_dev_actor(actor)
-    return AuthContext(
-        actor=actor, role=role, credential_type="dev", auth_method="dev"
-    )
+    return AuthContext(actor=actor, role=role, credential_type="dev", auth_method="dev")
 
 
 def _validate_dev_actor(actor: Scope) -> None:
@@ -61,18 +63,23 @@ def _parse_identities(identities: Mapping[str, Any]) -> dict[str, AuthContext]:
 
 
 class DevAuthenticator(Authenticator):
-    """无映射时保持固定身份；有映射时凭测试标识选择身份，不得用于生产。"""
+    """固定身份默认 USER，提权须显式配置；映射模式按各身份角色，不得用于生产。"""
 
     def __init__(
-        self, actor: Scope | None = None, *, identities: Mapping[str, Any] | None = None
+        self,
+        actor: Scope | None = None,
+        *,
+        identities: Mapping[str, Any] | None = None,
+        role: Role | str | None = None,
     ) -> None:
-        if actor is not None and identities is not None:
-            raise ValidationError("fixed actor and dev identities are mutually exclusive")
+        if identities is not None and (actor is not None or role is not None):
+            raise ValidationError("fixed actor/role and dev identities are mutually exclusive")
+        fixed_role = Role.USER if role is None else _parse_role(role)
         self._identities = None if identities is None else _parse_identities(identities)
         source = actor or Scope(org="local", user="developer")
         _validate_dev_actor(source)
         self._default_auth = AuthContext(
-            actor=replace(source), role=Role.ROOT, credential_type="dev", auth_method="dev"
+            actor=replace(source), role=fixed_role, credential_type="dev", auth_method="dev"
         )
 
     def authenticate(self, credentials: Credentials) -> AuthContext:
@@ -82,9 +89,7 @@ class DevAuthenticator(Authenticator):
             context = self._identities.get(credentials.api_key)
             if context is None:
                 raise AuthenticationError("authentication failed")
-        return replace(
-            context, actor=replace(context.actor), authenticated_at=datetime.now(UTC)
-        )
+        return replace(context, actor=replace(context.actor), authenticated_at=datetime.now(UTC))
 
     @staticmethod
     def mode() -> str:
@@ -101,4 +106,6 @@ class DevAuthenticator(Authenticator):
 
 @AuthProducer.register("dev")
 def _build(config) -> DevAuthenticator:
-    return DevAuthenticator(identities=config.get("identities"))
+    # 配置显式写 null 不是省略，拒绝误配；映射与固定角色也不得混用。
+    role = _parse_role(config.get("role")) if "role" in config.params else None
+    return DevAuthenticator(identities=config.get("identities"), role=role)

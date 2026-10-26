@@ -43,29 +43,23 @@ def alice_key(key_store) -> str:
 # -- DevAuthenticator ------------------------------------------------------- #
 
 
-def test_dev_returns_root_with_named_local_actor() -> None:
-    """ROOT 的 actor 是具名系统主体，权限只由 role 表达（IMPL-01 §1）。
-
-    security.md §2.2.1 示例写 Scope(org="*")，那在本主干会被
-    SQLitePermissionManager.check 的「跨 org 拒绝」规则挡住——ROOT 反而寸步难行。
-    具名 system 主体 + role=ROOT 放行语义随 PR2 ``Authorizer`` 的角色闸门
-    （``authorize(auth=AuthContext, ...)``）承担，PR1 权限门不消费 role。
-    """
+def test_dev_returns_user_with_named_local_actor() -> None:
+    """固定 DEV 默认普通用户；空凭据不隐式获得跨组织特权。"""
     ctx = DevAuthenticator().authenticate(Credentials())
     assert ctx.actor == Scope(org="local", user="developer")
-    assert ctx.role is Role.ROOT
+    assert ctx.role is Role.USER
     assert ctx.authenticated_at is not None
 
 
 def test_dev_ignores_all_credentials() -> None:
     dev = DevAuthenticator()
-    assert dev.authenticate(Credentials(api_key="anything")).role is Role.ROOT
+    assert dev.authenticate(Credentials(api_key="anything")).role is Role.USER
     assert dev.mode() == "dev"
     assert dev.health() is None
 
 
 def test_dev_actor_is_not_shared_across_authentications() -> None:
-    """NEW-SEC-01：DEV ROOT 每次认证返回独立 ``Scope`` 副本。
+    """NEW-SEC-01：DEV 每次认证返回独立 ``Scope`` 副本。
 
     模块级 ``_DEV_ACTOR`` 是共享对象，且 ``Scope`` 为可变 dataclass。若认证器直接
     复用该引用，上层把 ``ctx.actor.org`` 改成受害者 org 后，后续所有 DEV 认证都带着

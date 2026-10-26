@@ -93,10 +93,10 @@ def internal_context(authenticator) -> RequestSecurityContext:
     与「传入 Scope 直接当已认证 actor」的那条线（迁移计划 §5.3）。调用方要操作哪个
     Scope，照旧走业务参数；它决定不了自己是谁。
 
-    ``authenticator`` **必填**：无参领取 ROOT 已不再允许。进程内直连确实信任内核装配
-    方，但这份信任必须是一次显式传入（如 ``internal_context(DevAuthenticator())``），
-    让「这里拿到了 ROOT」在调用点看得见，而不是像旧的 ``authenticator=None`` 默认那样
-    谁都不写就悄悄得到一个超管身份。
+    ``authenticator`` **必填**：调用方必须显式选择认证器，身份与角色来自认证结果。
+    如 ``internal_context(DevAuthenticator())`` 只取得固定开发 USER，不是 ROOT；
+    管理操作需由可信装配显式配置有相应权限的认证器，或使用配置 Runtime 的 authenticate。
+    本入口不会因进程内调用自动提权，也不会恢复旧的 ``authenticator=None`` 超管默认值。
 
     **不可用于有网络对端的场景。** 网络接入必须走 ``auth_middleware.authenticated``：
     那里有真实凭据校验、限流、并发预算和入口审计，这里一样都没有。
