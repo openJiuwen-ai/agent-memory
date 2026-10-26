@@ -13,7 +13,7 @@
 
 ## 背景
 
-AgentEngine（`engine_impl/agent_engine.py`）默认装配为文档模式（`write_document=true`，
+AgentEngine（`engine_impl/agent_engine.py`）的 agent 场景配置显式开启文档模式（`write_document=true`，
 真源是 markdown + 影子索引，**不写 KV**——KV 仅保留为 vector chunk_tracking）。但
 AgentEngine 照搬 InMemoryEngine 的 KV 直读路径，没接上 `CompositeDomainStore` 早已实现
 的文档模式 shadow 分流（F08 §5.3：`get`→`shadow.get_units` line126、`list`→

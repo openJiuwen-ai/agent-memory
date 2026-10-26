@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -45,6 +46,15 @@ from jiuwen_memory.common.type_def import (
     Temporal,
 )
 from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks
+from jiuwen_memory.storage.markdown_impl._md_path import (
+    _FILE_NAME_TO_CLASS,
+)
+from jiuwen_memory.storage.markdown_impl._md_path import (
+    class_from_md_path as _class_from_md_path,
+)
+from jiuwen_memory.storage.markdown_impl._md_path import (
+    project_from_md_path as _project_from_md_path,
+)
 from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
 from jiuwen_memory.storage.sync_gate import (
@@ -56,48 +66,33 @@ from jiuwen_memory.storage.watchdog import Watchdog, WatchdogProducer
 
 logger = get_logger(__name__)
 
-# md 路径 → memory_class 反推映射（与 LocalMarkdownStore._PATH_MAP 对称，F08 §3）。
-# _PATH_MAP: user_profile→USER.md / long_term_memory→MEMORY.md / daily_memory→daily_memory/。
-# 反推：按文件名/子目录判 category——daily_memory/ 下 → daily_memory，
-# USER.md → user_profile，MEMORY.md → long_term_memory。
-_FILE_NAME_TO_CLASS: dict[str, str] = {
-    "USER.md": "user_profile",
-    "MEMORY.md": "long_term_memory",
-}
+# md 路径反推（project / memory_class / _FILE_NAME_TO_CLASS）统一收口到
+# markdown_impl/_md_path.py——看门狗与 DomainStore edit 兜底共用同一份 reverse 逻辑，
+# 此处 import re-export 保留历史名供本模块（_build_unit/_is_watched_md）与测试引用。
 
 _DEFAULT_TIER = MemoryTier.SEMANTIC
 _DEFAULT_DEBOUNCE_MS = 2000
 _INIT_GRACE_SECONDS = 1.0  # 启动后延迟置 watcher_initialized，避开初始扫描风暴
 
+_DAILY_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
-def _project_from_md_path(md_filename: str) -> str:
-    """从 md 相对路径反推 project（F08 §3 路径规则）。
 
-    路径形如 ``memory/{project}/daily_memory/2026-09-01.md`` 或
-    ``memory/{project}/MEMORY.md``；``USER.md`` 落 root 顶层（跨 project 用户画像，
-    无 project 段），无论是否带 ``memory/`` 前缀都 → ``default``。
+def _is_watched_md(path: str) -> bool:
+    """判断路径是否属于看门狗关心的三类记忆 md 文件（F08 §3）。
+
+    只看 basename，不看目录层级——USER.md 落 root 顶层、MEMORY.md 落
+    ``memory/{project}/``、daily 文件落 ``memory/{project}/daily_memory/``，三者由
+    ``recursive=True`` 在不同层级捕获，统一按文件名识别：
+    - USER.md / MEMORY.md：即 ``_FILE_NAME_TO_CLASS`` 的键；
+    - YYYY-MM-DD.md：daily 文件（日期文件名）。
+    其余 ``.md``（README/notes 等）不是记忆文件，忽略——否则会被
+    ``_class_from_md_path`` 兜底成 long_term_memory 误灌进 shadow；
+    非 ``.md``（如 shadow.db）也在此自然排除。
     """
-    normalized = md_filename.replace("\\", "/")
-    # USER.md 是跨 project 全局文件，basename 命中即落 default（不取 path 段作 project）
-    if os.path.basename(normalized) == "USER.md":
-        return "default"
-    parts = normalized.split("/")
-    # 期望 ["memory", <project>, ...]；USER.md 形如 USER.md（root 顶层，len=1）落 default
-    if len(parts) >= 2 and parts[0] == "memory":
-        return parts[1]
-    return "default"
-
-
-def _class_from_md_path(md_filename: str) -> str:
-    """从 md 相对路径反推 memory_class（F08 §3 映射，对称 LocalMarkdownStore._PATH_MAP）。"""
-    normalized = md_filename.replace("\\", "/")
-    if "daily_memory/" in normalized:
-        return "daily_memory"
-    base = os.path.basename(normalized)
+    base = os.path.basename(path.replace("\\", "/"))
     if base in _FILE_NAME_TO_CLASS:
-        return _FILE_NAME_TO_CLASS[base]
-    # 未知路径兜底 long_term_memory（与 LocalMarkdownStore._DEFAULT_CLASS 一致）
-    return "long_term_memory"
+        return True
+    return _DAILY_NAME_RE.match(base) is not None
 
 
 class LocalWatchdog(Watchdog):
@@ -185,7 +180,7 @@ class LocalWatchdog(Watchdog):
                     return
                 if not self._owner.watcher_initialized:
                     return
-                if not event.src_path.endswith(".md"):
+                if not _is_watched_md(event.src_path):
                     return
                 self._owner.schedule_sync(event.src_path)
 
@@ -193,7 +188,7 @@ class LocalWatchdog(Watchdog):
                 # 新建文件等同于"全量新行"——走同一同步路径（old 为空 → 全是 insert）
                 if event.is_directory or not self._owner.watcher_initialized:
                     return
-                if not event.src_path.endswith(".md"):
+                if not _is_watched_md(event.src_path):
                     return
                 self._owner.schedule_sync(event.src_path)
 
@@ -201,7 +196,7 @@ class LocalWatchdog(Watchdog):
                 # 文件删除 → 该文件所有 unit 全删
                 if event.is_directory or not self._owner.watcher_initialized:
                     return
-                if not event.src_path.endswith(".md"):
+                if not _is_watched_md(event.src_path):
                     return
                 self._owner.schedule_sync(event.src_path, deleted=True)
 

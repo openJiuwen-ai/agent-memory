@@ -29,6 +29,7 @@ from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocument
 from jiuwen_memory.storage.watchdog_impl.local_watchdog import (
     LocalWatchdog,
     _class_from_md_path,
+    _is_watched_md,
     _project_from_md_path,
 )
 
@@ -54,26 +55,27 @@ def test_content_hash_matches_shadow_index_sha256() -> None:
     assert content_hash("hello") == hashlib.sha256(b"hello").hexdigest()
 
 
-def test_project_from_md_path_for_user_file_is_default() -> None:
-    assert _project_from_md_path("memory/USER.md") == "default"
-    assert _project_from_md_path("USER.md") == "default"  # root 顶层（USER.md 上移后实际形态）
+def test_project_from_md_path_scopes_into_project() -> None:
+    """有 project 的记忆：``memory/{project}/...`` 第二段即 project。"""
+    assert _project_from_md_path("memory/p1/MEMORY.md") == "p1"
+    assert _project_from_md_path("memory/p1/daily_memory/2026-09-01.md") == "p1"
+    assert _project_from_md_path(r"memory\p1\MEMORY.md") == "p1"  # 反斜杠归一
 
 
 @pytest.mark.parametrize(
-    ("path", "expected"),
+    "path",
     [
-        ("memory/p1/MEMORY.md", "p1"),
-        ("memory/p1/daily_memory/2026-09-01.md", "p1"),
-        (r"memory\p1\MEMORY.md", "p1"),  # 反斜杠归一
-        ("memory/p1", "p1"),
+        "USER.md",  # root 顶层用户画像
+        "memory/USER.md",  # 历史路径形态（USER.md 上移前）
+        "memory/MEMORY.md",  # 无 project long_term（memory 根下，跨项目可见）
+        "memory/daily_memory/2026-10-26.md",  # 无 project daily（daily_memory 目录非 project）
+        "memory/p1",  # 裸目录不是合法 md_filename（事件必带文件名）
+        "other/file.md",  # 未知形态
     ],
 )
-def test_project_from_md_path_scopes_by_project(path: str, expected: str) -> None:
-    assert _project_from_md_path(path) == expected
-
-
-def test_project_from_md_path_unknown_shape_defaults() -> None:
-    assert _project_from_md_path("other/file.md") == "default"
+def test_project_from_md_path_projectless_falls_back_to_empty(path: str) -> None:
+    """无 project 的路径不误把文件名/目录名当 project，落空串（跨项目可见）。"""
+    assert _project_from_md_path(path) == ""
 
 
 @pytest.mark.parametrize(
@@ -88,6 +90,30 @@ def test_project_from_md_path_unknown_shape_defaults() -> None:
 )
 def test_class_from_md_path_maps_file_to_memory_class(path: str, expected: str) -> None:
     assert _class_from_md_path(path) == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("memory/USER.md", True),
+        ("USER.md", True),  # root 顶层（USER.md 上移后实际形态）
+        ("memory/p1/MEMORY.md", True),
+        ("MEMORY.md", True),
+        ("memory/p1/daily_memory/2026-09-30.md", True),
+        ("2026-09-30.md", True),
+        (r"memory\p1\MEMORY.md", True),  # 反斜杠归一
+        ("memory/p1/notes.md", False),
+        ("README.md", False),
+        ("memory/foo.md", False),
+        ("2026-9-30.md", False),  # 月/日非两位，不符 YYYY-MM-DD.md
+        ("20260930.md", False),
+        ("memory/p1/MEMORY.txt", False),  # 非 md
+        ("memory/.shadow/shadow.db", False),
+    ],
+)
+def test_is_watched_md_recognizes_only_memory_files(path: str, expected: bool) -> None:
+    """看门狗只认 USER.md / MEMORY.md / YYYY-MM-DD.md 三类记忆文件，其余忽略。"""
+    assert _is_watched_md(path) is expected
 
 
 # -- 按行收集 ---------------------------------------------------------------- #

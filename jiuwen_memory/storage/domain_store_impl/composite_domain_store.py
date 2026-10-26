@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import copy
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -61,6 +60,10 @@ from jiuwen_memory.storage.markdown import MarkdownStore
 from jiuwen_memory.storage.markdown_impl._md_blocks import (
     collect_blocks_from_text,
     content_hash,
+)
+from jiuwen_memory.storage.markdown_impl._md_path import (
+    class_from_md_path,
+    project_from_md_path,
 )
 from jiuwen_memory.storage.security import (
     StorageAccessContext,
@@ -751,22 +754,11 @@ class CompositeDomainStore(DomainStore):
             # D4.1 不对齐退化兜底：跨块合并/拆分，无法明确继承源。scope 取当前 scope
             # （edit 发起者，有明确 scope 上下文；不沿用看门狗 latest_scope_by_md 近似——
             # 那是看门狗无 scope 时的兜底，edit 有 scope 应落发起者），project/memory_class
-            # 从 md 路径反推（与看门狗 _project_from_md_path / _class_from_md_path 同口径），
-            # provenance 标 md_edit_fallback，不保留 supersedes（无明确继承源）。
-            parts = rel_path.replace("\\", "/").split("/")
-            fb_project = (
-                parts[1]
-                if len(parts) >= 2 and parts[0] == "memory" and parts[1] != "USER.md"
-                else "default"
-            )
-            normalized = rel_path.replace("\\", "/")
-            if "daily_memory/" in normalized:
-                fb_class = "daily_memory"
-            else:
-                base = os.path.basename(normalized)
-                fb_class = {"USER.md": "user_profile", "MEMORY.md": "long_term_memory"}.get(
-                    base, "daily_memory"
-                )
+            # 从 md 路径反推（共享 _md_path.project_from_md_path / class_from_md_path，
+            # 与看门狗 _build_unit 同一份 reverse 逻辑），provenance 标 md_edit_fallback，
+            # 不保留 supersedes（无明确继承源）。
+            fb_project = project_from_md_path(rel_path)
+            fb_class = class_from_md_path(rel_path)
             for _, new_c, _ in inserted_blocks:
                 new = MemoryUnit(
                     id=str(uuid.uuid4()),
@@ -836,7 +828,9 @@ class CompositeDomainStore(DomainStore):
         # 端口缺失时 manager 抛 UnsupportedStorageCapabilityError 并指明缺失端口。
         return cast(Any, self._manager.kv(self._kv_name))
 
-    def _get_units(self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False) -> list[MemoryUnit]:
+    def _get_units(
+        self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False
+    ) -> list[MemoryUnit]:
         """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
 
         文档模式（``write_document=true``）走影子索引 ``shadow.get_units``——
@@ -854,7 +848,10 @@ class CompositeDomainStore(DomainStore):
             return []
         if self.should_write_document():
             shadow = self._raw_shadow_index()
-            by_id = {unit.id: unit for unit in shadow.get_units(scope, unit_ids, relax_session=relax_session)}
+            by_id = {
+                unit.id: unit
+                for unit in shadow.get_units(scope, unit_ids, relax_session=relax_session)
+            }
             # shadow.get_units 按 IN 查询返回唯一行，对重复 id 复用同一份 unit 对象，
             # 与 KV 路径「重复 id 各自返回」行为一致（召回物化侧已 seen 去重，实际无重复）。
             return [by_id[uid] for uid in unit_ids if uid in by_id]

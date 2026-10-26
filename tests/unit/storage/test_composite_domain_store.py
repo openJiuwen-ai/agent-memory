@@ -219,6 +219,38 @@ def test_edit_md_file_unaligned_fallback_no_supersedes(tmp_path) -> None:
         )
 
 
+def test_edit_md_file_unaligned_fallback_keeps_empty_project_searchable(tmp_path) -> None:
+    """无 project 文件跨块合并：fallback unit project 落空串，全文检索可召回。
+
+    回归（检视意见）：fallback project 反推曾把 ``memory/MEMORY.md`` 第二段
+    "MEMORY.md" 当 project，落错 project 列后检索兜底 ``project=''`` 召不回。
+    """
+    from jiuwen_memory.storage.types import TextQuery
+
+    ds = _build_doc_store(tmp_path)
+    _write_unit(ds, "u1", "alpha")
+    _write_unit(ds, "u2", "beta")
+    old_cross = "alpha\n\n# \nbeta"
+    full = ds._raw_markdown().read_content(SCOPE, "MEMORY.md", project="")
+    assert full.count(old_cross) == 1, f"cross-block old not unique: {full!r}"
+
+    new_units = ds.edit_md_file(SCOPE, "MEMORY.md", old_cross, "merged", project="")
+    assert len(new_units) == 1, f"expect 1 merged unit, got {len(new_units)}"
+    new_u = new_units[0]
+    # project 落空串（而非误判成 "MEMORY.md"），跨项目可见
+    assert new_u.system_metadata.get("project") == "", (
+        f"fallback project should be empty, got {new_u.system_metadata.get('project')!r}"
+    )
+
+    # 无 project 谓词全文检索能召回合并后的新 unit（检索兜底 project=''）
+    shadow = ds._raw_shadow_index()
+    hits = shadow.search_fulltext(SCOPE, TextQuery(text="merged", top_k=10))
+    hit_ids = {h.id for h in hits}
+    assert new_u.id in hit_ids, (
+        f"merged unit not searchable by fulltext: {new_u.id} not in {hit_ids}"
+    )
+
+
 def test_edit_md_file_old_text_not_unique_raises(tmp_path) -> None:
     """old_text 不唯一（count>1）→ ValidationError。"""
     ds = _build_doc_store(tmp_path)

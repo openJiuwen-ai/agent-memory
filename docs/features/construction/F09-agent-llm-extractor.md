@@ -414,8 +414,8 @@ Output schema:
 **与 Router 判定的分工**：Router（`llm_router.py`）按 route_table 逐条判定并**改写 scope.space**（带空间路由语义）；本方案只产出归属类别**不动 scope**。agent 场景编排精简（绕开 `_route`）后，归属信息由抽取时同步产出，md 落盘分流不受影响。
 
 **已知代价**（接受）：
-- 看门狗反推（`_class_from_md_path`）已随命名收敛同步产出新三类名（`_FILE_NAME_TO_CLASS` 映射 `USER.md`→`user_profile`、`MEMORY.md`→`long_term_memory`、daily/未知→`daily_memory`）——用户手改 md 触发补登的 unit 与 agent_llm 产出的 `memory_class` 同名，shadow category 列一致，无旧版「`user_memory` vs `user_profile`」不一致遗留；
-- `memory_class` 取值空间无跨层硬校验：配置解析层（`_parse_classes`）只查非空+不重复，本类 `extract` 收口自己的枚举，md 端对未知值静默兜底 `daily_memory`——新类别要进系统必须同时改 `_MEMORY_CLASSES` 与 `_PATH_MAP` 两处。
+- 看门狗反推（`_class_from_md_path`）已随命名收敛同步产出新三类名（`_FILE_NAME_TO_CLASS` 映射 `USER.md`→`user_profile`、`MEMORY.md`→`long_term_memory`、daily→`daily_memory`、未知→`long_term_memory`）——用户手改 md 触发补登的 unit 与 agent_llm 产出的 `memory_class` 同名，shadow category 列一致，无旧版「`user_memory` vs `user_profile`」不一致遗留；
+- `memory_class` 取值空间无跨层硬校验：配置解析层（`_parse_classes`）只查非空+不重复，本类 `extract` 收口自己的枚举，md 端对未知值静默兜底 `long_term_memory`——新类别要进系统必须同时改 `_MEMORY_CLASSES` 与 `_PATH_MAP` 两处。
 
 ## 5. 测试与归档
 
