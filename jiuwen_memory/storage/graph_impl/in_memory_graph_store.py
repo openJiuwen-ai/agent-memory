@@ -130,6 +130,8 @@ class InMemoryGraphStore(GraphStore):
 # -- 注册到 GraphProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-@GraphProducer.register("memory")
+@GraphProducer.register(
+    "memory", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build(config):
     return InMemoryGraphStore()

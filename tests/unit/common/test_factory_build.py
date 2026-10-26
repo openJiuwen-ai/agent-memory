@@ -10,7 +10,7 @@ import pytest
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 
 
 class _PartProducer(Factory):
@@ -122,8 +122,6 @@ def test_dep_default_is_anonymous_independent():
 def test_dep_missing_without_default_raises():
     ctx = AssemblyContext.from_dict({})
     cfg_ctx = ctx
-    from jiuwen_memory.config.context import ComponentConfig
-
     config = ComponentConfig(params={}, ctx=cfg_ctx)
     with pytest.raises(ValidationError, match="未配置且无默认实现"):
         _PartProducer.dep(config)  # 无默认、无配置
@@ -215,3 +213,25 @@ def test_concurrent_builds_share_only_within_their_context():
     with ThreadPoolExecutor(max_workers=8) as pool:
         parts = list(pool.map(lambda _: _PartProducer.build_named("p", ctx), range(32)))
     assert all(part is parts[0] for part in parts)
+
+
+@pytest.mark.unit
+def test_registration_scope_restores_builders_and_capability_inspectors_after_error():
+    ctx = AssemblyContext.from_dict({})
+    config = ComponentConfig({}, ctx, "simple", "test")
+    with _PartProducer.registration_scope():
+        _PartProducer.register("simple", config_inspectors={"probe": lambda c: "original"})(
+            lambda c: _Part(7)
+        )
+        with pytest.raises(RuntimeError, match="abort"):
+            with _PartProducer.registration_scope():
+                _PartProducer.register("simple")(lambda c: _Part(99))
+                assert _PartProducer.build("simple", {}, ctx).size == 99
+                with pytest.raises(ValidationError, match="unknown"):
+                    _PartProducer.inspect_config("simple", "probe", config)
+                raise RuntimeError("abort")
+        assert _PartProducer.build("simple", {}, ctx).size == 7
+        assert _PartProducer.inspect_config("simple", "probe", config) == "original"
+    assert _PartProducer.build("simple", {}, ctx).size == 0
+    with pytest.raises(ValidationError, match="unknown"):
+        _PartProducer.inspect_config("simple", "probe", config)

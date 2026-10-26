@@ -130,7 +130,9 @@ def _context_value(context: PermissionContext | None, route_key: str) -> str:
     return str(context.metadata.get(route_key, "")).strip()
 
 
-@PermissionProducer.register("routing")
+@PermissionProducer.register(
+    "routing", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build(config):
     route_key = config.get("route_key", "memory_type")
     fallback = str(config.get("fallback", "")).strip()

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-26 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -410,8 +410,11 @@ HTTP/CLI/MCP 的显式 DEV 入口调用 `with_local_dev_security()`，仅在用�
 - 认证根装配消费一个最终实例；需要多认证串联时，应注册组合 target，由该 target 通过
   `Producer.dep()` 引用多个具名实例，而不是让 YAML 隐式并行执行。
 - `EncryptedKVStore` 只负责 KV 存储边界接线，密码学实现归
-  `common/security/cryptography`。FS 加密装饰器已从 PR1 拆出，待资产链路与 API 契约明确后
-  单独合入。
+  `common/security/cryptography`。PR1-1 增加 EncryptedFSStore 与全后端静态加密装配开关，
+  复用原有 provider/密钥协议；索引采用部署卷/后端保护，不改密文检索协议。详见 S06/S08
+  与 [F04](../features/common/F04-security-interfaces-and-encryption.md)。公共 manager 解析必须验证插件的
+  完整保护清单，装饰器依赖公开声明并经 Producer 选择；持久化位置由插件配置检查器声明，
+  未知能力失败关闭。资产上传/下载链路仍另行接线。
 - 内置 `LocalKeyProvider` 支持多代轮换：`rotate()` 生成新随机根密钥并推进 epoch，旧 epoch
   根密钥保留在进程内字典供 `unwrap` 解开历史信封（写出一律 v2 信封，v1 只读兼容）。新根
   密钥**不持久化**--进程重启回到配置声明的初始密钥，轮换后写入的信封在重启后不可读；

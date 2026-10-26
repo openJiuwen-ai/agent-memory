@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config.encryption import AtRestLocation
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.permission import PermissionManager, PermissionProducer
 from jiuwen_memory.control.types import Action, Grant, PermissionContext
@@ -305,7 +306,17 @@ class SQLitePermissionManager(PermissionManager):
                 )
 
 
-@PermissionProducer.register("sqlite")
+@PermissionProducer.register(
+    "sqlite",
+    config_inspectors={
+        "at_rest_locations": lambda config: {
+            "db_path": AtRestLocation(
+                config.get("db_path", ":memory:"),
+                requires_declaration=config.get("db_path", ":memory:") != ":memory:",
+            )
+        }
+    },
+)
 def _build(config):
     db_path = config.get("db_path", ":memory:")
     return SQLitePermissionManager(str(db_path))

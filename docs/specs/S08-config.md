@@ -212,6 +212,41 @@ ConfigSource
 
 ## 数据结构
 
+### PR1-1 静态加密配置
+
+| 配置 | 契约 |
+|---|---|
+| globals.storage_encryption_enabled | 默认 false；bool 或 true/false 字符串，其他值拒绝；装配期，不支持热切换 |
+| globals.storage_encryption_cryptography | 共享 CryptographyProvider 具名实例，默认 default；用于自动 KV/FS 包装 |
+| globals.storage_encryption_kv / storage_encryption_fs | 自动包装配置，形如 `{target: encrypted, params: {}}`；经对应 Producer 构建；原始依赖和 cryptography 由策略注入，不允许 params 覆盖 |
+| globals.storage_encryption_max_plaintext_bytes / storage_encryption_max_ciphertext_bytes | 自动 FS 包装的大小上限；默认 64 MiB / 0（明文上限+4 KiB），与显式 FS 参数同语义 |
+| 索引/文件型 SQLite 的 params.at_rest | method=volume/backend、非空 reference、bindings 映射；绑定受保护实际位置 |
+
+bindings 覆盖 ES hosts（ENTITY 兼容 endpoint）、Milvus uri、pgvector dsn、
+nano_graphrag working_dir、milvus_graph uri+working_dir、audit/permission/shadow_index/grant_store/delegation_store SQLite db_path、markdown_store root。
+统一加密开启时 Markdown 必须显式配置 root，影子 SQLite 必须显式配置 db_path
+（`:memory:` 仅豁免部署证明）；默认当前目录或跨命名空间派生路径不满足位置绑定契约。
+space_aware 使用 SQLite，也检查 db_path；纯内存后端和 SQLite :memory: 无需部署声明，后者的 db_path 仍须固定。
+持久化需求由各插件注册的 `at_rest_locations` 配置检查器公开声明，返回字段→实际位置的
+映射；普通值等价于 `AtRestLocation(value, requires_declaration=True)`。插件也可返回
+`AtRestLocation(value, requires_declaration=False)` 表达无需部署证明但仍须固定的位置。
+所有声明的位置都进入 ConfigSource 初始覆盖与运行时变更检查（含共享键和具名键）；
+只有 requires_declaration=true 的字段要求 params.at_rest.bindings。位置描述值不能为空，
+requires_declaration 必须是 bool；不同实例复用同一晚绑定键时，豁免位置也参与冲突检查。
+SQLite :memory: 必须声明 db_path 位置，不能用空映射豁免连接约束。空映射仅用于没有可
+切换存储位置的纯内存或关闭插件。检查器必须无构建/写入副作用，且与 builder
+共用注册生命周期。替换同名 target 不继承旧检查器；缺少检查器或返回无效位置一律拒绝。
+配置层不按 target 名或通用地址字段缺失推断豁免，新增后端通过插件注册扩展。
+permission.routing 只引用同命名空间具名依赖，自身无落盘，其依赖仍逐实例检查。
+开启后检查所有具名/L0/L1 实例；关闭时保持原有配置行为。
+运营方手写声明不等于远端磁盘的密码学证明，真实卷保护由部署管理执行。
+
+EncryptionBoundConfigSource 拒绝受保护连接初始 override 和运行中变更。当前 namespace.field
+晚绑定键为实例共享，开启时这些实例必须声明相同连接/目录；其他模型/prompt 键不受影响。
+改变受保护位置须重核查并重装配，不执行自动迁移。相关决策见
+[F04](../features/common/F04-security-interfaces-and-encryption.md)。
+统一开关开启时 KV/FS 具名端口要求 new_instance=false，避免后续依赖匿名重建 raw 而绕过保护。
+
 本规约不新增 MemoryUnit 字段。`ConfigSource` 为横切依赖，不进入 Scope/Filter 模型。
 
 ## 错误语义

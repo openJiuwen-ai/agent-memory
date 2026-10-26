@@ -438,11 +438,20 @@ class SQLiteDelegationStore(_SQLiteBacked, DelegationStore):
         )
 
 
-@GrantStoreProducer.register("sqlite")
+def _at_rest_locations(config):
+    from jiuwen_memory.config.encryption import AtRestLocation
+
+    path = config.get("db_path", ":memory:")
+    return {"db_path": AtRestLocation(path, requires_declaration=path != ":memory:")}
+
+
+@GrantStoreProducer.register("sqlite", config_inspectors={"at_rest_locations": _at_rest_locations})
 def _build_grant_store(config) -> SQLiteGrantStore:
     return SQLiteGrantStore(str(config.get("db_path", ":memory:")))
 
 
-@DelegationStoreProducer.register("sqlite")
+@DelegationStoreProducer.register(
+    "sqlite", config_inspectors={"at_rest_locations": _at_rest_locations}
+)
 def _build_delegation_store(config) -> SQLiteDelegationStore:
     return SQLiteDelegationStore(str(config.get("db_path", ":memory:")))

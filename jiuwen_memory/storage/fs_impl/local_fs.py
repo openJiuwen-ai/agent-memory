@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 import shutil
 from pathlib import Path
 from typing import BinaryIO
@@ -56,6 +57,11 @@ class LocalFSStore(FSStore):
         root = self._resolved_root()
         if not root.is_dir():
             raise HealthCheckError(f"storage root not a directory: {root}")
+
+    def object_id(self, scope: Scope, key_or_ref: str, *, for_insert: bool = False) -> str:
+        base = self._resolved_root().joinpath(*scope_segments(scope)).resolve()
+        relative = self._path(scope, key_or_ref).relative_to(base)
+        return os.path.normcase(str(relative)).replace(os.sep, "/")
 
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
         path = self._path(scope, key)

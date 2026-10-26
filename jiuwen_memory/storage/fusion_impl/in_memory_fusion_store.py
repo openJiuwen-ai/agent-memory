@@ -144,6 +144,8 @@ class InMemoryFusionStore(FusionStore):
 
 
 
-@FusionProducer.register("memory")
+@FusionProducer.register(
+    "memory", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build(config):
     return InMemoryFusionStore(TokenizerProducer.dep(config, default="whitespace"))

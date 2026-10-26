@@ -33,6 +33,10 @@
 
 ## 行为铁律
 
+- **静态加密装配边界**：构建组件前核查部署声明，ConfigSource 安装位置变更门禁后
+  回填当前上下文；公共 manager 解析执行保护清单准入，替代插件不得绕过统一开关。
+  包装接线遵循同一装配作用域和上游资源所有权/失败回滚生命周期。
+
 - **关闭失败必须可观察**：Runtime 在变更状态前校验 Scheduler 关闭上下文，逐步隔离收尾错误。无法确认后台组件停止时不释放 leader 锁或存储；确认停止后，锁释放失败仍继续存储清理。等待关闭汇报单个异常或 ExceptionGroup，影子索引清理失败不得静默吞掉。
 
 0. **写入 metadata 明确分区**
@@ -138,7 +142,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
    `store_manager.default`）。顺序铁律：
    ConfigSource → `store_manager.default`（composite 再 dep 各 Store，含 `kv_store.default`；
    若 default 为 encrypted target 则其 raw 指向具名实例）→ `_Kernel.kv = manager.kv(端口名)`。
-   `RoutingKVStore` 须作为 raw 落在加密层内；同实现换 Redis
+   统一静态加密开关开启时，resolve 验证 manager 完整保护清单与 KV/FS 保护健康，
+   替代 manager 缺少保护契约必须拒绝启动。`RoutingKVStore` 须作为 raw 落在加密层内；同实现换 Redis
    用 `kv_store.url` 晚绑定，不要为换 URL 预装多套 Routing 槽位（F01 §2.1.5 / S08）。
 6. 实现类（LocalMemoryAPI）不对外暴露，外部只依赖 `MemoryAPI` 抽象接口。
 7. `job_status` 统一查询 Scheduler 和长耗时 Ingest 任务；Ingest 任务必须显式传入

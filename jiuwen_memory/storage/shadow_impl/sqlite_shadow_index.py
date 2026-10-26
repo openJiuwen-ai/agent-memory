@@ -51,13 +51,17 @@ from jiuwen_memory.common.type_def import (
     iter_clauses,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.config.encryption import AtRestLocation
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
 from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
 _DEFAULT_PROJECT = ""  # 无 project 时的兜底值：空串=跨项目可见（IN ['', value] 命中）
-_DEFAULT_CLASS = "long_term_memory"  # 空/未知 memory_class 兜底 long_term_memory，与 LocalMarkdownStore 口径一致
-_DEFAULT_LIFECYCLE = "active"  # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
+_DEFAULT_CLASS = (
+    "long_term_memory"  # 空/未知 memory_class 兜底 long_term_memory，与 LocalMarkdownStore 口径一致
+)
+# memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
+_DEFAULT_LIFECYCLE = "active"
 _DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，F07 §4.4.3）
 
 # project 作为配置声明的收窄维，coords 折算后以 ``system_metadata.project`` 谓词
@@ -85,6 +89,7 @@ def _has_word_char(token: str) -> bool:
     """token 含字母/数字/汉字才保留——纯标点 token 在 FTS5 表达式里既无召回贡献
     又会触发语法错误。"""
     import re
+
     global _WORD_CHAR_RE
     if _WORD_CHAR_RE is None:
         _WORD_CHAR_RE = re.compile(r"[A-Za-z0-9一-鿿]")
@@ -104,9 +109,7 @@ def _try_import_sqlite_vec():
 
         return sqlite_vec
     except ImportError:
-        logger.warning(
-            "sqlite_vec not importable, vector recall disabled (degraded mode)"
-        )
+        logger.warning("sqlite_vec not importable, vector recall disabled (degraded mode)")
         return None
 
 
@@ -305,9 +308,7 @@ def _ensure_system_columns(conn: sqlite3.Connection) -> None:
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_unit)")}
     if "lifecycle" not in cols:
-        conn.execute(
-            "ALTER TABLE memory_unit ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'"
-        )
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'")
     if "t_valid" not in cols:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN t_valid INTEGER")
     if "t_invalid" not in cols:
@@ -320,15 +321,11 @@ def _ensure_system_columns(conn: sqlite3.Connection) -> None:
     if "space" not in cols:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN space TEXT NOT NULL DEFAULT ''")
     if "user" not in cols:
-        conn.execute(
-            'ALTER TABLE memory_unit ADD COLUMN "user" TEXT NOT NULL DEFAULT \'\''
-        )
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN \"user\" TEXT NOT NULL DEFAULT ''")
     if "agent" not in cols:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN agent TEXT NOT NULL DEFAULT ''")
     if "session" not in cols:
-        conn.execute(
-            "ALTER TABLE memory_unit ADD COLUMN session TEXT NOT NULL DEFAULT ''"
-        )
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN session TEXT NOT NULL DEFAULT ''")
 
 
 class SqliteDocumentShadowIndex(DocumentShadowIndex):
@@ -438,12 +435,12 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
     def _ensure_conn(self) -> sqlite3.Connection:
         """按当前 ``db_path`` 惰性打开连接；路径变化则重建。调用方须已持 ``_lock``。
 
-        降级处理：embedder 为 None 或 sqlite_vec 不可用/load 失败时，
-        跳过 vec0 建表与向量写入，只建 memory_unit + memory_fts。完整模式下与
-        SQLiteKVStore 的差异：开连接后、建表前必须
-        ``enable_load_extension(True) + sqlite_vec.load(conn)``，且连接重开时每次都要重新 load
-        （否则查 vec0 报 ``no such module: vec0``）。
-另：默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/memory/.shadow/shadow.db``，含子目录，连接前需确保父目录存在。
+        降级处理：embedder 为 None 或 sqlite_vec 不可用/load 失败时，跳过 vec0 建表与
+        向量写入，只建 memory_unit + memory_fts。完整模式下与 SQLiteKVStore 的差异：
+        开连接后、建表前必须 ``enable_load_extension(True) + sqlite_vec.load(conn)``，
+        且连接重开时每次都要重新 load（否则查 vec0 报 ``no such module: vec0``）。
+        默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/memory/.shadow/shadow.db``；
+        连接前需确保父目录存在。
         """
         path = self._resolved_db_path()
         if self._conn is not None and self._conn_path == path:
@@ -559,9 +556,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         不能因走编译路径径而无谓词即放宽成全库召回。存在性判断用 ``iter_clauses``
         平铺（仅判存在、不合并值），逻辑安全。
         """
-        return any(
-            c.field == _PROJECT_FILTER_FIELD for c in iter_clauses(filters)
-        )
+        return any(c.field == _PROJECT_FILTER_FIELD for c in iter_clauses(filters))
 
     @staticmethod
     def _category_of(unit: MemoryUnit) -> str:
@@ -595,9 +590,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     def _insert_one(self, conn: sqlite3.Connection, unit: MemoryUnit) -> None:
         # 冲突预检：unit_id 已存在报 ConflictError（对齐 KVStore.insert 语义，F07 §11.3）
-        existing = conn.execute(
-            "SELECT 1 FROM memory_unit WHERE unit_id=?", (unit.id,)
-        ).fetchone()
+        existing = conn.execute("SELECT 1 FROM memory_unit WHERE unit_id=?", (unit.id,)).fetchone()
         if existing is not None:
             raise ConflictError("shadow", unit.id)
 
@@ -606,7 +599,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         md_filename = self._md_filename_of(unit)
         category = self._category_of(unit)
         project = self._project_of(unit)
-        # user_profile 无 project 归属（md 走 USER.md 全局单文件，落 root 顶层不进 project 子目录），
+        # user_profile 无 project 归属（md 走 USER.md 全局单文件，落 root 顶层），
         # 影子索引 project 列恒落空串——召回按 project IN ('', value) 时空串行跨项目可见。
         # 不强制则带 coords 写入的 user_profile 会落具体 project 值，撤掉 category 分批后
         # 不带 coords 召回（IN ('')）召不回它，全局可见性丢失。
@@ -630,13 +623,21 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             'org, space, "user", agent, session, '
             "category, lifecycle, t_valid, t_invalid, t_event, unit_json) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (unit.id, content_hash, md_filename, project,
-             *self._scope_of(unit),
-             category, lifecycle, t_valid, t_invalid, t_event, unit_json),
+            (
+                unit.id,
+                content_hash,
+                md_filename,
+                project,
+                *self._scope_of(unit),
+                category,
+                lifecycle,
+                t_valid,
+                t_invalid,
+                t_event,
+                unit_json,
+            ),
         )
-        row = conn.execute(
-            "SELECT rowid FROM memory_unit WHERE unit_id=?", (unit.id,)
-        ).fetchone()
+        row = conn.execute("SELECT rowid FROM memory_unit WHERE unit_id=?", (unit.id,)).fetchone()
         rowid = row[0]
 
         # ② memory_fts：注入 tokenizer 预分词成 token 串，
@@ -659,7 +660,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     # -- 查询类：get_units/update_units/delete_units/list_units/list_units_by_md 已全部落地 -- #
 
-    def get_units(self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False) -> list[MemoryUnit]:
+    def get_units(
+        self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False
+    ) -> list[MemoryUnit]:
         """按 ``unit_id`` 点查全量 ``MemoryUnit``（F07 §11.3 / F08 §5.1）。
 
         ``scope`` 原生隔离——影子索引靠 scope 保等值 WHERE 隔离（对齐 KV 保等值
@@ -707,9 +710,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # 按输入顺序保序组装，缺失/非法的下标直接省略（不补 None，不抛错）。
         return [hits[uid] for uid in unit_ids if uid in hits]
 
-    def find_unit_ids_by_content_hash(
-        self, scope: Scope, content_hash: str
-    ) -> list[str]:
+    def find_unit_ids_by_content_hash(self, scope: Scope, content_hash: str) -> list[str]:
         """按 ``content_hash`` 在 scope 内反查 ``unit_id``（F08 §D3）。
 
         ``read_md_file`` / ``edit_md_file`` 的 hash 反查落点：读 md 按块算
@@ -744,7 +745,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                     scope.session,
                 ),
             ).fetchall()
-        return [uid for uid, in rows]
+        return [uid for (uid,) in rows]
 
     def update_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """覆写全量 ``unit_json``，按 ``content_hash`` 变化判定投影是否重建（F07 §11.3）。
@@ -855,9 +856,19 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             'org=?, space=?, "user"=?, agent=?, session=?, '
             "category=?, lifecycle=?, t_valid=?, t_invalid=?, t_event=?, unit_json=? "
             "WHERE unit_id=?",
-            (new_hash, md_filename, project,
-             *self._scope_of(unit),
-             category, lifecycle, t_valid, t_invalid, t_event, unit_json, unit.id),
+            (
+                new_hash,
+                md_filename,
+                project,
+                *self._scope_of(unit),
+                category,
+                lifecycle,
+                t_valid,
+                t_invalid,
+                t_event,
+                unit_json,
+                unit.id,
+            ),
         )
 
         # ② 投影重建仅当 content_hash 变（content 改）。content_hash 未变（只改状态字段）
@@ -1074,9 +1085,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             if not self._has_project_predicate(query.filters):
                 proj_default = "project = ?"
                 proj_default_params: list = [_DEFAULT_PROJECT]
-                sys_sql = (
-                    f"({sys_sql}) AND {proj_default}" if sys_sql else proj_default
-                )
+                sys_sql = f"({sys_sql}) AND {proj_default}" if sys_sql else proj_default
                 sys_params = [*sys_params, *proj_default_params]
             sys_where = f" AND ({sys_sql})" if sys_sql else ""
             # scope 原生隔离：与 sys_where（系统前置谓词）并列 AND，scope 不进 query.filters
@@ -1125,9 +1134,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             if not self._has_project_predicate(query.filters):
                 proj_default = "project = ?"
                 proj_default_params: list = [_DEFAULT_PROJECT]
-                sys_sql = (
-                    f"({sys_sql}) AND {proj_default}" if sys_sql else proj_default
-                )
+                sys_sql = f"({sys_sql}) AND {proj_default}" if sys_sql else proj_default
                 sys_params = [*sys_params, *proj_default_params]
             sys_where = f" AND ({sys_sql})" if sys_sql else ""
             # scope 原生隔离：与 sys_where 并列 AND（与 search_fulltext 同口径）。
@@ -1166,7 +1173,16 @@ def _vec_to_blob(vec: list[float]) -> bytes:
 logger = get_logger(__name__)
 
 
-@ShadowIndexProducer.register("sqlite")
+@ShadowIndexProducer.register(
+    "sqlite",
+    config_inspectors={
+        "at_rest_locations": lambda config: {
+            "db_path": AtRestLocation(
+                config.get("db_path"), requires_declaration=config.get("db_path") != ":memory:"
+            )
+        }
+    },
+)
 def _build(config):
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
@@ -1182,7 +1198,8 @@ def _build(config):
         # 打 debug 日志让回退可观测，避免静默行为偏移无迹可查。
         logger.debug(
             "get markdown_store.default failed, shadow sqlite db_path use default path, "
-            "exception msg: %s", e,
+            "exception msg: %s",
+            e,
         )
     # embedder 可选（降级）：config 显式配了 embedder 才注入，否则传 None → 降级模式。
     # 不用 dep(default=...) 是因为 default=None 会抛 ValidationError（dep 无 default 报错），
