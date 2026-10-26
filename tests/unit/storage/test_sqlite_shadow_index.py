@@ -115,14 +115,20 @@ def test_content_hash_is_sha256_of_raw_content() -> None:
     assert _content_hash("hello") != _content_hash("hello ")
 
 
-def test_project_of_reads_coords_or_defaults() -> None:
+def test_project_of_reads_scalar_or_coords() -> None:
+    # agent 场景：project 作标量直传 system_metadata（coords dict 会被标量校验拒）
+    assert _project_of(_unit("u1", "x", {"project": "p1"})) == "p1"
+    assert _project_of(_unit("u1", "x", {"project": ""})) == ""
+    # router 场景：coords.project（_route 回写）
     assert _project_of(_unit("u1", "x", {COORDS_KEY: {"project": "p1"}})) == "p1"
     assert _project_of(_unit("u1", "x", {})) == ""  # 空串兜底（跨项目可见）
+    # scalar 优先于 coords（两者并有时标量胜出）
+    assert _project_of(_unit("u1", "x", {"project": "s", COORDS_KEY: {"project": "c"}})) == "s"
 
 
 def test_category_of_reads_memory_class_or_defaults() -> None:
-    assert _category_of(_unit("u1", "x", {MEMORY_CLASS_KEY: "project_memory"})) == "project_memory"
-    assert _category_of(_unit("u1", "x", {})) == "team_memory"
+    assert _category_of(_unit("u1", "x", {MEMORY_CLASS_KEY: "long_term_memory"})) == "long_term_memory"
+    assert _category_of(_unit("u1", "x", {})) == "long_term_memory"
 
 
 def test_md_filename_of_reads_backfilled_path() -> None:
@@ -295,8 +301,8 @@ def test_search_fulltext_no_project_predicate_defaults_to_empty_string(tmp_path)
     """无 project 谓词 → 兜底 project=''（只召回跨项目可见空串行，不放宽成全库）。"""
     store = _store(tmp_path)
     # 空串 project（跨项目可见）+ 具体 project 各一条
-    store.insert_units(SCOPE, [_unit("u-empty", "alpha", {MEMORY_CLASS_KEY: "team_memory"})])
-    p1_meta = {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+    store.insert_units(SCOPE, [_unit("u-empty", "alpha", {MEMORY_CLASS_KEY: "daily_memory"})])
+    p1_meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
     store.insert_units(SCOPE, [_unit("u-p1", "alpha", p1_meta)])
     # 无 project 谓词召回
     hits = store.search_fulltext(SCOPE, TextQuery(text="alpha", top_k=10))
@@ -308,8 +314,8 @@ def test_search_fulltext_no_project_predicate_defaults_to_empty_string(tmp_path)
 def test_search_fulltext_project_and_conflict_values_yields_empty(tmp_path) -> None:
     """系统 p1 AND 用户 p2（冲突）→ 召回空集（AND 语义正确，P1 修复回归）。"""
     store = _store(tmp_path)
-    p1_meta = {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
-    p2_meta = {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p2"}}
+    p1_meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
+    p2_meta = {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p2"}}
     store.insert_units(SCOPE, [_unit("u-p1", "alpha", p1_meta)])
     store.insert_units(SCOPE, [_unit("u-p2", "alpha", p2_meta)])
 
@@ -326,7 +332,7 @@ def test_search_fulltext_project_and_conflict_values_yields_empty(tmp_path) -> N
 def test_insert_and_get_roundtrip(tmp_path) -> None:
     store = _store(tmp_path)
     unit = _unit(
-        "u1", "hello world", {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}}
+        "u1", "hello world", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
     )
 
     store.insert_units(SCOPE, [unit])
@@ -362,7 +368,7 @@ def test_update_overwrites_content_and_preserves_project_guard(tmp_path) -> None
             _unit(
                 "u1",
                 "hello world",
-                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+                {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}},
             )
         ],
     )
@@ -416,7 +422,7 @@ def test_update_preserves_md_filename_in_unit_json_when_new_unit_lacks_it(tmp_pa
     md = "memory/p1/MEMORY.md"
     store.insert_units(
         SCOPE,
-        [_unit("u1", "hello world", {MD_FILENAME_KEY: md, MEMORY_CLASS_KEY: "project_memory"})],
+        [_unit("u1", "hello world", {MD_FILENAME_KEY: md, MEMORY_CLASS_KEY: "long_term_memory"})],
     )
     # 构造 new unit：同 id、改 content，但**不带** MD_FILENAME_KEY（模拟 evolver dedup
     # 多源交集丢键 / 上游重建对象丢键）。
@@ -424,7 +430,7 @@ def test_update_preserves_md_filename_in_unit_json_when_new_unit_lacks_it(tmp_pa
         id="u1",
         scope=SCOPE,
         segments=[Segment(content="updated content")],
-        system_metadata={MEMORY_CLASS_KEY: "project_memory"},  # 故意无 MD_FILENAME_KEY
+        system_metadata={MEMORY_CLASS_KEY: "long_term_memory"},  # 故意无 MD_FILENAME_KEY
     )
     store.update_units(SCOPE, [new_unit])
 
@@ -444,17 +450,17 @@ def test_update_md_filename_loss_is_not_contagious_across_rounds(tmp_path) -> No
     md = "memory/p1/MEMORY.md"
     store.insert_units(
         SCOPE,
-        [_unit("u1", "first", {MD_FILENAME_KEY: md, MEMORY_CLASS_KEY: "project_memory"})],
+        [_unit("u1", "first", {MD_FILENAME_KEY: md, MEMORY_CLASS_KEY: "long_term_memory"})],
     )
     # 第一轮：new unit 不带 MD_FILENAME_KEY
     store.update_units(
         SCOPE,
-        [
+[
             MemoryUnit(
                 id="u1",
                 scope=SCOPE,
                 segments=[Segment(content="second")],
-                system_metadata={MEMORY_CLASS_KEY: "project_memory"},
+                system_metadata={MEMORY_CLASS_KEY: "long_term_memory"},
             )
         ],
     )
@@ -503,17 +509,17 @@ def test_search_fulltext_returns_ranked_hits(tmp_path) -> None:
     store.insert_units(
         SCOPE,
         [
-            _unit(
+_unit(
                 "u1",
                 "deploy cluster",
-                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+                {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}},
             ),
             _unit(
                 "u2",
                 "cluster failure",
-                {MEMORY_CLASS_KEY: "project_memory", COORDS_KEY: {"project": "p1"}},
+                {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}},
             ),
-            _unit("u3", "coffee preference", {MEMORY_CLASS_KEY: "user_memory"}),
+            _unit("u3", "coffee preference", {MEMORY_CLASS_KEY: "user_profile"}),
         ],
     )
 
@@ -600,6 +606,9 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
 
         def list_units_by_md(self, scope, md_filename):
             pass
+
+        def find_unit_ids_by_content_hash(self, scope, content_hash):
+            ...
 
         def latest_scope_by_md(self, scope, md_filename):
             pass
@@ -789,3 +798,44 @@ def test_latest_scope_by_md_does_not_filter_by_scope(tmp_path) -> None:
     store.insert_units(scope_a, [_unit_with_md("u1", "alpha", scope_a, md)])
     # 空 Scope 调用 → 仍取到 scope_a（不限 scope WHERE）
     assert store.latest_scope_by_md(Scope(), md) == scope_a
+
+
+# -- find_unit_ids_by_content_hash（F08 §D3）--------------------------------- #
+
+
+def test_find_unit_ids_by_content_hash_returns_matching_ids(tmp_path) -> None:
+    """content_hash 命中 → 返回对应 unit_id 列表。"""
+    store = _store(tmp_path)
+    store.insert_units(SCOPE, [_unit("u1", "hello")])
+    ch = _content_hash("hello")
+    ids = store.find_unit_ids_by_content_hash(SCOPE, ch)
+    assert ids == ["u1"], f"expect ['u1'], got {ids}"
+
+
+def test_find_unit_ids_by_content_hash_returns_empty_on_no_match(tmp_path) -> None:
+    """无命中返回空列表（不抛异常）。"""
+    store = _store(tmp_path)
+    ids = store.find_unit_ids_by_content_hash(SCOPE, _content_hash("nonexistent"))
+    assert ids == []
+
+
+def test_find_unit_ids_by_content_hash_is_scope_isolated(tmp_path) -> None:
+    """scope 5 维等值隔离：他 scope 同 content_hash 的 unit 查不到（F08 铁律 1）。"""
+    store = _store(tmp_path)
+    scope_a = Scope(org="acme", user="u1")
+    scope_b = Scope(org="acme", user="u2")
+    store.insert_units(scope_a, [_unit_scope("u1", "shared content", scope_a)])
+    store.insert_units(scope_b, [_unit_scope("u2", "shared content", scope_b)])
+    ch = _content_hash("shared content")
+    # scope_a 只查到自己的 u1，不含 scope_b 的 u2
+    assert store.find_unit_ids_by_content_hash(scope_a, ch) == ["u1"]
+    assert store.find_unit_ids_by_content_hash(scope_b, ch) == ["u2"]
+
+
+def test_find_unit_ids_by_content_hash_handles_multiple_units_same_content(tmp_path) -> None:
+    """同 scope 下多条同 content_hash 的 unit 全部返回（去重前）。"""
+    store = _store(tmp_path)
+    store.insert_units(SCOPE, [_unit("u1", "dup")])
+    store.insert_units(SCOPE, [_unit("u2", "dup")])
+    ids = store.find_unit_ids_by_content_hash(SCOPE, _content_hash("dup"))
+    assert set(ids) == {"u1", "u2"}, f"expect both u1 and u2, got {ids}"

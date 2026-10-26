@@ -36,20 +36,20 @@ def _table_config(**overrides):
         "coord_entities": ["project", "team"],
         "memory_classes": [
             {
-                "name": "user_memory",
+                "name": "user_profile",
                 "owner": "user",
                 "space_template": "u_{user}",
                 "fallback": True,
                 "description": "facts about the user",
             },
             {
-                "name": "project_memory",
+                "name": "long_term_memory",
                 "owner": "project",
                 "space_template": "p_{project}",
                 "cross_user": True,
                 "members": "project participants",
             },
-            {"name": "team_memory", "owner": "team", "record_only": True},
+            {"name": "daily_memory", "owner": "team", "record_only": True},
         ],
         "narrow_dims": [
             {"entity": "agent", "tag_key": "agent_id"},
@@ -119,9 +119,9 @@ def test_an_absent_namespace_parses_into_the_empty_table() -> None:
 def test_the_four_parse_products_each_land() -> None:
     table = _table()
     assert [item.name for item in table.classes] == [
-        "user_memory",
-        "project_memory",
-        "team_memory",
+        "user_profile",
+        "long_term_memory",
+        "daily_memory",
     ]
     # 判定标签键 = 收窄维标签键 ∪ 各自的归属未决派生键 ∪ 记录维生成的键；
     # 记录维类别未声明 tag_key 时按 owner 生成，且不派生未决键。
@@ -134,7 +134,7 @@ def test_the_four_parse_products_each_land() -> None:
         "session_id_unresolved",
         "project_id_unresolved",
     }
-    assert table.naming.fallback_class == "user_memory"
+    assert table.naming.fallback_class == "user_profile"
     # 内核三项排在部署声明项之前，且部署声明项保序。
     assert table.coord_keys == ("user", "agent", "session", "project", "team")
 
@@ -142,14 +142,14 @@ def test_the_four_parse_products_each_land() -> None:
 def test_a_class_whose_coordinate_is_absent_does_not_render_a_space() -> None:
     """坐标缺项是常态：该类别不进候选集，而不是整次写入失败。"""
     table = _table()
-    assert table.naming.spaces({"user": "alice"}) == {"user_memory": "u_alice"}
-    assert table.naming.render("project_memory", {"user": "alice"}) == ""
+    assert table.naming.spaces({"user": "alice"}) == {"user_profile": "u_alice"}
+    assert table.naming.render("long_term_memory", {"user": "alice"}) == ""
 
 
 def test_a_record_only_class_has_no_space_template() -> None:
     """记录维类别不落独立空间，只出一个标签键。"""
     table = _table()
-    assert table.naming.template_for("team_memory") == ""
+    assert table.naming.template_for("daily_memory") == ""
     assert "team_id" in table.tag_keys
 
 
@@ -164,7 +164,7 @@ def test_a_record_only_class_has_no_space_template() -> None:
             _table_config(
                 memory_classes=[
                     {
-                        "name": "user_memory",
+                        "name": "user_profile",
                         "owner": "user",
                         "space_template": "u_{user}",
                         "fallback": True,
@@ -180,13 +180,13 @@ def test_a_record_only_class_has_no_space_template() -> None:
             _table_config(
                 memory_classes=[
                     {
-                        "name": "user_memory",
+                        "name": "user_profile",
                         "owner": "user",
                         "space_template": "u_{user}",
                         "fallback": True,
                     },
                     {
-                        "name": "project_memory",
+                        "name": "long_term_memory",
                         "owner": "project",
                         "space_template": "p_{project}",
                         "cross_user": True,
@@ -250,7 +250,7 @@ def test_a_record_only_class_has_no_space_template() -> None:
             _table_config(
                 memory_classes=[
                     {
-                        "name": "user_memory",
+                        "name": "user_profile",
                         "owner": "user",
                         "space_template": "u_{user}_{tenant}",
                         "fallback": True,
@@ -264,7 +264,7 @@ def test_a_record_only_class_has_no_space_template() -> None:
             _table_config(
                 memory_classes=[
                     {
-                        "name": "user_memory",
+                        "name": "user_profile",
                         "owner": "user",
                         "space_template": "u_{session}",
                         "fallback": True,
@@ -278,7 +278,7 @@ def test_a_record_only_class_has_no_space_template() -> None:
             _table_config(
                 memory_classes=[
                     {
-                        "name": "user_memory",
+                        "name": "user_profile",
                         "owner": "user",
                         "space_template": "u_{user}",
                         "fallback": True,
@@ -333,7 +333,7 @@ def test_a_sanitized_class_falls_back_when_the_content_carries_a_principal_id() 
     config = _table_config(
         memory_classes=[
             {
-                "name": "user_memory",
+                "name": "user_profile",
                 "owner": "user",
                 "space_template": "u_{user}",
                 "fallback": True,
@@ -356,7 +356,7 @@ def test_a_sanitized_class_falls_back_when_the_content_carries_a_principal_id() 
     )
     trimmed = enforce_sanitized(decision, ctx)
     assert trimmed.scope.space == "u_alice"
-    assert trimmed.memory_class == "user_memory"
+    assert trimmed.memory_class == "user_profile"
     # 内容不被改写：脱敏检查改的是落点，不是条目本身。
     assert trimmed.unit.content == "alice 的部署环境是 K8s"
 
@@ -366,7 +366,7 @@ def test_a_clean_content_stays_in_the_sanitized_class() -> None:
         _table_config(
             memory_classes=[
                 {
-                    "name": "user_memory",
+                    "name": "user_profile",
                     "owner": "user",
                     "space_template": "u_{user}",
                     "fallback": True,
@@ -398,7 +398,7 @@ def test_an_unassembled_router_sends_the_whole_batch_to_fallback() -> None:
     ctx = _ctx(table, project="p1")
     decisions = route_batch(None, [_unit("x"), _unit("y")], ctx)
     assert [d.scope.space for d in decisions] == ["u_alice", "u_alice"]
-    assert all(d.memory_class == "user_memory" for d in decisions)
+    assert all(d.memory_class == "user_profile" for d in decisions)
     assert all(d.reason == "router not configured" for d in decisions)
 
 
@@ -417,7 +417,7 @@ def test_a_target_outside_the_candidate_set_is_pulled_back_to_fallback() -> None
     table = _table()
     ctx = _ctx(table, project="p1")
     router = _FixedRouter(
-        [RouteDecision(scope=Scope(org=ORG, space="u_bob"), memory_class="user_memory")]
+        [RouteDecision(scope=Scope(org=ORG, space="u_bob"), memory_class="user_profile")]
     )
     decisions = route_batch(router, [_unit("x")], ctx)
     assert decisions[0].scope.space == "u_alice"
@@ -483,16 +483,16 @@ def test_a_record_only_hit_lands_in_fallback_but_keeps_its_class_name() -> None:
     """记录维类别命中：落点是 fallback，类别名仍记该类别——落点追溯要的正是这一对照。"""
     table = _table()
     ctx = _ctx(table, team="t1")
-    decision = build_decision(_unit("这个 team 用同一套评审流程"), "team_memory", (), ctx)
+    decision = build_decision(_unit("这个 team 用同一套评审流程"), "daily_memory", (), ctx)
     assert decision.scope.space == "u_alice"
-    assert decision.memory_class == "team_memory"
+    assert decision.memory_class == "daily_memory"
     assert decision.tags["team_id"] == "t1"
 
 
 def test_a_narrow_dimension_takes_its_value_from_the_coordinates() -> None:
     table = _table()
     ctx = _ctx(table, project="p1")
-    decision = build_decision(_unit("x"), "project_memory", ("project_id",), ctx)
+    decision = build_decision(_unit("x"), "long_term_memory", ("project_id",), ctx)
     assert decision.scope.space == "p_p1"
     assert decision.tags["project_id"] == "p1"
 
@@ -506,7 +506,7 @@ def test_a_dimension_judged_true_without_a_coordinate_is_recorded_as_unresolved(
     """
     table = _table()
     ctx = _ctx(table)  # 坐标里没有 project
-    decision = build_decision(_unit("x"), "user_memory", ("project_id",), ctx)
+    decision = build_decision(_unit("x"), "user_profile", ("project_id",), ctx)
     assert "project_id" not in decision.tags
     assert decision.tags["project_id" + UNRESOLVED_SUFFIX] == "true"
 
@@ -514,7 +514,7 @@ def test_a_dimension_judged_true_without_a_coordinate_is_recorded_as_unresolved(
 def test_a_dimension_with_a_coordinate_carries_no_unresolved_mark() -> None:
     table = _table()
     ctx = _ctx(table, project="p1")
-    decision = build_decision(_unit("x"), "user_memory", ("project_id",), ctx)
+    decision = build_decision(_unit("x"), "user_profile", ("project_id",), ctx)
     assert decision.tags["project_id"] == "p1"
     assert "project_id" + UNRESOLVED_SUFFIX not in decision.tags
 
@@ -523,7 +523,7 @@ def test_a_dimension_judged_false_carries_no_unresolved_mark() -> None:
     """未决标记只由「判为真」触发：判为否时该维本就不适用，无结论可留。"""
     table = _table()
     ctx = _ctx(table)
-    decision = build_decision(_unit("x"), "user_memory", (), ctx)
+    decision = build_decision(_unit("x"), "user_profile", (), ctx)
     assert "project_id" + UNRESOLVED_SUFFIX not in decision.tags
 
 
@@ -550,7 +550,7 @@ def test_applying_decisions_rewrites_scope_and_records_the_class() -> None:
     decisions = route_batch(
         _FixedRouter(
             [
-                RouteDecision(scope=Scope(org=ORG, space="p_p1"), memory_class="project_memory"),
+                RouteDecision(scope=Scope(org=ORG, space="p_p1"), memory_class="long_term_memory"),
                 RouteDecision(discarded=True),
             ]
         ),
@@ -560,7 +560,7 @@ def test_applying_decisions_rewrites_scope_and_records_the_class() -> None:
     kept = apply_decisions(decisions)
     assert [unit.content for unit in kept] == ["keep"]
     assert kept[0].scope.space == "p_p1"
-    assert kept[0].system_metadata["memory_class"] == "project_memory"
+    assert kept[0].system_metadata["memory_class"] == "long_term_memory"
     # 键恒存在：本条未命中的收窄维也写空串。
     assert kept[0].system_metadata["session_id"] == ""
 
@@ -577,12 +577,12 @@ def test_a_record_only_class_without_a_tag_key_or_owner_is_rejected() -> None:
                 "coord_entities": ["team"],
                 "memory_classes": [
                     {
-                        "name": "user_memory",
+                        "name": "user_profile",
                         "owner": "user",
                         "space_template": "u_{user}",
                         "fallback": True,
                     },
-                    {"name": "team_memory", "record_only": True},
+                    {"name": "daily_memory", "record_only": True},
                 ],
             }
         )

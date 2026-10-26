@@ -330,7 +330,7 @@ class WriteOpsMixin:
                 if coords:
                     # coords 在入口被 _take_coords 取出，判定产物只回写标签与类别，
                     # 不塞回则 md 落盘（_md_path 读 coords.project）与影子索引
-                    # （_project_of）都读不到坐标，project_memory 全落 memory/default/。
+                    # （_project_of）都读不到坐标，long_term_memory 全落 memory/MEMORY.md。
                     # 与派生路径同处置：OrchestratingEvolver._route 从 ctx.coords 回写。
                     # coords 是瞬态键，dumps 进 unit_json 时剥除，但 md.write 与
                     # shadow.insert_units 在序列化之前从 unit 对象读，路径计算不受影响。

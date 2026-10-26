@@ -17,7 +17,7 @@
 | 文件 | 职责 |
 |---|---|
 | `store_manager.py` | 管理面契约 `StoreManager`（端口单一入口 `kv(name)`/`has_kv(name)` 等、`domain_store(name)`/`has_domain_store(name)`、能力/健康聚合）+ `StoreManagerProducer`（TOP_NAME=`store_manager`；`resolve` 按 params → `globals.store_manager` → default 三级链解析全局唯一 manager，不做匿名兜底）+ `resolve_name`（消费者具名端口/数据面选择键统一读取：params 直读、拒 inline dict）+ `StorageCapability` |
-| `domain_store.py` | 数据面契约 `DomainStore`（MemoryUnit 领域操作：`add`/`update` 带 `IndexWriteMode`、`delete` 带 `IndexRemoveMode`、get/list/scopes、recall/recall_and_get/retrieve/preferred_retrieval_pipeline）+ `DomainStoreProducer`（非平级 YAML 入口，由 manager 工厂内构建）。原文不在此列——由构建层注入独立 `KVStore` 自行读写 |
+| `domain_store.py` | 数据面契约 `DomainStore`（MemoryUnit 领域操作：`add`/`update` 带 `IndexWriteMode`、`delete` 带 `IndexRemoveMode`、get/list/scopes、recall/recall_and_get/retrieve/preferred_retrieval_pipeline、`read_md_file`/`edit_md_file`（F08 md 文件级读写，仅文档模式））+ `DomainStoreProducer`（非平级 YAML 入口，由 manager 工厂内构建）。原文不在此列——由构建层注入独立 `KVStore` 自行读写 |
 | `security.py` | StorageSecurity 通用授权与 StoreSecurity 数据保护能力标识 |
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
@@ -225,10 +225,22 @@
     接线。跨 Store 集的整栈切换走 Routing，不属命名数据面语义。
 17. **纯点读/列表读注入 KVStore 端口**：Dedup `_load_unit` / Governor `_find` / Evolver
     源读 / KeywordRecaller 实体扩展等纯点读场景注入 `manager.kv(name)` + `load_units`；
-    InMemoryEngine、LifecycleManager、EvolveJob/MiddleToLongJob 的部分路径仍使用 KV。
+    control 面（`LifecycleManager` / `EvolveJob` / `MiddleToLongJob`）真源读写全部直连
+    `manager.kv(name)`（点读 `load_units` / 列表 `list_units` / 枚举 `kv.scopes()`，lifecycle
+    回写 `memory_key`+`dumps` 同 ForwardIndexBuilder 模式）——均不注入 DomainStore（运行期持
+    最小接口，F07 决策 10 修订并推进到 control 面）。**Engine 例外**：`CloudEngine` 与
+    `AgentEngine` 的 MemoryUnit 读取（点读、列表、`scopes()` 枚举、evolve 候选 resolver）经
+    注入的 `DomainStore` 完成（文档模式分流 shadow、非文档模式分流 KV，对齐数据面抽象）；
     CloudEngine 的记忆 get/list/scopes 及其权限事实由 DomainStore 真源提供；文档写入经
-    DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。Schema/middle/lifecycle
-    的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。
+DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。文档模式下二者的
+    `update` SUPERSEDE / `delete` FORGET·ARCHIVE 在 engine 侧绕过 `KVLifecycleManager` 直接
+    落 shadow（lifecycle 数据源仍是 KV，文档模式真源在 shadow 必失败；见
+    [F09](../../docs/features/control/F09-agent-engine-doc-mode-read.md)）。
+    `InMemoryEngine` 仍直连 KV（非文档模式、KV 即真源）。`LifecycleManager` 仍直连 KV——
+    文档模式下 engine 侧绕过它而非改造其数据源（sweep 共性遗留见 F09）。Schema/middle/lifecycle
+    的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。DomainStore 消费方
+    有检索路径（`PipelineRetriever`）、一体化写路径（`UnifiedIndexBuilder`）与 Engine 读取路径
+    （`CloudEngine`/`AgentEngine`）。
 
 ### 内存索引过滤
 

@@ -25,8 +25,8 @@ unit 约束——一行正文 = 一个 content = 一个 hash 候选）。
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
+import re
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -45,6 +45,16 @@ from jiuwen_memory.common.type_def import (
     Segment,
     Temporal,
 )
+from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks
+from jiuwen_memory.storage.markdown_impl._md_path import (
+    _FILE_NAME_TO_CLASS,
+)
+from jiuwen_memory.storage.markdown_impl._md_path import (
+    class_from_md_path as _class_from_md_path,
+)
+from jiuwen_memory.storage.markdown_impl._md_path import (
+    project_from_md_path as _project_from_md_path,
+)
 from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
 from jiuwen_memory.storage.sync_gate import (
@@ -56,48 +66,33 @@ from jiuwen_memory.storage.watchdog import Watchdog, WatchdogProducer
 
 logger = get_logger(__name__)
 
-# md 路径 → memory_class 反推映射（与 LocalMarkdownStore._PATH_MAP 对称，F08 §3）。
-# _PATH_MAP: user_memory→USER.md / project_memory→MEMORY.md / team_memory→daily_memory。
-# 反推：按文件名/子目录判 category——daily_memory/ 下 → team_memory，MEMORY.md →
-# project_memory，USER.md → user_memory。
-_FILE_NAME_TO_CLASS: dict[str, str] = {
-    "USER.md": "user_memory",
-    "MEMORY.md": "project_memory",
-}
+# md 路径反推（project / memory_class / _FILE_NAME_TO_CLASS）统一收口到
+# markdown_impl/_md_path.py——看门狗与 DomainStore edit 兜底共用同一份 reverse 逻辑，
+# 此处 import re-export 保留历史名供本模块（_build_unit/_is_watched_md）与测试引用。
 
 _DEFAULT_TIER = MemoryTier.SEMANTIC
 _DEFAULT_DEBOUNCE_MS = 2000
 _INIT_GRACE_SECONDS = 1.0  # 启动后延迟置 watcher_initialized，避开初始扫描风暴
 
-
-def _content_hash(content: str) -> str:
-    """content 整段 sha256，与影子索引 ``_content_hash`` 同口径（sqlite_shadow_index.py）。"""
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+_DAILY_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
 
 
-def _project_from_md_path(md_filename: str) -> str:
-    """从 md 相对路径反推 project（F08 §3 路径规则）。
+def _is_watched_md(path: str) -> bool:
+    """判断路径是否属于看门狗关心的三类记忆 md 文件（F08 §3）。
 
-    路径形如 ``memory/{project}/daily_memory/2026-09-01.md`` 或
-    ``memory/{project}/MEMORY.md``；``USER.md`` 在 memory 根下无 project 段 → ``default``。
+    只看 basename，不看目录层级——USER.md 落 root 顶层、MEMORY.md 落
+    ``memory/{project}/``、daily 文件落 ``memory/{project}/daily_memory/``，三者由
+    ``recursive=True`` 在不同层级捕获，统一按文件名识别：
+    - USER.md / MEMORY.md：即 ``_FILE_NAME_TO_CLASS`` 的键；
+    - YYYY-MM-DD.md：daily 文件（日期文件名）。
+    其余 ``.md``（README/notes 等）不是记忆文件，忽略——否则会被
+    ``_class_from_md_path`` 兜底成 long_term_memory 误灌进 shadow；
+    非 ``.md``（如 shadow.db）也在此自然排除。
     """
-    parts = md_filename.replace("\\", "/").split("/")
-    # 期望 ["memory", <project?>, ...]；USER.md 形如 memory/USER.md（无 project 段）
-    if len(parts) >= 2 and parts[0] == "memory" and parts[1] != "USER.md":
-        return parts[1]
-    return "default"
-
-
-def _class_from_md_path(md_filename: str) -> str:
-    """从 md 相对路径反推 memory_class（F08 §3 映射，对称 LocalMarkdownStore._PATH_MAP）。"""
-    normalized = md_filename.replace("\\", "/")
-    if "daily_memory/" in normalized:
-        return "team_memory"
-    base = os.path.basename(normalized)
+    base = os.path.basename(path.replace("\\", "/"))
     if base in _FILE_NAME_TO_CLASS:
-        return _FILE_NAME_TO_CLASS[base]
-    # 未知路径兜底 team_memory（与 LocalMarkdownStore._DEFAULT_CLASS 一致）
-    return "team_memory"
+        return True
+    return _DAILY_NAME_RE.match(base) is not None
 
 
 class LocalWatchdog(Watchdog):
@@ -185,7 +180,7 @@ class LocalWatchdog(Watchdog):
                     return
                 if not self._owner.watcher_initialized:
                     return
-                if not event.src_path.endswith(".md"):
+                if not _is_watched_md(event.src_path):
                     return
                 self._owner.schedule_sync(event.src_path)
 
@@ -193,7 +188,7 @@ class LocalWatchdog(Watchdog):
                 # 新建文件等同于"全量新行"——走同一同步路径（old 为空 → 全是 insert）
                 if event.is_directory or not self._owner.watcher_initialized:
                     return
-                if not event.src_path.endswith(".md"):
+                if not _is_watched_md(event.src_path):
                     return
                 self._owner.schedule_sync(event.src_path)
 
@@ -201,17 +196,16 @@ class LocalWatchdog(Watchdog):
                 # 文件删除 → 该文件所有 unit 全删
                 if event.is_directory or not self._owner.watcher_initialized:
                     return
-                if not event.src_path.endswith(".md"):
+                if not _is_watched_md(event.src_path):
                     return
                 self._owner.schedule_sync(event.src_path, deleted=True)
 
-        watch_dir = os.path.join(self._markdown_root, "memory")
+        # 监听整个 markdown_root（recursive=True）：USER.md 落 root 顶层（不在 memory/ 下），
+        # memory/ 下的其余 md 由 recursive 监听自然捕获。memory/ 子目录由写入侧
+        # _ensure_dir 自动创建，创建后其下变更即被监听。不能 schedule 不存在的目录。
+        watch_dir = self._markdown_root
         if not os.path.isdir(watch_dir):
-            # memory 目录尚不存在：监听根目录，用户创建 memory 后事件自然来。
-            # 不能 schedule 不存在的目录（Observer 会报错），退监听 markdown_root 本身。
-            watch_dir = self._markdown_root
-            if not os.path.isdir(watch_dir):
-                os.makedirs(watch_dir, exist_ok=True)
+            os.makedirs(watch_dir, exist_ok=True)
 
         self._observer = Observer()
         handler = _MdFileHandler(self)
@@ -416,13 +410,17 @@ class LocalWatchdog(Watchdog):
             old_by_hash[ch] = unit_id
         old_hash_set = set(old_by_hash.keys())
 
-        # ② 新 (content_hash, content) list（按行遍历 md，保留 content 原文供建 unit）
+        # ② 新 (content_hash, content) list（按行遍历 md，保留 content 原文供建 unit）。
+        # collect_md_blocks 返回三元组 (hash, content, block_index)，看门狗只取前两元
+        # （block_index 供 DomainStore._supersede_shadow_for_md 跨块对齐用，看门狗「删旧建新」
+        # 不按位置继承、不需要 block_index）。口径与原 _collect_new_contents 完全一致
+        # （逐行遍历、跳过标题/空行、sha256、保序去重），只是定义移到共享 _md_blocks。
         new_pairs: list[tuple[str, str]] = []  # (hash, content) 保序、去重
         new_hash_set: set[str] = set()
         if not deleted:
             abs_path = os.path.join(self._markdown_root, md_filename)
             if os.path.isfile(abs_path):
-                new_pairs = self._collect_new_contents(abs_path)
+                new_pairs = [(h, c) for h, c, _ in collect_md_blocks(abs_path)]
                 new_hash_set = {h for h, _ in new_pairs}
 
         # ③ diff
@@ -473,7 +471,7 @@ class LocalWatchdog(Watchdog):
         缺省值：
         - scope：由调用方传入（继承自 ``latest_scope_by_md`` 或默认空 Scope，见 _sync_one）
         - scope.project（coords）：从 md 路径反推
-        - category(memory_class)：从 md 路径反推（USER.md→user_memory 等）
+        - category(memory_class)：从 md 路径反推（USER.md→user_profile 等）
         - tier：SEMANTIC（与抽取产出的语义记忆一致）
         - temporal：t_ingest=now，其余 None
         - provenance：标记 "watchdog_sync"
@@ -503,28 +501,6 @@ class LocalWatchdog(Watchdog):
                 MD_FILENAME_KEY: md_filename,
             },
         )
-
-    def _collect_new_contents(self, abs_path: str) -> list[tuple[str, str]]:
-        """读 md 按行遍历，返回 (content_hash, content) 列表（保序、去重）。
-
-        供 ``_sync_one`` insert 分支建新 unit 时还原 content 原文——
-        ``_build_unit`` 需要 content 而非 hash。
-        """
-        result: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        with open(abs_path, encoding="utf-8") as fh:
-            for line in fh:
-                stripped = line.rstrip("\n")
-                if stripped.startswith("#"):
-                    continue
-                if not stripped.strip():
-                    continue
-                ch = _content_hash(stripped)
-                if ch not in seen:
-                    seen.add(ch)
-                    result.append((ch, stripped))
-        return result
-
 
 # -- 注册到 WatchdogProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 

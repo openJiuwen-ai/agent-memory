@@ -21,6 +21,7 @@
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
 | `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
+| `memory_api_impl/md_ops.py` | MdOpsMixin（F08）：`read_md_file` / `edit_md_file`，经 Engine 窄端口委托（非经 `_commands.write`/`_queries.get`）。鉴权对齐 `get`（READ 单段）/ `add`（WRITE 单段，edit 走继承式 SUPERSEDE 本质是写新记忆，D5）；project 解析在 Engine 层 `project_from_context`，本层不拆 Context。返回前剥瞬态键（coords 等是路径解析依据，不是条目属性）。`edit_md_file` 经 `_ensure_space_writable`（与 `add` 同，装配空间级判定时由 `ENTRY_RULES` 登记 `edit_md_file` 触发状态校验） |
 | `memory_api_impl/dreaming.py` | DreamingCoordinator + DreamingDriverJob：dreaming 编排（PEP 边界）——leader-only 注册、`CANCEL_REQUESTED` 持久化幂等注销、generation 隔离旧代 Driver、生命周期操作串行与短状态锁分离、按 leader 任期缓存恢复结果、每 tick 持续授权（`created_by` 复验）、fan-out 逐桶裁决；Coordinator 只持鉴权、提交、调度、注册表、Engine 候选 scope 枚举窄端口，不反向持有完整 API；驱动 Job 每 tick 经 `commands.evolve` 提交一次性 EvolveJob |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/dreaming_security.py` | 私有注册身份快照编码；只消费受控上下文和服务端注册表，不接业务 payload、不保存原始凭据、不续期认证 |

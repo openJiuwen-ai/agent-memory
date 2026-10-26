@@ -58,13 +58,15 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 
 ### 二、md 视图存储：`MarkdownStore`（`storage/markdown.py` + `markdown_impl/local_markdown_store.py`）
 
-落盘路径按 `memory_class` + `coords.project` 映射（空值兜底 `team_memory` / `default`）：
+落盘路径按 `memory_class` + `coords.project` 映射（空值兜底 `long_term_memory` / 空串，落 memory 根下跨项目可见）：
 
 | memory_class | md 路径 | 说明 |
 |---|---|---|
-| `user_memory` | `{root}/memory/USER.md` | 跨 project，用户画像 |
-| `project_memory` | `{root}/memory/{project}/MEMORY.md` | 单文件块追加 |
-| `team_memory`（含兜底） | `{root}/memory/{project}/daily_memory/YYYY-MM-DD.md` | 按天聚合 |
+| `user_profile` | `{root}/USER.md` | 跨 project 用户画像，落 root 顶层（不进 memory/、无 project 段） |
+| `long_term_memory` | `{root}/memory/{project}/MEMORY.md` | 单文件块追加；无 project 落 `{root}/memory/MEMORY.md`（跨项目可见） |
+| `daily_memory` | `{root}/memory/{project}/daily_memory/YYYY-MM-DD.md` | 按天聚合；无 project 落 `{root}/memory/daily_memory/YYYY-MM-DD.md` |
+
+收敛后单一命名口径（旧三类名 `user_memory`/`project_memory`/`team_memory` 已从 `_PATH_MAP` 移除，全链路统一新名）。路径布局：`USER.md` 上移 root 顶层（跨 project 用户画像物理独立），其余 md 与影子索引 `memory/.shadow/shadow.db` 均收进 `memory/` 子目录。
 
 块格式恒为 `# {标题}\n{正文单行}\n\n`：
 
@@ -93,7 +95,7 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 
 **降级机制**：`embedder` 与 `sqlite_vec`（deploy extras 软依赖）均可选。完整模式（embedder 注入 + sqlite_vec 可加载）三表全建；降级模式只建前两表，`search_vector` 返回空列表不抛错——上层检索编排照常运行，只是向量召回缺一路。`vec_enabled` 依赖运行期 `sqlite_vec.load` 结果，连接建立前返回 False，消费方应在已建连接的路径读取而非装配期探测。
 
-**db_path 派生优先级**：`shadow_index.db_path` 显式配置 > `{markdown_store.root}/.shadow/shadow.db` 派生 > 构造期 fallback。第 2 级让 db 自动跟随 markdown 根目录——用户只配一处 root，影子索引物理伴生在 md 根下。
+**db_path 派生优先级**：`shadow_index.db_path` 显式配置 > `{markdown_store.root}/memory/.shadow/shadow.db` 派生 > 构造期 fallback。第 2 级让 db 自动跟随 markdown 根目录——用户只配一处 root，影子索引物理伴生在 `memory/` 子目录下（root 顶层只留 `USER.md`）。
 
 **CRUD 语义**（对齐 KVStore 惯例）：
 
@@ -128,15 +130,16 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **写窗口防护**（`storage/sync_gate.py`，F07 §12.9 风险 6）：文档路径是两步写（md + 索引），两步之间 md 与索引短暂不一致，看门狗 check-then-act 对账会误判漂移（add 窗口 → 幽灵 unit 双写；update/delete 反序窗口 → 删真 unit / 复活已删 unit）。防护：写入编排层在两步写之前 `open_write_window()`、`finally` 里 `close_write_window()`（精确覆盖含慢 embed 的全过程——完整模式逐条 embed 是远端 HTTP，窗口可达秒级，2s debounce 挡不住）；看门狗 sync 入口查 `write_window_open()`——窗口开着**推迟**本轮对账（0.25s 轮询，窗口一关立即续跑），超过 60s 上限放弃本次（防写路径 bug 永不关窗卡死任务；放弃不丢数据，下一次 md 文件事件会重新触发）。门闸是**深度计数**非布尔位（支持嵌套写路径），模块级单例——composite 与 watchdog 无需互相持有引用，同进程 import 即共享。
 
-**写失败补偿**（S09 第 12 条：真源与派生数据须定义提交顺序/幂等/重试/恢复，部分成功不能报为完整成功）：写窗口只防并发观察，不解决部分成功——后一步失败时前一步已落盘，调用抛异常但 md/shadow 漂移。三处文档路径加失败补偿，失败时**尽力回滚**到调用前状态（shadow 侧回滚到旧快照、md 侧靠 `replace_content`/`remove_content` 自身 `_safe_restore` 原子写恢复调用前字节态）。"等价于未发生"是**尽力而非保证**，存在三处落空（见下方「补偿失败处理」与「已知遗留-写失败补偿的残留风险」）：① `_safe_restore` 自身失败只记 warning 不抛，md 侧恢复落空；② 补偿动作失败被内层吞掉，原异常照常抛但 md/shadow 漂移留下；③ 补偿整体失败无 reconcile 兜底，漂移交看门狗对账。补偿仅在 md 调用**抛异常**时触发（未命中返 False 不触发，见下方「重要边界」）：
+**写失败补偿**（S09 第 12 条：真源与派生数据须定义提交顺序/幂等/重试/恢复，部分成功不能报为完整成功）：写窗口只防并发观察，不解决部分成功——后一步失败时前一步已落盘，调用抛异常但 md/shadow 漂移。四处文档路径加失败补偿，失败时**尽力回滚**到调用前状态（shadow 侧回滚到旧快照、md 侧靠 `replace_content`/`remove_content` 自身 `_safe_restore` 原子写恢复调用前字节态）。"等价于未发生"是**尽力而非保证**，存在三处落空（见下方「补偿失败处理」与「已知遗留-写失败补偿的残留风险」）：① `_safe_restore` 自身失败只记 warning 不抛，md 侧恢复落空；② 补偿动作失败被内层吞掉，原异常照常抛但 md/shadow 漂移留下；③ 补偿整体失败无 reconcile 兜底，漂移交看门狗对账。补偿仅在 md 调用**抛异常**时触发（未命中返 False 不触发，见下方「重要边界」）：
 
 | 方法 | 正常顺序 | 失败点 | 补偿动作 | 补偿数据来源 |
 |---|---|---|---|---|
 | `add` | `md.write` → `shadow.insert_units` | `shadow.insert_units` 抛错 | 反向循环 `md.remove_content(scope, md_filename, content)` 删 `md.write` 刚写的块 | `unit.system_metadata[MD_FILENAME_KEY]`（md.write 已回填）+ `segments[0].content` |
 | `update` | `get_units(old)` → `shadow.update_units(new)` → `md.replace/remove_content` | `md.*` 抛错 | `shadow.update_units([old])` 把该 unit 改回旧值（content_hash 还原，投影按 hash 变化自动重建回旧态；SUPERSEDE 场景只覆写 unit_json 还原 lifecycle）；md 侧由 `replace_content`/`remove_content` 自身 `_safe_restore` 原子写恢复调用前字节态（单块覆盖，无需额外 md 回写） | `olds[0]`（update_units 之前已 `shadow.get_units` 取的旧快照） |
 | `delete` | `get_units(olds)` → `shadow.delete_units` → 循环 `md.remove_content` | 某个 `md.remove_content` 抛错 | `shadow.insert_units(olds)` 把删的 unit 全部插回 + `md.restore_blocks(removed)` 把循环中已成功删除的块按 `md_filename` 追加回 | `olds`（delete_units 之前已 `shadow.get_units` 取的旧快照）；`removed`（循环中成功 `remove_content` 后记录的已删 unit） |
+| `edit_md_file` | `md.edit_content` → `shadow.insert_units`（批量）→ `shadow.update_units`（批量） | `shadow.update_units` 抛错（insert 已落、update 回滚） | shadow 侧：`shadow.delete_units(new_unit_ids)` 删刚插的新 unit（幂等；旧 unit 因 update 事务回滚天然 ACTIVE 无需恢复）；md 侧：`md.restore_content(raw_old)` 回写编辑前旧全文 | `raw_old`（edit_content 前已 `md.read_content` 取的旧全文快照）+ `new_unit_ids`（批量 insert 的新 unit id 列表） |
 
-补偿范围：`add` 补偿整个 batch 的 md 块（`md.write` 批量写，失败在 `shadow.insert_units`，所有刚写的块都反向删）；`update` 逐 unit 处理，补偿仅限失败的那个 unit（for 循环里失败即抛出退出，前面成功的 unit 的 md 与 shadow 已一致无需动）；`delete` 补偿整个 `olds`（`shadow.delete_units` 批量一次性删，失败在后续循环 md，回滚须把删的全部插回）+ 已成功删除的 md 块（`md.restore_blocks` 按 `md_filename` 追加回，绕过 `md.write` 的 `_md_path`——读回的 unit coords 被 `dumps` 剥除，`_md_path` 落空 project 路径错位）。
+补偿范围：`add` 补偿整个 batch 的 md 块（`md.write` 批量写，失败在 `shadow.insert_units`，所有刚写的块都反向删）；`update` 逐 unit 处理，补偿仅限失败的那个 unit（for 循环里失败即抛出退出，前面成功的 unit 的 md 与 shadow 已一致无需动）；`delete` 补偿整个 `olds`（`shadow.delete_units` 批量一次性删，失败在后续循环 md，回滚须把删的全部插回）+ 已成功删除的 md 块（`md.restore_blocks` 按 `md_filename` 追加回，绕过 `md.write` 的 `_md_path`——读回的 unit coords 被 `dumps` 剥除，`_md_path` 落空 project 路径错位）；`edit_md_file` 的 D4 落库走「先批量插新（单事务）再批量标旧（单事务）」——原逐条 insert/update 的 N+M 个事务收进 2 个事务，失败中间态从「插一半/标一半」降到「要么全插/全标、要么全没插/全没标」：insert 失败 shadow 无变化无需回滚，update 失败 shadow 侧只需 `delete_units(new_unit_ids)` 删新 unit（旧 unit 因事务回滚天然 ACTIVE）、md 侧 `restore_content(raw_old)` 回写旧全文（md 已改成 new 态），补偿后同一 `old_text` 可重试（修复前 retry 因 old_text 消失报 NotFoundError）。
 
 **update/delete 的 md_filename 取自 old**：`md.replace_content`/`md.remove_content` 定位文件用的 `md_filename` 从 `old.system_metadata` 取（不从 new `unit.system_metadata` 取）。md_filename 是不可变内部路径（写入时确定，update/delete 改 content/lifecycle 不改归属），从 old 取即"保留旧路径"，不依赖调用方每次重建对象都带回该键——上游 evolver dedup 多源交集（`inherited_system_metadata`）会丢键，从 new 取会让 md 调用被 `if md_filename:` 守卫静默跳过（md 与 shadow 漂移）。`old` 在 `if old is None: continue` 守卫之后必非 None。
 
@@ -161,13 +164,13 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 文档分流依赖 `coords.project`（md 路径）与 `memory_class`（md 路径 + 影子索引 category 列），两个断点在本次 commit 修复：
 
-1. **判定产物回写 coords**（`write_ops._routes_by_decision` / `OrchestratingEvolver._route`）：coords 在 API 入口被 `_take_coords` 取出，判定产物只回写标签与类别——不塞回则 md 落盘与影子索引都读不到坐标，project_memory 全落 `memory/default/`。两处从 `ctx.coords` / `coords` 回写进 `merged[COORDS_KEY]`。coords 是 TRANSIENT 键，dumps 进 unit_json 时剥除，但 md.write 与 shadow 在序列化**之前**从 unit 对象读，路径计算不受影响。
+1. **判定产物回写 coords**（`write_ops._routes_by_decision` / `OrchestratingEvolver._route`）：coords 在 API 入口被 `_take_coords` 取出，判定产物只回写标签与类别——不塞回则 md 落盘与影子索引都读不到坐标，long_term_memory 全落 `memory/MEMORY.md`（memory 根下，跨项目可见，project 隔离失效）。两处从 `ctx.coords` / `coords` 回写进 `merged[COORDS_KEY]`。coords 是 TRANSIENT 键，dumps 进 unit_json 时剥除，但 md.write 与 shadow 在序列化**之前**从 unit 对象读，路径计算不受影响。
 2. **回显剥瞬态键**（`local_support._strip_transient_metadata`）：write 返回的 unit 是同一批对象引用，原样回显等于 coords 越过 API 边界——与 `ROUTE_CTX_KEY` 同一处置：内部消费完，出口剥净。无瞬态键时不复制原对象直返（多数写入不走判定，不为不变式买单）。
 
 配套改动：
 
 - **LLM 抽取生成标题**（`llm_extractor`）：`ExtractionCandidate` 新增 `title` 字段，与 tier/tags 同 prompt 产出（命名「这件事」非类别，~20 字符）；`_parse_title` 清洗保单行 + 截断 ≤50 字符（防模型违约破坏块格式）；空串 = 无标题，落盘侧兜底 `# {unit.id}`。procedural 路径同 prompt 一并产出。
-- **LLM Router 注入坐标**：system prompt 增加 `OWNERSHIP COORDINATES: {coords}` 段——判定 memory_class 归属时参考具体实体（关于 project 的事实是 project_memory，即使出自用户之口）。
+- **LLM Router 注入坐标**：system prompt 增加 `OWNERSHIP COORDINATES: {coords}` 段——判定 memory_class 归属时参考具体实体（关于 project 的事实是 long_term_memory，即使出自用户之口）。
 - **memory_class 复用**：`MEMORY_CLASS_KEY` 本是归属判定的类别名，文档记忆复用它作 md 分流依据（不另设新键）。它是落盘键（不在 TRANSIENT 集合），dumps 保留、读回可查。
 
 ### 七、看门狗：`LocalWatchdog`（`storage/watchdog.py` + `watchdog_impl/local_watchdog.py`）
@@ -183,9 +186,9 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 - **debounce 按文件分键**：`_watch_timers` 按 md_filename 各持一个 timer——单一 timer 时 B 文件的事件会 cancel 掉 A 文件待执行的同步，而 A 无新事件不会再补（纯事件驱动），改动永久丢失。
 - **初始宽限期**：启动后延迟 1s 置 `watcher_initialized`，避开 Observer 刚起时对存量文件的初始扫描风暴（存量 md 是写入流程产物，不是「用户手改」）。
 - **写窗口推迟**：见决策四。`_do_sync` 里轮询 `write_window_open()`。
-- **unit_id 策略**：用户改某行 content → 旧 hash 消失 + 新 hash 出现 → 删旧 unit + 建新 unit（**新 uuid**），不保留旧 id（F07 §12.9 风险 5 当前版本策略——改行即断版本链，见已知遗留）。新建 unit 的缺省元数据：tier=SEMANTIC、t_ingest=now、provenance=`["watchdog_sync"]`、project 与 memory_class 从 md 路径反推（`daily_memory/` → team_memory、`MEMORY.md` → project_memory、`USER.md` → user_memory）。
+- **unit_id 策略**：用户改某行 content → 旧 hash 消失 + 新 hash 出现 → 删旧 unit + 建新 unit（**新 uuid**），不保留旧 id（F07 §12.9 风险 5 当前版本策略——改行即断版本链，见已知遗留）。新建 unit 的缺省元数据：tier=SEMANTIC、t_ingest=now、provenance=`["watchdog_sync"]`、project 与 memory_class 从 md 路径反推（统一收口 `markdown_impl/_md_path.py`，看门狗与 `edit_md_file` 兜底共用：project 取 `memory/{project}/...` 第二段，`memory/MEMORY.md`、`memory/daily_memory/日期.md`、`USER.md` 等无 project 落空串；memory_class 按 `daily_memory/` → daily_memory、`MEMORY.md` → long_term_memory、`USER.md` → user_profile）。
 - **scope 继承**：新建 unit 的 scope 由 `latest_scope_by_md`（按 md_filename 查该文件最新一条 unit 的 scope，`rowid DESC LIMIT 1`，不限 scope WHERE 对齐 `list_units_by_md` 跨 scope 诊断例外）继承——md 文件不编码 org/space/user/agent/session，按同文件最新归属近似；无历史（该 md 文件首次补登）返 None 落看门狗构造期空 Scope 保持现行为。这修正 scope 原生隔离下补登 unit 落空 scope 列、真实 scope 召回不可见的遗留（补登 unit 落真实 scope 列后，真实 scope 的 get/list/search 能拉到它）。
-- **监听目录**：`{root}/memory/` 递归；目录尚不存在时退监听 markdown_root 本身（不能 schedule 不存在的目录）。
+- **监听目录**：`{root}` 递归（root 顶层 `USER.md` 与 `memory/` 子树均在监听内；`_MdFileHandler` 按文件名白名单过滤，只认三类记忆文件——`USER.md` / `MEMORY.md` / `YYYY-MM-DD.md` 日期文件名（`_is_watched_md`），`memory/.shadow/shadow.db` 等非 md 及 `notes.md`/`README.md` 等非记忆 md 均不误触发）；目录尚不存在时先 `makedirs` 再监听（不能 schedule 不存在的目录）。
 
 **特殊场景与已知限制**（根因：看门狗按 content_hash 集合 diff，content_hash 不可唯一身份标识一个 md 块）：diff 的 `old_by_hash` 是 `content_hash → unit_id` 字典（同 hash 后者覆盖前者只留一个 id）、`_collect_new_contents` 用 `seen` 去重（同 content 第二次出现直接跳过）、diff 是纯集合差集 `old_set − new_set` / `new_set − old_set`。这让「重复 content」类手改失真：
 
@@ -260,6 +263,8 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 - **graph / entity 检索未接文档模式**：graph 路按端口就绪并存；entity 扩展未接（构造器持有的 `_storage` 预留点读真源能力）。
 - **`list_units` 全量拉取**：大表场景全量载入内存过滤分页，与 KV scan 同构但无分页下推；数据量大后需考虑 SQL 级分页。
 - **写失败补偿的残留风险**：三处文档路径已加失败补偿——`add` 反向删 md 块；`update` 回滚 shadow（md 侧靠 `replace_content`/`remove_content` 自身原子写 `_safe_restore` 恢复调用前字节态）；`delete` 回插 shadow + `md.restore_blocks(removed)` 按 `md_filename` 回写已删块（绕过 `md.write` 的 `_md_path`——读回 unit 的 coords 被 `dumps` 剥除会错算路径）。仍残留：① 补偿路径的 `remove_content`/`replace_content`/`restore_blocks` 均按 content 首次匹配（受「replace_content / remove_content 首个命中」同款限制，重复 content 误删/误改）；② `_safe_restore` 自身失败只记 warning 不抛（md 残缺漂移交看门狗）；③ 补偿整体失败（shadow 回滚失败 + md restore_blocks 失败）无 reconcile 兜底（补偿抛错吞掉、原异常抛出，md/shadow 漂移交看门狗）。彻底闭环需 md 块引入 unit_id 锚点 + 看门狗改 unit_id reconcile（见后续演进）。
+
+- **路径布局变更的存量迁移遗留（2026-10-16）**：`USER.md` 上移 root 顶层 + `.shadow` 下沉 `memory/.shadow/` 为纯新部署设计。存量库（旧路径 `memory/USER.md` + `root/.shadow/shadow.db`）需 backfill：`UPDATE memory_unit SET md_filename='USER.md' WHERE md_filename='memory/USER.md'` + 物理移动 `memory/USER.md`→`root/USER.md` + 迁移 `shadow.db` 到 `memory/.shadow/`；未 backfill 时旧 USER.md 版本链跨两个 md_filename 值断裂、旧行成「查不到也删不到」的影子孤儿。纯新部署 / 测试环境直接删库重测零成本。
 
 ## 后续演进
 

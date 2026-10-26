@@ -71,6 +71,14 @@ mcp = [
 security = [
     "argon2-cffi>=23.1",
 ]
+# jiuwenswarm 宿主集成（jiuwen_memory_adapter/jiuwenswarm）：把 AgentMemory 适配成
+# openjiuwen 的 MemoryProvider ABC，供 ExternalMemoryRail / JiuwenMemoryRail 驱动。
+# openjiuwen 是宿主侧 agent swarm 框架，仅在生产挂载到 jiuwenswarm 时需要——
+# provider.py 对其做 try/except 软依赖降级，未安装时基类退化为 object，本仓库自身的
+# 单元/集成测试（不依赖宿主）照常 import 与运行；装上后才真正继承 ABC。
+agent = [
+    "openjiuwen",
+]
 
 [dependency-groups]
 dev = [

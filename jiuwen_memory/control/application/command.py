@@ -8,6 +8,7 @@ from datetime import datetime
 from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import (
     CandidateSource,
+    Context,
     MemoryUnit,
     MetadataValueType,
     Modality,
@@ -150,6 +151,21 @@ class MemoryCommandService:
 
     async def delete(self, selector: DeleteSelector) -> list[str]:
         return await self._engine.delete(selector)
+
+    async def edit_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        old_text: str,
+        new_text: str,
+    ) -> list[MemoryUnit]:
+        """薄包装：委托 ``MemoryEngine.edit_md_file``（F08 md 文件级编辑接口）。
+
+        与 :meth:`write` 同构——已鉴权 target scope 上的写命令转发。鉴权（WRITE）与
+        ``_ensure_space_writable`` 在 API 层 PEP 完成后才进入本端口，本端口不拆 Context
+        （project 解析在 Engine 层）。edit 走继承式 SUPERSEDE，语义对齐 ``add``（WRITE）。
+        """
+        return await self._engine.edit_md_file(context, md_filename, old_text, new_text)
 
     async def evolve(
         self,

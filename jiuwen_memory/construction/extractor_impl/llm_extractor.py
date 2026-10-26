@@ -58,6 +58,7 @@ from jiuwen_memory.common.log import (
 )
 from jiuwen_memory.common.type_def import (
     MD_TITLE_KEY,
+    MEMORY_CLASS_KEY,
     Entity,
     LifecycleState,
     MemoryTier,
@@ -347,36 +348,62 @@ def _parse_title(raw) -> str:
     return s[:_MAX_TITLE_LEN]
 
 
-def _format_context_block(context: ExtractContext | None) -> str:
+# context 参考段模板（user prompt 末尾两段的标题与行为指令；条目行恒 "- {content}"）。
+# ExtractorImpl 以类属性 CONTEXT_SECTION_TEMPLATES 持有，子类（agent_llm）覆写换语言；
+# 模块函数缺省用本常量，外部调用方（entity_schema / dynamic_llm）零改动。
+_CONTEXT_SECTION_TEMPLATES = {
+    "recent_heading": (
+        "## Recent conversation context "
+        "(for coreference / pronoun resolution only — do NOT extract from these, "
+        "do NOT point source_id at these):\n"
+    ),
+    "related_heading": (
+        "## Existing related memories "
+        "(already-known facts — do NOT duplicate information these cover.\n"
+        "However, a line that CONTRADICTS, CORRECTS or REVISES an existing "
+        "memory is NOT a duplicate: extract it as a new item so the conflict "
+        "can be resolved downstream. Do NOT return [] merely because the topic "
+        "matches an existing memory.)\n"
+    ),
+}
+
+# observation_date 前缀模板（user prompt 头两行）：基准日期 + 相对时间解析说明。
+# ExtractorImpl 以类属性 OBSERVATION_DATE_PREFIX 持有，子类覆写换语言；
+# "{date}" 占位符由 _llm_extract_batch 填入日精度观测日期。
+_OBSERVATION_DATE_PREFIX = (
+    "observation_date: {date}\n"
+    "(Use this as the reference point to resolve relative time expressions "
+    "like \"yesterday\"/\"last week\"/\"tomorrow\" into absolute dates in content "
+    "and event_date.)\n\n"
+)
+
+
+def _format_context_block(
+    context: ExtractContext | None,
+    templates: dict[str, str] | None = None,
+) -> str:
     """把 ExtractContext 拼成 user prompt 末尾的参考段（无 context 返回空串）。
 
     - Recent conversation context：做指代/代词消解与语境，明示「不从中提取、
       source_id 不指向这些」。
     - Existing related memories：已有事实，明示「不要重复产出已涵盖的信息」，
       但矛盾/修正不算重复——必须照常产出，交由下游去重消解。
+
+    ``templates`` 缺省用模块级 ``_CONTEXT_SECTION_TEMPLATES``（英文）；
+    子类（agent_llm）经类属性传入双语版。
     """
     if context is None:
         return ""
+    tpl = templates if templates is not None else _CONTEXT_SECTION_TEMPLATES
     parts: list[str] = []
     if context.recent_originals:
         lines = [f"- {u.content}" for u in context.recent_originals if u.content]
         if lines:
-            parts.append(
-                "## Recent conversation context "
-                "(for coreference / pronoun resolution only — do NOT extract from these, "
-                "do NOT point source_id at these):\n" + "\n".join(lines)
-            )
+            parts.append(tpl["recent_heading"] + "\n".join(lines))
     if context.related_memories:
         lines = [f"- {u.content}" for u in context.related_memories if u.content]
         if lines:
-            parts.append(
-                "## Existing related memories "
-                "(already-known facts — do NOT duplicate information these cover.\n"
-                "However, a line that CONTRADICTS, CORRECTS or REVISES an existing "
-                "memory is NOT a duplicate: extract it as a new item so the conflict "
-                "can be resolved downstream. Do NOT return [] merely because the topic "
-                "matches an existing memory.)\n" + "\n".join(lines)
-            )
+            parts.append(tpl["related_heading"] + "\n".join(lines))
     return "\n\n".join(parts)
 
 
@@ -391,6 +418,17 @@ class ExtractorImpl(Extractor):
     tier/tags 由 LLM 在 Phase 2 一并产出，不经 FeatureExtractor 富化。
     L0/L1 分层标注不由本算子负责——由 Evolver 抽取后委托 LayerAnnotator 生成。
     """
+
+    # ------------------------------------------------------------------
+    # prompt 面类属性（F09 §2.1）：子类（agent_llm）覆写换场景与语言，
+    # 抽取管线零改动；默认值 = 模块常量，llm target 行为零变化。
+    # ------------------------------------------------------------------
+
+    EXTRACT_SYSTEM_PROMPT: str = _EXTRACT_SYSTEM_PROMPT
+    PROCEDURAL_SYSTEM_PROMPT: str = _PROCEDURAL_SYSTEM_PROMPT
+    EXTRACTION_FIDELITY_SUFFIX: str = _EXTRACTION_FIDELITY_SUFFIX
+    OBSERVATION_DATE_PREFIX: str = _OBSERVATION_DATE_PREFIX
+    CONTEXT_SECTION_TEMPLATES: dict[str, str] = _CONTEXT_SECTION_TEMPLATES
 
     def __init__(
         self,
@@ -623,19 +661,22 @@ class ExtractorImpl(Extractor):
                 continue
 
             event_date = str(item.get("event_date", "") or "").strip()
-            candidates.append(
-                ExtractionCandidate(
-                    target=target,
-                    content=content.strip(),
-                    source_unit_id=source_id,
-                    confidence=confidence,
-                    evidence=evidence,
-                    event_date=event_date,
-                    tier=tier,
-                    title=title,
-                    tags=tags,
-                )
-            )
+            # memory_class（归属类别）由 LLM 判定（F09 agent_llm）；基类只透传不校验值域，
+            # 值域约束归消费侧——agent_llm 子类兜底自己的枚举，文档模式落盘对未知值静默
+            # 兜底 long_term_memory。llm 基线 prompt 不输出该字段，恒空即零影响。
+            memory_class = str(item.get("memory_class", "") or "").strip()
+            candidates.append(ExtractionCandidate(
+                target=target,
+                content=content.strip(),
+                source_unit_id=source_id,
+                confidence=confidence,
+                evidence=evidence,
+                event_date=event_date,
+                tier=tier,
+                title=title,
+                tags=tags,
+                metadata={MEMORY_CLASS_KEY: memory_class} if memory_class else {},
+            ))
             logger.info(
                 "Extractor: candidate — source_unit_id=%s tier=%s metadata=%s",
                 source_id[:8],
@@ -753,7 +794,7 @@ class ExtractorImpl(Extractor):
             return []
 
         messages = [
-            ChatMessage(role="system", content=_PROCEDURAL_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=self.PROCEDURAL_SYSTEM_PROMPT),
             ChatMessage(role="user", content=source_text),
         ]
         try:
@@ -908,14 +949,9 @@ class ExtractorImpl(Extractor):
         # LLM 会把时分秒当作源文本给出的精度照抄进条目。
         elif "T" in observation_date:
             observation_date = observation_date.split("T", 1)[0]
-        user_text = (
-            f"observation_date: {observation_date}\n"
-            f"(Use this as the reference point to resolve relative time expressions "
-            f'like "yesterday"/"last week"/"tomorrow" into absolute dates in content '
-            f"and event_date.)\n\n" + user_text
-        )
+        user_text = self.OBSERVATION_DATE_PREFIX.format(date=observation_date) + user_text
         # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
-        context_block = _format_context_block(context)
+        context_block = _format_context_block(context, self.CONTEXT_SECTION_TEMPLATES)
         if context_block:
             user_text = user_text + "\n" + context_block
         fidelity_mode = any(
@@ -923,9 +959,9 @@ class ExtractorImpl(Extractor):
             in {"true", "1", "yes", "on"}
             for unit in units
         )
-        system_prompt = _EXTRACT_SYSTEM_PROMPT
+        system_prompt = self.EXTRACT_SYSTEM_PROMPT
         if fidelity_mode:
-            system_prompt = system_prompt + "\n\n" + _EXTRACTION_FIDELITY_SUFFIX
+            system_prompt = system_prompt + "\n\n" + self.EXTRACTION_FIDELITY_SUFFIX
         messages = [
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=user_text),

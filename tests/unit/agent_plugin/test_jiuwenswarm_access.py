@@ -1,4 +1,4 @@
-"""JiuwenSwarm provider：五维 Scope，list 走 MemoryAPI，不直读 KV。"""
+"""JiuwenSwarm provider：五维 Scope，search 走 MemoryAPI，不直读 KV。"""
 
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ def test_scope_does_not_guess_space_from_scope_id() -> None:
     assert scope.space == ""
 
 
-def test_in_process_list_uses_memory_api_and_isolates_space() -> None:
+def test_in_process_search_uses_memory_api_and_isolates_space() -> None:
     provider = _load_provider()
     # 身份是固定的已认证 principal（P1-2）：注入后不再随业务 scope 变化。固定 actor
     # 无法 owner-cover 两个 space，故用 ROOT 档放行写入——本测试钉的是**查询层**
@@ -130,10 +130,16 @@ def test_in_process_list_uses_memory_api_and_isolates_space() -> None:
     asyncio.run(adapter.initialize(scope_id="acme", space="beta"))
     asyncio.run(adapter.handle_tool_call("agent_memory_conclude", {"conclusion": "beta-memory"}))
     asyncio.run(adapter.initialize(scope_id="acme", space="alpha"))
-    listed = json.loads(asyncio.run(adapter.handle_tool_call("agent_memory_profile", {})))
-    result = listed.get("result", "")
-    assert "alpha-memory" in result
-    assert "beta-memory" not in result
+    # profile 工具下线后，space 隔离断言改走 search：alpha 命中自身记忆、
+    # 不得泄漏 beta space 的记忆（bound_scope 五维下推隔离）。
+    found = json.loads(
+        asyncio.run(
+            adapter.handle_tool_call("agent_memory_search", {"query": "memory"})
+        )
+    )
+    memories = [item["memory"] for item in found.get("results", [])]
+    assert any("alpha-memory" in m for m in memories)
+    assert all("beta-memory" not in m for m in memories)
 
     source = (
         _REPO / "jiuwen_memory_adapter" / "jiuwenswarm" / "agent_memory_provider.py"
@@ -181,3 +187,69 @@ def test_in_process_target_change_does_not_change_authenticated_actor() -> None:
 
     assert [seen for _, seen in recorded] == [actor] * len(targets)
     assert [target for target, _ in recorded] == targets
+
+
+def test_tool_schemas_hide_profile_procedural_and_add_md_file_tools() -> None:
+    """工具面板：profile/procedural 不注册（LLM 不可见），read/edit_md_file 上线（F08）。
+
+    两者实现保留在 handle_tool_call（内部直调入口），仅从 get_tool_schemas 移除。
+    """
+    provider = _load_provider()
+    adapter = provider.AgentMemoryMemoryProvider(user_id="alice")
+    names = [s["name"] for s in adapter.get_tool_schemas()]
+    assert "agent_memory_profile" not in names
+    assert "agent_memory_procedural" not in names
+    assert "agent_memory_read_md_file" in names
+    assert "agent_memory_edit_md_file" in names
+
+
+def test_unregistered_profile_tool_remains_callable() -> None:
+    """未注册 ≠ 删除：profile 不在 get_tool_schemas。
+
+    但 handle_tool_call 直调仍走真实实现（非 Unknown tool），保留内部排查入口。
+    """
+    provider = _load_provider()
+    adapter = provider.AgentMemoryMemoryProvider(
+        user_id="owner",
+        config_path=_write_in_process_config(),
+        security_provider=_security_provider(ApiScope(org="acme", user="owner"), role=Role.ROOT),
+    )
+    asyncio.run(adapter.initialize(scope_id="acme", space="alpha"))
+    result = json.loads(
+        asyncio.run(adapter.handle_tool_call("agent_memory_profile", {}))
+    )
+    assert "error" not in result  # 正常执行（空库 → "No memories stored yet."）
+
+
+def test_md_file_tools_reject_non_document_mode_in_process() -> None:
+    """非文档模式：read/edit_md_file 的 ValidationError 须经 client 透出。
+
+    write_document 缺省 False（未开文档模式）：LLM 需要「文档模式未开」信号，
+    不得降级成空结果或 unavailable。
+    """
+    provider = _load_provider()
+    adapter = provider.AgentMemoryMemoryProvider(
+        user_id="owner",
+        config_path=_write_in_process_config(),
+        security_provider=_security_provider(ApiScope(org="acme", user="owner"), role=Role.ROOT),
+    )
+    asyncio.run(adapter.initialize(scope_id="acme", space="alpha"))
+
+    read_result = json.loads(
+        asyncio.run(
+            adapter.handle_tool_call(
+                "agent_memory_read_md_file", {"md_filename": "MEMORY.md"}
+            )
+        )
+    )
+    assert "document mode" in read_result.get("error", "")
+
+    edit_result = json.loads(
+        asyncio.run(
+            adapter.handle_tool_call(
+                "agent_memory_edit_md_file",
+                {"md_filename": "MEMORY.md", "old_text": "x", "new_text": "y"},
+            )
+        )
+    )
+    assert "document mode" in edit_result.get("error", "")

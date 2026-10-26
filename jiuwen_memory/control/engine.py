@@ -25,6 +25,7 @@ from datetime import datetime
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
     CandidateSource,
+    Context,
     FilterExpr,
     MemoryUnit,
     MetadataValueType,
@@ -260,3 +261,40 @@ class MemoryEngine(ControlOperator):
     @abstractmethod
     async def admin_all(self) -> dict[str, str]:
         """列出全部运行时策略及当前值。"""
+
+    @abstractmethod
+    async def read_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        *,
+        line_range: tuple[int, int] | None = None,
+    ) -> list[MemoryUnit]:
+        """异步协程：按 md 文件 basename + 行范围读 md 原文，返回命中的 MemoryUnit（F08）。
+
+        文档模式专用接口（``CloudEngine`` / ``AgentEngine``）。入参形态与 :meth:`recall`
+        一致——用 ``context: Context``：``context.scope`` 为鉴权轴（与 get/list 同一段鉴权），
+        ``context.extensions["coords"]["project"]`` 为路径解析依据（与 search 中 coords 作
+        窄化谓词同派别，不参与鉴权）。Engine 层经 :func:`_project_from_context` 从 context
+        拆出 project 标量，显式传给 DomainStore（Context 不下沉存储层）。
+
+        非文档模式（``InMemoryEngine``）抛 ``ValidationError``（非文档模式无 md 文件）。
+        """
+
+    @abstractmethod
+    async def edit_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        old_text: str,
+        new_text: str,
+    ) -> list[MemoryUnit]:
+        """异步协程：按 md 文件 basename + old_text 做唯一替换，返回受影响的新 MemoryUnit（F08）。
+
+        入参形态与 :meth:`read_md_file` 一致（``context: Context``，project 走
+        ``context.extensions["coords"]["project"]``）。经 Engine 窗口到
+        ``DomainStore.edit_md_file``（``asyncio.to_thread`` 委托），DomainStore 内部完成
+        写窗保护 + edit_content 原子替换 + 继承式 SUPERSEDE 同步 shadow。
+
+        非文档模式（``InMemoryEngine``）抛 ``ValidationError``。
+        """

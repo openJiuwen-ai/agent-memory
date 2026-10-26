@@ -47,13 +47,6 @@ per narrowing dimension.
 
 OWNERSHIP COORDINATES: {coords}
 
-These are the concrete entities (user / project / team) the current interaction belongs to. \
-Use them to decide ownership: a memory stating a fact or decision ABOUT the named project is \
-project_memory (even if the user said it); a memory stating a fact, preference or habit ABOUT \
-the user is user_memory; a memory about how the named team collaborates is team_memory. The \
-narrowing dimensions are secondary — decide the class first from ownership, then answer the \
-narrow questions. When no class clearly fits, use the class marked FALLBACK.
-
 Output ONLY a JSON array. No explanation, no markdown fences. One entry per input memory, in \
 the SAME order as input. Each entry:
 

@@ -39,7 +39,7 @@ pytestmark = pytest.mark.unit
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
-    assert len(api_contract.api_method_names()) == 36
+    assert len(api_contract.api_method_names()) == 38
     assert api_contract.is_known_verb("add_async") is True
     assert api_contract.is_known_verb("does_not_exist") is False
 

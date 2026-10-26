@@ -102,7 +102,7 @@ class _KeywordRouter(Router):
         decisions = []
         for unit in units:
             is_project = "项目" in unit.content or "apollo" in unit.content.lower()
-            memory_class = "project_memory" if is_project else "user_memory"
+            memory_class = "long_term_memory" if is_project else "user_profile"
             # 个人偏好判为与当前项目相关：落个人主空间，但检索时能按项目收窄出来
             decisions.append(build_decision(unit, memory_class, ("project_id",), ctx))
         return decisions

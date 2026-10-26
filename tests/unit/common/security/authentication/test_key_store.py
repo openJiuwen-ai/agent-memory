@@ -326,9 +326,12 @@ def test_single_resolve_stays_under_budget(store) -> None:
     """性能基线：防止 Argon2 参数被误配成更离谱的值。
 
     实测单次约 200ms（128 MiB × time_cost=4），对应 5~20 QPS/核——这是已知
-    限制，不是本测试要防的；本测试只防「参数配错一个数量级」。
+    限制，不是本测试要防的；本测试只防「参数配错一个数量级」（典型 >2s）。
+    预算放到 2.0s 是给 CI 的 memory-bandwidth 抖动留余量：Argon2 是 memory-hard
+    函数，慢/被抢占环境单次可被拉到 1s+（实测 ~175ms 的 6 倍），1.0s 会误报。
+    放宽的是预算、不是参数要求。
     """
     key = store.issue(Scope(org="acme", user="perf"), Role.USER)
     start = time.perf_counter()
     store.resolve(key)
-    assert (time.perf_counter() - start) < 1.0
+    assert (time.perf_counter() - start) < 2.0

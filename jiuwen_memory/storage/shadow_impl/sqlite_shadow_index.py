@@ -55,10 +55,9 @@ from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
 from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
-_DEFAULT_PROJECT = ""  # 无 coords 时的 project 兜底值：空串=跨项目可见（IN ['', value] 命中）
-_DEFAULT_CLASS = "team_memory"
-# memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）。
-_DEFAULT_LIFECYCLE = "active"
+_DEFAULT_PROJECT = ""  # 无 project 时的兜底值：空串=跨项目可见（IN ['', value] 命中）
+_DEFAULT_CLASS = "long_term_memory"  # 空/未知 memory_class 兜底 long_term_memory，与 LocalMarkdownStore 口径一致
+_DEFAULT_LIFECYCLE = "active"  # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
 _DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，F07 §4.4.3）
 
 # project 作为配置声明的收窄维，coords 折算后以 ``system_metadata.project`` 谓词
@@ -68,8 +67,8 @@ _DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 
 _PROJECT_FILTER_FIELD = "system_metadata.project"
 
 # 召回按 project 过滤单批下推，不再按 category 分批（路径甲：召回只看过滤条件，
-# 不用记忆类型判断召回范围）。project 列空串 = 跨项目可见（user_memory 恒落空串，
-# 无 coords 的 project_memory/team_memory 兜底空串），带 coords 召回时
+# 不用记忆类型判断召回范围）。project 列空串 = 跨项目可见（user_profile 恒落空串，
+# 无 coords 的 long_term_memory/daily_memory 兜底空串），带 coords 召回时
 # IN ['', value] 一并命中空串行与本项目行。
 # category 维度不再在召回 SQL 过滤——若需按类别收窄，上层应通过 query.filters
 # 显式传 category 谓词（当前 narrow_dims 未配 category 维，故不收窄）。
@@ -119,7 +118,7 @@ def _build_schema(vec_dim: int | None) -> str:
     降级场景下向量召回缺一路，倒排与全量存储照常。
 
     ``memory_unit.category`` 列名保留（不改表结构），但 F08 复用 memory_class 后落的
-    是 memory_class 值（如 ``team_memory``），默认值取 F08 §2 兜底 ``team_memory``——
+    是 memory_class 值（如 ``daily_memory``），默认值取 F08 §2 兜底 ``long_term_memory``——
     非 F07 原设计的 ``diary``。
 
     FTS5 ``tokenize``： ``'simple'``（"不二次分词，分词归 jieba 预处理"），
@@ -401,12 +400,13 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         """解析 db_path：
 
         1. ``shadow_index.db_path`` 显式配置（最高优先级，覆盖一切）
-        2. ``markdown_store.root`` 派生：``{markdown_root}/.shadow/shadow.db``
-           （md 与影子索引同根伴生，影子索引是 md 的机器索引，物理位置应跟随 md 根目录）
+        2. ``markdown_store.root`` 派生：``{markdown_root}/memory/.shadow/shadow.db``
+           （md 与影子索引同根伴生，影子索引是 md 的机器索引，物理位置应跟随 md 根目录下
+           的 memory/ 子目录——root 顶层只留 USER.md，其余结构含 .shadow 整体收进 memory/）
         3. 构造期 fallback（兜底，当 markdown root 也未配置时）
 
         优先级 2 让 db 自动跟随 markdown 根目录移动而无需重复配置——
-        用户只配 ``markdown_store.root`` 一处，shadow db 自动落其下 ``.shadow/`` 子目录。
+        用户只配 ``markdown_store.root`` 一处，shadow db 自动落其 ``memory/.shadow/`` 子目录。
         """
         from jiuwen_memory.config.binding import resolve_connection_url
 
@@ -431,9 +431,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             fallback=self._fallback_markdown_root,
         )
         if markdown_root:
-            return os.path.join(markdown_root, ".shadow", "shadow.db")
-        # markdown root 也未配 → cwd 下 .shadow/shadow.db 兜底（极少见：未配 markdown_store）
-        return self._fallback_db_path or ".shadow/shadow.db"
+            return os.path.join(markdown_root, "memory", ".shadow", "shadow.db")
+        # markdown root 也未配 → cwd 下 memory/.shadow/shadow.db 兜底（极少见：未配 markdown_store）
+        return self._fallback_db_path or "memory/.shadow/shadow.db"
 
     def _ensure_conn(self) -> sqlite3.Connection:
         """按当前 ``db_path`` 惰性打开连接；路径变化则重建。调用方须已持 ``_lock``。
@@ -443,8 +443,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         SQLiteKVStore 的差异：开连接后、建表前必须
         ``enable_load_extension(True) + sqlite_vec.load(conn)``，且连接重开时每次都要重新 load
         （否则查 vec0 报 ``no such module: vec0``）。
-        默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/.shadow/shadow.db``，
-        含子目录，连接前需确保父目录存在。
+另：默认 db_path 派生自 ``markdown_store.root`` 的 ``{root}/memory/.shadow/shadow.db``，含子目录，连接前需确保父目录存在。
         """
         path = self._resolved_db_path()
         if self._conn is not None and self._conn_path == path:
@@ -507,9 +506,38 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _project_of(unit: MemoryUnit) -> str:
-        """从 ``coords`` 读 project，空落 ``default``（F08 §1.2/§3）。"""
-        coords = (unit.system_metadata or {}).get(COORDS_KEY) or {}
+        """取 project：``system_metadata.project``（agent 场景标量直传）优先，
+        ``coords.project``（router 场景 ``_route`` 回写）兜底，空落空串
+        （``_DEFAULT_PROJECT``，跨项目可见；F08 §1.2/§3）。与召回侧
+        ``_PROJECT_FILTER_FIELD`` 同 key 口径一致——
+        召回按 ``system_metadata.project`` 谓词下推，写入侧同此 key 取值。
+        """
+        metadata = unit.system_metadata or {}
+        project = metadata.get("project")
+        if isinstance(project, str) and project.strip():
+            return project.strip()
+        coords = metadata.get(COORDS_KEY) or {}
         return coords.get("project") or _DEFAULT_PROJECT
+
+    @staticmethod
+    def _sync_project_metadata(unit: MemoryUnit, project: str) -> None:
+        """把派生的 ``project`` 持久化进 ``system_metadata.project``，与投影列 ``project`` 对齐。
+
+        投影列取值自 ``system_metadata.project``（agent 抽取路径）或 ``coords.project``
+        （watchdog/router 路径，TRANSIENT，``dumps`` 剥除）。二者只在写入瞬间可读；
+        ``unit_json`` 若不显式回填 project，watchdog 同步的 unit 读回后 system_metadata
+        无 project 键，retrieval 复核 ``memory_filter._field_value`` 返 None、
+        ``IN ['', project]`` 判 False 被误滤；LLM 抽取的 user_profile 带具体 project 值，
+        仅同 project 查询可见。回填后持久化值与投影列一致，召回（project 列）与复核
+        （system_metadata.project）两侧对齐。``project`` 参数由调用方决定：user_profile
+        传空串（跨项目可见），其余传具体项目值。
+        """
+        sm = unit.system_metadata or {}
+        if sm.get("project") == project:
+            return
+        sm = dict(sm)
+        sm["project"] = project
+        unit.system_metadata = sm
 
     @staticmethod
     def _scope_of(unit: MemoryUnit) -> tuple[str, str, str, str, str]:
@@ -537,7 +565,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _category_of(unit: MemoryUnit) -> str:
-        """落 memory_class 值，空落 ``team_memory``（F08 §2/§5）。
+        """落 memory_class 值，空落 ``long_term_memory``（F08 §2/§5）。
 
         md.write 已在写入 md 前兜底回填 memory_class（F08 §4 步骤6 关键细节），
         故此处一般非空；留兜底是为防直接调 ``insert_units``（不经 md.write）的场景。
@@ -578,12 +606,13 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         md_filename = self._md_filename_of(unit)
         category = self._category_of(unit)
         project = self._project_of(unit)
-        # user_memory 无 project 归属（md 走 USER.md 全局单文件，不进 project 子目录），
+        # user_profile 无 project 归属（md 走 USER.md 全局单文件，落 root 顶层不进 project 子目录），
         # 影子索引 project 列恒落空串——召回按 project IN ('', value) 时空串行跨项目可见。
-        # 不强制则带 coords 写入的 user_memory 会落具体 project 值，撤掉 category 分批后
+        # 不强制则带 coords 写入的 user_profile 会落具体 project 值，撤掉 category 分批后
         # 不带 coords 召回（IN ('')）召不回它，全局可见性丢失。
-        if category == "user_memory":
+        if category == "user_profile":
             project = _DEFAULT_PROJECT
+        self._sync_project_metadata(unit, project)
         lifecycle = _lifecycle_of(unit)
         t_valid = _t_valid_of(unit)
         t_invalid = _t_invalid_of(unit)
@@ -593,8 +622,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # ① memory_unit（拿隐式 rowid，FTS5/vec0 靠它关联，F07 §11.2 注 A）。
         # scope 五列与 project 同级下推：org/space/user/agent/session 严格等值隔离
         # （对齐 KV 五段等值 WHERE，见 sqlite_kv_store），与 project（收窄维，
-        # IN ['', value]）正交。user_memory 的 project 空串守卫（见上方）不延伸到 scope
-        # ——scope 是身份隔离维，user_memory 的 scope 必须是真实值。
+        # IN ['', value]）正交。user_profile 的 project 空串守卫（见上方）不延伸到 scope
+        # ——scope 是身份隔离维，user_profile 的 scope 必须是真实值。
         conn.execute(
             "INSERT INTO memory_unit "
             "(unit_id, content_hash, md_filename, project, "
@@ -630,11 +659,11 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     # -- 查询类：get_units/update_units/delete_units/list_units/list_units_by_md 已全部落地 -- #
 
-    def get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+    def get_units(self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False) -> list[MemoryUnit]:
         """按 ``unit_id`` 点查全量 ``MemoryUnit``（F07 §11.3 / F08 §5.1）。
 
-        ``scope`` 原生隔离——影子索引靠 scope 五段等值 WHERE 隔离（对齐 KV 五段
-        等值过滤），与 project（收窄维）+ category（落盘键）正交。点查按 scope
+        ``scope`` 原生隔离——影子索引靠 scope 保等值 WHERE 隔离（对齐 KV 保等值
+        过滤），与 project（收窄维）+ category（落盘键）正交。点查按 scope
         等值过滤（与 ``insert_units`` 一致：写入落 scope 列，读回按 scope 等值）。
 
         **缺失 id 省略（不抛 NotFoundError）**：与 :class:`~storage.kv.KVStore.get`
@@ -642,17 +671,31 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         命中的 ``unit_id`` 来自 ``search_fulltext``/``search_vector`` 的 ``ScoredID``,
         若中途被删应静默跳过而非整批失败。返回列表按下标对应**输入顺序**组装
         （与 ``KVStore.mget`` 保序一致），便于调用方按下标对位。
+
+        **session 放宽（``relax_session=True``）**：仅检索物化侧使用——召回
+        （``search_fulltext``/``search_vector``）放宽 session 等值到 org/space/user/
+        agent 四段，故跨 session 召回的 unit（如 user_profile 记忆跨 session 共享）
+        回读时若仍按 session 五段等值会被过滤掉，命中却拉不到（MissingMemoryUnit）。
+        点查/列表等用户态接口保持 ``relax_session=False``（严格 session 等值）。
         """
         if not unit_ids:
             return []
+        # session 段缺省严格等值（点查口径）；relax_session=True 时放 session 段
+        # 进 WHERE，只对 org/space/user/agent 四段等值——与 recall 的放宽口径对齐。
+        scope_params = [scope.org, scope.space, scope.user, scope.agent]
+        if relax_session:
+            session_where = ""
+        else:
+            scope_params.append(scope.session)
+            session_where = " AND session=?"
         with self._lock:
             conn = self._ensure_conn()
             placeholders = ",".join("?" for _ in unit_ids)
             rows = conn.execute(
                 f"SELECT unit_id, unit_json FROM memory_unit "
                 f"WHERE unit_id IN ({placeholders}) "
-                f'AND org=? AND space=? AND "user"=? AND agent=? AND session=?',
-                (*unit_ids, scope.org, scope.space, scope.user, scope.agent, scope.session),
+                f'AND org=? AND space=? AND "user"=? AND agent=?{session_where}',
+                (*unit_ids, *scope_params),
             ).fetchall()
         # 命中 id → MemoryUnit；非 dict/无 id 的 unit_json 经 loads 归 None，过滤掉
         # （memory_codec.loads 对非 MemoryUnit 字节返回 None，见该模块容错演进说明）。
@@ -663,6 +706,45 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 hits[uid] = unit
         # 按输入顺序保序组装，缺失/非法的下标直接省略（不补 None，不抛错）。
         return [hits[uid] for uid in unit_ids if uid in hits]
+
+    def find_unit_ids_by_content_hash(
+        self, scope: Scope, content_hash: str
+    ) -> list[str]:
+        """按 ``content_hash`` 在 scope 内反查 ``unit_id``（F08 §D3）。
+
+        ``read_md_file`` / ``edit_md_file`` 的 hash 反查落点：读 md 按块算
+        ``content_hash``（与 :meth:`_content_hash` 同口径 ``sha256`` 不归一化）后，用
+        本方法反查命中的 ``unit_id``，再经 :meth:`get_units` 取完整 ``MemoryUnit``。
+
+        scope 5 段等值隔离——与 :meth:`get_units` 同口径（``org``/``space``/``user``/
+        ``agent``/``session`` 五段 AND 等值），**非** :meth:`list_units_by_md` 的跨 scope
+        例外口径。read/edit 是用户态接口须严格按 scope 隔离：同一 content_hash 在不同
+        scope 下是不同 unit（同文件不同用户写入相同正文行），跨 scope 返回会泄漏。
+        看门狗诊断（``list_units_by_md``）才跨 scope，本方法不沿用其例外。
+
+        走已有 ``idx_content_hash`` 索引（建表 DDL 第 154 行），``WHERE content_hash=?
+        AND <scope 5 段等值>`` 是索引前缀点查，O(log n)。
+
+        返回顺序：SQLite 默认 rowid 升序（插入顺序），未显式 ``ORDER BY``——调用方
+        （``read_md_file``）按 md 块解析顺序逐 hash 反查再 :meth:`get_units` 组装，
+        不依赖本方法返回顺序。同 ``content_hash`` 同 scope 下可命中多个 unit（不同
+        md 文件写了相同正文行），返回全部命中；空命中返回空列表。
+        """
+        with self._lock:
+            conn = self._ensure_conn()
+            rows = conn.execute(
+                "SELECT unit_id FROM memory_unit WHERE content_hash=? "
+                'AND org=? AND space=? AND "user"=? AND agent=? AND session=?',
+                (
+                    content_hash,
+                    scope.org,
+                    scope.space,
+                    scope.user,
+                    scope.agent,
+                    scope.session,
+                ),
+            ).fetchall()
+        return [uid for uid, in rows]
 
     def update_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """覆写全量 ``unit_json``，按 ``content_hash`` 变化判定投影是否重建（F07 §11.3）。
@@ -716,10 +798,12 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         category = self._category_of(unit)
         project = self._project_of(unit)
         # 投影列空兜底守卫：coords 是 TRANSIENT 键（dumps 剥除，memory_codec），
-        # 从影子索引读回的 unit 永远没有 coords → _project_of 落空串兜底。若不
-        # 守卫，任何 read-modify-write 循环（SUPERSEDE 改 lifecycle、dedup UPDATE
-        # 合并、LifecycleManager.transition/sweep——unit 都取自读回）都会把原
-        # project="p_xxx" 的行重置为空串，下次按 project 隔离召回即丢失。
+        # 从影子索引读回的 unit 无 coords；system_metadata.project 非 TRANSIENT 可
+        # 留存，_project_of 优先读它——agent 场景写入的 unit 读回仍能取到 project。
+        # 仅 coords-only 的 unit（router/watchdog）读回落空串兜底。若不守卫，任何
+        # read-modify-write 循环（SUPERSEDE 改 lifecycle、dedup UPDATE 合并、
+        # LifecycleManager.transition/sweep——unit 都取自读回）都会把原 project="p_xxx"
+        # 的行重置为空串，下次按 project 隔离召回即丢失。
         # 取到兜底值时保留旧列值：project 是写入时确定的归属坐标（F07 语义下
         # 不可变），读到兜底只可能是"上游丢了瞬态上下文"而非"调用方想改归属"。
         # md_filename 同理（md.write 回填的内部指针，重建 unit 对象的上游可能
@@ -729,11 +813,12 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # （SUPERSEDE 改的就是它们），且 t_valid=None 是合法值非兜底。
         if project == _DEFAULT_PROJECT and old_project:
             project = old_project
-        # user_memory 无 project 归属，project 列恒落空串（与 insert_units 同口径，
-        # 见写入侧守卫）。放兜底守卫之后，覆盖其结果——防旧数据 user_memory 的
+        # user_profile 无 project 归属，project 列恒落空串（与 insert_units 同口径，
+        # 见写入侧守卫）。放兜底守卫之后，覆盖其结果——防旧数据 user_profile 的
         # old_project 为具体值时被兜底守卫错误保留。
-        if category == "user_memory":
+        if category == "user_profile":
             project = _DEFAULT_PROJECT
+        self._sync_project_metadata(unit, project)
         if not md_filename and old_md_filename:
             md_filename = old_md_filename
         if category == _DEFAULT_CLASS and old_category:

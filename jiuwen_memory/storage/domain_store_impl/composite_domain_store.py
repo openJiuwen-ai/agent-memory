@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+import copy
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from jiuwen_memory.common.errors import (
@@ -28,6 +31,7 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
+    MEMORY_CLASS_KEY,
     CandidateFuser,
     ChannelError,
     FilterExpr,
@@ -42,6 +46,8 @@ from jiuwen_memory.common.type_def import (
     Scope,
     ScoredMemoryUnit,
     ScoredUnit,
+    Segment,
+    Temporal,
     is_retrieval_candidate,
     memory_key,
 )
@@ -50,11 +56,21 @@ from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_
 from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
 from jiuwen_memory.storage.kv import load_memory_unit
 from jiuwen_memory.storage.kv_impl.memory_list import list_memory_entries
+from jiuwen_memory.storage.markdown import MarkdownStore
+from jiuwen_memory.storage.markdown_impl._md_blocks import (
+    collect_blocks_from_text,
+    content_hash,
+)
+from jiuwen_memory.storage.markdown_impl._md_path import (
+    class_from_md_path,
+    project_from_md_path,
+)
 from jiuwen_memory.storage.security import (
     StorageAccessContext,
     StorageAction,
     StorageSecurity,
 )
+from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -186,11 +202,11 @@ class CompositeDomainStore(DomainStore):
         """运行期直接读实例属性，不查 config（装配期已固化，见 ``__init__``）。"""
         return self._write_document
 
-    def _raw_markdown(self) -> Any:
+    def _raw_markdown(self) -> MarkdownStore:
         """取 markdown 端口；文档模式未装配时 manager 抛 UnsupportedStorageCapabilityError。"""
         return self._manager.markdown()
 
-    def _raw_shadow_index(self) -> Any:
+    def _raw_shadow_index(self) -> DocumentShadowIndex:
         """取 shadow 端口；文档模式未装配时 manager 抛 UnsupportedStorageCapabilityError。"""
         return self._manager.shadow_index()
 
@@ -220,7 +236,7 @@ class CompositeDomainStore(DomainStore):
         if self.should_write_document():
             # 文档路径：写 md + 建影子索引，不碰 KV（F07 §3.1 互斥路径）。
             # md.write 内部按文件分组批量写、回填 unit.system_metadata["md_filename"]
-            # + 兜底 memory_class（空落 team_memory，F08 §2）；shadow.insert_units
+            # + 兜底 memory_class（空落 long_term_memory）；shadow.insert_units
             # 从 system_metadata 读 md_filename 建 three-table 索引。
             # 写窗口：两步写期间 md 与索引短暂不一致，挡住看门狗对账（F07 §12.9 风险 6，
             # sync_gate 模块说明）——insert_units 含逐条 embed（完整模式远端 HTTP），
@@ -572,6 +588,221 @@ class CompositeDomainStore(DomainStore):
         ranked = fuser.fuse(query, filtered)[:rank_limit]
         return RankedStorageResult(candidates=ranked, errors=materialized.errors)
 
+    # -- md 文件级接口（read_md_file / edit_md_file，F08 §D1/§D4）----------------- #
+
+    def read_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        *,
+        project: str = "",
+        line_range: tuple[int, int] | None = None,
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        """读 md 文件原文，按块算 content_hash 反查 shadow 取 MemoryUnit（F08 §D1）。
+
+        ``read_content`` 读 md 切片 → ``collect_blocks_from_text`` 按块算 hash →
+        ``find_unit_ids_by_content_hash``（scope 隔离）反查 → ``get_units`` 取完整 unit。
+        被行切片切断的不完整块 hash 匹配不上 shadow 完整块，自然跳过（F08 已知遗留 6）。
+        """
+        self._authorize(access, scope, StorageAction.GET, "memory_unit")
+        if not self.should_write_document():
+            raise ValidationError(
+                "read_md_file requires document mode (write_document=true)"
+            )
+        md = self._raw_markdown()
+        shadow = self._raw_shadow_index()
+        text = md.read_content(scope, md_basename, project=project, line_range=line_range)
+        blocks = collect_blocks_from_text(text)
+        unit_ids: list[str] = []
+        for ch, _, _ in blocks:
+            unit_ids.extend(shadow.find_unit_ids_by_content_hash(scope, ch))
+        return shadow.get_units(scope, unit_ids)
+
+    def edit_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        project: str = "",
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        """md 文件级唯一替换 + 继承式 SUPERSEDE 同步 shadow，返回新 unit（F08 §D4/§D5）。
+
+        写窗保护下：edit 前后读全文算块（精确 diff）→ ``edit_content`` 原子替换 md →
+        ``_supersede_shadow_for_md`` 同步 shadow（md 侧零触碰，只动 shadow 表）→
+        用新 content_hash 反查新 unit_id 返回。非文档模式抛 ``ValidationError``。
+        """
+        self._authorize(access, scope, StorageAction.ADD, "memory_unit")
+        if not self.should_write_document():
+            raise ValidationError(
+                "edit_md_file requires document mode (write_document=true)"
+            )
+        md = self._raw_markdown()
+        shadow = self._raw_shadow_index()
+        rel_path = MarkdownStore.resolve_md_path(md_basename, project)
+        open_write_window()
+        try:
+            # edit 前旧全文快照（md 侧失败补偿用：shadow 同步失败时回写整个文件到编辑前
+            # 字节态）。同一次读既算块 diff 又留快照，避免二次读文件。
+            raw_old = md.read_content(scope, md_basename, project=project)
+            # edit 前后全文块（含跨 scope），用于精确 diff：truly_inserted = new - old
+            # 只含 edit 真正新增的块（不含跨 scope 已有块——其 hash 在 old_full 里），
+            # 避免 list_units_by_md 跨 scope 导致当前 scope edit 误标/误插他 scope unit。
+            old_full = collect_blocks_from_text(raw_old)
+            try:
+                # md 原子替换（唯一性校验 + 原子写；失败抛 NotFoundError/ValidationError）
+                md.edit_content(scope, md_basename, old_text, new_text, project=project)
+                new_full = collect_blocks_from_text(
+                    md.read_content(scope, md_basename, project=project)
+                )
+                new_unit_ids = self._supersede_shadow_for_md(
+                    scope, rel_path, old_full, new_full, shadow
+                )
+            except Exception:
+                # md 侧补偿：md 已改成 new 态、shadow 同步失败时，回写旧全文让 md 回到
+                # 编辑前字节态（shadow 侧由 _supersede_shadow_for_md 自身回滚）。restore
+                # 是无条件整文件覆盖——edit_content 抛 NotFoundError/ValidationError 时
+                # md 本就未变，回写相同内容幂等无害。补偿失败只记 warning 不掩盖原异常。
+                try:
+                    md.restore_content(scope, md_basename, raw_old, project=project)
+                except Exception as restore_exc:
+                    logger.warning(
+                        "edit_md_file md 回滚失败 %s: %s", md_basename, restore_exc
+                    )
+                raise
+            return shadow.get_units(scope, new_unit_ids)
+        finally:
+            close_write_window()
+
+    def _supersede_shadow_for_md(
+        self,
+        scope: Scope,
+        rel_path: str,
+        old_full: list[tuple[str, str, int]],
+        new_full: list[tuple[str, str, int]],
+        shadow: DocumentShadowIndex,
+    ) -> list[str]:
+        """继承式 SUPERSEDE 同步 shadow（F08 §D4）：md 已改好，只动 shadow 表。
+
+        md 侧零触碰（``edit_content`` 已原子改好整个文件）——不复用 ``add``（会重复写
+        md 块）或 ``update``（它假设 md 还没改、自己改 md）。与现有 ``update`` SUPERSEDE
+        「先改 shadow 再改 md」的根本差异：edit_md_file 是「md 已改，只同步 shadow」。
+
+        落库动作（D4）：
+        1. 拿当前 scope 旧 unit（``list_units_by_md`` 跨 scope + ``get_units`` scope 过滤）；
+        2. edit 前后全文块 diff（精确，跨 scope 无关）——truly_inserted/superseded 只含
+           edit 真正产生/消失的块；
+        3. 构造 inserted 新 unit + ``insert_units``（先落新版，deepcopy 未改的 old 继承
+           元数据；D4.1 对齐按 block_index 继承 / 不对齐退化兜底）；
+        4. 标 superseded 旧 unit SUPERSEDED + ``update_units``（废旧版，在新版落地之后）。
+
+        顺序「先 insert 新版再 update 旧版」对齐 cloud_engine SUPERSEDE 范式
+        （``cloud_engine.py``：``new_index.build([new])`` 先落，再 ``old.lifecycle=SUPERSEDED``
+        标旧）——任何时刻都有一个可读版本。
+        """
+        # 1. 当前 scope 旧 unit（list_units_by_md 跨 scope 诊断口径，get_units 只返当前
+        #    scope 命中——跨 scope 的 uid 因 scope WHERE 不匹配被省略，实现 scope 隔离）。
+        old_pairs = shadow.list_units_by_md(scope, rel_path)
+        old_units = shadow.get_units(scope, [uid for uid, _ in old_pairs])
+        old_by_hash: dict[str, MemoryUnit] = {}
+        for u in old_units:
+            ch = content_hash(u.segments[0].content if u.segments else "")
+            old_by_hash[ch] = u
+
+        # 2. edit 前后全文 diff（精确，跨 scope 无关）。
+        old_full_hashes = {h for h, _, _ in old_full}
+        new_full_hashes = {h for h, _, _ in new_full}
+        truly_inserted_hashes = new_full_hashes - old_full_hashes
+        truly_superseded_full_hashes = old_full_hashes - new_full_hashes
+        # 当前 scope 旧 unit 中块消失的（superseded），与 edit 新增的块（inserted）。
+        superseded_units = [
+            u for h, u in old_by_hash.items() if h in truly_superseded_full_hashes
+        ]
+        inserted_blocks = [
+            (h, c, idx) for h, c, idx in new_full if h in truly_inserted_hashes
+        ]
+
+        now = datetime.now(UTC)
+        inserted_units: list[MemoryUnit] = []
+
+        # 3. 构造 inserted 新 unit（纯内存，不落库；deepcopy 此时未改的 old 继承元数据）。
+        #    统一先算齐整批，再一次性落库——把原「逐条 insert + 逐条 update」的 N+M 个
+        #    独立事务收进 2 个事务，失败中间态从「插一半/标一半」降到「要么全插/全标、
+        #    要么全没插/全没标」（见下方自回滚）。
+        if inserted_blocks and len(superseded_units) == len(inserted_blocks):
+            # D4.1 对齐：块数一致，按 block_index 一一继承对应旧 unit 全部元数据。
+            old_block_idx = {h: idx for h, _, idx in old_full}
+            superseded_sorted = sorted(
+                superseded_units,
+                key=lambda u: old_block_idx.get(
+                    content_hash(u.segments[0].content if u.segments else ""), 0
+                ),
+            )
+            inserted_sorted = sorted(inserted_blocks, key=lambda b: b[2])
+            for old, (_, new_c, _) in zip(superseded_sorted, inserted_sorted):
+                new = copy.deepcopy(old)  # old 此时 ACTIVE（未标 SUPERSEDED），继承全部元数据
+                new.id = str(uuid.uuid4())
+                new.supersedes = old.id
+                new.segments = [Segment(content=new_c)]
+                new.lifecycle = LifecycleState.ACTIVE
+                new.temporal.t_valid = now
+                inserted_units.append(new)
+        elif inserted_blocks:
+            # D4.1 不对齐退化兜底：跨块合并/拆分，无法明确继承源。scope 取当前 scope
+            # （edit 发起者，有明确 scope 上下文；不沿用看门狗 latest_scope_by_md 近似——
+            # 那是看门狗无 scope 时的兜底，edit 有 scope 应落发起者），project/memory_class
+            # 从 md 路径反推（共享 _md_path.project_from_md_path / class_from_md_path，
+            # 与看门狗 _build_unit 同一份 reverse 逻辑），provenance 标 md_edit_fallback，
+            # 不保留 supersedes（无明确继承源）。
+            fb_project = project_from_md_path(rel_path)
+            fb_class = class_from_md_path(rel_path)
+            for _, new_c, _ in inserted_blocks:
+                new = MemoryUnit(
+                    id=str(uuid.uuid4()),
+                    scope=scope,
+                    segments=[Segment(content=new_c)],
+                    lifecycle=LifecycleState.ACTIVE,
+                    temporal=Temporal(t_valid=now),
+                    system_metadata={
+                        "project": fb_project,
+                        MEMORY_CLASS_KEY: fb_class,
+                        MD_FILENAME_KEY: rel_path,
+                    },
+                    provenance=["md_edit_fallback"],
+                )
+                inserted_units.append(new)
+
+        # 4. 落库：先批量插新（单事务）再批量标旧（单事务），对齐 cloud_engine SUPERSEDE
+        #    「先 insert 新版再 update 旧版」范式——任何时刻都有一个可读版本。D4.1：消失的
+        #    旧块一律标记，无论对齐与否。content_hash 不变 → update_units 只覆写 unit_json
+        #    + lifecycle 投影列，不重建 FTS5/vec0（sqlite_shadow_index._update_one）。
+        #    失败补偿（S09 第 12 条，F08 写失败补偿）：insert 单事务失败 → shadow 无变化，
+        #    无需回滚；update 单事务失败 → 新 unit 已落、旧 unit 因回滚天然保持 ACTIVE，
+        #    只需 delete 掉刚插的新 unit（幂等删三表）即「shadow 等价于未发生」。md 侧回滚
+        #    由调用方 edit_md_file 负责。补偿失败只记 warning，漂移交看门狗对账。
+        if inserted_units:
+            shadow.insert_units(scope, inserted_units)
+        new_unit_ids = [u.id for u in inserted_units]
+        for old in superseded_units:
+            old.lifecycle = LifecycleState.SUPERSEDED
+            old.temporal.t_invalid = now
+        try:
+            if superseded_units:
+                shadow.update_units(scope, superseded_units)
+        except Exception:
+            try:
+                shadow.delete_units(scope, new_unit_ids)
+            except Exception as rb_exc:
+                logger.warning(
+                    "edit_md_file shadow 补偿回滚失败 (rel_path=%s): %s", rel_path, rb_exc
+                )
+            raise
+
+        return new_unit_ids
+
     def health(self) -> None:
         # 数据面无独立资源（recallers 是被注入的，非健康检查对象）；委托 manager 聚合。
         self._manager.health()
@@ -597,7 +828,9 @@ class CompositeDomainStore(DomainStore):
         # 端口缺失时 manager 抛 UnsupportedStorageCapabilityError 并指明缺失端口。
         return cast(Any, self._manager.kv(self._kv_name))
 
-    def _get_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+    def _get_units(
+        self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False
+    ) -> list[MemoryUnit]:
         """批量点读真源：按输入顺序返回，缺失 id 省略，重复 id 各自返回。
 
         文档模式（``write_document=true``）走影子索引 ``shadow.get_units``——
@@ -607,12 +840,18 @@ class CompositeDomainStore(DomainStore):
         非文档模式走 KV：``mget`` 不去重且任一 key 缺失即抛 ``NotFoundError``
         （见 :meth:`KVStore.mget`），故去重与「索引↔真源短暂不一致」的兜底
         都由本方法承担。影子索引路径无此问题——缺失 id 在 SQL 层自然省略。
+
+        ``relax_session=True`` 仅检索物化侧使用：召回放宽了 session 等值（四段），
+        物化回读须同口径放 session 等值，否则跨 session 命中的 unit 拉不到。
         """
         if not unit_ids:
             return []
         if self.should_write_document():
             shadow = self._raw_shadow_index()
-            by_id = {unit.id: unit for unit in shadow.get_units(scope, unit_ids)}
+            by_id = {
+                unit.id: unit
+                for unit in shadow.get_units(scope, unit_ids, relax_session=relax_session)
+            }
             # shadow.get_units 按 IN 查询返回唯一行，对重复 id 复用同一份 unit 对象，
             # 与 KV 路径「重复 id 各自返回」行为一致（召回物化侧已 seen 去重，实际无重复）。
             return [by_id[uid] for uid in unit_ids if uid in by_id]
@@ -697,7 +936,7 @@ class CompositeDomainStore(DomainStore):
                 if candidate.unit_id not in seen:
                     seen.add(candidate.unit_id)
                     unit_ids.append(candidate.unit_id)
-        units = {unit.id: unit for unit in self._get_units(scope, unit_ids)}
+        units = {unit.id: unit for unit in self._get_units(scope, unit_ids, relax_session=True)}
         batches = []
         errors = list(recalled.errors)
         for batch in recalled.batches:
