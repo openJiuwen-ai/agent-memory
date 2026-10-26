@@ -602,10 +602,11 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
     default_tags = defaults.get("tags")
     if default_tags is not None and not isinstance(default_tags, list):
         raise ValidationError("batch_add defaults.tags must be an array")
-    try:
-        default_source = Modality(defaults.get("source", defaults.get("modality", "text")))
-    except (TypeError, ValueError) as exc:
-        raise ValidationError(f"invalid batch_add default source: {exc}") from exc
+    default_source = _enum_value(
+        Modality,
+        defaults.get("source", defaults.get("modality", "text")),
+        name="batch_add defaults.source",
+    )
     default_occurred_at = _parse_occurred_at(
         defaults.get("occurred_at"), name="batch_add defaults.occurred_at"
     )
@@ -621,12 +622,16 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
                 "batch item metadata has been removed; use system_metadata and user_metadata"
             )
         item_scope = dispatch_item.target or default_scope
-        raw_source = raw_item.get("source", raw_item.get("modality"))
-        try:
-            item_source = Modality(raw_source) if raw_source is not None else None
-        except (TypeError, ValueError):
-            items.append(raw_item)
-            continue
+        if "source" in raw_item or "modality" in raw_item:
+            # 与 _add 对齐：显式传 source/modality 时非法值（含 null）→ 400，
+            # 不再静默跳过该项。
+            item_source = _enum_value(
+                Modality,
+                raw_item.get("source", raw_item.get("modality")),
+                name="batch item source",
+            )
+        else:
+            item_source = None  # 未声明 → api 层回落 default_source
         try:
             item_occurred_at = _parse_occurred_at(
                 raw_item.get("occurred_at"), name="batch_add item occurred_at"
