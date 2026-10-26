@@ -471,7 +471,7 @@ def test_producer_gate_allows_enabled_manager_without_kv() -> None:
     try:
         context = default_context()
         context.globals["schema_enabled"] = True
-        StoreManagerProducer.put("default", CompositeStoreManager())
+        StoreManagerProducer.put("default", CompositeStoreManager(), ctx=context)
 
         builder = IndexBuilderProducer.build("schema-property-test-noop", {}, context)
 

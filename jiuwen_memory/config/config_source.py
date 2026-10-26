@@ -13,8 +13,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from jiuwen_memory.common.factory.factory import Factory
+
+if TYPE_CHECKING:
+    from jiuwen_memory.config.context import AssemblyContext
 
 
 class ConfigSourceProducer(Factory):
@@ -23,13 +27,15 @@ class ConfigSourceProducer(Factory):
     TOP_NAME = "config_source"
 
     @classmethod
-    def get_cached(cls, name: str = "default") -> ConfigSource | None:
+    def get_cached(
+        cls, name: str = "default", *, ctx: AssemblyContext | None = None
+    ) -> ConfigSource | None:
         """取装配期已缓存的具名实例；未装配返回 ``None``（不触发 build）。
 
         供 PromptRegistry 等在组件 ``_build`` 时挂接同一 ConfigSource，
-        避免直接摸 ``_instances`` 私有表。
+        builder 内缺省使用当前上下文；外部查询应显式传 ctx。
         """
-        inst = cls._instance_cache().get(name)
+        inst = super().get_cached(name, ctx=ctx)
         return inst if isinstance(inst, ConfigSource) else None
 
 

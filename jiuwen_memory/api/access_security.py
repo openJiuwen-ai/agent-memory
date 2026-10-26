@@ -32,20 +32,20 @@ def build_configured_security_runtime(
 
     Access 只传普通 mapping，不接触内核 Factory/Config。多具名实例没有 ``default``
     时仅允许唯一实例，避免生产认证模式因字典顺序被隐式选中。
+    每次调用建立独立上下文和关闭根，不查找已有 SDK 实例；SDK 使用
+    assemble_runtime 返回句柄的 authenticate，跨装配共享须显式注入。
     """
     register_plugins()
     parsed = Config.from_dict(config)
     ctx = default_context().merged(parsed.context(known_top_names=Factory.known_top_names()))
-    with _assembly_lifecycle() as lifecycle:
-        runtime = _build_security_runtime(ctx, rebuild_closed=True)
+    with _assembly_lifecycle(ctx) as lifecycle:
+        runtime = _build_security_runtime(ctx)
         if runtime is not None:
             lifecycle.bind(runtime.security_resource_owner())
         return runtime
 
 
-def _build_security_runtime(
-    ctx: AssemblyContext, *, rebuild_closed: bool = False
-) -> SecurityRuntime | None:
+def _build_security_runtime(ctx: AssemblyContext) -> SecurityRuntime | None:
     """在内核的同一装配上下文选择运行时，不重置共享实例缓存。"""
     names = sorted(ctx.namespaces.get(SecurityRuntimeProducer.TOP_NAME, {}))
     if not names:
@@ -61,10 +61,6 @@ def _build_security_runtime(
         )
     runtime = SecurityRuntimeProducer.build_named(name, ctx)
     if runtime.security_resource_owner().is_closed():
-        if not rebuild_closed:
-            raise ValidationError("selected security Runtime has already been closed")
-        # 新独立装配不能复用缓存中的关闭句柄/依赖；存活句柄仍走原共享路径。
-        Factory.reset_all()
-        runtime = SecurityRuntimeProducer.build_named(name, ctx)
+        raise ValidationError("selected security Runtime has already been closed")
     runtime.health()
     return runtime

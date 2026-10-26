@@ -56,14 +56,14 @@ pytestmark = pytest.mark.unit
 _ALICE = Scope(org="acme", user="alice")
 
 
-@pytest.fixture(scope="module")
-def key_store():
+@pytest.fixture(name="key_store", scope="module")
+def _key_store_fixture():
     register_plugins()
     return KeyStoreProducer.build("memory", {}, AssemblyContext())
 
 
-@pytest.fixture(scope="module")
-def alice_key(key_store) -> str:
+@pytest.fixture(name="alice_key", scope="module")
+def _alice_key_fixture(key_store) -> str:
     return key_store.issue(_ALICE, Role.USER)
 
 
@@ -694,4 +694,26 @@ def test_no_audit_recorder_means_no_success_event(key_store, alice_key) -> None:
     """audit=None（进程内直连）时不落认证成功事件，行为与拒绝路径一致。"""
     auth = ApiKeyAuthenticator(key_store=key_store, root_api_key="", name="test")
     with authenticated(auth, Credentials(api_key=alice_key)) as ctx:
+        assert ctx.auth.actor.user == "alice"
+
+
+def test_plain_audit_failure_on_success_does_not_block_request(key_store, alice_key) -> None:
+    """
+    普通审计后端在认证成功事件上的写失败仍吞错（R1 修复镜像）：没有
+    ``integrity_protected`` 标记的 logger 保持「尽力而为」契约，fail-closed 只对
+    受保护审计生效——不靠异常类型区分，靠标记区分。
+    """
+
+    class _Exploding:
+        @staticmethod
+        def record(event):
+            raise RuntimeError("audit backend down")
+
+    auth = ApiKeyAuthenticator(key_store=key_store, root_api_key="", name="test")
+    with authenticated(
+        auth,
+        Credentials(api_key=alice_key),
+        _Exploding(),
+        surface=Surface.HTTP,
+    ) as ctx:
         assert ctx.auth.actor.user == "alice"

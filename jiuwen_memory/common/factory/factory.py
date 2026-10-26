@@ -2,8 +2,8 @@
 """Factory — 注册式工厂基类（开闭：分发封闭、实现可插拔）+ 具名实例共享。
 
 每个 producer 继承本类，声明全局唯一的 ``TOP_NAME``（配置里的顶层命名空间），
-并得到**独立的**
-``target → builder`` 注册表与 ``name → 实例`` 缓存。具体实现用 ``@SomeProducer.register("实现名")``
+并得到**独立的** ``target → builder`` 注册表；具名实例按上下文与 Producer 隔离。
+具体实现用 ``@SomeProducer.register("实现名")``
 把一个 ``_build(config) -> 实例`` 注册进来（接口 1 匿名创建的实现体）。在此之上：
 
 - :meth:`build`（接口 1，匿名）：按 ``target`` 新建、不入缓存。
@@ -15,16 +15,17 @@
   ``config.get(...)``（本实例 params 回退 globals）、取依赖
   ``XProducer.dep(config, default=...)``。
 
-装配编排（``api.build_kernel``）在每次组装前 :meth:`reset_all` 清空实例缓存以隔离多次装配。
+具名实例缓存归属 AssemblyContext；独立装配互不复用，builder 中的隐式缓存操作只作用当前上下文。
 """
 
 from __future__ import annotations
 
-from _thread import RLock
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from threading import RLock
 from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
@@ -36,36 +37,38 @@ _BUILD_OBSERVERS: ContextVar[tuple[Callable[[object], None], ...]] = ContextVar(
 
 
 @dataclass
-class _InstanceBinding:
-    """持有装配时的缓存原对象；后续 reset 只替换全局引用。"""
+class InstanceCache:
+    """单次装配拥有的具名实例及生命周期；不包含插件注册表。"""
 
-    caches: dict[type, dict[str, Any]]
-    lock: RLock
+    instances: dict[type, dict[str, Any]] = dataclass_field(default_factory=dict)
+    epoch: object = dataclass_field(default_factory=object)
+    lifecycle: object | None = None
+    lock: Any = dataclass_field(default_factory=RLock, repr=False)
 
 
-_bound_instances: ContextVar[_InstanceBinding | None] = ContextVar(
-    "factory_bound_instances", default=None,
+_DEFAULT_CACHE = InstanceCache()
+_CURRENT_CACHE: ContextVar[InstanceCache | None] = ContextVar(
+    "factory_instance_cache", default=None
 )
 
 
+def _instance_cache(ctx: Any = None) -> InstanceCache:
+    if ctx is not None:
+        return ctx.instance_cache
+    return _CURRENT_CACHE.get() or _DEFAULT_CACHE
+
+
 class Factory:
-    """注册式工厂：子类各自持有 ``target → builder`` 表与 ``name → 实例`` 缓存。"""
+    """注册式工厂：子类注册 builder，装配上下文持有具名实例缓存。"""
 
     # 该 Producer 的全局唯一顶层命名空间名（如 "kv_store"）；空=未迁移到新模型
     TOP_NAME: str = ""
     _registry: dict[str, Builder]
-    _instances: dict[str, Any]
-    _subclasses: list[type] = []  # 所有 producer 子类（供 reset_all 统一清缓存）
     _by_top_name: dict[str, type] = {}  # TOP_NAME -> producer 子类（供 Config 解析期校验顶层段）
-    _instance_lock = RLock()
-    _cache_epoch: object = object()
-    _cache_lifecycle: object | None = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls._registry = {}  # 每个 producer 子类一张独立注册表
-        cls._instances = {}  # 每个 producer 子类一份具名实例缓存
-        Factory._subclasses.append(cls)
         top = cls.__dict__.get("TOP_NAME", "")  # 仅认本类显式声明的（不继承父类）
         if top:
             prev = Factory._by_top_name.get(top)
@@ -136,10 +139,14 @@ class Factory:
                 f"{cls.__name__}: 未注册的实现 {target!r}（已注册：{cls.known()}）"
             )
         config = ComponentConfig(params=dict(params or {}), ctx=ctx, target=target, name=name)
-        instance = builder(config)
-        for observer in _BUILD_OBSERVERS.get():
-            observer(instance)
-        return instance
+        token = _CURRENT_CACHE.set(_instance_cache(ctx))
+        try:
+            instance = builder(config)
+            for observer in _BUILD_OBSERVERS.get():
+                observer(instance)
+            return instance
+        finally:
+            _CURRENT_CACHE.reset(token)
 
     @classmethod
     def build_named(cls, name: str, ctx: Any) -> Any:
@@ -149,8 +156,9 @@ class Factory:
         :meth:`build` 新建。``new_instance`` 为假则存入缓存供共享，为真则不存（每次新建）。
         命名空间由 ``cls.TOP_NAME`` 决定——故只需传具名实例名。
         """
-        with cls._cache_lock():
-            instances = cls._instance_cache()
+        cache = _instance_cache(ctx)
+        with cache.lock:
+            instances = cache.instances.setdefault(cls, {})
             if name in instances:
                 return instances[name]
             spec = ctx.lookup(cls.TOP_NAME, name)
@@ -160,49 +168,20 @@ class Factory:
             return instance
 
     @classmethod
-    def _instance_cache(cls) -> dict[str, Any]:
-        """具名缓存的统一入口，兼容装配内与已绑定的延迟解析。"""
-        bound = _bound_instances.get()
-        if bound is None:
-            return cls._instances
-        # 晚注册的 Producer 在旧装配内也不能借用新装配的缓存。
-        return bound.caches.setdefault(cls, {})
-
-    @classmethod
-    def _cache_lock(cls) -> RLock:
-        bound = _bound_instances.get()
-        return bound.lock if bound is not None else Factory._instance_lock
-
-    @classmethod
     def bind_named(cls, name: str, ctx: Any) -> Callable[[], Any]:
-        """绑定本轮装配的具名依赖，首次调用前不查配置、不创建组件。
+        """延迟解析指定上下文的具名依赖；绑定时不查配置、不创建对象。
 
-        保留本轮各 Producer 缓存的引用，因此后续 ``reset_all`` 不会改变本句柄的
-        嵌套依赖及 ConfigSource 来源；同轮句柄共用锁与缓存，首次并发解析仍共享实例。
-        ``new_instance`` 语义与 ``build_named`` 一致，失败不缓存且恢复调用方上下文。
+        上下文持有共享缓存与可重入锁，独立装配及全局 reset 不影响本句柄。
+        保留绑定时的创建观察者，嵌套依赖和 ConfigSource 均由 builder 继承该上下文。
         """
-        bound = _bound_instances.get()
-        if bound is None:
-            with Factory._instance_lock:
-                # Factory 统一管理自己注册的子类缓存，须保留原字典引用。
-                # 与 discard_created 相同，这是工厂内部管理，不是访问外部插件私有状态。
-                # pylint: disable=protected-access
-                bound = _InstanceBinding(
-                    {producer: producer._instances for producer in Factory._subclasses},
-                    Factory._instance_lock,
-                )
-                # pylint: enable=protected-access
-
         observers = _BUILD_OBSERVERS.get()
 
         def resolve() -> Any:
-            token = _bound_instances.set(bound)
             observer_token = _BUILD_OBSERVERS.set(observers)
             try:
                 return cls.build_named(name, ctx)
             finally:
                 _BUILD_OBSERVERS.reset(observer_token)
-                _bound_instances.reset(token)
 
         return resolve
 
@@ -236,56 +215,72 @@ class Factory:
         )
 
     @classmethod
-    def put(cls, name: str, instance: Any) -> None:
+    def put(cls, name: str, instance: Any, *, ctx: Any = None) -> None:
         """把一个外部实例以 ``name`` 预置进缓存（如显式注入的真源后端）。"""
-        cls._instance_cache()[name] = instance
+        cache = _instance_cache(ctx)
+        with cache.lock:
+            cache.instances.setdefault(cls, {})[name] = instance
 
     @classmethod
-    def reset_instances(cls) -> None:
+    def get_cached(cls, name: str, *, ctx: Any = None) -> Any:
+        """只查询指定上下文（builder 内缺省当前上下文），不隐式触发新装配。"""
+        cache = _instance_cache(ctx)
+        with cache.lock:
+            return cache.instances.get(cls, {}).get(name)
+
+    @classmethod
+    def reset_instances(cls, *, ctx: Any = None) -> None:
         """清空本 producer 的具名实例缓存。"""
-        cls._instances = {}
+        cache = _instance_cache(ctx)
+        with cache.lock:
+            cache.instances.pop(cls, None)
 
     @classmethod
-    def reset_all(cls) -> None:
-        """清空所有 producer 的具名实例缓存。"""
-        with Factory._instance_lock:
-            Factory._cache_epoch = object()
-            Factory._cache_lifecycle = None
-            for sub in Factory._subclasses:
-                sub.reset_instances()
-            Factory._instance_lock = RLock()
+    def reset_all(cls, *, ctx: Any = None) -> None:
+        """清空指定装配缓存；无上下文时只清理当前 builder 或独立的旧式默认缓存。"""
+        cache = _instance_cache(ctx)
+        with cache.lock:
+            cache.epoch = object()
+            cache.lifecycle = None
+            cache.instances.clear()
 
     @staticmethod
-    def cache_epoch() -> object:
+    def cache_epoch(*, ctx: Any = None) -> object:
         """返回当前缓存装配纪元的 opaque 标识，不暴露实例私有状态。"""
-        return Factory._cache_epoch
+        return _instance_cache(ctx).epoch
 
     @classmethod
-    def reset_if_current_epoch(cls, epoch: object) -> None:
+    def reset_if_current_epoch(cls, epoch: object, *, ctx: Any = None) -> None:
         """只失效仍属于本次装配的缓存，旧所有者不得清空较新装配。"""
-        if Factory._cache_epoch is epoch:
-            cls.reset_all()
+        cache = _instance_cache(ctx)
+        with cache.lock:
+            if cache.epoch is epoch:
+                cls.reset_all(ctx=ctx)
 
     @staticmethod
-    def bind_cache_lifecycle(owner: object, share: Callable[[object, object], None]) -> None:
+    def bind_cache_lifecycle(
+        owner: object, share: Callable[[object, object], None], *, ctx: Any = None
+    ) -> None:
         """装配根显式绑定本纪元所有者；同一具名图的新增视图按给定协议共享。"""
-        if Factory._cache_lifecycle is None:
-            Factory._cache_lifecycle = owner
-        else:
-            share(Factory._cache_lifecycle, owner)
+        cache = _instance_cache(ctx)
+        with cache.lock:
+            if cache.lifecycle is None:
+                cache.lifecycle = owner
+            else:
+                share(cache.lifecycle, owner)
 
     @classmethod
-    def discard_created(cls, instances: tuple[object, ...]) -> None:
+    def discard_created(cls, instances: tuple[object, ...], *, ctx: Any = None) -> None:
         """失败装配仅移除新建对象的缓存项；既有借用实例保持原样。"""
-        # 本工厂统一管理各 Producer 的缓存；不是探测第三方插件私有能力。
-        # pylint: disable=protected-access
         identities = {id(instance) for instance in instances}
-        for producer in Factory._subclasses:
-            retained = {}
-            for name, instance in producer._instances.items():
-                if id(instance) not in identities:
-                    retained[name] = instance
-            producer._instances = retained
+        cache = _instance_cache(ctx)
+        with cache.lock:
+            for producer, cached in cache.instances.items():
+                retained = {}
+                for name, instance in cached.items():
+                    if id(instance) not in identities:
+                        retained[name] = instance
+                cache.instances[producer] = retained
 
     @staticmethod
     @contextmanager

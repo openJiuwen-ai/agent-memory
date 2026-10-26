@@ -2,8 +2,6 @@
 """真实装配下的授权插件替换、写入失败与连接关闭回归。"""
 
 import asyncio
-import threading
-from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -13,6 +11,7 @@ from jiuwen_memory.api import (
     CloseableSecurityCapability,
     assemble,
     assemble_runtime,
+    assemble_server_runtime,
     build_configured_security_runtime,
 )
 from jiuwen_memory.common.errors import (
@@ -36,65 +35,10 @@ from jiuwen_memory.common.security.runtime import SecurityRuntimeProducer
 from jiuwen_memory.common.security.types import Action, Grant
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config.context import AssemblyContext
+from tests.support.public_managed_store import PublicManagedStore
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
-
-
-class PublicManagedStore(GrantStore):
-    """只实现公开契约的第三方替身；没有内置 Store 的私有钩子。"""
-
-    def __init__(self):
-        self.records = {}
-        self.lock = threading.RLock()
-
-    def add(self, grant):
-        with self.lock:
-            old = self.records.get(grant.grant_id)
-            if old is None or not old.revoked:
-                self.records[grant.grant_id] = deepcopy(grant)
-
-    def create_grant(self, grant):
-        snapshot = deepcopy(grant)
-        with self.lock:
-            old = self.records.get(grant.grant_id)
-            if old is not None:
-                if old != snapshot:
-                    raise BackendError("grant creation ID conflict")
-                return
-            self.records[grant.grant_id] = snapshot
-
-    def get_grant(self, grant_id):
-        with self.lock:
-            return deepcopy(self.records.get(grant_id))
-
-    def revoke_if_grantor(self, grant_id, expected_grantor):
-        with self.lock:
-            old = self.records.get(grant_id)
-            if old is not None:
-                if old.grantor != expected_grantor:
-                    raise BackendError("grant changed during revocation")
-                self.revoke(grant_id)
-
-    def revoke(self, grant_id):
-        with self.lock:
-            old = self.records.get(grant_id)
-            if old is not None:
-                self.records[grant_id] = replace(old, revoked=True)
-
-    def find_active(self, *, grantee, grantor_org, action, now):
-        active = []
-        with self.lock:
-            records = deepcopy(tuple(self.records.values()))
-        for grant in records:
-            if grant.grantor.org != grantor_org or grant.grantee.org != grantee.org:
-                continue
-            if action in grant.actions and grant.is_active(now=now):
-                active.append(deepcopy(grant))
-        return active
-
-    def health(self):
-        return None
 
 
 class FailingStore(PublicManagedStore):
@@ -497,7 +441,7 @@ def test_configured_helper_does_not_reuse_closed_unauthenticated_sdk_dependencie
 
 @pytest.mark.parametrize("secured", [False, True])
 def test_closing_an_older_runtime_keeps_the_newer_assembly_cache(secured):
-    # 白盒校验缓存仍绑定新装配的同一 PDP，而不是重建成第三份。
+    # 独立装配的 PDP 和关闭根不相互影响。
     # pylint: disable=protected-access
     config = {
         "security": {
@@ -509,14 +453,18 @@ def test_closing_an_older_runtime_keeps_the_newer_assembly_cache(secured):
     try:
         first.close()
         configured = build_configured_security_runtime(config)
-        assert configured.authorizer is second.api._authorizer
+        assert configured.authorizer is not second.api._authorizer
+        configured.close()
+        actor = Scope(org="acme", user="alice")
+        security = internal_context(ScopedAuthenticator(actor))
+        assert second.api.add("independent assembly", actor, security=security)
     finally:
         second.close()
         first.close()
 
 
-def test_failed_configured_helper_preserves_the_live_borrowed_authorizer(monkeypatch):
-    # 白盒对已装配 Store 注入健康故障；不得通过重建绕开或关闭借用对象。
+def test_independent_configured_helper_does_not_borrow_an_unrelated_authorizer(monkeypatch):
+    # 白盒对已装配 Store 注入故障，另一装配不能继承它的故障或关闭根。
     # pylint: disable=protected-access
     sdk = assemble_runtime(
         config={"grant_store": {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}}}
@@ -535,33 +483,30 @@ def test_failed_configured_helper_preserves_the_live_borrowed_authorizer(monkeyp
     try:
         with monkeypatch.context() as injection:
             injection.setattr(store, "health", unavailable)
-            with pytest.raises(ValidationError, match="unhealthy"):
-                build_configured_security_runtime(config)
+            configured = build_configured_security_runtime(config)
+            assert configured.authorizer is not authorizer
+            configured.close()
         store.health()
-        configured = build_configured_security_runtime(config)
-        assert configured.authorizer is authorizer, "health failure must not replace live PDP"
-        configured.close()
     finally:
         sdk.close()
 
 
-def test_same_epoch_sdk_and_configured_helper_share_close_once(monkeypatch):
+def test_explicitly_shared_sdk_and_configured_runtime_close_once(monkeypatch):
     # 白盒保存实际连接和消费者；共享根关闭任一视图都先停止后台、再只关一次 Store。
     # pylint: disable=protected-access
-    sdk = assemble_runtime(
-        config={"grant_store": {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}}}
-    )
-    store = sdk.api._authorizer.management_grant_store()
     configured = build_configured_security_runtime(
         {
+            "grant_store": {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}},
             "security": {
                 "default": {"target": "standard", "params": {"authenticator": {"target": "dev"}}}
-            }
+            },
         }
     )
+    sdk = assemble_server_runtime(security_runtime=configured)
+    store = configured.authorizer.management_grant_store()
     events = []
     original_close = store.close
-    original_stop = sdk._kernel.ingest_jobs.close
+    original_stop = sdk._runtime._kernel.ingest_jobs.close
 
     def close_store():
         events.append("store")
@@ -572,7 +517,7 @@ def test_same_epoch_sdk_and_configured_helper_share_close_once(monkeypatch):
         original_stop(wait=wait)
 
     monkeypatch.setattr(store, "close", close_store)
-    monkeypatch.setattr(sdk._kernel.ingest_jobs, "close", stop_jobs)
+    monkeypatch.setattr(sdk._runtime._kernel.ingest_jobs, "close", stop_jobs)
     try:
         configured.close()
         sdk.close()

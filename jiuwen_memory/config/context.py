@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.factory.factory import InstanceCache
 from jiuwen_memory.common.security.types import SECRET_PARAM_KEYS, SecretValue
 
 # 保留的顶层段名：不作为命名空间解析。globals=跨切面参数；prompts=动态 prompt 文本，
@@ -159,10 +160,13 @@ class RawSpec:
 
 @dataclass
 class AssemblyContext:
-    """全局装配上下文：所有命名空间（top_name -> name -> RawSpec）+ 跨切面 ``globals``。"""
+    """单次装配上下文：所有命名空间、跨切面 globals 以及独立的具名实例缓存。"""
 
     globals: dict[str, Any] = field(default_factory=dict)
     namespaces: dict[str, dict[str, RawSpec]] = field(default_factory=dict)
+    instance_cache: InstanceCache = field(
+        default_factory=InstanceCache, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def from_dict(

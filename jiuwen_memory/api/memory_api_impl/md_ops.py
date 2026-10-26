@@ -63,6 +63,7 @@ class MdOpsMixin:
         identity = security.auth.actor
         auth = self._authorize(security, context.scope, Action.WRITE, "edit_md_file")
         self._ensure_space_writable(context.scope)
+        self._ensure_audit_integrity_healthy()
         units = asyncio.run(
             self._commands.edit_md_file(context, md_filename, old_text, new_text)
         )

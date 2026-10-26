@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-10-21 |
-| 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，[F04-1 冻结接口备忘](../features/common/F04-1-security-api-contracts.md) |
+| 最近一次修订日期 | 2026-10-23 |
+| 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
 
@@ -16,7 +16,7 @@
 只维护 F04，不再新增安全 feature；逐次执行与验收记录不进入正式能力总纲。
 既有接口的签名、值对象及安全语义保持固定；安全插件可按 S09 增量声明独立能力，
 不得通过实现私有状态替代公开契约，也不得破坏旧接口与默认配置兼容。
-审计完整性实现仍归 PR3。
+审计完整性由 PR3 提供可选的链式 HMAC 实现；实现与部署边界统一见 F04。
 
 安全能力统一归属 `jiuwen_memory/common/security/`，按能力域分子包：
 
@@ -33,7 +33,9 @@
 `authorization/` 的契约随接口分支固定，PR2 提供 `StandardAuthorizer`、
 `RoutingAuthorizer`、`SpaceAwareAuthorizer`、memory / SQLite Store 与 PEP 接线，当前实现已
 完成核心接线；SDK 凭据源与受控代理代写的设计决策见 F04。
-`audit_integrity/`（PR3）本期仍只有固定契约，不实装或激活其 `*_impl`。
+`audit_integrity/`（PR3）提供 `chained_hmac` 实现、内存 / SQLite 链式后端和
+`ProtectedAuditLogger` 接线；必须显式启用，不改变未装配时的 unsupported 契约。
+外部 `AuditAnchor` 没有产品实现，`anchor_policy=required` 无锚点时拒绝。
 
 > 历史状态：这些能力此前平铺在 `common/authentication/`、`credential_store/`、
 > `admission/`、`encryption/` 与 `type_def/auth.py`。那是迁移前的目录形态，不再作为
@@ -171,10 +173,11 @@
 19. `SecurityRuntime` 只持有能力引用、执行启动期健康检查并暴露统一生命周期，不实现认证、
     授权或密码学算法。能力不健康必须在启动期拒绝，不能等第一个请求打进来才在 500 里暴露。
 20. 运行期共享状态（密码学 provider、密钥 provider、并发预算、限流桶）通过**具名实例**
-    显式共享，不靠模块级单例。同一具名密码学实例若同时被加密存储与
+    显式共享，不靠模块级单例。具名缓存归属装配上下文，同上下文引用共享、跨上下文
+    隔离；不得用全局 reset 打断存活实例。同一具名密码学实例若同时被加密存储与
     `SecurityRuntime` 引用，二者必须得到同一个对象。
 21. `SecurityRuntime` 不为后续 PR 预留恒为 `None` 的**必填**能力占位字段——那会诱导消费方写
-    `if runtime.authorizer:` 的 fail-open 分支。F04-1 明确定义为可选装配位的字段
+    `if runtime.authorizer:` 的 fail-open 分支。明确声明为可选装配位的字段
     （`cryptography_provider` / `audit_integrity_provider`）不在此列：消费方本就必须判空，
     未装配即该能力未启用。
 22. 健康检查不泄露 key、token 或主体存在性。
@@ -216,7 +219,9 @@
 ### 生命周期所有权
 
 装配根按公开依赖声明创建固定资源清单，不依赖解释器退出。同一图中共享对象按 identity
-去重关闭；使用者先停，依赖后释放。SecurityRuntime 与其外层 MemoryRuntime 不重复拥有
+去重关闭；使用者先停，依赖后释放。原始 AuditLogger 无论是否启用完整性都须纳入
+所有权图，完整性 provider 声明链 Store 和 KeyProvider 依赖，与审计及密码学引用去重。
+SecurityRuntime 与其外层 MemoryRuntime 不重复拥有
 同一授权图；未装配认证 Runtime 的 SDK 仍须拥有并关闭授权依赖。外部借用资源由其原
 所有者关闭，不进入借用者的清单；多个 surface 共享同一 Runtime 而不是各建关闭根。
 停止接收任务与任务全部结束必须分开记录。MemoryRuntime/ServerRuntime 的
@@ -246,6 +251,51 @@ health 必须拒绝使用，新的配置辅助装配不复用缓存中的关闭�
 重建或切换后端。屏障全部通过后，关闭通知与资源清理遇取消/中断仍处理其余安全清单，再传播中断；
 失败项保留重试机会。
 
+## 审计完整性公共契约
+
+| 契约 | 方法或字段 | 语义 |
+|---|---|---|
+| AuditIntegrityProvider | capabilities / chain_store / record_chained / verify / active_key_ref / health / is_test_only | 可选完整性提供者；chain_store 返回实际真源供装配同一性校验 |
+| ChainedAuditStore | read_head / append(record, expected_head) / read_stable_snapshot(after_sequence) / scan(after_sequence, limit, *, through_sequence) / health | 原子链式追加与稳定快照扫描 |
+| ChainStoreCapability | persistent / atomic_append / stable_head_snapshot / key_epoch / external_anchor / streaming_scan | 六项布尔能力声明，不按 target 推断 |
+| Proof | format_version / sequence / previous_digest / digest / key_id / key_epoch | 独立于 AuditEvent.detail 的不可变证明 |
+| AuditIntegrityStatus | unsupported / clean / tampered / incomplete / rollback_suspected | 只有 clean 表示验证完成且未发现损坏 |
+| AnchorStatus / AnchorState | 空串 / ok / lagging / conflict / unavailable | checked=false 对应空状态，checked=true 必须有非空状态 |
+| AuditAnchor | anchor_head / read_anchored / health | 外部可信锚点协议，未提供内置产品实现 |
+| KeyProvider MAC capability | supports_mac / mac / verify_mac | 不支持则拒绝；purpose 隔离用途，审计固定 audit-integrity:hmac:v1 |
+
+AuditIntegrityError 单根于 AgentMemoryError，派生 AuditMigrationRequiredError、
+ChainConflictError、AuditSchemaError 和 KeyCapabilityError。AuditLogger ABC 不增加
+默认返回空结果的完整性方法；未装配能力诚实返回 unsupported。ProtectedAuditLogger
+构造时要求 provider.chain_store() 与原始 logger 是同一对象；record 委派完整性 provider，
+错误原样传播，query 透传。wrapper 不单独级联关闭共享资源。
+
+受保护审计在计算 proof 前规范化和过滤 detail。敏感键按完整键名的小写子串匹配，
+仅精确的小写 `credential_id`、`key_fp`、`content_id`、`token_count` 作为非秘密
+标识或计数保留；调用方须保证这些字段承载相应元数据，不能填入秘密材料或正文。
+不按后缀、前缀、大小写变体放行未知扩展；KDF 输出及其他派生材料仍须遮蔽。
+允许字段同样受键数、键长、值长上限及字符串规范化约束，过滤不修改原始事件。
+
+增量验证固定稳定窗口：N=0 从 genesis（64 个零）开始；N>0 在同一快照读取并验证第
+N 条 checkpoint，计入 checked_count。每页固定 through_sequence 为该快照链头，
+并发追加留到下次。缺页、序号缺口、截断或无法到达快照链头均为 incomplete。
+high_water_mark 是连续成功验证到的最高序号；truncated 仅表示错误样本被截短。
+
+verify_audit 的参数、授权、专用 guard、尝试审计及资源上限见 S02；返回体固定为：
+
+```json
+{
+  "op": "verify_audit", "status": "clean", "checked_count": 5,
+  "error_count": 0, "truncated": false, "high_water_mark": 5,
+  "key_epoch_range": [1, 2],
+  "anchor": {"checked": false, "status": "", "detail": ""},
+  "samples": [], "detail": ""
+}
+```
+
+samples 的每项为上述 Proof 字段；返回体不含事件正文、密钥、凭据或 ok 字段。
+缺外部可信锚点无法识别整库回退到合法前缀；本地密钥轮换状态不跨重启持久化。
+
 ## 注册与配置
 
 每个能力目录的顶层 `.py` 定义抽象接口和 Producer，`*_impl/` 中的实现通过
@@ -257,7 +307,7 @@ import，注册装饰器才会生效。当前核心不自动发现任意外部 P
 
 顶层段名：`security`、`authenticator`、`key_store`、`authorizer`、`grant_store`、
 `delegation_store`、`rate_limiter`、`workload_guard`、`binding_policy`、`cryptography`、
-`key_provider`。
+`key_provider`、`audit_integrity`。
 
 ```yaml
 security:
@@ -270,6 +320,7 @@ security:
       workload_guard: shared_budget   # 具名引用 = 跨 surface 共享同一份预算
       binding_policy: loopback        # 省略时按 target 名取默认实现
       cryptography: default           # 可选；不配则 SecurityRuntime 不持有密码学能力
+      audit_integrity: default        # 可选；不配则普通审计（无链式证明）
 authenticator:
   default:
     target: api_key
