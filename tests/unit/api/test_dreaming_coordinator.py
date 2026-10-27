@@ -25,6 +25,7 @@ import asyncio
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +34,7 @@ from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_ke
 from jiuwen_memory.api.memory_api_impl.dreaming import (
     DreamingCoordinator,
     DreamingDriverJob,
+    _first_delay_from,
 )
 from jiuwen_memory.api.memory_api_impl.dreaming_security import _registration_identity
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
@@ -1196,3 +1198,145 @@ class TestQueryOpsThreeStates:
             ),
         )
         assert result is None
+
+
+# ====================================================================== #
+# 上次触发时间的连续计时（mem2.0 §2.5.1 改动 2）
+# ====================================================================== #
+
+
+def _entry_with(
+    *, interval: int = 60, last_triggered: str = "", generation: int = 1
+) -> DreamingEntry:
+    return DreamingEntry(
+        scope=_SCOPE,
+        mode="forget",
+        interval=interval,
+        candidate=None,
+        job_id="old",
+        channel="background",
+        created_by=_registration_identity(_SECURITY),
+        state=DreamingEntryState.ACTIVE.value,
+        generation=generation,
+        last_triggered=last_triggered,
+    )
+
+
+class TestLastTriggered:
+    def test_first_delay_from_values(self) -> None:
+        """last_triggered → 首次触发延迟的四态换算（改动 2 的换算规则）。"""
+        now = datetime.now(UTC)
+        # 从未触发（旧版本记录）→ None（等一个 interval，现行为）。
+        assert _first_delay_from(_entry_with(last_triggered="")) is None
+        # 墙钟不可解析（被改坏）→ 同 None，不可信的值保守处理。
+        assert _first_delay_from(_entry_with(last_triggered="not-a-time")) is None
+        # 间隔未满（60s 间隔、30s 前触发）→ 等剩余的 ~30s。
+        pending = _entry_with(
+            last_triggered=(now - timedelta(seconds=30)).isoformat()
+        )
+        delay = _first_delay_from(pending)
+        assert delay is not None and 29 <= delay <= 30, "等剩余秒数（取整可差 1）"
+        # 已过期（1 小时前触发）→ 下一次轮询即触发。
+        expired = _entry_with(
+            last_triggered=(now - timedelta(hours=1)).isoformat()
+        )
+        assert _first_delay_from(expired) == 0
+
+    def test_registry_round_trips_last_triggered(self) -> None:
+        kv = InMemoryKVStore()
+        DreamingRegistry(kv).save(
+            _entry_with(last_triggered="2026-10-01T00:00:00+00:00")
+        )
+
+        loaded = DreamingRegistry(kv).load_all()[0]
+
+        assert loaded.last_triggered == "2026-10-01T00:00:00+00:00"
+
+    def test_note_triggered_matches_generation_writes(self) -> None:
+        kv = InMemoryKVStore()
+        scheduler = _FakeScheduler()
+        api = _FakeApi(scheduler, kv)
+        coordinator = _coordinator(api)
+        _register(coordinator, scheduler)  # generation=1
+
+        coordinator.note_triggered(_SCOPE, EvolveMode.FORGET, generation=1)
+
+        assert DreamingRegistry(kv).load_all()[0].last_triggered != "", (
+            "generation 匹配时回写墙钟 ISO 时间"
+        )
+
+    def test_note_triggered_generation_mismatch_skips(self) -> None:
+        """注册已换代时旧代任务的迟到回写不覆盖新代记录。"""
+        kv = InMemoryKVStore()
+        scheduler = _FakeScheduler()
+        api = _FakeApi(scheduler, kv)
+        coordinator = _coordinator(api)
+        _register(coordinator, scheduler)
+
+        coordinator.note_triggered(_SCOPE, EvolveMode.FORGET, generation=99)
+
+        assert DreamingRegistry(kv).load_all()[0].last_triggered == ""
+
+    def test_register_overwrite_carries_last_triggered(self) -> None:
+        """覆写注册沿用旧记录的上次触发时间——间隔计时跨注册连续。"""
+        kv = InMemoryKVStore()
+        scheduler = _FakeScheduler()
+        api = _FakeApi(scheduler, kv)
+        coordinator = _coordinator(api)
+        _register(coordinator, scheduler)
+        coordinator.note_triggered(_SCOPE, EvolveMode.FORGET, generation=1)
+        before = DreamingRegistry(kv).load_all()[0].last_triggered
+
+        _register(coordinator, scheduler)  # 第二次注册（generation=2）
+
+        after = DreamingRegistry(kv).load_all()[0]
+        assert after.generation == 2
+        assert after.last_triggered == before, "覆写不重置间隔计时"
+
+    def test_driver_tick_notes_triggered(self) -> None:
+        """tick 成功提交演进后回写注册记录的上次触发时间。"""
+        kv = InMemoryKVStore()
+        scheduler = _FakeScheduler()
+        api = _FakeApi(scheduler, kv)
+        coordinator = _coordinator(api)
+        _register(coordinator, scheduler)
+        job = scheduler.submitted[0][1]
+        assert DreamingRegistry(kv).load_all()[0].last_triggered == ""
+
+        asyncio.run(job.run())
+
+        assert DreamingRegistry(kv).load_all()[0].last_triggered != ""
+
+    def test_restore_passes_first_delay_to_submitted_job(self) -> None:
+        """恢复按 last_triggered 换算首次触发延迟——重启不整体推迟一个 interval。"""
+        kv = InMemoryKVStore()
+        DreamingRegistry(kv).save(
+            _entry_with(
+                last_triggered=(datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+            )
+        )
+        scheduler = _FakeScheduler()
+        coordinator = _coordinator(_FakeApi(scheduler, kv))
+
+        restored = coordinator.restore()
+
+        assert len(restored) == 1
+        job = scheduler.submitted[0][1]
+        assert job.first_delay is not None and 29 <= job.first_delay <= 30, (
+            "间隔未满的等剩余秒数（30s 前触发、60s 间隔）"
+        )
+
+    def test_restore_expired_entry_first_delay_zero(self) -> None:
+        """已过期的注册：恢复后下一次轮询即触发，不再推迟一个完整 interval。"""
+        kv = InMemoryKVStore()
+        DreamingRegistry(kv).save(
+            _entry_with(
+                last_triggered=(datetime.now(UTC) - timedelta(hours=1)).isoformat()
+            )
+        )
+        scheduler = _FakeScheduler()
+        coordinator = _coordinator(_FakeApi(scheduler, kv))
+
+        coordinator.restore()
+
+        assert scheduler.submitted[0][1].first_delay == 0

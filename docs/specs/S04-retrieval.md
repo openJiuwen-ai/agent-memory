@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/retrieval/ |
 | 最近一次修订日期 | 2026-10-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F09-experience-retrieval.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
 ## Metadata 检索契约
 
@@ -23,12 +23,13 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 ## 范围 / 边界
 
 **管什么**：
-- 混合检索的完整链路编排（查询理解 → 并行多路召回 → 融合 → 精排 → 相关性阈值 → 渐进式披露 → 返回 + 检索轨迹）
+- 混合检索的完整链路编排（查询理解 → 并行多路召回 → 融合 → 精排 → 相关性阈值 → 可选选取 → 渐进式披露 → 返回 + 检索轨迹）
 - 查询理解：去噪/改写/分词/实体/向量化/时间解析
 - 多路召回：按配置启用的通道并行检索（向量/关键词/图/文档/时序）
 - 融合：多路候选合并去重、归一化打分、取最大值/RRF/加权排序
 - 精排（可选）：调用 Reranker 做 cross-encoder 精排
 - 相关性阈值：绝对/相对阈值裁剪低相关候选（结果数可 < top_k），min_results 兜底回填
+- 选取（可选）：相关性过滤后、top_k 截断前的名额分配（F09 经验记忆；对话记忆不配置，链路行为不变）
 - 渐进式披露：L0 摘要/L1 片段/L2 全文 按需加载
 - 检索轨迹：可观测的非黑盒调试信息
 - 可选 Schema TemporalEntity 视图：实体/Property 双路选择、实体内裁剪与双时间轴过滤
@@ -87,7 +88,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 
 ```python
 class RetrievalOperatorType(str, Enum):
-    QUERY_PARSER / FUSER / DISCLOSER / RETRIEVER / EXPANDER
+    QUERY_PARSER / FUSER / SELECTOR / DISCLOSER / RETRIEVER / EXPANDER
 
 class RetrievalOperator(ABC):
     def operator_type(self) -> RetrievalOperatorType  # 自描述
@@ -108,7 +109,7 @@ class RetrievalOperator(ABC):
 QueryParser
 → hierarchy kind/role/span 硬过滤
 → 既有 L0/L1/L2 内容层多路召回
-→ fusion → rerank → threshold → top_k
+→ fusion → rerank → threshold →（可选 select）→ top_k
 → 可选 Expand（expand_depth > 0）
 → tree score / convergence / tree token budget
 → 对每个保留 unit 调用 Discloser
@@ -206,7 +207,7 @@ QueryParser.parse(query) → ParsedQuery
 → Fuser.fuse(parsed_query, candidates) → list[ScoredMemoryUnit]
 → 截断精排预算；补位路径保存此时的融合候选顺序
 → 可选 Reranker 以 ParsedQuery.rewritten 精排 → [rollup=True] 祖先准入及 MaxP
-→ 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
+→ 相关性阈值过滤（结果数可 < top_k）→ 可选 Selector 选取（selector_enabled）→ 截断 top_k
 → Discloser 塑形；若 expand_depth>0，内部准备阶段暂不分配预算、不读后代
 → [expand_depth>0] 共享预算准入根；TIME 父角色上卷时复用命中后代，否则 Expander BFS
 → 统一截断父子返回总数到 top_k
@@ -386,6 +387,30 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 |------|------|------|
 | `fuse` | `(query: ParsedQuery, candidates: list[list[ScoredMemoryUnit]]) -> list[ScoredMemoryUnit]` | 融合已物化的分入口候选，保持 MemoryUnit 与 evidence |
 
+### Selector（`selector.py`）
+
+相关性过滤之后、截断 `top_k` 之前的可选阶段：从通过过滤的候选中决定返回哪几条、
+按什么顺序（名额分配），与 Fuser 的分工是「Fuser 合并多路候选成一份按相关性排好
+的列表，Selector 在过滤后的候选上分配名额」。首版实现是经验条目的选取
+（`selector_impl/experience_selector.py`，注册名 `experience`：复现要求、排序分、
+探索名额、按能力分组四步），对话记忆检索不配置。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `select` | `(survivors: list[ScoredMemoryUnit], query: RetrievalQuery) -> list[ScoredMemoryUnit]` | 选出返回的条目并排序；被淘汰的候选不出现，调用方截断前 top_k 条即最终返回 |
+
+契约约束：
+
+- 不带 scope 参数——scope 是召回前置谓词，进入选取的候选同属一个空间，
+  实现取 `survivors[0].unit.scope`。
+- 不原地修改入参（存储后端返回的可能是缓存中的同一对象）；需要改写条目
+  （如经验条目的 `usage_ref`）时在候选上换条目副本，调用方
+  （`PipelineRetriever`）据此重建 units 字典。
+- `PipelineRetriever` 经 `selector_enabled` 开关装配（true 而未指名时取缺省
+  实现 `experience`，与 `rerank_enabled` 同构）；未配置时链路行为不变。
+- Selector 不依赖 construction：经验检索的效用部件（效用事件、统计记录、
+  质量分公式）经 `common/experience.py` 与构建侧共用。
+
 ### Discloser（`discloser.py`）
 
 | 方法 | 签名 | 语义 |
@@ -554,6 +579,8 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 
 ### 轨迹
 
+普通链路沿用 `parse/recall/fuse/rerank/threshold/select/disclose`（`select` 仅在
+配置 Selector 时出现，阶段名固定为 `select`）。层级召回额外使用：
 普通链路沿用 `parse/recall/fuse/rerank/threshold/disclose`。Schema 时序选择命中时
 在 `disclose` 之后增加 `schema_temporal` 轨迹，记录组装后的实体数；
 执行失败时记录降级原因并继续使用已融合候选。
@@ -581,7 +608,7 @@ jiuwen_memory/retrieval/<算子>_impl/
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-各 Producer：`QueryParserProducer` / `FuserProducer` / `DiscloserProducer` / `RetrieverProducer`。
+各 Producer：`QueryParserProducer` / `FuserProducer` / `SelectorProducer` / `DiscloserProducer` / `RetrieverProducer`。
 注册由 `retrieval.bootstrap.register_operators` 统一触发。`RecallerProducer` 归存储层
 （`storage/domain_store_impl/recaller.py`，注册随 `storage.bootstrap.register_backends`
 触发）；YAML 命名空间仍是 `recaller`，配置写法不变。

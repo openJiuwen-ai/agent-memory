@@ -130,7 +130,7 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - `DeleteMode.DOWNWEIGHT` 不改变 lifecycle，只降低 `system_metadata.importance`
 - 运行时策略的读写职责归 `PolicyManager`；Engine 不承载具体策略存储或策略键校验逻辑
 - space 元数据、space policy、成员和 offboarding 状态职责归 `SpaceManager`；Engine 的 `purge_space` 负责枚举目标 `org + space` 的全部子 Scope 并清理记忆真源与索引
-- `delete_space` 鉴权后的 purge → `SpaceManager.delete` → `deleted_counts` 汇总只允许出现在 `application/SpaceLifecycleService`；该服务不执行 PEP、不失效 membership 缓存、不写入口审计
+- `delete_space` 鉴权后的 purge → `SpaceManager.delete` → `deleted_counts` 汇总只允许出现在 `application/SpaceLifecycleService`；该服务不执行 PEP、不失效 membership 缓存、不写入口审计。删除完成后可选调用注入的 `on_deleted` 回调组（mem2.0 按作者清除，缺省空 = 现有行为）：owners 在元数据删除之前读出，回调异常不上抛、不拦后续回调（`SpaceManager.delete` 不幂等，上抛即重试死循环）；回调实现在 construction 侧、装配注入
 - `application/` 四个端口由已注入的算子组成，不是 `ControlOperator`，无 Producer，不引入 Service Locator
 - `PolicyManager` 只管理运行时可变策略；未知 key 或试图新增 key 必须抛 `PolicyError`
 - 所有算子必须实现 `operator_type()` 和 `health()`（继承自 `ControlOperator`）

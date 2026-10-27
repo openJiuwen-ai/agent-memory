@@ -22,7 +22,7 @@
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
-| `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
+| `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService；`_with_producer_marks` 对经验写入（`memory_type` 落在无回退类别集合）把认证结果的生产者主体与凭据指纹写进内核保留键（先拒调用方占用再注入，mem2.0 §2.1） |
 | `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
 | `memory_api_impl/md_ops.py` | MdOpsMixin（F08）：`read_md_file` / `edit_md_file`，经 Engine 窄端口委托（非经 `_commands.write`/`_queries.get`）。鉴权对齐 `get`（READ 单段）/ `add`（WRITE 单段，edit 走继承式 SUPERSEDE 本质是写新记忆，D5）；project 解析在 Engine 层 `project_from_context`，本层不拆 Context。返回前剥瞬态键（coords 等是路径解析依据，不是条目属性）。`edit_md_file` 经 `_ensure_space_writable`（与 `add` 同，装配空间级判定时由 `ENTRY_RULES` 登记 `edit_md_file` 触发状态校验） |
 | `memory_api_impl/dreaming.py` | DreamingCoordinator + DreamingDriverJob：dreaming 编排（PEP 边界）——leader-only 注册、`CANCEL_REQUESTED` 持久化幂等注销、generation 隔离旧代 Driver、生命周期操作串行与短状态锁分离、按 leader 任期缓存恢复结果、每 tick 持续授权（`created_by` 复验）、fan-out 逐桶裁决；Coordinator 只持鉴权、提交、调度、注册表、Engine 候选 scope 枚举窄端口，不反向持有完整 API；驱动 Job 每 tick 经 `commands.evolve` 提交一次性 EvolveJob |
@@ -90,7 +90,9 @@
    `delete_space` 鉴权后调用 `SpaceLifecycleService`：先 `MemoryEngine.purge_space`
    清理同一 `org + space` 下所有 user/agent/session 子 Scope 的真源和索引，再委托
    `SpaceManager` 清理 messages 与管理元数据，并汇总 `deleted_counts`。本层只做
-   membership 缓存失效与入口审计，不得内联 purge+delete。
+   membership 缓存失效与入口审计，不得内联 purge+delete。装配在经验空间与
+   `author_key` 都已配置时把按作者清除的登记回调经 `space_lifecycle.on_deleted`
+   注入该服务（mem2.0 §2.5.2，见 F10）；条件不满足传 None，服务内部按缺省构造。
 
 ## PEP 鉴权流程
 

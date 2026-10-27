@@ -92,6 +92,7 @@ class LocalMemoryAPI(
         space_lifecycle: SpaceLifecycleService | None = None,
         governance: GovernanceService | None = None,
         dreaming_lock: LockProvider | None = None,
+        experience_default_space: str = "own",
         authorizer: Authorizer | None = None,
         credential_registry: CredentialStatusRegistry | None = None,
     ) -> None:
@@ -151,6 +152,11 @@ class LocalMemoryAPI(
             ensure_space_writable=self._ensure_space_writable,
             scope_supplier=engine.candidate_scopes,
         )
+        # 部署配置的经验缺省落点（globals.experience 的 default_space，v3 §2）。
+        # 不带 coords 且 default_space 填了空间名的 experience 写入按它鉴权
+        # （见 WriteOpsMixin._authorize_experience_space）；own 时落点就是写入
+        # 落点，已由现有逻辑校验，鉴权逻辑空过。
+        self._experience_default_space = str(experience_default_space or "own").strip()
 
     def _bind_credential_sources(self, authenticator: object) -> None:
         """用已装配 Authenticator 的签发真源填充本 PEP 的 CredentialStatusRegistry。
