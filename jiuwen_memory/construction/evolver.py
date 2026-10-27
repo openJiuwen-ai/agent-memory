@@ -38,6 +38,7 @@ class EvolveMode(str, Enum):
     CONSOLIDATE = "consolidate"
     FORGET = "forget"
     HIERARCHY = "hierarchy"
+    CONFLICT_CONSOLIDATE = "conflict_consolidate"
 
 
 @dataclass
