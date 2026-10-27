@@ -1,0 +1,149 @@
+# agent-memory 经验记忆（mem2.0）装配配置示例
+#
+# 覆盖完整经验链路：轨迹写入 → 评价（成败判定/归因）→ 提炼落盘 → 检索复用
+# → 周期整理（Curator）→ 技能归纳（SkillAbstractor）。使用方式同
+# config_template.yml：合并覆盖到内置默认之上，只写要改动的部分。
+#
+# 最小可跑形态（进程内栈 + 真实 LLM）即本文件取消注释的部分；换持久后端
+# （milvus/es/redis）参照 config_template.yml 的对应段覆盖 kv_store /
+# vector_store / fulltext_store 即可，经验链路不感知后端。
+#
+# 经验特性见 docs/features/construction/F09-experience-memory-write-pipeline.md
+# 与 docs/features/retrieval/F09-experience-retrieval.md。
+
+# ---- 真实模型（经验链路的判定/归因/提炼都要真实 LLM；不配则 echo 桩，仅供联调）----
+llm:
+  default:
+    target: openai                # 或 dashscope
+    params:
+      llm_api_key: "sk-..."       # 生产经 ${VAR} 环境变量注入，勿提交进仓库
+      llm_model: gpt-4o
+      llm_base_url: https://api.example.com/v1
+      llm_temperature: 0.0
+      llm_max_tokens: 4096
+
+# ---- 经验部署配置（§2）：落点、周期整理空间、技能沉淀开关 ----
+globals:
+  experience:
+    # 带 coords 的写入经验标为该类别、按其空间模板落点；指向对话记忆已在用
+    # 的类别即与对话同空间。不带 coords 时走 default_space。
+    memory_class: project
+    # 缺省 own = 写入者自己的空间（私有经验）；或填空间名（共享经验空间）。
+    default_space: shared-experience
+    # 周期整理空间清单：只在这些空间跑周期整理；skill: true 同时开启技能沉淀
+    # （技能归纳以经验沉淀开启为前提）。repro_unit 缺省 auto（写入者空间按
+    # 轨迹计数、其余按用户计数）。
+    curated_spaces:
+      - { space: shared-experience, skill: true }
+
+# ---- 引擎与调度（周期任务须 async_timer；进程内缺省调度器不支持周期任务）----
+scheduler:
+  default: { target: async_timer }
+
+# ---- evolver 双 profile：对话走 default（动态四步），经验走 experience ----
+evolver:
+  # 对话记忆：内置默认（dynamic_llm 抽取，无评价算子），不用写。
+  # 经验 profile：评价算子包住抽取算子（F09 决策二），curator/abstractor
+  # 分别接周期整理与技能归纳（F10/F11）。
+  experience:
+    target: dynamic
+    params:
+      extractor: experience       # ExperienceExtractor：提炼环境事实/条件动作
+      appraiser: experience        # ExperienceAppraiser：判定成败、归因、记复现
+      curator: experience          # ExperienceCurator：周期整理（CONSOLIDATE 之前）
+      abstractor: skill            # SkillAbstractor：技能归纳（整理之后）
+      llm: default                 # 必须显式引用——dep 缺省会匿名新建 echo 桩
+      # 去重结论按抽取策略限定（F09：四种结论里的「更新」会改写已有条目并丢
+      # 元数据，经验不接受；条件动作执行动作不同的并存——不含取代）。
+      dedup_decisions:
+        experience_fact: [add, noop, supersede]
+        experience_tip: [add, noop]
+      dedup: experience            # 经验的去重实例（见下：打开 tier 过滤）
+
+# ---- 经验去重实例：vector 召回 + 按 tier 过滤（经验不与对话互判重复）----
+dedup:
+  experience:
+    target: vector
+    params:
+      embedder: default
+      tier_filter: true
+
+# ---- 技能归纳算子（F11：evolver.experience 的 abstractor 引用它）----
+abstractor:
+  skill:
+    target: skill
+    params:
+      llm: default                 # 逐组一次模型调用（生成 SKILL.md 草稿）
+      embedder: default             # 分组相似度连边用
+
+# ---- 经验算子参数 ----
+extractor:
+  experience:
+    target: experience
+    params:
+      llm: default
+
+appraiser:
+  experience:
+    target: experience
+    params:
+      # 作者摘要的 HMAC salt：部署后固定不换（换了历史效用事件键对不上）。
+      # 生产经 ${VAR} 注入；未配置时经验 profile 装配失败（显式报错）。
+      author_key: "change-me-in-production"
+      llm: default
+      # 外部结果阈值按生产者配置（缺省 0.999——高于它才算 external 级成功）：
+      external_thresholds:
+        "user:alice": 0.8
+
+curator:
+  experience:
+    target: experience
+    params:
+      llm: default                 # 第 4 步合并删除用（可选：缺省只做规则退休）
+      embedder: default             # 聚簇相似度用（可选，同上）
+      # message_store 若显式声明，必须指向 kv_store.default 同一实例——
+      # 按作者清除的标记与算子读的 KV 不同源时合规清除会静默失效，
+      # 装配期校验会拒绝。缺省不写即同源。
+
+# ---- 检索双 profile：对话无 Selector，经验走选取（复现要求/排序分/探索名额）----
+retriever:
+  # 对话检索：内置默认（pipeline，无 selector），不用写。
+  experience:
+    target: pipeline
+    params:
+      selector_enabled: true       # ExperienceSelector：经验条目选取过滤
+
+# ---- 流水线双 profile 绑定：memory_type 路由（experience 不回落，§2.3）----
+pipeline:
+  default:
+    target: metadata
+    params:
+      profiles:
+        default:
+          index_builder: default
+          retriever: default
+          evolver: default
+        experience:
+          index_builder: default
+          retriever: experience     # 经验条目经经验 retriever（带选取）
+          evolver: experience
+      fallback: default             # 未知 memory_type 回落对话 profile
+
+# ---- 空间治理（共享经验空间需要：创建空间、成员鉴权）----
+permission:
+  default:
+    target: space_aware
+    params: { db_path: ":memory:" }   # 生产换 sqlite 文件路径或 pg
+
+authorizer:
+  default:
+    target: space_aware
+    params: { delegate: standard }
+  standard:
+    target: standard
+    params: { grant_store: default, delegation_store: default }
+
+grant_store:
+  default: memory                     # 生产换持久后端
+delegation_store:
+  default: memory

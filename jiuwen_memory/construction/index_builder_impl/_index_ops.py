@@ -18,6 +18,7 @@ from jiuwen_memory.common.type_def import (
     HIERARCHY_INDEX_KEYS,
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
+    TRANSIENT_SYSTEM_METADATA_KEYS,
     Chunk,
     MemoryUnit,
     Scope,
@@ -91,11 +92,20 @@ def index_metadata(
     layer: str,
     seq: int | None = None,
 ) -> dict[str, object]:
-    """保留独立双 metadata 路径，并从系统真源字段构造当前可过滤投影。"""
+    """构造可过滤索引投影，保留双命名空间的逻辑路径；系统真源字段覆盖同名用户字段。
+
+    ``metadata`` 值为 JSON 标量原生类型，后端据此建 double/boolean/keyword mapping
+    并在 top-k 截断前原生下推。UnitReader 复核读的是同一个对象，两侧判定不分叉。
+
+    ``system_metadata`` 投影跳过瞬态键（``coords`` / ``route_ctx``）与层级索引键
+    （``HIERARCHY_INDEX_KEYS``）：瞬态键在 KV 条目本体序列化时剥除，索引不剥则坐标
+    随条目进入向量库与全文索引，经验条目因此带上来源用户（§2.3）；层级键由树状记忆
+    侧单独维护，不进可过滤投影。两处均与序列化的处置保持一致。
+    """
     metadata = {
         f"system_metadata.{key}": value
         for key, value in unit.system_metadata.items()
-        if key not in HIERARCHY_INDEX_KEYS
+        if key not in TRANSIENT_SYSTEM_METADATA_KEYS and key not in HIERARCHY_INDEX_KEYS
     }
     metadata.update({f"user_metadata.{key}": value for key, value in unit.user_metadata.items()})
     metadata.update(

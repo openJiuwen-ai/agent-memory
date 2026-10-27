@@ -118,6 +118,13 @@ _BUILTIN_FIELDS = frozenset(
 # 边界转换，权限路由、Pipeline、Store 和 UnitReader 内部一律只见该规范名。
 MEMORY_TYPE_FILTER_FIELD = "system_metadata.memory_type"
 
+# 按类型隔离的 memory_type 取值（mem2.0 §2.3「同一空间内的隔离」）：经验与技能
+# 可与对话记忆落在同一个空间，检索/列举/去重按此集合互不可见。定义在 common
+# 是因为消费方横跨 api（接口层系统谓词）与 construction（去重召回过滤），
+# 而 construction 不依赖 control（构建层铁律）；``control/pipeline.py`` 再导出
+# 同一对象，契约入口仍从 pipeline 侧引用（v3 规约的引用位置）。
+ISOLATED_MEMORY_TYPES = frozenset({"experience", "skill"})
+
 
 def canonical_filter_field(name: str) -> str:
     """把兼容字段名转换为内核规范名。"""
