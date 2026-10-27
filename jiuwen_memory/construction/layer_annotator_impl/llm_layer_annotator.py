@@ -248,17 +248,24 @@ class LLMLayerAnnotator(LayerAnnotator):
         )
 
     def _annotate_chunked(self, unit: MemoryUnit) -> None:
-        """超限 unit 的无损分批标注：逐批生成 L0/L1，跨批合并后回填。"""
-        l0_parts: list[str] = []
-        l1_parts: list[str] = []
+        """超限 unit 的无损分批标注：全部片段有效才合并写回。
+
+        任一片段的 L0/L1 校验失败（_generate_layers 返回 {}）即整体放弃本次
+        标注：保留 unit 原有 layers 并 warning 上报，不提交残缺的整篇摘要
+        （检视 P2）。
+        """
+        staged: list[tuple[str, str]] = []
         for copy in chunk_unit(unit):
-            for _, (l0, l1) in self._generate_layers([copy]).items():
-                if l0:
-                    l0_parts.append(l0)
-                if l1:
-                    l1_parts.append(l1)
-        unit.layers.l0 = "\n".join(l0_parts)
-        unit.layers.l1 = "\n".join(l1_parts)
+            result = self._generate_layers([copy])
+            if not result:
+                logger.warning(
+                    "LLMLayerAnnotator: chunked layers invalid for unit=%s, keeping old layers",
+                    unit.id[:8],
+                )
+                return
+            staged.extend(result.values())
+        unit.layers.l0 = "\n".join(l0 for l0, _ in staged)
+        unit.layers.l1 = "\n".join(l1 for _, l1 in staged)
 
     def _call_llm_with_retry(self, messages: list, max_tokens: int = 4096) -> str:
         """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""

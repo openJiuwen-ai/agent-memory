@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
 
@@ -50,9 +50,13 @@ from jiuwen_memory.construction.prompt_guard import (
 )
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
+
 from ..abstractor import Abstractor
 from ..base import OperatorType
 from ..common import reject_deprecated_llm_attempt_keys, validate_llm_attempt_policy
+
+# 长记忆提炼视图（各分片候选拼接）的字符上限：归纳调用中每个超限 unit 只占这么多字符，保证跨记忆归纳批的 prompt 有界。
+_DIGEST_MAX_CHARS = 2000
 
 logger = get_logger(__name__)
 
@@ -438,19 +442,46 @@ class LLMAbstractor(Abstractor):
     def _llm_abstract(
         self, target: AbstractionTarget, units: list[MemoryUnit]
     ) -> list[AbstractionCandidate]:
-        """内容型完整消费：≤ 上限的 unit 合并单批调用；超限 unit 无损分批逐批调用。
+        """两段式内容型消费：先逐片提炼，再按原分组归纳（检视 P2）。
 
-        候选的 ``source_unit_ids`` 回指原 unit（分片副本保留 id），跨批天然可加
-        合并；中段截断会静默漏事实（检视 P2），故超限内容一律分批而不截断。
+        超限 unit 先按段落边界分片，逐片提炼出分片级候选（``source_unit_ids``
+        回指原 unit，事实不丢）；随后把每个超限 unit 替换为其提炼视图（各片
+        候选拼接，截到 _DIGEST_MAX_CHARS），与未超限 unit 合并进**同一次**归纳
+        调用——否则 PATTERN/PORTRAIT 的跨记忆共同归纳会被分片调用拆散。
         """
         candidates: list[AbstractionCandidate] = []
-        normal = [u for u in units if len(u.content) <= CONTENT_MAX_UNIT_CHARS]
-        if normal:
-            candidates.extend(self._llm_abstract_once(target, normal))
+        digest_units: list[MemoryUnit] = []
         for u in units:
-            if len(u.content) > CONTENT_MAX_UNIT_CHARS:
-                for copy in chunk_unit(u):
-                    candidates.extend(self._llm_abstract_once(target, [copy]))
+            if len(u.content) <= CONTENT_MAX_UNIT_CHARS:
+                continue
+            chunk_candidates: list[AbstractionCandidate] = []
+            for copy in chunk_unit(u):
+                chunk_candidates.extend(self._llm_abstract_once(target, [copy]))
+            candidates.extend(chunk_candidates)
+            digest = (
+                "\n".join(c.content for c in chunk_candidates)[:_DIGEST_MAX_CHARS]
+            )
+            if digest:
+                digest_units.append(
+                    replace(
+                        u,
+                        segments=[
+                            Segment(
+                                content=digest,
+                                assets=list(u.assets),
+                                source=u.source,
+                            )
+                        ],
+                    )
+                )
+            else:
+                logger.warning(
+                    "Abstractor: chunk distillation produced no candidates for unit id=%s",
+                    u.id[:8],
+                )
+        induce_units = [u for u in units if len(u.content) <= CONTENT_MAX_UNIT_CHARS] + digest_units
+        if induce_units:
+            candidates.extend(self._llm_abstract_once(target, induce_units))
         return candidates
 
     def _llm_abstract_once(

@@ -305,3 +305,21 @@ def test_llm_annotate_oversized_content_batched_and_merged():
     assert fact_b in llm.user_texts[1] and fact_c in llm.user_texts[1]
     assert unit.layers.l0 == "概要甲\n概要乙"  # 跨批合并
     assert unit.layers.l1 == "detail 甲文本\ndetail 乙文本"
+
+
+def test_llm_annotate_chunk_partial_failure_keeps_old_layers():
+    """分片摘要任一片无效：全部片段有效才写回，失败保留旧摘要（检视 P2）。"""
+    unit = create_test_unit("u1", "X" * 8000 + "中段事实乙在此。" + "Y" * 7984)
+    unit.layers.l0 = "旧概要"
+    unit.layers.l1 = "旧详情文本"
+    llm = RecordingLLM([
+        json.dumps([{"id": 0, "l0": "片一概要", "l1": "片一详情比概要更长"}]),
+        # 第二片 l0 == l1，长度校验失败 → _generate_layers 返回 {}
+        json.dumps([{"id": 0, "l0": "相同文本", "l1": "相同文本"}]),
+    ])
+    ann = LLMLayerAnnotator(llm=llm, layers_threshold=50, max_attempts=3, retry_backoff_ms=0)
+
+    ann.annotate([unit])
+
+    assert unit.layers.l0 == "旧概要"
+    assert unit.layers.l1 == "旧详情文本"

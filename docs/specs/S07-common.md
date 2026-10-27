@@ -192,6 +192,11 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 `extra_body.enable_thinking`，缺省为 `false`；通用 OpenAI Adapter 不按 base URL
 猜测厂商，也不自动注入该字段。
 
+**超时契约**：Adapter 必须把自家 SDK 的超时异常转换为 `common.errors.LLMTimeoutError`
+（或内建 `TimeoutError` 子类）后抛出，原始异常挂 `__cause__` 保留定位信息。消费方据此
+统一「超时不重试」——超时是确定性失败，重试只会把单次超时放大为 N×timeout；消费侧不得
+依赖具体 SDK 异常类名识别超时（换用其它合法 LLM 插件后同类超时必须同样被识别）。
+
 ### Reranker（`reranker/base.py`）
 
 重排能力：cross-encoder 精排。
