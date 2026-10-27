@@ -68,6 +68,7 @@ def test_streamable_http_initializes_and_lists_tools(monkeypatch, mcp_entry) -> 
     server.start_background.assert_awaited_once_with()
     server.close.assert_called_once_with()
 
+
 def test_stdio_subprocess_initializes_and_lists_tools() -> None:
     import anyio
     from mcp import ClientSession, StdioServerParameters

@@ -80,7 +80,7 @@ def test_fastmcp_lifespan_starts_and_closes_server(monkeypatch, fail_in_session)
 
     async def run_session() -> None:
         # 经注册到 FastMCP 的 wrapper 进入，避免只测生成器本身而漏掉 SDK 契约。
-        low_level = mcp_main.mcp._mcp_server
+        low_level = mcp_main.mcp._mcp_server  # pylint: disable=protected-access,huawei-protected-access
         async with low_level.lifespan(low_level):
             server.start_background.assert_awaited_once_with()
             server.close.assert_not_called()
