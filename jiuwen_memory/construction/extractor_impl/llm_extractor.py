@@ -1037,6 +1037,7 @@ class ExtractorImpl(Extractor):
             temperature=0,
             max_tokens=max_tokens,
         )
+
     def _build_units(
         self,
         candidates: list[ExtractionCandidate],

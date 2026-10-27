@@ -104,8 +104,6 @@ class SimpleIngestor(Ingestor):
         return split_within_limit(content, self._max_unit_chars)
 
 
-
-
 # -- 注册到 IngestorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 

@@ -550,6 +550,7 @@ class LLMAbstractor(Abstractor):
             temperature=0,
             max_tokens=4096,
         )
+
     def _parse_llm_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON，失败时尝试提取 JSON 核心部分。"""
         # 尝试直接解析

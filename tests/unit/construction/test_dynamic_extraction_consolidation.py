@@ -608,7 +608,6 @@ def test_evolver_producer_registers_dynamic():
     assert "orchestrating" in EvolverProducer.known()
 
 
-
 @pytest.mark.unit
 def test_dynamic_extractor_oversized_unit_fully_consumed_in_chunks():
     """>8000 unit 分批完整消费：逐批调用，中段事实进入后续批次 prompt。"""

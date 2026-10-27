@@ -232,6 +232,7 @@ class LLMClassifier(Classifier):
             temperature=0,
             max_tokens=4096,
         )
+
     def _parse_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON 数组（容错 markdown fence/单对象）。"""
         try:
