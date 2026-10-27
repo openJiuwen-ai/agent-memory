@@ -21,7 +21,12 @@ from jiuwen_memory.construction.common import (
     validate_llm_attempt_policy,
 )
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
-from jiuwen_memory.construction.prompt_guard import truncate_unit_content
+from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
+    chunk_unit,
+    truncate_unit_content,
+)
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
 logger = get_logger(__name__)
 
@@ -145,15 +150,26 @@ class LLMLayerAnnotator(LayerAnnotator):
             logger.info("LLMLayerAnnotator: no long content (> %d), skip", self._layers_threshold)
             return units
 
-        # 按 _LAYERS_BATCH_SIZE 分批，逐批调 LLM
-        for start in range(0, len(long_units), _LAYERS_BATCH_SIZE):
-            batch = long_units[start:start + _LAYERS_BATCH_SIZE]
+        # 内容型任务：<= CONTENT_MAX_UNIT_CHARS 的走多 unit 批次；超限的按段落
+        # 无损分批逐批调用后合并——截断会静默丢中段事实（检视 P2）。
+        normal = [u for u in long_units if len(u.content) <= CONTENT_MAX_UNIT_CHARS]
+        oversized = [u for u in long_units if len(u.content) > CONTENT_MAX_UNIT_CHARS]
+        for start in range(0, len(normal), _LAYERS_BATCH_SIZE):
+            batch = normal[start:start + _LAYERS_BATCH_SIZE]
             try:
                 self._annotate_batch(batch)
             except Exception as exc:
                 logger.warning(
                     "LLMLayerAnnotator: batch failed offset=%d size=%d, skipping: %s",
                     start, len(batch), exc,
+                )
+        for u in oversized:
+            try:
+                self._annotate_chunked(u)
+            except Exception as exc:
+                logger.warning(
+                    "LLMLayerAnnotator: chunked annotate failed unit=%s, skipping: %s",
+                    u.id[:8], exc,
                 )
 
         filled = sum(1 for u in long_units if u.layers.l0 or u.layers.l1)
@@ -163,13 +179,13 @@ class LLMLayerAnnotator(LayerAnnotator):
         )
         return units
 
-    def _annotate_batch(self, units: list[MemoryUnit]) -> None:
-        """单批 L0/L1 生成：拼 prompt → 调 LLM → 解析 JSON → 回填 unit.layers。"""
+    def _generate_layers(self, units: list[MemoryUnit]) -> dict[int, tuple[str, str]]:
+        """拼 prompt → 调 LLM → 解析校验，返回 {批次内序号: (l0, l1)}；不写回。"""
         from jiuwen_memory.common.type_def import ChatMessage
 
         # 每条 unit 用数字索引标记 [ID: N]，LLM 在输出里用 "id": N 回指
         items = [
-            f"---\n[ID: {i}]\n{truncate_unit_content(u.content)}\n---"
+            f"---\n[ID: {i}]\n{truncate_unit_content(u.content, limit=CONTENT_MAX_UNIT_CHARS)}\n---"
             for i, u in enumerate(units)
         ]
         user_text = "\n".join(items)
@@ -219,6 +235,11 @@ class LLMLayerAnnotator(LayerAnnotator):
         if seen_ids != expected:
             raise ValueError(f"layer output ids must exactly match {sorted(expected)}")
 
+        return staged
+
+    def _annotate_batch(self, units: list[MemoryUnit]) -> None:
+        """单批 L0/L1 生成并回填 unit.layers。"""
+        staged = self._generate_layers(units)
         for idx, (l0, l1) in staged.items():
             units[idx].layers.l0 = l0
             units[idx].layers.l1 = l1
@@ -226,29 +247,31 @@ class LLMLayerAnnotator(LayerAnnotator):
             "LLMLayerAnnotator: batch filled %d/%d units", len(staged), len(units),
         )
 
+    def _annotate_chunked(self, unit: MemoryUnit) -> None:
+        """超限 unit 的无损分批标注：逐批生成 L0/L1，跨批合并后回填。"""
+        l0_parts: list[str] = []
+        l1_parts: list[str] = []
+        for copy in chunk_unit(unit):
+            for _, (l0, l1) in self._generate_layers([copy]).items():
+                if l0:
+                    l0_parts.append(l0)
+                if l1:
+                    l1_parts.append(l1)
+        unit.layers.l0 = "\n".join(l0_parts)
+        unit.layers.l1 = "\n".join(l1_parts)
+
     def _call_llm_with_retry(self, messages: list, max_tokens: int = 4096) -> str:
-        """调用 LLM.chat()，含重试逻辑。"""
-        import time
-
-        last_exc: Exception | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
-            except Exception as exc:
-                last_exc = exc
-                if attempt == self._max_attempts - 1:
-                    break
-                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                logger.warning(
-                    "LLMLayerAnnotator: LLM call failed (attempt %d), retrying in %.1fs",
-                    attempt + 1, wait,
-                )
-                time.sleep(wait)
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("LLMLayerAnnotator: LLM call did not execute")
-
-
+        """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""
+        return call_llm_with_retry(
+            self._llm.chat,
+            messages,
+            max_attempts=self._max_attempts,
+            backoff_ms=self._retry_backoff_ms,
+            logger=logger,
+            label="LLMLayerAnnotator",
+            temperature=0,
+            max_tokens=max_tokens,
+        )
 # -- 注册到 LayerAnnotatorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 

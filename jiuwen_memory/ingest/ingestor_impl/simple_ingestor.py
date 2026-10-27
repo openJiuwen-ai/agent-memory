@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
+from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
 from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Temporal
 from jiuwen_memory.ingest.base import IngestOperatorType
@@ -95,33 +96,14 @@ class SimpleIngestor(Ingestor):
     def _split(self, content: str) -> list[str]:
         """按段落边界聚合为 ≤ max_unit_chars 的片段。
 
-        段落聚合路径无损可逆：``"\\n\\n".join(pieces)`` 严格还原原文（含首部
+        段落聚合路径无损可逆：``"\n\n".join(pieces)`` 严格还原原文（含首部
         空段落与冲刷边界上的空段落分隔符）；单段超长时硬切兜底，硬切点拼接会
         引入一个段落分隔（不影响记忆语义）。max_unit_chars <= 0 或文本未超限
-        时返回单片段。
+        时返回单片段。算法与 construction 内容分批共用（common.text_split）。
         """
-        limit = self._max_unit_chars
-        if limit <= 0 or len(content) <= limit:
-            return [content]
-        pieces: list[str] = []
-        buf: str | None = None  # None=尚未缓冲段落；"" 是合法缓冲（空段落）
-        for para in content.split("\n\n"):
-            candidate = para if buf is None else f"{buf}\n\n{para}"
-            if len(candidate) <= limit:
-                buf = candidate
-                continue
-            if buf is not None:
-                pieces.append(buf)
-                buf = None
-            # while 用严格 > 截切，残段恒非空；para 本身可为空段落（空串），
-            # 原样缓冲以保留分隔符。
-            while len(para) > limit:
-                pieces.append(para[:limit])
-                para = para[limit:]
-            buf = para
-        if buf is not None:
-            pieces.append(buf)
-        return pieces
+        return split_within_limit(content, self._max_unit_chars)
+
+
 
 
 # -- 注册到 IngestorProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

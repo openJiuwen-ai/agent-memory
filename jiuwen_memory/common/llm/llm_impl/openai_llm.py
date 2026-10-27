@@ -29,7 +29,7 @@ from jiuwen_memory.common._support import (
     require_https,
 )
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import HealthCheckError, LLMTimeoutError
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import ChatMessage
@@ -171,7 +171,7 @@ class OpenAILLM(LLM):
         started_at = time.monotonic()
         try:
             response = self.client.chat.completions.create(**create_kwargs)
-        except openai.APITimeoutError:
+        except openai.APITimeoutError as exc:
             logger.error(
                 "OpenAILLM chat timed out: model=%s elapsed=%.3fs timeout=%.3fs "
                 "max_retries=%d",
@@ -180,7 +180,11 @@ class OpenAILLM(LLM):
                 self._timeout,
                 self._max_retries,
             )
-            raise
+            # 超时契约（common/llm/base.py）：适配器统一转换为 LLMTimeoutError，
+            # 构建层据此做"超时不重试"，不感知 SDK 异常。
+            raise LLMTimeoutError(
+                f"OpenAILLM chat timed out: model={model} timeout={self._timeout}s"
+            ) from exc
         except openai.APIConnectionError as exc:
             logger.error("OpenAILLM: connection error — %s", exc)
             raise

@@ -22,6 +22,7 @@ from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.common import (
     reject_deprecated_llm_attempt_keys,
     validate_llm_attempt_policy,
@@ -213,26 +214,17 @@ class LLMRouter(Router):
         return _SYSTEM_PROMPT.format(classes=classes, dims=dims, coords=coords)
 
     def _call_llm_with_retry(self, messages: list) -> str:
-        last_exc: Exception | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=4096)
-            except Exception as exc:  # noqa: BLE001 —— 重试后仍失败即上抛
-                last_exc = exc
-                if attempt == self._max_attempts - 1:
-                    break
-                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                logger.warning(
-                    "LLMRouter: LLM call failed (attempt %d), retrying in %.1fs",
-                    attempt + 1,
-                    wait,
-                )
-                time.sleep(wait)
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("LLMRouter: LLM call did not execute")
-
-
+        """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""
+        return call_llm_with_retry(
+            self._llm.chat,
+            messages,
+            max_attempts=self._max_attempts,
+            backoff_ms=self._retry_backoff_ms,
+            logger=logger,
+            label="LLMRouter",
+            temperature=0,
+            max_tokens=4096,
+        )
 def _parse_response(response: str) -> list[dict]:
     """解析 LLM 返回的 JSON 数组（容错 markdown fence 与单对象形态）。"""
     text = response.strip()

@@ -43,7 +43,12 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.abstractor import AbstractorProducer
-from jiuwen_memory.construction.prompt_guard import CONTENT_MAX_UNIT_CHARS, truncate_unit_content
+from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
+    chunk_unit,
+    truncate_unit_content,
+)
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
 from ..abstractor import Abstractor
 from ..base import OperatorType
@@ -433,6 +438,24 @@ class LLMAbstractor(Abstractor):
     def _llm_abstract(
         self, target: AbstractionTarget, units: list[MemoryUnit]
     ) -> list[AbstractionCandidate]:
+        """内容型完整消费：≤ 上限的 unit 合并单批调用；超限 unit 无损分批逐批调用。
+
+        候选的 ``source_unit_ids`` 回指原 unit（分片副本保留 id），跨批天然可加
+        合并；中段截断会静默漏事实（检视 P2），故超限内容一律分批而不截断。
+        """
+        candidates: list[AbstractionCandidate] = []
+        normal = [u for u in units if len(u.content) <= CONTENT_MAX_UNIT_CHARS]
+        if normal:
+            candidates.extend(self._llm_abstract_once(target, normal))
+        for u in units:
+            if len(u.content) > CONTENT_MAX_UNIT_CHARS:
+                for copy in chunk_unit(u):
+                    candidates.extend(self._llm_abstract_once(target, [copy]))
+        return candidates
+
+    def _llm_abstract_once(
+        self, target: AbstractionTarget, units: list[MemoryUnit]
+    ) -> list[AbstractionCandidate]:
         """构建 target-specific prompt → 调 LLM → 解析 JSON → 过滤 confidence。"""
 
         # 选择 system prompt
@@ -516,28 +539,17 @@ class LLMAbstractor(Abstractor):
             return _SUMMARY_SYSTEM_PROMPT  # 降级为 SUMMARY
 
     def _call_llm_with_retry(self, messages: list) -> str:
-        """调用 LLM.chat()，含重试逻辑。"""
-        import time
-
-        last_exc: Exception | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=4096)
-            except Exception as exc:
-                last_exc = exc
-                if attempt == self._max_attempts - 1:
-                    break
-                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                logger.warning(
-                    "Abstractor: LLM call failed (attempt %d), retrying in %.1fs",
-                    attempt + 1,
-                    wait,
-                )
-                time.sleep(wait)
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("Abstractor: LLM call did not execute")
-
+        """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""
+        return call_llm_with_retry(
+            self._llm.chat,
+            messages,
+            max_attempts=self._max_attempts,
+            backoff_ms=self._retry_backoff_ms,
+            logger=logger,
+            label="Abstractor",
+            temperature=0,
+            max_tokens=4096,
+        )
     def _parse_llm_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON，失败时尝试提取 JSON 核心部分。"""
         # 尝试直接解析

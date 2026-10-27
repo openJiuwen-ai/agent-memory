@@ -23,6 +23,7 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier_impl.keyword_classifier import KeywordClassifier
 from jiuwen_memory.construction.classifier_impl.llm_classifier import LLMClassifier
 from tests.unit.construction.fixtures import MockLLM
+from jiuwen_memory.common.errors import LLMTimeoutError
 
 
 def _make_unit(
@@ -319,6 +320,15 @@ def test_timeout_subclass_is_not_retried():
         """模拟 SDK 自定义超时类型（类名不在 _TIMEOUT_EXC_NAMES 内）。"""
 
     llm = _FailingLLM(SdkTimeoutSubclass("sdk timeout subclass"))
+    clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
+    unit = _make_unit("u1", "content")
+    clf.classify([unit])
+    assert llm.call_count == 1
+
+
+def test_contract_timeout_error_is_not_retried():
+    """LLMTimeoutError（适配器转换后的契约超时）是确定性失败，max_attempts=3 也只调 1 次。"""
+    llm = _FailingLLM(LLMTimeoutError("contract timeout"))
     clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
     unit = _make_unit("u1", "content")
     clf.classify([unit])

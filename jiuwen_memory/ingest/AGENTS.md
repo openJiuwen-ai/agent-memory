@@ -82,7 +82,7 @@
 7. 默认 `PassthroughNormalizer` 只接已经是 UTF-8 文本的 TEXT/CODE；DOCUMENT 原件必须配置专用解析型 Normalizer，不能把文件 URI 当作解析后的正文。
 
 8. `SimpleIngestor` 在 normalize 前校验并消费叶提示，不创建父子边；无提示保持空结构。
-9. 预切分 `_part`/`_parts` 是 `SimpleIngestor` 的内部序号约定，不对输入开放：payload `system_metadata` 携带的同名键一律剔除，多片时强制覆盖为真实序号，单片时不残留。`max_unit_chars` 缺省 8000；显式 null/空串/非整数在装配期显式拒绝（`or 0` 式兜底会静默关闭切分），0/负数是文档化的关闭开关。段落聚合路径 `"\\n\\n".join(pieces)` 严格还原原文；单段超长硬切兜底，硬切点拼接引入一个段落分隔（不影响记忆语义）。设计取舍见 [F08](../../docs/features/F08-large-content-guardrails.md)。
+9. 预切分 `_part`/`_parts` 是 `SimpleIngestor` 的内部序号约定，不对输入开放：payload `system_metadata` 携带的同名键一律剔除，多片时强制覆盖为真实序号，单片时不残留。`max_unit_chars` 缺省 8000；显式 null/空串/非整数在装配期显式拒绝（`or 0` 式兜底会静默关闭切分），0/负数是文档化的关闭开关。段落聚合路径 `"\n\n".join(pieces)` 严格还原原文；单段超长硬切兜底，硬切点拼接引入一个段落分隔（不影响记忆语义）。
 10. `enrich_snapshot_hints` 由 Engine 传入开关；补齐只用 occurred_at，完整提示优先。
    无 occurred_at 时保持原输入；显式 TIME/Snapshot 单边区间不自动修补，已有端点原样保存。
    开启时缺时不使写入失败，非法身份、时间格式、逆序区间或边提示仍拒绝。

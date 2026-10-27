@@ -21,7 +21,11 @@ from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
-from jiuwen_memory.construction.prompt_guard import CONTENT_MAX_UNIT_CHARS, truncate_unit_content
+from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
+    chunk_unit,
+    truncate_unit_content,
+)
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from jiuwen_memory.construction.prompt_strategy import (
     EXTRACT_PROMPT_PREFIX,
@@ -145,6 +149,32 @@ class DynamicLLMExtractor(Extractor):
         return self._helper.build_units(candidates, sources)
 
     def _extract_strategy(
+        self,
+        units: list[MemoryUnit],
+        context: ExtractContext | None,
+        strategy: str,
+        prompt_key: str,
+    ) -> list[MemoryUnit]:
+        """内容型完整消费：≤ 上限的 unit 合并单批调用；超限 unit 无损分批逐批调用。
+
+        分片副本保留 id/元数据，候选仍回指原 unit；中段截断会静默漏事实
+        （检视 P2），故超限内容一律分批而不截断。
+        """
+        built: list[MemoryUnit] = []
+        normal = [u for u in units if len(u.content) <= CONTENT_MAX_UNIT_CHARS]
+        if normal:
+            built.extend(
+                self._extract_strategy_once(normal, context, strategy, prompt_key)
+            )
+        for u in units:
+            if len(u.content) > CONTENT_MAX_UNIT_CHARS:
+                for copy in chunk_unit(u):
+                    built.extend(
+                        self._extract_strategy_once([copy], context, strategy, prompt_key)
+                    )
+        return built
+
+    def _extract_strategy_once(
         self,
         units: list[MemoryUnit],
         context: ExtractContext | None,

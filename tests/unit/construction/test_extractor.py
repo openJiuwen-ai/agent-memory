@@ -887,10 +887,12 @@ def test_extract_prompt_keeps_full_presplit_unit():
     assert content in user_text
 
 
-def test_extract_prompt_truncates_beyond_content_limit():
-    """超过内容护栏（8000）的 unit 仍截断有界：头尾保留、中段以标记替代。"""
-    # 块结构内容（A/B/C/D 各 3000 字）：位置判别不被周期性子串干扰——
-    # content[3000:6000]（B 块）在旧 4000 上限的 head 3/4（3000 字）之外。
+def test_extract_beyond_content_limit_fully_consumed():
+    """超过内容护栏（8000）的 unit 不再截断：无损分批完整消费，中段事实不丢。
+
+    块结构内容（A/B/C/D 各 3000 字）做位置判别：硬切点落在 C 块内
+    （8000 = A3000+B3000+C2000），C 的前 2000 字在首批、后 1000 字在次批。
+    """
     content = "A" * 3000 + "B" * 3000 + "C" * 3000 + "D" * 3000
     resp = json.dumps([{"source_id": "u1", "target": "fact", "content": "x", "confidence": 0.9}])
     llm = _RecordingLLM([resp])
@@ -900,9 +902,35 @@ def test_extract_prompt_truncates_beyond_content_limit():
 
     extractor.extract([create_test_unit("u1", content)])
 
-    user_text = llm.captured_messages[0][-1].content
-    assert "TRUNCATED" in user_text
-    assert content[:100] in user_text  # 头部保留
-    assert content[-100:] in user_text  # 尾部保留
-    assert "B" * 3000 in user_text  # 头 3/4（6000 字）完整保留
-    assert len(user_text) < 20000, f"prompt 应有界，实际 {len(user_text)} chars"
+    assert llm.call_count == 2  # 12000 → 8000 + 4000 两批
+    texts = [m[-1].content for m in llm.captured_messages]
+    assert "A" * 3000 in texts[0] and "B" * 3000 in texts[0]  # 头部完整
+    assert "C" * 2000 in texts[0]  # 硬切点前的 C 段
+    assert "C" * 1000 in texts[1] and "D" * 3000 in texts[1]  # 尾部完整
+    assert all("TRUNCATED" not in t for t in texts)  # 不再静默丢中段
+    assert all(len(t) < 20000 for t in texts), "单批 prompt 仍有界"
+
+
+# ---------------------------------------------------------------------------
+# 内容型分批（检视 P2：抽取 8000 截断静默漏事实）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_oversized_unit_fully_consumed_in_chunks():
+    """>8000 unit 分批完整消费：候选跨批合并、source_id 不变，中段事实不丢。"""
+    middle_fact = "中段事实乙在此。"
+    content = "X" * 8000 + middle_fact + "Y" * 7984  # 16000 chars
+    r1 = json.dumps([{"source_id": "u1", "target": "preference", "content": "头部事实", "evidence": "头部", "confidence": 1.0}])
+    r2 = json.dumps([{"source_id": "u1", "target": "preference", "content": "中段事实已抽取", "evidence": middle_fact, "confidence": 1.0}])
+    llm = _RecordingLLM([r1, r2])
+    extractor = ExtractorImpl(llm=llm, min_confidence=0.5, max_attempts=3, retry_backoff_ms=0)
+    units = [create_test_unit("u1", content)]
+    result = extractor.extract(units)
+
+    assert llm.call_count == 2  # 分两批调用
+    texts = [m[-1].content for m in llm.captured_messages]
+    assert all(len(t) <= 8300 for t in texts)  # 单批 prompt 有界
+    assert middle_fact not in texts[0]
+    assert middle_fact in texts[1]
+    assert len(result) == 2  # 两批候选都保留
+    assert all(u.provenance == ["u1"] for u in result)

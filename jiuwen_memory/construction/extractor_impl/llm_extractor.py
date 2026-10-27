@@ -69,7 +69,12 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
-from jiuwen_memory.construction.prompt_guard import CONTENT_MAX_UNIT_CHARS, truncate_unit_content
+from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
+    chunk_unit,
+    truncate_unit_content,
+)
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
 from ..base import ExtractContext, OperatorType
 from ..common import merge_unit_tags, parse_tags, validate_llm_attempt_policy
@@ -921,6 +926,27 @@ class ExtractorImpl(Extractor):
         *,
         context: ExtractContext | None = None,
     ) -> list[ExtractionCandidate]:
+        """内容型完整消费：≤ 上限的 unit 合并单批调用；超限 unit 无损分批逐批调用。
+
+        候选经 ``source_id`` 回指原 unit（分片副本保留 id），跨批天然可加合并；
+        中段截断会静默漏事实（检视 P2），故超限内容一律分批而不截断。
+        """
+        candidates: list[ExtractionCandidate] = []
+        normal = [u for u in units if len(u.content) <= CONTENT_MAX_UNIT_CHARS]
+        if normal:
+            candidates.extend(self._llm_extract_once(normal, context=context))
+        for u in units:
+            if len(u.content) > CONTENT_MAX_UNIT_CHARS:
+                for copy in chunk_unit(u):
+                    candidates.extend(self._llm_extract_once([copy], context=context))
+        return candidates
+
+    def _llm_extract_once(
+        self,
+        units: list[MemoryUnit],
+        *,
+        context: ExtractContext | None = None,
+    ) -> list[ExtractionCandidate]:
         """对一批 unit 调一次 LLM 提取——每条 unit 带 [ID: ...] 标识，
         LLM 在每个候选里输出 ``source_id`` 回指来源；解析时校验 source_id 存在。
 
@@ -1000,28 +1026,17 @@ class ExtractorImpl(Extractor):
         return self.build_candidates(items, units)
 
     def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
-        """调用 LLM.chat()，含重试逻辑。"""
-        import time
-
-        last_exc: Exception | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=max_tokens)
-            except Exception as exc:
-                last_exc = exc
-                if attempt == self._max_attempts - 1:
-                    break
-                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                logger.warning(
-                    "Extractor: LLM call failed (attempt %d), retrying in %.1fs",
-                    attempt + 1,
-                    wait,
-                )
-                time.sleep(wait)
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("Extractor: LLM call did not execute")
-
+        """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""
+        return call_llm_with_retry(
+            self._llm.chat,
+            messages,
+            max_attempts=self._max_attempts,
+            backoff_ms=self._retry_backoff_ms,
+            logger=logger,
+            label="Extractor",
+            temperature=0,
+            max_tokens=max_tokens,
+        )
     def _build_units(
         self,
         candidates: list[ExtractionCandidate],

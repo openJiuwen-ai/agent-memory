@@ -55,6 +55,7 @@ from jiuwen_memory.common.log import (
 from jiuwen_memory.common.type_def import FeatureSet, MemoryUnit, Relation
 from jiuwen_memory.construction.associator import AssociatorProducer
 from jiuwen_memory.construction.prompt_guard import truncate_unit_content
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
 from ..associator import Associator
 from ..base import OperatorType
@@ -802,28 +803,17 @@ class LLMAssociator(Associator):
     # ------------------------------------------------------------------
 
     def _call_llm_with_retry(self, messages: list) -> str:
-        """调用 LLM.chat()，含重试逻辑。"""
-        import time
-
-        last_exc: Exception | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=4096)
-            except Exception as exc:
-                last_exc = exc
-                if attempt == self._max_attempts - 1:
-                    break
-                wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                logger.warning(
-                    "Associator: LLM call failed (attempt %d), retrying in %.1fs",
-                    attempt + 1,
-                    wait,
-                )
-                time.sleep(wait)
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("Associator: LLM call did not execute")
-
+        """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""
+        return call_llm_with_retry(
+            self._llm.chat,
+            messages,
+            max_attempts=self._max_attempts,
+            backoff_ms=self._retry_backoff_ms,
+            logger=logger,
+            label="Associator",
+            temperature=0,
+            max_tokens=4096,
+        )
     def _parse_llm_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON，失败时尝试提取 JSON 核心部分。"""
         # 尝试直接解析

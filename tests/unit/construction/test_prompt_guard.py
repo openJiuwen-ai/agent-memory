@@ -7,9 +7,13 @@
 """
 
 from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
     DEFAULT_MAX_UNIT_CHARS,
+    chunk_unit,
+    chunk_unit_content,
     truncate_unit_content,
 )
+from tests.unit.construction.fixtures import create_test_unit
 
 
 def test_short_content_returned_unchanged():
@@ -46,3 +50,55 @@ def test_disabled_when_limit_non_positive():
     content = "x" * 1000
     assert truncate_unit_content(content, limit=0) is content
     assert truncate_unit_content(content, limit=-1) is content
+
+
+# ---------------------------------------------------------------------------
+# 内容型任务无损分批（检视 P2：截断会静默漏掉中段事实）
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_unit_content_single_batch_within_limit():
+    """未超限单批原样返回。"""
+    content = "short content"
+    assert chunk_unit_content(content) == [content]
+
+
+def test_chunk_unit_content_lossless_over_limit():
+    """超限按段落聚合切批：每批 <= limit，join 严格还原原文。"""
+    paras = [f"para{i} " + "x" * 40 for i in range(10)]
+    content = "\n\n".join(paras)  # 478 chars
+    chunks = chunk_unit_content(content, limit=200)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 200 for c in chunks)
+    assert "\n\n".join(chunks) == content  # 无损
+
+
+def test_chunk_unit_content_default_limit_is_content_max():
+    """默认上限即 CONTENT_MAX_UNIT_CHARS，与 ingest 预切分对齐。"""
+    content = "x" * (CONTENT_MAX_UNIT_CHARS + 1)
+    chunks = chunk_unit_content(content)
+
+    assert len(chunks) == 2
+    assert all(len(c) <= CONTENT_MAX_UNIT_CHARS for c in chunks)
+    assert "".join(chunks) == content  # 硬切兜底同样无损
+
+
+def test_chunk_unit_short_returns_same_object():
+    """未超限返回原 unit（不拷贝，调用方可直接复用）。"""
+    unit = create_test_unit("u1", "short")
+    assert chunk_unit(unit) == [unit]
+    assert chunk_unit(unit)[0] is unit
+
+
+def test_chunk_unit_oversized_returns_chunked_copies():
+    """超限返回分片副本：id/元数据保留，内容 join 严格还原原文。"""
+    head, tail = "甲" * 100, "乙" * 100
+    content = head + "\n\n" + tail  # 202 chars
+    unit = create_test_unit("u1", content)
+    copies = chunk_unit(unit, limit=200)
+
+    assert len(copies) == 2
+    assert all(c.id == "u1" for c in copies)
+    assert [c.content for c in copies] == [head, tail]
+    assert copies[0].system_metadata == unit.system_metadata

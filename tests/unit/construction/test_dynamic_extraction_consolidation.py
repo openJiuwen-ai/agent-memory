@@ -25,6 +25,7 @@ from jiuwen_memory.construction.evolver import EvolveMode, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
+from tests.unit.construction.fixtures import RecordingLLM
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
@@ -605,3 +606,30 @@ def test_evolver_producer_registers_dynamic():
 
     assert "dynamic" in EvolverProducer.known()
     assert "orchestrating" in EvolverProducer.known()
+
+
+
+@pytest.mark.unit
+def test_dynamic_extractor_oversized_unit_fully_consumed_in_chunks():
+    """>8000 unit 分批完整消费：逐批调用，中段事实进入后续批次 prompt。"""
+    middle_fact = "中段事实丁在此。"
+    content = "X" * 8000 + middle_fact + "Y" * 7984  # 16000 chars
+    source = _unit(
+        "source-1",
+        content,
+        {"_extract_prompt_default": "k"},
+    )
+    registry = PromptRegistry.from_dict({"extract": {"k": "抽取 JSON 数组"}})
+    responses = [
+        json.dumps([{"source_id": "source-1", "content": "头部抽取", "confidence": 1.0}]),
+        json.dumps([{"source_id": "source-1", "content": "中段抽取", "confidence": 1.0}]),
+    ]
+    llm = RecordingLLM(responses)
+    result = DynamicLLMExtractor(
+        llm, _FallbackExtractor(), prompt_registry=registry
+    ).extract([source])
+
+    assert llm.calls == 2
+    assert middle_fact not in llm.user_texts[0]
+    assert middle_fact in llm.user_texts[1]
+    assert len(result) == 2
