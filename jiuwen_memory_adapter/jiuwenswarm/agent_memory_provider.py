@@ -45,8 +45,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 try:
@@ -263,6 +266,28 @@ _BREAKER_COOLDOWN = 120.0
 # 原文已由 /messages/ 承载、且会注入整轮对话噪音。显式 search 工具不过滤。
 _RECALL_TIERS = ("semantic", "core", "procedural")
 
+# 经验类别目录（mem2.0 §2.3 分类表，沿用 agent-core TTSE 的 categories.py，
+# 首版固定不演进）：工具 schema 的 category 枚举与检索过滤共用一份。
+_EXPERIENCE_CATEGORIES = (
+    "external-service-automation",
+    "documents-office-and-records",
+    "data-analytics-and-visualization",
+    "software-engineering-devops",
+    "security-privacy-and-risk",
+    "media-multimodal-and-creative",
+    "science-engineering-modeling",
+    "search-research-and-knowledge",
+    "embodied-simulation-and-interactive-tasks",
+    "skill-agent-meta-workflows",
+    "other",
+)
+
+# 查经验工具的固定返回条数（mem2.0 §2.4：两类合起来 5 条，模型不可改）。
+_EXPERIENCE_TOP_K = 5
+
+# 周期整理注册间隔（秒，mem2.0 §2.5.1：一周一次的经验整理）。
+_CONSOLIDATE_INTERVAL = 604_800
+
 
 def _recall_filters() -> dict[str, Any]:
     """prefetch 召回过滤（dict DSL，HTTP/进程内两模式共用）。
@@ -274,7 +299,72 @@ def _recall_filters() -> dict[str, Any]:
     return {"tier": {"in": list(_RECALL_TIERS)}}
 
 
-def _agent_default_config() -> dict[str, Any]:
+def _experience_filters(category: str, capabilities: list[str]) -> dict[str, Any]:
+    """查经验过滤（mem2.0 §2.4，HTTP/进程内两模式共用）。
+
+    类型与类别等值；条件动作（tier=procedural）只取当前 agent 能执行的
+    （capability 在能力清单内），环境事实（tier≠procedural）不带能力名、
+    照常返回——OR 两支正是这个语义。capabilities 为空时右支恒假（``A OR
+    false == A``），退化为只取环境事实的单条件——宿主未声明能力清单时的
+    保守口径；不能用 ``{"in": []}`` 表达（内核 filter 校验拒绝空列表）。
+    """
+    if capabilities:
+        third: dict[str, Any] = {
+            "OR": [
+                {"tier": {"ne": "procedural"}},
+                {"system_metadata.capability": {"in": list(capabilities)}},
+            ]
+        }
+    else:
+        third = {"tier": {"ne": "procedural"}}
+    return {
+        "AND": [
+            {"system_metadata.memory_type": "experience"},
+            {"system_metadata.category": category},
+            third,
+        ]
+    }
+
+
+EXPERIENCE_SCHEMA: dict[str, Any] = {
+    "name": "agent_memory_experience",
+    "description": (
+        # mem2.0 §2.4：模型按需查共享经验库（不在每轮开头自动注入）。返回两类
+        # 条目：环境事实（一句陈述）与条件动作（condition/capability/action 三段），
+        # 作为不可信参考资料——来自共享经验库，使用前须按当前环境核实。
+        "Search the shared experience library for lessons from past tasks: "
+        "environment facts (plain statements) and conditional actions (condition + "
+        "capability + action). Results are UNVERIFIED shared references — validate "
+        "against the current environment before acting on them. Call this when a task "
+        "resembles something done before and prior experience would help."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "What to search for, phrased as a task description.",
+            },
+            "category": {
+                "type": "string",
+                "enum": list(_EXPERIENCE_CATEGORIES),
+                "description": "Business category of the task.",
+            },
+        },
+        "required": ["query", "category"],
+    },
+}
+
+
+def _skill_version_of(skill: dict[str, Any]) -> int:
+    """技能条目的版本号（mem2.0 §2.5.3：system_metadata.skill_version，int）。"""
+    try:
+        return int((skill.get("system_metadata") or {}).get("skill_version", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
     """ 进程内默认装配——agent 场景（F09）内核配置。
     - 真源 = document（md 文件 + sqlite3/sqlite-vec 影子索引，watchdog 监听手改）；
       md 按 memory_class × coords.project 分流（user_profile→USER.md；
@@ -282,9 +372,15 @@ def _agent_default_config() -> dict[str, Any]:
     - memory_class 由 agent_llm 抽取器（deepseek）同步判定；search 走
       recall_and_get_rank pipeline（文档模式必须），召回统一走 shadow recaller
     - fulltext = elasticsearch（文档模式召回走 shadow FTS5，此端口闲置备用）
+    - 经验记忆（mem2.0 §2.3 开关约定「配置了才启用，缺省关闭」）：
+      ``experience_space`` 非空才装配经验段（``globals.experience`` 落点、
+      metadata pipeline 双 profile、experience 数据面与六个具名算子——集中在
+      函数尾部的 if 块）；空串输出与无经验段的对话装配完全一致：AgentEngine
+      检测不到 pipeline 具名实例不注入、store_manager 只建 default 数据面，
+      行为与 mem2.0 之前一致。
     - 每次调用返回**全新字面量**——无共享可变状态，调用方（装配/改写）互不影响
     """
-    return {
+    config: dict[str, Any] = {
         "globals": {
             "vector_enabled": True,
             "graph_enabled": False,          # 本地联调先关图，减少装配面
@@ -326,14 +422,20 @@ def _agent_default_config() -> dict[str, Any]:
         "shadow_index": {"default": {"target": "sqlite", "params": {"embedder": "default"}}},
         # 文档看门狗：md 保存后 debounce 毫秒再同步影子索引
         "watchdog": {"default": {"target": "watchdog", "params": {"debounce_ms": 2000}}},
-        # 全局唯一 StoreManager（F07）：文档模式召回统一走 shadow_recaller
+        # 全局唯一 StoreManager（F07）：文档模式召回统一走 shadow_recaller。
+        # experience 数据面（mem2.0）见函数尾部 if 块——经验/技能条目不走文档
+        # 分流（write_document 显式 false 盖过 globals，ComponentConfig.get
+        # params 优先），KV 真源 + keyword/vector 召回（fulltext/vector 端口走
+        # 内核 defaults 内存版，与对话的 shadow 索引互不占用）。
         "store_manager": {"default": {"target": "composite", "params": {
-            "domain_stores": {"default": {
-                "kv_store": "default",
-                "shadow_recaller": "shadow",
-                # 召回+物化在 storage 内一次完成（文档模式必须走此 pipeline）
-                "preferred_retrieval_pipeline": "recall_and_get_rank",
-            }},
+            "domain_stores": {
+                "default": {
+                    "kv_store": "default",
+                    "shadow_recaller": "shadow",
+                    # 召回+物化在 storage 内一次完成（文档模式必须走此 pipeline）
+                    "preferred_retrieval_pipeline": "recall_and_get_rank",
+                },
+            },
         }}},
         # ---- 共享插件 ------------------------------------------------------ #
         # jieba 分词（中文召回，whitespace 会把整句当一个 token）
@@ -358,39 +460,52 @@ def _agent_default_config() -> dict[str, Any]:
         }}},
         "fuser": {"default": "rrf"},
         "discloser": {"default": "truncating"},
-        "retriever": {"default": {"target": "pipeline", "params": {
-            "reranker": "default",
-            "query_parser": "default",
-            "fuser": "default",
-            "discloser": "default",
-            "over_fetch_factor": 4,
-            "over_fetch_floor": 60,
-            "recall_max": 100,
-            "rerank_max": 60,
-            "min_score": 0.0,
-            "min_score_ratio": 0.0,
-            "min_score_ratio_uncalibrated": 0.0,
-            "min_results": 0,
-        }}},
+        "retriever": {
+            "default": {"target": "pipeline", "params": {
+                "reranker": "default",
+                "query_parser": "default",
+                "fuser": "default",
+                "discloser": "default",
+                "over_fetch_factor": 4,
+                "over_fetch_floor": 60,
+                "recall_max": 100,
+                "rerank_max": 60,
+                "min_score": 0.0,
+                "min_score_ratio": 0.0,
+                "min_score_ratio_uncalibrated": 0.0,
+                "min_results": 0,
+            }},
+        },
         # ---- 构建 ---------------------------------------------------------- #
         # agent 场景（F09）：prompt user↔agent 重定向 + cn 指令面，抽取时同步判定
         # memory_class 三类（md 落盘分流键），无独立 fallback 路径
-        "extractor": {"default": {"target": "agent_llm",
-                                  "params": {"llm": "default", "extractor_language": "cn"}}},
+        # 对话抽取（agent_llm）；经验抽取（experience，§2.2 三段）见尾部 if 块
+        "extractor": {
+            "default": {"target": "agent_llm",
+                        "params": {"llm": "default", "extractor_language": "cn"}},
+        },
         "abstractor": {"default": "concat"},
         "associator": {
             "default": {"target": "keyword", "params": {"feature_extractor": "default"}}
         },
         "classifier": {"default": "llm"},
-        # 文档模式（write_document=true）：IndexBuilder 全委托 domain_store.add 文档分流
-        "constructor": {"default": {"target": "document", "params": {"domain_store": "default"}}},
-        # 文档模式去重（F08）：两路并跑（shadow FTS5 + vec）+ embedder cosine 精排
-        "dedup": {"default": {"target": "shadow", "params": {"embedder": "default"}}},
-        "evolver": {"default": {"target": "orchestrating", "params": {
-            "extractor": "default", "abstractor": "default", "associator": "default",
-            "index_builder": "default", "message_store": "default",
-            "dedup": "default", "llm": "default",
-        }}},
+        # 文档模式（write_document=true）：IndexBuilder 全委托 domain_store.add 文档分流；
+        # 经验 IndexBuilder（mem2.0，见尾部 if 块）：hybrid 落 experience 数据面。
+        "constructor": {
+            "default": {"target": "document", "params": {"domain_store": "default"}},
+        },
+        # 文档模式去重（F08）：两路并跑（shadow FTS5 + vec）+ embedder cosine 精排；
+        # 经验去重（mem2.0，见尾部 if 块）：vector dedup 查经验条目所在的 vector 端口。
+        "dedup": {
+            "default": {"target": "shadow", "params": {"embedder": "default"}},
+        },
+        "evolver": {
+            "default": {"target": "orchestrating", "params": {
+                "extractor": "default", "abstractor": "default", "associator": "default",
+                "index_builder": "default", "message_store": "default",
+                "dedup": "default", "llm": "default",
+            }},
+        },
         # ---- 摄取 ---------------------------------------------------------- #
         "ingestor": {"default": {"target": "simple", "params": {"normalizer": "default"}}},
         # ---- 控制 ---------------------------------------------------------- #
@@ -413,9 +528,114 @@ def _agent_default_config() -> dict[str, Any]:
         "space": {"default": {"target": "kv", "params": {}}},
         "config_source": {"default": "yaml_defaults"},
     }
+    if not experience_space:
+        return config
+    # ---- 经验段（mem2.0 §2.3「配置了才启用，缺省关闭」）----------------------- #
+    # globals 落点：经验固定 experience_space 空间（写入者空间之外的结构化沉淀），
+    # 开启该空间的技能沉淀与周期整理。
+    config["globals"]["experience"] = {
+        "memory_class": "experience",
+        "default_space": experience_space,
+        "curated_spaces": [{"space": experience_space, "skill": True}],
+    }
+    # experience 数据面：经验/技能条目不走文档分流——write_document 显式 false
+    # 盖过 globals（ComponentConfig.get params 优先），KV 真源 + keyword/vector
+    # 召回（fulltext/vector 端口走内核 defaults 内存版，与对话的 shadow 索引
+    # 互不占用）。
+    config["store_manager"]["default"]["params"]["domain_stores"]["experience"] = {
+        "write_document": False,
+        "kv_store": "default",
+        "keyword_recaller": "keyword",
+        "vector_recaller": "vector",
+        "preferred_retrieval_pipeline": "recall_and_get_rank",
+    }
+    # 经验检索（§2.4）：经验数据面 + 选取算子。parser/reranker 与对话检索共用
+    # 具名实例（查询向量同源）；write_document 显式 false——本实例按非文档装配
+    # （unit_reader 走 KV 点读、不补 DOCUMENT 通道）。
+    config["retriever"]["experience"] = {"target": "pipeline", "params": {
+        "reranker": "default",
+        "query_parser": "default",
+        "fuser": "default",
+        "discloser": "default",
+        "embedder": "default",
+        "over_fetch_factor": 4,
+        "over_fetch_floor": 60,
+        "recall_max": 100,
+        "rerank_max": 60,
+        "min_score": 0.0,
+        "min_score_ratio": 0.0,
+        "min_score_ratio_uncalibrated": 0.0,
+        "min_results": 0,
+        "domain_store": "experience",
+        "write_document": False,
+        "selector_enabled": True,
+    }}
+    # 经验抽取（§2.2 三段：提炼/修正/分类）。
+    config["extractor"]["experience"] = {"target": "experience", "params": {
+        "llm": "default",
+    }}
+    # 经验 IndexBuilder：hybrid 落 experience 数据面（KV 正排 + fulltext/vector
+    # 索引）。embedder 必须显式指名——dep 缺省匿名新建 hashing，与查询侧
+    # parser 的 openai embedder 不同源会让向量召回失真。
+    config["constructor"]["experience"] = {"target": "hybrid", "params": {
+        "embedder": "default",
+        "kv_store": "default",
+        "fulltext_store": "default",
+        "vector_store": "default",
+    }}
+    # 经验去重：vector dedup 查经验条目所在的 vector 端口，embedder 同上必须
+    # 显式（匿名缺省 hashing 与索引向量不同源）。
+    config["dedup"]["experience"] = {"target": "vector", "params": {
+        "embedder": "default",
+        "vector_store": "default",
+        "kv_store": "default",
+    }}
+    # 经验 evolver（§2.2）：DynamicEvolver + 经验 extractor/appraiser（评价包住
+    # 抽取）。index_builder/dedup 必须显式指名——dep 缺省按 globals.
+    # write_document=true 解析成 document/shadow（文档算子），经验条目会被
+    # 写进 md 文档。
+    config["evolver"]["experience"] = {"target": "dynamic", "params": {
+        "extractor": "experience",
+        "appraiser": "experience",
+        "index_builder": "experience",
+        "dedup": "experience",
+        "message_store": "default",
+        "llm": "default",
+    }}
+    # 经验评价算子（§2.2 八步前五步）：author_key 是作者摘要的 HMAC salt（缺失
+    # 装配失败）。生产经 JIUWEN_MEMORY_EXPERIENCE_AUTHOR_KEY 注入；缺省固定值
+    # 保证本地单机重启后摘要稳定（防同作者被判成不同人）。
+    config["appraiser"] = {"experience": {"target": "experience", "params": {
+        "llm": "default",
+        "author_key": os.getenv(
+            "JIUWEN_MEMORY_EXPERIENCE_AUTHOR_KEY", "agent-memory-experience-hmac-key"
+        ),
+    }}}
+    # metadata 双 profile 路由——AgentEngine 装配期检测到 pipeline 命名空间有
+    # default 具名实例即注入（_opt_pipeline）。对话单元无 memory_type 路由值 →
+    # fallback default（行为与无 pipeline 时一致：同一批具名算子）；
+    # memory_type=experience → 经验算子组（§2.1 不回落语义）。
+    config["pipeline"] = {"default": {"target": "metadata", "params": {
+        "profiles": {
+            "default": {
+                "index_builder": "default",
+                "retriever": "default",
+                "evolver": "default",
+            },
+            "experience": {
+                "index_builder": "experience",
+                "retriever": "experience",
+                "evolver": "experience",
+            },
+        },
+        "fallback": "default",
+    }}}
+    return config
 
 
-def _merge_config_over_default(config_dict: dict[str, Any]) -> dict[str, Any]:
+def _merge_config_over_default(
+    config_dict: dict[str, Any], experience_space: str = ""
+) -> dict[str, Any]:
     """[本地修改 2026-10-20] 把上层 ``config_dict`` 深合并到内置 agent 默认装配之上。
 
     进程内 ``config_dict`` 的语义从「整体替换」改为「以 ``_agent_default_config()``
@@ -431,6 +651,11 @@ def _merge_config_over_default(config_dict: dict[str, Any]) -> dict[str, Any]:
     内核 ``AssemblyContext.merged`` 的补全基准是 ``defaults.py``（不是 agent 默认），
     缺失的 F09 命名空间会被通用缺省补齐。返回值是 ``_agent_default_config()`` 的
     全新字面量被就地改写后的结果，默认配置本身每次调用都重建、无跨调用共享状态。
+
+    [本地修改 2026-10-27] 经验段按 ``experience_space`` 条件装配（对齐方案 §2.3
+    开关约定）：空串 → 合并基准不带经验段（上层显式配 ``globals.experience`` /
+    ``pipeline`` 等仍经深合并尊重）；非空 → 基准带经验段且落点为该空间，上层
+    显式配置同样覆盖。检索落点、周期整理与内核写入落点同空间，错位即查不到。
     """
 
     def _merge(base: Any, override: Any) -> Any:
@@ -440,7 +665,7 @@ def _merge_config_over_default(config_dict: dict[str, Any]) -> dict[str, Any]:
             return base
         return override
 
-    return _merge(_agent_default_config(), config_dict)
+    return _merge(_agent_default_config(experience_space=experience_space), config_dict)
 
 
 class AgentMemoryMemoryProvider(MemoryProvider):
@@ -469,6 +694,25 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     - ``identity_org``/``identity_user``：HTTP 模式服务端认证身份的 org/user
       （身份覆盖式 scope 的身份轴，§6.2-D）。缺省对齐 dev 认证器的固定身份
       ``local``/``developer``；生产配真实认证身份。
+    - ``experience_space``：经验记忆的空间名（mem2.0 §2.4「查经验的空间」，与
+      写入时经验落点一致）。非空 → 经验能力开启：注册查经验工具
+      ``agent_memory_experience``、initialize 恢复 dreaming 并注册周期整理、
+      进程内默认装配带上经验段（globals 落点 + 双 profile + 经验算子组）；
+      **空串（缺省）→ 全部关闭**——对齐方案 §2.3 开关约定「配置了才启用，
+      缺省关闭」：工具/周期任务/技能同步不启用，进程内默认装配不带经验段
+      （与无经验段的对话装配完全一致，AgentEngine 不注入 pipeline），现有
+      部署行为不受影响。进程内默认装配/config_dict 分支按本参数条件装配
+      经验段；外部 config_path 全权，不覆盖。
+    - ``experience_capabilities``：当前 agent 注册的工具与 skill 的名称清单
+      （mem2.0 §2.4/§2.5.6 的能力清单，与写轨迹时的同一份，去掉查经验工具
+      本身）。查经验时条件动作（tier=procedural）只返回清单内的；技能同步
+      跳过用到清单外工具的。缺省空——只返回环境事实、不同步条件动作类技能
+      （宿主未声明能力时的保守口径）。
+    - ``skills_dir``：技能同步目录（mem2.0 §2.5.6）。非空 → initialize 同步
+      一次、prefetch 距上次超过 ``skill_sync_interval`` 秒时后台同步，已发布
+      技能（trial/approved）写到 ``skills_dir/_mem2/<skill_name>/SKILL.md``；
+      空串 → 不同步。
+    - ``skill_sync_interval``：技能同步间隔秒，缺省 3600（1 小时）。
     """
 
     def __init__(
@@ -484,6 +728,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         api_key: str = "",
         identity_org: str = "local",
         identity_user: str = "developer",
+        experience_space: str = "",
+        experience_capabilities: Sequence[str] | None = None,
+        skills_dir: str = "",
+        skill_sync_interval: float = 3600.0,
         **_kwargs: Any,
     ) -> None:
         self._base_url = base_url or ""
@@ -499,13 +747,30 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._api_key = api_key
         self._identity_org = identity_org or "local"
         self._identity_user = identity_user or "developer"
+        # 经验记忆（mem2.0）：空间名非空即开启（缺省空串关闭，对齐方案 §2.3
+        # 「配置了才启用，缺省关闭」）——查经验工具 / 周期任务 / 技能同步；
+        # add_trajectory 是轨迹发送方的主动接口，不受此开关控制。
+        self._experience_space = experience_space or ""
+        self._experience_capabilities = list(experience_capabilities or ())
+        self._skills_dir = skills_dir or ""
+        self._skill_sync_interval = max(float(skill_sync_interval), 60.0)
 
         # Rail 在 before_invoke 首次调 initialize 时传入，覆盖构造默认
         self._scope_id: str = "__default__"
         self._session_id: str = "__default__"
 
+        # 查经验工具的使用记录（mem2.0 §2.4 record_retrieved）：每次条目 id 与
+        # 引用值，take_retrieved_refs 取走后由轨迹组装方并入 retrieved 字段
+        # （§2.1）。asyncio 单线程内 append/take 无锁。
+        self._retrieved_refs: list[dict[str, Any]] = []
+        self._last_skill_sync: float = 0.0
+
         self._client: _AgentMemoryClient | None = None
         self._initialized = False
+
+    @property
+    def _experience_enabled(self) -> bool:
+        return bool(self._experience_space)
 
     # -- MemoryProvider: 元信息 ---------------------------------------------- #
 
@@ -609,6 +874,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 api_key=self._api_key,
                 identity_org=self._identity_org,
                 identity_user=self._identity_user,
+                experience_space=self._experience_space,
             )
         await self._client.initialize()
         self._initialized = True
@@ -621,6 +887,54 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             or "builtin-agent-default",
             scope_for_log(self.bound_scope()),
         )
+        # mem2.0 §2.5.1：经验能力开启时恢复 dreaming 注册并在经验空间注册周期
+        # 整理（一周一次 CONSOLIDATE，谓词限定 active 经验）。失败只记日志——
+        # 多进程共用存储时只有一个能完成恢复，其余按设计继续。
+        if self._experience_enabled and self._client is not None:
+            await self._setup_experience_jobs()
+        # mem2.0 §2.5.6：initialize 同步一次技能（skills_dir 未配置则跳过）。
+        if self._skills_dir and self._experience_enabled:
+            await self.sync_skills()
+
+    async def _setup_experience_jobs(self) -> None:
+        """恢复 dreaming 注册 + 注册经验空间的周期整理（mem2.0 §2.5.1）。"""
+        client = self._client
+        if client is None:
+            # initialize 已按 _client 非空守卫；此处显式抛错防御误用（G.TES.01：
+            # assert 在 -O 下会被剥离，不能承担运行期契约）。
+            raise RuntimeError("experience jobs require an HTTP client")
+        try:
+            restored = await client.restore_dreaming()
+            logger.info(
+                "[AgentMemoryMemoryProvider] restore_dreaming restored=%s", restored
+            )
+        except Exception as exc:
+            # 他人持锁（多进程共用内核）或恢复失败：记日志继续，不阻塞记忆主链路。
+            logger.warning(
+                "[AgentMemoryMemoryProvider] restore_dreaming failed: error_type=%s",
+                type(exc).__name__,
+            )
+        try:
+            await client.register_consolidation(
+                self._experience_scope(), _CONSOLIDATE_INTERVAL
+            )
+            logger.info(
+                "[AgentMemoryMemoryProvider] consolidation registered space=%s "
+                "interval=%ss",
+                self._experience_space,
+                _CONSOLIDATE_INTERVAL,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[AgentMemoryMemoryProvider] consolidation registration failed: "
+                "error_type=%s",
+                type(exc).__name__,
+            )
+
+    def _experience_scope(self) -> _Scope:
+        """查经验/技能/周期整理的空间 scope（mem2.0 §2.4：不带 user——经验
+        条目不属于任何用户；space 维为构造参数 experience_space）。"""
+        return _Scope(org=self._scope_id, space=self._experience_space)
 
     # -- MemoryProvider: 工具声明 + 调度 -------------------------------------- #
 
@@ -633,6 +947,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         重新注册时直接加回列表即可）。
         """
         schemas = [SEARCH_SCHEMA, CONCLUDE_SCHEMA, READ_MD_SCHEMA, EDIT_MD_SCHEMA]
+        # mem2.0 §2.4：经验能力开启时注册查经验工具（模型按需调用）。
+        if self._experience_enabled:
+            schemas.append(EXPERIENCE_SCHEMA)
         logger.info(
             "[AgentMemoryMemoryProvider] get_tool_schemas CALLED -> returning %d schemas: %s",
             len(schemas),
@@ -764,6 +1081,63 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     )
                 return json.dumps({"results": payload, "count": len(payload)})
 
+            if tool_name == "agent_memory_experience":
+                # mem2.0 §2.4 查经验工具：模型填 query + category；space/capabilities/
+                # top_k 由接入适配补（构造参数 + 固定值），模型看不到也不能改。
+                query = args.get("query", "")
+                category = str(args.get("category") or "").strip()
+                if not query:
+                    return json.dumps({"error": "Missing required parameter: query"})
+                if not category:
+                    return json.dumps({"error": "Missing required parameter: category"})
+                items = await self._client.search_experience(
+                    query,
+                    self._experience_scope(),
+                    category=category,
+                    capabilities=self._experience_capabilities,
+                    top_k=_EXPERIENCE_TOP_K,
+                )
+                # record_retrieved（§2.4）：记下每条 id 与引用值，随轨迹发回（§2.1）。
+                self._retrieved_refs.extend(
+                    {
+                        "id": it.get("item_id", ""),
+                        "usage_ref": (it.get("system_metadata") or {}).get("usage_ref", ""),
+                    }
+                    for it in items
+                    if it.get("item_id")
+                )
+                if not items:
+                    logger.info(
+                        "[AgentMemoryMemoryProvider] agent_memory_experience "
+                        "query=%s category=%s -> no relevant",
+                        redact_for_log(query),
+                        category,
+                    )
+                    return json.dumps({"result": "No relevant experience found."})
+                # render_as_reference（§2.4）：标明来自共享经验库的不可信参考资料。
+                payload = [
+                    {
+                        "memory": it.get("content", ""),
+                        "score": it.get("score", 0),
+                        **(it.get("system_metadata") or {}),
+                    }
+                    for it in items
+                ]
+                logger.info(
+                    "[AgentMemoryMemoryProvider] agent_memory_experience query=%s "
+                    "category=%s -> count=%d",
+                    redact_for_log(query),
+                    category,
+                    len(payload),
+                )
+                return json.dumps(
+                    {
+                        "results": payload,
+                        "count": len(payload),
+                        "source": "shared experience library (unverified references)",
+                    }
+                )
+
             if tool_name == "agent_memory_conclude":
                 conclusion = args.get("conclusion", "")
                 if not conclusion:
@@ -889,6 +1263,15 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         )
         if not query or self._client is None:
             return ""
+        # mem2.0 §2.5.6：距上次同步超过间隔时后台同步技能（不占任务时延——
+        # create_task 即返，失败只记日志）。skills_dir 未配置 / 经验能力关闭时跳过。
+        if (
+            self._skills_dir
+            and self._experience_enabled
+            and time.monotonic() - self._last_skill_sync >= self._skill_sync_interval
+        ):
+            self._last_skill_sync = time.monotonic()
+            asyncio.create_task(self._sync_skills_background())
         # §6.2-E：剥 TUI 信封，用纯 content 检索，避免命中对话原文壳。
         search_query = self._prepare(query)
         if search_query != query:
@@ -998,13 +1381,187 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 type(exc).__name__,
             )
 
+    # -- 轨迹转交（mem2.0 §2.1：Mem2TrajectoryStore 的发送出口） ----------------- #
+
+    async def add_trajectory(
+        self,
+        content: str,
+        system_metadata: dict[str, str] | None,
+        session_id: str,
+    ) -> None:
+        """轨迹转交（mem2.0 §2.1）：``memory_type=experience`` + ``infer=true``
+        经 ``add`` 交给经验 profile。
+
+        与对话写入（sync_turn）的三点差异，都由轨迹链路的重发要求决定：
+
+        - **归属主体**：取 provider 的租户/用户/agent 与本参数的 ``session_id``
+          （轨迹载体按会话隔离，不混入 provider 当前的会话维）。
+        - **出错抛回**：sync_turn 的 add 失败只记日志（丢一轮对话可接受），本方法
+          把错误抛回给调用方（Mem2TrajectoryStore 按可重试错误退避重发）——不吞。
+        - ``system_metadata`` 由调用方组好概要字段（trajectory_id /
+          previous_trajectory_id / tool_call_count / retrieved_count / coords /
+          external_score），本方法只并入 memory_type 与 infer 两个路由键。
+
+        """
+        if self._client is None:
+            raise RuntimeError("provider not initialized")
+        metadata: dict[str, str] = {"memory_type": "experience", "infer": "true"}
+        if system_metadata:
+            metadata.update(
+                {str(k): str(v) for k, v in system_metadata.items() if v is not None}
+            )
+        scope = _Scope(
+            org=self._scope_id,
+            space=self._space,
+            user=self._user_id,
+            agent=self._agent_id,
+            session=session_id,
+        )
+        logger.info(
+            "[AgentMemoryMemoryProvider] add_trajectory session=%s "
+            "system_metadata=%s content_len=%d",
+            metadata_for_log({"session_id": session_id}),
+            metadata_for_log(metadata),
+            len(content),
+        )
+        # client.add_trajectory 不降级——异常原样抛回。
+        await self._client.add_trajectory(content, scope, system_metadata=metadata)
+
+    def take_retrieved_refs(self) -> list[dict[str, str]]:
+        """取走查经验工具累计的使用记录（§2.4 record_retrieved 的读出口）。
+
+        每项 ``{"id", "usage_ref"}``；取走即清空。轨迹组装方在组 retrieved 字段
+        （§2.1）时调用；不组轨迹的部署不调用、记录滞留至下次取走（量级为每
+        次工具调用至多 top_k 条，不构成泄漏）。
+        """
+        refs, self._retrieved_refs = self._retrieved_refs, []
+        return [
+            {
+                "id": str(ref.get("id", "")),
+                "usage_ref": str(ref.get("usage_ref", "")),
+            }
+            for ref in refs
+        ]
+
+    # -- 技能同步（mem2.0 §2.5.6） --------------------------------------------- #
+
+    # 技能名只接受小写字母/数字/连字符，不以连字符开头结尾，长度 1-64（模型生成、
+    # 编辑者可改，同步时不信任——§2.5.6 技能名校验）。
+    _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")
+
+    async def _sync_skills_background(self) -> None:
+        """prefetch 触发的后台同步入口：吞异常（不影响本轮检索）。"""
+        try:
+            await self.sync_skills()
+        except Exception as exc:
+            logger.warning(
+                "[AgentMemoryMemoryProvider] background skill sync failed: "
+                "error_type=%s",
+                type(exc).__name__,
+            )
+
+    async def sync_skills(self) -> None:
+        """把已发布技能同步到 ``skills_dir/_mem2/<skill_name>/SKILL.md``（§2.5.6）。
+
+        流程：取（list 已发布技能——memory_type=skill、标签 trial/approved、
+        生效）→ 筛选（同名取版本号最大；跳过技能名不合规 / 用到清单外工具 /
+        本地已有同名技能）→ 写（内容无变化不重写）→ 清理（_mem2 下不在本次
+        结果里的目录删除，即被驳回/取代/下线的技能）。取不到时不动现有文件。
+        """
+        if not self._skills_dir or not self._experience_enabled:
+            return
+        if self._client is None:
+            raise RuntimeError("provider not initialized")
+        # 1 取技能：失败即返回（不动现有文件，下次再试）。
+        skills = await self._client.list_published_skills(self._experience_scope())
+        self._last_skill_sync = time.monotonic()
+        # 2 筛选：同名取 skill_version 最大的一版。
+        by_name: dict[str, dict[str, Any]] = {}
+        for skill in skills:
+            name = str(skill.get("skill_name", "")).strip()
+            if not name:
+                continue
+            current = by_name.get(name)
+            if current is None or _skill_version_of(skill) > _skill_version_of(current):
+                by_name[name] = skill
+        mem2_dir = Path(self._skills_dir) / "_mem2"
+        selected: dict[str, dict[str, Any]] = {}
+        for name, skill in by_name.items():
+            # 技能名不合规：跳过（不信任模型/编辑者给的目录名）。
+            if not self._SKILL_NAME_RE.match(name):
+                logger.warning(
+                    "[AgentMemoryMemoryProvider] skill sync skipped invalid "
+                    "skill_name=%s",
+                    redact_for_log(name),
+                )
+                continue
+            # 本地已有同名技能（_mem2 之外的技能目录）：跳过，本地优先。
+            if (Path(self._skills_dir) / name).exists():
+                logger.info(
+                    "[AgentMemoryMemoryProvider] skill sync skipped local-existing "
+                    "skill_name=%s",
+                    name,
+                )
+                continue
+            # 能力清单非空时，技能用到的工具须全部在清单内（§2.5.6 跳过执行
+            # 不了的）；清单为空视同取不到，本次不按能力筛选（与 §2.5.6 的
+            # 「启动时还取不到这份清单的，本次不按能力筛选」同义）。
+            required = skill.get("capabilities") or []
+            if self._experience_capabilities and not set(
+                str(item) for item in required
+            ).issubset(self._experience_capabilities):
+                logger.info(
+                    "[AgentMemoryMemoryProvider] skill sync skipped beyond-"
+                    "capability skill_name=%s",
+                    name,
+                )
+                continue
+            selected[name] = skill
+        # 3 写文件：条目正文即 SKILL.md 全文；内容无变化不重写（保留 mtime，
+        # SkillUseRail 按修改时间发现变化）。路径解析校验：目标必须在 _mem2 内。
+        mem2_dir.mkdir(parents=True, exist_ok=True)
+        mem2_resolved = mem2_dir.resolve()
+        for name, skill in selected.items():
+            target = (mem2_dir / name / "SKILL.md").resolve()
+            if not str(target).startswith(str(mem2_resolved)):
+                logger.warning(
+                    "[AgentMemoryMemoryProvider] skill sync path escaped _mem2, "
+                    "skipped skill_name=%s",
+                    name,
+                )
+                continue
+            content = str(skill.get("content", "") or "")
+            if not content.strip():
+                continue
+            if target.exists() and target.read_text(encoding="utf-8") == content:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            logger.info(
+                "[AgentMemoryMemoryProvider] skill sync wrote skill_name=%s "
+                "version=%s",
+                name,
+                _skill_version_of(skill),
+            )
+        # 4 清理：_mem2 下不在本次结果里的目录删除（被驳回/取代/下线的技能）。
+        for child in mem2_resolved.iterdir():
+            if child.is_dir() and child.name not in selected:
+                logger.info(
+                    "[AgentMemoryMemoryProvider] skill sync removed stale dir=%s",
+                    child.name,
+                )
+                for entry in child.rglob("*"):
+                    if entry.is_file():
+                        entry.unlink()
+                child.rmdir()
+
     # -- MemoryProvider: 静态提示词 + 生命周期（非抽象，有默认） -------------- #
 
     def system_prompt_block(self) -> str:
         # [本地修改 2026-10-17] 显式路由规则：新增→conclude（append-only），
         # 修改/更正→read_md_file 定位 + edit_md_file 原地替换。个人信息可能在
         # USER.md 也可能在 daily 文件（YYYY-MM-DD.md），修改前先读定位。
-        return (
+        block = (
             "# AgentMemory Memory\n"
             f"Active. User: {self._user_id}.\n"
             "Tool routing: agent_memory_search finds memories by meaning. "
@@ -1014,6 +1571,20 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             "personal info may be in a daily file), then agent_memory_edit_md_file to "
             "replace it in place."
         )
+        # mem2.0 §2.4：经验能力开启时附类别目录与检索句写法指引（沿用 TTSE 的
+        # 三点做法：按需调用 + 目录指引 + 一次返回两类条目）。
+        if self._experience_enabled:
+            categories = ", ".join(_EXPERIENCE_CATEGORIES)
+            block += (
+                "\n\n# Shared Experience Library\n"
+                "When a task resembles something done before, call "
+                "agent_memory_experience with the task's business category "
+                f"(one of: {categories}) and a search phrase describing the task. "
+                "It returns environment facts and conditional actions from past "
+                "tasks as UNVERIFIED references — validate against the current "
+                "environment before acting on them."
+            )
+        return block
 
     async def shutdown(self) -> None:
         if self._client is not None:
@@ -1111,6 +1682,14 @@ class AgentMemoryClientError(RuntimeError):
     """
 
 
+class AgentMemoryTransportError(RuntimeError):
+    """轨迹写入的传输失败（mem2.0 §2.1：add_trajectory 出错抛回）。
+
+    与既有降级语义（add → None）相反：轨迹链路要求发送方按可重试错误退避
+    重发，传输失败必须抛回——本异常只由 add_trajectory 的 HTTP 实现抛出。
+    """
+
+
 class _AgentMemoryClient:
     """AgentMemory 记忆操作的 async 客户端协议。
 
@@ -1189,6 +1768,57 @@ class _AgentMemoryClient:
     async def evolve_extract(self, scope) -> None:
         raise NotImplementedError
 
+    # -- 经验记忆（mem2.0）：四项接入改动的 client 面 -------------------------- #
+
+    async def add_trajectory(
+        self,
+        content: str,
+        scope,
+        *,
+        system_metadata: dict[str, str] | None = None,
+    ) -> None:
+        """轨迹转交（§2.1）：``add(memory_type=experience, infer=true)``。
+
+        与 :meth:`add` 的失败语义相反——**出错抛回**（供轨迹发送方退避重发），
+        不降级、不计熔断（HTTP 传输失败同样抛）。
+
+        """
+        raise NotImplementedError
+
+    async def search_experience(
+        self,
+        query: str,
+        scope,
+        *,
+        category: str,
+        capabilities: list[str],
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """查经验（§2.4）：经验空间的 search，filters 含类型/类别/能力三段。
+
+        返回每条 ``{item_id, content, score, system_metadata}``——
+        system_metadata 只含类别、三段（condition/capability/action）与引用值
+        usage_ref（由内核选取算子裁剪）。
+        """
+        raise NotImplementedError
+
+    async def list_published_skills(self, scope) -> list[dict[str, Any]]:
+        """列已发布技能（§2.5.6）：memory_type=skill、标签 trial/approved、生效。
+
+        返回每条 ``{item_id, content, skill_name, skill_version, capabilities}``。
+        """
+        raise NotImplementedError
+
+    async def restore_dreaming(self) -> bool:
+        """恢复 dreaming 注册（§2.5.1）。返回是否执行了恢复（HTTP surface 未
+        暴露该 verb 时返回 False——由服务端侧自行恢复）。
+        """
+        return False
+
+    async def register_consolidation(self, scope, interval: int) -> None:
+        """在 scope 空间注册周期整理（§2.5.1：CONSOLIDATE + dreaming=True）。"""
+        raise NotImplementedError
+
     async def close(self) -> None:
         pass
 
@@ -1206,6 +1836,7 @@ def _build_client(
     api_key: str = "",
     identity_org: str = "local",
     identity_user: str = "developer",
+    experience_space: str = "",
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
@@ -1214,6 +1845,11 @@ def _build_client(
     文档真源装配，serve-doc 的代码化副本）。
     [本地修改 2026-10-20] ``config_dict`` 分支经 ``_merge_config_over_default()``
     深合并到内置默认之上（而非整体替换）：上层传部分片段时保留 agent 栈缺省。
+    [本地修改 2026-10-27] 经验记忆（mem2.0 §2.3 开关约定「配置了才启用，缺省
+    关闭」）：``experience_space`` 空串 → 进程内装配不带经验段（config_dict 分支
+    的合并基准同样不带；上层显式配 ``globals.experience`` 等仍经深合并尊重）；
+    非空 → 装配经验段且落点为该空间，与 provider 的检索/工具/周期任务一致。
+    外部 ``config_path`` 全权，不注入（部署方自配）。
 
     进程内分支统一携带 ``security_provider``——身份由可信 composition root 注入
     而非从业务 scope 自述（P1-2）；HTTP 分支的身份由 API Key 认证决定，与本参数
@@ -1226,19 +1862,23 @@ def _build_client(
             identity_org=identity_org,
             identity_user=identity_user,
         )
+
     if config_dict:
         # [本地修改 2026-10-20] 上层 config_dict 深合并到内置 agent 默认装配之上，
         # 而非整体替换——宿主只传要覆盖的片段（globals 凭证/端点、embedder_dim、
         # markdown_store.default.params.root），未提及的 F09 栈缺省原样保留。
+        # 经验段按 experience_space 条件进合并基准（2026-10-27，见上）。
         return _InProcessClient(
             None,
-            config_dict=_merge_config_over_default(config_dict),
+            config_dict=_merge_config_over_default(config_dict, experience_space),
             security_provider=security_provider,
         )
     if config_path:
         return _InProcessClient(config_path, security_provider=security_provider)
     return _InProcessClient(
-        None, config_dict=_agent_default_config(), security_provider=security_provider
+        None,
+        config_dict=_agent_default_config(experience_space=experience_space),
+        security_provider=security_provider,
     )
 
 
@@ -1373,10 +2013,14 @@ class _HttpClient(_AgentMemoryClient):
 
         身份覆盖式是唯一在 plain dev（allow_all）/ dev+identities / required
         三种部署形态下都成立的 payload 形态（design doc §6.2-D 部署形态表）。
+
+        [本地修改 2026-10-26] space 维透传语义 scope（此前硬编码空串）——经验
+        记忆（mem2.0）的检索/技能列举/周期整理都发生在显式空间（构造参数
+        experience_space），对话路径 space 仍为空串，行为不变。
         """
         return {
             "org": self._identity_org,
-            "space": "",
+            "space": getattr(scope, "space", "") or "",
             "user": self._identity_user,
             "agent": getattr(scope, "agent", ""),
             "session": getattr(scope, "user", ""),
@@ -1629,6 +2273,160 @@ class _HttpClient(_AgentMemoryClient):
         job_id = await self._post_verb("evolve", payload, write=True)
         logger.info("[AgentMemoryMemoryProvider/http] /v1/evolve -> job_id=%s", job_id)
 
+    # -- 经验记忆（mem2.0） ---------------------------------------------------- #
+
+    async def add_trajectory(
+        self, content, scope, *, system_metadata=None
+    ) -> None:
+        """轨迹转交（§2.1）。出错抛回——不走 ``_post_verb`` 的降级语义（None），
+        传输失败/HTTP 错误均抛 ``AgentMemoryTransportError`` 供发送方重发。
+        """
+        payload: dict[str, Any] = {
+            "content": content,
+            "scope": self._scope_payload(scope),
+            "tags": [],
+        }
+        if system_metadata:
+            payload["system_metadata"] = system_metadata
+        logger.info(
+            "[AgentMemoryMemoryProvider/http] POST /v1/add trajectory "
+            "system_metadata=%s content_len=%d",
+            metadata_for_log(system_metadata or {}),
+            len(content),
+        )
+        if self._http is None or not self._is_initialized or self._is_breaker_open():
+            raise AgentMemoryTransportError(
+                "AgentMemory HTTP client unavailable (not initialized or breaker open)"
+            )
+        try:
+            resp = await self._http.post(
+                "/v1/add", json=payload, timeout=self._write_timeout
+            )
+        except Exception as exc:
+            self._record_failure()
+            raise AgentMemoryTransportError(
+                f"trajectory add transport failed: {type(exc).__name__}"
+            ) from exc
+        if resp.is_error:
+            self._record_failure()
+            raise AgentMemoryTransportError(
+                f"/v1/add trajectory rejected: HTTP {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        self._record_success()
+
+    async def search_experience(
+        self, query, scope, *, category, capabilities, top_k=5
+    ) -> list[dict[str, Any]]:
+        """查经验（§2.4）：filters 三段 + extensions 路由到经验 profile。
+
+        响应 items 的 system_metadata 已由内核选取算子裁剪（类别/三段/usage_ref），
+        原样透传给上层渲染。
+        """
+        payload: dict[str, Any] = {
+            "query": query,
+            "context": {
+                "scope": self._scope_payload(scope),
+                # 路由键（§2.3）：extensions 优先于 filters 选 profile
+                "extensions": {"memory_type": "experience"},
+            },
+            "filters": _experience_filters(category, capabilities),
+            "top_k": min(int(top_k or 5), _MAX_TOP_K),
+            "disclosure": "l2",
+        }
+        logger.info(
+            "[AgentMemoryMemoryProvider/http] POST /v1/search experience "
+            "category=%s top_k=%d",
+            metadata_for_log({"category": category}),
+            top_k,
+        )
+        data = await self._post_verb("search", payload)
+        if not isinstance(data, dict):
+            return []
+        items = data.get("items", [])
+        if not isinstance(items, list):
+            return []
+        return [
+            {
+                "item_id": it.get("unit_id", ""),
+                "content": it.get("content", ""),
+                "score": it.get("score", 0),
+                "system_metadata": it.get("system_metadata") or {},
+            }
+            for it in items
+            if isinstance(it, dict)
+        ]
+
+    async def list_published_skills(self, scope) -> list[dict[str, Any]]:
+        """列已发布技能（§2.5.6）：类型 + 标签 + 生效三重过滤。"""
+        payload = {
+            "scope": self._scope_payload(scope),
+            "memory_types": ["skill"],
+            "filters": {
+                "AND": [
+                    {"tags": {"in": ["approved", "trial"]}},
+                    {"lifecycle": "active"},
+                ]
+            },
+            "limit": 1000,
+        }
+        logger.info("[AgentMemoryMemoryProvider/http] POST /v1/list skills")
+        data = await self._post_verb("list", payload)
+        if not isinstance(data, dict):
+            return []
+        items = data.get("items", [])
+        if not isinstance(items, list):
+            return []
+        return [
+            {
+                "item_id": it.get("id", ""),
+                "content": self._content_view(it),
+                "system_metadata": it.get("system_metadata") or {},
+                "skill_name": (it.get("system_metadata") or {}).get("skill_name", ""),
+                "skill_version": (it.get("system_metadata") or {}).get(
+                    "skill_version", 0
+                ),
+                "capabilities": (it.get("system_metadata") or {}).get(
+                    "capabilities", []
+                ),
+            }
+            for it in items
+            if isinstance(it, dict)
+        ]
+
+    async def restore_dreaming(self) -> bool:
+        """HTTP surface 未暴露 restore_dreaming verb（非 MemoryAPI 公共契约）——
+        由服务端侧自行恢复，本方法如实返回 False。
+        """
+        logger.info(
+            "[AgentMemoryMemoryProvider/http] restore_dreaming not exposed over "
+            "HTTP; server-side responsibility"
+        )
+        return False
+
+    async def register_consolidation(self, scope, interval: int) -> None:
+        """注册周期整理（§2.5.1）：CONSOLIDATE + dreaming=True + interval。"""
+        payload: dict[str, Any] = {
+            "scope": self._scope_payload(scope),
+            "mode": "consolidate",
+            "dreaming": True,
+            "interval": int(interval),
+            "candidate": {
+                "type": "predicate",
+                "filters": {
+                    "lifecycle": "active",
+                    "system_metadata.memory_type": "experience",
+                    "tier": {"in": ["semantic", "procedural"]},
+                },
+            },
+        }
+        logger.info(
+            "[AgentMemoryMemoryProvider/http] POST /v1/evolve consolidate "
+            "dreaming=True interval=%s",
+            interval,
+        )
+        await self._post_verb("evolve", payload, write=True)
+
     async def close(self) -> None:
         if self._http is not None:
             try:
@@ -1681,7 +2479,6 @@ class _InProcessClient(_AgentMemoryClient):
         config = config_dict
         if config is None and config_path:
             import json as _json
-            from pathlib import Path
 
             p = Path(config_path)
             data = (
@@ -1873,6 +2670,116 @@ class _InProcessClient(_AgentMemoryClient):
                 "[AgentMemoryMemoryProvider/in-process] evolve failed: error_type=%s",
                 type(exc).__name__,
             )
+
+    # -- 经验记忆（mem2.0） ---------------------------------------------------- #
+
+    async def add_trajectory(
+        self, content, scope, *, system_metadata=None
+    ) -> None:
+        """轨迹转交（§2.1）：add_async 原生协程，异常原样抛回（不降级）。"""
+        api_scope = self._to_api_scope(scope)
+        await self._api.add_async(
+            content,
+            api_scope,
+            source=Modality.TEXT,
+            security=self._security(),
+            tags=[],
+            system_metadata=system_metadata,
+        )
+
+    async def search_experience(
+        self, query, scope, *, category, capabilities, top_k=5
+    ) -> list[dict[str, Any]]:
+        """查经验（§2.4）：extensions 路由 + filters 三段，同步方法须 to_thread。"""
+        api_scope = self._to_api_scope(scope)
+        result = await asyncio.to_thread(
+            self._api.search,
+            query,
+            Context(
+                scope=api_scope,
+                extensions={"memory_type": "experience"},
+            ),
+            security=self._security(),
+            filters=_experience_filters(category, capabilities),
+            top_k=top_k,
+            disclosure=DisclosureLevel.L2,
+        )
+        return [
+            {
+                "item_id": it.unit_id,
+                "content": it.content,
+                "score": it.score,
+                # system_metadata 由内核选取算子裁剪（类别/三段/usage_ref）
+                "system_metadata": dict(getattr(it, "system_metadata", None) or {}),
+            }
+            for it in result.items
+        ]
+
+    async def list_published_skills(self, scope) -> list[dict[str, Any]]:
+        """列已发布技能（§2.5.6）：类型 + 标签 + 生效三重过滤（list 须 to_thread）。"""
+        api_scope = self._to_api_scope(scope)
+        result = await asyncio.to_thread(
+            self._api.list,
+            api_scope,
+            security=self._security(),
+            memory_types=["skill"],
+            filters={
+                "AND": [
+                    {"tags": {"in": ["approved", "trial"]}},
+                    {"lifecycle": "active"},
+                ]
+            },
+            limit=1000,
+        )
+        skills: list[dict[str, Any]] = []
+        for unit in result.items:
+            meta = dict(getattr(unit, "system_metadata", None) or {})
+            skills.append(
+                {
+                    "item_id": unit.id,
+                    "content": unit.content,
+                    "system_metadata": meta,
+                    "skill_name": meta.get("skill_name", ""),
+                    "skill_version": meta.get("skill_version", 0),
+                    "capabilities": meta.get("capabilities", []),
+                }
+            )
+        return skills
+
+    async def restore_dreaming(self) -> bool:
+        """恢复 dreaming 注册（§2.5.1）。非 MemoryAPI 公共契约——按属性探测，
+        会持实例锁（他人持有抛 RuntimeError，由上层记日志继续）。
+        """
+        restore = getattr(self._api, "restore_dreaming", None)
+        if restore is None:
+            logger.info(
+                "[AgentMemoryMemoryProvider/in-process] api has no "
+                "restore_dreaming attribute"
+            )
+            return False
+        await asyncio.to_thread(restore)
+        return True
+
+    async def register_consolidation(self, scope, interval: int) -> None:
+        """注册周期整理（§2.5.1）：CONSOLIDATE + dreaming=True + interval 秒。"""
+        api_scope = self._to_api_scope(scope)
+        await asyncio.to_thread(
+            self._api.evolve,
+            api_scope,
+            EvolveMode.CONSOLIDATE,
+            Channel.BACKGROUND,
+            security=self._security(),
+            candidate={
+                "type": "predicate",
+                "filters": {
+                    "lifecycle": "active",
+                    "system_metadata.memory_type": "experience",
+                    "tier": {"in": ["semantic", "procedural"]},
+                },
+            },
+            dreaming=True,
+            interval=int(interval),
+        )
 
     async def close(self) -> None:
         # 停看门狗/释放 shadow sqlite（文档模式），幂等；runtime.close 是同步方法。
