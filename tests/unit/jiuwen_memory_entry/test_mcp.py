@@ -74,24 +74,25 @@ SCOPE = {"org": "local", "user": "developer"}
 
 
 @pytest.mark.parametrize("fail_in_session", [False, True])
-def test_fastmcp_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -> None:
+def test_stdio_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -> None:
     server = Mock(start_background=AsyncMock())
     monkeypatch.setattr(mcp_main, "_SRV", server)
 
-    async def run_session() -> None:
-        # 经注册到 FastMCP 的 wrapper 进入，避免只测生成器本身而漏掉 SDK 契约。
-        low_level = mcp_main.mcp._mcp_server  # pylint: disable=protected-access,huawei-protected-access
-        async with low_level.lifespan(low_level):
-            server.start_background.assert_awaited_once_with()
-            server.close.assert_not_called()
-            if fail_in_session:
-                raise RuntimeError("session failed")
+    async def run_transport() -> None:
+        server.start_background.assert_awaited_once_with()
+        server.close.assert_not_called()
+        if fail_in_session:
+            raise RuntimeError("session failed")
+
+    transport = AsyncMock(side_effect=run_transport)
+    monkeypatch.setattr(mcp_main.FastMCP, "run_stdio_async", transport)
 
     if fail_in_session:
         with pytest.raises(RuntimeError, match="session failed"):
-            asyncio.run(run_session())
+            asyncio.run(mcp_main.mcp.run_stdio_async())
     else:
-        asyncio.run(run_session())
+        asyncio.run(mcp_main.mcp.run_stdio_async())
+    transport.assert_awaited_once_with()
     server.close.assert_called_once_with()
 
 
