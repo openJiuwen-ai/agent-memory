@@ -15,7 +15,8 @@
 [F04](../features/common/F04-security-interfaces-and-encryption.md)。后续安全能力更新
 只维护 F04，不再新增安全 feature；逐次执行与验收记录不进入正式能力总纲。
 既有接口的签名、值对象及安全语义保持固定；安全插件可按 S09 增量声明独立能力，
-不得通过实现私有状态替代公开契约，也不得破坏旧接口与默认配置兼容。
+不得通过实现私有状态替代公开契约。固定 DEV 默认角色按下文「DEV 默认隔离与显式提权」
+收紧为 USER，其余公开签名和默认行为不变，原本地管理流程需显式选择 ROOT。
 审计完整性由 PR3 提供可选的链式 HMAC 实现；实现与部署边界统一见 F04。
 
 安全能力统一归属 `jiuwen_memory/common/security/`，按能力域分子包：
@@ -62,7 +63,7 @@
    surface 认证拒绝按入口策略留审计。`Scope(user=..., agent=...)` 同时非空仍是
    资源层 `principal_path` 的合法层级表达，只是不作为认证 actor。
 6. **具名系统主体**：为兼容上游既有开发环境及本地数据，固定 DEV 产出
-   `Scope(org="local", user="developer")`；Root API Key 产出
+   `Scope(org="local", user="developer")`，默认 `Role.USER`；Root API Key 产出
    `Scope(org="system", user="root")`。ROOT 权限只由 `role=Role.ROOT` 表达，不来自
    actor 形状。授权时只能由 `Authorizer` 根据显式 `AuthContext.role` 执行 ROOT 闸门；空
    actor、目标 Scope 形状或 ContextVar 均不得推导出特权。
@@ -107,8 +108,9 @@
     公开 assemble_server_runtime 完成，返回 S02 定义的 ServerRuntime；Access 不得
     依赖 MemoryRuntime/API 实现的私有字段或绑定方法。显式替换认证器时 Registry 只保留新认证器
     的真源，不得把旧 issuer 的凭据继续当作当前部署有效身份；绑定过程先健康检查再替换。
-31. `AllowAllAuthorizer` 只允许显式测试装配。DEV 业务连续性由受控 `Role.ROOT` 通过真实
-    Authorizer 实现，不得靠旧 permission fallback、空 Scope 或缺省放行。
+31. `AllowAllAuthorizer` 只允许显式测试装配。固定 DEV 默认 USER；未另获授权的跨 org/user
+    请求必须拒绝。只有可信部署显式配置认证器 `params.role: root`，才经真实 Authorizer
+    获得 ROOT 权限，不得靠旧 permission fallback、空 Scope、请求头或缺省放行。
 32. 受控代理代写保持认证 actor 为真实单主体 agent。被代理用户只能从服务端绑定的
     Delegation 真源取得，不能从目标 Scope、请求 metadata 或 header 自述取得。
     凭据绑定与 PDP 共用同一 Store；认证后缓存的上下文仍须逐次复核委托有效期、撤销、
@@ -376,7 +378,7 @@ key_provider:
 DEV 时，才用配置适配器补齐完整 SecurityRuntime；MCP（含 stdio）同样默认 required，
 须显式 JIUWEN_MEMORY_MCP_AUTH_MODE=dev 才启用该适配器。未配置认证时均失闭。
 
-### DEV 业务连续性
+### DEV 默认隔离与显式提权
 
 公共 Core 装配入口是 `api.assemble()` / `api.assemble_runtime()`；Server 使用
 `api.assemble_server_runtime()` 获取已调和认证、授权、审计和生命周期的公开句柄。
@@ -386,9 +388,20 @@ MemoryRuntime 的上游文档生命周期与 ServerRuntime 增量契约见 S02�
 
 HTTP/CLI/MCP 的显式 DEV 入口调用 `with_local_dev_security()`，仅在用户没有
 声明 `security` 时向配置副本补齐完整 DEV Runtime；不修改原始 `config.settings`，也不注入
-`permission.default=allow_all`。PR2 的 `Authorizer` 已接管 `role=ROOT`，DEV 跨组织 add/get
-由真实 PDP 放行；API Key / Trusted 部署仍按 AuthContext 和授权事实判定。DEV 的
-`BindingPolicy` 继续限制实际监听地址为 loopback。
+`permission.default=allow_all`。固定身份忽略凭据但默认角色为 USER，自身范围可访问，
+未另获授权时跨 org/user 返回 403；忽略凭据不是忽略授权。需要本地超级管理员时，在
+显式 security 配置引用的 dev 认证器中设置 `params.role: root`（也可显式选 user/admin）。
+非法角色（包括显式 null）必须在装配期拒绝，不得回退 ROOT。固定 `role` 与 `identities`
+互斥；映射仍由各条身份的 role 决定，缺失/未知 selector 返回 401，不回落固定身份。
+该默认值变更替代先前固定 DEV 跨组织业务连续性约定；相关管理脚本需显式选择 ROOT。
+默认 USER 同时被管理面角色闸门拒绝：`create_space` 的 MANAGE_SPACE 允许本组织 ADMIN，
+跨组织需 ROOT；`audit` 的 READ_AUDIT 虽最低 ADMIN，但目标是系统根 Scope，实际需 ROOT。
+`verify_audit` 的 VERIFY_AUDIT 与 `admin_get/set/all` 的 ADMINISTER_SYSTEM 同样需 ROOT。
+MANAGE_PRINCIPAL/MANAGE_POLICY 是最低 ADMIN 的组织级动作契约，当前不新增对应网络入口；
+不得将空间成员/策略操作误归入这两个动作。空间治理仍按既有入口两轴、归属/有效成员和
+授予上界判定，合法 USER 治理权不因默认角色改变而消失，ADMIN 也不自动取得空间治理权。
+迁移只能显式配置认证器角色或合法空间治理事实，不新增请求参数提权或回退 allow_all。
+API Key / Trusted 与既有角色闸门不变；所有 DEV 仍受 loopback 绑定约束。
 
 ### 兼容周期
 

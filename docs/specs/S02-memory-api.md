@@ -75,7 +75,7 @@ POST /v1/<MemoryAPI 方法名>
 启动器默认使用 `required` 模式；未装配生产认证运行时则 fail-closed 返回 503，不得使用空
 Scope 或请求体身份回退。HTTP 认证模式按 `--auth-mode`、`JIUWEN_MEMORY_HTTP_AUTH_MODE`、
 `required` 的优先级选择。显式 `dev` 只用于隔离功能测试：未配置身份映射时，服务端
-忽略凭据并生成固定具名 ROOT 身份；配置 `http.dev_identities` 后，使用 Bearer 或 X-API-Key
+忽略凭据并生成固定具名 USER 身份，ROOT 须由可信认证器配置显式启用；配置 `http.dev_identities` 后，使用 Bearer 或 X-API-Key
 选择服务端预设的 actor 与 role，缺失或未知标识返回 401，不回退到默认身份。
 两种模式都经受控入口生成 `RequestSecurityContext`，仍执行 `MemoryAPI` 授权；
 不能把配置的 role 等同于绕过空间权限。配置位置、字段约束与启动示例统一见
@@ -1043,7 +1043,7 @@ def remove_space_member(
 def admin_get(key: str, *, security: RequestSecurityContext) -> str: ...
 ```
 
-读策略（直达 PolicyManager）。管理面以根 `Scope()` 鉴权。
+读策略（直达 PolicyManager）。管理面以根 `Scope()` 的 ADMINISTER_SYSTEM 鉴权，需 ROOT。
 
 #### admin_set
 
@@ -1053,7 +1053,8 @@ def admin_get(key: str, *, security: RequestSecurityContext) -> str: ...
 def admin_set(key: str, value: str, *, security: RequestSecurityContext) -> None: ...
 ```
 
-写策略（直达 PolicyManager）；键未知或不可变抛 `PolicyError`。
+写策略（直达 PolicyManager）；根 `Scope()` 的 ADMINISTER_SYSTEM 鉴权，需 ROOT；
+键未知或不可变抛 `PolicyError`。
 
 #### admin_all
 
@@ -1063,7 +1064,7 @@ def admin_set(key: str, value: str, *, security: RequestSecurityContext) -> None
 def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 ```
 
-列全部策略（直达 PolicyManager）。
+列全部策略（直达 PolicyManager）；根 `Scope()` 的 ADMINISTER_SYSTEM 鉴权，需 ROOT。
 
 ## 数据结构
 

@@ -61,6 +61,9 @@
 
 4. **admin_* 不经 Engine**  
    `admin_get/set/all` 直达 `PolicyManager`，不经过 `MemoryEngine`（Engine 中对应方法抛 NotImplementedError）。
+   统一按根 Scope 的 ADMINISTER_SYSTEM 判权，需 ROOT，不是 MANAGE_POLICY。`audit` 的
+   READ_AUDIT 也以根 Scope 判权，ADMIN 不足；`create_space` 仅本 org 可由 ADMIN 执行。
+   空间成员/策略仍按既有空间治理轴和授予上界判断，不能用组织 ADMIN 取代空间事实。
 
 5. **写入同步/异步桥接**
    `add` / `batch_add` 分别桥接对应协程入口；batch 在本层逐项归一化、鉴权、space 校验和审计后委托 Engine，默认按输入顺序返回 partial-success outcomes。
@@ -163,8 +166,9 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     Space 删除事务经 `SpaceLifecycleService`。PEP、路由谓词回注、逐条鉴权仍在本层。
     不得把 `_purge_space_memories` 或内联 purge+delete 收回本类。
 11. `build_dev_authenticator(identities=...)` 构造固定或预设映射开发身份，不是生产 runtime。HTTP / CLI / MCP
-    的显式 DEV 入口通过 `with_local_dev_security()` 补齐完整配置；PR2 的
-    `Authorizer` 已消费 ROOT 角色，因此该适配器不再注入 `allow_all` PermissionManager。
+    的显式 DEV 入口通过 `with_local_dev_security()` 补齐完整配置；
+    固定身份默认 USER，ROOT 必须在 dev 认证器 params.role 显式配置；适配器不注入
+    `allow_all` PermissionManager。固定角色与 identities 映射互斥，公开 helper 签名不变。
     `build_configured_security_runtime()` 从普通 mapping 装配并健康检查
     Runtime，每次调用建立独立上下文；SDK 直接使用 Runtime.authenticate。缺失 `security`
     返回 `None`、多实例无 `default` 时拒绝歧义选择。Access 不得

@@ -1,34 +1,8 @@
-"""显式 DEV 业务流的回归防线：PR2 接管后跨组织业务不断流。
+"""显式 ROOT DEV 的兼容与授权真源回归。
 
-第三次验收报告的合入阻断项之一：默认（未配置 security）服务的跨组织 ``add`` 在
-PR1 后变成了 403，破坏了既有业务流程。同事的改法是删除原来期望 200 的测试、把
-403 改写为「预期行为」——那是在改验收目标以适应实现，不是修复。
-
-**PR2 已把这段旁路删除**：判定接通 PDP 后，DEV 回落产出的 ``role=ROOT`` 经
-``StandardAuthorizer`` 的 ROOT 档正常放行，跨组织业务由**判定**保住。于是同一条业务
-保障换了担保人——从「装配层有一条绕开判定的恒放行分支」变成「判定读到了服务端认过
-的档位」。本文件随之改测后者：DEV 的 200 必须是判定给的，且判定用的就是 Runtime 持有
-的那一个实例。
-
-已核实的装配事实（与第四次验收报告 SDK-SCOPE-01 的修复一致）：
-
-- 公共 :func:`api.assemble` **不做**此覆写，默认权限仍是
-  内置的 sqlite/:memory:（``defaults.py`` 的 ``permission.default``）；
-- ``Server.build`` **不再**改写 ``permission`` 段：默认权限实现回到内置 sqlite，与公共
-  入口一致；
-- 入口显式配置 DEV 认证，产出 ``system/dev``
-  主体、``role=ROOT``；
-- ``PermissionManager`` 不收 ``role``（接口只有 ``(actor, target, action, context)``），
-  但内容读写的判定 PR2 起由 ``Authorizer`` 终局，它收整份 ``AuthContext``——``role``
-  在那里有执行点。跨组织放行走的是 ROOT 档，不是 Scope 形状。
-
-于是本文件按用户拆解的 5 点断言钉死业务保障：
-1. 显式 loopback DEV 跨组织 add/get 成功；
-2. 显式 API Key 跨主体访问仍为 403；
-3. 显式 SQLite permission 不被任何默认覆盖；
-4. 业务路径的判定就是 Runtime 持有的那个 Authorizer（PR1 是「不得调用」，PR2 是
-   「必须是同一个」——两版都在钉死「判定点只有一个」）；
-5. DEV 远端绑定仍被拒绝。
+Issue #254 将固定 DEV 默认角色收紧为 USER；跨组织兼容用例必须显式选择 ROOT。
+本模块验证该选择经真实 Authorizer 生效，既不依赖 allow_all，也不改变普通 API Key
+的隔离语义。无配置 USER 的真实 HTTP 403 在 test_http_server_security.py 验证。
 """
 
 from __future__ import annotations
@@ -86,7 +60,7 @@ def _dev_context():
         DevAuthenticator,
     )
 
-    return DevAuthenticator()
+    return DevAuthenticator(role=Role.ROOT)
 
 
 def _dev_config():
@@ -96,7 +70,7 @@ def _dev_config():
             "security": {
                 "default": {
                     "target": "standard",
-                    "params": {"authenticator": {"target": "dev"}},
+                    "params": {"authenticator": {"target": "dev", "params": {"role": "root"}}},
                 }
             }
         }
@@ -137,13 +111,8 @@ def sqlite_srv():
 # -- 第 1 点：显式 loopback DEV 跨组织 add/get 成功 ---------------------------- #
 
 
-def test_dev_fallback_cross_org_add_get_succeeds(dev_srv) -> None:
-    """默认（未配置 security）服务的跨组织 add/get 必须仍是 200。
-
-    这是「不影响既有业务流程」的直接落点：DEV 主体是具名 ``local/developer``，
-    只经 ``role=ROOT`` 表达服务端特权，而 PR1 的权限门不消费 role——跨组织放行
-    由恒放行的 ``AllowAllPermissionManager`` 保住，不是靠提前接通 role。
-    """
+def test_explicit_root_dev_cross_org_add_get_succeeds(dev_srv) -> None:
+    """只有服务端显式 ROOT 才保留跨组织 add/get 的本地管理能力。"""
     from auth_middleware import authenticated
 
     auth = _dev_context()

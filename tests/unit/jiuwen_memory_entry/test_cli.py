@@ -24,7 +24,12 @@ from jiuwen_memory_entry.cli import client as client_module
 from jiuwen_memory_entry.cli import commands
 from jiuwen_memory_entry.core import api_contract
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
-from tests.unit.jiuwen_memory_entry.fixtures import upstream_api_error
+from tests.unit.jiuwen_memory_entry.fixtures import (
+    DEV_MANAGEMENT_CASES,
+    fixed_dev_management_config,
+    seed_dev_management_space,
+    upstream_api_error,
+)
 
 pytestmark = pytest.mark.unit
 SCOPE = {"org": "local", "user": "developer"}
@@ -69,8 +74,10 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
     [
         ("add", {"content": "hello", "scope": SCOPE, "source": "text", "tags": ["a"]}),
         ("search", {"query": "hello", "context": {"scope": SCOPE}, "top_k": 3}),
-        ("search", {"query": "hello", "context": {"scope": SCOPE},
-                    "hierarchy_kind": "time", "top_k": 3}),
+        (
+            "search",
+            {"query": "hello", "context": {"scope": SCOPE}, "hierarchy_kind": "time", "top_k": 3},
+        ),
         ("get", {"unit_id": "u1", "scope": SCOPE}),
         ("update", {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "new"}}),
         ("delete", {"selector": {"scope": SCOPE, "unit_ids": ["u1"], "mode": "purge"}}),
@@ -280,9 +287,57 @@ def test_inprocess_upstream_error_response(method: str, upstream_status: int, mo
         client.close()
 
 
-def test_explicit_dev_preserves_cross_org_business_flow(api_client) -> None:
+def test_default_dev_rejects_cross_org_business_flow(api_client) -> None:
     status, body = api_client.call("add", {"content": "x", "scope": {"org": "another-org"}})
-    assert status == 200, body
+    assert status == 403, body
+
+
+@pytest.mark.parametrize("role", [None, "admin", "root"], ids=["default-user", "admin", "root"])
+def test_cli_management_configuration_migration(role, tmp_path) -> None:
+    config = tmp_path / "management-dev.json"
+    config.write_text(json.dumps(fixed_dev_management_config(role)), encoding="utf-8")
+    client = client_module.InProcessClient([str(config)], dev_authentication=True)
+    try:
+        seed_dev_management_space(client.server.api)
+        for method, payload, allowed_roles in DEV_MANAGEMENT_CASES:
+            status, body = client.call(method, payload)
+            assert status == (200 if role in allowed_roles else 403), (method, body)
+            if method == "verify_audit" and status == 200:
+                assert body["status"] == "unsupported", body
+    finally:
+        client.close()
+
+
+def test_cli_loads_explicit_root_dev_configuration(tmp_path) -> None:
+    config = tmp_path / "root-dev.json"
+    config.write_text(
+        json.dumps(
+            {
+                "memory_api": {
+                    "security": {
+                        "default": {
+                            "target": "standard",
+                            "params": {
+                                "authenticator": {
+                                    "target": "dev",
+                                    "params": {"role": "root"},
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = client_module.InProcessClient([str(config)], dev_authentication=True)
+    try:
+        status, body = client.call(
+            "add", {"content": "explicit root", "scope": {"org": "another-org"}}
+        )
+        assert status == 200, body
+    finally:
+        client.close()
 
 
 @pytest.mark.parametrize(

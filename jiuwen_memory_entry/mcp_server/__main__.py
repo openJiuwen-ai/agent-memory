@@ -6,7 +6,7 @@
 装配一次、跨工具调用持有状态。
 
 认证：``JIUWEN_MEMORY_MCP_AUTH_MODE``（required | dev，默认 required，失闭）。dev 模式使用
-固定 local/developer ROOT 测试身份，仅供本地功能测试且只允许绑定回环地址。凭据经
+固定 local/developer USER 测试身份，ROOT 须显式配置；仅供本地测试且只允许回环绑定。凭据经
 ``transport_security`` 按传输归一：stdio 读 ``AGENT_MEMORY_API_KEY``；Streamable HTTP
 逐请求读 ``Authorization`` header 与 socket peer（工具的 ``ctx: Context`` 参数由 FastMCP
 注入，不进模型可见 Schema）。
@@ -264,9 +264,12 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
             "filters": filters,
             "disclosure": disclosure,
             "with_trajectory": with_trajectory,
-            "hierarchy_kind": hierarchy_kind, "hierarchy_role": hierarchy_role,
-            "span_start": span_start, "span_end": span_end,
-            "expand_depth": expand_depth, "rollup": rollup,
+            "hierarchy_kind": hierarchy_kind,
+            "hierarchy_role": hierarchy_role,
+            "span_start": span_start,
+            "span_end": span_end,
+            "expand_depth": expand_depth,
+            "rollup": rollup,
         },
         context=ctx,
     )
@@ -384,7 +387,8 @@ async def memory_evolve(  # pylint: disable=too-many-arguments,huawei-too-many-a
             "dreaming": dreaming,
             "interval": interval,
             "candidate": candidate,
-            "hierarchy_options": hierarchy_options, "reuse_existing": reuse_existing,
+            "hierarchy_options": hierarchy_options,
+            "reuse_existing": reuse_existing,
         },
         context=ctx,
     )
@@ -620,12 +624,12 @@ async def memory_submit_ingest(  # pylint: disable=too-many-arguments,huawei-too
     )
 
 
-# --- 工具：管理面（admin 策略，MANAGE_POLICY 鉴权）------------------------------- #
+# --- 工具：管理面（根策略，ADMINISTER_SYSTEM 鉴权，需 ROOT）--------------------- #
 
 
 @mcp.tool()
 async def memory_admin_get(key: str, ctx: Context = None) -> str:
-    """读取一项运行时策略的当前值（管理面操作，需 MANAGE_POLICY 权限）。"""
+    """读取一项运行时策略的当前值（根管理面 ADMINISTER_SYSTEM，需 ROOT）。"""
     return await _invoke("admin_get", {"key": key}, context=ctx)
 
 
@@ -633,14 +637,14 @@ async def memory_admin_get(key: str, ctx: Context = None) -> str:
 async def memory_admin_set(key: str, value: str, ctx: Context = None) -> None:
     """
     调整一项运行时策略（启停索引、检索/演进开关等；未知键抛错）。
-    管理面操作，落审计。
+    根管理面 ADMINISTER_SYSTEM，需 ROOT，落审计。
     """
     return await _invoke("admin_set", {"key": key, "value": value}, context=ctx)
 
 
 @mcp.tool()
 async def memory_admin_all(ctx: Context = None) -> dict:
-    """列出全部运行时策略及当前值（管理面操作）。"""
+    """列出全部运行时策略及当前值（根管理面 ADMINISTER_SYSTEM，需 ROOT）。"""
     return await _invoke("admin_all", {}, context=ctx)
 
 
@@ -652,6 +656,7 @@ async def memory_audit(filters: dict, limit: int = 100, ctx: Context = None) -> 
     """
     审计查询：按条件检索审计留痕（谁在何时对哪条记忆做了什么操作）。
 
+    系统根资源的 READ_AUDIT，需 ROOT；默认 DEV USER 和组织 ADMIN 均不放行。
     filters: 形如 {"action": "add", "actor_user": "developer",
     "occurred_after": "2026-01-01T00:00:00"}；支持 action/layer/decision/
     target_id/actor_*/target_*/occurred_after/occurred_before。limit: 返回条数上限。
@@ -670,7 +675,8 @@ async def memory_verify_audit(
     """
     审计链完整性验证：校验审计事件链是否被篡改。
 
-    未装配审计完整性 provider 的部署返回 unsupported 状态（不报错）。
+    VERIFY_AUDIT 需 ROOT，默认 DEV USER 无权调用。授权通过后，未装配审计完整性
+    provider 的部署返回 unsupported 状态（不报错）。
     after_sequence: 从该序号之后增量验证（0 表示全量）。
     page_size / max_samples: 验证分页与抽样预算（受服务端可信上限约束）。
     anchor_policy: 锚点策略 if_configured（默认，部署配了才校验）。
@@ -879,9 +885,7 @@ def _tighten_tool_arg_models() -> None:
         if set(strict.model_json_schema()["properties"]) != set(
             base.model_json_schema()["properties"]
         ):
-            raise RuntimeError(
-                f"tightened arg model of {tool.name} changed the tool field set"
-            )
+            raise RuntimeError(f"tightened arg model of {tool.name} changed the tool field set")
         tool.fn_metadata.arg_model = strict
 
 

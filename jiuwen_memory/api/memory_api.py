@@ -437,7 +437,7 @@ class MemoryAPI(ABC):
     def admin_get(self, key: str, *, security: RequestSecurityContext) -> str:
         """
         admin：读取一项运行时策略的当前值；本层据 ``security`` 做管理面鉴权
-        （``MANAGE_POLICY``）。
+        （根 Scope 的 ``ADMINISTER_SYSTEM``，需 ROOT）。
         """
 
     @abstractmethod
@@ -445,14 +445,14 @@ class MemoryAPI(ABC):
         """
         admin：调整一项运行时策略（启停索引、检索/演进开关等；键未知或
         不可变配置抛 :class:`~common.errors.PolicyError`）；本层据 ``security`` 做管理面鉴权
-        （``MANAGE_POLICY``）并落审计。
+        （根 Scope 的 ``ADMINISTER_SYSTEM``，需 ROOT）并落审计。
         """
 
     @abstractmethod
     def admin_all(self, *, security: RequestSecurityContext) -> dict[str, str]:
         """
         admin：列出全部运行时策略及当前值；本层据 ``security`` 做管理面鉴权
-        （``MANAGE_POLICY``）。
+        （根 Scope 的 ``ADMINISTER_SYSTEM``，需 ROOT）。
         """
 
     # -- 治理（委托 Governor，架构 §12 的「看」侧） --------------------------- #
@@ -481,7 +481,7 @@ class MemoryAPI(ABC):
         self, filters: dict[str, str], *, security: RequestSecurityContext, limit: int = 100
     ) -> list[AuditEvent]:
         """审计查询：按条件（actor/action/layer/时间段等）检索审计留痕；
-        本层据 ``security`` 鉴权 ``READ_AUDIT``（管理面角色闸门，默认不可委托）。
+        本层据 ``security`` 鉴权根 Scope 的 ``READ_AUDIT``（需 ROOT，默认不可委托）。
         """
 
     @abstractmethod
@@ -496,7 +496,7 @@ class MemoryAPI(ABC):
     ) -> AuditVerificationResult:
         """审计链完整性验证：流式校验证明链，返回结构化状态。
 
-        本层据 ``security`` 鉴权 ``VERIFY_AUDIT``（管理面，默认不可委托）。输入只允许
+        本层据 ``security`` 鉴权 ``VERIFY_AUDIT``（需 ROOT，默认不可委托）。输入只允许
         服务端验证参数（范围、页预算、anchor policy），不接受调用方传入 expected
         digest / key / proof。``page_size`` 与 ``max_samples`` 还受服务端可信配置上限
         约束，不能靠放大单次请求绕过 ``WorkloadGuard`` 的并发预算。全量验证在

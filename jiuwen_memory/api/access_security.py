@@ -21,7 +21,7 @@ from jiuwen_memory.config.defaults import default_context
 
 
 def build_dev_authenticator(*, identities: Mapping[str, Any] | None = None) -> Authenticator:
-    """构造固定身份或服务端预设身份认证器，仅供本地开发测试。"""
+    """构造默认 USER 固定身份或服务端预设身份认证器，仅供本地开发测试。"""
     return DevAuthenticator(identities=identities)
 
 

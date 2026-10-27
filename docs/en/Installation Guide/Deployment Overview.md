@@ -120,13 +120,19 @@ first establish a trusted `RequestSecurityContext`, and the service rejects `sec
 `identity`, and similar identity claims in the request body. In the default `required` mode, a
 missing production runtime makes business endpoints return 503 instead of trusting a payload
 identity. Local functional tests may explicitly enable `dev`. Without an identity map it ignores
-authentication headers and uses the fixed `local/developer` ROOT identity. With
+authentication headers and uses the fixed `local/developer` USER identity. With
 [`http.dev_identities`](<../API Docs/config.md#33-http-development-tests-multiple-identities>),
 Bearer or X-API-Key test selectors choose server-defined identities; missing or unknown selectors
 return 401. Both modes run MemoryAPI authorization and reject payload-provided identity claims.
 
-Only fixed DEV without explicit security/permission temporarily injects allow_all; mapped DEV keeps
-existing permission checks. Named admin/root privileges and delegation await PR2 Authorizer.
+Fixed and mapped DEV use the real Authorizer without allow_all. Default USER cross-org/user requests
+return 403 unless separately authorized. Local ROOT requires explicit dev authenticator params.role;
+see the configuration guide above.
+Default USER also cannot call `audit`, `verify_audit`, `admin_get/set/all`, or `create_space`.
+The first three groups require explicit ROOT; local-org space creation accepts ADMIN. Membership
+and space-policy operations still require actual space-governance rights, not just an ADMIN role.
+See the [management migration guide](<../API Docs/config.md#migrating-management-entry-points-from-default-user>)
+for the full list and HTTP/CLI/MCP configuration-loading commands.
 
 The standard `HttpServer.serve()` entry point checks the binding before creating the socket.
 Dev mode allows only loopback hosts by default, such as `127.0.0.1`, `::1`, and `localhost`.

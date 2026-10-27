@@ -91,7 +91,7 @@ model services are not required.
 
 The example's `build_dev_authenticator()` is for in-process callers that explicitly cross the
 authentication boundary in local testing and similar scenarios; it does not validate credentials
-and returns a fixed development identity (`local/developer`, ROOT grade). Note that the business
+and returns a fixed development identity (`local/developer`, USER grade). Note that the business
 `scope` is only the operation target, not an identity: `internal_context()` derives the identity
 from the authenticator passed in, so a caller cannot decide who it is. Production applications must
 obtain `RequestSecurityContext` from a trusted authentication boundary. HTTP and CLI already use
@@ -118,9 +118,16 @@ curl http://127.0.0.1:8137/healthz
 ```
 
 `--auth-mode dev` enables an authenticator for isolated functional testing only.
-Without `http.dev_identities`, it ignores authentication headers and creates the server-side ROOT identity
+Without `http.dev_identities`, it ignores authentication headers and creates the server-side USER identity
 `Scope(org="local", user="developer")`, and still runs `MemoryAPI` authorization. The examples use
-the same Scope as the business target. This mode binds to loopback by default and must not be used
+the same Scope as the business target. Cross-org/user requests return 403 unless separately authorized.
+ROOT requires explicit dev authenticator `params.role`; see the
+[configuration guide](<../API Docs/config.md#33-http-development-tests-multiple-identities>).
+After upgrading, `audit`, `verify_audit`, and `admin_get/set/all` also require explicit ROOT;
+`create_space` requires at least an ADMIN in the same org. Space membership/policy operations
+follow actual governance rights. See the [management migration guide](<../API Docs/config.md#migrating-management-entry-points-from-default-user>);
+adding `--auth-mode dev` alone does not restore management privileges.
+This mode binds only to loopback and must not be used
 in production. The request body keeps the parameter structure of the same-named `MemoryAPI` method:
 
 ```bash
@@ -425,7 +432,8 @@ See the [CLI guide](../../../jiuwen_memory_entry/cli/DESIGN.md) for the full par
   claims in the request body are rejected.
 - In the default `required` mode, a launcher without a production authentication runtime returns
   503 and never falls back to an empty or payload-provided identity.
-- Without a map, dev uses the fixed `local/developer` ROOT identity; with a map, test selectors
+- Without a map, dev defaults to the fixed `local/developer` USER identity; ROOT requires explicit
+  configuration. With a map, test selectors
   choose the identity. Both still run authorization, are for isolated functional tests only,
   and require loopback binding by default.
 - Production environments should provide a trusted authentication runtime together with TLS, rate

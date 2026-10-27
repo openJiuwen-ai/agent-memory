@@ -1,6 +1,6 @@
 # Configuration and Assembly Guide
 
-Last revised: 2026-09-09
+Last revised: 2026-10-26
 
 Agent Memory configuration is more than a way to pass YAML fields to a constructor. It is a
 lightweight assembly mechanism built around a default topology, Producer registries, named
@@ -193,7 +193,8 @@ Producer namespaces.
 
 ### 3.3 HTTP Development Tests: Multiple Identities
 
-By default, `--auth-mode dev` ignores credentials and uses the fixed `local/developer` ROOT identity.
+By default, `--auth-mode dev` ignores credentials and uses the fixed `local/developer` USER identity.
+Its own scope is accessible; cross-org/user writes and searches return 403 unless separately authorized.
 To test space administration, membership permissions, or multiple users, add the following fragment
 to your own deployment configuration. Keep your existing `memory_api` storage, model, engine, and
 permission settings; a separate test configuration file is not required:
@@ -248,10 +249,63 @@ Behavior:
   a later `http` section replaces the earlier section in full.
 - Authentication headers select the identity. Changing `scope.user` in the body does not switch the
   caller; `scope` remains the business target.
-- Mapped DEV keeps PermissionManager/SpaceAwarePermissionManager checks without automatically
-  injecting allow_all. Named admin/root privileges and agent-on-user delegation await PR2 Authorizer.
+- Fixed and mapped DEV use the real Authorizer, never allow_all. Admin remains org-bound and does not
+  automatically gain space content access; acting for a user requires a valid delegation.
 - Actors require a non-empty org and exactly one user or agent; business scopes are separate.
 - Explicit memory_api.security takes precedence over the HTTP DEV convenience configuration.
+
+For local cross-org administration, explicitly configure a fixed ROOT identity. HTTP, CLI, and MCP
+can load this service configuration:
+
+```yaml
+memory_api:
+  security:
+    default:
+      target: standard
+      params:
+        authenticator:
+          target: dev
+          params:
+            role: root
+```
+
+The trusted configuration field `role` accepts user/admin/root and defaults to user. Invalid values,
+including null, fail startup. Fixed role and identities are mutually exclusive; mapped roles belong
+to individual entries. Explicit ROOT still ignores credentials: every caller able to connect shares
+its privileges. Keep it loopback-only and never use it in production. Scripts relying on the former
+fixed DEV ROOT default must opt in using this configuration.
+
+#### Migrating management entry points from default USER
+
+This change affects more than cross-principal add/search. API method names are also CLI commands
+and HTTP `/v1/<method>` routes; MCP tools use the `memory_` prefix. HTTP `--auth-mode dev`, local
+CLI `--auth-mode dev` / `InProcessClient(dev_authentication=True)`, and MCP
+`JIUWEN_MEMORY_MCP_AUTH_MODE=dev` all default to USER when role is omitted.
+
+| Entry point | Default USER | Migration and boundary |
+|---|---|---|
+| `audit` / `memory_audit` | 403 | Set `params.role: root`. READ_AUDIT has an ADMIN minimum, but this endpoint targets a system-root resource, so ADMIN also gets 403; filters cannot grant access |
+| `verify_audit` / `memory_verify_audit` | 403 | Set `params.role: root`. After authorization, an absent integrity provider returns `unsupported`, not successful verification |
+| `admin_get`, `admin_set`, `admin_all` | 403 | Set `params.role: root`; these use root-scope ADMINISTER_SYSTEM, not org-level MANAGE_POLICY |
+| `create_space` | 403 | `params.role: admin` can create spaces in the fixed identity's local org; cross-org creation requires root |
+| `get_space_policy`, `set_space_policy`, `list_space_members`, `add_space_member`, `remove_space_member`, `update_space`, `archive_space`, `delete_space` | No implicit ROOT bypass | With space authorization enabled, ownership/effective membership governance, the operation, and grant ceilings decide access. A USER with governance rights may still succeed; ADMIN alone does not replace those rights. Use explicit root only to restore global local-debug privileges |
+| MANAGE_PRINCIPAL / MANAGE_POLICY actions | Rejected by the role gate | The action contracts require at least ADMIN in the same org; system-root/cross-org resources require ROOT. These are not generic published principal-management network endpoints or the actions used by the space membership/policy APIs above |
+
+For local-org space creation only, change `role: root` in the example to `role: admin`. Audit
+queries, verification, and global runtime policies require root. Do not add allow_all or payload
+roles to bypass a 403; ADMIN is not a content-access superuser. Restart after changing role.
+Mapped DEV identities specify role on each mapping entry, not alongside a fixed role.
+
+Save the configuration in your existing service configuration (for example `dev-management.yaml`):
+
+```bash
+bash scripts/run-server.sh --auth-mode dev --host 127.0.0.1 dev-management.yaml
+bash scripts/run-cli.sh --auth-mode dev --config dev-management.yaml audit --filters '{}'
+JIUWEN_MEMORY_MCP_AUTH_MODE=dev bash scripts/run-mcp.sh dev-management.yaml
+```
+
+Programmatic local CLI uses `InProcessClient(["dev-management.yaml"], dev_authentication=True)`.
+Remote CLI roles come from the HTTP server configuration; client-side dev mode cannot elevate them.
 
 The standard HTTP launcher reads this configuration. Local CLI `--auth-mode dev` still uses its
 default fixed identity and does not automatically read `http.dev_identities`. Remote CLI can send

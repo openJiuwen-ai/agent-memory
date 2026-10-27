@@ -323,12 +323,34 @@ def test_guard_releases_on_exception() -> None:
     asyncio.run(scenario())
 
 
-def test_watchdog_keeps_the_lock_past_its_lease() -> None:
+def test_watchdog_keeps_the_lock_past_its_lease(monkeypatch) -> None:
+    # 只推进后端租约时钟，避免 CI 暂停事件循环超过 90ms 后把合法失锁误报为续租缺陷。
+    # 仍运行真实看门狗与 token CAS；仅返回 True 而不延长租约的实现无法通过互斥断言。
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
     provider = _provider(lease_ms=90)
 
     async def scenario() -> None:
+        renewed = asyncio.Event()
+        renewal_count = 0
+        real_renew = provider.renew
+
+        async def observed_renew(handle: LockHandle, *, lease_ms: int | None = None) -> bool:
+            nonlocal renewal_count
+            now[0] += 0.04
+            result = await real_renew(handle, lease_ms=lease_ms)
+            renewal_count += 1
+            if renewal_count >= 4:
+                renewed.set()
+            return result
+
+        monkeypatch.setattr(provider, "renew", observed_renew)
         async with provider.guard(_SCOPE, "write") as handle:
-            await asyncio.sleep(0.25)  # 远超一个租约周期
+            await asyncio.wait_for(renewed.wait(), timeout=5.0)
+            assert now[0] - 100.0 > handle.lease_ms / 1000.0
             assert handle.lost.is_set() is False
             await _assert_held(provider)
 
@@ -340,6 +362,28 @@ class _RenewFailingLockProvider(InMemoryLockProvider):
 
     async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
         return False
+
+
+def test_watchdog_does_not_revive_an_expired_lease(monkeypatch) -> None:
+    """模拟 CI 停顿超过租约：必须报告失锁，而不是为了续租测试恢复过期持有权。"""
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
+    provider = _provider(lease_ms=90)
+
+    async def scenario() -> None:
+        async with provider.guard(_SCOPE, "write") as handle:
+            now[0] += 0.10
+            await asyncio.wait_for(handle.lost.wait(), timeout=5.0)
+            fresh = await _acquire_elsewhere(provider)
+            assert fresh.token != handle.token
+            assert await provider.renew(handle) is False
+        await _assert_held(provider)  # 旧 guard 的释放也不能删除新持有者。
+        await provider.release(fresh)
+
+    asyncio.run(scenario())
 
 
 def test_watchdog_signals_loss_instead_of_silently_continuing() -> None:

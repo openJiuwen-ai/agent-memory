@@ -47,7 +47,7 @@ HTTP verb 集合直接取 `MemoryAPI.__abstractmethods__`。每个方法暴露�
 `security` 仍是 `MemoryAPI` 的正式参数，但不是客户端可填写的业务数据。HTTP 从认证头构造
 可信 `RequestSecurityContext`，再以 `security=` 传给同名方法。请求体声明 `security`、
 `actor`、`actor_*` 或其他身份字段时直接拒绝。启动器默认 `required` 且未装配生产安全运行时
-时继续 fail-closed 返回 503；显式 `dev` 模式仅供隔离功能测试，默认提供固定具名 ROOT 身份。
+时继续 fail-closed 返回 503；显式 `dev` 模式仅供隔离功能测试，默认提供固定具名 USER 身份，ROOT 须由部署显式配置。
 也支持可选的服务端预设身份映射，仍走同一认证上下文构造与授权链路；配置映射后，
 缺失或未知测试标识返回 401。配置方式见
 [Config 指南](../../zh/API文档/config.md#33-http-开发测试配置多个身份)。

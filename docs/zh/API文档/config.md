@@ -1,6 +1,6 @@
 # Config 配置与装配指南
 
-最近一次修订日期：2026-09-09
+最近一次修订日期：2026-10-26
 
 Agent Memory 的 Config 不只是把 YAML 字段传给某个构造函数，而是一套基于默认拓扑、
 Producer 注册表、具名实例和依赖引用的轻量级装配机制。本指南说明配置如何组织、合并、解析
@@ -186,7 +186,8 @@ HTTP/MCP 启动过程会：
 
 ### 3.3 HTTP 开发测试：配置多个身份
 
-默认 `--auth-mode dev` 忽略凭据，使用固定的 `local/developer` ROOT 身份。
+默认 `--auth-mode dev` 忽略凭据，使用固定的 `local/developer` USER 身份。
+本人范围可访问；没有额外授权时，跨 org/user 的写入、检索返回 403。
 测试空间管理、成员权限或多个用户时，可以在自己的部署配置文件中增加以下片段，
 保留原来的 `memory_api` 存储、模型、引擎及权限配置，不需要额外创建专用配置文件：
 
@@ -236,10 +237,63 @@ bash scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8137 /path/to
 - 映射必须是非空对象，不能是 `{}`、`null` 或列表；非法配置在启动监听前报错。
 - 配置在启动时加载，修改后需要重启；多配置文件的顶层合并规则见第 9 节，后一个 `http` 段整体覆盖前一个。
 - 身份由认证头选择，修改请求体 `scope.user` 不能切换身份；`scope` 仍是业务目标。
-- 映射 DEV 保留 PermissionManager/SpaceAwarePermissionManager 判定，不自动注入 allow_all。
-  具名 ops 的 admin 角色目前不会授予组织管理权限；角色闸门及 agent 代表 user 的
-  受控委托随 PR2 Authorizer 接入后验收，不以 user+agent 双主体表达委托。
+- 固定和映射 DEV 均经真实 Authorizer 判定，不注入 allow_all。admin 受组织边界约束，
+  不自动拥有空间内容权；代理操作使用有效委托，不以 user+agent 双主体表达认证身份。
 - 已显式配置 memory_api.security 时保留该运行时，不被 HTTP DEV 便捷配置覆盖。
+
+需要本地跨组织管理时，显式配置固定 ROOT（HTTP、CLI、MCP 均可加载此服务配置）：
+
+```yaml
+memory_api:
+  security:
+    default:
+      target: standard
+      params:
+        authenticator:
+          target: dev
+          params:
+            role: root
+```
+
+`role` 仅来自可信部署配置，可取 user/admin/root；省略时为 user，非法值（包括 null）
+启动拒绝。固定 role 与同一个认证器的 identities 互斥；映射身份请逐项设置 role。
+显式 ROOT 仍忽略认证头，任何能连接该端口的调用者共享其权限，因此仅限受控本地测试，
+不能用于生产，仍强制回环绑定。依赖旧固定 DEV ROOT 的管理脚本须迁移到此显式配置。
+
+#### 默认 USER 的管理入口迁移
+
+角色收紧不只影响跨主体 add/search。下表中的方法名也是 CLI 命令名和 HTTP 的
+`/v1/<方法名>`；MCP 工具加 `memory_` 前缀。HTTP `--auth-mode dev`、本地 CLI
+`--auth-mode dev` / `InProcessClient(dev_authentication=True)`、MCP
+`JIUWEN_MEMORY_MCP_AUTH_MODE=dev` 未配置 role 时均为 USER，升级后不会继续隐式获得管理权。
+
+| 入口 | 默认 USER | 迁移权限与边界 |
+|---|---|---|
+| `audit` / `memory_audit` | 403 | `params.role: root`；READ_AUDIT 虽最低 ADMIN，但此入口查询系统根资源，ADMIN 也为 403，filters 不能扩大权限 |
+| `verify_audit` / `memory_verify_audit` | 403 | `params.role: root`；通过授权后，无完整性 provider 返回 `unsupported`，不代表已完成验证 |
+| `admin_get`、`admin_set`、`admin_all` | 403 | `params.role: root`；实际动作是根 Scope 的 ADMINISTER_SYSTEM，不是组织级 MANAGE_POLICY |
+| `create_space` | 403 | `params.role: admin` 可在固定身份的 local 组织建空间；跨组织需要 root |
+| `get_space_policy`、`set_space_policy`、`list_space_members`、`add_space_member`、`remove_space_member`、`update_space`、`archive_space`、`delete_space` | 不再有 ROOT 全局放行 | 启用空间授权时，按归属/有效成员治理轴、操作和授予上界判定；USER 有合法治理权仍可成功，ADMIN 身份本身不能代替空间治理权；恢复旧全局调试权限需 root |
+| MANAGE_PRINCIPAL / MANAGE_POLICY 动作 | 角色闸门拒绝 | 动作契约最低 ADMIN，仅本组织；根资源/跨组织需 ROOT。它们不是已发布的通用主体管理网络接口，也不是上述空间成员/策略 API 的实际动作 |
+
+仅需 local 组织建空间时，将上例的 `role: root` 改为 `role: admin` 即可；需要审计查询、
+审计验证或全局运行时策略时保留 root。不要为解除 403 添加 allow_all、把角色放进请求体，
+或误以为 admin 拥有所有空间内容权。修改角色后重启进程；映射 DEV 在各 identities 条目
+配置 role，而不是同时配置固定 role。
+
+将配置保存到已有服务配置（例如 `dev-management.yaml`），按接入形态加载：
+
+```bash
+# HTTP：同一服务配置，默认仍须 loopback
+bash scripts/run-server.sh --auth-mode dev --host 127.0.0.1 dev-management.yaml
+# 本地 CLI：不是仅添加 --auth-mode dev，还必须加载角色配置
+bash scripts/run-cli.sh --auth-mode dev --config dev-management.yaml audit --filters '{}'
+# MCP：工具使用本进程已装配的角色，不接受工具参数提权
+JIUWEN_MEMORY_MCP_AUTH_MODE=dev bash scripts/run-mcp.sh dev-management.yaml
+```
+
+程序化本地 CLI 对应 `InProcessClient(["dev-management.yaml"], dev_authentication=True)`。
+远程 CLI 的角色由 HTTP 服务配置决定，客户端 `--auth-mode dev` 不会为远程服务提权。
 
 HTTP 标准启动器负责读取该配置；本地 CLI 的 `--auth-mode dev` 仍使用默认固定身份，
 不会自动读取 `http.dev_identities`。远程 CLI 可通过 `AGENT_MEMORY_API_KEY=test-u1`

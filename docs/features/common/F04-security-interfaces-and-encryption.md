@@ -65,10 +65,20 @@ metadata、业务请求头不能替代认证身份。`Role.ROOT` 来自服务端
 请求认证在接入边界执行，API 消费其结果；composition
 root 装配同源 Runtime 不意味着把协议解析或认证执行塞入 MemoryAPI。
 
-- DEV 无映射时产出 `local/developer` ROOT；Root API Key 产出 `system/root` ROOT。
+- DEV 无映射时产出 `local/developer` USER；Root API Key 产出 `system/root` ROOT。
   不使用空 actor 或 `org="*"` 表达特权。DEV 仅用于显式本地开发，并受回环绑定限制。
 - DEV 映射用服务端预设标识选择具名身份，未知或缺失标识拒绝。映射是开发测试能力，
   不是生产凭据系统；HTTP 显式配置已有 Runtime 时不被便捷映射覆盖。
+- 固定 DEV 通过认证器 `params.role` 显式选择 user/admin/root，缺省仅 USER。默认无认证头
+  请求不获得跨 org/user 特权；这是最小权限边界，替代早期为业务兼容默认 ROOT 的方案。
+  需要跨组织联调的脚本须显式配置 ROOT。role 不取请求头或 payload；固定 role 与身份映射
+  互斥，映射仍按每条配置决定角色；非法值启动拒绝。所有 DEV 继续限制本地回环。
+- 默认 USER 同时收紧管理面：`audit`、`verify_audit`、`admin_get/set/all` 的系统根资源
+  需要显式 ROOT；`create_space` 可由本 org ADMIN 执行，跨 org 需 ROOT。成员、空间策略及
+  空间状态管理不等同于组织角色：空间授权启用时仍按归属/有效成员治理轴及授予上界判定，
+  USER 有治理权仍可成功，ADMIN 不是全空间超级管理员。MANAGE_PRINCIPAL/MANAGE_POLICY
+  是最低 ADMIN 的动作契约，不是这些空间入口的实际动作或新发布的主体网络管理接口。
+  各形态加载方式、完整受影响入口及角色迁移见现有 [配置指南](../../zh/API文档/config.md#默认-user-的管理入口迁移)。
 - API Key 先按常时间 bytes 比较部署级 Root Key，再由 PrincipalKeyStore 验证主体 key。
   非 ASCII 错误 key 不应将认证拒绝变成 TypeError/500。主体 key 禁止签发 ROOT。
 - Trusted 必须有明确网关信任边界；身份材料由网关注入，角色从服务端 Store 查询，
@@ -116,7 +126,7 @@ legacy handler 的 security 必填，已删除 legacy_request_context 与 payloa
 桥。`actor_*` 身份声明显式拒绝，而 audit 的 actor_agent/actor_session 是历史查询
 过滤项，不能当调用身份。插件适配器由 composition root 注入可信 provider，缺失即拒绝
 进程内路径；示例/评测显式走 DEV 认证器，不从被测目标 Scope 构造“认证身份”。
-DEV 连续性由真实 Authorizer 消费受控 ROOT 角色实现，不借空 Scope 或 allow_all。
+DEV 自身范围访问由真实 Authorizer 判权；跨组织管理须显式 ROOT，不借空 Scope 或 allow_all。
 
 ## 3. 授权判定与真源
 
@@ -430,6 +440,8 @@ DEV 不允许 0.0.0.0、:: 或其他非回环绑定；容器转发、代理和 T
 - 客户端自述 actor、目标 Scope 反推被代理用户、ContextVar 暗传身份：破坏可信来源边界。
 - 以空 Scope 表达 ROOT、隐式 DEV、生产 allow_all 或两条 PermissionManager/Authorizer
   判定线：形成默认放行或真源分叉；具名身份和真实角色闸门已替代这些过渡方案。
+- 固定 DEV 缺省 ROOT：忽略凭据的开发入口不应同时隐式取得跨租户权限；采用默认 USER、
+  可信部署显式提权，不改变 ROOT 本身的角色语义，也不通过硬编码 Scope 比对绕开 PDP。
 - 为修安全缺陷破坏 Scope/MemoryAPI 的兼容形状或新增公共调试方法：采用防御性复制
   和兼容的公开 capability；底层插件协作必须完整声明，不以冻结为由依赖私有方法。
 - 仅判断请求 ID/Scope，不检查真实撤权目标和实际返回快照：可绕过作者、路由或版本隔离。

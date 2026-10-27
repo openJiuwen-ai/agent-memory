@@ -50,11 +50,16 @@ finally:
 
 from pydantic import ValidationError as PydanticValidationError  # noqa: E402
 
-from jiuwen_memory.api import Credentials, Surface, ValidationError  # noqa: E402
+from jiuwen_memory.api import Credentials, Scope, Surface, ValidationError  # noqa: E402
 from jiuwen_memory_entry.core.api_contract import (  # noqa: E402
     is_known_verb,
     method_contract,
     parse_request,
+)
+from tests.unit.jiuwen_memory_entry.fixtures import (  # noqa: E402
+    DEV_MANAGEMENT_CASES,
+    fixed_dev_management_config,
+    seed_dev_management_space,
 )
 
 try:  # mcp 版本差异防御：旧版无 ToolError 导出时降级为 RuntimeError
@@ -120,10 +125,10 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
         "search",
         {
             "query": "hello",
-                "context": {
-                    "scope": SCOPE,
-                    "extensions": {"query_context": ["用户：hello", "助手：hi"]},
-                },
+            "context": {
+                "scope": SCOPE,
+                "extensions": {"query_context": ["用户：hello", "助手：hi"]},
+            },
             "as_of": "2026-06-17T10:30:00+00:00",
             "filters": {"field": "tags", "op": "contains", "value": "a"},
             "disclosure": "l2",
@@ -152,7 +157,8 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "channel": "background",
             "dreaming": None,
             "interval": 0,
-            "hierarchy_options": None, "reuse_existing": False,
+            "hierarchy_options": None,
+            "reuse_existing": False,
             "candidate": {"type": "predicate", "limit": 10},
         },
     ),
@@ -399,9 +405,10 @@ def test_verify_audit_parameters_reach_persistent_chain(tmp_path, monkeypatch) -
     # pylint: disable=protected-access
     from tests.integration.test_audit_integrity_flow import _sqlite_cfg
 
-    config = mcp_main.load_config(
-        [mcp_main.OFFLINE, {"memory_api": _sqlite_cfg(str(tmp_path / "mcp.sqlite3"))._data}]
-    )
+    memory_config = _sqlite_cfg(str(tmp_path / "mcp.sqlite3"))._data
+    # 完整性验证是 ROOT 管理动作，测试必须显式提权，不能依赖默认 DEV 身份。
+    memory_config["security"]["default"]["params"]["authenticator"]["params"] = {"role": "root"}
+    config = mcp_main.load_config([mcp_main.OFFLINE, {"memory_api": memory_config}])
     server = mcp_main.Server.build(config)
     monkeypatch.setattr(mcp_main, "_SRV", server)
     try:
@@ -418,6 +425,74 @@ def test_verify_audit_parameters_reach_persistent_chain(tmp_path, monkeypatch) -
         assert result["anchor"]["checked"] is False
     finally:
         server.close()
+
+
+def test_default_dev_cannot_verify_audit(kernel) -> None:
+    """默认 USER 即使来自受控 MCP 认证边界，也没有 ROOT 审计验证权限。"""
+    with pytest.raises(RuntimeError, match="permission denied"):
+        asyncio.run(mcp_main.memory_verify_audit())
+
+
+@pytest.mark.parametrize("role", [None, "admin", "root"], ids=["default-user", "admin", "root"])
+def test_fixed_dev_management_tools_require_explicit_privileges(role, monkeypatch) -> None:
+    config = mcp_main.with_local_dev_security(
+        mcp_main.load_config([mcp_main.OFFLINE, fixed_dev_management_config(role)])
+    )
+    server = mcp_main.Server.build(config)
+    monkeypatch.setattr(mcp_main, "_SRV", server)
+    try:
+        seed_dev_management_space(server.api)
+        for method, payload, allowed_roles in DEV_MANAGEMENT_CASES:
+            tool = getattr(mcp_main, f"memory_{method}")
+            if role in allowed_roles:
+                result = asyncio.run(tool(**payload))
+                if method == "audit":
+                    assert isinstance(result, list), result
+                elif method == "create_space":
+                    assert result["space"] == payload["spec"]["space"], result
+                elif method == "verify_audit":
+                    assert result["status"] == "unsupported", result
+            else:
+                with pytest.raises(RuntimeError, match="permission denied"):
+                    asyncio.run(tool(**payload))
+    finally:
+        server.close(wait=True)
+
+
+def test_default_dev_retains_owned_space_governance(monkeypatch) -> None:
+    """USER 不是禁止所有空间治理；真实归属权仍可授权，角色迁移不能取代两轴判定。"""
+    config = mcp_main.with_local_dev_security(
+        mcp_main.load_config([mcp_main.OFFLINE, fixed_dev_management_config(None)])
+    )
+    server = mcp_main.Server.build(config)
+    monkeypatch.setattr(mcp_main, "_SRV", server)
+    try:
+        seed_dev_management_space(server.api, owner=Scope(org="local", user="developer"))
+        assert server.authenticator.authenticate(Credentials()).role.value == "user"
+        result = asyncio.run(
+            mcp_main.memory_set_space_policy(org="local", space="managed", policy={})
+        )
+        assert result["principal_path"] == "user_agent", result
+        assert (
+            asyncio.run(
+                mcp_main.memory_add_space_member(
+                    org="local",
+                    space="managed",
+                    member={"scope": {"org": "local", "user": "guest"}},
+                )
+            )
+            is None
+        )
+        assert (
+            asyncio.run(
+                mcp_main.memory_remove_space_member(
+                    org="local", space="managed", member={"org": "local", "user": "guest"}
+                )
+            )
+            is None
+        )
+    finally:
+        server.close(wait=True)
 
 
 @pytest.mark.parametrize("host,expected_status", [("127.0.0.1", 0), ("0.0.0.0", 2)])
@@ -749,11 +824,20 @@ def test_tool_run_rejects_extra_fields_before_dispatch(monkeypatch) -> None:
         )
 
 
-@pytest.mark.parametrize("overrides,depth,rollup", [
-    ({}, 1, True), ({"expand_depth": 0}, 0, True), ({"rollup": False}, 1, False),
-])
+@pytest.mark.parametrize(
+    "overrides,depth,rollup",
+    [
+        ({}, 1, True),
+        ({"expand_depth": 0}, 0, True),
+        ({"rollup": False}, 1, False),
+    ],
+)
 def test_search_forwards_tree_defaults_and_explicit_zero_false(
-    kernel, monkeypatch, overrides, depth, rollup,
+    kernel,
+    monkeypatch,
+    overrides,
+    depth,
+    rollup,
 ):
     from jiuwen_memory.api import HierarchyKind, HierarchyRole, RetrievalResult
 

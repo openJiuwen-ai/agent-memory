@@ -18,12 +18,14 @@ from time import perf_counter
 from typing import Any
 
 from jiuwen_memory.api import (
+    Credentials,
     DeleteMode,
     DeleteSelector,
     MemoryRuntime,
+    Surface,
     assemble_runtime,
     build_dev_authenticator,
-    internal_context,
+    new_request_context,
 )
 from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.config.config import Config
@@ -58,8 +60,15 @@ class EvalHarness:
     ) -> None:
         runtime = assemble_runtime(config=config)
         self._runtime: MemoryRuntime | None = runtime
-        # 本地评测是受控 composition root；身份固定，数据集 scope 只作目标。
-        self._authenticator = build_dev_authenticator()
+        # 本地跨主体评测显式选择 ROOT，不依赖 DEV 缺省提权；数据集 scope 只作目标。
+        self._authenticator = build_dev_authenticator(
+            identities={
+                "evaluation-root": {
+                    "actor": {"org": "local", "user": "developer"},
+                    "role": "root",
+                },
+            }
+        )
         try:
             self._api = runtime.api
             self._kv = _shared_evaluation_kv(self._api)
@@ -112,7 +121,8 @@ class EvalHarness:
 
     def _security_kwargs(self, _method, _target) -> dict:
         """每次调用生成新上下文，不从数据集目标推导 actor。"""
-        return {"security": internal_context(self._authenticator)}
+        auth = self._authenticator.authenticate(Credentials(api_key="evaluation-root"))
+        return {"security": new_request_context(auth, surface=Surface.INTERNAL)}
 
     def _install_pre_dedup_capture(self) -> None:
         """Observe extractor output before Evolver dedup without changing it."""

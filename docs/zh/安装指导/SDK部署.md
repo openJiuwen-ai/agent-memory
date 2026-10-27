@@ -87,7 +87,7 @@ finally:
 该模式的所有数据都在当前进程内，进程退出后丢失。它不需要 Docker，也不需要模型服务。
 
 示例中的 `build_dev_authenticator()` 仅供进程内调用方在本地测试等场景显式穿过认证边界，
-不验证凭据，产出的是固定开发身份（`local/developer`，ROOT 档）。注意业务 `scope` 只是
+不验证凭据，产出的是固定开发身份（`local/developer`，USER 档）。注意业务 `scope` 只是
 操作目标，不是身份：`internal_context()` 的身份由传入的认证器产出，调用方决定不了自己
 是谁。生产调用应由应用的可信认证边界生成 `RequestSecurityContext`；HTTP / CLI 已使用
 独立认证边界，不走这条本地通道。
@@ -113,8 +113,13 @@ curl http://127.0.0.1:8137/healthz
 ```
 
 `--auth-mode dev` 会启用仅供隔离功能测试的开发认证器。未配置 `http.dev_identities` 时，它忽略认证头，由服务端生成
-`Scope(org="local", user="developer")` 的 ROOT 身份并继续执行 `MemoryAPI` 的授权检查；因此示例把
-业务目标也设为该 Scope。该模式默认只允许绑定回环地址，不得用于生产环境。请求体保持同名
+`Scope(org="local", user="developer")` 的 USER 身份并继续执行 `MemoryAPI` 的授权检查；因此示例把
+业务目标也设为该 Scope。无额外授权的跨 org/user 请求返回 403；ROOT 须在 dev 认证器
+`params.role` 显式配置，见 [配置指南](../API文档/config.md#33-http-开发测试配置多个身份)。
+升级后 `audit`、`verify_audit`、`admin_get/set/all` 也需显式 ROOT，`create_space` 至少需本
+组织 ADMIN；空间成员/策略则按真实治理权判断。受影响命令和 HTTP/CLI/MCP 迁移方法见
+[管理入口迁移](../API文档/config.md#默认-user-的管理入口迁移)，不能仅加 `--auth-mode dev` 恢复管理权。
+该模式只允许绑定回环地址，不得用于生产环境。请求体保持同名
 `MemoryAPI` 方法的参数结构：
 
 ```bash
@@ -392,7 +397,7 @@ uv run --no-sync -- ./scripts/run-cli.sh --auth-mode dev add \
 - 开发环境建议绑定 `127.0.0.1`，不要直接把参考 HTTP 服务暴露到公网；
 - HTTP actor 仅来自认证上下文，请求体中的 `actor_*`、`identity` 等身份声明会被拒绝；
 - 默认 `required` 模式未装配生产认证 runtime 时返回 503，不会降级采用空身份或请求体身份；
-- `dev` 未配置映射时使用固定 `local/developer` ROOT 身份，配置映射后按测试标识选择身份；
+- `dev` 未配置映射时默认固定 `local/developer` USER，ROOT 须额外配置；映射按测试标识选择身份；
   两种模式都执行授权，仅供隔离功能测试，默认要求回环绑定；
 - 生产场景应提供可信认证 runtime，并增加 TLS、限流、超时、监控、备份和可靠的进程管理；
 - 应用退出前应调用 `runtime.close(wait=True)`，等待并释放进程内摄入任务线程池。
