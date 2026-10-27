@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-09-11 |
-| 影响范围 | `jiuwen_memory_entry/mcp_server/`（`__main__.py`、`transport_security.py`；原 `DESIGN.md` 已并入本文档），`tests/unit/jiuwen_memory_entry/test_mcp.py`、`test_mcp_transport_security.py` |
-| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py`（2026-10-08：101 + 5 全绿）；`ruff check` 通过 |
+| 影响范围 | `jiuwen_memory_entry/mcp_server/`（`__main__.py`、`transport_security.py`；原 `DESIGN.md` 已并入本文档），`tests/unit/jiuwen_memory_entry/test_mcp.py`、`test_mcp_transport_security.py`、`tests/integration/jiuwen_memory_entry/test_mcp_startup.py` |
+| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py tests/integration/jiuwen_memory_entry/test_mcp_startup.py`（2026-10-27：160 项通过）；变更 Python 文件 `ruff check` 通过 |
 | 备注 | 本文档吸收原 `jiuwen_memory_entry/mcp_server/DESIGN.md`（已删除），模块级设计、方案取舍与已知遗留统一在此维护 |
 
 ## 背景
@@ -116,6 +116,11 @@ space_usage、get/set_space_policy、list/add/remove_space_member）。
 
 ### 认证与运行
 
+- FastMCP 的 `lifespan` 回调必须返回异步上下文管理器；`_lifespan` 使用
+  `@asynccontextmanager`，进入时等待 `start_background()`，正常或异常退出均在
+  `finally` 中调用 `close()`。裸 async 生成器不支持 SDK 的 `async with`，会导致
+  stdio 与 Streamable HTTP 会话初始化失败（#256）。保留现有生命周期函数体，
+  通过标准库装饰器满足 SDK 契约，不为两种传输分别实现清理逻辑。
 - 认证模式：`JIUWEN_MEMORY_MCP_AUTH_MODE`（required | dev，默认 required，
   失闭）。`required` 未装配生产认证器时业务调用全部拒绝；`dev` 使用固定
   `local/developer` USER 测试身份（忽略凭据、保留 MemoryAPI 授权判定；ROOT 须显式配置），
@@ -196,6 +201,14 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 
 ## 验证
 
+- #256 生命周期回归：修复前经真实 FastMCP wrapper 复现
+  `TypeError: 'async_generator' object does not support the asynchronous context manager protocol`；
+  修复后验证正常/异常退出均关闭一次，并验证退出前已等待后台启动。
+- `pytest tests/integration/jiuwen_memory_entry/test_mcp_startup.py`：默认 required 模式的
+  真实 stdio 子进程经官方 `ClientSession.initialize()` / `list_tools()` 握手；
+  Streamable HTTP 经 ASGI TestClient 完成 initialize、initialized 通知与 tools/list，
+  并断言后台启动和关闭配对。HTTP 用替身内核隔离生命周期，stdio 使用真实 OFFLINE 内核；
+  不依赖外部服务或凭据。
 - `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（覆盖 36 工具契约锁
   （全量相等）+ 旧字段/身份字段拒绝 + 失闭与 Surface.MCP 注入 + 功能闭环含
   evolve→job_status 与 consolidate→trace 血缘链 + get/search 的 as_of valid-time
@@ -210,17 +223,16 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 ## 已知遗留
 
 1. **PR1 已接线保护能力**：限流、昂贵认证并发预算及入口审计均来自完整 Runtime。
-2. **`_SRV` 无显式统一关闭**（`__main__.py` 模块级装配、`main()` 阻塞运行）：涉及
-   S09 第 13 条生命周期要求，属 cf38c2a 引入的原有待办（非本轮回归），待统一生命
-   周期管理时补 stdio/HTTP 两路 shutdown 接线。
-3. **管理面/治理面/Space 工具鉴权依赖管理动作授权**：dev 身份走旧授权链（按 scope
-   归属判定、不读 role）；显式固定 DEV 未配 security/permission 时临时注入 allow_all。
-   具名角色权限随 PR2 Authorizer 接管后重测，不把 role 回灌 PermissionManager。
+2. **会话生命周期已接线**：stdio/HTTP 共用 FastMCP lifespan，正常和异常退出均
+   关闭 `_SRV`；本次覆盖单会话初始化与退出，多 HTTP 会话共享模块级内核的生命周期
+   协调不在本次验证范围内。
+3. **管理面/治理面/Space 工具鉴权依赖管理动作授权**：固定 DEV 默认 USER，
+   ROOT 须显式配置；权限始终由 Authorizer 判定，不注入 allow_all 过渡项。
 4. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。
 5. **OFFLINE 空间删除能力限制已消除**（原记录：`scope.space != ''` 时，授权通过后
    `InMemoryEngine` 返回 ValidationError，不支持非空 space 维的 purge）：`purge_space`
    不再对 space scope 设守卫——本引擎写路径本就拒绝 space scope，不存在空间记忆可清，
    purge 属天然 no-op；而 `delete_space` 是「先置 DELETING 再 purge」的两步事务，旧守卫
    会让删除必败、空间永久卡在 `deleting`。OFFLINE 装配下 create → delete → get(404)
-   自此闭环（见 F07 决策 2）。授权侧差异不变：显式固定 DEV 用临时 allow_all 可通过授权，
-   走旧授权链且无管理授权的具名 DEV 在授权阶段先被拒。
+   自此闭环（见 F07 决策 2）。授权仍经 Authorizer；是否允许管理操作取决于显式角色
+   与目标空间权限，默认 USER 不获得管理旁路。
