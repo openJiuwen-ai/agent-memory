@@ -21,6 +21,11 @@ from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
+    chunk_unit,
+    truncate_unit_content,
+)
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from jiuwen_memory.construction.prompt_strategy import (
     EXTRACT_PROMPT_PREFIX,
@@ -150,6 +155,32 @@ class DynamicLLMExtractor(Extractor):
         strategy: str,
         prompt_key: str,
     ) -> list[MemoryUnit]:
+        """内容型完整消费：≤ 上限的 unit 合并单批调用；超限 unit 无损分批逐批调用。
+
+        分片副本保留 id/元数据，候选仍回指原 unit；中段截断会静默漏事实
+        （检视 P2），故超限内容一律分批而不截断。
+        """
+        built: list[MemoryUnit] = []
+        normal = [u for u in units if len(u.content) <= CONTENT_MAX_UNIT_CHARS]
+        if normal:
+            built.extend(
+                self._extract_strategy_once(normal, context, strategy, prompt_key)
+            )
+        for u in units:
+            if len(u.content) > CONTENT_MAX_UNIT_CHARS:
+                for copy in chunk_unit(u):
+                    built.extend(
+                        self._extract_strategy_once([copy], context, strategy, prompt_key)
+                    )
+        return built
+
+    def _extract_strategy_once(
+        self,
+        units: list[MemoryUnit],
+        context: ExtractContext | None,
+        strategy: str,
+        prompt_key: str,
+    ) -> list[MemoryUnit]:
         # prompt_key 是引用 yml prompts.extract 段的 key；查 registry 取真实文本。
         # registry 未配置或 key 缺失时回退把 key 本身当文本用（兼容内联文本）。
         prompt = self._prompts.get(PHASE_EXTRACT, prompt_key)
@@ -164,7 +195,11 @@ class DynamicLLMExtractor(Extractor):
             datetime.now(UTC).isoformat(),
         )
         source_text = "\n".join(
-            _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=unit.content) for unit in units
+            _SOURCE_PREFIX.format(
+                unit_id=unit.id,
+                unit_content=truncate_unit_content(unit.content, limit=CONTENT_MAX_UNIT_CHARS),
+            )
+            for unit in units
         )
         context_block = _format_context_block(context)
         user_text = (

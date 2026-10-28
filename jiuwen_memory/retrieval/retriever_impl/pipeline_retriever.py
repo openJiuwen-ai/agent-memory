@@ -78,6 +78,24 @@ from .unit_reader import UnitReader
 
 logger = get_logger(__name__)
 
+# 精排输入限长出厂默认（retriever params 可经 rerank_max_query_chars /
+# rerank_max_doc_chars 覆盖；上调须自行承担精排超时风险）：交叉编码器负载 =
+# query 长度 × 候选数，超长 query（如 10KB）会把远程 rerank 服务顶到
+# reranker_timeout（默认 120s）才返回。召回向量化仍用全量 query，这里只
+# 截断送精排的文本；相关性以头部为主，故头部截断。
+_MAX_RERANK_QUERY_CHARS = 2000
+_MAX_RERANK_DOC_CHARS = 4000
+
+
+def _truncate_rerank_inputs(
+    query: str, docs: list[str], query_limit: int, doc_limit: int
+) -> tuple[str, list[str]]:
+    """精排输入限长：query/doc 超长会把远程 rerank 顶满 reranker_timeout。"""
+    return (
+        query[:query_limit],
+        [doc[:doc_limit] for doc in docs],
+    )
+
 
 class PipelineRetriever(Retriever):
     """编排 parse → 谓词 → recall(多路) → fuse → 点读+复核 → rerank → disclose。"""
@@ -102,6 +120,9 @@ class PipelineRetriever(Retriever):
         domain_store: DomainStore,
         schema_temporal_extension: SchemaTemporalPipelineExtension | None = None,
         doc_mode: bool = False,
+        # 精排输入限长：与 reranker_timeout 同走 retriever params 通道。
+        rerank_max_query_chars: int = _MAX_RERANK_QUERY_CHARS,
+        rerank_max_doc_chars: int = _MAX_RERANK_DOC_CHARS,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
@@ -139,6 +160,9 @@ class PipelineRetriever(Retriever):
         self._min_score_ratio = float(min_score_ratio)
         self._min_score_ratio_uncalibrated = float(min_score_ratio_uncalibrated)
         self._min_results = max(0, int(min_results))
+        # 精排输入限长上限（护栏旋钮，上调须自行承担精排超时风险）。
+        self._rerank_max_query_chars = max(1, int(rerank_max_query_chars))
+        self._rerank_max_doc_chars = max(1, int(rerank_max_doc_chars))
 
     @property
     def storage(self) -> DomainStore:
@@ -408,9 +432,15 @@ class PipelineRetriever(Retriever):
         if do_rerank and self._reranker is not None and survivors:
             t0 = perf_counter()
             try:
-                scores = self._reranker.rerank(
-                    parsed.rewritten, [candidate.unit.content for candidate in survivors]
+                # rerank 输入截断护栏：query/doc 超长会把精排请求卡满 120s 超时
+                # （issue #231 实测 124.9s）；rewrite 后的 query 可能更长，同样截断。
+                query_text, doc_texts = _truncate_rerank_inputs(
+                    parsed.rewritten,
+                    [candidate.unit.content for candidate in survivors],
+                    self._rerank_max_query_chars,
+                    self._rerank_max_doc_chars,
                 )
+                scores = self._reranker.rerank(query_text, doc_texts)
             except BackendError as exc:
                 detail = {
                     "skipped": "reranker_unavailable",
@@ -584,6 +614,12 @@ def _build(config):
             discloser,
         ),
         doc_mode=doc_mode,
+        rerank_max_query_chars=int(
+            Factory.cfg_get(config, "rerank_max_query_chars", _MAX_RERANK_QUERY_CHARS)
+        ),
+        rerank_max_doc_chars=int(
+            Factory.cfg_get(config, "rerank_max_doc_chars", _MAX_RERANK_DOC_CHARS)
+        ),
     )
     retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))
     retriever.bind_embedder(

@@ -30,6 +30,8 @@ from jiuwen_memory.construction.common import (
     reject_deprecated_llm_attempt_keys,
     validate_llm_attempt_policy,
 )
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
 logger = get_logger(__name__)
 
@@ -42,6 +44,9 @@ _CLASSIFY_ALLOWED_TIERS: set[str] = {
 
 # LLM 抽的 tags 上限。
 _MAX_TAGS = 3
+
+# LLM 端口未区分超时异常类型（不同 SDK 超时异常名不同），按异常类名识别：
+# openai.APITimeoutError / httpx.ReadTimeout / 内建 TimeoutError 等。
 
 # 批量分类的子批大小（单批 LLM 调用上限，超批分多次）。
 _CLASSIFY_BATCH_SIZE = 10
@@ -166,7 +171,12 @@ class LLMClassifier(Classifier):
 
     def _classify_batch(self, units: list[MemoryUnit]) -> None:
         """单批 LLM 分类：拼 prompt → 调 LLM → 解析 → 回写 tier/tags。"""
-        parts = [_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content) for u in units]
+        # 判定 tier/tags 不需要全文：护栏截断判定输入，防止超大 unit 把同步
+        # 写路径拖进分钟级 LLM 超时（存储/索引仍用全文，检索质量不受影响）。
+        parts = [
+            _SOURCE_PREFIX.format(unit_id=u.id, unit_content=truncate_unit_content(u.content))
+            for u in units
+        ]
         user_text = "\n".join(parts)
         messages = [
             ChatMessage(role="system", content=_CLASSIFY_SYSTEM_PROMPT),
@@ -211,25 +221,17 @@ class LLMClassifier(Classifier):
         )
 
     def _call_llm_with_retry(self, messages: list) -> str:
-        import time
-
-        last_exc: Exception | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=4096)
-            except Exception as exc:
-                last_exc = exc
-                if attempt == self._max_attempts - 1:
-                    break
-                wait = self._retry_backoff_ms * (2 ** attempt) / 1000.0
-                logger.warning(
-                    "LLMClassifier: LLM call failed (attempt %d), retrying in %.1fs",
-                    attempt + 1, wait,
-                )
-                time.sleep(wait)
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("LLMClassifier: LLM call did not execute")
+        """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""
+        return call_llm_with_retry(
+            self._llm.chat,
+            messages,
+            max_attempts=self._max_attempts,
+            backoff_ms=self._retry_backoff_ms,
+            logger=logger,
+            label="LLMClassifier",
+            temperature=0,
+            max_tokens=4096,
+        )
 
     def _parse_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON 数组（容错 markdown fence/单对象）。"""

@@ -6,10 +6,13 @@
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
+import httpx
+import openai
+
 import pytest
 
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import HealthCheckError, LLMTimeoutError
 from jiuwen_memory.common.llm.llm_impl import LlmProducer
 from jiuwen_memory.common.llm.llm_impl.openai_llm import OpenAILLM
 from jiuwen_memory.common.type_def import ChatMessage
@@ -164,3 +167,17 @@ def test_producer_unknown_type():
 
     with pytest.raises(ValidationError):
         LlmProducer.build("unknown", {}, AssemblyContext())
+
+
+def test_chat_converts_openai_timeout_to_contract_error():
+    """超时契约：适配器把 openai.APITimeoutError 转换为 LLMTimeoutError，构建层不感知 SDK。"""
+    llm = _make_mock_llm()
+    request = httpx.Request("POST", "https://provider.invalid/v1/chat/completions")
+    llm.client.chat.completions.create = MagicMock(
+        side_effect=openai.APITimeoutError(request=request)
+    )
+
+    with pytest.raises(LLMTimeoutError) as error:
+        llm.chat([ChatMessage(role="user", content="hi")])
+
+    assert isinstance(error.value.__cause__, openai.APITimeoutError)

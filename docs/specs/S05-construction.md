@@ -112,7 +112,8 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 20. **层级边双向一致**（已实现 TIME）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
     并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
 21. **父标注先于持久化和索引**（已实现 TIME）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
-    再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
+    再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果；
+超限内容分片生成时全部片段有效才合并写回，任一片无效该 unit 保留原有 layers。
 22. **Schema 事件精度不伪造日期**：Property 的年/月事件时间用
     `schema_event_start/end/precision` 半开区间表达，`temporal.t_event`
     保持为空；日/日时精度可同时写 `t_event`。Source 消息时间只能进入
@@ -157,6 +158,8 @@ LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 
 产物使用 `artifact`。非法 JSON 作为子批失败显式记录；候选结构逐条校验并隔离坏候选，
 同批合法候选继续保留。单个子批失败不阻断其它子批；仅当整次抽取没有产生任何可用候选
 时向上抛出首个错误，以区别于模型明确返回合法 `[]`。
+
+超过 `CONTENT_MAX_UNIT_CHARS`（8000，与 ingest 预切分上限对齐）的 unit 不截断——中段截断等于静默漏事实，显式拒绝又会丢掉合法输入——而是按段落边界分片逐批调用，候选按 `source_unit_ids` 叠加合并（溯源不变），单批 prompt 保持有界。
 
 动态实现识别 `_extract_prompt_<strategy>`。普通 write 路径以 `infer=true` 触发抽取，
 procedural write 或显式 `evolve(EXTRACT)` 也会进入同一 Extractor；每个非空自定义策略
@@ -250,6 +253,8 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 |------|------|------|
 | `abstract` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 对一批记忆单元做抽象与精炼，产出高抽象粒度的新记忆单元 |
 
+超过 `CONTENT_MAX_UNIT_CHARS` 的 unit 采用**两段式**消费：先按段落边界分片逐片提炼（分片级候选 `source_unit_ids` 回指原 unit，原文事实不丢），再把每个超限 unit 替换为其提炼视图（各片候选拼接、显式截到 2000 字符的压缩视图）与未超限 unit 合并进**同一次**归纳调用——PATTERN/PORTRAIT 的跨记忆共同归纳不因分片调用拆散。多组消费时单组失败隔离跳过，不影响其它组。
+
 ### Associator（`associator.py`）
 
 关联分析，发现记忆间的关联关系。
@@ -279,7 +284,10 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 按 `layer_annotator_threshold`（默认 512）筛选：仅对 `len(content) > threshold` 的 unit
 标注，短 content 留空。LLM 批量结果必须以合法、唯一的 ID 完整覆盖输入；重复、越界或
 遗漏 ID 时整批不写。每条结果应满足 `0 < len(L0) < len(L1) < len(L2)`，仅长度不合法的
-条目单独跳过，其余条目在结构校验完成后写入。Evolver 在 EXTRACT/CONSOLIDATE 抽取
+条目单独跳过，其余条目在结构校验完成后写入。超过 `CONTENT_MAX_UNIT_CHARS` 的 unit 
+不截断，按段落边界分片逐片生成 L0/L1：**全部片段都有效才合并写回**，任一片无效则该 
+unit 整体放弃本次标注——保留原有 layers（未标注为空）并 warning 上报，不提交残缺的
+整篇摘要。Evolver 在 EXTRACT/CONSOLIDATE 抽取
 （升华）后、去重落盘前调用。
 
 ### Router（`router.py`）
@@ -528,6 +536,11 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
   `router_retry_backoff`。
 - `max_attempts` 非法时在算子构造期抛出 `ValidationError`，不得等到第一次 LLM
   调用时才失败；最后一次调用失败时原始异常向上抛出。
+- 重试循环统一收敛在 `construction/llm_retry.py::call_llm_with_retry`，各算子一律委托
+  之，不再各自维护循环。**超时是确定性失败，不重试**：超时判别只认 LLM 契约的统一超时
+  类型（`common.errors.LLMTimeoutError` 或内建 `TimeoutError` 子类），由各 LLM Adapter
+  把自家 SDK 超时异常转换后抛出（见 S07「LLM」小节）；构建层不得依赖具体 SDK 异常类名
+  （S09 §9 抽象边界）——超时叠加重试会把单次超时放大为 N×timeout。
 
 这与 common 层的 `llm_max_retries` 不同：后者表示 SDK 在一次出站请求中的自动重试次数，
 因此 `N` 次 SDK 重试最多产生 `N + 1` 次底层请求。Construction 层不再读取
