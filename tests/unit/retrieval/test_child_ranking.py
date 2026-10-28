@@ -1,228 +1,214 @@
-"""父优先和子相关性排序使用真实展开链路，不更改候选预算或父分数。"""
+"""复用真实召回候选：父优先、融合原序、深度与预算；不再向量化子正文。"""
 
-import asyncio
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
-from jiuwen_memory.common.errors import BackendError, UnsupportedCapabilityError
-from jiuwen_memory.common.type_def import HierarchyRole, RecallChannel, RetrievalPipeline, Segment
-from jiuwen_memory.control.collective.cross_space_recall import SpaceRecallTarget, recall_spaces
-from jiuwen_memory.retrieval.child_ranking import child_cosine_order
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
+from jiuwen_memory.common.type_def import (
+    HierarchyRole,
+    RecallChannel,
+    RetrievalPipeline,
+    Segment,
+)
+from jiuwen_memory.retrieval.expansion import PreparedRetrievalResult, complete_expansion
+from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
+from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from jiuwen_memory.retrieval.types import DisclosureLevel
-from tests.unit.retrieval.expansion_fixtures import link, make_space_tree, make_tree
+from tests.unit.retrieval.expansion_fixtures import link, make_tree
 from tests.unit.retrieval.hierarchy_query_fixtures import (
     QUERY_SCOPE,
     ConstantEmbedder,
     hierarchy_query,
+    make_harness,
     tree_unit,
 )
+from tests.unit.retrieval.rollup_fixtures import make_rollup_space
 
 pytestmark = pytest.mark.unit
 
 
-class RecordingEmbedder(ConstantEmbedder):
-    def __init__(self, vectors=None):
-        self.calls = []
-        self.vectors = vectors or {}
+@pytest.mark.parametrize("pipeline", list(RetrievalPipeline))
+def test_recalled_children_keep_fusion_order_without_expansion_or_embedding(pipeline, monkeypatch):
+    tree = make_tree(pipeline, index_children=True)
+    hidden = tree_unit("not-recalled", HierarchyRole.SNAPSHOT)
+    link(tree.root, [*tree.children, hidden])
+    tree.save([tree.root])
+    tree.base.domain.add(QUERY_SCOPE, [hidden])
+    other_parent = tree_unit("unselected-parent")
+    other_child = tree_unit("unselected-child", HierarchyRole.SNAPSHOT)
+    link(other_parent, [other_child])
+    tree.base.add([other_parent, other_child])
 
-    def embed(self, texts):
-        self.calls.append(list(texts))
-        return [self.vectors.get(text, [1.0, 0.0]) for text in texts]
+    def rerank_scores(_query: str, texts: list[str]) -> list[float]:
+        scores = []
+        for text in texts:
+            score = 0.9 if text.endswith("1") else 0.1
+            scores.append(score)
+        return scores
+
+    reranker = Mock()
+    reranker.rerank.side_effect = rerank_scores
+    retriever = PipelineRetriever(
+        tree.base.parser, RRFFuser(), tree.base.discloser, None, reranker,
+        domain_store=tree.base.domain, min_score=0.5,
+    )
+    retriever.bind_expander(tree.expander)
+    forbid = Mock(side_effect=AssertionError("child selection must reuse recalled units"))
+    monkeypatch.setattr(tree.expander, "expand", forbid)
+    monkeypatch.setattr(ConstantEmbedder, "embed", forbid)
+    query = hierarchy_query(rollup=True, expand_depth=1, top_k=3, with_trajectory=True)
+    result = retriever.retrieve(QUERY_SCOPE, query)
+    assert [item.unit_id for item in result.items] == ["root", "first", "second"]
+    assert all(item.score == 0.9 for item in result.items)
+    assert not result.errors
+    assert result.trajectory[-1].stage == "child_select"
+    assert result.trajectory[-1].candidate_count == 2
+    for limit in (1, 2):
+        limited = retriever.retrieve(QUERY_SCOPE, replace(query, top_k=limit))
+        assert limited.items == result.items[:limit]
+    forbid.assert_not_called()
 
 
 @pytest.mark.parametrize("pipeline", list(RetrievalPipeline))
-def test_children_rank_by_raw_question_and_full_body_without_changing_scores(pipeline, monkeypatch):
-    tree = make_tree(pipeline)
-    first, second = tree.children
-    embedder = RecordingEmbedder({first.content: [0.0, 1.0], second.content: [1.0, 0.0]})
-    tree.base.retriever.bind_embedder(embedder)
-    original = tree.base.parser.parse
-
-    def parse(request):
-        result = original(request)
-        result.raw = "rewritten query differs"
-        return result
-
-    monkeypatch.setattr(tree.base.parser, "parse", parse)
-    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(
-        top_k=3, expand_depth=1, channels=[RecallChannel.KEYWORD],
-        disclosure=DisclosureLevel.L0, with_trajectory=True,
-    ))
-    assert [item.unit_id for item in result.items] == ["root", "second", "first"]
-    assert embedder.calls == [["recall evidence", first.content, second.content]]
-    assert all(item.score == result.items[0].score for item in result.items)
-    assert all(item.level is DisclosureLevel.L0 for item in result.items)
-    assert result.trajectory[-1].stage == "child_rank"
+def test_role_filter_precedes_recall_limit_and_rechecks_stale_index(pipeline):
+    harness = make_harness(pipeline, recall_limit=1)
+    parent = tree_unit("parent")
+    leaf = tree_unit("leaf", HierarchyRole.SNAPSHOT)
+    link(parent, [leaf])
+    harness.domain.add(QUERY_SCOPE, [parent])
+    harness.add([tree_unit("scene", HierarchyRole.SCENE),
+                 tree_unit("event", HierarchyRole.EVENT), leaf])
+    query = hierarchy_query(rollup=True, top_k=1, channels=[RecallChannel.VECTOR])
+    result = harness.retriever.retrieve(QUERY_SCOPE, query)
+    assert [item.unit_id for item in result.items] == [parent.id]
+    leaf.hierarchy.role = HierarchyRole.SCENE
+    harness.domain.update(QUERY_SCOPE, [leaf])
+    assert harness.retriever.retrieve(QUERY_SCOPE, query).items == []
 
 
-@pytest.mark.parametrize("top_k", [1, 2])
-def test_enough_parents_fill_output_without_child_embedding(top_k, monkeypatch):
-    tree = make_tree()
-    if top_k == 2:
-        second_root = tree_unit("another-root")
-        tree.base.add([second_root])
-    embedder = RecordingEmbedder()
-    tree.base.retriever.bind_embedder(embedder)
-    query = hierarchy_query(top_k=top_k, expand_depth=1)
-    roots = tree.base.retriever.retrieve(QUERY_SCOPE, replace(query, expand_depth=0))
-    result = tree.base.retriever.retrieve(QUERY_SCOPE, query)
-    assert [item.unit_id for item in result.items[:top_k]] == [
-        item.unit_id for item in roots.items
-    ]
-    assert len(result.items) == top_k
-    assert embedder.calls == []
-
-
-def test_no_children_or_snapshot_search_never_embeds(monkeypatch):
-    tree = make_tree()
-    embedder = RecordingEmbedder()
-    tree.base.retriever.bind_embedder(embedder)
-    tree.root.hierarchy.child_ids = []
-    tree.root.hierarchy.child_scopes = []
-    tree.save([tree.root])
-    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(expand_depth=1))
-    assert [item.unit_id for item in result.items] == ["root"]
-    tree.root.hierarchy.role = HierarchyRole.SNAPSHOT
-    tree.save([tree.root])
-    tree.base.keyword_builder.update([tree.root])
-    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(
-        expand_depth=1, hierarchy_role=HierarchyRole.SNAPSHOT,
-    ))
-    assert [item.unit_id for item in result.items] == ["root"]
-    assert embedder.calls == []
-
-
-def test_scope_identity_dedup_and_equal_similarity_keep_original_order(monkeypatch):
-    tree = make_tree()
-    tree.children[1].id = tree.children[0].id
-    link(tree.root, tree.children)
-    tree.save([tree.root])
-    tree.base.domain.add(tree.children[1].scope, [tree.children[1]])
-    embedder = RecordingEmbedder()
-    tree.base.retriever.bind_embedder(embedder)
-    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(expand_depth=1))
-    assert [item.unit_id for item in result.items] == ["root", "first", "first"]
-    assert [item.abstract for item in result.items[1:]] == ["leaf-0", "leaf-1"]
-    assert len(embedder.calls[0]) == 3
-
-
-@pytest.mark.parametrize("top_k", [2, 3, 5, 6])
-def test_cross_space_children_share_one_global_pool_before_total_cutoff(monkeypatch, top_k):
-    trees = {name: make_space_tree(name) for name in ("one", "two")}
-    embedder = RecordingEmbedder({"one-low": [0.0, 1.0], "two-low": [-1.0, 0.0]})
-    for name, tree in trees.items():
-        for index, child in enumerate(tree.children):
-            child.segments = [Segment(content=f"{name}-{'low' if index == 0 else 'high'}")]
-        tree.save(tree.children)
-        tree.base.retriever.bind_embedder(embedder)
-
-    async def recall(scope, query):
-        return trees[scope.space].base.retriever.retrieve(scope, query)
-
-    result, failures = asyncio.run(recall_spaces(
-        [SpaceRecallTarget(tree.root.scope) for tree in trees.values()],
-        hierarchy_query(top_k=top_k, expand_depth=1), top_k=top_k, recall=recall,
-    ))
-    assert failures == []
-    assert [item.content for item in result.items] == [
-        "recall evidence one", "recall evidence two", "one-high", "two-high", "one-low", "two-low",
-    ][:top_k]
-    assert len(embedder.calls) == int(top_k > 2)
-    assert len(result.items) == min(top_k, 6), "top_k 限制跨空间父子结果总数"
-
-
-def test_missing_embedder_is_not_a_silent_bfs_fallback(monkeypatch):
-    tree = make_tree()
-    tree.base.retriever.bind_embedder(None)
-    with pytest.raises(UnsupportedCapabilityError, match="Embedder"):
-        tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(top_k=3, expand_depth=1))
-
-
-@pytest.mark.parametrize("vectors", [
-    [], [[1.0, 0.0]], [[1.0, 0.0], [1.0]],
-    [[1.0, 0.0], [float("nan"), 1.0]], [[1.0, 0.0], [float("inf"), 1.0]],
-    [[1.0, 0.0], [0.0, 0.0]],
+@pytest.mark.parametrize("role,depth", [
+    (HierarchyRole.SCENE, 1), (HierarchyRole.SCENE, 2),
+    (HierarchyRole.EVENT, 1), (HierarchyRole.EVENT, 2), (HierarchyRole.EVENT, 3),
 ])
-def test_invalid_embedding_is_rejected_instead_of_returning_unranked_children(vectors, monkeypatch):
-    embedder = RecordingEmbedder()
-    monkeypatch.setattr(embedder, "embed", lambda texts: vectors)
-    with pytest.raises(BackendError, match="embedding"):
-        child_cosine_order("question", ["child"], embedder)
+def test_recalled_descendants_respect_actual_ancestor_depth(role, depth):
+    tree = make_tree(index_children=True)
+    roles = (
+        HierarchyRole.SNAPSHOT, HierarchyRole.TIME_SPAN, HierarchyRole.SCENE, HierarchyRole.EVENT,
+    )
+    chain = [tree_unit(value.value, value) for value in roles]
+    for parent, child in zip(chain[1:], chain):
+        link(parent, [child])
+    tree.base.add(chain)
+    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(
+        hierarchy_role=role, rollup=True, expand_depth=depth,
+        channels=[RecallChannel.KEYWORD],
+    ))
+    index = next(i for i, unit in enumerate(chain) if unit.hierarchy.role is role)
+    assert result.items[0].unit_id == chain[index].id
+    assert {item.unit_id for item in result.items} == {
+        unit.id for unit in chain[max(0, index - depth):index + 1]
+    }
+    assert not result.errors
 
 
-def test_blank_child_is_removed_after_budget_and_never_embedded(monkeypatch):
+def test_empty_recalled_children_are_prepared_without_errors():
     tree = make_tree()
+    query = hierarchy_query(
+        rollup=True, expand_depth=1, top_k=3, with_trajectory=True, defer_expansion=True,
+    )
+    prepared = tree.base.retriever.retrieve(QUERY_SCOPE, query)
+    assert prepared.recalled_children_ready
+    assert prepared.recalled_children == []
+    result = complete_expansion(prepared, [prepared], query)
+    assert [item.unit_id for item in result.items] == ["root"]
+    assert not result.errors
+    assert result.trajectory[-1].stage == "child_select"
+    assert result.trajectory[-1].candidate_count == 0
+    assert result.trajectory[-1].detail["selected_children"] == "0"
+
+
+@pytest.mark.parametrize("top_k", [1, 3])
+def test_unprepared_selected_provider_is_rejected_only_with_spare_window(top_k):
+    tree = make_tree(index_children=True)
+    query = hierarchy_query(rollup=True, expand_depth=1, top_k=top_k, defer_expansion=True)
+    prepared = tree.base.retriever.retrieve(QUERY_SCOPE, query)
+    provider = PreparedRetrievalResult(
+        items=prepared.items, expansion_roots=prepared.expansion_roots,
+    )
+    if top_k == 1:
+        result = complete_expansion(provider, [provider], query)
+        assert [item.unit_id for item in result.items] == ["root"]
+        assert not result.errors
+    else:
+        with pytest.raises(UnsupportedCapabilityError, match="未完成已召回后代的准备"):
+            complete_expansion(provider, [provider], query)
+
+
+def test_unselected_provider_does_not_need_child_preparation():
+    selected_tree = make_rollup_space("selected")
+    other_tree = make_rollup_space("other")
+    query = hierarchy_query(rollup=True, expand_depth=1, top_k=3, defer_expansion=True)
+    selected = selected_tree.base.retriever.retrieve(selected_tree.root.scope, query)
+    other = other_tree.base.retriever.retrieve(other_tree.root.scope, query)
+    provider = PreparedRetrievalResult(items=other.items, expansion_roots=other.expansion_roots)
+    result = complete_expansion(selected, [provider, selected], query)
+    assert [item.unit_id for item in result.items] == ["parent", "leaf-0", "leaf-1"]
+    assert not result.errors
+
+
+def test_recalled_child_with_broken_reverse_edge_is_excluded():
+    tree = make_tree(index_children=True)
+    tree.root.hierarchy.child_ids.pop()
+    tree.root.hierarchy.child_scopes.pop()
+    tree.save([tree.root])
+    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(rollup=True, expand_depth=1))
+    assert [item.unit_id for item in result.items] == ["root", "first"]
+    assert any(error.error_type == "child_mismatch" for error in result.errors)
+
+
+@pytest.mark.parametrize("rollup", [False, True])
+def test_blank_children_consume_budget_before_exclusion(rollup):
+    tree = make_tree(index_children=True)
     tree.children[0].segments = [Segment(content="   ")]
     tree.children[0].layers.l0 = ""
     tree.save(tree.children)
-    embedder = RecordingEmbedder()
-    tree.base.retriever.bind_embedder(embedder)
-    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(expand_depth=1))
+    query = hierarchy_query(rollup=rollup, expand_depth=1, disclosure=DisclosureLevel.L0)
+    result = tree.base.retriever.retrieve(QUERY_SCOPE, query)
     assert [item.unit_id for item in result.items] == ["root", "second"]
-    assert embedder.calls == [["recall evidence", tree.children[1].content]]
-
-    embedder.calls.clear()
-    limited = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(
-        expand_depth=1, max_tokens=2, disclosure=DisclosureLevel.L0,
-    ))
+    limited = tree.base.retriever.retrieve(QUERY_SCOPE, replace(query, max_tokens=2))
     assert [item.unit_id for item in limited.items] == ["root"]
     assert any(error.error_type == "budget_exhausted" for error in limited.errors)
-    assert embedder.calls == [], "空白正文已消耗的预算不能用于回填其他子节点"
 
 
-def test_l0_disclosure_without_returned_content_keeps_nonempty_source(monkeypatch):
-    tree = make_tree()
-    embedder = RecordingEmbedder()
-    tree.base.retriever.bind_embedder(embedder)
+def test_l0_disclosure_checks_source_body_and_keeps_recalled_children(monkeypatch):
+    tree = make_tree(index_children=True)
     original = tree.base.discloser.disclose
 
     def disclose(*args, **kwargs):
         return [replace(item, content="") for item in original(*args, **kwargs)]
 
     monkeypatch.setattr(tree.base.discloser, "disclose", disclose)
-    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(expand_depth=1))
+    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(rollup=True, expand_depth=1))
     assert [item.unit_id for item in result.items] == ["root", "first", "second"]
-    assert embedder.calls == [["recall evidence", *(child.content for child in tree.children)]]
 
 
-def test_blank_parent_is_removed_but_its_nonempty_children_remain(monkeypatch):
-    from jiuwen_memory.retrieval.expansion import complete_expansion
-
+def test_structural_expansion_preserves_scope_identity_and_bfs_order():
     tree = make_tree()
-    embedder = RecordingEmbedder()
-    tree.base.retriever.bind_embedder(embedder)
+    tree.children[1].id = tree.children[0].id
+    link(tree.root, tree.children)
+    tree.save([tree.root])
+    tree.base.domain.add(tree.children[1].scope, [tree.children[1]])
+    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(expand_depth=1))
+    assert [item.unit_id for item in result.items] == ["root", "first", "first"]
+    assert [item.abstract for item in result.items[1:]] == ["leaf-0", "leaf-1"]
+
+
+def test_blank_structural_root_still_expands_nonempty_children():
+    tree = make_tree()
     query = hierarchy_query(top_k=1, expand_depth=1, defer_expansion=True)
     prepared = tree.base.retriever.retrieve(QUERY_SCOPE, query)
-    root = prepared.expansion_roots[0]
-    root.candidate.unit.segments = [Segment(content="  ")]
+    prepared.expansion_roots[0].candidate.unit.segments = [Segment(content="  ")]
     result = complete_expansion(prepared, [prepared], query)
     assert [item.unit_id for item in result.items] == ["first"]
-    assert embedder.calls == [["recall evidence", *(child.content for child in tree.children)]]
-
-
-def test_unspecified_parent_role_preserves_existing_empty_content_behavior(monkeypatch):
-    tree = make_tree()
-    tree.children[0].segments = [Segment(content="   ")]
-    tree.save(tree.children)
-    embedder = RecordingEmbedder()
-    tree.base.retriever.bind_embedder(embedder)
-    result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(
-        hierarchy_role=None, expand_depth=1,
-    ))
-    assert [item.unit_id for item in result.items] == ["root", "first", "second"]
-    assert embedder.calls == []
-
-
-@pytest.mark.parametrize("pipeline", list(RetrievalPipeline))
-def test_total_cutoff_keeps_high_relevance_child_after_global_ranking(pipeline, monkeypatch):
-    tree = make_tree(pipeline)
-    first, second = tree.children
-    embedder = RecordingEmbedder({first.content: [0.0, 1.0], second.content: [1.0, 0.0]})
-    tree.base.retriever.bind_embedder(embedder)
-    query = hierarchy_query(top_k=3, expand_depth=1, disclosure=DisclosureLevel.L2)
-    full = tree.base.retriever.retrieve(QUERY_SCOPE, query)
-    limited = tree.base.retriever.retrieve(QUERY_SCOPE, replace(query, top_k=2))
-    assert [item.unit_id for item in limited.items] == ["root", "second"]
-    assert limited.items == full.items[:2], "最终裁剪必须保留完整排序的结果前缀"
-    assert embedder.calls[-1] == [query.text, first.content, second.content]

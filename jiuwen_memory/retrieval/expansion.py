@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """单/跨空间共用的展开收尾：先确定根，再共用一个披露预算。
 
-PreparedRetrievalResult 仅在内部 defer_expansion 协议中流转；公开返回值仍是
-普通 RetrievalResult。准备阶段不读取后代，跨空间仅把最终选中的根交给本模块。
+PreparedRetrievalResult 仅作为内部中间结果；公开返回值仍是普通 RetrievalResult。
+父角色上卷复用已召回后代；其他请求按结构展开，跨空间均延迟到全局选根后收尾。
 正文仍由注入的 Discloser 渲染；预算按实际渲染字段估算，不把原始全文冒充 L0 成本。
 """
 
@@ -12,7 +12,6 @@ import json
 from dataclasses import asdict, dataclass, field, replace
 from time import perf_counter
 
-from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import BackendError, UnsupportedCapabilityError
 from jiuwen_memory.common.type_def import (
     HierarchyKind,
@@ -23,7 +22,6 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.hierarchy import TIME_PARENT_ROLES
 
-from .child_ranking import child_cosine_order
 from .discloser import Discloser
 from .expander import MAX_EXPANSION_NODES, Expander, ExpandRequest, ExpandResult, NodeKey, node_key
 from .types import (
@@ -45,7 +43,6 @@ class ExpansionSource:
     query: ParsedQuery
     expander: Expander
     discloser: Discloser
-    embedder: Embedder | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +59,29 @@ class PreparedRetrievalResult(RetrievalResult):
     """内部中间结果，不得直接交付给 API 调用方或序列化。"""
 
     expansion_roots: list[ExpansionRoot] = field(default_factory=list)
+    recalled_children: list[tuple[ExpansionRoot, ScoredMemoryUnit]] = field(default_factory=list)
+    recalled_children_ready: bool = False  # 区分合法空候选与提供方未准备。
+
+    def keep_recalled(
+        self, candidates: list[ScoredMemoryUnit], parents: dict[NodeKey, NodeKey],
+    ) -> None:
+        """按融合原序保留已物化且归属、深度经上卷校验的后代。"""
+        roots = {node_key(root.candidate.unit): root for root in self.expansion_roots}
+        for candidate in candidates:
+            parent_key = parents.get(node_key(candidate.unit))
+            root = roots.get(parent_key) if parent_key is not None else None
+            if root is not None:
+                self.recalled_children.append((root, candidate))
+        self.recalled_children_ready = True
+
+
+def uses_recalled_children(query: RetrievalQuery) -> bool:
+    """TIME 父角色上卷查询默认复用命中后代；跨空间延迟到全局选根后补位。"""
+    return (
+        query.hierarchy_kind is HierarchyKind.TIME
+        and query.hierarchy_role in TIME_PARENT_ROLES
+        and query.rollup and query.expand_depth > 0
+    )
 
 
 @dataclass
@@ -125,7 +145,6 @@ class _Completion:
     budget: DisclosureBudget
     seen: set[NodeKey] = field(default_factory=set)
     remaining_nodes: int = MAX_EXPANSION_NODES
-    children: list[tuple[RetrievedItem, str]] = field(default_factory=list)
 
     def is_parent_query(self) -> bool:
         return (
@@ -153,34 +172,54 @@ class _Completion:
             return True
         item = replace(item, score=root.item.score)
         self.result.items.append(item)
-        self.children.append((item, unit.content))
         return True
 
-    def rank_children(self, roots: list[ExpansionRoot], parent_count: int) -> None:
-        """全局选根与预算准入后重排，不改变候选集合、根分数或披露预算。"""
-        if (
-            not self.is_parent_query()
-            or parent_count >= self.query.top_k
-            or not self.children
-        ):
+    def select_recalled(
+        self, prepared: list[PreparedRetrievalResult], roots: list[ExpansionRoot],
+    ) -> None:
+        """按空间处理顺序、空间内融合原序补位，仅保留所选父的后代。"""
+        parent_count = len(self.result.items)
+        if parent_count >= self.query.top_k:
             return
-        embedder = roots[0].source.embedder
-        if embedder is None:
-            raise UnsupportedCapabilityError(
-                "embedder", "child_ranking", "Retriever",
-                "树查询父节点不足时需要装配共享 Embedder 进行子节点排序",
-            )
         started = perf_counter()
-        order = child_cosine_order(
-            self.query.text, [content for _, content in self.children], embedder,
-        )
-        self.result.items[parent_count:] = [self.children[index][0] for index in order]
+        selected = {node_key(root.candidate.unit) for root in roots}
+        # prepared 沿用扇出目标顺序；不按完成时间或跨空间分数重排。
+        candidates: list[tuple[ExpansionRoot, ScoredMemoryUnit]] = []
+        for result in prepared:
+            # 只检查参与本次补位的提供方；未选中的空间不阻断查询。
+            if not result.recalled_children_ready and any(
+                node_key(root.candidate.unit) in selected for root in result.expansion_roots
+            ):
+                raise UnsupportedCapabilityError(
+                    "defer_expansion", "true", "Retriever",
+                    "检索实现未完成已召回后代的准备",
+                )
+            for root, candidate in result.recalled_children:
+                if node_key(root.candidate.unit) in selected:
+                    candidates.append((root, candidate))
+        for root, candidate in candidates:
+            if len(self.result.items) >= self.query.top_k:
+                break
+            if node_key(candidate.unit) in self.seen:
+                continue
+            if self.remaining_nodes <= 0:
+                outcome = ExpandResult()
+                outcome.exclude("node_limit", truncated=True)
+                self.record(root, outcome, 0.0)
+                break
+            self.remaining_nodes -= 1
+            if not self.select(root, candidate.unit, 1):
+                outcome = ExpandResult()
+                outcome.exclude("budget_exhausted", truncated=True)
+                self.record(root, outcome, 0.0)
+                break
         if self.query.with_trajectory:
             self.result.trajectory.append(TrajectoryStep(
-                stage="child_rank", cost_ms=(perf_counter() - started) * 1000,
-                candidate_count=len(self.children), detail={
-                    "algorithm": "parent_search_order_then_child_cosine",
+                stage="child_select", cost_ms=(perf_counter() - started) * 1000,
+                candidate_count=len(candidates), detail={
+                    "algorithm": "parent_search_order_then_recalled_children",
                     "parent_count": str(parent_count),
+                    "selected_children": str(len(self.result.items) - parent_count),
                     "ranking_cutoff": str(self.query.top_k),
                 },
             ))
@@ -238,7 +277,7 @@ class _Completion:
 def complete_expansion(
     selected: RetrievalResult, prepared: list[PreparedRetrievalResult], query: RetrievalQuery,
 ) -> RetrievalResult:
-    """选中根先消耗预算，展开并排序后按 top_k 限制父子返回总数。"""
+    """选中根先消耗预算，复用命中后代或按边展开，父子总数不超过 top_k。"""
     roots_by_key: dict[NodeKey, ExpansionRoot] = {}
     ordered_roots: list[ExpansionRoot] = []
     for result in prepared:
@@ -272,10 +311,11 @@ def complete_expansion(
         # 空正文父仍按原预算与边约束展开，不能连带丢掉有正文的后代。
         roots.append(root)
         state.seen.add(key)
-    parent_count = len(output.items)
-    for root in roots:
-        state.expand(root)
-    state.rank_children(roots, parent_count)
+    if uses_recalled_children(query):
+        state.select_recalled(prepared, roots)
+    else:
+        for root in roots:
+            state.expand(root)
     output.items = output.items[:query.top_k]
     return output
 

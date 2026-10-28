@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import (
     ChannelEvidence,
     FilterClause,
@@ -44,18 +45,29 @@ def test_maxp_keeps_best_direct_or_descendant_score_without_sum(parent_score) ->
     store.get.assert_not_called()
 
 
-def test_new_parent_has_no_fabricated_direct_evidence_and_reads_are_cached() -> None:
+@pytest.mark.parametrize("child_depth", [0, 1])
+def test_new_parent_has_no_fabricated_direct_evidence_and_reads_are_cached(child_depth) -> None:
     parent = tree_unit("parent")
     children = [tree_unit(f"leaf-{index}", HierarchyRole.SNAPSHOT) for index in range(3)]
     link(parent, children)
     sources = [ScoredMemoryUnit(child, 0.8, evidence=[ChannelEvidence()]) for child in children]
     store = read_spy([parent])
-    outcome = rollup_candidates(store, rollup_input(sources))
+    outcome = rollup_candidates(store, rollup_input(sources, child_depth=child_depth))
+    assert len(outcome.recalled_parents) == (3 if child_depth else 0)
     assert outcome.admitted_count == 1
     assert outcome.candidates[0].evidence == []
     assert outcome.candidates[0].score == 0.8
     assert outcome.visited_count == 3
     store.get.assert_called_once_with(QUERY_SCOPE, [parent.id])
+
+
+@pytest.mark.parametrize("child_depth", [True, False, -1, 0.5, "1", None])
+def test_invalid_child_depth_is_rejected_before_reading(child_depth) -> None:
+    store = read_spy([])
+    request = rollup_input([], child_depth=child_depth)
+    with pytest.raises(ValidationError, match="child_depth"):
+        rollup_candidates(store, request)
+    store.get.assert_not_called()
 
 
 @pytest.mark.parametrize("dimension", ["org", "space", "user", "agent", "session"])

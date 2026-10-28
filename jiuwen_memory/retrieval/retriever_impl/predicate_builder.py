@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def import (
     FilterLogic,
     FilterOp,
     HierarchyKind,
+    HierarchyRole,
 )
 from jiuwen_memory.common.type_def.hierarchy import TIME_PARENT_ROLES, HierarchyStatus
 from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
@@ -99,6 +100,17 @@ def build_ordinary_hierarchy_filters() -> list[FilterExpr]:
         FilterClause("hierarchy_kind", FilterOp.EQ, HierarchyKind.TIME.value),
         FilterClause("hierarchy_role", FilterOp.IN, [role.value for role in TIME_PARENT_ROLES]),
     ])])]
+
+
+def build_rollup_role_filters(query: HierarchyQuery) -> list[FilterExpr]:
+    """TIME 上卷仅召回目标角色及其下层；同一谓词继续用于真源复核。"""
+    if query.hierarchy_kind is not HierarchyKind.TIME or query.hierarchy_role is None:
+        return []
+    roles = (HierarchyRole.SNAPSHOT, *TIME_PARENT_ROLES)
+    if query.hierarchy_role not in roles:
+        return []
+    allowed = roles[:roles.index(query.hierarchy_role) + 1]
+    return [FilterClause("hierarchy_role", FilterOp.IN, [role.value for role in allowed])]
 
 
 def build_hierarchy_filters(query: HierarchyQuery) -> list[FilterExpr]:
