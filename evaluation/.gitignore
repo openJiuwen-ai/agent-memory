@@ -8,3 +8,6 @@ datasets/locomo/*.json
 !datasets/locomo/locomo_mini.json
 datasets/longmemeval/*.json
 !datasets/longmemeval/longmemeval_mini.json
+datasets/memoryagentbench/*.parquet
+datasets/memoryagentbench/*.json
+!datasets/memoryagentbench/factconsolidation_mh_6k.json

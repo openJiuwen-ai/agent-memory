@@ -1,0 +1,286 @@
+[
+  {
+    "entity_type": "person",
+    "entity_description": "A named individual: athletes, politicians, artists, authors, scientists, and historical figures.",
+    "entity_instruction": "Record one property per fact about this person. Each property value MUST be a complete, self-contained sentence restating the fact, e.g. 'Robert A. Heinlein is a citizen of United States of America.'. Place the fact under the predicate of the sentence, never under the entity that appears in the object position: for 'The capital of France is Paris', record France.capital = 'The capital of France is Paris.' and do NOT also create a Paris entry for it. Only use 'default_property' when no listed predicate fits, and start its value with the predicate phrase so the relation stays recoverable.",
+    "search_weight": 1.0,
+    "static_property": {
+      "name": "The person's full name exactly as it appears in the fact."
+    },
+    "dynamic_property": {
+      "citizenship": {
+        "type": "string",
+        "desc": "Country whose citizenship the person holds. Pattern: '{person} is a citizen of {country}'.",
+        "example": "Robert A. Heinlein is a citizen of United States of America."
+      },
+      "birth_place": {
+        "type": "string",
+        "desc": "City, town, or region where the person was born. Pattern: '{person} was born in the city of {city}'.",
+        "example": "Satya Nadella was born in the city of Hyderabad."
+      },
+      "death_place": {
+        "type": "string",
+        "desc": "City, town, or region where the person died. Pattern: '{person} died in the city of {city}'.",
+        "example": "Amy Winehouse died in the city of Camden Town."
+      },
+      "spouse": {
+        "type": "string",
+        "desc": "Marital relationship. Pattern: '{person} is married to {spouse}'. Use one entry per marriage.",
+        "example": "Ferdinand Marcos is married to Imelda Marcos."
+      },
+      "child": {
+        "type": "string",
+        "desc": "Parent-child relationship. Patterns: 'The child of {person} is {child}' or '{person}'s child is {child}'.",
+        "example": "Walter Chrysler's child is Walter Percy Chrysler Jr.."
+      },
+      "education_institution": {
+        "type": "string",
+        "desc": "School or university where the person was educated. Pattern: 'The university where {person} was educated is {institution}'.",
+        "example": "The university where Galileo Galilei was educated is University of Pisa."
+      },
+      "religion": {
+        "type": "string",
+        "desc": "Religious affiliation. Pattern: '{person} is affiliated with the religion of {religion}'.",
+        "example": "Natalie Portman is affiliated with the religion of Judaism."
+      },
+      "spoken_language": {
+        "type": "string",
+        "desc": "A language the person speaks. Pattern: '{person} speaks the language of {language}'.",
+        "example": "Neelam Kothari speaks the language of Hindi."
+      },
+      "employer": {
+        "type": "string",
+        "desc": "Organization that employs or employed the person. Pattern: '{person} is employed by {organization}'.",
+        "example": "Mimi Hafida is employed by GMA Network."
+      },
+      "work_location": {
+        "type": "string",
+        "desc": "City where the person works or worked. Pattern: '{person} worked in the city of {city}'.",
+        "example": "Pedro Pierluisi worked in the city of Washington, D.C."
+      },
+      "occupation_field": {
+        "type": "string",
+        "desc": "Field or profession the person works in. Pattern: '{person} works in the field of {field}'.",
+        "example": "Elinor Ostrom works in the field of economist."
+      },
+      "sport_position": {
+        "type": "string",
+        "desc": "Playing position for an athlete. Pattern: '{person} plays the position of {position}'.",
+        "example": "Hines Ward plays the position of wide receiver."
+      },
+      "notable_for": {
+        "type": "string",
+        "desc": "What the person is famous for, when the fact uses a 'famous for' frame. Pattern: '{person} is famous for {trait}'.",
+        "example": "Tom Hanks is famous for acting."
+      },
+      "default_property": {
+        "type": "string",
+        "desc": "Catch-all for person facts that fit no predicate above. Start the value with the relation phrase, e.g. 'The award received by {person} is {award}'. Use sparingly.",
+        "example": "The award received by Kathryn Bigelow is the Academy Award for Best Director."
+      }
+    }
+  },
+  {
+    "entity_type": "place",
+    "entity_description": "A geographic or political entity: countries, cities, continents, regions, empires, and other polities.",
+    "entity_instruction": "Record one property per fact about this place. Each property value MUST be a complete, self-contained sentence. Place the fact under the predicate of the sentence, never under an entity in the object position. Only use 'default_property' when no listed predicate fits, and start its value with the predicate phrase.",
+    "search_weight": 1.0,
+    "static_property": {
+      "name": "The place's name exactly as it appears in the fact.",
+      "place_type": "Category such as country, city, continent, region, or empire."
+    },
+    "dynamic_property": {
+      "capital": {
+        "type": "string",
+        "desc": "Capital city of a country, empire, or polity. Pattern: 'The capital of {place} is {city}'.",
+        "example": "The capital of Germany is Berlin."
+      },
+      "located_in_continent": {
+        "type": "string",
+        "desc": "Continent the place belongs to. Pattern: '{place} is located in the continent of {continent}'.",
+        "example": "Bengaluru is located in the continent of Asia."
+      },
+      "located_in_country": {
+        "type": "string",
+        "desc": "Country that contains this place. Pattern: '{place} is located in the country of {country}'.",
+        "example": "Hyderabad is located in the country of India."
+      },
+      "official_language": {
+        "type": "string",
+        "desc": "Official language of the country or polity. Pattern: 'The official language of {place} is {language}'.",
+        "example": "The official language of Germany is German."
+      },
+      "head_of_state": {
+        "type": "string",
+        "desc": "Current head of state. Pattern: 'The name of the current head of state in {place} is {person}'.",
+        "example": "The name of the current head of state in United States of America is Donald Trump."
+      },
+      "head_of_government": {
+        "type": "string",
+        "desc": "Current head of government, including titled offices. Patterns: 'The name of the current head of the {place} government is {person}', 'The Prime Minister of {place} is {person}', 'The President of {place} is {person}'.",
+        "example": "The Prime Minister of Sweden is Stefan Löfven."
+      },
+      "notable_for": {
+        "type": "string",
+        "desc": "What the place is famous for. Pattern: '{place} is famous for {trait}'.",
+        "example": "Paris is famous for the Eiffel Tower."
+      },
+      "default_property": {
+        "type": "string",
+        "desc": "Catch-all for place facts that fit no predicate above. Start the value with the relation phrase, e.g. 'The population of {place} is {number}'. Use sparingly.",
+        "example": "The population of Iceland is 370000."
+      }
+    }
+  },
+  {
+    "entity_type": "organization",
+    "entity_description": "An organized body: companies, universities, churches, sports teams, political parties, media outlets, and airlines.",
+    "entity_instruction": "Record one property per fact about this organization. Each property value MUST be a complete, self-contained sentence. Place the fact under the predicate of the sentence, never under an entity in the object position. Only use 'default_property' when no listed predicate fits, and start its value with the predicate phrase.",
+    "search_weight": 1.0,
+    "static_property": {
+      "name": "The organization's name exactly as it appears in the fact.",
+      "organization_type": "Category such as company, university, church, sports team, political party, or media outlet."
+    },
+    "dynamic_property": {
+      "founder": {
+        "type": "string",
+        "desc": "Person or group that founded the organization. Pattern: '{organization} was founded by {founder}'.",
+        "example": "Chanel was founded by Coco Chanel."
+      },
+      "founding_location": {
+        "type": "string",
+        "desc": "City where the organization was founded. Pattern: '{organization} was founded in the city of {city}'.",
+        "example": "Pakistan International Airlines was founded in the city of Karachi."
+      },
+      "headquarters": {
+        "type": "string",
+        "desc": "City where the headquarters is located. Pattern: 'The headquarters of {organization} is located in the city of {city}'.",
+        "example": "The headquarters of University of Minnesota is located in the city of Minneapolis."
+      },
+      "chief_executive_officer": {
+        "type": "string",
+        "desc": "Current chief executive officer. Pattern: 'The chief executive officer of {organization} is {person}'.",
+        "example": "The chief executive officer of Apple Inc. is Tim Cook."
+      },
+      "director": {
+        "type": "string",
+        "desc": "Current director of the organization. Pattern: 'The director of {organization} is {person}'.",
+        "example": "The director of British Broadcasting Corporation is Tony Hall, Baron Hall of Birkenhead."
+      },
+      "chairperson": {
+        "type": "string",
+        "desc": "Current chairperson. Pattern: 'The chairperson of {organization} is {person}'.",
+        "example": "The chairperson of Fatah is Mahmoud Abbas."
+      },
+      "associated_sport": {
+        "type": "string",
+        "desc": "Sport the team or club is associated with. Pattern: '{organization} is associated with the sport of {sport}'.",
+        "example": "Slovakia national football team is associated with the sport of association football."
+      },
+      "notable_for": {
+        "type": "string",
+        "desc": "What the organization is famous for. Pattern: '{organization} is famous for {trait}'.",
+        "example": "Harvard University is famous for its law school."
+      },
+      "default_property": {
+        "type": "string",
+        "desc": "Catch-all for organization facts that fit no predicate above. Start the value with the relation phrase, e.g. 'The parent organization of {organization} is {parent}'. Use sparingly.",
+        "example": "The parent organization of YouTube is Google."
+      }
+    }
+  },
+  {
+    "entity_type": "work",
+    "entity_description": "A created work or product: books, albums, songs, films, games, and other authored artifacts.",
+    "entity_instruction": "Record one property per fact about this work. Each property value MUST be a complete, self-contained sentence. Place the fact under the predicate of the sentence, never under an entity in the object position. Only use 'default_property' when no listed predicate fits, and start its value with the predicate phrase.",
+    "search_weight": 0.9,
+    "static_property": {
+      "name": "The work's title exactly as it appears in the fact.",
+      "work_type": "Category such as book, album, song, film, game, or other artifact."
+    },
+    "dynamic_property": {
+      "author": {
+        "type": "string",
+        "desc": "Author of a written work. Pattern: 'The author of {work} is {person}'.",
+        "example": "The author of Starship Troopers is Robert A. Heinlein."
+      },
+      "performer": {
+        "type": "string",
+        "desc": "Performer of a song or album. Pattern: '{work} was performed by {person}'.",
+        "example": "Aladdin Sane was performed by David Bowie."
+      },
+      "developer": {
+        "type": "string",
+        "desc": "Developer of a game or software. Pattern: '{work} was developed by {organization}'.",
+        "example": "Halo was developed by Bungie."
+      },
+      "producer_company": {
+        "type": "string",
+        "desc": "Company that produced or originally broadcast the work. Patterns: 'The company that produced {work} is {company}', 'The origianl broadcaster of {work} is {company}'.",
+        "example": "The origianl broadcaster of The Brady Bunch is American Broadcasting Company."
+      },
+      "original_language": {
+        "type": "string",
+        "desc": "Language the work was written in. Pattern: '{work} was written in the language of {language}'.",
+        "example": "The Bible was written in the language of Hebrew."
+      },
+      "country_of_origin": {
+        "type": "string",
+        "desc": "Country where the work was created. Pattern: '{work} was created in the country of {country}'.",
+        "example": "The Witcher was created in the country of Poland."
+      },
+      "creator": {
+        "type": "string",
+        "desc": "Person who created the work, when the fact is not agent-specific (author/performer/developer). Pattern: '{work} was created by {person}'.",
+        "example": "Buddhism was created by Siddhartha Gautama."
+      },
+      "genre": {
+        "type": "string",
+        "desc": "Genre or type of the work. Pattern: 'The type of music that {work} plays is {genre}' or 'The genre of {work} is {genre}'.",
+        "example": "The type of music that The Beatles plays is rock music."
+      },
+      "default_property": {
+        "type": "string",
+        "desc": "Catch-all for work facts that fit no predicate above. Start the value with the relation phrase, e.g. 'The publication date of {work} is {date}'. Use sparingly.",
+        "example": "The publication date of Starship Troopers is 1959."
+      }
+    }
+  },
+  {
+    "entity_type": "concept",
+    "entity_description": "An abstract or cultural concept: sports, playing positions, languages, religions, academic fields, and other non-physical entities that are not persons, places, organizations, or works.",
+    "entity_instruction": "Record one property per fact about this concept. Each property value MUST be a complete, self-contained sentence. Place the fact under the predicate of the sentence, never under an entity in the object position e.g. 'X is associated with the sport of Y' belongs to X's associated_sport, and 'Y was created in the country of Z' belongs to Y's country_of_origin. Only use 'default_property' when no listed predicate fits, and start its value with the predicate phrase.",
+    "search_weight": 0.8,
+    "static_property": {
+      "name": "The concept's name exactly as it appears in the fact.",
+      "concept_type": "Category such as sport, playing position, language, religion, or academic field."
+    },
+    "dynamic_property": {
+      "associated_sport": {
+        "type": "string",
+        "desc": "Sport the concept belongs to, used for playing positions and related notions. Pattern: '{concept} is associated with the sport of {sport}'.",
+        "example": "quarterback is associated with the sport of American football."
+      },
+      "country_of_origin": {
+        "type": "string",
+        "desc": "Country where the concept originated. Pattern: '{concept} was created in the country of {country}'.",
+        "example": "cricket was created in the country of England."
+      },
+      "part_of": {
+        "type": "string",
+        "desc": "Broader concept this one belongs to. Pattern: '{concept} is a type of {broader_concept}'.",
+        "example": "association football is a type of football."
+      },
+      "notable_for": {
+        "type": "string",
+        "desc": "What the concept is famous for. Pattern: '{concept} is famous for {trait}'.",
+        "example": "rugby union is famous for its physical contact."
+      },
+      "default_property": {
+        "type": "string",
+        "desc": "Catch-all for concept facts that fit no predicate above. Start the value with the relation phrase, e.g. 'The origin date of {concept} is {date}'. Use sparingly.",
+        "example": "The origin date of basketball is 1891."
+      }
+    }
+  }
+]
