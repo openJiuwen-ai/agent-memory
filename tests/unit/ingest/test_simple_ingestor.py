@@ -12,6 +12,7 @@ from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer impo
 )
 from jiuwen_memory.common.type_def import Modality, RawPayload, Scope
 from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
+from jiuwen_memory.ingest.source_impl.text_source import TextSource
 
 pytestmark = pytest.mark.unit
 
@@ -35,6 +36,17 @@ class _ImageNormalizer(Normalizer):
     def normalize(self, payload: RawPayload) -> str:
         self.payloads.append(payload)
         return "recognized image"
+
+
+def test_text_source_compares_naive_and_aware_incremental_boundaries_in_utc() -> None:
+    earlier = datetime(2026, 1, 1, 8)
+    later = datetime(2026, 1, 1, 10)
+    source = TextSource(Scope(org="acme", user="alice"), [("old", earlier), ("new", later)])
+
+    payloads = source.fetch(datetime(2026, 1, 1, 9, tzinfo=UTC))
+
+    assert [payload.data for payload in payloads] == [b"new"]
+    assert payloads[0].occurred_at is later
 
 
 def test_simple_ingestor_copies_payload_assets_to_its_segment() -> None:

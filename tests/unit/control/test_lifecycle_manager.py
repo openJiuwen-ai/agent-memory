@@ -163,6 +163,21 @@ def test_sweep_returns_pending_transitions_without_mutating_units(unit_factory) 
     assert _load(kv, forgotten).lifecycle == LifecycleState.FORGOTTEN
 
 
+def test_sweep_accepts_naive_expiration_time(unit_factory) -> None:
+    expired = unit_factory(
+        "expired-naive",
+        "expired active",
+        lifecycle=LifecycleState.ACTIVE,
+        t_invalid=(datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None),
+    )
+    kv, lifecycle = _store(expired)
+
+    transitions = lifecycle.sweep()
+
+    assert [transition.unit_id for transition in transitions] == [expired.id]
+    assert transitions[0].to_state == LifecycleState.FORGOTTEN
+
+
 def test_sweep_returns_empty_list_when_no_units_are_changed(unit_factory) -> None:
     unit = unit_factory("u1", "still active", lifecycle=LifecycleState.ACTIVE)
     kv, lifecycle = _store(unit)
