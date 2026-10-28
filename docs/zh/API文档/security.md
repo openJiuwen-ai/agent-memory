@@ -1,24 +1,6 @@
 # Security 安全功能使用指南
 
-最近一次修订日期：2026-10-23
-
-<details>
-<summary>开发与排障参考：源码入口</summary>
-
-配置与接口以对应版本源码为准，主要入口包括：
-
-- [公开 API 与装配入口](../../../jiuwen_memory/api/__init__.py)
-- [安全装配辅助](../../../jiuwen_memory/api/access_security.py)
-- [SecurityRuntime](../../../jiuwen_memory/common/security/runtime.py)
-- [Authenticator](../../../jiuwen_memory/common/security/authentication/base.py)
-- [PrincipalKeyStore](../../../jiuwen_memory/common/security/authentication/key_store.py)
-- [请求安全上下文](../../../jiuwen_memory/common/security/request_context.py)
-- [Authorizer 契约](../../../jiuwen_memory/common/security/authorization/base.py)
-- [密码学与密钥契约](../../../jiuwen_memory/common/security/cryptography/base.py)
-- [加密 KV 实现](../../../jiuwen_memory/storage/kv_impl/encrypted_kv_store.py)
-- [接入认证中间件](../../../jiuwen_memory_entry/core/auth_middleware.py)
-
-</details>
+最近一次修订日期：2026-10-28
 
 配置的通用组织与引用规则见 [Config 配置与装配指南](config.md)，控制层与存储层接口见
 [Control 层 API](control.md) 和 [Storage 层 API](storage.md)。
@@ -33,7 +15,8 @@
 |---|---|
 | 基础认证 | 支持 DEV、API Key 或 Trusted；生产环境选择 API Key 或 Trusted，配置见第 5 节 |
 | 业务授权与隔离 | 服务需支持并启用 Authorizer；用于限制普通用户的访问范围，见第 6 节；仅配置认证不代表已有这项能力 |
-| 主体 Key | 内置 memory 注册表重启失效；没有 HTTP/CLI/MCP 主体 Key 签发与角色管理接口，需受信服务端代码初始化，见第 5.2 节 |
+| 主体 Key | 由受信服务端代码签发；内置 KeyStore 在内存中，重启失效；Root 管理引导见第 5.2.1 节 |
+| Grant 与 Delegation 记录 | 默认在内存中；需要重启保留时显式配置文件型 SQLite，见第 6.2.4 节 |
 | 普通审计 | 默认 SQLite `:memory:` 不持久；需保留记录时显式配置文件路径，见第 11.1 节 |
 | KV 内容加密 | 需要配置加密 KV 端口与根密钥；不自动覆盖索引与其他文件，见第 9 节 |
 | 全后端静态加密 | 需要支持统一加密策略的实现；KV/FS 使用应用加密，索引与控制文件使用部署保护，见第 10 节 |
@@ -44,19 +27,6 @@
 不同部署可能只提供部分能力。增加一段配置不会使不支持该能力的版本自动具备实现，
 也不能将多个独立实现的配置直接拼接为一个服务。
 
-<details>
-<summary>维护参考：本文示例对应的实现分支</summary>
-
-此表供部署维护人员核对示例兼容性，普通调用者只需向服务管理员确认上表中的能力。
-
-| 实现 | 对应源码 | 兼容性说明 |
-|---|---|---|
-| 基础认证与加密 | 本文档基于 `mem2.0` 已合入的基础安全实现 | 业务授权仍使用旧 PermissionManager；安全运行时中的 Authorizer 占位不参与业务判定 |
-| 授权与隔离 | `sec/isolation` | 业务授权、委托、空间权限与公开 Server 装配示例的参考实现 |
-| 全后端静态加密 | `sec/storage-encryption` | 独立实现；不包含授权隔离与审计完整性的全部能力 |
-| 审计完整性 | `sec/audit` | 已包含公开 Server 装配入口；不包含全后端静态加密策略 |
-
-</details>
 
 ## 2. 一次请求如何经过安全检查
 
@@ -137,13 +107,13 @@ scripts/run-cli.sh --auth-mode dev add \
   --scope '{"org":"local","user":"developer"}'
 ```
 
-这是固定 DEV 身份，不需要 token，但服务必须限制回环。Windows 可在 PowerShell 中使用仓库 venv，并设置 `$env:PYTHONPATH` 为“仓库根;jiuwen_memory_entry/core”，再执行对应 `python -m jiuwen_memory_entry.http_server` 或 CLI 模块；HTTP JSON 引号按所用 shell 转义。
+这是固定 DEV 身份，默认角色为 USER，不需要 token，但服务必须限制回环。Windows 可在 PowerShell 中使用仓库 venv，并设置 `$env:PYTHONPATH` 为“仓库根;jiuwen_memory_entry/core”，再执行对应 `python -m jiuwen_memory_entry.http_server` 或 `python -m jiuwen_memory_entry.cli`；HTTP JSON 引号按所用 shell 转义。
 
 CLI 默认本地内存配置一条命令一个进程，第二条命令不会自动看见第一条的记忆或内存 Key。需要持久 Store、NDJSON batch 的同一会话，或者长命 HTTP 服务。
 
 ### 3.2 Python SDK（需要业务授权能力）
 
-下面是仅供本地开发的完整 Python 例子。使用默认内存数据面与 echo/hashing，不需要模型或外部数据库。DEV 无映射时固定身份为 `org=local,user=developer,role=ROOT`，并不适用于生产。
+下面是仅供本地开发的完整 Python 例子。使用默认内存数据面与 echo/hashing，不需要模型或外部数据库。固定 DEV 默认身份为 `org=local,user=developer,role=USER`，并不适用于生产。
 
 ```python
 from jiuwen_memory.api import (
@@ -154,7 +124,7 @@ config = {
     "security": {
         "default": {
             "target": "standard",
-            "params": {"authenticator": {"target": "dev"}},
+            "params": {"authenticator": {"target": "dev", "params": {"role": "user"}}},
         }
     }
 }
@@ -223,9 +193,9 @@ Python 的基础装配入口 `assemble_runtime(config=...)` 和支持业务授�
 
 ### 4.2 从服务配置到一次 HTTP/CLI 调用
 
-以第 5.2 节 API Key 服务配置为例，将其保存为 `security.yml`。先在**启动服务的终端**
+以第 5.2 节 API Key 服务配置为例，将其保存为 `api-key.yml`。先在**启动服务的终端**
 设置 `AGENT_MEMORY_ROOT_API_KEY`；下面以 Root Key 做一次本地运维验证。
-本例目标 Scope 使用 Root 身份自身的 `system/root`，兼容基础认证实现中的旧权限管理。
+本例目标 Scope 使用 Root 身份自身的 `system/root`。
 这两个环境变量分别用于服务端和客户端：
 
 - `AGENT_MEMORY_ROOT_API_KEY`：由服务端 YAML 的 `root_api_key` 引用，保存部署级 Root 凭据。
@@ -234,14 +204,14 @@ Python 的基础装配入口 `assemble_runtime(config=...)` 和支持业务授�
 **本节的本地 Root 测试中，两者使用同一个值，需要显式赋值；程序不会自动同步，
 也没有根据 Root Key 派生客户端 Key 的步骤。** 客户端提交这个值时，以 Root 身份认证。
 
-普通用户接入时，由服务端受信代码通过 `key_store.issue(actor, role)` 独立随机签发主体
-Key（见第 5.2.1 节），再把返回值提供给客户端的 `AGENT_MEMORY_API_KEY`。主体 Key
+普通用户接入时，由部署方在受信管理代码中校验 Root 身份后，通过
+`key_store.issue(actor, role)` 独立随机签发主体 Key（完整引导见第 5.2.1 节），再把返回值提供给客户端的 `AGENT_MEMORY_API_KEY`。主体 Key
 不由 Root Key 计算得到，此时两个变量的值不同。认证成功后能访问哪些范围，仍取决于业务授权。
 
 ```bash
 # Bash：生成本次本地测试的随机 Root Key，不输出其值。
 export AGENT_MEMORY_ROOT_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-scripts/run-server.sh security.yml --host 127.0.0.1 --port 8137
+scripts/run-server.sh api-key.yml --host 127.0.0.1 --port 8137
 ```
 
 PowerShell 中的等价启动方式（仓库根目录，使用已安装依赖的 Python）：
@@ -249,7 +219,7 @@ PowerShell 中的等价启动方式（仓库根目录，使用已安装依赖的
 ```powershell
 $env:AGENT_MEMORY_ROOT_API_KEY = python -c "import secrets; print(secrets.token_urlsafe(32))"
 $env:PYTHONPATH = "$($PWD.Path);$($PWD.Path)\jiuwen_memory_entry\core"
-python -m jiuwen_memory_entry.http_server security.yml --host 127.0.0.1 --port 8137
+python -m jiuwen_memory_entry.http_server api-key.yml --host 127.0.0.1 --port 8137
 ```
 
 服务运行时另开终端发请求。新终端不会自动继承启动终端刚设置的变量；先通过受保护
@@ -284,8 +254,12 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8137/v1/add' -Method Post `
 
 注意：设置环境变量本身不会自动创建认证配置。`AGENT_MEMORY_API_KEY` 是客户端读取
 的变量，`AGENT_MEMORY_ROOT_API_KEY` 在本例中由服务 YAML 引用，二者职责不同。
-HTTP 服务的配置路径是位置参数；CLI 本地执行才使用 `--config security.yml`，
+HTTP 服务的配置路径是位置参数；CLI 本地执行才使用 `--config api-key.yml`，
 远程 `--server` 调用不接收本地服务配置。CLI 没有通用的 `--security` 或 `--api-key` 参数。
+
+固定 DEV 不通过 Root Key 认证：此时设置这两个变量不会把调用者变成 Root。
+只有显式配置为 ROOT 的固定 DEV，才与本例在角色权限上对应，身份和认证过程仍不同；
+默认 USER 的 DEV 不具备 Root 权限。详见第 5.1.2 节。
 
 ### 4.3 SDK 如何传 `security=`
 
@@ -302,46 +276,116 @@ unit = runtime.api.add("private demo", target, security=security)[0]
 `security` 表示“经认证的调用者”，`target` 表示“目标数据归属”。HTTP/CLI/MCP 入口会
 替调用者完成上下文构造，不需要、也不接受客户端把这个 Python 对象序列化到 JSON。
 
-## 5. 三种认证模式
+## 5. 选择一种认证模式
 
-| 模式 | 适合什么场景 | 调用方提供什么 |
+一个运行中的服务使用 `security.default.params.authenticator` 选中的一个认证器。
+DEV、API Key 和 Trusted 是**替换使用**的认证方式，不是同时通过的三道检查。
+
+| 模式 | 使用场景 | 客户端提交什么 |
 |---|---|---|
-| DEV | 本机功能调试、模拟 Alice/Bob 等测试身份 | 固定 DEV 不需 Key；映射 DEV 提交服务端预设 selector |
-| API Key | 客户端直接调用记忆服务 | 服务端认可的 Key |
-| Trusted | 企业已有网关或统一认证系统 | 客户端向网关认证；网关向记忆服务提供专用 Key 和身份头 |
+| 固定 DEV | 本机调试，所有请求使用同一测试身份 | 不需要 Key；默认角色为 USER |
+| 映射 DEV | 本机模拟 Alice、Bob 等不同用户 | 服务端预设的测试 selector，例如 `demo-alice` |
+| API Key | 客户端直接访问服务 | Root 管理凭据，或已签发的普通用户 Key |
+| Trusted | 通过已部署的认证网关接入 | 客户端向网关认证；网关向后端发送专用 Key 与身份头 |
 
-“认证通过”只说明身份有效。普通用户是否能访问某条记忆，还要由对应版本的业务授权
-决定。测试隔离时用普通用户身份，不使用固定 DEV 的 ROOT 或部署 Root Key。
+“认证通过”说明身份有效；能访问哪些数据还取决于授权。测试 Alice/Bob 隔离时，
+使用 USER 身份，不用 Root Key 或 ROOT 角色替代普通用户测试。
 
-### 5.1 DEV
+### 5.1 DEV 配置及模式切换
 
-固定 DEV 产出 `local/developer` ROOT。映射模式则把测试 selector 放在 api_key 材料中，匹配服务端预设 actor/role；未知或缺失 selector 拒绝，不回退固定 ROOT。
+#### 5.1.1 DEV 与 API Key 配置文件二选一
+
+将下面完整服务配置保存为 `dev.yml`，仅用于本机测试：
 
 ```yaml
-authenticator:
-  demo:
-    target: dev
-    params:
-      identities:
-        demo-alice: {actor: {org: demo, user: alice}, role: user}
-        demo-bob: {actor: {org: demo, user: bob}, role: user}
+memory_api:
+  security:
+    default:
+      target: standard
+      params: {authenticator: local_dev}
+  authenticator:
+    local_dev:
+      target: dev
+      params: {role: user}
 ```
 
-actor 的 org 必须非空，user 与 agent 恰好一个非空；session 挂在已有主体下。资源 Scope 可以表达更复杂归属，但不能作为认证 actor 直接传入。
-上方映射片段还必须让 `security.default.params.authenticator: demo` 指向它；只新增 demo
-命名实例但仍选择固定 DEV，不会切换成 Alice/Bob。
+第 5.2 节的完整配置另存为 `api-key.yml`。启动时选择其中一份：
 
-`--auth-mode dev` 只在未声明 security 时补配置，不会覆盖已有 API Key/Trusted 部署。HTTP 可配置 `http.dev_identities` 映射；CLI 远程 `--server` 不接受本地 `--auth-mode dev` 或 `--config`，认证必须由服务端决定。
+```bash
+# 本机 DEV，不需要 Root Key。
+scripts/run-server.sh dev.yml --host 127.0.0.1 --port 8137
+
+# 切换为 API Key：先停止前一个服务，设置 Root Key，再选择另一份配置。
+scripts/run-server.sh api-key.yml --host 127.0.0.1 --port 8137
+```
+
+PowerShell 按第 4.2 节设置 PYTHONPATH 后，使用
+`python -m jiuwen_memory_entry.http_server dev.yml` 或相同命令加 `api-key.yml`。
+切换后需重启服务；本机内存数据、Key 和授权记录也会随旧进程结束而丢失。
+
+不要将两份认证配置当作互补项一起加载。入口对多个配置文件执行顶层浅覆盖，
+后一个文件的整个 `memory_api` 可能替换前一个文件的安全和存储配置。
+如需在同一配置中定义多个具名认证器，仍只有 `security.default.params.authenticator`
+引用的那个生效；仅定义一个 API Key 实例不会自动启用它。
+
+`--auth-mode dev` 是便捷引导：**只在没有显式 `security` 配置时补入 DEV**。
+它不会覆盖 `api-key.yml` 中已选择的 API Key，不能用它临时绕过 Key 校验。
+默认的 `--auth-mode required` 表示不自动补 DEV，不会替你创建 API Key 配置。
+CLI 远程 `--server` 的认证方式由服务端决定，不接受客户端用 `--auth-mode dev` 切换。
+
+#### 5.1.2 DEV 与两个 Key 环境变量是什么关系
+
+| 服务端选择 | `AGENT_MEMORY_API_KEY` 的用途 | `AGENT_MEMORY_ROOT_API_KEY` 的用途 | 认证后的角色 |
+|---|---|---|---|
+| 固定 DEV，`role: user` 或省略角色 | 不用来校验身份 | 不参与 DEV 认证 | USER，默认身份 `local/developer` |
+| 固定 DEV，显式 `role: root` | 不用来校验身份 | 不参与 DEV 认证 | ROOT，身份仍是 `local/developer` |
+| 映射 DEV | 本机测试时传 selector | 不参与 DEV 认证 | 由 selector 对应的服务端映射决定 |
+| API Key，客户端提交 Root Key | 值须与服务端 Root Key 相同 | 由服务 YAML 的 `root_api_key` 引用 | ROOT，身份 `system/root` |
+| API Key，客户端提交普通用户 Key | 值为独立签发的主体 Key | 仅在服务端用于 Root 管理认证 | 由主体注册表决定，通常是 USER |
+
+因此，“DEV 与 Root Key 等价”只适用于**显式 ROOT 的固定 DEV 与 Root Key 的角色
+权限比较**，不表示二者身份相同，也不表示默认 DEV 是 Root。Root Key 要验证密钥；
+固定 DEV 信任本机部署者选定的身份，不能用于生产。
+
+需要本机 Root 功能测试时，把 `dev.yml` 中 `local_dev.params.role` 改为 `root` 后重启；
+不要通过设置 Key 环境变量或 JSON 的 `role` 字段尝试提升固定 DEV 角色。
+
+#### 5.1.3 模拟不同用户：映射 DEV
+
+映射 DEV 将测试 selector 对应到指定身份。下面是另一份完整服务配置：
+
+```yaml
+memory_api:
+  security:
+    default:
+      target: standard
+      params: {authenticator: demo}
+  authenticator:
+    demo:
+      target: dev
+      params:
+        identities:
+          demo-alice: {actor: {org: demo, user: alice}, role: user}
+          demo-bob: {actor: {org: demo, user: bob}, role: user}
+```
+
+HTTP 请求使用 `Authorization: Bearer demo-alice`；远程 CLI 可以设置
+`AGENT_MEMORY_API_KEY=demo-alice`。selector 是公开的测试标识，不是随机签发的生产 Key。
+未知或缺失 selector 返回 401，不回退到固定身份。
+
+`actor.org` 必须非空，`user` 与 `agent` 恰好填写一个；`session` 挂在已有主体下。
+固定角色配置与 `identities` 映射不能同时用于同一认证器。第 6.2 节使用这种映射完成
+完整的 Grant 测试，不需要先实现生产凭据管理系统。
 
 ### 5.2 API Key
 
-下面配置启用 API Key 认证与主体凭据注册表。基础认证实现的业务访问仍由旧
-PermissionManager 判定；完整的角色、在线撤权和资源授权还需要服务支持业务授权能力。
+将下面完整服务配置保存为 `api-key.yml`。它同时接受部署方的 Root Key，以及同一
+主体注册表签发的普通用户 Key。Root Key 与普通用户 Key 属于同一种 API Key 认证模式。
 
 内置 API Key 认证支持部署级 Root Key，以及由 PrincipalKeyStore 管理的主体 Key。
 
 ```yaml
-# 完整服务外层示例；属于单进程原型，不是持久化凭据产品完成声明。
+# 完整服务配置；内置主体 KeyStore 为单进程内存存储。
 memory_api:
   security:
     default:
@@ -375,44 +419,68 @@ Root Key 认证为 `system/root` ROOT；它不由主体 Store 签发，主体 is
 
 当前只有内置 memory 主体 KeyStore，重启失效。配置 SQLite Grant/Delegation 不会让主体 Key 变持久。生产若需要可靠凭据持久化，应实现遵守契约及在线撤销能力的插件和受信管理入口，不能用探测 `_records` 的临时脚本冒充产品方案。
 
-#### 5.2.1 受信凭据管理
+#### 5.2.1 由 Root 管理代码签发普通用户 Key
 
-下面是服务端受信凭据管理示例，不是 HTTP endpoint，也不是要求 Access 层 import 内核实现。Role/fingerprint 来自公共安全契约；key_store property 是内置 ApiKeyAuthenticator 的公开属性，不是所有第三方 Authenticator 的必备成员。
+普通用户不能通过选择 Scope、填写用户名或设置环境变量自行生成有效 Key。
+部署方的管理流程是：
 
-下面只验证当前上游已经实现的签发、认证和撤销。示例使用公开装配辅助，不访问私有
-Factory、注册表字段或 Runtime 内核字段；仅凭这个示例不能证明已缓存的业务上下文也会被在线撤权；该验证见下一节。
+1. 使用服务端已有的 Root Key 验证管理员身份。
+2. 管理代码检查认证结果的角色确实为 ROOT。
+3. 在**将来处理用户请求的同一个 Runtime、同一个 KeyStore** 中调用
+   `issue(Scope(org=..., user=...), Role.USER)`。
+4. 将返回的普通用户 Key 通过受保护渠道交给该用户，用户只设置自己的
+   `AGENT_MEMORY_API_KEY`；不向用户分发 Root Key。
+
+这里的“Root 签发”是受信管理流程，不是用 Root Key 对用户名做计算。
+KeyStore 随机生成新 Key，保存身份、角色、验证 hash 与指纹；明文只在 `issue` 返回。
+`issue` 本身不接收管理员身份，**下面的 Root 检查必须由管理代码执行**，不能把它
+包装成任意用户都能调用的签发函数。目前没有 `/v1/issue_key`、CLI `issue_key`
+或 MCP 签发工具；不能仅凭 Root Key 发起一个不存在的签发请求。
+
+先在本终端设置 `AGENT_MEMORY_ROOT_API_KEY`，再运行以下完整的进程内示例。
+它验证 Root 管理签发和普通用户调用，不会打印任何密钥，也不会启动 HTTP 服务：
 
 ```python
-import secrets
+import os
 from jiuwen_memory.api import (
-    AuthenticationError, Credentials, Scope, build_configured_security_runtime,
+    Credentials, PermissionDeniedError, Scope, assemble_server_runtime,
 )
-from jiuwen_memory.common.security.authentication.key_store import fingerprint
 from jiuwen_memory.common.security.types import Role
 
+root_key = os.environ["AGENT_MEMORY_ROOT_API_KEY"]
 config = {
     "security": {"default": {"target": "standard", "params": {"authenticator": "issuer"}}},
     "authenticator": {"issuer": {"target": "api_key", "params": {
-        "key_store": "principals", "root_api_key": secrets.token_urlsafe(32),
+        "key_store": "principals", "root_api_key": root_key,
     }}},
     "key_store": {"principals": {"target": "memory"}},
 }
-runtime = build_configured_security_runtime(config)
+runtime = assemble_server_runtime(config=config)
 try:
-    issuer = runtime.authenticator
-    actor = Scope(org="demo", user="alice")
-    token = issuer.key_store.issue(actor, Role.USER)
-    assert issuer.authenticate(Credentials(api_key=token)).actor == actor
-    issuer.key_store.revoke(fingerprint(token))
-    try:
-        issuer.authenticate(Credentials(api_key=token))
-    except AuthenticationError:
-        pass
-    else:
-        raise AssertionError("a revoked key must not authenticate")
+    admin = runtime.authenticate(Credentials(api_key=root_key))
+    if admin.auth.role is not Role.ROOT:
+        raise PermissionDeniedError("issue_key", message="ROOT management identity required")
+    issuer = runtime.security_runtime.authenticator
+    alice = Scope(org="demo", user="alice")
+    alice_key = issuer.key_store.issue(alice, Role.USER)
+    assert alice_key != root_key
+    # 同进程演示客户端选择普通用户 Key；实际交付时通过受保护渠道提供给 Alice。
+    os.environ["AGENT_MEMORY_API_KEY"] = alice_key
+    security = runtime.authenticate(Credentials(api_key=os.environ["AGENT_MEMORY_API_KEY"]))
+    assert security.auth.actor == alice and security.auth.role is Role.USER
+    unit = runtime.api.add("Alice private demo", alice, security=security)[0]
+    assert runtime.api.get(unit.id, alice, security=security).content == "Alice private demo"
 finally:
-    runtime.close()
+    runtime.close(wait=True)
 ```
+
+要让 HTTP/CLI/MCP 用户使用这把 Key，部署方应把上面的初始化逻辑放进实际服务启动
+流程，再启动监听。内置 KeyStore 是内存存储：运行一次独立签发脚本后退出，再启动
+另一个服务进程，原 Key 不会随之出现。普通用户不需要执行这段管理代码。
+
+主体 Key 只支持签发 USER/ADMIN，不允许 `issue(..., Role.ROOT)`；Root 凭据由部署配置
+提供。同一主体的活跃 Key 不能具有冲突角色，需要改角色时先撤销旧 Key，再由管理方重签。
+撤销主体 Key 使用 `key_store.revoke(fingerprint(token))`；它与撤销 Grant 是不同操作。
 
 #### 5.2.2 缓存上下文的在线撤销（需支持在线撤权）
 
@@ -718,11 +786,131 @@ PEP 先验证受控来源、actor 完整性、认证期限和需在线复核凭�
 
 来源证明不是同进程沙箱。受信插件能调用受控构造器，防恶意插件需要进程/权限隔离，不能仅依赖 Python 私有名或 HMAC。
 
-### 6.2 Grant 分享与撤销
+### 6.2 Grant：把自己的资源访问权分享给别人
 
-当前管理域只有一个共享 GrantStore，管理写入与实际 PDP 判定同源。singular/plural 方法是同一真源的两种视图，不是扇出事务协议。
+场景：Alice 有自己的记忆，希望 Bob 能读取，但不能修改。Alice 仍是数据所属用户，
+Bob 仍用自己的身份访问。给 Bob 签发 Key 只解决“Bob 是谁”，**还需要 Grant 才能
+开放 Alice 的资源范围**。Grant 也可以授给 agent，并不限于人与人之间。
 
-下面的完整本地示例验证 Bob 无权 → 授权可读 → 撤销拒绝。DEV 映射只用于测试身份，不赋予两人 ROOT。
+#### 6.2.1 谁能调用授权和撤销接口
+
+| 调用 | 认证凭据 | 还要通过的权限检查 |
+|---|---|---|
+| `POST /v1/grant` | 实际授予方的 Key；测试中可用 Alice 的 DEV selector | 调用者对 `grantor` 指定范围须有 `share` 权限；本人拥有的私有范围通常满足 |
+| `POST /v1/revoke` | 有权回收分享的调用者 Key | 按保存记录中的真实 `grantor` 检查 `revoke_share`，不是相信请求中重填的归属 |
+| Bob 读取 Alice 的记忆 | Bob 自己的 Key | 检查有效 Grant 是否同时覆盖 Bob、目标 Scope、`read` 动作和有效期 |
+
+Root 可执行管理操作，但普通所有者分享本人资源不要求持有 Root Key。ADMIN 角色
+也不自动拥有所有人的正文或分享权。只获 `read` 的 Bob 不能凭这条分享继续授权给别人，
+也不能撤销 Alice 的分享。
+
+`grantor` 是被开放的**资源范围**，`grantee` 是获权主体；二者都不是 HTTP 调用者的
+身份声明。调用者由 Bearer 认证确定。Bob 在请求体写 `grantor=alice` 不会变成 Alice。
+普通角色的 Grant 不跨组织生效，也不会把 USER 变成 ADMIN/ROOT。
+
+#### 6.2.2 用 HTTP 发起和撤销分享
+
+已有 API Key 服务时，使用各人真实的主体 Key。没有凭据管理服务的本机测试，可将
+下面完整配置保存为 `grant-demo.yml`；它是另一份 DEV 测试配置，不与 `api-key.yml` 叠加：
+
+```yaml
+memory_api:
+  security:
+    default:
+      target: standard
+      params: {authenticator: demo, authorizer: default}
+  authenticator:
+    demo:
+      target: dev
+      params:
+        identities:
+          demo-alice: {actor: {org: demo, user: alice}, role: user}
+          demo-bob: {actor: {org: demo, user: bob}, role: user}
+  authorizer:
+    default:
+      target: standard
+      params: {grant_store: default, delegation_store: default}
+  grant_store:
+    default: {target: memory}
+  delegation_store:
+    default: {target: memory}
+```
+
+```bash
+scripts/run-server.sh grant-demo.yml --host 127.0.0.1 --port 8137
+```
+
+另开终端，Alice 用自己的 selector 授权 Bob 读取：
+
+```bash
+curl -i -X POST http://127.0.0.1:8137/v1/grant \
+  -H 'Authorization: Bearer demo-alice' \
+  -H 'Content-Type: application/json' \
+  -d '{"grant":{"grantor":{"org":"demo","user":"alice"},"grantee":{"org":"demo","user":"bob"},"actions":["read"]}}'
+```
+
+请求体字段说明：
+
+| 字段 | 用途 |
+|---|---|
+| `grant.grantor` | Alice 开放的 Scope；本例为 Alice 的全部私有记忆范围，不是单条记忆 ID |
+| `grant.grantee` | 得到访问权的 Bob；Bob 后续仍用自己的 Key |
+| `grant.actions` | 本例只授 `read`；不包含 `write`、`update`、`delete`、`share` 等其他动作 |
+| `grant.expires_at` | 可选的未来 ISO-8601 时间，含时区；省略或 null 表示不设到期时间 |
+| 响应中的 `grant_id` | 服务端生成的记录 ID；创建成功后保存，撤销时必须使用它 |
+
+成功返回 200，响应正文为创建后的 Grant 对象，包含 `grant_id`，不是另套一层
+`{"ok":...}`。下次创建同样的分享可能得到另一个 ID；不要因响应丢失就假定重试不会重复授权。
+
+撤销时，将下面 `<grant_id>` 替换为创建响应里的真实 ID，仍由 Alice 调用：
+
+```bash
+curl -i -X POST http://127.0.0.1:8137/v1/revoke \
+  -H 'Authorization: Bearer demo-alice' \
+  -H 'Content-Type: application/json' \
+  -d '{"grant":{"grant_id":"<grant_id>","grantor":{"org":"demo","user":"alice"},"grantee":{"org":"demo","user":"bob"},"actions":["read"]}}'
+```
+
+PowerShell 可以直接保存并回传完整返回对象，避免手工复制 ID：
+
+```powershell
+$headers = @{Authorization='Bearer demo-alice'}
+$body = @{grant=@{
+  grantor=@{org='demo'; user='alice'}
+  grantee=@{org='demo'; user='bob'}
+  actions=@('read')
+}} | ConvertTo-Json -Depth 10
+$created = Invoke-RestMethod -Uri 'http://127.0.0.1:8137/v1/grant' -Method Post `
+  -Headers $headers -ContentType 'application/json' -Body $body
+$revokeBody = @{grant=$created} | ConvertTo-Json -Depth 10
+Invoke-RestMethod -Uri 'http://127.0.0.1:8137/v1/revoke' -Method Post `
+  -Headers $headers -ContentType 'application/json' -Body $revokeBody
+```
+
+远程 CLI 的参数形状相同：先设置 Alice 的 `AGENT_MEMORY_API_KEY`，使用
+`--server http://127.0.0.1:8137 grant --grant '<Grant JSON>'`；JSON 直接是 Grant
+对象，CLI 会将其放入名为 `grant` 的参数，不再手工包一层 `grant`。
+
+用 Alice 写入一条记忆，再始终用 Bob 的凭据对同一 ID、同一 Alice Scope 调用
+`POST /v1/get`，验证以下结果；Python 的完整流程见下一节：
+
+| 阶段或错误条件 | 预期结果 |
+|---|---|
+| 分享前，Bob 读取 Alice 的数据 | 403 |
+| Alice 创建有效 `read` 分享后，Bob 读取相同数据 | 200 |
+| Alice 撤销后，Bob 再次读取 | 403；Bob 自己的 Key 仍有效 |
+| 没有凭据或凭据错误 | 401；DEV 示例中未知 selector 也返回 401 |
+| Bob 尝试代替 Alice 创建/撤销分享 | 403 |
+| revoke 缺少 `grant_id` | 400 |
+
+撤销已不存在的 ID 或重复撤销是幂等处理；成功并不证明原来一定有该记录。
+若 Bob 还有另一条有效授权、所有者权限或其他独立允许依据，撤销一条 Grant 不会清除它们。
+撤销 Grant 也不会注销 Bob 的 Key，更不会删除 Alice 的记忆。
+
+#### 6.2.3 Python：分享前拒绝、分享后允许、撤销后拒绝
+
+下面示例在一个进程中完成全部验证。测试 selector 不是生产 Key；所有授权记录保存在
+本进程的内存 GrantStore 中。
 
 ```python
 from jiuwen_memory.api import (
@@ -736,8 +924,8 @@ config = {
         "demo-alice": {"actor": {"org": "demo", "user": "alice"}, "role": "user"},
         "demo-bob": {"actor": {"org": "demo", "user": "bob"}, "role": "user"},
     }}}},
-    "grant_store": {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}},
-    "delegation_store": {"default": {"target": "sqlite", "params": {"db_path": ":memory:"}}},
+    "grant_store": {"default": {"target": "memory"}},
+    "delegation_store": {"default": {"target": "memory"}},
 }
 runtime = assemble_server_runtime(config=config)
 def security(selector):
@@ -769,25 +957,48 @@ finally:
     runtime.close()
 ```
 
-保存 grant 返回的服务端 grant_id；revoke 传返回对象即可。撤销按 ID 读取真实 grantor 并原子绑定目标，修改请求中的 grantor 不会改变判权依据。未知 ID/重复撤销幂等，无 ID 不是有效撤销请求。
+SDK 的 `security=` 同样必须来自实际认证器，不能用包含 `actor`、`role` 的 dict 代替。
+`grant` 返回的对象带服务端 ID，可直接传给 `revoke`。
 
-Store 的 create_grant 按 ID 幂等，不代表新的网络 grant 请求自动去重；丢失响应后重试可能生成另一 ID。不要把接口行为宣传为恰好一次网络提交。
+#### 6.2.4 GrantStore 的记录存在哪里
 
-第三方旧 GrantStore 可以用于只读 PDP，但 grant/revoke 需要公开 GrantManagementCapability，不能要求私有 `_get_for_revoke/_revoke_bound`。`globals.require_grant_management=true` 让缺能力在装配时失败；默认 false 保留只读插件兼容。多个不同管理 Store 始终拒绝，不采用无法保证的补偿扇出写入。
+**当前默认 GrantStore 是 `memory`，授权信息确实保存在进程内存中。** 默认
+DelegationStore 也在内存中。进程退出或重建后记录丢失，多个服务进程各有自己的内存表。
 
-HTTP 形状：
+| 存储对象 | 保存什么 | 默认与重启行为 |
+|---|---|---|
+| KeyStore | 主体 Key 的验证材料、身份、角色与撤销状态 | 内置 `memory`，重启失效 |
+| GrantStore | 分享 ID、资源 Scope、获权主体、动作、到期及撤销状态 | 默认 `memory`，重启丢失分享 |
+| DelegationStore | agent 委托及有效期、凭据/session 绑定、撤销状态 | 默认 `memory`，重启丢失委托 |
+| SQLite `:memory:` | 另一种进程内授权数据库 | 虽然 target 是 sqlite，但仍不落盘，连接关闭即丢失 |
+| 文件型 SQLite | `auth_grants` / `auth_delegations` 授权记录表 | 显式配置文件路径后可持久化 |
 
-```json
-{
-  "grant": {
-    "grantor": {"org": "demo", "user": "alice"},
-    "grantee": {"org": "demo", "user": "bob"},
-    "actions": ["read"]
-  }
-}
+要保留分享和委托，在**所选服务配置的 `memory_api` 内**替换或增加下面字段。
+这是存储配置片段，保留原有 `security`、`authenticator` 等字段，不把它作为新的
+外层配置文件叠加加载：
+
+```yaml
+authorizer:
+  default:
+    target: standard
+    params: {grant_store: default, delegation_store: default}
+grant_store:
+  default:
+    target: sqlite
+    params: {db_path: ./state/grants.sqlite3}
+delegation_store:
+  default:
+    target: sqlite
+    params: {db_path: ./state/delegations.sqlite3}
 ```
 
-POST `/v1/grant`，Bearer 在 header 中。revoke 请求仍有 grant 对象并带 grant_id；业务 JSON 不接受 security、identity、actor、acting_user 等自述身份。
+路径相对服务进程的工作目录。容器部署需将 `state` 放在持久卷中，并配置目录访问权限、
+备份和所需的静态加密。`grant/revoke` 只写入当前 Authorizer 实际引用的 GrantStore；
+另建一个同名表或只修改旧 `permission` 配置，不会成为当前授权来源。
+
+持久化记忆的 KV/向量库不会自动持久化分享；持久化 GrantStore 也不会让内存 KeyStore
+变成持久凭据服务。重启后即使 Grant 还在，用户仍需要被当前 KeyStore 认可的凭据。
+不要通过重启“撤销”内存权限，应使用正式撤销流程；重建前还需确认服务的部署方式。
 
 ### 6.3 空间两轴与最小空间示例
 
@@ -897,12 +1108,49 @@ list 在本次返回分页的同一真源快照逐条 READ；get 对最终 as_of
 
 系统 Scope/权限过滤与用户 filters 外层 AND，不能被 OR 覆盖。无权资源、未知类型路由、跨 org 或失效委托不能通过搜索参数扩大范围。debug 时先看实际返回快照与系统谓词，不先把 filter 或权限兜底改成放行。
 
-## 7. 受控代理代写
+## 7. Delegation：让 agent 在限定范围内代用户工作
 
-本节需要服务支持代理委托，由受信服务端代码配置。普通客户端使用已分配的凭据，
-不自行声明被代理用户。
+场景：Alice 让会议助手 agent 在接下来 30 分钟内，把会议结果写入 Alice 的记忆。
+agent 使用自己的凭据和 session；服务端确认 Alice 的委托仍有效后才允许代操作。
+这样不需要把 Alice 的个人 Key 或 Root Key 交给助手，也能单独停止这次代理任务。
 
-当前采用私有可信服务端装配过渡，不增加冻结网络接口。已认证凭据的指纹绑定既有 DelegationStore 记录，由 PEP/PDP 逐次复核。真实 actor 仍是单主体 agent，不改成被代理用户；作者归属可从有效委托派生，审计始终记录真实 actor。
+### 7.1 与 Grant 的区别
+
+| 对比 | Grant：资源分享 | Delegation：有限期代操作 |
+|---|---|---|
+| 意图 | “Bob/助手可以访问我的这部分资源” | “助手在限定任务内代表我工作” |
+| 获权主体 | 可为用户或 agent；以自身身份使用分享 | 本实现被委托方为 agent，调用身份仍是该 agent |
+| 有效期 | 可不设到期时间，也可限时 | 必须有未来的有限到期时间 |
+| 约束 | 资源 Scope、grantee、动作、有效期 | 委托人、agent、动作、有效期，可再绑定空间、凭据和 session |
+| 作者与审计 | 不因分享把调用者变成资源主人 | 代写可归属委托人，保留 agent 作者信息；审计仍记录真实 agent |
+| 撤销 | 用公开 `grant/revoke` 管理分享 ID | 由受信委托管理流程撤销委托 ID |
+
+同一个 agent 仅需要读取共享资料时，可以使用 Grant；需要表达“为某用户执行一次
+有期限的代理任务”时，使用 Delegation。二者不是不同名字的同一把 Key。
+
+撤销 Delegation 不会顺带撤销独立 Grant，撤销 Grant 也不会注销 agent Key。
+但一个已绑定委托的请求在委托失效时会被拒绝，不会悄悄降级为“再试试普通分享”。
+
+### 7.2 如何建立并使用委托
+
+本节需要服务支持代理委托，由受信服务端代码配置：
+
+1. 部署方确认 Alice 的授权意愿和可授出范围，为 agent 分配独立身份、凭据与 session。
+2. 建立 Delegation 记录，填写 delegator、delegate、允许动作及有限到期时间。
+3. 将 agent 凭据指纹绑定到这条记录，并让认证与授权使用同一个 DelegationStore。
+4. agent 正常提交自己的凭据调用业务接口；服务端逐次检查委托是否到期、撤销，
+   以及动作、空间、凭据与 session 是否匹配。
+
+普通客户端不需要、也不能把 `delegation_id`、`acting_user` 或委托人角色写进
+HTTP 头或业务 JSON 来选择身份。目前没有公共 `/v1/delegate` 或对应 CLI/MCP
+委托管理入口；不能把调用 `grant` 当作创建代理任务。
+
+允许委托的动作仅为 `read/write/update/delete`，不转交 `share/revoke_share` 或管理
+角色能力；空间场景还要复核委托人当前的内容权限。ROOT 身份也不是 agent 委托的替代品。
+
+### 7.3 服务端配置示例
+
+委托由受信服务端代码建立并绑定到 agent 凭据，不从客户端请求中临时创建。已认证凭据的指纹绑定既有 DelegationStore 记录，由 PEP/PDP 逐次复核。真实 actor 仍是单主体 agent，不改成被代理用户；作者归属可从有效委托派生，审计始终记录真实 actor。
 
 此配置是空间示例的增量片段，不能单独启动；需要支持业务授权与代理委托。在空间示例中添加 DEV 映射 `demo-agent`，actor 为 `{org: demo, agent: agent1, session: session1}`、role=user；在 `security.default.params` 加以下字段。指纹是公开测试 selector `demo-agent` 的 SHA-256，不是真实生产 token：
 
@@ -925,7 +1173,7 @@ delegations:
 
 复核包括撤销、到期、动作、空间、凭据、session，以及委托人的当前内容权。委托不借出治理权、不自动创建 fallback 空间。代理写入后的 author_principal 可为 `user:alice`、author_agent 为 `agent1`，但 auth.actor.user 仍为空。
 
-禁止客户端从 header/payload 指定 delegation_id、acting_user 或 `_delegator.*` 事实来提权；后者只允许服务端可信投影。动态创建/撤销委托的网络管理接口当前没有，正式产品化需另立接口决策。
+禁止客户端从 header/payload 指定 delegation_id、acting_user 或 `_delegator.*` 事实来提权；后者只允许服务端可信投影。目前没有动态创建/撤销委托的 HTTP/CLI/MCP 管理入口，应由部署方的受信管理流程处理。
 
 ## 8. 入口资源保护与传输
 
@@ -1469,7 +1717,7 @@ request_id / job_id / unit_id / grant_id / delegation_id：
 预期允许或拒绝以及依据：
 实际错误、DenyReason、retryable、ChannelError：
 普通主体凭据是否需在线复核（不附原始材料）：
-是否文档模式 / 是否已合入最新上游：
+是否启用文档记忆 / 持久化配置：
 最小复现、运行任务状态、共享关闭顺序：
 修复及新增回归、实际执行与跳过范围：
 ```
