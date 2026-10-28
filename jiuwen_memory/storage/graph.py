@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
@@ -30,6 +31,16 @@ class GraphProducer(Factory):
 
 
 class GraphStore(BaseStore):
+    @property
+    def supports_incident_edges(self) -> bool:
+        return False
+
+    def incident_edges(
+        self, scope: Scope, node_id: str, *, limit: int = 100,
+    ) -> list[Edge]:
+        """Return at most limit edges, preserving direction and properties; no traversal."""
+        raise UnsupportedCapabilityError("incident graph edges are not supported")
+
     @abstractmethod
     def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
         """

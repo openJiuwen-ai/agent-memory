@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -622,3 +622,10 @@ Store 抽象、跨后端不变量与注册机制。
 | S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |
 | S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |
+
+
+## 接续管理与证据图能力
+
+`KVStore.persistent_atomic_records` 默认 false，表示固定持久命名空间和单记录原子替换，不代表 CAS。`claim_single_writer(namespace)` 默认不支持；支持者持有管理写者排他声明直到 close，第二写者必须失败，不能把单进程 RLock 当跨进程互斥。Registry 显式使用具名端口，测试 ephemeral 例外不得用于生产。
+
+`GraphStore.supports_incident_edges` 默认 false；`incident_edges(scope, node_id, *, limit)` 返回保留 source/target/id/relation/properties 的有界入出边，不跨 Scope。角色图装配要求该能力；不能用无向邻居列表冒充有向关系。节点和边属于可重建投影，关系真源在 MemoryUnit；投影 ID 使用专用前缀，后端更新邻接后不得因旧邻接删除已移到其他端点的边。

@@ -15,6 +15,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `role_view.py` / `role_view_impl/bounded.py` | 职责视图接口/Producer 与有界关系展开实现，保留证据路径和缺口 |
 | `base.py` | RetrievalOperator 基类：所有检索层算子的自描述契约 |
 | `types.py` | 检索对外类型；Storage 共用的 ParsedQuery/候选/错误类型从 common 重导出 |
 | `cross_space.py` | 跨空间检索的取数上界（`allocate_quota`）与结果合并（`merge`）；不访问存储、不调模型的纯函数，与算子并列而非算子，不进工厂 |

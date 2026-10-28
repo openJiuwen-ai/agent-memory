@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -711,3 +711,12 @@ Evolver 的可选能力 `hierarchy_profile(kind) -> HierarchyComposeProfile | No
 `EvolveRequest.hierarchy_incremental` 仅供内部周期任务使用：非空时以相邻单层请求
 委托 Composer.build；为空时沿用显式 replace_in_span。Dynamic/Schema Evolver 继承该
 委托路径，原 `evolve(units, mode)`、显式分组和重建行为保持。
+
+
+## 证据关系构建与冲突消解
+
+`Associator.configure_relations(catalog)` 是可选能力，默认报不支持；支持者接受构建与检索共用的启动关系目录。模型产出候选不因置信度高自动成为验证事实，缺原文依据或端点无效的候选不生成关系。
+
+`ConflictResolver` 继承 ConstructionOperator，类型 CONFLICT_RESOLVER，Producer 命名空间 conflict_resolver；resolve(memory_a, memory_b, edge, context) 返回 Resolution(decision, reason, candidate)，不直接修改正文。策略链对 advisory 保留差异，对证据不全和多方冲突升级复核；人工裁决优先于自动结果。
+
+关系真源仍是通过既有写入链落盘的 MemoryUnit。证据图 IndexBuilder 只接已提交记录的 RETRIEVAL_ONLY 投影，拒绝代写正文；按命名空间内确定 ID 幂等重建。修订/撤回先作用于真源，再更新图，查询必须回查，详见 [S10](S10-cross-agent-continuity.md)。

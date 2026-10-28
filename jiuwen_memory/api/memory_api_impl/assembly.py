@@ -737,6 +737,15 @@ def _assemble_kernel(
         authorizer=authorizer,
         credential_registry=credential_registry,
     )
+    if "continuity" in ctx.namespaces:
+        from jiuwen_memory.control.continuity.base import ContinuityProducer
+        from jiuwen_memory.retrieval import role_view  # noqa: F401
+
+        api._continuity = ContinuityProducer.build_named("default", ctx)
+        connectors = ctx.globals.get("continuity_connectors", {})
+        if not isinstance(connectors, dict):
+            raise ValidationError("continuity_connectors must be a trusted connection mapping")
+        api._continuity_connectors = connectors
     _reject_routing_without_space_authorization(api)
     watchdog: Watchdog | None = None
     has_shadow = storage.has_shadow_index()

@@ -1,0 +1,74 @@
+# 与部署的认证配置一起加载。这里只声明可信连接，不创建身份或授予空间权限。
+globals:
+  continuity_connectors:
+    workbuddy:
+      actor: {org: demo, space: '', user: wb, agent: '', session: ''}
+      projects: [role-project]
+      enabled: true
+    hermes:
+      actor: {org: demo, space: '', user: hermes, agent: '', session: ''}
+      projects: [role-project]
+      enabled: true
+    jiuwenswarm:
+      actor: {org: demo, space: '', user: swarm, agent: '', session: ''}
+      projects: [role-project]
+      enabled: true
+engine:
+  default:
+    target: cloud
+    params:
+      ingestor: default
+      index_builder: default
+      retriever: default
+      kv_store: default
+      scheduler: default
+      evolver: default
+      lifecycle: default
+authorizer:
+  default:
+    target: space_aware
+    params: {delegate: standard}
+  standard:
+    target: standard
+    params: {grant_store: default, delegation_store: default}
+permission:
+  default:
+    target: space_aware
+    params: {db_path: role-permissions.db}
+kv_store:
+  default:
+    target: sqlite
+    params: {db_path: role-memory.db, fixed_path: true}
+  registry:
+    target: sqlite
+    params: {db_path: role-registry.db, fixed_path: true}
+  evidence:
+    target: sqlite
+    params: {db_path: role-graph.db, fixed_path: true}
+graph_store:
+  evidence:
+    target: kv
+    params: {kv_store: evidence}
+constructor:
+  evidence:
+    target: evidence_graph
+    params: {graph_store: evidence}
+role_view:
+  default: {target: bounded}
+continuity:
+  default:
+    target: local
+    params:
+      single_writer: true
+      registry_store: registry
+      graph_store: evidence
+      relation_index_builder: evidence
+      role_view: default
+      relation_types_path: examples/role_memory/relation_types.yaml
+      duty_policies_path: examples/role_memory/duty_policies.yaml
+      # 可选：配置一个真实具名 LLM，再设置 relation_associator: evidence。
+      # 不启用时仍支持明确引用、手工关系登记/复核和职责展开。
+# associator:
+#   evidence:
+#     target: evidence_llm
+#     params: {llm: your_configured_llm}

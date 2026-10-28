@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -657,3 +657,8 @@ detail 标记 retryable="true"，不保留故障保护，下一周期重新读�
 当前注册不持久化、不自动发现 home，不复用 dreaming 的持续授权/恢复注册表。
 宿主负责注册范围及其权限生命周期；动态关闭策略只让后续轮次跳过，不中断已经开始
 的本轮写入。需要停止任务时使用 job_cancel 或 Runtime.close。
+
+
+## 职责关系接续应用端口
+
+`Continuity` 编排任务控制记录、事件幂等、关系真源登记、视图和修复；Producer 命名空间为 continuity。端口接受已授权 Scope、管理主体摘要及读写回调，不接收 identity/security 或执行认证。API 通过 task_owner/binding_connector/relation_head_ref 取得最小鉴权事实，不访问控制存储。Registry 状态和请求回执单记录原子提交，要求具名持久 KV 的单写声明与排他写者能力；不承诺跨正文、索引、控制记录的事务。图投影交构建层 IndexBuilder，视图交检索层 RoleView，详见 [S10](S10-cross-agent-continuity.md)。

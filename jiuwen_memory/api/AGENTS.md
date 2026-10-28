@@ -15,6 +15,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `memory_api_impl/continuity_ops.py` | 角色接续 PEP、可信连接匹配、原引用/关系依赖核验和结构化入口 |
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |

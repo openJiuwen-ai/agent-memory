@@ -25,6 +25,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from importlib import import_module
 from typing import Any
 
@@ -191,7 +192,64 @@ def _check_binding(host: str) -> None:
 
 
 @mcp.tool()
-async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
+async def memory_role_view(scope: dict, request: _api.RoleViewQuery, ctx: Context = None) -> dict:
+    """恢复任务或沿记忆关系查证。request 提供 query/anchor/task_id 至少一个；
+    duty 为 general/diagnosis/testing/execution。相同起点按职责展开不同边，返回
+    anchors、paths、facts、judgments、experiences、gaps。anchor 需包含完整 scope、
+    unit_id、content_digest；来自已保存记录的回执。缺口或未核实路径不能当作事实。
+    """
+    return await _invoke("role_view", {"scope": scope, "request": asdict(request)}, context=ctx)
+
+
+@mcp.tool()
+async def memory_role_task(scope: dict, request: _api.TaskRequest, ctx: Context = None) -> dict:
+    """登记跨产品任务。operation: create/get/find/bind/unbind/attach/close。
+    变更须带稳定 request_id、expected_revision；绑定不授予源记忆权限，不需要交接确认。
+    """
+    return await _invoke("role_task", {"scope": scope, "request": asdict(request)}, context=ctx)
+
+
+@mcp.tool()
+async def memory_role_record(scope: dict, event: _api.ContinuityEvent, ctx: Context = None) -> dict:
+    """保存观察/判断/经验。event 必填 task_id、binding_id、event_id、content；
+    重试复用 event_id。检查 committed/partial/unknown，不把工具建议当执行结果。
+    """
+    return await _invoke("role_record", {"scope": scope, "event": asdict(event)}, context=ctx)
+
+
+@mcp.tool()
+async def memory_role_relation(
+    scope: dict,
+    relation: _api.RelationRecord,
+    expected_revision: int,
+    ctx: Context = None,
+) -> dict:
+    """登记或复核关系。先保存两端记忆取得引用，再提交 source/target、relation_type、
+    relation_id/revision、evidence_refs、conditions、status。supports/contradicts/
+    possible_cause_of/verification_method_for/verifies/requires；抽取结果默认 candidate。
+    复核用新 revision，撤回用 revoked；不得把 confirmed 理解成外部事实已经成立。
+    """
+    return await _invoke(
+        "role_relation",
+        {"scope": scope, "relation": asdict(relation), "expected_revision": expected_revision},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_role_rebuild(
+    scope: dict, recovery: _api.ContinuityRecovery | None = None, ctx: Context = None
+) -> dict:
+    """从关系真源重建图投影；不重新抽取旧正文，不宣称关系覆盖完整。"""
+    return await _invoke(
+        "role_rebuild",
+        {"scope": scope, "recovery": asdict(recovery) if recovery else None},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_add(
     content: str,
     scope: dict,
     tags: list[str] | None = None,

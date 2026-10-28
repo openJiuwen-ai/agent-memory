@@ -39,6 +39,13 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
+from jiuwen_memory.common.type_def.continuity import (
+    ContinuityEvent,
+    ContinuityRecovery,
+    RelationRecord,
+    RoleViewQuery,
+    TaskRequest,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
@@ -85,6 +92,34 @@ class MemoryAPI(ABC):
     §RequestSecurityContext）。target 仍由业务参数表达，不与 actor 合并——二者
     同为 Scope 时若合并，「读自己的」和「读别人的」在签名上就分不出来了。
     """
+
+    @abstractmethod
+    def role_task(
+        self, scope: Scope, request: TaskRequest, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Register/bind/read task context without execution ownership transfer."""
+
+    @abstractmethod
+    def role_record(
+        self, scope: Scope, event: ContinuityEvent, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Idempotently record an attributed event and associate it with its task."""
+
+    @abstractmethod
+    def role_relation(self, scope: Scope, relation: RelationRecord, expected_revision: int,
+                      *, security: RequestSecurityContext) -> dict:
+        """Register or review a versioned evidence relation, then project its graph edge."""
+
+    @abstractmethod
+    def role_view(
+        self, scope: Scope, request: RoleViewQuery, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Find a memory anchor and expand typed relations according to duty."""
+
+    @abstractmethod
+    def role_rebuild(self, scope: Scope, *, security: RequestSecurityContext,
+                     recovery: ContinuityRecovery | None = None) -> dict:
+        """Repair relation projections from authorized sources without re-extraction."""
 
     @abstractmethod
     def add(

@@ -46,6 +46,7 @@ from jiuwen_memory.control.scheduler import Scheduler
 from jiuwen_memory.control.space import SpaceManager
 
 from .admin_ops import AdminOpsMixin
+from .continuity_ops import ContinuityOpsMixin
 from .dreaming import DreamingCoordinator
 from .local_support import (
     _first_family_predicate,
@@ -62,6 +63,7 @@ __all__ = ["LocalMemoryAPI", "_first_family_predicate", "_resolve_space_owner"]
 
 
 class LocalMemoryAPI(
+    ContinuityOpsMixin,
     WriteOpsMixin,
     QueryOpsMixin,
     MdOpsMixin,
@@ -103,6 +105,8 @@ class LocalMemoryAPI(
             audit_verify_limits, AuditVerificationLimits
         ):
             raise ValidationError("audit_verify_limits must be AuditVerificationLimits")
+        self._continuity = None
+        self._continuity_connectors = {}
         self._engine = engine
         self._runtime_close: Callable[[], None] | None = None
         self._require_grant_management = False

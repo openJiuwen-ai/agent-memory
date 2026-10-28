@@ -57,6 +57,31 @@ class SQLiteKVStore(KVStore):
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         self._conn_path: str | None = None
+        self._writer_claims: dict[str, object] = {}
+
+    @property
+    def persistent_atomic_records(self) -> bool:
+        return self._config_source is None and self._fallback_db_path != ":memory:"
+
+    def claim_single_writer(self, namespace: str) -> None:
+        import fcntl
+        import hashlib
+        from pathlib import Path
+
+        if not self.persistent_atomic_records:
+            super().claim_single_writer(namespace)
+        suffix = hashlib.sha256(namespace.encode()).hexdigest()[:16]
+        lock_path = str(Path(self._fallback_db_path).resolve()) + f".{suffix}.writer"
+        with self._lock:
+            if namespace in self._writer_claims:
+                raise ConflictError("writer", message="Registry writer already exists")
+            handle = open(lock_path, "a+b")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                raise ConflictError("writer", message="Registry writer already exists") from None
+            self._writer_claims[namespace] = handle
 
     # -- 内部 ---------------------------------------------------------------- #
 
@@ -78,6 +103,9 @@ class SQLiteKVStore(KVStore):
                 self._conn.close()
                 self._conn = None
                 self._conn_path = None
+            for handle in self._writer_claims.values():
+                handle.close()
+            self._writer_claims.clear()
 
     # -- KVStore 契约 -------------------------------------------------------- #
 
@@ -296,5 +324,8 @@ def _build(config):
 
     return SQLiteKVStore(
         Factory.cfg_get(config, "db_path", "agent_memory.db"),
-        config_source=ConfigSourceProducer.get_cached("default"),
+        config_source=(
+            None if config.get("fixed_path", False)
+            else ConfigSourceProducer.get_cached("default")
+        ),
     )
