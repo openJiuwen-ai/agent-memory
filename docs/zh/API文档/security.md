@@ -323,6 +323,12 @@ PowerShell 按第 4.2 节设置 PYTHONPATH 后，使用
 `python -m jiuwen_memory_entry.http_server dev.yml` 或相同命令加 `api-key.yml`。
 切换后需重启服务；本机内存数据、Key 和授权记录也会随旧进程结束而丢失。
 
+验收时，对 DEV 发不带认证头的业务请求应返回 200；切换到 API Key 后，同样不带
+认证头的请求应返回 401，错误 Key 也返回 401，正确 Root Key 才返回 200。
+不要用 `/healthz` 判断模式是否切换成功，该接口不验证业务凭据。第 5.2.1 节的
+完整脚本会顺序启动这两份配置，自动检查上述结果，再验证普通用户 Key。
+脚本在一个终端内完成，不需要手工将随机 Root Key 转交另一个终端。
+
 不要将两份认证配置当作互补项一起加载。入口对多个配置文件执行顶层浅覆盖，
 后一个文件的整个 `memory_api` 可能替换前一个文件的安全和存储配置。
 如需在同一配置中定义多个具名认证器，仍只有 `security.default.params.authenticator`
@@ -437,46 +443,135 @@ KeyStore 随机生成新 Key，保存身份、角色、验证 hash 与指纹；�
 包装成任意用户都能调用的签发函数。目前没有 `/v1/issue_key`、CLI `issue_key`
 或 MCP 签发工具；不能仅凭 Root Key 发起一个不存在的签发请求。
 
-先在本终端设置 `AGENT_MEMORY_ROOT_API_KEY`，再运行以下完整的进程内示例。
-它验证 Root 管理签发和普通用户调用，不会打印任何密钥，也不会启动 HTTP 服务：
+本地测试可以直接运行下面的完整脚本。先将第 5.1.1、5.2 节的完整配置分别保存为
+仓库根目录的 `dev.yml`、`api-key.yml`，将脚本保存为同一目录下的
+`check_api_key.py`。先停止占用 8137 端口的服务，再从仓库根目录执行：
 
-```python
-import os
-from jiuwen_memory.api import (
-    Credentials, PermissionDeniedError, Scope, assemble_server_runtime,
-)
-from jiuwen_memory.common.security.types import Role
-
-root_key = os.environ["AGENT_MEMORY_ROOT_API_KEY"]
-config = {
-    "security": {"default": {"target": "standard", "params": {"authenticator": "issuer"}}},
-    "authenticator": {"issuer": {"target": "api_key", "params": {
-        "key_store": "principals", "root_api_key": root_key,
-    }}},
-    "key_store": {"principals": {"target": "memory"}},
-}
-runtime = assemble_server_runtime(config=config)
-try:
-    admin = runtime.authenticate(Credentials(api_key=root_key))
-    if admin.auth.role is not Role.ROOT:
-        raise PermissionDeniedError("issue_key", message="ROOT management identity required")
-    issuer = runtime.security_runtime.authenticator
-    alice = Scope(org="demo", user="alice")
-    alice_key = issuer.key_store.issue(alice, Role.USER)
-    assert alice_key != root_key
-    # 同进程演示客户端选择普通用户 Key；实际交付时通过受保护渠道提供给 Alice。
-    os.environ["AGENT_MEMORY_API_KEY"] = alice_key
-    security = runtime.authenticate(Credentials(api_key=os.environ["AGENT_MEMORY_API_KEY"]))
-    assert security.auth.actor == alice and security.auth.role is Role.USER
-    unit = runtime.api.add("Alice private demo", alice, security=security)[0]
-    assert runtime.api.get(unit.id, alice, security=security).content == "Alice private demo"
-finally:
-    runtime.close(wait=True)
+```bash
+# 使用第 3 节已安装项目及依赖的 Python 环境。
+export PYTHONPATH="$PWD:$PWD/jiuwen_memory_entry/core"
+python check_api_key.py
 ```
 
-要让 HTTP/CLI/MCP 用户使用这把 Key，部署方应把上面的初始化逻辑放进实际服务启动
-流程，再启动监听。内置 KeyStore 是内存存储：运行一次独立签发脚本后退出，再启动
-另一个服务进程，原 Key 不会随之出现。普通用户不需要执行这段管理代码。
+PowerShell：
+
+```powershell
+$env:PYTHONPATH = "$($PWD.Path);$($PWD.Path)\jiuwen_memory_entry\core"
+python check_api_key.py
+```
+
+<details>
+<summary>check_api_key.py：DEV/API Key 切换、Root 签发与普通用户 HTTP 调用</summary>
+
+```python
+import json
+import os
+import secrets
+import threading
+from contextlib import contextmanager
+from http.server import ThreadingHTTPServer
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from config_loader import load_layer
+from profiles import load_config
+from jiuwen_memory.api import Credentials, Scope
+from jiuwen_memory.common.security.types import Role
+from jiuwen_memory_entry.http_server.__main__ import HttpServer
+
+
+@contextmanager
+def running(filename):
+    service = HttpServer.build(load_config([load_layer(filename)]))
+    server = None
+    worker = None
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 8137), service.handler_cls())
+        server.daemon_threads = True
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        yield service
+    finally:
+        if worker is not None:
+            server.shutdown()
+            worker.join()
+        if server is not None:
+            server.server_close()
+        service.close(wait=True)
+
+
+def post(method, key, body, expected):
+    headers = {"Content-Type": "application/json"}
+    if key is not None:
+        headers["Authorization"] = f"Bearer {key}"
+    request = Request(
+        f"http://127.0.0.1:8137/v1/{method}",
+        data=json.dumps(body).encode(), headers=headers,
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            status, result = response.status, json.load(response)
+    except HTTPError as error:
+        status, result = error.code, None
+        error.close()
+    assert status == expected, f"{method}: expected {expected}, got {status}"
+    return result
+
+
+with running("dev.yml"):
+    post("add", None, {
+        "content": "DEV test", "scope": {"org": "local", "user": "developer"},
+    }, 200)
+    print("PASS DEV: no credential -> 200")
+
+# 只为本次测试生成 Root Key；不打印、不写文件，不修改父终端的环境变量。
+os.environ["AGENT_MEMORY_ROOT_API_KEY"] = secrets.token_urlsafe(32)
+with running("api-key.yml") as service:
+    root_key = os.environ["AGENT_MEMORY_ROOT_API_KEY"]
+    root_body = {"content": "Root test", "scope": {"org": "system", "user": "root"}}
+    post("add", None, root_body, 401)
+    post("add", "invalid-test-key", root_body, 401)
+    os.environ["AGENT_MEMORY_API_KEY"] = root_key
+    assert os.environ["AGENT_MEMORY_API_KEY"] == root_key
+    post("add", os.environ["AGENT_MEMORY_API_KEY"], root_body, 200)
+    print("PASS API Key: missing/wrong -> 401; Root -> 200")
+
+    # 这是受信服务端管理代码；检查 Root 后，向实际处理 HTTP 的同一 KeyStore 签发。
+    admin = service.authenticator.authenticate(Credentials(api_key=root_key))
+    if admin.role is not Role.ROOT:
+        raise PermissionError("ROOT management identity required")
+    alice = Scope(org="demo", user="alice")
+    alice_key = service.authenticator.key_store.issue(alice, Role.USER)
+    assert alice_key != root_key
+    os.environ["AGENT_MEMORY_API_KEY"] = alice_key
+    identity = service.authenticator.authenticate(Credentials(api_key=alice_key))
+    assert identity.actor == alice and identity.role is Role.USER
+    print("PASS issuance: Root checked; independent USER Key issued")
+
+    # 模拟客户端只拿到 Alice Key，通过真正的 HTTP 接口写入、读取。
+    body = {"content": "Alice private demo", "scope": {"org": "demo", "user": "alice"}}
+    units = post("add", os.environ["AGENT_MEMORY_API_KEY"], body, 200)
+    unit = post("get", alice_key, {"unit_id": units[0]["id"], "scope": body["scope"]}, 200)
+    assert unit["segments"][0]["content"] == "Alice private demo"
+    post("add", alice_key, root_body, 403)
+    print("PASS USER HTTP: own write/read -> 200; Root scope -> 403")
+print("PASS complete: listeners closed; in-memory Keys discarded")
+```
+
+</details>
+
+预期依次看到五行 `PASS`（中间可能有普通服务日志），分别对应 DEV、API Key、签发、
+普通用户 HTTP 调用和资源关闭；出现异常或状态码不符即未通过。脚本使用默认内存
+数据面，不需要模型、外部数据库或生产凭据。端口被占用时先停止旧服务再重试。
+
+该脚本把受信管理端和测试客户端放在一个进程中，避免在终端间复制密钥；它使用的
+API Key 配置与正式入口相同，但不会安装管理接口，也不会输出可复用的用户 Key。
+普通用户只需接收管理员交付的 Key；实际部署中，部署方应将初始化逻辑放进服务
+启动流程，通过受保护渠道交付 `issue` 返回值，然后让客户端显式执行
+`export AGENT_MEMORY_API_KEY='<管理员交付的普通用户 Key>'`，或 PowerShell 的
+`$env:AGENT_MEMORY_API_KEY = '<管理员交付的普通用户 Key>'`。这里的占位符必须替换，
+不填 Root Key。内置 KeyStore 在内存中：独立签发脚本退出后，再启动另一个服务，
+原 Key 不会随之出现；本脚本退出后生成的测试 Key 也全部失效。
 
 主体 Key 只支持签发 USER/ADMIN，不允许 `issue(..., Role.ROOT)`；Root 凭据由部署配置
 提供。同一主体的活跃 Key 不能具有冲突角色，需要改角色时先撤销旧 Key，再由管理方重签。
@@ -891,8 +986,81 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8137/v1/revoke' -Method Post `
 `--server http://127.0.0.1:8137 grant --grant '<Grant JSON>'`；JSON 直接是 Grant
 对象，CLI 会将其放入名为 `grant` 的参数，不再手工包一层 `grant`。
 
-用 Alice 写入一条记忆，再始终用 Bob 的凭据对同一 ID、同一 Alice Scope 调用
-`POST /v1/get`，验证以下结果；Python 的完整流程见下一节：
+上面的 curl/PowerShell 演示单次授权和撤销。验收完整链路时，在**刚启动的
+`grant-demo.yml` 服务**上运行下面脚本；不要保留其他测试给 Bob 的有效分享，也不要
+在测试中途重启服务。将代码保存为 `check_grant_http.py`，另开终端执行
+`python check_grant_http.py`。只需 Python 标准库；默认连接 8137，使用其他端口时执行
+`python check_grant_http.py http://127.0.0.1:你的端口`。Windows 启动服务的完整命令为：
+
+```powershell
+$env:PYTHONPATH = "$($PWD.Path);$($PWD.Path)\jiuwen_memory_entry\core"
+python -m jiuwen_memory_entry.http_server grant-demo.yml --host 127.0.0.1 --port 8137
+```
+
+<details>
+<summary>check_grant_http.py：自动保存记忆 ID、授权 ID 并验证撤销</summary>
+
+```python
+import json
+import sys
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+base = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8137").rstrip("/")
+alice = {"org": "demo", "user": "alice"}
+bob = {"org": "demo", "user": "bob"}
+
+
+def post(label, method, selector, body, expected):
+    headers = {"Content-Type": "application/json"}
+    if selector is not None:
+        headers["Authorization"] = f"Bearer {selector}"
+    request = Request(f"{base}/v1/{method}", data=json.dumps(body).encode(), headers=headers)
+    try:
+        with urlopen(request, timeout=20) as response:
+            status, result = response.status, json.load(response)
+    except HTTPError as error:
+        status, result = error.code, None
+        error.close()
+    assert status == expected, f"{label}: expected {expected}, got {status}"
+    print(f"PASS {label}: {status}")
+    return result
+
+
+units = post("Alice writes", "add", "demo-alice", {
+    "content": "Grant HTTP test", "scope": alice,
+}, 200)
+read = {"unit_id": units[0]["id"], "scope": alice}
+request = {"grant": {"grantor": alice, "grantee": bob, "actions": ["read"]}}
+post("Bob before grant", "get", "demo-bob", read, 403)
+post("No credential", "grant", None, request, 401)
+post("Bob cannot impersonate grantor", "grant", "demo-bob", request, 403)
+created = post("Alice grants READ", "grant", "demo-alice", request, 200)
+try:
+    assert created["grant_id"], "Server must return grant_id"
+    unit = post("Bob after grant", "get", "demo-bob", read, 200)
+    assert unit["segments"][0]["content"] == "Grant HTTP test"
+    post("Bob cannot revoke Alice grant", "revoke", "demo-bob", {"grant": created}, 403)
+finally:
+    # 即使中间断言失败，也由 Alice 撤销本次创建的分享。
+    result = post("Alice revokes", "revoke", "demo-alice", {"grant": created}, 200)
+    assert result is None, "Successful revoke returns JSON null"
+post("Bob after revoke", "get", "demo-bob", read, 403)
+post("Alice still owns data", "get", "demo-alice", read, 200)
+post("Bob Key still valid", "add", "demo-bob", {"content": "Bob own data", "scope": bob}, 200)
+```
+
+</details>
+
+预期看到十一行 `PASS`；其中 Bob 读取同一条记忆的状态按 **403 → 200 → 403** 变化。
+若出现连接失败，先确认服务仍在运行且端口一致；若缺凭据返回 200，确认启动的不是
+固定 DEV；若第一次 Bob 读取就成功，使用新进程重建本例的内存测试服务，排除旧分享。
+本例中的 selector 是公开测试标识，不用于生产。`add` 返回记忆列表，脚本保存
+第一条的 `id`；`get` 请求传 `unit_id` 和原来的 Alice `scope`。HTTP 返回的记忆正文
+在 `segments` 内，本例从 `segments[0].content` 核对文本，不能直接取顶层 `content`。
+SDK 则可使用对象的 `.content` 属性，完整流程见下一节。
+
+接口验收结果：
 
 | 阶段或错误条件 | 预期结果 |
 |---|---|
@@ -1148,32 +1316,103 @@ HTTP 头或业务 JSON 来选择身份。目前没有公共 `/v1/delegate` 或�
 允许委托的动作仅为 `read/write/update/delete`，不转交 `share/revoke_share` 或管理
 角色能力；空间场景还要复核委托人当前的内容权限。ROOT 身份也不是 agent 委托的替代品。
 
-### 7.3 服务端配置示例
+### 7.3 可直接运行的委托与撤销测试
 
-委托由受信服务端代码建立并绑定到 agent 凭据，不从客户端请求中临时创建。已认证凭据的指纹绑定既有 DelegationStore 记录，由 PEP/PDP 逐次复核。真实 actor 仍是单主体 agent，不改成被代理用户；作者归属可从有效委托派生，审计始终记录真实 actor。
+委托建立和撤销目前没有网络管理接口，因此本例由**受信服务端测试脚本**装配完整
+配置、创建委托并撤销；普通客户端不能执行这些管理步骤。该脚本独立运行，
+不需要拼接第 6.3 节的空间配置，也不连接前面启动的 HTTP 服务。
 
-此配置是空间示例的增量片段，不能单独启动；需要支持业务授权与代理委托。在空间示例中添加 DEV 映射 `demo-agent`，actor 为 `{org: demo, agent: agent1, session: session1}`、role=user；在 `security.default.params` 加以下字段。指纹是公开测试 selector `demo-agent` 的 SHA-256，不是真实生产 token：
+将下列代码保存为仓库根目录的 `check_delegation.py`，使用第 3 节安装好项目的
+Python 环境执行 `python check_delegation.py`。从源码目录运行时，Bash 先设置
+`export PYTHONPATH="$PWD:$PWD/jiuwen_memory_entry/core"`；PowerShell 先设置
+`$env:PYTHONPATH = "$($PWD.Path);$($PWD.Path)\jiuwen_memory_entry\core"`。
+不需要设置 Root Key 或 `AGENT_MEMORY_API_KEY`；脚本只使用公开的 DEV 测试 selector。
 
-```yaml
-delegation_store: default
-delegation_bindings:
-  7a281dacac30cea2f30d7c8f489ab9c046efb0f2215c0e4218c58c182a9c28b4: alice-agent1
-delegations:
-  - delegation_id: alice-agent1
-    delegator: {org: demo, user: alice}
-    delegate: {org: demo, agent: agent1, session: session1}
-    actions: [read, write]
-    expires_at: "<服务端生成的未来有限期 ISO-8601 时间，包含时区>"
-    allowed_spaces: [team]
-    bound_credential_id: 7a281dacac30cea2f30d7c8f489ab9c046efb0f2215c0e4218c58c182a9c28b4
-    bound_session: session1
+<details>
+<summary>check_delegation.py：30 分钟代写、真实身份、作者归属与在线撤销</summary>
+
+```python
+import hashlib
+from datetime import UTC, datetime, timedelta
+
+from jiuwen_memory.api import (
+    Credentials, PermissionDeniedError, Scope, assemble_server_runtime,
+)
+from jiuwen_memory.common.security.capabilities import delegation_sources
+
+selector = "demo-agent"
+credential_id = hashlib.sha256(selector.encode()).hexdigest()
+agent_scope = {"org": "demo", "agent": "agent1", "session": "session1"}
+alice_scope = {"org": "demo", "user": "alice"}
+config = {
+    "security": {"default": {"target": "standard", "params": {
+        "authenticator": "demo", "authorizer": "default", "delegation_store": "default",
+        "delegation_bindings": {credential_id: "alice-agent1"},
+        "delegations": [{
+            "delegation_id": "alice-agent1", "delegator": alice_scope,
+            "delegate": agent_scope, "actions": ["read", "write"],
+            "expires_at": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
+            "bound_credential_id": credential_id, "bound_session": "session1",
+        }],
+    }}},
+    "authenticator": {"demo": {"target": "dev", "params": {"identities": {
+        "demo-alice": {"actor": alice_scope, "role": "user"},
+        selector: {"actor": agent_scope, "role": "user"},
+    }}}},
+    "authorizer": {"default": {"target": "standard", "params": {
+        "grant_store": "default", "delegation_store": "default",
+    }}},
+    "grant_store": {"default": {"target": "memory"}},
+    "delegation_store": {"default": {"target": "memory"}},
+}
+runtime = assemble_server_runtime(config=config)
+try:
+    agent = runtime.authenticate(Credentials(api_key=selector))
+    assert agent.auth.actor == Scope(**agent_scope)
+    assert not agent.auth.actor.user
+    print("PASS identity: caller remains agent1/session1")
+    target = Scope(**alice_scope)
+    unit = runtime.api.add("Delegated meeting notes", target, security=agent)[0]
+    assert unit.system_metadata["author_principal"] == "user:alice"
+    assert unit.system_metadata["author_agent"] == "agent1"
+    assert runtime.api.get(unit.id, target, security=agent).content == "Delegated meeting notes"
+    print("PASS delegation: agent writes/reads; author is Alice with agent1 recorded")
+
+    # 服务端管理流程撤销当前 Authorizer 实际使用的同一委托 Store。
+    stores = delegation_sources(runtime.security_runtime.authorizer)
+    assert len(stores) == 1
+    stores[0].revoke("alice-agent1")
+    try:
+        runtime.api.get(unit.id, target, security=agent)
+    except PermissionDeniedError:
+        print("PASS revoke: previously authenticated agent context is denied")
+    else:
+        raise AssertionError("Revoked delegation must deny the agent")
+    alice = runtime.authenticate(Credentials(api_key="demo-alice"))
+    assert runtime.api.get(unit.id, target, security=alice).content == "Delegated meeting notes"
+    print("PASS owner: Alice can still read; data was not deleted")
+finally:
+    runtime.close(wait=True)
 ```
 
-到期时间应在服务端用当前 UTC 加明确有限期限生成，不能把上面的占位符直接作为运行配置。绑定的 Store 必须与 Authorizer 的实际委托源是同一个对象；相同连接串但不同实例不满足同源。
+</details>
 
-复核包括撤销、到期、动作、空间、凭据、session，以及委托人的当前内容权。委托不借出治理权、不自动创建 fallback 空间。代理写入后的 author_principal 可为 `user:alice`、author_agent 为 `agent1`，但 auth.actor.user 仍为空。
+预期看到四行 `PASS`。身份检查确认没有把 agent 变成 Alice；代写检查确认记忆归属
+Alice 并保留 agent 信息；撤销检查使用**撤销前已认证的上下文**，确认不能继续访问；
+最后确认撤销没有删除记忆或影响 Alice 自身的访问。全部数据和委托均在本进程内存中，
+脚本退出后丢弃，不会产生可供另一个服务使用的委托。
 
-禁止客户端从 header/payload 指定 delegation_id、acting_user 或 `_delegator.*` 事实来提权；后者只允许服务端可信投影。目前没有动态创建/撤销委托的 HTTP/CLI/MCP 管理入口，应由部署方的受信管理流程处理。
+配置中的 `delegation_bindings` 将凭据 SHA-256 指纹指向委托 ID；`bound_credential_id`
+和 `bound_session` 将该记录限制在同一凭据与 session；`expires_at` 每次运行时生成
+当前 UTC 加 30 分钟，不需要手填日期。生产中应使用独立随机 agent Key 的指纹，
+不能沿用公开 selector。本例针对 Alice 的私有记忆；空间场景还需创建目标空间，
+确认 Alice 当前有相应内容权，并用 `allowed_spaces` 限定允许的空间。
+
+建立和撤销实际任务时，部署方必须先验证用户授权意愿和管理调用者的权限，再操作
+同一委托 Store；脚本直接配置/撤销是本机受信测试装配，不是给普通用户开放的管理接口。
+认证与授权必须引用同一 Store 对象，不能另外新建一个数据库连接冒充当前委托源。
+客户端始终只提交自己的凭据与正常业务参数，不传 `delegation_id`、`acting_user`
+或 `_delegator.*` 来选择被代理用户。委托失效会拒绝绑定请求，不回退到普通 Grant。
 
 ## 8. 入口资源保护与传输
 
