@@ -1,0 +1,212 @@
+# agent-memory MAB 评测配置（本地真后端 + schema 模式）。
+#
+# 用户配置合并覆盖到内置默认（纯内存离线栈）之上，故只写要改动的部分：globals +
+# 把各 default 实例换成真后端。连接串经 ${VAR} 从 evaluation/environment/.env 注入，
+# 配置文件本身不落密。staged runner 经 config_loader 取 memory_api 段交给内核装配。
+
+profile: local
+
+memory_api:
+  # ---- 跨切面参数（具名实例的 params 可覆盖）----
+  globals:
+    vector_enabled: true        # 向量索引 + 向量召回（Milvus）
+    graph_enabled: false        # 图召回
+    rerank_enabled: false       # 精排（关闭时 pipeline 短路 reranker）
+    layers_index_enabled: false  # L0/L1 分层召回
+    entity_enabled: true        # 实体索引 + 召回侧 L2 实体扩展
+    schema_enabled: true        # ★ schema 抽取链路（配套 extractor/evolver 见下）
+
+    # 向量维度，必须与 Milvus collection 的 dim 一致
+    embedder_dim: 4096
+    chunk_size: 512
+
+    # LLM：openai 兼容端点（llm_model / base_url / api_key / temperature / max_tokens）
+    llm_model: "${MODEL_NAME}"
+    llm_base_url: "${API_BASE}"
+    llm_api_key: "${API_KEY}"
+    llm_temperature: 0.01
+    llm_max_tokens: 4096
+
+    # 嵌入：openai 兼容 /v1/embeddings（base_url 不含 /embeddings，SDK 自拼）
+    embedder_model: "${EMBED_MODEL_NAME}"
+    embedder_base_url: "${EMBED_BASE_URL}"
+    embedder_api_key: "${EMBED_API_KEY}"
+    embedder_max_batch: 64
+
+  # ---- 共享插件 ----
+  llm:
+    default:
+      target: openai
+  embedder:
+    default: { target: openai }
+  tokenizer:
+    default: { target: jieba }   # 对齐 docker online：中文分词用 jieba（已装）
+  # 精排：SiliconFlow bge-reranker-v2-m3（cohere 方言；base_url 含 /v1 不含 /rerank）
+  reranker:
+    default:
+      target: api
+      params:
+        reranker_model: BAAI/bge-reranker-v2-m3
+        reranker_base_url: "${RERANK_BASE_URL}"
+        reranker_api_key: "${RERANK_API_KEY}"
+        reranker_timeout: 30.0
+        reranker_dialect: cohere
+
+
+  # ---- 构建侧：各算子均走共享 LLM ----
+  extractor:
+    default:
+      target: entity_schema
+      params:
+        schema_path: "examples/entity_schema_mab.json"   # MAB 事实谓词 schema（5 类型，属性=谓词）；相对仓库根解析
+        llm: default
+        enable_schema_selection: false   # MAB 是事实列表；schema selection 的 JSON 输出不稳定，跳过
+        schema_validation_attempts: 3   # glm-5.2 偶发返回空串，需要重试
+        # 单次抽取的输出上限；chunk 较大时 JSON 会超长被截断，导致整批降级为只有 source
+        schema_extract_max_tokens: 16384
+  abstractor:
+    default:
+      target: llm
+      params:
+        llm: default
+  associator:
+    default:
+      target: llm
+      params:
+        llm: default
+        feature_extractor: default
+        embedder: default
+  classifier:
+    default:
+      target: llm
+      params:
+        llm: default
+  # 注意：实例级覆盖会**整体替换 params**，必须写全依赖拓扑；漏写的依赖会被匿名重建，
+  # 其 embedder 落回默认 hashing，导致索引与查询用的向量不一致。
+  evolver:
+    default:
+      target: schema_orchestrating
+      params:
+        extractor: default
+        abstractor: default
+        associator: default
+        index_builder: default
+        message_store: default
+        dedup: default
+        embedder: default
+        llm: default
+
+  # ---- 存储后端：覆盖各命名空间下的 default 实例（必填连接参数缺失会在装配期直接报错）----
+  kv_store:                      # 真源（本地 Redis）
+    default:
+      target: redis
+      params:
+        url: "${REDIS_URL:-redis://127.0.0.1:6379/0}"
+  fulltext_store:                 # 关键词召回（本地 ES，BM25）
+    default:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX:-agent_memory_fulltext}"
+    layers_l0:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX_L0:-agent_memory_fulltext_l0}"
+    layers_l1:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_FULLTEXT_INDEX_L1:-agent_memory_fulltext_l1}"
+  entity_store:                   # 实体倒排索引（ES，entity_enabled=true 时生效）
+    default:
+      target: elasticsearch
+      params:
+        hosts: "${ES_HOSTS:-http://127.0.0.1:9200}"
+        index: "${ES_ENTITY_INDEX:-agent_memory_entity}"
+        number_of_shards: 1
+        number_of_replicas: 0
+  vector_store:                  # 向量召回（远程 Milvus，ANN）
+    default:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://127.0.0.1:19530}"
+        collection: "${MILVUS_COLLECTION:-agent_memory_vectors}"
+        dim: 4096
+        metric_type: COSINE
+    layers_l0:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://127.0.0.1:19530}"
+        collection: "${MILVUS_COLLECTION_L0:-agent_memory_vectors_l0}"
+        dim: 4096
+        metric_type: COSINE
+    layers_l1:
+      target: milvus
+      params:
+        uri: "${MILVUS_URI:-http://127.0.0.1:19530}"
+        collection: "${MILVUS_COLLECTION_L1:-agent_memory_vectors_l1}"
+        dim: 4096
+        metric_type: COSINE
+
+  # ---- 召回侧 ----
+  # fuser：加权 RRF（k=20，vector 2.0 / keyword 1.0，向量为主、关键词互补）
+  fuser:
+    default:
+      target: weighted_rrf
+      params:
+        fusion_rrf_k: 20
+        fusion_channel_weights:
+          vector: 2.0
+          keyword: 1.0
+  recaller:
+    # storage=default 指向内置 composite，其 fulltext/vector 部分已被上面覆盖为 ES / Milvus
+    keyword:
+      target: keyword
+      params:
+        storage: default   # → ES（BM25）
+    vector:
+      target: vector
+      params:
+        storage: default   # → Milvus（ANN）
+        min_similarity: 0.0
+  # query_parser 不走 LLM 改写：query 原样透传（llm 内联 echo）
+  query_parser:
+    default:
+      target: simple
+      params:
+        tokenizer: default
+        embedder: default
+        feature_extractor: default
+        llm: { target: echo }
+
+  # 检索管道：相关性阈值全部置 0，让融合结果不经阈值再砍（对齐基线口径）。
+  # 容量：每路召回 recall_max=200；融合后取 top_k（评测由 runner.top_k 给定）。
+  retriever:
+    default:
+      target: pipeline
+      params:
+        keyword_recaller: keyword
+        vector_recaller: vector
+        graph_recaller: graph
+        reranker: default
+        query_parser: default
+        fuser: default
+        discloser: default
+        storage: default      # 点读真源（recheck）：composite → kv 部分 = Redis
+        over_fetch_factor: 4
+        over_fetch_floor: 60
+        recall_max: 200
+        rerank_max: 50
+        min_score: 0.0
+        min_score_ratio: 0.0
+        min_score_ratio_uncalibrated: 0.0
+        min_results: 0
+
+# ---- runner 段：evaluation/memoryagentbench/run.py 的运行参数（命令行优先）----
+runner:
+  # 单子集 JSON（生成方式见 datasets/memoryagentbench/README.md）
+  data: evaluation/datasets/memoryagentbench/factconsolidation_mh_6k.json
+  chunk_chars: 4096     # add 时每次送进记忆系统的上下文字符数
+  top_k: 50             # 检索进入 prompt 的记忆条数
+
