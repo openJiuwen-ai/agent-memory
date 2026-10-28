@@ -23,6 +23,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -70,6 +71,30 @@ except ImportError:  # pragma: no cover
 pytestmark = pytest.mark.unit
 
 SCOPE = {"org": "local", "user": "developer"}
+
+
+@pytest.mark.parametrize("fail_in_session", [False, True])
+def test_stdio_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -> None:
+    server = Mock(start_background=AsyncMock())
+    monkeypatch.setattr(mcp_main, "_SRV", server)
+
+    async def run_transport() -> None:
+        server.start_background.assert_awaited_once_with()
+        server.close.assert_not_called()
+        if fail_in_session:
+            raise RuntimeError("session failed")
+
+    transport = AsyncMock(side_effect=run_transport)
+    monkeypatch.setattr(mcp_main.FastMCP, "run_stdio_async", transport)
+
+    if fail_in_session:
+        with pytest.raises(RuntimeError, match="session failed"):
+            asyncio.run(mcp_main.mcp.run_stdio_async())
+    else:
+        asyncio.run(mcp_main.mcp.run_stdio_async())
+    transport.assert_awaited_once_with()
+    server.close.assert_called_once_with()
+
 
 # 工具名 → (MemoryAPI 方法名, 代表性最小合法 payload)。payload 同时锁「形状可过
 # parse_request」——工具转发给 _invoke 的键名集合必须与这里给出的契约一致。
