@@ -5,7 +5,14 @@ from __future__ import annotations
 
 import re
 
-_BRACKET_UTC_RE = re.compile(r"\[[^\[\]]*UTC\]\s*")
+# Only the generated wrapper timestamp ("[Fri 2026-03-27 06:16 UTC]") is
+# metadata. A user query may legitimately contain "[CPU UTC]" or similar, so
+# require the wrapper to start the text and carry a weekday/ISO date.
+_BRACKET_UTC_RE = re.compile(
+    r"^\s*\[\s*(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b|\d{4}-\d{2}-\d{2})"
+    r"[^\[\]]*UTC\s*\]\s*",
+    re.IGNORECASE,
+)
 _SENDER_LINE_RE = re.compile(
     r"(?im)^[^\S\r\n]*Sender[^\S\r\n]*\(untrusted metadata\)[^\S\r\n]*:[^\r\n]*(?:\r?\n|$)"
 )
