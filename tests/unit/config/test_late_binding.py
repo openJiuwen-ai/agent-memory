@@ -7,11 +7,20 @@ from unittest.mock import MagicMock
 import pytest
 
 from jiuwen_memory.common.embedder.embedder_impl.openai_embedder import OpenAIEmbedder
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.llm.base import LlmProducer
+from jiuwen_memory.common.llm.llm_impl.dashscope_llm import DashScopeLLM
 from jiuwen_memory.common.llm.llm_impl.openai_llm import OpenAILLM
 from jiuwen_memory.common.reranker.reranker_impl.api_reranker import APIReranker
 from jiuwen_memory.common.type_def import ChatMessage
+from jiuwen_memory.config.config_source import ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.defaults import default_context
+from jiuwen_memory.config.project import project_assembly_values
 from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
+
+pytestmark = pytest.mark.unit
 
 
 class _EmbResp:
@@ -115,6 +124,166 @@ def test_openai_llm_late_binds_model_and_credentials(monkeypatch: pytest.MonkeyP
     assert len(clients) == 2
     assert ctor_kwargs[1]["api_key"] == "sk-b"
     assert clients[1].chat.completions.create.call_args.kwargs["model"] == "gpt-4o"
+
+
+@pytest.mark.parametrize(
+    ("target", "model", "base_url", "api_key"),
+    [
+        ("openai", "alt-openai", "https://alt-openai.example/v1", "sk-alt-openai"),
+        ("dashscope", "alt-dashscope", "https://alt-dashscope.example/v1", "sk-alt-dashscope"),
+    ],
+)
+def test_named_llm_uses_its_own_config_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+) -> None:
+    ctx = default_context().merged(
+        AssemblyContext.from_dict(
+            {
+                "globals": {"config_namespace": "global.llm"},
+                "llm": {
+                    "default": {
+                        "target": "openai",
+                        "params": {
+                            "llm_model": "default-model",
+                            "llm_base_url": "https://default.example/v1",
+                            "llm_api_key": "sk-default",
+                        },
+                    },
+                    "alt": {
+                        "target": target,
+                        "params": {
+                            "llm_model": model,
+                            "llm_base_url": base_url,
+                            "llm_api_key": api_key,
+                        },
+                    },
+                }
+            }
+        )
+    )
+    source = DictConfigSource(project_assembly_values(ctx))
+    source.put("global.llm.model", "global-model")
+    source.put("global.llm.base_url", "https://global.example/v1")
+    source.put("global.llm.api_key", "sk-global")
+    ConfigSourceProducer.put("default", source, ctx=ctx)
+
+    class _Choice:
+        def __init__(self) -> None:
+            self.message = type("M", (), {"content": "ok"})()
+
+    class _Resp:
+        choices = [_Choice()]
+
+    ctor_kwargs: list[dict] = []
+    clients: list[MagicMock] = []
+
+    def _factory(**kwargs):
+        ctor_kwargs.append(kwargs)
+        client = MagicMock()
+        client.chat.completions.create = MagicMock(return_value=_Resp())
+        clients.append(client)
+        return client
+
+    import openai as openai_mod
+
+    monkeypatch.setattr(openai_mod, "OpenAI", _factory)
+    llm = LlmProducer.build_named("alt", ctx)
+    expected_type = DashScopeLLM if target == "dashscope" else OpenAILLM
+    assert isinstance(llm, expected_type)
+
+    assert llm.chat([ChatMessage(role="user", content="hi")]) == "ok"
+    assert ctor_kwargs[0]["base_url"] == base_url
+    assert ctor_kwargs[0]["api_key"] == api_key
+    assert clients[0].chat.completions.create.call_args.kwargs["model"] == model
+
+
+def test_named_llm_honors_explicit_config_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = default_context().merged(
+        AssemblyContext.from_dict(
+            {
+                "llm": {
+                    "alt": {
+                        "target": "openai",
+                        "params": {
+                            "llm_model": "fallback-model",
+                            "llm_base_url": "https://fallback.example/v1",
+                            "llm_api_key": "sk-fallback",
+                            "config_namespace": "custom.llm",
+                        },
+                    }
+                }
+            }
+        )
+    )
+    projected = project_assembly_values(ctx)
+    assert projected["custom.llm.model"] == "fallback-model"
+    assert "llm.alt.model" not in projected
+    assert "custom.llm.config_namespace" not in projected
+    source = DictConfigSource(projected)
+    source.put("custom.llm.model", "custom-model")
+    source.put("custom.llm.base_url", "https://custom.example/v1")
+    source.put("custom.llm.api_key", "sk-custom")
+    ConfigSourceProducer.put("default", source, ctx=ctx)
+
+    class _Choice:
+        def __init__(self) -> None:
+            self.message = type("M", (), {"content": "ok"})()
+
+    class _Resp:
+        choices = [_Choice()]
+
+    ctor_kwargs: list[dict] = []
+    clients: list[MagicMock] = []
+
+    def _factory(**kwargs):
+        ctor_kwargs.append(kwargs)
+        client = MagicMock()
+        client.chat.completions.create = MagicMock(return_value=_Resp())
+        clients.append(client)
+        return client
+
+    import openai as openai_mod
+
+    monkeypatch.setattr(openai_mod, "OpenAI", _factory)
+    llm = LlmProducer.build_named("alt", ctx)
+
+    assert llm.chat([ChatMessage(role="user", content="hi")]) == "ok"
+    assert ctor_kwargs[0]["base_url"] == "https://custom.example/v1"
+    assert ctor_kwargs[0]["api_key"] == "sk-custom"
+    assert clients[0].chat.completions.create.call_args.kwargs["model"] == "custom-model"
+
+
+@pytest.mark.parametrize(
+    ("config_namespace", "error"),
+    [(None, "必须是字符串"), ("   ", "不能为空")],
+)
+def test_named_llm_rejects_invalid_config_namespace(
+    config_namespace: object, error: str
+) -> None:
+    ctx = default_context().merged(
+        AssemblyContext.from_dict(
+            {
+                "llm": {
+                    "alt": {
+                        "target": "openai",
+                        "params": {
+                            "llm_model": "alt-model",
+                            "config_namespace": config_namespace,
+                        },
+                    }
+                }
+            }
+        )
+    )
+
+    with pytest.raises(ValidationError, match=error):
+        LlmProducer.build_named("alt", ctx)
 
 
 def test_api_reranker_late_binds_model_key_url() -> None:

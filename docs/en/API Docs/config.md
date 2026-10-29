@@ -1,6 +1,6 @@
 # Configuration and Assembly Guide
 
-Last revised: 2026-10-26
+Last revised: 2026-10-29
 
 Agent Memory configuration is more than a way to pass YAML fields to a constructor. It is a
 lightweight assembly mechanism built around a default topology, Producer registries, named
@@ -902,6 +902,25 @@ Adding a named instance does not activate it automatically. Another component mu
 explicitly. Likewise, registering a target does not mean that the implementation has been
 assembled.
 
+LLM late-binding endpoint keys are scoped to the instance:
+
+```text
+llm.default   -> llm.model / llm.api_key / llm.base_url
+llm.reasoning -> llm.reasoning.model / llm.reasoning.api_key / llm.reasoning.base_url
+```
+
+OpenAI and DashScope instances derive this namespace from the instance name. `llm.reasoning`
+therefore reads its own endpoint keys even when `config_namespace` is omitted. An explicit
+`config_namespace` only selects a different shared or custom key family.
+
+An explicit `config_namespace` must be set under the instance `params` and must be a non-empty
+string. It never falls back to `globals`; blank, `null`, or other non-string values fail during
+assembly. Projection and lookup share the effective namespace, so `config_namespace: custom.llm`
+projects that instance's endpoint parameters to `custom.llm.*`.
+
+`default` is the reserved main-instance name. `llm.default` uses the shared `llm.*` keys;
+renaming the main instance to `primary` uses `llm.primary.*` and does not create an `llm.*` alias.
+
 ## 12. Runtime ConfigSource
 
 `Config` and `AssemblyContext` determine the assembly topology. After that topology has been
@@ -926,6 +945,9 @@ prompts.extract.preference
 llm.model
 llm.api_key
 llm.base_url
+llm.reasoning.model
+llm.reasoning.api_key
+llm.reasoning.base_url
 embedder.model
 embedder.api_key
 embedder.base_url
@@ -933,6 +955,12 @@ kv_store.url
 vector_store.uri
 fulltext_store.hosts
 ```
+
+`llm.<instance>.*` keys are generated only for the corresponding instance and only when it
+does not explicitly override `config_namespace`; they do not share the default endpoint under
+`llm.*`. With an explicit override, projection switches to the effective namespace and does not
+generate endpoint keys under the original instance name. Only `llm` currently enables this
+instance-scoped projection; Embedder, Reranker, ASR, and Store have not migrated yet.
 
 It does not watch the YAML file for changes. After modifying the file, call `assemble()` again.
 

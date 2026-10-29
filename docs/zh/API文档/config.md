@@ -1,6 +1,6 @@
 # Config 配置与装配指南
 
-最近一次修订日期：2026-10-26
+最近一次修订日期：2026-10-29
 
 Agent Memory 的 Config 不只是把 YAML 字段传给某个构造函数，而是一套基于默认拓扑、
 Producer 注册表、具名实例和依赖引用的轻量级装配机制。本指南说明配置如何组织、合并、解析
@@ -867,6 +867,24 @@ Classifier -> llm.default
 新增具名实例不会自动生效，必须被其他组件显式引用。仅仅注册了某个 target，也不代表该实现
 已经被装配。
 
+LLM 的晚绑定端点 key 与实例身份绑定：
+
+```text
+llm.default   -> llm.model / llm.api_key / llm.base_url
+llm.reasoning -> llm.reasoning.model / llm.reasoning.api_key / llm.reasoning.base_url
+```
+
+OpenAI 与 DashScope 实例会从实例名自动推导该命名空间。`llm.reasoning` 即使不配置
+`config_namespace`，也会读取自己的端点键；显式 `config_namespace` 只用于主动选择其他
+共享或自定义 key 族。
+
+显式 `config_namespace` 只能写在实例 `params` 下，且必须是非空字符串；不会从 `globals`
+回退，空白、`null` 或其他非字符串会在装配期报错。投影和读取共用该有效命名空间，因此
+`config_namespace: custom.llm` 会把该实例的端点参数投影到 `custom.llm.*`。
+
+`default` 是主实例保留名。`llm.default` 使用共享 `llm.*`；将主实例命名为 `primary` 时会
+使用 `llm.primary.*`，不会额外生成 `llm.*` 别名。
+
 ## 12. 运行时 ConfigSource
 
 装配拓扑由 `Config` 和 `AssemblyContext` 决定。拓扑构建完成后，部分配置可通过
@@ -890,6 +908,9 @@ prompts.extract.preference
 llm.model
 llm.api_key
 llm.base_url
+llm.reasoning.model
+llm.reasoning.api_key
+llm.reasoning.base_url
 embedder.model
 embedder.api_key
 embedder.base_url
@@ -897,6 +918,11 @@ kv_store.url
 vector_store.uri
 fulltext_store.hosts
 ```
+
+`llm.<实例名>.*` 只在对应实例存在且未显式覆盖 `config_namespace` 时自动生成；这些键
+对应实例自己的端点，不会与 `llm.*` 的 default 端点共享。显式覆盖 `config_namespace` 时，
+投影键改用该实例的有效命名空间，不再生成原实例名下的端点键。当前只有 `llm` 启用这层
+实例作用域投影；Embedder、Reranker、ASR 与 Store 尚未迁移。
 
 它不会监听 YAML 文件变化。修改文件后必须重新执行 `assemble()`。
 

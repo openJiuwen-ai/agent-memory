@@ -90,7 +90,7 @@ def test_memory_builder_applies_lease_and_timeout() -> None:
         fresh = await _acquire_elsewhere(provider)
         await provider.release(fresh)
 
-        await provider.acquire(_SCOPE, "write")
+        await provider.acquire(_SCOPE, "write", lease_ms=30_000)
 
         started = time.monotonic()
         with pytest.raises(LockTimeoutError):
@@ -215,10 +215,10 @@ def test_lease_expiry_lets_another_holder_in() -> None:
 
 def test_stale_release_does_not_free_the_new_holders_lock() -> None:
     """租约过期后他人拿到同名锁，原持有者的 release 必须是空操作。"""
-    provider = _provider(lease_ms=50)
+    provider = _provider()
 
     async def scenario() -> None:
-        stale = await provider.acquire(_SCOPE, "write")
+        stale = await provider.acquire(_SCOPE, "write", lease_ms=50)
         await asyncio.sleep(0.08)
         fresh = await _acquire_elsewhere(provider)
 
