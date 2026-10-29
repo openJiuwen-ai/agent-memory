@@ -13,9 +13,10 @@ list，读 md 按行算新 content_hash list，diff 出「新增/删除」集合
 
 **块格式对齐** ``MarkdownStore._render_block``：``# {标题}\\n{content}\\n\\n``
 （标题按 F08 §8 分流：daily 文件用 coords.team、其余用 LLM 生成的 md_title、均兜底
-unit.id——标题内容对 diff 无影响，本实现只认 ``#`` 开头的标题行）。按行遍历：标题行
-（``#`` 开头）跳过、空行跳过、正文行算 sha256（F07 §12.4 单段
-unit 约束——一行正文 = 一个 content = 一个 hash 候选）。
+unit.id——标题内容对 diff 无影响，本实现只认 ``#`` 开头的标题行）。按块结构解析
+（与 ``collect_blocks_from_text`` 同口径）：块间空行切块、块首标题行跳过、正文行算
+sha256——正文行不判 ``#`` 前缀（``#1 里程碑`` 等合法正文与标题行不可区分，靠块结构
+区分）（F07 §12.4 单段 unit 约束——一行正文 = 一个 content = 一个 hash 候选）。
 
 **unit_id 策略**：用户改某行 content → 旧 hash 消失 + 新 hash 出现 → 删旧 unit
 + 建新 unit（新 id），不保留旧 id（F07 §12.9 风险5 当前版本策略）。删旧后用旧 id
@@ -410,11 +411,11 @@ class LocalWatchdog(Watchdog):
             old_by_hash[ch] = unit_id
         old_hash_set = set(old_by_hash.keys())
 
-        # ② 新 (content_hash, content) list（按行遍历 md，保留 content 原文供建 unit）。
+        # ② 新 (content_hash, content) list（按块结构解析 md，保留 content 原文供建 unit）。
         # collect_md_blocks 返回三元组 (hash, content, block_index)，看门狗只取前两元
         # （block_index 供 DomainStore._supersede_shadow_for_md 跨块对齐用，看门狗「删旧建新」
-        # 不按位置继承、不需要 block_index）。口径与原 _collect_new_contents 完全一致
-        # （逐行遍历、跳过标题/空行、sha256、保序去重），只是定义移到共享 _md_blocks。
+        # 不按位置继承、不需要 block_index）。口径为块结构解析（跳过块首标题行、正文行
+        # 不判 # 前缀、sha256、保序去重），定义在共享 _md_blocks（与 edit_md_file 同口径）。
         new_pairs: list[tuple[str, str]] = []  # (hash, content) 保序、去重
         new_hash_set: set[str] = set()
         if not deleted:

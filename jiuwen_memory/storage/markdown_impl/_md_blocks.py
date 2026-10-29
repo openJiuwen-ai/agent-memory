@@ -6,15 +6,17 @@
 
 - md 块结构是 ``# {标题}\\n{正文}\\n\\n``（``LocalMarkdownStore._render_block``），单段 unit
   约束下一行正文 = 一个块 = 一个 content_hash 候选。
-- 逐行遍历：``#`` 开头的标题行跳过、空行跳过、正文行算 sha256。标题内容对 diff / hash 无
-  影响（标题行在任何读回路径中不被解析，见 ``_render_block`` 注释）。
+- 按块结构解析（块间空行切块、每块首行为标题、其余为正文），而非逐行遍历——``#`` 开头
+  的标题行与 ``#`` 开头的正文行（如 ``#1 里程碑``）在文本上不可区分，只能靠块结构区分
+  （标题是块首行，正文在块内首行之后）。正文行不判 ``#`` 前缀，算 sha256。标题内容对
+  diff / hash 无影响（标题行在任何读回路径中不被解析，见 ``_render_block`` 注释）。
 - content_hash 算法与影子索引 ``SqliteDocumentShadowIndex._content_hash`` 同口径
   （``sqlite_shadow_index.py``）：``sha256(content.encode("utf-8")).hexdigest()``，不归一化。
   read_md_file / edit_md_file 侧算 hash 必须用本口径，否则与 shadow 落库的 content_hash
   对不上、``find_unit_ids_by_content_hash`` 反查落空。
 
 本模块是「md 文件 → (content_hash, content, block_index)」的唯一定义点，看门狗与
-``CompositeDomainStore._supersede_shadow_for_md`` 共用，避免两处各自抄一份按行遍历逻辑
+``CompositeDomainStore._supersede_shadow_for_md`` 共用，避免两处各自抄一份按块解析逻辑
 产生口径分叉。
 """
 
@@ -36,43 +38,64 @@ def content_hash(content: str) -> str:
 
 
 def collect_blocks_from_text(text: str) -> list[tuple[str, str, int]]:
-    """从文本按行遍历，返回 ``(content_hash, content, block_index)`` 列表。
+    """从文本按块结构解析，返回 ``(content_hash, content, block_index)`` 列表。
 
-    与 :func:`collect_md_blocks` 同口径（逐行跳过标题行/空行、正文行算 sha256、保序
-    去重、带 block_index），区别仅在接收 ``str`` 而非 ``abs_path``——``read_md_file``
-    （``read_content`` 返回切片后的 ``str``）与 ``edit_md_file``（edit 前后读全文
-    ``str``）拿到的是文本而非文件路径，共用本函数按块解析，不重复读文件。
+    与 :func:`collect_md_blocks` 同口径（按空行切块、每块首行标题跳过、正文行算
+    sha256、保序去重、带 block_index），区别仅在接收 ``str`` 而非 ``abs_path``——
+    ``read_md_file``（``read_content`` 返回切片 ``str``）与 ``edit_md_file``（edit
+    前后读全文 ``str``）拿到文本而非路径，共用本函数按块解析，不重复读文件。
 
-    口径与 ``collect_md_blocks`` 逐字节一致：``splitlines()`` 去行尾后逐行判定，与
-    ``collect_md_blocks`` 的 ``line.rstrip("\\n")``（fh 通用换行已归一 ``\\r\\n``→``\\n``）
-    产出相同的 content 行 → 相同 content_hash → ``find_unit_ids_by_content_hash`` 命中。
+    标题行与 ``#`` 开头的正文行不靠 ``#`` 前缀区分（那会把 ``#1 里程碑`` 等合法
+    正文误当标题跳过），而是靠块结构区分：块首行是标题（跳过），块内首行之后的行
+    是正文（不判 ``#`` 前缀）。无标题的裸正文块（用户手改直接加一行正文、块首非
+    ``#``）整体视作正文；``#`` 开头的孤立单行（无正文）仍按标题跳过（与旧逐行
+    口径一致——文本上无法区分「孤立标题」与「# 开头裸正文」）。
     """
     result: list[tuple[str, str, int]] = []
     seen: set[str] = set()
+    block: list[str] = []
     for line in text.splitlines():
-        if line.startswith("#"):
-            continue
         if not line.strip():
+            if block:
+                _append_block(block, result, seen)
+                block = []
             continue
+        block.append(line)
+    if block:
+        _append_block(block, result, seen)
+    return result
+
+
+def _append_block(
+    block: list[str],
+    result: list[tuple[str, str, int]],
+    seen: set[str],
+) -> None:
+    """把一个块内的正文行（跳过块首标题行）逐行算 hash 追加进 result。
+
+    block 首行若是 ``#`` 开头则为标题行，取 ``block[1:]`` 作正文；否则整个 block
+    都是正文（裸正文块）。正文行不判 ``#`` 前缀，与 :func:`collect_blocks_from_text`
+    的块结构口径一致。
+    """
+    body = block[1:] if block[0].startswith("#") else block
+    for line in body:
         ch = content_hash(line)
         if ch in seen:
             continue
         seen.add(ch)
         result.append((ch, line, len(result)))
-    return result
 
 
 def collect_md_blocks(abs_path: str) -> list[tuple[str, str, int]]:
-    """读 md 文件按行遍历，返回 ``(content_hash, content, block_index)`` 列表。
+    """读 md 文件按块结构解析，返回 ``(content_hash, content, block_index)`` 列表。
 
-    与 ``LocalWatchdog._collect_new_contents`` 同口径（逐行遍历、跳过标题行/空行、正文行
-    算 sha256），区别仅在多带 ``block_index``（正文行从 0 起的序号）——供
+    与 :func:`collect_blocks_from_text` 同口径（按空行切块、跳过块首标题行、正文行算
+    sha256、保序去重），区别仅在多带 ``block_index``（正文行从 0 起的序号）——供
     ``_supersede_shadow_for_md`` 做跨块对齐（D4.1：替换前后块数一致时按 block_index 一一
     继承对应旧 unit 的元数据）。
 
-    保序、去重（同看门狗：同一 content_hash 只保留首条，后续重复正文行跳过）——与看门狗
-    ``_collect_new_contents`` 的 ``seen`` 集合去重一致，避免同文件内重复正文行被当作多条
-    新块重复建 unit。
+    保序、去重（同一 content_hash 只保留首条，后续重复正文行跳过），避免同文件内重复
+    正文行被当作多条新块重复建 unit。
 
     文件不存在视为「无正文块」返回空列表——调用方（看门狗 deleted=True / DomainStore
     容错）按空列表 diff 出「全删」语义，与看门狗 ``deleted=True`` 分支一致。需要区分

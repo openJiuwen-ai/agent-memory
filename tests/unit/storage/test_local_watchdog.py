@@ -5,7 +5,7 @@
 
 - md 路径反推 project/category 错（如 USER.md 误判进 project 子目录）→ 新建 unit 落错
   归属坐标，召回按 project 隔离丢失。
-- ``_collect_new_contents`` 未跳过标题行（``#``）/空行 → 把标题当正文建幽灵 unit、空行
+- ``collect_blocks_from_text`` 未跳过块首标题行 / 空行 → 把标题当正文建幽灵 unit、空行
   参与 hash diff 制造假漂移。
 - 整文件重建（而非 unit 粒度）会丢失其他 unit 的 id，破坏 supersedes 版本链（F07 §12）。
 
@@ -124,12 +124,12 @@ def test_collect_new_contents_skips_titles_blanks_and_dedups(tmp_path) -> None:
     md.parent.mkdir(parents=True)
     md.write_text("# title\nhello\n\n# title2\nhello\n\nworld\n", encoding="utf-8")
 
-    # collect_md_blocks 返回三元组 (hash, content, block_index)，取前两元保持与原
-    # _collect_new_contents 返回形态一致；口径（跳过标题/空行、去重、保序）完全不变。
+    # collect_md_blocks 返回三元组 (hash, content, block_index)，取前两元；口径（按块
+    # 结构跳过块首标题行/空行、去重、保序）——# 开头正文行不再被当标题跳过。
     result = collect_md_blocks(str(md))
     pairs = [(h, c) for h, c, _ in result]
 
-    # 标题行跳过；空行跳过；重复 content 去重；保序
+    # 块首标题行跳过；空行跳过；重复 content 去重；保序
     assert [content for _, content in pairs] == ["hello", "world"]
     assert [h for h, _ in pairs] == [content_hash("hello"), content_hash("world")]
 
