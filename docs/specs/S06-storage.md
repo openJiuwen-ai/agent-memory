@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -111,8 +111,8 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     `DomainStore.get`/`list` 与 `load_units`/`list_units` helper，`KVStore.list`
     本身也按 `MEMORY_KEY_PREFIX` 扫描。这是正排作为唯一需要**两向投影**的索引形式的固有代价：
     实现分居两层，靠这对共享契约对齐。
-29. **命名数据面共享物理 Store 集**：`manager.domain_store(name)` 的多套命名数据面差异仅在
-    检索 profile（`preferred_retrieval_pipeline` + recallers 组合）；同名多次调用返回同一实例。
+29. **命名数据面使用受管 Store 集**：`manager.domain_store(name)` 的多套命名数据面可分别选择
+    受管真源 KV 端口与检索 profile（`preferred_retrieval_pipeline` + recallers 组合）；同名多次调用返回同一实例。
     跨 Store 集的整栈切换走 F02 Routing（`store_manager.active`），不属命名数据面语义。
 30. **所有 XXXStore 获取经 StoreManager**：消费者不直接调 Store Producer 解析具名后端
     （F07 起 `EntityStore` 一并纳入——写入侧 `HybridIndexBuilder` 与召回侧 `KeywordRecaller`
@@ -139,6 +139,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 |---|---|---|
 | 端口 | `kv/vector/fulltext/graph/fusion/fs/entity/markdown/shadow_index(name="default")` 及 `has_*(name="default")` | 暴露经过统一授权代理的完整 Store 契约；单一入口（无 property、无 `*_port` 后缀）；未声明端口抛 `UnsupportedStorageCapabilityError` |
 | 数据面 | `domain_store(name="default")` / `has_domain_store(name="default")` | 取命名数据面实例；实现需缓存（同名多次返回同一实例） |
+| KV 真源领域门面 | `domain_store_for_kv(name="default") -> DomainStore` | 绑定指定受管 KV 端口及 MemoryUnit codec，保留领域与端口授权；不继承默认数据面的 KV 选择、文档模式或召回配置，不注册/替换具名数据面，不承诺实例缓存；未实现时抛 UnsupportedStorageCapabilityError，公共基类不选择具体数据面实现 |
 | 能力 | `capabilities()` | 返回不可变标准端口能力集合 |
 | 横切 | `security` / `health()` | 统一授权入口并聚合全部命名端口的健康检查 |
 

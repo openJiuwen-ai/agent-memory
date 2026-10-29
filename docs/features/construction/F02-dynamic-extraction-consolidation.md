@@ -106,3 +106,26 @@ SUPERSEDE/NOOP 判定和写入动作长期藏在 Evolver 内，职责上属于�
 - 旧 pipeline profile 未声明 evolver 时默认走 `orchestrating`（legacy）；改为 `dynamic`
   才启用动态四步编排。
 - yml `prompts` 段默认为空骨架，具体 prompt 文本需用户在配置中覆盖。
+
+
+## 批内替代关系与时间结果
+
+### 决策
+
+普通批量去重与动态巩固落盘共享同一决策执行逻辑，每批显式记录原目标完整 Scope + ID
+到后继完整 Scope + ID 的替代关系。跨 session/agent 的合法后继仍可被后到候选追踪；
+映射只在本批存活，不提供跨请求事务或持久化版本链能力。
+未来生效的替代若只修改旧记录截止时间、尚未将其归档，返回 updated_ids；已归档则返回
+superseded_ids，避免发生写入但结果遗漏。
+
+### 拒绝的方案
+
+不把后继查找和 created_units 快照替换统一改为 same_scope。前者涉及替代关系，后者
+涉及具体记录身份；不同 session/agent 可以存在同 ID 记录，宽范围匹配会误替换快照。
+不将映射存入 Evolver 实例或业务 metadata，避免跨请求状态污染或新增持久化协议。
+
+### 验证与兼容
+
+覆盖普通/动态批次、跨 session/agent、不同 Scope 同 ID、旧候选反向失效和未来边界上报。
+自定义 yml prompts.extract 需按每个来源旁的 observation_date 解析日期；旧模板若将
+首条日期视为全批日期，应更新该指令。用户模板不自动改写，也不恢复可能混用日期的批级头部。

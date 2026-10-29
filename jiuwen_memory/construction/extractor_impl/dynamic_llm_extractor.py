@@ -9,8 +9,6 @@ metadata 只写 prompt 的 **key**（引用 yml ``prompts.extract`` 段的命名
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
     get_logger,
@@ -24,7 +22,6 @@ from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.prompt_guard import (
     CONTENT_MAX_UNIT_CHARS,
     chunk_unit,
-    truncate_unit_content,
 )
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from jiuwen_memory.construction.prompt_strategy import (
@@ -41,6 +38,7 @@ from .llm_extractor import (
     ExtractorImpl,
     _format_context_block,
 )
+from .observation_time import observation_sources
 
 logger = get_logger(__name__)
 
@@ -186,24 +184,10 @@ class DynamicLLMExtractor(Extractor):
         prompt = self._prompts.get(PHASE_EXTRACT, prompt_key)
         if prompt is None:
             prompt = prompt_key
-        observation_date = next(
-            (
-                str(unit.system_metadata.get("observation_date", "")).strip()
-                for unit in units
-                if unit.system_metadata.get("observation_date")
-            ),
-            datetime.now(UTC).isoformat(),
-        )
-        source_text = "\n".join(
-            _SOURCE_PREFIX.format(
-                unit_id=unit.id,
-                unit_content=truncate_unit_content(unit.content, limit=CONTENT_MAX_UNIT_CHARS),
-            )
-            for unit in units
-        )
+        source_text = observation_sources(units, _SOURCE_PREFIX)
         context_block = _format_context_block(context)
         user_text = (
-            f"strategy: {strategy}\nobservation_date: {observation_date}\n\n{source_text}"
+            f"strategy: {strategy}\n{source_text}"
             + (f"\n{context_block}" if context_block else "")
         )
         response = self._helper.call_llm_with_retry(
