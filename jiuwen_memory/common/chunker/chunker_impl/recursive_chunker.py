@@ -169,8 +169,16 @@ class RecursiveChunker(Chunker):
         偏移量始终相对于原始输入 text，通过逐层累加修正。
         """
         if level >= len(separator_levels):
-            # 最底层：无法再按分隔符切，直接返回整段
-            return [_Split(text=text, start=0, end=len(text))]
+            # 最底层：无法再按分隔符切，按 chunk_size 硬截断。
+            # 否则一段没有任何分隔符的长文本（压缩 JSON、base64、无标点长句）
+            # 会整段成为一个超长 chunk，突破 embedding 窗口。
+            limit = self._chunk_size
+            if limit <= 0:
+                return [_Split(text=text, start=0, end=len(text))]
+            return [
+                _Split(text=text[i : i + limit], start=i, end=min(i + limit, len(text)))
+                for i in range(0, len(text), limit)
+            ]
 
         # 找到当前层级中第一个出现在文本里的分隔符
         separators = separator_levels[level]
@@ -269,19 +277,25 @@ class RecursiveChunker(Chunker):
             if current_len + s_len > self._chunk_size and current:
                 groups.append(current)
 
-                # overlap 回溯：从当前组尾部取 overlap_chars 的片段作为下一组开头
+                # overlap 回溯：从当前组尾部取不超过 overlap_chars 的完整片段。
+                # 单个片段本身就超过 overlap 预算时不再纳入（overlap 是尽力而为，
+                # chunk_size 才是上限）；overlap_chars=0 表示不重叠。
                 overlap_splits: list[_Split] = []
                 overlap_chars = 0
                 for prev_s in reversed(current):
                     prev_len = len(prev_s.text)
+                    if overlap_chars + prev_len > self._overlap:
+                        break
                     overlap_splits.insert(0, prev_s)
                     overlap_chars += prev_len
-                    if overlap_chars >= self._overlap:
-                        break
 
-                # 下一组以 overlap 片段开头
+                # 下一组以 overlap 片段开头；若 overlap 会让新 chunk 超过
+                # chunk_size，则放弃 overlap，保证 chunk 不超限。
                 current = overlap_splits
                 current_len = overlap_chars
+                if current_len + s_len > self._chunk_size:
+                    current = []
+                    current_len = 0
 
             # 加入当前片段
             current.append(s)
