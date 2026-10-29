@@ -133,3 +133,24 @@ def test_load_layer_rejects_non_object_top_level(tmp_path, text) -> None:
     """顶层非对象的配置层直接报错，不再静默跳过（调用方以为配置生效了）。"""
     with pytest.raises(ValidationError, match="top level"):
         config_loader.load_layer(_write(tmp_path, text, name="config.json"))
+
+
+def test_load_layer_missing_file_raises_the_whitelisted_error(tmp_path) -> None:
+    """A missing config file is a surface error, not a FileNotFoundError traceback.
+
+    HTTP/MCP callers only translate ValidationError; letting OSError escape the
+    loader printed a traceback and exited 1 instead of one error line + exit 2.
+    """
+    missing = str(tmp_path / "missing.yml")
+
+    with pytest.raises(ValidationError, match="could not be read"):
+        config_loader.load_layer(missing)
+
+
+def test_load_layer_non_utf8_file_raises_the_whitelisted_error(tmp_path) -> None:
+    """An undecodable layer must not leak UnicodeDecodeError out of the loader."""
+    path = tmp_path / "bad.yml"
+    path.write_bytes(b"\xff\xfe\x00")
+
+    with pytest.raises(ValidationError, match="could not be read|not valid UTF-8"):
+        config_loader.load_layer(str(path))
