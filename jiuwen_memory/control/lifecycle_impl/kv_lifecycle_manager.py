@@ -6,9 +6,16 @@ forgotten），不物理删除。``sweep`` 是**纯计算**——扫描到期（
 的 active 单元和 superseded 旧版本，返回待执行的
 :class:`~control.lifecycle.SweepTransition`，不改真源、不触碰检索索引；索引清理与
 真源回写由 Engine/Governance 编排执行（见 ``MemoryEngine.sweep_expired``）。
-真源读写直接经注入的 :class:`~storage.kv.KVStore` 端口（``scopes()`` 跨 scope 扫描
-+ ``load_units``/``list_units`` 读 + ``memory_key``/``dumps`` 回写，同
-``ForwardIndexBuilder`` 模式——回写即正排本体，无检索索引需要拆分）。
+
+真源读写数据源**文档分流**：注入 :class:`~storage.domain_store.DomainStore` 后，
+``transition``/``sweep`` 按 ``domain_store.should_write_document()`` 分两路——
+文档模式（write_document=true）经 DomainStore 走 ``md``+``shadow`` 真源（
+``get``/``list`` 读 + ``update`` 回写 lifecycle，content 不变 → shadow 只覆写
+unit_json + lifecycle 投影列，不碰 md）；非文档模式维持经注入的
+:class:`~storage.kv.KVStore` 端口（``scopes()`` 跨 scope 扫描 + ``load_units``/
+``list_units`` 读 + ``memory_key``/``dumps`` 回写，同 ``ForwardIndexBuilder``
+模式——回写即正排本体，无检索索引需要拆分）。``domain_store=None`` 时退化为纯 KV
+实现（向后兼容直构与测试）。
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from jiuwen_memory.control.lifecycle import (
     SweepTransition,
 )
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
+from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore, list_units, load_units
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
@@ -105,11 +113,17 @@ def _sweep_target(
 
 
 class KVLifecycleManager(LifecycleManager):
-    """在 kv 真源上做非破坏式状态流转与到期清扫。"""
+    """在真源上做非破坏式状态流转与到期清扫（文档分流，见模块 docstring）。"""
 
-    def __init__(self, kv: KVStore, policy: PolicyManager | None = None) -> None:
+    def __init__(
+        self,
+        kv: KVStore,
+        policy: PolicyManager | None = None,
+        domain_store: DomainStore | None = None,
+    ) -> None:
         self._kv = kv
         self._policy = policy
+        self._domain_store = domain_store
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.LIFECYCLE
@@ -118,14 +132,22 @@ class KVLifecycleManager(LifecycleManager):
         return None
 
     def _write_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """回写正排本体（ForwardIndexBuilder 模式）：key=memory_key，value=dumps。"""
+        """回写正排本体：文档模式经 DomainStore（content 不变 → shadow 只覆写
+        lifecycle 投影列），非文档模式 key=memory_key、value=dumps 回写 KV。"""
+        if self._domain_store is not None and self._domain_store.should_write_document():
+            self._domain_store.update(scope, units)
+            return
         for unit in units:
             self._kv.update(scope, memory_key(unit.id), dumps(unit))
 
     def transition(
         self, scope: Scope, unit_ids: list[str], target: LifecycleState
     ) -> None:
-        matches = load_units(self._kv, scope, unit_ids)
+        # 文档模式：DomainStore.get 读（文档分流到 shadow），非文档：KV load_units。
+        if self._domain_store is not None and self._domain_store.should_write_document():
+            matches = self._domain_store.get(scope, unit_ids)
+        else:
+            matches = load_units(self._kv, scope, unit_ids)
         for unit in matches:
             _ensure_transition_allowed(unit.lifecycle, target, unit.id)
             unit.lifecycle = target
@@ -163,8 +185,19 @@ class KVLifecycleManager(LifecycleManager):
     def sweep(self) -> list[SweepTransition]:
         now = datetime.now(UTC)
         transitions: list[SweepTransition] = []
-        for scope in self._kv.scopes():
-            units, _ = list_units(self._kv, scope, limit=1_000_000)
+        # 文档模式：DomainStore.scopes() + DomainStore.list 读全量（文档分流到 shadow，
+        # 扫描含 SUPERSEDED 旧版——list 不筛 lifecycle）；非文档：KV scopes + list_units。
+        if self._domain_store is not None and self._domain_store.should_write_document():
+            scope_units: list[tuple[Scope, list[MemoryUnit]]] = [
+                (scope, self._domain_store.list(scope, limit=1_000_000).items)
+                for scope in self._domain_store.scopes()
+            ]
+        else:
+            scope_units = [
+                (scope, list_units(self._kv, scope, limit=1_000_000)[0])
+                for scope in self._kv.scopes()
+            ]
+        for scope, units in scope_units:
             for unit in units:
                 target = _sweep_target(unit, now, self._policy)
                 if target is None:
@@ -188,7 +221,9 @@ class KVLifecycleManager(LifecycleManager):
 
 @LifecycleProducer.register("kv")
 def _build(config):
+    manager = StoreManagerProducer.resolve(config)
     return KVLifecycleManager(
-        StoreManagerProducer.resolve(config).kv(resolve_name(config, "kv_store")),
+        manager.kv(resolve_name(config, "kv_store")),
         PolicyProducer.dep(config, default="dict"),
+        domain_store=manager.domain_store(resolve_name(config, "domain_store")),
     )
