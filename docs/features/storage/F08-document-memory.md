@@ -181,7 +181,7 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **关键机制**：
 
-- **unit 粒度增量 diff**（非 lite 的文件级全量重建）：`shadow.list_units_by_md(scope, md_filename)` 拿旧 `(unit_id, content_hash)` → 读 md 按块解析算新 hash → diff 出新增/删除集合只动变化的 unit。整文件重建会丢其他 unit 的 id（破坏 supersedes 链）。**当前是全量对账**（`list_units_by_md` 不限 lifecycle，superseded/archived/forgotten 历史行一并参与）——superseded 旧版的 content 已被 `edit_md_file` 从 md 换走，看门狗下轮对账会把其 hash 判为「用户手删」而二次清除该历史行、致版本链/as_of 断裂（见「已知遗留」）。「只取 active 行」的对账口径（`list_units_by_md` 加 lifecycle 参数 + 看门狗传 active）尚未实现，留待另行修复。
+- **unit 粒度增量 diff**（非 lite 的文件级全量重建）：`shadow.list_units_by_md(scope, md_filename)` 拿旧  **active** `(unit_id, content_hash)` → 读 md 按块解析算新 hash → diff 出新增/删除集合只动变化的 unit。整文件重建会丢其他 unit 的 id（破坏 supersedes 链）。**当前是全量对账**（`list_units_by_md` 不限 lifecycle，superseded/archived/forgotten 历史行一并参与）——superseded 旧版的 content 已被 `edit_md_file` 从 md 换走，看门狗下轮对账会把其 hash 判为「用户手删」而二次清除该历史行、致版本链/as_of 断裂
 - **按块结构解析**（`collect_blocks_from_text` 统一口径）：块间空行切块、每块首行（标题）跳过、正文行算 sha256，正文行**不判 `#` 前缀**——`#1 里程碑` 等 `#` 开头的合法正文与标题行文本不可区分，靠块结构区分（标题是块首行、正文在块内首行之后），否则这类正文被误当标题跳过、同文件任意手改时被连坐删除（issue #264 的 `#1 里程碑` 连坐删除场景）。前提即决策四的单行约束。**首块首行不总落在块边界**：`read_md_file` 传 `line_range` 切片，切片首行可能是上一块以 `#` 开头的正文行——`collect_blocks_from_text` 的 ``first_line_is_title`` 参数供切片调用方声明首行角色（`read_md_file` 传 `False`：宁可把可能是标题的首行多算成正文、hash 反查落空是空集无害，也不漏算正文行致 unit 被误判「待删」）；首块之后的块落在空行切出的真实块边界，首行恢复按标题处理。
 - **debounce 按文件分键**：`_watch_timers` 按 md_filename 各持一个 timer——单一 timer 时 B 文件的事件会 cancel 掉 A 文件待执行的同步，而 A 无新事件不会再补（纯事件驱动），改动永久丢失。
 - **初始宽限期**：启动后延迟 1s 置 `watcher_initialized`，避开 Observer 刚起时对存量文件的初始扫描风暴（存量 md 是写入流程产物，不是「用户手改」）。
