@@ -200,6 +200,7 @@ def _normalize_clip(item: dict[str, Any]) -> dict[str, Any]:
         "detailed_caption": str(item.get("detailed_caption", "")).strip(),
         "asr": str(item.get("ASR", "")).strip(),
         "environment": str(item.get("environment", "")).strip(),
+        "inferred_intent": str(item.get("inferred_intent", "")).strip(),
     }
 
 
