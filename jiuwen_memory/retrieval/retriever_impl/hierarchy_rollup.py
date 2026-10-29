@@ -33,6 +33,7 @@ class RollupRequest:
     candidates: list[ScoredMemoryUnit]
     max_hops: int = MAX_ROLLUP_HOPS
     node_limit: int = MAX_ROLLUP_NODES
+    child_depth: int = 0
 
 
 @dataclass
@@ -44,6 +45,7 @@ class RollupResult:
     visited_count: int = 0
     admitted_count: int = 0
     boosted_count: int = 0
+    recalled_parents: dict[NodeKey, NodeKey] = field(default_factory=dict)
 
     def exclude(self, code: str) -> None:
         """单请求按首次出现顺序去重诊断码。"""
@@ -94,10 +96,10 @@ class _Rollup:
                 self.result.exclude("missing_parent")
         return self.cache[key]
 
-    def ancestor(self, source: MemoryUnit) -> MemoryUnit | None:
+    def ancestor(self, source: MemoryUnit) -> tuple[MemoryUnit, int] | None:
         current = source
         seen = {node_key(source)}
-        for _ in range(self.request.max_hops):
+        for depth in range(1, self.request.max_hops + 1):
             reference = current.hierarchy
             if not reference.parent_id:
                 return None
@@ -127,7 +129,7 @@ class _Rollup:
                 return None
             target_role = self.request.target_role
             if target_role is None or parent.hierarchy.role is target_role:
-                return parent
+                return parent, depth
             seen.add(key)
             current = parent
         if current.hierarchy.parent_id:
@@ -138,10 +140,14 @@ class _Rollup:
         role = self.request.target_role
         if role is not None and source.unit.hierarchy.role is role:
             return
-        parent = self.ancestor(source.unit)
-        if parent is None:
+        ancestor = self.ancestor(source.unit)
+        if ancestor is None:
             return
+        parent, depth = ancestor
         key = node_key(parent)
+        if depth <= self.request.child_depth:
+            # 祖先链已校验可见性、双向引用和时间覆盖，只复用请求深度内的实际命中。
+            self.result.recalled_parents[node_key(source.unit)] = key
         previous = self.selected.get(key)
         if previous is None:
             # 不把子命中的通道 evidence 冒充父自身的索引证据。
@@ -160,6 +166,10 @@ def rollup_candidates(domain: DomainStore, request: RollupRequest) -> RollupResu
         raise ValidationError("上卷 max_hops 必须是正整数")
     if type(request.node_limit) is not int or request.node_limit < 0:
         raise ValidationError("上卷 node_limit 必须是非负整数")
+    if isinstance(request.child_depth, bool) or not isinstance(request.child_depth, int):
+        raise ValidationError("上卷 child_depth 必须是非负整数，不能是 bool")
+    if request.child_depth < 0:
+        raise ValidationError("上卷 child_depth 必须是非负整数，不能是 bool")
     result = RollupResult()
     state = _Rollup(domain, request, result)
     sources: list[ScoredMemoryUnit] = []

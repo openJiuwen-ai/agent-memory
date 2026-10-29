@@ -16,8 +16,6 @@ from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
 
-from jiuwen_memory.common.embedder import DeferredEmbedder
-from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.errors import (
     BackendError,
     UnsupportedCapabilityError,
@@ -53,6 +51,7 @@ from jiuwen_memory.retrieval.expansion import (
     ExpansionSource,
     complete_expansion,
     prepare_expansion,
+    uses_recalled_children,
 )
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
@@ -73,7 +72,11 @@ from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
 from .hierarchy_rollup import RollupRequest, rollup_candidates
-from .predicate_builder import build_hierarchy_filters, build_system_filters
+from .predicate_builder import (
+    build_hierarchy_filters,
+    build_rollup_role_filters,
+    build_system_filters,
+)
 from .unit_reader import UnitReader
 
 logger = get_logger(__name__)
@@ -131,7 +134,6 @@ class PipelineRetriever(Retriever):
         self._domain = domain_store
         self._schema_temporal_extension = schema_temporal_extension
         self._expander: Expander | None = None
-        self._embedder: Embedder | None = None
         # 文档模式标志：ShadowRecaller.channel()=DOCUMENT，但 parser 产出的
         # parsed.channels 默认含 [KEYWORD, GRAPH]（+VECTOR）不含 DOCUMENT。
         # _domain.recall 用 `r.channel() in channels` 过滤 recaller——DOCUMENT 不在
@@ -176,10 +178,6 @@ class PipelineRetriever(Retriever):
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
 
-    def bind_embedder(self, embedder: Embedder | None) -> None:
-        """装配共享子排序依赖；不在构造参数中再增加一个模型配置轴。"""
-        self._embedder = embedder
-
     def bind_expander(self, expander: Expander) -> None:
         """装配阶段绑定同源的展开算子，不引入第二份存储配置。"""
         self._expander = expander
@@ -191,6 +189,7 @@ class PipelineRetriever(Retriever):
         hierarchy = HierarchyQuery.from_query(query)
         validate_expand_depth(query.expand_depth, hierarchy.hierarchy_kind)
         validate_rollup(query.rollup, hierarchy.hierarchy_kind)
+        reuse_children = uses_recalled_children(query)
         if query.expand_depth and not isinstance(query.disclosure, DisclosureLevel):
             raise ValidationError("展开 disclosure 必须是 DisclosureLevel")
         if query.expand_depth and self._expander is None:
@@ -303,7 +302,9 @@ class PipelineRetriever(Retriever):
         user_filters = parsed.scalar_filters  # parser 已 normalize 的用户表达式（供 §6 复核）
         if query.rollup:
             parser_filters = [] if user_filters is None else [user_filters]
-            user_filters = and_merge(query.filters, parser_filters)
+            user_filters = and_merge(
+                query.filters, [*parser_filters, *build_rollup_role_filters(hierarchy)],
+            )
         parsed.scalar_filters = and_merge(user_filters, sys_filters)
 
         # 通道选择：调用级 query.channels 覆盖 parser 建议；显式空列表不是“全部”。
@@ -415,6 +416,7 @@ class PipelineRetriever(Retriever):
 
         # Fuser 后再限制精排预算；Storage.retrieve 已在入口内应用同一个上限。
         survivors = list(fused[:budget_n])
+        recalled_candidates = list(survivors) if reuse_children else []
         recheck_dropped = 0
         record_step("recheck", 0.0, n=len(survivors), detail={"dropped": "0"})
         if recheck_dropped:
@@ -469,11 +471,13 @@ class PipelineRetriever(Retriever):
             )
 
         # [7b] 上卷放在最终分数生成后、阈值/top_k 前，不被后续精排覆盖。
+        rolled = None
         if query.rollup:
             t0 = perf_counter()
             rolled = rollup_candidates(self._domain, RollupRequest(
                 scope=scope, query=parsed, target_role=hierarchy.hierarchy_role,
                 candidates=survivors,
+                child_depth=query.expand_depth if reuse_children else 0,
             ))
             survivors = rolled.candidates
             errors = list(errors)
@@ -549,9 +553,10 @@ class PipelineRetriever(Retriever):
                 ),
                 expander=self._expander,
                 discloser=self._discloser,
-                embedder=self._embedder,
             )
             prepared = prepare_expansion(result, source, final)
+            if reuse_children and rolled is not None:
+                prepared.keep_recalled(recalled_candidates, rolled.recalled_parents)
             if query.defer_expansion:
                 return prepared
             result = complete_expansion(result, [prepared], query)
@@ -622,11 +627,6 @@ def _build(config):
         ),
     )
     retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))
-    retriever.bind_embedder(
-        EmbedderProducer.dep(config)
-        if config.params.get("embedder") is not None
-        else DeferredEmbedder(EmbedderProducer.bind_named("default", config.ctx))
-    )
     return retriever
 
 
