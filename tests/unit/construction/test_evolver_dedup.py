@@ -32,12 +32,13 @@ from jiuwen_memory.construction.abstractor import Abstractor
 from jiuwen_memory.construction.associator import Associator
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.evolver_impl.conflict_consolidator import ConsolidatePlan
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.graph import GraphStore
-from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.kv import KVStore, load_units
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -350,11 +351,10 @@ def _make_evolver(
         "tier_filter": dedup_kwargs.get("dedup_tier_filter", True),
         "scope_filter": dedup_kwargs.get("dedup_scope_filter", True),
     }
-    evolver_kwargs = {
-        k: dedup_kwargs[k]
-        for k in ("dedup_medium_similarity", "dedup_high_similarity")
-        if k in dedup_kwargs
-    }
+    evolver_kwargs: dict[str, object] = {}
+    for key in ("dedup_medium_similarity", "dedup_high_similarity", "conflict_consolidator"):
+        if key in dedup_kwargs:
+            evolver_kwargs[key] = dedup_kwargs[key]
     storage = make_storage(kv=kv, vector=vector_store, graph=NoopGraphStore())
     dedup = VectorDedup(storage=storage, embedder=embedder, **recaller_kwargs)
     return OrchestratingEvolver(
@@ -408,6 +408,158 @@ def _index_unit(
         metadata={"unit_id": unit.id, "tier": unit.tier.value, "seq": "0"},
     )
     vector_store.insert(unit.scope, [record])
+
+
+# ---------------------------------------------------------------------------
+# CONFLICT_CONSOLIDATE 落盘层（R1 / R2 / R3）
+# ---------------------------------------------------------------------------
+
+
+class _FakeConsolidator:
+    """直接返回固定计划的假 consolidator（重载语义复用真源 KV）。"""
+
+    def __init__(self, plan: ConsolidatePlan, kv) -> None:
+        self._plan = plan
+        self._kv = kv
+
+    def plan(self, seeds):  # noqa: ARG002
+        return self._plan
+
+    def load_fresh(self, scope, unit_ids):
+        return load_units(self._kv, scope, unit_ids)
+
+
+def _schema_property(
+    unit_id: str,
+    content: str,
+    *,
+    entity_id: str = "E-jon",
+    prop: str = "occupation",
+    lifecycle: LifecycleState = LifecycleState.ACTIVE,
+) -> MemoryUnit:
+    return MemoryUnit(
+        id=unit_id,
+        scope=_DEFAULT_SCOPE,
+        tier=MemoryTier.SEMANTIC,
+        segments=[Segment(content=content, source=Modality.TEXT)],
+        lifecycle=lifecycle,
+        temporal=Temporal(),
+        system_metadata={
+            "extraction_mode": "schema",
+            "schema_entity_id": entity_id,
+            "schema_entity_name": "Jon",
+            "schema_entity_type": "person",
+            "schema_property_name": prop,
+            "schema_property_operation": "set",
+        },
+    )
+
+
+class TestConflictConsolidateApply:
+    """验证 `_evolve_conflict_consolidate` 的落盘与标记语义。"""
+
+    @staticmethod
+    def test_additions_are_persisted_without_dedup():
+        """产物（create/merge）直接落盘，不过相似去重——同内容也不会被 NOOP。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+
+        seed = _schema_property("b1", "Jon is a banker")
+        _index_unit(seed, stores["kv"], stores["vector"], embedder)
+
+        # 产物与 seed 内容完全相同：若走 dedup 会被高相似 NOOP；直接落盘应保留
+        prod = _schema_property("p1", "Jon is a banker")
+        plan = ConsolidatePlan(run_id="run-1", additions=[prod], processed_unit_ids={"b1"})
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            _MockLLM(),
+            conflict_consolidator=_FakeConsolidator(plan, stores["kv"]),
+        )
+
+        result = evolver.evolve([seed], EvolveMode.CONFLICT_CONSOLIDATE)
+
+        assert "p1" in result.created_ids
+        assert loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("p1"))) is not None
+        # seed 本体内容不被产物影响，只追加 done 标记
+        stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("b1")))
+        assert stored.content == "Jon is a banker"
+        assert stored.system_metadata.get("consolidation_done_at")
+
+    @staticmethod
+    def test_retired_seed_is_not_marked():
+        """被退役的 seed 不得打 done 标记（P7 按 retired_ids 排除）。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+
+        seed = _schema_property("b1", "Jon is a banker")
+        _index_unit(seed, stores["kv"], stores["vector"], embedder)
+
+        plan = ConsolidatePlan(run_id="run-1", retire=[seed], processed_unit_ids={"b1"})
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            _MockLLM(),
+            conflict_consolidator=_FakeConsolidator(plan, stores["kv"]),
+        )
+
+        evolver.evolve([seed], EvolveMode.CONFLICT_CONSOLIDATE)
+
+        stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("b1")))
+        assert stored.lifecycle is LifecycleState.SUPERSEDED
+        assert not stored.system_metadata.get("consolidation_done_at")
+
+    @staticmethod
+    def test_failed_cluster_not_marked():
+        """R2：LLM 失败的簇（processed_unit_ids 为空）不得打 done 标记。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+
+        seed = _schema_property("b1", "Jon is a banker")
+        _index_unit(seed, stores["kv"], stores["vector"], embedder)
+
+        # 模拟 plan 失败：无任何产出、processed_unit_ids 为空
+        plan = ConsolidatePlan(run_id="run-x")
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            _MockLLM(),
+            conflict_consolidator=_FakeConsolidator(plan, stores["kv"]),
+        )
+
+        evolver.evolve([seed], EvolveMode.CONFLICT_CONSOLIDATE)
+
+        stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("b1")))
+        assert not stored.system_metadata.get("consolidation_done_at")
+
+    @staticmethod
+    def test_expanded_cluster_member_is_marked():
+        """簇内被展开拉入、但不在 seeds 里的老成员也要打标记，否则簇永不 settled。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+
+        seed = _schema_property("b2", "Jon is a teacher")
+        old = _schema_property("b1", "Jon is a banker")
+        for unit in (seed, old):
+            _index_unit(unit, stores["kv"], stores["vector"], embedder)
+
+        plan = ConsolidatePlan(run_id="run-1", processed_unit_ids={"b1", "b2"})
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            _MockLLM(),
+            conflict_consolidator=_FakeConsolidator(plan, stores["kv"]),
+        )
+
+        evolver.evolve([seed], EvolveMode.CONFLICT_CONSOLIDATE)
+
+        for unit_id in ("b1", "b2"):
+            stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(unit_id)))
+            assert stored.system_metadata.get("consolidation_done_at"), unit_id
 
 
 # ---------------------------------------------------------------------------

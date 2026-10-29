@@ -53,6 +53,8 @@ _DEFAULT_BATCH_SIZE = 8
 _DEFAULT_VALIDATION_ATTEMPTS = 3
 _DEFAULT_MAX_ENTITIES = 200
 _DEFAULT_MAX_PROPERTIES = 15
+# 单次抽取 LLM 调用的输出 token 上限。
+_DEFAULT_EXTRACT_MAX_TOKENS = 16384
 _NAME_SUFFIX_RE = re.compile(r"[（(].*$")
 _PROPERTY_TIME_TOKEN_RE = re.compile(
     r"(?<![\d-])"
@@ -355,6 +357,7 @@ class EntitySchemaExtractor(Extractor):
         max_properties_per_entity: int = _DEFAULT_MAX_PROPERTIES,
         max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
+        extract_max_tokens: int = _DEFAULT_EXTRACT_MAX_TOKENS,
     ) -> None:
         if batch_size < 1:
             raise ValueError("schema batch_size 必须 >= 1")
@@ -364,6 +367,8 @@ class EntitySchemaExtractor(Extractor):
             raise ValueError("max_entities_per_conversation 必须 >= 1")
         if max_properties_per_entity < 1:
             raise ValueError("max_properties_per_entity 必须 >= 1")
+        if extract_max_tokens < 1:
+            raise ValueError("schema extract_max_tokens 必须 >= 1")
         self._llm = llm
         self._catalog = (
             schema
@@ -373,6 +378,7 @@ class EntitySchemaExtractor(Extractor):
         self._enable_schema_selection = enable_schema_selection
         self._batch_size = batch_size
         self._validation_attempts = validation_attempts
+        self._extract_max_tokens = extract_max_tokens
         self._normalizer = SchemaExtractionNormalizer(
             self._catalog,
             max_entities_per_conversation=max_entities_per_conversation,
@@ -524,7 +530,10 @@ class EntitySchemaExtractor(Extractor):
         last_response = ""
         best_candidates: list[SchemaPropertyCandidate] = []
         for _attempt in range(self._validation_attempts):
-            response = self._helper.call_llm_with_retry([ChatMessage(role="user", content=prompt)])
+            response = self._helper.call_llm_with_retry(
+                [ChatMessage(role="user", content=prompt)],
+                max_tokens=self._extract_max_tokens,
+            )
             last_response = response
             try:
                 raw_memory = _parse_json_object(response)
@@ -1548,4 +1557,7 @@ def _build(config):
         ),
         max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
+        extract_max_tokens=int(
+            config.get("schema_extract_max_tokens", _DEFAULT_EXTRACT_MAX_TOKENS)
+        ),
     )

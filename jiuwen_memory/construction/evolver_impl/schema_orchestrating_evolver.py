@@ -23,6 +23,7 @@ from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.common import merge_unit_tags
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
+from jiuwen_memory.construction.evolver_impl.conflict_consolidator import ConflictConsolidator
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
     _resolve_message_store,
@@ -72,6 +73,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         layer_annotator: LayerAnnotator | None = None,
         schema_entity_resolver: SchemaEntityResolver | None = None,
         schema_property_merge_planner: SchemaPropertyMergePlanner | None = None,
+        conflict_consolidator: ConflictConsolidator | None = None,
         *,
         hierarchy_composer: HierarchyComposer | None = None,
         kv_name: str = "default",
@@ -88,6 +90,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             dedup=dedup,
             llm=llm,
             layer_annotator=layer_annotator,
+            conflict_consolidator=conflict_consolidator,
             hierarchy_composer=hierarchy_composer,
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
@@ -335,6 +338,11 @@ def _build(config):
         merge_enabled=as_bool(config.get("use_property_merge"), default=False),
     )
     hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=index_default)
+    conflict_consolidator = ConflictConsolidator(
+        kv=kv,
+        llm=llm,
+        min_cluster_size=int(config.get("conflict_consolidate_min_cluster_size", 2)),
+    )
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -350,6 +358,7 @@ def _build(config):
         layer_annotator=_optional_layer_annotator(config),
         schema_entity_resolver=resolver,
         schema_property_merge_planner=property_merge,
+        conflict_consolidator=conflict_consolidator,
         kv_name=kv_name,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
