@@ -136,7 +136,11 @@ class DefaultHierarchyComposer(HierarchyComposer):
                 [*batch.parents, *batch.children, *candidate.incremental.supporting_units],
                 allow_cross_user=self.allow_cross_user,
             )
-        result = self._persist(batch.parents, batch.children, [])
+            admission = request.incremental.write_admission
+            if admission is not None:
+                for group in _by_scope([*batch.parents, *batch.children]):
+                    admission(group[0].scope)
+        result = self._persist(batch.parents, batch.children, [], admission)
         result.deferred_child_count = len(candidate.leaves) - len(batch.children)
         result.pending_before = batch.pending_before
         return result
@@ -195,19 +199,20 @@ class DefaultHierarchyComposer(HierarchyComposer):
         parents: list[MemoryUnit],
         children: list[MemoryUnit],
         old_parents: list[MemoryUnit],
+        admission: Callable[[Scope], None] | None = None,
     ) -> HierarchyComposeResult:
         result = HierarchyComposeResult()
         for parent_group in _parent_write_groups(parents):
             if not _attempt(
                 lambda: self.index_builder.build(parent_group, mode=IndexWriteMode.FORWARD_ONLY),
-                result, parent_group, "parent_write_failed",
+                result, parent_group, "parent_write_failed", admission=admission,
             ):
                 return result
             result.created_parent_ids.extend(unit.id for unit in parent_group)
         for child_group in _by_scope(children):
             if not _attempt(
                 lambda: self.index_builder.update(child_group, mode=IndexWriteMode.FORWARD_ONLY),
-                result, child_group, "child_edge_write_failed",
+                result, child_group, "child_edge_write_failed", admission=admission,
             ):
                 return result
             result.updated_child_ids.extend(unit.id for unit in child_group)
@@ -220,22 +225,22 @@ class DefaultHierarchyComposer(HierarchyComposer):
         for old_group in _by_scope(old_parents):
             if not _attempt(
                 lambda: self.index_builder.update(old_group, mode=IndexWriteMode.FORWARD_ONLY),
-                result, old_group, "old_parent_retire_failed",
+                result, old_group, "old_parent_retire_failed", admission=admission,
             ):
                 return result
             result.replaced_parent_ids.extend(unit.id for unit in old_group)
         if old_parents:
             _attempt(
                 lambda: self.index_builder.remove(old_parents, mode=IndexRemoveMode.SOFT),
-                result, old_parents, "index_remove_failed",
+                result, old_parents, "index_remove_failed", admission=admission,
             )
         _attempt(
             lambda: self.index_builder.build(parents, mode=IndexWriteMode.RETRIEVAL_ONLY),
-            result, parents, "index_build_failed",
+            result, parents, "index_build_failed", admission=admission,
         )
         _attempt(
             lambda: self.index_builder.update(children, mode=IndexWriteMode.RETRIEVAL_ONLY),
-            result, children, "index_update_failed",
+            result, children, "index_update_failed", admission=admission,
         )
         return result
 
@@ -427,8 +432,12 @@ def _attempt(
     result: HierarchyComposeResult,
     units: list[MemoryUnit],
     issue: str,
+    *, admission: Callable[[Scope], None] | None = None,
 ) -> bool:
     try:
+        if admission is not None:
+            for group in _by_scope(units):
+                admission(group[0].scope)
         action()
         return True
     except Exception as exc:

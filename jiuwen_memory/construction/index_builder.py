@@ -24,6 +24,7 @@ from .base import ConstructionOperator, OperatorType
 
 if TYPE_CHECKING:
     from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
+    from jiuwen_memory.storage.domain_store import DomainStore
 
 
 class IndexBuilderProducer(Factory):
@@ -100,6 +101,14 @@ class IndexBuilder(ConstructionOperator):
     能否拆分由该 Storage 实现按自身能力决定。
     """
 
+    def read_domain_store(self) -> DomainStore | None:
+        """Return the write-bound truth reader, if this builder delegates to a DomainStore.
+
+        A missing capability must be paired with an explicitly configured/injected
+        DomainStore. Evolvers never infer the truth reader from a default data plane.
+        """
+        return None
+
     @abstractmethod
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         """为一批记忆单元构建已启用的各形式索引。
@@ -145,6 +154,9 @@ class SchemaPropertyIndexingBuilder(IndexBuilder):
     ) -> None:
         self._delegate = delegate
         self._property_index = property_index
+
+    def read_domain_store(self) -> DomainStore | None:
+        return self._delegate.read_domain_store()
 
     @property
     def delegate(self) -> IndexBuilder:

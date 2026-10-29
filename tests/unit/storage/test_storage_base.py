@@ -198,3 +198,8 @@ def test_domain_store_without_ports_serves_memory_units() -> None:
 
     domain_store.delete(scope, ["u1"])
     assert domain_store.get(scope, ["u1"]) == []
+
+
+def test_base_manager_does_not_choose_a_concrete_kv_reader():
+    with pytest.raises(UnsupportedStorageCapabilityError, match="KV-bound domain reader"):
+        UnitOnlyStoreManager().domain_store_for_kv()

@@ -34,13 +34,15 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `associator_impl/` | Associator 实现目录（keyword / llm）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `index_builder_impl/` | IndexBuilder 实现目录（forward / fulltext / hybrid / unified / vector / entity + 共享 `_index_ops.py`）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）纯编排，组合 forward / fulltext / vector / entity 四个子 builder；`unified` 全部写委托 DomainStore 领域接口（`add`/`update`/`delete`，`mode` 原样透传，不触碰任何底层端口），构建侧完成两件事——(a) `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed，经 `_index_ops.vectorize_unit` 与 vector builder 共用实现）回填 `MemoryUnit.vectors`（`list[ChunkVector]`）随本体下传（一体化数据面实现消费该字段自建 chunk 级向量索引，CompositeDomainStore 仅随本体落盘）；(b) 把 `index_metadata` 的过滤投影字段（`content_layer`/`t_valid`/`t_event`/`t_invalid` 哨兵与 epoch 毫秒）直接补进 `unit.system_metadata`，一体化后端从 `system_metadata`/`user_metadata` 直接读取建索引、无需 `index_metadata` 投影下传；`forward` 只交付记忆本体（正排 KV），`fulltext`/`vector`/`entity` 只建各自的检索索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。`_index_ops.py` 承载 fulltext / vector 共享的投影与流水线（metadata 投影、scope 分组、端口解析、全文文档构造、向量切片-embed-写库、L0/L1 分层建删），unified 复用其 scope 分组与 `vectorize_unit` 切片-embed 单元管线。写接口用 `IndexWriteMode`（`ALL`/`FORWARD_ONLY`/`RETRIEVAL_ONLY`）表达写入范围，`remove` 用 `IndexRemoveMode`（`SOFT`/`HARD`）表达删除语义：`SOFT` 只移出检索索引、本体保留且 get/list 可读；`HARD` 物理删除。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
-| `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `dedup_impl/` | Dedup 实现目录（vector / keyword / shadow）；shadow 显式选配，读取文档机器真源                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
+| `dedup_impl/` | Dedup 实现目录（vector / keyword / shadow）；shadow 显式选配，读取文档机器真源 |
+| `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类 |
+| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
+| `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录 |
+| `evolver_impl/temporal_validity.py` | UPDATE/SUPERSEDE 的时间护栏纯函数；只以显式 aware `t_message` 排陈述先后，已有 valid-time 区间独立校验 |
+| `extractor_impl/observation_time.py` | legacy/dynamic 抽取共用的逐来源日期上下文，显式 observation_date 优先，其次来源消息的当地日期；支持调用方日期前缀模板 |
+| `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
+| `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
 
 注册的 IndexBuilder target 为 forward/fulltext/vector/hybrid/unified/document；EntityIndexBuilder
 是 hybrid 的内部辅助组件，不注册独立 entity target。标题、正文、prompt、模型响应和 Scope
@@ -74,7 +76,7 @@ Evolver.evolve(units, mode):
 ```
 
 三个 Evolver 同属 `evolver` 顶层命名空间。`DynamicEvolver` 与显式启用的
-`SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract`；
+`SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，通过覆盖 `_evolve_extract` 切换抽取路径；
 其他模式（含 HIERARCHY）继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
 
 ## 行为铁律
@@ -113,6 +115,7 @@ Evolver.evolve(units, mode):
    `OrchestratingEvolver._evolve_extract`（legacy）由 `_dedup_batch` 耦合判定与落盘；
    `DynamicEvolver._evolve_extract`（dynamic）在 consolidate 只判定，reflect 后统一落盘。
    装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`，保证 fulltext-only 下去重仍可用。
+   模型改选目标后，执行时使用该目标自身的召回分数，不能继续携带最高分命中的分数。
    高相似 direct_noop 短路（`score ≥ dedup_high_similarity`）须经
    `evolver_impl/dedup_direct_noop.should_direct_noop` 校验：仅当相对已有记忆无
    `has_meaningful_delta`（`t_event` 冲突、更正词、日期 span 集合差）时才允许跳过 LLM。
@@ -120,6 +123,20 @@ Evolver.evolve(units, mode):
 8. **构建层不依赖 control**
    SUPERSEDE/FORGET 标记由 `OrchestratingEvolver`/`DynamicEvolver` 经
    `IndexBuilder.update` 完成，不经 `LifecycleManager`（construction → control 严禁）。
+
+   forward 经 manager.domain_store_for_kv 取得与正排 KV 同源的领域读接口，hybrid 透传；
+   unified/document 暴露写入绑定的数据面，Schema 包装器透传 `read_domain_store()`。
+   Evolver Producer 显式注入该接口；旧 builder 必须配置 params.domain_store，手动装配传入
+   domain_store，缺失读能力时拒绝执行。构造器与 Producer 共用 `_bind_read_domain`，
+   显式选择与已声明读接口不是同一对象时在构造阶段拒绝；省略显式参数即使用 builder 绑定。
+   不通过 KV 对象推断门面等价，禁止默认库兜底。
+   legacy/dynamic 共用父类 `_apply_decision`；修改前经同 profile 的 DomainStore 重新读取目标，
+   候选写入使用副本，目标仅在实际 UPDATE/SUPERSEDE 修改前复制；直接 NOOP 不复制对象。
+   旧 SUPERSEDE 候选自行退出当前态；旧 UPDATE 候选单独保留，不覆盖新内容。
+   UPDATE 合并正文时同步推进 `t_message` 至较新候选的 UTC 消息时间，后续决策重新读取该值；
+   不修改 `t_event` 和已有有效期。
+   缺时间、naive 时间、同刻冲突和不相交区间均保守 ADD；不从 t_event 推导陈述先后，
+   不把 t_message 回填为 t_valid。批内 ADD 提交前重新召回，dynamic 重判仍走其配置 prompt。
 
 9. **Dedup 与 IndexBuilder 共享底层 Store**
    去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
@@ -152,7 +169,7 @@ Evolver.evolve(units, mode):
     真源仍保留 None，禁止为适配后端改写 MemoryUnit；`memory_filter._field_value`
     对 `t_event` / `t_invalid` 的 None 同步投影为对应哨兵，使后置复核与下推不分叉。
 
-14. **抽取与分层优先保证完整性**
+15. **抽取与分层优先保证完整性**
     派生 L2 只保存紧凑陈述，通过 `source_ref`/`provenance`/`evidence` 回指来源；坏候选
     与坏子批分别隔离，整次抽取无可用候选时才显式失败；动态抽取可隔离单策略失败，但
     全部策略失败必须向上抛错。LLM 分层的重复、越界或遗漏 ID 拒绝整批，单条长度异常
@@ -219,7 +236,7 @@ Evolver.evolve(units, mode):
 4. Evolver 返回 `EvolveResult`（created_ids / updated_ids / superseded_ids / forgotten_ids）。
 5. Dedup 必须实现 `recall(candidate) -> list[(MemoryUnit, score)]`；实现内部异常吞掉返回空列表，不阻断演进。
 6. 算子内部调用共享插件（Chunker/Embedder/Tokenizer/FeatureExtractor/LLM）必须使用注入的实例，不自行构造。
-7. `DynamicEvolver` 继承 `OrchestratingEvolver`，复用父类全部依赖（extractor/abstractor/associator/index_builder/kv/graph/dedup/llm/layer_annotator），额外注入 `PromptRegistry`；只覆盖 `_evolve_extract`，其他模式（含 HIERARCHY）继承父类。
+7. `DynamicEvolver` 继承 `OrchestratingEvolver`，复用父类全部依赖（extractor/abstractor/associator/index_builder/kv/graph/dedup/llm/layer_annotator），额外注入 `PromptRegistry`；覆盖 `_evolve_extract` 切换抽取路径，其他模式（含 HIERARCHY）继承父类。
 8. `DynamicEvolver` 与 IndexBuilder/KVStore/Dedup 必须使用同一 profile 的共享实例；pipeline profile 选 evolver 实现名（`orchestrating` / `dynamic`）即切换 EXTRACT 路径。
 9. `DynamicLLMExtractor` 子类只覆盖 `parse_response` 完成响应解析与构建；策略遍历、fallback、
    `_extraction_strategy` 标记和 consolidation/reflect prompt key 透传由基类统一执行。
@@ -274,3 +291,14 @@ Evolver.evolve(units, mode):
 周期执行和故障保护由 control 承担；内部 hierarchy_preparation 只包围增量请求的
 无写入准备段，异常转为 HierarchyPreparationError；持久化必须在该边界之外，
 显式请求保留原异常语义。
+
+抽取入口先经 `prompt_guard.chunk_unit` 无损分片并消费全部正文；
+`extractor_impl/observation_time.py` 格式化时保留每片的来源日期和 ID，
+`truncate_unit_content` 仅作单次格式化的有界防护，正常分片不会触发截断，不修改来源对象。
+
+批内 `_apply_decision` 的 successors 映射由普通批量判定与动态落盘分别创建，仅在当前批次共享；
+原目标和后继均按完整 Scope + ID 定位，不在 Evolver 实例上保存跨请求状态。
+`created_units` 快照替换保持完整 Scope 比较；未来边界回写且仍 ACTIVE 的旧目标计入 updated_ids。
+
+自定义 yml `prompts.extract` 兼容提醒：observation_date 已从批级单条头部改为逐来源前缀。
+模板应使用对应来源旁的日期，不应将第一条日期应用于整批；来源 ID 与日期配对保持。

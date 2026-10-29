@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -27,6 +28,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction.evolver import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
+
+BackgroundJobAdmission = Callable[[Scope], None]
 
 
 class PrincipalPath(str, Enum):

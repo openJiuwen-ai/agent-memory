@@ -21,12 +21,12 @@ from jiuwen_memory.construction.common import (
     validate_llm_attempt_policy,
 )
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.prompt_guard import (
     CONTENT_MAX_UNIT_CHARS,
     chunk_unit,
     truncate_unit_content,
 )
-from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
 logger = get_logger(__name__)
 

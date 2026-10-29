@@ -278,3 +278,11 @@ SQLite 影子索引的 temporal 列复用 common/time_utils.epoch_ms，与构建
 
 CompositeDomainStore 与 KeywordRecaller 的真源候选检查传入完整 ParsedQuery；
 不得仅传时间字段，否则会遗漏结构过滤。API 负责鉴权，数据面消费已授权的 Scope 与谓词。
+
+
+### 正排 KV 真源领域读取
+
+StoreManager.domain_store_for_kv(name) 定义可选领域读契约，默认抛不支持错误，不依赖具体实现。
+CompositeStoreManager 实现该方法，返回显式绑定受管 KV 的领域门面，用于正排写入前复核。
+该门面仍执行 memory_unit 授权并通过受管 KV 代理读数，不借用默认数据面的真源端口、
+文档模式或召回配置，不注册或替换 manager 的具名数据面。

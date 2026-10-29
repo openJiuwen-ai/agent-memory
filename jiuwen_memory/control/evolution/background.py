@@ -12,7 +12,7 @@ from jiuwen_memory.control.evolution.validation import scope_contains
 from jiuwen_memory.control.jobs import JobFactory, JobType
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler
-from jiuwen_memory.control.types import BackgroundJobStartResult, Channel
+from jiuwen_memory.control.types import BackgroundJobAdmission, BackgroundJobStartResult, Channel
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore
 
@@ -31,6 +31,7 @@ class BackgroundDependencies:
 
 async def start_hierarchy_derivation(
     scope: Scope, policy: PolicyManager, dependencies: BackgroundDependencies,
+    *, admission: BackgroundJobAdmission | None = None,
 ) -> BackgroundJobStartResult:
     """默认关闭；开启后仅在实际支持周期的 Scheduler 注册一个 home。"""
     scope_contains(scope, scope)
@@ -56,9 +57,12 @@ async def start_hierarchy_derivation(
         raise ValidationError("periodic hierarchy requires an injected source read port")
     if not dependencies.scheduler.supports_recurring:
         raise ValidationError("hierarchy requires a periodic Scheduler")
+    if not callable(admission):
+        raise ValidationError("periodic hierarchy requires runtime admission")
+    admission(deepcopy(scope))
     job = dependencies.factory.get_job(
         JobType.HIERARCHY_DERIVE, deepcopy(scope), evolver=dependencies.evolver,
-        kv=dependencies.kv, policy=policy,
+        kv=dependencies.kv, policy=policy, admission=admission,
     )
     dependencies.scheduler.validate(job)
     return BackgroundJobStartResult(

@@ -28,7 +28,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import Enum
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 
 from .domain_store import DomainStore
@@ -128,8 +128,8 @@ class StoreManager(ABC):
 
     端口方法返回经 ``StorageSecurity`` 授权代理的完整 Store 契约；未声明端口访问统一抛
     :class:`~common.errors.UnsupportedStorageCapabilityError`。``domain_store(name)``
-    返回本 manager 管理的**命名数据面**实例——多套命名数据面共享同一物理 Store 集，
-    差异仅在检索 profile（``preferred_retrieval_pipeline`` + recallers 组合）；实现需
+    返回本 manager 管理的**命名数据面**实例——多套命名数据面使用本 manager 的受管 Store，
+    可分别选择真源 KV 端口与检索 profile（``preferred_retrieval_pipeline`` + recallers）；实现需
     保证同名多次调用返回同一实例（``bind_recallers`` 状态不丢）。
     """
 
@@ -153,6 +153,16 @@ class StoreManager(ABC):
     @abstractmethod
     def domain_store(self, name: str = "default") -> DomainStore:
         """取命名数据面实例；实现需缓存（同名多次调用返回同一实例）。"""
+
+    def domain_store_for_kv(self, name: str = "default") -> DomainStore:
+        """Create a KV truth facade for the MemoryUnit codec used by forward indexing.
+
+        This facade does not inherit the default domain's KV selection, document mode
+        or recall profile. Reads retain domain authorization and the managed KV proxy.
+        """
+        raise UnsupportedStorageCapabilityError(
+            "StoreManager does not provide a KV-bound domain reader"
+        )
 
     @abstractmethod
     def has_domain_store(self, name: str = "default") -> bool:

@@ -236,12 +236,14 @@ def test_factory_selected_profile_and_shared_index_builder_are_effective(target,
         },
     })
     context = context.merged(configured)
+    composition.manager.bind_domain_store(composition.manager.domain_store_for_kv())
     StoreManagerProducer.put("default", composition.manager, ctx=context)
     IndexBuilderProducer.put("shared", composition.builder, ctx=context)
     evolver = EvolverProducer.build(target, {
         "extractor": {"target": "keyword"},
         "dedup": {"target": "keyword"},
         "index_builder": "shared", "hierarchy_composer": "selected",
+        "domain_store": "default",
     }, context)
     composer = HierarchyComposerProducer.build_named("selected", context)
 

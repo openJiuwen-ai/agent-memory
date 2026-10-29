@@ -19,6 +19,7 @@ from jiuwen_memory.common.type_def import MemoryUnit, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
@@ -42,6 +43,10 @@ class ForwardIndexBuilder(IndexBuilder):
         # 构造即解析：manager 无该命名端口时此处直接抛
         # UnsupportedStorageCapabilityError，不拖到首次写入才以 AttributeError 暴露。
         self._kv = storage.kv(kv_name)
+        self._read_domain = storage.domain_store_for_kv(kv_name)
+
+    def read_domain_store(self) -> DomainStore:
+        return self._read_domain
 
     @property
     def kv_store(self) -> KVStore:

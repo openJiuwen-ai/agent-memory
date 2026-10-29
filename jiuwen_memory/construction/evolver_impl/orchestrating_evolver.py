@@ -26,7 +26,9 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 from jiuwen_memory.common.errors import ConflictError, ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
@@ -57,7 +59,7 @@ from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer
+from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
 from jiuwen_memory.construction.evolver import (
     EvolveMode,
     Evolver,
@@ -66,6 +68,11 @@ from jiuwen_memory.construction.evolver import (
     EvolverProducer,
 )
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
+from jiuwen_memory.construction.evolver_impl.temporal_validity import (
+    aware_utc,
+    compare_validity,
+    time_context,
+)
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
 from jiuwen_memory.construction.hierarchy_composer import (
@@ -90,6 +97,7 @@ from jiuwen_memory.construction.snapshot_inheritance import (
     inherit_infer_snapshots,
     snapshot_for_decision,
 )
+from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
@@ -111,6 +119,7 @@ of an existing memory.
 
 Output ONLY a JSON object with:
 - "decision": "add" | "update" | "supersede" | "noop"
+- "existing_id": the listed memory this decision refers to (required for update/supersede)
 - "reason": brief explanation (one sentence)
 
 Decision rules:
@@ -137,6 +146,7 @@ Output ONLY a JSON array (one entry per candidate, in input order). No explanati
 fences.
 Each entry:
 - "candidate_id": the candidate's id (the value after [ and before ])
+- "existing_id": the listed memory this decision refers to (required for update/supersede)
 - "decision": "add" | "update" | "supersede" | "noop"
 - "reason": brief explanation (one sentence)
 
@@ -191,6 +201,24 @@ def _route_ctx_of(units: list[MemoryUnit]) -> RouteContext | None:
 # ---------------------------------------------------------------------------
 
 
+class _UnitKey(NamedTuple):
+    """记忆单元的全维身份键：Scope 五元组 + 单元 id，用于后继追踪的去重集合。"""
+
+    org: str
+    space: str
+    user: str
+    agent: str
+    session: str
+    unit_id: str
+
+
+def _unit_key(unit: MemoryUnit) -> _UnitKey:
+    scope = unit.scope
+    return _UnitKey(
+        scope.org, scope.space, scope.user, scope.agent, scope.session, unit.id
+    )
+
+
 class OrchestratingEvolver(Evolver):
     """编排 extract/associate/consolidate/forget，并把产物落真源 + 建索引 + 图。
 
@@ -218,6 +246,7 @@ class OrchestratingEvolver(Evolver):
         router: Router | None = None,
         *,
         hierarchy_composer: HierarchyComposer | None = None,
+        domain_store: DomainStore | None = None,
         graph_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -226,8 +255,9 @@ class OrchestratingEvolver(Evolver):
         self._abstractor = abstractor
         self._associator = associator
         self._index = index_builder
-        # storage 只用于在此取图端口；MemoryUnit 的写入一律经 self._index，故不留字段。
+        # 写入一律经 IndexBuilder；manager 仅用于图端口及提交前的领域点读。
         self._graph = storage.graph(graph_name) if storage.has_graph(graph_name) else None
+        self._read_domain = _bind_read_domain(index_builder, domain_store)
         # 原文（/messages/）专用：不是索引形式，不经 IndexBuilder。缺省与正排 KV 同实例。
         self._message_store = message_store
         self._dedup = dedup
@@ -398,6 +428,7 @@ class OrchestratingEvolver(Evolver):
            decision 逐条执行。批量失败则降级为逐条单次 LLM 判定。
         """
         result = EvolveResult()
+        successors: dict[tuple[str, str, str, str, str, str], MemoryUnit] = {}
         noop_count = 0
         logger.debug(
             "[trace/consolidate] _dedup_batch ENTER | candidates=%d | dedup_impl=%s",
@@ -454,24 +485,33 @@ class OrchestratingEvolver(Evolver):
 
         # ---- 第二段：批量 LLM 判定 ----
         decisions: dict[str, DedupDecision] = {}
+        targets: dict[str, MemoryUnit] = {}
         if need_llm:
             batch_items = [(c, hits) for c, _, _, hits in need_llm]
-            decisions = self._llm_dedup_decide_batch(batch_items)
+            decisions = self._llm_dedup_decide_batch(batch_items, targets=targets)
 
         # ---- 第三段：逐条执行 ----
         for candidate, best_unit, best_score in direct_add:
             noop_count += self._apply_decision(
-                candidate, DedupDecision.ADD, best_unit, best_score, result
+                candidate, DedupDecision.ADD, best_unit, best_score, result, successors=successors
             )
 
         for candidate, best_unit, best_score in direct_noop:
             noop_count += self._apply_decision(
-                candidate, DedupDecision.NOOP, best_unit, best_score, result
+                candidate, DedupDecision.NOOP, best_unit, best_score, result, successors=successors
             )
 
-        for candidate, best_unit, best_score, _ in need_llm:
+        for candidate, best_unit, best_score, hits in need_llm:
             decision = decisions.get(candidate.id, DedupDecision.ADD)
-            noop_count += self._apply_decision(candidate, decision, best_unit, best_score, result)
+            target = targets.get(candidate.id)
+            if target is not None:
+                best_unit, best_score = next(
+                    (unit, score) for unit, score in hits
+                    if unit.id == target.id and same_scope(unit.scope, target.scope)
+                )
+            noop_count += self._apply_decision(
+                candidate, decision, best_unit, best_score, result, successors=successors
+            )
 
         logger.info(
             "Evolver._dedup: total=%d add=%d update=%d supersede=%d noop=%d "
@@ -494,8 +534,95 @@ class OrchestratingEvolver(Evolver):
         existing_unit: MemoryUnit | None,
         similarity: float,
         result: EvolveResult,
+        *,
+        successors: dict[tuple[str, str, str, str, str, str], MemoryUnit] | None = None,
     ) -> int:
         """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
+        # Builders may mutate candidates; NOOP never reaches a write path.
+        if decision != DedupDecision.NOOP:
+            candidate = deepcopy(candidate)
+        if decision == DedupDecision.ADD and result.created_units:
+            # Initial batch recall ran before writes. A new indexed peer may now exist.
+            decision, existing_unit, similarity = self._recheck_candidate(candidate)
+        boundary = _now()
+        if decision in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE):
+            if existing_unit is not None:
+                fresh = self._domain.get(existing_unit.scope, [existing_unit.id])
+                existing_unit = fresh[0] if fresh else None
+            # A previous decision in this batch may have superseded this target.
+            seen: set[tuple[str, str, str, str, str, str]] = set()
+            while (
+                existing_unit is not None
+                and existing_unit.lifecycle == LifecycleState.SUPERSEDED
+            ):
+                key = _unit_key(existing_unit)
+                if key in seen:
+                    existing_unit = None
+                    break
+                seen.add(key)
+                if successors is not None:
+                    successor = successors.get(key)
+                else:
+                    # Compatibility for single-decision callers: never infer a cross-Scope link.
+                    successor = None
+                    for unit in result.created_units:
+                        if (
+                            unit.scope == existing_unit.scope
+                            and unit.supersedes == existing_unit.id
+                        ):
+                            successor = unit
+                if successor is not None:
+                    fresh = self._domain.get(successor.scope, [successor.id])
+                    existing_unit = fresh[0] if fresh else None
+                else:
+                    existing_unit = None
+            if (
+                existing_unit is None
+                or existing_unit.lifecycle != LifecycleState.ACTIVE
+                or not same_scope(candidate.scope, existing_unit.scope)
+            ):
+                decision = DedupDecision.ADD
+                candidate.system_metadata["dedup_temporal_reason"] = "target_unavailable"
+            else:
+                verdict = compare_validity(candidate, existing_unit, now=boundary)
+                candidate.system_metadata["dedup_temporal_reason"] = verdict.reason
+                candidate.system_metadata["dedup_time_basis"] = "message_statement_order"
+                logger.info(
+                    "Evolver temporal decision metadata=%s",
+                    metadata_for_log({"action": verdict.action, "reason": verdict.reason}),
+                )
+                if verdict.action == "preserve":
+                    decision = DedupDecision.ADD
+                elif verdict.action == "older":
+                    if decision == DedupDecision.UPDATE:
+                        # UPDATE may contain complementary details. Preserve them separately
+                        # rather than merging old values into the current record.
+                        decision = DedupDecision.ADD
+                    else:
+                        snapshot_for_decision(candidate, decision, existing_unit)
+                        candidate.lifecycle = (
+                            LifecycleState.ACTIVE
+                            if verdict.boundary > boundary else LifecycleState.SUPERSEDED
+                        )
+                        candidate.temporal.t_invalid = verdict.boundary
+                        candidate.system_metadata["dedup_decision"] = "expired_by_newer_existing"
+                        if candidate.lifecycle == LifecycleState.ACTIVE:
+                            candidate.system_metadata["dedup_decision"] = (
+                                "bounded_by_newer_existing"
+                            )
+                        candidate.system_metadata["dedup_superseded_by"] = existing_unit.id
+                        candidate = self._build_candidate(candidate)
+                        result.created_ids.append(candidate.id)
+                        result.created_units.append(candidate)
+                        if candidate.lifecycle == LifecycleState.SUPERSEDED:
+                            result.superseded_ids.append(candidate.id)
+                        return 0
+                else:
+                    boundary = verdict.boundary
+                    if decision == DedupDecision.UPDATE and boundary > _now():
+                        # Future states must not leak into today's content through a merge.
+                        decision = DedupDecision.ADD
+                        candidate.system_metadata["dedup_temporal_reason"] = "future_update"
         snapshot = snapshot_for_decision(candidate, decision, existing_unit)
         logger.debug(
             "[trace/dedup] decision | candidate_id=%s | decision=%s | existing=%s "
@@ -534,11 +661,13 @@ class OrchestratingEvolver(Evolver):
                     metadata_for_log({"dedup_decision": decision.value}),
                     candidate.id[:8],
                 )
-            self._index.build([candidate])
+            candidate = self._build_candidate(candidate)
             result.created_ids.append(candidate.id)
             result.created_units.append(candidate)
 
         elif decision == DedupDecision.UPDATE:
+            # Copy the refreshed target only when it will actually be modified.
+            existing_unit = deepcopy(existing_unit)
             # 合成新旧 content
             merged_content = self._merge_content(existing_unit, candidate)
             # 更新 existing_unit
@@ -546,6 +675,9 @@ class OrchestratingEvolver(Evolver):
                 existing_unit.segments[0].content = merged_content
             else:
                 existing_unit.segments = [Segment(content=merged_content)]
+            # The time guard admitted a strictly newer statement. Persist its time with
+            # the merged content so later arrivals cannot use the target's old timestamp.
+            existing_unit.temporal.t_message = aware_utc(candidate.temporal.t_message)
             # 合并 provenance
             existing_unit.provenance = list(
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
@@ -556,27 +688,47 @@ class OrchestratingEvolver(Evolver):
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
+            for key in ("dedup_temporal_reason", "dedup_time_basis"):
+                if key in candidate.system_metadata:
+                    existing_unit.system_metadata[key] = candidate.system_metadata[key]
             # existing_unit 是已建索引的记忆，经 IndexBuilder 统一回写。
             if snapshot is not None:
                 existing_unit.hierarchy = snapshot
             self._index.update([existing_unit])
+            result.created_units[:] = [
+                existing_unit if unit.scope == existing_unit.scope and unit.id == existing_unit.id
+                else unit for unit in result.created_units
+            ]
             result.updated_ids.append(existing_unit.id)
 
         elif decision == DedupDecision.SUPERSEDE:
+            existing_unit = deepcopy(existing_unit)
             # 新版落盘
             candidate.supersedes = existing_unit.id
             candidate.provenance = list(set(candidate.provenance) | {existing_unit.id})
             candidate.system_metadata["dedup_decision"] = "supersede"
             candidate.system_metadata["dedup_similarity"] = str(similarity)
             candidate.system_metadata["dedup_superseded"] = existing_unit.id
-            self._index.build([candidate])
+            candidate = self._build_candidate(candidate)
             # 旧版标记 SUPERSEDED（不依赖 LifecycleManager）
-            existing_unit.lifecycle = LifecycleState.SUPERSEDED
-            existing_unit.temporal.t_invalid = _now()
+            existing_unit.lifecycle = (
+                LifecycleState.ACTIVE if boundary > _now() else LifecycleState.SUPERSEDED
+            )
+            old_end = aware_utc(existing_unit.temporal.t_invalid)
+            existing_unit.temporal.t_invalid = min(boundary, old_end) if old_end else boundary
             self._index.update([existing_unit])
+            result.created_units[:] = [
+                existing_unit if unit.scope == existing_unit.scope and unit.id == existing_unit.id
+                else unit for unit in result.created_units
+            ]
             result.created_ids.append(candidate.id)
             result.created_units.append(candidate)
-            result.superseded_ids.append(existing_unit.id)
+            if successors is not None:
+                successors[_unit_key(existing_unit)] = candidate
+            if existing_unit.lifecycle == LifecycleState.SUPERSEDED:
+                result.superseded_ids.append(existing_unit.id)
+            else:
+                result.updated_ids.append(existing_unit.id)
 
         elif decision == DedupDecision.NOOP:
             logger.info(
@@ -587,6 +739,46 @@ class OrchestratingEvolver(Evolver):
             return 1
 
         return 0
+
+    @property
+    def _domain(self) -> DomainStore:
+        """Read the writer's truth, independently of the message store's KV port."""
+        if self._read_domain is not None:
+            return self._read_domain
+        reader = getattr(self._index, "read_domain_store", None)
+        domain = reader() if callable(reader) else None
+        if domain is None:
+            raise ValidationError(
+                "Evolver requires a write-bound truth reader; declare "
+                "IndexBuilder.read_domain_store() or explicitly inject domain_store"
+            )
+        self._read_domain = domain
+        return domain
+
+    def _recheck_candidate(
+        self, candidate: MemoryUnit
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
+        try:
+            return self._dedup_single(candidate)
+        except Exception as exc:
+            logger.warning("Evolver batch recheck failed: %s", type(exc).__name__)
+            return DedupDecision.ADD, None, 0.0
+
+    def _build_candidate(self, candidate: MemoryUnit) -> MemoryUnit:
+        previous = self._domain.get(candidate.scope, [candidate.id])
+        if previous:
+            stored = previous[0]
+            if (
+                stored.content != candidate.content
+                or stored.source_ref != candidate.source_ref
+                or stored.temporal.t_message != candidate.temporal.t_message
+            ):
+                raise ConflictError("memory", candidate.id, "candidate id reused for another fact")
+            # Repair derived indexes after a partial build, keeping the persisted decision.
+            self._index.update([stored])
+            return stored
+        self._index.build([candidate])
+        return candidate
 
     def _dedup_single(
         self, candidate: MemoryUnit
@@ -616,7 +808,14 @@ class OrchestratingEvolver(Evolver):
 
         # 中/高相似 → LLM 语义判定
         try:
-            decision = self._llm_dedup_decide(candidate, hit_units)
+            targets: dict[str, MemoryUnit] = {}
+            decision = self._llm_dedup_decide(candidate, hit_units, targets=targets)
+            target = targets.get(candidate.id)
+            if target is not None:
+                best_unit, best_score = next(
+                    (unit, score) for unit, score in hit_units
+                    if unit.id == target.id and same_scope(unit.scope, target.scope)
+                )
         except Exception as exc:
             logger.warning(
                 "Evolver._dedup_single: LLM dedup failed for %s, fallback rule-based: %s",
@@ -632,10 +831,28 @@ class OrchestratingEvolver(Evolver):
 
         return (decision, best_unit, best_score)
 
+    @staticmethod
+    def _validated_target(
+        payload: dict,
+        hits: list[tuple[MemoryUnit, float]],
+        decision: DedupDecision,
+    ) -> MemoryUnit | None:
+        if decision not in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE):
+            return None
+        visible = {unit.id: unit for unit, _ in hits[:3]}
+        target_id = payload.get("existing_id")
+        if target_id is None and len(visible) == 1:
+            return next(iter(visible.values()))  # Compatible with single-target old prompts.
+        if not isinstance(target_id, str) or target_id not in visible:
+            raise ValueError("modification requires a listed existing_id")
+        return visible[target_id]
+
     def _llm_dedup_decide(
         self,
         candidate: MemoryUnit,
         hits: list[tuple[MemoryUnit, float]],
+        *,
+        targets: dict[str, MemoryUnit] | None = None,
     ) -> DedupDecision:
         """构建去重判定 prompt，LLM.chat() → 解析 JSON → 返回 DedupDecision。"""
         existing_texts = []
@@ -644,6 +861,7 @@ class OrchestratingEvolver(Evolver):
                 f"[Memory ID: {unit.id}]\n"
                 f"Content: {unit.content}\n"
                 f"Tier: {unit.tier.value}\n"
+                f"{time_context(unit)}\n"
                 f"Similarity: {score:.3f}"
             )
 
@@ -652,7 +870,9 @@ class OrchestratingEvolver(Evolver):
             f"[Memory ID: {candidate.id}]\n"
             f"Content: {candidate.content}\n"
             f"Tier: {candidate.tier.value}\n\n"
-            f"Existing similar memories:\n" + "\n\n".join(existing_texts)
+            f"{time_context(candidate)}\n\n"
+            f"Existing similar memories:\n"
+            + "\n\n".join(existing_texts)
         )
 
         messages = [
@@ -711,7 +931,11 @@ class OrchestratingEvolver(Evolver):
 
         decision_str = result.get("decision", "add").lower()
         try:
-            return DedupDecision(decision_str)
+            decision = DedupDecision(decision_str)
+            target = self._validated_target(result, hits, decision)
+            if target is not None and targets is not None:
+                targets[candidate.id] = target
+            return decision
         except ValueError:
             logger.warning(
                 "Evolver._llm_dedup_decide: unknown decision '%s', fallback ADD",
@@ -722,6 +946,8 @@ class OrchestratingEvolver(Evolver):
     def _llm_dedup_decide_batch(
         self,
         items: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]],
+        *,
+        targets: dict[str, MemoryUnit] | None = None,
     ) -> dict[str, DedupDecision]:
         """批量 LLM 判定：一次调用判多条候选，返回 {candidate_id: decision}。
 
@@ -736,9 +962,11 @@ class OrchestratingEvolver(Evolver):
         # 构建紧凑批量 prompt
         blocks: list[str] = []
         for cand, hits in items:
-            cand_block = f"[{cand.id}]: {cand.content}"
+            cand_block = f"[{cand.id}]: {cand.content}\n{time_context(cand)}"
             for unit, score in hits[:3]:
-                cand_block += f"\n  e|{unit.id}|{score:.3f}: {unit.content}"
+                cand_block += (
+                    f"\n  e|{unit.id}|{score:.3f}: {unit.content}\n{time_context(unit)}"
+                )
             blocks.append(cand_block)
         user_prompt = "\n---\n".join(blocks)
 
@@ -784,7 +1012,7 @@ class OrchestratingEvolver(Evolver):
                 "fallback to per-candidate single: error_type=%s",
                 type(exc).__name__,
             )
-            return self._fallback_single_decide(items)
+            return self._fallback_single_decide(items, targets=targets)
 
         # 解析 JSON 数组
         results: dict[str, DedupDecision] = {}
@@ -817,10 +1045,11 @@ class OrchestratingEvolver(Evolver):
                 "fallback to per-candidate single: %s",
                 redact_for_log(response),
             )
-            return self._fallback_single_decide(items)
+            return self._fallback_single_decide(items, targets=targets)
 
         # 按候选 id 取 decision
         known_candidate_ids = {candidate.id for candidate, _ in items}
+        hit_map = {candidate.id: hits for candidate, hits in items}
         for entry in parsed:
             if not isinstance(entry, dict):
                 continue
@@ -828,9 +1057,14 @@ class OrchestratingEvolver(Evolver):
             # 单对象响应（无 candidate_id 字段）且只有一条候选 → 用该候选 id
             if cid is None and len(items) == 1:
                 cid = items[0][0].id
+            if not isinstance(cid, str) or cid not in known_candidate_ids:
+                continue
             decision_str = str(entry.get("decision", "add")).lower()
             try:
                 results[cid] = DedupDecision(decision_str)
+                target = self._validated_target(entry, hit_map[cid], results[cid])
+                if target is not None and targets is not None:
+                    targets[cid] = target
             except ValueError:
                 candidate_id_for_log = (
                     cid
@@ -853,20 +1087,22 @@ class OrchestratingEvolver(Evolver):
                 "fallback to per-candidate single",
                 len(missing),
             )
-            results.update(self._fallback_single_decide(missing))
+            results.update(self._fallback_single_decide(missing, targets=targets))
 
         return results
 
     def _fallback_single_decide(
         self,
         items: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]],
+        *,
+        targets: dict[str, MemoryUnit] | None = None,
     ) -> dict[str, DedupDecision]:
         """批量降级：逐条调单条 LLM 判定。某条失败 → 按规则（score 阈值）判定。"""
         results: dict[str, DedupDecision] = {}
         for cand, hits in items:
             best_unit, best_score = max(hits, key=lambda x: x[1]) if hits else (None, 0.0)
             try:
-                results[cand.id] = self._llm_dedup_decide(cand, hits)
+                results[cand.id] = self._llm_dedup_decide(cand, hits, targets=targets)
             except Exception:
                 logger.warning(
                     "Evolver._fallback_single_decide: single LLM failed for %s, rule-based",
@@ -1247,6 +1483,36 @@ def _resolve_message_store(config) -> KVStore:
     return KvProducer.build("memory", {}, config.ctx)
 
 
+def _bind_read_domain(
+    index_builder: IndexBuilder, declared: DomainStore | None,
+) -> DomainStore | None:
+    """Use the declared writer binding without guessing equivalence between facades."""
+    reader = getattr(index_builder, "read_domain_store", None)
+    bound = reader() if callable(reader) else None
+    if bound is not None and declared is not None and bound is not declared:
+        raise ValidationError(
+            "Evolver domain_store conflicts with IndexBuilder truth reader: "
+            "omit domain_store to use the writer binding, or inject the exact instance "
+            "returned by IndexBuilder.read_domain_store(); sharing a KV is insufficient"
+        )
+    return bound if bound is not None else declared
+
+
+def _resolve_read_domain(config, index_builder: IndexBuilder) -> DomainStore:
+    """Bind truth explicitly; a missing capability must never select a different store."""
+    declared = None
+    if "domain_store" in config.params:
+        declared = StoreManagerProducer.resolve(config).domain_store(
+            resolve_name(config, "domain_store")
+        )
+    domain = _bind_read_domain(index_builder, declared)
+    if domain is None:
+        raise ValidationError(
+            "Evolver requires IndexBuilder.read_domain_store() or params.domain_store"
+        )
+    return domain
+
+
 @EvolverProducer.register("orchestrating")
 def _build(config):
     """装配 OrchestratingEvolver：经各 Producer ``dep`` 取全部算子 + 去重 dedup。
@@ -1288,6 +1554,7 @@ def _build(config):
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=hierarchy_index,
+        domain_store=_resolve_read_domain(config, hierarchy_index),
         storage=StoreManagerProducer.resolve(config),
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),

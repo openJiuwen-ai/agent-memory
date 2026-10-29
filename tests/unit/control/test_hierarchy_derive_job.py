@@ -301,13 +301,88 @@ def test_spec_requires_same_source_dependencies_and_preserves_fault_latch() -> N
     spec = HierarchyDeriveJobSpec(HierarchyJobSpec(harness.kv))
     with pytest.raises(ValidationError, match="runtime"):
         spec.with_scope(harness.home, evolver=harness.evolver)
+    with pytest.raises(ValidationError, match="runtime"):
+        spec.with_scope(harness.home, evolver=harness.evolver,
+                        kv=harness.kv, policy=prototype.dependencies.policy)
+    with pytest.raises(ValidationError, match="callable admission"):
+        spec.with_scope(harness.home, evolver=harness.evolver,
+                        kv=harness.kv, policy=prototype.dependencies.policy, admission=False)
     first = spec.with_scope(harness.home, evolver=harness.evolver,
-                            kv=harness.kv, policy=prototype.dependencies.policy)
+                            kv=harness.kv, policy=prototype.dependencies.policy,
+                            admission=prototype.dependencies.admission)
     first.state.needs_repair = True
     again = spec.with_scope(harness.home, evolver=harness.evolver,
-                            kv=harness.kv, policy=prototype.dependencies.policy)
+                            kv=harness.kv, policy=prototype.dependencies.policy,
+                            admission=prototype.dependencies.admission)
     result = asyncio.run(again.run())
     assert again.dependencies.hierarchy.kv is harness.kv
     assert again.dependencies.hierarchy.evolver is harness.evolver
     assert result.status is JobStatus.FAILED
     assert not harness.evolver.requests
+
+
+@pytest.mark.parametrize(
+    "phase", ["before_read", "before_evolve", "after_preparation", "after_parent"],
+)
+def test_admission_denial_stops_work_and_preserves_partial_write_state(phase, monkeypatch):
+    from jiuwen_memory.common.errors import PermissionDeniedError
+
+    harness = job_harness(profiles=event_profiles(settle_seconds="1"))
+    job = derive_job(harness, DeriveClock(ORIGIN + timedelta(minutes=5)))
+    denied = phase == "before_read"
+
+    def admission(scope):
+        assert scope.org == harness.home.org and scope.space == harness.home.space
+        if denied:
+            raise PermissionDeniedError("admission withdrawn")
+
+    job.dependencies.admission = admission
+    if phase == "before_read":
+        def unexpected_read(*args, **kwargs):
+            pytest.fail("denied job must not read source data")
+
+        monkeypatch.setattr(harness.kv, "scopes", unexpected_read)
+    elif phase == "before_evolve":
+        from jiuwen_memory.control.jobs_impl import hierarchy_derive_job
+        collect = hierarchy_derive_job.collect_incremental
+
+        def deny_after_read(*args):
+            nonlocal denied
+            selected = collect(*args)
+            denied = True
+            return selected
+
+        monkeypatch.setattr(hierarchy_derive_job, "collect_incremental", deny_after_read)
+    elif phase == "after_preparation":
+        composer = harness.composition.composer
+        pipeline = composer._pipeline()  # pylint: disable=protected-access
+        prepare = pipeline.build_incremental
+
+        def deny_after_preparation(*args):
+            nonlocal denied
+            batch = prepare(*args)
+            denied = True
+            return batch
+
+        monkeypatch.setattr(pipeline, "build_incremental", deny_after_preparation)
+        monkeypatch.setattr(composer, "_pipeline", lambda: pipeline)
+    else:
+        builder = harness.composition.builder
+        build = builder.build
+
+        def deny_after_parent(*args, **kwargs):
+            nonlocal denied
+            build(*args, **kwargs)
+            denied = True
+
+        monkeypatch.setattr(builder, "build", deny_after_parent)
+    result = asyncio.run(job.run())
+    assert result.status is JobStatus.FAILED and result.detail["complete"] == "false"
+    if phase == "after_parent":
+        assert result.detail["created_parent_count"] == "1"
+        assert result.detail["updated_child_count"] == "0"
+        assert int(result.detail["repair_required_count"]) > 0 and job.state.needs_repair
+    else:
+        assert not harness.composition.builder.calls
+        assert result.detail["created_parent_count"] == result.detail["updated_child_count"] == "0"
+        assert not job.state.needs_repair, "准入拒绝且确认未写入时不得触发永久故障保护"

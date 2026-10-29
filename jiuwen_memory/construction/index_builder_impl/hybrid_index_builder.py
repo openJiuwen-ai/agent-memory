@@ -23,6 +23,7 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -77,6 +78,9 @@ class HybridIndexBuilder(IndexBuilder):
         self._entity_builder = (
             EntityIndexBuilder(entity_linker) if entity_linker is not None else None
         )
+
+    def read_domain_store(self) -> DomainStore:
+        return self._forward_builder.read_domain_store()
 
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER

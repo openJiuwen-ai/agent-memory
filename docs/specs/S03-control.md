@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -616,16 +616,19 @@ False（默认）允许完整旧树与新叶一起重建，无新叶也可重建
 Runtime 通过装配期绑定的 API 内部回调完成 PEP 后，经 Command→Engine 注册
 HIERARCHY_DERIVE Job；MemoryAPI 及具体 API 对象均不提供公开注册方法。
 这里 home 指树驻留范围 tree_home_scope，是完整 Scope，不是目录或单棵树 ID。
-Engine 注入同一 Evolver、PolicyManager 与读源（本地 KVStore / 云端 DomainStore）；
+Engine 注入 API 提供的 `BackgroundJobAdmission = Callable[[Scope], None]` 准入回调，
+以及同一 Evolver、PolicyManager 与读源（本地 KVStore / 云端 DomainStore）；
 Job 通过 Evolver 的 TIME profile 快照获知层级和分组配置，不重新装配内容算子。
 默认 `hierarchy.auto_derive=false`；自定义 policies 仍完整替换默认表，缺键视为关闭。
 
 每轮流程：
 
-1. 检查协作取消、固定 home、实时双开关及该 home 的故障保护状态。
+1. 检查协作取消、固定 home、实时双开关及该 home 的故障保护状态；
+   启用执行时调用显式注入的 API 准入回调复验授权及空间可写状态，缺少回调拒绝注册。
 2. 取得可选 `hierarchy:time` 锁，与显式建树共用；锁覆盖本轮读取、验证和写入。
 3. 按 profile 顺序处理 Snapshot→TimeSpan、TimeSpan→Scene、Scene→Event。
-   每层读取目标父水位、选择候选与完整后代，交给同一 Evolver/Composer 单层增量构建。
+   每层读取前及派发 Evolver 前再次调用准入回调；读取目标父水位、选择候选与完整后代，
+   交给同一 Evolver/Composer 单层增量构建。
 4. 当前层立即持久化；下一层重新扫描，允许同轮使用新父。未来输入与未封口组最早起点
    向上传递，阻止上层水位越过未完成的下层。分组和严格静默边界见 S05。
 5. 汇总结果与跳过样例，释放锁，交由 Scheduler 记录本轮终态及父定时任务的最近结果。
@@ -655,5 +658,10 @@ detail 标记 retryable="true"，不保留故障保护，下一周期重新读�
 不会额外触发故障保护；强制取消而无法核对结果时保守阻止后续推进。
 
 当前注册不持久化、不自动发现 home，不复用 dreaming 的持续授权/恢复注册表。
-宿主负责注册范围及其权限生命周期；动态关闭策略只让后续轮次跳过，不中断已经开始
-的本轮写入。需要停止任务时使用 job_cancel 或 Runtime.close。
+宿主选择注册范围，注册许可不覆盖未来轮次。任务读取和持久化边界通过 API 准入回调
+复验原注册身份、授权及空间状态；归档、冻结、权限撤销或认证过期后，后续轮次
+返回 FAILED/complete=false，不得继续写入或误报成功。确认尚未写入的拒绝不闩住故障状态，
+已有部分写入则保留实际计数和 repair_required，阻止自动推进。动态关闭策略只让后续
+轮次跳过；需要停止任务时使用 job_cancel 或 Runtime.close。
+这些复验不是事务或写入 fencing：单个底层调用已开始后不能强制回滚，也不保证跨进程
+状态切换与写入原子化；后续写入批次仍必须复验，身份不向执行层下传。

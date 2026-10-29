@@ -177,6 +177,9 @@ parent_scope 在进入 Evolver 前报错，不触发写入阶段的故障暂停�
 `jobs_impl/hierarchy_derive_job.py`。JobFactory 首次注册时延迟构造 derive spec；同一
 完整 Scope 共享故障保护状态，不因重复注册清零。自动 Job 每轮重新读取策略，逐层
 候选→构建→记录结果；使用与显式建树相同的 hierarchy:time 锁。
+注册必须注入 API 提供的 BackgroundJobAdmission；Job 在读取及构建派发前调用，
+并将不含身份的回调交给 Composer 在准备结束及写入批次前复验。准入拒绝必须失败，
+已写入时保留计数及故障保护；不得将无写入的拒绝当成永久 repair。
 AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘要，不实现树算法。
 诊断详情序列化失败时记录日志并回退为 JSON 空对象，不中断完成记录、活跃引用清理或队列。
 周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。

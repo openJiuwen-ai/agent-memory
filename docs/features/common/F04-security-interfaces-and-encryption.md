@@ -248,6 +248,12 @@ policy 或委托人事实。授予上界仅 ROOT 免除普通成员限制；ADMI
 历史读取采用保守边界：当前请求条目与实际选中版本都必须可读。本页不改变公开 MemoryAPI、
 权限查询接口或 frozen 值对象；门禁整改不能以删除逐条安全断言换取绿测。
 
+Runtime 注册的周期 HIERARCHY 也不能沿用一次性许可。API 显式注入绑定 home 的准入回调，
+每轮读取、构建派发和持久化批次前复验原注册上下文的可信来源、到期及在线凭据状态，
+刷新空间事实后复验 WRITE/UPDATE 权限及空间可写状态。回调失败即拒绝，不降级放行；
+security/actor 不向 Engine、Job 或 Composer 传递。确认无写入时报告失败，部分写入则
+保留已完成计数与修复要求；这不提供撤销已开始底层调用或跨进程写入 fencing 的能力。
+
 ### 4.1 dreaming 与生命周期
 
 保留最新上游的 evolve 三态、candidate/interval、fan-out、损坏记录隔离与取消/恢复机制。

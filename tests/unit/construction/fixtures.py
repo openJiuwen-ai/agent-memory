@@ -626,3 +626,32 @@ def make_snapshot_test_harness(
         **options,
     )
     return SimpleNamespace(evolver=evolver, world=world, index=index, llm=llm)
+
+
+def named_truth_evolver_context(kind: str, *, schema_enabled: bool = False, builder="unified"):
+    """两套独立 KV 真源，constructor 仅指定 truth，Evolver 不重复声明数据面名。"""
+    from jiuwen_memory.config.context import AssemblyContext
+
+    return AssemblyContext.from_dict({
+        "globals": {"vector_enabled": False, "schema_enabled": schema_enabled},
+        "kv_store": {"default": "memory", "truth": "memory"},
+        "fulltext_store": {"default": "memory"},
+        "vector_store": {"default": "memory"},
+        "store_manager": {"default": {
+            "target": "composite",
+            "params": {"domain_stores": {
+                "default": {"kv_store": "default"},
+                "truth": {"kv_store": "truth"},
+            }},
+        }},
+        "extractor": {"keyword": "keyword"},
+        "dedup": {"keyword": "keyword"},
+        "constructor": {"writer": {
+            "target": builder, "params": (
+                {"domain_store": "truth"} if builder == "unified" else {"kv_store": "truth"}
+            ),
+        }},
+        "evolver": {"worker": {"target": kind, "params": {
+            "index_builder": "writer", "extractor": "keyword", "dedup": "keyword",
+        }}},
+    })
