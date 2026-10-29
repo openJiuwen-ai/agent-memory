@@ -13,6 +13,7 @@
 
 | 文件/目录 | 职责 |
 |---|---|
+| `relations/catalog.py` / `type_def/continuity.py` | 关系与职责启动目录、接续 DTO；职责与权限角色分离 |
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |

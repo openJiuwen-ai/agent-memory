@@ -12,6 +12,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `continuity/` | 接续应用接口/Producer、单写持久 Registry、事件与关系回执、构建/视图编排 |
 | `base.py` | `ControlOperator` 抽象基类 + `ControlOperatorType` 枚举；所有算子的自描述契约 |
 | `types.py` | 控制层数据类型（Channel/JobInfo/MemoryPatch/DeleteSelector/BatchWrite*/WriteTargets 等）+ 安全域 Action/Grant 兼容再导出，被本层所有文件及上游 `api/` 依赖 |
 | `engine.py` | `MemoryEngine` 抽象接口——跨层编排中枢，异步协程 |

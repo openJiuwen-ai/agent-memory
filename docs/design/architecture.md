@@ -214,9 +214,11 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ## 6. 记忆接口层（Memory API）
 
+可选角色关系记忆入口已增加 `role_task`、`role_record`、`role_relation`、`role_view`、`role_rebuild`，负责显式任务映射、可靠记录、关系复核、职责图视图和补建恢复；保持同一 PEP 与传输契约，详见 [S10](../specs/S10-cross-agent-continuity.md)。
+
 所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；当前由 `Authorizer` 判定，旧 `PermissionManager` 不参与生产授权。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
 
-本章**只列出当前代码已实现的 36 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
+本章**只列出当前代码已实现的 43 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
 
 | 对外接口方法 | 语义 | 入参 | 出参 |
 | --- | --- | --- | --- |
@@ -238,8 +240,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `trace` | 治理·血缘回溯：沿 `provenance` 追溯演进来源链（委托 Governor；不沿层级树、不沿 `supersedes`） | `unit_id: str`；`scope: Scope`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |
 | `audit` | 治理·审计查询：按 actor/target/action/layer/时间段等检索审计留痕（委托 Governor）。无具体 target scope 时以根 `Scope()` 为鉴权闸门 | `filters: dict[str, str]`；`*`；`security: RequestSecurityContext`；`limit: int = 100` | `list[AuditEvent]` |
 | `verify_audit` | 审计链完整性验证，按 `VERIFY_AUDIT` 执行管理面鉴权；参数受服务端上限和独立并发预算约束，未装配 provider 时返回 `unsupported` | `*`；`security: RequestSecurityContext`；`after_sequence: int = 0`；`page_size: int = 1000`；`max_samples: int = 20`；`anchor_policy: str = "if_configured"` | `AuditVerificationResult` |
-| `grant` | 跨 scope 授权。公共 `Grant` 来自安全域，包含 `grant_id`、`revoked` 与冻结后的动作集合；当前过渡态委托 `PermissionManager`，目标切到 `Authorizer` / `GrantStore` | `grant: Grant`；`*`；`security: RequestSecurityContext` | `Grant` |
-| `revoke` | 回收授权；当前过渡态按旧授权条件撤销，目标形态按 `grant_id` 精确定位 | `grant: Grant`；`*`；`security: RequestSecurityContext` | `None` |
+| `grant` | 跨 scope 授权。公共 `Grant` 来自安全域，包含 `grant_id`、`revoked` 与冻结后的动作集合；通过 `Authorizer` 的管理能力写入唯一 `GrantStore` | `grant: Grant`；`*`；`security: RequestSecurityContext` | `Grant` |
+| `revoke` | 回收授权；按 `grant_id` 精确定位并幂等撤销 | `grant: Grant`；`*`；`security: RequestSecurityContext` | `None` |
 | `create_space` | 创建 space，并写入 `principal_path`、状态、metadata 与初始 policy。以 `Scope(org=spec.org)` 做 WRITE 鉴权 | `spec: SpaceSpec`；`*`；`security: RequestSecurityContext` | `SpaceInfo` |
 | `get_space` | 读取单个 space 的基础信息、状态与策略摘要 | `org: str`；`space: str`；`*`；`security: RequestSecurityContext` | `SpaceInfo` |
 | `list_spaces` | 列出 org 下 spaces。`SpaceStatus`：`ACTIVE`/`FROZEN`/`ARCHIVED`/`DELETING`/`DELETED` | `org: str`；`*`；`security: RequestSecurityContext`；`status: SpaceStatus \| None = None`；`limit: int = 100`；`cursor: str \| None = None` | `list[SpaceInfo]` |
@@ -253,6 +255,13 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `list_space_members` | 列出 space 成员与角色 | `org: str`；`space: str`；`*`；`security: RequestSecurityContext` | `list[SpaceMember]` |
 | `add_space_member` | 添加或更新 space 成员角色 | `org: str`；`space: str`；`member: SpaceMember`；`*`；`security: RequestSecurityContext` | `None` |
 | `remove_space_member` | 移除 space 成员 | `org: str`；`space: str`；`member: Scope`；`*`；`security: RequestSecurityContext` | `None` |
+| `role_task` | 登记、绑定和读取跨产品任务 | `scope: Scope`；`request: TaskRequest`；`security: RequestSecurityContext` | `dict` |
+| `role_record` | 幂等记录带来源的事件 | `scope: Scope`；`event: ContinuityEvent`；`security: RequestSecurityContext` | `dict` |
+| `role_relation` | 登记或复核证据关系 | `scope: Scope`；`relation: RelationRecord；expected_revision: int`；`security: RequestSecurityContext` | `dict` |
+| `role_view` | 按职责展开证据路径 | `scope: Scope`；`request: RoleViewQuery`；`security: RequestSecurityContext` | `dict` |
+| `role_rebuild` | 修复投影或恢复未知写入 | `scope: Scope`；`recovery: ContinuityRecovery \| None = None`；`security: RequestSecurityContext` | `dict` |
+| `read_md_file` | 读取 Markdown 记忆文件 | `md_filename`、`context`、可信 `security`；具体参数见 S02 | `list[MemoryUnit]` |
+| `edit_md_file` | 替换 Markdown 记忆块并保存新版本 | `md_filename`、`context`、可信 `security`；具体参数见 S02 | `list[MemoryUnit]` |
 | `admin_get` | admin：读取一项运行时可变策略的当前值（直达 PolicyManager）。管理面以根 `Scope()` 鉴权 | `key: str`；`*`；`security: RequestSecurityContext` | `str` |
 | `admin_set` | admin：调整一项运行时策略（启停索引、检索/演进开关等；键未知或不可变配置抛 `PolicyError`） | `key: str`；`value: str`；`*`；`security: RequestSecurityContext` | `None` |
 | `admin_all` | admin：列出全部运行时策略及当前值 | `*`；`security: RequestSecurityContext` | `dict[str, str]` |

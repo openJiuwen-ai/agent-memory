@@ -16,6 +16,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `graph_impl/kv_graph_store.py` | 持久 KV 图投影与邻接查询；旧邻接不决定删除新边 |
 | `store_manager.py` | 管理面契约 `StoreManager`（端口单一入口 `kv(name)`/`has_kv(name)` 等、`domain_store(name)`/`has_domain_store(name)`、能力/健康聚合）+ `StoreManagerProducer`（TOP_NAME=`store_manager`；`resolve` 按 params → `globals.store_manager` → default 三级链解析全局唯一 manager，不做匿名兜底）+ `resolve_name`（消费者具名端口/数据面选择键统一读取：params 直读、拒 inline dict）+ `StorageCapability` |
 | `domain_store.py` | 数据面契约 `DomainStore`（MemoryUnit 领域操作：`add`/`update` 带 `IndexWriteMode`、`delete` 带 `IndexRemoveMode`、get/list/scopes、recall/recall_and_get/retrieve/preferred_retrieval_pipeline、`read_md_file`/`edit_md_file`（F08 md 文件级读写，仅文档模式））+ `DomainStoreProducer`（非平级 YAML 入口，由 manager 工厂内构建）。原文不在此列——由构建层注入独立 `KVStore` 自行读写 |
 | `security.py` | StorageSecurity 通用授权、StoreSecurity 数据保护能力标识及公开 StoreEncryptionBinding 依赖契约 |

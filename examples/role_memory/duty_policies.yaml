@@ -1,0 +1,8 @@
+# 内置 general / diagnosis / testing / execution 保留，可增补项目职责。
+security:
+  display_name: 安全审查
+  traversal:
+    - {edge_type: mitigates, direction: backward, priority: 1, max_depth: 2}
+    - {edge_type: verifies, direction: backward, priority: 2, max_depth: 2}
+  budget: {max_depth: 2, max_nodes: 30, max_edges: 60, timeout_ms: 1000}
+# contradicts 双向与 requires 出向检查由服务端强制追加，配置不能删除。

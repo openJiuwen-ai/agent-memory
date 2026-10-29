@@ -17,6 +17,7 @@ def register_controllers() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
+    import_optional("jiuwen_memory.control.continuity.service")
     import_optional("jiuwen_memory.control.pipeline_impl")
     import_optional("jiuwen_memory.control.engine_impl")
     import_optional("jiuwen_memory.control.governance_impl")

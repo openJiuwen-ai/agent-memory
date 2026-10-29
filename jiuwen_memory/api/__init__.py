@@ -214,4 +214,22 @@ __all__ = [
     "scope_for_log",
 ]
 
+from jiuwen_memory.common.type_def.continuity import (
+    ContinuityEvent,
+    ContinuityRecovery,
+    Duty,
+    EvidenceRelation,
+    MemoryRef,
+    RelationRecord,
+    RelationStatus,
+    RoleViewQuery,
+    TaskRequest,
+    ViewBudget,
+)
+
 from .search_options import SearchOptions
+
+__all__ += [
+    "ContinuityRecovery", "ContinuityEvent", "Duty", "EvidenceRelation", "MemoryRef",
+    "RelationRecord", "RelationStatus", "RoleViewQuery", "TaskRequest", "ViewBudget",
+]

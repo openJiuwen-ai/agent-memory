@@ -20,6 +20,7 @@ from inspect import Parameter, isawaitable, signature
 
 import pytest
 
+from jiuwen_memory.api import ContinuityEvent, MemoryRef, RelationRecord, RoleViewQuery, TaskRequest
 from jiuwen_memory.api.memory_api import MemoryAPI
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import PermissionDeniedError
@@ -396,6 +397,13 @@ def test_every_public_entry_rejects_before_business_access(
     values = {
         "security": security,
         "scope": VICTIM_SCOPE,
+        "request": TaskRequest("create", "r") if entry == "role_task" else RoleViewQuery(query="q"),
+        "event": ContinuityEvent("t", "b", "e", "observation"),
+        "relation": RelationRecord(
+            "r", MemoryRef(VICTIM_SCOPE, "a", "0" * 64),
+            MemoryRef(VICTIM_SCOPE, "b", "1" * 64), "supports",
+        ),
+        "expected_revision": 0,
         "content": "content",
         "source": Modality.TEXT,
         "items": [BatchWriteItem(content="content", scope=VICTIM_SCOPE)],

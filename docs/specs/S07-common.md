@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -604,3 +604,10 @@ CryptographyProvider 与 `local` KeyProvider。
 索引转换为 epoch 毫秒。缺值与未知/开放区间哨兵由字段自身契约决定。
 自动生成的点状 Snapshot 满足 occurred_at、t_message、span_start、span_end 同值，
 其时间索引也必须相等；显式传入的更宽区间不受点状约束。
+
+
+## 职责关系共享数据
+
+公开 DTO 包括 MemoryRef、TaskRequest、ContinuityEvent、RelationRecord、RoleViewQuery、ViewBudget、ContinuityRecovery；详细字段及兼容状态以 [S10](S10-cross-agent-continuity.md) 为准。MemoryRef 按真实 Scope/ID 与规范化内容摘要定位，不要求旧正文先增加任务/职责标签。
+
+RelationCatalog 是启动时验证的共享配置数据，不是每职责一个插件：关系定义含方向、对称/传递、端点类别与说明，职责策略含类型、展开方向、优先级和预算。构建与查询必须注入同一目录；未知名字失败，运行时不动态注册。职责字符串不是 SpaceContentRole，也不影响授权。

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.errors import NotFoundError, UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, MemoryUnit, Scope
@@ -38,6 +38,15 @@ class KvProducer(Factory):
 
 
 class KVStore(BaseStore):
+    @property
+    def persistent_atomic_records(self) -> bool:
+        """Fixed durable namespace with atomic single-record replacement (not CAS)."""
+        return False
+
+    def claim_single_writer(self, namespace: str) -> None:
+        """Hold an exclusive management writer claim until store.close(); fail if unsupported."""
+        raise UnsupportedCapabilityError("KV backend cannot enforce a single writer")
+
     @abstractmethod
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""

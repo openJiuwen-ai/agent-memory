@@ -235,7 +235,7 @@ class QueryOpsMixin:
             rq.filters = and_merge(rq.filters, system_clauses)
         result = asyncio.run(self._queries.recall(context.scope, rq))
         self._log(identity, "search", target_scope=context.scope, detail=auth)
-        return result
+        return self._guard_continuity_search(result)
 
     def _search_spaces(
         self, context: Context, retrieval_query: RetrievalQuery, access: _SearchAccess,
@@ -404,7 +404,7 @@ class QueryOpsMixin:
                 "count": str(len(merged.items)),
             },
         )
-        return merged
+        return self._guard_continuity_search(merged)
 
     def _hierarchy_enabled(self) -> bool:
         """仅在可信请求通过校验后读取运行时树总开关。"""
@@ -523,6 +523,8 @@ class QueryOpsMixin:
                 "page_count": str(len(result.items)),
             },
         )
+        for unit in result.items:
+            self._guard_continuity_snapshot(unit, security)
         return result
 
     def get(
@@ -566,6 +568,7 @@ class QueryOpsMixin:
             unit.id,
             context=_unit_snapshot_permission_context(unit),
         )
+        self._guard_continuity_snapshot(unit, security)
         self._log(
             identity,
             "get",

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -52,7 +52,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 ## HTTP / CLI 与协议适配契约
 
 HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
-`MemoryAPI.__abstractmethods__` 的 38 个公开方法全部按以下规则暴露：
+`MemoryAPI.__abstractmethods__` 的 43 个公开方法全部按以下规则暴露：
 
 ```text
 POST /v1/<MemoryAPI 方法名>
@@ -105,7 +105,7 @@ dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或�
 此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
 HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
-不再经过 legacy `DispatchRequest` / shared handler。CLI 的 38 个命令与参数直接从
+不再经过 legacy `DispatchRequest` / shared handler。CLI 的 43 个命令与参数直接从
 `MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
 对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
 本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
@@ -1384,3 +1384,9 @@ AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.ru
 父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
 `last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
 诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。
+
+## 角色关系记忆入口
+
+五个可选公开方法接受 `scope` 与必需的可信 `security`：`role_task(request: TaskRequest)`、`role_record(event: ContinuityEvent)`、`role_relation(relation: RelationRecord, expected_revision: int)`、`role_view(request: RoleViewQuery)`、`role_rebuild(*, recovery: ContinuityRecovery | None = None)`。全部返回结构化字典；HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射，MCP 注册同名 memory_role_* 工具。DTO/状态/重试语义见 [S10](S10-cross-agent-continuity.md)。
+
+仅显式配置 continuity 才启用；未启用返回 UnsupportedCapabilityError。scope 必须是 org+space 的项目空间。API 执行项目权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。旧关系失效后的复核/撤回可授权读取旧关系控制记录，但不向调用方披露其不可读依赖。普通 get/list/inspect/trace 也复核关联依赖，普通 search 保守隐藏无法当次核验的关系记录。

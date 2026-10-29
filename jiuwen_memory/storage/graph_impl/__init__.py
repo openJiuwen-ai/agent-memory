@@ -9,6 +9,7 @@ from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.storage.graph import GraphProducer
 
 import_optional(".in_memory_graph_store", __name__)
+import_optional(".kv_graph_store", __name__)
 import_optional(".nano_graphrag_graph", __name__)
 
 __all__ = ["GraphProducer"]

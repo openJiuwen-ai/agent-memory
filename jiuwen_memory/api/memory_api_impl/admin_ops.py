@@ -198,6 +198,7 @@ class AdminOpsMixin:
     ) -> None:
         # 只使用本次真源返回的条目，避免二次读取与最终返回内容的快照错位。
         for unit in units:
+            self._guard_continuity_snapshot(unit, security)
             context = _unit_snapshot_permission_context(unit)
             self._authorize(security, unit.scope, Action.READ, entry, unit.id, context=context)
 

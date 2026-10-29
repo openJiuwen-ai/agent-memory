@@ -99,6 +99,18 @@ def test_stdio_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -
 # 工具名 → (MemoryAPI 方法名, 代表性最小合法 payload)。payload 同时锁「形状可过
 # parse_request」——工具转发给 _invoke 的键名集合必须与这里给出的契约一致。
 TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
+    "memory_role_view": ("role_view", {"scope": {"org": "o", "space": "p"},
+                                      "request": {"query": "timeout", "duty": "testing"}}),
+    "memory_role_task": ("role_task", {"scope": {"org": "o", "space": "p"},
+                                      "request": {"operation": "create", "request_id": "r"}}),
+    "memory_role_record": ("role_record", {"scope": {"org": "o", "space": "p"},
+        "event": {"task_id": "t", "binding_id": "b", "event_id": "e", "content": "observed"}}),
+    "memory_role_relation": ("role_relation", {"scope": {"org": "o", "space": "p"},
+        "expected_revision": 0, "relation": {"relation_id": "r", "relation_type": "supports",
+        "source": {"scope": SCOPE, "unit_id": "a", "content_digest": "0" * 64},
+        "target": {"scope": SCOPE, "unit_id": "b", "content_digest": "1" * 64}}}),
+    "memory_role_rebuild": ("role_rebuild", {"scope": {"org": "o", "space": "p"}}),
+
     "memory_add": (
         "add",
         {

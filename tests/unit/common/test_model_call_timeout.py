@@ -136,6 +136,15 @@ def _record_openai_client(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return recorded
 
 
+@pytest.fixture(autouse=True)
+def _capture_logs_after_other_tests_assemble_runtime(monkeypatch):
+    # Runtime configures its own handler and disables root propagation. Restore it
+    # just for caplog tests so test order does not determine whether logs are captured.
+    import logging
+
+    monkeypatch.setattr(logging.getLogger("agent_memory"), "propagate", True)
+
+
 def test_read_outbound_call_policy_defaults_are_overridable() -> None:
     """调用策略函数的默认参数应与系统默认值一致，且可显式覆盖。"""
     policy = read_outbound_call_policy({}, "llm")

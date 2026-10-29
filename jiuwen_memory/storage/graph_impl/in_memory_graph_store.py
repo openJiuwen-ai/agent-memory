@@ -33,6 +33,19 @@ class InMemoryGraphStore(GraphStore):
         self._nodes: dict[_ScopeKey, dict[str, Node]] = defaultdict(dict)
         self._edges: dict[_ScopeKey, dict[str, Edge]] = defaultdict(dict)
 
+    @property
+    def supports_incident_edges(self) -> bool:
+        return True
+
+    def incident_edges(self, scope: Scope, node_id: str, *, limit: int = 100) -> list[Edge]:
+        from copy import deepcopy
+
+        return deepcopy(sorted(
+            (e for e in self._edges[_skey(scope)].values()
+             if e.source == node_id or e.target == node_id),
+            key=lambda e: e.id,
+        )[:limit])
+
     def store_type(self) -> StoreType:
         return StoreType.GRAPH
 
