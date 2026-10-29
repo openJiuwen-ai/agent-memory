@@ -38,6 +38,7 @@ from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_FILENAME_KEY,
     MEMORY_CLASS_KEY,
+    LifecycleState,
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -396,15 +397,22 @@ class LocalWatchdog(Watchdog):
     def _sync_one(self, md_filename: str, deleted: bool) -> None:
         """单文件 unit 粒度增量同步（F07 §12.3 流程）。
 
-        ① old = shadow.list_units_by_md(scope, md_filename)  # [(unit_id, content_hash)]
+        ① old = shadow.list_units_by_md(scope, md_filename, lifecycle=active)
+           # [(unit_id, content_hash)]，只取 active 行
         ② 读 md 按行算 new (content_hash, content) list  (deleted=True 时 new 为空 → 全删)
         ③ diff：
            old_hash - new_hash → delete_units(对应 unit_id)
            new_hash - old_hash → insert_units(新建 unit，步骤 3 缺省元数据 + content 原文)
+
+        ① 只取 active 行：superseded/archived/forgotten 行本就是 SUPERSEDE/治理后保留的
+        历史版本（md 已删旧块、shadow 保留该行做版本链/as_of），md 无其 hash 是正确终态
+        而非「用户手删」信号，不参与 hash 对账——否则看门狗会把旧版行物理删除、断版本链。
         """
         scope = self._scope
-        # ① 旧 unit（含 content_hash）
-        old_pairs = self._shadow.list_units_by_md(scope, md_filename)
+        # ① 旧 unit（含 content_hash）——只取 active 行，排除历史版本（见 docstring）。
+        old_pairs = self._shadow.list_units_by_md(
+            scope, md_filename, lifecycle=LifecycleState.ACTIVE.value
+        )
         old_by_hash: dict[str, str] = {}
         for unit_id, ch in old_pairs:
             old_by_hash[ch] = unit_id
