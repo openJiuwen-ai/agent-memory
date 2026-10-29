@@ -16,6 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import ConflictError, PartialFailureError, ValidationError
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
 from jiuwen_memory.common.type_def.memory import MEMORY_KEY_PREFIX
 from jiuwen_memory.common.type_def.memory_codec import loads
@@ -98,7 +99,10 @@ class SchemaUpdateCoordinator:
                 continue
             if old.id not in sources(unit):
                 continue
-            if unit.temporal.t_invalid is not None and unit.temporal.t_invalid <= boundary:
+            if (
+                unit.temporal.t_invalid is not None
+                and as_utc(unit.temporal.t_invalid) <= as_utc(boundary)
+            ):
                 continue
             expected = (
                 new.system_metadata.get("schema_name"),
@@ -184,7 +188,10 @@ class SchemaUpdateCoordinator:
             if after is None or after.lifecycle != LifecycleState.ACTIVE:
                 rest.append(change)
                 continue
-            if after.temporal.t_invalid is not None and after.temporal.t_invalid <= boundary:
+            if (
+                after.temporal.t_invalid is not None
+                and as_utc(after.temporal.t_invalid) <= as_utc(boundary)
+            ):
                 rest.append(change)
                 continue
             active.append(change)
@@ -203,23 +210,32 @@ class SchemaUpdateCoordinator:
             source_expiry = new.temporal.t_invalid
             if only_source_property and source_expiry is not None:
                 # A conclusion supported only by this source cannot outlive its validity.
-                if after.temporal.t_invalid is None or source_expiry < after.temporal.t_invalid:
+                if (
+                    after.temporal.t_invalid is None
+                    or as_utc(source_expiry) < as_utc(after.temporal.t_invalid)
+                ):
                     after.temporal.t_invalid = source_expiry
             valid_from = after.temporal.t_valid
             valid_until = after.temporal.t_invalid
             if valid_from is not None and valid_until is not None:
-                if valid_until <= valid_from:
+                if as_utc(valid_until) <= as_utc(valid_from):
                     raise ValidationError("Schema update produces an inverted validity interval")
         return plan
 
     @staticmethod
     def _retire(before: MemoryUnit, boundary: datetime, *, replaced: bool) -> MemoryUnit:
-        if before.temporal.t_valid is not None and boundary <= before.temporal.t_valid:
+        if (
+            before.temporal.t_valid is not None
+            and as_utc(boundary) <= as_utc(before.temporal.t_valid)
+        ):
             raise ValidationError("Schema update boundary must follow the previous valid time")
         after = copy.deepcopy(before)
         if replaced:
             after.lifecycle = LifecycleState.SUPERSEDED
-        if after.temporal.t_invalid is None or boundary < after.temporal.t_invalid:
+        if (
+            after.temporal.t_invalid is None
+            or as_utc(boundary) < as_utc(after.temporal.t_invalid)
+        ):
             after.temporal.t_invalid = boundary
         return after
 

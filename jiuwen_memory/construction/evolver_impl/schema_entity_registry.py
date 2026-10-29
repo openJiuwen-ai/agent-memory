@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import LifecycleState, MemoryTier, MemoryUnit, Segment, Temporal
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.storage.fulltext import FulltextStore
@@ -268,6 +269,7 @@ def _entity_record(
                 for unit in observations
                 if unit.temporal.t_message is not None
             ),
+            key=as_utc,
             default=existing.temporal.t_message if existing is not None else None,
         ),
     )

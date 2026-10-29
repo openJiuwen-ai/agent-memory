@@ -8,8 +8,9 @@ from jiuwen_memory.api import DeleteMode, DeleteSelector, Scope
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
 from jiuwen_memory.common.security import internal_context
-from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Segment, memory_key
+from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Segment, Temporal, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.control.engine_impl.temporal_support import matches_delete_selector
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from tests.support.scoped_authenticator import ScopedAuthenticator
 from tests.unit.api.fixtures import security_for
@@ -290,3 +291,113 @@ def test_delete_purge_recursively_removes_provenance_descendants() -> None:
         kernel.api.get(unrelated.id, scope, security=security_for(kernel.api, actor)).id
         == unrelated.id
     )
+
+
+def test_delete_selector_before_matches_naive_message_time_with_aware_cutoff() -> None:
+    """契约层两种合法 ISO 形态组合：naive occurred_at 写入 + aware before 删除。"""
+    scope = Scope(org="acme", user="u1", agent="a1", session="s1")
+    actor = scope
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
+    old = kernel.api.add(
+        "old event",
+        scope,
+        security=security_for(kernel.api, actor),
+        occurred_at=datetime(2026, 6, 17, 9, 0),  # naive
+    )[0]
+    new = kernel.api.add(
+        "new event",
+        scope,
+        security=security_for(kernel.api, actor),
+        occurred_at=datetime(2026, 6, 17, 12, 0),  # naive
+    )[0]
+
+    affected = kernel.api.delete(
+        DeleteSelector(
+            scope=scope,
+            before=datetime(2026, 6, 17, 10, 0, tzinfo=UTC),  # aware
+            mode=DeleteMode.FORGET,
+        ),
+        security=security_for(kernel.api, actor),
+    )
+
+    assert old.id in affected, "naive t_message 早于 aware before 应命中，不得因混比抛 TypeError"
+    assert new.id not in affected
+
+
+def test_delete_selector_before_matches_aware_message_time_with_naive_cutoff() -> None:
+    """反向组合：aware occurred_at 写入 + naive before 删除。"""
+    scope = Scope(org="acme", user="u1", agent="a1", session="s1")
+    actor = scope
+    kv = InMemoryKVStore()
+    kernel = build_kernel(kv=kv)
+    old = kernel.api.add(
+        "old event",
+        scope,
+        security=security_for(kernel.api, actor),
+        occurred_at=datetime(2026, 6, 17, 9, 0, tzinfo=UTC),
+    )[0]
+    new = kernel.api.add(
+        "new event",
+        scope,
+        security=security_for(kernel.api, actor),
+        occurred_at=datetime(2026, 6, 17, 12, 0, tzinfo=UTC),
+    )[0]
+
+    affected = kernel.api.delete(
+        DeleteSelector(
+            scope=scope,
+            before=datetime(2026, 6, 17, 10, 0),  # naive
+            mode=DeleteMode.FORGET,
+        ),
+        security=security_for(kernel.api, actor),
+    )
+
+    assert old.id in affected, "aware t_message 早于 naive before 应命中，不得因混比抛 TypeError"
+    assert new.id not in affected
+
+
+SCOPE = Scope(org="acme", user="u1", agent="a1", session="s1")
+
+# 同一时刻的两种合法 ISO 形态：naive 按 UTC 解释，aware 带 +00:00。
+NAIVE_9 = datetime(2026, 6, 17, 9, 0)
+AWARE_9 = datetime(2026, 6, 17, 9, 0, tzinfo=UTC)
+NAIVE_10 = datetime(2026, 6, 17, 10, 0)
+AWARE_10 = datetime(2026, 6, 17, 10, 0, tzinfo=UTC)
+
+
+
+def _unit(t_message: datetime | None) -> MemoryUnit:
+    return MemoryUnit(
+        id="u1",
+        scope=SCOPE,
+        segments=[Segment(content="note")],
+        temporal=Temporal(t_message=t_message),
+    )
+
+
+@pytest.mark.parametrize(
+    ("t_message", "before", "expected"),
+    [
+        (NAIVE_9, AWARE_10, True),  # 契约层两种合法形态组合：先前必抛 TypeError
+        (AWARE_9, NAIVE_10, True),
+        (NAIVE_9, NAIVE_10, True),
+        (AWARE_9, AWARE_10, True),
+        (NAIVE_9, AWARE_9, False),  # 边界：t_message == before 不命中
+        (AWARE_9, NAIVE_9, False),
+    ],
+)
+def test_matches_delete_selector_compares_naive_and_aware_forms(
+    t_message: datetime, before: datetime, expected: bool
+) -> None:
+    selector = DeleteSelector(unit_ids=["u1"], before=before, mode=DeleteMode.FORGET)
+
+    assert matches_delete_selector(_unit(t_message), selector) is expected, (
+        "before 与 t_message 的 naive/aware 组合必须按 UTC 归一后比较"
+    )
+
+
+def test_matches_delete_selector_skips_unit_without_message_time() -> None:
+    selector = DeleteSelector(unit_ids=["u1"], before=AWARE_10)
+
+    assert matches_delete_selector(_unit(None), selector) is False, "无 t_message 不命中 before"

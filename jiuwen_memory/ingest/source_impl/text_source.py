@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime
 
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import Modality, RawPayload, Scope
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.source import Source
@@ -37,7 +38,7 @@ class TextSource(Source):
     def fetch(self, since: datetime | None = None) -> list[RawPayload]:
         out: list[RawPayload] = []
         for text, occurred_at in self._items:
-            if since is not None and occurred_at <= since:
+            if since is not None and as_utc(occurred_at) <= as_utc(since):
                 continue  # 增量：只取 since 之后
             out.append(
                 RawPayload(

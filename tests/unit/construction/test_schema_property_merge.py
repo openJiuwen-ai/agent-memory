@@ -141,7 +141,7 @@ def test_same_event_update_creates_replacement_and_supersedes_old() -> None:
     kv = MemoryKVStore()
     event = datetime(2023, 8, 3, tzinfo=UTC)
     old_message_time = datetime(2023, 8, 3, 9, tzinfo=UTC)
-    new_message_time = datetime(2023, 8, 3, 11, tzinfo=UTC)
+    new_message_time = datetime(2023, 8, 3, 11)
     existing = _property("old", "Alice", entity_id="entity-1", event_time=event)
     incoming = _property("new", "Alice", entity_id="entity-1", event_time=event)
     existing.source_ref = "source-old"

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.membership import MembershipProducer, MembershipResolver
@@ -68,7 +69,7 @@ class KVMembershipResolver(MembershipResolver):
         live = tuple(
             member
             for member in members
-            if member.expires_at is None or member.expires_at > now
+            if member.expires_at is None or as_utc(member.expires_at) > as_utc(now)
         )
         facts = SpaceFacts(org=org, space=space, info=info, members=live)
         self._store(key, facts)

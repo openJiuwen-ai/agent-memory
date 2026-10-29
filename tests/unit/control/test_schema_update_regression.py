@@ -89,6 +89,33 @@ def test_issue208_refreshes_entities_properties_and_search(world, mode):
     assert updated.id not in {item.unit_id for item in old_hits.items}
 
 
+def test_schema_update_accepts_mixed_timezone_validity_boundaries(world):
+    source, properties = world.add("陈静负责推荐算法迭代")
+    old_property = properties[0]
+    old_property.temporal.t_invalid = T1 + timedelta(days=365)
+    world.index.update([old_property])
+    world.llm.facts = [("陈静", "occupation", "陈静负责大模型评测", "")]
+    boundary = T1.replace(tzinfo=None)
+    source_expiry = T1 + timedelta(days=180)
+
+    updated = world.update(
+        source,
+        MemoryPatch(
+            content="陈静负责大模型评测",
+            mode=UpdateMode.SUPERSEDE,
+            t_valid=boundary,
+            t_invalid=source_expiry,
+        ),
+    )
+
+    replacements = [unit for unit in world.units() if unit.supersedes == old_property.id]
+    assert updated.temporal.t_valid == boundary
+    assert updated.temporal.t_invalid == source_expiry
+    assert world.get(old_property.id).temporal.t_invalid == boundary
+    assert len(replacements) == 1
+    assert replacements[0].temporal.t_invalid == source_expiry
+
+
 @pytest.mark.parametrize("mode", list(UpdateMode))
 def test_empty_content_retracts_entities_and_single_source_property(world, mode):
     source, props = world.add("陈静负责推荐算法迭代")

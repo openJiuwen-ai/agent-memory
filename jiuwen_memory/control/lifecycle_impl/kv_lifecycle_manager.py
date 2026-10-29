@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
 from jiuwen_memory.common.log import get_logger, scope_for_log
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryUnit,
@@ -99,7 +100,11 @@ def _sweep_target(
     if unit.lifecycle == LifecycleState.SUPERSEDED:
         return _policy_target(policy, _SUPERSEDED_TARGET_KEY)
     t_invalid = unit.temporal.t_invalid
-    if unit.lifecycle == LifecycleState.ACTIVE and t_invalid is not None and t_invalid < now:
+    if (
+        unit.lifecycle == LifecycleState.ACTIVE
+        and t_invalid is not None
+        and as_utc(t_invalid) < as_utc(now)
+    ):
         return _policy_target(policy, _EXPIRED_ACTIVE_TARGET_KEY)
     return None
 
