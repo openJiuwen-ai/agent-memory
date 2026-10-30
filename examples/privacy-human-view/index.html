@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>敏感记忆查看示例</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="demo-label">Jiuwen Memory · 演示</span>
+      <h1>敏感记忆查看</h1>
+      <p>选择脱敏记忆，验证后在当前页面查看完整原文。</p>
+    </header>
+
+    <p class="demo-note">本页使用虚构数据和模拟验证，不连接真实服务。</p>
+
+    <div class="layout">
+      <section class="memories" aria-labelledby="list-title">
+        <h2 id="list-title">选择一条记忆</h2>
+        <div id="memory-list"></div>
+        <p class="hint">列表始终只展示脱敏内容。</p>
+      </section>
+
+      <section class="reader" aria-labelledby="memory-title">
+        <div class="reader-heading">
+          <h2 id="memory-title"></h2>
+          <span id="level"></span>
+        </div>
+        <dl>
+          <div><dt>组织</dt><dd>云杉研究室（示例）</dd></div>
+          <div><dt>空间</dt><dd>研发工作区（示例）</dd></div>
+          <div><dt>归属用户</dt><dd>林予（示例）</dd></div>
+        </dl>
+        <p id="status" class="status" role="status"></p>
+        <p id="content" class="sentence" aria-live="polite"></p>
+        <div class="actions">
+          <button id="view" class="primary">验证并查看原文</button>
+          <button id="clear" hidden>清除原文</button>
+          <p id="policy" class="hint"></p>
+        </div>
+      </section>
+    </div>
+
+    <footer>正式接入使用安全路由；此页面仅演示交互。<a href="README.md">运行与接入说明</a></footer>
+  </main>
+
+  <dialog id="verification" aria-labelledby="verification-title">
+    <h2 id="verification-title">Passkey 验证示意</h2>
+    <p>真实接入时，由浏览器调起设备的 Passkey 验证。</p>
+    <p>本次验证仅用于当前这条记忆。</p>
+    <div class="dialog-actions">
+      <button id="cancel">取消</button>
+      <button id="approve" class="primary">模拟验证通过</button>
+    </div>
+    <button id="changed" class="text-button">模拟验证期间记忆更新</button>
+  </dialog>
+</body>
+</html>

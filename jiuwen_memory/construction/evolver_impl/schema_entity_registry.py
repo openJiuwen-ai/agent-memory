@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.security.privacy.base import PrivacyProtection
 from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import LifecycleState, MemoryTier, MemoryUnit, Segment, Temporal
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
@@ -43,8 +44,10 @@ class SchemaEntityRegistry:
         vector_store: VectorStore | None = None,
         fulltext_store: FulltextStore | None = None,
         embedder: Embedder | None = None,
+        privacy: PrivacyProtection | None = None,
     ) -> None:
         self._kv = kv
+        self._privacy = privacy
         self._vector = vector_store
         self._fulltext = fulltext_store
         self._embedder = embedder
@@ -89,6 +92,15 @@ class SchemaEntityRegistry:
             entity_id = key[-1]
             existing = self._load(units[0], entity_id)
             record = _entity_record(entity_id, units, existing)
+            if self._privacy is not None:
+                # This registry is an auxiliary search projection, not human-view
+                # truth. Project safe text before either KV persistence or embedding.
+                for segment in record.segments:
+                    segment.content = self._privacy.preview_echo(segment.content)
+                record.system_metadata = {
+                    key: self._privacy.preview_echo(value, label=key)
+                    for key, value in record.system_metadata.items()
+                }
             self._upsert(record)
             self._index(record)
             records.append(record)

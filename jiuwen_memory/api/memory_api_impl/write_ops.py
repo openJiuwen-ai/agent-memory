@@ -15,6 +15,7 @@ from jiuwen_memory.common.errors import (
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
@@ -87,6 +88,7 @@ class WriteOpsMixin:
             )
         )
 
+    @privacy_operation
     async def add_async(
         self,
         content: str,
@@ -121,7 +123,10 @@ class WriteOpsMixin:
         target, system_metadata = self._write_target(
             scope, security, coords, content, system_metadata
         )
-        permission_context = _write_permission_context(target, tags, system_metadata)
+        permission_tags = tags
+        if self._privacy is not None and tags is not None:
+            permission_tags = [self._privacy.preview(tag) for tag in tags]
+        permission_context = _write_permission_context(target, permission_tags, system_metadata)
         auth = self._authorize(
             security,
             target,
@@ -327,7 +332,8 @@ class WriteOpsMixin:
             pending.append((key, content, merged))
         if pending:
             decisions = collective.route_many(
-                self._router, [content for _key, content, _meta in pending], ctx
+                self._router, [self._privacy.preview(content) if self._privacy else content
+                               for _key, content, _meta in pending], ctx
             )
             for (key, _content, merged), decision in zip(pending, decisions):
                 merged.update(collective.decision_metadata(decision))
@@ -548,6 +554,7 @@ class WriteOpsMixin:
             )
         )
 
+    @privacy_operation
     async def batch_add_async(
         self,
         items: list[BatchWriteItem],
@@ -688,8 +695,11 @@ class WriteOpsMixin:
 
         authorized: list[tuple[int, BatchWriteItem, dict[str, str]]] = []
         for index, item in ready:
+            permission_tags = item.tags
+            if self._privacy is not None and permission_tags is not None:
+                permission_tags = [self._privacy.preview(tag) for tag in permission_tags]
             permission_context = _write_permission_context(
-                item.scope, item.tags, item.system_metadata
+                item.scope, permission_tags, item.system_metadata
             )
             try:
                 auth = self._authorize(
@@ -765,4 +775,14 @@ class WriteOpsMixin:
                     },
                 )
 
+        if self._privacy is not None:
+            for outcome in outcomes.values():
+                item = outcome.item
+                outcome.item = replace(
+                    item, content=self._privacy.preview_echo(item.content),
+                    tags=self._privacy.preview_echo(item.tags),
+                    system_metadata=self._privacy.preview_echo(item.system_metadata),
+                    user_metadata=self._privacy.preview_echo(item.user_metadata),
+                )
+                outcome.error = self._privacy.preview_echo(outcome.error)
         return self._commands.collect_batch_result(outcomes, len(items))

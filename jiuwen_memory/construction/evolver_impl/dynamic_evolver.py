@@ -361,6 +361,8 @@ def _build(config):
 
     hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
     hierarchy_llm = LlmProducer.dep(config, default="echo")
+    from jiuwen_memory.common.security.privacy.base import optional_privacy
+
     return DynamicEvolver(
         extractor=ExtractorProducer.dep(config, default="dynamic_llm"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -379,4 +381,5 @@ def _build(config):
         prompt_registry=registry,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        privacy=optional_privacy(config),
     )

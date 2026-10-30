@@ -16,6 +16,11 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
+from jiuwen_memory.common.security.privacy.base import (
+    PrivacyProtection,
+    optional_privacy,
+    split_protected_text,
+)
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
 from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Temporal
@@ -31,9 +36,16 @@ def _now() -> datetime:
 class SimpleIngestor(Ingestor):
     """规约 + 转换为记忆单元（不落盘）；超限文本预切分为多个 unit。"""
 
-    def __init__(self, normalizer: Normalizer, max_unit_chars: int = 8000) -> None:
+    def __init__(
+        self,
+        normalizer: Normalizer,
+        max_unit_chars: int = 8000,
+        *,
+        privacy: PrivacyProtection | None = None,
+    ) -> None:
         self._normalizer = normalizer
         self._max_unit_chars = max_unit_chars
+        self._privacy = privacy
 
     @staticmethod
     def operator_type() -> IngestOperatorType:
@@ -51,7 +63,12 @@ class SimpleIngestor(Ingestor):
             # 叶提示只声明结构身份；在规约前校验，不允许输入声明父子边。
             hierarchy, base_system_metadata = extract_hierarchy_hints(payload.system_metadata)
             content = self._normalizer.normalize(payload)
-            pieces = self._split(content)
+            if self._privacy is not None:
+                pieces = self._privacy.split_input(content, self._max_unit_chars)
+            elif "privacy_level" in payload.system_metadata:
+                pieces = split_protected_text(content, self._max_unit_chars)
+            else:
+                pieces = self._split(content)
             total = len(pieces)
             # t_event 从完整 content 抽取（首个绝对日期，无则 None），所有分片继承同一份：
             # 切分不改变事件时间，且与查询侧共用 common.time_utils 的同一份规则——否则
@@ -130,4 +147,5 @@ def _build(config):
     return SimpleIngestor(
         NormalizerProducer.dep(config, default="passthrough"),
         max_unit_chars=_parse_max_unit_chars(config.get("max_unit_chars")),
+        privacy=optional_privacy(config),
     )

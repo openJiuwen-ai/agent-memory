@@ -12,6 +12,7 @@ Space offboarding，MemoryUnit 的过滤、计数和分页则由独立 list 契�
 from __future__ import annotations
 
 from abc import abstractmethod
+from contextvars import ContextVar
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
@@ -24,6 +25,16 @@ from .base import BaseStore
 from .types import KVMemoryListResult
 
 logger = get_logger(__name__)
+_PRIVATE_BUILD: ContextVar[bool] = ContextVar("private_kv_build", default=False)
+
+
+def kv_config_source():
+    """Private backend locations are fixed; ordinary KV keeps ConfigSource late binding."""
+    if _PRIVATE_BUILD.get():
+        return None
+    from jiuwen_memory.config.config_source import ConfigSourceProducer
+
+    return ConfigSourceProducer.get_cached("default")
 
 
 class KvProducer(Factory):
@@ -36,8 +47,61 @@ class KvProducer(Factory):
 
     TOP_NAME = "kv_store"
 
+    @classmethod
+    def build(cls, target, params, ctx, *, name=""):
+        store = super().build(target, params, ctx, name=name)
+        if _PRIVATE_BUILD.get():
+            return store
+        from jiuwen_memory.common.security.privacy.base import optional_privacy
+        from jiuwen_memory.config.context import ComponentConfig
+        from jiuwen_memory.storage._privacy_kv import PrivacyKVStore
+
+        privacy = optional_privacy(ComponentConfig(dict(params or {}), ctx, target, name))
+        return PrivacyKVStore(store, privacy) if privacy is not None else store
+
+    @classmethod
+    def build_named(cls, name, ctx):
+        if _PRIVATE_BUILD.get():
+            from jiuwen_memory.common.errors import ValidationError
+
+            raise ValidationError("private KV dependencies must be inline, outside public ports")
+        return super().build_named(name, ctx)
+
+    @classmethod
+    def build_private(cls, config):
+        """Build an isolated inline backend without recursively assembling PrivacyProtection."""
+        from jiuwen_memory.common.errors import ValidationError
+
+        spec = config.params.get("kv_store")
+        if not isinstance(spec, dict) or not isinstance(spec.get("target"), str):
+            raise ValidationError("privacy KV requires an inline kv_store definition")
+        token = _PRIVATE_BUILD.set(True)
+        try:
+            return cls.dep(config)
+        finally:
+            _PRIVATE_BUILD.reset(token)
+
 
 class KVStore(BaseStore):
+    @staticmethod
+    def supports_compare_and_swap() -> bool:
+        """Whether this implementation supports atomic conditional byte replacement."""
+        return False
+
+    @staticmethod
+    def compare_and_swap(
+        scope: Scope, key: str, expected: bytes | None, value: bytes | None
+    ) -> bool:
+        """Atomically compare and replace a live value; None means absent/delete.
+
+        Successful replacements have no TTL. Expired values compare as absent.
+        Return False on mismatch; backend failures must raise, never report success.
+        This optional capability preserves compatibility with third-party plugins.
+        """
+        from jiuwen_memory.common.errors import ValidationError
+
+        raise ValidationError("KV backend does not support compare_and_swap")
+
     @abstractmethod
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""

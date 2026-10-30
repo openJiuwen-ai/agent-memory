@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.common.errors import BackendError, NotFoundError, ValidationError
 from jiuwen_memory.common.security.cryptography import CryptographyProducer, CryptographyProvider
 from jiuwen_memory.common.security.types import CryptoContext
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
@@ -97,6 +97,22 @@ class EncryptedKVStore(KVStore):
     def health(self) -> None:
         self._raw.health()
         self._encryption.health()
+
+    def supports_compare_and_swap(self) -> bool:
+        return self._raw.supports_compare_and_swap()
+
+    def compare_and_swap(self, scope, key, expected, value) -> bool:
+        if expected is None:
+            raw_expected = None
+        else:
+            try:
+                raw_expected = self._raw.get(scope, key)
+            except NotFoundError:
+                return False
+            if self._decrypt(scope, key, raw_expected) != expected:
+                return False
+        encoded = self._encrypt(scope, key, value) if value is not None else None
+        return self._raw.compare_and_swap(scope, key, raw_expected, encoded)
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         self._raw.insert(scope, key, self._encrypt(scope, key, value), ttl=ttl)

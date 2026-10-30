@@ -24,6 +24,7 @@ import os
 import sys
 import threading
 import uuid
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -33,6 +34,7 @@ from jiuwen_memory_entry.core.api_contract import invoke_api, is_known_verb
 from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.error_response import error_response
 from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
+from jiuwen_memory_entry.http_server.human_view import handle_human_request
 
 # 共享应用核（server / profiles / handler / config_loader）住在 jiuwen_memory_entry/core；
 # 加入 sys.path 后 flat-import 复用——本 surface 只做 HTTP 传输。
@@ -154,7 +156,27 @@ class HttpServer(Server):
         class Handler(BaseHTTPRequestHandler):
             timeout = _READ_TIMEOUT
 
+            @contextmanager
+            def human_primary_auth(self):
+                runtime = srv.security_runtime
+                if runtime is None:
+                    raise AuthenticationError("primary authentication unavailable")
+                peer = self.client_address[0] if self.client_address else ""
+                with authenticated(
+                    runtime.authenticator,
+                    credentials_from_headers(self.headers, peer_address=peer),
+                    audit=getattr(runtime, "audit", None) or srv.audit,
+                    limiter=getattr(runtime, "rate_limiter", None),
+                    workload_guard=getattr(runtime, "workload_guard", None),
+                    surface=Surface.HTTP,
+                ) as security:
+                    yield security
+
             def handle_get(self) -> None:
+                if self.path.startswith("/security/privacy") and handle_human_request(
+                    self, srv.human_view, post=False
+                ):
+                    return
                 request_id = uuid.uuid4().hex
                 if self.path.rstrip("/") == "/healthz":
                     self._send(
@@ -166,6 +188,10 @@ class HttpServer(Server):
                     self._send_error("NotFound", self.path, request_id=request_id)
 
             def handle_post(self) -> None:
+                if self.path.startswith("/security/privacy") and handle_human_request(
+                    self, srv.human_view, post=True, primary_auth=self.human_primary_auth
+                ):
+                    return
                 request_id = uuid.uuid4().hex
                 if not self.path.startswith("/v1/"):
                     self._send_error("NotFound", self.path, request_id=request_id)

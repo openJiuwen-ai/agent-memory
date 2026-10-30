@@ -238,3 +238,44 @@ def unit_factory() -> Callable[..., MemoryUnit]:
 @pytest.fixture
 def index_unit_fn() -> Callable[[RetrievalWorld, MemoryUnit], None]:
     return index_unit
+
+
+
+@pytest.fixture
+def privacy_crypto():
+    from jiuwen_memory.common.security.cryptography.cryptography_impl.local_envelope import (
+        LocalEnvelopeCryptographyProvider,
+        LocalKeyProvider,
+    )
+    return LocalEnvelopeCryptographyProvider(LocalKeyProvider(key_hex="11" * 32))
+
+
+@pytest.fixture
+def privacy_factory(tmp_path, privacy_crypto):
+    """Construct/reopen test-owned providers through their public configuration."""
+    from jiuwen_memory.common.security.privacy.privacy_impl.regex import RegexPrivacy
+
+    providers = []
+
+    def create(**params):
+        provider = RegexPrivacy(privacy_crypto, str(tmp_path / "private.sqlite"), **params)
+        providers.append(provider)
+        return provider
+
+    yield create
+    for provider in reversed(providers):
+        provider.close()
+
+
+@pytest.fixture
+def privacy(privacy_factory):
+    return privacy_factory()
+
+
+@pytest.fixture
+def privacy_state(tmp_path):
+    from tests.support.privacy import PrivacyState
+
+    state = PrivacyState(tmp_path / "private.sqlite")
+    yield state
+    state.close()

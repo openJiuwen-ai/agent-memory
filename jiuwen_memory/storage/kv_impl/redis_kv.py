@@ -118,6 +118,14 @@ class RedisKVStore(KVStore):
         if not ok:
             raise HealthCheckError("redis ping returned falsy")
 
+    def close(self) -> None:
+        """Release an owned client; assembly stops readers before closing dependencies."""
+        if self._client is not None:
+            with wrap_backend("redis close"):
+                self._client.close()
+            self._client = None
+            self._client_fingerprint = None
+
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""
         nk = self._namespaced(scope, key)
@@ -125,6 +133,30 @@ class RedisKVStore(KVStore):
             ok = self.client.set(nk, value, nx=True, px=self._px(ttl))
         if not ok:  # NX 未写入 = 键已存在
             raise ConflictError(entity="key", key=key)
+
+    @staticmethod
+    def supports_compare_and_swap() -> bool:
+        return True
+
+    def compare_and_swap(self, scope, key, expected, value) -> bool:
+        script = """
+        local current = redis.call('GET', KEYS[1])
+        if ARGV[1] == 'absent' then
+            if current then return 0 end
+        elseif current ~= ARGV[2] then return 0 end
+        if ARGV[3] == 'delete' then
+            redis.call('DEL', KEYS[1])
+        else
+            redis.call('SET', KEYS[1], ARGV[4])
+        end
+        return 1
+        """
+        with wrap_backend("redis conditional update"):
+            return bool(self.client.eval(
+                script, 1, self._namespaced(scope, key),
+                "absent" if expected is None else "present", expected or b"",
+                "delete" if value is None else "write", value or b"",
+            ))
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """覆写 ``scope`` 下已有 ``key``；不存在时报缺失。"""
@@ -298,7 +330,7 @@ def _build(config):
 
     三方库后端：url 必填，未配置即在 build 阶段报错（而非惰性连接时才暴露）。
     """
-    from jiuwen_memory.config.config_source import ConfigSourceProducer
+    from jiuwen_memory.storage.kv import kv_config_source
 
     url = Factory.require_param(config, "url", backend="redis KV")
     ssl = read_ssl_config(config, backend="redis KV")
@@ -315,6 +347,6 @@ def _build(config):
         port=Factory.cfg_get(config, "port", 6379),
         db=Factory.cfg_get(config, "db", 0),
         password=Factory.cfg_get(config, "password"),
-        config_source=ConfigSourceProducer.get_cached("default"),
+        config_source=kv_config_source(),
         **options,
     )

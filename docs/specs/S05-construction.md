@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 乱序陈述的修改型决策契约
 
@@ -754,3 +754,19 @@ Evolver 的可选能力 `hierarchy_profile(kind) -> HierarchyComposeProfile | No
 `EvolveRequest.hierarchy_incremental` 仅供内部周期任务使用：非空时以相邻单层请求
 委托 Composer.build；为空时沿用显式 replace_in_span。Dynamic/Schema Evolver 继承该
 委托路径，原 `evolve(units, mode)`、显式分组和重建行为保持。
+
+## 隐私保护的构建边界
+
+启用时，任何 IndexBuilder target 在正文/索引写入前统一复检段正文、L0/L1、实体、标签、
+业务元数据和事实文本。组合构建器的同一对象只由外层保护一次，新增对象仍需保护；
+ALL/FORWARD_ONLY/RETRIEVAL_ONLY 与 HARD/SOFT 原有语义保留。
+索引包装层不提前提交或删除清单，私有关联由 KV 真源写入/删除边界维护；构建成功后
+只同步指纹匹配的已提交修订号。索引失败不撤销幸存真源的私有状态，部分成功批次逐条
+保留对应版本；`remove_with_scope` 等仅移除投影的操作不撤销关联。
+派生、分层标注和去重可使用本次原文，统一在索引投影前保护；图节点/关系的直接写入
+也在持久化边界保护。原始等级不得因线索被替换而自动下降。Schema 辅助实体注册表
+在 KV 和向量/全文索引生成前保存不可还原的安全投影，正式 Source/Property 保留可逆保护。
+合法占位符保持幂等，未知/过期/无来源或格式损坏的占位符拒绝，不能回落原文。
+内容型 prompt 的完整分批保留原子占位符及长度上限；判定型 prompt 的头尾截断把跨界引用
+完整移入省略区，不把半个引用送入后续模型。小于单个引用的分批上限明确拒绝。
+受控路由只重绑定已授权目标的密文引用；同组织范围及关联校验见 S10。

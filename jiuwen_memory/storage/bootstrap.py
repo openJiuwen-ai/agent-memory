@@ -23,6 +23,7 @@ def register_backends() -> None:
     if _REGISTERED:
         return
     import_optional("jiuwen_memory.storage.kv_impl")
+    import_optional("jiuwen_memory.storage.privacy_impl")
     import_optional("jiuwen_memory.storage.vector_impl")
     import_optional("jiuwen_memory.storage.graph_impl")
     import_optional("jiuwen_memory.storage.fulltext_impl")

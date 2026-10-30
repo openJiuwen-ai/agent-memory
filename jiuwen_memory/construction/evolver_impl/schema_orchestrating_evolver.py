@@ -80,6 +80,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
+        privacy=None,
     ) -> None:
         super().__init__(
             extractor=extractor,
@@ -95,6 +96,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             domain_store=domain_store,
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
+            privacy=privacy,
         )
         # IndexBuilder owns memory writes; KV is used only to read source/property records.
         self._source_kv = storage.kv(kv_name)
@@ -232,6 +234,9 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             return EvolveResult(created_ids=source_ids)
 
         copy_consolidation_prompts(units, extracted)
+        if self._privacy is not None:
+            for unit in extracted:
+                self._privacy.inherit_classification(unit, units)
         self._annotate_layers(extracted)
         if self._schema_entity_resolver is not None:
             self._schema_entity_resolver.resolve(extracted)
@@ -290,6 +295,8 @@ def _optional_layer_annotator(config):
 
 @EvolverProducer.register("schema_orchestrating")
 def _build(config):
+    from jiuwen_memory.common.security.privacy.base import optional_privacy
+
     vector_on = config.get("vector_enabled", True)
     # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
     # 三处消费方（engine/evolver/job_factory）必须共用本函数，否则缺省判定分叉会让
@@ -303,6 +310,7 @@ def _build(config):
     llm = LlmProducer.dep(config, default="echo")
     registry = SchemaEntityRegistry(
         kv,
+        privacy=optional_privacy(config),
         vector_store=(
             storage.vector("schema_entities")
             if storage.has_vector("schema_entities")
@@ -358,4 +366,5 @@ def _build(config):
         kv_name=kv_name,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        privacy=optional_privacy(config),
     )

@@ -73,6 +73,40 @@ class PostgresKVStore(PgStoreBase, KVStore):
     def health(self) -> None:
         self._health()
 
+    @staticmethod
+    def supports_compare_and_swap() -> bool:
+        return True
+
+    def compare_and_swap(self, scope, key, expected, value) -> bool:
+        if expected is None:
+            if value is None:
+                try:
+                    self.get(scope, key)
+                except NotFoundError:
+                    return True
+                return False
+            try:
+                self.insert(scope, key, value)
+            except ConflictError:
+                return False
+            return True
+        clause, dimensions = pg_scope_clause(scope, exact=True)
+        predicate = (
+            f"{clause} AND key = %s AND value = %s "
+            "AND (expires_at IS NULL OR expires_at > extract(epoch from clock_timestamp()))"
+        )
+        params = (*dimensions, key, expected)
+        if value is None:
+            statement = f"DELETE FROM {self._table_ref} WHERE {predicate} RETURNING 1"
+        else:
+            statement = (
+                f"UPDATE {self._table_ref} SET value = %s, expires_at = NULL "
+                f"WHERE {predicate} RETURNING 1"
+            )
+            params = (value, *params)
+        with wrap_backend("postgres conditional update"):
+            return self._fetch_one(statement, params) is not None
+
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         statement = f"""
             INSERT INTO {self._table_ref} AS current (
@@ -242,7 +276,7 @@ class PostgresKVStore(PgStoreBase, KVStore):
 @KvProducer.register("postgres")
 def _build(config):
     # sslmode 是参数形态的真开关，无须校验 dsn scheme（见 _pg.PgStoreBase.pool）。
-    from jiuwen_memory.config.config_source import ConfigSourceProducer
+    from jiuwen_memory.storage.kv import kv_config_source
 
     ssl = read_ssl_config(config, backend="postgres KV")
     return PostgresKVStore(
@@ -256,5 +290,5 @@ def _build(config):
         connect_timeout=Factory.cfg_get(config, "connect_timeout", 10.0),
         application_name=Factory.cfg_get(config, "application_name", "agent_memory"),
         auto_create_schema=Factory.cfg_get(config, "auto_create_schema", True),
-        config_source=ConfigSourceProducer.get_cached("default"),
+        config_source=kv_config_source(),
     )

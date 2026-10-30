@@ -19,6 +19,7 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.security import principal, space_predicates
+from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
@@ -178,6 +179,10 @@ class QueryOpsMixin:
         extensions = dict(context.extensions)
         max_tokens = _parse_max_tokens(extensions.pop(EXT_MAX_TOKENS, None))
         query_context = _pop_query_context(extensions)
+        if self._privacy is not None:
+            query = self._privacy.preview(query)
+            if query_context is not None:
+                query_context = tuple(self._privacy.preview(turn) for turn in query_context)
         spaces = _pop_spaces(extensions)
         coords = _pop_coords(extensions, enabled=self._routing_enabled())
         reject_kernel_coords(coords)
@@ -575,6 +580,7 @@ class QueryOpsMixin:
         )
         return unit
 
+    @privacy_operation
     def update(
         self,
         unit_id: str,
@@ -615,6 +621,26 @@ class QueryOpsMixin:
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
         before = asyncio.run(self._queries.get(unit_id, scope, None))
+        if self._privacy is not None:
+            from dataclasses import replace as copy_patch
+
+            from jiuwen_memory.common.type_def import RawPayload
+
+            protected = self._privacy.ingress(RawPayload(
+                id=unit_id, scope=scope, data=(patch.content or "").encode("utf-8"),
+                system_metadata=dict(patch.system_metadata or {}),
+                user_metadata=dict(patch.user_metadata or {}),
+            ))
+            self._privacy.inherit_classification(protected, [before])
+            protected_tags = self._privacy.ingress(RawPayload(
+                id=unit_id, scope=scope, user_metadata={"tags": patch.tags or []},
+            )).user_metadata["tags"] if patch.tags is not None else None
+            patch = copy_patch(
+                patch, content=protected.data.decode() if patch.content is not None else None,
+                system_metadata=protected.system_metadata,
+                user_metadata=protected.user_metadata if patch.user_metadata is not None else None,
+                tags=protected_tags,
+            )
         plan = None
         if self._commands.requires_update_preparation(before, patch):
             plan = asyncio.run(self._commands.prepare_update(unit_id, scope, patch))
@@ -631,6 +657,8 @@ class QueryOpsMixin:
             unit = asyncio.run(self._commands.commit_update(plan))
         else:
             unit = asyncio.run(self._commands.update(unit_id, scope, patch))
+        if self._privacy is not None:
+            unit = asyncio.run(self._queries.get(unit.id, unit.scope, None))
         update_detail = {}
         if plan is not None:
             affected_unit_ids = []
@@ -701,6 +729,12 @@ class QueryOpsMixin:
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
         deleted = asyncio.run(self._commands.delete(selector))
+        if self._privacy is not None:
+            # IndexBuilder covers normal removals; this also revokes raw-message
+            # records removed by a direct purge path.
+            for context in contexts:
+                if context.unit_id in deleted and selector.mode.value == "purge":
+                    self._privacy.discard(context.scope, [context.unit_id])
         self._log(
             identity,
             "delete",

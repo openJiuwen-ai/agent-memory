@@ -65,6 +65,26 @@ def test_kv_full_crud_lifecycle(kv):
         store.get(scope, "k")
 
 
+def test_redis_conditional_private_state_and_recovery(kv, privacy_crypto):
+    from jiuwen_memory.storage.privacy_impl import EncryptedPrivacyStore, KVPrivacyStore
+    from tests.unit.storage.test_kv_compare_and_swap import (
+        test_cas_distinguishes_absent_empty_mismatch_update_and_delete as cas_contract,
+    )
+    from tests.unit.storage.test_privacy_store import write_snapshot
+
+    store, scope = kv
+    # Contract uses a separate complete Scope; remove its key after exercising it.
+    cas_contract(store)
+    private = EncryptedPrivacyStore(KVPrivacyStore(store), privacy_crypto)
+    try:
+        snapshot = write_snapshot(private, scope=scope)
+        private.checkpoint(scope, snapshot.unit)
+        private.delete(scope, [snapshot.unit])
+        assert private.search(scope, [snapshot.unit]) == []
+    finally:
+        private.delete(scope, None)
+
+
 def test_kv_insert_conflict_keeps_original(kv):
     store, scope = kv
     store.insert(scope, "k", b"first")
