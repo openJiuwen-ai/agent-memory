@@ -4,6 +4,8 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
 
+from _support import logger
+
 from jiuwen_memory.api import (
     Credentials,
     PermissionDeniedError,
@@ -12,8 +14,8 @@ from jiuwen_memory.api import (
 )
 from jiuwen_memory.common.security.capabilities import delegation_sources
 
-selector = "demo-agent"
-credential_id = hashlib.sha256(selector.encode()).hexdigest()
+SELECTOR = "demo-agent"
+credential_id = hashlib.sha256(SELECTOR.encode()).hexdigest()
 agent_scope = {"org": "demo", "agent": "agent1", "session": "session1"}
 alice_scope = {"org": "demo", "user": "alice"}
 config = {
@@ -45,7 +47,7 @@ config = {
             "params": {
                 "identities": {
                     "demo-alice": {"actor": alice_scope, "role": "user"},
-                    selector: {"actor": agent_scope, "role": "user"},
+                    SELECTOR: {"actor": agent_scope, "role": "user"},
                 }
             },
         }
@@ -64,29 +66,36 @@ config = {
 }
 runtime = assemble_server_runtime(config=config)
 try:
-    agent = runtime.authenticate(Credentials(api_key=selector))
-    assert agent.auth.actor == Scope(**agent_scope)
-    assert not agent.auth.actor.user
-    print("PASS identity: caller remains agent1/session1")
+    agent = runtime.authenticate(Credentials(api_key=SELECTOR))
+    if agent.auth.actor != Scope(**agent_scope):
+        raise RuntimeError("Delegation must preserve the agent identity")
+    if agent.auth.actor.user:
+        raise RuntimeError("Delegation must not authenticate the agent as a user")
+    logger.info("PASS identity: caller remains agent1/session1")
     target = Scope(**alice_scope)
     unit = runtime.api.add("Delegated meeting notes", target, security=agent)[0]
-    assert unit.system_metadata["author_principal"] == "user:alice"
-    assert unit.system_metadata["author_agent"] == "agent1"
-    assert runtime.api.get(unit.id, target, security=agent).content == "Delegated meeting notes"
-    print("PASS delegation: agent writes/reads; author is Alice with agent1 recorded")
+    if unit.system_metadata["author_principal"] != "user:alice":
+        raise RuntimeError("Delegated content must identify Alice as author")
+    if unit.system_metadata["author_agent"] != "agent1":
+        raise RuntimeError("Delegated content must record agent1")
+    if runtime.api.get(unit.id, target, security=agent).content != "Delegated meeting notes":
+        raise RuntimeError("Delegate must read the written content")
+    logger.info("PASS delegation: agent writes/reads; author is Alice with agent1 recorded")
 
     # 服务端管理流程撤销当前 Authorizer 实际使用的同一委托 Store。
     stores = delegation_sources(runtime.security_runtime.authorizer)
-    assert len(stores) == 1
+    if len(stores) != 1:
+        raise RuntimeError("Expected exactly one authoritative delegation store")
     stores[0].revoke("alice-agent1")
     try:
         runtime.api.get(unit.id, target, security=agent)
     except PermissionDeniedError:
-        print("PASS revoke: previously authenticated agent context is denied")
+        logger.info("PASS revoke: previously authenticated agent context is denied")
     else:
-        raise AssertionError("Revoked delegation must deny the agent")
+        raise RuntimeError("Revoked delegation must deny the agent")
     alice = runtime.authenticate(Credentials(api_key="demo-alice"))
-    assert runtime.api.get(unit.id, target, security=alice).content == "Delegated meeting notes"
-    print("PASS owner: Alice can still read; data was not deleted")
+    if runtime.api.get(unit.id, target, security=alice).content != "Delegated meeting notes":
+        raise RuntimeError("Revocation must preserve the owner access and data")
+    logger.info("PASS owner: Alice can still read; data was not deleted")
 finally:
     runtime.close(wait=True)

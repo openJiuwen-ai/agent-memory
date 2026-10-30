@@ -6,7 +6,7 @@ import os
 import secrets
 import sys
 
-from _support import EXAMPLE_DIR
+from _support import EXAMPLE_DIR, logger
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -32,8 +32,9 @@ async def main():
                     "scope": {"org": "system", "user": "root"},
                 },
             )
-            assert not written.isError, written
-            print("PASS MCP required: Root authenticated; memory_add succeeded")
+            if written.isError:
+                raise RuntimeError("MCP memory_add must succeed")
+            logger.info("PASS MCP required: Root authenticated; memory_add succeeded")
             result = await session.call_tool(
                 "memory_verify_audit",
                 {
@@ -43,12 +44,14 @@ async def main():
                     "anchor_policy": "if_configured",
                 },
             )
-            assert not result.isError, result
+            if result.isError:
+                raise RuntimeError("MCP verify_audit call must succeed")
             # 本例 api-key.yml 没有完整性 provider；成功调用不表示审计检查通过。
-            assert any("unsupported" in getattr(part, "text", "") for part in result.content), (
-                result
-            )
-            print("PASS MCP verify_audit: unsupported without provider")
+            if not any("unsupported" in getattr(part, "text", "") for part in result.content):
+                raise RuntimeError(
+                    "MCP must report unsupported without an audit integrity provider"
+                )
+            logger.info("PASS MCP verify_audit: unsupported without provider")
 
 
 if __name__ == "__main__":

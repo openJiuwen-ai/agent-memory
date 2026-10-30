@@ -2,6 +2,7 @@
 """安全示例共用的本机 HTTP 启停与请求辅助；不提供产品管理接口。"""
 
 import json
+import logging
 import threading
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
@@ -9,10 +10,12 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from profiles import load_config
-
 from jiuwen_memory_entry.core.config_loader import load_layer
+from jiuwen_memory_entry.core.profiles import load_config
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+logger = logging.getLogger("security_examples")
 
 EXAMPLE_DIR = Path(__file__).resolve().parent
 
@@ -58,5 +61,6 @@ def post(base, method, key, body, expected=200, *, headers=None):
     except HTTPError as error:
         status, result = error.code, None
         error.close()
-    assert status == expected, f"{method}: expected {expected}, got {status}"
+    if status != expected:
+        raise RuntimeError(f"{method}: expected {expected}, got {status}")
     return result

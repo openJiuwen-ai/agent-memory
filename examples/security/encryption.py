@@ -4,7 +4,7 @@
 import os
 import secrets
 
-from _support import kernel_config
+from _support import kernel_config, logger
 
 from jiuwen_memory.api import Context, Credentials, DisclosureLevel, Scope, assemble_server_runtime
 
@@ -14,17 +14,19 @@ try:
     security = runtime.authenticate(Credentials())
     scope = Scope(org="local", user="developer")
     units = runtime.api.add("project zephyr launch plan", scope, security=security)
-    assert (
+    if (
         runtime.api.get(units[0].id, scope, security=security).content
-        == "project zephyr launch plan"
-    )
+        != "project zephyr launch plan"
+    ):
+        raise RuntimeError("Encrypted read must return the written content")
     result = runtime.api.search(
         "zephyr",
         Context(scope=scope),
         disclosure=DisclosureLevel.L2,
         security=security,
     )
-    assert units and result.items
-    print("PASS encrypted API: write/read/search as DEV USER")
+    if not (units and result.items):
+        raise RuntimeError("Encrypted write and search must return results")
+    logger.info("PASS encrypted API: write/read/search as DEV USER")
 finally:
     runtime.close(wait=True)

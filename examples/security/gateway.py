@@ -11,7 +11,7 @@ from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from _support import post, running
+from _support import logger, post, running
 
 from jiuwen_memory.api import Scope, register_trusted_principal
 
@@ -37,7 +37,7 @@ def gateway(*, client_key, backend_port=0, gateway_port=0):
             def log_message(self, *_args):
                 pass
 
-            def do_POST(self):
+            def handle_post(self):
                 if self.path != "/v1/add":
                     self.send_error(404)
                     return
@@ -76,6 +76,9 @@ def gateway(*, client_key, backend_port=0, gateway_port=0):
                 finally:
                     connection.close()
 
+            # 标准库按 HTTP 方法查找 do_POST，绑定到蛇形命名的处理方法。
+            do_POST = handle_post
+
         server = ThreadingHTTPServer(("127.0.0.1", gateway_port), Gateway)
         server.daemon_threads = True
         worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -111,7 +114,10 @@ def main():
                     "X-Role": "root",
                 },
             )
-            assert units[0]["system_metadata"]["author_principal"] == "user:alice"
+            if units[0]["system_metadata"]["author_principal"] != "user:alice":
+                raise RuntimeError(
+                    "Spoofed client headers must not change the authenticated author"
+                )
             post(
                 backend,
                 "add",
@@ -124,7 +130,7 @@ def main():
                     "X-Principal-Id": "alice",
                 },
             )
-            print("PASS gateway: valid/missing/spoofed/direct -> 200/401/200/401")
+            logger.info("PASS gateway: valid/missing/spoofed/direct -> 200/401/200/401")
             post(
                 base,
                 "add",
@@ -135,9 +141,9 @@ def main():
                 },
                 403,
             )
-            print("PASS gateway authorization: Alice cannot write Bob scope -> 403")
+            logger.info("PASS gateway authorization: Alice cannot write Bob scope -> 403")
         else:
-            print(f"Gateway {base}; backend {backend}; press Ctrl+C to stop", flush=True)
+            logger.info("Gateway %s; backend %s; press Ctrl+C to stop", base, backend)
             try:
                 threading.Event().wait()
             except KeyboardInterrupt:

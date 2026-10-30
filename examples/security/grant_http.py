@@ -4,7 +4,7 @@
 import argparse
 from contextlib import nullcontext
 
-from _support import post, running
+from _support import logger, post, running
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--server", help="已有 grant-dev.yml 测试服务；省略时自动启动隔离服务")
@@ -19,12 +19,14 @@ with context as (_, base):
     post(base, "get", "demo-bob", read, 403)
     post(base, "grant", None, request, 401)
     post(base, "grant", "demo-bob", request, 403)
-    print("PASS before Grant: Bob -> 403; missing credential -> 401; forged grantor -> 403")
+    logger.info("PASS before Grant: Bob -> 403; missing credential -> 401; forged grantor -> 403")
     created = post(base, "grant", "demo-alice", request)
     try:
-        assert created["grant_id"]
+        if not created["grant_id"]:
+            raise RuntimeError("Grant creation must return a grant ID")
         unit = post(base, "get", "demo-bob", read)
-        assert unit["segments"][0]["content"] == "Grant HTTP test"
+        if unit["segments"][0]["content"] != "Grant HTTP test":
+            raise RuntimeError("Bob must read the content after the Grant")
         post(
             base,
             "delete",
@@ -38,12 +40,16 @@ with context as (_, base):
             403,
         )
         post(base, "revoke", "demo-bob", {"grant": created}, 403)
-        print("PASS READ Grant: Bob reads -> 200; delete/revoke -> 403")
+        logger.info("PASS READ Grant: Bob reads -> 200; delete/revoke -> 403")
     finally:
-        assert post(base, "revoke", "demo-alice", {"grant": created}) is None
+        if post(base, "revoke", "demo-alice", {"grant": created}) is not None:
+            raise RuntimeError("Grant revocation must return an empty result")
     post(base, "get", "demo-bob", read, 403)
     post(base, "get", "demo-alice", read)
     post(base, "add", "demo-bob", {"content": "Bob own data", "scope": bob})
-    assert post(base, "revoke", "demo-alice", {"grant": created}) is None
+    if post(base, "revoke", "demo-alice", {"grant": created}) is not None:
+        raise RuntimeError("Repeated Grant revocation must return an empty result")
     post(base, "revoke", "demo-alice", request, 400)
-    print("PASS revoke: Bob -> 403; owner/data/Key unaffected; repeat -> 200; missing ID -> 400")
+    logger.info(
+        "PASS revoke: Bob -> 403; owner/data/Key unaffected; repeat -> 200; missing ID -> 400"
+    )

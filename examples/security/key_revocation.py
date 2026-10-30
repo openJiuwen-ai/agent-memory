@@ -4,7 +4,7 @@
 import os
 import secrets
 
-from _support import kernel_config
+from _support import kernel_config, logger
 
 from jiuwen_memory.api import (
     Credentials,
@@ -30,8 +30,8 @@ try:
     except PermissionDeniedError:
         pass
     else:
-        raise AssertionError("cached context must fail after the key is revoked")
+        raise RuntimeError("cached context must fail after the key is revoked")
 finally:
     runtime.close()
 
-print("PASS cached Key context revoked")
+logger.info("PASS cached Key context revoked")

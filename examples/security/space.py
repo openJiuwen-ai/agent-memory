@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """本地空间治理与内容权限示例，读取随附完整配置。"""
 
-from _support import kernel_config
+from _support import kernel_config, logger
 
 from jiuwen_memory.api import (
     Credentials,
@@ -36,8 +36,9 @@ try:
     )
     target = Scope(org="demo", space="team")
     unit = runtime.api.add("Alice uses Python", target, security=alice)[0]
-    assert runtime.api.get(unit.id, target, security=bob).content == "Alice uses Python"
+    if runtime.api.get(unit.id, target, security=bob).content != "Alice uses Python":
+        raise RuntimeError("Bob must read the shared space content")
 finally:
     runtime.close()
 
-print("PASS space: create/member/write/read")
+logger.info("PASS space: create/member/write/read")

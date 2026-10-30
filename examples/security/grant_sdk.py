@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """SDK Grant 完整生命周期，显式配置认证、授权与内存 Store。"""
 
-from _support import kernel_config
+from _support import kernel_config, logger
 
 from jiuwen_memory.api import (
     Action,
@@ -29,7 +29,7 @@ try:
     except PermissionDeniedError:
         pass
     else:
-        raise AssertionError("Bob must not read before a grant")
+        raise RuntimeError("Bob must not read before a grant")
     granted = runtime.api.grant(
         Grant(
             grantor=target,
@@ -38,16 +38,18 @@ try:
         ),
         security=alice,
     )
-    assert granted.grant_id
-    assert runtime.api.get(unit.id, target, security=bob).content == "Alice uses Python"
+    if not granted.grant_id:
+        raise RuntimeError("Grant creation must return a grant ID")
+    if runtime.api.get(unit.id, target, security=bob).content != "Alice uses Python":
+        raise RuntimeError("Bob must read the content after the Grant")
     runtime.api.revoke(granted, security=alice)
     try:
         runtime.api.get(unit.id, target, security=bob)
     except PermissionDeniedError:
         pass
     else:
-        raise AssertionError("Bob must not read after revocation")
+        raise RuntimeError("Bob must not read after revocation")
 finally:
     runtime.close()
 
-print("PASS SDK Grant: denied/allowed/revoked")
+logger.info("PASS SDK Grant: denied/allowed/revoked")

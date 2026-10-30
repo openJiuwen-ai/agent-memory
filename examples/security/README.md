@@ -22,5 +22,7 @@
 `gateway.py` 不加 `--self-test` 时保持 8137/8139 监听，需要 `DEMO_CLIENT_KEY`；Ctrl+C 关闭。
 `grant_http.py --server URL` 会写入指定测试服务，仅用于指南配置的隔离测试实例。
 
-CI 在 Python 3.11/3.12 上运行 `tests/integration/security/test_usage_examples.py`。
+示例通过日志输出 `PASS` 结果，验收失败会抛出异常并以非零状态退出。
+CI 在 Python 3.11/3.12 上以普通和优化模式运行 `tests/integration/security/test_usage_examples.py`，
+确保启用 `python -O` 后仍执行全部验收步骤。
 这些本地检查不等于完成了 Linux LUKS、Docker、ES 或其他真实后端的加密部署验收。

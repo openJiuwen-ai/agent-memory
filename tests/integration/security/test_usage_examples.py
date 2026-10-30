@@ -31,8 +31,9 @@ SCRIPTS = [
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("optimized", [False, True], ids=["normal", "optimized"])
 @pytest.mark.parametrize(("filename", "arguments"), SCRIPTS, ids=[s[0] for s in SCRIPTS])
-def test_repository_security_example(filename, arguments):
+def test_repository_security_example(filename, arguments, optimized):
     if filename == "mcp_stdio.py":
         pytest.importorskip("mcp", reason="Install the mcp extra; security-examples CI requires it")
     env = os.environ.copy()
@@ -41,6 +42,7 @@ def test_repository_security_example(filename, arguments):
         paths.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(paths)
     env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONOPTIMIZE"] = "1" if optimized else "0"
     result = subprocess.run(
         [sys.executable, str(EXAMPLES / filename), *arguments],
         cwd=ROOT,
@@ -51,7 +53,9 @@ def test_repository_security_example(filename, arguments):
         timeout=90,
     )
     assert result.returncode == 0, f"{filename} failed:\n{result.stdout}\n{result.stderr}"
-    assert "PASS " in result.stdout, f"{filename} did not report its verification result"
+    assert "PASS " in result.stdout + result.stderr, (
+        f"{filename} did not report its verification result"
+    )
 
 
 @pytest.mark.unit
