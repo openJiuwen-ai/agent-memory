@@ -6,7 +6,15 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwen_memory.config.context import AssemblyContext, RawSpec
-from jiuwen_memory.config.keys import GLOBALS_PREFIX, PROMPTS_PREFIX, namespaced_key
+from jiuwen_memory.config.keys import (
+    GLOBALS_PREFIX,
+    NS_LLM,
+    PROMPTS_PREFIX,
+    namespaced_key,
+    resolve_instance_namespace,
+)
+
+_INSTANCE_SCOPED_NAMESPACES = frozenset({NS_LLM})
 
 
 def _stringify(value: Any) -> str:
@@ -24,8 +32,10 @@ def project_assembly_values(ctx: AssemblyContext) -> dict[str, str]:
     覆盖：
     - ``globals.*``（跳过内部/复杂结构；``prompts`` 单独展开）
     - ``prompts.<phase>.<name>``
-    - 各命名空间具名实例的 ``params`` → ``<ns>.<param>``（仅 default 实例写入无前缀冲突的简写；
-      同时写入 ``<ns>.<instance>.<param>`` 以便多实例区分）
+    - 已迁移的 ``llm`` 命名空间：default 实例写 ``llm.<field>``，其他实例写
+      ``llm.<instance>.<field>``
+    - 其他命名空间暂保留旧投影：``<ns>.<instance>.<param>``；default 实例另写
+      ``<ns>.<short-field>``。这些命名空间的消费者尚未接入实例级命名空间推导
     - 若 globals 或 params 含 ``<ns>.active`` / ``active`` 约定，照常投影
     """
     out: dict[str, str] = {}
@@ -54,14 +64,23 @@ def project_assembly_values(ctx: AssemblyContext) -> dict[str, str]:
         for inst_name, spec in instances.items():
             if not isinstance(spec, RawSpec):
                 continue
+            effective_namespace = (
+                resolve_instance_namespace(top_name, inst_name, spec.params)
+                if top_name in _INSTANCE_SCOPED_NAMESPACES
+                else ""
+            )
             for param_key, param_val in spec.params.items():
                 if isinstance(param_val, (dict, list)):
                     continue
-                # 实例限定 key：embedder.openai_primary.embedder_api_key
+                if effective_namespace:
+                    if param_key == "config_namespace":
+                        continue
+                    field = _short_field(top_name, param_key)
+                    out[namespaced_key(effective_namespace, field)] = _stringify(param_val)
+                    continue
+
                 out[f"{top_name}.{inst_name}.{param_key}"] = _stringify(param_val)
-                # default 实例同时投影到命名空间简写：便于 llm.model 等约定 key
                 if inst_name == "default":
-                    # 兼容装配 params 名 embedder_api_key → 约定 embedder.api_key
                     short = _short_field(top_name, param_key)
                     out[namespaced_key(top_name, short)] = _stringify(param_val)
 

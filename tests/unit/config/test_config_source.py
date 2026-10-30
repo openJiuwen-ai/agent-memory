@@ -11,10 +11,20 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.active import resolve_active_name, resolve_bound_value
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
+from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.config.defaults import default_context
+from jiuwen_memory.config.keys import instance_namespace
 from jiuwen_memory.config.project import project_assembly_values
 from jiuwen_memory.config.routing import ActiveRouter, RoutingEmbedder
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
+
+pytestmark = pytest.mark.unit
+
+
+def test_instance_namespace_keeps_anonymous_llm_on_shared_keys() -> None:
+    assert instance_namespace("llm", "") == "llm"
+    assert instance_namespace("llm", "default") == "llm"
+    assert instance_namespace("llm", "alt") == "llm.alt"
 
 
 def test_project_assembly_values_includes_globals_and_prompts() -> None:
@@ -24,6 +34,56 @@ def test_project_assembly_values_includes_globals_and_prompts() -> None:
     values = project_assembly_values(ctx)
     assert values["globals.vector_enabled"] == "false"
     assert values["prompts.extract.episodic"] == "抽取事件"
+
+
+def test_project_assembly_values_scopes_instance_keys_to_migrated_namespaces() -> None:
+    ctx = default_context().merged(
+        AssemblyContext.from_dict(
+            {
+                "llm": {
+                    "default": {
+                        "target": "openai",
+                        "params": {
+                            "llm_model": "default-model",
+                            "llm_api_key": "default-key",
+                            "llm_base_url": "https://default.example/v1",
+                        },
+                    },
+                    "alt": {
+                        "target": "openai",
+                        "params": {
+                            "llm_model": "alt-model",
+                            "llm_api_key": "alt-key",
+                            "llm_base_url": "https://alt.example/v1",
+                        },
+                    },
+                },
+                "embedder": {
+                    "default": {
+                        "target": "openai",
+                        "params": {"embedder_api_key": "default-embed-key"},
+                    },
+                    "main": {
+                        "target": "openai",
+                        "params": {"embedder_api_key": "main-embed-key"},
+                    },
+                },
+            }
+        )
+    )
+
+    values = project_assembly_values(ctx)
+
+    assert values["llm.model"] == "default-model"
+    assert values["llm.api_key"] == "default-key"
+    assert values["llm.base_url"] == "https://default.example/v1"
+    assert values["llm.alt.model"] == "alt-model"
+    assert values["llm.alt.api_key"] == "alt-key"
+    assert values["llm.alt.base_url"] == "https://alt.example/v1"
+    assert "llm.alt.llm_model" not in values
+    assert values["embedder.api_key"] == "default-embed-key"
+    assert values["embedder.main.embedder_api_key"] == "main-embed-key"
+    assert "embedder.main.api_key" not in values
 
 
 def test_yaml_defaults_config_source_fetch_roundtrip() -> None:
