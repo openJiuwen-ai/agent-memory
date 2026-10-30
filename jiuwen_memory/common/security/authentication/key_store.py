@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import secrets
 from abc import ABC, abstractmethod
+from typing import Protocol, runtime_checkable
 
+from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.security.types import AuthContext, Role
 from jiuwen_memory.common.type_def.scope import Scope
@@ -124,3 +126,34 @@ class PrincipalKeyStore(ABC):
     @abstractmethod
     def health(self) -> None:
         """存活探测：健康时返回 ``None``，否则抛出异常。"""
+
+
+@runtime_checkable
+class PrincipalRegistrationCapability(Protocol):
+    """受信部署代码的主体初始化能力，不增加 PrincipalKeyStore 的抽象方法。
+
+    只登记组织内 user/agent 和 USER/ADMIN 角色，不签发 API Key。同主体同角色幂等，
+    冲突角色拒绝且不改变原状态；必须与认证查角色使用同一注册表并原子提交。
+    初始化记录的生命周期独立于 API Key。此能力不是动态停用或改角色接口。
+    """
+
+    def register_principal(self, actor: Scope, role: Role) -> None:
+        """在受信初始化阶段登记主体；失败不留下新的有效角色。"""
+        ...
+
+
+def validate_principal_registration(actor: Scope, role: Role) -> None:
+    """初始化只接受组织内单主体，不能用资源范围或会话声明角色。"""
+    if not isinstance(actor, Scope):
+        raise ValidationError("principal registration requires a Scope")
+    values = (actor.org, actor.space, actor.user, actor.agent, actor.session)
+    if any(not isinstance(value, str) or value != value.strip() for value in values):
+        raise ValidationError("principal registration requires canonical string identity fields")
+    if not actor.org or bool(actor.user) == bool(actor.agent):
+        raise ValidationError("principal registration requires org and exactly one user or agent")
+    if actor.space or actor.session:
+        raise ValidationError("register the principal without space or session")
+    if not isinstance(role, Role):
+        raise ValidationError("principal registration requires a Role")
+    if role is Role.ROOT:
+        raise PermissionDeniedError("register_principal", message="cannot register ROOT")

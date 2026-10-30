@@ -41,6 +41,7 @@
 | `security/` | 安全能力的唯一归属地（设计维护页 F04，公开契约 S10）。PR1 已实装认证、保护与静态加密；`authentication/` 提供 Authenticator、PrincipalKeyStore 与 CredentialStatusRegistry，唯一实现目录是其内部的 `authentication/authentication_impl/`，包含 api_key / dev / trusted 三种认证器及凭据存储实现。进程内调用方经 `request_context.internal_context(authenticator)` 显式穿过认证边界，身份由传入的认证器产出、调用方不能自述身份（legacy 桥与公共 `ScopedAuthenticator` 均已删除，测试替身在 `tests/support/`）。PR2 在 `authorization/authorization_impl/` 提供 Standard/Routing/SpaceAware Authorizer 及 memory/SQLite GrantStore、DelegationStore；冻结约束是 MemoryAPI/Authorizer 唯一 PEP/PDP、凭据逐请求在线复核且旧 PermissionManager 不进入生产路径。`audit_integrity/` 注册可选 chained_hmac provider，提供版本化 HMAC、稳定快照增量验证及有界 CAS。`request_context.py` 提供受控上下文构造。安全注册入口统一使用 `import_required` 记录并重抛依赖导入错误。另含空间级授权事实与谓词纯函数（见 `docs/features/control/F07-collective-memory-design.md`）。 |
 | `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
 | `security/_delegation_binding.py` | 私有服务端装配适配：凭据指纹绑定现有委托 ID，认证 actor 不变，记录与 Authorizer 必须同源；供 PEP/PDP 共用绑定复核，不注册新认证 target、不扩展冻结接口。 |
+| `security/authentication/key_store.py` | PrincipalKeyStore 契约与可选 PrincipalRegistrationCapability；Trusted 无 Key 初始化采用增量能力，不扩充旧 ABC |
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
 | `security/_assembly_lifecycle.py` | 私有装配作用域：经 Factory 公开创建观察记录本次新建对象，启动失败回滚；成功将所有者显式绑定缓存纪元，保护借用依赖与较新装配。 |
 
@@ -93,6 +94,13 @@
    通过 `get_logger()` 获取的 logger 默认安装 `SensitiveDataFilter`；正文、用户身份、Scope
    实值、标签、模型原始响应和 metadata 叶子值必须先用对应日志标记函数包装。仅 MemoryUnit
    技术 ID 可由调用点显式列入可见集合；过滤器不得修改业务对象、持久化数据或 API 响应。
+
+### Trusted 初始化本地约束
+
+- 主体登记委派实际认证器持有的同一 Store；不生成 API Key、不从请求头读取角色。
+- memory 显式登记与 Key 签发共享角色状态锁；同角色幂等、冲突拒绝，登记状态独立于
+  最后一把 Key 的撤销。原本仅由 Key 建立的主体保持原有撤销行为。
+- 不增加旧认证器/KeyStore ABC 的抽象方法，第三方插件通过可选能力选择支持。
 
 ## 与其他子目录的边界
 
