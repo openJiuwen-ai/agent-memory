@@ -31,6 +31,11 @@ from jiuwen_memory.common.normalizer import (
     ensure_structured_modalities_declared,
 )
 from jiuwen_memory.common.normalizer.base import LocalMediaPreflight, NormalizerProducer
+from jiuwen_memory.common.security.privacy.base import (
+    PrivacyProtection,
+    optional_privacy,
+    split_protected_text,
+)
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
 from jiuwen_memory.common.type_def import (
@@ -56,11 +61,18 @@ def _now() -> datetime:
 class SimpleIngestor(Ingestor):
     """规约 + 转换为记忆单元（不落盘）；超限文本预切分为多个 unit。"""
 
-    def __init__(self, normalizer: Normalizer, max_unit_chars: int = 8000) -> None:
+    def __init__(
+        self,
+        normalizer: Normalizer,
+        max_unit_chars: int = 8000,
+        *,
+        privacy: PrivacyProtection | None = None,
+    ) -> None:
         self._normalizer = normalizer
         self._max_unit_chars = max_unit_chars
         # 规约器固定，其结构化产物声明在构造期取一次并校验（须是 modalities() 子集）。
         self._structured_modalities = ensure_structured_modalities_declared(normalizer)
+        self._privacy = privacy
 
     @staticmethod
     def operator_type() -> IngestOperatorType:
@@ -91,6 +103,10 @@ class SimpleIngestor(Ingestor):
                     "SimpleIngestor: %s 规约结果为结构化产物，跳过预切分", payload.modality
                 )
                 pieces = [content]
+            elif self._privacy is not None:
+                pieces = self._privacy.split_input(content, self._max_unit_chars)
+            elif "privacy_level" in payload.system_metadata:
+                pieces = split_protected_text(content, self._max_unit_chars)
             else:
                 pieces = self._split(content)
             total = len(pieces)
@@ -173,4 +189,5 @@ def _build(config):
     return SimpleIngestor(
         NormalizerProducer.dep(config, default="passthrough"),
         max_unit_chars=_parse_max_unit_chars(config.get("max_unit_chars")),
+        privacy=optional_privacy(config),
     )

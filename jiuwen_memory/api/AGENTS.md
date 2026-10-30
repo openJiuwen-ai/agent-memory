@@ -46,6 +46,7 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write`、`check_configuration_access` |
+| `memory_api_impl/human_view_ops.py` | HumanViewOpsMixin：可选 begin_human_view/finish_human_view 安全入口；Runtime 适配器转发到 API，API 内执行认证并经 Engine 返回用户访问正文 |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
 | `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；无路由文档模式的 search 在 API 层把 project 坐标折算为收窄谓词；个人模式逐范围授权读取；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
 | `memory_api_impl/md_ops.py` | MdOpsMixin（F08）：`read_md_file` / `edit_md_file`，经 Engine 窄端口委托（非经 `_commands.write`/`_queries.get`）。鉴权对齐 `get`（READ 单段）/ `add`（WRITE 单段，edit 走继承式 SUPERSEDE 本质是写新记忆，D5）；`read_md_file` 的鉴权与审计 target 是折算后的空间级反查 scope（与写入侧对落点判权对称，空 space 不绕过空间轴判权），折算不出退回 raw scope 时判权/审计/反查三轴同轴；project 解析在 Engine 层 `project_from_context`，本层不拆 Context。返回前剥瞬态键（coords 等是路径解析依据，不是条目属性）。`edit_md_file` 经 `_ensure_space_writable`（与 `add` 同，装配空间级判定时由 `ENTRY_RULES` 登记 `edit_md_file` 触发状态校验） |
@@ -53,6 +54,20 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/dreaming_security.py` | 私有注册身份快照编码；只消费受控上下文和服务端注册表，不接业务 payload、不保存原始凭据、不续期认证 |
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
+
+`human_view.py` 提供增量 HumanView/HumanViewRuntime 安全能力协议，Server 装配结果
+可供 HTTP 接入组合；begin/finish 统一转发到 MemoryAPI 的可选用户访问控制方法，
+不加入普通机器方法目录，也不向 SDK/MCP 暴露还原参数。
+assembly 为处理、KV、构建及用户访问控制装配同一 PrivacyProtection，并绑定最终 AuditLogger。
+启用前检查已有 KV 记忆的保护标记及策略；未迁移明文、文档模式或文件监听组合明确拒绝。
+API 边界保护路由预览、查询文本/上下文和批量回显；更新准备只校验并保留分级，允许
+可信构建处理使用原文，落盘边界统一保护。用户访问控制 begin 和 finish
+均复用既有 get PEP，分别检查初次请求身份与认证后人的身份。HTTP 传入延迟执行的
+可信认证上下文，API 内才执行常规认证；人机认证也在 API 入口内委派。私有披露协调器
+的还原回调返回 API，由 API 调用 Engine 的 HumanViewRenderer 并返回结果；离开 finish
+上下文不得调用还原回调。不具备 Engine 专用能力时拒绝启用用户访问控制。
+实现层 `bind_human_view` 仅供可信装配注入依赖并取得转发适配器，检查 Engine 能力且
+拒绝重复绑定；还原回调只在 API 对象内部接线，不纳入 MemoryAPI 契约或机器路由。
 
 ## 行为铁律
 

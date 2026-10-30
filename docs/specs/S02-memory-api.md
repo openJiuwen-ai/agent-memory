@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/api/ |
 | 最近一次修订日期 | 2026-11-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F08-personal-memory-portal.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 明文读取与独立维护边界
 
@@ -1764,3 +1764,34 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 
 公开 add/add_async、batch_add/batch_add_async（公共参数与每项合并后）、update 的 system_metadata 拒绝整个 continuity_* 前缀（含未来扩展键），统一返回 ValidationError；批量逐项失败沿用 BatchWriteOutcome.error_type。user_metadata 同名键只是用户数据，不具有接续语义。仅通过 `continuity` 参数经已鉴权的内部写路径生成系统接续字段，内部路径仍执行信任上下文校验、WRITE、空间可写、作者归属与审计，不向外暴露绕过标志。
 
+## 可逆脱敏与用户访问边界
+
+开启保护后，普通 add/batch_add/get/list/search/update 仍使用原方法签名，对 `redact` 片段
+返回脱敏表示。路由预览、检索文本/query_context 及批量输入回显遵守同一策略；更新准备
+与其他可信构建处理可使用本次原文，最终 MemoryUnit 在持久化及索引生成前保护。
+受保护片段的原文不进入普通召回、后处理或响应缓存。`privacy_level`、`privacy_revision`、
+`privacy_message_revision`、`privacy_rule_ids`、`privacy_categories` 是内核保留
+system_metadata 键，调用方不能赋值；后两项仅为有限判级依据，不构成授权证明。
+
+MemoryAPI 提供两个可选用户访问控制入口，不加入普通机器方法目录：
+
+| 方法 | 契约 |
+|---|---|
+| `begin_human_view(payload, browser, *, security=None, primary_auth=None)` | 认证、READ 判权并暂存脱敏快照，返回人机挑战；登记使用受控邀请 |
+| `finish_human_view(payload, browser, *, peer="")` | 验证一次性人机证明、复核资源，经 Engine 还原并返回专用终端响应 |
+
+`primary_auth` 是可信宿主注入的延迟认证上下文工厂，不是 JSON 字段；API 内部进入它，
+保留宿主常规认证的限流、审计和生命周期。进程内调用也可提供既有可信 `security`，
+二者不可同时传入。未装配能力默认拒绝；采用非抽象可选方法保持已有实现兼容。
+增量 `HumanViewRuntime.human_view` 只作转发适配，begin/finish 均调用上述 API 方法。
+HTTP 提供
+`GET /security/privacy`、同源静态脚本及 `POST /security/privacy/begin|finish`；
+访问 begin 在 API 内执行常规认证，经 get PEP 和 Engine 查询脱敏快照，交由
+PrivacyProtection 短期暂存；认证挑战绑定服务端实际 Scope/ID/revision、请求身份和浏览器。
+finish 在 API 内委派人的证明验证，仍调用正常 get PEP 检查当前权限和快照；仅 ACTIVE
+且版本有效时，由 API 经 Engine 的独立 HumanViewRenderer 能力组装首次快照，结果经
+API 返回终端。普通 HTTP `/v1`、CLI 与 MCP 机器工具不注册这些用户访问控制入口。
+不提供 reveal 布尔参数、可复用解密 bearer token、明文结果轮询或 SDK/MCP 还原工具。
+该能力关闭/未装配不改变普通接口。`allow` 的直接写入豁免不属于仅人可见保证；
+逐项请求/响应、挑战消费、审计及故障语义见
+[S10 用户访问控制契约](S10-security.md#隐私保护与用户访问控制)，配置见 S08。

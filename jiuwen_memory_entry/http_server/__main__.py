@@ -24,6 +24,7 @@ import os
 import sys
 import threading
 import uuid
+from contextlib import contextmanager
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -41,6 +42,7 @@ from jiuwen_memory_entry.core.api_contract import (
 from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.error_response import error_response
 from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
+from jiuwen_memory_entry.http_server.human_view import handle_human_request
 from jiuwen_memory_entry.portal.requests import BROWSER_VERBS, invoke_browser_api
 from jiuwen_memory_entry.portal.sessions import (
     BROWSER_HEADER,
@@ -284,7 +286,27 @@ class HttpServer(Server):
         class Handler(BaseHTTPRequestHandler):
             timeout = _READ_TIMEOUT
 
+            @contextmanager
+            def human_primary_auth(self):
+                runtime = srv.security_runtime
+                if runtime is None:
+                    raise AuthenticationError("primary authentication unavailable")
+                peer = self.client_address[0] if self.client_address else ""
+                with authenticated(
+                    runtime.authenticator,
+                    credentials_from_headers(self.headers, peer_address=peer),
+                    audit=getattr(runtime, "audit", None) or srv.audit,
+                    limiter=getattr(runtime, "rate_limiter", None),
+                    workload_guard=getattr(runtime, "workload_guard", None),
+                    surface=Surface.HTTP,
+                ) as security:
+                    yield security
+
             def handle_get(self) -> None:
+                if self.path.startswith("/security/privacy") and handle_human_request(
+                    self, srv.human_view, post=False
+                ):
+                    return
                 request_id = uuid.uuid4().hex
                 if self.path.rstrip("/") == "/portal" and srv.portal_enabled:
                     if not self._portal_origin_allowed(require_origin=False):
@@ -310,6 +332,10 @@ class HttpServer(Server):
                     self._send_error("NotFound", self.path, request_id=request_id)
 
             def handle_post(self) -> None:
+                if self.path.startswith("/security/privacy") and handle_human_request(
+                    self, srv.human_view, post=True, primary_auth=self.human_primary_auth
+                ):
+                    return
                 request_id = uuid.uuid4().hex
                 is_portal = self.path.startswith("/portal/api/")
                 browser_request = self._uses_portal_session()

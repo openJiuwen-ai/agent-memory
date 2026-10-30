@@ -1,6 +1,6 @@
 # Config 配置与装配指南
 
-最近一次修订日期：2026-10-29
+最近一次修订日期：2026-11-06
 
 Agent Memory 的 Config 不只是把 YAML 字段传给某个构造函数，而是一套基于默认拓扑、
 Producer 注册表、具名实例和依赖引用的轻量级装配机制。本指南说明配置如何组织、合并、解析
@@ -406,7 +406,7 @@ constructor:
   default:
     target: hybrid
     params:
-      storage: default
+      store_manager: default
       chunker: default
       embedder: default
 ```
@@ -417,10 +417,11 @@ constructor:
 |---|---|
 | 共享组件 | `tokenizer`、`chunker`、`embedder`、`llm`、`reranker`、`normalizer`、`asr` |
 | Ingest | `ingestor` |
-| Storage | `storage`、`kv_store`、`vector_store`、`fulltext_store`、`graph_store` |
+| Storage | `store_manager`、`domain_store`、`recaller`、`kv_store`、`vector_store`、`fulltext_store`、`graph_store` |
 | Construction | `extractor`、`classifier`、`constructor`、`dedup`、`evolver` |
-| Retrieval | `query_parser`、`recaller`、`fuser`、`discloser`、`retriever` |
+| Retrieval | `query_parser`、`fuser`、`discloser`、`retriever` |
 | Control | `engine`、`scheduler`、`permission`、`policy`、`lifecycle` |
+| Security | `security`、`authenticator`、`authorizer`、`cryptography`、`key_provider`、`privacy`、`privacy_store`、`human_authenticator` |
 
 具体可选 target 以各层 API 文档和 Producer 注册结果为准。
 
@@ -453,6 +454,56 @@ normalizer:
 `TEXT` 和 `CODE`：CODE 输入必须是源码文本，不读取源码文件；只有 TEXT 保留无 data 时的
 URI 兼容回退。PDF/Office 等 `DOCUMENT` 原件需要专用解析型 Normalizer。完整视频依赖配置见
 [`examples/config_multimodal.yml`](../../../examples/config_multimodal.yml)。
+
+### 4.5 隐私分级与用户访问控制
+
+隐私片段通过 `privacy_store` 装配：`encrypted` 包装 `sqlite`，加解密由 Store 调用
+密码学模块；`privacy.default.params.privacy_store` 引用该实例。旧 `vault_path` 与
+`cryptography` 仍自动装配同样的保护链。此 Store 不进入普通记忆召回端口。
+
+隐私保护与普通存储的静态加密分别配置。`globals.privacy_enabled` 控制脱敏和用户访问控制，
+`globals.storage_encryption_enabled` 控制普通存储介质保护；开启任一项不会自动开启另一项。
+
+默认 S1 公开采用 `allow`，S2 个人隐私及 S3 凭据采用 `redact`；所有等级的 `reveal` 默认
+开启，但仍须每次人的证明和资源授权。`allow` 是直接写入豁免，可进入普通模型和响应；
+`redact` 保护的片段在持久化正文和索引生成前脱敏，普通召回返回脱敏内容，原文经独立
+用户访问控制流程还原。规约、分类、抽取、摘要和去重属于可信处理，可使用本次原文；本能力
+不隔离处理插件、LLM/Embedder 外部服务及其日志。默认摄入切分保留已识别敏感跨度，
+单个跨度超过 max_unit_chars 的正数上限时拒绝，不通过拆开敏感值绕过落盘识别。
+
+1. 安装 `pip install -e ".[security]"`，准备显式密码学依赖及独立敏感区状态路径。
+   完整叠加配置见 [privacy-human-view.yml](../../../examples/privacy-human-view.yml)。
+   用部署密钥管理注入示例中的 `JIUWEN_PRIVACY_MASTER_KEY`，不要把真实密钥写入仓库。
+2. 将示例叠加到现有认证/授权配置。HTTP/MCP 保留顶层 `memory_api`；直接装配 SDK 时
+   只传该段内容。开启前，已装配逻辑 KV 的记忆与原始消息须为空或已受控迁移，不能
+   只更换请求 Scope 绕过检查；当前不提供旧库自动迁移。
+3. 需要查看原文时配置 `human_authenticator.default`，使 `rp_id` 与公开 origin 的主机名
+   一致。仅 `http://localhost[:port]` 可使用 HTTP，其他地址须固定 HTTPS origin，反向
+   代理保留 Host，禁用响应缓存及正文日志。服务端不要求 Windows Hello 或交互桌面。
+4. 可信部署方生成至少 32 字符的高熵一次性登记码，只将其小写 SHA-256 摘要与固定 USER
+   Scope 放入 `enrollment_invites`，经独立渠道把码交给本人。默认空列表不提供新邀请；
+   机器 API Key 不能登记人。被绑定用户仍须拥有目标记忆的正常读取权限。
+5. 本人打开 `/security/privacy`，用邀请登记设备 Passkey；宿主将目标 Scope、unit ID 和
+   可选的 `system_metadata.privacy_revision` 带入查看请求。HTTP begin/finish 统一转发到
+   MemoryAPI.begin_human_view/finish_human_view；常规认证在 API 内执行，再经 get 权限
+   检查，由 Engine 查询脱敏快照，暂存后返回挑战及服务端 target。
+   finish 将该 target 的 scope/unit_id/revision 展开到请求顶层，完成 Passkey 后复查
+   权限、ACTIVE 状态和版本，再经 Engine
+   专用查看路径还原首次快照，结果经 API 返回页面。关闭还原的片段仍保留占位符，
+   更新或失效后须重新验证。
+   暂存只在当前进程内，begin/finish 须路由到同一实例；重启后重新开始。
+
+普通 SDK/MCP 和检索链路始终按写入策略返回内容，不接收人的解密权限。关闭总开关只
+停止新保护和原文查看，保留策略和既有占位符；修改策略后重建 Runtime。未配置人机
+认证器时可只使用脱敏写入与召回。
+
+当前支持内联 TEXT/CODE；URI、资产、文档/文件监听组合拒绝。规则目录支持类别到等级
+映射、逐项开关和命中依据；姓名、地址、IP 等高误报规则默认关闭。显式 `rules` 保持
+替换默认目录的旧行为，`use_builtin_rules=true` 才叠加；组合取最高敏感等级，详见 S08。
+默认正则不识别所有语义隐私。LLM 分类、分级云同步/分享/自动硬删除为
+TODO，不能用作生效保障。私有状态路径、控制元数据和备份仍须由部署方配置访问保护，
+真实设备和浏览器组合需要联调。参数默认值见 [S08](../../specs/S08-config.md#隐私配置)，
+完整协议与信任边界见 [S10](../../specs/S10-security.md#隐私保护与用户访问控制)。
 
 ## 5. 具名实例结构
 

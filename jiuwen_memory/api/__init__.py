@@ -5,6 +5,7 @@
 调用所需的全部类型，调用方无需 import 内核其他包。
 """
 
+from jiuwen_memory.api.human_view import HumanView, HumanViewRuntime
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
     AuthenticationError,
@@ -162,6 +163,8 @@ __all__ = [
     "ManagedServerRuntime",
     "assemble_managed_runtime",
     "assemble_managed_server_runtime",
+    "HumanView",
+    "HumanViewRuntime",
     "SearchOptions",
     "EvolveTaskOptions",
     "HierarchyComposeOptions",

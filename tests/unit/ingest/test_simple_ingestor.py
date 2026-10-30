@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from unittest.mock import Mock
 
 import pytest
 
@@ -304,20 +305,24 @@ class _LongCaptionImageNormalizer(Normalizer):
         return "\n\n".join(f"caption line {i} " + "字" * 40 for i in range(20))
 
 
-def test_simple_ingestor_keeps_video_envelope_whole_over_limit() -> None:
+@pytest.mark.parametrize("privacy_enabled", [False, True])
+def test_simple_ingestor_keeps_video_envelope_whole_over_limit(privacy_enabled: bool) -> None:
     """issue #294：规约器声明为结构化产物的模态不参与预切分，超限仍是单个完整 unit。"""
     envelope = json.dumps({"payload_id": "v1", "clips": [{"id": "c1", "x": "甲" * 400}]})
     assert len(envelope) > 200, "用例前提：包络必须超过 max_unit_chars"
 
-    units = SimpleIngestor(_EnvelopeVideoNormalizer(envelope), max_unit_chars=200).ingest(
-        [RawPayload(id="video-1", modality=Modality.VIDEO, uri="file:///v.mp4")]
-    )
+    privacy = Mock() if privacy_enabled else None
+    units = SimpleIngestor(
+        _EnvelopeVideoNormalizer(envelope), max_unit_chars=200, privacy=privacy
+    ).ingest([RawPayload(id="video-1", modality=Modality.VIDEO, uri="file:///v.mp4")])
 
     assert len(units) == 1, "视频包络不应被按字符数切成多个 unit"
     assert units[0].content == envelope, "包络内容应原样保留"
     assert json.loads(units[0].content)["clips"][0]["id"] == "c1", "包络应仍是合法 JSON"
     assert "_part" not in units[0].system_metadata, "单 unit 不应残留 _part"
     assert "_parts" not in units[0].system_metadata, "单 unit 不应残留 _parts"
+    if privacy is not None:
+        privacy.split_input.assert_not_called()
 
 
 def test_simple_ingestor_rejects_misdeclared_structured_modalities_at_construction() -> None:

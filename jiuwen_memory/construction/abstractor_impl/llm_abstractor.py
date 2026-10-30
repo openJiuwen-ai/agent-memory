@@ -59,8 +59,8 @@ from ..common import (
     validate_llm_attempt_policy,
 )
 
-# 长记忆提炼视图（各分片候选拼接）的字符上限：归纳调用中每个超限 unit 只占这么多
-# 字符，保证跨记忆归纳批的 prompt 有界。
+# 长记忆提炼视图（各分片候选拼接）的字符上限：归纳调用中每个超限 unit
+# 只占这么多字符，保证跨记忆归纳批的 prompt 有界。
 _DIGEST_MAX_CHARS = 2000
 
 logger = get_logger(__name__)

@@ -15,6 +15,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from jiuwen_memory.common.security.privacy.base import (
+    protected_text_boundary,
+    split_protected_text,
+)
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.type_def import MemoryUnit, Segment
 
@@ -39,8 +43,10 @@ def truncate_unit_content(content: str, limit: int = DEFAULT_MAX_UNIT_CHARS) -> 
         return content
     head = limit * 3 // 4
     tail = limit // 4
-    omitted = len(content) - head - tail
-    return f"{content[:head]}\n...[TRUNCATED {omitted} chars]...\n{content[-tail:]}"
+    head = protected_text_boundary(content, head)
+    tail_start = protected_text_boundary(content, len(content) - tail, right=True)
+    omitted = tail_start - head
+    return f"{content[:head]}\n...[TRUNCATED {omitted} chars]...\n{content[tail_start:]}"
 
 
 def chunk_unit_content(
@@ -60,7 +66,11 @@ def chunk_unit(unit: MemoryUnit, limit: int = CONTENT_MAX_UNIT_CHARS) -> list[Me
     副本保留 id/scope/metadata 等全部字段，仅把 segments 换成单段分片——
     候选经 ``source_id``/``source_unit_ids`` 回指时仍指向原 unit。
     """
-    chunks = chunk_unit_content(unit.content, limit)
+    chunks = (
+        split_protected_text(unit.content, limit)
+        if "privacy_level" in unit.system_metadata
+        else chunk_unit_content(unit.content, limit)
+    )
     if len(chunks) == 1:
         return [unit]
     return [

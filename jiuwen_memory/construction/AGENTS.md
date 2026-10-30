@@ -86,6 +86,18 @@ Evolver.evolve(units, mode):
 `SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，通过覆盖 `_evolve_extract` 切换抽取路径；
 其他模式（含 HIERARCHY）继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
 
+### 隐私保护装配
+
+`privacy_index_builder.py` 在 IndexBuilderProducer 边界包装各 target，先保护完整投影、
+校验引用，再调用实际构建器；成功后同步指纹匹配的已提交修订号，不提前覆盖清单。
+组合构建器只执行一次外层保护，Schema 反向索引机制保留。
+三种 Evolver 的具体构造器可注入共享 PrivacyProtection；路由和分层处理可使用本次原文，
+实际图写入前保护；Schema 辅助实体注册表在保存及索引生成前转换为安全投影。
+受控路由通过候选空间校验后只迁移密文引用，不解密片段。原 Evolver/IndexBuilder ABC
+及写入/删除模式不变。私有关联由 KV 真源边界维护，构建失败或仅删除投影不撤销关联。
+prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正数上限拒绝；判定型头尾
+截断把跨界占位符完整省略，原有限长和完整分批策略保持。
+
 ## 行为铁律
 
 0. **派生 metadata 按来源合并**：单源复制 `user_metadata`，多源只保留相等交集；
@@ -137,7 +149,7 @@ Evolver.evolve(units, mode):
    `IndexBuilder.update` 完成，不经 `LifecycleManager`（construction → control 严禁）。
 
    forward 经 manager.domain_store_for_kv 取得与正排 KV 同源的领域读接口，hybrid 透传；
-   unified/document 暴露写入绑定的数据面，Schema 包装器透传 `read_domain_store()`。
+   unified/document 暴露写入绑定的数据面，Schema 与 Privacy 包装器透传 `read_domain_store()`。
    Evolver Producer 显式注入该接口；旧 builder 必须配置 params.domain_store，手动装配传入
    domain_store，缺失读能力时拒绝执行。构造器与 Producer 共用 `_bind_read_domain`，
    显式选择与已声明读接口不是同一对象时在构造阶段拒绝；省略显式参数即使用 builder 绑定。

@@ -17,6 +17,14 @@
 | `python examples/security/audit.py` | 临时审计链和实际 HTTP/CLI 验证 |
 | `python examples/security/mcp_stdio.py` | 安装 MCP extra 后的真实 stdio 会话与 Root 引导 |
 
+隐私分级、可逆脱敏与 Passkey 查看使用完整配置 [privacy.yml](privacy.yml)，按
+[安全使用指南第 13 节](../../docs/zh/API文档/security.md#13-隐私分级脱敏与用户访问控制)
+准备密钥和登记邀请，再启动真实 HTTP 服务并在浏览器验收。该配置采用固定 DEV USER，
+仅用于回环演练。非 DEV 完整配置为 [privacy-api-key.yml](privacy-api-key.yml)，
+API Key 用户隔离验收为 `python -m pytest tests/integration/security/test_privacy_api_key_example.py -q`。
+它验证 Alice/Bob 各自允许、有效的他人 Passkey 拒绝，以及普通 get/search 始终脱敏。
+真实设备与生产登录接入另行验收；两份隐私配置均要求显式设置状态目录并保留对应原密钥。
+
 默认演练使用进程内数据、回环临时端口和系统临时审计文件，不需要模型、数据库或生产凭据。
 脚本中的随机密钥只供该进程及其子进程使用，不打印、不交付为正式用户 Key。
 `gateway.py` 不加 `--self-test` 时保持 8137/8139 监听，需要 `DEMO_CLIENT_KEY`；Ctrl+C 关闭。
