@@ -54,8 +54,8 @@ from jiuwen_memory.common.log import (
 )
 from jiuwen_memory.common.type_def import FeatureSet, MemoryUnit, Relation
 from jiuwen_memory.construction.associator import AssociatorProducer
-from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 
 from ..associator import Associator
 from ..base import OperatorType

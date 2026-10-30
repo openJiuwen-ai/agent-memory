@@ -77,6 +77,17 @@ Evolver.evolve(units, mode):
 `SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，只覆盖 `_evolve_extract`；
 其他模式（含 HIERARCHY）继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
 
+### 隐私保护装配
+
+`privacy_index_builder.py` 在 IndexBuilderProducer 边界包装各 target，先保护完整投影、
+校验引用，再调用实际构建器；成功后同步指纹匹配的已提交修订号，不提前覆盖清单。
+组合构建器只执行一次外层保护，Schema 反向索引机制保留。
+三种 Evolver 的具体构造器可注入共享 PrivacyProtection；在路由/分层/图写入前复检，
+受控路由通过候选空间校验后只迁移密文引用，不解密片段。原 Evolver/IndexBuilder ABC
+及写入/删除模式不变。私有关联由 KV 真源边界维护，构建失败或仅删除投影不撤销关联。
+prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正数上限拒绝；判定型头尾
+截断把跨界占位符完整省略，原有限长和完整分批策略保持。
+
 ## 行为铁律
 
 0. **派生 metadata 按来源合并**：单源复制 `user_metadata`，多源只保留相等交集；

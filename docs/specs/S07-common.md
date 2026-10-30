@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -25,7 +25,7 @@
 - 审计日志（AuditLogger）
 - 安全域横切能力（认证、资源保护与密码学，归 `common/security/`，接口与实装齐备）
 - 跨实例互斥横切接口（LockProvider）
-- 安全域契约（授权与审计完整性的抽象接口、请求上下文受控构造入口；接口先行，实现分别归 PR2 / PR3）
+- 安全域契约（授权、审计完整性、隐私保护、独立人机认证及请求上下文受控构造入口；现行契约见 S10）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -33,7 +33,7 @@
 - 不做具体算子实现（算子由各层 `*_impl/` 实现）
 - 不做存储后端实现
 - 不做业务编排逻辑
-- 不做鉴权/策略管理
+- 不承担业务入口的 PEP 编排或应用策略治理；安全域提供 PDP 与授权存储能力
 
 ## 不变量
 
@@ -604,3 +604,13 @@ CryptographyProvider 与 `local` KeyProvider。
 索引转换为 epoch 毫秒。缺值与未知/开放区间哨兵由字段自身契约决定。
 自动生成的点状 Snapshot 满足 occurred_at、t_message、span_start、span_end 同值，
 其时间索引也必须相等；显式传入的更宽区间不受点状约束。
+
+## 隐私与独立人机认证能力
+
+PrivacyProtection 和 HumanAuthenticator 是独立安全横切契约，不加入模型 PluginType，
+不扩展原 Authenticator 的机机 Credentials，也不让 mode/target 字符串决定人的身份。
+配置命名空间为 privacy / human_authenticator；安全 bootstrap 在配置解析前注册。
+策略按显式 rank 排序，不依赖等级 ID 的字符串顺序。
+共享段落切分允许可选 boundary(text, limit) 回调，仅调整单段硬切位置，返回值必须在
+(0, limit] 内；默认切分行为不变。隐私能力据此保留完整引用，不承载认证或授权状态。
+完整契约、控制总开关、保留配置及故障语义统一见 S10/S08；实现地图维护在对应模块 AGENTS.md。

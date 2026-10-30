@@ -57,6 +57,13 @@
 检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用 `mget` /
 `exists` / `scan` / `scopes`；fs 提供 `stat`。
 
+`_privacy_kv.py` 提供可选 PrivacyKVStore，由 KvProducer 包装逻辑 KV 边界，覆盖
+`/memory/` 和 `/messages/` 的直接写入与删除；其他系统记录原样传递。嵌套加密端口只在
+本次受控写入内跳过重复保护，底层 security 能力原样转发。片段密文不存到这些 KV 端口，
+关联失效时保留的本体只能是脱敏内容；原始消息淘汰不删除仍被正式记忆拥有的片段引用。
+写入通过隐私能力的 write 提交，异常后按真源回读恢复存续版本；旧关联的密文恢复引用
+保留至结果确认。真源删除成功后才 discard，失败不提前撤销，索引层不重复维护关联。
+
 ## 行为铁律
 
 - **统一静态加密准入**：`StoreManagerProducer.resolve` 在开关开启时验证完整

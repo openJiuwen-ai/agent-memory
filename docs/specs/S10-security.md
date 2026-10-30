@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -309,7 +309,7 @@ import，注册装饰器才会生效。当前核心不自动发现任意外部 P
 
 顶层段名：`security`、`authenticator`、`key_store`、`authorizer`、`grant_store`、
 `delegation_store`、`rate_limiter`、`workload_guard`、`binding_policy`、`cryptography`、
-`key_provider`、`audit_integrity`。
+`key_provider`、`audit_integrity`、`privacy`、`human_authenticator`。
 
 ```yaml
 security:
@@ -441,3 +441,137 @@ HTTP 显式 DEV 可从 http.dev_identities 读取服务端身份映射，或由�
 具名 ADMIN/ROOT 的组织权限与 agent 代表 user 的受控委托使用同一链路，内容轴、治理轴、
 作者标记和路由/检索过滤共同接受验证。旧 PermissionManager 仅为历史兼容类，不参与生产判定。
 PR1 阶段曾暂用旧权限链，那是迁移历史而非当前要求；不得恢复双 PDP。
+
+## 隐私保护与人类终端披露
+
+### 分级与普通处理不变量
+
+默认 S1 公开 `allow`、S2 个人隐私 `redact`、S3 凭据 `redact`，以显式 `rank` 比较。
+`allow` 是完整直接写入豁免，原文可进入普通模型、索引和响应；以下仅人可见保证适用
+于 `redact` 片段。`reveal` 缺省为 `true`，仍要求每次人的证明、正常授权和有效快照。
+
+1. 原入口负责机机认证及唯一 PEP/PDP；规约或模型处理前识别、保留分级并脱敏。
+2. 派生处理、实际正文/索引及直接原始消息写入前复检，分级不因占位符或摘要消失而下降。
+3. 正常处理使用占位符，未知、过期、损坏或无来源引用失闭；客户端不得自述保护完成、
+   等级或修订号。`privacy_level`、`privacy_revision`、`privacy_message_revision` 是内核字段。
+4. 构建和通过候选目标校验的同组织路由可认证引用、搬运密文，不解密敏感片段。
+5. 查询、召回、重排、普通 SDK/MCP 返回及 Agent 上下文保持脱敏；人的认证不修改
+   RetrievalQuery、DisclosureLevel 或普通访问权限，不写回原文。
+6. 原始消息和正式记忆分别拥有引用；显式硬删和回滚撤销关联。分级自动硬删、云同步、
+   分享和 LLM 分类只保留配置，不能宣称已经执行。
+
+### 隐私能力契约
+
+`PrivacyProducer` 使用 `privacy` 命名空间。能力由同次装配共享，方法职责如下；这不是
+面向普通调用方的解密 API。
+
+| 方法 | 契约 |
+|---|---|
+| `preview(text, *, label="") -> str` | 保护路由/查询文本，不保留原值 |
+| `preview_echo(value, *, label="") -> Any` | 保护输入回显，包含嵌套元数据及非法占位符尝试 |
+| `ingress(payload) -> RawPayload` | 返回受保护副本；摄入只暂存有界内存密文，不落盘 |
+| `prepare(unit) -> None` | 原地复检正文、摘要、标签、实体、业务元数据及事实文本，校验引用来源；不发布清单 |
+| `inherit_classification(unit, sources) -> None` | 继承同 Scope 来源的最高已知分级 |
+| `persist(unit, *, channel="memory") -> None` | 提交密文及认证清单；通道仅 `memory / message` |
+| `write(unit, commit, read, *, channel="memory") -> None` | 保护并提交真源；`commit(protected_unit)` 写入，异常时 `read()` 返回当前单元或 `None`，按实际存续版本恢复关联 |
+| `refresh_revision(unit) -> None` | 将内容指纹匹配的已提交清单修订号同步到调用方对象，不新建或替换清单 |
+| `relocate(unit, target) -> None` | 原候选授权校验后搬运同组织密文引用，保留来源绑定 |
+| `discard(scope, unit_ids, *, channel="memory", commit=None) -> None` | 可选 `commit()` 先删除真源，成功后撤销引用并清理无引用片段；与写入共享实例内互斥边界 |
+| `discard_scope(scope) -> None` | 清理匹配完整或前缀 Scope 的私有状态 |
+| `validate_existing(unit, *, channel="memory") -> None` | 发布 Runtime 前拒绝无保护标记或需按新规则迁移的旧内容 |
+| `staging_scope(*, retain_on_success=False)` | 管理本操作新暂存密文的上下文，不传递身份/授权 |
+| `render(unit) -> str` | 仅由受控人类查看边界在证明及资源检查后调用，返回当前正文 |
+| `bind_audit(audit)` / `health()` | 绑定最终共享审计器及检查依赖 |
+
+正则匹配共享单次保护调用的时间预算，超时失闭。完整写入/构建结束、失败或取消后释放
+本操作的新暂存项，迟到回调不得重新暂存；独立摄入可显式保留成功输出至后续持久化，
+仍受 TTL/容量限制。清理暂存不删除已提交的关联。引用、指纹与加密上下文见
+[S06](S06-storage.md#敏感片段与脱敏真源)，切分约束见 S01/S05，配置见 S08。
+
+索引包装层复检投影，不提前覆盖或回收真源关联。KV 边界在委托写入前保留旧清单的
+密文恢复引用；冲突及其他委托异常均回读真源，保留实际存续快照。真源已写、索引后续
+失败时保留新快照。回读也失败时持久保留候选版本和引用，后续成功写入或硬删再清理；
+这些恢复记录不作为普通历史记忆开放，人的查看仍须从当前真源取得匹配的版本。
+删除必须在真源删除成功后回收；仅移除检索投影不得撤销私有状态。各后端不提供全局事务。
+
+### 独立人机认证与 Runtime 能力
+
+`HumanAuthenticatorProducer` 使用 `human_authenticator` 命名空间，不扩展机机
+Authenticator 或 Credentials。认证器提供下列契约：
+
+| 方法 / 属性 | 契约 |
+|---|---|
+| `origin: str` | 人类传输必须验证的精确浏览器 origin |
+| `begin(binding, *, invite="") -> dict` | 创建绑定到具体浏览器操作的短时一次性挑战 |
+| `finish(challenge_id, binding, credential) -> (AuthContext, str)` | 先消费挑战再验证，返回登记的人类及服务端确定的 `enroll / view` 操作 |
+| `health()` | 检查认证状态依赖 |
+
+WebAuthn 实现验证 RP ID、精确 origin、签名、user verification 及计数器，登记要求
+可发现 Passkey。可信部署邀请绑定固定 USER；邀请、公钥及实际断言共同确定人类身份，
+不从机器 key、客户端 `acting_user` 或目标 Scope 推导。成功产生本操作使用的短时 USER
+上下文，不向浏览器或机器发放可复用解密权限。ROOT/ADMIN 不替代人的证明。
+
+`HumanViewRuntime.human_view` 是可选增量 capability。其 `HumanView` 提供 `origin`、
+`admission(peer)`、`begin(payload, browser)` 和 `finish(payload, browser, *, peer="")`。
+传输先进入独立预算，再读请求体；`browser` 是服务端产生的浏览器绑定标识，`peer` 来自
+真实传输对端。MemoryAPI 和原安全 ABC 签名不变，普通 SDK/MCP 不接收人机证明。
+
+### 人类 HTTP 终端
+
+| 路径 | 用途 |
+|---|---|
+| `GET /security/privacy` | 最小查看页，设置浏览器绑定 cookie |
+| `GET /security/privacy/viewer.js` | 同源脚本 |
+| `POST /security/privacy/begin` | 创建登记或查看挑战 |
+| `POST /security/privacy/finish` | 提交登记证明或查看断言 |
+
+POST 使用 JSON 对象，正文为 1～65536 字节。Host 须与固定 origin 的 netloc 精确一致，
+POST Origin 须与完整 origin 一致；浏览器 cookie 为 HttpOnly/SameSite=Strict，HTTPS 下
+带 Secure。响应设置 CSP、no-store、Referrer-Policy 和 nosniff，不允许嵌入第三方页面。
+localhost 之外使用固定 HTTPS origin，服务端不依赖交互桌面或 Windows Hello。
+
+| 字段 | `begin` | `finish` |
+|---|---|---|
+| `scope` | 查看必填的完整目标 Scope；登记可为空 | 与本次挑战完全相同 |
+| `unit_id` | 查看必填 | 与本次挑战完全相同 |
+| `revision` | 查看必填，取当前 `system_metadata.privacy_revision` | 与本次挑战完全相同 |
+| `invite` | 登记时携带经独立渠道取得的登记码；查看不传 | 不作为身份或操作声明 |
+| `challenge_id` | 不传 | 服务端返回的挑战 ID |
+| `credential` | 不传 | 浏览器 WebAuthn credential 的 JSON 序列化结果，二进制字段为 base64url |
+
+begin 返回 `challenge_id`、`operation`（`enroll / view`）和 `publicKey`。登记成功返回
+`{"enrolled": true}`；查看成功返回 `{"unit_id": "...", "content": "当前完整正文"}`。
+绑定字段改变必须重新 begin，不能复用旧证明。链接或 URL fragment 只可用于预填非明文
+目标，不构成授权，不签发通用解密 token，也不提供原文轮询结果。
+
+finish 先原子消费挑战，失败/过期也不可重放，跨连接竞争至多一次成功。证明通过后使用
+已登记 USER 和真实传输对端调用现有 `API.get`，重新检查实际返回资源的权限，要求
+`LifecycleState.ACTIVE` 且修订号匹配；记录检查通过的审计后才执行 `render`。缺失或
+无法认证的清单、状态/版本失效、撤权及审计失败均不能释放原文。`reveal=false` 的片段
+继续保留占位符，返回的是当前记忆正文，不重建摘要丢弃的原句。
+
+| HTTP 状态 | 条件 |
+|---|---|
+| 403 | 来源/浏览器绑定、证明、资源授权或快照检查失败；不回显正文或断言 |
+| 404 | 未装配人类查看能力或未知路径 |
+| 413 / 415 | 数字正文长度超限 / 不是 JSON Content-Type |
+| 429 | 人类入口预算耗尽 |
+| 503 | 未预期的服务或依赖异常 |
+
+### 审计与信任边界
+
+复用最终 AuditLogger，启用审计完整性时经过同一保护链。当前事件如下：
+
+| action | 语义 |
+|---|---|
+| `privacy_protection` | 新保护清单提交；detail 仅含等级、片段数和通道 |
+| `human_challenge` / `human_authentication` | 挑战创建成功 / 创建过程认证拒绝 |
+| `human_verification` | 验证证明前的尝试审计 |
+| `human_enrollment` | 登记成功 |
+| `human_disclosure` | 释放前检查通过或处理拒绝；allow 不表示客户端已经收到明文 |
+
+审计不记录正文、片段值、登记码、完整断言或密钥。内容只进入本次人类响应与页面展示，
+不写回本体、索引、普通轨迹或共享缓存。相同进程中能够访问密钥/私有对象的恶意插件、
+宿主权限主体和可以读取人的浏览器的 Agent 不在此服务边界保证内；密钥可在加密阶段
+已加载，不能把认证后解密解释为认证前服务端绝无解密能力。真实设备与浏览器组合需要
+部署验收，自动测试不构成硬件或生物认证承诺。取舍与遗留统一见 F04。

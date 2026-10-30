@@ -25,7 +25,6 @@ from jiuwen_memory.construction.evolver import EvolveMode, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
-from tests.unit.construction.fixtures import RecordingLLM
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
@@ -41,6 +40,7 @@ from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexWriteMode
 from tests.conftest import make_storage
 from tests.support.scoped_authenticator import ScopedAuthenticator
+from tests.unit.construction.fixtures import RecordingLLM
 
 _TEST_KEY_HEX = "00" * 32
 

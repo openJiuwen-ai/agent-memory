@@ -1,6 +1,6 @@
 # Configuration and Assembly Guide
 
-Last revised: 2026-10-26
+Last revised: 2026-10-30
 
 Agent Memory configuration is more than a way to pass YAML fields to a constructor. It is a
 lightweight assembly mechanism built around a default topology, Producer registries, named
@@ -423,7 +423,7 @@ constructor:
   default:
     target: hybrid
     params:
-      storage: default
+      store_manager: default
       chunker: default
       embedder: default
 ```
@@ -434,10 +434,11 @@ Common namespaces include:
 |---|---|
 | Shared components | `tokenizer`, `chunker`, `embedder`, `llm`, `reranker`, `normalizer`, `asr` |
 | Ingest | `ingestor` |
-| Storage | `storage`, `kv_store`, `vector_store`, `fulltext_store`, `graph_store` |
+| Storage | `store_manager`, `domain_store`, `recaller`, `kv_store`, `vector_store`, `fulltext_store`, `graph_store` |
 | Construction | `extractor`, `classifier`, `constructor`, `dedup`, `evolver` |
-| Retrieval | `query_parser`, `recaller`, `fuser`, `discloser`, `retriever` |
+| Retrieval | `query_parser`, `fuser`, `discloser`, `retriever` |
 | Control | `engine`, `scheduler`, `permission`, `policy`, `lifecycle` |
+| Security | `security`, `authenticator`, `authorizer`, `cryptography`, `key_provider`, `privacy`, `human_authenticator` |
 
 See the API reference for each layer and the registered Producer targets for the available target
 values.
@@ -474,6 +475,51 @@ be source text; passthrough does not read source files. Only TEXT retains the co
 that treats `uri` as text when `data` is empty. PDF/Office `DOCUMENT` inputs require a dedicated
 parsing Normalizer. See [`examples/config_multimodal.yml`](../../../examples/config_multimodal.yml)
 for the complete video dependency configuration.
+
+### 4.5 Privacy Classification and Human Viewing
+
+Privacy protection and storage encryption have separate switches. `globals.privacy_enabled`
+controls redaction and human viewing; `globals.storage_encryption_enabled` protects ordinary
+storage at rest. Enabling either capability does not enable the other.
+
+The default levels are S1 public (`allow`), S2 personal data (`redact`), and S3 credentials
+(`redact`). `reveal` defaults to true but still requires fresh human proof and resource
+authorization. `allow` is a direct-write exemption: original text may reach ordinary models
+and responses. Only `redact` fragments receive the protected processing and human viewing path.
+
+1. Install `pip install -e ".[security]"` and configure an explicit cryptography dependency
+   and a private fragment state path. Use the
+   [complete overlay](../../../examples/privacy-human-view.yml); inject its
+   `JIUWEN_PRIVACY_MASTER_KEY` through deployment key management, never source control.
+2. Overlay it on the existing authentication and authorization configuration. HTTP/MCP use
+   the `memory_api` envelope; direct SDK assembly receives its contents. Memories and raw
+   messages in every assembled logical KV must be empty or migrated before enabling privacy.
+   Changing the request Scope does not bypass validation; automatic migration is unavailable.
+3. For original-text viewing, configure `human_authenticator.default` with an RP ID matching
+   the public origin hostname. Only `http://localhost[:port]` permits HTTP; other origins
+   require fixed HTTPS. Preserve Host through reverse proxies and disable response caching
+   and body logging. The server needs neither an interactive desktop nor Windows Hello.
+4. A trusted operator issues a high-entropy, one-use invitation of at least 32 characters.
+   Configure only its lowercase SHA-256 digest and a fixed USER Scope in `enrollment_invites`,
+   and deliver the code separately to that person. The default empty list issues no new
+   invitations. Machine API keys cannot enroll people; the user still needs ordinary read access.
+5. Open `/security/privacy` and enroll a device Passkey with the invitation. Use the complete
+   Scope, unit ID, and current `system_metadata.privacy_revision` from a protected result to
+   verify and view the current full memory text. Fragments with reveal disabled remain
+   placeholders. Changes or invalid snapshots require a fresh snapshot and verification.
+
+Ordinary SDK/MCP and retrieval flows continue to follow the configured write policy and do
+not receive human decryption authority. Disabling privacy stops new protection and viewing,
+preserving policies and existing placeholders. Rebuild the Runtime after policy changes.
+Redacted writes and recall work without a human authenticator.
+
+Only inline TEXT/CODE is supported; URI, asset, document, and file-watcher combinations are
+rejected. Default regex rules do not detect all semantic privacy, and an explicit `rules`
+list replaces all built-in rules. LLM classification and per-level cloud, sharing, and
+automatic hard-deletion enforcement remain TODO. Protect private state paths, control
+metadata, and backups through deployment controls; validate real devices and browsers.
+See [S08](../../specs/S08-config.md#隐私配置) for defaults and
+[S10](../../specs/S10-security.md#隐私保护与人类终端披露) for the protocol and trust boundary.
 
 ## 5. Named Instance Structure
 

@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## Schema source 更新准备契约
 
@@ -657,3 +657,14 @@ detail 标记 retryable="true"，不保留故障保护，下一周期重新读�
 当前注册不持久化、不自动发现 home，不复用 dreaming 的持续授权/恢复注册表。
 宿主负责注册范围及其权限生命周期；动态关闭策略只让后续轮次跳过，不中断已经开始
 的本轮写入。需要停止任务时使用 job_cancel 或 Runtime.close。
+
+## 隐私保护与生命周期
+
+可选隐私能力不改变 MemoryEngine/Evolver 的抽象签名。首次保护位于摄入前；实际正文/索引
+提交前再检查，直接 KV 真源和原始消息写入也不能绕过。路由须先经过原授权候选集合校验，
+再迁移同组织的密文引用；不通过解密原文完成转移。
+单条和批量写入的标签均保留至受控保护边界；引擎补入标签后、选择处理流水线及分类前
+再次保护，使标签生成可还原片段并参与分级。授权和输入回显的 preview 不覆盖业务输入。
+明确硬删/回滚删除撤销对应关联，原始消息淘汰不误删仍被正式记忆引用的片段。
+软删与定期硬删策略分开：分级 retention TTL 暂只存配置，不执行自动硬删。
+人类查看要求 ACTIVE 快照；普通历史查询语义不因此改变。详见 S10、S05、S06。

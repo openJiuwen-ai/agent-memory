@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -724,98 +724,53 @@ def test_in_process_scheduler_runs_middle_to_long_job_no_candidates() -> None:
 # ---- 异步治理：to_thread 不卡事件循环 ----
 
 
+def _assert_event_loop_progress(loop: asyncio.AbstractEventLoop, loop_thread: int) -> None:
+    """同步 I/O 在工作线程等待，只有事件循环执行回调后才允许返回。"""
+    assert threading.get_ident() != loop_thread, "同步 I/O 不应在事件循环线程执行"
+    progressed = threading.Event()
+    loop.call_soon_threadsafe(progressed.set)
+    assert progressed.wait(timeout=10), "同步 I/O 等待期间，事件循环未能执行回调"
+
+
 def test_archive_originals_does_not_block_event_loop() -> None:
-    """``_archive_originals`` 内 lifecycle.transition + index.remove 已包 to_thread——
-    同步阻塞 IO 跑在独立线程,事件循环能并发跑其他协程。
-
-    验证方式：lifecycle.transition 内 sleep 1s（模拟 Redis SDK 阻塞）,
-    并发跑一个标志位协程（asyncio.sleep(0.1) 后置位）。若 _archive_originals
-    包了 to_thread,标志位协程在 transition 阻塞 1s 期间能完成——总耗时 ~1s。
-    若未包（旧代码同步调）,事件循环被 transition 卡 1s,标志位协程要等
-    transition 跑完才能跑——总耗时 ~2s。
-    """
-
-    class _BlockingLifecycle(_RecordingLifecycle):
-        """transition 内 sleep 1s 模拟同步阻塞 IO。"""
-
-        def transition(self, scope, unit_ids, target):
-            time.sleep(1.0)
-            super().transition(scope, unit_ids, target)
-
-    scope = Scope(user="u1")
-    kv = InMemoryKVStore()
-    job, _, lifecycle, index, _ = _build_job(
-        scope, kv, lifecycle=_BlockingLifecycle()
-    )
-    u1 = _make_unit("u1", scope, "c1")
-
-    marker_done = False
-
-    async def _marker():
-        """标志位协程——asyncio.sleep(0.1) 后置位。若事件循环被卡,此协程
-        要等 lifecycle.transition 跑完才能跑（>1s 后才置位）。"""
-        nonlocal marker_done
-        await asyncio.sleep(0.1)
-        marker_done = True
+    """归档 I/O 等待期间事件循环仍可推进，不以总耗时推断线程隔离。"""
 
     async def _run():
-        # 并发跑 _archive_originals + _marker
-        start = time.monotonic()
-        await asyncio.gather(job._archive_originals([u1]), _marker())  # pylint: disable=protected-access
-        return time.monotonic() - start
+        loop, loop_thread = asyncio.get_running_loop(), threading.get_ident()
 
-    elapsed = asyncio.run(_run())
+        class _BlockingLifecycle(_RecordingLifecycle):
+            def transition(self, scope, unit_ids, target):
+                _assert_event_loop_progress(loop, loop_thread)
+                super().transition(scope, unit_ids, target)
 
-    # 标志位应被置位（_marker 协程能跑）——若 to_thread 失效,事件循环被卡,
-    # _marker 跑不到置位语句
-    assert marker_done, (
-        "_marker 协程未在 _archive_originals 期间完成——to_thread 没生效,"
-        "事件循环被同步 IO 卡住"
-    )
-    # 总耗时应接近 1s（lifecycle sleep）——若 to_thread 失效,_marker 等
-    # transition 跑完才跑,总耗时 ~1.1s+。这里宽松断言 <1.5s。
-    assert elapsed < 1.5, (
-        f"总耗时 {elapsed:.2f}s > 1.5s——to_thread 没生效,事件循环被同步 IO 卡住"
-    )
+        scope = Scope(user="u1")
+        job, _, lifecycle, index, _ = _build_job(
+            scope, InMemoryKVStore(), lifecycle=_BlockingLifecycle()
+        )
+        unit = _make_unit("u1", scope, "c1")
+        await job._archive_originals([unit])  # pylint: disable=protected-access
+        assert lifecycle.transition_calls == [(scope, [unit.id], LifecycleState.ARCHIVED)]
+        assert index.removed == [unit]
+
+    asyncio.run(_run())
 
 
 def test_list_working_units_does_not_block_event_loop() -> None:
-    """``_list_working_units`` 内 kv.scan 已包 to_thread——同步阻塞 IO 跑在
-    独立线程,事件循环能并发跑其他协程。
-
-    验证同 _archive_originals 测试：kv.scan 内 sleep 1s,标志位协程能在
-    scan 阻塞期间完成。
-    """
-
-    class _BlockingKV(InMemoryKVStore):
-        """scan 内 sleep 1s 模拟同步阻塞 IO。"""
-
-        def scan(self, scope, prefix=""):
-            time.sleep(1.0)
-            return super().scan(scope, prefix)
-
-    scope = Scope(user="u1")
-    kv = _BlockingKV()
-    kv.insert(scope, memory_key("m1"), dumps(_make_unit("m1", scope, "c1")))
-    job, *_ = _build_job(scope, kv)
-
-    marker_done = False
-
-    async def _marker():
-        nonlocal marker_done
-        await asyncio.sleep(0.1)
-        marker_done = True
+    """候选读取 I/O 等待期间事件循环仍可推进，不依赖 CI 的调度耗时。"""
 
     async def _run():
-        start = time.monotonic()
-        await asyncio.gather(job._list_working_units(), _marker())  # pylint: disable=protected-access
-        return time.monotonic() - start
+        loop, loop_thread = asyncio.get_running_loop(), threading.get_ident()
 
-    elapsed = asyncio.run(_run())
+        class _BlockingKV(InMemoryKVStore):
+            def scan(self, scope, prefix=""):
+                _assert_event_loop_progress(loop, loop_thread)
+                return super().scan(scope, prefix)
 
-    assert marker_done, (
-        "_marker 协程未在 _list_working_units 期间完成——to_thread 没生效"
-    )
-    assert elapsed < 1.5, (
-        f"总耗时 {elapsed:.2f}s > 1.5s——to_thread 没生效,事件循环被同步 IO 卡住"
-    )
+        scope = Scope(user="u1")
+        kv = _BlockingKV()
+        kv.insert(scope, memory_key("m1"), dumps(_make_unit("m1", scope, "c1")))
+        job, *_ = _build_job(scope, kv)
+        units = await job._list_working_units()  # pylint: disable=protected-access
+        assert [unit.id for unit in units] == ["m1"]
+
+    asyncio.run(_run())

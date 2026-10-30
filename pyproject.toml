@@ -20,6 +20,8 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.16",
     "argon2-cffi>=23.1",
+    "webauthn>=2.7,<3",
+    "regex>=2024.11.6",
     # 测试套件自身消费的三个未声明依赖（test_outbound_ssl / test_multimodal_adapter /
     # test_middle_e2e_real_llm），缺失会让 pytest 卡在 collection error。
     "httpx>=0.27,<1",
@@ -70,6 +72,8 @@ mcp = [
 # 静态加密所需的 cryptography 已在主依赖里（common.security.cryptography 使用）。
 security = [
     "argon2-cffi>=23.1",
+    "webauthn>=2.7,<3",
+    "regex>=2024.11.6",
 ]
 # jiuwenswarm 宿主集成（jiuwen_memory_adapter/jiuwenswarm）：把 AgentMemory 适配成
 # openjiuwen 的 MemoryProvider ABC，供 ExternalMemoryRail / JiuwenMemoryRail 驱动。
@@ -86,6 +90,8 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.16",
     "argon2-cffi>=23.1",
+    "webauthn>=2.7,<3",
+    "regex>=2024.11.6",
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",

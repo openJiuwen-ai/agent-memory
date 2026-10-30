@@ -284,6 +284,9 @@ MD_TITLE_KEY = "md_title"
 # 按标签的批量删除范围。故在写入边界拒绝。
 KERNEL_SYSTEM_METADATA_KEYS = frozenset(
     {
+        "privacy_level",
+        "privacy_revision",
+        "privacy_message_revision",
         # -- 索引投影字段：真源系统字段在索引里占用同名 key -----------------------
         # 调用方经 system_metadata 写这些 key 会与索引投影的取值不一致，两侧判定相反、
         # 过滤结果静默出错。用户元数据落在另一命名空间、占不到它们，本项只防入参。

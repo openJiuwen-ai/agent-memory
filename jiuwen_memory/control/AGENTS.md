@@ -8,6 +8,10 @@
 
 所有算子继承 `ControlOperator`（`base.py`），由外部装配注入到引擎，引擎本身不实现具体能力。
 
+InMemoryEngine/CloudEngine 可注入共享 PrivacyProtection；摄入后补入调用方标签，再经
+prepare 保护、分级并校验引用，之后才选择处理流水线及调用分类器。真源私有关联的提交
+和删除由 KV 边界负责，编排层不通过 preview 覆盖待保护的标签。
+
 ## 模块地图
 
 | 文件 | 职责 |

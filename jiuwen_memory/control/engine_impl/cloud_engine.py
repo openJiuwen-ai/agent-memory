@@ -22,6 +22,7 @@ from jiuwen_memory.common.log import (
     metadata_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.security.privacy.base import PrivacyProtection, optional_privacy
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -254,6 +255,7 @@ class CloudEngine(MemoryEngine):
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
         policy: PolicyManager | None = None,
+        privacy: PrivacyProtection | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -272,6 +274,7 @@ class CloudEngine(MemoryEngine):
         self._default_pipeline_name = default_pipeline_name.strip()
         self._job_factory = job_factory
         self._policy = policy
+        self._privacy = privacy
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -1009,6 +1012,8 @@ class CloudEngine(MemoryEngine):
                 if key not in consumed_hints
             )
             unit.tags = list(tags or [])
+            if self._privacy is not None:
+                self._privacy.prepare(unit)
 
     def _stamp_pipeline(self, units: list[MemoryUnit], pipeline_name: str) -> None:
         if not pipeline_name:
@@ -1135,4 +1140,5 @@ def _build(config):
         default_pipeline_name=str(config.get("default_pipeline_name", "default")),
         job_factory=_optional_job_factory(config),
         policy=PolicyProducer.build_named("default", config.ctx),
+        privacy=optional_privacy(config),
     )

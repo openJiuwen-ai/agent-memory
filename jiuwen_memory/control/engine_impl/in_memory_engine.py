@@ -21,6 +21,7 @@ from jiuwen_memory.common.log import (
     metadata_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.security.privacy.base import PrivacyProtection, optional_privacy
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -241,6 +242,7 @@ class InMemoryEngine(MemoryEngine):
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
         policy: PolicyManager | None = None,
+        privacy: PrivacyProtection | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -255,6 +257,7 @@ class InMemoryEngine(MemoryEngine):
         self._classifier = classifier
         self._job_factory = job_factory
         self._policy = policy
+        self._privacy = privacy
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -333,6 +336,8 @@ class InMemoryEngine(MemoryEngine):
         units = self._ingestor.ingest([payload])
         for unit in units:
             unit.tags = list(tags or [])
+            if self._privacy is not None:
+                self._privacy.prepare(unit)
             if middle:  # 中期缓冲标记——MiddleToLongJob 据此过滤候选
                 unit.system_metadata["middle"] = "true"
             if "session_id" in meta:
@@ -995,4 +1000,5 @@ def _build(config):
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),
         policy=PolicyProducer.build_named("default", config.ctx),
+        privacy=optional_privacy(config),
     )

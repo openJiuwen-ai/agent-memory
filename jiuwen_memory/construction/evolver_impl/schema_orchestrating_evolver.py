@@ -77,6 +77,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
+        privacy=None,
     ) -> None:
         super().__init__(
             extractor=extractor,
@@ -91,6 +92,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             hierarchy_composer=hierarchy_composer,
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
+            privacy=privacy,
         )
         # IndexBuilder owns memory writes; KV is used only to read source/property records.
         self._source_kv = storage.kv(kv_name)
@@ -228,6 +230,9 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             return EvolveResult(created_ids=source_ids)
 
         copy_consolidation_prompts(units, extracted)
+        if self._privacy is not None:
+            for unit in extracted:
+                self._privacy.inherit_classification(unit, units)
         self._annotate_layers(extracted)
         if self._schema_entity_resolver is not None:
             self._schema_entity_resolver.resolve(extracted)
@@ -335,6 +340,8 @@ def _build(config):
         merge_enabled=as_bool(config.get("use_property_merge"), default=False),
     )
     hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=index_default)
+    from jiuwen_memory.common.security.privacy.base import optional_privacy
+
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -353,4 +360,5 @@ def _build(config):
         kv_name=kv_name,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        privacy=optional_privacy(config),
     )

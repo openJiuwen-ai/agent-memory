@@ -31,6 +31,12 @@
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
 | `access_security.py` | Access 安全装配辅助：提供 dev Authenticator；私有 `_build_security_runtime` 从同一装配上下文选择、健康检查 Runtime，公开 mapping helper 复用它；不暴露 common 实现路径 |
 
+`human_view.py` 提供增量 HumanView/HumanViewRuntime 安全能力协议，Server 装配结果
+可供 HTTP 接入组合；不增加 MemoryAPI 方法，也不向 SDK/MCP 暴露还原参数。
+assembly 为处理、KV、构建及人类查看装配同一 PrivacyProtection，并绑定最终 AuditLogger。
+启用前检查已有 KV 记忆的保护标记及策略；未迁移明文、文档模式或文件监听组合明确拒绝。
+API 边界保护路由预览、查询文本/上下文、更新准备和批量回显；人类查看复用既有 get PEP。
+
 ## 行为铁律
 
 - **静态加密装配边界**：构建组件前核查部署声明，ConfigSource 安装位置变更门禁后

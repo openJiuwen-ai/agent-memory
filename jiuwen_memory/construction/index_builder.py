@@ -59,6 +59,12 @@ class IndexBuilderProducer(Factory):
         from jiuwen_memory.config.context import ComponentConfig
 
         config = ComponentConfig(params=dict(params or {}), ctx=ctx, target=target, name=name)
+        from jiuwen_memory.common.security.privacy.base import optional_privacy
+        from jiuwen_memory.construction.privacy_index_builder import PrivacyIndexBuilder
+
+        privacy = optional_privacy(config)
+        if privacy is not None:
+            builder = PrivacyIndexBuilder(builder, privacy)
         if not as_bool(config.get("schema_enabled"), default=False):
             return builder
 
