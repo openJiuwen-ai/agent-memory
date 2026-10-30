@@ -1,0 +1,54 @@
+memory_api:
+  security:
+    default:
+      target: standard
+      params:
+        authenticator: issuer
+        authorizer: default
+        audit_integrity: default
+        audit_verify_guard: audit_verify
+  authenticator:
+    issuer:
+      target: api_key
+      params:
+        key_store: principals
+        root_api_key: ${AGENT_MEMORY_ROOT_API_KEY}
+  key_store:
+    principals: {target: memory}
+  authorizer:
+    default:
+      target: standard
+      params: {grant_store: default, delegation_store: default}
+  grant_store:
+    default: {target: memory}
+  delegation_store:
+    default: {target: memory}
+  audit:
+    default:
+      target: sqlite
+      params: {db_path: "${AGENT_MEMORY_AUDIT_DB}"}
+  key_provider:
+    audit_keys:
+      target: local
+      params:
+        key_env: AGENT_MEMORY_AUDIT_ROOT_KEY
+        key_file: ""
+        create_key_file: false
+        key_epoch: 1
+  audit_integrity:
+    default:
+      target: chained_hmac
+      params:
+        audit: default
+        key_provider: audit_keys
+        max_cas_retries: 10
+        max_key_retries: 5
+        verify_page_size: 1000
+        max_samples: 20
+  workload_guard:
+    audit_verify:
+      target: semaphore
+      params: {max_concurrent: 1}
+  globals:
+    audit_verify_max_page_size: 1000
+    audit_verify_max_samples: 20
