@@ -19,8 +19,8 @@ from jiuwen_memory.construction.layer_annotator_impl.keyword_layer_annotator imp
 from jiuwen_memory.construction.layer_annotator_impl.llm_layer_annotator import LLMLayerAnnotator
 from tests.unit.construction.fixtures import (
     MockLLM,
-    create_test_unit,
     RecordingLLM,
+    create_test_unit,
 )
 
 # 用于构造超阈 content 的长文本（> 512 字符）。

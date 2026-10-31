@@ -5,11 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 ## Metadata 转换契约
 
 `RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空。
@@ -158,3 +158,12 @@ Ingestor 本身不访问 PolicyManager。Engine 在 hierarchy.enabled 关闭或�
 `occurred_at` 原样作为消息时间；自动补齐 Snapshot 时，两端保留同一时间表示。
 业务偏移只来自显式时间运算，不得附加服务器时区偏移。比较和索引转换统一遵守 S07：
 无时区时间按 UTC 解释，有时区时间保持实际时刻，均不改写真源。
+
+## 可选隐私保护
+
+启用隐私保护时，在具体 Ingestor/Normalizer 处理前对 RawPayload 识别、分级并替换敏感片段。
+保护后的输入才可用于规约或外部模型；原始等级不能因占位符/摘要而自动下降。
+摄入只允许有界内存密文暂存，不持久化；输出继续复检，实际关联交由构建/存储写边界提交。
+长文本预切分必须保留完整占位符；切点可向前移动，不能拆断引用、扩大配置长度上限或丢字。
+单个引用超过正数切分上限时明确拒绝，不产生破损分片。
+本轮只支持 inline TEXT/CODE；URI、原模态资产在规约前拒绝。配置及隔离契约见 S10。

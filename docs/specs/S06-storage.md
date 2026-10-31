@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -622,3 +622,45 @@ Store 抽象、跨后端不变量与注册机制。
 | S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |
 | S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |
+
+## 敏感片段与脱敏真源
+
+隐私能力维护独立私有状态，不注册为 StoreManager 端口，不由普通 KV、DomainStore 或
+召回接口返回原文。片段值与引用清单主体加密；用于定位的 Scope、对象 ID、等级及修订
+标识属于控制元数据，不应被描述为整个私有数据库均已加密。部署须保护状态路径和备份。
+
+### 关联与密码学绑定
+
+| 对象 | 绑定与约束 |
+|---|---|
+| 脱敏占位符 | `[JW-PRIVATE:<48 位小写十六进制随机标识>]`，不编码原值，不构成访问凭据 |
+| 敏感片段 | AEAD 绑定来源完整 Scope、token、等级、用途 `privacy-fragment`；加密上下文版本为 1 |
+| 引用清单 | AEAD 绑定目标完整 Scope、`<memory/message>/<unit_id>:<revision>`、用途 `privacy-manifest`；主体包含 token 集合、指纹与段位置 |
+| 修订标识 | `privacy_revision` 与 `privacy_message_revision` 分别服务正式记忆和原始消息，由服务端生成 |
+| 内容指纹 | 覆盖段正文、L0/L1、标签、实体、用户元数据及事实文本；不含索引构建追加的技术性 system_metadata |
+
+非保留系统文本元数据仍需保护，其 token 纳入认证清单。相同指纹和 token 集合可以复用
+已认证修订号；未知、过期、无来源或损坏的引用拒绝写入。正常构建可认证仅含引用的清单，
+不能解密敏感片段。合法同组织路由保留片段的来源加密绑定，并密封目标清单。
+修订号表示记忆/消息保护快照，不是独立的规则版本；当前不持久化策略版本历史，配置变更
+通过重建运行时及既有内容校验生效。
+
+### 提交、失败和清理
+
+正文、索引及直接 `/memory/`、`/messages/` 写入前均保护。嵌套加密 KV 只在同一次
+精确 Scope/key 操作内跳过重复编码，不豁免其他键；StoreSecurity 能力保持透传。
+私有关联的提交和回收由 KV 真源边界维护；索引包装层只复检投影并同步已提交修订号。
+委托写入前持久保留旧清单与片段的密文恢复引用。插入冲突或其他写入异常时回读真源：
+旧值仍在则恢复旧关联，新值已写则保留新关联，确认不存在才清理。回读失败时保留候选
+快照及引用；下一次成功写入或硬删再回收，不将其开放为普通历史查询。
+实例内写入和删除共享互斥边界；各后端不共享全局事务。缺失、版本不符或无法认证的
+关联仍拒绝还原，业务真源中可留下的内容必须是脱敏表示。
+
+原始消息和正式记忆分通道计引用。显式硬删、回滚删除及空间删除撤销相应关联，最后
+一个引用消失后清理片段。先完成真源删除再回收对应私有状态，删除异常保留未确认的引用；
+仅删除检索投影不回收私有状态。来源删除不自动推断为删除全部派生记忆；软删状态不允许人的
+原文展示，分级自动硬删仍是 TODO。指纹和清单校验不替代查看时的正常资源判权。
+清理针对逻辑记录和引用，不声明备份、数据库日志或存储介质已经完成可验证擦除。
+
+原文精确检索、旧库自动迁移、文档/文件监听路径及分级 TTL/cloud/share 执行未提供。
+完整披露契约见 [S10](S10-security.md#隐私保护与人类终端披露)。

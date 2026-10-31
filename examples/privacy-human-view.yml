@@ -1,0 +1,72 @@
+# 先安装 .[security]，再叠加到现有认证/授权配置；本文件不会代替主认证器。
+# HTTP/MCP 读取 memory_api 段；SDK 将该段交给 assemble_runtime。
+memory_api:
+  globals:
+    privacy_enabled: true
+  privacy:
+    default:
+      target: regex
+      params:
+        cryptography: privacy
+        vault_path: .agent-memory/private-fragments.sqlite
+        staging_ttl: 300
+        staging_limit: 10000
+        regex_timeout: 2.0 # 秒，每次文本/元数据保护的总匹配预算；超时拒绝，不代替业务/LLM 超时
+        llm_enabled: false # TODO：LLM 分类；开启会明确拒绝装配
+        llm: privacy_classifier # 保留配置引用；本轮不解析、不调用
+        levels:
+          - name: S1
+            label: 公开
+            rank: 1
+            write: allow
+            reveal: true
+            sync_mode: full # TODO：端云同步管控
+            retention_mode: keep # TODO：软删后的自动硬删除
+            retention_seconds: 0
+            share_mode: shareable # TODO：分级分享管控
+          - name: S2
+            label: 个人隐私
+            rank: 2
+            write: redact
+            reveal: true
+            sync_mode: none # TODO
+            retention_mode: keep # TODO
+            retention_seconds: 0
+            share_mode: no_share # TODO
+          - name: S3
+            label: 凭据
+            rank: 3
+            write: redact
+            reveal: true
+            sync_mode: none # TODO
+            retention_mode: keep # TODO
+            retention_seconds: 0
+            share_mode: no_share # TODO
+        # rules 缺省时使用内置正则；显式填写列表将替换整套默认规则。
+        # 每项包含 level / pattern / 可选 group（捕获组名称或序号）。
+  cryptography:
+    privacy:
+      target: local
+      params: {key_provider: privacy}
+  key_provider:
+    privacy:
+      target: local
+      params:
+        key_env: JIUWEN_PRIVACY_MASTER_KEY # 32 字节独立根密钥的 hex/base64；由部署方注入
+        key_file: ''
+  human_authenticator:
+    default:
+      target: passkey
+      params:
+        rp_id: localhost
+        origin: http://localhost:8137 # 生产必须使用固定 HTTPS origin
+        credential_path: .agent-memory/human-passkeys.sqlite
+        challenge_ttl: 120
+        enrollment_invites: [] # 可信部署方配置一次性高熵登记码的 SHA-256 摘要，禁止填机机 API Key
+        # enrollment_invites:
+        #   - digest: <一次性登记码的 64 位小写 hex SHA-256>
+        #     actor: {org: <组织>, user: <真实用户>}
+  rate_limiter:
+    human: {target: token_bucket, params: {capacity: 10, refill_per_sec: 1}}
+  workload_guard:
+    human: {target: semaphore, params: {max_concurrent: 4}}

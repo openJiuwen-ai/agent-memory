@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-10-26 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
+| 最近一次修订日期 | 2026-10-30 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
 
@@ -321,3 +321,81 @@ Composer 的 `params.hierarchy_profiles` 配置；显式 Composer 不自动合�
   尝试，数量持续超限时可能连续失败；本轮此前成功持久化的下层结果保留。
 - 显式建树也使用这些限额，不能保证一次重建就解除容量问题。可评估内存和读取成本后
   调高上限并重新装配，或合理划分处理范围；相交旧树仍须补齐全部后代，不得截断旧子树。
+
+## 隐私配置
+
+隐私策略在装配期生效，修改总开关、规则、密钥引用或认证器配置后须重建 Runtime；
+不属于 `ConfigSource` 晚绑定或 PolicyManager 动态策略。与全后端静态加密总开关独立。
+
+### 总开关与共享装配
+
+| 配置条件 | 装配行为 |
+|---|---|
+| 未写 `globals.privacy_enabled`，无 `privacy` 段 | 关闭隐私能力 |
+| 未写总开关，有 `privacy.default` | 启用该显式配置 |
+| 总开关为 `false` | 保留策略，停止新保护和人类还原入口；不扫描或解密既有占位符 |
+| 总开关为 `true`，缺少 `privacy.default` | 拒绝启动 |
+
+总开关只接受真正布尔值。启用时 `privacy` 仅允许一个共享 `default` 实例，禁止
+`new_instance=true`。没有人机认证器仍可脱敏写入及召回，但不能查看原文。开启前检查
+已装配逻辑 KV 中的 `/memory/`、`/messages/`；未迁移语料、文档模式和文件监听组合拒绝
+启动，不在普通读请求里改写旧数据。
+
+### `privacy.default.target=regex`
+
+下表字段位于 `privacy.default.params`。
+
+| 字段 | 默认值 / 要求 | 语义 |
+|---|---|---|
+| `cryptography` | 必填 | 显式引用密码学依赖；失败不回退明文 |
+| `vault_path` | 必填 | 独立敏感区状态路径，不注册为普通存储端口 |
+| `levels` | S1/S2/S3 | 自定义等级列表；显式列表替换默认等级 |
+| `rules` | 内置规则 | 每项含 `level`、`pattern` 和可选 `group`；显式列表替换整套默认规则 |
+| `rules[].group` | `0` | 完整命中或有效捕获组名称/序号，确定要保护的片段 |
+| `staging_ttl` | `300` 秒 | 暂存片段的正数有效期 |
+| `staging_limit` | `10000` | 暂存片段正数容量上限 |
+| `regex_timeout` | `2.0` 秒 | 只接受 (0, 30] 内有限数值；单次文本/元数据保护的总匹配预算 |
+| `llm_enabled` / `llm` | `false` / 无 | 保留分类开关及引用；开启分类明确拒绝，引用不解析、不调用 |
+
+默认规则覆盖大陆手机号、身份证形态、邮箱、标记凭据及私钥，不承诺全部语义隐私。
+等级序号、保留秒数和匹配超时不接受布尔值；`reveal` 及总开关只接受布尔值。
+规则必须引用已配置等级；重叠命中采用较高 `rank`。超时拒绝本次处理，该预算不替代
+业务或 LLM 超时。可选 `[security]` 提供有界正则和 WebAuthn 依赖，选中实现时才加载。
+
+| 等级字段 | 默认值 / 要求 | 语义 |
+|---|---|---|
+| `name` / `rank` | 必填且各自唯一 | 非空标识和非负整数敏感度；未命中使用配置中最低等级 |
+| `label` / `description` | 空字符串 | 展示标签及说明 |
+| `write` | 自定义等级缺省 `redact` | 仅 `allow`（完整直接写入豁免）或 `redact` |
+| `reveal` | `true` | 允许经本次人的证明及资源授权还原，不表示免认证 |
+| `sync_mode` | 自定义等级缺省 `none` | `full / none / index_only`，仅保留，TODO |
+| `retention_mode` / `retention_seconds` | `keep` / `0` | `keep / purge_after_ttl` 及非负秒数，仅保留，TODO |
+| `share_mode` | 自定义等级缺省 `no_share` | `shareable / internal_only / no_share`，仅保留，TODO |
+
+内置 S1 为 `allow / reveal=true / sync_mode=full / share_mode=shareable`；S2/S3 为
+`redact / reveal=true / sync_mode=none / share_mode=no_share`。均为 `retention_mode=keep`。
+显式改写等级时须同步规则映射；关闭某等级 `reveal` 后相应片段继续显示为占位符。
+
+### `human_authenticator.default.target=passkey`
+
+字段位于该实例的 `params`；启用人类查看时同样只允许共享 `default` 实例。
+
+| 字段 | 默认值 / 要求 | 语义 |
+|---|---|---|
+| `rp_id` | 必填 | 与 `origin` 的主机名完全一致，不含端口 |
+| `origin` | 必填 | 固定 HTTPS origin，无路径/查询/片段/用户信息；仅 `http://localhost[:port]` 例外 |
+| `credential_path` | 必填 | 人机凭据、公钥计数器及挑战的独立状态路径 |
+| `challenge_ttl` | `120` 秒 | 范围 10～300 秒，一次使用，失败及过期不可重放 |
+| `enrollment_invites` | `[]` | 每项为 `digest` 与 `actor`；空列表不提供新登记邀请 |
+
+`digest` 是高熵登记码的 64 位小写十六进制 SHA-256；登记码至少 32 字符，经独立可信
+渠道交给本人，不写入配置。`actor` 是服务端确定的具名 USER Scope（有 `user`、无
+`agent`），不从机器 API Key、目标 Scope 或浏览器自述推导。
+
+可选具名 `rate_limiter.human`、`workload_guard.human` 控制独立查看预算；未配置时分别
+使用容量 10、补充 1/s 的令牌桶和并发 4 的信号量。限流按 HTTP 真实对端地址执行，代理
+部署须评估共享对端的预算，不信任客户端转发头。
+
+完整叠加示例见 [privacy-human-view.yml](../../examples/privacy-human-view.yml)，部署及
+首次登记见[配置指南](../zh/API文档/config.md#45-隐私分级与人类查看)，协议见
+[S10](S10-security.md#隐私保护与人类终端披露)。

@@ -69,12 +69,12 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.prompt_guard import (
     CONTENT_MAX_UNIT_CHARS,
     chunk_unit,
     truncate_unit_content,
 )
-from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
 from ..base import ExtractContext, OperatorType
 from ..common import merge_unit_tags, parse_tags, validate_llm_attempt_policy

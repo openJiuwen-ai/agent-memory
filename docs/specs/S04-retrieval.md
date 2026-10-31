@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## Metadata 检索契约
 
@@ -615,3 +615,10 @@ FilterExpr 复核仍按统一时间投影判定；不改变未知时间哨兵和
 
 结构查询的真源复核保留微秒精度，索引毫秒投影只负责前置筛选。
 valid-time 起点为空表示无下界：前置使用 NOT(t_valid > as_of)，真源按半开区间复核。
+
+## 脱敏记忆的召回约束
+
+启用隐私后，配置为 `redact` 的片段在索引、召回、重排和披露中使用脱敏表示；API 在送入
+查询处理前按同一策略保护查询文本及 `query_context`。通过人的二次认证也不改变 RetrievalQuery、DisclosureLevel 或召回权限。
+原文恢复仅发生在独立人类终端，在正常资源判权后生成当次展示文本，不写回检索或 Agent 上下文。
+原值精确检索及通用原文 recall 不在本轮支持范围；能力与 allow 豁免边界见 S10。

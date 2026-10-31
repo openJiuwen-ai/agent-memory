@@ -16,6 +16,7 @@
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |
+| `text_split.py` | 摄入与内容型 prompt 共用段落切分；可选 boundary 回调只向前调整硬切点，不扩大长度上限 |
 | `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、本地模型来源解析（`resolve_model_source`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`/`read_ssl_config`/`reject_url_tls_params`）、scope 命名空间渲染（`SCOPE_DIMS`/`scope_segments`）、后端异常归一（`wrap_backend`）；storage、lock 与出站客户端共用，避免各写一份 |
 | `_import_support.py` | 导入容错样板的唯一归属地（`import_optional`/`import_required`/`import_required_attr`）：装配各 `*_impl` 包触发 `@Producer.register` 时逐个隔离可选依赖，单个缺失只让该插件缺席、不连坐同批其他插件、不阻断 `MemoryAPI` 构造。刻意与 `_support.py` 分家——后者讲配置值语义且连带 `type_def`/`Factory`/`errors`，本模块讲导入机制且**只依赖标准库**（51 个 `*_impl`/bootstrap 消费点各自 import 一次，自身须停在零项目依赖）；**不得**引入任何 `jiuwen_memory` 内部对象，以免装配期导入顺序反受各层先后影响。接入侧另有一份 `jiuwen_memory_entry/core/import_support.py`——Access 只允许依赖 `jiuwen_memory.api`（见 `tests/unit/api/test_access_api_boundary.py`），两侧不复用 |
 | `log/` | 统一运行日志入口：`base.py` 提供 `get_logger` / `setup_logging`，`privacy_filter.py` 提供默认全局启用的 `SensitiveDataFilter` 及 `install_privacy_filter` / `redact_for_log` / `metadata_for_log` / `scope_for_log`；普通服务端日志在 Formatter 前脱敏，保留字段结构和经调用点确认的 MemoryUnit 技术 ID，不修改业务对象或正式 API 响应 |
@@ -43,6 +44,15 @@
 | `security/_delegation_binding.py` | 私有服务端装配适配：凭据指纹绑定现有委托 ID，认证 actor 不变，记录与 Authorizer 必须同源；供 PEP/PDP 共用绑定复核，不注册新认证 target、不扩展冻结接口。 |
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
 | `security/_assembly_lifecycle.py` | 私有装配作用域：经 Factory 公开创建观察记录本次新建对象，启动失败回滚；成功将所有者显式绑定缓存纪元，保护借用依赖与较新装配。 |
+
+### 隐私与人类查看能力
+
+`security/privacy/base.py` 定义独立的 PrivacyProtection/PrivacyProducer；
+`privacy/privacy_impl/regex.py` 承担正则策略、内存密文暂存与私有片段关联存储。
+`privacy/disclosure.py` 只在独立人机认证后调用既有 API.get 判权并生成终端展示文本。
+`security/human_authentication/` 定义独立 HumanAuthenticator，passkey 实现在选中时才加载
+可选依赖。两者统一由 security/bootstrap 注册，未配置时不装配。私有 SQLite 状态的
+构造失败清理由 `security/_sqlite_state.py` 统一处理，不加入 StoreManager 检索端口。
 
 ## 行为铁律
 

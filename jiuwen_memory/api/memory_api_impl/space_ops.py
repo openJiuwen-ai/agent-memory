@@ -258,6 +258,8 @@ class SpaceOpsMixin:
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
         result, purged = asyncio.run(self._space_lifecycle.delete_space(org, space))
+        if self._privacy is not None:
+            self._privacy.discard_scope(target)
         self._invalidate_space_facts(org, space)
         self._log(
             identity,

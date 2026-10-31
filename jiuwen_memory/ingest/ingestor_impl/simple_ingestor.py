@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
+from jiuwen_memory.common.security.privacy.base import split_protected_text
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
 from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Temporal
@@ -51,7 +52,11 @@ class SimpleIngestor(Ingestor):
             # 叶提示只声明结构身份；在规约前校验，不允许输入声明父子边。
             hierarchy, base_system_metadata = extract_hierarchy_hints(payload.system_metadata)
             content = self._normalizer.normalize(payload)
-            pieces = self._split(content)
+            pieces = (
+                split_protected_text(content, self._max_unit_chars)
+                if "privacy_level" in payload.system_metadata
+                else self._split(content)
+            )
             total = len(pieces)
             # t_event 从完整 content 抽取（首个绝对日期，无则 None），所有分片继承同一份：
             # 切分不改变事件时间，且与查询侧共用 common.time_utils 的同一份规则——否则

@@ -34,6 +34,7 @@ from profiles import Config
 from jiuwen_memory.api import (
     AUTO_SECURITY_RUNTIME,
     CloseableSecurityCapability,
+    HumanViewRuntime,
     MemoryRuntime,
     RequestSecurityContext,
     ServerRuntime,
@@ -64,6 +65,10 @@ class Server:
     @property
     def api(self):
         return self._runtime.api
+
+    @property
+    def human_view(self):
+        return self._runtime.human_view if isinstance(self._runtime, HumanViewRuntime) else None
 
     async def start_background(self) -> None:
         """异步面宿主调用：起看门狗等后台组件（绑当前 loop，F07 §12.10）。"""

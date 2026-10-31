@@ -36,6 +36,16 @@ class KvProducer(Factory):
 
     TOP_NAME = "kv_store"
 
+    @classmethod
+    def build(cls, target, params, ctx, *, name=""):
+        store = super().build(target, params, ctx, name=name)
+        from jiuwen_memory.common.security.privacy.base import optional_privacy
+        from jiuwen_memory.config.context import ComponentConfig
+        from jiuwen_memory.storage._privacy_kv import PrivacyKVStore
+
+        privacy = optional_privacy(ComponentConfig(dict(params or {}), ctx, target, name))
+        return PrivacyKVStore(store, privacy) if privacy is not None else store
+
 
 class KVStore(BaseStore):
     @abstractmethod

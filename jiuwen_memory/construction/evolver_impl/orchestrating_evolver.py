@@ -36,6 +36,7 @@ from jiuwen_memory.common.log import (
     redact_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MESSAGES_KEY_PREFIX,
@@ -221,8 +222,10 @@ class OrchestratingEvolver(Evolver):
         graph_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
+        privacy=None,
     ) -> None:
         self._extractor = extractor
+        self._privacy = privacy
         self._abstractor = abstractor
         self._associator = associator
         self._index = index_builder
@@ -272,6 +275,7 @@ class OrchestratingEvolver(Evolver):
     # Evolver 契约
     # ------------------------------------------------------------------
 
+    @privacy_operation
     def evolve(
         self,
         units: list[MemoryUnit] | EvolveRequest,
@@ -363,6 +367,12 @@ class OrchestratingEvolver(Evolver):
         if not units or self._graph is None:
             return
         scope = units[0].scope
+        if self._privacy is not None:
+            for unit in units:
+                self._privacy.prepare(unit)
+            for relation in relations:
+                relation.relation = self._privacy.preview_echo(relation.relation)
+                relation.metadata = self._privacy.preview_echo(relation.metadata)
         for u in units:
             node = Node(id=u.id, label=u.tier.value, properties={"content": u.content})
             try:
@@ -1064,6 +1074,9 @@ class OrchestratingEvolver(Evolver):
         落盘的 unit 已带 layers（见 F01-memory-layer）。annotator 内部按阈值筛选，
         短 content 留空。失败降级为空 layers。
         """
+        if self._privacy is not None:
+            for unit in units:
+                self._privacy.prepare(unit)
         if self._layer_annotator is None or not units:
             return
         try:
@@ -1075,6 +1088,9 @@ class OrchestratingEvolver(Evolver):
                 len(units),
                 exc,
             )
+        if self._privacy is not None:
+            for unit in units:
+                self._privacy.prepare(unit)
 
     # ------------------------------------------------------------------
     # 归属判定（抽取后、分层标注与去重之前）
@@ -1092,10 +1108,18 @@ class OrchestratingEvolver(Evolver):
         两个落盘不变量与「落点须在候选集内」的兜底都在
         :func:`~construction.router.route_batch` 内完成，不在本方法重写一份。
         """
+        if self._privacy is not None:
+            for unit in derived:
+                self._privacy.inherit_classification(unit, sources)
+                self._privacy.prepare(unit)
         ctx = _route_ctx_of(sources)
         if ctx is None or not derived:
             return derived
         decisions = route_batch(self._router, derived, ctx)
+        if self._privacy is not None:
+            for decision in decisions:
+                if decision.unit is not None and not decision.discarded:
+                    self._privacy.relocate(decision.unit, decision.scope)
         kept = apply_decisions(decisions)
         # apply_decisions 改 scope/tags/memory_class 但不回写 coords。
         # 派生 unit 经 inherited_system_metadata 继承源单元 metadata，而源单元的 coords
@@ -1178,6 +1202,9 @@ class OrchestratingEvolver(Evolver):
         补判定插入点——没有可用的候选空间集合，判出的落点无从校验是否在调用方的写权范围内。
         """
         abstracted = self._abstractor.abstract(units)
+        if self._privacy is not None:
+            for unit in abstracted:
+                self._privacy.inherit_classification(unit, units)
         logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
         if not abstracted:
             return EvolveResult()
@@ -1283,6 +1310,8 @@ def _build(config):
 
     hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
     hierarchy_llm = LlmProducer.dep(config, default="echo")
+    from jiuwen_memory.common.security.privacy.base import optional_privacy
+
     return OrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="keyword"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -1300,4 +1329,5 @@ def _build(config):
         graph_name=resolve_name(config, "graph_store"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        privacy=optional_privacy(config),
     )

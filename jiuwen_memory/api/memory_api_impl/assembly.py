@@ -157,6 +157,7 @@ class _Kernel:
     watchdog: Watchdog | None = None
     security_runtime: SecurityRuntime | None = None
     security_resources: SecurityResourceOwner | None = None
+    human_view: Any = None
 
     async def start_background(self) -> None:
         """启动需事件循环就绪的后台组件。
@@ -242,6 +243,7 @@ class _ServerRuntime:
     _runtime: MemoryRuntime
     security_runtime: Any
     audit: AuditLogger | None
+    human_view: Any = None
 
     @property
     def api(self) -> MemoryAPI:
@@ -649,6 +651,32 @@ def _assemble_kernel(
     # 根组件（LocalMemoryAPI）经 ROOT_PARAMS 引用各命名空间下的 default 实例。
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
+    from jiuwen_memory.common.security.human_authentication.base import HumanAuthenticatorProducer
+    from jiuwen_memory.common.security.privacy.base import optional_privacy
+    from jiuwen_memory.common.security.privacy.disclosure import HumanDisclosure
+    from jiuwen_memory.common.security.protection.rate_limit import RateLimitProducer
+
+    privacy = optional_privacy(root)
+    human_specs = ctx.namespaces.get("human_authenticator", {})
+    human = None
+    human_limiter = human_guard = None
+    if privacy is not None and human_specs:
+        if set(human_specs) != {"default"} or human_specs["default"].new_instance:
+            raise ValidationError("human_authenticator requires one shared default instance")
+        human = HumanAuthenticatorProducer.build_named("default", ctx)
+        human.health()
+        human_limiter = (
+            RateLimitProducer.build_named("human", ctx)
+            if "human" in ctx.namespaces.get("rate_limiter", {}) else
+            RateLimitProducer.build("token_bucket", {"capacity": 10, "refill_per_sec": 1}, ctx)
+        )
+        human_guard = (
+            WorkloadGuardProducer.build_named("human", ctx)
+            if "human" in ctx.namespaces.get("workload_guard", {}) else
+            WorkloadGuardProducer.build("semaphore", {"max_concurrent": 4}, ctx)
+        )
+        human_limiter.health()
+        human_guard.health()
 
     # API 业务审计与 surface 入口审计必须共用同一个具名实例。
     audit_logger = AuditProducer.dep(root, default="sqlite")
@@ -673,6 +701,8 @@ def _assemble_kernel(
     # 同一实例），授权代理默认 AllowAll、行为与裸 KVStore 一致。ROOT_PARAMS 的
     # kv_store 键即端口名（用户可指名其他 kv 端口）。
     kv_store = storage.kv(resolve_name(root, "kv_store"))
+    if privacy is not None:
+        _validate_privacy_namespace(storage, root, privacy)
 
     ingest_jobs = IngestJobProducer.dep(root, default="in_process")
     if not isinstance(ingest_jobs, IngestJobController):
@@ -736,6 +766,7 @@ def _assemble_kernel(
         router=optional_router(root),
         authorizer=authorizer,
         credential_registry=credential_registry,
+        privacy=privacy,
     )
     _reject_routing_without_space_authorization(api)
     watchdog: Watchdog | None = None
@@ -766,7 +797,9 @@ def _assemble_kernel(
     for name in sorted(shadow_names):
         if storage.has_shadow_index(name):
             shadows.append(storage.shadow_index(name))
-    resources = SecurityResourceOwner((authorizer, *shadows, audit_logger))
+    privacy_resources = tuple(item for item in (privacy, human, human_limiter, human_guard)
+                              if item is not None)
+    resources = SecurityResourceOwner((authorizer, *shadows, audit_logger, *privacy_resources))
     if security_runtime is not None:
         resources.share_with(security_runtime.security_resource_owner())
 
@@ -806,6 +839,10 @@ def _assemble_kernel(
             "必须经 security 段的 params.audit_integrity 显式启用（不配该段 = 普通审计）；"
             "只配 audit_integrity 而不接线，部署会以为已启用链式证明，实际仍是普通审计。"
         )
+    if privacy is not None:
+        privacy.bind_audit(audit_logger)
+    human_view = (HumanDisclosure(privacy, human, api.get, audit_logger, human_limiter, human_guard)
+                  if human else None)
     return _Kernel(
         api=api,
         kv=kv_store,
@@ -818,7 +855,34 @@ def _assemble_kernel(
         watchdog=watchdog,
         security_runtime=security_runtime,
         security_resources=resources,
+        human_view=human_view,
     )
+
+
+def _validate_privacy_namespace(storage, root, privacy) -> None:
+    """Enabling protection must not silently expose a pre-existing plaintext corpus."""
+    from jiuwen_memory.common.type_def.memory_codec import loads
+
+    if storage.has_shadow_index() or as_bool(root.get("document_enabled"), default=False):
+        raise ValidationError("privacy does not yet support document mode or filesystem watchers")
+    names = {resolve_name(root, "kv_store"), *root.ctx.namespaces.get("kv_store", {})}
+    for name in names:
+        if not storage.has_kv(name):
+            continue
+        store = storage.kv(name)
+        for scope in store.scopes():
+            for prefix, channel in (("/memory/", "memory"), ("/messages/", "message")):
+                for _, raw in store.scan(scope, prefix=prefix):
+                    try:
+                        unit = loads(raw)
+                    except UnicodeDecodeError:
+                        # A declared raw port may sit inside an encrypted KV;
+                        # its outer logical port is also validated in this loop.
+                        continue
+                    if unit is not None:
+                        if unit.scope != scope:
+                            raise ValidationError("privacy memory scope mismatch")
+                        privacy.validate_existing(unit, channel=channel)
 
 
 def _reject_test_only_authorizer(authorizer: Authorizer, config: Config | None) -> None:
@@ -943,7 +1007,7 @@ def assemble_server_runtime(
         auto_security = security_runtime is AUTO_SECURITY_RUNTIME
         selected = kernel.security_runtime if auto_security else security_runtime
         _bind_server_security(kernel, selected, auto_security=auto_security)
-        facade = _ServerRuntime(runtime, selected, kernel.audit)
+        facade = _ServerRuntime(runtime, selected, kernel.audit, kernel.human_view)
         share_security_lifecycle(runtime, selected)
         if isinstance(selected, CloseableSecurityCapability) and not isinstance(
             selected, SecurityLifecycleCapability
