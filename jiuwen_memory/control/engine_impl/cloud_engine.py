@@ -50,6 +50,10 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
+    RetrievalPipelines,
+    build_retrieval_pipelines,
+)
 from jiuwen_memory.control.engine_impl.schema_update_support import (
     commit_schema_update,
     is_schema_update_candidate,
@@ -254,10 +258,12 @@ class CloudEngine(MemoryEngine):
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
         policy: PolicyManager | None = None,
+        retrieval_pipelines: dict[str, Retriever] | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
+        self._retrieval_pipelines = RetrievalPipelines(retriever, retrieval_pipelines)
         self._domain_store = domain_store
         self._kv = kv
         self._scheduler = scheduler
@@ -287,7 +293,7 @@ class CloudEngine(MemoryEngine):
         return self._domain_store.scopes()
 
     def health(self) -> None:
-        return None
+        self._retrieval_pipelines.health()
 
     async def write(
         self,
@@ -537,11 +543,14 @@ class CloudEngine(MemoryEngine):
         )
         return units
 
+    def retrieval_pipeline_names(self) -> tuple[str, ...]:
+        return self._retrieval_pipelines.names()
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         routed_query = self._normalized_query(query)
-        binding = self._recall_binding(routed_query)
-        retriever = binding.retriever if binding is not None else self._retriever
-        return retriever.retrieve(scope, routed_query)
+        self.validate_retrieval_pipeline(routed_query.pipeline)
+        binding = self._recall_binding(routed_query) if routed_query.pipeline is None else None
+        return self._retrieval_pipelines.retrieve(scope, routed_query, binding)
 
     async def list(
         self,
@@ -1119,15 +1128,18 @@ def _build(config):
     # 同一份装配拿到不一致的 IndexBuilder（见 config.document_flag docstring）。
     ib_default = resolve_index_builder_default(config)
     manager = StoreManagerProducer.resolve(config)
+    retriever = RetrieverProducer.dep(config, default="pipeline")
+    retrieval_pipelines = build_retrieval_pipelines(config)
     return CloudEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        RetrieverProducer.dep(config, default="pipeline"),
+        retriever,
         manager.domain_store(resolve_name(config, "domain_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
         kv=manager.kv(resolve_name(config, "kv_store")),
+        retrieval_pipelines=retrieval_pipelines,
         classifier=_optional_classifier(config),
         pipeline=_optional_pipeline(config),
         message_type_key=str(config.get("message_type_key", "message_type")),

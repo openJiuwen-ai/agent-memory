@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -1388,3 +1388,16 @@ AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.ru
 父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
 `last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
 诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。
+
+
+## search 的检索 pipeline 选择扩展键
+
+`context.extensions["retrieval_pipeline"]` 接受非空字符串或 None；名称精确匹配，不做 trim
+或大小写转换。缺省/None 保留原 profile/default 路由。API 复制参数袋后消费此键，转换为
+`RetrievalQuery.pipeline`，不修改调用方 Context，也不继续透传给 ParsedQuery 或自定义召回插件。
+SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 search 参数。
+
+请求上下文可信校验之后、单空间/跨空间分流之前，经 query application port 调用 Engine 的
+公共校验方法；未知名称抛 ValidationError，附公开可选名单。即使跨空间目标为空也必须拒绝
+未知名称，不把调用参数错误转换成空间 ChannelError。API 不访问 Engine 或 Retriever 私有配置。
+选择只影响检索算法，不替代 scope/授权谓词校验；优先级与装配约束见 S03/S04。

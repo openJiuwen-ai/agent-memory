@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -58,8 +58,8 @@ evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽�
 ## 不变量
 
 1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/Store 全部由装配注入；可通过 Store 抽象完成真源语义，但不得绑定具体后端或直接调用 LLM。
-2. **引擎方法一律异步协程**：同步调用由 `jiuwen_memory/api` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check/decide(actor, target, action, context)` 由 `jiuwen_memory/api/MemoryAPI` 在入口调用（安全域 PR1 曾试图给 `check/decide` 增加 keyword-only `auth: AuthContext | None`，经上游复审查已回退——判定仍走 `actor: Scope`），engine 信任传入的 scope 已鉴权。禁止在 engine 内部重复 check。
+2. **引擎数据操作使用异步接口**：同步 API 自行桥接（`asyncio.run`）；能力查询和无 I/O 参数校验为同步方法。异步签名不保证内部同步插件并行执行。
+3. **鉴权不在本层执行**：API PEP 经安全域 Authorizer 完成终局授权；旧 PermissionManager 不参与生产判定。Engine 信任传入 scope 已鉴权，不重复执行授权。
 4. **LifecycleManager 只做非破坏式标记**：`transition` 标记状态（superseded/archived/forgotten），绝不物理删除。物理删除（purge）走 Engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 Producer 自注册后被外部装配消费，不被顶层接口引用。
 6. **types.py 零依赖本层其他文件**：纯数据定义，被本层各接口和 `jiuwen_memory/api/` 共同依赖。
@@ -70,9 +70,9 @@ evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽�
 11. **自演进由控制层调度、构建层执行**：控制层只提交任务、管理通道和任务状态；抽取、升华、关联、冲突消解与索引维护逻辑归构建层。
 12. **Pipeline 只做跨层 profile 选择**：`MemoryPipeline` 可以选择不同的构建/查询组件绑定，但不得实现抽取、索引、检索算法；construction/retrieval 不反向依赖 control。
 13. **权限上下文由 API/Engine 解析，不信任调用方声明**：add/search/list 的请求条件可由 API 构造 `PermissionContext`；list 当前分页实际命中的 unit 以及 get/update/delete 这类已有 unit 操作必须由 Engine 从真源元数据解析 memory_type/tags 后再鉴权。
-14. **权限路由与执行路由同源但职责独立**：两者对 recall 都使用
-    extensions 优先、FilterExpr 强制唯一等值兜底的取值规则；PermissionManager 选择
-    授权策略，MemoryPipeline 选择执行组件，互不代替。
+14. **权限路由与执行路由职责独立**：API 从 extensions 或唯一等值 FilterExpr 构造
+    权限上下文，RoutingAuthorizer 仅按 PEP 构造的 ResourceDescriptor 选择授权策略；
+    MemoryPipeline 选择执行组件，两者互不代替。
 15. **路由授权绑定数据范围**：路由型权限根据某字段授权后，API 必须把同一值回注为
     系统过滤谓词；routing fallback 必须是最小权限策略，不得使用 `allow_all`。
 16. **目标操作使用完整 Scope**：MemoryUnit id 仅在 Scope 内唯一。LifecycleManager、Governor 与 IndexBuilder 的目标修改/读取/删除不得依赖全局 `id -> scope` 猜测，调用方必须显式提供 Scope 或携带 Scope 的 MemoryUnit。
@@ -81,7 +81,7 @@ evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽�
 19. **树结构一致性（目标）**：同一 kind 的父子边必须同 `org+space`、无环、单父、双向一致且顺序稳定；`user`/`agent`/`session` 可按 compose profile 放宽（跨细粒度 scope 时边须可解析定位）；`HierarchyStatus` 只允许 ACTIVE/DISMISSED，且与 `LifecycleState` 分离。
 20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
 21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
-22. **判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（候选渲染、排序与上限截断），判权本身经 `can_write` 回调由 API 层执行；本层不持有 `PermissionManager`、不接收 `identity`、不抛权限异常——缺兜底落点时返回 `WriteTargets.fallback=None`，由 PEP 抛出。该裁剪可下沉的前提是失效方向为拒绝：未参与判权的空间不进候选，表现为写不进去而非越权写入。**检索侧的逐空间判权循环不适用本条**，其循环体就是 `PermissionManager.decide` 本身，移出等于把 PEP 分裂为两处；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。检索侧可下沉的是判权之后的部分：`collective/cross_space_recall.py` 收已判权的空间目标（含各自的谓词）与 `recall` 回调，做取数上界摊配、召回扇出与结果合并，全程不读 `identity`、不做任何裁决，与写入侧同一形态。它把空间级扇出失败与判权剔除分两路交回——并进 `merged.errors` 之后，扇出失败会与检索层的分通道错误混在同一个列表里，API 层要为「整个空间挂了」写审计就只能按 `channel is SPACE` 过滤，那是把审计判据绑在本层的 channel 编码上。
+22. **判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（候选渲染、排序与上限截断），判权本身经 `can_write` 回调由 API 层执行；本层不持有 `PermissionManager`、不接收 `identity`、不抛权限异常——缺兜底落点时返回 `WriteTargets.fallback=None`，由 PEP 抛出。该裁剪可下沉的前提是失效方向为拒绝：未参与判权的空间不进候选，表现为写不进去而非越权写入。**检索侧的逐空间判权循环不适用本条**，其循环体调用 `Authorizer.authorize`，移出等于把 PEP 分裂为两处；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。检索侧可下沉的是判权之后的部分：`collective/cross_space_recall.py` 收已判权的空间目标（含各自的谓词）与 `recall` 回调，做取数上界摊配、召回扇出与结果合并，全程不读 `identity`、不做任何裁决，与写入侧同一形态。它把空间级扇出失败与判权剔除分两路交回——并进 `merged.errors` 之后，扇出失败会与检索层的分通道错误混在同一个列表里，API 层要为「整个空间挂了」写审计就只能按 `channel is SPACE` 过滤，那是把审计判据绑在本层的 channel 编码上。
 23. **应用端口不是算子**：`control/application` 的 `MemoryCommandService` / `MemoryQueryService` / `SpaceLifecycleService` / `GovernanceService` 无 Producer、不执行 PEP、不接收 `identity`。它们由已注入的 Engine / Governor / SpaceManager 组成，供 API 与单测复用同一语义，禁止 Service Locator。`delete_space` 的 purge → SpaceManager.delete → `deleted_counts` 汇总只允许出现在 `SpaceLifecycleService`。purge 成功而 metadata delete 失败必须抛 `PartialFailureError`，重试入口仍是 `delete_space`。路由谓词回注、逐空间判权和逐单元结果鉴权仍属 PEP（见不变量 22），不经这些端口下沉。
 24. **Engine 不解释资产映射**：`write` 只把 `assets` 防御性复制到 `RawPayload.assets` 后交给 Ingestor；Ingestor 返回后，Engine 不得按“首个 Segment”或其他假设改写 `Segment.assets`。
 25. **后台 Job 的 IndexBuilder/Evolver 由 Engine 运行时注入**：`EvolveJobSpec` / `MiddleToLongJobSpec` 装配期不解析 Evolver/IndexBuilder（不按 `vector_enabled` 猜默认、不调对应 Producer）；Engine 经 `JobFactory.get_job` 必传注入与写入/演进同源的实例（middle 路径传 pipeline binding 或单 profile 的 `index=`/`evolver=`，`evolve` 传 Engine 装配的 `evolver=`），运行时注入优先于 Spec 兜底字段；缺失注入时 `with_scope` 抛 `ValidationError`，不静默回退默认实现。
@@ -310,7 +310,10 @@ active → archived → forgotten
 | `trace` | `(unit_id: str, scope: Scope) -> list[MemoryUnit]` | 在已鉴权目标 Scope 内沿 `provenance` 血缘向上追溯；`supersedes` 仅用于版本链与 `get(as_of)` |
 | `audit` | `(filters: dict[str, str], limit=100) -> list[AuditEvent]` | 治理层唯一对外审计查询入口，按 `action` / `layer` / `decision` / `target_id` / `actor_org` / `actor_space` / `actor_user` / `actor_agent` / `actor_session` / `target_org` / `target_space` / `target_user` / `target_agent` / `target_session` / `occurred_after` / `occurred_before` 过滤审计事件；底层 `AuditLogger` 负责记录事件，并通过 `query(filters, limit)` 向治理层提供后端内查询能力 |
 
-### PermissionManager（`permission.py`）
+### PermissionManager（`permission.py`，历史兼容接口）
+
+下述 check 与旧 permission 配置仅描述兼容组件，不是当前生产 PEP 的授权入口；
+生产判定使用安全域 Authorizer，不能把兼容规则当作现行 API 授权依据。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -351,11 +354,11 @@ delegate，避免调用方理解授权记录应落在哪个后端。路由值只
 声明的业务值，未知值和直接 policy 名都落 `fallback`；`fallback` 在装配期禁止指向
 `allow_all`。
 
-recall / list 完成权限检查前，API 构造 `PermissionContext` 时从
-`extensions` 取路由值**只解释 `PermissionManager.routing_fields()` 声明的键**
+当前生产 recall / list 完成权限检查前，API 构造 `PermissionContext` 时从
+`extensions` 取路由值**只解释 `Authorizer.routing_fields()` 声明的键**
 （extensions 优先、filter 等值兜底）；其余扩展键对权限层不透明——不进
 `PermissionContext.metadata`，也不被隐式 `str()`。完成权限检查后，API 读取
-`PermissionManager.routing_fields()`，把授权所依据的路由值作为等值系统谓词回注
+`Authorizer.routing_fields()`（或按入口的 routing_fields_for_entry），把授权所依据的路由值作为等值系统谓词回注
 查询，并与用户 `FilterExpr` 做外层 `AND`。这保证“选择哪条权限策略”和“实际能读取
 哪类数据”使用同一个值，用户表达式中的 `OR` 不能绕过该约束。
 
@@ -657,3 +660,27 @@ detail 标记 retryable="true"，不保留故障保护，下一周期重新读�
 当前注册不持久化、不自动发现 home，不复用 dreaming 的持续授权/恢复注册表。
 宿主负责注册范围及其权限生命周期；动态关闭策略只让后续轮次跳过，不中断已经开始
 的本轮写入。需要停止任务时使用 job_cancel 或 Runtime.close。
+
+
+## 按查询选择检索 pipeline
+
+配置 `engine.<name>.params.retrieval_pipelines` 为「公开名 → retriever 具名实例名」映射，
+所有引用装配期经 Producer 构建；名称和引用必须是非空字符串。未知引用、缺失 parser 依赖
+声明或共享关系不符均装配失败，查询时不创建插件。声明契约见 S04；装配与资源所有权遵守 S09。
+未配置时公开 default，指向已注入的默认 retriever（不重复构建）；显式空映射不公开任何名称，
+但未指定名称的 profile/default 路由仍有效。白名单不继承或自动暴露其他 retriever 实例。
+
+`MemoryEngine.retrieval_pipeline_names() -> tuple[str, ...]` 同步返回稳定的公开名集合；
+旧引擎插件默认返回空元组，不声称支持选择。公共同步方法
+`validate_retrieval_pipeline(name: str | None) -> None` 不触发检索，None 表示未选择；
+非字符串、空白字符串和未知名称抛 ValidationError，未知名称附可选名单。
+API 经 MemoryQueryService 的校验端口在单/跨空间分流前调用；Engine.recall 再兜底校验。
+
+优先级为显式 query.pipeline > profile binding.retriever > 默认 retriever。
+显式选择时不执行 profile 查询路由，不改变写入、演进和默认绑定。无名称请求继续既有路由；
+内部直接持有 Retriever 的组件不参与选择。Cloud 的既有查询默认值规范化保持。
+
+选择只改变本次请求所调用的完整实例，不修改共享 retriever 字段。轨迹与选择日志由选择器
+记录，name/source 语义见 S04；返回对象的 Prepared/SchemaTemporal 子类型和内部来源必须保留。
+跨空间各子请求保留 pipeline 值；空间级部分失败仍按既有协议处理，不能把未知名称参数错误
+交到扇出后吞并。健康检查聚合默认与白名单 retriever，按身份去重，依赖失败不隐藏。

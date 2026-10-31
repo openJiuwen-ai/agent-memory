@@ -244,3 +244,10 @@ assembly 的 MemoryRuntime / ServerRuntime 提供异步 start_background_jobs，
 
 Markdown 编辑同样在委托 Command 前执行审计完整性健康预检；健康故障或已锁存的
 degraded 不得产生文件编辑或版本写入副作用。读取仍沿用既有 READ 判权与审计路径。
+
+
+### 检索 pipeline 参数边界
+
+query_ops 消费 retrieval_pipeline 扩展键并写入 RetrievalQuery.pipeline；先验证请求上下文来源，
+再经 MemoryQueryService.validate_retrieval_pipeline 校验，最后才分流单/跨空间请求。
+零候选空间不能跳过名称校验；不访问 Engine 私有白名单，不修改调用方参数袋。

@@ -185,3 +185,13 @@ AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘�
 周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。
 只接受构建层明确的 HierarchyPreparationError 作为本层未写入证据，失败后允许下轮重试；
 部分写入、未分类插件异常和强制取消的未知结果保持暂停，不按空变更 ID 推断无写入。
+
+
+### 可选检索 pipeline
+
+- engine_impl/retrieval_pipelines.py 统一装配白名单与运行期选择；in_memory/cloud/agent 三个
+  Engine 都通过它执行 query > profile > default 路由，不改写共享默认实例。
+- 装配只通过 RetrieverProducer 与 Retriever.query_parsers 公共声明，不读取插件私有字段，
+  不按具体实现类型或 target 增加分支。显式白名单内依赖未知或 parser 不共享则启动失败。
+- MemoryQueryService 转发公共名称校验，API 在空间分流前调用；recall 再兜底校验。
+- 原 candidate_resolver 等直接注入 Retriever 的组件继续使用固定实例。
