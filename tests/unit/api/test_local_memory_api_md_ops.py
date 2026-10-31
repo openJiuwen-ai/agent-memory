@@ -44,6 +44,7 @@ class _FakeEngine:
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.last_read_scope: Scope | None = None
 
     async def read_md_file(self, context, md_filename, *, line_range=None):
         self.last_read_scope = context.scope
