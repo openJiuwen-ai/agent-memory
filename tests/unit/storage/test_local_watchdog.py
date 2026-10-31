@@ -23,7 +23,13 @@ import pytest
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
     WhitespaceTokenizer,
 )
-from jiuwen_memory.common.type_def import COORDS_KEY, MD_FILENAME_KEY, MEMORY_CLASS_KEY, Scope
+from jiuwen_memory.common.type_def import (
+    COORDS_KEY,
+    MD_FILENAME_KEY,
+    MEMORY_CLASS_KEY,
+    LifecycleState,
+    Scope,
+)
 from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks, content_hash
 from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
 from jiuwen_memory.storage.watchdog_impl.local_watchdog import (
@@ -229,6 +235,85 @@ def test_sync_one_replaces_changed_line_with_new_id(tmp_path) -> None:
     new_units = wd._shadow.get_units(SCOPE, [remaining[0][0]])
     assert new_units[0].segments[0].content == "new content"
     assert new_units[0].id != "u-old"  # 新 uuid，不保留旧 id
+
+
+@pytest.mark.parametrize(
+    "retired_lifecycle",
+    [LifecycleState.FORGOTTEN, LifecycleState.ARCHIVED, LifecycleState.SUPERSEDED],
+)
+def test_sync_one_does_not_reinsert_retired_block(tmp_path, retired_lifecycle) -> None:
+    """归档/遗忘/取代后 md 残留块不重插：diff 两侧基准不同（delete 认 active / insert 认全集）。
+
+    FORGET/ARCHIVE 只改 lifecycle + remove(SOFT)（md 不删块）、SUPERSEDE 的 remove_content
+    未命中也会留块——shadow 里该行 lifecycle 非 active 但 content_hash 仍在。若 insert 侧
+    只用 active 集合作「已知块」扣除，会把残留块重插为 active 重复行（遗忘语义失效 +
+    内容重复）——全集扣除命中历史行、跳过 insert。
+    """
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment
+
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/p1/MEMORY.md"
+    content = "retired content"
+    # 残留：行 lifecycle 非 active，md 块仍在文件里（非破坏式遗忘 / SUPERSEDE 漂移）
+    wd._shadow.insert_units(
+        SCOPE,
+        [
+            MemoryUnit(
+                id="u-retired",
+                scope=SCOPE,
+                lifecycle=retired_lifecycle,
+                segments=[Segment(content=content)],
+                system_metadata={MD_FILENAME_KEY: md_filename},
+            ),
+        ],
+    )
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    md.parent.mkdir(parents=True)
+    md.write_text(f"# t\n{content}\n\n", encoding="utf-8")
+
+    wd._sync_one(md_filename, deleted=False)
+
+    # 不重插：全集仍只有原 retired 行（旧代码会多出一条 active 重复行）
+    remaining = wd._shadow.list_units_by_md(SCOPE, md_filename)
+    assert [uid for uid, _ in remaining] == ["u-retired"]
+    unit = wd._shadow.get_units(SCOPE, ["u-retired"])[0]
+    assert unit.lifecycle == retired_lifecycle
+
+
+def test_sync_one_does_not_physically_delete_superseded_row(tmp_path) -> None:
+    """SUPERSEDE 后 md 已删旧块：看门狗对账不得物理删 SUPERSEDED 旧版行（修复目标本身）。
+
+    旧行 lifecycle=SUPERSEDED、md 已无其块（remove_content 删掉），是正确终态而非
+    「用户手删」删除信号。delete 侧只认 active 行 → SUPERSEDED 行不进 to_delete，
+    版本链/as_of 不因看门狗对账断裂。
+    """
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment
+
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/p1/MEMORY.md"
+    wd._shadow.insert_units(
+        SCOPE,
+        [
+            MemoryUnit(
+                id="u-superseded",
+                scope=SCOPE,
+                lifecycle=LifecycleState.SUPERSEDED,
+                segments=[Segment(content="old content")],
+                system_metadata={MD_FILENAME_KEY: md_filename},
+            ),
+        ],
+    )
+    # md 已无旧块（SUPERSEDE 的 remove_content 已删），只有空文件
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("", encoding="utf-8")
+
+    wd._sync_one(md_filename, deleted=False)
+
+    # SUPERSEDED 行保留（不物理删），版本链/as_of 不断
+    remaining = wd._shadow.list_units_by_md(SCOPE, md_filename)
+    assert [uid for uid, _ in remaining] == ["u-superseded"]
+    assert wd._shadow.get_units(SCOPE, ["u-superseded"])[0].lifecycle == LifecycleState.SUPERSEDED
 
 
 def test_sync_one_noop_when_in_sync(tmp_path) -> None:

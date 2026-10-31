@@ -397,19 +397,33 @@ class LocalWatchdog(Watchdog):
     def _sync_one(self, md_filename: str, deleted: bool) -> None:
         """单文件 unit 粒度增量同步（F07 §12.3 流程）。
 
-        ① old = shadow.list_units_by_md(scope, md_filename, lifecycle=active)
-           # [(unit_id, content_hash)]，只取 active 行
-        ② 读 md 按行算 new (content_hash, content) list  (deleted=True 时 new 为空 → 全删)
-        ③ diff：
-           old_hash - new_hash → delete_units(对应 unit_id)
-           new_hash - old_hash → insert_units(新建 unit，步骤 3 缺省元数据 + content 原文)
+        ① old_all = shadow.list_units_by_md(scope, md_filename)
+           # 全集 [(unit_id, content_hash)]，供 insert 侧「已知块」扣除（known_hash_set）
+        ② old_active = shadow.list_units_by_md(scope, md_filename, lifecycle=active)
+           # 仅 active 行，供 delete 侧「现存块」基准（old_hash_set）
+        ③ 读 md 按行算 new (content_hash, content) list  (deleted=True 时 new 为空 → 全删)
+        ④ diff：
+           old_hash(active) - new_hash → delete_units(对应 unit_id)
+           new_hash - known_hash(全集) → insert_units(新建 unit，步骤 3 缺省元数据 + content 原文)
 
-        ① 只取 active 行：superseded/archived/forgotten 行本就是 SUPERSEDE/治理后保留的
-        历史版本（md 已删旧块、shadow 保留该行做版本链/as_of），md 无其 hash 是正确终态
-        而非「用户手删」信号，不参与 hash 对账——否则看门狗会把旧版行物理删除、断版本链。
+        两侧基准分开（不同口径对称设计，缺一不可）：delete 侧只认 active 行——
+        superseded/archived/forgotten 历史版本（SUPERSEDE/治理后保留，md 已删旧块、shadow
+        留行做版本链/as_of）不参与 to_delete，否则看门狗会把旧版行物理删除、断版本链。
+        insert 侧用全集 hash 扣除——archived/forgotten 行的 md 块仍留在文件里（FORGET/
+        ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这
+        残留块重插为 active 重复行（遗忘语义失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
         """
         scope = self._scope
-        # ① 旧 unit（含 content_hash）——只取 active 行，排除历史版本（见 docstring）。
+        # ① 旧 unit 全集（含 content_hash）——insert 侧「已知块」扣除基准。用全集而非
+        #    active：archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改
+        #    lifecycle + remove(SOFT)，md 不删块），用 active 集合扣会把这残留块重插为
+        #    active 重复行（遗忘失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
+        all_pairs = self._shadow.list_units_by_md(scope, md_filename)
+        known_hash_set = {ch for _, ch in all_pairs}
+
+        # ② 旧 unit（仅 active 行）——delete 侧「现存块」基准。只认 active，排除
+        #    superseded/archived/forgotten 历史版本（md 已删旧块、shadow 留行做版本链
+        #    /as_of，md 无其 hash 是正确终态而非删除信号），避免物理删旧版行断版本链。
         old_pairs = self._shadow.list_units_by_md(
             scope, md_filename, lifecycle=LifecycleState.ACTIVE.value
         )
@@ -418,7 +432,7 @@ class LocalWatchdog(Watchdog):
             old_by_hash[ch] = unit_id
         old_hash_set = set(old_by_hash.keys())
 
-        # ② 新 (content_hash, content) list（按行遍历 md，保留 content 原文供建 unit）。
+        # ③ 新 (content_hash, content) list（按行遍历 md，保留 content 原文供建 unit）。
         # collect_md_blocks 返回三元组 (hash, content, block_index)，看门狗只取前两元
         # （block_index 供 DomainStore._supersede_shadow_for_md 跨块对齐用，看门狗「删旧建新」
         # 不按位置继承、不需要 block_index）。口径与原 _collect_new_contents 完全一致
@@ -431,9 +445,9 @@ class LocalWatchdog(Watchdog):
                 new_pairs = [(h, c) for h, c, _ in collect_md_blocks(abs_path)]
                 new_hash_set = {h for h, _ in new_pairs}
 
-        # ③ diff
+        # ④ diff
         to_delete = old_hash_set - new_hash_set
-        to_insert_pairs = [(h, c) for h, c in new_pairs if h not in old_hash_set]
+        to_insert_pairs = [(h, c) for h, c in new_pairs if h not in known_hash_set]
 
         if not to_delete and not to_insert_pairs:
             logger.debug("LocalWatchdog: no drift, skip sync %s", md_filename)
