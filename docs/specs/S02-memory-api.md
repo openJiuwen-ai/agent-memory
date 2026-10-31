@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -710,6 +710,8 @@ def read_md_file(
 按 `md_filename`（basename：`USER.md` / `MEMORY.md` / `YYYY-MM-DD.md`）+ 行范围读 md 文件原文，返回命中的 MemoryUnit 列表。入参形态与 `search` 一致（`context: Context`）：`context.scope` 携带归属五维，`context.extensions["coords"]["project"]` 决定从哪个 project 子目录读（project 解析在 Engine 层 `project_from_context`，API 层不拆 Context）。`line_range` 为 `(start, end)` 1-based 闭区间，`None` 表示整文件，越界自动 clamp。
 
 返回值与 `add` / `search` 同构为 `list[MemoryUnit]`——按块算 content_hash 在影子索引反查 unit_id 后取完整 MemoryUnit；`MdFileContent` 的格式转换放 provider 层。鉴权 `READ` 对 `context.scope` 单段（与 `get` / `list` 同口径，F08 D5）。返回前剥瞬态键（`coords` 等是路径解析依据，不是条目属性）。
+
+路由装配下（`_routing_enabled()`），数据面反查 scope 在 API 层折算为空间级 `Scope(org, space)`（`md_filename → memory_class` 的 space_template 经 `principal.kernel_coords(coords, identity)` 渲染），与写入侧 `RouteDecision` 落盘形态（org+space、主体维空）对齐，避免 5 段等值反查因 space/user 两段错位静默返空；鉴权与审计（`target_scope`）仍走 raw `context.scope`。路由未启用、坐标缺失或模板渲染不出时退回 raw scope——放宽方向，不阻断读取（F08 D3.1）。
 
 #### edit_md_file
 

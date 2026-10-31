@@ -117,6 +117,32 @@ def test_read_md_file_line_range_skips_partial_blocks(tmp_path) -> None:
     assert len(full) == 1
 
 
+def test_read_md_file_scope_projection_is_required_for_routed_units(tmp_path) -> None:
+    """routed 落盘 scope=Scope(org, space)（主体维空）时，raw scope（org+user）反查返空。
+
+    read_md_file 与 routing 互操作缝隙的存储层根因：写入侧 router 把落盘 scope 归一为
+    ``Scope(org, space)``，read_md_file 的 hash 反查（``find_unit_ids_by_content_hash``
+    5 段等值）拿调用方 raw scope（org+user）去匹配 → space/user 两段结构错位 → 静默返空。
+    方案甲在 API 层把 raw scope 折算成空间级 scope，本测试第二段证明折算后的形态命中。
+    """
+    ds = _build_doc_store(tmp_path)
+    landed = Scope(org="acme", space="p_p1")  # router 判定后的落盘形态（主体维恒空）
+    _write_unit(
+        ds,
+        "u1",
+        "project memory",
+        scope=landed,
+        metadata={MEMORY_CLASS_KEY: "long_term_memory", "project": "p1"},
+    )
+
+    # 调用方自然上下文（org+user）：反查 5 段等值错位 → 静默返空（修改前现象）
+    assert ds.read_md_file(SCOPE, "MEMORY.md", project="p1") == []
+
+    # 空间级 scope（方案甲折算后的形态）：命中
+    units = ds.read_md_file(landed, "MEMORY.md", project="p1")
+    assert [u.id for u in units] == ["u1"]
+
+
 def test_read_md_file_rejects_non_document_mode(tmp_path) -> None:
     """非文档模式（write_document=false）→ ValidationError。"""
     sb.register_backends()

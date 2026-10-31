@@ -14,16 +14,23 @@ FakeEngine 绑定版隔离测试 PEP + 剥瞬态键逻辑。
 from __future__ import annotations
 
 # pylint: disable=protected-access  # 测试替换内部端口对象以隔离委托
+from types import SimpleNamespace
+
 import pytest
 
 from jiuwen_memory.api import assemble
 from jiuwen_memory.api.memory_api import MemoryAPI
 from jiuwen_memory.api.memory_api_impl.local_memory_api import LocalMemoryAPI
+from jiuwen_memory.api.memory_api_impl.local_support import (
+    _md_memory_class,
+    space_scope_for_md_read,
+)
 from jiuwen_memory.api.memory_api_impl.md_ops import MdOpsMixin
 from jiuwen_memory.common.errors import PermissionDeniedError
-from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.security import internal_context, principal
 from jiuwen_memory.common.security.space_roles import ENTRY_RULES, SpaceAction, SpaceAxis
 from jiuwen_memory.common.type_def import COORDS_KEY, Context, MemoryUnit, Scope, Segment
+from jiuwen_memory.construction.router import parse_route_table
 from jiuwen_memory.control.application import MemoryCommandService, MemoryQueryService
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
@@ -37,8 +44,10 @@ class _FakeEngine:
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.last_read_scope: Scope | None = None
 
     async def read_md_file(self, context, md_filename, *, line_range=None):
+        self.last_read_scope = context.scope
         self.calls.append(("read", md_filename, line_range))
         return [
             MemoryUnit(
@@ -65,6 +74,32 @@ class _FakeEngine:
 def _api_with_fake_engine():
     """assemble() 默认装配 + 替换 _queries/_commands 为 FakeEngine 绑定版。"""
     api = assemble()
+    fake = _FakeEngine()
+    api._queries = MemoryQueryService(fake)
+    api._commands = MemoryCommandService(fake)
+    return api, fake
+
+
+_MD_ROUTE_TABLE = {
+    "coord_entities": ["project"],
+    "memory_classes": [
+        {"name": "user_profile", "owner": "user", "space_template": "u_{user}", "fallback": True},
+        {"name": "long_term_memory", "owner": "project", "space_template": "p_{project}"},
+        {"name": "daily_memory", "owner": "team", "record_only": True},
+    ],
+    "narrow_dims": [{"entity": "project", "tag_key": "project_id"}],
+}
+
+
+def _api_with_routed_table():
+    """assemble() + 注入非空判定表（routing_enabled=True）+ FakeEngine。
+
+    不完整装配 keyword_stub Router——``_md_read_scope`` 只读 ``_route_table.naming`` 与
+    ``_routing_enabled``，注入一个带 ``table`` 的替身即可聚焦验证折算接线，鉴权仍走
+    assemble() 的真实角色鉴权（u1 读自己的 scope 通过）。
+    """
+    api = assemble()
+    api._router = SimpleNamespace(table=parse_route_table(_MD_ROUTE_TABLE))
     fake = _FakeEngine()
     api._queries = MemoryQueryService(fake)
     api._commands = MemoryCommandService(fake)
@@ -148,6 +183,75 @@ def test_read_md_file_default_line_range_none() -> None:
     security = internal_context(ScopedAuthenticator(SCOPE))
     api.read_md_file(_context(), "USER.md", security=security)
     assert fake.calls[-1] == ("read", "USER.md", None)
+
+
+# -- read_md_file 路由折算（方案甲）：读回侧对称空间折算 -------------------- #
+
+
+def test_md_memory_class_maps_filenames() -> None:
+    """md 文件名 → memory_class：USER.md/MEMORY.md/daily 三态，basename 归一。"""
+    assert _md_memory_class("MEMORY.md") == "long_term_memory"
+    assert _md_memory_class("USER.md") == "user_profile"
+    assert _md_memory_class("2026-10-29.md") == "daily_memory"
+    assert _md_memory_class("memory/p1/MEMORY.md") == "long_term_memory"
+
+
+def test_space_scope_for_md_read_projects_to_org_and_space() -> None:
+    """MEMORY.md（long_term_memory）折算成 Scope(org, space=p_{project})，主体维空。"""
+    naming = parse_route_table(_MD_ROUTE_TABLE).naming
+    raw = Scope(org="acme", user="alice")
+    coords = principal.kernel_coords({"project": "p1"}, raw)
+    assert space_scope_for_md_read(naming, raw, "MEMORY.md", coords) == Scope(
+        org="acme", space="p_p1"
+    )
+
+
+def test_space_scope_for_md_read_projects_user_template_via_kernel_coords() -> None:
+    """USER.md（user_profile）用内核坐标 user 渲染——业务 coords 无 user，须经 kernel_coords。"""
+    naming = parse_route_table(_MD_ROUTE_TABLE).naming
+    raw = Scope(org="acme", user="alice")
+    coords = principal.kernel_coords({"project": "p1"}, raw)
+    assert space_scope_for_md_read(naming, raw, "USER.md", coords) == Scope(
+        org="acme", space="u_alice"
+    )
+
+
+def test_space_scope_for_md_read_falls_back_when_unrenderable() -> None:
+    """daily_memory 无模板 → 渲染空串 → 退回 raw scope（放宽方向）。"""
+    naming = parse_route_table(_MD_ROUTE_TABLE).naming
+    raw = Scope(org="acme", user="alice")
+    coords = principal.kernel_coords({"project": "p1"}, raw)
+    assert space_scope_for_md_read(naming, raw, "2026-10-29.md", coords) == raw
+
+
+def test_read_md_file_projects_scope_to_space_level_when_routed() -> None:
+    """路由启用时 read_md_file 下传空间级 scope（org+space），非 raw（org+user）。
+
+    修复前反查用 raw scope，space/user 两段与落盘（org+space）错位 → 静默返空。
+    """
+    api, fake = _api_with_routed_table()
+    security = internal_context(ScopedAuthenticator(SCOPE))
+    api.read_md_file(_context("p1"), "MEMORY.md", security=security)
+
+    assert fake.last_read_scope == Scope(org="acme", space="p_p1")
+
+
+def test_read_md_file_keeps_raw_scope_without_coords() -> None:
+    """坐标缺失时退回 raw scope——放宽方向，不阻断读取（路由启用但无反查锚点）。"""
+    api, fake = _api_with_routed_table()
+    security = internal_context(ScopedAuthenticator(SCOPE))
+    api.read_md_file(Context(scope=SCOPE, extensions={}), "MEMORY.md", security=security)
+
+    assert fake.last_read_scope == SCOPE
+
+
+def test_read_md_file_keeps_raw_scope_when_not_routed() -> None:
+    """未启用路由时 scope 原样下传——与改造前行为一致。"""
+    api, fake = _api_with_fake_engine()
+    security = internal_context(ScopedAuthenticator(SCOPE))
+    api.read_md_file(_context("p1"), "MEMORY.md", security=security)
+
+    assert fake.last_read_scope == SCOPE
 
 
 # -- edit_md_file：PEP + 委托 + 剥瞬态键 ------------------------------------- #
