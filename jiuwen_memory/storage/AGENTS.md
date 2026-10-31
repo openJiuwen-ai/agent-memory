@@ -30,7 +30,7 @@
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产）；可选 object_id 能力为加密提供稳定对象标识 |
 | `encryption.py` | PR1-1 的 StoreManager 装配保护：全部具名 KV/FS 包装、公开依赖契约去重、可配置 Producer 包装与缓存回填；公共 manager 保护清单准入检查 |
 | `entity_store.py` | EntityStore 端口契约（**StorageCapability 第七席位 ENTITY**）：以 `space_id` routing + `EntityStoreFilters` 中非空的 `actor_id` / `assistant_id` / `session_id` 隔离的实体反向索引；`space_id: str` 作显式第一入参——BaseStore「scope 第一入参」的**唯一例外**，授权由 `_AuthorizedEntityStoreProxy` 专门适配 |
-| `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）；`SslConfig` 与 scheme 校验复用 `common._support` |
+| `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）、已选后端依赖预加载（`preload_backend`）；`SslConfig` 与 scheme 校验复用 `common._support` |
 | `_pg.py` | PostgreSQL 后端共享基础：asyncpg 惰性连接池（专职事件循环线程桥接同步调用）、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
 | `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector）；`uri`/`dsn` 晚绑定 |
@@ -170,6 +170,16 @@
 - 具体后端选型决策（由装配层配置）
 
 ## 本地约束
+
+配置工厂选中 ES 全文、ES 实体、Milvus 向量或 `milvus_graph` 融合后，在同步装配期经 `preload_backend`
+加载 `elasticsearch` / `pymilvus`，记录开始、完成与耗时；导入或原生库加载失败抛
+`BackendError`。客户端连接及索引/集合创建仍在首次使用时执行，直接构造 Store 仍保留
+惰性导入；融合后端的图依赖也保持惰性加载。离线后端不预加载上述依赖，
+ES 实体未配置 hosts/endpoint 时先返回 None。
+融合工厂先校验必填参数和正维度，再预加载 `pymilvus`，最后构造 Store 创建工作目录，
+依赖加载失败时不得留下新目录。
+正维度规则统一由 `vector_impl/milvus_vector.py` 的 `require_positive_dim` 实现，
+向量构造函数与融合工厂共用；融合工厂的错误使用 `milvus_graph fusion` 标明后端。
 
 1. 所有 Store 必须实现 `store_type()` 和 `health()`（继承自 `BaseStore`）。
 2. 实现通过 `@XxxProducer.register("name")` 自注册。

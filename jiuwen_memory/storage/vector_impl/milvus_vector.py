@@ -7,7 +7,8 @@
 （§5.2 / §7）；``id`` 是 scope 内逻辑主键，物理主键由 scope+id 生成，``metadata`` 经动态
 字段承载，``filters`` 转为 scope 之外的标量谓词。
 
-``pymilvus`` 惰性导入与连接（目标 API：``MilvusClient``，pymilvus 2.4+）。``score``
+工厂在装配期预加载 ``pymilvus``，连接仍惰性执行（目标 API：``MilvusClient``，
+pymilvus 2.4+）。``score``
 直接返回 Milvus 的 distance：``COSINE``/``IP`` 越大越相关、``L2`` 越小越相关，
 由配置的 ``metric_type`` 决定语义。
 """
@@ -37,7 +38,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.storage.vector import VectorProducer
 
-from .._support import read_ssl_config, scope_dims, scope_segments, wrap_backend
+from .._support import preload_backend, read_ssl_config, scope_dims, scope_segments, wrap_backend
 from ..base import StoreType
 from ..types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from ..vector import VectorStore
@@ -111,6 +112,12 @@ def _is_not_loaded(exc: Exception) -> bool:
     )
 
 
+def require_positive_dim(dim: int, *, backend: str = "milvus vector store") -> None:
+    """向量后端与融合工厂共用正维度规则，错误标明实际后端。"""
+    if dim <= 0:
+        raise ValidationError(f"{backend} requires positive 'dim'")
+
+
 class MilvusVectorStore(VectorStore):
     def __init__(
         self,
@@ -130,8 +137,7 @@ class MilvusVectorStore(VectorStore):
         config_namespace: str = "vector_store",
         **options: Any,
     ) -> None:
-        if dim <= 0:
-            raise ValidationError("milvus vector store requires positive 'dim'")
+        require_positive_dim(dim)
         if load_timeout <= 0:
             raise ValidationError("milvus vector store requires positive 'load_timeout'")
         self._fallback_uri = uri or f"http://{host}:{port}"
@@ -527,7 +533,7 @@ def _build(config):
         # 和私钥同时提供才生效，单独配置会静默失效。
         options["secure"] = True
         options["server_pem_path"] = ssl.ca_cert
-    return MilvusVectorStore(
+    store = MilvusVectorStore(
         uri=Factory.require_param(config, "uri", backend="milvus vector"),
         host=Factory.cfg_get(config, "host", "localhost"),
         port=Factory.cfg_get(config, "port", 19530),
@@ -542,3 +548,5 @@ def _build(config):
         config_source=ConfigSourceProducer.get_cached("default"),
         **options,
     )
+    preload_backend("pymilvus")
+    return store

@@ -2,12 +2,13 @@
 
 The Storage layer provides two levels of storage abstraction to upper layers:
 
-- `Storage`: the unified domain interface for `MemoryUnit`, also responsible for capability discovery, authorization, and retrieval adaptation.
+- `StoreManager`: the management plane for capability discovery, ports, authorization proxies, and health aggregation.
+- `DomainStore`: the data plane for `MemoryUnit` CRUD and retrieval adaptation.
 - `BaseStore` and its subinterfaces: six standard ports for KV, vector, full-text, graph, fusion, and file backends, plus an independent entity reverse-index port.
 
 This document is an API reference for the current abstract interfaces. It does not prescribe the internal implementation of any specific backend. The following source files are authoritative:
 
-- [`storage.py`](../../../jiuwen_memory/storage/storage.py)
+- [`store_manager.py`](../../../jiuwen_memory/storage/store_manager.py) / [`domain_store.py`](../../../jiuwen_memory/storage/domain_store.py)
 - [`base.py`](../../../jiuwen_memory/storage/base.py)
 - [`security.py`](../../../jiuwen_memory/storage/security.py)
 - [`kv.py`](../../../jiuwen_memory/storage/kv.py)
@@ -71,29 +72,31 @@ The interface does not guarantee transactional atomicity for batch methods. Cons
 ## 2. Unified Storage Interface
 
 ```python
-from jiuwen_memory.storage.storage import Storage
+from jiuwen_memory.storage import DomainStore, StoreManager
 ```
 
-`Storage` is the shared storage entry point for Engine, Construction, and Retrieval. It defines behavior at the interface level and does not mean "source-of-truth writes only." A concrete implementation may persist only the MemoryUnit body, or it may also write forward, vector, full-text, or graph indexes.
+Engine, Construction, and Retrieval share a `StoreManager` and access named ports or `domain_store(name)`. Section 2.1 describes the management plane; sections 2.2–2.4 describe `DomainStore`. A data-plane implementation may persist only the MemoryUnit body or write multiple index forms.
 
 ### 2.1 Capability Discovery and Port Access
 
-`StorageCapability` defines six standard capabilities: `KV`, `VECTOR`, `FULLTEXT`, `GRAPH`, `FUSION`, and `FS`.
+`StorageCapability` defines nine capabilities: `KV`, `VECTOR`, `FULLTEXT`, `GRAPH`, `FUSION`,
+`FS`, `ENTITY`, `MARKDOWN`, and `DOCUMENT_SHADOW`.
 
 | API | Return value | Description |
 |---|---|---|
-| `capabilities()` | `frozenset[StorageCapability]` | Returns the capabilities declared by the current Storage instance |
-| `has_kv()` / `has_vector()` / `has_fulltext()` | `bool` | Checks for the default KV/vector/full-text capability |
-| `has_graph()` / `has_fusion()` / `has_fs()` | `bool` | Checks for the default graph/fusion/file capability |
-| `has_*_port(name="default")` | `bool` | Checks whether a named port exists |
-| `kv` / `vector` / `fulltext` / `graph` / `fusion` / `fs` | Corresponding Store | Accesses the default port |
-| `*_port(name="default")` | Corresponding Store | Accesses a named port |
+| `capabilities()` | `frozenset[StorageCapability]` | Returns the manager's declared capabilities |
+| `has_kv(name="default")` / `has_vector(name="default")` / `has_fulltext(name="default")` | `bool` | Checks whether the named port exists |
+| `has_graph(name="default")` / `has_fusion(name="default")` / `has_fs(name="default")` | `bool` | Checks whether the named port exists |
+| `has_entity(name="default")` / `has_markdown(name="default")` / `has_shadow_index(name="default")` | `bool` | Checks entity, Markdown, and shadow-index ports |
+| `kv(name="default")` / `vector(name="default")` / `fulltext(name="default")` / `graph(name="default")` / `fusion(name="default")` / `fs(name="default")` | Corresponding Store | Accesses a named port; the default name is `default` |
+| `entity(name="default")` / `markdown(name="default")` / `shadow_index(name="default")` | Corresponding Store | Accesses the corresponding named port |
+| `domain_store(name="default")` / `has_domain_store(name="default")` | `DomainStore` / `bool` | Accesses or checks a named data plane |
 
-Check a capability with `has_*()` or `has_*_port()` before accessing its port. Accessing an undeclared port raises `UnsupportedStorageCapabilityError`.
+Accessing an undeclared port raises `UnsupportedStorageCapabilityError`.
 
 ```python
-if storage.has_vector_port("default"):
-    vector_store = storage.vector_port("default")
+if manager.has_vector("default"):
+    vector_store = manager.vector("default")
 ```
 
 ### 2.2 MemoryUnit Writes and Deletion
@@ -148,7 +151,7 @@ Deletes the specified memories within `scope`. Deletion is idempotent.
 | `FORWARD_ONLY` | Writes only the memory body and does not actively update retrieval indexes |
 | `RETRIEVAL_ONLY` | Assumes the body already exists and writes only retrieval indexes; implementations without retrieval capability may treat this as a no-op |
 
-`mode` expresses the logical write scope requested by the caller; it does not imply that the backend has two physical storage systems. For example, `CompositeStorage` does not perform index projection, while an integrated Storage implementation may complete multiple writes in a single `add` call.
+`mode` expresses the logical write scope requested by the caller; it does not imply that the backend has two physical storage systems. For example, `CompositeDomainStore` does not perform index projection, while an integrated Storage implementation may complete multiple writes in a single `add` call.
 
 #### Removal Scope: `IndexRemoveMode`
 
@@ -230,8 +233,8 @@ Shared parameters:
 
 | API | Description |
 |---|---|
-| `security` | Returns the current Storage's `StorageSecurity` |
-| `scopes() -> list[Scope]` | Enumerates Scopes containing MemoryUnit data; ordering is implementation-defined |
+| `security` | Returns the manager/data plane's `StorageSecurity` |
+| `DomainStore.scopes() -> list[Scope]` | Enumerates Scopes containing MemoryUnit data; ordering is implementation-defined |
 | `health() -> None` | Checks Storage, its security component, and its backends; returns `None` when healthy |
 
 ## 3. BaseStore Base Class
@@ -415,7 +418,7 @@ Returns `None` when the operation is allowed and raises `PermissionDeniedError` 
 
 | Producer | `TOP_NAME` | Product |
 |---|---|---|
-| `StorageProducer` | `storage` | `Storage` |
+| `StoreManagerProducer` | `store_manager` | `StoreManager` |
 | `KvProducer` | `kv_store` | `KVStore` |
 | `VectorProducer` | `vector_store` | `VectorStore` |
 | `FulltextProducer` | `fulltext_store` | `FulltextStore` |
@@ -424,7 +427,7 @@ Returns `None` when the operation is allowed and raises `PermissionDeniedError` 
 | `FsProducer` | `fs_store` | `FSStore` |
 | `EntityStoreProducer` | `entity_store` | `EntityStore` |
 
-Concrete implementations register with `@XxxProducer.register("name")`. `storage.bootstrap.register_backends()` imports the implementation modules and triggers registration. `StorageProducer.resolve(config)` resolves a shared Storage from component configuration and uses `composite` as its default target. Business code should normally use the `Storage` injected by the assembly layer instead of resolving and pinning low-level Stores itself.
+Concrete implementations register with `@XxxProducer.register("name")`. `storage.bootstrap.register_backends()` imports the implementation modules and triggers registration. `StoreManagerProducer.resolve(config)` resolves the shared StoreManager, whose default target is `composite`. Business code uses the injected StoreManager/DomainStore instead of resolving and pinning low-level Stores itself.
 
 ## 13. Configurable Implementations
 
@@ -451,7 +454,7 @@ kv_store:
 
 Dependency parameters support two forms:
 
-- A string such as `storage: default` references a shared named instance in the corresponding
+- A string such as `store_manager: default` references a shared named instance in the corresponding
   Producer namespace.
 - A mapping such as `raw_kv_store: {target: sqlite, params: {...}}` constructs an anonymous,
   non-shared instance inline.
@@ -464,38 +467,41 @@ not be omitted.
 When passed directly to `Config.from_dict()` or `Config.from_yaml()`, these namespaces are top-level
 sections. In deployment configuration, place them under `memory_api:`.
 
-Without user configuration, the default Storage composition is
-`composite + memory KV/vector/fulltext/graph`; the L0/L1 vector and full-text ports also use
-`memory`. FusionStore, FSStore, and EntityStore are not connected to `CompositeStorage` by default.
-External backend targets import clients and establish connections lazily. A valid configuration
-therefore does not guarantee that the third-party client and service are ready; call `health()`
-before deployment.
+Without user configuration, the management plane uses `CompositeStoreManager` and the data
+plane uses `CompositeDomainStore`. KV/vector/full-text/graph and the L0/L1 vector and full-text
+ports use in-memory implementations; FusionStore, FSStore, and EntityStore are not declared by default.
+Configured ES full-text/entity, Milvus vector, and `milvus_graph` fusion backends preload the
+ES/Milvus client dependencies during assembly. Missing packages or native-library load failures
+raise `BackendError` at that point; custom installations must install `.[deploy]` or the selected
+client packages. Connections and index initialization remain lazy, as do the fusion backend's graph
+dependencies. Successful assembly does not guarantee that backend services are reachable; call
+`health()` before deployment. Preloading mitigates runtime cold loading; it does not establish or
+fix the underlying Windows loader mechanism.
 
-### 13.2 Storage Implementation
+### 13.2 StoreManager / DomainStore Implementations
 
-| `target` | Implementation class | Function | Main `params` |
+| Role | Implementation class | Function | Configuration |
 |---|---|---|---|
-| `composite` | `CompositeStorage` | Default unified Storage. It combines Store ports, persists the MemoryUnit body through the KV port, and exposes retrieval adapters through configured Recallers. It does not build vector, full-text, or graph projections. | `kv_store` (default `memory`); optional `vector_store`, `fulltext_store`, `graph_store`, `fusion_store`, and `fs_store`; `preferred_retrieval_pipeline` (default `recall_get_rank`) |
+| Management plane | `CompositeStoreManager` | The `composite` target in the `store_manager` namespace; aggregates declared Store ports, capabilities, authorization proxies, and named data planes | `params.domain_stores.<name>` declares data planes; ports are collected from the Store namespaces |
+| Data plane | `CompositeDomainStore` | MemoryUnit CRUD and retrieval adaptation, using KV as the default source of truth; does not build vector/full-text/graph projections | Data-plane `kv_store`, `preferred_retrieval_pipeline`, and Recaller selectors |
 
 `preferred_retrieval_pipeline` accepts `recall_get_rank`, `recall_and_get_rank`, or `retrieve`.
 `vector_store.layers_l0/layers_l1` and `fulltext_store.layers_l0/layers_l1` are automatically exposed
-by `CompositeStorage` as ports with the same names.
+by the manager as ports with the same names. Keep the built-in manager configuration and override
+only the selected backend, for example:
 
 ```yaml
-storage:
+globals:
+  store_manager: default
+fulltext_store:
   default:
-    target: composite
+    target: elasticsearch
     params:
-      kv_store: default
-      vector_store: default
-      fulltext_store: default
-      graph_store: default
-      preferred_retrieval_pipeline: recall_get_rank
+      hosts: http://localhost:9200
 ```
 
-The only built-in Storage target is currently `composite`. `RoutingStorage` and the routing Stores
-are product-level routing components that can be injected manually; they are not currently
-registered as a YAML-compatible `target: routing`.
+`RoutingStoreManager`, `RoutingDomainStore`, and routing Stores can be injected manually;
+they are not registered as a YAML `target: routing`.
 
 ### 13.3 KVStore Implementations
 
@@ -690,7 +696,7 @@ constructor:
   default:
     target: hybrid
     params:
-      storage: default
+      store_manager: default
       chunker: default
       embedder: default
       entity_store: default
@@ -698,7 +704,7 @@ recaller:
   keyword:
     target: keyword
     params:
-      storage: default
+      store_manager: default
       entity_store: default
 ```
 
@@ -708,8 +714,8 @@ recall-side `recaller.keyword` must each reference the same named `entity_store`
 ### 13.10 How Security Interfaces Are Implemented
 
 `StorageSecurity` currently has no independent Producer namespace. A configuration-built
-`CompositeStorage` uses `AllowAllStorageSecurity` by default. A custom authorization implementation
-must be supplied in code through `CompositeStorage(..., security=...)` or injected by the product
+`CompositeStoreManager` uses `AllowAllStorageSecurity` by default. A custom authorization implementation
+must be supplied in code through `CompositeStoreManager(..., security=...)` or injected by the product
 assembly layer; it cannot be selected directly as a YAML target.
 
 `StoreSecurity` also has no separately selectable target. Ordinary Stores use
@@ -721,21 +727,21 @@ provided by the `CryptographyProvider` referenced by `params.cryptography`.
 
 ```python
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
-from jiuwen_memory.storage.storage import Storage
+from jiuwen_memory.storage import DomainStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 
-def save_and_load(storage: Storage, scope: Scope, unit: MemoryUnit) -> MemoryUnit | None:
+def save_and_load(storage: DomainStore, scope: Scope, unit: MemoryUnit) -> MemoryUnit | None:
     storage.add(scope, [unit], mode=IndexWriteMode.ALL)
     loaded = storage.get(scope, [unit.id])
     return loaded[0] if loaded else None
 
 
-def remove_from_retrieval(storage: Storage, scope: Scope, unit_id: str) -> None:
+def remove_from_retrieval(storage: DomainStore, scope: Scope, unit_id: str) -> None:
     storage.delete(scope, [unit_id], mode=IndexRemoveMode.SOFT)
 ```
 
-These examples express only the interface semantics. The physical data affected by `ALL` or `SOFT` depends on the injected `Storage` implementation and its capabilities.
+These examples express only the interface semantics. The physical data affected by `ALL` or `SOFT` depends on the injected `DomainStore` implementation and its capabilities.
 
 ## 15. Storage Data Types
 
@@ -921,7 +927,7 @@ token-matching strategy.
 | KV/FS single-item `get` target is absent | `NotFoundError` |
 | Any key in KV `mget` is absent | `NotFoundError`; no partial list is returned |
 | Some IDs in a retrieval Store batch `get` are absent | Missing items are omitted and existing records are returned |
-| `MemoryUnit.scope` differs from the explicit Scope passed to `Storage.add/update` | Built-in `CompositeStorage` raises `ValidationError` |
+| `MemoryUnit.scope` differs from the explicit Scope passed to `DomainStore.add/update` | Built-in `CompositeDomainStore` raises `ValidationError` |
 | Filter operator, vector dimension, query, or configuration is invalid | `ValidationError` |
 | An undeclared capability or named port is accessed | `UnsupportedStorageCapabilityError` |
 | `StorageSecurity.authorize` denies access | `PermissionDeniedError` |
@@ -941,9 +947,9 @@ not imply that every Storage implementation has built-in index-projection capabi
 
 | Combination | `ALL` | `FORWARD_ONLY` | `RETRIEVAL_ONLY` | `SOFT` | `HARD` |
 |---|---|---|---|---|---|
-| Direct CRUD through `CompositeStorage` | Writes/updates the KV memory record | Writes/updates the KV memory record | No-op | No-op; record remains | Deletes the KV memory record |
-| `HybridIndexBuilder + CompositeStorage` | forward + fulltext + vector + optional entity | Runs forward only | Runs retrieval sub-builders only | Removes derived retrieval indexes only | Removes derived indexes first, then forward |
-| `UnifiedIndexBuilder + CompositeStorage` | KV memory record only | KV memory record only | No-op | No-op | Deletes the KV memory record |
+| Direct CRUD through `CompositeDomainStore` | Writes/updates the KV memory record | Writes/updates the KV memory record | No-op | No-op; record remains | Deletes the KV memory record |
+| `HybridIndexBuilder + CompositeDomainStore` | forward + fulltext + vector + optional entity | Runs forward only | Runs retrieval sub-builders only | Removes derived retrieval indexes only | Removes derived indexes first, then forward |
+| `UnifiedIndexBuilder + CompositeDomainStore` | KV memory record only | KV memory record only | No-op | No-op | Deletes the KV memory record |
 | `UnifiedIndexBuilder + custom unified Storage` | Storage implements the complete write | Must preserve at least the source record | Implementation decides whether indexes can be backfilled independently | Implementation must preserve the source record | Implementation deletes the record and derived indexes |
 
 Therefore, the abstract `Storage` methods alone do not prove that a selected target manages vector,
