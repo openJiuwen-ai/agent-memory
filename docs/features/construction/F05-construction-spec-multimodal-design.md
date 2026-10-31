@@ -315,3 +315,12 @@ CLM `content` 已是视觉片段描述，ELM `content` 已是事件摘要，当�
 - 图片、音频和 Dreaming 闲时扫描尚未实现。
 - 查询驱动的快速处理尚未实现。对于网页视频链接或上传后立即提问的场景，可先使用
   VLM 做粗粒度处理，同时在后台完成完整记忆构建。
+
+
+### 本地视频导入部署前提
+
+使用本地视频前需在视频 Normalizer 的 `params.local_media_roots` 配置完整 Scope
+对应的导入目录，并预先创建目录。未配置时明确拒绝，不再允许读取服务进程可访问的
+任意路径。`temp_root` 仅用于临时处理文件。接口参数、原资产引用及输出投影保持原样；
+配置语义见 [S08](../../specs/S08-config.md#视频本地媒体目录配置)，安全设计见
+[F04](../common/F04-security-interfaces-and-encryption.md#本地视频源文件准入)。

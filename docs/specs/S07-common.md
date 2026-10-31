@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -604,3 +604,14 @@ CryptographyProvider 与 `local` KeyProvider。
 索引转换为 epoch 毫秒。缺值与未知/开放区间哨兵由字段自身契约决定。
 自动生成的点状 Snapshot 满足 occurred_at、t_message、span_start、span_end 同值，
 其时间索引也必须相等；显式传入的更宽区间不受点状约束。
+
+
+## 本地视频文件准入契约
+
+内置视频 Normalizer 在读取本地源文件前按 `RawPayload.scope` 精确匹配服务端
+`local_media_roots` 的完整五维绑定；省略维度匹配空串，不表示通配。无绑定拒绝。
+本地路径及 `file:` URI 可继续使用，但不能跨绑定目录、通过 `..`/链接逃逸或访问
+网络文件来源。校验和复制必须基于安全打开的普通文件句柄，后续模型和子进程只读取
+任务私有副本；副本随成功/失败清理。原资产引用、文件名与规约输出结构保持稳定。
+可信注入的替代 backend 负责自身源访问，不由此获得内置文件读取能力。
+配置契约见 S08，安全边界见 F04。不向 Normalizer 传递请求身份或新增公共 API 参数。

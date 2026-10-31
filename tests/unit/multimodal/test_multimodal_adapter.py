@@ -376,20 +376,24 @@ def test_video_normalizer_uses_configured_temp_root(tmp_path, monkeypatch) -> No
         observed["run_root"] = run_root
         assert run_root.parent == temp_root
         assert run_root.is_dir()
+        assert source_path.read_bytes() == video_path.read_bytes()
         return [], []
 
     monkeypatch.setattr(VideoNormalizer, "_run_pipeline", fake_run_pipeline)
-    normalizer = VideoNormalizer.from_config({"temp_root": str(temp_root)})
+    normalizer = VideoNormalizer.from_config({
+        "temp_root": str(temp_root),
+        "local_media_roots": [{"scope": {"org": "org-1", "user": "user-1"}, "root": str(tmp_path)}],
+    })
     normalizer.normalize(
         RawPayload(
             id="video-1",
-            scope=Scope(user="user-1"),
+            scope=Scope(org="org-1", user="user-1"),
             modality=Modality.VIDEO,
             uri=video_path.as_uri(),
         )
     )
 
-    assert observed["source_path"] == video_path
+    assert observed["source_path"] == observed["run_root"] / "input" / video_path.name
     assert not observed["run_root"].exists()
 
 
@@ -432,6 +436,9 @@ def test_video_normalizer_passes_separate_llm_and_vlm_ports(tmp_path, monkeypatc
             "asr_chunk_seconds": 300,
             "vlm_max_inline_video_bytes": 1024,
             "temp_root": str(tmp_path / "video-work"),
+            "local_media_roots": [
+                {"scope": {"org": "org-1", "user": "user-1"}, "root": str(tmp_path)}
+            ],
         },
         asr_port=asr_service,
         llm_port=text_llm,
@@ -441,7 +448,7 @@ def test_video_normalizer_passes_separate_llm_and_vlm_ports(tmp_path, monkeypatc
     normalizer.normalize(
         RawPayload(
             id="video-1",
-            scope=Scope(user="user-1"),
+            scope=Scope(org="org-1", user="user-1"),
             modality=Modality.VIDEO,
             uri=video_path.as_uri(),
         )
@@ -568,6 +575,10 @@ def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> N
     settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]["temp_root"] = str(
         tmp_path / "video-work"
     )
+    video_params = settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]
+    video_params["local_media_roots"] = [
+        {"scope": {"org": "org-1", "user": "user-1"}, "root": str(tmp_path)}
+    ]
     # Pipeline 被 mock，两个模型端口只需用 echo 完成装配。
     settings["llm"]["video_text"]["target"] = "echo"
     settings["llm"]["video_vision"]["target"] = "echo"
@@ -618,6 +629,10 @@ def test_video_add_and_prefixed_job_status_share_handler_route(tmp_path, monkeyp
     settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]["temp_root"] = str(
         tmp_path / "video-work"
     )
+    video_params = settings["normalizer"]["default"]["params"]["routes"]["video"]["params"]
+    video_params["local_media_roots"] = [
+        {"scope": {"org": "org-1", "user": "user-1"}, "root": str(tmp_path)}
+    ]
     # Pipeline 被 mock，两个模型端口只需用 echo 完成装配。
     settings["llm"]["video_text"]["target"] = "echo"
     settings["llm"]["video_vision"]["target"] = "echo"
