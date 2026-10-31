@@ -106,8 +106,8 @@ def test_rollup_uses_common_final_scale_before_threshold_and_top_k(
     harness.add([parent, child])
     reranker = Mock()
 
-    def rerank_scores(_query, texts):
-        return [0.9 if "leaf" in text else 0.1 for text in texts]
+    def rerank_scores(_query, units):
+        return [0.9 if "leaf" in unit.content else 0.1 for unit in units]
 
     reranker.rerank.side_effect = rerank_scores
     retriever = PipelineRetriever(
@@ -121,7 +121,10 @@ def test_rollup_uses_common_final_scale_before_threshold_and_top_k(
     if use_reranker:
         assert result.items[0].score == 0.9
         assert reranker.rerank.call_count == 2
-        assert set(reranker.rerank.call_args.args[1]) == {parent.content, child.content}
+        assert {unit.content for unit in reranker.rerank.call_args.args[1]} == {
+        parent.content,
+        child.content,
+    }
 
 
 @pytest.mark.parametrize("channel", [RecallChannel.KEYWORD, RecallChannel.VECTOR])

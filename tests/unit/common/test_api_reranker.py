@@ -62,14 +62,14 @@ def test_restores_input_order_from_index() -> None:
             {"index": 1, "relevance_score": 0.1},
         ]
     }
-    scores = _reranker(payload).rerank("q", ["a", "b", "c"])
+    scores = _reranker(payload).rerank_texts("q", ["a", "b", "c"])
 
     assert scores == [0.5, 0.1, 0.9]
 
 
 def test_request_shape_and_auth() -> None:
     reranker, client = _reranker_with_client({"results": []})
-    reranker.rerank("咖啡", ["doc1", "doc2"])
+    reranker.rerank_texts("咖啡", ["doc1", "doc2"])
 
     call = client.calls[0]
     assert call["url"].endswith("/rerank")
@@ -84,12 +84,14 @@ def test_request_shape_and_auth() -> None:
 
 def test_missing_result_defaults_zero() -> None:
     # 响应只覆盖 index 0 → 其余保持 0.0
-    scores = _reranker({"results": [{"index": 0, "relevance_score": 0.7}]}).rerank("q", ["a", "b"])
+    scores = _reranker({"results": [{"index": 0, "relevance_score": 0.7}]}).rerank_texts(
+        "q", ["a", "b"]
+    )
     assert scores == [0.7, 0.0]
 
 
 def test_empty_texts_returns_empty() -> None:
-    assert _reranker({"results": []}).rerank("q", []) == []
+    assert _reranker({"results": []}).rerank_texts("q", []) == []
 
 
 # -- 防御：空文档 / 空 query 不透传后端（Issue #189 根因 2） -------------------- #
@@ -100,7 +102,7 @@ def test_empty_text_elements_excluded_from_request() -> None:
     # 被过滤位置保持 0.0。
     payload = {"results": [{"index": 0, "relevance_score": 0.9}]}
     reranker, client = _reranker_with_client(payload)
-    scores = reranker.rerank("q", ["", "abc", "   "])
+    scores = reranker.rerank_texts("q", ["", "abc", "   "])
 
     assert scores == [0.0, 0.9, 0.0], "空文本应得 0.0 分而非透传后端"
     sent = client.calls[0]["json"]["documents"]
@@ -110,7 +112,7 @@ def test_empty_text_elements_excluded_from_request() -> None:
 def test_all_texts_empty_skips_request_entirely() -> None:
     # 全部文本为空 → 不发请求，直接返回全 0.0（零网络零错误）
     reranker, client = _reranker_with_client({"results": []})
-    scores = reranker.rerank("q", ["", "  "])
+    scores = reranker.rerank_texts("q", ["", "  "])
 
     assert scores == [0.0, 0.0]
     assert client.calls == [], "全空文本不应发起任何请求"
@@ -119,7 +121,7 @@ def test_all_texts_empty_skips_request_entirely() -> None:
 def test_empty_query_skips_request_entirely() -> None:
     # 空 query 对 rerank 无意义且同样可能被网关拒绝 → 跳过请求返回全 0.0
     reranker, client = _reranker_with_client({"results": []})
-    scores = reranker.rerank("   ", ["a", "b"])
+    scores = reranker.rerank_texts("   ", ["a", "b"])
 
     assert scores == [0.0, 0.0]
     assert client.calls == [], "空 query 不应发起任何请求"
@@ -128,7 +130,7 @@ def test_empty_query_skips_request_entirely() -> None:
 def test_backend_error_on_http_failure() -> None:
     reranker = _reranker({}, raise_exc=RuntimeError("502 Bad Gateway"))
     with pytest.raises(BackendError):
-        reranker.rerank("q", ["a"])
+        reranker.rerank_texts("q", ["a"])
 
 
 def test_registered_in_producer() -> None:
@@ -163,7 +165,7 @@ def test_dashscope_request_envelope_and_endpoint() -> None:
             }
         }
     )
-    scores = reranker.rerank("咖啡", ["a", "b"])
+    scores = reranker.rerank_texts("咖啡", ["a", "b"])
 
     assert scores == [0.2, 0.8]  # 还原输入顺序
     call = client.calls[0]
