@@ -989,10 +989,12 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         加 scope WHERE 会断对账）。md 文件按 memory_class+coords.project 组织、不按 scope
         组织，单文件可含多 scope unit。影子索引其余方法已加 scope 原生隔离，本方法是看门狗诊断例外。
 
-        ``lifecycle`` 可选过滤：非 None 时拼 ``AND lifecycle = ?``——看门狗对账只取
-        active 行（``LifecycleState.ACTIVE.value``），排除 superseded/archived/forgotten
+        ``lifecycle`` 可选过滤：非 None 时拼 ``AND lifecycle = ?``——看门狗 delete 侧对账
+        只取 active 行（``LifecycleState.ACTIVE.value``），排除 superseded/archived/forgotten
         历史行（SUPERSEDE 后 md 已删旧块、shadow 保留旧行，md 无此 hash 是正确终态而
-        非删除信号，不应进入 to_delete 对账）。None 不过滤（跨 scope 诊断原行为）。
+        非删除信号，不应进入 to_delete 对账）。insert 侧「已知块」扣除用 None 的全集
+        （archived/forgotten 行的 md 块仍留文件，须命中历史行避免重插 active，见
+        ``LocalWatchdog._sync_one``）。None 不过滤（跨 scope 诊断原行为）。
 
         无 ``md_filename`` 参数校验——空串/None 由 SQL 自然返空（``md_filename`` 列
         写入侧由 ``_md_filename_of`` 兜底，不会存空串，故空串查询必返空，无需特判）。
