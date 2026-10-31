@@ -18,7 +18,7 @@ from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_featu
     KeywordFeatureExtractor,
 )
 from jiuwen_memory.common.llm.base import LLM
-from jiuwen_memory.common.reranker.base import Reranker
+from jiuwen_memory.common.reranker.base import Reranker, RerankResolution
 from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
 from jiuwen_memory.common.type_def import (
     ChatMessage,
@@ -26,6 +26,7 @@ from jiuwen_memory.common.type_def import (
     EntityStoreFilters,
     FilterClause,
     FilterOp,
+    MemoryUnit,
     RetrievalPipeline,
     hash_entity_text,
     memory_key,
@@ -102,9 +103,9 @@ class RecordingReranker(Reranker):
     def health(self) -> None:
         return None
 
-    def rerank(self, query: str, texts: list[str]) -> list[float]:
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
         self.queries.append(query)
-        return [1.0 - index / 100.0 for index in range(len(texts))]
+        return [1.0 - index / 100.0 for index in range(len(units))]
 
 
 class RecordingOverlapReranker(OverlapReranker):
@@ -114,9 +115,9 @@ class RecordingOverlapReranker(OverlapReranker):
         super().__init__(tokenizer)
         self.queries: list[str] = []
 
-    def rerank(self, query: str, texts: list[str]) -> list[float]:
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
         self.queries.append(query)
-        return super().rerank(query, texts)
+        return super().rerank(query, units)
 
 
 class _StaticEntityStore:
@@ -211,8 +212,8 @@ class StaticReranker(Reranker):
     def health(self) -> None:
         return None
 
-    def rerank(self, query: str, texts: list[str]) -> list[float]:
-        return self._scores[: len(texts)]
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
+        return self._scores[: len(units)]
 
 
 class SlowRecaller(Recaller):
@@ -1405,3 +1406,114 @@ def test_default_config_attaches_l0_l1_recallers() -> None:
             assert _store_of(r) is not None, f"{key} recaller 未注入分层 store"
     finally:
         Factory.reset_all()
+
+
+class _ResolvingReranker(Reranker):
+    """resolve 覆写桩：按预置 keep 下标返回子序列（去重/冲突消解装配注入验证）。"""
+
+    def __init__(self, keep_indices: list[int]) -> None:
+        self.keep_indices = keep_indices
+
+    def plugin_type(self) -> PluginType:
+        return PluginType.RERANKER
+
+    def health(self) -> None:
+        return None
+
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
+        return [1.0 for _ in units]
+
+    def resolve(self, query: str, units: list[MemoryUnit]) -> RerankResolution:
+        return RerankResolution(
+            kept_indices=self.keep_indices,
+            duplicates=[],
+            conflict_dropped=[i for i in range(len(units)) if i not in self.keep_indices],
+        )
+
+
+class _FailingResolveReranker(Reranker):
+    """resolve 抛异常的桩：验证降级回原候选 + 轨迹 degraded。"""
+
+    def plugin_type(self) -> PluginType:
+        return PluginType.RERANKER
+
+    def health(self) -> None:
+        return None
+
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
+        return [1.0 for _ in units]
+
+    def resolve(self, query: str, units: list[MemoryUnit]) -> RerankResolution:
+        raise RuntimeError("resolve boom")
+
+
+def _resolve_world(reranker: Reranker) -> tuple[PipelineRetriever, CompositeDomainStore]:
+    world = make_world()
+    index_unit(world, make_unit("u1", "alice likes coffee"))
+    index_unit(world, make_unit("u2", "bob likes tea"))
+    parser = SimpleQueryParser(
+        world.tokenizer,
+        world.embedder,
+        feature_extractor=KeywordFeatureExtractor(world.tokenizer),
+    )
+    domain = _storage_for(
+        world,
+        [
+            StaticRecaller(
+                [
+                    ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                    ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                ]
+            )
+        ],
+    )
+    retriever = PipelineRetriever(
+        parser, RRFFuser(), world.discloser, world.unit_reader, reranker, domain_store=domain
+    )
+    return retriever, domain
+
+
+def test_resolve_injected_keeps_subsequence() -> None:
+    """resolve 装配注入：轨迹含 resolve 步，结果为处理后子序列。"""
+    retriever, _ = _resolve_world(_ResolvingReranker(keep_indices=[1]))
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="coffee", top_k=5, rerank=True, with_trajectory=True),
+    )
+
+    resolve_steps = [step for step in result.trajectory if step.stage == "resolve"]
+    assert resolve_steps, "resolve 注入后应记录 resolve 轨迹步"
+    assert resolve_steps[0].detail["out"] == "1"
+    assert [item.unit_id for item in result.items] == ["u2"]
+
+
+def test_resolve_not_injected_is_noop_keep_all() -> None:
+    """未覆写 resolve 的普通 reranker：resolve 步记录但保持全保留（duplicates=0）。"""
+    retriever, _ = _resolve_world(RecordingReranker())
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="coffee", top_k=5, rerank=True, with_trajectory=True),
+    )
+
+    resolve_steps = [step for step in result.trajectory if step.stage == "resolve"]
+    assert resolve_steps, "普通 reranker 也统一调 resolve（默认 keep_all）"
+    assert resolve_steps[0].detail["out"] == "2"
+    assert resolve_steps[0].detail["duplicates"] == "0"
+    assert sorted(item.unit_id for item in result.items) == ["u1", "u2"]
+
+
+def test_resolve_failure_degrades_to_original_candidates() -> None:
+    """resolve 实现抛异常：降级回原候选，轨迹 detail 含 degraded。"""
+    retriever, _ = _resolve_world(_FailingResolveReranker())
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="coffee", top_k=5, rerank=True, with_trajectory=True),
+    )
+
+    resolve_steps = [step for step in result.trajectory if step.stage == "resolve"]
+    assert resolve_steps, "resolve 失败也应记录轨迹步"
+    assert resolve_steps[0].detail["skipped"] == "degraded"
+    assert sorted(item.unit_id for item in result.items) == ["u1", "u2"]

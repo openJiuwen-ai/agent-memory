@@ -12,6 +12,7 @@ from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
 from jiuwen_memory.common.tokenizer import Tokenizer
 from jiuwen_memory.common.tokenizer.base import TokenizerProducer
+from jiuwen_memory.common.type_def import MemoryUnit
 
 
 class OverlapReranker(Reranker):
@@ -26,7 +27,8 @@ class OverlapReranker(Reranker):
     def health(self) -> None:
         return None
 
-    def rerank(self, query: str, texts: list[str]) -> list[float]:
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
+        texts = [u.content for u in units]
         q = set(self._tokenizer.tokenize(query))
         if not q:
             return [0.0 for _ in texts]

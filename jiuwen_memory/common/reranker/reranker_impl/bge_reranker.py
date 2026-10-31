@@ -15,6 +15,7 @@ from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
+from jiuwen_memory.common.type_def import MemoryUnit, Segment
 
 logger = get_logger(__name__)
 
@@ -41,7 +42,10 @@ class BGEReranker(Reranker):
     def health(self) -> None:
         self._load_model()
         try:
-            scores = self.rerank("health check", ["health check"])
+            scores = self.rerank(
+                "health check",
+                [MemoryUnit(segments=[Segment(content="health check")])],
+            )
             if len(scores) != 1:
                 raise HealthCheckError(f"BGE reranker returned {len(scores)} scores")
         except HealthCheckError:
@@ -49,13 +53,13 @@ class BGEReranker(Reranker):
         except Exception as exc:
             raise HealthCheckError(f"BGEReranker health check failed: {exc}") from exc
 
-    def rerank(self, query: str, texts: list[str]) -> list[float]:
-        if not texts:
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
+        if not units:
             return []
         self._load_model()
 
         scores: list[float] = []
-        pairs = [[query, text] for text in texts]
+        pairs = [[query, unit.content] for unit in units]
         for batch in self._split_batches(pairs):
             batch_scores = self._compute_score(batch)
             if len(batch_scores) != len(batch):

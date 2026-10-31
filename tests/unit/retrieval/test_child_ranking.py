@@ -41,10 +41,10 @@ def test_recalled_children_keep_fusion_order_without_expansion_or_embedding(pipe
     link(other_parent, [other_child])
     tree.base.add([other_parent, other_child])
 
-    def rerank_scores(_query: str, texts: list[str]) -> list[float]:
+    def rerank_scores(_query: str, units) -> list[float]:
         scores = []
-        for text in texts:
-            score = 0.9 if text.endswith("1") else 0.1
+        for unit in units:
+            score = 0.9 if unit.content.endswith("1") else 0.1
             scores.append(score)
         return scores
 
