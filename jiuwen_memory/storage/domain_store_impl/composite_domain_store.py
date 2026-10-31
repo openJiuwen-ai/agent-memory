@@ -319,14 +319,21 @@ class CompositeDomainStore(DomainStore):
                     old_content = old.segments[0].content if old.segments else ""
                     new_content = unit.segments[0].content if unit.segments else ""
                     if old_content == new_content:
-                        # SUPERSEDE 标记：content 没变但 lifecycle 从 ACTIVE→SUPERSEDED
-                        # （evolver _apply_decision 或 API 层 supersede）。旧版 md 块应删除，
-                        # 与影子索引 unit_json 里 lifecycle 投影列更新同口径——md 真源
-                        # 不能留"幽灵块"让用户看到矛盾两条都在。old 取自本次 update 前影子
-                        # 索引的快照（上方 shadow.get_units），unit.lifecycle 是改过的新值。
+                        # 纯 lifecycle 流转（content 不变）按「md 可见性」分三态（#261 方案 C）：
+                        # - SUPERSEDED/FORGOTTEN「隐藏态」= 从文档消失 → remove_content 物理删旧块；
+                        # - ARCHIVED「转冷态」= 可回溯、保留 md 块（不经此处）。
+                        # 与影子索引 unit_json 里 lifecycle 投影列更新同口径——md 真源不能留
+                        # "幽灵块"让用户看到与索引矛盾的两条都在。old 取自本次 update 前影子
+                        # 索引快照（上方 shadow.get_units），unit.lifecycle 是改过的新值。
+                        # 只在「可见态(ACTIVE/ARCHIVED)→隐藏态(SUPERSEDED/FORGOTTEN)」时删块；
+                        # 隐藏态间流转（如 SUPERSEDED→FORGOTTEN，块早已删除）不重删，避免
+                        # remove_content 未命中误报 drift。
                         if (
-                            old.lifecycle == LifecycleState.ACTIVE
-                            and unit.lifecycle == LifecycleState.SUPERSEDED
+                            old.lifecycle in (LifecycleState.ACTIVE, LifecycleState.ARCHIVED)
+                            and unit.lifecycle in (
+                                LifecycleState.SUPERSEDED,
+                                LifecycleState.FORGOTTEN,
+                            )
                         ):
                             md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
                             if md_filename:

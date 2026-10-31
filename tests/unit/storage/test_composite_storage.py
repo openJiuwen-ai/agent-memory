@@ -566,7 +566,8 @@ def test_document_mode_delete_missing_id_is_noop(tmp_path) -> None:
 def test_document_mode_soft_delete_exits_retrieval_via_lifecycle(tmp_path) -> None:
     """SOFT 删除契约：文档模式下 delete(SOFT) 本身是 no-op，检索退出由
     「先 transition（update FORWARD_ONLY 同步 lifecycle 投影列）再 remove(SOFT)」
-    实现——lifecycle 谓词下推后 FTS 不召回，本体与 md 块保留。
+    实现——lifecycle 谓词下推后 FTS 不召回，本体保留（get 可读）。md 块按 FORGOTTEN
+    隐藏态语义物理删除（#261 方案 C）。
 
     锁定三重排除机制的第①②环：谓词下推 + 投影列同步。若谓词下推
     （_compile_system_filters）或 update 投影列覆写被改坏，本测试失败。
@@ -580,17 +581,18 @@ def test_document_mode_soft_delete_exits_retrieval_via_lifecycle(tmp_path) -> No
     storage.add(scope, [_doc_unit(scope, "u1", "retired content")])
 
     # 遗忘流第①步：transition = 改 lifecycle + update(FORWARD_ONLY)（对齐
-    # KVLifecycleManager.transition / InMemoryEngine.delete 的调用序）。
+    # KVLifecycleManager.transition / InMemoryEngine.delete 的调用序）。FORGOTTEN 是
+    # 隐藏态，update 文档分支按 content 不变走 remove_content 物理删 md 块。
     (unit,) = storage.get(scope, ["u1"])
     unit.lifecycle = LifecycleState.FORGOTTEN
     storage.update(scope, [unit], mode=IndexWriteMode.FORWARD_ONLY)
-    # 遗忘流第②步：remove(SOFT)——文档模式 no-op，不删本体不删 md 块。
+    # 遗忘流第②步：remove(SOFT)——文档模式 no-op，不删本体。
     storage.delete(scope, ["u1"], mode=IndexRemoveMode.SOFT)
 
-    # 本体保留（SOFT 契约）：get 可读，md 块仍在。
+    # 本体保留（SOFT 契约）：get 可读；md 块已物理删除（遗忘=从文档消失）。
     assert storage.get(scope, ["u1"]) != []
     md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
-    assert "retired content" in md
+    assert "retired content" not in md
 
     # 检索退出（FORGOTTEN 不召回）：filters = project 谓词（否则批 1 落 default
     # 不含 p1，断言空洞）+ lifecycle 谓词（对齐 build_system_filters 当前态产出
@@ -607,6 +609,25 @@ def test_document_mode_soft_delete_exits_retrieval_via_lifecycle(tmp_path) -> No
         scope, TextQuery(text="retired content", top_k=10, filters=filters)
     )
     assert not any(h.id == "u1" for h in hits)
+
+
+def test_document_mode_archived_keeps_md_block(tmp_path) -> None:
+    """ARCHIVED 保留 md 块（转冷可回溯）——#261 方案 C：仅 SUPERSEDED/FORGOTTEN 隐藏态
+    物理删块，ARCHIVED 是可回溯的冷态，md 块必须留在文档里供 as_of/回溯读取。
+    """
+    from jiuwen_memory.common.type_def.memory import LifecycleState
+
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    storage.add(scope, [_doc_unit(scope, "u1", "cold content")])
+
+    (unit,) = storage.get(scope, ["u1"])
+    unit.lifecycle = LifecycleState.ARCHIVED
+    storage.update(scope, [unit])
+
+    assert storage.get(scope, ["u1"]) != []
+    md = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "cold content" in md
 
 
 def test_document_mode_soft_delete_bare_call_keeps_recall(tmp_path) -> None:
