@@ -29,6 +29,7 @@ from jiuwen_memory.common.type_def.entity import (
     EntityStoreFilters,
 )
 
+from .._support import preload_backend
 from ..base import StoreType
 from ..entity_store import EntityStore, EntityStoreProducer
 
@@ -39,8 +40,8 @@ class ElasticsearchEntityStore(EntityStore):
     """entity 反向索引的 Elasticsearch 实现（与 ``ElasticsearchFulltextStore`` 同构）。
 
     client 实例自持（``self._client``），首次访问 ``client`` property 时惰性建并
-    触发 ``ensure_index``。``elasticsearch`` 客户端惰性导入，未安装/未就绪不影响
-    ``import storage``。
+    触发 ``ensure_index``。工厂在装配期预加载 ``elasticsearch``；未安装/未就绪
+    不影响 ``import storage``。
     """
 
     def __init__(
@@ -468,7 +469,7 @@ def _build(config):
     else:
         options["verify_certs"] = False
 
-    return ElasticsearchEntityStore(
+    store = ElasticsearchEntityStore(
         hosts=hosts_list,
         index=Factory.cfg_get(config, "index", "memory_entities"),
         username=Factory.cfg_get(config, "username"),
@@ -478,3 +479,5 @@ def _build(config):
         number_of_replicas=Factory.cfg_get(config, "number_of_replicas", 1) or 1,
         **options,
     )
+    preload_backend("elasticsearch")
+    return store

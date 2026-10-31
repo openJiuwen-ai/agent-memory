@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -132,6 +132,18 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     建议用作 readiness，或在部署侧区分 required/optional 探活。
 
 ## 接口契约
+
+### 部署依赖加载时机
+
+配置选中的 ES 全文、ES 实体、Milvus 向量及 `milvus_graph` 融合后端在同步装配阶段
+预加载 ES/Milvus 客户端依赖（融合后端的图依赖仍惰性加载），
+避免长命服务首次请求在线程池中冷加载原生库；未选中的后端不因此引入部署依赖。
+预加载只导入模块，不建连、不建索引/集合；客户端连接及索引初始化仍为首次使用时执行。
+依赖导入或原生库加载失败在装配阶段以 `BackendError` 报错并保留原始异常链。
+ES 实体未配置 hosts/endpoint 时仍关闭该端口，不要求安装客户端。
+直接构造 Store 的手工接线仍保留惰性导入语义。
+这是将运行期冷加载前移到启动期的缓解措施，不代表已定位或修复 Windows loader
+底层慢加载机制；部署应为启动依赖加载保留时间。
 
 ### StoreManager（管理面，`store_manager.py`）
 

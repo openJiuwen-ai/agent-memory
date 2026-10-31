@@ -2,7 +2,8 @@
 """MilvusGraphFusionStore — Milvus(向量) + nano-graphrag(图) 融合的 FusionStore。
 
 后端为 Milvus(向量) + nano-graphrag(图) 的融合：构建时同时建向量与图索引，检索时
-向量召回后再经图扩展邻居。第三方依赖惰性加载，未安装也可导入本包并完成注册。
+向量召回后再经图扩展邻居。工厂在装配期预加载 ``pymilvus``，客户端连接与图依赖
+仍惰性加载；未安装第三方依赖也可导入本包并完成注册。
 
 实现 :class:`~storage.fusion.FusionStore`，**构建时同时建图与向量索引**、**检索时
 先向量召回再图扩展邻居**：
@@ -34,12 +35,12 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.storage.fusion import FusionProducer
 
-from .._support import scope_segments, wrap_backend
+from .._support import preload_backend, scope_segments, wrap_backend
 from ..base import StoreType
 from ..fusion import FusionStore
 from ..graph_impl.nano_graphrag_graph import _networkx_storage_cls, networkx_graph
 from ..types import FusionQuery, FusionRecord, ScoredID, VectorQuery, VectorRecord
-from ..vector_impl.milvus_vector import MilvusVectorStore
+from ..vector_impl.milvus_vector import MilvusVectorStore, require_positive_dim
 
 _TEXT_KEY = "_fusion_text"
 _VALUE_KEY = "_fusion_value_b64"
@@ -286,9 +287,14 @@ def _build(config):
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     uri = Factory.require_param(config, "uri", backend="milvus_graph fusion")
+    working_dir = Factory.require_param(config, "working_dir", backend="milvus_graph fusion")
+    dim = Factory.cfg_get(config, "dim", Factory.cfg_get(config, "embedder_dim", 0))
+    # 保持维度校验先于依赖检查，并在构造函数创建工作目录前完成预加载。
+    require_positive_dim(dim, backend="milvus_graph fusion")
+    preload_backend("pymilvus")
     return MilvusGraphFusionStore(
-        working_dir=Factory.require_param(config, "working_dir", backend="milvus_graph fusion"),
-        dim=Factory.cfg_get(config, "dim", Factory.cfg_get(config, "embedder_dim", 0)),
+        working_dir=working_dir,
+        dim=dim,
         milvus={"uri": uri},
         collection=Factory.cfg_get(config, "collection", "agent_memory_fusion"),
         metric_type=Factory.cfg_get(config, "metric_type", "COSINE"),

@@ -13,6 +13,8 @@ StoreManager 管理。本文件覆盖端口侧契约；消费方经端口取实�
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -42,6 +44,12 @@ from jiuwen_memory.storage.store_manager import StorageCapability, StoreManagerP
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def elasticsearch_dependency(monkeypatch):
+    """端口装配测试仅需可导入依赖，不创建真实 ES 客户端。"""
+    monkeypatch.setitem(sys.modules, "elasticsearch", ModuleType("elasticsearch"))
 
 
 @pytest.fixture(autouse=True)
@@ -353,7 +361,7 @@ def _es(**params: Any) -> dict[str, Any]:
     return {"target": "elasticsearch", "params": params}
 
 
-def test_store_manager_builds_entity_port_from_namespace_default() -> None:
+def test_store_manager_builds_entity_port_from_namespace_default(elasticsearch_dependency) -> None:
     """声明 entity_store.default 即成为 manager 的 ENTITY 默认端口（三级解析第二级）。"""
     register_backends()
     ctx = _ctx({"default": _es(hosts="http://es:9200", index="ents")})
@@ -385,7 +393,7 @@ def test_no_entity_namespace_means_no_capability() -> None:
     assert StorageCapability.ENTITY not in manager.capabilities()
 
 
-def test_named_entity_port_without_hosts_is_dropped() -> None:
+def test_named_entity_port_without_hosts_is_dropped(elasticsearch_dependency) -> None:
     """具名实例 builder 返 None 时该端口被丢弃，且不影响 default 与 health。"""
     register_backends()
     ctx = _ctx(
@@ -401,7 +409,7 @@ def test_named_entity_port_without_hosts_is_dropped() -> None:
     assert not manager.has_entity("aux")
 
 
-def test_entity_ports_aggregate_whole_namespace() -> None:
+def test_entity_ports_aggregate_whole_namespace(elasticsearch_dependency) -> None:
     """命名空间下所有实例全量成为端口，``default`` 只是其中一个普通键。"""
     register_backends()
     ctx = _ctx(
@@ -418,7 +426,7 @@ def test_entity_ports_aggregate_whole_namespace() -> None:
     assert StorageCapability.ENTITY in manager.capabilities()
 
 
-def test_entity_capability_holds_without_default_port() -> None:
+def test_entity_capability_holds_without_default_port(elasticsearch_dependency) -> None:
     """只声明具名实例（无 default）：capability 成立、具名端口可用、default 不可用。
 
     capability 与 has_*() 同源于端口表——「有能力但无 default 端口」是一致的状态，
@@ -436,7 +444,7 @@ def test_entity_capability_holds_without_default_port() -> None:
         manager.entity()
 
 
-def test_deploy_shaped_config_assembles_entity_port() -> None:
+def test_deploy_shaped_config_assembles_entity_port(elasticsearch_dependency) -> None:
     """按 deploy config 的形状（顶层 entity_store 段，不动 store_manager）能装出端口。"""
     register_backends()
     ctx = _ctx(

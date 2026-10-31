@@ -122,8 +122,9 @@ def test_every_backend_requires_ca_cert_when_verify_enabled(
         producer.build(target, {**params, "ssl_verify": "true"}, AssemblyContext())
 
 
-def test_elasticsearch_accepts_multi_node_https_hosts() -> None:
+def test_elasticsearch_accepts_multi_node_https_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
     """hosts 支持多节点列表，须逐个校验——整体转字符串会误拒合法配置。"""
+    monkeypatch.setitem(sys.modules, "elasticsearch", ModuleType("elasticsearch"))
     FulltextProducer.build(
         "elasticsearch",
         {
