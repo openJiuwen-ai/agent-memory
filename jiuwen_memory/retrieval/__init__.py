@@ -7,6 +7,7 @@ from .discloser import Discloser
 from .fuser import Fuser
 from .query_parser import QueryParser
 from .retriever import Retriever
+from .staged_retriever import StagedRetriever
 from .types import (
     ChannelEvidence,
     DisclosureLevel,
@@ -27,6 +28,7 @@ __all__ = [
     "Fuser",
     "Discloser",
     "Retriever",
+    "StagedRetriever",
     "RetrievalQuery",
     "ParsedQuery",
     "RecallChannel",

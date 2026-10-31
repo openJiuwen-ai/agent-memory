@@ -71,6 +71,10 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
     restore_coords_from_md_filename,
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
+    RetrievalPipelines,
+    build_retrieval_pipelines,
+)
 from jiuwen_memory.control.engine_impl.schema_update_support import (
     commit_schema_update,
     is_schema_update_candidate,
@@ -251,10 +255,12 @@ class AgentEngine(MemoryEngine):
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
+        retrieval_pipelines: dict[str, Retriever] | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
+        self._retrieval_pipelines = RetrievalPipelines(retriever, retrieval_pipelines)
         self._domain_store = domain_store
         self._kv = kv
         self._scheduler = scheduler
@@ -286,7 +292,7 @@ class AgentEngine(MemoryEngine):
         return self._domain_store.scopes()
 
     def health(self) -> None:
-        return None
+        self._retrieval_pipelines.health()
 
     async def write(
         self,
@@ -419,10 +425,13 @@ class AgentEngine(MemoryEngine):
                     break
         return BatchWriteResult(outcomes=outcomes)
 
+    def retrieval_pipeline_names(self) -> tuple[str, ...]:
+        return self._retrieval_pipelines.names()
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
-        binding = self._recall_binding(query)
-        retriever = binding.retriever if binding is not None else self._retriever
-        return retriever.retrieve(scope, query)
+        self.validate_retrieval_pipeline(query.pipeline)
+        binding = self._recall_binding(query) if query.pipeline is None else None
+        return self._retrieval_pipelines.retrieve(scope, query, binding)
 
     async def list(
         self,
@@ -903,15 +912,18 @@ def _build(config):
         return JobFactoryProducer.build_named("default", ctx)
 
     manager = StoreManagerProducer.resolve(config)
+    retriever = RetrieverProducer.dep(config, default="pipeline")
+    retrieval_pipelines = build_retrieval_pipelines(config)
     return AgentEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        RetrieverProducer.dep(config, default="pipeline"),
+        retriever,
         manager.domain_store(resolve_name(config, "domain_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
         kv=manager.kv(resolve_name(config, "kv_store")),
+        retrieval_pipelines=retrieval_pipelines,
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),

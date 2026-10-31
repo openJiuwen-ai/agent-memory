@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """最小实现：:class:`~retrieval.retriever.Retriever`——检索链路编排者。
 
-单次 :meth:`retrieve` 驱动完整链路（Option B：点读/有效性/重排为独立阶段）：
-查询理解 → 前置谓词构造 → 并行多路召回 → 融合 → 截断候选预算 → 点读真源 +
-有效性过滤 → （可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
+单次 :meth:`retrieve` 驱动完整链路：
+查询理解 → 前置谓词构造 → 多路召回与真源复核 → 融合 → 截断候选预算 →
+（可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
 scope 作显式首参贯穿下推；召回/取数/排序全部委托统一 Storage 的三条首选路径，
 本类不含召回/打分逻辑，也不持有召回路（CompositeStorage 的兼容 Recaller 由
 storage 层工厂按配置装配）。
@@ -11,10 +11,8 @@ storage 层工厂按配置装配）。
 
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
 from time import perf_counter
-from uuid import uuid4
 
 from jiuwen_memory.common.errors import (
     BackendError,
@@ -55,18 +53,18 @@ from jiuwen_memory.retrieval.expansion import (
 )
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
-from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.retrieval.retriever import RetrieverProducer
 from jiuwen_memory.retrieval.schema_temporal.pipeline import (
     OrdinaryRetrieval,
     SchemaTemporalPipelineExtension,
     build_schema_temporal_extension,
 )
+from jiuwen_memory.retrieval.staged_retriever import RetrieveState, StagedRetriever
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
     RetrievalQuery,
     RetrievalResult,
-    TrajectoryStep,
 )
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
@@ -100,8 +98,8 @@ def _truncate_rerank_inputs(
     )
 
 
-class PipelineRetriever(Retriever):
-    """编排 parse → 谓词 → recall(多路) → fuse → 点读+复核 → rerank → disclose。"""
+class PipelineRetriever(StagedRetriever):
+    """编排 parse → 谓词 → recall/真源复核 → fuse → rerank → disclose。"""
 
     def __init__(
         self,
@@ -185,11 +183,39 @@ class PipelineRetriever(Retriever):
     def health(self) -> None:
         return None
 
+    def query_parsers(self) -> tuple[QueryParser, ...]:
+        return (self._parser,)
+
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        state = RetrieveState.start(scope, query)
+        self.validate(state)
+        state.log_start()
+        if not self.parse(state):
+            return state.empty_result()
+        self.build_filters(state)
+        self.select_channels(state)
+        self.plan_budget(state)
+        self.recall_and_fuse(state)
+        state.cut_to_budget()
+        self.rerank(state)
+        if query.rollup:
+            self.rollup(state)
+        self.threshold(state)
+        state.cut_to_top_k()
+        self.disclose(state)
+        state.build_result()
+        if query.expand_depth:
+            self.expand(state)
+            if query.defer_expansion:
+                assert state.result is not None
+                return state.result
+        return self.finalize(state)
+
+    def validate(self, state: RetrieveState) -> None:
+        query = state.query
         hierarchy = HierarchyQuery.from_query(query)
         validate_expand_depth(query.expand_depth, hierarchy.hierarchy_kind)
         validate_rollup(query.rollup, hierarchy.hierarchy_kind)
-        reuse_children = uses_recalled_children(query)
         if query.expand_depth and not isinstance(query.disclosure, DisclosureLevel):
             raise ValidationError("展开 disclosure 必须是 DisclosureLevel")
         if query.expand_depth and self._expander is None:
@@ -203,46 +229,14 @@ class PipelineRetriever(Retriever):
         if query.max_tokens is not None and query.max_tokens <= 0:
             raise ValidationError(f"max_tokens must be positive, got {query.max_tokens}")
 
-        started_at = perf_counter()
-        trace_id = uuid4().hex[:16]
-        scope_dims = _scope_log_dims(scope)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Retriever.retrieve start: trace_id=%s scope_dims=%s top_k=%d channels=%s "
-                "rerank=%s disclosure=%s query_len=%d",
-                trace_id,
-                scope_dims,
-                query.top_k,
-                _format_channels(query.channels, auto_label="auto"),
-                query.rerank,
-                query.disclosure.value,
-                len(query.text),
-            )
+        state.hierarchy = hierarchy
 
-        traj: list[TrajectoryStep] = []
-        trace = query.with_trajectory
-
-        def record_step(
-            stage: str,
-            cost_ms: float,
-            n: int = 0,
-            channel: RecallChannel | None = None,
-            detail: dict[str, str] | None = None,
-        ) -> None:
-            if trace:
-                traj.append(
-                    TrajectoryStep(
-                        stage=stage,
-                        channel=channel,
-                        candidate_count=n,
-                        cost_ms=cost_ms,
-                        detail=detail or {},
-                    )
-                )
-
-        def step(stage: str, t0: float, n: int = 0, channel=None, detail=None) -> None:
-            record_step(stage, (perf_counter() - t0) * 1000.0, n, channel, detail)
-
+    def parse(self, state: RetrieveState) -> bool:
+        query = state.query
+        hierarchy = state.hierarchy
+        assert hierarchy is not None, "validate must complete first"
+        step = state.run.step
+        trace_id, scope_dims = state.run.trace_id, state.run.scope_dims
         # 空 query 短路：无可检索信号，返回空结果而非把空串喂给各后端。
         if not query.text.strip():
             step("parse", perf_counter(), detail={"skipped": "empty_query"})
@@ -251,17 +245,8 @@ class PipelineRetriever(Retriever):
                 trace_id,
                 scope_dims,
             )
-            logger.debug(
-                "Retriever.retrieve done: trace_id=%s scope_dims=%s fused=%d survivors=%d "
-                "returned=%d cost_ms=%.2f",
-                trace_id,
-                scope_dims,
-                0,
-                0,
-                0,
-                (perf_counter() - started_at) * 1000.0,
-            )
-            return RetrievalResult(items=[], trajectory=traj)
+            state.run.log_done(0, 0, 0)
+            return False
 
         # [2] 查询理解
         t0 = perf_counter()
@@ -273,7 +258,7 @@ class PipelineRetriever(Retriever):
         parsed.span_end = hierarchy.span_end
         if not parsed.raw.strip():
             step("parse", t0, detail={"skipped": "empty_after_parse"})
-            return RetrievalResult(items=[], trajectory=traj)
+            return False
         # 调用方自定义透传配置随 parsed 下达各召回路（自定义 Recaller 按约定读取）；
         # 在此统一接力，无需各 parser 实现感知。
         parsed.extensions = dict(query.extensions)
@@ -292,8 +277,18 @@ class PipelineRetriever(Retriever):
                 trace_id,
                 scope_dims,
             )
-            return RetrievalResult(items=[], trajectory=traj)
+            return False
 
+        state.parsed = parsed
+        return True
+
+    def build_filters(self, state: RetrieveState) -> None:
+        query = state.query
+        hierarchy = state.hierarchy
+        assert hierarchy is not None, "validate must complete first"
+        parsed = state.parsed
+        assert parsed is not None, "parse must complete first"
+        candidate_hierarchy = replace(hierarchy, hierarchy_role=None) if query.rollup else hierarchy
         # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
         #      用户表达式作整体 child——绝不摊平，防其 OR 稀释 lifecycle 等安全谓词。
         sys_filters = build_hierarchy_filters(candidate_hierarchy) + build_system_filters(
@@ -307,6 +302,14 @@ class PipelineRetriever(Retriever):
             )
         parsed.scalar_filters = and_merge(user_filters, sys_filters)
 
+        parsed.include_archived = query.include_archived
+        parsed.recheck_filters = user_filters
+        state.user_filters = user_filters
+
+    def select_channels(self, state: RetrieveState) -> None:
+        query = state.query
+        parsed = state.parsed
+        assert parsed is not None, "parse must complete first"
         # 通道选择：调用级 query.channels 覆盖 parser 建议；显式空列表不是“全部”。
         if query.channels == []:
             raise ValidationError("channels must be omitted or contain at least one channel")
@@ -324,8 +327,10 @@ class PipelineRetriever(Retriever):
                     "PipelineRetriever: DOCUMENT injected into channels "
                     "(doc_mode=%s)", self._doc_mode,
                 )
-        parsed.include_archived = query.include_archived
-        parsed.recheck_filters = user_filters
+        state.channels = enabled
+
+    def plan_budget(self, state: RetrieveState) -> None:
+        query = state.query
         # 召回超采样（撒宽网）与精排预算（控成本）解耦：
         #   recall_k = max(top_k*factor, floor)  —— 每路召回宽度
         #   budget_n = max(rerank_max, top_k)    —— recheck+rerank 封顶，永不欠 top_k
@@ -334,6 +339,15 @@ class PipelineRetriever(Retriever):
             recall_k = min(recall_k, self._recall_max)  # 硬上限：封顶后端召回压力
         budget_n = max(self._rerank_max, query.top_k)
 
+        state.recall_k, state.budget_n = recall_k, budget_n
+
+    def recall_and_fuse(self, state: RetrieveState) -> None:
+        parsed = state.parsed
+        assert parsed is not None, "parse must complete first"
+        record_step = state.run.record
+        trace_id, scope_dims = state.run.trace_id, state.run.scope_dims
+        scope, enabled = state.scope, state.channels
+        recall_k, budget_n = state.recall_k, state.budget_n
         # [3b-6] DomainStore 的全局首选值选择三条 recall/get/rank 路径。
         pipeline = self._domain.preferred_retrieval_pipeline()
         t0 = perf_counter()
@@ -414,20 +428,15 @@ class PipelineRetriever(Retriever):
         fusion_detail = explain_fusion() if callable(explain_fusion) else {}
         record_step("fuse", 0.0, n=len(fused), detail=fusion_detail)
 
-        # Fuser 后再限制精排预算；Storage.retrieve 已在入口内应用同一个上限。
-        survivors = list(fused[:budget_n])
-        recalled_candidates = list(survivors) if reuse_children else []
-        recheck_dropped = 0
-        record_step("recheck", 0.0, n=len(survivors), detail={"dropped": "0"})
-        if recheck_dropped:
-            logger.debug(
-                "Retriever.recheck dropped: trace_id=%s scope_dims=%s dropped=%d budget=%d",
-                trace_id,
-                scope_dims,
-                recheck_dropped,
-                len(survivors),
-            )
+        state.candidates, state.errors = fused, list(errors)
 
+    def rerank(self, state: RetrieveState) -> None:
+        query = state.query
+        parsed = state.parsed
+        assert parsed is not None, "parse must complete first"
+        survivors = state.candidates
+        step, record_step = state.run.step, state.run.record
+        trace_id = state.run.trace_id
         # [7] 可选重排：内容已物化，按 ParsedQuery.rewritten 的相关性精排
         do_rerank = query.rerank if query.rerank is not None else (self._reranker is not None)
         reranked = False
@@ -470,28 +479,42 @@ class PipelineRetriever(Retriever):
                 "rerank", 0.0, n=len(survivors), detail={"skipped": "no_reranker_configured"}
             )
 
-        # [7b] 上卷放在最终分数生成后、阈值/top_k 前，不被后续精排覆盖。
-        rolled = None
-        if query.rollup:
-            t0 = perf_counter()
-            rolled = rollup_candidates(self._domain, RollupRequest(
-                scope=scope, query=parsed, target_role=hierarchy.hierarchy_role,
-                candidates=survivors,
-                child_depth=query.expand_depth if reuse_children else 0,
-            ))
-            survivors = rolled.candidates
-            errors = list(errors)
-            errors.extend(ChannelError(
-                RecallChannel.HIERARCHY, "rollup", issue, f"rollup: {issue}",
-            ) for issue in rolled.issues)
-            step("rollup", t0, n=len(survivors), detail={
-                "algorithm": "maxp", "admitted": str(rolled.admitted_count),
-                "boosted": str(rolled.boosted_count), "visited": str(rolled.visited_count),
-                "complete": str(not rolled.issues).lower(), "issues": ",".join(rolled.issues),
-                "target_role": hierarchy.hierarchy_role.value if hierarchy.hierarchy_role else "",
-            })
-            parsed.hierarchy_role = hierarchy.hierarchy_role
+        state.candidates, state.calibrated = survivors, reranked
 
+    def rollup(self, state: RetrieveState) -> None:
+        query = state.query
+        parsed = state.parsed
+        assert parsed is not None, "parse must complete first"
+        hierarchy = state.hierarchy
+        assert hierarchy is not None, "validate must complete first"
+        scope, survivors, errors = state.scope, state.candidates, state.errors
+        reuse_children = uses_recalled_children(query)
+        step = state.run.step
+        t0 = perf_counter()
+        rolled = rollup_candidates(self._domain, RollupRequest(
+            scope=scope, query=parsed, target_role=hierarchy.hierarchy_role,
+            candidates=survivors,
+            child_depth=query.expand_depth if reuse_children else 0,
+        ))
+        survivors = rolled.candidates
+        errors = list(errors)
+        errors.extend(ChannelError(
+            RecallChannel.HIERARCHY, "rollup", issue, f"rollup: {issue}",
+        ) for issue in rolled.issues)
+        step("rollup", t0, n=len(survivors), detail={
+            "algorithm": "maxp", "admitted": str(rolled.admitted_count),
+            "boosted": str(rolled.boosted_count), "visited": str(rolled.visited_count),
+            "complete": str(not rolled.issues).lower(), "issues": ",".join(rolled.issues),
+            "target_role": hierarchy.hierarchy_role.value if hierarchy.hierarchy_role else "",
+        })
+        parsed.hierarchy_role = hierarchy.hierarchy_role
+
+        state.candidates, state.rolled, state.errors = survivors, rolled, errors
+
+    def threshold(self, state: RetrieveState) -> None:
+        query = state.query
+        survivors, reranked = state.candidates, state.calibrated
+        step = state.run.step
         # [8] 统一阈值过滤：精排路径用校准分；未精排路径仅使用相对阈值。
         t0 = perf_counter()
         survivors, threshold_detail = apply_threshold(
@@ -505,12 +528,15 @@ class PipelineRetriever(Retriever):
         )
         step("threshold", t0, n=len(survivors), detail=threshold_detail)
 
-        # [9] 截断 top_k
-        final = survivors[: query.top_k]
-        units = {candidate.unit_id: candidate.unit for candidate in final}
-        if query.expand_depth:
-            record_step("parent_recall", 0.0, n=len(final), detail={"top_k": str(query.top_k)})
+        state.candidates = survivors
 
+    def disclose(self, state: RetrieveState) -> None:
+        query = state.query
+        parsed = state.parsed
+        assert parsed is not None, "parse must complete first"
+        final = state.final
+        units = {candidate.unit_id: candidate.unit for candidate in final}
+        step = state.run.step
         # [10] 渐进式披露（纯内容塑形，复用已点读的 units）
         t0 = perf_counter()
         items = self._discloser.disclose(
@@ -530,36 +556,43 @@ class PipelineRetriever(Retriever):
             }
         step("disclose", t0, n=len(items), detail=disclose_detail)
 
-        logger.debug(
-            "Retriever.retrieve done: trace_id=%s scope_dims=%s fused=%d survivors=%d "
-            "returned=%d cost_ms=%.2f",
-            trace_id,
-            scope_dims,
-            len(fused),
-            len(survivors),
-            len(items),
-            (perf_counter() - started_at) * 1000.0,
+        state.items = items
+
+    def expand(self, state: RetrieveState) -> None:
+        query = state.query
+        parsed = state.parsed
+        assert parsed is not None, "parse must complete first"
+        scope, final, result = state.scope, state.final, state.result
+        assert result is not None, "build_result must complete first"
+        rolled, recalled_candidates = state.rolled, state.recalled_children
+        reuse_children = uses_recalled_children(query)
+        parsed_filters = [] if parsed.recheck_filters is None else [parsed.recheck_filters]
+        child_filters = and_merge(query.filters, parsed_filters)
+        source = ExpansionSource(
+            scope=scope,
+            query=replace(
+                parsed, hierarchy_role=None,
+                scalar_filters=child_filters,
+                recheck_filters=child_filters,
+            ),
+            expander=self._expander,
+            discloser=self._discloser,
         )
-        result = RetrievalResult(items=items, trajectory=traj, errors=errors)
-        if query.expand_depth:
-            parsed_filters = [] if parsed.recheck_filters is None else [parsed.recheck_filters]
-            child_filters = and_merge(query.filters, parsed_filters)
-            source = ExpansionSource(
-                scope=scope,
-                query=replace(
-                    parsed, hierarchy_role=None,
-                    scalar_filters=child_filters,
-                    recheck_filters=child_filters,
-                ),
-                expander=self._expander,
-                discloser=self._discloser,
-            )
-            prepared = prepare_expansion(result, source, final)
-            if reuse_children and rolled is not None:
-                prepared.keep_recalled(recalled_candidates, rolled.recalled_parents)
-            if query.defer_expansion:
-                return prepared
-            result = complete_expansion(result, [prepared], query)
+        prepared = prepare_expansion(result, source, final)
+        if reuse_children and rolled is not None:
+            prepared.keep_recalled(recalled_candidates, rolled.recalled_parents)
+        if query.defer_expansion:
+            state.result = prepared
+            return
+        state.result = complete_expansion(result, [prepared], query)
+
+    def finalize(self, state: RetrieveState) -> RetrievalResult:
+        query = state.query
+        parsed = state.parsed
+        assert parsed is not None, "parse must complete first"
+        scope, final, result = state.scope, state.final, state.result
+        assert result is not None, "build_result must complete first"
+        user_filters, step = state.user_filters, state.run.step
         if self._schema_temporal_extension is None:
             return result
         return self._schema_temporal_extension.apply(
@@ -570,6 +603,7 @@ class PipelineRetriever(Retriever):
             user_filters=user_filters,
             record_step=step,
         )
+
 
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
@@ -700,33 +734,6 @@ def apply_threshold(
         "out": str(len(kept)),
         "dropped": str(n_in - len(kept)),
     }
-
-
-def _format_channels(channels: list[RecallChannel] | None, *, auto_label: str) -> str:
-    if channels is None:
-        return auto_label
-    if not channels:
-        return "all"
-    return ",".join(channel.value for channel in channels)
-
-
-def _scope_log_dims(scope: Scope) -> str:
-    dims: list[str] = []
-    if scope.org:
-        dims.append("org")
-    if scope.space:
-        dims.append("space")
-    if scope.user:
-        dims.append("user")
-    if scope.agent:
-        dims.append("agent")
-    if scope.session:
-        dims.append("session")
-    return ",".join(dims) if dims else "none"
-
-
-def _safe_error(exc: Exception) -> str:
-    return safe_error_message(exc)
 
 
 def _materialize_recalled(

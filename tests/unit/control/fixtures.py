@@ -211,3 +211,20 @@ class SchemaWorld:
             return bindings[units[0].system_metadata.get("message_type", "chat")]
 
         self.pipeline.select_for_write = select
+
+
+def selectable_retrieval_config(engine_kind="in_memory"):
+    """完整出厂拓扑上增加具名检索变体，不隐式继承 default.params。"""
+    from jiuwen_memory.config.defaults import default_config_dict
+
+    config = default_config_dict()
+    config["fuser"]["score_max"] = {"target": "score_max"}
+    config["retriever"]["fast"] = {"target": "pipeline", "params": {
+        "query_parser": "default", "fuser": "score_max", "discloser": "default",
+        "rerank_enabled": False,
+    }}
+    config["engine"]["default"]["target"] = engine_kind
+    config["engine"]["default"]["params"]["retrieval_pipelines"] = {
+        "default": "default", "fast": "fast",
+    }
+    return config

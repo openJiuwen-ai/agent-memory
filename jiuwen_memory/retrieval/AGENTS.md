@@ -21,7 +21,8 @@
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
-| `retriever.py` | Retriever 接口：检索层入口，编排完整链路 |
+| `retriever.py` | Retriever 接口与 Producer；完整链路入口及可选 query_parsers 依赖声明 |
+| `staged_retriever.py` | StagedRetriever 抽象阶段与请求独占 RetrieveState / RetrieveRun；不提供 retrieve 编排 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
@@ -36,10 +37,10 @@
      ↓ 结构化查询（tokens/keywords/entities/vector/scalar_filters/channels）
 2. ParsedQuery.raw 为空时短路返回空结果
      ↓
-3. 根据 Storage.preferred_retrieval_pipeline 选择：
+3. 根据 DomainStore.preferred_retrieval_pipeline 选择：
      ↓ recall → 去重 id 点读 → 恢复分入口候选
      ↓ 或 recall_and_get → 物化候选
-     ↓ 或 Storage.retrieve(parsed, fuser) → 已融合候选
+     ↓ 或 DomainStore.retrieve(scope, parsed, fuser) → 已融合候选
 4. Fuser 前完成真源复核，再对 ScoredMemoryUnit 做分层归并和跨通道融合
 5. 截断精排预算 budget = fused[:max(rerank_max, top_k)]
      ↓
@@ -210,3 +211,13 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
   处理顺序、空间内融合原序补入所选父的后代；不比较跨空间分数或按完成时间重排。
 - 共用披露预算及完整 Scope+id 去重；空正文在预算准入后按真源排除，不退还预算。
   空父仍可带回合法后代。score 仍表示原根分或继承分，轨迹以 child_select 记录补位。
+
+
+### 分阶段实现与具名选择
+
+- PipelineRetriever 继承 StagedRetriever，具体 retrieve 编排依次调用阶段；变体只覆写需要变化的阶段。
+- 状态及轨迹每次请求创建，不能挂到共享实例上；预算截断必须在精排前保存后代候选原序。
+- RollupResult 位于 types.py，阶段契约不得反向依赖 retriever_impl。
+- PipelineRetriever.query_parsers 返回注入的 parser；MultimodalRetriever 经基础 Retriever
+  的公共方法转交声明。装配校验不允许读取 _parser 或识别具体插件类型。
+- pipeline 选择归 control，Retriever 不解析 query.pipeline；三个 DomainStore 执行路径保持原有语义。

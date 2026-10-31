@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -43,7 +43,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 
 1. **scope 是独立轴**：`scope: Scope` 作为 `Retriever.retrieve` / `Recaller.recall` 的显式第一入参贯穿全链路，不随 `RetrievalQuery` 携带、也不混进 `filters`。
 2. **query 是「找什么」，scope 是「在谁的范围内找」**：两条轴分开传。
-3. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
+3. **接口与实现严格分离**：接口、共享状态及契约辅助逻辑不 import `*_impl/`；具体算法留在实现模块。
 4. **通道到物理 Store 非 1:1**：一路可对应一个 Store，也可多路合到一个 Store（如 FusionStore），TEMPORAL 通常是叠加在其他通道上的时间过滤。
 5. **读写同一套共享插件**：QueryParser 必须与构建侧使用同一套 Tokenizer/Embedder/FeatureExtractor，保证同词表/同向量空间。
 6. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `RetrievalOperator`。
@@ -615,3 +615,57 @@ FilterExpr 复核仍按统一时间投影判定；不改变未知时间哨兵和
 
 结构查询的真源复核保留微秒精度，索引毫秒投影只负责前置筛选。
 valid-time 起点为空表示无下界：前置使用 NOT(t_valid > as_of)，真源按半开区间复核。
+
+
+## 分阶段检索与可选 pipeline 契约
+
+`Retriever.retrieve(scope, query)` 保持不变。`StagedRetriever` 是可选的中间 ABC，
+声明下表阶段，`retrieve` 仍抽象，由实现提供编排。非分阶段、组合型插件无需实现这些阶段。
+阶段签名为 `(self, state: RetrieveState)`；除 `parse -> bool`、
+`finalize -> RetrievalResult` 外均返回 None。state 是插件扩展契约中的内部调用态，
+不进入 API 序列化；每次调用独立创建，不保存在共享 retriever 上。
+
+| 步骤 | 前置条件 | 完整业务写集 |
+|---|---|---|
+| validate | 输入已创建 | hierarchy |
+| parse | hierarchy 就绪 | parsed（kind/role/span/extensions/as_of）；无意图返回 False |
+| build_filters | parse=True | parsed.scalar_filters/recheck_filters/include_archived，user_filters |
+| select_channels | parse=True | channels |
+| plan_budget | 校验通过 | recall_k，budget_n |
+| recall_and_fuse | 过滤、通道、预算就绪 | candidates（融合序），errors |
+| cut_to_budget（state 辅助） | 融合之后、精排之前 | candidates，recalled_children；run.fused_count |
+| rerank | 预算截断完成 | candidates，calibrated |
+| rollup | query.rollup=True；精排后阈值前 | candidates，rolled，errors，parsed.hierarchy_role |
+| threshold | 最终候选分已生成 | candidates |
+| cut_to_top_k（state 辅助） | 阈值之后 | final |
+| disclose | final 就绪 | items |
+| build_result（state 辅助） | 披露完成 | result |
+| expand | query.expand_depth>0；result 就绪 | result |
+| finalize | 普通 result 就绪 | 返回结果，不修改 state 字段 |
+
+所有阶段可向 run 追加轨迹；输入 scope/query/run 引用只读使用。
+状态创建不输出 start 日志；validate 成功后才调用 log_start，disclosure 使用枚举 value，
+非法输入不得因日志格式化而改变校验异常。三个 state 辅助方法是固定
+语义，不是可替换算子；自定义编排仍须满足前置条件，由契约测试验证，不声称运行时禁止跳过。
+parse 短路时 parsed 可为空，返回带已有轨迹的空结果。其余产物初始为 None、空列表或零值；
+calibrated=False、rolled=None。RollupResult 是共享阶段数据，不依赖具体上卷实现。
+
+预算截断后、精排前保存 recalled_children 快照；精排不得原地修改快照中的候选。
+TIME 父角色上卷展开时，即使快照为空也须调用 keep_recalled 标记已准备完成。
+expand 先创建 PreparedRetrievalResult；defer_expansion=True 时直接交跨空间层完成展开，
+不调用 finalize。否则完成展开，恢复普通结果后才进行 Schema 等后处理。
+
+`RetrievalQuery.pipeline: str | None` 是控制层选择键，与 DomainStore 的
+`RetrievalPipeline` 三种物理执行路径无关。直接调用 Retriever.retrieve 不解析该键，
+仍使用当前实例；选择发生在 Engine。API 消费保留扩展键，不传入 ParsedQuery.extensions。
+
+`Retriever.query_parsers() -> tuple[QueryParser, ...] | None` 是可选依赖声明：
+None 表示未声明；声明时返回稳定、真实的已注入 parser 实例，不得在查询中构建依赖。
+组合实现经子组件公共方法汇总，不得读取私有字段。显式配置非空可选 pipeline 白名单时，
+默认 retriever 和每个白名单成员必须声明非空 parser 集合，且所有成员均为同一个实例；
+不满足则装配失败。未启用白名单的旧插件不因缺少声明被拒绝。
+这项检查只证明查询侧共享，默认 parser 与构建侧 tokenizer/embedder 的一致性仍由既有装配契约负责。
+
+选择器在 with_trajectory=True 时加入首个 pipeline step，detail 为 name/source。
+source=query 时 name 为白名单公开名，source=profile 时为 profile 名，source=default 时为
+默认路由标识 default；后两种不是白名单存在性声明。检索直接调用的阶段轨迹不增加此 step。

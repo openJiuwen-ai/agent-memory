@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import (
@@ -31,6 +31,10 @@ from jiuwen_memory.retrieval.schema_temporal.model import (
     SchemaTemporalQuery,
     SchemaTemporalResult,
 )
+
+if TYPE_CHECKING:
+    from jiuwen_memory.retrieval.expander import NodeKey
+
 
 __all__ = [
     "ChannelError",
@@ -92,6 +96,8 @@ class RetrievalQuery:
     rollup: bool = False
     # 可选最近上下文，仅供支持上下文感知改写的 QueryParser 消费。
     query_context: tuple[str, ...] | None = None
+
+    pipeline: str | None = None  # engine 白名单公开名；None 保留 profile/default 路由
 
     def __post_init__(self) -> None:
         # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。
@@ -157,3 +163,20 @@ class SchemaTemporalRetrievalResult(RetrievalResult):
     """仅在 Schema Temporal 产生结构化视图时扩展公开检索结果。"""
 
     schema_temporal: SchemaTemporalResult = field(kw_only=True)
+
+
+@dataclass
+class RollupResult:
+    """稳定诊断不暴露被排除节点的身份、正文或后端异常信息。"""
+
+    candidates: list[ScoredMemoryUnit] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+    visited_count: int = 0
+    admitted_count: int = 0
+    boosted_count: int = 0
+    recalled_parents: dict[NodeKey, NodeKey] = field(default_factory=dict)
+
+    def exclude(self, code: str) -> None:
+        """单请求按首次出现顺序去重诊断码。"""
+        if code not in self.issues:
+            self.issues.append(code)
