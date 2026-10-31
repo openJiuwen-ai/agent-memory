@@ -140,7 +140,7 @@ def test_api_reranker_late_binds_model_key_url() -> None:
         client=client,
         config_source=cfg,
     )
-    scores = rr.rerank("q", ["doc"])
+    scores = rr.rerank_texts("q", ["doc"])
     assert scores == [0.9]
     assert client.post.call_args.kwargs["headers"]["Authorization"] == "Bearer rk-a"
     assert client.post.call_args.args[0] == "https://a.example/rerank"
@@ -149,7 +149,7 @@ def test_api_reranker_late_binds_model_key_url() -> None:
     cfg.put("reranker.model", "rerank-v2")
     cfg.put("reranker.api_key", "rk-b")
     cfg.put("reranker.base_url", "https://b.example")
-    rr.rerank("q", ["doc"])
+    rr.rerank_texts("q", ["doc"])
     assert client.post.call_args.kwargs["headers"]["Authorization"] == "Bearer rk-b"
     assert client.post.call_args.args[0] == "https://b.example/rerank"
     assert client.post.call_args.kwargs["json"]["model"] == "rerank-v2"
