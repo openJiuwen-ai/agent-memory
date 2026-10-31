@@ -256,11 +256,12 @@
     CloudEngine 的记忆 get/list/scopes 及其权限事实由 DomainStore 真源提供；文档写入经
 DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。文档模式下二者的
     `update` SUPERSEDE / `delete` FORGET·ARCHIVE 在 engine 侧绕过 `KVLifecycleManager` 直接
-    落 shadow（lifecycle 数据源仍是 KV，文档模式真源在 shadow 必失败；见
+    落 shadow（engine 侧绕过是 F09 决策 2 既定范式；`KVLifecycleManager` 的
+    `supersede`/`transition`/`sweep` 已注入 `domain_store` 文档分流，见
     [F09](../../docs/features/control/F09-agent-engine-doc-mode-read.md)）。
-    `InMemoryEngine` 仍直连 KV（非文档模式、KV 即真源）。`LifecycleManager` 仍直连 KV——
-    文档模式下 engine 侧绕过它而非改造其数据源（sweep 共性遗留见 F09）。Schema/middle/lifecycle
-    的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。DomainStore 消费方
+    `InMemoryEngine` 仍直连 KV（非文档模式、KV 即真源）。`LifecycleManager` 已注入
+    `domain_store` 文档分流（#261 覆盖 `transition`/`sweep`，本次补 `supersede`）。
+    Schema/middle 的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。DomainStore 消费方
     有检索路径（`PipelineRetriever`）、一体化写路径（`UnifiedIndexBuilder`）与 Engine 读取路径
     （`CloudEngine`/`AgentEngine`）。
 
