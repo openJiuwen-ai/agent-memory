@@ -10,12 +10,13 @@ from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_ke
 from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.types import Role
-from jiuwen_memory.common.type_def import LifecycleState, memory_key
+from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.config.config import Config
 from jiuwen_memory.control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
 from jiuwen_memory.control.policy_impl.dict_policy_manager import DictPolicyManager
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.types import MemoryListResult
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
@@ -37,6 +38,39 @@ def _store(unit) -> tuple[InMemoryKVStore, KVLifecycleManager]:
 
 def _load(kv: InMemoryKVStore, unit) -> object:
     return loads(kv.get(unit.scope, memory_key(unit.id)))
+
+
+class _FakeDocStore:
+    """文档模式 DomainStore stub：真源为内存 dict，``should_write_document`` 恒 True。
+
+    ``get``/``update`` 覆盖 transition/supersede 的读写路径（文档模式经 DomainStore
+    而非 KV）；``scopes``/``list`` 覆盖 sweep 的全量扫描。写操作记入 ``written`` 供断言。
+    """
+
+    def __init__(self, units: list[MemoryUnit]) -> None:
+        self._units: dict[str, MemoryUnit] = {u.id: u for u in units}
+        self.written: list[str] = []
+
+    def should_write_document(self) -> bool:
+        return True
+
+    def get(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+        return [self._units[uid] for uid in unit_ids if uid in self._units]
+
+    def update(self, scope: Scope, units: list[MemoryUnit]) -> None:
+        for unit in units:
+            self._units[unit.id] = unit
+            self.written.append(unit.id)
+
+    def scopes(self) -> list[Scope]:
+        seen: list[Scope] = []
+        for unit in self._units.values():
+            if unit.scope not in seen:
+                seen.append(unit.scope)
+        return seen
+
+    def list(self, scope: Scope, *, limit: int = 100, **kwargs) -> MemoryListResult:
+        return MemoryListResult(items=[u for u in self._units.values() if u.scope == scope])
 
 
 def test_transition_allows_defined_forward_lifecycle_moves(unit_factory) -> None:
@@ -105,6 +139,76 @@ def test_supersede_raises_not_found_for_missing_unit() -> None:
             "missing",
             datetime(2026, 6, 17, 11, 0, tzinfo=UTC),
         )
+
+
+def test_supersede_document_mode_reads_via_domain_store(unit_factory) -> None:
+    """文档模式 supersede 经 DomainStore 读写真源（读 get、写 update），不抛 NotFoundError。
+
+    回归锁：#261 第三个入口——文档模式 KV 恒空，supersede 若仍走 ``load_units(KV)``
+    会读空→NotFoundError。修复后 transition/supersede 共用 ``_load_units`` 分流。
+    """
+    invalid_at = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
+    unit = unit_factory("u1", "old version", lifecycle=LifecycleState.ACTIVE)
+    doc_store = _FakeDocStore([unit])
+    # KV 故意留空（文档模式 KV 恒空），只注入 domain_store
+    lifecycle = KVLifecycleManager(InMemoryKVStore(), domain_store=doc_store)
+
+    updated = lifecycle.supersede(unit.scope, unit.id, invalid_at)
+
+    assert updated.lifecycle == LifecycleState.SUPERSEDED
+    assert updated.temporal.t_invalid == invalid_at
+    # 写走 domain_store（非 KV）
+    assert doc_store.written == ["u1"]
+    assert doc_store._units["u1"].lifecycle == LifecycleState.SUPERSEDED
+
+
+def test_transition_document_mode_reads_and_writes_via_domain_store(unit_factory) -> None:
+    """文档模式 transition 经 DomainStore 读写真源（读 get、写 update），不读 KV。"""
+    unit = unit_factory("u1", "active memory", lifecycle=LifecycleState.ACTIVE)
+    doc_store = _FakeDocStore([unit])
+    # KV 故意留空（文档模式 KV 恒空），只注入 domain_store
+    lifecycle = KVLifecycleManager(InMemoryKVStore(), domain_store=doc_store)
+
+    lifecycle.transition(unit.scope, [unit.id], LifecycleState.ARCHIVED)
+
+    assert doc_store.written == ["u1"]
+    assert doc_store._units["u1"].lifecycle == LifecycleState.ARCHIVED
+
+
+def test_sweep_document_mode_reads_via_domain_store(unit_factory) -> None:
+    """文档模式 sweep 经 DomainStore scopes()+list 读全量，纯计算不回写。"""
+    now = datetime.now(UTC)
+    expired = unit_factory(
+        "expired",
+        "expired active",
+        lifecycle=LifecycleState.ACTIVE,
+        t_invalid=now - timedelta(days=1),
+    )
+    active = unit_factory("active", "still active", lifecycle=LifecycleState.ACTIVE)
+    superseded = unit_factory("superseded", "old version", lifecycle=LifecycleState.SUPERSEDED)
+    doc_store = _FakeDocStore([expired, active, superseded])
+    # KV 故意留空（文档模式 KV 恒空），只注入 domain_store
+    lifecycle = KVLifecycleManager(InMemoryKVStore(), domain_store=doc_store)
+
+    transitions = lifecycle.sweep()
+
+    assert [t.unit_id for t in transitions] == ["expired", "superseded"]
+    assert all(t.to_state == LifecycleState.FORGOTTEN for t in transitions)
+    # 纯计算：sweep 不回写真源
+    assert doc_store.written == []
+    assert doc_store._units["expired"].lifecycle == LifecycleState.ACTIVE
+
+
+def test_domain_store_none_degenerates_to_kv(unit_factory) -> None:
+    """domain_store=None 显式退化为纯 KV 路径（transition 读写走 KV，不经分流）。"""
+    unit = unit_factory("u1", "active memory", lifecycle=LifecycleState.ACTIVE)
+    kv = InMemoryKVStore()
+    kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
+    lifecycle = KVLifecycleManager(kv, domain_store=None)  # 显式 None
+
+    lifecycle.transition(unit.scope, [unit.id], LifecycleState.FORGOTTEN)
+
+    assert _load(kv, unit).lifecycle == LifecycleState.FORGOTTEN
 
 
 def test_targeted_transition_does_not_mutate_same_id_in_another_scope(unit_factory) -> None:
@@ -262,3 +366,36 @@ def test_default_kernel_lifecycle_sweep_uses_runtime_policy(unit_factory) -> Non
     assert result.swept == [expired.id]
     assert result.failed == []
     assert stored.lifecycle == LifecycleState.ARCHIVED
+
+
+def test_build_injects_domain_store_for_document_mode(tmp_path) -> None:
+    """``_build`` 装配注入 domain_store：文档模式（write_document=true）domain_store 非 None。"""
+    # pylint: disable=protected-access  # 测试直取装配结果的私有 domain_store 断言接线
+    from jiuwen_memory.common.bootstrap import register_plugins
+    from jiuwen_memory.config.context import AssemblyContext
+    from jiuwen_memory.control.lifecycle import LifecycleProducer
+    from jiuwen_memory.storage import bootstrap as sb
+    from jiuwen_memory.storage.store_manager import StoreManagerProducer
+
+    sb.register_backends()
+    register_plugins()
+    StoreManagerProducer.reset_all()
+
+    ctx = AssemblyContext.from_dict({
+        "globals": {"write_document": True},
+        "kv_store": {"default": "memory"},
+        "markdown_store": {"default": {"target": "local", "params": {"root": str(tmp_path)}}},
+        "shadow_index": {"default": {"target": "sqlite"}},
+        "store_manager": {"default": {"target": "composite", "params": {
+            "domain_stores": {"default": {"kv_store": "default"}},
+        }}},
+    })
+    lifecycle = LifecycleProducer.build(
+        "kv",
+        {"kv_store": "default", "domain_store": "default"},
+        ctx,
+    )
+
+    assert isinstance(lifecycle, KVLifecycleManager)
+    assert lifecycle._domain_store is not None
+    assert lifecycle._domain_store.should_write_document() is True

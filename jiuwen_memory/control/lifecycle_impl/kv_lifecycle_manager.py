@@ -8,7 +8,7 @@ forgotten），不物理删除。``sweep`` 是**纯计算**——扫描到期（
 真源回写由 Engine/Governance 编排执行（见 ``MemoryEngine.sweep_expired``）。
 
 真源读写数据源**文档分流**：注入 :class:`~storage.domain_store.DomainStore` 后，
-``transition``/``sweep`` 按 ``domain_store.should_write_document()`` 分两路——
+``transition``/``supersede``/``sweep`` 按 ``domain_store.should_write_document()`` 分两路——
 文档模式（write_document=true）经 DomainStore 走 ``md``+``shadow`` 真源（
 ``get``/``list`` 读 + ``update`` 回写 lifecycle，content 不变 → shadow 只覆写
 unit_json + lifecycle 投影列，不碰 md）；非文档模式维持经注入的
@@ -20,6 +20,7 @@ unit_json + lifecycle 投影列，不碰 md）；非文档模式维持经注入�
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
@@ -131,6 +132,14 @@ class KVLifecycleManager(LifecycleManager):
     def health(self) -> None:
         return None
 
+    def _load_units(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
+        """读真源 unit（文档分流）：文档模式经 DomainStore ``get``（分流到 shadow），
+        非文档模式经 KV ``load_units``。transition/supersede 共用同一读入口——文档模式
+        KV 恒空，漏掉分流会让 supersede 读空→NotFoundError（第三个入口，见 #261）。"""
+        if self._domain_store is not None and self._domain_store.should_write_document():
+            return self._domain_store.get(scope, unit_ids)
+        return load_units(self._kv, scope, unit_ids)
+
     def _write_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """回写正排本体：文档模式经 DomainStore（content 不变 → shadow 只覆写
         lifecycle 投影列），非文档模式 key=memory_key、value=dumps 回写 KV。"""
@@ -143,11 +152,7 @@ class KVLifecycleManager(LifecycleManager):
     def transition(
         self, scope: Scope, unit_ids: list[str], target: LifecycleState
     ) -> None:
-        # 文档模式：DomainStore.get 读（文档分流到 shadow），非文档：KV load_units。
-        if self._domain_store is not None and self._domain_store.should_write_document():
-            matches = self._domain_store.get(scope, unit_ids)
-        else:
-            matches = load_units(self._kv, scope, unit_ids)
+        matches = self._load_units(scope, unit_ids)
         for unit in matches:
             _ensure_transition_allowed(unit.lifecycle, target, unit.id)
             unit.lifecycle = target
@@ -162,7 +167,7 @@ class KVLifecycleManager(LifecycleManager):
         )
 
     def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
-        units = load_units(self._kv, scope, [unit_id])
+        units = self._load_units(scope, [unit_id])
         for unit in units:
             _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, unit.id)
             unit.lifecycle = LifecycleState.SUPERSEDED
@@ -182,35 +187,38 @@ class KVLifecycleManager(LifecycleManager):
         )
         raise NotFoundError("memory_unit", unit_id)
 
+    def _iter_scope_units(self) -> Iterator[tuple[Scope, MemoryUnit]]:
+        """per-scope 流式枚举真源 unit：逐 scope 读完即释放，不物化全库。
+
+        文档模式经 DomainStore.scopes()+list（分流 shadow，list 不筛 lifecycle 故含
+        SUPERSEDED 旧版）；非文档模式经 KV scopes()+list_units。逐 scope yield 而非
+        一次性物化全库，避免 sweep 全库驻留内存回归（issue #261 审查）。
+        """
+        if self._domain_store is not None and self._domain_store.should_write_document():
+            for scope in self._domain_store.scopes():
+                for unit in self._domain_store.list(scope, limit=1_000_000).items:
+                    yield scope, unit
+        else:
+            for scope in self._kv.scopes():
+                for unit in list_units(self._kv, scope, limit=1_000_000)[0]:
+                    yield scope, unit
+
     def sweep(self) -> list[SweepTransition]:
         now = datetime.now(UTC)
         transitions: list[SweepTransition] = []
-        # 文档模式：DomainStore.scopes() + DomainStore.list 读全量（文档分流到 shadow，
-        # 扫描含 SUPERSEDED 旧版——list 不筛 lifecycle）；非文档：KV scopes + list_units。
-        if self._domain_store is not None and self._domain_store.should_write_document():
-            scope_units: list[tuple[Scope, list[MemoryUnit]]] = [
-                (scope, self._domain_store.list(scope, limit=1_000_000).items)
-                for scope in self._domain_store.scopes()
-            ]
-        else:
-            scope_units = [
-                (scope, list_units(self._kv, scope, limit=1_000_000)[0])
-                for scope in self._kv.scopes()
-            ]
-        for scope, units in scope_units:
-            for unit in units:
-                target = _sweep_target(unit, now, self._policy)
-                if target is None:
-                    continue
-                transitions.append(
-                    SweepTransition(
-                        scope=scope,
-                        unit_id=unit.id,
-                        from_state=unit.lifecycle,
-                        to_state=target,
-                        unit=unit,
-                    )
+        for scope, unit in self._iter_scope_units():
+            target = _sweep_target(unit, now, self._policy)
+            if target is None:
+                continue
+            transitions.append(
+                SweepTransition(
+                    scope=scope,
+                    unit_id=unit.id,
+                    from_state=unit.lifecycle,
+                    to_state=target,
+                    unit=unit,
                 )
+            )
         transitions.sort(key=lambda t: t.unit_id)
         logger.info("Lifecycle.sweep: pending=%d", len(transitions))
         return transitions
