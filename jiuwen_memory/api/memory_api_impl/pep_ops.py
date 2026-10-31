@@ -27,6 +27,7 @@ from jiuwen_memory.common.security.audit_integrity.base import AuditIntegrityErr
 from jiuwen_memory.common.security.capabilities import EntryRoutingCapability, needs_space_facts
 from jiuwen_memory.common.security.request_context import get_request_id
 from jiuwen_memory.common.security.space_decision import (
+    ATTR_OWN_ACTIONS,
     ATTR_PRINCIPAL_PATH,
     ATTR_SPACE_ACTION,
     ATTR_SPACE_AXIS,
@@ -70,6 +71,7 @@ from jiuwen_memory.control.types import (
     SpaceInfo,
     SpaceMember,
     SpacePatch,
+    SpacePolicy,
     SpaceSpec,
     SpaceStatus,
 )
@@ -427,6 +429,7 @@ class PepOpsMixin:
         carry_author_marks: bool = True,
         space_action: SpaceAction | None = None,
         space_axis: SpaceAxis | None = None,
+        own_actions_apply: bool | None = None,
     ) -> tuple[PermissionContext | None, SpaceFacts | None]:
         """装配判定输入：主体次序、入口名、条目作者标记与空间授权事实。
 
@@ -441,6 +444,12 @@ class PepOpsMixin:
 
         连同读到的整份 :class:`SpaceFacts` 一并返回：生命周期状态不进判定投影，而状态
         校验要看它。返回同一份而非另读一次，使一次调用内的判定与状态校验基于同一快照。
+
+        ``own_actions_apply`` 覆盖入口表的「本人所写」附加集合开关（与 ``space_action``、
+        ``space_axis`` 并列的属性通道）；经验条目的 ``get`` / ``list`` 在本方法内按判定
+        上下文的类型改写（mem2.0 §2.3「经验条目只对编辑者可读写」）：``memory_type`` 为
+        ``experience`` 时要求动作由读改为更新、附加集合关闭，于是只有基础动作含更新的
+        编辑者能通过。
         """
         if not target.org or not target.space:
             # 非空间级目标不装配空间属性，但独占键仍须剥离：不剥则调用方注入的
@@ -466,12 +475,14 @@ class PepOpsMixin:
             metadata.pop(principal.AUTHOR_PRINCIPAL, None)
         space_facts: SpaceAuthorizationFacts | None = None
         facts: SpaceFacts | None = None
+        policy: SpacePolicy | None = None
         if self._needs_space_facts():
             facts = self._read_space_facts(target)
             if facts is not None:
+                policy = facts.info.policy if facts.info is not None else None
                 metadata[ATTR_PRINCIPAL_PATH] = (
-                    facts.info.policy.principal_path.value
-                    if (facts.info is not None)
+                    policy.principal_path.value
+                    if policy is not None
                     else PrincipalPath.USER_AGENT.value
                 )
                 space_facts = _project_space_facts(facts)
@@ -481,6 +492,26 @@ class PepOpsMixin:
             except NotFoundError:
                 return self._rebuilt_context(target, context, metadata, None), None
             metadata[ATTR_PRINCIPAL_PATH] = policy.principal_path.value
+
+        if (
+            context is not None
+            and context.memory_type == "experience"
+            and entry in ("get", "list")
+        ):
+            # 经验条目的条目读（§2.3「经验条目只对编辑者可读写」）：判定上下文的
+            # memory_type 为 experience 时，读动作改判为更新并关闭「本人所写」附加
+            # 集合——get / list 绕过选取算子的复现要求与隔离期，限制直接读取。
+            # get 的判定上下文由引擎按已有条目元数据构造、list 取请求的路由值，
+            # 都已带 memory_type。条目的作者标记保持不动：现有判定在作者标记缺失
+            # 时按「本人所写」可能成立处置，去掉它反而让贡献者凭附加集合中的更新
+            # 动作通过。调用方显式给的动作保留（它知道自己为什么给）；显式开的
+            # 附加集合同样被关掉——这条约束管的就是该集合放行的方向。
+            if space_action is None:
+                space_action = SpaceAction.UPDATE
+            metadata[ATTR_SPACE_ACTION] = space_action.value
+            own_actions_apply = False
+        if own_actions_apply is not None:
+            metadata[ATTR_OWN_ACTIONS] = "true" if own_actions_apply else "false"
         return self._rebuilt_context(target, context, metadata, space_facts), facts
 
     @staticmethod

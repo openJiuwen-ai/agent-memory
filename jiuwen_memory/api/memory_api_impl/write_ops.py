@@ -15,9 +15,12 @@ from jiuwen_memory.common.errors import (
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.security import principal
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
+    PRODUCER_CREDENTIAL_KEY,
+    PRODUCER_PRINCIPAL_KEY,
     ROUTE_CTX_KEY,
     MemoryUnit,
     MetadataValueType,
@@ -32,6 +35,7 @@ from jiuwen_memory.construction.router import (
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
+from jiuwen_memory.control.pipeline import NO_FALLBACK_MEMORY_TYPES
 from jiuwen_memory.control.types import (
     BatchWriteItem,
     BatchWriteOutcome,
@@ -55,6 +59,35 @@ from .local_support import (
 )
 
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
+
+
+def _with_producer_marks(
+    metadata: dict[str, Any] | None, security: RequestSecurityContext
+) -> dict[str, Any] | None:
+    """经验写入的生产者标记（mem2.0 §2.1）：认证结果写进两个内核保留键。
+
+    生产者主体与凭据指纹都取认证结果（``AuthContext``），覆盖请求中的同名键——
+    调用方自报的接入方标识不可信，补报核对与外部结果阈值都按生产者取值，不能让
+    请求冒用其他接入方。评价算子从这两个键与 ``scope.org`` 组出轨迹记录的
+    ``producer``（构建层按不变量不接触调用身份，F07）。
+
+    只对 ``memory_type`` 为 ``experience`` 的写入生效；其余写入不带这两个键。
+    调用点在保留键校验之后（先拒调用方占用，再由内核写入，与
+    ``_with_author_marks`` 同一次序）。主体维全空的调用方跳过（运维通道，同
+    ``_with_author_marks`` 的门控——经验写入在评价算子按「缺少生产者标记」拒绝）。
+    """
+    memory_type = str((metadata or {}).get("memory_type", "")).strip()
+    if memory_type not in NO_FALLBACK_MEMORY_TYPES:
+        return metadata
+    actor = security.auth.actor
+    if not actor.user and not actor.agent:
+        return dict(metadata or {}) if metadata else metadata
+    producer_principal, _agent = principal.derive_author(actor)
+    return {
+        **(metadata or {}),
+        PRODUCER_PRINCIPAL_KEY: producer_principal,
+        PRODUCER_CREDENTIAL_KEY: security.auth.credential_id,  # 空串也写入，不省略键
+    }
 
 
 class WriteOpsMixin:
@@ -121,6 +154,9 @@ class WriteOpsMixin:
         target, system_metadata = self._write_target(
             scope, security, coords, content, system_metadata
         )
+        # 经验写入且不经判定时，经验空间的写权无处校验（§2.1）：派生条目落经验空间
+        # 而落点解析给的是轨迹载体落点，须单独对经验空间按写入动作鉴权。
+        self._authorize_experience_space(security, coords, system_metadata)
         permission_context = _write_permission_context(target, tags, system_metadata)
         auth = self._authorize(
             security,
@@ -137,7 +173,8 @@ class WriteOpsMixin:
             assets=assets,
             tags=tags,
             system_metadata=_with_author_marks(
-                system_metadata, self._resource_principal(security, Action.WRITE, target)
+                _with_producer_marks(system_metadata, security),
+                self._resource_principal(security, Action.WRITE, target),
             ),
             user_metadata=user_metadata,
             occurred_at=occurred_at,
@@ -243,6 +280,35 @@ class WriteOpsMixin:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+    def _authorize_experience_space(
+        self,
+        security: RequestSecurityContext,
+        coords: Mapping[str, str] | None,
+        metadata: Mapping[str, Any] | None,
+    ) -> None:
+        """经验写入的缺省落点鉴权（v3 §2.1）：不带 ``coords`` 且 ``default_space``
+        填了空间名时，写入者对这个空间的写权限无处校验。
+
+        带 ``coords`` 的写入由落点判定计算候选空间时校验（现有逻辑）；不带时
+        抽取算子把候选落点设为 ``default_space`` 解析的空间，在解析出落点之后、
+        交给引擎之前，对它按写入动作鉴权，无权返回权限错误。``default_space``
+        为 ``own`` 时落点就是写入落点，已由现有逻辑校验，此处空过。未配置
+        经验的部署不在此报错——引擎的 profile 准入（§2.1 不回落）会拒绝。
+        """
+        memory_type = str((metadata or {}).get("memory_type", "")).strip()
+        if memory_type not in NO_FALLBACK_MEMORY_TYPES or coords is not None:
+            return
+        default_space = self._experience_default_space
+        if not default_space or default_space == "own":
+            return
+        identity = security.auth.actor
+        self._authorize(
+            security,
+            Scope(org=identity.org, space=default_space),
+            Action.WRITE,
+            "add",
+        )
 
     def _explicit_scope_target(
         self, scope: Scope | None, identity: Scope, metadata: dict[str, Any] | None
@@ -699,6 +765,8 @@ class WriteOpsMixin:
                     "add",
                     context=permission_context,
                 )
+                # 批量与单条同处置（§2.1）：经验写入不经判定时对经验空间单独鉴权。
+                self._authorize_experience_space(security, coords, item.system_metadata)
                 self._ensure_space_writable(item.scope)
                 authorized.append((index, item, auth))
             except (PermissionDeniedError, ValidationError, PolicyError) as exc:
@@ -729,15 +797,15 @@ class WriteOpsMixin:
             authorized = [entry for entry in authorized if entry[0] < stopped_index]
 
         if authorized:
-            # 作者标记在鉴权与保留键校验之后写入，逐项各写一份（各项的 metadata 已归并）。
-            # 只作用于交给引擎的那份：逐项结果回填的仍是调用方输入的归一化形态，内核标记
-            # 是条目内容的一部分，不回显为「调用方传了这些键」。
+            # 作者标记与生产者标记在鉴权与保留键校验之后写入，逐项各写一份（各项的
+            # metadata 已归并）。只作用于交给引擎的那份：逐项结果回填的仍是调用方输入
+            # 的归一化形态，内核标记是条目内容的一部分，不回显为「调用方传了这些键」。
             remapped = await self._commands.batch_write_aligned(
                 [
                     replace(
                         item,
                         system_metadata=_with_author_marks(
-                            item.system_metadata,
+                            _with_producer_marks(item.system_metadata, security),
                             self._resource_principal(security, Action.WRITE, item.scope),
                         ),
                     )

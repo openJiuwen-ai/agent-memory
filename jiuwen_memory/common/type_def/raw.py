@@ -28,7 +28,7 @@ class RawPayload:
     assets: list[str] = field(default_factory=list)  # 待 Ingestor 映射的资产引用
 
 
-# -- KV key 前缀（未建索引的 infer 原文） ------------------------------------- #
+# -- KV key 前缀（未建索引的 infer 原文 / 经验轨迹记录） ---------------------- #
 # 真源 KV key 按「是否建索引」带前缀（见 F02 决策6）：未建索引的 infer=true 原文
 # 落 /messages/{id}（建索引记忆落 /memory/{id}，见 memory.py）。所有落盘/回查
 # infer 原文的点用 messages_key；拉取最近 N 条做指代消解/语境时用 list(prefix=...)。
@@ -39,3 +39,19 @@ MESSAGES_KEY_PREFIX = "/messages/"
 def messages_key(unit_id: str) -> str:
     """未建索引 infer 原文的 KV key。"""
     return f"{MESSAGES_KEY_PREFIX}{unit_id}"
+
+# 轨迹记录（mem2.0 §2.1）：一次任务执行过程的原始内容，不建索引、不参与检索，
+# 与对话原文同存一个 KV、同一个写入落点，只是键前缀不同。作者摘要用于在同一
+# 落点（如团队空间）区分多 位作者的轨迹；常量放本模块是因为加密 KV 按前缀
+# 归类加密用途（storage 不能 import construction，见 encrypted_kv_store）。
+
+TRAJECTORIES_KEY_PREFIX = "/trajectories/"
+
+
+def trajectory_key(author_digest: str, trajectory_id: str) -> str:
+    """轨迹记录的 KV key：写入落点下 ``/trajectories/{作者摘要}/{trajectory_id}``。
+
+    ``author_digest`` 是作者主体经部署密钥 ``experience_author_key`` 做 HMAC 的
+    摘要（construction/experience.py 计算），键中不出现作者本身。
+    """
+    return f"{TRAJECTORIES_KEY_PREFIX}{author_digest}/{trajectory_id}"

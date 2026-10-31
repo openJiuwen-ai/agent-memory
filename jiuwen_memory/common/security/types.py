@@ -602,8 +602,9 @@ class CryptoContext:
 
 # 带 secret 语义的配置参数名（F05 装配不变量 7）：配置解析期按此包裹 SecretValue /
 # 脱敏 repr。新增 secret 配置项须同步登记在这里（kernel 路径与 bootstrap 路径共用）。
+# experience_author_key：经验作者摘要的 HMAC 部署密钥（mem2.0 §2.1）。
 SECRET_PARAM_KEYS = frozenset(
-    {"root_api_key", "gateway_key", "key_hex", "key_b64", "shared_secret"}
+    {"root_api_key", "gateway_key", "key_hex", "key_b64", "shared_secret", "experience_author_key"}
 )
 
 

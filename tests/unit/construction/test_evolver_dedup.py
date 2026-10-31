@@ -993,6 +993,112 @@ class TestDedupMiddleFilter:
         )
 
 
+class TestDedupMemoryTypeIsolation:
+    """类型隔离（mem2.0 §2.3「去重按类型隔离」）：对话记忆与经验不互判为重复。
+
+    复现作者记录与复现要求都建立在「去重能把同类认作同一条」之上——把一条
+    对话记忆记成经验的一次复现会污染计数。候选是隔离类型时只对照同类；其余
+    候选排除两类隔离条目。两条召回路（vector / keyword）同一语义。
+    """
+
+    @staticmethod
+    def test_vector_dedup_excludes_experience_from_chat_candidate():
+        """对话候选不召回同空间同文本的经验条目（内存后端不消费下推谓词，
+        靠加载后复核兜底）。
+        """
+        from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
+
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+        dedup = VectorDedup(
+            storage=make_storage(kv=stores["kv"], vector=stores["vector"]),
+            embedder=embedder,
+            min_similarity=0.0,
+            top_k=10,
+            tier_filter=False,
+            scope_filter=False,
+        )
+
+        experience = _make_unit("exp-1", "Dave likes to go hiking on weekends.")
+        experience.system_metadata["memory_type"] = "experience"
+        _index_unit(experience, stores["kv"], stores["vector"], embedder)
+
+        candidate = _make_unit("c1", "Dave likes to go hiking on weekends.")
+        hits = dedup.recall(candidate)
+
+        hit_ids = {u.id for u, _ in hits}
+        assert "exp-1" not in hit_ids, (
+            f"对话候选不得召回经验条目——跨类型误判会污染复现计数，got hits={hit_ids}"
+        )
+
+    @staticmethod
+    def test_vector_dedup_experience_candidate_matches_same_type():
+        """经验候选仍召回同类的经验条目——隔离不是把经验挡在去重之外。"""
+        from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
+
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+        dedup = VectorDedup(
+            storage=make_storage(kv=stores["kv"], vector=stores["vector"]),
+            embedder=embedder,
+            min_similarity=0.0,
+            top_k=10,
+            tier_filter=False,
+            scope_filter=False,
+        )
+
+        experience = _make_unit("exp-1", "Dave likes to go hiking on weekends.")
+        experience.system_metadata["memory_type"] = "experience"
+        _index_unit(experience, stores["kv"], stores["vector"], embedder)
+
+        candidate = _make_unit("c1", "Dave likes to go hiking on weekends.")
+        candidate.system_metadata["memory_type"] = "experience"
+        hits = dedup.recall(candidate)
+
+        hit_ids = {u.id for u, _ in hits}
+        assert "exp-1" in hit_ids, (
+            f"经验候选应召回同类经验条目——经验的重现由它识别，got hits={hit_ids}"
+        )
+
+    @staticmethod
+    def test_keyword_dedup_excludes_experience_from_chat_candidate():
+        """KeywordDedup 同一类型隔离语义——倒排路同样在加载后过滤。"""
+        from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+            WhitespaceTokenizer,
+        )
+        from jiuwen_memory.construction.dedup_impl.keyword_dedup import KeywordDedup
+        from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import (
+            InMemoryFulltextStore,
+        )
+        from jiuwen_memory.storage.types import Document
+
+        kv = _MemoryKVStore()
+        fulltext = InMemoryFulltextStore(tokenizer=WhitespaceTokenizer())
+        dedup = KeywordDedup(
+            storage=make_storage(kv=kv, fulltext=fulltext),
+            min_similarity=0.0,
+            top_k=10,
+            tier_filter=False,
+            scope_filter=False,
+        )
+
+        experience = _make_unit("exp-1", "dave enjoys hiking on weekends")
+        experience.system_metadata["memory_type"] = "experience"
+        kv.insert(experience.scope, memory_key(experience.id), dumps(experience))
+        fulltext.insert(
+            experience.scope,
+            [Document(id=experience.id, text=experience.content)],
+        )
+
+        candidate = _make_unit("c1", "Dave likes to go hiking on weekends.")
+        hits = dedup.recall(candidate)
+
+        hit_ids = {u.id for u, _ in hits}
+        assert "exp-1" not in hit_ids, (
+            f"KeywordDedup 的对话候选同样不得召回经验条目，got hits={hit_ids}"
+        )
+
+
 class TestDedupEvolveExtract:
     """EXTRACT 模式集成：Extractor 产出 → 去重 → EvolveResult。"""
 

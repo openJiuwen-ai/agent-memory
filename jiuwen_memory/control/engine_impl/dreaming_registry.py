@@ -111,6 +111,11 @@ class DreamingEntry:
     # 每次重新注册递增。Scheduler 可能按 schedule_key 复用 job_id，generation
     # 用于挡住上一代已经排队的 DriverJob 删除或执行新一代声明。
     generation: int = 1
+    # 上次触发时间（墙钟 ISO；空 = 从未触发或旧版本记录）。每轮成功提交演进后
+    # 回写；服务重启恢复时据此换算首次触发延迟（mem2.0 §2.5.1 改动 2）——
+    # 间隔未满的等剩余时间，已过期的下一次轮询即触发。register 整条覆写
+    # 注册记录，重复注册时从旧记录显式带过。
+    last_triggered: str = ""
 
 
 def actor_to_dict(actor: Scope) -> dict[str, str]:
@@ -223,6 +228,7 @@ class DreamingRegistry:
             "created_by": entry.created_by,
             "state": entry.state,
             "generation": entry.generation,
+            "last_triggered": entry.last_triggered,
         }
         value = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         if self._kv.exists(_DREAMING_SCOPE, key):
@@ -536,6 +542,9 @@ class DreamingRegistry:
         generation = payload.get("generation", 1)
         if not isinstance(generation, int) or isinstance(generation, bool) or generation <= 0:
             raise ValueError("dreaming generation 必须是正整数")
+        last_triggered = payload.get("last_triggered", "")
+        if not isinstance(last_triggered, str):
+            raise ValueError("dreaming last_triggered 必须是字符串")
         return DreamingEntry(
             scope=Scope(**{f: payload["scope"].get(f, "") for f in _SCOPE_FIELDS}),
             mode=payload["mode"],
@@ -546,4 +555,5 @@ class DreamingRegistry:
             created_by=created_by,
             state=state,
             generation=generation,
+            last_triggered=last_triggered,
         )

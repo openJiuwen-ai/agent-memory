@@ -529,6 +529,8 @@ class AsyncTimerScheduler(Scheduler):
         # 去重只依赖 Job 契约的通用键——Scheduler 不识别 EvolveJob 或其 mode 业务
         # 语义；"同 scope 下 EXTRACT 与 FORGET 是不同任务"由 EvolveJob 的
         # schedule_key（含 mode）表达，这里零业务知识。
+        # first_delay（mem2.0 §2.5.1 改动 2）：声明了就按它设首次触发时间（0 =
+        # 下一次轮询即触发），未声明保持等一个 interval 的现行为。
         if wheel is not None:
             for entry in wheel.entries:
                 if entry.job.schedule_key == schedule_key:
@@ -540,7 +542,9 @@ class AsyncTimerScheduler(Scheduler):
                     # was_done=False + interval 不变：不动 next_run_at（debounce 保护——
                     #   连续 add_async 不应把 Timer 一直推后）。
                     if was_done:
-                        entry.next_run_at = int(time.monotonic()) + job.interval
+                        entry.next_run_at = (
+                            int(time.monotonic()) + self._first_delay_of(job)
+                        )
                     elif interval_changed:
                         entry.next_run_at = (
                             entry.next_run_at - entry.interval + job.interval
@@ -604,7 +608,8 @@ class AsyncTimerScheduler(Scheduler):
             job_id=job_id,
             job=job,
             interval=job.interval,
-            next_run_at=int(time.monotonic()) + job.interval,  # 首次触发要等一个 interval
+            # 首次触发按声明的 first_delay（缺省等一个 interval，现行为）。
+            next_run_at=int(time.monotonic()) + self._first_delay_of(job),
         )
         self._live_jobs[job_id] = job
 
@@ -728,6 +733,13 @@ class AsyncTimerScheduler(Scheduler):
         self._wheels.pop(wheel.scope_key, None)
 
     # ---- 辅助 ----
+
+    @staticmethod
+    def _first_delay_of(job: Job) -> int:
+        """首次触发延迟：声明了 first_delay 用它（0=下一次轮询即触发），
+        未声明等一个 interval（现行为）。"""
+        delay = getattr(job, "first_delay", None)
+        return job.interval if delay is None else max(0, int(delay))
 
     def _merge_info(self, info: JobInfo, result: JobInfo) -> None:
         """把实例 run() 返回的 JobInfo 合并回主 info，并处理 is_done 传播。"""

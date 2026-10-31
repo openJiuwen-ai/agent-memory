@@ -12,6 +12,7 @@
 - :class:`~construction.classifier.Classifier` 多维分类（认知角色/主题/重要度）
 - :class:`~construction.index_builder.IndexBuilder` 多形式索引构建
 - :class:`~construction.evolver.Evolver` 自演进闭环
+- :class:`~construction.curator.Curator` 周期整理（mem2.0 §2.5.2）
 
 算子内部调用 ``jiuwen_memory/common`` 共享插件（分词/切分/向量化/特征抽取/LLM），
 经 ``jiuwen_memory/storage`` 接口落库；二者均由装配注入，算子不依赖具体后端。
@@ -22,8 +23,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from jiuwen_memory.common.type_def.memory import MemoryUnit
+
+if TYPE_CHECKING:
+    from jiuwen_memory.construction.appraiser import Appraisal
 
 
 class OperatorType(str, Enum):
@@ -35,6 +40,8 @@ class OperatorType(str, Enum):
     EVOLVER = "evolver"
     LAYER_ANNOTATOR = "layer_annotator"
     ROUTER = "router"
+    APPRAISER = "appraiser"
+    CURATOR = "curator"
     HIERARCHY_COMPOSER = "hierarchy_composer"
 
 
@@ -70,3 +77,7 @@ class ExtractContext:
 
     recent_originals: list[MemoryUnit] = field(default_factory=list)
     related_memories: list[MemoryUnit] = field(default_factory=list)
+    # 评价结论（mem2.0 §2.2）：配置了评价算子的 profile 在抽取之前调 appraise，
+    # 结论经本字段传给抽取算子。类型由实现定义（经验的实现是
+    # ExperienceAppraisal）；未配置评价算子的 profile 不读取、恒为 None。
+    appraisal: Appraisal | None = None

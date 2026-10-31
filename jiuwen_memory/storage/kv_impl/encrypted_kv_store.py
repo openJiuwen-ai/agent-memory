@@ -15,7 +15,13 @@ from typing import Any
 from jiuwen_memory.common.errors import BackendError, ValidationError
 from jiuwen_memory.common.security.cryptography import CryptographyProducer, CryptographyProvider
 from jiuwen_memory.common.security.types import CryptoContext
-from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
+from jiuwen_memory.common.type_def import (
+    MEMORY_KEY_PREFIX,
+    MESSAGES_KEY_PREFIX,
+    TRAJECTORIES_KEY_PREFIX,
+    FilterExpr,
+    Scope,
+)
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.security import (
@@ -37,6 +43,9 @@ def _purpose_for_key(key: str) -> str:
     if key.startswith(MEMORY_KEY_PREFIX):
         return _PURPOSE_MEMORY_UNIT
     if key.startswith(MESSAGES_KEY_PREFIX):
+        return _PURPOSE_RAW_MESSAGE
+    # 轨迹记录与原文消息同为"对话原文"性质（含用户消息明文），AAD purpose 一致
+    if key.startswith(TRAJECTORIES_KEY_PREFIX):
         return _PURPOSE_RAW_MESSAGE
     return _PURPOSE_KV_VALUE
 

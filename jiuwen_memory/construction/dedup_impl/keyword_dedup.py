@@ -14,7 +14,12 @@ from __future__ import annotations
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
+from jiuwen_memory.construction.dedup import (
+    Dedup,
+    DedupProducer,
+    memory_type_matches,
+    same_scope,
+)
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -82,6 +87,11 @@ class KeywordDedup(Dedup):
                 continue
             # tier_filter: 可选按 tier 过滤（默认 False，允许跨层去重）
             if self._tier_filter and unit.tier != candidate.tier:
+                continue
+            # 类型隔离（mem2.0 §2.3）：不同类型带的条目不参与对照——对话记忆与
+            # 经验不互判为重复。倒排路的 filters 不被内存后端消费，类型过滤与
+            # tier 过滤同在加载后做。
+            if not memory_type_matches(candidate, unit):
                 continue
             # scope_filter: 只保留与候选同 scope 的 unit
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):

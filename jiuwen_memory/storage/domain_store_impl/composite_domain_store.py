@@ -509,6 +509,14 @@ class CompositeDomainStore(DomainStore):
         # （unit_id 当 key、unit_json 当 raw_bytes），无需区分来源。非文档维持原 KV.list 路径。
         if self.should_write_document():
             entries = self._raw_shadow_index().list_units(scope)
+            # mem2.0（§2.3 类型隔离的列举面）：经验/技能条目不经文档分流（经验
+            # profile 的 IndexBuilder 落 KV 索引，非文档数据面），文档真源只覆盖
+            # 对话记忆——list 是全类型列举入口，须把 KV 侧条目并进来统一过滤分页
+            # （dreaming 注册表等非 MemoryUnit 记录由 load_memory_unit 容错滤除，
+            # 与 KV.list 契约同构）。KV 端口未装配的文档部署（非 agent 默认装配）
+            # 跳过合并，行为与此前一致。
+            if self._manager.has_kv(self._kv_name):
+                entries = [*entries, *self._kv().scan(scope)]
             result = list_memory_entries(
                 entries,
                 scope,

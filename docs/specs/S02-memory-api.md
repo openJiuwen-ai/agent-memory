@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/construction/F10-experience-memory-and-skill.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-1-security-api-contracts.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-experience-retrieval.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -222,6 +222,9 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 21. **Space 删除事务在 Control**：`delete_space` 鉴权后调用 `SpaceLifecycleService`（先 `MemoryEngine.purge_space`，再 `SpaceManager.delete`，并把 purge 条数累加进 `deleted_counts` 的 `memory` / `index` / `kv`）。purge 失败则不删 space；purge 成功而 metadata delete 失败时抛 `PartialFailureError`（`retry_action=delete_space`），不得报告完整成功。重试同一入口：purge 对空空间幂等，第二步再删元数据。API 只授权、调用该端口、使 membership 缓存失效并记录入口审计；不得在 API 内联 purge+delete 或实现索引删除/存储遍历。
 22. **业务逻辑下沉可验证**：新增数据面语义时，API 侧只增加契约校验/参数装配/授权映射，具体行为必须在 `MemoryEngine` 或对应 Control/Construction/Retrieval 算子中实现。API 单测应使用 spy/mock 验证委托，Control 单测应覆盖真实行为，禁止只在 API 单测中覆盖业务分支。
 23. **Access 只依赖本包**：`jiuwen_memory_entry/` 与 `jiuwen_memory_adapter/` 只 `import jiuwen_memory.api`，不得 import `jiuwen_memory.api.memory_api_impl` 或其他内核包。协议转换所需的 DTO、枚举、异常、`internal_context` / `new_request_context` / `build_dev_authenticator` / `Surface` / `Credentials`，以及日志脱敏辅助函数 `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log` 由本包重导出。这四个辅助函数只处理 Python logging 参数，不增加 HTTP DTO 字段，也不改变 `MemoryAPI` 方法签名或响应。公开装配是 `assemble` / `assemble_runtime` / `assemble_server_runtime`（`config=dict | Config | None`），Access composition root（`jiuwen_memory_entry/core/server.py`）不 import `jiuwen_memory.config`，不访问内核实现私有成员。`Kernel` / `build_kernel` / `LocalMemoryAPI` 不是公开导出；公开运行时与 `Server` 不暴露 `kv` / `storage` / `space`。
+24. **经验写入的缺省落点鉴权（mem2.0）**：经验类别的写入（`memory_type` 落在无回退类别集合）且不带 `coords` 时，缺省落点由部署配置 `globals.experience` 的 `default_space` 给出（v3 §2）——为 `own` 时落点即写入落点（现有逻辑已校验，此处空过）；为空间名时 `add` / `add_async` 须对该经验空间（主体同组织 + 该空间名）单独按 WRITE 鉴权，无权返回权限错误。带 `coords` 的写入由落点判定计算候选空间时校验（现有逻辑）。未配置经验的部署不在此报错——引擎的 profile 准入（不回落默认 profile）兜底拒绝。derived_only 空间的读收紧见 S03 `SpacePolicy.write_mode`。关联决策见 [F10](../features/construction/F10-experience-memory-and-skill.md)。
+25. **经验检索的空间绑定路由（mem2.0）**：目标空间经 `SpacePolicy.pipeline_profiles` 的 `"*"` 键绑定 pipeline profile 时，`search` 把绑定值写进请求扩展参数的 `pipeline.route_key` 键——写入点在权限上下文构造之前（鉴权与执行按同一 profile），并覆盖调用方自带的同键值（绑定是空间级决定）。绑定的取值没有对应 profile（引擎未注入 pipeline 或 `has_profile_for` 为假）抛 `ValidationError`，不静默回落默认 profile。绑定了 profile 的空间不参与跨空间检索：显式 `spaces` 点名即 `ValidationError`（回显空间名与绑定值），主体反查静默排除（全部候选被排除时返回合法空结果，不是无权错误）。空间不存在或后端不可用按无绑定处理——空间可达性由鉴权裁决，路由侧不重复。关联决策见 [F08](../features/retrieval/F09-experience-retrieval.md)。
+26. **经验写入的生产者标记注入（mem2.0 §2.1）**：`memory_type` 落在无回退类别集合的写入，接口层把认证结果的生产者主体（从 `security.auth.actor` 推导）与凭据指纹（`AuthContext.credential_id`）写进 `system_metadata` 的内核保留键 `_producer_principal` / `_producer_credential`，覆盖请求中的同名键——调用方自报的接入方标识不可信，补报核对与外部结果阈值都按生产者取值。两个键属 `KERNEL_SYSTEM_METADATA_KEYS`，调用方经入参写入在边界先被拒（先拒后写）。凭据指纹为空串时恒写键不省略。主体维全空的调用方（运维通道）跳过注入——经验写入在评价算子按「缺少生产者标记」拒绝。其余写入不带这两个键。
 
 ## 接口契约
 
@@ -363,6 +366,14 @@ target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema 
 - **`procedural="true"`**：原文**不落 KV**；喂 `Evolver.evolve(units, EXTRACT)`。extractor 把本轮汇总成一条 PROCEDURAL 执行历史，再由 Evolver 落盘（`DynamicEvolver` 也走父类 procedural 路径，不判定）。
 - procedural 与 infer 同传时按 procedural 语义：原文不落 `/messages/`、不收集
   context、不去重。语义是"把这轮做了什么记成一条可检索 how-to"。
+
+##### 经验轨迹写入（mem2.0）
+
+`add`（及 `add_async`/`batch_add*`）不新增方法承载经验轨迹——`system_metadata["memory_type"]="experience"` 即转入经验管线（落点鉴权见条目 24、生产者标记注入见条目 26；设计见 [F10](../features/construction/F10-experience-memory-and-skill.md)，判定更新链见 [F10](../features/construction/F10-experience-memory-and-skill.md)）：
+
+- **`content` 为轨迹 JSON 对象**：`messages` 必填（元素带 `role`）；`retrieved` 可选（`[{id, ref}]` 使用记录，与 `retrieved_count` 核对）；`context` 可选背景块（预定义字段 `turn` / `started_at` / `ended_at` / `end_state` / `project` / `model` / `framework` / `extra`，v3 §2.1）。
+- **概要字段走 `system_metadata`**：`trajectory_id` 必填；`previous_trajectory_id`（反馈回填关联）、`tool_call_count`、`retrieved_count`、`external_score`（0-1，外部结果补报——轨迹已处理完时只按补报更新判定，不作为新轨迹）可选。
+- 原文与轨迹记录同级别加密（`/trajectories/` 键归 `raw_message` purpose，见 F10 第一部分决策十）；缺生产者标记（运维通道等主体维全空的调用方）按参数错误拒绝。
 
 ##### 动态抽取与巩固 prompt
 
@@ -507,6 +518,14 @@ def search(
 ```
 
 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine。`filters/as_of/top_k/disclosure/with_trajectory` 和 `context.extensions["max_tokens"]` 的既有处理不变。
+
+**空间绑定路由（mem2.0，F08）**：目标空间经 `SpacePolicy.pipeline_profiles` 的
+`"*"` 键绑定 pipeline profile 时，路由值取绑定值写进请求扩展参数的
+`pipeline.route_key` 键——写入点在权限上下文构造之前（鉴权与执行按同一
+profile），覆盖调用方自带的同键值；绑定的取值没有对应 profile 抛
+`ValidationError`（部署错配在入口暴露，不静默回落）。绑定了 profile 的空间
+不参与跨空间检索（显式点名拒绝、主体反查静默排除）。详见不变量 25、
+[S03 MemoryPipeline 路由规则](S03-control.md) 与 [F08](../features/retrieval/F09-experience-retrieval.md)。
 
 树参数的默认值直接体现在签名中，不使用内部二次补默认值。开启树功能时，省略参数
 即使用 TIME/time_span、一级展开和 MaxP 上卷；显式 `expand_depth=0` 或 `rollup=False`

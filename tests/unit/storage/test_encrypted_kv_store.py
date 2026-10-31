@@ -133,6 +133,22 @@ def test_encrypted_kv_store_mget_decrypts_each_value_with_its_own_aad() -> None:
     assert purposes == ["memory_unit", "raw_message"]
 
 
+def test_encrypted_kv_store_trajectory_keys_use_raw_message_purpose() -> None:
+    # 轨迹记录与对话原文同为「对话原文」性质（含用户消息明文），AAD purpose 与
+    # /messages/ 一致（mem2.0 §2.1）；purpose 不一致时 AAD 不匹配、解不开。
+    kv, _, encryption = _kv()
+    scope = Scope(org="acme", user="alice")
+    key = "/trajectories/d0123456789abcdef/t-0001"
+
+    kv.insert(scope, key, b"trajectory payload")
+
+    _, aad, _ = encryption.encrypt_calls[0]
+    assert _aad_payload(aad)["purpose"] == "raw_message", (
+        "轨迹键归入 raw_message purpose，AAD 与原文消息一致"
+    )
+    assert kv.get(scope, key) == b"trajectory payload"
+
+
 def test_encrypted_kv_store_mget_missing_raises_not_found() -> None:
     # raw mget 缺失即抛 NotFoundError（与 get 一致），encrypted 不静默省略。
     kv, _, _ = _kv()
