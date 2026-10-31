@@ -240,8 +240,7 @@ def _wire(entity_store) -> AssemblyContext:
         fulltext=InMemoryFulltextStore(WhitespaceTokenizer()),
         entity=entity_store,
     )
-    StoreManagerProducer.put("main", manager)
-    return AssemblyContext.from_dict(
+    ctx = AssemblyContext.from_dict(
         {
             "globals": {
                 "store_manager": "main",
@@ -251,6 +250,8 @@ def _wire(entity_store) -> AssemblyContext:
             }
         }
     )
+    StoreManagerProducer.put("main", manager, ctx=ctx)
+    return ctx
 
 
 def test_hybrid_builder_takes_entity_from_manager_port(_clean_factory) -> None:
@@ -272,7 +273,6 @@ def test_hybrid_builder_degrades_when_manager_has_no_entity_port(_clean_factory)
         vector=InMemoryVectorStore(),
         fulltext=InMemoryFulltextStore(WhitespaceTokenizer()),
     )
-    StoreManagerProducer.put("main", manager)
     ctx = AssemblyContext.from_dict(
         {
             "globals": {
@@ -284,6 +284,7 @@ def test_hybrid_builder_degrades_when_manager_has_no_entity_port(_clean_factory)
         }
     )
 
+    StoreManagerProducer.put("main", manager, ctx=ctx)
     builder = IndexBuilderProducer.build("hybrid", {}, ctx)
     # 不抛异常：fulltext/vector 子 builder 正常跑，entity 跳过
     builder.build([_make_unit("u1", "alice likes coffee", entities=["Alice"])])
@@ -298,7 +299,6 @@ def test_entity_disabled_skips_port_lookup(_clean_factory) -> None:
         fulltext=InMemoryFulltextStore(WhitespaceTokenizer()),
         entity=store,
     )
-    StoreManagerProducer.put("main", manager)
     ctx = AssemblyContext.from_dict(
         {
             "globals": {
@@ -310,6 +310,7 @@ def test_entity_disabled_skips_port_lookup(_clean_factory) -> None:
         }
     )
 
+    StoreManagerProducer.put("main", manager, ctx=ctx)
     builder = IndexBuilderProducer.build("hybrid", {}, ctx)
     builder.build([_make_unit("u1", "alice likes coffee", entities=["Alice"])])
 

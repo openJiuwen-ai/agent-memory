@@ -6,10 +6,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from jiuwen_memory.api import Scope, Surface
+from jiuwen_memory.api import RequestSecurityContext, Scope
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest
 
 _SCOPE_KEYS = {"tenant_id", "scope", "space", "space_id", "agent", "session"}
+# 历史 actor_* 键：不再解释为身份（P1-2——身份只来自 security），但仍是请求信封键，
+# 不透传进业务 payload。
 _ACTOR_KEYS = {
     "actor_tenant_id",
     "actor_scope",
@@ -18,12 +20,16 @@ _ACTOR_KEYS = {
     "actor_agent",
     "actor_session",
 }
-_NON_BUSINESS_KEYS = _SCOPE_KEYS | _ACTOR_KEYS | {
-    "grantee",
-    "member",
-    "target_scope",
-    "items",
-}
+_NON_BUSINESS_KEYS = (
+    _SCOPE_KEYS
+    | _ACTOR_KEYS
+    | {
+        "grantee",
+        "member",
+        "target_scope",
+        "items",
+    }
+)
 _NON_BUSINESS_PREFIXES = ("grantee_", "member_")
 
 
@@ -45,20 +51,24 @@ def _scope(payload: Mapping[str, Any], prefix: str = "", base: Scope | None = No
     )
 
 
-def _actor(payload: Mapping[str, Any], target: Scope) -> Scope:
-    if not any(key in payload for key in _ACTOR_KEYS):
-        return target
-    actor_space = (
-        _space(payload, "actor_")
-        if "actor_space" in payload or "actor_space_id" in payload
-        else target.space
-    )
+def _nested_scope(payload: Mapping[str, Any], base: Scope) -> Scope:
+    """Decode a nested typed Scope while retaining legacy aliases."""
+
+    def _value(name: str, legacy: str, default: str) -> str:
+        if name in payload:
+            raw = payload[name]
+        elif legacy in payload:
+            raw = payload[legacy]
+        else:
+            return default
+        return "" if raw is None else str(raw)
+
     return Scope(
-        org=str(payload.get("actor_tenant_id") or target.org or "default"),
-        space=actor_space,
-        user=str(payload.get("actor_scope", "")),
-        agent=str(payload.get("actor_agent", "")),
-        session=str(payload.get("actor_session", "")),
+        org=_value("org", "tenant_id", base.org),
+        space=_value("space", "space_id", base.space),
+        user=_value("user", "scope", base.user),
+        agent=_value("agent", "agent", base.agent),
+        session=_value("session", "session", base.session),
     )
 
 
@@ -72,22 +82,31 @@ def _business_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_legacy_dispatch_request(
-    verb: str, payload: Mapping[str, Any], *, surface: Surface = Surface.INTERNAL
+    verb: str,
+    payload: Mapping[str, Any],
+    *,
+    security: RequestSecurityContext,
 ) -> DispatchRequest:
-    """Convert the historical flat surface shape to the structured boundary."""
+    """Convert the historical flat surface shape to the structured boundary.
+
+    ``security`` is **required**: a trusted context produced by the composition
+    root's authenticator. No actor is derived from the payload—callers without
+    a trusted identity source must route through HTTP/API-Key instead.
+    """
     target_source = payload
     if verb == "batch_add" and isinstance(payload.get("defaults"), Mapping):
         target_source = payload["defaults"]
     target = _scope(target_source)
-    actor_source = dict(target_source)
-    actor_source.update({key: value for key, value in payload.items() if key in _ACTOR_KEYS})
-    actor = _actor(actor_source, target)
+    # 业务 target 与可信 actor 分离：target 只描述「操作落在哪」，身份只来自 security。
+    actor = security.actor
     grantee = None
     if "grantee" in payload or "grantee_tenant_id" in payload:
         grantee_raw = payload.get("grantee")
         grantee = (
             Scope(org=target.org, space=target.space, user=str(grantee_raw))
             if isinstance(grantee_raw, str)
+            else _nested_scope(grantee_raw, target)
+            if isinstance(grantee_raw, Mapping)
             else _scope(payload, "grantee_", target)
         )
     member = None
@@ -96,6 +115,9 @@ def build_legacy_dispatch_request(
         member = (
             Scope(org=target.org, space=target.space, user=str(member_raw))
             if isinstance(member_raw, str)
+            else _nested_scope(member_raw.get("scope", member_raw), target)
+            if isinstance(member_raw, Mapping)
+            and isinstance(member_raw.get("scope", member_raw), Mapping)
             else _scope(payload, "member_", target)
         )
 
@@ -116,12 +138,19 @@ def build_legacy_dispatch_request(
         )
 
     business = _business_payload(payload)
+    # 嵌套 ``member`` 里的角色与时间是一等字段：``member`` 属非业务键，若不在此
+    # 上提，``_space_member`` 只能看到扁平键，成员永远建成最低档且无有效期。
+    if verb == "add_space_member" and isinstance(payload.get("member"), Mapping):
+        nested_member = payload["member"]
+        for key in ("role", "content_role", "governance_role", "created_at", "expires_at"):
+            if key in nested_member and key not in business:
+                business[key] = nested_member[key]
     return DispatchRequest(
         verb=verb,
         actor=actor,
         target=target,
+        security=security,
         payload=business,
-        surface=surface,
         grantee=grantee,
         member=member,
         batch_items=tuple(items),

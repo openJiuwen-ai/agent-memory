@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from .hierarchy import HierarchyRef
 from .scope import Scope
 
 MetadataValueType = str | int | float | bool | None | list[str]
@@ -145,6 +146,22 @@ class ChunkVector:
 
 
 @dataclass
+class TreeFact:
+    """树构建用完整事实；来源以完整 Scope + snapshot id 标识，不参与检索投影。"""
+
+    source_id: str
+    source_scope: Scope
+    text: str
+
+
+@dataclass
+class TreeMemoryData:
+    """逐层继承的构建材料，与可索引的 segments 正文分开持久化。"""
+
+    facts: list[TreeFact] = field(default_factory=list)
+
+
+@dataclass
 class MemoryUnit:
     """一条记忆：多段内容投影 + 归属/时间/血缘/生命周期。
 
@@ -183,6 +200,11 @@ class MemoryUnit:
     # Storage.add/update 下传；一体化 Storage 消费它自建向量索引，CompositeStorage
     # 仅随本体持久化。空列表表示未向量化。
     vectors: list[ChunkVector] = field(default_factory=list)
+    # 跨 unit 树结构引用（F08），与披露层/多模态粒度/tier 正交。
+    # 追加字段以保留既有 MemoryUnit 的位置参数顺序；空结构表示未挂树。
+    hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
+    # None 表示未保存完整事实（含旧数据），不能把旧父摘要当成完整事实补入。
+    tree_memory: TreeMemoryData | None = None
 
     @property
     def content(self) -> str:
@@ -234,7 +256,25 @@ COORDS_KEY = "coords"
 TRANSIENT_SYSTEM_METADATA_KEYS = frozenset({ROUTE_CTX_KEY, COORDS_KEY})
 
 # 归属判定命中的类别名，落条目 system_metadata（见 KERNEL_SYSTEM_METADATA_KEYS 内的同名项）。
+# 文档记忆（F08）复用此值作 md 文件分流依据：memory_class → md 路径映射（F08 §3）。
+# 它是落盘键（不在 TRANSIENT_SYSTEM_METADATA_KEYS 内），dumps 保留，影子索引 unit_json
+# 反序列化后可读；md 写入与影子索引 insert_units 均从 unit.system_metadata 取此值。
 MEMORY_CLASS_KEY = "memory_class"
+
+# md 文件相对路径指针：文档记忆（F08）下 ``MarkdownStore.write`` 落盘后回填进
+# ``unit.system_metadata[MD_FILENAME_KEY]``（值如 ``memory/my_app/daily_memory/2026-08-29.md``），
+# 供影子索引 ``memory_unit.md_filename`` 列落库（F07 §11.2 / F08 §4 步骤4）。
+# 它是普通字符串键，不进瞬态集合——落盘进 unit_json 与表列两处冗余但无害：
+# 表列用于召回查询，unit_json 内的用于反序列化兜底。
+MD_FILENAME_KEY = "md_filename"
+
+# md 块标题：LLM 抽取时与 tier/tags 同一 prompt 一并产出（F08 §8），构建派生 unit 时写入
+# ``unit.system_metadata[MD_TITLE_KEY]``，``MarkdownStore.write`` 渲染标题行时读取——
+# daily 文件（daily_memory）不用它（用 coords.team 标识来源），其余 md 文件用它，
+# 缺失兜底 ``# {unit.id}``（infer=false 直写与看门狗重建路径无 LLM 标题）。
+# 与 MD_FILENAME_KEY 同类：内核写入的普通字符串键，不进瞬态集合（落 unit_json，召回物化可读），
+# 不进 KERNEL_SYSTEM_METADATA_KEYS（调用方写了也只是无害冗余，渲染有兜底，不构成伪造面）。
+MD_TITLE_KEY = "md_title"
 
 # ``system_metadata`` 里由内核写入并参与判定的键，调用方不得经该入参赋值。
 #
@@ -258,6 +298,11 @@ KERNEL_SYSTEM_METADATA_KEYS = frozenset(
         "t_invalid",
         "t_message",
         "seq",
+        # 树结构投影由 HierarchyRef 生成；kind/role 兼作合法叶提示，不能在此禁止。
+        "hierarchy_status",
+        "tree_parent_id",
+        "tree_span_start",
+        "tree_span_end",
         # -- 群体记忆（F07）：内核按调用方身份写入并参与判定 --------------------
         # 作者主体：user:<id> 或 agent:<id>，由内核从身份推导，调用方不可赋值
         "author_principal",

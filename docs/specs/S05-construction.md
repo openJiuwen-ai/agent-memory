@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-10-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -50,7 +50,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 - 候选落盘前巩固（ADD/UPDATE/SUPERSEDE/NOOP）
 - 多形式索引构建（文档/关键词/向量/图，按配置启用）
 - 记忆自演进（抽取 → 关联 → 冲突消解 → 升华 → 遗忘/降权）
-- 树结构派生、区间重建与双向边维护（目标契约，尚未实现）
+- 树结构派生、区间重建与双向边维护（已实现 TIME）
 
 **不管什么**：
 - 不做鉴权（由 `jiuwen_memory/api` 层负责）
@@ -107,12 +107,22 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
     读写不分叉。
 18. **正排最先出现、最后消失**：`build`/`update` 正排在前，`remove` 正排最后。正排先删会
     留下孤儿派生索引，而删除路径的扫描源正是正排，此后无法清理。
-19. **叶权威、父可重建**（目标契约，尚未实现）：普通写入或来源转换产生的叶是权威事实；
+19. **叶权威、父可重建**（已实现 TIME）：普通写入或来源转换产生的叶是权威事实；
     `HierarchyComposer` 生成的父节点是派生物。重建父层不得删除、改写或归档权威叶内容。
-20. **层级边双向一致**（目标契约，尚未实现）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
+20. **层级边双向一致**（已实现 TIME）：父 `child_ids` 与子 `parent_id` 必须在同一构建操作中维护，
     并在写索引前通过同 org+space、无环、单 kind 单父、区间覆盖校验（跨细粒度 scope 时边可解析）。
-21. **父标注先于持久化和索引**（目标契约，尚未实现）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
-    再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果。
+21. **父标注先于持久化和索引**（已实现 TIME）：新派生父节点先经 `LayerAnnotator` best-effort 生成 L0/L1，
+    再写 KV 和索引。标注失败保留空 layers 并继续，不得因摘要失败丢失结构结果；
+超限内容分片生成时全部片段有效才合并写回，任一片无效该 unit 保留原有 layers。
+22. **Schema 事件精度不伪造日期**：Property 的年/月事件时间用
+    `schema_event_start/end/precision` 半开区间表达，`temporal.t_event`
+    保持为空；日/日时精度可同时写 `t_event`。Source 消息时间只能进入
+    Property content 作为 as-of 上下文，不得自动当成事件时间。
+23. **Schema 实体分组可重现、不是独立真源**：同 org/space/user、Schema 名称、
+    实体类型和归一名必须产生相同临时 `schema_entity_key`。Schema Entity Resolver 在落盘前
+    通过名称、别名、语义候选与 LLM CREATE/UPDATE 判断写入 canonical `schema_entity_id`，
+    并将 key 改为该 id。隐藏 Registry 是可由 Property 重建的派生投影，
+    也不替代 `MemoryUnit.entities`。
 
 ## 接口契约
 
@@ -121,7 +131,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 ```python
 class OperatorType(str, Enum):
     EXTRACTOR / ABSTRACTOR / ASSOCIATOR / CLASSIFIER / INDEX_BUILDER / EVOLVER / LAYER_ANNOTATOR
-    # 目标新增：HIERARCHY_COMPOSER
+    HIERARCHY_COMPOSER = "hierarchy_composer"
 
 class ConstructionOperator(ABC):
     def operator_type(self) -> OperatorType  # 自描述
@@ -149,6 +159,8 @@ LLM 抽取只合并同一实体同一关系或同一事件。派生单元的 L2 
 同批合法候选继续保留。单个子批失败不阻断其它子批；仅当整次抽取没有产生任何可用候选
 时向上抛出首个错误，以区别于模型明确返回合法 `[]`。
 
+超过 `CONTENT_MAX_UNIT_CHARS`（8000，与 ingest 预切分上限对齐）的 unit 不截断——中段截断等于静默漏事实，显式拒绝又会丢掉合法输入——而是按段落边界分片逐批调用，候选按 `source_unit_ids` 叠加合并（溯源不变），单批 prompt 保持有界。
+
 动态实现识别 `_extract_prompt_<strategy>`。普通 write 路径以 `infer=true` 触发抽取，
 procedural write 或显式 `evolve(EXTRACT)` 也会进入同一 Extractor；每个非空自定义策略
 执行一次 LLM 调用。metadata 中 `_extract_prompt_<strategy>` 的值是 prompt 的
@@ -175,11 +187,36 @@ Schema 抽取先选择本轮相关 entity type/property，再使用同一选中�
 属性名、非空事实文本，以及同 Scope 输入中的一个或多个 `source_unit_ids`。
 
 每个合法属性生成一个独立 MemoryUnit。属性 Unit 的 `entities` 为空；Schema 名称、版本、
-实体类型和属性名写系统 metadata。属性成功落盘后，仅实体明文聚合写回相应 Source
-MemoryUnit 的 `entities`，属性名不得进入实体列表；经 `IndexBuilder.update(mode=ALL)`
-同时回写本体和刷新检索索引；
+实体类型、实体名、稳定 `schema_entity_key` 和属性名写入系统 metadata。
+属性成功落盘后，仅实体明文聚合写回相应 Source MemoryUnit 的 `entities`，
+属性名不得进入实体列表；稳定实体 key 另存于系统 metadata，并经
+`IndexBuilder.update(mode=ALL)` 回写本体与刷新检索索引；
 来源业务 metadata 仍按通用派生规则写入 user metadata。
-完整可解析的事件日期/时间可写 `temporal.t_event`，但时间不是属性合法性的必要条件。
+
+Schema 生成上下文须按每个 Source 显式提供 unit id、说话者、角色和
+`temporal.t_message`，使相对时间能绑定到正确来源。时间字段按下列契约投影：
+
+- 年/月/日/日时分别记录 `schema_event_precision`；
+- `schema_event_start` 为包含边界，`schema_event_end` 为不包含边界；
+- 年/月仅写半开区间，日/日时同时把起点写入 `temporal.t_event`；
+- 无事件时间时允许 content 附带 Source message date 作为 as-of 上下文，
+  `temporal.t_message` 保持来源消息时间，`temporal.t_event` 保持为空；
+- 相对时间的 Property content 同时保留 Source message date 和原始相对表达。
+
+时间不是属性合法性的必要条件。不得以 `t_message` 填充缺失的 `t_event`，
+也不得把月/年精度扩展为任意具体日期。
+
+`schema_enabled=true` 时，`IndexBuilderProducer` 在任意具体 IndexBuilder
+target 外包装 Schema Property 反向索引维护器。`FORWARD_ONLY build` 记录排除项，
+避免后续 Scope 回填误纳入未建检索索引的 Property；`FORWARD_ONLY update` 保留已有
+membership，以便软删后仍可保留属性版本历史。
+Property canonical identity 依次取 `schema_entity_id`、`schema_entity_key`、
+`type::name`，且必须具有非空 `schema_property_name`。一个 Scope 首次维护时从该
+Scope 的全部 MemoryUnit 一次性回填 membership/pointer，并以 Scope watermark 作为
+最终提交标记；watermark 缺失或失效时读侧回退 Scope 列表查询。携带 MemoryUnit 的
+硬删和 `remove_with_scope()` 均同步维护索引；维护失败必须使 watermark 失效并恢复
+fallback。没有 KV 端口的一体化/自定义 manager 不装配该索引，读取侧改走 DomainStore
+Scope fallback。该索引可从 MemoryUnit 重建，是派生数据而不是实体真源。
 
 Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选直接 ADD，不进入普通文本
 相似度 Dedup。Extractor 连续重试后仍失败时只放弃 Schema 派生，不回滚已持久化 Source。
@@ -216,6 +253,8 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 |------|------|------|
 | `abstract` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 对一批记忆单元做抽象与精炼，产出高抽象粒度的新记忆单元 |
 
+超过 `CONTENT_MAX_UNIT_CHARS` 的 unit 采用**两段式**消费：先按段落边界分片逐片提炼（分片级候选 `source_unit_ids` 回指原 unit，原文事实不丢），再把每个超限 unit 替换为其提炼视图（各片候选拼接、显式截到 2000 字符的压缩视图）与未超限 unit 合并进**同一次**归纳调用——PATTERN/PORTRAIT 的跨记忆共同归纳不因分片调用拆散。多组消费时单组失败隔离跳过，不影响其它组。
+
 ### Associator（`associator.py`）
 
 关联分析，发现记忆间的关联关系。
@@ -245,7 +284,10 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 按 `layer_annotator_threshold`（默认 512）筛选：仅对 `len(content) > threshold` 的 unit
 标注，短 content 留空。LLM 批量结果必须以合法、唯一的 ID 完整覆盖输入；重复、越界或
 遗漏 ID 时整批不写。每条结果应满足 `0 < len(L0) < len(L1) < len(L2)`，仅长度不合法的
-条目单独跳过，其余条目在结构校验完成后写入。Evolver 在 EXTRACT/CONSOLIDATE 抽取
+条目单独跳过，其余条目在结构校验完成后写入。超过 `CONTENT_MAX_UNIT_CHARS` 的 unit 
+不截断，按段落边界分片逐片生成 L0/L1：**全部片段都有效才合并写回**，任一片无效则该 
+unit 整体放弃本次标注——保留原有 layers（未标注为空）并 warning 上报，不提交残缺的
+整篇摘要。Evolver 在 EXTRACT/CONSOLIDATE 抽取
 （升华）后、去重落盘前调用。
 
 ### Router（`router.py`）
@@ -364,12 +406,10 @@ MemoryUnit
 metadata 一致投影到已启用的 L0/L1/L2 索引记录；索引是派生物，必须可从 KV 中的
 `MemoryUnit` 重建。
 
-### HierarchyComposer（目标契约，尚未实现）
+### HierarchyComposer（已实现的显式与增量 TIME 构建）
 
-`HierarchyComposer` 与 `Extractor` / `Abstractor` 等并列，同属 `ConstructionOperator`：
-实现建树/区间替换算法，由控制层 `evolve(..., mode=HIERARCHY)` → Evolver 调度调用；
-不自行鉴权、不自行提交后台任务，也不替代 IndexBuilder。普通 EXTRACT/CONSOLIDATE
-等模式不暗改 `HierarchyRef`。
+与 Extractor / Abstractor 并列，消费备齐的 MemoryUnit，经 IndexBuilder 持久化，
+不自行查库、鉴权或调度。控制层 evolve_v2(HIERARCHY) 通过 Evolver 委托本算子。
 
 ```python
 @dataclass(frozen=True)
@@ -384,16 +424,16 @@ class HierarchyComposeOptions:
     kind: HierarchyKind
     leaf_role: HierarchyRole
     parent_roles: list[HierarchyRole]
+    tree_home_scope: Scope
     span_start: datetime | None = None
     span_end: datetime | None = None
-    replace_existing: bool = False
     metadata: dict[str, str] = field(default_factory=dict)
 
 @dataclass
 class HierarchyComposeRequest:
-    scope: Scope
-    leaf_ids: list[str]
+    leaves: list[MemoryUnit]
     options: HierarchyComposeOptions
+    existing_parents: list[MemoryUnit] = field(default_factory=list)
 
 @dataclass
 class HierarchyRepair:
@@ -409,74 +449,48 @@ class HierarchyComposeResult:
     replaced_parent_ids: list[str] = field(default_factory=list)
     repair_required: list[HierarchyRepair] = field(default_factory=list)
     complete: bool = True
-
-class HierarchyComposer(ConstructionOperator):
-    def build(self, request: HierarchyComposeRequest) -> HierarchyComposeResult: ...
-    def replace_in_span(self, request: HierarchyComposeRequest) -> HierarchyComposeResult: ...
 ```
 
-`HierarchyComposeProfile` 是装配期不可变配置，按 `kind` 唯一注册；重复 kind、
-空 `parent_roles`、重复 role、`leaf_role` 出现在父序列中、未注册 stage 或 kind
-不支持该 role 序列时拒绝装配。`stage_options` 的外层键是稳定 stage 名，内层值只允许
-字符串配置；运行时 Policy 不修改 profile。
+`HierarchyComposer.build(request)` 为首次构建，拒绝旧父边；
+`replace_in_span(request)` 要求有界 span，允许新叶与旧树完整输入共同构建。
+显式 Evolver 使用 replace_in_span；完整复用由 Job 在调用算子前判断，
+不存在 replace_existing 字段。空候选由 Job 返回空操作，不发送给严格 Composer。
 
-`leaf_ids` 必须非空、无重复并全部解析到 `request.scope`；其顺序是输入稳定顺序。
-`parent_roles` 必须非空，是从近叶到远叶的待构建父角色序列；不得重复，也不得包含
-`leaf_role`。
-kind/role 必须使用 S07 定义的枚举。TIME 请求必须给出成对且有效的 span；非 TIME
-可省略。`metadata` 只复制到新派生父节点，不得覆盖 id、scope、tier、temporal、
-provenance、supersedes、lifecycle 或 hierarchy 等核心字段。
+当前只支持 TIME：Snapshot→TimeSpan→Scene→Event 的非空父层前缀。
+profile 按 kind 唯一配置，stage_options 只接受 TimeSpanMerger、SceneSegmenter、
+EventBuilder。时间以 hierarchy 区间比较，naive 按 UTC、aware 按实际瞬间；
+原始叶的 temporal、正文、来源、生命周期不变，仅更新 hierarchy。
 
-调用方按 `replace_existing` 确定唯一分派：`false` 调用 `build`，发现冲突旧父时整体
-失败；`true` 调用 `replace_in_span`，并要求请求具有成对且有界的 span。显式
-`evolve(HIERARCHY)` 使用调用方给出的值；S03 的 ensure 和 auto derive 固定组装为
-`replace_existing=true`，使同一区间的重复任务成为受控重建，而不是产生第二套父层。
+父驻留 tree_home_scope；叶允许位于其覆盖的更细 Scope，org/space 必须精确相同。
+所有结构节点以完整 Scope + id 定位。重建备齐相交旧根的整棵子树，包含区间外子叶；
+先构造副本并验证，再按新父本体从根向下→叶父边→旧父归档断边→检索索引刷新写入。
+旧父本体保留 ARCHIVED，旧索引软删除。无事务回滚保证；失败返回真实完成项及
+repair_required，调用方须报告 FAILED。当前没有自动修复或事务恢复执行器。
 
-`build` 读取权威叶，在请求 span 内创建指定父角色，写入父的有序 `child_ids` 并回写
-直接子的 `parent_id`。它不得隐式替换 span 外的父节点；发现已有冲突父边时返回校验
-错误，不做部分挂接。父节点的 tier 由内容决定，不得从 role 硬推导；角色与 tier 的
-设计指导映射由 [F08-memory-tree.md](../features/common/F08-memory-tree.md)
-记录，不构成本接口的枚举等价约束。
+逐层分组、完整事实和摘要契约见本文末尾交付部分。单层增量通过内部上下文驱动，
+后台注册、候选扫描与逐层增量已接入，调度契约见 S03；ensure、多 kind 构建和自动修复尚未实现。
 
-TIME 构建以 `MemoryUnit.temporal.t_event` 作为叶事件时间，以
-`HierarchyRef.span_start/span_end` 作为结构覆盖区间。父区间覆盖所有直接子区间，
-直接子按区间起点、事件时间和输入稳定顺序排序。`HierarchyKind.TIME` 不替代
-`MemoryUnit.temporal`，也不替代 `RecallChannel.TEMPORAL`。
-
-新父正文和 segments 先构造，再调用 `LayerAnnotator`；无 annotator 或标注失败时以空
-layers 降级。只有通过结构校验后，才按“KV 真源 → 内容索引”顺序持久化父与被改写的子。
-
-`replace_in_span` 仅选择与请求 span 相交、kind 匹配且角色位于 `parent_roles` 的旧派生
-父节点。它必须先计算完整替换集并验证新树，然后：
-
-1. 从旧父 `child_ids` 移除边，并清空仍指向旧父的直接子 `parent_id`；
-2. 将相交旧派生父默认转为 `LifecycleState.ARCHIVED`，并从活动内容索引移除；
-   `replace_in_span` 本身不物理 PURGE 真源，物理回收必须走 S03 的显式生命周期策略；
-3. 保留全部权威叶及其 segments、temporal、provenance 和生命周期；
-4. 写入新父，回挂双向边，再更新受影响索引；
-5. 边界切过旧父时扩大替换范围到完整旧父，或拒绝请求，不留下半父节点。
-
-期望的原子边界是同 org+space 下“旧边断开、新父写入、新边挂接、旧父退役”的一次提交
-（子叶可驻留不同 session/user Scope，由边定位）。
-支持事务的 KV 后端必须原子提交；不支持事务时必须先暂存并验证新父，按可恢复顺序写入，
-具体顺序是“写入尚未挂活动边的新父 → 按稳定顺序切换子边 → 归档旧父 → 更新索引”。
-失败后返回 `complete=false` 和逐项 `repair_required`，且不得删除权威叶。调用方不得把
-带 repair 项的结果当作成功；construction/control 负责重试或一致性修复。
+内部增量准备段（Evolver 请求校验与 Composer 分组、摘要、候选树验证）尚未调用持久化时，
+异常以 HierarchyPreparationError（ValidationError 子类）保留原原因并向上传递。
+该信号仅证明当前层未写入，不否认此前已完成的下层。显式建树保留原异常类型。
+持久化调用必须在准备段之外：部分写入按 complete/repair_required 报告，未分类的
+插件异常不声明无写入；控制层据此保守处理。模型摘要已有的摘录回退策略保持不变。
 
 ### Evolver（`evolver.py`）
 
-记忆自演进，持续驱动演进闭环。两个实现：`OrchestratingEvolver`（注册名 `orchestrating`，legacy）与 `DynamicEvolver`（注册名 `dynamic`，子类，EXTRACT 走动态 prompt 四步）。`evolve` 按模式分派到 `_evolve_extract` / `_evolve_consolidate` / `_evolve_associate` / `_evolve_forget` 四个可覆盖方法。两种 Evolver 的高相似 direct_noop 短路共用 `evolver_impl/dedup_direct_noop.should_direct_noop`。
+记忆自演进。OrchestratingEvolver、DynamicEvolver、SchemaOrchestratingEvolver
+保留各自普通抽取行为；HIERARCHY 共用父类分流，仅调用可选 HierarchyComposer。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `evolve` | `(request: EvolveRequest) -> EvolveResult` | 对一批记忆单元执行指定阶段的演进，返回变更结果 |
+| `evolve` | `(units: list[MemoryUnit] | EvolveRequest, mode: EvolveMode | None = None) -> EvolveResult` | 对一批记忆单元执行指定阶段的演进，返回变更结果 |
 
 **EvolveMode**：
 - `EXTRACT` — 信息提取
 - `ASSOCIATE` — 关联分析
 - `CONSOLIDATE` — 冲突消解（近重复融合/矛盾标记失效）
 - `FORGET` — 遗忘/降权（过期/低价值记忆归档）
-- `HIERARCHY` — 显式创建或重建父节点及双向包含边（目标新增）
+- `HIERARCHY` — 显式创建或重建父节点及双向包含边
 
 ```python
 @dataclass
@@ -485,11 +499,12 @@ class EvolveRequest:
     mode: EvolveMode
     metadata: dict[str, str] = field(default_factory=dict)
     hierarchy_options: HierarchyComposeOptions | None = None
+    hierarchy_incremental: HierarchyIncrementalContext | None = None
 ```
 
 `metadata` 承载 correlation id、触发来源等请求级透传信息，不写回 unit 核心字段。
 仅 `HIERARCHY` 接受 `hierarchy_options`，且必须提供 kind、leaf_role、parent_roles 与
-TIME 所需 span；其他 mode 提供该 options 时拒绝。实现迁移期间可以保留
+tree_home_scope 与 TIME 所需 span；其他 mode 提供该 options 或 incremental 时拒绝。继续兼容
 `evolve(units, mode)` 作为兼容入口，其语义等价于构造不带 metadata/options 的请求；
 该入口不能触发 HIERARCHY。
 
@@ -506,6 +521,31 @@ class EvolveResult:
 ```
 
 `hierarchy_result` 只在 HIERARCHY 模式返回结构结果与修复报告，其他 mode 为 `None`。
+
+### LLM 调用尝试策略
+
+Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`：
+
+- `max_attempts` 表示本次逻辑调用允许的 **LLM 总调用次数**，必须是大于等于 `1`
+  的整数；`1` 表示只调用一次，不重试。默认值为 `3`。
+- `retry_backoff_ms` 表示两次调用之间的指数退避初始值，必须是不小于 `0` 的整数，
+  默认值为 `1000`。
+- 适用配置键分别为 `extractor_max_attempts`、`abstractor_max_attempts`、
+  `associator_max_attempts`、`classifier_max_attempts`、`layer_annotator_max_attempts`
+  和 `router_max_attempts`；对应退避键为各自的 `*_retry_backoff`，Router 使用
+  `router_retry_backoff`。
+- `max_attempts` 非法时在算子构造期抛出 `ValidationError`，不得等到第一次 LLM
+  调用时才失败；最后一次调用失败时原始异常向上抛出。
+- 重试循环统一收敛在 `construction/llm_retry.py::call_llm_with_retry`，各算子一律委托
+  之，不再各自维护循环。**超时是确定性失败，不重试**：超时判别只认 LLM 契约的统一超时
+  类型（`common.errors.LLMTimeoutError` 或内建 `TimeoutError` 子类），由各 LLM Adapter
+  把自家 SDK 超时异常转换后抛出（见 S07「LLM」小节）；构建层不得依赖具体 SDK 异常类名
+  （S09 §9 抽象边界）——超时叠加重试会把单次超时放大为 N×timeout。
+
+这与 common 层的 `llm_max_retries` 不同：后者表示 SDK 在一次出站请求中的自动重试次数，
+因此 `N` 次 SDK 重试最多产生 `N + 1` 次底层请求。Construction 层不再读取
+`retry_max_retries` 或各组件的 `*_retry_max` 旧键；装配期发现旧键时直接抛出
+`ValidationError` 并提示对应的新键名，避免升级后静默回落默认值。
 
 各模式对 hierarchy 的行为：
 
@@ -551,12 +591,12 @@ class EvolveResult:
 | `provenance` | list[str] | 演进血缘（多→一）：由哪些 unit 抽取/升华/合并而来 |
 | `supersedes` | str | 版本链（一→一）：本版取代的上一版 id（空=首版） |
 | `tags` | list[str] | 标签（检索前置过滤用） |
-| `system_metadata` / `user_metadata` | dict[str, MetadataValueType] | 系统/用户双命名空间元数据（保留 JSON 标量原生类型，见 F04-memory-metadata-separation） |
+| `system_metadata` / `user_metadata` | dict[str, MetadataValueType] | 系统/用户双命名空间元数据（保留 JSON 标量原生类型）；Schema Property 可用系统字段承载实体分组键与事件精度/区间 |
 | `lifecycle` | LifecycleState | 生命周期状态 |
 | `entities` | list[str] | L2 记忆里由大模型抽取得到的实体文本（明文）。entity linker 建反向索引时只消费本字段构造 `EntityMention`，为空时直接跳过该 unit（已砍 spaCy 兜底，无回退抽取，见 [F06](../features/retrieval/F06-entity-recall-channel.md)）。默认空，向后兼容 |
 | `vectors` | list[ChunkVector] | content 的 chunk 级向量投影：构建期由 IndexBuilder 在 `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed）填充，`id`/`seq` 与 Chunk 对齐，随本体经 `DomainStore.add/update` 下传；一体化数据面实现消费它自建 chunk 级向量索引（record id 沿用 `{unit_id}-{chunk_id}`），CompositeDomainStore 仅随本体持久化。空列表表示未向量化；codec 加字段兼容演进，`_v` 不升（见 F06-unified-index-builder） |
 
-构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。目标父节点复用既有
+构建层直接消费 S07 定义的 `HierarchyRef` 和层级枚举。TIME 父节点复用既有
 segments、layers、tier 和 metadata 槽位，结构边只写 hierarchy；`content/assets/source`
 仍是基于 segments 的只读合并视图。精确类型与默认值见 [S07-common.md](S07-common.md)。
 
@@ -599,9 +639,75 @@ jiuwen_memory/construction/<算子>_impl/
 |-----------|------|
 | S01-ingest_access | 本层接收接入层产出的 MemoryUnit 做落盘+索引 |
 | S03-control | Engine.write 路径调用本层 IndexBuilder.build，Engine.evolve 路径调用本层 Evolver |
-| S04-retrieval | 检索层消费本层构建的索引 |
+| S04-retrieval | 检索层消费本层构建的内容索引、Schema 时间投影和 Entity → Property 反向索引 |
 | S06-storage | 本层通过注入的 Store 抽象做真源与索引持久化 |
 | S07-common | 本层消费 Chunker/Tokenizer/Embedder/FeatureExtractor/LLM/Reranker 共享插件 |
 | S08-config | Prompt 文本与模型晚绑定经 ConfigSource；业务入参只传 prompt key |
 | F07-collective-memory | `Router` 是本层承担的归属判定算子；判定表配置、生效范围与失败方向由该规约定义 |
 | architecture.md §4/§6/§8 | 分层记忆结构 / 多形式索引 / 记忆自演进 |
+
+## 同步 infer 的 Snapshot 继承
+
+Orchestrating/Dynamic Evolver 在抽取后、归属路由前，仅为明确 infer=true 的 TIME/Snapshot
+来源传递叶身份。匹配要求完整 Scope 相同，优先唯一 source_ref，无法解析时完整解析
+provenance。涉及参与继承的来源时必须唯一；明确全部来自非参与来源的候选允许多源，
+保持普通抽取行为。缺失、无法解析或跨 Scope 的来源引用仍拒绝，不能猜测是否参与继承。
+先验证整批候选再赋值，
+避免引用失败留下半批结构。独立 Extractor、procedural、Schema 与普通后台 EXTRACT
+不自动获得该继承语义。KeywordExtractor 清除 deepcopy 带出的结构，防止沿用来源父子边。
+
+继承只复制 kind/role/span 和 ACTIVE 状态，不复制边、ordinal、tree_memory 或修改 temporal。
+对于未挂树的 TIME/Snapshot，缺失时间端点保留 None，不在继承或去重时自动补齐。
+写入缺时提示的容忍不改变默认结构校验；显式和自动建树已在候选层跳过未挂树缺时叶，再严格校验树。
+去重 ADD 保持一条候选；NOOP 不修改已有节点；UPDATE 用新叶区间替换，不做区间并集，
+缺少新提示则保留旧结构；SUPERSEDE 保留原版本替换规则。UPDATE/SUPERSEDE 涉及已挂树
+节点或其他树角色时，在正文合并和存储写入前拒绝，避免产生未经维护的父摘要/边。
+这些检查不构成批量事务；它们保护当前决策涉及的记忆，之前成功的独立决策不会回滚。
+
+
+## TIME 分组与逐层事实摘要
+
+`HierarchyComposeOptions` 指定 kind、叶角色、非空父角色前缀、tree_home_scope，
+以及可选成对区间和新父 metadata。仅实现 TIME/Snapshot，父链为
+TimeSpan→Scene→Event 的非空前缀；调用方原始叶不被分组与摘要过程修改。
+
+`HierarchyComposeProfile` 固定树形与三个阶段选项。TimeSpan 的 gap_seconds 表示
+整组累计区间跨度，等于阈值不切分；单个超长叶保持原子性。Scene 可设最大跨度，
+Event 不设时间跨度窗口。会话、上下文、结束信号、语义判据按各层配置执行。
+
+每层先生成结构与摘要，再进行上一层分组。完整事实独立于摘要逐层传播，
+结构摘录数量/长度上限仅约束回退正文。摘要失败保留结构摘录，父 L0/L1 标注失败
+保留空层；模型缺依赖属于配置错误。时间比较统一使用 common 的 UTC 解释规则。
+
+
+### 显式构建持久化契约
+
+`HierarchyComposer.build(request)` 拒绝已有父边；`replace_in_span(request)` 要求
+有界时间范围和相交旧根的全部父层、叶节点。两者返回 HierarchyComposeResult，
+包含 created_parent_ids/updated_child_ids/replaced_parent_ids/repair_required/complete。
+新父与子边写入前严格校验，正文与来源不通过树构建修改。部分失败不保证回滚，
+调用方不得将 complete=False 或非空 repair_required 当作完整成功。
+
+
+### TIME 单层增量构建与封口
+
+`HierarchyComposeRequest.incremental` 是可选的内部 `HierarchyIncrementalContext`，
+包含 `settle_at`（本轮时间）、`ready_before`（下层待定最早起点）与
+`supporting_units`（输入根的完整后代）。只允许 profile 中相邻的一层，输入根不得已挂父。
+`build` 处理增量；`replace_in_span` 拒绝增量上下文。既有显式请求语义保持。
+
+非尾组按已形成的边界尝试封口；尾组要求本轮时间减组最大结束时间严格大于
+`settle_seconds`。TimeSpan/Scene 未配置静默时回退至各自分组跨度，Event 默认三天。
+待提交组不能越过下层待定起点，也不能与后续待定组重叠，只提交安全连续前缀。
+未封口组不生成摘要、不写父节点。静默不改变显式分组结果。
+
+新增 `HierarchyComposeResult.deferred_child_count` 和 `pending_before` 表达等待数量
+与最早待定时间。已挂下层子树保持正文、披露层与直接子边，仅为本轮输入根补父边；
+完整证据与双向引用必须校验通过，部分写入仍返回 repair_required。
+
+
+Evolver 的可选能力 `hierarchy_profile(kind) -> HierarchyComposeProfile | None` 返回其
+绑定 Composer 的配置快照；默认 None，不为自动任务构造另一套模型依赖。
+`EvolveRequest.hierarchy_incremental` 仅供内部周期任务使用：非空时以相邻单层请求
+委托 Composer.build；为空时沿用显式 replace_in_span。Dynamic/Schema Evolver 继承该
+委托路径，原 `evolve(units, mode)`、显式分组和重建行为保持。

@@ -26,6 +26,7 @@
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
 | `retriever_impl/` | Retriever 实现目录；pipeline 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；multimodal 组合原生、CLM、ELM 三个过滤分支并执行 RRF 融合 |
+| `schema_temporal/` | 只读 Schema TemporalEntity 视图：双轴查询、实体/Property 双路、实体内裁剪、邻居扩展与最终 Source fallback；正式输出为每 Entity 一个结果 |
 | `bootstrap.py` | 统一触发所有检索算子注册 |
 
 ## 检索链路
@@ -42,7 +43,7 @@
 4. Fuser 前完成真源复核，再对 ScoredMemoryUnit 做分层归并和跨通道融合
 5. 截断精排预算 budget = fused[:max(rerank_max, top_k)]
      ↓
-6. 可选 Reranker 精排（记 calibrated 标志）
+6. 可选 Reranker 用 `ParsedQuery.rewritten` 精排（记 calibrated 标志；fallback/off 时该值即 sanitized raw）
      ↓
 7. 相关性阈值：绝对 min_score（仅校准路径）+ 相对 ratio（校准/未校准两路，默认关闭）
      ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
@@ -50,6 +51,8 @@
      ↓
 9. Discloser.disclose(...) → list[RetrievedItem]
      ↓ 按层级加载内容（L0/L1/L2）
+10. 可选 Schema TemporalEntity（最终普通结果作 Entity seed，Property 独立召回）
+     ↓ 组装、实体内裁剪、直达 Property 回融、时间线邻居和 Source fallback
 → RetrievalResult（items + trajectory + errors）
 ```
 
@@ -77,6 +80,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 3. **query 原文先规范化再召回**
    默认 `SimpleQueryParser` 在分词、向量化和时间解析前做保守去噪，剥除 UTC 时间戳与 `Sender (untrusted metadata)` 等上游包装噪声；`ParsedQuery.raw` 是进入检索链路的规范化文本。清洗后为空时，`PipelineRetriever` 必须在召回前短路返回空结果。
+   LLM 改写默认关闭；显式开启后把 sanitized raw 与 API 边界传入的 typed `query_context` 交给 strict JSON 改写任务。非空 `rewritten` 驱动软召回与 Reranker 精排；显式 null 表示 no-intent，产出空软信号并在 DomainStore 前短路；解析失败或模型异常回退 sanitized raw。硬过滤、`as_of` 与 event-time 窗不被 LLM 输出或上下文改写。parse/rerank 轨迹记录 `off/used/fallback/no_intent`、fallback 原因和 rerank query source，不记录 query、上下文或模型输出。
 
 4. **通道到物理 Store 非 1:1**
    一路可对应一个 Store（如 VectorStore），多路也可合到一个 Store（如 FusionStore 同时支持向量+关键词），TEMPORAL 通常是叠加在其他通道上的时间过滤。
@@ -102,6 +106,17 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 10. **Discloser 只做内容塑形**
    候选记忆单元已由 Retriever 经 UnitReader 点读、有效性过滤、（可选）重排后给定。Discloser 不再做点读/过滤/重排，只按 level 截/取内容产出结果。
 
+11. **Schema TemporalEntity 只读但正式返回**
+   临时视图不持久化，所有 Property/Source 必须先经过点读和生命周期复核。
+   每个 Entity 可投影为一个 `RetrievedItem`，结构化视图仅写入
+   `SchemaTemporalRetrievalResult.schema_temporal`；普通结果无此字段。其 id 是 Entity id，不得伪装成可点读的
+   MemoryUnit。必要 Source fallback 仍保留真实 MemoryUnit id。
+
+12. **Schema TemporalEntity 保持两条时间轴**
+   `knowledge_as_of` 只选择 `[t_valid, t_invalid)` 内可知的版本；
+   `event_at/event_from/event_to` 只选择事件时间。年/月精度使用区间，
+   不将 Source message time 伪造为 `t_event`。
+
 ## 与其他子目录的边界
 
 **本模块管**：
@@ -110,6 +125,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - 融合与重排（Fuser）
 - 渐进式披露（Discloser）
 - 检索轨迹记录（TrajectoryStep）
+- 只读 Schema TemporalEntity 候选选择（不创建或持久化新记忆）
 
 **不管**：
 - 鉴权（归 `api`）
@@ -125,7 +141,10 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 2. 算子实现通过 `@XxxProducer.register("name")` 自注册。
 3. Retriever 内部 UnitReader 点读后必须复核 lifecycle、valid-time、event-time 和完整
    FilterExpr；当前态也须按当前 UTC 时间检查 `[t_valid, t_invalid)`。
-4. `extensions` 字段透传配置：RetrievalQuery.extensions → ParsedQuery.extensions，供自定义 Recaller 按约定 key 读取，内核核心不解释。
+4. `extensions` 默认透传：RetrievalQuery.extensions → ParsedQuery.extensions。
+   `schema_temporal` 是内核保留键，仅在 `globals.schema_temporal_enabled=true`
+   时解析；支持 `true`、模式字符串或规范字典。其余 key 依旧透传给自定义
+   Recaller，内核不解释。
 5. 显式空 `channels` 无效；`RetrievalQuery.channels=None` 时优先使用
    `QueryParser` 建议的通道，parser 未给出建议时再由 Storage 使用已配置入口。
    部分通道失败返回 items 与 `ChannelError`，全部选中通道失败抛
@@ -140,3 +159,54 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 8. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
    分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
+10. Schema TemporalEntity 选择器只在普通 Reranker、阈值、top-k 与 disclosure 完成后运行。
+   最终普通结果只提供 Entity seed；Entity 索引与直达 Property 路径独立，直达 Property 不受 Entity 名额截断，
+   并扩展同实体、同属性前后 `property_extension_step` 条（`default_property`
+   除外）。各实体独立截断，不使用全局 `break`。Source fallback 只保留
+   普通融合候选中尚未被直达 Property 充分覆盖的 Source，
+   不将整个 Scope 平铺到候选。
+
+9. 查询时间边界的 epoch 投影复用 common/time_utils.epoch_ms；真源时间比较复用 as_utc。
+
+
+### 普通召回的树父隔离
+
+`predicate_builder.build_hierarchy_filters` 对无 kind 请求复用普通父隔离；显式 kind
+则下推结构状态、角色与闭区间条件。common 的 is_retrieval_candidate 在真源层复核。
+不得仅做返回后过滤，否则父节点会抢占普通叶的候选名额。
+
+### 显式层级召回
+
+- PipelineRetriever 保真传递 kind/role/span，不依赖自定义 Parser 识别新字段。
+- 结构条件与用户条件以外层 AND 合并；结构时间索引使用 tree_span_start/tree_span_end。
+- recall/get/rank、recall_and_get/rank 和 retrieve 三路都复核本体；索引旧值不能授权命中。
+- Discloser 优先使用 ScoredMemoryUnit 自带本体，避免跨完整 Scope 的相同 id 覆盖；
+  普通查询不披露父引用，显式层级请求的 parent_id 来自 HierarchyRef。
+- MultimodalRetriever 尚不支持层级组合，显式拒绝，不静默退回普通多模态搜索。
+
+### 上卷与展开
+
+- `retriever_impl/hierarchy_rollup.py` 在融合/精排之后、阈值/top_k 之前上卷；父与后代
+  共用评分池。MaxP 取最大值，不累加，不为新准入父伪造通道证据。
+- `expander.py` 定义内部只读契约；`expander_impl/default_expander.py` 只使用注入的
+  同源 DomainStore，按完整 Scope 和有序父子边 BFS，不扫描、不写树。
+- `expansion.py` 在单空间或跨空间全局选根后统一分配披露预算和节点上限；
+  PreparedRetrievalResult 只在内部传递，不序列化、不直接返回公开调用者。
+- 越权 Scope 在点读前拒绝；kind、状态、双向引用、区间覆盖和可见性逐边复核。
+  缺节点、坏结构、读失败及截断用 HIERARCHY 诊断表示，不泄露被排除内容。
+- 展开收尾限制父子总数为 top_k；补位达到窗口即停止，结构 BFS 最后统一截断。
+- 保留文档模式与可选 Reranker 的 BackendError 降级路径，不用原分支旧实现覆盖。
+
+### 父子结果整理
+
+- TIME 指定角色上卷时，初次召回及真源复核只允许该角色及其下层，不能仅在返回后筛选。
+- TIME 父角色、rollup=True 且 expand_depth>0 时，复用融合后、budget_n 截断后、精排前
+  的候选顺序。MaxP 记录已校验祖先归属与实际路径深度，仅补入所选父的合法命中后代。
+- keep_recalled 完成后标记 recalled_children_ready，合法空候选也完成准备；窗口未满时
+  仅校验已选父对应的提供方，未准备明确拒绝。内部 child_depth 独立校验非负整数并排除 bool。
+- 父保持最终查询顺序，后代按融合原序补至 top_k；不重查子树或额外 embedding 排序。
+  候选不足允许少于 top_k。普通 Reranker、阈值及父分数逻辑保持。
+- 其他展开请求继续 BFS，按遍历顺序返回。跨空间先延迟至全局选根，再按现有空间
+  处理顺序、空间内融合原序补入所选父的后代；不比较跨空间分数或按完成时间重排。
+- 共用披露预算及完整 Scope+id 去重；空正文在预算准入后按真源排除，不退还预算。
+  空父仍可带回合法后代。score 仍表示原根分或继承分，轨迹以 child_select 记录补位。

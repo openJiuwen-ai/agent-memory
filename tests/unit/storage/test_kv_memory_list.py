@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from fnmatch import fnmatch
 
 import pytest
 
-from jiuwen_memory.common.security import SecurityProvider
+from jiuwen_memory.common.security.cryptography import CryptographyProvider
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterGroup,
@@ -70,7 +70,7 @@ class _FakeRedisKVStore(RedisKVStore):
         return self.fake_client
 
 
-class _ReverseSecurity(SecurityProvider):
+class _ReverseSecurity(CryptographyProvider):
     def encrypt(self, plaintext, *, context=None, aad=b""):
         _ = context, aad
         return plaintext[::-1]
@@ -111,7 +111,7 @@ def _unit(
         id=unit_id,
         scope=scope,
         segments=[Segment(content=unit_id)],
-        temporal=Temporal(t_ingest=datetime(2026, 7, day, tzinfo=timezone.utc)),
+        temporal=Temporal(t_ingest=datetime(2026, 7, day, tzinfo=UTC)),
         system_metadata={"memory_type": memory_type},
         user_metadata={
             "project": project,

@@ -6,16 +6,26 @@ from __future__ import annotations
 from datetime import datetime
 
 from jiuwen_memory.common.security.types import Action
-from jiuwen_memory.common.type_def import MemoryUnit, MetadataValueType, Modality, Scope
+from jiuwen_memory.common.type_def import (
+    CandidateSource,
+    Context,
+    MemoryUnit,
+    MetadataValueType,
+    Modality,
+    Scope,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.engine import MemoryEngine
+from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.types import (
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
     Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryPatch,
     PermissionContext,
 )
@@ -142,7 +152,51 @@ class MemoryCommandService:
     async def delete(self, selector: DeleteSelector) -> list[str]:
         return await self._engine.delete(selector)
 
+    async def edit_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        old_text: str,
+        new_text: str,
+    ) -> list[MemoryUnit]:
+        """薄包装：委托 ``MemoryEngine.edit_md_file``（F08 md 文件级编辑接口）。
+
+        与 :meth:`write` 同构——已鉴权 target scope 上的写命令转发。鉴权（WRITE）与
+        ``_ensure_space_writable`` 在 API 层 PEP 完成后才进入本端口，本端口不拆 Context
+        （project 解析在 Engine 层）。edit 走继承式 SUPERSEDE，语义对齐 ``add``（WRITE）。
+        """
+        return await self._engine.edit_md_file(context, md_filename, old_text, new_text)
+
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
-    ) -> str:
-        return await self._engine.evolve(scope, mode, channel)
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        candidate: CandidateSource | dict | None = None,
+        buckets: list[Scope] | None = None,
+        denied_scopes: list[str] | None = None,
+    ) -> str | None:
+        """提交一次性 EvolveJob（纯执行链）。
+
+        ``buckets`` / ``denied_scopes`` 为 API 层 fan-out 逐桶裁决的产物
+        （PEP 边界：鉴权在 API 层，本端口只转发已获准的命令）。
+        """
+        return await self._engine.evolve(
+            scope,
+            mode,
+            channel,
+            candidate=candidate,
+            buckets=buckets,
+            denied_scopes=denied_scopes,
+        )
+
+    async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
+        """透传已鉴权的显式建树请求。"""
+        return await self._engine.evolve_v2(scope, options)
+
+    async def start_background_jobs(
+        self, scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
+        """注册已鉴权 home 的后台任务；不在控制层重新判权。"""
+        return await self._engine.start_background_jobs(scope, policy)

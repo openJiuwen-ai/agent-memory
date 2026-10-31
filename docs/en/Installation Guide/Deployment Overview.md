@@ -100,8 +100,8 @@ The HTTP boundary performs only the conversions required by JSON:
 - Python objects such as `Scope`, `Context`, and `MemoryPatch` use equivalent JSON objects, while
   enum and datetime values use strings and ISO 8601 strings respectively;
 - `security` cannot be supplied in the request body. The authentication boundary constructs and
-  injects it from the runtime's authentication result. Dev mode uses a minimal
-  `DevHttpSecurityRuntime`, not a fully configured production security runtime.
+  injects it from the runtime's authentication result. Dev mode also uses a complete configured
+  `SecurityRuntime` and the shared binding policy.
 
 Synchronous methods run directly in the request thread. For asynchronous methods, the HTTP entry
 point waits for the same-named async method and returns its original result instead of creating a
@@ -120,26 +120,27 @@ first establish a trusted `RequestSecurityContext`, and the service rejects `sec
 `identity`, and similar identity claims in the request body. In the default `required` mode, a
 missing production runtime makes business endpoints return 503 instead of trusting a payload
 identity. Local functional tests may explicitly enable `dev`. Without an identity map it ignores
-authentication headers and uses the fixed `local/developer` ROOT identity. With
+authentication headers and uses the fixed `local/developer` USER identity. With
 [`http.dev_identities`](<../API Docs/config.md#33-http-development-tests-multiple-identities>),
 Bearer or X-API-Key test selectors choose server-defined identities; missing or unknown selectors
 return 401. Both modes run MemoryAPI authorization and reject payload-provided identity claims.
 
+Fixed and mapped DEV use the real Authorizer without allow_all. Default USER cross-org/user requests
+return 403 unless separately authorized. Local ROOT requires explicit dev authenticator params.role;
+see the configuration guide above.
+Default USER also cannot call `audit`, `verify_audit`, `admin_get/set/all`, or `create_space`.
+The first three groups require explicit ROOT; local-org space creation accepts ADMIN. Membership
+and space-policy operations still require actual space-governance rights, not just an ADMIN role.
+See the [management migration guide](<../API Docs/config.md#migrating-management-entry-points-from-default-user>)
+for the full list and HTTP/CLI/MCP configuration-loading commands.
+
 The standard `HttpServer.serve()` entry point checks the binding before creating the socket.
 Dev mode allows only loopback hosts by default, such as `127.0.0.1`, `::1`, and `localhost`.
-Reusing `handler_cls()` in a separately constructed server does not perform this check;
-the embedding application must enforce its own binding policy.
-Listening on `0.0.0.0` inside Docker also requires
-`JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK=true`. The supplied Compose files set this flag
-and publish the host port only on `127.0.0.1` by default. Before exposing the service to a shared network or production,
-return to `required`, provide a production-grade authentication runtime, add TLS, access control,
-and traffic protection at a gateway, and use appropriate process and availability management.
-
-> **Dangerous override:** `JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK=true` relaxes the
-> dev binding restriction; it does not add production authentication. Without a map, anyone who
-> connects uses the default test identity. With a map, holders of test selectors can choose the
-> configured identities, subject to API authorization. Restrict published ports, container networks,
-> and proxies. Neither a startup warning nor test identity mapping replaces production security.
+Reusing `handler_cls()` in a separately constructed server does not perform this check; the
+embedding application must enforce its own binding policy. DEV has no environment-variable bypass
+and cannot listen on `0.0.0.0`. Container, shared-network, and production deployments must use
+`required` with an api_key or trusted authenticator that explicitly declares remote exposure, plus
+TLS, access control, and traffic protection at a gateway.
 
 ## 4. Access Methods That Are Not Separate Deployment Options
 

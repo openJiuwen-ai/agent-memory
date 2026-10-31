@@ -3,17 +3,18 @@
 
 :class:`Server` is the **base class** every protocol surface builds on: it holds
 one assembled runtime (config + api + ingest lifecycle) and exposes :attr:`api`
-plus :meth:`dispatch`. MCP and historical in-process callers use the legacy
-verb router; HTTP and CLI call the same-named ``MemoryAPI`` method directly. A concrete
+plus :meth:`dispatch`. ``dispatch`` serves historical in-process callers of the
+legacy envelope; HTTP, CLI and MCP all call the same-named ``MemoryAPI`` method
+directly through ``api_contract.invoke_api``. A concrete
 surface subclasses this class and adds its transport (see
 :class:`jiuwen_memory_entry.http_server.__main__.HttpServer` for the HTTP/socket
 surface); the CLI's ``InProcessClient`` uses the base directly.
 
-The minimal reference build uses :func:`api.assemble_runtime` (the per-capability
+The minimal reference build uses :func:`api.assemble_server_runtime` (the per-capability
 impls wired together, pure in-memory, no external deps). Swapping in a real profile
 means assembling real plugins/Stores in :meth:`build` and reusing the same API.
 
-本模块是 Access 的 **composition root**：只通过 ``jiuwen_memory.api.assemble_runtime``
+本模块是 Access 的 **composition root**：只通过 ``jiuwen_memory.api.assemble_server_runtime``
 装配内核（传入 dict，不 import ``jiuwen_memory.config``）。公开面只保留 ``api``、
 ``dispatch()`` 和 surface lifecycle，不暴露 raw KV。
 
@@ -26,14 +27,22 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import replace
 from typing import Any
 
 from profiles import Config
 
-from jiuwen_memory.api import MemoryRuntime, Surface, assemble_runtime
+from jiuwen_memory.api import (
+    AUTO_SECURITY_RUNTIME,
+    CloseableSecurityCapability,
+    MemoryRuntime,
+    RequestSecurityContext,
+    ServerRuntime,
+    assemble_server_runtime,
+)
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+
+_AUTO_SECURITY = AUTO_SECURITY_RUNTIME
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO not in sys.path:
@@ -45,57 +54,136 @@ if _REPO not in sys.path:
 class Server:
     """Assembled runtime + shared dispatch; base for all protocol surfaces."""
 
-    def __init__(self, config: Config, runtime: MemoryRuntime) -> None:
+    def __init__(
+        self, config: Config, runtime: MemoryRuntime, security_runtime: Any = None
+    ) -> None:
         self.config = config
         self._runtime = runtime
+        self.security_runtime = security_runtime
 
     @property
     def api(self):
         return self._runtime.api
 
+    async def start_background(self) -> None:
+        """异步面宿主调用：起看门狗等后台组件（绑当前 loop，F07 §12.10）。"""
+        await self._runtime.start_background()
+
+    def start(self) -> None:
+        """同步面宿主调用：daemon 线程自持 loop 起后台组件（F07 §12.10）。"""
+        self._runtime.start()
+
+    @property
+    def audit(self):
+        """返回供认证边界记录入口事件的共享审计器。"""
+        if isinstance(self._runtime, ServerRuntime):
+            return self._runtime.audit
+        return None
+
+    @property
+    def authenticator(self):
+        return getattr(self.security_runtime, "authenticator", None)
+
+    @property
+    def rate_limiter(self):
+        return getattr(self.security_runtime, "rate_limiter", None)
+
+    @property
+    def workload_guard(self):
+        guard = getattr(self.security_runtime, "workload_guard", None)
+        authenticator = self.authenticator
+        if authenticator is None or not authenticator.requires_concurrency_guard():
+            return None
+        return guard
+
+    @property
+    def binding_policy(self):
+        return getattr(self.security_runtime, "binding_policy", None)
+
     @classmethod
-    def build(cls, config: Config, spaces: Any = None) -> "Server":
+    def build(
+        cls,
+        config: Config,
+        spaces: Any = None,
+        *,
+        security_runtime: Any = _AUTO_SECURITY,
+    ) -> Server:
         """Assemble a runtime from ``config`` and return a ``cls`` instance.
 
         ``config.settings`` 是合并后的完整配置字典，含 profiles 层自有的 ``profile`` /
         ``policies`` 等顶层键；其中 ``memory_api`` 段（若有）才是交给内核的**两级命名空间**
-        装配配置，由 :func:`api.assemble_runtime` 合并覆盖到内置默认之上。须**只取该段**
+        装配配置，由 :func:`api.assemble_server_runtime` 合并覆盖到内置默认之上。须**只取该段**
         交装配 —— 整包传入会让 ``profile`` / ``policies`` 撞上新配置解析期的顶层段名
         校验而报错。无该段时（纯 ``OFFLINE`` 档）``config=None`` 回落进程内默认实现。
         """
         memory_api = config.settings.get("memory_api")
-        return cls(
-            config,
-            assemble_runtime(policies=config.policies or None, config=memory_api),
+        runtime = assemble_server_runtime(
+            policies=config.policies or None,
+            config=memory_api,
+            security_runtime=security_runtime,
         )
+        try:
+            return cls(config, runtime, runtime.security_runtime)
+        except BaseException as assembly_error:
+            try:
+                runtime.close(wait=True)
+            except BaseException as cleanup_error:
+                raise assembly_error from cleanup_error
+            raise
 
     def dispatch(
         self,
         verb: str | DispatchRequest,
         payload: dict[str, Any] | None = None,
         *,
-        identity=None,
+        security: RequestSecurityContext,
     ) -> tuple[int, dict[str, Any]]:
         """Route a legacy request through the shared handler.
 
-        ``identity`` is an adapter-supplied actor. MCP retains this
-        compatibility path; HTTP and CLI inject their authenticated security context
-        while calling ``api`` directly.
+        ``security`` is an adapter-produced trusted context, **required**. This
+        compatibility path serves historical in-process callers; HTTP, CLI and MCP
+        call ``api`` directly. Callers without a trusted identity source must not
+        use this path—route through HTTP/API-Key instead.
         """
         from handler import dispatch as _dispatch
 
         if isinstance(verb, DispatchRequest):
             status, body = _dispatch(self, verb)
             return status, dict(body)
-        request = build_legacy_dispatch_request(verb, payload or {}, surface=Surface.INTERNAL)
-        if identity is not None:
-            request = replace(request, actor=identity)
+        if security is None:
+            from jiuwen_memory.api import ValidationError
+
+            raise ValidationError("dispatch requires an explicit trusted security context")
+        request = build_legacy_dispatch_request(verb, payload or {}, security=security)
         status, body = _dispatch(self, request)
         return status, dict(body)
 
     def close(self, *, wait: bool = True) -> None:
-        """Release the Control-owned ingest worker pool."""
-        self._runtime.close(wait=wait)
+        """关闭公开装配句柄；旧手工构造路径单独关闭额外的安全组合。"""
+        try:
+            self._runtime.close(wait=wait)
+        finally:
+            assembled_security = (
+                self._runtime.security_runtime if isinstance(self._runtime, ServerRuntime) else None
+            )
+            if self.security_runtime is not assembled_security and isinstance(
+                self.security_runtime, CloseableSecurityCapability
+            ):
+                self.security_runtime.close()
+
+    def restore_dreaming(self) -> None:
+        """重启恢复注册态 dreaming 任务（F04 D8）——**长命 surface** 启动时调用。
+
+        短命进程（CLI 命令、一次性脚本）不得调用：恢复会取实例锁并把注册表
+        全部任务装配进本进程调度器，短命进程退出等于全部定时任务停摆（锁靠
+        owner 匹配释放，但任务已死）。锁被他人持有（未过期）时
+        :class:`RuntimeError` 直接 fail fast——单实例部署模型下这是部署错误。
+        ``restore_dreaming`` 不属于 MemoryAPI 公共契约（任意主体可触发的恢复
+        会把部署模型决定权让渡给调用方），经 getattr 探测。
+        """
+        restore = getattr(self.api, "restore_dreaming", None)
+        if callable(restore):
+            restore()
 
 
 def default_spaces() -> dict[str, Any]:

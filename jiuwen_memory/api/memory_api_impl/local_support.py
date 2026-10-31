@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from math import isfinite
-from typing import Any
+from typing import Any, NamedTuple
 
 from jiuwen_memory.common.errors import (
     PolicyError,
@@ -20,9 +20,10 @@ from jiuwen_memory.common.security.space_roles import (
     SpaceAxis,
     SpaceMemberFact,
 )
-from jiuwen_memory.common.security.types import Action, Grant
+from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
+    EXT_QUERY_CONTEXT,
     EXT_SPACES,
     KERNEL_SYSTEM_METADATA_KEYS,
     TRANSIENT_SYSTEM_METADATA_KEYS,
@@ -31,6 +32,7 @@ from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterExpr,
     FilterOp,
+    MemoryUnit,
     MetadataValueType,
     Scope,
     canonical_filter_field,
@@ -59,6 +61,17 @@ logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 # 装配下为 no-op。租户数据/治理方法仍按各自的 target scope 鉴权。
 _ROOT = Scope()
 
+
+class _TrustedRequestTarget(NamedTuple):
+    """可信上下文预检的动作、目标和审计信息；仅在 PEP 实现内部传递。"""
+
+    action: Action
+    audit_action: str
+    scope: Scope
+    target_id: str = ""
+    context: PermissionContext | None = None
+
+
 # ``list_spaces`` 取候选时的全库扫描上界。逐空间判权的次数等于候选数，需有一个显式的
 # 天花板；达到该值记 WARNING，不静默截断。
 _SPACE_SCAN_CAP = 10000
@@ -72,19 +85,6 @@ _GRANT_ACTION_BACK: dict[Action, SpaceAction] = {
     Action.DELETE: SpaceAction.DELETE,
     Action.SHARE: SpaceAction.SHARE,
 }
-
-
-_LEGACY_PERMISSION_ACTIONS = frozenset(
-    {Action.READ, Action.WRITE, Action.UPDATE, Action.DELETE, Action.SHARE}
-)
-
-
-def _validate_legacy_permission_actions(grant: Grant) -> None:
-    """旧 PermissionManager 未实现安全域管理动作，过渡期对这些动作 fail-closed。"""
-    unsupported = grant.actions - _LEGACY_PERMISSION_ACTIONS
-    if unsupported:
-        values = ", ".join(sorted(action.value for action in unsupported))
-        raise ValueError(f"legacy PermissionManager does not support actions: {values}")
 
 
 def _parse_max_tokens(raw: str | None) -> int | None:
@@ -235,9 +235,7 @@ def _reject_foreign_routed_scope(scope: Scope, identity: Scope) -> None:
     """
     _reject_foreign_write_scope(scope, identity)
     if scope.org and scope.org != identity.org:
-        raise ValidationError(
-            f"write scope org={scope.org!r} does not match the caller identity"
-        )
+        raise ValidationError(f"write scope org={scope.org!r} does not match the caller identity")
 
 
 def _reject_foreign_write_scope(scope: Scope, identity: Scope) -> None:
@@ -253,9 +251,7 @@ def _reject_foreign_write_scope(scope: Scope, identity: Scope) -> None:
     for dim in ("user", "agent"):
         value = getattr(scope, dim)
         if value and value != getattr(identity, dim):
-            raise ValidationError(
-                f"write scope {dim}={value!r} does not match the caller identity"
-            )
+            raise ValidationError(f"write scope {dim}={value!r} does not match the caller identity")
 
 
 def _space_level_scope(scope: Scope) -> Scope:
@@ -321,6 +317,28 @@ def _pop_spaces(options: dict[str, Any]) -> list[str] | None:
     return list(raw)
 
 
+def _pop_query_context(options: dict[str, Any]) -> tuple[str, ...] | None:
+    """取出检索上下文改写的最近对话片段；key 不存在时返回 ``None``。
+
+    key 已存在即表示调用方显式依赖本次上下文，非法取值必须 fail-fast；静默按无上下文
+    检索会隐藏调用方 bug，并让结果语义从「带上下文」退化为「孤立 query」。错误文案只
+    描述 key 与期望类型，不回显上下文内容。
+    """
+    if EXT_QUERY_CONTEXT not in options:
+        return None
+    raw = options.pop(EXT_QUERY_CONTEXT)
+    if raw is None:
+        raise ValidationError(
+            "query_context must not be null; "
+            "omit the key or provide a list or tuple of strings"
+        )
+    if not isinstance(raw, (list, tuple)):
+        raise ValidationError("query_context must be a list or tuple of strings")
+    if not all(isinstance(item, str) for item in raw):
+        raise ValidationError("query_context items must be strings")
+    return tuple(raw)
+
+
 def _space_denied(space: str, error_type: str, message: str) -> ChannelError:
     """把一个被判权剔除的候选空间记成结果对象上的结构化错误。
 
@@ -354,6 +372,28 @@ def _take_coords(
     return _parse_coords(metadata[COORDS_KEY]), (rest or None)
 
 
+def _strip_transient_metadata(unit: MemoryUnit) -> MemoryUnit:
+    """把瞬态键从回显给调用方的 unit 剥除（坐标是判定输入，不是条目属性）。
+
+    文档记忆（F08）为 md 路径分流在写入链路中段把 ``coords`` 塞回 unit 对象——
+    ``MarkdownStore.write`` 与影子索引都在序列化之前从 unit 对象读它算落盘路径。
+    序列化（``dumps``）本就剥瞬态键，存储侧因此干净；但 write 返回的 unit 是同
+    一批对象引用，原样回显等于瞬态键越过了 API 边界。与 ``ROUTE_CTX_KEY``
+    同一处置：内部消费完，出口剥净。
+
+    无瞬态键时不复制，原对象直返——多数写入不走判定，避免为不变式买单。
+    """
+    metadata = unit.system_metadata
+    if not metadata or not any(key in metadata for key in TRANSIENT_SYSTEM_METADATA_KEYS):
+        return unit
+    stripped = {}
+    for key, value in metadata.items():
+        if key not in TRANSIENT_SYSTEM_METADATA_KEYS:
+            stripped[key] = value
+    unit.system_metadata = stripped
+    return unit
+
+
 def _reject_non_scalar_metadata(
     metadata: dict[str, MetadataValueType] | None, *, field_name: str
 ) -> None:
@@ -376,8 +416,7 @@ def _reject_non_scalar_metadata(
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             continue
         raise ValidationError(
-            f"{field_name}[{key!r}] 仅支持 JSON 标量或字符串数组，"
-            f"收到 {type(value).__name__}"
+            f"{field_name}[{key!r}] 仅支持 JSON 标量或字符串数组，收到 {type(value).__name__}"
         )
 
 
@@ -511,8 +550,9 @@ def _recall_permission_context(
     routed_metadata = _required_filter_metadata(filters)
     # S03「MemoryPipeline 路由规则」——extensions 优先。
     for key in routing_fields:
-        # 归属坐标与候选空间列表不是策略路由值：前者是判定输入、后者是编排开关。
-        if key in (COORDS_KEY, EXT_SPACES):
+        # 归属坐标、候选空间列表与检索上下文不是策略路由值：前两者是判定/编排开关，
+        # query_context 只服务 parser 的软召回增强。
+        if key in (COORDS_KEY, EXT_SPACES, EXT_QUERY_CONTEXT):
             continue
         override = context.extensions.get(key)
         if override is None:
@@ -627,9 +667,7 @@ def _list_routing_clauses(
             if value:
                 values.add(value)
         if len(values) == 1:
-            clauses.append(
-                FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop())
-            )
+            clauses.append(FilterClause(canonical_filter_field(field), FilterOp.EQ, values.pop()))
     return clauses
 
 
@@ -659,6 +697,19 @@ def _selector_permission_context(selector: DeleteSelector, scope: Scope) -> Perm
         scope=scope,
         tags=tuple(selector.tags),
         metadata={"mode": selector.mode.value},
+    )
+
+
+def _unit_snapshot_permission_context(unit: MemoryUnit) -> PermissionContext:
+    """从将要返回的同一真源快照提取权限事实，不再二次读取。"""
+    return PermissionContext(
+        resource_type="memory_unit",
+        unit_id=unit.id,
+        scope=unit.scope,
+        memory_type=str(unit.system_metadata.get("memory_type", "")).strip(),
+        pipeline=str(unit.system_metadata.get("pipeline", "")).strip(),
+        tags=tuple(unit.tags),
+        metadata={key: str(value) for key, value in unit.system_metadata.items()},
     )
 
 
@@ -740,7 +791,7 @@ def _evolve_space_action(mode: EvolveMode | str) -> SpaceAction:
         resolved = EvolveMode(mode)
     except ValueError:
         return SpaceAction.WRITE
-    if resolved in (EvolveMode.CONSOLIDATE, EvolveMode.FORGET):
+    if resolved in (EvolveMode.CONSOLIDATE, EvolveMode.FORGET, EvolveMode.HIERARCHY):
         return SpaceAction.UPDATE
     return SpaceAction.WRITE
 
@@ -753,9 +804,7 @@ def _is_status_only(patch: SpacePatch | None) -> bool:
     if patch is None or patch.status is None:
         return False
     return all(
-        getattr(patch, field.name) is None
-        for field in fields(patch)
-        if field.name != "status"
+        getattr(patch, field.name) is None for field in fields(patch) if field.name != "status"
     )
 
 
@@ -778,12 +827,11 @@ def _project_space_facts(facts: SpaceFacts) -> SpaceAuthorizationFacts:
     )
     return SpaceAuthorizationFacts(owners=owners, members=members)
 
+
 __all__ = [
     "_ROOT",
     "_SPACE_SCAN_CAP",
     "_GRANT_ACTION_BACK",
-    "_LEGACY_PERMISSION_ACTIONS",
-    "_validate_legacy_permission_actions",
     "_parse_max_tokens",
     "_context_detail",
     "_required_filter_metadata",
@@ -814,6 +862,7 @@ __all__ = [
     "_routing_clauses_of",
     "_selector_permission_context",
     "_unit_lookup_permission_context",
+    "_unit_snapshot_permission_context",
     "_space_scope",
     "_space_target_id",
     "_space_permission_context",

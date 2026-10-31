@@ -153,7 +153,7 @@ class LongMemEvalDataset(Dataset):
         samples: Sequence[int] | None,
         max_questions: int | None,
     ) -> None:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         if not isinstance(data, list):
             raise ValueError("LongMemEval root must be a JSON array")

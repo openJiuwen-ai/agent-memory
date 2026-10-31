@@ -15,7 +15,7 @@ import uuid
 import pytest
 
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import HealthCheckError, ValidationError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit, Scope, Segment
 from jiuwen_memory.construction.base import OperatorType
@@ -34,14 +34,14 @@ TABLE_CONFIG = {
     "coord_entities": ["project"],
     "memory_classes": [
         {
-            "name": "user_memory",
+            "name": "user_profile",
             "owner": "user",
             "space_template": "u_{user}",
             "fallback": True,
             "description": "facts about the user",
         },
         {
-            "name": "project_memory",
+            "name": "long_term_memory",
             "owner": "project",
             "space_template": "p_{project}",
             "cross_user": True,
@@ -104,10 +104,10 @@ def _unit(content: str) -> MemoryUnit:
 
 def _router(*responses: object, retries: int = 3) -> tuple[LLMRouter, _ScriptedLLM]:
     llm = _ScriptedLLM(*responses)
-    return LLMRouter(llm, _table(), retry_max_retries=retries, retry_backoff_ms=0), llm
+    return LLMRouter(llm, _table(), max_attempts=retries, retry_backoff_ms=0), llm
 
 
-def _reply(unit: MemoryUnit, memory_class: str = "user_memory", **extra: object) -> str:
+def _reply(unit: MemoryUnit, memory_class: str = "user_profile", **extra: object) -> str:
     return json.dumps([{"source_id": unit.id, "memory_class": memory_class, **extra}])
 
 
@@ -171,10 +171,10 @@ def test_a_routed_unit_takes_its_class_and_narrow_hits() -> None:
     ctx = _ctx(table, project="p1")
     unit = _unit("项目 p1 部署在集群 A")
     router, _llm = _router(
-        _reply(unit, "project_memory", narrow={"agent_id": True, "session_id": False})
+        _reply(unit, "long_term_memory", narrow={"agent_id": True, "session_id": False})
     )
     (decision,) = router.route([unit], ctx)
-    assert decision.memory_class == "project_memory"
+    assert decision.memory_class == "long_term_memory"
     assert decision.scope.space == "p_p1"
     # 只含判为真的收窄维。判为否的键补空串是落盘不变量，由契约层的 ``route_batch``
     # 施加而不在本实现内——放实现内则换一个实现即可能漏掉。
@@ -187,7 +187,7 @@ def test_an_id_returned_inside_its_shell_still_matches() -> None:
     ctx = _ctx(table, project="p1")
     unit = _unit("项目 p1 部署在集群 A")
     router, _llm = _router(
-        '[{"source_id": "[ID: ' + unit.id + ']", "memory_class": "project_memory"}]'
+        '[{"source_id": "[ID: ' + unit.id + ']", "memory_class": "long_term_memory"}]'
     )
     (decision,) = router.route([unit], ctx)
     assert decision.scope.space == "p_p1"
@@ -201,7 +201,7 @@ def test_a_unit_missing_from_the_response_falls_back_alone() -> None:
     table = _table()
     ctx = _ctx(table, project="p1")
     routed, missing = _unit("项目 p1 部署在集群 A"), _unit("我偏好深色主题")
-    router, _llm = _router(_reply(routed, "project_memory", narrow={}))
+    router, _llm = _router(_reply(routed, "long_term_memory", narrow={}))
     decisions = router.route([routed, missing], ctx)
     assert [d.scope.space for d in decisions] == ["p_p1", "u_alice"]
     assert decisions[1].reason == "no decision for unit"
@@ -220,8 +220,8 @@ def test_a_batch_of_blank_ids_is_matched_by_position() -> None:
     router, _llm = _router(
         json.dumps(
             [
-                {"source_id": "", "memory_class": "user_memory", "narrow": {}},
-                {"source_id": "", "memory_class": "project_memory", "narrow": {}},
+                {"source_id": "", "memory_class": "user_profile", "narrow": {}},
+                {"source_id": "", "memory_class": "long_term_memory", "narrow": {}},
             ]
         )
     )
@@ -239,8 +239,8 @@ def test_duplicate_ids_are_matched_by_position() -> None:
     router, _llm = _router(
         json.dumps(
             [
-                {"source_id": same, "memory_class": "user_memory", "narrow": {}},
-                {"source_id": same, "memory_class": "project_memory", "narrow": {}},
+                {"source_id": same, "memory_class": "user_profile", "narrow": {}},
+                {"source_id": same, "memory_class": "long_term_memory", "narrow": {}},
             ]
         )
     )
@@ -255,7 +255,7 @@ def test_position_matching_falls_back_when_the_response_is_short() -> None:
     blank_a = MemoryUnit(segments=[Segment(content="项目 p1 部署在集群 A")])
     blank_b = MemoryUnit(segments=[Segment(content="我偏好深色主题")])
     router, _llm = _router(
-        json.dumps([{"source_id": "", "memory_class": "project_memory", "narrow": {}}])
+        json.dumps([{"source_id": "", "memory_class": "long_term_memory", "narrow": {}}])
     )
     decisions = router.route([blank_a, blank_b], ctx)
     assert [d.scope.space for d in decisions] == ["p_p1", "u_alice"]
@@ -274,7 +274,7 @@ def test_a_non_dict_narrow_value_yields_no_hits() -> None:
     router, _llm = _router(_reply(unit, narrow="yes"))
     (decision,) = router.route([unit], ctx)
     assert decision.tags == {}
-    assert decision.memory_class == "user_memory"
+    assert decision.memory_class == "user_profile"
 
 
 def test_a_non_dict_entry_in_the_response_is_skipped() -> None:
@@ -283,10 +283,10 @@ def test_a_non_dict_entry_in_the_response_is_skipped() -> None:
     ctx = _ctx(table)
     unit = _unit("我偏好深色主题")
     router, _llm = _router(
-        '["garbage", {"source_id": "' + unit.id + '", "memory_class": "user_memory"}]'
+        '["garbage", {"source_id": "' + unit.id + '", "memory_class": "user_profile"}]'
     )
     (decision,) = router.route([unit], ctx)
-    assert decision.memory_class == "user_memory"
+    assert decision.memory_class == "user_profile"
 
 
 def test_the_discard_flag_is_carried_through() -> None:
@@ -318,7 +318,7 @@ def test_a_batch_over_the_size_limit_is_split_and_order_is_preserved() -> None:
     replies = [
         json.dumps(
             [
-                {"source_id": unit.id, "memory_class": "user_memory"}
+                {"source_id": unit.id, "memory_class": "user_profile"}
                 for unit in units[start:start + 10]
             ]
         )
@@ -336,7 +336,7 @@ def test_a_transient_llm_failure_is_retried() -> None:
     unit = _unit("我偏好深色主题")
     router, llm = _router(RuntimeError("timeout"), _reply(unit))
     (decision,) = router.route([unit], ctx)
-    assert decision.memory_class == "user_memory"
+    assert decision.memory_class == "user_profile"
     assert len(llm.calls) == 2
 
 
@@ -350,12 +350,22 @@ def test_the_last_failure_is_raised_after_the_retries_are_used_up() -> None:
     assert len(llm.calls) == 3
 
 
-def test_a_zero_retry_budget_is_a_configuration_error() -> None:
-    """``retry_max_retries=0`` 时一次都不调用，报配置错而不是静默返回空。"""
-    router, llm = _router(retries=0)
-    with pytest.raises(RuntimeError, match="retry_max_retries"):
-        router.route([_unit("我偏好深色主题")], _ctx(_table()))
-    assert llm.calls == []
+def test_a_zero_attempt_budget_is_a_configuration_error() -> None:
+    """``max_attempts=0`` 时在构造期失败。"""
+    with pytest.raises(ValidationError, match="max_attempts"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=0, retry_backoff_ms=0)
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "bad"])
+def test_invalid_attempt_budget_is_rejected(value: object) -> None:
+    with pytest.raises(ValidationError, match="max_attempts"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=value, retry_backoff_ms=0)
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, "bad"])
+def test_invalid_backoff_is_rejected(value: object) -> None:
+    with pytest.raises(ValidationError, match="retry_backoff_ms"):
+        LLMRouter(_ScriptedLLM(), _table(), max_attempts=1, retry_backoff_ms=value)
 
 
 # -- 算子契约 -------------------------------------------------------------- #
@@ -383,6 +393,34 @@ def test_the_system_prompt_carries_the_classes_and_dimensions() -> None:
     router, llm = _router(_reply(unit))
     router.route([unit], _ctx(table))
     prompt = llm.calls[0][0].content
-    assert "user_memory (FALLBACK)" in prompt
-    assert "project_memory" in prompt
+    assert "user_profile (FALLBACK)" in prompt
+    assert "long_term_memory" in prompt
     assert "agent_id" in prompt and "session_id" in prompt
+
+
+def test_the_system_prompt_carries_ownership_coordinates() -> None:
+    """归属坐标必须进 prompt：模型据此决定 project/user/team 归属（F08 §1.2 复用 coords）。
+
+    漏掉坐标即模型只按收窄维猜归属——project 级事实可能落 user_profile，召回按 project
+    隔离时丢失。
+    """
+    table = _table()
+    ctx = _ctx(table, project="p1")
+    unit = _unit("项目 p1 部署在集群 A")
+    router, llm = _router(_reply(unit))
+    router.route([unit], ctx)
+    prompt = llm.calls[0][0].content
+    assert "OWNERSHIP COORDINATES" in prompt
+    assert "project=p1" in prompt
+    assert "user=alice" in prompt
+
+
+def test_the_system_prompt_coordinates_default_to_none() -> None:
+    """无坐标时显示 ``(none)``，不因缺项把 prompt 格式化炸掉。"""
+    table = _table()
+    ctx = _ctx(table, user="", agent="", session="")
+    unit = _unit("我偏好深色主题")
+    router, llm = _router(_reply(unit))
+    router.route([unit], ctx)
+    prompt = llm.calls[0][0].content
+    assert "OWNERSHIP COORDINATES" in prompt

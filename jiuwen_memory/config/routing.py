@@ -48,7 +48,9 @@ from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.fusion import FusionStore
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.markdown import MarkdownStore
 from jiuwen_memory.storage.security import StorageAccessContext, StorageSecurity
+from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.store_manager import StorageCapability, StoreManager
 from jiuwen_memory.storage.types import (
     Document,
@@ -394,6 +396,9 @@ class RoutingFSStore(FSStore):
     def health(self) -> None:
         self._router.get().health()
 
+    def object_id(self, scope: Scope, key_or_ref: str, *, for_insert: bool = False) -> str:
+        return self._router.get().object_id(scope, key_or_ref, for_insert=for_insert)
+
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:
         return self._router.get().insert(scope, key, data)
 
@@ -509,6 +514,12 @@ class RoutingStoreManager(StoreManager):
     def entity(self, name: str = "default") -> EntityStore:
         return self._lazy_port("entity", name)  # type: ignore[return-value]
 
+    def markdown(self, name: str = "default") -> MarkdownStore:
+        return self._lazy_port("markdown", name)  # type: ignore[return-value]
+
+    def shadow_index(self, name: str = "default") -> DocumentShadowIndex:
+        return self._lazy_port("shadow_index", name)  # type: ignore[return-value]
+
     def has_kv(self, name: str = "default") -> bool:
         return self._active().has_kv(name)
 
@@ -529,6 +540,12 @@ class RoutingStoreManager(StoreManager):
 
     def has_entity(self, name: str = "default") -> bool:
         return self._active().has_entity(name)
+
+    def has_markdown(self, name: str = "default") -> bool:
+        return self._active().has_markdown(name)
+
+    def has_shadow_index(self, name: str = "default") -> bool:
+        return self._active().has_shadow_index(name)
 
     def health(self) -> None:
         self._active().health()
@@ -693,6 +710,33 @@ class RoutingDomainStore(DomainStore):
             rank_limit=rank_limit,
             access=access,
             **kwargs,
+        )
+
+    def read_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        *,
+        project: str = "",
+        line_range: tuple[int, int] | None = None,
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        return self._active_domain().read_md_file(
+            scope, md_basename, project=project, line_range=line_range, access=access
+        )
+
+    def edit_md_file(
+        self,
+        scope: Scope,
+        md_basename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        project: str = "",
+        access: StorageAccessContext | None = None,
+    ) -> list[MemoryUnit]:
+        return self._active_domain().edit_md_file(
+            scope, md_basename, old_text, new_text, project=project, access=access
         )
 
     def health(self) -> None:

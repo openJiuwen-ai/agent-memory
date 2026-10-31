@@ -157,7 +157,7 @@ class SpaceAxis(str, Enum):
     的空间策略裁剪——只经内容轴通过时策略置空。
 
     ``ORG`` 的入口不落两轴求值，由管理面角色闸门终局裁决。组织级角色不属本特性范围，
-    这些入口维持现状判据（F07 决策 4「五步无判据来源」）。
+    这些入口维持现状判据（F07 决策 4「四步无判据来源」）。
     """
 
     CONTENT = "content"
@@ -209,6 +209,12 @@ ENTRY_RULES: dict[str, EntryRule] = {
     "export_space": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     "update": EntryRule(SpaceAxis.CONTENT, SpaceAction.UPDATE),
     "delete": EntryRule(SpaceAxis.CONTENT, SpaceAction.DELETE),
+    # md 文件级接口（F08）：read 对齐 get/list（内容轴 READ），edit 对齐 add
+    # （内容轴 WRITE——继承式 SUPERSEDE 本质写新记忆）。文件级操作不按 unit_id，单段鉴权（D5）。
+    # 登记进表才会在装配空间级判定时经 _is_space_level_entry 触发 _ensure_space_state_allows，
+    # 否则 edit_md_file 在 FROZEN 空间漏掉状态校验（_ensure_space_writable 在该形态 early return）。
+    "read_md_file": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
+    "edit_md_file": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
     # 去重与遗忘两种演进模式取 UPDATE，由鉴权点按模式覆盖本表的默认动作；
     # 两种模式都不放宽到「本人所写」——输入是一批条目，逐条判会使一次调用部分生效。
     "evolve": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE, own_actions_apply=False),

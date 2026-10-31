@@ -51,9 +51,7 @@ async def _acquire_elsewhere(
     同 task 内重复获取一定被判为重入（这是契约），故凡是要验证互斥的用例都必须换 task
     竞争，否则测到的是重入路径而非互斥路径。
     """
-    return await asyncio.create_task(
-        provider.acquire(scope, name, wait_timeout_ms=wait_timeout_ms)
-    )
+    return await asyncio.create_task(provider.acquire(scope, name, wait_timeout_ms=wait_timeout_ms))
 
 
 async def _assert_held(
@@ -77,14 +75,18 @@ def test_top_name_is_a_known_config_section() -> None:
 
 
 def test_memory_builder_applies_lease_and_timeout() -> None:
+    # lease_ms 与 wait_timeout_ms 的差值必须拉大：竞争者 task 从 create_task 到首次
+    # 尝试的调度延迟 ε 一旦 ≥ lease-wait（原 50-30=20ms），锁就在 30ms 等待窗口内过期、
+    # 被竞争者拿到而不抛 LockTimeoutError（CI 高负载下 ε 超 20ms 很常见）。lease-wait
+    # 拉到 170ms，等待窗口远早于租约到期结束，恒超时。第 2 步 sleep 相应放大到 >租约。
     provider = LockProducer.build(
-        "memory", {"lease_ms": 50, "wait_timeout_ms": 30}, AssemblyContext()
+        "memory", {"lease_ms": 200, "wait_timeout_ms": 30}, AssemblyContext()
     )
     assert isinstance(provider, InMemoryLockProvider)
 
     async def scenario() -> None:
         await provider.acquire(_SCOPE, "write")
-        await asyncio.sleep(0.08)
+        await asyncio.sleep(0.30)  # 超过租约，锁过期，他人可获取
         fresh = await _acquire_elsewhere(provider)
         await provider.release(fresh)
 
@@ -229,17 +231,24 @@ def test_stale_release_does_not_free_the_new_holders_lock() -> None:
     asyncio.run(scenario())
 
 
-def test_renew_extends_lease_and_fails_after_loss() -> None:
+def test_renew_extends_lease_and_fails_after_loss(monkeypatch) -> None:
+    # 只控制内存后端的租约时钟；真实 sleep 可能因调度延迟越过 60ms 租约。
+    # 不替换进程级 time.monotonic，避免影响 asyncio 自身的等待与超时。
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
     provider = _provider(lease_ms=60)
 
     async def scenario() -> None:
         handle = await provider.acquire(_SCOPE, "write")
-        await asyncio.sleep(0.04)
+        now[0] += 0.04
         assert await provider.renew(handle) is True
-        await asyncio.sleep(0.04)
+        now[0] += 0.04
         await _assert_held(provider)  # 续期后仍在租约内
 
-        await asyncio.sleep(0.08)  # 续期后的租约也到期
+        now[0] += 0.08  # 续期后的租约也到期
         stolen = await _acquire_elsewhere(provider)
         assert stolen.token != handle.token
         assert await provider.renew(handle) is False
@@ -314,12 +323,34 @@ def test_guard_releases_on_exception() -> None:
     asyncio.run(scenario())
 
 
-def test_watchdog_keeps_the_lock_past_its_lease() -> None:
+def test_watchdog_keeps_the_lock_past_its_lease(monkeypatch) -> None:
+    # 只推进后端租约时钟，避免 CI 暂停事件循环超过 90ms 后把合法失锁误报为续租缺陷。
+    # 仍运行真实看门狗与 token CAS；仅返回 True 而不延长租约的实现无法通过互斥断言。
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
     provider = _provider(lease_ms=90)
 
     async def scenario() -> None:
+        renewed = asyncio.Event()
+        renewal_count = 0
+        real_renew = provider.renew
+
+        async def observed_renew(handle: LockHandle, *, lease_ms: int | None = None) -> bool:
+            nonlocal renewal_count
+            now[0] += 0.04
+            result = await real_renew(handle, lease_ms=lease_ms)
+            renewal_count += 1
+            if renewal_count >= 4:
+                renewed.set()
+            return result
+
+        monkeypatch.setattr(provider, "renew", observed_renew)
         async with provider.guard(_SCOPE, "write") as handle:
-            await asyncio.sleep(0.25)  # 远超一个租约周期
+            await asyncio.wait_for(renewed.wait(), timeout=5.0)
+            assert now[0] - 100.0 > handle.lease_ms / 1000.0
             assert handle.lost.is_set() is False
             await _assert_held(provider)
 
@@ -331,6 +362,28 @@ class _RenewFailingLockProvider(InMemoryLockProvider):
 
     async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
         return False
+
+
+def test_watchdog_does_not_revive_an_expired_lease(monkeypatch) -> None:
+    """模拟 CI 停顿超过租约：必须报告失锁，而不是为了续租测试恢复过期持有权。"""
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
+    provider = _provider(lease_ms=90)
+
+    async def scenario() -> None:
+        async with provider.guard(_SCOPE, "write") as handle:
+            now[0] += 0.10
+            await asyncio.wait_for(handle.lost.wait(), timeout=5.0)
+            fresh = await _acquire_elsewhere(provider)
+            assert fresh.token != handle.token
+            assert await provider.renew(handle) is False
+        await _assert_held(provider)  # 旧 guard 的释放也不能删除新持有者。
+        await provider.release(fresh)
+
+    asyncio.run(scenario())
 
 
 def test_watchdog_signals_loss_instead_of_silently_continuing() -> None:
@@ -361,7 +414,7 @@ def test_guard_without_auto_renew_starts_no_task() -> None:
 class _FakeScript:
     """模拟 redis-py 的 Script 对象；按脚本源码分派到对应的 CAS 语义。"""
 
-    def __init__(self, backing: "_FakeRedis", source: str) -> None:
+    def __init__(self, backing: _FakeRedis, source: str) -> None:
         self._backing = backing
         self._source = source
 

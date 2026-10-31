@@ -18,23 +18,24 @@
 | `pipeline.py` | `MemoryPipeline` 抽象接口——按记忆类型选择构建/查询 profile |
 | `lifecycle.py` | `LifecycleManager` 接口——状态流转（transition）与到期清扫（sweep） |
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
-| `permission.py` | `PermissionManager` 接口——跨 scope 授权与校验 |
-| `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度 |
+| `permission.py` | `PermissionManager` 历史兼容接口——不参与生产请求授权 |
+| `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度；`supports_recurring` 周期能力、`link_child` 父子任务观测关联、`RecurringJobStoppedError` 永久停摆信号、`validate_shutdown` 关闭上下文校验、`shutdown` 优雅关闭 |
 | `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
 | `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/`begin_delete`/删除/导出/用量/策略/成员 |
-| `collective/` | 群体记忆的控制层纯逻辑子包，三个模块均非算子（无 Producer 注册、不访问存储与模型），不由 `bootstrap` 触发注册。`routing.py`：结论直写路径的归属判定调用，API 层传入成品 `RouteContext`（含已鉴权候选集）与 `Router` 实例，本模块调 `route_batch` 并归一结果，存在的理由是分层边界——判定由构建层承担、判定输入由 API 层的鉴权点构造，二者之间的调用不能落在 API 层（S02「不调用构建」）。`write_targets.py`：写入候选空间集合的渲染、排序、截断与取交，收 `can_write` 回调而不收 `identity`。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与轮转合并，收 `recall` 回调与 API 层判权后给出的空间目标（含逐空间谓词）；只 import `retrieval/cross_space.py` 的三个纯函数，不持有引擎、不持有检索算子；空间级扇出失败与判权剔除分两路交回，不并进 `merged.errors`。三者共同形态是「裁决留 PEP，裁决之后的机械换算与 I/O 编排落本层」，上下之间经回调或成品数据衔接。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
-| `application/` | 按用例划分的 typed application ports，四个模块均非算子（无 Producer、不执行 PEP、不接收 `identity`）。`command.py`：`MemoryCommandService` 包装 Engine 的 write/batch_write/update/delete/evolve，并提供 `batch_write_aligned` / `collect_batch_result` 做鉴权后的下标回填。`query.py`：`MemoryQueryService` 包装 recall/list/get 与鉴权元数据读取。`space_lifecycle.py`：`SpaceLifecycleService` 先 `begin_delete` 标 `DELETING`，再 purge + `SpaceManager.delete` + `deleted_counts` 汇总；第二步失败抛 `PartialFailureError`，重试入口仍是 `delete_space`。`governance_service.py`：`GovernanceService` 包装 Governor 的 inspect/trace/audit。由已注入的算子组成，不引入 Service Locator；SDK/HTTP/MCP 经 `LocalMemoryAPI` 共用。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
+| `collective/` | 群体记忆的控制层纯逻辑子包，三个模块均非算子（无 Producer 注册、不访问存储与模型），不由 `bootstrap` 触发注册。`routing.py`：结论直写路径的归属判定调用，API 层传入成品 `RouteContext`（含已鉴权候选集）与 `Router` 实例，本模块调 `route_batch` 并归一结果，存在的理由是分层边界——判定由构建层承担、判定输入由 API 层的鉴权点构造，二者之间的调用不能落在 API 层（S02「不调用构建」）。`write_targets.py`：写入候选空间集合的渲染、排序、截断与取交，收 `can_write` 回调而不收 `identity`。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与轮转合并，收 `recall` 回调与 API 层判权后给出的空间目标（含逐空间谓词）；使用 `retrieval/cross_space.py` 合并，并将选中的物化根交给 `retrieval/expansion.py` 统一收尾；不持有引擎、不依赖检索实现；空间级扇出失败与判权剔除分两路交回，不并进 `merged.errors`。三者共同形态是「裁决留 PEP，裁决之后的机械换算与 I/O 编排落本层」，上下之间经回调或成品数据衔接。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
+| `application/` | 按用例划分的 typed application ports，四个模块均非算子（无 Producer、不执行 PEP、不接收 `identity`）。`command.py`：`MemoryCommandService` 包装 Engine 的 write/batch_write/update/delete/evolve/evolve_v2/start_background_jobs，并提供 `batch_write_aligned` / `collect_batch_result` 做鉴权后的下标回填。`query.py`：`MemoryQueryService` 包装 recall/list/get 与鉴权元数据读取。`space_lifecycle.py`：`SpaceLifecycleService` 先 `begin_delete` 标 `DELETING`，再 purge + `SpaceManager.delete` + `deleted_counts` 汇总；第二步失败抛 `PartialFailureError`，重试入口仍是 `delete_space`。`governance_service.py`：`GovernanceService` 包装 Governor 的 inspect/trace/audit。由已注入的算子组成，不引入 Service Locator；SDK/HTTP/MCP 经 `LocalMemoryAPI` 共用。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
 | `membership.py` | `MembershipResolver` 接口——读空间授权事实（成员表与归属登记）供鉴权点判定，带短 TTL 缓存；正查与反查都只依赖 `SpaceManager` 一个契约 |
 | `__init__.py` | 公开导出全部接口类与数据类型 |
-| `engine_impl/` | MemoryEngine 实现目录：`in_memory_engine.py`（本地最小实现）/ `cloud_engine.py`（云侧 message_type/profile 编排） |
+| `engine_impl/` | MemoryEngine 实现目录：`in_memory_engine.py`（本地最小实现）/ `cloud_engine.py`（云侧 message_type/profile 编排）/ `evolve_dispatch.py`（evolve 纯执行共用件：candidate→resolver 装配 + 一次性 EvolveJob 提交；三态分发 / 持续授权在 API 层 DreamingCoordinator）/ `dreaming_registry.py`（定时任务 KV 注册表：`created_by` 持续授权档案、`state + generation` 注销/旧代隔离状态、单实例锁 acquire/release；由 API 层 DreamingCoordinator 持有驱动） |
 | `engine_impl/schema_update_support.py` | 两 Engine 共用的无 I/O 候选判断、Schema 能力/路由校验及更新委托；通过 Engine 注入的 Evolver/IndexBuilder 解析回调取得组件，不直接访问 Engine 受保护成员；普通更新跳过准备阶段，算法在构建层，计划授权在 API，异步入口将同步构建工作放入工作线程 |
 | `*_impl/` | 每个算子对应一个实现子目录，含具体实现类；Producer 定义在顶层接口文件，具体实现用 `@XProducer.register(...)` 自注册 |
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
 | `space_impl/` | SpaceManager 实现目录（kv） |
 | `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化与 payload 幂等） |
-| `jobs.py` | `Job` 抽象（scope + interval 标识，`run() -> JobInfo` 唯一执行入口，不自带循环）+ `JobFactory`（按 job_type + scope + 运行时参数生成实例）+ `JobType` 枚举 + `JobFactoryProducer` |
+| `jobs.py` | `Job` 抽象（scope + interval 标识，`run() -> JobInfo` 唯一执行入口，不自带循环；`schedule_key` 调度去重键——默认类名，Scheduler 只按此通用键去重，业务身份区分由子类覆写，如 EvolveJob 含 mode）+ `JobFactory`（按 job_type + scope + 运行时参数生成实例）+ `JobType` 枚举 + `JobFactoryProducer` |
+| `evolution/` | 显式建树请求验证、树开关分流与任务提交，以及 background 周期注册，不鉴权、不做分组算法 |
 | `jobs_impl/` | 后台 Job 实现目录：`evolve_job.py`（EvolveJob + EvolveJobSpec）、`middle_to_long_job.py`（MiddleToLongJob + MiddleToLongJobSpec + default JobFactory 装配）。Spec 装配期固化业务参数与 storage/lifecycle/llm 依赖；index/evolver 不在装配期解析（行为铁律 17） |
 
 ## 文件关系
@@ -48,31 +49,36 @@
 
 ## 行为铁律
 
+- **提交循环分支一致**：AsyncTimerScheduler.submit 以当前运行循环是否为所属循环决定直接提交或跨线程提交；同线程异循环显式拒绝，不允许落入未初始化 future 的路径。等待关闭不设整体期限，自定义 Job 须能正常结束或在执行边界响应取消，外部调用配置超时。
+
+- **调度器关闭必须释放线程**：`AsyncTimerScheduler` 用短生命周期锁串行化关闭标记、提交和 tick 入队；关闭后拒绝提交，取消排队任务，通知在飞任务协作式收尾，再释放 Runner。保留任务历史，查询/取消不得重启线程。中期转换取消后停止新批次，已成功抽取的批次仍完成归档并保留结果 ID。摄入控制器重复关闭时仍须允许等待此前未等待的线程池收尾。
+
 0. **系统控制只读 `system_metadata`**：Engine/Pipeline/PermissionContext 所需的
    `infer` / `procedural` / `middle` / 路由和内部状态不得从 `user_metadata`
    读取或 fallback。`MemoryPatch` 对两个命名空间分别 merge-update。
 
-1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/存储端口全部由装配注入。**记忆本体的写入一律经 `IndexBuilder`**——engine 不直接向真源写 KV。`InMemoryEngine` 保持 KVStore 读取路径；`CloudEngine` 的 MemoryUnit 读取（点读、列表、`scopes()` 枚举）经注入的 `DomainStore` 完成。禁止绕过存储抽象绑定具体后端或在 engine 内调用 LLM。
+1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/存储端口全部由装配注入。**记忆本体的写入一律经 `IndexBuilder`**——engine 不直接向真源写 KV。`InMemoryEngine` 保持 KVStore 读取路径；`CloudEngine` 与 `AgentEngine` 的 MemoryUnit 读取（点读、列表、`scopes()` 枚举及 dreaming 候选解析）经注入的 `DomainStore` 完成——文档模式分流到影子索引、非文档模式分流到 KV。文档模式下 `AgentEngine` 的 `update` SUPERSEDE / `delete` FORGET·ARCHIVE 在 engine 侧绕过 `KVLifecycleManager`（其 supersede/transition 从 KV 取 unit，文档模式真源在 shadow 必失败），直接改 unit 落 shadow（对齐 `CloudEngine` SUPERSEDE 范式，见 [F09](../../docs/features/control/F09-agent-engine-doc-mode-read.md)）；非文档模式维持 `lifecycle.*` 直调。禁止绕过存储抽象绑定具体后端或在 engine 内调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `api/` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
-3. **鉴权不在本层执行**：`PermissionManager.check` 由 `api/MemoryAPI` 在入口调用，engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 items、count 与 contexts 必须来自同一次存储列表查询。禁止在 engine 内部重复 check。**判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（截断规则），判权本身经 `can_write` 回调由 API 层执行；该裁剪的失效方向是未判即不进候选、表现为拒绝而非放行，因此可下沉。本层也不抛权限异常——缺兜底落点时返回空值，由 PEP 抛出。检索侧的逐空间判权循环不适用本条：其循环体就是 `PermissionManager.decide` 本身，移出等于移出 PEP；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。判权之后的部分可以下沉——`collective/cross_space_recall.py` 收已判权的空间目标与 `recall` 回调，做摊配、扇出与合并，不读 `identity`、不做裁决。
+3. **鉴权不在本层执行**：安全域 `Authorizer.authorize` 由 `api/MemoryAPI` 唯一 PEP 调用，engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 items、count 与 contexts 必须来自同一次存储列表查询。禁止在 engine 内部重复 check。**判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（截断规则），判权本身经 `can_write` 回调由 API 层执行；该裁剪的失效方向是未判即不进候选、表现为拒绝而非放行，因此可下沉。本层也不抛权限异常——缺兜底落点时返回空值，由 PEP 抛出。检索侧的逐空间判权循环不适用本条：其循环体就是 `Authorizer.authorize` 本身，移出等于移出 PEP；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。判权之后的部分可以下沉——`collective/cross_space_recall.py` 收已判权的空间目标与 `recall` 回调，做摊配、扇出与合并，不读 `identity`、不做裁决。
 4. **LifecycleManager 只做 Scope 内非破坏式标记**：`transition` / `supersede` 必须接收完整 Scope，只标记该 Scope 下的目标 id，绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
 5. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。`*_impl/` 通过 producer 工厂被外部装配消费，不被顶层接口引用。
 6. **Pipeline 只做 profile 选择**：`MemoryPipeline` 选择一组已装配的 `IndexBuilder` / `Evolver` / `Retriever` / `Classifier` 绑定，不实现抽取、巩固、索引、检索算法，不让 construction/retrieval 反向依赖 control。
 7. **PermissionContext 由可信边界构造**：add/search/list 的请求 context 来自 API 入参；list 当前页实际 unit 与 get/update/delete 的已有 unit context 必须由 Engine 从真源元数据解析，不能信任调用方声明 memory_type。
-8. **权限路由与数据范围绑定**：RoutingPermissionManager 只按 PermissionContext 选择
+8. **权限路由与数据范围绑定**：RoutingAuthorizer 只按 PEP 构造的 ResourceDescriptor 选择
    delegate；API 必须把授权所依据的路由字段回注为系统过滤谓词。未知路由值和直接
    policy 名落最小权限 fallback，fallback 不得配置为 allow_all。
-9. **space 是权限硬边界**：`PermissionManager.check` 先按 `org + space` 判断 owner-cover；同 org 跨 space 默认拒绝，只有 `Scope()` 或显式 grant 可跨 space。owner-cover 的主体路径由 `PermissionContext.metadata["principal_path"]` 选择（默认 `user_agent`，可选 `agent_user`）。
+9. **space 是权限硬边界**：Authorizer 按可信角色、`org + space` 和主体路径判断覆盖；空 `Scope()` 不是特权身份。跨 space 必须有符合规则的授权，ROOT 特权只来自可信角色。owner-cover 的主体路径由 PEP 从 space policy 投影到资源属性（默认 `user_agent`，可选 `agent_user`）。
 10. **space policy 是主体路径来源**：`LocalMemoryAPI` 在鉴权前读取目标 space policy，并用其中的 `principal_path` 覆盖 `PermissionContext.metadata["principal_path"]`；调用级 metadata 不能临时改变已有 space 的主体路径。
 11. **Space id 全局唯一**：`KVSpaceManager` 在根 Scope 维护全局 Space 注册键；不同 org 创建同一非空 Space id 必须报 `ConflictError`。
-12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描。
-13. **批量写入保序且不鉴权**：Engine 的 `batch_write` 只接收 API 已前置校验的归一化 item，按输入顺序复用 `write`；不得在 Engine 内并发提交或重复执行 `PermissionManager.check`。
+12. **治理读取按已鉴权 Scope 定位**：Governor 的 `inspect` / `trace` 必须接收 API 已鉴权 target Scope，不得仅按 unit id 跨 Scope 扫描；返回快照由 API 再逐条执行 READ 判定（含祖先），Governor 不充当 PEP。
+13. **批量写入保序且不鉴权**：Engine 的 `batch_write` 只接收 API 已前置校验的归一化 item，按输入顺序复用 `write`；不得在 Engine 内并发提交或重复执行授权判定。
 14. **Ingest 任务按 Scope 隔离**：任务状态查询为纯读取，不更新进程缓存或
     `payload_id -> job_id` 映射；`_find_existing` 只有在任务 Scope 与请求 Scope
     完全一致后才维护映射，READ 鉴权由 MemoryAPI 执行。
 15. **授权值对象与路由 capability 单一真源**：`Action` / `Grant` 只从 `common.security.types` 兼容再导出，不在 control 重定义；`PermissionManager.routing_fields()` 继承自 `common.security.authorization.RoutingFieldsProvider`，只允许路由实现覆盖。
 16. **Engine 不回填 Segment assets**：`write` 将 API 入参中的 `assets` 复制到 `RawPayload`，之后由 Ingestor 负责映射。Engine 可继续处理 tags 和引擎管理的 metadata，但不得假设首 Segment 并改写 `Segment.assets`。
 17. **后台 Job 的 IndexBuilder/Evolver 由 Engine 运行时注入**：`EvolveJobSpec` / `MiddleToLongJobSpec` 装配期不解析 Evolver/IndexBuilder（不按 `vector_enabled` 猜默认、不调 `EvolverProducer` / `IndexBuilderProducer`）；Engine 提交 Job 时必传注入与写入/演进同源的实例（middle 路径传 pipeline binding 或单 profile 的 `index=` / `evolver=`，`evolve` 传 Engine 装配的 `evolver=`），运行时注入优先于 Spec 兜底字段；缺失注入时 `with_scope` 抛 `ValidationError`，不静默回退默认实现（见 docs/features/control/F08-engine-job-builder-alignment.md）。
+18. **dreaming 控制层纯执行**（F04 D7，PEP 边界）：Engine / EvolveJob / FanOutResolver **不鉴权**——不接收 identity、不调 `PermissionManager.check`、不收 guard 闭包。三态分发、持续授权、fan-out 逐桶裁决与恢复编排在 API 层 `DreamingCoordinator`；Engine.evolve 只保留 candidate→resolver→一次性 EvolveJob。拒绝桶只以 `count:N` 脱敏摘要回显。定时注册要求 `scheduler.supports_recurring`。首次注册写序 submit→save，失败 cancel；更新复用 schedule_key 时 save 失败必须恢复旧 Job 声明。注销先持久化 `CANCEL_REQUESTED`，旧代 Driver 用 generation 自停；API 协调器不得在短状态锁内等待 Scheduler。周期实例空表启动也持 leader 租约，register 与每 tick 均复核；失锁以 `RecurringJobStoppedError` 停父 Timer。Scheduler 的 cancel/status 必须在其私有循环串行化，shutdown 必须 await 已取消任务后才能关循环。EvolveJob 的同步 Evolver 返回后须先合并结果再检查取消，使 CANCELLED 状态保留部分写入 ID。
 
 ## 双通道调度机制
 
@@ -114,6 +120,10 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 
 ## 本地约束
 
+- `job_impl/ingest_job.py` 分开记录 `_closed`（停止接收）与 `_drained`（工作线程结束）。
+  wait=False 后仍允许 wait=True 完成 drain；线程等待不持状态锁，确保任务可写入终态。
+
+- `AsyncTimerScheduler` 同循环提交也须 await 实际提交体；周期实例浅拷贝与 `link_child` 派生任务通过 `Job.inherit_cancellation_from` 读取父任务的只读 `cancellation_signal` 并共享取消信号，调度器只经 `Job.request_cancel` 发出取消，不直接访问事件对象。取消/永久停摆后不开始新的执行步骤，`EvolveJob` 每桶在线程内复核，已进入的同步调用不强制中断。活跃 Job 引用随完成清理，一次性与终态周期父任务的历史共用 10000 条有界上限。
 - `types.py` 中 `DeleteSelector` 各条件取「与」关系，至少给出一项；Engine 收到空 selector 必须抛 `ValidationError`
 - `UpdateMode.SUPERSEDE`（默认）生成新 id，旧 id 标记 superseded——`update` 返回的记忆 id 可能与传入的 `unit_id` 不同
 - `DeleteMode.PURGE` 是唯一物理删除路径；会删除真源、移除索引，并递归删除 provenance 后代
@@ -125,3 +135,53 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - `PolicyManager` 只管理运行时可变策略；未知 key 或试图新增 key 必须抛 `PolicyError`
 - 所有算子必须实现 `operator_type()` 和 `health()`（继承自 `ControlOperator`）
 - 跨模块规则（如 scope 隔离、MemoryUnit 跨层传递）见 `docs/specs/`，不在本文件重复
+
+### Snapshot 自动接入
+
+两个 Engine 的可选 policy 依赖由 Producer 解析共享的 policy.default；每次 write 按
+hierarchy.enabled 调用 ingest 的纯补齐函数：开启时补齐，关闭时移除合法叶提示，再交 Ingestor。DictPolicyManager 的装配
+未配置 policies 时使用默认表（hierarchy.enabled=false），显式表完整替换，空表保留为空；
+Engine 缺少树开关时按关闭处理，不在 config/defaults.py 堆叠查询参数。
+CloudEngine 不回填已消费的叶提示。此流程不提交父节点构建任务。
+
+
+### 显式建树的稳定边界
+
+- `jobs_impl/hierarchy_candidates.py` 按有界 Scope/时间收齐候选和完整旧子树；支持
+  本地 KV 与云端 DomainStore（含管理器端口代理）。读取不完整时失败，不能截断后建树。
+- `jobs_impl/hierarchy_job.py` 使用 Engine 注入的读源/Evolver。缺时未挂树叶跳过，
+  已挂树损坏报错；复用检查不修改内容。可选锁覆盖取数到同步写入收尾。
+- Job 支持上游协作取消；已经进入的同步工作先结束并记录结果，不提前释放锁。
+  `scheduler_impl/job_outcome.py` 校验终态，两个 Scheduler 均保留真实业务失败。
+- 提交先校验基础请求，关闭时成功跳过且不校验树选项，开启后再验证区间与父层链。
+- 显式 HIERARCHY 是单次任务；自动建树独立使用 HIERARCHY_DERIVE，不复用普通 dreaming。
+
+### 跨空间树查询
+
+recall_spaces 扇出时设置内部 defer_expansion，先按既有规则全局选根，再交检索层完成
+共享预算展开；未选根不读后代。自定义 Retriever 返回非空结果但不提供准备协议时，
+记录该空间能力错误，不能静默绕过共享预算。身份与逐空间判权仍只由 API 处理。
+TIME 父角色、rollup=True 且 expand_depth>0 使用已召回后代补位。准备结果沿用
+targets 顺序，检索层按该顺序及各空间融合原序补入已选父的后代，共享预算与数量上限；
+不按任务完成时间或跨空间分数重排。
+
+### 增量候选读取
+
+`jobs_impl/hierarchy_incremental` 负责水位、未挂父输入与有界跳过诊断；
+`hierarchy_candidates.collect_root_subtrees` 只补齐已选根的完整后代并复核外部反向引用，
+不重新吸纳游离候选。沿用 KV/DomainStore 双读端口、公共 UTC 转换与缺时叶判据。
+显式与增量候选共用 `validate_snapshot_links` 校验 Snapshot 引用；非法子引用或孤立
+parent_scope 在进入 Evolver 前报错，不触发写入阶段的故障暂停，也不静默跳过。
+
+
+### 自动增量调度
+
+`evolution/background.py` 校验双开关、绑定 profile、周期能力及同源依赖，提交
+`jobs_impl/hierarchy_derive_job.py`。JobFactory 首次注册时延迟构造 derive spec；同一
+完整 Scope 共享故障保护状态，不因重复注册清零。自动 Job 每轮重新读取策略，逐层
+候选→构建→记录结果；使用与显式建树相同的 hierarchy:time 锁。
+AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘要，不实现树算法。
+诊断详情序列化失败时记录日志并回退为 JSON 空对象，不中断完成记录、活跃引用清理或队列。
+周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。
+只接受构建层明确的 HierarchyPreparationError 作为本层未写入证据，失败后允许下轮重试；
+部分写入、未分类插件异常和强制取消的未知结果保持暂停，不按空变更 ID 推断无写入。

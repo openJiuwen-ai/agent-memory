@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-09-03 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -13,7 +13,7 @@
 ## Metadata 转换契约
 
 `RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空。
-Ingestor 必须分别复制两个 dict，不得合并、解释或在两者之间 fallback。
+Ingestor 必须分别复制两个 dict，不得合并或在两者之间 fallback。系统侧的四个层级叶提示会被消费为 `HierarchyRef`，其余字段复制透传；用户侧同名提示保持业务数据。
 
 ## 范围 / 边界
 
@@ -74,6 +74,7 @@ class IngestOperator(ABC):
 ```
 Source.fetch() → list[RawPayload]
 → 校验 payload.modality 属于 Normalizer.modalities()
+→ 校验系统侧 hierarchy 叶提示（失败不调用 Normalizer）
 → Normalizer.normalize(payload) → content 文本投影
 → Ingestor 组装 MemoryUnit，并将 payload.assets 映射到产出的 Segment
 → 返回 list[MemoryUnit]
@@ -134,3 +135,26 @@ jiuwen_memory/ingest/ingestor_impl/
 | S05-construction | 构建层接收本层产出的 MemoryUnit 做落盘+索引+演进 |
 | S07-common | Normalizer/Tokenizer 等共享插件由本层消费 |
 | architecture.md §10 | 多模态信息源接入与规约投影 |
+
+## 树结构叶提示
+
+系统侧仅允许 `hierarchy_kind`、`hierarchy_role`、`hierarchy_span_start`、
+`hierarchy_span_end`。kind/role 同在，TIME 只接受 snapshot；时间端点允许缺失，
+已有端点原样保留，缺失端点为 None。其他 kind 只接受 node，区间必须成对或整体省略。
+已给时间为 ISO 8601 字符串，比较按 UTC，朴素时间也按 UTC 解读，保持微秒精度。
+未知 hierarchy_ 键、父角色、父子边声明、未知枚举、坏时间或逆序区间仍抛 ValidationError；
+单纯缺少 TIME 叶时间不再作为非法输入。
+
+提示只声明叶身份，不创建边。返回结构为 ACTIVE、无父无子；提示从系统 metadata 移除，
+不改变输入字典。是否按 occurred_at 自动补齐由 Engine 根据策略调用纯补齐函数决定，
+Ingestor 本身不访问 PolicyManager。Engine 在 hierarchy.enabled 关闭或缺失时移除本次
+输入副本中的四个合法叶提示，不补时间、不生成 Snapshot，occurred_at 与其他业务数据
+保持原有语义。未知结构键、父子边及内核投影键仍拒绝；不清理已有树或调用方字典。
+开启时，无提示或仅声明 TIME/Snapshot 身份且有 occurred_at 才自动生成等值双端点；
+没有 occurred_at 时不猜测时间，无提示保留空 hierarchy，显式身份保留其已有字段。
+只提供一个端点时即使有 occurred_at 也不修补。完整显式区间优先。
+时间不完整的叶只作为待筛选提示保存，不代表具备参与 TIME 建树的资格。
+
+`occurred_at` 原样作为消息时间；自动补齐 Snapshot 时，两端保留同一时间表示。
+业务偏移只来自显式时间运算，不得附加服务器时区偏移。比较和索引转换统一遵守 S07：
+无时区时间按 UTC 解释，有时区时间保持实际时刻，均不改写真源。

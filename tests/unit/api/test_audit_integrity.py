@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """verify_audit 的 surface 暴露边界与 PEP 契约（PR3 接口文档 §6.1）。
 
-接口先行版：用 stub provider 验证 PEP，不实现任何密码学；真实认证接入前 generic
-dispatch 不注册该管理面 verb，避免把 payload actor 当成可信根身份。
+用 stub provider 验证 PEP 层契约（密码学与链式语义在 provider/store 专项测试覆盖）；
+真实认证接入前 generic dispatch 不注册该管理面 verb，避免把 payload actor 当成可信
+根身份。
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import pytest
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.api.memory_api_impl.local_memory_api import LocalMemoryAPI
 from jiuwen_memory.common.errors import RateLimitedError, ValidationError
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.audit_integrity.base import (
     AnchorState,
     AuditIntegrityError,
@@ -28,11 +30,12 @@ from jiuwen_memory.common.security.audit_integrity.base import (
     AuditVerificationResult,
     Proof,
 )
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security.authorization.base import AuthorizationDecision, Authorizer
 from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -69,6 +72,7 @@ def _srv(api) -> object:
 
 def test_generic_dispatch_does_not_expose_verify_audit_before_real_authentication() -> None:
     """payload actor 不能构造根权限；真实认证接入前管理面 verb 不注册。"""
+
     class _Api:
         called = False
 
@@ -78,7 +82,12 @@ def test_generic_dispatch_does_not_expose_verify_audit_before_real_authenticatio
 
     api = _Api()
     status, body = handler.dispatch(
-        _srv(api), build_legacy_dispatch_request("verify_audit", {"actor_user": "root"})
+        _srv(api),
+        build_legacy_dispatch_request(
+            "verify_audit",
+            {"actor_user": "root"},
+            security=internal_context(ScopedAuthenticator(Scope(org="system", user="auditor"))),
+        ),
     )
 
     assert status == 404
@@ -149,6 +158,13 @@ def _local_api(
 ) -> tuple[LocalMemoryAPI, MagicMock, MagicMock, MagicMock]:
     permission = MagicMock()
     permission.decide.return_value = SimpleNamespace(allowed=True, rule="test", axis=None)
+    # 审计入口属组织级（ENTRY_RULES 里 SpaceAxis.ORG），PR2 起由 PDP 终局裁决，
+    # 不再回落 permission 的 ACL 判据——断言也随之落在 authorizer 上。
+    authorizer = MagicMock(spec=Authorizer)
+    authorizer.management_grant_store.return_value = None
+    authorizer.management_grant_stores.return_value = []
+    authorizer.authorize.return_value = AuthorizationDecision.allow("test")
+    authorizer.routing_fields.return_value = ()
     audit_logger = MagicMock()
     governor = MagicMock()
     governor.audit.return_value = []
@@ -164,17 +180,20 @@ def _local_api(
         audit_integrity_provider=provider,
         audit_verify_guard=guard,
         audit_verify_limits=limits,
+        authorizer=authorizer,
     )
-    return api, permission, audit_logger, governor
+    return api, authorizer, audit_logger, governor
 
 
 def test_verify_audit_without_provider_returns_unsupported() -> None:
     """未装配 provider：诚实返回 unsupported，不抛错、不降级成 clean。"""
-    api, permission, _, _ = _local_api()
+    api, authorizer, _, _ = _local_api()
 
-    result = api.verify_audit(security=legacy_request_context(Scope()))
+    result = api.verify_audit(
+        security=internal_context(ScopedAuthenticator(Scope(org="system", user="auditor")))
+    )
 
-    assert permission.decide.call_args.args[2] is Action.VERIFY_AUDIT
+    assert authorizer.authorize.call_args.kwargs["resource"].action is Action.VERIFY_AUDIT
     assert result.status is AuditIntegrityStatus.UNSUPPORTED
     assert result.checked_count == 0
     assert result.high_water_mark == 0
@@ -189,7 +208,7 @@ def test_verify_audit_with_provider_returns_result_and_releases_guard() -> None:
     api, _, _, _ = _local_api(provider=provider, guard=guard)
 
     result = api.verify_audit(
-        security=legacy_request_context(Scope()),
+        security=internal_context(ScopedAuthenticator(Scope(org="system", user="auditor"))),
         after_sequence=3,
         page_size=50,
         max_samples=2,
@@ -214,7 +233,9 @@ def test_verify_audit_rejected_when_workload_budget_exhausted() -> None:
     api, _, audit_logger, _ = _local_api(provider=provider, guard=guard)
 
     with pytest.raises(RateLimitedError, match="workload budget"):
-        api.verify_audit(security=legacy_request_context(Scope()))
+        api.verify_audit(
+            security=internal_context(ScopedAuthenticator(Scope(org="system", user="auditor")))
+        )
 
     assert provider.verify_kwargs is None
     assert audit_logger.record.call_count == 1
@@ -237,7 +258,7 @@ def test_verify_audit_releases_guard_when_provider_raises() -> None:
     actor = Scope(org="acme", user="auditor")
 
     with pytest.raises(AuditIntegrityError, match="verification failed"):
-        api.verify_audit(security=legacy_request_context(actor))
+        api.verify_audit(security=internal_context(ScopedAuthenticator(actor)))
 
     assert calls == ["audit.record", "provider.verify"]
     assert audit_logger.record.call_count == 1
@@ -260,7 +281,7 @@ def test_verify_audit_clamps_requests_to_trusted_server_limits() -> None:
     )
 
     api.verify_audit(
-        security=legacy_request_context(Scope()),
+        security=internal_context(ScopedAuthenticator(Scope(org="system", user="auditor"))),
         page_size=51,
         max_samples=3,
     )
@@ -300,7 +321,7 @@ def test_verify_audit_truncates_provider_samples_to_effective_limit() -> None:
     api, _, _, _ = _local_api(provider=provider, guard=_StubGuard())
 
     result = api.verify_audit(
-        security=legacy_request_context(Scope()),
+        security=internal_context(ScopedAuthenticator(Scope(org="system", user="auditor"))),
         max_samples=2,
     )
 
@@ -308,25 +329,23 @@ def test_verify_audit_truncates_provider_samples_to_effective_limit() -> None:
     assert result.truncated is True
 
 
-def test_audit_preserves_legacy_read_action_while_verify_uses_new_action() -> None:
-    api, permission, _, _ = _local_api()
-    security = legacy_request_context(Scope())
+def test_audit_and_verify_use_distinct_management_plane_actions() -> None:
+    """两个审计入口取各自的管理面动作，不共用一个。
 
-    def _decide(_identity, _target, action, **_kwargs):
-        return SimpleNamespace(
-            allowed=action in {Action.READ, Action.VERIFY_AUDIT},
-            rule="legacy-root-grant",
-            axis=None,
-        )
-
-    permission.decide.side_effect = _decide
+    PR1 时 ``audit`` 复用通用 ``READ``，是「空目标 + READ 即平台管理员」这一惯用法的
+    残留。PR2 起组织级入口由 PDP 按封闭的管理面动作裁决：``audit`` 取 ``READ_AUDIT``、
+    ``verify_audit`` 取 ``VERIFY_AUDIT``。两者不再共用一个动作，否则「能读自己的数据」
+    与「能读全组织的审计流水」在判定入参上长得一模一样。
+    """
+    api, authorizer, _, _ = _local_api()
+    security = internal_context(ScopedAuthenticator(Scope(org="system", user="auditor")))
 
     api.audit({}, security=security)
-    assert permission.decide.call_args.args[2] is Action.READ
+    assert authorizer.authorize.call_args.kwargs["resource"].action is Action.READ_AUDIT
 
-    permission.decide.reset_mock()
+    authorizer.authorize.reset_mock()
     api.verify_audit(security=security)
-    assert permission.decide.call_args.args[2] is Action.VERIFY_AUDIT
+    assert authorizer.authorize.call_args.kwargs["resource"].action is Action.VERIFY_AUDIT
 
 
 def test_provider_requires_dedicated_verify_guard() -> None:
@@ -334,10 +353,16 @@ def test_provider_requires_dedicated_verify_guard() -> None:
         _local_api(provider=_StubProvider())
 
 
-def test_interface_only_audit_integrity_config_fails_closed() -> None:
+def test_audit_integrity_without_security_wiring_fails_closed() -> None:
+    """配置了 audit_integrity 段但 SecurityRuntime 未引用它：拒绝启动。
+
+    接口先行期这段配置因「无注册实现」失败；PR3 实装后失败语义收窄为接线守卫——
+    audit_integrity 只能经 security.params.audit_integrity 显式启用，只配段不接线
+    会让部署以为已启用链式证明，实际仍是普通审计（fail-open），必须拦下。
+    """
     config = Config.from_dict({"audit_integrity": {"default": {"target": "chained_hmac"}}})
 
-    with pytest.raises(ValidationError, match="interface-only"):
+    with pytest.raises(ValidationError, match="没有 SecurityRuntime 引用它"):
         build_kernel(config=config)
 
 
@@ -357,7 +382,10 @@ def test_verify_audit_validates_direct_api_parameters(kwargs) -> None:
     api, _, _, _ = _local_api()
 
     with pytest.raises(ValidationError):
-        api.verify_audit(security=legacy_request_context(Scope()), **kwargs)
+        api.verify_audit(
+            security=internal_context(ScopedAuthenticator(Scope(org="system", user="auditor"))),
+            **kwargs,
+        )
 
 
 def test_verify_audit_signature_is_keyword_only_server_side_params() -> None:
@@ -373,3 +401,23 @@ def test_verify_audit_signature_is_keyword_only_server_side_params() -> None:
     ]
     for name in ("security", "after_sequence", "page_size", "max_samples", "anchor_policy"):
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_verify_audit_releases_guard_when_attempt_log_fails() -> None:
+    """
+    验证尝试的审计追加失败也必须归还 guard 槽位（PR3-07）：尝试日志写在 acquire
+    之后，若不在 release 的 finally 保护内，反复失败会持续占用并发预算，数据库恢复
+    后验证仍被容量拒绝。
+    """
+    provider = _StubProvider()
+    guard = _StubGuard()
+    api, _, audit_logger, _ = _local_api(provider=provider, guard=guard)
+    audit_logger.record.side_effect = AuditIntegrityError("protected audit append failed")
+
+    with pytest.raises(AuditIntegrityError, match="protected audit append failed"):
+        api.verify_audit(
+            security=internal_context(ScopedAuthenticator(Scope(org="acme", user="auditor")))
+        )
+
+    assert guard.acquired == 1
+    assert guard.released == 1

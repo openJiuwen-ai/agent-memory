@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-09-16 |
+| 最近一次修订日期 | 2026-10-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-encrypted-storage.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
 
 索引记录保留 `system_metadata.<key>` 和 `user_metadata.<key>` 的逻辑路径。Milvus 与
@@ -23,7 +23,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 - StorageSecurity 数据面授权和 StoreSecurity 数据保护能力边界
 - 可配置真源（文档/结构化）的 KV 存储抽象
 - KV 加密装饰器（EncryptedKVStore）
-- 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）、实体反向（EntityStore）
+- 多后端索引存储抽象：向量（VectorStore）、全文（FulltextStore）、图（GraphStore）、融合（FusionStore）、文件系统（FSStore）、实体反向（EntityStore）、markdown 视图（MarkdownStore）、文档影子索引（DocumentShadowIndex）
 - 统一 CRUD 动词（insert / delete / update / get）
 - 检索型存储的 search 查询
 - scope 原生隔离（scope 为显式第一入参，物理约束在该 scope 内）
@@ -56,11 +56,11 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     必须用内部派生字段恢复语义。
 13. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
 14. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
-15. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `SecurityProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
+15. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `CryptographyProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。
 16. **space 是 scope 的硬分区维度**：`scope_segments(scope)` 使用 `org/space/user/agent/session` 五段；`scope_dims(scope)` 在 `org` 非空时即使 `space==""` 也下推 `space == ""`，避免空 space 查询跨到非空 space。
 17. **标识唯一性分层**：非空 Space id 在 Space 资源注册表中全局唯一；MemoryUnit 与各 Store 记录 id 只要求在完整 Scope 内唯一。
 18. **SSL 声明即生效**：接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert` 两个装配参数（默认关闭）。`ssl_verify` 只表示**是否校验服务端证书**，不负责开启加密——加密开关落在连接串上（`rediss://` / `https://` / `sslmode=`）。开启后不得静默降级：缺证书、连接串仍为明文、或连接串自带会覆盖本设置的 TLS 参数，一律在**装配阶段**报错。
-19. **KV 是层级真源**（目标契约，尚未实现）：序列化 `MemoryUnit.hierarchy` 与 unit
+19. **KV 是层级真源**（已实现）：序列化 `MemoryUnit.hierarchy` 与 unit
     一同存入 KV。当前契约不新增 hierarchy Store，也不把父子包含边双写到 GraphStore；
     若未来迁移到独立边存储，必须先修订本 spec 和 S07 的数据模型契约。
 20. **层级索引是派生物**：VectorRecord/Document 的 hierarchy metadata 必须能够从 KV
@@ -70,12 +70,13 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 22. **CRUD 不级联层级关系**：KVStore 的 insert/update/delete 只作用于指定 key。删除父或子
     不会自动改写其他 unit；父子双向边维护、剪枝与修复由 construction/control 调用显式
     CRUD 完成。GraphStore 删除节点时清理关联图边的既有语义不适用于 hierarchy。
-23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY
-    （ENTITY 为 F07 新增第七席）。capability 与 `has_*()` **同源于端口表**——某类存储只要有
+23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY/MARKDOWN/DOCUMENT_SHADOW
+    （ENTITY 为 F07 新增第七席；MARKDOWN/DOCUMENT_SHADOW 为 F08 新增第八、第九席，仅文档模式
+    `write_document=true` 装配，见 F08-document-memory.md）。capability 与 `has_*()` **同源于端口表**——某类存储只要有
     任一端口可用即拥有该 capability，二者不会分叉；
     `has_*(name)` 由集合/命名端口表推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
 24. **端口单一入口且全量自动**：每个 capability 一对 `xxx(name="default")` / `has_xxx(name="default")`
-    方法（无 property 快捷方式、无 `*_port` 后缀双入口）；七类 `*_store` 命名空间下**所有**
+    方法（无 property 快捷方式、无 `*_port` 后缀双入口）；九类 `*_store` 命名空间下**所有**
     具名实例（含 `default`）**声明即端口**，端口名即实例名（encrypted KV 的明文 raw 若以具名
     声明会随之暴露，raw 推荐在 kv 实例 params 内 inline 声明）；上层不得绕过
     `StoreManagerProducer` 直接解析 Store 具名实例。
@@ -136,12 +137,12 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 
 | 类别 | 接口 | 语义 |
 |---|---|---|
-| 端口 | `kv/vector/fulltext/graph/fusion/fs/entity(name="default")` 及 `has_*(name="default")` | 暴露经过统一授权代理的完整 Store 契约；单一入口（无 property、无 `*_port` 后缀）；未声明端口抛 `UnsupportedStorageCapabilityError` |
+| 端口 | `kv/vector/fulltext/graph/fusion/fs/entity/markdown/shadow_index(name="default")` 及 `has_*(name="default")` | 暴露经过统一授权代理的完整 Store 契约；单一入口（无 property、无 `*_port` 后缀）；未声明端口抛 `UnsupportedStorageCapabilityError` |
 | 数据面 | `domain_store(name="default")` / `has_domain_store(name="default")` | 取命名数据面实例；实现需缓存（同名多次返回同一实例） |
 | 能力 | `capabilities()` | 返回不可变标准端口能力集合 |
 | 横切 | `security` / `health()` | 统一授权入口并聚合全部命名端口的健康检查 |
 
-`CompositeStoreManager` 是默认实现（组合七类 Store + 端口表 + `_AuthorizedStoreProxy`，
+`CompositeStoreManager` 是默认实现（组合九类 Store + 端口表 + `_AuthorizedStoreProxy`，
 ENTITY 端口用 `_AuthorizedEntityStoreProxy`），提供两条入口：`__init__` 收**已构造的 Store
 实例**（手工接线与测试路径，每类接单实例或 `{name: store}` 端口表）；`from_config(config)`
 从装配配置内部构造全部 Store 与全部命名数据面（装配路径，注册的 `_build` 即其一行封装）。
@@ -162,7 +163,7 @@ params 显式覆盖 → `globals.store_manager` → `"default"` 三级链解析�
 `ValidationError`，不做匿名兜底构建。消费者不再逐个声明 `storage` 引用。
 
 **数据面装配参数归位（F07）**：`store_manager.<inst>.params` **不承载任何数据面配置**——
-七类端口由命名空间全量聚合（声明即端口），与 params 无关。数据面的全部装配参数住在
+九类端口由命名空间全量聚合（声明即端口），与 params 无关。数据面的全部装配参数住在
 `store_manager.<inst>.params.domain_stores: {<name>: {...}}`：`preferred_retrieval_pipeline`
 / `kv_store` / `domain_store_target` / 七个 `*_recaller` 选择键。`default` 可显式声明且
 **必建**（整段缺省时按全默认构造）。
@@ -238,7 +239,10 @@ globals，inline dict 拒绝），缺省 `"default"`。注意与跨切面开关�
 S04 的「scope 是独立轴」同一条铁律。召回分数统一「分越大越相关」，chunk→unit 归并由
 同目录 `unit_aggregation.aggregate_to_units` 按 `metadata['unit_id']` 取 MaxP。
 
-### 共享读 helper（`kv.py::load_units` / `list_units`）
+
+### 共享读 helper（`kv.py::load_memory_unit` / `load_units` / `list_units`）
+
+`load_memory_unit(raw, scope=..., key=...)` 是字节级损坏的隔离口：`loads` 保持严格 UTF-8，`UnicodeDecodeError` 记 warning（含脱敏 scope、可见 MemoryUnit id、字节数和异常类型）并返回 `None`，调用方同其他非 MemoryUnit 记录一样过滤。`load_units` / `list_units`、DomainStore `get` / `list`、`UnitReader` 与 KV list 兼容实现都经它读取；get/list 对存在但不可解码的记录按缺失省略，search/recall 不因单条坏记录中断。
 
 `load_units(kv, scope, unit_ids) -> list[MemoryUnit]`：按 unit_id 从 KV 真源点读
 MemoryUnit 列表（`memory_key` + `loads`）——缺失省略、按输入顺序返回、重复 id 各自返回、
@@ -291,8 +295,8 @@ class BaseStore(ABC):
 
 | 方法 | 行为 |
 |------|------|
-| `insert` / `update` | 构造 `SecurityContext(scope, purpose, metadata)` 与 AAD，调用 `SecurityProvider.encrypt` 后写入 raw KV |
-| `get` / `scan` / `mget` | 从 raw KV 读取密文字节，调用 `SecurityProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据。`mget` 委托 raw 一次性批量取密文（raw 缺失即抛 `NotFoundError`）后**逐项解密**——AAD 绑定 scope+key+purpose，各 key AAD 不同，不能批量统一解密 |
+| `insert` / `update` | 构造 `CryptoContext(scope, purpose, object_id, format_version)` 与 AAD，调用 `CryptographyProvider.encrypt` 后写入 raw KV |
+| `get` / `scan` / `mget` | 从 raw KV 读取密文字节，调用 `CryptographyProvider.decrypt` 后返回明文字节；任一解密失败抛 `BackendError`，不跳过坏数据。`mget` 委托 raw 一次性批量取密文（raw 缺失即抛 `NotFoundError`）后**逐项解密**——AAD 绑定 scope+key+purpose，各 key AAD 不同，不能批量统一解密 |
 | `list` | 扫描目标 Scope 的 `/memory/` 密文并逐条解密，再执行统一过滤、计数、排序和分页；不调用 raw KV 的 `list` |
 | `exists` / `delete` / `scopes` | 直接委托 raw KV，不读取或改写 value |
 
@@ -301,7 +305,7 @@ class BaseStore(ABC):
 | 参数 | 语义 |
 |------|------|
 | `raw_kv_store` | 必填，指向被装饰的 raw KVStore 具名实例或内联配置；不得指向当前 encrypted 实例自身 |
-| `security` | 必填，指向 `common.security.SecurityProvider` 具名实例或内联配置 |
+| `cryptography` | 必填，指向 `common.security.cryptography.CryptographyProvider` 具名实例或内联配置 |
 
 AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key` 与 `purpose`。`purpose` 由 key 前缀推导：`/memory/` 为 `memory_unit`，`/messages/` 为 `raw_message`，其他为 `kv_value`。
 
@@ -369,11 +373,67 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 | `delete` | `(scope, ref) -> None` | 删除 scope 下 ref 处的文件（幂等） |
 | `get` | `(scope, ref) -> BinaryIO` | 打开 scope 下 ref 处的文件用于读取，由调用方负责关闭 |
 | `stat` | `(scope, ref) -> FileStat` | 返回 scope 下 ref 处文件的元信息 |
+| `object_id` | `(scope, key_or_ref, *, for_insert=False) -> str` | 可选能力；返回稳定对象标识，默认抛 UnsupportedCapabilityError；insert key、返回 ref、别名及 update 均须指向同一标识 |
+
+#### 加密 FS 装饰器契约（PR1-1）
+
+`encrypted` FS target 属于 PR1-1；inner 必须提供 object_id 能力，不能假定其返回 key。
+未提供该能力时 encrypted 装配拒绝，raw 后端不受影响。update 可以返回新引用字符串，
+但 object_id 必须保持不变，违反时抛 BackendError。LocalFS 规范化别名，InMemoryFS
+将 insert key 转为规范 fs:// 引用；AAD 格式版本为 1，绑定完整 Scope、稳定对象标识与 fs_object 用途。
+
+`encrypted` FS target 包装任意 inner FSStore，写入时整体加密文件内容，读取时有界读完整
+密文后整体解密；`delete` 与 `stat` 委托 inner。`ref` 与 Scope 保持可寻址的明文，
+完整 Scope 与 ref 所指的稳定对象标识必须进入 AAD。`FileStat.size` 表示 inner 中的密文长度，
+不承诺等于明文长度。
+
+装配参数：
+
+| 参数 | 语义 |
+|------|------|
+| `inner` | 必填，指向被装饰的 FSStore 具名实例或内联配置；不得指向当前实例自身 |
+| `cryptography` | 必填，指向 CryptographyProvider 具名实例或内联配置 |
+| `max_plaintext_bytes` | 默认 64 MiB，单文件明文硬上限，必须大于等于 1；bool/浮点数非法 |
+| `max_ciphertext_bytes` | 默认 0，密文读写上限；`0` 表示明文上限加 4 KiB 安全余量，负数/bool/浮点数非法 |
+
+大小检查必须同时覆盖：写入时循环有界读取明文、落盘前检查生成密文、读取前按 `stat` 快速早拒、真正读取时
+循环有界读取密文，以及解密后再次校验明文。`stat` 不能作为唯一边界，因为它与随后
+`get` 之间存在 TOCTOU 窗口。
+
+#### 全后端静态加密装配
+
+标准 API/StoreManager 装配以 globals.storage_encryption_enabled 为统一开关，默认 false。
+开启后全部具名 KV/FS（含注入 KV 与 public raw 端口）统一保护，并更新 Producer 共享缓存；
+既有显式 encrypted 不双包，同 raw 端口沿用其既有 provider。关闭时不拆除显式 encrypted。
+应用字节加密仍保留 key/Scope/路径等寻址元数据；完整落盘文件的保护由加密卷/后端承担。
+
+全文、向量、图、融合、实体、Markdown 与文件型影子索引/audit/permission SQLite
+的静态加密采用部署卷/后端。
+启用时逐具名实例核查 params.at_rest 声明与位置绑定，契约见 S08 和 common/F04。内存后端及
+SQLite :memory: 无落盘要求，但仍必须固定连接位置，拒绝初始覆盖及运行时切盘（S08）；
+声明是运营方核查责任，不能冒充应用验证了远端磁盘。
+StoreSecurity.enabled() 仍表达 Store 内部保护，索引的外部保护通过部署声明与宿主检查表达。
+查询接口、BM25/ANN/原生过滤不变；本 PR 不新增密态检索或应用层全量解密检索路径。
+
+`StoreSecurity.encryption_binding` 是公开的可选装饰依赖契约，返回
+`StoreEncryptionBinding(inner, provider, format)`；原生保护实现可返回 None。
+绑定须指向实际原始 Store、实际 CryptographyProvider 及非空的兼容格式标识。
+同 raw 的 provider/format 冲突必须拒绝；自动保护不得依赖具体装饰器类或私有字段。
+自动包装由对应 Producer 选择配置的 target，显式注入原始具名引用与共享 cryptography；
+返回保护对象必须声明相同依赖并通过健康检查。已保护的显式端口及 raw 别名复用现有对象。
+
+`StoreManager.encryption_inventory() -> dict[StorageCapability, dict[str, object]]`
+返回所有数据面实际使用的完整端口快照，capability 与 `capabilities()` 一致；每个对象须与
+对应公开端口方法返回的对象一致，且不得隐藏领域数据面使用的可写 raw。统一开关开启时，
+`StoreManagerProducer.resolve` 在公共边界验证全部 manager 插件的清单：配置的 KV/FS
+具名端口不得遗漏，其保护须启用且健康；额外未配置的索引端口须声明内部保护。
+配置的索引端口必须实际对应同名配置及插件声明的持久化位置，不得冒用内存配置。
+缺失或不完整的保护能力抛 ValidationError，关闭开关时不要求旧插件实现该可选契约。
 
 ### EntityStore（`entity_store.py`）
 
 实体反向索引（实体 → 关联的 memory）。F07 起是 `StorageCapability` 第七席 ENTITY，经
-`manager.entity(name)` 取用，与其余六类同构。
+`manager.entity(name)` 取用，与其他能力同构。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -384,8 +444,9 @@ GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因�
 
 **隔离模型是本层唯一的 scope 契约偏离**：第一入参是 `space_id: str`（`space_id_from_scope`
 的算值：`scope.space` → `scope.org` → 字面量 `"default"` 三级降级，走后端 routing）而非
-`Scope`；额外的隔离维度是 `EntityStoreFilters.actor_id`（= `scope.user`）单段 term。
-agent/session **不作**隔离维度——实体是 user 级知识，同 user 下跨 agent、跨 session 共享。
+`Scope`；额外的隔离维度由 `EntityStoreFilters` 中非空的 `actor_id` / `assistant_id` /
+`session_id` 分别生成 term。`from_scope` 将 user / agent / session 映射到这三项；空值
+不生成该维过滤。后端按显式 filters 决定范围，不承诺同 user 下必然跨 agent/session 共享。
 隔离仍由存储层强制（不变量 1），只是维度表达与五段模型不同构；代价由授权代理承担
 （不变量 26 的有损 scope 近似）。
 
@@ -395,7 +456,38 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 
 **装配期降级**：entity 是增强层，builder 在必填连接参数（`hosts`）未配时返回 `None` 而
 非抛错 → 无 ENTITY 能力 → 两侧消费方跳过（不变量 24 的端口表 None 过滤、不变量 31）。
-这与其余六类"缺必填参 `require_param` 抛错"的约定不同，是有意的差异。
+这是可选增强层的降级策略；其他连接型后端缺必填参数时通常由 `require_param` 拒绝构建。
+
+### MarkdownStore / DocumentShadowIndex（文档记忆真源，F08）
+
+文档模式（`globals.write_document=true`）的真源形态：`MarkdownStore` 是人类可读 markdown
+视图（`USER.md` / `MEMORY.md` / `daily_memory/日期.md`，按 `memory_class` + `project` 分流落盘），
+`DocumentShadowIndex` 是机器真源（单 sqlite 文件承载 `memory_unit` 全量 + `memory_fts` 倒排
++ `memory_vec` 向量三表同库，靠隐式 rowid 关联）。二者为 F08 新增的第八、第九 capability
+（MARKDOWN / DOCUMENT_SHADOW），仅文档模式装配，经 `manager.markdown(name)` / `manager.shadow_index(name)`
+取用，与其余七类同构暴露。`StorageCapability.namespace` / `port_method` 公开能力对应的
+配置命名空间与端口方法，其中 DOCUMENT_SHADOW 对应 shadow_index（非 document_shadow_store）。
+统一静态加密启用时，Markdown root 与影子 SQLite db_path 由插件声明并绑定部署保护；
+两者要求显式位置，SQLite :memory: 仅免部署证明，位置仍固定，详见 common/F04。
+
+两端口是文档记忆的双写对——`CompositeDomainStore.add/update/delete` 文档分支同步写 md 块 +
+shadow 索引，写窗口（`sync_gate`）防护看门狗并发观察，写失败补偿回滚到调用前状态。完整算子
+契约见 F08-document-memory.md（§2 MarkdownStore / §3 影子索引 / §4 写入路径分流 / 决策四写失败
+补偿）。**scope 原生隔离**：影子索引 `memory_unit` 表加 org/space/user/agent/session 五列
+（对齐 KV 五段等值 WHERE），与 project+category 列隔离正交——project 是收窄维
+（`IN ['', value]`），scope 是身份隔离维（严格等值）。`list_units_by_md`（看门狗跨 scope
+诊断）/`delete_units`（幂等按 unit_id）例外不限 scope。看门狗建新 unit 时按
+`latest_scope_by_md`（同 `list_units_by_md` 跨 scope 不限 WHERE 例外，`rowid DESC LIMIT 1`）
+继承该 md 文件最新一条 unit 的 scope，无历史返 None 落空 Scope——修正补登 unit 落空 scope
+列、真实 scope 召回不可见的遗留。**召回放宽 session**：`search_fulltext`/`search_vector`
+的 scope WHERE 只对 org/space/user/agent 四段严格等值，不做 session 等值（记忆跨 session
+共享）；`get_units`/`list_units` 仍五段严格等值（点查/列表不放宽）——召回与点查/列表口径
+不一致是有意为之的已知边界。
+
+**装配期降级**：embedder 未注入或 sqlite-vec 不可用时，shadow 降级为两表（`memory_unit` +
+`memory_fts`）模式——向量召回返空、倒排与全量存储照常（与 EntityStore 同属增强层降级，但
+shadow 是文档模式必需项而非可选增强，`write_document=true` 下不装配即数据面抛
+`UnsupportedStorageCapabilityError`）。
 
 ## 数据结构
 
@@ -412,16 +504,21 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 | `VectorRecord` | id / vector: list[float] / metadata |
 | `VectorQuery` | vector: list[float] / top_k / filters: FilterExpr \| None / extensions: dict[str, Any] |
 
-目标层级索引 metadata 在既有 `unit_id`、`content_layer`、`tier`、`lifecycle`、`seq`
+层级索引 metadata 在既有 `unit_id`、`content_layer`、`tier`、`lifecycle`、`seq`
 基础上增加：
 
 | 键 | 表示 |
 |---|---|
 | `hierarchy_kind` | kind 的字符串值；空 hierarchy 时缺省 |
 | `hierarchy_role` | role 的字符串值；空 hierarchy 时缺省 |
-| `parent_id` | 直接父 id；根或未挂接时为空串 |
-| `span_start` | ISO 8601 区间起点；未声明区间时缺省 |
-| `span_end` | ISO 8601 区间终点；未声明区间时缺省 |
+| `hierarchy_status` | 非空结构恒写 active/dismissed |
+| `tree_parent_id` | 直接父 id；根或未挂接时为空串 |
+| `tree_span_start` | UTC epoch 毫秒区间起点；未声明区间时缺省 |
+| `tree_span_end` | UTC epoch 毫秒区间终点；未声明区间时缺省 |
+
+三个 tree_ 字段是索引/过滤名；HierarchyRef 内部字段及序列化键仍为 parent_id/span_start/span_end。
+这些通用名称不再属于树保留键，system_metadata 同名业务值继续接受；不提供旧树字段别名。
+裸通用过滤键按原有规则归 user_metadata，显式 system_metadata 路径仍读取系统业务值。
 
 同一 unit 的 L0/L1/L2 VectorRecord 必须携带相同的 hierarchy metadata；现有记录 id
 格式保持不变。
@@ -433,21 +530,24 @@ agent/session **不作**隔离维度——实体是 user 级知识，同 user �
 | `Document` | id / text / metadata |
 | `TextQuery` | text / top_k / filters: FilterExpr \| None / extensions: dict[str, Any] |
 
-Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保留既有
+Document 使用与 VectorRecord 相同的六个 hierarchy metadata 键，并保留既有
 `content_layer`。L0/L1/L2 文档的当前 id 规则保持不变；增加 metadata 不改变主键。
 
-### 层级过滤与区间表示（目标契约，尚未实现）
+### 层级过滤与区间表示
 
 层级过滤继续使用现有 `FilterClause(field, op, value)`，不新增查询结构：
 
 - kind/role/parent 精确过滤使用 `EQ`，例如
-  `field="hierarchy_kind"`、`field="parent_id"`。
+  `field="hierarchy_kind"`、`field="tree_parent_id"`。
 - 区间相交 `[query_start, query_end]` 表示为
-  `span_start <= query_end AND span_end >= query_start`，即分别使用 `LTE` 与 `GTE`。
-- 时间值统一写为 ISO 8601 字符串；同一索引内必须规范到可按时间顺序比较的统一时区格式。
+  `tree_span_start <= query_end AND tree_span_end >= query_start`，即分别使用 `LTE` 与 `GTE`。
+- 树区间与普通 temporal 字段的时间投影统一写为 UTC epoch 毫秒，朴素 datetime 按 UTC
+  解释；带时区值保留实际时刻，不使用服务器本地时区。真源保留原时间表示；
+  没有区间时不落时间哨兵，普通字段的既有缺值与哨兵规则保持不变。
 - filters 只承载 scope 之外的谓词，scope 仍是 Store 方法的显式第一参数。
 
 后端若不能原生执行区间谓词，可以在同 scope 候选上做等价后过滤，但不得放宽结果语义。
+裸结构字段只读 `HierarchyRef` 真源，用户同名 metadata 不覆盖它。索引更新先清旧结构投影，再生成当前值；Unified 写到 system_metadata 的结构副本不得被其他 builder 当成旧值再次索引。
 索引重建必须枚举 KV 真源的 MemoryUnit，重新生成内容层与 hierarchy metadata；不得从
 旧索引反推 hierarchy。
 
@@ -481,6 +581,16 @@ Document 使用与 VectorRecord 相同的五个 hierarchy metadata 键，并保�
 
 **注**：所有 `metadata` / `filters` / `scalar_filters` 只承载 scope 之外的额外谓词，scope 作为显式第一入参，不混进这些结构体。
 
+## 文档后台组件生命周期
+
+Watchdog 不属于存储 capability，由装配根持有并显式启动。start 必须在事件循环
+就绪后调用，且该循环须持续运行到 Watchdog 停止；stop 幂等地停止事件/任务准入、
+取消定时器并等待已进入数据面的同步工作，
+返回后不得再访问 shadow。此等待不得依赖调用方事件循环继续执行。
+排队但尚未进入数据面的工作在停止后不得访问依赖，旧代工作不得因重新启动而复活。
+装配根在 watcher、摄入和调度使用者停止后，按共享所有权去重关闭 shadow 等连接；
+失败装配只回滚本次新建资源，不关闭借用对象。
+
 ## 实现注册机制
 
 ```
@@ -494,7 +604,8 @@ jiuwen_memory/storage/domain_store_impl/    # 数据面实现（CompositeDomainS
 
 各 Producer：`StoreManagerProducer` / `DomainStoreProducer` / `RecallerProducer` / `KvProducer` /
 `FulltextProducer` / `VectorProducer` / `GraphProducer` / `FusionProducer` / `FsProducer` /
-`EntityStoreProducer`。
+`EntityStoreProducer` / `MarkdownProducer` / `ShadowIndexProducer`；文档看门狗使用
+`WatchdogProducer`。
 注册由 `storage.bootstrap.register_backends` 统一触发。`DomainStoreProducer` 不是平级
 YAML 入口——domain_store 由 manager 工厂内构建（manager 是唯一装配入口）。
 

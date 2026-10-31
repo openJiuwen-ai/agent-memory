@@ -2,8 +2,9 @@
 """查询时间约束解析：自然语言 → 事件时间窗 ``(time_from, time_to)``（event-time）。
 
 **规则版**：覆盖中文常见相对时间（今天/昨天/前天/本周/上周/本月/上个月/今年/
-去年/最近 N 天/过去 N 周…）。命中即返回闭/半开区间的起止 ``datetime``，未命中返回
-``(None, None)``。
+去年/最近 N 天/过去 N 周…）与绝对日期（2026年6月8日 / 2026-06-08 / 6月8日/号，
+无年份按当前年补齐，规则与写入侧共用 ：func:`common.time_utils.first_absolute_date`）。
+命中即返回闭/半开区间的起止 ``datetime``，未命中返回 ``(None, None)``。
 
 **属性问闸门**：属性问（多大/几岁/爱好/是谁/住址/名字/生日/年龄…）即使含时间词
 （如「王芳今年多大了」「李华上周爱好是什么」）也不应下推事件窗——这是属性查询
@@ -18,10 +19,11 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from datetime import UTC, datetime, timedelta
 
-TimeWindow = Tuple[Optional[datetime], Optional[datetime]]
+from jiuwen_memory.common.time_utils import first_absolute_date
+
+TimeWindow = tuple[datetime | None, datetime | None]
 
 # 属性问强信号关键词：命中即判为属性问，清空时间窗。
 # 必须避开「会议/工作」等中性名词——误判会让真事件问句漏召回；
@@ -81,12 +83,19 @@ def _rule_based(text: str, now: datetime) -> TimeWindow:
     if "今年" in t:
         return year_start, now
 
+    # 绝对日期（2026年6月8日 / 2026-06-08 / 6月8日/号）：生成当日事件窗。放在相对
+    # 规则之后——相对词（今天/最近3天）是更强的意图信号；与写入侧共用
+    # common.time_utils 的同一份规则，无年份日期两侧都按各自 now 的年份补齐。
+    date_hit = first_absolute_date(t, now)
+    if date_hit is not None:
+        return _day_bounds(date_hit)
+
     return None, None
 
 
 def parse_time(
     text: str,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
     llm: object = None,  # LLM 钩子：注入即在规则未命中时委托其解析（默认不启用）
 ) -> TimeWindow:
     """解析 ``text`` 中的事件时间约束，返回 ``(time_from, time_to)``。
@@ -95,7 +104,7 @@ def parse_time(
     属性查询不应被误当事件时间检索下推，否则 ``t_event=None`` 的派生 unit
     会被索引按缺失字段排他，系统性空召回。
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     if _ATTRIBUTE_QUERY_PATTERN.search(text):
         return None, None
     win = _rule_based(text, now)

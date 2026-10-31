@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from jiuwen_memory.common.errors import (
     PermissionDeniedError,
@@ -45,7 +46,9 @@ from .local_support import (
     _reject_non_scalar_metadata,
     _reject_route_tag_keys,
     _space_level_scope,
+    _strip_transient_metadata,
     _take_coords,
+    _TrustedRequestTarget,
     _truthy_metadata,
     _with_author_marks,
     _write_permission_context,
@@ -102,20 +105,25 @@ class WriteOpsMixin:
         # 三项校验都在落点解析之前：解析会往 system_metadata 塞判定产物与瞬态的
         # route_ctx（非标量），先校验才是校调用方给的那份。
         # 坐标先取出：它是嵌套字典，留在参数袋里会被下面的标量校验拒绝。
-        coords, system_metadata = _take_coords(
-            system_metadata, enabled=self._routing_enabled()
-        )
+        coords, system_metadata = _take_coords(system_metadata, enabled=self._routing_enabled())
         _reject_kernel_system_metadata(system_metadata)
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
         reject_kernel_coords(coords)
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org))
+        )
+        # mutation 前审计完整性预检与故障隔离（PR3-08/R3，计划 §9.3）：路由解析前执行，
+        # 防止 _write_target → _ensure_fallback_space 在 degraded/损坏状态下创建
+        # fallback 空间（T1：隐式建空间发生在审计预检之前）。
+        self._ensure_audit_integrity_healthy()
         target, system_metadata = self._write_target(
-            scope, identity, coords, content, system_metadata
+            scope, security, coords, content, system_metadata
         )
         permission_context = _write_permission_context(target, tags, system_metadata)
         auth = self._authorize(
-            identity,
+            security,
             target,
             Action.WRITE,
             "add",
@@ -128,12 +136,14 @@ class WriteOpsMixin:
             source,
             assets=assets,
             tags=tags,
-            system_metadata=_with_author_marks(system_metadata, identity),
+            system_metadata=_with_author_marks(
+                system_metadata, self._resource_principal(security, Action.WRITE, target)
+            ),
             user_metadata=user_metadata,
             occurred_at=occurred_at,
         )
         self._log(identity, "add", target_scope=target, detail=auth)
-        return units
+        return [_strip_transient_metadata(unit) for unit in units]
 
     def _routes_by_decision(
         self,
@@ -204,7 +214,7 @@ class WriteOpsMixin:
     def _write_target(
         self,
         scope: Scope,
-        identity: Scope,
+        security: RequestSecurityContext,
         coords: dict[str, str] | None,
         content: str,
         metadata: dict[str, Any] | None,
@@ -225,10 +235,11 @@ class WriteOpsMixin:
 
         原文与消息维护落 fallback 空间，判定只改派生单元的 scope，引擎写入签名不变。
         """
+        identity = self._resource_principal(security, Action.WRITE)
         if not self._routes_by_decision(scope, coords, metadata):
             return self._explicit_scope_target(scope, identity, metadata)
         _reject_foreign_routed_scope(scope, identity)
-        outcome = self._routed_targets([(0, content, metadata)], identity, coords)[0]
+        outcome = self._routed_targets([(0, content, metadata)], security, coords)[0]
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
@@ -262,7 +273,7 @@ class WriteOpsMixin:
     def _routed_targets(
         self,
         entries: Sequence[tuple[Any, str, dict[str, Any] | None]],
-        identity: Scope,
+        security: RequestSecurityContext,
         coords: dict[str, str] | None,
     ) -> dict[Any, tuple[Scope, dict[str, Any] | None] | Exception]:
         """交由归属判定的写入：整批一次判定，逐项产出落点与要补写的判定产物。
@@ -277,6 +288,7 @@ class WriteOpsMixin:
         """
         if not entries:
             return {}
+        identity = security.auth.actor
         if not self._routing_enabled():
             # 防御性分支：两个调用点都经 _routes_by_decision 前置，未装配判定表时不会走到
             # 这里。留着是因为本方法的正确性不该依赖调用点记得先判——真到了这里，说明
@@ -287,7 +299,7 @@ class WriteOpsMixin:
             )
             return {key: error for key, _content, _metadata in entries}
         try:
-            ctx = self._route_context(identity, coords)
+            ctx = self._route_context(security, coords)
         except Exception as exc:  # noqa: BLE001 —— 上下文构造失败逐项回传，不中止整批
             return {key: exc for key, _content, _metadata in entries}
 
@@ -319,6 +331,14 @@ class WriteOpsMixin:
             )
             for (key, _content, merged), decision in zip(pending, decisions):
                 merged.update(collective.decision_metadata(decision))
+                if coords:
+                    # coords 在入口被 _take_coords 取出，判定产物只回写标签与类别，
+                    # 不塞回则 md 落盘（_md_path 读 coords.project）与影子索引
+                    # （_project_of）都读不到坐标，long_term_memory 全落 memory/MEMORY.md。
+                    # 与派生路径同处置：OrchestratingEvolver._route 从 ctx.coords 回写。
+                    # coords 是瞬态键，dumps 进 unit_json 时剥除，但 md.write 与
+                    # shadow.insert_units 在序列化之前从 unit 对象读，路径计算不受影响。
+                    merged[COORDS_KEY] = dict(coords)
                 resolved[key] = (decision.scope, merged)
             self._log_routing_degradation(identity, ctx, decisions)
         return resolved
@@ -366,10 +386,11 @@ class WriteOpsMixin:
     def _batch_write_targets(
         self,
         entries: Sequence[tuple[int, BatchWriteItem]],
-        identity: Scope,
+        security: RequestSecurityContext,
         coords: dict[str, str] | None,
     ) -> dict[int, tuple[Scope, dict[str, Any] | None] | Exception]:
         """批量入口的落点解析：显式 ``scope`` 的项逐项处理，其余整批一次判定。"""
+        identity = self._resource_principal(security, Action.WRITE)
         resolved: dict[int, tuple[Scope, dict[str, Any] | None] | Exception] = {}
         routed: list[tuple[int, str, dict[str, Any] | None]] = []
         for index, item in entries:
@@ -388,7 +409,7 @@ class WriteOpsMixin:
                 continue
             if routes:
                 routed.append((index, item.content, item.system_metadata))
-        resolved.update(self._routed_targets(routed, identity, coords))
+        resolved.update(self._routed_targets(routed, security, coords))
         return resolved
 
     @staticmethod
@@ -562,14 +583,19 @@ class WriteOpsMixin:
             raise ValidationError("batch occurred_at must be datetime")
         # 坐标取自批级参数袋：判定上下文每批只算一次，逐项无处安放（逐项携带即拒绝，
         # 见 _normalize_batch_item）。同样须先于标量校验取出。
-        coords, system_metadata = _take_coords(
-            system_metadata, enabled=self._routing_enabled()
-        )
+        coords, system_metadata = _take_coords(system_metadata, enabled=self._routing_enabled())
         _reject_kernel_system_metadata(system_metadata)
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
         reject_kernel_coords(coords)
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org))
+        )
+        # T1：审计完整性预检必须早于 _batch_write_targets——后者通过
+        # _route_context → _ensure_fallback_space 隐式创建空间（副作用），
+        # 预检应在任何副作用之前拒绝。
+        self._ensure_audit_integrity_healthy()
 
         outcomes: dict[int, BatchWriteOutcome] = {}
         ready: list[tuple[int, BatchWriteItem]] = []
@@ -622,7 +648,7 @@ class WriteOpsMixin:
 
         # 第 2 遍：落点解析（整批一次）与 sequence 去重。两者的次序不可换：去重键含 scope
         # 五维，落点未定时算不出。判定按写入路径生效、不按单条与批量入口区分。
-        targets = self._batch_write_targets(normalized, identity, coords)
+        targets = self._batch_write_targets(normalized, security, coords)
         for index, item in normalized:
             try:
                 outcome = targets.get(index)
@@ -641,9 +667,7 @@ class WriteOpsMixin:
                         item.sequence,
                     )
                     if sequence_key in seen_sequences:
-                        raise ValidationError(
-                            "duplicate sequence within the same scope and stream"
-                        )
+                        raise ValidationError("duplicate sequence within the same scope and stream")
                     seen_sequences.add(sequence_key)
                 ready.append((index, item))
             except Exception as exc:
@@ -669,7 +693,7 @@ class WriteOpsMixin:
             )
             try:
                 auth = self._authorize(
-                    identity,
+                    security,
                     item.scope,
                     Action.WRITE,
                     "add",
@@ -712,7 +736,10 @@ class WriteOpsMixin:
                 [
                     replace(
                         item,
-                        system_metadata=_with_author_marks(item.system_metadata, identity),
+                        system_metadata=_with_author_marks(
+                            item.system_metadata,
+                            self._resource_principal(security, Action.WRITE, item.scope),
+                        ),
                     )
                     for _, item, _ in authorized
                 ],
@@ -721,6 +748,11 @@ class WriteOpsMixin:
             )
             for engine_outcome, (index, item, auth) in zip(remapped, authorized):
                 outcomes[index] = engine_outcome
+                if engine_outcome.units:
+                    # 批路径与 add 同处置：units 是回显给调用方的形态，瞬态键不越界。
+                    engine_outcome.units = [
+                        _strip_transient_metadata(unit) for unit in engine_outcome.units
+                    ]
                 self._log(
                     identity,
                     "add",

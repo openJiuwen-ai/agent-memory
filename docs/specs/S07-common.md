@@ -5,10 +5,10 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-09-15 |
+| 最近一次修订日期 | 2026-10-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/common/F05-security-api-contracts.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## Metadata 领域模型契约
 
@@ -23,9 +23,9 @@
 - 核心数据类型定义（MemoryUnit/Scope/Context/Relation 等）
 - 工厂注册机制（Factory/Producer 基础设施）
 - 审计日志（AuditLogger）
-- 数据保护横切接口（SecurityProvider）
+- 安全域横切能力（认证、资源保护与密码学，归 `common/security/`，接口与实装齐备）
 - 跨实例互斥横切接口（LockProvider）
-- 安全域契约（认证/密码学/保护/授权/审计完整性的抽象接口、公共安全值对象、请求上下文受控构造、`SecurityRuntime`）及本地测试用 dev Authenticator；生产实现暂缓
+- 安全域契约（授权与审计完整性的抽象接口、请求上下文受控构造入口；接口先行，实现分别归 PR2 / PR3）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -39,13 +39,16 @@
 
 1. **共享插件必须双侧同一**：Embedder/Tokenizer/FeatureExtractor 等必须在构建侧与检索侧使用同一实现/同一配置，保证同词表/同向量空间。
 2. **接口与实现严格分离**：顶层 `.py` 是纯抽象，不 import `*_impl/`。
-3. **所有插件必须实现 `plugin_type()` 和 `health()`**：继承自 `Plugin` 基类。
-4. **types.py 零依赖其他文件**：纯数据定义，被全局共享依赖。
+3. **模型插件遵循 `Plugin` 契约**：继承 `Plugin` 的模型插件实现 `plugin_type()` 和
+   `health()`；审计能力实现自己 `base.py` 的接口；认证、资源保护、密码学等安全能力
+   统一归 `common/security/`，实现各自能力域的契约（见 S10）。
+4. **type_def 不依赖能力实现**：`type_def/*.py` 可在目录内引用基础数据类型，但不得
+   import security、audit、storage 等能力实现。
 5. **工厂注册发生在 import 时**：实现文件尾部 `@XxxProducer.register("name")` 绑定构建函数，`__init__.py` 导入实现文件触发注册。
 6. **LLM Provider 参数不上浮到业务层**：厂商专属请求字段只能由对应 Adapter 生成；消费 `LLM` 的算子只传递通用生成选项。
-7. **SecurityProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，是否启用由装配配置决定。
-8. **安全域接口先行**：`common/security/` 当前合入 F05 契约层（types / 各能力 base / request_context / runtime）以及仅供本地功能测试的 `authentication_impl/dev_authenticator.py`。dev 忽略凭据、返回固定具名 ROOT 身份；用于 HTTP 时要求 loopback 绑定。HTTP / CLI 只有显式选择 `dev` 才启用，默认 `required` 不降级。其余生产 `*_impl` 与完整 Server lifecycle 接线暂缓，旧 `SecurityProvider` 继续从包顶层导出。`security/legacy.py` 是过渡桥，随实装 PR 删除。
-9. **`RequestSecurityContext` 只由受控入口构造**：`security/request_context.py` 的 `new_request_context` / `internal_context` 是唯一构造点——`request_id` 服务端生成、`started_at` 取服务端时钟、`attributes` 只由系统组件写入；实例携带来源绑定，`has_valid_origin()` 判定是否出自受控入口。
+7. **CryptographyProvider 是字节级横切接口**：调用方在持久化字节写入前加密、读取后解密；接口不绑定 `MemoryUnit` 或存储后端，也不决定数据是否应该加密——是否启用由上层选择不同的存储适配器表达。
+8. **授权域已接管、审计完整性可选装配**：认证 / 密码学 / 保护 / 授权四域已实装；审计完整性须经安全 Runtime 显式引用 provider，并与业务及入口使用同一审计后端。未装配返回 unsupported，不能降级为 clean；已装配时写入故障必须失闭。DEV 经真实 Authorizer 判权，不注入 allow_all。HTTP / CLI 默认 required；显式 dev 的固定身份默认 USER，ROOT 须由可信部署额外配置，映射身份按其角色判定。详见 S10。
+9. **`RequestSecurityContext` 的受控构造入口**：`security/request_context.py` 的 `new_request_context` / `internal_context` 是唯一构造点——`request_id` 由服务端或受控适配层生成、`started_at` 取服务端时钟、`attributes` 只由系统组件写入；请求结束必须 reset。PEP 来源校验的正式接管归 PR2。
 10. **标识唯一性分层**：非空 Space id 全局唯一；`MemoryUnit.id` 只要求在完整 Scope 内唯一。
 11. **Scope 位置参数兼容**：`space` 可为空但只能按关键字传入；旧位置参数顺序保持
    `Scope(org, user, agent, session)`。
@@ -62,9 +65,9 @@
     以 `LockHandle.lost` 为准。后端不可用时 fail-closed 抛 `BackendError`，不静默降级为无锁。
 14. **四条层次轴正交**：`ContentLayers`/`DisclosureLevel` 表示同一 unit 的 L0/L1/L2 披露；
     多模态 CLM/ELM（`system_metadata["memory_level"]` + `provenance`）表示单媒体源构建粒度；
-    `MemoryTier` 表示认知角色；目标契约中的 `HierarchyRef` 表示跨 unit 的树结构包含。
-    树结构尚未实现；实现后任一轴不得推导或代替另外三轴。
-15. **树结构引用一致**（目标契约，尚未实现）：`kind` 与 `role` 必须同时设置或同时缺省；
+    `MemoryTier` 表示认知角色；`HierarchyRef` 表示跨 unit 的树结构包含。
+    结构模型、纯校验、TIME 父节点构造与树遍历已接入。任一轴不得推导或代替另外三轴。
+15. **树结构引用一致**：`kind` 与 `role` 必须同时设置或同时缺省；
    空 `HierarchyRef` 等价于未启用树结构。非空结构**不得成环**；同一 kind 下采用单父
    严格树；父 `child_ids` 与子 `parent_id` 双向一致且子列表不得重复。
    **结构边的 scope 规则（非五维全等）**：
@@ -77,14 +80,26 @@
    - **引用可解析**：因 `MemoryUnit.id` 仅在完整 Scope 内唯一，当子（或父）与持有边的
      unit 完整 Scope 不完全相同时，边必须携带可定位的子/父 Scope（见下方
      `child_scopes` / `parent_scope`）；二者皆缺省时退化为「与本 unit 完整 Scope 相同」。
-16. **层级区间有效**（目标契约，尚未实现）：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；`HierarchyKind.TIME` 的所有节点必须有区间。
-17. **引用语义分离**（目标契约，尚未实现）：`provenance` 只表示演进来源，`supersedes`
+16. **层级区间有效**：`span_start`/`span_end` 必须同时为空或同时存在，存在时 `span_start <= span_end`，父区间覆盖直接子区间；参与树的 `HierarchyKind.TIME` 节点必须有完整区间。
+    未挂树的 ACTIVE Snapshot 允许保存缺时叶提示，默认结构校验仍拒绝此类不完整节点。
+17. **引用语义分离**：`provenance` 只表示演进来源，`supersedes`
     只表示版本替换，`hierarchy` 只表示结构包含；生命周期归 `LifecycleState`，结构修正状态归
     `HierarchyStatus`。
-18. **OpenAI 出站等待策略显式可配**：OpenAI 兼容 LLM 与 Embedder 必须显式传入
+18. **Scope 保持固定的可变 dataclass 契约**：`Scope` 是跨模块公共结构，PR1/PR2/PR3
+    接口固定后不得在实现 PR 中改成 frozen 或可哈希。安全组件不得跨信任边界复用传入的
+    Scope 引用：认证器、凭据 Store 和请求上下文必须按需创建防御性副本/来源绑定，防止
+    「签发 key 后改原 actor，使已签发身份跟着变」的跨请求污染。
+19. **OpenAI 出站等待策略显式可配**：OpenAI 兼容 LLM、Embedder 与 `openai_transcription`
+   ASR 必须显式传入
    有限 timeout 和重试上限；默认 `300` 秒、`0` 次 SDK 重试，TCP connect 固定 5 秒。
    `<prefix>_timeout` 必须是有限正数，`<prefix>_max_retries` 必须是不小于 0 的整数，
-   非法值在装配阶段抛 `ValidationError`。
+   非法值在装配阶段抛 `ValidationError`。ASR 对应 `asr_timeout` / `asr_max_retries`，
+   同时用于探活和每个分片转写请求，不表示整段视频的总耗时上限。
+   显式启用重试时采用 SDK 的退避策略，不保证配额恢复；本层不叠加长退避或并发限流。
+20. **本地 BGE 模型不在运行时下载**：`bge_m3` 与 `bge_reranker` 的模型参数可以是
+    已部署的本地目录，或只代表已经存在于 HuggingFace 本地缓存中的 repo id。实现必须
+    通过本地目录解析后再交给底层模型库，并以 `local_files_only=True` 查缓存；缓存缺失、
+    依赖缺失或模型加载失败统一报告 `BackendError`，不得通过设置运行时环境变量或在线回退来下载。
 
 ## 接口契约
 
@@ -177,6 +192,11 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 `extra_body.enable_thinking`，缺省为 `false`；通用 OpenAI Adapter 不按 base URL
 猜测厂商，也不自动注入该字段。
 
+**超时契约**：Adapter 必须把自家 SDK 的超时异常转换为 `common.errors.LLMTimeoutError`
+（或内建 `TimeoutError` 子类）后抛出，原始异常挂 `__cause__` 保留定位信息。消费方据此
+统一「超时不重试」——超时是确定性失败，重试只会把单次超时放大为 N×timeout；消费侧不得
+依赖具体 SDK 异常类名识别超时（换用其它合法 LLM 插件后同类超时必须同样被识别）。
+
 ### Reranker（`reranker/base.py`）
 
 重排能力：cross-encoder 精排。
@@ -203,19 +223,24 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 `provider.chain_store() is audit_logger`，以对象 identity 强制“记链与查询同一存储”的
 不变量，不能只依赖具名配置或注释。
 
-### SecurityProvider（`security/security.py`）
+### CryptographyProvider（`security/cryptography/base.py`）
 
-数据保护横切接口。调用方以 bytes 为边界接入：写入持久化字节前调用 `encrypt`，读取持久化字节后调用 `decrypt`。接口只表达数据保护能力，不绑定 `MemoryUnit` 序列化、不绑定 KV 后端、不决定是否默认启用加密。
+数据保护横切接口。调用方以 bytes 为边界接入：写入持久化字节前调用 `encrypt`，读取持久化字节后调用 `decrypt`。接口只表达数据保护能力，不绑定 `MemoryUnit` 序列化、不绑定 KV 后端、不决定是否启用加密。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `encrypt` | `(plaintext: bytes, *, context: SecurityContext | None = None, aad: bytes = b"") -> bytes` | 加密明文字节，可结合 scope / purpose / metadata 与 AAD 做租户隔离和完整性保护 |
-| `decrypt` | `(ciphertext: bytes, *, context: SecurityContext | None = None, aad: bytes = b"") -> bytes` | 解密密文字节并校验完整性 |
+| `encrypt` | `(plaintext: bytes, *, context: CryptoContext, aad: bytes = b"") -> bytes` | 加密明文字节，结合 scope / purpose / object_id / 格式版本与 AAD 做租户隔离和完整性保护 |
+| `decrypt` | `(ciphertext: bytes, *, context: CryptoContext, aad: bytes = b"") -> bytes` | 解密密文字节并校验完整性；失败一律抛错，绝不返回原始 bytes |
 | `health` | `() -> None` | 存活探测；默认返回 `None`，具体实现可覆盖并抛出健康检查异常 |
 
-`SecurityProducer.TOP_NAME` 为 `security`。具体 provider 的实现列表、target 名与
+`context` 是**必填 keyword 参数**：AAD 绑定的隔离维度不能靠调用方"忘了传"退化成无绑定。
+
+密钥一律经 `KeyProvider`（`security/cryptography/key_provider.py`，`TOP_NAME` 为
+`key_provider`）取得，实现不得自己读环境变量或配置文件里的根密钥。
+
+`CryptographyProducer.TOP_NAME` 为 `cryptography`。具体 provider 的实现列表、target 名与
 私有配置参数归 `jiuwen_memory/common/AGENTS.md` 与对应 feature 文档记录；本 spec 只固化
-接口、上下文和错误语义。
+接口、上下文和错误语义，安全侧的装配不变量见 S10。
 
 ### LockProvider（`lock/lock.py`）
 
@@ -234,23 +259,24 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 `LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
 静默退化成不跨实例的单机锁。
 
-### 安全域契约（`security/`，接口先行）
+### 安全域契约（`security/`）
 
-F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审计完整性 / Runtime 与公共安全值对象），
-**只固定接口，实现暂缓**。设计与过渡期语义见
-`docs/features/common/F05-security-api-contracts.md`。
+F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 / 审计完整性 / Runtime 与公共安全值对象）。
+认证 / 密码学 / 保护 / 授权已实装并接入 Server lifecycle；审计完整性已有可选的链式实现。
+现有安全能力与部署边界见 F04；公开接口及插件协作契约见 S10。
 
 | 子包/模块 | 契约 | 语义 |
 |---|---|---|
-| `security/types.py` | `Credentials` / `AuthContext` / `RequestSecurityContext` / `CryptoContext` / `Grant` / `Action` / `Role` / `Surface` | 协议无关的公共安全值对象与身份传播原语；`RequestSecurityContext` 是 `MemoryAPI` 公开方法的显式安全输入 |
-| `security/request_context.py` | `new_request_context` / `internal_context` | `RequestSecurityContext` 的受控构造入口（见不变量 9）；`internal_context` 的 authenticator 必填，进程内直连不得自述身份 |
+| `security/types.py` | `Credentials` / `AuthContext` / `RequestSecurityContext` / `CryptoContext` / `Grant` / `Action` / `Role` / `Surface` | 协议无关的公共安全值对象与身份传播原语；`RequestSecurityContext` 是 `MemoryAPI` 公开方法的显式安全输入（PR1 已切到 `security=` 签名） |
+| `security/request_context.py` | `new_request_context` / `internal_context` | `RequestSecurityContext` 的受控构造入口（见不变量 9）；认证中间件已走该入口，PR2 PEP 来源校验及进程内显式上下文已启用。`internal_context` 的 authenticator 必填，进程内直连不得自述身份 |
 | `security/authentication/` | `Authenticator` / `PrincipalKeyStore` / `CredentialStatusRegistry` | 认证：凭据 -> `AuthContext`；key 真源与凭据状态 |
-| `security/authorization/` | `Authorizer` / `RoutingFieldsProvider` / `GrantStore` / `DelegationStore` / `scope_covers` | 授权判定契约与授权真源；两代授权接口共享路由字段 capability；`grant_id` 是存储主键，撤销按 ID 且软撤销 |
+| `security/authorization/` | `Authorizer` / `RoutingFieldsProvider` / `GrantStore` / `DelegationStore` / `scope_covers` | 授权判定契约与授权真源（PR2 实装）；两代授权接口共享路由字段 capability；`grant_id` 是存储主键，撤销按 ID 且软撤销 |
+| `security/capabilities.py` | 增量公开能力协议与 `SecurityResourceOwner` | 管理原子性、来源/空间/入口路由声明、拥有或借用的安全依赖和显式共享生命周期；旧 ABC 抽象方法集合不变，详细约束见 S10 |
 | `security/cryptography/` | `CryptographyProvider` / `KeyProvider` | 密码学能力与密钥提供方 |
 | `security/protection/` | `RateLimiter` / `WorkloadGuard` / `BindingPolicy` | 入口限流、昂贵操作并发预算与绑定策略 |
 | `security/audit_integrity/` | `AuditIntegrityProvider` / `ChainedAuditStore` / `AuditAnchor` / `AnchorStatus` / `Proof` / `AuditVerificationLimits` / `AuditVerificationResult` | 审计链完整性契约（PR3）：链式 HMAC 证明、六布尔 `ChainStoreCapability` 行为声明与有界流式验证；`AnchorStatus` 固定锚点核对取值域并与 `AnchorState.checked` 交叉校验；`read_stable_snapshot(after_sequence)` 原子取得增量 checkpoint 与固定链头，`scan(..., through_sequence=快照链头)` 排除并发追加；可信 limits 与代码硬上限共同限制单页读取和 samples；`AuditLogger` 基类不加完整性默认方法，capability 不从 target 名推断 |
-| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根（authenticator / authorizer / crypto / protection / audit_integrity） |
-| `security/legacy.py` | `legacy_request_context` | **过渡桥**：把旧调用方的 identity `Scope` 包成 `RequestSecurityContext`；假认证，随实装 PR 删除 |
+| `security/runtime.py` | `SecurityRuntime` | 跨能力装配根（authenticator / protection / authorizer 必填、crypto 与 audit_integrity 为可选装配位并纳入健康检查；PR2 默认装配真实 `StandardAuthorizer`，test-only authorizer 在生产装配期拒绝） |
+| `security/legacy.py` | （已删除） | 原为 PR1→PR2 过渡桥 `legacy_request_context`：把调用方手上的 `Scope` 包成 `RequestSecurityContext`，属身份自述。PR2 已切换 `dispatch` 与全部进程内调用方到显式 `security=` / `internal_context(authenticator)` 并删除该文件——身份改由认证器产出，`Scope` 只作操作目标 |
 
 `Grant` 保留旧公共构造形状：调用方只传 `grantor` / `grantee` / `actions` 即可，
 `grant_id` 默认留空并由目标管理面服务生成。`actions` 在构造时统一冻结为
@@ -269,25 +295,38 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
-| `MemoryUnit` | id / scope / tier / layers / segments / source_ref / temporal / provenance / supersedes / tags / system_metadata / user_metadata / lifecycle / entities / vectors | 记忆单元；id 在完整 Scope 内唯一；`content` / `assets` / `source` 是从 `segments` 折叠得到的只读视图；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder）。尚未实现的 `hierarchy` 见下文“树结构（目标契约，尚未实现）” |
+| `MemoryUnit` | id / scope / tier / layers / segments / source_ref / temporal / provenance / supersedes / tags / system_metadata / user_metadata / lifecycle / entities / vectors / hierarchy / tree_memory | 记忆单元；id 在完整 Scope 内唯一；`content` / `assets` / `source` 是从 `segments` 折叠得到的只读视图；`vectors` 为 chunk 级向量投影（构建期按 Chunker+Embedder 管线填充，随本体经 Storage 领域接口下传，见 F06-unified-index-builder）。`hierarchy` 与 `tree_memory` 见下文“树结构” |
 | `ContentLayers` | l0 / l1 | 分层披露标注（l0=50-100 字概要、l1=200-500 字要点 overview）；默认空串，extractor 对超阈 content 产出 |
 | `Segment` | content / assets / source | 内容段；文本投影、原模态资产引用和来源模态一一对应 |
 | `Temporal` | t_event / t_ingest / t_valid / t_invalid / t_message | 事件、摄入、有效期与消息时间字段 |
 | `ChunkVector` | id / seq / vector | 与 Chunk 对齐的 chunk 级向量投影 |
 | `Relation` | source_id / target_id / relation / score / metadata | 关联关系 |
-| `Scope` | org / space / user / agent / session | 作用域；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only |
+| `Scope` | org / space / user / agent / session | 作用域（可变 dataclass，保持固定公共契约）；非空 `space` 是全局唯一逻辑隔离标识，空值为兼容域且该字段为 keyword-only；安全边界不得复用不可信调用方持有的同一对象 |
 | `Context` | scope / extensions | API 调用上下文；`max_tokens` 通过 extensions 的约定键传入并在 API 边界解析，不是 Context 字段 |
 | `Entity` | text / type / score | 实体 |
 | `FeatureSet` | keywords / entities / labels | 特征集合 |
 | `Chunk` | id / unit_id / seq / text / start / end / token_count / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息；content 为文本或多模态 parts |
 | `RawPayload` | id / scope / modality / data / uri / system_metadata / user_metadata / occurred_at / assets | 原始负载；`assets` 只承载待 Ingestor 映射的资产引用，不规定产出数量或 Segment 位置 |
-| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反 |
+| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反。内置字段白名单（`filter.py` `_BUILTIN_FIELDS`）含 `t_ingest`（摄入时间，epoch 毫秒，恒非空；2026-09-15 入册，dreaming 时间窗下推依赖，见 F04-dreaming.md D5） |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
+| `matches_filter_value` | `(object, FilterClause) -> bool` | 真源与内存索引共用的标量/数组/缺值比较 |
 | `matches_memory_unit` | `(MemoryUnit, FilterExpr \| None) -> bool` | retrieval 真源复核和 KV list 共用的 MemoryUnit 字段投影与过滤求值 |
-| `AuditEvent` | id / timestamp / actor / target / action / target_id / layer / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤 |
-| `SecurityContext` | scope / purpose / metadata | 一次加密/解密调用的安全上下文 |
+| `AuditEvent` | id / actor / target / action / target_id / layer / decision / occurred_at / detail | 审计事件；`actor` 与 `target` 均为 Scope，支持 actor_* 与 target_* 字段过滤；`detail` 可承载 `acting_user` / `role` / `credential_id` / `auth_method` 等认证审计字段 |
+
+### 安全类型（`security/types.py`）
+
+请求身份与加密上下文归安全域，不再住 `type_def/`——`type_def` 是被所有层 import 的
+基础类型，安全类型放进去会让「谁能改身份」的边界消失。字段语义与不变量见 S10。
+
+| 类型 | 关键字段 | 语义 |
+|------|----------|------|
+| `AuthContext` | actor / role / credential_type / credential_id / auth_method / credential_issuer / credential_status_required / authenticated_at / expires_at / delegation_id | 认证层产出的可信身份（`frozen=True`）；认证只回答「你是谁」——故意**不带** `acting_user` 之类的授权结果字段，委托由 `delegation_id` 携带服务端已验证的标识、由 `Authorizer` 回 `DelegationStore` 复核；`credential_issuer` 与撤销 capability 属 PR1 |
+| `RequestSecurityContext` | auth / request_id / peer / surface / started_at / attributes | 把可信身份绑定到一次具体请求；公开 `MemoryAPI` 签名与 `dispatch` 均已切到 `security: RequestSecurityContext` 必填，进程内调用方经 `internal_context(authenticator)` 受控构造 |
+| `CryptoContext` | scope / purpose / object_id / format_version / metadata | 一次加解密调用的安全上下文；前四项进 AAD |
+| `Credentials` | api_key / headers / peer_address | 认证输入的原始凭据材料（`repr` 不打印敏感字段） |
+| `Role` / `Surface` | 见 S10 | 服务端角色注册表与接入形态枚举 |
 
 ### 枚举（`type_def/memory.py`）
 
@@ -296,10 +335,10 @@ F05 公共安全架构的契约层（认证 / 密码学 / 保护 / 授权 / 审�
 | `Modality` | TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT |
 | `LifecycleState` | ACTIVE / SUPERSEDED / ARCHIVED / FORGOTTEN |
 
-目标新增的 `HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
+`HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
 避免摘要表与精确枚举并存后发生漂移。
 
-### 树结构（目标契约，尚未实现）
+### 树结构
 
 ```python
 class HierarchyKind(str, Enum):
@@ -345,18 +384,29 @@ class HierarchyRef:
     ordinal: int = 0
     status: HierarchyStatus = HierarchyStatus.ACTIVE
 
-# MemoryUnit 的目标增量字段；其余既有字段保持不变
+# MemoryUnit 末尾追加字段，保留已有位置参数顺序
 hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
+tree_memory: TreeMemoryData | None = None
 ```
 
-`HierarchyStatus` 只描述结构节点是否有效、被结构修正排除或等待确认，不包含
+`HierarchyStatus` 只描述结构节点有效或被结构修正排除，不包含
 `ARCHIVED`/`FORGOTTEN`；归档、遗忘与版本失效继续由 `LifecycleState` 表达。
 `parent_id=""` 表示根或尚未挂接，`child_ids` 是直接子节点的稳定有序列表，
 `ordinal` 是同一父节点下的排序提示。非 TIME kind 可以不声明区间；一旦声明，仍须满足
 成对、顺序和父覆盖约束。TIME 的区间是结构覆盖范围，不替代
 `MemoryUnit.temporal` 的双时间，也不替代 `RecallChannel.TEMPORAL` 的召回过滤。
 
-目标实现必须满足以下校验不变量：
+`validate_ref` 与 `validate_tree` 提供无副作用校验；消费边界须在使用结构前调用。
+`is_incomplete_snapshot(ref)` 仅识别 TIME/Snapshot、ACTIVE、无任何父子引用且缺少一个
+或两个时间端点的形态，不能证明没有外部父引用。`validate_ref` 的关键字参数
+`allow_incomplete_snapshot=False` 默认严格；显式启用时仅允许该形态的时间缺失，
+仍校验已有端点为 datetime，不补齐或转换时间。`validate_tree` 始终使用默认严格校验。
+`validate_tree` 先校验全部字段，再检查非空结构；集合外引用仍校验身份和边界，
+仅跳过依赖外部节点内容的双向边、环与覆盖核对。默认允许跨 session，
+非空 user/agent 不同须显式设置 `allow_cross_user=True`；org/space 始终不可跨。
+时间比较按 UTC（朴素时间亦按 UTC），保留微秒精度。
+
+校验不变量：
 
 - 所有父子引用必须解析到**同 org + 同 space** 的 `MemoryUnit`；禁止跨 org / 跨 space
   结构边；禁止自环、祖先环。
@@ -367,7 +417,7 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 - 同一 kind 下每个节点最多一个非空 `parent_id`；当前契约不支持同 kind 多父。
 - 对每条边 `P -> C`，`C.parent_id == P.id` 当且仅当 `C.id` 在 `P.child_ids` 中；若使用
   scope 覆盖，则 `C` 侧 `parent_scope`（或缺省的本 unit scope）必须与 `P` 的驻留 Scope 一致。
-- `child_ids` 不重复；TIME 按区间起点或事件时间稳定排序，其他 kind 按 `ordinal`
+- 子引用以完整 Scope + id 去重，同名 id 可驻留不同 Scope；TIME 的构建顺序约定按区间起点或事件时间，其他 kind 按 `ordinal`
   与领域稳定顺序排序。
 - 空结构定义为 `kind is None and role is None`；此时 `parent_id=""`、`child_ids=[]`、
   `child_scopes=[]`、`parent_scope is None`，且不得携带非空父子 id 或 span。旧数据没有
@@ -393,11 +443,11 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 真源 KVStore 存**字节**，`MemoryUnit` 对象只在写入（`dumps`）与产出结果（`loads`）两处出现。编解码与 `MemoryUnit` 同住 `common/type_def`，纯函数、无存储后端依赖。
 
 - `dumps(unit) -> bytes`：`MemoryUnit` → JSON 字节，带 `_v` 版本号、枚举取 `.value`、时间取 isoformat。字段含 `segments`、`layers`（`{l0, l1}`）。
-- `loads(raw) -> MemoryUnit | None`：逆 `dumps`；非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。
+- `loads(raw) -> MemoryUnit | None`：逆 `dumps`；严格 UTF-8 解码，非 dict 返回 `None`（KVStore 中混有索引/跟踪等非 unit 记录，靠此过滤）。`UnicodeDecodeError` 不在 codec 内吞掉；存储读取层经 `load_memory_unit` 记日志并按不可解码记录隔离。
 - **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=4`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`；`_v=4` 将混合 metadata 拆分为 `system_metadata` / `user_metadata`，`_v<4` 数据须离线迁移）。
 - `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
-- 目标树结构尚未进入当前 `MemoryUnit` 和 codec；`hierarchy` 的读取降级及写入校验规则见
-  上文“树结构（目标契约，尚未实现）”，不得将其描述为当前 `_v=4` 已具备的能力。
+- 空 `hierarchy` 不写出，缺失读为空；未知枚举、坏时间和坏 Scope 引用使整段结构降级为空并记诊断，正文保留。未知字段忽略；可解析但不自洽的结构交消费边界校验，codec 不调用 `validate_ref`。
+- `TreeFact(source_id, source_scope, text)` 保存完整 Scope 的来源事实；`TreeMemoryData(facts)` 是独立构建材料，不进入正文、全文/向量投影或披露。`tree_memory=None` 表示未保存材料，空列表表示已保存但无事实；坏材料整组降级为 None，不能保留部分列表冒充完整事实。两字段保持 `_v=4`。
 - 只有字段语义或结构发生破坏性变化时才提升 `_v`；增加可选枚举成员或可缺省字段不单独升版。
 
 ### 工厂注册机制（`factory/factory.py`）
@@ -414,30 +464,46 @@ hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
 | `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` | `embedder` / `chunker` / `tokenizer` |
 | `IndexBuilderProducer` / `RecallerProducer` | `constructor` / `recaller` |
 | `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` | `normalizer` / `asr` / `feature_extractor` / `llm` / `reranker` |
-| `AuditProducer` / `SecurityProducer` / `LockProducer` | `audit` / `security` / `lock` |
+| `AuditProducer` / `LockProducer` | `audit` / `lock` |
+| 安全域各 Producer（`SecurityRuntimeProducer` / `AuthProducer` / `KeyStoreProducer` / `RateLimitProducer` / `WorkloadGuardProducer` / `BindingPolicyProducer` / `CryptographyProducer` / `KeyProviderProducer`） | 见 S10 |
 
 #### Factory 基类
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `register(target)` | `@classmethod (target: str) -> Callable` | 装饰器：注册某实现的 `_build` 函数（接口 1 的实现体） |
+| `register(target, *, config_inspectors=None)` | `@classmethod -> Callable` | 注册 builder 与可选的具名配置检查器；替换 target 同时替换全部检查器，未声明的不继承 |
+| `registration_scope()` | `@classmethod -> ContextManager[None]` | 临时注册边界；正常/异常退出均恢复该 Producer 的 builder 与检查器快照，支持嵌套；不恢复实例缓存，不作为并发注册事务 |
+| `for_namespace(namespace)` | `@classmethod -> type[Factory]` | 查命名空间的 Producer；未知命名空间抛 ValidationError，不构建实例 |
+| `inspect_config(target, inspector, config)` | `@classmethod -> Any` | 执行插件注册的无副作用配置检查器；缺失能力抛 ValidationError，返回值契约由消费方定义 |
 | `build(target, params, ctx, *, name="")` | `@classmethod -> T` | **接口 1（匿名）**：按 `target` 新建，**不入缓存** |
 | `build_named(name, ctx)` | `@classmethod -> T` | **接口 2（具名/共享）**：按具名实例名取/建，按 `new_instance` 决定是否缓存共享 |
+| `bind_named(name, ctx)` | `@classmethod -> Callable[[], T]` | 绑定指定装配上下文，首次调用前不查配置或创建组件；沿用该上下文的缓存、锁和绑定时的创建观察者，失败可重试 |
 | `dep(config, param_name=None, default=None)` | `@classmethod -> T` | builder 内取依赖：引用名(str)→`build_named`（共享）/ 内联(dict)→`build`（匿名）/ 缺省(None)→`build(default)`（匿名默认） |
 | `cfg_get` / `require_param` | `@staticmethod (config, key, ...)` | 读本组件参数（缺失给默认 / 必填缺失即抛 `ValidationError`） |
-| `reset_all()` | `@classmethod () -> None` | 清空所有工厂的实例缓存（装配前调用，隔离多次装配） |
-| `put(name, instance)` | `@classmethod -> None` | 把外部实例预置进缓存（如显式注入的真源 kv） |
+| `reset_all(*, ctx=None)` | `@classmethod -> None` | 只清指定装配缓存；省略 ctx 时使用当前 builder 上下文，builder 外仅清旧式默认缓存 |
+| `put(name, instance, *, ctx=None)` | `@classmethod -> None` | 把外部实例预置进缓存（如显式注入的真源 kv） |
+| `get_cached(name, *, ctx=None)` | `@classmethod -> T or None` | 只读指定上下文中的已有实例；builder 内缺省继承当前上下文 |
+| `observe_builds(observer)` | `(Callable[[object], None]) -> context manager` | 观察本作用域由标准 build 新建的实例（含匿名子依赖）；不报告缓存命中/put；嵌套观察者均收到通知 |
+| `cache_epoch(*, ctx=None)` / `reset_if_current_epoch(epoch, *, ctx=None)` | `() -> object` / `(object) -> None` | opaque 装配纪元；reset_all 切换纪元，旧所有者只能失效自己的当前纪元 |
+| `bind_cache_lifecycle(owner, share, *, ctx=None)` | `(object, Callable[[object, object], None]) -> None` | 装配根声明本纪元生命周期所有者，同一具名图的新增视图显式调用给定共享协议，不跨独立纪元隐式去重 |
+| `discard_created(instances, *, ctx=None)` | `(tuple[object, ...]) -> None` | 失败装配只移除新建对象的缓存条目，保留先前借用的缓存实例 |
 
 - **接口 1（匿名）`build`**：查 `_registry[target]`，把 `params` 包成 `ComponentConfig` 交给注册的 `_build`，返回**新实例、不入缓存**。
-- **接口 2（具名/共享）`build_named`**：命中 `cls._instances[name]` → 返回缓存共享实例；否则 `spec = ctx.lookup(cls.TOP_NAME, name)`（用自己的 `TOP_NAME` 定位命名空间）→ `build(spec.target, spec.params, ctx)`；`spec.new_instance` 为假则存入缓存供共享、为真则每次新建。
+- **接口 2（具名/共享）`build_named`**：命中 `ctx.instance_cache` 中 producer/name 对应的实例 → 返回缓存共享实例；否则 `spec = ctx.lookup(cls.TOP_NAME, name)`（用自己的 `TOP_NAME` 定位命名空间）→ `build(spec.target, spec.params, ctx)`；`spec.new_instance` 为假则存入缓存供共享、为真则每次新建。
 - **`dep`** 的 `param_name` 缺省取 `cls.TOP_NAME`，仅当 builder 入参名与依赖 Producer 顶层名不一致时显式传。
+- 装配根通过创建观察维护失败回滚清单，不在失败后探测具体插件的私有状态。成功发布后
+  按具名依赖的公开所有权契约关闭；观察通知不能代替插件自身构造失败时的局部资源清理。
+  关闭本纪元根失效其缓存，不能影响后来已重建的独立纪元。ContextVar 仅用于隔离装配
+  观察作用域与 builder 的缓存上下文，不承载认证身份，不改变业务安全输入。
+  注册表仍属 Producer，缓存和生命周期属 AssemblyContext；独立上下文不隐式共享。
+  同上下文的具名并发构建串行发布，嵌套依赖可重入；全局 reset 不影响存活的上下文。
 
 #### 配置数据结构（`config/context.py`）
 
 | 类型 | 关键字段 | 语义 |
 |------|----------|------|
 | `RawSpec` | target / params / new_instance | 一个具名实例的纯数据 |
-| `AssemblyContext` | globals / namespaces（`top_name → name → RawSpec`） | 全局装配上下文；`lookup(top_name, name) -> RawSpec` 取具名配置 |
+| `AssemblyContext` | globals / namespaces（`top_name → name → RawSpec`）/ instance_cache | 单次装配上下文；`lookup(top_name, name) -> RawSpec` 取具名配置，缓存不跨上下文共享 |
 | `ComponentConfig` | params / ctx / target / name | 传给每个 `_build` 的 config 视图；`get(key, default)` 先查本实例 `params`，缺失回退 `ctx.globals`，最终给 `default` |
 
 - `ComponentConfig.get` 实现跨切面参数「写一处、处处读到」：`embedder_dim` / `vector_enabled` 等写在 `globals`，具名实例 `params` 可覆盖。
@@ -472,12 +538,12 @@ def _build(config: ComponentConfig) -> Embedder:
 - 具名实例默认**共享**：多处 `build_named("main_vec", ctx)` 命中同一缓存键 → 同一实例
 - 配 `new_instance: true` 的具名实例退出共享（每次引用都新建）
 - 匿名 `build` 与内联实例（dict 依赖）天然不共享
-- `reset_all()` 清空缓存（隔离多次装配 / 测试隔离）
+- `reset_all(ctx=ctx)` 只清该上下文缓存；独立装配天然隔离，不以全局 reset 实现隔离
 
 各 Producer 继承 `Factory`：
-- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer` / `SecurityProducer`
+- `EmbedderProducer` / `ChunkerProducer` / `TokenizerProducer` / `NormalizerProducer` / `VideoAsrProducer` / `FeatureExtractorProducer` / `LlmProducer` / `RerankerProducer` / `AuditProducer`，以及 `common/security/` 下的安全域 Producer（见 S10）
 
-## 错误类型（`errors.py` / `security.py` / `lock.py`）
+## 错误类型（`errors.py` / `security/cryptography/base.py` / `lock.py`）
 
 | 异常 | 含义 |
 |------|------|
@@ -487,8 +553,8 @@ def _build(config: ComponentConfig) -> Embedder:
 | `PolicyError` | 策略错误（未知键/不可变配置） |
 | `BackendError` | 后端不可用 |
 | `HealthCheckError` | 健康检查失败 |
+| `CryptographyError` | 加密或解密处理失败的基类 |
 | `UnsupportedCapabilityError` | 组件不支持请求的能力值；携带 `capability` / `value` / `component` |
-| `SecurityError` / `EncryptionError` | 安全横切处理失败的基类 |
 | `LockError` | 锁相关异常的基类 |
 | `LockTimeoutError` | 有界等待耗尽仍未获得锁 |
 | `LockLostError` | 租约续期失败、持有权已失效（由消费方按需抛出） |
@@ -501,13 +567,18 @@ def _build(config: ComponentConfig) -> Embedder:
 
 ```
 jiuwen_memory/common/<组件>/
-    base.py | <name>.py     # 接口 + Producer（横切组件用 <name>.py，如 security.py / lock.py）
+    base.py | <name>.py     # 接口 + Producer（横切组件用 <name>.py，如 lock.py；安全域在 security/ 子包内分层）
     <组件>_impl/
         __init__.py         # 重导出实现类
         <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-注册由 `common.bootstrap.register_plugins` 统一触发。`security_impl/` 当前注册 `local` SecurityProvider 实现，`lock_impl/` 注册 `redis` 与 `memory` 两个 LockProvider 实现。
+安全能力多一层能力域：`src/common/security/<能力域>/{base.py, <能力域>_impl/}`。
+
+注册由 `common.bootstrap.register_plugins` 统一触发（安全域的注册入口是
+`common.security.bootstrap.register_security`）。`cryptography_impl/` 当前注册 `local`
+CryptographyProvider 与 `local` KeyProvider。
+`lock_impl/` 注册 `redis` 与 `memory` 两个 LockProvider 实现。
 
 ## 与其它 spec 的关系
 
@@ -518,6 +589,18 @@ jiuwen_memory/common/<组件>/
 | S04-retrieval | 检索层消费 Embedder/Tokenizer/FeatureExtractor/LLM/Reranker |
 | S05-construction | 构建层消费 Chunker/Embedder/Tokenizer/FeatureExtractor/LLM |
 | S06-storage | 存储层依赖本层的数据类型定义（Scope/FilterClause 等） |
+| S10-security | 约束 PR1 认证、保护、密码学 capability，配置选择与启动安全不变量 |
 | S08-config | 插件晚绑定 model/api_key/url 等由 ConfigSource 提供；装配拓扑仍走 Factory |
 | F07-collective-memory | 保留键与瞬态键集合扩充（已落地）；两轴角色与身份推导落 `security/space_roles.py` 与 `security/principal.py`（已落地）；空间授权事实经安全层资源描述对象的结构化字段传入判定实现 |
 | architecture.md 全文 | 本层承载全局共享的数据类型与工具 |
+
+## 记忆时间的统一解释
+
+消息时间、树区间、普通 temporal 索引字段与查询边界使用同一规则：无时区 datetime
+按 UTC 解释；带时区 datetime 转为 UTC 时保持实际时刻。该约定不推测无时区输入的
+真实地理时区，不读取部署机器本地时区。需要表达当地时刻的调用方应显式携带时区。
+
+真源保留输入表示，业务派生仅包含明确的时间偏移；比较保留 datetime 微秒精度，
+索引转换为 epoch 毫秒。缺值与未知/开放区间哨兵由字段自身契约决定。
+自动生成的点状 Snapshot 满足 occurred_at、t_message、span_start、span_end 同值，
+其时间索引也必须相等；显式传入的更宽区间不受点状约束。

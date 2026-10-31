@@ -15,13 +15,18 @@ from jiuwen_memory.common.security.space_roles import (
 from jiuwen_memory.common.security.types import Action as Action
 from jiuwen_memory.common.security.types import Grant as Grant
 from jiuwen_memory.common.type_def import (
+    CandidateSource,
     FilterExpr,
+    HierarchyKind,
+    HierarchyRole,
     MemoryTier,
     MemoryUnit,
     MetadataValueType,
     Modality,
     Scope,
 )
+from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 
 
 class PrincipalPath(str, Enum):
@@ -260,6 +265,37 @@ class Channel(str, Enum):
     BACKGROUND = "background"  # 离线：异步做重的抽取/升华/重索引
 
 
+@dataclass(frozen=True)
+class EvolveTaskOptions:
+    """显式演进任务请求；Scope 与认证上下文仍由入口分别传入。"""
+
+    mode: EvolveMode
+    channel: Channel = Channel.BACKGROUND
+    hierarchy_options: HierarchyComposeOptions | None = None
+    reuse_existing: bool = False  # HIERARCHY：完整树复用，纯新叶构建，部分树拒绝
+
+    candidate: CandidateSource | dict | None = None
+    dreaming: bool | None = None
+    interval: int = 0
+
+    @classmethod
+    def time_hierarchy(
+        cls, scope: Scope, *, span_start: datetime, span_end: datetime,
+        reuse_existing: bool = False,
+    ) -> EvolveTaskOptions:
+        """内置 TIME 四层请求；调用方仍显式提供已授权 Scope 和有界时间范围。"""
+        from copy import deepcopy
+
+        return cls(
+            mode=EvolveMode.HIERARCHY, reuse_existing=reuse_existing,
+            hierarchy_options=HierarchyComposeOptions(
+                kind=HierarchyKind.TIME, leaf_role=HierarchyRole.SNAPSHOT,
+                parent_roles=[HierarchyRole.TIME_SPAN, HierarchyRole.SCENE, HierarchyRole.EVENT],
+                tree_home_scope=deepcopy(scope), span_start=span_start, span_end=span_end,
+            ),
+        )
+
+
 class JobStatus(str, Enum):
     PENDING = "pending"  # 已提交待执行
     RUNNING = "running"  # 执行中
@@ -278,6 +314,15 @@ class JobInfo:
     scope: Scope = field(default_factory=Scope)  # 演进作用范围
     status: JobStatus = JobStatus.PENDING  # 当前状态
     detail: dict[str, str] = field(default_factory=dict)  # 附加信息（进度/错误原因等）
+
+
+@dataclass
+class BackgroundJobStartResult:
+    """周期任务注册结果；与每轮建树结果分开表达。"""
+
+    job_ids: list[str] = field(default_factory=list)
+    skipped: bool = False
+    reason: str = ""
 
 
 class UpdateMode(str, Enum):

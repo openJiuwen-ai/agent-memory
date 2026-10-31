@@ -6,12 +6,11 @@
 
 本层是控制层（``jiuwen_memory/control``）的薄封装：数据面（add/search/list/get/update/
 delete/evolve/admin）委托 :class:`~control.engine.MemoryEngine`，管理面查询
-（任务状态、血缘/审计、跨 scope 授权）直达对应控制算子
-（:class:`~control.scheduler.Scheduler` / :class:`~control.governance.Governor`
-/ :class:`~control.permission.PermissionManager`）——只做参数装配与鉴权，
-编排逻辑全部在 ``jiuwen_memory/control``。接口先行过渡期的授权判定仍走
-``PermissionManager``；目标实现切到
-:class:`~common.security.authorization.Authorizer`（F05 §Authorization）。
+（任务状态、血缘/审计）直达对应控制算子（:class:`~control.scheduler.Scheduler` /
+:class:`~control.governance.Governor`）——只做参数装配与鉴权，
+编排逻辑全部在 ``jiuwen_memory/control``。授权判定统一经
+:class:`~common.security.authorization.Authorizer`（唯一 PDP，含跨 scope 授权的
+GrantStore 真源；F05 §Authorization）。
 调用层（SDK/CLI/MCP 等）只依赖本包即可触达全部对外能力，无需 import 内核其他包。
 """
 
@@ -29,15 +28,19 @@ from jiuwen_memory.common.security.audit_integrity.base import (
 from jiuwen_memory.common.security.types import Grant, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
     AuditEvent,
+    CandidateSource,
     Context,
     FilterClause,
     FilterExpr,
+    HierarchyKind,
+    HierarchyRole,
     MemoryUnit,
     MetadataValueType,
     Modality,
     Scope,
 )
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
     BatchWriteItem,
     BatchWriteResult,
@@ -65,11 +68,11 @@ class MemoryAPI(ABC):
 
     **鉴权与审计的执行点（PEP）在本层，且本层是唯一的业务 PEP**：每个涉及租户
     数据/治理的方法都收 ``scope``（操作的目标范围 target）与 ``security``
-    （本次请求的安全上下文）。接口先行过渡期从 ``security.auth.actor`` 取身份，
-    仍调用 ``PermissionManager``；目标实现再从真源构造
+    （本次请求的安全上下文）。本层从 ``security.auth.actor`` 取身份，先校验
+    上下文可信性（来源证明、时效与需在线复核的凭据），再从真源构造
     :class:`~common.security.types.ResourceDescriptor`、派生
     :class:`~common.security.types.AuthorizationEnvironment` 并调用
-    :class:`~common.security.authorization.Authorizer`。不通过即抛
+    :class:`~common.security.authorization.Authorizer`（唯一 PDP）。不通过即抛
     :class:`~common.errors.PermissionDeniedError`（适用于下列所有方法，各方法不再
     重复说明）；通过后才委托 :class:`~control.engine.MemoryEngine`，且仅透传已鉴权
     的 target ``scope`` 与业务参数（调用方身份不下沉，下游信任 target）；同时在本层
@@ -187,7 +190,8 @@ class MemoryAPI(ABC):
         """异步批量写入；语义与 :meth:`batch_add` 一致。"""
 
     @abstractmethod
-    def search(
+    # 平铺参数保留公开接口兼容性；内部通过 SearchOptions 聚合。
+    def search(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         query: str,
         context: Context,
@@ -198,6 +202,12 @@ class MemoryAPI(ABC):
         top_k: int = 10,
         disclosure: DisclosureLevel = DisclosureLevel.L0,
         with_trajectory: bool = False,
+        hierarchy_kind: HierarchyKind | None = HierarchyKind.TIME,
+        hierarchy_role: HierarchyRole | None = HierarchyRole.TIME_SPAN,
+        span_start: datetime | None = None,
+        span_end: datetime | None = None,
+        expand_depth: int = 1,
+        rollup: bool = True,
     ) -> RetrievalResult:
         """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。
 
@@ -220,7 +230,14 @@ class MemoryAPI(ABC):
         - 时延：随候选空间数线性增长。召回按并发写就，但引擎侧 ``recall`` 当前是同步实现、
           实际顺序执行，候选集上限（``space.fanout_limit``）因而同时是时延上界的约束项。
 
+        树参数默认 TIME/time_span、一级展开与上卷；显式 0/False 原样生效。
+        hierarchy.enabled 关闭或缺失时忽略所有树参数，执行普通查询；保留已有过滤和权限。
         取同步形态：多空间召回在实现内部完成，不向调用方暴露异步契约。
+
+        最近上下文经 ``context.extensions["query_context"]`` 传入，取值为
+        ``list[str]`` 或 ``tuple[str, ...]``；API 边界校验并转换为
+        ``RetrievalQuery.query_context``，供支持上下文感知改写的 parser 消费。该 key
+        移除后不进入插件透传、权限路由或硬过滤；非法取值抛 ``ValidationError``。
         """
 
     @abstractmethod
@@ -279,18 +296,86 @@ class MemoryAPI(ABC):
         """
 
     @abstractmethod
-    def evolve(
+    # 树选项追加在旧参数之后；不改变原有位置参数与默认值。
+    def evolve(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         scope: Scope,
         mode: EvolveMode,
         channel: Channel = Channel.BACKGROUND,
         *,
+        candidate: CandidateSource | dict | None = None,
+        dreaming: bool | None = None,
+        interval: int = 0,
         security: RequestSecurityContext,
-    ) -> str:
+        hierarchy_options: HierarchyComposeOptions | None = None,
+        reuse_existing: bool = False,
+    ) -> str | None:
         """触发演进（extract/associate/consolidate/forget）：``scope`` 为演进
         目标范围、``security`` 为本次请求的安全上下文（本层据二者鉴权）；返回任务
         id，状态用 :meth:`job_status` 查询。索引维护不在此——它随 add/update/delete
         自动跟进。
+
+        HIERARCHY 使用 hierarchy_options 和 reuse_existing 显式建树，不接受普通模式的
+        candidate/dreaming/interval。树开关关闭时忽略树选项并返回成功跳过任务；基础请求
+        校验、WRITE/UPDATE 授权和空间可写检查仍执行。
+
+        F04 dreaming 三态：``dreaming=None`` 立即跑（一次性任务，``candidate``
+        可选四类候选源，缺省谓词全量源）；``dreaming=True`` 注册定时
+        （``interval>0``，KV 持久化，重启恢复）；``dreaming=False`` 注销
+        （命中 (scope, mode) 注册则取消并删除，返回 None）。
+        """
+
+    @abstractmethod
+    def read_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        *,
+        security: RequestSecurityContext,
+        line_range: tuple[int, int] | None = None,
+    ) -> list[MemoryUnit]:
+        """按 ``md_filename`` + 行范围读 md 文件原文，返回命中的 MemoryUnit 列表（F08）。
+
+        入参形态与 :meth:`search` 一致（用 ``context: Context``）：``context.scope``
+        携带归属五维，``context.extensions["coords"]["project"]`` 决定从哪个 project
+        子目录读（project 解析在 Engine 层，本层不拆 Context）。``md_filename`` 接受
+        basename（``USER.md`` / ``MEMORY.md`` / ``YYYY-MM-DD.md``）。
+
+        ``line_range`` 为 ``(start, end)`` 1-based 闭区间，``None`` 表示整文件，越界
+        自动 clamp。返回值与 :meth:`add` / :meth:`search` 同构为 ``list[MemoryUnit]``；
+        ``MdFileContent`` 的格式转换放 provider 层。
+
+        本层据 ``context.scope`` 鉴权 ``READ``（单段，与 :meth:`get` / :meth:`list`
+        同口径，F08 D5）。文档模式真源是 md + 影子索引，非文档模式无 md 文件——
+        ``InMemoryEngine`` 抛 :class:`~common.errors.ValidationError`。
+        """
+
+    @abstractmethod
+    def edit_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        old_text: str,
+        new_text: str,
+        *,
+        security: RequestSecurityContext,
+    ) -> list[MemoryUnit]:
+        """按 ``md_filename`` + ``old_text`` 在文件内做唯一替换，返回受影响的新
+        MemoryUnit 列表（F08）。
+
+        语义对齐 agent-core ``edit_memory``：``old_text`` 在文件内必须唯一（``count > 1``
+        抛 :class:`~common.errors.ValidationError`），不存在抛
+        :class:`~common.errors.NotFoundError`，``replace(old, new, 1)`` 精确替换一处后
+        原子写回。``old_text`` 任意文本（块内片段 / 跨多块均可），不强制对齐块边界。
+
+        与 :meth:`update` 的差别：``update`` 按 ``unit_id`` 做 SUPERSEDE/OVERWRITE
+        （替换整个 unit.content）；本方法按文件内 ``old_text`` 做局部文本替换，保留文件
+        其他部分。edit 走「继承式 SUPERSEDE」——新 unit 继承旧 unit 的元数据 + 新 id +
+        ``supersedes`` 指向旧 id + 旧版标记 SUPERSEDED（F08 D4）。返回新 unit（旧版已
+        失效，返回它会让调用方误用失效 id）。
+
+        本层据 ``context.scope`` 鉴权 ``WRITE``（单段，与 :meth:`add` 同口径——edit 本质
+        是写入新记忆，语义对齐 ``add`` 而非 ``update``，F08 D5 / R6）。
         """
 
     @abstractmethod
@@ -321,9 +406,11 @@ class MemoryAPI(ABC):
         tags: list[str] | None = None,
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
     ) -> IngestSubmission:
         """受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；
-        调用方拿不到 ``IngestJobController``。后台 ``add`` 仍再鉴权一次。
+        调用方拿不到 ``IngestJobController``。后台 ``add`` 仍再鉴权一次，并原样接收
+        ``occurred_at`` 作为消息发生时间——该字段属于消息时间轴，不借 metadata 旁路传递。
         """
 
     @abstractmethod
@@ -350,7 +437,7 @@ class MemoryAPI(ABC):
     def admin_get(self, key: str, *, security: RequestSecurityContext) -> str:
         """
         admin：读取一项运行时策略的当前值；本层据 ``security`` 做管理面鉴权
-        （``MANAGE_POLICY``）。
+        （根 Scope 的 ``ADMINISTER_SYSTEM``，需 ROOT）。
         """
 
     @abstractmethod
@@ -358,14 +445,14 @@ class MemoryAPI(ABC):
         """
         admin：调整一项运行时策略（启停索引、检索/演进开关等；键未知或
         不可变配置抛 :class:`~common.errors.PolicyError`）；本层据 ``security`` 做管理面鉴权
-        （``MANAGE_POLICY``）并落审计。
+        （根 Scope 的 ``ADMINISTER_SYSTEM``，需 ROOT）并落审计。
         """
 
     @abstractmethod
     def admin_all(self, *, security: RequestSecurityContext) -> dict[str, str]:
         """
         admin：列出全部运行时策略及当前值；本层据 ``security`` 做管理面鉴权
-        （``MANAGE_POLICY``）。
+        （根 Scope 的 ``ADMINISTER_SYSTEM``，需 ROOT）。
         """
 
     # -- 治理（委托 Governor，架构 §12 的「看」侧） --------------------------- #
@@ -394,8 +481,7 @@ class MemoryAPI(ABC):
         self, filters: dict[str, str], *, security: RequestSecurityContext, limit: int = 100
     ) -> list[AuditEvent]:
         """审计查询：按条件（actor/action/layer/时间段等）检索审计留痕；
-        当前实现为兼容存量授权记录，仍据 ``security`` 鉴权 ``READ``；迁移到目标动作
-        ``READ_AUDIT`` 必须作为独立兼容性变更处理。
+        本层据 ``security`` 鉴权根 Scope 的 ``READ_AUDIT``（需 ROOT，默认不可委托）。
         """
 
     @abstractmethod
@@ -410,7 +496,7 @@ class MemoryAPI(ABC):
     ) -> AuditVerificationResult:
         """审计链完整性验证：流式校验证明链，返回结构化状态。
 
-        本层据 ``security`` 鉴权 ``VERIFY_AUDIT``（管理面，默认不可委托）。输入只允许
+        本层据 ``security`` 鉴权 ``VERIFY_AUDIT``（需 ROOT，默认不可委托）。输入只允许
         服务端验证参数（范围、页预算、anchor policy），不接受调用方传入 expected
         digest / key / proof。``page_size`` 与 ``max_samples`` 还受服务端可信配置上限
         约束，不能靠放大单次请求绕过 ``WorkloadGuard`` 的并发预算。全量验证在
@@ -418,7 +504,7 @@ class MemoryAPI(ABC):
         ``unsupported`` 状态，不抛错。
         """
 
-    # -- 跨 scope 授权（委托 PermissionManager，架构 §3.2） ------------------- #
+    # -- 跨 scope 授权（安全域 GrantStore） ---------------------------------- #
 
     @abstractmethod
     def grant(self, grant: Grant, *, security: RequestSecurityContext) -> Grant:
@@ -426,20 +512,15 @@ class MemoryAPI(ABC):
         新增一条跨 scope 授权（共享池等）；本层据 ``security`` 鉴权 SHARE
         （须有权再授权 ``grant.grantor`` 范围）。返回值携带该授权的 ``grant_id``，
         供后续精确撤销。
-
-        接口先行过渡期：``GrantStore`` 未实装，服务端尚不生成 ``grant_id``，
-        返回值原样回传入参（见 F05-security-api-contracts §5.4）。
         """
 
     @abstractmethod
     def revoke(self, grant: Grant, *, security: RequestSecurityContext) -> None:
         """
         回收一条授权（幂等）；本层据 ``security`` 鉴权 ``REVOKE_SHARE``。
-        目标语义是按 ``grant.grant_id`` 精确定位。
-
-        接口先行过渡期：``GrantStore`` 未实装，实际仍按
-        ``grantor + grantee + action`` 条件撤销，``grant_id`` 不参与定位
-        （见 F05-security-api-contracts §5.4）。
+        按 ``grant.grant_id`` 精确定位；未知 ID 幂等无副作用，缺失 ID 拒绝。
+        其余字段不参与定位或归属鉴权。保存 grant 返回值后直接传回，或使用
+        ``Grant.for_revocation(grant_id)``；旧的无 ID 条件撤销须迁移到服务端 ID。
         """
 
     # -- Space 管理（委托 SpaceManager） ------------------------------------ #

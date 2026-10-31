@@ -8,16 +8,28 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import (
     ChannelError,
     ChannelEvidence,
     FilterExpr,
+    HierarchyKind,
+    HierarchyRole,
     MetadataValueType,
     ParsedQuery,
     RecallChannel,
     ScoredMemoryUnit,
     ScoredUnit,
     normalize,
+)
+from jiuwen_memory.common.type_def.hierarchy_query import (
+    HierarchyQuery,
+    validate_expand_depth,
+    validate_rollup,
+)
+from jiuwen_memory.retrieval.schema_temporal.model import (
+    SchemaTemporalQuery,
+    SchemaTemporalResult,
 )
 
 __all__ = [
@@ -28,6 +40,7 @@ __all__ = [
     "RecallChannel",
     "RetrievalQuery",
     "RetrievalResult",
+    "SchemaTemporalRetrievalResult",
     "RetrievedItem",
     "ScoredMemoryUnit",
     "ScoredUnit",
@@ -57,7 +70,7 @@ class RetrievalQuery:
     # 标签/元数据前置过滤：树形谓词；旧 list/dict 仅在本查询对象边界兼容。
     filters: FilterExpr | None = None
     as_of: datetime | None = None  # 时间点回溯（双时间模型 valid-time）；None 表示当前
-    top_k: int = 10  # 返回条数
+    top_k: int = 10  # 选根与最终父子返回总数上限
     disclosure: DisclosureLevel = DisclosureLevel.L0  # 结果披露层级
     max_tokens: int | None = None  # 自适应披露预算；None 表示使用 discloser 默认策略
     with_trajectory: bool = False  # 是否返回检索轨迹
@@ -65,13 +78,34 @@ class RetrievalQuery:
     channels: list[RecallChannel] | None = None  # 覆盖启用的召回通道；None 用 parser 建议
     rerank: bool | None = None  # 覆盖重排开关；None 用装配默认（是否注入了 reranker）
     include_archived: bool = False  # 当前态查询是否纳入 archived 记忆
-    # 调用方自定义透传配置（源自 Context.extensions）；内核核心不解释，
-    # 顺 parser 进 ParsedQuery 供自定义检索模块按约定 key 读取。
+    # Schema 属性时间线查询；None 时仅在配置开启 conditional-auto 且命中时间意图时启用。
+    schema_temporal: SchemaTemporalQuery | None = None
+    # 调用方自定义透传配置（源自 Context.extensions）；除内置保留键
+    # ``schema_temporal`` 外，内核不解释，顺 parser 进 ParsedQuery 供扩展模块读取。
     extensions: dict[str, Any] = field(default_factory=dict)
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
+    expand_depth: int = 0
+    defer_expansion: bool = False  # 跨空间先全局选根，再统一展开；不向公开选项暴露
+    rollup: bool = False
+    # 可选最近上下文，仅供支持上下文感知改写的 QueryParser 消费。
+    query_context: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         # 查询对象边界规范化：外部兼容旧输入，内部只保留 FilterExpr | None。
         self.filters = normalize(self.filters)
+        hierarchy = HierarchyQuery.from_query(self)
+        validate_expand_depth(self.expand_depth, hierarchy.hierarchy_kind)
+        validate_rollup(self.rollup, hierarchy.hierarchy_kind)
+        self.span_start = hierarchy.span_start
+        self.span_end = hierarchy.span_end
+        if self.query_context is not None:
+            if not isinstance(self.query_context, tuple):
+                raise ValidationError("query_context must be None or a tuple of strings")
+            if any(not isinstance(item, str) for item in self.query_context):
+                raise ValidationError("query_context items must be strings")
 
 
 @dataclass
@@ -81,17 +115,19 @@ class RetrievedItem:
     ``abstract`` / ``overview`` / ``content`` 分别对应 L0 摘要 / L1 片段 / L2 全文，
     一次性加载（来自 ``unit.layers.l0`` / ``unit.layers.l1`` / ``unit.content``）。
     调用方按需取用：紧预算用 abstract，中等用 overview，全文用 content。
-    ``level`` 标记本次披露的主层级（ADAPTIVE 按 max_tokens 选定）。
+    ``level`` 标记本次披露的主层级（ADAPTIVE 按 max_tokens 选定）。普通检索的
+    ``unit_id`` 是 MemoryUnit id；Schema Temporal 正式结果中则是稳定 Entity id。
     """
 
     unit_id: str = ""  # 记忆单元 id
-    score: float = 0.0  # 融合/重排后的最终得分
+    score: float = 0.0  # 根取融合/精排或 MaxP 分数，展开子继承根分
     abstract: str = ""  # L0 摘要（unit.layers.l0，50-100 字）
     overview: str = ""  # L1 片段（unit.layers.l1，200-500 字）
     content: str = ""  # L2 全文（unit.content）
     user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     level: DisclosureLevel = DisclosureLevel.L0  # 本次披露主层级
     system_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
+    parent_id: str = ""  # 真源父节点 id；未挂父或普通查询时为空
 
 
 @dataclass
@@ -114,3 +150,10 @@ class RetrievalResult:
         default_factory=list
     )  # 检索轨迹（with_trajectory 时返回）
     errors: list[ChannelError] = field(default_factory=list)  # 部分通道失败，不依赖轨迹开关
+
+
+@dataclass
+class SchemaTemporalRetrievalResult(RetrievalResult):
+    """仅在 Schema Temporal 产生结构化视图时扩展公开检索结果。"""
+
+    schema_temporal: SchemaTemporalResult = field(kw_only=True)

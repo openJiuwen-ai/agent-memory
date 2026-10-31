@@ -7,6 +7,8 @@ profile: docker
 
 memory_api:
   globals:
+    # PR1-1: start via deploy/encryption/compose.py when enabling encryption.
+    storage_encryption_enabled: "${STORAGE_ENCRYPTION_ENABLED:-false}"
     vector_enabled: true
     graph_enabled: false
     rerank_enabled: true
@@ -33,6 +35,17 @@ memory_api:
     # 公网端点留空 ssl_ca_cert 即可（公共 CA），私有部署自签时给出容器内证书路径。
     llm_ssl_verify: "${LLM_SSL_VERIFY:-false}"
     llm_ssl_ca_cert: "${LLM_SSL_CA:-}"
+
+    # BUG2026092802777 加固：大文本 add 卡死 900s 的三层收口。
+    # llm_timeout：出站 LLM 调用超时（SDK 默认 300s 收敛为 60s，慢模型须显式声明上限）；
+    # classifier_max_attempts：分类总尝试次数（默认 3 → 1，超时类失败本来就不重试）。
+    # 注意上游 !352 已禁用旧键名 classifier_retry_max（装配期 ValidationError，
+    # 服务无法启动），不要改回旧键；
+    # max_unit_chars：写侧预切分上限，单 unit 内容超过即按段落聚合切分（默认 8000），
+    # 避免 500KB 全文进 LLM prompt。
+    llm_timeout: 60.0
+    classifier_max_attempts: 1
+    max_unit_chars: 8000
 
     # Remote bge-m3 embedding service. Base URL must include /v1 because the
     # OpenAI client appends /embeddings. No public default is provided: memory
@@ -77,6 +90,15 @@ memory_api:
         # SSL：ssl_verify 只管**是否校验服务端证书**，加密开关在 url 的 scheme 上——
         # 接云端实例须把 url 换成 rediss://，否则 ssl_verify=true 会在装配阶段报错。
         # ssl_ca_cert 为云厂商控制台下载的 CA 证书路径（容器内可读），开启时必填。
+        ssl_verify: "${REDIS_SSL_VERIFY:-false}"
+        ssl_ca_cert: "${REDIS_SSL_CA:-}"
+  lock:
+    dreaming:
+      target: redis
+      params:
+        url: "${REDIS_URL:-redis://redis:6379/0}"
+        lease_ms: 30000
+        wait_timeout_ms: 0
         ssl_verify: "${REDIS_SSL_VERIFY:-false}"
         ssl_ca_cert: "${REDIS_SSL_CA:-}"
   fulltext_store:
@@ -210,3 +232,15 @@ memory_api:
         embedder: default
         llm: { target: echo }
         rewrite_enabled: false
+
+  # scheduler: production profile assembles async_timer explicitly (the default
+  # in_process does not support recurring jobs — dreaming registration fails
+  # fast). async_timer owns a private background event loop: Timer coroutines
+  # do not piggyback on per-request loops, so the per-request asyncio.run close
+  # never kills registered timers. Single-instance deployment model: a second
+  # instance sharing the same KV is rejected by the restore instance lock.
+  scheduler:
+    default:
+      target: async_timer
+      params:
+        tick_interval: 10

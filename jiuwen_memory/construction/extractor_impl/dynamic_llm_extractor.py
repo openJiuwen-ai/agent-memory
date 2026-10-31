@@ -9,7 +9,7 @@ metadata 只写 prompt 的 **key**（引用 yml ``prompts.extract`` 段的命名
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
@@ -19,7 +19,13 @@ from jiuwen_memory.common.log import (
 from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
+from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
+    chunk_unit,
+    truncate_unit_content,
+)
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from jiuwen_memory.construction.prompt_strategy import (
     EXTRACT_PROMPT_PREFIX,
@@ -56,7 +62,7 @@ class DynamicLLMExtractor(Extractor):
         *,
         prompt_registry: PromptRegistry | None = None,
         min_confidence: float = 0.5,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
         extract_batch_size: int = _DEFAULT_EXTRACT_BATCH_SIZE,
     ) -> None:
@@ -66,7 +72,7 @@ class DynamicLLMExtractor(Extractor):
         self._helper = ExtractorImpl(
             llm=llm,
             min_confidence=min_confidence,
-            retry_max_retries=retry_max_retries,
+            max_attempts=max_attempts,
             retry_backoff_ms=retry_backoff_ms,
             extract_batch_size=extract_batch_size,
         )
@@ -149,6 +155,32 @@ class DynamicLLMExtractor(Extractor):
         strategy: str,
         prompt_key: str,
     ) -> list[MemoryUnit]:
+        """内容型完整消费：≤ 上限的 unit 合并单批调用；超限 unit 无损分批逐批调用。
+
+        分片副本保留 id/元数据，候选仍回指原 unit；中段截断会静默漏事实
+        （检视 P2），故超限内容一律分批而不截断。
+        """
+        built: list[MemoryUnit] = []
+        normal = [u for u in units if len(u.content) <= CONTENT_MAX_UNIT_CHARS]
+        if normal:
+            built.extend(
+                self._extract_strategy_once(normal, context, strategy, prompt_key)
+            )
+        for u in units:
+            if len(u.content) > CONTENT_MAX_UNIT_CHARS:
+                for copy in chunk_unit(u):
+                    built.extend(
+                        self._extract_strategy_once([copy], context, strategy, prompt_key)
+                    )
+        return built
+
+    def _extract_strategy_once(
+        self,
+        units: list[MemoryUnit],
+        context: ExtractContext | None,
+        strategy: str,
+        prompt_key: str,
+    ) -> list[MemoryUnit]:
         # prompt_key 是引用 yml prompts.extract 段的 key；查 registry 取真实文本。
         # registry 未配置或 key 缺失时回退把 key 本身当文本用（兼容内联文本）。
         prompt = self._prompts.get(PHASE_EXTRACT, prompt_key)
@@ -160,10 +192,14 @@ class DynamicLLMExtractor(Extractor):
                 for unit in units
                 if unit.system_metadata.get("observation_date")
             ),
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
         )
         source_text = "\n".join(
-            _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=unit.content) for unit in units
+            _SOURCE_PREFIX.format(
+                unit_id=unit.id,
+                unit_content=truncate_unit_content(unit.content, limit=CONTENT_MAX_UNIT_CHARS),
+            )
+            for unit in units
         )
         context_block = _format_context_block(context)
         user_text = (
@@ -194,6 +230,7 @@ class DynamicLLMExtractor(Extractor):
 @ExtractorProducer.register("dynamic_llm")
 def _build(config):
     """装配 DynamicLLMExtractor；PromptRegistry 挂接共享 ConfigSource 以支持 prompt 晚绑定。"""
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     prompts_data = config.get("prompts")
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
@@ -208,7 +245,7 @@ def _build(config):
         fallback=ExtractorProducer.dep(config, "fallback", default="keyword"),
         prompt_registry=registry,
         min_confidence=config.get("extractor_min_confidence", 0.5),
-        retry_max_retries=config.get("extractor_retry_max", 3),
+        max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
     )

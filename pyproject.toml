@@ -18,12 +18,15 @@ dependencies = [
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
-    "ruff>=0.8",
+    "ruff>=0.16",
+    "argon2-cffi>=23.1",
     # 测试套件自身消费的三个未声明依赖（test_outbound_ssl / test_multimodal_adapter /
     # test_middle_e2e_real_llm），缺失会让 pytest 卡在 collection error。
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
+    # 单测中的 LocalWatchdog.start 需要真实 watchdog 模块。
+    "watchdog>=4.0",
 ]
 nlp = [
     "spacy>=3.7",
@@ -49,18 +52,40 @@ deploy = [
     "pyyaml>=6",
     # api_reranker 出站 HTTP（部署镜像走外部 rerank 服务时必需）。
     "httpx>=0.27,<1",
+    "watchdog>=4.0",
+    # 文档记忆（F07/F08）影子索引的 vec0 向量表扩展。代码用 try/except ImportError 软依赖——
+    # 不装则降级为「全量+倒排」两表，向量召回缺一路但不抛错（倒排召回照常）。
+    # 装上 + 配 embedder 才进入完整模式（建 memory_vec 表，向量召回可用）。
+    "sqlite-vec>=0.1",
 ]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
-    "mcp>=1.2",
+    # v1.27.2 修复 Streamable HTTP session 未绑定认证主体的高危漏洞；当前适配器使用
+    # v1 FastMCP API，显式挡住不兼容的 v2 大版本升级。
+    "mcp>=1.27.2,<2",
     "pyyaml>=6",
+]
+# 认证能力（jiuwen_memory/common/security/authentication/key_store）：API Key 的 Argon2id 哈希。标准库无 Argon2id；缺依赖时在
+# 装配期抛 ValidationError，绝不降级为明文比对。
+# 静态加密所需的 cryptography 已在主依赖里（common.security.cryptography 使用）。
+security = [
+    "argon2-cffi>=23.1",
+]
+# jiuwenswarm 宿主集成（jiuwen_memory_adapter/jiuwenswarm）：把 AgentMemory 适配成
+# openjiuwen 的 MemoryProvider ABC，供 ExternalMemoryRail / JiuwenMemoryRail 驱动。
+# openjiuwen 是宿主侧 agent swarm 框架，仅在生产挂载到 jiuwenswarm 时需要——
+# provider.py 对其做 try/except 软依赖降级，未安装时基类退化为 object，本仓库自身的
+# 单元/集成测试（不依赖宿主）照常 import 与运行；装上后才真正继承 ABC。
+agent = [
+    "openjiuwen",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=6.0,<7.0",
-    "ruff>=0.8",
+    "ruff>=0.16",
+    "argon2-cffi>=23.1",
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
@@ -97,4 +122,14 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "UP"]
+# UP042（str,Enum → StrEnum）会改变 str(member) 的输出语义（"Class.MEMBER" → 成员值），
+# 现存 45 处 (str, Enum) 枚举不做机械迁移；其余 UP 规则启用以强制 PEP 585/604 类型注解约定。
+ignore = ["UP042"]
+
+[tool.ruff.lint.isort]
+# 显式固定 import 成员排序语义：ruff 默认 order-by-type=true（常量/类/函数分组排序），
+# isort 等外部工具默认 false（纯字母序，OFFLINE/load_config 顺序两说不同）。
+# 显式声明以消除工具间解释分歧，避免 lint 结果随环境漂移。
+order-by-type = true
+case-sensitive = false

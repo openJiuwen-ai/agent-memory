@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import openai
 import pytest
 
@@ -19,11 +22,106 @@ from jiuwen_memory.common._support import (
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.embedder_impl import EmbedderProducer
 from jiuwen_memory.common.embedder.embedder_impl.openai_embedder import OpenAIEmbedder
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import HealthCheckError, LLMTimeoutError, ValidationError
 from jiuwen_memory.common.llm.llm_impl import LlmProducer
 from jiuwen_memory.common.llm.llm_impl.openai_llm import OpenAILLM
+from jiuwen_memory.common.normalizer.normalizer_impl import video_asr
 from jiuwen_memory.common.type_def import ChatMessage
 from jiuwen_memory.config import AssemblyContext
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("custom", [False, True])
+def test_openai_asr_call_policy(monkeypatch, custom: bool) -> None:
+    recorded = _record_openai_client(monkeypatch)
+    config = {
+        "asr_model": "whisper-1",
+        "asr_base_url": "https://provider.invalid/v1",
+        "asr_api_key": "test-key",
+    }
+    if custom:
+        config.update(asr_timeout="45", asr_max_retries="2")
+    service = video_asr.VideoAsrProducer.build("openai_transcription", config, AssemblyContext())
+    assert service.client is not None
+    timeout = recorded["timeout"]
+    assert (timeout.read, timeout.write, timeout.pool) == ((45.0,) * 3 if custom else (300.0,) * 3)
+    assert timeout.connect == OUTBOUND_CONNECT_TIMEOUT_SECONDS
+    assert recorded["max_retries"] == (2 if custom else DEFAULT_OUTBOUND_MAX_RETRIES)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("asr_timeout", 0),
+        ("asr_timeout", -1),
+        ("asr_timeout", "nan"),
+        ("asr_timeout", "inf"),
+        ("asr_timeout", "bad"),
+        ("asr_timeout", True),
+        ("asr_max_retries", -1),
+        ("asr_max_retries", 1.5),
+        ("asr_max_retries", True),
+        ("asr_max_retries", "bad"),
+    ],
+)
+def test_openai_asr_rejects_invalid_call_policy(key: str, value: Any, monkeypatch) -> None:
+    factory = MagicMock()
+    monkeypatch.setattr(openai, "OpenAI", factory)
+    with pytest.raises(ValidationError, match=key):
+        video_asr.VideoAsrProducer.build(
+            "openai_transcription",
+            {"asr_model": "whisper-1", "asr_base_url": "https://provider.invalid", key: value},
+            AssemblyContext(),
+        )
+    factory.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("operation", ["health", "transcribe"])
+def test_openai_asr_default_does_not_retry_429(operation: str, monkeypatch, tmp_path: Path) -> None:
+    requests = []
+    sdk_factory = openai.OpenAI
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(429, json={"error": {"message": "rate limited"}})
+
+    transport_client = httpx.Client(transport=httpx.MockTransport(respond))
+
+    def create_client(**kwargs):
+        return sdk_factory(**kwargs, http_client=transport_client)
+
+    monkeypatch.setattr(openai, "OpenAI", create_client)
+    service = video_asr.OpenAITranscriptionVideoAsr(
+        model_name="whisper-1", base_url="https://provider.invalid/v1", api_key="test-key"
+    )
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"test audio")
+    monkeypatch.setattr(video_asr, "_split_audio_to_chunks", lambda *a, **kw: [(audio, 0)])
+    try:
+        expected = HealthCheckError if operation == "health" else openai.RateLimitError
+        with pytest.raises(expected) as captured:
+            if operation == "health":
+                service.health()
+            else:
+                service.transcribe(audio, language=None, chunk_seconds=30)
+        assert len(requests) == 1, "默认 429 应立即上抛，不触发 SDK 或应用层重试"
+        if operation == "health":
+            assert isinstance(captured.value.__cause__, openai.RateLimitError)
+    finally:
+        transport_client.close()
+
+
+@pytest.fixture(autouse=True)
+def _capture_library_logs(caplog):
+    """直接捕获库 logger，避免先前 assemble 关闭 propagate 后断言读不到日志。"""
+    logger = logging.getLogger("agent_memory")
+    logger.addHandler(caplog.handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 def _record_openai_client(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -189,7 +287,11 @@ def test_openai_llm_start_log_omits_content(caplog) -> None:
 
 
 def test_openai_llm_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) -> None:
-    """LLM 超时异常单独记录后原样抛出。"""
+    """LLM 超时异常单独记录后转换为契约类型 LLMTimeoutError 抛出。
+
+    构建层据此统一"超时不重试"，不再感知具体 SDK 异常类名（见 construction
+    的 llm_retry 契约）；原 SDK 异常挂 __cause__ 保留定位信息。
+    """
 
     class FakeAPITimeoutError(Exception):
         pass
@@ -200,9 +302,11 @@ def test_openai_llm_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) -> None
 
     with (
         caplog.at_level("ERROR", logger="agent_memory.common.llm.llm_impl.openai_llm"),
-        pytest.raises(FakeAPITimeoutError),
+        pytest.raises(LLMTimeoutError) as error,
     ):
         llm.chat([ChatMessage(role="user", content="secret prompt")])
+
+    assert isinstance(error.value.__cause__, FakeAPITimeoutError), "原 SDK 异常保留在 __cause__"
 
     assert "timed out" in caplog.text, "超时应单独记录"
     assert f"timeout={DEFAULT_OUTBOUND_TIMEOUT_SECONDS:.3f}s" in caplog.text, (

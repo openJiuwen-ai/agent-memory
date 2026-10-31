@@ -24,6 +24,8 @@ from datetime import datetime
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
+    CandidateSource,
+    Context,
     FilterExpr,
     MemoryUnit,
     MetadataValueType,
@@ -32,7 +34,10 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
+from jiuwen_memory.control.policy import PolicyManager
+from jiuwen_memory.control.types import BackgroundJobStartResult
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
+from jiuwen_memory.storage.kv import KVStore
 
 from .base import ControlOperator
 from .types import (
@@ -40,6 +45,7 @@ from .types import (
     BatchWriteResult,
     Channel,
     DeleteSelector,
+    EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
@@ -59,6 +65,19 @@ class EngineProducer(Factory):
 
 class MemoryEngine(ControlOperator):
     """编排接口层各语义；本身不实现具体能力，驱动各层算子完成。"""
+
+    @property
+    @abstractmethod
+    def kv(self) -> KVStore:
+        """真源 KV 端口（装配注入 Engine 的同一实例）。
+
+        供 API 层 dreaming 编排读注册表（注册表与真源同 KV 才有恢复语义）；
+        只读用途，不作为写入通道。
+        """
+
+    def candidate_scopes(self) -> list[Scope]:
+        """返回演进候选数据面中已有记忆的作用域。"""
+        return self.kv.scopes()
 
     @abstractmethod
     async def write(
@@ -201,9 +220,35 @@ class MemoryEngine(ControlOperator):
 
     @abstractmethod
     async def evolve(
-        self, scope: Scope, mode: EvolveMode, channel: Channel = Channel.BACKGROUND
-    ) -> str:
-        """触发一次演进：委托 Scheduler 提交指定阶段与通道，返回任务 id。"""
+        self,
+        scope: Scope,
+        mode: EvolveMode,
+        channel: Channel = Channel.BACKGROUND,
+        *,
+        candidate: CandidateSource | dict | None = None,
+        buckets: list[Scope] | None = None,
+        denied_scopes: list[str] | None = None,
+    ) -> str | None:
+        """触发一次演进执行：委托 Scheduler 提交一次性 EvolveJob，返回任务 id。
+
+        本方法是**纯执行件**——不做鉴权（PEP 边界：入口鉴权与持续授权都在
+        API 层，S03）。``candidate`` 可选指定候选源（谓词/点名/召回/枚举），
+        None=谓词全量源。``buckets`` / ``denied_scopes`` 仅供 fan-out 候选源：
+        API 层逐桶鉴权后传入获准桶列表（None = 内核直调路径，resolver 自行
+        枚举全部命中桶）；``denied_scopes`` 为 API 层鉴权拒绝的桶标签，随
+        JobInfo 回显。dreaming 的注册/注销/恢复编排不在此层（API 层
+        DreamingCoordinator）。
+        """
+
+    async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
+        """一次性显式建树；普通 evolve 的候选源与 dreaming 执行契约保持。"""
+        raise NotImplementedError("当前 Engine 未实现显式树构建")
+
+    async def start_background_jobs(
+        self, scope: Scope, policy: PolicyManager,
+    ) -> BackgroundJobStartResult:
+        """注册已鉴权 home 的后台任务；不在控制层重新判权。"""
+        raise NotImplementedError("当前 Engine 未实现自动建树")
 
     @abstractmethod
     async def admin_get(self, key: str) -> str:
@@ -216,3 +261,40 @@ class MemoryEngine(ControlOperator):
     @abstractmethod
     async def admin_all(self) -> dict[str, str]:
         """列出全部运行时策略及当前值。"""
+
+    @abstractmethod
+    async def read_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        *,
+        line_range: tuple[int, int] | None = None,
+    ) -> list[MemoryUnit]:
+        """异步协程：按 md 文件 basename + 行范围读 md 原文，返回命中的 MemoryUnit（F08）。
+
+        文档模式专用接口（``CloudEngine`` / ``AgentEngine``）。入参形态与 :meth:`recall`
+        一致——用 ``context: Context``：``context.scope`` 为鉴权轴（与 get/list 同一段鉴权），
+        ``context.extensions["coords"]["project"]`` 为路径解析依据（与 search 中 coords 作
+        窄化谓词同派别，不参与鉴权）。Engine 层经 :func:`_project_from_context` 从 context
+        拆出 project 标量，显式传给 DomainStore（Context 不下沉存储层）。
+
+        非文档模式（``InMemoryEngine``）抛 ``ValidationError``（非文档模式无 md 文件）。
+        """
+
+    @abstractmethod
+    async def edit_md_file(
+        self,
+        context: Context,
+        md_filename: str,
+        old_text: str,
+        new_text: str,
+    ) -> list[MemoryUnit]:
+        """异步协程：按 md 文件 basename + old_text 做唯一替换，返回受影响的新 MemoryUnit（F08）。
+
+        入参形态与 :meth:`read_md_file` 一致（``context: Context``，project 走
+        ``context.extensions["coords"]["project"]``）。经 Engine 窗口到
+        ``DomainStore.edit_md_file``（``asyncio.to_thread`` 委托），DomainStore 内部完成
+        写窗保护 + edit_content 原子替换 + 继承式 SUPERSEDE 同步 shadow。
+
+        非文档模式（``InMemoryEngine``）抛 ``ValidationError``。
+        """

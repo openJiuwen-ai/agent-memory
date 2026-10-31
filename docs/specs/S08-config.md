@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-09-16 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 装配开关见 `docs/features/construction/F08-entity-schema-extension.md` |
+| 最近一次修订日期 | 2026-10-26 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
 
 ## 范围 / 边界
 
@@ -48,6 +48,12 @@
     `build_kernel` 装配期决定是否注册 Schema target。它不是运行时热切换键，
     改值后必须重新装配。开关开启不得自动改写 Extractor/Evolver target。
     开关关闭却出现 Schema target 配置时必须 fail-closed，即使它们曾在同一进程注册过。
+11. **Schema TemporalEntity 是独立装配门**：`globals.schema_temporal_enabled`
+    默认为 `false`，仅决定 Retriever 是否装配时序选择器。它不自动开启
+    Schema 抽取，也不改写已选 Extractor/Evolver target。硬门开启后，
+    单次查询仍需 `RetrievalQuery.schema_temporal`（或兼容扩展键）显式请求，
+    或同时开启 `schema_temporal_auto_enabled`，且 Parser 已有时间窗或内置
+    规则能从原始 query 解析出时间窗。
 
 ## 接口契约
 
@@ -66,8 +72,56 @@
 - `ComponentConfig.get`：实例 params > globals > 代码默认
 
 装配拓扑（选哪个 `target`、有哪些具名实例、依赖引用）仍由上述机制在 **`build_kernel` 时**确定。
+每个 AssemblyContext 持有独立具名缓存；同上下文显式引用才共享，新上下文即使
+名称相同也不得复用旧配置的有状态实例。不得在装配入口全局 reset 破坏已有实例。
+缓存属于该上下文的装配纪元，根关闭后不得复用其中已关闭的依赖。失败装配的回滚只能
+清理本次新建对象，不能关闭先前借用的存活依赖；旧根关闭不能失效较新装配的缓存。
+同纪元视图由装配根显式绑定生命周期共享协议；纪元与创建观察规则见 S07。此机制仅
+服务装配/关闭，不将 health 故障解释为拓扑切换，也不增加 ConfigSource 热切换键。
 `globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
 再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
+
+Schema 构建参数中，`schema_entity_resolution_enabled` 与
+`schema_entity_merge_decision_enabled` 默认均为 `true`，用于 canonical identity 的
+精确名称、别名与 LLM CREATE/UPDATE 判断；`use_property_merge` 默认 `false`，只有显式
+开启后才合并普通 set 属性。显式 delete 始终由 Schema Planner 消费并归档命中旧事实。
+
+`vector_store.schema_entities` 与 `fulltext_store.schema_entities` 是 canonical Schema
+Entity 的独立命名端口，避免 Entity 与普通 MemoryUnit 混索引。`schema_enabled=true`
+时，IndexBuilder 维护 Entity → Property MemoryUnit ID 的 KV 派生反向索引；该索引可由
+Property MemoryUnit 重建，不是事实真源。
+
+`globals.schema_temporal_enabled` 是 Retriever 的装配期硬门。开启后，
+Retriever 参数接受以下 Schema TemporalEntity 调优键：
+
+| 参数 | 默认值 | 语义 |
+|---|---:|---|
+| `schema_temporal_auto_enabled` | `false` | Parser 已有时间窗或原始 query 可解析出时间窗时自动启用 |
+| `schema_temporal_entity_top_k` | `20` | 独立 Entity 全文/向量路径的单路召回上限 |
+| `schema_temporal_property_top_k` | `50` | Property 直达路径的召回上限 |
+| `schema_temporal_property_top_n` | `25` | 直达 Property 进入晚融合的数量上限 |
+| `schema_temporal_rrf_k` | `60` | Entity/Property 信号合并的 RRF 常数 |
+| `schema_temporal_max_properties_per_entity` | `20` | 实体内二次裁剪的基准 Property 条目预算 |
+| `schema_temporal_property_allocation_min_factor` | `0.5` | 小实体相对基准预算的下界因子 |
+| `schema_temporal_property_allocation_max_factor` | `1.5` | 大实体相对基准预算的上界因子 |
+| `schema_temporal_shrink_enabled` | `true` | 是否执行实体内 Property 预算裁剪 |
+| `schema_temporal_property_rerank_enabled` | `true` | 是否复用 Retriever Reranker 做实体内 Property 精排 |
+| `schema_temporal_direct_property_rerank_enabled` | `false` | 是否在 Property 直达路径 Top-N 前精排 |
+| `schema_temporal_entity_rerank_enabled` | `false` | 是否对组装完成的实体结果做最终精排 |
+| `schema_temporal_entity_rerank_max_chars` | `4000` | 单个实体送最终精排的最大字符数 |
+| `schema_temporal_property_extension_step` | `3` | 命中属性前后各扩展的同属性条目数 |
+| `schema_temporal_formatting_enabled` | `true` | 是否把每个 TemporalEntity 投影为一个正式结果项 |
+| `schema_temporal_formatting_max_chars` | `16000` | 每个实体格式化后的独立字符上限 |
+| `schema_temporal_source_fallback_enabled` | `true` | 是否保留受控 Source-first 兜底 |
+| `schema_temporal_source_policy` | `missing_or_incomplete` | Source 策略：none/missing/missing_or_incomplete/always |
+| `schema_temporal_source_top_k` | `20` | Source 兜底通道的最大保留数 |
+| `schema_temporal_source_ratio` | `0.3` | 最终结果为 Source fallback 预留的预算比例 |
+| `schema_temporal_source_max_chars` | `1200` | 单条 Source fallback 的字符上限 |
+
+上述键是装配参数，不是业务数据；请求级的 mode、事件区间、
+`knowledge_as_of`、属性白名单和归档可见性继续通过
+`RetrievalQuery.schema_temporal` 表达；传输层可继续使用
+`RetrievalQuery.extensions["schema_temporal"]`。
 
 ### ConfigSource（新增）
 
@@ -94,7 +148,7 @@ ConfigSource
 
 | 类别 | 改值 key（优先） | 改选用 key（次选） |
 |---|---|---|
-| 能力开关 | `globals.vector_enabled`、`globals.graph_enabled`、`globals.rerank_enabled`、`globals.layers_index_enabled` | — |
+| 能力开关 | `globals.vector_enabled`、`globals.graph_enabled`、`globals.rerank_enabled`、`globals.layers_index_enabled`、`globals.schema_enabled`、`globals.schema_temporal_enabled` | — |
 | prompt | `prompts.extract.<name>`、`prompts.consolidate.<name>`、`prompts.reflect.<name>` | — |
 | Embedder | `embedder.model`、`embedder.api_key`、`embedder.base_url` | `embedder.active` |
 | LLM | `llm.model`、`llm.api_key`、`llm.base_url` | `llm.active` |
@@ -158,6 +212,41 @@ ConfigSource
 
 ## 数据结构
 
+### PR1-1 静态加密配置
+
+| 配置 | 契约 |
+|---|---|
+| globals.storage_encryption_enabled | 默认 false；bool 或 true/false 字符串，其他值拒绝；装配期，不支持热切换 |
+| globals.storage_encryption_cryptography | 共享 CryptographyProvider 具名实例，默认 default；用于自动 KV/FS 包装 |
+| globals.storage_encryption_kv / storage_encryption_fs | 自动包装配置，形如 `{target: encrypted, params: {}}`；经对应 Producer 构建；原始依赖和 cryptography 由策略注入，不允许 params 覆盖 |
+| globals.storage_encryption_max_plaintext_bytes / storage_encryption_max_ciphertext_bytes | 自动 FS 包装的大小上限；默认 64 MiB / 0（明文上限+4 KiB），与显式 FS 参数同语义 |
+| 索引/文件型 SQLite 的 params.at_rest | method=volume/backend、非空 reference、bindings 映射；绑定受保护实际位置 |
+
+bindings 覆盖 ES hosts（ENTITY 兼容 endpoint）、Milvus uri、pgvector dsn、
+nano_graphrag working_dir、milvus_graph uri+working_dir、audit/permission/shadow_index/grant_store/delegation_store SQLite db_path、markdown_store root。
+统一加密开启时 Markdown 必须显式配置 root，影子 SQLite 必须显式配置 db_path
+（`:memory:` 仅豁免部署证明）；默认当前目录或跨命名空间派生路径不满足位置绑定契约。
+space_aware 使用 SQLite，也检查 db_path；纯内存后端和 SQLite :memory: 无需部署声明，后者的 db_path 仍须固定。
+持久化需求由各插件注册的 `at_rest_locations` 配置检查器公开声明，返回字段→实际位置的
+映射；普通值等价于 `AtRestLocation(value, requires_declaration=True)`。插件也可返回
+`AtRestLocation(value, requires_declaration=False)` 表达无需部署证明但仍须固定的位置。
+所有声明的位置都进入 ConfigSource 初始覆盖与运行时变更检查（含共享键和具名键）；
+只有 requires_declaration=true 的字段要求 params.at_rest.bindings。位置描述值不能为空，
+requires_declaration 必须是 bool；不同实例复用同一晚绑定键时，豁免位置也参与冲突检查。
+SQLite :memory: 必须声明 db_path 位置，不能用空映射豁免连接约束。空映射仅用于没有可
+切换存储位置的纯内存或关闭插件。检查器必须无构建/写入副作用，且与 builder
+共用注册生命周期。替换同名 target 不继承旧检查器；缺少检查器或返回无效位置一律拒绝。
+配置层不按 target 名或通用地址字段缺失推断豁免，新增后端通过插件注册扩展。
+permission.routing 只引用同命名空间具名依赖，自身无落盘，其依赖仍逐实例检查。
+开启后检查所有具名/L0/L1 实例；关闭时保持原有配置行为。
+运营方手写声明不等于远端磁盘的密码学证明，真实卷保护由部署管理执行。
+
+EncryptionBoundConfigSource 拒绝受保护连接初始 override 和运行中变更。当前 namespace.field
+晚绑定键为实例共享，开启时这些实例必须声明相同连接/目录；其他模型/prompt 键不受影响。
+改变受保护位置须重核查并重装配，不执行自动迁移。相关决策见
+[F04](../features/common/F04-security-interfaces-and-encryption.md)。
+统一开关开启时 KV/FS 具名端口要求 new_instance=false，避免后续依赖匿名重建 raw 而绕过保护。
+
 本规约不新增 MemoryUnit 字段。`ConfigSource` 为横切依赖，不进入 Scope/Filter 模型。
 
 ## 错误语义
@@ -175,7 +264,60 @@ ConfigSource
 | S02-memory-api | 业务 API 不承载六类配置写入；调用级 options 边界 |
 | S03-control | PolicyManager 与 ConfigSource 分工 |
 | S05-construction | PromptRegistry / Evolver / IndexBuilder 消费 fetch |
-| S04-retrieval | 能力开关与 rerank/embedder 晚绑定 |
+| S04-retrieval | 能力开关、Schema TemporalEntity 装配参数与 rerank/embedder 晚绑定 |
 | S06-storage | `store_manager` 选择统一实现（globals.store_manager 指名），Store 命名空间配置其下层端口与命名端口；连接/`active` 晚绑定不做迁移 |
 | S07-common | 插件实现与 Factory 注册；配置数据在 `jiuwen_memory/config` |
 | architecture.md §13 | 可配置化分层与落点 |
+
+
+## TIME 构建与自动任务配置
+
+`globals.hierarchy_profiles.time` 是构建配置：Snapshot→TimeSpan→Scene→Event，
+TimeSpan 累计跨度 7200 秒，Scene 最大跨度 1209600 秒，Event 相似阈值 0.65；
+各层 summary_mode=llm。摘录限额不截断完整事实或 LLM 输入，不能当作分组限制。
+内置尾组静默为 TimeSpan 7200 秒、Scene 86400 秒、Event 259200 秒；
+Scene 最大分组跨度与静默独立。该预设不包含查询参数或调度周期。
+
+未指定 Evolver.params.hierarchy_composer 时，使用内置预设的延迟 Composer，
+复用该 Evolver 的 IndexBuilder/LLM；embedder.default 在首次需要时解析。
+显式引用或内联 Composer 配置优先；None/空字符串显式禁用装配。构建是否执行
+仍由 policy 中 hierarchy.enabled 控制。自定义 policies 完整替换默认表，缺键关闭。
+
+Factory.bind_named 绑定原 AssemblyContext 和创建观察者；缓存与锁归该上下文持有，
+全局 reset_all 不影响旧实例，独立上下文不复用同名依赖。并发首次解析共享同一
+上下文的具名实例，失败不缓存并恢复调用者上下文。
+ConfigSource.get_cached 同样遵循绑定上下文，不串用后续装配的配置源。
+
+
+| 配置位置 | 参数 | 默认值与含义 |
+|---|---|---|
+| globals.policies | hierarchy.enabled | "false"；树总开关 |
+| globals.policies | hierarchy.auto_derive | "false"；与总开关共同控制后台注册及每轮执行，开启后仍须 Runtime 显式注册 |
+| scheduler.default | target | 默认 in_process；自动建树须改为支持周期的 async_timer |
+| scheduler.default.params | tick_interval | async_timer 默认 10 秒；任务间隔不得小于它 |
+| job_factory.default.params | hierarchy_derive_interval | 1800 秒；正整数，后台运行间隔 |
+| job_factory.default.params | hierarchy_derive_lookback | 604800 秒；正整数，仅筛选未挂父 Snapshot |
+| job_factory.default.params | hierarchy_max_leaves / hierarchy_page_size | 5000 / 200；完整候选保护上限 / 读取分页大小，容量语义见下文 |
+| job_factory.default.params | lock / hierarchy_lock_wait_ms | 可选具名锁 / 30000 毫秒；沿用显式构建互斥 |
+| hierarchy_profiles.time.stage_options.TimeSpanMerger | settle_seconds | 内置 7200；自定义 profile 省略时沿用 gap_seconds |
+| hierarchy_profiles.time.stage_options.SceneSegmenter | settle_seconds | 内置 86400；自定义 profile 省略时沿用 max_duration_seconds |
+| hierarchy_profiles.time.stage_options.EventBuilder | settle_seconds | 259200；尾组静默 |
+
+分组与静默参数属于构建 profile，可在 `globals.hierarchy_profiles` 内置预设或显式
+Composer 的 `params.hierarchy_profiles` 配置；显式 Composer 不自动合并内置 profile。
+静默仅影响自动尾组封口，显式建树不等待静默。周期/回看参数归 JobFactory，首次启用
+注册时校验；双开关未开启时不解析未使用的自动任务参数。
+策略可动态设置；调度间隔、回看和 profile 是装配配置，修改后重新装配并注册。
+
+`hierarchy_max_leaves` 是完整读取的容量保护，不是分批处理数量，也不是分组切分阈值：
+
+- 每层自动候选满足 `len(initial) + len(pending) <= max_leaves`。initial 包含当前时间内
+  未挂父的合格输入（含尚未满足尾组静默条件的输入）；pending 专指 span_end 晚于本轮
+  当前时间的输入。被跳过的缺时、迟到、过窗叶不占这项额度。
+- 补齐候选的完整后代时，Snapshot 叶数量也受 max_leaves 约束；完整子树读取还有逐层
+  子引用数量保护。父节点数量上限为 3 * max_leaves，自动水位扫描同样限制 home 中
+  全部活动 TIME 父节点的数量，不只统计本轮新增父节点。
+- 超限在候选收集阶段报告 FAILED，不截断后继续、不触发持续故障保护。下一周期仍会
+  尝试，数量持续超限时可能连续失败；本轮此前成功持久化的下层结果保留。
+- 显式建树也使用这些限额，不能保证一次重建就解除容量问题。可评估内存和读取成本后
+  调高上限并重新装配，或合理划分处理范围；相交旧树仍须补齐全部后代，不得截断旧子树。

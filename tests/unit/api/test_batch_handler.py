@@ -8,10 +8,15 @@ from typing import Any
 import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control import BatchWriteItem, BatchWriteOutcome, BatchWriteResult
 from jiuwen_memory_entry.core import handler
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest
-from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
+from jiuwen_memory_entry.core.legacy_request_adapter import (
+    build_legacy_dispatch_request,
+)
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -42,8 +47,12 @@ class _Server:
         self.api = _RecordingBatchApi()
 
 
-def _dispatch(srv, verb: str, payload: dict):
-    return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload))
+def _dispatch(srv, verb: str, payload: dict, *, actor: Scope | None = None):
+    # 测试身份独立于业务 target，不能从 payload 拼装认证主体。
+    security = internal_context(
+        ScopedAuthenticator(actor if actor is not None else Scope(org="acme", user="alice"))
+    )
+    return handler.dispatch(srv, build_legacy_dispatch_request(verb, payload, security=security))
 
 
 def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
@@ -79,7 +88,8 @@ def test_batch_add_maps_defaults_item_scope_and_actor() -> None:
     assert body["ok"] is True
     assert [outcome["input"]["content"] for outcome in body["outcomes"]] == ["first", "second"]
     call = srv.api.calls[0]
-    assert call["security"].auth.actor == handler.Scope(org="acme", space="product", user="writer")
+    # actor 来自固定测试 security，payload 的 actor_scope 已被剥离、不进身份。
+    assert call["security"].auth.actor == handler.Scope(org="acme", user="alice")
     assert call["items"][0].scope == handler.Scope(org="acme", space="product", user="alice")
     assert call["items"][1].scope == handler.Scope(org="acme", space="product", user="bob")
     assert call["items"][1].source == handler.Modality.CODE
@@ -101,6 +111,7 @@ def test_structured_batch_uses_typed_item_target_and_actor() -> None:
             verb="batch_add",
             actor=actor,
             target=default_target,
+            security=internal_context(ScopedAuthenticator(actor)),
             batch_items=(DispatchBatchItem(target=item_target, payload={"content": "remember"}),),
         ),
     )
@@ -173,14 +184,8 @@ def test_batch_add_malformed_item_does_not_raise_internal_error() -> None:
     assert body["outcomes"][1]["ok"] is True
 
 
-@pytest.mark.parametrize(
-    "item",
-    [
-        {"content": "invalid modality", "source": "unknown"},
-        {"content": "invalid time", "occurred_at": "not-a-datetime"},
-    ],
-)
-def test_batch_add_invalid_item_fields_return_structured_outcome(item: dict[str, str]) -> None:
+def test_batch_add_invalid_item_source_returns_validation_error() -> None:
+    """item 显式声明非法 source/modality → 与 _add 对齐：整个请求 400。"""
     class _KernelServer:
         def __init__(self) -> None:
             self.api = build_kernel().api
@@ -190,7 +195,33 @@ def test_batch_add_invalid_item_fields_return_structured_outcome(item: dict[str,
         "batch_add",
         {
             "defaults": {"tenant_id": "acme", "scope": "alice"},
-            "items": [item, {"content": "valid"}],
+            "items": [
+                {"content": "invalid modality", "source": "unknown"},
+                {"content": "valid"},
+            ],
+        },
+    )
+
+    assert status == 400, body
+    assert body["error"] == "ValidationError"
+    assert "batch item source must be one of" in body["message"]
+
+
+def test_batch_add_invalid_item_occurred_at_returns_structured_outcome() -> None:
+    """item 非法 occurred_at → 保持原行为：200 + per-item 结构化 outcome。"""
+    class _KernelServer:
+        def __init__(self) -> None:
+            self.api = build_kernel().api
+
+    status, body = _dispatch(
+        _KernelServer(),
+        "batch_add",
+        {
+            "defaults": {"tenant_id": "acme", "scope": "alice"},
+            "items": [
+                {"content": "invalid time", "occurred_at": "not-a-datetime"},
+                {"content": "valid"},
+            ],
         },
     )
 

@@ -5,15 +5,24 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from jiuwen_memory.common.time_utils import epoch_ms
+
 from .filter import FilterClause, FilterExpr, FilterOp, evaluate, filter_field_metadata_key
+from .hierarchy import HIERARCHY_INDEX_KEYS, hierarchy_index_metadata
 from .memory import T_EVENT_UNKNOWN, T_INVALID_OPEN, MemoryUnit
 
 
 def _epoch_ms(value: datetime | None) -> int | None:
-    return None if value is None else int(value.timestamp() * 1000)
+    return None if value is None else epoch_ms(value)
 
 
 def _field_value(unit: MemoryUnit, field: str):
+    if field in HIERARCHY_INDEX_KEYS:
+        # 裸结构字段读真源；显式 metadata 路径仍保持独立命名空间。
+        try:
+            return hierarchy_index_metadata(unit.hierarchy).get(field)
+        except (AttributeError, TypeError, ValueError):
+            return None
     if field == "tags":
         return unit.tags
     if field == "tier":
@@ -37,6 +46,10 @@ def _field_value(unit: MemoryUnit, field: str):
         return T_INVALID_OPEN if value is None else value
     if field == "t_message":
         return _epoch_ms(unit.temporal.t_message)
+    if field == "t_ingest":
+        # 恒非空（内核接入路径强制盖章，F04 D5）；防御性对齐 t_message 的
+        # None 语义（None 只匹配 NE/NOT_IN），恒写投影下不会有实际 None。
+        return _epoch_ms(unit.temporal.t_ingest)
     key = filter_field_metadata_key(field)
     if key.startswith("user_metadata."):
         return unit.user_metadata.get(key.removeprefix("user_metadata."))
@@ -46,7 +59,11 @@ def _field_value(unit: MemoryUnit, field: str):
 
 
 def _matches_clause(unit: MemoryUnit, clause: FilterClause) -> bool:
-    value = _field_value(unit, clause.field)
+    return matches_filter_value(_field_value(unit, clause.field), clause)
+
+
+def matches_filter_value(value: object, clause: FilterClause) -> bool:
+    """真源与内存索引共用标量、数组和缺值的过滤语义。"""
     op, target = clause.op, clause.value
 
     if isinstance(value, (list, tuple, set)):  # 集合字段（如 tags）

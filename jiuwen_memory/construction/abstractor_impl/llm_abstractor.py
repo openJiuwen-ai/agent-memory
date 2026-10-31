@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import Enum
 
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor, FeatureExtractorProducer
@@ -43,9 +43,20 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.abstractor import AbstractorProducer
+from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
+    chunk_unit,
+    truncate_unit_content,
+)
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
+
 
 from ..abstractor import Abstractor
 from ..base import OperatorType
+from ..common import reject_deprecated_llm_attempt_keys, validate_llm_attempt_policy
+
+# 长记忆提炼视图（各分片候选拼接）的字符上限：归纳调用中每个超限 unit 只占这么多字符，保证跨记忆归纳批的 prompt 有界。
+_DIGEST_MAX_CHARS = 2000
 
 logger = get_logger(__name__)
 
@@ -194,7 +205,7 @@ class LLMAbstractor(Abstractor):
         min_group_size_portrait: int = 5,
         max_groups_per_batch: int = 4,
         max_context_tokens: int = 180000,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         self._llm = llm
@@ -205,8 +216,9 @@ class LLMAbstractor(Abstractor):
         self._min_group_size_portrait = min_group_size_portrait
         self._max_groups_per_batch = max_groups_per_batch
         self._max_context_tokens = max_context_tokens
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts, retry_backoff_ms,
+        )
         # 估算 token 系数：4 chars ≈ 1 token（中英文混合场景）
         self._chars_per_token = 4
 
@@ -430,6 +442,51 @@ class LLMAbstractor(Abstractor):
     def _llm_abstract(
         self, target: AbstractionTarget, units: list[MemoryUnit]
     ) -> list[AbstractionCandidate]:
+        """两段式内容型消费：先逐片提炼，再按原分组归纳（检视 P2）。
+
+        超限 unit 先按段落边界分片，逐片提炼出分片级候选（``source_unit_ids``
+        回指原 unit，事实不丢）；随后把每个超限 unit 替换为其提炼视图（各片
+        候选拼接，截到 _DIGEST_MAX_CHARS），与未超限 unit 合并进**同一次**归纳
+        调用——否则 PATTERN/PORTRAIT 的跨记忆共同归纳会被分片调用拆散。
+        """
+        candidates: list[AbstractionCandidate] = []
+        digest_units: list[MemoryUnit] = []
+        for u in units:
+            if len(u.content) <= CONTENT_MAX_UNIT_CHARS:
+                continue
+            chunk_candidates: list[AbstractionCandidate] = []
+            for copy in chunk_unit(u):
+                chunk_candidates.extend(self._llm_abstract_once(target, [copy]))
+            candidates.extend(chunk_candidates)
+            digest = (
+                "\n".join(c.content for c in chunk_candidates)[:_DIGEST_MAX_CHARS]
+            )
+            if digest:
+                digest_units.append(
+                    replace(
+                        u,
+                        segments=[
+                            Segment(
+                                content=digest,
+                                assets=list(u.assets),
+                                source=u.source,
+                            )
+                        ],
+                    )
+                )
+            else:
+                logger.warning(
+                    "Abstractor: chunk distillation produced no candidates for unit id=%s",
+                    u.id[:8],
+                )
+        induce_units = [u for u in units if len(u.content) <= CONTENT_MAX_UNIT_CHARS] + digest_units
+        if induce_units:
+            candidates.extend(self._llm_abstract_once(target, induce_units))
+        return candidates
+
+    def _llm_abstract_once(
+        self, target: AbstractionTarget, units: list[MemoryUnit]
+    ) -> list[AbstractionCandidate]:
         """构建 target-specific prompt → 调 LLM → 解析 JSON → 过滤 confidence。"""
 
         # 选择 system prompt
@@ -438,7 +495,12 @@ class LLMAbstractor(Abstractor):
         # 构建 user prompt
         parts = []
         for u in units:
-            parts.append(_SOURCE_PREFIX.format(unit_id=u.id, unit_content=u.content))
+            parts.append(
+                _SOURCE_PREFIX.format(
+                    unit_id=u.id,
+                    unit_content=truncate_unit_content(u.content, limit=CONTENT_MAX_UNIT_CHARS),
+                )
+            )
         user_text = "\n".join(parts)
 
         from jiuwen_memory.common.type_def import ChatMessage
@@ -508,27 +570,17 @@ class LLMAbstractor(Abstractor):
             return _SUMMARY_SYSTEM_PROMPT  # 降级为 SUMMARY
 
     def _call_llm_with_retry(self, messages: list) -> str:
-        """调用 LLM.chat()，含重试逻辑。"""
-        import time
-
-        last_exc = None
-        for attempt in range(self._retry_max_retries):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=4096)
-            except Exception as exc:
-                last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "Abstractor: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1,
-                        wait,
-                    )
-                    time.sleep(wait)
-        # 所有重试都失败（retry_max_retries <= 0 时未进入循环，last_exc 仍为 None）
-        if last_exc is None:
-            raise RuntimeError("LLM 调用未执行：retry_max_retries 必须 >= 1")
-        raise last_exc
+        """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""
+        return call_llm_with_retry(
+            self._llm.chat,
+            messages,
+            max_attempts=self._max_attempts,
+            backoff_ms=self._retry_backoff_ms,
+            logger=logger,
+            label="Abstractor",
+            temperature=0,
+            max_tokens=4096,
+        )
 
     def _parse_llm_response(self, response: str) -> list[dict]:
         """解析 LLM 返回的 JSON，失败时尝试提取 JSON 核心部分。"""
@@ -627,7 +679,7 @@ class LLMAbstractor(Abstractor):
                 source_ref=primary_source.id,
                 temporal=Temporal(
                     t_event=primary_source.temporal.t_event,
-                    t_ingest=datetime.now(timezone.utc),
+                    t_ingest=datetime.now(UTC),
                     t_message=primary_source.temporal.t_message,
                 ),
                 provenance=valid_source_ids,
@@ -663,6 +715,7 @@ class LLMAbstractor(Abstractor):
 
 @AbstractorProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "abstractor")
     return LLMAbstractor(
         llm=LlmProducer.dep(config, default="echo"),
         feature_extractor=FeatureExtractorProducer.dep(config, default="keyword"),
@@ -672,6 +725,6 @@ def _build(config):
         min_group_size_portrait=config.get("abstractor_min_group_size_portrait", 5),
         max_groups_per_batch=config.get("abstractor_max_groups_per_batch", 4),
         max_context_tokens=config.get("abstractor_max_context_tokens", 180000),
-        retry_max_retries=config.get("abstractor_retry_max", 3),
+        max_attempts=config.get("abstractor_max_attempts", 3),
         retry_backoff_ms=config.get("abstractor_retry_backoff", 1000),
     )

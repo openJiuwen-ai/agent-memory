@@ -53,13 +53,13 @@ services:
     restart: unless-stopped
 
   agent-memory:
+    environment:
+      STORAGE_ENCRYPTION_ENABLED: "${STORAGE_ENCRYPTION_ENABLED:-false}"
     build:
       context: ../../..
       dockerfile: deploy/docker/postgres/Dockerfile
     env_file:
       - .env
-    environment:
-      JIUWEN_MEMORY_HTTP_ALLOW_DEV_AUTH_NON_LOOPBACK: "true"
     volumes:
       - ./config.yml:/config/config.yml:ro
       - ../../../jiuwen_memory:/app/jiuwen_memory:ro

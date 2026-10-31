@@ -2,7 +2,7 @@
 
 > Agent-memory在1.0版本上进行了全量的架构升级，版本规划从 **V0.2.0** 起编号。下面按照版本记录每个版本交付的主要新特性；后续版本为规划草案，随立项与 Issue 调整，不构成实现承诺。
 >
-> 最近一次修订日期：2026-09-13
+> 最近一次修订日期：2026-10-10
 
 ---
 
@@ -94,6 +94,24 @@
 
 本版本计划构建或增强以下特性：
 
+### 配置升级说明
+
+Construction 层 LLM 尝试次数配置键已统一改名。旧键不再读取，配置中出现旧键时会在装配期
+抛出 `ValidationError`，请按下表更新配置：
+
+| 旧键 | 新键 |
+|---|---|
+| `extractor_retry_max` | `extractor_max_attempts` |
+| `abstractor_retry_max` | `abstractor_max_attempts` |
+| `associator_retry_max` | `associator_max_attempts` |
+| `classifier_retry_max` | `classifier_max_attempts` |
+| `layer_annotator_retry_max` | `layer_annotator_max_attempts` |
+| `retry_max_retries` | `router_max_attempts` |
+| `retry_backoff_ms` | `router_retry_backoff` |
+
+`max_attempts` 表示一次逻辑调用的 LLM 总调用次数；common 层的 `llm_max_retries`
+仍表示 SDK 自动重试次数，语义不变。
+
 ### **记忆存储**
 
 - 对接GaussDB
@@ -158,7 +176,7 @@
 ## 规划原则
 
 1. **V0.2.0 为能力基线**：后续版本只增能力或硬化，不轻易破坏 Core API 语义；破坏性变更需升 minor 并写迁移说明。
-2. **features 归档纪律不变**：影响公开接口或跨模块取舍的特性，仍按「代码 → 测试 → docs/features」三连提交。
+2. **features 归档纪律不变**：影响公开接口或跨模块取舍的特性仍须归档 `docs/features/`；每个实现 PR 的代码、测试与相关文档统一交付为一个合并提交。
 3. **与 design 的关系**：`docs/design/` 为长期愿景；本 Roadmap 是可执行切片。design 中开放问题（architecture §17）在对应版本立项时再定案。
 
 ---

@@ -13,12 +13,14 @@ from .scheduler import Scheduler
 from .space import SpaceManager
 from .types import (
     Action,
+    BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
     Channel,
     DeleteMode,
     DeleteSelector,
+    EvolveTaskOptions,
     Grant,
     JobInfo,
     JobStatus,
@@ -39,6 +41,7 @@ from .types import (
 )
 
 __all__ = [
+    "EvolveTaskOptions",
     "ControlOperator",
     "ControlOperatorType",
     "MemoryEngine",
@@ -69,6 +72,7 @@ __all__ = [
     "JobInfo",
     "MemoryPatch",
     "MemoryListResult",
+    "BackgroundJobStartResult",
     "BatchWriteItem",
     "BatchWriteOutcome",
     "BatchWriteResult",

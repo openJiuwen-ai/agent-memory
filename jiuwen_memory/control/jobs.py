@@ -14,14 +14,23 @@ Job 封装"做什么 + 怎么找数据 + 怎么调 evolver + 怎么后处理"，
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
+from threading import Event
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
 from .types import JobInfo
+
+
+class JobCancelledError(RuntimeError):
+    """任务收到协作式取消信号，可携带取消前已提交的结构化结果。"""
+
+    def __init__(self, message: str, *, detail: dict[str, str] | None = None) -> None:
+        super().__init__(message)
+        self.detail = dict(detail or {})
 
 
 @dataclass
@@ -32,10 +41,33 @@ class Job(ABC):
     周期由 Scheduler 的 Timer 协程负责。``run`` 为 ``async`` 接口——Job 内部
     若需调同步阻塞算子（evolver.evolve / LLM.chat）应包
     ``await asyncio.to_thread(...)`` 避免阻塞事件循环。
+    自定义 Job 须能正常结束，或在执行步骤边界通过 check_cancelled 响应取消；
+    外部模型/存储调用应配置超时。shutdown(wait=True) 不设整体等待期限，
+    request_cancel 不会强制中断已经进入的同步调用。
     """
 
     scope: Scope = field(default_factory=Scope)
     interval: int = 0  # 0=一次性任务；>0=定时任务声明（秒，须 >= scheduler.tick_interval）
+    parent_job_id: str = ""  # Scheduler 触发的周期实例及其派生任务使用
+    _cancel_event: Event = field(default_factory=Event, init=False, repr=False, compare=False)
+
+    def check_cancelled(self) -> None:
+        """在执行边界检查共享取消信号；已进入的同步调用不受中断。"""
+        if self._cancel_event.is_set():
+            raise JobCancelledError("job cancelled before next execution step")
+
+    def request_cancel(self) -> None:
+        """发出协作式取消信号；由 Scheduler 在其私有循环内调用。"""
+        self._cancel_event.set()
+
+    @property
+    def cancellation_signal(self) -> Event:
+        """返回共享取消信号；仅供 Job 之间继承，不由 Scheduler 直接操作。"""
+        return self._cancel_event
+
+    def inherit_cancellation_from(self, parent: Job) -> None:
+        """与父任务共享取消信号，使取消能传播到已派生但尚未执行的任务。"""
+        self._cancel_event = parent.cancellation_signal
 
     @abstractmethod
     async def run(self) -> JobInfo:
@@ -51,11 +83,25 @@ class Job(ABC):
         """
         return ""
 
+    @property
+    def schedule_key(self) -> str:
+        """本任务的调度去重键（同 scope 内判定"是不是同一个任务"）。
+
+        Scheduler 定时任务去重**只依赖这个通用键**，不识别具体 Job 类或其业务
+        字段（mode/interval 等）——否则"同 scope 下不同 mode 的 EvolveJob 共存"
+        这类业务约束会散落到各 Scheduler 实现里各自漂移。默认取任务类名
+        （与旧去重行为等价）；任务实例间可区分业务身份的实现（如 EvolveJob
+        按 mode 区分）覆写本属性。
+        """
+        return type(self).__name__
+
 
 class JobType(str, Enum):
     """Job 类型枚举——``JobFactory.get_job`` 的必选参数。"""
 
     EVOLVE = "evolve"
+    HIERARCHY = "hierarchy"
+    HIERARCHY_DERIVE = "hierarchy_derive"
     MIDDLE_TO_LONG = "middle_to_long"
 
 

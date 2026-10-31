@@ -471,7 +471,10 @@ class ElasticsearchFulltextStore(FulltextStore):
 # -- 注册到 FulltextProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-@FulltextProducer.register("elasticsearch")
+@FulltextProducer.register(
+    "elasticsearch",
+    config_inspectors={"at_rest_locations": lambda config: {"hosts": config.get("hosts")}},
+)
 def _build(config):
     # 三方库后端：hosts 必填，未配置即在 build 阶段报错；其余构造参数有默认值，可经 params 覆盖。
     from jiuwen_memory.config.config_source import ConfigSourceProducer

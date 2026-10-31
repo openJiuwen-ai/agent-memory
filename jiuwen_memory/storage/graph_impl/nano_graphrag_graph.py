@@ -337,7 +337,12 @@ class NanoGraphRAGGraphStore(GraphStore):
 # -- 注册到 GraphProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-@GraphProducer.register("nano_graphrag")
+@GraphProducer.register(
+    "nano_graphrag",
+    config_inspectors={
+        "at_rest_locations": lambda config: {"working_dir": config.get("working_dir")}
+    },
+)
 def _build(config):
     # working_dir 在构造器中无默认值 → 必填；namespace_prefix/create_root 有默认值，可覆盖。
     from jiuwen_memory.config.config_source import ConfigSourceProducer

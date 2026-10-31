@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -29,6 +29,8 @@ from jiuwen_memory.api import (
     ValidationError,
 )
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
+from jiuwen_memory.retrieval.schema_temporal.model import SchemaTemporalMode, SchemaTemporalResult
+from jiuwen_memory.retrieval.types import RetrievalResult, SchemaTemporalRetrievalResult
 from jiuwen_memory_entry.core import api_contract
 from jiuwen_memory_entry.core.api_contract import invoke_api
 
@@ -37,7 +39,7 @@ pytestmark = pytest.mark.unit
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
-    assert len(api_contract.api_method_names()) == 36
+    assert len(api_contract.api_method_names()) == 38
     assert api_contract.is_known_verb("add_async") is True
     assert api_contract.is_known_verb("does_not_exist") is False
 
@@ -158,7 +160,7 @@ def test_update_request_decodes_complete_memory_patch() -> None:
     assert arguments["patch"] == MemoryPatch(
         content="updated",
         tier=MemoryTier.SEMANTIC,
-        t_valid=datetime(2026, 9, 4, tzinfo=timezone.utc),
+        t_valid=datetime(2026, 9, 4, tzinfo=UTC),
         mode=UpdateMode.OVERWRITE,
     )
 
@@ -189,7 +191,7 @@ def test_search_request_decodes_context_and_keeps_dict_filter_dsl() -> None:
             "query": "coffee",
             "context": {
                 "scope": {"org": "acme", "user": "alice"},
-                "extensions": {"language": "zh"},
+                "extensions": {"language": "zh", "query_context": ["用户：coffee", "助手：latte"]},
             },
             "filters": {"tags": {"contains": "habit"}},
             "disclosure": "l2",
@@ -197,10 +199,23 @@ def test_search_request_decodes_context_and_keeps_dict_filter_dsl() -> None:
     )
 
     assert arguments["context"] == Context(
-        scope=Scope(org="acme", user="alice"), extensions={"language": "zh"}
+        scope=Scope(org="acme", user="alice"),
+        extensions={"language": "zh", "query_context": ["用户：coffee", "助手：latte"]},
     )
     assert arguments["filters"] == {"tags": {"contains": "habit"}}
     assert arguments["disclosure"] is DisclosureLevel.L2
+
+
+def test_search_top_level_query_context_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="unknown field"):
+        api_contract.parse_request(
+            "search",
+            {
+                "query": "coffee",
+                "context": {"scope": {"org": "acme", "user": "alice"}},
+                "query_context": ["用户：coffee"],
+            },
+        )
 
 
 def test_grant_request_decodes_nested_scopes_actions_and_datetime() -> None:
@@ -220,7 +235,7 @@ def test_grant_request_decodes_nested_scopes_actions_and_datetime() -> None:
     assert grant.grantor == Scope(org="acme", user="owner")
     assert grant.grantee == Scope(org="acme", user="reader")
     assert grant.actions == frozenset({Action.READ, Action.WRITE})
-    assert grant.expires_at == datetime(2026, 10, 1, tzinfo=timezone.utc)
+    assert grant.expires_at == datetime(2026, 10, 1, tzinfo=UTC)
 
 
 def test_space_request_decodes_domain_objects_with_their_defaults() -> None:
@@ -284,6 +299,19 @@ def test_json_serializer_preserves_dataclass_fields_and_wire_values() -> None:
     assert "item_id" not in result[0]
 
 
+def test_search_serializer_only_emits_schema_temporal_for_extended_result() -> None:
+    ordinary = api_contract.to_jsonable(RetrievalResult())
+    temporal = api_contract.to_jsonable(
+        SchemaTemporalRetrievalResult(
+            schema_temporal=SchemaTemporalResult(mode=SchemaTemporalMode.HISTORY)
+        )
+    )
+
+    assert set(ordinary) == {"items", "trajectory", "errors"}
+    assert set(temporal) == {"items", "trajectory", "errors", "schema_temporal"}
+    assert temporal["schema_temporal"]["mode"] == "history"
+
+
 def test_sync_and_async_http_invocation_use_same_named_api_methods() -> None:
     calls: list[str] = []
 
@@ -309,3 +337,49 @@ def test_sync_and_async_http_invocation_use_same_named_api_methods() -> None:
     assert sync_result[0]["id"] == "sync"
     assert async_result[0]["id"] == "async"
     assert not any(dataclasses.is_dataclass(result) for result in (sync_result, async_result))
+
+
+def test_evolve_decodes_hierarchy_options_without_changing_normal_modes():
+    from jiuwen_memory.api import EvolveMode, HierarchyRole
+
+    scope = {"org": "acme", "user": "alice"}
+    span = "2026-10-21T09:00:00+08:00"
+    parsed = api_contract.parse_request("evolve", {
+        "scope": scope, "mode": "hierarchy", "reuse_existing": True,
+        "hierarchy_options": {
+            "kind": "time", "leaf_role": "snapshot", "parent_roles": ["time_span"],
+            "tree_home_scope": scope, "span_start": span, "span_end": span,
+        },
+    })
+    assert parsed["mode"] is EvolveMode.HIERARCHY and parsed["reuse_existing"] is True
+    options = parsed["hierarchy_options"]
+    assert options.parent_roles == [HierarchyRole.TIME_SPAN]
+    assert options.span_start == datetime.fromisoformat(span)
+    assert options.tree_home_scope == parsed["scope"]
+    ordinary = api_contract.parse_request("evolve", {"scope": scope, "mode": "extract"})
+    assert ordinary["mode"] is EvolveMode.EXTRACT and "options" not in ordinary
+
+
+def test_search_transport_decodes_flat_hierarchy_parameters():
+    from jiuwen_memory.api import HierarchyKind, HierarchyRole
+
+    raw = {
+        "query": "evidence", "context": {"scope": {"org": "acme"}}, "top_k": 3,
+        "hierarchy_kind": "time", "hierarchy_role": "time_span",
+        "span_start": "2026-09-10T09:00:00", "span_end": "2026-09-10T09:00:01",
+        "expand_depth": 0, "rollup": False,
+    }
+    parsed = api_contract.parse_request("search", raw)
+    assert parsed["hierarchy_kind"] is HierarchyKind.TIME
+    assert parsed["hierarchy_role"] is HierarchyRole.TIME_SPAN
+    assert parsed["span_start"].tzinfo is None and parsed["top_k"] == 3
+    assert parsed["expand_depth"] == 0 and parsed["rollup"] is False
+    with pytest.raises(ValidationError, match="unknown field"):
+        api_contract.parse_request("search", {**raw, "options": {}})
+
+
+@pytest.mark.parametrize("verb", ["search_v2", "evolve_v2"])
+def test_parallel_public_methods_are_not_exposed(verb):
+    assert verb not in api_contract.api_method_names()
+    with pytest.raises(ValidationError, match="unknown MemoryAPI method"):
+        api_contract.parse_request(verb, {})

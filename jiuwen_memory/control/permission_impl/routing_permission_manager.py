@@ -130,14 +130,14 @@ def _context_value(context: PermissionContext | None, route_key: str) -> str:
     return str(context.metadata.get(route_key, "")).strip()
 
 
-@PermissionProducer.register("routing")
+@PermissionProducer.register(
+    "routing", config_inspectors={"at_rest_locations": lambda config: {}}
+)
 def _build(config):
     route_key = config.get("route_key", "memory_type")
     fallback = str(config.get("fallback", "")).strip()
     if not fallback:
-        raise ValidationError(
-            "permission.routing params.fallback 必须指向一个具名 permission"
-        )
+        raise ValidationError("permission.routing params.fallback 必须指向一个具名 permission")
     if fallback == config.name:
         raise ValidationError("permission.routing params.fallback 不能指向 routing 自身")
     routes_raw = config.get("routes", {})

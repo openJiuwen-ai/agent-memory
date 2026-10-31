@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any, Iterator, Mapping
+from typing import Any
 
 _SRC = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -41,6 +42,7 @@ from jiuwen_memory.api import (
     reset_request_id,
     set_current,
     set_request_id,
+    validate_actor_form,
 )
 
 _BEARER = "bearer "
@@ -120,6 +122,8 @@ def authenticated(
 
         try:
             ctx = authenticator.authenticate(credentials)
+            # 第三方认证器也必须服从 actor 全局形态不变量；在认证边界统一拒绝。
+            validate_actor_form(ctx.actor)
         except AuthenticationError:
             _record_denial(audit, authenticator, credentials, "authenticate")
             raise
@@ -135,6 +139,7 @@ def authenticated(
             # attributes 留空：业务 payload 不得注入任何系统属性。
             # 可信代理链、mTLS 主体等属性将来只能由服务端组件写入。
         )
+        _record_auth_success(audit, ctx, credentials, surface, security.request_id)
 
         token = set_current(ctx)
         if request_id_token is None:
@@ -196,3 +201,43 @@ def _record_denial(audit, authenticator, credentials, action) -> None:
         )
     except Exception:  # pragma: no cover - 审计后端故障不该把 401/429 变成 500
         pass
+
+
+def _record_auth_success(audit, ctx, credentials, surface, request_id) -> None:
+    """记录不含明文凭据的认证成功事件，并与请求 ID 关联。
+
+    受保护审计（链式完整性）对**任何**写入失败 fail-closed（PR3-08/R1）：按
+    ``integrity_protected`` 标记区分受保护与普通审计，不依赖「正好抛了某个异常
+    类型」——后端真实故障（如 SQLite 写失败）同样拒绝请求进入业务主体。「认证成功」
+    本身就是安全边界的一部分，静默放行会让边界事件脱离完整性保护。普通审计后端的
+    既有吞错语义保持不变：普通审计是「尽力而为」的部署约定，与链式完整性不同契约。
+    """
+    if audit is None:
+        return
+    protected = getattr(audit, "integrity_protected", False)
+    try:
+        surface_name = (
+            str(getattr(surface, "value", surface)) if surface is not None else "internal"
+        )
+        audit.record(
+            AuditEvent(
+                actor=ctx.actor,
+                action="authenticate",
+                decision="allow",
+                layer="security",
+                detail={
+                    "mode": str(getattr(ctx.auth_method, "value", ctx.auth_method)),
+                    "peer": _normalized_peer(credentials),
+                    "surface": surface_name,
+                    "request_id": request_id,
+                    "acting_user": ctx.actor.user,
+                    "role": ctx.role.value,
+                    "key_fp": ctx.credential_id,
+                    "auth_mode": ctx.auth_method,
+                },
+            )
+        )
+    except Exception:
+        if protected:
+            raise
+        # pragma: no cover - 普通审计后端故障不应把已认证请求变成 500

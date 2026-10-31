@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
-from typing import List
+from datetime import UTC
 
 from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
+    HierarchyRef,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
@@ -47,10 +48,10 @@ class KeywordExtractor(Extractor):
 
     def extract(
         self,
-        units: List[MemoryUnit],
+        units: list[MemoryUnit],
         *,
         context: ExtractContext | None = None,
-    ) -> List[MemoryUnit]:
+    ) -> list[MemoryUnit]:
         # context 对本实现 noop：无 LLM prompt 可拼，指代消解/去重靠下游 Evolver
         # （_dedup_batch 兜底）。接受参数仅为统一 Extractor 签名。
         # procedural 模式：本实现无 LLM 做结构化汇总，降级为把本轮原文原样合成 1 条
@@ -61,7 +62,7 @@ class KeywordExtractor(Extractor):
         ):
             return self._build_procedural(units)
         logger.info("KeywordExtractor: received %d units", len(units))
-        derived: List[MemoryUnit] = []
+        derived: list[MemoryUnit] = []
         for unit in units:
             if unit.provenance or unit.lifecycle != LifecycleState.ACTIVE:
                 logger.debug(
@@ -86,6 +87,7 @@ class KeywordExtractor(Extractor):
                 ]
                 d.provenance = [unit.id]
                 d.supersedes = ""
+                d.hierarchy = HierarchyRef()
                 d.system_metadata = inherited_system_metadata([unit])
                 d.user_metadata = inherited_user_metadata([unit])
                 if "extracted" not in d.tags:
@@ -106,15 +108,15 @@ class KeywordExtractor(Extractor):
         )
         return derived
 
-    def _build_procedural(self, units: List[MemoryUnit]) -> List[MemoryUnit]:
+    def _build_procedural(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         """procedural 降级：无 LLM，把本轮原文原样合成 1 条 PROCEDURAL。"""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         source = units[0]
         content = "\n".join(u.content for u in units if u.content).strip()
         if not content:
             return []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         unit = MemoryUnit(
             id=str(uuid.uuid4()),
             scope=source.scope,

@@ -462,7 +462,9 @@ class PgVectorStore(PgStoreBase, VectorStore):
             await conn.execute("SET LOCAL enable_indexscan = off")
 
 
-@VectorProducer.register("pgvector")
+@VectorProducer.register(
+    "pgvector", config_inspectors={"at_rest_locations": lambda config: {"dsn": config.get("dsn")}}
+)
 def _build(config):
     # sslmode 是参数形态的真开关，无须校验 dsn scheme（见 _pg.PgStoreBase.pool）。
     from jiuwen_memory.config.config_source import ConfigSourceProducer

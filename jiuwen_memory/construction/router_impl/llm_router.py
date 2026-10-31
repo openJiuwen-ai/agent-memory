@@ -16,12 +16,18 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, List
+from typing import Any
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
+from jiuwen_memory.construction.common import (
+    reject_deprecated_llm_attempt_keys,
+    validate_llm_attempt_policy,
+)
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 from jiuwen_memory.construction.router import (
     RouteContext,
     RouteDecision,
@@ -40,6 +46,8 @@ _ROUTE_BATCH_SIZE = 10
 _SYSTEM_PROMPT = """\
 You assign each memory below to exactly one ownership class, and answer one yes/no question \
 per narrowing dimension.
+
+OWNERSHIP COORDINATES: {coords}
 
 Output ONLY a JSON array. No explanation, no markdown fences. One entry per input memory, in \
 the SAME order as input. Each entry:
@@ -80,13 +88,14 @@ class LLMRouter(Router):
         llm: LLM,
         table: RouteTable,
         *,
-        retry_max_retries: int = 3,
+        max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
     ) -> None:
         self._llm = llm
         self._table = table
-        self._retry_max_retries = retry_max_retries
-        self._retry_backoff_ms = retry_backoff_ms
+        self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
+            max_attempts, retry_backoff_ms,
+        )
 
     @property
     def table(self) -> RouteTable:
@@ -103,7 +112,7 @@ class LLMRouter(Router):
 
             raise HealthCheckError(str(exc)) from exc
 
-    def route(self, units: List[MemoryUnit], ctx: RouteContext) -> List[RouteDecision]:
+    def route(self, units: list[MemoryUnit], ctx: RouteContext) -> list[RouteDecision]:
         if not units:
             return []
         decisions: list[RouteDecision] = []
@@ -114,14 +123,16 @@ class LLMRouter(Router):
         return decisions
 
     def _route_batch(
-        self, units: List[MemoryUnit], ctx: RouteContext
-    ) -> List[RouteDecision]:
+        self, units: list[MemoryUnit], ctx: RouteContext
+    ) -> list[RouteDecision]:
         messages = [
             ChatMessage(role="system", content=self._system_prompt(ctx)),
             ChatMessage(
                 role="user",
                 content="\n".join(
-                    _SOURCE_PREFIX.format(unit_id=unit.id, unit_content=unit.content)
+                    _SOURCE_PREFIX.format(
+                        unit_id=unit.id, unit_content=truncate_unit_content(unit.content)
+                    )
                     for unit in units
                 ),
             ),
@@ -178,7 +189,7 @@ class LLMRouter(Router):
         return results
 
     @staticmethod
-    def _ids_unusable(units: List[MemoryUnit]) -> bool:
+    def _ids_unusable(units: list[MemoryUnit]) -> bool:
         """id 是否不足以比对：任一条为空，或存在重复。"""
         ids = [unit.id for unit in units]
         return not all(ids) or len(set(ids)) != len(ids)
@@ -199,26 +210,21 @@ class LLMRouter(Router):
             )
             for dim in ctx.narrow_dims
         ) or "- (none)"
-        return _SYSTEM_PROMPT.format(classes=classes, dims=dims)
+        coords = ", ".join(f"{k}={v}" for k, v in ctx.coords.items()) or "(none)"
+        return _SYSTEM_PROMPT.format(classes=classes, dims=dims, coords=coords)
 
     def _call_llm_with_retry(self, messages: list) -> str:
-        last_exc: Exception | None = None
-        for attempt in range(self._retry_max_retries):
-            try:
-                return self._llm.chat(messages, temperature=0, max_tokens=4096)
-            except Exception as exc:  # noqa: BLE001 —— 重试后仍失败即上抛
-                last_exc = exc
-                if attempt < self._retry_max_retries - 1:
-                    wait = self._retry_backoff_ms * (2**attempt) / 1000.0
-                    logger.warning(
-                        "LLMRouter: LLM call failed (attempt %d), retrying in %.1fs",
-                        attempt + 1,
-                        wait,
-                    )
-                    time.sleep(wait)
-        if last_exc is None:
-            raise RuntimeError("LLMRouter: LLM 调用未执行（retry_max_retries 必须 >= 1）")
-        raise last_exc
+        """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""
+        return call_llm_with_retry(
+            self._llm.chat,
+            messages,
+            max_attempts=self._max_attempts,
+            backoff_ms=self._retry_backoff_ms,
+            logger=logger,
+            label="LLMRouter",
+            temperature=0,
+            max_tokens=4096,
+        )
 
 
 def _parse_response(response: str) -> list[dict]:
@@ -242,6 +248,7 @@ def _parse_response(response: str) -> list[dict]:
 
 @RouterProducer.register("llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "router")
     return LLMRouter(
         LlmProducer.dep(config, default="echo"),
         parse_route_table(
@@ -251,6 +258,6 @@ def _build(config):
                 "narrow_dims": config.get("narrow_dims"),
             }
         ),
-        retry_max_retries=int(config.get("retry_max_retries", 3)),
-        retry_backoff_ms=int(config.get("retry_backoff_ms", 1000)),
+        max_attempts=config.get("router_max_attempts", 3),
+        retry_backoff_ms=config.get("router_retry_backoff", 1000),
     )

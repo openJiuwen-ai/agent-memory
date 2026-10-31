@@ -8,6 +8,7 @@ import inspect
 import io
 import json
 import threading
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
@@ -23,7 +24,12 @@ from jiuwen_memory_entry.cli import client as client_module
 from jiuwen_memory_entry.cli import commands
 from jiuwen_memory_entry.core import api_contract
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
-from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
+from tests.unit.jiuwen_memory_entry.fixtures import (
+    DEV_MANAGEMENT_CASES,
+    fixed_dev_management_config,
+    seed_dev_management_space,
+    upstream_api_error,
+)
 
 pytestmark = pytest.mark.unit
 SCOPE = {"org": "local", "user": "developer"}
@@ -68,6 +74,10 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
     [
         ("add", {"content": "hello", "scope": SCOPE, "source": "text", "tags": ["a"]}),
         ("search", {"query": "hello", "context": {"scope": SCOPE}, "top_k": 3}),
+        (
+            "search",
+            {"query": "hello", "context": {"scope": SCOPE}, "hierarchy_kind": "time", "top_k": 3},
+        ),
         ("get", {"unit_id": "u1", "scope": SCOPE}),
         ("update", {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "new"}}),
         ("delete", {"selector": {"scope": SCOPE, "unit_ids": ["u1"], "mode": "purge"}}),
@@ -85,7 +95,7 @@ def test_cli_builds_same_request_without_defaults(method: str, payload: dict) ->
     for name, value in payload.items():
         encoded = value if contract.type_hints[name] is str else json.dumps(value)
         # Enum parameters use their string values on the command line.
-        if name == "source":
+        if name in {"source", "hierarchy_kind"}:
             encoded = value
         argv.extend([f"--{name}", encoded])
     args = cli.build_parser().parse_args(argv)
@@ -131,7 +141,7 @@ def test_http_client_preserves_payload_and_original_response(monkeypatch, body) 
 
 @pytest.fixture(params=["local", "http"])
 def api_client(request, monkeypatch):
-    local = client_module.InProcessClient(authenticator=build_dev_authenticator())
+    local = client_module.InProcessClient(dev_authentication=True)
     if request.param == "local":
         try:
             yield local
@@ -139,7 +149,9 @@ def api_client(request, monkeypatch):
             local.close()
         return
     server = HttpServer(
-        local.server.config, local.server, security_runtime=build_dev_security_runtime()
+        local.server.config,
+        local.server,
+        security_runtime=local.server.security_runtime,
     )
     # HttpServer expects an object with api and close, both supplied by the existing Server.
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.handler_cls())
@@ -243,10 +255,89 @@ def test_inprocess_fails_closed_without_authentication() -> None:
         client.close()
 
 
-def test_dev_authentication_still_checks_business_permissions(api_client) -> None:
+@pytest.mark.parametrize("method", ["add", "search"])
+@pytest.mark.parametrize("upstream_status", [429, 400, 500])
+def test_inprocess_upstream_error_response(method: str, upstream_status: int, monkeypatch) -> None:
+    client = client_module.InProcessClient(dev_authentication=True)
+    error = upstream_api_error(upstream_status)
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(client.server.api, method, fail)
+    payload = (
+        {"scope": SCOPE, "content": "x"}
+        if method == "add"
+        else {"context": {"scope": SCOPE}, "query": "x"}
+    )
+    limited = upstream_status == 429
+    try:
+        status, body = client.call(method, payload)
+        assert status == (429 if limited else 500)
+        assert body == {
+            "error": "RateLimitError" if limited else "InternalError",
+            "message": "too many requests" if limited else "internal server error",
+            "retryable": limited,
+            "request_id": body["request_id"],
+        }
+        assert body["request_id"]
+        assert get_current() is None
+        assert get_request_id() is None
+    finally:
+        client.close()
+
+
+def test_default_dev_rejects_cross_org_business_flow(api_client) -> None:
     status, body = api_client.call("add", {"content": "x", "scope": {"org": "another-org"}})
-    assert status == 403
-    assert body["error"] == "PermissionDeniedError"
+    assert status == 403, body
+
+
+@pytest.mark.parametrize("role", [None, "admin", "root"], ids=["default-user", "admin", "root"])
+def test_cli_management_configuration_migration(role, tmp_path) -> None:
+    config = tmp_path / "management-dev.json"
+    config.write_text(json.dumps(fixed_dev_management_config(role)), encoding="utf-8")
+    client = client_module.InProcessClient([str(config)], dev_authentication=True)
+    try:
+        seed_dev_management_space(client.server.api)
+        for method, payload, allowed_roles in DEV_MANAGEMENT_CASES:
+            status, body = client.call(method, payload)
+            assert status == (200 if role in allowed_roles else 403), (method, body)
+            if method == "verify_audit" and status == 200:
+                assert body["status"] == "unsupported", body
+    finally:
+        client.close()
+
+
+def test_cli_loads_explicit_root_dev_configuration(tmp_path) -> None:
+    config = tmp_path / "root-dev.json"
+    config.write_text(
+        json.dumps(
+            {
+                "memory_api": {
+                    "security": {
+                        "default": {
+                            "target": "standard",
+                            "params": {
+                                "authenticator": {
+                                    "target": "dev",
+                                    "params": {"role": "root"},
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = client_module.InProcessClient([str(config)], dev_authentication=True)
+    try:
+        status, body = client.call(
+            "add", {"content": "explicit root", "scope": {"org": "another-org"}}
+        )
+        assert status == 200, body
+    finally:
+        client.close()
 
 
 @pytest.mark.parametrize(
@@ -332,3 +423,69 @@ def test_text_and_quiet_render_api_fields(capsys) -> None:
     args.output = "quiet"
     assert commands.emit(200, body, args) == 0
     assert capsys.readouterr().out == "u1\n"
+
+
+# --- 协议与配置错误不得误报成功、不得吞掉错误详情 --------------------------------- #
+
+
+def test_http_client_non_json_200_body_reports_failure(monkeypatch, capsys) -> None:
+    """回归：HTTP 200 + 非 JSON 体曾沿用 200 状态，CLI 退出码 0 却输出 BadResponse。
+
+    现在映射为 502（协议层错误）：退出码 1、错误体走 stderr。
+    """
+
+    class Response(io.BytesIO):
+        status = 200
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda request, *, timeout: Response(b"<html>proxy</html>")
+    )
+    client = client_module.HttpClient("http://example.test")
+    status, body = client.call("list", {"scope": SCOPE})
+
+    assert status == 502
+    assert body["error"] == "BadResponse"
+    assert commands.emit(status, body, SimpleNamespace(output="json", pretty=False)) == 1
+    assert "BadResponse" in capsys.readouterr().err
+
+
+def test_http_client_non_json_error_body_keeps_original_status(monkeypatch) -> None:
+    """HTTP 错误响应体非 JSON：保留原状态码（已是失败，信息更有用）。"""
+
+    def urlopen(request, *, timeout):
+        raise urllib.error.HTTPError(
+            "http://example.test/v1/list", 503, "Service Unavailable", None, io.BytesIO(b"<html/>")
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    client = client_module.HttpClient("http://example.test")
+    status, body = client.call("list", {"scope": SCOPE})
+
+    assert status == 503
+    assert body["error"] == "BadResponse"
+
+
+def test_quiet_mode_still_shows_error_details(capsys) -> None:
+    """回归：quiet 模式曾把错误体渲染成空行（认证失败、记忆不存在时无任何输出）。"""
+    body = {"error": "PermissionDeniedError", "message": "authentication failed"}
+    result = commands.emit(403, body, SimpleNamespace(output="quiet", pretty=False))
+
+    assert result == 1
+    err = capsys.readouterr().err
+    assert "PermissionDeniedError" in err
+    assert "authentication failed" in err
+
+
+def test_cli_reports_corrupt_config_layer_without_traceback(tmp_path, capsys) -> None:
+    """回归：损坏的 --config 层曾以 JSONDecodeError traceback 崩溃。
+
+    现在 load_layer 转成 ValidationError，main() 按 CliError 同口径输出一行
+    错误、退出码 2。
+    """
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    result = cli.main(
+        ["--config", str(bad), "--auth-mode", "dev", "list", "--scope", json.dumps(SCOPE)]
+    )
+
+    assert result == 2

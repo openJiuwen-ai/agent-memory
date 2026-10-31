@@ -8,7 +8,7 @@ import pytest
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.llm.base import LLM
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import (
     DedupDecision,
     MemoryTier,
@@ -25,6 +25,7 @@ from jiuwen_memory.construction.evolver import EvolveMode, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
+from tests.unit.construction.fixtures import RecordingLLM
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
@@ -39,6 +40,7 @@ from jiuwen_memory.storage.graph_impl.in_memory_graph_store import InMemoryGraph
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexWriteMode
 from tests.conftest import make_storage
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 _TEST_KEY_HEX = "00" * 32
 
@@ -246,9 +248,7 @@ def test_dynamic_extractor_without_prompt_delegates_to_fallback():
 
 @pytest.mark.unit
 def test_dynamic_extractor_subclass_can_parse_xml_into_memory_units():
-    llm = _ScriptedLLM(
-        ['<memories><memory source_id="source-1">XML抽取结果</memory></memories>']
-    )
+    llm = _ScriptedLLM(['<memories><memory source_id="source-1">XML抽取结果</memory></memories>'])
     fallback = _FallbackExtractor()
     source = _unit(
         "source-1",
@@ -262,16 +262,13 @@ def test_dynamic_extractor_subclass_can_parse_xml_into_memory_units():
         {
             "extract": {
                 "xml_key": (
-                    "按 XML 格式抽取："
-                    '<memories><memory source_id="...">...</memory></memories>'
+                    '按 XML 格式抽取：<memories><memory source_id="...">...</memory></memories>'
                 )
             }
         }
     )
 
-    result = _XmlDynamicExtractor(
-        llm, fallback, prompt_registry=registry
-    ).extract([source])
+    result = _XmlDynamicExtractor(llm, fallback, prompt_registry=registry).extract([source])
 
     assert len(result) == 1
     assert isinstance(result[0], MemoryUnit)
@@ -281,8 +278,7 @@ def test_dynamic_extractor_subclass_can_parse_xml_into_memory_units():
     assert result[0].system_metadata["_extraction_strategy"] == "xml"
     assert result[0].system_metadata["_consolidation_prompt_xml"] == "按 XML 策略巩固"
     assert llm.messages[0][0].content == (
-        "按 XML 格式抽取："
-        '<memories><memory source_id="...">...</memory></memories>'
+        '按 XML 格式抽取：<memories><memory source_id="...">...</memory></memories>'
     )
     assert fallback.called is False
 
@@ -316,9 +312,7 @@ def test_dynamic_extractor_raises_when_every_strategy_payload_is_invalid():
         "原始内容",
         {"_extract_prompt_broken": "broken_key"},
     )
-    registry = PromptRegistry.from_dict(
-        {"extract": {"broken_key": "返回 JSON 数组"}}
-    )
+    registry = PromptRegistry.from_dict({"extract": {"broken_key": "返回 JSON 数组"}})
     extractor = DynamicLLMExtractor(
         _ScriptedLLM(["not json"]),
         _FallbackExtractor(),
@@ -336,15 +330,11 @@ def test_dynamic_extractor_raises_for_invalid_candidate_structure():
         "原始内容",
         {"_extract_prompt_broken": "broken_key"},
     )
-    response = json.dumps(
-        [{"source_id": "missing", "content": "orphan fact", "confidence": 1.0}]
-    )
+    response = json.dumps([{"source_id": "missing", "content": "orphan fact", "confidence": 1.0}])
     extractor = DynamicLLMExtractor(
         _ScriptedLLM([response]),
         _FallbackExtractor(),
-        prompt_registry=PromptRegistry.from_dict(
-            {"extract": {"broken_key": "返回 JSON 数组"}}
-        ),
+        prompt_registry=PromptRegistry.from_dict({"extract": {"broken_key": "返回 JSON 数组"}}),
     )
 
     with pytest.raises(InvalidExtractionCandidateError):
@@ -423,9 +413,7 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
     index = _Index(storage.domain_store())
     extractor = _FallbackExtractor()
     dedup = _Dedup([(existing, 0.8)])
-    registry = PromptRegistry.from_dict(
-        {"consolidate": {"episodic": "事件变化时替换旧记忆"}}
-    )
+    registry = PromptRegistry.from_dict({"consolidate": {"episodic": "事件变化时替换旧记忆"}})
     llm = _ScriptedLLM(
         [json.dumps({"decision": "supersede", "existing_id": "existing", "reason": "new"})]
     )
@@ -557,9 +545,7 @@ def test_dynamic_evolver_judge_routes_high_similarity_delta_to_llm():
         json.dumps({"decision": "supersede", "existing_id": "existing", "reason": "月份更新"})
     ]
 
-    decision, existing_hit, similarity = getattr(evolver, "_judge")(
-        candidate, [(existing, 0.95)]
-    )
+    decision, existing_hit, similarity = getattr(evolver, "_judge")(candidate, [(existing, 0.95)])
 
     assert llm.messages, "有实质差异时应走 LLM 而非 direct_noop"
     assert decision == DedupDecision.SUPERSEDE
@@ -590,17 +576,17 @@ def test_default_engine_writes_through_without_consolidator():
 
     kernel = build_kernel(
         config=Config.from_dict(
-            {
-                "security": {
-                    "default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}
-                }
-            }
+            {"security": {"default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}}}
         )
     )
     scope = Scope(org="org", user="user")
 
-    first = kernel.api.add("完全相同的记忆", scope, security=legacy_request_context(scope))
-    second = kernel.api.add("完全相同的记忆", scope, security=legacy_request_context(scope))
+    first = kernel.api.add(
+        "完全相同的记忆", scope, security=internal_context(ScopedAuthenticator(scope))
+    )
+    second = kernel.api.add(
+        "完全相同的记忆", scope, security=internal_context(ScopedAuthenticator(scope))
+    )
 
     # 默认直写路径：两次都落盘，不去重（去重交给显式 evolve）
     assert len(first) == 1
@@ -620,3 +606,29 @@ def test_evolver_producer_registers_dynamic():
 
     assert "dynamic" in EvolverProducer.known()
     assert "orchestrating" in EvolverProducer.known()
+
+
+@pytest.mark.unit
+def test_dynamic_extractor_oversized_unit_fully_consumed_in_chunks():
+    """>8000 unit 分批完整消费：逐批调用，中段事实进入后续批次 prompt。"""
+    middle_fact = "中段事实丁在此。"
+    content = "X" * 8000 + middle_fact + "Y" * 7984  # 16000 chars
+    source = _unit(
+        "source-1",
+        content,
+        {"_extract_prompt_default": "k"},
+    )
+    registry = PromptRegistry.from_dict({"extract": {"k": "抽取 JSON 数组"}})
+    responses = [
+        json.dumps([{"source_id": "source-1", "content": "头部抽取", "confidence": 1.0}]),
+        json.dumps([{"source_id": "source-1", "content": "中段抽取", "confidence": 1.0}]),
+    ]
+    llm = RecordingLLM(responses)
+    result = DynamicLLMExtractor(
+        llm, _FallbackExtractor(), prompt_registry=registry
+    ).extract([source])
+
+    assert llm.calls == 2
+    assert middle_fact not in llm.user_texts[0]
+    assert middle_fact in llm.user_texts[1]
+    assert len(result) == 2

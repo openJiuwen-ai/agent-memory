@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """CompositeStoreManager — 默认管理面实现。
 
-组合七类 Store + 端口代理 + 健康聚合；数据面实例由 manager 工厂内的
+组合九类 Store + 端口代理 + 健康聚合；数据面实例由 manager 工厂内的
 ``DomainStoreProducer.build`` 构建并经 :meth:`bind_domain_store` 注入（装配链路见
 模块尾部 ``_build``）。召回路装配在 manager ``_build`` 末尾完成（F06 内收设计保留）：
 按 ``vector_enabled`` / ``graph_enabled`` / ``layers_index_enabled`` 与 ``*_recaller``
@@ -12,9 +12,9 @@
 profile：``preferred_retrieval_pipeline`` + recaller 选择键覆盖）；各套共享同一
 物理 Store 集。
 
-命名端口（F07）：七类 ``*_store`` 命名空间下所有非 ``default`` 具名实例**全量自动**
+命名端口（F07）：九类存储命名空间（含 ``shadow_index``）下所有具名实例（含 ``default``）**全量自动**
 成为端口（声明即端口）；encrypted 的明文 raw 若以具名声明会随之暴露，raw 推荐
-inline 声明（见 F04/S06）。
+inline 声明（见 F04/S06）；统一加密开关开启后具名 raw 别名也指向保护对象。
 
 recaller builder 会经 ``StoreManagerProducer.resolve`` 回取本 manager 实例，故工厂
 先把构建中的实例预注册进具名缓存再组装召回路，打破循环依赖：具名构建用
@@ -39,11 +39,13 @@ from jiuwen_memory.storage.fulltext import FulltextProducer, FulltextStore
 from jiuwen_memory.storage.fusion import FusionProducer, FusionStore
 from jiuwen_memory.storage.graph import GraphProducer, GraphStore
 from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
 from jiuwen_memory.storage.security import (
     AllowAllStorageSecurity,
     StorageAction,
     StorageSecurity,
 )
+from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
 from jiuwen_memory.storage.store_manager import (
     StorageCapability,
     StoreManager,
@@ -170,7 +172,7 @@ class _AuthorizedEntityStoreProxy:
 
 
 def _proxy_for(capability: StorageCapability, store: Any, security: StorageSecurity) -> Any:
-    """ENTITY 端口用专用代理（space_id 首参 + entity 方法名映射）；其余六类走通用代理。"""
+    """ENTITY 端口用专用代理（space_id 首参 + entity 方法名映射）；其他能力走通用代理。"""
     if capability is StorageCapability.ENTITY:
         return _AuthorizedEntityStoreProxy(store, security, capability.value)
     return _AuthorizedStoreProxy(store, security, capability.value)
@@ -195,7 +197,7 @@ def _as_ports(value: Any) -> dict[str, Any]:
 
 
 class CompositeStoreManager(StoreManager):
-    """默认管理面实现：组合七类 Store + 端口代理 + 健康聚合。
+    """默认管理面实现：组合九类 Store + 端口代理 + 健康聚合。
 
     数据面领域操作（add/recall/...）由 :meth:`domain_store` 返回的
     :class:`~storage.domain_store.DomainStore` 承担；本类只管端口暴露与授权代理。
@@ -215,6 +217,8 @@ class CompositeStoreManager(StoreManager):
         fusion: FusionStore | dict[str, FusionStore] | None = None,
         fs: FSStore | dict[str, FSStore] | None = None,
         entity: EntityStore | dict[str, EntityStore] | None = None,
+        markdown: MarkdownStore | dict[str, MarkdownStore] | None = None,
+        shadow_index: DocumentShadowIndex | dict[str, DocumentShadowIndex] | None = None,
         security: StorageSecurity | None = None,
     ) -> None:
         self._named_stores: dict[StorageCapability, dict[str, Any]] = {
@@ -225,6 +229,8 @@ class CompositeStoreManager(StoreManager):
             StorageCapability.FUSION: _as_ports(fusion),
             StorageCapability.FS: _as_ports(fs),
             StorageCapability.ENTITY: _as_ports(entity),
+            StorageCapability.MARKDOWN: _as_ports(markdown),
+            StorageCapability.DOCUMENT_SHADOW: _as_ports(shadow_index),
         }
         # capability = 该类存储至少有一个端口可用（与 has_*() 同源，二者不会分叉）。
         self._capabilities = frozenset(
@@ -251,10 +257,10 @@ class CompositeStoreManager(StoreManager):
     def from_config(cls, config: Any) -> CompositeStoreManager:
         """装配入口：内部构造全部 Store 与默认数据面，返回就绪的 manager。
 
-        顺序是刚性的——数据面持有 manager 引用，故必须**先**把七类 Store 装齐、
+        顺序是刚性的——数据面持有 manager 引用，故必须**先**把九类 Store 装齐、
         manager 自身构造完成，**最后**才构造 ``CompositeDomainStore`` 并注入：
 
-        1. 七类 Store 全量聚合（:func:`_collect_ports`）→ 构造 manager；
+        1. 九类 Store 全量聚合（:func:`_collect_ports`）→ 构造 manager；
         2. 预注册进具名缓存——召回路 builder 会经 ``StoreManagerProducer.resolve``
            回取本实例，不先注册就会递归新建第二套 manager（F06 双分支：具名构建用
            ``config.name``，匿名构建用含 ``id()`` 的合成名）；
@@ -266,14 +272,21 @@ class CompositeStoreManager(StoreManager):
         抛 ``UnsupportedStorageCapabilityError``）。这也让两条入口行为一致——
         :meth:`__init__` 同样允许构造不含 KV 的 manager（分层索引专用装配即如此）。
         """
+        from jiuwen_memory.storage.encryption import protect_ports
+
+        kv_ports = _collect_ports(KvProducer, config)
+        fs_ports = _collect_ports(FsProducer, config)
+        kv_ports, fs_ports = protect_ports(config, kv_ports, fs_ports)
         manager = cls(
-            kv=_collect_ports(KvProducer, config),
+            kv=kv_ports,
             vector=_collect_ports(VectorProducer, config),
             fulltext=_collect_ports(FulltextProducer, config),
             graph=_collect_ports(GraphProducer, config),
             fusion=_collect_ports(FusionProducer, config),
-            fs=_collect_ports(FsProducer, config),
+            fs=fs_ports,
             entity=_collect_ports(EntityStoreProducer, config),
+            markdown=_collect_ports(MarkdownProducer, config),
+            shadow_index=_collect_ports(ShadowIndexProducer, config),
         )
         if config.name:
             storage_ref = config.name
@@ -286,6 +299,9 @@ class CompositeStoreManager(StoreManager):
 
     def capabilities(self) -> frozenset[StorageCapability]:
         return self._capabilities
+
+    def encryption_inventory(self) -> dict[StorageCapability, dict[str, object]]:
+        return {capability: dict(self._proxies[capability]) for capability in self._capabilities}
 
     def domain_store(self, name: str = "default") -> DomainStore:
         try:
@@ -327,6 +343,12 @@ class CompositeStoreManager(StoreManager):
     def entity(self, name: str = "default") -> EntityStore:
         return cast(EntityStore, self._port(StorageCapability.ENTITY, name))
 
+    def markdown(self, name: str = "default") -> MarkdownStore:
+        return cast(MarkdownStore, self._port(StorageCapability.MARKDOWN, name))
+
+    def shadow_index(self, name: str = "default") -> DocumentShadowIndex:
+        return cast(DocumentShadowIndex, self._port(StorageCapability.DOCUMENT_SHADOW, name))
+
     def has_kv(self, name: str = "default") -> bool:
         return self._has_port(StorageCapability.KV, name)
 
@@ -347,6 +369,12 @@ class CompositeStoreManager(StoreManager):
 
     def has_entity(self, name: str = "default") -> bool:
         return self._has_port(StorageCapability.ENTITY, name)
+
+    def has_markdown(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.MARKDOWN, name)
+
+    def has_shadow_index(self, name: str = "default") -> bool:
+        return self._has_port(StorageCapability.DOCUMENT_SHADOW, name)
 
     def health(self) -> None:
         self._security.health()
@@ -388,11 +416,10 @@ def _collect_ports(producer: type[Factory], config: Any) -> dict[str, Any]:
     ``hosts`` 未配时）约定返 None 表示「未配即降级关闭」。端口表的值非 None 是
     :class:`CompositeStoreManager` 的不变量（``health()`` 直接 ``store.security`` /
     ``store.health()``，代理也假定非 None），故在这个**唯一的**「命名空间 → 端口」
-    构造点上统一过滤，而不是把 None 判断散进 health/代理。对其余六类是 no-op
-    （它们的 builder 缺必填参一律 ``require_param`` 抛错，不返 None）。
+    构造点上统一过滤，而不是把 None 判断散进 health/代理。对其他返回 Store 的实现无影响。
 
     注意：encrypted KV 的明文 raw 若以具名声明（``raw_kv_store: <name>``），也会随之
-    暴露为端口；raw 推荐 inline 声明（F04/S06 文档约定）。
+    暴露为端口；统一加密开启后该端口也受保护，关闭时 raw 推荐 inline 声明。
     """
     namespace = config.ctx.namespaces.get(producer.TOP_NAME, {})
     ports: dict[str, Any] = {}
@@ -414,7 +441,7 @@ def _build_domain_stores(config: Any, manager: CompositeStoreManager, storage_re
 
     数据面的全部装配参数都住在 ``store_manager.<inst>.params.domain_stores.<name>``：
     检索首选路径、真源 KV 端口名、``domain_store_target`` 与七个 ``*_recaller`` 选择键。
-    manager 段自身不承载数据面配置——七类 Store 端口由 :func:`_collect_ports` 扫命名
+    manager 段自身不承载数据面配置——九类 Store 端口由 :func:`_collect_ports` 扫命名
     空间得来，与 params 无关。
 
     **继承规则只有一条，对所有键统一生效**：``default`` entry 是 base，命名 entry

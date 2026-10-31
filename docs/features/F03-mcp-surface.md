@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-09-11 |
-| 影响范围 | `jiuwen_memory_entry/mcp_server/`（`__main__.py`、`transport_security.py`；原 `DESIGN.md` 已并入本文档），`tests/unit/jiuwen_memory_entry/test_mcp.py`、`test_mcp_transport_security.py` |
-| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py`（92 + 5 全绿）；`ruff check` 通过 |
+| 影响范围 | `jiuwen_memory_entry/mcp_server/`（`__main__.py`、`transport_security.py`；原 `DESIGN.md` 已并入本文档），`tests/unit/jiuwen_memory_entry/test_mcp.py`、`test_mcp_transport_security.py`、`tests/integration/jiuwen_memory_entry/test_mcp_startup.py` |
+| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py tests/integration/jiuwen_memory_entry/test_mcp_startup.py`（2026-10-27：163 项通过）；变更 Python 文件 `ruff check` 通过 |
 | 备注 | 本文档吸收原 `jiuwen_memory_entry/mcp_server/DESIGN.md`（已删除），模块级设计、方案取舍与已知遗留统一在此维护 |
 
 ## 背景
@@ -23,22 +23,29 @@ FastMCP 工具函数需要面向模型的 docstring 与显式运行时类型注�
 
 1. **工具集与 `MemoryAPI` 全量对齐（36/36）**，命名 `memory_<method>`：与 HTTP/CLI
    共享同一套 `api_contract` 参数校验（`parse_request`）与调用桥（`invoke_api`），
-   MCP 面只做协议翻译、零业务编排。
+   MCP 面只做协议翻译、零业务编排。工具参数模型另收紧为 `extra=forbid`，使契约外字段
+   与前两条路径同口径报错（见 F07 决策 1）——FastMCP 的 `ArgModelBase` 默认
+   `extra=ignore`，否则字段会在到达 `parse_request` 之前被丢弃。
 2. **async 工具 + `asyncio.to_thread` 隔离**：FastMCP 在事件循环线程裸调工具函数，
    而同步 `MemoryAPI` 方法在 api 层内部用 `asyncio.run` 桥接协程——两者相遇必抛
    "cannot be called from a running event loop"。执行体放入工作线程（无运行中循环，
    内部桥接照常工作），结果经 await 回流事件循环。
-3. **`submit_ingest` 保留扁平协议**：工具签名 5 个业务参数 + `ctx`（FastMCP 框架
-   注入的传输上下文，不进模型可见 Schema）。G.FNM.03（单工具入参数阈值 5）按业务
-   参数计恰在阈值内，`ctx` 以注释说明豁免依据；不改变公开请求形状
-   `{"content", "scope", "source", "payload_id", "source_ref"}`。
+3. **`submit_ingest` 保留扁平协议**：工具签名为扁平业务参数 + `ctx`（FastMCP 框架
+   注入的传输上下文，不进模型可见 Schema）。G.FNM.03（单工具入参数阈值 5）在
+   工具集与 `MemoryAPI` 契约全量对齐（决策 1）后按工具逐个超出（submit_ingest
+   9 个、batch_add 9 个、add 8 个）——契约对齐优先于参数数量指标，模型侧靠
+   docstring 的参数说明与 JSON 形状示例消化参数量；该阈值继续作为**新增**工具的
+   设计约束。不改变公开请求形状 `{"content", "scope", ...}`。
 4. **认证 fail-closed**：`JIUWEN_MEMORY_MCP_AUTH_MODE`（required | dev，默认
    required）。`required` 未装配生产认证器时业务调用全部拒绝；`dev` 使用固定
-   `local/developer` ROOT 测试身份、仅允许回环绑定。身份只经
+   `local/developer` USER 测试身份、仅允许回环绑定，ROOT 须显式配置。身份只经
    `auth_middleware.authenticated`（`Surface.MCP`）注入 `security`，payload 中的
    `security/identity/actor` 等保留字段在契约边界直接拒绝。
-5. **契约锁测试**：`test_mcp.py` 对 36 个工具锁「工具签名参数 ⊆ 契约参数、契约必填
-   ⊆ 工具参数、代表性 payload 可过 `parse_request`」，防止工具签名与 API 签名漂移。
+5. **契约锁测试**：`test_mcp.py` 对 36 个工具锁「工具签名参数 **==** 契约参数
+   （全量相等）、代表性 payload 可过 `parse_request`」，防止工具签名与 API 签名
+   漂移。全量相等锁是 as_of 漂移的教训——此前的「子集 + 必填覆盖」锁会放行可选
+   参数静默缺失，MCP 客户端经工具 schema 感知不到该参数；任何参数差异都必须
+   显式决策（改工具或改契约），不允许静默漂移。
 
 ## 拒绝的方案
 
@@ -47,8 +54,9 @@ FastMCP 工具函数需要面向模型的 docstring 与显式运行时类型注�
 | 像 HTTP/CLI 一样从 `MemoryAPI` 反射生成 MCP 工具 | FastMCP 要求显式装饰器函数与面向模型的 docstring（模型凭它选工具填参），反射无法生成模型可读描述；`Context` 注入还要求保留运行时注解对象 |
 | `submit_ingest` 用 dataclass 参数袋压参（6 → 2） | 会把公开请求从扁平改成嵌套 `{"args": {...}}`——FastMCP 按函数签名生成客户端可见参数结构，协议形状随之改变，既有 MCP 调用方全部失配（S09 第 14 条兼容要求）；仅为「参数数量」指标付出破坏公开协议的代价不成立。契约锁测试同步失败也证明该改动与契约冲突 |
 | `submit_ingest` 维持 6 参数且不做任何豁免说明 | 静态检查报警无法闭环；豁免必须有依据——`ctx` 是框架注入参数、不是业务参数，理由已注释在工具定义处 |
-| dev 模式跳过 MemoryAPI 授权判定 | 会把本地测试习惯带进生产路径；保留授权判定、只固定身份，dev 仍是「同一张授权网下的测试身份」 |
-| 限流 / workload_guard 随生产认证器接入自动生效 | `authenticated` 的 `limiter`/`workload_guard` 是显式参数，MCP 面当前调用链未传——不能在文档里许诺不存在的接线；待生产认证 runtime 接入时一并显式装配（见已知遗留 1） |
+| dev 模式绕过 MemoryAPI 授权判定 | 所有请求仍经过同一 API 授权点；PR1 仅在显式固定 DEV 且用户未配置身份映射、security/permission 时，由入口临时注入 allow_all，PR2 接通角色闸门后删除 |
+| 只装配 Runtime、不显式传递限流与 workload_guard | `authenticated` 的保护组件是显式参数，省略即不生效；PR1 已将共享 Runtime 的限流、并发预算和审计显式传入，stdio 无远端 peer 时不传限流 |
+| `as_of`/`occurred_at` 用 `datetime \| None` 注解 | FastMCP/pydantic 会把客户端 ISO 字符串 coerce 成 `datetime` 对象再进工具函数，而共享契约 `parse_request` 的 `_decode` 只接受 ISO 8601 字符串（JSON 边界无 datetime 类型）——对象在契约边界即被拒。注解用 `str \| None`，ISO 字符串原样进 payload、由契约层 `fromisoformat` 解码，与 HTTP 路径完全一致（代码处有同义注释） |
 
 ## 接入与运行
 
@@ -82,40 +90,54 @@ _invoke_blocking：credentials_for_transport → authenticated(Surface.MCP) → 
 ### 工具与参数
 
 工具集与 `MemoryAPI` 公开方法**全量对齐（36/36）**，命名规则
-`memory_<method>`：数据面 10 个（add/add_async/batch_add/batch_add_async/
+`memory_<method>`：数据面 9 个（add/add_async/batch_add/batch_add_async/
 search/list/get/update/delete）、任务与摄入 5 个（evolve/check_write/
 submit_ingest/job_status/job_cancel）、管理面 3 个（admin_get/set/all）、
 治理面 4 个（inspect/trace/audit/verify_audit）、授权 2 个（grant/revoke）、
-Space 管理 12 个（create/get/list/update/archive/delete_space、export_space、
+Space 管理 13 个（create/get/list/update/archive/delete_space、export_space、
 space_usage、get/set_space_policy、list/add/remove_space_member）。
 
 - 参数名与 `MemoryAPI` 签名严格一致（`unit_id`/`top_k`/`with_trajectory`…），
   请求形状全部为扁平 `{"参数名": 值}`；`scope` 为对象
   `{"org","user","agent","session","space"}`，五维可给空串。
+- **参数与契约全量对齐（2026-09-15 起）**：36 个工具的签名参数集合与
+  `MemoryAPI` 契约完全相等——此前按「模型对话场景」精选缓发的可选参数
+  （add/batch_add/submit_ingest/check_write 的 metadata 族与 source/occurred_at/
+  assets/stream_id、search 的 filters/disclosure、list 的 memory_types/extensions/
+  filters、evolve 的 channel、list_spaces 的 status/limit/cursor、delete_space 的
+  mode、verify_audit 的 4 个参数）已全部补齐。时间类参数（`as_of`/`occurred_at`）
+  用 `str`（ISO 8601）注解，见「拒绝的方案」。
 - docstring 面向模型撰写（何时调用、参数 JSON 形状、返回结构）——模型凭它
   选择工具与填参。
-- `ctx: Context` 参数由 FastMCP 注入（Streamable HTTP 传输下携带请求头供
-  凭据提取），**不进模型可见 Schema**。
-- 部分参数未透传（如 add 的 assets/system_metadata/user_metadata/occurred_at、
-  search 的 filters/as_of/disclosure）——按「模型对话场景」精选，后续按需补充。
+- `ctx: Context` 参数由 FastMCP 注入（Streamable HTTP 传输下携带请求头供凭据
+  提取），**不进模型可见 Schema**。
 - `verify_audit` 未装配审计完整性 provider 时返回 `unsupported`（不报错）；
   `delete_space` 当前实现仅支持 purge。
 
 ### 认证与运行
 
+- `_lifespan` 使用 `@asynccontextmanager` 管理传输宿主的共享 runtime，进入时等待
+  `start_background()`，正常退出、异常退出及启动失败均在 `finally` 中调用 `close()`。
+  裸 async 生成器不能用于 `async with`（#256）。
+- HTTP stateful 模式每个客户端会话各自调用一次底层 `Server.run()`，因此不能把
+  共享 runtime 的启停注册到 FastMCP 的会话级 `lifespan`。`_RuntimeFastMCP` 的
+  `run_stdio_async()` 在 stdio 传输外层持有 `_lifespan`；`streamable_http_app()`
+  将它组合到 ASGI 应用生命周期外层，先启动内核，再启动 SDK 会话管理器；关闭时
+  先停止全部会话，再关闭内核。`mcp.run()` 与直接挂载返回的 ASGI 应用均使用此接线。
+- 不采用「会话引用计数归零即关闭」：runtime 关闭后拒绝重启，此方案虽能保护同时
+  存在的会话，却会破坏全部会话结束后的再次连接。当前 LocalWatchdog 的 `start()`
+  已幂等，但这不能解决会话提前关闭共享 runtime 的问题。
 - 认证模式：`JIUWEN_MEMORY_MCP_AUTH_MODE`（required | dev，默认 required，
   失闭）。`required` 未装配生产认证器时业务调用全部拒绝；`dev` 使用固定
-  `local/developer` ROOT 测试身份（忽略凭据、保留 MemoryAPI 授权判定），
-  仅供本地功能测试，且只允许绑定回环地址——放开须设
-  `JIUWEN_MEMORY_MCP_ALLOW_DEV_NON_LOOPBACK=true`（仅限隔离容器）。
+  `local/developer` USER 测试身份（忽略凭据、保留 MemoryAPI 授权判定；ROOT 须显式配置），
+  仅供本地功能测试，网络传输严格回环绑定，没有非回环环境变量旁路。
+  stdio 也须显式 dev；required 从 memory_api.security 装配完整 Runtime。
 - 凭据按传输归一（`transport_security.credentials_for_transport`）：
   stdio 读 `AGENT_MEMORY_API_KEY`；Streamable HTTP 逐请求读
   `Authorization: Bearer` 与 socket peer（拿不到请求上下文属接线错误，
   fail-closed 不回退环境变量）。
-- 限流与 workload_guard：当前**未接线**——`_invoke_blocking` 调用认证中间件时
-  不传 `limiter`/`workload_guard`（OFFLINE/本地运行时为 None，stdio 无网络
-  对端）。两者是 `authenticated` 的显式参数，接入生产认证 runtime 时需一并
-  构建传入，**不会随认证器自动生效**（见已知遗留 1）。
+- 网络限流、昂贵认证并发预算与入口审计均从同一 Runtime 传入 authenticated。
+  stdio 无网络对端，不传 IP 限流器，但保留昂贵认证并发预算；网络绑定统一经 binding_policy。
 
 ### 启动方式
 
@@ -185,9 +207,21 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 
 ## 验证
 
-- `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（92 用例：36 工具契约锁 +
-  旧字段/身份字段拒绝 + 失闭与 Surface.MCP 注入 + 功能闭环含 evolve→job_status 与
-  consolidate→trace 血缘链 + Schema 无 ctx 泄漏 + FastMCP.call_tool 协议编组）
+- #256 生命周期回归：修复前经真实 FastMCP wrapper 复现
+  `TypeError: 'async_generator' object does not support the asynchronous context manager protocol`；
+  修复后在 stdio 传输外层验证正常/异常退出均关闭一次，并验证已等待后台启动。
+- `pytest tests/integration/jiuwen_memory_entry/test_mcp_startup.py`：默认 required 模式的
+  真实 stdio 子进程经官方 `ClientSession.initialize()` / `list_tools()` 握手；
+  Streamable HTTP 使用真实 OFFLINE 内核与显式 DEV 身份，经 ASGI TestClient 完成
+  initialize、initialized 通知、tools/list 与 memory_add。覆盖单会话、两个并存会话、
+  结束一个后另一个继续写入、全部结束后新会话继续写入；断言应用启动时后台只启动一次，
+  会话结束不关闭内核，应用退出时才关闭一次。另用替身内核验证应用启动失败与异常退出
+  的清理。不依赖外部服务或凭据。
+- `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（覆盖 36 工具契约锁
+  （全量相等）+ 旧字段/身份字段拒绝 + 失闭与 Surface.MCP 注入 + 功能闭环含
+  evolve→job_status 与 consolidate→trace 血缘链 + get/search 的 as_of valid-time
+  回溯 + list memory_types / search filters 收敛 + Schema 无 ctx 泄漏 +
+  FastMCP.call_tool 协议编组）
 - `pytest tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py`（5 用例）
 - `ruff check` 通过
 - 行为抽检：`memory_submit_ingest` 扁平协议经真实 FastMCP `call_tool` 调用成功并
@@ -196,15 +230,17 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
 
 ## 已知遗留
 
-1. **限流与 workload_guard 未接线**：`_invoke_blocking` 调用 `authenticated` 时不传
-   `limiter`/`workload_guard`，生产认证 runtime 接入时需一并构建传入，不会随认证器
-   自动生效。
-2. **`_SRV` 无显式统一关闭**（`__main__.py` 模块级装配、`main()` 阻塞运行）：涉及
-   S09 第 13 条生命周期要求，属 cf38c2a 引入的原有待办（非本轮回归），待统一生命
-   周期管理时补 stdio/HTTP 两路 shutdown 接线。
-3. **管理面/治理面/Space 工具鉴权依赖管理动作授权**：dev 身份走旧授权链（按 scope
-   归属判定、不读 role）时这些操作返回 PermissionDenied（F05 授权链过渡期缺口，
-   非缺陷）；待 ROOT role 接入 PermissionManager 后重测。
-4. **部分参数未透传**（add 的 assets/system_metadata/user_metadata/occurred_at、
-   search 的 filters/as_of/disclosure）——按「模型对话场景」精选，后续按需补充。
-5. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。
+1. **PR1 已接线保护能力**：限流、昂贵认证并发预算及入口审计均来自完整 Runtime。
+2. **宿主生命周期已接线**：stdio 传输与 HTTP ASGI 应用持有共享 runtime，HTTP
+   客户端会话不拥有内核。多会话与会话全部结束后的再次连接已纳入回归；HTTP 测试通过
+   ASGI TestClient 验证，未覆盖真实网络监听和操作系统信号退出。
+3. **管理面/治理面/Space 工具鉴权依赖管理动作授权**：固定 DEV 默认 USER，
+   ROOT 须显式配置；权限始终由 Authorizer 判定，不注入 allow_all 过渡项。
+4. **OFFLINE 内存栈不跨进程持久**——持久化需接真后端 config。
+5. **OFFLINE 空间删除能力限制已消除**（原记录：`scope.space != ''` 时，授权通过后
+   `InMemoryEngine` 返回 ValidationError，不支持非空 space 维的 purge）：`purge_space`
+   不再对 space scope 设守卫——本引擎写路径本就拒绝 space scope，不存在空间记忆可清，
+   purge 属天然 no-op；而 `delete_space` 是「先置 DELETING 再 purge」的两步事务，旧守卫
+   会让删除必败、空间永久卡在 `deleting`。OFFLINE 装配下 create → delete → get(404)
+   自此闭环（见 F07 决策 2）。授权仍经 Authorizer；是否允许管理操作取决于显式角色
+   与目标空间权限，默认 USER 不获得管理旁路。

@@ -10,9 +10,9 @@ Store 实例（写索引、读 KV 真源等）的组件依赖本接口；数据�
 ``has_xxx(name="default")`` 方法，无 property 快捷方式、无 ``*_port`` 后缀双入口
 （二者是 F05 首版遗留的重复写法，F07 合并）。默认端口 ``manager.kv()``；分层索引起
 命名端口 ``manager.fulltext("layers_l0")``。命名端口装配为**命名空间全量自动**：
-七类 ``*_store`` 命名空间下所有非 ``default`` 具名实例都成为端口（声明即端口）。
+九类存储命名空间（含 ``shadow_index``）下所有具名实例（含 ``default``）都成为端口（声明即端口）。
 
-ENTITY 端口（F07）是第七 capability，与其余六类同构暴露；两处例外须知：其一，方法首
+ENTITY 端口（F07）是第七 capability，与其他能力同构暴露；两处例外须知：其一，方法首
 入参是 ``space_id: str`` 而非 ``Scope``（BaseStore「scope 显式第一入参」的唯一例外），
 授权由 ``_AuthorizedEntityStoreProxy`` 专门适配；其二，默认端口额外接受
 「``entity_store.default`` 声明即端口」的兜底解析（理由见 ``composite_store_manager``
@@ -38,7 +38,9 @@ from .fulltext import FulltextStore
 from .fusion import FusionStore
 from .graph import GraphStore
 from .kv import KVStore
+from .markdown import MarkdownStore
 from .security import StorageSecurity
+from .shadow import DocumentShadowIndex
 from .vector import VectorStore
 
 
@@ -75,6 +77,9 @@ class StoreManagerProducer(Factory):
                 f"StoreManagerProducer assembled {type(manager).__name__}, "
                 "expected StoreManager"
             )
+        from jiuwen_memory.storage.encryption import validate_manager_encryption
+
+        validate_manager_encryption(config, manager)
         return manager
 
 
@@ -104,6 +109,18 @@ class StorageCapability(str, Enum):
     FUSION = "fusion"
     FS = "fs"
     ENTITY = "entity"
+    MARKDOWN = "markdown"
+    DOCUMENT_SHADOW = "document_shadow"
+
+    @property
+    def namespace(self) -> str:
+        """能力对应的配置命名空间。"""
+        return "shadow_index" if self is self.DOCUMENT_SHADOW else f"{self.value}_store"
+
+    @property
+    def port_method(self) -> str:
+        """能力对应的公共 manager 端口方法名。"""
+        return "shadow_index" if self is self.DOCUMENT_SHADOW else self.value
 
 
 class StoreManager(ABC):
@@ -124,6 +141,14 @@ class StoreManager(ABC):
     @abstractmethod
     def capabilities(self) -> frozenset[StorageCapability]:
         ...
+
+    def encryption_inventory(self) -> dict[StorageCapability, dict[str, object]]:
+        """所有数据面使用的端口快照，返回值与公开端口方法为同一对象。
+
+        启用统一加密时必需；不支持完整保护拓扑的插件拒绝装配。
+        关闭开关时保持旧插件兼容性。实现不得隐藏领域数据面使用的原始依赖。
+        """
+        raise ValidationError("StoreManager must declare an encryption inventory")
 
     @abstractmethod
     def domain_store(self, name: str = "default") -> DomainStore:
@@ -163,8 +188,16 @@ class StoreManager(ABC):
         """取 ENTITY 端口（实体反向索引）。
 
         注意首入参例外：``EntityStore`` 的方法以 ``space_id: str`` 而非 ``Scope``
-        作第一入参（见 :mod:`storage.entity_store`），端口本身的取用方式与其余六类一致。
+        作第一入参（见 :mod:`storage.entity_store`），端口本身的取用方式与其他能力一致。
         """
+
+    @abstractmethod
+    def markdown(self, name: str = "default") -> MarkdownStore:
+        """取 MARKDOWN 端口（文档记忆人类视图，仅文档模式 write_document=true 装配）。"""
+
+    @abstractmethod
+    def shadow_index(self, name: str = "default") -> DocumentShadowIndex:
+        """取 DOCUMENT_SHADOW 端口（文档记忆机器索引，仅文档模式装配）。"""
 
     def has_kv(self, name: str = "default") -> bool:
         return name == "default" and StorageCapability.KV in self.capabilities()
@@ -186,6 +219,12 @@ class StoreManager(ABC):
 
     def has_entity(self, name: str = "default") -> bool:
         return name == "default" and StorageCapability.ENTITY in self.capabilities()
+
+    def has_markdown(self, name: str = "default") -> bool:
+        return name == "default" and StorageCapability.MARKDOWN in self.capabilities()
+
+    def has_shadow_index(self, name: str = "default") -> bool:
+        return name == "default" and StorageCapability.DOCUMENT_SHADOW in self.capabilities()
 
     @abstractmethod
     def health(self) -> None:

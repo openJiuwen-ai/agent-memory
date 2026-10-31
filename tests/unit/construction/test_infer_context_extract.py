@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
+from datetime import UTC
 
 import pytest
 
@@ -44,7 +45,6 @@ from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import Orches
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KVStore
-from tests.conftest import make_storage
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -52,6 +52,7 @@ from jiuwen_memory.storage.types import (
     VectorRecord,
 )
 from jiuwen_memory.storage.vector import VectorStore
+from tests.conftest import make_storage
 
 pytestmark = pytest.mark.unit
 
@@ -336,7 +337,9 @@ class TestInferContextCollection:
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         extractor = _ScriptedExtractor([_make_unit("ext-1", "新事实")])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         unit = _make_unit("u1", "普通消息")  # 无 metadata.infer
         evolver.evolve([unit], EvolveMode.EXTRACT)
@@ -345,11 +348,15 @@ class TestInferContextCollection:
 
     @staticmethod
     def test_infer_collects_recent_originals_and_related():
-        """infer=true → context 含 recent_originals（/messages/ 原文）+ related_memories（召回）。"""
+        """infer=true → context 含 recent_originals（/messages/ 原文）
+        + related_memories（召回）。
+        """
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         extractor = _ScriptedExtractor([_make_unit("ext-1", "新事实")])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # 预置一条已索引的相关记忆（/memory/，供 dedup.recall 召回）
         # 用与本轮相同文本（HashEmbedder 同文本→cosine=1.0，确保超过 min_similarity 召回）
@@ -357,7 +364,9 @@ class TestInferContextCollection:
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
         # 预置一条历史 infer 原文（/messages/，规约后的 MemoryUnit）
-        hist = _make_unit("hist-1", "user: 之前聊过猫\nassistant: 嗯", system_metadata={"infer": "true"})
+        hist = _make_unit(
+            "hist-1", "user: 之前聊过猫\nassistant: 嗯", system_metadata={"infer": "true"}
+        )
         stores["kv"].insert(_DEFAULT_SCOPE, messages_key(hist.id), dumps(hist))
 
         # 本轮 infer unit（content 与 related 相同，便于召回）
@@ -376,18 +385,20 @@ class TestInferContextCollection:
     @staticmethod
     def test_recent_originals_excludes_current_and_sorts_by_occurred_at():
         """recent 按 occurred_at 降序取最近10条，排除本轮自身。"""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         extractor = _ScriptedExtractor([])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # 三条历史原文，不同 t_ingest
         for i, ts in enumerate([3, 1, 2]):
             u = _make_unit(
                 f"hist-{i}", f"msg-{i}", system_metadata={"infer": "true"},
-                t_ingest=datetime(2026, 1, ts, tzinfo=timezone.utc),
+                t_ingest=datetime(2026, 1, ts, tzinfo=UTC),
             )
             stores["kv"].insert(_DEFAULT_SCOPE, messages_key(u.id), dumps(u))
 
@@ -409,7 +420,9 @@ class TestRelatedMemoriesDedup:
         stores = {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         extractor = _ScriptedExtractor([_make_unit("ext-1", "新事实")])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # related 与本轮同文本（HashEmbedder 同文本→cosine=1.0，确保超过 min_similarity 召回）
         related = _make_unit("rel-1", "用户偏好 Python 编程", tier=MemoryTier.SEMANTIC)
@@ -432,7 +445,9 @@ class TestRelatedMemoriesDedup:
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         dup_candidate = _make_unit("c-dup", "用户偏好 Python", tier=MemoryTier.SEMANTIC)
         extractor = _ScriptedExtractor([dup_candidate])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         related = _make_unit("rel-1", "用户偏好 Python", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
@@ -450,7 +465,9 @@ class TestRelatedMemoriesDedup:
         plugins = {"embedder": _HashEmbedder(), "llm": _MockLLM()}
         new_candidate = _make_unit("c-new", "用户在做数据库迁移", tier=MemoryTier.SEMANTIC)
         extractor = _ScriptedExtractor([new_candidate])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         related = _make_unit("rel-1", "用户偏好 Python", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
@@ -471,7 +488,9 @@ class TestRelatedMemoriesDedup:
         # 候选 content 与历史原文相同
         candidate = _make_unit("c-1", "我喜欢猫", tier=MemoryTier.SEMANTIC)
         extractor = _ScriptedExtractor([candidate])
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # 历史原文（/messages/，无向量索引）——不会被 dedup.recall 召回
         hist = _make_unit("hist-1", "我喜欢猫", system_metadata={"infer": "true"})
@@ -629,13 +648,19 @@ class TestProceduralExtract:
             tier=MemoryTier.PROCEDURAL,
         )
         extractor = _ProceduralExtractor(proc_unit)
-        evolver = _make_evolver(stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor)
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], plugins["embedder"], plugins["llm"], extractor
+        )
 
         # 预置一条已有记忆（若走 dedup.recall 可能召回——procedural 不应走）
         related = _make_unit("rel-1", "目标：查询订单", tier=MemoryTier.SEMANTIC)
         _index_related(related, stores["kv"], stores["vector"], plugins["embedder"])
 
-        cur = _make_unit("cur-1", "user: 查下订单\nassistant: 已返回列表", system_metadata={"procedural": "true"})
+        cur = _make_unit(
+            "cur-1",
+            "user: 查下订单\nassistant: 已返回列表",
+            system_metadata={"procedural": "true"},
+        )
         result = evolver.evolve([cur], EvolveMode.EXTRACT)
 
         # procedural 收到 context=None（不收集）

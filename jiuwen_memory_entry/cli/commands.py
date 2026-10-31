@@ -164,6 +164,10 @@ def _render_text(body: Any) -> str:
 
 
 def _render_quiet(body: Any) -> str:
+    # quiet 只压缩「成功结果」的输出；错误体必须完整可见——否则认证失败、
+    # 记忆不存在时只输出空行，调用方既拿不到 id 也看不到失败原因。
+    if isinstance(body, dict) and "error" in body:
+        return f"error: {body['error']}: {body.get('message', '')}"
     values = []
     for item in _items(body):
         if isinstance(item, str):

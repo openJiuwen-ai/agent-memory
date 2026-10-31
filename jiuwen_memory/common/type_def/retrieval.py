@@ -10,6 +10,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from .feature import Entity
 from .filter import FilterExpr
+from .hierarchy import HierarchyKind, HierarchyRole
 from .memory import MemoryUnit
 
 
@@ -28,6 +29,7 @@ class RecallChannel(str, Enum):
     GRAPH = "graph"
     TEMPORAL = "temporal"
     SPACE = "space"
+    HIERARCHY = "hierarchy"  # 结构遍历诊断，不参与召回融合
 
 
 @dataclass
@@ -60,6 +62,12 @@ class ParsedQuery:
     channels: list[RecallChannel] = field(default_factory=list)
     include_archived: bool = False
     extensions: dict[str, Any] = field(default_factory=dict)
+    hierarchy_kind: HierarchyKind | None = None
+    hierarchy_role: HierarchyRole | None = None
+    span_start: datetime | None = None
+    span_end: datetime | None = None
+    rewrite_status: str = "off"  # off / used / fallback / no_intent
+    rewrite_fallback_reason: str = ""  # 仅 fallback 状态有值
 
 
 @dataclass

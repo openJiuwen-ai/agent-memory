@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.control.base import ControlOperatorType
-from jiuwen_memory.control.jobs import Job
+from jiuwen_memory.control.jobs import Job, JobCancelledError
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
+from jiuwen_memory.control.scheduler_impl.job_outcome import terminal_job_status
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 
 logger = get_logger(__name__)
@@ -57,13 +58,17 @@ class InProcessScheduler(Scheduler):
             result = await job.run()
             for k, v in result.detail.items():
                 info.detail[k] = v
-            info.status = JobStatus.SUCCEEDED
+            info.status = terminal_job_status(result)
             logger.info(
-                "InProcessScheduler.succeeded: job_id=%s kind=%s scope=%s",
+                "InProcessScheduler.finished: job_id=%s kind=%s scope=%s",
                 job_id,
                 type(job).__name__,
                 scope_for_log(job.scope),
             )
+        except JobCancelledError as exc:
+            info.detail.update(exc.detail)
+            info.status = JobStatus.CANCELLED
+            info.detail["cancelled_at"] = self._now_iso()
         except asyncio.CancelledError:
             # 事件循环关闭 / 主动 cancel Task——把状态 + 日志打全再重新 raise，
             # 不能吞，否则破坏 asyncio cancel 协议。
@@ -113,7 +118,7 @@ class InProcessScheduler(Scheduler):
             )
 
     def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
 
 # -- 注册到 SchedulerProducer（实现自注册，新增无需改 producer/装配入口） -------- #

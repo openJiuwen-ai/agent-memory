@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -52,11 +52,14 @@ def test_cross_space_explicit_grant_allows_action(tmp_path) -> None:
     mgr.grant(Grant(grantor=grantor, grantee=grantee, actions=[Action.READ]))
 
     assert mgr.check(grantee, target, Action.READ) is True
-    assert mgr.check(
-        Scope(org="acme", space="other", user="reader"),
-        target,
-        Action.READ,
-    ) is False
+    assert (
+        mgr.check(
+            Scope(org="acme", space="other", user="reader"),
+            target,
+            Action.READ,
+        )
+        is False
+    )
 
 
 def test_agent_user_principal_path_changes_owner_cover(tmp_path) -> None:
@@ -109,16 +112,19 @@ def test_expired_grant_is_rejected(tmp_path) -> None:
         grantor=Scope(org="acme", user="owner"),
         grantee=Scope(org="acme", user="reader"),
         actions=[Action.READ],
-        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
     )
 
     mgr.grant(grant)
 
-    assert mgr.check(
-        Scope(org="acme", user="reader"),
-        Scope(org="acme", user="owner", session="session-a"),
-        Action.READ,
-    ) is False
+    assert (
+        mgr.check(
+            Scope(org="acme", user="reader"),
+            Scope(org="acme", user="owner", session="session-a"),
+            Action.READ,
+        )
+        is False
+    )
 
 
 def test_expired_grant_does_not_block_regrant(tmp_path) -> None:
@@ -133,7 +139,7 @@ def test_expired_grant_does_not_block_regrant(tmp_path) -> None:
             grantor=grantor,
             grantee=grantee,
             actions=[Action.READ],
-            expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
         )
     )
     mgr.grant(
@@ -141,7 +147,7 @@ def test_expired_grant_does_not_block_regrant(tmp_path) -> None:
             grantor=grantor,
             grantee=grantee,
             actions=[Action.READ],
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
         )
     )
 
@@ -234,11 +240,14 @@ def test_check_pushes_scope_matching_into_sql(tmp_path, monkeypatch) -> None:
     spy = spies[0]
     spy.grant_selects.clear()
 
-    assert mgr.check(
-        Scope(org="acme", user="reader", agent="agent-a"),
-        Scope(org="acme", user="owner", session="session-a"),
-        Action.READ,
-    ) is True
+    assert (
+        mgr.check(
+            Scope(org="acme", user="reader", agent="agent-a"),
+            Scope(org="acme", user="owner", session="session-a"),
+            Action.READ,
+        )
+        is True
+    )
 
     assert len(spy.grant_selects) == 1
     query = spy.grant_selects[0]

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from time import perf_counter, sleep
 from types import SimpleNamespace
-from typing import List
 
 import pytest
 
@@ -13,15 +14,25 @@ from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.embedder.base import EmbedderProducer
 from jiuwen_memory.common.errors import BackendError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (
+from jiuwen_memory.common.feature_extractor.feature_extractor_impl.keyword_feature_extractor import (  # noqa: E501
     KeywordFeatureExtractor,
 )
+from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.reranker.reranker_impl.overlap_reranker import OverlapReranker
-from jiuwen_memory.common.type_def import FilterClause, FilterOp, RetrievalPipeline, memory_key
+from jiuwen_memory.common.type_def import (
+    ChatMessage,
+    EntityRecord,
+    EntityStoreFilters,
+    FilterClause,
+    FilterOp,
+    RetrievalPipeline,
+    hash_entity_text,
+    memory_key,
+)
 from jiuwen_memory.common.type_def.memory import LifecycleState
 from jiuwen_memory.common.type_def.memory_codec import dumps
-from jiuwen_memory.common.type_def.scope import Scope
+from jiuwen_memory.common.type_def.scope import Scope, space_id_from_scope
 from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.config.defaults import default_config_dict
 from jiuwen_memory.retrieval.bootstrap import register_operators
@@ -52,6 +63,106 @@ from tests.conftest import DEFAULT_SCOPE, index_unit, make_unit, make_world
 pytestmark = pytest.mark.integration
 
 
+class RecordingLLM(LLM):
+    """记录 prompt / options 并按脚本返回的确定性 LLM 桩。"""
+
+    def __init__(self, response: str | None = None, *, error: Exception | None = None) -> None:
+        self.response = response
+        self.error = error
+        self.calls = 0
+        self.messages: list[list[ChatMessage]] = []
+
+    def plugin_type(self) -> PluginType:
+        return PluginType.LLM
+
+    def health(self) -> None:
+        return None
+
+    def chat(self, messages: list[ChatMessage], **options: object) -> str:
+        self.calls += 1
+        self.messages.append(list(messages))
+        if self.error is not None:
+            raise self.error
+        if self.response is not None:
+            return self.response
+        content = messages[-1].content
+        query = content.split("<current_query>\n", 1)[1].split("\n</current_query>", 1)[0]
+        return json.dumps({"rewritten": query}, ensure_ascii=False)
+
+
+class RecordingReranker(Reranker):
+    """记录精排输入并保持候选原始顺序，便于断言 query 来源。"""
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    def plugin_type(self) -> PluginType:
+        return PluginType.RERANKER
+
+    def health(self) -> None:
+        return None
+
+    def rerank(self, query: str, texts: list[str]) -> list[float]:
+        self.queries.append(query)
+        return [1.0 - index / 100.0 for index in range(len(texts))]
+
+
+class RecordingOverlapReranker(OverlapReranker):
+    """记录精排 query，同时保留真实 overlap 打分行为。"""
+
+    def __init__(self, tokenizer) -> None:
+        super().__init__(tokenizer)
+        self.queries: list[str] = []
+
+    def rerank(self, query: str, texts: list[str]) -> list[float]:
+        self.queries.append(query)
+        return super().rerank(query, texts)
+
+
+class _StaticEntityStore:
+    """只服务 KeywordRecaller 实体反查的最小测试桩。"""
+
+    def __init__(self, record: EntityRecord) -> None:
+        self.record = record
+        self.calls = 0
+        self.requested_hashes: set[str] = set()
+
+    def find_by_entity_text_hash(
+        self,
+        space_id: str,
+        entity_text_hashes: tuple[str, ...],
+        *,
+        filters: EntityStoreFilters,
+        limit: int = 500,
+    ) -> list[EntityRecord]:
+        del space_id, filters, limit
+        self.calls += 1
+        self.requested_hashes.update(entity_text_hashes)
+        return [self.record] if self.record.entity_text_hash in set(entity_text_hashes) else []
+
+
+class _BlockingDomainStore:
+    """no-intent 必须在任何 DomainStore 路径前短路。"""
+
+    def __init__(self, pipeline: RetrievalPipeline):
+        self.pipeline = pipeline
+
+    def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
+        return self.pipeline
+
+    @staticmethod
+    def recall(*args, **kwargs):
+        raise AssertionError("recall must not run for no_intent")
+
+    @staticmethod
+    def recall_and_get(*args, **kwargs):
+        raise AssertionError("recall_and_get must not run for no_intent")
+
+    @staticmethod
+    def retrieve(*args, **kwargs):
+        raise AssertionError("retrieve must not run for no_intent")
+
+
 class FailingRecaller(Recaller):
     """Fault-injection recaller used to verify per-channel degradation."""
 
@@ -61,7 +172,7 @@ class FailingRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return RecallChannel.VECTOR
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         raise BackendError("simulated backend outage")
 
 
@@ -70,12 +181,12 @@ class StaticRecaller(Recaller):
 
     def __init__(
         self,
-        candidates: List[ScoredUnit],
+        candidates: list[ScoredUnit],
         channel: RecallChannel = RecallChannel.KEYWORD,
     ) -> None:
         self._candidates = candidates
         self._channel = channel
-        self.calls: List[int] = []
+        self.calls: list[int] = []
 
     def health(self) -> None:
         return None
@@ -83,7 +194,7 @@ class StaticRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return self._channel
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         self.calls.append(top_k)
         return self._candidates[:top_k]
 
@@ -91,7 +202,7 @@ class StaticRecaller(Recaller):
 class StaticReranker(Reranker):
     """Deterministic reranker returning predefined scores in input order."""
 
-    def __init__(self, scores: List[float]) -> None:
+    def __init__(self, scores: list[float]) -> None:
         self._scores = scores
 
     def plugin_type(self) -> PluginType:
@@ -100,7 +211,7 @@ class StaticReranker(Reranker):
     def health(self) -> None:
         return None
 
-    def rerank(self, query: str, texts: List[str]) -> List[float]:
+    def rerank(self, query: str, texts: list[str]) -> list[float]:
         return self._scores[: len(texts)]
 
 
@@ -118,7 +229,7 @@ class SlowRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return self._channel
 
-    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> List[ScoredUnit]:
+    def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         sleep(self._delay_seconds)
         return [ScoredUnit(self._unit_id, 1.0, self._channel)]
 
@@ -189,6 +300,298 @@ def test_noise_only_query_short_circuits_after_parse(indexed_world, scope) -> No
 def test_invalid_top_k_raises(indexed_world, scope) -> None:
     with pytest.raises(ValidationError):
         indexed_world.retriever.retrieve(scope, RetrievalQuery(text="coffee", top_k=0))
+
+
+def _rewrite_retriever(world, llm, *, rewrite_enabled: bool = True) -> PipelineRetriever:
+    """构造接入改写 parser 的真实内存检索栈。"""
+    parser = SimpleQueryParser(
+        world.tokenizer,
+        world.embedder,
+        feature_extractor=KeywordFeatureExtractor(world.tokenizer),
+        llm=llm,
+        rewrite_enabled=rewrite_enabled,
+    )
+    return PipelineRetriever(
+        parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=_storage_for(world, [world.keyword, world.vector_recaller]),
+    )
+
+
+def test_rewrite_used_end_to_end(indexed_world, scope) -> None:
+    llm = RecordingLLM(json.dumps({"rewritten": "alice coffee"}, ensure_ascii=False))
+    retriever = _rewrite_retriever(indexed_world, llm)
+
+    result = retriever.retrieve(
+        scope,
+        RetrievalQuery(
+            text="do you remember where alice likes coffee?",
+            top_k=5,
+            with_trajectory=True,
+        )
+    )
+
+    parse_step = [step for step in result.trajectory if step.stage == "parse"][0]
+    assert "u1" in [item.unit_id for item in result.items], "改写后的 query 应命中候选"
+    assert llm.calls == 1, "改写启用时应只调用一次 LLM"
+    assert parse_step.detail["rewrite"] == "used", "轨迹应记录改写状态 used"
+
+
+def test_rewrite_context_reaches_prompt_and_recalls_end_to_end(indexed_world, scope) -> None:
+    llm = RecordingLLM(json.dumps({"rewritten": "alice coffee"}, ensure_ascii=False))
+    retriever = _rewrite_retriever(indexed_world, llm)
+
+    result = retriever.retrieve(
+        scope,
+        RetrievalQuery(
+            text="她喜欢什么咖啡？",
+            query_context=("用户：alice 喜欢咖啡。",),
+            top_k=5,
+            with_trajectory=True,
+        ),
+    )
+
+    content = llm.messages[0][-1].content
+    assert content.index("<current_query>") < content.index("<recent_context>")
+    assert "她喜欢什么咖啡？" in content
+    assert "alice 喜欢咖啡" in content
+    assert "u1" in [item.unit_id for item in result.items]
+
+
+def test_rewrite_context_candidate_survives_rewritten_rerank() -> None:
+    world = make_world()
+    index_unit(world, make_unit("u1", "alice likes coffee"))
+    index_unit(world, make_unit("u2", "她喜欢咖啡"))
+    llm = RecordingLLM(json.dumps({"rewritten": "alice coffee"}, ensure_ascii=False))
+    parser = SimpleQueryParser(
+        world.tokenizer,
+        world.embedder,
+        feature_extractor=KeywordFeatureExtractor(world.tokenizer),
+        llm=llm,
+        rewrite_enabled=True,
+    )
+    reranker = RecordingOverlapReranker(world.tokenizer)
+    retriever = PipelineRetriever(
+        parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        reranker,
+        domain_store=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [
+                        ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                        ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                    ]
+                )
+            ],
+        ),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(
+            text="她喜欢什么咖啡？",
+            query_context=("用户：alice 喜欢咖啡。",),
+            top_k=2,
+            rerank=True,
+            with_trajectory=True,
+        ),
+    )
+
+    ids = [item.unit_id for item in result.items]
+    assert "u1" in ids, "rewritten 精排应保留由上下文恢复主体的候选"
+    assert reranker.queries == ["alice coffee"], "used 状态精排应直接收到 rewritten"
+    rerank_step = [step for step in result.trajectory if step.stage == "rerank"][0]
+    assert rerank_step.detail["query_source"] == "parsed.rewritten"
+    assert rerank_step.detail["rewrite"] == "used"
+
+
+def test_rewrite_and_entity_expansion_use_separate_inputs() -> None:
+    world = make_world()
+    index_unit(world, make_unit("u1", "alice likes coffee"))
+    world.kv.insert(
+        DEFAULT_SCOPE,
+        memory_key("u2"),
+        dumps(make_unit("u2", "deployment rollback plan")),
+    )
+    document = world.fulltext.get(DEFAULT_SCOPE, ["u1"])[0]
+    world.fulltext.update(
+        DEFAULT_SCOPE,
+        [replace(document, metadata={**document.metadata, "entities": ["alice"]})],
+    )
+    entity_hash = hash_entity_text("alice")
+    entity_store = _StaticEntityStore(
+        EntityRecord(
+            id="entity-alice",
+            space_id=space_id_from_scope(DEFAULT_SCOPE),
+            entity_text="alice",
+            entity_type="PROPER",
+            linked_memory_ids=("u1", "u2"),
+            filters=EntityStoreFilters.from_scope(DEFAULT_SCOPE),
+            entity_text_hash=entity_hash,
+        )
+    )
+    manager = CompositeStoreManager(
+        kv=world.kv, vector=world.vector, fulltext=world.fulltext
+    )
+    domain_store = CompositeDomainStore(
+        manager=manager, preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK
+    )
+    domain_store.bind_recallers([KeywordRecaller(manager, entity_store=entity_store)])
+    manager.bind_domain_store(domain_store)
+    llm = RecordingLLM(json.dumps({"rewritten": "alice coffee"}, ensure_ascii=False))
+    parser = SimpleQueryParser(
+        world.tokenizer,
+        world.embedder,
+        feature_extractor=KeywordFeatureExtractor(world.tokenizer),
+        llm=llm,
+        rewrite_enabled=True,
+    )
+    retriever = PipelineRetriever(
+        parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=domain_store,
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(
+            text="她喜欢什么咖啡？",
+            query_context=("用户：alice 喜欢咖啡。",),
+            top_k=5,
+        ),
+    )
+
+    ids = {item.unit_id for item in result.items}
+    assert {"u1", "u2"} <= ids, "rewrite 命中 batch1 后实体扩展应带入关联候选"
+    assert entity_store.calls == 1, "实体扩展应基于 batch1 metadata 反查一次"
+    assert entity_store.requested_hashes == {entity_hash}
+    assert llm.calls == 1, "entity expansion 不应触发第二次 rewrite"
+
+
+@pytest.mark.parametrize("rewrite_enabled", [False, True])
+def test_rewrite_fallback_and_off_rerank_sanitized_raw(rewrite_enabled) -> None:
+    world = make_world()
+    index_unit(world, make_unit("u1", "alice likes coffee"))
+    index_unit(world, make_unit("u2", "她喜欢咖啡"))
+    llm = RecordingLLM("not json")
+    parser = SimpleQueryParser(
+        world.tokenizer,
+        world.embedder,
+        feature_extractor=KeywordFeatureExtractor(world.tokenizer),
+        llm=llm,
+        rewrite_enabled=rewrite_enabled,
+    )
+    reranker = RecordingReranker()
+    retriever = PipelineRetriever(
+        parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        reranker,
+        domain_store=_storage_for(
+            world,
+            [
+                StaticRecaller(
+                    [
+                        ScoredUnit("u1", 1.0, RecallChannel.KEYWORD),
+                        ScoredUnit("u2", 0.9, RecallChannel.KEYWORD),
+                    ]
+                )
+            ],
+        ),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="她喜欢什么咖啡？", top_k=2, rerank=True, with_trajectory=True),
+    )
+
+    assert reranker.queries == ["她喜欢什么咖啡？"]
+    expected_status = "fallback" if rewrite_enabled else "off"
+    rerank_step = [step for step in result.trajectory if step.stage == "rerank"][0]
+    assert rerank_step.detail["rewrite"] == expected_status
+
+
+@pytest.mark.parametrize(
+    "pipeline",
+    [
+        RetrievalPipeline.RECALL_GET_RANK,
+        RetrievalPipeline.RECALL_AND_GET_RANK,
+        RetrievalPipeline.RETRIEVE,
+    ],
+)
+def test_rewrite_no_intent_short_circuits_all_storage_pipelines(
+    indexed_world, scope, pipeline
+) -> None:
+    llm = RecordingLLM('{"rewritten": null}')
+    reranker = RecordingReranker()
+    parser = SimpleQueryParser(
+        indexed_world.tokenizer,
+        indexed_world.embedder,
+        feature_extractor=KeywordFeatureExtractor(indexed_world.tokenizer),
+        llm=llm,
+        rewrite_enabled=True,
+    )
+    retriever = PipelineRetriever(
+        parser,
+        RRFFuser(),
+        indexed_world.discloser,
+        indexed_world.unit_reader,
+        reranker,
+        domain_store=_BlockingDomainStore(pipeline),
+    )
+
+    result = retriever.retrieve(
+        scope,
+        RetrievalQuery(text="谢谢，明白了", top_k=5, with_trajectory=True),
+    )
+
+    assert result.items == []
+    assert result.errors == []
+    parse_step = next(step for step in result.trajectory if step.stage == "parse")
+    assert parse_step.detail["rewrite"] == "no_intent"
+    assert parse_step.detail["skipped"] == "no_retrieval_intent"
+    assert llm.calls == 1
+    assert reranker.queries == [], "no_intent 应在精排前短路"
+
+
+
+def test_rewrite_fallback_end_to_end(indexed_world, scope) -> None:
+    llm = RecordingLLM("not json")
+    retriever = _rewrite_retriever(indexed_world, llm)
+
+    result = retriever.retrieve(
+        scope, RetrievalQuery(text="coffee", top_k=5, with_trajectory=True)
+    )
+
+    parse_step = [step for step in result.trajectory if step.stage == "parse"][0]
+    assert "u1" in [item.unit_id for item in result.items], "改写失败应回退 raw query"
+    assert llm.calls == 1, "改写失败时不应在 parser 内重试"
+    assert parse_step.detail["rewrite"] == "fallback", "轨迹应记录 fallback"
+    assert parse_step.detail["fallback_reason"] == "invalid_json", "轨迹应记录 fallback 原因"
+
+
+def test_rewrite_off_default_end_to_end(indexed_world, scope) -> None:
+    llm = RecordingLLM()
+    retriever = _rewrite_retriever(indexed_world, llm, rewrite_enabled=False)
+
+    result = retriever.retrieve(
+        scope, RetrievalQuery(text="coffee", top_k=5, with_trajectory=True)
+    )
+
+    parse_step = [step for step in result.trajectory if step.stage == "parse"][0]
+    assert "u1" in [item.unit_id for item in result.items], "默认链路应正常检索"
+    assert llm.calls == 0, "rewrite 关闭时不应调用 LLM"
+    assert parse_step.detail["rewrite"] == "off", "轨迹应记录 rewrite off"
+
 
 
 def test_invalid_max_tokens_raises(indexed_world, scope) -> None:

@@ -8,7 +8,7 @@
 两个入口对应两类调用方：
 
 - :func:`new_request_context` 给**已完成认证**的 surface 用（HTTP / MCP / CLI 经
-  ``bootstrap.core.auth_middleware`` 调它）；
+  ``jiuwen_memory_entry.core.auth_middleware`` 调它）；
 - :func:`internal_context` 给**进程内直连**的调用方用（示例脚本、评测 harness、
   嵌入式插件）——它们没有网络对端，但契约与外部请求完全相同（F05 §进程内调用）。
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from contextvars import ContextVar, Token
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.security.types import (
     AuthContext,
@@ -26,6 +26,7 @@ from jiuwen_memory.common.security.types import (
     RequestSecurityContext,
     Surface,
     _bind_origin,
+    validate_actor_form,
 )
 
 _REQUEST_ID: ContextVar[str | None] = ContextVar("agent_memory_request_id", default=None)
@@ -68,13 +69,14 @@ def new_request_context(
 
     Round3: _origin 绑定完整 RequestSecurityContext 安全字段，防止 replace(attributes=...) 提权。
     """
+    validate_actor_form(auth.actor)
     # 先构造上下文（_origin 用占位符）
     context = RequestSecurityContext(
         auth=auth,
         request_id=request_id or uuid.uuid4().hex,
         peer=peer,
         surface=surface,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         attributes=attributes or {},
         _origin="",  # 占位符
     )
@@ -91,10 +93,10 @@ def internal_context(authenticator) -> RequestSecurityContext:
     与「传入 Scope 直接当已认证 actor」的那条线（迁移计划 §5.3）。调用方要操作哪个
     Scope，照旧走业务参数；它决定不了自己是谁。
 
-    ``authenticator`` **必填**：无参领取 ROOT 已不再允许。进程内直连确实信任内核装配
-    方，但这份信任必须是一次显式传入（如 ``internal_context(DevAuthenticator())``），
-    让「这里拿到了 ROOT」在调用点看得见，而不是像旧的 ``authenticator=None`` 默认那样
-    谁都不写就悄悄得到一个超管身份。
+    ``authenticator`` **必填**：调用方必须显式选择认证器，身份与角色来自认证结果。
+    如 ``internal_context(DevAuthenticator())`` 只取得固定开发 USER，不是 ROOT；
+    管理操作需由可信装配显式配置有相应权限的认证器，或使用配置 Runtime 的 authenticate。
+    本入口不会因进程内调用自动提权，也不会恢复旧的 ``authenticator=None`` 超管默认值。
 
     **不可用于有网络对端的场景。** 网络接入必须走 ``auth_middleware.authenticated``：
     那里有真实凭据校验、限流、并发预算和入口审计，这里一样都没有。

@@ -28,7 +28,8 @@ globals:
 
 # ---- 本地高级精排（需安装 extra: embed，并准备模型文件）----
 # reranker:
-#   default: { target: bge_reranker, params: { reranker_bge_model: BAAI/bge-reranker-v2-m3 } }
+#   default: { target: bge_reranker, params: { reranker_bge_model: /models-local/bge-reranker-v2-m3 } }
+#   # 仅使用本地目录或已准备好的 HuggingFace 缓存，运行时不会下载权重。
 
 # ---- 多实例 + 引用共享示例：构建侧与召回侧共享同一具名 vector_store ----
 # vector_store:
@@ -121,31 +122,32 @@ globals:
 #       # narrow_dims 每项 4 个字段：entity 与 tag_key 必填（tag_key 不得重复），
 #       #   applies_to 默认对全部类别生效，question 默认空（判定时问模型的那句话）。
 #       # 以上约束在装配期校验，配错即 ValidationError，不会留到运行时。
-#       # target: llm 时另可配 retry_max_retries（默认 3）、retry_backoff_ms（默认 1000）。
+#       # target: llm 时另可配 router_max_attempts（默认 3）、
+#       # router_retry_backoff（默认 1000）。
 #       # 接入方的产品概念，内核只作字典键透传；内核自带 user/agent/session 三项，
 #       # 取值以调用方身份为准、不接受覆盖，因此这里不得与那三项重名。
 #       coord_entities: [project, team]
 #       # 一个类别 = 一个归属维 + 一个空间名模板。
 #       # 判据是「换掉哪个坐标这条记忆就不成立，那个坐标即它的归属维」。
 #       memory_classes:
-#         - name: user_memory
+#         - name: user_profile
 #           # description 会拼进判定 prompt，模型据它选类别，写清楚这一类是什么
 #           description: 关于用户本人的事实、偏好与习惯，换一个用户就不成立
 #           owner: user                  # 归属维实体名
 #           space_template: "u_{user}"   # 空间名模板，必须引用该类别的 owner
 #           fallback: true               # 兜底落点，有且仅有一个，且不得 cross_user
-#         - name: project_memory
+#         - name: long_term_memory
 #           description: 关于某个项目的事实、决定与约定，换一个项目就不成立
 #           owner: project
 #           space_template: "p_{project}"
 #           cross_user: true             # 该类别的空间跨用户可见，是设计意图
 #           members: 项目参与者           # cross_user 必须给出成员来源或声明 sanitized
-#         - name: team_memory
+#         - name: daily_memory
 #           description: 关于某个 agent-team 的协作方式，换一个 team 就不成立
 #           owner: team
 #           # record_only：不落独立空间，命中该类别的条目落 fallback 空间，归属实体
 #           # 只记成一个标签。该形态下团队记忆不在团队内共享——标签只在作者自己的
-#           # 空间内起收窄作用。要在团队内共享就删掉本行并按 project_memory 的写法配。
+#           # 空间内起收窄作用。要在团队内共享就删掉本行并按 long_term_memory 的写法配。
 #           record_only: true
 #           tag_key: team_id             # 不写则按 <owner>_id 生成
 #       # 收窄维：命中即在条目上打标签，检索按同一组标签收窄
@@ -158,5 +160,5 @@ globals:
 #           question: 这条记忆是否只在这一次会话内有意义？
 #         - entity: project
 #           tag_key: project_id
-#           applies_to: [user_memory]    # 只对这些类别生效；不写则对全部类别生效
+#           applies_to: [user_profile]    # 只对这些类别生效；不写则对全部类别生效
 #           question: 这条记忆是否与某个具体项目相关？

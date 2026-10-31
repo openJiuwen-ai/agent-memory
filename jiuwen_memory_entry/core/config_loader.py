@@ -26,7 +26,7 @@ _PLACEHOLDER_RULE = (
 )
 
 
-def _sub_env(m: "re.Match[str]") -> str:
+def _sub_env(m: re.Match[str]) -> str:
     name, default = m.group(1), m.group(2)
     return os.environ.get(name, default if default is not None else "")
 
@@ -61,13 +61,30 @@ def expand_env(obj):
 
 
 def load_layer(path: str) -> dict:
-    """读一层配置文件：``.yml/.yaml`` 走 YAML，其余按 JSON；读后做环境变量展开。"""
-    with open(path, "r", encoding="utf-8") as fh:
-        text = fh.read()
-    if path.endswith((".yml", ".yaml")):
-        import yaml  # 部署镜像已装 PyYAML（见 pyproject 的 deploy extra）
+    """读一层配置文件：``.yml/.yaml`` 走 YAML，其余按 JSON；读后做环境变量展开。
 
-        data = yaml.safe_load(text) or {}
-    else:
-        data = json.loads(text) if text.strip() else {}
+    解析失败与顶层非对象统一抛 :class:`ValidationError`（公开面白名单错误），
+    不把 ``JSONDecodeError`` / ``YAMLError`` 裸抛给 surface——三个入口
+    （HTTP/MCP/CLI）都按 ``AgentMemoryError`` 统一接错误提示，而不是 traceback。
+    顶层是数组等非映射时曾**静默跳过**该层（合并循环只认 dict），调用方以为
+    配置生效了实际没有——此处直接报错。
+    """
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    try:
+        if path.endswith((".yml", ".yaml")):
+            import yaml  # 部署镜像已装 PyYAML（见 pyproject 的 deploy extra）
+
+            data = yaml.safe_load(text) or {}
+        else:
+            data = json.loads(text) if text.strip() else {}
+    except ValueError as exc:  # json.JSONDecodeError；yaml.YAMLError 不是 ValueError
+        raise ValidationError(f"config file {path} is not valid JSON: {exc}") from exc
+    except Exception as exc:  # yaml.YAMLError 及其他解析器错误，统一转白名单类型
+        raise ValidationError(f"config file {path} could not be parsed: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValidationError(
+            f"config file {path} must be a JSON/YAML object at the top level, "
+            f"got {type(data).__name__}"
+        )
     return expand_env(data)

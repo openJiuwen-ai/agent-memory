@@ -60,12 +60,12 @@ combines the in-process KV, Vector, Fulltext, and Graph Store implementations. E
 and reranking also use default implementations with no external dependencies.
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, assemble_runtime, build_dev_authenticator, internal_context
 
 runtime = assemble_runtime()
 api = runtime.api
 scope = Scope(org="demo", user="alice")
-security = legacy_request_context(scope)
+security = internal_context(build_dev_authenticator())
 
 try:
     units = api.add(
@@ -89,10 +89,13 @@ finally:
 All data in this mode lives in the current process and is lost when the process exits. Docker and
 model services are not required.
 
-The example's `legacy_request_context` is a transitional bridge for local testing; it does not
-validate credentials. Production applications must obtain `RequestSecurityContext` from a trusted
-authentication boundary instead of treating the business `scope` as an authenticated identity.
-HTTP and CLI already use independent authentication boundaries and do not use this legacy bridge.
+The example's `build_dev_authenticator()` is for in-process callers that explicitly cross the
+authentication boundary in local testing and similar scenarios; it does not validate credentials
+and returns a fixed development identity (`local/developer`, USER grade). Note that the business
+`scope` is only the operation target, not an identity: `internal_context()` derives the identity
+from the authenticator passed in, so a caller cannot decide who it is. Production applications must
+obtain `RequestSecurityContext` from a trusted authentication boundary. HTTP and CLI already use
+independent authentication boundaries and do not use this local channel.
 
 ## 4. Option Two: In-Memory Storage + Local HTTP Launcher
 
@@ -115,9 +118,16 @@ curl http://127.0.0.1:8137/healthz
 ```
 
 `--auth-mode dev` enables an authenticator for isolated functional testing only.
-Without `http.dev_identities`, it ignores authentication headers and creates the server-side ROOT identity
+Without `http.dev_identities`, it ignores authentication headers and creates the server-side USER identity
 `Scope(org="local", user="developer")`, and still runs `MemoryAPI` authorization. The examples use
-the same Scope as the business target. This mode binds to loopback by default and must not be used
+the same Scope as the business target. Cross-org/user requests return 403 unless separately authorized.
+ROOT requires explicit dev authenticator `params.role`; see the
+[configuration guide](<../API Docs/config.md#33-http-development-tests-multiple-identities>).
+After upgrading, `audit`, `verify_audit`, and `admin_get/set/all` also require explicit ROOT;
+`create_space` requires at least an ADMIN in the same org. Space membership/policy operations
+follow actual governance rights. See the [management migration guide](<../API Docs/config.md#migrating-management-entry-points-from-default-user>);
+adding `--auth-mode dev` alone does not restore management privileges.
+This mode binds only to loopback and must not be used
 in production. The request body keeps the parameter structure of the same-named `MemoryAPI` method:
 
 ```bash
@@ -134,13 +144,12 @@ curl -X POST http://127.0.0.1:8137/v1/search \
 HTTP authentication mode is selected in this order: `--auth-mode`, the
 `JIUWEN_MEMORY_HTTP_AUTH_MODE` environment variable, then `required`. Setting the environment variable
 to `dev` enables development authentication even without the command-line option.
-In `required` mode, the launcher has no production `SecurityRuntimeProducer`, so business endpoints
-fail closed with 503. Integrating applications should inject a trusted security runtime through
+In `required` mode, the launcher builds a production `SecurityRuntime` from
+`memory_api.security`; without that configuration, business endpoints fail closed with 503.
+Integrating applications may also inject a trusted runtime through
 `HttpServer.build(..., security_runtime=security_runtime)`. This security runtime is not the
-memory-kernel runtime returned by `assemble_runtime()`.
-The development launcher uses a minimal `DevHttpSecurityRuntime` with a development authenticator
-and no rate limiter, workload guard, or surface audit component. API authorization and business
-auditing still run.
+memory-kernel runtime returned by `assemble_runtime()`. The development launcher also assembles a
+complete runtime, including the shared binding policy and resource-protection capabilities.
 
 To test administrators, space members, and multiple users, add
 [`http.dev_identities`](<../API Docs/config.md#33-http-development-tests-multiple-identities>) to
@@ -246,7 +255,7 @@ both the HTTP configuration format and its environment-variable expansion, load 
 follows:
 
 ```python
-from jiuwen_memory.api import Context, Scope, assemble_runtime, legacy_request_context
+from jiuwen_memory.api import Context, Scope, assemble_runtime, build_dev_authenticator, internal_context
 from jiuwen_memory_entry.core.config_loader import load_layer
 
 layer = load_layer("local-real-storage.yml")
@@ -254,7 +263,7 @@ runtime = assemble_runtime(config=layer["memory_api"])
 api = runtime.api
 
 scope = Scope(org="demo", user="alice")
-security = legacy_request_context(scope)
+security = internal_context(build_dev_authenticator())
 try:
     api.add("A memory that must be persisted", scope, security=security)
     result = api.search("persisted memory", Context(scope), security=security, top_k=5)
@@ -423,7 +432,8 @@ See the [CLI guide](../../../jiuwen_memory_entry/cli/DESIGN.md) for the full par
   claims in the request body are rejected.
 - In the default `required` mode, a launcher without a production authentication runtime returns
   503 and never falls back to an empty or payload-provided identity.
-- Without a map, dev uses the fixed `local/developer` ROOT identity; with a map, test selectors
+- Without a map, dev defaults to the fixed `local/developer` USER identity; ROOT requires explicit
+  configuration. With a map, test selectors
   choose the identity. Both still run authorization, are for isolated functional tests only,
   and require loopback binding by default.
 - Production environments should provide a trusted authentication runtime together with TLS, rate

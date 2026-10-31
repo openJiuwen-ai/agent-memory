@@ -59,7 +59,7 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 ## 代码风格
 
-- **类型注解**：使用 PEP 585 内置泛型（`list[X]`、`dict[K, V]`）和 PEP 604 联合类型（`X | Y`、`X | None`）；禁止从 `typing` 导入 `List` / `Dict` / `Set` / `Optional` / `Union` 等已被内置语法替代的别名。`Callable`、`Awaitable`、`TYPE_CHECKING`、`Any` 等无内置等价物的仍从 `typing` 导入。
+- **类型注解**：使用 PEP 585 内置泛型（`list[X]`、`dict[K, V]`）和 PEP 604 联合类型（`X | Y`、`X | None`）；禁止从 `typing` 导入 `List` / `Dict` / `Set` / `Optional` / `Union` / `Tuple` 等已被内置语法替代的别名。`Callable`、`Awaitable`、`Mapping`、`Sequence`、`Iterator` 等抽象基类从 `collections.abc` 导入（UP035 强制）；仅 `TYPE_CHECKING`、`Any` 等无等价物的仍从 `typing` 导入。由 ruff `UP` 规则集强制（`UP042` StrEnum 迁移除外，见 `pyproject.toml`）。
 - **Linter**：`ruff`（行长 100，target Python 3.11）；提交前运行 `ruff check --fix` 修复，`ruff check` 验证。
 
 ## 设计文档归档与双向同步
@@ -73,11 +73,23 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 三条强制约束，提交时必查（由 `.githooks/pre-commit` 检查，**默认未启用**：先跑 `git config core.hooksPath .githooks` 才会生效）：
 
-1. **影响公开接口、跨模块协调或有多方案取舍的特性必须归档特性文档，特性代码、测试代码、文档拆成三个连续提交**：在 `docs/features/` 下新增 `FNN-<slug>.md`，记录决策、拒绝的方案、验证基线、已知遗留。落地顺序**固定为三个紧邻的提交**——提交 1 落特性代码（`feat(memory): ...`），提交 2 落单测（`test(memory): ...`），提交 3 落文档（`docs(memory): ...`，含 features 新增、受影响 specs 修订日期更新、受影响模块 AGENTS.md 更新）。特性代码、测试、文档不再混进同一次 commit——既不让大段文档 diff 淹没代码评审，也让测试改动独立可审，还避免文档归档拖延导致设计上下文随时间漂移。commit message 只写 what，features 文档负责写 why / why-not。
+1. **影响公开接口、跨模块协调或有多方案取舍的特性必须归档特性文档；每个实现 PR 最终交付一个合并提交**：通常在 `docs/features/` 下新增 `FNN-<slug>.md`，记录决策、拒绝的方案、验证基线、已知遗留；安全能力使用下方「安全文档单一维护约定」，只更新已有 F04。特性代码、测试代码和相关文档统一纳入该 PR 的一个合并提交，包含 features 新增或更新、受影响 specs 修订日期更新、受影响模块 AGENTS.md 更新，不再要求拆成三次提交。代码、测试与文档必须同步完成。commit message 只写 what，features 文档负责写 why / why-not。
 
 2. **跨模块规约变动必须更新 specs 文档**：接口契约、跨模块协议、不变量、公共 API 发生变化时，同步修订 `docs/specs/SNN-<slug>.md`；新规约 = 新 spec 文件。规约变了但 specs 没改，下次读 spec 的人就被误导——这是设计债，不是文档懒。
 
 3. **双向同步：读到与代码不一致的描述必须当场修文档**。以代码为准刷新文档，在同一次改动里落地；不要把过时表述当作新约束执行。任何一份 `AGENTS.md` / `docs/specs/*` / `docs/features/*` 里读到的接口名、枚举值、truth table 行数、文件路径、不变量等只要与当前代码不符，**不要**把过时表述当作新约束去执行、也不要原样转述给用户；先 `grep` 代码、以代码为准刷新文档，在同一次改动里落地。`AGENTS.md` 里每条点名了"X 个分支 / Y 路 dispatch / Z 方法"的句子都是契约的一部分。**更新目标是 `AGENTS.md`，不是 `CLAUDE.md`**——`CLAUDE.md` 现在只是指向 `AGENTS.md` 的只读指针壳，编辑它没有任何意义；所有内容变更一律落到对应目录的 `AGENTS.md`。
+
+### 安全文档单一维护约定
+
+- 本项目现有安全能力总纲统一维护在 `docs/features/common/F04-security-interfaces-and-encryption.md`。
+  能力改变时刷新现行设计，不将 F04 当执行记事本；合并上游、基线适配、门禁/验收的逐次
+  复现、执行结果和工作笔记放本地 `security-plans/`，不纳入实现 PR。不得因此在 `docs/`
+  新增安全文档。原 F10～F14 已整合，不恢复它们或为后续同步重新编号。
+- 安全域阶段性接口备忘已整合到既有 specs；安全能力特性文档只保留 F04，
+  不恢复阶段性备忘或将本地检测记录纳入正式文档。
+- 既有 specs 与模块 AGENTS.md 的职责和双向同步要求不变，更新现有文件，不另建重复
+  设计页。冻结接口不因文档整理而改变；本地 `security-plans/problems/` 工作记录不纳入
+  实现 PR。此次约定不删除或合并上游独立的 SSL 等非本轮安全专题文档。
 
 **pre-commit hook 行为**（`.githooks/pre-commit`，需手动 `git config core.hooksPath .githooks` 启用）：
 - 非交互环境（无 TTY，如 CI）直接 `exit 0`，不做任何检查；交互终端下会逐项询问
@@ -105,4 +117,4 @@ commit message scope 固定用 `memory`（如 `feat(memory): ...`、`fix(memory)
 
 footer 用 `Refs: #<issue>` 关联 issue；issue 号无法从上下文确认时必须先询问用户，不要臆造。
 
-涉及文档更新的特性改动，特性代码、测试、文档拆成三个连续提交，细则见上文「设计文档归档与双向同步」约束 #1。
+每个实现 PR 最终交付一个合并提交，统一包含实现代码、测试和相关文档，细则见上文「设计文档归档与双向同步」约束 #1。

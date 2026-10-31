@@ -19,8 +19,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from datetime import UTC, datetime
 
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
@@ -33,6 +32,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.common.type_def.chat import ChatMessage
+from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import AbstractorProducer
 from jiuwen_memory.construction.associator import AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext
@@ -44,6 +44,7 @@ from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     _resolve_message_store,
 )
 from jiuwen_memory.construction.extractor import ExtractorProducer
+from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_composer
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
 from jiuwen_memory.construction.prompt_registry import (
     PHASE_CONSOLIDATE,
@@ -57,6 +58,10 @@ from jiuwen_memory.construction.prompt_strategy import (
     parse_prompt_strategies,
 )
 from jiuwen_memory.construction.router import optional_router
+from jiuwen_memory.construction.snapshot_inheritance import (
+    inherit_infer_snapshots,
+    snapshot_for_decision,
+)
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
 logger = get_logger(__name__)
@@ -68,7 +73,7 @@ class ConsolidateDecision:
 
     candidate: MemoryUnit
     decision: DedupDecision
-    existing: Optional[MemoryUnit]
+    existing: MemoryUnit | None
     score: float
 
 
@@ -89,7 +94,7 @@ class DynamicEvolver(OrchestratingEvolver):
         super().__init__(*args, **kwargs)
         self._prompts = prompt_registry or PromptRegistry()
 
-    def _evolve_extract(self, units: List[MemoryUnit]) -> EvolveResult:
+    def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         """动态四步：extract → consolidate(判定) → reflect → 落盘。
 
         procedural 路径仍走父类行为（不收集 context、不判定、直接落盘）——
@@ -114,10 +119,11 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _extract_step(
         self,
-        units: List[MemoryUnit],
-        context: Optional[ExtractContext],
-    ) -> List[MemoryUnit]:
+        units: list[MemoryUnit],
+        context: ExtractContext | None,
+    ) -> list[MemoryUnit]:
         extracted = self._extractor.extract(units, context=context)
+        inherit_infer_snapshots(units, extracted)
         logger.info("DynamicEvolver: EXTRACT extractor returned %d units", len(extracted))
         if not extracted:
             return []
@@ -137,9 +143,9 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _consolidate_step(
         self,
-        candidates: List[MemoryUnit],
-    ) -> List[ConsolidateDecision]:
-        decisions: List[ConsolidateDecision] = []
+        candidates: list[MemoryUnit],
+    ) -> list[ConsolidateDecision]:
+        decisions: list[ConsolidateDecision] = []
         for candidate in candidates:
             try:
                 hits = self._dedup.recall(candidate)
@@ -164,8 +170,8 @@ class DynamicEvolver(OrchestratingEvolver):
     def _judge(
         self,
         candidate: MemoryUnit,
-        hits: List[Tuple[MemoryUnit, float]],
-    ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+        hits: list[tuple[MemoryUnit, float]],
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         if not hits:
             return DedupDecision.ADD, None, 0.0
         existing, score = max(hits, key=lambda item: item[1])
@@ -188,7 +194,7 @@ class DynamicEvolver(OrchestratingEvolver):
                 return DedupDecision.NOOP, existing, score
             return DedupDecision.ADD, existing, score
 
-    def _resolve_consolidate_prompt(self, candidate: MemoryUnit) -> Optional[str]:
+    def _resolve_consolidate_prompt(self, candidate: MemoryUnit) -> str | None:
         prompts = parse_prompt_strategies(
             candidate.system_metadata, CONSOLIDATION_PROMPT_PREFIX
         )
@@ -207,9 +213,9 @@ class DynamicEvolver(OrchestratingEvolver):
     def _llm_judge(
         self,
         candidate: MemoryUnit,
-        hits: List[Tuple[MemoryUnit, float]],
+        hits: list[tuple[MemoryUnit, float]],
         prompt: str,
-    ) -> Tuple[DedupDecision, Optional[MemoryUnit], float]:
+    ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         hit_map = {unit.id: (unit, score) for unit, score in hits[:5]}
         existing_text = "\n\n".join(
             f"[Memory ID: {unit.id}]\nContent: {unit.content}\n"
@@ -244,9 +250,9 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _reflect_step(
         self,
-        candidates: List[MemoryUnit],
-        decisions: List[ConsolidateDecision],
-    ) -> List[MemoryUnit]:
+        candidates: list[MemoryUnit],
+        decisions: list[ConsolidateDecision],
+    ) -> list[MemoryUnit]:
         return candidates
 
     # ------------------------------------------------------------------
@@ -255,8 +261,8 @@ class DynamicEvolver(OrchestratingEvolver):
 
     def _persist_decisions(
         self,
-        candidates: List[MemoryUnit],
-        decisions: List[ConsolidateDecision],
+        candidates: list[MemoryUnit],
+        decisions: list[ConsolidateDecision],
     ) -> EvolveResult:
         result = EvolveResult()
         for decision in decisions:
@@ -273,11 +279,12 @@ class DynamicEvolver(OrchestratingEvolver):
         self,
         candidate: MemoryUnit,
         decision: DedupDecision,
-        existing: Optional[MemoryUnit],
+        existing: MemoryUnit | None,
         similarity: float,
         result: EvolveResult,
     ) -> int:
         """执行单条决策，返回 noop 计数（0 或 1，与父类签名一致）。"""
+        snapshot = snapshot_for_decision(candidate, decision, existing)
         if decision == DedupDecision.ADD or (
             decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE}
             and existing is None
@@ -308,6 +315,8 @@ class DynamicEvolver(OrchestratingEvolver):
                     "dedup_merged_from": candidate.id,
                 }
             )
+            if snapshot is not None:
+                existing.hierarchy = snapshot
             self._index.update([existing])
             result.updated_ids.append(existing.id)
             return 0
@@ -324,7 +333,7 @@ class DynamicEvolver(OrchestratingEvolver):
         )
         self._index.build([candidate])
         existing.lifecycle = LifecycleState.SUPERSEDED
-        existing.temporal.t_invalid = datetime.now(timezone.utc)
+        existing.temporal.t_invalid = datetime.now(UTC)
         self._index.update([existing])
         result.created_ids.append(candidate.id)
         result.created_units.append(candidate)
@@ -385,7 +394,7 @@ def _build(config):
     ``config.get("prompts")`` 在 params 无 prompts 时回退 globals。
     """
     vector_on = config.get("vector_enabled", True)
-    ib_default = "hybrid" if vector_on else "fulltext"
+    ib_default = resolve_index_builder_default(config)
     dr_default = "vector" if vector_on else "keyword"
 
     def _opt_annotator():
@@ -408,15 +417,20 @@ def _build(config):
         else PromptRegistry(config_source=config_source)
     )
 
+    hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
+    hierarchy_llm = LlmProducer.dep(config, default="echo")
     return DynamicEvolver(
         extractor=ExtractorProducer.dep(config, default="dynamic_llm"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
-        index_builder=IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+        index_builder=hierarchy_index,
         storage=StoreManagerProducer.resolve(config),
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dr_default),
-        llm=LlmProducer.dep(config, default="echo"),
+        llm=hierarchy_llm,
+        hierarchy_composer=optional_hierarchy_composer(
+            config, index_builder=hierarchy_index, llm=hierarchy_llm,
+        ),
         layer_annotator=_opt_annotator(),
         router=optional_router(config),
         prompt_registry=registry,

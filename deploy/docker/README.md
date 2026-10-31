@@ -59,6 +59,10 @@ cd deploy/docker/local
 
 ## 启动
 
+PR1-1 的全后端静态加密默认关闭。若设置 `STORAGE_ENCRYPTION_ENABLED=true`，使用
+[加密部署启动器](../encryption/README.md)，它检查 Linux encrypted block volume 并覆盖
+全部持久化服务目录。直接修改开关不会加密现有 named volumes，也不会迁移历史数据。
+
 ### 在线模型模式
 
 在线模型模式不安装 `torch` / `FlagEmbedding` / `transformers`，也不挂载本地模型目录。嵌入与精排

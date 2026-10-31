@@ -78,14 +78,14 @@ MemoryUnit
 ├── temporal        时间：t_event(发生) / t_ingest(摄入) / t_valid / t_invalid
 ├── provenance      演进血缘（多→一合成）：由哪些 unit 抽取/升华/合并而来（来源可仍有效）
 ├── supersedes      版本链（一→一更替）：本版取代的上一版 id（update SUPERSEDE 模式产生；空=首版）
-├── hierarchy       HierarchyRef：跨 unit 树结构（设计目标，尚未实现）
+├── hierarchy       HierarchyRef：跨 unit 树结构（已接入 TIME 构建与查询）
 ├── tags/metadata   标签、命名空间、置信度、重要度等
 └── lifecycle       状态：active / superseded(被取代) / archived / forgotten
 ```
 
 - `temporal` 借鉴 Zep **双时间模型**，支持有效期与时间点回溯。
 - **内容真相是 `segments[]`**：`content/assets/source` 均为折叠后的只读兼容视图，不是与 `segments[]` 并列写入的第二份数据。`ContentLayers.l0/l1` 已实现，L2 不重复存储，直接取 `MemoryUnit.content`。
-- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；目标 `HierarchyRef` 回答“结构上包含谁、隶属于谁”，供父子树构建与 `search(..., expand_depth>0)` 下钻。三者生命周期、遍历方向和治理动作互不替代。
+- **`provenance`、`supersedes`、`hierarchy` 三分**：`provenance` 回答“由哪些 unit 抽取或合成”，供 `trace` 回溯；`supersedes` 回答“本版本取代谁”，供 `as_of` 版本回溯；`HierarchyRef` 回答“结构上包含谁、隶属于谁”，供父子树构建与 `search(..., expand_depth>0)` 下钻。三者生命周期、遍历方向和治理动作互不替代。
 - `lifecycle` 用「标记失效」而非物理删除（非破坏式更新）。`update` 默认 **SUPERSEDE**（生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链），亦可 **OVERWRITE**（同 id 原地覆写，旧内容仅留审计——非破坏式原则的有意例外）。
 - **多模态**：每个 `Segment` 把可治理文本/结构投影、原模态资产引用与来源模态放在一起；下游索引与检索统一作用于各段合并后的 `content` 视图（详见 §5.1）。
 
@@ -214,7 +214,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ## 6. 记忆接口层（Memory API）
 
-所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；接口先行过渡期由 `PermissionManager` 判定，实装后切到 `Authorizer`。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
+所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；当前由 `Authorizer` 判定，旧 `PermissionManager` 不参与生产授权。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
 
 本章**只列出当前代码已实现的 36 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
 
@@ -224,14 +224,14 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `add_async` | **异步**写入记忆：签名/语义同 `add`，直通引擎异步 `write`，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用 | 同 `add` | `list[MemoryUnit]` |
 | `batch_add` | **同步**批量写入。`BatchWriteItem` 含 `content` 及可选 `scope/source/assets/tags/system_metadata/user_metadata/occurred_at/stream_id/sequence/idempotency_key`。顶层参数作批次默认值，单项可覆盖。结果 `outcomes` 与输入索引一一对应；默认归集单项错误，`continue_on_error=False` 时后续项为跳过 | `items: list[BatchWriteItem]`；`scope: Scope \| None = None`；`source: Modality = TEXT`；`*`；`security: RequestSecurityContext`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`）；`occurred_at: datetime \| None = None`；`stream_id: str = ""`；`continue_on_error: bool = True` | `BatchWriteResult` |
 | `batch_add_async` | **异步**批量写入：签名/语义同 `batch_add`，串行保序 | 同 `batch_add` | `BatchWriteResult` |
-| `submit_ingest` | 受鉴权的长耗时摄入入队；先校验 WRITE，再委托 Control 创建或复用任务，后台执行 `add` 时再次鉴权。返回提交状态，不表示摄入已完成 | `content: str`；`scope: Scope`；`source: Modality`；`*`；`security: RequestSecurityContext`；`payload_id: str`；`source_ref: str`；`assets: list[str] \| None = None`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `IngestSubmission` |
+| `submit_ingest` | 受鉴权的长耗时摄入入队；先校验 WRITE，再委托 Control 创建或复用任务，后台执行 `add` 时再次鉴权。返回提交状态，不表示摄入已完成 | `content: str`；`scope: Scope`；`source: Modality`；`*`；`security: RequestSecurityContext`；`payload_id: str`；`source_ref: str`；`assets: list[str] \| None = None`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`）；`occurred_at: datetime \| None = None` | `IngestSubmission` |
 | `check_write` | Pre-flight WRITE 鉴权，不落盘。镜像 `add` 的鉴权与 space 可写校验，供长耗时摄入任务入队前拒绝无权限请求 | `scope: Scope`；`security: RequestSecurityContext`；`*`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `None` |
-| `search` | 混合检索召回。`context.scope` 为目标范围；`context.extensions["max_tokens"]` 由本层解析为披露预算后从透传中移除。`filters` 为结构化过滤（FilterExpr / 旧 list / dict DSL）。`as_of` 为 valid-time 回溯。`RetrievalResult` 含命中项、可选轨迹和通道错误 | `query: str`；`context: Context`；`*`；`security: RequestSecurityContext`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None`；`as_of: datetime \| None = None`；`top_k: int = 10`；`disclosure: DisclosureLevel = L0`；`with_trajectory: bool = False` | `RetrievalResult` |
+| `search` | 混合检索召回。`context.scope` 为目标范围；`context.extensions["max_tokens"]` 由本层解析为披露预算后从透传中移除。`filters` 为结构化过滤（FilterExpr / 旧 list / dict DSL）。`as_of` 为 valid-time 回溯。`RetrievalResult` 含命中项、可选轨迹和通道错误 | `query: str`；`context: Context`；`*`；`security: RequestSecurityContext`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None`；`as_of: datetime \| None = None`；`top_k: int = 10`；`disclosure: DisclosureLevel = L0`；`with_trajectory: bool = False`；末尾追加 hierarchy_kind/hierarchy_role/span_start/span_end/expand_depth/rollup | `RetrievalResult` |
 | `list` | 列出 scope 下已建索引记忆（只含 `/memory/`，不含 infer 原文）。支持类型/结构化过滤、自定义透传与分页；`items` 为当前页，`count` 为分页前精确总数。`memory_types` 与 `filters` 取 AND；`org/space/user/agent/session` 不得出现在 filters | `scope: Scope`；`*`；`security: RequestSecurityContext`；`offset: int = 0`；`limit: int = 100`；`memory_types: list[str] \| None = None`；`extensions: dict[str, Any] \| None = None`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None` | `MemoryListResult` |
 | `get` | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` | `unit_id: str`；`scope: Scope`；`*`；`security: RequestSecurityContext`；`as_of: datetime \| None = None` | `MemoryUnit` |
 | `update` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）。`system_metadata` / `user_metadata` 分别合并 | `unit_id: str`；`scope: Scope`；`patch: MemoryPatch`；`*`；`security: RequestSecurityContext` | `MemoryUnit` |
 | `delete` | 按选择器（id / scope / 标签 / 时间，条件取「与」，至少一项）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id。未给 `selector.scope` 时鉴权退到根 scope | `selector: DeleteSelector`；`*`；`security: RequestSecurityContext` | `list[str]` |
-| `evolve` | 触发演进（mode：extract / associate / consolidate / forget），经控制层 Scheduler 双通道调度，返回任务 id，不表示已完成；索引维护不在此（随数据面操作自动跟进） | `scope: Scope`；`mode: EvolveMode`；`channel: Channel = BACKGROUND`；`*`；`security: RequestSecurityContext` | `str`（job id） |
+| `evolve` | 原四种演进模式及 HIERARCHY 显式建树，返回任务 id；关闭树开关时 HIERARCHY 成功跳过 | `scope`；`mode`；`channel=BACKGROUND`；`*`；`candidate=None`；`dreaming=None`；`interval=0`；`security`；`hierarchy_options=None`；`reuse_existing=False` | `str \| None`（job id 或注销结果） |
 | `job_status` | 查询演进任务或长耗时 Ingest 任务（委托 Scheduler / Ingest 任务表）。Ingest 任务要求传入 target `scope`；API 对任务真实 Scope 执行 READ 鉴权与审计 | `job_id: str`；`*`；`security: RequestSecurityContext`；`scope: Scope \| None = None` | `JobInfo` |
 | `job_cancel` | 取消尚未完成的演进任务（幂等，委托 Scheduler） | `job_id: str`；`*`；`security: RequestSecurityContext` | `None` |
 | `inspect` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） | `unit_ids: list[str]`；`scope: Scope`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |
@@ -333,8 +333,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | **多维分类**  | 按主题/认知角色/来源/重要度等多维度归类      | 认知角色（working/core/episodic/semantic/procedural/archival）是其中一维，决定常驻上下文 or 按需检索 |
 || **同 unit 内容层标注** | `LayerAnnotator` 生成 L0 概要 / L1 片段；L2 复用全文                    | 当前已接 EXTRACT/CONSOLIDATE 派生 unit，必须在其持久化与索引前完成；普通 write 尚未接入 |
 | **时间字段**         | 有效期、时间点、事件先后                                                 | 双时间模型，支持历史回溯与非破坏式更新                                                           |
-| **树结构构建（目标）**    | `HierarchyComposer` 从权威叶生成父摘要与双向父子引用                         | 所有 kind 共享树校验、叶权威与单 kind 遍历约束 |
-| **TIME 树管线（目标）** | `TimeHierarchyPipeline` 按区间构建 snapshot/time_span/scene/event | `MemoryUnit.temporal` 提供叶事件时间，`HierarchyRef.span_*` 表示父覆盖区间 |
+| **树结构构建**    | `HierarchyComposer` 从权威叶生成父摘要与双向父子引用                         | 当前构建仅支持 TIME；其他 kind 复用模型与协议，构建尚未交付 |
+| **TIME 树管线** | `TimeHierarchyPipeline` 按区间构建 snapshot/time_span/scene/event | `MemoryUnit.temporal` 提供叶事件时间，`HierarchyRef.span_*` 表示父覆盖区间 |
 
 ### 9.2 多形式索引：文档 / 关键词 / 向量 / 图
 
@@ -441,7 +441,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 > `IntegratedStorage` 是已定义的实现方向，尚未提供仓内实现。精确契约见
 > [S06-storage.md](../specs/S06-storage.md)，设计取舍见
 > [F05-unified-storage-design.md](../features/storage/F05-unified-storage-design.md)。
-> **hierarchy 存储边界（目标）**：首期 `HierarchyRef` 内嵌于 KV 真源的 `MemoryUnit`；kind/role/span 等字段投影到全文/向量索引 metadata 供前置过滤，目标索引可从 KV 重建（当前 rebuild 实现缺口见 §9.2）。GraphStore 只表达实体、因果、引用等非包含关系，不作为首期父子树真源；当同 kind 多父、丰富边属性或跨 kind 组合查询成为主路径时，再评估独立边存储。
+> **hierarchy 存储边界**：首期 `HierarchyRef` 内嵌于 KV 真源的 `MemoryUnit`；kind/role/span 等字段投影到全文/向量索引 metadata 供前置过滤，目标索引可从 KV 重建（当前 rebuild 实现缺口见 §9.2）。GraphStore 只表达实体、因果、引用等非包含关系，不作为首期父子树真源；当同 kind 多父、丰富边属性或跨 kind 组合查询成为主路径时，再评估独立边存储。
 
 ---
 
@@ -506,7 +506,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | **真源形态**（§10.1） | 文档 / 结构化 | 按 profile | 切轻量真源降存储与运维 |
 | **索引类型**（§9.2） | 文档 / 关键词 / 向量 / 图 各自开关 | 关键词+向量（图/文档按需启用） | 关图/向量大幅降写入与存储成本 |
 | **检索策略**（§8） | Storage 首选 pipeline、召回通道、重排 on/off、渐进披露层级、`as_of` | 按 Storage 实现选择 + 混合召回 | 关重排/单通道降时延 |
-| **树结构**（§4/§8） | 见 [S03 PolicyManager 目标层级策略键](../specs/S03-control.md)（`hierarchy.enabled` / `auto_derive` / `ensure_on_recall` / `score_propagation` / `expand_default_depth` / `expand_top_m`）；建树装配见 [S05 HierarchyComposeProfile](../specs/S05-construction.md)；决策与取值语义见 [F08](../features/common/F08-memory-tree.md) | 默认关闭；公开 search 默认 `expand_depth=0` | 关闭建树/展开可保持 F01 基线成本 |
+| **树结构**（§4/§8） | 见 [S03 层级策略](../specs/S03-control.md)（当前 `hierarchy.enabled` / `hierarchy.auto_derive`；ensure 等仍未交付；自动建树还需 Runtime 注册）；建树装配见 [S05 HierarchyComposeProfile](../specs/S05-construction.md)；决策与取值语义见 [F08](../features/common/F08-memory-tree.md) | 默认关闭；开启后普通 search 应用接口 TimeSpan 预设，search 末尾的可选参数支持显式覆盖；关闭时忽略树参数 | 关闭建树/展开可保持 F01 基线成本 |
 | **自演进**（§9.3） | 总开关、阶段（extract/associate/consolidate/forget）、hot/background、控制模式 | 全闭环+双通道 | 仅 extract 或纯离线，降在线时延与 LLM 成本 |
 | **双时间**（§3.1） | 启用 / 关闭（仅留最新版本） | 启用 | 关闭可省去历史时间维护，适合无回溯需求 |
 | **多模态规约**（§5.1） | 启用的规约器、是否留原模态资产、投影粒度 | 文本+按需图像 | 仅文本，去掉 ASR/OCR/caption 依赖 |
@@ -686,7 +686,7 @@ agent-memory/
     │   ├── layer_annotator.py      #   当前：同 unit L0/L1 内容层标注
     │   ├── index_builder.py        #   多形式索引构建：build / update / remove / rebuild（scope 显式传给 Store）
     │   ├── evolver.py              #   自演进：EvolveMode（extract/associate/consolidate/forget/hierarchy；索引维护非演进模式）
-    │   ├── hierarchy_composer.py   #   [planned] 构建算子：通用父子树创建/重建、replace_in_span（由 evolver 在 HIERARCHY 模式调用）
+    │   ├── hierarchy_composer.py   #   构建算子：显式 TIME 父子树创建/重建、replace_in_span（由 evolver 在 HIERARCHY 模式调用）
     │
     ├── retrieval/                  # D 记忆检索层（§8）：查询解析→Storage pipeline→Reranker→阈值→披露
     │   ├── base.py                 #   RetrievalOperator 算子契约
@@ -696,7 +696,7 @@ agent-memory/
     │   ├── fuser.py                #   物化候选融合（分层 MaxP + 跨通道融合；不含 Reranker）
     │   ├── discloser.py            #   渐进式披露：disclose(query, …) L0 摘要 → L1 片段 → L2 全文
     │   ├── retriever.py            #   检索入口接口：retrieve(scope, query)
-    │   ├── hierarchy_expander.py   #   [planned] Retriever 内部算子：expand_depth>0 时单 kind 展开（共用 max_tokens）
+    │   ├── expander.py             #   Retriever 内部算子：expand_depth>0 时单 kind 展开（共用 max_tokens）；实现位于 expander_impl/
     │   └── retriever_impl/         #   PipelineRetriever：按 Storage 首选值编排三条 pipeline
     │
     ├── storage/                    # F 记忆存储层（§10）：StoreManager 管理面 + DomainStore 数据面 + 六类标准 Store

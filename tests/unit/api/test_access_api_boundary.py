@@ -8,9 +8,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.api import MemoryAPI, assemble, assemble_runtime
-from jiuwen_memory.common.security.legacy import legacy_request_context
+from jiuwen_memory.api import (
+    BackgroundJobStartResult,
+    MemoryAPI,
+    ServerRuntime,
+    assemble,
+    assemble_runtime,
+    assemble_server_runtime,
+)
+from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Scope
+from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
 
@@ -74,11 +82,15 @@ def test_entry_and_adapter_import_only_public_api_package() -> None:
 def test_public_api_does_not_export_kernel_or_impl() -> None:
     import jiuwen_memory.api as api_pkg
 
-    missing = [
-        name
-        for name in ("MemoryAPI", "assemble", "assemble_runtime")
-        if name not in api_pkg.__all__
-    ]
+    required_exports = (
+        "MemoryAPI",
+        "assemble",
+        "assemble_runtime",
+        "ServerRuntime",
+        "assemble_server_runtime",
+        "AUTO_SECURITY_RUNTIME",
+    )
+    missing = [name for name in required_exports if name not in api_pkg.__all__]
     leaked = [name for name in _PUBLIC_FORBIDDEN if name in api_pkg.__all__]
     assert missing == [], f"public api __all__ missing {missing}"
     assert leaked == [], f"public api still exports internals: {leaked}"
@@ -89,7 +101,7 @@ def test_public_api_does_not_export_kernel_or_impl() -> None:
 def test_assemble_accepts_mapping_without_config_type() -> None:
     api = assemble(config={})
     scope = Scope(org="acme", user="owner")
-    units = api.add("from-dict", scope, security=legacy_request_context(scope))
+    units = api.add("from-dict", scope, security=internal_context(ScopedAuthenticator(scope)))
     assert units[0].content == "from-dict"
     assert isinstance(api, MemoryAPI)
     assert not hasattr(api, "kv")
@@ -99,7 +111,9 @@ def test_assemble_accepts_mapping_without_config_type() -> None:
 def test_assemble_runtime_exposes_api_and_close_not_storage_ports() -> None:
     runtime = assemble_runtime(config={})
     scope = Scope(org="acme", user="owner")
-    units = runtime.api.add("via-runtime", scope, security=legacy_request_context(scope))
+    units = runtime.api.add(
+        "via-runtime", scope, security=internal_context(ScopedAuthenticator(scope))
+    )
     assert units[0].content == "via-runtime"
     assert callable(runtime.close)
     for port in _RUNTIME_FORBIDDEN_PORTS:
@@ -122,3 +136,123 @@ def test_server_does_not_expose_kv_or_kernel() -> None:
     assert not hasattr(srv, "ingest_jobs")
     assert srv.api is runtime.api
     srv.close(wait=False)
+
+
+def test_server_has_no_kernel_private_security_dependencies() -> None:
+    path = _REPO / "jiuwen_memory_entry" / "core" / "server.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    forbidden = {
+        "_security_runtime",
+        "_authorizer",
+        "_bind_authorizer",
+        "_bind_credential_sources",
+        "_audit",
+    }
+    violations = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in forbidden:
+            violations.append(node.attr)
+        if isinstance(node, ast.Constant) and node.value in forbidden:
+            violations.append(node.value)
+    assert violations == [], f"Server relies on private kernel state: {violations}"
+
+
+def test_server_build_consumes_only_public_assembly_result(monkeypatch) -> None:
+    import server as surface_server
+
+    events = []
+    entry_security = object()
+
+    class PublicRuntime:
+        api = object()
+        audit = object()
+        security_runtime = entry_security
+
+        def __init__(self) -> None:
+            self.events = events
+
+        @staticmethod
+        def authenticate(credentials):
+            raise NotImplementedError("SDK authentication is not used by Server")
+
+        @staticmethod
+        def start() -> None:
+            return None
+
+        @staticmethod
+        async def start_background() -> None:
+            return None
+
+        @staticmethod
+        async def start_background_jobs(scope, *, security) -> BackgroundJobStartResult:
+            return BackgroundJobStartResult(skipped=True)
+
+        def close(self, *, wait: bool = True) -> None:
+            self.events.append(wait)
+
+        def __getattr__(self, name):
+            raise AssertionError(f"{type(self).__name__} does not promise {name}")
+
+    public_runtime = PublicRuntime()
+    captured = {}
+
+    def assemble_public(**kwargs):
+        captured.update(kwargs)
+        return public_runtime
+
+    monkeypatch.setattr(surface_server, "assemble_server_runtime", assemble_public)
+    config = SimpleNamespace(settings={"memory_api": {}}, policies={})
+    srv = surface_server.Server.build(config, security_runtime=entry_security)
+    assert isinstance(public_runtime, ServerRuntime)
+    assert srv.api is public_runtime.api
+    assert srv.audit is public_runtime.audit
+    assert srv.security_runtime is entry_security
+    assert captured == {"policies": None, "config": {}, "security_runtime": entry_security}
+    srv.close(wait=False)
+    assert events == [False], "the public assembled handle owns the shutdown path"
+
+
+def test_public_server_assembly_exposes_no_storage_ports() -> None:
+    runtime = assemble_server_runtime(config={})
+    try:
+        assert isinstance(runtime, ServerRuntime)
+        assert runtime.security_runtime is None
+        assert runtime.audit is not None
+        for port in _RUNTIME_FORBIDDEN_PORTS:
+            assert not hasattr(runtime, port), f"ServerRuntime leaked {port}"
+    finally:
+        runtime.close(wait=False)
+
+
+def test_legacy_server_constructor_closes_extra_public_security() -> None:
+    import server as surface_server
+
+    events = []
+    runtime = SimpleNamespace(api=object(), close=lambda wait=True: events.append(wait))
+    security = SimpleNamespace(close=lambda: events.append("security"))
+    srv = surface_server.Server(SimpleNamespace(), runtime, security)
+    assert srv.audit is None, "MemoryRuntime does not promise an audit port"
+    srv.close(wait=False)
+    assert events == [False, "security"]
+
+
+def test_server_construction_cancellation_closes_public_result(monkeypatch) -> None:
+    import server as surface_server
+
+    events = []
+    runtime = SimpleNamespace(
+        api=object(),
+        audit=None,
+        security_runtime=None,
+        close=lambda wait=True: events.append(wait),
+    )
+
+    class CancelledServer(surface_server.Server):
+        def __init__(self, config, runtime, security_runtime=None):
+            super().__init__(config, runtime, security_runtime)
+            raise KeyboardInterrupt("cancel startup")
+
+    monkeypatch.setattr(surface_server, "assemble_server_runtime", lambda **kwargs: runtime)
+    with pytest.raises(KeyboardInterrupt, match="cancel startup"):
+        CancelledServer.build(SimpleNamespace(settings={}, policies={}))
+    assert events == [True]

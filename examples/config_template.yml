@@ -15,6 +15,8 @@ globals:
   chunk_size: 120
   policies:                   # 运行时可变策略（交 PolicyManager；值保持字符串）
     rerank.enabled: "true"
+    hierarchy.enabled: "false"   # 开启后自动接入 Snapshot，显式或已注册后台任务生成父树
+    hierarchy.auto_derive: "false"  # 自动任务的独立开关，开启后仍须调用 Runtime 注册
 
 # ---- 换存储后端：覆盖各命名空间下的 default 实例（三方后端必填参数在 build 期即校验）----
 # kv_store:
@@ -43,7 +45,8 @@ globals:
 
 # ---- 本地高级精排（需安装 extra: embed，并准备模型文件）----
 # reranker:
-#   default: { target: bge_reranker, params: { reranker_bge_model: BAAI/bge-reranker-v2-m3 } }
+#   default: { target: bge_reranker, params: { reranker_bge_model: /models-local/bge-reranker-v2-m3 } }
+#   # 仅使用本地目录或已准备好的 HuggingFace 缓存，运行时不会下载权重。
 
 # ---- 跨实例分布式锁（横切原语，当前无消费方，配了也只在有人 dep 时才实例化）----
 # 不设默认实现：要用就必须显式配，避免「忘了配 Redis」静默退化成不跨实例的单机锁。
@@ -176,31 +179,32 @@ globals:
 #       # narrow_dims 每项 4 个字段：entity 与 tag_key 必填（tag_key 不得重复），
 #       #   applies_to 默认对全部类别生效，question 默认空（判定时问模型的那句话）。
 #       # 以上约束在装配期校验，配错即 ValidationError，不会留到运行时。
-#       # target: llm 时另可配 retry_max_retries（默认 3）、retry_backoff_ms（默认 1000）。
+#       # target: llm 时另可配 router_max_attempts（默认 3）、
+#       # router_retry_backoff（默认 1000）。
 #       # 接入方的产品概念，内核只作字典键透传；内核自带 user/agent/session 三项，
 #       # 取值以调用方身份为准、不接受覆盖，因此这里不得与那三项重名。
 #       coord_entities: [project, team]
 #       # 一个类别 = 一个归属维 + 一个空间名模板。
 #       # 判据是「换掉哪个坐标这条记忆就不成立，那个坐标即它的归属维」。
 #       memory_classes:
-#         - name: user_memory
+#         - name: user_profile
 #           # description 会拼进判定 prompt，模型据它选类别，写清楚这一类是什么
 #           description: 关于用户本人的事实、偏好与习惯，换一个用户就不成立
 #           owner: user                  # 归属维实体名
 #           space_template: "u_{user}"   # 空间名模板，必须引用该类别的 owner
 #           fallback: true               # 兜底落点，有且仅有一个，且不得 cross_user
-#         - name: project_memory
+#         - name: long_term_memory
 #           description: 关于某个项目的事实、决定与约定，换一个项目就不成立
 #           owner: project
 #           space_template: "p_{project}"
 #           cross_user: true             # 该类别的空间跨用户可见，是设计意图
 #           members: 项目参与者           # cross_user 必须给出成员来源或声明 sanitized
-#         - name: team_memory
+#         - name: daily_memory
 #           description: 关于某个 agent-team 的协作方式，换一个 team 就不成立
 #           owner: team
 #           # record_only：不落独立空间，命中该类别的条目落 fallback 空间，归属实体
 #           # 只记成一个标签。该形态下团队记忆不在团队内共享——标签只在作者自己的
-#           # 空间内起收窄作用。要在团队内共享就删掉本行并按 project_memory 的写法配。
+#           # 空间内起收窄作用。要在团队内共享就删掉本行并按 long_term_memory 的写法配。
 #           record_only: true
 #           tag_key: team_id             # 不写则按 <owner>_id 生成
 #       # 收窄维：命中即在条目上打标签，检索按同一组标签收窄
@@ -213,5 +217,65 @@ globals:
 #           question: 这条记忆是否只在这一次会话内有意义？
 #         - entity: project
 #           tag_key: project_id
-#           applies_to: [user_memory]    # 只对这些类别生效；不写则对全部类别生效
+#           applies_to: [user_profile]    # 只对这些类别生效；不写则对全部类别生效
 #           question: 这条记忆是否与某个具体项目相关？
+
+
+# ---- 显式 TIME 建树 ----
+# 在上述 globals.policies 中将 hierarchy.enabled 设为 "true"；自定义 policies 完整替换
+# 默认策略表，需自行保留所用键。写完后调用 API（security 使用正常认证上下文）：
+# options = EvolveTaskOptions.time_hierarchy(
+#     home, span_start=start, span_end=end, reuse_existing=True,
+# )
+# job_id = api.evolve(
+#     home, options.mode, hierarchy_options=options.hierarchy_options,
+#     reuse_existing=options.reuse_existing, security=security,
+# )
+# info = api.job_status(job_id, security=security)
+# async_timer 需等到终态；默认 in_process 在提交中完成。
+# 内置构建预设：TimeSpan 累计跨度 2 小时、Scene 最大跨度 14 天、Event 相似阈值 0.65。
+# 开启树后普通 search 使用接口预设 TIME/time_span、rollup=true、expand_depth=1。
+# 可在 search 上显式传 expand_depth=0、rollup=False 等覆盖；父子总数不超过 top_k。
+# 查询前须完成显式或后台建树；无有效 TimeSpan 时不自动回退。
+# 关闭树开关会忽略合法叶提示、树查询和建树选项；普通写入/查询/演进照常执行。
+# 如需覆盖，在现有 globals 段内添加 hierarchy_profiles；不要重复声明 globals。
+# 查询展开与父优先排序已接入；后台配置及注册见下文。
+
+
+# ---- 可选后台自动增量建树 ----
+# 在现有 globals.policies 中同时开启 hierarchy.enabled 和 hierarchy.auto_derive。
+# 下列段若已存在请合并，避免同名 YAML 键覆盖已有配置；不需改 add/search/evolve 调用。
+# scheduler:
+#   default:
+#     target: async_timer
+#     params:
+#       tick_interval: 10
+# job_factory:
+#   default:
+#     target: default
+#     params:
+#       hierarchy_derive_interval: 1800   # 秒，不得小于 tick_interval
+#       hierarchy_derive_lookback: 604800 # 秒，仅限制未挂父 Snapshot
+#       hierarchy_max_leaves: 5000  # 完整候选保护上限，不是每轮截取的批大小
+#       hierarchy_page_size: 200
+#       # lock: default        # 可选，引用已配置的具名锁；与显式建树共用
+#       hierarchy_lock_wait_ms: 30000
+# 每层未挂父候选与未来输入合计受 max_leaves 限制，尚未封口的尾组也占额度。
+# 补齐完整子树仍受叶子上限限制；home 中活动父节点另有 3 * max_leaves 上限。
+# 超限本轮失败，不截断候选、不进入持续故障保护；下轮仍尝试，已完成的下层保留。
+# 数量持续超限可能连续失败；显式建树也受限，需调高上限或在保留完整旧子树的前提下
+# 分范围处理。调高上限需评估内存/读取成本并重新装配 Runtime；详见 S08 配置规约。
+# 内置 profile：TimeSpan 累计跨度/静默 2 小时；Scene 最大跨度 14 天、静默 1 天；
+# Event 按语义分组、静默 3 天。静默只用于自动尾组封口，不改变显式建树分组。
+# runtime = assemble_runtime(config=config)
+# home = Scope(org="org1", space="space1", user="user1", agent="agent1", session="")
+# started = await runtime.start_background_jobs(home, security=security)
+# home 是树驻留范围 tree_home_scope；不是目录或树 ID，可包含多棵树。
+# org/space 精确匹配，非空主体字段限制候选，父写到 home，叶保留原 Scope。
+# if not started.skipped:
+#     info = runtime.api.job_status(started.job_ids[0], security=security)
+#     # info.detail["last_run_status"] / json.loads(info.detail["last_run_detail"])
+# 宿主进程保持运行，退出时 runtime.close()；单个 home 可通过 api.job_cancel 停止。
+# 缺时/迟到/过窗输入只记录跳过，正常输入继续；确认本层未写入的准备失败可在下轮重试。
+# 部分写入或写入结果不确定（含写入后失锁）需要先核对并修复，
+# 不能把完整性故障当作普通跳过；后台不自动修树，不持久化注册记录。

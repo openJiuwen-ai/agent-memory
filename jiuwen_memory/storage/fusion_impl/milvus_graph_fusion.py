@@ -271,7 +271,15 @@ class MilvusGraphFusionStore(FusionStore):
 # -- 注册到 FusionProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
 
 
-@FusionProducer.register("milvus_graph")
+@FusionProducer.register(
+    "milvus_graph",
+    config_inspectors={
+        "at_rest_locations": lambda config: {
+            "uri": config.get("uri"),
+            "working_dir": config.get("working_dir"),
+        }
+    },
+)
 def _build(config):
     # 三方库 + 本地图：uri/working_dir 必填；dim 取 params.dim，回退内核共享的 embedder_dim。
     # 其余有默认值的构造参数均可经 params 覆盖。

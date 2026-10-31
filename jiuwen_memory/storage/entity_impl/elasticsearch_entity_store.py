@@ -62,7 +62,8 @@ class ElasticsearchEntityStore(EntityStore):
         self._list_limit = list_limit
         self._number_of_shards = number_of_shards
         self._number_of_replicas = number_of_replicas
-        self._options = options  # SSL 等额外构造参数（ca_certs/verify_certs 由 _build 读 SSL 后传入）
+        self._options = options  # SSL 等额外构造参数
+        # （ca_certs/verify_certs 由 _build 读 SSL 后传入）
         self._client: Any = None
         self._index_ready = False
 
@@ -432,7 +433,17 @@ class ElasticsearchEntityStore(EntityStore):
 
 # -- 注册到 EntityStoreProducer（实现自注册，与 FulltextStore._build 同构） ------- #
 
-@EntityStoreProducer.register("elasticsearch")
+def _at_rest_locations(config):
+    if config.get("hosts"):
+        return {"hosts": config.get("hosts")}
+    if config.get("endpoint"):
+        return {"endpoint": config.get("endpoint")}
+    return {}  # 与 builder 一致：仅此实现的未配置状态明确关闭端口。
+
+
+@EntityStoreProducer.register(
+    "elasticsearch", config_inspectors={"at_rest_locations": _at_rest_locations}
+)
 def _build(config):
     # hosts 可选（entity 是增强层，未配即降级关闭 entity 链路，不报错——与
     # FulltextStore 的 require_param 不同，后者是主链路必需品，缺了必报错）。

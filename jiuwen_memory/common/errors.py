@@ -117,6 +117,15 @@ class HealthCheckError(AgentMemoryError):
     """``health()`` 存活探测失败：底层后端/插件不可用或未就绪。"""
 
 
+class LLMTimeoutError(AgentMemoryError):
+    """LLM 调用超时——确定性失败，调用方不应重试。
+
+    LLM 契约的统一超时类型（见 common/llm/base.py 的 chat 契约）：各适配器
+    必须把自家 SDK 的超时异常转换为本类型后抛出；构建层据此统一做"超时不
+    重试"，不再感知具体 SDK 异常（BUG2026092802777：超时叠加重试 = N×timeout）。
+    """
+
+
 class BackendError(AgentMemoryError):
     """
     底层存储/插件后端的非预期失败（网络、IO、远端报错等），区别于上述
