@@ -4,13 +4,11 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError, ValidationError
@@ -21,6 +19,7 @@ from jiuwen_memory.common.normalizer.base import (
     NormalizerProducer,
     ensure_normalizer_supports,
 )
+from jiuwen_memory.common.security.protection.local_media import LocalMediaImports
 from jiuwen_memory.common.type_def import Modality, RawPayload
 
 from .video_asr import VideoAsrProducer, VideoAsrService
@@ -46,6 +45,7 @@ class VideoNormalizer(Normalizer):
         vlm_port: LLM | None = None,
         vlm_max_inline_video_bytes: int = DEFAULT_MAX_INLINE_VIDEO_BYTES,
         temp_root: str = "",
+        local_media_roots: object = None,
         backend: VideoMemoryBackend | None = None,
     ) -> None:
         if chunk_seconds <= 0:
@@ -63,6 +63,7 @@ class VideoNormalizer(Normalizer):
         self._vlm_max_inline_video_bytes = vlm_max_inline_video_bytes
         self._temp_root = temp_root
         self._backend = backend
+        self._local_media = LocalMediaImports(local_media_roots)
 
     @classmethod
     def from_config(
@@ -88,6 +89,7 @@ class VideoNormalizer(Normalizer):
                 )
             ),
             temp_root=str(params.get("temp_root", "")),
+            local_media_roots=params.get("local_media_roots"),
             backend=backend,
         )
 
@@ -131,10 +133,6 @@ class VideoNormalizer(Normalizer):
         if not payload.uri:
             raise ValidationError("video normalization requires RawPayload.uri")
 
-        video_path = _file_uri_to_path(payload.uri)
-        if not video_path.is_file():
-            raise ValidationError(f"video file not found: {video_path}")
-
         temp_root = Path(self._temp_root).expanduser() if self._temp_root else None
         if temp_root is not None:
             try:
@@ -155,7 +153,9 @@ class VideoNormalizer(Normalizer):
                 f"cannot create temporary video directory under {temp_root}: {exc}"
             ) from exc
         with temporary as temp_dir:
-            return self._run_pipeline(video_path, Path(temp_dir))
+            run_root = Path(temp_dir)
+            video_path = self._local_media.stage(payload.uri, payload.scope, run_root)
+            return self._run_pipeline(video_path, run_root)
 
     def _run_pipeline(self, video_path: Path, run_root: Path) -> VideoMemoryOutput:
         try:
@@ -220,23 +220,6 @@ def _normalize_event(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _file_uri_to_path(uri: str) -> Path:
-    parsed = urlparse(uri)
-    if parsed.scheme not in ("", "file"):
-        raise ValidationError(
-            f"video normalizer does not support URI scheme {parsed.scheme!r}"
-        )
-    if parsed.scheme == "":
-        return Path(uri).expanduser()
-    path = unquote(parsed.path)
-    if parsed.netloc and parsed.netloc not in ("", "localhost"):
-        path = f"//{parsed.netloc}{path}"
-    is_windows_drive = len(path) >= 3 and path[0] == "/" and path[2] == ":"
-    if os.name == "nt" and is_windows_drive:
-        path = path[1:]
-    return Path(path)
-
-
 def _object_list(value: Any, label: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise BackendError(f"video memory {label} must be a list of objects")
@@ -276,4 +259,5 @@ def _build(config):
             config.get("vlm_max_inline_video_bytes", DEFAULT_MAX_INLINE_VIDEO_BYTES)
         ),
         temp_root=str(config.get("temp_root", "")),
+        local_media_roots=config.get("local_media_roots"),
     )

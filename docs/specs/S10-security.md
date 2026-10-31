@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-10-30 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -473,3 +473,24 @@ HTTP 显式 DEV 可从 http.dev_identities 读取服务端身份映射，或由�
 具名 ADMIN/ROOT 的组织权限与 agent 代表 user 的受控委托使用同一链路，内容轴、治理轴、
 作者标记和路由/检索过滤共同接受验证。旧 PermissionManager 仅为历史兼容类，不参与生产判定。
 PR1 阶段曾暂用旧权限链，那是迁移历史而非当前要求；不得恢复双 PDP。
+
+
+## 本地媒体源访问边界
+
+对目标 Scope 的 WRITE 授权不授予服务进程任意文件的读取权。内置视频文件读取还必须
+通过服务端配置的完整 Scope/导入目录绑定，缺配置或跨目录均拒绝；同步、异步、批量
+和后台摄入共享最终文件读取边界。仅返回摘要或仅限制写入 Scope 不能替代源准入。
+
+真实路径归属检查后，必须安全打开源文件并从该句柄生成任务私有副本；后续处理不得
+按调用方原路径重新打开。POSIX 从已核对装配时设备号/inode 的配置根目录描述符开始，
+以 dir_fd 逐段拒绝符号链接替换；Windows 固定祖先句柄并拒绝 reparse point。硬链接
+原始来源不在路径准入的识别范围，部署方须限制导入根及父目录的写入和链接权限。
+此策略由可信部署配置控制，不改变认证、授权动作矩阵或 RequestSecurityContext。
+匹配对象是最终落点 Scope，启用归属判定时应按 org/space 绑定，其余维为空。
+
+视频输入仅接受绝对本地路径及绝对 file URI。语法非法（含相对路径、NUL、非法 URI）
+报 ValidationError（HTTP 400）。缺少匹配绑定、目录外路径、源文件不存在/无法安全打开
+及非普通文件统一报不含源路径的 PermissionDeniedError（HTTP 403）；这里有意将旧版
+源文件不存在的 400 收紧为 403，不提供服务器文件存在性探测。临时目录创建或副本写入
+失败报 BackendError（HTTP 503），不误报源越界；同一任务每次暂存使用独立子目录，
+相同文件名可重复处理，原有副本不被覆盖。
