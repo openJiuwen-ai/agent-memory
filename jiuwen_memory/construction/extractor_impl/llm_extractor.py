@@ -336,7 +336,7 @@ def _parse_tier(raw) -> MemoryTier:
     return MemoryTier.SEMANTIC
 
 
-# md 块标题长度上限（F08 §8.4）：块格式是「标题行\n正文行」，看门狗按行遍历——
+# md 块标题长度上限（F08 §8.4）：块格式是「标题行\n正文行」，看门狗按块解析——
 # 清洗保证标题恒单行；长度截断是显示层约束（prompt 约束 ~20 字，这里兜 50 防长标题）。
 _MAX_TITLE_LEN = 50
 
