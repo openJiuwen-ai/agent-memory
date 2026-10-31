@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
 
 ## 范围 / 边界
@@ -321,3 +321,27 @@ Composer 的 `params.hierarchy_profiles` 配置；显式 Composer 不自动合�
   尝试，数量持续超限时可能连续失败；本轮此前成功持久化的下层结果保留。
 - 显式建树也使用这些限额，不能保证一次重建就解除容量问题。可评估内存和读取成本后
   调高上限并重新装配，或合理划分处理范围；相交旧树仍须补齐全部后代，不得截断旧子树。
+
+
+## 视频本地媒体目录配置
+
+`normalizer.<name>.params.local_media_roots` 是服务端配置的列表，每项仅包含 `scope`
+和 `root`。`scope` 可声明 org/space/user/agent/session，org 必须为非空字符串，其他
+省略维度按空串精确匹配；不支持通配符。`root` 必须是已存在的绝对本地目录，不能是
+卷根目录或 UNC 网络路径。可为同一 Scope 配多个目录；无绑定时拒绝实际文件读取。
+服务端必须按数据授权域分别配置，不能向所有租户共同开放含私有媒体的父目录。
+
+```yaml
+normalizer:
+  video:
+    target: video
+    params:
+      local_media_roots:
+        - scope: {org: acme, space: project-a}
+          root: /srv/agent-memory/imports/acme/project-a
+      temp_root: /tmp/agent-memory-video
+```
+
+`temp_root` 仅控制处理临时目录，不是源文件白名单。旧视频部署须先创建导入目录并新增
+绑定；API 参数与正常视频处理流程保持原样。配置不能由业务 metadata 或请求体覆盖。
+该准入能力不依赖隐私分级模块或其开关。

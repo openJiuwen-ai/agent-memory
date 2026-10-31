@@ -33,11 +33,12 @@
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
 | `tokenizer/` | Tokenizer 插件目录 |
-| `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；passthrough 只接已是 UTF-8 文本的 TEXT/CODE，DOCUMENT 需专用解析器；`ensure_normalizer_supports` 是共用模态能力门禁；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans |
+| `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；passthrough 只接已是 UTF-8 文本的 TEXT/CODE，DOCUMENT 需专用解析器；`ensure_normalizer_supports` 是共用模态能力门禁；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans；内置视频文件读取统一经过 LocalMediaImports 准入及私有副本 |
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
 | `audit/` | AuditLogger 插件目录；内存 / SQLite 后端实现 ChainedAuditStore；`protected_audit_logger.py` 的 `ProtectedAuditLogger` 把 record 委派审计完整性 provider、query 透传，并在构造时校验 provider chain store 与 logger 是同一对象；经内核显式装配，写链失败锁存 degraded，mutation 预检失闭，detail 在写入边界过滤 |
+| `security/protection/local_media.py` | `LocalMediaImports`：服务端完整 Scope 与本地媒体目录绑定，安全句柄打开并复制到任务私有目录，描述符通过显式上下文成对释放；空策略拒绝，不依赖 privacy，也不把身份下传给业务层。 |
 | `security/` | 安全能力的唯一归属地（设计维护页 F04，公开契约 S10）。PR1 已实装认证、保护与静态加密；`authentication/` 提供 Authenticator、PrincipalKeyStore 与 CredentialStatusRegistry，唯一实现目录是其内部的 `authentication/authentication_impl/`，包含 api_key / dev / trusted 三种认证器及凭据存储实现。进程内调用方经 `request_context.internal_context(authenticator)` 显式穿过认证边界，身份由传入的认证器产出、调用方不能自述身份（legacy 桥与公共 `ScopedAuthenticator` 均已删除，测试替身在 `tests/support/`）。PR2 在 `authorization/authorization_impl/` 提供 Standard/Routing/SpaceAware Authorizer 及 memory/SQLite GrantStore、DelegationStore；冻结约束是 MemoryAPI/Authorizer 唯一 PEP/PDP、凭据逐请求在线复核且旧 PermissionManager 不进入生产路径。`audit_integrity/` 注册可选 chained_hmac provider，提供版本化 HMAC、稳定快照增量验证及有界 CAS。`request_context.py` 提供受控上下文构造。安全注册入口统一使用 `import_required` 记录并重抛依赖导入错误。另含空间级授权事实与谓词纯函数（见 `docs/features/control/F07-collective-memory-design.md`）。 |
 | `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
 | `security/_delegation_binding.py` | 私有服务端装配适配：凭据指纹绑定现有委托 ID，认证 actor 不变，记录与 Authorizer 必须同源；供 PEP/PDP 共用绑定复核，不注册新认证 target、不扩展冻结接口。 |

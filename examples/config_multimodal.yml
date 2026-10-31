@@ -17,6 +17,11 @@ memory_api:
               vlm_port: video_vision
               vlm_max_inline_video_bytes: 52428800
               temp_root: /tmp/agent-memory-video
+              # 服务端预先创建此目录；只允许完整 Scope 精确匹配的媒体导入。
+              # 按实际部署修改 org/user/space/agent/session 和 root；省略维度表示空串。
+              local_media_roots:
+                - scope: {org: demo, user: alice}
+                  root: /srv/agent-memory/imports/demo/alice
 
   asr:
     video:

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -441,3 +441,15 @@ HTTP 显式 DEV 可从 http.dev_identities 读取服务端身份映射，或由�
 具名 ADMIN/ROOT 的组织权限与 agent 代表 user 的受控委托使用同一链路，内容轴、治理轴、
 作者标记和路由/检索过滤共同接受验证。旧 PermissionManager 仅为历史兼容类，不参与生产判定。
 PR1 阶段曾暂用旧权限链，那是迁移历史而非当前要求；不得恢复双 PDP。
+
+
+## 本地媒体源访问边界
+
+对目标 Scope 的 WRITE 授权不授予服务进程任意文件的读取权。内置视频文件读取还必须
+通过服务端配置的完整 Scope/导入目录绑定，缺配置或跨目录均拒绝；同步、异步、批量
+和后台摄入共享最终文件读取边界。仅返回摘要或仅限制写入 Scope 不能替代源准入。
+
+真实路径归属检查后，必须安全打开源文件并从该句柄生成任务私有副本；后续处理不得
+按调用方原路径重新打开。POSIX 逐段拒绝符号链接替换，Windows 固定祖先句柄并拒绝
+reparse point。错误不披露原始绝对路径。此策略由可信部署配置控制，不改变认证、
+授权动作矩阵或 RequestSecurityContext；输入目录及主机权限仍由部署方维护。
