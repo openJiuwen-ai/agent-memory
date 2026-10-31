@@ -8,7 +8,7 @@ F07 §12.8 方案 B 变体）。
 
 **与 lite 的关键差异**：lite 的 ``sync`` 是文件级全量重建（整文件 chunks 删重建）；
 本实现是 **unit 粒度增量**——``shadow.list_units_by_md`` 拿旧 (unit_id, content_hash)
-list，读 md 按行算新 content_hash list，diff 出「新增/删除」集合只动变化的 unit。
+list，读 md 按块算新 content_hash list，diff 出「新增/删除」集合只动变化的 unit。
 否则改一行重建整个文件的 unit 会丢失其他 unit 的 id（破坏 supersedes 链，F07 §12）。
 
 **块格式对齐** ``MarkdownStore._render_block``：``# {标题}\\n{content}\\n\\n``
@@ -398,7 +398,7 @@ class LocalWatchdog(Watchdog):
         """单文件 unit 粒度增量同步（F07 §12.3 流程）。
 
         ① old = shadow.list_units_by_md(scope, md_filename)  # [(unit_id, content_hash)]
-        ② 读 md 按行算 new (content_hash, content) list  (deleted=True 时 new 为空 → 全删)
+        ② 读 md 按块算 new (content_hash, content) list  (deleted=True 时 new 为空 → 全删)
         ③ diff：
            old_hash - new_hash → delete_units(对应 unit_id)
            new_hash - old_hash → insert_units(新建 unit，步骤 3 缺省元数据 + content 原文)

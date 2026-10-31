@@ -117,6 +117,20 @@ def test_read_md_file_line_range_skips_partial_blocks(tmp_path) -> None:
     assert len(full) == 1
 
 
+def test_read_md_file_line_range_hash_content_not_treated_as_title(tmp_path) -> None:
+    """切片首行是 ``#`` 开头正文行时不被当标题丢弃（committer 意见修复）。
+
+    正文 ``#1 里程碑`` 落 md 第二行（首行是标题行 ``# ``）。``line_range=(2, 2)``
+    切片首行即该正文行——若把它当标题整行丢弃，hash 反查落空、unit 在读取路径上
+    被判「不存在/待删」。修正后 ``read_md_file`` 传 ``first_line_is_title=False``，
+    该行算作正文、反查命中返回完整 unit。
+    """
+    ds = _build_doc_store(tmp_path)
+    _write_unit(ds, "u1", "#1 里程碑")
+    sliced = ds.read_md_file(SCOPE, "MEMORY.md", project="", line_range=(2, 2))
+    assert [u.id for u in sliced] == ["u1"], f"# 开头正文行被当标题丢弃: {[u.id for u in sliced]}"
+
+
 def test_read_md_file_rejects_non_document_mode(tmp_path) -> None:
     """非文档模式（write_document=false）→ ValidationError。"""
     sb.register_backends()

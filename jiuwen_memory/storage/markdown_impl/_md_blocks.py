@@ -37,7 +37,9 @@ def content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def collect_blocks_from_text(text: str) -> list[tuple[str, str, int]]:
+def collect_blocks_from_text(
+    text: str, *, first_line_is_title: bool = True
+) -> list[tuple[str, str, int]]:
     """从文本按块结构解析，返回 ``(content_hash, content, block_index)`` 列表。
 
     与 :func:`collect_md_blocks` 同口径（按空行切块、每块首行标题跳过、正文行算
@@ -50,6 +52,20 @@ def collect_blocks_from_text(text: str) -> list[tuple[str, str, int]]:
     是正文（不判 ``#`` 前缀）。无标题的裸正文块（用户手改直接加一行正文、块首非
     ``#``）整体视作正文；``#`` 开头的孤立单行（无正文）仍按标题跳过（与旧逐行
     口径一致——文本上无法区分「孤立标题」与「# 开头裸正文」）。
+
+    代价/边界：当块粘连（删掉块间空行）或块首标题行之前被手加一行正文时，原标题行
+    会沉到块中间、成为「块内首行之后」的正文行而被按正文算 hash 产出「标题原文幽灵
+    unit」——这是「宁可多算、不可漏算」取舍的固有代价（见 F08「特殊场景与已知限制」），
+    非缺陷；调用方若要避免，须求 md 块间空行完整。
+
+    「块首行是标题」这个前提只在文本从块边界起读时成立。``read_md_file`` 的
+    ``line_range`` 切片起点不一定落在块边界——切片首行可能是上一块以 ``#`` 开头的
+    正文行（如 ``#1 里程碑``），若仍按标题跳过会整行丢弃、缺 content_hash，导致
+    ``find_unit_ids_by_content_hash`` 反查落空、该 unit 在读取路径上被判「不存在/
+    待删」。故切片调用方传 ``first_line_is_title=False`` 声明「首块首行不当作标题」：
+    宁可把可能是标题的首行多算成正文（标题 hash 反查落空是空集、无害），也不漏算
+    正文行。首块之后的块都落在空行切出的真实块边界上，首行角色恢复为标题（本函数
+    会在 flush 第一个块后把该 flag 重置为 True）。
     """
     result: list[tuple[str, str, int]] = []
     seen: set[str] = set()
@@ -57,12 +73,13 @@ def collect_blocks_from_text(text: str) -> list[tuple[str, str, int]]:
     for line in text.splitlines():
         if not line.strip():
             if block:
-                _append_block(block, result, seen)
+                _append_block(block, result, seen, first_line_is_title)
+                first_line_is_title = True  # 空行之后的块首行必落在真实块边界
                 block = []
             continue
         block.append(line)
     if block:
-        _append_block(block, result, seen)
+        _append_block(block, result, seen, first_line_is_title)
     return result
 
 
@@ -70,14 +87,16 @@ def _append_block(
     block: list[str],
     result: list[tuple[str, str, int]],
     seen: set[str],
+    first_line_is_title: bool,
 ) -> None:
-    """把一个块内的正文行（跳过块首标题行）逐行算 hash 追加进 result。
+    """把一个块内的正文行逐行算 hash 追加进 result。
 
-    block 首行若是 ``#`` 开头则为标题行，取 ``block[1:]`` 作正文；否则整个 block
-    都是正文（裸正文块）。正文行不判 ``#`` 前缀，与 :func:`collect_blocks_from_text`
-    的块结构口径一致。
+    ``first_line_is_title`` 为真且 block 首行以 ``#`` 开头时，首行视作标题，取
+    ``block[1:]`` 作正文；否则整个 block 都是正文（裸正文块，或切片首块声明
+    ``first_line_is_title=False`` 的情况）。正文行不判 ``#`` 前缀，与
+    :func:`collect_blocks_from_text` 的块结构口径一致。
     """
-    body = block[1:] if block[0].startswith("#") else block
+    body = block[1:] if first_line_is_title and block[0].startswith("#") else block
     for line in body:
         ch = content_hash(line)
         if ch in seen:

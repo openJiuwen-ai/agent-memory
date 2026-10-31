@@ -24,7 +24,11 @@ from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
     WhitespaceTokenizer,
 )
 from jiuwen_memory.common.type_def import COORDS_KEY, MD_FILENAME_KEY, MEMORY_CLASS_KEY, Scope
-from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks, content_hash
+from jiuwen_memory.storage.markdown_impl._md_blocks import (
+    collect_blocks_from_text,
+    collect_md_blocks,
+    content_hash,
+)
 from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
 from jiuwen_memory.storage.watchdog_impl.local_watchdog import (
     LocalWatchdog,
@@ -122,16 +126,64 @@ def test_is_watched_md_recognizes_only_memory_files(path: str, expected: bool) -
 def test_collect_new_contents_skips_titles_blanks_and_dedups(tmp_path) -> None:
     md = tmp_path / "memory" / "p1" / "MEMORY.md"
     md.parent.mkdir(parents=True)
-    md.write_text("# title\nhello\n\n# title2\nhello\n\nworld\n", encoding="utf-8")
+    # 含 # 开头正文行（#1 里程碑）——块首 # 行是标题（跳过）、块内 # 行是正文（不判 # 前缀）。
+    # 旧逐行遍历会把 #1 里程碑 也当标题跳过，本用例数据直接锁死「块首=标题、块内其余=正文」。
+    md.write_text(
+        "# title\n#1 里程碑\n\n# title2\nworld\n\n# title3\n#1 里程碑\n",
+        encoding="utf-8",
+    )
 
     # collect_md_blocks 返回三元组 (hash, content, block_index)，取前两元；口径（按块
     # 结构跳过块首标题行/空行、去重、保序）——# 开头正文行不再被当标题跳过。
     result = collect_md_blocks(str(md))
     pairs = [(h, c) for h, c, _ in result]
 
-    # 块首标题行跳过；空行跳过；重复 content 去重；保序
-    assert [content for _, content in pairs] == ["hello", "world"]
-    assert [h for h, _ in pairs] == [content_hash("hello"), content_hash("world")]
+    # 块首 # 行（# title/# title2/# title3）跳过；块内 # 正文行（#1 里程碑）保留；
+    # 裸正文块（world）保留；重复的 #1 里程碑去重；保序
+    assert [content for _, content in pairs] == ["#1 里程碑", "world"]
+    assert [h for h, _ in pairs] == [content_hash("#1 里程碑"), content_hash("world")]
+
+
+def test_collect_blocks_from_text_first_line_is_title_false(tmp_path) -> None:
+    """切片首行是 ``#`` 开头正文行时，``first_line_is_title=False`` 不把该行当标题丢弃。
+
+    复现 committer 意见的失败模式：``read_md_file`` 的 ``line_range`` 切片起点不一定落在
+    块边界，首行可能是上一块以 ``#`` 开头的正文行（如 ``#1 里程碑``）。默认口径（首块首行
+    视作标题）会整行丢弃、缺 hash 反查落空；声明 ``first_line_is_title=False`` 后该行算作
+    正文进入 result，hash 匹配得上完整块。
+    """
+    # 模拟 line_range 切片：首行是 # 开头正文行，其后跟一个完整块（标题 + 正文）。
+    text = "#1 里程碑\n\n# 标题\nsecond memory\n"
+    blocks = collect_blocks_from_text(text, first_line_is_title=False)
+    contents = [c for _, c, _ in blocks]
+    # 首块首行没被当标题丢掉；第二个完整块的标题行仍被正常跳过
+    assert contents == ["#1 里程碑", "second memory"]
+    hashes = [h for h, _, _ in blocks]
+    assert hashes == [content_hash("#1 里程碑"), content_hash("second memory")]
+
+
+def test_collect_blocks_from_text_default_keeps_title_skipped(tmp_path) -> None:
+    """默认口径（全文读）：首行是标题仍按标题跳过，行为不回退。"""
+    text = "# 标题\n#1 里程碑\n"
+    blocks = collect_blocks_from_text(text)
+    # 默认 first_line_is_title=True：首块首行 "# 标题" 是标题被跳过，正文 "#1 里程碑" 保留
+    assert [c for _, c, _ in blocks] == ["#1 里程碑"]
+
+
+def test_collect_blocks_title_sinks_to_content_when_blocks_merge(tmp_path) -> None:
+    """块粘连（删块间空行）后原标题沉到块中间，被当正文产出——幽灵 unit 的已知代价。
+
+    按块结构解析的「块首=标题、块内其余=正文」靠块结构判定、不靠 ``#`` 前缀。删掉
+    块间空行（或块首标题行前手加一行正文）后，下一块标题行会沉到上一块内、成为
+    「块内首行之后」的正文行，按正文算 hash 产出「标题原文」——这是「宁可多算、
+    不可漏算」取舍的固有代价，本用例固化该契约，防止后人改回逐行跳过让 ``#`` 正文
+    再次被静默丢弃。
+    """
+    # 两块粘连：原本 "# t2" 是块首标题（跳过），删空行后沉到块中间变成正文
+    text = "# t1\ncontent1\n# t2\ncontent2\n"
+    blocks = collect_blocks_from_text(text)
+    # 单个粘连块：block[0]="# t1" 是标题跳过，其余三行全是正文（含沉中间的 # t2）
+    assert [c for _, c, _ in blocks] == ["content1", "# t2", "content2"]
 
 
 # -- 建 unit 缺省元数据 ------------------------------------------------------ #
@@ -179,6 +231,25 @@ def test_sync_one_inserts_new_lines(tmp_path) -> None:
     indexed = wd._shadow.list_units_by_md(SCOPE, "memory/p1/MEMORY.md")
     units = wd._shadow.get_units(SCOPE, [unit_id for unit_id, _hash in indexed])
     assert [u.segments[0].content for u in units] == ["hello world"]
+
+
+def test_sync_one_indexes_hash_leading_content(tmp_path) -> None:
+    """# 开头正文行（块内非首行）经看门狗对账仍被索引，不被当标题丢弃。
+
+    端到端覆盖 PR 缺陷：旧逐行遍历把 ``#1 里程碑`` 当标题跳过 → 影子索引无此 unit →
+    记忆从检索丢失。按块结构解析后，块首 ``# t`` 是标题跳过、块内 ``#1 里程碑`` 是
+    正文算 hash 建 unit——索引里必须能读到这条记忆。
+    """
+    wd = _watchdog(tmp_path)
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("# t\n#1 里程碑\n\n", encoding="utf-8")
+
+    wd._sync_one("memory/p1/MEMORY.md", deleted=False)
+
+    indexed = wd._shadow.list_units_by_md(SCOPE, "memory/p1/MEMORY.md")
+    units = wd._shadow.get_units(SCOPE, [unit_id for unit_id, _hash in indexed])
+    assert [u.segments[0].content for u in units] == ["#1 里程碑"]
 
 
 def test_sync_one_deletes_removed_lines(tmp_path) -> None:
