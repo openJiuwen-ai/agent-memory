@@ -181,7 +181,7 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **关键机制**：
 
-- **unit 粒度增量 diff**（非 lite 的文件级全量重建）：`shadow.list_units_by_md` 拿旧 `(unit_id, content_hash)` → 读 md 按行算新 hash → diff 出新增/删除集合只动变化的 unit。整文件重建会丢其他 unit 的 id（破坏 supersedes 链）。
+- **unit 粒度增量 diff**（非 lite 的文件级全量重建）：`shadow.list_units_by_md(scope, md_filename, lifecycle=active)` 拿旧 **active** `(unit_id, content_hash)` 作 delete 侧基准，另取 `list_units_by_md(scope, md_filename)` **全集** hash 作 insert 侧「已知块」扣除基准 → 读 md 按行算新 hash → diff 出新增/删除集合只动变化的 unit。整文件重建会丢其他 unit 的 id（破坏 supersedes 链）。**两侧基准分开（对称设计）**：delete 侧只取 active 行——superseded/archived/forgotten 历史行不参与删除对账（它们本就不该在 md 里，md 无其块是 SUPERSEDE / lifecycle 治理的正确终态而非「用户手删」删除信号——否则会二次物理清除 SUPERSEDE 旧版行，断版本链/as_of）；insert 侧用全集 hash 扣除——archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这残留块重插为 active 重复行（遗忘语义失效 + 内容重复），全集扣除命中历史行、跳过 insert。
 - **按行遍历**：`#` 开头标题行跳过、空行跳过、正文行算 sha256——前提即决策四的单行约束。
 - **debounce 按文件分键**：`_watch_timers` 按 md_filename 各持一个 timer——单一 timer 时 B 文件的事件会 cancel 掉 A 文件待执行的同步，而 A 无新事件不会再补（纯事件驱动），改动永久丢失。
 - **初始宽限期**：启动后延迟 1s 置 `watcher_initialized`，避开 Observer 刚起时对存量文件的初始扫描风暴（存量 md 是写入流程产物，不是「用户手改」）。

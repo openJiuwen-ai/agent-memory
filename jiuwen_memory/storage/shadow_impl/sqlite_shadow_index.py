@@ -978,7 +978,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             ).fetchall()
         return [(uid, bytes(raw)) for uid, raw in rows]
 
-    def list_units_by_md(self, scope: Scope, md_filename: str) -> list[tuple[str, str]]:
+    def list_units_by_md(
+        self, scope: Scope, md_filename: str, *, lifecycle: str | None = None
+    ) -> list[tuple[str, str]]:
         """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用（F07 §12.3）。
 
         返回 ``(unit_id, content_hash)`` 二元组。看门狗比 md 文件现存 unit 与 shadow
@@ -987,15 +989,24 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         加 scope WHERE 会断对账）。md 文件按 memory_class+coords.project 组织、不按 scope
         组织，单文件可含多 scope unit。影子索引其余方法已加 scope 原生隔离，本方法是看门狗诊断例外。
 
+        ``lifecycle`` 可选过滤：非 None 时拼 ``AND lifecycle = ?``——看门狗 delete 侧对账
+        只取 active 行（``LifecycleState.ACTIVE.value``），排除 superseded/archived/forgotten
+        历史行（SUPERSEDE 后 md 已删旧块、shadow 保留旧行，md 无此 hash 是正确终态而
+        非删除信号，不应进入 to_delete 对账）。insert 侧「已知块」扣除用 None 的全集
+        （archived/forgotten 行的 md 块仍留文件，须命中历史行避免重插 active，见
+        ``LocalWatchdog._sync_one``）。None 不过滤（跨 scope 诊断原行为）。
+
         无 ``md_filename`` 参数校验——空串/None 由 SQL 自然返空（``md_filename`` 列
         写入侧由 ``_md_filename_of`` 兜底，不会存空串，故空串查询必返空，无需特判）。
         """
+        sql = "SELECT unit_id, content_hash FROM memory_unit WHERE md_filename = ?"
+        params: list[str] = [md_filename]
+        if lifecycle is not None:
+            sql += " AND lifecycle = ?"
+            params.append(lifecycle)
         with self._lock:
             conn = self._ensure_conn()
-            rows = conn.execute(
-                "SELECT unit_id, content_hash FROM memory_unit WHERE md_filename = ?",
-                (md_filename,),
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [(uid, ch) for uid, ch in rows]
 
     def latest_scope_by_md(self, scope: Scope, md_filename: str) -> Scope | None:
