@@ -4,6 +4,8 @@
 把多条记忆概括成一条**高抽象粒度**的 CORE「画像」单元：内容为各来源内容的
 拼接摘要，``provenance`` 记全部来源 id、打 ``profile`` 标签。真实实现会用 LLM
 做真正的概括/升华，这里用拼接作可复现占位；少于 2 条不产出。
+
+F10：产出单元写 ``origin=inferred``，重要度取 ``default`` 类别查表值（覆盖继承值）。
 """
 
 from __future__ import annotations
@@ -22,12 +24,19 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    inferred_attribution,
+)
 
 logger = get_logger(__name__)
 
 
 class ConcatAbstractor(Abstractor):
     """把多条记忆拼接概括为一条 CORE 画像单元（高抽象，记全量血缘）。"""
+
+    def __init__(self, importance_category_map: dict[str, str] | None = None) -> None:
+        self._importance_category_map = importance_category_map
 
     def operator_type(self) -> OperatorType:
         return OperatorType.ABSTRACTOR
@@ -62,7 +71,8 @@ class ConcatAbstractor(Abstractor):
                 segments=[Segment(content=f"画像综合（{len(sources)} 条）：{summary}")],
                 provenance=[u.id for u in sources],
                 tags=["profile"],
-                system_metadata=inherited_system_metadata(sources),
+                system_metadata=inherited_system_metadata(sources)
+                | inferred_attribution(None, self._importance_category_map),
                 user_metadata=inherited_user_metadata(sources),
                 temporal=Temporal(
                     t_event=now,
@@ -88,4 +98,6 @@ class ConcatAbstractor(Abstractor):
 
 @AbstractorProducer.register("concat")
 def _build(config):
-    return ConcatAbstractor()
+    return ConcatAbstractor(
+        importance_category_map=importance_category_map_from_config(config),
+    )

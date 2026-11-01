@@ -60,6 +60,11 @@ from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
+from jiuwen_memory.construction.common import (
+    IMPORTANCE_KEY,
+    ORIGIN_KEY,
+    merge_importance_max,
+)
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
 from jiuwen_memory.construction.evolver import (
     EvolveMode,
@@ -683,8 +688,14 @@ class OrchestratingEvolver(Evolver):
             existing_unit.provenance = list(
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
-            # 合并 metadata
+            # 合并 metadata；F10 重要度只增不减、origin 随被合并的 existing——先备份，
+            # 交集继承后写回（两侧 origin 不同时交集会丢掉该键）
             had_md_title = MD_TITLE_KEY in existing_unit.system_metadata
+            importance = merge_importance_max(
+                existing_unit.system_metadata.get(IMPORTANCE_KEY),
+                candidate.system_metadata.get(IMPORTANCE_KEY),
+            )
+            origin = existing_unit.system_metadata.get(ORIGIN_KEY)
             existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
             # 标题描述本次更新后的事实，不是新旧记忆共有的属性。
             # 新候选无标题时清空旧标题，避免继续展示已经过时的事实。
@@ -693,6 +704,10 @@ class OrchestratingEvolver(Evolver):
                     MD_TITLE_KEY, ""
                 )
             existing_unit.user_metadata = inherited_user_metadata([existing_unit, candidate])
+            if importance is not None:
+                existing_unit.system_metadata[IMPORTANCE_KEY] = importance
+            if origin not in (None, ""):
+                existing_unit.system_metadata[ORIGIN_KEY] = origin
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
@@ -714,6 +729,12 @@ class OrchestratingEvolver(Evolver):
             # 新版落盘
             candidate.supersedes = existing_unit.id
             candidate.provenance = list(set(candidate.provenance) | {existing_unit.id})
+            importance = merge_importance_max(
+                existing_unit.system_metadata.get(IMPORTANCE_KEY),
+                candidate.system_metadata.get(IMPORTANCE_KEY),
+            )
+            if importance is not None:
+                candidate.system_metadata[IMPORTANCE_KEY] = importance
             candidate.system_metadata["dedup_decision"] = "supersede"
             candidate.system_metadata["dedup_similarity"] = str(similarity)
             candidate.system_metadata["dedup_superseded"] = existing_unit.id

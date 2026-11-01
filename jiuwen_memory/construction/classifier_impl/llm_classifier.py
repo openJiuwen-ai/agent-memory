@@ -13,6 +13,11 @@
 tier 限定 ``episodic`` / ``semantic`` / ``procedural``（与 extractor 一致），非法值兜底
 EPISODIC（原文未分类时的保守默认，区别于派生兜底 SEMANTIC）。tags 1-3 个，清洗截断。
 LLM 不可用/解析失败降级为空 tags + EPISODIC tier，不阻断。
+
+重要度（F10）：同一次调用一并产出 ``importance_category``，按 ``importance_category_map``
+查表写 ``system_metadata["importance"]``；调用方已显式给值时不覆盖。未判出类别（含批次
+失败）的 unit 取 ``default`` 类别值。类别段受 ``importance_category_prompt_enabled`` 控制，
+默认关：提示词不带类别段，重要度一律取 ``default`` 类别值。
 """
 
 from __future__ import annotations
@@ -26,6 +31,10 @@ from jiuwen_memory.common.type_def import ChatMessage, LifecycleState, MemoryTie
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.common import (
+    fill_missing_importance,
+    importance_category_map_from_config,
+    importance_category_prompt,
+    importance_category_prompt_enabled_from_config,
     parse_tags,
     reject_deprecated_llm_attempt_keys,
     validate_llm_attempt_policy,
@@ -112,8 +121,15 @@ class LLMClassifier(Classifier):
         llm: LLM,
         max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
+        importance_category_map: dict[str, str] | None = None,
+        importance_category_prompt_enabled: bool = False,
     ) -> None:
         self._llm = llm
+        self._importance_category_map = importance_category_map
+        self._importance_category_prompt_enabled = importance_category_prompt_enabled
+        self._system_prompt = _CLASSIFY_SYSTEM_PROMPT
+        if importance_category_prompt_enabled:
+            self._system_prompt += "\n" + importance_category_prompt(importance_category_map)
         self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
             max_attempts, retry_backoff_ms,
         )
@@ -167,6 +183,9 @@ class LLMClassifier(Classifier):
                     "LLMClassifier: batch failed offset=%d size=%d, skipping",
                     start, len(sub),
                 )
+        # 未判出类别的（批次失败 / LLM 漏条）补 default 类别值，保证新原文都有起始重要度
+        for unit in accepted:
+            fill_missing_importance(unit, None, self._importance_category_map)
         return units
 
     def _classify_batch(self, units: list[MemoryUnit]) -> None:
@@ -179,7 +198,7 @@ class LLMClassifier(Classifier):
         ]
         user_text = "\n".join(parts)
         messages = [
-            ChatMessage(role="system", content=_CLASSIFY_SYSTEM_PROMPT),
+            ChatMessage(role="system", content=self._system_prompt),
             ChatMessage(role="user", content=user_text),
         ]
         response = self._call_llm_with_retry(messages)
@@ -197,6 +216,12 @@ class LLMClassifier(Classifier):
                 )
                 continue
             unit.tier = _parse_tier(item.get("tier"))
+            category = (
+                item.get("importance_category")
+                if self._importance_category_prompt_enabled
+                else None
+            )
+            fill_missing_importance(unit, category, self._importance_category_map)
             tags = parse_tags(item.get("tags"))
             if tags:
                 # 合并到已有 tags（追加去重，≤ _MAX_TAGS）
@@ -269,4 +294,6 @@ def _build(config):
         llm=LlmProducer.dep(config, default="echo"),
         max_attempts=config.get("classifier_max_attempts", 3),
         retry_backoff_ms=config.get("classifier_retry_backoff", 1000),
+        importance_category_map=importance_category_map_from_config(config),
+        importance_category_prompt_enabled=importance_category_prompt_enabled_from_config(config),
     )

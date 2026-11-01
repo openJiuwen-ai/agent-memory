@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F10-importance-and-source-attribution.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 乱序陈述的修改型决策契约
 
@@ -106,12 +106,21 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，判定（ADD/UPDATE/SUPERSEDE/NOOP）与落盘由 Evolver 实现承担——`OrchestratingEvolver._evolve_extract`（legacy，`_dedup_batch` 判定+落盘耦合）或 `DynamicEvolver._evolve_extract`（dynamic，consolidate 只判定、落盘延后到 reflect 之后）。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`。
 9. **构建层不依赖 control**：`DynamicEvolver`/`OrchestratingEvolver` 的 SUPERSEDE 与 FORGET 经 `IndexBuilder` 完成，不经 `LifecycleManager`。
 10. **Dedup 与 IndexBuilder 共享底层 Store**：去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
-11. **派生 metadata 键保持类型稳定**：当前 Classifier 只更新
-    `MemoryUnit.tier` / `MemoryUnit.tags`，不约定额外分类 metadata 键；
+11. **派生 metadata 键保持类型稳定**：Classifier 更新 `MemoryUnit.tier` /
+    `MemoryUnit.tags`，并在 `system_metadata.importance` 缺失时补写（见下条）；
     LLM Extractor / LLM Abstractor 写出 `system_metadata.confidence` 时使用浮点字符串，
     非 LLM 实现不保证存在该键。Evolver 写回 `metadata.dedup_similarity`、
     `DeleteMode.DOWNWEIGHT` 写回 `system_metadata.importance` 时也使用浮点字符串。
     查询侧不对这些键做隐式类型转换。
+11a. **重要度与来源标识**：`system_metadata.importance` 是 [0,1] 内两位小数的浮点字符串，
+    `system_metadata.origin` 取 `"original"`（原文，接入层写）或 `"inferred"`（派生）。
+    LLM 只判重要度类别，数值由 `globals.importance_category_map` 查表（未命中取表内
+    `default`，再兜底 `"0.50"`；值经钳位与非数值兜底）。原文路径（Classifier）只在
+    importance 缺失时补写，调用方显式值不覆盖；派生路径（Extractor / Abstractor 产出的
+    新 unit）恒写 `origin="inferred"` 与查表重要度，覆盖从来源继承的值。去重 UPDATE /
+    SUPERSEDE 落盘时 importance 按数值取 max（只增不减），双方均缺失时不写；UPDATE 保留
+    被合并 existing 的 origin（existing 无 origin 时不借候选的），SUPERSEDE 用新版本自带的
+    origin。
 12. **consolidate 只判定不落盘**：`DynamicEvolver` 的 consolidate 步只产出
     `ConsolidateDecision`（候选 + 决策 + 已有记忆 + 相似度），落盘延后到
     reflect 之后统一执行。reflect 默认 no-op；当前只有对子候选的原地修改能影响落盘。
@@ -303,6 +312,12 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `classify` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 为一批记忆单元打上 tier/主题/重要度等分类标签，返回更新后的单元 |
+
+重要度维度与 tier 正交：实现判出重要度类别（默认七类 identity / rule / preference /
+knowledge / relation / default / transient，业务可在配置表中增删），按装配期固化的
+`importance_category_map` 查表写入 `system_metadata.importance`；已有值不覆盖，判类失败
+回落 `default`。LLM 实现的类别段受 `globals.importance_category_prompt_enabled` 控制，
+默认关：提示词不带类别段，重要度一律取 `default`。
 
 ### LayerAnnotator（`layer_annotator.py`）
 

@@ -8,7 +8,10 @@ LLMClassifier 重写为纯 LLM tier+tags 抽取后，测试覆盖：
 - 空 units / 非 ACTIVE / 空 content 跳过
 """
 
+import hashlib
 import json
+
+import pytest
 
 from jiuwen_memory.common.type_def import (
     LifecycleState,
@@ -24,6 +27,9 @@ from jiuwen_memory.construction.classifier_impl.keyword_classifier import Keywor
 from jiuwen_memory.construction.classifier_impl.llm_classifier import LLMClassifier
 from tests.unit.construction.fixtures import MockLLM
 from jiuwen_memory.common.errors import LLMTimeoutError
+
+
+_CLASSIFY_PROMPT_48BE7B3_SHA256 = "277d2205784c7a140c18ea63a322e2bc50ea5c82de20af08eaa292a4048f0b02"
 
 
 def _make_unit(
@@ -333,3 +339,161 @@ def test_contract_timeout_error_is_not_retried():
     unit = _make_unit("u1", "content")
     clf.classify([unit])
     assert llm.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# F10 重要度：LLM 判类别 + 配置查表；只补缺不覆盖调用方显式值
+# ---------------------------------------------------------------------------
+
+
+_CUSTOM_MAP = {"identity": "0.95", "billing": "0.70", "default": "0.40"}
+
+
+def _importance_classifier(
+    items: list[dict], category_map: dict[str, str] | None = None
+) -> LLMClassifier:
+    return LLMClassifier(
+        llm=MockLLM(responses=[_classify_response(items)]),
+        max_attempts=1,
+        retry_backoff_ms=0,
+        importance_category_map=category_map,
+        importance_category_prompt_enabled=True,
+    )
+
+
+def test_llm_classifier_writes_importance_by_category_from_config():
+    unit = _make_unit("u1", "我叫张三")
+    clf = _importance_classifier(
+        [{"source_id": "u1", "tier": "semantic", "importance_category": "billing"}],
+        _CUSTOM_MAP,
+    )
+    clf.classify([unit])
+    assert unit.system_metadata["importance"] == "0.70", "业务自定义类别按配置查表"
+
+
+def test_llm_classifier_category_parsing_is_case_insensitive():
+    unit = _make_unit("u1", "我叫张三")
+    clf = _importance_classifier(
+        [{"source_id": "u1", "tier": "semantic", "importance_category": " Identity "}]
+    )
+    clf.classify([unit])
+    assert unit.system_metadata["importance"] == "0.95"
+
+
+def test_llm_classifier_preserves_caller_supplied_importance():
+    unit = _make_unit("u1", "我叫张三")
+    unit.system_metadata["importance"] = "0.33"
+    clf = _importance_classifier(
+        [{"source_id": "u1", "tier": "semantic", "importance_category": "identity"}]
+    )
+    clf.classify([unit])
+    assert unit.system_metadata["importance"] == "0.33", "调用方显式值不得被 LLM 类别覆盖"
+
+
+def test_llm_classifier_unknown_category_falls_back_to_default():
+    unit = _make_unit("u1", "x")
+    clf = _importance_classifier(
+        [{"source_id": "u1", "tier": "episodic", "importance_category": "galaxy"}],
+        _CUSTOM_MAP,
+    )
+    clf.classify([unit])
+    assert unit.system_metadata["importance"] == "0.40", "未知类别取 category_map['default']"
+
+
+def test_llm_classifier_missing_category_map_falls_back_to_default_importance():
+    unit = _make_unit("u1", "x")
+    clf = _importance_classifier(
+        [{"source_id": "u1", "tier": "episodic", "importance_category": "identity"}], {}
+    )
+    clf.classify([unit])
+    assert unit.system_metadata["importance"] == "0.50", "配置未提供类别时兜底 DEFAULT_IMPORTANCE"
+
+
+def test_llm_classifier_failed_batch_still_gets_default_importance():
+    unit = _make_unit("u1", "x")
+    clf = LLMClassifier(llm=MockLLM(responses=["not json"]), max_attempts=1, retry_backoff_ms=0)
+    clf.classify([unit])
+    assert unit.system_metadata["importance"] == "0.50", "LLM 未判出类别也要有起始重要度"
+
+
+def test_llm_classifier_prompt_lists_configured_categories():
+    llm = MockLLM(responses=[_classify_response([])])
+    calls: list = []
+    original_chat = llm.chat
+
+    def recording_chat(messages, **kwargs):
+        calls.append(messages)
+        return original_chat(messages, **kwargs)
+
+    llm.chat = recording_chat
+    LLMClassifier(
+        llm=llm,
+        max_attempts=1,
+        retry_backoff_ms=0,
+        importance_category_map=_CUSTOM_MAP,
+        importance_category_prompt_enabled=True,
+    ).classify([_make_unit("u1", "x")])
+    system_prompt = calls[0][0].content
+    assert '"importance_category"' in system_prompt
+    assert '"billing"' in system_prompt, "业务追加的类别须同步出现在提示词"
+
+
+def test_llm_classifier_category_prompt_off_matches_baseline_and_ignores_category():
+    # pylint: disable=protected-access
+    clf = LLMClassifier(
+        llm=MockLLM(
+            responses=[
+                _classify_response(
+                    [{"source_id": "u1", "tier": "semantic", "importance_category": "identity"}]
+                )
+            ]
+        ),
+        max_attempts=1,
+        retry_backoff_ms=0,
+    )
+    digest = hashlib.sha256(clf._system_prompt.encode("utf-8")).hexdigest()
+    assert digest == _CLASSIFY_PROMPT_48BE7B3_SHA256, "同 48be7b3"
+    [unit] = clf.classify([_make_unit("u1", "x")])
+    assert unit.system_metadata["importance"] == "0.50", "关时 LLM 判类被忽略"
+
+
+def test_keyword_classifier_writes_importance_by_category():
+    rule = _make_unit("u1", "提交前必须跑全量测试")
+    pref = _make_unit("u2", "我喜欢美式咖啡")
+    plain = _make_unit("u3", "今天下雨")
+    KeywordClassifier().classify([rule, pref, plain])
+    assert rule.system_metadata["importance"] == "0.90"
+    assert pref.system_metadata["importance"] == "0.85"
+    assert plain.system_metadata["importance"] == "0.50"
+
+
+def test_keyword_classifier_preserves_caller_supplied_importance():
+    unit = _make_unit("u1", "我喜欢美式咖啡")
+    unit.system_metadata["importance"] = "0.10"
+    KeywordClassifier(importance_category_map=_CUSTOM_MAP).classify([unit])
+    assert unit.system_metadata["importance"] == "0.10"
+
+
+@pytest.mark.parametrize(("enabled", "expected"), [(None, False), (True, True)])
+def test_category_prompt_switch_reads_globals_via_assembly(enabled, expected):
+    # pylint: disable=protected-access
+    from jiuwen_memory.common.bootstrap import register_plugins
+    from jiuwen_memory.config.context import AssemblyContext
+    from jiuwen_memory.config.defaults import default_config_dict
+    from jiuwen_memory.construction.bootstrap import register_constructors
+    from jiuwen_memory.construction.classifier import ClassifierProducer
+    from jiuwen_memory.construction.extractor import ExtractorProducer
+
+    register_plugins()
+    register_constructors()
+    raw = default_config_dict()
+    if enabled is not None:
+        raw["globals"]["importance_category_prompt_enabled"] = enabled
+    llm = {"llm": {"target": "echo"}}
+    raw["classifier"] = {"default": {"target": "llm", "params": llm}}
+    raw["extractor"] = {"default": {"target": "llm", "params": llm}}
+    ctx = AssemblyContext.from_dict(raw)
+    classifier = ClassifierProducer.build_named("default", ctx)
+    extractor = ExtractorProducer.build_named("default", ctx)
+    assert ('"importance_category"' in classifier._system_prompt) is expected
+    assert extractor._importance_category_prompt_enabled is expected

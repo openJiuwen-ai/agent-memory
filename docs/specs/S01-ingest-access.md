@@ -5,11 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-10-29 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F10-importance-and-source-attribution.md |
 ## Metadata 转换契约
 
 `RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空。
@@ -79,6 +79,11 @@ Source.fetch() → list[RawPayload]
 → Ingestor 组装 MemoryUnit，并将 payload.assets 映射到产出的 Segment
 → 返回 list[MemoryUnit]
 ```
+
+**来源标识**：Ingestor 产出的是原文记忆，`system_metadata["origin"]` 缺失或为空时写
+`"original"`；调用方显式传入的 origin 原样保留。派生记忆的 `"inferred"` 由构建层
+产出算子写入（见 S05），接入层不写 `importance`。常量 `ORIGIN_KEY` /
+`ORIGIN_ORIGINAL` / `ORIGIN_INFER` 定义在 `common.type_def`，接入层不依赖构建层。
 
 ## 数据结构
 

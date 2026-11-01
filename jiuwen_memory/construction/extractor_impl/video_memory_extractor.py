@@ -20,6 +20,10 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
+from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    inferred_attribution,
+)
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
@@ -29,6 +33,9 @@ _CALL_LEVEL_METADATA_KEYS = frozenset({"infer", "pipeline"})
 
 class VideoMemoryExtractor(Extractor):
     """Convert normalized video data into CLM and ELM MemoryUnits."""
+
+    def __init__(self, importance_category_map: dict[str, str] | None = None) -> None:
+        self._importance_category_map = importance_category_map
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EXTRACTOR
@@ -64,6 +71,11 @@ class VideoMemoryExtractor(Extractor):
                 continue
             clips = _build_clips(source, video_data)
             events = _build_events(source, video_data, clips)
+            # F10: CLM/ELM are derived memories -> origin=inferred, default-category
+            # importance (overrides the value copied from the source video unit).
+            attribution = inferred_attribution(None, self._importance_category_map)
+            for unit in (*clips.values(), *events):
+                unit.system_metadata.update(attribution)
             derived.extend(clips.values())
             derived.extend(events)
         return derived
@@ -229,5 +241,6 @@ def _memory_float(value: object, *, field: str) -> float:
 
 @ExtractorProducer.register("video_memory")
 def _build(config):
-    del config
-    return VideoMemoryExtractor()
+    return VideoMemoryExtractor(
+        importance_category_map=importance_category_map_from_config(config),
+    )

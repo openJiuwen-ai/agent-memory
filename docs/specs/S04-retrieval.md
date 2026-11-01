@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/retrieval/ |
 | 最近一次修订日期 | 2026-11-02 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/retrieval/F09-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
 ## Metadata 检索契约
 
@@ -29,6 +29,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 - 融合：多路候选合并去重、归一化打分、取最大值/RRF/加权排序
 - 精排（可选）：调用 Reranker 做 cross-encoder 精排
 - 相关性阈值：绝对/相对阈值裁剪低相关候选（结果数可 < top_k），min_results 兜底回填
+- 次级排序（可选，默认关闭）：阈值之后、top_k 之前，在相关性相近的带内按重要度/时效性 tie-break
 - 渐进式披露：L0 摘要/L1 片段/L2 全文 按需加载
 - 检索轨迹：可观测的非黑盒调试信息
 - 可选 Schema TemporalEntity 视图：实体/Property 双路选择、实体内裁剪与双时间轴过滤
@@ -87,7 +88,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 
 ```python
 class RetrievalOperatorType(str, Enum):
-    QUERY_PARSER / FUSER / DISCLOSER / RETRIEVER / EXPANDER
+    QUERY_PARSER / FUSER / DISCLOSER / RETRIEVER / EXPANDER / SECONDARY_SCORER
 
 class RetrievalOperator(ABC):
     def operator_type(self) -> RetrievalOperatorType  # 自描述
@@ -108,7 +109,7 @@ class RetrievalOperator(ABC):
 QueryParser
 → hierarchy kind/role/span 硬过滤
 → 既有 L0/L1/L2 内容层多路召回
-→ fusion → rerank → threshold → top_k
+→ fusion → rerank → [rollup] → threshold → [secondary_rank] → top_k
 → 可选 Expand（expand_depth > 0）
 → tree score / convergence / tree token budget
 → 对每个保留 unit 调用 Discloser
@@ -166,6 +167,46 @@ Property 缺失或不完整时的证据保全通道，不扫描并平铺整个 S
 
 `cross_space.py` 只提供取数上界、结果合并与失败编码三个纯函数；跨空间的召回扇出编排落控制层 `control/collective/cross_space_recall.py`，它 import 本模块，本模块不反向依赖控制层。
 
+### SecondaryScorer（`fuser_impl/secondary_scorer/secondary_scorer.py`）
+
+次级排序算子，与 `Fuser` 平级但不是 `Fuser`：`Fuser` 在召回之后、精排之前按 unit_id
+融合多路候选；`SecondaryScorer` 在相关性阈值（及 rollup MaxP）之后、`top_k` 截断之前，
+只对单路已排好序的候选做带内重排。
+
+```python
+class SecondaryScorer(RetrievalOperator):
+    def operator_type(self) -> RetrievalOperatorType  # SECONDARY_SCORER
+    def health(self) -> None
+    def explain(self) -> dict[str, str]  # 默认返回空 dict，业务实现可不覆盖
+    def score(
+        self, query: ParsedQuery, candidates: list[ScoredCandidate], *, calibrated: bool
+    ) -> list[ScoredCandidate]
+    def score_with_detail(
+        self, query: ParsedQuery, candidates: list[ScoredCandidate], *, calibrated: bool
+    ) -> tuple[list[ScoredCandidate], dict[str, str]]  # 默认委托 score，明细为空
+```
+
+- 业务实现只须实现 `score`（及基类要求的 `operator_type` / `health`）；`explain` 与
+  `score_with_detail` 有默认实现，轨迹明细随之为空。
+- 入参已按相关性分降序；返回值必须是入参的一个排列——只重排，不增删候选。
+- `calibrated=False`（未精排，分数是 RRF 融合分）或候选数 ≤ 1 时返回原顺序。未精排时
+  Retriever 在调用算子前也会门控，直接记 `skipped: uncalibrated`。
+- 默认实现按锚定分带：带首分减带宽 `score_band`（闭区间）以内的候选同带，带宽恒
+  ≤ `score_band`；带间严格保持相关性顺序，带内按 `importance_weight·importance +
+  recency_weight·recency` 稳定降序。`importance` 读 `system_metadata["importance"]` 并按
+  数值解析（缺失/非法取 0.5，越界裁剪 [0,1]）；`recency = 1/(1+age_days/recency_tau_days)`，
+  基于 `Temporal.t_ingest`，缺失取 0，未来时间裁剪为 1。
+
+配置分两处：总开关 `secondary_rank_enabled`（出厂在 `globals`，默认 false；写在 `globals` 或
+`retriever.<name>.params` 都生效，params 优先）与引用 `retriever.<name>.params.secondary_scorer`
+（默认 `default`）；算子参数在顶层命名空间
+`secondary_scorer.<name>.params`（`score_band` 0.05、`importance_weight` 0.5、
+`recency_weight` 0.5、`recency_tau_days` 30）。业务实现以
+`@SecondaryScorerProducer.register("<名>")` 自注册并把 `target` 指向它即可替换算法。
+
+`PipelineRetriever` 恒记 `secondary_rank` 轨迹 step：关闭时 `skipped=disabled`；算子
+返回非排列、`explain` 或打分抛异常时记 `error` 并保持原顺序，不阻断检索。
+
 ### Expander（`expander.py` / `expander_impl/default_expander.py`）
 
 ```python
@@ -206,7 +247,8 @@ QueryParser.parse(query) → ParsedQuery
 → Fuser.fuse(parsed_query, candidates) → list[ScoredMemoryUnit]
 → 截断精排预算；补位路径保存此时的融合候选顺序
 → 可选 Reranker 以 ParsedQuery.rewritten 精排 → [rollup=True] 祖先准入及 MaxP
-→ 相关性阈值过滤（结果数可 < top_k）→ 截断 top_k
+→ 相关性阈值过滤（结果数可 < top_k）
+→ [secondary_rank_enabled] SecondaryScorer 带内重排（仅精排路径生效）→ 截断 top_k
 → Discloser 塑形；若 expand_depth>0，内部准备阶段暂不分配预算、不读后代
 → [expand_depth>0] 共享预算准入根；TIME 父角色上卷时复用命中后代，否则 Expander BFS
 → 统一截断父子返回总数到 top_k
