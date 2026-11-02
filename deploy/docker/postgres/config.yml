@@ -135,7 +135,6 @@ memory_api:
         tokenizer: default
         embedder: default
         llm: { target: echo }
-        rewrite_enabled: false
 
   # scheduler：生产档显式装配 async_timer（默认 in_process 不支持周期任务，
   # dreaming 注册会 fail fast 拒绝）。async_timer 自带私有后台事件循环——
