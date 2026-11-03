@@ -23,7 +23,7 @@
 | `text_split.py` | 摄入与内容型 prompt 共用段落切分；可选 boundary 回调只向前调整硬切点，不扩大长度上限 |
 | `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、本地模型来源解析（`resolve_model_source`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`/`read_ssl_config`/`reject_url_tls_params`）、scope 命名空间渲染（`SCOPE_DIMS`/`scope_segments`）、后端异常归一（`wrap_backend`）；storage、lock 与出站客户端共用，避免各写一份 |
 | `_import_support.py` | 导入容错样板的唯一归属地（`import_optional`/`import_required`/`import_required_attr`）：装配各 `*_impl` 包触发 `@Producer.register` 时逐个隔离可选依赖，单个缺失只让该插件缺席、不连坐同批其他插件、不阻断 `MemoryAPI` 构造。刻意与 `_support.py` 分家——后者讲配置值语义且连带 `type_def`/`Factory`/`errors`，本模块讲导入机制且**只依赖标准库**（51 个 `*_impl`/bootstrap 消费点各自 import 一次，自身须停在零项目依赖）；**不得**引入任何 `jiuwen_memory` 内部对象，以免装配期导入顺序反受各层先后影响。接入侧另有一份 `jiuwen_memory_entry/core/import_support.py`——Access 只允许依赖 `jiuwen_memory.api`（见 `tests/unit/api/test_access_api_boundary.py`），两侧不复用 |
-| `log/` | 统一运行日志入口：`base.py` 提供 `get_logger` / `setup_logging`，`privacy_filter.py` 提供默认全局启用的 `SensitiveDataFilter` 及 `install_privacy_filter` / `redact_for_log` / `metadata_for_log` / `scope_for_log`；普通服务端日志在 Formatter 前脱敏，保留字段结构和经调用点确认的 MemoryUnit 技术 ID，不修改业务对象或正式 API 响应 |
+| `log/` | SDK 运行日志入口：`base.py` 的 `get_logger` 用于获取日志器，`setup_logging` 设置当前进程共用的 SDK 日志输出，接收 `agent_memory.*` 和 `jiuwen_memory.*` 两种名称。`privacy_filter.py` 同时提供安全故障诊断（独立 StreamHandler 直接 emit 到 stderr，不挂日志器、不经过业务 Handler，失败返回状态并防止递归）、脱敏过滤器及 `install_privacy_filter` / `redact_for_log` / `metadata_for_log` / `scope_for_log`。输出前先脱敏，`log_filters` 按业务/内置分别编译和应用正文正则，每个输出拿到单独的日志记录；不修改业务进程的全局日志器、业务对象或 API 响应，仍保留字段结构和经调用点确认的 MemoryUnit 技术 ID |
 | `time_utils.py` | 纯时间转换 as_utc/epoch_ms：无时区按 UTC，有时区保持实际时刻；不依赖服务器时区、不改写真源 |
 | `plaintext.py` | 继承 BackendError 的内部非信封拒绝信号；不实现密码学算法或新增 API 错误结果值 |
 | `type_def/` | 核心数据类型定义目录 |
@@ -125,6 +125,31 @@ privacy_rule_ids / privacy_categories 诊断摘要，客户端不可赋值。私
    通过 `get_logger()` 获取的 logger 默认安装 `SensitiveDataFilter`；正文、用户身份、Scope
    实值、标签、模型原始响应和 metadata 叶子值必须先用对应日志标记函数包装。仅 MemoryUnit
    技术 ID 可由调用点显式列入可见集合；过滤器不得修改业务对象、持久化数据或 API 响应。
+   脱敏普通异常必须在源日志器 Filter 和分发入口得到隔离；脱敏失败的整条记录不得进入 SDK 管理的输出，
+   只报告不含正文、异常值和源码内容的诊断。不能用继续分发原记录的方式绕过失败。
+10. **SDK 原有运行日志按配置选择输出位置**：SDK 各模块保留原来的打印语句，接管本身不删减
+    打印点。`agent_memory.*` 和 `jiuwen_memory.*` 是这些日志器的名字，用来标识来源模块，
+    不是日志正文必须包含的文字。SDK 按这两种名字识别自己的日志；业务进程的全局日志器
+    （Python root logger）和第三方库继续按各自原有配置输出。
+
+    首次未指定 `log_output` 时默认使用 `builtin`。传入 `log_handler` 后，还需明确选择
+    `business` 或 `both` 才会把日志交给业务处理器。`business` 模式下，SDK 自己的终端和
+    文件输出不再启用，应去业务配置的目的地查看日志。日志级别限制、脱敏规则和业务处理器
+    的过滤条件继续生效，因此两边最终可见的日志数量也取决于这些设置。
+    SDK 管理的输出必须先检查 `globals.log_level`，再执行各处理器自己的级别和过滤条件；
+    子日志器单独设置较低级别不能绕过 SDK 门槛，不覆盖业务处理器已有的级别。
+    正文正则在日志初始化时校验并编译，按两路分别筛选；匹配脱敏后、填入参数的正文，
+    不包括格式前缀和另附异常堆栈，不改日志模板和参数。业务处理前准备匹配内容，
+    业务修改不得影响内置侧筛选。规则缺省不提前生成正文，匹配普通异常按输出隔离；
+    配置结构、逐项继承和冲突规则见 S08，不修改业务 Handler 的 Filter 列表。
+
+    业务处理器由调用方负责关闭。应用此前手工添加的 SDK 日志处理器会保留，不要把同一个
+    处理器既手工添加，又通过 `log_handler` 传入。SDK 路由前置安装和失败回滚必须在 logging
+    模块锁内发布新的 handlers 列表，不就地改写正在被其他线程遍历的旧列表，不调用业务
+    Handler。分发期间同线程的嵌套 SDK 记录跳过全部 SDK 管理输出，不能只跳过业务端。
+    每个输出使用单独的日志记录，字典、列表等
+    标准容器分别复制；自定义业务对象仍可能共用，具体规则见 S02。业务处理器抛出的普通
+    异常不能中断 SDK 操作，也不能阻止双路模式下 SDK 自己的输出。
 
 ### Trusted 初始化本地约束
 

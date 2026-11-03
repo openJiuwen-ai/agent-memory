@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -111,6 +112,58 @@ def managed_models():
 
     with Factory.observe_builds(record):
         yield models
+
+
+@pytest.fixture(autouse=True)
+def _isolate_sdk_logging_configuration() -> Any:
+    """隔离 SDK 日志单例；内部状态只供测试保存/恢复，不关闭业务 Handler。"""
+    from jiuwen_memory.common.log import base as log_base
+
+    previous_state = log_base._LOGGING_STATE  # pylint: disable=protected-access
+    roots = [logging.getLogger(name) for name in ("agent_memory", "jiuwen_memory")]
+    snapshots = [
+        {
+            "logger": logger,
+            "level": logger.level,
+            "propagate": logger.propagate,
+            "router_index": (
+                logger.handlers.index(previous_state.router)
+                if previous_state is not None
+                and previous_state.router in logger.handlers
+                else None
+            ),
+        }
+        for logger in roots
+    ]
+    if previous_state is not None:
+        for logger in roots:
+            logger.removeHandler(previous_state.router)
+    for logger in roots:
+        logger.setLevel(logging.NOTSET)
+        logger.propagate = True
+    log_base._LOGGING_STATE = None  # pylint: disable=protected-access
+
+    try:
+        yield
+    finally:
+        test_state = log_base._LOGGING_STATE  # pylint: disable=protected-access
+        if test_state is not None and test_state is not previous_state:
+            for logger in roots:
+                logger.removeHandler(test_state.router)
+            for handler in test_state.owned_handlers:
+                handler.close()
+
+        log_base._LOGGING_STATE = previous_state  # pylint: disable=protected-access
+        for snapshot in snapshots:
+            logger = snapshot["logger"]
+            logger.setLevel(snapshot["level"])
+            logger.propagate = snapshot["propagate"]
+            router_index = snapshot["router_index"]
+            if previous_state is not None and router_index is not None:
+                logger.removeHandler(previous_state.router)
+                logger.handlers.insert(
+                    min(router_index, len(logger.handlers)), previous_state.router
+                )
 
 
 DEFAULT_SCOPE = Scope(org="acme", user="u1", agent="a1", session="s1")
