@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md、docs/features/retrieval/F09-context-pack.md |
 
 ## Metadata 检索契约
 
@@ -165,6 +165,8 @@ Property 缺失或不完整时的证据保全通道，不扫描并平铺整个 S
 `RecallChannel.SPACE`（F07 随跨空间检索新增）不是召回通道，是「某个空间整体没进结果」的标记位，只出现在 `RetrievalResult.errors` 的 `ChannelError.channel` 上。它不进候选、不参与融合，也不出现在 `ChannelEvidence.channel` 里，因此按通道配置融合权重或按通道打点的消费方不为它配权重。该取值的构造点是本层的 `cross_space.space_error`，由 API 层（判权剔除）与控制层（扇出失败）两侧共用。
 
 `cross_space.py` 只提供取数上界、结果合并与失败编码三个纯函数；跨空间的召回扇出编排落控制层 `control/collective/cross_space_recall.py`，它 import 本模块，本模块不反向依赖控制层。
+
+`context_pack.pack_context(query, memories, *, budget_ratio=0.8, strategy=AUTO, count_tokens=None) -> PackedContext`（F09）是检索之后的纯函数：输入调用方已拿到的 Top-K（正文、事件时间、检索得分），输出不超过 `budget_ratio` × 官方渲染 token 的记忆块文本，以及每条记忆的去向（`kept` / `telegraphed` / `dropped`，互斥且覆盖全部输入）。所有记忆都放不下时保留排第一的一条，此时允许超预算。它不访问存储、不调模型，不改变 `Retriever.retrieve` 的结果；Retriever 与 Discloser 不调用它。
 
 ### Expander（`expander.py` / `expander_impl/default_expander.py`）
 

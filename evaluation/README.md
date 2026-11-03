@@ -196,6 +196,30 @@ locomo:
 `effective.SCOPE_TAG`，再设置 `scope_tag` 为该值并将 `skip_write` 改为 `true`。
 复用旧 Scope 时禁止开启 `cleanup_after_run`，避免误删对比基线。
 
+### LoCoMo 上下文打包（F09）
+
+答题前把每个 cutoff 切片的记忆块压到 `context_pack_ratio` × 官方渲染 token 以内，召回不变，
+不调用额外模型（设计与实验数据见 `docs/features/retrieval/F09-context-pack.md`）：
+
+```yaml
+locomo:
+  context_pack: true
+  context_pack_ratio: 0.8
+```
+
+每题的打包统计写入 `test_response_v5*.json` 的 `context_pack` 字段。对比打包与不打包时，
+优先用回放脚本复用同一轮已落盘的召回，避免重跑写入带来的抽取随机性：
+
+```bash
+python -m evaluation.locomo.context_pack_replay \
+  --run-dir evaluation/outputs/locomo/<run_id>_<run_tag> \
+  --data evaluation/datasets/locomo/locomo10.json --top-k 10,20,50
+```
+
+默认每组 2 轮、24 并发，偶数轮两组先后倒置；复现 F09 的实验结果时加 `--conversation-ids 2,3,4,5,6,7,8,9`。
+输出 `<run-dir>/context_pack_replay/summary.md`：基线 / 打包准确率、配对差与 95% CI、记忆 token（cl100k）与降幅、
+每题墙钟时长。加 `--dry-run` 只统计 token，不调用模型。
+
 ## 七、切换到标准数据集
 
 只换数据路径和范围，不换测评实现。
