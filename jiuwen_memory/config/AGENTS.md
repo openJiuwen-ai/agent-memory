@@ -29,6 +29,13 @@
 
 2. **同实现凭证优先晚绑定**  
    model/api_key/base_url/url 在 Embedder/LLM/Reranker/Store 调用或取连接路径 `fetch`；`*.active` 仅用于异质实现互切。
+   具名实例的晚绑定 key 必须包含实例身份：`default` 用 `<namespace>.<field>`，其他实例用
+   `<namespace>.<instance>.<field>`。该实例作用域投影当前只对已迁移的 `llm` 启用；其他
+   命名空间在消费 builder 接入 `instance_namespace` 前保留旧投影，不得提前生成无人读取的
+   `<namespace>.<instance>.<short-field>`。投影与消费方共用 `instance_namespace` /
+   `resolve_instance_namespace`。`config_namespace` 只从实例 `params` 读取，不从 `globals`
+   回退，必须为非空字符串；空白或非字符串装配期拒绝。
+   `default` 是主实例保留名，不为主实例改名场景生成兼容别名。
    **禁止**为同实现换 Redis URL / sqlite `db_path` 预装 `Redis_1`/`Redis_2` 等多具名实例再切 `kv_store.active`（装配期猜集群数；后来的集群应 `put(kv_store.url)`）。
 
 3. **A/B 分离**  

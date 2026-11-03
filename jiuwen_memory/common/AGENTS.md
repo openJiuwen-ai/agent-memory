@@ -121,6 +121,9 @@
 4. 重依赖实现在 `*_impl/__init__.py` 中用 `try/except ImportError` 包裹。
 5. 两级命名空间配置驱动装配：每个 Producer 声明全局唯一 `TOP_NAME`（占配置顶层段），其下是若干具名实例（`target` 指定实现名、`params` 传参、`new_instance` 控制是否共享）。`_build(config)` 里用 `XProducer.dep(config, param_name=None, default=...)` 取子依赖（引用名→共享 / 内联 dict→匿名 / 缺省→默认匿名）。
 6. LLM 的厂商扩展参数必须由对应 Provider Adapter 注入；构建、检索等内核业务调用点不得硬编码 `extra_body` 等传输层字段。
+   OpenAI/DashScope LLM builder 必须从 `config.name` 推导实例晚绑定命名空间：空名与
+   `default` 使用 `llm`，其他具名实例使用 `llm.<name>`。显式 `config_namespace` 只从实例
+   `params` 读取，不从 `globals` 回退，必须是非空字符串；空白或非字符串装配期拒绝。
 7. 横切能力（Authenticator / PrincipalKeyStore / RateLimiter / WorkloadGuard /
    BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger / LockProvider）
    不继承 `Plugin`、不进入 `PluginType`；接口统一在能力目录的 `base.py`（安全域为
