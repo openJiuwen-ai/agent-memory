@@ -15,11 +15,11 @@
 
 | 文件 | 职责 |
 |---|---|
-| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化与日志脱敏辅助函数 |
+| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化与日志脱敏辅助函数；创建 SDK 时可用具名参数 `log_handler` 传入业务日志处理器 |
 | `access_security.py` | 公开安全装配辅助与 `register_trusted_principal`；初始化按增量能力委派实际认证器，不依赖实现类或另建主体 Store |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
+| `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄，并在创建 SDK 时设置当前进程共用的日志输出；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
@@ -217,6 +217,11 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     后台线程不再访问连接后才释放 shadow。同步启动将 Observer 故障传回调用方，关闭后拒绝重启。
 15. 成员/Grant 授予上界接收完整可信上下文，只有 ROOT 免除普通成员上界；不得从 actor
     的 Scope 形状推导特权。路由写入和跨空间查询必须区分后端故障与正常权限拒绝。
+16. 创建 SDK 时，`assemble()` / `assemble_runtime()` 接收的业务日志处理器由调用方负责关闭。
+    同一进程共用首次成功初始化的日志设置；即使后续组件初始化失败，这套设置也会保留。
+    后续实例可以不再传处理器，继续使用已有对象。关闭某个实例不会重置日志设置或关闭
+    处理器。输出选项和配置冲突的处理规则见 S02、F09；本功能不自动接管 Server、CLI、HTTP、
+    MCP 各自的入口日志。
 
 
 ### 显式建树边界

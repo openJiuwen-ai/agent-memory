@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-04 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
+| 最近一次修订日期 | 2026-11-05 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md` |
 
 ## 范围 / 边界
 
@@ -61,6 +61,11 @@
     单次查询仍需 `RetrievalQuery.schema_temporal`（或兼容扩展键）显式请求，
     或同时开启 `schema_temporal_auto_enabled`，且 Parser 已有时间窗或内置
     规则能从原始 query 解析出时间窗。
+12. **同一进程共用一套 SDK 日志配置**：`globals.log_level`、`log_format`、`log_datefmt`、
+    `log_file`、`log_output` 和 `log_filters` 在首次日志初始化成功后固定。后续实例省略的配置沿用已有值；
+    相同配置可以重复使用，不会重复添加输出；换配置或换业务处理器对象会报错。不能通过
+    `ConfigSource` 在运行中修改这些设置。日志设置完成后，即使后续组件初始化失败，
+    这套设置仍然保留。
 
 ## 接口契约
 
@@ -87,6 +92,81 @@
 服务装配/关闭，不将 health 故障解释为拓扑切换，也不增加 ConfigSource 热切换键。
 `globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
 再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
+
+### SDK 运行日志配置
+
+下列字段放在 `assemble(config=...)` / `assemble_runtime(config=...)` 所接收配置的
+`globals` 下。可以直接传 Python 字典，也可以先用 `Config.from_yaml("文件路径")` 读取
+业务自己的 YAML 文件再传入。SDK 没有固定的日志配置文件，也不会自动查找文件。
+首次日志初始化成功后，这些设置不再随运行中的配置更新而改变。
+
+| 全局字段 | 默认值 | 语义 |
+|---|---|---|
+| `log_level` | `INFO` | SDK 管理的两路输出使用的统一最低级别，子日志器不能降低此门槛；业务处理器自身的级别限制和过滤条件也继续生效 |
+| `log_format` | `[%(asctime)s] %(name)s %(levelname)s %(message)s` | SDK 自己的输出格式；业务处理器没有格式化器（`Formatter`）时也使用它 |
+| `log_datefmt` | `%Y-%m-%d %H:%M:%S` | SDK 设置的日志时间格式；不覆盖业务已有的格式化器 |
+| `log_file` | 空字符串 | SDK 自己的日志文件路径，使用 UTF-8 编码并追加写入；只在 `builtin` / `both` 模式创建 |
+| `log_output` | `builtin` | 选择 `builtin`、`business` 或 `both`，含义见下文 |
+| `log_filters.business.include` / `exclude` | 无限制 | 业务输出的正文包含、排除正则 |
+| `log_filters.builtin.include` / `exclude` | 无限制 | SDK 终端和内置文件共用的正文包含、排除正则 |
+
+`log_output` 的三个选项分别是：
+
+- `builtin`：SDK 输出到终端的标准错误输出（`stderr`），配置了 `log_file` 时也写入文件。
+- `business`：只交给 `log_handler` 指定的业务处理器，不创建 SDK 自己的终端或文件输出。
+- `both`：同时使用业务处理器和 SDK 自己的输出。
+
+首次调用没有指定 `log_output` 时，一律使用 `builtin`；传入业务处理器不会自动启用业务
+输出。明确选择 `business` 或 `both` 却没有提供处理器，会初始化失败。后续创建 SDK 实例时，
+可以省略 `log_handler`，继续使用首次注册的处理器。
+
+业务处理器已有的格式、日志级别限制和过滤条件继续生效。SDK 也会保留应用之前手工给 SDK
+日志器添加的处理器；选择 `business` 不会关闭这些已有输出。
+
+重复初始化和配置冲突的处理规则见 [S02](S02-memory-api.md#sdk-运行日志接管)。完整的配置与
+装配示例见 [F09](../features/api/F09-sdk-runtime-logging.md#配置文件和-sdk-装配示例)，由业务按示例准备自己的 YAML 和处理器。
+
+#### 两路独立的正文正则过滤
+
+```yaml
+globals:
+  log_output: both
+  log_level: INFO
+  log_filters:
+    business:
+      include: '超时|连接失败'
+      exclude: '健康检查'
+    builtin:
+      exclude: '健康检查'
+```
+
+本例的业务处理器只接收正文包含“超时”或“连接失败”、且不包含“健康检查”的日志。
+SDK 终端和内置文件只排除健康检查，其他达到级别门槛的日志照常输出。删除整个
+`builtin` 配置块后，内置输出不再按正文筛选。设置规则不会自动启用对应输出，仍由
+`log_output` 决定是否启用；业务处理器仍需通过 `log_handler` 提供。
+
+- 配置结构必须是映射：`log_filters` 只接受 `business`、`builtin`，各输出块只接受
+  `include`、`exclude`，未知字段和错误层级报 `ValidationError`。
+- 首次初始化时，省略规则或规则值为 `null` 表示无此限制；空字符串、非字符串及非法正则
+  均报 `ValidationError`。`null` 只能作为叶子规则值，不能代替整个配置块。
+- `include` 不匹配则不输出，`exclude` 匹配则不输出，同时匹配时排除优先。
+  使用 Python 标准 `re.search()`，允许在正文任意位置匹配，默认区分大小写。
+  需要忽略大小写可写 `(?i)`；正则建议用 YAML 单引号包裹。
+- 匹配脱敏后、日志参数填入后的正文，不含 Formatter 添加的时间、级别、路径，
+  不含另附的异常堆栈。正文内原有换行保留，遵循 Python 正则默认换行语义。
+  本次不提供按日志器名称匹配、正则替换或单独的 flags 配置项。
+- 两路匹配依据在业务处理前准备，不受业务 Handler 修改记录影响。Handler 仍接收标准
+  LogRecord 副本，SDK 不把原来的 `msg` / `args` 强制改成已拼接字符串。
+- 规则、SDK 级别、目标 Handler 级别和其自有 Filter 必须全部允许。SDK 不修改业务的
+  Filter 列表，也不对应用自行挂接的处理器施加这些正则。
+- 初始化时编译所有显式规则，包括尚未启用输出的规则；错误提示指出配置路径和错误位置，
+  不回显正则全文或日志正文。校验失败不会安装半套日志设置，已有设置也不会被覆盖。
+- 进程共享设置按叶子规则继承：后续省略规则沿用已有值，相同原文可重复使用，
+  不同原文或用 `null` 清除已配置规则报冲突。不根据正则语义判断等价，不支持热更新。
+- 未配置规则的输出不提前生成匹配正文。准备正文或匹配中的普通异常按输出隔离，
+  继续尝试其他输出；直接写到 `stderr` 的处理故障提示不参与正则过滤。
+
+匹配同步执行，不新增匹配超时机制。业务应使用简洁规则；复杂正则可能增加 SDK 调用耗时。
 
 Schema 构建参数中，`schema_entity_resolution_enabled` 与
 `schema_entity_merge_decision_enabled` 默认均为 `true`，用于 canonical identity 的

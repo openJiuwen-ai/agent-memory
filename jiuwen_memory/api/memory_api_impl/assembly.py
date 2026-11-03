@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -595,6 +596,8 @@ def _build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
 ) -> _Kernel:
     """把配置装配成内部内核（api + 真源）。各组件经引用自取依赖、缺省随调用点给出。
 
@@ -610,7 +613,7 @@ def _build_kernel(
     if config is not None and not config.is_empty():
         ctx = ctx.merged(config.context(known_top_names=Factory.known_top_names()))
     with _assembly_lifecycle(ctx) as lifecycle:
-        kernel = _assemble_kernel(policies, kv, ctx, config)
+        kernel = _assemble_kernel(policies, kv, ctx, config, log_handler=log_handler)
         owner = (
             kernel.security_runtime.security_resource_owner()
             if kernel.security_runtime is not None
@@ -625,6 +628,8 @@ def _assemble_kernel(
     kv: KVStore | None,
     ctx: AssemblyContext,
     config: Config | None,
+    *,
+    log_handler: logging.Handler | None = None,
 ) -> _Kernel:
     """在创建观察作用域内解析依赖，失败由外层按本次拥有关系回滚。"""
 
@@ -648,7 +653,10 @@ def _assemble_kernel(
 
     # 根组件（LocalMemoryAPI）经 ROOT_PARAMS 引用各命名空间下的 default 实例。
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
-    setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
+    if log_handler is None:
+        setup_logging(root)  # 保持旧无 handler 调用形状
+    else:
+        setup_logging(root, log_handler=log_handler)
 
     # API 业务审计与 surface 入口审计必须共用同一个具名实例。
     audit_logger = AuditProducer.dep(root, default="sqlite")
@@ -895,18 +903,22 @@ def assemble(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
 ) -> MemoryAPI:
     """装配出一个可用的 ``MemoryAPI``。普通调用方只应使用本函数。"""
-    return assemble_runtime(policies, kv, config).api
+    return assemble_runtime(policies, kv, config, log_handler=log_handler).api
 
 
 def assemble_runtime(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
 ) -> MemoryRuntime:
     """一次装配 SDK 认证、业务 API 与启动/关闭句柄，不暴露存储或任务控制器端口。"""
-    kernel = _build_kernel(policies, kv, config)
+    kernel = _build_kernel(policies, kv, config, log_handler=log_handler)
     return _runtime_from_kernel(kernel)
 
 
