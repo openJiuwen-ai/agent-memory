@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from xml.etree import ElementTree
 
 import pytest
@@ -16,6 +17,7 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
     Segment,
+    Temporal,
     memory_key,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
@@ -23,6 +25,7 @@ from jiuwen_memory.config.config import Config
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.evolver import EvolveMode, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
 from tests.unit.construction.fixtures import RecordingLLM
@@ -136,6 +139,9 @@ class _Index:
         self.updated = []
         self._storage = storage
 
+    def read_domain_store(self):
+        return self._storage
+
     def build(self, units, *, mode: IndexWriteMode = IndexWriteMode.ALL):
         self.built.extend(units)
         if self._storage is not None:
@@ -158,6 +164,9 @@ class _Index:
 def _unit(unit_id: str, content: str, metadata=None) -> MemoryUnit:
     return MemoryUnit(
         id=unit_id,
+        temporal=Temporal(
+            t_message=datetime(2026, 1, 1 if unit_id == "existing" else 2, tzinfo=UTC)
+        ),
         scope=Scope(org="org", user="user"),
         tier=MemoryTier.EPISODIC,
         segments=[Segment(content=content, source=Modality.TEXT)],
@@ -170,14 +179,17 @@ def _make_evolver(
     llm: _ScriptedLLM | None = None,
     dedup_hits=None,
     prompts: dict | None = None,
-) -> tuple[DynamicEvolver, InMemoryKVStore, _Index]:
+    kind: type[OrchestratingEvolver] = DynamicEvolver,
+) -> tuple[OrchestratingEvolver, InMemoryKVStore, _Index]:
     kv = InMemoryKVStore()
     storage = make_storage(kv=kv, graph=InMemoryGraphStore())
     index = _Index(storage.domain_store())
     extractor = _FallbackExtractor()
     dedup = _Dedup(dedup_hits)
-    registry = PromptRegistry.from_dict(prompts or {})
-    evolver = DynamicEvolver(
+    options = {}
+    if issubclass(kind, DynamicEvolver):
+        options["prompt_registry"] = PromptRegistry.from_dict(prompts or {})
+    evolver = kind(
         extractor=extractor,
         abstractor=object(),  # EXTRACT 路径不触发 abstractor
         associator=object(),  # EXTRACT 路径不触发 associator
@@ -187,7 +199,7 @@ def _make_evolver(
         dedup=dedup,
         llm=llm or _ScriptedLLM(),
         layer_annotator=None,
-        prompt_registry=registry,
+        **options,
     )
     return evolver, kv, index
 

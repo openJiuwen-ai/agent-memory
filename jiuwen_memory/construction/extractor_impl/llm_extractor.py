@@ -69,16 +69,16 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.prompt_guard import (
     CONTENT_MAX_UNIT_CHARS,
     chunk_unit,
-    truncate_unit_content,
 )
-from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 
 from ..base import ExtractContext, OperatorType
 from ..common import merge_unit_tags, parse_tags, validate_llm_attempt_policy
 from ..extractor import Extractor, ExtractorProducer
+from .observation_time import observation_sources
 
 logger = get_logger(__name__)
 
@@ -173,7 +173,7 @@ Rules:
   yields "A renewed their licence" and "A urged B to renew B's licence" - never "B
   renewed their licence".
 
-- Time. The user message opens with "observation_date: YYYY-MM-DD" - the date the lines
+- Time. Each source block opens with "observation_date: YYYY-MM-DD" - the date its lines
   were said and the reference for every time expression; the lines carry no date.
   (a) Whatever places the item in time belongs in the CONTENT TEXT. A reader of the item
       sees only that text, so a time left in "event_date" alone is invisible and does not
@@ -302,7 +302,8 @@ def _strip_source_id_shell(raw: str) -> str:
 def _parse_event_date(raw: str) -> datetime | None:
     """解析 LLM 输出的 event_date（ISO 8601）为 datetime；失败返回 None。
 
-    兼容带/不带时区、仅日期（YYYY-MM-DD）等形式。解析失败不阻断——回退到 source.t_event。
+    兼容带/不带时区、仅日期（YYYY-MM-DD）等形式。
+    解析失败不阻断，返回 None；不继承来源消息的事件时间。
     """
     s = (raw or "").strip()
     if not s:
@@ -373,7 +374,7 @@ _CONTEXT_SECTION_TEMPLATES = {
     ),
 }
 
-# observation_date 前缀模板（user prompt 头两行）：基准日期 + 相对时间解析说明。
+# 每条来源的 observation_date 前缀模板：基准日期 + 相对时间解析说明。
 # ExtractorImpl 以类属性 OBSERVATION_DATE_PREFIX 持有，子类覆写换语言；
 # "{date}" 占位符由 _llm_extract_batch 填入日精度观测日期。
 _OBSERVATION_DATE_PREFIX = (
@@ -956,33 +957,10 @@ class ExtractorImpl(Extractor):
         """
         from jiuwen_memory.common.type_def import ChatMessage
 
-        # 拼 user prompt：每条 unit 带 [ID: unit.id] 前缀
-        parts = [
-            _SOURCE_PREFIX.format(
-                unit_id=u.id,
-                unit_content=truncate_unit_content(u.content, limit=CONTENT_MAX_UNIT_CHARS),
-            )
-            for u in units
-        ]
-        user_text = "\n".join(parts)
-        # 基准时间 observation_date（经 metadata 下推）：LLM 据此把相对时间解析成绝对时间。
-        # 取首个含 observation_date 的 unit（同批通常一致）；未传则以当前时间为基准。
-        observation_date = next(
-            (
-                str(u.system_metadata.get("observation_date", "")).strip()
-                for u in units
-                if u.system_metadata.get("observation_date")
-            ),
-            "",
+        # Each source keeps its own date and the extractor-specific prefix template.
+        user_text = observation_sources(
+            units, _SOURCE_PREFIX, date_prefix=self.OBSERVATION_DATE_PREFIX,
         )
-        if not observation_date:
-            observation_date = datetime.now(UTC).date().isoformat()
-        # prompt 声明该行形如 "observation_date: YYYY-MM-DD"，且据此把观测日期按日精度写进
-        # content。调用方可能下推完整时间戳，故统一截到日——否则 prompt 的日精度约定不成立，
-        # LLM 会把时分秒当作源文本给出的精度照抄进条目。
-        elif "T" in observation_date:
-            observation_date = observation_date.split("T", 1)[0]
-        user_text = self.OBSERVATION_DATE_PREFIX.format(date=observation_date) + user_text
         # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
         context_block = _format_context_block(context, self.CONTEXT_SECTION_TEMPLATES)
         if context_block:

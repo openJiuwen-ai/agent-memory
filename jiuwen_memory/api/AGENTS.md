@@ -49,6 +49,9 @@
    Space 删除事务经 `SpaceLifecycleService`。编排逻辑（write 路径、search/list 取数、
    evolve 调度、purge+delete）全部在 `control`，禁止在本层堆业务逻辑。
 
+周期 HIERARCHY 的准入回调由 API 注入并绑定 home；每轮读取及每批写入前重新走 PEP、
+刷新空间事实并检查可写状态，不沿用注册时许可。执行层只调用回调，不持有身份。
+
 2. **调用方身份不下沉**
    身份取自 `security.auth.actor`；鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层/检索层/构建层/存储层。
 

@@ -19,6 +19,7 @@ from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.engine import MemoryEngine
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.types import (
+    BackgroundJobAdmission,
     BackgroundJobStartResult,
     BatchWriteItem,
     BatchWriteOutcome,
@@ -197,6 +198,7 @@ class MemoryCommandService:
 
     async def start_background_jobs(
         self, scope: Scope, policy: PolicyManager,
+        *, admission: BackgroundJobAdmission | None = None,
     ) -> BackgroundJobStartResult:
-        """注册已鉴权 home 的后台任务；不在控制层重新判权。"""
-        return await self._engine.start_background_jobs(scope, policy)
+        """注册后台任务并透传 API 准入回调；控制层不实现判权。"""
+        return await self._engine.start_background_jobs(scope, policy, admission=admission)

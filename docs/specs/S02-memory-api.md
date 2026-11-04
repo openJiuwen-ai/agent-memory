@@ -1119,7 +1119,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 | `tier` | MemoryTier | 认知角色分类 |
 | `segments` | list[Segment] | 多段内容投影（每段 = content + assets + source） |
 | `source_ref` | str | 来源引用（RawPayload id / 会话 id，可溯源） |
-| `temporal` | Temporal | 双时间：`t_event`/`t_ingest`/`t_valid`/`t_invalid` |
+| `temporal` | Temporal | 时间：`t_event`/`t_ingest`/`t_valid`/`t_invalid`/`t_message`；`occurred_at` 进入消息时间 `t_message` |
 | `provenance` | list[str] | 演进血缘（多→一合成）：由哪些 unit 提取/升华/合并而来 |
 | `supersedes` | str | 版本链（一→一更替）：本版本取代的上一版 id；空表示首版 |
 | `tags` | list[str] | 标签（检索前置过滤用） |
@@ -1362,7 +1362,11 @@ async def start_background_jobs(
 org/space 精确匹配，非空 user/agent/session 限定输入范围，空维度允许覆盖其子范围。
 新父驻留完整 home，叶保留原 Scope；同一个 home 可包含多棵树，不是树 ID 或文件目录。
 不会自动发现 home 或扩大到其他主体。注册前校验可信上下文、home 的
-WRITE/UPDATE 权限和空间可写状态；当前不支持按 metadata 路由的逐候选授权。
+WRITE/UPDATE 权限和空间可写状态；当前不支持按 metadata 路由的逐候选授权。每次执行还通过
+API 注入的 `BackgroundJobAdmission(scope) -> None` 准入回调复验原注册上下文的可信来源、
+到期、在线凭据状态、当前 WRITE/UPDATE 授权和空间状态；刷新空间事实，不能沿用注册时
+的许可。回调绑定 home，只允许该范围内目标，异常或读取失败按拒绝处理。
+控制层仅持有并调用准入契约，不接收 security/actor、不自行判权。
 
 `BackgroundJobStartResult` 包含 `job_ids: list[str]`、`skipped: bool`、`reason: str`。
 树总开关或自动开关关闭/缺失时返回 skipped、空 job_ids 和 `hierarchy_disabled`；未绑定

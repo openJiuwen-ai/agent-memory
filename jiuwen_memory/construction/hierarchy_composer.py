@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -73,6 +73,7 @@ class HierarchyIncrementalContext:
     settle_at: datetime
     ready_before: datetime | None = None
     supporting_units: list[MemoryUnit] = field(default_factory=list)
+    write_admission: Callable[[Scope], None] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
