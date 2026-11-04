@@ -35,7 +35,6 @@ from jiuwen_memory.common.type_def import (
     Scope,
     Segment,
 )
-from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
@@ -56,6 +55,13 @@ from jiuwen_memory.control.engine_impl.schema_update_support import (
     prepare_schema_update,
 )
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
+from jiuwen_memory.control.engine_impl.temporal_support import (
+    matches_delete_selector,
+    valid_at,
+)
+from jiuwen_memory.control.engine_impl.temporal_support import (
+    valid_sort_key as _valid_sort_key,
+)
 from jiuwen_memory.control.evolution.background import (
     BackgroundDependencies,
     start_hierarchy_derivation,
@@ -131,25 +137,6 @@ def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
 
 
 
-def _valid_at(unit: MemoryUnit, as_of: datetime) -> bool:
-    valid_from = unit.temporal.t_valid
-    invalid_from = unit.temporal.t_invalid
-    has_non_positive_validity_window = (
-        valid_from is not None and invalid_from is not None and invalid_from <= valid_from
-    )
-    if has_non_positive_validity_window:
-        return as_of < invalid_from
-    if valid_from is not None and as_of < valid_from:
-        return False
-    if invalid_from is not None and as_of >= invalid_from:
-        return False
-    return True
-
-
-def _valid_sort_key(unit: MemoryUnit) -> datetime:
-    return unit.temporal.t_valid or datetime.min.replace(tzinfo=UTC)
-
-
 def _downweight_importance(unit: MemoryUnit) -> None:
     raw = unit.system_metadata.get("importance")
     try:
@@ -182,22 +169,6 @@ def _scoped_unit_id(scope: Scope, unit_id: str) -> _ScopedUnitId:
 
 def _truthy(metadata: dict[str, MetadataValueType], key: str) -> bool:
     return str(metadata.get(key, "")).strip().lower() == "true"
-
-
-def _matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool:
-    wanted_ids = set(selector.unit_ids)
-    wanted_tags = set(selector.tags)
-    if wanted_ids and unit.id not in wanted_ids:
-        return False
-    if wanted_tags and not wanted_tags.intersection(unit.tags):
-        return False
-    if selector.before is not None:
-        t_message = unit.temporal.t_message
-        if t_message is None or t_message >= selector.before:
-            return False
-    if selector.filters is not None and not matches_memory_unit(unit, selector.filters):
-        return False
-    return True
 
 
 def _expand_provenance_descendants(
@@ -602,7 +573,7 @@ class CloudEngine(MemoryEngine):
         contexts: list[PermissionContext] = []
         for scope in scopes:
             for unit in self._list_units(scope):
-                if _matches_delete_selector(unit, selector):
+                if matches_delete_selector(unit, selector):
                     contexts.append(_permission_context_from_unit(unit))
         return contexts
 
@@ -616,7 +587,7 @@ class CloudEngine(MemoryEngine):
         for unit in self._version_family(scope, unit_id):
             if unit.lifecycle == LifecycleState.FORGOTTEN:
                 continue
-            if _valid_at(unit, as_of):
+            if valid_at(unit, as_of):
                 candidates.append(unit)
         if not candidates:
             raise NotFoundError("memory_unit", unit_id)
@@ -752,7 +723,7 @@ class CloudEngine(MemoryEngine):
         matches = [
             (scope, key, unit)
             for scope, key, unit in scanned
-            if _matches_delete_selector(unit, selector)
+            if matches_delete_selector(unit, selector)
         ]
         affected = [unit.id for _, _, unit in matches]
         if not affected:

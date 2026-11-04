@@ -29,6 +29,7 @@
 | `__init__.py` | 公开导出全部接口类与数据类型 |
 | `engine_impl/` | MemoryEngine 实现目录：`in_memory_engine.py`（本地最小实现）/ `cloud_engine.py`（云侧 message_type/profile 编排）/ `evolve_dispatch.py`（evolve 纯执行共用件：candidate→resolver 装配 + 一次性 EvolveJob 提交；三态分发 / 持续授权在 API 层 DreamingCoordinator）/ `dreaming_registry.py`（定时任务 KV 注册表：`created_by` 持续授权档案、`state + generation` 注销/旧代隔离状态、单实例锁 acquire/release；由 API 层 DreamingCoordinator 持有驱动） |
 | `engine_impl/schema_update_support.py` | 两 Engine 共用的无 I/O 候选判断、Schema 能力/路由校验及更新委托；通过 Engine 注入的 Evolver/IndexBuilder 解析回调取得组件，不直接访问 Engine 受保护成员；普通更新跳过准备阶段，算法在构建层，计划授权在 API，异步入口将同步构建工作放入工作线程 |
+| `engine_impl/temporal_support.py` | 三 Engine 共用的时间比较真源：`valid_at`（as_of 与 t_valid/t_invalid 的有效期判定，含「非正有效期窗口」引擎特例）、`valid_sort_key`（历史版本按 UTC 生效时间排序，缺值为最早时间哨兵）与 `matches_delete_selector`（delete 选择器逐条命中判定）。跨「入参时间」与「记忆时间」的比较一律双侧过 `common/time_utils.as_utc` 后再比——契约层与 SDK 直调都接受带/不带时区后缀两种合法 ISO 形态，落盘也原样保留形态，naive 与 aware 裸比较恒抛 `TypeError`；naive 按 UTC 解释，与 `common/type_def/retrieval_filter.valid_at` 同约定，且不改写落盘值 |
 | `*_impl/` | 每个算子对应一个实现子目录，含具体实现类；Producer 定义在顶层接口文件，具体实现用 `@XProducer.register(...)` 自注册 |
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
