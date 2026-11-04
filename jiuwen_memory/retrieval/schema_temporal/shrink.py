@@ -188,7 +188,7 @@ def _rank_entries(
     degraded_error = ""
     if rerank_enabled and reranker is not None and entries:
         try:
-            relevance = [float(score) for score in reranker.rerank(query_text, texts)]
+            relevance = [float(score) for score in reranker.rerank_texts(query_text, texts)]
             if len(relevance) != len(entries) or not all(
                 math.isfinite(score) for score in relevance
             ):

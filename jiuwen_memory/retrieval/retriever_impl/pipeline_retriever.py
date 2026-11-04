@@ -3,7 +3,8 @@
 
 单次 :meth:`retrieve` 驱动完整链路（Option B：点读/有效性/重排为独立阶段）：
 查询理解 → 前置谓词构造 → 并行多路召回 → 融合 → 截断候选预算 → 点读真源 +
-有效性过滤 → （可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
+有效性过滤 → （可选）重排 → （可选）去重/冲突消解 → 阈值过滤 → 截断 top_k →
+渐进式披露 → 返回结果与轨迹。
 scope 作显式首参贯穿下推；召回/取数/排序全部委托统一 Storage 的三条首选路径，
 本类不含召回/打分逻辑，也不持有召回路（CompositeStorage 的兼容 Recaller 由
 storage 层工厂按配置装配）。
@@ -27,6 +28,7 @@ from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
 from jiuwen_memory.common.type_def import (
     ChannelError,
+    MemoryUnit,
     ParsedQuery,
     RecallBatch,
     RecallResult,
@@ -35,6 +37,7 @@ from jiuwen_memory.common.type_def import (
     ScoredCandidate,
     ScoredMemoryUnit,
     ScoredUnit,
+    Segment,
     and_merge,
     is_retrieval_candidate,
 )
@@ -91,13 +94,19 @@ _MAX_RERANK_DOC_CHARS = 4000
 
 
 def _truncate_rerank_inputs(
-    query: str, docs: list[str], query_limit: int, doc_limit: int
-) -> tuple[str, list[str]]:
-    """精排输入限长：query/doc 超长会把远程 rerank 顶满 reranker_timeout。"""
-    return (
-        query[:query_limit],
-        [doc[:doc_limit] for doc in docs],
-    )
+    query: str, units: list[MemoryUnit], query_limit: int, doc_limit: int
+) -> tuple[str, list[MemoryUnit]]:
+    """精排输入限长：query/content 超长会把远程 rerank 顶满 reranker_timeout。
+
+    content 截断只落在送精排的**临时副本**上（单段截断内容），不改写真源。
+    """
+    truncated = [
+        unit
+        if len(unit.content) <= doc_limit
+        else replace(unit, segments=[Segment(content=unit.content[:doc_limit])])
+        for unit in units
+    ]
+    return query[:query_limit], truncated
 
 
 class PipelineRetriever(Retriever):
@@ -436,13 +445,13 @@ class PipelineRetriever(Retriever):
             try:
                 # rerank 输入截断护栏：query/doc 超长会把精排请求卡满 120s 超时
                 # （issue #231 实测 124.9s）；rewrite 后的 query 可能更长，同样截断。
-                query_text, doc_texts = _truncate_rerank_inputs(
+                query_text, rerank_units = _truncate_rerank_inputs(
                     parsed.rewritten,
-                    [candidate.unit.content for candidate in survivors],
+                    [candidate.unit for candidate in survivors],
                     self._rerank_max_query_chars,
                     self._rerank_max_doc_chars,
                 )
-                scores = self._reranker.rerank(query_text, doc_texts)
+                scores = self._reranker.rerank(query_text, rerank_units)
             except BackendError as exc:
                 detail = {
                     "skipped": "reranker_unavailable",
@@ -469,6 +478,55 @@ class PipelineRetriever(Retriever):
             record_step(
                 "rerank", 0.0, n=len(survivors), detail={"skipped": "no_reranker_configured"}
             )
+
+        # [7a] 语义去重 + 冲突消解（锦上添花）：resolve 输出保留候选的稳定子序列，
+        #      不合成/改写内容——内容变更的单一真相源是写侧 Evolver。任何失败降级为
+        #      keep_all（不丢候选），轨迹记 degraded + 脱敏 error。
+        #      仅在精排成功（reranked）后运行：精排已降级时后端不可用，resolve 会
+        #      对同一故障后端再打一次（超时翻倍，见 issue #231），须跳过。
+        if reranked and survivors:
+            t0 = perf_counter()
+            pre_count = len(survivors)
+            try:
+                # resolve 同样套限长护栏：LLM 会把候选内容拼进 prompt，超长记忆同样
+                # 会顶满 reranker_timeout / 上下文超限（与精排同口径，issue #231）。
+                resolve_query, resolve_units = _truncate_rerank_inputs(
+                    parsed.rewritten,
+                    [candidate.unit for candidate in survivors],
+                    self._rerank_max_query_chars,
+                    self._rerank_max_doc_chars,
+                )
+                resolution = self._reranker.resolve(resolve_query, resolve_units)
+                survivors = [survivors[i] for i in resolution.kept_indices]
+                record_step(
+                    "resolve",
+                    (perf_counter() - t0) * 1000.0,
+                    n=len(resolution.kept_indices),
+                    detail={
+                        "in": str(pre_count),
+                        "out": str(len(resolution.kept_indices)),
+                        "duplicates": str(len(resolution.duplicates)),
+                        "conflict_dropped": str(len(resolution.conflict_dropped)),
+                    },
+                )
+            except Exception as exc:
+                detail = {
+                    "skipped": "degraded",
+                    "error": safe_error_message(exc),
+                }
+                # 与 rerank 降级分支同口径：record_step 仅在 with_trajectory 时落轨迹，
+                # 生产默认不带轨迹，须补一条 warning 日志让 resolve 失效可观测。
+                logger.warning(
+                    "Retriever.resolve degraded: trace_id=%s error=%s",
+                    trace_id,
+                    redact_for_log(detail["error"]),
+                )
+                record_step(
+                    "resolve",
+                    (perf_counter() - t0) * 1000.0,
+                    n=len(survivors),
+                    detail=detail,
+                )
 
         # [7b] 上卷放在最终分数生成后、阈值/top_k 前，不被后续精排覆盖。
         rolled = None

@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -199,11 +199,20 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 ### Reranker（`reranker/base.py`）
 
-重排能力：cross-encoder 精排。
+重排能力：cross-encoder 精排 + 可选语义去重/冲突消解（F10-llm-reranker）。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `rerank` | `(query: str, texts: list[str]) -> list[float]` | 对每条 text 计算与 query 的相关性得分 |
+| `rerank` | `(query: str, units: list[MemoryUnit]) -> list[float]` | 对每条 `MemoryUnit` 计算与 query 的相关性得分（顺序与输入一致）；实现可消费 `unit.content / tier / temporal / tags / entities / provenance` 等字段 |
+| `rerank_texts` | `(query: str, texts: list[str]) -> list[float]` | `str` 入参的兼容入口（非抽象）：把每个 text 包成空 `MemoryUnit` 再调 `rerank` |
+| `resolve` | `(query: str, units: list[MemoryUnit]) -> RerankResolution` | 可选语义去重 + 冲突消解（非抽象）：默认 `keep_all`，仅 LLM 档覆写 |
+
+数据结构（与 Reranker 契约同处 `reranker/base.py`）：
+
+- `RerankResolution`：`kept_indices`（保留的输入下标，稳定子序列）+ `duplicates`（`DuplicateGroup` 列表）+ `conflict_dropped`（冲突丢弃下标）；`keep_all(n)` 类方法构造全保留默认结果。
+- `DuplicateGroup`：重复簇的 `representative`（保留下标）+ `dropped`（被去重下标）。
+
+`kept_indices` 只做选择不合成内容——每个保留下标仍指向真源 `MemoryUnit`，`unit_id` ↔ 真源对应不断裂。
 
 ### AuditLogger（`audit/base.py`）
 

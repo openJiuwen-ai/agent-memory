@@ -84,7 +84,7 @@ def test_rerank_empty_does_not_load_model():
 def test_rerank_scores_keep_input_order():
     """T-BGE-RR-03: 批量精排分数顺序与候选文本顺序一致。"""
     reranker = _make_mock_reranker()
-    scores = reranker.rerank(
+    scores = reranker.rerank_texts(
         "coffee morning",
         [
             "alice drinks coffee every morning",
@@ -99,7 +99,7 @@ def test_rerank_scores_keep_input_order():
 def test_rerank_auto_split_and_passes_normalize_flag():
     """T-BGE-RR-04: 超过 batch size 自动拆分，并透传 normalize 配置。"""
     reranker = _make_mock_reranker(max_batch_size=2, normalize=False)
-    scores = reranker.rerank("coffee", ["coffee", "tea", "coffee tea", "water", "coffee"])
+    scores = reranker.rerank_texts("coffee", ["coffee", "tea", "coffee tea", "water", "coffee"])
 
     assert scores == [1.0, 0.0, 1.0, 0.0, 1.0]
     model = getattr(reranker, "_model")
@@ -112,7 +112,7 @@ def test_rerank_supports_compute_score_without_normalize_argument():
     reranker = BGEReranker()
     setattr(reranker, "_model", MockBGEModelWithoutNormalize())
 
-    assert reranker.rerank("coffee", ["coffee", "tea"]) == [1.0, 1.0]
+    assert reranker.rerank_texts("coffee", ["coffee", "tea"]) == [1.0, 1.0]
 
 
 def test_health_ok():
@@ -146,7 +146,7 @@ def test_lazy_load_from_flagembedding(tmp_path, monkeypatch):
         )
         assert getattr(reranker, "_model") is None
 
-        scores = reranker.rerank("coffee", ["coffee note"])
+        scores = reranker.rerank_texts("coffee", ["coffee note"])
 
     assert scores == [1.0]
     model = getattr(reranker, "_model")
@@ -160,7 +160,7 @@ def test_missing_flagembedding_dependency_reports_backend_error(tmp_path):
     with patch.dict(sys.modules, {"FlagEmbedding": None}):
         reranker = BGEReranker(model_name_or_path=str(tmp_path))
         with pytest.raises(BackendError, match="FlagEmbedding"):
-            reranker.rerank("coffee", ["coffee note"])
+            reranker.rerank_texts("coffee", ["coffee note"])
 
 
 def test_producer_known():

@@ -107,8 +107,20 @@ class FailingReranker(Reranker):
     def health(self) -> None:
         return None
 
-    def rerank(self, query: str, texts: list[str]) -> list[float]:
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
         raise self.error
+
+
+class _ResolveTrackingReranker(FailingReranker):
+    """rerank 抛错、resolve 计数的桩：验证精排失败后不会再打同一后端。"""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(error)
+        self.resolve_calls = 0
+
+    def resolve(self, query: str, units: list[MemoryUnit]):
+        self.resolve_calls += 1
+        return super().resolve(query, units)
 
 
 class CountingKVStore(InMemoryKVStore):
@@ -248,6 +260,25 @@ def test_backend_reranker_failure_degrades_to_uncalibrated_results() -> None:
     assert isinstance(rerank_step.detail["error"], str)
     threshold_step = next(step for step in result.trajectory if step.stage == "threshold")
     assert threshold_step.detail["calibrated"] == "False"
+
+
+def test_rerank_failure_skips_resolve_to_avoid_double_backend_call() -> None:
+    """精排失败（BackendError）后不得再对同一故障后端调用 resolve（避免超时翻倍）。"""
+    reranker = _ResolveTrackingReranker(BackendError("model unavailable"))
+    retriever, _, _, scope = _build_retriever(
+        RetrievalPipeline.RECALL_GET_RANK,
+        [IdRecaller(RecallChannel.KEYWORD, "u1")],
+        reranker=reranker,
+        min_score=0.99,
+    )
+
+    result = retriever.retrieve(
+        scope, RetrievalQuery(text="one", top_k=1, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1"]
+    assert reranker.resolve_calls == 0, "精排失败时不得再对同一后端调用 resolve"
+    assert "resolve" not in {step.stage for step in result.trajectory}
 
 
 def test_missing_flagembedding_dependency_degrades_reranker(tmp_path):

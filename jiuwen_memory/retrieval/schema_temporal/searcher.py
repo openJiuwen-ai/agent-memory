@@ -304,7 +304,7 @@ def _validated_rerank_scores(
     expected: int,
     label: str,
 ) -> list[float]:
-    scores = [float(score) for score in reranker.rerank(query, texts)]
+    scores = [float(score) for score in reranker.rerank_texts(query, texts)]
     if len(scores) != expected or not all(math.isfinite(score) for score in scores):
         raise ValueError(f"{label} reranker returned invalid scores")
     return scores

@@ -34,6 +34,7 @@ from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError, ValidationError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
+from jiuwen_memory.common.type_def import MemoryUnit, Segment
 
 logger = get_logger(__name__)
 
@@ -125,19 +126,20 @@ class APIReranker(Reranker):
     def health(self) -> None:
         """探活：调用一次 rerank 测试 API 可达。"""
         try:
-            self.rerank("health check", ["ok"])
+            self.rerank("health check", [MemoryUnit(segments=[Segment(content="ok")])])
         except Exception as exc:
             raise HealthCheckError(f"Reranker health check failed: {exc}") from exc
 
-    def rerank(self, query: str, texts: list[str]) -> list[float]:
-        """对候选文本打相关性分，返回与 ``texts`` 等长、同序的分数列表。
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
+        """对候选记忆打相关性分，返回与 ``units`` 等长、同序的分数列表。
 
         每次调用按 ConfigSource 解析 model/api_key/base_url，再按方言拼端点与 body。
-        空/纯空白的 query 或文本元素不透传后端（整批请求会被网关 400 拒绝），
-        对应分数保持 0.0；返回值仍与 ``texts`` 等长同序。
+        空/纯空白的 query 或 content 元素不透传后端（整批请求会被网关 400 拒绝），
+        对应分数保持 0.0；返回值仍与 ``units`` 等长同序。
         """
-        if not texts:
+        if not units:
             return []
+        texts = [unit.content for unit in units]
         scores = [0.0] * len(texts)
         if not (query or "").strip():
             logger.warning(

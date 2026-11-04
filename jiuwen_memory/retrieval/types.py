@@ -134,7 +134,7 @@ class RetrievedItem:
 class TrajectoryStep:
     """检索轨迹中的一步：可观测、可调试，非黑盒（§7 ⑤）。"""
 
-    stage: str = ""  # 阶段：parse / recall / fuse / rerank / disclose
+    stage: str = ""  # 阶段：parse / recall / fuse / rerank / resolve / disclose
     channel: RecallChannel | None = None  # 涉及的召回通道（非召回步为 None）
     candidate_count: int = 0  # 本步产出的候选数
     cost_ms: float = 0.0  # 本步耗时（毫秒）

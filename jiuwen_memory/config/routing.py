@@ -23,7 +23,7 @@ from typing import Any, BinaryIO, Generic, TypeVar
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.llm.base import LLM
-from jiuwen_memory.common.reranker.base import Reranker
+from jiuwen_memory.common.reranker.base import Reranker, RerankResolution
 from jiuwen_memory.common.type_def import (
     CandidateFuser,
     ChatMessage,
@@ -182,9 +182,17 @@ class RoutingReranker(Reranker):
         """委托当前 active Reranker 探活。"""
         self._router.get().health()
 
-    def rerank(self, query: str, texts: list[str]) -> list[float]:
+    def rerank(self, query: str, units: list[MemoryUnit]) -> list[float]:
         """委托当前 active Reranker 打分。"""
-        return self._router.get().rerank(query, texts)
+        return self._router.get().rerank(query, units)
+
+    def rerank_texts(self, query: str, texts: list[str]) -> list[float]:
+        """委托当前 active Reranker 的字符串兼容入口。"""
+        return self._router.get().rerank_texts(query, texts)
+
+    def resolve(self, query: str, units: list[MemoryUnit]) -> RerankResolution:
+        """委托当前 active Reranker 的去重/冲突消解。"""
+        return self._router.get().resolve(query, units)
 
 
 class RoutingKVStore(KVStore):

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -23,11 +23,12 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 ## 范围 / 边界
 
 **管什么**：
-- 混合检索的完整链路编排（查询理解 → 并行多路召回 → 融合 → 精排 → 相关性阈值 → 渐进式披露 → 返回 + 检索轨迹）
+- 混合检索的完整链路编排（查询理解 → 并行多路召回 → 融合 → 精排 → 去重/冲突消解 → 相关性阈值 → 渐进式披露 → 返回 + 检索轨迹）
 - 查询理解：去噪/改写/分词/实体/向量化/时间解析
 - 多路召回：按配置启用的通道并行检索（向量/关键词/图/文档/时序）
 - 融合：多路候选合并去重、归一化打分、取最大值/RRF/加权排序
 - 精排（可选）：调用 Reranker 做 cross-encoder 精排
+- 去重/冲突消解（可选）：调用 `Reranker.resolve` 对精排后候选做语义去重与冲突消解
 - 相关性阈值：绝对/相对阈值裁剪低相关候选（结果数可 < top_k），min_results 兜底回填
 - 渐进式披露：L0 摘要/L1 片段/L2 全文 按需加载
 - 检索轨迹：可观测的非黑盒调试信息
@@ -72,6 +73,10 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 19. **可选精排失败可降级**：已配置的 Reranker 在 `rerank` 阶段抛出 `BackendError` 时，
     Retriever 必须继续使用未精排候选，按未校准阈值路径处理，并在轨迹中记录
     `skipped=reranker_unavailable` 与脱敏后的 `error`。其他异常不得被该降级路径吞掉。
+20. **去重/冲突消解是锦上添花**：`resolve` 阶段失败（LLM 异常/非法 JSON/引用不存在下标等
+    任何异常）Retriever 必须保留原候选（`keep_all`），轨迹记 `resolve` 步的
+    `skipped=degraded` + 脱敏 `error`，不得因去重失败影响检索可用性。`resolve` 只做选择
+    （返回保留候选的稳定子序列），不合成/改写内容——内容变更的单一真相源是写侧 Evolver。
 20. **TemporalEntity 不是记忆真源**：Schema 时序检索在读取期组装临时实体视图，
     Property/Source 必须先完成点读与有效性复核。正式结果可把每个实体格式化为
     一个 `RetrievedItem`，其 id 是 Entity id；该项不是 synthetic MemoryUnit，
@@ -108,7 +113,7 @@ class RetrievalOperator(ABC):
 QueryParser
 → hierarchy kind/role/span 硬过滤
 → 既有 L0/L1/L2 内容层多路召回
-→ fusion → rerank → threshold → top_k
+→ fusion → rerank → resolve → threshold → top_k
 → 可选 Expand（expand_depth > 0）
 → tree score / convergence / tree token budget
 → 对每个保留 unit 调用 Discloser
@@ -554,8 +559,9 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 
 ### 轨迹
 
-普通链路沿用 `parse/recall/fuse/rerank/threshold/disclose`。Schema 时序选择命中时
-在 `disclose` 之后增加 `schema_temporal` 轨迹，记录组装后的实体数；
+普通链路沿用 `parse/recall/fuse/rerank/resolve/threshold/disclose`（`resolve` 仅在
+精排候选非空时记录，`detail` 记 `in`/`out`/`duplicates`/`conflict_dropped`）。Schema
+时序选择命中时在 `disclose` 之后增加 `schema_temporal` 轨迹，记录组装后的实体数；
 执行失败时记录降级原因并继续使用已融合候选。
 层级召回额外使用：
 
