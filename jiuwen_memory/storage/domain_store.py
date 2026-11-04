@@ -49,7 +49,8 @@ class DomainStoreProducer(Factory):
 
     命名数据面（F07）：``store_manager.<inst>.params.domain_stores`` 段声明的每套
     命名数据面也经本工厂构建（同样回取 manager 引用），差异键（``preferred_retrieval_pipeline``
-    / recaller 选择键）随 params 透传；段内不允许声明 ``"default"``。
+    / recaller 选择键、真源 ``kv_store``）随 params 透传；``default`` 段提供默认值，
+    其他具名数据面可按项覆盖。
 
     ``store_manager`` 参数必填、无 default：独立构建 domain_store 会触发 manager
     匿名重建的无限递归，且违背「所有存储类从 StoreManager 获取」原则——缺引用时

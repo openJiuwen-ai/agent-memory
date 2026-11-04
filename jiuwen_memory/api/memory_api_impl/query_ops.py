@@ -756,7 +756,26 @@ class QueryOpsMixin:
         else:
             if self._authorizer.routing_fields():
                 raise ValidationError("周期 HIERARCHY 暂不支持权限路由或逐候选鉴权")
-            result = await self._commands.start_background_jobs(scope, self._policy)
+
+            def admission(target: Scope) -> None:
+                if not scope_contains(scope, target):
+                    raise ValidationError("background admission cannot expand registered home")
+                self._require_trusted_context(
+                    security, _TrustedRequestTarget(Action.WRITE, "evolve", target),
+                )
+                self._invalidate_space_facts(target.org, target.space)
+                if self._authorizer.routing_fields():
+                    raise ValidationError("周期 HIERARCHY 暂不支持权限路由或逐候选鉴权")
+                for action in (Action.WRITE, Action.UPDATE):
+                    self._authorize(
+                        security, target, action, "evolve",
+                        space_action=_evolve_space_action(EvolveMode.HIERARCHY),
+                    )
+                self._ensure_space_writable(target)
+
+            result = await self._commands.start_background_jobs(
+                scope, self._policy, admission=admission,
+            )
         self._log(security.auth.actor, "evolve", target_scope=scope, detail={
             **auth, "trigger": "auto_derive", "job_ids": json.dumps(result.job_ids),
             "skipped": str(result.skipped).lower(), "reason": result.reason,

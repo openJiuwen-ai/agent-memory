@@ -292,3 +292,29 @@ manager params 的键，且默认数据面与命名数据面对 params/globals �
 - **`jiuwen_memory.retrieval.recaller` 路径删除**（E-3）：第三方自定义 recaller 需改为 `from jiuwen_memory.storage.domain_store_impl.recaller import Recaller`。两份 API 文档（`docs/zh|en/API文档/`）已同步——`retrieval.md` §5 收缩为指路小节（保留编号，不动其后 12 节），完整契约落在 `storage.md` §20。注册用的 target 名与 YAML 命名空间不变。
 - **用户配置需下移一层**（E-5）：写在 `store_manager.<inst>.params` 的 `*_recaller` / `preferred_retrieval_pipeline` / `kv_store` 要移进 `params.domain_stores.default`。`defaults.py` 与两份 deploy config 已改（deploy 本就不覆写 `store_manager` 段，实际迁移面限于用户自定义配置）；旧位置的键**静默失效**，不报错——因为 manager 段允许任意 params 键，无法与合法的自定义键区分。
 - **`AssemblyContext.merged` 仍是实例级整体覆盖**（E-5 未改变）：覆写 `store_manager.<inst>.params` 要写全整个 `domain_stores` map。归位后这一点更显眼（单一嵌套键，而非散落的十来个平级键），但陷阱性质不变，两份 deploy config 的告警注释保留并已按新形态改写。
+
+
+## 写入绑定的领域读端口
+
+### 决策
+
+修改型演进与候选重试必须读取 IndexBuilder 的写入真源。builder 可通过
+`read_domain_store()` 声明读端口；标准 Producer 与直接构造 Evolver 使用同一绑定校验。
+已声明端口时，省略显式 domain_store 即自动复用；显式指定则必须为同一门面实例。
+旧 builder 未声明端口时仍可显式注入，绑定正确性由装配方负责。
+
+`domain_store_for_kv` 在公共 StoreManager 中只保留契约与不支持错误，具体 KV 门面
+由 CompositeStoreManager 创建，避免公共接口依赖默认实现，遵循 S09 的可替换边界。
+
+### 拒绝的方案
+
+- 只在 Producer 校验：直接构造可绕过检查，使另一数据面的同 ID 正文覆盖写真源。
+- 仅依据相同 KV 判定门面等价：无法保证文档模式、编码及授权语义一致。
+- 自动忽略冲突的显式读端口：隐藏调用方装配错误，不满足 fail-fast。
+- 为此引入通用真源等价标识：当前使用 builder 已绑定的实例即可满足需求，暂不扩展协议。
+
+### 验证与边界
+
+回归覆盖默认/动态 Evolver、forward/hybrid/unified、跨库同 Scope 同 ID、标准 Producer
+拒绝不同门面以及省略重复配置后的正常替代。相同 KV 的不同门面仍按既有 S05 契约拒绝，
+错误信息说明如何使用写入侧绑定；这不是对底层物理数据源是否相同的推断。

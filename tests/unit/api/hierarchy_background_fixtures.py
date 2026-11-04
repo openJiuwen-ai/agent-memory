@@ -19,10 +19,10 @@ def background_config(engine_kind: str = "in_memory") -> dict:
     return config
 
 
-async def wait_for_round(api, job_id, security, previous: str = ""):
+async def wait_for_round(api, job_id, security, previous: str = "", *, scope=HOME):
     async with asyncio.timeout(10):
         while True:
-            status = api.job_status(job_id, scope=HOME, security=security)
+            status = api.job_status(job_id, scope=scope, security=security)
             if status.detail.get("last_run_id", "") not in ("", previous):
                 return status
             await asyncio.sleep(0.02)

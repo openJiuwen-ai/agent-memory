@@ -4,6 +4,7 @@
 import json
 from copy import deepcopy
 from dataclasses import replace
+from datetime import UTC, datetime
 from functools import partial
 
 import pytest
@@ -40,7 +41,12 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(params=["orchestrating", "dynamic"])
-def harness_factory(request):
+def harness_factory(request, monkeypatch):
+    # Message fixtures are in September; use an explicit evaluation clock for both evolvers.
+    monkeypatch.setattr(
+        "jiuwen_memory.construction.evolver_impl.orchestrating_evolver._now",
+        lambda: datetime(2026, 10, 1, tzinfo=UTC),
+    )
     return partial(make_snapshot_test_harness, request.param)
 
 
@@ -175,7 +181,8 @@ def test_decisions_preserve_memory_semantics_and_update_only_snapshot(harness_fa
     if decision is DedupDecision.UPDATE:
         assert count == 1 and result.updated_ids == [old.id] and result.created_ids == []
         assert stored.content == "merged old and new", "继续执行原有正文合并"
-        assert stored.temporal == before.temporal, "snapshot 覆盖不改变原 temporal 更新语义"
+        expected_temporal = replace(before.temporal, t_message=candidate.temporal.t_message)
+        assert stored.temporal == expected_temporal, "仅推进陈述时间，其余时间轴保持独立"
         assert stored.hierarchy == candidate.hierarchy
         assert stored.hierarchy.span_start > before.hierarchy.span_end, "不合并新旧区间"
         assert {"old-source", "new-source"} <= set(stored.provenance)
@@ -205,6 +212,8 @@ def test_decisions_preserve_memory_semantics_and_update_only_snapshot(harness_fa
 def test_update_without_new_hints_preserves_old_hierarchy(harness_factory, old_has_snapshot):
     old = snapshot_test_unit("old") if old_has_snapshot else create_test_unit("old")
     candidate = create_test_unit("new")
+    old.temporal.t_message = datetime(2026, 9, 1, tzinfo=UTC)
+    candidate.temporal.t_message = datetime(2026, 9, 20, tzinfo=UTC)
     before = deepcopy(old.hierarchy)
     harness = harness_factory(candidate=candidate, existing=old, decision=DedupDecision.UPDATE)
     harness.index.build([old])
@@ -217,6 +226,7 @@ def test_update_without_new_hints_preserves_old_hierarchy(harness_factory, old_h
 
 def test_update_can_initialize_an_existing_unstructured_memory(harness_factory):
     old, candidate = create_test_unit("old"), snapshot_test_unit("new", 20)
+    old.temporal.t_message = datetime(2026, 9, 1, tzinfo=UTC)
     harness = harness_factory(candidate=candidate, existing=old, decision=DedupDecision.UPDATE)
     harness.index.build([old])
 
@@ -414,3 +424,34 @@ def test_update_accepts_partial_leaf_and_preserves_incoming_time(harness_factory
     assert harness.world.kv.list(old.scope).count == 1
     document = harness.world.fulltext.get(old.scope, [old.id])[0]
     assert ("tree_span_end" in document.metadata) == (candidate.hierarchy.span_end is not None)
+
+
+def test_older_snapshot_is_expired_without_changing_newer_snapshot(harness_factory):
+    old, candidate = snapshot_test_unit("existing", 20), snapshot_test_unit("late", 1)
+    before = deepcopy(old)
+    harness = harness_factory(candidate=candidate, existing=old, decision=DedupDecision.SUPERSEDE)
+    harness.index.build([old])
+
+    result = harness.evolver.evolve([candidate], EvolveMode.EXTRACT)
+
+    stored = loads(harness.world.kv.get(candidate.scope, memory_key(candidate.id)))
+    assert loads(harness.world.kv.get(old.scope, memory_key(old.id))) == before
+    assert stored.hierarchy == candidate.hierarchy
+    assert stored.lifecycle is LifecycleState.SUPERSEDED
+    assert result.created_ids == result.superseded_ids == [candidate.id]
+
+
+def test_snapshot_update_with_unknown_message_time_preserves_both(harness_factory):
+    old, candidate = snapshot_test_unit("existing"), snapshot_test_unit("new", 20)
+    candidate.temporal.t_message = None
+    before = deepcopy(old)
+    harness = harness_factory(candidate=candidate, existing=old, decision=DedupDecision.UPDATE)
+    harness.index.build([old])
+
+    result = harness.evolver.evolve([candidate], EvolveMode.EXTRACT)
+
+    assert loads(harness.world.kv.get(old.scope, memory_key(old.id))) == before
+    stored = loads(harness.world.kv.get(candidate.scope, memory_key(candidate.id)))
+    assert stored.hierarchy == candidate.hierarchy
+    assert result.created_ids == [candidate.id] and result.updated_ids == []
+    assert harness.llm.call_count == 1

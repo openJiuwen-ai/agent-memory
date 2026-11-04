@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from jiuwen_memory.api import assemble_runtime, assemble_server_runtime
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.type_def import Scope
-from jiuwen_memory.control.types import JobStatus
+from jiuwen_memory.control.types import JobStatus, SpacePatch, SpaceSpec, SpaceStatus
 from tests.unit.api.fixtures import HOME, ROOT_SECURITY, security_for
 from tests.unit.api.hierarchy_background_fixtures import background_config, wait_for_round
 
@@ -147,5 +148,72 @@ def test_routing_boundary_only_applies_to_enabled_background_jobs(enabled) -> No
         else:
             result = asyncio.run(runtime.start_background_jobs(HOME, security=security))
             assert result.skipped and not result.job_ids
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(("engine_kind", "failure"), [
+    ("cloud", "archived"), ("cloud", "frozen"), ("cloud", "revoked"),
+    ("in_memory", "revoked"), ("cloud", "expired"), ("in_memory", "expired"),
+])
+def test_periodic_hierarchy_rechecks_space_and_authorization(
+    engine_kind, failure, monkeypatch,
+) -> None:
+    # pylint: disable=protected-access  # 撤销真实委托记录，其他步骤使用公开 API 与 Scheduler
+    from jiuwen_memory.common.security._delegation_binding import _stores
+
+    runtime = assemble_runtime(config=background_config(engine_kind))
+    api = runtime.api
+    home = HOME if failure in ("revoked", "expired") else Scope(
+        org=HOME.org, space="periodic-admission", user=HOME.user,
+    )
+    try:
+        if home.space:
+            api.create_space(SpaceSpec(
+                org=home.org, space=home.space, owner=Scope(org=home.org, user=home.user),
+            ), security=ROOT_SECURITY)
+        security = security_for(api, home)
+        expires = datetime.now(UTC) + timedelta(hours=1)
+        if failure == "expired":
+            from jiuwen_memory.common.security.request_context import new_request_context
+
+            security = new_request_context(
+                replace(security.auth, expires_at=expires), surface=security.surface,
+            )
+        scope = replace(home, session="closed-session")
+        leaf = api.add(
+            "completed session", scope, security=security,
+            occurred_at=datetime.now(UTC) - timedelta(minutes=2),
+            system_metadata={"infer": False},
+        )[0]
+        registered = asyncio.run(runtime.start_background_jobs(home, security=security))
+        if failure == "archived":
+            api.archive_space(home.org, home.space, security=ROOT_SECURITY)
+        elif failure == "frozen":
+            api.update_space(home.org, home.space, SpacePatch(status=SpaceStatus.FROZEN),
+                             security=ROOT_SECURITY)
+        elif failure == "revoked":
+            for store in _stores(api._authorizer):
+                store.revoke(security.auth.delegation_id)
+        else:
+            class AfterExpiry(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return expires + timedelta(seconds=1)
+
+            monkeypatch.setattr("jiuwen_memory.common.security.types.datetime", AfterExpiry)
+        first = asyncio.run(wait_for_round(
+            api, registered.job_ids[0], ROOT_SECURITY, scope=home,
+        ))
+        second = asyncio.run(wait_for_round(
+            api, registered.job_ids[0], ROOT_SECURITY, first.detail["last_run_id"], scope=home,
+        ))
+        for status in (first, second):
+            detail = json.loads(status.detail["last_run_detail"])
+            assert status.detail["last_run_status"] == "failed", detail
+            assert detail["complete"] == "false", detail
+            assert detail["created_parent_count"] == detail["updated_child_count"] == "0"
+            assert "error" in detail and "paused_reason" not in detail
+        assert api.get(leaf.id, scope, security=ROOT_SECURITY) == leaf
     finally:
         runtime.close()

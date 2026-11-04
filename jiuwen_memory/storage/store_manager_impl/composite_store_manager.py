@@ -29,6 +29,7 @@ from typing import Any, cast
 from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.type_def import RetrievalPipeline
 from jiuwen_memory.common.type_def.entity import EntityOpType
 from jiuwen_memory.config.context import ComponentConfig
 from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
@@ -310,6 +311,14 @@ class CompositeStoreManager(StoreManager):
             raise UnsupportedStorageCapabilityError(
                 f"domain_store is not available: {name!r}"
             ) from exc
+
+    def domain_store_for_kv(self, name: str = "default") -> DomainStore:
+        """Expose a codec-compatible reader through this manager's authorized KV port."""
+        self.kv(name)
+        return CompositeDomainStore(
+            manager=self, kv_name=name,
+            preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK,
+        )
 
     def has_domain_store(self, name: str = "default") -> bool:
         return name in self._domain_stores
