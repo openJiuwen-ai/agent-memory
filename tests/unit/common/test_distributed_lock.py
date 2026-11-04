@@ -90,7 +90,7 @@ def test_memory_builder_applies_lease_and_timeout() -> None:
         fresh = await _acquire_elsewhere(provider)
         await provider.release(fresh)
 
-        await provider.acquire(_SCOPE, "write")
+        await provider.acquire(_SCOPE, "write", lease_ms=30_000)
 
         started = time.monotonic()
         with pytest.raises(LockTimeoutError):
@@ -215,16 +215,16 @@ def test_lease_expiry_lets_another_holder_in() -> None:
 
 def test_stale_release_does_not_free_the_new_holders_lock(monkeypatch) -> None:
     """租约过期后他人拿到同名锁，原持有者的 release 必须是空操作。"""
-    # 只推进旧租约的时钟，避免 CI 调度延迟使新持有者的 50ms 租约也在断言前过期。
+    # 仅推进内存后端时钟使旧租约过期，不依赖 CI 调度速度。
     now = [100.0]
     monkeypatch.setattr(
         "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
         types.SimpleNamespace(monotonic=lambda: now[0]),
     )
-    provider = _provider(lease_ms=50)
+    provider = _provider()
 
     async def scenario() -> None:
-        stale = await provider.acquire(_SCOPE, "write")
+        stale = await provider.acquire(_SCOPE, "write", lease_ms=50)
         now[0] += 0.08
         fresh = await _acquire_elsewhere(provider)
 

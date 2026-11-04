@@ -47,7 +47,7 @@ class DashScopeLLM(OpenAILLM):
     额外参数：
         enable_thinking: 是否在请求里带 ``extra_body.enable_thinking``；
                          ``None`` 表示完全不发送该厂商字段。
-        config_source / config_namespace: 与父类相同，走 ``llm.*`` 晚绑定 key。
+        config_source / config_namespace: 与父类相同，装配器按实例名选择晚绑定 key 命名空间。
     """
 
     def __init__(
@@ -90,6 +90,7 @@ class DashScopeLLM(OpenAILLM):
 def _build(config):
     """装配 DashScope LLM，并挂接内核共享 ConfigSource（若已装配）。"""
     from jiuwen_memory.config.config_source import ConfigSourceProducer
+    from jiuwen_memory.config.keys import NS_LLM, resolve_instance_namespace
 
     base_url = (
         config.get("llm_base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -99,6 +100,9 @@ def _build(config):
     if ssl.verify:
         require_https(base_url, component="dashscope LLM", param="llm")
         require_ca_file(ssl.ca_cert, component="dashscope LLM", param="llm")
+    config_namespace = resolve_instance_namespace(
+        NS_LLM, config.name, config.params
+    )
     return DashScopeLLM(
         model_name=config.get("llm_model") or "qwen-plus",
         base_url=base_url,
@@ -111,5 +115,5 @@ def _build(config):
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
-        config_namespace=str(config.get("config_namespace", "llm")),
+        config_namespace=config_namespace,
     )
