@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-30 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -297,6 +297,38 @@ verify_audit 的参数、授权、专用 guard、尝试审计及资源上限见 
 
 samples 的每项为上述 Proof 字段；返回体不含事件正文、密钥、凭据或 ok 字段。
 缺外部可信锚点无法识别整库回退到合法前缀；本地密钥轮换状态不跨重启持久化。
+
+## Trusted 主体公开初始化
+
+受信宿主在开始接收请求前，可通过唯一 Access 公共面调用：
+
+```python
+from jiuwen_memory.api import Scope, register_trusted_principal
+
+register_trusted_principal(
+    runtime.security_runtime.authenticator,
+    Scope(org="demo", user="alice"),
+    role="user",
+)
+```
+
+- `register_trusted_principal(authenticator, actor, *, role="user") -> None` 初始化该
+  认证器**实际使用**的主体注册表，不替换认证器、不另建 Store、不生成主体 API Key。
+- 仅限服务端受信部署代码。该函数不承担管理调用者认证，不属于 MemoryAPI，
+  不新增 HTTP、CLI 或 MCP 管理路由；宿主不得直接暴露为匿名注册入口。
+- actor 需为字符串字段组成的规范 Scope：org 非空，user/agent 恰一非空，
+  space/session 为空；不接受字段首尾空白。角色只允许 `user/admin`，ROOT 拒绝。
+- `PrincipalRegistrationCapability.register_principal(actor, Role)` 是可选增量能力，
+  不增加 Authenticator/PrincipalKeyStore 既有 ABC 的抽象方法。内置 Trusted 认证器
+  委派到其同源 Store；第三方认证器或 Store 未声明能力时抛 UnsupportedCapabilityError，
+  原有已预置主体的第三方 Store 仍可进行认证。
+- 注册必须原子提交。同主体同角色幂等，不同角色与任何既有有效登记/Key 冲突时
+  拒绝，失败不留下角色。并发签发和登记不得产生互相矛盾的角色。
+- 显式登记的主体独立于 API Key：撤销该主体最后一把 API Key，不删除它的显式登记。
+  仅由 Key 签发形成的旧主体仍在最后一把 Key 撤销后失去角色。初始化入口不提供
+  角色覆盖、动态主体停用或持久化；内置 memory 的全部状态随进程结束丢失。
+- 网关验证仍要求专用 gateway_key 与组织/主体身份头，未知主体拒绝，角色不从头部取。
+  主体注册不授予 Grant、Delegation 或跨范围访问权；业务权限仍由实际 Authorizer 判定。
 
 ## 注册与配置
 

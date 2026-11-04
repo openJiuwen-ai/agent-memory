@@ -13,14 +13,20 @@ import hmac
 import logging
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import AuthenticationError, ValidationError
+from jiuwen_memory.common.errors import (
+    AuthenticationError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.security.authentication.base import Authenticator, AuthProducer
 from jiuwen_memory.common.security.authentication.key_store import (
     KeyStoreProducer,
     PrincipalKeyStore,
+    PrincipalRegistrationCapability,
     fingerprint,
+    validate_principal_registration,
 )
-from jiuwen_memory.common.security.types import AuthContext, Credentials, reveal_secret
+from jiuwen_memory.common.security.types import AuthContext, Credentials, Role, reveal_secret
 from jiuwen_memory.common.type_def.scope import Scope
 
 _LOG = logging.getLogger(__name__)
@@ -62,6 +68,20 @@ class TrustedAuthenticator(Authenticator):
     def __init__(self, key_store: PrincipalKeyStore, gateway_key: str = "") -> None:
         self._key_store = key_store
         self._gateway_key = gateway_key
+
+    def register_principal(self, actor: Scope, role: Role) -> None:
+        """受信初始化，只使用本认证器实际查询的注册表，不产生 API Key。"""
+        validate_principal_registration(actor, role)
+        if not isinstance(self._key_store, PrincipalRegistrationCapability) or not callable(
+            self._key_store.register_principal,
+        ):
+            raise UnsupportedCapabilityError(
+                capability="principal_registration",
+                value="register_principal",
+                component="key_store",
+                message="KeyStore does not support principal registration",
+            )
+        self._key_store.register_principal(actor, role)
 
     def authenticate(self, credentials: Credentials) -> AuthContext:
         headers = credentials.headers

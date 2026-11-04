@@ -1,0 +1,29 @@
+name: Trusted principal bootstrap
+on:
+  pull_request:
+  push:
+    branches: [main, mem2.0, develop, stable]
+jobs:
+  trusted-http:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e ".[dev,security]"
+      - name: Collect tests without custom import paths
+        run: |
+          python -m pytest --collect-only tests/integration/security/test_trusted_bootstrap.py
+          python -m pytest --collect-only -m unit
+      - name: Verify pure Trusted initialization over HTTP
+        run: python -m pytest tests/integration/security/test_trusted_bootstrap.py
+      - name: Run public API bootstrap example
+        run: |
+          python examples/security/trusted_bootstrap.py
+          python -O examples/security/trusted_bootstrap.py

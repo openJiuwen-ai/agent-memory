@@ -128,6 +128,26 @@ legacy handler 的 security 必填，已删除 legacy_request_context 与 payloa
 进程内路径；示例/评测显式走 DEV 认证器，不从被测目标 Scope 构造“认证身份”。
 DEV 自身范围访问由真实 Authorizer 判权；跨组织管理须显式 ROOT，不借空 Scope 或 allow_all。
 
+### 2.4 Trusted 主体初始化
+
+选择 Trusted 配置后，空 memory 注册表需要在同一服务内预置主体。早期测试借用
+API Key 认证器的 Store 签发不用的 Key，再替换入口认证器；这种做法依赖内部实现，
+并把主体登记不必要地耦合到 API Key 的签发与撤销。
+
+现在由受信启动代码调用 `jiuwen_memory.api.register_trusted_principal`，向实际 Trusted
+认证器登记组织内的 user/agent 和 USER/ADMIN 角色。函数按增量能力委派同一 Store，
+不导出实现类、不查看生命周期依赖清单来猜 Store，也不要求了解网关厂商或上游登录协议。
+协议仍是专用 gateway_key 与固定身份头，角色来自服务端注册表。
+
+内置 memory Store 分开保留显式登记角色和凭据记录。同角色登记幂等，角色冲突拒绝，
+与 Key 签发共享状态锁，避免并发产生角色分叉。API Key 的旧签发/撤销行为保持：
+只有显式登记的主体在最后一把 Key 被撤销后仍有 Trusted 角色，原 Key-only 主体不受影响。
+
+拒绝用自动生成的废弃 Key 模拟登记、开放匿名注册、信任 X-Role、在初始化时写 ROOT，
+以及给旧 ABC 新增必选抽象方法。入口只做受信启动初始化，不交付动态改角色/停用、
+HTTP 管理接口或持久化产品；管理认证和持久化需要独立设计。契约见 S10，验证覆盖
+纯 Trusted 配置、无 Key 登记、身份与权限负例、幂等/冲突、并发和旧插件兼容。
+
 ## 3. 授权判定与真源
 
 ### 3.1 唯一 PEP/PDP、角色与路由
