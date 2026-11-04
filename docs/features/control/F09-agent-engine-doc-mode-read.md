@@ -33,7 +33,9 @@ MemoryUnit，导致多条路径断口：
 （`cloud_engine.py` 的 SUPERSEDE 分支）。唯独 AgentEngine 没接——`_build` 没注入
 domain_store，照搬了 InMemoryEngine 的 KV 直读 / lifecycle 直调。根因见记忆
 `doc-mode-supersede-kv-lifecycle-break`：`KVLifecycleManager` 的 supersede/transition/
-sweep 都从 KVStore 取 unit，文档模式下走它必 NotFoundError / 静默失效。
+sweep 都从 KVStore 取 unit，文档模式下走它必 NotFoundError / 静默失效。（该根因已由
+issue #261 根治——`KVLifecycleManager` 注入 `domain_store` 后按 `should_write_document()`
+文档分流，见「方案 A（后采纳）」。）
 
 ## 决策
 
@@ -50,7 +52,8 @@ sweep 都从 KVStore 取 unit，文档模式下走它必 NotFoundError / 静默�
 
 文档模式下 `KVLifecycleManager.supersede/transition` 从 KV 取 unit 必失败，根因是
 lifecycle 数据源与文档真源（shadow）不一致。本次选**engine 侧绕过**（对齐 CloudEngine
-SUPERSEDE 范式），不选 lifecycle 数据源根治（见「拒绝的方案」）：
+SUPERSEDE 范式），不选 lifecycle 数据源根治（见「拒绝的方案」）；该根治随后由
+issue #261 落地（见「方案 A（后采纳）」），engine 侧绕过仍保留：
 
 - **update SUPERSEDE**：`should_write_document()` 为真时，先 `restore_coords_from_md_filename`
   防 coords 丢失致新版落错 md 文件（见决策 3），再 `index.build([new])` 落新版，最后直接
@@ -59,6 +62,10 @@ SUPERSEDE 范式），不选 lifecycle 数据源根治（见「拒绝的方案�
 - **delete FORGET/ARCHIVE**：`should_write_document()` 为真时，直接
   `unit.lifecycle = target; index.update([...])` 落 shadow——不调 `lifecycle.transition`。
   DOWNWEIGHT 不改 lifecycle（上方已单独处理），不受影响。非文档模式维持 `lifecycle.transition`。
+  `index.update→domain.update` 文档分支按「md 可见性」删块（#261 方案 C，见
+  [F08](../../storage/F08-document-memory.md)「写入路径分流」update 行）：`FORGOTTEN`
+  物理删 md 块（遗忘=从文档消失），`ARCHIVED` 保留 md 块（转冷可回溯），`SUPERSEDED` 维持
+  已删；sweep FORGOTTEN（经 `lifecycle.transition` 回写真源 → `domain.update`）同口径统一删块。
 - 绕过不校验 `_ensure_transition_allowed`（对齐 CloudEngine SUPERSEDE 绕过不校验的简化风格）。
 
 ### 决策 3：提取 `restore_coords_from_md_filename` 到共用件
@@ -85,7 +92,7 @@ KV/DomainStore 双适配（`CandidateStore = KVStore | DomainStore`，`_is_kv_st
 
 ## 拒绝的方案
 
-### 方案 A（未选）：lifecycle 数据源根治——KVLifecycleManager 注入 DomainStore
+### 方案 A（当时未选，后由 issue #261 采纳）：lifecycle 数据源根治——KVLifecycleManager 注入 DomainStore
 
 让 `KVLifecycleManager.supersede/transition/sweep` 改从 DomainStore 取 unit，文档模式
 下自动分流到 shadow。**未选原因**：
@@ -97,6 +104,11 @@ KV/DomainStore 双适配（`CandidateStore = KVStore | DomainStore`，`_is_kv_st
    「engine 侧绕过」已是既定范式——AgentEngine 对齐它即可，无需另起 lifecycle 改造；
 3. sweep 仍读 KV 是共性问题（CloudEngine 同样未修），lifecycle 根治需连带处理 sweep
    数据源，本次明确列为遗留（见「已知遗留」），不在本次 scope 内。
+
+> **后记（issue #261）**：本方案已落地。`KVLifecycleManager` 注入 `domain_store` 后，
+> `transition`/`sweep`/`supersede` 改经 `_load_units`/`_write_units` 按
+> `should_write_document()` 文档分流——文档模式经 DomainStore（shadow）、非文档模式经
+> KV。见 `kv_lifecycle_manager.py` 模块 docstring 与「已知遗留」#1 的标注。
 
 ### 方案 B（未选）：AgentEngine 不持有 domain_store，read 时按 should_write_document 判别走 KV 或 shadow
 
@@ -124,9 +136,11 @@ DomainStore 读取」对 CloudEngine 已确立的范式），且会复制 Domain
 
 ## 已知遗留
 
-1. **`sweep_expired` 仍读 KV**：`lifecycle.sweep()` 纯计算从 KV 读全量，文档模式下失效。
+1. **`sweep_expired` 仍读 KV**（已由 issue #261 修复）：`lifecycle.sweep()` 纯计算从 KV 读全量，文档模式下失效。
    根治需 lifecycle.sweep 数据源改造（注入 DomainStore 或 engine 侧重写 sweep 计算）。
    CloudEngine 同样未修——列为跨 engine follow-up，不在本次 scope。
+   `KVLifecycleManager.sweep` 现按 `should_write_document()` 分流（文档模式走
+   `DomainStore.scopes()`/`list`，非文档模式走 KV `scopes()`/`list_units`）。
 2. **CloudEngine delete/sweep 共性遗留**：CloudEngine `delete`（非 SUPERSEDE 的 transition
    分支）/ `sweep` 也直调 lifecycle 未绕过，本次只修 AgentEngine。CloudEngine 共性问题
    在此记录为跨 engine follow-up。
