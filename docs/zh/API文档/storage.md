@@ -2,12 +2,13 @@
 
 Storage 层为上层提供两级存储抽象：
 
-- `Storage`：面向 `MemoryUnit` 的统一领域接口，同时负责能力发现、授权和检索适配。
+- `StoreManager`：管理面，负责能力发现、端口访问、授权代理与健康聚合。
+- `DomainStore`：数据面，负责 `MemoryUnit` 领域 CRUD 和检索适配。
 - `BaseStore` 及其子接口：面向 KV、向量、全文、图、融合和文件后端的六类标准端口，以及独立的实体反向索引端口。
 
 本文是当前抽象接口的 API 参考，不规定某个具体后端的内部实现。以下源码是最终依据：
 
-- [`storage.py`](../../../jiuwen_memory/storage/storage.py)
+- [`store_manager.py`](../../../jiuwen_memory/storage/store_manager.py) / [`domain_store.py`](../../../jiuwen_memory/storage/domain_store.py)
 - [`base.py`](../../../jiuwen_memory/storage/base.py)
 - [`security.py`](../../../jiuwen_memory/storage/security.py)
 - [`kv.py`](../../../jiuwen_memory/storage/kv.py)
@@ -71,29 +72,31 @@ scope = Scope(
 ## 2. Storage 统一接口
 
 ```python
-from jiuwen_memory.storage.storage import Storage
+from jiuwen_memory.storage import DomainStore, StoreManager
 ```
 
-`Storage` 是 Engine、Construction 和 Retrieval 共享的存储入口。它是面向接口的功能约定，不等同于“只写真源”：具体实现可以只保存 MemoryUnit 本体，也可以同时完成正排、向量、全文或图索引的写入。
+Engine、Construction 和 Retrieval 共享 `StoreManager`，经命名端口或 `domain_store(name)` 访问存储。以下 §2.1 属于管理面；§2.2–§2.4 属于 `DomainStore`。数据面实现可以只保存 MemoryUnit 本体，也可以完成多种索引写入。
 
 ### 2.1 能力发现与端口访问
 
-`StorageCapability` 包含六种标准能力：`KV`、`VECTOR`、`FULLTEXT`、`GRAPH`、`FUSION`、`FS`。
+`StorageCapability` 包含 `KV`、`VECTOR`、`FULLTEXT`、`GRAPH`、`FUSION`、`FS`、
+`ENTITY`、`MARKDOWN`、`DOCUMENT_SHADOW` 九种能力。
 
 | API | 返回值 | 说明 |
 |---|---|---|
-| `capabilities()` | `frozenset[StorageCapability]` | 返回当前 Storage 实例声明的能力集 |
-| `has_kv()` / `has_vector()` / `has_fulltext()` | `bool` | 判断默认 KV/向量/全文能力是否存在 |
-| `has_graph()` / `has_fusion()` / `has_fs()` | `bool` | 判断默认图/融合/文件能力是否存在 |
-| `has_*_port(name="default")` | `bool` | 判断具名端口是否存在 |
-| `kv` / `vector` / `fulltext` / `graph` / `fusion` / `fs` | 对应 Store | 访问默认端口 |
-| `*_port(name="default")` | 对应 Store | 访问指定名称的端口 |
+| `capabilities()` | `frozenset[StorageCapability]` | 返回 manager 已声明的能力集 |
+| `has_kv(name="default")` / `has_vector(name="default")` / `has_fulltext(name="default")` | `bool` | 判断对应具名端口是否存在 |
+| `has_graph(name="default")` / `has_fusion(name="default")` / `has_fs(name="default")` | `bool` | 判断对应具名端口是否存在 |
+| `has_entity(name="default")` / `has_markdown(name="default")` / `has_shadow_index(name="default")` | `bool` | 判断实体、Markdown、影子索引端口是否存在 |
+| `kv(name="default")` / `vector(name="default")` / `fulltext(name="default")` / `graph(name="default")` / `fusion(name="default")` / `fs(name="default")` | 对应 Store | 访问具名端口，默认名为 `default` |
+| `entity(name="default")` / `markdown(name="default")` / `shadow_index(name="default")` | 对应 Store | 访问相应具名端口 |
+| `domain_store(name="default")` / `has_domain_store(name="default")` | `DomainStore` / `bool` | 访问或检查命名数据面 |
 
-访问端口前应先用 `has_*()` 或 `has_*_port()` 判断能力。未声明的端口会抛出 `UnsupportedStorageCapabilityError`。
+访问未声明的端口会抛出 `UnsupportedStorageCapabilityError`。
 
 ```python
-if storage.has_vector_port("default"):
-    vector_store = storage.vector_port("default")
+if manager.has_vector("default"):
+    vector_store = manager.vector("default")
 ```
 
 ### 2.2 MemoryUnit 写入与删除
@@ -148,7 +151,7 @@ storage.delete(
 | `FORWARD_ONLY` | 只写记忆本体，不主动更新检索索引 |
 | `RETRIEVAL_ONLY` | 本体已存在，只写检索索引；无检索能力的实现可为空操作 |
 
-`mode` 表达调用方要求的逻辑写入范围，不代表底层一定有两个物理存储。例如，`CompositeStorage` 不负责索引投影，而一体化 Storage 可以在一次 `add` 中完成多种写入。
+`mode` 表达调用方要求的逻辑写入范围，不代表底层一定有两个物理存储。例如，`CompositeDomainStore` 不负责索引投影，而一体化 Storage 可以在一次 `add` 中完成多种写入。
 
 #### 删除范围 `IndexRemoveMode`
 
@@ -230,8 +233,8 @@ storage.list(
 
 | API | 说明 |
 |---|---|
-| `security` | 返回当前 Storage 的 `StorageSecurity` |
-| `scopes() -> list[Scope]` | 枚举已存在 MemoryUnit 数据的 Scope；顺序由实现定义 |
+| `security` | manager/data plane 的 `StorageSecurity` |
+| `DomainStore.scopes() -> list[Scope]` | 枚举已存在 MemoryUnit 数据的 Scope；顺序由实现定义 |
 | `health() -> None` | 检查 Storage、安全组件及所属后端；健康时返回 `None` |
 
 ## 3. BaseStore 基类
@@ -415,7 +418,7 @@ security.authorize(
 
 | Producer | `TOP_NAME` | 产物 |
 |---|---|---|
-| `StorageProducer` | `storage` | `Storage` |
+| `StoreManagerProducer` | `store_manager` | `StoreManager` |
 | `KvProducer` | `kv_store` | `KVStore` |
 | `VectorProducer` | `vector_store` | `VectorStore` |
 | `FulltextProducer` | `fulltext_store` | `FulltextStore` |
@@ -424,7 +427,7 @@ security.authorize(
 | `FsProducer` | `fs_store` | `FSStore` |
 | `EntityStoreProducer` | `entity_store` | `EntityStore` |
 
-具体实现使用 `@XxxProducer.register("name")` 注册，并由 `storage.bootstrap.register_backends()` 触发实现模块导入。`StorageProducer.resolve(config)` 用于从组件配置解析共享 Storage，默认 target 为 `composite`。业务代码通常使用装配层已注入的 `Storage`，不应自行解析和固化底层 Store。
+具体实现使用 `@XxxProducer.register("name")` 注册，并由 `storage.bootstrap.register_backends()` 触发实现模块导入。`StoreManagerProducer.resolve(config)` 用于解析共享 StoreManager，默认 target 为 `composite`。业务代码使用装配层已注入的 StoreManager/DomainStore，不应自行解析和固化底层 Store。
 
 ## 13. 可配置实现
 
@@ -450,36 +453,38 @@ kv_store:
 
 依赖参数有两种写法：
 
-- 字符串，如 `storage: default`：引用相应 Producer 命名空间下的具名共享实例。
+- 字符串，如 `store_manager: default`：引用相应 Producer 命名空间下的具名共享实例。
 - 映射，如 `raw_kv_store: {target: sqlite, params: {...}}`：就地创建不共享的匿名实例。
 
 `params` 中未找到的普通参数会回退读取 `globals`。用户配置会按“命名空间 + 实例名”覆盖内置默认；覆盖某个已有实例时，该实例的 `params` 整体替换，因此不能丢失必要的依赖引用。
 
 直接传给 `Config.from_dict()` / `Config.from_yaml()` 时，以上命名空间就是顶层段；部署配置中则放在 `memory_api:` 下。
 
-不传用户配置时，Storage 默认组合是 `composite + memory KV/vector/fulltext/graph`，L0/L1 向量和全文端口也使用 `memory`；FusionStore、FSStore 和 EntityStore 不会默认接入 `CompositeStorage`。外部后端 target 采用惰性导入/连接，配置成功不代表对应三方客户端和服务已就绪，上线前还应调用 `health()`。
+不传用户配置时，管理面使用 `CompositeStoreManager`，数据面使用 `CompositeDomainStore`，KV/vector/fulltext/graph 及 L0/L1 向量和全文端口使用内存实现；FusionStore、FSStore 和 EntityStore 不默认声明。配置选中的 ES 全文/实体、Milvus 向量及 `milvus_graph` 融合会在装配期预加载 ES/Milvus 客户端依赖，缺失或原生库加载失败即报 `BackendError`；自建环境需安装 `.[deploy]` 或所选客户端。连接及索引初始化仍惰性执行，融合后端的图依赖也保持惰性加载；装配成功不代表后端服务可达，上线前还应调用 `health()`。预加载缓解运行期冷加载，不代表已定位或修复 Windows loader 底层机制。
 
-### 13.2 Storage 实现
+### 13.2 StoreManager / DomainStore 实现
 
-| `target` | 实现类 | 功能 | 主要 `params` |
+| 角色 | 实现类 | 功能 | 配置 |
 |---|---|---|---|
-| `composite` | `CompositeStorage` | 默认统一 Storage；组合各类 Store 端口，MemoryUnit 本体由 KV 端口持久化，检索适配由装配的 Recaller 提供；本实现不负责向量/全文/图投影构建 | `kv_store`（默认 `memory`），可选 `vector_store` / `fulltext_store` / `graph_store` / `fusion_store` / `fs_store`，`preferred_retrieval_pipeline`（默认 `recall_get_rank`） |
+| 管理面 | `CompositeStoreManager` | `store_manager` 命名空间的 `composite` target；聚合已声明 Store 端口、能力、授权代理及命名数据面 | `params.domain_stores.<name>` 声明数据面；Store 端口由各 Store 命名空间聚合 |
+| 数据面 | `CompositeDomainStore` | MemoryUnit 本体 CRUD 与检索适配，默认真源为 KV；不负责向量/全文/图投影构建 | 数据面内的 `kv_store`、`preferred_retrieval_pipeline` 及 Recaller 选择键 |
 
-`preferred_retrieval_pipeline` 可选 `recall_get_rank`、`recall_and_get_rank`、`retrieve`。`vector_store.layers_l0/layers_l1` 和 `fulltext_store.layers_l0/layers_l1` 会被 `CompositeStorage` 自动暴露为同名端口。
+`preferred_retrieval_pipeline` 可选 `recall_get_rank`、`recall_and_get_rank`、`retrieve`。
+`vector_store.layers_l0/layers_l1` 和 `fulltext_store.layers_l0/layers_l1` 由 manager
+自动暴露为同名端口。默认 manager 配置可保持内置值，仅覆盖所选后端，例如：
 
 ```yaml
-storage:
+globals:
+  store_manager: default
+fulltext_store:
   default:
-    target: composite
+    target: elasticsearch
     params:
-      kv_store: default
-      vector_store: default
-      fulltext_store: default
-      graph_store: default
-      preferred_retrieval_pipeline: recall_get_rank
+      hosts: http://localhost:9200
 ```
 
-目前内置 Storage target 只有 `composite`。`RoutingStorage` 和 Routing Store 是产品可手工注入的路由组件，当前没有注册成可在 YAML 中直接使用的 `target: routing`。
+`RoutingStoreManager`、`RoutingDomainStore` 和 Routing Store 是可手工注入的路由组件，
+未注册为 YAML `target: routing`。
 
 ### 13.3 KVStore 实现
 
@@ -666,7 +671,7 @@ constructor:
   default:
     target: hybrid
     params:
-      storage: default
+      store_manager: default
       chunker: default
       embedder: default
       entity_store: default
@@ -674,7 +679,7 @@ recaller:
   keyword:
     target: keyword
     params:
-      storage: default
+      store_manager: default
       entity_store: default
 ```
 
@@ -682,7 +687,7 @@ recaller:
 
 ### 13.10 安全接口的实现方式
 
-`StorageSecurity` 目前没有独立 Producer 命名空间。`CompositeStorage` 配置构建默认使用 `AllowAllStorageSecurity`；自定义授权实现需要代码构造 `CompositeStorage(..., security=...)` 或由产品装配层注入，不能直接写成 YAML target。
+`StorageSecurity` 目前没有独立 Producer 命名空间。`CompositeStoreManager` 配置构建默认使用 `AllowAllStorageSecurity`；自定义授权实现需要代码构造 `CompositeStoreManager(..., security=...)` 或由产品装配层注入，不能直接写成 YAML target。
 
 `StoreSecurity` 也不单独选 target：普通 Store 默认为 `PassthroughStoreSecurity`；选择
 `kv_store.target=encrypted` 后，`EncryptedKVStore.security` 自动变为已启用状态，真正的
@@ -692,21 +697,21 @@ recaller:
 
 ```python
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
-from jiuwen_memory.storage.storage import Storage
+from jiuwen_memory.storage import DomainStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 
-def save_and_load(storage: Storage, scope: Scope, unit: MemoryUnit) -> MemoryUnit | None:
+def save_and_load(storage: DomainStore, scope: Scope, unit: MemoryUnit) -> MemoryUnit | None:
     storage.add(scope, [unit], mode=IndexWriteMode.ALL)
     loaded = storage.get(scope, [unit.id])
     return loaded[0] if loaded else None
 
 
-def remove_from_retrieval(storage: Storage, scope: Scope, unit_id: str) -> None:
+def remove_from_retrieval(storage: DomainStore, scope: Scope, unit_id: str) -> None:
     storage.delete(scope, [unit_id], mode=IndexRemoveMode.SOFT)
 ```
 
-这两段代码只表达接口语义。`ALL` 或 `SOFT` 最终会操作哪些物理数据，取决于注入的 `Storage` 实现及其能力。
+这两段代码只表达接口语义。`ALL` 或 `SOFT` 最终会操作哪些物理数据，取决于注入的 `DomainStore` 实现及其能力。
 
 ## 15. 存储数据类型
 
@@ -889,7 +894,7 @@ FS 的 `ref` 是 Store 返回的规范引用，不应由调用方拼接物理路
 | KV/FS 单条 `get` 不存在 | `NotFoundError` |
 | KV `mget` 任意 key 不存在 | `NotFoundError`，不返回部分列表 |
 | 检索型 Store 批量 `get` 部分 ID 缺失 | 省略缺失项，返回实际找到的记录 |
-| `MemoryUnit.scope` 与 `Storage.add/update` 显式 Scope 不一致 | 内置 `CompositeStorage` 抛 `ValidationError` |
+| `MemoryUnit.scope` 与 `DomainStore.add/update` 显式 Scope 不一致 | 内置 `CompositeDomainStore` 抛 `ValidationError` |
 | 过滤算子、向量维度、query 或配置非法 | `ValidationError` |
 | 访问未声明能力/具名端口 | `UnsupportedStorageCapabilityError` |
 | `StorageSecurity.authorize` 拒绝 | `PermissionDeniedError` |
@@ -908,9 +913,9 @@ FS 的 `ref` 是 Store 返回的规范引用，不应由调用方拼接物理路
 
 | 组合 | `ALL` | `FORWARD_ONLY` | `RETRIEVAL_ONLY` | `SOFT` | `HARD` |
 |---|---|---|---|---|---|
-| `CompositeStorage` 直接 CRUD | 写/更新 KV 记忆本体 | 写/更新 KV 记忆本体 | 空操作 | 空操作，保留本体 | 删除 KV 记忆本体 |
-| `HybridIndexBuilder + CompositeStorage` | forward + fulltext + vector + 可选 entity | 只执行 forward | 只执行检索子 builder | 只删派生检索索引 | 先删派生索引，后删 forward |
-| `UnifiedIndexBuilder + CompositeStorage` | 只有 KV 记忆本体 | 只有 KV 记忆本体 | 空操作 | 空操作 | 删除 KV 记忆本体 |
+| `CompositeDomainStore` 直接 CRUD | 写/更新 KV 记忆本体 | 写/更新 KV 记忆本体 | 空操作 | 空操作，保留本体 | 删除 KV 记忆本体 |
+| `HybridIndexBuilder + CompositeDomainStore` | forward + fulltext + vector + 可选 entity | 只执行 forward | 只执行检索子 builder | 只删派生检索索引 | 先删派生索引，后删 forward |
+| `UnifiedIndexBuilder + CompositeDomainStore` | 只有 KV 记忆本体 | 只有 KV 记忆本体 | 空操作 | 空操作 | 删除 KV 记忆本体 |
 | `UnifiedIndexBuilder + 自定义一体化 Storage` | 由该 Storage 实现全部写入 | 必须至少保证本体 | 由实现决定能否单独补索引 | 由实现保证本体保留 | 由实现删除本体和派生索引 |
 
 因此，不能仅看 `Storage` 的抽象方法就假定当前 target 已经同时管理向量、全文和图索引。

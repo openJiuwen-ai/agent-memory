@@ -64,9 +64,10 @@ def test_producer_unknown_backend_raises() -> None:
         KvProducer.build("nope", {}, AssemblyContext())
 
 
-def test_vector_requires_dim() -> None:
-    with pytest.raises(ValidationError):
-        MilvusVectorStore(dim=0)
+@pytest.mark.parametrize("dim", [0, -1])
+def test_vector_requires_dim(dim: int) -> None:
+    with pytest.raises(ValidationError, match="milvus vector store requires positive 'dim'"):
+        MilvusVectorStore(dim=dim)
 
 
 # ------------------------------------------------ 三方库后端的 build 期参数校验
