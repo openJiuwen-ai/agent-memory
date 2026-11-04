@@ -3,7 +3,7 @@
 
 CLI 命令集由 ``MemoryAPI.__abstractmethods__`` 反射生成（``cli/__main__.py:42``），
 本文件锁四件事：
-1. 契约锁——36 个方法全部有同名子命令、选项名与 ``api_contract`` 零漂移；
+1. 契约锁——38 个方法全部有同名子命令、选项名与 ``api_contract`` 零漂移；
 2. 会话内闭环——同一 client 的 add→search→list→get→update→delete→evolve 全链路；
    注意 OFFLINE 内存后端不跨 CLI 进程保留数据，跨调用共享状态的唯一方式是
    同一 client（或 batch 单会话 / 远程常驻服务）；
@@ -86,7 +86,7 @@ def dev_client():
     client.close()
 
 
-# --- A. 契约锁：36 方法全覆盖、选项名与 api_contract 零漂移 ---------------------- #
+# --- A. 契约锁：38 方法全覆盖、选项名与 api_contract 零漂移 ---------------------- #
 
 
 def test_cli_exposes_every_api_method_plus_helpers() -> None:
