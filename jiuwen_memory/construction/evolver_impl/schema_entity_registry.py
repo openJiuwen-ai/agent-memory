@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import LifecycleState, MemoryTier, MemoryUnit, Segment, Temporal
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.storage.fulltext import FulltextStore
@@ -262,14 +263,7 @@ def _entity_record(
     record.temporal = Temporal(
         t_ingest=existing.temporal.t_ingest if existing is not None else now,
         t_valid=existing.temporal.t_valid if existing is not None else now,
-        t_message=max(
-            (
-                unit.temporal.t_message
-                for unit in observations
-                if unit.temporal.t_message is not None
-            ),
-            default=existing.temporal.t_message if existing is not None else None,
-        ),
+        t_message=_latest_message_time(observations, existing),
     )
     record.lifecycle = LifecycleState.ACTIVE
     record.system_metadata = {
@@ -290,6 +284,17 @@ def _entity_record(
         ),
     }
     return record
+
+
+def _latest_message_time(
+    observations: list[MemoryUnit], existing: MemoryUnit | None
+) -> datetime | None:
+    values = [
+        unit.temporal.t_message
+        for unit in [*observations, *([existing] if existing is not None else [])]
+        if unit.temporal.t_message is not None
+    ]
+    return max(values, key=as_utc) if values else None
 
 
 def _strings(value: object) -> list[str]:

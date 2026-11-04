@@ -35,7 +35,7 @@ def test_facts_reports_individual_space_and_filters_expired_members() -> None:
     assert facts.info is not None
     assert facts.info.owners == [Scope(org="acme", space="team", user="alice")]
 
-    past = datetime.now(UTC) - timedelta(days=1)
+    past = (datetime.now(UTC) - timedelta(days=1)).replace(tzinfo=None)
     manager.add_member(
         "acme",
         "team",

@@ -5,7 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
+<<<<<<< mem2Feature
 | 最近一次修订日期 | 2026-10-26 |
+=======
+| 最近一次修订日期 | 2026-10-29 |
+>>>>>>> mem2.0
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -658,6 +662,7 @@ detail 标记 retryable="true"，不保留故障保护，下一周期重新读�
 不会额外触发故障保护；强制取消而无法核对结果时保守阻止后续推进。
 
 当前注册不持久化、不自动发现 home，不复用 dreaming 的持续授权/恢复注册表。
+
 宿主选择注册范围，注册许可不覆盖未来轮次。任务读取和持久化边界通过 API 准入回调
 复验原注册身份、授权及空间状态；归档、冻结、权限撤销或认证过期后，后续轮次
 返回 FAILED/complete=false，不得继续写入或误报成功。确认尚未写入的拒绝不闩住故障状态，
@@ -665,3 +670,19 @@ detail 标记 retryable="true"，不保留故障保护，下一周期重新读�
 轮次跳过；需要停止任务时使用 job_cancel 或 Runtime.close。
 这些复验不是事务或写入 fencing：单个底层调用已开始后不能强制回滚，也不保证跨进程
 状态切换与写入原子化；后续写入批次仍必须复验，身份不向执行层下传。
+
+
+
+## 时间比较语义
+
+`get(as_of)` 与 `DeleteSelector.before` 接受带时区和不带时区的时间。
+比较时不带时区按 UTC 解释，带时区保留实际时刻，保留微秒精度，不改写入参或存储值。
+
+- 删除筛选严格要求 `t_message < before`；缺少 `t_message` 不命中。
+- 历史有效期为 `[t_valid, t_invalid)`，缺少端点表示该侧无界。
+  保留引擎对非正有效期窗口（两端存在且 `t_invalid <= t_valid`）的既有特例：
+  仅 `as_of < t_invalid` 时有效。
+- 多个历史版本同时有效时，按归一后的 `t_valid` 选择最新版本；缺值作为最早时间。
+- 到期清扫同样按该规则比较 `t_invalid` 与当前时刻；仅 `t_invalid < now` 的 ACTIVE
+  单元视为到期，等于当前时刻时不提前清扫。
+

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.feature_extractor.base import FeatureExtractor
@@ -15,6 +16,10 @@ from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import WhitespaceTokenizer
 from jiuwen_memory.common.type_def import ChatMessage, Entity, FeatureSet
 from jiuwen_memory.common.type_def.filter import FilterClause, FilterOp
+from jiuwen_memory.config import AssemblyContext
+from jiuwen_memory.config.defaults import default_context
+from jiuwen_memory.retrieval.bootstrap import register_operators
+from jiuwen_memory.retrieval.query_parser import QueryParserProducer
 from jiuwen_memory.retrieval.query_parser_impl import simple_query_parser
 from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
 from jiuwen_memory.retrieval.types import RecallChannel, RetrievalQuery
@@ -163,6 +168,41 @@ def test_rewrite_disabled_by_default_even_with_llm() -> None:
     assert llm.calls == 0, "rewrite_enabled=False 时不应调用 LLM"
     assert parsed.rewrite_status == "off", "关闭改写时状态应为 off"
     assert parsed.rewrite_fallback_reason == "", "关闭改写时不应有 fallback 原因"
+
+
+@pytest.mark.parametrize(
+    ("switch", "attribute", "default_value", "global_value", "instance_value"),
+    [
+        ("sanitize_enabled", "_sanitize", True, False, True),
+        ("sanitize_strip_code", "_strip_code_fences", False, True, False),
+        ("rewrite_enabled", "_rewrite_enabled", False, True, False),
+    ],
+)
+def test_query_parser_build_applies_instance_globals_builder_precedence(
+    switch, attribute, default_value, global_value, instance_value
+) -> None:
+    """真实 builder 产物遵循实例 params > globals > builder 默认值。"""
+    register_plugins()
+    register_operators()
+
+    def build(user_config: dict[str, object]) -> SimpleQueryParser:
+        ctx = default_context().merged(AssemblyContext.from_dict(user_config))
+        return QueryParserProducer.build_named("default", ctx)
+
+    default_parser = build({})
+    global_parser = build({"globals": {switch: global_value}})
+    instance_parser = build(
+        {
+            "globals": {switch: global_value},
+            "query_parser": {
+                "default": {"target": "simple", "params": {switch: instance_value}}
+            },
+        }
+    )
+
+    assert getattr(default_parser, attribute) is default_value
+    assert getattr(global_parser, attribute) is global_value
+    assert getattr(instance_parser, attribute) is instance_value
 
 
 def test_rewrite_enabled_uses_llm() -> None:

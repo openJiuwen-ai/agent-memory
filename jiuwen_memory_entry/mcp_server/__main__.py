@@ -885,6 +885,60 @@ async def memory_remove_space_member(
     )
 
 
+# --- 工具：md 文件级读写 --- #
+
+
+@mcp.tool()
+async def memory_read_md_file(
+    context: dict,
+    md_filename: str,
+    line_range: list[int] | None = None,
+    ctx: Context = None,
+) -> list[dict]:
+    """读取 markdown 文件，返回命中的记忆单元列表。仅文档模式支持。
+
+    context: {"scope": {...}, "extensions": {"coords": {"project": "..."}}}。
+    md_filename: 文件 basename，如 USER.md、MEMORY.md 或 YYYY-MM-DD.md。
+    line_range: 可选 [start, end]，恰好 2 个整数，1-based 闭区间；
+        省略时读取整文件，越界自动 clamp。
+    """
+    # 保留 JSON 数组，由共享契约解码为 tuple；提前转换会被 _decode 拒绝。
+    return await _invoke(
+        "read_md_file",
+        {"context": context, "md_filename": md_filename, "line_range": line_range},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_edit_md_file(
+    context: dict,
+    md_filename: str,
+    old_text: str,
+    new_text: str,
+    ctx: Context = None,
+) -> list[dict]:
+    """替换 markdown 文件内唯一匹配的文本，返回受影响的新记忆单元列表。
+
+    仅文档模式支持，需具备 WRITE 权限。
+
+    context: {"scope": {...}, "extensions": {"coords": {"project": "..."}}}。
+    md_filename: 文件 basename，如 USER.md、MEMORY.md 或 YYYY-MM-DD.md。
+    old_text: 必须在文件内唯一；不存在或多次匹配时返回错误。
+    new_text: 替换后的文本。
+    """
+    return await _invoke(
+        "edit_md_file",
+        {
+            "context": context,
+            "md_filename": md_filename,
+            "old_text": old_text,
+            "new_text": new_text,
+        },
+        context=ctx,
+    )
+
+
 def _tighten_tool_arg_models() -> None:
     """把每个工具的参数模型收紧为 extra=forbid，与 HTTP/CLI 严格契约对齐。
 
