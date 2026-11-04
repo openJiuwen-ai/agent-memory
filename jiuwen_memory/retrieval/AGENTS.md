@@ -18,6 +18,7 @@
 | `base.py` | RetrievalOperator 基类：所有检索层算子的自描述契约 |
 | `types.py` | 检索对外类型；Storage 共用的 ParsedQuery/候选/错误类型从 common 重导出 |
 | `cross_space.py` | 跨空间检索的取数上界（`allocate_quota`）与结果合并（`merge`）；不访问存储、不调模型的纯函数，与算子并列而非算子，不进工厂 |
+| `context_pack.py` | 检索结果上下文打包（`pack_context`）：在 token 预算内把 Top-K 渲染成答题记忆块（角色缩写+紧凑 / 电报式 / 删条，F09）；纯函数，供检索之后的消费方调用，不进工厂、不改 Retriever 结果 |
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |

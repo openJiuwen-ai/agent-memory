@@ -42,3 +42,6 @@ locomo:
   skip_write: false
   # 默认保留本轮后端数据用于 bad case/evidence 溯源。
   cleanup_after_run: false
+  # 上下文打包（F09）：答题前把每个 cutoff 切片压到 ratio × 官方渲染 token 内，召回不变。
+  context_pack: false
+  context_pack_ratio: 0.8

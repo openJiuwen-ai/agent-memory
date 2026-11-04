@@ -133,6 +133,10 @@ def _locomo_args(config_file: Path, settings: dict[str, Any]) -> list[str]:
         args.append("--skip-write")
     if settings.get("cleanup_after_run", False):
         args.append("--cleanup-after-run")
+    if settings.get("context_pack", False):
+        args.extend(
+            ["--context-pack", "--context-pack-ratio", str(settings.get("context_pack_ratio", 0.8))]
+        )
     return args
 
 

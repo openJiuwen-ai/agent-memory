@@ -37,6 +37,8 @@
     RAW_ALWAYS=0        每个 turn 都额外写一份原文（与 RAW_FALLBACK 互斥的另一方案，A/B 用）
     DATE_PREFIX=0       正文加绝对日期前缀（默认关：新 prompt 的时间锚点取 observation_date 行）
     DISABLE_THINKING=0  默认不注入；仅自建 vLLM GLM 需要时设 1，DeepSeek 保持 0
+    CONTEXT_PACK=0      答题前对每个 cutoff 切片做上下文打包（F09），预算按 cl100k 计
+    CONTEXT_PACK_RATIO=0.8  打包预算占官方渲染记忆块 token 的比例
 
 产物管理：每轮进 outputs/locomo/<RUN_ID>_<RUN_TAG>/，含 test_*_v5<conv>.* + run_meta.json
           + config.snapshot.yml + engine.log + run.log。outputs/locomo/latest.txt 记最近一轮。
@@ -74,6 +76,7 @@ load_dotenv(dotenv_path=os.path.join(_EVALUATION_DIR, "environment", ".env"), ov
 
 from evaluation.locomo import prompts  # noqa: E402
 from evaluation.shared.config_loader import load_layer  # noqa: E402
+from evaluation.shared.tokens import cl100k_tokens  # noqa: E402
 from jiuwen_memory.api import (  # noqa: E402
     DeleteMode,
     DeleteSelector,
@@ -86,6 +89,7 @@ from jiuwen_memory.common.security.types import (  # noqa: E402
 )
 from jiuwen_memory.common.type_def import ChatMessage, Context, Scope  # noqa: E402
 from jiuwen_memory.config import Config  # noqa: E402
+from jiuwen_memory.retrieval.context_pack import PackMemory, pack_context  # noqa: E402
 from jiuwen_memory.retrieval.types import DisclosureLevel  # noqa: E402
 
 # NOTE: 引擎已重构掉检索时延打点，common.latency_collector 不再存在。下方
@@ -136,6 +140,15 @@ DISABLE_THINKING = os.getenv("DISABLE_THINKING", "0").strip().lower() not in (
     "no",
     "off",
 )
+# 上下文打包（F09）：答题前把每个 cutoff 切片压到 CONTEXT_PACK_RATIO × 官方渲染 token 内，
+# 按条数自动选策略（≤10 角色缩写+紧凑、≤20 电报式、其余直接删条）。默认关，开启后召回不变。
+CONTEXT_PACK = os.getenv("CONTEXT_PACK", "0").strip().lower() in ("1", "true", "yes", "on")
+CONTEXT_PACK_RATIO = float(os.getenv("CONTEXT_PACK_RATIO", "0.8"))
+if CONTEXT_PACK:
+    # 打包异常会被每题的 except 记为答错；比例非法或缺 tiktoken 在启动时就报错，避免整轮静默全错。
+    if not 0.0 < CONTEXT_PACK_RATIO <= 1.0:
+        raise RuntimeError(f"CONTEXT_PACK_RATIO 须在 (0, 1] 内，当前 {CONTEXT_PACK_RATIO}")
+    cl100k_tokens("")
 # 外层 conv 并发度（默认 10）：10 个 conv 同时跑，每 conv 内部 cutoff/qa 全程串行。
 # 峰值 LLM 并发 = CONCURRENCY（10）。华为云 DeepSeek TPM 500000 实测 10 并发重试可兜，
 # 20 并发（CUTOFF_INNER_CONCURRENCY=2）429 泛滥（0804 全量 214 次 RateLimit，0806 4407 次）。
@@ -553,6 +566,7 @@ _META_ENV_KEYS = (
     "RESUME", "RUN_DIR", "OUTPUT_DIR",
     "RAW_FALLBACK", "RAW_ALWAYS", "DATE_PREFIX",
     "SAVE_ERROR_DETAIL", "LLM_TIMEOUT", "DISABLE_THINKING",
+    "CONTEXT_PACK", "CONTEXT_PACK_RATIO",
     # 后端与模型标识：非密钥，用于事后辨认这轮跑在哪个后端、哪个模型上
     "LLM_MODEL", "LLM_BASE_URL", "EMBED_MODEL_NAME", "EMBED_BASE_URL",
     "REDIS_URL", "ES_HOSTS", "ES_FULLTEXT_INDEX", "MILVUS_URI", "MILVUS_COLLECTION",
@@ -644,6 +658,8 @@ def _dump_run_meta(todo: list, data_file: str) -> None:
         "RAW_ALWAYS": RAW_ALWAYS,
         "DATE_PREFIX": DATE_PREFIX,
         "DISABLE_THINKING": DISABLE_THINKING,
+        "CONTEXT_PACK": CONTEXT_PACK,
+        "CONTEXT_PACK_RATIO": CONTEXT_PACK_RATIO,
         "SAVE_ERROR_DETAIL": SAVE_ERROR_DETAIL,
         "RESUME": RESUME,
         "RUN_ID": RUN_ID,
@@ -978,7 +994,7 @@ class ConversationProcessor:
                 logger.warning("conv %d recall failed: %s", self.conv_id, str(e)[:120])
                 res = None
         items = (res.items if res else [])
-        # 转成 prompts.get_answer_generation_prompt 要的 [{memory, created_at}]
+        # 转成 prompts.get_answer_generation_prompt 要的 [{memory, created_at}]（score 供打包排序）
         # recall 返回的 RetrievedItem 不暴露 temporal，created_at 取不到 → prompt 全显
         # "(unknown date)"，时间题缺锚点。用 inspect 按 unit_id 批量反查完整 MemoryUnit，
         # 取 unit.temporal.t_event（即 write 时传入的 occurred_at，
@@ -998,7 +1014,8 @@ class ConversationProcessor:
                                    self.conv_id, str(e)[:120])
         search_results = [
             {"memory": it.content,
-             "created_at": created_at_map.get(it.unit_id, "")}
+             "created_at": created_at_map.get(it.unit_id, ""),
+             "score": it.score}
             for it in items
         ]
         recall_record = {
@@ -1035,17 +1052,36 @@ class ConversationProcessor:
 
     def answer_and_judge(
         self, request: _AnswerJudgeRequest
-    ) -> tuple[str, bool, str, str]:
+    ) -> tuple[str, bool, str, str, dict | None]:
         """对单 cutoff 切片生成回答 + 判分。
 
-        切 search_results[:cutoff] → generate prompt → LLM 生成 → judge prompt → 判分。
-        返回 (response, ok, label, verdict)。对齐 mem0 locomo 的 _run_one_cutoff。
+        切 search_results[:cutoff] →（CONTEXT_PACK 时打包）→ generate prompt → LLM 生成 →
+        judge prompt → 判分。返回 (response, ok, label, verdict, pack)，pack 为打包统计，
+        未开启时为 None。对齐 mem0 locomo 的 _run_one_cutoff。
         """
         sliced = request.search_results[: request.cutoff]
+        block, pack = None, None
+        if CONTEXT_PACK and sliced:
+            packed = pack_context(
+                request.question,
+                [PackMemory(r["memory"], r["created_at"], r.get("score", 0.0)) for r in sliced],
+                budget_ratio=CONTEXT_PACK_RATIO,
+                count_tokens=cl100k_tokens,
+            )
+            block = packed.text
+            pack = {
+                "strategy": packed.strategy.value,
+                "full_tokens": packed.full_tokens,
+                "tokens": packed.tokens,
+                "kept": len(packed.kept),
+                "telegraphed": len(packed.telegraphed),
+                "dropped": len(packed.dropped),
+            }
         prompt = prompts.get_answer_generation_prompt(
             question=request.question,
             search_results=sliced,
             reference_date=request.reference_date,
+            memories_block=block,
         )
         with _PhaseTimer("generate", self.conv_id):
             response = self.llm.chat([ChatMessage(role="user", content=prompt)],
@@ -1063,7 +1099,7 @@ class ConversationProcessor:
                 temperature=0.0, max_tokens=512,
             )
         label = _parse_judge_json(verdict)
-        return response, (label == "CORRECT"), label, verdict
+        return response, (label == "CORRECT"), label, verdict, pack
 
     def process_full(self, conv: dict) -> dict:
         """处理单个 conv 全流程：写→生成→判分。返回结果记录。"""
@@ -1120,7 +1156,7 @@ class ConversationProcessor:
             per_cutoff: dict[int, dict] = {}
             for cutoff in CUTOFFS:
                 try:
-                    response, ok, label, verdict = self.answer_and_judge(
+                    response, ok, label, verdict, pack = self.answer_and_judge(
                         _AnswerJudgeRequest(
                             question=question,
                             gold=gold,
@@ -1139,18 +1175,20 @@ class ConversationProcessor:
                         continue  # 不计分母
                     logger.warning("conv %d qa%d cutoff %d failed: %s",
                                    self.conv_id, q_idx, cutoff, str(e)[:120])
-                    response, ok, label, verdict = "", False, "", ""
+                    response, ok, label, verdict, pack = "", False, "", "", None
                 correct[cutoff][category] += 1 if ok else 0
                 total[cutoff][category] += 1
                 per_cutoff[cutoff] = {
                     "response": response, "ok": ok, "label": label, "verdict": verdict,
                 }
-                _append_jsonl(
-                    f"{response_path}{self.conv_id}.json",
-                    {"qa_idx": q_idx, "cutoff": cutoff, "category": category,
-                     "question": question, "answer": gold, "response": response},
-                    self.conv_id,
-                )
+                response_record = {
+                    "qa_idx": q_idx, "cutoff": cutoff, "category": category,
+                    "question": question, "answer": gold, "response": response,
+                }
+                if pack is not None:
+                    response_record["context_pack"] = pack
+                _append_jsonl(f"{response_path}{self.conv_id}.json", response_record,
+                              self.conv_id)
                 if SAVE_ERROR_DETAIL and not ok:
                     _append_jsonl(
                         f"{errors_detail_path}{self.conv_id}.jsonl",

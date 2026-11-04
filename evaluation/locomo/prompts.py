@@ -148,6 +148,7 @@ def get_answer_generation_prompt(
     search_results: list,
     reference_date: str = None,
     user_profile: dict = None,
+    memories_block: str | None = None,
 ) -> str:
     """Build the answer generation prompt from search results.
 
@@ -163,11 +164,16 @@ def get_answer_generation_prompt(
             reasoning. Defaults to "2023" if not provided.
         user_profile: Optional dict of user profile data. When provided, a
             User Profile section is added to the prompt before the memories.
+        memories_block: Pre-rendered memory block (e.g. from
+            ``jiuwen_memory.retrieval.context_pack``). When given it replaces the
+            rendering of ``search_results``.
     """
     if reference_date is None:
         reference_date = "2023"
 
-    if not search_results:
+    if memories_block:
+        memories_text = memories_block
+    elif not search_results:
         memories_text = "(No relevant memories found)"
     else:
         top_results = search_results[:ANSWERER_MEMORY_LIMIT]

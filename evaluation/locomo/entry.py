@@ -34,6 +34,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--skip-write", action="store_true")
     parser.add_argument("--cleanup-after-run", action="store_true")
+    parser.add_argument(
+        "--context-pack",
+        action="store_true",
+        help="答题前对每个 cutoff 切片做上下文打包（F09）",
+    )
+    parser.add_argument("--context-pack-ratio", type=float, default=0.8)
     parser.add_argument("--output-root", default=str(EVALUATION_DIR / "outputs" / "locomo"))
     parser.add_argument("--config", default=str(Path(__file__).with_name("config.yml")))
     return parser
@@ -59,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("--scope-tag 仅能与 --skip-write 一起用于显式复用旧 Scope")
     if args.skip_write and args.cleanup_after_run:
         raise RuntimeError("复用旧 Scope 时不能开启 --cleanup-after-run")
+    if not 0.0 < args.context_pack_ratio <= 1.0:
+        raise RuntimeError("--context-pack-ratio 须在 (0, 1] 内")
 
     overrides = {
         "INPUT_DATA_FILE": str(data_path),
@@ -74,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         "SCOPE_TAG": scope_tag,
         "SKIP_WRITE": "1" if args.skip_write else "0",
         "CLEANUP_AFTER_RUN": "1" if args.cleanup_after_run else "0",
+        "CONTEXT_PACK": "1" if args.context_pack else "0",
+        "CONTEXT_PACK_RATIO": str(args.context_pack_ratio),
         "RUNS_ROOT": str(Path(args.output_root).resolve()),
         "CONFIG_FILE": str(config_path),
         "RESUME": "0",
