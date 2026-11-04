@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -414,6 +414,12 @@ SQLite :memory: 无落盘要求，但仍必须固定连接位置，拒绝初始�
 声明是运营方核查责任，不能冒充应用验证了远端磁盘。
 StoreSecurity.enabled() 仍表达 Store 内部保护，索引的外部保护通过部署声明与宿主检查表达。
 查询接口、BM25/ANN/原生过滤不变；本 PR 不新增密态检索或应用层全量解密检索路径。
+
+Linux 管理加密卷须为完整块设备路径受 dm-crypt 保护的 ext4，具有 has_journal 特性及
+可核查的非零内部 journal inode；非 ext4、无 journal、外部或无法核查的 journal 均拒绝。
+初始化只接受新建镜像，须显式选择 ext4 与 journal，并在报告成功前核查实际文件系统
+类型及内部 journal。格式化命令返回成功不能替代产物核查；失败须关闭已打开的临时
+mapper、保留镜像供排查，不自动覆盖或修复已有卷。挂载后仍独立验证同一契约。
 
 `StoreSecurity.encryption_binding` 是公开的可选装饰依赖契约，返回
 `StoreEncryptionBinding(inner, provider, format)`；原生保护实现可返回 None。

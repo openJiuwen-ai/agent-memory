@@ -81,6 +81,12 @@ def verify_mount(path: Path, *, require_directory: bool = True) -> dict[str, str
     ).get("blockdevices", [])
     if not devices or not all(_encrypted_tree(device) for device in devices):
         raise RuntimeError("data root has an unencrypted block-device path")
+    _verify_internal_journal(source)
+    return {"source": source, "target": mount["target"], "fstype": mount["fstype"]}
+
+
+def _verify_internal_journal(source: str) -> None:
+    """Require inspectable journal blocks inside the same encrypted filesystem."""
     attributes = {}
     for line in run(["tune2fs", "-l", source]).splitlines():
         key, separator, value = line.partition(":")
@@ -89,11 +95,11 @@ def verify_mount(path: Path, *, require_directory: bool = True) -> dict[str, str
     features = attributes.get("filesystem features", "").split()
     if not features:
         raise RuntimeError("cannot inspect ext4 encryption coverage")
-    if "has_journal" in features:
-        inode = attributes.get("journal inode", "")
-        if not inode.isdigit() or int(inode) == 0:
-            raise RuntimeError("external ext4 journals require a separate encryption contract")
-    return {"source": source, "target": mount["target"], "fstype": mount["fstype"]}
+    if "has_journal" not in features:
+        raise RuntimeError("managed encrypted volumes require ext4 with an internal journal")
+    inode = attributes.get("journal inode", "")
+    if not inode.isascii() or not inode.isdigit() or int(inode) == 0:
+        raise RuntimeError("external ext4 journals require a separate encryption contract")
 
 
 def _name(value: str) -> str:
@@ -140,7 +146,12 @@ def initialize(image: Path, key_file: Path, size_gib: int) -> None:
         )
         run(["cryptsetup", "open", "--key-file", str(key), str(image.resolve()), mapper])
         opened = True
-        run(["mkfs.ext4", "-m", "0", str(Path("/dev/mapper") / mapper)])
+        source = str(Path("/dev/mapper") / mapper)
+        # executable() resolves mkfs.ext4 symlinks to mke2fs, losing the argv[0] type hint.
+        run(["mkfs.ext4", "-t", "ext4", "-j", "-m", "0", source])
+        if run(["blkid", "-p", "-s", "TYPE", "-o", "value", source]).strip() != "ext4":
+            raise RuntimeError("managed encrypted volumes require ext4 with an internal journal")
+        _verify_internal_journal(source)
     finally:
         if opened:
             run(["cryptsetup", "close", mapper])
