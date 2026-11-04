@@ -316,6 +316,29 @@ class MockLLM(LLM):
         return response
 
 
+class RecordingLLM(LLM):
+    """RecordingLLM：记录每次 chat 的 user prompt（供内容覆盖断言），响应按序循环。"""
+
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+        self.user_texts: list[str] = []
+
+    def plugin_type(self):
+        from jiuwen_memory.common.base import PluginType
+
+        return PluginType.LLM
+
+    def health(self) -> None:
+        return None
+
+    def chat(self, messages: list[ChatMessage], **options: object) -> str:
+        self.user_texts.append(messages[-1].content)
+        response = self._responses[self.calls % len(self._responses)]
+        self.calls += 1
+        return response
+
+
 class SimpleTokenizer(Tokenizer):
     """SimpleTokenizer：按空格和标点分词。"""
 

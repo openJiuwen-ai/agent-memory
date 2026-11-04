@@ -41,8 +41,11 @@ def link(parent: MemoryUnit, children: list[MemoryUnit]) -> None:
         child.hierarchy.parent_scope = parent.scope
 
 
-def make_tree(pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK) -> TreeHarness:
-    """只有父建检索索引，子只能经结构边点读，不能误用第二次关键词搜索。"""
+def make_tree(
+    pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK,
+    *, index_children: bool = False,
+) -> TreeHarness:
+    """默认仅父建索引；子候选复用用例可将子同 Scope 建索引。"""
     base = make_harness(pipeline)
     root = tree_unit("root")
     root.layers.l0 = "root"
@@ -55,10 +58,17 @@ def make_tree(pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK) -
         child.segments = [Segment(content=f"parameter detail {index}: 500ms -> 2000ms")]
         child.layers.l0 = f"leaf-{index}"
         child.layers.l1 = f"leaf overview {index}"
+    if index_children:
+        for index, child in enumerate(children):
+            child.scope = QUERY_SCOPE
+            child.segments = [Segment(content=f"recall evidence {index}")]
     link(root, children)
     base.add([root])
     for child in children:
         base.domain.add(child.scope, [child])
+    if index_children:
+        base.keyword_builder.build(children)
+        base.vector_builder.build(children)
     expander = DefaultExpander(base.domain)
     base.retriever.bind_expander(expander)
     return TreeHarness(base, root, children, expander)

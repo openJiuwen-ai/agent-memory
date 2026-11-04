@@ -147,7 +147,6 @@ def make_harness(
         recall_max=recall_limit,
         domain_store=domain,
     )
-    retriever.bind_embedder(embedder)
     return HierarchyHarness(
         retriever,
         domain,

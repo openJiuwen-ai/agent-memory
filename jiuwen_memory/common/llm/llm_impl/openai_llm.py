@@ -29,7 +29,7 @@ from jiuwen_memory.common._support import (
     require_https,
 )
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import HealthCheckError, LLMTimeoutError
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import ChatMessage
@@ -56,7 +56,7 @@ class OpenAILLM(LLM):
         max_retries: SDK 单次调用内的自动重试次数
         ssl_verify / ssl_ca_cert: 出站 TLS 校验
         config_source: 可选；每次调用 ``fetch("llm.model|api_key|base_url")``
-        config_namespace: ConfigSource key 命名空间，默认 ``llm``
+        config_namespace: ConfigSource key 命名空间；直接构造时默认 ``llm``，装配器按实例名推导
     """
 
     def __init__(
@@ -171,7 +171,7 @@ class OpenAILLM(LLM):
         started_at = time.monotonic()
         try:
             response = self.client.chat.completions.create(**create_kwargs)
-        except openai.APITimeoutError:
+        except openai.APITimeoutError as exc:
             logger.error(
                 "OpenAILLM chat timed out: model=%s elapsed=%.3fs timeout=%.3fs "
                 "max_retries=%d",
@@ -180,7 +180,11 @@ class OpenAILLM(LLM):
                 self._timeout,
                 self._max_retries,
             )
-            raise
+            # 超时契约（common/llm/base.py）：适配器统一转换为 LLMTimeoutError，
+            # 构建层据此做"超时不重试"，不感知 SDK 异常。
+            raise LLMTimeoutError(
+                f"OpenAILLM chat timed out: model={model} timeout={self._timeout}s"
+            ) from exc
         except openai.APIConnectionError as exc:
             logger.error("OpenAILLM: connection error — %s", exc)
             raise
@@ -243,7 +247,11 @@ def _build(config):
         require_https(base_url, component="openai LLM", param="llm")
         require_ca_file(ssl.ca_cert, component="openai LLM", param="llm")
     from jiuwen_memory.config.config_source import ConfigSourceProducer
+    from jiuwen_memory.config.keys import NS_LLM, resolve_instance_namespace
 
+    config_namespace = resolve_instance_namespace(
+        NS_LLM, config.name, config.params
+    )
     return OpenAILLM(
         model_name=config.get("llm_model") or "gpt-4o",
         base_url=base_url,
@@ -255,5 +263,5 @@ def _build(config):
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
-        config_namespace=str(config.get("config_namespace", "llm")),
+        config_namespace=config_namespace,
     )

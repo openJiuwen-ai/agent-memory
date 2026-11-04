@@ -23,6 +23,7 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier_impl.keyword_classifier import KeywordClassifier
 from jiuwen_memory.construction.classifier_impl.llm_classifier import LLMClassifier
 from tests.unit.construction.fixtures import MockLLM
+from jiuwen_memory.common.errors import LLMTimeoutError
 
 
 def _make_unit(
@@ -219,3 +220,116 @@ def test_keyword_classifier_basic():
     clf = KeywordClassifier()
     assert clf.operator_type() == OperatorType.CLASSIFIER
     assert clf.health() is None
+
+
+# ---------------------------------------------------------------------------
+# 超长内容护栏与重试策略（BUG2026092802777）
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLLM(MockLLM):
+    """捕获 chat 入参后委托 MockLLM 返回预定义响应。"""
+
+    def __init__(self, responses: list[str] | None = None) -> None:
+        super().__init__(responses)
+        self.captured_messages: list[list] = []
+
+    def chat(self, messages, **options):
+        self.captured_messages.append(messages)
+        return super().chat(messages, **options)
+
+
+class _FailingLLM(MockLLM):
+    """chat 固定抛指定异常并计数（验证超时/非超时的重试分叉）。"""
+
+    def __init__(self, exc: Exception) -> None:
+        super().__init__()
+        self._exc = exc
+
+    def chat(self, messages, **options):
+        self._call_count += 1
+        raise self._exc
+
+
+class _FlakyThenSuccessLLM(MockLLM):
+    """前 N 次 chat 抛非超时异常，之后委托 MockLLM 正常返回。"""
+
+    def __init__(self, responses: list[str], failures: int) -> None:
+        super().__init__(responses)
+        self._remaining_failures = failures
+
+    def chat(self, messages, **options):
+        if self._remaining_failures > 0:
+            self._remaining_failures -= 1
+            self._call_count += 1
+            raise ValueError("transient llm error")
+        return super().chat(messages, **options)
+
+
+def test_large_content_prompt_is_truncated_not_full():
+    """~180KB unit → 进 LLM 的 user prompt 有界且带截断标记，首尾信息保留。"""
+    big = "标题段落。\n\n" + ("中" * 100 + "\n\n") * 1800  # ≈180K chars
+    resp = _classify_response([{"source_id": "u1", "tier": "semantic", "tags": ["big"]}])
+    llm = _RecordingLLM([resp])
+    clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
+    unit = _make_unit("u1", big)
+    clf.classify([unit])
+
+    assert llm.captured_messages, "LLM 应被调用"
+    user_text = llm.captured_messages[0][-1].content
+    assert len(user_text) < 10000, f"prompt 应有界，实际 {len(user_text)} chars"
+    assert "TRUNCATED" in user_text
+    assert big[:50] in user_text  # 头部保留
+    assert big[-50:] in user_text  # 尾部保留
+    assert unit.tier == MemoryTier.SEMANTIC  # 分类照常完成
+
+
+def test_timeout_exception_is_not_retried():
+    """超时类异常是确定性失败：retry_max_retries=3 也只调 1 次（批降级跳过）。"""
+    llm = _FailingLLM(TimeoutError("llm timeout"))
+    clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
+    unit = _make_unit("u1", "content")
+    clf.classify([unit])
+    assert llm.call_count == 1
+
+
+def test_non_timeout_exception_is_retried():
+    """非超时异常仍按 retry_max_retries 重试（重试耗尽 → 批降级跳过）。"""
+    llm = _FailingLLM(ValueError("boom"))
+    clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
+    unit = _make_unit("u1", "content")
+    clf.classify([unit])
+    assert llm.call_count == 3
+
+
+def test_transient_failure_recovers_within_retries():
+    """前 2 次瞬时失败、第 3 次成功 → 分类照常写回 tier/tags。"""
+    resp = _classify_response([{"source_id": "u1", "tier": "semantic", "tags": ["ok"]}])
+    llm = _FlakyThenSuccessLLM([resp], failures=2)
+    clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
+    unit = _make_unit("u1", "content")
+    clf.classify([unit])
+    assert llm.call_count == 3
+    assert unit.tier == MemoryTier.SEMANTIC
+    assert "ok" in [t.lower() for t in unit.tags]
+
+
+def test_timeout_subclass_is_not_retried():
+    """类名不在清单内的内建 TimeoutError 子类，经 isinstance 兜底同样不重试。"""
+    class SdkTimeoutSubclass(TimeoutError):
+        """模拟 SDK 自定义超时类型（类名不在 _TIMEOUT_EXC_NAMES 内）。"""
+
+    llm = _FailingLLM(SdkTimeoutSubclass("sdk timeout subclass"))
+    clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
+    unit = _make_unit("u1", "content")
+    clf.classify([unit])
+    assert llm.call_count == 1
+
+
+def test_contract_timeout_error_is_not_retried():
+    """LLMTimeoutError（适配器转换后的契约超时）是确定性失败，max_attempts=3 也只调 1 次。"""
+    llm = _FailingLLM(LLMTimeoutError("contract timeout"))
+    clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
+    unit = _make_unit("u1", "content")
+    clf.classify([unit])
+    assert llm.call_count == 1

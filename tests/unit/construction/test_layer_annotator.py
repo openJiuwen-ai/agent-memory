@@ -20,6 +20,7 @@ from jiuwen_memory.construction.layer_annotator_impl.llm_layer_annotator import 
 from tests.unit.construction.fixtures import (
     MockLLM,
     create_test_unit,
+    RecordingLLM,
 )
 
 # 用于构造超阈 content 的长文本（> 512 字符）。
@@ -263,3 +264,62 @@ def test_llm_invalid_length_skips_only_that_item():
     assert invalid.layers.l1 == ""
     assert valid.layers.l0 == "summary"
     assert valid.layers.l1 == "a valid detailed overview"
+
+
+# ---------------------------------------------------------------------------
+# 内容型分批（检视 P2：分层摘要 4000 截断丢中段）
+# ---------------------------------------------------------------------------
+
+
+def test_llm_annotate_4001_to_8000_content_not_truncated():
+    """检视复现（7016 字符）：L0/L1 是内容摘要，4001~8000 输入必须完整进 prompt。"""
+    middle_fact = "中段事实甲在此。"
+    content = "X" * 3500 + middle_fact + "Y" * 3500  # 7016 chars
+    llm = RecordingLLM([
+        json.dumps([{"id": 0, "l0": "概要", "l1": "overview 详情文本"}])
+    ])
+    ann = LLMLayerAnnotator(llm=llm, layers_threshold=50, max_attempts=3, retry_backoff_ms=0)
+    unit = create_test_unit("u1", content)
+    ann.annotate([unit])
+
+    assert len(llm.user_texts) == 1
+    assert middle_fact in llm.user_texts[0]  # 中段事实没有被截掉
+    assert unit.layers.l0 and unit.layers.l1
+
+
+def test_llm_annotate_oversized_content_batched_and_merged():
+    """>8000 内容按段落无损分批逐批调用：L0/L1 跨批合并，内容不丢、单批仍有界。"""
+    fact_a, fact_b, fact_c = "事实甲。", "事实乙。", "事实丙。"
+    content = "A" * 100 + fact_a + "B" * 8300 + fact_b + "C" * 7000 + fact_c + "D" * 100
+    llm = RecordingLLM([
+        json.dumps([{"id": 0, "l0": "概要甲", "l1": "detail 甲文本"}]),
+        json.dumps([{"id": 0, "l0": "概要乙", "l1": "detail 乙文本"}]),
+    ])
+    ann = LLMLayerAnnotator(llm=llm, layers_threshold=50, max_attempts=3, retry_backoff_ms=0)
+    unit = create_test_unit("u1", content)
+    ann.annotate([unit])
+
+    assert len(llm.user_texts) == 2
+    assert all(len(t) <= 8300 for t in llm.user_texts)  # 单批 prompt 有界
+    assert fact_a in llm.user_texts[0]
+    assert fact_b in llm.user_texts[1] and fact_c in llm.user_texts[1]
+    assert unit.layers.l0 == "概要甲\n概要乙"  # 跨批合并
+    assert unit.layers.l1 == "detail 甲文本\ndetail 乙文本"
+
+
+def test_llm_annotate_chunk_partial_failure_keeps_old_layers():
+    """分片摘要任一片无效：全部片段有效才写回，失败保留旧摘要（检视 P2）。"""
+    unit = create_test_unit("u1", "X" * 8000 + "中段事实乙在此。" + "Y" * 7984)
+    unit.layers.l0 = "旧概要"
+    unit.layers.l1 = "旧详情文本"
+    llm = RecordingLLM([
+        json.dumps([{"id": 0, "l0": "片一概要", "l1": "片一详情比概要更长"}]),
+        # 第二片 l0 == l1，长度校验失败 → _generate_layers 返回 {}
+        json.dumps([{"id": 0, "l0": "相同文本", "l1": "相同文本"}]),
+    ])
+    ann = LLMLayerAnnotator(llm=llm, layers_threshold=50, max_attempts=3, retry_backoff_ms=0)
+
+    ann.annotate([unit])
+
+    assert unit.layers.l0 == "旧概要"
+    assert unit.layers.l1 == "旧详情文本"

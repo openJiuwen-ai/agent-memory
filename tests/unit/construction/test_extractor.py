@@ -850,3 +850,91 @@ def test_keyword_procedural_inherits_write_tags():
 
     assert len(result) == 1
     assert result[0].tags == ["devops", "procedural"]
+
+
+# ---------------------------------------------------------------------------
+# 内容型任务护栏对齐（BUG2026092802777）：抽取依赖全篇事实分布，护栏上限须
+# ≥ ingest 预切分上限（默认 8000），否则预切分产物仍被中段截断、静默漏抽。
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLLM(MockLLM):
+    """捕获 chat 入参后委托 MockLLM 返回预定义响应。"""
+
+    def __init__(self, responses: list[str] | None = None) -> None:
+        super().__init__(responses)
+        self.captured_messages: list[list] = []
+
+    def chat(self, messages, **options):
+        self.captured_messages.append(messages)
+        return super().chat(messages, **options)
+
+
+def test_extract_prompt_keeps_full_presplit_unit():
+    """8000 字预切分产物完整进抽取 prompt：不截断、无省略标记。"""
+    content = "事实" * 4000  # 恰为内容护栏上限 8000 chars
+    resp = json.dumps([{"source_id": "u1", "target": "fact", "content": "x", "confidence": 0.9}])
+    llm = _RecordingLLM([resp])
+    extractor = ExtractorImpl(
+        llm=llm, min_confidence=0.5, max_attempts=3, retry_backoff_ms=1000
+    )
+
+    extractor.extract([create_test_unit("u1", content)])
+
+    assert llm.captured_messages, "LLM 应被调用"
+    user_text = llm.captured_messages[0][-1].content
+    assert "TRUNCATED" not in user_text
+    assert content in user_text
+
+
+def test_extract_beyond_content_limit_fully_consumed():
+    """超过内容护栏（8000）的 unit 不再截断：无损分批完整消费，中段事实不丢。
+
+    块结构内容（A/B/C/D 各 3000 字）做位置判别：硬切点落在 C 块内
+    （8000 = A3000+B3000+C2000），C 的前 2000 字在首批、后 1000 字在次批。
+    """
+    content = "A" * 3000 + "B" * 3000 + "C" * 3000 + "D" * 3000
+    resp = json.dumps([{"source_id": "u1", "target": "fact", "content": "x", "confidence": 0.9}])
+    llm = _RecordingLLM([resp])
+    extractor = ExtractorImpl(
+        llm=llm, min_confidence=0.5, max_attempts=3, retry_backoff_ms=1000
+    )
+
+    extractor.extract([create_test_unit("u1", content)])
+
+    assert llm.call_count == 2  # 12000 → 8000 + 4000 两批
+    texts = [m[-1].content for m in llm.captured_messages]
+    assert "A" * 3000 in texts[0] and "B" * 3000 in texts[0]  # 头部完整
+    assert "C" * 2000 in texts[0]  # 硬切点前的 C 段
+    assert "C" * 1000 in texts[1] and "D" * 3000 in texts[1]  # 尾部完整
+    assert all("TRUNCATED" not in t for t in texts)  # 不再静默丢中段
+    assert all(len(t) < 20000 for t in texts), "单批 prompt 仍有界"
+
+
+# ---------------------------------------------------------------------------
+# 内容型分批（检视 P2：抽取 8000 截断静默漏事实）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_oversized_unit_fully_consumed_in_chunks():
+    """>8000 unit 分批完整消费：候选跨批合并、source_id 不变，中段事实不丢。"""
+    middle_fact = "中段事实乙在此。"
+    content = "X" * 8000 + middle_fact + "Y" * 7984  # 16000 chars
+    r1 = json.dumps(
+        [{"source_id": "u1", "target": "preference", "content": "头部事实", "evidence": "头部", "confidence": 1.0}]
+    )
+    r2 = json.dumps(
+        [{"source_id": "u1", "target": "preference", "content": "中段事实已抽取", "evidence": middle_fact, "confidence": 1.0}]
+    )
+    llm = _RecordingLLM([r1, r2])
+    extractor = ExtractorImpl(llm=llm, min_confidence=0.5, max_attempts=3, retry_backoff_ms=0)
+    units = [create_test_unit("u1", content)]
+    result = extractor.extract(units)
+
+    assert llm.call_count == 2  # 分两批调用
+    texts = [m[-1].content for m in llm.captured_messages]
+    assert all(len(t) <= 8300 for t in texts)  # 单批 prompt 有界
+    assert middle_fact not in texts[0]
+    assert middle_fact in texts[1]
+    assert len(result) == 2  # 两批候选都保留
+    assert all(u.provenance == ["u1"] for u in result)

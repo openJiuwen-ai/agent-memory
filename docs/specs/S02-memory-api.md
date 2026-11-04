@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -528,8 +528,12 @@ top_k、披露、Scope 与权限不变；普通召回可命中已有 Snapshot，
 开启状态下主动使用普通查询须显式传 hierarchy_kind=None、hierarchy_role=None、expand_depth=0、rollup=False，
 并省略 span。内部 SearchOptions 只是参数载体，其默认值不作为公开接口预设。
 
-无有效 TimeSpan 时不回退到未挂树叶，也不在搜索时建树。TIME 父角色查询按父原序、
-子相关性全局排序后截断，父子返回总数不超过 top_k，细则见 S04。
+无有效 TimeSpan 时不回退到未挂树叶，也不在搜索时建树。TIME 父角色查询开启上卷及
+展开时，保留父节点顺序，再按精排前的融合顺序补入已召回、归属和深度合法的后代；
+不再遍历整棵子树或额外 embedding 排序，候选不足时允许少于 top_k。
+跨空间先按现有规则全局选父，再按空间处理顺序依次取各空间内部保持融合原序的
+后代候选，仅补入已选父节点的后代，共享预算。rollup=False 或未指定 TIME 父角色时
+沿用结构 BFS，按遍历顺序返回。父子总数不超过 top_k，细则见 S04。
 统一入口保留来源校验、READ 鉴权、委托资源主体、空间事实及路由谓词；跨空间按原权限
 逐空间分发。请求快照不修改调用者输入，运行时插件保留身份。
 

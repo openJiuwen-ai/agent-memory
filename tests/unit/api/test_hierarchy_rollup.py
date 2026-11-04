@@ -126,8 +126,7 @@ def test_real_cross_space_rollup_preserves_two_evidence_groups() -> None:
             top_k=4, with_trajectory=True,
         )), security=security)
         assert len(result.items) == 4
-        expected_ids = {expected_leaf.id for expected_leaf in leaves}
-        assert {item.unit_id for item in result.items[2:]} == expected_ids
+        assert [item.unit_id for item in result.items[2:]] == [leaf.id for leaf in leaves]
         assert len([step for step in result.trajectory if step.stage == "rollup"]) == 2
         assert result.errors == []
     finally:

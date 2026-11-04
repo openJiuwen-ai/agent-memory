@@ -8,6 +8,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from jiuwen_memory.common.errors import ValidationError
+
 # 跨切面开关前缀：globals.<name>
 GLOBALS_PREFIX = "globals."
 
@@ -51,6 +55,34 @@ def prompt_key(phase: str, name: str) -> str:
 def namespaced_key(namespace: str, field: str) -> str:
     """构造 ``<namespace>.<field>``，如 ``embedder.active``、``llm.api_key``。"""
     return f"{namespace}.{field}"
+
+
+def instance_namespace(namespace: str, instance_name: str) -> str:
+    """返回具名实例的晚绑定命名空间；default 复用命名空间简写。"""
+    if not instance_name or instance_name == "default":
+        return namespace
+    return f"{namespace}.{instance_name}"
+
+
+def resolve_instance_namespace(
+    namespace: str,
+    instance_name: str,
+    params: Mapping[str, object],
+) -> str:
+    """解析实例命名空间；显式值只读实例 params，且必须是非空字符串。"""
+    if "config_namespace" not in params:
+        return instance_namespace(namespace, instance_name)
+    explicit_namespace = params["config_namespace"]
+    if not isinstance(explicit_namespace, str):
+        raise ValidationError(
+            f"{namespace}.{instance_name or 'default'} params.config_namespace 必须是字符串"
+        )
+    normalized = explicit_namespace.strip()
+    if not normalized:
+        raise ValidationError(
+            f"{namespace}.{instance_name or 'default'} params.config_namespace 不能为空"
+        )
+    return normalized
 
 
 def active_key(namespace: str) -> str:

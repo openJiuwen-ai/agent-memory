@@ -22,7 +22,7 @@ from jiuwen_memory.common._support import (
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.embedder_impl import EmbedderProducer
 from jiuwen_memory.common.embedder.embedder_impl.openai_embedder import OpenAIEmbedder
-from jiuwen_memory.common.errors import HealthCheckError, ValidationError
+from jiuwen_memory.common.errors import HealthCheckError, LLMTimeoutError, ValidationError
 from jiuwen_memory.common.llm.llm_impl import LlmProducer
 from jiuwen_memory.common.llm.llm_impl.openai_llm import OpenAILLM
 from jiuwen_memory.common.normalizer.normalizer_impl import video_asr
@@ -287,7 +287,11 @@ def test_openai_llm_start_log_omits_content(caplog) -> None:
 
 
 def test_openai_llm_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) -> None:
-    """LLM 超时异常单独记录后原样抛出。"""
+    """LLM 超时异常单独记录后转换为契约类型 LLMTimeoutError 抛出。
+
+    构建层据此统一"超时不重试"，不再感知具体 SDK 异常类名（见 construction
+    的 llm_retry 契约）；原 SDK 异常挂 __cause__ 保留定位信息。
+    """
 
     class FakeAPITimeoutError(Exception):
         pass
@@ -298,9 +302,11 @@ def test_openai_llm_timeout_log(caplog, monkeypatch: pytest.MonkeyPatch) -> None
 
     with (
         caplog.at_level("ERROR", logger="agent_memory.common.llm.llm_impl.openai_llm"),
-        pytest.raises(FakeAPITimeoutError),
+        pytest.raises(LLMTimeoutError) as error,
     ):
         llm.chat([ChatMessage(role="user", content="secret prompt")])
+
+    assert isinstance(error.value.__cause__, FakeAPITimeoutError), "原 SDK 异常保留在 __cause__"
 
     assert "timed out" in caplog.text, "超时应单独记录"
     assert f"timeout={DEFAULT_OUTBOUND_TIMEOUT_SECONDS:.3f}s" in caplog.text, (

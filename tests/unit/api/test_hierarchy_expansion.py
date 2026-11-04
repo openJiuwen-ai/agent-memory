@@ -76,7 +76,7 @@ def test_invalid_depth_fails_at_public_boundary(api, depth) -> None:
 
 def test_http_cli_shared_contract_serializes_only_flat_public_results(api) -> None:
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
-    leaf = write_snapshot(api, 0)
+    leaf = write_snapshot(api, 0, session="")
     job_id = api.evolve(HOME, **vars(task_options()), security=security_for(api, HOME))
     assert api.job_status(job_id, security=security_for(api, HOME)).status is JobStatus.SUCCEEDED
     result = invoke_api(api, "search", {
@@ -99,7 +99,7 @@ def test_each_built_level_expands_to_original_evidence(engine, depth, role):
     runtime = assemble_runtime(config=runtime_config(engine, depth))
     api = runtime.api
     try:
-        leaves = [write_snapshot(api, minute) for minute in (0, 1)]
+        leaves = [write_snapshot(api, minute, session="") for minute in (0, 1)]
         security = security_for(api, HOME)
         job_id = api.evolve(HOME, **vars(task_options(depth)), security=security)
         info = api.job_status(job_id, security=security)
@@ -152,7 +152,7 @@ def test_real_cross_space_search_applies_one_total_limit_after_expansion() -> No
 def test_public_tree_search_caps_total_without_changing_qa_prefix(api, use_defaults, top_k):
     api.admin_set("hierarchy.enabled", "true", security=ROOT_SECURITY)
     for minute in (0, 1):
-        write_snapshot(api, minute)
+        write_snapshot(api, minute, session="")
     job_id = api.evolve(HOME, **vars(task_options()), security=security_for(api, HOME))
     assert api.job_status(job_id, security=security_for(api, HOME)).status is JobStatus.SUCCEEDED
 

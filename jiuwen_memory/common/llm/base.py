@@ -32,6 +32,10 @@ class LLM(Plugin):
 
         ``options`` 携带生成参数（``temperature``、``max_tokens`` 等），
         后端忽略不认识的键。
+
+        超时契约：实现必须把自家 SDK 的超时异常转换为
+        common.errors.LLMTimeoutError（或内建 TimeoutError 子类）后抛出——
+        调用方据此统一做"超时不重试"，不感知具体 SDK 异常。
         """
 
     def generate(self, prompt: str, **options: object) -> str:
