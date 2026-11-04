@@ -25,7 +25,9 @@ from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     EXT_QUERY_CONTEXT,
     EXT_SPACES,
+    ISOLATED_MEMORY_TYPES,
     KERNEL_SYSTEM_METADATA_KEYS,
+    MEMORY_TYPE_FILTER_FIELD,
     TRANSIENT_SYSTEM_METADATA_KEYS,
     ChannelError,
     Context,
@@ -217,6 +219,29 @@ def _reject_route_tag_keys(metadata: dict[str, Any] | None, tag_keys: frozenset[
     clash = sorted(set(metadata) & tag_keys)
     if clash:
         raise ValidationError(f"metadata 不得使用判定标签 key：{clash}")
+
+
+def _reject_memory_type_transition(
+    before: MemoryUnit, patch_metadata: dict[str, Any] | None
+) -> None:
+    """update 边界拒绝把 ``memory_type`` 改入/改出隔离类型（mem2.0 §2.3）。
+
+    经验与技能是与对话记忆同空间的隔离类型：贡献者把自己的一条记忆改成经验或
+    技能即注入其他用户的 agent；反向改出则会绕开经验条目「只对编辑者可读写」
+    的约束。同为隔离类型的互换（experience ↔ skill）同样拒绝——技能只由
+    归纳算子产出。值未变化时放行：等值重写不是转移。
+    """
+    if not patch_metadata or "memory_type" not in patch_metadata:
+        return
+    new_value = str(patch_metadata["memory_type"]).strip()
+    old_value = str(before.system_metadata.get("memory_type", "")).strip()
+    if new_value == old_value:
+        return
+    if new_value in ISOLATED_MEMORY_TYPES or old_value in ISOLATED_MEMORY_TYPES:
+        raise ValidationError(
+            "update 不得把 memory_type 改入或改出隔离类型"
+            f"（{sorted(ISOLATED_MEMORY_TYPES)}）：{old_value!r} → {new_value!r}"
+        )
 
 
 def _reject_foreign_routed_scope(scope: Scope, identity: Scope) -> None:
@@ -689,6 +714,26 @@ def _routing_clauses_of(
         if routed:
             clauses.append(FilterClause(canonical_filter_field(field), FilterOp.EQ, routed))
     return clauses
+
+
+def _type_isolation_clause(route_value: str | None) -> FilterClause:
+    """类型隔离的系统谓词（mem2.0 §2.3「同一空间内的隔离」）。
+
+    经验与技能可与对话记忆同空间，检索与列举互不可见由这条谓词承担：路由值在
+    :data:`ISOLATED_MEMORY_TYPES` 内（查经验 / 查技能的请求）追加该值的等值条件
+    ——「只经扩展参数点名 experience、过滤条件不带类型」的请求也取不到对话记忆；
+    其余请求（含没有路由值、走默认 profile 的）追加 ``NOT_IN``，对话检索取不到
+    经验与技能。``NOT_IN`` 是 ``IN`` 的逻辑否定、字段缺失的条目命中，不带
+    ``memory_type`` 的对话条目不会被误排除。
+
+    调用方不能去掉这条谓词是它的全部意义：与用户 filters 做外层 AND（同
+    :func:`and_merge` 的系统谓词通道），不摊平进用户的 OR。
+    """
+    if route_value in ISOLATED_MEMORY_TYPES:
+        return FilterClause(MEMORY_TYPE_FILTER_FIELD, FilterOp.EQ, route_value)
+    return FilterClause(
+        MEMORY_TYPE_FILTER_FIELD, FilterOp.NOT_IN, sorted(ISOLATED_MEMORY_TYPES)
+    )
 
 
 def _selector_permission_context(selector: DeleteSelector, scope: Scope) -> PermissionContext:

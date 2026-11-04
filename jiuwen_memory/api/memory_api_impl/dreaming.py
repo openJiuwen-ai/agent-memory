@@ -25,6 +25,7 @@ import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
@@ -56,6 +57,25 @@ from .dreaming_security import _registration_identity, _restored_security
 from .local_support import _evolve_space_action
 
 logger = get_logger(__name__)
+
+
+def _first_delay_from(entry: DreamingEntry) -> int | None:
+    """注册记录的 last_triggered → 恢复时的首次触发延迟（改动 2）。
+
+    间隔未满的等剩余秒数；已过期的下一次轮询即触发（0）；从未触发或时间
+    不可解析（旧版本记录 / 被改坏）→ ``None``（等一个 interval，现行为——
+    不可信的墙钟保守处理）。
+    """
+    if not entry.last_triggered:
+        return None
+    try:
+        last = datetime.fromisoformat(entry.last_triggered)
+    except ValueError:
+        return None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    elapsed = (datetime.now(UTC) - last).total_seconds()
+    return max(0, entry.interval - int(elapsed))
 
 
 def _scope_label(scope: Scope) -> str:
@@ -107,8 +127,12 @@ class DreamingDriverJob(Job):
         security: RequestSecurityContext,
         interval: int,
         generation: int,
+        first_delay: int | None = None,
     ) -> None:
-        super().__init__(scope=scope, interval=interval)
+        # first_delay：恢复路径按注册记录的 last_triggered 换算（改动 2）——
+        # 间隔未满等剩余秒数，已过期下一次轮询即触发；新建注册不传（等一个
+        # interval，现行为）。
+        super().__init__(scope=scope, interval=interval, first_delay=first_delay)
         self._coordinator = coordinator
         self._mode = mode
         self._channel = channel
@@ -180,6 +204,10 @@ class DreamingDriverJob(Job):
             buckets=buckets,
             denied_scopes=denied,
         )
+        # 本轮已提交演进——回写注册记录的上次触发时间（改动 2）。generation
+        # 不匹配（注册已换代）时 note_triggered 内部跳过，防旧代任务改写新代
+        # 记录；此刻不写则重启后 first_delay 换算无锚点。
+        coordinator.note_triggered(self.scope, self._mode, generation=self._generation)
         if spawned and self.parent_job_id:
             coordinator.link_spawned_job(spawned, self.parent_job_id)
         detail: dict[str, str] = {"spawned_job_id": spawned or ""}
@@ -356,6 +384,24 @@ class DreamingCoordinator:
         )
         self._ensure_space_writable(scope)
 
+    def note_triggered(
+        self, scope: Scope, mode: EvolveMode | str, *, generation: int
+    ) -> None:
+        """回写注册记录的上次触发时间（墙钟 ISO，mem2.0 §2.5.1 改动 2）。
+
+        DriverJob 每 tick 成功提交演进后调用；重启恢复据此换算首次触发延迟
+        （:func:`_first_delay_from`）。generation 不匹配（注册已换代或注销）
+        时跳过——防上一代任务的迟到回写覆盖新代记录。
+        """
+        mode_value = mode.value if isinstance(mode, EvolveMode) else str(mode)
+        with self._mutation_lock:
+            entry = self._registry.find(scope, mode_value)
+            if entry is None or entry.generation != generation:
+                return
+            self._registry.save(
+                replace(entry, last_triggered=datetime.now(UTC).isoformat())
+            )
+
     def authorize_fan_out(
         self,
         security: RequestSecurityContext,
@@ -463,6 +509,11 @@ class DreamingCoordinator:
                             created_by=identity,
                             state=DreamingEntryState.ACTIVE.value,
                             generation=generation,
+                            # 覆写注册沿用旧记录的上次触发时间（改动 2）——
+                            # 间隔计时跨注册连续，不因重复注册被重置推迟。
+                            last_triggered=(
+                                old_entry.last_triggered if old_entry is not None else ""
+                            ),
                         )
                     )
                 # save 可能阻塞到租约过期；落盘后再验一次，防止
@@ -687,6 +738,10 @@ class DreamingCoordinator:
                     security=security,
                     interval=entry.interval,
                     generation=entry.generation + 1,
+                    # 按上次触发时间换算首次触发延迟（改动 2）：间隔未满的
+                    # 等剩余秒数，已过期的下一次轮询即触发——重启不再把周期
+                    # 整理整体推迟一个完整 interval。
+                    first_delay=_first_delay_from(entry),
                 )
                 scheduler.validate(job)
                 job_id = asyncio.run(scheduler.submit(job, channel))

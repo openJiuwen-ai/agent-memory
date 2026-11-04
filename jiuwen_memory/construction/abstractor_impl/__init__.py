@@ -10,5 +10,6 @@ from jiuwen_memory.construction.abstractor import AbstractorProducer
 
 import_optional(".concat_abstractor", __name__)
 import_optional(".llm_abstractor", __name__)
+import_optional(".skill_abstractor", __name__)
 
 __all__ = ["AbstractorProducer"]

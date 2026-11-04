@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/construction/F10-experience-memory-and-skill.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-experience-retrieval.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
 
 ## Schema source 更新准备契约
 
@@ -82,7 +82,7 @@ evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽�
 20. **结构与生命周期事务（目标）**：`provenance`、`supersedes` 与 `hierarchy` 分别表示演进来源、版本替换和父子包含；FORGET/PURGE 不级联删除后代内容。
 21. **重叠 span 串行化（目标）**：同一 `scope + kind` 下 span 相交的 HIERARCHY build/replace、层级 update、FORGET 和 PURGE 必须串行化，或以乐观版本条件在提交前检测冲突；replace 不得吸收未参与初始输入快照的并发叶写入。
 22. **判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（候选渲染、排序与上限截断），判权本身经 `can_write` 回调由 API 层执行；本层不持有 `PermissionManager`、不接收 `identity`、不抛权限异常——缺兜底落点时返回 `WriteTargets.fallback=None`，由 PEP 抛出。该裁剪可下沉的前提是失效方向为拒绝：未参与判权的空间不进候选，表现为写不进去而非越权写入。**检索侧的逐空间判权循环不适用本条**，其循环体就是 `PermissionManager.decide` 本身，移出等于把 PEP 分裂为两处；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。检索侧可下沉的是判权之后的部分：`collective/cross_space_recall.py` 收已判权的空间目标（含各自的谓词）与 `recall` 回调，做取数上界摊配、召回扇出与结果合并，全程不读 `identity`、不做任何裁决，与写入侧同一形态。它把空间级扇出失败与判权剔除分两路交回——并进 `merged.errors` 之后，扇出失败会与检索层的分通道错误混在同一个列表里，API 层要为「整个空间挂了」写审计就只能按 `channel is SPACE` 过滤，那是把审计判据绑在本层的 channel 编码上。
-23. **应用端口不是算子**：`control/application` 的 `MemoryCommandService` / `MemoryQueryService` / `SpaceLifecycleService` / `GovernanceService` 无 Producer、不执行 PEP、不接收 `identity`。它们由已注入的 Engine / Governor / SpaceManager 组成，供 API 与单测复用同一语义，禁止 Service Locator。`delete_space` 的 purge → SpaceManager.delete → `deleted_counts` 汇总只允许出现在 `SpaceLifecycleService`。purge 成功而 metadata delete 失败必须抛 `PartialFailureError`，重试入口仍是 `delete_space`。路由谓词回注、逐空间判权和逐单元结果鉴权仍属 PEP（见不变量 22），不经这些端口下沉。
+23. **应用端口不是算子**：`control/application` 的 `MemoryCommandService` / `MemoryQueryService` / `SpaceLifecycleService` / `GovernanceService` 无 Producer、不执行 PEP、不接收 `identity`。它们由已注入的 Engine / Governor / SpaceManager 组成，供 API 与单测复用同一语义，禁止 Service Locator。`delete_space` 的 purge → SpaceManager.delete → `deleted_counts` 汇总只允许出现在 `SpaceLifecycleService`。purge 成功而 metadata delete 失败必须抛 `PartialFailureError`，重试入口仍是 `delete_space`。删除完成后可选调用注入的 `on_deleted` 回调组（mem2.0 按作者清除的登记路径，缺省空 = 现有行为）：回调收到 `(org, space, owners)`，owners 在元数据删除之前读出；回调异常不上抛、不拦后续回调——`SpaceManager.delete` 对已删空间不幂等，上抛会让已完成的事务被无限重试。回调实现在 construction 侧、装配注入（见 S05 Curator 节与 F10）。路由谓词回注、逐空间判权和逐单元结果鉴权仍属 PEP（见不变量 22），不经这些端口下沉。
 24. **Engine 不解释资产映射**：`write` 只把 `assets` 防御性复制到 `RawPayload.assets` 后交给 Ingestor；Ingestor 返回后，Engine 不得按“首个 Segment”或其他假设改写 `Segment.assets`。
 25. **后台 Job 的 IndexBuilder/Evolver 由 Engine 运行时注入**：`EvolveJobSpec` / `MiddleToLongJobSpec` 装配期不解析 Evolver/IndexBuilder（不按 `vector_enabled` 猜默认、不调对应 Producer）；Engine 经 `JobFactory.get_job` 必传注入与写入/演进同源的实例（middle 路径传 pipeline binding 或单 profile 的 `index=`/`evolver=`，`evolve` 传 Engine 装配的 `evolver=`），运行时注入优先于 Spec 兜底字段；缺失注入时 `with_scope` 抛 `ValidationError`，不静默回退默认实现。
 
@@ -102,7 +102,7 @@ class ControlOperator(ABC):
 
 ### MemoryEngine（`engine.py`）
 
-编排接口层各语义的中枢。共同依赖 Ingestor、Classifier、IndexBuilder、Evolver、Retriever、Scheduler、LifecycleManager，可选注入 MemoryPipeline 做按记忆类型或 message_type 的 profile 选择。存储面按实现区分：`InMemoryEngine` 注入 KVStore 并沿用 `load_units`/`list_units` helper；`CloudEngine` 注入 DomainStore 作为 MemoryUnit 领域真源读入口。Evolver 有两个平级注册实现：`OrchestratingEvolver`（注册名 `orchestrating`）与其子类 `DynamicEvolver`（注册名 `dynamic`，EXTRACT 走 extract→consolidate→reflect→落盘）；装配或 profile 选择决定实际路径。
+编排接口层各语义的中枢。共同依赖 Ingestor、Classifier、IndexBuilder、Evolver、Retriever、Scheduler、LifecycleManager，可选注入 MemoryPipeline 做按记忆类型或 message_type 的 profile 选择。存储面按实现区分：`InMemoryEngine` 注入 KVStore 并沿用 `load_units`/`list_units` helper；`CloudEngine` 注入 DomainStore 作为 MemoryUnit 领域真源读入口。Evolver 有两个平级注册实现：`OrchestratingEvolver`（注册名 `orchestrating`）与其子类 `DynamicEvolver`（注册名 `dynamic`，EXTRACT 走 extract→consolidate→reflect→落盘）；装配或 profile 选择决定实际路径。`MemoryEngine` 另暴露抽象 property `pipeline -> MemoryPipeline | None`（未注入为 None）——供 API 层读取路由键名并校验空间绑定 profile 的可达性（F08），不新增行为。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -236,6 +236,9 @@ class PipelineBinding:
 class MemoryPipeline(ControlOperator):
     def select_for_write(units: list[MemoryUnit]) -> PipelineBinding
     def select_for_recall(query: RetrievalQuery) -> PipelineBinding
+    @property
+    def route_key(self) -> str                 # 路由键名（F09 新增）
+    def has_profile_for(memory_type: str) -> bool
 ```
 
 默认 `metadata` 实现的配置形态：
@@ -264,7 +267,15 @@ pipeline:
 
 路由规则：
 
+- `route_key`（缺省 `memory_type`）：查询侧从 `RetrievalQuery.extensions[route_key]` 读路由值；API 层把空间策略绑定的路由值写进请求扩展参数时用同一键，写读两侧不共用即路由错位（F08）。
+- `has_profile_for(value)`：该路由值是否有对应 profile。引擎在选 profile 前用它核对 `NO_FALLBACK_MEMORY_TYPES`（`pipeline.py` 上的 `frozenset({"experience"})`，不回落类别）——不回落的取值没有 profile 即返回参数错误而非静默落默认；API 层亦用它校验空间绑定 profile 的可达性（F08）。
 - 写入侧读取 `MemoryUnit.system_metadata[route_key]`。
+- **空间策略绑定优先于请求自带值**（F08，mem2.0 §2.3）：`SpacePolicy.pipeline_profiles`
+  的 `"*"` 键把空间绑定到某个 profile。单空间 `search` 时 API 层把绑定值写进
+  `extensions[route_key]`（覆盖调用方自带的同键值；写入点在权限上下文构造之前，
+  鉴权与执行按同一 profile）；绑定值无对应 profile 抛 `ValidationError`，不静默
+  回落。绑定了 profile 的空间不参与跨空间检索：显式点名拒绝、主体反查静默排除。
+  消费逻辑与错误形态见 S02 `search`。
 - 查询侧优先读取 `RetrievalQuery.extensions[route_key]`，其次从规范化
   `FilterExpr` 提取逻辑上强制成立的 `system_metadata.<route_key>` 唯一等值；
   `memory_type` 裸字段仅作为 `system_metadata.memory_type` 的输入别名。
@@ -492,7 +503,7 @@ MaxP、展开上限及预算由 S04 定义，不从尚未实现的策略键推�
 | `DeleteSelector` | dataclass | unit_ids / scope / tags / before / mode(DeleteMode) |
 | `PrincipalPath` | 枚举 | USER_AGENT / AGENT_USER |
 | `SpaceStatus` | 枚举 | ACTIVE / FROZEN / ARCHIVED / DELETING / DELETED |
-| `SpacePolicy` | dataclass | require_space / principal_path / storage_isolation_strategy / retention / quotas / index_profiles / pipeline_profiles |
+| `SpacePolicy` | dataclass | require_space / principal_path / storage_isolation_strategy / retention / quotas / index_profiles / pipeline_profiles（`"*"` 键把空间绑定到某个 pipeline profile；首版只认 `"*"`，检索侧消费见 MemoryPipeline 路由规则与 F08）/ write_mode（`any` 缺省 / `derived_only` 只接受派生写入——derived_only 下 `get`/`list` 在 API 层改判为 UPDATE 并关闭「本人所写」附加集合，只对 editor 放行，见 S02 不变量 24） |
 | `SpaceSpec` | dataclass | org / space / display_name / principal_path / policy / metadata |
 | `SpaceInfo` | dataclass | org / space / display_name / status / principal_path / policy / metadata / created_at / archived_at |
 | `SpacePatch` | dataclass | display_name / status / principal_path / policy / metadata |

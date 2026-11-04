@@ -285,6 +285,15 @@ class AgentEngine(MemoryEngine):
         """
         return self._domain_store.scopes()
 
+    @property
+    def pipeline(self) -> MemoryPipeline | None:
+        """流水线路由（API 层校验空间绑定 profile 用，见 MemoryEngine.pipeline）。
+
+        AgentEngine 可选注入（``pipeline.default`` 具名实例存在时，``_opt_pipeline``）；
+        未注入的部署为 ``None``——与 CloudEngine 同构。
+        """
+        return self._pipeline
+
     def health(self) -> None:
         return None
 

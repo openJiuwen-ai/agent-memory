@@ -7,6 +7,7 @@
       extract: { episodic: "...", preference: "..." }
       consolidate: { episodic: "..." }
       reflect: { episodic: "..." }
+      appraise: { feedback: "...", outcome: "...", attribute: "..." }
 
 metadata 只写 prompt 的 **key**；运行时由本注册表按 ``phase + key`` 取回真实文本。
 
@@ -22,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 PHASE_EXTRACT = "extract"
 PHASE_CONSOLIDATE = "consolidate"
 PHASE_REFLECT = "reflect"
+# 评价阶段（mem2.0 §2.2）：判定反馈 / 判定成败 / 归因，使用方是 ExperienceAppraiser。
+PHASE_APPRAISE = "appraise"
 
 if TYPE_CHECKING:
     from jiuwen_memory.config.config_source import ConfigSource

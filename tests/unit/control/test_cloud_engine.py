@@ -338,6 +338,10 @@ class _MessageTypePipeline(MemoryPipeline):
     def __init__(self, profiles: dict[str, PipelineBinding]) -> None:
         self.profiles = profiles
 
+    @property
+    def route_key(self) -> str:
+        return "message_type"
+
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.PIPELINE
 
@@ -351,6 +355,9 @@ class _MessageTypePipeline(MemoryPipeline):
     def select_for_recall(self, query: RetrievalQuery) -> PipelineBinding:
         route = query.extensions.get("message_type", "chat")
         return self.profiles.get(route, self.profiles["chat"])
+
+    def has_profile_for(self, memory_type: str) -> bool:
+        return memory_type in self.profiles
 
 
 def _engine(ingestor: Ingestor | None = None):
@@ -856,3 +863,128 @@ def test_cloud_engine_evolve_raises_when_job_factory_is_none() -> None:
 
     with pytest.raises(RuntimeError, match="evolve requires job_factory"):
         asyncio.run(engine.evolve(scope, EvolveMode.EXTRACT, Channel.HOT))
+
+
+# ====================================================================== #
+# 不回落的 memory_type（mem2.0 §2.1「experience 不回落」）
+# ====================================================================== #
+
+
+def _pipeline_profiles(engine) -> dict:
+    """白盒读取引擎 profile 表（经小工具绕行受保护访问）。"""
+    return getattr(getattr(engine, "_pipeline"), "profiles")
+
+
+def _require_profile(engine, *args, **kwargs) -> None:
+    """白盒触达 profile 准入核对。"""
+    getattr(engine, "_require_profile")(*args, **kwargs)
+
+
+def _engine_with_experience_profile():
+    """在标准替身引擎上补一个 experience profile（复用 chat 的替身组件）。"""
+    engine, records = _engine()
+    profiles = _pipeline_profiles(engine)
+    profiles["experience"] = profiles["chat"]
+    return engine, records
+
+
+def test_cloud_engine_write_rejects_no_fallback_type_without_profile() -> None:
+    """无对应 profile 的 experience 写入直接拒绝：回落会把轨迹 JSON 当对话抽取。"""
+    engine, _ = _engine()  # profiles 只有 chat / coding
+
+    with pytest.raises(ValidationError, match="profile"):
+        asyncio.run(
+            engine.write(
+                "trajectory payload",
+                Scope(org="acme", user="alice"),
+                system_metadata={"message_type": "experience"},
+            )
+        )
+
+
+def test_cloud_engine_write_rejects_no_fallback_type_without_infer() -> None:
+    """experience 只支持派生写入：不带 infer=true 的直接写入拒绝。"""
+    engine, _ = _engine_with_experience_profile()
+
+    with pytest.raises(ValidationError, match="infer=true"):
+        asyncio.run(
+            engine.write(
+                "trajectory payload",
+                Scope(org="acme", user="alice"),
+                system_metadata={"message_type": "experience"},
+            )
+        )
+
+
+def test_cloud_engine_write_rejects_no_fallback_type_with_procedural() -> None:
+    engine, _ = _engine_with_experience_profile()
+
+    with pytest.raises(ValidationError, match="procedural"):
+        asyncio.run(
+            engine.write(
+                "trajectory payload",
+                Scope(org="acme", user="alice"),
+                system_metadata={
+                    "message_type": "experience",
+                    "infer": True,
+                    "procedural": True,
+                },
+            )
+        )
+
+
+def test_cloud_engine_write_rejects_no_fallback_type_with_middle() -> None:
+    engine, _ = _engine_with_experience_profile()
+
+    with pytest.raises(ValidationError, match="middle"):
+        asyncio.run(
+            engine.write(
+                "trajectory payload",
+                Scope(org="acme", user="alice"),
+                system_metadata={
+                    "message_type": "experience",
+                    "infer": True,
+                    "middle": True,
+                },
+            )
+        )
+
+
+def test_cloud_engine_recall_rejects_no_fallback_type_without_profile() -> None:
+    """检索侧同样约束：无对应 profile 的 experience 检索拒绝。"""
+    engine, _ = _engine()
+
+    with pytest.raises(ValidationError, match="profile"):
+        asyncio.run(
+            engine.recall(
+                Scope(org="acme", user="alice"),
+                RetrievalQuery(
+                    text="deploy tips",
+                    extensions={"message_type": "experience"},
+                ),
+            )
+        )
+
+
+def test_cloud_engine_require_profile_allows_fallback_types_and_valid_requests() -> None:
+    """回落类别（chat 等）不受约束；有 profile 且 infer=true 的 experience 放行。"""
+    engine, _ = _engine_with_experience_profile()
+
+    _require_profile(engine, "chat")  # 回落类别恒放行
+    _require_profile(engine, "chat", infer=False, procedural=True)
+    _require_profile(engine, "experience", infer=True)  # 派生写入放行
+    _require_profile(engine, "experience")  # 检索侧（infer=None）不核对开关
+
+
+def test_cloud_engine_require_profile_rejects_skill_writes() -> None:
+    """skill 不经写入接口（mem2.0 §2.3「类型不能伪造」）：技能由技能归纳算子从
+    多条独立复现的经验提炼（§2.5），写入侧整体拒绝——与有没有 profile、带不带
+    infer 无关；检索侧（infer=None）放行，技能条目按等值谓词可读。
+    """
+    engine, _ = _engine_with_experience_profile()
+
+    with pytest.raises(ValidationError, match="skill"):
+        _require_profile(engine, "skill", infer=True)  # 派生写入同样拒绝
+    with pytest.raises(ValidationError, match="skill"):
+        _require_profile(engine, "skill", infer=False)  # 直接写入拒绝
+    _require_profile(engine, "skill")  # 检索侧（infer=None）放行

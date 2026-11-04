@@ -30,6 +30,7 @@ from .entity import (
 )
 from .feature import Entity, FeatureSet, Relation
 from .filter import (
+    ISOLATED_MEMORY_TYPES,
     MEMORY_TYPE_FILTER_FIELD,
     FilterClause,
     FilterExpr,
@@ -66,6 +67,8 @@ from .memory import (
     MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
     MEMORY_KEY_PREFIX,
+    PRODUCER_CREDENTIAL_KEY,
+    PRODUCER_PRINCIPAL_KEY,
     ROUTE_CTX_KEY,
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
@@ -88,7 +91,13 @@ from .memory import (
 )
 from .memory_filter import matches_filter_value, matches_memory_unit
 from .normalizer import EntityNormalizer
-from .raw import MESSAGES_KEY_PREFIX, RawPayload, messages_key
+from .raw import (
+    MESSAGES_KEY_PREFIX,
+    TRAJECTORIES_KEY_PREFIX,
+    RawPayload,
+    messages_key,
+    trajectory_key,
+)
 from .retrieval import (
     CandidateFuser,
     ChannelError,
@@ -177,6 +186,7 @@ __all__ = [
     "FilterLogic",
     "FilterGroup",
     "FilterExpr",
+    "ISOLATED_MEMORY_TYPES",
     "MEMORY_TYPE_FILTER_FIELD",
     "normalize",
     "validate",
@@ -191,6 +201,8 @@ __all__ = [
     "MEMORY_KEY_PREFIX",
     "KERNEL_SYSTEM_METADATA_KEYS",
     "MEMORY_CLASS_KEY",
+    "PRODUCER_PRINCIPAL_KEY",
+    "PRODUCER_CREDENTIAL_KEY",
     "MD_FILENAME_KEY",
     "MD_TITLE_KEY",
     "COORDS_KEY",
@@ -199,8 +211,10 @@ __all__ = [
     "T_INVALID_OPEN",
     "T_EVENT_UNKNOWN",
     "MESSAGES_KEY_PREFIX",
+    "TRAJECTORIES_KEY_PREFIX",
     "memory_key",
     "messages_key",
+    "trajectory_key",
     "matches_memory_unit",
     "matches_filter_value",
     "RecallChannel",

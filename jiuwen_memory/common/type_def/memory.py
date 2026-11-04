@@ -276,6 +276,13 @@ MD_FILENAME_KEY = "md_filename"
 # 不进 KERNEL_SYSTEM_METADATA_KEYS（调用方写了也只是无害冗余，渲染有兜底，不构成伪造面）。
 MD_TITLE_KEY = "md_title"
 
+# 经验写入（mem2.0 §2.1）的生产者标记：接口层把认证结果中的生产者主体与凭据指纹
+# 写进这两个键，覆盖请求中的同名键——调用方自报的接入方标识不可信，生产者只认
+# 认证结果。它们随传参用的 ``MemoryUnit`` 进入评价算子（算子从这两个键与
+# ``scope.org`` 组出轨迹记录的 ``producer``），该 ``MemoryUnit`` 不落盘。
+PRODUCER_PRINCIPAL_KEY = "_producer_principal"  # 生产者主体（user:<id> / agent:<id>）
+PRODUCER_CREDENTIAL_KEY = "_producer_credential"  # 认证凭据指纹（AuthContext.credential_id）
+
 # ``system_metadata`` 里由内核写入并参与判定的键，调用方不得经该入参赋值。
 #
 # 上游把 metadata 拆成两个命名空间后，用户元数据物理上已占用不了系统键名；但
@@ -314,6 +321,10 @@ KERNEL_SYSTEM_METADATA_KEYS = frozenset(
         # 未启用判定的写入路径不写该键。它是落点断言的唯一稳定判据——派生记忆的
         # content 是模型产物、措辞不保证逐次一致，按内容等值匹配不成立
         "memory_class",
+        # -- 经验记忆（mem2.0 §2.1）：接口层从认证结果写入的生产者标记 ----------
+        # 调用方写了即伪造接入方身份（补报核对与外部阈值都按生产者取值），先拒后写。
+        PRODUCER_PRINCIPAL_KEY,
+        PRODUCER_CREDENTIAL_KEY,
         # -- 群体记忆阶段四才写入：先占位，防止存量数据占用键名 ------------------
         "origin_spaces",  # 内容源自哪些空间
         "origin_contributors",  # 内容由哪些主体产生

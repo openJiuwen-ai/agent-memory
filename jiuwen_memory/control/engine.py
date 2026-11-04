@@ -40,6 +40,7 @@ from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.kv import KVStore
 
 from .base import ControlOperator
+from .pipeline import MemoryPipeline
 from .types import (
     BatchWriteItem,
     BatchWriteResult,
@@ -73,6 +74,16 @@ class MemoryEngine(ControlOperator):
 
         供 API 层 dreaming 编排读注册表（注册表与真源同 KV 才有恢复语义）；
         只读用途，不作为写入通道。
+        """
+
+    @property
+    @abstractmethod
+    def pipeline(self) -> MemoryPipeline | None:
+        """流水线路由（装配注入；未启用流水线的部署为 ``None``）。
+
+        供 API 层校验空间绑定 profile 的可达性（mem2.0 §2.3）：``search`` 的
+        目标空间按空间策略绑定 profile，绑定的取值没有对应 profile 时返回
+        参数错误，而不是静默回落默认 profile。只读用途。
         """
 
     def candidate_scopes(self) -> list[Scope]:

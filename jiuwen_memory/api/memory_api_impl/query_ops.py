@@ -47,6 +47,7 @@ from jiuwen_memory.control.evolution.validation import (
     validate_evolve_options,
     validate_evolve_request,
 )
+from jiuwen_memory.control.pipeline import route_value_of
 from jiuwen_memory.control.types import (
     BackgroundJobStartResult,
     Channel,
@@ -71,12 +72,14 @@ from .local_support import (
     _pop_spaces,
     _recall_permission_context,
     _reject_kernel_system_metadata,
+    _reject_memory_type_transition,
     _reject_non_scalar_metadata,
     _reject_route_tag_keys,
     _routing_clauses_of,
     _selector_permission_context,
     _space_denied,
     _TrustedRequestTarget,
+    _type_isolation_clause,
     _unit_lookup_permission_context,
     _unit_snapshot_permission_context,
 )
@@ -223,6 +226,16 @@ class QueryOpsMixin:
         )
         if routing_clauses:
             rq.filters = and_merge(rq.filters, routing_clauses)
+        # 类型隔离的系统谓词（mem2.0 §2.3）：经验与技能可与对话记忆同空间，检索
+        # 互不可见由这条谓词承担——无路由值/非隔离路由值排除两类条目，隔离路由值
+        # 只取该类。路由值按 profile 选择同一口径解析（extensions 优先、其次含
+        # 授权回注谓词的 filters），追加在授权路由谓词之后：解析看到的 filters 与
+        # engine 选 profile 时将看到的一致，两边各解析一套即「选了经验 profile、
+        # 却被自己的谓词排除经验」。
+        rq.filters = and_merge(
+            rq.filters,
+            [_type_isolation_clause(route_value_of(rq.extensions, rq.filters, self._route_key()))],
+        )
         # 两族谓词与调用方表达式合成一个 AND 一次下推，在 top-k 截断之前生效——
         # 召回后二次过滤会让被筛掉的条目白占召回名额，最终返回条数少于 top_k。
         # 第二族由归属坐标折算：坐标缺项不生成对应谓词，表现为该维不收窄，失效方向是放宽。
@@ -271,7 +284,24 @@ class QueryOpsMixin:
         org = context.scope.org
         normalized_filters = retrieval_query.filters
 
-        candidates = self._search_candidates(resource_principal, org, spaces, audit_actor=identity)
+        candidates = self._search_candidates(
+            resource_principal, org, spaces, audit_actor=identity
+        )
+        # 经验检索一次只查一个空间（mem2.0 §2.4）：路由值为 experience 的跨空间
+        # 检索返回参数错误——选取算子按一次返回的条数安排探索名额、按能力分组与
+        # 补满，跨空间时各空间分别选出的结果还要轮转合并并截断，最终留下哪几条由
+        # 合并决定，探索与分组都失去作用。同时检索个人与团队两个空间的经验要求
+        # 选取在跨空间合并之后执行，首版不支持，列为已知遗留。
+        route_value = route_value_of(
+            retrieval_query.extensions, normalized_filters, self._route_key()
+        )
+        if route_value == "experience":
+            raise ValidationError(
+                "路由值为 experience 的检索一次只查一个空间，不接受跨空间检索"
+            )
+        # 类型隔离的系统谓词（mem2.0 §2.3「跨空间检索走同一处」）：不随空间变，
+        # 循环外算一次，逐空间随两族系统谓词下推。
+        type_clause = _type_isolation_clause(route_value)
         # 收窄谓词的实际取值只在此处成形，下游只能看到条数。缺这一行时「召回为空」
         # 无法区分坐标未传到、判定表未声明该维、以及该维确实过滤掉了全部条目。
         logger.info(
@@ -338,6 +368,7 @@ class QueryOpsMixin:
                         permission_context.space_facts, resource_principal, narrow
                     )
                 )
+                clauses.append(type_clause)
                 targets.append(collective.SpaceRecallTarget(scope=target, clauses=tuple(clauses)))
             else:
                 denied.append(
@@ -440,6 +471,17 @@ class QueryOpsMixin:
             candidates = candidates[:limit]
         return candidates
 
+    def _route_key(self) -> str:
+        """路由键：启用流水线时取其声明（缺省 ``memory_type``），未启用时取缺省。
+
+        类型隔离谓词的路由值解析（mem2.0 §2.3）与 profile 选择共用同一个键：
+        两侧键不一致即「按 A 键选了经验 profile、按 B 键解析出无路由值」，
+        追加的是排除经验的谓词。未启用流水线的部署没有 profile 可选，但仍按
+        同一键解析——请求 filters 点名 ``memory_type`` 时谓词取等值一侧。
+        """
+        pipeline = self._engine.pipeline
+        return getattr(pipeline, "route_key", None) or "memory_type"
+
     def list(
         self,
         scope: Scope,
@@ -477,6 +519,22 @@ class QueryOpsMixin:
             memory_types,
         )
         effective_filters = and_merge(normalized_filters, routing_clauses)
+        # 类型隔离（mem2.0 §2.3）：显式点名 memory_types 的请求由该参数在存储层
+        # 过滤，点名的类型即调用方所要，与 _list_routing_clauses 对 memory_type
+        # 字段的跳过同构；未点名时与 search 同一条谓词——默认列举不混入经验与
+        # 技能，按路由值点名的只取该类。list 不经 pipeline 选 profile，路由值仍
+        # 按同一口径从 extensions 与 filters 解析。
+        if not any(str(value).strip() for value in memory_types or ()):
+            effective_filters = and_merge(
+                effective_filters,
+                [
+                    _type_isolation_clause(
+                        route_value_of(
+                            normalized_extensions, normalized_filters, self._route_key()
+                        )
+                    )
+                ],
+            )
         # list 必须注入第一族，否则个体空间的隔离只在 search 上成立：它是同样按空间返回
         # 条目的批量入口，不注入的后果与 search 同因同向。第二段逐条鉴权不能替代谓词——
         # 逐条鉴权的失败形态是抛异常而非过滤，整次调用失败而不是少返回几条。
@@ -615,6 +673,10 @@ class QueryOpsMixin:
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
         before = asyncio.run(self._queries.get(unit_id, scope, None))
+        # 类型不能伪造（mem2.0 §2.3）：改入/改出隔离类型在此拒绝，早于任何
+        # 构建侧流程——prepare_update 产生的计划可能衍生新条目，事后拒绝会
+        # 留下半套产物。值未变化（等值重写）不是转移，放行。
+        _reject_memory_type_transition(before, patch.system_metadata)
         plan = None
         if self._commands.requires_update_preparation(before, patch):
             plan = asyncio.run(self._commands.prepare_update(unit_id, scope, patch))

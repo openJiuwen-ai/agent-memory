@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-23 |
+| 最近一次修订日期 | 2026-10-31 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F10-experience-memory-and-skill.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## Metadata 派生与索引契约
 
@@ -43,6 +43,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 
 **管什么**：
 - 真源落盘（统一经 IndexBuilder 写入记忆单元及派生索引）
+- 写入准入与评价（Appraiser，mem2.0 经验记忆；含轨迹/判定/效用记录等专用记录的读写，不建索引、不参与检索）
 - 信息提取（低抽象粒度：事实/事件/偏好）
 - 抽象与精炼/升华（高抽象粒度：画像/长期偏好/可复用技能）
 - 关联分析（实体共指/因果链/引用关系）
@@ -138,7 +139,23 @@ class ConstructionOperator(ABC):
     def health(self) -> None                 # 存活探测
 ```
 
-> `OperatorType` 枚举无独立 DEDUP 值——`Dedup` 实现复用 `OperatorType.EVOLVER`（去重召回服务于 evolver）。`DynamicEvolver` 是 `OrchestratingEvolver` 的子类，同样返回 `OperatorType.EVOLVER`——它是 evolver 的动态 prompt 变体，通过覆盖 `_evolve_extract` 切换 EXTRACT 路径。
+> `OperatorType` 枚举无独立 DEDUP 值——`Dedup` 实现复用 `OperatorType.EVOLVER`（去重召回服务于 evolver）。`DynamicEvolver` 是 `OrchestratingEvolver` 的子类，同样返回 `OperatorType.EVOLVER`——它是 evolver 的动态 prompt 变体，通过覆盖 `_evolve_extract` 切换 EXTRACT 路径。`Appraiser` 同理复用 `OperatorType.EVOLVER`。
+
+### Appraiser（`appraiser.py`，mem2.0）
+
+写入准入与评价算子，可选装配（profile 不配置即不接线，evolver 行为与未引入时一致）。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `appraise` | `(units: list[MemoryUnit]) -> Appraisal` | 抽取**之前**调用：对本次写入做准入与评价，允许副作用（读写专用记录）。抛异常之前，实现自己写入的状态须已置为失败 |
+| `finalize` | `(units, appraisal: Appraisal, result: Any) -> None` | 准入的写入在流程结束时调用一次；`result` 是 `EvolveResult`，流程抛异常时以 `None` 调用（实现据此置失败） |
+
+`Appraisal(proceed, data)`：`proceed` 为假时本次写入到此结束——不抽取、也不调
+`finalize`；`data` 类型由实现定义，经 `ExtractContext.appraisal` 传给抽取算子。
+
+Evolver 接线不变量：`appraise` 异常冒泡（不进抽取、不收尾）；抽取异常先
+`finalize(units, appraisal, None)` 再 raise；`finalize` 自身异常不抛（只记
+warning）。关联决策见 [F10](../features/construction/F10-experience-memory-and-skill.md)。
 
 ### Extractor（`extractor.py`）
 
@@ -254,6 +271,13 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 | `abstract` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 对一批记忆单元做抽象与精炼，产出高抽象粒度的新记忆单元 |
 
 超过 `CONTENT_MAX_UNIT_CHARS` 的 unit 采用**两段式**消费：先按段落边界分片逐片提炼（分片级候选 `source_unit_ids` 回指原 unit，原文事实不丢），再把每个超限 unit 替换为其提炼视图（各片候选拼接、显式截到 2000 字符的压缩视图）与未超限 unit 合并进**同一次**归纳调用——PATTERN/PORTRAIT 的跨记忆共同归纳不因分片调用拆散。多组消费时单组失败隔离跳过，不影响其它组。
+
+类属性 `dedup_products: bool = True`（F10）：产物是否在落盘前与落点空间已有条目
+做语义去重。缺省 True（事实/画像类产物语义相同即重复，向后兼容）；技能归纳
+（`skill` 实现）置 False——同一技能的新旧版本内容天然相近，语义去重会把新版
+误判成重复，版本演进由条目 id 幂等与版本号承载。`OrchestratingEvolver.
+_evolve_consolidate` 在 `_annotate_layers` 之后读本属性，False 时跳过
+`_dedup_batch` 直接落盘。
 
 ### Associator（`associator.py`）
 
@@ -533,7 +557,8 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 - 适用配置键分别为 `extractor_max_attempts`、`abstractor_max_attempts`、
   `associator_max_attempts`、`classifier_max_attempts`、`layer_annotator_max_attempts`
   和 `router_max_attempts`；对应退避键为各自的 `*_retry_backoff`，Router 使用
-  `router_retry_backoff`。
+  `router_retry_backoff`。技能归纳（`skill` Abstractor）用独立的
+  `skill_max_attempts`（F10）。
 - `max_attempts` 非法时在算子构造期抛出 `ValidationError`，不得等到第一次 LLM
   调用时才失败；最后一次调用失败时原始异常向上抛出。
 - 重试循环统一收敛在 `construction/llm_retry.py::call_llm_with_retry`，各算子一律委托
@@ -575,6 +600,28 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 - `KeywordDedup`（`keyword`）— FulltextStore.search，词重叠率；Document.id = unit.id 恒等无需解析
 
 **降级契约**：实现内部任何异常（Embedder/Store 失败）都吞掉并返回空列表——去重是尽力而为，不可阻断演进。
+
+### Curator（`curator.py`，mem2.0）
+
+周期整理算子，可选装配（evolver 实例参数 `curator` 声明引用名或 `curator` 命名空间 `default` 实例；两者皆无即不接线，CONSOLIDATE 直接升华，现有行为不变）。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `curate` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | CONSOLIDATE 升华**之前**调用：整理本轮读入的条目，返回参与后续归纳的条目；失败轮返回空列表（本轮不归纳） |
+
+接线不变量：`curate` 异常冒泡（不进升华）；返回集是「参与归纳」的条目，非
+经验空间的条目不得混入（实现按部署配置 `globals.experience` 的 `curated_spaces`
+清单过滤，v3 §2——清单外空间不整理、不写运行摘要、不进返回集；运行摘要条目
+`memory_type=experience` + `EPISODIC` + 标签 `run-summary`，只写本体不建索引，
+编辑者用 `list` 按 `memory_type` 与标签列出）。
+
+整理流程与失败隔离的分层语义（第 0/1 步失败本轮中止；第 2-6、8 步失败记
+运行摘要跳过；簇级失败只跳过该簇）、按作者清除协议（space 删除回调写
+`/experience/erased-authors/{摘要}` 标记 → 下一轮聚合之前删该作者事件、退休「只剩
+该作者复现」的条目、删标记；统计随聚合全量重算）的决策与取舍见
+[F10](../features/construction/F10-experience-memory-and-skill.md)。按作者清除的
+登记回调由装配注入 `SpaceLifecycleService`（S03），密钥与评价算子的
+`author_key` 同值。
 
 ## 数据结构
 
@@ -628,7 +675,7 @@ jiuwen_memory/construction/<算子>_impl/
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-各 Producer：`ExtractorProducer` / `AbstractorProducer` / `AssociatorProducer` / `ClassifierProducer` / `IndexBuilderProducer` / `DedupProducer` / `EvolverProducer`；`RouterProducer`（可选装配，首版只有模型实现）。
+各 Producer：`ExtractorProducer` / `AbstractorProducer` / `AssociatorProducer` / `ClassifierProducer` / `IndexBuilderProducer` / `DedupProducer` / `EvolverProducer`；`RouterProducer`（可选装配，首版只有模型实现）；`AppraiserProducer` / `CuratorProducer`（mem2.0，可选装配）。
 注册由 `construction.bootstrap.register_constructors` 统一触发。
 
 > 当前有哪些实现、文件职责、行为铁律归 [`jiuwen_memory/construction/AGENTS.md`](../../jiuwen_memory/construction/AGENTS.md)，本 spec 只列契约。

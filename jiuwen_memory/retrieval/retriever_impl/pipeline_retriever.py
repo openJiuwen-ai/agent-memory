@@ -61,6 +61,7 @@ from jiuwen_memory.retrieval.schema_temporal.pipeline import (
     SchemaTemporalPipelineExtension,
     build_schema_temporal_extension,
 )
+from jiuwen_memory.retrieval.selector import Selector, SelectorProducer
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
@@ -126,6 +127,7 @@ class PipelineRetriever(Retriever):
         # 精排输入限长：与 reranker_timeout 同走 retriever params 通道。
         rerank_max_query_chars: int = _MAX_RERANK_QUERY_CHARS,
         rerank_max_doc_chars: int = _MAX_RERANK_DOC_CHARS,
+        selector: Selector | None = None,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
@@ -134,10 +136,13 @@ class PipelineRetriever(Retriever):
         self._domain = domain_store
         self._schema_temporal_extension = schema_temporal_extension
         self._expander: Expander | None = None
+        # 选取算子（mem2.0 §2.4）：相关性过滤后、截断 top_k 前的可选阶段。
+        # 未配置（对话记忆检索）时链路行为不变。
+        self._selector = selector
         # 文档模式标志：ShadowRecaller.channel()=DOCUMENT，但 parser 产出的
         # parsed.channels 默认含 [KEYWORD, GRAPH]（+VECTOR）不含 DOCUMENT。
         # _domain.recall 用 `r.channel() in channels` 过滤 recaller——DOCUMENT 不在
-        # enabled 里则 ShadowRecaller 被过滤 → 召回落空（F08 §5.6 S14 根因之二）。
+        # enabled 里则 ShadowRecaller 被过滤 → 召回落空（F09 §5.6 S14 根因之二）。
         # retrieve() 据此标志把 DOCUMENT 补进 enabled（不改 ShadowRecaller.channel()，
         # 保持其 DOCUMENT 语义）。
         self._doc_mode = doc_mode
@@ -313,13 +318,13 @@ class PipelineRetriever(Retriever):
         enabled = query.channels if query.channels is not None else (parsed.channels or None)
         # 文档模式：ShadowRecaller.channel()=DOCUMENT 不在 parser 默认 channels 内
         # （[KEYWORD, GRAPH]+可选 VECTOR），这里补进去——否则 ShadowRecaller 被
-        # `r.channel() in channels` 过滤掉 → 召回落空（F08 §5.6 S14 根因之二）。
+        # `r.channel() in channels` 过滤掉 → 召回落空（F09 §5.6 S14 根因之二）。
         # 调用方若显式传 query.channels 仍尊重其选择（仅补、不替；DOCUMENT 缺失时才加）。
         if self._doc_mode and enabled is not None:
             if RecallChannel.DOCUMENT not in enabled:
                 enabled = [*enabled, RecallChannel.DOCUMENT]
                 # 文档模式召回能否命中的关键：DOCUMENT 缺失即 ShadowRecaller 被
-                # channels 过滤掉 → 召回恒空（F08 §5.6 S14 根因之二）。
+                # channels 过滤掉 → 召回恒空（F09 §5.6 S14 根因之二）。
                 logger.info(
                     "PipelineRetriever: DOCUMENT injected into channels "
                     "(doc_mode=%s)", self._doc_mode,
@@ -505,6 +510,17 @@ class PipelineRetriever(Retriever):
         )
         step("threshold", t0, n=len(survivors), detail=threshold_detail)
 
+        # [8.5] 选取（可选，mem2.0 §2.4）：从通过相关性过滤的候选中决定返回哪
+        #       几条——经验的探索名额与按能力分组须在截断之前做，截断后排在
+        #       top_k 之外的条目已被丢弃。选取算子不原地修改候选，会换上带引用
+        #       值的条目副本；披露读的条目字典须随之重建，副本才能进返回结果。
+        #       未配置（对话记忆检索）时跳过，行为不变。
+        if self._selector is not None:
+            t0 = perf_counter()
+            survivors = self._selector.select(survivors, query)
+            units = {candidate.unit_id: candidate.unit for candidate in survivors}
+            step("select", t0, n=len(survivors))
+
         # [9] 截断 top_k
         final = survivors[: query.top_k]
         units = {candidate.unit_id: candidate.unit for candidate in final}
@@ -589,6 +605,13 @@ def _build(config):
     )
     discloser = DiscloserProducer.dep(config, default="truncating")
     doc_mode = should_write_document(config.get(WRITE_DOCUMENT_KEY, False))
+    # 选取算子默认关（对话记忆检索不配置；经验 profile 显式打开，mem2.0 §2.4）。
+    # 开关与 reranker 的 rerank_enabled 同构：true 而未指名时取缺省实现 experience。
+    selector = (
+        SelectorProducer.dep(config, default="experience")
+        if config.get("selector_enabled", False)
+        else None
+    )
     unit_reader = None if doc_mode else (
         UnitReader(manager.kv(kv_name)) if manager.has_kv(kv_name) else None
     )
@@ -625,6 +648,7 @@ def _build(config):
         rerank_max_doc_chars=int(
             Factory.cfg_get(config, "rerank_max_doc_chars", _MAX_RERANK_DOC_CHARS)
         ),
+        selector=selector,
     )
     retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))
     return retriever

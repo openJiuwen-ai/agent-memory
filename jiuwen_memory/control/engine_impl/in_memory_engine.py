@@ -264,6 +264,11 @@ class InMemoryEngine(MemoryEngine):
         """真源 KV 端口（API 层 dreaming 编排读注册表用，见 MemoryEngine.kv）。"""
         return self._kv
 
+    @property
+    def pipeline(self) -> MemoryPipeline | None:
+        """流水线路由（API 层校验空间绑定 profile 用，见 MemoryEngine.pipeline）。"""
+        return self._pipeline
+
     def health(self) -> None:
         return None
 
@@ -822,6 +827,8 @@ class InMemoryEngine(MemoryEngine):
         # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，
         # 不允许 Spec 侧自行解析另一套（middle 路径的 index/evolver 同理）。
         # 纯执行（鉴权在 API 层）：candidate→resolver 翻译 + 一次性 EvolveJob 提交。
+        # evolver_for_unit（mem2.0 §2.5.1 改动 1）与 CloudEngine 同款：条目按
+        # memory_type 分发到所属 profile 的 evolver。
         return await submit_evolve(
             scope=scope,
             mode=mode,
@@ -834,6 +841,7 @@ class InMemoryEngine(MemoryEngine):
             retriever=self._retriever,
             buckets=buckets,
             denied_scopes=denied_scopes,
+            evolver_for_unit=self._evolver_for_unit,
         )
 
     async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:

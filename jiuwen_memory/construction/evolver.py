@@ -58,6 +58,12 @@ class EvolveResult:
     ``created_units`` 回传实际落盘的对象。归属判定改写派生单元的 scope 之后，调用方按
     原 scope 回读真源会落空——只有回传对象才取得到。新增与版本替换两条分支都要回填：
     前者是 ``_persist``，后者是去重判定为 UPDATE / SUPERSEDE 时写入的新版本。
+
+    ``duplicate_ids`` 是去重判为重复（NOOP）的候选所命中的**已有条目** id：判为重复
+    不落盘、不改写已有条目，但这次写入是已有条目的一次复现，收尾据此记复现事件
+    （mem2.0 §2.2）。重复结论没有有效的已有条目（模型没给 ``existing_id`` 或给出的
+    不在本次召回中）时不填写、由落盘处记警告——不用相似度最高的召回条目代替，
+    避免误记复现。未配置评价算子的 profile 不读取。
     """
 
     created_ids: list[str] = field(default_factory=list)
@@ -65,6 +71,7 @@ class EvolveResult:
     superseded_ids: list[str] = field(default_factory=list)
     forgotten_ids: list[str] = field(default_factory=list)
     created_units: list[MemoryUnit] = field(default_factory=list)
+    duplicate_ids: list[str] = field(default_factory=list)
     hierarchy_result: HierarchyComposeResult | None = None
 
 

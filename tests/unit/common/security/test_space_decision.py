@@ -338,6 +338,37 @@ def test_org_axis_is_not_evaluated_here() -> None:
     assert outcome.reason is DenyReason.CONTEXT_MISMATCH
 
 
+# -- own_actions_apply 覆盖通道（mem2.0 §2.3 derived_only）------------------- #
+
+
+def test_own_actions_false_closes_contributor_own_update() -> None:
+    """附加集合关闭时，贡献者的更新只依基础集合：本人所写的更新也不再放行。
+
+    ``derived_only`` 空间的条目读改判更新并关闭附加集合（§2.3），贡献者的更新
+    只存在于附加集合里，关闭即被拒——这正是「只有编辑者能读」的判据来源。
+    """
+    facts = _shared(_member(BOB, content=SpaceContentRole.CONTRIBUTOR))
+    allowed_when_open = _decide(
+        BOB, facts=facts, entry="get", action=SpaceAction.UPDATE,
+        author_principal="user:bob",
+    )
+    denied_when_closed = _decide(
+        BOB, facts=facts, entry="get", action=SpaceAction.UPDATE,
+        author_principal="user:bob", own_actions_apply=False,
+    )
+    assert allowed_when_open.allowed, "前置：附加集合开着时本人所写的更新放行"
+    assert not denied_when_closed.allowed, "附加集合关掉后本人所写的更新被拒"
+
+
+def test_own_actions_false_keeps_editor_update() -> None:
+    """附加集合关闭不影响编辑者：其更新在基础集合里。"""
+    facts = _shared(_member(BOB, content=SpaceContentRole.EDITOR))
+    assert _decide(
+        BOB, facts=facts, entry="get", action=SpaceAction.UPDATE,
+        author_principal="user:alice", own_actions_apply=False,
+    ).allowed, "编辑者的更新不依赖附加集合"
+
+
 # -- 第 9 步 代操作委托：本步只收判定结论，复核由宿主回真源做 ------------------ #
 #
 # 委托记录的有效期、动作、绑定复核都在宿主侧（见 tests/unit/api/ 的空间级生命周期用例）。

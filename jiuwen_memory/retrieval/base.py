@@ -8,6 +8,8 @@
 
 - :class:`~retrieval.query_parser.QueryParser` 查询理解（改写/分词/实体/向量化/时间解析）
 - :class:`~retrieval.fuser.Fuser` 多路融合 + 重排（RRF / Reranker）
+- :class:`~retrieval.selector.Selector` 选取（相关性过滤后、截断 top_k 前的可选阶段，
+  决定返回哪几条；首版实现是经验条目的选取，mem2.0 §2.4）
 - :class:`~retrieval.discloser.Discloser` 渐进式披露（L0 摘要 → L1 片段 → L2 全文）
 - :class:`~retrieval.retriever.Retriever` 检索入口（编排整条链路，记录轨迹）
 
@@ -29,6 +31,7 @@ from enum import Enum
 class RetrievalOperatorType(str, Enum):
     QUERY_PARSER = "query_parser"
     FUSER = "fuser"
+    SELECTOR = "selector"
     DISCLOSER = "discloser"
     EXPANDER = "expander"
     RETRIEVER = "retriever"

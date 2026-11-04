@@ -55,8 +55,11 @@ from jiuwen_memory.common.type_def.memory import ROUTE_CTX_KEY, Segment
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
+from jiuwen_memory.construction.appraiser import Appraisal, Appraiser, AppraiserProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
+from jiuwen_memory.construction.common import resolve_message_store
+from jiuwen_memory.construction.curator import Curator, CuratorProducer
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer
 from jiuwen_memory.construction.evolver import (
     EvolveMode,
@@ -90,7 +93,7 @@ from jiuwen_memory.construction.snapshot_inheritance import (
     inherit_infer_snapshots,
     snapshot_for_decision,
 )
-from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -216,11 +219,15 @@ class OrchestratingEvolver(Evolver):
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
         router: Router | None = None,
+        appraiser: Appraiser | None = None,
+        curator: Curator | None = None,
         *,
         hierarchy_composer: HierarchyComposer | None = None,
         graph_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
+        recent_originals_limit: int = 10,
+        related_memories_top_k: int = 10,
     ) -> None:
         self._extractor = extractor
         self._abstractor = abstractor
@@ -236,6 +243,13 @@ class OrchestratingEvolver(Evolver):
         self._layer_annotator = layer_annotator
         # 归属判定算子：None 表示不判定，派生单元沿用源单元的 scope（向后兼容）。
         self._router = router
+        # 评价算子：None 表示无准入评价与收尾（向后兼容）。经验 profile 配置
+        # ExperienceAppraiser：抽取之前 appraise、流程结束 finalize（§2.2）。
+        self._appraiser = appraiser
+        # 整理算子：None 表示 CONSOLIDATE 不整理直接升华（向后兼容）。经验
+        # profile 配置 ExperienceCurator：升华之前先整理（§2.5.2）——归纳只用
+        # 整理后留下的条目；curate 返回空列表（有一步失败）时本轮不归纳。
+        self._curator = curator
         self._hierarchy_composer = hierarchy_composer
         self.relations: list[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
@@ -247,9 +261,11 @@ class OrchestratingEvolver(Evolver):
         self._dedup_medium_similarity = dedup_medium_similarity
         self._dedup_high_similarity = dedup_high_similarity
 
-        # infer 上下文收集的条数（见 F02「上下文增强抽取」）
-        self._recent_originals_limit = 10
-        self._related_memories_top_k = 10
+        # infer 上下文收集的条数（见 F02「上下文增强抽取」）。取 0 时整步跳过
+        # （不扫描/不写入/不删除 /messages/、不调去重召回）——经验 profile 的取法：
+        # 轨迹由评价算子存为轨迹记录，不收集对话上下文（§2.2）。
+        self._recent_originals_limit = int(recent_originals_limit)
+        self._related_memories_top_k = int(related_memories_top_k)
 
     # ------------------------------------------------------------------
     # infer=true 上下文收集（evolver 内部，evolve 接口不变）
@@ -579,6 +595,17 @@ class OrchestratingEvolver(Evolver):
             result.superseded_ids.append(existing_unit.id)
 
         elif decision == DedupDecision.NOOP:
+            # 判为重复：把命中的已有条目 id 记入 duplicate_ids，读取方（评价算子的
+            # finalize）据此记复现。重复结论没有有效的已有条目时不填、记警告——
+            # 不用相似度最高的召回条目代替，避免误记复现（§2.2）。
+            if existing_unit is not None:
+                result.duplicate_ids.append(existing_unit.id)
+            else:
+                logger.warning(
+                    "Evolver._dedup: NOOP without existing_unit for candidate %s, "
+                    "duplicate_ids not recorded",
+                    candidate.id[:8],
+                )
             logger.info(
                 "Evolver._dedup: NOOP candidate %s skipped (duplicate of %s)",
                 candidate.id[:8],
@@ -986,6 +1013,12 @@ class OrchestratingEvolver(Evolver):
         """
         if not units:
             return []
+        if self._recent_originals_limit <= 0:
+            # 保留条数为 0：整步跳过——不扫描、不写入、不删除。现有实现先写入本轮
+            # 原文再按条数删除，若只把常量改 0，轨迹会先作为对话原文写进 /messages/
+            # 再被删除；经验 profile 用本参数关闭原文维护（轨迹由评价算子存为轨迹
+            # 记录，§2.2）。
+            return []
         scope = units[0].scope
         try:
             historical = self._list_messages(scope)
@@ -1032,7 +1065,12 @@ class OrchestratingEvolver(Evolver):
 
         对本轮每个 unit 调一次 dedup.recall（它已滤自身、滤非 ACTIVE、按 min_similarity
         过滤、聚合取 max），合并去重后取 top-N。dedup.recall 内部异常吞掉返回空，不阻断。
+
+        ``related_memories_top_k`` 取 0 时整步跳过（不调去重召回）——经验 profile
+        的取法：经验的去重召回由去重判定自己做，上下文不收集相关记忆（§2.2）。
         """
+        if self._related_memories_top_k <= 0:
+            return []
         seen: dict[str, MemoryUnit] = {}
         for unit in units:
             try:
@@ -1130,10 +1168,59 @@ class OrchestratingEvolver(Evolver):
         return kept
 
     def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
-        """EXTRACT：抽取派生候选 → 分层标注 → 去重判定+落盘（_dedup_batch）。
+        """EXTRACT：评价准入 → 抽取派生候选 → 分层标注 → 去重判定+落盘（_dedup_batch）。
 
-        子类可覆盖本方法切换 EXTRACT 路径（如 DynamicEvolver 走 extract→consolidate→reflect→落盘）。
+        配置了评价算子时（经验 profile，§2.2）：抽取之前调 ``appraise``，``proceed``
+        为否直接返回空（重复检查、结构过滤与补报在此消化，不进抽取）；评价结论挂进
+        抽取上下文；流程结束时调 ``finalize`` 记复现与计数——流程出错时以 ``None``
+        调，收尾自身出错只记日志，抛出流程原来的异常。未配置时两处都跳过（其他
+        profile 行为不变）。
+
+        子类可覆盖本方法切换 EXTRACT 路径（如 DynamicEvolver 走 extract→consolidate→reflect→落盘）；
+        覆盖方自行接入评价算子（见 DynamicEvolver）。
         """
+        appraisal = self._appraise(units)
+        if appraisal is not None and not appraisal.proceed:
+            return EvolveResult()
+        try:
+            result = self._extract_with_appraisal(units, appraisal)
+        except Exception:
+            self._finalize(units, appraisal, None)
+            raise
+        self._finalize(units, appraisal, result)
+        return result
+
+    def _appraise(self, units: list[MemoryUnit]) -> Appraisal | None:
+        """抽取前准入评价；未配置评价算子返回 ``None``（appraise 自身的异常照常冒泡）。"""
+        if self._appraiser is None:
+            return None
+        return self._appraiser.appraise(units)
+
+    def _finalize(
+        self,
+        units: list[MemoryUnit],
+        appraisal: Appraisal | None,
+        result: EvolveResult | None,
+    ) -> None:
+        """流程结束收尾；未配置评价算子或无评价结论时跳过。
+
+        ``result`` 为 ``None`` 表示流程抛异常（评价算子据此置轨迹为处理失败）。
+        收尾自身出错只记日志：条目可能已落盘，抛出会把成功的写入误报为失败。
+        """
+        if self._appraiser is None or appraisal is None:
+            return
+        try:
+            self._appraiser.finalize(units, appraisal, result)
+        except Exception as exc:
+            logger.warning(
+                "Evolver._finalize: appraiser finalize failed: %s: %s",
+                type(exc).__name__, exc,
+            )
+
+    def _extract_with_appraisal(
+        self, units: list[MemoryUnit], appraisal: Appraisal | None
+    ) -> EvolveResult:
+        """EXTRACT 的实际管线；评价结论挂进抽取上下文（无评价算子时为 ``None``）。"""
         procedural = self._is_procedural(units)
         if procedural:
             # procedural=true：过程记忆抽取——不收集 context（不检索10条、不拉10条）、
@@ -1158,6 +1245,12 @@ class OrchestratingEvolver(Evolver):
         # 非 procedural 的 EXTRACT 路径（infer 同步抽取 / background EXTRACT）：
         recent = self._persist_and_maintain_messages(units)
         context = self._maybe_collect_extract_context(units, recent)
+        if appraisal is not None:
+            # 评价结论只有配置了评价算子的 profile 的抽取算子读取（ExtractContext
+            # 的 appraisal 字段）；非 infer 写入 context 为 None 时补一个空壳挂上。
+            if context is None:
+                context = ExtractContext()
+            context.appraisal = appraisal
         extracted = self._extractor.extract(units, context=context)
         inherit_infer_snapshots(units, extracted)
         logger.info("Evolver: EXTRACT extractor returned %d units", len(extracted))
@@ -1176,13 +1269,28 @@ class OrchestratingEvolver(Evolver):
         判定上下文经瞬态键 ``route_ctx`` 从写入入口传入，只在该次写入的调用链上存在；整合
         由调度器在后台触发，取不到这个上下文。整合产物因此沿用被整合单元的落点。不要在这里
         补判定插入点——没有可用的候选空间集合，判出的落点无从校验是否在调用方的写权范围内。
+
+        配置了整理算子（经验 profile，§2.5.2）时在升华之前先整理：整理聚合效用
+        事件为统计记录、退闲置与有害条目、控制类别规模；归纳只用整理后留下的
+        条目。curate 返回空列表（整理有一步失败）时本轮不归纳，直接返回。
         """
+        if self._curator is not None:
+            units = self._curator.curate(units)
+            logger.info("Evolver: CONSOLIDATE curator returned %d units", len(units))
+            if not units:
+                return EvolveResult()
         abstracted = self._abstractor.abstract(units)
         logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
         if not abstracted:
             return EvolveResult()
         copy_consolidation_prompts(units, abstracted)
         self._annotate_layers(abstracted)
+        if not self._abstractor.dedup_products:
+            # 技能类产物不过语义去重（§2.5.3）：同一技能的新版与旧版内容
+            # 天然相近，去重会把新版误判成重复。直接落盘，先例同 EXTRACT
+            # 的 procedural 路径。
+            created = self._persist(abstracted)
+            return EvolveResult(created_ids=created, created_units=list(abstracted))
         return self._dedup_batch(abstracted)
 
     def _evolve_associate(self, units: list[MemoryUnit]) -> EvolveResult:
@@ -1228,23 +1336,44 @@ class OrchestratingEvolver(Evolver):
 
 
 def _resolve_message_store(config) -> KVStore:
-    """取原文 store：params 声明了就按引用取，没声明则复用 ``kv_store.default`` 具名实例。
+    """取原文 store（共用兜底，见 :func:`construction.common.resolve_message_store`）。"""
+    return resolve_message_store(config)
 
-    不能简单用 ``KvProducer.dep(config, "message_store", default="memory")``——``dep`` 的
-    ``default`` 分支是**匿名新建**，会造出一个与配置后端无关的进程内 KV，原文从此写进谁也
-    看不见的 dict（不落盘、重启即失、``storage.scan`` 查不到、无告警）。
 
-    而字段缺失是常态：``AssemblyContext.merged`` 按具名实例整体覆盖，用户一旦声明
-    ``evolver.default``（如 examples/config_template.yml 里启用 dynamic 的写法），内置
-    params 里的 ``message_store`` 就随之消失。
+def _opt_appraiser(config) -> Appraiser | None:
+    """评价算子可选装配（两个 evolver 的装配共用）：实例参数声明优先，置空即禁用。
 
-    与 :meth:`StoreManagerProducer.resolve` 同款兜底——两者都是**有状态**依赖，新建一个等于换后端。
+    与 :func:`_opt_annotator` 同款：实例参数 ``appraiser`` 声明了就按引用取（None/
+    "" 显式禁用）；未声明时取 ``appraiser`` 命名空间下的具名 ``default``；两者皆无
+    返回 ``None``（无准入评价与收尾，其他 profile 的行为不变）。
     """
-    if "message_store" in config.params:
-        return KvProducer.dep(config, "message_store")
-    if "default" in config.ctx.namespaces.get(KvProducer.TOP_NAME, {}):
-        return KvProducer.build_named("default", config.ctx)
-    return KvProducer.build("memory", {}, config.ctx)
+    if "appraiser" in config.params:
+        name = config.params.get("appraiser")
+        if not name:  # None / "" → 显式禁用
+            return None
+        return AppraiserProducer.build_named(str(name), config.ctx)
+    ns = config.ctx.namespaces.get(AppraiserProducer.TOP_NAME, {})
+    if "default" not in ns:
+        return None
+    return AppraiserProducer.build_named("default", config.ctx)
+
+
+def _opt_curator(config) -> Curator | None:
+    """整理算子可选装配（经验 profile 用，其他 profile 不受影响）。
+
+    与 :func:`_opt_appraiser` 同款：实例参数 ``curator`` 声明了就按引用取
+    （None/"" 显式禁用）；未声明时取 ``curator`` 命名空间下的具名 ``default``；
+    两者皆无返回 ``None``（CONSOLIDATE 不整理直接升华，现有行为不变）。
+    """
+    if "curator" in config.params:
+        name = config.params.get("curator")
+        if not name:  # None / "" → 显式禁用
+            return None
+        return CuratorProducer.build_named(str(name), config.ctx)
+    ns = config.ctx.namespaces.get(CuratorProducer.TOP_NAME, {})
+    if "default" not in ns:
+        return None
+    return CuratorProducer.build_named("default", config.ctx)
 
 
 @EvolverProducer.register("orchestrating")
@@ -1297,7 +1426,11 @@ def _build(config):
         ),
         layer_annotator=_opt_annotator(),
         router=optional_router(config),
+        appraiser=_opt_appraiser(config),
+        curator=_opt_curator(config),
         graph_name=resolve_name(config, "graph_store"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        recent_originals_limit=config.get("recent_originals_limit", 10),
+        related_memories_top_k=config.get("related_memories_top_k", 10),
     )

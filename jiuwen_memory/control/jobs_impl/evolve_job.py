@@ -15,6 +15,7 @@ Engine 共用同一实例，Spec 不自行解析）。
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from jiuwen_memory.common.errors import ValidationError
@@ -49,6 +50,7 @@ class EvolveJob(Job):
         mode: EvolveMode = EvolveMode.EXTRACT,
         interval: int = 0,
         resolver: CandidateResolver | None = None,
+        evolver_for_unit: Callable[[MemoryUnit], Evolver | None] | None = None,
     ) -> None:
         super().__init__(scope=scope, interval=interval)
         self._kv = kv
@@ -56,6 +58,12 @@ class EvolveJob(Job):
         self._mode = mode
         # None → 默认谓词源（list 全量）——不传 resolver 的旧调用路径行为不变。
         self._resolver = resolver or PredicateResolver(scope=scope, kv=kv)
+        # None → 全部条目交 self._evolver（现行为）；非 None → 逐条取所属
+        # profile 的 evolver 按实例分组分别演进（mem2.0 §2.5.1 改动 1）：
+        # Dreaming 读入的条目按 memory_type 分发，经验条目交经验 profile
+        # 的 evolver，其余仍交全局 evolver。逐条选取，是因为现有
+        # select_for_write 对一批条目只取第一条带路由值的条目的 memory_type。
+        self._evolver_for_unit = evolver_for_unit
 
     @property
     def mode(self) -> str:
@@ -169,7 +177,29 @@ class EvolveJob(Job):
 
     def _evolve_group(self, units: list[MemoryUnit]) -> EvolveResult:
         self.check_cancelled()
-        return self._evolver.evolve(units, self._mode)
+        # 空桶仍调全局 evolver（既有契约）；未配 evolver_for_unit 的调用路径
+        # 整批交 self._evolver——两条旧行为都不变。
+        if self._evolver_for_unit is None or not units:
+            return self._evolver.evolve(units, self._mode)
+        # 逐条取所属 profile 的 evolver（取不到回落全局），按实例分组分别
+        # 演进，结果合并（mem2.0 §2.5.1 改动 1）。
+        groups: dict[int, tuple[Evolver, list[MemoryUnit]]] = {}
+        for unit in units:
+            evolver = self._evolver_for_unit(unit) or self._evolver
+            marker = id(evolver)
+            if marker not in groups:
+                groups[marker] = (evolver, [])
+            groups[marker][1].append(unit)
+        merged = EvolveResult()
+        for evolver, group_units in groups.values():
+            result = evolver.evolve(group_units, self._mode)
+            merged.created_ids.extend(result.created_ids)
+            merged.updated_ids.extend(result.updated_ids)
+            merged.superseded_ids.extend(result.superseded_ids)
+            merged.forgotten_ids.extend(result.forgotten_ids)
+            merged.created_units.extend(result.created_units)
+            merged.duplicate_ids.extend(result.duplicate_ids)
+        return merged
 
 
 # -- Spec + builder ------------------------------------------------------- #
@@ -189,7 +219,9 @@ class EvolveJobSpec:
     evolver: Evolver | None = None
 
     def with_scope(self, scope: Scope, **kwargs) -> EvolveJob:
-        """生成完整 Job 实例——``kwargs`` 透传运行时参数（``mode`` / ``evolver`` 等）。"""
+        """生成完整 Job 实例——``kwargs`` 透传运行时参数（``mode`` / ``evolver``
+        / ``evolver_for_unit`` / ``resolver`` 等）。
+        """
         evolver = kwargs.pop("evolver", None) or self.evolver
         if evolver is None:
             raise ValidationError(

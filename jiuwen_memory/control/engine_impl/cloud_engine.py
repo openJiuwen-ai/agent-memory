@@ -66,7 +66,12 @@ from jiuwen_memory.control.evolution.hierarchy_submission import (
 )
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
-from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.pipeline import (
+    NO_FALLBACK_MEMORY_TYPES,
+    MemoryPipeline,
+    PipelineBinding,
+    PipelineProducer,
+)
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
@@ -283,6 +288,11 @@ class CloudEngine(MemoryEngine):
             raise RuntimeError("CloudEngine dreaming requires a KVStore")
         return self._kv
 
+    @property
+    def pipeline(self) -> MemoryPipeline | None:
+        """流水线路由（API 层校验空间绑定 profile 用，见 MemoryEngine.pipeline）。"""
+        return self._pipeline
+
     def candidate_scopes(self) -> list[Scope]:
         return self._domain_store.scopes()
 
@@ -316,6 +326,15 @@ class CloudEngine(MemoryEngine):
             raise ValueError(
                 "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
             )
+        # 不回落的取值（§2.1「experience 不回落」）在选 profile 之前核对：无 profile、
+        # 或不经过对应 profile 的派生流程（infer 非 true / procedural / middle）即
+        # 参数错误，不写入任何内容。
+        self._require_profile(
+            str(raw_meta.get(self._message_type_key, "")).strip(),
+            infer=infer,
+            procedural=procedural,
+            middle=middle,
+        )
 
         middle_interval = raw_meta.pop("middle_interval", None)
         raw_meta.pop("middle", None)
@@ -539,6 +558,10 @@ class CloudEngine(MemoryEngine):
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         routed_query = self._normalized_query(query)
+        # 不回落的取值同样约束检索：无对应 profile 即参数错误（§2.1）。
+        self._require_profile(
+            str(routed_query.extensions.get(self._message_type_key, "")).strip()
+        )
         binding = self._recall_binding(routed_query)
         retriever = binding.retriever if binding is not None else self._retriever
         return retriever.retrieve(scope, routed_query)
@@ -856,6 +879,9 @@ class CloudEngine(MemoryEngine):
             )
         # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
         # 纯执行（鉴权在 API 层）：candidate→resolver 翻译 + 一次性 EvolveJob 提交。
+        # evolver_for_unit（mem2.0 §2.5.1 改动 1）：条目按 memory_type 分发到所属
+        # profile 的 evolver（引擎现有的逐条选取方法），经验条目不再被对话记忆的
+        # 整理规则处理。
         return await submit_evolve(
             scope=scope,
             mode=mode,
@@ -868,6 +894,7 @@ class CloudEngine(MemoryEngine):
             retriever=self._retriever,
             buckets=buckets,
             denied_scopes=denied_scopes,
+            evolver_for_unit=self._evolver_for_unit,
         )
 
     async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
@@ -1015,6 +1042,50 @@ class CloudEngine(MemoryEngine):
             return
         for unit in units:
             unit.system_metadata["pipeline"] = pipeline_name
+
+    def _require_profile(
+        self,
+        value: str,
+        *,
+        infer: bool | None = None,
+        procedural: bool = False,
+        middle: bool = False,
+    ) -> None:
+        """不回落的 ``memory_type`` 取值（:data:`NO_FALLBACK_MEMORY_TYPES`）的准入核对。
+
+        无对应 profile 即 ``ValidationError``：回落会把轨迹 JSON 当作一段对话抽取、写入
+        用户自己的空间，而 ``add`` 仍返回成功（§2.1）。``write`` 侧另核对三个写入开关
+        （``infer=None`` 表示检索侧，不核对）；这三种请求都不经过对应 profile 的派生流程：
+        ``infer`` 不为真走直接写入、``procedural=true`` 转过程记忆分支、``middle=true``
+        走工作记忆建索引。
+
+        ``skill`` 在写入侧整体拒绝（§2.3「类型不能伪造」）：技能由技能归纳算子从多条
+        复现的经验里产出（§2.5），不经写入接口——放行即贡献者可把自己的一条记忆写成
+        技能注入其他用户。检索侧（``infer=None``）放行：技能条目按等值谓词可读，读
+        权限沿用空间的现有规则。
+        """
+        if value == "skill":
+            if infer is not None:
+                raise ValidationError(
+                    "memory_type='skill' 不能经 add 写入：技能由技能归纳算子从多条"
+                    "独立复现的经验提炼（§2.5），不经写入接口"
+                )
+            return
+        if value not in NO_FALLBACK_MEMORY_TYPES:
+            return
+        if self._pipeline is None or not self._pipeline.has_profile_for(value):
+            raise ValidationError(
+                f"memory_type={value!r} 须由对应的流水线 profile 处理："
+                "部署未启用流水线或未为它配置 profile，拒绝执行"
+            )
+        if infer is not None:
+            # 拆成两层 if（G.CTL.03 单个 if 至多 3 个布尔表达式）：
+            # 外层判「带 infer 传参」，内层判三种非法形态。
+            if not infer or procedural or middle:
+                raise ValidationError(
+                    f"memory_type={value!r} 只支持同步派生写入（infer=true），"
+                    "且不得带 procedural=true 或 middle=true"
+                )
 
     def _write_binding(self, units: list[MemoryUnit]) -> PipelineBinding | None:
         if self._pipeline is None:

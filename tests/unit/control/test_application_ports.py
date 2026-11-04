@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from jiuwen_memory.common.errors import PartialFailureError
+from jiuwen_memory.common.errors import NotFoundError, PartialFailureError
 from jiuwen_memory.common.type_def import MemoryUnit, Modality, Scope, Segment
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control.application import (
@@ -253,6 +254,108 @@ def test_space_lifecycle_retry_completes_after_partial_metadata_delete_failure()
     assert result.deleted_counts["kv"] == 1
     assert engine.purge_space.await_count == 2
     assert space.delete.call_count == 2
+
+
+# ====================================================================== #
+# 删除后回调（mem2.0 §2.5.2「按作者清除」的登记路径）
+# ====================================================================== #
+
+
+def _space_with_owners(owners: list[Scope]) -> MagicMock:
+    """带 owners 元数据的 SpaceManager 替身（F07 归属主体登记形态）。"""
+    space = MagicMock()
+    space.get.return_value = SimpleNamespace(owners=owners)
+    space.delete.return_value = SpaceDeleteResult(
+        org="acme",
+        space="coding",
+        deleted_counts={"kv": 0},
+        status=SpaceStatus.DELETED,
+    )
+    return space
+
+
+def test_space_lifecycle_notifies_callbacks_with_owners_read_before_delete() -> None:
+    """删除成功后回调收到 (org, space, owners)；owners 在元数据删除前读出。
+
+    owners 是被删空间的归属主体登记（F07），元数据删除后就读不到了——读取
+    必须发生在 ``space.delete`` 之前。
+    """
+    engine = AsyncMock()
+    engine.purge_space.return_value = ["u1"]
+    owners = [Scope(org="acme", user="alice"), Scope(org="acme", agent="bot")]
+    space = _space_with_owners(owners)
+    received: list[tuple[str, str, list[Scope]]] = []
+    service = SpaceLifecycleService(
+        engine, space, on_deleted=[lambda org, s, ws: received.append((org, s, ws))]
+    )
+
+    asyncio.run(service.delete_space("acme", "coding"))
+
+    assert received == [("acme", "coding", owners)], "回调收到删除前的 owners"
+    method_order = [name for name, _args, _kwargs in space.method_calls]
+    assert method_order.index("get") < method_order.index("delete"), (
+        "owners 必须在元数据删除之前读出"
+    )
+
+
+def test_space_lifecycle_callback_failure_is_contained() -> None:
+    """回调异常不上抛（space.delete 不幂等，上抛会让重试死循环）、不拦后续回调。"""
+    engine = AsyncMock()
+    engine.purge_space.return_value = []
+    space = _space_with_owners([Scope(org="acme", user="alice")])
+    received: list[str] = []
+
+    def _boom(org: str, space_name: str, owners: list[Scope]) -> None:
+        raise RuntimeError("callback exploded")
+
+    def _ok(org: str, space_name: str, owners: list[Scope]) -> None:
+        received.append(space_name)
+
+    service = SpaceLifecycleService(engine, space, on_deleted=[_boom, _ok])
+
+    result, _purged = asyncio.run(service.delete_space("acme", "coding"))
+
+    assert result.status == SpaceStatus.DELETED, "事务已成功，回调异常不改结果"
+    assert received == ["coding"], "炸掉的回调不拦后续回调"
+
+
+def test_space_lifecycle_callback_not_fired_when_metadata_delete_fails() -> None:
+    """元数据删除失败（PartialFailureError）时不触发回调——事务未完成不登记。"""
+    engine = AsyncMock()
+    engine.purge_space.return_value = ["u1"]
+    space = _space_with_owners([])
+    space.delete.side_effect = RuntimeError("metadata delete failed")
+    received: list[str] = []
+    service = SpaceLifecycleService(
+        engine, space, on_deleted=[lambda org, s, ws: received.append(s)]
+    )
+
+    with pytest.raises(PartialFailureError):
+        asyncio.run(service.delete_space("acme", "coding"))
+
+    assert received == [], "事务失败不触发删除后回调"
+
+
+def test_space_lifecycle_owners_empty_when_get_misses() -> None:
+    """begin_delete 后 get 抛 NotFoundError 时 owners 按空列表回调。"""
+    engine = AsyncMock()
+    engine.purge_space.return_value = []
+    space = MagicMock()
+    space.get.side_effect = NotFoundError("space not found")
+    space.delete.return_value = SpaceDeleteResult(
+        org="acme",
+        space="coding",
+        deleted_counts={},
+        status=SpaceStatus.DELETED,
+    )
+    received: list[list[Scope]] = []
+    service = SpaceLifecycleService(
+        engine, space, on_deleted=[lambda org, s, ws: received.append(ws)]
+    )
+
+    asyncio.run(service.delete_space("acme", "coding"))
+
+    assert received == [[]], "空间元数据缺失时 owners 为空列表，回调照常触发"
 
 
 def test_governance_delegates_inspect_trace_audit() -> None:

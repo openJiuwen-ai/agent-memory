@@ -25,6 +25,7 @@ from jiuwen_memory.common.type_def import (
     CandidateSource,
     FanOutCandidate,
     IdsCandidate,
+    MemoryUnit,
     PredicateCandidate,
     RecallCandidate,
     Scope,
@@ -183,13 +184,15 @@ async def submit_evolve(
     retriever: Retriever | None,
     buckets: list[Scope] | None = None,
     denied_scopes: list[str] | None = None,
+    evolver_for_unit: Callable[[MemoryUnit], Evolver | None] | None = None,
 ) -> str | None:
     """立即执行一次演进（唯一执行链条）：candidate → resolver → EvolveJob → submit。
 
     纯执行件——鉴权在 API 层（入口 + fan-out 逐桶）已完成；``buckets`` /
     ``denied_scopes`` 为 API 层裁决产物，fan-out 型候选源才收（与
     ``build_resolver`` 的 kwargs 透传协议一致）。红线：必须经 EvolveJob
-    提交，不得另写执行链条。
+    提交，不得另写执行链条。``evolver_for_unit`` 透传给 EvolveJob 按条目
+    所属 profile 分发演进（mem2.0 §2.5.1 改动 1）；None 时整批交 ``evolver``。
     """
     resolver = build_resolver(
         scope,
@@ -200,6 +203,11 @@ async def submit_evolve(
         denied_scopes=denied_scopes,
     )
     job = job_factory.get_job(
-        JobType.EVOLVE, scope=scope, mode=mode, evolver=evolver, resolver=resolver
+        JobType.EVOLVE,
+        scope=scope,
+        mode=mode,
+        evolver=evolver,
+        resolver=resolver,
+        evolver_for_unit=evolver_for_unit,
     )
     return await scheduler.submit(job, channel)
