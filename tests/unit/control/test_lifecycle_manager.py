@@ -48,29 +48,30 @@ class _FakeDocStore:
     """
 
     def __init__(self, units: list[MemoryUnit]) -> None:
-        self._units: dict[str, MemoryUnit] = {u.id: u for u in units}
+        self.units: dict[str, MemoryUnit] = {u.id: u for u in units}
         self.written: list[str] = []
 
-    def should_write_document(self) -> bool:
+    @staticmethod
+    def should_write_document() -> bool:
         return True
 
     def get(self, scope: Scope, unit_ids: list[str]) -> list[MemoryUnit]:
-        return [self._units[uid] for uid in unit_ids if uid in self._units]
+        return [self.units[uid] for uid in unit_ids if uid in self.units]
 
     def update(self, scope: Scope, units: list[MemoryUnit]) -> None:
         for unit in units:
-            self._units[unit.id] = unit
+            self.units[unit.id] = unit
             self.written.append(unit.id)
 
     def scopes(self) -> list[Scope]:
         seen: list[Scope] = []
-        for unit in self._units.values():
+        for unit in self.units.values():
             if unit.scope not in seen:
                 seen.append(unit.scope)
         return seen
 
     def list(self, scope: Scope, *, limit: int = 100, **kwargs) -> MemoryListResult:
-        return MemoryListResult(items=[u for u in self._units.values() if u.scope == scope])
+        return MemoryListResult(items=[u for u in self.units.values() if u.scope == scope])
 
 
 def test_transition_allows_defined_forward_lifecycle_moves(unit_factory) -> None:
@@ -159,7 +160,7 @@ def test_supersede_document_mode_reads_via_domain_store(unit_factory) -> None:
     assert updated.temporal.t_invalid == invalid_at
     # 写走 domain_store（非 KV）
     assert doc_store.written == ["u1"]
-    assert doc_store._units["u1"].lifecycle == LifecycleState.SUPERSEDED
+    assert doc_store.units["u1"].lifecycle == LifecycleState.SUPERSEDED
 
 
 def test_transition_document_mode_reads_and_writes_via_domain_store(unit_factory) -> None:
@@ -172,7 +173,7 @@ def test_transition_document_mode_reads_and_writes_via_domain_store(unit_factory
     lifecycle.transition(unit.scope, [unit.id], LifecycleState.ARCHIVED)
 
     assert doc_store.written == ["u1"]
-    assert doc_store._units["u1"].lifecycle == LifecycleState.ARCHIVED
+    assert doc_store.units["u1"].lifecycle == LifecycleState.ARCHIVED
 
 
 def test_sweep_document_mode_reads_via_domain_store(unit_factory) -> None:
@@ -196,7 +197,7 @@ def test_sweep_document_mode_reads_via_domain_store(unit_factory) -> None:
     assert all(t.to_state == LifecycleState.FORGOTTEN for t in transitions)
     # 纯计算：sweep 不回写真源
     assert doc_store.written == []
-    assert doc_store._units["expired"].lifecycle == LifecycleState.ACTIVE
+    assert doc_store.units["expired"].lifecycle == LifecycleState.ACTIVE
 
 
 def test_domain_store_none_degenerates_to_kv(unit_factory) -> None:
