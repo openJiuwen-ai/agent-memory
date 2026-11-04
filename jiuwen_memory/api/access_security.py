@@ -7,14 +7,20 @@ from collections.abc import Mapping
 from typing import Any
 
 from jiuwen_memory.common.bootstrap import register_plugins
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.security._assembly_lifecycle import _assembly_lifecycle
 from jiuwen_memory.common.security.authentication.authentication_impl.dev_authenticator import (
     DevAuthenticator,
 )
 from jiuwen_memory.common.security.authentication.base import Authenticator
+from jiuwen_memory.common.security.authentication.key_store import (
+    PrincipalRegistrationCapability,
+    validate_principal_registration,
+)
 from jiuwen_memory.common.security.runtime import SecurityRuntime, SecurityRuntimeProducer
+from jiuwen_memory.common.security.types import Role
+from jiuwen_memory.common.type_def.scope import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.config.defaults import default_context
@@ -64,3 +70,36 @@ def _build_security_runtime(ctx: AssemblyContext) -> SecurityRuntime | None:
         raise ValidationError("selected security Runtime has already been closed")
     runtime.health()
     return runtime
+
+
+def register_trusted_principal(
+    authenticator: Authenticator,
+    actor: Scope,
+    *,
+    role: str = "user",
+) -> None:
+    """在开始接收请求前，由受信部署代码初始化 Trusted 的实际主体注册表。
+
+    role 只接受 user/admin；同主体同角色幂等，角色冲突拒绝，不产生主体 API Key。
+    这不是管理请求的鉴权入口：宿主负责限制调用者，不能直接暴露为 HTTP/CLI/MCP。
+    第三方认证器/Store 未声明初始化能力时明确报 UnsupportedCapabilityError。
+    """
+    try:
+        assigned_role = Role(role)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("principal role must be user or admin") from exc
+    validate_principal_registration(actor, assigned_role)
+    if (
+        not isinstance(authenticator, Authenticator)
+        or not isinstance(
+            authenticator,
+            PrincipalRegistrationCapability,
+        )
+        or not callable(authenticator.register_principal)
+    ):
+        raise UnsupportedCapabilityError(
+            capability="principal_registration",
+            value="register_trusted_principal",
+            component="authenticator",
+        )
+    authenticator.register_principal(actor, assigned_role)
