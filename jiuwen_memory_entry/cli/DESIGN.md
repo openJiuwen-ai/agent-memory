@@ -18,7 +18,7 @@ JSON 规则，领域错误共用 `core/error_response.py` 的状态映射和脱�
 
 ## 命令与参数
 
-命令集合直接来自 `MemoryAPI.__abstractmethods__`，当前 36 个公开方法均有同名命令。
+命令集合直接来自 `MemoryAPI.__abstractmethods__`，当前 38 个公开方法均有同名命令。
 参数由方法签名生成，只排除 `self` 和由认证边界注入的 `security`。
 
 - 原样保留参数名，例如 `--unit_id`、`--top_k`、`--continue_on_error`；

@@ -328,7 +328,7 @@ api = assemble(config=Config.from_yaml("memory-api.yml"))
 
 ## 9. HTTP 接口与 MemoryAPI 的选择
 
-HTTP 服务一一公开 `MemoryAPI` 的全部 36 个方法，统一使用 `POST /v1/<method_name>`。请求参数的
+HTTP 服务一一公开 `MemoryAPI` 的全部 38 个方法，统一使用 `POST /v1/<method_name>`。请求参数的
 名称、嵌套结构、必填项和默认值与同名方法一致；成功响应是原返回值的 JSON 表达，不增加额外响应
 外壳。`security` 是唯一不从请求体接收的参数，由认证 runtime 构造并注入。
 
@@ -377,7 +377,7 @@ HTTP/CLI 已支持 `add`、`add_async`、`batch_add`、`batch_add_async` 的请�
 
 ### CLI 使用同一套参数
 
-CLI 当前提供全部 36 个 API 同名命令，参数保留原名，复杂对象使用 JSON；例如：
+CLI 当前提供全部 38 个 API 同名命令，参数保留原名，复杂对象使用 JSON；例如：
 
 ```bash
 uv run --no-sync -- ./scripts/run-cli.sh --auth-mode dev add \
