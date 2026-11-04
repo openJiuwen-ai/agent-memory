@@ -2,8 +2,11 @@
 
 import asyncio
 import logging
+import subprocess
 import sys
 import threading
+from pathlib import Path
+from textwrap import dedent
 from types import ModuleType
 from unittest.mock import Mock
 
@@ -73,7 +76,7 @@ def test_backend_build_preloads_dependency_without_connecting(
 
 
 @pytest.mark.parametrize("producer,target,params,module_name", _BACKENDS)
-@pytest.mark.parametrize("error_type", [ImportError, OSError])
+@pytest.mark.parametrize("error_type", [ImportError, OSError, RuntimeError, ValueError])
 def test_backend_dependency_failure_is_reported_at_build(
     monkeypatch, producer, target, backend_params, module_name, error_type,
 ):
@@ -90,6 +93,48 @@ def test_backend_dependency_failure_is_reported_at_build(
     assert caught.value.__cause__ is error
 
 
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, asyncio.CancelledError])
+def test_preload_does_not_wrap_process_control_or_cancellation(monkeypatch, error_type):
+    error = error_type("preload interrupted")
+
+    def fail(_name):
+        raise error
+
+    monkeypatch.setattr(_support, "import_required", fail)
+    with pytest.raises(error_type) as caught:
+        _support.preload_backend("elasticsearch")
+    assert caught.value is error
+
+
+def test_preload_preserves_process_exit_in_subprocess():
+    # G.ERR.11：退出信号只在独立进程主入口构造、捕获，不让测试进程承担退出风险。
+    script = dedent("""
+        import sys
+        from unittest.mock import patch
+        from jiuwen_memory.storage import _support
+
+        signal = SystemExit("preload interrupted")
+        with patch.object(_support, "import_required", side_effect=signal):
+            try:
+                _support.preload_backend("elasticsearch")
+            except SystemExit as caught:
+                assert caught is signal, "process exit must propagate unchanged"
+            else:
+                raise AssertionError("process exit was swallowed")
+        sys.stdout.write("process-exit-preserved")
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[3],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "process-exit-preserved", result.stdout
+
+
 def test_entity_without_hosts_does_not_load_dependency(backend_imports):
     events, constructor, _ = backend_imports
     assert EntityStoreProducer.build("elasticsearch", {}, AssemblyContext()) is None
@@ -97,7 +142,7 @@ def test_entity_without_hosts_does_not_load_dependency(backend_imports):
     constructor.assert_not_called()
 
 
-@pytest.mark.parametrize("error_type", [ImportError, OSError])
+@pytest.mark.parametrize("error_type", [ImportError, OSError, RuntimeError, ValueError])
 def test_fusion_dependency_failure_does_not_create_working_directory(
     monkeypatch, tmp_path, error_type,
 ):

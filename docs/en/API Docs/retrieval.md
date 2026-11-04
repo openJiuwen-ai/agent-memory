@@ -354,7 +354,7 @@ included is controlled by `vector_enabled`, `graph_enabled`, `layers_index_enabl
 
 | `target` | Implementation class | Function | Dependencies and parameters |
 |---|---|---|---|
-| `simple` | `SimpleQueryParser` | The only built-in parser. It can perform conservative sanitization, optional strict LLM rewriting, Tokenizer tokenization, FeatureExtractor keyword/entity extraction, Embedder vectorization, and rule-based time parsing. | Depends on `tokenizer`, `embedder`, `llm`, and `feature_extractor`; `sanitize_enabled` (default `true`), `sanitize_strip_code` (default `false`), `rewrite_enabled` (default `false`); when `vector_enabled=false`, no Embedder is assembled |
+| `simple` | `SimpleQueryParser` | The only built-in parser. It can perform conservative sanitization, optional strict LLM rewriting, Tokenizer tokenization, FeatureExtractor keyword/entity extraction, Embedder vectorization, and rule-based time parsing. | Depends on `tokenizer`, `embedder`, `llm`, and `feature_extractor`; `sanitize_enabled` (default `true`), `sanitize_strip_code` (default `false`), and `rewrite_enabled` (default `false`); when `vector_enabled=false`, no Embedder is assembled |
 
 ```yaml
 query_parser:
@@ -368,6 +368,14 @@ query_parser:
       feature_extractor: default
       sanitize_enabled: true
       sanitize_strip_code: false
+```
+
+The three switches resolve in this order: QueryParser instance `params`, then `globals`, then the
+built-in default. Use `globals` for a retrieval-wide default and instance `params` for a local override:
+
+```yaml
+globals:
+  rewrite_enabled: true
 ```
 
 The built-in default target is `simple`. Its default LLM target is `echo`, and

@@ -36,12 +36,12 @@ logger = get_logger(__name__)
 
 
 def preload_backend(module_name: str) -> None:
-    """装配已选后端时加载依赖；连接和索引创建仍留到首次使用。"""
+    """装配时加载已选后端，归一导入期间的普通异常；连接和索引仍惰性初始化。"""
     started = time.perf_counter()
     logger.info("backend dependency import started: %s", module_name)
     try:
         import_required(module_name)
-    except (ImportError, OSError) as exc:
+    except Exception as exc:  # 三方模块初始化也可能抛 RuntimeError 等普通异常
         logger.error(
             "backend dependency import failed: %s elapsed=%.3fs",
             module_name, time.perf_counter() - started,

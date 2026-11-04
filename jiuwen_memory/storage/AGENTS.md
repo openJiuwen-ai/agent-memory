@@ -172,14 +172,17 @@
 ## 本地约束
 
 配置工厂选中 ES 全文、ES 实体、Milvus 向量或 `milvus_graph` 融合后，在同步装配期经 `preload_backend`
-加载 `elasticsearch` / `pymilvus`，记录开始、完成与耗时；导入或原生库加载失败抛
-`BackendError`。客户端连接及索引/集合创建仍在首次使用时执行，直接构造 Store 仍保留
+加载 `elasticsearch` / `pymilvus`，记录开始、完成与耗时；仅对依赖导入期间的普通
+`Exception` 归一为 `BackendError` 并保留原始异常链，`KeyboardInterrupt` / `SystemExit` /
+取消等 `BaseException` 原样透传。客户端连接及索引/集合创建仍在首次使用时执行，直接构造 Store 仍保留
 惰性导入；融合后端的图依赖也保持惰性加载。离线后端不预加载上述依赖，
 ES 实体未配置 hosts/endpoint 时先返回 None。
 融合工厂先校验必填参数和正维度，再预加载 `pymilvus`，最后构造 Store 创建工作目录，
 依赖加载失败时不得留下新目录。
 正维度规则统一由 `vector_impl/milvus_vector.py` 的 `require_positive_dim` 实现，
 向量构造函数与融合工厂共用；融合工厂的错误使用 `milvus_graph fusion` 标明后端。
+
+- `LocalMarkdownStore` 的正常写入与补偿恢复共享标题渲染；标题、`md_title`、团队坐标与 `memory_class`（含未知非空值）必须通过 `redact_for_log` 记录，日志脱敏不修改实际 Markdown、正文或元数据。
 
 1. 所有 Store 必须实现 `store_type()` 和 `health()`（继承自 `BaseStore`）。
 2. 实现通过 `@XxxProducer.register("name")` 自注册。
@@ -266,11 +269,12 @@ ES 实体未配置 hosts/endpoint 时先返回 None。
     CloudEngine 的记忆 get/list/scopes 及其权限事实由 DomainStore 真源提供；文档写入经
 DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。文档模式下二者的
     `update` SUPERSEDE / `delete` FORGET·ARCHIVE 在 engine 侧绕过 `KVLifecycleManager` 直接
-    落 shadow（lifecycle 数据源仍是 KV，文档模式真源在 shadow 必失败；见
+    落 shadow（engine 侧绕过是 F09 决策 2 既定范式；`KVLifecycleManager` 的
+    `supersede`/`transition`/`sweep` 已注入 `domain_store` 文档分流，见
     [F09](../../docs/features/control/F09-agent-engine-doc-mode-read.md)）。
-    `InMemoryEngine` 仍直连 KV（非文档模式、KV 即真源）。`LifecycleManager` 仍直连 KV——
-    文档模式下 engine 侧绕过它而非改造其数据源（sweep 共性遗留见 F09）。Schema/middle/lifecycle
-    的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。DomainStore 消费方
+    `InMemoryEngine` 仍直连 KV（非文档模式、KV 即真源）。`LifecycleManager` 已注入
+    `domain_store` 文档分流（#261 覆盖 `transition`/`sweep`，本次补 `supersede`）。
+    Schema/middle 的 KV 耦合不因文档开关自动消失，不能承诺所有组合均已适配。DomainStore 消费方
     有检索路径（`PipelineRetriever`）、一体化写路径（`UnifiedIndexBuilder`）与 Engine 读取路径
     （`CloudEngine`/`AgentEngine`）。
 

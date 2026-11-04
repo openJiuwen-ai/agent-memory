@@ -135,7 +135,9 @@ store 声明为距离型时直接 `raise ValidationError`，与 `min_similarity`
 > 预算到全池 127」不矛盾——后者是把预算放到召回上限、成本翻倍，此处是小幅上调（成本仅 ×1.2）；
 > 对比见 `F04-score-max-fusion.md`「拒绝的方案」中对全池扩容的否决条目。
 > **迁移说明**：这批参数（连同 `query_parser` 的 `sanitize_enabled` / `sanitize_strip_code`）原置于
-> `globals`，现按「globals 仅放跨切面参数」的约定移入各算子实例 `params`。
+> `globals`，现按「globals 仅放跨切面参数」的约定移入各算子实例 `params`；`query_parser` 的
+> `sanitize_enabled` / `sanitize_strip_code` / `rewrite_enabled` 默认值改由 builder fallback 提供，
+> 按实例 `params` > `globals` > builder 缺省读取。
 
 ---
 

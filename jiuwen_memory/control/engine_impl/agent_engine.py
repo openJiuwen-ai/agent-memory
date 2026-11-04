@@ -19,8 +19,9 @@ metadata 保留原生类型落库、admin_* 不落引擎（API 层直达 PolicyM
    normalizer 能力门禁在规约前拒绝（UnsupportedCapabilityError）。若未来
    rail 层出现多模态写入工具，需恢复模态特判。
 3. **无 procedural / middle 分流**：agent 链路无过程性记忆与中位延迟写入
-   语义，write 只保留 infer=true 的派生抽取与缺省直写两路；middle /
-   middle_interval 与 InMemoryEngine 一致 pop 不落盘。
+   语义，write 只保留 infer=true 的派生抽取与缺省直写两路。middle /
+   middle_interval 是调用级开关，本引擎不识别、不剥除、不生效——文档模式
+   默认不支持中期记忆（middle 强绑 KV 后端），如需支持应转需求而非静默透传。
 4. **文档模式 lifecycle 绕过**：默认装配文档模式（真源 md + shadow，KV 不
    持有 MemoryUnit）。KVLifecycleManager 的 supersede/transition/sweep 都从
    KVStore 取 unit，文档模式下走它必 NotFoundError / 静默失效。update
@@ -307,7 +308,8 @@ class AgentEngine(MemoryEngine):
         # agent 场景无 procedural（过程记忆汇总）与 middle（中期缓冲）路径。
         # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
         # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
-        # middle / middle_interval 是调用级开关，不是 unit 持久属性——下面从 meta 剥除。
+        # agent 场景无 middle 路径：middle / middle_interval 不识别、不剥除，随 meta
+        # 原样透传（middle 语义不生效——文档模式默认不支持中期记忆，见类 docstring）。
         meta = dict(system_metadata or {})
 
         def _is_true(key: str) -> bool:

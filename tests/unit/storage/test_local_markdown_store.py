@@ -14,6 +14,7 @@ from __future__ import annotations
 
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
 import datetime
+import logging
 import os
 
 import pytest
@@ -188,7 +189,9 @@ def test_render_block_falls_back_to_empty_title_when_no_team() -> None:
 
 def test_write_persists_blocks_and_backfills_md_filename(tmp_path) -> None:
     store = _store(tmp_path)
-    unit = _unit("u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit(
+        "u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
+    )
 
     store.write(SCOPE, [unit])
 
@@ -242,7 +245,9 @@ def test_replace_content_replaces_matching_block(tmp_path) -> None:
 
 def test_replace_content_returns_false_when_no_match(tmp_path) -> None:
     store = _store(tmp_path)
-    unit = _unit("u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}})
+    unit = _unit(
+        "u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}}
+    )
     store.write(SCOPE, [unit])
 
     assert store.replace_content(SCOPE, "memory/p1/MEMORY.md", "not there", "x") is False
@@ -282,7 +287,9 @@ def test_remove_content_returns_false_when_no_match(tmp_path) -> None:
     store = _store(tmp_path)
     store.write(
         SCOPE,
-        [_unit("u1", "hello", {MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"}})],
+        [_unit("u1", "hello", {
+            MEMORY_CLASS_KEY: "long_term_memory", COORDS_KEY: {"project": "p1"},
+        })],
     )
 
     assert store.remove_content(SCOPE, "memory/p1/MEMORY.md", "missing") is False
@@ -572,3 +579,61 @@ def test_edit_content_resolves_project_subdir(tmp_path) -> None:
     store.edit_content(SCOPE, "MEMORY.md", "project content", "edited", project="p1")
     text = store.read_content(SCOPE, "MEMORY.md", project="p1")
     assert "edited" in text, f"project-scoped edit failed: {text!r}"
+
+
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize(
+    "memory_class", ["long_term_memory", "daily_memory", "private-client@example.test"]
+)
+def test_title_logs_redact_pii_without_changing_document(
+    tmp_path, caplog, monkeypatch, restore, memory_class,
+):
+    """Both normal writes and compensation must keep PII out of INFO logs."""
+    from jiuwen_memory.storage.markdown_impl.local_markdown_store import logger
+
+    title = "Alice alice@example.test 13800138000"
+    team = "Bob bob@example.test 13900139000"
+    unit = _unit(
+        "technical-id",
+        "original body",
+        {
+            MEMORY_CLASS_KEY: memory_class,
+            MD_TITLE_KEY: title,
+            COORDS_KEY: {"team": team},
+        },
+    )
+    store = _store(tmp_path)
+    if restore:
+        unit.system_metadata[MD_FILENAME_KEY] = "restored.md"
+    # Assembly stops propagation at agent_memory; capture at the emitting logger and
+    # also avoid duplicate records when this file is run without earlier assembly.
+    logger.addHandler(caplog.handler)
+    try:
+        with monkeypatch.context() as logging_state:
+            logging_state.setattr(logger, "propagate", False)
+            with caplog.at_level(logging.INFO, logger=logger.name):
+                if restore:
+                    store.restore_blocks(SCOPE, [unit])
+                else:
+                    store.write(SCOPE, [unit])
+    finally:
+        logger.removeHandler(caplog.handler)
+    trace = [record.getMessage() for record in caplog.records if "[trace/md]" in record.msg]
+    assert len(trace) == 1, "render must still emit its diagnostic event"
+    assert all(
+        value not in trace[0]
+        for value in (title, team, memory_class, "alice@", "bob@", "13800138000", "13900139000")
+    ), "PII must not appear in rendered logs"
+    assert "memory_class=*" in trace[0] and "technica" in trace[0], (
+        "technical diagnostics must remain visible"
+    )
+    document = (tmp_path / unit.system_metadata[MD_FILENAME_KEY]).read_text(encoding="utf-8")
+    expected_title = team if memory_class == "daily_memory" else title
+    assert document == f"# {expected_title}\noriginal body\n\n", "redaction must affect logs only"
+    assert unit.system_metadata[MEMORY_CLASS_KEY] == memory_class, (
+        "log redaction must not normalize or overwrite business categories"
+    )
+    assert unit.system_metadata[MD_TITLE_KEY] == title, "business metadata must remain intact"
+    assert unit.system_metadata[COORDS_KEY]["team"] == team, (
+        "business coordinates must remain intact"
+    )
