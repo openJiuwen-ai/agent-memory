@@ -33,32 +33,38 @@ class MdOpsMixin:
     ) -> list[MemoryUnit]:
         """按 ``md_filename`` + 行范围读 md 文件原文，返回命中的 MemoryUnit 列表（F08）。
 
-        鉴权 ``READ`` 对 ``context.scope`` 单段（与 ``get`` / ``list`` 同口径，D5）。project
-        解析在 Engine 层，本层不拆 Context。返回前剥瞬态键（coords 等是判定输入 / 路径解析
-        依据，不是条目属性），与 ``add`` 出口同处置。
-
-        路由启用时数据面反查 scope 经 :meth:`_md_read_scope` 折算为空间级（org+space）——
-        鉴权与审计（``target_scope``）仍用 raw ``context.scope``，仅反查 axis 对齐落盘形态。
+        鉴权 ``READ`` 单段（与 ``get`` / ``list`` 同口径，D5），target 是折算后的反查
+        scope：路由启用时数据面反查 scope 经 :meth:`_md_read_scope` 折算为空间级
+        （org+space），鉴权与审计（``target_scope``）对同一折算 scope 执行——与写入侧
+        「先定落点、对落盘空间判权 + 审计」（``add`` 对 ``_write_target`` 落点判权）
+        对称。折算不出时退回 raw ``context.scope``，判权/审计/反查三者同轴。project
+        解析在 Engine 层，本层不拆 Context。返回前剥瞬态键（coords 等是判定输入 /
+        路径解析依据，不是条目属性），与 ``add`` 出口同处置。
         """
         identity = security.auth.actor
-        auth = self._authorize(security, context.scope, Action.READ, "read_md_file")
-        read_context = replace(context, scope=self._md_read_scope(context, md_filename, security))
+        read_scope = self._md_read_scope(context, md_filename, security)
+        auth = self._authorize(security, read_scope, Action.READ, "read_md_file")
         units = asyncio.run(
-            self._queries.read_md_file(read_context, md_filename, line_range=line_range)
+            self._queries.read_md_file(
+                replace(context, scope=read_scope), md_filename, line_range=line_range
+            )
         )
-        self._log(identity, "read_md_file", target_scope=context.scope, detail=auth)
+        self._log(identity, "read_md_file", target_scope=read_scope, detail=auth)
         return [_strip_transient_metadata(unit) for unit in units]
 
     def _md_read_scope(
         self, context: Context, md_filename: str, security: RequestSecurityContext
     ) -> Scope:
-        """路由启用时，把 ``read_md_file`` 数据面反查的 scope 折算为空间级（org+space）。
+        """路由启用时，把 ``read_md_file`` 的反查/鉴权/审计 scope 折算为空间级（org+space）。
 
         与写入侧同一坐标口径：``principal.kernel_coords`` 以身份覆盖内核三项
         （user/agent/session），使 ``u_{user}`` 这类内核坐标模板也能渲染出空间名——只拿
         调用方业务 coords 时该模板必缺 user 键、渲染空串退回 raw scope，user_profile 的
-        读回仍落空。鉴权与审计仍走 ``context.scope``（raw），只有数据面反查 axis 折到与
-        落盘同一形态。路由未启用或坐标缺失/渲染不出时退回 raw scope——放宽方向，与现状一致。
+        读回仍落空。折算出的空间级 scope 同时是鉴权（READ）与审计的 target：调用方须对
+        该空间有读权，否则在 PEP 拒绝。只把数据面反查 axis 折到落盘形态、鉴权仍留在
+        raw scope 的话，空 space 绕过空间轴判权（越权读取）且审计看不出实际访问的空间
+        （审计盲区）。路由未启用或坐标缺失/渲染不出时退回 raw scope——判权/审计/反查
+        同轴，行为与未折算部署一致。
         """
         if not self._routing_enabled():
             return context.scope
