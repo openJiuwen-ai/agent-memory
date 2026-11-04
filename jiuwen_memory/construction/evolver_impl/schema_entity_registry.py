@@ -263,15 +263,7 @@ def _entity_record(
     record.temporal = Temporal(
         t_ingest=existing.temporal.t_ingest if existing is not None else now,
         t_valid=existing.temporal.t_valid if existing is not None else now,
-        t_message=max(
-            (
-                unit.temporal.t_message
-                for unit in observations
-                if unit.temporal.t_message is not None
-            ),
-            key=as_utc,
-            default=existing.temporal.t_message if existing is not None else None,
-        ),
+        t_message=_latest_message_time(observations, existing),
     )
     record.lifecycle = LifecycleState.ACTIVE
     record.system_metadata = {
@@ -292,6 +284,17 @@ def _entity_record(
         ),
     }
     return record
+
+
+def _latest_message_time(
+    observations: list[MemoryUnit], existing: MemoryUnit | None
+) -> datetime | None:
+    values = [
+        unit.temporal.t_message
+        for unit in [*observations, *([existing] if existing is not None else [])]
+        if unit.temporal.t_message is not None
+    ]
+    return max(values, key=as_utc) if values else None
 
 
 def _strings(value: object) -> list[str]:
