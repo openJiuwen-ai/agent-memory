@@ -171,6 +171,8 @@
 
 ## 本地约束
 
+- `LocalMarkdownStore` 的正常写入与补偿恢复共享标题渲染；标题、`md_title`、团队坐标与 `memory_class`（含未知非空值）必须通过 `redact_for_log` 记录，日志脱敏不修改实际 Markdown、正文或元数据。
+
 1. 所有 Store 必须实现 `store_type()` 和 `health()`（继承自 `BaseStore`）。
 2. 实现通过 `@XxxProducer.register("name")` 自注册。
 3. 检索型 Store 的 `get` 批量查询时，缺失的 id 从结果中省略（不抛异常）。

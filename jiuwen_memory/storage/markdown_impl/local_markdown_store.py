@@ -25,7 +25,7 @@ import threading
 
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_FILENAME_KEY,
@@ -556,10 +556,10 @@ class LocalMarkdownStore(MarkdownStore):
         logger.info(
             "[trace/md] render block | title=%r | memory_class=%s | md_title_key=%s "
             "| team=%r | unit_id=%s",
-            title,
-            memory_class,
-            str((unit.system_metadata or {}).get(MD_TITLE_KEY) or ""),
-            (coords.get("team") if isinstance(coords, dict) else None)
+            redact_for_log(title),
+            redact_for_log(memory_class),
+            redact_for_log((unit.system_metadata or {}).get(MD_TITLE_KEY)),
+            redact_for_log(coords.get("team") if isinstance(coords, dict) else None)
             if memory_class == "daily_memory"
             else None,
             unit.id[:8],
