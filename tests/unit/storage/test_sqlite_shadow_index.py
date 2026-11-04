@@ -606,7 +606,7 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
         def list_units(self, scope):
             pass
 
-        def list_units_by_md(self, scope, md_filename):
+        def list_units_by_md(self, scope, md_filename, *, lifecycle=None):
             pass
 
         def find_unit_ids_by_content_hash(self, scope, content_hash):
@@ -748,6 +748,35 @@ def test_list_units_by_md_does_not_filter_by_scope(tmp_path) -> None:
     # 空 Scope() 看门狗查 → 两条都见（不限 scope）
     entries = store.list_units_by_md(Scope(), md)
     assert {uid for uid, _ in entries} == {"u1", "u2"}
+
+
+def test_list_units_by_md_lifecycle_filter(tmp_path) -> None:
+    """lifecycle 传值只返回该 lifecycle 行；None 返回全部（看门狗 delete/insert 两侧基准）。"""
+    from jiuwen_memory.common.type_def import LifecycleState
+
+    store = _store(tmp_path)
+    md = "MEMORY.md"
+    active = MemoryUnit(
+        id="u1",
+        scope=SCOPE,
+        lifecycle=LifecycleState.ACTIVE,
+        segments=[Segment(content="alpha")],
+        system_metadata={MD_FILENAME_KEY: md},
+    )
+    superseded = MemoryUnit(
+        id="u2",
+        scope=SCOPE,
+        lifecycle=LifecycleState.SUPERSEDED,
+        segments=[Segment(content="beta")],
+        system_metadata={MD_FILENAME_KEY: md},
+    )
+    store.insert_units(SCOPE, [active, superseded])
+
+    # 不过滤：全集两条（insert 侧「已知块」扣除基准）
+    assert {uid for uid, _ in store.list_units_by_md(SCOPE, md)} == {"u1", "u2"}
+    # lifecycle=active：只 active 行（delete 侧基准，排除历史版本）
+    active_entries = store.list_units_by_md(SCOPE, md, lifecycle=LifecycleState.ACTIVE.value)
+    assert [uid for uid, _ in active_entries] == ["u1"]
 
 
 def test_delete_units_cross_scope_idempotent(tmp_path) -> None:
