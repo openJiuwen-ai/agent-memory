@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -259,8 +260,8 @@ def test_client_rejects_invalid_programmatic_timeout(value) -> None:
         client_module.make_client("http://example.test", timeout=value)
 
 
-@pytest.fixture
-def slow_http_server(monkeypatch):
+@contextmanager
+def _slow_http_server(monkeypatch):
     """Start a real HTTP server whose response arrives after one second."""
     delay = 1.0
 
@@ -271,8 +272,12 @@ def slow_http_server(monkeypatch):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                # Timeout tests deliberately close the client before the response.
+                pass
 
         def log_message(self, *args):
             return None
@@ -280,6 +285,8 @@ def slow_http_server(monkeypatch):
     # BaseHTTPRequestHandler dispatches GET requests through this exact attribute.
     setattr(Handler, "do_GET", Handler.handle_get)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    # server_close() must join request threads before pytest stops capturing stderr.
+    httpd.daemon_threads = False
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     monkeypatch.setattr(urllib.request, "urlopen", opener.open)
@@ -290,6 +297,22 @@ def slow_http_server(monkeypatch):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
+
+
+@pytest.fixture
+def slow_http_server(monkeypatch):
+    with _slow_http_server(monkeypatch) as url:
+        yield url
+
+
+def test_slow_http_server_timeout_cleanup_is_quiet(monkeypatch, capsys) -> None:
+    with _slow_http_server(monkeypatch) as url:
+        status, body = client_module.HttpClient(url, timeout=0.2).healthz()
+        assert status == 0
+        assert body["error"] == "ConnectionError"
+
+    # Inspect only after server_close() has joined the delayed response handler.
+    assert capsys.readouterr().err == ""
 
 
 def test_http_client_reports_timeout_as_connection_failure(slow_http_server) -> None:
