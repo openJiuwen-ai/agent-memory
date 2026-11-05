@@ -182,7 +182,8 @@ class LocalMarkdownStore(MarkdownStore):
                     fh.write(block)
 
     def replace_content(
-        self, scope: Scope, md_filename: str, old_content: str, new_content: str
+        self, scope: Scope, md_filename: str, old_content: str, new_content: str,
+        *, new_title: str | None = None, old_title: str | None = None,
     ) -> bool:
         """在 md 文件定位含 ``old_content`` 的块，替换为 ``new_content``（F07 §5.2.3）。
 
@@ -192,8 +193,9 @@ class LocalMarkdownStore(MarkdownStore):
         用 coords.team，其余用 MD_TITLE_KEY；与 unit_id 无关；尾部 ``\\n\\n`` 是块间
         分隔，切块后余下），正文 = 块去首行（标题）+ 去前导换行后的剩余单行。
 
-        命中后**整块替换**为 ``# {原标题}\\n{new_content}\\n\\n``：保留原块的首行（标题行），
-        只换正文——OVERWRITE 同 unit_id 原地改写（§5.2.1），标题行内容不在替换范围。
+        命中后同步替换正文和显式提供的 ``new_title``；None 保留原块首行，空串清空标题。
+        标题折叠为单行，避免破坏块结构。OVERWRITE 同 unit_id 原地改写（§5.2.1）。
+        ``old_title`` 非 None 时同时匹配旧标题，避免误改正文相同的其他块。
         块间分隔的 ``\\n\\n`` 由拼接复原。
 
         未命中（``old_content`` 不在文件任何块）返回 False——正常流程步骤 ③ 已改 content，
@@ -227,8 +229,10 @@ class LocalMarkdownStore(MarkdownStore):
                     new_blocks.append(block)
                     continue
                 title, body = parts[0], parts[1]
-                if body == old_content and not replaced:
-                    # 命中：整块替换为「原标题 + 新正文」，保留 unit_id（OVERWRITE 同 id）。
+                matches_title = old_title is None or title == f"# {old_title}"
+                if body == old_content and matches_title and not replaced:
+                    if new_title is not None:
+                        title = f"# {' '.join(new_title.split())}"
                     # 替换首个命中（old_content 重复时只改第一处，§5.2.3 注：重复 content
                     # 字符串匹配会误替多块——首版取首个，后续可加 unit_id 重载优化锚点）。
                     new_blocks.append(f"{title}\n{new_content}")
@@ -410,6 +414,71 @@ class LocalMarkdownStore(MarkdownStore):
                     f"(found {count} occurrences): {old_text!r}"
                 )
             out = text.replace(old_text, new_text, 1)
+            # 文件工具通常只传正文；沿用旧事实标题会让 USER.md 显示相互矛盾的内容。
+            # 仅处理块结构未变、正文单行且标题未被显式编辑的情形；daily 标题是团队名。
+            if md_basename in ("USER.md", "MEMORY.md"):
+                old_blocks = text.split("\n\n")
+                new_blocks = out.split("\n\n")
+                if len(old_blocks) == len(new_blocks):
+                    for index, (old_block, new_block) in enumerate(zip(old_blocks, new_blocks)):
+                        old_parts = old_block.split("\n")
+                        new_parts = new_block.split("\n")
+                        if (
+                            len(old_parts) == len(new_parts) == 2
+                            and old_parts[0] == new_parts[0]
+                            and old_parts[0].startswith("# ")
+                            and old_parts[0][2:].strip()
+                            and old_parts[1] != new_parts[1]
+                            and new_parts[1].strip()
+                        ):
+                            old_body = old_parts[1]
+                            new_body = new_parts[1]
+                            prefix_len = 0
+                            while (
+                                prefix_len < min(len(old_body), len(new_body))
+                                and old_body[prefix_len] == new_body[prefix_len]
+                            ):
+                                prefix_len += 1
+                            suffix_len = 0
+                            while (
+                                suffix_len < min(
+                                    len(old_body) - prefix_len,
+                                    len(new_body) - prefix_len,
+                                )
+                                and old_body[-suffix_len - 1] == new_body[-suffix_len - 1]
+                            ):
+                                suffix_len += 1
+                            old_end = len(old_body) - suffix_len if suffix_len else len(old_body)
+                            new_end = len(new_body) - suffix_len if suffix_len else len(new_body)
+                            old_title = old_parts[0][2:].strip()
+                            candidates: list[tuple[int, str, str]] = []
+                            changed_len = old_end - prefix_len
+                            context_budget = len(old_title) - changed_len
+                            max_left = min(prefix_len, max(context_budget, 0))
+                            for left_len in range(max_left + 1):
+                                max_right = min(
+                                    suffix_len, max(context_budget - left_len, 0)
+                                )
+                                for right_len in range(max_right + 1):
+                                    old_candidate = old_body[
+                                        prefix_len - left_len:old_end + right_len
+                                    ]
+                                    if not old_candidate or old_title.count(old_candidate) != 1:
+                                        continue
+                                    new_candidate = new_body[
+                                        prefix_len - left_len:new_end + right_len
+                                    ]
+                                    candidates.append(
+                                        (len(old_candidate), old_candidate, new_candidate)
+                                    )
+                            if candidates:
+                                _, old_candidate, new_candidate = max(candidates)
+                                title = old_title.replace(old_candidate, new_candidate, 1)
+                            else:
+                                # “居住地”等概括性标题不含旧事实，无需随正文改写。
+                                title = old_title
+                            new_blocks[index] = f"# {title}\n{new_parts[1]}"
+                    out = "\n\n".join(new_blocks)
 
             # 原子写（见 replace_content 同款）：open("w") 截断后 write 抛错会让旧内容
             # 永久丢失——补偿路径（_supersede_shadow_for_md 回滚 shadow）救不回 md。

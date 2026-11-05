@@ -31,6 +31,7 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
+    MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
     CandidateFuser,
     ChannelError,
@@ -306,6 +307,11 @@ class CompositeDomainStore(DomainStore):
                     # 先取旧 unit 拿 old content + md_filename（replace_content 的定位锚与路径）。
                     olds = shadow.get_units(scope, [unit.id])
                     old = olds[0] if olds else None
+                    if MD_TITLE_KEY in unit.system_metadata:
+                        # 与文件标题使用同一单行值，后续更新才能用旧标题准确定位。
+                        unit.system_metadata[MD_TITLE_KEY] = " ".join(
+                            str(unit.system_metadata[MD_TITLE_KEY] or "").split()
+                        )
                     # 影子索引覆写（id 不存在内部报 NotFoundError，对齐 KVStore.update）。
                     shadow.update_units(scope, [unit])
                     # md 侧按 content 是否变化分两路：OVERWRITE（content 变）走
@@ -318,6 +324,23 @@ class CompositeDomainStore(DomainStore):
                         continue
                     old_content = old.segments[0].content if old.segments else ""
                     new_content = unit.segments[0].content if unit.segments else ""
+                    md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                    # daily 文件的标题标识团队；只有非 daily 块使用 md_title。
+                    metadata = unit.system_metadata or {}
+                    new_title = None
+                    if (
+                        class_from_md_path(md_filename) != "daily_memory"
+                        and MD_TITLE_KEY in metadata
+                    ):
+                        new_title = str(metadata.get(MD_TITLE_KEY) or "").strip()
+                    title_changed = (
+                        new_title is not None
+                        and new_title != str(
+                            (old.system_metadata or {}).get(MD_TITLE_KEY) or ""
+                        ).strip()
+                        and old.lifecycle in (LifecycleState.ACTIVE, LifecycleState.ARCHIVED)
+                        and unit.lifecycle in (LifecycleState.ACTIVE, LifecycleState.ARCHIVED)
+                    )
                     if old_content == new_content:
                         # 纯 lifecycle 流转（content 不变）按「md 可见性」分三态（#261 方案 C）：
                         # - SUPERSEDED/FORGOTTEN「隐藏态」= 从文档消失 → remove_content 物理删旧块；
@@ -335,7 +358,6 @@ class CompositeDomainStore(DomainStore):
                                 LifecycleState.FORGOTTEN,
                             )
                         ):
-                            md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
                             if md_filename:
                                 # remove_content 未命中（md 与索引漂移）返 False 不抛错，
                                 # 与 replace_content 同款降级——索引侧已更新，漂移交看门狗对账。
@@ -362,8 +384,8 @@ class CompositeDomainStore(DomainStore):
                                         "suspected unit=%s md_filename=%s",
                                         unit.id[:8], md_filename,
                                     )
-                        continue
-                    md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                        if not title_changed:
+                            continue
                     if md_filename:
                         # 未命中（md 与索引漂移，如手改 md）返 False——不抛错，索引侧已更新，
                         # 漂移交看门狗（§12.3）后续对账，避免 update 因 md 异常而整体失败。
@@ -372,7 +394,13 @@ class CompositeDomainStore(DomainStore):
                         # 还原，投影按 hash 变化自动重建回旧态）。返 False 不触发补偿。
                         try:
                             replaced = md.replace_content(
-                                scope, md_filename, old_content, new_content
+                                scope, md_filename, old_content, new_content,
+                                new_title=new_title,
+                                old_title=(
+                                    str(old.system_metadata[MD_TITLE_KEY] or "").strip()
+                                    if new_title is not None and MD_TITLE_KEY in old.system_metadata
+                                    else None
+                                ),
                             )
                         except Exception as exc:
                             logger.error(
@@ -666,11 +694,16 @@ class CompositeDomainStore(DomainStore):
             try:
                 # md 原子替换（唯一性校验 + 原子写；失败抛 NotFoundError/ValidationError）
                 md.edit_content(scope, md_basename, old_text, new_text, project=project)
-                new_full = collect_blocks_from_text(
-                    md.read_content(scope, md_basename, project=project)
-                )
+                raw_new = md.read_content(scope, md_basename, project=project)
+                new_full = collect_blocks_from_text(raw_new)
+                new_titles = {}
+                if class_from_md_path(rel_path) != "daily_memory":
+                    for block in raw_new.split("\n\n"):
+                        parts = block.split("\n")
+                        if len(parts) == 2 and parts[0].startswith("#"):
+                            new_titles[content_hash(parts[1])] = parts[0].lstrip("#").strip()
                 new_unit_ids = self._supersede_shadow_for_md(
-                    scope, rel_path, old_full, new_full, shadow
+                    scope, rel_path, old_full, new_full, shadow, new_titles=new_titles
                 )
             except Exception:
                 # md 侧补偿：md 已改成 new 态、shadow 同步失败时，回写旧全文让 md 回到
@@ -695,6 +728,8 @@ class CompositeDomainStore(DomainStore):
         old_full: list[tuple[str, str, int]],
         new_full: list[tuple[str, str, int]],
         shadow: DocumentShadowIndex,
+        *,
+        new_titles: dict[str, str] | None = None,
     ) -> list[str]:
         """继承式 SUPERSEDE 同步 shadow（F08 §D4）：md 已改好，只动 shadow 表。
 
@@ -794,15 +829,31 @@ class CompositeDomainStore(DomainStore):
         #    无需回滚；update 单事务失败 → 新 unit 已落、旧 unit 因回滚天然保持 ACTIVE，
         #    只需 delete 掉刚插的新 unit（幂等删三表）即「shadow 等价于未发生」。md 侧回滚
         #    由调用方 edit_md_file 负责。补偿失败只记 warning，漂移交看门狗对账。
+        for new in inserted_units:
+            title = (new_titles or {}).get(content_hash(new.segments[0].content))
+            if title is not None:
+                new.system_metadata[MD_TITLE_KEY] = title
         if inserted_units:
             shadow.insert_units(scope, inserted_units)
         new_unit_ids = [u.id for u in inserted_units]
+        title_changed_units: list[MemoryUnit] = []
+        for content_hash_value in old_full_hashes & new_full_hashes:
+            old = old_by_hash.get(content_hash_value)
+            title = (new_titles or {}).get(content_hash_value)
+            if (
+                old is not None
+                and title is not None
+                and str(old.system_metadata.get(MD_TITLE_KEY) or "") != title
+            ):
+                old.system_metadata[MD_TITLE_KEY] = title
+                title_changed_units.append(old)
         for old in superseded_units:
             old.lifecycle = LifecycleState.SUPERSEDED
             old.temporal.t_invalid = now
         try:
-            if superseded_units:
-                shadow.update_units(scope, superseded_units)
+            shadow_updates = [*superseded_units, *title_changed_units]
+            if shadow_updates:
+                shadow.update_units(scope, shadow_updates)
         except Exception:
             try:
                 shadow.delete_units(scope, new_unit_ids)
@@ -812,7 +863,7 @@ class CompositeDomainStore(DomainStore):
                 )
             raise
 
-        return new_unit_ids
+        return [*new_unit_ids, *(unit.id for unit in title_changed_units)]
 
     def health(self) -> None:
         # 数据面无独立资源（recallers 是被注入的，非健康检查对象）；委托 manager 聚合。

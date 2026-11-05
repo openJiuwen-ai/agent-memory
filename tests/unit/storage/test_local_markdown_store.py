@@ -253,6 +253,18 @@ def test_replace_content_returns_false_when_no_match(tmp_path) -> None:
     assert store.replace_content(SCOPE, "memory/p1/MEMORY.md", "not there", "x") is False
 
 
+@pytest.mark.parametrize("new_title", [None, "", "杭州\n居民"])
+def test_replace_content_handles_optional_title(tmp_path, new_title) -> None:
+    store = _store(tmp_path)
+    unit = _unit("u1", "old", {MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "上海居民"})
+    store.write(SCOPE, [unit])
+
+    assert store.replace_content(SCOPE, "USER.md", "old", "new", new_title=new_title)
+
+    title = "上海居民" if new_title is None else " ".join(new_title.split())
+    assert (tmp_path / "USER.md").read_text(encoding="utf-8") == f"# {title}\nnew\n\n"
+
+
 def test_replace_content_returns_false_when_file_missing(tmp_path) -> None:
     store = _store(tmp_path)
     assert store.replace_content(SCOPE, "memory/nope/MEMORY.md", "a", "b") is False
@@ -514,6 +526,86 @@ def test_edit_content_replaces_unique_substring(tmp_path) -> None:
     text = store.read_content(SCOPE, "MEMORY.md", project="")
     assert "goodbye" in text, f"replacement not written: {text!r}"
     assert "hello world" not in text, f"old content still present: {text!r}"
+
+
+@pytest.mark.parametrize(
+    "memory_class,basename",
+    [("user_profile", "USER.md"), ("long_term_memory", "MEMORY.md")],
+)
+def test_edit_content_refreshes_matching_fact_in_heading(
+    tmp_path, memory_class, basename,
+) -> None:
+    store = _store(tmp_path)
+    store.write(SCOPE, [_unit("u1", "用户居住在上海。", {
+        MEMORY_CLASS_KEY: memory_class,
+        MD_TITLE_KEY: "居住地上海",
+        COORDS_KEY: {"project": ""},
+    })])
+
+    store.edit_content(
+        SCOPE, basename, "用户居住在上海。", "用户居住在杭州。", project="",
+    )
+
+    assert store.read_content(SCOPE, basename, project="") == (
+        "# 居住地杭州\n用户居住在杭州。\n\n"
+    )
+
+
+def test_edit_content_preserves_explicitly_edited_heading(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.write(SCOPE, [_unit("u1", "用户居住在上海。", {
+        MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "居住地上海",
+    })])
+
+    store.edit_content(
+        SCOPE, "USER.md",
+        "# 居住地上海\n用户居住在上海。",
+        "# 常住城市杭州\n用户居住在杭州。",
+    )
+
+    assert store.read_content(SCOPE, "USER.md") == "# 常住城市杭州\n用户居住在杭州。\n\n"
+
+
+def test_edit_content_uses_unique_context_for_ambiguous_minimal_diff(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.write(SCOPE, [_unit("u1", "用户居住在上海。", {
+        MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "海边工作，常住上海",
+    })])
+
+    store.edit_content(SCOPE, "USER.md", "用户居住在上海。", "用户居住在上饶。")
+
+    assert store.read_content(SCOPE, "USER.md") == (
+        "# 海边工作，常住上饶\n用户居住在上饶。\n\n"
+    )
+
+
+def test_edit_content_preserves_generic_heading_without_old_fact(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.write(SCOPE, [_unit("u1", "用户居住在上海。", {
+        MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "居住地",
+    })])
+
+    store.edit_content(SCOPE, "USER.md", "用户居住在上海。", "用户居住在杭州。")
+
+    assert store.read_content(SCOPE, "USER.md") == (
+        "# 居住地\n用户居住在杭州。\n\n"
+    )
+
+
+def test_edit_content_preserves_daily_team_heading(tmp_path) -> None:
+    store = _store(tmp_path)
+    unit = _unit("u1", "用户居住在上海。", {
+        MEMORY_CLASS_KEY: "daily_memory",
+        COORDS_KEY: {"team": "研发组", "project": ""},
+    })
+    store.write(SCOPE, [unit])
+    basename = unit.system_metadata[MD_FILENAME_KEY].rsplit("/", 1)[-1]
+
+    store.edit_content(SCOPE, basename, "上海", "杭州", project="")
+
+    assert store.read_content(SCOPE, basename, project="") == (
+        "# 研发组\n用户居住在杭州。\n\n"
+    )
 
 
 def test_edit_content_accepts_cross_block_text(tmp_path) -> None:

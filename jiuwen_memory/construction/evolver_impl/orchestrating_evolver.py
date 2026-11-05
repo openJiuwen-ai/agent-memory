@@ -40,6 +40,7 @@ from jiuwen_memory.common.log import (
 )
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
+    MD_TITLE_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
     HierarchyKind,
@@ -683,7 +684,14 @@ class OrchestratingEvolver(Evolver):
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
             # 合并 metadata
+            had_md_title = MD_TITLE_KEY in existing_unit.system_metadata
             existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
+            # 标题描述本次更新后的事实，不是新旧记忆共有的属性。
+            # 新候选无标题时清空旧标题，避免继续展示已经过时的事实。
+            if MD_TITLE_KEY in candidate.system_metadata or had_md_title:
+                existing_unit.system_metadata[MD_TITLE_KEY] = candidate.system_metadata.get(
+                    MD_TITLE_KEY, ""
+                )
             existing_unit.user_metadata = inherited_user_metadata([existing_unit, candidate])
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
