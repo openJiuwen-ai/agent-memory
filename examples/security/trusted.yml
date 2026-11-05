@@ -1,0 +1,17 @@
+memory_api:
+  security:
+    default: {target: standard, params: {authenticator: gateway, authorizer: default}}
+  authenticator:
+    gateway:
+      target: trusted
+      params: {key_store: principals, gateway_key: "${AGENT_MEMORY_GATEWAY_KEY}"}
+  key_store:
+    principals: {target: memory}
+  authorizer:
+    default:
+      target: standard
+      params: {grant_store: default, delegation_store: default}
+  grant_store:
+    default: {target: memory}
+  delegation_store:
+    default: {target: memory}

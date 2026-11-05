@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """配置层加载：读一层 YAML/JSON 文件并展开 ``${VAR}`` / ``${VAR:-默认值}``。
 
-由 HTTP / MCP 两个 surface 共享——连接串与密钥经环境变量注入，配置文件本身不落密。
-（CLI 直接传 JSON 层，不经此模块。）
+由 HTTP / CLI / MCP 三个 surface 共享——连接串与密钥经环境变量注入，
+配置文件本身不落密；CLI 的 --config 文件也通过 load_layer 读取和展开。
 
 展开规则与 SDK 侧 ``Config.from_yaml`` 保持一致（见 ``jiuwen_memory/config/config.py``）：
 只支持单层占位符，嵌套写法与含 ``}`` 的默认值报错而非静默产出错值。两处实现由
