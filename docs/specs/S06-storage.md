@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Metadata 物理存储契约
@@ -111,8 +111,8 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     `DomainStore.get`/`list` 与 `load_units`/`list_units` helper，`KVStore.list`
     本身也按 `MEMORY_KEY_PREFIX` 扫描。这是正排作为唯一需要**两向投影**的索引形式的固有代价：
     实现分居两层，靠这对共享契约对齐。
-29. **命名数据面共享物理 Store 集**：`manager.domain_store(name)` 的多套命名数据面差异仅在
-    检索 profile（`preferred_retrieval_pipeline` + recallers 组合）；同名多次调用返回同一实例。
+29. **命名数据面使用受管 Store 集**：`manager.domain_store(name)` 的多套命名数据面可分别选择
+    受管真源 KV 端口与检索 profile（`preferred_retrieval_pipeline` + recallers 组合）；同名多次调用返回同一实例。
     跨 Store 集的整栈切换走 F02 Routing（`store_manager.active`），不属命名数据面语义。
 30. **所有 XXXStore 获取经 StoreManager**：消费者不直接调 Store Producer 解析具名后端
     （F07 起 `EntityStore` 一并纳入——写入侧 `HybridIndexBuilder` 与召回侧 `KeywordRecaller`
@@ -133,12 +133,25 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 
 ## 接口契约
 
+### 部署依赖加载时机
+
+配置选中的 ES 全文、ES 实体、Milvus 向量及 `milvus_graph` 融合后端在同步装配阶段
+预加载 ES/Milvus 客户端依赖（融合后端的图依赖仍惰性加载），
+避免长命服务首次请求在线程池中冷加载原生库；未选中的后端不因此引入部署依赖。
+预加载只导入模块，不建连、不建索引/集合；客户端连接及索引初始化仍为首次使用时执行。
+依赖导入或原生库加载失败在装配阶段以 `BackendError` 报错并保留原始异常链。
+ES 实体未配置 hosts/endpoint 时仍关闭该端口，不要求安装客户端。
+直接构造 Store 的手工接线仍保留惰性导入语义。
+这是将运行期冷加载前移到启动期的缓解措施，不代表已定位或修复 Windows loader
+底层慢加载机制；部署应为启动依赖加载保留时间。
+
 ### StoreManager（管理面，`store_manager.py`）
 
 | 类别 | 接口 | 语义 |
 |---|---|---|
 | 端口 | `kv/vector/fulltext/graph/fusion/fs/entity/markdown/shadow_index(name="default")` 及 `has_*(name="default")` | 暴露经过统一授权代理的完整 Store 契约；单一入口（无 property、无 `*_port` 后缀）；未声明端口抛 `UnsupportedStorageCapabilityError` |
 | 数据面 | `domain_store(name="default")` / `has_domain_store(name="default")` | 取命名数据面实例；实现需缓存（同名多次返回同一实例） |
+| KV 真源领域门面 | `domain_store_for_kv(name="default") -> DomainStore` | 绑定指定受管 KV 端口及 MemoryUnit codec，保留领域与端口授权；不继承默认数据面的 KV 选择、文档模式或召回配置，不注册/替换具名数据面，不承诺实例缓存；未实现时抛 UnsupportedStorageCapabilityError，公共基类不选择具体数据面实现 |
 | 能力 | `capabilities()` | 返回不可变标准端口能力集合 |
 | 横切 | `security` / `health()` | 统一授权入口并聚合全部命名端口的健康检查 |
 
@@ -414,6 +427,12 @@ SQLite :memory: 无落盘要求，但仍必须固定连接位置，拒绝初始�
 声明是运营方核查责任，不能冒充应用验证了远端磁盘。
 StoreSecurity.enabled() 仍表达 Store 内部保护，索引的外部保护通过部署声明与宿主检查表达。
 查询接口、BM25/ANN/原生过滤不变；本 PR 不新增密态检索或应用层全量解密检索路径。
+
+Linux 管理加密卷须为完整块设备路径受 dm-crypt 保护的 ext4，具有 has_journal 特性及
+可核查的非零内部 journal inode；非 ext4、无 journal、外部或无法核查的 journal 均拒绝。
+初始化只接受新建镜像，须显式选择 ext4 与 journal，并在报告成功前核查实际文件系统
+类型及内部 journal。格式化命令返回成功不能替代产物核查；失败须关闭已打开的临时
+mapper、保留镜像供排查，不自动覆盖或修复已有卷。挂载后仍独立验证同一契约。
 
 `StoreSecurity.encryption_binding` 是公开的可选装饰依赖契约，返回
 `StoreEncryptionBinding(inner, provider, format)`；原生保护实现可返回 None。

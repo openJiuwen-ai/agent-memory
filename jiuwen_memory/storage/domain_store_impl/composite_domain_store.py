@@ -164,10 +164,10 @@ class CompositeDomainStore(DomainStore):
     def _sanitize_document_content(units: list[MemoryUnit]) -> None:
         """文档路径 content 单行清洗（F07 §12.4 的 enforcement point）。
 
-        块格式契约（``<标题>\\n<正文单行>\\n\\n``、看门狗按行遍历、replace/remove 按
+        块格式契约（``<标题>\\n<正文单行>\\n\\n``、看门狗按块解析、replace/remove 按
         ``\\n\\n`` 切块比对正文）建立在「一个 unit 一行正文」上，但上游（LLM 抽取/
         直写）不保证——content 含换行时：md 块被切碎、replace_content 比对失锚；
-        看门狗按行遍历把第 2+ 行当独立幽灵 unit，且整段 content_hash 与任何单行
+        看门狗按块解析把第 2+ 行当独立幽灵 unit，且整段 content_hash 与任何单行
         hash 对不上 → diff 出「删真 unit + 建幽灵 unit（新 uuid，断版本链）」。
 
         故在 md.write / shadow.insert_units 分叉**之前**对 unit 本体原地折叠
@@ -319,14 +319,21 @@ class CompositeDomainStore(DomainStore):
                     old_content = old.segments[0].content if old.segments else ""
                     new_content = unit.segments[0].content if unit.segments else ""
                     if old_content == new_content:
-                        # SUPERSEDE 标记：content 没变但 lifecycle 从 ACTIVE→SUPERSEDED
-                        # （evolver _apply_decision 或 API 层 supersede）。旧版 md 块应删除，
-                        # 与影子索引 unit_json 里 lifecycle 投影列更新同口径——md 真源
-                        # 不能留"幽灵块"让用户看到矛盾两条都在。old 取自本次 update 前影子
-                        # 索引的快照（上方 shadow.get_units），unit.lifecycle 是改过的新值。
+                        # 纯 lifecycle 流转（content 不变）按「md 可见性」分三态（#261 方案 C）：
+                        # - SUPERSEDED/FORGOTTEN「隐藏态」= 从文档消失 → remove_content 物理删旧块；
+                        # - ARCHIVED「转冷态」= 可回溯、保留 md 块（不经此处）。
+                        # 与影子索引 unit_json 里 lifecycle 投影列更新同口径——md 真源不能留
+                        # "幽灵块"让用户看到与索引矛盾的两条都在。old 取自本次 update 前影子
+                        # 索引快照（上方 shadow.get_units），unit.lifecycle 是改过的新值。
+                        # 只在「可见态(ACTIVE/ARCHIVED)→隐藏态(SUPERSEDED/FORGOTTEN)」时删块；
+                        # 隐藏态间流转（如 SUPERSEDED→FORGOTTEN，块早已删除）不重删，避免
+                        # remove_content 未命中误报 drift。
                         if (
-                            old.lifecycle == LifecycleState.ACTIVE
-                            and unit.lifecycle == LifecycleState.SUPERSEDED
+                            old.lifecycle in (LifecycleState.ACTIVE, LifecycleState.ARCHIVED)
+                            and unit.lifecycle in (
+                                LifecycleState.SUPERSEDED,
+                                LifecycleState.FORGOTTEN,
+                            )
                         ):
                             md_filename = (old.system_metadata or {}).get(MD_FILENAME_KEY, "")
                             if md_filename:
@@ -604,6 +611,10 @@ class CompositeDomainStore(DomainStore):
         ``read_content`` 读 md 切片 → ``collect_blocks_from_text`` 按块算 hash →
         ``find_unit_ids_by_content_hash``（scope 隔离）反查 → ``get_units`` 取完整 unit。
         被行切片切断的不完整块 hash 匹配不上 shadow 完整块，自然跳过（F08 已知遗留 6）。
+
+        ``line_range`` 切片起点不一定落在块边界，首行可能是上一块以 ``#`` 开头的正文行，
+        故传 ``first_line_is_title=False`` 声明首块首行不当标题——否则该行被整行丢弃、
+        缺 hash 反查落空、unit 被误判「不存在/待删」，与逐行遍历时代的连坐删除残留同根。
         """
         self._authorize(access, scope, StorageAction.GET, "memory_unit")
         if not self.should_write_document():
@@ -613,7 +624,7 @@ class CompositeDomainStore(DomainStore):
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
         text = md.read_content(scope, md_basename, project=project, line_range=line_range)
-        blocks = collect_blocks_from_text(text)
+        blocks = collect_blocks_from_text(text, first_line_is_title=False)
         unit_ids: list[str] = []
         for ch, _, _ in blocks:
             unit_ids.extend(shadow.find_unit_ids_by_content_hash(scope, ch))

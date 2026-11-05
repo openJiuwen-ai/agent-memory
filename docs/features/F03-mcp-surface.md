@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-09-11 |
 | 影响范围 | `jiuwen_memory_entry/mcp_server/`（`__main__.py`、`transport_security.py`；原 `DESIGN.md` 已并入本文档），`tests/unit/jiuwen_memory_entry/test_mcp.py`、`test_mcp_transport_security.py`、`tests/integration/jiuwen_memory_entry/test_mcp_startup.py` |
-| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py tests/integration/jiuwen_memory_entry/test_mcp_startup.py`（2026-10-27：163 项通过）；变更 Python 文件 `ruff check` 通过 |
+| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py tests/integration/jiuwen_memory_entry/test_mcp_startup.py`（2026-11-04：174 项通过）；变更 Python 文件 `ruff check` 通过 |
 | 备注 | 本文档吸收原 `jiuwen_memory_entry/mcp_server/DESIGN.md`（已删除），模块级设计、方案取舍与已知遗留统一在此维护 |
 
 ## 背景
@@ -21,7 +21,7 @@ FastMCP 工具函数需要面向模型的 docstring 与显式运行时类型注�
 
 ## 决策
 
-1. **工具集与 `MemoryAPI` 全量对齐（36/36）**，命名 `memory_<method>`：与 HTTP/CLI
+1. **工具集与 `MemoryAPI` 全量对齐（38/38）**，命名 `memory_<method>`：与 HTTP/CLI
    共享同一套 `api_contract` 参数校验（`parse_request`）与调用桥（`invoke_api`），
    MCP 面只做协议翻译、零业务编排。工具参数模型另收紧为 `extra=forbid`，使契约外字段
    与前两条路径同口径报错（见 F07 决策 1）——FastMCP 的 `ArgModelBase` 默认
@@ -41,11 +41,14 @@ FastMCP 工具函数需要面向模型的 docstring 与显式运行时类型注�
    `local/developer` USER 测试身份、仅允许回环绑定，ROOT 须显式配置。身份只经
    `auth_middleware.authenticated`（`Surface.MCP`）注入 `security`，payload 中的
    `security/identity/actor` 等保留字段在契约边界直接拒绝。
-5. **契约锁测试**：`test_mcp.py` 对 36 个工具锁「工具签名参数 **==** 契约参数
+5. **契约锁测试**：`test_mcp.py` 对 38 个工具锁「工具签名参数 **==** 契约参数
    （全量相等）、代表性 payload 可过 `parse_request`」，防止工具签名与 API 签名
    漂移。全量相等锁是 as_of 漂移的教训——此前的「子集 + 必填覆盖」锁会放行可选
    参数静默缺失，MCP 客户端经工具 schema 感知不到该参数；任何参数差异都必须
-   显式决策（改工具或改契约），不允许静默漂移。
+   显式决策（改工具或改契约），不允许静默漂移。工具名称集合还必须等于
+   `api_method_names()` 加 `memory_` 前缀后的集合，避免工具与手工测试清单同时遗漏
+   API 方法（#257）。`read_md_file` / `edit_md_file` 复用原有认证与调用桥；
+   `line_range` 在工具面保留 JSON 数组，由共享契约转换为二元元组。
 
 ## 拒绝的方案
 
@@ -89,9 +92,9 @@ _invoke_blocking：credentials_for_transport → authenticated(Surface.MCP) → 
 
 ### 工具与参数
 
-工具集与 `MemoryAPI` 公开方法**全量对齐（36/36）**，命名规则
-`memory_<method>`：数据面 9 个（add/add_async/batch_add/batch_add_async/
-search/list/get/update/delete）、任务与摄入 5 个（evolve/check_write/
+工具集与 `MemoryAPI` 公开方法**全量对齐（38/38）**，命名规则
+`memory_<method>`：数据面 11 个（add/add_async/batch_add/batch_add_async/
+search/list/get/update/delete/read_md_file/edit_md_file）、任务与摄入 5 个（evolve/check_write/
 submit_ingest/job_status/job_cancel）、管理面 3 个（admin_get/set/all）、
 治理面 4 个（inspect/trace/audit/verify_audit）、授权 2 个（grant/revoke）、
 Space 管理 13 个（create/get/list/update/archive/delete_space、export_space、
@@ -100,7 +103,7 @@ space_usage、get/set_space_policy、list/add/remove_space_member）。
 - 参数名与 `MemoryAPI` 签名严格一致（`unit_id`/`top_k`/`with_trajectory`…），
   请求形状全部为扁平 `{"参数名": 值}`；`scope` 为对象
   `{"org","user","agent","session","space"}`，五维可给空串。
-- **参数与契约全量对齐（2026-09-15 起）**：36 个工具的签名参数集合与
+- **参数与契约全量对齐（2026-09-15 起；2026-11-04 扩至 38 个工具）**：38 个工具的签名参数集合与
   `MemoryAPI` 契约完全相等——此前按「模型对话场景」精选缓发的可选参数
   （add/batch_add/submit_ingest/check_write 的 metadata 族与 source/occurred_at/
   assets/stream_id、search 的 filters/disclosure、list 的 memory_types/extensions/
@@ -180,7 +183,7 @@ JIUWEN_MEMORY_MCP_AUTH_MODE=dev npx @modelcontextprotocol/inspector \
   python jiuwen_memory_entry/mcp_server/__main__.py
 ```
 
-**第 2 步——确认工具清单**：连接后在 Tools 页看到 36 个 `memory_*` 工具
+**第 2 步——确认工具清单**：连接后在 Tools 页看到 38 个 `memory_*` 工具
 （等价于协议层的 `tools/list`）。
 
 **第 3 步——写入**：在 `memory_add` 表单填 `content = 我喜欢喝咖啡`、
@@ -217,11 +220,12 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
   结束一个后另一个继续写入、全部结束后新会话继续写入；断言应用启动时后台只启动一次，
   会话结束不关闭内核，应用退出时才关闭一次。另用替身内核验证应用启动失败与异常退出
   的清理。不依赖外部服务或凭据。
-- `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（覆盖 36 工具契约锁
+- `pytest tests/unit/jiuwen_memory_entry/test_mcp.py`（覆盖 38 工具契约锁
   （全量相等）+ 旧字段/身份字段拒绝 + 失闭与 Surface.MCP 注入 + 功能闭环含
   evolve→job_status 与 consolidate→trace 血缘链 + get/search 的 as_of valid-time
   回溯 + list memory_types / search filters 收敛 + Schema 无 ctx 泄漏 +
-  FastMCP.call_tool 协议编组）
+  FastMCP.call_tool 协议编组，含 md 文件读写参数转发、认证上下文、行范围解码、
+  非二元/非整数行范围拒绝及编辑错误传播）
 - `pytest tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py`（5 用例）
 - `ruff check` 通过
 - 行为抽检：`memory_submit_ingest` 扁平协议经真实 FastMCP `call_tool` 调用成功并

@@ -15,7 +15,8 @@
 
 | 文件 | 职责 |
 |---|---|
-| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数及日志脱敏辅助函数 |
+| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化与日志脱敏辅助函数 |
+| `access_security.py` | 公开安全装配辅助与 `register_trusted_principal`；初始化按增量能力委派实际认证器，不依赖实现类或另建主体 Store |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
@@ -24,7 +25,7 @@
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
 | `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
-| `memory_api_impl/md_ops.py` | MdOpsMixin（F08）：`read_md_file` / `edit_md_file`，经 Engine 窄端口委托（非经 `_commands.write`/`_queries.get`）。鉴权对齐 `get`（READ 单段）/ `add`（WRITE 单段，edit 走继承式 SUPERSEDE 本质是写新记忆，D5）；project 解析在 Engine 层 `project_from_context`，本层不拆 Context。返回前剥瞬态键（coords 等是路径解析依据，不是条目属性）。`edit_md_file` 经 `_ensure_space_writable`（与 `add` 同，装配空间级判定时由 `ENTRY_RULES` 登记 `edit_md_file` 触发状态校验） |
+| `memory_api_impl/md_ops.py` | MdOpsMixin（F08）：`read_md_file` / `edit_md_file`，经 Engine 窄端口委托（非经 `_commands.write`/`_queries.get`）。鉴权对齐 `get`（READ 单段）/ `add`（WRITE 单段，edit 走继承式 SUPERSEDE 本质是写新记忆，D5）；`read_md_file` 的鉴权与审计 target 是折算后的空间级反查 scope（与写入侧对落点判权对称，空 space 不绕过空间轴判权），折算不出退回 raw scope 时判权/审计/反查三轴同轴；project 解析在 Engine 层 `project_from_context`，本层不拆 Context。返回前剥瞬态键（coords 等是路径解析依据，不是条目属性）。`edit_md_file` 经 `_ensure_space_writable`（与 `add` 同，装配空间级判定时由 `ENTRY_RULES` 登记 `edit_md_file` 触发状态校验） |
 | `memory_api_impl/dreaming.py` | DreamingCoordinator + DreamingDriverJob：dreaming 编排（PEP 边界）——leader-only 注册、`CANCEL_REQUESTED` 持久化幂等注销、generation 隔离旧代 Driver、生命周期操作串行与短状态锁分离、按 leader 任期缓存恢复结果、每 tick 持续授权（`created_by` 复验）、fan-out 逐桶裁决；Coordinator 只持鉴权、提交、调度、注册表、Engine 候选 scope 枚举窄端口，不反向持有完整 API；驱动 Job 每 tick 经 `commands.evolve` 提交一次性 EvolveJob |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/dreaming_security.py` | 私有注册身份快照编码；只消费受控上下文和服务端注册表，不接业务 payload、不保存原始凭据、不续期认证 |
@@ -48,6 +49,9 @@
    数据面经 `MemoryCommandService` / `MemoryQueryService`，治理经 `GovernanceService`，
    Space 删除事务经 `SpaceLifecycleService`。编排逻辑（write 路径、search/list 取数、
    evolve 调度、purge+delete）全部在 `control`，禁止在本层堆业务逻辑。
+
+周期 HIERARCHY 的准入回调由 API 注入并绑定 home；每轮读取及每批写入前重新走 PEP、
+刷新空间事实并检查可写状态，不沿用注册时许可。执行层只调用回调，不持有身份。
 
 2. **调用方身份不下沉**
    身份取自 `security.auth.actor`；鉴权通过后只透传已鉴权的 target `scope`，`security` 及其中的 actor 不传入控制层/检索层/构建层/存储层。

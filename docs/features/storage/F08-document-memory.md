@@ -100,7 +100,7 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 **CRUD 语义**（对齐 KVStore 惯例）：
 
 - `insert_units`：unit_id 已存在抛 `ConflictError`；同事务写全量 + FTS5 + vec0。
-- `update_units`：id 不存在抛 `NotFoundError`；**shadow 侧**按 `content_hash` 变化判定投影重建——content 改（OVERWRITE）→ 重建倒排 + 向量；只改状态字段（SUPERSEDE）→ 只覆写 `unit_json`（投影列 lifecycle 等无论 hash 是否变都覆写，谓词下推依赖）。注意此行描述的是 shadow 侧投影重建判定，与决策四 `update` 表里 md 侧分流（content 变→`replace_content` 改块；SUPERSEDE→`remove_content` 删旧块）是两侧各自行为，不要混读为「md 也不动」（谓词下推依赖）。重建走 DELETE + INSERT 而非原地 UPDATE（vec0 无 UPDATE 语义，FTS5 原地行为依赖实现版本）。**投影列空兜底守卫**：coords 是 TRANSIENT 键（dumps 剥除），读回的 unit 永远没有 coords → `_project_of` 落 default；若不守卫，任何 read-modify-write 循环（SUPERSEDE / dedup / LifecycleManager）都会把原 project 重置为 default，下次按 project 隔离召回即丢失。project / md_filename / category 取到兜底值时保留旧列值。**守卫值回填 `unit.system_metadata`**：守卫只把旧值兜进投影列局部变量还不够——`dumps(unit)` 序列化的 `unit_json` 会丢键，`get_units` 读回不带键 → 下一轮 read-modify-write 的 `old` 也不带键（传染性丢失）。`md_filename` 守卫后回填进 `unit.system_metadata[MD_FILENAME_KEY]`（落盘键，不在 TRANSIENT 集合），让 `unit_json` 与投影列一致、读回带键、根除传染；就地 mutate 入参 unit（与 `md.write` 回填同款模式），composite update 因与 shadow 同引用、shadow 在 md 调用之前执行而能从 `unit.system_metadata` 取到。
+- `update_units`：id 不存在抛 `NotFoundError`；**shadow 侧**按 `content_hash` 变化判定投影重建——content 改（OVERWRITE）→ 重建倒排 + 向量；只改状态字段（纯 lifecycle 流转，SUPERSEDE/FORGOTTEN/ARCHIVED）→ 只覆写 `unit_json`（投影列 lifecycle 等无论 hash 是否变都覆写，谓词下推依赖）。注意此行描述的是 shadow 侧投影重建判定，与决策四 `update` 表里 md 侧分流（content 变→`replace_content` 改块；隐藏态 SUPERSEDED/FORGOTTEN→`remove_content` 删旧块，ARCHIVED 保留）是两侧各自行为，不要混读为「md 也不动」（谓词下推依赖）。重建走 DELETE + INSERT 而非原地 UPDATE（vec0 无 UPDATE 语义，FTS5 原地行为依赖实现版本）。**投影列空兜底守卫**：coords 是 TRANSIENT 键（dumps 剥除），读回的 unit 永远没有 coords → `_project_of` 落 default；若不守卫，任何 read-modify-write 循环（SUPERSEDE / dedup / LifecycleManager）都会把原 project 重置为 default，下次按 project 隔离召回即丢失。project / md_filename / category 取到兜底值时保留旧列值。**守卫值回填 `unit.system_metadata`**：守卫只把旧值兜进投影列局部变量还不够——`dumps(unit)` 序列化的 `unit_json` 会丢键，`get_units` 读回不带键 → 下一轮 read-modify-write 的 `old` 也不带键（传染性丢失）。`md_filename` 守卫后回填进 `unit.system_metadata[MD_FILENAME_KEY]`（落盘键，不在 TRANSIENT 集合），让 `unit_json` 与投影列一致、读回带键、根除传染；就地 mutate 入参 unit（与 `md.write` 回填同款模式），composite update 因与 shadow 同引用、shadow 在 md 调用之前执行而能从 `unit.system_metadata` 取到。
 - `delete_units`：幂等（缺失静默跳过），同事务显式删三表（rowid 关联无级联）。**幂等按 unit_id 不限 scope**（看门狗删、补偿回滚删依赖跨 scope 幂等），是 scope 原生隔离的幂等语义例外。
 - `get_units`：缺失 id 省略不抛错（服务召回物化，命中 id 中途被删应跳过而非整批失败），按输入顺序保序返回。**按 scope 原生隔离**（scope 五段等值 WHERE，不跨 scope 返回）。
 - `list_units`：拉该 scope 的 `(unit_id, unit_json bytes)`，过滤/排序/分页交上层复用 `list_memory_entries`（与 KV `scan→list` 同构）。**按 scope 原生隔离**（对齐 KV scan 按 scope 物理约束）。`list_units_by_md`（看门狗诊断用）例外不限 scope。
@@ -120,7 +120,7 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 | 方法 | 文档路径 |
 |---|---|
 | `add` | `_sanitize_document_content` → `md.write`（回填 md_filename）→ `shadow.insert_units`；不碰 KV |
-| `update` | 逐条：`shadow.get_units` 取旧 content → `shadow.update_units` 覆写（OVERWRITE content 变→重建 FTS5/vec0；SUPERSEDE content 不变→只覆写 `unit_json`+lifecycle 投影列）→ content 变时 `md.replace_content` 改块；SUPERSEDE（lifecycle ACTIVE→SUPERSEDED、content 不变）走 `md.remove_content` **删旧块**——md 真源不留"幽灵块"与新块并存，与影子索引 lifecycle 投影列更新同口径（shadow 侧只改投影列，md 侧物理删旧块）|
+| `update` | 逐条：`shadow.get_units` 取旧 content → `shadow.update_units` 覆写（OVERWRITE content 变→重建 FTS5/vec0；纯 lifecycle 流转 content 不变→只覆写 `unit_json`+lifecycle 投影列）→ content 变时 `md.replace_content` 改块；纯 lifecycle 流转按「md 可见性」分三态（#261 方案 C）——隐藏态（lifecycle 落到 `SUPERSEDED`/`FORGOTTEN`、content 不变）走 `md.remove_content` **物理删旧块**，`ARCHIVED` 保留 md 块（转冷可回溯）——md 真源不留"幽灵块"与影子索引 lifecycle 投影列更新同口径（shadow 侧只改投影列，md 侧物理删旧块）。仅「可见态(ACTIVE/ARCHIVED)→隐藏态(SUPERSEDED/FORGOTTEN)」才删块；隐藏态间流转（如 SUPERSEDED→FORGOTTEN，块早已删）不重删，避免 `remove_content` 未命中误报 drift |
 | `delete` | `shadow.get_units` 取旧 unit（md_filename + content 定位 md 块）→ `shadow.delete_units` 删三表 → 逐条 `md.remove_content` |
 | `get` | `shadow.get_units`（缺失省略、保序），替代 `kv.mget` |
 | `list` | `shadow.list_units` 全量拉 → 复用 `list_memory_entries` 内存过滤排序分页 |
@@ -181,8 +181,8 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **关键机制**：
 
-- **unit 粒度增量 diff**（非 lite 的文件级全量重建）：`shadow.list_units_by_md` 拿旧 `(unit_id, content_hash)` → 读 md 按行算新 hash → diff 出新增/删除集合只动变化的 unit。整文件重建会丢其他 unit 的 id（破坏 supersedes 链）。
-- **按行遍历**：`#` 开头标题行跳过、空行跳过、正文行算 sha256——前提即决策四的单行约束。
+- **unit 粒度增量 diff**（非 lite 的文件级全量重建）：`shadow.list_units_by_md(scope, md_filename, lifecycle=active)` 拿旧 **active** `(unit_id, content_hash)` 作 delete 侧基准，另取 `list_units_by_md(scope, md_filename)` **全集** hash 作 insert 侧「已知块」扣除基准 → 读 md 按行算新 hash → diff 出新增/删除集合只动变化的 unit。整文件重建会丢其他 unit 的 id（破坏 supersedes 链）。**两侧基准分开（对称设计）**：delete 侧只取 active 行——superseded/archived/forgotten 历史行不参与删除对账（它们本就不该在 md 里，md 无其块是 SUPERSEDE / lifecycle 治理的正确终态而非「用户手删」删除信号——否则会二次物理清除 SUPERSEDE 旧版行，断版本链/as_of）；insert 侧用全集 hash 扣除——archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这残留块重插为 active 重复行（遗忘语义失效 + 内容重复），全集扣除命中历史行、跳过 insert。
+- **按块结构解析**（`collect_blocks_from_text` 统一口径）：块间空行切块、每块首行（标题）跳过、正文行算 sha256，正文行**不判 `#` 前缀**——`#1 里程碑` 等 `#` 开头的合法正文与标题行文本不可区分，靠块结构区分（标题是块首行、正文在块内首行之后），否则这类正文被误当标题跳过、同文件任意手改时被连坐删除（issue #264 的 `#1 里程碑` 连坐删除场景）。前提即决策四的单行约束。**首块首行不总落在块边界**：`read_md_file` 传 `line_range` 切片，切片首行可能是上一块以 `#` 开头的正文行——`collect_blocks_from_text` 的 ``first_line_is_title`` 参数供切片调用方声明首行角色（`read_md_file` 传 `False`：宁可把可能是标题的首行多算成正文、hash 反查落空是空集无害，也不漏算正文行致 unit 被误判「待删」）；首块之后的块落在空行切出的真实块边界，首行恢复按标题处理。
 - **debounce 按文件分键**：`_watch_timers` 按 md_filename 各持一个 timer——单一 timer 时 B 文件的事件会 cancel 掉 A 文件待执行的同步，而 A 无新事件不会再补（纯事件驱动），改动永久丢失。
 - **初始宽限期**：启动后延迟 1s 置 `watcher_initialized`，避开 Observer 刚起时对存量文件的初始扫描风暴（存量 md 是写入流程产物，不是「用户手改」）。
 - **写窗口推迟**：见决策四。`_do_sync` 里轮询 `write_window_open()`。
@@ -190,13 +190,14 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 - **scope 继承**：新建 unit 的 scope 由 `latest_scope_by_md`（按 md_filename 查该文件最新一条 unit 的 scope，`rowid DESC LIMIT 1`，不限 scope WHERE 对齐 `list_units_by_md` 跨 scope 诊断例外）继承——md 文件不编码 org/space/user/agent/session，按同文件最新归属近似；无历史（该 md 文件首次补登）返 None 落看门狗构造期空 Scope 保持现行为。这修正 scope 原生隔离下补登 unit 落空 scope 列、真实 scope 召回不可见的遗留（补登 unit 落真实 scope 列后，真实 scope 的 get/list/search 能拉到它）。
 - **监听目录**：`{root}` 递归（root 顶层 `USER.md` 与 `memory/` 子树均在监听内；`_MdFileHandler` 按文件名白名单过滤，只认三类记忆文件——`USER.md` / `MEMORY.md` / `YYYY-MM-DD.md` 日期文件名（`_is_watched_md`），`memory/.shadow/shadow.db` 等非 md 及 `notes.md`/`README.md` 等非记忆 md 均不误触发）；目录尚不存在时先 `makedirs` 再监听（不能 schedule 不存在的目录）。
 
-**特殊场景与已知限制**（根因：看门狗按 content_hash 集合 diff，content_hash 不可唯一身份标识一个 md 块）：diff 的 `old_by_hash` 是 `content_hash → unit_id` 字典（同 hash 后者覆盖前者只留一个 id）、`_collect_new_contents` 用 `seen` 去重（同 content 第二次出现直接跳过）、diff 是纯集合差集 `old_set − new_set` / `new_set − old_set`。这让「重复 content」类手改失真：
+**特殊场景与已知限制**（根因：看门狗按 content_hash 集合 diff，content_hash 不可唯一身份标识一个 md 块）：diff 的 `old_by_hash` 是 `content_hash → unit_id` 字典（同 hash 后者覆盖前者只留一个 id）、`collect_blocks_from_text` 用 `seen` 去重（同 content 第二次出现直接跳过）、diff 是纯集合差集 `old_set − new_set` / `new_set − old_set`。这让「重复 content」类手改失真：
 
 - **用户手动新增与已有 content 相同的块**：新增行算出的 content_hash 已在 `old_hash_set` 里 → `seen` 去重时直接跳过（不进 `new_pairs`）→ `to_insert_pairs` 为空，看门狗**不建新 unit**。md 文件多了一块、影子索引没对应行——但看门狗的对账基准恰恰是 content_hash，hash 相同即对账「通过」，看门狗**发现不了这个漂移**。
 - **用户手动删除一个与别处 content 重复的块**：md 里原本有两块相同 content（历史遗留或上条的产物），删其一 → 新 `seen` 集合里该 hash 仍存在（另一块保留）→ `old_hash_set − new_hash_set` 为空，看门狗**不删影子索引**。md 少了一块、影子索引多留一条幽灵 unit。
 - **用户改某行 content，改后恰好与另一行相同**：旧 hash 消失（那个唯一 content）→ 进 `to_delete`；新 hash 已在集合里 → `seen` 跳过、不进 `to_insert`。看门狗**删旧 unit 但不建新 unit**——影子索引净少一条，md 却仍保留改后的行。
+- **块粘连 / 块首前手加正文 → 原标题沉中产出幽灵 unit**（按块结构解析的代价面）：块首行是标题、块内其余行是正文，靠「块结构」判定而非「`#` 前缀」判定。用户删掉块间空行（两块粘连为一）或在块首标题行之前手加一行正文后，原标题行会沉到块中间、成为「块内首行之后」的正文行，被按正文算 sha256 建 unit——看门狗会为 `# title` 这类标题原文建出幽灵 unit（可被 search 召回且不自愈，除非用户把空行改回去）。这是「宁可产生脏数据、绝不静默漏删用户正文」取舍的固有代价（方向正确、非缺陷），与上方 content 重复类失真是两回事，一并在此记档。彻底闭环同上方——md 块引入 unit_id 锚点后按锚点 reconcile。
 
-三者共同后果：md 与影子索引漂移，但看门狗的 content_hash 集合 diff 算法对这类漂移「天然失明」。根因与「写失败补偿的残留风险」（补偿按 content 首次匹配误删）同源——均源于 md 块无稳定 unit_id 锚点、按 content_hash/content 隐式身份标识。彻底闭环需引入 `<!-- id:{unit_id} -->` 锚点，让看门狗对账从「content_hash 集合 diff」改为「按 unit_id reconcile」（见后续演进），消除重复 content 的失真与版本链断裂。
+content 重复类三者的共同后果：md 与影子索引漂移，但看门狗的 content_hash 集合 diff 算法对这类漂移「天然失明」。根因与「写失败补偿的残留风险」（补偿按 content 首次匹配误删）同源——均源于 md 块无稳定 unit_id 锚点、按 content_hash/content 隐式身份标识。彻底闭环需引入 `<!-- id:{unit_id} -->` 锚点，让看门狗对账从「content_hash 集合 diff」改为「按 unit_id reconcile」（见后续演进），消除重复 content 的失真与版本链断裂。
 
 装配（`WatchdogProducer.register("watchdog")`）：shadow 与 markdown 一律从注入的 StoreManager 取端口（不自行 build_named，保证与 CompositeStorage 读写同源）；markdown root 从 `MarkdownStore.root` 契约读（ConfigSource 晚绑定解析后的值，不跨 namespace 摸 params 字面量）；scope 用空 `Scope()` 占位（影子索引不按 scope 隔离）。
 
@@ -255,6 +256,7 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 ## 已知遗留
 
 - **看门狗改行断版本链**：用户改某行 content → 删旧 unit + 建新 uuid unit，supersedes 链断裂（F07 §12.9 风险 5 当前版本策略）。后续可探索按标题行锚定保留旧 id。
+- **看门狗二次清除 SUPERSEDE 旧版行**：`list_units_by_md` 当前全量对账（无 lifecycle 过滤）——`edit_md_file` 把旧版标 SUPERSEDED 且 md 已换成新 content 后，看门狗下轮对账会把 SUPERSEDE 旧版的 hash 判为「用户手删」→ `delete_units` 物理删掉该历史行，版本链/as_of 断裂。修向 A（`list_units_by_md` 加 lifecycle 参数 + 看门狗传 active）尚未实现，待另行修复。
 - **replace_content / remove_content 首个命中**：content 重复时只改/删第一处，可能误替多块（§5.2.3 注）；后续可加 unit_id 锚点优化。
 - **跨进程文件锁未做**：md 与 sqlite 都是进程内 `threading.Lock` 串行化，多进程并发写同一 root 无防护（与 sync_gate 跨进程不防护同口径）。
 - **TOCTOU 窗口**：`_safe_abs_path` realpath 校验与 open 之间存在竞争窗口，收口面向恶意字符串威胁模型。

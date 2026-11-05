@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
 
 ## 范围 / 边界
@@ -40,6 +40,13 @@
    `security.default` 同样必须从根组件显式引用，使用户的安全参数覆盖实际作用于
    `EncryptedKVStore`，不得静默退回默认密钥文件。
 5. **同实现多套凭证优先晚绑定**：同一 LLM/Embedder/Reranker/Store 实现上切换 model/api_key/base_url/url/hosts/uri，须在调用/取连接路径 `fetch` 对应 key；**不得**把同构多 Key/URL 的首选做成多具名实例 + `*.active`。`*.active` 仅用于异质实现互切或产品明确要求的实例隔离。
+   对已迁移实例作用域命名空间的组件（当前仅 LLM），晚绑定 key 必须携带实例身份：
+   `default` 使用 `<namespace>.<field>`，其他具名实例使用 `<namespace>.<instance>.<field>`。
+   装配投影与消费方必须共用同一命名规则。其他命名空间的消费 builder 尚未接入该推导，
+   投影不得提前生成看似可用但无人消费的 `<namespace>.<instance>.<short-field>` 键。
+   显式 `config_namespace` 只从实例 `params` 读取，不从 `globals` 回退；值必须是非空字符串，
+   规范化后作为覆盖命名空间，空白或非字符串在装配期抛 `ValidationError`。它是显式覆盖，
+   不是避免实例间串读的必需项。
 6. **配置不进业务入参**：prompt 全文、模型名、API Key、base_url、Store 连接串、全局能力开关的写入路径不得解释自 `add`/`search`/`evolve`/`list` 的调用参数；调用侧最多传 prompt **key**（含本轮 extract/consolidate/reflect 策略选用，见 F01 决策 2.2）、`memory_type`/pipeline 等业务选择子。
 7. **key 稳定、值为传输安全字符串**：`fetch` 返回的值以 `str` 为主契约；布尔/数字由消费方解析。缺失 key 的语义由方法约定（返回 `None` 或抛错），实现须文档化且默认源与自定义源一致。
 8. **双侧同配置**：Embedder/Tokenizer 等构建侧与检索侧必须观察到同一 `ConfigSource` 快照语义，避免两侧模型或开关不一致。
@@ -163,6 +170,14 @@ ConfigSource
 
 说明：
 
+- 具名 LLM 的端点键由实例身份决定：`llm.default` → `llm.model` / `llm.api_key` /
+  `llm.base_url`；`llm.<name>` → `llm.<name>.model` / `llm.<name>.api_key` /
+  `llm.<name>.base_url`。OpenAI 与 DashScope builder 在未显式配置 `config_namespace` 时
+  按实例名推导该命名空间；匿名内联实例仍使用 `llm.*`。显式 `config_namespace` 只可写在
+  实例 `params` 中，必须是非空字符串，不从 `globals` 回退；投影与该实例的读取都使用这个
+  有效命名空间，空白或非字符串在装配期失败。不得把它当作非 default 实例正常工作的前置条件。
+  `default` 是主实例的保留名：`llm.default` 使用共享 `llm.*` 键族；其他名称（包括被当作
+  主实例使用的自定义名称）使用自己的实例键族，不生成别名。
 - 具体后端连接字段名与装配 `params` 对齐，完整表与「已接线 / 待接线」见 F01 决策 2.1。
 - 对某实现无意义的 key（如 hashing 的 `api_key`）消费方必须忽略，不得当作错误。
 - **消费约定**：OpenAI 兼容 Embedder/LLM、API Reranker 须在每次业务调用路径解析 `model`/`api_key`/`base_url`；连接型 Store 须在取客户端路径解析连接类 key；凭证或连接串变化时重建客户端。
@@ -321,3 +336,31 @@ Composer 的 `params.hierarchy_profiles` 配置；显式 Composer 不自动合�
   尝试，数量持续超限时可能连续失败；本轮此前成功持久化的下层结果保留。
 - 显式建树也使用这些限额，不能保证一次重建就解除容量问题。可评估内存和读取成本后
   调高上限并重新装配，或合理划分处理范围；相交旧树仍须补齐全部后代，不得截断旧子树。
+
+
+## 视频本地媒体目录配置
+
+`normalizer.<name>.params.local_media_roots` 是服务端配置的列表，每项仅包含 `scope`
+和 `root`。`scope` 可声明 org/space/user/agent/session，org 必须为非空字符串，其他
+省略维度按空串精确匹配；不支持通配符。`root` 必须是已存在的绝对本地目录，不能是
+卷根目录或 UNC 网络路径。可为同一 Scope 配多个目录；无绑定时拒绝实际文件读取。
+服务端必须按数据授权域分别配置，不能向所有租户共同开放含私有媒体的父目录。
+匹配对象是最终落点 `RawPayload.scope`，不是认证主体。启用归属判定的部署会将落点
+归一为 org/space，user/agent/session 为空，配置只填写 org/space；若配置 user 将无法
+匹配。未启用归属判定时按实际落点的五维填写，仍非通配匹配。
+POSIX 还校验打开根目录的设备号/inode 与装配时一致，更换根目录后须重新装配。
+
+```yaml
+normalizer:
+  video:
+    target: video
+    params:
+      local_media_roots:
+        - scope: {org: acme, space: project-a}
+          root: /srv/agent-memory/imports/acme/project-a
+      temp_root: /tmp/agent-memory-video
+```
+
+`temp_root` 仅控制处理临时目录，不是源文件白名单。旧视频部署须先创建导入目录并新增
+绑定；API 参数与正常视频处理流程保持原样。配置不能由业务 metadata 或请求体覆盖。
+该准入能力不依赖隐私分级模块或其开关。

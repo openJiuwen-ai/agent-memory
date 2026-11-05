@@ -42,7 +42,7 @@ from jiuwen_memory.control.jobs_impl.hierarchy_job import (
     build_spec,
 )
 from jiuwen_memory.control.policy import PolicyManager
-from jiuwen_memory.control.types import JobInfo, JobStatus
+from jiuwen_memory.control.types import BackgroundJobAdmission, JobInfo, JobStatus
 
 
 def _utc_now() -> datetime:
@@ -78,6 +78,7 @@ class HierarchyDeriveDependencies:
 
     hierarchy: HierarchyJobDependencies
     policy: PolicyManager
+    admission: BackgroundJobAdmission
     clock: Callable[[], datetime] = _utc_now
 
 
@@ -92,6 +93,8 @@ class HierarchyDeriveJob(Job):
         scope_contains(scope, scope)
         settings = options or HierarchyDeriveOptions()
         super().__init__(deepcopy(scope), settings.interval)
+        if not callable(dependencies.admission):
+            raise ValidationError("derive requires runtime admission")
         self.dependencies = dependencies
         self.options = settings
         self.limits = limits or HierarchyJobLimits()
@@ -127,6 +130,7 @@ class HierarchyDeriveJob(Job):
                 raise ValidationError(
                     "previous composition incomplete; repair before runtime restart"
                 )
+            self.dependencies.admission(deepcopy(self._home))
             profile = self.dependencies.hierarchy.evolver.hierarchy_profile(HierarchyKind.TIME)
             if profile is None:
                 detail.update(complete="true", reason="no compose profile")
@@ -188,6 +192,7 @@ class HierarchyDeriveJob(Job):
                 hierarchy_incremental=HierarchyIncrementalContext(
                     settle_at=now, ready_before=frontier,
                     supporting_units=selected.supporting_units,
+                    write_admission=self.dependencies.admission,
                 ),
             )
             evolved = await blocking_call(self._evolve_if_active, (request,))
@@ -209,9 +214,11 @@ class HierarchyDeriveJob(Job):
     def _check_active(self, handle: LockHandle | None) -> None:
         self.check_cancelled()
         _check_lock(handle)
+        self.dependencies.admission(deepcopy(self._home))
 
     def _evolve_if_active(self, request: EvolveRequest) -> EvolveResult:
         self.check_cancelled()
+        self.dependencies.admission(deepcopy(self._home))
         self.state.needs_repair = True
         return self.dependencies.hierarchy.evolver.evolve(request)
 
@@ -275,14 +282,16 @@ class HierarchyDeriveJobSpec:
 
     def with_scope(self, scope: Scope, **kwargs) -> HierarchyDeriveJob:
         """强制使用运行时同源依赖，不偷偷解析默认模型或清空 Scope。"""
-        if set(kwargs) != {"evolver", "kv", "policy"} or any(
+        if set(kwargs) != {"evolver", "kv", "policy", "admission"} or any(
             value is None for value in kwargs.values()
         ):
-            raise ValidationError("derive requires runtime evolver, kv and policy")
+            raise ValidationError("derive requires runtime evolver, kv, policy and admission")
+        if not callable(kwargs["admission"]):
+            raise ValidationError("derive requires callable admission")
         job = HierarchyDeriveJob(
             scope, HierarchyDeriveDependencies(HierarchyJobDependencies(
                 kwargs["kv"], kwargs["evolver"], self.hierarchy.lock,
-            ), kwargs["policy"]), self.options, self.hierarchy.limits,
+            ), kwargs["policy"], kwargs["admission"]), self.options, self.hierarchy.limits,
         )
         job.state = self.states.setdefault(scope_key(scope), HierarchyDeriveState())
         return job

@@ -15,18 +15,17 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from typing import Any
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.common import (
     reject_deprecated_llm_attempt_keys,
     validate_llm_attempt_policy,
 )
+from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 from jiuwen_memory.construction.router import (
     RouteContext,

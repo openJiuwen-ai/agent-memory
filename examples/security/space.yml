@@ -1,0 +1,33 @@
+memory_api:
+  security:
+    default:
+      target: standard
+      params: {authenticator: demo, authorizer: default}
+  authenticator:
+    demo:
+      target: dev
+      params:
+        identities:
+          demo-ops: {actor: {org: demo, user: ops}, role: admin}
+          demo-alice: {actor: {org: demo, user: alice}, role: user}
+          demo-bob: {actor: {org: demo, user: bob}, role: user}
+  engine:
+    default:
+      target: cloud
+      params:
+        ingestor: default
+        index_builder: default
+        retriever: default
+        scheduler: default
+        evolver: default
+        lifecycle: default
+        job_factory: default
+  authorizer:
+    default: {target: space_aware, params: {delegate: standard}}
+    standard:
+      target: standard
+      params: {grant_store: default, delegation_store: default}
+  grant_store:
+    default: {target: sqlite, params: {db_path: ":memory:"}}
+  delegation_store:
+    default: {target: sqlite, params: {db_path: ":memory:"}}

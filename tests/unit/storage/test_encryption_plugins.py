@@ -91,6 +91,9 @@ class ForeignManager(StoreManager):
     def domain_store(self, name="default"):
         return self.delegate.domain_store(name)
 
+    def domain_store_for_kv(self, name="default"):
+        return self.delegate.domain_store_for_kv(name)
+
     def has_domain_store(self, name="default"):
         return self.delegate.has_domain_store(name)
 

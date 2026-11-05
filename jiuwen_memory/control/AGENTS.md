@@ -29,6 +29,7 @@
 | `__init__.py` | 公开导出全部接口类与数据类型 |
 | `engine_impl/` | MemoryEngine 实现目录：`in_memory_engine.py`（本地最小实现）/ `cloud_engine.py`（云侧 message_type/profile 编排）/ `evolve_dispatch.py`（evolve 纯执行共用件：candidate→resolver 装配 + 一次性 EvolveJob 提交；三态分发 / 持续授权在 API 层 DreamingCoordinator）/ `dreaming_registry.py`（定时任务 KV 注册表：`created_by` 持续授权档案、`state + generation` 注销/旧代隔离状态、单实例锁 acquire/release；由 API 层 DreamingCoordinator 持有驱动） |
 | `engine_impl/schema_update_support.py` | 两 Engine 共用的无 I/O 候选判断、Schema 能力/路由校验及更新委托；通过 Engine 注入的 Evolver/IndexBuilder 解析回调取得组件，不直接访问 Engine 受保护成员；普通更新跳过准备阶段，算法在构建层，计划授权在 API，异步入口将同步构建工作放入工作线程 |
+| `engine_impl/temporal_support.py` | 三 Engine 共用的时间比较真源：`valid_at`（as_of 与 t_valid/t_invalid 的有效期判定，含「非正有效期窗口」引擎特例）、`valid_sort_key`（历史版本按 UTC 生效时间排序，缺值为最早时间哨兵）与 `matches_delete_selector`（delete 选择器逐条命中判定）。跨「入参时间」与「记忆时间」的比较一律双侧过 `common/time_utils.as_utc` 后再比——契约层与 SDK 直调都接受带/不带时区后缀两种合法 ISO 形态，落盘也原样保留形态，naive 与 aware 裸比较恒抛 `TypeError`；naive 按 UTC 解释，与 `common/type_def/retrieval_filter.valid_at` 同约定，且不改写落盘值 |
 | `*_impl/` | 每个算子对应一个实现子目录，含具体实现类；Producer 定义在顶层接口文件，具体实现用 `@XProducer.register(...)` 自注册 |
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
@@ -57,7 +58,7 @@
    `infer` / `procedural` / `middle` / 路由和内部状态不得从 `user_metadata`
    读取或 fallback。`MemoryPatch` 对两个命名空间分别 merge-update。
 
-1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/存储端口全部由装配注入。**记忆本体的写入一律经 `IndexBuilder`**——engine 不直接向真源写 KV。`InMemoryEngine` 保持 KVStore 读取路径；`CloudEngine` 与 `AgentEngine` 的 MemoryUnit 读取（点读、列表、`scopes()` 枚举及 dreaming 候选解析）经注入的 `DomainStore` 完成——文档模式分流到影子索引、非文档模式分流到 KV。文档模式下 `AgentEngine` 的 `update` SUPERSEDE / `delete` FORGET·ARCHIVE 在 engine 侧绕过 `KVLifecycleManager`（其 supersede/transition 从 KV 取 unit，文档模式真源在 shadow 必失败），直接改 unit 落 shadow（对齐 `CloudEngine` SUPERSEDE 范式，见 [F09](../../docs/features/control/F09-agent-engine-doc-mode-read.md)）；非文档模式维持 `lifecycle.*` 直调。禁止绕过存储抽象绑定具体后端或在 engine 内调用 LLM。
+1. **引擎不实现具体算法能力**：`MemoryEngine` 只编排，Ingestor/构建算子/Retriever/存储端口全部由装配注入。**记忆本体的写入一律经 `IndexBuilder`**——engine 不直接向真源写 KV。`InMemoryEngine` 保持 KVStore 读取路径；`CloudEngine` 与 `AgentEngine` 的 MemoryUnit 读取（点读、列表、`scopes()` 枚举及 dreaming 候选解析）经注入的 `DomainStore` 完成——文档模式分流到影子索引、非文档模式分流到 KV。文档模式下 `AgentEngine` 的 `update` SUPERSEDE / `delete` FORGET·ARCHIVE 在 engine 侧绕过 `KVLifecycleManager`（`supersede`/`transition`/`sweep` 均已注入 `domain_store` 文档分流，见 F09 issue_261；engine 侧绕过是 F09 决策 2 既定范式），直接改 unit 落 shadow（对齐 `CloudEngine` SUPERSEDE 范式，见 [F09](../../docs/features/control/F09-agent-engine-doc-mode-read.md)）；非文档模式维持 `lifecycle.*` 直调。禁止绕过存储抽象绑定具体后端或在 engine 内调用 LLM。
 2. **引擎方法一律异步协程**：同步调用由 `api/` 层自行桥接（`asyncio.run`），engine 内不做同步阻塞。
 3. **鉴权不在本层执行**：安全域 `Authorizer.authorize` 由 `api/MemoryAPI` 唯一 PEP 调用，engine 信任传入的 scope 已鉴权。Engine 提供 `permission_context_for_unit`、`list_with_permission_contexts` 和 `permission_contexts_for_delete`，供 API 使用真源 metadata 做类型化鉴权；list 的 items、count 与 contexts 必须来自同一次存储列表查询。禁止在 engine 内部重复 check。**判权范围的裁剪可落本层，判权的执行不可**：`collective/write_targets.py` 决定哪些候选空间被送去判权（截断规则），判权本身经 `can_write` 回调由 API 层执行；该裁剪的失效方向是未判即不进候选、表现为拒绝而非放行，因此可下沉。本层也不抛权限异常——缺兜底落点时返回空值，由 PEP 抛出。检索侧的逐空间判权循环不适用本条：其循环体就是 `Authorizer.authorize` 本身，移出等于移出 PEP；逐空间系统谓词的生成同样留 API 层，它按 `identity` 与空间事实取值。判权之后的部分可以下沉——`collective/cross_space_recall.py` 收已判权的空间目标与 `recall` 回调，做摊配、扇出与合并，不读 `identity`、不做裁决。
 4. **LifecycleManager 只做 Scope 内非破坏式标记**：`transition` / `supersede` 必须接收完整 Scope，只标记该 Scope 下的目标 id，绝不物理删除。物理删除（purge）走 engine 的 `delete` 路径 + `DeleteMode.PURGE`。
@@ -180,6 +181,9 @@ parent_scope 在进入 Evolver 前报错，不触发写入阶段的故障暂停�
 `jobs_impl/hierarchy_derive_job.py`。JobFactory 首次注册时延迟构造 derive spec；同一
 完整 Scope 共享故障保护状态，不因重复注册清零。自动 Job 每轮重新读取策略，逐层
 候选→构建→记录结果；使用与显式建树相同的 hierarchy:time 锁。
+注册必须注入 API 提供的 BackgroundJobAdmission；Job 在读取及构建派发前调用，
+并将不含身份的回调交给 Composer 在准备结束及写入批次前复验。准入拒绝必须失败，
+已写入时保留计数及故障保护；不得将无写入的拒绝当成永久 repair。
 AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘要，不实现树算法。
 诊断详情序列化失败时记录日志并回退为 JSON 空对象，不中断完成记录、活跃引用清理或队列。
 周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。

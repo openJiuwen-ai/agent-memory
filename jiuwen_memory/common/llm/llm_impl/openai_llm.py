@@ -56,7 +56,7 @@ class OpenAILLM(LLM):
         max_retries: SDK 单次调用内的自动重试次数
         ssl_verify / ssl_ca_cert: 出站 TLS 校验
         config_source: 可选；每次调用 ``fetch("llm.model|api_key|base_url")``
-        config_namespace: ConfigSource key 命名空间，默认 ``llm``
+        config_namespace: ConfigSource key 命名空间；直接构造时默认 ``llm``，装配器按实例名推导
     """
 
     def __init__(
@@ -247,7 +247,11 @@ def _build(config):
         require_https(base_url, component="openai LLM", param="llm")
         require_ca_file(ssl.ca_cert, component="openai LLM", param="llm")
     from jiuwen_memory.config.config_source import ConfigSourceProducer
+    from jiuwen_memory.config.keys import NS_LLM, resolve_instance_namespace
 
+    config_namespace = resolve_instance_namespace(
+        NS_LLM, config.name, config.params
+    )
     return OpenAILLM(
         model_name=config.get("llm_model") or "gpt-4o",
         base_url=base_url,
@@ -259,5 +263,5 @@ def _build(config):
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
-        config_namespace=str(config.get("config_namespace", "llm")),
+        config_namespace=config_namespace,
     )

@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-05 |
+| 日期 | 2026-11-04 |
 | 影响范围 | `jiuwen_memory_entry/core/`、`jiuwen_memory/control/`、`jiuwen_memory/ingest/`、`jiuwen_memory/construction/`、`jiuwen_memory/retrieval/` |
 | 状态 | **已落地**（视频记忆写入、异步任务管理及多通道检索） |
 
@@ -202,12 +202,16 @@ result = self._dedup_batch(extracted)
 **代码路径**：原生 `KVStore`、`IndexBuilder` 及其当前配置实现。
 
 **职责**：最终 CLM/ELM 使用 `/memory/<MemoryUnit.id>` 保存，并由原生全文和向量
-IndexBuilder 建立索引。系统不新增多模态 Store，原始视频不复制，只在
-`segments[].assets` 中保留 URI。
+IndexBuilder 建立索引。系统不新增多模态 Store，原始视频不持久化；读取前生成任务
+私有副本供流水线处理，结束后清理，`segments[].assets` 保留原始 URI。
 
-服务配置文件为 `examples/config_multimodal.yml`，配置完成后可按以下方式启动：
+服务配置文件为 `examples/config_multimodal.yml`。示例导入根在装配期必须已存在，先按
+默认 dev 身份创建目录，并将待处理媒体放入其中；修改 root 时同步调整建目录命令。
+以下为 Linux 本地启动示例，Windows 应在 YAML 中使用已存在的本机绝对目录。
+完成模型服务配置后启动：
 
 ```bash
+mkdir -p /tmp/agent-memory-imports/local/developer
 ./scripts/run-server.sh --auth-mode dev --host 127.0.0.1 --port 8002 examples/config_multimodal.yml
 ```
 
@@ -315,3 +319,13 @@ CLM `content` 已是视觉片段描述，ELM `content` 已是事件摘要，当�
 - 图片、音频和 Dreaming 闲时扫描尚未实现。
 - 查询驱动的快速处理尚未实现。对于网页视频链接或上传后立即提问的场景，可先使用
   VLM 做粗粒度处理，同时在后台完成完整记忆构建。
+
+
+### 本地视频导入部署前提
+
+使用本地视频前需在视频 Normalizer 的 `params.local_media_roots` 配置完整 Scope
+对应的导入目录，并预先创建目录；启用归属判定时匹配归一后的 org/space 落点，
+不能沿用 dev 示例的 user 绑定。未配置时明确拒绝，不再允许读取服务进程可访问的
+任意路径。`temp_root` 仅用于临时处理文件。接口参数、原资产引用及输出投影保持原样；
+配置语义见 [S08](../../specs/S08-config.md#视频本地媒体目录配置)，安全设计见
+[F04](../common/F04-security-interfaces-and-encryption.md#本地视频源文件准入)。

@@ -72,6 +72,7 @@ def test_build_delegates_each_unit_to_storage_add() -> None:
 
     builder.build(units)
 
+    assert builder.read_domain_store() is storage
     assert len(storage.adds) == 2
     assert [call[1][0].id for call in storage.adds] == ["u1", "u2"]
     assert all(call[2] is IndexWriteMode.ALL for call in storage.adds)

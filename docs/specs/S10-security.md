@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -298,6 +298,38 @@ verify_audit 的参数、授权、专用 guard、尝试审计及资源上限见 
 samples 的每项为上述 Proof 字段；返回体不含事件正文、密钥、凭据或 ok 字段。
 缺外部可信锚点无法识别整库回退到合法前缀；本地密钥轮换状态不跨重启持久化。
 
+## Trusted 主体公开初始化
+
+受信宿主在开始接收请求前，可通过唯一 Access 公共面调用：
+
+```python
+from jiuwen_memory.api import Scope, register_trusted_principal
+
+register_trusted_principal(
+    runtime.security_runtime.authenticator,
+    Scope(org="demo", user="alice"),
+    role="user",
+)
+```
+
+- `register_trusted_principal(authenticator, actor, *, role="user") -> None` 初始化该
+  认证器**实际使用**的主体注册表，不替换认证器、不另建 Store、不生成主体 API Key。
+- 仅限服务端受信部署代码。该函数不承担管理调用者认证，不属于 MemoryAPI，
+  不新增 HTTP、CLI 或 MCP 管理路由；宿主不得直接暴露为匿名注册入口。
+- actor 需为字符串字段组成的规范 Scope：org 非空，user/agent 恰一非空，
+  space/session 为空；不接受字段首尾空白。角色只允许 `user/admin`，ROOT 拒绝。
+- `PrincipalRegistrationCapability.register_principal(actor, Role)` 是可选增量能力，
+  不增加 Authenticator/PrincipalKeyStore 既有 ABC 的抽象方法。内置 Trusted 认证器
+  委派到其同源 Store；第三方认证器或 Store 未声明能力时抛 UnsupportedCapabilityError，
+  原有已预置主体的第三方 Store 仍可进行认证。
+- 注册必须原子提交。同主体同角色幂等，不同角色与任何既有有效登记/Key 冲突时
+  拒绝，失败不留下角色。并发签发和登记不得产生互相矛盾的角色。
+- 显式登记的主体独立于 API Key：撤销该主体最后一把 API Key，不删除它的显式登记。
+  仅由 Key 签发形成的旧主体仍在最后一把 Key 撤销后失去角色。初始化入口不提供
+  角色覆盖、动态主体停用或持久化；内置 memory 的全部状态随进程结束丢失。
+- 网关验证仍要求专用 gateway_key 与组织/主体身份头，未知主体拒绝，角色不从头部取。
+  主体注册不授予 Grant、Delegation 或跨范围访问权；业务权限仍由实际 Authorizer 判定。
+
 ## 注册与配置
 
 每个能力目录的顶层 `.py` 定义抽象接口和 Producer，`*_impl/` 中的实现通过
@@ -441,3 +473,24 @@ HTTP 显式 DEV 可从 http.dev_identities 读取服务端身份映射，或由�
 具名 ADMIN/ROOT 的组织权限与 agent 代表 user 的受控委托使用同一链路，内容轴、治理轴、
 作者标记和路由/检索过滤共同接受验证。旧 PermissionManager 仅为历史兼容类，不参与生产判定。
 PR1 阶段曾暂用旧权限链，那是迁移历史而非当前要求；不得恢复双 PDP。
+
+
+## 本地媒体源访问边界
+
+对目标 Scope 的 WRITE 授权不授予服务进程任意文件的读取权。内置视频文件读取还必须
+通过服务端配置的完整 Scope/导入目录绑定，缺配置或跨目录均拒绝；同步、异步、批量
+和后台摄入共享最终文件读取边界。仅返回摘要或仅限制写入 Scope 不能替代源准入。
+
+真实路径归属检查后，必须安全打开源文件并从该句柄生成任务私有副本；后续处理不得
+按调用方原路径重新打开。POSIX 从已核对装配时设备号/inode 的配置根目录描述符开始，
+以 dir_fd 逐段拒绝符号链接替换；Windows 固定祖先句柄并拒绝 reparse point。硬链接
+原始来源不在路径准入的识别范围，部署方须限制导入根及父目录的写入和链接权限。
+此策略由可信部署配置控制，不改变认证、授权动作矩阵或 RequestSecurityContext。
+匹配对象是最终落点 Scope，启用归属判定时应按 org/space 绑定，其余维为空。
+
+视频输入仅接受绝对本地路径及绝对 file URI。语法非法（含相对路径、NUL、非法 URI）
+报 ValidationError（HTTP 400）。缺少匹配绑定、目录外路径、源文件不存在/无法安全打开
+及非普通文件统一报不含源路径的 PermissionDeniedError（HTTP 403）；这里有意将旧版
+源文件不存在的 400 收紧为 403，不提供服务器文件存在性探测。临时目录创建或副本写入
+失败报 BackendError（HTTP 503），不误报源越界；同一任务每次暂存使用独立子目录，
+相同文件名可重复处理，原有副本不被覆盖。

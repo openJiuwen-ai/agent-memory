@@ -5,7 +5,7 @@
 
 - md 路径反推 project/category 错（如 USER.md 误判进 project 子目录）→ 新建 unit 落错
   归属坐标，召回按 project 隔离丢失。
-- ``_collect_new_contents`` 未跳过标题行（``#``）/空行 → 把标题当正文建幽灵 unit、空行
+- ``collect_blocks_from_text`` 未跳过块首标题行 / 空行 → 把标题当正文建幽灵 unit、空行
   参与 hash diff 制造假漂移。
 - 整文件重建（而非 unit 粒度）会丢失其他 unit 的 id，破坏 supersedes 版本链（F07 §12）。
 
@@ -23,8 +23,19 @@ import pytest
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
     WhitespaceTokenizer,
 )
-from jiuwen_memory.common.type_def import COORDS_KEY, MD_FILENAME_KEY, MEMORY_CLASS_KEY, Scope
-from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks, content_hash
+from jiuwen_memory.common.type_def import (
+    COORDS_KEY,
+    MD_FILENAME_KEY,
+    MEMORY_CLASS_KEY,
+    LifecycleState,
+    Scope,
+)
+
+from jiuwen_memory.storage.markdown_impl._md_blocks import (
+    collect_blocks_from_text,
+    collect_md_blocks,
+    content_hash,
+)
 from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
 from jiuwen_memory.storage.watchdog_impl.local_watchdog import (
     LocalWatchdog,
@@ -122,16 +133,64 @@ def test_is_watched_md_recognizes_only_memory_files(path: str, expected: bool) -
 def test_collect_new_contents_skips_titles_blanks_and_dedups(tmp_path) -> None:
     md = tmp_path / "memory" / "p1" / "MEMORY.md"
     md.parent.mkdir(parents=True)
-    md.write_text("# title\nhello\n\n# title2\nhello\n\nworld\n", encoding="utf-8")
+    # 含 # 开头正文行（#1 里程碑）——块首 # 行是标题（跳过）、块内 # 行是正文（不判 # 前缀）。
+    # 旧逐行遍历会把 #1 里程碑 也当标题跳过，本用例数据直接锁死「块首=标题、块内其余=正文」。
+    md.write_text(
+        "# title\n#1 里程碑\n\n# title2\nworld\n\n# title3\n#1 里程碑\n",
+        encoding="utf-8",
+    )
 
-    # collect_md_blocks 返回三元组 (hash, content, block_index)，取前两元保持与原
-    # _collect_new_contents 返回形态一致；口径（跳过标题/空行、去重、保序）完全不变。
+    # collect_md_blocks 返回三元组 (hash, content, block_index)，取前两元；口径（按块
+    # 结构跳过块首标题行/空行、去重、保序）——# 开头正文行不再被当标题跳过。
     result = collect_md_blocks(str(md))
     pairs = [(h, c) for h, c, _ in result]
 
-    # 标题行跳过；空行跳过；重复 content 去重；保序
-    assert [content for _, content in pairs] == ["hello", "world"]
-    assert [h for h, _ in pairs] == [content_hash("hello"), content_hash("world")]
+    # 块首 # 行（# title/# title2/# title3）跳过；块内 # 正文行（#1 里程碑）保留；
+    # 裸正文块（world）保留；重复的 #1 里程碑去重；保序
+    assert [content for _, content in pairs] == ["#1 里程碑", "world"]
+    assert [h for h, _ in pairs] == [content_hash("#1 里程碑"), content_hash("world")]
+
+
+def test_collect_blocks_from_text_first_line_is_title_false(tmp_path) -> None:
+    """切片首行是 ``#`` 开头正文行时，``first_line_is_title=False`` 不把该行当标题丢弃。
+
+    复现 committer 意见的失败模式：``read_md_file`` 的 ``line_range`` 切片起点不一定落在
+    块边界，首行可能是上一块以 ``#`` 开头的正文行（如 ``#1 里程碑``）。默认口径（首块首行
+    视作标题）会整行丢弃、缺 hash 反查落空；声明 ``first_line_is_title=False`` 后该行算作
+    正文进入 result，hash 匹配得上完整块。
+    """
+    # 模拟 line_range 切片：首行是 # 开头正文行，其后跟一个完整块（标题 + 正文）。
+    text = "#1 里程碑\n\n# 标题\nsecond memory\n"
+    blocks = collect_blocks_from_text(text, first_line_is_title=False)
+    contents = [c for _, c, _ in blocks]
+    # 首块首行没被当标题丢掉；第二个完整块的标题行仍被正常跳过
+    assert contents == ["#1 里程碑", "second memory"]
+    hashes = [h for h, _, _ in blocks]
+    assert hashes == [content_hash("#1 里程碑"), content_hash("second memory")]
+
+
+def test_collect_blocks_from_text_default_keeps_title_skipped(tmp_path) -> None:
+    """默认口径（全文读）：首行是标题仍按标题跳过，行为不回退。"""
+    text = "# 标题\n#1 里程碑\n"
+    blocks = collect_blocks_from_text(text)
+    # 默认 first_line_is_title=True：首块首行 "# 标题" 是标题被跳过，正文 "#1 里程碑" 保留
+    assert [c for _, c, _ in blocks] == ["#1 里程碑"]
+
+
+def test_collect_blocks_title_sinks_to_content_when_blocks_merge(tmp_path) -> None:
+    """块粘连（删块间空行）后原标题沉到块中间，被当正文产出——幽灵 unit 的已知代价。
+
+    按块结构解析的「块首=标题、块内其余=正文」靠块结构判定、不靠 ``#`` 前缀。删掉
+    块间空行（或块首标题行前手加一行正文）后，下一块标题行会沉到上一块内、成为
+    「块内首行之后」的正文行，按正文算 hash 产出「标题原文」——这是「宁可多算、
+    不可漏算」取舍的固有代价，本用例固化该契约，防止后人改回逐行跳过让 ``#`` 正文
+    再次被静默丢弃。
+    """
+    # 两块粘连：原本 "# t2" 是块首标题（跳过），删空行后沉到块中间变成正文
+    text = "# t1\ncontent1\n# t2\ncontent2\n"
+    blocks = collect_blocks_from_text(text)
+    # 单个粘连块：block[0]="# t1" 是标题跳过，其余三行全是正文（含沉中间的 # t2）
+    assert [c for _, c, _ in blocks] == ["content1", "# t2", "content2"]
 
 
 # -- 建 unit 缺省元数据 ------------------------------------------------------ #
@@ -179,6 +238,25 @@ def test_sync_one_inserts_new_lines(tmp_path) -> None:
     indexed = wd._shadow.list_units_by_md(SCOPE, "memory/p1/MEMORY.md")
     units = wd._shadow.get_units(SCOPE, [unit_id for unit_id, _hash in indexed])
     assert [u.segments[0].content for u in units] == ["hello world"]
+
+
+def test_sync_one_indexes_hash_leading_content(tmp_path) -> None:
+    """# 开头正文行（块内非首行）经看门狗对账仍被索引，不被当标题丢弃。
+
+    端到端覆盖 PR 缺陷：旧逐行遍历把 ``#1 里程碑`` 当标题跳过 → 影子索引无此 unit →
+    记忆从检索丢失。按块结构解析后，块首 ``# t`` 是标题跳过、块内 ``#1 里程碑`` 是
+    正文算 hash 建 unit——索引里必须能读到这条记忆。
+    """
+    wd = _watchdog(tmp_path)
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("# t\n#1 里程碑\n\n", encoding="utf-8")
+
+    wd._sync_one("memory/p1/MEMORY.md", deleted=False)
+
+    indexed = wd._shadow.list_units_by_md(SCOPE, "memory/p1/MEMORY.md")
+    units = wd._shadow.get_units(SCOPE, [unit_id for unit_id, _hash in indexed])
+    assert [u.segments[0].content for u in units] == ["#1 里程碑"]
 
 
 def test_sync_one_deletes_removed_lines(tmp_path) -> None:
@@ -229,6 +307,85 @@ def test_sync_one_replaces_changed_line_with_new_id(tmp_path) -> None:
     new_units = wd._shadow.get_units(SCOPE, [remaining[0][0]])
     assert new_units[0].segments[0].content == "new content"
     assert new_units[0].id != "u-old"  # 新 uuid，不保留旧 id
+
+
+@pytest.mark.parametrize(
+    "retired_lifecycle",
+    [LifecycleState.FORGOTTEN, LifecycleState.ARCHIVED, LifecycleState.SUPERSEDED],
+)
+def test_sync_one_does_not_reinsert_retired_block(tmp_path, retired_lifecycle) -> None:
+    """归档/遗忘/取代后 md 残留块不重插：diff 两侧基准不同（delete 认 active / insert 认全集）。
+
+    FORGET/ARCHIVE 只改 lifecycle + remove(SOFT)（md 不删块）、SUPERSEDE 的 remove_content
+    未命中也会留块——shadow 里该行 lifecycle 非 active 但 content_hash 仍在。若 insert 侧
+    只用 active 集合作「已知块」扣除，会把残留块重插为 active 重复行（遗忘语义失效 +
+    内容重复）——全集扣除命中历史行、跳过 insert。
+    """
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment
+
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/p1/MEMORY.md"
+    content = "retired content"
+    # 残留：行 lifecycle 非 active，md 块仍在文件里（非破坏式遗忘 / SUPERSEDE 漂移）
+    wd._shadow.insert_units(
+        SCOPE,
+        [
+            MemoryUnit(
+                id="u-retired",
+                scope=SCOPE,
+                lifecycle=retired_lifecycle,
+                segments=[Segment(content=content)],
+                system_metadata={MD_FILENAME_KEY: md_filename},
+            ),
+        ],
+    )
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    md.parent.mkdir(parents=True)
+    md.write_text(f"# t\n{content}\n\n", encoding="utf-8")
+
+    wd._sync_one(md_filename, deleted=False)
+
+    # 不重插：全集仍只有原 retired 行（旧代码会多出一条 active 重复行）
+    remaining = wd._shadow.list_units_by_md(SCOPE, md_filename)
+    assert [uid for uid, _ in remaining] == ["u-retired"]
+    unit = wd._shadow.get_units(SCOPE, ["u-retired"])[0]
+    assert unit.lifecycle == retired_lifecycle
+
+
+def test_sync_one_does_not_physically_delete_superseded_row(tmp_path) -> None:
+    """SUPERSEDE 后 md 已删旧块：看门狗对账不得物理删 SUPERSEDED 旧版行（修复目标本身）。
+
+    旧行 lifecycle=SUPERSEDED、md 已无其块（remove_content 删掉），是正确终态而非
+    「用户手删」删除信号。delete 侧只认 active 行 → SUPERSEDED 行不进 to_delete，
+    版本链/as_of 不因看门狗对账断裂。
+    """
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment
+
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/p1/MEMORY.md"
+    wd._shadow.insert_units(
+        SCOPE,
+        [
+            MemoryUnit(
+                id="u-superseded",
+                scope=SCOPE,
+                lifecycle=LifecycleState.SUPERSEDED,
+                segments=[Segment(content="old content")],
+                system_metadata={MD_FILENAME_KEY: md_filename},
+            ),
+        ],
+    )
+    # md 已无旧块（SUPERSEDE 的 remove_content 已删），只有空文件
+    md = tmp_path / "memory" / "p1" / "MEMORY.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("", encoding="utf-8")
+
+    wd._sync_one(md_filename, deleted=False)
+
+    # SUPERSEDED 行保留（不物理删），版本链/as_of 不断
+    remaining = wd._shadow.list_units_by_md(SCOPE, md_filename)
+    assert [uid for uid, _ in remaining] == ["u-superseded"]
+    assert wd._shadow.get_units(SCOPE, ["u-superseded"])[0].lifecycle == LifecycleState.SUPERSEDED
 
 
 def test_sync_one_noop_when_in_sync(tmp_path) -> None:

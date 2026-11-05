@@ -41,7 +41,7 @@
 
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
-| `simple` | `SimpleQueryParser` | `tokenizer`（`dep`，缺省 `whitespace`）；`embedder`（`dep`，缺省 `hashing`，仅 `vector_enabled` 时接入）；`llm`（`dep`，缺省 `echo`）；`feature_extractor`（`dep`，缺省 `keyword`） | `ParsedQuery` | 默认先按 `params.sanitize_enabled=true` 做保守去噪（UTC 时间戳、`Sender (untrusted metadata)` 元数据行；代码围栏默认保留，可用 `params.sanitize_strip_code=true` 剥除），`ParsedQuery.raw` 为清洗后文本；用注入的 `Tokenizer` 分词（与索引侧同实例 = 同词表）；`params.rewrite_enabled=true` 且注入可用 LLM 时结合可选 `query_context` 执行 strict JSON 改写，非空结果驱动软召回与 Reranker 精排，失败回退 sanitized raw，显式 null 表示 no-intent 并短路召回（见 `F08`）；接了 `embedder` 时对 query 向量化（同向量空间）并启用 VECTOR 通道；`feature_extractor` 抽实体与补充关键词供图召回使用；`filters` 透传为硬过滤、`as_of` 透传为 valid-time 回溯点；文本时间约束经 `time_parse` 规则解析为 event-time 窗 |
+| `simple` | `SimpleQueryParser` | `tokenizer`（`dep`，缺省 `whitespace`）；`embedder`（`dep`，缺省 `hashing`，仅 `vector_enabled` 时接入）；`llm`（`dep`，缺省 `echo`）；`feature_extractor`（`dep`，缺省 `keyword`）；`sanitize_enabled` / `sanitize_strip_code` / `rewrite_enabled`（读取顺序：实例 `params` > `globals` > builder 缺省 `true` / `false` / `false`） | `ParsedQuery` | 默认先做保守去噪（UTC 时间戳、`Sender (untrusted metadata)` 元数据行；代码围栏默认保留），`ParsedQuery.raw` 为清洗后文本；用注入的 `Tokenizer` 分词（与索引侧同实例 = 同词表）；`rewrite_enabled=true` 且注入可用 LLM 时结合可选 `query_context` 执行 strict JSON 改写，非空结果驱动软召回与 Reranker 精排，失败回退 sanitized raw，显式 null 表示 no-intent 并短路召回（见 `F08`）；接了 `embedder` 时对 query 向量化（同向量空间）并启用 VECTOR 通道；`feature_extractor` 抽实体与补充关键词供图召回使用；`filters` 透传为硬过滤、`as_of` 透传为 valid-time 回溯点；文本时间约束经 `time_parse` 规则解析为 event-time 窗 |
 
 **`sanitize.py`（子模块）**：规则版 query 去噪——剥除上游包装产生的 UTC 方括号时间戳与 `Sender (untrusted metadata)` 元数据整行；默认保护三反引号代码围栏内部格式，只折叠围栏外空白；输入为空或清洗后为空时返回空串。
 
@@ -112,7 +112,8 @@
 
 ## 拒绝的方案
 
-- **QueryParser 默认用对话 LLM 改写 query**：被拒。缺省 `llm=echo`（不改写）——对话模型常把 query「答」成长文，造成语义漂移并引入显著延迟；改写能力需调用方显式注入并自担风险（部署配置即把 query_parser 的 llm 内联为 `echo`）。
+- **QueryParser 默认用对话 LLM 改写 query**：被拒。缺省 `llm=echo` 且 `rewrite_enabled=false`（不改写）——对话模型常把 query「答」成长文，造成语义漂移并引入显著延迟；改写能力需同时显式注入 LLM 并开启 `rewrite_enabled`，由调用方自担风险。
+- **继续在 `query_parser.default.params` 固化三个开关的默认值**：被拒。实例层先于 `globals`，会把全局配置静默遮蔽；默认值归 builder fallback，实例 `params` 仍按最高优先级局部覆盖。
 - **Discloser 内做点读 / 有效性过滤 / 重排（Option A）**：被拒，改 Option B。点读、复核、重排上移到 `Retriever` 阶段，`Discloser` 退化为纯内容塑形（只按 `level` 截取）——职责单一、可独立替换，且重排只作用于已点读的存活候选。
 - **只靠谓词下推 或 只靠后置过滤**：被拒，两者并存 = 纵深防御。能下推的（lifecycle/temporal）在索引级先排除以减少召回浪费；索引未写齐相应字段或异步滞后时，`passes` / `in_event_window` 后置兜底正确性。
 - **`time_parse` 默认注入 LLM**：被拒。规则版覆盖常见中文相对时间且可控；默认不接 LLM，避免规则确定性被弱模型噪声污染，复杂表述留可选钩子按需注入。
@@ -128,13 +129,14 @@
 
 - `pytest tests/unit/retrieval tests/integration/retrieval` 全绿（exit 0）。
 - 单测覆盖：`query_parser` / `time_parse` / `recallers` / `fuser` / `discloser` / `predicate_builder` / `unit_reader`；集成覆盖：`pipeline_retriever` 全链路与 `index_contract`。
+- 配置优先级单测覆盖 QueryParser 三开关的实例 `params`、`globals` 与 builder 缺省值三级读取。
 - 内存实现（memory store + hashing embedder + whitespace 分词 + echo LLM）无外部服务即可全程运行，是 CI 常驻覆盖面；真实后端（milvus/es/redis）按 integration 约定未连通时自动 skip。
 
 ---
 
 ## 已知遗留
 
-- **LLM 改写 / 时间解析默认关闭**：query 改写已提供 opt-in 的 strict JSON 实现（见 `F08`）；缺省仍走 `echo`，复杂时间解析仍是规则版。真实模型的效果、延迟与漂移需部署侧按需验证。
+- **LLM 改写 / 时间解析默认关闭**：query 改写已提供 opt-in 的 strict JSON 实现（见 `F08`）；缺省走 `echo` + `rewrite_enabled=false`，真正的 query 改写需显式注入 LLM、开启 `rewrite_enabled` 并承担延迟/漂移；复杂时间解析仍是规则版。真实模型的效果、延迟与漂移需部署侧按需验证。
 - **InMemory 召回为近似计分**：内存向量走暴力余弦、内存全文走词重叠比值近似 BM25，仅供离线/测试；生产召回走 milvus / es。
 - **图召回依赖已建图**：`graph` 通道依赖构建层 ASSOCIATE 已建关联图，图为空时该路无产出。
 - **FusionStore 未接入 pipeline**：`PipelineRetriever` 走分离的多路 `recaller` + `Fuser`；向量·倒排·正排合一的 `fusion_store` 形态（见存储层规约）是另一条尚未编排进检索链路的路径。

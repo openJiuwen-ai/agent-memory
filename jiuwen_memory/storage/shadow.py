@@ -86,10 +86,15 @@ class DocumentShadowIndex(BaseStore):
         """按 scope 全量拉 ``(unit_id, unit_json bytes)``，供 list 接口内存过滤排序分页。"""
 
     @abstractmethod
-    def list_units_by_md(self, scope: Scope, md_filename: str) -> list[tuple[str, str]]:
+    def list_units_by_md(
+        self, scope: Scope, md_filename: str, *, lifecycle: str | None = None
+    ) -> list[tuple[str, str]]:
         """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用。
 
-        返回 ``(unit_id, content_hash)`` 二元组。
+        返回 ``(unit_id, content_hash)`` 二元组。``lifecycle`` 可选过滤：传
+        ``LifecycleState.ACTIVE.value`` 只取 active 行（看门狗对账只认活跃行——非
+        active 行是 SUPERSEDE/治理留下的历史版本，本就不该在 md 里、不参与 hash
+        对账）；None 不过滤（保持跨 scope 诊断原行为）。
         """
 
     @abstractmethod

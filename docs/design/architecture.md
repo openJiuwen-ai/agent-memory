@@ -216,7 +216,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；当前由 `Authorizer` 判定，旧 `PermissionManager` 不参与生产授权。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
 
-本章**只列出当前代码已实现的 36 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
+本章**只列出当前代码已实现的 38 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
 
 | 对外接口方法 | 语义 | 入参 | 出参 |
 | --- | --- | --- | --- |
@@ -232,6 +232,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `update` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）。`system_metadata` / `user_metadata` 分别合并 | `unit_id: str`；`scope: Scope`；`patch: MemoryPatch`；`*`；`security: RequestSecurityContext` | `MemoryUnit` |
 | `delete` | 按选择器（id / scope / 标签 / 时间，条件取「与」，至少一项）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id。未给 `selector.scope` 时鉴权退到根 scope | `selector: DeleteSelector`；`*`；`security: RequestSecurityContext` | `list[str]` |
 | `evolve` | 原四种演进模式及 HIERARCHY 显式建树，返回任务 id；关闭树开关时 HIERARCHY 成功跳过 | `scope`；`mode`；`channel=BACKGROUND`；`*`；`candidate=None`；`dreaming=None`；`interval=0`；`security`；`hierarchy_options=None`；`reuse_existing=False` | `str \| None`（job id 或注销结果） |
+| `read_md_file` | 文档模式按 md 文件读记忆单元：`md_filename` 为 basename（`USER.md` / `MEMORY.md` / `YYYY-MM-DD.md`），`line_range` 为 1-based 闭区间（省略读整文件、越界 clamp）；按块 content_hash 反查影子索引后组装 `MemoryUnit`。非文档模式抛 `ValidationError` | `context: Context`；`md_filename: str`；`*`；`security: RequestSecurityContext`；`line_range: tuple[int, int] \| None = None` | `list[MemoryUnit]` |
+| `edit_md_file` | 文档模式按文件内唯一 `old_text` 精确替换一处并原子写回；新 unit 继承式 SUPERSEDE（元数据继承、旧版标记失效）。`old_text` 不存在抛 `NotFoundError`、不唯一抛 `ValidationError`；非文档模式抛 `ValidationError` | `context: Context`；`md_filename: str`；`old_text: str`；`new_text: str`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |
 | `job_status` | 查询演进任务或长耗时 Ingest 任务（委托 Scheduler / Ingest 任务表）。Ingest 任务要求传入 target `scope`；API 对任务真实 Scope 执行 READ 鉴权与审计 | `job_id: str`；`*`；`security: RequestSecurityContext`；`scope: Scope \| None = None` | `JobInfo` |
 | `job_cancel` | 取消尚未完成的演进任务（幂等，委托 Scheduler） | `job_id: str`；`*`；`security: RequestSecurityContext` | `None` |
 | `inspect` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） | `unit_ids: list[str]`；`scope: Scope`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |

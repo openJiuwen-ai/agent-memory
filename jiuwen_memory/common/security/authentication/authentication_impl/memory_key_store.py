@@ -27,6 +27,7 @@ from jiuwen_memory.common.security.authentication.key_store import (
     fingerprint,
     generate_api_key,
     key_prefix,
+    validate_principal_registration,
 )
 from jiuwen_memory.common.security.types import AuthContext, Role
 from jiuwen_memory.common.type_def.scope import Scope
@@ -74,6 +75,8 @@ class InMemoryKeyStore(PrincipalKeyStore):
         # 变）。含 space 会让「同 principal 不同 space 同 role」变成两条互覆记录；
         # 含 session 会让「同一 principal 换个 session 登录」查不到 role。两者都是
         # 把非身份维度塞进了身份索引。
+        # 显式初始化的主体不依赖某把 API Key，撤销最后一把 Key 不删除该登记。
+        self._registered_roles: dict[tuple[str, str, str], Role] = {}
         self._roles: dict[tuple[str, str, str], Role] = {}  # (org, user, agent) -> role
         # 状态锁：issue 的「检查 role -> hash -> 写 record/role」、revoke 的「标记撤销
         # -> 重算 role」、resolve 的「取候选 -> 确认未撤销」都必须原子（验收复验 P2-role：
@@ -109,6 +112,17 @@ class InMemoryKeyStore(PrincipalKeyStore):
 
     # -- 契约 ------------------------------------------------------------ #
 
+    def register_principal(self, actor: Scope, role: Role) -> None:
+        validate_principal_registration(actor, role)
+        actor = replace(actor)
+        key = self._role_key(actor)
+        with self._lock:
+            existing = self._roles.get(key)
+            if existing is not None and existing is not role:
+                raise ValidationError("principal already has a different role")
+            self._registered_roles[key] = role
+            self._roles[key] = role
+
     def issue(self, actor: Scope, role: Role) -> str:
         if role is Role.ROOT:
             # §3.2「明确禁止」：ROOT 只能来自配置声明的 Root API Key。
@@ -124,7 +138,7 @@ class InMemoryKeyStore(PrincipalKeyStore):
         # 同 principal 已有不同 role 的有效 key 时拒绝签发（审计验收 P2-role）。
         # 否则 issue 覆盖 _roles 后，resolve（读 record.role）与 get_role（读 _roles）
         # 会返回不一致；revoke ADMIN key 后 _roles 仍残留 ADMIN = 撤销后提权残留。
-        # 换 role 须先 revoke 该 principal 全部 key，或走专门的 set_role（本期未提供）。
+        # Key-only 主体换 role 须先 revoke 全部 key；显式初始化的角色不能靠签发覆盖。
         #
         # 并发原子性（验收复验 P2-role）：Argon2 hash（~200ms）在锁**外**算，进锁后
         # **重新检查** principal role 再原子提交 record/index/role。否则两线程并发
@@ -136,6 +150,10 @@ class InMemoryKeyStore(PrincipalKeyStore):
         with self._lock:
             existing = self._roles.get(role_key)
             if existing is not None and existing is not role:
+                if role_key in self._registered_roles:
+                    raise ValidationError(
+                        "cannot change an initialized principal role by issuing a Key"
+                    )
                 raise ValidationError(
                     f"principal 已持有 role={existing.value}，签发不同 role={role.value} 前须先 "
                     f"revoke 其全部 key"
@@ -207,6 +225,8 @@ class InMemoryKeyStore(PrincipalKeyStore):
             ]
             if remaining:
                 self._roles[key] = remaining[0].role
+            elif key in self._registered_roles:
+                self._roles[key] = self._registered_roles[key]
             else:
                 self._roles.pop(key, None)
 

@@ -316,7 +316,7 @@ def _make_evolver(kv, vector_store, embedder, llm, extractor) -> OrchestratingEv
         abstractor=None,  # EXTRACT 不用
         associator=None,
         index_builder=_NoopIndexBuilder(kv),
-        storage=storage,
+        storage=storage, domain_store=storage.domain_store(),
         message_store=storage.kv(),
         dedup=dedup,
         llm=llm,
@@ -570,6 +570,7 @@ class TestEngineInferPersist:
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
             index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+            domain_store=storage.domain_store(),
             message_store=storage.kv(),
             dedup=dedup, llm=_MockLLM(),
         )
@@ -692,6 +693,7 @@ class TestProceduralExtract:
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
             index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+            domain_store=storage.domain_store(),
             message_store=storage.kv(),
             dedup=dedup, llm=_MockLLM(),
         )
@@ -756,6 +758,7 @@ class TestProceduralExtract:
         evolver = OrchestratingEvolver(
             extractor=extractor, abstractor=None, associator=None,
             index_builder=_NoopIndexBuilder(stores["kv"]), storage=storage,
+            domain_store=storage.domain_store(),
             message_store=storage.kv(),
             dedup=dedup, llm=_MockLLM(),
         )

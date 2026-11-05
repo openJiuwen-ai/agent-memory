@@ -3,7 +3,7 @@
 ``_parse_title`` 与 ``_parse_procedural_response`` 把 LLM 产出的 ``title`` 字段清洗为
 「单行 ≤50 字符」后落 ``unit.system_metadata[MD_TITLE_KEY]``，供 md 渲染标题行。失效方向：
 
-- 标题含换行未折叠 → md 块被切碎、看门狗按行遍历把第 2+ 行当幽灵 unit。
+- 标题含换行未折叠 → md 块被切碎、看门狗按块解析把第 2+ 行当幽灵 unit。
 - 标题超长未截断 → 块格式破坏（标题行与正文行不再一一对应）。
 - 空/非法标题未兜底为空串 → 落盘侧无法回退 ``# {unit.id}`` 占位。
 

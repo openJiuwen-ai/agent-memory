@@ -35,7 +35,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.policy import PolicyManager
-from jiuwen_memory.control.types import BackgroundJobStartResult
+from jiuwen_memory.control.types import BackgroundJobAdmission, BackgroundJobStartResult
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.kv import KVStore
 
@@ -246,8 +246,9 @@ class MemoryEngine(ControlOperator):
 
     async def start_background_jobs(
         self, scope: Scope, policy: PolicyManager,
+        *, admission: BackgroundJobAdmission | None = None,
     ) -> BackgroundJobStartResult:
-        """注册已鉴权 home 的后台任务；不在控制层重新判权。"""
+        """注册后台任务并透传 API 准入回调；控制层不实现判权。"""
         raise NotImplementedError("当前 Engine 未实现自动建树")
 
     @abstractmethod

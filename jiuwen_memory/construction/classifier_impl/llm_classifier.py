@@ -30,8 +30,8 @@ from jiuwen_memory.construction.common import (
     reject_deprecated_llm_attempt_keys,
     validate_llm_attempt_policy,
 )
-from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
+from jiuwen_memory.construction.prompt_guard import truncate_unit_content
 
 logger = get_logger(__name__)
 

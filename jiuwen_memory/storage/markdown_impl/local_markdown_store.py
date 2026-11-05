@@ -25,7 +25,7 @@ import threading
 
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_FILENAME_KEY,
@@ -241,7 +241,7 @@ class LocalMarkdownStore(MarkdownStore):
                 return False
 
             # 还原：块间用 \n\n 拼接，末尾补 \n\n（与 _render_block 尾部 \n\n 对齐，
-            # 保证后续 write 追加 / 看门狗按行遍历口径不变）。
+            # 保证后续 write 追加 / 看门狗按块解析口径不变）。
             out = "".join(f"{b}\n\n" for b in new_blocks)
             # 原子写（S09 第 12 条）：``open("w")`` 打开瞬间即截断文件，``write`` 中途
             # 抛错（磁盘满/IO）会让旧内容永久丢失——补偿路径（update 失败回滚 shadow）
@@ -312,7 +312,7 @@ class LocalMarkdownStore(MarkdownStore):
                 return False
 
             # 还原：剩余块间用 \n\n 拼接，末尾补 \n\n（与 replace_content 口径一致，
-            # 保证后续 write 追加 / 看门狗按行遍历口径不变）。删空后 out 为空串，
+            # 保证后续 write 追加 / 看门狗按块解析口径不变）。删空后 out 为空串，
             # 写回空文件（全部块已删，与影子索引全删对齐）。
             out = "".join(f"{b}\n\n" for b in new_blocks)
             # 原子写（见 replace_content 同款）：写失败回写旧全文 ``text`` 恢复调用前状态，
@@ -556,10 +556,10 @@ class LocalMarkdownStore(MarkdownStore):
         logger.info(
             "[trace/md] render block | title=%r | memory_class=%s | md_title_key=%s "
             "| team=%r | unit_id=%s",
-            title,
-            memory_class,
-            str((unit.system_metadata or {}).get(MD_TITLE_KEY) or ""),
-            (coords.get("team") if isinstance(coords, dict) else None)
+            redact_for_log(title),
+            redact_for_log(memory_class),
+            redact_for_log((unit.system_metadata or {}).get(MD_TITLE_KEY)),
+            redact_for_log(coords.get("team") if isinstance(coords, dict) else None)
             if memory_class == "daily_memory"
             else None,
             unit.id[:8],

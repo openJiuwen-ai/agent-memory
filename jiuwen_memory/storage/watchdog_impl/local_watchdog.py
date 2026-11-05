@@ -8,14 +8,15 @@ F07 §12.8 方案 B 变体）。
 
 **与 lite 的关键差异**：lite 的 ``sync`` 是文件级全量重建（整文件 chunks 删重建）；
 本实现是 **unit 粒度增量**——``shadow.list_units_by_md`` 拿旧 (unit_id, content_hash)
-list，读 md 按行算新 content_hash list，diff 出「新增/删除」集合只动变化的 unit。
+list，读 md 按块算新 content_hash list，diff 出「新增/删除」集合只动变化的 unit。
 否则改一行重建整个文件的 unit 会丢失其他 unit 的 id（破坏 supersedes 链，F07 §12）。
 
 **块格式对齐** ``MarkdownStore._render_block``：``# {标题}\\n{content}\\n\\n``
 （标题按 F08 §8 分流：daily 文件用 coords.team、其余用 LLM 生成的 md_title、均兜底
-unit.id——标题内容对 diff 无影响，本实现只认 ``#`` 开头的标题行）。按行遍历：标题行
-（``#`` 开头）跳过、空行跳过、正文行算 sha256（F07 §12.4 单段
-unit 约束——一行正文 = 一个 content = 一个 hash 候选）。
+unit.id——标题内容对 diff 无影响，本实现只认 ``#`` 开头的标题行）。按块结构解析
+（与 ``collect_blocks_from_text`` 同口径）：块间空行切块、块首标题行跳过、正文行算
+sha256——正文行不判 ``#`` 前缀（``#1 里程碑`` 等合法正文与标题行不可区分，靠块结构
+区分）（F07 §12.4 单段 unit 约束——一行正文 = 一个 content = 一个 hash 候选）。
 
 **unit_id 策略**：用户改某行 content → 旧 hash 消失 + 新 hash 出现 → 删旧 unit
 + 建新 unit（新 id），不保留旧 id（F07 §12.9 风险5 当前版本策略）。删旧后用旧 id
@@ -38,6 +39,7 @@ from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_FILENAME_KEY,
     MEMORY_CLASS_KEY,
+    LifecycleState,
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -396,25 +398,46 @@ class LocalWatchdog(Watchdog):
     def _sync_one(self, md_filename: str, deleted: bool) -> None:
         """单文件 unit 粒度增量同步（F07 §12.3 流程）。
 
-        ① old = shadow.list_units_by_md(scope, md_filename)  # [(unit_id, content_hash)]
-        ② 读 md 按行算 new (content_hash, content) list  (deleted=True 时 new 为空 → 全删)
-        ③ diff：
-           old_hash - new_hash → delete_units(对应 unit_id)
-           new_hash - old_hash → insert_units(新建 unit，步骤 3 缺省元数据 + content 原文)
+        ① old_all = shadow.list_units_by_md(scope, md_filename)
+           # 全集 [(unit_id, content_hash)]，供 insert 侧「已知块」扣除（known_hash_set）
+        ② old_active = shadow.list_units_by_md(scope, md_filename, lifecycle=active)
+           # 仅 active 行，供 delete 侧「现存块」基准（old_hash_set）
+        ③ 读 md 按行算 new (content_hash, content) list  (deleted=True 时 new 为空 → 全删)
+        ④ diff：
+           old_hash(active) - new_hash → delete_units(对应 unit_id)
+           new_hash - known_hash(全集) → insert_units(新建 unit，步骤 3 缺省元数据 + content 原文)
+
+        两侧基准分开（不同口径对称设计，缺一不可）：delete 侧只认 active 行——
+        superseded/archived/forgotten 历史版本（SUPERSEDE/治理后保留，md 已删旧块、shadow
+        留行做版本链/as_of）不参与 to_delete，否则看门狗会把旧版行物理删除、断版本链。
+        insert 侧用全集 hash 扣除——archived/forgotten 行的 md 块仍留在文件里（FORGET/
+        ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这
+        残留块重插为 active 重复行（遗忘语义失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
         """
         scope = self._scope
-        # ① 旧 unit（含 content_hash）
-        old_pairs = self._shadow.list_units_by_md(scope, md_filename)
+        # ① 旧 unit 全集（含 content_hash）——insert 侧「已知块」扣除基准。用全集而非
+        #    active：archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改
+        #    lifecycle + remove(SOFT)，md 不删块），用 active 集合扣会把这残留块重插为
+        #    active 重复行（遗忘失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
+        all_pairs = self._shadow.list_units_by_md(scope, md_filename)
+        known_hash_set = {ch for _, ch in all_pairs}
+
+        # ② 旧 unit（仅 active 行）——delete 侧「现存块」基准。只认 active，排除
+        #    superseded/archived/forgotten 历史版本（md 已删旧块、shadow 留行做版本链
+        #    /as_of，md 无其 hash 是正确终态而非删除信号），避免物理删旧版行断版本链。
+        old_pairs = self._shadow.list_units_by_md(
+            scope, md_filename, lifecycle=LifecycleState.ACTIVE.value
+        )
         old_by_hash: dict[str, str] = {}
         for unit_id, ch in old_pairs:
             old_by_hash[ch] = unit_id
         old_hash_set = set(old_by_hash.keys())
 
-        # ② 新 (content_hash, content) list（按行遍历 md，保留 content 原文供建 unit）。
+        # ② 新 (content_hash, content) list（按块结构解析 md，保留 content 原文供建 unit）。
         # collect_md_blocks 返回三元组 (hash, content, block_index)，看门狗只取前两元
         # （block_index 供 DomainStore._supersede_shadow_for_md 跨块对齐用，看门狗「删旧建新」
-        # 不按位置继承、不需要 block_index）。口径与原 _collect_new_contents 完全一致
-        # （逐行遍历、跳过标题/空行、sha256、保序去重），只是定义移到共享 _md_blocks。
+        # 不按位置继承、不需要 block_index）。口径为块结构解析（跳过块首标题行、正文行
+        # 不判 # 前缀、sha256、保序去重），定义在共享 _md_blocks（与 edit_md_file 同口径）。
         new_pairs: list[tuple[str, str]] = []  # (hash, content) 保序、去重
         new_hash_set: set[str] = set()
         if not deleted:
@@ -423,9 +446,9 @@ class LocalWatchdog(Watchdog):
                 new_pairs = [(h, c) for h, c, _ in collect_md_blocks(abs_path)]
                 new_hash_set = {h for h, _ in new_pairs}
 
-        # ③ diff
+        # ④ diff
         to_delete = old_hash_set - new_hash_set
-        to_insert_pairs = [(h, c) for h, c in new_pairs if h not in old_hash_set]
+        to_insert_pairs = [(h, c) for h, c in new_pairs if h not in known_hash_set]
 
         if not to_delete and not to_insert_pairs:
             logger.debug("LocalWatchdog: no drift, skip sync %s", md_filename)

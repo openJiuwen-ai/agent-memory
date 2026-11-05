@@ -68,6 +68,10 @@ class DocumentIndexBuilder(IndexBuilder):
             )
         self._domain = domain_store
 
+    def read_domain_store(self) -> DomainStore:
+        """Expose the same domain used by build/update for pre-write rechecks."""
+        return self._domain
+
     def operator_type(self) -> OperatorType:
         return OperatorType.INDEX_BUILDER
 
