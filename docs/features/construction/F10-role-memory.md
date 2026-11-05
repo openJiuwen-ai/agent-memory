@@ -918,26 +918,259 @@ globals:
 
 HTTP 通过 `POST /v1/<方法名>` 暴露，CLI 由 `MemoryAPI` 签名反射生成，MCP 注册为 `memory_role_*` 工具；通用 MCP 桥和 JiuwenSwarm provider 注册为 `agent_memory_role_*` 工具（见 7.3）。
 
-### 6.2 最短链路时序
+### 6.2 时序图
 
+参与方说明：**Agent** 为外部产品（经 MCP 桥或 provider）；**API** 为 `MemoryAPI` 的鉴权层（`continuity_ops.py`）；**Svc** 为 `ContinuityService`；**Reg** 为 Registry 具名 KV（`/continuity/...`）；**Mem** 为现有写入与读取链路（`add` / `get` / `list` / `search`，最终落 MemoryUnit）；**Graph** 为证据图（`evidence_graph` 投影 + GraphStore）。所有接口第一步都先执行可信上下文校验和项目 Scope 检查（`org + space`，不带 user / agent / session），图中不再重复。
+
+#### 6.2.1 端到端：跨产品无交接接续
+
+```mermaid
+sequenceDiagram
+    participant O as 负责人
+    participant WB as WorkBuddy
+    participant HM as Hermes
+    participant AM as agent-memory
+    O->>AM: role_task(create, request_id)
+    AM-->>O: task_id, revision=1
+    O->>AM: role_task(bind, workbuddy, context=s1)
+    AM-->>O: binding_id=b-wb, revision=2
+    O->>AM: role_task(bind, hermes, context=s2)
+    AM-->>O: binding_id=b-hm, revision=3
+    WB->>AM: role_record(b-wb, event_id=evt-1, "观察到超时")
+    AM-->>WB: status=committed, refs=[MemoryRef]
+    Note over WB: 离线，不做交接
+    HM->>AM: role_view(task_id, duty=diagnosis)
+    AM-->>HM: facts / paths / gaps / meta
+    HM->>AM: role_record(b-hm, evt-2, "复测通过")
+    AM-->>HM: committed, refs
+    HM->>AM: role_relation(evt-2 verifies evt-1, expected_revision=0)
+    AM-->>HM: committed, relation_ref
 ```
-负责人            WorkBuddy           Hermes             agent-memory
-  │ role_task(create) ─────────────────────────────────────▶│ 生成 task_id，revision=1
-  │ role_task(bind, workbuddy) ────────────────────────────▶│ binding_id=b-wb
-  │ role_task(bind, hermes) ───────────────────────────────▶│ binding_id=b-hm
-  │                  │ role_record(b-wb, evt-1, "观察到超时") ──▶│ MemoryUnit + 回执 committed
-  │                  │（离线，不做交接）                         │
-  │                  │                  │ role_view(task_id) ──▶│ 背景 → 展开 → 视图
-  │                  │                  │◀─ facts / gaps / meta ─│
-  │                  │                  │ role_record(b-hm, evt-2, "复测通过")▶│
-  │                  │                  │ role_relation(evt-2 verifies evt-1)▶│ 真源 + 图投影
-```
+
+端到端步骤说明：
 
 1. 负责人用稳定 `request_id` 调用 `role_task(create)`，取得 `task_id`。
 2. 负责人为每个连接调用 `bind`，提供 `connector_id`、`context_id`、`expected_revision` 和 `request_id`，取得独立的 `binding_id`；不按标题自动合并任务。
 3. WorkBuddy 以自己的身份调用 `role_record`，提供稳定 `event_id` 和原始内容，保存返回的 `MemoryRef`。
 4. WorkBuddy 可以离线。Hermes 用 `role_view(task_id=...)` 恢复背景并检查 gaps，无需交接或确认。
 5. 新内容先 record 取得引用，再登记关系。对同一个起点分别传 diagnosis、testing、execution，服务端选择不同类型和方向的边；复核通过新修订写回，必须带 `expected_revision`。
+
+#### 6.2.2 role_task（以 bind 为例）
+
+```mermaid
+sequenceDiagram
+    participant A as Agent/负责人
+    participant API
+    participant Svc
+    participant Reg
+    participant Mem
+    A->>API: role_task(scope, TaskRequest)
+    API->>API: get/find 需 READ，其余需 WRITE
+    API->>Svc: task_owner(task_id)
+    API->>API: 修改既有任务时校验调用者是创建负责人
+    API->>API: bind 时校验 connector 属于本组织且允许该项目
+    API->>Svc: task(request, owner, read)
+    opt 请求携带 background
+        Svc->>Mem: 逐个点读 MemoryRef（判权、核对摘要与生命周期）
+    end
+    Svc->>Reg: mutate：读记录 → 核对 expected_revision → 查 request_id 回执
+    alt 同 request_id 且内容一致
+        Reg-->>Svc: 返回上次结果（replayed=true）
+    else 修订号不符或 request_id 内容不同
+        Reg-->>Svc: ConflictError
+    else 正常
+        Svc->>Reg: 应用变更、revision+1、写回执，整条记录原子写回
+    end
+    Svc-->>API: task_id, revision, 裁剪后的任务快照
+    API->>API: 审计
+    API-->>A: 结果
+```
+
+#### 6.2.3 role_record
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant API
+    participant Svc
+    participant Reg
+    participant Mem
+    A->>API: role_record(scope, ContinuityEvent)
+    API->>API: 项目 WRITE 判权
+    API->>Svc: binding_connector(task_id, binding_id)
+    API->>API: 认证主体 == 连接 actor、连接已启用、允许该项目
+    API->>Svc: record(event, connector, read, write)
+    Svc->>Reg: 读任务与绑定（须 open、绑定有效且属于该连接）
+    Svc->>Reg: 读事件回执（幂等键 = 连接+绑定+event_id）
+    alt 已有回执且摘要不同
+        Svc-->>API: ConflictError（event_id 被不同内容复用）
+    else 无回执
+        Svc->>Reg: 检查切换水位与来源游标，预留位置
+        Svc->>Reg: 保存回执 status=unknown
+        Svc->>Mem: add 原文（infer=false，带 continuity_* 元数据与 event_time）
+        Mem-->>Svc: MemoryUnit
+        Svc->>Reg: 回执 status=partial，记录 refs
+    end
+    Svc->>Reg: 引用加入任务背景、任务 revision+1
+    Svc->>Reg: 回执 status=committed
+    opt 配置了派生构建
+        Svc->>Svc: 冻结构建计划 → 逐项写入 → 核对（见 4.2）
+    end
+    opt 配置了关系发现
+        Svc->>Svc: 生成候选关系并登记（失败只影响 association_status）
+    end
+    Svc-->>API: status, operation_id, refs
+    API->>API: 审计
+    API-->>A: 回执
+```
+
+写正文失败时直接返回 `status=unknown`，不再继续；调用方须先用 `role_rebuild(recovery)` 核对再用原 `event_id` 重试（见 6.3）。
+
+#### 6.2.4 role_relation
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant API
+    participant Svc
+    participant Reg
+    participant Mem
+    participant G as Graph
+    A->>API: role_relation(scope, RelationRecord, expected_revision)
+    API->>API: 项目 WRITE 判权
+    opt 修订既有关系
+        API->>Svc: relation_head_ref(relation_id)
+        API->>Mem: 读旧关系真源，按其快照做 UPDATE 判权
+    end
+    API->>Svc: relation(record, expected_revision, read, write)
+    Svc->>Mem: 点读两端与全部证据，按关系目录校验类型与端点类别
+    Svc->>Reg: 读关系头
+    alt 同修订同内容
+        Svc->>G: 只补投影
+    else 修订号不符 / 上次写入状态 unknown
+        Svc-->>API: ConflictError
+    else 正常
+        Svc->>Mem: 修订时读旧真源，核对端点与类型未变，保留人工裁决
+        opt contradicts
+            Svc->>Svc: ConflictResolver 给出裁决建议
+        end
+        Svc->>Reg: 关系头 status=unknown
+        Svc->>Mem: add 关系 JSON（真源 MemoryUnit）
+        Svc->>Reg: 关系头记录 ref，status=partial
+        Svc->>G: 按修订条件投影（project_edge / unproject_edge）
+        Svc->>Reg: 关系头 status=committed，追加变更日志
+    end
+    Svc-->>API: status, relation_ref, revision
+    API-->>A: 结果
+```
+
+#### 6.2.5 role_view
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant API
+    participant Svc
+    participant V as RoleView
+    participant G as Graph
+    participant Mem
+    A->>API: role_view(scope, RoleViewQuery)
+    API->>API: 项目 READ 判权
+    API->>Svc: view(request, read, discover)
+    Svc->>Svc: 读任务背景（若给 task_id）
+    Svc->>V: build(...)
+    V->>Mem: 播种：背景 → anchor → query 语义候选（经 search，至多 5 条）
+    loop 有界广度优先（深度 / 节点 / 边 / 路径 / 耗时预算）
+        V->>G: incident_edges(节点)
+        V->>Svc: resolve_edge：读关系头与真源，核对修订
+        V->>Mem: 点读两端与证据（判权、摘要、来源是否被隔离）
+        V->>V: 按各职责规则判定是否展开，记录路径与职责归属
+    end
+    V->>V: 状态计算（supports 提升、反证降级、裁决标 refuted）
+    V-->>Svc: role-view/1
+    Svc-->>API: 视图
+    API-->>A: facts / judgments / experiences / risks / paths / gaps / meta
+```
+
+读不到的端点或证据记为 `reference_unavailable` 并且不再穿过；任何预算耗尽都写入缺口，不返回完整。
+
+#### 6.2.6 role_rebuild
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant API
+    participant Svc
+    participant Reg
+    participant Mem
+    participant G as Graph
+    A->>API: role_rebuild(scope, recovery?)
+    API->>API: 项目 WRITE 判权
+    alt 不带 recovery：补建投影
+        API->>Svc: repair(read)
+        loop 每个关系头
+            Svc->>Mem: 读真源并校验依赖
+            Svc->>G: 条件投影
+        end
+        Svc-->>API: results, coverage, gaps
+    else 带 recovery
+        API->>Svc: recovery_owner(recovery)
+        API->>API: event 恢复校验原连接身份；逐个引用做 UPDATE 判权
+        API->>Svc: recover(recovery, read)
+        alt kind=event
+            Svc->>Mem: 读引用，核对 continuity_event、信封摘要与正文
+            Svc->>Reg: 回执置 partial（next_action=retry_original_event）
+        else kind=relation
+            Svc->>Mem: 读引用，核对 relation_id、修订、payload_digest
+            Svc->>G: 补投影
+        else kind=derivation
+            Svc->>Svc: 按冻结计划只核对派生输出，不写新内容
+        end
+        Svc-->>API: 核对结果
+    end
+    API-->>A: 结果
+```
+
+#### 6.2.7 来源治理：role_quarantine_source / role_release_source / role_mark_source_cutover
+
+```mermaid
+sequenceDiagram
+    participant Adm as 治理人员
+    participant API
+    participant Svc
+    participant Reg
+    Adm->>API: role_quarantine_source(scope, source_key, reason)
+    API->>API: 项目 MANAGE_SPACE 判权
+    API->>Svc: quarantine_source(source_key, reason, operator)
+    Svc->>Reg: 写 /continuity/sources/{source_key}（原因、操作者、时间）
+    API->>API: 审计（含 reason）
+    API-->>Adm: 隔离记录
+    Note over API,Reg: 之后所有读取（get / search / list / 视图 / 跨空间查询）都会拦截该来源的内容
+    Adm->>API: role_release_source(scope, source_key)
+    API->>Svc: release_source → 删除隔离记录
+    API-->>Adm: 是否之前处于隔离
+    Adm->>API: role_mark_source_cutover(scope, connector, context_id)
+    API->>Svc: mark_source_cutover（要求该来源没有待核对的预留位置）
+    Svc->>Reg: 写切换水位
+    API-->>Adm: 水位；之后拒绝该来源的新事件
+```
+
+#### 6.2.8 role_publish
+
+```mermaid
+sequenceDiagram
+    participant U as 发布者
+    participant API
+    participant Mem
+    U->>API: role_publish(scope=共享项目, source=MemoryRef, reason)
+    API->>API: reason 非空；共享项目 WRITE 判权
+    API->>Mem: 按来源原 Scope 点读（READ 判权、摘要、生命周期）
+    API->>API: 校验同组织；来源空间 SHARE 判权
+    API->>Mem: add 原文到共享项目（保留出处、发布依据与来源 t_event）
+    Mem-->>API: 新 MemoryUnit
+    API->>API: 审计（含来源与依据）
+    API-->>U: 新记录引用 + 来源引用
+```
 
 ### 6.3 失败与恢复
 
