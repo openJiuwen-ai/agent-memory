@@ -29,6 +29,7 @@ from jiuwen_memory.common.errors import (
     safe_error_message,
 )
 from jiuwen_memory.common.log import get_logger, scope_for_log
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
     MD_TITLE_KEY,
@@ -978,6 +979,8 @@ class CompositeDomainStore(DomainStore):
                 source = _recaller_source(recaller)
                 try:
                     candidates = future.result()
+                except PlaintextDataError:
+                    raise
                 except Exception as exc:
                     errors.append(
                         ChannelError(

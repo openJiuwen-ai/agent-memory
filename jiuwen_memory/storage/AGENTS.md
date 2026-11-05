@@ -22,6 +22,7 @@
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
 | `_schema_property_index.py` | Schema Entity → Property MemoryUnit ID 的 KV 派生反向索引；以 Scope watermark 作为全量回填提交标记，membership/pointer 支持幂等更新与硬删；canonical identity 按 `schema_entity_id` → `schema_entity_key` → `type::name` 解析且要求非空 `schema_property_name` |
+| `migration.py` | 受保护插件的可选明文记忆维护契约，插件声明枚举、物理身份和原子转换，不依赖实现私有状态 |
 | `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 三件——`load_memory_unit(raw, scope, key)` 解码隔离（坏字节记 warning 后返 `None`），`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤），`list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
@@ -58,6 +59,8 @@
 `exists` / `scan` / `scopes`；fs 提供 `stat`。
 
 ## 行为铁律
+
+- **显式维护能力**：内置 KV 通过公开 migration_identity 和原子 compare_exchange 支持受控维护；内存 KV 的读写、枚举和 CAS 在实例方法内持有同一把锁，过期清理也在锁内。EncryptedKV 的扫描/迁移能力不用于正常读取，保留到期语义且不复活扫描后消失的记录。缺少可靠枚举/CAS 时明确不支持。
 
 - **统一静态加密准入**：`StoreManagerProducer.resolve` 在开关开启时验证完整
   encryption_inventory，清单与公开端口须为同一对象。Composite manager 通过 Producer

@@ -5,8 +5,28 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+
+## 显式明文记忆维护
+
+新增封闭动作 `Action.MIGRATE_MEMORY`，归专用管理动作、不可委托；普通 WRITE、Grant
+或 Delegation 不能扩大范围。StandardAuthorizer 对该动作终局裁决：ROOT 全域、ADMIN
+仅本 org、USER 仅自身主体且 space 必须与凭据精确相等（包括空 space），保留 USER
+凭据非空 agent/session 限制。空 space 不授予其他空间的维护权限。第三方 Authorizer
+仍须明确允许，工具额外执行同一角色范围上界，不因替换 PDP 放宽硬边界。
+
+独立维护入口用实际配置的认证器取得受控身份；按实际 manager/端口和公开位置身份去重，
+先按身份过滤 Scope 再读取候选值，逐项执行在线撤销/时效复核、PDP 与物理身份校验。
+扫描和 JSONL 输入均须在鉴权及操作前通过目标插件的无损 Scope 校验；无法无损表达的
+命名空间明确拒绝，不因显式输入而跳过存储约束。
+写前持久化尝试审计，不将原文或凭据写入结果/审计 detail。配置、位置和角色不能由
+业务 payload 自述。inspect/migrate/clear 均不挂到正常启动或读取流程；操作失败返回
+工具自己的结构化结果；正常读取的非信封拒绝沿原 BackendError 异常契约失败，不当作空结果。
+迁移编排、结果和格式校验位于 deploy/migration，使用独立装配根，不导入私有 Kernel、
+不装配 MemoryAPI 或启动调度/摄入/文件监听后台任务；配置来源位置守卫、认证撤销真源、
+审计完整性与共享资源关闭沿用现有公开插件契约。具体维护和清空边界见 F04 §5.3 与 S02/S06。
+
 
 ## 范围 / 边界
 

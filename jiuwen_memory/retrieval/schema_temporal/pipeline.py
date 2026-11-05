@@ -12,6 +12,7 @@ from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.errors import safe_error_message
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.type_def import (
     ChannelError,
@@ -111,6 +112,8 @@ class SchemaTemporalPipelineExtension:
                 n=(len(temporal.entities) if temporal else 0),
                 channel=RecallChannel.TEMPORAL,
             )
+        except PlaintextDataError:
+            raise
         except Exception as exc:
             error = ChannelError(
                 RecallChannel.TEMPORAL,

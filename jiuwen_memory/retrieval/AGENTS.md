@@ -68,6 +68,8 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 ## 行为铁律
 
+- **明文拒绝不可降级**：扩展、rollup、多模态及 Schema Temporal 的容错分支必须继续传播 PlaintextDataError，由 API 返回明确错误，不吞成缺失节点或成功空结果。
+
 0. **metadata 过滤不跨命名空间**：`user_metadata.<key>` 和
    `system_metadata.<key>` 从对应真源字段复核，不 fallback。`RetrievedItem` 同时附带
    两个命名空间，调用方按接入形态决定是否暴露系统字段。

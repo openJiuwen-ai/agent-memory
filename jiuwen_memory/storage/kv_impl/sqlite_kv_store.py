@@ -23,6 +23,7 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.migration import opaque_location
 from jiuwen_memory.storage.types import KVMemoryListResult
 
 from .memory_list import list_memory_entries
@@ -80,6 +81,32 @@ class SQLiteKVStore(KVStore):
                 self._conn_path = None
 
     # -- KVStore 契约 -------------------------------------------------------- #
+
+    def migration_identity(self) -> object:
+        import os
+        from pathlib import Path
+
+        path = self._resolved_db_path()
+        return ("sqlite", id(self)) if path == ":memory:" else opaque_location(
+            "sqlite", os.path.normcase(str(Path(path).resolve()))
+        )
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None
+    ) -> bool:
+        clause = ('org=? AND space=? AND "user"=? AND agent=? AND session=? '
+                  'AND key=? AND value=? AND (expires_at IS NULL OR expires_at>?)')
+        params = (scope.org, scope.space, scope.user, scope.agent, scope.session,
+                  key, expected, time.time())
+        with self._lock:
+            connection = self._ensure_conn()
+            if replacement is None:
+                cursor = connection.execute(f"DELETE FROM kv WHERE {clause}", params)
+            else:
+                cursor = connection.execute(
+                    f"UPDATE kv SET value=? WHERE {clause}", (replacement, *params)
+                )
+            return cursor.rowcount == 1
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         with self._lock:

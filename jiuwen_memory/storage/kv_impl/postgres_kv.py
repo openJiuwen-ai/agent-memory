@@ -9,6 +9,7 @@ from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.migration import opaque_location
 
 from .._pg import PgStoreBase, _quote_ident, pg_scope_clause
 from .._support import read_ssl_config, wrap_backend
@@ -70,6 +71,9 @@ class PostgresKVStore(PgStoreBase, KVStore):
     def store_type(self) -> StoreType:
         return StoreType.KV
 
+    def migration_identity(self) -> object:
+        return opaque_location("postgres", self._resolved_dsn(), self._table_ref)
+
     def health(self) -> None:
         self._health()
 
@@ -117,6 +121,21 @@ class PostgresKVStore(PgStoreBase, KVStore):
         statement = f"DELETE FROM {self._table_ref} WHERE {clause} AND key = %s"
         with wrap_backend(f"postgres delete {key!r}"):
             self._execute(statement, (*params, key))
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None
+    ) -> bool:
+        clause, params = pg_scope_clause(scope, exact=True)
+        where = (f"{clause} AND key=%s AND value=%s AND "
+                 "(expires_at IS NULL OR expires_at > extract(epoch from clock_timestamp()))")
+        if replacement is None:
+            statement = f"DELETE FROM {self._table_ref} WHERE {where} RETURNING 1"
+            values = (*params, key, expected)
+        else:
+            statement = f"UPDATE {self._table_ref} SET value=%s WHERE {where} RETURNING 1"
+            values = (replacement, *params, key, expected)
+        with wrap_backend("postgres compare_exchange"):
+            return self._fetch_one(statement, values) is not None
 
     def get(self, scope: Scope, key: str) -> bytes:
         clause, params = pg_scope_clause(scope, exact=True)
