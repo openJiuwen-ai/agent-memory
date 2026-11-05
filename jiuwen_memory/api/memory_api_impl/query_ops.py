@@ -178,6 +178,8 @@ class QueryOpsMixin:
         extensions = dict(context.extensions)
         max_tokens = _parse_max_tokens(extensions.pop(EXT_MAX_TOKENS, None))
         query_context = _pop_query_context(extensions)
+        pipeline = extensions.pop("retrieval_pipeline", None)
+        self._queries.validate_retrieval_pipeline(pipeline)
         spaces = _pop_spaces(extensions)
         coords = _pop_coords(extensions, enabled=self._routing_enabled())
         reject_kernel_coords(coords)
@@ -196,7 +198,7 @@ class QueryOpsMixin:
             hierarchy_role=hierarchy.hierarchy_role,
             span_start=hierarchy.span_start, span_end=hierarchy.span_end,
             expand_depth=options.expand_depth, rollup=options.rollup,
-            query_context=query_context,
+            query_context=query_context, pipeline=pipeline,
         )
         if spaces is not None:
             self._require_trusted_context(
