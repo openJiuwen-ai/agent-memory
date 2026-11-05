@@ -393,7 +393,7 @@ continue to operate.
 | `evolver` | `dynamic` | `DynamicEvolver` | Dynamic-prompt four-step EXTRACT; inherits other modes from orchestrating | Same dependencies plus `PromptRegistry`; automatically injects `layer_annotator.default` when present |
 
 Both Evolvers use `dedup_medium_similarity` (default `0.7`) and `dedup_high_similarity` (default
-`0.9`). When `vector_enabled=false`, unspecified IndexBuilder and Dedup targets switch to `fulltext`
+`1.0`). When `vector_enabled=false`, unspecified IndexBuilder and Dedup targets switch to `fulltext`
 and `keyword`, respectively.
 
 ## 14. Default Assembly
@@ -454,7 +454,7 @@ evolver:
       dedup: default
       llm: default
       dedup_medium_similarity: 0.7
-      dedup_high_similarity: 0.9
+      dedup_high_similarity: 1.0
 ```
 
 The current `dynamic` builder looks up `layer_annotator.default` directly and does not read
@@ -602,7 +602,7 @@ Producer rules above.
 | `dedup_tier_filter` | `bool` | `false` | Both Dedup implementations | Restricts recall to the same tier |
 | `dedup_scope_filter` | `bool` | `true` | Both Dedup implementations | Restricts recall to the candidate Scope |
 | `dedup_medium_similarity` | `float` | `0.7` | Both Evolvers | Medium-similarity decision threshold |
-| `dedup_high_similarity` | `float` | `0.9` | Both Evolvers | High-similarity threshold; must not be below medium |
+| `dedup_high_similarity` | `float` | `1.0` | Both Evolvers | High-similarity threshold; must not be below medium; only exact duplicates bypass the LLM |
 | `layer_annotator_threshold` | `int` | `512` | Both LayerAnnotators | Annotates only units whose content length exceeds this threshold |
 | `layer_annotator_l1_chars` | `int` | `200` | `layer_annotator.keyword` | Number of characters retained for L1 |
 | `layer_annotator_max_attempts` | `int` | `3` | `layer_annotator.llm` | Total LLM annotation calls; `1` means no retry |

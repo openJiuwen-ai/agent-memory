@@ -5,15 +5,17 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
 
 ## 乱序陈述的修改型决策契约
 
-- UPDATE/SUPERSEDE 必须指向当前判定可见的 existing_id；legacy 仅一个候选时兼容缺省 ID，
-  dynamic 仍要求显式 ID。多候选缺省或 ID 越界时转 ADD，不得默认修改最高相似记录。
+- UPDATE/SUPERSEDE 应返回并指向当前判定可见的 `existing_id`。`OrchestratingEvolver`
+  保留单命中兼容：仅一个可见命中且 ID 缺省时使用该命中；多命中缺省或 ID 越界时转
+  ADD，不得默认修改最高相似记录。`DynamicEvolver` 自定义 prompt 仍要求显式 ID。
+  模型改选目标后，执行时使用该目标自身的召回分数。
 - `t_message` 仅表示陈述先后，`t_event` 表示事件时间，`[t_valid, t_invalid)` 表示已有有效期；
   三者不得互相兜底。只有双方有时区且不在未来的消息时间才可排序；同刻或缺失时保守 ADD。
 - UPDATE 成功合并较新候选时，正文与 `t_message` 一并持久化，后者推进为该候选的消息时间
@@ -104,6 +106,11 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 7. **scope 原生隔离**：构建索引时将来源 `MemoryUnit.scope` 作为 Store 方法的显式
    入参下推；`VectorRecord` / `Document` / `Node` 等记录结构不混入 scope 字段。
 8. **去重召回与判定分离**：去重召回（用哪个索引）由 `Dedup` 接口承担，判定（ADD/UPDATE/SUPERSEDE/NOOP）与落盘由 Evolver 实现承担——`OrchestratingEvolver._evolve_extract`（legacy，`_dedup_batch` 判定+落盘耦合）或 `DynamicEvolver._evolve_extract`（dynamic，consolidate 只判定、落盘延后到 reflect 之后）。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`。
+   LLM 判定为 UPDATE/SUPERSEDE 时应返回 `existing_id`，且该 ID 必须来自同一候选
+   本次 `Dedup.recall` 的命中集合；最高相似项只用于排序，不能代替模型选择的语义目标。
+   `OrchestratingEvolver` 仅对单命中且 ID 缺省保留兼容，多命中缺省或 ID 非法时降级
+   为 ADD；`DynamicEvolver` 仍要求显式 ID。
+   `dedup_high_similarity` 默认值为 `1.0`；只有精确重复且 `should_direct_noop` 判断无实质差异时才允许跳过 LLM。
 9. **构建层不依赖 control**：`DynamicEvolver`/`OrchestratingEvolver` 的 SUPERSEDE 与 FORGET 经 `IndexBuilder` 完成，不经 `LifecycleManager`。
 10. **Dedup 与 IndexBuilder 共享底层 Store**：去重召回检索的是已索引内容，`Dedup` 实现取的 `VectorStore`/`FulltextStore` 必须与 IndexBuilder 写入的是同一实例（按字段名缓存命中）。
 11. **派生 metadata 键保持类型稳定**：当前 Classifier 只更新
@@ -599,6 +606,12 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 ### Dedup（`dedup.py`）
 
 去重召回，由 Evolver 实现（`OrchestratingEvolver._dedup_batch` / `DynamicEvolver._consolidate_step`）及 infer 上下文收集调用。召回 + 阈值过滤 + 加载 + 聚合取 max 全在实现内完成；判定与落盘动作归调用方（evolver）。
+
+LLM 的修改型判定（UPDATE/SUPERSEDE）必须绑定具体已有单元：判定结果同时携带
+`existing_id`，执行层按该 ID 在当前候选的召回命中中解析目标和对应相似度。
+`OrchestratingEvolver` 仅对单命中且 ID 缺省使用该唯一命中；多命中缺省、非法或不属于
+该候选命中集合的 ID 一律降级为 ADD，不得回退到最高相似项执行修改。
+`DynamicEvolver` 的修改型判定仍要求显式 ID。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
