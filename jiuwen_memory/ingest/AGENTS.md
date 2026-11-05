@@ -73,6 +73,9 @@
 
 ## 本地约束
 
+- SimpleIngestor 在每个 payload 规约前后检查 common 的任务局部取消信号，不吞掉取消
+  异常，不把已取消规约的部分结果继续交付构建层；未绑定信号时保持同步接口行为。
+
 1. 所有 Operator 必须实现 `operator_type()` 和 `health()`（继承自 `IngestOperator`）。
 2. Source 实现不走 Producer，由信息源接入侧按连接参数直接构造。
 3. Ingestor 接收 `list[RawPayload]`，返回 `list[MemoryUnit]`，不做持久化。

@@ -320,6 +320,15 @@ def test_mcp_tool_registry_covers_expected_verbs() -> None:
         assert is_known_verb(verb), verb
 
 
+def test_mcp_ingest_cancel_forwards_target_scope(monkeypatch) -> None:
+    invoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(mcp_main, "_invoke", invoke)
+    asyncio.run(mcp_main.memory_job_cancel(job_id="ing_test", scope=SCOPE))
+    invoke.assert_awaited_once_with(
+        "job_cancel", {"job_id": "ing_test", "scope": SCOPE}, context=None
+    )
+
+
 @pytest.mark.parametrize("tool_name", list(TOOL_CASES))
 def test_tool_signature_matches_api_contract(tool_name: str) -> None:
     verb, _payload = TOOL_CASES[tool_name]

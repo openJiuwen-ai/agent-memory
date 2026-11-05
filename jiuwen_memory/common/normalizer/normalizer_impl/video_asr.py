@@ -28,6 +28,7 @@ from jiuwen_memory.common._support import (
 from jiuwen_memory.common.base import Plugin, PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.ingest_cancellation import check_ingest_cancelled, wait_ingest_cancelled
 from jiuwen_memory.common.log import get_logger, redact_for_log
 
 logger = get_logger(__name__)
@@ -152,6 +153,7 @@ def _split_audio_to_chunks(
     start = 0.0
     index = 0
     while start < duration:
+        check_ingest_cancelled()
         length = min(float(chunk_seconds), duration - start)
         chunk_path = out_dir / f"audio_chunk_{index:04d}.wav"
         subprocess.run(
@@ -222,8 +224,10 @@ def run_video_asr(video_path: str | Path, config: VideoAsrConfig) -> list[dict[s
     )
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
+        check_ingest_cancelled()
         if _has_audio_stream(source_path):
             audio_path = _ensure_audio(source_path, temp_dir)
+            check_ingest_cancelled()
             segments = config.service.transcribe(
                 audio_path,
                 language=config.language,
@@ -235,6 +239,7 @@ def run_video_asr(video_path: str | Path, config: VideoAsrConfig) -> list[dict[s
                 redact_for_log(source_path),
             )
             segments = []
+        check_ingest_cancelled()
         if output_json:
             output_json.parent.mkdir(parents=True, exist_ok=True)
             output_json.write_text(
@@ -337,6 +342,7 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
             chunk_seconds=chunk_seconds,
         )
         for chunk_path, offset in chunks:
+            check_ingest_cancelled()
             request: dict[str, Any] = {
                 "model": model,
                 "response_format": "verbose_json",
@@ -346,6 +352,7 @@ class OpenAITranscriptionVideoAsr(VideoAsrService):
                 request["language"] = language
             with chunk_path.open("rb") as audio_file:
                 response = self.client.audio.transcriptions.create(file=audio_file, **request)
+            check_ingest_cancelled()
             segments = _transcription_payload(response).get("segments")
             if not isinstance(segments, list):
                 raise BackendError(
@@ -439,6 +446,7 @@ class DashScopeFileTranscriptionVideoAsr(VideoAsrService):
         if not endpoint.api_key:
             raise BackendError("DashScope ASR requires a non-empty API key")
         headers = {"Authorization": f"Bearer {endpoint.api_key}"}
+        check_ingest_cancelled()
         audio_url = _upload_dashscope_audio(
             audio_path,
             model=endpoint.model,
@@ -473,6 +481,7 @@ class DashScopeFileTranscriptionVideoAsr(VideoAsrService):
 
         deadline = time.monotonic() + self._task_timeout_seconds
         while True:
+            check_ingest_cancelled()
             task = self._request_json(
                 "GET",
                 f"{base_url}/tasks/{task_id}",
@@ -498,7 +507,7 @@ class DashScopeFileTranscriptionVideoAsr(VideoAsrService):
                 raise BackendError(
                     f"DashScope ASR task timed out after {self._task_timeout_seconds:g}s"
                 )
-            time.sleep(self._poll_interval_seconds)
+            wait_ingest_cancelled(self._poll_interval_seconds)
 
     def _request_json(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
         import requests
@@ -509,6 +518,7 @@ class DashScopeFileTranscriptionVideoAsr(VideoAsrService):
         if self._ssl_verify:
             kwargs["verify"] = outbound_verify(self._ssl_ca_cert)
         for attempt in range(3):
+            check_ingest_cancelled()
             try:
                 response = requests.request(method, url, **kwargs)
             except (requests.ConnectionError, requests.Timeout) as exc:
@@ -522,7 +532,7 @@ class DashScopeFileTranscriptionVideoAsr(VideoAsrService):
                     method,
                     redact_for_log(url),
                 )
-                time.sleep(2**attempt)
+                wait_ingest_cancelled(2**attempt)
                 continue
             try:
                 response.raise_for_status()
@@ -542,12 +552,13 @@ class DashScopeFileTranscriptionVideoAsr(VideoAsrService):
                     method,
                     redact_for_log(url),
                 )
-                time.sleep(2**attempt)
+                wait_ingest_cancelled(2**attempt)
                 continue
             except requests.RequestException as exc:
                 raise BackendError(
                     f"DashScope ASR request failed: {method} {url}: {exc}"
                 ) from exc
+            check_ingest_cancelled()
             try:
                 payload = response.json()
             except ValueError as exc:
@@ -585,6 +596,7 @@ def _upload_dashscope_audio(
     except ImportError as exc:
         raise BackendError(str(exc)) from exc
     for attempt in range(3):
+        check_ingest_cancelled()
         try:
             uploaded = oss_utils.upload(
                 model=model,
@@ -598,7 +610,7 @@ def _upload_dashscope_audio(
                 raise BackendError(
                     f"failed to upload audio to DashScope temporary OSS: {exc}"
                 ) from exc
-            time.sleep(2**attempt)
+            wait_ingest_cancelled(2**attempt)
     audio_url = uploaded[0] if isinstance(uploaded, tuple) else uploaded
     if not isinstance(audio_url, str) or not audio_url.startswith("oss://"):
         raise BackendError("DashScope temporary upload returned an invalid OSS URL")

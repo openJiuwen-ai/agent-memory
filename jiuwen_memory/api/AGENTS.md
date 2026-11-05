@@ -126,6 +126,10 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 
 ## 本地约束
 
+- `job_cancel` 对 `ing_` 任务要求显式 scope，查询真实任务后执行 WRITE 判权、审计与
+  完整性预检，再委托 IngestJobController；不得退到 Scheduler 或从调用者身份猜 scope。
+  `job_status` 保留取消请求、部分写入及重试核对标记；终态取消不覆盖原结果。
+
 - dreaming 驱动提交派生任务后须立即调用 `link_child`，两步之间不得让出调度循环，以便执行前绑定父任务取消生命周期。注销先持久化 `CANCEL_REQUESTED`，Driver 在 tick 开头和提交前复核 `state + generation + job_id`；阻塞式 Scheduler 调用不得发生在协调器短状态锁内。
 - dreaming 的 `created_by` 保留五维 actor，并由 API 写入私有 `_request_context_v1` 字符串快照。
   恢复只从服务端注册表读快照，保留原角色、到期时间、凭据复核能力及委托 ID；每 tick
