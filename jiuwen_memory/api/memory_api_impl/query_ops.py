@@ -49,12 +49,14 @@ from jiuwen_memory.control.evolution.validation import (
 )
 from jiuwen_memory.control.types import (
     BackgroundJobStartResult,
+    BatchUpdateResult,
     Channel,
     DeleteSelector,
     EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
+    UpdateSelector,
 )
 from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery, RetrievalResult
 
@@ -651,6 +653,93 @@ class QueryOpsMixin:
             detail={**auth, **update_detail, "before_unit_id": before.id, "after_unit_id": unit.id},
         )
         return unit
+
+    def batch_update(
+        self,
+        selector: UpdateSelector,
+        patches: list[MemoryPatch],
+        *,
+        security: RequestSecurityContext,
+        limit: int | None = None,
+        continue_on_error: bool = True,
+    ) -> BatchUpdateResult:
+        identity = security.auth.actor
+        selector_is_empty = (
+            not selector.unit_ids
+            and not selector.tags
+            and selector.before is None
+            and selector.after is None
+            and selector.filters is None
+        )
+        if selector_is_empty:
+            raise ValidationError(
+                "UpdateSelector requires unit_ids, tags, before, after, or filters"
+            )
+        if not patches:
+            raise ValidationError("patches must be non-empty")
+        for patch in patches:
+            _reject_kernel_system_metadata(patch.system_metadata)
+            _reject_route_tag_keys(patch.system_metadata, self._route_table.tag_keys)
+            _reject_non_scalar_metadata(patch.system_metadata, field_name="system_metadata")
+            _reject_non_scalar_metadata(patch.user_metadata, field_name="user_metadata")
+        if len(patches) > 1:
+            if not selector.unit_ids:
+                raise ValidationError(
+                    "per-item patches require selector.unit_ids to be non-empty"
+                )
+            if len(selector.unit_ids) != len(patches):
+                raise ValidationError(
+                    f"len(unit_ids)={len(selector.unit_ids)} must equal "
+                    f"len(patches)={len(patches)} in per-item mode"
+                )
+        target = selector.scope or _ROOT
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.UPDATE, "batch_update", target)
+        )
+        contexts = asyncio.run(self._queries.permission_contexts_for_update(selector))
+        selector_context = PermissionContext(
+            resource_type="update_selector",
+            scope=target,
+            tags=tuple(selector.tags),
+        )
+        auth: dict[str, str] = {}
+        if not contexts:
+            auth = self._authorize(
+                security,
+                target,
+                Action.UPDATE,
+                "batch_update",
+                context=selector_context,
+            )
+        else:
+            auth = {"permission_check": "enabled", "permission_reason": "permission check passed"}
+            for permission_context in contexts:
+                unit_auth = self._authorize(
+                    security,
+                    permission_context.scope,
+                    Action.UPDATE,
+                    "batch_update",
+                    permission_context.unit_id,
+                    context=permission_context,
+                )
+                auth.update(unit_auth)
+        result = asyncio.run(
+            self._commands.batch_update(
+                selector if limit is None else replace(selector, limit=limit),
+                patches, continue_on_error=continue_on_error,
+            )
+        )
+        self._log(
+            identity,
+            "batch_update",
+            target_scope=target,
+            detail={
+                **auth,
+                "candidate_count": str(len(contexts)),
+                "outcome_count": str(len(result.outcomes)),
+            },
+        )
+        return result
 
     def delete(self, selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]:
         identity = security.auth.actor

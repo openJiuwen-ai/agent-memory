@@ -357,6 +357,40 @@ class MemoryPatch:
     mode: UpdateMode = UpdateMode.SUPERSEDE  # 版本语义：保留原有(新 id) / 覆盖(同 id)
 
 
+@dataclass
+class UpdateSelector:
+    """``batch_update`` 的目标选择：各条件取「与」，至少给出一项。
+
+    与 :class:`DeleteSelector` 结构相同，但不携带 ``mode``——批量更新的版本语义
+    由各 :class:`MemoryPatch.mode` 逐条决定。
+    """
+
+    unit_ids: list[str] = field(default_factory=list)  # 按 id 指定
+    scope: Scope | None = None  # 限定归属 scope
+    tags: list[str] = field(default_factory=list)  # 命中任一标签
+    before: datetime | None = None  # 仅命中 t_message 早于此时间的
+    after: datetime | None = None  # 仅命中 t_message 晚于此时间的
+    filters: FilterExpr | None = None  # 结构化谓词
+    limit: int | None = None  # 最多更新 N 条匹配项（post-match 截断）
+
+@dataclass
+class BatchUpdateOutcome:
+    """批量更新的逐项结果。"""
+
+    index: int
+    unit_id: str
+    updated_unit: MemoryUnit | None = None
+    error: str = ""
+    error_type: str = ""
+
+
+@dataclass
+class BatchUpdateResult:
+    """与候选顺序对齐的批量更新结果。"""
+
+    outcomes: list[BatchUpdateOutcome] = field(default_factory=list)
+
+
 class DeleteMode(str, Enum):
     """``delete`` 的语义：遗忘/降权/归档为非破坏式（架构 §9），purge 为合规硬删除。"""
 
