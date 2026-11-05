@@ -10,6 +10,7 @@ LLMClassifier 重写为纯 LLM tier+tags 抽取后，测试覆盖：
 
 import json
 
+from jiuwen_memory.common.errors import LLMTimeoutError
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryTier,
@@ -23,7 +24,6 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier_impl.keyword_classifier import KeywordClassifier
 from jiuwen_memory.construction.classifier_impl.llm_classifier import LLMClassifier
 from tests.unit.construction.fixtures import MockLLM
-from jiuwen_memory.common.errors import LLMTimeoutError
 
 
 def _make_unit(

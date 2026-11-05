@@ -33,7 +33,11 @@ from jiuwen_memory.common.security.authorization.base import (
     AuthorizationProducer,
     Authorizer,
 )
-from jiuwen_memory.common.security.authorization.scope_rules import PrincipalPath, scope_covers
+from jiuwen_memory.common.security.authorization.scope_rules import (
+    PrincipalPath,
+    migration_scope_allowed,
+    scope_covers,
+)
 from jiuwen_memory.common.security.authorization.store import (
     DelegationStore,
     DelegationStoreProducer,
@@ -62,6 +66,7 @@ _MINIMUM_ROLE: dict[Action, Role] = {
     Action.MANAGE_POLICY: Role.ADMIN,
     Action.READ_AUDIT: Role.ADMIN,
     Action.VERIFY_AUDIT: Role.ROOT,
+    Action.MIGRATE_MEMORY: Role.USER,
     Action.ADMINISTER_SYSTEM: Role.ROOT,
 }
 
@@ -279,6 +284,10 @@ class StandardAuthorizer(Authorizer):
         能碰；带 org 的管理面资源（space、主体）ADMIN 可管，但止于本 org。
         """
         action = resource.action
+        if action is Action.MIGRATE_MEMORY:
+            if not auth.delegation_id and migration_scope_allowed(auth, resource.scope):
+                return AuthorizationDecision.allow("migration_scope")
+            return AuthorizationDecision.deny(DenyReason.NOT_COVERED, "migration_scope")
         if action not in MANAGEMENT_ACTIONS:
             return None
         required = _MINIMUM_ROLE[action]

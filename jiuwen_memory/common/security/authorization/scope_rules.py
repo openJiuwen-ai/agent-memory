@@ -15,7 +15,35 @@ from __future__ import annotations
 
 from enum import Enum
 
+from jiuwen_memory.common.security.types import AuthContext, Role
 from jiuwen_memory.common.type_def.scope import Scope
+
+
+def migration_scope_allowed(auth: AuthContext, target: Scope) -> bool:
+    """Migration ceiling: own principal, organization admin, or global ROOT.
+
+    This dedicated administrative operation cannot inherit ordinary WRITE grants.
+    USER space is an exact boundary, including an empty binding. Explicit
+    agent/session bindings continue to constrain USER credentials.
+    """
+    if auth.role is Role.ROOT:
+        return True
+    if not target.org or target.org != auth.actor.org:
+        return False
+    if auth.role is Role.ADMIN:
+        return True
+    if auth.role is not Role.USER:
+        return False
+    actor = auth.actor
+    if actor.space != target.space:
+        return False
+    principal = "user" if actor.user else "agent"
+    if not getattr(actor, principal) or getattr(actor, principal) != getattr(target, principal):
+        return False
+    return all(
+        not getattr(actor, dim) or getattr(actor, dim) == getattr(target, dim)
+        for dim in ("agent", "session")
+    )
 
 
 class PrincipalPath(str, Enum):
