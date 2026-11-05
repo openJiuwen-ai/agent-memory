@@ -7,7 +7,7 @@
 影子索引自身的 ``search_vector`` / ``search_fulltext``——与 ShadowRecaller 同源。
 
 **分数量纲对齐**：Evolver 阈值用 cosine 量纲（``dedup_medium_similarity=0.7`` /
-``dedup_high_similarity=0.9``，越大越相关）。shadow 两路返回的分数与此不可比——
+``dedup_high_similarity=1.0``，越大越相关）。shadow 两路返回的分数与此不可比——
 ``search_vector`` 返回 ``-distance``（vec0 L2 距离，越大越相关但非 0~1），
 ``search_fulltext`` 返回 BM25（负值，越小越相关）。本实现用 shadow 召回候选 id 后，
 用 ``embedder`` 重新算 ``cosine(candidate, hit)`` 作为分数，与 Evolver 阈值完全对齐。

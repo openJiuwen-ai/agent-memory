@@ -79,7 +79,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         domain_store: DomainStore | None = None,
         kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
-        dedup_high_similarity: float = 0.9,
+        dedup_high_similarity: float = 1.0,
     ) -> None:
         super().__init__(
             extractor=extractor,
@@ -357,5 +357,5 @@ def _build(config):
         schema_property_merge_planner=property_merge,
         kv_name=kv_name,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
-        dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
     )

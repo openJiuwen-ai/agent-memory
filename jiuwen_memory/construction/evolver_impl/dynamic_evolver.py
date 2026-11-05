@@ -234,10 +234,10 @@ class DynamicEvolver(OrchestratingEvolver):
         decision = DedupDecision(
             str(payload.get("decision", "add")).strip().lower()
         )
-        existing_id = str(payload.get("existing_id", "")).strip()
-        existing, score = hit_map.get(existing_id, (None, 0.0))
+        existing_unit_id = str(payload.get("existing_unit_id", "")).strip()
+        existing, score = hit_map.get(existing_unit_id, (None, 0.0))
         if decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE} and existing is None:
-            raise ValueError("修改型决策必须引用本次召回中的 existing_id")
+            raise ValueError("修改型决策必须引用本次召回中的 existing_unit_id")
         return decision, existing, score
 
     # ------------------------------------------------------------------
@@ -378,5 +378,5 @@ def _build(config):
         router=optional_router(config),
         prompt_registry=registry,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
-        dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
     )

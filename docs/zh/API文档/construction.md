@@ -344,7 +344,7 @@ constructor:             # Producer.TOP_NAME
 | `evolver` | `orchestrating` | `OrchestratingEvolver` | legacy 四模式；EXTRACT 中去重判定与落盘耦合 | extractor、abstractor、associator、index_builder、storage、message_store、dedup、llm；可用 `params.layer_annotator` 选择、禁用标注器 |
 | `evolver` | `dynamic` | `DynamicEvolver` | 动态 prompt 四步 EXTRACT；其他模式继承 orchestrating | 同上，额外使用 `PromptRegistry`；存在 `layer_annotator.default` 时自动注入 |
 
-两个 Evolver 都使用 `dedup_medium_similarity`（默认 `0.7`）与 `dedup_high_similarity`（默认 `0.9`）。`vector_enabled=false` 时，未显式指定的 IndexBuilder/Dedup 默认分别切换为 `fulltext` 和 `keyword`。
+两个 Evolver 都使用 `dedup_medium_similarity`（默认 `0.7`）与 `dedup_high_similarity`（默认 `1.0`）。`vector_enabled=false` 时，未显式指定的 IndexBuilder/Dedup 默认分别切换为 `fulltext` 和 `keyword`。
 
 ## 14. 默认装配
 
@@ -404,7 +404,7 @@ evolver:
       dedup: default
       llm: default
       dedup_medium_similarity: 0.7
-      dedup_high_similarity: 0.9
+      dedup_high_similarity: 1.0
 ```
 
 `dynamic` 的当前 builder 会直接查找 `layer_annotator.default`，不读取
@@ -545,7 +545,7 @@ rebuild() -> None
 | `dedup_tier_filter` | `bool` | `false` | 两种 Dedup | 是否限制相同 tier |
 | `dedup_scope_filter` | `bool` | `true` | 两种 Dedup | 是否按候选 Scope 限定召回 |
 | `dedup_medium_similarity` | `float` | `0.7` | 两种 Evolver | 中相似判定阈值 |
-| `dedup_high_similarity` | `float` | `0.9` | 两种 Evolver | 高相似判定阈值，应不小于 medium |
+| `dedup_high_similarity` | `float` | `1.0` | 两种 Evolver | 高相似判定阈值，应不小于 medium；仅精确重复可绕过 LLM |
 | `layer_annotator_threshold` | `int` | `512` | 两种 LayerAnnotator | 只标注 content 长度超过阈值的单元 |
 | `layer_annotator_l1_chars` | `int` | `200` | `layer_annotator.keyword` | L1 截取字符数 |
 | `layer_annotator_max_attempts` | `int` | `3` | `layer_annotator.llm` | LLM 标注总调用次数；`1` 表示不重试 |

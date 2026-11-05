@@ -607,7 +607,7 @@ def make_snapshot_test_harness(
         response = {
             "candidate_id": candidate.id,
             "decision": decision.value,
-            "existing_id": existing.id if existing is not None else "",
+            "existing_unit_id": existing.id if existing is not None else "",
         }
         payload = [response] if evolver_kind == "orchestrating" else response
         responses.insert(0, json.dumps(payload))
