@@ -848,12 +848,15 @@ class CompositeDomainStore(DomainStore):
             previous_title = (old_titles or {}).get(key)
             if previous_title is None or previous_title == title:
                 continue
-            matches = [
-                unit for unit in old_units
-                if content_hash(unit.segments[0].content if unit.segments else "") == key[0]
-                and str(unit.system_metadata.get(MD_TITLE_KEY) or "") == previous_title
-                and unit.lifecycle in (LifecycleState.ACTIVE, LifecycleState.ARCHIVED)
-            ]
+            matches = []
+            for unit in old_units:
+                if unit.lifecycle not in (LifecycleState.ACTIVE, LifecycleState.ARCHIVED):
+                    continue
+                if str(unit.system_metadata.get(MD_TITLE_KEY) or "") != previous_title:
+                    continue
+                content = unit.segments[0].content if unit.segments else ""
+                if content_hash(content) == key[0]:
+                    matches.append(unit)
             if len(matches) == 1:
                 old = matches[0]
                 old.system_metadata[MD_TITLE_KEY] = title
