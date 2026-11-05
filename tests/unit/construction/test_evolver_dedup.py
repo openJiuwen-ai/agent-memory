@@ -416,6 +416,8 @@ def test_dedup_update_syncs_title_to_user_md(tmp_path, candidate_title) -> None:
         candidate.system_metadata[MD_TITLE_KEY] = candidate_title
     result = EvolveResult()
 
+    # 定向验证内部去重决策，避免模型路由影响此存储回归。
+    # pylint: disable-next=protected-access
     evolver._apply_decision(candidate, DedupDecision.UPDATE, existing, 0.8, result)
 
     title = candidate_title or ""
@@ -427,7 +429,8 @@ def test_dedup_update_syncs_title_to_user_md(tmp_path, candidate_title) -> None:
     assert updated.system_metadata[MD_TITLE_KEY] == title
     assert updated.content == "用户居住在杭州"
     assert existing.system_metadata[MD_TITLE_KEY] == "上海居民"
-    assert llm._call_count == 1
+    # 验证测试替身的调用计数，防止额外模型调用。
+    assert llm._call_count == 1  # pylint: disable=protected-access
 
 
 def _create_stores():

@@ -228,6 +228,19 @@ def test_explicit_title_edit_updates_shadow_anchor_for_next_body_edit(tmp_path) 
     assert body_updated.supersedes == "u1"
 
 
+def test_title_edit_targets_duplicate_body_by_old_heading(tmp_path) -> None:
+    ds = _build_doc_store(tmp_path)
+    for uid, title in (("u1", "# 上海"), ("u2", "杭州")):
+        _write_unit(ds, uid, "相同正文", metadata={
+            MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: title,
+        })
+    (updated,) = ds.edit_md_file(SCOPE, "USER.md", "# # 上海", "# # 北京")
+    assert updated.id == "u1"
+    units = {unit.id: unit for unit in ds.get(SCOPE, ["u2", "u1"])}
+    assert units["u1"].system_metadata[MD_TITLE_KEY] == "# 北京"
+    assert units["u2"].system_metadata[MD_TITLE_KEY] == "杭州"
+
+
 def test_edit_md_file_aligned_inherits_metadata_and_supersedes(tmp_path) -> None:
     """对齐场景（块数不变）：新 unit 继承旧 unit 元数据 + supersedes 指向旧 id。
 

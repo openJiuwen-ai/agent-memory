@@ -592,6 +592,29 @@ def test_edit_content_preserves_generic_heading_without_old_fact(tmp_path) -> No
     )
 
 
+def test_replace_content_falls_back_when_heading_drifted(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.write(SCOPE, [_unit("u1", "上海", {
+        MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "手改标题",
+    })])
+    assert store.replace_content(
+        SCOPE, "USER.md", "上海", "杭州", old_title="原始标题", new_title="居住地杭州",
+    )
+    assert store.read_content(SCOPE, "USER.md") == "# 居住地杭州\n杭州\n\n"
+
+
+def test_cross_block_edit_does_not_infer_titles_from_block_positions(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.write(SCOPE, [
+        _unit("u1", "上海", {MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "上海"}),
+        _unit("u2", "杭州", {MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "上海"}),
+    ])
+    old = store.read_content(SCOPE, "USER.md")
+    new = "# 上海\n杭州\n\n# 上海\n上海\n\n"
+    store.edit_content(SCOPE, "USER.md", old, new)
+    assert store.read_content(SCOPE, "USER.md") == new
+
+
 def test_edit_content_preserves_daily_team_heading(tmp_path) -> None:
     store = _store(tmp_path)
     unit = _unit("u1", "用户居住在上海。", {

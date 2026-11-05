@@ -185,6 +185,7 @@ ES 实体未配置 hosts/endpoint 时先返回 None。
 - `LocalMarkdownStore` 的正常写入与补偿恢复共享标题渲染；标题、`md_title`、团队坐标与 `memory_class`（含未知非空值）必须通过 `redact_for_log` 记录，日志脱敏不修改实际 Markdown、正文或元数据。
 - 文档更新同步写回显式提供的 `md_title`（含仅标题变化和空标题）；缺失时保留文件原标题，daily 文件保留团队标题。标题和正文在同次文件写入及失败补偿中处理。
 - 文件编辑工具仅改 USER.md/MEMORY.md 正文时，同步替换标题中对应的旧事实片段并更新影子索引标题；显式改过的标题与 daily 团队标题不自动改写。
+- 标题漂移时仅在正文唯一的情况下回退匹配；跨块编辑不按位置推断事实标题。文件编辑的标题同步使用块位置与旧标题区分重复正文，解析标题仅去掉一个 Markdown 标题前缀。
 
 1. 所有 Store 必须实现 `store_type()` 和 `health()`（继承自 `BaseStore`）。
 2. 实现通过 `@XxxProducer.register("name")` 自注册。

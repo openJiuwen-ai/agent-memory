@@ -219,6 +219,15 @@ class LocalMarkdownStore(MarkdownStore):
             raw_blocks = text.split("\n\n")
             blocks = [b for b in raw_blocks if b]
 
+            # 标题只用于消歧；漂移时仅在正文唯一的情况下退化匹配。
+            matching_bodies = [b for b in blocks if b.split("\n", 1)[-1] == old_content]
+            title_found = any(
+                b.split("\n", 1)[0].strip() == f"# {old_title}"
+                for b in matching_bodies
+            )
+            if old_title is not None and not title_found and len(matching_bodies) == 1:
+                old_title = None
+
             replaced = False
             new_blocks: list[str] = []
             for block in blocks:
@@ -229,7 +238,7 @@ class LocalMarkdownStore(MarkdownStore):
                     new_blocks.append(block)
                     continue
                 title, body = parts[0], parts[1]
-                matches_title = old_title is None or title == f"# {old_title}"
+                matches_title = old_title is None or title.strip() == f"# {old_title}"
                 if body == old_content and matches_title and not replaced:
                     if new_title is not None:
                         title = f"# {' '.join(new_title.split())}"
@@ -416,21 +425,20 @@ class LocalMarkdownStore(MarkdownStore):
             out = text.replace(old_text, new_text, 1)
             # 文件工具通常只传正文；沿用旧事实标题会让 USER.md 显示相互矛盾的内容。
             # 仅处理块结构未变、正文单行且标题未被显式编辑的情形；daily 标题是团队名。
-            if md_basename in ("USER.md", "MEMORY.md"):
+            if md_basename in ("USER.md", "MEMORY.md") and "\n" not in old_text:
                 old_blocks = text.split("\n\n")
                 new_blocks = out.split("\n\n")
                 if len(old_blocks) == len(new_blocks):
                     for index, (old_block, new_block) in enumerate(zip(old_blocks, new_blocks)):
                         old_parts = old_block.split("\n")
                         new_parts = new_block.split("\n")
-                        if (
-                            len(old_parts) == len(new_parts) == 2
-                            and old_parts[0] == new_parts[0]
-                            and old_parts[0].startswith("# ")
-                            and old_parts[0][2:].strip()
-                            and old_parts[1] != new_parts[1]
-                            and new_parts[1].strip()
-                        ):
+                        if len(old_parts) != 2 or len(new_parts) != 2:
+                            continue
+                        if old_parts[0] != new_parts[0] or not old_parts[0].startswith("# "):
+                            continue
+                        if not old_parts[0][2:].strip() or not new_parts[1].strip():
+                            continue
+                        if old_parts[1] != new_parts[1]:
                             old_body = old_parts[1]
                             new_body = new_parts[1]
                             prefix_len = 0

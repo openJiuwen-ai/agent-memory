@@ -697,13 +697,16 @@ class CompositeDomainStore(DomainStore):
                 raw_new = md.read_content(scope, md_basename, project=project)
                 new_full = collect_blocks_from_text(raw_new)
                 new_titles = {}
+                old_titles = {}
                 if class_from_md_path(rel_path) != "daily_memory":
-                    for block in raw_new.split("\n\n"):
-                        parts = block.split("\n")
-                        if len(parts) == 2 and parts[0].startswith("#"):
-                            new_titles[content_hash(parts[1])] = parts[0].lstrip("#").strip()
+                    for raw, titles in ((raw_old, old_titles), (raw_new, new_titles)):
+                        for index, block in enumerate(raw.split("\n\n")):
+                            parts = block.split("\n")
+                            if len(parts) == 2 and parts[0].startswith("# "):
+                                titles[(content_hash(parts[1]), index)] = parts[0][2:].strip()
                 new_unit_ids = self._supersede_shadow_for_md(
-                    scope, rel_path, old_full, new_full, shadow, new_titles=new_titles
+                    scope, rel_path, old_full, new_full, shadow,
+                    new_titles=new_titles, old_titles=old_titles,
                 )
             except Exception:
                 # md 侧补偿：md 已改成 new 态、shadow 同步失败时，回写旧全文让 md 回到
@@ -729,7 +732,8 @@ class CompositeDomainStore(DomainStore):
         new_full: list[tuple[str, str, int]],
         shadow: DocumentShadowIndex,
         *,
-        new_titles: dict[str, str] | None = None,
+        new_titles: dict[tuple[str, int], str] | None = None,
+        old_titles: dict[tuple[str, int], str] | None = None,
     ) -> list[str]:
         """继承式 SUPERSEDE 同步 shadow（F08 §D4）：md 已改好，只动 shadow 表。
 
@@ -830,21 +834,28 @@ class CompositeDomainStore(DomainStore):
         #    只需 delete 掉刚插的新 unit（幂等删三表）即「shadow 等价于未发生」。md 侧回滚
         #    由调用方 edit_md_file 负责。补偿失败只记 warning，漂移交看门狗对账。
         for new in inserted_units:
-            title = (new_titles or {}).get(content_hash(new.segments[0].content))
-            if title is not None:
-                new.system_metadata[MD_TITLE_KEY] = title
+            titles = [
+                title for (hash_value, _), title in (new_titles or {}).items()
+                if hash_value == content_hash(new.segments[0].content)
+            ]
+            if len(titles) == 1:
+                new.system_metadata[MD_TITLE_KEY] = titles[0]
         if inserted_units:
             shadow.insert_units(scope, inserted_units)
         new_unit_ids = [u.id for u in inserted_units]
         title_changed_units: list[MemoryUnit] = []
-        for content_hash_value in old_full_hashes & new_full_hashes:
-            old = old_by_hash.get(content_hash_value)
-            title = (new_titles or {}).get(content_hash_value)
-            if (
-                old is not None
-                and title is not None
-                and str(old.system_metadata.get(MD_TITLE_KEY) or "") != title
-            ):
+        for key, title in (new_titles or {}).items():
+            previous_title = (old_titles or {}).get(key)
+            if previous_title is None or previous_title == title:
+                continue
+            matches = [
+                unit for unit in old_units
+                if content_hash(unit.segments[0].content if unit.segments else "") == key[0]
+                and str(unit.system_metadata.get(MD_TITLE_KEY) or "") == previous_title
+                and unit.lifecycle in (LifecycleState.ACTIVE, LifecycleState.ARCHIVED)
+            ]
+            if len(matches) == 1:
+                old = matches[0]
                 old.system_metadata[MD_TITLE_KEY] = title
                 title_changed_units.append(old)
         for old in superseded_units:
