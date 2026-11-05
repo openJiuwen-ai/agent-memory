@@ -21,6 +21,9 @@ class MemoryQueryService:
     def __init__(self, engine: MemoryEngine) -> None:
         self._engine = engine
 
+    def validate_retrieval_pipeline(self, name: str | None) -> None:
+        self._engine.validate_retrieval_pipeline(name)
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         return await self._engine.recall(scope, query)
 
