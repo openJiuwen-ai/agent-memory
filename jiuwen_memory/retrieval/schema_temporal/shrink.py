@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.type_def import ParsedQuery
 
@@ -88,6 +89,8 @@ class SchemaTemporalShrinker:
             if entity_local_recall is not None:
                 try:
                     local_hits = entity_local_recall(entity.entity_id)
+                except PlaintextDataError:
+                    raise
                 except Exception as exc:
                     degraded_errors.add(type(exc).__name__)
                     local_hits = []
@@ -194,6 +197,8 @@ def _rank_entries(
             ):
                 raise ValueError("property reranker returned invalid scores")
             reranked = True
+        except PlaintextDataError:
+            raise
         except Exception as exc:
             relevance = list(lexical)
             degraded_error = type(exc).__name__

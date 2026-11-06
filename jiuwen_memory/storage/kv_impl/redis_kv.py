@@ -23,6 +23,7 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.migration import opaque_location
 
 from .._support import (
     read_ssl_config,
@@ -109,6 +110,13 @@ class RedisKVStore(KVStore):
         """返回存储类型 ``KV``。"""
         return StoreType.KV
 
+    def migration_identity(self) -> object:
+        return opaque_location("redis", self._client_key())
+
+    def migration_scope_supported(self, scope: Scope) -> bool:
+        values = (scope.org, scope.space, scope.user, scope.agent, scope.session)
+        return tuple(_decode_scope_segment(part) for part in scope_segments(scope)) == values
+
     def health(self) -> None:
         """对 Redis 执行 ``PING``；失败抛 :class:`HealthCheckError`。"""
         try:
@@ -138,6 +146,24 @@ class RedisKVStore(KVStore):
         """删除 ``scope`` 下的 ``key``（幂等）。"""
         with wrap_backend(f"redis delete {key!r}"):
             self.client.delete(self._namespaced(scope, key))  # 幂等
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None
+    ) -> bool:
+        script = """
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+        if ARGV[2] == 'delete' then return redis.call('DEL', KEYS[1]) end
+        local ttl = redis.call('PTTL', KEYS[1])
+        if ttl == 0 or ttl == -2 then return 0 end
+        redis.call('SET', KEYS[1], ARGV[3])
+        if ttl > 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
+        return 1
+        """
+        with wrap_backend("redis compare_exchange"):
+            return bool(self.client.eval(
+                script, 1, self._namespaced(scope, key), expected,
+                "delete" if replacement is None else "replace", replacement or b"",
+            ))
 
     def get(self, scope: Scope, key: str) -> bytes:
         """读取 ``scope`` 下 ``key`` 的值；不存在时报缺失。"""

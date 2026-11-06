@@ -445,3 +445,17 @@ def test_vec_many_ops_consistency(vec):
         else:
             assert "upd" not in rec.metadata
             assert rec.metadata["n"] == i
+
+
+def test_redis_maintenance_compare_exchange_preserves_ttl_and_conflicts(kv):
+    store, scope = kv
+    store.insert(scope, "maintenance", b"plaintext", ttl=30)
+    physical_key = ":".join((*scope_segments(scope), "maintenance"))
+    before = store.client.pttl(physical_key)
+    assert store.compare_exchange(scope, "maintenance", b"plaintext", b"ciphertext")
+    after = store.client.pttl(physical_key)
+    assert 0 < after <= before
+    assert not store.compare_exchange(scope, "maintenance", b"plaintext", None)
+    assert store.get(scope, "maintenance") == b"ciphertext"
+    assert store.compare_exchange(scope, "maintenance", b"ciphertext", None)
+    assert not store.exists(scope, "maintenance")

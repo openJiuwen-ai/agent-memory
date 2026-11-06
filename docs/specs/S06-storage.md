@@ -24,6 +24,27 @@ USER.md/MEMORY.md 单行正文变化时，可同步替换未显式编辑标题�
 文件编辑后标题同步到 shadow，重复正文结合块位置和旧标题定位，不仅按哈希覆盖。
 标题与正文同次文件写入，shadow 更新失败时恢复文件快照并补偿索引。
 
+## 显式明文维护增量能力
+
+KVStore 增量提供非抽象 `compare_exchange(scope, key, expected, replacement) -> bool`：
+完整 Scope/key/value 原子匹配，保留原绝对到期时间；replacement=None 为比较删除。
+缺失、过期、变化返回 false，不创建记录。无法提供原子性时明确报不支持，禁止读后
+普通 update/delete 兜底。`migration_identity()` 返回仅供维护去重的物理位置身份，
+不能输出连接秘密。既有 ABC 抽象方法集合不变。
+
+受保护端口的可选 PlaintextMigrationTarget（storage/migration.py）契约包括
+migration_validate_scope/migration_identity/migration_scopes/migration_records(scope)/
+migration_key(unit_id)/migrate_plaintext(scope, key, expected, *, operation,
+existing_only=False)。记录扫描仅在已判权 Scope 内，密文仍需认证；迁移通过公开 provider
+加密，写前及持久化回读校验，现有记录以 CAS 保留 TTL。existing_only=true 禁止把扫描后
+消失或到期的记录重新插入。显式文件导入可插入缺失目标；clear 不删除密文。
+MigrationVerificationError.committed=true 标识提交后的回读失败，不自动回滚为明文。
+
+位置和保护依赖来自实际 manager 清单与公开插件能力，未知枚举/CAS 能力须明确失败。
+FS 资产、索引投影和治理记录不能按 MemoryUnit 猜测迁移；索引维持部署加密契约。
+非信封输入的专用 PlaintextDataError 仍在底层终止读取，沿原 BackendError 异常契约传播；
+存储不得返回原明文、错误对象冒充 bytes 或空内容。
+
 ## Metadata 物理存储契约
 
 索引记录保留 `system_metadata.<key>` 和 `user_metadata.<key>` 的逻辑路径。Milvus 与

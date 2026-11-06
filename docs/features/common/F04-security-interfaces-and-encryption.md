@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-11-04 |
+| 日期 | 2026-11-06 |
 | 影响范围 | `jiuwen_memory/common/security/`、API PEP、各接入形态、存储加密及相关模块规约 |
 | 验证范围 | 安全契约、第三方替换、故障、生命周期及各接入面业务回归；见「验证要求」 |
 | 规范契约 | [S10 安全横切契约](../../specs/S10-security.md)、[S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[S06 存储层](../../specs/S06-storage.md) |
@@ -24,7 +24,7 @@
 维护约定：安全能力变化时刷新本页现行描述，不因上游合并、基线适配、门禁与验收等工作
 在 `docs/` 新建文档或追加过程笔记。现有 specs 继续承载契约、模块 AGENTS.md 继续承载
 实现地图，涉及它们的事实纠偏同步更新既有文件。阶段性接口备忘已整合到既有 specs，
-安全能力特性文档只保留 F04。MemoryAPI 业务签名保持稳定，底层插件契约按公开能力演进。
+安全能力特性文档只保留 F04。MemoryAPI 方法名和请求参数保持稳定；读取明文新增明确的错误返回，底层插件契约按公开能力演进。
 本次不合并或删除独立的模型服务 SSL、存储 SSL 等上游专题文档。
 
 源码中的历史 `F05 §...` / `security.md` 简称是早期安全架构来源注记，不指 SSL 文档；
@@ -423,6 +423,67 @@ memory_api:
           reference: operator:es-volume-verification
           bindings: {hosts: 'https://es.internal:9200'}
 ```
+
+### 5.3 显式明文记忆维护
+
+开启加密不触发启动迁移，也不在 get/search 中尝试转换旧数据。内置 provider 通过可选
+格式识别能力拒绝非信封输入；格式识别不是认证，也不证明输入一定是合法明文。
+正常 get/list/search/inspect/trace/read_md_file/export_space 沿已有 BackendError 异常契约
+报错，消息提示显式迁移或清空；不返回原明文、空结果或不存在。MemoryAPI 方法签名、
+返回类型和公共导出保持原样，HTTP/CLI/MCP 使用既有错误处理，不增加专用结果对象或 409 映射。
+损坏 ENC1、错误密钥等仍走原有完整性/后端失败契约，不自动修复或回退明文。
+检索只在实际读取到此类数据时失败，不为了检查明文在每次搜索前扫描全库。
+
+独立工具按实际装配的 StoreManager 保护清单选择当前 KV 端口，沿包装器公开能力扫描；
+不扫描插件注册表、工作区全盘或调用方任意路径。同一物理位置去重，保护绑定冲突在
+写入前拒绝。缺少可靠清单、位置身份、枚举或原子比较能力时返回 `unsupported`。
+Redis 等后端的有损命名空间若不能还原原 Scope，扫描与 JSONL 输入均明确拒绝，
+在鉴权和操作前校验每条记录的 Scope，不猜测归属或折叠写入其他命名空间。
+内置 Memory/SQLite/Redis/PostgreSQL KV 支持；扫描对象仅为尚未过期的 `/memory/{id}`
+当前格式 MemoryUnit，不把 `/messages`、治理元数据、任意 FS 资产或索引投影猜成记忆。
+FS 未提供安全枚举与原子比较能力时明确报不支持，整体不报告全部成功；部署侧索引、
+影子库及 Markdown 继续使用 §5.2 的卷/后端加密，不套应用层信封。
+需要只处理已支持的具名 KV 时，部署方显式选 `--port`，结果仅代表所选范围。
+
+工具使用实际配置的认证器及同源 Authorizer：USER 仅本人主体，组织 ADMIN 仅本 org，
+ROOT 可跨 org。USER 的 space 是硬边界，须与目标精确相等，包括双方均为空的情况；
+空绑定不覆盖具名空间，已有非空 agent/session 绑定继续生效。Grant/Delegation 不能
+扩大此专用维护范围。枚举 Scope 后先鉴权再加载其记录，不向普通用户展示其他主体的
+ID、数量或内容；逐条操作前重核查失效/撤销和真实物理身份。配置与端口选择是受信部署
+输入，不得将整个配置或服务端路径作为 HTTP/MCP 请求参数。具备主机文件与根密钥权限
+的本地代码不在 Python 层权限隔离的威胁边界内。
+
+工具先校验版本、ID、五维 Scope、内容/元数据及物理 key/Scope 一致性；兼容的当前落库
+格式直接处理，不重新抽取或重建业务事实。旧混合元数据格式返回 `format_upgrade_required`，
+损坏信封不能作为明文重试。`inspect` 只检查；`migrate` 调用 encrypt，先自检密文再用
+原子比较替换，并解密持久化回读核对；`clear` 仅比较删除本次确认的合法明文，不清库、
+不删除密文。比较失败返回冲突，不盲目覆盖；已有记录保留绝对到期时间，扫描后到期或
+消失的记录不重建。已加密且通过认证的记录跳过，不重复加密。
+逐项提交，失败项与成功项分别返回；回读失败保留 `committed=true`，不能把已提交写入
+说成已回滚。正常业务/启动流程不调用此工具，维护时应停止业务写入；CAS 仅防止覆盖
+并发变化，不提供跨后端整批事务。
+
+```shell
+# 使用内核 YAML（服务配置中的 memory_api 段），凭据从 AGENT_MEMORY_API_KEY 读取
+python -m deploy.migration.encrypt --config kernel.yaml --operation inspect
+python -m deploy.migration.encrypt --config kernel.yaml --operation migrate
+python -m deploy.migration.encrypt --config kernel.yaml --operation clear --port default
+```
+
+工具随源码部署，入口与实现均在 `deploy/migration/`；`assembly.py` 独立装配实际
+StoreManager、ConfigSource、认证/授权和审计，`runner.py` 编排维护，`validation.py` 校验
+当前格式，`encrypt.py` 提供命令行。不经 MemoryAPI 或私有 Kernel，不启动 Engine、
+调度、摄入或文件监听后台任务；装配失败回滚、实际审计完整性及共享资源关闭保持同源。
+认证凭据从 AGENT_MEMORY_API_KEY 读取，不接受自述 actor/role。未传 `--input` 时直接扫描；
+可选 `--input` 接收每行一个现行 MemoryUnit 的 JSONL。
+文件模式保留原字节，既有目标必须匹配，不能用文件覆盖不同内容；缺失目标仅 migrate
+可以导入，导出文件不携带存储 TTL 时新导入记录无 TTL，不宣称恢复丢失的过期信息。
+工具返回结构化结果而非操作异常；CLI 完成退出 0，失败/部分失败退出 2。
+输入文件及外部备份由持有者管理，工具不自动删除它们。
+
+清空是逻辑删除，不等于安全擦除磁盘、数据库空闲页、WAL、快照或备份；原地替换也不
+保证消除历史明文副本。部署方须将这些位置纳入卷/后端加密及保留清理策略。工具不承诺
+全库重写、FS 资产迁移、格式升级或索引重建，也不把不支持的能力当成无明文。
 
 ## 6. 密钥管理与分发
 

@@ -12,12 +12,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.common.errors import (
+    BackendError,
+    ConflictError,
+    NotFoundError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
+from jiuwen_memory.common.plaintext import require_ciphertext
 from jiuwen_memory.common.security.cryptography import CryptographyProducer, CryptographyProvider
 from jiuwen_memory.common.security.types import CryptoContext
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
-from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.kv import KvProducer, KVStore, MigrationVerificationError
 from jiuwen_memory.storage.security import (
     EnabledStoreSecurity,
     StoreEncryptionBinding,
@@ -150,6 +157,84 @@ class EncryptedKVStore(KVStore):
     def scopes(self) -> list[Scope]:
         return self._raw.scopes()
 
+    def migration_identity(self) -> object:
+        return self._raw.migration_identity()
+
+    def migration_validate_scope(self, scope: Scope) -> None:
+        if not self._raw.migration_scope_supported(scope):
+            raise UnsupportedCapabilityError("lossless_scope", "kv", "storage")
+
+    def migration_scopes(self) -> list[Scope]:
+        return self._raw.scopes()
+
+    def migration_key(self, unit_id: str) -> str:
+        return MEMORY_KEY_PREFIX + unit_id
+
+    def migration_records(self, scope: Scope) -> list[tuple[str, bytes]]:
+        records = []
+        for key, value in self._raw.scan(scope, MEMORY_KEY_PREFIX):
+            classified = self._encryption.is_ciphertext(value)
+            if classified is None:
+                raise UnsupportedCapabilityError("ciphertext_recognition", "kv", "cryptography")
+            if classified:
+                self._decrypt(scope, key, value)
+            else:
+                records.append((key, value))
+        return records
+
+    def migrate_plaintext(
+        self, scope: Scope, key: str, expected: bytes, *,
+        operation: str, existing_only: bool = False,
+    ) -> str:
+        """Explicit trusted tool capability. Ordinary reads never call this method.
+
+        Compare exact exported bytes and retain TTL for existing records. A missing
+        target can be imported; clearing is always limited to matching plaintext.
+        """
+        if operation not in {"migrate", "clear"} or expected.startswith(b"ENC1"):
+            raise ValidationError("invalid plaintext migration operation")
+        try:
+            current = self._raw.get(scope, key)
+        except NotFoundError:
+            if operation == "clear" or existing_only:
+                return "skipped"
+            ciphertext = self._verified_encryption(scope, key, expected)
+            self._raw.insert(scope, key, ciphertext)
+            self._verify_persisted(scope, key, expected)
+            return "migrated"
+        classified = self._encryption.is_ciphertext(current)
+        if classified is None:
+            raise UnsupportedCapabilityError("ciphertext_recognition", "kv", "cryptography")
+        if classified:
+            # Never delete ciphertext, and never repair a damaged envelope.
+            plaintext = self._decrypt(scope, key, current)
+            if operation == "clear" or plaintext == expected:
+                return "skipped"
+            raise ConflictError(message="migration target differs from exported record")
+        if current != expected:
+            raise ConflictError(message="migration target differs from exported record")
+        replacement = (
+            self._verified_encryption(scope, key, expected) if operation == "migrate" else None
+        )
+        if not self._raw.compare_exchange(scope, key, expected, replacement):
+            raise ConflictError(message="migration target changed or expired")
+        if operation == "migrate":
+            self._verify_persisted(scope, key, expected)
+        return "migrated" if operation == "migrate" else "cleared"
+
+    def _verify_persisted(self, scope: Scope, key: str, plaintext: bytes) -> None:
+        try:
+            if self._decrypt(scope, key, self._raw.get(scope, key)) != plaintext:
+                raise MigrationVerificationError()
+        except Exception:
+            raise MigrationVerificationError() from None
+
+    def _verified_encryption(self, scope: Scope, key: str, plaintext: bytes) -> bytes:
+        ciphertext = self._encrypt(scope, key, plaintext)
+        if self._decrypt(scope, key, ciphertext) != plaintext:
+            raise BackendError("migration ciphertext verification failed")
+        return ciphertext
+
     def _encrypt(self, scope: Scope, key: str, plaintext: bytes) -> bytes:
         purpose = _purpose_for_key(key)
         context = _crypto_context(scope, key, purpose)
@@ -160,6 +245,7 @@ class EncryptedKVStore(KVStore):
             raise BackendError(f"kv encryption failed: key={key!r} purpose={purpose!r}") from exc
 
     def _decrypt(self, scope: Scope, key: str, ciphertext: bytes) -> bytes:
+        require_ciphertext(self._encryption, ciphertext)
         purpose = _purpose_for_key(key)
         context = _crypto_context(scope, key, purpose)
         aad = _aad(scope, key, purpose)
