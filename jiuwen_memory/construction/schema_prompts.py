@@ -414,6 +414,103 @@ Rules:
 5. Output JSON only.
 """
 
+# ---------------------------------------------------------------------------
+# Conflict consolidation prompts (CONFLICT_CONSOLIDATE evolve mode)
+# ---------------------------------------------------------------------------
+
+CONFLICT_RELATION_DETECTION_PROMPT = """
+You are a memory conflict detector. You are given ONE cluster of memories that all describe the
+SAME entity and the SAME property (for example, the same person's occupation). Every memory in the
+cluster already shares the same subject and predicate, so you do NOT judge whether they are about
+the same thing — they are. Partition the memories into problem groups by the relationship between
+their values.
+
+Return exactly one JSON object:
+{{
+  "issue_groups": [
+    {{
+      "issue_type": "conflict|duplicate|near_duplicate|complementary",
+      "memory_ids": ["ids involved in this single issue"],
+      "value_hints": {{"memory_id": "value or key detail of that memory"}},
+      "confidence": "high|medium|low",
+      "reason": "brief reason"
+    }}
+  ]
+}}
+
+Issue categories:
+- conflict: memories assert different, mutually exclusive current values for the property
+  (e.g. "works at A" vs "works at B" for the same present tense).
+- duplicate: exactly the same fact.
+- near_duplicate: the same fact with minor wording or detail differences.
+- complementary: non-conflicting fragments about the same fact/event that may be merged, OR values
+  at clearly different times that together form a timeline. A later value is NOT a conflict when
+  the earlier one is simply a historical state.
+
+Rules:
+- Emit one group per problem type. Memories with the same problem share one group.
+- A group may contain more than two memories.
+- Use only memory ids that appear in the cluster; never invent ids.
+- Do not use real-world knowledge to decide which value is correct.
+- When uncertain whether two values conflict, use "complementary" rather than "conflict".
+- Output only JSON, no Markdown, no commentary.
+
+Cluster (entity: {entity_name}; property: {property_name}):
+{context}
+"""
+
+CONFLICT_ACTION_PLANNING_PROMPT = """
+You are a memory consolidation action planner. You receive ONE issue group drawn from a cluster
+of memories that share the same entity and the same property. Decide the minimal set of actions
+that makes the stored memories consistent without losing information.
+
+Return exactly one JSON object:
+{{
+  "actions": [
+    {{"type": "create", "content": "...", "evidence_unit_ids": ["..."]}},
+    {{"type": "merge", "source_unit_ids": ["..."], "target_content": "..."}},
+    {{"type": "update", "unit_id": "...", "content": "..."}},
+    {{"type": "archive", "unit_id": "...", "reason": "..."}}
+  ]
+}}
+
+Action semantics:
+- create: add a new consolidated fact, supported by the evidence units that justify it.
+- merge: combine several source units into one target fact; the source units will be retired.
+- update: correct the content of one existing unit in place.
+- archive: retire an obsolete old value; its successor must already exist or be created here.
+
+## Currentness is decided by time, NOT by plausibility
+- Every memory carries `time` (effective time = `event_time` when the fact states one, otherwise
+  `ingest_time`), plus `event_time` / `ingest_time` individually. For a conflict, apply
+  **latest-wins**: the memory with the **latest `time`** is the current value.
+- When both memories state an `event_time`, prefer the later event time; only fall back to
+  `ingest_time` (write order) when no event time is stated.
+- Do NOT use real-world knowledge, plausibility, or common sense to decide which memory is
+  correct. A memory that appears false in the real world may still be the current memory — the
+  stored fact wins over what you believe to be true.
+- Compare times chronologically (year, month, day, hour, minute, second). If two conflicting
+  memories have the **same or unknown time**, neither is newer: do NOT archive either.
+- If temporal ordering is uncertain, do not archive. False archival is worse than leaving both.
+- Before emitting an archive, verify: (1) same entity, (2) same property, (3) the surviving value
+  has a later `time` than the archived one.
+
+## Other issue types
+- duplicate / near_duplicate: merge or archive the redundant one, keeping the most complete.
+- complementary: only act when a merge clearly improves one fact; otherwise return no actions.
+
+## General
+- Prefer the least destructive action. Never drop a unique name, date, place, or detail.
+- Every unit_id, source_unit_ids entry, and evidence_unit_ids entry must be an id shown below.
+- Return an empty actions list when no change is justified.
+- Output only JSON, no Markdown, no commentary.
+
+Issue type: {issue_type}
+Memories:
+{context}
+"""
+
+
 AGENT_MEMORY_ENTITY_MERGE_APPENDIX = """
 ## Agent Memory identity boundaries (take precedence)
 1. Generic roles such as User, Assistant, Speaker, or Participant are not aliases for a named
@@ -437,6 +534,8 @@ AGENT_MEMORY_PROPERTY_MERGE_APPENDIX = """
 __all__ = [
     "AGENT_MEMORY_ENTITY_MERGE_APPENDIX",
     "AGENT_MEMORY_PROPERTY_MERGE_APPENDIX",
+    "CONFLICT_ACTION_PLANNING_PROMPT",
+    "CONFLICT_RELATION_DETECTION_PROMPT",
     "ENTITY_GENERATION_PROMPT",
     "PROPERTY_DELETE_DECISION_PROMPT",
     "PROPERTY_MERGE_DECISION_PROMPT",

@@ -58,6 +58,11 @@ deploy = [
     # 装上 + 配 embedder 才进入完整模式（建 memory_vec 表，向量召回可用）。
     "sqlite-vec>=0.1",
 ]
+# 评测侧专用依赖：`evaluation/memoryagentbench` 直接读 MemoryAgentBench 的原始 parquet
+# （`Conflict_Resolution-*.parquet`）。内核不依赖该库。
+eval = [
+    "pyarrow>=15",
+]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
     # v1.27.2 修复 Streamable HTTP session 未绑定认证主体的高危漏洞；当前适配器使用
