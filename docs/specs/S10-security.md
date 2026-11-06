@@ -4,8 +4,8 @@
 
 | 项 | 值 |
 |---|---|
-| 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-11-04 |
+| 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/`、`jiuwen_memory_adapter/agent_security/` |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -19,7 +19,9 @@
 收紧为 USER，其余公开签名和默认行为不变，原本地管理流程需显式选择 ROOT。
 审计完整性由 PR3 提供可选的链式 HMAC 实现；实现与部署边界统一见 F04。
 
-安全能力统一归属 `jiuwen_memory/common/security/`，按能力域分子包：
+下层 jiuwen 安全能力归属 `jiuwen_memory/common/security/`，按能力域分子包。
+独立 agent 侧插件通过公开 SDK 消费这些能力，不属于内核认证/授权真源；其外发与
+宿主装配契约见本文末「agent 侧敏感记忆使用与外发契约」。下表只列下层能力：
 
 | 子包 | 承载 |
 |---|---|
@@ -494,3 +496,156 @@ PR1 阶段曾暂用旧权限链，那是迁移历史而非当前要求；不得�
 源文件不存在的 400 收紧为 403，不提供服务器文件存在性探测。临时目录创建或副本写入
 失败报 BackendError（HTTP 503），不误报源越界；同一任务每次暂存使用独立子目录，
 相同文件名可重复处理，原有副本不被覆盖。
+
+## agent 侧敏感记忆使用与外发契约
+
+本节定义 MindVault SDK 的 agent 侧边界，不改变上述 SDK 认证、授权、脱敏及人类查看
+契约。使用说明见[插件 README](../../jiuwen_memory_adapter/agent_security/README.md)，
+设计决策见 [F04 §11](../features/common/F04-security-interfaces-and-encryption.md#11-agent-侧敏感记忆使用与外发管控)。
+
+### 信任与装配
+
+宿主负责认证主体、会话所有权、权限端口、工具实现及模型目标的真实性。`Actor` 的
+`tenant_id/user_id/session_id/agent_id/incarnation` 全部来自可信宿主；聊天文字、工具
+参数和审批请求体不能构造或扩大身份。新会话必须使用 `new_session` 返回的 Actor，
+插件不导入未知旧历史并赋予默认 S1。
+
+`SecurityPlugin` 消费已经解析的 `framework` 与可选 `memory_backend` 选型；外发 policy
+和实际模型 targets 单独注入。解析不等于安装门禁，显式受控装配才提供执行覆盖。
+默认注册表不存在的名称必须拒绝，不得改用另一框架、后端或不受控对象继续运行。
+注册及配置解析不得发起业务 I/O、创建 SDK 或通过导入安装全局回调。
+
+`authorize(operation)`、`authorize_input(actor, hook, producer)`、
+`authorize_transfer(sender, recipient, snapshot)` 是独立授权端口，必须明确返回 `True`。
+批准外发不是 memory 使用授权、接收方授权或人类原文查看授权；这些权限不能互相替代。
+
+### 统一边界
+
+下列名称是插件协议，不假设框架提供同名原生 hook。驱动可以组合原生回调和最终执行
+包装，但不得以只能观察的通知回调代替数据释放前的执行门禁。
+
+| 边界 | 必须满足的语义 |
+|---|---|
+| `BEFORE_MEMORY_EXPORT` | SDK 结果进入 agent 前校验当前身份、Scope、用途、来源修订及脱敏视图 |
+| `BEFORE_LLM_CALL` | 实际请求发送前校验最终目标、凭据适用范围及序列化载荷 |
+| `AFTER_LLM_CALL` | 模型结果进入框架、回调及历史前构造并复检安全视图 |
+| `ON_LLM_STREAM_CHUNK` | 模型调用内的流释放检查，不得将未经完整检查的跨块内容提前交付 |
+| `BEFORE_TOOL_CALL` | 全部前置改写与纯准备结束后检查最终参数并冻结候选 |
+| `AFTER_TOOL_CALL` | 工具结果进入框架前检查，不承诺回滚已发生副作用 |
+| `BEFORE_AGENT_MESSAGE` | agent 消息实际交付前授权、检查；接收方执行前继承可信来源，回复同样受控 |
+| `BEFORE_AGENT_RESPONSE` | 最终用户响应交付前检查；不能由内部消息出口替代 |
+
+完整装配只能使用本实例登记的模型、工具与受控 agent；最终消费前复核实际对象。
+工具 `prepare_request(payload, context)` 可重跑且不得执行外部副作用；
+`send(approved, context)` 仅消费批准的冻结候选，不得重读旧参数或扩大目的地。
+这约束可信工具实现，不构成对任意工具代码的沙箱隔离。
+
+模型目标使用 `LlmTarget(target_id, provider, model, endpoint, protocol="openai-chat")`。
+`endpoint` 是完整 Chat Completions 请求 URL，provider 是可信宿主配置标签；标签本身
+不构成放行依据。每次实际发送，包括重试、动态选模和 fallback，都必须重新解析最终
+URL/model 并匹配凭据适用目标。未知目标、未经验证的头和重定向拒绝；中止应阻断同一
+逻辑调用的后续发送尝试。不信任网关对其内部隐藏路由的自述。
+
+### 记忆来源与后端契约
+
+framework 与 memory_backend 独立扩展。记忆后端声明自己的接口目录、参数 schema
+和实现，不要求各系统实现同一套 CRUD。扩展来自可信宿主显式注册，不接受模型指定
+模块路径或运行期自动发现未经审核的实现。
+
+```text
+RuntimeRegistry.register(framework, factory)
+RuntimeRegistry.resolve(framework) -> RuntimeDriver
+MemoryBackendRegistry.register(backend_id, factory)
+MemoryBackendRegistry.create(backend_id, context, **native_options) -> MemoryBackend
+```
+
+RuntimeDriver 定义模型/工具/消息接线、原生 agent 构造、输入适配与可信调用关联；
+驱动仅取得 `RuntimeContext` 的门禁、当前上下文、模型/工具只读收据和资源所有权端口，
+不能通过更换实现消除最终消费检查。接口完整性校验不等于证明驱动安全。
+
+内部协作使用显式端口：受控 agent 通过只读 `runtime_context` 收据校验实际对象，
+通过 `enter_run/leave_run` 绑定和恢复可信调用，`owner_for/begin_delegate` 维护原会话
+归属。模型驱动通过只读 targets、作用域和 provider 生命周期端口协作；原生工具
+包装捕获已绑定的执行回调。以上均供受信宿主接线，不接受模型或请求体声明身份，
+也不替代来源、权限及最终载荷的再次检查。
+
+| RuntimeDriver 端口 | 责任 |
+|---|---|
+| `framework` | 必须与注册名称一致 |
+| `create_execution(guard, **ports)` | 构造工具最终执行适配器 |
+| `create_llm_binding(adapter)` | 模型调用的原生上下文接线 |
+| `create_delivery_binding(adapter)` | agent 结果交付及原生中断恢复接线 |
+| `register_llm_provider(adapter)` | 显式创建合作模型 provider，不覆盖未受控内置实现 |
+| `create_tool(**definition)` | 构造框架原生工具 |
+| `create_model(host, target, **options)` | 构造绑定最终请求门禁的模型对象 |
+| `await build_agent(host, **configuration)` | 安装原生接线并校验实际对象 |
+| `inputs(text, session)` | 将可信会话映射为原生输入与调用选项 |
+| `llm_task(request)` | 从可信调用关联生成逻辑模型操作标识 |
+
+MemoryBackend 提供 `backend_id`、不可变 `operations`、
+`invoke(operation, arguments, actor) -> BackendResult` 及 `close()`。
+`BackendOperation` 包含名称、说明、对象参数 schema 和 effect；当前 effect 仅为
+`memory-read`，写入、共享或外发不能冒充读取绕过执行检查。
+`BackendResult(value, source)` 的 source 必须是当前主体已经登记且验证一致的
+`SourceSnapshot`；非空结果没有可信来源时拒绝交付。
+工厂取得 `BackendContext` 的 sources、inspector、audit 端口及宿主显式提供的原生参数；
+后端声明必须与注册 ID 一致，接口名不得与其他后端、外部工具或委派工具冲突。
+
+jiuwen SDK 接入只使用公开接口，宿主注入 `security_for`、`scope_for`、`authorize_use`
+和 `protected_source_levels_for`。敏感等级未确认受保护、来源缺少等级/修订、生命周期
+失效、Scope 或投影不一致均拒绝。`detector_version_for` 仅绑定插件检测版本，不能作为
+SDK 规则相同或 SDK 原文已安全隐藏的证明。
+
+agent 文本视图仅含不透明 `reference` 与 `content/abstract/overview`，不透传真实
+存储 ID、metadata、轨迹、附件或原文还原入口。来源账本保留等级、修订、用途、规则
+版本和带密钥摘要，不保存记忆正文；来源等级不会因脱敏自动降低。
+外发前重新验证来源，发送租约期间禁止来源集合变化；取消不得留下已领取的租约。
+agent 间交付既要接收方使用授权，也要传递来源，不能只复制脱敏字符串。
+
+### 检测、策略与审批
+
+检测器是插件注入端口，不要求 memory 提供额外检测 API：
+
+```text
+TextInspector.version -> str
+TextInspector.inspect(text: str, *, label: str = "") -> TextInspection
+TextInspection(level_id, redacted, matched_rules=(), categories=())
+```
+
+检测失败或版本改变时拒绝释放。已知来源等级与本次载荷检测等级取更严格者；未命中
+不能推导出 memory 使用权或外发许可。上下层规则允许不同，不能据此丢弃来源标签。
+
+外发 policy 数据使用 `schema_version=1`，version 为管理员修订标签。每个 target
+包含 `hooks/actions/max_level/allow_original`；目标、动作、边界与等级限制共同生效。
+未知字段、契约版本、未注册目标及无可发送候选拒绝。策略修订与审批绑定，旧批准不能
+覆盖新策略。S1 无改变载荷且来源为 S1 时可自动放行；敏感来源不会仅因当前扫描无命中
+自动获得无来源待遇。
+
+审批绑定主体、会话、操作、目标、来源快照、载荷、策略及候选版本，只在当前操作
+有效。选择值固定为 `CONTINUE_ORIGINAL`、`ABORT`、`SEND_REDACTED`，可用集合由策略
+决定。`allow_original=false` 或当前载荷新命中 S3 时不允许原样外发；脱敏选择使用
+插件登记并复检的替换候选，前端和模型不能提供替换正文。
+
+宿主认证的 owner 可调用 `pending(owner)` 和
+`decide(actor=owner, approval_id=..., version=..., choice=...)`。界面使用固定模板，
+无需额外模型推理；聊天文字不是批准。ASGI 控制入口复用宿主认证，POST 必须满足同源
+JSON 校验；请求体仅包含审批引用、版本和选择。子 agent 的审批进入同一 owner 会话。
+未知身份、超时、取消、关闭、撤权、改写和重放不能触发发送。
+
+### 结果、审计与生命周期
+
+AFTER 负责结果检查，不将已发生外发表述为“未执行”。文本 SSE 可采用有界完整缓冲，
+必须跨块和转义解码后检查，再释放安全结果；缺终止、超限、非法控制元数据或取消不得
+交付部分正文。结果、来源、权限和版本检查应先于宿主可见回调与用户输出。
+
+插件审计与下层 memory 审计是不同边界。插件仅记录固定元数据和带密钥引用，不含正文、
+凭据或任意异常；审计满额或 sink 失败拒绝释放。宿主负责及时消费队列，配置 sink 本身
+不替代 drain。失败后的真实外部状态可以是 unknown，不承诺外部恰好一次执行。
+
+`SecurityDenied` 表示安全拒绝，`ConfigurationError` 表示配置/注册声明无效，
+`InspectionError` 表示检测配置或预算无效；原生驱动可以转换为宿主中断或安全停止状态。
+异常和拒绝信息不得携带未检查的业务正文。关闭先撤销运行权限，再尽力清理所有自有
+组件；异步应用使用 `aclose()`，借用的 SDK 由宿主管理。关闭不回滚已完成外部副作用。
+
+覆盖报告只描述实际装配实例，不将声明支持等同于未受控路径已安全。多模态、其他协议、
+私有 RPC、跨重启/分布式审批及外部历史恢复不在当前文本闭环契约的支持承诺内。

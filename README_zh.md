@@ -52,7 +52,7 @@ openJiuwen **agent-memory** （又称Jiuwen Memory） 是九问社区开源的�
 | **记忆检索（Retrieval）** | 查询理解与去噪 → Storage 首选 pipeline（recall/get/Fuser）→ Reranker → 相关性阈值 → **渐进式披露 L0→L1→L2**，检索轨迹可观测、通道错误结构化返回 |
 | **记忆构建（Construction）** | 六类可组合算子：extractor / abstractor / associator / classifier / index_builder / evolver，覆盖从原始信息到记忆索引构建的全流程 |
 | **存储抽象（Storage）** | 统一 `Storage` 门面 + 六类标准端口：**KV / 向量 / 全文 / 图 / 融合 / 文件系统**，能力发现 + 两级安全边界，后端可插拔 |
-| **Agent 插件** | `agent_plugin/` 面向 JiuwenSwarm接入封装，OpenClaw / Codex / Hermes 等生态也在持续规划中 |
+| **Agent 插件** | `jiuwen_memory_adapter/` 提供 JiuwenSwarm 接入；[MindVault SDK](jiuwen_memory_adapter/agent_security/README.md) 为显式受控的 openJiuwen 智能体提供敏感记忆使用和外发管控 |
 | **评测框架（Evaluation）** | 两层评测：组件级 IR（Recall@k/MRR/nDCG 等）与端到端 QA（LLM-as-judge），内置 LoCoMo / LongMemEval 适配器 + smoke test |
 
 ## 架构总览
@@ -186,7 +186,7 @@ vector_store:
 
 **重要**：合入 PR/MR 时，base 分支请选择 `mem2.0`（当前开发分支）而非默认的 `main`。
 
-贡献前请阅读 [开发规范](.claude/CLAUDE.md)，了解代码风格、分层与测试策略。项目遵循「算子 + 插件 + 存储」三类契约，新功能请先在 `docs/design/architecture.md` 对应层确定落点。
+贡献前请阅读 [开发规范](AGENTS.md)，了解代码风格、分层与测试策略。项目遵循「算子 + 插件 + 存储」三类契约，新功能请先在 `docs/design/architecture.md` 对应层确定落点。
 
 ## 常见问题
 

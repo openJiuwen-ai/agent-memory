@@ -18,6 +18,21 @@
 └── .claude/            # AI 辅助工具配置（rules / skills / settings）
 ```
 
+`jiuwen_memory_adapter/agent_security/` 集中维护 MindVault SDK 的统一钩子、运行时适配和
+独立 Python 分发元数据（根 wheel 排除该子包）；本地约束见该目录 `AGENTS.md`。
+显式安全装配沿用 framework 选型，覆盖 SDK 文本交付、来源账本、LLM/工具执行及
+结果、流释放、用户响应和 agent 消息；实际覆盖由装配实例报告，配置解析不安装门禁。原会话审批使用认证控制入口及固定三选择控件，不调用 LLM。
+首个插件 PR 仅提供 openJiuwen 适配，覆盖合作执行路径、实际 URL/model、动态选模/重试
+及来源继承；完整三框架版本保存在独立开发分支，后续追加。具体边界见本地约束。
+检测器及规则快照由插件独立维护，不扩展 jiuwen memory API。可选 memory_backend 与
+framework 独立选型；后端声明自己的接口目录，当前只实现 jiuwen memory。
+实际装配通过 RuntimeRegistry 选择框架驱动；独立静态描述留待后续 PR，
+使用版本化策略数据契约及确定性的判定用例，保留后续跨运行时扩展能力。
+不改变已有记忆 Provider 的行为。
+MindVault SDK 为 agent 侧插件名称；下层认证、授权、脱敏等统称 jiuwen 安全能力。
+插件使用入口为该目录的 README.md，示例在 examples/；稳定契约归现有 S10，
+安全设计决策归既有 F04，逐次实施及验收笔记仍只放本地 security-plans。
+
 
 
 ## AGENTS.md 层级

@@ -20,6 +20,8 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.16",
     "argon2-cffi>=23.1",
+    # MindVault SDK 单元测试使用独立检测器；不加入根包运行时依赖。
+    "regex>=2024.11.6",
     # 测试套件自身消费的三个未声明依赖（test_outbound_ssl / test_multimodal_adapter /
     # test_middle_e2e_real_llm），缺失会让 pytest 卡在 collection error。
     "httpx>=0.27,<1",
@@ -86,6 +88,7 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.16",
     "argon2-cffi>=23.1",
+    "regex>=2024.11.6",
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
@@ -106,6 +109,8 @@ include = [
 exclude = [
     "jiuwen_memory_entry.cli*",
     "jiuwen_memory_entry.mcp_server*",
+    # MindVault SDK 通过其目录内的 pyproject 独立分发，避免两个 wheel 拥有相同文件。
+    "jiuwen_memory_adapter.agent_security*",
 ]
 
 [tool.pytest.ini_options]
