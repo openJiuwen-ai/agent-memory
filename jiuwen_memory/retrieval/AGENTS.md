@@ -15,6 +15,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `role_view.py` / `role_view_impl/bounded.py` | 职责视图接口/Producer 与有界关系展开实现：单/多职责（duty 列表）逐职责边判定、带剩余深度的路径状态与支配、跨职责路径、`matched_duties`/`valid_duties`/`common`/`duty_coverage`，保留证据路径与缺口；经验条目按 candidate/supported_in_conditions/needs_review/refuted 流转 |
 | `base.py` | RetrievalOperator 基类：所有检索层算子的自描述契约 |
 | `types.py` | 检索对外类型；Storage 共用的 ParsedQuery/候选/错误类型从 common 重导出 |
 | `cross_space.py` | 跨空间检索的取数上界（`allocate_quota`）与结果合并（`merge`）；不访问存储、不调模型的纯函数，与算子并列而非算子，不进工厂 |
@@ -210,3 +211,5 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
   处理顺序、空间内融合原序补入所选父的后代；不比较跨空间分数或按完成时间重排。
 - 共用披露预算及完整 Scope+id 去重；空正文在预算准入后按真源排除，不退还预算。
   空父仍可带回合法后代。score 仍表示原根分或继承分，轨迹以 child_select 记录补位。
+
+角色视图复用已判权关系快照传播依赖失效：supports 正向、requires 反向；meta.review 聚合必需项、候选项及视图外未检查范围，不另外绕过预算扫描图。

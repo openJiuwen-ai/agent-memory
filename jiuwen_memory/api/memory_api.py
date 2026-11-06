@@ -39,6 +39,14 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
+from jiuwen_memory.common.type_def.continuity import (
+    ContinuityEvent,
+    ContinuityRecovery,
+    MemoryRef,
+    RelationRecord,
+    RoleViewQuery,
+    TaskRequest,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
@@ -87,6 +95,54 @@ class MemoryAPI(ABC):
     """
 
     @abstractmethod
+    def role_task(
+        self, scope: Scope, request: TaskRequest, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Register/bind/read task context without execution ownership transfer."""
+
+    @abstractmethod
+    def role_record(
+        self, scope: Scope, event: ContinuityEvent, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Idempotently record an attributed event and associate it with its task."""
+
+    @abstractmethod
+    def role_relation(self, scope: Scope, relation: RelationRecord, expected_revision: int,
+                      *, security: RequestSecurityContext) -> dict:
+        """Register or review a versioned evidence relation, then project its graph edge."""
+
+    @abstractmethod
+    def role_view(
+        self, scope: Scope, request: RoleViewQuery, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Find a memory anchor and expand typed relations according to duty."""
+
+    @abstractmethod
+    def role_rebuild(self, scope: Scope, *, security: RequestSecurityContext,
+                     recovery: ContinuityRecovery | None = None) -> dict:
+        """Repair relation projections from authorized sources without re-extraction."""
+
+    @abstractmethod
+    def role_quarantine_source(self, scope: Scope, source_key: str, reason: str,
+                               *, security: RequestSecurityContext) -> dict:
+        """Isolate a source range with an auditable reason until it is released."""
+
+    @abstractmethod
+    def role_release_source(self, scope: Scope, source_key: str,
+                            *, security: RequestSecurityContext) -> bool:
+        """Release a previously quarantined source range; returns whether it was quarantined."""
+
+    @abstractmethod
+    def role_mark_source_cutover(self, scope: Scope, connector: str, context_id: str,
+                                 *, security: RequestSecurityContext) -> dict:
+        """Cut a dual-write source over to agent-memory as the single authoritative writer."""
+
+    @abstractmethod
+    def role_publish(self, scope: Scope, source: MemoryRef, reason: str,
+                     *, security: RequestSecurityContext) -> dict:
+        """Explicitly publish a private record into the shared project space."""
+
+    @abstractmethod
     def add(
         self,
         content: str,
@@ -99,6 +155,7 @@ class MemoryAPI(ABC):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> list[MemoryUnit]:
         """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。
 
@@ -147,6 +204,7 @@ class MemoryAPI(ABC):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> list[MemoryUnit]:
         """异步写入记忆；语义与 :meth:`add` 一致并直通引擎协程。"""
 
@@ -164,12 +222,14 @@ class MemoryAPI(ABC):
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
+        event_time: datetime | None = None,
     ) -> BatchWriteResult:
         """同步批量写入；结果按输入顺序逐项对齐。
 
         ``scope`` 是批级缺省值，逐项 ``BatchWriteItem.scope`` 为 ``None`` 时沿用它；两级都
         不给即该项没有落点，除非批级参数袋请求了判定（见 :meth:`add`）。判定请求是批级的，
-        逐项参数袋携带 ``coords`` 即拒绝——整批共用一次判定上下文。
+        逐项参数袋携带 ``coords`` 即拒绝——整批共用一次判定上下文。``event_time`` 是批级缺省的
+        含时区事件时间，逐项 ``BatchWriteItem.event_time`` 优先；不含时区时该项或整批被拒绝。
         """
 
     @abstractmethod
@@ -186,6 +246,7 @@ class MemoryAPI(ABC):
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
+        event_time: datetime | None = None,
     ) -> BatchWriteResult:
         """异步批量写入；语义与 :meth:`batch_add` 一致。"""
 
@@ -407,10 +468,12 @@ class MemoryAPI(ABC):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> IngestSubmission:
         """受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；
         调用方拿不到 ``IngestJobController``。后台 ``add`` 仍再鉴权一次，并原样接收
         ``occurred_at`` 作为消息发生时间——该字段属于消息时间轴，不借 metadata 旁路传递。
+        ``event_time`` 是含时区的事件时间，入队前校验，避免错误只在后台任务里才暴露。
         """
 
     @abstractmethod

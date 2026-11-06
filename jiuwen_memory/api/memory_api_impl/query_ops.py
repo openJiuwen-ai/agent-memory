@@ -235,7 +235,7 @@ class QueryOpsMixin:
             rq.filters = and_merge(rq.filters, system_clauses)
         result = asyncio.run(self._queries.recall(context.scope, rq))
         self._log(identity, "search", target_scope=context.scope, detail=auth)
-        return result
+        return self._guard_continuity_search(result, scope=context.scope)
 
     def _search_spaces(
         self, context: Context, retrieval_query: RetrievalQuery, access: _SearchAccess,
@@ -364,12 +364,21 @@ class QueryOpsMixin:
         # 查询骨架装配一次，逐空间只差取数上界与本空间谓词，两项都由控制层补齐。
         # 逐空间构造 RetrievalQuery 的循环本身就是取数编排，不留本层。
         # 同步桥接留本层（S02「同步/异步桥接」）：控制层给协程，本层 asyncio.run。
+        item_scopes = {}
+
+        async def guarded_recall(target_scope, query):
+            result = await self._queries.recall(target_scope, query)
+            # Trusted fan-out origin, never a Scope supplied in memory metadata.
+            for item in result.items:
+                item_scopes[id(item)] = target_scope
+            return self._guard_continuity_search(result, scope=target_scope)
+
         merged, space_failures = asyncio.run(
             collective.recall_spaces(
                 targets,
                 retrieval_query,
                 top_k=retrieval_query.top_k,
-                recall=self._queries.recall,
+                recall=guarded_recall,
             )
         )
         for failure in space_failures:
@@ -404,7 +413,7 @@ class QueryOpsMixin:
                 "count": str(len(merged.items)),
             },
         )
-        return merged
+        return self._guard_continuity_search(merged, item_scopes=item_scopes)
 
     def _hierarchy_enabled(self) -> bool:
         """仅在可信请求通过校验后读取运行时树总开关。"""
@@ -523,6 +532,8 @@ class QueryOpsMixin:
                 "page_count": str(len(result.items)),
             },
         )
+        for unit in result.items:
+            self._guard_continuity_snapshot(unit, security)
         return result
 
     def get(
@@ -566,6 +577,7 @@ class QueryOpsMixin:
             unit.id,
             context=_unit_snapshot_permission_context(unit),
         )
+        self._guard_continuity_snapshot(unit, security)
         self._log(
             identity,
             "get",

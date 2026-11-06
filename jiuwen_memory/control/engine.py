@@ -66,6 +66,17 @@ class EngineProducer(Factory):
 class MemoryEngine(ControlOperator):
     """编排接口层各语义；本身不实现具体能力，驱动各层算子完成。"""
 
+    def configure_retention(self, guard) -> None:
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("engine does not expose retention coordination")
+
+    @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        """Whether list metadata equality reads committed truth without index lag."""
+        return False
+
+
     @property
     @abstractmethod
     def kv(self) -> KVStore:
@@ -91,6 +102,7 @@ class MemoryEngine(ControlOperator):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> list[MemoryUnit]:
         """异步（协程）写入：hot path 完成（真源落盘 + 轻量索引）后返回
         本次插入的全部记忆单元（规约/切分可产生多条）；重的抽取/升华
@@ -183,6 +195,12 @@ class MemoryEngine(ControlOperator):
     ) -> SourceUpdatePlan | None:
         """Internal preparation for derived-write authorization; no business writes."""
         return None
+
+    def conditional_update(self, unit: MemoryUnit, expected_digest: str) -> bool:
+        """Authorized content replacement through a write chain with real CAS support."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("engine does not support conditional updates")
 
     async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
         """Commit a prepared and authorized update, using its frozen candidates."""

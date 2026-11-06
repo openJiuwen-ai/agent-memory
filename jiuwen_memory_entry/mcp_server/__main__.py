@@ -25,6 +25,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from importlib import import_module
 from typing import Any
 
@@ -191,13 +192,119 @@ def _check_binding(host: str) -> None:
 
 
 @mcp.tool()
-async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
+async def memory_role_view(scope: dict, request: _api.RoleViewQuery, ctx: Context = None) -> dict:
+    """恢复任务或沿记忆关系查证。request 提供 query/anchor/task_id 至少一个；
+    duty 为 general/diagnosis/testing/execution。相同起点按职责展开不同边，返回
+    anchors、paths、facts、judgments、experiences、gaps。anchor 需包含完整 scope、
+    unit_id、content_digest；来自已保存记录的回执。缺口或未核实路径不能当作事实。
+    """
+    return await _invoke("role_view", {"scope": scope, "request": asdict(request)}, context=ctx)
+
+
+@mcp.tool()
+async def memory_role_task(scope: dict, request: _api.TaskRequest, ctx: Context = None) -> dict:
+    """登记跨产品任务。operation: create/get/find/bind/unbind/attach/close。
+    变更须带稳定 request_id、expected_revision；绑定不授予源记忆权限，不需要交接确认。
+    """
+    return await _invoke("role_task", {"scope": scope, "request": asdict(request)}, context=ctx)
+
+
+@mcp.tool()
+async def memory_role_record(scope: dict, event: _api.ContinuityEvent, ctx: Context = None) -> dict:
+    """保存观察/判断/经验。event 必填 task_id、binding_id、event_id、content；
+    重试复用 event_id。检查 committed/partial/unknown，不把工具建议当执行结果。
+    """
+    return await _invoke("role_record", {"scope": scope, "event": asdict(event)}, context=ctx)
+
+
+@mcp.tool()
+async def memory_role_relation(
+    scope: dict,
+    relation: _api.RelationRecord,
+    expected_revision: int,
+    ctx: Context = None,
+) -> dict:
+    """登记或复核关系。先保存两端记忆取得引用，再提交 source/target、relation_type、
+    relation_id/revision、evidence_refs、conditions、status。supports/contradicts/
+    possible_cause_of/verification_method_for/verifies/requires；抽取结果默认 candidate。
+    复核用新 revision，撤回用 revoked；不得把 confirmed 理解成外部事实已经成立。
+    """
+    return await _invoke(
+        "role_relation",
+        {"scope": scope, "relation": asdict(relation), "expected_revision": expected_revision},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_role_rebuild(
+    scope: dict, recovery: _api.ContinuityRecovery | None = None, ctx: Context = None
+) -> dict:
+    """从关系真源重建图投影；不重新抽取旧正文，不宣称关系覆盖完整。"""
+    return await _invoke(
+        "role_rebuild",
+        {"scope": scope, "recovery": asdict(recovery) if recovery else None},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_role_publish(
+    scope: dict, source: _api.MemoryRef, reason: str, ctx: Context = None
+) -> dict:
+    """显式发布私有记录到共享空间，逐字复制并保留出处与发布依据；不自动摘要。"""
+    return await _invoke(
+        "role_publish",
+        {"scope": scope, "source": asdict(source), "reason": reason},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_role_quarantine_source(
+    scope: dict, source_key: str, reason: str, ctx: Context = None
+) -> dict:
+    """隔离异常来源范围，普通 get/search 与角色视图立即停止使用；需治理权限。"""
+    return await _invoke(
+        "role_quarantine_source",
+        {"scope": scope, "source_key": source_key, "reason": reason},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_role_release_source(
+    scope: dict, source_key: str, ctx: Context = None
+) -> bool:
+    """解除来源隔离。"""
+    return await _invoke(
+        "role_release_source",
+        {"scope": scope, "source_key": source_key},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_role_mark_source_cutover(
+    scope: dict, connector: str, context_id: str, ctx: Context = None
+) -> dict:
+    """把双写来源切换为 agent-memory 为准；切换后该来源新事件被拒绝。"""
+    return await _invoke(
+        "role_mark_source_cutover",
+        {"scope": scope, "connector": connector, "context_id": context_id},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_add(
     content: str,
     scope: dict,
     tags: list[str] | None = None,
     source: str = "text",
     assets: list[str] | None = None,
     occurred_at: str | None = None,
+    event_time: str | None = None,
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
     ctx: Context = None,
@@ -212,7 +319,8 @@ async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-argu
     source: 来源模态 text/image/audio/video/code/document（默认 text）。
     assets: 可选原模态资产引用列表（如 ["file:///pic.png"]）。
     occurred_at: 可选 ISO 8601 时间点——消息/对话发生时间（写入 temporal.t_message），
-        缺省不填（null）；内容所述事件时间（t_event）由系统从内容提取，不经此参数。
+        缺省不填（null）。
+    event_time: 可选含时区 ISO 8601 事件时间（写入 t_event），优先于正文日期抽取。
     system_metadata: 可选系统元数据对象（值限标量）；infer/procedural 等调用级
         开关经它下推。
     user_metadata: 可选用户元数据对象（值限标量）；供过滤，检索时用
@@ -228,6 +336,7 @@ async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-argu
             "source": source,
             "assets": assets,
             "occurred_at": occurred_at,
+            "event_time": event_time,
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
         },
@@ -428,6 +537,7 @@ async def memory_batch_add(  # pylint: disable=too-many-arguments,huawei-too-man
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
     continue_on_error: bool = True,
+    event_time: str | None = None,
     ctx: Context = None,
 ) -> dict:
     """
@@ -435,7 +545,7 @@ async def memory_batch_add(  # pylint: disable=too-many-arguments,huawei-too-man
 
     items: 写入条目数组，每项形如 {"content": "记忆内容"}；content 必填，
         也可逐项给 scope/tags/source/assets/system_metadata/user_metadata/
-        occurred_at/stream_id 覆盖批级缺省值。
+        occurred_at/event_time/stream_id 覆盖批级缺省值。
     scope: 批级缺省归属坐标——item 里不给 scope 的条目沿用它，形如
         {"org":"acme","user":"alice"}。
     tags: 批级缺省标签。
@@ -443,6 +553,7 @@ async def memory_batch_add(  # pylint: disable=too-many-arguments,huawei-too-man
     stream_id: 批级缺省流标识（同一条消息流的写入共享它）。
     occurred_at: 批级缺省消息/对话发生时间（ISO 8601，写入 temporal.t_message），
         缺省不填（null）。
+    event_time: 批级缺省事件时间（含时区 ISO 8601，写入 t_event），优先于正文日期抽取。
     system_metadata / user_metadata: 批级缺省元数据对象（值限标量）。
     continue_on_error: true（默认）时单条失败不中断整批。
     返回 {"outcomes": [...]}，每项含 index（与输入顺序对齐）与 units（成功）
@@ -460,6 +571,7 @@ async def memory_batch_add(  # pylint: disable=too-many-arguments,huawei-too-man
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
             "continue_on_error": continue_on_error,
+            "event_time": event_time,
         },
         context=ctx,
     )
@@ -509,6 +621,7 @@ async def memory_add_async(  # pylint: disable=too-many-arguments,huawei-too-man
     source: str = "text",
     assets: list[str] | None = None,
     occurred_at: str | None = None,
+    event_time: str | None = None,
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
     ctx: Context = None,
@@ -517,7 +630,7 @@ async def memory_add_async(  # pylint: disable=too-many-arguments,huawei-too-man
     异步写入一条记忆（语义同 memory_add，直通引擎协程，等待完成并返回结果）。
 
     content: 记忆内容。scope: 归属坐标 {"org","user",...}。tags: 可选标签。
-    其余参数语义同 memory_add（source/assets/occurred_at/system_metadata/
+    其余参数语义同 memory_add（source/assets/occurred_at/event_time/system_metadata/
     user_metadata）。
     """
     return await _invoke(
@@ -529,6 +642,7 @@ async def memory_add_async(  # pylint: disable=too-many-arguments,huawei-too-man
             "source": source,
             "assets": assets,
             "occurred_at": occurred_at,
+            "event_time": event_time,
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
         },
@@ -547,6 +661,7 @@ async def memory_batch_add_async(  # pylint: disable=too-many-arguments,huawei-t
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
     continue_on_error: bool = True,
+    event_time: str | None = None,
     ctx: Context = None,
 ) -> dict:
     """
@@ -566,6 +681,7 @@ async def memory_batch_add_async(  # pylint: disable=too-many-arguments,huawei-t
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
             "continue_on_error": continue_on_error,
+            "event_time": event_time,
         },
         context=ctx,
     )
@@ -617,6 +733,7 @@ async def memory_submit_ingest(  # pylint: disable=too-many-arguments,huawei-too
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
     occurred_at: str | None = None,
+    event_time: str | None = None,
     ctx: Context = None,
 ) -> dict:
     """
@@ -627,6 +744,7 @@ async def memory_submit_ingest(  # pylint: disable=too-many-arguments,huawei-too
     assets: 可选资产引用列表。tags: 可选标签。
     system_metadata / user_metadata: 可选元数据对象（值限标量）。
     occurred_at: 可选 ISO 8601 消息发生时间，后台写入时原样传递。
+    event_time: 可选含时区 ISO 8601 事件时间（写入 t_event），入队前校验。
     后台 add 会再鉴权一次；用 memory_job_status 查任务进度。
     """
     return await _invoke(
@@ -642,6 +760,7 @@ async def memory_submit_ingest(  # pylint: disable=too-many-arguments,huawei-too
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
             "occurred_at": occurred_at,
+            "event_time": event_time,
         },
         context=ctx,
     )

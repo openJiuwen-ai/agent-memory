@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.errors import NotFoundError, UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, MemoryUnit, Scope
@@ -37,7 +37,48 @@ class KvProducer(Factory):
     TOP_NAME = "kv_store"
 
 
+def update_memory_if_unchanged(kv, unit: MemoryUnit, expected_digest: str) -> bool:
+    """Content predicate plus byte CAS protects intervening metadata changes as well."""
+    from jiuwen_memory.common.type_def.continuity import MemoryRef
+    from jiuwen_memory.common.type_def.memory_codec import dumps
+
+    if not kv.supports_compare_and_swap:
+        raise UnsupportedCapabilityError("conditional update requires atomic truth storage")
+    key = memory_key(unit.id)
+    try:
+        raw = kv.get(unit.scope, key)
+    except NotFoundError:
+        return False
+    current = loads(raw)
+    if current is None or MemoryRef.of(current).content_digest != expected_digest:
+        return False
+    return kv.compare_and_swap(unit.scope, key, raw, dumps(unit))
+
+
 class KVStore(BaseStore):
+    @property
+    def supports_compare_and_swap(self) -> bool:
+        return False
+
+    def compare_and_swap(
+        self, scope: Scope, key: str, expected: bytes, value: bytes
+    ) -> bool:
+        """Atomically replace an existing live value iff bytes match; preserve its TTL."""
+        raise UnsupportedCapabilityError("KV backend cannot atomically compare and swap")
+
+    @property
+    def persistent_atomic_records(self) -> bool:
+        """Fixed durable namespace with atomic single-record replacement (not CAS)."""
+        return False
+
+    def claim_single_writer(self, namespace: str) -> None:
+        """Hold an exclusive management writer claim until store.close(); fail if unsupported."""
+        raise UnsupportedCapabilityError("KV backend cannot enforce a single writer")
+
+    def release_single_writer(self, namespace: str) -> None:
+        """Release an acquired claim without closing a borrowed Store connection."""
+        raise UnsupportedCapabilityError("KV backend cannot release a writer claim")
+
     @abstractmethod
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""

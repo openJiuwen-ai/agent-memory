@@ -359,6 +359,9 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | `delete` | `(scope, node_ids=None, edge_ids=None) -> None` | 在 scope 内按 id 删除节点（连带其关联边）/ 边（幂等） |
 | `get` | `(scope, node_ids: list[str]) -> list[Node]` | 在 scope 内按 id 点查节点；缺失的 id 从结果中省略 |
 | `search` | `(scope, query: GraphQuery) -> list[Node]` | 在 scope 内从 query.start_id 出发扩展邻域/子图（多跳遍历） |
+| `incident_edges` | `(scope, node_id, *, limit=100) -> list[Edge]` | 返回保留 source/target 方向的有界入出边；`supports_incident_edges` 为真 |
+| `project_edge` | `(scope, edge, *, revision, nodes=None) -> None` | 按修订条件投影（见「接续管理与证据图能力」）；`supports_conditional_projection` 为真 |
+| `unproject_edge` | `(scope, edge_id, *, revision) -> None` | 按修订条件撤投影；`supports_conditional_projection` 为真 |
 
 GraphStore 只承载 `ASSOCIATE` 等路径产生的语义关联、共指、因果或引用关系。父子包含
 关系的读取与遍历以 KV 中 `MemoryUnit.hierarchy` 为准，不通过 GraphStore 搜索或修复。
@@ -641,3 +644,30 @@ Store 抽象、跨后端不变量与注册机制。
 | S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |
 | S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |
+
+
+## 接续管理与证据图能力
+
+`KVStore.persistent_atomic_records` 默认 false，表示固定持久命名空间和单记录原子替换，不代表 CAS。`claim_single_writer(namespace)` 默认不支持；支持者持有管理写者排他声明直到 close，第二写者必须失败，不能把单进程 RLock 当跨进程互斥。Registry 显式使用具名端口，测试 ephemeral 例外不得用于生产。
+
+`GraphStore.supports_incident_edges` 默认 false；`incident_edges(scope, node_id, *, limit)` 返回保留 source/target/id/relation/properties 的有界入出边，不跨 Scope。角色图装配要求该能力；不能用无向邻居列表冒充有向关系。节点和边属于可重建投影，关系真源在 MemoryUnit；投影 ID 使用专用前缀，后端更新邻接后不得因旧邻接删除已移到其他端点的边。
+
+**条件投影（可选能力，已实现 `kv` / `memory` / `neo4j`）**：`GraphStore.supports_conditional_projection` 默认 false；支持者提供 `project_edge(scope, edge, *, revision, nodes=None)` 与 `unproject_edge(scope, edge_id, *, revision)`。`project_edge` 在单个原子操作（事务或后端写锁）内按边 ID 读取当前边：不存在且无更高撤回墓碑则创建（节点按 ID 创建或复用、从不删除）；当前修订小于 `revision` 则原地更新端点与属性；相等且内容一致视为已完成、不做改动，相等但内容不同报 `ConflictError`；大于则拒绝并报告已有更新版本。`unproject_edge` 仅当当前边修订不大于 `revision` 时删除该边，不删除任何节点，并记录撤回墓碑使更旧修订的重放无法复活已被撤回的边。普通 `insert` 仍保持"重复 ID 报冲突"。关系投影器依赖此能力实现确认丢失后的安全重放，不能以"先删后插"代替。
+
+### 派生构建与借用资源
+
+`DomainStore.supports_exact_metadata_lookup` 默认 false；声明 true 必须保证系统元数据等值过滤查询从真源读取，写成功后立即可查，不能依赖异步索引。`KVStore.release_single_writer(namespace)` 只释放该命名空间写者声明，不关闭数据库；默认不支持。使用方释放自己的 claim，资源所有者负责 close，借用 KV 的图实现不关闭 KV。
+
+### 原子条件更新
+
+`KVStore.supports_compare_and_swap` 默认 false；`compare_and_swap(scope, key, expected, value)`
+在单个原子操作中比较活跃键的原始 bytes 并替换，保留原 TTL。缺键、过期、值不等返回 false，
+不创建新键；后端故障抛错。不支持的后端拒绝，不能用进程锁包装读后写冒充跨连接 CAS。
+加密包装必须比较先前观察到的密文，不用重新加密 expected（随机 nonce 不保证密文相等）。
+
+`DomainStore.supports_conditional_update` 默认 false；
+`update_if_unchanged(scope, unit, expected_digest, access=...)` 在内容摘要匹配时原子更新真源，
+范围不匹配拒绝；元数据完整 bytes 的比较覆盖核对与写入之间发生的修改。该能力只承诺真源，
+检索投影由构建链管理。领域更新和底层 CAS 均走 UPDATE 授权。
+
+Neo4j 的 ssl_verify=true 要求 bolt+s:// 或 neo4j+s:// 及 ssl_ca_cert，动态 URI 重绑定不得绕过校验。自定义 CA 通过驱动显式 encrypted=True 与 trusted_certificates 传递（驱动侧 URI 转为对应无后缀 scheme，仅作为加密参数表达方式，连接仍强制 TLS）。健康检查不得执行建约束 DDL，首次写入前须完成所需唯一约束。

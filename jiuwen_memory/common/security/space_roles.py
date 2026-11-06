@@ -137,6 +137,7 @@ OWNER_ENTRY_SAME_DIMS = frozenset(
         "add_space_member",
         "remove_space_member",
         "export_space",
+        "role_publish_share",
     }
 )
 OWNER_ENTRY_COVERS = frozenset(
@@ -186,8 +187,19 @@ class EntryRule:
 # 而散落的形态无法一眼核对完整性。表外的入口由鉴权点按「未登记即不做空间级判定」
 # 处置，与组织级入口一并维持现状判据。
 ENTRY_RULES: dict[str, EntryRule] = {
+    "role_view": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
+    "role_task_read": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
+    "role_task_write": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
+    "role_record": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
+    "role_relation": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
+    "role_rebuild": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
+    "role_publish": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
+    "role_publish_share": EntryRule(SpaceAxis.GOVERNANCE, SpaceAction.SHARE),
     # -- 组织级：角色闸门终局，本特性内维持现状判据 ------------------------- #
     "create_space": EntryRule(SpaceAxis.ORG, SpaceAction.MANAGE_SPACE),
+    "role_quarantine_source": EntryRule(SpaceAxis.ORG, SpaceAction.MANAGE_SPACE),
+    "role_release_source": EntryRule(SpaceAxis.ORG, SpaceAction.MANAGE_SPACE),
+    "role_mark_source_cutover": EntryRule(SpaceAxis.ORG, SpaceAction.MANAGE_SPACE),
     "audit": EntryRule(SpaceAxis.ORG, SpaceAction.READ_AUDIT),
     "verify_audit": EntryRule(SpaceAxis.ORG, SpaceAction.VERIFY_AUDIT),
     "admin_get": EntryRule(SpaceAxis.ORG, SpaceAction.ADMINISTER_SYSTEM),

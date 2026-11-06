@@ -42,6 +42,7 @@ from .local_support import (
     _reject_foreign_routed_scope,
     _reject_foreign_write_scope,
     _reject_invalid_content,
+    _reject_invalid_event_time,
     _reject_kernel_system_metadata,
     _reject_non_scalar_metadata,
     _reject_route_tag_keys,
@@ -72,6 +73,7 @@ class WriteOpsMixin:
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> list[MemoryUnit]:
         return asyncio.run(
             self.add_async(
@@ -84,6 +86,7 @@ class WriteOpsMixin:
                 system_metadata=system_metadata,
                 user_metadata=user_metadata,
                 occurred_at=occurred_at,
+                event_time=event_time,
             )
         )
 
@@ -99,7 +102,30 @@ class WriteOpsMixin:
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> list[MemoryUnit]:
+        return await self._add_impl(
+            content, scope, source, security=security, assets=assets, tags=tags,
+            system_metadata=system_metadata, user_metadata=user_metadata,
+            occurred_at=occurred_at, event_time=event_time,
+        )
+
+    async def _add_impl(
+        self,
+        content: str,
+        scope: Scope,
+        source: Modality = Modality.TEXT,
+        *,
+        security: RequestSecurityContext,
+        assets: list[str] | None = None,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
+        continuity_metadata: dict[str, MetadataValueType] | None = None,
+    ) -> list[MemoryUnit]:
+        _reject_invalid_event_time(event_time)
         identity = security.auth.actor
         _reject_invalid_content(content)
         # 三项校验都在落点解析之前：解析会往 system_metadata 塞判定产物与瞬态的
@@ -111,6 +137,10 @@ class WriteOpsMixin:
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
         reject_kernel_coords(coords)
+        # Only the private role writer supplies these kernel-owned fields. Public
+        # metadata has already passed the reserved-prefix check, with no bypass flag.
+        if continuity_metadata:
+            system_metadata = {**(system_metadata or {}), **continuity_metadata}
         self._require_trusted_context(
             security, _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org))
         )
@@ -141,6 +171,7 @@ class WriteOpsMixin:
             ),
             user_metadata=user_metadata,
             occurred_at=occurred_at,
+            **({"event_time": event_time} if event_time is not None else {}),
         )
         self._log(identity, "add", target_scope=target, detail=auth)
         return [_strip_transient_metadata(unit) for unit in units]
@@ -451,6 +482,7 @@ class WriteOpsMixin:
         system_metadata: dict[str, MetadataValueType] | None,
         user_metadata: dict[str, MetadataValueType] | None,
         occurred_at: datetime | None,
+        event_time: datetime | None = None,
         stream_id: str,
     ) -> BatchWriteItem:
         """归一一项批量写入；逐项 ``scope`` 为 ``None`` 即沿用批级取值。
@@ -484,6 +516,7 @@ class WriteOpsMixin:
             raise ValidationError("batch item user_metadata must be dict")
         if item.occurred_at is not None and not isinstance(item.occurred_at, datetime):
             raise ValidationError("batch item occurred_at must be datetime")
+        _reject_invalid_event_time(item.event_time, name="batch item event_time")
         if item.system_metadata and COORDS_KEY in item.system_metadata:
             # 静默忽略的失效方向是「以为逐项坐标生效了、其实没有」，从调用侧看不出来。
             raise ValidationError(
@@ -517,6 +550,7 @@ class WriteOpsMixin:
             stream_id=item.stream_id or stream_id,
             sequence=item.sequence,
             idempotency_key=item.idempotency_key,
+            event_time=item.event_time if item.event_time is not None else event_time,
         )
 
     def batch_add(
@@ -532,6 +566,7 @@ class WriteOpsMixin:
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
+        event_time: datetime | None = None,
     ) -> BatchWriteResult:
         return asyncio.run(
             self.batch_add_async(
@@ -545,6 +580,7 @@ class WriteOpsMixin:
                 occurred_at=occurred_at,
                 stream_id=stream_id,
                 continue_on_error=continue_on_error,
+                event_time=event_time,
             )
         )
 
@@ -561,6 +597,7 @@ class WriteOpsMixin:
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
+        event_time: datetime | None = None,
     ) -> BatchWriteResult:
         identity = security.auth.actor
         if not isinstance(items, list) or not items:
@@ -581,6 +618,7 @@ class WriteOpsMixin:
             raise ValidationError("batch stream_id must be str")
         if occurred_at is not None and not isinstance(occurred_at, datetime):
             raise ValidationError("batch occurred_at must be datetime")
+        _reject_invalid_event_time(event_time, name="batch event_time")
         # 坐标取自批级参数袋：判定上下文每批只算一次，逐项无处安放（逐项携带即拒绝，
         # 见 _normalize_batch_item）。同样须先于标量校验取出。
         coords, system_metadata = _take_coords(system_metadata, enabled=self._routing_enabled())
@@ -636,6 +674,7 @@ class WriteOpsMixin:
                             system_metadata=system_metadata,
                             user_metadata=user_metadata,
                             occurred_at=occurred_at,
+                            event_time=event_time,
                             stream_id=stream_id,
                         ),
                     )

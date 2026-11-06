@@ -484,8 +484,21 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         api_key: str = "",
         identity_org: str = "local",
         identity_user: str = "developer",
+        continuity_enabled: bool = False,
+        default_duty: str | list[str] = "general",
         **_kwargs: Any,
     ) -> None:
+        self._continuity_enabled = continuity_enabled
+        self._default_duty = default_duty
+        duties = [default_duty] if isinstance(default_duty, str) else default_duty
+        if (not isinstance(duties, list) or not 1 <= len(duties) <= 4
+                or any(not isinstance(d, str) or not d.strip() for d in duties)):
+            raise ValueError("unknown default duty")
+        if continuity_enabled:
+            from jiuwen_memory_adapter.continuity.client import ContinuityClient
+
+            probe = ContinuityClient(base_url or "", api_key)
+            probe.close()
         self._base_url = base_url or ""
         self._config_path = config_path
         self._config_dict = config_dict
@@ -633,6 +646,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         重新注册时直接加回列表即可）。
         """
         schemas = [SEARCH_SCHEMA, CONCLUDE_SCHEMA, READ_MD_SCHEMA, EDIT_MD_SCHEMA]
+        if self._continuity_enabled:
+            from jiuwen_memory_adapter.continuity import tool_schemas
+
+            schemas.extend(tool_schemas())
         logger.info(
             "[AgentMemoryMemoryProvider] get_tool_schemas CALLED -> returning %d schemas: %s",
             len(schemas),
@@ -649,6 +666,19 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         )
         if self._client is None:
             return json.dumps({"error": "provider not initialized"})
+        if tool_name.startswith("agent_memory_role_"):
+            if not self._continuity_enabled:
+                return json.dumps({"error": "continuity is not enabled"})
+            verb = tool_name.removeprefix("agent_memory_")
+            if verb not in {"role_task", "role_record", "role_relation", "role_view",
+                            "role_rebuild"}:
+                return json.dumps({"error": "unknown continuity tool"})
+            payload = dict(args)
+            if verb == "role_view":
+                payload["request"] = dict(payload.get("request", {}))
+                payload["request"].setdefault("duty", self._default_duty)
+            result = await self._client.continuity_call(verb, payload)
+            return json.dumps(result, ensure_ascii=False)
         if self._client.is_unavailable():
             return json.dumps(
                 {"error": "AgentMemory temporarily unavailable (repeated failures); will retry."}
@@ -882,6 +912,20 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     async def prefetch(self, query: str, **kwargs: Any) -> str:
         """返 Markdown 字符串，Rail 包 ``<memory-context>`` 注入提示词。"""
+        if self._continuity_enabled:
+            if self._client is None:
+                raise RuntimeError("continuity provider not initialized")
+            scope = kwargs.get("scope")
+            if not isinstance(scope, dict):
+                raise ValueError("continuity prefetch requires explicit project scope")
+            request = {"query": self._prepare(query), "duty": kwargs.get(
+                "duty", self._default_duty), "task_id": kwargs.get("task_id", "")}
+            result = await self._client.continuity_call(
+                "role_view", {"scope": scope, "request": request}
+            )
+            # Rail accepts text: preserve the complete structured view as JSON, including
+            # paths, gaps and explicit errors. Do not flatten it into a success summary.
+            return json.dumps(result, ensure_ascii=False)
         logger.info(
             "[AgentMemoryMemoryProvider] prefetch CALLED query=%s client=%s",
             redact_for_log(query),
@@ -943,7 +987,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
 
-    async def sync_turn(self, user_msg: str, assistant_msg: str, **kwargs: Any) -> None:
+    async def sync_turn(
+        self, user_msg: str, assistant_msg: str, **kwargs: Any
+    ) -> dict | None:
         """存本轮对话并**同步抽取事实**（对齐常见记忆层 ``add(infer=True)``）。
 
         传 ``system_metadata={"infer": "true"}`` 给 AgentMemory ``add``：hot path 同步调
@@ -956,6 +1002,24 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         保证检索 query 与落盘内容形态一致（此前 prefetch 剥壳、sync_turn 存壳，
         记忆里会存进带壳信封文本）。
         """
+        if self._continuity_enabled:
+            if self._client is None:
+                raise RuntimeError("continuity provider not initialized")
+            if not isinstance(kwargs.get("scope"), dict) or not all(
+                kwargs.get(key) for key in ("task_id", "binding_id", "event_id")
+            ):
+                raise ValueError(
+                    "continuity sync requires scope, task, binding and stable event ID"
+                )
+            content = f"user: {self._prepare(user_msg)}\nassistant: {assistant_msg}"
+            return await self._client.continuity_call("role_record", {
+                "scope": kwargs["scope"],
+                "event": {"task_id": kwargs["task_id"], "binding_id": kwargs["binding_id"],
+                          "event_id": kwargs["event_id"], "content": content,
+                          "kind": "statement",
+                          "source_position": kwargs.get("source_position"),
+                          "previous_position": kwargs.get("previous_position")},
+            })
         if not user_msg or not assistant_msg or self._client is None:
             return
         user_msg = self._prepare(user_msg)
@@ -1004,7 +1068,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         # [本地修改 2026-10-17] 显式路由规则：新增→conclude（append-only），
         # 修改/更正→read_md_file 定位 + edit_md_file 原地替换。个人信息可能在
         # USER.md 也可能在 daily 文件（YYYY-MM-DD.md），修改前先读定位。
-        return (
+        prompt = (
             "# AgentMemory Memory\n"
             f"Active. User: {self._user_id}.\n"
             "Tool routing: agent_memory_search finds memories by meaning. "
@@ -1014,6 +1078,14 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             "personal info may be in a daily file), then agent_memory_edit_md_file to "
             "replace it in place."
         )
+        if self._continuity_enabled:
+            prompt += (
+                " Restore saved task background with agent_memory_role_view before continuing. "
+                "Select a duty to expand typed relations; inspect paths and gaps. "
+                "Record observations/results with role_record and review relations explicitly. "
+                "No predecessor handoff is required; Rail hooks do not capture all history."
+            )
+        return prompt
 
     async def shutdown(self) -> None:
         if self._client is not None:
@@ -1027,6 +1099,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         触发 ``evolve(EXTRACT)`` 让 AgentMemory Extractor 从累积原文抽取事实。
         需配 ``extractor:llm``+``llm:openai`` 才真抽取（默认 keyword 空转）。
         """
+        if self._continuity_enabled:
+            # role_record owns the frozen derivation plan and its durable receipt.
+            # A scope-wide EXTRACT would bypass that recovery and provenance boundary.
+            return
         if self._client is None:
             return
         logger.info(
@@ -1137,6 +1213,9 @@ class _AgentMemoryClient:
         user_metadata: dict[str, str] | None = None,
     ) -> _AddResult | None:
         raise NotImplementedError
+
+    async def continuity_call(self, verb: str, payload: dict) -> dict:
+        raise NotImplementedError("continuity requires a remote client")
 
     async def search(
         self,
@@ -1485,6 +1564,26 @@ class _HttpClient(_AgentMemoryClient):
             content=self._content_view(unit),
             tier=unit.get("tier", ""),
         )
+
+    async def continuity_call(self, verb: str, payload: dict) -> dict:
+        import httpx
+
+        if verb not in {"role_task", "role_record", "role_relation", "role_view", "role_rebuild"}:
+            raise ValueError("unsupported continuity operation")
+        try:
+            response = await self._http.post(f"/v1/{verb}", json=payload, timeout=120.0)
+            if response.status_code >= 400:
+                return {
+                    "status": "rejected" if response.status_code < 500 else "unknown",
+                    "error": f"http_{response.status_code}",
+                }
+            response.raise_for_status()
+            result = response.json()
+            if not isinstance(result, dict):
+                raise ValueError("structured response required")
+            return result
+        except (httpx.HTTPError, ValueError):
+            return {"status": "unknown", "error": "transport_unavailable"}
 
     async def search(self, query, scope, *, top_k=10, filters=None) -> list[dict[str, Any]]:
         """混合检索。响应键是 ``items``（不是旧契约的 ``hits``）。"""

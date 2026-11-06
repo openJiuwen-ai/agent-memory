@@ -42,6 +42,9 @@ class MemoryCommandService:
     def __init__(self, engine: MemoryEngine) -> None:
         self._engine = engine
 
+    def conditional_update(self, unit: MemoryUnit, expected_digest: str) -> bool:
+        return self._engine.conditional_update(unit, expected_digest)
+
     async def write(
         self,
         content: str,
@@ -53,6 +56,7 @@ class MemoryCommandService:
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> list[MemoryUnit]:
         return await self._engine.write(
             content,
@@ -63,6 +67,7 @@ class MemoryCommandService:
             system_metadata=system_metadata,
             user_metadata=user_metadata,
             occurred_at=occurred_at,
+            **({"event_time": event_time} if event_time is not None else {}),
         )
 
     async def batch_write(

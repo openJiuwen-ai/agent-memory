@@ -89,6 +89,11 @@ class VectorIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
+    def supported_write_modes(self) -> set[IndexWriteMode]:
+        # Retrieval-only: never delivers the memory body, so it cannot satisfy the main
+        # write chain's ALL requirement (S05 / S09 §9).
+        return {IndexWriteMode.RETRIEVAL_ONLY}
+
     # ------------------------------------------------------------------
     # IndexBuilder 契约
     # ------------------------------------------------------------------

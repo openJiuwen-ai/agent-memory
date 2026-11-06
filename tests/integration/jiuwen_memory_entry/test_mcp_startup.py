@@ -145,7 +145,9 @@ def test_stdio_subprocess_initializes_and_lists_tools() -> None:
         args=["-m", "jiuwen_memory_entry.mcp_server"],
         cwd=str(root),
         env={
-            "PYTHONPATH": os.pathsep.join([str(root), str(root / "jiuwen_memory_entry/core")]),
+            "PYTHONPATH": os.pathsep.join([
+                str(root), str(root / "jiuwen_memory_entry/core"), os.environ.get("PYTHONPATH", ""),
+            ]),
             "JIUWEN_MEMORY_MCP_AUTH_MODE": "required",
             "MCP_TRANSPORT": "stdio",
         },

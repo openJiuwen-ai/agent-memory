@@ -88,6 +88,16 @@ class HybridIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
+    @property
+    def supports_conditional_update(self) -> bool:
+        return self._forward_builder.supports_conditional_update
+
+    def update_if_unchanged(self, unit, expected_digest) -> bool:
+        if not self._forward_builder.update_if_unchanged(unit, expected_digest):
+            return False
+        self.update([unit], mode=IndexWriteMode.RETRIEVAL_ONLY)
+        return True
+
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         logger.info(
             "HybridIndexBuilder: building index for %d units (mode=%s)",

@@ -109,6 +109,26 @@ logger = get_logger(__name__)
 class CompositeDomainStore(DomainStore):
     """默认数据面实现：MemoryUnit 领域 CRUD + 检索适配。"""
 
+    @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        """Whether list metadata equality reads committed truth without index lag."""
+        return not self._write_document
+
+    @property
+    def supports_conditional_update(self) -> bool:
+        return not self.should_write_document() and self._kv().supports_compare_and_swap
+
+    def update_if_unchanged(self, scope, unit, expected_digest, *, access=None) -> bool:
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+        from jiuwen_memory.storage.kv import update_memory_if_unchanged
+
+        self._authorize(access, scope, StorageAction.UPDATE, "memory_unit")
+        self._validate_units(scope, [unit])
+        if not self.supports_conditional_update:
+            raise UnsupportedCapabilityError("conditional update requires atomic truth storage")
+        return update_memory_if_unchanged(self._kv(), unit, expected_digest)
+
+
     def __init__(
         self,
         *,

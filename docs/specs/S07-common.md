@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -617,3 +617,9 @@ CryptographyProvider 与 `local` KeyProvider。
 任务私有副本；副本随成功/失败清理。原资产引用、文件名与规约输出结构保持稳定。
 可信注入的替代 backend 负责自身源访问，不由此获得内置文件读取能力。
 配置契约见 S08，安全边界见 F04。不向 Normalizer 传递请求身份或新增公共 API 参数。
+
+## 职责关系共享数据
+
+公开 DTO 包括 MemoryRef、TaskRequest、ContinuityEvent、RelationRecord、RoleViewQuery、ViewBudget、ContinuityRecovery；详细字段及兼容状态以 [S11](S11-cross-agent-continuity.md) 为准。MemoryRef 按真实 Scope/ID 与规范化内容摘要定位，不要求旧正文先增加任务/职责标签。
+
+RelationCatalog 是启动时验证的共享配置数据，不是每职责一个插件；`RelationTypeSpec` 与 `TraversalRule` 的字段见 [S11 数据结构](S11-cross-agent-continuity.md#relationcatalogrelationtypespectraversalrule)。构建与查询必须注入同一目录；未知名字失败，运行时不动态注册。职责字符串不是 SpaceContentRole，也不影响授权。

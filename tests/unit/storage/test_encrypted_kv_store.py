@@ -227,3 +227,21 @@ def test_encrypted_kv_store_factory_requires_raw_dependency() -> None:
     except ValidationError:
         return
     raise AssertionError("encrypted kv should require params.raw_kv_store")
+
+
+def test_encrypted_sqlite_compare_and_swap_preserves_plaintext_contract(tmp_path):
+    from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+
+    raw = SQLiteKVStore(str(tmp_path / "encrypted-cas.db"))
+    kv = EncryptedKVStore(raw, _FakeSecurity())
+    scope = Scope(org="o", space="s")
+    try:
+        kv.insert(scope, "k", b"before")
+        assert kv.supports_compare_and_swap
+        assert kv.compare_and_swap(scope, "k", b"before", b"after")
+        assert not kv.compare_and_swap(scope, "k", b"before", b"stale")
+        assert kv.get(scope, "k") == b"after"
+        assert raw.get(scope, "k") != b"after"
+        assert not kv.compare_and_swap(scope, "missing", b"before", b"after")
+    finally:
+        raw.close()

@@ -199,6 +199,7 @@ def _batch_item_view(item: BatchWriteItem) -> Body:
         "system_metadata": item.system_metadata,
         "user_metadata": item.user_metadata,
         "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
+        "event_time": item.event_time.isoformat() if item.event_time else None,
         "stream_id": item.stream_id,
         "sequence": item.sequence,
         "idempotency_key": item.idempotency_key,
@@ -475,6 +476,7 @@ def _submit_video(srv, payload: Body, *, scope: Scope, security: RequestSecurity
         # 消息发生时间统一走 ``occurred_at``，不塞进 system_metadata（下游 add 不会
         # 把 metadata 里的同名字段当作消息时间，且会污染元数据命名空间）。
         occurred_at=_parse_occurred_at(payload.get("occurred_at"), name="add occurred_at"),
+        event_time=_parse_occurred_at(payload.get("event_time"), name="add event_time"),
     )
     job = submission.job
     return {
@@ -559,6 +561,8 @@ def _add(srv, request: DispatchRequest) -> Body:
         system_metadata=dict(raw_system_metadata or {}) or None,
         user_metadata=dict(raw_user_metadata or {}) or None,
         occurred_at=occurred_at,
+        **({"event_time": _parse_occurred_at(payload["event_time"], name="add event_time")}
+           if payload.get("event_time") is not None else {}),
     )
     # infer=True 时引擎可能合法返回空：派生记忆全部被 dedup 判为 update/noop
     # （result.created_ids 为空，见 engine.write 的 infer 分支）。
@@ -610,6 +614,9 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
     default_occurred_at = _parse_occurred_at(
         defaults.get("occurred_at"), name="batch_add defaults.occurred_at"
     )
+    default_event_time = _parse_occurred_at(
+        defaults.get("event_time"), name="batch_add defaults.event_time"
+    )
 
     items: list[BatchWriteItem | object] = []
     for dispatch_item in request.batch_items:
@@ -636,6 +643,9 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
             item_occurred_at = _parse_occurred_at(
                 raw_item.get("occurred_at"), name="batch_add item occurred_at"
             )
+            item_event_time = _parse_occurred_at(
+                raw_item.get("event_time"), name="batch_add item event_time"
+            )
         except ValidationError:
             items.append(raw_item)
             continue
@@ -649,6 +659,7 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
                 system_metadata=raw_item.get("system_metadata"),
                 user_metadata=raw_item.get("user_metadata"),
                 occurred_at=item_occurred_at,
+                event_time=item_event_time,
                 stream_id=raw_item.get("stream_id", ""),
                 sequence=raw_item.get("sequence"),
                 idempotency_key=raw_item.get("idempotency_key", ""),
@@ -664,6 +675,7 @@ def _batch_add(srv, request: DispatchRequest) -> Body:
         system_metadata=raw_system_metadata,
         user_metadata=raw_user_metadata,
         occurred_at=default_occurred_at,
+        event_time=default_event_time,
         stream_id=defaults.get("stream_id", ""),
         continue_on_error=payload.get("continue_on_error", True),
     )

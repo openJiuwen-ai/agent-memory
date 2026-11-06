@@ -79,6 +79,14 @@ class EvolverProducer(Factory):
 
 
 class Evolver(ConstructionOperator):
+    def configure_retention(self, guard) -> None:
+        """Inject a trusted reference guard; failure must prevent automatic cleanup."""
+        self._retention_guard = guard
+
+    def retains(self, unit: MemoryUnit) -> bool:
+        guard = getattr(self, "_retention_guard", None)
+        return bool(guard(unit)) if guard is not None else False
+
     @staticmethod
     def hierarchy_profile(kind: HierarchyKind) -> HierarchyComposeProfile | None:
         """返回绑定 Composer 的配置快照；未声明能力时不启用自动建树。"""

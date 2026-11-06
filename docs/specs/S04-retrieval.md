@@ -619,3 +619,8 @@ FilterExpr 复核仍按统一时间投影判定；不改变未知时间哨兵和
 
 结构查询的真源复核保留微秒精度，索引毫秒投影只负责前置筛选。
 valid-time 起点为空表示无下界：前置使用 NOT(t_valid > as_of)，真源按半开区间复核。
+
+
+## 职责关系视图
+
+`RoleView` 是独立 RetrievalOperator，Producer 命名空间 role_view，算子类型 ROLE_VIEW。输入 RoleViewQuery 与已授权读回调，注入图查询、关系真源解析及启动关系目录；不读取产品身份。任务背景、明确 anchor 优先；语义经验仅为独立候选，不能虚构连边。按类型/方向/优先级有界展开，逐边核对当前关系、端点及证据，返回路径与结构化 gaps。所有职责保留反证和前置条件检查，未知职责报错。共享总预算和保守覆盖语义见 [S11](S11-cross-agent-continuity.md)。

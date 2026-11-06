@@ -98,6 +98,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
         "system_metadata": "system_metadata",
         "user_metadata": "user_metadata",
         "occurred_at": "occurred_at",
+        "event_time": "event_time",
     },
     "batch_add": {
         "items": DERIVED,
@@ -107,6 +108,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
         "system_metadata": "defaults.system_metadata",
         "user_metadata": "defaults.user_metadata",
         "occurred_at": "defaults.occurred_at",
+        "event_time": "defaults.event_time",
         "stream_id": "defaults.stream_id",
         "continue_on_error": "continue_on_error",
     },

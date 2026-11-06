@@ -39,7 +39,11 @@ from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
-from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.index_builder import (
+    IndexBuilder,
+    IndexBuilderProducer,
+    require_full_write_chain,
+)
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
@@ -208,6 +212,17 @@ def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
 class CloudEngine(MemoryEngine):
     """云侧读写编排：以 message_type 选择构建/查询 profile。"""
 
+    @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        """Whether list metadata equality reads committed truth without index lag."""
+        return self._domain_store.supports_exact_metadata_lookup
+
+
+    def configure_retention(self, guard) -> None:
+        self._lifecycle.configure_retention(guard)
+        if self._evolver is not None:
+            self._evolver.configure_retention(guard)
+
     def __init__(
         self,
         ingestor: Ingestor,
@@ -272,6 +287,7 @@ class CloudEngine(MemoryEngine):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> list[MemoryUnit]:
         raw_meta = enrich_snapshot_hints(
             system_metadata, occurred_at,
@@ -305,8 +321,13 @@ class CloudEngine(MemoryEngine):
             system_metadata=meta,
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
+            event_time=event_time,
         )
         units = self._ingestor.ingest([payload])
+        # Explicit input time is a write contract, independent of Ingestor choice.
+        if event_time is not None:
+            for unit in units:
+                unit.temporal.t_event = event_time
         self._prepare_ingested_units(units, scope, meta, tags=tags)
 
         binding = self._write_binding(units)
@@ -418,6 +439,7 @@ class CloudEngine(MemoryEngine):
                     system_metadata=item.system_metadata,
                     user_metadata=item.user_metadata,
                     occurred_at=item.occurred_at,
+                    event_time=item.event_time,
                 )
                 outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
             except Exception as exc:
@@ -616,6 +638,10 @@ class CloudEngine(MemoryEngine):
             binding.name if binding is not None else self._default_pipeline_name
         )
         return await prepare_schema_update(self._evolver_for_unit, old, new, patch)
+
+    def conditional_update(self, unit: MemoryUnit, expected_digest: str) -> bool:
+        current = self._load(unit.scope, unit.id)
+        return self._index_for_unit(current).update_if_unchanged(unit, expected_digest)
 
     async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
         return await commit_schema_update(
@@ -1094,7 +1120,9 @@ def _build(config):
     manager = StoreManagerProducer.resolve(config)
     return CloudEngine(
         IngestorProducer.dep(config, default="simple"),
-        IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+        require_full_write_chain(
+            IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
+        ),
         RetrieverProducer.dep(config, default="pipeline"),
         manager.domain_store(resolve_name(config, "domain_store")),
         SchedulerProducer.dep(config, default="in_process"),

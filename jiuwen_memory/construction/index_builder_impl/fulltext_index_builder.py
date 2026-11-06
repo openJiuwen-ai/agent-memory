@@ -72,6 +72,11 @@ class FulltextIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
+    def supported_write_modes(self) -> set[IndexWriteMode]:
+        # Retrieval-only: this builder never delivers the memory body, so it must not
+        # satisfy the main write chain's ALL requirement (S05 / S09 §9).
+        return {IndexWriteMode.RETRIEVAL_ONLY}
+
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         # 本实现只建检索索引，不交付记忆本体：FORWARD_ONLY 即整体跳过。
         if mode is IndexWriteMode.FORWARD_ONLY:

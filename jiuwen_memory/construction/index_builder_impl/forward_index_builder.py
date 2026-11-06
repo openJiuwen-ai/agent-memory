@@ -59,6 +59,15 @@ class ForwardIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
+    @property
+    def supports_conditional_update(self) -> bool:
+        return self._kv.supports_compare_and_swap
+
+    def update_if_unchanged(self, unit, expected_digest) -> bool:
+        from jiuwen_memory.storage.kv import update_memory_if_unchanged
+
+        return update_memory_if_unchanged(self._kv, unit, expected_digest)
+
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         # 本实现只负责正排：RETRIEVAL_ONLY 即整体跳过。
         if mode is IndexWriteMode.RETRIEVAL_ONLY:

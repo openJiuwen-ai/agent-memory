@@ -113,6 +113,31 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "new_text": "new",
         },
     ),
+    "memory_role_view": ("role_view", {"scope": {"org": "o", "space": "p"},
+                                      "request": {"query": "timeout", "duty": "testing"}}),
+    "memory_role_task": ("role_task", {"scope": {"org": "o", "space": "p"},
+                                      "request": {"operation": "create", "request_id": "r"}}),
+    "memory_role_record": ("role_record", {"scope": {"org": "o", "space": "p"},
+        "event": {"task_id": "t", "binding_id": "b", "event_id": "e", "content": "observed"}}),
+    "memory_role_relation": ("role_relation", {"scope": {"org": "o", "space": "p"},
+        "expected_revision": 0, "relation": {"relation_id": "r", "relation_type": "supports",
+        "source": {"scope": SCOPE, "unit_id": "a", "content_digest": "0" * 64},
+        "target": {"scope": SCOPE, "unit_id": "b", "content_digest": "1" * 64}}}),
+    "memory_role_rebuild": ("role_rebuild", {"scope": {"org": "o", "space": "p"}}),
+    "memory_role_quarantine_source": ("role_quarantine_source", {
+        "scope": SCOPE, "source_key": "workbuddy", "reason": "invalid source",
+    }),
+    "memory_role_release_source": ("role_release_source", {
+        "scope": SCOPE, "source_key": "workbuddy",
+    }),
+    "memory_role_mark_source_cutover": ("role_mark_source_cutover", {
+        "scope": SCOPE, "connector": "workbuddy", "context_id": "session",
+    }),
+    "memory_role_publish": ("role_publish", {
+        "scope": SCOPE, "source": {"scope": SCOPE, "unit_id": "a", "content_digest": "0" * 64},
+        "reason": "share approved evidence",
+    }),
+
     "memory_add": (
         "add",
         {
@@ -121,6 +146,7 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "source": "text",
             "assets": ["file:///a.png"],
             "occurred_at": "2026-06-17T10:00:00+00:00",
+            "event_time": "2001-01-01T00:00:00+00:00",
             "system_metadata": {"infer": "true"},
             "user_metadata": {"project": "x"},
         },
@@ -132,6 +158,7 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "scope": SCOPE,
             "source": "text",
             "occurred_at": "2026-06-17T10:00:00+00:00",
+            "event_time": "2001-01-01T00:00:00+00:00",
             "system_metadata": {"infer": "true"},
             "user_metadata": {"project": "x"},
         },
@@ -769,7 +796,7 @@ def test_submit_ingest_schema_preserves_flat_required_and_optional_arguments() -
     tool = next(tool for tool in tools if tool.name == "memory_submit_ingest")
     schema = tool.inputSchema or {}
     expected = {"content", "scope", "source", "payload_id", "source_ref"}
-    optional = {"assets", "tags", "system_metadata", "user_metadata", "occurred_at"}
+    optional = {"assets", "tags", "system_metadata", "user_metadata", "occurred_at", "event_time"}
     assert set(schema.get("properties", {})) == expected | optional
     assert set(schema.get("required", [])) == expected
 

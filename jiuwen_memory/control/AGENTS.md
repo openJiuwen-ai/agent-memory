@@ -12,6 +12,8 @@
 
 | 文件 | 职责 |
 |---|---|
+| `continuity.py` | 接续应用契约与 ContinuityProducer |
+| `continuity_impl/` | 单写持久 Registry、事件与关系回执、构建/视图编排；内部 repository 辅助 |
 | `base.py` | `ControlOperator` 抽象基类 + `ControlOperatorType` 枚举；所有算子的自描述契约 |
 | `types.py` | 控制层数据类型（Channel/JobInfo/MemoryPatch/DeleteSelector/BatchWrite*/WriteTargets 等）+ 安全域 Action/Grant 兼容再导出，被本层所有文件及上游 `api/` 依赖 |
 | `engine.py` | `MemoryEngine` 抽象接口——跨层编排中枢，异步协程 |
@@ -189,3 +191,9 @@ AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘�
 周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。
 只接受构建层明确的 HierarchyPreparationError 作为本层未写入证据，失败后允许下轮重试；
 部分写入、未分类插件异常和强制取消的未知结果保持暂停，不按空变更 ID 推断无写入。
+
+AgentEngine、CloudEngine、InMemoryEngine 的主写构建器统一通过 require_full_write_chain 按 supported_write_modes 校验，拒绝仅 RETRIEVAL_ONLY 插件。
+
+Command/Engine.write 显式透传 event_time，batch_write 逐项转发 BatchWriteItem.event_time，内置三类 Engine 在摄入后、持久化前保证 t_event 投影；替换 Ingestor 不改变显式时间语义。
+
+接续引用保留检查无法读取或解析关系真源时保守保留候选记忆，并仅记录异常类型；未预期的编程异常向上传播，不按“无引用”放行清理。

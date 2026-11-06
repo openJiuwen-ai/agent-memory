@@ -52,7 +52,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 ## HTTP / CLI 与协议适配契约
 
 HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
-`MemoryAPI.__abstractmethods__` 的 38 个公开方法全部按以下规则暴露：
+`MemoryAPI.__abstractmethods__` 的 47 个公开方法全部按以下规则暴露：
 
 ```text
 POST /v1/<MemoryAPI 方法名>
@@ -105,7 +105,7 @@ dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或�
 此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
 HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
-不再经过 legacy `DispatchRequest` / shared handler。CLI 的 38 个命令与参数直接从
+不再经过 legacy `DispatchRequest` / shared handler。CLI 的 47 个命令与参数直接从
 `MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
 对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
 本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
@@ -323,6 +323,7 @@ def add(
     system_metadata: dict[str, MetadataValueType] | None = None,
     user_metadata: dict[str, MetadataValueType] | None = None,
     occurred_at: datetime | None = None,
+    event_time: datetime | None = None,
 ) -> list[MemoryUnit]: ...
 
 async def add_async(...) -> list[MemoryUnit]: ...  # 签名同 add
@@ -408,6 +409,7 @@ def batch_add(
     occurred_at: datetime | None = None,
     stream_id: str = "",
     continue_on_error: bool = True,
+    event_time: datetime | None = None,
 ) -> BatchWriteResult: ...
 
 async def batch_add_async(...) -> BatchWriteResult: ...  # 签名同 batch_add
@@ -450,12 +452,15 @@ def submit_ingest(
     system_metadata: dict[str, MetadataValueType] | None = None,
     user_metadata: dict[str, MetadataValueType] | None = None,
     occurred_at: datetime | None = None,
+    event_time: datetime | None = None,
 ) -> IngestSubmission: ...
 ```
 
 受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；Access / `assemble_runtime()` 不得持有 `IngestJobController`。后台实际 `add` 仍再鉴权一次。
 
 `occurred_at` 为消息发生时间，随任务原样交给后台 `add`，语义与 `add` 的同名参数一致（见 [F06](../features/api/F06-access-parameter-forwarding.md)）；该字段属于消息时间轴，不借 `metadata` 旁路传递。
+
+`event_time` 为含时区的事件时间，在入队前校验（不含时区直接拒绝，不进队列），随任务原样交给后台 `add` 写入 `t_event`；不得将时间藏进 metadata，或把消息时间 `occurred_at` 当作 `t_event`。
 
 #### search
 
@@ -1184,7 +1189,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 ### BatchWriteItem / BatchWriteOutcome / BatchWriteResult（batch_add，`control/types.py`）
 
-- `BatchWriteItem` 表达单项内容与可选 scope/source/tags/`system_metadata`/`user_metadata`/occurred_at 覆盖；`stream_id`、`sequence`、`idempotency_key` 首版仅用于调度和回显，不写入真源。
+- `BatchWriteItem` 表达单项内容与可选 scope/source/tags/`system_metadata`/`user_metadata`/occurred_at/`event_time` 覆盖；`event_time` 未给时沿用批级缺省值，不含时区的单项按 `ValidationError` 归集，不影响其他项；`stream_id`、`sequence`、`idempotency_key` 首版仅用于调度和回显，不写入真源。
 - `BatchWriteOutcome` 包含输入索引、归一化 item、该项产生的 `units` 与可归集的 `error` / `error_type`；成功且 units 为空仍是成功。Engine 的非领域异常也必须归集为 `InternalError`，不能使整批 HTTP 请求退化为 500。
 - `BatchWriteResult.outcomes` 与输入严格一一对应。相同 `(Scope, stream_id)` 的非空 `sequence` 不得重复；接口不自动重排。
 
@@ -1394,3 +1399,150 @@ AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.ru
 父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
 `last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
 诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。
+
+## 角色关系记忆入口
+
+本节各 DTO 的字段级定义、内部回执与关系头结构见 [S11 数据结构](S11-cross-agent-continuity.md#数据结构)，含义与用法见 [F10 第 5 节](../features/construction/F10-role-memory.md#5-数据结构)。
+
+五个可选公开方法接受 `scope` 与必需的可信 `security`：`role_task(request: TaskRequest)`、`role_record(event: ContinuityEvent)`、`role_relation(relation: RelationRecord, expected_revision: int)`、`role_view(request: RoleViewQuery)`、`role_rebuild(*, recovery: ContinuityRecovery | None = None)`；另有来源治理的 `role_quarantine_source(source_key, reason)`、`role_release_source(source_key)`、显式发布 `role_publish(source, reason)` 与双写切换的 `role_mark_source_cutover(connector, context_id)`。全部返回结构化字典（治理两方法分别返回隔离记录与布尔）；HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射，MCP 注册同名 memory_role_* 工具。DTO/状态/重试语义见 [S11](S11-cross-agent-continuity.md)。
+
+仅显式配置 continuity 才启用；未启用返回 UnsupportedCapabilityError。scope 必须是 org+space 的项目空间。API 执行项目权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。旧关系失效后的复核/撤回可授权读取旧关系控制记录，但不向调用方披露其不可读依赖。普通 get/list/inspect/trace 也复核关联依赖，普通 search 保守隐藏无法当次核验的关系记录。
+
+### 共同参数、返回状态与传输
+
+| 参数 | 含义与限制 |
+|---|---|
+| `scope: Scope` | Registry/事件/关系所属项目，必须给出 `org`、`space`，`user/agent/session` 为空；不是调用者身份 |
+| `security: RequestSecurityContext` | SDK 必填 keyword-only 可信上下文；HTTP/MCP 由认证边界注入，不放入业务 JSON。同步 SDK 方法须在无运行事件循环的线程调用 |
+| `MemoryRef` | `scope` 是原记忆完整五维 Scope，`unit_id` 是实际 MemoryUnit ID，`content_digest` 是 64 位小写 SHA-256；从保存回执或已读取 MemoryUnit 取得，不用消息 ID/任意摘要代替。摘要算法见 S11 |
+
+`role_release_source` 返回布尔值，其余方法返回 `dict`。`committed` 表示该操作所要求的真源/回执已保存，不表示任务完成；关系写入还要求投影完成。`partial` 表示已有可恢复进度；`unknown` 表示写入确认不足，不能换新 ID 再写。可选关联发现的 `association_status` 与事件的 `status` 分开。结构化业务状态不是 HTTP 错误码；即使 HTTP 200 也必须检查回执。
+
+共通异常：`ValidationError` 为字段/模型/项目形状错误；`PermissionDeniedError` 为认证授权或依赖不可读；`NotFoundError` 为控制记录不存在；`ConflictError` 为修订过期、幂等键冲突、引用变化等；`UnsupportedCapabilityError` 为未装配接续能力。实际存储故障也可能抛出，不能把异常视为未写入证明。HTTP 状态映射沿用本规约「HTTP / CLI 与协议适配契约」。
+
+### role_task：登记、查询和关联任务
+
+签名：`role_task(scope, request: TaskRequest, *, security) -> dict`。
+
+| TaskRequest 字段 | 默认值 | 含义 |
+|---|---|---|
+| `operation` | 必填 | create / get / find / bind / unbind / attach / close |
+| `request_id` | `""` | 变更必填稳定幂等键，同键重试必须保持请求内容；get/find 无需填写 |
+| `task_id` | `""` | create 由服务端生成，其他定点操作使用返回的全局任务 ID；find 通过本地上下文查找 |
+| `expected_revision` | `0` | create 使用 0；其他变更使用最近读取的任务 revision。查询忽略此值 |
+| `connector_id` / `context_id` | `""` | bind/find 使用：可信连接配置标识和该产品的本地上下文标识；不根据标题自动关联 |
+| `context_source` | `"native"` | native 表示原生上下文 ID；adapter 表示桥接层生成的稳定标识 |
+| `binding_id` | `""` | unbind 指定此前返回的绑定 ID |
+| `background` | `[]` | 需要登记的 MemoryRef 列表；通常用于 attach，也可随其他变更提交；登记不复制正文、不授予读权限 |
+| `required` | `true` | 本次 background 是否属于必需证据；不可读必需证据会影响接续就绪判断 |
+| `reason` | `""` | 解绑原因，随撤销主体保存 |
+
+变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [{task_id, revision}]}`，不证明调用者拥有其中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。失活绑定/关闭任务不能继续记录事件；修订冲突后先 get，再决定是否以新请求提交。
+
+### role_record：可靠记录事件
+
+签名：`role_record(scope, event: ContinuityEvent, *, security) -> dict`。
+
+| ContinuityEvent 字段 | 默认值 | 含义 |
+|---|---|---|
+| `task_id` / `binding_id` / `event_id` | 必填 | 全局任务、有效绑定、产品侧稳定事件 ID；事件幂等域包含项目、连接及绑定 |
+| `content` | 必填 | 非空原文；不是命令执行授权 |
+| `kind` | `"unclassified"` | observation / statement / judgment / result / experience / correction / unclassified |
+| `classification_confidence` | `"unknown"` | low / high / unknown；low 强制降级为 unclassified，high 不等于事实确认 |
+| `duty_ids` | `[]` | 职责适用标签，不决定作者身份和访问权限 |
+| `evidence_refs` | `[]` | 支撑事件的原记忆引用；写入及重试时核验 |
+| `source_locator` / `claimed_author` | `None` | 原文定位信息、原文声称作者；均不能覆盖服务端认证归属 |
+| `occurred_at` | `None` | 原事件时间，提供时须含时区；保留于事件封装，不用它推断执行顺序 |
+| `source_position` / `previous_position` | `None` | 来源内事件位置及其前一位置，用于增量同步游标 |
+| `schema_version` | `"continuity-event/1"` | 固定版本；未知版本拒绝 |
+
+返回至少含 `status`、`operation_id`、`refs`；正常路径还含 `index_status="unchecked"`，表示未声明索引覆盖。启用可选关系发现时增加 `association_status`。服务端核对绑定连接与当前认证主体相同；`claimed_author` 不能替代此检查。同键不同内容冲突；partial 复用原事件重试，unknown 先通过 role_rebuild 的 recovery 核对实际引用，再重试原事件。
+
+### role_relation：登记、复核或撤回关系
+
+签名：`role_relation(scope, relation: RelationRecord, expected_revision: int, *, security) -> dict`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `expected_revision` | 方法必填 | 首次 0；更新填写当前关系修订。要求 `relation.revision = expected_revision + 1` |
+| `relation_id` | 必填 | 稳定逻辑 ID，不使用保留前缀 `continuity:`；同修订重试内容必须一致 |
+| `source` / `target` | 必填 | 两端 MemoryRef；方向按关系语义定义，不随查询方向变化；不允许自环 |
+| `relation_type` | 必填 | 内置六类或启动配置注册的类型；定义见 S11。修订不改变既有端点和类型 |
+| `revision` | `1` | 本次新修订，不是任务 revision |
+| `status` | `"candidate"` | candidate / confirmed / needs_review / revoked；旧 proposed/retracted 兼容读取 |
+| `evidence_refs` / `conditions` | `[]` | 可核查依据及适用条件；confirmed 必须有依据，verifies 必须有条件。确认关系不自动确认端点事实 |
+| `schema_version` / `model_version` | `memory-relation/1` / `memory-relations/1` | 当前受支持的结构及关系模型版本 |
+| `batch_id` | `""` | 选择性补建批次，供撤回核对，不改变权限 |
+| `conflict_kind` | `""` | factual / temporal / advisory，空表示未分类 |
+| `resolution` | `""` | prefer_a（source）/ prefer_b（target）/ both_valid / escalate / defer；仅 contradicts 可填写，advisory 不允许选胜者 |
+| `resolution_reason` | `""` | 提交裁决时必填的依据说明 |
+| `resolution_origin` / `resolution_refs` | `""` / `[]` | 裁决来源及验证关系依赖；显式人工裁决由服务端标为 human，自动策略填写其来源。不能靠自述来源获得信任 |
+
+成功/部分成功返回 `{status, relation_ref, relation_id, revision}`；unknown 可能没有 relation_ref。首次需项目 WRITE；修改还需旧关系快照 UPDATE。旧记录仅可为复核/撤回进行受控管理读取，不因此披露失效依赖。同修订同内容可重试补投影；unknown 先使用真实关系记录引用恢复。撤回写新修订，历史与正文保留。
+
+### role_view：职责关系视图
+
+签名：`role_view(scope, request: RoleViewQuery, *, security) -> dict`。
+
+| RoleViewQuery 字段 | 默认值 | 含义 |
+|---|---|---|
+| `query` | `""` | 语义发现线索；与 anchor、task_id 至少给一项 |
+| `anchor` | `None` | 已知 MemoryRef 起点，优先于语义候选 |
+| `task_id` | `""` | 读取任务登记的共同背景作为起点，不要求交接确认 |
+| `duty` | `"general"` | general / diagnosis / testing / execution 或已配置职责名；选择边类型、方向、优先级，不授予权限 |
+| `budget` | ViewBudget 默认值 | max_depth=2、max_nodes=30、max_edges=60、max_paths=60、timeout_ms=1000；正整数，上限依次为 4/200/500/500/10000，服务端职责策略可进一步收紧 |
+
+返回 `schema_version、task_id、anchors、paths、facts、judgments、experiences、open_issues、risks、gaps、meta`，条目/路径/缺口的详细 schema 见 S11。`meta` 包含实际职责、策略版本、生效预算、覆盖状态及 continuation_ready。权限不足的起点或路径以不泄露源身份的缺口表达；项目级权限不足直接拒绝。遍历结束不等于资料完整，首版缺覆盖与环境证明时保持 partial/false。
+
+### role_rebuild：补建投影或核对未知写入
+
+签名：`role_rebuild(scope, *, security, recovery: ContinuityRecovery | None = None) -> dict`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `recovery` | `None` | 不给时从可读关系真源补建图投影，不重新抽取正文、不做全量记忆迁移 |
+| `recovery.kind` | 必填 | event 或 relation |
+| `recovery.operation_id` | 必填 | event 使用 record 回执的 operation_id；relation 使用 relation_id |
+| `recovery.refs` | 必填非空 | 已实际提交、可核对的 MemoryRef；必须位于当前项目 Scope。关系恢复只允许一个记录引用 |
+
+普通补建返回 `{results, coverage: "unknown", gaps}`；results 是可读关系的投影回执，不披露不可读关系数量。事件恢复返回 `{status, refs, next_action: "retry_original_event"}`，恢复本身不完成背景关联；关系恢复返回关系投影回执。均需项目 WRITE；恢复还逐条要求 UPDATE，事件恢复校验原连接主体。引用/内容与原 journal 不匹配时报 ConflictError，无可靠引用不能调用此方法猜测成功。
+
+### role_quarantine_source / role_release_source：来源范围隔离与解除
+
+签名：`role_quarantine_source(scope, source_key, reason, *, security) -> dict`；
+`role_release_source(scope, source_key, *, security) -> bool`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `source_key` | 必填 | 隔离的来源范围键（连接名）；隔离后普通 get/search 与角色视图/交接都按该来源不可用处理 |
+| `reason` | 必填非空 | 隔离原因，随记录持久化并写入入口审计 detail |
+
+两方法均按项目空间 `MANAGE_SPACE` 判权并落入口审计；隔离记录持久化于 Registry `/continuity/sources/{source_key}`，含 `reason`、`operator`（主体指纹）与 `quarantined_at`，释放即删除。隔离只影响命中该来源范围的记录，不波及其他来源；`release_source` 对未隔离来源返回 `False`。跨空间查询的逐 item 来源隔离与显式发布流程不在本方法范围（见 F10 §4.6）。
+
+### role_mark_source_cutover：双写切换为 agent-memory 为准
+
+签名：`role_mark_source_cutover(scope, connector, context_id, *, security) -> dict`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `connector` | 必填 | 有序来源的连接名 |
+| `context_id` | 必填 | 连接内的本地上下文，与绑定 `context_id` 一致 |
+
+按项目空间 `MANAGE_SPACE` 判权并落入口审计；先要求该来源无待核对边界（pending reservation），再在当前游标位置记录切换水位（`cutover_position`/`cutover_at`）。切换后该来源再提交的新事件（`source_position` 越过水位）被拒绝，以 agent-memory 为唯一真源。幂等：已有水位时原样返回。读取水位不在本方法，经任务视图的 `source_cursors` 或服务 `source_cutover` 取得。
+
+### role_publish：显式发布私有内容到共享空间
+
+签名：`role_publish(scope, source: MemoryRef, reason, *, security) -> dict`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `source` | 必填 | 待发布的私有记录 MemoryRef，须位于同组织 |
+| `reason` | 必填非空 | 发布依据，随共享记录 `continuity_publish_reason` 持久化并写入入口审计 |
+
+按项目空间内容轴 WRITE 判权（`ENTRY_RULES["role_publish"]`），逐条复核对源 `source` 所属 Scope 的 READ，并额外按源空间治理轴 SHARE 判权（`ENTRY_RULES["role_publish_share"]`，归属主体档）；只有读取权而无分享权的主体不得发布。随后把源正文**逐字复制**为项目空间内的新共享记录（`continuity_kind=statement`），保留出处 `continuity_published_source`（源 MemoryRef 的规范化 JSON）。不自动摘要、不跨组织、不把私有原文改写成公开事实；发布只创建一份新记录，不改动原记录。返回 `{ref, source}`。
+
+### 显式事件时间与接续字段保留
+
+`add` / `add_async` 新增可选 `event_time: datetime | None`，必须含有效时区，否则抛 ValidationError；映射 temporal.t_event，独立于 occurred_at（t_message）。显式时间是调用方提供的业务声明，不证明来源或事件真实性。`batch_add` / `batch_add_async` 接收批级 `event_time`，`BatchWriteItem.event_time` 逐项覆盖；`submit_ingest` 接收 `event_time` 并在入队前校验。三者的 `occurred_at` 仍只写消息时间，不能替代事件时间。派生输出不继承来源事件时间（见 F10 4.2）；`role_publish` 发布的是同一条记录的原文副本，保留来源的 `t_event`。MCP 的 add、add_async、batch_add、batch_add_async、submit_ingest 都透传该字段；legacy 文本 add、视频异步提交和 batch_add（`defaults.event_time` 与单项 `event_time`）同样支持。
+
+公开 add/add_async、batch_add/batch_add_async（公共参数与每项合并后）、update 的 system_metadata 拒绝整个 continuity_* 前缀（含未来扩展键），统一返回 ValidationError；批量逐项失败沿用 BatchWriteOutcome.error_type。user_metadata 同名键只是用户数据，不具有接续语义。仅通过已鉴权接续入口的内部写路径生成系统接续字段，内部路径仍执行信任上下文校验、WRITE、空间可写、作者归属与审计，不向外暴露绕过标志。

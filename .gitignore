@@ -46,3 +46,6 @@ opencode.json
 /security-plans
 
 .claude/
+
+# Local Codex environment settings
+/.codex/

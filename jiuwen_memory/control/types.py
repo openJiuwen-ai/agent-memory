@@ -213,6 +213,7 @@ class BatchWriteItem:
     stream_id: str = ""
     sequence: int | None = None
     idempotency_key: str = ""
+    event_time: datetime | None = None  # 显式事件时间，含时区；写入 temporal.t_event
 
 
 @dataclass

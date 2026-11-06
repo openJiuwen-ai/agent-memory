@@ -13,6 +13,8 @@
 
 | 文件/目录 | 职责 |
 |---|---|
+| `relations/legacy.py` | 旧关系到候选证据关系的显式纯函数映射；相似/共指不升级为证据 |
+| `relations/catalog.py` / `type_def/continuity.py` | 关系与职责启动目录、接续 DTO；职责与权限角色分离 |
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |
@@ -227,3 +229,5 @@ DeferredEmbedder 在首次调用时解析并共享实际插件，失败不缓存
 common.time_utils.as_utc，naive 按 UTC 解释，不改变原输入对象。
 `is_retrieval_candidate(unit, query, *, filters)` 接受 ParsedQuery，在三条存储路径
 共用 lifecycle、valid/event-time、结构字段及用户过滤的真源复核。
+
+RawPayload.event_time 是可选的 keyword-only 显式事件时间（含时区），独立于 occurred_at 消息时间；不通过系统元数据承载时间指令。

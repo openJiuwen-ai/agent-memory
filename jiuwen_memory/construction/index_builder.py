@@ -143,6 +143,53 @@ class IndexBuilder(ConstructionOperator):
     def rebuild(self) -> None:
         """从真源全量重建索引（删索引不丢数据的保障）。"""
 
+    @property
+    def supports_conditional_update(self) -> bool:
+        return False
+
+    def update_if_unchanged(self, unit: MemoryUnit, expected_digest: str) -> bool:
+        """CAS truth then refresh projections; failure may leave committed truth to repair."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("IndexBuilder cannot conditionally update truth")
+
+    def projection_graph(self):
+        """Return the injected graph dependency for graph-only projection, otherwise None."""
+        return None
+
+    def supported_write_modes(self) -> set[IndexWriteMode]:
+        """公开能力：声明本构建器实现的写入模式（S05）。
+
+        完整写入链的构建器必须声明 :data:`~storage.types.IndexWriteMode.ALL`（以及
+        :data:`~storage.types.IndexWriteMode.FORWARD_ONLY` 用于生命周期治理）；只声明
+        :data:`~storage.types.IndexWriteMode.RETRIEVAL_ONLY` 的构建器（如关系投影器）
+        只能被配置到投影位置，配到主写入链时装配期拒绝。装配器按此能力声明判断，不按
+        target 名、模块路径或具体类型识别（S09 §9）。
+        """
+        return {
+            IndexWriteMode.ALL,
+            IndexWriteMode.FORWARD_ONLY,
+            IndexWriteMode.RETRIEVAL_ONLY,
+        }
+
+
+def require_full_write_chain(builder: IndexBuilder) -> IndexBuilder:
+    """装配期守卫：主写入链构建器必须声明完整的正排/检索写入能力。
+
+    只声明 RETRIEVAL_ONLY 的构建器（如 ``evidence_graph`` 关系投影器）配到 Engine 主
+    写入链位置时在此拒绝——判断依据是 :meth:`IndexBuilder.supported_write_modes` 能力
+    声明，不按 target 名或具体类型识别（S05 / S09 §9）。
+    """
+    from jiuwen_memory.common.errors import ValidationError
+
+    modes = builder.supported_write_modes()
+    if IndexWriteMode.ALL not in modes:
+        raise ValidationError(
+            "main write chain requires an IndexBuilder that supports ALL write mode; "
+            f"{type(builder).__name__} declares {sorted(m.value for m in modes)}"
+        )
+    return builder
+
 
 class SchemaPropertyIndexingBuilder(IndexBuilder):
     """Target-neutral decorator for the Schema Property reverse index."""
@@ -225,6 +272,12 @@ class SchemaPropertyIndexingBuilder(IndexBuilder):
 
     def rebuild(self) -> None:
         self._delegate.rebuild()
+
+    def projection_graph(self):
+        return self._delegate.projection_graph()
+
+    def supported_write_modes(self) -> set[IndexWriteMode]:
+        return self._delegate.supported_write_modes()
 
     def _invalidate_after_failure(self, units: list[MemoryUnit], original: Exception) -> None:
         try:

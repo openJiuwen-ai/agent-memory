@@ -15,8 +15,9 @@
 
 | 文件 | 职责 |
 |---|---|
+| `memory_api_impl/continuity_ops.py` | 角色接续 PEP、可信连接匹配、原引用/关系依赖核验和结构化入口 |
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化与日志脱敏辅助函数 |
-| `access_security.py` | 公开安全装配辅助与 `register_trusted_principal`；初始化按增量能力委派实际认证器，不依赖实现类或另建主体 Store |
+| `access_security.py` | 公开安全装配辅助：提供 dev Authenticator 与 `register_trusted_principal`；Trusted 初始化按增量能力委派实际认证器，不依赖实现类或另建主体 Store；私有 `_build_security_runtime` 从同一装配上下文选择、健康检查 Runtime，公开 mapping helper 复用它；不暴露 common 实现路径 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
@@ -30,7 +31,6 @@
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/dreaming_security.py` | 私有注册身份快照编码；只消费受控上下文和服务端注册表，不接业务 payload、不保存原始凭据、不续期认证 |
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
-| `access_security.py` | Access 安全装配辅助：提供 dev Authenticator；私有 `_build_security_runtime` 从同一装配上下文选择、健康检查 Runtime，公开 mapping helper 复用它；不暴露 common 实现路径 |
 
 ## 行为铁律
 
@@ -248,3 +248,9 @@ assembly 的 MemoryRuntime / ServerRuntime 提供异步 start_background_jobs，
 
 Markdown 编辑同样在委托 Command 前执行审计完整性健康预检；健康故障或已锁存的
 degraded 不得产生文件编辑或版本写入副作用。读取仍沿用既有 READ 判权与审计路径。
+
+接续原始事件写入透传发生时间；updated 回调只接受单段纯文本且无资产的目标，保留段属性并以摘要 CAS，拒绝旧计划覆盖结构化目标。
+
+公开写入/更新拒绝整个 continuity_* 系统元数据前缀；_role_writer 通过私有 _add_impl 注入接续字段，仍复用原有鉴权、作者归属与审计。add/add_async、batch_add/batch_add_async（批级与 BatchWriteItem 逐项）、submit_ingest 的 event_time 必须含时区，经 `_reject_invalid_event_time` 统一校验，与消息 occurred_at 分离；submit_ingest 在入队前校验。role_publish 的原文副本保留来源 t_event，派生输出不继承。updated 回调以同次 CAS 清空 layers、刷新冻结计划给出的批次/输出标识。
+
+接续服务和可信连接映射由装配根通过 LocalMemoryAPI 构造参数注入，不在构造后改写其私有成员。

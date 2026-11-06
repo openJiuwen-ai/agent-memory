@@ -68,6 +68,25 @@ class DomainStore(ABC):
     """
 
     @property
+    def supports_conditional_update(self) -> bool:
+        return False
+
+    def update_if_unchanged(
+        self, scope: Scope, unit: MemoryUnit, expected_digest: str,
+        *, access: StorageAccessContext | None = None,
+    ) -> bool:
+        """Atomically update truth against its content digest; false means no write."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("DomainStore cannot conditionally update truth")
+
+    @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        """Whether list metadata equality reads committed truth without index lag."""
+        return False
+
+
+    @property
     @abstractmethod
     def security(self) -> StorageSecurity:
         ...

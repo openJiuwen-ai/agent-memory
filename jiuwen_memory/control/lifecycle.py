@@ -47,6 +47,14 @@ class LifecycleProducer(Factory):
 
 
 class LifecycleManager(ControlOperator):
+    def configure_retention(self, guard) -> None:
+        """Inject a trusted reference guard; failure must prevent automatic cleanup."""
+        self._retention_guard = guard
+
+    def retains(self, unit: MemoryUnit) -> bool:
+        guard = getattr(self, "_retention_guard", None)
+        return bool(guard(unit)) if guard is not None else False
+
     @abstractmethod
     def transition(
         self, scope: Scope, unit_ids: list[str], target: LifecycleState
