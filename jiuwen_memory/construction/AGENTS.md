@@ -249,6 +249,9 @@ Evolver.evolve(units, mode):
 普通时间和树区间投影共用 common/time_utils.py，真源时间表示不变。
 `tree_memory.facts` 只随真源持久化，不参与全文、切片、向量化或披露正文。
 
+去重 UPDATE 的 `md_title` 使用新候选标题，不参与新旧元数据交集；候选无标题时清空旧标题，
+避免更新后的记忆继续显示旧事实。
+
 ### Snapshot 继承
 
 `snapshot_inheritance.py` 提供叶安全复制和去重前校验。Orchestrating/Dynamic 在 Router

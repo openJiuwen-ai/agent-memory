@@ -5,9 +5,25 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
+## Markdown 块更新契约
+
+`MarkdownStore.replace_content(scope, md_filename, old_content, new_content, *,
+new_title=None, old_title=None) -> bool` 定位并替换首个符合条件的块。
+`new_title=None` 保留原标题，空串清空标题，非空标题归一为单行。
+`old_title` 非 None 时联合匹配标题与正文；标题漂移时仅在可替换块正文唯一时
+退化匹配，重复正文不猜测目标。候选统计与实际替换共用首个换行拆分口径，
+无换行的裸正文块不参与；未提供旧标题时按正文首个命中替换。
+未命中返回 False，`remove_content` 仍按正文删除首个命中。
+
+`edit_content` 要求 old_text 在文件全文中唯一，支持任意子串及跨块编辑。
+USER.md/MEMORY.md 单行正文变化时，可同步替换未显式编辑标题中的唯一旧事实片段；
+概括性标题、daily 团队标题及跨块编辑标题不自动改写。
+文件编辑后标题同步到 shadow，重复正文结合块位置和旧标题定位，不仅按哈希覆盖。
+标题与正文同次文件写入，shadow 更新失败时恢复文件快照并补偿索引。
+
 ## Metadata 物理存储契约
 
 索引记录保留 `system_metadata.<key>` 和 `user_metadata.<key>` 的逻辑路径。Milvus 与

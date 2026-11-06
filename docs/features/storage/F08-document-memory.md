@@ -70,12 +70,12 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 
 块格式恒为 `# {标题}\n{正文单行}\n\n`：
 
-- **标题分流**：daily 文件用 `coords["team"]`（标识来源团队，缺失兜底 `unit.id`）；其余文件用 `system_metadata["md_title"]`（LLM 抽取时与 tier/tags 同 prompt 生成），缺失兜底 `unit.id`。标题行在任何机器读回路径中不被解析，内容变化对机器路径零影响。
+- **标题分流**：daily 文件用 `coords["team"]`（标识来源团队）；其余文件用 `system_metadata["md_title"]`（LLM 抽取时与 tier/tags 同 prompt 生成），缺失均为空标题。文件编辑后同步解析标题回填影子索引，但召回不依赖解析 md。
 - **正文单行**是存储层强约束（见决策六）。
 
 `write` 落盘后**就地回填** `unit.system_metadata[MD_FILENAME_KEY]`（md 相对路径），供影子索引落 `memory_unit.md_filename` 列、看门狗定位文件。整批共持一次锁、按文件分组一次追加写（同文件多 unit 的块拼一起，减少 IO）。
 
-`replace_content` / `remove_content` 服务 update / delete 的 md 侧同步：按 `\n\n` 切块、标题行后正文 == 目标 content 命中，整块替换 / 删除**首个**命中；未命中返回 False（md 与索引漂移，交看门狗对账，不抛错）。
+`replace_content` / `remove_content` 服务 update / delete 的 md 侧同步：按 `\n\n` 切块。删除仍按正文删除首个命中；替换未提供旧标题时按正文替换首个命中，提供旧标题时优先联合匹配标题和正文。标题漂移时仅在可替换块的正文唯一时退化匹配；无换行的裸正文块不参与统计或替换。未命中返回 False（md 与索引漂移，交看门狗对账，不抛错）。显式新标题与正文同次写入，空标题表示清空，未提供则保留原标题；daily 更新保留团队标题。
 
 **路径安全收口**（`_safe_abs_path`）：`md_filename` 源于调用方可写的 `system_metadata`，不可信——绝对路径直接拒绝；`realpath` 归一双方后 `commonpath` 前缀校验（消解 `..`、双斜杠、symlink；Windows 跨盘符 ValueError 视为逃逸）。逃逸抛 `ValidationError` fail-closed。已知边界：realpath 与 open 之间存在 TOCTOU 窗口，本收口面向「恶意字符串」威胁模型，非对抗本地竞争者的沙箱。
 
@@ -257,7 +257,7 @@ content 重复类三者的共同后果：md 与影子索引漂移，但看门狗
 
 - **看门狗改行断版本链**：用户改某行 content → 删旧 unit + 建新 uuid unit，supersedes 链断裂（F07 §12.9 风险 5 当前版本策略）。后续可探索按标题行锚定保留旧 id。
 - **看门狗二次清除 SUPERSEDE 旧版行**：`list_units_by_md` 当前全量对账（无 lifecycle 过滤）——`edit_md_file` 把旧版标 SUPERSEDED 且 md 已换成新 content 后，看门狗下轮对账会把 SUPERSEDE 旧版的 hash 判为「用户手删」→ `delete_units` 物理删掉该历史行，版本链/as_of 断裂。修向 A（`list_units_by_md` 加 lifecycle 参数 + 看门狗传 active）尚未实现，待另行修复。
-- **replace_content / remove_content 首个命中**：content 重复时只改/删第一处，可能误替多块（§5.2.3 注）；后续可加 unit_id 锚点优化。
+- **重复正文的定位边界**：remove_content 仍删除首个正文命中；replace_content 未提供旧标题时替换首个正文命中，提供旧标题时按标题消歧。标题漂移且可替换正文重复时返回 False，避免误改；相同标题与正文仍无法区分，后续可加 unit_id 锚点优化。
 - **跨进程文件锁未做**：md 与 sqlite 都是进程内 `threading.Lock` 串行化，多进程并发写同一 root 无防护（与 sync_gate 跨进程不防护同口径）。
 - **TOCTOU 窗口**：`_safe_abs_path` realpath 校验与 open 之间存在竞争窗口，收口面向恶意字符串威胁模型。
 - **SOFT remove 是 no-op**：依赖调用方「先 transition 再 remove(SOFT)」契约，裸调 SOFT 不会使 unit 退出检索。

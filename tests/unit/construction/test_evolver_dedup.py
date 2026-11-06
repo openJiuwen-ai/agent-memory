@@ -18,11 +18,14 @@ from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import (
+    MD_TITLE_KEY,
+    MEMORY_CLASS_KEY,
     DedupDecision,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
     Modality,
+    RetrievalPipeline,
     Scope,
     Segment,
     Temporal,
@@ -32,7 +35,7 @@ from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.construction.abstractor import Abstractor
 from jiuwen_memory.construction.associator import Associator
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.evolver import EvolveMode
+from jiuwen_memory.construction.evolver import EvolveMode, EvolveResult
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.index_builder import IndexBuilder
@@ -372,6 +375,62 @@ def _make_evolver(
         llm=llm,
         **evolver_kwargs,
     )
+
+
+@pytest.mark.parametrize("candidate_title", ["杭州居民", "", None])
+def test_dedup_update_syncs_title_to_user_md(tmp_path, candidate_title) -> None:
+    """#288：UPDATE 的新标题须贯穿去重、影子索引及 USER.md 写回。"""
+    from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+        WhitespaceTokenizer,
+    )
+    from jiuwen_memory.construction.index_builder_impl.document_index_builder import (
+        DocumentIndexBuilder,
+    )
+    from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+    from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
+    from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
+    from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
+
+    manager = CompositeStoreManager(
+        markdown=LocalMarkdownStore(root=str(tmp_path)),
+        shadow_index=SqliteDocumentShadowIndex(
+            db_path=str(tmp_path / "shadow.db"), tokenizer=WhitespaceTokenizer()
+        ),
+    )
+    domain = CompositeDomainStore(
+        manager=manager, write_document=True,
+        preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK,
+    )
+    llm = _MockLLM(responses=["用户居住在杭州"])
+    evolver = OrchestratingEvolver(
+        extractor=NoopExtractor(), abstractor=NoopAbstractor(), associator=NoopAssociator(),
+        index_builder=DocumentIndexBuilder(domain), storage=manager,
+        message_store=_MemoryKVStore(), dedup=None, llm=llm,
+    )
+    existing = _make_unit("e1", "用户居住在上海")
+    existing.system_metadata = {MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "上海居民"}
+    domain.add(existing.scope, [existing])
+    candidate = _make_unit("c1", "用户居住在杭州")
+    candidate.system_metadata[MEMORY_CLASS_KEY] = "user_profile"
+    if candidate_title is not None:
+        candidate.system_metadata[MD_TITLE_KEY] = candidate_title
+    result = EvolveResult()
+
+    # 定向验证内部去重决策，避免模型路由影响此存储回归。
+    # pylint: disable-next=protected-access
+    evolver._apply_decision(candidate, DedupDecision.UPDATE, existing, 0.8, result)
+
+    title = candidate_title or ""
+    assert result.updated_ids == [existing.id]
+    assert (tmp_path / "USER.md").read_text(encoding="utf-8") == (
+        f"# {title}\n用户居住在杭州\n\n"
+    )
+    (updated,) = domain.get(existing.scope, [existing.id])
+    assert updated.system_metadata[MD_TITLE_KEY] == title
+    assert updated.content == "用户居住在杭州"
+    assert existing.system_metadata[MD_TITLE_KEY] == "上海居民"
+    # 验证测试替身的调用计数，防止额外模型调用。
+    assert llm._call_count == 1  # pylint: disable=protected-access
 
 
 def _create_stores():
