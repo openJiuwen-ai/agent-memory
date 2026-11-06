@@ -6,8 +6,11 @@
 **配置从 YAML 读、合并到内置默认后装配**：``Config.from_yaml(examples/config.yml)`` 解析成
 两级命名空间（``AssemblyContext``）→ ``assemble`` 把它合并覆盖到内置默认上，各组件级 Producer
 （KvProducer / RecallerProducer / EngineProducer …，工厂均与契约同处接口层、注册式）经
-``build_named`` / ``dep`` 按引用产出实例、按具名共享单例，``build_kernel`` 编排成 ``MemoryAPI``。
+``build_named`` / ``dep`` 按引用产出实例、按具名共享单例，``_build_kernel`` 编排成 ``MemoryAPI``。
 改实现/换后端只改 yml，各层不动。无任何外部依赖。
+
+资源 scope 可以同时含 user/agent/session；认证 actor 必须只含 user 或 agent 之一，
+并有非空 org。示例以 Alice/Bob 用户操作各自资源，ROOT 也使用具名运维主体。
 
 群体记忆默认关闭；取消 ``config.yml`` 末块的注释即开启，本文件各节随之带上空间维度，
 末节再演示按归属坐标分流写入、跨空间检索与空间隔离。两种形态下各节的调用形式相同，
@@ -42,10 +45,10 @@ logger = logging.getLogger(__name__)
 
 
 ORG = "acme"
-ALICE = Scope(org=ORG, user="alice", agent="assistant", session="s1")
-ALICE_PERSON = Scope(org=ORG, user="alice")  # 治理动作要求本人直接调用，不带代理维
-BOB = Scope(org=ORG, user="bob", agent="assistant", session="s2")
-OPS = Scope()  # 运维身份：管理面入口按根 scope 鉴权
+ALICE_SCOPE = Scope(org=ORG, user="alice", agent="assistant", session="s1")
+ALICE_PERSON = Scope(org=ORG, user="alice")  # 认证主体，同时用于空间归属
+BOB_PERSON = Scope(org=ORG, user="bob")
+OPS = Scope(org="system", user="operator")  # ROOT 也必须使用合法的单主体身份
 
 
 def _dev_security(actor: Scope, *, role: Role = Role.USER) -> RequestSecurityContext:
@@ -69,9 +72,8 @@ def _dev_security(actor: Scope, *, role: Role = Role.USER) -> RequestSecurityCon
 
 
 # 演示身份：示例进程自造（开发模式）。SEC_OPS 走 ROOT 档做管理面演示。
-SEC_ALICE = _dev_security(ALICE)
-SEC_ALICE_PERSON = _dev_security(ALICE_PERSON)
-SEC_BOB = _dev_security(BOB)
+SEC_ALICE = _dev_security(ALICE_PERSON)
+SEC_BOB = _dev_security(BOB_PERSON)
 SEC_OPS = _dev_security(OPS, role=Role.ROOT)
 MAIN_SPACE = "u_alice"  # 开启空间治理后 alice 的主空间
 PROJECT_SPACE = "p_apollo"
@@ -157,11 +159,11 @@ def _collective(api) -> None:
         ORG,
         PROJECT_SPACE,
         SpaceMember(
-            scope=Scope(org=ORG, user="bob"),
+            scope=BOB_PERSON,
             content_role=SpaceContentRole.EDITOR,
             governance_role=SpaceGovernanceRole.NONE,
         ),
-        security=SEC_ALICE_PERSON,
+        security=SEC_ALICE,
     )
     logger.info("  [space] 开通协作空间 %s，写入 bob 的成员记录", PROJECT_SPACE)
 
@@ -215,9 +217,7 @@ def main() -> None:
     api = assemble(config=config)
     # 开启空间治理后写入未注册空间由放行改为拒绝，因此先开通主空间、scope 指向它；
     # 未开启时空间维留空，与改造前一致。后面各节的调用形式两种形态下完全相同。
-    scope = _provision(api) if api.space_governance_enabled else ALICE
-    actor = ALICE  # 调用方身份始终是本人，与目标 scope 分开
-    security = _dev_security(actor)
+    scope = _provision(api) if api.space_governance_enabled else ALICE_SCOPE
 
     # 1) add -----------------------------------------------------------------
     facts = [
@@ -227,20 +227,20 @@ def main() -> None:
     ]
     written_ids = []
     for f in facts:
-        units = api.add(f, scope, security=security, tags=["demo"])
+        units = api.add(f, scope, security=SEC_ALICE, tags=["demo"])
         written_ids.append(units[0].id)
         logger.info("[add] %s  <%s...>", units[0].id[:8], f[:24])
 
     # 2) search --------------------------------------------------------------
     logger.info("\n[search] query='咖啡 早上'")
-    res = api.search("咖啡 早上", Context(scope), security=security, top_k=3, with_trajectory=True)
+    res = api.search("咖啡 早上", Context(scope), security=SEC_ALICE, top_k=3, with_trajectory=True)
     for item in res.items:
         logger.info("  score=%.3f  %s  %s", item.score, item.unit_id[:8], item.content)
     logger.info("  trajectory: %s", [(s.stage, s.candidate_count) for s in res.trajectory])
 
-    # 3) get（tier 由构建层 Classifier 在写入时判定：含「喜欢」→ semantic） ----
+    # 3) get（tier 由配置的 Classifier 在写入时判定） -----------------------
     first = written_ids[0]
-    got = api.get(first, scope, security=security)
+    got = api.get(first, scope, security=SEC_ALICE)
     logger.info(
         "\n[get] %s  tier=%s  tags=%s  content=<%s>",
         first[:8],
@@ -251,26 +251,26 @@ def main() -> None:
 
     # 4) update（SUPERSEDE，记版本链） ---------------------------------------
     new_unit = api.update(
-        first, scope, MemoryPatch(content="Alice 改喝拿铁了，要加燕麦奶。"), security=security
+        first, scope, MemoryPatch(content="Alice 改喝拿铁了，要加燕麦奶。"), security=SEC_ALICE
     )
     logger.info(
         "\n[update] %s -> %s  supersedes=%s", first[:8], new_unit.id[:8], new_unit.supersedes[:8]
     )
-    chain = api.trace(new_unit.id, scope, security=security)
+    chain = api.trace(new_unit.id, scope, security=SEC_ALICE)
     logger.info("  trace chain: %s", [u.id[:8] for u in chain])
 
     # 4.5) evolve（构建层闭环：抽取低抽象事实 / 升华画像 / 遗忘被取代的旧版） --
     q = "咖啡 项目 评审"
-    before = len(api.search(q, Context(scope), security=security, top_k=20).items)
-    api.evolve(scope, EvolveMode.EXTRACT, security=security)  # Extractor：派生事实(记血缘)
-    api.evolve(scope, EvolveMode.CONSOLIDATE, security=security)  # Abstractor：升华 CORE 画像
-    api.evolve(scope, EvolveMode.ASSOCIATE, security=security)  # Associator：发现关联
-    api.evolve(scope, EvolveMode.FORGET, security=security)  # 清理 superseded 旧版
-    after = len(api.search(q, Context(scope), security=security, top_k=20).items)
+    before = len(api.search(q, Context(scope), security=SEC_ALICE, top_k=20).items)
+    api.evolve(scope, EvolveMode.EXTRACT, security=SEC_ALICE)  # Extractor：派生事实(记血缘)
+    api.evolve(scope, EvolveMode.CONSOLIDATE, security=SEC_ALICE)  # Abstractor：升华 CORE 画像
+    api.evolve(scope, EvolveMode.ASSOCIATE, security=SEC_ALICE)  # Associator：发现关联
+    api.evolve(scope, EvolveMode.FORGET, security=SEC_ALICE)  # 清理 superseded 旧版
+    after = len(api.search(q, Context(scope), security=SEC_ALICE, top_k=20).items)
     logger.info(
         "\n[evolve] 召回命中 %s -> %s（extract 派生 + consolidate 画像入索引）", before, after
     )
-    prof = api.search("画像综合", Context(scope), security=security, top_k=1).items
+    prof = api.search("画像综合", Context(scope), security=SEC_ALICE, top_k=1).items
     if prof:
         logger.info("  consolidate 画像 %s: <%s...>", prof[0].unit_id[:8], prof[0].content[:36])
 
