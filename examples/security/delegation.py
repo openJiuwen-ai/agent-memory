@@ -25,7 +25,6 @@ config = {
             "params": {
                 "authenticator": "demo",
                 "authorizer": "default",
-                "delegation_store": "default",
                 "delegation_bindings": {credential_id: "alice-agent1"},
                 "delegations": [
                     {
@@ -57,12 +56,12 @@ config = {
             "target": "standard",
             "params": {
                 "grant_store": "default",
-                "delegation_store": "default",
+                "delegation_store": "task_delegations",
             },
         }
     },
     "grant_store": {"default": {"target": "memory"}},
-    "delegation_store": {"default": {"target": "memory"}},
+    "delegation_store": {"task_delegations": {"target": "memory"}},
 }
 runtime = assemble_server_runtime(config=config)
 try:
