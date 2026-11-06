@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-06-24 |
 | 影响范围 | jiuwen_memory/construction/（七个算子 + 实现包）、docs/specs/S05-construction.md、jiuwen_memory/construction/AGENTS.md |
-| 测试基线 | tests/unit/construction/（82 passed，含 test_evolver_dedup.py / test_extractor.py）、examples/demo_classifier.py、examples/quickstart*.py 端到端跑通 |
+| 测试基线 | tests/unit/construction/（942 passed，含 test_evolver_dedup.py / test_extractor.py）、examples/demo_classifier.py、examples/quickstart*.py 端到端跑通 |
 | Refs | — |
 
 > 本文是构建层的特性文档（features）——记来龙去脉与决策取舍 + 各算子实现的落地规约。接口契约见 [`docs/specs/S05-construction.md`](../../specs/S05-construction.md)；当前实现地图见 [`jiuwen_memory/construction/AGENTS.md`](../../../jiuwen_memory/construction/AGENTS.md)。
@@ -38,6 +38,8 @@
    仍为 no-op，恢复能力尚未落地。
 3. **接口与实现严格分离**：顶层 `.py` 纯抽象（不 import `*_impl/`），实现经 `@Producer.register` 自注册。端侧用规则/小模型（keyword classifier、hashing embedder）、云侧用强 LLM，只改配置不改代码。共享插件（Embedder/Tokenizer/Chunker/FeatureExtractor）须与 retrieval 侧同一实例，装配按字段名缓存保证同实例。
 4. **去重召回与判定分离**：去重召回抽象成独立 `Dedup` 接口，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。两路 score 同为 0~1 量纲（cosine / 词重叠率），medium/high 阈值统一复用。
+   LLM 判定 UPDATE/SUPERSEDE 时同时返回 `existing_unit_id`，执行层只在同一候选的本次召回命中中解析目标；最高相似项是排序结果，不是语义更正目标。缺失、非法或越界的 ID 降级为 ADD，防止误覆盖相似但并非被更正的事实。
+   `dedup_high_similarity` 默认取 `1.0`，使未达到精确重复的候选都进入 LLM 判定；`1.0` 仍需 `should_direct_noop` 确认无实质差异，避免相同向量分数掩盖更正语义。
 5. **SUPERSEDE 不经 LifecycleManager**：Evolver 标记旧版 SUPERSEDED 直接 `KVStore.update`，不经 control 层 LifecycleManager（construction → control 严禁）。版本链由 `supersedes` 字段记录，非破坏式、保留血缘。
 6. **去重不用 Reranker**：LLM 直接做最终语义判定，Reranker 中间层不增精度只增开销。若未来需降 LLM 调用成本，可考虑在 LLM 前加 Reranker 过滤器。
 7. **LLM 上限按总尝试次数命名**：Construction 层统一使用 `max_attempts` 表示
@@ -149,11 +151,20 @@
 - 规则分类 ~0 LLM 调用、< 50ms，对写入时延影响可忽略
 - LLM 深度通道仍可选在写入路径触发（`llm_enabled=True`），但规则兜底保证 LLM 不可用时分类仍可用
 
+### 方案 F：保留 `dedup_high_similarity=0.9`，仅依赖 LLM 选对去重目标
+
+**描述**：保持原高相似阈值，让 `0.9` 以上的候选继续由 LLM 决定目标。
+
+**拒绝原因**：
+- 该阈值分支会直接 `NOOP` 并跳过 LLM，更正语句只要与旧事实足够相似就失去被判定为 `SUPERSEDE/UPDATE` 的机会。
+- 只修 prompt 目标字段无法覆盖这类短路；默认阈值和无实质差异闸门必须一起调整。
+
 ## 验证
 
 ### 单元测试
 
 - `tests/unit/construction/test_evolver_dedup.py` — 去重决策四态（ADD/UPDATE/SUPERSEDE/NOOP）+ 降级场景（Embedder/VectorStore/LLM 失败）+ 自身过滤 + 高相似实质差异改走 LLM（`TestDedupDirectNoopDelta`）。其中 supersede/update/json-fallback 三例用 `dedup_high_similarity=1.01` 抬高短路阈值，强制走 LLM 判定分支（默认高相似且无实质差异才 direct_noop，测 LLM 路径时需抬高阈值或构造 `has_meaningful_delta`）
+  另覆盖 LLM 明确选择低相似但语义对应目标时不得回退最高相似项、目标缺失/非法时降级 ADD（`TestDedupLLMTargetSelection`），以及默认 `dedup_high_similarity=1.0` 下 0.99 相似候选进入 LLM（`TestDedupNoop`）。
 - `tests/unit/construction/test_dedup_direct_noop.py` — `should_direct_noop` / `has_meaningful_delta` 启发式闸门
 - `tests/unit/construction/test_extractor.py` — Extractor 4 Phase；`test_extract_batch` 验证批量提取一次 LLM 调用返回全部候选、`source_id` 回指正确源 unit
 - `tests/unit/construction/test_e2e_evolution.py` — 演进闭环端到端
@@ -168,6 +179,9 @@
 | 场景 | 验证方式 | 结果 |
 |------|---------|------|
 | 只配倒排时去重仍可用 | `vector_enabled=False` 装配，`KeywordDedup` 召回命中现有记忆 score=1.000 | ✅（修复前 score=0.000 完全失效） |
+| LLM 指定的修改目标不是最高相似项 | 最高相似 e1=0.95，模型指定 e2=0.82，执行后仅 e2=SUPERSEDED | ✅ |
+| LLM 修改型判定缺少合法目标 | 返回 `supersede` 但 `existing_unit_id` 缺失/不存在 | ✅ 降级 ADD，旧单元保持 ACTIVE |
+| 默认高相似阈值 | `dedup_high_similarity` 默认 1.0；0.99 相似候选必须进入 LLM，精确重复且无实质差异才 direct NOOP | ✅ |
 | 写入路径低时延 | quickstart write 链路（分类+落盘+建索引）秒级内完成 | ✅ |
 | 索引可重建 | `IndexBuilder.rebuild()` 从 KVStore 全量重建 | ❌（当前实现为 no-op，待补齐） |
 | 端侧降级 | 无 LLM/无 spaCy 时 classifier 规则兜底、demo 仍可跑 | ✅ |

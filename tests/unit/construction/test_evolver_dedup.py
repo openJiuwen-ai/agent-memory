@@ -33,7 +33,11 @@ from jiuwen_memory.construction.abstractor import Abstractor
 from jiuwen_memory.construction.associator import Associator
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.evolver import EvolveMode
-from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    _DEDUP_BATCH_SYSTEM_PROMPT,
+    _DEDUP_SYSTEM_PROMPT,
+    OrchestratingEvolver,
+)
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.storage.base import StoreType
@@ -495,7 +499,7 @@ class TestDedupNoop:
 
     @staticmethod
     def test_high_similarity_llm_noop():
-        """高相似度 + LLM 判定 noop → NOOP（不写库）。"""
+        """完全相同且无实质差异 → direct NOOP（不写库）。"""
         stores = _create_stores()
         # HashEmbedder：同文本 → cosine=1.0，不同文本 → cosine<1.0
         # 需要构造同文本场景来触发高相似度
@@ -512,13 +516,35 @@ class TestDedupNoop:
         existing_unit = _make_unit("e1", "用户偏好简洁回答风格")
         _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
 
-        # 候选：与已有记忆文本完全相同 → cosine=1.0 → LLM 判定 noop
+        # 候选：与已有记忆文本完全相同 → cosine=1.0 → direct NOOP
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
         decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
 
         assert decision == DedupDecision.NOOP
         assert existing is not None
         assert similarity >= 0.85
+        assert getattr(llm, "_call_count") == 0
+
+    @staticmethod
+    def test_score_below_default_high_similarity_routes_to_llm():
+        """默认 high=1.0：0.99 相似仍交 LLM，避免阈值短路语义更正。"""
+        stores = _create_stores()
+        llm = _MockLLM(responses=[json.dumps({"decision": "noop", "reason": "重复"})])
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+        )
+        existing = _make_unit("e1", "用户偏好简洁回答风格")
+        candidate = _make_unit("c1", "用户偏好简洁回答风格")
+        setattr(getattr(evolver, "_dedup"), "recall", lambda unit: [(existing, 0.99)])
+
+        result = getattr(evolver, "_dedup_batch")([candidate])
+
+        assert getattr(llm, "_call_count") == 1
+        assert result.created_ids == []
 
     @staticmethod
     def test_noop_not_written_to_kv():
@@ -554,7 +580,9 @@ class TestDedupDirectNoopDelta:
     def test_high_similarity_month_change_routes_to_llm():
         stores = _create_stores()
         llm = _MockLLM(
-            responses=[json.dumps({"decision": "supersede", "reason": "月份更新"})]
+            responses=[json.dumps(
+                {"decision": "supersede", "existing_unit_id": "e1", "reason": "月份更新"}
+            )]
         )
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
         evolver = _make_evolver(
@@ -585,7 +613,9 @@ class TestDedupDirectNoopDelta:
         """_dedup_batch 路径：高相似但有月份差异 → 不入 direct_noop，改入 need_llm。"""
         stores = _create_stores()
         llm = _MockLLM(
-            responses=[json.dumps({"decision": "supersede", "reason": "月份更新"})]
+            responses=[json.dumps(
+                {"decision": "supersede", "existing_unit_id": "e1", "reason": "月份更新"}
+            )]
         )
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
         evolver = _make_evolver(
@@ -612,6 +642,99 @@ class TestDedupDirectNoopDelta:
         assert result.updated_ids == []
 
 
+class TestDedupLLMTargetSelection:
+    """LLM 明确指定的旧单元必须覆盖默认最高相似项。"""
+
+    @pytest.mark.parametrize(
+        "prompt", [_DEDUP_SYSTEM_PROMPT, _DEDUP_BATCH_SYSTEM_PROMPT]
+    )
+    def test_prompt_requires_existing_target(self, prompt: str):
+        assert '"existing_unit_id"' in prompt
+        assert "MUST be non-null" in prompt
+        assert "highest similarity score" in prompt
+
+    @staticmethod
+    def test_supersede_uses_llm_selected_unit_instead_of_best_match():
+        stores = _create_stores()
+        llm = _MockLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "decision": "supersede",
+                        "existing_unit_id": "e2",
+                        "reason": "更正指向中午旧记录",
+                    }
+                )
+            ]
+        )
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+            dedup_high_similarity=0.99,
+        )
+        best_match = _make_unit("e1", "晚上吃了汉堡王")
+        selected_target = _make_unit("e2", "中午吃了麦当劳")
+        _index_unit(best_match, stores["kv"], stores["vector"], plugins["embedder"])
+        _index_unit(selected_target, stores["kv"], stores["vector"], plugins["embedder"])
+        candidate = _make_unit("c1", "中午实际吃了汉堡王")
+
+        def fake_recall(unit: MemoryUnit):
+            return [(best_match, 0.95), (selected_target, 0.82)]
+
+        setattr(getattr(evolver, "_dedup"), "recall", fake_recall)
+
+        result = getattr(evolver, "_dedup_batch")([candidate])
+
+        assert result.superseded_ids == ["e2"]
+        assert loads(
+            stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1"))
+        ).lifecycle == LifecycleState.ACTIVE
+        assert loads(
+            stores["kv"].get(_DEFAULT_SCOPE, memory_key("e2"))
+        ).lifecycle == LifecycleState.SUPERSEDED
+        new_unit = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("c1")))
+        assert new_unit.supersedes == "e2"
+
+    @pytest.mark.parametrize("existing_unit_id", [None, "e999"])
+    def test_modifying_decision_without_valid_target_falls_back_to_add(
+        self,
+        existing_unit_id: str | None,
+    ):
+        stores = _create_stores()
+        payload = {"decision": "supersede", "reason": "目标缺失或非法"}
+        if existing_unit_id is not None:
+            payload["existing_unit_id"] = existing_unit_id
+        llm = _MockLLM(responses=[json.dumps(payload)])
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+            dedup_high_similarity=0.99,
+        )
+        existing = _make_unit("e1", "中午吃了麦当劳")
+        _index_unit(existing, stores["kv"], stores["vector"], plugins["embedder"])
+        candidate = _make_unit("c1", "中午实际吃了汉堡王")
+
+        setattr(
+            getattr(evolver, "_dedup"),
+            "recall",
+            lambda unit: [(existing, 0.95)],
+        )
+
+        result = getattr(evolver, "_dedup_batch")([candidate])
+
+        assert result.created_ids == ["c1"]
+        assert result.superseded_ids == []
+        assert loads(
+            stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1"))
+        ).lifecycle == LifecycleState.ACTIVE
+
+
 class TestDedupSupersede:
     """SUPERSEDE 场景：新版替代旧版 → 新版落盘 + 旧版标记 SUPERSEDED。"""
 
@@ -623,7 +746,17 @@ class TestDedupSupersede:
         所以用同文本触发高相似度，LLM 判定 supersede 来测试。
         """
         stores = _create_stores()
-        llm = _MockLLM(responses=[json.dumps({"decision": "supersede", "reason": "新版更完整"})])
+        llm = _MockLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "decision": "supersede",
+                        "existing_unit_id": "e1",
+                        "reason": "新版更完整",
+                    }
+                )
+            ]
+        )
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
         # 抬高 high 阈值（>1.0），让同文本 cosine=1.0 落入 medium~high 的 LLM 判定区间，
         # 强制走 mock LLM 判 supersede（否则 1.0≥high 会被短路成 NOOP 跳过 LLM）。
@@ -669,7 +802,13 @@ class TestDedupUpdate:
         merge_content = "用户偏好简洁回答风格，不喜欢冗长解释"
         llm = _MockLLM(
             responses=[
-                json.dumps({"decision": "update", "reason": "候选补充了不喜欢冗长解释"}),
+                json.dumps(
+                    {
+                        "decision": "update",
+                        "existing_unit_id": "e1",
+                        "reason": "候选补充了不喜欢冗长解释",
+                    }
+                ),
                 merge_content,  # 第二次调用：merge content
             ]
         )
@@ -712,7 +851,13 @@ class TestDedupUpdate:
         stores = _create_stores()
         llm = _MockLLM(
             responses=[
-                json.dumps({"decision": "update", "reason": "候选补充信息"}),
+                json.dumps(
+                    {
+                        "decision": "update",
+                        "existing_unit_id": "e1",
+                        "reason": "候选补充信息",
+                    }
+                ),
                 "",  # 第二次调用（merge content）：HTTP 200 但 content 为空
             ]
         )

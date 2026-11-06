@@ -28,7 +28,6 @@ from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolv
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
-from tests.unit.construction.fixtures import RecordingLLM
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
@@ -44,6 +43,7 @@ from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexWriteMode
 from tests.conftest import make_storage
 from tests.support.scoped_authenticator import ScopedAuthenticator
+from tests.unit.construction.fixtures import RecordingLLM
 
 _TEST_KEY_HEX = "00" * 32
 
@@ -427,7 +427,11 @@ def test_dynamic_evolver_supersedes_existing_via_llm_judge():
     dedup = _Dedup([(existing, 0.8)])
     registry = PromptRegistry.from_dict({"consolidate": {"episodic": "事件变化时替换旧记忆"}})
     llm = _ScriptedLLM(
-        [json.dumps({"decision": "supersede", "existing_id": "existing", "reason": "new"})]
+        [
+            json.dumps(
+                {"decision": "supersede", "existing_unit_id": "existing", "reason": "new"}
+            )
+        ]
     )
     candidate = _unit(
         "candidate",
@@ -471,7 +475,9 @@ def test_dynamic_evolver_update_empty_merge_falls_back_to_concatenation():
     registry = PromptRegistry.from_dict({"consolidate": {"episodic": "巩固判定"}})
     llm = _ScriptedLLM(
         [
-            json.dumps({"decision": "update", "existing_id": "existing", "reason": "补充"}),
+            json.dumps(
+                {"decision": "update", "existing_unit_id": "existing", "reason": "补充"}
+            ),
             "",  # _merge_content 调用：LLM 200 但返回空串
         ]
     )
@@ -525,6 +531,7 @@ def test_dynamic_evolver_high_similarity_skips_llm_judge():
     existing = _unit("existing", "完全相同的记忆")
     evolver, kv, _ = _make_evolver(dedup_hits=[(existing, 0.95)])
     candidate = _unit("candidate", "完全相同的记忆")
+    setattr(evolver, "_dedup_high_similarity", 0.9)
 
     result = evolver.evolve([candidate], EvolveMode.EXTRACT)
 
@@ -554,7 +561,9 @@ def test_dynamic_evolver_judge_routes_high_similarity_delta_to_llm():
     )
     llm = getattr(evolver, "_llm")
     llm.responses = [
-        json.dumps({"decision": "supersede", "existing_id": "existing", "reason": "月份更新"})
+        json.dumps(
+            {"decision": "supersede", "existing_unit_id": "existing", "reason": "月份更新"}
+        )
     ]
 
     decision, existing_hit, similarity = getattr(evolver, "_judge")(candidate, [(existing, 0.95)])
