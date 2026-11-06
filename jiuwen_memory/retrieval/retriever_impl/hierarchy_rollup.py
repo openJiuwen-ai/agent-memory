@@ -17,6 +17,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
 from jiuwen_memory.retrieval.expander import NodeKey, node_key, within_scope
+from jiuwen_memory.retrieval.types import RollupResult
 from jiuwen_memory.storage.domain_store import DomainStore
 
 MAX_ROLLUP_HOPS = 32
@@ -34,23 +35,6 @@ class RollupRequest:
     max_hops: int = MAX_ROLLUP_HOPS
     node_limit: int = MAX_ROLLUP_NODES
     child_depth: int = 0
-
-
-@dataclass
-class RollupResult:
-    """稳定诊断不暴露被排除节点的身份、正文或后端异常信息。"""
-
-    candidates: list[ScoredMemoryUnit] = field(default_factory=list)
-    issues: list[str] = field(default_factory=list)
-    visited_count: int = 0
-    admitted_count: int = 0
-    boosted_count: int = 0
-    recalled_parents: dict[NodeKey, NodeKey] = field(default_factory=dict)
-
-    def exclude(self, code: str) -> None:
-        """单请求按首次出现顺序去重诊断码。"""
-        if code not in self.issues:
-            self.issues.append(code)
 
 
 @dataclass

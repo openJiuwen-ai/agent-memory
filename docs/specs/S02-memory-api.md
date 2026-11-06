@@ -1416,3 +1416,16 @@ AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.ru
 父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
 `last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
 诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。
+
+
+## search 的检索 pipeline 选择扩展键
+
+`context.extensions["retrieval_pipeline"]` 接受非空字符串或 None；名称精确匹配，不做 trim
+或大小写转换。缺省/None 保留原 profile/default 路由。API 复制参数袋后消费此键，转换为
+`RetrievalQuery.pipeline`，不修改调用方 Context，也不继续透传给 ParsedQuery 或自定义召回插件。
+SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 search 参数。
+
+请求上下文可信校验之后、单空间/跨空间分流之前，经 query application port 调用 Engine 的
+公共校验方法；未知名称抛 ValidationError，附公开可选名单。即使跨空间目标为空也必须拒绝
+未知名称，不把调用参数错误转换成空间 ChannelError。API 不访问 Engine 或 Retriever 私有配置。
+选择只影响检索算法，不替代 scope/授权谓词校验；优先级与装配约束见 S03/S04。
