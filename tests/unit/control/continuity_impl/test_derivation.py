@@ -1,7 +1,5 @@
 """Derivation recovery: frozen plan, output keys, per-item reconciliation."""
 
-from dataclasses import replace
-
 import pytest
 
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
@@ -36,7 +34,6 @@ class Chain:
         self.units: dict[str, MemoryUnit] = {}
         self.sources: set[tuple[str, str]] = set()
         self.created: list[str] = []
-        self.cas_rejects = False
 
     def query_output(self, output_key):
         return [
@@ -56,14 +53,6 @@ class Chain:
     def add_source(self, event_key, unit_id):
         self.sources.add((event_key, unit_id))
 
-    def conditional_update(self, ref, before_digest, content, metadata):
-        current = self.units[ref.unit_id]
-        if self.cas_rejects or MemoryRef.of(current).content_digest != before_digest:
-            return False
-        self.units[ref.unit_id] = replace(current, segments=[Segment(content=content)],
-                                          system_metadata={**current.system_metadata, **metadata})
-        return True
-
 
 def _run(chain, plan):
     return reconcile(
@@ -72,7 +61,6 @@ def _run(chain, plan):
         read=chain.read,
         create=chain.create,
         add_source=chain.add_source,
-        conditional_update=chain.conditional_update,
     )
 
 
@@ -126,61 +114,6 @@ def test_reused_unreadable_target_is_partial():
     assert result.conflicts == ["reuse-0"]
 
 
-def test_updated_applies_when_digest_is_before():
-    chain = Chain()
-    target = _unit("t", "v1")
-    chain.units["t"] = target
-    item = DerivationItem(
-        output_key="upd-0", action="updated", ref=MemoryRef.of(target),
-        content="v2", digest_before=_digest("v1"), digest_after=_digest("v2"),
-    )
-    result = _run(chain, DerivationPlan("b", [item]))
-    assert result.status == "committed"
-    assert chain.units["t"].segments[0].content == "v2"
-
-
-def test_updated_is_already_applied_when_digest_is_after():
-    chain = Chain()
-    target = _unit("t", "v2")
-    chain.units["t"] = target
-    item = DerivationItem(
-        output_key="upd-0", action="updated", ref=MemoryRef.of(target),
-        content="v2", digest_before=_digest("v1"), digest_after=_digest("v2"),
-    )
-    result = _run(chain, DerivationPlan("b", [item]))
-    assert result.status == "committed"
-    assert result.derived[0]["already_applied"] is True
-
-
-def test_updated_with_third_party_digest_conflicts():
-    chain = Chain()
-    target = _unit("t", "someone-else-changed")
-    chain.units["t"] = target
-    item = DerivationItem(
-        output_key="upd-0", action="updated", ref=MemoryRef.of(target),
-        content="v2", digest_before=_digest("v1"), digest_after=_digest("v2"),
-    )
-    result = _run(chain, DerivationPlan("b", [item]))
-    assert result.status == "partial"
-    assert result.conflicts == ["upd-0"]
-    assert chain.units["t"].segments[0].content == "someone-else-changed"
-
-
-def test_updated_cas_rejection_is_partial_without_lost_update():
-    chain = Chain()
-    target = _unit("t", "v1")
-    chain.units["t"] = target
-    chain.cas_rejects = True  # third party modified between read and CAS
-    item = DerivationItem(
-        output_key="upd-0", action="updated", ref=MemoryRef.of(target),
-        content="v2", digest_before=_digest("v1"), digest_after=_digest("v2"),
-    )
-    result = _run(chain, DerivationPlan("b", [item]))
-    assert result.status == "partial"
-    assert result.conflicts == ["upd-0"]
-    assert chain.units["t"].segments[0].content == "v1"  # not overwritten
-
-
 def test_missing_output_creates_and_derived_matches_plan():
     chain = Chain()
     item = DerivationItem(
@@ -203,46 +136,10 @@ def test_missing_query_output_fails_closed_for_created():
         read=chain.read,
         create=chain.create,
         add_source=chain.add_source,
-        conditional_update=chain.conditional_update,
     )
     assert result.status == "partial"
     assert result.conflicts == ["out-0"]
     assert chain.created == []  # never created without a reliable adoption check
-
-
-@pytest.mark.parametrize("current_content", ["v1", "v2"])
-def test_missing_cas_fails_closed_for_updated(current_content):
-    chain = Chain()
-    target = _unit("t", current_content)
-    chain.units["t"] = target
-    item = DerivationItem(
-        output_key="upd-0", action="updated", ref=MemoryRef.of(target),
-        content="v2", digest_before=_digest("v1"), digest_after=_digest("v2"),
-    )
-    result = reconcile(
-        DerivationPlan("b", [item]),
-        query_output=chain.query_output,
-        read=chain.read,
-        create=chain.create,
-        add_source=chain.add_source,
-        conditional_update=None,
-    )
-    assert result.status == "partial"
-    assert result.conflicts == ["upd-0"]
-    assert chain.units["t"].segments[0].content == current_content  # no unverified completion
-
-
-def test_updated_receipt_uses_post_update_digest():
-    chain = Chain()
-    target = _unit("t", "before")
-    chain.units["t"] = target
-    item = DerivationItem("update", "updated", ref=MemoryRef.of(target), content="after",
-                          digest_before=_digest("before"), digest_after=_digest("after"))
-    result = _run(chain, DerivationPlan("b", [item]))
-    assert result.status == "committed"
-    assert result.derived[0]["ref"]["content_digest"] == _digest("after")
-    replay = _run(chain, DerivationPlan("b", [item]))
-    assert replay.derived[0]["ref"]["content_digest"] == _digest("after")
 
 
 def test_duplicate_output_identity_is_not_arbitrarily_adopted():
@@ -263,34 +160,3 @@ def test_reused_target_modified_after_plan_is_not_adopted():
     assert result.status == "partial"
     assert result.derived == []
     assert chain.sources == set()
-
-
-def test_updated_recovery_with_strict_snapshot_reader_repairs_projection():
-    from jiuwen_memory.common.errors import ConflictError
-
-    chain = Chain()
-    before = _unit("target", "before")
-    chain.units[before.id] = _unit("target", "after")
-    item = DerivationItem(
-        "updated", "updated", ref=MemoryRef.of(before), content="after",
-        digest_before=_digest("before"), digest_after=_digest("after"),
-    )
-    refreshes = []
-
-    def strict_read(ref):
-        unit = chain.read(ref)
-        if MemoryRef.of(unit) != ref:
-            raise ConflictError("reference")
-        return unit
-
-    def apply(ref, digest, content, metadata):
-        refreshes.append(digest)
-        return chain.conditional_update(ref, digest, content, metadata)
-
-    result = reconcile(
-        DerivationPlan("batch", [item]), query_output=chain.query_output, read=strict_read,
-        create=chain.create, add_source=chain.add_source, conditional_update=apply,
-    )
-    assert result.status == "committed"
-    assert refreshes == [_digest("after")]
-    assert result.derived[0]["ref"]["content_digest"] == _digest("after")

@@ -40,12 +40,12 @@ from jiuwen_memory.common.type_def import (
     Scope,
 )
 from jiuwen_memory.common.type_def.continuity import (
-    ContinuityEvent,
     ContinuityRecovery,
+    ContinuityWrite,
     MemoryRef,
     RelationRecord,
-    RoleViewQuery,
     TaskRequest,
+    ViewBudget,
 )
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
@@ -95,52 +95,30 @@ class MemoryAPI(ABC):
     """
 
     @abstractmethod
-    def role_task(
+    def continuity_task(
         self, scope: Scope, request: TaskRequest, *, security: RequestSecurityContext,
     ) -> dict:
         """Register/bind/read task context without execution ownership transfer."""
 
     @abstractmethod
-    def role_record(
-        self, scope: Scope, event: ContinuityEvent, *, security: RequestSecurityContext,
-    ) -> dict:
-        """Idempotently record an attributed event and associate it with its task."""
-
-    @abstractmethod
-    def role_relation(self, scope: Scope, relation: RelationRecord, expected_revision: int,
+    def continuity_relation(self, scope: Scope, relation: RelationRecord, expected_revision: int,
                       *, security: RequestSecurityContext) -> dict:
         """Register or review a versioned evidence relation, then project its graph edge."""
 
     @abstractmethod
-    def role_view(
-        self, scope: Scope, request: RoleViewQuery, *, security: RequestSecurityContext,
-    ) -> dict:
-        """Find a memory anchor and expand typed relations according to duty."""
-
-    @abstractmethod
-    def role_rebuild(self, scope: Scope, *, security: RequestSecurityContext,
+    def continuity_recover(self, scope: Scope, *, security: RequestSecurityContext,
                      recovery: ContinuityRecovery | None = None) -> dict:
         """Repair relation projections from authorized sources without re-extraction."""
 
     @abstractmethod
-    def role_quarantine_source(self, scope: Scope, source_key: str, reason: str,
+    def quarantine_source(self, scope: Scope, source_key: str, reason: str,
                                *, security: RequestSecurityContext) -> dict:
         """Isolate a source range with an auditable reason until it is released."""
 
     @abstractmethod
-    def role_release_source(self, scope: Scope, source_key: str,
+    def release_source(self, scope: Scope, source_key: str,
                             *, security: RequestSecurityContext) -> bool:
         """Release a previously quarantined source range; returns whether it was quarantined."""
-
-    @abstractmethod
-    def role_mark_source_cutover(self, scope: Scope, connector: str, context_id: str,
-                                 *, security: RequestSecurityContext) -> dict:
-        """Cut a dual-write source over to agent-memory as the single authoritative writer."""
-
-    @abstractmethod
-    def role_publish(self, scope: Scope, source: MemoryRef, reason: str,
-                     *, security: RequestSecurityContext) -> dict:
-        """Explicitly publish a private record into the shared project space."""
 
     @abstractmethod
     def add(
@@ -156,6 +134,7 @@ class MemoryAPI(ABC):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
+        continuity: ContinuityWrite | None = None,
     ) -> list[MemoryUnit]:
         """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。
 
@@ -205,6 +184,7 @@ class MemoryAPI(ABC):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
+        continuity: ContinuityWrite | None = None,
     ) -> list[MemoryUnit]:
         """异步写入记忆；语义与 :meth:`add` 一致并直通引擎协程。"""
 
@@ -269,6 +249,10 @@ class MemoryAPI(ABC):
         span_end: datetime | None = None,
         expand_depth: int = 1,
         rollup: bool = True,
+        task_id: str = "",
+        anchor: MemoryRef | None = None,
+        duty: str | list[str] | None = None,
+        view_budget: ViewBudget | None = None,
     ) -> RetrievalResult:
         """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。
 

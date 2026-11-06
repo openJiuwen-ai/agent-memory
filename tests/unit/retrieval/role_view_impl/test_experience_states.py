@@ -147,7 +147,3 @@ def test_disputed_premise_downgrades_dependent_experience(service):
         svc.relation(scope, record, 0, read, write)
     view = svc.view(scope, RoleViewQuery(anchor=premise), read, lambda *_: [])
     assert view["experiences"][0]["status"] == "needs_review"
-    review = view["meta"]["review"]
-    assert review["required"][0]["unit_id"] == premise.unit_id
-    assert any(ref["unit_id"] == exp.unit_id for ref in review["candidate"])
-    assert review["unchecked"] == ["dependencies_outside_view"]

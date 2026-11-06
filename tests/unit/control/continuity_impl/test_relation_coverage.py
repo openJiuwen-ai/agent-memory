@@ -49,7 +49,7 @@ def test_unprojected_relation_is_partial(setup, monkeypatch):
         RelationRecord("r", a, b, "supports", status="confirmed", evidence_refs=[a]),
         0, read, write,
     )
-    assert outcome["status"] == "partial"
+    assert outcome["status"] == "projecting"
     assert _view(service, scope, read, a)["meta"]["relation_coverage"] == "partial"
 
 

@@ -85,7 +85,7 @@ class _AuthorizedStoreProxy:
 def _action_for_store_method(name: str) -> Any:
     if name == "insert":
         return StorageAction.ADD
-    if name in {"update", "compare_and_swap"}:
+    if name in {"update"}:
         return StorageAction.UPDATE
     if name == "delete":
         return StorageAction.DELETE

@@ -52,9 +52,17 @@ def test_malformed_identity_rejected(tmp_path, event_id):
 def test_import_stops_at_every_uncommitted_boundary(status):
     class Client:
         @staticmethod
-        def call(*args):
-            return {"status": status}
+        def call(verb, payload):
+            assert verb == "batch_add"
+            assert payload["continue_on_error"] is False
+            return {"outcomes": [{"continuity_status": status, "operation_id": "op"}]}
 
-    result = import_history(Client(), {}, {}, [{"event_id": "1"}, {"event_id": "2"}])
+    events = [
+        {"event_id": "1", "content": "a", "task_id": "t", "binding_id": "b"},
+        {"event_id": "2", "content": "b", "task_id": "t", "binding_id": "b"},
+    ]
+    result = import_history(Client(), {}, {}, events)
     assert len(result["results"]) == 1
-    assert result["remaining"] == 1
+    # 停在第一个未提交项：该行与它后面的行都还没写入，`remaining` 按实际导入数算。
+    assert result["imported"] == 0
+    assert result["remaining"] == 2

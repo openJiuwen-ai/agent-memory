@@ -5,7 +5,7 @@ This module converts the mappable subset into candidate ``RelationRecord`` insta
 for contradictions, invokes the injected ``ConflictResolver``. The result is attached as a
 resolution recommendation but the relation stays ``candidate`` — the memory system never
 auto-confirms an association or a conflict; a human review or an explicit evidence-backed
-``role_relation`` confirmation remains required.
+``continuity_relation`` confirmation remains required.
 """
 
 from __future__ import annotations

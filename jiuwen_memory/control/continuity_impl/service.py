@@ -10,11 +10,12 @@ from jiuwen_memory.common.errors import (
     ConflictError,
     NotFoundError,
     PermissionDeniedError,
+    UnsupportedCapabilityError,
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.relations.catalog import RelationCatalog
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
 from jiuwen_memory.common.type_def.continuity import (
     MODEL_VERSION,
     ContinuityEvent,
@@ -24,6 +25,8 @@ from jiuwen_memory.common.type_def.continuity import (
     TaskRequest,
     canonical,
     fingerprint,
+    view_kind,
+    view_status,
 )
 from jiuwen_memory.construction.associator import AssociatorProducer
 from jiuwen_memory.construction.conflict_resolver import ConflictResolverProducer
@@ -36,38 +39,149 @@ from jiuwen_memory.control.continuity import (
 )
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
-from jiuwen_memory.storage.types import IndexWriteMode
 
-from . import sync
+from .projection import IndexBuilderRelationProjector
 from .repository import ContinuityRepository
 
 logger = get_logger(__name__)
+
+
+def _is_relation_head(record) -> bool:
+    """True for a relation *head*; False for an immutable ``<id>/rev/<n>`` revision row.
+
+    Revisions live under ``/continuity/relations/<id>/rev/<n>`` so a plain prefix scan
+    returns them too. They carry neither ``current`` (KV head) nor ``ref`` (legacy head),
+    which is exactly what separates them from heads.
+    """
+    return "current" in record or "ref" in record
+
+
+
+_DISCOVERY_ORDER = ("background", "anchor", "relation", "semantic_candidate")
+
+
+# S11 ViewAnnotation 的完整字段；两档都给出全部键，接续档没有的值用空值而不是省略，
+# 客户端不必按档位分支解析。
+_ANNOTATION_DEFAULTS = {
+    "kind": "statement",
+    "status": "unknown",
+    "discovery": "",
+    "required": False,
+    "classification_confidence": "unknown",
+    "evidence_refs": [],
+    "conditions": [],
+    "duty_ids": [],
+    "valid_duties": [],
+    "common": False,
+    "path_ids": [],
+}
+
+
+def _view_entry(*, unit_id: str, text: str, **annotation) -> dict:
+    """One normalized view entry (S11 ViewAnnotation, both modes).
+
+    Only S11 fields are kept: the builder's own ``id``/``text`` are entry-level data, not
+    annotation, and must not be duplicated into it.
+    """
+    full = {}
+    for key, default in _ANNOTATION_DEFAULTS.items():
+        value = annotation.get(key)
+        if value is None:
+            value = default
+        full[key] = list(value) if isinstance(default, list) else value
+    return {"unit_id": unit_id, "text": text, "annotation": full}
+
+
+def _unit_entry(unit: MemoryUnit, discovery: str, *, required: bool = False) -> dict:
+    """Continuity-mode entry for a unit read directly (anchor / background)."""
+    event_kind = str(unit.system_metadata.get("continuity_kind", "statement"))
+    return _view_entry(
+        unit_id=unit.id,
+        text=unit.content,
+        kind=view_kind(event_kind),
+        status=view_status(event_kind),
+        discovery=discovery,
+        required=required,
+        classification_confidence=unit.system_metadata.get(
+            "continuity_classification_confidence", "unknown"
+        ),
+        evidence_refs=[asdict(MemoryRef.of(unit))],
+        duty_ids=list(unit.system_metadata.get("continuity_duties", []) or []),
+        common=True,
+    )
+
+
+def _finalize_view(items: list[dict], *, top_k: int, gaps: list[dict]) -> list[dict]:
+    """Order by discovery source (background → anchor → relation → semantic) then truncate.
+
+    Ordering matters for truncation: required background must never be pushed out by
+    semantic candidates, so it is sorted first and the truncation gap is appended after.
+    """
+    ranked = sorted(
+        items,
+        key=lambda entry: _DISCOVERY_ORDER.index(entry["annotation"]["discovery"])
+        if entry["annotation"]["discovery"] in _DISCOVERY_ORDER
+        else len(_DISCOVERY_ORDER),
+    )
+    if len(ranked) > top_k:
+        gaps.append(
+            {
+                "code": "budget_exhausted",
+                "message": f"view returned {len(ranked)} items; truncated to top_k",
+                "blocking": False,
+                "affected_item_ids": [],
+            }
+        )
+        ranked = ranked[:top_k]
+    return ranked
 
 
 class ContinuityService(Continuity):
     def __init__(
         self,
         repository: ContinuityRepository,
-        graph: GraphStore,
-        view_builder,
+        graph: GraphStore | None = None,
+        view_builder=None,
         *,
-        projector,
+        mode: str = "role",
+        projector=None,
         catalog=None,
         conflict_resolver=None,
         associator=None,
         derivation_extractor=None,
         derivation_dedup=None,
         derivation_version="",
+        relation_projector=None,
+        connectors: dict | None = None,
     ):
-        if not graph.supports_incident_edges:
-            raise ValidationError("continuity graph must support directed incident edges")
-        projector_graph = projector.projection_graph()
-        if projector_graph is not graph:
-            raise ValidationError(
-                "relation projector and the continuity view must share one GraphStore object"
-            )
+        # 关系投影走独立端口（接收 RelationRecord）；没有专门投影器时用适配器包住
+        # 既有的 IndexBuilder，伪造 MemoryUnit 的知识只留在 projection.py 一处。
+        if relation_projector is None and projector is not None:
+            relation_projector = IndexBuilderRelationProjector(projector)
+        self.relation_projector = relation_projector
+        # 可信连接配置由装配注入；``None`` 表示「未知」，此时带连接的关系一律不可用
+        # （fail closed），不允许「没配置就放行」。
+        self.connectors = connectors
+
+        if mode not in {"continuity", "role"}:
+            raise ValidationError("continuity mode must be 'continuity' or 'role'")
+        if mode == "role":
+            if graph is None or not graph.supports_incident_edges:
+                raise ValidationError(
+                    "role mode requires a graph supporting directed incident edges"
+                )
+            if view_builder is None:
+                raise ValidationError("role mode requires a role view builder")
+            if projector is None:
+                raise ValidationError("role mode requires a relation projector")
+            projector_graph = projector.projection_graph()
+            if projector_graph is not graph:
+                raise ValidationError(
+                    "relation projector and the continuity view must share one GraphStore object"
+                )
         if derivation_extractor is not None and not derivation_version:
             raise ValidationError("derivation requires an explicit builder/model version")
+        self.mode = mode
         self.derivation_extractor = derivation_extractor
         self.derivation_dedup = derivation_dedup
         self.derivation_version = derivation_version
@@ -77,16 +191,18 @@ class ContinuityService(Continuity):
         self.associator = associator
         if associator is not None:
             associator.configure_relations(self.catalog)
-        view_builder.configure_relations(self.catalog)
+        if view_builder is not None:
+            view_builder.configure_relations(self.catalog)
         self.view_builder = view_builder
         self.repository = repository
         self.graph = graph
 
-    def health(self) -> None:
+    def health(self) -> dict:
         self.repository.kv.health()
-        self.graph.health()
-        self.projector.health()
-        self.view_builder.health()
+        if self.mode == "role":
+            self.graph.health()
+            self.projector.health()
+            self.view_builder.health()
         if self.conflict_resolver:
             self.conflict_resolver.health()
         if self.associator:
@@ -95,6 +211,16 @@ class ContinuityService(Continuity):
             self.derivation_extractor.health()
         if self.derivation_dedup:
             self.derivation_dedup.health()
+        return {"continuity_mode": self.mode}
+
+    def _require_role_mode(self) -> None:
+        if self.mode != "role":
+            raise UnsupportedCapabilityError(
+                capability="relation",
+                value=self.mode,
+                component="continuity",
+                message=f"continuity {self.mode} mode has no relation capability",
+            )
 
     def close(self) -> None:
         """Stop the Registry writer; injected stores remain owned by their assembly root."""
@@ -117,11 +243,6 @@ class ContinuityService(Continuity):
         if request.operation == "get":
             task = repo.get(scope, "tasks", request.task_id)
             view = self.task_view(task, read)
-            view["source_cursors"] = {
-                binding["binding_id"]: sync.cursor(
-                    repo, scope, binding["connector_id"], binding["context_id"]
-                ) for binding in task["bindings"] if binding["active"]
-            }
             return view
         task_id = request.task_id
         initial = None
@@ -207,19 +328,18 @@ class ContinuityService(Continuity):
         write: WriteMemory,
         *,
         query_output=None,
-        conditional_update=None,
+        request_fingerprint: str = "",
     ) -> dict:
         if self.derivation_extractor is not None and query_output is None:
             raise ValidationError("derivation requires exact read-after-write metadata lookup")
         repo = self.repository
-        key = fingerprint(
-            {"connector": connector, "binding": event.binding_id, "event": event.event_id}
-        )
+        key = self.event_key(connector, event.binding_id, event.event_id)
         envelope = asdict(event)
-        if event.source_position is None:
-            # Preserve hashes of envelopes written before ordered-source support.
-            envelope.pop("source_position")
-            envelope.pop("previous_position")
+        # 幂等摘要覆盖整个请求：只对事件摘要会让「改 event_time／metadata 后重试」被当成
+        # 同一事件而静默返回旧记录。指纹写进 envelope 本身，使摘要可从落盘记录复算
+        # （recover 就靠这一点核对回执与正文）。
+        if request_fingerprint:
+            envelope["request_fingerprint"] = request_fingerprint
         digest = fingerprint(envelope)
         with repo.lock:
             task = repo.get(scope, "tasks", event.task_id)
@@ -231,14 +351,6 @@ class ContinuityService(Continuity):
             try:
                 receipt = repo.get(scope, "events", key)
             except NotFoundError:
-                # After a cutover the source stops emitting events entirely; ordered and
-                # unordered new events alike must be rejected, while replay of an already
-                # committed receipt continues to resolve above.
-                sync.reject_cutover(repo, scope, connector, binding["context_id"])
-                if event.source_position is not None:
-                    sync.reserve(
-                        repo, scope, connector, binding["context_id"], event, key, digest
-                    )
                 receipt = {
                     "digest": digest,
                     "status": "unknown",
@@ -254,8 +366,12 @@ class ContinuityService(Continuity):
                             "continuity_kind": event.kind,
                             "continuity_classification_confidence": event.classification_confidence,
                             "continuity_task": event.task_id,
-                            "continuity_event": key,
+                            "continuity_binding": event.binding_id,
+                            "continuity_event": event.event_id,
+                            "continuity_operation_id": key,
                             "continuity_connector": connector,
+                            "continuity_source_locator": event.source_locator or "",
+                            "continuity_claimed_author": event.claimed_author or "",
                             "continuity_duties": event.duty_ids,
                             "continuity_envelope": canonical(envelope),
                         },
@@ -285,24 +401,12 @@ class ContinuityService(Continuity):
                 receipt["status"] = "committed"
                 repo.save(scope, "events", key, receipt)
             if receipt["status"] == "committed" and self.derivation_extractor is not None:
-                self._derive_event(
-                    scope, key, task, receipt, read, write, query_output, conditional_update
-                )
+                self._derive_event(scope, key, task, receipt, read, write, query_output)
             if receipt["status"] == "committed" and self.associator is not None:
                 if receipt.get("association_status") != "committed":
                     self._associate_event(scope, key, task, receipt, read, write)
             for item in receipt.get("derived", []):
                 read(MemoryRef.parse(item["ref"]))
-            source_cursor = None
-            if event.source_position is not None:
-                source_cursor = sync.cursor(repo, scope, connector, binding["context_id"])
-                if receipt["status"] == "committed" and all(
-                    receipt.get(stage, "committed") == "committed"
-                    for stage in ("derivation_status", "association_status")
-                ):
-                    source_cursor = sync.commit(
-                        repo, scope, connector, binding["context_id"], event, key, digest
-                    )
             return {
                 **{
                     k: v
@@ -311,20 +415,244 @@ class ContinuityService(Continuity):
                 },
                 "index_status": "unchecked",
                 "operation_id": key,
-                "source_cursor": source_cursor,
             }
 
-    def _derive_event(
-        self, scope, key, task, receipt, read, write, query_output, conditional_update
-    ):
+    def record_batch(
+        self,
+        scope,
+        events,
+        connectors,
+        read,
+        write_batch,
+        *,
+        request_fingerprints=None,
+        query_output=None,
+    ) -> list[dict]:
+        """Five-phase reliable batch write (D5).
+
+        1. validate every event against its task/binding and read its evidence refs;
+        2. write all missing bodies in **one** ``write_batch`` call;
+        3. append background to each affected task **once** (deduplicated by value);
+        4. bump each affected task revision **once**;
+        5. persist one receipt per event (then run per-event derivation).
+
+        ``write_batch(items)`` takes ``[(content, metadata), ...]`` and returns one unit
+        list per item. A batch write failure leaves every pending event ``unknown`` so a
+        retry reconciles instead of rewriting bodies.
+        """
+        if self.derivation_extractor is not None and query_output is None:
+            raise ValidationError("derivation requires exact read-after-write metadata lookup")
+        repo = self.repository
+        fingerprints = list(request_fingerprints or [""] * len(events))
+        results: list[dict] = []
+        pending: list[dict] = []
+        resumable: list[dict] = []
+        with repo.lock:
+            # Phase 1: validate + classify.
+            for index, event in enumerate(events):
+                connector = connectors[index]
+                key = self.event_key(connector, event.binding_id, event.event_id)
+                envelope = asdict(event)
+                if fingerprints[index]:
+                    envelope["request_fingerprint"] = fingerprints[index]
+                digest = fingerprint(envelope)
+                task = repo.get(scope, "tasks", event.task_id)
+                binding = self.binding(task, event.binding_id)
+                if task["state"] != "open" or binding["connector_id"] != connector:
+                    raise ConflictError(
+                        "binding", message="inactive task or mismatched connection"
+                    )
+                for ref in event.evidence_refs:
+                    read(ref)
+                try:
+                    receipt = repo.get(scope, "events", key)
+                except NotFoundError:
+                    receipt = None
+                if receipt is not None and receipt["digest"] != digest:
+                    raise ConflictError("event", message="event ID reused with different content")
+                entry = {
+                    "index": index,
+                    "event": event,
+                    "connector": connector,
+                    "key": key,
+                    "envelope": envelope,
+                    "digest": digest,
+                    "task": task,
+                    "receipt": receipt,
+                }
+                if receipt is not None:
+                    # A receipt that already exists means the body was attempted before.
+                    # Re-writing it would duplicate content: a receipt without refs stays
+                    # ``unknown`` and is reconciled through ``recover(kind=event)``; one
+                    # with refs only needs the promotion (background/revision/committed).
+                    for ref in receipt["refs"]:
+                        read(MemoryRef.parse(ref))
+                    if receipt["refs"]:
+                        resumable.append(entry)
+                    else:
+                        results.append((index, self._receipt_result(receipt, key)))
+                else:
+                    pending.append(entry)
+                entry["results"] = results
+            # Phase 2a: register every pending event as ``unknown`` **before** writing a
+            # body. Without this, a crash between the body write and the receipt leaves no
+            # trace: the retry would write the body again and recovery would have nothing
+            # to reconcile against (S11 / D5 order, same as single ``record``).
+            for entry in pending:
+                receipt = entry["receipt"] or {}
+                receipt.update(
+                    digest=entry["digest"],
+                    status="unknown",
+                    refs=[],
+                    connector=entry["connector"],
+                    task_id=entry["event"].task_id,
+                )
+                receipt.setdefault("derived", [])
+                entry["receipt"] = receipt
+                repo.save(scope, "events", entry["key"], receipt)
+            # Phase 2b: one batched body write for everything still missing.
+            written: dict[int, list] = {}
+            if pending:
+                try:
+                    batches = write_batch(
+                        [
+                            (
+                                entry["event"].content,
+                                self._event_metadata(
+                                    entry["event"], entry["connector"], entry["key"]
+                                ),
+                            )
+                            for entry in pending
+                        ]
+                    )
+                    for entry, units in zip(pending, batches):
+                        written[entry["index"]] = list(units)
+                except Exception:
+                    # The bodies may or may not have landed; the durable ``unknown``
+                    # receipts already saved above are what recovery reconciles against.
+                    for entry in pending:
+                        entry["results"].append(
+                            (
+                                entry["index"],
+                                self._receipt_result(entry["receipt"], entry["key"]),
+                            )
+                        )
+                    pending = []
+            # Phase 2c: convert the receipts that have bodies into ``partial``.
+            for entry in pending:
+                units = written.get(entry["index"])
+                if units is None:
+                    # No body for this item: keep it ``unknown`` instead of pretending it
+                    # was written with empty refs.
+                    entry["results"].append(
+                        (
+                            entry["index"],
+                            self._receipt_result(entry["receipt"], entry["key"]),
+                        )
+                    )
+                    entry["skip"] = True
+                    continue
+                entry["receipt"].update(
+                    status="partial",
+                    refs=[asdict(MemoryRef.of(unit)) for unit in units],
+                )
+                repo.save(scope, "events", entry["key"], entry["receipt"])
+            pending = [entry for entry in pending if not entry.get("skip")]
+            # Receipts that already carry refs only need the promotion path below.
+            pending = pending + resumable
+            # Phase 3 + 4: background once and revision once per task.
+            touched: dict[str, dict] = {}
+            for entry in pending:
+                units = written.get(entry["index"]) or []
+                receipt = entry["receipt"] or {
+                    "connector": entry["connector"],
+                    "task_id": entry["event"].task_id,
+                    "derived": [],
+                }
+                receipt.update(
+                    digest=entry["digest"],
+                    refs=[asdict(MemoryRef.of(unit)) for unit in units] or receipt.get("refs", []),
+                )
+                entry["receipt"] = receipt
+                if receipt["refs"]:
+                    task = touched.setdefault(
+                        entry["event"].task_id,
+                        {
+                            "task": repo.get(scope, "tasks", entry["event"].task_id),
+                            "changed": False,
+                        },
+                    )["task"]
+                    for ref in receipt["refs"]:
+                        item = {"ref": ref, "required": False}
+                        if item not in task["background"]:
+                            task["background"].append(item)
+                            touched[entry["event"].task_id]["changed"] = True
+            for task_id, entry in touched.items():
+                if entry["changed"]:
+                    entry["task"]["revision"] += 1
+                    repo.save(scope, "tasks", task_id, entry["task"])
+            # Phase 5: receipts (committed only when refs exist).
+            for entry in pending:
+                receipt = entry["receipt"]
+                receipt["status"] = "committed" if receipt["refs"] else "unknown"
+                receipt.setdefault("index_status", "unchecked")
+                repo.save(scope, "events", entry["key"], receipt)
+                entry["results"].append(
+                    (entry["index"], self._receipt_result(receipt, entry["key"]))
+                )
+            for entry in pending:
+                receipt = entry["receipt"]
+                if receipt["status"] != "committed" or self.derivation_extractor is None:
+                    continue
+                task = repo.get(scope, "tasks", entry["event"].task_id)
+                self._derive_event(
+                    scope,
+                    entry["key"],
+                    task,
+                    receipt,
+                    read,
+                    self._single_event_writer(write_batch),
+                    query_output,
+                )
+        ordered = dict(results)
+        return [ordered[index] for index in range(len(events))]
+
+    @staticmethod
+    def _event_metadata(event, connector, key) -> dict:
+        return {
+            "continuity_kind": event.kind,
+            "continuity_classification_confidence": event.classification_confidence,
+            "continuity_task": event.task_id,
+            "continuity_binding": event.binding_id,
+            "continuity_event": event.event_id,
+            "continuity_operation_id": key,
+            "continuity_connector": connector,
+            "continuity_source_locator": event.source_locator or "",
+            "continuity_claimed_author": event.claimed_author or "",
+            "continuity_duties": event.duty_ids,
+            "continuity_envelope": canonical(asdict(event)),
+        }
+
+    @staticmethod
+    def _receipt_result(receipt, key) -> dict:
+        return {
+            **{
+                name: value
+                for name, value in receipt.items()
+                if name not in {"relation_candidates", "build_plan"}
+            },
+            "index_status": "unchecked",
+            "operation_id": key,
+        }
+
+    def _derive_event(self, scope, key, task, receipt, read, write, query_output):
         """Journal a side-effect-free extraction plan before applying its outputs.
 
         Called under repository.lock: concurrent retries of one output cannot both pass
         the lookup/create boundary. Content is written only via the authorized callback.
-        The built-in planner reuses exact, authorized snapshots; semantic updates remain
-        explicit corrections rather than silently overwriting another author's memory.
+        The built-in planner reuses exact, authorized snapshots; a new builder/model
+        version re-plans created/reused against the same sources without duplicating them.
         """
-        from jiuwen_memory.common.type_def import MemoryUnit, Modality, Segment
 
         from .derivation import DerivationItem, DerivationPlan, reconcile
 
@@ -332,17 +660,15 @@ class ContinuityService(Continuity):
         try:
             sources = [read(MemoryRef.parse(ref)) for ref in receipt["refs"]]
             build_id = fingerprint({"event": key, "version": self.derivation_version})
-            source_refs_digest = canonical(receipt["refs"])
             if "build_plan" not in receipt or receipt.get("build_id") != build_id:
                 # A derivation_version change is an explicit new-version rebuild: re-plan
-                # against the same sources and update the previous outputs in place (CAS)
-                # instead of duplicating them under a fresh build. The batch id and the
-                # frozen plan are saved together only after extraction succeeds, so a failed
-                # model run never leaves the new id pointing at a stale plan.
+                # created/reused against the same sources instead of duplicating them under
+                # a fresh build. The batch id and the frozen plan are saved together only
+                # after extraction succeeds, so a failed model run never leaves the new id
+                # pointing at a stale plan.
                 extracted = self.derivation_extractor.extract(sources)
                 plan = []
                 seen = set()
-                assigned_refs: set[str] = set()
                 for unit in extracted:
                     if unit.scope != scope:
                         raise ValidationError("derivation cannot change source scope")
@@ -369,40 +695,12 @@ class ContinuityService(Continuity):
                                 "continuity_event"
                             ):
                                 continue
-                            if ref.unit_id in assigned_refs:
-                                # Each previous output revises at most one old record; a
-                                # second output matching the same target must not freeze a
-                                # duplicate update of the same digest.
-                                continue
                             try:
                                 authorized = read(ref)
                             except (PermissionDeniedError, NotFoundError, ConflictError):
                                 continue
                             if MemoryRef.of(authorized).content_digest == digest:
                                 item = replace(item, action="reused", ref=ref)
-                                assigned_refs.add(ref.unit_id)
-                                break
-                            # A previous derived output of the same sources with different
-                            # content is a revised statement: update it in place (CAS).
-                            plain_text_target = (
-                                len(authorized.segments) == 1
-                                and not authorized.segments[0].assets
-                                and authorized.segments[0].source == Modality.TEXT
-                            )
-                            if (
-                                plain_text_target
-                                and candidate.system_metadata.get("continuity_build")
-                                and candidate.system_metadata.get("continuity_source_refs")
-                                == source_refs_digest
-                            ):
-                                item = replace(
-                                    item,
-                                    action="updated",
-                                    ref=ref,
-                                    digest_before=MemoryRef.of(authorized).content_digest,
-                                    digest_after=digest,
-                                )
-                                assigned_refs.add(ref.unit_id)
                                 break
                     plan.append(asdict(item))
                 receipt["build_id"] = build_id
@@ -455,7 +753,6 @@ class ContinuityService(Continuity):
                 read=read,
                 create=create,
                 add_source=add_source,
-                conditional_update=conditional_update,
             )
             receipt.update(
                 derivation_status=result.status,
@@ -552,7 +849,7 @@ class ContinuityService(Continuity):
             out = []
             for edge in self.graph.incident_edges(scope, ref_key, limit=101):
                 try:
-                    other, other_ref = self.resolve_edge(scope, edge.id, read)
+                    other = self.resolve_edge(scope, edge.id, read)
                 except AgentMemoryError as exc:
                     logger.warning(
                         "Relation support unavailable: error_type=%s", type(exc).__name__
@@ -562,7 +859,12 @@ class ContinuityService(Continuity):
                     other.relation_type == "supports"
                     and other.status == RelationStatus.CONFIRMED
                 ):
-                    out.append((other, other_ref))
+                    # Relation truth lives in the Registry KV head; the proof reference
+                    # carries the relation id and its payload digest so a later revision
+                    # or revocation invalidates the resolution.
+                    out.append(
+                        (other, MemoryRef(scope, other.relation_id, fingerprint(asdict(other))))
+                    )
             return out
 
         def sources(ref_key):
@@ -612,9 +914,10 @@ class ContinuityService(Continuity):
         relation: RelationRecord,
         expected_revision: int,
         read: ReadMemory,
-        write: WriteMemory,
         read_previous: ReadMemory | None = None,
+        connector: str = "",
     ) -> dict:
+        self._require_role_mode()
         repo = self.repository
         if relation.revision != expected_revision + 1:
             raise ValidationError("relation revision must follow expected_revision")
@@ -622,7 +925,9 @@ class ContinuityService(Continuity):
         if relation.status != RelationStatus.REVOKED:
             source, target = read(relation.source), read(relation.target)
             self.catalog.validate(relation, source, target)
-            for ref in [*relation.evidence_refs, *relation.resolution_refs]:
+            # Resolution proofs reference relation heads, not memory units; they are
+            # re-checked through validate_resolution, never read as content.
+            for ref in relation.evidence_refs:
                 read(ref)
         elif expected_revision == 0:
             raise ValidationError("cannot revoke an unknown relation")
@@ -632,23 +937,13 @@ class ContinuityService(Continuity):
             try:
                 head = repo.get(scope, "relations", relation.relation_id)
             except NotFoundError:
-                head = {"revision": 0, "history": []}
-            previous_ref = head.get("ref")
+                head = {"revision": 0}
             if head.get("digest") == digest:
-                if not previous_ref:
-                    return {"status": "unknown", "relation_id": relation.relation_id}
-                read(MemoryRef.parse(previous_ref))
                 return self._project(scope, relation, head, read)
             if head.get("revision") != expected_revision:
                 raise ConflictError("relation", message="stale relation revision")
-            if head.get("status") == "unknown":
-                raise ConflictError("relation", message="unresolved write requires reconciliation")
-            if previous_ref:
-                import json
-
-                previous = RelationRecord.parse(
-                    json.loads((read_previous or read)(MemoryRef.parse(previous_ref)).content)
-                )
+            if head.get("current"):
+                previous = RelationRecord.parse(head["current"])
                 if (
                     previous.source.key != relation.source.key
                     or previous.target.key != relation.target.key
@@ -665,38 +960,25 @@ class ContinuityService(Continuity):
                         resolution_origin="human",
                         resolution_refs=previous.resolution_refs,
                     )
-                head["history"].append(previous_ref)
+                # Immutable prior revision before the head is atomically replaced.
+                repo.save(
+                    scope,
+                    "relations",
+                    f"{relation.relation_id}/rev/{previous.revision}",
+                    asdict(previous),
+                )
             resolved = self._resolve_conflict(scope, relation, source, target, read)
-            payload = asdict(resolved)
-            dependencies = [
-                resolved.source, resolved.target,
-                *resolved.evidence_refs, *resolved.resolution_refs,
-            ]
+            current = asdict(resolved)
             head.update(
                 revision=relation.revision,
                 digest=digest,
-                status="unknown",
-                ref=None,
-                payload_digest=fingerprint(payload),
-                relation_state=resolved.status.value,
-                dependencies=[asdict(ref) for ref in dependencies],
+                status="projecting",
+                connector=connector,
+                payload_digest=fingerprint(current),
+                current=current,
             )
             repo.save(scope, "relations", relation.relation_id, head)
-            try:
-                units = write(canonical(payload), {"continuity_kind": "relation"})
-            except Exception:
-                return {
-                    "status": "unknown",
-                    "relation_id": relation.relation_id,
-                    "revision": relation.revision,
-                }
-            if len(units) != 1:
-                raise ValidationError("relation writes require one unchanged memory record")
-            if units[0].content != canonical(payload):
-                raise ValidationError("construction changed the relation payload")
-            head.update(ref=asdict(MemoryRef.of(units[0])), status="partial")
-            repo.save(scope, "relations", relation.relation_id, head)
-            return self._project(scope, relation, head, read)
+            return self._project(scope, resolved, head, read)
 
     def _resolve_conflict(self, scope, relation, source, target, read):
         if relation.relation_type != "contradicts" or relation.status == RelationStatus.REVOKED:
@@ -720,7 +1002,7 @@ class ContinuityService(Continuity):
                 if edge.id == "continuity:relation:" + relation.relation_id:
                     continue
                 try:
-                    other, other_ref = self.resolve_edge(scope, edge.id, read)
+                    other = self.resolve_edge(scope, edge.id, read)
                     for dependency in [other.source, other.target, *other.evidence_refs]:
                         read(dependency)
                 except Exception:
@@ -740,7 +1022,9 @@ class ContinuityService(Continuity):
                     and matching_evidence
                 ):
                     verified = True
-                    proof_refs.append(other_ref)
+                    proof_refs.append(
+                        MemoryRef(scope, other.relation_id, fingerprint(asdict(other)))
+                    )
             context[f"verified_{suffix}"] = verified
             context["multiple_conflicts"] = (
                 context.get("multiple_conflicts", False) or conflicts > 0
@@ -758,6 +1042,7 @@ class ContinuityService(Continuity):
         )
 
     def view(self, scope, request, read, discover):
+        self._require_role_mode()
         task = self.repository.get(scope, "tasks", request.task_id) if request.task_id else None
         result = self.view_builder.build(
             scope,
@@ -780,10 +1065,12 @@ class ContinuityService(Continuity):
         ``covered_for_requested_scope`` only means every registered relation truth has a
         committed projection; it never proves that all history was ingested.
         """
-        heads = self.repository.list(scope, "relations")
+        heads = [
+            h for h in self.repository.list(scope, "relations") if _is_relation_head(h)
+        ]
         if not heads:
             return "unknown"
-        projected = sum(1 for h in heads if h.get("ref") and h.get("status") == "committed")
+        projected = sum(1 for h in heads if h.get("status") == "committed")
         status = "covered_for_requested_scope" if projected == len(heads) else "partial"
         self.repository.save(
             scope,
@@ -804,159 +1091,92 @@ class ContinuityService(Continuity):
         self, scope: Scope, relation: RelationRecord, head: dict, read: ReadMemory
     ) -> dict:
         try:
-            unit = read(MemoryRef.parse(head["ref"]))
-            self.projector.build([unit], mode=IndexWriteMode.RETRIEVAL_ONLY)
+            if self.relation_projector is None:
+                raise UnsupportedCapabilityError(
+                    capability="relation_projection",
+                    value=relation.relation_id,
+                    component="continuity",
+                    message="no relation projector is assembled",
+                )
+            self.relation_projector.project(scope, relation, relation.revision)
             head["status"] = "committed"
-            # Repair older heads as well, so retention no longer has to retain all
-            # evidence conservatively when an old record lacks its dependency manifest.
-            head["relation_state"] = relation.status.value
-            dependencies = [
-                relation.source, relation.target,
-                *relation.evidence_refs, *relation.resolution_refs,
-            ]
-            head["dependencies"] = [asdict(ref) for ref in dependencies]
-            self._journal_change(scope, relation)
         except Exception:
-            head["status"] = "partial"
+            head["status"] = "projecting"
         self.repository.save(scope, "relations", relation.relation_id, head)
         return {
             "status": head["status"],
-            "relation_ref": head["ref"],
             "relation_id": relation.relation_id,
             "revision": relation.revision,
         }
 
-    def _change_watermark(self, scope: Scope) -> dict:
-        try:
-            return self.repository.get(scope, "changes", "watermark")
-        except NotFoundError:
-            return {"next": 0}
-
-    def _journal_change(self, scope: Scope, relation: RelationRecord) -> None:
-        """Append a committed relation revision/revocation to the change journal (idempotent).
-
-        The change record and the watermark are two separate KV records, so a crash between
-        their saves leaves a record whose id is not yet reflected in the watermark. A new id
-        is therefore derived from the journal itself (max recorded id + 1), not only the
-        watermark: recovery is order-independent and a later change never reuses an id that
-        an earlier, not-yet-watermarked change already claimed.
-        """
-        key = fingerprint(
-            {"relation_id": relation.relation_id, "revision": relation.revision}
-        )
-        try:
-            existing = self.repository.get(scope, "changes", key)
-            watermark = self._change_watermark(scope)
-            if watermark["next"] <= existing["change_id"]:
-                watermark["next"] = existing["change_id"] + 1
-                self.repository.save(scope, "changes", "watermark", watermark)
-            return  # idempotent: this change's id is already durable in its record
-        except NotFoundError:
-            pass
-        watermark = self._change_watermark(scope)
-        change_id = watermark["next"]
-        for record in self.repository.list(scope, "changes"):
-            if "change_id" in record:
-                change_id = max(change_id, record["change_id"] + 1)
-        self.repository.save(
-            scope,
-            "changes",
-            key,
-            {
-                "change_id": change_id,
-                "relation_id": relation.relation_id,
-                "revision": relation.revision,
-                "relation_type": relation.relation_type,
-                "status": relation.status.value,
-                "source_key": relation.source.key,
-                "target_key": relation.target.key,
-                "changed_at": datetime.now(UTC).isoformat(),
-            },
-        )
-        watermark["next"] = change_id + 1
-        self.repository.save(scope, "changes", "watermark", watermark)
-
-    def review_changes(self, scope: Scope, since: int = 0) -> dict:
-        """Return relation changes since ``since`` and the new watermark.
-
-        The change journal is the durable "变化入库" leg of the review loop: callers
-        re-derive review items only from changes after the watermark they last processed.
-        """
-        # Snapshot records and cursor under the writer lock. A durable record may
-        # precede its watermark after a failed save, even before any writer retries.
-        with self.repository.lock:
-            watermark = self._change_watermark(scope)
-            changes = [r for r in self.repository.list(scope, "changes") if "change_id" in r]
-            next_id = max([watermark["next"], *(c["change_id"] + 1 for c in changes)])
-            changes = [c for c in changes if c["change_id"] >= since]
-            changes.sort(key=lambda c: c["change_id"])
-            return {"changes": changes, "watermark": next_id}
-
-    def propagate_review(
-        self,
-        scope: Scope,
-        since: int,
-        read: ReadMemory,
-        *,
-        required: set[str],
-        max_nodes: int = 50,
-        max_depth: int = 4,
-    ) -> dict:
-        """Incrementally propagate review from the change journal into three tiers.
-
-        Each changed relation seeds a bounded forward walk of the dependent subgraph
-        (``review.review_impact``), so only the affected references are re-reviewed, never
-        the whole graph. Returns the aggregated tiers plus the watermark to resume from.
-        """
-        from .review import review_impact
-
-        reviewed = self.review_changes(scope, since)
-        required_items: list[str] = []
-        candidate_items: list[str] = []
-        unchecked = False
-        for change in reviewed["changes"]:
-            for seed in {change["source_key"], change["target_key"]}:
-                outcome = review_impact(
-                    scope,
-                    self.graph,
-                    resolve_edge=lambda rid: self.resolve_edge(scope, rid, read),
-                    seed=seed,
-                    required=required,
-                    max_nodes=max_nodes,
-                    max_depth=max_depth,
-                )
-                required_items.extend(outcome["required"])
-                candidate_items.extend(outcome["candidate"])
-                unchecked = unchecked or bool(outcome["gaps"])
-        return {
-            "required": sorted(set(required_items)),
-            "candidate": sorted(set(candidate_items) - set(required_items)),
-            "gaps": ["unchecked_dependencies"] if unchecked else [],
-            "watermark": reviewed["watermark"],
-        }
-
-    def resolve_edge(self, scope: Scope, relation_id: str, read: ReadMemory) -> tuple:
-        import json
-
+    def resolve_edge(self, scope: Scope, relation_id: str, read: ReadMemory) -> RelationRecord:
         relation_id = relation_id.removeprefix("continuity:relation:")
         head = self.repository.get(scope, "relations", relation_id)
-        if not head.get("ref"):
+        if "current" not in head:
             raise NotFoundError("relation")
-        ref = MemoryRef.parse(head["ref"])
-        unit = read(ref)
-        relation = RelationRecord.parse(json.loads(unit.content))
-        if relation.relation_id != relation_id or relation.revision != head["revision"]:
+        self._require_connector_available(scope, head)
+        relation = RelationRecord.parse(head["current"])
+        if relation.relation_id != relation_id or relation.revision != head.get("revision"):
             raise ConflictError("relation", message="relation head changed")
         self.validate_resolution(scope, relation, read)
-        return relation, ref
+        return relation
+
+    def task_background(self, scope, task_id, read):
+        gaps = []
+        try:
+            task = self.repository.get(scope, "tasks", task_id)
+        except NotFoundError:
+            return {
+                "units": [],
+                "required_ids": [],
+                "gaps": [
+                    {
+                        "code": "task_not_found",
+                        "message": f"continuity task {task_id} is not registered",
+                        "blocking": False,
+                        "affected_item_ids": [],
+                    }
+                ],
+            }
+        units, required_ids = [], []
+        for item in task.get("background", []):
+            required = bool(item.get("required", True))
+            try:
+                ref = MemoryRef.parse(item["ref"])
+            except (ValueError, KeyError, TypeError):
+                gaps.append(
+                    {
+                        "code": "background_unreadable",
+                        "message": "task background reference is not a valid MemoryRef",
+                        "blocking": required,
+                        "affected_item_ids": [],
+                    }
+                )
+                continue
+            try:
+                unit = read(ref)
+            except AgentMemoryError:
+                # 不披露 unit_id：读不到这条背景往往正是因为没有权限，缺口里回显标识
+                # 等于把受限记录的 ID 送给无权限调用方（S11 不变量 7）。
+                gaps.append(
+                    {
+                        "code": "background_unavailable",
+                        "message": "a task background record is not readable",
+                        "blocking": required,
+                        "affected_item_ids": [],
+                    }
+                )
+                continue
+            units.append(unit)
+            if required:
+                required_ids.append(unit.id)
+        return {"units": units, "required_ids": required_ids, "gaps": gaps}
 
     def task_owner(self, scope, task_id):
         return self.repository.get(scope, "tasks", task_id)["owner"]
 
     def retains(self, unit) -> bool:
         """Check all project registries so a cross-scope reference retains its real source."""
-        if unit.system_metadata.get("continuity_kind") == "relation":
-            return True
         key = MemoryRef.of(unit).key
         with self.repository.lock:
             for project in self.repository.kv.scopes():
@@ -967,12 +1187,19 @@ class ContinuityService(Continuity):
                     ):
                         return True
                 for head in self.repository.list(project, "relations"):
-                    if head.get("relation_state") == "revoked":
+                    if "current" not in head:
                         continue
-                    if "dependencies" not in head:
-                        # Legacy control rows must be backfilled before cleanup is safe.
-                        return True
-                    if any(MemoryRef.parse(ref).key == key for ref in head["dependencies"]):
+                    relation = RelationRecord.parse(head["current"])
+                    if relation.status == RelationStatus.REVOKED:
+                        continue
+                    if any(
+                        r.key == key
+                        for r in [
+                            relation.source,
+                            relation.target,
+                            *relation.evidence_refs,
+                        ]
+                    ):
                         return True
         return False
 
@@ -981,33 +1208,30 @@ class ContinuityService(Continuity):
 
         Retention guard for the lifecycle sweep: evidence still cited by an open task's
         background, or by any relation's endpoints/evidence/resolution, must not be cleaned
-        up early. ``read`` enables the relation-truth scan; without it only the cheap
-        active-task check runs.
+        up early. Relation truth lives in the Registry KV head, so no ``read`` is required.
         """
         for task in self.repository.list(scope, "tasks"):
             if task.get("state") != "open":
                 continue
             if any(item.get("ref") == asdict(ref) for item in task.get("background", [])):
                 return True
-        if read is None:
-            return False
-        import json
-
         for head in self.repository.list(scope, "relations"):
-            if not head.get("ref"):
+            if not _is_relation_head(head) or "current" not in head:
                 continue
             try:
-                unit = read(MemoryRef.parse(head["ref"]))
-                relation = RelationRecord.parse(json.loads(unit.content))
-            except (AgentMemoryError, ValueError, TypeError, KeyError) as exc:
-                # An unreadable relation cannot prove absence of dependencies.
-                logger.warning("Retention check incomplete: error_type=%s", type(exc).__name__)
+                relation = RelationRecord.parse(head["current"])
+            except (ValidationError, ValueError, KeyError, TypeError) as exc:
+                # An unreadable relation truth must retain conservatively; only an
+                # unexpected programming error may propagate to the caller.
+                logger.warning(
+                    "Relation truth unreadable during retention check: error_type=%s",
+                    type(exc).__name__,
+                )
                 return True
             if ref in [
                 relation.source,
                 relation.target,
                 *relation.evidence_refs,
-                *relation.resolution_refs,
             ]:
                 return True
         return False
@@ -1045,41 +1269,156 @@ class ContinuityService(Continuity):
         self.repository.delete(scope, "sources", source_key)
         return True
 
-    def mark_source_cutover(
-        self, scope: Scope, connector: str, context_id: str
-    ) -> dict:
-        """Cut a dual-write source over to agent-memory as the single authoritative writer.
-
-        Records the cutover watermark at the caught-up cursor position; a pending source
-        event must be settled first, and afterwards the source must stop emitting events.
-        Held under the same repository lock as ``record`` so a concurrent event commit
-        cannot advance the cursor between the watermark read and its write.
-        """
-        with self.repository.lock:
-            return sync.mark_cutover(self.repository, scope, connector, context_id)
-
-    def source_cutover(self, scope: Scope, connector: str, context_id: str) -> int | None:
-        """Return the cutover watermark position for an ordered source, or ``None``."""
-        return sync.cutover(self.repository, scope, connector, context_id)
-
     def binding_connector(self, scope, task_id, binding_id):
         return self.binding(self.repository.get(scope, "tasks", task_id), binding_id)[
             "connector_id"
         ]
 
-    def relation_head_ref(self, scope, relation_id):
-        return self.repository.get(scope, "relations", relation_id).get("ref")
+    def continuity_view_result(self, scope, request, read, *, extra_items, top_k: int) -> dict:
+        items = []
+        gaps = []
+        required_ids: set[str] = set()
+        seen: set[str] = set()
+        if request.anchor is not None:
+            try:
+                anchor = read(request.anchor)
+            except AgentMemoryError:
+                # 与角色模式一致：读不到的 anchor 必须报缺口，不能与「没有 anchor」混同。
+                gaps.append(
+                    {
+                        "code": "reference_unavailable",
+                        "message": "the anchor reference is not readable",
+                        "blocking": False,
+                        "affected_item_ids": [],
+                    }
+                )
+                anchor = None
+            if anchor is not None:
+                seen.add(anchor.id)
+                items.append(_unit_entry(anchor, "anchor", required=True))
+        if request.task_id:
+            background = self.task_background(scope, request.task_id, read)
+            required_ids = set(background.get("required_ids") or [])
+            gaps.extend(background.get("gaps") or [])
+            for unit in background.get("units") or []:
+                if unit.id in seen:
+                    continue
+                seen.add(unit.id)
+                items.append(
+                    _unit_entry(unit, "background", required=unit.id in required_ids)
+                )
+        for entry in extra_items:
+            if entry["unit_id"] in seen:
+                continue
+            seen.add(entry["unit_id"])
+            # 语义召回只给出 unit_id/正文/系统元数据；kind 与 status 按同一映射推导，
+            # 它不是已读取的引用，evidence_refs 留空而不是伪造摘要。
+            event_kind = str(
+                (entry.get("system_metadata") or {}).get("continuity_kind", "statement")
+            )
+            items.append(
+                _view_entry(
+                    unit_id=entry["unit_id"],
+                    text=entry.get("content", ""),
+                    kind=view_kind(event_kind),
+                    status=view_status(event_kind),
+                    discovery="semantic_candidate",
+                    common=True,
+                )
+            )
+        items = _finalize_view(items, top_k=top_k, gaps=gaps)
+        duties = request.duty if isinstance(request.duty, list) else [request.duty]
+        if any(duty != "general" for duty in duties):
+            # 只对「要求了非 general 职责」的查询声明关系展开不可用。
+            gaps.append(
+                {
+                    "code": "relation_expansion_disabled",
+                    "message": "relation expansion is not available in continuity mode",
+                    "blocking": False,
+                    "affected_item_ids": [],
+                }
+            )
+        return {
+            "items": items,
+            "paths": [],
+            "gaps": gaps,
+            "meta": {
+                "mode": "continuity",
+                "duty": request.duty,
+                "anchors": [asdict(request.anchor)] if request.anchor is not None else [],
+            },
+        }
+
+    def view_result(self, scope, request, read, discover, *, top_k: int) -> dict:
+        view = self.view(scope, request, read, discover)
+        # `anchors` 是 MemoryRef 字典（无 id/text），不是条目：作为结果输出会产生
+        # unit_id 为空、正文为空的条目并占掉 top_k 名额，它属于视图元信息。
+        items = []
+        for group in ("facts", "judgments", "experiences", "open_issues", "risks"):
+            for entry in view.get(group) or []:
+                refs = entry.get("evidence_refs") or []
+                unit_id = (refs[0].get("unit_id") if refs else "") or entry.get("id", "")
+                if not unit_id:
+                    continue
+                # 构建器已算好 kind/status/discovery 等 S11 标注，原样保留；只丢掉条目级
+                # 的 id/text（text 已是条目正文，不在标注里重复一份）。
+                annotation = {k: v for k, v in entry.items() if k not in {"id", "text"}}
+                items.append(
+                    _view_entry(unit_id=unit_id, text=entry.get("text", ""), **annotation)
+                )
+        gaps = list(view.get("gaps") or [])
+        items = _finalize_view(items, top_k=top_k, gaps=gaps)
+        meta = dict(view.get("meta") or {})
+        meta["mode"] = "role"
+        meta["schema_version"] = str(view.get("schema_version", ""))
+        meta["anchors"] = list(view.get("anchors") or [])
+        return {
+            "items": items,
+            "paths": list(view.get("paths") or []),
+            "gaps": gaps,
+            "meta": meta,
+        }
+
+    def relation_current(self, scope, relation_id):
+        return self.repository.get(scope, "relations", relation_id).get("current")
+
+    def _require_connector_available(self, scope, head) -> None:
+        """Unavailable submitting connector = unusable relation, reported as not found.
+
+        Fails closed: with no connector configuration injected, a relation that names a
+        submitting connector cannot be proven usable and is treated as unavailable.
+        """
+        connector = head.get("connector") or ""
+        if not connector:
+            return
+        if self.connectors is None:
+            raise NotFoundError("relation")
+        configured = self.connectors.get(connector)
+        if configured is None:
+            raise NotFoundError("relation")
+        if not configured.get("enabled", True):
+            raise NotFoundError("relation")
+        if scope.space not in configured.get("projects", []):
+            raise NotFoundError("relation")
+        if self.source_quarantine(scope, connector) is not None:
+            raise NotFoundError("relation")
+
+    def relation_head(self, scope, relation_id) -> dict:
+        """The full KV head (including its submitting ``connector``)."""
+        return self.repository.get(scope, "relations", relation_id)
 
     def validate_resolution(self, scope, relation, read):
-        import json
-
+        """Re-check each supporting relation's current head; revision or revocation invalidates."""
         for proof in relation.resolution_refs:
-            unit = read(proof)
-            supported = RelationRecord.parse(json.loads(unit.content))
-            current = self.relation_head_ref(scope, supported.relation_id)
+            try:
+                head = self.repository.get(scope, "relations", proof.unit_id)
+            except NotFoundError:
+                raise ConflictError("resolution", message="resolution evidence changed") from None
+            if head.get("payload_digest") != proof.content_digest:
+                raise ConflictError("resolution", message="resolution evidence changed")
+            supported = RelationRecord.parse(head["current"])
             if (
-                current != asdict(proof)
-                or supported.status != RelationStatus.CONFIRMED
+                supported.status != RelationStatus.CONFIRMED
                 or supported.relation_type != "supports"
             ):
                 raise ConflictError("resolution", message="resolution evidence changed")
@@ -1103,40 +1442,35 @@ class ContinuityService(Continuity):
                 for source in receipt["refs"]:
                     read(MemoryRef.parse(source))
                 build_id = receipt["build_id"]
-                # created outputs carry this build's identity; reused/updated targets are
-                # located by their node key (scope + unit id), so recovery is action-aware
-                # and does not mistake an in-place update for a different build's output.
+                # created outputs carry this build's identity; reused targets are located
+                # by their node key (scope + unit id).
                 by_output = {}
-                by_target = {}
+                by_reused = {}
                 for item in receipt["build_plan"]:
-                    by_output[item["output_key"]] = item
-                    if item["action"] in {"updated", "reused"} and item.get("ref"):
-                        by_target[MemoryRef.parse(item["ref"]).key] = item
+                    if item["action"] == "created":
+                        by_output[item["output_key"]] = item
+                    elif item["action"] == "reused" and item.get("ref"):
+                        by_reused[MemoryRef.parse(item["ref"]).key] = item
                 supplied = {}
                 for ref in request.refs:
                     unit = read(ref)
                     output = unit.system_metadata.get("continuity_output")
-                    # A new writer retags updated targets, while legacy successful
-                    # writes may retain old tags. Target + frozen digest identifies both.
-                    item = by_target.get(MemoryRef.of(unit).key)
-                    if item is not None:
-                        expected = (
-                            item["digest_after"] if item["action"] == "updated"
-                            else MemoryRef.parse(item["ref"]).content_digest
-                        )
-                        if MemoryRef.of(unit).content_digest != expected:
-                            raise ConflictError(
-                                "derivation", message="target differs from frozen reference"
-                            )
-                    else:
+                    if output and unit.system_metadata.get("continuity_build") == build_id:
                         item = by_output.get(output)
-                        if (unit.system_metadata.get("continuity_build") != build_id
-                                or item is None or item["action"] != "created"):
+                        if item is None:
                             raise ConflictError(
                                 "derivation", message="output is not in frozen plan"
                             )
                         if MemoryRef.of(unit).content_digest != item["content_digest"]:
                             raise ConflictError("derivation", message="output digest changed")
+                    else:
+                        item = by_reused.get(MemoryRef.of(unit).key)
+                        if item is None:
+                            raise ConflictError(
+                                "derivation", message="output is not in frozen plan"
+                            )
+                        if MemoryRef.of(unit) != MemoryRef.parse(item["ref"]):
+                            raise ConflictError("derivation", message="reused reference changed")
                     if item["output_key"] in supplied:
                         raise ConflictError("derivation", message="duplicate output identity")
                     supplied[item["output_key"]] = unit
@@ -1170,8 +1504,13 @@ class ContinuityService(Continuity):
                     envelope = json.loads(
                         str(unit.system_metadata.get("continuity_envelope", "{}"))
                     )
+                    # 改造前 `continuity_event` 存的就是幂等键；读旧数据时回退到它，
+                    # 否则历史上停在 unknown 的事件一律核不过。
+                    recorded = unit.system_metadata.get(
+                        "continuity_operation_id"
+                    ) or unit.system_metadata.get("continuity_event")
                     if (
-                        unit.system_metadata.get("continuity_event") != request.operation_id
+                        recorded != request.operation_id
                         or fingerprint(envelope) != receipt["digest"]
                     ):
                         raise ConflictError("recovery", message="event receipt does not match")
@@ -1187,38 +1526,32 @@ class ContinuityService(Continuity):
                     "refs": receipt["refs"],
                     "next_action": "retry_original_event",
                 }
-            if len(request.refs) != 1:
-                raise ValidationError("relation recovery requires exactly one record")
-            head = self.repository.get(scope, "relations", request.operation_id)
-            unit = read(request.refs[0])
-            data = json.loads(unit.content)
-            relation = RelationRecord.parse(data)
-            if (
-                relation.relation_id != request.operation_id
-                or relation.revision != head["revision"]
-                or fingerprint(data) != head.get("payload_digest")
-            ):
-                raise ConflictError("recovery", message="relation receipt does not match")
-            if head.get("ref") and head["ref"] != asdict(request.refs[0]):
-                raise ConflictError("recovery", message="relation already reconciled differently")
-            head.update(ref=asdict(request.refs[0]), status="partial")
-            self.repository.save(scope, "relations", request.operation_id, head)
-            return self._project(scope, relation, head, read)
+            if request.kind == "relation":
+                self._require_role_mode()
+                head = self.repository.get(scope, "relations", request.operation_id)
+                if "current" not in head:
+                    raise NotFoundError("relation")
+                relation = RelationRecord.parse(head["current"])
+                return self._project(scope, relation, head, read)
+            raise ValidationError("unknown recovery kind")
 
     def repair(self, scope: Scope, read: ReadMemory) -> dict:
         """Rebuild graph projections from authoritative relation heads, not re-extraction."""
+        self._require_role_mode()
         results = []
         incomplete = False
         with self.repository.lock:
             for head in self.repository.list(scope, "relations"):
-                if not head.get("ref"):
+                if not _is_relation_head(head):
+                    # Immutable revision rows are not heads: they must not be reported as
+                    # "legacy head without current" (that produced a permanent gap).
+                    continue
+                if "current" not in head:
                     incomplete = True
                     continue
                 try:
-                    import json
-
-                    unit = read(MemoryRef.parse(head["ref"]))
-                    relation = RelationRecord.parse(json.loads(unit.content))
+                    self._require_connector_available(scope, head)
+                    relation = RelationRecord.parse(head["current"])
                     if relation.status != RelationStatus.REVOKED:
                         for ref in [relation.source, relation.target, *relation.evidence_refs]:
                             read(ref)
@@ -1241,32 +1574,56 @@ def build(config):
         allow_ephemeral=config.get("allow_ephemeral", False),
     )
     try:
-        from jiuwen_memory.retrieval.role_view import RoleViewProducer
+        mode = config.get("mode")
+        if mode not in {"continuity", "role"}:
+            raise ValidationError(
+                "continuity.default.params.mode is required and must be 'continuity' or 'role'"
+            )
+        # Document mode has no precise metadata query; derivation must fail at startup.
+        from jiuwen_memory.config.document_flag import should_write_document
 
-        view = RoleViewProducer.build_named(config.get("role_view", "default"), config.ctx)
+        if (
+            should_write_document(config.get("write_document", False))
+            and config.get("derivation_extractor")
+        ):
+            raise ValidationError("derivation build is not supported in document mode")
 
-        def catalog_data(inline_key, path_key):
-            if config.get(inline_key) and config.get(path_key):
-                raise ValidationError("specify catalog inline or via file, not both")
-            if config.get(path_key):
-                from pathlib import Path
+        role_keys = (
+            "graph_store", "role_view", "relation_index_builder",
+            "relation_types", "relation_types_path",
+            "duty_policies", "duty_policies_path",
+            "relation_associator", "conflict_resolver",
+        )
+        if mode == "continuity":
+            ignored = [k for k in role_keys if config.get(k)]
+            if ignored:
+                logger.warning(
+                    "continuity mode ignores role-only configuration: %s",
+                    ", ".join(sorted(ignored)),
+                )
+            graph = view = projector = None
+            catalog = associator = conflict_resolver = None
+        else:
+            from jiuwen_memory.retrieval.role_view import RoleViewProducer
 
-                import yaml
+            view = RoleViewProducer.build_named(config.get("role_view", "default"), config.ctx)
 
-                data = yaml.safe_load(Path(config.get(path_key)).read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    raise ValidationError("catalog file must contain a mapping")
-                return data
-            return config.get(inline_key, {})
+            def catalog_data(inline_key, path_key):
+                if config.get(inline_key) and config.get(path_key):
+                    raise ValidationError("specify catalog inline or via file, not both")
+                if config.get(path_key):
+                    from pathlib import Path
 
-        from jiuwen_memory.construction.dedup import DedupProducer
-        from jiuwen_memory.construction.extractor import ExtractorProducer
+                    import yaml
 
-        service = ContinuityService(
-            repository,
-            storage.graph(config.get("graph_store", "default")),
-            view,
-            projector=(
+                    data = yaml.safe_load(Path(config.get(path_key)).read_text(encoding="utf-8"))
+                    if not isinstance(data, dict):
+                        raise ValidationError("catalog file must contain a mapping")
+                    return data
+                return config.get(inline_key, {})
+
+            graph = storage.graph(config.get("graph_store", "default"))
+            projector = (
                 IndexBuilderProducer.dep(config, "relation_index_builder")
                 if config.get("relation_index_builder")
                 else IndexBuilderProducer.build(
@@ -1274,7 +1631,33 @@ def build(config):
                     {"graph_store": config.get("graph_store", "default")},
                     config.ctx,
                 )
-            ),
+            )
+            catalog = RelationCatalog(
+                catalog_data("relation_types", "relation_types_path"),
+                catalog_data("duty_policies", "duty_policies_path"),
+            )
+            associator = (
+                AssociatorProducer.build_named(config.get("relation_associator"), config.ctx)
+                if config.get("relation_associator")
+                else None
+            )
+            conflict_resolver = (
+                ConflictResolverProducer.build_named(config.get("conflict_resolver"), config.ctx)
+                if config.get("conflict_resolver")
+                else ConflictResolverProducer.build("chain", {}, config.ctx)
+            )
+
+        from jiuwen_memory.construction.dedup import DedupProducer
+        from jiuwen_memory.construction.extractor import ExtractorProducer
+
+        connectors = (getattr(config.ctx, "globals", {}) or {}).get("continuity_connectors", {})
+
+        service = ContinuityService(
+            repository,
+            graph,
+            view,
+            mode=mode,
+            projector=projector,
             derivation_extractor=(
                 ExtractorProducer.build_named(config.get("derivation_extractor"), config.ctx)
                 if config.get("derivation_extractor")
@@ -1286,20 +1669,17 @@ def build(config):
                 else None
             ),
             derivation_version=config.get("derivation_version", ""),
-            catalog=RelationCatalog(
-                catalog_data("relation_types", "relation_types_path"),
-                catalog_data("duty_policies", "duty_policies_path"),
-            ),
-            associator=(
-                AssociatorProducer.build_named(config.get("relation_associator"), config.ctx)
-                if config.get("relation_associator")
-                else None
-            ),
-            conflict_resolver=(
-                ConflictResolverProducer.build_named(config.get("conflict_resolver"), config.ctx)
-                if config.get("conflict_resolver")
-                else ConflictResolverProducer.build("chain", {}, config.ctx)
-            ),
+            catalog=catalog,
+            associator=associator,
+            conflict_resolver=conflict_resolver,
+            relation_projector=(
+                projector
+                if hasattr(projector, "project")
+                else IndexBuilderRelationProjector(projector)
+            )
+            if projector is not None
+            else None,
+            connectors=connectors,
         )
         service.health()
         return service

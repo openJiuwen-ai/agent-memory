@@ -19,8 +19,11 @@ from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.common.type_def.continuity import (
     MODEL_VERSION,
     MemoryRef,
+    RelationRecord,
     RelationStatus,
     RoleViewQuery,
+    view_kind,
+    view_status,
 )
 from jiuwen_memory.retrieval.role_view import RoleView, RoleViewProducer
 from jiuwen_memory.storage.graph import GraphStore
@@ -53,7 +56,7 @@ class RoleViewBuilder(RoleView):
         graph: GraphStore,
         read: Callable[[MemoryRef], MemoryUnit],
         discover: Callable[[str, int], list[MemoryUnit]],
-        resolve_edge: Callable[[str], tuple],
+        resolve_edge: Callable[[str], RelationRecord],
         background: list[dict] | None = None,
         registry_revision: int | None = None,
     ) -> dict:
@@ -64,7 +67,7 @@ class RoleViewBuilder(RoleView):
             d: {"status": "not_started", "expanded_edges": 0, "reason": ""} for d in duties
         }
         result = dict(
-            schema_version="role-view/1",
+            schema_version="role-view/2",
             task_id=request.task_id or None,
             anchors=[],
             paths=[],
@@ -144,13 +147,8 @@ class RoleViewBuilder(RoleView):
             item = dict(
                 id=f"m{len(nodes) + 1}",
                 text=unit.content,
-                kind={
-                    "judgment": "inference",
-                    "result": "observation",
-                    "unclassified": "statement",
-                    "correction": "statement",
-                }.get(kind, kind),
-                status="reported",
+                kind=view_kind(kind),
+                status=view_status(kind),
                 classification_confidence=unit.system_metadata.get(
                     "continuity_classification_confidence", "unknown"
                 ),
@@ -161,6 +159,7 @@ class RoleViewBuilder(RoleView):
                 path_ids=[],
                 valid_duties=[],
                 common=discovery in {"background", "anchor", "semantic_candidate"},
+                required=False,
             )
             # A recorded experience is a reusable-strategy candidate until it gains a
             # confirmed, evidenced, conditioned support (or loses one to an explicit
@@ -209,10 +208,10 @@ class RoleViewBuilder(RoleView):
             if edge_id in resolved:
                 return resolved[edge_id]
             try:
-                relation, relation_ref = resolve_edge(edge_id)
+                relation = resolve_edge(edge_id)
                 for ref in [relation.source, relation.target, *relation.evidence_refs]:
                     read(ref)
-                resolved[edge_id] = (relation, relation_ref)
+                resolved[edge_id] = relation
             except (AgentMemoryError, ValueError, KeyError):
                 resolved[edge_id] = None
             return resolved[edge_id]
@@ -221,6 +220,10 @@ class RoleViewBuilder(RoleView):
 
         def seed(ref: MemoryRef, discovery: str, required: bool = False) -> None:
             if add(ref, discovery, required):
+                # add 的 required 只决定读取失败时缺口是否阻塞（关系端点也传 True）；
+                # 条目标注的「必需依据」只来自必需背景与显式 anchor，且只升不降。
+                if required:
+                    nodes[ref.key][2]["required"] = True
                 if asdict(ref) not in result["anchors"]:
                     result["anchors"].append(asdict(ref))
                     enqueue(ref.key, frozenset(duties), 0, ref, [])
@@ -286,7 +289,7 @@ class RoleViewBuilder(RoleView):
                 if pair is None:
                     gap("reference_unavailable", True)
                     continue
-                relation, relation_ref = pair
+                relation = pair
                 if relation.status == RelationStatus.RETRACTED:
                     continue
                 actual_direction = "out" if relation.source.key == node_key else "in"
@@ -311,7 +314,6 @@ class RoleViewBuilder(RoleView):
                 if not add(target, "relation", True):
                     continue
                 step = dict(
-                    relation_ref=asdict(relation_ref),
                     relation_id=relation.relation_id,
                     revision=relation.revision,
                     relation_type=relation.relation_type,
@@ -410,7 +412,7 @@ class RoleViewBuilder(RoleView):
         for pair in resolved.values():
             if pair is None:
                 continue
-            relation, _ = pair
+            relation = pair
             if relation.status != RelationStatus.CONFIRMED:
                 continue
             if relation.relation_type == "supports":
@@ -428,25 +430,14 @@ class RoleViewBuilder(RoleView):
                 if conclusion not in affected:
                     affected.add(conclusion)
                     pending.append(conclusion)
-        required_keys = {
-            MemoryRef.parse(entry["ref"]).key
-            for entry in background or [] if entry["required"]
-        }
-        if request.anchor:
-            required_keys.add(request.anchor.key)
-        review = {"required": [], "candidate": [], "unchecked": []}
-        for key, (ref, _, item) in nodes.items():
-            if key not in affected:
-                continue
-            if item["status"] != "refuted":
-                item["status"] = "needs_review"
-            review_items = review["required"] if key in required_keys else review["candidate"]
-            review_items.append(asdict(ref))
+        for key in affected:
+            if key in nodes:
+                item = nodes[key][2]
+                if item["status"] != "refuted":
+                    item["status"] = "needs_review"
         if affected:
             # A duty-limited view cannot prove the entire dependency graph was read.
-            review["unchecked"].append("dependencies_outside_view")
             gap("unchecked_dependencies", True)
-        result["meta"]["review"] = review
         for d in duties:
             cov = duty_coverage[d]
             cov["expanded_edges"] = expanded[d]

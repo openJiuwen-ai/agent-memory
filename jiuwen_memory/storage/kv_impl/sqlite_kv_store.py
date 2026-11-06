@@ -115,21 +115,6 @@ class SQLiteKVStore(KVStore):
 
     # -- KVStore 契约 -------------------------------------------------------- #
 
-    @property
-    def supports_compare_and_swap(self) -> bool:
-        return True
-
-    def compare_and_swap(self, scope, key, expected, value) -> bool:
-        with self._lock:
-            cursor = self._ensure_conn().execute(
-                'UPDATE kv SET value=? WHERE org=? AND space=? AND "user"=? '
-                'AND agent=? AND session=? AND key=? AND value=? '
-                'AND (expires_at IS NULL OR expires_at>?)',
-                (value, scope.org, scope.space, scope.user, scope.agent, scope.session,
-                 key, expected, time.time()),
-            )
-            return cursor.rowcount == 1
-
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         with self._lock:
             self._ensure_conn()

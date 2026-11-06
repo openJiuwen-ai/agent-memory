@@ -50,7 +50,7 @@ def test_closed_task_no_longer_blocks_retention(setup):
     assert service.is_referenced(scope, ref) is False
 
 
-def test_without_reader_only_active_tasks_are_checked(setup):
+def test_relation_head_reference_is_seen_without_a_reader(setup):
     service, scope, write, read, _, _ = setup
     evidence = MemoryRef.of(write("evidence")[0])
     a = MemoryRef.of(write("a")[0])
@@ -59,9 +59,8 @@ def test_without_reader_only_active_tasks_are_checked(setup):
         RelationRecord("r", a, evidence, "supports", status="confirmed", evidence_refs=[a]),
         0, read, write,
     )
-    # No reader: relation-truth scan is skipped, so the relation reference is not seen.
-    assert service.is_referenced(scope, evidence) is False
-    assert service.is_referenced(scope, evidence, read=read) is True
+    # Relation truth is the Registry KV head, so retention needs no content reader.
+    assert service.is_referenced(scope, evidence) is True
 
 
 def test_sweep_guard_keeps_referenced_evidence_until_task_closes(setup):
@@ -103,8 +102,7 @@ def test_retention_uses_identity_even_if_evidence_content_changed(setup):
     assert service.retains(unit), "a stale reference still requires review before cleanup"
 
 
-@pytest.mark.parametrize("failure", ["denied", "malformed", "bug"])
-def test_relation_read_failure_does_not_allow_cleanup(setup, failure):
+def test_malformed_relation_head_retains_conservatively(setup):
     from jiuwen_memory.common.errors import PermissionDeniedError
 
     service, scope, write, read, _, _ = setup
@@ -113,16 +111,10 @@ def test_relation_read_failure_does_not_allow_cleanup(setup, failure):
     service.relation(
         scope, RelationRecord("r", evidence, target, "supports"), 0, read, write,
     )
-
-    def unavailable(ref):
-        if failure == "denied":
-            raise PermissionDeniedError("get")
-        if failure == "malformed":
-            raise ValueError("invalid relation payload")
-        raise RuntimeError("unexpected programming failure")
-
-    if failure == "bug":
-        with pytest.raises(RuntimeError, match="unexpected programming failure"):
-            service.is_referenced(scope, evidence, read=unavailable)
-    else:
-        assert service.is_referenced(scope, evidence, read=unavailable) is True
+    # Corrupt the persisted relation truth: an unreadable head must retain, not release.
+    head = service.repository.get(scope, "relations", "r")
+    head["current"] = {"relation_id": "r", "revision": 1}
+    service.repository.save(scope, "relations", "r", head)
+    assert service.is_referenced(scope, evidence) is True
+    # A well-formed head that no longer cites the unit releases it again.
+    del PermissionDeniedError

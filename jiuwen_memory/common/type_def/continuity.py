@@ -15,6 +15,26 @@ from jiuwen_memory.common.type_def.scope import Scope
 MODEL_VERSION = "memory-relations/1"
 
 
+# 事件类别 → 视图条目 kind（S11 ViewAnnotation.kind 枚举）。两档视图共用，保证同一条
+# 记录在接续档与角色档里标注一致。
+_VIEW_KIND = {
+    "judgment": "inference",
+    "result": "observation",
+    "unclassified": "statement",
+    "correction": "statement",
+}
+
+
+def view_kind(event_kind: str) -> str:
+    """Map a stored ``continuity_kind`` onto the S11 view ``kind`` vocabulary."""
+    return _VIEW_KIND.get(event_kind, event_kind)
+
+
+def view_status(event_kind: str) -> str:
+    """Initial evidence status: recorded experiences stay candidates, others are reported."""
+    return "candidate" if event_kind == "experience" else "reported"
+
+
 def canonical(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -222,17 +242,8 @@ class ContinuityEvent:
     occurred_at: str | None = None
     claimed_author: str | None = None
     schema_version: str = "continuity-event/1"
-    source_position: int | None = None
-    previous_position: int | None = None
 
     def __post_init__(self) -> None:
-        if (self.source_position is None) != (self.previous_position is None):
-            raise ValidationError("source position and previous position must be supplied together")
-        if self.source_position is not None:
-            if type(self.source_position) is not int or type(self.previous_position) is not int:
-                raise ValidationError("source positions must be increasing nonnegative integers")
-            if self.previous_position < 0 or self.source_position <= self.previous_position:
-                raise ValidationError("source positions must be increasing nonnegative integers")
         if self.classification_confidence not in {"low", "high", "unknown"}:
             raise ValidationError("unknown classification confidence")
         if self.classification_confidence == "low":
@@ -261,13 +272,55 @@ class ContinuityEvent:
 
 
 @dataclass
+class ContinuityWrite:
+    """接续信息（不含正文与时间）：``add(continuity=...)`` 与 ``BatchWriteItem.continuity``。
+
+    正文仍是 ``add`` 的 ``content``；原始发生时间用现有 ``event_time``；经验适用职责放在
+    ``tags``（``duty:<id>``）。所有字段映射进 ``continuity_*`` 系统元数据、``source_ref``
+    与 ``tags``，公开调用方不能经 ``system_metadata`` 直接设置。
+    """
+
+    task_id: str
+    binding_id: str
+    event_id: str
+    kind: str = "unclassified"
+    classification_confidence: str = "unknown"
+    evidence_refs: list[MemoryRef] = field(default_factory=list)
+    claimed_author: str | None = None
+    context_id: str = ""
+    source_locator: str | None = None
+    schema_version: str = "continuity-write/1"
+
+    def __post_init__(self) -> None:
+        if self.classification_confidence not in {"low", "high", "unknown"}:
+            raise ValidationError("unknown classification confidence")
+        if self.classification_confidence == "low":
+            self.kind = "unclassified"
+        if self.schema_version != "continuity-write/1":
+            raise ValidationError("unsupported continuity write version")
+        if not all((self.task_id, self.binding_id, self.event_id)):
+            raise ValidationError("task, binding and event required")
+        if self.kind not in {
+            "observation",
+            "statement",
+            "judgment",
+            "result",
+            "experience",
+            "correction",
+            "unclassified",
+        }:
+            raise ValidationError("unknown event kind")
+
+
+@dataclass
 class ContinuityRecovery:
     kind: str
     operation_id: str
     refs: list[MemoryRef]
 
     def __post_init__(self):
-        missing_refs = self.kind != "derivation" and not self.refs
+        # 只有事件恢复需要「已提交引用」：relation/derivation 由服务端从真源重建，不读 refs。
+        missing_refs = self.kind == "event" and not self.refs
         valid_kind = self.kind in {"event", "relation", "derivation"}
         if not valid_kind or not self.operation_id or missing_refs:
             raise ValidationError("recovery requires a kind, operation ID and committed references")

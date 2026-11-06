@@ -306,4 +306,4 @@ Evolver.evolve(units, mode):
 自定义 yml `prompts.extract` 兼容提醒：observation_date 已从批级单条头部改为逐来源前缀。
 模板应使用对应来源旁的日期，不应将第一条日期应用于整批；来源 ID 与日期配对保持。
 
-forward、hybrid、unified 提供可选条件更新：真源 CAS 成功才更新检索投影；投影失败允许按更新后摘要重放修复，禁止无条件回写真源。Schema 装饰器未启用该能力。
+forward、hybrid、unified 不再提供条件更新（原仅服务角色记忆派生 updated，已删除，见 S06「原子条件更新」）。

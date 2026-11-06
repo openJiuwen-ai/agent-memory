@@ -6,11 +6,8 @@ from types import UnionType
 from typing import get_args, get_origin, get_type_hints
 
 from jiuwen_memory.api import (
-    ContinuityEvent,
     ContinuityRecovery,
-    MemoryRef,
     RelationRecord,
-    RoleViewQuery,
     TaskRequest,
 )
 
@@ -40,39 +37,30 @@ def _schema(annotation):
     }
 
 
-def tool_schemas() -> list[dict]:
+def tool_schemas(*, mode: str = "role", include_governance: bool = False) -> list[dict]:
+    """Agent-facing tool schemas for the continuity surface.
+
+    ``continuity_relation`` only exists in role mode (D2); the source-governance tools are
+    admin-only and stay out of the agent list unless ``include_governance`` is passed (D4).
+    """
     specs = [
         (
-            "role_view",
-            "request",
-            RoleViewQuery,
-            "Locate memory by query or anchor, or restore saved task background; expand typed "
-            "edges by duty (general/diagnosis/testing/execution or configured policy). "
-            "Read paths and gaps before acting. No predecessor handoff is required.",
-        ),
-        (
-            "role_task",
+            "continuity_task",
             "request",
             TaskRequest,
             "Create/get/find/bind/unbind/attach/close task mappings. Mutations require stable "
             "request_id and expected_revision. Bindings never grant source read permissions.",
         ),
-        (
-            "role_record",
-            "event",
-            ContinuityEvent,
-            "Record an observation, result or experience in an authorized binding. Reuse event_id "
-            "on retry. Inspect committed/partial/unknown; reconcile unknown before retrying.",
-        ),
-        (
-            "role_relation",
+    ]
+    if mode == "role":
+        specs.append((
+            "continuity_relation",
             "relation",
             RelationRecord,
             "Register or review a relation between committed MemoryRefs. Unknown model output "
             "stays candidate. Confirm with evidence; revoke with a new revision. To review "
             "a contradiction supply conflict_kind, resolution and resolution_reason.",
-        ),
-    ]
+        ))
     out = []
     for verb, arg, dto, description in specs:
         properties = {
@@ -85,7 +73,7 @@ def tool_schemas() -> list[dict]:
             arg: _schema(dto),
         }
         required = ["scope", arg]
-        if verb == "role_relation":
+        if verb == "continuity_relation":
             properties["expected_revision"] = {"type": "integer", "minimum": 0}
             required.append("expected_revision")
         out.append(
@@ -100,11 +88,11 @@ def tool_schemas() -> list[dict]:
                 },
             }
         )
-    # role_rebuild has no required business payload: optional recovery reconciles an
+    # continuity_recover has no required business payload: optional recovery reconciles an
     # unknown write acknowledgment; omitting it rebuilds graph projections.
     out.append(
         {
-            "name": "agent_memory_role_rebuild",
+            "name": "agent_memory_continuity_recover",
             "description": (
                 "Rebuild graph projections from authoritative relation heads, or reconcile "
                 "an unknown/partial write acknowledgment via a ContinuityRecovery payload. "
@@ -147,18 +135,11 @@ def tool_schemas() -> list[dict]:
             },
         }
 
+    if not include_governance:
+        return out
     out.append(
         _governance(
-            "agent_memory_role_publish",
-            "Publish a private record into the shared project space verbatim, keeping its "
-            "origin and justification; never auto-summarizes private text into public facts.",
-            ["source", "reason"],
-            {"source": _schema(MemoryRef), "reason": {"type": "string"}},
-        )
-    )
-    out.append(
-        _governance(
-            "agent_memory_role_quarantine_source",
+            "agent_memory_quarantine_source",
             "Isolate an anomalous source range with a reason; ordinary reads and role views "
             "stop using it immediately.",
             ["source_key", "reason"],
@@ -167,18 +148,10 @@ def tool_schemas() -> list[dict]:
     )
     out.append(
         _governance(
-            "agent_memory_role_release_source",
+            "agent_memory_release_source",
             "Release a previously quarantined source range.",
             ["source_key"],
             {"source_key": {"type": "string"}},
-        )
-    )
-    out.append(
-        _governance(
-            "agent_memory_role_mark_source_cutover",
-            "Cut a dual-write source over to agent-memory as the single authoritative writer.",
-            ["connector", "context_id"],
-            {"connector": {"type": "string"}, "context_id": {"type": "string"}},
         )
     )
     return out

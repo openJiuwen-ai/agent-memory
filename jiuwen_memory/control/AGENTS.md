@@ -197,3 +197,5 @@ AgentEngine、CloudEngine、InMemoryEngine 的主写构建器统一通过 requir
 Command/Engine.write 显式透传 event_time，batch_write 逐项转发 BatchWriteItem.event_time，内置三类 Engine 在摄入后、持久化前保证 t_event 投影；替换 Ingestor 不改变显式时间语义。
 
 接续引用保留检查无法读取或解析关系真源时保守保留候选记忆，并仅记录异常类型；未预期的编程异常向上传播，不按“无引用”放行清理。
+
+关系真源存 Registry KV，保留检查读关系头而非关系 MemoryUnit；EvolveJob 仍排除 `continuity_kind=relation` 的单元，仅保护尚未迁移的旧关系单元。Engine.list 接收 API 下推的接续来源系统过滤谓词，在分页与 count 前生效；三种 Engine 的 batch_write 均保持逐项结果对齐，并把 `BatchWriteItem.source_ref` 透传给 write，供接续层分阶段提交回执。

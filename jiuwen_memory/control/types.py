@@ -26,6 +26,7 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
+from jiuwen_memory.common.type_def.continuity import ContinuityWrite
 from jiuwen_memory.construction.evolver import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 
@@ -214,6 +215,9 @@ class BatchWriteItem:
     sequence: int | None = None
     idempotency_key: str = ""
     event_time: datetime | None = None  # 显式事件时间，含时区；写入 temporal.t_event
+    # 原始来源定位：仅接续内部写路径使用（source_locator → MemoryUnit.source_ref）。
+    source_ref: str = ""
+    continuity: ContinuityWrite | None = None  # 接续写入；批量历史导入用
 
 
 @dataclass
@@ -225,6 +229,8 @@ class BatchWriteOutcome:
     units: list[MemoryUnit] = field(default_factory=list)
     error: str = ""
     error_type: str = ""
+    operation_id: str = ""  # 接续项的事件幂等键
+    continuity_status: str = ""  # committed / partial / unknown / rejected
 
 
 @dataclass

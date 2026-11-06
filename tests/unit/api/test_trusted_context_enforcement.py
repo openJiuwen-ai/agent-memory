@@ -397,11 +397,15 @@ def test_every_public_entry_rejects_before_business_access(
     values = {
         "security": security,
         "scope": VICTIM_SCOPE,
-        "request": TaskRequest("create", "r") if entry == "role_task" else RoleViewQuery(query="q"),
+        "request": TaskRequest("create", "r")
+        if entry == "continuity_task"
+        else RoleViewQuery(query="q"),
         "event": ContinuityEvent("t", "b", "e", "observation"),
         "relation": RelationRecord(
-            "r", MemoryRef(VICTIM_SCOPE, "a", "0" * 64),
-            MemoryRef(VICTIM_SCOPE, "b", "1" * 64), "supports",
+            "r",
+            MemoryRef(VICTIM_SCOPE, "a", "0" * 64),
+            MemoryRef(VICTIM_SCOPE, "b", "1" * 64),
+            "supports",
         ),
         "expected_revision": 0,
         "content": "content",

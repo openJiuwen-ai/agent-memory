@@ -103,6 +103,7 @@ class MemoryEngine(ControlOperator):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
+        source_ref: str = "",
     ) -> list[MemoryUnit]:
         """异步（协程）写入：hot path 完成（真源落盘 + 轻量索引）后返回
         本次插入的全部记忆单元（规约/切分可产生多条）；重的抽取/升华
@@ -195,12 +196,6 @@ class MemoryEngine(ControlOperator):
     ) -> SourceUpdatePlan | None:
         """Internal preparation for derived-write authorization; no business writes."""
         return None
-
-    def conditional_update(self, unit: MemoryUnit, expected_digest: str) -> bool:
-        """Authorized content replacement through a write chain with real CAS support."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
-        raise UnsupportedCapabilityError("engine does not support conditional updates")
 
     async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
         """Commit a prepared and authorized update, using its frozen candidates."""

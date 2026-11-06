@@ -52,6 +52,7 @@ def _continuity_config(tmp_path) -> Config:
                     "target": "local",
                     "params": {
                         "single_writer": True,
+                        "mode": "role",
                         "registry_store": "registry",
                         "graph_store": "evidence",
                         "relation_index_builder": "evidence",

@@ -5,37 +5,41 @@ from __future__ import annotations
 import asyncio
 import json
 from contextvars import ContextVar
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import (
+    AgentMemoryError,
     ConflictError,
-    NotFoundError,
     PermissionDeniedError,
     UnsupportedCapabilityError,
     ValidationError,
+    WriteIncompleteError,
 )
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
-from jiuwen_memory.common.type_def import ContentLayers, Context, Modality, Scope
+from jiuwen_memory.common.type_def import MemoryUnit, Modality, Scope
 from jiuwen_memory.common.type_def.continuity import (
     ContinuityEvent,
     ContinuityRecovery,
+    ContinuityWrite,
     MemoryRef,
     RelationRecord,
     RelationStatus,
-    RoleViewQuery,
     TaskRequest,
-    canonical,
     fingerprint,
 )
-from jiuwen_memory.retrieval.types import DisclosureLevel
+from jiuwen_memory.control.types import BatchWriteItem
 
 from .local_support import (
-    _space_permission_context,
-    _space_scope,
-    _space_target_id,
+    _strip_transient_metadata,
     _unit_snapshot_permission_context,
+    _with_author_marks,
 )
+
+
+class _Skipped:
+    """Batch item skipped because an earlier item in the same run failed."""
+
 
 _MANAGE_RELATION = ContextVar("continuity_manage_relation", default=False)
 _READ_DEPTH = ContextVar("continuity_read_depth", default=0)
@@ -55,9 +59,10 @@ class ContinuityOpsMixin:
         )
         if not enabled:
             return False
-        if self._continuity is not None and self._continuity.source_quarantine(
-            scope, connector
-        ) is not None:
+        if (
+            self._continuity is not None
+            and self._continuity.source_quarantine(scope, connector) is not None
+        ):
             return False
         return True
 
@@ -67,19 +72,9 @@ class ContinuityOpsMixin:
         connector = metadata.get("continuity_connector")
         if connector and not self._source_available(unit.scope, connector):
             raise PermissionDeniedError("source unavailable")
-        if _MANAGE_RELATION.get() and metadata.get("continuity_kind") == "relation":
-            return
         refs = []
         try:
-            if metadata.get("continuity_kind") == "relation":
-                relation = RelationRecord.parse(json.loads(unit.content))
-                refs = [
-                    relation.source,
-                    relation.target,
-                    *relation.evidence_refs,
-                    *relation.resolution_refs,
-                ]
-            elif metadata.get("continuity_source_refs"):
+            if metadata.get("continuity_source_refs"):
                 refs = [MemoryRef.parse(r) for r in json.loads(metadata["continuity_source_refs"])]
             elif metadata.get("continuity_envelope"):
                 envelope = json.loads(str(metadata["continuity_envelope"]))
@@ -95,14 +90,29 @@ class ContinuityOpsMixin:
         try:
             for ref in refs:
                 self._role_reader(security, unit.scope)(ref)
-            if metadata.get("continuity_kind") == "relation" and relation.resolution_refs:
-                if self._continuity is None:
-                    raise PermissionDeniedError("resolution verification unavailable")
-                self._continuity.validate_resolution(
-                    unit.scope, relation, self._role_reader(security, unit.scope)
-                )
         finally:
             _READ_DEPTH.reset(token)
+
+    def _unavailable_continuity_connectors(self, scope) -> list[str]:
+        """Connectors whose entries must not appear in ordinary reads (disabled ∪ quarantined)."""
+        names = sorted(
+            name
+            for name, value in (self._continuity_connectors or {}).items()
+            if not value.get("enabled", True)
+        )
+        if self._continuity is None:
+            return names
+        for name in (self._continuity_connectors or {}):
+            if name in names:
+                continue
+            try:
+                if self._continuity.source_quarantine(scope, name) is not None:
+                    names.append(name)
+            except Exception:
+                # An unreadable quarantine state must not hide entries: stay conservative by
+                # leaving the connector available and letting the read-time guard decide.
+                continue
+        return names
 
     def _guard_continuity_search(self, result, scope=None, *, item_scopes=None):
         # Ordinary retrieval has no per-item real Scope/path contract. Structured records
@@ -117,8 +127,7 @@ class ContinuityOpsMixin:
             real_scope = item_scopes.get(id(item)) if item_scopes is not None else scope
             if connector and not self._source_available(real_scope, connector):
                 continue
-            if (metadata.get("continuity_kind") == "relation"
-                    or metadata.get("continuity_source_refs")):
+            if metadata.get("continuity_source_refs"):
                 continue
             if metadata.get("continuity_envelope"):
                 try:
@@ -181,22 +190,48 @@ class ContinuityOpsMixin:
 
         return managed
 
-    def _role_writer(self, scope, security, *, event_time=None, verbatim_time=None):
+    def _role_writer(
+        self,
+        scope,
+        security,
+        *,
+        event_time=None,
+        tags=None,
+        source_ref="",
+        source=None,
+        assets=None,
+        system_metadata=None,
+        user_metadata=None,
+        occurred_at=None,
+    ):
         def write(content, metadata):
-            return asyncio.run(self._add_impl(
-                content,
-                scope,
-                security=security,
-                system_metadata={"infer": "false", "middle": "false"},
-                continuity_metadata=metadata,
-                # Source events carry their own time; a published copy is the same
-                # record. Derived outputs do not inherit it (F10 4.2).
-                event_time=(event_time if metadata.get("continuity_event") else verbatim_time),
-            ))
+            # 接续写入固定 infer/middle=false（原文直接落盘、不经分类器改写），
+            # 调用方的其余系统键原样保留。
+            # 只有**原始事件**继承事件时间；派生输出（metadata 带 continuity_output）是
+            # 按构建时刻生成的新记忆，不能继承来源的发生时间（F10 4.2）。
+            merged = {**(system_metadata or {}), "infer": "false", "middle": "false"}
+            return asyncio.run(
+                self._add_impl(
+                    content,
+                    scope,
+                    source if source is not None else Modality.TEXT,
+                    security=security,
+                    assets=assets,
+                    tags=tags,
+                    system_metadata=merged,
+                    user_metadata=user_metadata,
+                    occurred_at=occurred_at,
+                    continuity_metadata=metadata,
+                    source_ref=source_ref,
+                    # Source events carry their own time; derived outputs do not inherit it
+                    # (F10 4.2).
+                    event_time=(None if metadata.get("continuity_output") else event_time),
+                )
+            )
 
         return write
 
-    def role_task(
+    def continuity_task(
         self,
         scope: Scope,
         request: TaskRequest,
@@ -205,14 +240,14 @@ class ContinuityOpsMixin:
     ) -> dict:
         reading = request.operation in {"get", "find"}
         if reading:
-            self._authorize(security, scope, Action.READ, "role_task_read")
+            self._authorize(security, scope, Action.READ, "continuity_task_read")
         else:
-            self._authorize(security, scope, Action.WRITE, "role_task_write")
+            self._authorize(security, scope, Action.WRITE, "continuity_task_write")
         service = self._role_service(scope)
         owner = fingerprint(asdict(security.auth.actor))
         if request.operation not in {"create", "get", "find"}:
             if service.task_owner(scope, request.task_id) != owner:
-                raise PermissionDeniedError("role_task_write")
+                raise PermissionDeniedError("continuity_task_write")
         if request.operation == "bind":
             connector = self._continuity_connectors.get(request.connector_id)
             if not connector or connector.get("actor", {}).get("org") != scope.org:
@@ -220,74 +255,377 @@ class ContinuityOpsMixin:
             if scope.space not in connector.get("projects", []):
                 raise ValidationError("connector is not configured for this project")
         result = service.task(scope, request, owner, self._role_reader(security, scope))
-        self._log(security.auth.actor, "role_task", request.task_id, target_scope=scope)
+        self._log(security.auth.actor, "continuity_task", request.task_id, target_scope=scope)
         return result
 
-    def role_record(
+    def _require_relation_submitter(self, scope: Scope, security, connector: str) -> None:
+        """Registration-side gate: the submitting connector, or project governance."""
+        if connector and self._connector_for_actor(scope, security) == connector:
+            return
+        self._authorize(security, scope, Action.MANAGE_SPACE, "continuity_relation")
+
+    def _connector_for_actor(self, scope: Scope, security) -> str:
+        """The connector that submitted this request ("" when the caller is not one).
+
+        Only enabled connectors that cover the current project count; if the same actor is
+        behind several of them the attribution is ambiguous and we refuse to guess.
+        """
+        actor = asdict(security.auth.actor)
+        matches = [
+            name
+            for name, configured in (self._continuity_connectors or {}).items()
+            if configured.get("actor") == actor
+            and configured.get("enabled", True)
+            and scope.space in configured.get("projects", [])
+        ]
+        if len(matches) > 1:
+            raise ValidationError(
+                "multiple enabled connectors match this principal: " + ", ".join(sorted(matches))
+            )
+        return matches[0] if matches else ""
+
+    def _continuity_batch(
         self,
-        scope: Scope,
-        event: ContinuityEvent,
+        entries: list[tuple],
         *,
         security: RequestSecurityContext,
-    ) -> dict:
-        self._authorize(security, scope, Action.WRITE, "role_record")
+        stop_on_error: bool = False,
+    ) -> list[tuple[int, list[MemoryUnit] | Exception]]:
+        """One five-phase reliable write for every continuity item in a batch.
+
+        ``entries`` are ``(index, BatchWriteItem)``. Every item is authorized and counted
+        before the batch starts, so a rejected item never half-writes the batch.
+        """
+        prepared = []
+        rejected: list[tuple[int, Exception]] = []
+        position = 0
+        for position, (index, item) in enumerate(entries):
+            continuity = item.continuity
+            try:
+                # 逐项校验：任何一项不合格只拒绝它自己，不影响同批其他项。
+                self._authorize(security, item.scope, Action.WRITE, "add")
+                service = self._role_service(item.scope)
+                connector = service.binding_connector(
+                    item.scope, continuity.task_id, continuity.binding_id
+                )
+                configured = self._continuity_connectors.get(connector, {})
+                actor = asdict(security.auth.actor)
+                if (
+                    configured.get("actor") != actor
+                    or not configured.get("enabled", connector in self._continuity_connectors)
+                    or item.scope.space not in configured.get("projects", [])
+                ):
+                    raise PermissionDeniedError("add")
+                conflicting = {"infer", "procedural", "middle"} & set(
+                    item.system_metadata or {}
+                )
+                if conflicting:
+                    raise ValidationError(
+                        "continuity write does not accept system_metadata keys: "
+                        + ", ".join(sorted(conflicting))
+                    )
+                expected_key = self._continuity_operation_id(item.scope, continuity)
+                if item.idempotency_key and item.idempotency_key != expected_key:
+                    # 幂等键不一致只是这一项的问题，整批继续。
+                    raise ValidationError(
+                        "idempotency_key must equal the continuity event key"
+                    )
+            except AgentMemoryError as exc:
+                rejected.append((index, exc))
+                if stop_on_error:
+                    # 批内顺序执行：第一处失败后剩余项不再写入，标成 Skipped。
+                    rejected.extend(
+                        (later, _Skipped()) for later, _ in entries[position + 1 :]
+                    )
+                    return rejected
+                continue
+            duty_ids = [
+                str(tag).removeprefix("duty:")
+                for tag in (item.tags or [])
+                if isinstance(tag, str) and tag.startswith("duty:")
+            ]
+            prepared.append(
+                {
+                    "index": index,
+                    "item": item,
+                    "connector": connector,
+                    "event": ContinuityEvent(
+                        task_id=continuity.task_id,
+                        binding_id=continuity.binding_id,
+                        event_id=continuity.event_id,
+                        content=item.content,
+                        kind=continuity.kind,
+                        classification_confidence=continuity.classification_confidence,
+                        evidence_refs=list(continuity.evidence_refs),
+                        source_locator=continuity.source_locator,
+                        claimed_author=continuity.claimed_author,
+                        duty_ids=duty_ids,
+                    ),
+                    "request_fingerprint": fingerprint(
+                        {
+                            "content": item.content,
+                            "source": None if item.source is None else item.source.value,
+                            "assets": list(item.assets or []),
+                            "tags": list(item.tags or []),
+                            "system_metadata": dict(item.system_metadata or {}),
+                            "user_metadata": dict(item.user_metadata or {}),
+                            "occurred_at": (
+                                None if item.occurred_at is None else item.occurred_at.isoformat()
+                            ),
+                            "event_time": (
+                                None if item.event_time is None else item.event_time.isoformat()
+                            ),
+                        }
+                    ),
+                }
+            )
+        if not prepared:
+            return rejected
+        results: list[tuple[int, list[MemoryUnit] | Exception]] = list(rejected)
+        # 不同项目空间不能塞进同一个 record_batch（任务与写者都属于某个项目）：按首个
+        # 出现的顺序分组，各自走一次批处理，只影响不同项目的那几项。
+        groups: dict[tuple, list[dict]] = {}
+        for entry in prepared:
+            item_scope = entry["item"].scope
+            groups.setdefault(
+                (item_scope.org, item_scope.space, item_scope.user,
+                 item_scope.agent, item_scope.session),
+                [],
+            ).append(entry)
+        for group in groups.values():
+            group_scope = group[0]["item"].scope
+            service = self._role_service(group_scope)
+
+            def write_batch(pairs, _group=group, _scope=group_scope):
+                return asyncio.run(
+                    self._add_many_impl(pairs, _scope, _group, security=security)
+                )
+
+            try:
+                receipts = service.record_batch(
+                    group_scope,
+                    [entry["event"] for entry in group],
+                    [entry["connector"] for entry in group],
+                    self._role_reader(security, group_scope),
+                    write_batch,
+                    request_fingerprints=[
+                        entry["request_fingerprint"] for entry in group
+                    ],
+                )
+            except AgentMemoryError as exc:
+                # 批次级失败（例如任务在预检后被关闭）无法按条归属，统一记为该项错误。
+                results.extend((entry["index"], exc) for entry in group)
+                if stop_on_error:
+                    break
+                continue
+            for entry, receipt in zip(group, receipts):
+                status = receipt.get("status")
+                if status == "committed":
+                    units = [
+                        self.get(link.unit_id, link.scope, security=security)
+                        for link in (
+                            MemoryRef.parse(ref) for ref in receipt.get("refs") or []
+                        )
+                    ]
+                    results.append((entry["index"], units))
+                else:
+                    results.append(
+                        (
+                            entry["index"],
+                            WriteIncompleteError(
+                                operation_id=receipt.get("operation_id", ""),
+                                status=str(status),
+                                refs=tuple(
+                                    MemoryRef.parse(json.dumps(ref))
+                                    for ref in receipt.get("refs") or []
+                                ),
+                                retry_action=(
+                                    "retry_original_write"
+                                    if status == "partial"
+                                    else "recover_then_retry"
+                                ),
+                            ),
+                        )
+                    )
+            if stop_on_error and any(
+                isinstance(result, Exception) for _index, result in results
+            ):
+                break
+        return results
+
+    async def _add_many_impl(self, pairs, scope, prepared, *, security):
+        """Write several continuity bodies through one engine batch call.
+
+        Mirrors ``_add_impl``'s per-item steps (author marks, ``source_ref`` and audit)
+        instead of calling the engine directly: otherwise imported memories would differ
+        from ``add``-written ones in exactly the fields later authorization reads.
+        """
+        items = []
+        for (content, metadata), entry in zip(pairs, prepared):
+            item = entry["item"]
+            target = item.scope
+            merged = {**metadata, **(item.system_metadata or {})}
+            items.append(
+                BatchWriteItem(
+                    content=content,
+                    scope=target,
+                    source=item.source or Modality.TEXT,
+                    assets=list(item.assets or []),
+                    tags=item.tags,
+                    system_metadata=_with_author_marks(
+                        merged,
+                        self._resource_principal(security, Action.WRITE, target),
+                    ),
+                    user_metadata=item.user_metadata,
+                    occurred_at=item.occurred_at,
+                    event_time=item.event_time,
+                    source_ref=item.continuity.source_locator or "",
+                )
+            )
+        result = await self._commands.batch_write(items, continue_on_error=False)
+        produced = []
+        for outcome, entry in zip(result.outcomes, prepared):
+            if outcome.error:
+                raise WriteIncompleteError(
+                    operation_id="",
+                    status="unknown",
+                    refs=(),
+                    retry_action="recover_then_retry",
+                )
+            self._log(
+                security.auth.actor, "add", entry["event"].event_id,
+                target_scope=entry["item"].scope,
+            )
+            produced.append([_strip_transient_metadata(unit) for unit in outcome.units])
+        return produced
+
+    def _continuity_operation_id(self, scope: Scope, continuity: ContinuityWrite) -> str:
+        """The event idempotency key shared with ``ContinuityService.record``."""
         service = self._role_service(scope)
-        actor = asdict(security.auth.actor)
-        connector = service.binding_connector(scope, event.task_id, event.binding_id)
-        # Connection attribution is from trusted configuration, never an event field.
+        connector = service.binding_connector(scope, continuity.task_id, continuity.binding_id)
+        return service.event_key(connector, continuity.binding_id, continuity.event_id)
+
+    def _continuity_add(
+        self,
+        content: str,
+        scope: Scope,
+        *,
+        security: RequestSecurityContext,
+        continuity: ContinuityWrite,
+        tags: list[str] | None,
+        event_time,
+        idempotency_key: str = "",
+        source=None,
+        assets: list[str] | None = None,
+        system_metadata: dict | None = None,
+        user_metadata: dict | None = None,
+        occurred_at=None,
+    ) -> list[MemoryUnit]:
+        """Reliable continuity write through ``add``: idempotent event + task background.
+
+        Returns the saved memory units on a committed event receipt; raises
+        ``WriteIncompleteError`` while the receipt is unknown or partial so a caller can
+        never mistake an incomplete write for success.
+        """
+        # 合并入口必须透传普通 add 的参数；不支持的组合显式拒绝，不静默丢弃
+        # （静默丢弃的失效方向是「调用方以为元数据生效了」）。
+        conflicting = {"infer", "procedural", "middle"} & set(system_metadata or {})
+        if conflicting:
+            raise ValidationError(
+                "continuity write does not accept system_metadata keys: "
+                + ", ".join(sorted(conflicting))
+            )
+        service = self._role_service(scope)
+        self._authorize(security, scope, Action.WRITE, "add")
+        connector = service.binding_connector(scope, continuity.task_id, continuity.binding_id)
+        if idempotency_key:
+            expected = service.event_key(
+                connector, continuity.binding_id, continuity.event_id
+            )
+            if idempotency_key != expected:
+                raise ValidationError("idempotency_key must equal the continuity event key")
         configured = self._continuity_connectors.get(connector, {})
+        actor = asdict(security.auth.actor)
         if (
             configured.get("actor") != actor
             or not configured.get("enabled", connector in self._continuity_connectors)
             or scope.space not in configured.get("projects", [])
         ):
-            raise PermissionDeniedError("role_record")
-
-        def conditional_update(ref, expected_digest, content, metadata):
-            # The same PEP as an ordinary update; WRITE on the project does not grant
-            # permission to overwrite an existing memory owned by another actor.
-            expected = replace(ref, content_digest=expected_digest)
-            unit = self._role_reader(security, scope)(expected)
-            self._authorize(
-                security, unit.scope, Action.UPDATE, "update", unit.id,
-                context=_unit_snapshot_permission_context(unit),
-            )
-            # Frozen plans carry one text body, not segment addresses. Never guess
-            # which segment or multimodal projection to overwrite (including old plans).
-            if (len(unit.segments) != 1 or unit.segments[0].assets
-                    or unit.segments[0].source != Modality.TEXT):
-                raise ValidationError("derivation update requires a single plain-text segment")
-            changed = replace(
-                unit,
-                segments=[replace(unit.segments[0], content=content)],
-                layers=ContentLayers(),
-                system_metadata={**unit.system_metadata, **metadata},
-            )
-            applied = self._commands.conditional_update(changed, expected_digest)
-            if applied:
-                self._log(security.auth.actor, "update", unit.id, target_scope=unit.scope)
-            return applied
-
-        result = service.record(
+            raise PermissionDeniedError("add")
+        read = self._role_reader(security, scope)
+        # 经验条目的适用职责只以 `duty:<id>` 标签承载（ContinuityWrite 无独立字段），
+        # 这里必须还原回事件，否则视图里经验条目的 duties 永远为空。
+        duty_ids = [
+            str(tag).removeprefix("duty:")
+            for tag in (tags or [])
+            if isinstance(tag, str) and tag.startswith("duty:")
+        ]
+        event = ContinuityEvent(
+            task_id=continuity.task_id,
+            binding_id=continuity.binding_id,
+            event_id=continuity.event_id,
+            content=content,
+            kind=continuity.kind,
+            classification_confidence=continuity.classification_confidence,
+            evidence_refs=list(continuity.evidence_refs),
+            source_locator=continuity.source_locator,
+            claimed_author=continuity.claimed_author,
+            duty_ids=duty_ids,
+        )
+        # 幂等摘要必须覆盖所有会改变持久化内容的参数：同一 (task, binding, event) 改
+        # event_time/metadata/时间后重试是**不同请求**，应冲突而不是复用旧回执。
+        request_fingerprint = fingerprint(
+            {
+                "content": content,
+                "source": None if source is None else source.value,
+                "assets": list(assets or []),
+                "tags": list(tags or []),
+                "system_metadata": dict(system_metadata or {}),
+                "user_metadata": dict(user_metadata or {}),
+                "occurred_at": None if occurred_at is None else occurred_at.isoformat(),
+                "event_time": None if event_time is None else event_time.isoformat(),
+            }
+        )
+        receipt = service.record(
             scope,
             event,
             connector,
-            self._role_reader(security, scope),
+            read,
             self._role_writer(
-                scope, security,
-                event_time=(datetime.fromisoformat(event.occurred_at.replace("Z", "+00:00"))
-                            if event.occurred_at else None),
+                scope, security, event_time=event_time, tags=tags,
+                source_ref=continuity.source_locator or "",
+                source=source, assets=assets, system_metadata=system_metadata,
+                user_metadata=user_metadata, occurred_at=occurred_at,
             ),
-            query_output=(lambda output_key: self.list(
-                scope, security=security, limit=2,
-                filters={"system_metadata.continuity_output": {"eq": output_key}},
-            ).items) if self._queries.supports_exact_metadata_lookup else None,
-            conditional_update=conditional_update,
+            query_output=(
+                lambda output_key: (
+                    self.list(
+                        scope,
+                        security=security,
+                        limit=2,
+                        filters={"system_metadata.continuity_output": {"eq": output_key}},
+                    ).items
+                )
+            )
+            if self._queries.supports_exact_metadata_lookup
+            else None,
+            request_fingerprint=request_fingerprint,
         )
-        self._log(security.auth.actor, "role_record", event.event_id, target_scope=scope)
-        return result
+        self._log(security.auth.actor, "add", continuity.event_id, target_scope=scope)
+        if receipt["status"] != "committed":
+            raise WriteIncompleteError(
+                operation_id=receipt["operation_id"],
+                status=receipt["status"],
+                refs=tuple(MemoryRef.parse(item) for item in receipt.get("refs", [])),
+                retry_action=(
+                    "retry_original_write"
+                    if receipt["status"] == "partial"
+                    else "recover_then_retry"
+                ),
+            )
+        return [read(MemoryRef.parse(item)) for item in receipt.get("refs", [])]
 
-    def role_relation(
+    def continuity_relation(
         self,
         scope: Scope,
         relation: RelationRecord,
@@ -295,7 +633,7 @@ class ContinuityOpsMixin:
         *,
         security: RequestSecurityContext,
     ) -> dict:
-        self._authorize(security, scope, Action.WRITE, "role_relation")
+        self._authorize(security, scope, Action.WRITE, "continuity_relation")
         service = self._role_service(scope)
         read = (
             self._role_management_reader(security, scope)
@@ -303,72 +641,46 @@ class ContinuityOpsMixin:
             else self._role_reader(security, scope)
         )
         if expected_revision:
-            head_ref = service.relation_head_ref(scope, relation.relation_id)
-            if head_ref:
-                ref = MemoryRef.parse(head_ref)
-                # Revisions of other authors' relations require UPDATE, not just WRITE.
-                unit = self._role_management_reader(security, scope)(ref)
-                self._authorize(
-                    security,
-                    unit.scope,
-                    Action.UPDATE,
-                    "update",
-                    unit.id,
-                    context=_unit_snapshot_permission_context(unit),
-                )
+            head = service.relation_head(scope, relation.relation_id)
+            current = head.get("current") if head else None
+            if current:
+                existing = RelationRecord.parse(current)
+                # 登记侧：只有提交连接本身或项目治理角色能改这条关系（撤回同样适用）。
+                # 旧关系头没有 connector，就只剩治理角色能改——否则它谁都能改。
+                self._require_relation_submitter(scope, security, head.get("connector", ""))
+                # 内容侧：两端记忆的 UPDATE 权保持现状。
+                for ref in (existing.source, existing.target):
+                    unit = self._role_management_reader(security, scope)(ref)
+                    self._authorize(
+                        security,
+                        unit.scope,
+                        Action.UPDATE,
+                        "update",
+                        unit.id,
+                        context=_unit_snapshot_permission_context(unit),
+                    )
         result = service.relation(
             scope,
             relation,
             expected_revision,
             read,
-            self._role_writer(scope, security),
             read_previous=self._role_management_reader(security, scope),
+            # D3：关系头必须记住提交连接，隔离/停用该连接后关系才不可用。
+            connector=self._connector_for_actor(scope, security),
         )
-        self._log(security.auth.actor, "role_relation", relation.relation_id, target_scope=scope)
+        self._log(
+            security.auth.actor, "continuity_relation", relation.relation_id, target_scope=scope
+        )
         return result
 
-    def role_view(
-        self,
-        scope: Scope,
-        request: RoleViewQuery,
-        *,
-        security: RequestSecurityContext,
-    ) -> dict:
-        self._authorize(security, scope, Action.READ, "role_view")
-        service = self._role_service(scope)
-        read = self._role_reader(security, scope)
-
-        def discover(query, limit):
-            results = self.search(
-                query,
-                Context(scope),
-                security=security,
-                top_k=limit,
-                disclosure=DisclosureLevel.L2,
-            )
-            units = []
-            for item in results.items:
-                # Schema entity views are not memory IDs; unresolved candidates are omitted.
-                try:
-                    unit = self.get(item.unit_id, scope, security=security)
-                    read(MemoryRef.of(unit))
-                    units.append(unit)
-                except (PermissionDeniedError, ConflictError, NotFoundError):
-                    continue
-            return units
-
-        result = service.view(scope, request, read, discover)
-        self._log(security.auth.actor, "role_view", request.task_id, target_scope=scope)
-        return result
-
-    def role_rebuild(
+    def continuity_recover(
         self,
         scope: Scope,
         *,
         security: RequestSecurityContext,
         recovery: ContinuityRecovery | None = None,
     ) -> dict:
-        self._authorize(security, scope, Action.WRITE, "role_rebuild")
+        self._authorize(security, scope, Action.WRITE, "continuity_recover")
         service = self._role_service(scope)
         read = self._role_management_reader(security, scope)
         if recovery is not None:
@@ -377,7 +689,7 @@ class ContinuityOpsMixin:
                 self._continuity_connectors.get(connector, {}).get("actor")
                 != asdict(security.auth.actor)
             ):
-                raise PermissionDeniedError("role_rebuild")
+                raise PermissionDeniedError("continuity_recover")
             for ref in recovery.refs:
                 unit = read(ref)
                 self._authorize(
@@ -391,10 +703,10 @@ class ContinuityOpsMixin:
             result = service.recover(scope, recovery, read)
         else:
             result = service.repair(scope, read)
-        self._log(security.auth.actor, "role_rebuild", "", target_scope=scope)
+        self._log(security.auth.actor, "continuity_recover", "", target_scope=scope)
         return result
 
-    def role_quarantine_source(
+    def quarantine_source(
         self,
         scope: Scope,
         source_key: str,
@@ -402,106 +714,29 @@ class ContinuityOpsMixin:
         *,
         security: RequestSecurityContext,
     ) -> dict:
-        self._authorize(security, scope, Action.MANAGE_SPACE, "role_quarantine_source")
+        self._authorize(security, scope, Action.MANAGE_SPACE, "quarantine_source")
         service = self._role_service(scope)
         record = service.quarantine_source(
             scope, source_key, reason, operator=fingerprint(asdict(security.auth.actor))
         )
         self._log(
             security.auth.actor,
-            "role_quarantine_source",
+            "quarantine_source",
             source_key,
             target_scope=scope,
             detail={"reason": reason},
         )
         return record
 
-    def role_release_source(
+    def release_source(
         self,
         scope: Scope,
         source_key: str,
         *,
         security: RequestSecurityContext,
     ) -> bool:
-        self._authorize(security, scope, Action.MANAGE_SPACE, "role_release_source")
+        self._authorize(security, scope, Action.MANAGE_SPACE, "release_source")
         service = self._role_service(scope)
         released = service.release_source(scope, source_key)
-        self._log(security.auth.actor, "role_release_source", source_key, target_scope=scope)
+        self._log(security.auth.actor, "release_source", source_key, target_scope=scope)
         return released
-
-    def role_mark_source_cutover(
-        self,
-        scope: Scope,
-        connector: str,
-        context_id: str,
-        *,
-        security: RequestSecurityContext,
-    ) -> dict:
-        self._authorize(security, scope, Action.MANAGE_SPACE, "role_mark_source_cutover")
-        service = self._role_service(scope)
-        result = service.mark_source_cutover(scope, connector, context_id)
-        self._log(
-            security.auth.actor,
-            "role_mark_source_cutover",
-            connector,
-            target_scope=scope,
-            detail={"context_id": context_id},
-        )
-        return result
-
-    def role_publish(
-        self,
-        scope: Scope,
-        source: MemoryRef,
-        reason: str,
-        *,
-        security: RequestSecurityContext,
-    ) -> dict:
-        """Explicitly publish a private record into the shared project space.
-
-        The publisher needs WRITE on the project, READ **and SHARE** on the source's own
-        scope (a reader who cannot re-share must not broaden visibility), and the shared
-        record keeps the verbatim content plus origin/provenance and justification —
-        publishing never auto-summarizes private text into public facts.
-        """
-        if not reason.strip():
-            raise ValidationError("publish requires a non-empty justification")
-        self._authorize(security, scope, Action.WRITE, "role_publish")
-        unit = self._role_reader(security, scope)(source)
-        if unit.scope.org != scope.org:
-            raise ValidationError("publish requires the same organization")
-        # Re-sharing private content into the shared space requires SHARE on the source
-        # scope, not merely READ; otherwise a reader broadens visibility without grant.
-        source_scope = _space_scope(unit.scope.org, unit.scope.space)
-        self._authorize(
-            security,
-            source_scope,
-            Action.SHARE,
-            "role_publish_share",
-            _space_target_id(source_scope.org, source_scope.space),
-            context=_space_permission_context("space_member", source_scope),
-        )
-        source_time = unit.temporal.t_event
-        published = self._role_writer(
-            scope, security,
-            verbatim_time=(source_time if source_time is not None
-                           and source_time.utcoffset() is not None else None),
-        )(
-            unit.content,
-            {
-                "continuity_kind": "statement",
-                "continuity_published_source": canonical(asdict(source)),
-                "continuity_publish_reason": reason,
-            },
-        )
-        if len(published) != 1:
-            raise ValidationError("publish requires one shared record")
-        ref = MemoryRef.of(published[0])
-        self._log(
-            security.auth.actor,
-            "role_publish",
-            ref.unit_id,
-            target_scope=scope,
-            detail={"source": canonical(asdict(source)), "reason": reason},
-        )
-        return {"ref": asdict(ref), "source": asdict(source)}

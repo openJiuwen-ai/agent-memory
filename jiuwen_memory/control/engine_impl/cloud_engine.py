@@ -288,6 +288,7 @@ class CloudEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
+        source_ref: str = "",
     ) -> list[MemoryUnit]:
         raw_meta = enrich_snapshot_hints(
             system_metadata, occurred_at,
@@ -322,6 +323,7 @@ class CloudEngine(MemoryEngine):
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
             event_time=event_time,
+            source_ref=source_ref,
         )
         units = self._ingestor.ingest([payload])
         # Explicit input time is a write contract, independent of Ingestor choice.
@@ -440,6 +442,7 @@ class CloudEngine(MemoryEngine):
                     user_metadata=item.user_metadata,
                     occurred_at=item.occurred_at,
                     event_time=item.event_time,
+                    source_ref=item.source_ref,
                 )
                 outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
             except Exception as exc:
@@ -638,10 +641,6 @@ class CloudEngine(MemoryEngine):
             binding.name if binding is not None else self._default_pipeline_name
         )
         return await prepare_schema_update(self._evolver_for_unit, old, new, patch)
-
-    def conditional_update(self, unit: MemoryUnit, expected_digest: str) -> bool:
-        current = self._load(unit.scope, unit.id)
-        return self._index_for_unit(current).update_if_unchanged(unit, expected_digest)
 
     async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
         return await commit_schema_update(

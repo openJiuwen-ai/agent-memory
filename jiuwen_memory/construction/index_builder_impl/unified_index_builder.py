@@ -92,19 +92,6 @@ class UnifiedIndexBuilder(IndexBuilder):
     def health(self) -> None:
         return None
 
-    @property
-    def supports_conditional_update(self) -> bool:
-        return self._domain.supports_conditional_update
-
-    def update_if_unchanged(self, unit, expected_digest) -> bool:
-        self._enrich_index_metadata([unit])
-        self._maybe_vectorize([unit])
-        if not self._domain.update_if_unchanged(unit.scope, unit, expected_digest):
-            return False
-        if self._entity_builder is not None:
-            self._entity_builder.update([unit], mode=IndexWriteMode.RETRIEVAL_ONLY)
-        return True
-
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         """补齐索引过滤字段 + 向量化（开关门控）后按 Scope 分组委托 ``DomainStore.add``。"""
         self._enrich_index_metadata(units)

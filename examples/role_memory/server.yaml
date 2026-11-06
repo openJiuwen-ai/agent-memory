@@ -55,10 +55,17 @@ constructor:
     params: {graph_store: evidence}
 role_view:
   default: {target: bounded}
+# 接续模式（不需要图存储）的最小配置：删去上方 graph_store / constructor / role_view 及
+# 下方图与关系相关键，并把 mode 改为 continuity；保留的图相关键会被忽略并在启动日志告警。
+#   continuity:
+#     default:
+#       target: local
+#       params: {mode: continuity, single_writer: true, registry_store: registry}
 continuity:
   default:
     target: local
     params:
+      mode: role            # 必填：role（角色模式，需图存储与 role_view）或 continuity
       single_writer: true
       registry_store: registry
       graph_store: evidence

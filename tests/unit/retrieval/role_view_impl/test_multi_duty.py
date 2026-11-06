@@ -58,12 +58,7 @@ class World:
 
     def resolve_edge(self, edge_id):
         rid = edge_id.removeprefix("continuity:relation:")
-        rec = self.relations[rid]
-        rel_unit = MemoryUnit(
-            id="rel-" + rid, scope=self.scope, segments=[Segment(content=rid)]
-        )
-        self.units[rel_unit.id] = rel_unit
-        return rec, MemoryRef.of(rel_unit)
+        return self.relations[rid]
 
     def view(self, anchor, duty, budget=None):
         if isinstance(anchor, str):

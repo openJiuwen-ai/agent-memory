@@ -214,11 +214,11 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ## 6. 记忆接口层（Memory API）
 
-可选角色关系记忆入口已增加 `role_task`、`role_record`、`role_relation`、`role_view`、`role_rebuild`，负责显式任务映射、可靠记录、关系复核、职责图视图和补建恢复；另有来源治理的 `role_quarantine_source`、`role_release_source`。保持同一 PEP 与传输契约，详见 [S11](../specs/S11-cross-agent-continuity.md)。
+可选角色关系记忆（2026-11-05 设计修订）分接续 / 角色两档：可靠写入并入 `add` / `batch_add` 的 `continuity` 参数，任务背景与职责视图并入 `search` 的 `duty` / `task_id` / `anchor` / `view_budget` 参数（结果为 `RetrievalResult` 可选字段）；专用入口只保留 `continuity_task`、`continuity_relation`（仅角色模式）、`continuity_recover`，以及治理面的 `quarantine_source`、`release_source`。保持同一 PEP 与传输契约，详见 [S11](../specs/S11-cross-agent-continuity.md)。代码已落地为目标形态（43 个方法，两档模式），剩余差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。
 
 所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；当前由 `Authorizer` 判定，旧 `PermissionManager` 不参与生产授权。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
 
-本章**只列出当前代码已实现的 43 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
+本章列出 43 个对外接口，一方法一行；其中五个接续入口已实现（`continuity_task`、`continuity_relation`、`continuity_recover`、`quarantine_source`、`release_source`）。旧 `role_record` / `role_view` / `role_publish` / `role_mark_source_cutover` 已删除，前两者能力并入 `add` / `batch_add` / `search`。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
 
 | 对外接口方法 | 语义 | 入参 | 出参 |
 | --- | --- | --- | --- |
@@ -257,17 +257,11 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `list_space_members` | 列出 space 成员与角色 | `org: str`；`space: str`；`*`；`security: RequestSecurityContext` | `list[SpaceMember]` |
 | `add_space_member` | 添加或更新 space 成员角色 | `org: str`；`space: str`；`member: SpaceMember`；`*`；`security: RequestSecurityContext` | `None` |
 | `remove_space_member` | 移除 space 成员 | `org: str`；`space: str`；`member: Scope`；`*`；`security: RequestSecurityContext` | `None` |
-| `role_task` | 登记、绑定和读取跨产品任务 | `scope: Scope`；`request: TaskRequest`；`security: RequestSecurityContext` | `dict` |
-| `role_record` | 幂等记录带来源的事件 | `scope: Scope`；`event: ContinuityEvent`；`security: RequestSecurityContext` | `dict` |
-| `role_relation` | 登记或复核证据关系 | `scope: Scope`；`relation: RelationRecord；expected_revision: int`；`security: RequestSecurityContext` | `dict` |
-| `role_view` | 按职责展开证据路径 | `scope: Scope`；`request: RoleViewQuery`；`security: RequestSecurityContext` | `dict` |
-| `role_rebuild` | 修复投影或恢复未知写入 | `scope: Scope`；`recovery: ContinuityRecovery \| None = None`；`security: RequestSecurityContext` | `dict` |
-| `role_quarantine_source` | 隔离来源范围并记录原因 | `scope: Scope`；`source_key: str`；`reason: str`；`security: RequestSecurityContext` | `dict` |
-| `role_release_source` | 解除来源隔离 | `scope: Scope`；`source_key: str`；`security: RequestSecurityContext` | `bool` |
-| `role_mark_source_cutover` | 双写切换为 agent-memory 为准 | `scope: Scope`；`connector: str`；`context_id: str`；`security: RequestSecurityContext` | `dict` |
-| `role_publish` | 显式发布私有内容到共享空间 | `scope: Scope`；`source: MemoryRef`；`reason: str`；`security: RequestSecurityContext` | `dict` |
-| `read_md_file` | 读取 Markdown 记忆文件 | `md_filename`、`context`、可信 `security`；具体参数见 S02 | `list[MemoryUnit]` |
-| `edit_md_file` | 替换 Markdown 记忆块并保存新版本 | `md_filename`、`context`、可信 `security`；具体参数见 S02 | `list[MemoryUnit]` |
+| `continuity_task` | 登记、绑定和读取跨产品任务 | `scope: Scope`；`request: TaskRequest`；`*`；`security: RequestSecurityContext` | `dict` |
+| `continuity_relation` | 仅角色模式，登记、复核或撤回证据关系；真源存 Registry KV | `scope: Scope`；`relation: RelationRecord`；`expected_revision: int`；`*`；`security: RequestSecurityContext` | `dict` |
+| `continuity_recover` | 核对未知写入、修复关系投影、核对派生 | `scope: Scope`；`recovery: ContinuityRecovery`；`*`；`security: RequestSecurityContext` | `dict` |
+| `quarantine_source` | 治理面，隔离来源连接并记录原因 | `scope: Scope`；`connector: str`；`reason: str`；`*`；`security: RequestSecurityContext` | `dict` |
+| `release_source` | 治理面，解除来源隔离 | `scope: Scope`；`connector: str`；`*`；`security: RequestSecurityContext` | `bool` |
 | `admin_get` | admin：读取一项运行时可变策略的当前值（直达 PolicyManager）。管理面以根 `Scope()` 鉴权 | `key: str`；`*`；`security: RequestSecurityContext` | `str` |
 | `admin_set` | admin：调整一项运行时策略（启停索引、检索/演进开关等；键未知或不可变配置抛 `PolicyError`） | `key: str`；`value: str`；`*`；`security: RequestSecurityContext` | `None` |
 | `admin_all` | admin：列出全部运行时策略及当前值 | `*`；`security: RequestSecurityContext` | `dict[str, str]` |

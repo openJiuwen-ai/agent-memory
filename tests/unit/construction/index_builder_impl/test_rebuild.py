@@ -1,11 +1,9 @@
 """Rebuild only projections: actual SQLite truth stays byte-identical."""
 
-from dataclasses import replace
 
 import pytest
 
-from jiuwen_memory.common.type_def import Scope, Segment, memory_key
-from jiuwen_memory.common.type_def.continuity import MemoryRef
+from jiuwen_memory.common.type_def import Scope, memory_key
 from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
 from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
 from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
@@ -42,23 +40,5 @@ def test_retrieval_only_recovers_recall_without_rewriting_truth(tmp_path):
         assert kv.get(scope, memory_key(unit.id)) == original
         hits = stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
         assert [hit.id for hit in hits] == [unit.id]
-    finally:
-        kv.close()
-
-
-def test_conditional_write_refreshes_indexes_only_for_matching_truth(tmp_path):
-    kv = SQLiteKVStore(str(tmp_path / "truth.db"))
-    builder, stores = _builder(kv)
-    scope = Scope(org="o", space="s")
-    unit = create_test_unit("old", "Python evidence", scope=scope)
-    changed = replace(unit, segments=[Segment(content="Rust evidence")])
-    try:
-        builder.build([unit])
-        digest = MemoryRef.of(unit).content_digest
-        assert builder.update_if_unchanged(changed, digest)
-        assert not builder.update_if_unchanged(unit, digest)
-        hits = stores["fulltext"].search(scope, TextQuery(text="Rust", top_k=10))
-        assert [hit.id for hit in hits] == [unit.id]
-        assert not stores["fulltext"].search(scope, TextQuery(text="Python", top_k=10))
     finally:
         kv.close()

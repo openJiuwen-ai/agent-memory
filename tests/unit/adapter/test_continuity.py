@@ -22,13 +22,13 @@ pytestmark = pytest.mark.unit
 def test_remote_authentication_and_unknown_are_not_silent_success():
     def transport(request):
         assert request.headers["Authorization"] == "Bearer test-key"
-        assert request.url.path == "/v1/role_view"
+        assert request.url.path == "/v1/continuity_recover"
         return httpx.Response(401, json={"detail": "secret detail not echoed"})
 
     client = ContinuityClient(
         "https://memory.example", "test-key", transport=httpx.MockTransport(transport)
     )
-    assert client.call("role_view", {}) == {"status": "rejected", "error": "http_401"}
+    assert client.call("continuity_recover", {}) == {"status": "rejected", "error": "http_401"}
     client.close()
     with pytest.raises(ValueError):
         ContinuityClient("http://memory.example", "key")
@@ -56,25 +56,21 @@ def test_history_identity_preflight_and_unknown_boundary(tmp_path):
         @staticmethod
         def call(verb, payload):
             assert parse_request(verb, payload)
-            return {"status": "unknown"}
+            return {"outcomes": [{"continuity_status": "unknown", "operation_id": "op"}]}
 
     result = import_history(Client(), {"org": "o", "space": "p"}, manifest, events)
-    assert len(result["results"]) == 1 and result["remaining"] == 1
+    assert len(result["results"]) == 1
+    assert result["imported"] == 0 and result["remaining"] == len(events)
 
 
 def test_adapter_schema_includes_nested_fields_and_custom_duty():
     schemas = {s["name"]: s["parameters"] for s in tool_schemas()}
-    relation = schemas["agent_memory_role_relation"]["properties"]["relation"]
+    relation = schemas["agent_memory_continuity_relation"]["properties"]["relation"]
     assert "evidence_refs" in relation["properties"]
     assert "content_digest" in relation["properties"]["source"]["properties"]
-    view = schemas["agent_memory_role_view"]["properties"]["request"]
-    assert "max_nodes" in view["properties"]["budget"]["properties"]
-    assert "enum" not in view["properties"]["duty"], "configured policies must remain usable"
-
-
-def test_adapter_schema_exposes_role_rebuild():
+def test_adapter_schema_exposes_continuity_recover():
     schemas = {s["name"]: s["parameters"] for s in tool_schemas()}
-    rebuild = schemas["agent_memory_role_rebuild"]
+    rebuild = schemas["agent_memory_continuity_recover"]
     assert rebuild["required"] == ["scope"]
     recovery = rebuild["properties"]["recovery"]
     assert {"type": "null"} in recovery["anyOf"]
@@ -84,7 +80,7 @@ def test_adapter_schema_exposes_role_rebuild():
     assert "refs" in payload["properties"]
 
 
-def test_jiuwenswarm_forwards_role_rebuild():
+def test_jiuwenswarm_forwards_continuity_recover():
     provider = AgentMemoryMemoryProvider(
         base_url="https://memory.example", api_key="test", continuity_enabled=True
     )
@@ -98,35 +94,10 @@ def test_jiuwenswarm_forwards_role_rebuild():
     provider._client = Client()
     arguments = {"scope": {"org": "o", "space": "p"}, "recovery": None}
     result = json.loads(
-        asyncio.run(provider.handle_tool_call("agent_memory_role_rebuild", arguments))
+        asyncio.run(provider.handle_tool_call("agent_memory_continuity_recover", arguments))
     )
-    assert result["verb"] == "role_rebuild"
+    assert result["verb"] == "continuity_recover"
     assert result["scope"] == {"org": "o", "space": "p"}
-
-
-def test_jiuwenswarm_passes_explicit_duty_and_preserves_paths():
-    provider = AgentMemoryMemoryProvider(
-        base_url="https://memory.example",
-        api_key="test",
-        continuity_enabled=True,
-        default_duty="diagnosis",
-    )
-
-    class Client:
-        async def continuity_call(self, verb, payload):
-            assert verb == "role_view"
-            return {"duty": payload["request"]["duty"], "paths": [{"path_id": "p1"}], "gaps": []}
-
-    # White-box fixture/fault injection; do not expose a production test API.
-    # pylint: disable-next=protected-access
-    provider._client = Client()
-    arguments = {"scope": {"org": "o", "space": "p"}, "request": {"query": "q", "duty": "testing"}}
-    result = json.loads(asyncio.run(provider.handle_tool_call("agent_memory_role_view", arguments)))
-    assert result["duty"] == "testing"
-    assert result["paths"] == [{"path_id": "p1"}]
-    assert arguments["request"]["duty"] == "testing"
-    assert "agent_memory_role_view" in {s["name"] for s in provider.get_tool_schemas()}
-    assert "agent_memory_edit_md_file" in {s["name"] for s in provider.get_tool_schemas()}
 
 
 def test_legacy_reference_digest_matches_server_without_reindexing():
@@ -152,7 +123,7 @@ def test_legacy_reference_digest_matches_server_without_reindexing():
         sources=[{"scope": {"org": "o", "user": "private"}, "unit_id": "old"}],
     )
     assert MemoryRef.parse(calls[-1][1]["request"]["background"][0]) == MemoryRef.of(unit)
-    assert [call[0] for call in calls] == ["get", "role_task"]
+    assert [call[0] for call in calls] == ["get", "continuity_task"]
 
 
 def test_batch_rollback_uses_original_revision_and_cannot_delete_newer_edits():
@@ -189,15 +160,14 @@ def test_jiuwenswarm_rail_preserves_structured_view_and_durable_receipt():
     client.continuity_call.return_value = view
     scope = {"org": "o", "space": "p"}
     assert json.loads(asyncio.run(provider.prefetch("query", scope=scope, task_id="t"))) == view
-    assert client.continuity_call.call_args.args[1]["request"]["duty"] == [
-        "diagnosis", "execution"
-    ]
+    assert client.continuity_call.call_args.args[1]["duty"] == ["diagnosis", "execution"]
+    assert client.continuity_call.call_args.args[1]["task_id"] == "t"
     client.continuity_call.return_value = {"status": "unknown", "operation_id": "op"}
     result = asyncio.run(provider.sync_turn(
         "question", "answer", scope=scope, task_id="t", binding_id="b", event_id="turn-1"
     ))
     assert result == {"status": "unknown", "operation_id": "op"}
-    assert client.continuity_call.call_args.args[1]["event"]["event_id"] == "turn-1"
+    assert client.continuity_call.call_args.args[1]["continuity"]["event_id"] == "turn-1"
     with pytest.raises(ValueError, match="stable event ID"):
         asyncio.run(provider.sync_turn("question", "answer", scope=scope))
     client.continuity_call.side_effect = ConnectionError("offline")

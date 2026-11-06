@@ -50,9 +50,7 @@ def prepare_history(
         else:
             missing.add("event_id")
             # Without native identity only replay of this exact batch is provable.
-            event_id = hashlib.sha256(
-                json.dumps([batch_id, digest, line_no]).encode()
-            ).hexdigest()
+            event_id = hashlib.sha256(json.dumps([batch_id, digest, line_no]).encode()).hexdigest()
             locator = f"{product}:{batch_id}:{digest}:line:{line_no}"
         event = ContinuityEvent(
             task_id=task_id,
@@ -64,8 +62,6 @@ def prepare_history(
             claimed_author=row.get("claimed_author"),
             source_locator=locator,
             duty_ids=row.get("duty_ids", []),
-            source_position=row.get("source_position"),
-            previous_position=row.get("previous_position"),
         )
         events.append(asdict(event))
     manifest = dict(
@@ -83,14 +79,75 @@ def prepare_history(
     return manifest, events
 
 
-def import_history(client, scope: dict, manifest: dict, events: list[dict]) -> dict:
-    results = []
-    for event in events:
-        result = client.call("role_record", {"scope": scope, "event": event})
-        results.append({"event_id": event["event_id"], **result})
-        if result.get("status") != "committed":
-            break  # Never blindly retry an unacknowledged write or skip its unknown boundary.
-    return {"manifest": manifest, "results": results, "remaining": len(events) - len(results)}
+def import_history(
+    client, scope: dict, manifest: dict, events: list[dict], *, chunk_size: int = 50
+) -> dict:
+    """Import history through chunked ``batch_add`` calls with per-item continuity.
+
+    Chunking keeps one HTTP request bounded (a whole history in one body is neither
+    retryable nor transportable). Each chunk is sent with ``continue_on_error=False``:
+    after the first non-committed item the server stops, so the remaining rows are
+    **not** written and must be counted as not yet imported.
+    """
+    size = max(1, int(chunk_size))
+    results: list[dict] = []
+    imported = 0
+    for start in range(0, len(events), size):
+        chunk = events[start : start + size]
+        items = [
+            {
+                "content": event["content"],
+                "scope": scope,
+                # 经验适用职责经 `duty:<id>` 标签承载；prepare_history 单独产出的
+                # duty_ids 必须折回标签，否则导入后视图里的 duties 全丢。
+                "tags": [
+                    *[str(tag) for tag in event.get("tags") or []],
+                    *[f"duty:{duty}" for duty in event.get("duty_ids") or []],
+                ],
+                "continuity": {
+                    "task_id": event["task_id"],
+                    "binding_id": event["binding_id"],
+                    "event_id": event["event_id"],
+                    "kind": event.get("kind", "unclassified"),
+                    "classification_confidence": event.get(
+                        "classification_confidence", "unknown"
+                    ),
+                    "evidence_refs": list(event.get("evidence_refs") or []),
+                    "context_id": event.get("context_id", ""),
+                    "source_locator": event.get("source_locator"),
+                    "claimed_author": event.get("claimed_author"),
+                },
+            }
+            for event in chunk
+        ]
+        outcome = client.call(
+            "batch_add",
+            {"items": items, "scope": scope, "continue_on_error": False},
+        )
+        stopped = False
+        for event, item_outcome in zip(chunk, outcome.get("outcomes") or [], strict=False):
+            status = item_outcome.get("continuity_status") or ""
+            results.append(
+                {
+                    "event_id": event["event_id"],
+                    "status": status or "rejected",
+                    "operation_id": item_outcome.get("operation_id", ""),
+                    "refs": item_outcome.get("units") or [],
+                }
+            )
+            if status != "committed":
+                stopped = True
+                break
+            imported += 1
+        if stopped:
+            # 服务端在第一个未提交项处停批，本块剩余行与后续块都还没写，不能算已导入。
+            break
+    return {
+        "manifest": manifest,
+        "results": results,
+        "imported": imported,
+        "remaining": len(events) - imported,
+    }
 
 
 def attach_existing(
@@ -122,7 +179,7 @@ def attach_existing(
             {"scope": unit["scope"], "unit_id": unit["id"], "content_digest": content_digest}
         )
     return client.call(
-        "role_task",
+        "continuity_task",
         {
             "scope": project,
             "request": {
@@ -194,7 +251,7 @@ def backfill_relations(client, scope: dict, batch_id: str, relations: list[dict]
     for relation in relations:
         record = {**relation, "batch_id": batch_id}
         result = client.call(
-            "role_relation",
+            "continuity_relation",
             {
                 "scope": scope,
                 "relation": record,
@@ -229,7 +286,8 @@ def rollback_relations(client, scope: dict, batch_id: str, receipts: list[dict])
         record.update(revision=expected + 1, status="revoked")
         results.append(
             client.call(
-                "role_relation", {"scope": scope, "relation": record, "expected_revision": expected}
+                "continuity_relation",
+                {"scope": scope, "relation": record, "expected_revision": expected},
             )
         )
     return {"batch_id": batch_id, "results": results}

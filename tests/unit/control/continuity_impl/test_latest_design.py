@@ -148,7 +148,7 @@ def test_support_resolution_and_manual_review_survive_revision(setup):
         conflict_kind="factual",
     )
     service.relation(scope, conflict, 0, read, write)
-    resolved, _ = service.resolve_edge(scope, "conflict", read)
+    resolved = service.resolve_edge(scope, "conflict", read)
     assert resolved.resolution == "prefer_b"
     view = service.view(scope, RoleViewQuery(anchor=a), read, lambda *_: [])
     assert next(item for item in view["facts"] if item["text"] == "16GB")["status"] == "refuted"
@@ -160,7 +160,7 @@ def test_support_resolution_and_manual_review_survive_revision(setup):
     )
     service.relation(scope, review, 1, read, write)
     service.relation(scope, replace(conflict, revision=3), 2, read, write)
-    current, _ = service.resolve_edge(scope, "conflict", read)
+    current = service.resolve_edge(scope, "conflict", read)
     assert current.resolution == "both_valid"
     assert current.resolution_origin == "human"
 
@@ -184,7 +184,7 @@ def test_advisory_never_chooses_winner(setup):
         read,
         write,
     )
-    relation, _ = service.resolve_edge(scope, "advice", read)
+    relation = service.resolve_edge(scope, "advice", read)
     assert relation.resolution == "defer"
     assert relation.resolution_origin == "automatic"
 
@@ -207,7 +207,7 @@ def test_verifies_alone_does_not_select_a_winner(setup):
         conditions=["host A"], evidence_refs=[proof], conflict_kind="factual",
     )
     service.relation(scope, conflict, 0, read, write)
-    resolved, _ = service.resolve_edge(scope, "conflict", read)
+    resolved = service.resolve_edge(scope, "conflict", read)
     assert resolved.resolution == "defer"
     assert resolved.resolution_refs == []
 
@@ -229,7 +229,7 @@ def test_support_with_different_conditions_does_not_select_a_winner(setup):
         conditions=["host A"], evidence_refs=[proof], conflict_kind="factual",
     )
     service.relation(scope, conflict, 0, read, write)
-    resolved, _ = service.resolve_edge(scope, "conflict", read)
+    resolved = service.resolve_edge(scope, "conflict", read)
     assert resolved.resolution == "defer"
     assert resolved.resolution_refs == []
 
@@ -317,7 +317,7 @@ def test_resolution_is_invalidated_when_support_is_revoked(setup):
         conflict_kind="factual",
     )
     service.relation(scope, conflict, 0, read, write)
-    resolved, _ = service.resolve_edge(scope, "conflict", read)
+    resolved = service.resolve_edge(scope, "conflict", read)
     assert resolved.resolution == "prefer_b"
     assert len(resolved.resolution_refs) == 1
     service.relation(scope, replace(proof, revision=2, status="revoked"), 1, read, write)

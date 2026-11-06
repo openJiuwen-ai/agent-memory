@@ -74,6 +74,12 @@ pytestmark = pytest.mark.unit
 SCOPE = {"org": "local", "user": "developer"}
 
 
+@pytest.mark.parametrize("name", ["memory_quarantine_source", "memory_release_source"])
+def test_source_governance_tools_are_not_agent_facing(name) -> None:
+    """来源治理只在管理面暴露（F10 D4）：MCP 是 Agent 入口，不应注册这两个工具。"""
+    assert name not in {tool.name for tool in asyncio.run(mcp_main.mcp.list_tools())}
+
+
 @pytest.mark.parametrize("fail_in_session", [False, True])
 def test_stdio_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -> None:
     server = Mock(start_background=AsyncMock())
@@ -113,30 +119,13 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "new_text": "new",
         },
     ),
-    "memory_role_view": ("role_view", {"scope": {"org": "o", "space": "p"},
-                                      "request": {"query": "timeout", "duty": "testing"}}),
-    "memory_role_task": ("role_task", {"scope": {"org": "o", "space": "p"},
+    "memory_continuity_task": ("continuity_task", {"scope": {"org": "o", "space": "p"},
                                       "request": {"operation": "create", "request_id": "r"}}),
-    "memory_role_record": ("role_record", {"scope": {"org": "o", "space": "p"},
-        "event": {"task_id": "t", "binding_id": "b", "event_id": "e", "content": "observed"}}),
-    "memory_role_relation": ("role_relation", {"scope": {"org": "o", "space": "p"},
+    "memory_continuity_relation": ("continuity_relation", {"scope": {"org": "o", "space": "p"},
         "expected_revision": 0, "relation": {"relation_id": "r", "relation_type": "supports",
         "source": {"scope": SCOPE, "unit_id": "a", "content_digest": "0" * 64},
         "target": {"scope": SCOPE, "unit_id": "b", "content_digest": "1" * 64}}}),
-    "memory_role_rebuild": ("role_rebuild", {"scope": {"org": "o", "space": "p"}}),
-    "memory_role_quarantine_source": ("role_quarantine_source", {
-        "scope": SCOPE, "source_key": "workbuddy", "reason": "invalid source",
-    }),
-    "memory_role_release_source": ("role_release_source", {
-        "scope": SCOPE, "source_key": "workbuddy",
-    }),
-    "memory_role_mark_source_cutover": ("role_mark_source_cutover", {
-        "scope": SCOPE, "connector": "workbuddy", "context_id": "session",
-    }),
-    "memory_role_publish": ("role_publish", {
-        "scope": SCOPE, "source": {"scope": SCOPE, "unit_id": "a", "content_digest": "0" * 64},
-        "reason": "share approved evidence",
-    }),
+    "memory_continuity_recover": ("continuity_recover", {"scope": {"org": "o", "space": "p"}}),
 
     "memory_add": (
         "add",
@@ -682,7 +671,11 @@ def test_search_returns_original_result_shape(kernel) -> None:
     asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE))
     result = asyncio.run(mcp_main.memory_search(query="coffee", context={"scope": SCOPE}, top_k=5))
     assert isinstance(result, dict)
-    assert set(result) == {"items", "errors", "trajectory"}
+    # 契约：RetrievalResult 的字段机械展开（F10 6.2.6 给 search 增加了职责视图可选字段）。
+    assert set(result) == {
+        "items", "errors", "trajectory", "paths", "gaps", "view_meta"
+    }
+    assert result["paths"] == [] and result["view_meta"] is None
     assert "hits" not in result
 
 

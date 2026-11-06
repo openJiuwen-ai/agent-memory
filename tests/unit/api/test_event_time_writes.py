@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import yaml
 
-from jiuwen_memory.api import BatchWriteItem, MemoryRef, Modality, Scope, assemble_runtime
+from jiuwen_memory.api import BatchWriteItem, Modality, Scope, assemble_runtime
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.types import Role
@@ -125,18 +125,4 @@ def test_submit_ingest_passes_event_time_to_background_add(env, monkeypatch):
     )
     units = submit.call_args.kwargs["task"]()
     assert units[0].temporal.t_event == EVENT_TIME
-
-
-def test_publish_preserves_source_event_time(env):
-    api, project, security = env
-    source_space = Scope(org="demo", space="private-space")
-    owner = Scope(org="demo", user="owner")
-    api.create_space(
-        SpaceSpec(org="demo", space="private-space", owner=owner),
-        security=_security(Scope(org="demo", user="ops"), Role.ADMIN),
-    )
-    unit = api.add("record", source_space, security=security, event_time=EVENT_TIME)[0]
-    published = api.role_publish(project, MemoryRef.of(unit), "share it", security=security)
-    copy = api.get(published["ref"]["unit_id"], project, security=security)
-    assert copy.temporal.t_event == EVENT_TIME
 

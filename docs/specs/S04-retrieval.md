@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-02 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -623,4 +623,4 @@ valid-time 起点为空表示无下界：前置使用 NOT(t_valid > as_of)，真
 
 ## 职责关系视图
 
-`RoleView` 是独立 RetrievalOperator，Producer 命名空间 role_view，算子类型 ROLE_VIEW。输入 RoleViewQuery 与已授权读回调，注入图查询、关系真源解析及启动关系目录；不读取产品身份。任务背景、明确 anchor 优先；语义经验仅为独立候选，不能虚构连边。按类型/方向/优先级有界展开，逐边核对当前关系、端点及证据，返回路径与结构化 gaps。所有职责保留反证和前置条件检查，未知职责报错。共享总预算和保守覆盖语义见 [S11](S11-cross-agent-continuity.md)。
+`RoleView` 是独立 RetrievalOperator，Producer 命名空间 role_view，算子类型 ROLE_VIEW，仅角色模式装配。它由 `search` 的接续参数（`duty` / `task_id` / `anchor` / `view_budget`）触发，结果以 `RetrievalResult.paths` / `gaps` / `view_meta` 与 `RetrievedItem.view` 可选字段返回（schema `role-view/2`）；三者均缺省时 search 行为不变，接续模式下不展开关系并返回非阻断 `relation_expansion_disabled` gap；与跨空间 `spaces` 同传返回 ValidationError。输入视图查询与已授权读回调，注入图查询、关系真源解析及启动关系目录；不读取产品身份。任务背景、明确 anchor 优先；语义经验仅为独立候选，不能虚构连边。按类型/方向/优先级有界展开，逐边回查 Registry KV 关系头核对当前关系（边属性存 relation_id 与 revision；提交连接停用或隔离时视为不可用），以及端点和证据，返回路径与结构化 gaps。所有职责保留反证和前置条件检查，未知职责报错。共享总预算和保守覆盖语义见 [S11](S11-cross-agent-continuity.md)。

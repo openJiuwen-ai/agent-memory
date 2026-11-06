@@ -266,6 +266,7 @@ class InMemoryEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
+        source_ref: str = "",
     ) -> list[MemoryUnit]:
         _ensure_local_scope(scope)
         # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
@@ -317,6 +318,7 @@ class InMemoryEngine(MemoryEngine):
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
             event_time=event_time,
+            source_ref=source_ref,
         )
         # 三条路径共用：Ingestor 规约。
         units = self._ingestor.ingest([payload])
@@ -476,6 +478,7 @@ class InMemoryEngine(MemoryEngine):
                     user_metadata=item.user_metadata,
                     occurred_at=item.occurred_at,
                     event_time=item.event_time,
+                    source_ref=item.source_ref,
                 )
                 outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
             except Exception as exc:
@@ -626,10 +629,6 @@ class InMemoryEngine(MemoryEngine):
         return await prepare_schema_update(
             self._evolver_for_unit, old, _apply_patch(old, patch), patch
         )
-
-    def conditional_update(self, unit: MemoryUnit, expected_digest: str) -> bool:
-        current = self._load(unit.scope, unit.id)
-        return self._index_for_unit(current).update_if_unchanged(unit, expected_digest)
 
     async def commit_update(self, plan: SourceUpdatePlan) -> MemoryUnit:
         return await commit_schema_update(

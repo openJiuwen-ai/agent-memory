@@ -153,6 +153,7 @@ class _Kernel:
     space: SpaceManager | None = None
     audit: AuditLogger | None = None
     config_source: ConfigSource | None = None
+    ctx: AssemblyContext | None = None
     scheduler: Scheduler | None = None
     watchdog: Watchdog | None = None
     security_runtime: SecurityRuntime | None = None
@@ -832,6 +833,7 @@ def _assemble_kernel(
             "只配 audit_integrity 而不接线，部署会以为已启用链式证明，实际仍是普通审计。"
         )
     return _Kernel(
+        ctx=ctx,
         api=api,
         kv=kv_store,
         storage=storage,
@@ -934,6 +936,56 @@ def assemble_runtime(
     """一次装配 SDK 认证、业务 API 与启动/关闭句柄，不暴露存储或任务控制器端口。"""
     kernel = _build_kernel(policies, kv, config)
     return _runtime_from_kernel(kernel)
+
+
+class MaintenancePorts:
+    """Offline maintenance handle: two KVs, the assembly context, and close().
+
+    Maintenance tooling must share the *same* assembly as the service: re-building a
+    second context would hand the projector a different GraphStore, and dropping the
+    kernel would leak the continuity single-writer lock it claimed.
+    """
+
+    def __init__(
+        self,
+        truth_kv: KVStore,
+        registry_kv: KVStore,
+        ctx: AssemblyContext,
+        runtime: _MemoryRuntime,
+    ) -> None:
+        self.truth_kv = truth_kv
+        self.registry_kv = registry_kv
+        self.ctx = ctx
+        self._runtime = runtime
+        self._closed = False
+
+    def close(self) -> None:
+        """Release everything this assembly created, including the writer lock."""
+        if self._closed:
+            return
+        self._closed = True
+        self._runtime.close()
+
+
+def assemble_maintenance_ports(
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    registry_store: str = "default",
+) -> MaintenancePorts:
+    """Assemble once and return a closable maintenance handle.
+
+    Same path as :func:`assemble_runtime` (defaults merge, plug-in registration,
+    ConfigSource) so an offline migration sees the configuration the service would see.
+    Not a data-plane entry: callers must own the deployment for the duration and close
+    the returned handle to release the continuity single-writer lock.
+    """
+    kernel = _build_kernel(config=config)
+    return MaintenancePorts(
+        truth_kv=kernel.kv,
+        registry_kv=kernel.storage.kv(registry_store),
+        ctx=kernel.ctx,
+        runtime=_runtime_from_kernel(kernel),
+    )
 
 
 def _runtime_from_kernel(kernel: _Kernel) -> _MemoryRuntime:

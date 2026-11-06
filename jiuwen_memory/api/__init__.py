@@ -17,6 +17,7 @@ from jiuwen_memory.common.errors import (
     RateLimitedError,
     UnsupportedCapabilityError,
     ValidationError,
+    WriteIncompleteError,
     safe_error_message,
 )
 from jiuwen_memory.common.log import (
@@ -72,6 +73,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.continuity import (
     ContinuityEvent,
     ContinuityRecovery,
+    ContinuityWrite,
     Duty,
     EvidenceRelation,
     MemoryRef,
@@ -124,9 +126,11 @@ from .access_security import (
 from .memory_api import MemoryAPI
 from .memory_api_impl import (
     AUTO_SECURITY_RUNTIME,
+    MaintenancePorts,
     MemoryRuntime,
     ServerRuntime,
     assemble,
+    assemble_maintenance_ports,
     assemble_runtime,
     assemble_server_runtime,
 )
@@ -140,6 +144,8 @@ __all__ = [
     "HierarchyRole",
     "MemoryAPI",
     "assemble",
+    "MaintenancePorts",
+    "assemble_maintenance_ports",
     "assemble_runtime",
     "share_security_lifecycle",
     "CloseableSecurityCapability",
@@ -220,6 +226,7 @@ __all__ = [
     "ConflictError",
     "NotFoundError",
     "PartialFailureError",
+    "WriteIncompleteError",
     "PermissionDeniedError",
     "PolicyError",
     "RateLimitedError",
@@ -237,6 +244,7 @@ __all__ = [
 
 
 __all__ += [
-    "ContinuityRecovery", "ContinuityEvent", "Duty", "EvidenceRelation", "MemoryRef",
+    "ContinuityRecovery",
+    "ContinuityWrite", "ContinuityEvent", "Duty", "EvidenceRelation", "MemoryRef",
     "RelationRecord", "RelationStatus", "RoleViewQuery", "TaskRequest", "ViewBudget",
 ]

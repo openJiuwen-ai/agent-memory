@@ -7,7 +7,14 @@ from urllib.parse import urlsplit
 
 import httpx
 
-VERBS = frozenset({"role_task", "role_record", "role_relation", "role_view", "role_rebuild", "get"})
+VERBS = frozenset(
+    {
+        "continuity_task",
+        "continuity_relation",
+        "continuity_recover",
+        "get",
+    }
+)
 
 
 class ContinuityClient:

@@ -143,16 +143,6 @@ class IndexBuilder(ConstructionOperator):
     def rebuild(self) -> None:
         """从真源全量重建索引（删索引不丢数据的保障）。"""
 
-    @property
-    def supports_conditional_update(self) -> bool:
-        return False
-
-    def update_if_unchanged(self, unit: MemoryUnit, expected_digest: str) -> bool:
-        """CAS truth then refresh projections; failure may leave committed truth to repair."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
-        raise UnsupportedCapabilityError("IndexBuilder cannot conditionally update truth")
-
     def projection_graph(self):
         """Return the injected graph dependency for graph-only projection, otherwise None."""
         return None

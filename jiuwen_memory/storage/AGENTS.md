@@ -302,6 +302,6 @@ CompositeStoreManager 实现该方法，返回显式绑定受管 KV 的领域门
 该门面仍执行 memory_unit 授权并通过受管 KV 代理读数，不借用默认数据面的真源端口、
 文档模式或召回配置，不注册或替换 manager 的具名数据面。
 
-SQLite KV 提供单语句 compare_and_swap；EncryptedKVStore 对观察到的密文 CAS。CompositeDomainStore 的非文档写路径通过公开 capability 提供内容摘要条件更新，其他后端默认拒绝。
+KV 与 DomainStore 不提供 compare_and_swap / 条件更新（原仅服务角色记忆派生 updated，已随 updated 推迟一并删除，见 S06「原子条件更新」）；Registry 并发依赖单写者声明。
 
 Neo4j 启用 SSL 时在装配与 URI 晚绑定处验证 TLS scheme，显式加密与自定义 CA 同时传给驱动；health 只探测，首次写入前创建唯一约束。

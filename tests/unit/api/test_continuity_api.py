@@ -3,9 +3,10 @@
 import pytest
 
 from jiuwen_memory.api import (
+    Context,
+    ContinuityWrite,
     MemoryRef,
     RelationRecord,
-    RoleViewQuery,
     Scope,
     TaskRequest,
     assemble_runtime,
@@ -46,7 +47,7 @@ def test_public_role_view_and_task_registration():
             "continuity": {
                 "default": {
                     "target": "local",
-                    "params": {"single_writer": True, "allow_ephemeral": True},
+                    "params": {"single_writer": True, "allow_ephemeral": True, "mode": "role"},
                 }
             },
             "role_view": {"default": {"target": "bounded"}},
@@ -60,7 +61,7 @@ def test_public_role_view_and_task_registration():
     admin = _security(owner, Role.ADMIN)
     try:
         api.create_space(SpaceSpec(org="acme", space="project", owner=owner), security=admin)
-        task = api.role_task(project, TaskRequest("create", "create"), security=security)
+        task = api.continuity_task(project, TaskRequest("create", "create"), security=security)
         assert task["revision"] == 1
         a = api.add("payment timeout", project, security=security)[0]
         b = api.add("a test method", project, security=security)[0]
@@ -72,12 +73,13 @@ def test_public_role_view_and_task_registration():
             status="confirmed",
             evidence_refs=[MemoryRef.of(b)],
         )
-        result = api.role_relation(project, relation, 0, security=security)
+        result = api.continuity_relation(project, relation, 0, security=security)
         assert result["status"] == "committed"
-        view = api.role_view(
-            project, RoleViewQuery(anchor=MemoryRef.of(a), duty="testing"), security=security
+        view = api.search(
+            "", Context(project), security=security,
+            anchor=MemoryRef.of(a), duty="testing",
         )
-        assert any(p["steps"][-1]["relation_id"] == "r" for p in view["paths"])
+        assert any(p["steps"][-1]["relation_id"] == "r" for p in view.paths)
     finally:
         runtime.close()
 
@@ -88,7 +90,7 @@ def test_three_principals_resume_without_handoff_and_source_can_be_isolated(tmp_
 
     import yaml
 
-    from jiuwen_memory.api import ContinuityEvent, PermissionDeniedError, SpaceMember
+    from jiuwen_memory.api import PermissionDeniedError, SpaceMember
 
     config = yaml.safe_load(Path("examples/role_memory/server.yaml").read_text())
     for name, spec in config["kv_store"].items():
@@ -112,10 +114,10 @@ def test_three_principals_resume_without_handoff_and_source_can_be_isolated(tmp_
             api.add_space_member(
                 "demo", "role-project", SpaceMember(scope=actor), security=security
             )
-        task = api.role_task(project, TaskRequest("create", "create"), security=security)
+        task = api.continuity_task(project, TaskRequest("create", "create"), security=security)
         bindings = {}
         for name in actors:
-            task = api.role_task(
+            task = api.continuity_task(
                 project,
                 TaskRequest(
                     "bind",
@@ -130,34 +132,36 @@ def test_three_principals_resume_without_handoff_and_source_can_be_isolated(tmp_
             bindings[name] = task["task"]["bindings"][-1]["binding_id"]
         workbuddy_binding = bindings.get("workbuddy")
         assert workbuddy_binding is not None, "WorkBuddy binding was not registered"
-        event = ContinuityEvent(task["task_id"], workbuddy_binding, "event", "observed timeout")
-        receipt = api.role_record(
-            project, event, security=_security(actors["workbuddy"])
+        write = ContinuityWrite(task["task_id"], workbuddy_binding, "event")
+        units = api.add(
+            "observed timeout", project,
+            security=_security(actors["workbuddy"]), continuity=write,
         )
-        assert receipt["status"] == "committed"
+        assert units[0].content == "observed timeout"
         for name in ("hermes", "jiuwenswarm"):
-            view = api.role_view(
-                project,
-                RoleViewQuery(task_id=task["task_id"], duty="diagnosis"),
-                security=_security(actors[name]),
+            view = api.search(
+                "", Context(project), security=_security(actors[name]),
+                task_id=task["task_id"], duty="diagnosis",
             )
-            assert any(item["text"] == "observed timeout" for item in view["facts"])
-            assert view["meta"]["based_on_handoff"] is None
+            assert any(item.content == "observed timeout" for item in view.items)
+            assert view.view_meta["based_on_handoff"] is None
         with pytest.raises(PermissionDeniedError):
-            api.role_record(project, event, security=_security(actors["hermes"]))
+            api.add(
+                "observed timeout", project,
+                security=_security(actors["hermes"]), continuity=write,
+            )
         # A trusted configuration update isolates the source; binding alone cannot bypass it.
         # White-box fixture/fault injection; do not expose a production test API.
         # pylint: disable-next=protected-access
         api._continuity_connectors["workbuddy"]["enabled"] = False
-        isolated = api.role_view(
-            project,
-            RoleViewQuery(task_id=task["task_id"]),
-            security=_security(actors["hermes"]),
+        isolated = api.search(
+            "", Context(project), security=_security(actors["hermes"]),
+            task_id=task["task_id"],
         )
-        assert "observed timeout" not in str(isolated)
-        ref = MemoryRef.parse(receipt["refs"][0])
+        assert "observed timeout" not in str(isolated.items)
+        ref = MemoryRef.of(units[0])
         with pytest.raises(PermissionDeniedError):
             api.get(ref.unit_id, ref.scope, security=_security(actors["hermes"]))
-        assert asdict(project) == receipt["refs"][0]["scope"]
+        assert asdict(project) == asdict(units[0].scope)
     finally:
         runtime.close()

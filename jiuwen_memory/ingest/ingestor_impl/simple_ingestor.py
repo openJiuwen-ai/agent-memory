@@ -79,7 +79,7 @@ class SimpleIngestor(Ingestor):
                                 source=payload.modality,
                             )
                         ],
-                        source_ref=payload.id,
+                        source_ref=payload.source_ref or payload.id,
                         temporal=Temporal(
                             t_event=t_event,
                             t_ingest=now,

@@ -1,6 +1,5 @@
 """Legacy association mapping: caused_by/contradicts become candidate evidence relations."""
 
-import json
 from typing import Any, NamedTuple
 from unittest.mock import Mock
 
@@ -71,8 +70,8 @@ def _candidate_types(service, scope, event):
 def _written_relations(service, scope, read):
     out = []
     for head in service.repository.list(scope, "relations"):
-        if head.get("ref"):
-            out.append(RelationRecord.parse(json.loads(read(MemoryRef.parse(head["ref"])).content)))
+        if head.get("current"):
+            out.append(RelationRecord.parse(head["current"]))
     return out
 
 

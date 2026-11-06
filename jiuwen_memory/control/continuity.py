@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.common.type_def.continuity import (
@@ -24,12 +25,16 @@ class ContinuityProducer(Factory):
 
 
 class Continuity(ABC):
+    # 部署档位，公开能力声明：``role``（含关系扩展）或 ``continuity``（仅接续）。
+    # API 依赖该声明判断能否展开关系，不探测实现私有状态（S09 §1/§6/§7）。
+    mode: str = "role"
+
     def retains(self, unit) -> bool:
         """Conservative automatic-cleanup guard; implementations must inspect references."""
         return True
 
     @abstractmethod
-    def health(self) -> None:
+    def health(self) -> dict:
         ...
 
     def close(self) -> None:
@@ -59,16 +64,6 @@ class Continuity(ABC):
         """Release a quarantined source; returns whether it was quarantined."""
         return False
 
-    def mark_source_cutover(self, scope: Scope, connector: str, context_id: str) -> dict:
-        """Cut a dual-write source over to agent-memory as the single authoritative writer."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
-        raise UnsupportedCapabilityError("source cutover is not supported")
-
-    def source_cutover(self, scope: Scope, connector: str, context_id: str) -> int | None:
-        """Return the cutover watermark position for an ordered source, or ``None``."""
-        return None
-
     @abstractmethod
     def task(self, scope: Scope, request: TaskRequest, owner: str, read: ReadMemory) -> dict:
         ...
@@ -89,9 +84,98 @@ class Continuity(ABC):
         connector: str,
         read: ReadMemory,
         write: WriteMemory,
-        *, query_output=None, conditional_update=None,
+        *, query_output=None, request_fingerprint: str = "",
     ) -> dict:
         ...
+
+    def view_result(
+        self,
+        scope: Scope,
+        request: RoleViewQuery,
+        read: ReadMemory,
+        discover,
+        *, top_k: int,
+    ) -> dict:
+        """Duty view normalized for the API layer: ``{items, paths, gaps, meta}``.
+
+        ``items`` entries are ``{unit_id, text, group, annotation}``; the API layer only
+        converts them to its result type. Assembling entries, ordering, truncation gaps
+        and meta belongs to the view plug-in, not to the API mixin.
+        """
+        raise UnsupportedCapabilityError(
+            capability="view_result",
+            value=request.task_id or request.query,
+            component="continuity",
+            message="this continuity implementation cannot normalize a duty view",
+        )
+
+    def continuity_view_result(
+        self,
+        scope: Scope,
+        request: RoleViewQuery,
+        read: ReadMemory,
+        *,
+        extra_items,
+        top_k: int,
+    ) -> dict:
+        """Continuity-mode view: task background + anchor seeds, no relation expansion.
+
+        ``extra_items`` are the plain-retrieval hits (``{unit_id, content}``); merging,
+        ordering, the ``required`` flag and the gaps belong here, not in the API layer.
+        """
+        raise UnsupportedCapabilityError(
+            capability="continuity_view_result",
+            value=request.task_id or request.query,
+            component="continuity",
+            message="this continuity implementation cannot merge a continuity view",
+        )
+
+    def event_key(self, connector: str, binding_id: str, event_id: str) -> str:
+        """The single idempotency key for one continuity event (all callers share it)."""
+        from jiuwen_memory.common.type_def.continuity import fingerprint
+
+        return fingerprint(
+            {"connector": connector, "binding": binding_id, "event": event_id}
+        )
+
+    def record_batch(
+        self,
+        scope: Scope,
+        events: list[ContinuityEvent],
+        connectors: list[str],
+        read: ReadMemory,
+        write_batch,
+        *, request_fingerprints: list[str] | None = None, query_output=None,
+    ) -> list[dict]:
+        """Reliable batch write: one dict per event, in input order.
+
+        The default implementation keeps plug-ins working by falling back to per-event
+        ``record``; implementations that support it batch body writes, append task
+        background once per task and bump each task revision once (D5).
+        """
+        results = []
+        for index, event in enumerate(events):
+            fingerprint_value = (request_fingerprints or [""] * len(events))[index]
+            results.append(
+                self.record(
+                    scope,
+                    event,
+                    connectors[index],
+                    read,
+                    self._single_event_writer(write_batch),
+                    query_output=query_output,
+                    request_fingerprint=fingerprint_value,
+                )
+            )
+        return results
+
+    @staticmethod
+    def _single_event_writer(write_batch):
+        def write(content, metadata):
+            batches = write_batch([(content, metadata)])
+            return list(batches[0]) if batches else []
+
+        return write
 
     @abstractmethod
     def relation(
@@ -100,13 +184,12 @@ class Continuity(ABC):
         relation: RelationRecord,
         expected_revision: int,
         read: ReadMemory,
-        write: WriteMemory,
         read_previous: ReadMemory | None = None,
     ) -> dict:
         ...
 
     @abstractmethod
-    def relation_head_ref(self, scope: Scope, relation_id: str) -> dict | None:
+    def relation_current(self, scope: Scope, relation_id: str) -> dict | None:
         ...
 
     @abstractmethod
@@ -114,6 +197,22 @@ class Continuity(ABC):
         self, scope: Scope, relation: RelationRecord, read: ReadMemory
     ) -> None:
         ...
+
+    def task_background(self, scope: Scope, task_id: str, read: ReadMemory) -> dict:
+        """Task background as ``{units, required_ids, gaps}``.
+
+        Continuity mode has no relation expansion but must still restore the task's
+        background, so this stays a public capability rather than a role-mode-only path.
+        Implementations must report missing/unreadable background as ``gaps`` (with the
+        stored ``required`` flag) instead of returning an empty success: "no background"
+        and "a required premise is unreadable" are different answers to the caller.
+        """
+        raise UnsupportedCapabilityError(
+            capability="task_background",
+            value=task_id,
+            component="continuity",
+            message="this continuity implementation cannot restore task background",
+        )
 
     @abstractmethod
     def view(

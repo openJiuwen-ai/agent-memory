@@ -37,35 +37,7 @@ class KvProducer(Factory):
     TOP_NAME = "kv_store"
 
 
-def update_memory_if_unchanged(kv, unit: MemoryUnit, expected_digest: str) -> bool:
-    """Content predicate plus byte CAS protects intervening metadata changes as well."""
-    from jiuwen_memory.common.type_def.continuity import MemoryRef
-    from jiuwen_memory.common.type_def.memory_codec import dumps
-
-    if not kv.supports_compare_and_swap:
-        raise UnsupportedCapabilityError("conditional update requires atomic truth storage")
-    key = memory_key(unit.id)
-    try:
-        raw = kv.get(unit.scope, key)
-    except NotFoundError:
-        return False
-    current = loads(raw)
-    if current is None or MemoryRef.of(current).content_digest != expected_digest:
-        return False
-    return kv.compare_and_swap(unit.scope, key, raw, dumps(unit))
-
-
 class KVStore(BaseStore):
-    @property
-    def supports_compare_and_swap(self) -> bool:
-        return False
-
-    def compare_and_swap(
-        self, scope: Scope, key: str, expected: bytes, value: bytes
-    ) -> bool:
-        """Atomically replace an existing live value iff bytes match; preserve its TTL."""
-        raise UnsupportedCapabilityError("KV backend cannot atomically compare and swap")
-
     @property
     def persistent_atomic_records(self) -> bool:
         """Fixed durable namespace with atomic single-record replacement (not CAS)."""

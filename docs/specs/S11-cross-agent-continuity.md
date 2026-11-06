@@ -4,15 +4,15 @@
 
 | 项 | 值 |
 | --- | --- |
-| 状态 | 内核与工具契约已实现；真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
+| 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；剩余实现差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
 | 关联模块 | jiuwen_memory_adapter/、jiuwen_memory_entry/、jiuwen_memory/api/、jiuwen_memory/control/、jiuwen_memory/common/、jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性文档 | [F10-role-memory](../features/construction/F10-role-memory.md) |
 | 关联规约 | [S02](S02-memory-api.md)、[S03](S03-control.md)、[S04](S04-retrieval.md)、[S06](S06-storage.md)、[S07](S07-common.md)、[S09](S09-plugin-development.md) |
 
 ## 范围 / 边界
 
-规定三方接入需要提供的认证、事件、任务绑定、历史导入与回写语义，以及 agent-memory 负责的任务登记、职责关系扩展和结构化视图。本规约定义跨模块边界；不更改现有 `add/search/get` 签名，不规定产品内部任务系统，不提供通用工作流或自动执行锁。
+规定三方接入需要提供的认证、事件、任务绑定、历史导入与回写语义，以及 agent-memory 负责的任务登记、职责关系扩展和结构化视图。本规约定义跨模块边界；接续能力以**可选参数**扩展 `add` / `batch_add`（`continuity`）与 `search`（`duty` / `task_id` / `anchor` / `view_budget`），参数缺省时两者行为与改动前完全一致；`get` 签名不变。专用入口只保留任务登记（`continuity_task`）、关系登记（`continuity_relation`）、核对恢复（`continuity_recover`）与治理（`quarantine_source` / `release_source`）。不规定产品内部任务系统，不提供通用工作流或自动执行锁，不提供跨空间发布与增量同步游标。
 
 首版从已保存记录恢复任务背景，前任可以离线；不要求交接单或接收确认。多个授权参与者可贡献记录，本规约不定义执行所有权或外部任务锁。
 
@@ -27,11 +27,32 @@
 7. 视图中的未知、缺证和部分失败必须结构化表达；空列表不等于完成检查。受限记录的身份、数量或 Scope 不得借缺口说明泄露。
 8. 登记状态更新和回执要先持久化再返回成功。普通聊天的 best-effort 写入不能作为可靠写入确认。
 9. 角色入口与其他公开方法一样向 PEP 传递完整 `RequestSecurityContext`，先验证来源、时效和凭据撤销状态；不能只传 actor。项目空间成员授权由 `space_aware` Authorizer 执行。
-10. 角色入口沿用同步 MemoryAPI 契约；异步宿主通过工作线程调用（MCP 已如此接线）。关系修订和恢复判权使用已读取 MemoryUnit 的同一快照，不为判权额外读取另一版本。
+10. 角色入口沿用同步 MemoryAPI 契约；异步宿主通过工作线程调用（MCP 已如此接线）。关系修订和恢复判权使用已读取的关系记录与端点 MemoryUnit 的同一快照，不为判权额外读取另一版本。
+11. 接续能力分两档：`continuity`（接续模式，不需要图存储）与 `role`（角色模式，需要图存储）。档位由配置显式声明，运行期不自动升降档；接续模式下不得伪装具备关系扩展（见[模式与能力矩阵](#模式与能力矩阵)）。
+
+## 模式与能力矩阵
+
+配置键 `continuity.default.params.mode` 取 `continuity` 或 `role`，**必填**；出现 `continuity` 命名空间而缺 `mode` 时启动失败。
+
+- **接续模式（continuity）**：任务登记、可靠写入（含历史导入）、任务背景检索、来源治理、可选派生构建。不需要图存储。若同时配置了 `graph_store`、`relation_index_builder`、`role_view`、`relation_associator`、`conflict_resolver`、`relation_types*`、`duty_policies*`，启动时忽略并输出一次 warning，列出被忽略的键。
+- **角色模式（role）**：接续模式全部能力 ＋ 关系登记、职责扩展、证据图投影、关系覆盖清单、可选候选关系发现与冲突消解。缺 `graph_store`、后端不支持有向邻接查询或条件投影、或缺 `role_view` 时启动失败。
+
+| 能力 | continuity × 普通写入 | continuity × 文档模式 | role × 普通写入 | role × 文档模式 |
+| --- | --- | --- | --- | --- |
+| 任务登记 / 绑定（`continuity_task`） | ✓ | ✓ | ✓ | ✓ |
+| 可靠写入（`add` / `batch_add` 的 `continuity` 参数） | ✓ | ✓ | ✓ | ✓ |
+| 任务背景检索（`search` + `task_id`） | ✓ | ✓ | ✓ | ✓ |
+| 来源隔离 / 解除 | ✓ | ✓ | ✓ | ✓ |
+| 派生构建 | 可选 | ✗（无精确元数据查询，配置即启动失败） | 可选 | ✗（同左） |
+| 关系登记（`continuity_relation`） | ✗ `UnsupportedCapabilityError` | ✗ | ✓ | ✓（关系真源在 KV，不受文档模式影响） |
+| 职责扩展（`search` + 非 general `duty` / `anchor`） | 降级：普通结果 ＋ 非阻断 gap | 同左 | ✓ | ✓ |
+| 候选关系发现 / 冲突消解 | ✗ | ✗ | 可选 | 可选 |
+
+接续模式下 `search` 带非 general `duty` 或带 `anchor` 时不抛错：返回正常的任务背景与语义检索结果，`gaps` 追加非阻断 `relation_expansion_disabled`，`view_meta.mode="continuity"`。仅关系的入口（`continuity_relation`、`continuity_recover(kind=relation)`）返回 `UnsupportedCapabilityError`。MCP、JiuwenSwarm provider 与远程桥在接续模式下不注册 `continuity_relation` 工具；服务端能力发现返回 `continuity_mode`。
 
 ## 数据结构
 
-本节给出字段级定义，含义、用法和示例见 [F10 第 5 节](../features/construction/F10-role-memory.md#5-数据结构)，两处小标题同名。公开 DTO 定义在 `jiuwen_memory/common/type_def/continuity.py`，经 `jiuwen_memory.api` 重导出；标为"内部"的结构是持久控制记录，不是公开 DTO，KV 路径为 `/continuity/{tasks,events,relations}/<key>`。
+本节给出字段级定义，含义、用法和示例见 [F10 第 5 节](../features/construction/F10-role-memory.md#5-数据结构)，两处小标题同名。公开 DTO 定义在 `jiuwen_memory/common/type_def/continuity.py`，经 `jiuwen_memory.api` 重导出；标为"内部"的结构是持久控制记录，不是公开 DTO，KV 路径为 `/continuity/{tasks,events,relations}/<key>` 与 `/continuity/coverage/relations`。
 
 ### `MemoryRef`
 
@@ -75,25 +96,41 @@ TaskRecord（`/continuity/tasks/<task_id>`）：
 
 Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connector_id`、`context_id`、`context_source`、`created_by`、`active`；解绑后增加 `revoked_by`、`revocation_reason`，记录保留。
 
-### `ContinuityEvent`
+### `ContinuityWrite`
+
+`add` 与 `BatchWriteItem` 的可选参数 `continuity`，表示"这是一条要可靠登记到任务的事件"。缺省时写入行为与改动前一致。
 
 | 字段 | 类型 | 默认值 | 约束 |
 | --- | --- | --- | --- |
-| `task_id` | string | 必填 | 非空 |
+| `task_id` | string | 必填 | 非空，任务须 open |
 | `binding_id` | string | 必填 | 当前有效的绑定 |
-| `event_id` | string | 必填 | 在该连接和绑定内稳定，重试复用 |
-| `content` | string | 必填 | 非空，不含凭据 |
+| `event_id` | string | 必填 | 在该连接和绑定内稳定，重试复用；幂等键 = 连接、绑定、事件 ID 的摘要（即 `operation_id`） |
 | `kind` | string | `"unclassified"` | observation / statement / judgment / result / experience / correction / unclassified |
 | `classification_confidence` | string | `"unknown"` | low / high / unknown；low 时 `kind` 强制改为 unclassified |
-| `duty_ids` | string[] | `[]` | 职责背景，不产生权限 |
 | `evidence_refs` | MemoryRef[] | `[]` | 写入和重试时逐个核验 |
-| `source_locator` | string 或 null | `null` | 原始消息、工具输出或导入文件位置 |
-| `occurred_at` | string 或 null | `null` | RFC 3339，必须带时区；不用于决定全局顺序 |
 | `claimed_author` | string 或 null | `null` | 原文声称的作者，不是已认证作者 |
-| `source_position` / `previous_position` | int 或 null | `null` | 来源内事件位置及其前一位置，用于增量同步游标；规则见"有序来源的同步游标" |
+| `context_id` | string 或 null | `null` | 产品会话或上下文 ID |
+| `source_locator` | string 或 null | `null` | 原始消息、工具输出或导入文件位置；写入 `MemoryUnit.source_ref` |
+| `schema_version` | string | `"continuity-write/1"` | 其他值拒绝 |
+
+字段映射：正文取 `add` 的 `content`；原始时间取 `add` 的 `event_time`（写 `temporal.t_event`），`occurred_at` 保持消息时间（t_message）语义；职责背景取 `tags`（`duty:<id>`），不产生权限；`kind` 写 `continuity_kind`，原始事件统一 `tier=episodic`（不经 classifier 改写）；其余字段由内部写路径注入 `continuity_*` 系统元数据（`continuity_task`、`continuity_binding`、`continuity_event`、`continuity_connector`、`continuity_confidence`、`continuity_evidence_refs`、`continuity_claimed_author`、`continuity_envelope_digest`）。公开调用方不得直接设置 `continuity_*`。
+
+带 `continuity` 的写入：scope 必须是项目空间（user、agent、session 为空）；连接由认证链解析并核对属于该项目；只有这类写入使用幂等键，普通 `add` 不变。
+
+### `ContinuityEvent`（交换格式）
+
+`ContinuityEvent` 只作为 Adapter 的历史导入交换格式（JSONL 一行一个事件），由适配器或导入工具映射为 `add` / `batch_add` 的参数：`content` → `content`，`occurred_at` → `event_time`，`duty_ids` → `tags`，其余字段 → `ContinuityWrite`。
+
+| 字段 | 类型 | 默认值 | 约束 |
+| --- | --- | --- | --- |
+| `task_id` / `binding_id` / `event_id` | string | 必填 | 同 `ContinuityWrite` |
+| `content` | string | 必填 | 非空，不含凭据 |
+| `kind` / `classification_confidence` / `evidence_refs` / `claimed_author` / `source_locator` | — | 同 `ContinuityWrite` | 同 `ContinuityWrite` |
+| `duty_ids` | string[] | `[]` | 职责背景，不产生权限 |
+| `occurred_at` | string 或 null | `null` | RFC 3339，必须带时区；不用于决定全局顺序 |
 | `schema_version` | string | `"continuity-event/1"` | 其他值拒绝 |
 
-完整信封以 `continuity_envelope` 存入正文 MemoryUnit 的系统元数据，另有 `continuity_kind`、`continuity_classification_confidence`、`continuity_task`、`continuity_event`、`continuity_connector`、`continuity_duties`。
+首版不提供来源内位置（`source_position` / `previous_position`）与增量同步游标，见 F10 12.3。
 
 ### 事件回执（内部）
 
@@ -110,9 +147,11 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 | `build_id`、`build_plan` | 启用派生构建时：构建批次标识和冻结的构建计划 |
 | `derived`、`derivation_status`、`derivation_conflicts` | 启用派生构建时：实际输出、派生状态和冲突项 |
 
+返回语义：`add` 返回类型仍为 `list[MemoryUnit]`。committed 时返回本次（或同键重放时已保存的）正文单元；同键异内容返回 `ConflictError`；回执为 unknown 或 partial 时抛 `WriteIncompleteError`（`PartialFailureError` 子类，HTTP 409），携带 `operation_id`、`status`（unknown / partial）、`refs`（已确认保存的 MemoryRef）与 `retry_action`（`retry_original_write` / `recover_then_retry`）。
+
 提交顺序：先保存 unknown 回执 → 写正文 → 保存引用并转 partial → 把引用加入任务背景并递增修订 → 转 committed。这不是跨记录事务：背景已保存而最终回执未保存时，同键重试复用引用，按值去重补齐背景，不重写正文；任务修订号可能多递增一次。未保存可靠引用时保持 unknown，必须通过恢复接口核对。关系发现失败不撤销已提交事件，只把 `association_status` 置为 partial 并记录不含原文和异常消息的错误类别。
 
-派生构建：原始事件持久化之后，抽取、去重、巩固和关系发现作为第二阶段。回执另记 `build_id`（事件幂等键 ＋ 构建器与模型版本摘要）、`derivation_status`（pending / committed / partial / failed）、冻结的构建计划，以及 `derived` 列表（每项 `{output_key, ref, action}`，`action` 为 created / reused / updated；updated 另记更新前后摘要）。计划持久化前禁止任何派生写入；已有计划则复用、不重新调用模型，没有计划时允许重新生成；同一 `build_id` 只能以"尚无计划"为条件原子写入一份计划；新构建器或模型版本发起的重建产生新的 `build_id`。created 新建输出在系统元数据带 `continuity_build`、`continuity_output`；reused 保留目标既有标识；updated 在同一次 CAS 中更新正文、清空旧 layers，并写入当前 continuity_build/continuity_output。核对入口对 created 校验批次、输出标识与计划摘要，对 reused 校验冻结目标引用及其摘要，对 updated 校验冻结目标标识及更新后摘要，不接受其他内容版本。恢复规则：created 以 `system_metadata.continuity_output` 在真源上做精确等值查询（不依赖向量或全文索引），查到已存在且摘要一致则采用，否则新建，摘要不一致标冲突；reused 的来源关联以"事件 ＋ 被复用记忆"为键，集合语义；updated 当前摘要等于更新后摘要视为已完成、等于更新前摘要则以带期望摘要的原子条件更新应用、条件不满足或都不等则标冲突且不覆盖。前置能力：写入链须保证系统元数据等值查询写后可读，并提供带期望摘要的条件更新；前者缺失时不得启用派生构建，后者缺失时 updated 一律转 partial 待人工处理。`role_rebuild` 的恢复入口另支持 `kind=derivation`（只核对、不写新内容）。零条派生视为 committed；派生记忆来源指向原始事件引用；派生失败不影响原始事件已提交的结论。
+派生构建：原始事件持久化之后，抽取、去重、巩固和关系发现作为第二阶段。回执另记 `build_id`（事件幂等键 ＋ 构建器与模型版本摘要）、`derivation_status`（pending / committed / partial / failed）、冻结的构建计划，以及 `derived` 列表（每项 `{output_key, ref, action}`，`action` 为 created / reused）。计划持久化前禁止任何派生写入；已有计划则复用、不重新调用模型，没有计划时允许重新生成；同一 `build_id` 只能以"尚无计划"为条件写入一份计划（由单写者 Registry 串行保证）；新构建器或模型版本发起的重建产生新的 `build_id`。created 新建输出在系统元数据带 `continuity_build`、`continuity_output`；reused 保留目标既有标识。核对入口对 created 校验批次、输出标识与计划摘要，对 reused 校验冻结目标引用及其摘要，不接受其他内容版本。恢复规则：created 以 `system_metadata.continuity_output` 在真源上做精确等值查询（不依赖向量或全文索引），查到已存在且摘要一致则采用，否则新建，摘要不一致标冲突；reused 的来源关联以"事件 ＋ 被复用记忆"为键，集合语义。前置能力：写入链须保证系统元数据等值查询写后可读，缺失时不得启用派生构建。首版不提供 updated（原地更新已有记忆），也不依赖 KV CAS 或带期望摘要的条件更新，见 F10 12.3。`continuity_recover` 另支持 `kind=derivation`（只核对、不写新内容）。零条派生视为 committed；派生记忆来源指向原始事件引用；派生失败不影响原始事件已提交的结论。
 
 ### `RelationRecord` 与 `RelationStatus`
 
@@ -136,20 +175,29 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 写入主体、时间及关系真实归属由服务端保存。端点的 `continuity_kind` 须在关系类型允许的端点类别内。后续自动修订未提供裁决时，保留此前的人工裁决。
 
-### 关系头（内部）
+### 关系头与修订历史（内部）
 
-`/continuity/relations/<relation_id>`：
+关系真源存于 Registry KV，**不是** MemoryUnit（F10 4.1 的例外，理由见 F10 4.1 与第 10 节）。项目 Scope 隔离：
 
-| 字段 | 说明 |
+| KV 路径 | 内容 |
+| --- | --- |
+| `/continuity/relations/<relation_id>` | 关系头：`revision`、`digest`、`payload_digest`、`status`、`connector`、`current` |
+| `/continuity/relations/<relation_id>/rev/<n>` | 第 n 修订的完整 RelationRecord，写入后不可变 |
+
+| 关系头字段 | 说明 |
 | --- | --- |
 | `revision` | 当前修订号 |
 | `digest` | 本次请求关系的摘要；同修订同内容重试只补投影 |
-| `payload_digest` | 实际落盘的关系内容（含服务端补充的裁决字段）的摘要，供恢复核对 |
-| `status` | unknown / partial / committed；unknown 时拒绝新修订，须先恢复 |
-| `ref` | 当前修订关系真源 MemoryUnit 的引用 |
-| `history` | 旧修订的真源引用 |
+| `payload_digest` | 实际落盘的关系内容（含服务端补充的裁决字段）的摘要，供投影核对 |
+| `status` | projecting（真源已提交、投影未完成）/ committed |
+| `connector` | 提交该修订的可信连接；连接停用或隔离时该关系不可用 |
+| `current` | 当前修订完整 RelationRecord（含服务端裁决字段与写入主体、时间） |
 
-图投影：节点 ID 为 `continuity:memory:` 加 Scope 与 unit ID 的摘要，边 ID 为 `continuity:relation:<relation_id>`，边属性保存关系真源引用。投影由 `evidence_graph` IndexBuilder 以 RETRIEVAL_ONLY 模式完成；撤回时删除对应边。旧的无前缀投影不再作为角色关系使用，需要重建。
+写入顺序：先写不可变修订记录，再原子替换关系头（单记录原子替换即真源提交点，不再有 unknown 状态），然后条件投影，投影完成后置 committed。并发沿用单写者 Registry（`claim_single_writer`）与 `expected_revision` 校验，不依赖 KV CAS。
+
+读取判权：调用方对项目 Scope 有 READ，关系两端及证据均可读，提交连接未停用、未隔离。关系不进入普通 `search` / `list` / `get` 的候选集，也不进入 Evolve。
+
+图投影：节点 ID 为 `continuity:memory:` 加 Scope 与 unit ID 的摘要，边 ID 为 `continuity:relation:<relation_id>`，边属性保存 `relation_id` 与 `revision`（不再保存关系 MemoryRef），视图回查 KV 关系头核验当前状态。投影由 `evidence_graph` IndexBuilder 以 RETRIEVAL_ONLY 模式完成；撤回时删除对应边。旧的无前缀投影不再作为角色关系使用，需要重建；存量关系 MemoryUnit 由一次性迁移搬入 KV 并重建投影（F10 12.2）。
 
 ### `EvidenceRelation`
 
@@ -193,11 +241,11 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 查询 `duty` 为一个策略名，或去重后 1–4 个策略名的列表，可取配置新增的策略名；任一未注册返回 `ValidationError`，不静默忽略。业务 `duty_ids` 与经验适用职责可多值，查询 duty 只选择遍历策略，不是业务身份，也不授予权限。配置可用同名职责覆盖内置策略的展开规则，强制检查仍会追加。
 
-多职责规则：每个职责保留自己的 TraversalRule，不合并成一张表；第 k 跳的边被职责 d 允许，当且仅当 d 的某条规则匹配其类型与实际方向且 k 小于该规则的 `max_depth`；被至少一个职责允许即展开，`step.matched_duties` 按此逐职责计算。遍历单位是路径状态（节点，以及每个仍有效职责的剩余深度）；同一节点上，若 S 的有效职责集合包含 T 的且对 T 的每个职责剩余深度不小于 T，则 S 支配 T，被支配状态不展开、可被替代，互不支配的状态都保留；有效职责集合为空后，后续每跳沿任一职责在当前跳数下仍允许的边前进，路径有效职责保持为空，跨职责状态每节点只保留剩余深度最大的一个；单节点至多保留 k＋1 个互不支配状态，这是主动截断上限，达到时须报告 `unchecked_dependencies` 并把受影响职责标为 truncated；正文按 MemoryRef 去重为一个 ViewItem，后续到达追加 `path_ids` 与 `valid_duties`；边的真源回查与判权结果缓存复用，不用全局已见边截断路径。`path.valid_duties` 为各步允许职责的交集，可为空（跨职责路径照常返回）；ViewItem 的 `valid_duties` 为到达路径之并。预算共享：生效预算 = 请求预算与各职责策略预算中最大者取较小值；总预算优先：边预算 B ≥ k 时每个职责先获得 ⌊B/(2k)⌋（至少 1 条）的最低配额，B < k 时按传入顺序轮转每职责至多 1 条直至用完，未分到预算的职责为 not_started；剩余预算按合并优先级轮转分配；共享边的回查、判权和预算只计一次，但计入所有允许它的职责的覆盖统计；`meta.duty_coverage` 给出每个职责的 `status`（complete / truncated / not_started）、展开边数与截断原因；complete 只表示本次有界展开未被截断，不表示证据已完整覆盖。任务背景、anchor、语义候选、强制检查产生的反证与风险标记 `common=true`，与全部缺口一起始终保留；按单职责还原时保留 `common` 条目、全部缺口和 `valid_duties` 含该职责的路径，结果不保证与单独查询完全相同。
+多职责规则：每个职责保留自己的 TraversalRule，不合并成一张表；第 k 跳的边被职责 d 允许，当且仅当 d 的某条规则匹配其类型与实际方向且 k 小于该规则的 `max_depth`；被至少一个职责允许即展开，`step.matched_duties` 按此逐职责计算。遍历单位是路径状态（节点，以及每个仍有效职责的剩余深度）；同一节点上，若 S 的有效职责集合包含 T 的且对 T 的每个职责剩余深度不小于 T，则 S 支配 T，被支配状态不展开、可被替代，互不支配的状态都保留；有效职责集合为空后，后续每跳沿任一职责在当前跳数下仍允许的边前进，路径有效职责保持为空，跨职责状态每节点只保留剩余深度最大的一个；单节点至多保留 k＋1 个互不支配状态，这是主动截断上限，达到时须报告 `unchecked_dependencies` 并把受影响职责标为 truncated；正文按 MemoryRef 去重为一个 视图条目，后续到达追加 `path_ids` 与 `valid_duties`；边的真源回查与判权结果缓存复用，不用全局已见边截断路径。`path.valid_duties` 为各步允许职责的交集，可为空（跨职责路径照常返回）；视图条目 的 `valid_duties` 为到达路径之并。预算共享：生效预算 = 请求预算与各职责策略预算中最大者取较小值；总预算优先：边预算 B ≥ k 时每个职责先获得 ⌊B/(2k)⌋（至少 1 条）的最低配额，B < k 时按传入顺序轮转每职责至多 1 条直至用完，未分到预算的职责为 not_started；剩余预算按合并优先级轮转分配；共享边的回查、判权和预算只计一次，但计入所有允许它的职责的覆盖统计；`meta.duty_coverage` 给出每个职责的 `status`（complete / truncated / not_started）、展开边数与截断原因；complete 只表示本次有界展开未被截断，不表示证据已完整覆盖。任务背景、anchor、语义候选、强制检查产生的反证与风险标记 `common=true`，与全部缺口一起始终保留；按单职责还原时保留 `common` 条目、全部缺口和 `valid_duties` 含该职责的路径，结果不保证与单独查询完全相同。
 
-### `RoleViewQuery` 与 `ViewBudget`
+### `search` 的接续参数与 `ViewBudget`
 
-`RoleViewQuery`：`query: string = ""`、`anchor: MemoryRef | None = None`、`task_id: string = ""`、`duty: string | string[] = "general"`、`budget: ViewBudget`；`query`（去空白后）、`anchor`、`task_id` 至少一项非空。
+`search(query, context, ..., duty: str | list[str] | None = None, task_id: str | None = None, anchor: MemoryRef | None = None, view_budget: ViewBudget | None = None)`。`duty`、`task_id`、`anchor` 均为空时与改动前行为完全一致；任一非空即进入任务 / 职责视图路径，此时 `query`（去空白后）、`anchor`、`task_id` 至少一项非空，仅给 `task_id` 或 `anchor` 时 `query` 可为空串，`duty` 缺省解析为 general。首版不支持跨空间职责视图：`context.extensions` 带 `spaces` 键且同时给出 `duty` / `task_id` / `anchor` 时返回 `ValidationError`。
 
 `ViewBudget`：
 
@@ -211,46 +259,48 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 均为正整数；生效预算取请求值与职责策略预算的较小值。内置职责策略未单独配置预算时取默认值 2 / 30 / 60 / 1000，此时请求更大的值不会生效；需要放宽须在职责策略中配置 `budget`。`timeout_ms` 只限制继续展开，不强行中断已进入的同步存储调用，部署还须配置底层 I/O 超时。
 
-### `role-view/1` 结果
+### 职责视图结果（`role-view/2`，`RetrievalResult` 可选字段）
 
-所有顶层字段必填，未知值使用 null 或显式状态，不能省略 gaps 来表示"不知道"。MCP/HTTP 传输适配必须保留其语义，Markdown 只是附加呈现。
+职责视图不再是独立返回类型，而是 `RetrievalResult` 与 `RetrievedItem` 上的可选字段，仅当 `duty` / `task_id` / `anchor` 给出时填充；普通检索这些字段为 null。MCP/HTTP 传输适配必须保留其语义，Markdown 只是附加呈现。
 
-| 字段 | 类型 | 约束 |
+| `RetrievalResult` 新增字段 | 类型 | 约束 |
 | --- | --- | --- |
-| `schema_version` | string | `role-view/1`；未知主版本拒绝解析 |
-| `task_id` | string 或 null | 无任务的记忆扩展返回 null |
-| `anchors` | MemoryRef[] | 实际使用的可读起点 |
-| `paths` | RelationPath[] | 有依据且已授权的扩展路径 |
-| `facts` | ViewItem[] | 观察或来源陈述 |
-| `judgments` | ViewItem[] | 解释、建议、决策或纠正，不与事实合并 |
-| `experiences` | ViewItem[] | 带适用条件的职责经验 |
-| `open_issues` | ViewItem[] | 未决事项及未分配责任 |
-| `risks` | ViewItem[] | 已知风险和约束；未决或已消解的反证在此呈现 |
-| `gaps` | Gap[] | 数据缺失、核验未完成、预算或通道限制 |
-| `meta` | ViewMeta | 见下 |
+| `paths` | RelationPath[] 或 null | 有依据且已授权的扩展路径；接续模式为空列表 |
+| `gaps` | Gap[] 或 null | 视图路径下必填（可为空列表）；不能省略 gaps 来表示"不知道" |
+| `view_meta` | ViewMeta 或 null | 视图路径下必填，见下 |
 
-`ViewItem` 另有多职责字段 `valid_duties: string[]`、`common: bool`。`ViewItem`：`id`（视图内唯一）、`text`、`kind`（observation / statement / inference / suggestion / decision / experience / open_issue / risk）、`status`（observed / reported / candidate / supported_in_conditions / needs_review / refuted / unknown）、`classification_confidence`、`evidence_refs`、`conditions`、`duty_ids`（经验适用职责，非作者身份）、`discovery`（background / anchor / relation / semantic_candidate）、`path_ids`。`reported` 仅表示来源陈述；经验条目默认 `candidate`；无证据时不得标为 supported_in_conditions，该状态的 conditions 非空。
+`RetrievedItem.view: ViewAnnotation | None`：视图路径下每个条目必填。原 role-view/1 的 facts / judgments / experiences / open_issues / risks 分组改由 `view.kind` 与 `view.status` 表达，客户端按需分组。
+
+`ViewAnnotation`：`kind`（observation / statement / inference / suggestion / decision / experience / open_issue / risk）、`status`（observed / reported / candidate / supported_in_conditions / needs_review / refuted / unknown）、`classification_confidence`、`evidence_refs`、`conditions`、`duty_ids`（经验适用职责，非作者身份）、`discovery`（background / anchor / relation / semantic_candidate）、`path_ids`、`valid_duties: string[]`、`common: bool`。条目身份为 `RetrievedItem.unit_id`。`reported` 仅表示来源陈述；经验条目默认 `candidate`；无证据时不得标为 supported_in_conditions，该状态的 conditions 非空。
+
+排序：background → anchor → relation → semantic_candidate，组内按原检索得分；`top_k` 截断 items 时追加非阻断 `budget_exhausted` gap，且必需背景不被语义候选挤出。
 
 supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的 inference 或 experience 条目：关系、两端及证据均可读，且 evidence_refs 与 conditions 非空。反向遍历不颠倒被支持者；条目携带该关系的条件、证据与路径。多条支持路径保留各自条件，不拼成无条件结论。`verifies` 本身不编码结果是支持还是否定，不能仅凭该关系提升状态。待复核反证及未解决冲突优先降级为 needs_review，明确反驳保留 refuted；关系撤回后重新计算。
 
-`RelationPath` 另有 `valid_duties: string[]`，每一步另有 `matched_duties: string[]`。`RelationPath`：`path_id`（视图内唯一）、`anchor`（MemoryRef）、`steps`（有序列表，每步含 `relation_ref`、`relation_id`、`revision`、`relation_type`、`direction`（in / out，遍历方向，不改变关系固有方向）、`source`、`target`、`status`、`evidence_refs`、`conditions`、`matched_duties`）。路径可共享节点；正文按引用去重，不从摘要重新抽取。
+`RelationPath`：`path_id`（视图内唯一）、`anchor`（MemoryRef）、`valid_duties: string[]`、`steps`（有序列表，每步含 `relation_id`、`revision`、`relation_type`、`direction`（in / out，遍历方向，不改变关系固有方向）、`source`、`target`、`status`、`evidence_refs`、`conditions`、`matched_duties: string[]`）。关系真源在 KV，步内不再携带关系 MemoryRef。路径可共享节点；正文按引用去重，不从摘要重新抽取。
 
-`Gap`：`code`、`message`（经脱敏）、`blocking`、`affected_item_ids`。code 取 missing_input / reference_unavailable / unchecked_dependencies / budget_exhausted / retrieval_partial / environment_unconfirmed / review_pending / unresolved_conflict / conflict_escalated / relation_coverage_unknown / graph_unavailable；reference_unavailable 不对无权者区分不存在和受限。
+`Gap`：`code`、`message`（经脱敏）、`blocking`、`affected_item_ids`（取 `unit_id`）。code 取 missing_input / reference_unavailable / unchecked_dependencies / budget_exhausted / retrieval_partial / environment_unconfirmed / review_pending / unresolved_conflict / conflict_escalated / relation_coverage_unknown / graph_unavailable / relation_expansion_disabled；reference_unavailable 不对无权者区分不存在和受限；relation_expansion_disabled 仅在接续模式出现，非阻断。
 
 | ViewMeta 字段 | 类型 | 约束 |
 | --- | --- | --- |
+| `schema_version` | string | `role-view/2`；未知主版本拒绝解析 |
+| `mode` | string | continuity / role，本服务的接续档位 |
+| `task_id` | string 或 null | 无任务的记忆扩展返回 null |
+| `anchors` | MemoryRef[] | 实际使用的可读起点 |
 | `based_on_handoff` | MemoryRef 或 null | 基于哪个明确交接；null 不等于整个历史已检查 |
 | `generated_at` | RFC 3339 string | 生成时间，不是三方同步水位 |
 | `registry_revision` | integer 或 null | 本次任务登记修订；无任务时 null |
-| `duty` | string | 实际解析的职责；多职责时为列表第一个，保持字符串以兼容旧客户端 |
+| `duty` | string | 实际解析的职责；多职责时为列表第一个 |
 | `duties` | string[] | 实际解析的全部职责 |
-| `duty_coverage` | object[] | 每个职责的 `duty`、`status`（complete / truncated / not_started）、`expanded_edges`、`reason` |
-| `policy_version` / `model_version` | string | 所选策略（组合）及关系模型版本 |
+| `duty_coverage` | object[] | 每个职责的 `duty`、`status`（complete / truncated / not_started）、`expanded_edges`、`reason`；接续模式为空列表 |
+| `policy_version` / `model_version` | string | 所选策略（组合）及关系模型版本；接续模式为空串 |
 | `effective_budget` | object | 生效的深度、节点、边和耗时上限 |
-| `relation_coverage` | covered_for_requested_scope / partial / unknown | 仅描述已登记关系的构建与投影范围；无登记关系为 unknown，登记关系全部投影追平为 covered_for_requested_scope，否则 partial |
+| `relation_coverage` | covered_for_requested_scope / partial / unknown | 仅描述已登记关系的构建与投影范围；无登记关系或接续模式为 unknown，登记关系全部投影追平为 covered_for_requested_scope，否则 partial |
 | `completeness` | complete_for_requested_scope / partial | 首版固定 partial：遍历结束不能证明摄入覆盖或环境已核实，不依据 gaps 为空升级 |
 | `continuation_ready` | boolean | 必需证据及已声明环境条件是否满足；首版不提供环境核验，固定 false。仅为信息就绪提示，不授权执行 |
 | `unchecked_scope` | string[] | 语义范围，例如 additional_history / relation_coverage / environment；不是未授权空间 ID 列表 |
+
+首版不提供 `ViewMeta.review` 复核聚合与影响传播（见 F10 12.3）。
 
 ### `Resolution` 与 `ConflictResolution`
 
@@ -266,13 +316,15 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 
 ### `ContinuityRecovery`
 
+`continuity_recover` 的入参，覆盖未知写入核对与投影修复（MemoryAPI 没有公开的索引重建入口，关系投影修复也经此）。
+
 | 字段 | 类型 | 约束 |
 | --- | --- | --- |
-| `kind` | string | event / relation / derivation；derivation 只核对派生构建状态，不写新内容，`refs` 可为空 |
-| `operation_id` | string | 事件为回执的 `operation_id`；关系为 `relation_id` |
-| `refs` | MemoryRef[] | event、relation 时非空，必须位于当前项目 Scope；关系恢复只能一个 |
+| `kind` | string | event / relation / derivation；relation 仅角色模式可用，接续模式返回 `UnsupportedCapabilityError` |
+| `operation_id` | string | event、derivation 为回执的 `operation_id`；relation 为 `relation_id` |
+| `refs` | MemoryRef[] | event 时非空，必须位于当前项目 Scope；relation、derivation 可为空 |
 
-事件恢复核对每个引用的 `continuity_event`、信封摘要和拼接后的正文，一致时把回执置为 partial，返回 `next_action=retry_original_event`；调用方用原事件重试完成背景关联。关系恢复核对关系 ID、修订号和 `payload_digest`，一致时补建投影。不匹配返回 `ConflictError`；恢复不创建第二份内容，也不自动认定写入失败。
+事件恢复核对每个引用的 `continuity_event`、信封摘要和拼接后的正文，一致时把回执置为 partial，返回 `next_action=retry_original_write`；调用方用原写入请求重试完成背景关联。关系恢复从 KV 读取关系头与当前修订，核对 `payload_digest` 后补建投影并置 committed（关系真源单记录提交，不需要客户端提供引用）。派生恢复只核对已保存计划和输出标识，不写业务正文。不匹配返回 `ConflictError`；恢复不创建第二份内容，也不自动认定写入失败。
 
 ### `continuity_connectors`
 
@@ -282,7 +334,7 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 | --- | --- | --- |
 | `actor` | 五维身份 | 必须与该连接的认证主体完全一致 |
 | `projects` | string[] | 允许绑定和写入的 space |
-| `enabled` | bool | 缺省视为启用；false 时拒绝该连接的新事件，并在普通读取、搜索和角色读取中隐藏其来源内容 |
+| `enabled` | bool | 缺省视为启用；false 时拒绝该连接的新事件，并在普通读取、搜索、列表和视图中隐藏其来源内容（规则见[来源治理与列表过滤](#来源治理与列表过滤)） |
 
 它是服务端身份映射，不是认证器，也不授予空间权限；不是 dict 时装配失败。
 
@@ -307,7 +359,7 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 | --- | --- | --- |
 | 认证 | 远程连接使用 TLS 和服务端可验证的 Bearer/API 凭据；本地桥接从受控凭据存储取得同等身份上下文。凭据不写入事件/提示词 | 拒绝业务调用；不得切为匿名或 dev 身份 |
 | 连接身份 | 服务端登记的 `connector_id` 及其所属主体；产品本地账号映射由可信配置确认 | 不以用户提供的产品名推导主体 |
-| 工具调用 | 能调用 record/view、登记/绑定查询及复核操作，并接收结构化结果 | 不能标记为具备接续能力 |
+| 工具调用 | 能以接续参数调用写入与检索（`memory_add` / `memory_search`）、任务登记/绑定查询，角色模式下还能登记关系，并接收结构化结果 | 不能标记为具备接续能力 |
 | 上下文绑定 | 原生上下文 ID，或由适配器生成并持久化的上下文别名；同时标明 ID 来源 | 不声称别名是产品原生会话 ID |
 | 记录可靠性 | 稳定事件/重试键、写入结果及失败状态可取得；无法自动采集时由显式工具提交 | 不把未回写的执行结果列为已交接 |
 | 历史能力 | 声明 `native_export`、`user_supplied` 或 `unsupported`；记录实际覆盖范围 | 不承诺完整历史；不阻断从新任务开始的在线接续 |
@@ -317,15 +369,25 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 
 ### 事件与回写信封
 
-事件体即 [`ContinuityEvent`](#continuityevent)，认证上下文与事件体分开。
+事件体即 `add` / `BatchWriteItem` 的正文与 [`ContinuityWrite`](#continuitywrite)（历史导入时由 [`ContinuityEvent`](#continuityevent交换格式) 映射而来），认证上下文与事件体分开。
 
 服务端从认证链和绑定解析可信连接、提交者、任务与落点；若请求显式携带这些字段，须核对一致，不能覆盖可信值。稳定事件键的作用域包含组织、目标空间、可信连接与绑定；同键同内容重试不得增加独立证据计数，同键异内容返回冲突。
 
-回写结果至少区分 `committed` / `partial` / `unknown` / `rejected`，返回已确认保存的 MemoryRef、索引状态与结构化错误；原始来源和派生单元引用分开。`unknown` 先核对再重试。不能仅返回 Markdown、“已记住”或一个后台 job ID 充当持久化确认。
+回写结果至少区分 `committed` / `partial` / `unknown` / `rejected`：`add` 以返回值（committed）、`WriteIncompleteError`（partial / unknown）与普通错误（rejected）表达，`batch_add` 在每个 `BatchWriteOutcome` 的 `continuity_status` 上表达；均返回已确认保存的 MemoryRef 与结构化错误，原始来源和派生单元引用分开。`unknown` 先用 `continuity_recover` 核对再重试。不能仅返回 Markdown、“已记住”或一个后台 job ID 充当持久化确认。
+
+### 批量可靠写入（`batch_add`）
+
+外部 Agent 历史导入与高频回写使用 `batch_add`，`BatchWriteItem.continuity: ContinuityWrite | None` 逐项声明。
+
+- 批级 `scope` 与逐项 scope 必须是同一项目空间；同一批可包含不同任务。
+- 已有 `BatchWriteItem.idempotency_key` 与 `continuity` 同时出现时，两者须一致，否则该项拒绝；以 `continuity` 幂等键为准。
+- 分阶段处理：① 批量写入全部项的 unknown 回执 → ② 正文走现有批量写入链（批量向量化与索引）→ ③ 批量转 partial 并保存引用 → ④ 按任务分组，每个任务**只追加一次**背景并递增一次修订 → ⑤ 批量转 committed。派生构建与关系发现按项排入后续阶段，不阻塞批写返回。
+- `BatchWriteOutcome` 新增 `operation_id` 与 `continuity_status`（committed / partial / unknown / rejected）；单项失败按 `continue_on_error` 处理，不中断其他项。
+- 整批重放安全：已 committed 的项返回已保存单元，partial 的项补齐背景，unknown 的项须先核对。不同项的提交不构成事务，任务修订号可能比项数少（按任务合并），也可能因重试多递增一次。
 
 ### 历史导入交换格式
 
-Adapter 交付 UTF-8 JSONL：每行一个上述事件；附批次清单，包含来源产品和版本、导出/采集方式、上下文 ID 与来源、事件范围、批次 ID、文件摘要、记录数及缺失字段。原生导出为每会话一行时由适配器拆成事件并保留原文件及行内定位。
+Adapter 交付 UTF-8 JSONL：每行一个 [`ContinuityEvent`](#continuityevent交换格式)，导入工具按批映射为 `batch_add`；附批次清单，包含来源产品和版本、导出/采集方式、上下文 ID 与来源、事件范围、批次 ID、文件摘要、记录数及缺失字段。原生导出为每会话一行时由适配器拆成事件并保留原文件及行内定位。
 
 本地无稳定事件 ID 时，使用固定导入批次标识＋源文件摘要＋行/事件序号生成可重试键，不能用文本相同推断是同一事件。用户手工提供片段标为 `user_supplied`，不能宣称完整会话或可信工具执行反馈。源文件变化作为新批次，跨批去重需来源映射，不保证自动识别所有重复。
 
@@ -335,7 +397,7 @@ Adapter 交付 UTF-8 JSONL：每行一个上述事件；附批次清单，包含
 
 外部 Agent（OpenClaw、Hermes、WorkBuddy、DeepSeek Harness 等）自有记忆读入 agent-memory 时遵守本契约，流程与取舍见 [F10 第 8 节](../features/construction/F10-role-memory.md#8-外部-agent-记忆迁移)。
 
-- **适配器输出**：一份[导入清单](#导入清单manifest) ＋ 一份 `ContinuityEvent` JSONL（UTF-8，每行一个事件）。
+- **适配器输出**：一份[导入清单](#导入清单manifest) ＋ 一份 `ContinuityEvent` JSONL（UTF-8，每行一个事件），由导入工具分批调用 `batch_add` 写入。
 - **字段映射**：原始位置写入 `source_locator`（产品、批次、文件摘要、行号或事件序号）；原文作者写入 `claimed_author`；原始时间写入 `occurred_at` 并带时区，未知则为 null 并列入清单的 `missing_fields`；能判断的类型写入 `kind`，判断依据不足时为 unclassified 或 `classification_confidence=low`。
 - **事件键**：产品有稳定事件 ID 时使用之；没有时用批次 ID、源文件摘要、行号或事件序号计算，不能用文本相同推断同一事件。
 - **服务端要求**：原文作为来源保存；派生内容进入统一的抽取、去重、巩固、关系发现与冲突消解；独立来源计数在去重后保留，同一来源的多次导出或转述不计为多个来源；导入者为认证主体，`claimed_author` 不升级为认证身份；每批可按批次 ID 追溯与回滚，回滚不删除批次之后他人新增或修订的数据。
@@ -356,7 +418,7 @@ Adapter 交付 UTF-8 JSONL：每行一个上述事件；附批次清单，包含
 
 任务标识由 agent-memory 生成，用户或脚本负责显式绑定；Adapter 负责解析并回传绑定，产品无需实现“跨产品任务等价”API。一会话多任务默认使用不同绑定，未提供绑定而无法唯一解析时拒绝。解除后重新关联创建新绑定，不能让迟到事件被静默写入另一个任务。
 
-背景清单在控制真源中区分必需与可选引用。对外查询按源授权裁剪，不意味着内部删除引用：view 和可选背景快照 的受信任核验仍检查必需集合。任何必需引用因无权或缺失不可用时，返回不含引用身份的通用 blocking gap，continuation_ready=false；不得通过先过滤、再对剩余集合宣布完整来绕过条件。可选引用未能读取时仅显示不泄露来源身份的覆盖限制。
+背景清单在控制真源中区分必需与可选引用。对外查询按源授权裁剪，不意味着内部删除引用：视图和可选背景快照的受信任核验仍检查必需集合。任何必需引用因无权或缺失不可用时，返回不含引用身份的通用 blocking gap，continuation_ready=false；不得通过先过滤、再对剩余集合宣布完整来绕过条件。可选引用未能读取时仅显示不泄露来源身份的覆盖限制。
 
 TaskRecord 与 Binding 的字段见[数据结构](#taskrecord-与-binding内部)。首版绑定归入任务控制记录一并持久化；按本地上下文反查的索引（若建立）仅是可重建投影，缺失或滞后时回查控制真源，不能据旧索引接受已经解除的绑定。记录不得包含第三方登录凭据。
 
@@ -372,9 +434,9 @@ TaskRecord 与 Binding 的字段见[数据结构](#taskrecord-与-binding内部)
 
 具名持久 KV 须声明单记录原子替换（`persistent_atomic_records`），并支持 `claim_single_writer(namespace)`，持有到 Store 关闭。SQLite 用独立文件锁拒绝第二写者，仅限单机文件系统，不支持跨主机网络文件系统多写；`allow_ephemeral` 仅用于测试。
 
-装配与生命周期：Continuity 查询使用的 GraphStore 与关系投影写入的 GraphStore 必须是同一对象：两者由同一装配上下文按具名依赖解析，Continuity 装配时校验投影器实际持有的图与视图使用的图是同一对象（对象身份，端口名只用于声明依赖、不能仅靠字符串比较）；不一致即启动失败。IndexBuilder 以公开能力声明支持的写入模式（契约见 S05 `supported_write_modes`），只声明 RETRIEVAL_ONLY 的构建器（如关系投影器）配到主写入链位置时启动期拒绝，判断依据是能力声明而非 target 名或具体类型（S09 §9；能力声明已落地，主写入链的装配期拒绝检查仍未接入 Engine 装配）。Registry KV（含单写锁）、证据图及其 KV 由装配根持有，`runtime.close()` 按"停止接续准入 → 关闭 Continuity → 关闭图存储 → 关闭底层 KV"释放，共享 KV 只关闭一次（按对象身份去重），单写锁随 KV 关闭释放，关闭后同进程可重新装配；借用资源不由当前装配根关闭；装配中途失败只释放本次创建的资源与本次获取的单写锁。显式配置的可选组件（关系发现、LLM 冲突策略）启动期 health 失败即启动失败，运行期失败显式降级（`association_status=partial` 或 escalate）。重新装配与同一图对象校验已落地并经验证（`runtime.close()` 后重装成功、投影器/视图图不一致启动失败）；装配中途失败回滚与借用资源区分仍待验证。
+装配与生命周期：角色模式下 Continuity 查询使用的 GraphStore 与关系投影写入的 GraphStore 必须是同一对象：两者由同一装配上下文按具名依赖解析，Continuity 装配时校验投影器实际持有的图与视图使用的图是同一对象（对象身份，端口名只用于声明依赖、不能仅靠字符串比较）；不一致即启动失败。IndexBuilder 以公开能力声明支持的写入模式（契约见 S05 `supported_write_modes`），只声明 RETRIEVAL_ONLY 的构建器（如关系投影器）配到主写入链位置时启动期拒绝，判断依据是能力声明而非 target 名或具体类型（S09 §9；能力声明已落地，主写入链的装配期拒绝检查仍未接入 Engine 装配）。Registry KV（含单写锁）、证据图及其 KV 由装配根持有，`runtime.close()` 按"停止接续准入 → 关闭 Continuity → 关闭图存储 → 关闭底层 KV"释放，共享 KV 只关闭一次（按对象身份去重），单写锁随 KV 关闭释放，关闭后同进程可重新装配；借用资源不由当前装配根关闭；装配中途失败只释放本次创建的资源与本次获取的单写锁。显式配置的可选组件（关系发现、LLM 冲突策略）启动期 health 失败即启动失败，运行期失败显式降级（`association_status=partial` 或 escalate）。重新装配与同一图对象校验已落地并经验证（`runtime.close()` 后重装成功、投影器/视图图不一致启动失败）；装配中途失败回滚与借用资源区分仍待验证。
 
-图存储后端：角色图要求 GraphStore 支持有向邻接查询、同一对端点多条边、五维 Scope 隔离和单次写操作原子提交；首版须提供至少一个满足这些要求的真实图数据库后端用于集成测试和部署（Neo4j），不能只以 KV 投影或内存实现验收。不同后端须通过同一套 GraphStore 契约测试。关系投影采用按修订的条件投影（GraphStore 可选能力，见 S06）：单事务内按确定性边 ID 比较修订，新于当前则创建或原地更新，相等视为完成，旧于当前拒绝覆盖；撤回仅删除修订不新于撤回修订的边，不删除节点；普通 insert 保持重复 ID 报冲突。真实后端验收须覆盖连接中断、提交确认丢失后的条件重放与重建、事务回滚和关闭后重新装配。
+图存储后端（仅角色模式）：角色图要求 GraphStore 支持有向邻接查询、同一对端点多条边、五维 Scope 隔离和单次写操作原子提交；首版须提供至少一个满足这些要求的真实图数据库后端用于集成测试和部署（Neo4j），不能只以 KV 投影或内存实现验收。不同后端须通过同一套 GraphStore 契约测试。关系投影采用按修订的条件投影（GraphStore 可选能力，见 S06）：单事务内按确定性边 ID 比较修订，新于当前则创建或原地更新，相等视为完成，旧于当前拒绝覆盖；撤回仅删除修订不新于撤回修订的边，不删除节点；普通 insert 保持重复 ID 报冲突。真实后端验收须覆盖连接中断、提交确认丢失后的条件重放与重建、事务回滚和关闭后重新装配。
 
 ## 无交接接续与并发语义
 
@@ -399,13 +461,13 @@ Registry 的修订检查只保护映射和背景清单。多个绑定可并发�
 
 RelationRecord 字段与状态见[数据结构](#relationrecord-与-relationstatus)。确认表示关系经可定位依据或有权责任方确认，不把端点推断升级为外部事实；模型抽取默认 candidate，缺证不得自动 confirmed，candidate 只在显式未核实区呈现，不作为已验证路径。自定义关系名为字符串，启动目录校验未知类型、端点类别及策略引用；内置语义不可覆盖，只允许改展示名和说明。冲突消解：advisory 差异不自动合并；无法证明条件可比、存在多方冲突或证据检查不完整时不自动选胜者；模型结果是候选，即使高置信也不能代替独立依据；模型发现与冲突分类属于可选装配，不开启时可显式登记与复核。
 
-未知类型、无效方向/端点、模型版本不兼容拒绝写入；端点未能解析保留为待处理项，不生成虚构边。真源关系记录先持久化，再以 relation_id/revision 幂等更新图投影。关系修订保留历史，撤回和源隔离立即通过真源核验阻止使用；投影滞后只能降低完整性，不能恢复旧状态。关系与两端及证据均须可读；无权节点不可作为中间桥梁，响应不得泄露隐藏路径或节点数量。
+未知类型、无效方向/端点、模型版本不兼容拒绝写入；端点未能解析保留为待处理项，不生成虚构边。真源关系记录先持久化到 Registry KV，再以 relation_id/revision 幂等更新图投影。关系修订保留历史，撤回和源隔离立即通过真源核验阻止使用；投影滞后只能降低完整性，不能恢复旧状态。关系与两端及证据均须可读；无权节点不可作为中间桥梁，响应不得泄露隐藏路径或节点数量。
 
-涉及本次新内容的关系采用两步写入：先 record 取得服务端返回的 MemoryRef，再通过 `role_relation` 提交 RelationRecord（签名见 S02）。首版不接受客户端临时端点。第二步失败不回滚第一步；返回正文引用、关系提交状态与幂等回执，按 relation_id/revision 核对后重试，图投影失败另行修复，不重复抽取正文。关系登记与修订需校验真实归属的操作权和端点读取权，expected_revision 冲突拒绝。
+涉及本次新内容的关系采用两步写入：先以带 `continuity` 的 `add` 取得服务端返回的正文单元并构造 MemoryRef，再通过 `continuity_relation` 提交 RelationRecord（签名见 S02，仅角色模式）。首版不接受客户端临时端点。第二步失败不回滚第一步；返回正文引用、关系提交状态与幂等回执，按 relation_id/revision 核对后重试，图投影失败另行修复，不重复抽取正文。关系登记与修订需校验真实归属的操作权和端点读取权，expected_revision 冲突拒绝。
 
 ### 查询输入与策略
 
-下列为 view 的逻辑输入，不改变现有 search 签名：
+下列为 `search` 的接续参数（`view_budget` 即下表 budget）：
 
 | 字段 | 约束 |
 | --- | --- |
@@ -413,7 +475,7 @@ RelationRecord 字段与状态见[数据结构](#relationrecord-与-relationstat
 | anchor | MemoryRef，可选；存在时直接点读作为起点，不强制再做语义搜索 |
 | task_id | 可选；指定时必须读取获授权的任务共同背景 |
 | duty | 服务端注册的策略名，或 1–4 个策略名的列表；内置 general / diagnosis / testing / execution，其中 general 为缺省解析值且可显式传入，枚举之外取值报错 |
-| budget | 可选 max_depth / max_nodes / max_edges / timeout_ms；正整数，不得超过服务端上限 |
+| view_budget | 可选 max_depth / max_nodes / max_edges / max_paths / timeout_ms；正整数，不得超过服务端上限 |
 
 query、anchor、task_id 至少提供一个。仅 task_id 时以登记背景为起点；同时给 query 与 anchor（或任务背景）时，anchor 与背景固定起点，query 只用于发现与起点没有连边的职责经验候选，不参与排序。anchor 与 task_id 同传不自动创建关联。响应报告实际解析到的职责、策略版本和生效预算；配置默认职责与显式值的优先级为“显式值 → 连接默认值 → general”，均不影响授权。
 
@@ -421,7 +483,7 @@ query、anchor、task_id 至少提供一个。仅 task_id 时以登记背景为�
 
 职责策略映射为“关系类型＋遍历方向＋深度/数量限制”，不要求每条边写 duty。diagnosis 从问题沿 possible_cause_of 入边找假设，再沿 supports/contradicts 入边找证据；testing 沿 verification_method_for/verifies 入边找方法和结果，再找方法的 verifies 入边；execution 从已选方案沿 requires 出边找条件，并沿 verifies 入边找执行验证。问题没有明确方案关系时报告缺口，可另做语义候选检索，不能虚构问题到方案的连接。
 
-需要跨任务经验且没有已知关系时，可从已授权任务目标/query/anchor 正文做有界语义候选发现。返回 ViewItem 的 discovery 为 semantic_candidate，path_ids 为空；不得编造与原起点的关系，可将候选作为附加起点继续展开。无可用文本报 missing_input；候选与图共用总预算，额外候选不挤掉必需背景。
+需要跨任务经验且没有已知关系时，可从已授权任务目标/query/anchor 正文做有界语义候选发现。返回条目的 `view.discovery` 为 semantic_candidate，path_ids 为空；不得编造与原起点的关系，可将候选作为附加起点继续展开。无可用文本报 missing_input；候选与图共用总预算，额外候选不挤掉必需背景。
 
 general 使用同一关系集合的有界通用展开。所有策略对返回判断/方案的直接反证、必要条件执行共同检查，共用总预算；不足时明确 unchecked_dependencies，不宣称完整。按 Scope/ID/摘要去重节点，按关系 ID/版本去重边，访问去重防环。固定模型和数据下，相同 anchor 不同 duty 应体现路径选择差异，而不是只重写摘要。
 
@@ -431,15 +493,26 @@ general 使用同一关系集合的有界通用展开。所有策略对返回判
 
 ### Agent 能力发现与工具暴露
 
-工具 schema 描述 query/anchor/task_id/duty/budget 及错误语义；工具说明明确“定位记忆并按职责扩展关系”，暴露支持的 duty 与缺省行为。系统提示词或 Skill 仅补充何时调用：恢复任务先读取背景、缺证时展开、形成结果后记录。不得仅靠一段提示词宣称已实现工具能力。
+`memory_search` 工具 schema 描述 query/anchor/task_id/duty/view_budget 及错误语义；接续模式下 duty 说明标注"当前服务未启用关系扩展"；工具说明明确“定位记忆并按职责扩展关系”，暴露支持的 duty 与缺省行为。系统提示词或 Skill 仅补充何时调用：恢复任务先读取背景、缺证时展开、形成结果后记录。不得仅靠一段提示词宣称已实现工具能力。
+
+工具命名：内核 MCP 沿用 `memory_<方法名>`（`memory_add`、`memory_search`、`memory_continuity_task`、`memory_continuity_recover`，角色模式另有 `memory_continuity_relation`）；JiuwenSwarm 适配器为 `agent_memory_<方法名>`。服务端无法报告 `continuity_mode` 时适配器按接续模式注册（少注册优于误注册）。
 
 Provider/MCP Adapter 只负责注册、可信上下文、参数转换及结构化回写，不执行图算法。已固定职责可经连接配置提供默认值；多职责 Agent 可显式选择。宿主不能表达所需 schema 时由适配器显式转换并测试，不静默丢弃职责或路径。Agent 不需掌握全部边类型，关系策略由服务端维护。
 
-## 结构化角色视图 v1
+## 结构化职责视图（role-view/2）
 
-结果字段、条目状态规则、缺口码和元信息见[数据结构 `role-view/1` 结果](#role-view1-结果)。关系覆盖没有可信全量水位时返回 unknown，不虚构 covered；遍历队列耗尽只表示本次有界展开结束，不能证明摄入覆盖或环境已核实。
+结果字段、条目状态规则、缺口码和元信息见[数据结构「职责视图结果」](#职责视图结果role-view2retrievalresult-可选字段)。关系覆盖没有可信全量水位时返回 unknown，不虚构 covered；遍历队列耗尽只表示本次有界展开结束，不能证明摄入覆盖或环境已核实。
 
 所有引用和内容在返回前判权；无权信息不得以 item ID、计数、Scope 或缺口说明回显。必需交接引用不可用时 continuation_ready=false；可选经验通道失败可返回 partial，但必须说明实际可继续的边界。
+
+## 来源治理与列表过滤
+
+来源治理入口为 `quarantine_source(scope, connector, reason)` 与 `release_source(scope, connector)`，归入治理组（管理面暴露，不进入 Agent 工具清单）。不可用来源集合 = 配置 `enabled=false` 的连接 ∪ 当前项目被隔离的连接。
+
+- `search`（含视图路径）：不可用来源的条目在候选阶段过滤，关系的提交连接不可用时该关系不参与展开。
+- `list`：不可用来源集合作为系统过滤谓词 `NOT system_metadata.continuity_connector IN {不可用连接}` 下推到 Engine，在分页与 `count` 之前生效，保证 `count`、`offset` / `limit` 一致；不得在取页后逐条抛 `PermissionDeniedError` 导致整页失败。
+- `get`：单条命中不可用来源时返回 `PermissionDeniedError`，不区分不存在与受限。
+- 隔离与解除即时生效，不改写正文，不删除关系；解除后恢复可见。
 
 ## 验证基线
 
@@ -449,41 +522,38 @@ Provider/MCP Adapter 只负责注册、可信上下文、参数转换及结构�
 - candidate（兼容旧 proposed）、反证、环、超预算、失效端点、撤回边、图滞后、缺失通道、权限中间节点均有可验证行为。
 - 任务映射重启可读；并发修订、事件重试、绑定撤销及任务关闭不误关联或重开。
 - 实际存量无需职责标签即可点读；关系补建幂等、可撤回，不改原正文，不误删后续关系。
-- 结构化响应包含 anchors/paths/gaps 和策略版本；工具 schema、默认职责与显式职责一致。
+- 结构化响应包含 view_meta.anchors / paths / gaps 和策略版本；工具 schema、默认职责与显式职责一致。
+- `search` 不带接续参数时结果与改动前一致；接续模式下带 duty 返回普通结果与 relation_expansion_disabled。
+- `batch_add` 导入：每任务一次背景追加；整批重放不产生重复正文；单项失败不影响其他项。
+- `list` 在存在隔离来源时分页与 count 一致，不整页失败。
+- 关系真源在 KV：普通 search / list / get 不返回关系，撤回与隔离立即生效。
 
 ## 与其它 spec 的关系
 
-S02 是公开 API 和鉴权入口，登记 role_task/record/relation/view/rebuild 及 surface 覆盖。S03 承载 TaskRegistry 及复核编排，S04 承载职责关系扩展和 view，S06 明确具名管理端口及持久能力，S07 承载最终 DTO/编解码。S09 约束装配、能力、错误、health 和关闭。本规约不自动赋予现有插件这些能力。
+S02 是公开 API 和鉴权入口，登记 `add` / `batch_add` 的 `continuity` 参数、`search` 的接续参数、`continuity_task` / `continuity_relation` / `continuity_recover`、治理 `quarantine_source` / `release_source` 及 surface 覆盖。S03 承载 TaskRegistry 编排，S04 承载职责关系扩展与 `RetrievalResult` 可选字段，S06 明确具名管理端口及持久能力，S07 承载最终 DTO/编解码。S09 约束装配、能力、错误、health 和关闭。本规约不自动赋予现有插件这些能力。
 
-公开入口为 `role_task`、`role_record`、`role_relation`、`role_view`、`role_rebuild`，逻辑 DTO 经统一 HTTP/CLI 契约解析；MCP 保留嵌套 schema。远程产品桥只转发到同一服务，不在产品内装配第二个 Registry。配置与可执行接入步骤见[示例](../../examples/role_memory/README.md)；正式产品联调和真实历史样本不由协议替身测试代替。
+逻辑 DTO 经统一 HTTP/CLI 契约解析；MCP 保留嵌套 schema。远程产品桥只转发到同一服务，不在产品内装配第二个 Registry。配置与可执行接入步骤见[示例](../../examples/role_memory/README.md)；正式产品联调和真实历史样本不由协议替身测试代替。
 
 ### 派生构建能力与依赖判权
 
-写入链通过 `supports_exact_metadata_lookup` 声明真源系统元数据等值查询的写后可读能力。派生构建启用前必须验证；不支持的实现默认 false。派生输出以 `continuity_source_refs` 保存原始事件 MemoryRef 的 JSON 列表，读取正文前重新验证源摘要与读取权限；普通搜索不能验证依赖时不得返回该输出。新版本重建可规划同源 updated；updated 仅在注入原子条件更新能力后可自动应用。
+写入链通过 `supports_exact_metadata_lookup` 声明真源系统元数据等值查询的写后可读能力。派生构建启用前必须验证；不支持的实现（含文档模式）默认 false，此时配置派生构建即启动失败。派生输出以 `continuity_source_refs` 保存原始事件 MemoryRef 的 JSON 列表，读取正文前重新验证源摘要与读取权限；普通搜索不能验证依赖时不得返回该输出。
 
-`ContinuityRecovery.kind=derivation` 核对已保存计划和输出标识，不写业务正文；回执置 partial 并要求重试原事件完成后续关联。已有计划的普通重试不因当前模型版本变化而重跑；显式新批次重建仍是独立能力。
+`ContinuityRecovery.kind=derivation` 核对已保存计划和输出标识，不写业务正文；回执置 partial 并要求重试原写入完成后续关联。已有计划的普通重试不因当前模型版本变化而重跑；显式新批次重建仍是独立能力，且只产生 created / reused。
 
-### 视图内复核聚合
+### 时间映射与字段信任边界
 
-`ViewMeta.review` 返回 `{required: MemoryRef[], candidate: MemoryRef[], unchecked: string[]}`。前两组仅包含当前视图已判权条目，required 为必需背景或显式 anchor。对本次已核验关系，supports 沿支持方向、requires 沿前置依赖的反方向传播待复核状态；已明确否定仍保留 refuted。职责视图不保证遍历全依赖图，存在复核条目时 unchecked 包含 dependencies_outside_view，并返回 blocking 的 unchecked_dependencies 缺口。不得利用聚合返回无权端点或绕过原查询预算。
+接续时间映射：带 `continuity` 的写入，`event_time` 写入原始事件所有分片的 `temporal.t_event`，优先于正文日期推断；缺省时沿用摄入时间抽取规则。`occurred_at` 仍写入 t_message。
 
-### 有序来源的同步游标
+接续字段信任边界：`continuity_*` 仅由接续内部写路径注入，普通公开写入/更新不得设置；`add` 的 `continuity` 参数经 DTO 验证后由内部写路径注入，经 Command/Engine/RawPayload 传递；Ingestor 不解析信封，信封摘要仅作持久核对依据。
 
-ContinuityEvent 可选字段 `source_position: int | None` 与 `previous_position: int | None`
-须同时提供，前者严格大于后者，后者非负；初始水位为 0，产品可使用非连续的递增位置。
-键为项目 Scope 内 connector＋context_id 的摘要，Registry `/continuity/sync/` 保存已提交水位，
-及待完成事件的 operation_id、信封摘要和前后位置。首次处理先持久化 reservation，再写事件。
-不同事件不得越过 pending 边界；原文、启用的派生和关联阶段都 committed 后才推进游标。
-首版采用串行推进；乱序或前序不匹配拒绝并要求从当前游标重放，不缓存无限乱序队列。
+派生时间边界：`event_time` 只设置原始事件 t_event；created 派生输出不自动继承来源时间，按自身正文日期推断，无法推断则为空。reused 保留目标既有时间。来源时间检索不保证召回派生结果，查询侧不自动沿来源引用扩展时间谓词；同事件声明驱动的继承与来源时间联查均为后续能力。
 
-role_record 返回 `source_cursor`；role_task(get) 返回按 binding_id 索引的 `source_cursors`。
-旧事件重放不回退游标；unknown 必须先用 role_rebuild 核对再重试原事件。未提供位置时不提供
-持续同步顺序保证，且信封持久化省略新增的 null 字段，兼容既有事件回执摘要。
-派生 updated 必须经过 UPDATE PEP 与条件写入链；显式新版本重建允许规划同源 updated，
-不允许因此自动覆盖非同源的相似记忆。
+### 缺口码
 
-接续时间映射：显式 `ContinuityEvent.occurred_at` 写入原始事件所有分片的 `temporal.t_event`，优先于正文日期推断；缺省时沿用摄入时间抽取规则。普通 add 的 occurred_at 仍写入 t_message。updated 冻结计划仅对单段纯文本、无资产目标允许自动 CAS；未提供段落地址时禁止把结构化目标摊平成文本覆盖，多段/多模态目标规划 created 保留旧记录，旧计划在写入边界拒绝。
-
-接续字段信任边界：continuity_* 仅由接续内部写路径注入，普通公开写入/更新不得设置。role_record 将经过 DTO 验证的 occurred_at 转为显式 event_time，经 Command/Engine/RawPayload 传递；Ingestor 不解析信封，信封仅作持久核对依据。updated 回调新增第四参数 metadata（当前构建的 continuity_build/continuity_output），与正文及摘要失效在同次原子条件写入内提交；确认丢失时通过冻结目标及更新后摘要核对，兼容旧输出仍带旧批次标识，重试补齐标识及索引，不重跑模型。缺少 CAS 时，即便正文已匹配后摘要也保持 partial，不能把正文一致等同于摘要和批次标识已修复。
-
-派生时间边界：role_record 的 occurred_at 只设置原始事件 t_event；created 派生输出不自动继承来源时间，按自身正文日期推断，无法推断则为空。reused/updated 保留目标既有时间。来源时间检索不保证召回派生结果，查询侧不自动沿来源引用扩展时间谓词；同事件声明驱动的继承与来源时间联查均为后续能力。
+| 码 | 含义 | 阻塞 |
+| --- | --- | --- |
+| `relation_expansion_disabled` | 接续模式不展开关系（仅当调用方要求非 general 职责） | 否 |
+| `budget_exhausted` | 视图结果超过 `top_k` 被截断 | 否 |
+| `task_not_found` | 给定 `task_id` 未登记 | 否 |
+| `background_unreadable` | 任务背景引用无法解析（不披露条目标识） | 按存储的 `required` |
+| `background_unavailable` | 任务背景条目不可读（不披露条目标识） | 按存储的 `required` |

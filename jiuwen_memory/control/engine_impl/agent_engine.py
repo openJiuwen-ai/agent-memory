@@ -281,6 +281,7 @@ class AgentEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
+        source_ref: str = "",
     ) -> list[MemoryUnit]:
         # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
@@ -314,6 +315,7 @@ class AgentEngine(MemoryEngine):
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
             event_time=event_time,
+            source_ref=source_ref,
         )
         # 两条路径共用：Ingestor 规约。
         units = self._ingestor.ingest([payload])
@@ -381,6 +383,7 @@ class AgentEngine(MemoryEngine):
                     user_metadata=item.user_metadata,
                     occurred_at=item.occurred_at,
                     event_time=item.event_time,
+                    source_ref=item.source_ref,
                 )
                 outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
             except Exception as exc:

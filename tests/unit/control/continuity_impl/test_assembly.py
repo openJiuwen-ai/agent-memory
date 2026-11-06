@@ -2,7 +2,7 @@
 
 import pytest
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.construction.index_builder import IndexBuilder, require_full_write_chain
 from jiuwen_memory.construction.index_builder_impl.evidence_graph import EvidenceGraphBuilder
 from jiuwen_memory.control.continuity_impl.repository import ContinuityRepository
@@ -92,6 +92,47 @@ def test_matching_projector_graph_is_accepted(tmp_path):
             repository, graph, RoleViewBuilder(), projector=EvidenceGraphBuilder(graph)
         )
         service.health()
+    finally:
+        kv.close()
+
+
+def test_continuity_mode_requires_no_graph_and_gates_relations(tmp_path):
+    from jiuwen_memory.common.type_def import Scope
+    from jiuwen_memory.common.type_def.continuity import MemoryRef, RelationRecord
+
+    kv = SQLiteKVStore(str(tmp_path / "registry.db"))
+    try:
+        repository = ContinuityRepository(kv, single_writer=True, allow_ephemeral=True)
+        service = ContinuityService(repository, mode="continuity")
+        assert service.health() == {"continuity_mode": "continuity"}
+        scope = Scope(org="acme", space="project")
+        a = MemoryRef(scope, "a", "0" * 64)
+        b = MemoryRef(scope, "b", "1" * 64)
+        with pytest.raises(UnsupportedCapabilityError):
+            service.relation(
+                scope, RelationRecord("r", a, b, "supports"),
+                0, lambda ref: None, lambda text, metadata=None: [],
+            )
+    finally:
+        kv.close()
+
+
+def test_role_mode_without_graph_or_view_is_rejected(tmp_path):
+    kv = SQLiteKVStore(str(tmp_path / "registry.db"))
+    try:
+        repository = ContinuityRepository(kv, single_writer=True, allow_ephemeral=True)
+        with pytest.raises(ValidationError, match="role mode requires"):
+            ContinuityService(repository, mode="role")
+    finally:
+        kv.close()
+
+
+def test_invalid_mode_is_rejected(tmp_path):
+    kv = SQLiteKVStore(str(tmp_path / "registry.db"))
+    try:
+        repository = ContinuityRepository(kv, single_writer=True, allow_ephemeral=True)
+        with pytest.raises(ValidationError, match="continuity mode"):
+            ContinuityService(repository, mode="neither")
     finally:
         kv.close()
 

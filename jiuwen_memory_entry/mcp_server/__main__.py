@@ -192,33 +192,19 @@ def _check_binding(host: str) -> None:
 
 
 @mcp.tool()
-async def memory_role_view(scope: dict, request: _api.RoleViewQuery, ctx: Context = None) -> dict:
-    """恢复任务或沿记忆关系查证。request 提供 query/anchor/task_id 至少一个；
-    duty 为 general/diagnosis/testing/execution。相同起点按职责展开不同边，返回
-    anchors、paths、facts、judgments、experiences、gaps。anchor 需包含完整 scope、
-    unit_id、content_digest；来自已保存记录的回执。缺口或未核实路径不能当作事实。
-    """
-    return await _invoke("role_view", {"scope": scope, "request": asdict(request)}, context=ctx)
-
-
-@mcp.tool()
-async def memory_role_task(scope: dict, request: _api.TaskRequest, ctx: Context = None) -> dict:
+async def memory_continuity_task(
+    scope: dict, request: _api.TaskRequest, ctx: Context = None
+) -> dict:
     """登记跨产品任务。operation: create/get/find/bind/unbind/attach/close。
     变更须带稳定 request_id、expected_revision；绑定不授予源记忆权限，不需要交接确认。
     """
-    return await _invoke("role_task", {"scope": scope, "request": asdict(request)}, context=ctx)
+    return await _invoke(
+        "continuity_task", {"scope": scope, "request": asdict(request)}, context=ctx
+    )
 
 
 @mcp.tool()
-async def memory_role_record(scope: dict, event: _api.ContinuityEvent, ctx: Context = None) -> dict:
-    """保存观察/判断/经验。event 必填 task_id、binding_id、event_id、content；
-    重试复用 event_id。检查 committed/partial/unknown，不把工具建议当执行结果。
-    """
-    return await _invoke("role_record", {"scope": scope, "event": asdict(event)}, context=ctx)
-
-
-@mcp.tool()
-async def memory_role_relation(
+async def memory_continuity_relation(
     scope: dict,
     relation: _api.RelationRecord,
     expected_revision: int,
@@ -230,68 +216,20 @@ async def memory_role_relation(
     复核用新 revision，撤回用 revoked；不得把 confirmed 理解成外部事实已经成立。
     """
     return await _invoke(
-        "role_relation",
+        "continuity_relation",
         {"scope": scope, "relation": asdict(relation), "expected_revision": expected_revision},
         context=ctx,
     )
 
 
 @mcp.tool()
-async def memory_role_rebuild(
+async def memory_continuity_recover(
     scope: dict, recovery: _api.ContinuityRecovery | None = None, ctx: Context = None
 ) -> dict:
     """从关系真源重建图投影；不重新抽取旧正文，不宣称关系覆盖完整。"""
     return await _invoke(
-        "role_rebuild",
+        "continuity_recover",
         {"scope": scope, "recovery": asdict(recovery) if recovery else None},
-        context=ctx,
-    )
-
-
-@mcp.tool()
-async def memory_role_publish(
-    scope: dict, source: _api.MemoryRef, reason: str, ctx: Context = None
-) -> dict:
-    """显式发布私有记录到共享空间，逐字复制并保留出处与发布依据；不自动摘要。"""
-    return await _invoke(
-        "role_publish",
-        {"scope": scope, "source": asdict(source), "reason": reason},
-        context=ctx,
-    )
-
-
-@mcp.tool()
-async def memory_role_quarantine_source(
-    scope: dict, source_key: str, reason: str, ctx: Context = None
-) -> dict:
-    """隔离异常来源范围，普通 get/search 与角色视图立即停止使用；需治理权限。"""
-    return await _invoke(
-        "role_quarantine_source",
-        {"scope": scope, "source_key": source_key, "reason": reason},
-        context=ctx,
-    )
-
-
-@mcp.tool()
-async def memory_role_release_source(
-    scope: dict, source_key: str, ctx: Context = None
-) -> bool:
-    """解除来源隔离。"""
-    return await _invoke(
-        "role_release_source",
-        {"scope": scope, "source_key": source_key},
-        context=ctx,
-    )
-
-
-@mcp.tool()
-async def memory_role_mark_source_cutover(
-    scope: dict, connector: str, context_id: str, ctx: Context = None
-) -> dict:
-    """把双写来源切换为 agent-memory 为准；切换后该来源新事件被拒绝。"""
-    return await _invoke(
-        "role_mark_source_cutover",
-        {"scope": scope, "connector": connector, "context_id": context_id},
         context=ctx,
     )
 
@@ -307,6 +245,7 @@ async def memory_add(
     event_time: str | None = None,
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
+    continuity: dict | None = None,
     ctx: Context = None,
 ) -> list[dict]:
     """
@@ -339,6 +278,7 @@ async def memory_add(
             "event_time": event_time,
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
+            "continuity": continuity,
         },
         context=ctx,
     )
@@ -361,6 +301,10 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
     span_end: str | None = None,
     expand_depth: int = 1,
     rollup: bool = True,
+    task_id: str = "",
+    anchor: dict | None = None,
+    duty: str | list[str] | None = None,
+    view_budget: dict | None = None,
 ) -> dict:
     """
     按「语义 + 关键词」双路混合检索记忆。
@@ -402,6 +346,10 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
             "span_end": span_end,
             "expand_depth": expand_depth,
             "rollup": rollup,
+            "task_id": task_id,
+            "anchor": anchor,
+            "duty": duty,
+            "view_budget": view_budget,
         },
         context=ctx,
     )
@@ -624,6 +572,7 @@ async def memory_add_async(  # pylint: disable=too-many-arguments,huawei-too-man
     event_time: str | None = None,
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
+    continuity: dict | None = None,
     ctx: Context = None,
 ) -> list[dict]:
     """
@@ -645,6 +594,7 @@ async def memory_add_async(  # pylint: disable=too-many-arguments,huawei-too-man
             "event_time": event_time,
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
+            "continuity": continuity,
         },
         context=ctx,
     )

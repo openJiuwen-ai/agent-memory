@@ -69,6 +69,7 @@ from jiuwen_memory.api import (
     UnsupportedCapabilityError,
     UpdateMode,
     ValidationError,
+    WriteIncompleteError,
 )
 from jiuwen_memory.api import normalize as normalize_filters
 from jiuwen_memory_entry.core.api_contract import parse_request  # noqa: E402
@@ -82,6 +83,7 @@ _STATUS = {
     BackendError: 503,
     ConflictError: 409,
     PartialFailureError: 409,
+    WriteIncompleteError: 409,
     UnsupportedCapabilityError: 400,
     ValidationError: 400,
     PolicyError: 400,
