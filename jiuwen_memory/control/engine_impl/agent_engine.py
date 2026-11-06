@@ -624,9 +624,12 @@ class AgentEngine(MemoryEngine):
                 self._ensure_unit_scope(unit, scope)
                 if _matches_update_selector(unit, selector):
                     candidates.append((scope, unit))
-        if selector.limit is not None:
+        if selector.limit is not None and selector.limit > 0:
             candidates = candidates[:selector.limit]
         unified = len(patches) == 1
+        if not unified and selector.unit_ids:
+            id_order = {uid: i for i, uid in enumerate(selector.unit_ids)}
+            candidates.sort(key=lambda su: id_order.get(su[1].id, len(id_order)))
         outcomes: list[BatchUpdateOutcome] = []
         for index, (scope, unit) in enumerate(candidates):
             patch = patches[0] if unified else patches[index]

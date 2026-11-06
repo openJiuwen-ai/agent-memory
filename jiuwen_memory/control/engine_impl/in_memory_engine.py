@@ -35,6 +35,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
 )
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
@@ -189,11 +190,11 @@ def _matches_update_selector(unit: MemoryUnit, selector: UpdateSelector) -> bool
         return False
     if selector.before is not None:
         t_message = unit.temporal.t_message
-        if t_message is None or t_message >= selector.before:
+        if t_message is None or as_utc(t_message) >= as_utc(selector.before):
             return False
     if selector.after is not None:
         t_message = unit.temporal.t_message
-        if t_message is None or t_message <= selector.after:
+        if t_message is None or as_utc(t_message) <= as_utc(selector.after):
             return False
     if selector.filters is not None and not matches_memory_unit(unit, selector.filters):
         return False
@@ -707,9 +708,12 @@ class InMemoryEngine(MemoryEngine):
             for unit in self._list_units(scope):
                 if _matches_update_selector(unit, selector):
                     candidates.append((scope, unit))
-        if selector.limit is not None:
+        if selector.limit is not None and selector.limit > 0:
             candidates = candidates[:selector.limit]
         unified = len(patches) == 1
+        if not unified and selector.unit_ids:
+            id_order = {uid: i for i, uid in enumerate(selector.unit_ids)}
+            candidates.sort(key=lambda su: id_order.get(su[1].id, len(id_order)))
         outcomes: list[BatchUpdateOutcome] = []
         for index, (scope, unit) in enumerate(candidates):
             patch = patches[0] if unified else patches[index]
