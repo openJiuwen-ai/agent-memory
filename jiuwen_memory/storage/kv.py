@@ -11,6 +11,7 @@ Space offboarding，MemoryUnit 的过滤、计数和分页则由独立 list 契�
 
 from __future__ import annotations
 
+import json
 from abc import abstractmethod
 
 from jiuwen_memory.common.errors import NotFoundError
@@ -108,7 +109,7 @@ def load_memory_unit(raw: bytes, *, scope: Scope, key: str) -> MemoryUnit | None
     """反序列化一条 MemoryUnit；字节级损坏时隔离该记录并保留定位日志。"""
     try:
         return loads(raw)
-    except UnicodeDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         unit_id = key.removeprefix(MEMORY_KEY_PREFIX)
         logger.warning(
             "MemoryUnit decode failed; skipped record scope=%s unit_id=%s bytes=%d error=%s",
