@@ -921,10 +921,16 @@ def test_extract_oversized_unit_fully_consumed_in_chunks():
     middle_fact = "中段事实乙在此。"
     content = "X" * 8000 + middle_fact + "Y" * 7984  # 16000 chars
     r1 = json.dumps(
-        [{"source_id": "u1", "target": "preference", "content": "头部事实", "evidence": "头部", "confidence": 1.0}]
+        [{
+            "source_id": "u1", "target": "preference", "content": "头部事实",
+            "evidence": "头部", "confidence": 1.0,
+        }]
     )
     r2 = json.dumps(
-        [{"source_id": "u1", "target": "preference", "content": "中段事实已抽取", "evidence": middle_fact, "confidence": 1.0}]
+        [{
+            "source_id": "u1", "target": "preference", "content": "中段事实已抽取",
+            "evidence": middle_fact, "confidence": 1.0,
+        }]
     )
     llm = _RecordingLLM([r1, r2])
     extractor = ExtractorImpl(llm=llm, min_confidence=0.5, max_attempts=3, retry_backoff_ms=0)

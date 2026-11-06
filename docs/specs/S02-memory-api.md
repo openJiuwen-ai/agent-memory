@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 文档分工
 
@@ -1394,3 +1394,23 @@ AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.ru
 父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
 `last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
 诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。
+
+## 可逆脱敏与人的查看边界
+
+开启保护后，普通 add/batch_add/get/list/search/update 仍使用原方法签名，对 `redact` 片段
+返回脱敏表示。路由预览、检索文本/query_context 及批量输入回显遵守同一策略；更新准备
+与其他可信构建处理可使用本次原文，最终 MemoryUnit 在持久化及索引生成前保护。
+受保护片段的原文不进入普通召回、后处理或响应缓存。`privacy_level`、`privacy_revision`、
+`privacy_message_revision`、`privacy_rule_ids`、`privacy_categories` 是内核保留
+system_metadata 键，调用方不能赋值；后两项仅为有限判级依据，不构成授权证明。
+
+增量 `HumanViewRuntime.human_view` 是独立安全能力，不是 MemoryAPI 方法。HTTP 提供
+`GET /security/privacy`、同源静态脚本及 `POST /security/privacy/begin|finish`；
+查看 begin 先接受常规认证产生的 security，经 get PEP 和 Engine 查询脱敏快照，交由
+PrivacyProtection 短期暂存；认证挑战绑定服务端实际 Scope/ID/revision、请求身份和浏览器。
+finish 验证人的证明后，仍调用正常 get PEP 检查当前权限和快照；仅 ACTIVE 且版本有效时，
+经 Engine 的独立 HumanViewRenderer 能力组装首次快照并返回专用人类查看结果。
+不提供 reveal 布尔参数、可复用解密 bearer token、明文结果轮询或 SDK/MCP 还原工具。
+该能力关闭/未装配不改变普通接口。`allow` 的直接写入豁免不属于仅人可见保证；
+逐项请求/响应、挑战消费、审计及故障语义见
+[S10 人类终端契约](S10-security.md#隐私保护与人类终端披露)，配置见 S08。

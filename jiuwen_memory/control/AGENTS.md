@@ -8,6 +8,10 @@
 
 所有算子继承 `ControlOperator`（`base.py`），由外部装配注入到引擎，引擎本身不实现具体能力。
 
+Engine 摄入后补入调用方标签，原文及标签交给可信分类、抽取、分层和去重流程，不在此
+提前替换。MemoryUnit 在 IndexBuilder 生成持久化索引前统一保护，直接 KV 原文消息
+写保护副本；真源私有关联提交和删除由 KV 边界负责，preview 不覆盖待处理业务输入。
+
 ## 模块地图
 
 | 文件 | 职责 |
@@ -40,6 +44,10 @@
 | `jobs_impl/` | 后台 Job 实现目录：`evolve_job.py`（EvolveJob + EvolveJobSpec）、`middle_to_long_job.py`（MiddleToLongJob + MiddleToLongJobSpec + default JobFactory 装配）。Spec 装配期固化业务参数与 storage/lifecycle/llm 依赖；index/evolver 不在装配期解析（行为铁律 17） |
 
 ## 文件关系
+
+- `engine_impl/human_view.py` 的 HumanViewEngineMixin 供三个 Engine 复用，实现安全域
+  HumanViewRenderer；在线程中委托隐私模块消费获准快照，仅返回独立的人类正文结果。
+  普通 get/recall 仍只处理脱敏 MemoryUnit，不承载浏览器认证或等待状态。
 
 - 顶层 `.py` 只定义抽象接口，零实现逻辑
 - 带实现的非算子代码收在子包（`collective/`、`application/`），不得为了方便把实现逻辑放到顶层 `.py`

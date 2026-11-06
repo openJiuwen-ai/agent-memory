@@ -56,7 +56,12 @@ def test_abstract_mixed_group_induces_across_units():
     llm = RecordingLLM([
         json.dumps([{"content": "长片提炼甲", "evidence": "头部", "confidence": 0.9}]),
         json.dumps([{"content": "长片提炼乙", "evidence": "中段", "confidence": 0.9}]),
-        json.dumps([{"content": "共同模式X", "evidence": "甲乙丙", "confidence": 0.9, "pattern_name": "weekly"}]),
+        json.dumps([
+            {
+                "content": "共同模式X", "evidence": "甲乙丙",
+                "confidence": 0.9, "pattern_name": "weekly",
+            }
+        ]),
     ])
     abst = _make_abstractor(llm)
     result = abst.abstract([s1, s2, l1])

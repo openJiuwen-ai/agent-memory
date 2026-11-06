@@ -5,11 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 ## Metadata 转换契约
 
 `RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空。
@@ -158,3 +158,13 @@ Ingestor 本身不访问 PolicyManager。Engine 在 hierarchy.enabled 关闭或�
 `occurred_at` 原样作为消息时间；自动补齐 Snapshot 时，两端保留同一时间表示。
 业务偏移只来自显式时间运算，不得附加服务器时区偏移。比较和索引转换统一遵守 S07：
 无时区时间按 UTC 解释，有时区时间保持实际时刻，均不改写真源。
+
+## 可选隐私保护
+
+启用隐私保护时，RawPayload 入口校验支持的输入、拒绝客户端占位符并保留分级，不替换
+原文、不创建片段密文。Normalizer 及后续可信处理可以使用本次原文；源等级仍保留。
+实际脱敏与片段关联交由 MemoryUnit 的构建/存储写边界，在持久化索引生成前完成。
+默认 SimpleIngestor 通过 PrivacyProtection.split_input 切分原文，保留已识别敏感跨度及
+已有合法占位符，不扩大正数长度上限、不丢字；单个跨度超过上限时明确拒绝。替代 Ingestor
+应遵守同一切分约束，避免跨 unit 拆开后使落盘识别失去完整线索。
+本轮只支持 inline TEXT/CODE；URI、原模态资产在规约前拒绝。配置及隔离契约见 S10。

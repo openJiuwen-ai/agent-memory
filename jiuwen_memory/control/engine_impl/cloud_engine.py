@@ -22,6 +22,7 @@ from jiuwen_memory.common.log import (
     metadata_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.security.privacy.base import PrivacyProtection, optional_privacy
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -48,6 +49,7 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
     restore_coords_from_md_filename,
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.schema_update_support import (
     commit_schema_update,
@@ -205,7 +207,7 @@ def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
     )
 
 
-class CloudEngine(MemoryEngine):
+class CloudEngine(HumanViewEngineMixin, MemoryEngine):
     """云侧读写编排：以 message_type 选择构建/查询 profile。"""
 
     def __init__(
@@ -226,6 +228,7 @@ class CloudEngine(MemoryEngine):
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
         policy: PolicyManager | None = None,
+        privacy: PrivacyProtection | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -244,6 +247,7 @@ class CloudEngine(MemoryEngine):
         self._default_pipeline_name = default_pipeline_name.strip()
         self._job_factory = job_factory
         self._policy = policy
+        self._privacy = privacy
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -1108,4 +1112,5 @@ def _build(config):
         default_pipeline_name=str(config.get("default_pipeline_name", "default")),
         job_factory=_optional_job_factory(config),
         policy=PolicyProducer.build_named("default", config.ctx),
+        privacy=optional_privacy(config),
     )

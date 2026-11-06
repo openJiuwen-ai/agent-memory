@@ -94,6 +94,7 @@ class LocalMemoryAPI(
         dreaming_lock: LockProvider | None = None,
         authorizer: Authorizer | None = None,
         credential_registry: CredentialStatusRegistry | None = None,
+        privacy=None,
     ) -> None:
         if audit_integrity_provider is not None and audit_verify_guard is None:
             raise ValidationError(
@@ -104,6 +105,7 @@ class LocalMemoryAPI(
         ):
             raise ValidationError("audit_verify_limits must be AuditVerificationLimits")
         self._engine = engine
+        self._privacy = privacy
         self._runtime_close: Callable[[], None] | None = None
         self._require_grant_management = False
         self._perm = permission

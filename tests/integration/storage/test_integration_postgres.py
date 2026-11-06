@@ -103,6 +103,26 @@ def test_postgres_kv_core_semantics(pg_kv) -> None:
         store.update(scope, "k", b"missing")
 
 
+def test_postgres_conditional_private_state_and_recovery(pg_kv, privacy_crypto):
+    from dataclasses import replace
+
+    from jiuwen_memory.storage.privacy_impl import EncryptedPrivacyStore, KVPrivacyStore
+    from tests.unit.storage.test_kv_compare_and_swap import (
+        test_cas_distinguishes_absent_empty_mismatch_update_and_delete as cas_contract,
+    )
+    from tests.unit.storage.test_privacy_store import write_snapshot
+
+    store, scope = pg_kv
+    cas_contract(store)
+    private = EncryptedPrivacyStore(KVPrivacyStore(store), privacy_crypto)
+    old = write_snapshot(private, scope=scope)
+    private.checkpoint(scope, old.unit)
+    private.update(scope, replace(old, revision="new", digest="new"), {})
+    private.reconcile(scope, old.unit, old.revision, old.digest)
+    assert private.get(scope, old.unit) == old
+    private.delete(scope, None)
+
+
 def test_postgres_kv_scope_ttl_and_literal_prefix(pg_kv) -> None:
     store, scope = pg_kv
     other = Scope(org=scope.org, space=f"{scope.space}-other", user=scope.user)

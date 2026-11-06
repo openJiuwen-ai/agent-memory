@@ -19,6 +19,12 @@
 | `source_impl/text_source.py` | TextSource：纯文本信息源（当前唯一实现） |
 | `bootstrap.py` | 统一触发 Ingestor 实现注册 |
 
+`privacy_ingestor.py` 提供可选 PrivacyIngestor；IngestorProducer 在显式启用隐私配置时
+包装任何 target。入口只校验支持范围、拒绝客户端占位符并保留原始分级，具体 Ingestor/
+Normalizer 使用原文，输出不脱敏、不创建片段密文。实际保护交给构建/存储写入边界。
+SimpleIngestor 通过共享 PrivacyProtection.split_input 保留原文中的敏感跨度，单个跨度
+超过正数上限时拒绝；不丢字、不扩大上限。未启用隐私时继续使用原段落切分。
+
 ## 行为铁律
 
 0. **双 metadata 分离转换**

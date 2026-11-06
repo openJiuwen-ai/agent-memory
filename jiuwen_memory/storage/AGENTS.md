@@ -22,6 +22,7 @@
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
 | `_schema_property_index.py` | Schema Entity → Property MemoryUnit ID 的 KV 派生反向索引；以 Scope watermark 作为全量回填提交标记，membership/pointer 支持幂等更新与硬删；canonical identity 按 `schema_entity_id` → `schema_entity_key` → `type::name` 解析且要求非空 `schema_property_name` |
+| `privacy.py` / `privacy_impl/` | PrivacyStore 私有状态契约及 Producer；KVPrivacyStore 以独立 KVStore 的原子条件写维护完整 Scope 状态，SQLitePrivacyStore 保留旧专用库兼容；EncryptedPrivacyStore 复用密码学能力保护片段和清单；安全模块独立持有，不进入管理面九类普通端口或 DomainStore 召回 |
 | `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 三件——`load_memory_unit(raw, scope, key)` 解码隔离（坏字节记 warning 后返 `None`），`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤），`list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
@@ -43,7 +44,7 @@
 | `domain_store_impl/` | 数据面实现目录；`CompositeDomainStore`（`recallers` property + `bind_recallers` 手工接线口 + `for_manager(manager, config)` 供 manager 装配期直接构造——profile 派生、召回路组装与绑定一次完成；真源 KV 端口名由装配期指名，非硬编码 default）、`_assemble_recallers`（F06 内收设计）与**召回路全家**：契约 `recaller.py`（`Recaller` + `RecallerProducer`，`TOP_NAME=recaller`）+ 实现 `keyword_recaller.py` / `vector_recaller.py` / `graph_recaller.py` + 共用的 `unit_aggregation.py`（chunk→unit MaxP 归并）。Recaller 是数据面内部件而非检索层算子，不继承 `RetrievalOperator`（F07） |
 | `markdown.py` / `shadow.py` | 文档视图与机器真源接口及 Producer；local Markdown 与 SQLite shadow 可选装配 |
 | `watchdog.py` / `watchdog_impl/` | 文件监听公共生命周期；LocalWatchdog 停止准入后通过线程条件等待已进入 shadow 的工作，排队旧代不再访问依赖；不等待调用方 loop 恢复协程 |
-| `bootstrap.py` | 统一触发九类 Store 后端、watchdog 与 Storage 实现注册 |
+| `bootstrap.py` | 统一触发普通 Store、独立 PrivacyStore、watchdog 与 Storage 实现注册 |
 
 ## 统一 CRUD 动词
 
@@ -56,6 +57,13 @@
 
 检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用 `mget` /
 `exists` / `scan` / `scopes`；fs 提供 `stat`。
+
+`_privacy_kv.py` 提供可选 PrivacyKVStore，由 KvProducer 包装逻辑 KV 边界，覆盖
+`/memory/` 和 `/messages/` 的直接写入与删除；其他系统记录原样传递。嵌套加密端口只在
+本次受控写入内跳过重复保护，底层 security 能力原样转发。片段密文不存到这些 KV 端口，
+关联失效时保留的本体只能是脱敏内容；原始消息淘汰不删除仍被正式记忆拥有的片段引用。
+写入通过隐私能力的 write 提交，异常后按真源回读恢复存续版本；旧关联的密文恢复引用
+保留至结果确认。真源删除成功后才 discard，失败不提前撤销，索引层不重复维护关联。
 
 ## 行为铁律
 
@@ -92,11 +100,22 @@
 7. **后端不可用统一抛 BackendError**
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
 
-8. **EncryptedKVStore 只做装饰，不做算法**
+8. **加密 Store 只做装饰，不做算法**
    `encrypted` KV target 必须显式包装一个 raw KVStore，并调用
    `common.security.cryptography` 的 `CryptographyProvider` 做 value 加解密
    （旧 `SecurityProvider` 只保留一个发布周期的兼容导出）；`list` 必须在解密后执行
    MemoryUnit 过滤，不能把过滤下推到密文 raw KV。真实加密算法不放在 storage 层。
+
+   EncryptedPrivacyStore 同样通过 CryptographyProvider 加密，不自行实现算法。
+   PrivacyStore 的 stage_fragment 产生未落盘的不透明受保护引用，reference 和路由
+   搬运不解密；get/search 只解密关联清单，get_fragment 仅供已完成二次认证和判权的
+   人类查看读取原值。insert/update 原子更新清单及引用，checkpoint/reconcile/confirm
+   维护外部真源提交期间的密文恢复状态；事务只覆盖私有后端。SQLite 表及原加密上下文
+   保持兼容，显式未保护的 PrivacyStore 不允许接入隐私能力。KVPrivacyStore 使用
+   `/privacy/state/v1` 单键 CAS，原子发布完整 Scope 的片段、清单和恢复引用；嵌套
+   事务支持保存点，冲突拒绝覆盖，状态大小有界。memory/sqlite/redis/postgres 提供
+   原生 CAS；第三方默认不支持，不以 get/update 模拟。私有 KV 递归内联构造，
+   禁止引用公开具名端口并跳过业务隐私包装；连接不受业务 ConfigSource 晚绑定。
 
    PR1-1 的 `globals.storage_encryption_enabled` 在标准装配时统一保护全部具名 KV/FS。
    两类 raw 端口与显式 wrapper 全部构造后再包装并更新 Producer 缓存，禁止递归双包、

@@ -28,6 +28,16 @@ class IngestorProducer(Factory):
 
     TOP_NAME = "ingestor"
 
+    @classmethod
+    def build(cls, target, params, ctx, *, name=""):
+        ingestor = super().build(target, params, ctx, name=name)
+        from jiuwen_memory.common.security.privacy.base import optional_privacy
+        from jiuwen_memory.config.context import ComponentConfig
+        from jiuwen_memory.ingest.privacy_ingestor import PrivacyIngestor
+
+        privacy = optional_privacy(ComponentConfig(dict(params or {}), ctx, target, name))
+        return PrivacyIngestor(ingestor, privacy) if privacy is not None else ingestor
+
 
 class Ingestor(IngestOperator):
     @abstractmethod
