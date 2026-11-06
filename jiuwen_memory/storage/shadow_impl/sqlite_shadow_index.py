@@ -228,9 +228,17 @@ def _compile_clause(col: str, op: FilterOp, value) -> tuple[str | None, list]:
     if op is FilterOp.NE:
         return f"{col} != ?", [value]
     if op is FilterOp.IN:
+        if not value:
+            # IN 空集恒假（无成员可匹配）。用户可经 system_metadata.project
+            # 叶子注入空 IN——不特判会编译成 ``IN ()``，SQLite 语法错误以裸
+            # OperationalError 逃逸。
+            return "1 = 0", []
         ph = ",".join("?" for _ in value)
         return f"{col} IN ({ph})", list(value)
     if op is FilterOp.NOT_IN:
+        if not value:
+            # NOT IN 空集恒真（排除空集 = 不排除任何记录）。
+            return "1", []
         ph = ",".join("?" for _ in value)
         return f"{col} NOT IN ({ph})", list(value)
     if op is FilterOp.GT:

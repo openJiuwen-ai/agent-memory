@@ -194,6 +194,34 @@ def test_compile_system_filters_drops_non_system_fields() -> None:
     assert params == []
 
 
+def test_compile_clause_empty_in_list_compiles_to_constant_predicate() -> None:
+    """IN [] 恒假 / NOT IN [] 恒真：空集合不得编译成 ``IN ()``（SQLite 语法错误）。"""
+    assert _compile_clause("project", FilterOp.IN, []) == ("1 = 0", [])
+    assert _compile_clause("project", FilterOp.NOT_IN, []) == ("1", [])
+    # 非空集合行为不变
+    assert _compile_clause("project", FilterOp.IN, ["p1"]) == ("project IN (?)", ["p1"])
+
+
+def test_compile_system_filters_user_injected_empty_in_is_reachable_and_safe() -> None:
+    """用户可经 system_metadata.project 叶子注入空 IN（from_dict 不校验空集），
+    必须编译为恒假常量谓词而非 ``IN ()`` 语法错误；AND 组合语义不变。"""
+    clause = FilterClause("system_metadata.project", FilterOp.IN, [])
+    sql, params = _compile_system_filters(clause)
+    assert sql == "1 = 0"
+    assert params == []
+    # AND 组中空 IN 与其他系统谓词组合：恒假分支正常参与编译
+    group = FilterGroup(
+        FilterLogic.AND,
+        [
+            FilterClause("lifecycle", FilterOp.EQ, "active"),
+            FilterClause("system_metadata.project", FilterOp.IN, []),
+        ],
+    )
+    sql_group, params_group = _compile_system_filters(group)
+    assert sql_group == "(lifecycle = ?) AND (1 = 0)"
+    assert params_group == ["active"]
+
+
 def test_compile_system_filters_and_skips_unconstrained_children() -> None:
     group = FilterGroup(
         FilterLogic.AND,
