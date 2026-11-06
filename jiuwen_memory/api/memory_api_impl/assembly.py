@@ -153,10 +153,12 @@ class _Kernel:
     space: SpaceManager | None = None
     audit: AuditLogger | None = None
     config_source: ConfigSource | None = None
+    ctx: AssemblyContext | None = None
     scheduler: Scheduler | None = None
     watchdog: Watchdog | None = None
     security_runtime: SecurityRuntime | None = None
     security_resources: SecurityResourceOwner | None = None
+    continuity: Any | None = None
 
     async def start_background(self) -> None:
         """启动需事件循环就绪的后台组件。
@@ -172,15 +174,19 @@ class _Kernel:
             logger.info("start_background: watchdog.start() called")
 
     def close(self) -> None:
-        """后台屏障成功后，统一释放自有 shadow 与安全资源。"""
-        if self.security_runtime is not None:
-            self.security_runtime.close()
-        elif self.security_resources is not None:
-            self.security_resources.close()
-        elif self.storage.has_shadow_index():
-            shadow = self.storage.shadow_index()
-            if shadow is not None:
-                shadow.close()
+        """后台屏障成功后，统一释放自有 shadow、接续与安全资源。"""
+        try:
+            if self.continuity is not None:
+                self.continuity.close()
+        finally:
+            if self.security_runtime is not None:
+                self.security_runtime.close()
+            elif self.security_resources is not None:
+                self.security_resources.close()
+            elif self.storage.has_shadow_index():
+                shadow = self.storage.shadow_index()
+                if shadow is not None:
+                    shadow.close()
 
 
 @runtime_checkable
@@ -616,6 +622,13 @@ def _build_kernel(
             if kernel.security_runtime is not None
             else kernel.security_resources
         )
+        # Track only stores constructed in this assembly. Explicitly injected stores
+        # are not observed and must remain usable after this runtime closes.
+        from jiuwen_memory.storage.base import BaseStore
+
+        stores = tuple(resource for resource in reversed(lifecycle.created)
+                       if isinstance(resource, BaseStore))
+        owner.share_with(SecurityResourceOwner(stores))
         lifecycle.bind(owner)
         return kernel
 
@@ -705,6 +718,17 @@ def _assemble_kernel(
     engine = EngineProducer.dep(root, default="in_memory")
     permission = PermissionProducer.dep(root, default="sqlite")
 
+    continuity = None
+    connectors = {}
+    if "continuity" in ctx.namespaces:
+        from jiuwen_memory.control.continuity import ContinuityProducer
+        from jiuwen_memory.retrieval import role_view  # noqa: F401
+
+        continuity = ContinuityProducer.build_named("default", ctx)
+        engine.configure_retention(continuity.retains)
+        connectors = ctx.globals.get("continuity_connectors", {})
+        if not isinstance(connectors, dict):
+            raise ValidationError("continuity_connectors must be a trusted connection mapping")
     api = LocalMemoryAPI(
         engine=engine,
         permission=permission,
@@ -736,6 +760,8 @@ def _assemble_kernel(
         router=optional_router(root),
         authorizer=authorizer,
         credential_registry=credential_registry,
+        continuity=continuity,
+        continuity_connectors=connectors,
     )
     _reject_routing_without_space_authorization(api)
     watchdog: Watchdog | None = None
@@ -807,6 +833,7 @@ def _assemble_kernel(
             "只配 audit_integrity 而不接线，部署会以为已启用链式证明，实际仍是普通审计。"
         )
     return _Kernel(
+        ctx=ctx,
         api=api,
         kv=kv_store,
         storage=storage,
@@ -818,6 +845,7 @@ def _assemble_kernel(
         watchdog=watchdog,
         security_runtime=security_runtime,
         security_resources=resources,
+        continuity=getattr(api, "_continuity", None),
     )
 
 
@@ -908,6 +936,56 @@ def assemble_runtime(
     """一次装配 SDK 认证、业务 API 与启动/关闭句柄，不暴露存储或任务控制器端口。"""
     kernel = _build_kernel(policies, kv, config)
     return _runtime_from_kernel(kernel)
+
+
+class MaintenancePorts:
+    """Offline maintenance handle: two KVs, the assembly context, and close().
+
+    Maintenance tooling must share the *same* assembly as the service: re-building a
+    second context would hand the projector a different GraphStore, and dropping the
+    kernel would leak the continuity single-writer lock it claimed.
+    """
+
+    def __init__(
+        self,
+        truth_kv: KVStore,
+        registry_kv: KVStore,
+        ctx: AssemblyContext,
+        runtime: _MemoryRuntime,
+    ) -> None:
+        self.truth_kv = truth_kv
+        self.registry_kv = registry_kv
+        self.ctx = ctx
+        self._runtime = runtime
+        self._closed = False
+
+    def close(self) -> None:
+        """Release everything this assembly created, including the writer lock."""
+        if self._closed:
+            return
+        self._closed = True
+        self._runtime.close()
+
+
+def assemble_maintenance_ports(
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    registry_store: str = "default",
+) -> MaintenancePorts:
+    """Assemble once and return a closable maintenance handle.
+
+    Same path as :func:`assemble_runtime` (defaults merge, plug-in registration,
+    ConfigSource) so an offline migration sees the configuration the service would see.
+    Not a data-plane entry: callers must own the deployment for the duration and close
+    the returned handle to release the continuity single-writer lock.
+    """
+    kernel = _build_kernel(config=config)
+    return MaintenancePorts(
+        truth_kv=kernel.kv,
+        registry_kv=kernel.storage.kv(registry_store),
+        ctx=kernel.ctx,
+        runtime=_runtime_from_kernel(kernel),
+    )
 
 
 def _runtime_from_kernel(kernel: _Kernel) -> _MemoryRuntime:

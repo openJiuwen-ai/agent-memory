@@ -28,6 +28,12 @@ class AssociatorProducer(Factory):
 
 
 class Associator(ConstructionOperator):
+    def configure_relations(self, catalog) -> None:
+        """Optional typed evidence discovery capability; unsupported implementations fail closed."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("associator cannot use a configured evidence catalog")
+
     @abstractmethod
     def associate(self, units: list[MemoryUnit]) -> list[Relation]:
         """在一批记忆单元间做关联分析，返回发现的关联关系。"""

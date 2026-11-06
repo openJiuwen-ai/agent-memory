@@ -198,7 +198,8 @@ class MarkdownStore(BaseStore):
         不耦合具体实现（``LocalMarkdownStore``）。与实现的 ``_md_path``（按 memory_class
         映射）产出同一路径，但入参是 basename + project（不依赖完整 MemoryUnit）：
 
-        - ``USER.md`` → ``USER.md``（跨 project 用户画像，落 root 顶层，不进 memory/ 也无 project 段）；
+        - ``USER.md`` → ``USER.md``（跨 project 用户画像，落 root 顶层，
+          不进 memory/ 也无 project 段）；
         - ``MEMORY.md`` → project 非空 ``memory/{project}/MEMORY.md``，空
           ``memory/MEMORY.md``（跨项目可见）；
         - 其余（daily 文件名，如 ``2026-09-30.md``）→ project 非空

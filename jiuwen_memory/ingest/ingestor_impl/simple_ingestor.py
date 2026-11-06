@@ -56,7 +56,7 @@ class SimpleIngestor(Ingestor):
             # t_event 从完整 content 抽取（首个绝对日期，无则 None），所有分片继承同一份：
             # 切分不改变事件时间，且与查询侧共用 common.time_utils 的同一份规则——否则
             # 写入侧标注的日期与查询侧解析的窗口对不上，时间窗谓词依旧空转（issue #252）。
-            t_event = first_absolute_date(content, now)
+            t_event = payload.event_time or first_absolute_date(content, now)
             # 每个分片继承同一份（消毒后的）结构提示与元数据；多片时记 _part/_parts。
             # 这两个键是 simple 实现的内部序号约定，不对输入开放：用户注入的同名键
             # 一律剔除——多片时强制覆盖为真实序号（setdefault 会让注入值污染全部
@@ -79,7 +79,7 @@ class SimpleIngestor(Ingestor):
                                 source=payload.modality,
                             )
                         ],
-                        source_ref=payload.id,
+                        source_ref=payload.source_ref or payload.id,
                         temporal=Temporal(
                             t_event=t_event,
                             t_ingest=now,

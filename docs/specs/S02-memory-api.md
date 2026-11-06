@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -52,7 +52,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 ## HTTP / CLI 与协议适配契约
 
 HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
-`MemoryAPI.__abstractmethods__` 的 38 个公开方法全部按以下规则暴露：
+`MemoryAPI.__abstractmethods__` 的 43 个公开方法全部按以下规则暴露：
 
 ```text
 POST /v1/<MemoryAPI 方法名>
@@ -105,7 +105,7 @@ dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或�
 此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
 HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
-不再经过 legacy `DispatchRequest` / shared handler。CLI 的 38 个命令与参数直接从
+不再经过 legacy `DispatchRequest` / shared handler。CLI 的 43 个命令与参数直接从
 `MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
 对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
 本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
@@ -268,6 +268,11 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 运行时策略面（直达 PolicyManager） | `admin_get` | 已实现 | [admin_get](#admin_get) | F01 |
 | 运行时策略面 | `admin_set` | 已实现 | [admin_set](#admin_set) | F01 |
 | 运行时策略面 | `admin_all` | 已实现 | [admin_all](#admin_all) | F01 |
+| 接续面（委托 ContinuityService） | `continuity_task` | 已实现 | [continuity_task](#continuity_task登记查询和关联任务) | construction/F10 |
+| 接续面 | `continuity_relation` | 已实现；仅角色模式 | [continuity_relation](#continuity_relation登记复核或撤回关系) | construction/F10 |
+| 接续面 | `continuity_recover` | 已实现 | [continuity_recover](#continuity_recover核对未知写入与修复投影) | construction/F10 |
+| 治理面（接续来源） | `quarantine_source` | 已实现 | [quarantine_source / release_source](#quarantine_source--release_source来源隔离与解除) | construction/F10 |
+| 治理面（接续来源） | `release_source` | 已实现 | [quarantine_source / release_source](#quarantine_source--release_source来源隔离与解除) | construction/F10 |
 
 ---
 
@@ -323,6 +328,7 @@ def add(
     system_metadata: dict[str, MetadataValueType] | None = None,
     user_metadata: dict[str, MetadataValueType] | None = None,
     occurred_at: datetime | None = None,
+    event_time: datetime | None = None,
 ) -> list[MemoryUnit]: ...
 
 async def add_async(...) -> list[MemoryUnit]: ...  # 签名同 add
@@ -389,6 +395,8 @@ target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema 
   `KVStore.list` 只查询 `/memory/` 记忆并返回当前页与分页前总数。详见 F02 决策10与
   F01 的 list 决策。
 
+> 接续写入：`add` 另有可选 keyword 参数 `continuity: ContinuityWrite | None = None`，给出时按可靠写入语义登记到任务，见[角色关系记忆入口 / 可靠写入](#add--batch_add-的-continuity-参数可靠写入)。
+
 > 开关由来与"为何默认不同步、为何经 Evolver 而非独立 Extractor"的取舍见 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)；add 路径流程见 [`S03-control.md`](S03-control.md)。
 
 #### batch_add / batch_add_async
@@ -408,12 +416,15 @@ def batch_add(
     occurred_at: datetime | None = None,
     stream_id: str = "",
     continue_on_error: bool = True,
+    event_time: datetime | None = None,
 ) -> BatchWriteResult: ...
 
 async def batch_add_async(...) -> BatchWriteResult: ...  # 签名同 batch_add
 ```
 
 同步桥接批量写入；逐项归一化、WRITE 鉴权、space 校验与审计，结果始终按输入索引对齐。`batch_add_async` 串行保序批量写入；默认归集单项错误，`continue_on_error=False` 时后续项为 `Skipped`。顶层 `system_metadata` / `user_metadata` 作批次默认值，单项可覆盖。设计取舍见 [`F03-batch-write-api.md`](../features/api/F03-batch-write-api.md)。
+
+接续批量写入：`BatchWriteItem.continuity` 逐项声明可靠写入，用于外部 Agent 历史快速导入，分阶段处理与逐项回执见[角色关系记忆入口 / 可靠写入](#add--batch_add-的-continuity-参数可靠写入)。
 
 #### check_write
 
@@ -450,12 +461,15 @@ def submit_ingest(
     system_metadata: dict[str, MetadataValueType] | None = None,
     user_metadata: dict[str, MetadataValueType] | None = None,
     occurred_at: datetime | None = None,
+    event_time: datetime | None = None,
 ) -> IngestSubmission: ...
 ```
 
 受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；Access / `assemble_runtime()` 不得持有 `IngestJobController`。后台实际 `add` 仍再鉴权一次。
 
 `occurred_at` 为消息发生时间，随任务原样交给后台 `add`，语义与 `add` 的同名参数一致（见 [F06](../features/api/F06-access-parameter-forwarding.md)）；该字段属于消息时间轴，不借 `metadata` 旁路传递。
+
+`event_time` 为含时区的事件时间，在入队前校验（不含时区直接拒绝，不进队列），随任务原样交给后台 `add` 写入 `t_event`；不得将时间藏进 metadata，或把消息时间 `occurred_at` 当作 `t_event`。
 
 #### search
 
@@ -538,6 +552,8 @@ top_k、披露、Scope 与权限不变；普通召回可命中已有 Snapshot，
 逐空间分发。请求快照不修改调用者输入，运行时插件保留身份。
 
 HTTP/CLI 仅暴露原 search，MCP 仅暴露 memory_search；参数与 SDK 同义。
+
+接续检索：`search` 另有可选 keyword 参数 `duty`、`task_id`、`anchor`、`view_budget`，三者（duty/task_id/anchor）均缺省时行为不变；给出任一即进入任务/职责视图路径并填充 `RetrievalResult` 的可选字段。首版不支持跨空间职责视图：`context.extensions` 带 `spaces` 键且同时给出 `duty` / `task_id` / `anchor` 时返回 `ValidationError`。见[角色关系记忆入口 / 职责检索](#search-的接续参数职责检索)。
 历史进程内 handler 仅在显式提供树字段时按同一类型契约解码并转发，省略字段不补默认值。
 不再提供公开 search_v2/evolve_v2 或对应 MCP 工具，不新增公开 expand。
 
@@ -574,6 +590,8 @@ def list(
 边界 adapter 使用显式 codec 序列化；未知 key 原样透传。
 `filters` 与 search 共用 FilterExpr/旧 list/dict DSL 规范化语义，`memory_types` 与 filters
 取 AND。`org/space/user/agent/session` 属于 Scope 隔离轴，不得出现在 filters。
+
+接续来源过滤：启用接续时，不可用来源（配置 `enabled=false` 的连接 ∪ 项目内被隔离的连接）作为系统过滤谓词 `NOT system_metadata.continuity_connector IN {不可用连接}` 与用户 filters 取 AND 下推到 Engine，在分页与 `count` 之前生效；`list` 不得因页内含不可用来源条目而整页抛 `PermissionDeniedError`。`get` 单条命中仍返回 `PermissionDeniedError`。契约见 [S11「来源治理与列表过滤」](S11-cross-agent-continuity.md#来源治理与列表过滤)。
 
 #### get
 
@@ -1184,9 +1202,11 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 ### BatchWriteItem / BatchWriteOutcome / BatchWriteResult（batch_add，`control/types.py`）
 
-- `BatchWriteItem` 表达单项内容与可选 scope/source/tags/`system_metadata`/`user_metadata`/occurred_at 覆盖；`stream_id`、`sequence`、`idempotency_key` 首版仅用于调度和回显，不写入真源。
+- `BatchWriteItem` 表达单项内容与可选 scope/source/tags/`system_metadata`/`user_metadata`/occurred_at/`event_time` 覆盖；`event_time` 未给时沿用批级缺省值，不含时区的单项按 `ValidationError` 归集，不影响其他项；`stream_id`、`sequence`、`idempotency_key` 首版仅用于调度和回显，不写入真源。
 - `BatchWriteOutcome` 包含输入索引、归一化 item、该项产生的 `units` 与可归集的 `error` / `error_type`；成功且 units 为空仍是成功。Engine 的非领域异常也必须归集为 `InternalError`，不能使整批 HTTP 请求退化为 500。
 - `BatchWriteResult.outcomes` 与输入严格一一对应。相同 `(Scope, stream_id)` 的非空 `sequence` 不得重复；接口不自动重排。
+- 内部字段：`BatchWriteItem.source_ref` 只由接续批量写入在内部设置（`source_locator` → `MemoryUnit.source_ref`）；公开调用方传非空值即 `ValidationError`。
+- 接续：`BatchWriteItem.continuity: ContinuityWrite | None`；`BatchWriteOutcome` 新增 `operation_id: str = ""` 与 `continuity_status: str = ""`（committed / partial / unknown / rejected，未带 continuity 的项为空）。
 
 ### DisclosureLevel / RetrievalResult（search 返回，`retrieval/types.py`）
 
@@ -1194,6 +1214,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 `RetrievalResult`：
 - `items: list[RetrievedItem]` —— 每项 `unit_id` / `score`（融合/重排后最终分）/ `content`（按层级加载）/ `level`（实际披露层级）。
+- 接续可选字段（仅给出 duty/task_id/anchor 时填充，否则为 null）：`paths: list[RelationPath] | None`、`gaps: list[Gap] | None`、`view_meta: ViewMeta | None`；`RetrievedItem.view: ViewAnnotation | None`。字段定义见 S11。
 - `trajectory: list[TrajectoryStep]` —— 仅 `with_trajectory=True` 返回。每步 `stage`（parse/recall/fuse/recheck/rerank/threshold/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
 
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
@@ -1256,6 +1277,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 | `UnsupportedCapabilityError` | 请求的 `source` 模态不在当前 Normalizer 声明的能力集合内；在规约、落盘和建索引前失败 |
 | `PolicyError` | `admin_set` 的键未知或为不可变配置；树开关关闭时忽略树参数，不因此抛 PolicyError |
 | `ConflictError` | 写入冲突（如 id 重复）或目标结构前置条件与当前状态冲突 |
+| `WriteIncompleteError` | `PartialFailureError` 子类，HTTP 409。带 `continuity` 的 `add` 回执停在 unknown / partial；携带 `operation_id`、`status`、`refs`、`retry_action` |
 | `BackendError` / `HealthCheckError` | 后端故障 / 健康探测失败 |
 
 ## 鉴权流程
@@ -1394,3 +1416,140 @@ AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.ru
 父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
 `last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
 诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。
+
+## 角色关系记忆入口
+
+> **状态：已实现（2026-11-05 设计修订）**。`role_*` 已并入 `add`/`batch_add`/`search` 并改名为 `continuity_*`、`quarantine_source`、`release_source`；`role_record`、`role_view`、`role_publish`、`role_mark_source_cutover` 已删除。剩余差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。
+
+本节各 DTO 的字段级定义、内部回执与关系头结构见 [S11 数据结构](S11-cross-agent-continuity.md#数据结构)，含义与用法见 [F10 第 5 节](../features/construction/F10-role-memory.md#5-数据结构)。
+
+接续能力不再设独立的写入与视图方法：
+
+| 能力 | 入口 |
+|---|---|
+| 可靠写入、历史导入 | `add(..., continuity=ContinuityWrite)`；`batch_add` 的 `BatchWriteItem.continuity` |
+| 任务背景 / 职责视图 | `search(..., duty=, task_id=, anchor=, view_budget=)` |
+| 任务登记与绑定 | `continuity_task(scope, request: TaskRequest, *, security) -> dict` |
+| 关系登记、复核、撤回（仅角色模式） | `continuity_relation(scope, relation: RelationRecord, expected_revision: int, *, security) -> dict` |
+| 未知写入核对与投影修复 | `continuity_recover(scope, recovery: ContinuityRecovery, *, security) -> dict` |
+| 来源隔离与解除（治理面） | `quarantine_source(scope, connector, reason, *, security) -> dict`；`release_source(scope, connector, *, security) -> bool` |
+
+HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `memory_search` 携带接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover` 与（仅角色模式）`memory_continuity_relation`（沿用 `memory_<方法名>`；JiuwenSwarm 适配器为 `agent_memory_*`）；`quarantine_source` / `release_source` 只在管理面暴露，不进入 Agent 工具清单。不再提供跨空间发布（以现有 `grant` ＋ `continuity_task(attach)` 挂引用代替）与双写切换。
+
+仅显式配置 `continuity`（且 `mode` 为 `continuity` 或 `role`）才启用；未启用时带接续参数的 `add`/`batch_add`/`search` 与上述专用入口返回 `UnsupportedCapabilityError`。接续模式下 `continuity_relation`、`continuity_recover(kind=relation)` 返回 `UnsupportedCapabilityError`，`search` 带非 general duty 时降级（见下）。scope 必须是 org+space 的项目空间。API 执行项目权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。关系真源存于 Registry KV，不出现在普通 get/list/search 结果中。
+
+### 共同参数、返回状态与传输
+
+| 参数 | 含义与限制 |
+|---|---|
+| `scope: Scope` | Registry/事件/关系所属项目，必须给出 `org`、`space`，`user/agent/session` 为空；不是调用者身份 |
+| `security: RequestSecurityContext` | SDK 必填 keyword-only 可信上下文；HTTP/MCP 由认证边界注入，不放入业务 JSON。同步 SDK 方法须在无运行事件循环的线程调用 |
+| `MemoryRef` | `scope` 是原记忆完整五维 Scope，`unit_id` 是实际 MemoryUnit ID，`content_digest` 是 64 位小写 SHA-256；从已保存单元取得，不用消息 ID/任意摘要代替。摘要算法见 S11 |
+
+专用入口中 `release_source` 返回布尔值，其余返回 `dict`。`committed` 表示该操作所要求的真源/回执已保存，不表示任务完成；关系写入还要求投影完成。`partial` 表示已有可恢复进度；`unknown` 表示写入确认不足，不能换新 ID 再写。可选关联发现的 `association_status` 与事件的 `status` 分开。
+
+共通异常：`ValidationError` 为字段/模型/项目形状错误；`PermissionDeniedError` 为认证授权或依赖不可读；`NotFoundError` 为控制记录不存在；`ConflictError` 为修订过期、幂等键冲突、引用变化等；`WriteIncompleteError`（409）为可靠写入停在 unknown/partial；`UnsupportedCapabilityError` 为未装配接续能力或当前档位不支持。实际存储故障也可能抛出，不能把异常视为未写入证明。HTTP 状态映射沿用本规约「HTTP / CLI 与协议适配契约」。
+
+### add / batch_add 的 continuity 参数（可靠写入）
+
+`add(content, scope, source, *, security, ..., event_time=None, continuity: ContinuityWrite | None = None) -> list[MemoryUnit]`；`batch_add` 逐项 `BatchWriteItem.continuity`。
+
+| ContinuityWrite 字段 | 默认值 | 含义 |
+|---|---|---|
+| `task_id` / `binding_id` / `event_id` | 必填 | 全局任务、有效绑定、产品侧稳定事件 ID；幂等键 = 连接、绑定、事件 ID 的摘要（`operation_id`） |
+| `kind` | `"unclassified"` | observation / statement / judgment / result / experience / correction / unclassified |
+| `classification_confidence` | `"unknown"` | low / high / unknown；low 强制降级为 unclassified，high 不等于事实确认 |
+| `evidence_refs` | `[]` | 支撑事件的原记忆引用；写入及重试时核验 |
+| `claimed_author` | `None` | 原文声称作者，不覆盖服务端认证归属 |
+| `context_id` | `None` | 产品会话或上下文 ID |
+| `source_locator` | `None` | 原文定位信息，写入 `MemoryUnit.source_ref` |
+| `schema_version` | `"continuity-write/1"` | 固定版本；未知版本拒绝 |
+
+参数映射：正文用 `content`；原事件时间用 `event_time`（t_event），`occurred_at` 仍是消息时间；职责背景用 `tags`（`duty:<id>`）；其余字段由内部写路径写入 `continuity_*` 系统元数据，公开调用方不得直接设置该前缀。
+
+返回：committed 时返回正文单元；同键同内容重放返回已保存单元，不重复写正文；同键异内容 `ConflictError`；回执停在 unknown / partial 时抛 `WriteIncompleteError`，携带 `operation_id`、`status`、`refs`、`retry_action`（partial → `retry_original_write`；unknown → `recover_then_retry`，先调 `continuity_recover` 再重试）。服务端核对绑定连接与当前认证主体相同；`claimed_author` 不能替代此检查。
+
+`batch_add`：批级与逐项 scope 须为同一项目空间，不同任务可同批；`idempotency_key` 与 `continuity` 同时给出时须一致。处理分五阶段（批量 unknown 回执 → 批量写正文 → 批量转 partial → 每任务一次背景追加 → 批量转 committed），派生与关系发现排入后续阶段。逐项结果在 `BatchWriteOutcome.operation_id` / `continuity_status` 上表达，不抛 `WriteIncompleteError`；单项失败按 `continue_on_error` 归集。
+
+### search 的接续参数（职责检索）
+
+`search(query, context, *, security, ..., duty: str | list[str] | None = None, task_id: str | None = None, anchor: MemoryRef | None = None, view_budget: ViewBudget | None = None) -> RetrievalResult`。
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `duty` | `None` | general / diagnosis / testing / execution 或已配置职责名，或 1–4 个的列表；选择边类型、方向、优先级，不授予权限；视图路径下缺省解析为 general |
+| `task_id` | `None` | 读取任务登记的共同背景作为起点，不要求交接确认 |
+| `anchor` | `None` | 已知 MemoryRef 起点，优先于语义候选 |
+| `view_budget` | ViewBudget 默认值 | max_depth=2、max_nodes=30、max_edges=60、max_paths=60、timeout_ms=1000；正整数，上限依次为 4/200/500/500/10000，服务端职责策略可进一步收紧 |
+
+`duty`、`task_id`、`anchor` 均缺省时与改动前完全一致。任一给出时：`query`、`anchor`、`task_id` 至少一项非空（仅给 task_id 或 anchor 时 `query` 可为空串）；`context.extensions` 带 `spaces` 键时返回 `ValidationError`（首版不支持跨空间职责视图）；结果按 background → anchor → relation → semantic_candidate 排序，`top_k` 截断时追加非阻断 `budget_exhausted` gap；`RetrievalResult.paths` / `gaps` / `view_meta` 与 `RetrievedItem.view` 填充，schema 见 S11 `role-view/2`。权限不足的起点或路径以不泄露源身份的缺口表达；项目级权限不足直接拒绝。接续模式下不展开关系：返回普通任务背景与语义结果，`gaps` 追加非阻断 `relation_expansion_disabled`，`view_meta.mode="continuity"`。
+
+### continuity_task：登记、查询和关联任务
+
+签名：`continuity_task(scope, request: TaskRequest, *, security) -> dict`。
+
+| TaskRequest 字段 | 默认值 | 含义 |
+|---|---|---|
+| `operation` | 必填 | create / get / find / bind / unbind / attach / close |
+| `request_id` | `""` | 变更必填稳定幂等键，同键重试必须保持请求内容；get/find 无需填写 |
+| `task_id` | `""` | create 由服务端生成，其他定点操作使用返回的全局任务 ID；find 通过本地上下文查找 |
+| `expected_revision` | `0` | create 使用 0；其他变更使用最近读取的任务 revision。查询忽略此值 |
+| `connector_id` / `context_id` | `""` | bind/find 使用：可信连接配置标识和该产品的本地上下文标识；不根据标题自动关联 |
+| `context_source` | `"native"` | native 表示原生上下文 ID；adapter 表示桥接层生成的稳定标识 |
+| `binding_id` | `""` | unbind 指定此前返回的绑定 ID |
+| `background` | `[]` | 需要登记的 MemoryRef 列表；通常用于 attach，也可随其他变更提交；登记不复制正文、不授予读权限 |
+| `required` | `true` | 本次 background 是否属于必需证据；不可读必需证据会影响接续就绪判断 |
+| `reason` | `""` | 解绑原因，随撤销主体保存 |
+
+变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [{task_id, revision}]}`，不证明调用者拥有其中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
+
+### continuity_relation：登记、复核或撤回关系
+
+签名：`continuity_relation(scope, relation: RelationRecord, expected_revision: int, *, security) -> dict`。仅角色模式；接续模式返回 `UnsupportedCapabilityError`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `expected_revision` | 方法必填 | 首次 0；更新填写当前关系修订。要求 `relation.revision = expected_revision + 1` |
+| `relation_id` | 必填 | 稳定逻辑 ID，不使用保留前缀 `continuity:`；同修订重试内容必须一致 |
+| `source` / `target` | 必填 | 两端 MemoryRef；方向按关系语义定义，不随查询方向变化；不允许自环 |
+| `relation_type` | 必填 | 内置六类或启动配置注册的类型；定义见 S11。修订不改变既有端点和类型 |
+| `revision` | `1` | 本次新修订，不是任务 revision |
+| `status` | `"candidate"` | candidate / confirmed / needs_review / revoked；旧 proposed/retracted 兼容读取 |
+| `evidence_refs` / `conditions` | `[]` | 可核查依据及适用条件；confirmed 必须有依据，verifies 必须有条件。确认关系不自动确认端点事实 |
+| `schema_version` / `model_version` | `memory-relation/1` / `memory-relations/1` | 当前受支持的结构及关系模型版本 |
+| `batch_id` | `""` | 选择性补建批次，供撤回核对，不改变权限 |
+| `conflict_kind` | `""` | factual / temporal / advisory，空表示未分类 |
+| `resolution` | `""` | prefer_a（source）/ prefer_b（target）/ both_valid / escalate / defer；仅 contradicts 可填写，advisory 不允许选胜者 |
+| `resolution_reason` | `""` | 提交裁决时必填的依据说明 |
+| `resolution_origin` / `resolution_refs` | `""` / `[]` | 裁决来源及验证关系依赖；显式人工裁决由服务端标为 human，自动策略填写其来源。不能靠自述来源获得信任 |
+
+返回 `{status, relation_id, revision}`，`status` 为 projecting / committed。关系真源写入 Registry KV（先不可变修订记录，再原子替换关系头），不生成 MemoryUnit。首次需项目 WRITE；修改与撤回走**双条件**：①内容侧——对两端记忆都有 UPDATE 权；②登记侧——当前认证主体对应的连接须等于关系头记录的 `connector`，或调用者在项目上有 `MANAGE_SPACE`。旧关系头 `connector` 为空时只允许 `MANAGE_SPACE`。旧修订仅可为复核/撤回进行受控读取，不因此披露失效依赖。同修订同内容重试只补投影；projecting 可用 `continuity_recover(kind=relation)` 补投影。撤回写新修订，历史与正文保留。
+
+### continuity_recover：核对未知写入与修复投影
+
+签名：`continuity_recover(scope, recovery: ContinuityRecovery, *, security) -> dict`。
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `recovery.kind` | 必填 | event / relation / derivation；relation 仅角色模式 |
+| `recovery.operation_id` | 必填 | event、derivation 使用写入回执的 operation_id；relation 使用 relation_id |
+| `recovery.refs` | event 必填非空 | 已实际提交、可核对的 MemoryRef，必须位于当前项目 Scope；relation、derivation 可为空 |
+
+事件恢复返回 `{status, refs, next_action: "retry_original_write"}`，恢复本身不完成背景关联；关系恢复从 KV 关系头核对 `payload_digest` 并补投影，返回 `{status, relation_id, revision}`；派生恢复只核对计划与输出标识。均需项目 WRITE；事件恢复逐条要求 UPDATE 并校验原连接主体。引用/内容与原回执不匹配时报 ConflictError，无可靠引用不能调用此方法猜测成功。MemoryAPI 不提供公开的全量索引重建入口，本方法不重新抽取正文、不做全量记忆迁移。
+
+### quarantine_source / release_source：来源隔离与解除
+
+签名：`quarantine_source(scope, connector, reason, *, security) -> dict`；`release_source(scope, connector, *, security) -> bool`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `connector` | 必填 | 隔离的来源连接名 |
+| `reason` | 必填非空 | 隔离原因，随记录持久化并写入入口审计 detail |
+
+两方法归入治理面，按项目空间 `MANAGE_SPACE` 判权并落入口审计；隔离记录持久化于 Registry `/continuity/sources/{connector}`，含 `reason`、`operator`（主体指纹）与 `quarantined_at`，释放即删除。隔离后：search（含视图）过滤该来源条目与其提交的关系；list 以系统过滤谓词下推、分页与 count 一致；get 单条返回 `PermissionDeniedError`。隔离只影响该来源，不改写正文、不删除关系；`release_source` 对未隔离来源返回 `False`。
+
+### 显式事件时间与接续字段保留
+
+`add` / `add_async` 新增可选 `event_time: datetime | None`，必须含有效时区，否则抛 ValidationError；映射 temporal.t_event，独立于 occurred_at（t_message）。显式时间是调用方提供的业务声明，不证明来源或事件真实性。`batch_add` / `batch_add_async` 接收批级 `event_time`，`BatchWriteItem.event_time` 逐项覆盖；`submit_ingest` 接收 `event_time` 并在入队前校验。三者的 `occurred_at` 仍只写消息时间，不能替代事件时间。派生输出不继承来源事件时间（见 F10 4.2）。MCP 的 add、add_async、batch_add、batch_add_async、submit_ingest 都透传该字段；legacy 文本 add、视频异步提交和 batch_add（`defaults.event_time` 与单项 `event_time`）同样支持。
+
+公开 add/add_async、batch_add/batch_add_async（公共参数与每项合并后）、update 的 system_metadata 拒绝整个 continuity_* 前缀（含未来扩展键），统一返回 ValidationError；批量逐项失败沿用 BatchWriteOutcome.error_type。user_metadata 同名键只是用户数据，不具有接续语义。仅通过 `continuity` 参数经已鉴权的内部写路径生成系统接续字段，内部路径仍执行信任上下文校验、WRITE、空间可写、作者归属与审计，不向外暴露绕过标志。

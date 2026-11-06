@@ -270,3 +270,13 @@ def test_parse_max_unit_chars_rejects_invalid_values() -> None:
         _parse_max_unit_chars("abc")
     with pytest.raises(ValidationError):
         _parse_max_unit_chars(True)
+
+
+def test_ingestor_uses_explicit_time_without_parsing_continuity_metadata():
+    event_time = datetime(2001, 1, 1, tzinfo=UTC)
+    payload = RawPayload(
+        data=b"observation", event_time=event_time,
+        system_metadata={"continuity_envelope": "opaque to ingestion"},
+    )
+    unit = SimpleIngestor(PassthroughNormalizer()).ingest([payload])[0]
+    assert unit.temporal.t_event == event_time

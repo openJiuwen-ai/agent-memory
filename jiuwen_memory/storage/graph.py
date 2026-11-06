@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
@@ -30,6 +31,55 @@ class GraphProducer(Factory):
 
 
 class GraphStore(BaseStore):
+    @property
+    def supports_incident_edges(self) -> bool:
+        return False
+
+    def incident_edges(
+        self, scope: Scope, node_id: str, *, limit: int = 100,
+    ) -> list[Edge]:
+        """Return at most limit edges, preserving direction and properties; no traversal."""
+        raise UnsupportedCapabilityError("incident graph edges are not supported")
+
+    @property
+    def supports_conditional_projection(self) -> bool:
+        """Whether :meth:`project_edge` / :meth:`unproject_edge` are available.
+
+        An optional public capability (S06): backends that can compare edge revisions
+        in a single transaction advertise it. Relation projection relies on it so that
+        a lost acknowledgment can be replayed without deleting a newer revision.
+        """
+        return False
+
+    def project_edge(
+        self,
+        scope: Scope,
+        edge: Edge,
+        *,
+        revision: int,
+        nodes: list[Node] | None = None,
+    ) -> None:
+        """Conditionally project ``edge`` keyed by its ``revision``.
+
+        Nodes use merge semantics (create or reuse, never delete). For the edge:
+
+        - absent → create it, recording ``revision`` in ``properties``;
+        - present with ``revision`` equal → no-op (idempotent replay);
+        - present with a lower ``revision`` → update endpoints/properties in place;
+        - present with a higher ``revision`` → raise ``ConflictError`` so an old
+          revision never overwrites a newer one.
+        """
+        raise UnsupportedCapabilityError("conditional edge projection is not supported")
+
+    def unproject_edge(self, scope: Scope, edge_id: str, *, revision: int) -> None:
+        """Conditionally remove ``edge_id`` if its projected revision <= ``revision``.
+
+        An edge projected by a later revision is left untouched; a missing edge is a
+        no-op, so revokes replay idempotently without resurrecting or erasing newer
+        projections.
+        """
+        raise UnsupportedCapabilityError("conditional edge projection is not supported")
+
     @abstractmethod
     def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
         """

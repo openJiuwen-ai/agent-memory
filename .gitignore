@@ -19,6 +19,8 @@ dist/
 logs/
 *.log
 *.db
+# SQLite 单写者锁文件（Registry single_writer）
+*.writer
 
 # benchmark datasets (large; fetched separately) + eval run outputs
 automated_testing/data/
@@ -46,3 +48,6 @@ opencode.json
 /security-plans
 
 .claude/
+
+# Local Codex environment settings
+/.codex/

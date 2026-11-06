@@ -5,11 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-<<<<<<< mem2Feature
-| 最近一次修订日期 | 2026-10-26 |
-=======
-| 最近一次修订日期 | 2026-10-29 |
->>>>>>> mem2.0
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -110,7 +106,7 @@ class ControlOperator(ABC):
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `write` | `async (content, scope, source, *, assets, tags, system_metadata, user_metadata, occurred_at) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
+| `write` | `async (content, scope, source, *, assets, tags, system_metadata, user_metadata, occurred_at, event_time) -> list[MemoryUnit]` | 规约→可选抽取/分类→落盘+建索引；`infer=true` 时返回 `created_ids` 对应的派生结果，否则处理原始单元（直写不去重） |
 | `batch_write` | `async (items: list[BatchWriteItem], *, continue_on_error=True) -> BatchWriteResult` | 只接收 API 已归一化并完成鉴权/space 前置校验的项；按输入顺序复用 `write`，归集领域异常及非领域异常（后者为 `InternalError`）；fail-fast 时填充 `Skipped` outcomes |
 | `recall` | `async (scope, query: RetrievalQuery) -> RetrievalResult` | 委托 Retriever 完整检索链路（含目标 `expand_depth>0` 时的内部展开） |
 | `list` | `async (scope, *, offset=0, limit=100, memory_types=None, extensions=None, filters=None) -> MemoryListResult` | 校验分页参数并委托当前实现的存储读入口（InMemoryEngine 为 KVStore，CloudEngine 为 DomainStore）；返回当前页和分页前匹配总数 |
@@ -686,3 +682,15 @@ detail 标记 retryable="true"，不保留故障保护，下一周期重新读�
 - 到期清扫同样按该规则比较 `t_invalid` 与当前时刻；仅 `t_invalid < now` 的 ACTIVE
   单元视为到期，等于当前时刻时不提前清扫。
 
+
+## 职责关系接续应用端口
+
+`Continuity` 编排任务控制记录、事件幂等、关系真源登记、视图和修复；按配置 `mode` 分两档（continuity 不装配图与视图，role 装配）；关系真源存 Registry KV 的关系头与不可变修订记录，不再是 MemoryUnit；Producer 命名空间为 continuity。端口接受已授权 Scope、管理主体摘要及读写回调，不接收 identity/security 或执行认证。API 通过 task_owner/binding_connector/relation_head/event_key 取得最小鉴权事实，不访问控制存储。Registry 状态和请求回执单记录原子提交，要求具名持久 KV 的单写声明与排他写者能力，不依赖 KV CAS；`batch_add` 的接续项按任务分组、经 `record_batch` 先登记 unknown 回执、一次写全部正文、每任务一次背景追加与一次修订（契约默认实现逐条回退到 `record`）；不承诺跨正文、索引、控制记录的事务。图投影交构建层 IndexBuilder，视图交检索层 RoleView，详见 [S11](S11-cross-agent-continuity.md)。
+
+### 接续证据保留与资源所有权
+
+`MemoryEngine.configure_retention(guard)` 向本引擎的生命周期与 Evolver 注入证据保留判定；默认实现拒绝不支持的装配，不静默忽略。`LifecycleManager.configure_retention(guard)` / `retains(unit)` 为自动清扫提供公开过滤能力，未配置时保持既有行为。活动任务背景或未撤回关系引用的证据不能被自动清扫；缺依赖清单时保守保留，修复真源投影时补建清单。
+
+接续服务仅释放自己申请的单写 claim，装配根按资源创建记录关闭自有 Store；借用的 Store 不关闭。单个组件释放失败仍需尝试其余自有资源清理。
+
+Engine.write 的可选 event_time 为含时区事件时间，随 RawPayload 显式传递；batch_write 逐项转发 `BatchWriteItem.event_time`，语义与 write 相同；非空时 Engine 必须在原文落盘/建索引前保障全部摄入输出的 temporal.t_event 等于该值，不依赖 Ingestor 的特定实现。普通调用省略该值保持原有行为。

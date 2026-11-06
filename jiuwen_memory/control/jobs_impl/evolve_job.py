@@ -169,6 +169,20 @@ class EvolveJob(Job):
 
     def _evolve_group(self, units: list[MemoryUnit]) -> EvolveResult:
         self.check_cancelled()
+        had_inputs = bool(units)
+        # Relation JSON and durable source events are evidence, not model input to rewrite.
+        eligible_units = []
+        for unit in units:
+            if unit.system_metadata.get("continuity_kind") == "relation":
+                continue
+            if unit.system_metadata.get("continuity_event"):
+                continue
+            eligible_units.append(unit)
+        units = eligible_units
+        if self._mode == EvolveMode.FORGET:
+            units = [u for u in units if not self._evolver.retains(u)]
+        if had_inputs and not units:
+            return EvolveResult()
         return self._evolver.evolve(units, self._mode)
 
 

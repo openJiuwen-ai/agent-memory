@@ -109,6 +109,12 @@ logger = get_logger(__name__)
 class CompositeDomainStore(DomainStore):
     """默认数据面实现：MemoryUnit 领域 CRUD + 检索适配。"""
 
+    @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        """Whether list metadata equality reads committed truth without index lag."""
+        return not self._write_document
+
+
     def __init__(
         self,
         *,

@@ -15,8 +15,9 @@
 
 | 文件 | 职责 |
 |---|---|
+| `memory_api_impl/continuity_ops.py` | 角色接续 PEP、可信连接匹配、原引用/关系依赖核验；入口为 `continuity_task`/`continuity_relation`/`continuity_recover`/`quarantine_source`/`release_source`，可靠写入与职责视图分别并入 `add`/`batch_add` 的 `continuity` 参数与 `search` 的 `task_id`/`anchor`/`duty`/`view_budget`；`list` 下推不可用来源谓词，并对每页条目逐条复核依赖证据、剔除不合规条目（不整页报错）；`batch_add` 的相邻接续项按 scope 分组后各合成一次 `record_batch`，正文批写复用 `add` 的作者标记/`source_ref`/审计步骤，`search` 的视图组装委托 `Continuity.view_result`，本层只做类型转换 |
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化与日志脱敏辅助函数 |
-| `access_security.py` | 公开安全装配辅助与 `register_trusted_principal`；初始化按增量能力委派实际认证器，不依赖实现类或另建主体 Store |
+| `access_security.py` | 公开安全装配辅助：提供 dev Authenticator 与 `register_trusted_principal`；Trusted 初始化按增量能力委派实际认证器，不依赖实现类或另建主体 Store；私有 `_build_security_runtime` 从同一装配上下文选择、健康检查 Runtime，公开 mapping helper 复用它；不暴露 common 实现路径 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
@@ -30,7 +31,6 @@
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |
 | `memory_api_impl/dreaming_security.py` | 私有注册身份快照编码；只消费受控上下文和服务端注册表，不接业务 payload、不保存原始凭据、不续期认证 |
 | `memory_api_impl/space_ops.py` | SpaceOpsMixin：Space CRUD；`delete_space` 经 SpaceLifecycleService |
-| `access_security.py` | Access 安全装配辅助：提供 dev Authenticator；私有 `_build_security_runtime` 从同一装配上下文选择、健康检查 Runtime，公开 mapping helper 复用它；不暴露 common 实现路径 |
 
 ## 行为铁律
 
@@ -248,3 +248,11 @@ assembly 的 MemoryRuntime / ServerRuntime 提供异步 start_background_jobs，
 
 Markdown 编辑同样在委托 Command 前执行审计完整性健康预检；健康故障或已锁存的
 degraded 不得产生文件编辑或版本写入副作用。读取仍沿用既有 READ 判权与审计路径。
+
+接续原始事件写入透传发生时间（`event_time` → `t_event`）；派生构建只做 created / reused，不自动覆盖已有记忆。
+
+带 `continuity` 参数的 `add` 返回类型仍为 `list[MemoryUnit]`，unknown/partial 抛 `WriteIncompleteError`（`PartialFailureError` 子类，HTTP 409）；`search` 的 duty/task_id/anchor 全空时行为不变，与 `extensions.spaces` 同传拒绝；视图路径沿用调用方的 `filters`/`as_of`（锚点、任务背景、关系端点与语义候选逐条判过）；接续模式保留任务背景与 anchor、只跳过关系展开：背景按存储顺序先合并去重（含已被语义召回的条目），再追加语义结果，`required` 取 `task_background` 返回的真实标记；`list` 把不可用接续来源作为系统过滤谓词在分页前下推，并逐条复核依赖证据后剔除，不整页抛 PermissionDeniedError。
+
+公开写入/更新拒绝整个 continuity_* 系统元数据前缀；`_role_writer` 通过私有 `_add_impl` 注入接续字段，仍复用原有鉴权、作者归属与审计。`_continuity_add` 服务 `add(continuity=)`；`batch_add` 的接续项经 `_continuity_batch` 按项目分组后调用 `Continuity.record_batch`，正文经 `_add_many_impl` 一次批量写入并复用作者标记、`source_ref` 与审计；事件幂等键统一由 `Continuity.event_key`（连接, binding, event）计算；回执摘要另含完整请求指纹（正文/来源/资产/标签/metadata/时间），改内容后重试必须冲突。`batch_add` 混合批次按输入顺序推进（普通项成批、接续项冲刷前后批）。接续写入透传 `source`/`assets`/`system_metadata`/`user_metadata`/`occurred_at`，并拒绝 `infer`/`procedural`/`middle` 这类与「原文直落」冲突的系统键。add/add_async、batch_add/batch_add_async（批级与 BatchWriteItem 逐项）、submit_ingest 的 event_time 必须含时区，经 `_reject_invalid_event_time` 统一校验，与消息 occurred_at 分离；submit_ingest 在入队前校验。
+
+接续服务和可信连接映射由装配根通过 LocalMemoryAPI 构造参数注入，不在构造后改写其私有成员。一次性维护工具（如关系迁移脚本）走公开的 `assemble_maintenance_ports`，不 import 内核私有装配函数。

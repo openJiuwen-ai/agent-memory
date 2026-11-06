@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -367,6 +367,9 @@ unit 整体放弃本次标注——保留原有 layers（未标注为空）并 w
 | `update` | `(units, *, mode: IndexWriteMode = ALL) -> None` | 更新各形式索引；`FORWARD_ONLY` 表示只回写记忆本体、检索索引不动，`RETRIEVAL_ONLY` 表示只刷新检索索引 |
 | `remove` | `(units, *, mode: IndexRemoveMode = HARD) -> None` | 按每个 MemoryUnit 自带 Scope 删除索引（幂等）；`SOFT` 为软删除——只移出检索索引（search/recall 不再召回），记忆本体保留、get/list 仍可读；`HARD` 物理删除本体与全部索引 |
 | `rebuild` | `() -> None` | **目标契约**：从记忆本体全量重建派生索引（删索引不丢数据的保障）；重建时也重新投影 hierarchy metadata。当前实现尚未提供该能力。 |
+| `supported_write_modes` | `() -> set[IndexWriteMode]` | **公开能力**：声明本构建器实现的写入模式。默认返回 `{ALL, FORWARD_ONLY, RETRIEVAL_ONLY}`（完整写入链）；只声明 `RETRIEVAL_ONLY` 的构建器（如关系投影器 `evidence_graph`）只能配到投影位置，配到 Engine 主写入链时装配期拒绝（S09 §9 按能力声明而非 target 名/类型识别）。 |
+
+模块级助手 `require_full_write_chain(builder)` 承载主写入链装配守卫：声明不含 `ALL` 的构建器即抛 `ValidationError`，已接入 `cloud` / `in_memory` 两个 Engine 装配。
 
 写接口枚举 `IndexWriteMode`（`ALL` / `FORWARD_ONLY` / `RETRIEVAL_ONLY`）表达写入范围，
 删除接口枚举 `IndexRemoveMode`（`SOFT` / `HARD`）表达删除语义，均归口
@@ -754,3 +757,28 @@ Evolver 的可选能力 `hierarchy_profile(kind) -> HierarchyComposeProfile | No
 `EvolveRequest.hierarchy_incremental` 仅供内部周期任务使用：非空时以相邻单层请求
 委托 Composer.build；为空时沿用显式 replace_in_span。Dynamic/Schema Evolver 继承该
 委托路径，原 `evolve(units, mode)`、显式分组和重建行为保持。
+
+
+## 证据关系构建与冲突消解
+
+`Associator.configure_relations(catalog)` 是可选能力，默认报不支持；支持者接受构建与检索共用的启动关系目录。模型产出候选不因置信度高自动成为验证事实，缺原文依据或端点无效的候选不生成关系。
+
+`ConflictResolver` 继承 ConstructionOperator，类型 CONFLICT_RESOLVER，Producer 命名空间 conflict_resolver；resolve(memory_a, memory_b, edge, context) 返回 Resolution(decision, reason, candidate)，不直接修改正文。策略链对 advisory 保留差异，对证据不全和多方冲突升级复核；人工裁决优先于自动结果。
+
+关系真源仍是通过既有写入链落盘的 MemoryUnit。证据图 IndexBuilder 只接已提交记录的 RETRIEVAL_ONLY 投影，拒绝代写正文；按命名空间内确定 ID 幂等重建。修订/撤回先作用于真源，再更新图，查询必须回查，详见 [S11](S11-cross-agent-continuity.md)。
+
+### IndexBuilder 写入模式声明（尚未实现）
+
+IndexBuilder 须以公开能力 `supported_write_modes() -> frozenset[IndexWriteMode]` 声明其支持的写入模式；默认实现返回全部模式。只声明 `RETRIEVAL_ONLY` 的构建器（如证据图投影）是部分能力，装配器在把构建器放到主写入链（需要写入本体与索引）的位置时检查该声明，不满足即启动失败。判断只依据能力声明，不按 target 名、模块路径或具体类型识别（S09 §9）。依赖外部图存储的构建器须由装配方注入已解析的 GraphStore 对象，不在构建器内部另行解析同名依赖。
+
+### 投影依赖与自动遗忘保留
+
+`IndexBuilder.projection_graph()` 默认返回 None，关系投影器返回所用 GraphStore；装配器只通过该公开声明核对实例，不读取私有字段。`Evolver.configure_retention(guard)` 注入证据保留检查，`retains(unit)` 为 true 时自动 FORGET 不得删除；未配置默认 false。关系真源和接续原始事件不得交给常规抽取、巩固或遗忘改写。
+
+### 条件更新写入链
+
+`IndexBuilder.supports_conditional_update` 默认 false；`update_if_unchanged(unit, expected_digest)`
+先通过后端 CAS 提交真源，再刷新本实现承载的检索投影。false 表示未写入；异常可能发生于
+真源已提交后的投影阶段，调用方必须核对冻结的前后摘要，不能据此创建第二条记忆。
+恢复可对匹配更新后摘要的同一内容再次条件更新以修复投影；不重新调用抽取或巩固模型。
+Schema 装饰器未声明此能力时继续拒绝，不绕过其派生写入契约。

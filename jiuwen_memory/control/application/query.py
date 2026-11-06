@@ -21,6 +21,10 @@ class MemoryQueryService:
     def __init__(self, engine: MemoryEngine) -> None:
         self._engine = engine
 
+    @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        return self._engine.supports_exact_metadata_lookup
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         return await self._engine.recall(scope, query)
 

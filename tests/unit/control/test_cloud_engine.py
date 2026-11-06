@@ -856,3 +856,15 @@ def test_cloud_engine_evolve_raises_when_job_factory_is_none() -> None:
 
     with pytest.raises(RuntimeError, match="evolve requires job_factory"):
         asyncio.run(engine.evolve(scope, EvolveMode.EXTRACT, Channel.HOT))
+
+
+def test_explicit_event_time_survives_replacement_ingestor() -> None:
+
+    # This plugin does not implement the new optional time projection itself.
+    engine, _ = _engine(_AssetRoutingIngestor())
+    event_time = datetime(2001, 1, 1, tzinfo=UTC)
+    units = asyncio.run(engine.write(
+        "observation", Scope(org="acme", user="alice"), event_time=event_time,
+    ))
+    assert units
+    assert all(unit.temporal.t_event == event_time for unit in units)
