@@ -305,6 +305,7 @@ constructor:             # Producer.TOP_NAME
 |---|---|---|---|
 | `keyword` | `KeywordExtractor` | 按 Chunker 切分原文，生成带血缘的 SEMANTIC 单元；procedural 时合并为一条过程记忆 | `chunker`，默认 `fixed_window` |
 | `llm` | `ExtractorImpl` | LLM 结构化抽取，校验来源、置信度、tier 和 tags | `llm`；`extractor_min_confidence`、`extractor_max_attempts`、`extractor_retry_backoff`、`extract_batch_size` |
+| `agent_llm` | `AgentLlmExtractor` | `llm` 的 agent 方向版：继承抽取管线与输出契约，prompt 面向 user↔agent 对话，并在抽取时同步判定 `memory_class` | `llm`；参数同 `llm`，另有 `extractor_language`（`cn` / `en`，默认 `cn`） |
 | `dynamic_llm` | `DynamicLLMExtractor` | 按 `_extract_prompt_<strategy>` 逐策略抽取；无策略时委托 fallback | `llm`、`fallback`、`prompts`；参数同 `llm` |
 | `video_memory` | `VideoMemoryExtractor` | 将视频规约结果转换为 CLM/ELM 多模态 MemoryUnit | 无配置依赖；输入需包含约定的视频 metadata |
 
@@ -514,10 +515,11 @@ rebuild() -> None
 
 | 参数 | 类型 | 默认值 | 适用实现 | 作用/约束 |
 |---|---|---:|---|---|
-| `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` | 过滤低置信抽取候选 |
-| `extractor_max_attempts` | `int` | `3` | `llm` / `dynamic_llm` | LLM 总调用次数；`1` 表示不重试 |
-| `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` | 重试退避，毫秒 |
-| `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` | 单次 LLM 抽取的原文条数上限 |
+| `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` / `agent_llm` | 过滤低置信抽取候选 |
+| `extractor_max_attempts` | `int` | `3` | `llm` / `dynamic_llm` / `agent_llm` | LLM 总调用次数；`1` 表示不重试 |
+| `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` / `agent_llm` | 重试退避，毫秒 |
+| `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` / `agent_llm` | 单次 LLM 抽取的原文条数上限 |
+| `extractor_language` | `str` | `cn` | `agent_llm` | prompt 指令面语言，`cn` / `en`；非法值兜底 `cn`，输出契约恒为英文 |
 | `abstractor_min_confidence` | `float` | `0.5` | `abstractor.llm` | 最低置信度 |
 | `abstractor_min_group_size_summary` | `int` | `1` | `abstractor.llm` | summary 分组下限 |
 | `abstractor_min_group_size_pattern` | `int` | `3` | `abstractor.llm` | pattern 分组下限 |

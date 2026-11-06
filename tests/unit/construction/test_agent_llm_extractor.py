@@ -12,7 +12,11 @@
 
 import json
 
+import pytest
+
+from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.type_def import MEMORY_CLASS_KEY, MemoryTier
+from jiuwen_memory.config import AssemblyContext
 from jiuwen_memory.construction.base import ExtractContext
 from jiuwen_memory.construction.extractor import ExtractorProducer
 from jiuwen_memory.construction.extractor_impl.agent_llm_extractor import (
@@ -44,6 +48,14 @@ class RecordingLLM(MockLLM):
     def chat(self, messages: list, **options: object) -> str:
         self.calls.append(messages)
         return super().chat(messages, **options)
+
+
+class FailingLLM(RecordingLLM):
+    """每次调用都失败的 LLM：记录调用后抛错，供总尝试次数断言。"""
+
+    def chat(self, messages: list, **options: object) -> str:
+        self.calls.append(messages)
+        raise RuntimeError("down")
 
 
 def _make(
@@ -289,3 +301,21 @@ def test_format_context_block_default_english():
 def test_agent_llm_registered():
     """agent_llm target 经 import 自注册进 ExtractorProducer。"""
     assert "agent_llm" in ExtractorProducer.known(), "agent_llm 应出现在注册表"
+
+
+def test_agent_llm_factory_reads_new_attempt_keys():
+    """工厂读新键 extractor_max_attempts：LLM 持续失败时总调用次数等于配置值，不回落默认 3。"""
+    ctx = AssemblyContext()
+    llm = FailingLLM()
+    LlmProducer.put("failing", llm, ctx=ctx)
+    extractor = ExtractorProducer.build(
+        "agent_llm",
+        {"llm": "failing", "extractor_max_attempts": 2, "extractor_retry_backoff": 0},
+        ctx,
+    )
+    assert isinstance(extractor, AgentLlmExtractor), "agent_llm 应装配出 AgentLlmExtractor"
+
+    with pytest.raises(RuntimeError, match="down"):
+        extractor.extract([create_test_unit("u1", "周五晚上聚餐，4个人")])
+
+    assert len(llm.calls) == 2, "extractor_max_attempts=2 应只调用 LLM 两次"
