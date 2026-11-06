@@ -148,13 +148,13 @@ def test_batch_update_continue_on_error_true() -> None:
     )
 
     assert len(result.outcomes) == 3
-    errors = [o for o in result.outcomes if o.error]
-    successes = [o for o in result.outcomes if not o.error]
+    errors = [outcome for outcome in result.outcomes if outcome.error]
+    successes = [outcome for outcome in result.outcomes if not outcome.error]
     assert len(errors) == 1
     assert errors[0].unit_id == forgotten_id
     assert len(successes) == 2
-    for o in successes:
-        assert o.updated_unit is not None
+    for outcome in successes:
+        assert outcome.updated_unit is not None
 
 
 def test_batch_update_continue_on_error_false_skips_remaining() -> None:
@@ -177,7 +177,7 @@ def test_batch_update_continue_on_error_false_skips_remaining() -> None:
 
     assert len(result.outcomes) == 3
     # At least one error, and all outcomes after the first error are skipped.
-    error_indices = [i for i, o in enumerate(result.outcomes) if o.error]
+    error_indices = [idx for idx, outcome in enumerate(result.outcomes) if outcome.error]
     assert len(error_indices) >= 1
     first_error_idx = error_indices[0]
     # All outcomes after the first error should be skipped.

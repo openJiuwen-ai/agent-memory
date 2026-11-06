@@ -77,6 +77,7 @@ class MemoryQueryService:
         PEP 完成后才进入本端口，与 ``get`` / ``list`` 的鉴权后委托模式一致。
         """
         return await self._engine.read_md_file(context, md_filename, line_range=line_range)
+
     async def permission_contexts_for_update(
         self, selector: UpdateSelector
     ) -> list[PermissionContext]:

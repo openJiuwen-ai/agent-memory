@@ -373,6 +373,7 @@ class UpdateSelector:
     filters: FilterExpr | None = None  # 结构化谓词
     limit: int | None = None  # 最多更新 N 条匹配项（post-match 截断）
 
+
 @dataclass
 class BatchUpdateOutcome:
     """批量更新的逐项结果。"""

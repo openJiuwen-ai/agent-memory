@@ -199,6 +199,8 @@ def _matches_update_selector(unit: MemoryUnit, selector: UpdateSelector) -> bool
     if selector.filters is not None and not matches_memory_unit(unit, selector.filters):
         return False
     return True
+
+
 def _expand_provenance_descendants(
     units: list[tuple[Scope, str, MemoryUnit]],
     seed_ids: set[_ScopedUnitId],

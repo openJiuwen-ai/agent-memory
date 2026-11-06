@@ -196,6 +196,7 @@ def _matches_update_selector(unit: MemoryUnit, selector: UpdateSelector) -> bool
         return False
     return True
 
+
 def _expand_provenance_descendants(
     units: list[tuple[Scope, str, MemoryUnit]],
     seed_ids: set[_ScopedUnitId],

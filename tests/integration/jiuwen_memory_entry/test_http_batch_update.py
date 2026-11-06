@@ -141,8 +141,8 @@ def test_http_batch_update_continue_on_error(http_url) -> None:
 
     assert status == 200, result
     assert len(result["outcomes"]) == 2
-    errors = [o for o in result["outcomes"] if o["error"]]
-    successes = [o for o in result["outcomes"] if not o["error"]]
+    errors = [outcome for outcome in result["outcomes"] if outcome["error"]]
+    successes = [outcome for outcome in result["outcomes"] if not outcome["error"]]
     assert len(errors) == 1
     assert errors[0]["unit_id"] == id_bad
     assert len(successes) == 1
