@@ -1,6 +1,6 @@
 # Security 安全功能使用指南
 
-最近一次修订日期：2026-11-05
+最近一次修订日期：2026-11-06
 
 本文说明记忆服务的配置、调用和安全验收。存储后端的扩展开发请查阅
 [S06 存储契约](../../specs/S06-storage.md) 与 [S10 安全契约](../../specs/S10-security.md)；
@@ -617,6 +617,17 @@ session；服务检查 Alice 的委托是否仍有效，不需要把 Alice 的�
 部署方确认用户同意与可授出范围后，为 agent 分配独立凭据/session，记录委托人、
 agent、动作和到期时间，并绑定凭据指纹。允许动作仅为 `read/write/update/delete`，
 不转交分享或管理能力；空间场景还需确认 Alice 当前有相应内容权并限制 `allowed_spaces`。
+
+委托存储只在实际使用的 `authorizer.<name>.params.delegation_store` 中选择，
+`security` 自动复用同一个实例；自定义实例名和 SQLite 后端同样适用，不回退查找
+另一份 `default`。例如选择 `task_delegations` 时，在 `delegation_store.task_delegations`
+定义后端：内存用 `target: memory`；需要持久化时改为 `target: sqlite` 并设置
+`params.db_path` 为实际数据库文件路径。
+
+升级旧配置时，删除 `security.<name>.params.delegation_store`，否则启动会提示配置错误。
+启用委托绑定时，所选 Authorizer 必须提供唯一委托存储；没有或有多个不同存储都会
+拒绝启动，不能靠 Security 再选一次来消除歧义。委托绑定和可信初始化记录仍放在
+`security` 的 `delegation_bindings`、`delegations` 中。
 
 目前没有公共 `/v1/delegate` 或 CLI/MCP 委托管理入口。普通调用者只提交自己的
 凭据和业务参数，不在头部或 JSON 填 `delegation_id`、`acting_user` 来选择身份。

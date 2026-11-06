@@ -92,7 +92,6 @@ def collective_settings():
                     "target": "standard",
                     "params": {
                         "authenticator": {"target": "dev", "params": {"identities": identities}},
-                        "delegation_store": "default",
                         "delegation_bindings": {fingerprint("test-u1-agent"): "u1-a1"},
                         "delegations": [
                             {
