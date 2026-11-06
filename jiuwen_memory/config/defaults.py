@@ -211,6 +211,11 @@ def default_config_dict() -> dict[str, Any]:
                     "min_score_ratio": 0.0,
                     "min_score_ratio_uncalibrated": 0.0,
                     "min_results": 0,
+                    # Schema temporal Property 直达召回并行的共享线程池与超时降级：
+                    # executor 复用避免每请求新建线程；超时按 TEMPORAL 通道错误降级，
+                    # 不让后端卡死拖垮整条检索链。0=不限。
+                    "schema_temporal_executor_max_workers": 1,
+                    "schema_temporal_recall_timeout": 30.0,
                     # Schema TemporalEntity 选配检索：Entity/Property 双路、
                     # 实体内二次筛选、同属性时间线邻居和 Source-first 兜底。
                     "schema_temporal_auto_enabled": False,
@@ -227,6 +232,10 @@ def default_config_dict() -> dict[str, Any]:
                     "schema_temporal_entity_rerank_enabled": False,
                     "schema_temporal_entity_rerank_max_chars": 4000,
                     "schema_temporal_property_extension_step": 3,
+                    # 批量反查实体数阈值：≤阈值时按每个实体走窄前缀 scan（只扫该实体
+                    # membership），>阈值才走一次全 Scope scan。大 Scope + 少实体场景避免
+                    # 全量扫描退化。
+                    "schema_temporal_lookup_batch_threshold": 8,
                     # 正式结果为每个 Entity 一条格式化时间线；字符预算按实体独立应用。
                     "schema_temporal_formatting_enabled": True,
                     "schema_temporal_formatting_max_chars": 16000,

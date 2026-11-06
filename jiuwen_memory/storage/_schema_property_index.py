@@ -52,8 +52,11 @@ class SchemaPropertyIndex:
     partially updated derived index.
     """
 
-    def __init__(self, kv: KVStore) -> None:
+    def __init__(self, kv: KVStore, *, lookup_batch_threshold: int = 8) -> None:
         self._kv = kv
+        # 批量反查的实体数阈值：≤阈值时按每个实体走窄前缀 scan（只扫该实体 membership），
+        # >阈值才走一次全 Scope scan。大 Scope + 少实体场景避免全量扫描退化。
+        self._lookup_batch_threshold = max(1, int(lookup_batch_threshold))
 
     def upsert(self, units: list[MemoryUnit]) -> None:
         """Synchronize current Property ownership after a successful index write."""
@@ -147,6 +150,62 @@ class SchemaPropertyIndex:
             if unit_id:
                 unit_ids.add(unit_id)
         return SchemaPropertyLookup(indexed=True, unit_ids=sorted(unit_ids))
+
+    def lookup_batch(
+        self,
+        scope: Scope,
+        entity_keys: list[str],
+    ) -> dict[str, SchemaPropertyLookup]:
+        """Return Property ids for many Entities.
+
+        When the entity count is small (≤ ``lookup_batch_threshold``), each
+        entity is resolved by its own narrow-prefix scan — only that entity's
+        membership is touched. When the count exceeds the threshold, a single
+        full-scope scan collects all of them at once, trading scan width for
+        fewer round trips.
+        """
+
+        if not entity_keys:
+            return {}
+        normalized = list(dict.fromkeys(key.strip() for key in entity_keys))
+        non_empty = [key for key in normalized if key]
+        if not non_empty:
+            return {key: SchemaPropertyLookup(indexed=False, unit_ids=[]) for key in normalized}
+        if len(non_empty) <= self._lookup_batch_threshold:
+            return {
+                key: (
+                    self.lookup(scope, key)
+                    if key
+                    else SchemaPropertyLookup(indexed=False, unit_ids=[])
+                )
+                for key in normalized
+            }
+        if not self._scope_indexed(scope):
+            return {
+                key: SchemaPropertyLookup(indexed=False, unit_ids=[]) for key in normalized
+            }
+        by_digest = {_digest(key): key for key in non_empty}
+        grouped: dict[str, set[str]] = {key: set() for key in non_empty}
+        for membership_key, raw_unit_id in self._kv.scan(scope, f"{_PREFIX}/entities/"):
+            digest = _membership_entity_digest(membership_key)
+            if digest is None:
+                continue
+            entity_key = by_digest.get(digest)
+            if entity_key is None:
+                continue
+            try:
+                unit_id = raw_unit_id.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise BackendError("schema property index membership is not UTF-8") from exc
+            if unit_id:
+                grouped[entity_key].add(unit_id)
+        return {
+            key: SchemaPropertyLookup(
+                indexed=bool(key),
+                unit_ids=sorted(grouped[key]),
+            )
+            for key in normalized
+        }
 
     def invalidate(self, units: list[MemoryUnit]) -> None:
         """Make affected scopes fall back after a partially failed owner write."""
@@ -269,6 +328,8 @@ class SchemaPropertyIndex:
         )
 
     def _scope_indexed(self, scope: Scope) -> bool:
+        # 不缓存：SchemaPropertyIndex 跨检索/构建/演进多实例，缓存会让
+        # invalidate 失效后读者仍信任派生索引（见 F07 已知遗留）。
         try:
             raw = self._kv.get(scope, _SCOPE_WATERMARK_KEY)
         except NotFoundError:
@@ -354,6 +415,16 @@ def _digest(value: str) -> str:
 
 def _membership_prefix(entity_key: str) -> str:
     return f"{_PREFIX}/entities/{_digest(entity_key)}/members/"
+
+
+def _membership_entity_digest(membership_key: str) -> str | None:
+    prefix = f"{_PREFIX}/entities/"
+    if not membership_key.startswith(prefix):
+        return None
+    parts = membership_key[len(prefix):].split("/")
+    if len(parts) != 3 or parts[1] != "members" or not parts[0] or not parts[2]:
+        return None
+    return parts[0]
 
 
 def _membership_key(entity_key: str, unit_id: str) -> str:

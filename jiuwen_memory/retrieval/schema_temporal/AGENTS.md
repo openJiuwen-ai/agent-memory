@@ -19,6 +19,7 @@ fallback 仍来自真实 `MemoryUnit`。
 | `searcher.py` | 水合、裁剪、直达晚融合、同属性邻居和时间过滤编排 |
 | `selector.py` | 组织临时时间线、Property 候选与 Source fallback |
 | `formatter.py` | 保留时间精度的实体时间线上下文格式化 |
+| `pipeline.py` | 普通 pipeline 到 TemporalEntity 的可选适配层：parse 后提交 Property 直达召回（与普通召回并行），disclosure 后 join，再组装、格式化与投影 |
 
 ## 行为铁律
 
@@ -36,6 +37,15 @@ fallback 仍来自真实 `MemoryUnit`。
    点读。Source fallback 在最终投影后占用受控槽位并携带消息时间。
 7. **精度不造假**：year/month/day 使用半开区间，年/月不得补成虚构的具体日期。
 8. **失败可降级**：Schema 时序支路失败时记录 TEMPORAL 通道错误，普通候选链路继续工作。
+9. **Property 直达召回可与普通召回并行**：parse 后立即提交 Property 直达召回 future，
+   普通 pipeline 完成后（disclosure 后）join；Entity 路径仍后处理，Entity seed 仍依赖
+   普通最终结果。future 跑在 Retriever 实例级共享 `ThreadPoolExecutor`（惰性创建），
+   join 设 `schema_temporal_recall_timeout` 超时降级。批次内部保持单次调用：批量反查与
+   批量水合、一次批量实体召回；Reranker 批量优先（1 次跨实体调用），仅当批量失败时
+   退化为逐实体重试，单实体失败只降级该实体。`lookup_batch` 按实体数阈值
+   `schema_temporal_lookup_batch_threshold` 分流：≤阈值走窄前缀、>阈值走全 Scope scan。
+   预召回在 worker 线程跑，错误经显式回传注入主线程 thread-local `last_errors`
+   （不再依赖实例级共享状态）。
 
 ## 与其他子目录的边界
 

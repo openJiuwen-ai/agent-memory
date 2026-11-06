@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-02 |
+| 最近一次修订日期 | 2026-11-06 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -143,6 +143,10 @@ Entity 路径的名额不得剪掉已直接命中的 Property；直达属性按 
 除外）。各实体独立裁剪，
 不允许因一个实体到达全局上限而中止后续实体。Source fallback 只作为结构化
 Property 缺失或不完整时的证据保全通道，不扫描并平铺整个 Scope。
+
+Property 直达召回可在 parse 阶段后立即并行提交，并在普通 pipeline 完成（disclosure）
+后 join；时序选择仍在普通 Reranker、阈值、top-k 与 disclosure 之后执行，`Fuser.fuse`
+与 `RecallChannel` 契约不变。
 
 该链路以 `SchemaTemporalRetrievalResult.schema_temporal` 返回结构化时间线，并将
 `items` 替换为实体级视图与必要 Source。未启用硬门、未指定

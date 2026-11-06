@@ -10,6 +10,7 @@ from threading import local
 
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.type_def import (
+    ChannelError,
     ChannelEvidence,
     FilterExpr,
     MemoryUnit,
@@ -24,7 +25,8 @@ from jiuwen_memory.storage.vector import VectorStore
 
 from .model import EventTimePrecision, SchemaPropertyEntry, SchemaTemporalResult
 from .query import temporal_query_from_extensions
-from .reader import PropertyIdLookup
+from .reader import PropertyIdLookup, PropertyIdLookupBatch
+from .recall import SchemaPropertyRecallHit
 from .searcher import SchemaTemporalSearcher, lexical_property_score
 
 
@@ -42,6 +44,7 @@ class TemporalEntitySelector:
         *,
         auto_enabled: bool = False,
         property_id_lookup: PropertyIdLookup | None = None,
+        property_id_lookup_batch: PropertyIdLookupBatch | None = None,
         entity_fulltext_store: FulltextStore | None = None,
         entity_vector_store: VectorStore | None = None,
         entity_top_k: int = 20,
@@ -67,6 +70,7 @@ class TemporalEntitySelector:
             domain_store,
             auto_enabled=auto_enabled,
             property_id_lookup=property_id_lookup,
+            property_id_lookup_batch=property_id_lookup_batch,
             entity_fulltext_store=entity_fulltext_store,
             entity_vector_store=entity_vector_store,
             entity_top_k=entity_top_k,
@@ -125,6 +129,18 @@ class TemporalEntitySelector:
         explicit = temporal_query_from_extensions(parsed)
         return self._searcher.should_search(parsed, explicit)
 
+    def recall_property_hits(
+        self,
+        scope: Scope,
+        parsed: ParsedQuery,
+        *,
+        filters: FilterExpr | None = None,
+    ) -> tuple[list[SchemaPropertyRecallHit], list[ChannelError]]:
+        """Pass-through pre-recall; it must not touch the thread-local result state."""
+
+        explicit = temporal_query_from_extensions(parsed)
+        return self._searcher.recall_property_hits(scope, parsed, explicit, filters=filters)
+
     def select(
         self,
         scope: Scope,
@@ -133,6 +149,8 @@ class TemporalEntitySelector:
         *,
         filters: FilterExpr | None = None,
         limit: int | None = None,
+        precollected_property_hits: list[SchemaPropertyRecallHit] | None = None,
+        precollected_errors: list[ChannelError] | None = None,
     ) -> tuple[list[ScoredMemoryUnit], dict[str, MemoryUnit]]:
         """Select and order real units for the schema-temporal branch."""
 
@@ -143,6 +161,8 @@ class TemporalEntitySelector:
             explicit,
             seed_entity_ids=_seed_entity_ids(candidates),
             filters=filters,
+            precollected_property_hits=precollected_property_hits,
+            precollected_errors=precollected_errors,
         )
         self._state.recall_errors = self._searcher.recall_errors
         self.last_result = result

@@ -27,7 +27,7 @@ class PropertyRecallHit(Protocol):
     score: float
 
 
-EntityLocalRecall = Callable[[str], list[PropertyRecallHit]]
+EntityLocalRecall = Callable[[list[str]], dict[str, list[PropertyRecallHit]]]
 
 
 class SchemaTemporalShrinker:
@@ -69,6 +69,9 @@ class SchemaTemporalShrinker:
         entities_reranked = 0
         degraded_errors: set[str] = set()
 
+        pending: list[
+            tuple[TemporalEntity, int, int, list[tuple[str, SchemaPropertyEntry]]]
+        ] = []
         for entity, original_count, allocated in zip(
             result.entities,
             entry_counts,
@@ -83,31 +86,94 @@ class SchemaTemporalShrinker:
             if original_count <= budget:
                 result.selected[entity.entity_id] = entity.selected_payload(result.mode)
                 continue
-            entries = _flatten(entity)
+            pending.append((entity, original_count, budget, _flatten(entity)))
+
+        recalled_hits: dict[str, list[PropertyRecallHit]] = {}
+        if pending and entity_local_recall is not None:
+            try:
+                recalled_hits = entity_local_recall(
+                    [item[0].entity_id for item in pending],
+                )
+            except Exception as exc:
+                degraded_errors.add(type(exc).__name__)
+                recalled_hits = {}
+
+        prepared: list[
+            tuple[
+                TemporalEntity,
+                int,
+                int,
+                list[tuple[str, SchemaPropertyEntry]],
+                dict[str, float],
+            ]
+        ] = []
+        for entity, original_count, budget, entries in pending:
             local_scores: dict[str, float] = {}
-            if entity_local_recall is not None:
+            for hit in recalled_hits.get(entity.entity_id, []):
+                local_scores[hit.unit_id] = hit.score
+            locally_recalled = [item for item in entries if item[1].unit_id in local_scores]
+            if locally_recalled:
+                entries = locally_recalled
+            prepared.append((entity, original_count, budget, entries, local_scores))
+
+        # Rerank：批量优先（1 次调用覆盖全部超预算实体），仅当批量失败时退化为
+        # 逐实体重试——单实体失败只降级该实体，避免一条文本超限拖垮全部。批量成功
+        # 时把扁平分数按 span 切回各实体；远程 reranker 下把 N 次 RTT 压回 1 次。
+        batch_scores: list[list[float] | None] = [None] * len(prepared)
+        degraded_per_entity: list[bool] = [False] * len(prepared)
+        if prepared and self._rerank_enabled and self._reranker is not None:
+            spans: list[tuple[int, int]] = []
+            flat_texts: list[str] = []
+            for prepared_item in prepared:
+                entries = prepared_item[3]
+                start = len(flat_texts)
+                flat_texts.extend(f"{name}: {entry.value}" for name, entry in entries)
+                spans.append((start, len(flat_texts)))
+            batch_ok = False
+            if flat_texts:
                 try:
-                    local_hits = entity_local_recall(entity.entity_id)
+                    flat_scores = [
+                        float(score) for score in self._reranker.rerank(query_text, flat_texts)
+                    ]
+                    if len(flat_scores) != len(flat_texts) or not all(
+                        math.isfinite(score) for score in flat_scores
+                    ):
+                        raise ValueError("property reranker returned invalid scores")
                 except Exception as exc:
                     degraded_errors.add(type(exc).__name__)
-                    local_hits = []
-                for hit in local_hits:
-                    local_scores[hit.unit_id] = hit.score
-                locally_recalled = [item for item in entries if item[1].unit_id in local_scores]
-                if locally_recalled:
-                    entries = locally_recalled
+                else:
+                    for index, (start, end) in enumerate(spans):
+                        batch_scores[index] = list(flat_scores[start:end])
+                    batch_ok = True
+            if not batch_ok:
+                for index, prepared_item in enumerate(prepared):
+                    entries = prepared_item[3]
+                    texts = [f"{name}: {entry.value}" for name, entry in entries]
+                    if not texts:
+                        continue
+                    try:
+                        scores = [
+                            float(score) for score in self._reranker.rerank(query_text, texts)
+                        ]
+                        if len(scores) != len(texts) or not all(
+                            math.isfinite(score) for score in scores
+                        ):
+                            raise ValueError("property reranker returned invalid scores")
+                    except Exception as exc:
+                        degraded_per_entity[index] = True
+                        degraded_errors.add(type(exc).__name__)
+                    else:
+                        batch_scores[index] = scores
 
-            ranked, reranked, degraded_error = _rank_entries(
+        for index, (entity, original_count, budget, entries, local_scores) in enumerate(prepared):
+            ranked, reranked = _rank_entries(
                 entries,
-                query_text=query_text,
                 terms=terms,
                 recall_scores=local_scores,
-                reranker=self._reranker if original_count > budget else None,
-                rerank_enabled=self._rerank_enabled,
+                rerank_scores=batch_scores[index],
+                degraded=degraded_per_entity[index],
             )
             entities_reranked += int(reranked)
-            if degraded_error:
-                degraded_errors.add(degraded_error)
             selected = ranked[:budget]
             properties: dict[str, list[SchemaPropertyEntry]] = {}
             for _score, _lexical, name, entry in selected:
@@ -172,36 +238,27 @@ def _flatten(entity: TemporalEntity) -> list[tuple[str, SchemaPropertyEntry]]:
 def _rank_entries(
     entries: list[tuple[str, SchemaPropertyEntry]],
     *,
-    query_text: str,
     terms: set[str],
     recall_scores: dict[str, float],
-    reranker: Reranker | None,
-    rerank_enabled: bool,
-) -> tuple[list[tuple[float, float, str, SchemaPropertyEntry]], bool, str]:
+    rerank_scores: list[float] | None = None,
+    degraded: bool = False,
+) -> tuple[list[tuple[float, float, str, SchemaPropertyEntry]], bool]:
     texts = [f"{name}: {entry.value}" for name, entry in entries]
     lexical = [_entry_lexical_score(text, terms) for text in texts]
     relevance = [
         recall_scores.get(entry.unit_id, lexical_score)
         for (_name, entry), lexical_score in zip(entries, lexical, strict=True)
     ]
-    reranked = False
-    degraded_error = ""
-    if rerank_enabled and reranker is not None and entries:
-        try:
-            relevance = [float(score) for score in reranker.rerank(query_text, texts)]
-            if len(relevance) != len(entries) or not all(
-                math.isfinite(score) for score in relevance
-            ):
-                raise ValueError("property reranker returned invalid scores")
-            reranked = True
-        except Exception as exc:
-            relevance = list(lexical)
-            degraded_error = type(exc).__name__
+    reranked = rerank_scores is not None
+    if reranked:
+        relevance = list(rerank_scores)
+    elif degraded:
+        relevance = list(lexical)
     ranked = []
     for (name, entry), score, lexical_score in zip(entries, relevance, lexical, strict=True):
         ranked.append((score, lexical_score, name, entry))
     ranked.sort(key=lambda item: (-item[0], -item[1], item[2], item[3].unit_id))
-    return ranked, reranked, degraded_error
+    return ranked, reranked
 
 
 def _entry_lexical_score(text: str, terms: set[str]) -> float:

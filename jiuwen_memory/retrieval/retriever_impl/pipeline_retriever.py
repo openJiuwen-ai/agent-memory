@@ -12,6 +12,8 @@ storage 层工厂按配置装配）。
 from __future__ import annotations
 
 import logging
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
@@ -89,6 +91,11 @@ logger = get_logger(__name__)
 _MAX_RERANK_QUERY_CHARS = 2000
 _MAX_RERANK_DOC_CHARS = 4000
 
+# Schema temporal Property 直达召回并行的共享线程池默认：每请求最多 1 个 worker
+# （与普通召回并发，不引入额外并行度），超时降级避免后端卡死拖垮整条检索链。
+_SCHEMA_TEMPORAL_EXECUTOR_MAX_WORKERS = 1
+_SCHEMA_TEMPORAL_RECALL_TIMEOUT = 30.0
+
 
 def _truncate_rerank_inputs(
     query: str, docs: list[str], query_limit: int, doc_limit: int
@@ -98,6 +105,18 @@ def _truncate_rerank_inputs(
         query[:query_limit],
         [doc[:doc_limit] for doc in docs],
     )
+
+
+def _cancel_future(future: Future) -> None:
+    """Best-effort cancel of a timed-out pre-recall future.
+
+    ``cancel`` only succeeds if the task has not started; a running task
+    cannot be interrupted in Python. We still call it so a queued-but-unstarted
+    task is dropped instead of running after the caller has already degraded.
+    """
+
+    if not future.done():
+        future.cancel()
 
 
 class PipelineRetriever(Retriever):
@@ -126,6 +145,8 @@ class PipelineRetriever(Retriever):
         # 精排输入限长：与 reranker_timeout 同走 retriever params 通道。
         rerank_max_query_chars: int = _MAX_RERANK_QUERY_CHARS,
         rerank_max_doc_chars: int = _MAX_RERANK_DOC_CHARS,
+        schema_temporal_executor_max_workers: int = _SCHEMA_TEMPORAL_EXECUTOR_MAX_WORKERS,
+        schema_temporal_recall_timeout: float = _SCHEMA_TEMPORAL_RECALL_TIMEOUT,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
@@ -165,6 +186,13 @@ class PipelineRetriever(Retriever):
         # 精排输入限长上限（护栏旋钮，上调须自行承担精排超时风险）。
         self._rerank_max_query_chars = max(1, int(rerank_max_query_chars))
         self._rerank_max_doc_chars = max(1, int(rerank_max_doc_chars))
+        # Schema temporal Property 直达召回的共享线程池：避免每请求新建 executor
+        # 造成线程数失控；join 设超时，超时按 TEMPORAL 通道错误降级，不阻塞整条链路。
+        self._schema_temporal_executor: ThreadPoolExecutor | None = None
+        self._schema_temporal_executor_max_workers = max(
+            1, int(schema_temporal_executor_max_workers)
+        )
+        self._schema_temporal_recall_timeout = max(0.0, float(schema_temporal_recall_timeout))
 
     @property
     def storage(self) -> DomainStore:
@@ -184,6 +212,23 @@ class PipelineRetriever(Retriever):
 
     def health(self) -> None:
         return None
+
+    def _schema_temporal_executor_pool(self) -> ThreadPoolExecutor:
+        """Lazily create the shared executor for parallel Property pre-recall.
+
+        Created on first use so a retriever that never opts into schema_temporal
+        pays no thread cost; the pool lives for the retriever's lifetime and is
+        reclaimed when the retriever is GC'd.
+        """
+
+        pool = self._schema_temporal_executor
+        if pool is None:
+            pool = ThreadPoolExecutor(
+                max_workers=self._schema_temporal_executor_max_workers,
+                thread_name_prefix="schema-temporal-property",
+            )
+            self._schema_temporal_executor = pool
+        return pool
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         hierarchy = HierarchyQuery.from_query(query)
@@ -277,6 +322,9 @@ class PipelineRetriever(Retriever):
         # 调用方自定义透传配置随 parsed 下达各召回路（自定义 Recaller 按约定读取）；
         # 在此统一接力，无需各 parser 实现感知。
         parsed.extensions = dict(query.extensions)
+        if query.schema_temporal is not None:
+            # 提前下沉 typed 字段：并行提交前的 should_select 必须能读到它。
+            parsed.extensions["schema_temporal"] = query.schema_temporal
         if query.rollup and query.as_of is not None:
             parsed.as_of = query.as_of
         parse_detail = {"rewrite": parsed.rewrite_status}
@@ -335,6 +383,30 @@ class PipelineRetriever(Retriever):
         budget_n = max(self._rerank_max, query.top_k)
 
         # [3b-6] DomainStore 的全局首选值选择三条 recall/get/rank 路径。
+        # Property 直达召回与普通召回并行：parse 后立即提交，disclosure 后 join。
+        parallel_recall = None
+        if self._schema_temporal_extension is not None and not (
+            query.expand_depth and query.defer_expansion
+        ):
+            try:
+                parallel = self._schema_temporal_extension.should_select(parsed)
+            except Exception as exc:
+                # 非法 schema_temporal 扩展不得破坏普通检索；留给 apply 的降级路径报错。
+                logger.warning(
+                    "Retriever.parallel property recall skipped: trace_id=%s error_type=%s "
+                    "error=%s",
+                    trace_id,
+                    type(exc).__name__,
+                    redact_for_log(safe_error_message(exc)),
+                )
+                parallel = False
+            if parallel:
+                parallel_recall = self._schema_temporal_executor_pool().submit(
+                    self._schema_temporal_extension.recall_property_hits,
+                    scope,
+                    parsed,
+                    user_filters=user_filters,
+                )
         pipeline = self._domain.preferred_retrieval_pipeline()
         t0 = perf_counter()
         errors: list[ChannelError]
@@ -560,6 +632,54 @@ class PipelineRetriever(Retriever):
             if query.defer_expansion:
                 return prepared
             result = complete_expansion(result, [prepared], query)
+        precollected_property_hits = None
+        precollected_errors: list[ChannelError] = []
+        if parallel_recall is not None:
+            timeout = self._schema_temporal_recall_timeout or None
+            try:
+                precollected_property_hits, precollected_errors = (
+                    parallel_recall.result(timeout=timeout)
+                )
+            except FutureTimeoutError as exc:
+                logger.warning(
+                    "Retriever.parallel property recall timed out after %.1fs: "
+                    "trace_id=%s",
+                    self._schema_temporal_recall_timeout,
+                    trace_id,
+                )
+                _cancel_future(parallel_recall)
+                result = replace(
+                    result,
+                    errors=[
+                        *result.errors,
+                        ChannelError(
+                            RecallChannel.TEMPORAL,
+                            "parallel_property_recall",
+                            type(exc).__name__,
+                            f"timed out after {self._schema_temporal_recall_timeout}s",
+                        ),
+                    ],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Retriever.parallel property recall degraded: trace_id=%s error_type=%s "
+                    "error=%s",
+                    trace_id,
+                    type(exc).__name__,
+                    redact_for_log(safe_error_message(exc)),
+                )
+                result = replace(
+                    result,
+                    errors=[
+                        *result.errors,
+                        ChannelError(
+                            RecallChannel.TEMPORAL,
+                            "parallel_property_recall",
+                            type(exc).__name__,
+                            safe_error_message(exc),
+                        ),
+                    ],
+                )
         if self._schema_temporal_extension is None:
             return result
         return self._schema_temporal_extension.apply(
@@ -569,6 +689,8 @@ class PipelineRetriever(Retriever):
             OrdinaryRetrieval(list(final), result),
             user_filters=user_filters,
             record_step=step,
+            precollected_property_hits=precollected_property_hits,
+            precollected_errors=precollected_errors or None,
         )
 
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
@@ -624,6 +746,17 @@ def _build(config):
         ),
         rerank_max_doc_chars=int(
             Factory.cfg_get(config, "rerank_max_doc_chars", _MAX_RERANK_DOC_CHARS)
+        ),
+        schema_temporal_executor_max_workers=int(
+            Factory.cfg_get(
+                config, "schema_temporal_executor_max_workers",
+                _SCHEMA_TEMPORAL_EXECUTOR_MAX_WORKERS,
+            )
+        ),
+        schema_temporal_recall_timeout=float(
+            Factory.cfg_get(
+                config, "schema_temporal_recall_timeout", _SCHEMA_TEMPORAL_RECALL_TIMEOUT
+            )
         ),
     )
     retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))
