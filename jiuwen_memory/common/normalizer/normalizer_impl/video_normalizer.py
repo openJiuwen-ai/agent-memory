@@ -12,6 +12,7 @@ from typing import Any
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError, ValidationError
+from jiuwen_memory.common.ingest_cancellation import IngestCancelled, check_ingest_cancelled
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.normalizer.base import (
@@ -117,8 +118,10 @@ class VideoNormalizer(Normalizer):
             )
 
     def normalize(self, payload: RawPayload) -> str:
+        check_ingest_cancelled()
         ensure_normalizer_supports(self, payload.modality)
         clips, events = self._extract_video_memory(payload)
+        check_ingest_cancelled()
         video_memory = {
             "payload_id": payload.id,
             "asset_uri": payload.uri,
@@ -181,6 +184,8 @@ class VideoNormalizer(Normalizer):
                 _object_list(outputs.get("short_term"), "short_term"),
                 _object_list(outputs.get("medium_term"), "medium_term"),
             )
+        except IngestCancelled:
+            raise
         except Exception as exc:
             logger.exception(
                 "VideoNormalizer: pipeline failed for video=%s",

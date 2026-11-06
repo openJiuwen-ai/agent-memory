@@ -20,7 +20,7 @@
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
 | `permission.py` | `PermissionManager` 历史兼容接口——不参与生产请求授权 |
 | `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度；`supports_recurring` 周期能力、`link_child` 父子任务观测关联、`RecurringJobStoppedError` 永久停摆信号、`validate_shutdown` 关闭上下文校验、`shutdown` 优雅关闭 |
-| `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
+| `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer；任务私有取消上下文及 Engine 检查点——长耗时摄入任务管理 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
 | `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/`begin_delete`/删除/导出/用量/策略/成员 |
 | `collective/` | 群体记忆的控制层纯逻辑子包，三个模块均非算子（无 Producer 注册、不访问存储与模型），不由 `bootstrap` 触发注册。`routing.py`：结论直写路径的归属判定调用，API 层传入成品 `RouteContext`（含已鉴权候选集）与 `Router` 实例，本模块调 `route_batch` 并归一结果，存在的理由是分层边界——判定由构建层承担、判定输入由 API 层的鉴权点构造，二者之间的调用不能落在 API 层（S02「不调用构建」）。`write_targets.py`：写入候选空间集合的渲染、排序、截断与取交，收 `can_write` 回调而不收 `identity`。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与轮转合并，收 `recall` 回调与 API 层判权后给出的空间目标（含逐空间谓词）；使用 `retrieval/cross_space.py` 合并，并将选中的物化根交给 `retrieval/expansion.py` 统一收尾；不持有引擎、不依赖检索实现；空间级扇出失败与判权剔除分两路交回，不并进 `merged.errors`。三者共同形态是「裁决留 PEP，裁决之后的机械换算与 I/O 编排落本层」，上下之间经回调或成品数据衔接。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
@@ -120,6 +120,14 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 ## 本地约束
+
+- 摄入取消与任务开始/完成在控制器状态锁内串行；Future 完成回调统一释放容量与执行句柄。
+  控制器为任务体绑定 common.ingest_cancellation 的共享信号并在 finally 中 reset，
+  使内置视频模型调用和 ASR 分片可检查取消，不把 control 类型下传到 common 插件。
+  回调观察并记录 Future 异常；终态持久化失败不覆盖内存实际结果，不留下无句柄的 running。
+  `status -> _load` 只返回重启恢复投影，不写库；恢复持久化只发生在授权的提交路径。
+  Engine 只检查任务私有 ContextVar 中的取消信号，普通 write 无信号时行为不变；
+  已进入的同步写入先收尾，不提前报告终态。写入后取消保留产物并阻止原 payload 自动重试。
 
 - `job_impl/ingest_job.py` 分开记录 `_closed`（停止接收）与 `_drained`（工作线程结束）。
   wait=False 后仍允许 wait=True 完成 drain；线程等待不持状态锁，确保任务可写入终态。

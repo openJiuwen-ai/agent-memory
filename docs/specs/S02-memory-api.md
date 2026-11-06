@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-05 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -245,7 +245,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `evolve` | 原有四种演进与 dreaming | [evolve](#evolve) | F01、F02 |
 | 数据面（文档模式，经 Engine 窄端口） | `read_md_file` | 已实现；仅文档模式可用 | [read_md_file](#read_md_file) | F08 |
 | 数据面（文档模式） | `edit_md_file` | 已实现；仅文档模式可用 | [edit_md_file](#edit_md_file) | F08 |
-| 任务面（委托 Scheduler） | `job_status` | 已实现 | [job_status](#job_status) | F01 |
+| 任务面（委托 Scheduler / IngestJobController） | `job_status` | 已实现 | [job_status](#job_status) | F01 |
 | 任务面 | `job_cancel` | 已实现 | [job_cancel](#job_cancel) | F01 |
 | 治理面（委托 Governor） | `inspect` | 已实现 | [inspect](#inspect) | F01 |
 | 治理面 | `trace` | 已实现 | [trace](#trace) | F01 |
@@ -285,7 +285,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | `list` | 不读归属坐标，但注入第一族系统谓词 | 行为变更：个体空间内不再返回不可见条目 | 已落地 |
 | `list_spaces` | `cursor` 标记废弃；`limit` 由每页条数改为返回条数上限 | 签名不变，翻页语义变更 | 已落地 |
 | `create_space` | 签名不变；入参 `SpaceSpec` 新增 `owner` 字段，供开通服务声明归属主体或显式不登记 | 向后兼容 | 已落地 |
-| `job_status` / `job_cancel` | 签名不变；返回值 `JobInfo.mode` 的取值域由任务类名改为演进模式（`EvolveMode` 的值），无演进模式的任务仍回落类名 | 行为变更，不受两个开关约束：鉴权点按该取值决定任务入口取哪个动作，类名区分不了遗忘与抽取 | 已落地 |
+| `job_status` / `job_cancel` | 本表归属判定改造未改签名；返回值 `JobInfo.mode` 的取值域由任务类名改为演进模式（`EvolveMode` 的值），无演进模式的任务仍回落类名。后续 #285 为 job_cancel 增加可选 scope，见任务面契约 | 行为变更，不受两个开关约束：鉴权点按该取值决定任务入口取哪个动作，类名区分不了遗忘与抽取 | 已落地 |
 
 `scope` 语义不变：它就是落点，且保持必填。落点也可以不由调用方指定、改由归属判定选择，这时在写入侧参数袋里放 `system_metadata["coords"]` 请求判定，候选空间集合由归属坐标推出、落点由判定算子在集内选择。分流判据是该键在不在，与 `scope` 的取值形态无关——键由调用方主动放入，而 `space` 为空是调用方什么都没表达时的取值，拿它触发另一条路径等于由内核解读缺省状态。`space` 非空也不否决判定请求：上游网关按自己的租户或应用标识填 `space` 是常见形态，那个取值不是本系统的空间标识，以它否决则这类接入方无路可走（直写要求空间已登记，未登记即判权拒绝）。给了 `coords` 即交出落点决定权，`scope.space` 在这条路径上不参与落点计算，真实落点由返回的记忆单元携带。两处都没有声明时拒绝，替换的是同一形态下原本含义模糊的判权拒绝。走判定路径时入参 `scope` 的主体维与 `org` 仍须与身份一致，不静默丢弃。条目的可读范围由所在空间的权限决定，写入侧不设条目级的可见性声明入参（F07）。
 
@@ -776,10 +776,32 @@ def job_status(
 **状态：已实现**
 
 ```python
-def job_cancel(job_id: str, *, security: RequestSecurityContext) -> None: ...
+def job_cancel(
+    job_id: str, *, security: RequestSecurityContext, scope: Scope | None = None
+) -> None: ...
 ```
 
-取消尚未完成的演进任务（幂等，委托 Scheduler）。按其任务 scope 鉴权 WRITE（与 evolve 触发一致）。
+取消演进或长耗时摄入任务，终态重复取消幂等。演进任务委托 Scheduler，原调用兼容；
+`ing_` 摄入任务必须提供 target `scope`，缺失抛 ValidationError，任务不存在或 Scope
+不匹配抛 NotFoundError。可信上下文校验先于任务查询，随后按任务真实 Scope 鉴权 WRITE、
+记录审计并执行完整性预检，通过后才委托摄入控制器取消。
+
+摄入排队任务取消后不执行任务体；运行中取消为协作式，当前已进入的同步分类、演进或写入
+允许收尾。内置视频规约在 ASR 分片、文本/VLM 请求及应用层重试之间也有检查点，
+取消后不再发送下一请求，轮询与退避等待可被唤醒；已发出的请求和 SDK 内部重试不能
+保证立即终止。第三方插件未响应检查点时仍允许整个调用收尾。返回 None 表示请求已接受，不代表执行
+已结束：`job_status` 在收尾期间仍返回 running，`detail.cancel_requested="true"`，
+结束后返回 cancelled；真实业务错误仍返回 failed。取消不回滚写入，已知产物保留在
+`detail.unit_ids`；进入写入后的取消或失败以 `partial_write="true"` 和
+`retry_requires_reconciliation="true"` 保守标记可能残留，不以空 ID 推断零写入。
+调用方应先核对真源并处理残留，再显式使用新 payload_id 重提；原 payload_id 自动重试
+被 ConflictError 拒绝。确认未进入写入的取消任务可以复用原 payload_id 重新提交。
+
+状态查询为纯读取，重启遗留任务只返回恢复后的 failed 投影，不在 READ/WRITE 鉴权或
+审计完整性预检前持久化恢复。运行中遗留任务因无法证明零写入，即使未请求取消也要求
+先核对结果，再使用新 payload_id 重提，这是对原有重启后直接重试行为的保守收紧。
+后台终态写库失败时，当前进程仍报告实际执行终态及已知 ID，并在任务 error 与日志中
+报告持久化失败；不能将业务已结束的任务留在 running，也不能吞掉真实业务错误。
 
 周期任务注销或本地失锁停摆时，取消信号覆盖其已排队驱动和已关联的派生演进任务；后续演进桶不再开始。已进入的同步 Evolver 调用可以结束，取消不回滚已完成写入，也不提供存储 fencing 保证。同步调用返回后才观察到取消时，任务状态为 `CANCELLED`，但 `detail` 必须保留已返回的变更 ID，并回显 `partial_write`、`completed_groups`、`retry_requires_reconciliation`；调用方须先查询真源核对结果，不得把 CANCELLED 当作“零写入”直接全量重试。
 
