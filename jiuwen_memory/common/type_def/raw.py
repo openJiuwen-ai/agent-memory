@@ -27,6 +27,12 @@ class RawPayload:
     occurred_at: datetime | None = None  # 消息/对话发生时间（写入 temporal.t_message）
     assets: list[str] = field(default_factory=list)  # 待 Ingestor 映射的资产引用
 
+    def __post_init__(self) -> None:
+        # RawPayload carries exactly one source. Accepting both silently makes
+        # the normalizer use data and drop the URI; fail instead of guessing.
+        if self.data and self.uri:
+            raise ValueError("RawPayload cannot carry both data and uri")
+
 
 # -- KV key 前缀（未建索引的 infer 原文） ------------------------------------- #
 # 真源 KV key 按「是否建索引」带前缀（见 F02 决策6）：未建索引的 infer=true 原文
