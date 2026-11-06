@@ -1,16 +1,12 @@
-﻿# S03 — 控制层（Control Layer）
+# S03 — 控制层（Control Layer）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-<<<<<<< mem2Feature
-| 最近一次修订日期 | 2026-10-26 |
-=======
-| 最近一次修订日期 | 2026-10-29 |
->>>>>>> mem2.0
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 最近一次修订日期 | 2026-11-05 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F11-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
 
@@ -118,8 +114,10 @@ class ControlOperator(ABC):
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
 | `list_with_permission_contexts` | `async (同 list 参数) -> tuple[MemoryListResult, list[PermissionContext]]` | 从同一次列表查询的当前页构造逐项真源权限上下文，items/count/context 不做二次读取 |
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
+| `permission_contexts_for_update` | `async (selector: UpdateSelector) -> list[PermissionContext]` | 解析 batch_update selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权；与 `permission_contexts_for_delete` 对称 |
 | `get` | `async (unit_id, scope, as_of=None) -> MemoryUnit` | 真源点读；`as_of` 非空沿 supersedes 链返回当时有效版本 |
 | `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写；目标层级 patch 走结构事务 |
+| `batch_update` | `async (selector: UpdateSelector, patches: list[MemoryPatch], *, continue_on_error=True) -> BatchUpdateResult` | 只接收 API 已鉴权的 selector 和 patches；按 selector 取候选→`limit` 截断→逐条调 `update`→汇总结果；`continue_on_error=False` 时失败后填充 `Skipped` outcomes；领域异常归集原始信息，非领域异常归集为 `InternalError` |
 | `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删 / 其他委托 LifecycleManager 非破坏式流转；目标需维护受影响层级边 |
 | `purge_space` | `async (org: str, space: str) -> list[str]` | 物理删除该 Space 全部 user/agent/session 子 Scope 的 MemoryUnit 真源与索引，供 offboarding 调用 |
 | `sweep_expired` | `async () -> SweepResult` | 编排到期清扫：`LifecycleManager.sweep()` 纯计算 transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组先 `IndexBuilder.remove(SOFT)` 移出检索索引、成功后 `LifecycleManager.transition` 回写真源；ARCHIVED 组只回写（`include_archived` 召回与 `as_of` 回溯仍需索引，不删）。顺序不变量（先删索引、后回写真源）保证 remove 失败时单元保持 ACTIVE、下轮 sweep 重新发现自愈；任一步失败的组计入 `SweepResult.failed`，不静默当成功。共享编排在 `engine_impl/sweep_support.py`，InMemoryEngine 直调 IndexBuilder，CloudEngine 按各 pipeline 的 builder 分组删除 |

@@ -12,6 +12,7 @@ from typing import Any
 
 from jiuwen_memory.api.search_options import SearchOptions
 from jiuwen_memory.common.errors import (
+    AgentMemoryError,
     BackendError,
     NotFoundError,
     PermissionDeniedError,
@@ -49,12 +50,15 @@ from jiuwen_memory.control.evolution.validation import (
 )
 from jiuwen_memory.control.types import (
     BackgroundJobStartResult,
+    BatchUpdateOutcome,
+    BatchUpdateResult,
     Channel,
     DeleteSelector,
     EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
+    UpdateSelector,
 )
 from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery, RetrievalResult
 
@@ -575,6 +579,37 @@ class QueryOpsMixin:
         )
         return unit
 
+    def _do_single_update(
+        self,
+        unit_id: str,
+        scope: Scope,
+        patch: MemoryPatch,
+        security: RequestSecurityContext,
+    ) -> MemoryUnit:
+        """单条更新的 mutation 核心（不含 metadata 拒绝和顶层鉴权，供 batch_update 复用）。
+
+        走完整的 schema prepare→逐项鉴权→commit 流程；普通记忆直接 commands.update。
+        """
+        self._ensure_space_writable(scope)
+        before = asyncio.run(self._queries.get(unit_id, scope, None))
+        plan = None
+        if self._commands.requires_update_preparation(before, patch):
+            plan = asyncio.run(self._commands.prepare_update(unit_id, scope, patch))
+        if plan is not None:
+            for action, context in self._commands.update_permission_contexts(plan):
+                self._authorize(
+                    security,
+                    context.scope,
+                    action,
+                    "batch_update",
+                    context.unit_id,
+                    context=context,
+                )
+            unit = asyncio.run(self._commands.commit_update(plan))
+        else:
+            unit = asyncio.run(self._commands.update(unit_id, scope, patch))
+        return unit
+
     def update(
         self,
         unit_id: str,
@@ -651,6 +686,142 @@ class QueryOpsMixin:
             detail={**auth, **update_detail, "before_unit_id": before.id, "after_unit_id": unit.id},
         )
         return unit
+
+    def batch_update(
+        self,
+        selector: UpdateSelector,
+        patches: list[MemoryPatch],
+        *,
+        security: RequestSecurityContext,
+        limit: int | None = None,
+        continue_on_error: bool = True,
+    ) -> BatchUpdateResult:
+        identity = security.auth.actor
+        selector_is_empty = (
+            not selector.unit_ids
+            and not selector.tags
+            and selector.before is None
+            and selector.after is None
+            and selector.filters is None
+        )
+        if selector_is_empty:
+            raise ValidationError(
+                "UpdateSelector requires unit_ids, tags, before, after, or filters"
+            )
+        if not patches:
+            raise ValidationError("patches must be non-empty")
+        if limit is not None and limit <= 0:
+            raise ValidationError("limit must be a positive integer")
+        for patch in patches:
+            _reject_kernel_system_metadata(patch.system_metadata)
+            _reject_route_tag_keys(patch.system_metadata, self._route_table.tag_keys)
+            _reject_non_scalar_metadata(patch.system_metadata, field_name="system_metadata")
+            _reject_non_scalar_metadata(patch.user_metadata, field_name="user_metadata")
+        unified = len(patches) == 1
+        if not unified:
+            if not selector.unit_ids:
+                raise ValidationError(
+                    "per-item patches require selector.unit_ids to be non-empty"
+                )
+            if len(selector.unit_ids) != len(patches):
+                raise ValidationError(
+                    f"len(unit_ids)={len(selector.unit_ids)} must equal "
+                    f"len(patches)={len(patches)} in per-item mode"
+                )
+        target = selector.scope or _ROOT
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.UPDATE, "batch_update", target)
+        )
+        # selector 级跨范围鉴权闸门（对齐 delete 的 L761-768）
+        selector_context = PermissionContext(
+            resource_type="update_selector",
+            scope=target,
+            tags=tuple(selector.tags),
+        )
+        if selector.scope is not None or not selector.unit_ids:
+            self._authorize(
+                security,
+                target,
+                Action.UPDATE,
+                "batch_update",
+                context=selector_context,
+            )
+        contexts = asyncio.run(self._queries.permission_contexts_for_update(selector))
+        auth: dict[str, str] = {}
+        if not contexts:
+            auth = self._authorize(
+                security,
+                target,
+                Action.UPDATE,
+                "batch_update",
+                context=selector_context,
+            )
+        else:
+            auth = {"permission_check": "enabled", "permission_reason": "permission check passed"}
+            for permission_context in contexts:
+                unit_auth = self._authorize(
+                    security,
+                    permission_context.scope,
+                    Action.UPDATE,
+                    "batch_update",
+                    permission_context.unit_id,
+                    context=permission_context,
+                )
+                auth.update(unit_auth)
+        # mutation 前审计完整性预检（对齐 update/delete 的 R3 约束）
+        self._ensure_audit_integrity_healthy()
+        # 构建 candidate 列表：逐条模式按 unit_ids 顺序排列，统一模式按存储顺序
+        candidates = list(contexts)
+        if not unified and selector.unit_ids:
+            id_order = {uid: i for i, uid in enumerate(selector.unit_ids)}
+            candidates.sort(key=lambda ctx: id_order.get(ctx.unit_id, len(id_order)))
+        effective_limit = limit if limit is not None else selector.limit
+        if effective_limit is not None:
+            candidates = candidates[:effective_limit]
+        outcomes: list[BatchUpdateOutcome] = []
+        for index, ctx in enumerate(candidates):
+            patch = patches[0] if unified else patches[index]
+            try:
+                updated = self._do_single_update(
+                    ctx.unit_id, ctx.scope, patch, security,
+                )
+                outcomes.append(
+                    BatchUpdateOutcome(index=index, unit_id=ctx.unit_id, updated_unit=updated)
+                )
+            except Exception as exc:
+                is_domain_error = isinstance(exc, AgentMemoryError)
+                if not is_domain_error:
+                    logger.exception("unexpected batch update failure at index %s", index)
+                outcomes.append(
+                    BatchUpdateOutcome(
+                        index=index,
+                        unit_id=ctx.unit_id,
+                        error=str(exc) if is_domain_error else "unexpected batch update failure",
+                        error_type=type(exc).__name__ if is_domain_error else "InternalError",
+                    )
+                )
+                if not continue_on_error:
+                    for skipped_index in range(index + 1, len(candidates)):
+                        outcomes.append(
+                            BatchUpdateOutcome(
+                                index=skipped_index,
+                                unit_id=candidates[skipped_index].unit_id,
+                                error="skipped after previous item failed",
+                                error_type="Skipped",
+                            )
+                        )
+                    break
+        self._log(
+            identity,
+            "batch_update",
+            target_scope=target,
+            detail={
+                **auth,
+                "candidate_count": str(len(candidates)),
+                "outcome_count": str(len(outcomes)),
+            },
+        )
+        return BatchUpdateResult(outcomes=outcomes)
 
     def delete(self, selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]:
         identity = security.auth.actor

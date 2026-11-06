@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-05 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 文档分工
 
@@ -241,6 +241,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
+| 数据面 | `batch_update` | 已实现 | [batch_update](#batch_update) | F11 |
 | 数据面 | `delete` | 已实现 | [delete](#delete) | 无独立 F；实现见 F01 |
 | 数据面 | `evolve` | 原有四种演进与 dreaming | [evolve](#evolve) | F01、F02 |
 | 数据面（文档模式，经 Engine 窄端口） | `read_md_file` | 已实现；仅文档模式可用 | [read_md_file](#read_md_file) | F08 |
@@ -638,6 +639,38 @@ hierarchy: HierarchyPatch | None = None
 双向一致和稳定顺序后原子应用。
 
 `SUPERSEDE` 若目标已挂树，Engine 必须把结构位置从旧 id 一致迁移到新版本 id，再把旧版本设为 `SUPERSEDED`；不得留下指向旧版本的活动结构边。`OVERWRITE` 保持 id，但层级 patch 仍须经过相同校验。
+
+#### batch_update
+
+**状态：已实现**（F11）
+
+```python
+def batch_update(
+    selector: UpdateSelector,
+    patches: list[MemoryPatch],
+    *,
+    security: RequestSecurityContext,
+    limit: int | None = None,
+    continue_on_error: bool = True,
+) -> BatchUpdateResult: ...
+```
+
+批量更新记忆：鉴权 UPDATE→委托 Engine。`UpdateSelector` 各条件取「与」，至少一项：
+`unit_ids` / `scope` / `tags` / `before` / `after` / `filters`。空 selector 抛 `ValidationError`。
+
+`patches` 长度决定模式：`len==1` 为统一 patch（所有候选应用同一个 patch）；
+`len>1` 为逐条对应（必须给 `selector.unit_ids` 且 `len(unit_ids) == len(patches)`）。
+逐条模式无 `unit_ids` 或数量不匹配抛 `ValidationError`。
+
+`limit` 覆盖 `selector.limit`，做 post-match 截断（全量匹配后取前 N 条执行更新）。
+`continue_on_error=True` 时单条失败不中断整批；`False` 时失败后后续标记 `Skipped`。
+
+鉴权流程：先 trusted_context 检查（`Action.UPDATE`, `"batch_update"`），再通过
+`engine.permission_contexts_for_update(selector)` 取候选 unit 权限上下文，逐条
+UPDATE 鉴权；无候选时对 selector scope 做 selector 级 fallback 鉴权。每个 `MemoryPatch`
+的 `system_metadata` / `user_metadata` 复用单条 `update` 的内核保留 key 与非标量校验。
+
+设计取舍见 [`F11-batch-update-api.md`](../features/api/F11-batch-update-api.md)。
 
 #### delete
 
@@ -1155,6 +1188,12 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 `DeleteSelector` 各条件取「与」，至少给一项：`unit_ids` / `scope`（鉴权依据）/ `tags`（命中任一）/ `before`（`t_event` 早于此）/ `mode`。
 
 `DeleteMode`：`FORGET`（标记遗忘，可恢复，默认）/ `ARCHIVE`（归档转冷）/ `DOWNWEIGHT`（保持 active 仅降权）/ `PURGE`（物理删真源与索引，合规硬删，不可恢复）。
+
+### UpdateSelector / BatchUpdateOutcome / BatchUpdateResult（batch_update，`control/types.py`）
+
+`UpdateSelector` 与 `DeleteSelector` 结构相同（`unit_ids` / `scope` / `tags` / `before` / `after` / `filters`），但**不携带 `mode`**——批量更新的版本语义由各 `MemoryPatch.mode` 逐条决定。新增 `after` 字段（`DeleteSelector` 没有），支持「只更新某时间段之后的消息」。`limit` 做 post-match 截断（全量匹配后取前 N 条执行更新）。各条件取「与」，至少给出一项。
+
+`BatchUpdateOutcome` 包含候选索引、`unit_id`、成功时的 `updated_unit` 或失败时的 `error` / `error_type`。`BatchUpdateResult.outcomes` 与候选顺序对齐。
 
 ### FilterExpr / FilterClause / FilterGroup（search 前置过滤，`common/type_def`）
 

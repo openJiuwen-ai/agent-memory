@@ -860,7 +860,9 @@ def _delete(srv, request: DispatchRequest) -> Body:
         filters is not None,
     )
     if not any(provided_criteria):
-        raise ValidationError("delete requires at least one of: item_id, tags, before, filters")
+        raise ValidationError(
+            "delete requires at least one of: item_id, tags, before, filters"
+        )
     selector = DeleteSelector(
         unit_ids=[] if unit_id is None else [str(unit_id)],
         scope=scope,

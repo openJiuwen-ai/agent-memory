@@ -361,6 +361,40 @@ async def memory_update(unit_id: str, scope: dict, patch: dict, ctx: Context = N
 
 
 @mcp.tool()
+async def memory_batch_update(  # pylint: disable=huawei-too-many-arguments
+    selector: dict,
+    patches: list[dict],
+    limit: int | None = None,
+    continue_on_error: bool = True,
+    ctx: Context = None,
+) -> dict:
+    """
+    批量更新多条记忆。patches 长度决定模式：
+    len==1 为统一 patch（所有候选应用同一个 patch，适合批量改 tags/tier/metadata）；
+    len>1 为逐条对应（必须给 selector.unit_ids 且数量一致，每条独立 patch）。
+
+    selector: 目标选择，形如 {"unit_ids":["id1","id2"]} 或 {"scope":{...},"tags":["t"]}，
+        各条件取「与」，至少给出一项（unit_ids/scope/tags/before/after/filters）。
+    patches: 修正内容数组，每项形如 {"tags":["新标签"], "tier":"semantic"}，
+        仅非 null 字段生效。mode 可选 "supersede"（默认）或 "overwrite"。
+    limit: 最多更新 N 条（正整数，两种模式均生效；逐条模式下不得小于 patches 数量）。
+    continue_on_error: true（默认）时单条失败不中断整批。
+    返回 {"outcomes": [...]}，每项含 index / unit_id / updated_unit（成功）
+    或 error / error_type（失败）。
+    """
+    return await _invoke(
+        "batch_update",
+        {
+            "selector": selector,
+            "patches": patches,
+            "limit": limit,
+            "continue_on_error": continue_on_error,
+        },
+        context=ctx,
+    )
+
+
+@mcp.tool()
 async def memory_delete(selector: dict, ctx: Context = None) -> list[str]:
     """
     按选择器删除记忆。selector 必须给出 unit_ids / tags / before / filters 之一

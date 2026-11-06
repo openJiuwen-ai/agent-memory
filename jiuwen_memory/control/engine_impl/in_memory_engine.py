@@ -34,6 +34,8 @@ from jiuwen_memory.common.type_def import (
     Scope,
     Segment,
 )
+from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
@@ -74,6 +76,8 @@ from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
     BackgroundJobAdmission,
     BackgroundJobStartResult,
+    BatchUpdateOutcome,
+    BatchUpdateResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -86,6 +90,7 @@ from jiuwen_memory.control.types import (
     PermissionContext,
     SweepResult,
     UpdateMode,
+    UpdateSelector,
 )
 from jiuwen_memory.ingest.hierarchy_hints import enrich_snapshot_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
@@ -174,6 +179,26 @@ def _permission_context_from_unit(unit: MemoryUnit) -> PermissionContext:
         tags=tuple(unit.tags),
         metadata={key: str(value) for key, value in unit.system_metadata.items()},
     )
+
+
+def _matches_update_selector(unit: MemoryUnit, selector: UpdateSelector) -> bool:
+    wanted_ids = set(selector.unit_ids)
+    wanted_tags = set(selector.tags)
+    if wanted_ids and unit.id not in wanted_ids:
+        return False
+    if wanted_tags and not wanted_tags.intersection(unit.tags):
+        return False
+    if selector.before is not None:
+        t_message = unit.temporal.t_message
+        if t_message is None or as_utc(t_message) >= as_utc(selector.before):
+            return False
+    if selector.after is not None:
+        t_message = unit.temporal.t_message
+        if t_message is None or as_utc(t_message) <= as_utc(selector.after):
+            return False
+    if selector.filters is not None and not matches_memory_unit(unit, selector.filters):
+        return False
+    return True
 
 
 def _expand_provenance_descendants(
@@ -554,6 +579,25 @@ class InMemoryEngine(MemoryEngine):
                     contexts.append(_permission_context_from_unit(unit))
         return contexts
 
+    async def permission_contexts_for_update(
+        self, selector: UpdateSelector
+    ) -> list[PermissionContext]:
+        if selector.scope is not None:
+            _ensure_local_scope(selector.scope)
+        scopes = (
+            [selector.scope]
+            if selector.scope is not None
+            else [scope for scope in self._kv.scopes() if not scope.space]
+        )
+        if not scopes:
+            scopes = [Scope()]
+        contexts: list[PermissionContext] = []
+        for scope in scopes:
+            for unit in self._list_units(scope):
+                if _matches_update_selector(unit, selector):
+                    contexts.append(_permission_context_from_unit(unit))
+        return contexts
+
     async def get(
         self, unit_id: str, scope: Scope, as_of: datetime | None = None
     ) -> MemoryUnit:
@@ -648,6 +692,65 @@ class InMemoryEngine(MemoryEngine):
             )
         return new
 
+    async def batch_update(
+        self, selector: UpdateSelector, patches: list[MemoryPatch], *,
+        continue_on_error: bool = True,
+    ) -> BatchUpdateResult:
+        if selector.scope is not None:
+            _ensure_local_scope(selector.scope)
+        scopes = (
+            [selector.scope]
+            if selector.scope is not None
+            else [scope for scope in self._kv.scopes() if not scope.space]
+        )
+        if not scopes:
+            scopes = [Scope()]
+        candidates: list[tuple[Scope, MemoryUnit]] = []
+        for scope in scopes:
+            for unit in self._list_units(scope):
+                if _matches_update_selector(unit, selector):
+                    candidates.append((scope, unit))
+        if selector.limit is not None and selector.limit > 0:
+            candidates = candidates[:selector.limit]
+        unified = len(patches) == 1
+        if not unified and selector.unit_ids:
+            id_order = {uid: i for i, uid in enumerate(selector.unit_ids)}
+            candidates.sort(key=lambda su: id_order.get(su[1].id, len(id_order)))
+        outcomes: list[BatchUpdateOutcome] = []
+        for index, (scope, unit) in enumerate(candidates):
+            patch = patches[0] if unified else patches[index]
+            try:
+                updated = await self.update(unit.id, scope, patch)
+                outcomes.append(
+                    BatchUpdateOutcome(index=index, unit_id=unit.id, updated_unit=updated)
+                )
+            except Exception as exc:
+                is_domain_error = isinstance(exc, AgentMemoryError)
+                if not is_domain_error:
+                    logger.exception("unexpected batch update failure at index %s", index)
+                outcomes.append(
+                    BatchUpdateOutcome(
+                        index=index,
+                        unit_id=unit.id,
+                        error=str(exc) if is_domain_error else "unexpected batch update failure",
+                        error_type=type(exc).__name__ if is_domain_error else "InternalError",
+                    )
+                )
+                if not continue_on_error:
+                    for skipped_index, (skipped_scope, skipped_unit) in enumerate(
+                        candidates[index + 1:], index + 1
+                    ):
+                        outcomes.append(
+                            BatchUpdateOutcome(
+                                index=skipped_index,
+                                unit_id=skipped_unit.id,
+                                error="skipped after previous item failed",
+                                error_type="Skipped",
+                            )
+                        )
+                    break
+        return BatchUpdateResult(outcomes=outcomes)
+
     async def delete(self, selector: DeleteSelector) -> list[str]:
         selector_is_empty = (
             not selector.unit_ids
@@ -678,6 +781,7 @@ class InMemoryEngine(MemoryEngine):
             if matches_delete_selector(unit, selector)
         ]
         affected = [unit.id for _, _, unit in matches]
+
         if not affected:
             logger.info(
                 "Engine.delete no matches: mode=%s scope=%s",

@@ -92,9 +92,9 @@ _invoke_blocking：credentials_for_transport → authenticated(Surface.MCP) → 
 
 ### 工具与参数
 
-工具集与 `MemoryAPI` 公开方法**全量对齐（38/38）**，命名规则
-`memory_<method>`：数据面 11 个（add/add_async/batch_add/batch_add_async/
-search/list/get/update/delete/read_md_file/edit_md_file）、任务与摄入 5 个（evolve/check_write/
+工具集与 `MemoryAPI` 公开方法**全量对齐（39/39）**，命名规则
+`memory_<method>`：数据面 12 个（add/add_async/batch_add/batch_add_async/
+search/list/get/update/batch_update/delete/read_md_file/edit_md_file）、任务与摄入 5 个（evolve/check_write/
 submit_ingest/job_status/job_cancel）、管理面 3 个（admin_get/set/all）、
 治理面 4 个（inspect/trace/audit/verify_audit）、授权 2 个（grant/revoke）、
 Space 管理 13 个（create/get/list/update/archive/delete_space、export_space、
@@ -103,7 +103,7 @@ space_usage、get/set_space_policy、list/add/remove_space_member）。
 - 参数名与 `MemoryAPI` 签名严格一致（`unit_id`/`top_k`/`with_trajectory`…），
   请求形状全部为扁平 `{"参数名": 值}`；`scope` 为对象
   `{"org","user","agent","session","space"}`，五维可给空串。
-- **参数与契约全量对齐（2026-09-15 起；2026-11-04 扩至 38 个工具）**：38 个工具的签名参数集合与
+- **参数与契约全量对齐（2026-09-15 起；2026-11-05 扩至 39 个工具）**：39 个工具的签名参数集合与
   `MemoryAPI` 契约完全相等——此前按「模型对话场景」精选缓发的可选参数
   （add/batch_add/submit_ingest/check_write 的 metadata 族与 source/occurred_at/
   assets/stream_id、search 的 filters/disclosure、list 的 memory_types/extensions/

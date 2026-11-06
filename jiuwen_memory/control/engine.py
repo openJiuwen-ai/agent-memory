@@ -41,6 +41,7 @@ from jiuwen_memory.storage.kv import KVStore
 
 from .base import ControlOperator
 from .types import (
+    BatchUpdateResult,
     BatchWriteItem,
     BatchWriteResult,
     Channel,
@@ -50,6 +51,7 @@ from .types import (
     MemoryPatch,
     PermissionContext,
     SweepResult,
+    UpdateSelector,
 )
 
 
@@ -165,6 +167,12 @@ class MemoryEngine(ControlOperator):
         """
 
     @abstractmethod
+    async def permission_contexts_for_update(
+        self, selector: UpdateSelector
+    ) -> list[PermissionContext]:
+        """解析 batch_update selector 会命中的候选 unit 权限上下文。"""
+
+    @abstractmethod
     async def get(
         self, unit_id: str, scope: Scope, as_of: datetime | None = None
     ) -> MemoryUnit:
@@ -195,6 +203,13 @@ class MemoryEngine(ControlOperator):
         原地覆写沿用同 id（旧内容仅留审计）。``scope`` 为已鉴权的目标范围；
         返回结果记忆单元。
         """
+
+    @abstractmethod
+    async def batch_update(
+        self, selector: UpdateSelector, patches: list[MemoryPatch], *,
+        continue_on_error: bool = True,
+    ) -> BatchUpdateResult:
+        """批量更新：按 selector 取候选 → 逐条调 update → 汇总结果。"""
 
     @abstractmethod
     async def delete(self, selector: DeleteSelector) -> list[str]:

@@ -21,6 +21,7 @@ from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.types import (
     BackgroundJobAdmission,
     BackgroundJobStartResult,
+    BatchUpdateResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -29,6 +30,7 @@ from jiuwen_memory.control.types import (
     EvolveTaskOptions,
     MemoryPatch,
     PermissionContext,
+    UpdateSelector,
 )
 
 
@@ -99,6 +101,14 @@ class MemoryCommandService:
 
     async def update(self, unit_id: str, scope: Scope, patch: MemoryPatch) -> MemoryUnit:
         return await self._engine.update(unit_id, scope, patch)
+
+    async def batch_update(
+        self, selector: UpdateSelector, patches: list[MemoryPatch], *,
+        continue_on_error: bool = True,
+    ) -> BatchUpdateResult:
+        return await self._engine.batch_update(
+            selector, patches, continue_on_error=continue_on_error
+        )
 
     def requires_update_preparation(self, unit: MemoryUnit, patch: MemoryPatch) -> bool:
         return self._engine.requires_update_preparation(unit, patch)
