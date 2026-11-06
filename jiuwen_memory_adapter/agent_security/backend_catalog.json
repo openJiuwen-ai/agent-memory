@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "backends": {
+    "jiuwen": {
+      "operations": [
+        {
+          "name": "jiuwen_memory_get",
+          "description": "按 ID 读取经授权的 jiuwen 脱敏记忆。",
+          "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "unit_id"
+            ],
+            "properties": {
+              "unit_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            }
+          },
+          "effect": "memory-read"
+        },
+        {
+          "name": "jiuwen_memory_list",
+          "description": "列出当前授权范围内的 jiuwen 脱敏记忆。",
+          "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            }
+          },
+          "effect": "memory-read"
+        },
+        {
+          "name": "jiuwen_memory_search",
+          "description": "检索当前授权范围内的 jiuwen 脱敏记忆。",
+          "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "query"
+            ],
+            "properties": {
+              "query": {
+                "type": "string"
+              },
+              "top_k": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            }
+          },
+          "effect": "memory-read"
+        }
+      ]
+    }
+  }
+}

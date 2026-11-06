@@ -52,7 +52,7 @@ openJiuwen **agent-memory** (also known as Jiuwen Memory) is a user-centric, hig
 | **Memory Retrieval** | Query understanding & denoising → Storage-preferred pipeline (recall/get/Fuser) → Reranker → relevance threshold → **progressive disclosure L0→L1→L2**, with observable retrieval trajectories and structured error returns |
 | **Memory Construction** | Six composable operator types: extractor / abstractor / associator / classifier / index_builder / evolver — covering the full pipeline from raw information to indexed memory |
 | **Storage Abstraction** | Unified `Storage` facade with six standard ports: **KV / Vector / Full-text / Graph / Fused / Filesystem** — capability discovery + two-tier security boundary, pluggable backends |
-| **Agent Plugins** | `agent_plugin/` provides integration with JiuwenSwarm; OpenClaw / Codex / Hermes ecosystems are also being planned |
+| **Agent Plugins** | `jiuwen_memory_adapter/` provides JiuwenSwarm integration; [MindVault SDK](jiuwen_memory_adapter/agent_security/README.md) adds sensitive-memory use and egress controls for explicitly managed openJiuwen agents |
 | **Evaluation Framework** | Two-layer evaluation: component-level IR metrics (Recall@k/MRR/nDCG, etc.) and end-to-end QA (LLM-as-judge), with built-in LoCoMo / LongMemEval adapters + smoke tests |
 
 ## Architecture Overview
@@ -195,7 +195,7 @@ Contributions to agent-memory are welcome. You can contribute in the following w
 
 **Important**: When merging PRs/MRs, please select `mem2.0` (the current development branch) as the base branch instead of the default `main`.
 
-Before contributing, please read the [Development Guidelines](.claude/CLAUDE.md) for code style, layering, and testing strategy. The project follows three contract categories — operators, plugins, and storage — please identify the appropriate layer in `docs/design/architecture.md` before proposing new features.
+Before contributing, please read the [Development Guidelines](AGENTS.md) for code style, layering, and testing strategy. The project follows three contract categories — operators, plugins, and storage — please identify the appropriate layer in `docs/design/architecture.md` before proposing new features.
 
 ## FAQ
 

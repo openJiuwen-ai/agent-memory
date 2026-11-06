@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>jiuwen 安全会话</title>
+<style>body{font:16px/1.5 system-ui;max-width:800px;margin:40px auto;padding:0 20px}textarea{box-sizing:border-box;width:100%;min-height:90px;font:inherit}button{font:inherit;padding:8px 16px;margin:8px 8px 8px 0}#transcript p{white-space:pre-wrap}#status{color:#495363}</style>
+<main><h1>jiuwen 安全会话</h1><div id="transcript" aria-live="polite"></div>
+<jiuwen-security-approvals endpoint="/security"></jiuwen-security-approvals>
+<p id="status" role="status">就绪</p><form id="chat"><label for="message">消息</label><textarea id="message" required></textarea>
+<button id="send" type="submit">发送</button><button id="cancel" type="button" disabled>中止本次运行</button></form></main>
+<script type="module" src="/security/widget.mjs"></script>
+<script type="module">
+const transcript=document.querySelector('#transcript'),status=document.querySelector('#status');
+let current=null;
+async function request(path,body){const r=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error();return await r.json()}
+function add(role,text){const p=document.createElement('p');p.textContent=role+'：'+text;transcript.append(p)}
+document.querySelector('#chat').onsubmit=async e=>{e.preventDefault();if(current)return;const text=document.querySelector('#message').value;add('用户',text);document.querySelector('#send').disabled=true;status.textContent='处理中，敏感外发将等待本会话确认';try{current=(await request('/run',{text})).run_id;document.querySelector('#cancel').disabled=false;while(current){const result=await request('/result',{run_id:current});if(result.status!=='running'){add('agent',result.content);break}await new Promise(r=>setTimeout(r,350))}}catch{status.textContent='会话请求未接受'}finally{current=null;document.querySelector('#send').disabled=false;document.querySelector('#cancel').disabled=true;status.textContent='本次运行结束'}};
+document.querySelector('#cancel').onclick=async()=>{if(current)await request('/cancel',{run_id:current})};
+</script></html>
