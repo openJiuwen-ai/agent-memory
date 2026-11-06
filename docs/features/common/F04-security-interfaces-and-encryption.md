@@ -4,11 +4,11 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-11-04 |
+| 日期 | 2026-11-06 |
 | 影响范围 | `jiuwen_memory/common/security/`、API PEP、各接入形态、存储加密及相关模块规约 |
 | 验证范围 | 安全契约、第三方替换、故障、生命周期及各接入面业务回归；见「验证要求」 |
 | 规范契约 | [S10 安全横切契约](../../specs/S10-security.md)、[S02 记忆接口层](../../specs/S02-memory-api.md)、[S07 公共组件层](../../specs/S07-common.md)、[S06 存储层](../../specs/S06-storage.md) |
-| Refs | #143、#270、#280 |
+| Refs | #143、#270、#280、#293 |
 
 ## 背景与维护边界
 
@@ -235,9 +235,17 @@ allowed_spaces 使用带 encoding 标记的 JSON，不据内容外观猜编码�
 凭据与会话绑定；普通主体、角色或 metadata 不自行产生代理关系。
 
 PR1 DEV 映射只证明单主体，没有凭据到委托记录的绑定入口。经确认采用私有服务端
-装配过渡：`security.<name>.params` 下指定同源 delegation_store、指纹到 delegation_id
-的 delegation_bindings，以及可选可信初始化 delegations。不是原始 token 到用户的
-映射，不接受 HTTP payload 或客户端 header 指定被代理人；初始化也不能复活撤销记录。
+装配过渡：委托存储只由 Authorizer 选择，Security 在启用凭据委托绑定时通过公开
+DelegationSourcesCapability 复用其唯一实际真源（按对象身份去重）。不按 target、实例名
+或私有字段推测，也不回退构建 `default`；没有或有多个不同真源时拒绝启动，重复暴露
+同一个实例则允许。未启用委托绑定时不增加这一唯一性要求。
+
+委托相关的 `security.<name>.params` 配置只保留指纹到 delegation_id 的 delegation_bindings，以及可选
+可信初始化 delegations；不再接受 delegation_store 选择项，旧配置需删除该项。拒绝保留
+双处选择或隐式默认回退，因为它们会让认证绑定和授权/撤销各自选择存储，增加配错风险。
+Authorizer 仍可独立用于业务判定，依赖生命周期由统一装配根管理，不转移到 Authorizer。
+这不是原始 token 到用户的映射，不接受 HTTP payload 或客户端 header 指定被代理人；
+初始化也不能复活撤销记录。
 
 代理代写适配限于 USER 级单主体 agent 与具名用户委托。PEP 由有效记录派生资源归属和
 作者标记，认证 actor 仍是实际 agent；PDP 再复核真源与委托人当前空间内容权。
