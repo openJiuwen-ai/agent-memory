@@ -220,7 +220,11 @@ class LocalMarkdownStore(MarkdownStore):
             blocks = [b for b in raw_blocks if b]
 
             # 标题只用于消歧；漂移时仅在正文唯一的情况下退化匹配。
-            matching_bodies = [b for b in blocks if b.split("\n", 1)[-1] == old_content]
+            matching_bodies = []
+            for block in blocks:
+                parts = block.split("\n", 1)
+                if len(parts) == 2 and parts[1] == old_content:
+                    matching_bodies.append(block)
             title_found = any(
                 b.split("\n", 1)[0].strip() == f"# {old_title}"
                 for b in matching_bodies
@@ -397,7 +401,8 @@ class LocalMarkdownStore(MarkdownStore):
         切块、不要求 old_text 是整块正文），且**校验唯一性**（不唯一抛 ValidationError，
         非首版「取首个」）。对齐 agent-core edit_memory 契约（old_text 任意文本、跨块均可、
         必须唯一）。块结构重组（合并/拆分）交由上层 ``_supersede_shadow_for_md`` 按块解析
-        处理，md 侧只保证文件级替换的原子性与唯一性。
+        处理。USER.md/MEMORY.md 的单行正文编辑还会同步刷新未显式修改标题中的唯一
+        旧事实片段；无对应片段、跨块编辑或 daily 文件均不自动改写标题。
 
         失败语义：文件不存在 / old_text 未找到抛 ``NotFoundError``；old_text 不唯一抛
         ``ValidationError``；原子写失败经 :func:`_safe_restore` 回写读出的旧全文后重抛
