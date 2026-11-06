@@ -183,11 +183,14 @@ def _absolute_range(text: str) -> ExtractedTimeWindow:
         try:
             start = _month_or_year_start(range_match.group("sy"), range_match.group("sm"))
             end_start = _month_or_year_start(range_match.group("ey"), range_match.group("em"))
-        except ValueError:
-            # 非法年月（如「2026年13月」）：与单日期 chinese 分支同构，返回空窗
-            # 不下推时间约束，而非让 ValueError 穿透使本次检索整体降级。
+            # end 计算须同在 try 内：区间右端 9999 年经 _next_month/_next_year
+            # 越界（year 10000）抛 ValueError，与非法年月走同一空窗回落。
+            end = _next_month(end_start) if range_match.group("em") else _next_year(end_start)
+        except (ValueError, OverflowError):
+            # 非法年月（如「2026年13月」）或年份越界（如「2020年到9999年」）：
+            # 与单日期 chinese 分支同构，返回空窗不下推时间约束，而非让异常
+            # 穿透使本次检索整体降级。
             return ExtractedTimeWindow()
-        end = _next_month(end_start) if range_match.group("em") else _next_year(end_start)
         precision = EventTimePrecision.YEAR
         if range_match.group("sm") or range_match.group("em"):
             precision = EventTimePrecision.MONTH
@@ -205,9 +208,15 @@ def _absolute_range(text: str) -> ExtractedTimeWindow:
             precision = EventTimePrecision.UNKNOWN
             if start_precision == end_precision:
                 precision = start_precision
+            try:
+                # 排他端计算：区间右端 9999-12 经 _exclusive_end 越界
+                # （ValueError/OverflowError），同样空窗回落。
+                end = _exclusive_end(end_start, end_precision)
+            except (ValueError, OverflowError):
+                return ExtractedTimeWindow()
             return ExtractedTimeWindow(
                 start,
-                _exclusive_end(end_start, end_precision),
+                end,
                 precision,
                 TemporalIntentSource.RULE,
             )
@@ -225,11 +234,14 @@ def _absolute_range(text: str) -> ExtractedTimeWindow:
                 int(chinese.group("month")) if chinese.group("month") else None,
                 int(chinese.group("day")) if chinese.group("day") else None,
             )
-        except ValueError:
+            # 排他端计算同在 try 内：9999 年 12 月经 _next_month 越界
+            # （year 10000）抛 ValueError，同样空窗回落。
+            end = _exclusive_end(start, precision)
+        except (ValueError, OverflowError):
             return ExtractedTimeWindow()
         return ExtractedTimeWindow(
             start,
-            _exclusive_end(start, precision),
+            end,
             precision,
             TemporalIntentSource.RULE,
         )
@@ -238,9 +250,15 @@ def _absolute_range(text: str) -> ExtractedTimeWindow:
     if iso:
         start, precision = _parse_partial_date(iso.group(1))
         if start is not None:
+            try:
+                # 排他端计算：9999-12-31 经 _exclusive_end 越过 datetime.max
+                # 抛 OverflowError（DAY 精度走加法），同样空窗回落。
+                end = _exclusive_end(start, precision)
+            except (ValueError, OverflowError):
+                return ExtractedTimeWindow()
             return ExtractedTimeWindow(
                 start,
-                _exclusive_end(start, precision),
+                end,
                 precision,
                 TemporalIntentSource.RULE,
             )
@@ -272,15 +290,17 @@ def _relative_range(
         flags=re.IGNORECASE,
     )
     if match:
-        amount = int(match.group(1) or match.group(3))
-        unit = (match.group(2) or match.group(4)).casefold()
-        week_units = {"周", "星期", "week", "weeks"}
         try:
+            # int 转换须在 try 内：正则 \d+ 可匹配超长数字串，CPython 3.11+ 对
+            # int(str) 有 4300 位上限，超限抛 ValueError（非 OverflowError）。
+            amount = int(match.group(1) or match.group(3))
+            unit = (match.group(2) or match.group(4)).casefold()
+            week_units = {"周", "星期", "week", "weeks"}
             delta = timedelta(weeks=amount) if unit in week_units else timedelta(days=amount)
             return now - delta, now, EventTimePrecision.DATETIME
-        except OverflowError:
-            # N 超出 datetime 可表示范围：语义上等价于全部历史，返回 None
-            # （未命中），上层按空窗处理而非让 OverflowError 穿透整条链路。
+        except (OverflowError, ValueError):
+            # N 超出 datetime 可表示范围或超出 int 转换上限：语义上等价于全部
+            # 历史，返回 None（未命中），上层按空窗处理而非让异常穿透整条链路。
             return None
 
     lowered = text.casefold()

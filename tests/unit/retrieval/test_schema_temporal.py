@@ -905,3 +905,25 @@ def test_extractor_relative_time_overflow_returns_empty_window(text: str) -> Non
 
     assert result == ExtractedTimeWindow()
     assert result.found is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "过去" + "9" * 5000 + "天",       # int(str) 4300 位上限 → ValueError
+        "2020年到9999年的会议",           # 区间右端 9999 年 → _next_year 越界 ValueError
+        "9999年12月",                     # chinese 单日期 → _exclusive_end 越界 ValueError
+        "9999-12-31",                     # iso 单日期 → DAY 精度加法越过 datetime.max OverflowError
+        "2020-01到9999-12",               # iso 区间 → 右端 _exclusive_end 越界 ValueError
+    ],
+)
+def test_extractor_boundary_years_and_huge_digits_return_empty_window(text: str) -> None:
+    """年份越界（9999）与超长数字串（int 4300 位上限）与 timedelta 溢出同构：
+    一律空窗回落，不得穿透 extract()。"""
+    extractor = SchemaTimeExtractor(now=lambda: datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
+
+    result = extractor.extract(text)
+
+    assert result == ExtractedTimeWindow()
+    assert result.found is False
