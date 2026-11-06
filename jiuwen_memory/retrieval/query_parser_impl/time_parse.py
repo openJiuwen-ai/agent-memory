@@ -51,8 +51,13 @@ def _rule_based(text: str, now: datetime) -> TimeWindow:
     m = re.search(r"(最近|过去|近)\s*(\d+)\s*(天|日|周|星期)", t)
     if m:
         n = int(m.group(2))
-        delta = timedelta(weeks=n) if m.group(3) in ("周", "星期") else timedelta(days=n)
-        return now - delta, now
+        try:
+            delta = timedelta(weeks=n) if m.group(3) in ("周", "星期") else timedelta(days=n)
+            return now - delta, now
+        except OverflowError:
+            # N 超出 datetime 可表示范围（如「最近1000000000天」）：语义上等价于
+            # 全部历史，不下推时间窗；继续尝试后续规则，最终自然回落 (None, None)。
+            pass
 
     if "前天" in t:
         return _day_bounds(now - timedelta(days=2))

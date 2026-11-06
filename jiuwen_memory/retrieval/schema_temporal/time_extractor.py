@@ -180,8 +180,13 @@ def _absolute_range(text: str) -> ExtractedTimeWindow:
         text,
     )
     if range_match:
-        start = _month_or_year_start(range_match.group("sy"), range_match.group("sm"))
-        end_start = _month_or_year_start(range_match.group("ey"), range_match.group("em"))
+        try:
+            start = _month_or_year_start(range_match.group("sy"), range_match.group("sm"))
+            end_start = _month_or_year_start(range_match.group("ey"), range_match.group("em"))
+        except ValueError:
+            # 非法年月（如「2026年13月」）：与单日期 chinese 分支同构，返回空窗
+            # 不下推时间约束，而非让 ValueError 穿透使本次检索整体降级。
+            return ExtractedTimeWindow()
         end = _next_month(end_start) if range_match.group("em") else _next_year(end_start)
         precision = EventTimePrecision.YEAR
         if range_match.group("sm") or range_match.group("em"):
@@ -270,8 +275,13 @@ def _relative_range(
         amount = int(match.group(1) or match.group(3))
         unit = (match.group(2) or match.group(4)).casefold()
         week_units = {"周", "星期", "week", "weeks"}
-        delta = timedelta(weeks=amount) if unit in week_units else timedelta(days=amount)
-        return now - delta, now, EventTimePrecision.DATETIME
+        try:
+            delta = timedelta(weeks=amount) if unit in week_units else timedelta(days=amount)
+            return now - delta, now, EventTimePrecision.DATETIME
+        except OverflowError:
+            # N 超出 datetime 可表示范围：语义上等价于全部历史，返回 None
+            # （未命中），上层按空窗处理而非让 OverflowError 穿透整条链路。
+            return None
 
     lowered = text.casefold()
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
