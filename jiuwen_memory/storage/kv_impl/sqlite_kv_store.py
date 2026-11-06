@@ -14,6 +14,7 @@ BLOB、``expires_at`` 为过期 Unix 秒（NULL 永不过期）。scope 各维�
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -239,6 +240,14 @@ class SQLiteKVStore(KVStore):
             self._conn.close()
             self._conn = None
             self._conn_path = None
+        # sqlite3.connect creates the database file but not intermediate
+        # directories. Docs ship nested paths such as ``./data/memory.db`` and
+        # late-bound path changes can point at a fresh tree, so create the
+        # parent first (the shadow index already does the same for shadow.db).
+        if path != ":memory:":
+            parent = os.path.dirname(os.path.abspath(path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
         self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._conn_path = path
         self._conn.execute(_SCHEMA)
