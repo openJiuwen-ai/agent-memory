@@ -1,0 +1,19 @@
+# MindVault SDK：由宿主读取此段，传给 SecurityPlugin。
+# 使用说明见 README.md；宿主分别传入 agent_security 和 policy。
+# 仅解析配置不安装门禁；使用 plugin.model/tool/agent 等高层入口完成受控装配。
+# 自定义驱动由可信宿主显式注册；本地 SDK 后端与框架驱动独立配置。
+agent_security:
+  framework: openjiuwen  # 首个 PR 仅提供 openJiuwen；其他驱动由后续 PR 追加。
+  memory_backend: jiuwen  # 可省略；后端接口目录独立于 framework 注册，不规定统一 CRUD。
+
+# 宿主将此独立字段传给 SecurityPlugin(policy=...)。
+# 策略与框架选型分开配置，不因用户批准而扩大实际目标权限。
+policy:
+  schema_version: 1
+  version: deployment-1
+  targets:
+    - target: approved-target
+      hooks: [BEFORE_LLM_CALL, BEFORE_TOOL_CALL, BEFORE_AGENT_RESPONSE, BEFORE_AGENT_MESSAGE]
+      actions: ["*"]
+      max_level: S3
+      allow_original: true

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "MindVaultSDK"
+version = "0.1.0"
+description = "MindVault SDK for jiuwen agent security: hooks and sensitive egress approval"
+requires-python = ">=3.11"
+dependencies = ["regex>=2024.11.6"]
+
+[tool.setuptools]
+# 保留仓库内的公开导入路径；父目录可由 Python namespace package 提供。
+packages = [
+    "jiuwen_memory_adapter.agent_security",
+    "jiuwen_memory_adapter.agent_security.adapters",
+    "jiuwen_memory_adapter.agent_security.detectors",
+]
+package-dir = { "jiuwen_memory_adapter.agent_security" = "." }
+include-package-data = false
+
+[tool.setuptools.package-data]
+"jiuwen_memory_adapter.agent_security" = ["config.example.yaml", "backend_catalog.json", "policy_schema.json", "web/*.mjs", "web/*.html"]
