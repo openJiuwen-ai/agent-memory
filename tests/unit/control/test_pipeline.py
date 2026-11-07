@@ -78,10 +78,6 @@ def _kernel_config() -> Config:
                 "coding": {"target": "named", "params": {"name": "coding"}},
             },
             "classifier": {"default": {"target": "keyword"}},
-            "evolver": {"default": {
-                "target": "orchestrating",
-                "params": {"domain_store": "default", "index_builder": "default"},
-            }},
             "pipeline": {
                 "default": {
                     "target": "metadata",

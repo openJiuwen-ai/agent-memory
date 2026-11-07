@@ -26,7 +26,6 @@ from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
     _resolve_message_store,
-    _resolve_read_domain,
 )
 from jiuwen_memory.construction.evolver_impl.schema_entity_registry import SchemaEntityRegistry
 from jiuwen_memory.construction.evolver_impl.schema_entity_resolver import SchemaEntityResolver
@@ -46,7 +45,6 @@ from jiuwen_memory.construction.source_update import (
     SourceUpdatePlan,
     SourceUpdateSupport,
 )
-from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore, load_units
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
@@ -76,7 +74,6 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         schema_property_merge_planner: SchemaPropertyMergePlanner | None = None,
         *,
         hierarchy_composer: HierarchyComposer | None = None,
-        domain_store: DomainStore | None = None,
         kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 0.9,
@@ -92,7 +89,6 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             llm=llm,
             layer_annotator=layer_annotator,
             hierarchy_composer=hierarchy_composer,
-            domain_store=domain_store,
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
         )
@@ -344,7 +340,6 @@ def _build(config):
         abstractor=AbstractorProducer.dep(config, default="concat"),
         associator=AssociatorProducer.dep(config, default="keyword"),
         index_builder=hierarchy_index,
-        domain_store=_resolve_read_domain(config, hierarchy_index),
         storage=storage,
         message_store=_resolve_message_store(config),
         dedup=DedupProducer.dep(config, default=dedup_default),

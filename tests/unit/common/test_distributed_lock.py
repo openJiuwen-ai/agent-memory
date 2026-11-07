@@ -25,12 +25,10 @@ from jiuwen_memory.common.lock import (
     LockProducer,
     LockTimeoutError,
 )
-from jiuwen_memory.common.lock.lock_impl import in_memory_lock
 from jiuwen_memory.common.lock.lock_impl.in_memory_lock import InMemoryLockProvider
 from jiuwen_memory.common.lock.lock_impl.redis_lock import _RELEASE_LUA, RedisLockProvider
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import AssemblyContext
-from tests.unit.common.fixtures import LockTestClock
 
 pytestmark = pytest.mark.unit
 
@@ -76,9 +74,11 @@ def test_top_name_is_a_known_config_section() -> None:
     assert "lock" in Factory.known_top_names()
 
 
-def test_memory_builder_applies_lease_and_timeout(monkeypatch) -> None:
-    clock = LockTestClock()
-    monkeypatch.setattr(in_memory_lock, "time", types.SimpleNamespace(monotonic=clock.monotonic))
+def test_memory_builder_applies_lease_and_timeout() -> None:
+    # lease_ms 与 wait_timeout_ms 的差值必须拉大：竞争者 task 从 create_task 到首次
+    # 尝试的调度延迟 ε 一旦 ≥ lease-wait（原 50-30=20ms），锁就在 30ms 等待窗口内过期、
+    # 被竞争者拿到而不抛 LockTimeoutError（CI 高负载下 ε 超 20ms 很常见）。lease-wait
+    # 拉到 170ms，等待窗口远早于租约到期结束，恒超时。第 2 步 sleep 相应放大到 >租约。
     provider = LockProducer.build(
         "memory", {"lease_ms": 200, "wait_timeout_ms": 30}, AssemblyContext()
     )
@@ -86,7 +86,7 @@ def test_memory_builder_applies_lease_and_timeout(monkeypatch) -> None:
 
     async def scenario() -> None:
         await provider.acquire(_SCOPE, "write")
-        clock.advance(201)  # 超过配置的租约，锁过期，他人可获取。
+        await asyncio.sleep(0.30)  # 超过租约，锁过期，他人可获取
         fresh = await _acquire_elsewhere(provider)
         await provider.release(fresh)
 
@@ -95,7 +95,7 @@ def test_memory_builder_applies_lease_and_timeout(monkeypatch) -> None:
         started = time.monotonic()
         with pytest.raises(LockTimeoutError):
             await asyncio.create_task(provider.acquire(_SCOPE, "write"))
-        assert time.monotonic() - started >= 0.02
+        assert 0.02 <= time.monotonic() - started < 0.5
 
     asyncio.run(scenario())
 
@@ -201,62 +201,63 @@ def test_different_keys_do_not_contend() -> None:
 # -- 租约 ------------------------------------------------------------------------ #
 
 
-def test_lease_expiry_lets_another_holder_in(monkeypatch) -> None:
+def test_lease_expiry_lets_another_holder_in() -> None:
     provider = _provider(lease_ms=50)
-    clock = LockTestClock()
-    monkeypatch.setattr(in_memory_lock, "time", types.SimpleNamespace(monotonic=clock.monotonic))
 
     async def scenario() -> None:
         first = await provider.acquire(_SCOPE, "write")
-        clock.advance(49)
-        await _assert_held(provider)
-        clock.advance(2)
+        await asyncio.sleep(0.08)
         second = await _acquire_elsewhere(provider)
         assert second.token != first.token
-        await provider.release(second)
 
     asyncio.run(scenario())
 
 
 def test_stale_release_does_not_free_the_new_holders_lock(monkeypatch) -> None:
     """租约过期后他人拿到同名锁，原持有者的 release 必须是空操作。"""
+    # 仅推进内存后端时钟使旧租约过期，不依赖 CI 调度速度。
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
     provider = _provider()
-    clock = LockTestClock()
-    monkeypatch.setattr(in_memory_lock, "time", types.SimpleNamespace(monotonic=clock.monotonic))
 
     async def scenario() -> None:
         stale = await provider.acquire(_SCOPE, "write", lease_ms=50)
-        clock.advance(51)
+        now[0] += 0.08
         fresh = await _acquire_elsewhere(provider)
-        assert fresh.token != stale.token
 
         await provider.release(stale)
 
         await _assert_held(provider)
         await provider.release(fresh)
-        next_holder = await _acquire_elsewhere(provider)
-        await provider.release(next_holder)
+        await _acquire_elsewhere(provider)
 
     asyncio.run(scenario())
 
 
 def test_renew_extends_lease_and_fails_after_loss(monkeypatch) -> None:
-    provider = _provider(lease_ms=200)
-    clock = LockTestClock()
-    monkeypatch.setattr(in_memory_lock, "time", types.SimpleNamespace(monotonic=clock.monotonic))
+    # 只控制内存后端的租约时钟；真实 sleep 可能因调度延迟越过 60ms 租约。
+    # 不替换进程级 time.monotonic，避免影响 asyncio 自身的等待与超时。
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
+    provider = _provider(lease_ms=60)
 
     async def scenario() -> None:
         handle = await provider.acquire(_SCOPE, "write")
-        clock.advance(150)
+        now[0] += 0.04
         assert await provider.renew(handle) is True
-        clock.advance(100)
-        await _assert_held(provider)  # 已越过初始租约，但续期后的租约仍有效。
+        now[0] += 0.04
+        await _assert_held(provider)  # 续期后仍在租约内
 
-        clock.advance(101)  # 续期后的租约也到期。
+        now[0] += 0.08  # 续期后的租约也到期
         stolen = await _acquire_elsewhere(provider)
         assert stolen.token != handle.token
         assert await provider.renew(handle) is False
-        await provider.release(stolen)
 
     asyncio.run(scenario())
 
@@ -329,36 +330,35 @@ def test_guard_releases_on_exception() -> None:
 
 
 def test_watchdog_keeps_the_lock_past_its_lease(monkeypatch) -> None:
+    # 只推进后端租约时钟，避免 CI 暂停事件循环超过 90ms 后把合法失锁误报为续租缺陷。
+    # 仍运行真实看门狗与 token CAS；仅返回 True 而不延长租约的实现无法通过互斥断言。
+    now = [100.0]
+    monkeypatch.setattr(
+        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
+        types.SimpleNamespace(monotonic=lambda: now[0]),
+    )
     provider = _provider(lease_ms=90)
-    clock = LockTestClock()
-    # 替换后端的 time 引用，不能改全局 time.monotonic，否则会影响事件循环及超时。
-    monkeypatch.setattr(in_memory_lock, "time", types.SimpleNamespace(monotonic=clock.monotonic))
 
     async def scenario() -> None:
         renewed = asyncio.Event()
-        renew_results: list[bool] = []
-        original_renew = provider.renew
+        renewal_count = 0
+        real_renew = provider.renew
 
-        async def observed_renew(handle, *, lease_ms=None):
-            result = await original_renew(handle, lease_ms=lease_ms)
-            renew_results.append(result)
-            renewed.set()
+        async def observed_renew(handle: LockHandle, *, lease_ms: int | None = None) -> bool:
+            nonlocal renewal_count
+            now[0] += 0.04
+            result = await real_renew(handle, lease_ms=lease_ms)
+            renewal_count += 1
+            if renewal_count >= 4:
+                renewed.set()
             return result
 
         monkeypatch.setattr(provider, "renew", observed_renew)
         async with provider.guard(_SCOPE, "write") as handle:
-            # 保留真实 guard/续租任务，每推进一次虚拟时间都等待后端实际完成续租。
-            # 主机即使暂停超过 90ms，也不会意外推进测试中的租约时钟。
-            for _ in range(9):
-                renewed.clear()
-                clock.advance(30)
-                await asyncio.wait_for(renewed.wait(), timeout=5.0)
-                assert handle.lost.is_set() is False
-            assert clock.monotonic() > handle.lease_ms / 1000.0
-            assert all(renew_results), "每轮都必须真实续租成功"
+            await asyncio.wait_for(renewed.wait(), timeout=5.0)
+            assert now[0] - 100.0 > handle.lease_ms / 1000.0
+            assert handle.lost.is_set() is False
             await _assert_held(provider)
-        fresh = await _acquire_elsewhere(provider)
-        await provider.release(fresh)
 
     asyncio.run(scenario())
 

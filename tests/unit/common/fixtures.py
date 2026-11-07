@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""公共类型、codec 与锁测试的确定性构造辅助。"""
+"""树结构类型和 codec 测试的确定性构造辅助。"""
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from jiuwen_memory.common.type_def import (
@@ -67,16 +67,3 @@ def with_hierarchy(unit: MemoryUnit, value: object) -> MemoryUnit | None:
     payload = json.loads(dumps(unit))
     payload["hierarchy"] = value
     return loads(json.dumps(payload).encode("utf-8"))
-
-
-@dataclass
-class LockTestClock:
-    """仅控制锁后端的租约时钟，不改变 asyncio 使用的真实调度时钟。"""
-
-    elapsed_ms: int = 0
-
-    def monotonic(self) -> float:
-        return self.elapsed_ms / 1000.0
-
-    def advance(self, milliseconds: int) -> None:
-        self.elapsed_ms += milliseconds

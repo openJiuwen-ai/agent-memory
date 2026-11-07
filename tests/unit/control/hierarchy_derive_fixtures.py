@@ -27,5 +27,5 @@ def derive_job(harness: HierarchyJobHarness, clock: DeriveClock) -> HierarchyDer
     return HierarchyDeriveJob(harness.home, HierarchyDeriveDependencies(
         HierarchyJobDependencies(harness.kv, harness.evolver), DictPolicyManager({
             "hierarchy.enabled": "true", "hierarchy.auto_derive": "true",
-        }), lambda scope: None, clock,
+        }), clock,
     ), HierarchyDeriveOptions(interval=1))
