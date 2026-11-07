@@ -9,10 +9,6 @@
 
 from __future__ import annotations
 
-import time
-
-from jiuwen_memory.common._import_support import import_required
-
 # The names below are kept as the storage package's backward-compatible import surface.
 # pylint: disable=unused-import
 from jiuwen_memory.common._support import (  # noqa: F401
@@ -26,34 +22,9 @@ from jiuwen_memory.common._support import (  # noqa: F401
     scope_segments,
     wrap_backend,
 )
-from jiuwen_memory.common.errors import BackendError
-from jiuwen_memory.common.log import get_logger
 
 # pylint: enable=unused-import
 from jiuwen_memory.common.type_def import Scope
-
-logger = get_logger(__name__)
-
-
-def preload_backend(module_name: str) -> None:
-    """装配时加载已选后端，归一导入期间的普通异常；连接和索引仍惰性初始化。"""
-    started = time.perf_counter()
-    logger.info("backend dependency import started: %s", module_name)
-    try:
-        import_required(module_name)
-    except Exception as exc:  # 三方模块初始化也可能抛 RuntimeError 等普通异常
-        logger.error(
-            "backend dependency import failed: %s elapsed=%.3fs",
-            module_name, time.perf_counter() - started,
-        )
-        raise BackendError(
-            f"{module_name} dependency failed to load; "
-            f"install {module_name} and check its native dependencies"
-        ) from exc
-    logger.info(
-        "backend dependency import completed: %s elapsed=%.3fs",
-        module_name, time.perf_counter() - started,
-    )
 
 
 def scope_dims(scope: Scope) -> list[tuple[str, str]]:

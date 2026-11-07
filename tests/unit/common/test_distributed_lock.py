@@ -213,19 +213,13 @@ def test_lease_expiry_lets_another_holder_in() -> None:
     asyncio.run(scenario())
 
 
-def test_stale_release_does_not_free_the_new_holders_lock(monkeypatch) -> None:
+def test_stale_release_does_not_free_the_new_holders_lock() -> None:
     """租约过期后他人拿到同名锁，原持有者的 release 必须是空操作。"""
-    # 仅推进内存后端时钟使旧租约过期，不依赖 CI 调度速度。
-    now = [100.0]
-    monkeypatch.setattr(
-        "jiuwen_memory.common.lock.lock_impl.in_memory_lock.time",
-        types.SimpleNamespace(monotonic=lambda: now[0]),
-    )
     provider = _provider()
 
     async def scenario() -> None:
         stale = await provider.acquire(_SCOPE, "write", lease_ms=50)
-        now[0] += 0.08
+        await asyncio.sleep(0.08)
         fresh = await _acquire_elsewhere(provider)
 
         await provider.release(stale)

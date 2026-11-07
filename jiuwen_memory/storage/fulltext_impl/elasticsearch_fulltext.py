@@ -7,8 +7,7 @@ CRUD，``search`` 走 ``match`` 关键词检索（BM25）。``scope`` 为方法�
 约束在该 scope 内（对非空维度施加 ``term`` 过滤），实现原生隔离（§5.2 / §7）；
 ``id`` 是 scope 内逻辑主键，物理 ``_id`` 由 scope+id 生成，``filters`` 仅承载 scope 之外的谓词。
 
-工厂在装配期预加载 ``elasticsearch``，连接和建索引仍惰性执行；
-未安装/未就绪不影响 ``import storage``。
+``elasticsearch`` 客户端惰性导入与连接，未安装/未就绪不影响 ``import storage``。
 目标客户端 API 为 elasticsearch-py 8.x。
 """
 
@@ -35,7 +34,6 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.storage.fulltext import FulltextProducer
 
 from .._support import (
-    preload_backend,
     read_ssl_config,
     require_tls_scheme,
     scope_dims,
@@ -493,7 +491,7 @@ def _build(config):
             param="params.hosts",
         )
         options["ca_certs"] = ssl.ca_cert
-    store = ElasticsearchFulltextStore(
+    return ElasticsearchFulltextStore(
         hosts=hosts,
         index=Factory.cfg_get(config, "index", "agent_memory_fulltext"),
         username=Factory.cfg_get(config, "username"),
@@ -505,5 +503,3 @@ def _build(config):
         config_source=ConfigSourceProducer.get_cached("default"),
         **options,
     )
-    preload_backend("elasticsearch")
-    return store
