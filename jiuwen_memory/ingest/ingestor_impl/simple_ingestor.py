@@ -6,6 +6,9 @@
 LLM 分类/抽取 prompt（同步写路径分钟级阻塞：add 500KB → 全文单发 LLM 3×300s
 超时 ≈900s 无响应）。按段落聚合基本无信息丢失，单段超长时硬切兜底；
 ``max_unit_chars <= 0`` 关闭切分，保持旧行为。
+
+来源标识（construction F10）：调用方未显式给 ``system_metadata["origin"]`` 时默认写 ``original``；
+派生记忆的 ``inferred`` 由构建层产出算子自己写。
 """
 
 from __future__ import annotations
@@ -19,7 +22,14 @@ from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_suppor
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
-from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Temporal
+from jiuwen_memory.common.type_def import (
+    ORIGIN_KEY,
+    ORIGIN_ORIGINAL,
+    MemoryUnit,
+    RawPayload,
+    Segment,
+    Temporal,
+)
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.hierarchy_hints import extract_hierarchy_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
@@ -71,6 +81,8 @@ class SimpleIngestor(Ingestor):
                 if total > 1:
                     system_metadata["_part"] = part
                     system_metadata["_parts"] = total
+                if system_metadata.get(ORIGIN_KEY) in (None, ""):
+                    system_metadata[ORIGIN_KEY] = ORIGIN_ORIGINAL
                 units.append(
                     MemoryUnit(
                         id=str(uuid.uuid4()),

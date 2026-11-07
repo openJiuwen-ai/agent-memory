@@ -6,6 +6,9 @@
 - 含流程词（步骤/流程/先…然后/如何…）→ PROCEDURAL（怎么做）；
 - 其余维持 EPISODIC（发生过什么）。
 真实实现会用 LLM / FeatureExtractor 做多维分类，这里仅作可复现的占位。
+
+重要度（F10）同款按词判类别（偏好词→preference、规则词→rule、其余 default），按
+``importance_category_map`` 查表补写；调用方已显式给值时不覆盖。
 """
 
 from __future__ import annotations
@@ -14,11 +17,16 @@ from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_lo
 from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
+from jiuwen_memory.construction.common import (
+    fill_missing_importance,
+    importance_category_map_from_config,
+)
 
 logger = get_logger(__name__)
 
 _SEMANTIC = ("喜欢", "偏好", "讨厌", "习惯", "总是", "喜爱")
 _PROCEDURAL = ("步骤", "流程", "先", "然后", "如何", "怎么", "方法")
+_RULE = ("永远不要", "必须", "禁止", "一律")
 _TOPIC = {
     "coffee": ("咖啡", "拿铁", "美式", "燕麦奶"),
     "meeting": ("评审", "会议", "团队"),
@@ -28,6 +36,9 @@ _TOPIC = {
 
 class KeywordClassifier(Classifier):
     """关键词启发式分类：设定 tier，并追加一个主题标签。"""
+
+    def __init__(self, importance_category_map: dict[str, str] | None = None) -> None:
+        self._importance_category_map = importance_category_map
 
     def operator_type(self) -> OperatorType:
         return OperatorType.CLASSIFIER
@@ -44,6 +55,9 @@ class KeywordClassifier(Classifier):
             topic = self._topic(unit.content)
             if topic and topic not in unit.tags:
                 unit.tags.append(topic)
+            fill_missing_importance(
+                unit, self._importance_category(unit.content), self._importance_category_map
+            )
             logger.info(
                 "KeywordClassifier: unit id=%s content=%s → tier=%s→%s, "
                 "topic=%s, tags=%s→%s",
@@ -65,6 +79,14 @@ class KeywordClassifier(Classifier):
             return MemoryTier.PROCEDURAL
         return MemoryTier.EPISODIC
 
+    @staticmethod
+    def _importance_category(content: str) -> str:
+        if any(w in content for w in _RULE):
+            return "rule"
+        if any(w in content for w in _SEMANTIC):
+            return "preference"
+        return "default"
+
     def _topic(self, content: str) -> str:
         for topic, words in _TOPIC.items():
             if any(w in content for w in words):
@@ -77,4 +99,6 @@ class KeywordClassifier(Classifier):
 
 @ClassifierProducer.register("keyword")
 def _build(config):
-    return KeywordClassifier()
+    return KeywordClassifier(
+        importance_category_map=importance_category_map_from_config(config),
+    )

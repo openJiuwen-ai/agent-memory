@@ -3,7 +3,8 @@
 
 单次 :meth:`retrieve` 驱动完整链路（Option B：点读/有效性/重排为独立阶段）：
 查询理解 → 前置谓词构造 → 并行多路召回 → 融合 → 截断候选预算 → 点读真源 +
-有效性过滤 → （可选）重排 → 阈值过滤 → 截断 top_k → 渐进式披露 → 返回结果与轨迹。
+有效性过滤 → （可选）重排 → 阈值过滤 → （可选）次级排序 → 截断 top_k → 渐进式披露 →
+返回结果与轨迹。
 scope 作显式首参贯穿下推；召回/取数/排序全部委托统一 Storage 的三条首选路径，
 本类不含召回/打分逻辑，也不持有召回路（CompositeStorage 的兼容 Recaller 由
 storage 层工厂按配置装配）。
@@ -16,6 +17,7 @@ from dataclasses import replace
 from time import perf_counter
 from uuid import uuid4
 
+from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.errors import (
     BackendError,
     UnsupportedCapabilityError,
@@ -54,6 +56,10 @@ from jiuwen_memory.retrieval.expansion import (
     uses_recalled_children,
 )
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
+from jiuwen_memory.retrieval.fuser_impl.secondary_scorer import (
+    SecondaryScorer,
+    SecondaryScorerProducer,
+)
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.schema_temporal.pipeline import (
@@ -126,6 +132,9 @@ class PipelineRetriever(Retriever):
         # 精排输入限长：与 reranker_timeout 同走 retriever params 通道。
         rerank_max_query_chars: int = _MAX_RERANK_QUERY_CHARS,
         rerank_max_doc_chars: int = _MAX_RERANK_DOC_CHARS,
+        # 次级排序（retrieval F09）：总开关默认关；开启时须注入 SecondaryScorer。
+        secondary_rank_enabled: bool = False,
+        secondary_scorer: SecondaryScorer | None = None,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
@@ -165,6 +174,10 @@ class PipelineRetriever(Retriever):
         # 精排输入限长上限（护栏旋钮，上调须自行承担精排超时风险）。
         self._rerank_max_query_chars = max(1, int(rerank_max_query_chars))
         self._rerank_max_doc_chars = max(1, int(rerank_max_doc_chars))
+        if secondary_rank_enabled and secondary_scorer is None:
+            raise ValidationError("secondary_rank_enabled=true 但未注入 secondary_scorer")
+        self._secondary_rank_enabled = bool(secondary_rank_enabled)
+        self._secondary_scorer = secondary_scorer
 
     @property
     def storage(self) -> DomainStore:
@@ -505,6 +518,9 @@ class PipelineRetriever(Retriever):
         )
         step("threshold", t0, n=len(survivors), detail=threshold_detail)
 
+        # [8b] 次级排序：只重排已通过阈值的候选（不复活被砍候选），排完再截 top_k。
+        survivors = self._secondary_rank(parsed, survivors, reranked, trace_id, record_step)
+
         # [9] 截断 top_k
         final = survivors[: query.top_k]
         units = {candidate.unit_id: candidate.unit for candidate in final}
@@ -571,6 +587,58 @@ class PipelineRetriever(Retriever):
             record_step=step,
         )
 
+    def _secondary_rank(
+        self,
+        parsed: ParsedQuery,
+        survivors: list[ScoredCandidate],
+        calibrated: bool,
+        trace_id: str,
+        record_step,
+    ) -> list[ScoredCandidate]:
+        """调用 SecondaryScorer 做带内重排；关闭 / 异常时候选顺序不变，均记轨迹。"""
+        if not self._secondary_rank_enabled or self._secondary_scorer is None:
+            record_step(
+                "secondary_rank", 0.0, n=len(survivors),
+                detail={"enabled": "false", "skipped": "disabled"},
+            )
+            return survivors
+        scorer = self._secondary_scorer
+        detail = {"enabled": "true", "calibrated": str(calibrated).lower()}
+        t0 = perf_counter()
+        try:
+            # explain 也是业务实现的代码，与打分同属降级范围。
+            detail.update(scorer.explain())
+            # 未精排路径由编排层门控，不依赖业务算子遵守契约；算子内部门控保留作第二道防线。
+            if not calibrated:
+                detail["skipped"] = "uncalibrated"
+                record_step(
+                    "secondary_rank", (perf_counter() - t0) * 1000.0, len(survivors),
+                    detail=detail,
+                )
+                return survivors
+            ranked, score_detail = scorer.score_with_detail(
+                parsed, survivors, calibrated=calibrated
+            )
+            if len(ranked) != len(survivors) or {c.unit_id for c in ranked} != {
+                c.unit_id for c in survivors
+            }:
+                raise ValidationError("SecondaryScorer 只能重排，不得增删候选")
+        except Exception as exc:  # noqa: BLE001 - 业务算子失败降级为原顺序，不阻断检索
+            detail["error"] = safe_error_message(exc)
+            logger.warning(
+                "Retriever.secondary_rank failed, keep original order: trace_id=%s error=%s",
+                trace_id,
+                redact_for_log(detail["error"]),
+            )
+            record_step(
+                "secondary_rank", (perf_counter() - t0) * 1000.0, len(survivors), detail=detail
+            )
+            return survivors
+        detail.update(score_detail)
+        record_step("secondary_rank", (perf_counter() - t0) * 1000.0, len(ranked), detail=detail)
+        return ranked
+
+
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
 
@@ -588,6 +656,9 @@ def _build(config):
         else None
     )
     discloser = DiscloserProducer.dep(config, default="truncating")
+    secondary_rank_enabled = as_bool(
+        Factory.cfg_get(config, "secondary_rank_enabled", None), default=False
+    )
     doc_mode = should_write_document(config.get(WRITE_DOCUMENT_KEY, False))
     unit_reader = None if doc_mode else (
         UnitReader(manager.kv(kv_name)) if manager.has_kv(kv_name) else None
@@ -624,6 +695,12 @@ def _build(config):
         ),
         rerank_max_doc_chars=int(
             Factory.cfg_get(config, "rerank_max_doc_chars", _MAX_RERANK_DOC_CHARS)
+        ),
+        secondary_rank_enabled=secondary_rank_enabled,
+        secondary_scorer=(
+            SecondaryScorerProducer.dep(config, default="default")
+            if secondary_rank_enabled
+            else None
         ),
     )
     retriever.bind_expander(ExpanderProducer.build("default", {"domain_store": domain}, config.ctx))

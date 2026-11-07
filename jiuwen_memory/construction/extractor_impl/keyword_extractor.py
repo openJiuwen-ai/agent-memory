@@ -7,6 +7,9 @@
 把内容拆成离散事实，这里用切分作可复现占位（保持派生 + 血缘 + 低抽象的结构）。
 
 只处理原始 active 单元，避免对派生单元 / 被取代单元反复再抽取。
+
+F10：派生单元写 ``origin=inferred``，重要度无 LLM 判类别，取 ``default`` 类别查表值
+（覆盖从源继承来的值）。
 """
 
 from __future__ import annotations
@@ -28,7 +31,11 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
-from jiuwen_memory.construction.common import merge_unit_tags
+from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    inferred_attribution,
+    merge_unit_tags,
+)
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 
 logger = get_logger(__name__)
@@ -37,8 +44,11 @@ logger = get_logger(__name__)
 class KeywordExtractor(Extractor):
     """按 chunk 把原始单元提升为带血缘的 SEMANTIC 事实派生单元。"""
 
-    def __init__(self, chunker: Chunker) -> None:
+    def __init__(
+        self, chunker: Chunker, importance_category_map: dict[str, str] | None = None
+    ) -> None:
         self._chunker = chunker
+        self._importance_category_map = importance_category_map
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EXTRACTOR
@@ -88,7 +98,9 @@ class KeywordExtractor(Extractor):
                 d.provenance = [unit.id]
                 d.supersedes = ""
                 d.hierarchy = HierarchyRef()
-                d.system_metadata = inherited_system_metadata([unit])
+                d.system_metadata = inherited_system_metadata([unit]) | inferred_attribution(
+                    None, self._importance_category_map
+                )
                 d.user_metadata = inherited_user_metadata([unit])
                 if "extracted" not in d.tags:
                     d.tags.append("extracted")
@@ -133,7 +145,8 @@ class KeywordExtractor(Extractor):
             provenance=[u.id for u in units],
             # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
             tags=merge_unit_tags(source.tags, ["procedural"]),
-            system_metadata=inherited_system_metadata(units),
+            system_metadata=inherited_system_metadata(units)
+            | inferred_attribution(None, self._importance_category_map),
             user_metadata=inherited_user_metadata(units),
             lifecycle=LifecycleState.ACTIVE,
         )
@@ -150,4 +163,7 @@ class KeywordExtractor(Extractor):
 
 @ExtractorProducer.register("keyword")
 def _build(config):
-    return KeywordExtractor(ChunkerProducer.dep(config, default="fixed_window"))
+    return KeywordExtractor(
+        ChunkerProducer.dep(config, default="fixed_window"),
+        importance_category_map=importance_category_map_from_config(config),
+    )

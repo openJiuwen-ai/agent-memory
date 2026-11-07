@@ -14,7 +14,7 @@
 | `source.py` | Source 接口：多模态信息源连接器（fetch 拉取原始数据 → RawPayload） |
 | `hierarchy_hints.py` | 纯叶提示解析与消息时间补齐；不读策略或存储，拒绝边与父角色 |
 | `ingestor.py` | Ingestor 接口：编排 Source → Normalizer → 组装 MemoryUnit |
-| `ingestor_impl/simple_ingestor.py` | SimpleIngestor：规约后按 `max_unit_chars` 预切分——超限文本产出多个 MemoryUnit（每 unit 单 Segment，`system_metadata` 记 `_part`/`_parts` 序号），未超限产出单个；该 payload 的全部 assets 复制到每个 Segment |
+| `ingestor_impl/simple_ingestor.py` | SimpleIngestor：规约后按 `max_unit_chars` 预切分——超限文本产出多个 MemoryUnit（每 unit 单 Segment，`system_metadata` 记 `_part`/`_parts` 序号），未超限产出单个；该 payload 的全部 assets 复制到每个 Segment；`system_metadata.origin` 缺省写 `"original"`（调用方显式值保留） |
 | `source_impl/` | Source 实现目录 |
 | `source_impl/text_source.py` | TextSource：纯文本信息源（当前唯一实现） |
 | `bootstrap.py` | 统一触发 Ingestor 实现注册 |
@@ -42,6 +42,11 @@
 
 6. **Ingestor 在规约前执行模态门禁**
    调用 `Normalizer.normalize` 前先以 `Normalizer.modalities()` 校验当前 `RawPayload.modality`；不支持时抛 `UnsupportedCapabilityError`，不产生 MemoryUnit、不进入落盘和建索引。
+
+7. **原文来源标识由 Ingestor 写**
+   `system_metadata.origin` 取值二态：`"original"`（本层产出的原文记忆，缺省时写入）/
+   `"inferred"`（构建层派生 unit，由产出算子写）。常量取自 `common.type_def`，不 import
+   construction；本层不写 `importance`。
 
 ## 规约投影（Normalization）
 

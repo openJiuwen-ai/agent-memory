@@ -8,7 +8,7 @@
 | 最近一次修订日期 | 2026-11-05 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md |
 
 ## 摄入协作取消
 
@@ -343,6 +343,7 @@ F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 
 |------|------|
 | `Modality` | TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT |
 | `LifecycleState` | ACTIVE / SUPERSEDED / ARCHIVED / FORGOTTEN |
+| `ImportanceCategory` | IDENTITY / RULE / PREFERENCE / KNOWLEDGE / RELATION / DEFAULT / TRANSIENT（默认重要度类别；配置表可扩展自定义类别字符串，不强制枚举校验） |
 
 `HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
 避免摘要表与精确枚举并存后发生漂移。
@@ -442,6 +443,12 @@ tree_memory: TreeMemoryData | None = None
 ### metadata 保留键与瞬态键（`type_def/memory.py`）
 
 `KERNEL_SYSTEM_METADATA_KEYS` 是内核占用的键名清单，写入路径据此拒绝调用方经 `system_metadata` 入参使用其中任何一个；`TRANSIENT_SYSTEM_METADATA_KEYS` 中的键只在内存中传递，编解码器序列化时剥除、不落盘。两者的作用域都是 `system_metadata`——`user_metadata` 不受这两份清单约束。
+
+`system_metadata` 的派生语义键常量同处定义：`ORIGIN_KEY="origin"`，取值
+`ORIGIN_ORIGINAL="original"`（原文）/ `ORIGIN_INFER="inferred"`（派生）；
+`IMPORTANCE_KEY="importance"`，值为 [0,1] 两位小数浮点字符串，由类别经配置查表得出。
+两键都不在不传播清单内，也不是内核保留键——调用方可显式传入，派生 unit 由产出算子
+自行重写。
 
 > F07 起：前者增六键——内核按调用方身份写入的两个作者标记键、判定算子写入的命中类别名（`memory_class`），以及三个后续阶段才写入、提前占位以防存量数据占用的溯源键；后者增判定上下文的透传键。两份清单均为扩充，条目结构与序列化版本不变。
 >

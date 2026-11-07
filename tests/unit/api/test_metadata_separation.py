@@ -97,11 +97,15 @@ def test_update_merges_namespaces_independently() -> None:
 
     # 作者标记两个键由内核按调用方身份恒写入（F07「作者标记」），与本用例要断言的
     # 「两个命名空间各自独立 merge」正交，一并列出以保持相等断言的强度。
+    # origin/importance 由 construction F10 默认写入：原文路径 origin=original；classifier 未判出
+    # 重要度类别（测试 LLM 为回显桩）时取 default 类别值 0.50。
     assert updated.system_metadata == {
         "pipeline": "default",
         "dreaming": True,
         AUTHOR_PRINCIPAL: "user:u",
         AUTHOR_AGENT: "",
+        "origin": "original",
+        "importance": "0.50",
     }
     assert updated.user_metadata == {"project": "beta", "owner": "alice"}
 
