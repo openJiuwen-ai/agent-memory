@@ -104,11 +104,7 @@ from jiuwen_memory.retrieval import (
     TrajectoryStep,
 )
 
-from .access_security import (
-    build_configured_security_runtime,
-    build_dev_authenticator,
-    register_trusted_principal,
-)
+from .access_security import build_configured_security_runtime, build_dev_authenticator
 from .memory_api import MemoryAPI
 from .memory_api_impl import (
     AUTO_SECURITY_RUNTIME,
@@ -121,10 +117,7 @@ from .memory_api_impl import (
 
 __all__ = [
     "SearchOptions",
-    "EvolveTaskOptions",
-    "HierarchyComposeOptions",
-    "HierarchyKind",
-    "HierarchyRole",
+    "EvolveTaskOptions", "HierarchyComposeOptions", "HierarchyKind", "HierarchyRole",
     "MemoryAPI",
     "assemble",
     "assemble_runtime",
@@ -135,7 +128,6 @@ __all__ = [
     "assemble_server_runtime",
     "AUTO_SECURITY_RUNTIME",
     "build_dev_authenticator",
-    "register_trusted_principal",
     "build_configured_security_runtime",
     # 数据模型（common.type_def）
     "Scope",

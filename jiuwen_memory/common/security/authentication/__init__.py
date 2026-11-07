@@ -4,7 +4,6 @@ from .base import Authenticator, AuthProducer
 from .key_store import (
     KeyStoreProducer,
     PrincipalKeyStore,
-    PrincipalRegistrationCapability,
     fingerprint,
     generate_api_key,
     key_prefix,
@@ -15,7 +14,6 @@ __all__ = [
     "Authenticator",
     "KeyStoreProducer",
     "PrincipalKeyStore",
-    "PrincipalRegistrationCapability",
     "fingerprint",
     "generate_api_key",
     "key_prefix",
