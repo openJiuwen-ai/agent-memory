@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-02 |
+| 最近一次修订日期 | 2026-10-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -335,10 +335,6 @@ depth=0 保持既有 Discloser 行为。预算截断记录 `budget_exhausted`。
 `raw` 表示进入检索链路的规范化 query 文本，不要求逐字等于调用方传入的
 `RetrievalQuery.text`。默认 `simple` 实现会先剥除上游包装噪声（如 UTC 时间戳、
 `Sender (untrusted metadata)` 元数据行），再基于清洗后的文本产生分词、向量和时间窗。
-
-`simple` 的 `sanitize_enabled`、`sanitize_strip_code`、`rewrite_enabled` 按实例 `params` >
-`globals` > 实现默认值读取，默认值依次为 `true` / `false` / `false`。默认实例不得预先固化
-这些值，否则会遮蔽 `globals`；未配置时必须保持上述默认行为。
 
 默认 `simple` 实现的 LLM 改写关闭。显式开启且注入 LLM 时，parser 将 sanitized raw
 放入 `<current_query>`，把规范化后的可选 `query_context` 放入 `<recent_context>`，

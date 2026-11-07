@@ -353,14 +353,6 @@ query_parser:
       sanitize_strip_code: false
 ```
 
-以上三个开关按 QueryParser 实例 `params`、`globals`、内置默认值的顺序读取。需要检索级默认值时写入
-`globals`，需要单实例覆盖时写入实例 `params`：
-
-```yaml
-globals:
-  rewrite_enabled: true
-```
-
 内置默认 target 为 `simple`。其默认 LLM target 为 `echo`，且 `rewrite_enabled=false`，
 因此不调用改写。显式设为 `true` 并注入具备改写能力的 LLM 后，`simple` 使用
 `llm.chat()` 的 strict JSON 输出，并可消费由 `Context.extensions["query_context"]`

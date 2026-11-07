@@ -231,6 +231,7 @@ memory_api:
         tokenizer: default
         embedder: default
         llm: { target: echo }
+        rewrite_enabled: false
 
   # scheduler: production profile assembles async_timer explicitly (the default
   # in_process does not support recurring jobs — dreaming registration fails
