@@ -6,12 +6,9 @@
 ## 准备加密卷
 
 宿主需要 Linux、Python >=3.11、PyYAML、Docker Compose、cryptsetup、findmnt、lsblk
-和 mkfs.ext4/tune2fs/blkid。加密启动与目录权限准备由宿主管理员执行；Docker daemon 必须位于同一宿主。
+和 mkfs.ext4/tune2fs。加密启动与目录权限准备由宿主管理员执行；Docker daemon 必须位于同一宿主。
 命令统一从仓库根以 `python -m deploy.encryption.compose` 或 `python -m deploy.encryption.volume` 运行，避免修改 sys.path。
 外部工具从宿主系统目录解析为绝对路径；不使用 profile 的 PATH 或当前目录寻找特权命令。
-init 显式指定 ext4 类型与 journal，不依赖 mkfs.ext4 符号链接的调用名称或宿主默认类型。
-格式化后通过 blkid 核查实际类型，并通过 tune2fs 核查 has_journal 与非零内部 journal inode，
-全部通过后才关闭临时 mapper 并报告成功。缺少工具、类型不符或 journal 无法核查均失败。
 已有 ext4（内部 journal）dm-crypt 挂载可以直接使用，无须执行 init。多设备文件系统和
 外部 journal 需另行核查，本启动器拒绝自动声明其完整覆盖。以下命令均在仓库根执行。
 启动器同时要求本地 Unix Docker endpoint 和与宿主相符的 daemon 名称，拒绝远端 Docker
@@ -32,10 +29,7 @@ sudo python -m deploy.encryption.volume check /srv/agent-memory-encrypted
 ```
 
 镜像容量固定，按实际索引、WAL/日志、MinIO 对象及增长预留空间；本工具不自动扩容。
-init 失败会关闭已打开的临时 mapper 并保留镜像供排查，不能对同名镜像重试格式化。
-旧版工具可能因 mkfs.ext4 符号链接被解析为 mke2fs 而创建 ext2；升级不会自动修复已有镜像。
-确认镜像为空且可丢弃后，由管理员另建新路径初始化；已有数据须先备份并按迁移流程处理。
-open 要求挂载点为空，避免遮盖旧数据；验证失败会卸载本次挂载并关闭 mapper。
+init 失败会保留镜像供排查，不能对同名镜像重试格式化。open 要求挂载点为空，避免遮盖旧数据。
 
 ## 一个开关选择加密部署
 
@@ -84,7 +78,7 @@ sudo python -m deploy.encryption.volume close --mountpoint /srv/agent-memory-enc
 启动器按后端镜像的实际 UID 准备数据目录；命名用户通过禁用网络、替换 entrypoint 的 id
 命令解析，无法解析就拒绝；应用镜像按仓库 Dockerfile 的固定 UID 10001 准备。
 启动器检查每个子目录及已有控制文件确实位于加密块设备上，普通目录、普通磁盘、NFS、
-非 ext4 文件系统、无 journal 的 ext4、外部或无法核查的 journal 和缺失工具均拒绝；
+非 ext4 文件系统、外部 journal 和缺失工具均拒绝；
 它不自动格式化、挂载或解密后端数据库。应用的 StoreSecurity.enabled() 只表达应用
 Store 内部保护，部署保护声明是另外的责任边界。
 
@@ -118,9 +112,8 @@ encrypted 写入转为 ENC1。不得直接把明文复制到 encrypted 逻辑端
 
 部署后用同一批查询比较加密前后的结果、P50/P95/P99、吞吐和冷启动；检查卸载后镜像
 无法直接读取数据库内容，重开卷/重启容器后旧数据可读，wrong key 和普通目录不能启动。
-回归测试覆盖离线规划、设备检查、失败清理与真实 KV/FS；Linux e2fsprogs 集成测试使用
-临时普通文件验证 mkfs.ext4 符号链接解析后的真实 ext4 与内部 journal 产物，无须 root。
-该测试模拟 LUKS/device 边界，不替代完整 Linux 环境中的 init/open/check/close 与 Docker 验收。
+当前环境完成离线规划/设备检查模拟、真实 KV/FS 测试及 Ubuntu/WSL 普通目录拒绝探针；
+WSL 缺少 cryptsetup 和 Docker，LUKS+Docker 全栈验收仍需在完整 Linux 环境执行。
 
 参考：[Docker volume 合并规则](https://docs.docker.com/reference/compose-file/merge/)、
 [Linux dm-crypt](https://docs.kernel.org/admin-guide/device-mapper/dm-crypt.html)。

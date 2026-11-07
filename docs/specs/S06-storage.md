@@ -428,12 +428,6 @@ SQLite :memory: 无落盘要求，但仍必须固定连接位置，拒绝初始�
 StoreSecurity.enabled() 仍表达 Store 内部保护，索引的外部保护通过部署声明与宿主检查表达。
 查询接口、BM25/ANN/原生过滤不变；本 PR 不新增密态检索或应用层全量解密检索路径。
 
-Linux 管理加密卷须为完整块设备路径受 dm-crypt 保护的 ext4，具有 has_journal 特性及
-可核查的非零内部 journal inode；非 ext4、无 journal、外部或无法核查的 journal 均拒绝。
-初始化只接受新建镜像，须显式选择 ext4 与 journal，并在报告成功前核查实际文件系统
-类型及内部 journal。格式化命令返回成功不能替代产物核查；失败须关闭已打开的临时
-mapper、保留镜像供排查，不自动覆盖或修复已有卷。挂载后仍独立验证同一契约。
-
 `StoreSecurity.encryption_binding` 是公开的可选装饰依赖契约，返回
 `StoreEncryptionBinding(inner, provider, format)`；原生保护实现可返回 None。
 绑定须指向实际原始 Store、实际 CryptographyProvider 及非空的兼容格式标识。
