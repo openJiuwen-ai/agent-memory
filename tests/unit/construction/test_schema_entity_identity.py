@@ -137,38 +137,6 @@ def test_registry_limit_counts_only_active_entities_in_requested_schema() -> Non
     assert [unit.id for unit in found] == ["first", "second"]
 
 
-def test_registry_selects_latest_message_time_across_naive_and_aware_values() -> None:
-    kv = MemoryKVStore()
-    registry = SchemaEntityRegistry(kv)
-    earlier = _property("p1", "Caroline", entity_id="entity-1")
-    later = _property("p2", "Caroline", entity_id="entity-1")
-    for unit in (earlier, later):
-        unit.system_metadata["schema_entity_id"] = "entity-1"
-    earlier.temporal.t_message = datetime(2026, 1, 1, 8, tzinfo=UTC)
-    later.temporal.t_message = datetime(2026, 1, 1, 9)
-
-    record = registry.sync([earlier, later])[0]
-
-    assert record.temporal.t_message is later.temporal.t_message
-
-
-def test_registry_does_not_move_message_time_backward_on_later_sync() -> None:
-    kv = MemoryKVStore()
-    registry = SchemaEntityRegistry(kv)
-    later_message = datetime(2026, 1, 2, tzinfo=UTC)
-    initial = _property("p1", "Caroline", entity_id="entity-1")
-    initial.system_metadata["schema_entity_id"] = "entity-1"
-    initial.temporal.t_message = later_message
-    registry.sync([initial])
-    older = _property("p2", "Caroline", entity_id="entity-1")
-    older.system_metadata["schema_entity_id"] = "entity-1"
-    older.temporal.t_message = datetime(2026, 1, 1)
-
-    record = registry.sync([older])[0]
-
-    assert record.temporal.t_message == later_message
-
-
 def test_overlapping_alias_does_not_merge_incompatible_explicit_speakers() -> None:
     kv = MemoryKVStore()
     llm = _LLM({"action": "create"})

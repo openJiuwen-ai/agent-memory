@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Segment
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory_codec import loads
@@ -435,7 +434,7 @@ def _latest_message_time(target: MemoryUnit, sources: list[MemoryUnit]) -> datet
         for unit in [target, *sources]
         if unit.temporal.t_message is not None
     ]
-    return max(values, key=as_utc) if values else None
+    return max(values) if values else None
 
 
 def _property_text(unit: MemoryUnit) -> str:

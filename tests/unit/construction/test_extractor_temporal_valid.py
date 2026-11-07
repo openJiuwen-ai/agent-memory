@@ -17,8 +17,7 @@ from jiuwen_memory.common.type_def import (
     Temporal,
 )
 from jiuwen_memory.construction.extractor_impl.llm_extractor import ExtractorImpl
-from jiuwen_memory.control.engine_impl.in_memory_engine import _valid_sort_key
-from jiuwen_memory.control.engine_impl.temporal_support import valid_at as _valid_at
+from jiuwen_memory.control.engine_impl.in_memory_engine import _valid_at, _valid_sort_key
 from tests.unit.construction.fixtures import MockLLM
 
 
