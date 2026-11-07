@@ -90,7 +90,7 @@ deployment.
 
 ### 3.2 HTTP and MemoryAPI Are Aligned One to One
 
-The local HTTP service is a JSON adapter over `MemoryAPI` and exposes all 38 methods. Each method
+The local HTTP service is a JSON adapter over `MemoryAPI` and exposes all 36 methods. Each method
 uses `POST /v1/<method_name>`. Request field names, nesting, required fields, and defaults match the
 same-named `MemoryAPI` method. A successful response directly serializes the original return value
 without introducing another business envelope or task model.
@@ -144,7 +144,7 @@ TLS, access control, and traffic protection at a gateway.
 
 ## 4. Access Methods That Are Not Separate Deployment Options
 
-- **CLI**: exposes all 38 API methods as same-named commands with matching parameter names and JSON
+- **CLI**: exposes all 36 API methods as same-named commands with matching parameter names and JSON
   structures. Local mode calls the API directly; `--server` sends the same payload over HTTP without
   legacy request/response conversion. Local tests require explicit `--auth-mode dev`; remote
   authentication is controlled by the server. See the [CLI guide](../../../jiuwen_memory_entry/cli/DESIGN.md).

@@ -25,7 +25,7 @@ legacy handler 只注册部分 verb，导致 `MemoryAPI` 已有方法不能自�
 ### 1. 以 MemoryAPI 公开方法集作为路由注册表
 
 HTTP verb 集合直接取 `MemoryAPI.__abstractmethods__`。每个方法暴露为
-`POST /v1/<method_name>`，因此当前 38 个公开方法全部具备同名 URL。`GET /healthz` 是唯一
+`POST /v1/<method_name>`，因此当前 36 个公开方法全部具备同名 URL。`GET /healthz` 是唯一
 不属于 `MemoryAPI` 的 HTTP 运维接口。
 
 ### 2. 请求契约从方法签名派生
@@ -80,7 +80,7 @@ HTTP 和 CLI 都不再经过 `DispatchRequest` / shared handler。请求解析�
 原返回值序列化放在 `core/api_contract.py`，领域错误状态与脱敏放在 `core/error_response.py`。
 HTTP DTO 不再有独立文件，HTTP 与 CLI 不各自维护一套参数转换。
 
-CLI 当前暴露 38 个 API 同名命令；每个方法的参数由签名生成 `--<parameter_name>`，
+CLI 当前暴露 36 个 API 同名命令；每个方法的参数由签名生成 `--<parameter_name>`，
 保留原字段、默认值和 JSON 嵌套关系。`unit_id` 不改成 `item_id`，`patch` / `selector`
 不再由 CLI 推导，字符串与枚举直接传文本，对象和集合使用 JSON。
 
@@ -133,7 +133,7 @@ legacy handler 的入口；旧远程客户端不能因此继续使用已升级�
 
 ## 验证
 
-- HTTP 方法集合与 `MemoryAPI.__abstractmethods__` 精确相等，当前为 38 个；
+- HTTP 方法集合与 `MemoryAPI.__abstractmethods__` 精确相等，当前为 36 个；
 - 所有方法的请求字段集合与 API 签名精确相等（排除 `self`、`security`）；
 - 覆盖 `Scope`、`Context`、`BatchWriteItem`、`MemoryPatch`、`DeleteSelector`、`Grant`、
   `SpaceSpec`、`SpaceMember`、枚举、集合及时间转换；

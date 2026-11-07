@@ -53,7 +53,6 @@ from pydantic import ValidationError as PydanticValidationError  # noqa: E402
 
 from jiuwen_memory.api import Credentials, Scope, Surface, ValidationError  # noqa: E402
 from jiuwen_memory_entry.core.api_contract import (  # noqa: E402
-    api_method_names,
     is_known_verb,
     method_contract,
     parse_request,
@@ -100,19 +99,6 @@ def test_stdio_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -
 # 工具名 → (MemoryAPI 方法名, 代表性最小合法 payload)。payload 同时锁「形状可过
 # parse_request」——工具转发给 _invoke 的键名集合必须与这里给出的契约一致。
 TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
-    "memory_read_md_file": (
-        "read_md_file",
-        {"context": {"scope": SCOPE}, "md_filename": "USER.md", "line_range": [1, 2]},
-    ),
-    "memory_edit_md_file": (
-        "edit_md_file",
-        {
-            "context": {"scope": SCOPE},
-            "md_filename": "USER.md",
-            "old_text": "old",
-            "new_text": "new",
-        },
-    ),
     "memory_add": (
         "add",
         {
@@ -315,7 +301,6 @@ def _wait_job_terminal(job_id: str, scope: dict[str, Any]) -> dict[str, Any]:
 def test_mcp_tool_registry_covers_expected_verbs() -> None:
     registered = {name for name in dir(mcp_main) if name.startswith("memory_")}
     assert registered == set(TOOL_CASES), registered ^ set(TOOL_CASES)
-    assert registered == {f"memory_{verb}" for verb in api_method_names()}
     for _tool_name, (verb, _payload) in TOOL_CASES.items():
         assert is_known_verb(verb), verb
 
@@ -732,7 +717,7 @@ def test_delete_space_rejects_archive_mode(kernel) -> None:
         asyncio.run(mcp_main.memory_delete_space(org="local", space="no-such", mode="archive"))
 
 
-# --- E. 模型可见 Schema：全量工具、ctx 不进 schema -------------------------------- #
+# --- E. 模型可见 Schema：36 工具、ctx 不进 schema --------------------------------- #
 
 
 def test_list_tools_schema_excludes_ctx() -> None:
@@ -775,73 +760,6 @@ def test_submit_ingest_schema_preserves_flat_required_and_optional_arguments() -
 
 
 # --- F. 协议编组层：FastMCP.call_tool 真实调用路径 ------------------------------- #
-
-
-@pytest.mark.parametrize("line_range", [None, [1, 2]])
-def test_read_md_file_call_tool_decodes_json_range(kernel, monkeypatch, line_range) -> None:
-    captured = {}
-
-    def read_md_file(context, md_filename, *, security, line_range=None):
-        captured.update(
-            context=context, md_filename=md_filename, security=security, line_range=line_range
-        )
-        return []
-
-    monkeypatch.setattr(kernel.api, "read_md_file", read_md_file)
-    payload = {"context": {"scope": SCOPE}, "md_filename": "USER.md"}
-    if line_range is not None:
-        payload["line_range"] = line_range
-    _, structured = asyncio.run(mcp_main.mcp.call_tool("memory_read_md_file", payload))
-    assert structured == {"result": []}
-    assert captured["context"].scope == Scope(**SCOPE)
-    assert captured["md_filename"] == "USER.md"
-    assert captured["line_range"] == (tuple(line_range) if line_range else None)
-    assert captured["security"].surface is Surface.MCP
-
-
-@pytest.mark.parametrize("line_range", [[1, 2, 3], [1, "invalid"]])
-def test_read_md_file_call_tool_rejects_invalid_range(kernel, monkeypatch, line_range) -> None:
-    def unexpected_read(*args, **kwargs):
-        pytest.fail("invalid range must be rejected before API dispatch")
-
-    monkeypatch.setattr(kernel.api, "read_md_file", unexpected_read)
-    with pytest.raises(ToolError, match="line_range"):
-        asyncio.run(
-            mcp_main.mcp.call_tool(
-                "memory_read_md_file",
-                {"context": {"scope": SCOPE}, "md_filename": "USER.md", "line_range": line_range},
-            )
-        )
-
-
-def test_edit_md_file_call_tool_forwards_text_and_errors(kernel, monkeypatch) -> None:
-    captured = {}
-
-    def edit_md_file(context, md_filename, old_text, new_text, *, security):
-        captured.update(
-            context=context,
-            md_filename=md_filename,
-            old_text=old_text,
-            new_text=new_text,
-            security=security,
-        )
-        return []
-
-    monkeypatch.setattr(kernel.api, "edit_md_file", edit_md_file)
-    payload = TOOL_CASES["memory_edit_md_file"][1]
-    _, structured = asyncio.run(mcp_main.mcp.call_tool("memory_edit_md_file", payload))
-    assert structured == {"result": []}
-    assert captured["context"].scope == Scope(**SCOPE)
-    assert captured["md_filename"] == "USER.md"
-    assert (captured["old_text"], captured["new_text"]) == ("old", "new")
-    assert captured["security"].surface is Surface.MCP
-
-    def reject(*args, **kwargs):
-        raise ValidationError("old_text must be unique")
-
-    monkeypatch.setattr(kernel.api, "edit_md_file", reject)
-    with pytest.raises(ToolError, match="old_text must be unique"):
-        asyncio.run(mcp_main.mcp.call_tool("memory_edit_md_file", payload))
 
 
 def test_fastmcp_call_tool_marshals_arguments(kernel) -> None:

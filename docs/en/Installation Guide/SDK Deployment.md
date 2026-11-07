@@ -348,7 +348,7 @@ This form also expands `${VAR}` / `${VAR:-default}` placeholders from the proces
 
 ## 9. Choosing Between HTTP and MemoryAPI
 
-The HTTP service exposes all 38 `MemoryAPI` methods one to one through
+The HTTP service exposes all 36 `MemoryAPI` methods one to one through
 `POST /v1/<method_name>`. Request names, nesting, required fields, and defaults match the same-named
 method. A successful response is the JSON representation of the original return value, without an
 additional envelope. `security` is the only parameter not accepted from the request body; the
@@ -404,7 +404,7 @@ depend on the classes and model output; exactly two memories are not guaranteed.
 
 ### CLI Uses the Same Parameters
 
-CLI exposes all 38 API methods as same-named commands, preserves parameter names, and accepts
+CLI exposes all 36 API methods as same-named commands, preserves parameter names, and accepts
 complex objects as JSON. For example:
 
 ```bash
