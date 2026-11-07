@@ -16,33 +16,10 @@ import sys
 
 from jiuwen_memory.api import ValidationError
 from jiuwen_memory_entry.cli import commands
-from jiuwen_memory_entry.cli.client import DEFAULT_HTTP_TIMEOUT, make_client, validate_timeout
+from jiuwen_memory_entry.cli.client import make_client
 from jiuwen_memory_entry.core.api_contract import api_method_names
 
 logger = logging.getLogger("agent-memory.cli")
-
-
-def _positive_timeout(value: str) -> float:
-    """Parse one finite positive remote HTTP timeout."""
-    try:
-        return validate_timeout(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
-
-
-def _env_timeout() -> float:
-    """Read AGENT_MEMORY_TIMEOUT; unset or blank keeps the built-in default."""
-    raw = os.environ.get("AGENT_MEMORY_TIMEOUT", "").strip()
-    if not raw:
-        return DEFAULT_HTTP_TIMEOUT
-    try:
-        return validate_timeout(raw)
-    except ValueError as exc:
-        # 报错必须点名环境变量：argparse 的 "argument --timeout" 前缀会误导只设了
-        # AGENT_MEMORY_TIMEOUT 的调用方去改命令行参数。
-        raise argparse.ArgumentTypeError(
-            f"AGENT_MEMORY_TIMEOUT must be a finite positive number: {raw!r}"
-        ) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,15 +29,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--server",
         default=os.environ.get("AGENT_MEMORY_SERVER"),
         help="HTTP endpoint; omitted means in-process execution",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=_positive_timeout,
-        default=None,
-        help=(
-            "remote HTTP socket timeout in seconds, not a total deadline; "
-            "default 300 or AGENT_MEMORY_TIMEOUT"
-        ),
     )
     parser.add_argument(
         "--config", action="append", default=[], help="local JSON/YAML config layer"
@@ -96,24 +64,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--auth-mode dev applies to local execution; configure dev on the HTTP server")
     if args.server and args.config:
         parser.error("--config applies only to local execution")
-    if args.timeout is not None and not args.server:
-        # 显式传了就说明期望生效，静默忽略比报错更难排查；只设环境变量时仍按本地
-        # 忽略，避免一条面向远程的 AGENT_MEMORY_TIMEOUT 打断本地调用。
-        parser.error("--timeout applies only to remote execution")
-    timeout = DEFAULT_HTTP_TIMEOUT
-    if args.server:
-        try:
-            timeout = args.timeout if args.timeout is not None else _env_timeout()
-        except argparse.ArgumentTypeError as exc:
-            parser.error(str(exc))
     client = None
     try:
-        client = make_client(
-            args.server,
-            args.config,
-            auth_mode=args.auth_mode,
-            timeout=timeout,
-        )
+        client = make_client(args.server, args.config, auth_mode=args.auth_mode)
         if args.command == "healthz":
             return commands.run_health(client, args)
         if args.command == "batch":

@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import http.client
 import json
 import logging
-import math
 import os
 import sys
 import urllib.error
@@ -28,24 +26,6 @@ if _CORE_DIR not in sys.path:
     sys.path.append(_CORE_DIR)
 
 logger = logging.getLogger("agent-memory.cli")
-
-DEFAULT_HTTP_TIMEOUT = 300.0
-
-
-def validate_timeout(timeout: float) -> float:
-    """Return one finite positive timeout in seconds; reject any other value.
-
-    CLI 的 ``--timeout`` / ``AGENT_MEMORY_TIMEOUT`` 与程序化 ``make_client`` /
-    ``HttpClient`` 共用这一条校验，避免只有命令行入口挡非法值、库调用仍把
-    ``0`` / ``nan`` / 负数透给 ``urllib``。
-    """
-    try:
-        value = float(timeout)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"timeout must be a finite positive number: {timeout!r}") from exc
-    if not math.isfinite(value) or value <= 0:
-        raise ValueError(f"timeout must be a finite positive number: {timeout!r}")
-    return value
 
 
 class EngineClient(Protocol):
@@ -144,15 +124,10 @@ class InProcessClient:
 class HttpClient:
     """Send API-shaped requests and return the HTTP server's original JSON value."""
 
-    def __init__(
-        self,
-        base_url: str,
-        timeout: float = DEFAULT_HTTP_TIMEOUT,
-        api_key: str | None = None,
-    ) -> None:
+    def __init__(self, base_url: str, timeout: float = 30.0, api_key: str | None = None) -> None:
         """Configure the endpoint and credentials without changing API payloads."""
         self.base_url = base_url.rstrip("/")
-        self.timeout = validate_timeout(timeout)
+        self.timeout = timeout
         self.api_key = (
             api_key if api_key is not None else os.environ.get("AGENT_MEMORY_API_KEY", "")
         ).strip()
@@ -179,26 +154,6 @@ class HttpClient:
             f"{self.base_url}{path}", data=data, headers=headers, method=method
         )
         try:
-            return self._send(request)
-        except (TimeoutError, ConnectionError, http.client.HTTPException) as exc:
-            # urllib 并不把 getresponse()/响应体读取阶段的所有传输失败包装为
-            # URLError。超时、对端断开、RST 和不完整 HTTP 响应必须在此统一映射，
-            # 避免异常穿透 call() 的二元组契约并被 CLI 错误地归为参数失败。
-            error_type = type(exc).__name__
-            message = f"HTTP transport failed (error={error_type})"
-            if isinstance(exc, TimeoutError):
-                message = (
-                    "HTTP socket operation timed out "
-                    f"(error={error_type}, timeout={self.timeout:g}s)"
-                )
-            return 0, {
-                "error": "ConnectionError",
-                "message": message,
-            }
-
-    def _send(self, request: urllib.request.Request) -> tuple[int, Any]:
-        """Send one request, mapping HTTP and transport failures to the tuple contract."""
-        try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return _read_json(response, transport_status=response.status)
         except urllib.error.HTTPError as exc:
@@ -224,18 +179,13 @@ def _read_json(response, *, transport_status: int) -> tuple[int, Any]:
 
 
 def make_client(
-    server_url: str | None,
-    configs: list[str] | None = None,
-    *,
-    auth_mode: str = "required",
-    timeout: float = DEFAULT_HTTP_TIMEOUT,
+    server_url: str | None, configs: list[str] | None = None, *, auth_mode: str = "required"
 ) -> EngineClient:
     """Select HTTP or in-process execution; dev authentication is explicit and local."""
     if auth_mode not in {"required", "dev"}:
         raise ValueError(f"unknown authentication mode: {auth_mode}")
-    timeout = validate_timeout(timeout)
     if server_url:
-        return HttpClient(server_url, timeout=timeout)
+        return HttpClient(server_url)
     dev_authentication = auth_mode == "dev"
     if dev_authentication:
         logger.warning("development authentication is enabled for local CLI testing")

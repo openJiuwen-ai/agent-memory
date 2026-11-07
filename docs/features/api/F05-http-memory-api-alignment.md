@@ -6,8 +6,8 @@
 |---|---|
 | 日期 | 2026-09-09 |
 | 影响范围 | `jiuwen_memory_entry/http_server/`、`jiuwen_memory_entry/cli/`、`jiuwen_memory_entry/core/api_contract.py`、`jiuwen_memory_entry/core/error_response.py`、`docs/specs/S02-memory-api.md` |
-| 测试基线 | entry / common security / API 相关单测 680 项及真实 HTTP 异步写入集成测试 4 项通过，共 684 项；修改的 Python 文件 Ruff、编译及本地 CodeCheck 结构预检通过，未重跑全仓 UT，未执行云端 CodeCheck。（2026-11-04 CLI 超时改动：`test_cli.py` + `test_cli_tool.py` 167 项通过；变更文件 `ruff check` / `ruff format --check` 通过） |
-| Refs | #283（CLI 远程客户端固定 30 秒超时且无配置通道） |
+| 测试基线 | entry / common security / API 相关单测 680 项及真实 HTTP 异步写入集成测试 4 项通过，共 684 项；修改的 Python 文件 Ruff、编译及本地 CodeCheck 结构预检通过，未重跑全仓 UT，未执行云端 CodeCheck |
+| Refs | —（如有 issue 补 `Refs: #<n>`） |
 
 ## 背景
 
@@ -152,25 +152,6 @@ legacy handler 的入口；旧远程客户端不能因此继续使用已升级�
 - 验证原 JSON 值不包装、actor 与业务 scope 分离、请求上下文清理、batch 共享实例及资源关闭；
 - `examples/demo_cli.py` 使用显式 dev 认证和 API 原参数完成本地调用演示。
 
-## CLI 远程客户端超时（2026-11-04）
-
-远程 CLI 原先固定 30 秒且没有配置通道，慢 `add`、`evolve` 等操作可能在响应前被客户端
-截断。默认值调整为 300 秒，参考 SDK 的 `llm_timeout` / `embedder_timeout` 单次模型
-调用配置，见 [F05-model-service-ssl](../common/F05-model-service-ssl.md)。这不保证覆盖
-包含多次模型调用的整个业务操作，长调用可显式调高。
-
-配置通道为 `--timeout <seconds>` 与 `AGENT_MEMORY_TIMEOUT`，只接受有限正数，命令行
-优先；非法配置按参数错误退出 2，环境变量错误明确标出变量名。显式 `--timeout` 仅远程
-有效，未指定远程服务地址时按参数错误退出 2；本地模式忽略环境变量。`--config` 仅用于
-本地运行时配置，远程模式拒绝该参数，因此不通过配置键设置客户端超时。
-程序化调用使用同一校验逻辑，非法值抛出 `ValueError`。
-超时返回 `(0, {"error": "ConnectionError", ...})`，CLI 写 stderr 并退出 1。回归测试覆盖
-配置优先级、非法值、本地模式边界，以及真实慢 HTTP 服务的超时失败和成功响应。
-
-该值约束 `urllib` 的 socket 阻塞，不是总 deadline；服务端持续返回数据时总耗时可超过
-该值。NDJSON `batch` 按请求应用超时，整体没有总预算。客户端配置不改变服务端请求体
-读取超时或业务执行预算，客户端超时后服务端请求可能继续执行。
-
 ## 已知遗留
 
 - HTTP server 基于 `ThreadingHTTPServer`；`invoke_api` 对协程方法使用 `asyncio.run`，
@@ -189,9 +170,7 @@ legacy handler 的入口；旧远程客户端不能因此继续使用已升级�
 - CLI 的生产认证器尚未接入配置装配；程序内可显式注入 Authenticator，命令行功能测试
   使用 `--auth-mode dev`。默认内存后端不会跨 CLI 进程保留记录，连续调用需 batch、持久化后端或常驻 HTTP。
 - 旧 HTTP URL、CLI 命令别名与旧返回 envelope 不保留兼容；调用方需要一次性迁移。
-- 本仓库 `jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py` 的远程客户端已迁移到
-  当前 HTTP 契约：`POST /v1/<verb>`、嵌套 `scope`、`search` 读 `items`、`evolve` 返回裸 job_id。
-  其独立的读写超时策略使用 `_READ_TIMEOUT=30` / `_WRITE_TIMEOUT=120`，
-  `_build_client` 尚无超时装配配置通道；实际影响需按 `httpx` 的 per-phase timeout
-  语义单独评估，本次未调整。
+- 本仓库 `jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py` 的远程客户端尚未迁移：
+  请求仍使用 flat `tenant_id` / `scope` / `k`，响应仍读取 `ok` / `item_id` / `hits`。
+  即使启用 dev 认证，它也不能直接连接当前 HTTP；需调用方后续对齐请求和原返回类型。
   SDK 进程内模式不经过 HTTP，但仍使用过渡安全上下文；本次不修改该 adapter。
