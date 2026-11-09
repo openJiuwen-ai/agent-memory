@@ -802,8 +802,7 @@ class CompositeDomainStore(DomainStore):
                 inserted_units.append(new)
         elif inserted_blocks:
             # D4.1 不对齐退化兜底：跨块合并/拆分，无法明确继承源。scope 取当前 scope
-            # （edit 发起者，有明确 scope 上下文；不沿用看门狗 latest_scope_by_md 近似——
-            # 那是看门狗无 scope 时的兜底，edit 有 scope 应落发起者），project/memory_class
+            # （edit 发起者，有明确 scope 上下文），project/memory_class
             # 从 md 路径反推（共享 _md_path.project_from_md_path / class_from_md_path，
             # 与看门狗 _build_unit 同一份 reverse 逻辑），provenance 标 md_edit_fallback，
             # 不保留 supersedes（无明确继承源）。

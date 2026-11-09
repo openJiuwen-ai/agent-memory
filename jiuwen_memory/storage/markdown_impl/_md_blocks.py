@@ -38,7 +38,7 @@ def content_hash(content: str) -> str:
 
 
 def collect_blocks_from_text(
-    text: str, *, first_line_is_title: bool = True
+    text: str, *, first_line_is_title: bool = True, deduplicate: bool = True
 ) -> list[tuple[str, str, int]]:
     """从文本按块结构解析，返回 ``(content_hash, content, block_index)`` 列表。
 
@@ -68,7 +68,7 @@ def collect_blocks_from_text(
     会在 flush 第一个块后把该 flag 重置为 True）。
     """
     result: list[tuple[str, str, int]] = []
-    seen: set[str] = set()
+    seen: set[str] | None = set() if deduplicate else None
     block: list[str] = []
     for line in text.splitlines():
         if not line.strip():
@@ -86,7 +86,7 @@ def collect_blocks_from_text(
 def _append_block(
     block: list[str],
     result: list[tuple[str, str, int]],
-    seen: set[str],
+    seen: set[str] | None,
     first_line_is_title: bool,
 ) -> None:
     """把一个块内的正文行逐行算 hash 追加进 result。
@@ -99,13 +99,14 @@ def _append_block(
     body = block[1:] if first_line_is_title and block[0].startswith("#") else block
     for line in body:
         ch = content_hash(line)
-        if ch in seen:
-            continue
-        seen.add(ch)
+        if seen is not None:
+            if ch in seen:
+                continue
+            seen.add(ch)
         result.append((ch, line, len(result)))
 
 
-def collect_md_blocks(abs_path: str) -> list[tuple[str, str, int]]:
+def collect_md_blocks(abs_path: str, *, deduplicate: bool = True) -> list[tuple[str, str, int]]:
     """读 md 文件按块结构解析，返回 ``(content_hash, content, block_index)`` 列表。
 
     与 :func:`collect_blocks_from_text` 同口径（按空行切块、跳过块首标题行、正文行算
@@ -114,7 +115,7 @@ def collect_md_blocks(abs_path: str) -> list[tuple[str, str, int]]:
     继承对应旧 unit 的元数据）。
 
     保序、去重（同一 content_hash 只保留首条，后续重复正文行跳过），避免同文件内重复
-    正文行被当作多条新块重复建 unit。
+    正文行被当作多条新块重复建 unit。共享文件对账传 deduplicate=False 检测重复正文。
 
     文件不存在视为「无正文块」返回空列表——调用方（看门狗 deleted=True / DomainStore
     容错）按空列表 diff 出「全删」语义，与看门狗 ``deleted=True`` 分支一致。需要区分
@@ -128,7 +129,7 @@ def collect_md_blocks(abs_path: str) -> list[tuple[str, str, int]]:
         return []
     with open(abs_path, encoding="utf-8") as fh:
         text = fh.read()
-    return collect_blocks_from_text(text)
+    return collect_blocks_from_text(text, deduplicate=deduplicate)
 
 
 def build_block_units(  # noqa: ARG001  — 保留 kwargs 供未来扩展，当前签名稳定即可

@@ -70,7 +70,8 @@
 
 1. **scope 原生隔离**  
    `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。`org/space/user/agent/session` 五段 scope 必须参与命名空间或过滤；空 `space` 只匹配空 space 兼容域。隔离必须在存储层强制，上层不依赖调用纪律。
-   **文档影子索引（F08）已同构落地**：`memory_unit` 表加 org/space/user/agent/session 五列，scope 入参拼 WHERE AND 等值下推（对齐 KV 五段等值），与 project（收窄维 `IN ['', value]`）隔离正交。`list_units_by_md`（看门狗跨 scope 诊断）/`delete_units`（幂等按 unit_id）例外不限 scope。
+   **文档影子索引（F08）已同构落地**：`memory_unit` 表加 org/space/user/agent/session 五列，scope 入参拼 WHERE AND 等值下推（对齐 KV 五段等值），与 project（收窄维 `IN ['', value]`）隔离正交。`list_units_by_md` / `list_watchdog_rows` 按文件跨 Scope 读，`list_shared_watchdog_files` 跨 Scope 枚举共享文件，`delete_units` / `apply_watchdog_diff` 按 ID 跨 Scope 删除。
+   看门狗按 org、space、user、agent 判断共享文件。共享文件只为可确认归属的替换建新 unit，歧义改动保留索引并告警。索引增删须在同一事务内完成。
    **唯一例外是 ENTITY 端口**：`EntityStore` 四方法以 `space_id: str`（`space_id_from_scope` 的算值，走后端 routing）+ `EntityStoreFilters` 承担隔离。ES 对非空的 `actor_id` / `assistant_id` / `session_id` 分别下推 term；`from_scope` 对应映射 user / agent / session，空值不生成该维过滤。隔离仍在存储层强制，只是维度表达不同；该端口的授权由 `_AuthorizedEntityStoreProxy` 适配，其授权 Scope 仍仅保留 space/user 的有损近似。
 
 2. **记录 id 在 scope 内唯一**

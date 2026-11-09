@@ -89,22 +89,22 @@ class DocumentShadowIndex(BaseStore):
     def list_units_by_md(
         self, scope: Scope, md_filename: str, *, lifecycle: str | None = None
     ) -> list[tuple[str, str]]:
-        """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用。
+        """按文件跨 Scope 查询 (unit_id, content_hash)，供文档编辑对账。
 
-        返回 ``(unit_id, content_hash)`` 二元组。``lifecycle`` 可选过滤：传
-        ``LifecycleState.ACTIVE.value`` 只取 active 行（看门狗对账只认活跃行——非
-        active 行是 SUPERSEDE/治理留下的历史版本，本就不该在 md 里、不参与 hash
-        对账）；None 不过滤（保持跨 scope 诊断原行为）。
+        lifecycle 可选，传入时仅返回匹配该状态的行。
         """
 
     @abstractmethod
-    def latest_scope_by_md(self, scope: Scope, md_filename: str) -> Scope | None:
-        """按 ``md_filename`` 查该文件最新一条 unit 的 scope，无历史返 None。
+    def list_watchdog_rows(self, md_filename: str) -> list[tuple[str, str, str, Scope]]:
+        """跨 Scope 读取 (unit_id, content_hash, lifecycle, scope)，按写入顺序倒排。"""
 
-        供看门狗建新 unit 时继承 scope（md 文件不编码 scope，按同文件最新归属近似）。
-        不限 scope WHERE（对齐 ``list_units_by_md`` 的看门狗跨 scope 诊断例外）。
-        排序口径 rowid DESC（最近插入）；无历史返 None。
-        """
+    @abstractmethod
+    def list_shared_watchdog_files(self) -> list[str]:
+        """列出 org/space/user/agent 归属不唯一的文件，供看门狗记录正文顺序。"""
+
+    @abstractmethod
+    def apply_watchdog_diff(self, unit_ids: list[str], units: list[MemoryUnit]) -> None:
+        """按 ID 跨 Scope 删除旧 unit，并在同一事务插入归属已确认的新 unit。"""
 
     @abstractmethod
     def search_fulltext(self, scope: Scope, query: TextQuery) -> list[ScoredID]:

@@ -808,7 +808,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # 取到兜底值时保留旧列值：project 是写入时确定的归属坐标（F07 语义下
         # 不可变），读到兜底只可能是"上游丢了瞬态上下文"而非"调用方想改归属"。
         # md_filename 同理（md.write 回填的内部指针，重建 unit 对象的上游可能
-        # 丢键，覆写空串会让 list_units_by_md 的看门狗对账失锚）；category 同理
+        # 丢键，覆写空串会让按文件对账失锚）；category 同理
         # （memory_class 是落盘键、读回保留，取到兜底说明上游重建对象丢了键）。
         # lifecycle/t_valid/t_invalid/t_event 不守卫——它们是 update 的语义本体
         # （SUPERSEDE 改的就是它们），且 t_valid=None 是合法值非兜底。
@@ -918,32 +918,50 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 return
             try:
                 conn.execute("BEGIN")
-                placeholders = ",".join("?" for _ in unit_ids)
-                # 先查存在的 rowid（幂等：只删存在的 id，缺失静默跳过）。
-                rows = conn.execute(
-                    f"SELECT rowid FROM memory_unit WHERE unit_id IN ({placeholders})",
-                    tuple(unit_ids),
-                ).fetchall()
-                rowids = [r[0] for r in rows]
-                if rowids:
-                    rowid_ph = ",".join("?" for _ in rowids)
-                    conn.execute(
-                        f"DELETE FROM memory_fts WHERE rowid IN ({rowid_ph})",
-                        tuple(rowids),
-                    )
-                    if self.vec_enabled:
-                        conn.execute(
-                            f"DELETE FROM memory_vec WHERE rowid IN ({rowid_ph})",
-                            tuple(rowids),
-                        )
-                    conn.execute(
-                        f"DELETE FROM memory_unit WHERE unit_id IN ({placeholders})",
-                        tuple(unit_ids),
-                    )
+                self._delete_units(conn, unit_ids)
                 conn.execute("COMMIT")
             except Exception as exc:
                 conn.execute("ROLLBACK")
                 logger.error("shadow delete failed, rolled back: %s", exc)
+                raise
+
+    def _delete_units(self, conn: sqlite3.Connection, unit_ids: list[str]) -> None:
+        if not unit_ids:
+            return
+        placeholders = ",".join("?" for _ in unit_ids)
+        # 先查存在的 rowid（幂等：只删存在的 id，缺失静默跳过）。
+        rows = conn.execute(
+            f"SELECT rowid FROM memory_unit WHERE unit_id IN ({placeholders})",
+            tuple(unit_ids),
+        ).fetchall()
+        rowids = [r[0] for r in rows]
+        if rowids:
+            rowid_ph = ",".join("?" for _ in rowids)
+            conn.execute(
+                f"DELETE FROM memory_fts WHERE rowid IN ({rowid_ph})",
+                tuple(rowids),
+            )
+            if self.vec_enabled:
+                conn.execute(
+                    f"DELETE FROM memory_vec WHERE rowid IN ({rowid_ph})",
+                    tuple(rowids),
+                )
+            conn.execute(
+                f"DELETE FROM memory_unit WHERE unit_id IN ({placeholders})",
+                tuple(unit_ids),
+            )
+
+    def apply_watchdog_diff(self, unit_ids: list[str], units: list[MemoryUnit]) -> None:
+        with self._lock:
+            conn = self._ensure_conn()
+            conn.execute("BEGIN")
+            try:
+                self._delete_units(conn, unit_ids)
+                for unit in units:
+                    self._insert_one(conn, unit)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
                 raise
 
     def list_units(self, scope: Scope) -> list[tuple[str, bytes]]:
@@ -981,24 +999,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
     def list_units_by_md(
         self, scope: Scope, md_filename: str, *, lifecycle: str | None = None
     ) -> list[tuple[str, str]]:
-        """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用（F07 §12.3）。
-
-        返回 ``(unit_id, content_hash)`` 二元组。看门狗比 md 文件现存 unit 与 shadow
-        索引登记的 content_hash 判定漂移（F07 §12.3），故只需 ``content_hash`` 不需
-        ``unit_json`` 全量。``scope`` 不参与过滤——看门狗跨 scope 诊断（用空 Scope() 占位，
-        加 scope WHERE 会断对账）。md 文件按 memory_class+coords.project 组织、不按 scope
-        组织，单文件可含多 scope unit。影子索引其余方法已加 scope 原生隔离，本方法是看门狗诊断例外。
-
-        ``lifecycle`` 可选过滤：非 None 时拼 ``AND lifecycle = ?``——看门狗 delete 侧对账
-        只取 active 行（``LifecycleState.ACTIVE.value``），排除 superseded/archived/forgotten
-        历史行（SUPERSEDE 后 md 已删旧块、shadow 保留旧行，md 无此 hash 是正确终态而
-        非删除信号，不应进入 to_delete 对账）。insert 侧「已知块」扣除用 None 的全集
-        （archived/forgotten 行的 md 块仍留文件，须命中历史行避免重插 active，见
-        ``LocalWatchdog._sync_one``）。None 不过滤（跨 scope 诊断原行为）。
-
-        无 ``md_filename`` 参数校验——空串/None 由 SQL 自然返空（``md_filename`` 列
-        写入侧由 ``_md_filename_of`` 兜底，不会存空串，故空串查询必返空，无需特判）。
-        """
+        """按文件跨 Scope 读取 (unit_id, content_hash)，可按 lifecycle 过滤。"""
         sql = "SELECT unit_id, content_hash FROM memory_unit WHERE md_filename = ?"
         params: list[str] = [md_filename]
         if lifecycle is not None:
@@ -1009,28 +1010,49 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             rows = conn.execute(sql, params).fetchall()
         return [(uid, ch) for uid, ch in rows]
 
-    def latest_scope_by_md(self, scope: Scope, md_filename: str) -> Scope | None:
-        """按 ``md_filename`` 查最新一条 unit 的 scope（rowid DESC LIMIT 1），无历史返 None。
-
-        供看门狗建新 unit 时继承 scope（md 文件不编码 org/space/user/agent/session，按同文件
-        最新归属近似）。不限 scope WHERE（看门狗跨 scope 取该文件最新归属，与
-        ``list_units_by_md`` 同例外——加 scope WHERE 会过滤掉非空 scope 的历史 unit）。
-
-        排序口径 ``rowid DESC``：SQLite 隐式 rowid 单调递增 = 最后插入。``t_ingest`` 不在
-        memory_unit 表上（在 ``unit_json`` 内，无法 ORDER BY）；``t_event``/``t_invalid``
-        哨兵化无区分度；``t_valid`` 允许 NULL 且可被上游回填非 now 值。rowid 是唯一可靠口径。
-        """
+    def list_shared_watchdog_files(self) -> list[str]:
         with self._lock:
-            conn = self._ensure_conn()
-            row = conn.execute(
-                'SELECT org, space, "user", agent, session FROM memory_unit '
-                "WHERE md_filename=? ORDER BY rowid DESC LIMIT 1",
-                (md_filename,),
-            ).fetchone()
-        if row is None:
-            return None
-        org, space, user, agent, session = row
-        return Scope(org=org, space=space, user=user, agent=agent, session=session)
+            path = self._resolved_db_path()
+            if self._conn_path != path and not os.path.isfile(path):
+                return []  # 启动时没有索引历史，无需创建数据库。
+            rows = (
+                self._ensure_conn()
+                .execute(
+                    "SELECT md_filename FROM ("
+                    'SELECT DISTINCT md_filename, org, space, "user", agent '
+                    "FROM memory_unit WHERE md_filename <> ''"
+                    ") GROUP BY md_filename HAVING COUNT(*) > 1",
+                )
+                .fetchall()
+            )
+        return [filename for (filename,) in rows]
+
+    def list_watchdog_rows(self, md_filename: str) -> list[tuple[str, str, str, Scope]]:
+        with self._lock:
+            rows = (
+                self._ensure_conn()
+                .execute(
+                    'SELECT unit_id, content_hash, lifecycle, org, space, "user", agent, session '
+                    "FROM memory_unit WHERE md_filename = ? ORDER BY rowid DESC",
+                    (md_filename,),
+                )
+                .fetchall()
+            )
+        return [
+            (
+                uid,
+                content_hash,
+                lifecycle,
+                Scope(
+                    org=org,
+                    space=space,
+                    user=user,
+                    agent=agent,
+                    session=session,
+                ),
+            )
+            for uid, content_hash, lifecycle, org, space, user, agent, session in rows
+        ]
 
     def scopes(self) -> list[Scope]:
         """枚举 memory_unit 表已有 Scope（对齐 ``sqlite_kv_store.scopes`` 范式）。

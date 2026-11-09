@@ -28,15 +28,17 @@ from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
     MEMORY_CLASS_KEY,
     LifecycleState,
+    MemoryUnit,
     Scope,
+    Segment,
 )
-
 from jiuwen_memory.storage.markdown_impl._md_blocks import (
     collect_blocks_from_text,
     collect_md_blocks,
     content_hash,
 )
 from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
+from jiuwen_memory.storage.types import TextQuery
 from jiuwen_memory.storage.watchdog_impl.local_watchdog import (
     LocalWatchdog,
     _class_from_md_path,
@@ -262,8 +264,6 @@ def test_sync_one_indexes_hash_leading_content(tmp_path) -> None:
 def test_sync_one_deletes_removed_lines(tmp_path) -> None:
     """md 删除影子索引登记的行 → 删对应 unit（纯删除）。"""
     wd = _watchdog(tmp_path)
-    from jiuwen_memory.common.type_def import MemoryUnit, Segment
-
     md_filename = "memory/p1/MEMORY.md"
     old = MemoryUnit(
         id="u1",
@@ -285,8 +285,6 @@ def test_sync_one_deletes_removed_lines(tmp_path) -> None:
 def test_sync_one_replaces_changed_line_with_new_id(tmp_path) -> None:
     """改一行 → 旧 hash 消失 + 新 hash 出现 → 删旧 unit + 建新 unit（新 id）。"""
     wd = _watchdog(tmp_path)
-    from jiuwen_memory.common.type_def import MemoryUnit, Segment
-
     md_filename = "memory/p1/MEMORY.md"
     old = MemoryUnit(
         id="u-old",
@@ -321,8 +319,6 @@ def test_sync_one_does_not_reinsert_retired_block(tmp_path, retired_lifecycle) -
     只用 active 集合作「已知块」扣除，会把残留块重插为 active 重复行（遗忘语义失效 +
     内容重复）——全集扣除命中历史行、跳过 insert。
     """
-    from jiuwen_memory.common.type_def import MemoryUnit, Segment
-
     wd = _watchdog(tmp_path)
     md_filename = "memory/p1/MEMORY.md"
     content = "retired content"
@@ -359,8 +355,6 @@ def test_sync_one_does_not_physically_delete_superseded_row(tmp_path) -> None:
     「用户手删」删除信号。delete 侧只认 active 行 → SUPERSEDED 行不进 to_delete，
     版本链/as_of 不因看门狗对账断裂。
     """
-    from jiuwen_memory.common.type_def import MemoryUnit, Segment
-
     wd = _watchdog(tmp_path)
     md_filename = "memory/p1/MEMORY.md"
     wd._shadow.insert_units(
@@ -406,8 +400,6 @@ def test_sync_one_noop_when_in_sync(tmp_path) -> None:
 def test_sync_one_deleted_flag_drops_all_units(tmp_path) -> None:
     """文件删除（deleted=True）→ 该文件所有 unit 全删。"""
     wd = _watchdog(tmp_path)
-    from jiuwen_memory.common.type_def import MemoryUnit, Segment
-
     md_filename = "memory/p1/MEMORY.md"
     wd._shadow.insert_units(
         SCOPE,
@@ -459,14 +451,163 @@ def test_started_reflects_lifecycle_and_stop_start_resets_closed(tmp_path) -> No
     assert wd.started is False
 
 
-def test_sync_one_inherits_scope_from_latest(tmp_path) -> None:
-    """sync 补登的 unit 继承该 md 最新一条 unit 的 scope（修正 scope 原生隔离下补登可见性）。
+@pytest.mark.parametrize(
+    ("contents", "has_baseline", "replacement", "history_space"),
+    [
+        (("after", "other"), True, "after", None),
+        (("after", "changed"), True, None, None),
+        (("before", "other", "after"), True, None, None),
+        (("other", "other"), True, None, None),
+        (("other", "after"), True, None, None),
+        (("after", "other"), False, None, None),
+        (("after", "other"), True, "after", "sp-b"),
+        (("after", "other"), True, None, "sp-a"),
+    ],
+    ids=[
+        "single-replacement", "multiple-replacements", "append",
+        "duplicate-content", "shift", "missing-baseline",
+        "same-owner-history", "foreign-owner-history",
+    ],
+)
+def test_sync_one_preserves_scope_in_shared_markdown(
+    tmp_path, contents, has_baseline, replacement, history_space,
+) -> None:
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/MEMORY.md"
+    scope_b = Scope(org="acme", space="sp-b", user="developer", agent="agent", session="b")
+    scope_a = Scope(org="acme", space="sp-a", user="developer", agent="agent", session="a")
+    for unit_id, owner in [("before", scope_b), ("other", scope_a)]:
+        unit = MemoryUnit(
+            id=unit_id,
+            scope=owner,
+            segments=[Segment(content=unit_id)],
+            system_metadata={MD_FILENAME_KEY: md_filename},
+        )
+        wd._shadow.insert_units(owner, [unit])
+
+    if history_space:
+        owner = scope_a if history_space == "sp-a" else scope_b
+        history = MemoryUnit(
+            id="history",
+            scope=owner,
+            lifecycle=LifecycleState.SUPERSEDED,
+            segments=[Segment(content="before")],
+            system_metadata={MD_FILENAME_KEY: md_filename},
+        )
+        wd._shadow.insert_units(owner, [history])
+
+    md = tmp_path / md_filename
+    md.parent.mkdir()
+    md.write_text("# t\nbefore\n\n# t\nother\n\n", encoding="utf-8")
+    if has_baseline:
+        wd._seed_shared_orders()
+    md.write_text("".join(f"# t\n{content}\n\n" for content in contents), encoding="utf-8")
+    for _ in range(2):
+        wd._sync_one(md_filename, deleted=False)
+
+    query = TextQuery(text="after")
+    assert wd._shadow.search_fulltext(scope_a, query) == []
+    hits = wd._shadow.search_fulltext(scope_b, query)
+    if replacement:
+        assert len(hits) == 1
+        new_unit, = wd._shadow.get_units(scope_b, [hits[0].id])
+        assert new_unit.scope == scope_b
+        assert new_unit.segments[0].content == replacement
+        assert wd._shadow.get_units(scope_b, ["before"]) == []
+    else:
+        assert hits == []
+        assert wd._shadow.get_units(scope_b, ["before"])
+    assert wd._shadow.get_units(scope_a, ["other"])
+    if history_space:
+        assert wd._shadow.get_units(history.scope, ["history"])
+
+
+def test_sync_one_keeps_old_index_when_replacement_insert_fails(tmp_path, monkeypatch) -> None:
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/MEMORY.md"
+    md = tmp_path / md_filename
+    md.parent.mkdir()
+    md.write_text("# t\nbefore\n\n", encoding="utf-8")
+    wd._sync_one(md_filename, deleted=False)
+    md.write_text("# t\nafter\n\n", encoding="utf-8")
+
+    def fail_insert(*_args):
+        raise RuntimeError("insert failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wd._shadow, "_insert_one", fail_insert)
+        with pytest.raises(RuntimeError, match="insert failed"):
+            wd._sync_one(md_filename, deleted=False)
+    assert len(wd._shadow.search_fulltext(SCOPE, TextQuery(text="before"))) == 1
+    assert wd._shadow.search_fulltext(SCOPE, TextQuery(text="after")) == []
+
+    wd._sync_one(md_filename, deleted=False)
+    assert wd._shadow.search_fulltext(SCOPE, TextQuery(text="before")) == []
+    assert len(wd._shadow.search_fulltext(SCOPE, TextQuery(text="after"))) == 1
+
+
+def test_sync_one_deletes_missing_active_row_with_duplicate_history(tmp_path) -> None:
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/MEMORY.md"
+    scope_a, scope_b = Scope(space="a"), Scope(space="b")
+    for unit_id, content, owner, lifecycle in [
+        ("removed", "removed", scope_a, LifecycleState.ACTIVE),
+        ("kept", "kept", scope_b, LifecycleState.ACTIVE),
+        ("history", "kept", scope_b, LifecycleState.SUPERSEDED),
+    ]:
+        unit = MemoryUnit(
+            id=unit_id,
+            scope=owner,
+            lifecycle=lifecycle,
+            segments=[Segment(content=content)],
+            system_metadata={MD_FILENAME_KEY: md_filename},
+        )
+        wd._shadow.insert_units(owner, [unit])
+    md = tmp_path / md_filename
+    md.parent.mkdir()
+    md.write_text("# t\nkept\n\n", encoding="utf-8")
+
+    wd._sync_one(md_filename, deleted=False)
+
+    assert wd._shadow.get_units(scope_a, ["removed"]) == []
+    assert len(wd._shadow.get_units(scope_b, ["kept", "history"])) == 2
+
+
+def test_sync_one_appends_for_same_owner_across_sessions(tmp_path) -> None:
+    wd = _watchdog(tmp_path)
+    md_filename = "memory/MEMORY.md"
+    scopes = [
+        Scope(org="acme", space="space", user="developer", agent="agent", session=session)
+        for session in ("s1", "s2")
+    ]
+    for owner in scopes:
+        unit = MemoryUnit(
+            id=owner.session,
+            scope=owner,
+            segments=[Segment(content=owner.session)],
+            system_metadata={MD_FILENAME_KEY: md_filename},
+        )
+        wd._shadow.insert_units(owner, [unit])
+    md = tmp_path / md_filename
+    md.parent.mkdir()
+    md.write_text("# t\ns1\n\n# t\ns2\n\n# t\nappended\n\n", encoding="utf-8")
+
+    assert wd._shadow.list_shared_watchdog_files() == []
+    wd._sync_one(md_filename, deleted=False)
+
+    query = TextQuery(text="appended")
+    hits = wd._shadow.search_fulltext(scopes[0], query)
+    assert len(hits) == 1
+    assert wd._shadow.search_fulltext(scopes[1], query) == hits
+    assert wd._shadow.get_units(scopes[1], [hits[0].id])[0].scope == scopes[1]
+
+
+def test_sync_one_inherits_scope_from_single_owner(tmp_path) -> None:
+    """单一归属的 md 补登新 unit 时继承文件 Scope。
 
     历史 unit 落 scope_a，手动改 md 加新行 → 看门狗补登的新 unit 应继承 scope_a
     （非看门狗的空 Scope），scope_a 的召回能拉到补登 unit。
     """
-    from jiuwen_memory.common.type_def import MemoryUnit, Segment
-
     wd = _watchdog(tmp_path)
     md_filename = "memory/p1/MEMORY.md"
     # 历史 unit 落 scope_a（wd.scope 是 SCOPE=Scope(org="acme")，这里另造一个区分）
