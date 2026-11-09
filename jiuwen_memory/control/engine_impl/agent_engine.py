@@ -12,11 +12,11 @@ metadata 保留原生类型落库、admin_* 不落引擎（API 层直达 PolicyM
 
 1. **多空间**：不设 ``scope.space == ""`` 本地域校验——delete / 候选枚举扫
    全部 scopes，支撑个人 agent 的 project 分目录等多空间落点。
-2. **纯文本模态**：jiuwenswarm 侧记忆 rail（MemoryRail / CodingMemoryRail）
+2. **文本载体模态**：jiuwenswarm 侧记忆 rail（MemoryRail / CodingMemoryRail）
    写入/存储/检索全链路纯文本（工具签名 ``content: str``，存储 .md，检索
    文本向量 + BM25），无 VIDEO 的 uri 载体与 payload_id 幂等需求——
-   ``data`` 恒 ``content.encode("utf-8")``、``uri`` 恒空串。非文本模态由
-   normalizer 能力门禁在规约前拒绝（UnsupportedCapabilityError）。若未来
+   ``data`` 恒 ``content.encode("utf-8")``、``uri`` 恒空串。引擎在构造
+   RawPayload 前以 UnsupportedCapabilityError 拒绝 TEXT/CODE 之外的模态。若未来
    rail 层出现多模态写入工具，需恢复模态特判。
 3. **无 procedural / middle 分流**：agent 链路无过程性记忆与中位延迟写入
    语义，write 只保留 infer=true 的派生抽取与缺省直写两路。middle /
@@ -40,7 +40,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
+from jiuwen_memory.common.errors import (
+    AgentMemoryError,
+    NotFoundError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
@@ -284,6 +289,18 @@ class AgentEngine(MemoryEngine):
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
     ) -> list[MemoryUnit]:
+        if source not in (Modality.TEXT, Modality.CODE):
+            modality = source.value if isinstance(source, Modality) else str(source)
+            raise UnsupportedCapabilityError(
+                capability="modality",
+                value=modality,
+                component="AgentEngine",
+                message=(
+                    "AgentEngine supports only text-backed writes "
+                    f"(text and code), received modality {modality!r}"
+                ),
+            )
+
         # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
         #   （指代消解/语境）+ 召回10条相关记忆（去重提示），调 extractor 抽派生落 /memory/。
@@ -300,11 +317,6 @@ class AgentEngine(MemoryEngine):
 
         infer = _is_true("infer")
 
-        # agent 场景仅文本模态：jiuwenswarm 侧记忆 rail（MemoryRail /
-        # CodingMemoryRail）写入/存储/检索全链路纯文本（工具签名
-        # content: str，存储 .md，检索文本向量+BM25），无 VIDEO 的 uri 载体
-        # 与 payload_id 幂等需求；非文本模态由 normalizer 能力门禁在规约前
-        # 拒绝（UnsupportedCapabilityError）。
         payload = RawPayload(
             id=str(uuid.uuid4()),
             scope=scope,

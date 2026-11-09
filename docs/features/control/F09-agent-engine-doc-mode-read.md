@@ -39,6 +39,17 @@ issue #261 根治——`KVLifecycleManager` 注入 `domain_store` 后按 `should
 
 ## 决策
 
+### AgentEngine 写入模态边界
+
+关联问题 [#301](https://gitcode.com/openJiuwen/agent-memory/issues/301)。
+
+AgentEngine 面向个人 Agent 的文本记忆场景，单条写入和批量写入支持以 UTF-8 文本
+承载的 `Modality.TEXT` 和 `Modality.CODE`。支持 CODE 输入标签表示代码文本可经
+PassthroughNormalizer 规约，不代表完整 Coding 模式已经实现。其他模态在规约前返回
+`UnsupportedCapabilityError`，错误包含被拒绝的模态。该约束适用于 AgentEngine 的
+输入编排。InMemoryEngine 和 CloudEngine
+在配置视频流水线后可接收视频 URI，文档存储可以保存解析生成的记忆。
+
 ### 决策 1：AgentEngine 持有 domain_store，读路径对齐 CloudEngine
 
 构造函数新增 `domain_store: DomainStore` 必填参数（retriever 之后），存
