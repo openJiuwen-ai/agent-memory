@@ -66,6 +66,12 @@ from jiuwen_memory.control.evolution.hierarchy_submission import (
     HierarchySubmissionDependencies,
     submit_hierarchy,
 )
+from jiuwen_memory.control.ingest_job import (
+    begin_ingest_write,
+    check_ingest_cancelled,
+    record_ingest_ids,
+    record_ingest_units,
+)
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
@@ -302,7 +308,9 @@ class InMemoryEngine(MemoryEngine):
             occurred_at=occurred_at,
         )
         # 三条路径共用：Ingestor 规约。
+        check_ingest_cancelled()
         units = self._ingestor.ingest([payload])
+        check_ingest_cancelled()
         for unit in units:
             unit.tags = list(tags or [])
             if middle:  # 中期缓冲标记——MiddleToLongJob 据此过滤候选
@@ -321,11 +329,13 @@ class InMemoryEngine(MemoryEngine):
                 raise RuntimeError(
                     "Engine.write procedural=True requires an Evolver (装配未注入 evolver)"
                 )
+            begin_ingest_write()
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            record_ingest_ids(result.created_ids)
             derived = list(result.created_units) or [
                 self._load(scope, uid) for uid in result.created_ids
             ]
@@ -349,16 +359,17 @@ class InMemoryEngine(MemoryEngine):
                     evolver,
                     parse_middle_interval(middle_interval),
                 )
-            # 既有 infer=true 同步抽取路径，不动
             if evolver is None:
                 raise RuntimeError(
                     "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
                 )
+            begin_ingest_write()
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            record_ingest_ids(result.created_ids)
             derived = list(result.created_units) or [
                 self._load(scope, uid) for uid in result.created_ids
             ]
@@ -374,10 +385,13 @@ class InMemoryEngine(MemoryEngine):
 
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引。
         # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
+        check_ingest_cancelled()
         if classifier is not None:
             classifier.classify(units)
         # 记忆写入只经 IndexBuilder：交付 Storage + 建 hot 轻量索引由其统一编排。
+        begin_ingest_write()
         await asyncio.to_thread(index_builder.build, units)
+        record_ingest_units(units)
         return units
 
     # ---- 中期缓冲子路径 ----
@@ -421,7 +435,10 @@ class InMemoryEngine(MemoryEngine):
         for unit in units:
             unit.tier = MemoryTier.WORKING
             unit.system_metadata["middle"] = "true"
+        begin_ingest_write()
         await asyncio.to_thread(index_builder.build, units)
+        record_ingest_units(units)
+        check_ingest_cancelled()
 
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
         middle_metadata = {

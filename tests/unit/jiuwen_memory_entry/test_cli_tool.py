@@ -95,6 +95,60 @@ def test_cli_exposes_every_api_method_plus_helpers() -> None:
     assert {"healthz", "batch"} <= choices  # 仅有的两个辅助命令
 
 
+def test_cli_ingest_cancel_forwards_target_scope(dev_client, monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(dev_client.server.api, "job_cancel", lambda **kwargs: calls.append(kwargs))
+    status, body = dev_client.call("job_cancel", {"job_id": "ing_test", "scope": SCOPE})
+    assert status == 200 and body is None
+    assert calls[0]["job_id"] == "ing_test"
+    assert vars(calls[0]["scope"])["org"] == SCOPE["org"]
+    assert vars(calls[0]["scope"])["user"] == SCOPE["user"]
+
+
+def test_cli_ingest_cancel_roundtrip(dev_client, monkeypatch) -> None:
+    """CLI 客户端到真实内核的取消闭环；不覆盖 argparse 或 HTTP 传输。"""
+    # Block the internal ingest stage without replacing public API dispatch.
+    # pylint: disable=protected-access
+    api = dev_client.server.api
+    ingestor = api._commands._engine._ingestor
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    ingest, finish = ingestor.ingest, api._ingest_jobs._finished
+
+    def block_ingest(payloads):
+        entered.set()
+        assert release.wait(5), "test must release normalization"
+        return ingest(payloads)
+
+    def observe_finish(job_id, future):
+        finish(job_id, future)
+        finished.set()
+
+    monkeypatch.setattr(ingestor, "ingest", block_ingest)
+    monkeypatch.setattr(api._ingest_jobs, "_finished", observe_finish)
+    try:
+        status, submission = dev_client.call("submit_ingest", {
+            "content": "cancel before storing", "scope": SCOPE, "source": "text",
+            "payload_id": "cli-cancel", "source_ref": "test:cli-cancel",
+        })
+        assert status == 200, submission
+        job_id = submission["job"]["id"]
+        assert entered.wait(2)
+        status, body = dev_client.call("job_cancel", {"job_id": job_id, "scope": SCOPE})
+        assert status == 200 and body is None
+        status, running = dev_client.call("job_status", {"job_id": job_id, "scope": SCOPE})
+        assert status == 200 and running["status"] == "running"
+        assert running["detail"]["cancel_requested"] == "true"
+        release.set()
+        assert finished.wait(3)
+        status, result = dev_client.call("job_status", {"job_id": job_id, "scope": SCOPE})
+        assert status == 200 and result["status"] == "cancelled"
+        assert result["detail"]["partial_write"] == "false"
+        status, memories = dev_client.call("list", {"scope": SCOPE})
+        assert status == 200 and memories["count"] == 0
+    finally:
+        release.set()
+
+
 @pytest.mark.parametrize("method", sorted(api_method_names()))
 def test_command_options_match_api_contract(method: str) -> None:
     contract = method_contract(method)

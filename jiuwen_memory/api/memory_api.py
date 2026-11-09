@@ -422,15 +422,17 @@ class MemoryAPI(ABC):
         scope: Scope | None = None,
     ) -> JobInfo:
         """
-        查询演进任务状态（委托 Scheduler）；``security`` 为本次请求的安全上下文，本层
-        据其鉴权（仅可查自身/已授权范围的任务）。
+        查询演进或摄入任务状态；摄入任务必须提供 target scope。security 为本次请求
+        安全上下文，本层据其鉴权（仅可查自身/已授权范围的任务）。
         """
 
     @abstractmethod
-    def job_cancel(self, job_id: str, *, security: RequestSecurityContext) -> None:
+    def job_cancel(
+        self, job_id: str, *, security: RequestSecurityContext, scope: Scope | None = None
+    ) -> None:
         """
-        取消尚未完成的演进任务（幂等，委托 Scheduler）；``security`` 为本次请求的
-        安全上下文，本层据其鉴权。
+        取消演进或摄入任务（终态幂等）。摄入任务必须提供 target scope；运行中协作取消，
+        已进入的同步调用允许收尾，不回滚已写入数据。security 为本次请求安全上下文。
         """
 
     @abstractmethod

@@ -117,6 +117,9 @@ class AdminOpsMixin:
                     "source_ref": job.source_ref,
                     "unit_ids": ",".join(job.unit_ids),
                     "error": job.error,
+                    "cancel_requested": str(job.cancel_requested).lower(),
+                    "partial_write": str(job.partial_write).lower(),
+                    "retry_requires_reconciliation": str(job.retry_requires_reconciliation).lower(),
                 },
             )
         else:
@@ -132,26 +135,38 @@ class AdminOpsMixin:
         self._log(identity, "job_status", job_id, target_scope=info.scope, detail=auth)
         return info
 
-    def job_cancel(self, job_id: str, *, security: RequestSecurityContext) -> None:
+    def job_cancel(
+        self, job_id: str, *, security: RequestSecurityContext, scope: Scope | None = None
+    ) -> None:
         identity = security.auth.actor
         # 取消即对该任务范围的写动作，按其 scope 鉴权 WRITE
         # （与 evolve 触发一致）。
         self._require_trusted_context(
-            security, _TrustedRequestTarget(Action.WRITE, "job_cancel", _ROOT, job_id)
+            security, _TrustedRequestTarget(Action.WRITE, "job_cancel", scope or _ROOT, job_id)
         )
-        info = self._scheduler.status(job_id)
+        if job_id.startswith(INGEST_JOB_PREFIX):
+            if scope is None:
+                raise ValidationError("ingest job cancellation requires target scope")
+            info = self._ingest_jobs.status(job_id, scope=scope)
+            space_action = None
+        else:
+            info = self._scheduler.status(job_id)
+            space_action = _evolve_space_action(info.mode)
         auth = self._authorize(
             security,
             info.scope,
             Action.WRITE,
             "job_cancel",
             job_id,
-            space_action=_evolve_space_action(info.mode),
+            space_action=space_action,
         )
         self._log(identity, "job_cancel", job_id, target_scope=info.scope, detail=auth)
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
-        self._scheduler.cancel(job_id)
+        if job_id.startswith(INGEST_JOB_PREFIX):
+            self._ingest_jobs.cancel(job_id, scope=info.scope)
+        else:
+            self._scheduler.cancel(job_id)
 
     def admin_get(self, key: str, *, security: RequestSecurityContext) -> str:
         identity = security.auth.actor

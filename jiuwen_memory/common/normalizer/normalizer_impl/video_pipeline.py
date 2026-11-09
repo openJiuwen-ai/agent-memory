@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from jiuwen_memory.common.ingest_cancellation import IngestCancelled, check_ingest_cancelled
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import ChatMessage
@@ -144,6 +145,7 @@ def _call_openai_json_with_retry(
     last_raw = ""
 
     for attempt in range(1, JSON_API_MAX_ATTEMPTS + 1):
+        check_ingest_cancelled()
         retry_prompt = prompt
         if attempt > 1:
             retry_prompt = (
@@ -162,11 +164,14 @@ def _call_openai_json_with_retry(
                 [ChatMessage(role="user", content=retry_prompt)],
                 **options,
             ).strip()
+            check_ingest_cancelled()
             last_raw = raw
             data = _parse_json_safe(raw)
             if validator is not None:
                 validator(data)
             return data, raw, ""
+        except IngestCancelled:
+            raise
         except Exception as e:
             last_error = str(e)
             logger.warning(
@@ -1011,6 +1016,7 @@ def _extract_video_subclip(
     import shutil
     import subprocess
 
+    check_ingest_cancelled()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if shutil.which("ffmpeg") is None:
         raise FileNotFoundError("ffmpeg not found in PATH. Please install ffmpeg.")
@@ -1127,6 +1133,7 @@ def _offline_vu(
     max_retries = 4
     generated_text = ""
     for attempt in range(max_retries + 1):
+        check_ingest_cancelled()
         try:
             retry_prompt = (
                 prompt
@@ -1151,7 +1158,10 @@ def _offline_vu(
                 max_tokens=512,
                 temperature=0.4,
             ).strip()
+            check_ingest_cancelled()
             return _parse_json_safe(generated_text)
+        except IngestCancelled:
+            raise
         except Exception as e:
             snippet = (generated_text or str(e)).replace("\n", " ")
             logger.warning(
@@ -1173,6 +1183,7 @@ def run_video_memory_pipeline_off(
     work_root: str | Path,
     config: VideoPipelineConfig,
 ) -> dict[str, Any]:
+    check_ingest_cancelled()
     video_path = _resolve_video_path(Path(video_path))
     chunk_seconds = config.chunk_seconds
     asr_port = config.asr_port
@@ -1966,6 +1977,7 @@ def run_video_memory_pipeline_off(
     def _run_stm_for_segment(
         start_t: float, end_t: float, seg_tag: str
     ) -> tuple[ShortTermMemory | None, list[float], str]:
+        check_ingest_cancelled()
         out_clip = segments_dir / f"seg_{seg_tag}.mp4"
         logger.debug(
             "VideoPipeline: extracting segment=%s start=%.3f end=%.3f",
@@ -1975,6 +1987,8 @@ def run_video_memory_pipeline_off(
         )
         try:
             _extract_video_subclip(video_path, out_clip, start_t, end_t)
+        except IngestCancelled:
+            raise
         except Exception as e:
             logger.exception(
                 "VideoPipeline: failed to extract segment=%s start=%.3f end=%.3f",
