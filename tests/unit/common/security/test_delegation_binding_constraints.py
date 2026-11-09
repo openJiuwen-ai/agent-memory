@@ -3,16 +3,20 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from jiuwen_memory.common.errors import PermissionDeniedError
-from jiuwen_memory.common.security._delegation_binding import _bound_record
+from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.security._delegation_binding import _bind_delegations, _bound_record
+from jiuwen_memory.common.security.authentication.base import Authenticator
 from jiuwen_memory.common.security.authorization.authorization_impl.memory_stores import (
     InMemoryDelegationStore,
 )
 from jiuwen_memory.common.security.types import Action, AuthContext, Delegation, Role
 from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 
 pytestmark = pytest.mark.unit
 NOW = datetime(2026, 9, 21, tzinfo=UTC)
@@ -104,3 +108,36 @@ def test_valid_binding_preserves_optional_restrictions(restricted):
         )
         == record
     )
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_binding_assembly_rejects_missing_or_ambiguous_authorizer_sources(count):
+    stores = tuple(InMemoryDelegationStore() for _ in range(count))
+    authorizer = SimpleNamespace(delegation_stores=lambda: stores)
+    config = ComponentConfig(
+        params={"delegation_bindings": {"fingerprint": "task"}},
+        ctx=AssemblyContext.from_dict({}),
+    )
+    with pytest.raises(ValidationError, match="exactly one DelegationStore"):
+        _bind_delegations(Mock(spec=Authenticator), authorizer, config)
+
+
+def test_binding_assembly_deduplicates_shared_sources_by_identity():
+    store = InMemoryDelegationStore()
+    authorizer = SimpleNamespace(delegation_stores=lambda: (store, store))
+    authenticator = Mock(spec=Authenticator)
+    config = ComponentConfig(
+        params={"delegation_bindings": {"fingerprint": "task"}},
+        ctx=AssemblyContext.from_dict({}),
+    )
+    bound = _bind_delegations(authenticator, authorizer, config)
+    assert bound.security_dependencies() == (authenticator, store)
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_unbound_authentication_does_not_require_a_unique_delegation_source(count):
+    stores = tuple(InMemoryDelegationStore() for _ in range(count))
+    authorizer = SimpleNamespace(delegation_stores=lambda: stores)
+    authenticator = Mock(spec=Authenticator)
+    config = ComponentConfig(params={}, ctx=AssemblyContext.from_dict({}))
+    assert _bind_delegations(authenticator, authorizer, config) is authenticator

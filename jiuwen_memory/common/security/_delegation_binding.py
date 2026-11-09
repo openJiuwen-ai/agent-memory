@@ -12,10 +12,7 @@ from jiuwen_memory.common.security.authentication.base import Authenticator
 from jiuwen_memory.common.security.authentication.key_store import fingerprint
 from jiuwen_memory.common.security.authorization.base import Authorizer
 from jiuwen_memory.common.security.authorization.scope_rules import scope_covers
-from jiuwen_memory.common.security.authorization.store import (
-    DelegationStore,
-    DelegationStoreProducer,
-)
+from jiuwen_memory.common.security.authorization.store import DelegationStore
 from jiuwen_memory.common.security.capabilities import (
     CredentialSourcesCapability,
     delegation_sources,
@@ -208,6 +205,11 @@ def _validate_record_fields(record: Delegation) -> None:
 def _bind_delegations(
     authenticator: Authenticator, authorizer: Authorizer, config
 ) -> Authenticator:
+    if "delegation_store" in config.params:
+        raise ValidationError(
+            "security.params.delegation_store is not supported; "
+            "select the store in authorizer.params.delegation_store"
+        )
     bindings = config.get("delegation_bindings")
     records = config.get("delegations", [])
     if bindings is None and not records:
@@ -219,14 +221,12 @@ def _bind_delegations(
             raise ValidationError("delegation_bindings keys must be nonempty fingerprints")
         if not isinstance(value, str) or not value:
             raise ValidationError("delegation_bindings values must be nonempty record IDs")
-    store_name = config.get("delegation_store", "default")
-    if not isinstance(store_name, str) or not store_name:
-        raise ValidationError("delegation_store must reference a named store")
-    store = DelegationStoreProducer.build_named(store_name, config.ctx)
-    if not any(store is source for source in _stores(authorizer)):
+    stores = _stores(authorizer)
+    if len(stores) != 1:
         raise ValidationError(
-            "delegation binding and Authorizer must share the same DelegationStore"
+            "delegation binding requires exactly one DelegationStore from the Authorizer"
         )
+    store = stores[0]
     parsed = [_parse_record(raw) for raw in records]
     if len({r.delegation_id for r in parsed}) != len(parsed):
         raise ValidationError("duplicate delegation ID in server configuration")

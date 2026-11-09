@@ -11,12 +11,17 @@ from jiuwen_memory.api import (
     Scope,
     Surface,
     assemble_runtime,
+    assemble_server_runtime,
     new_request_context,
 )
 from jiuwen_memory.api.memory_api_impl.local_support import _TrustedRequestTarget
 from jiuwen_memory.common.errors import AuthenticationError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security._delegation_binding import _stores
 from jiuwen_memory.common.security.authentication.key_store import fingerprint
+from jiuwen_memory.common.security.authorization.authorization_impl.sqlite_stores import (
+    SQLiteDelegationStore,
+)
+from jiuwen_memory.common.security.capabilities import delegation_sources
 from jiuwen_memory.common.security.types import Action, Role
 from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.control.types import SpaceMember, SpaceSpec
@@ -25,13 +30,22 @@ from tests.integration.jiuwen_memory_entry.fixtures import collective_settings
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture(params=["memory", "sqlite"])
+@pytest.fixture(
+    params=[
+        ("memory", "default"),
+        ("sqlite", "default"),
+        ("memory", "task_delegations"),
+        ("sqlite", "task_delegations"),
+    ]
+)
 def delegated_runtime(request):
     # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
     # pylint: disable=protected-access
     settings = collective_settings()["memory_api"]
-    settings["delegation_store"]["default"] = request.param
-    settings["grant_store"]["default"] = request.param
+    backend, store_name = request.param
+    settings["delegation_store"][store_name] = backend
+    settings["authorizer"]["standard"]["params"]["delegation_store"] = store_name
+    settings["grant_store"]["default"] = backend
     runtime = assemble_runtime(config=settings)
     auth = runtime._kernel.security_runtime.authenticator
 
@@ -161,12 +175,58 @@ def test_unbound_and_forged_input_cannot_create_delegated_author(delegated_runti
         )
 
 
-def test_binding_rejects_a_different_authorizer_store():
+@pytest.mark.parametrize("store_name", ["default", "other", None])
+@pytest.mark.parametrize("bound", [True, False], ids=["bound", "unbound"])
+def test_security_delegation_store_option_is_rejected(store_name, bound):
     config = collective_settings()["memory_api"]
-    config["delegation_store"]["other"] = "memory"
-    config["security"]["default"]["params"]["delegation_store"] = "other"
-    with pytest.raises(ValidationError, match="same DelegationStore"):
+    params = config["security"]["default"]["params"]
+    params["delegation_store"] = store_name
+    if not bound:
+        params.pop("delegation_bindings")
+        params.pop("delegations")
+    with pytest.raises(ValidationError, match="authorizer.*delegation_store"):
         assemble_runtime(config=config)
+
+
+def test_binding_reuses_the_authorizer_store_instance(delegated_runtime):
+    # 白盒验证同一对象；不通过类型名推测后端，也不查询另一套装配上下文。
+    # pylint: disable=protected-access
+    runtime, context, store = delegated_runtime
+    bound = runtime._kernel.security_runtime.authenticator
+    assert bound.security_dependencies()[1] is store
+    assert store.get("u1-a1") is not None
+    assert context("test-u1-agent").auth.delegation_id == "u1-a1"
+
+
+@pytest.mark.parametrize("selection", ["named", "inline", "new_instance"])
+def test_binding_uses_selected_persistent_sqlite_and_preserves_revocation(tmp_path, selection):
+    config = collective_settings()["memory_api"]
+    db_path = tmp_path / "delegations.db"
+    spec = {"target": "sqlite", "params": {"db_path": str(db_path)}}
+    if selection == "inline":
+        reference = spec
+    else:
+        reference = "task_delegations"
+        spec["new_instance"] = selection == "new_instance"
+        config["delegation_store"][reference] = spec
+    config["authorizer"]["standard"]["params"]["delegation_store"] = reference
+    runtime = assemble_server_runtime(config=config)
+    try:
+        sources = delegation_sources(runtime.security_runtime.authorizer)
+        assert len(sources) == 1
+        assert runtime.security_runtime.authenticator.security_dependencies()[1] is sources[0]
+        credentials = Credentials(api_key="test-u1-agent")
+        assert runtime.authenticate(credentials).auth.delegation_id == "u1-a1"
+        sources[0].revoke("u1-a1")
+        with pytest.raises(AuthenticationError):
+            runtime.authenticate(credentials)
+    finally:
+        runtime.close(wait=True)
+    reopened = SQLiteDelegationStore(str(db_path))
+    try:
+        assert reopened.get("u1-a1").revoked, "Revocation must persist in the selected SQLite file"
+    finally:
+        reopened.close()
 
 
 @pytest.mark.parametrize(
