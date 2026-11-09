@@ -74,13 +74,19 @@ class MarkdownStore(BaseStore):
 
     @abstractmethod
     def replace_content(
-        self, scope: Scope, md_filename: str, old_content: str, new_content: str
+        self, scope: Scope, md_filename: str, old_content: str, new_content: str,
+        *, new_title: str | None = None, old_title: str | None = None,
     ) -> bool:
         """在 md 文件里定位含 ``old_content`` 的块，替换为 ``new_content``（F07 §5.2.3）。
 
         update 的 OVERWRITE 步骤 ⑤ 调用：影子索引 ``update_units`` 覆写 ``unit_json`` +
         重建投影（步骤 ③，§5.2.1）后，md 侧需同步把旧 content 块替换为新 content 块，
         让 md 与影子索引一致。
+
+        ``new_title`` 非 None 时同步替换标题（空串清空标题）；None 保留原标题。
+        ``old_title`` 非 None 时同时匹配旧标题，避免正文相同、标题不同的块被误改。
+        标题漂移未命中时，仅当可替换块的正文唯一才退化为正文匹配；无换行的裸正文块
+        不参与候选统计或替换。未提供 ``old_title`` 时保留正文首个命中的行为。
 
         块定位：md 块结构 ``<标题>\\n<正文>\\n\\n``（见 :meth:`_render_block`），按
         ``\\n\\n`` 切块，逐块比对正文 == ``old_content`` 命中——正文单行（§12.4 已
@@ -162,7 +168,8 @@ class MarkdownStore(BaseStore):
 
         ``old_text`` 任意文本（块内片段 / 跨多块均可），不强制对齐块边界——文件级
         子串替换，块结构重组（合并/拆分）由上层 ``_supersede_shadow_for_md`` 同步 shadow
-        时按块解析处理。md 侧只保证文件级文本替换的原子性与唯一性。
+        时按块解析处理。USER.md/MEMORY.md 仅编辑正文且保留旧标题时，实现同步刷新
+        可对应的事实标题；显式编辑后的标题和 daily 文件的团队标题保持不变。
         """
 
     @abstractmethod
@@ -198,7 +205,8 @@ class MarkdownStore(BaseStore):
         不耦合具体实现（``LocalMarkdownStore``）。与实现的 ``_md_path``（按 memory_class
         映射）产出同一路径，但入参是 basename + project（不依赖完整 MemoryUnit）：
 
-        - ``USER.md`` → ``USER.md``（跨 project 用户画像，落 root 顶层，不进 memory/ 也无 project 段）；
+        - ``USER.md`` → ``USER.md``（跨 project 用户画像，落 root 顶层，
+          不进 memory/ 也无 project 段）；
         - ``MEMORY.md`` → project 非空 ``memory/{project}/MEMORY.md``，空
           ``memory/MEMORY.md``（跨项目可见）；
         - 其余（daily 文件名，如 ``2026-09-30.md``）→ project 非空

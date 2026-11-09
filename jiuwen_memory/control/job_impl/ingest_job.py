@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from threading import BoundedSemaphore, RLock
+from threading import BoundedSemaphore, Event, RLock
 
 from jiuwen_memory.common.errors import (
     BackendError,
@@ -16,16 +16,21 @@ from jiuwen_memory.common.errors import (
     NotFoundError,
     ValidationError,
 )
+from jiuwen_memory.common.ingest_cancellation import ingest_cancel_signal
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.ingest_job import (
     INGEST_JOB_PREFIX,
+    IngestCancellation,
+    IngestCancelled,
     IngestJob,
     IngestJobController,
     IngestJobProducer,
     IngestSubmission,
     IngestTask,
+    check_ingest_cancelled,
+    ingest_cancellation,
 )
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
@@ -65,6 +70,8 @@ class InProcessIngestJobController(IngestJobController):
         self._executor: ThreadPoolExecutor | None = None
         self._capacity = BoundedSemaphore(max_workers + max_pending_jobs)
         self._jobs: dict[str, IngestJob] = {}
+        self._futures: dict[str, Future[None]] = {}
+        self._cancellations: dict[str, IngestCancellation] = {}
         self._job_id_by_payload: dict[_PayloadKey, str] = {}
         self._lock = RLock()
         self._closed = False
@@ -112,6 +119,12 @@ class InProcessIngestJobController(IngestJobController):
                     )
                 if existing.status in {"pending", "running", "succeeded"}:
                     return IngestSubmission(existing, reused=True)
+                if existing.retry_requires_reconciliation:
+                    raise ConflictError(
+                        "ingest_payload", payload_id,
+                        "previous ingest may have written data; "
+                        "reconcile before using a new payload_id",
+                    )
                 # A failed submission is retryable. Let the caller correct an
                 # invalid URI while retaining the same idempotency key.
                 previous_job_id = existing.id
@@ -120,7 +133,7 @@ class InProcessIngestJobController(IngestJobController):
             self._jobs[job.id] = job
             self._job_id_by_payload[key] = job.id
             try:
-                self._persist(job)
+                self._persist(job, update_payload=True)
             except Exception:
                 self._capacity.release()
                 self._jobs.pop(job.id, None)
@@ -135,14 +148,49 @@ class InProcessIngestJobController(IngestJobController):
                     thread_name_prefix="memory-ingest",
                 )
             executor = self._executor
-        try:
-            future = executor.submit(self._run, job.id, task)
-            future.add_done_callback(lambda _future: self._capacity.release())
-        except RuntimeError as exc:
-            self._capacity.release()
-            self._update(job.id, status="failed", error=str(exc))
-            raise BackendError(f"failed to submit ingest job: {exc}") from exc
+            # Publish the future and cancellation signal before a worker can start.
+            self._cancellations[job.id] = IngestCancellation(Event())
+            try:
+                future = executor.submit(self._run, job.id, task)
+            except RuntimeError as exc:
+                self._cancellations.pop(job.id, None)
+                self._capacity.release()
+                self._update(job.id, status="failed", error=str(exc))
+                raise BackendError(f"failed to submit ingest job: {exc}") from exc
+            self._futures[job.id] = future
+            future.add_done_callback(lambda completed: self._finished(job.id, completed))
         return IngestSubmission(job, reused=False)
+
+    def _finished(self, job_id: str, future: Future[None]) -> None:
+        failure = None if future.cancelled() else future.exception()
+        with self._lock:
+            if failure is not None:
+                current = self._jobs[job_id]
+                state = self._cancellations[job_id]
+                # Execution is over even when a state-store write failed. Preserve an
+                # already computed outcome and its IDs; never leave an orphan running.
+                self._jobs[job_id] = replace(
+                    current,
+                    status="failed" if current.status in {"pending", "running"} else current.status,
+                    unit_ids=tuple(dict.fromkeys((*current.unit_ids, *state.unit_ids))),
+                    error="; ".join(filter(None, (
+                        current.error, f"ingest state persistence failed: {failure}"
+                    ))),
+                    partial_write=(
+                        current.partial_write
+                        or (state.write_started and current.status != "succeeded")
+                    ),
+                    retry_requires_reconciliation=(
+                        current.retry_requires_reconciliation
+                        or (state.write_started and current.status != "succeeded")
+                    ),
+                )
+            self._futures.pop(job_id, None)
+            self._cancellations.pop(job_id, None)
+            self._capacity.release()
+        if failure is not None:
+            logger.error("Ingest worker failed: job_id=%s", job_id,
+                         exc_info=(type(failure), failure, failure.__traceback__))
 
     def status(self, job_id: str, *, scope: Scope) -> IngestJob:
         with self._lock:
@@ -150,6 +198,25 @@ class InProcessIngestJobController(IngestJobController):
         if job is None or job.scope != scope:
             raise NotFoundError("ingest_job", job_id)
         return job
+
+    def cancel(self, job_id: str, *, scope: Scope) -> None:
+        with self._lock:
+            job = self.status(job_id, scope=scope)
+            if job.status not in {"pending", "running"} or job.cancel_requested:
+                return
+            state = self._cancellations.get(job_id)
+            future = self._futures.get(job_id)
+            if state is None or future is None:
+                raise BackendError("ingest job has no active execution")
+            updated = replace(
+                job, cancel_requested=True, updated_at=datetime.now(UTC),
+                status="cancelled" if job.status == "pending" else job.status,
+            )
+            self._persist(updated)
+            self._jobs[job_id] = updated
+            state.requested.set()
+            # If the worker is already waiting for the lock, _run observes cancelled.
+            future.cancel()
 
     def close(self, *, wait: bool = True) -> None:
         with self._lock:
@@ -181,23 +248,43 @@ class InProcessIngestJobController(IngestJobController):
         if existing is not None:
             if existing.scope != scope:
                 return None
+            if existing.id not in self._jobs:
+                # This is the authorized submit path, unlike the read-only status path.
+                self._persist(existing)
             self._jobs[existing.id] = existing
             self._job_id_by_payload[key] = existing.id
         return existing
 
     def _run(self, job_id: str, task: IngestTask) -> None:
-        self._update(job_id, status="running")
+        with self._lock:
+            if self._jobs[job_id].status == "cancelled":
+                return
+            self._update(job_id, status="running")
+            state = self._cancellations[job_id]
+        token = ingest_cancellation.set(state)
+        signal_token = ingest_cancel_signal.set(state.requested)
+        status, error = "succeeded", ""
+        unit_ids = state.unit_ids
         try:
+            check_ingest_cancelled()
             units = task()
+            unit_ids = tuple(dict.fromkeys((*state.unit_ids, *(u.id for u in units))))
+        except IngestCancelled as exc:
+            status, error, unit_ids = "cancelled", str(exc), state.unit_ids
         except Exception as exc:
             logger.exception("Ingest job failed: job_id=%s", job_id)
-            self._update(job_id, status="failed", error=str(exc))
-            return
-        self._update(
-            job_id,
-            status="succeeded",
-            unit_ids=tuple(unit.id for unit in units),
-        )
+            status, error, unit_ids = "failed", str(exc), state.unit_ids
+        finally:
+            ingest_cancel_signal.reset(signal_token)
+            ingest_cancellation.reset(token)
+        with self._lock:
+            if status == "succeeded" and state.requested.is_set():
+                status = "cancelled"
+            self._update(
+                job_id, status=status, error=error, unit_ids=unit_ids,
+                partial_write=state.write_started and status != "succeeded",
+                retry_requires_reconciliation=state.write_started and status != "succeeded",
+            )
 
     def _update(
         self,
@@ -206,6 +293,8 @@ class InProcessIngestJobController(IngestJobController):
         status: str,
         unit_ids: tuple[str, ...] = (),
         error: str = "",
+        partial_write: bool = False,
+        retry_requires_reconciliation: bool = False,
     ) -> None:
         with self._lock:
             current = self._jobs[job_id]
@@ -215,11 +304,13 @@ class InProcessIngestJobController(IngestJobController):
                 updated_at=datetime.now(UTC),
                 unit_ids=unit_ids,
                 error=error,
+                partial_write=partial_write,
+                retry_requires_reconciliation=retry_requires_reconciliation,
             )
             self._jobs[job_id] = updated
             self._persist(updated)
 
-    def _persist(self, job: IngestJob) -> None:
+    def _persist(self, job: IngestJob, *, update_payload: bool = False) -> None:
         if self._kv is None:
             return
         value = json.dumps(
@@ -232,6 +323,9 @@ class InProcessIngestJobController(IngestJobController):
                 "updated_at": job.updated_at.isoformat(),
                 "unit_ids": list(job.unit_ids),
                 "error": job.error,
+                "cancel_requested": job.cancel_requested,
+                "partial_write": job.partial_write,
+                "retry_requires_reconciliation": job.retry_requires_reconciliation,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -241,6 +335,8 @@ class InProcessIngestJobController(IngestJobController):
             self._kv.update(job.scope, job_key, value)
         else:
             self._kv.insert(job.scope, job_key, value)
+        if not update_payload:
+            return
         payload_key = _payload_storage_key(job.payload_id)
         payload_value = job.id.encode("utf-8")
         if self._kv.exists(job.scope, payload_key):
@@ -263,6 +359,11 @@ class InProcessIngestJobController(IngestJobController):
                 updated_at=datetime.fromisoformat(str(data["updated_at"])),
                 unit_ids=tuple(str(item) for item in data.get("unit_ids", [])),
                 error=str(data.get("error", "")),
+                cancel_requested=bool(data.get("cancel_requested", False)),
+                partial_write=bool(data.get("partial_write", False)),
+                retry_requires_reconciliation=bool(
+                    data.get("retry_requires_reconciliation", False)
+                ),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise BackendError(f"invalid persisted ingest job {job_id!r}") from exc
@@ -272,8 +373,11 @@ class InProcessIngestJobController(IngestJobController):
                 status="failed",
                 updated_at=datetime.now(UTC),
                 error="ingest job was interrupted by server restart",
+                partial_write=job.status == "running",
+                retry_requires_reconciliation=job.status == "running",
             )
-            self._persist(job)
+            # Recovery here is a read-only projection. Status is called before PEP
+            # authorization; only authorized mutation paths may persist recovery.
         return job
 
 

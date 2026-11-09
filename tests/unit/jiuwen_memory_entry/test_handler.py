@@ -40,6 +40,25 @@ def _dispatch_request(verb: str, payload: dict):
     return build_legacy_dispatch_request(verb, payload, security=security)
 
 
+@pytest.mark.parametrize("state", ["running", "cancelled"])
+def test_legacy_ingest_status_preserves_cancellation_details(state) -> None:
+    # The legacy response adapter is private and intentionally tested directly.
+    # pylint: disable=protected-access
+    job = SimpleNamespace(
+        id="ing_legacy", scope=Scope(org="local", user="developer"),
+        status=SimpleNamespace(value=state),
+        detail={
+            "cancel_requested": "true", "partial_write": "true",
+            "retry_requires_reconciliation": "true",
+        },
+    )
+    body = handler._ingest_job_status(SimpleNamespace(), job, security=None)
+    for key in ("cancel_requested", "partial_write", "retry_requires_reconciliation"):
+        assert body[key] == "true"
+    assert "取消" in body["feedback_message"]
+    assert "正在处理中" not in body["feedback_message"]
+
+
 def test_rate_limited_error_preserves_legacy_400_mapping() -> None:
     """审计接口 PR 不应把既有 HTTP 限流响应从 400 隐式改为 429。"""
 

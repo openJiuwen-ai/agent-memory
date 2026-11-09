@@ -5,11 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-<<<<<<< mem2Feature
-| 最近一次修订日期 | 2026-10-26 |
-=======
-| 最近一次修订日期 | 2026-10-29 |
->>>>>>> mem2.0
+| 最近一次修订日期 | 2026-11-05 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -404,6 +400,24 @@ SUCCEEDED/FAILED/CANCELLED，非终态返回视为错误。auto derive 已接入
 长耗时摄入任务使用独立 Control 算子管理，具体线程池实现位于 `job_impl/`。`status`
 是无缓存副作用的只读查询；payload 幂等映射只在 Scope 一致后维护。接口层通过
 `MemoryAPI.job_status()` 对任务真实 Scope 执行 READ 鉴权与审计。
+
+`cancel(job_id, *, scope)` 按完整 Scope 定位任务，未知或错域抛 NotFoundError；终态幂等。
+Pending 取消阻止任务体执行并归还队列容量；Running 仅记录取消请求，实际收尾前仍是
+running，之后为 cancelled；执行异常保持 failed。任务记录追加 cancel_requested、
+partial_write、retry_requires_reconciliation，旧记录缺省 False；状态与这些字段持久化。
+运行中任务重启后按 interrupted failed 投影，并要求核对潜在写入后再重提。
+此投影不写库或更新缓存；恢复结果只在授权的提交路径持久化。已结束任务的状态持久化
+失败不覆盖内存实际终态及已知 ID，任务 error 和后台日志报告故障，句柄及容量正常释放。
+
+取消信号只在本次摄入执行上下文中传播，不从 metadata 注入，不改变普通同步写入的
+公共签名。Engine 在规约前后、分类前及写入/演进前检查；已进入的同步步骤允许收尾。
+内置视频插件复用 common 的任务局部信号，在 ASR 分片、模型调用和应用层重试之间
+检查；轮询/退避等待可被取消唤醒。取消异常须原样传播，不得转成 BackendError 或重试。
+控制器在任务体执行前绑定信号，退出时 reset；未绑定信号的普通调用保持原行为。
+已知写入 ID 必须保留。中期写入收尾后再次检查，取消时不再提交后续演进任务。
+进入写入后的失败或取消不自动回滚，不允许原 payload_id 自动重试；未写入的取消可重试。
+Future 与信号在任务完成后释放，容量仅归还一次；旧任务状态更新不得覆盖重提后的
+payload_id 映射。
 
 `close(*, wait=True)` 停止接收新任务，等待全部已提交任务及最终状态写入完成；
 `wait=False` 只请求停机，不取消已提交任务，也不证明任务结束。之后再次调用

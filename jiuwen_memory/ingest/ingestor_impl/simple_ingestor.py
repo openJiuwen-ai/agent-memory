@@ -14,6 +14,7 @@ import uuid
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.ingest_cancellation import check_ingest_cancelled
 from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
 from jiuwen_memory.common.text_split import split_within_limit
@@ -46,11 +47,13 @@ class SimpleIngestor(Ingestor):
     def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
         units: list[MemoryUnit] = []
         for payload in payloads:
+            check_ingest_cancelled()
             ensure_normalizer_supports(self._normalizer, payload.modality)
             now = _now()
             # 叶提示只声明结构身份；在规约前校验，不允许输入声明父子边。
             hierarchy, base_system_metadata = extract_hierarchy_hints(payload.system_metadata)
             content = self._normalizer.normalize(payload)
+            check_ingest_cancelled()
             pieces = self._split(content)
             total = len(pieces)
             # t_event 从完整 content 抽取（首个绝对日期，无则 None），所有分片继承同一份：
