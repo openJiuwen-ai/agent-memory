@@ -26,6 +26,7 @@ from jiuwen_memory.construction.layer_annotator_impl.llm_layer_annotator import 
 )
 from jiuwen_memory.construction.router import RouterProducer, parse_route_table
 from jiuwen_memory.construction.router_impl.llm_router import LLMRouter
+from jiuwen_memory.construction.schema_bootstrap import register_schema_constructors
 from tests.unit.construction.fixtures import HashEmbedder, RuleFeatureExtractor
 
 
@@ -155,6 +156,7 @@ def test_each_llm_component_rejects_invalid_backoff(
     [
         (ExtractorProducer, "llm", "extractor_retry_max", "extractor_max_attempts"),
         (ExtractorProducer, "dynamic_llm", "extractor_retry_max", "extractor_max_attempts"),
+        (ExtractorProducer, "agent_llm", "extractor_retry_max", "extractor_max_attempts"),
         (
             ExtractorProducer,
             "entity_schema",
@@ -181,6 +183,7 @@ def test_build_rejects_deprecated_llm_attempt_keys(
     new_key: str,
 ) -> None:
     register_constructors()
+    register_schema_constructors()
 
     with pytest.raises(
         ValidationError,

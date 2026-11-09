@@ -27,6 +27,7 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MEMORY_CLASS_KEY, MemoryUnit
 
 from ..base import ExtractContext
+from ..common import reject_deprecated_llm_attempt_keys
 from ..extractor import ExtractorProducer
 from .llm_extractor import _DEFAULT_EXTRACT_BATCH_SIZE, ExtractorImpl
 
@@ -464,10 +465,11 @@ class AgentLlmExtractor(ExtractorImpl):
 
 @ExtractorProducer.register("agent_llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     return AgentLlmExtractor(
         llm=LlmProducer.dep(config, default="echo"),
         min_confidence=config.get("extractor_min_confidence", 0.5),
-        max_attempts=config.get("extractor_retry_max", 3),
+        max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
         language=config.get("extractor_language", "cn"),
