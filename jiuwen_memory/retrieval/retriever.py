@@ -3,19 +3,23 @@
 
 单次 :meth:`retrieve` 驱动：查询理解 → 并行多路召回（按配置启用的
 通道）→ 融合 + 重排 → 渐进式披露 → 返回结果与检索轨迹。
-记忆接口层的 ``search`` 映射到本接口；QueryParser / Recaller / Fuser /
+记忆接口层的 ``search`` 映射到本接口；QueryParser / DomainStore / Fuser /
 Discloser 由装配注入。
 """
 
 from __future__ import annotations
 
 from abc import abstractmethod
+from typing import TYPE_CHECKING
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
 from .base import RetrievalOperator
 from .types import RetrievalQuery, RetrievalResult
+
+if TYPE_CHECKING:
+    from .query_parser import QueryParser
 
 
 class RetrieverProducer(Factory):
@@ -30,6 +34,14 @@ class RetrieverProducer(Factory):
 
 
 class Retriever(RetrievalOperator):
+    def query_parsers(self) -> tuple[QueryParser, ...] | None:
+        """声明实际使用的 parser 依赖；None 表示未声明，组合实现递归汇总。
+
+        仅显式启用可选 pipeline 装配时要求此能力。返回值在实例生命周期内稳定，
+        不得构建新实例；装配器仅比较对象身份，不读取插件私有字段。
+        """
+        return None
+
     @abstractmethod
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         """在 ``scope`` 范围内执行完整检索链路，返回结果项与（按需的）检索

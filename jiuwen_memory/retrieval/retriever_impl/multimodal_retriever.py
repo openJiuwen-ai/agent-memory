@@ -15,6 +15,7 @@ from jiuwen_memory.common.type_def import (
     and_merge,
 )
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.query_parser import QueryParser
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import (
     RetrievalQuery,
@@ -45,6 +46,9 @@ class MultimodalRetriever(Retriever):
         self._clip_top_k = clip_top_k
         self._event_top_k = event_top_k
         self._rrf_k = rrf_k
+
+    def query_parsers(self) -> tuple[QueryParser, ...] | None:
+        return self._base.query_parsers()
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
