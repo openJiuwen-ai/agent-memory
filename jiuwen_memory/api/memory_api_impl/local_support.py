@@ -329,8 +329,8 @@ def _pop_coords(options: dict[str, Any], *, enabled: bool) -> dict[str, str] | N
     移除不可省略：``options`` 随 parser 透传给自定义检索模块，留下会让坐标以一个未声明
     的字段出现在该模块的入参里。与 ``EXT_MAX_TOKENS`` 同一处置。
 
-    ``enabled`` 为假即整体不介入：未装配判定表的部署里该键不产生收窄谓词，取出它只会让
-    自定义检索模块少收到一个调用方明明传了的字段。本特性在那种部署里应当完全不可达。
+    ``enabled`` 为假时保留坐标供自定义检索模块使用。无路由文档模式的 project 收窄
+    由 search 单独处理。
     """
     if not enabled or COORDS_KEY not in options:
         return None

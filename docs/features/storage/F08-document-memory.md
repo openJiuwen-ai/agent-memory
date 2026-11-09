@@ -58,7 +58,7 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 
 ### 二、md 视图存储：`MarkdownStore`（`storage/markdown.py` + `markdown_impl/local_markdown_store.py`）
 
-落盘路径按 `memory_class` + `coords.project` 映射（空值兜底 `long_term_memory` / 空串，落 memory 根下跨项目可见）：
+落盘路径按 `memory_class` 和项目映射。项目优先取标量 `system_metadata.project`，其次取写入坐标 `coords.project`。缺省类别为 `long_term_memory`，缺省项目为空串，对应 memory 根下的跨项目文档。
 
 | memory_class | md 路径 | 说明 |
 |---|---|---|
@@ -106,6 +106,8 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 - `list_units`：拉该 scope 的 `(unit_id, unit_json bytes)`，过滤/排序/分页交上层复用 `list_memory_entries`（与 KV `scan→list` 同构）。**按 scope 原生隔离**（对齐 KV scan 按 scope 物理约束）。`list_units_by_md`（看门狗诊断用）例外不限 scope。
 
 **召回（`search_fulltext` / `search_vector`）**，project 谓词经 `_compile_system_filters` 编译下推（保留 AND/OR 语义）：
+
+无路由的文档模式也支持按项目检索。写入时可用标量 `system_metadata.project` 指定项目，搜索时用 `Context.extensions["coords"]["project"]` 生成项目谓词。这样直写的项目文档能与公共文档一同进入候选集。只查指定项目时可使用显式 `filters`，同时传坐标与过滤条件时两者取交集。
 
 project 谓词取自 `query.filters` 里的 `system_metadata.project`（上层 coords 折算下推，`_narrow_predicates` 产 `IN ["", value]`），与其他系统谓词（lifecycle/t_valid/t_invalid/t_event）一起经 `_compile_system_filters` 统一编译成保留 AND/OR 逻辑的 SQL WHERE 下推。单条 `IN ["", value]` 编译成 `project IN ('', value)`——一条 SQL 同时搜当前 project + 默认 project（跨项目可见的空串行 + 本项目行）。多条 project 谓词（系统收窄 AND 用户过滤）按 AND/OR 逻辑编译，不再降级成 OR 并集（已移除的旧平铺路径把多谓词值合并成单一 `IN (...)` 丢 AND/OR，会让「系统收窄 p1 AND 用户 p2」泄露 p2）。无 project 谓词（未带 coords）→ 兜底追加 `project = ''`，只召回跨项目可见的空串行（保留旧无谓词只返空串行语义，避免放宽成全库召回）。category 维度不在召回 SQL 过滤——若需按类别收窄，上层应通过 `query.filters` 显式传 category 谓词。**scope 原生隔离**：影子索引 `memory_unit` 表加 org/space/user/agent/session 五列（对齐 KV 五段等值 WHERE），`scope` 入参与 `sys_where`（系统前置谓词）并列 AND 下推——scope 是身份隔离维（严格等值，无空串跨 scope 可见语义），与 project（收窄维，`IN ['', value]`）+ category（落盘键）正交。`list_units_by_md`（看门狗跨 scope 诊断）/ `delete_units`（幂等按 unit_id）例外不限 scope。**召回放宽 session**：`search_fulltext`/`search_vector` 的 scope WHERE 只对 org/space/user/agent 四段严格等值，**不做 session 等值**——记忆应跨 session 共享（同一 user/agent 在不同 session 的记忆互通）。`get_units`/`list_units` 仍保留 session 等值（点查/列表不放宽），故跨 session 召回的 unit 在 list 看不到、get 拉不到——召回侧有意放宽的已知边界。
 

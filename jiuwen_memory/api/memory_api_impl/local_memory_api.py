@@ -94,6 +94,7 @@ class LocalMemoryAPI(
         dreaming_lock: LockProvider | None = None,
         authorizer: Authorizer | None = None,
         credential_registry: CredentialStatusRegistry | None = None,
+        document_mode: bool = False,
     ) -> None:
         if audit_integrity_provider is not None and audit_verify_guard is None:
             raise ValidationError(
@@ -132,8 +133,9 @@ class LocalMemoryAPI(
         # 空间级判定的部署无须提供它，此时判定实现的 requires_space_facts 也为假。
         self._membership = membership
         # 归属判定算子。未装配时判定表为空，写入侧 scope 必填、判定路径不可达，
-        # 全链路行为与未启用该特性一致——这是可灰度上线的前提。
+        # 文档模式检索可独立使用 project 坐标。
         self._router = router
+        self._document_mode = document_mode
         self._commands = commands if commands is not None else MemoryCommandService(engine)
         self._queries = queries if queries is not None else MemoryQueryService(engine)
         self._space_lifecycle = (
