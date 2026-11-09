@@ -203,8 +203,7 @@ def test_compile_clause_empty_in_list_compiles_to_constant_predicate() -> None:
 
 
 def test_compile_system_filters_user_injected_empty_in_is_reachable_and_safe() -> None:
-    """用户可经 system_metadata.project 叶子注入空 IN（from_dict 不校验空集），
-    必须编译为恒假常量谓词而非 ``IN ()`` 语法错误；AND 组合语义不变。"""
+    """system_metadata.project 注入空 IN 编译为恒假（1 = 0），AND 组合语义不变。"""
     clause = FilterClause("system_metadata.project", FilterOp.IN, [])
     sql, params = _compile_system_filters(clause)
     assert sql == "1 = 0"
