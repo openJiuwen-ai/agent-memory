@@ -50,8 +50,10 @@
 
 ## 行为铁律
 
-- **AgentEngine 写入模态**：仅接收 `Modality.TEXT`。非文本请求在构造
-  `RawPayload` 和调用 Ingestor 前抛出 `UnsupportedCapabilityError`，批量写入逐项复用该入口。
+- **AgentEngine 写入模态**：接收以 UTF-8 文本承载的 `Modality.TEXT` 和
+  `Modality.CODE`。其他模态在构造 `RawPayload` 和调用 Ingestor 前抛出
+  `UnsupportedCapabilityError`，批量写入逐项复用该入口。支持 CODE 输入标签不代表
+  完整 Coding 模式已经实现。
 
 - **提交循环分支一致**：AsyncTimerScheduler.submit 以当前运行循环是否为所属循环决定直接提交或跨线程提交；同线程异循环显式拒绝，不允许落入未初始化 future 的路径。等待关闭不设整体期限，自定义 Job 须能正常结束或在执行边界响应取消，外部调用配置超时。
 

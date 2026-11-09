@@ -264,17 +264,35 @@ def _kv_engine() -> tuple[AgentEngine, dict]:
 # -- 文档模式：读路径经 DomainStore（shadow） --------------------------------- #
 
 
-@pytest.mark.parametrize("source", [source for source in Modality if source != Modality.TEXT])
-def test_write_rejects_non_text_before_ingest(tmp_path, source: Modality) -> None:
+@pytest.mark.parametrize(
+    "source",
+    [source for source in Modality if source not in (Modality.TEXT, Modality.CODE)],
+)
+def test_write_rejects_non_text_backed_modality_before_ingest(
+    tmp_path, source: Modality
+) -> None:
     engine, _ = _doc_engine(tmp_path)
 
     with (
         patch.object(_DocIngestor, "ingest") as ingest,
-        pytest.raises(UnsupportedCapabilityError, match="AgentEngine supports only text writes"),
+        pytest.raises(
+            UnsupportedCapabilityError,
+            match="AgentEngine supports only text-backed writes",
+        ),
     ):
         asyncio.run(engine.write("file:///data/demo.mp4", SCOPE, source))
 
     ingest.assert_not_called()
+
+
+def test_doc_write_accepts_code_as_text_backed_modality(tmp_path) -> None:
+    engine, _ = _doc_engine(tmp_path)
+
+    units = asyncio.run(engine.write("def hello(): pass", SCOPE, Modality.CODE))
+
+    assert len(units) == 1
+    assert units[0].content == "def hello(): pass"
+    assert units[0].source == Modality.CODE
 
 
 def test_doc_write_then_list_get_hit(tmp_path) -> None:
@@ -461,15 +479,22 @@ def test_kv_mode_batch_write_reports_unsupported_video_and_continues() -> None:
     items = [
         BatchWriteItem(content="file:///data/demo.mp4", scope=SCOPE, source=Modality.VIDEO),
         BatchWriteItem(content="text memory", scope=SCOPE, source=Modality.TEXT),
+        BatchWriteItem(content="def batch(): pass", scope=SCOPE, source=Modality.CODE),
     ]
 
-    rejected, written = asyncio.run(engine.batch_write(items)).outcomes
+    rejected, text_written, code_written = asyncio.run(engine.batch_write(items)).outcomes
 
     assert rejected.error_type == "UnsupportedCapabilityError"
-    assert rejected.error == "AgentEngine supports only text writes, received modality 'video'"
+    assert rejected.error == (
+        "AgentEngine supports only text-backed writes "
+        "(text and code), received modality 'video'"
+    )
     assert not rejected.units
-    assert not written.error
-    assert [unit.content for unit in written.units] == ["text memory"]
+    assert not text_written.error
+    assert [unit.content for unit in text_written.units] == ["text memory"]
+    assert not code_written.error
+    assert [unit.content for unit in code_written.units] == ["def batch(): pass"]
+    assert [unit.source for unit in code_written.units] == [Modality.CODE]
 
 
 def test_kv_mode_write_then_list_get_hit() -> None:
