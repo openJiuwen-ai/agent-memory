@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-09 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
 
 ## 范围 / 边界
@@ -75,7 +75,15 @@
   `${...}` 的转义写法。含占位符的叶子展开后若仍残留 `${...}` 或花括号计数不配对，
   在解析阶段抛 `ValidationError`（不静默返回错值）。接入层 `load_layer` 遵循同一规则，
   两处实现由 `tests/unit/jiuwen_memory_entry/test_config_loader.py` 的 parity 用例锁定
-- `default_context()` 与用户 context `merged`：globals 按 key 覆盖，命名空间按实例名覆盖/新增
+- `AssemblyContext.merged` 按 key 覆盖 globals，同名实例整体替换。
+  内核装配有一条例外。选用 `engine.default.target: agent` 时，省略 `params` 或写入非空
+  `params` 会继承未覆盖的默认依赖。该规则也适用于 `engine: {default: agent}` 简写。
+  此时未显式覆盖的 `constructor.default`
+  在文档模式使用 `document`，非文档模式下开启向量用 `hybrid`，关闭向量用保留真源读写能力的
+  `unified`。关闭向量时，未显式覆盖的 `dedup.default` 使用 `keyword`。
+  显式写 `params: {}` 或 `params: null` 仍整体替换。若默认 AgentEngine 因依赖字段缺失
+  或为 null 而绕过已声明的具名默认实例，装配告警列出配置路径和实际匿名实现。
+  JobFactory 仍通过具名实例查找。
 - `ComponentConfig.get`：实例 params > globals > 代码默认
 
 装配拓扑（选哪个 `target`、有哪些具名实例、依赖引用）仍由上述机制在 **`build_kernel` 时**确定。

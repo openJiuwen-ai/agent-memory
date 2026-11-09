@@ -30,8 +30,12 @@ from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 from jiuwen_memory.config.defaults import default_config_dict
+from jiuwen_memory.construction.dedup_impl.keyword_dedup import KeywordDedup
+from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+from jiuwen_memory.construction.index_builder_impl.unified_index_builder import UnifiedIndexBuilder
 from jiuwen_memory.construction.router import RouterProducer, optional_router
 from jiuwen_memory.control.base import ControlOperatorType
+from jiuwen_memory.control.engine_impl import agent_engine
 from jiuwen_memory.control.permission import PermissionManager, PermissionProducer
 from jiuwen_memory.control.permission_impl.allow_all_permission_manager import (  # noqa: E402
     AllowAllPermissionManager,
@@ -225,6 +229,84 @@ def test_assembly_audit_fallback_matches_sqlite_default(monkeypatch) -> None:
 
     assert seen_defaults
     assert set(seen_defaults) == {"sqlite"}
+
+
+@pytest.mark.parametrize("engine", ["agent", {"target": "agent"}])
+def test_agent_target_only_reuses_configured_evolver(engine) -> None:
+    kernel = build_kernel(config={
+        "engine": {"default": engine},
+        "evolver": {"default": {"target": "dynamic", "params": {"extractor": "default"}}},
+    })
+    try:
+        assert isinstance(kernel.api._engine, agent_engine.AgentEngine)
+        assert isinstance(kernel.api._engine._evolver, DynamicEvolver)
+    finally:
+        kernel.close()
+
+
+@pytest.mark.parametrize(
+    ("params", "uses_dynamic_evolver"),
+    [({}, False), (None, False), ({"evolver": "dynamic"}, True)],
+)
+def test_agent_explicit_params_control_evolver(params, uses_dynamic_evolver, monkeypatch) -> None:
+    warnings = []
+    monkeypatch.setattr(
+        agent_engine.logger, "warning", lambda message, *args: warnings.append(message % args)
+    )
+    kernel = build_kernel(config={
+        "engine": {"default": {"target": "agent", "params": params}},
+    })
+    try:
+        assert isinstance(kernel.api._engine._evolver, DynamicEvolver) is uses_dynamic_evolver
+        if uses_dynamic_evolver:
+            assert not warnings
+        else:
+            assert len(warnings) == 1
+            expected = (
+                "ingestor.default",
+                "constructor.default",
+                "retriever.default",
+                "scheduler.default",
+                "evolver.default",
+                "lifecycle.default",
+                "orchestrating",
+            )
+            for name in expected:
+                assert name in warnings[0]
+            assert "job_factory" not in warnings[0]
+    finally:
+        kernel.close()
+
+
+def test_agent_target_only_keeps_non_vector_index_and_dedup() -> None:
+    kernel = build_kernel(config={
+        "globals": {"vector_enabled": False},
+        "engine": {"default": "agent"},
+    })
+    try:
+        engine = kernel.api._engine
+        assert isinstance(engine._index, UnifiedIndexBuilder)
+        assert engine._index.read_domain_store() is kernel.storage.domain_store()
+        assert engine._evolver._index is engine._index
+        assert isinstance(engine._evolver._dedup, KeywordDedup)
+    finally:
+        kernel.close()
+
+
+def test_merge_keeps_instance_replacement_outside_agent_default() -> None:
+    base = AssemblyContext.from_dict(default_config_dict())
+    override = AssemblyContext.from_dict({
+        "engine": {"default": "agent"},
+        "evolver": {"default": "dynamic"},
+        "globals": {"write_document": "invalid"},
+    })
+    merged = base.merged(override)
+
+    assert merged.lookup("engine", "default").params == {}
+    assert merged.lookup("evolver", "default").params == {}
+    assert merged.lookup("constructor", "default") == base.lookup("constructor", "default")
+    assert merged.lookup("dedup", "default") == base.lookup("dedup", "default")
+    assert merged.merged(override) == merged
 
 
 def test_config_overrides_control_operator() -> None:

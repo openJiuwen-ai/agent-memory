@@ -1,7 +1,7 @@
 # agent-memory 装配配置示例（被 examples/quickstart.py 通过 Config.from_yaml 解析）
 #
 # 配置是**两级命名空间**：顶层 = 各组件（Producer 的 TOP_NAME），其下 = 具名实例（target/params）。
-# 用户配置会**合并覆盖**到内置默认（纯内存离线栈）之上——只需写要改动的部分。
+# globals 按键覆盖内置默认；同名实例默认整体替换，修改实例时须保留需要的 params。
 # 依赖写法：「引用名(字符串)」= 共享同一具名实例；「内联(映射)」= 就地建匿名实例。
 #
 # 下面除 globals 外全部注释掉 → 本文件等价于纯默认装配；按需取消注释即可覆盖。
@@ -87,12 +87,20 @@ globals:
 #                    EXTRACT 走 _dedup_batch 判定+落盘耦合的旧路径。
 #   - dynamic        动态 prompt 四步编排（extract→consolidate(判定)→reflect→落盘），
 #                    EXTRACT 走 DynamicEvolver；其余三模式继承 orchestrating 行为。
-# 仅在要调阈值时才写下面两个可选参数。
+# 切换 default 实例时请一并保留具名依赖；阈值可选。
 # evolver:
 #   default:
 #     target: dynamic
-#     # dedup_medium_similarity: 0.7    # 可选：consolidate 中段阈值（< 此值直接 ADD）
-#     # dedup_high_similarity: 0.9       # 可选：consolidate 高相似阈值（≥ 此值直接 NOOP）
+#     params:
+#       extractor: default
+#       abstractor: default
+#       associator: default
+#       index_builder: default
+#       message_store: default
+#       dedup: default
+#       llm: default
+#       # dedup_medium_similarity: 0.7   # 可选：consolidate 中段阈值（< 此值直接 ADD）
+#       # dedup_high_similarity: 0.9     # 可选：consolidate 高相似阈值（≥ 此值直接 NOOP）
 
 # ====================================================================== #
 # 群体记忆：空间治理 + 归属判定

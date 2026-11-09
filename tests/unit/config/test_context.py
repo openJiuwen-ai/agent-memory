@@ -37,6 +37,17 @@ def test_parse_shorthand_and_inline():
     assert k2.new_instance is True
 
 
+def test_explicit_empty_params_differ_from_omission():
+    ctx = AssemblyContext.from_dict({"engine": {
+        "omitted": {"target": "agent"},
+        "empty": {"target": "agent", "params": {}},
+        "null": {"target": "agent", "params": None},
+    }})
+
+    assert ctx.lookup("engine", "empty") == ctx.lookup("engine", "null")
+    assert ctx.lookup("engine", "empty") != ctx.lookup("engine", "omitted")
+
+
 def test_lookup_missing_raises():
     ctx = AssemblyContext.from_dict({"kv_store": {"k1": "memory"}})
     with pytest.raises(ValidationError, match="引用的具名配置不存在"):
