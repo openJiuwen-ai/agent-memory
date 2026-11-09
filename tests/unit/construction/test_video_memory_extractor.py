@@ -4,10 +4,14 @@ import json
 
 import pytest
 
+from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import (
+    VideoNormalizer,
+)
 from jiuwen_memory.common.type_def import (
     LifecycleState,
     MemoryUnit,
     Modality,
+    RawPayload,
     Scope,
     Segment,
 )
@@ -15,6 +19,7 @@ from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.construction.extractor_impl.video_memory_extractor import (
     VideoMemoryExtractor,
 )
+from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 
 pytestmark = pytest.mark.unit
 
@@ -207,3 +212,54 @@ def test_derived_metadata_strips_call_level_switches() -> None:
     assert "infer" not in clm.system_metadata
     assert "pipeline" not in clm.system_metadata
     assert clm.user_metadata.get("custom_key") == "keep"
+
+
+def _video_backend(payload: RawPayload) -> tuple[list[dict], list[dict]]:
+    """4 个 clip + 2 个 event，detailed_caption 撑大包络使其远超默认 8000 字符。"""
+    del payload
+    clips = [
+        {
+            "id": f"clip-{i}",
+            "time_range": [i * 30, (i + 1) * 30],
+            "visual_summary": "画面摘要",
+            "detailed_caption": "详细描述" * 1000,
+            "ASR": "语音转写",
+            "environment": "室内",
+        }
+        for i in range(4)
+    ]
+    events = [
+        {
+            "task_id": "event-1",
+            "time_span": [0, 60],
+            "child_clip_ids": ["clip-0", "clip-1"],
+            "topic": "开场",
+            "summary": "前两段",
+        },
+        {
+            "task_id": "event-2",
+            "time_span": [60, 120],
+            "child_clip_ids": ["clip-2", "clip-3"],
+            "topic": "收尾",
+            "summary": "后两段",
+        },
+    ]
+    return clips, events
+
+
+def test_oversized_video_envelope_survives_ingest_and_extracts_all_memories() -> None:
+    """issue #294：超过默认 max_unit_chars 的视频包络经 SimpleIngestor 后仍能抽出全部 CLM/ELM。"""
+    ingestor = SimpleIngestor(VideoNormalizer(backend=_video_backend))
+    payload = RawPayload(
+        id="video-1", scope=Scope(user="user-1"), modality=Modality.VIDEO, uri="file:///v.mp4"
+    )
+
+    sources = ingestor.ingest([payload])
+    assert len(sources) == 1, "视频包络应保持单 unit"
+    assert len(sources[0].content) > 8000, "用例前提：包络必须超过默认 max_unit_chars"
+
+    derived = VideoMemoryExtractor().extract(sources)
+
+    assert len(derived) == 6, "4 个 clip + 2 个 event 应全部抽出"
+    levels = sorted(str(u.system_metadata.get("memory_level")) for u in derived)
+    assert levels == ["clm"] * 4 + ["elm"] * 2, "应产出 4 条 CLM 与 2 条 ELM"

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
 
 from jiuwen_memory.common.base import PluginType
-from jiuwen_memory.common.errors import UnsupportedCapabilityError
+from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.normalizer import Normalizer
 from jiuwen_memory.common.normalizer.normalizer_impl.passthrough_normalizer import (
     PassthroughNormalizer,
@@ -256,9 +257,108 @@ def test_simple_ingestor_sanitizes_injected_part_metadata() -> None:
     assert "_parts" not in single[0].system_metadata
 
 
+class _EnvelopeVideoNormalizer(Normalizer):
+    """模拟视频规约器：产出紧凑 JSON 包络（无空行），并声明 VIDEO 为结构化产物。"""
+
+    def __init__(self, envelope: str) -> None:
+        self.envelope = envelope
+
+    @staticmethod
+    def plugin_type() -> PluginType:
+        return PluginType.NORMALIZER
+
+    @staticmethod
+    def health() -> None:
+        return None
+
+    @staticmethod
+    def modalities() -> list[Modality]:
+        return [Modality.VIDEO]
+
+    def normalize(self, payload: RawPayload) -> str:
+        del payload
+        return self.envelope
+
+    @staticmethod
+    def structured_modalities() -> frozenset[Modality]:
+        return frozenset({Modality.VIDEO})
+
+
+class _LongCaptionImageNormalizer(Normalizer):
+    """自定义 IMAGE 规约器：产出超长纯文本投影，不声明结构化产物（走缺省）。"""
+
+    @staticmethod
+    def plugin_type() -> PluginType:
+        return PluginType.NORMALIZER
+
+    @staticmethod
+    def health() -> None:
+        return None
+
+    @staticmethod
+    def modalities() -> list[Modality]:
+        return [Modality.IMAGE]
+
+    def normalize(self, payload: RawPayload) -> str:
+        del payload
+        return "\n\n".join(f"caption line {i} " + "字" * 40 for i in range(20))
+
+
+def test_simple_ingestor_keeps_video_envelope_whole_over_limit() -> None:
+    """issue #294：规约器声明为结构化产物的模态不参与预切分，超限仍是单个完整 unit。"""
+    envelope = json.dumps({"payload_id": "v1", "clips": [{"id": "c1", "x": "甲" * 400}]})
+    assert len(envelope) > 200, "用例前提：包络必须超过 max_unit_chars"
+
+    units = SimpleIngestor(_EnvelopeVideoNormalizer(envelope), max_unit_chars=200).ingest(
+        [RawPayload(id="video-1", modality=Modality.VIDEO, uri="file:///v.mp4")]
+    )
+
+    assert len(units) == 1, "视频包络不应被按字符数切成多个 unit"
+    assert units[0].content == envelope, "包络内容应原样保留"
+    assert json.loads(units[0].content)["clips"][0]["id"] == "c1", "包络应仍是合法 JSON"
+    assert "_part" not in units[0].system_metadata, "单 unit 不应残留 _part"
+    assert "_parts" not in units[0].system_metadata, "单 unit 不应残留 _parts"
+
+
+def test_simple_ingestor_rejects_misdeclared_structured_modalities_at_construction() -> None:
+    """规约器把不支持的模态声明为结构化产物时，SimpleIngestor 构造期直接拒绝。"""
+
+    class _Misdeclared(_LongCaptionImageNormalizer):
+        @staticmethod
+        def structured_modalities() -> frozenset[Modality]:
+            return frozenset({Modality.VIDEO})
+
+    with pytest.raises(ValidationError, match="structured_modalities"):
+        SimpleIngestor(_Misdeclared())
+
+
+def test_simple_ingestor_splits_undeclared_custom_modality_output() -> None:
+    """未声明结构化产物的自定义规约器（如 IMAGE caption）仍按缺省预切分，保护不因模态而撤销。"""
+    units = SimpleIngestor(_LongCaptionImageNormalizer(), max_unit_chars=200).ingest(
+        [RawPayload(id="image-1", modality=Modality.IMAGE, uri="file:///photo.jpg")]
+    )
+
+    assert len(units) > 1, "超限的纯文本投影应被预切分，与 text 模态一致"
+    assert all(len(u.content) <= 200 for u in units), "每片都不应超过 max_unit_chars"
+    assert units[0].system_metadata["_parts"] == len(units), "多片应记录 _parts 总数"
+
+
+def test_simple_ingestor_still_splits_code_modality() -> None:
+    """code 与 text 同为 passthrough 直通的整块原文，仍参与预切分。"""
+    payload = RawPayload(
+        id="code-1",
+        modality=Modality.CODE,
+        data=("x = 1\n" * 60).encode("utf-8"),
+    )
+
+    units = SimpleIngestor(PassthroughNormalizer(), max_unit_chars=200).ingest([payload])
+
+    assert len(units) > 1, "超限代码文本应被预切分"
+    assert all(len(u.content) <= 200 for u in units), "每片都不应超过 max_unit_chars"
+
+
 def test_parse_max_unit_chars_rejects_invalid_values() -> None:
     """显式 null/空串/非整数非法值显式拒绝；缺省 8000；0/负数是文档化关闭开关。"""
-    from jiuwen_memory.common.errors import ValidationError
     from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import _parse_max_unit_chars
 
     assert _parse_max_unit_chars(None) == 8000  # 键缺省 = 出厂默认
