@@ -90,6 +90,12 @@ KV/DomainStore 双适配（`CandidateStore = KVStore | DomainStore`，`_is_kv_st
 本身不改（resolver 由 `submit_evolve` 经 `build_resolver` 装配并注入，EvolveJob 的 `self._kv`
 仅是 resolver=None 时的兜底，本路径不触达）。
 
+### 无路由部署的项目检索
+
+Agent 文档模式可直接通过 `system_metadata.project` 写入项目记忆。搜索时传入
+`Context.extensions["coords"]["project"]`，召回该项目和未指定项目的记忆。
+项目条件复用 F08 的影子索引过滤，显式 `filters` 可进一步收窄结果。
+
 ## 拒绝的方案
 
 ### 方案 A（当时未选，后由 issue #261 采纳）：lifecycle 数据源根治——KVLifecycleManager 注入 DomainStore

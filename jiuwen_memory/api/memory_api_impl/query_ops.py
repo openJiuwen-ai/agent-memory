@@ -21,6 +21,7 @@ from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_lo
 from jiuwen_memory.common.security import principal, space_predicates
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
+    COORDS_KEY,
     EXT_MAX_TOKENS,
     CandidateSource,
     ChannelError,
@@ -181,7 +182,8 @@ class QueryOpsMixin:
         pipeline = extensions.pop("retrieval_pipeline", None)
         self._queries.validate_retrieval_pipeline(pipeline)
         spaces = _pop_spaces(extensions)
-        coords = _pop_coords(extensions, enabled=self._routing_enabled())
+        routing_enabled = self._routing_enabled()
+        coords = _pop_coords(extensions, enabled=routing_enabled)
         reject_kernel_coords(coords)
         resource_principal = self._resource_principal(security, Action.READ)
         # 坐标折算成第二族收窄谓词的取值，在此算一次、两条路径共用。放进各自分支即
@@ -190,6 +192,12 @@ class QueryOpsMixin:
         narrow = narrow_dims_of(
             principal.kernel_coords(coords, resource_principal), self._route_table.narrow_dims
         )
+        if self._document_mode and not routing_enabled:
+            # 标量 project 直写的文档同样需要项目过滤，且无需解析其他路由坐标。
+            raw_coords = extensions.get(COORDS_KEY)
+            project = raw_coords.get("project") if isinstance(raw_coords, dict) else None
+            if isinstance(project, str) and project.strip():
+                narrow["project"] = project.strip()
         rq = RetrievalQuery(
             text=query, filters=options.filters, as_of=options.as_of,
             top_k=options.top_k, disclosure=options.disclosure,

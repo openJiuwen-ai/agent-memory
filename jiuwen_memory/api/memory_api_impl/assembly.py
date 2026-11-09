@@ -72,7 +72,9 @@ from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 from jiuwen_memory.config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
 from jiuwen_memory.config.document_flag import (
     WATCH_DOCUMENT_KEY,
+    WRITE_DOCUMENT_KEY,
     resolve_watch_document,
+    should_write_document,
 )
 from jiuwen_memory.config.encryption import (
     EncryptionBoundConfigSource,
@@ -725,7 +727,7 @@ def _assemble_kernel(
         # 索引包装，不持有连接或线程。
         membership=MembershipProducer.dep(root, default="kv"),
         # 归属判定算子。未声明 router 命名空间即为 None：判定表为空、写入侧 scope 必填、
-        # 判定路径不可达，全链路行为与未启用该特性一致。
+        # 写入判定路径不可达。
         #
         # 是否与构建层共用一份判定表取决于配置写法，不是无条件成立：经 router.default
         # 具名引用时 Factory 缓存具名实例，本层与两个 Evolver 取到同一个对象；而 Evolver
@@ -734,6 +736,7 @@ def _assemble_kernel(
         # 表算，两者错位。判定表不另设解析路径的理由见 F07「归属判定算子」，那一条约束的
         # 是同一实例内不出现两份表，跨实例的一致由本处的配置写法决定。
         router=optional_router(root),
+        document_mode=should_write_document(root.get(WRITE_DOCUMENT_KEY)),
         authorizer=authorizer,
         credential_registry=credential_registry,
     )
