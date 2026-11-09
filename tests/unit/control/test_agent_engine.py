@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
     WhitespaceTokenizer,
 )
@@ -35,6 +37,7 @@ from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
     LifecycleState,
     MemoryUnit,
+    Modality,
     RawPayload,
     RetrievalPipeline,
     Scope,
@@ -58,6 +61,7 @@ from jiuwen_memory.control.scheduler_impl.in_process_scheduler import (
     InProcessScheduler,
 )
 from jiuwen_memory.control.types import (
+    BatchWriteItem,
     Channel,
     DeleteMode,
     DeleteSelector,
@@ -260,6 +264,19 @@ def _kv_engine() -> tuple[AgentEngine, dict]:
 # -- 文档模式：读路径经 DomainStore（shadow） --------------------------------- #
 
 
+@pytest.mark.parametrize("source", [source for source in Modality if source != Modality.TEXT])
+def test_write_rejects_non_text_before_ingest(tmp_path, source: Modality) -> None:
+    engine, _ = _doc_engine(tmp_path)
+
+    with (
+        patch.object(_DocIngestor, "ingest") as ingest,
+        pytest.raises(UnsupportedCapabilityError, match="AgentEngine supports only text writes"),
+    ):
+        asyncio.run(engine.write("file:///data/demo.mp4", SCOPE, source))
+
+    ingest.assert_not_called()
+
+
 def test_doc_write_then_list_get_hit(tmp_path) -> None:
     """文档模式 write 后 list 非空、get 命中——读经 DomainStore 分流到 shadow。
 
@@ -437,6 +454,22 @@ def test_doc_evolve_resolver_reads_shadow(tmp_path) -> None:
 
 
 # -- 非文档模式回归：list/get 仍走 KV --------------------------------------- #
+
+
+def test_kv_mode_batch_write_reports_unsupported_video_and_continues() -> None:
+    engine, _ = _kv_engine()
+    items = [
+        BatchWriteItem(content="file:///data/demo.mp4", scope=SCOPE, source=Modality.VIDEO),
+        BatchWriteItem(content="text memory", scope=SCOPE, source=Modality.TEXT),
+    ]
+
+    rejected, written = asyncio.run(engine.batch_write(items)).outcomes
+
+    assert rejected.error_type == "UnsupportedCapabilityError"
+    assert rejected.error == "AgentEngine supports only text writes, received modality 'video'"
+    assert not rejected.units
+    assert not written.error
+    assert [unit.content for unit in written.units] == ["text memory"]
 
 
 def test_kv_mode_write_then_list_get_hit() -> None:

@@ -21,6 +21,9 @@ CLM 组成的事件级摘要。两级结果统一构建为 mem2.0 原生 `Memory
 
 ## 总体链路
 
+视频写入适用于配置了视频流水线的 InMemoryEngine 和 CloudEngine。AgentEngine 仅支持
+文本写入，详见 [F09 的写入模态边界](../control/F09-agent-engine-doc-mode-read.md#agentengine-写入模态边界)。
+
 ```text
 视频请求
   -> POST /v1/submit_ingest

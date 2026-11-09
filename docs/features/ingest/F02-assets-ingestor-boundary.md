@@ -42,5 +42,5 @@
 
 - `RawPayload.assets` 当前仅是 `list[str]` 引用，不表达资产类型、存储状态或与 Segment 的结构化关系。
 - 当前只有 SimpleIngestor；多 MemoryUnit/多 Segment 的具体映射能力交给后续 Ingestor 实现，不在本次预先固化。
-- `MemoryEngine.write` 当前只对 `Modality.VIDEO` 把 `content` 写入 `RawPayload.uri`，其他模态写入 `RawPayload.data`。因此 `modalities()` 只决定“能不能进”，不能解决“数据放哪里”；新增其他外部 URI 模态前，需要单独补充显式的 data/uri 载体契约。
+- InMemoryEngine 与 CloudEngine 对 `Modality.VIDEO` 把 `content` 写入 `RawPayload.uri`，其他模态写入 `RawPayload.data`。AgentEngine 的输入载体仅支持文本，非文本请求在进入 Ingestor 前拒绝，见 [F09](../control/F09-agent-engine-doc-mode-read.md)。新增其他外部 URI 模态前，需要补充对应的 data/uri 载体契约。
 - 当前没有 DocumentNormalizer；PDF/Office 等文档原件不能通过 passthrough 解析，需在专用实现落地后再声明 DOCUMENT 能力。
