@@ -57,7 +57,8 @@ class VideoMemoryExtractor(Extractor):
                 video_data = _load_video_data(source)
             except BackendError as exc:
                 logger.warning(
-                    "skip non-video memory unit %s during extract: %s",
+                    "skip video source unit %s during extract: "
+                    "content is not a parsable video envelope (%s)",
                     source.id,
                     exc,
                 )

@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-09 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -158,9 +158,16 @@ class Plugin(ABC):
 |------|------|------|
 | `normalize` | `(payload: RawPayload) -> str` | 从原始负载提取/翻译为可治理文本 |
 | `modalities` | `() -> list[Modality]` | 返回本 normalizer 支持的模态类型 |
+| `structured_modalities` | `() -> frozenset[Modality]` | 返回规约结果为**结构化中间产物**（给下游程序整体解析的包络）的模态子集；缺省实现返回空集，非抽象，既有实现无需改动 |
 | `ensure_normalizer_supports` | `(normalizer, modality) -> None` | 公共能力门禁；支持时返回 `None`，否则抛含 capability/value/component 的 `UnsupportedCapabilityError` |
+| `ensure_structured_modalities_declared` | `(normalizer) -> frozenset[Modality]` | 装配期门禁：`structured_modalities()` 必须是 `modalities()` 的子集，否则抛 `ValidationError`；消费方（如 `SimpleIngestor`）构造时调用并缓存返回值 |
 
 `modalities()` 是“是否支持该模态”的单一能力声明，不描述输入使用 `data` 还是 `uri`。
+`structured_modalities()` 是“该模态的 content 能否被接入层按长度切分”的声明：命中的模态由
+接入层整体交付（S01 第 7 条），未命中的视为整块纯文本投影可预切分。声明归生产该格式的
+Normalizer——`VideoNormalizer` 声明 `VIDEO`（JSON 包络由 `VideoMemoryExtractor` 整体解析），
+`PassthroughNormalizer` 走缺省空集；`RoutingNormalizer` 的声明与其 `normalize` 分派一致：显式
+route 的模态取 delegate 的声明，其余取 fallback 的声明。
 `RoutingNormalizer` 构造时必须校验每个显式 route key 属于其 delegate 的能力集合，矛盾时按
 装配错误抛 `ValidationError`；运行时真实 payload 不受支持时抛
 `UnsupportedCapabilityError`。HTTP 视频入口缺少视频 Normalizer 时使用同一能力错误，
