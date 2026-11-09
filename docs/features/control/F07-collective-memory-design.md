@@ -1080,7 +1080,7 @@ def most_specific(members, actor, *, dim: str) -> SpaceMemberFact | None: ...
 | 内容轴 | `search` / `list` / `get` / `inspect` / `trace` / `export_space` | 内容 | `READ` |
 | 内容轴 | `update` | 内容 | `UPDATE` |
 | 内容轴 | `delete` | 内容 | `DELETE` |
-| 内容轴 | `evolve` | 内容 | `WRITE`；去重与遗忘两种模式取 `UPDATE` |
+| 内容轴 | `evolve` | 内容 | `WRITE`；去重、冲突巩固、遗忘与显式建树（`HIERARCHY`）四种模式取 `UPDATE` |
 | 内容轴 | `job_status` / `job_cancel` | 内容 | 取发起该作业的演进模式对应的动作 |
 | 两轴任一 | `get_space` / `list_spaces` / `space_usage` | 任一 | `READ` |
 | 治理轴 | `get_space_policy` / `list_space_members` | 治理 | `READ` |
@@ -1089,7 +1089,7 @@ def most_specific(members, actor, *, dim: str) -> SpaceMemberFact | None: ...
 | 治理轴 | `remove_space_member` / `revoke` | 治理 | `REVOKE_SHARE` |
 | 治理轴 | `delete_space` | 治理 | `DELETE`（指删空间） |
 
-去重与遗忘两种演进模式取 `UPDATE`。任务状态查询与取消按发起该作业的演进模式取同一动作，这要求任务信息携带演进模式取值而非任务类名。
+去重、冲突巩固、遗忘与显式建树（`HIERARCHY`）四种演进模式取 `UPDATE`。任务状态查询与取消按发起该作业的演进模式取同一动作，这要求任务信息携带演进模式取值而非任务类名。
 
 **「本人所写」附加集合按入口开关，不按是否携带作者标记。** 条目级入口分两段鉴权，第一段的目标是空间、不带条目信息，此时附加集合按可能成立处置，否则可贡献档在第一段即被拒（其 `UPDATE` / `DELETE` 只存在于该附加集合内），最终边界由携带作者标记的第二段给出。演进与两个任务入口没有第二段——它们作用于整个空间、条目作者各不相同，因此附加集合对它们一律不适用，只按基础集合求值。若改按「未携带作者标记即视为本人所写」统一处置，可贡献档成员即可对他人写入的条目执行遗忘与去重。
 

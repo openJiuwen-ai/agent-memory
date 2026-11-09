@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-10-27 |
 | 影响范围 | `jiuwen_memory/construction/`（`evolver.py`、`evolver_impl/conflict_consolidator.py`、`evolver_impl/orchestrating_evolver.py`、`evolver_impl/schema_orchestrating_evolver.py`、`extractor_impl/entity_schema_extractor.py`、`schema_prompts.py`）、`jiuwen_memory/api/memory_api_impl/local_support.py`；`docs/specs/S02-memory-api.md`、`docs/specs/S05-construction.md`、`docs/specs/S08-config.md`；`jiuwen_memory/construction/AGENTS.md` |
-| 测试基线 | 新增 21 例（`test_conflict_consolidator.py` 17 例、`test_evolver_dedup.py` 新增 4 例）；`pytest tests/unit/construction` → 909 passed |
+| 测试基线 | 新增 22 例（`test_conflict_consolidator.py` 18 例、`test_evolver_dedup.py` 新增 4 例）；`pytest tests/unit/construction` → 1142 passed |
 | Refs | —（issue 号待补） |
 
 ## 背景
@@ -128,6 +128,15 @@ prompt 明确要求按时间做 latest-wins：`t_event` 优先，其次 `t_messa
   直接回写会覆盖本轮 UPDATE 内容或复活已 SUPERSEDED 的旧版。
 - 标记集合 = `processed_unit_ids ∪ 产物 id − 退役 id`；标记经 `update(FORWARD_ONLY)`
   只回写本体，不刷新检索索引。
+- 产物构造时清空从代表单元继承的 `consolidation_run_id` / `consolidation_done_at`：
+  避免「产物落盘后、本轮打标前」中断时产物带旧标记落盘。
+
+### 8. 配套变更：Schema 抽取输出上限可配置
+
+`EntitySchemaExtractor` 新增 `extract_max_tokens`（配置键 `schema_extract_max_tokens`），
+默认值保持 LLM 客户端原有的 **8192**，不改变既有部署的输出上限与成本；需要更高上限的
+部署显式覆盖即可。该参数只调整属性抽取那一次调用的输出上限：chunk 较大时 JSON 会被
+截断，整批降级为只落 Source（本次评测配置显式设为 16384）。输入切分策略不变。
 
 ## 拒绝的方案
 
@@ -145,20 +154,21 @@ prompt 明确要求按时间做 latest-wins：`t_event` 优先，其次 `t_messa
 
 ### 单元测试
 
-- `tests/unit/construction/test_conflict_consolidator.py`（17 例）：两维聚类无重叠、
+- `tests/unit/construction/test_conflict_consolidator.py`（18 例）：两维聚类无重叠、
   seed 范围不外溢、单条簇过滤、确定性去重、关系检测与动作规划解析、越界 id 丢弃、
-  LLM 解析失败时计划为空、settled 簇跳过、退化取数、混用时区排序、产物清空派生字段。
+  LLM 解析失败时计划为空、settled 簇跳过、退化取数、混用时区排序、产物清空派生字段与
+  幂等标记、跨 issue group 已退役目标不重复处理。
 - `tests/unit/construction/test_evolver_dedup.py`（23 例，其中 4 例覆盖巩固落盘）：
   产物经 IndexBuilder 落盘（替身只写正排，不覆盖派生索引）、被退役 seed 不打标、
   计划为空（失败簇）不打标、本轮展开拉入的非 seed 成员也打标。
 - 命令与结果：`.venv/bin/python -m pytest tests/unit/construction -o addopts=-ra -q`
-  → 909 passed。
+  → 1142 passed。
 
 ### 评测
 
 MemoryAgentBench FactConsolidation（add → consolidate → 不追加记忆重评），模型 glm-5.2，
-`chunk_chars=4096`、`top_k=50`、`substring_exact_match`，评测侧把巩固输出上限覆盖为
-8192：
+`chunk_chars=4096`、`top_k=50`、`substring_exact_match`，评测配置把抽取输出上限显式设为
+16384、巩固输出上限覆盖为 8192：
 
 | 子集 | BEFORE | AFTER | Δ | ACTIVE property 记忆数（前 → 后） | 答案变化 |
 |---|---:|---:|---:|---:|---:|
@@ -171,8 +181,8 @@ MemoryAgentBench FactConsolidation（add → consolidate → 不追加记忆重�
 LoCoMo1（从 LoCoMo 数据集截取的 1 个会话：conv-26，单段双人对话，453 turn / 53
 session，199 道题覆盖 Multi-hop / Temporal / Open-domain / Single-hop 四类；评测
 runner 为 evaluation/locomo，指标沿用其 top_k 10/20/50/200 多档切片生成+判分口径）：
-全量 turn 写入 → 全量 QA 评测 → 巩固 → 同库重评，模型 glm-5.2，巩固输出上限覆盖为
-8192：
+全量 turn 写入 → 全量 QA 评测 → 巩固 → 同库重评，模型 glm-5.2，评测配置把抽取输出
+上限显式设为 16384、巩固输出上限覆盖为 8192：
 
 | 指标 | BEFORE | AFTER | Δ |
 |---|---:|---:|---:|

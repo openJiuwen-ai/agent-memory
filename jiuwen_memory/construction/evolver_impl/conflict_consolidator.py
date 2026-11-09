@@ -344,7 +344,10 @@ class ConflictConsolidator:
         plan: ConsolidatePlan,
     ) -> None:
         by_id = {unit.id: unit for unit in cluster.memories}
-        retired: set[str] = set()
+        # 跨 issue group 共享已退役集合：同一条记忆可能被 LLM#1 划进多个 group，
+        # 后续 group 的 update/merge/archive 不得再以已退役对象为目标或来源，
+        # 否则会为同一条旧值生成第二份 ACTIVE 产物（冲突被平移到下一轮）。
+        retired: set[str] = {unit.id for unit in plan.retire}
 
         def _retire(target: MemoryUnit) -> None:
             if target.id in retired:
@@ -369,6 +372,8 @@ class ConflictConsolidator:
                 sources = [by_id[i] for i in _valid_ids(action.get("source_unit_ids"), by_id)]
                 if not content or len(sources) < 2:
                     continue
+                if any(source.id in retired for source in sources):
+                    continue
                 for source in sources:
                     _retire(source)
                 plan.additions.append(
@@ -382,7 +387,7 @@ class ConflictConsolidator:
             elif action_type == "update":
                 content = str(action.get("content") or "").strip()
                 target = by_id.get(str(action.get("unit_id") or "").strip())
-                if not content or target is None:
+                if not content or target is None or target.id in retired:
                     continue
                 _retire(target)
                 plan.replacements.append(
@@ -395,7 +400,7 @@ class ConflictConsolidator:
                 )
             else:  # archive
                 target = by_id.get(str(action.get("unit_id") or "").strip())
-                if target is not None:
+                if target is not None and target.id not in retired:
                     _retire(target)
 
     # ------------------------------------------------------------------
@@ -463,10 +468,13 @@ def _make_property_unit(
     representative = cluster.memories[0]
     unit = copy.deepcopy(representative)
     unit.id = str(uuid.uuid4())
-    # 内容已改写：清空旧单元的派生字段（L0/L1 摘要、向量），与 schema_update 的约定一致。
+    # 内容已改写：清空旧单元的派生字段（L0/L1 摘要、向量）与上一轮的幂等标记，
+    # 避免产物在「落盘后、重新打标前」中断时带着旧标记落盘（会被误判 settled）。
     unit.layers.l0 = ""
     unit.layers.l1 = ""
     unit.vectors = []
+    unit.system_metadata.pop("consolidation_run_id", None)
+    unit.system_metadata.pop("consolidation_done_at", None)
     unit.segments = [
         Segment(
             content=content,

@@ -100,6 +100,9 @@ Schema 构建参数中，`schema_entity_resolution_enabled` 与
 `schema_entity_merge_decision_enabled` 默认均为 `true`，用于 canonical identity 的
 精确名称、别名与 LLM CREATE/UPDATE 判断；`use_property_merge` 默认 `false`，只有显式
 开启后才合并普通 set 属性。显式 delete 始终由 Schema Planner 消费并归档命中旧事实。
+`schema_extract_max_tokens` 是单次属性抽取 LLM 调用的输出上限，默认 `8192`（与 LLM
+客户端默认一致；评测配置显式设为 `16384`）；`conflict_consolidate_min_cluster_size`
+是冲突巩固的最小簇大小，默认 `2`。
 
 `vector_store.schema_entities` 与 `fulltext_store.schema_entities` 是 canonical Schema
 Entity 的独立命名端口，避免 Entity 与普通 MemoryUnit 混索引。`schema_enabled=true`

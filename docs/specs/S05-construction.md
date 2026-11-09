@@ -262,7 +262,7 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 
 ### DynamicEvolver（`evolver_impl/dynamic_evolver.py`）
 
-`OrchestratingEvolver` 的子类，覆盖 `_evolve_extract` 走动态 prompt 四步编排：`extract → consolidate(判定) → reflect → 落盘`。其余三模式（CONSOLIDATE/ASSOCIATE/FORGET）继承父类行为。注册名 `dynamic`，与 `orchestrating` 平级，同属 `evolver` 顶层命名空间——装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径。
+`OrchestratingEvolver` 的子类，覆盖 `_evolve_extract` 走动态 prompt 四步编排：`extract → consolidate(判定) → reflect → 落盘`。其余模式（CONSOLIDATE/CONFLICT_CONSOLIDATE/ASSOCIATE/FORGET）继承父类行为；`DynamicEvolver` 未注入 `ConflictConsolidator`，冲突巩固在该实现上空跑。注册名 `dynamic`，与 `orchestrating` 平级，同属 `evolver` 顶层命名空间——装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -531,6 +531,7 @@ repair_required，调用方须报告 FAILED。当前没有自动修复或事务�
 - `EXTRACT` — 信息提取
 - `ASSOCIATE` — 关联分析
 - `CONSOLIDATE` — 冲突消解（近重复融合/矛盾标记失效）
+- `CONFLICT_CONSOLIDATE` — Schema 属性记忆的簇内冲突巩固（需注入 `ConflictConsolidator`，未注入空跑）
 - `FORGET` — 遗忘/降权（过期/低价值记忆归档）
 - `HIERARCHY` — 显式创建或重建父节点及双向包含边
 
@@ -598,6 +599,7 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 | `EXTRACT` | 既有节点不变；新派生节点默认空，`provenance` 来源不自动成为父 |
 | `ASSOCIATE` | hierarchy 不变；关系只写 GraphStore，不写 `parent_id` |
 | `CONSOLIDATE` | 既有节点不变；新合成节点默认空，需单独建树 |
+| `CONFLICT_CONSOLIDATE` | 既有节点不变；新产物由簇内代表单元复制，不新建父节点 |
 | `FORGET` | 不改其他节点 kind/role/span；断开直接父边和全部直接子边，不级联删除父或任何子孙 |
 | `HIERARCHY` | 委托 HierarchyComposer 创建/替换父节点并一致回写直接子边 |
 

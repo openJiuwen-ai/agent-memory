@@ -39,6 +39,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类 |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
 | `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录 |
+| `evolver_impl/conflict_consolidator.py` | `CONFLICT_CONSOLIDATE` 的规划器：按 `(schema_entity_id, schema_property_name)` 成簇，两段 LLM 产出无副作用的 `ConsolidatePlan`；不落盘 |
 | `evolver_impl/temporal_validity.py` | UPDATE/SUPERSEDE 的时间护栏纯函数；只以显式 aware `t_message` 排陈述先后，已有 valid-time 区间独立校验 |
 | `extractor_impl/observation_time.py` | legacy/dynamic 抽取共用的逐来源日期上下文，显式 observation_date 优先，其次来源消息的当地日期；支持调用方日期前缀模板 |
 | `bootstrap.py` | 统一触发所有构建算子注册（含 dedup_impl） |
@@ -69,6 +70,8 @@ Evolver.evolve(units, mode):
               → [dynamic]     _evolve_extract: extract→route→consolidate(判定)→reflect→落盘
               → [schema]      _evolve_extract: Source-first→属性抽取→属性落盘→Source entities 写回
   CONSOLIDATE → _evolve_consolidate: abstract→annotate→_dedup_batch
+  CONFLICT_CONSOLIDATE → _evolve_conflict_consolidate: 成簇→两段 LLM 规划→
+               产物 build 全索引 + 旧版 SUPERSEDED/SOFT→done 标记（FORWARD_ONLY）
   ASSOCIATE   → _evolve_associate: associate→冲突消解→图索引 Edge
   FORGET     → _evolve_forget: 遗忘候选筛选→lifecycle 置 FORGOTTEN→
                IndexBuilder.update(mode=FORWARD_ONLY) 回写本体 +
@@ -107,7 +110,7 @@ Evolver.evolve(units, mode):
    字段，也不把 Scope 放进 metadata/filters，后端负责命名空间或专用过滤。
 
 6. **Evolver 内容演进与结构演进独立**
-   `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `FORGET`（遗忘/降权）四种内容模式独立，可单独触发。HIERARCHY 只委托 Composer，不进入抽取/去重。索引维护不作为 evolve 模式。
+   `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `CONFLICT_CONSOLIDATE`（Schema 属性簇内冲突巩固）/ `FORGET`（遗忘/降权）五种内容模式独立，可单独触发。HIERARCHY 只委托 Composer，不进入抽取/去重。索引维护不作为 evolve 模式。
 
 7. **去重召回与判定分离**
    `Dedup` 接口只管召回（向量化/分词 → Store.search → 加载 → 聚合取 max），判定

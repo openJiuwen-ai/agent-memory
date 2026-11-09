@@ -269,7 +269,7 @@ def test_merge_action_adds_consolidated_unit_and_retires_sources() -> None:
 
 
 def test_make_property_unit_clears_derived_fields() -> None:
-    """内容改写后，旧单元的 L0/L1 摘要与向量不得被继承。"""
+    """内容改写后，旧单元的 L0/L1 摘要、向量与上一轮幂等标记不得被继承。"""
     from jiuwen_memory.common.type_def import ChunkVector
     from jiuwen_memory.construction.evolver_impl.conflict_consolidator import (
         Cluster,
@@ -280,6 +280,8 @@ def test_make_property_unit_clears_derived_fields() -> None:
     old.layers.l0 = "旧摘要"
     old.layers.l1 = "旧概览"
     old.vectors = [ChunkVector(id="c1", seq=0, vector=[0.1, 0.2])]
+    old.system_metadata["consolidation_run_id"] = "old-run"
+    old.system_metadata["consolidation_done_at"] = "2026-01-01T00:00:00+00:00"
     cluster = Cluster(entity_id="E-jon", property_name="occupation", memories=[old])
 
     unit = _make_property_unit(cluster, "Jon is a teacher", ["m1"])
@@ -288,6 +290,8 @@ def test_make_property_unit_clears_derived_fields() -> None:
     assert unit.layers.l0 == ""
     assert unit.layers.l1 == ""
     assert unit.vectors == []
+    assert "consolidation_run_id" not in unit.system_metadata
+    assert "consolidation_done_at" not in unit.system_metadata
 
 
 def test_update_action_replaces_target_and_retires_old() -> None:
@@ -315,6 +319,63 @@ def test_update_action_replaces_target_and_retires_old() -> None:
     assert len(plan.replacements) == 1
     assert plan.replacements[0].supersedes == "m1"
     assert {u.id for u in plan.retire} == {"m1"}
+
+
+class _SequencedLLM:
+    """关系检测返回固定分组；动作规划按调用顺序返回不同响应。"""
+
+    def __init__(self, relation: object, action_sequence: list[object]) -> None:
+        self._relation = relation
+        self._actions = list(action_sequence)
+
+    def chat(self, messages, **_options) -> str:
+        content = messages[0].content if messages else ""
+        if "conflict detector" in content:
+            return json.dumps(self._relation)
+        action = self._actions.pop(0) if self._actions else {"actions": []}
+        return action if isinstance(action, str) else json.dumps(action)
+
+
+def test_target_retired_by_earlier_group_is_not_reprocessed() -> None:
+    """同一记忆被划进两个 issue group 时，后续 group 不得再以已退役对象为目标。"""
+    kv = MemoryKVStore()
+    units = [
+        _property("m1", "E-jon", "occupation", "Jon is a banker"),
+        _property("m2", "E-jon", "occupation", "Jon left banking"),
+        _property("m3", "E-jon", "occupation", "Jon joined a startup"),
+    ]
+    _seed(kv, units)
+    llm = _SequencedLLM(
+        relation={
+            "issue_groups": [
+                {"issue_type": "near_duplicate", "memory_ids": ["m1", "m2"]},
+                {"issue_type": "conflict", "memory_ids": ["m1", "m3"]},
+            ]
+        },
+        action_sequence=[
+            {
+                "actions": [
+                    {
+                        "type": "merge",
+                        "source_unit_ids": ["m1", "m2"],
+                        "target_content": "Jon left banking",
+                    }
+                ]
+            },
+            {
+                "actions": [
+                    {"type": "update", "unit_id": "m1", "content": "Jon is a banker in 2024"}
+                ]
+            },
+        ],
+    )
+
+    plan = _consolidator(kv, llm).plan(units)
+
+    # m1 已在第一组被合并退役，第二组的 update 必须跳过
+    assert len(plan.additions) == 1
+    assert not plan.replacements
+    assert {u.id for u in plan.retire} == {"m1", "m2"}
 
 
 # ---------------------------------------------------------------------------
