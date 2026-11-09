@@ -612,7 +612,13 @@ def test_document_shadow_index_vec_enabled_defaults_to_false() -> None:
         def find_unit_ids_by_content_hash(self, scope, content_hash):
             pass
 
-        def latest_scope_by_md(self, scope, md_filename):
+        def list_watchdog_rows(self, md_filename):
+            return []
+
+        def list_shared_watchdog_files(self):
+            return []
+
+        def apply_watchdog_diff(self, unit_ids, units):
             pass
 
         def search_fulltext(self, scope, query):
@@ -801,34 +807,6 @@ def test_scopes_enumerates_distinct(tmp_path) -> None:
     result = store.scopes()
     assert scope_a in result
     assert scope_b in result
-
-
-def test_latest_scope_by_md_returns_latest_scope(tmp_path) -> None:
-    """同 md_filename 插两条不同 scope（rowid 后插为新）→ 返回后插的 scope。"""
-    store = _store(tmp_path)
-    scope_a = Scope(org="o", user="a")
-    scope_b = Scope(org="o", user="b")
-    md = "MEMORY.md"
-    store.insert_units(scope_a, [_unit_with_md("u1", "alpha", scope_a, md)])
-    store.insert_units(scope_b, [_unit_with_md("u2", "beta", scope_b, md)])
-    result = store.latest_scope_by_md(Scope(), md)
-    assert result == scope_b  # rowid DESC → 后插入的 u2
-
-
-def test_latest_scope_by_md_no_history_returns_none(tmp_path) -> None:
-    """无历史 md_filename → 返 None。"""
-    store = _store(tmp_path)
-    assert store.latest_scope_by_md(Scope(), "no-such.md") is None
-
-
-def test_latest_scope_by_md_does_not_filter_by_scope(tmp_path) -> None:
-    """空 Scope 调用能取到非空 scope 的历史（跨 scope 不限 WHERE，看门狗诊断例外）。"""
-    store = _store(tmp_path)
-    scope_a = Scope(org="o", user="a")
-    md = "MEMORY.md"
-    store.insert_units(scope_a, [_unit_with_md("u1", "alpha", scope_a, md)])
-    # 空 Scope 调用 → 仍取到 scope_a（不限 scope WHERE）
-    assert store.latest_scope_by_md(Scope(), md) == scope_a
 
 
 # -- find_unit_ids_by_content_hash（F08 §D3）--------------------------------- #

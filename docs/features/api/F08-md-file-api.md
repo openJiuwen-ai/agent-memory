@@ -56,7 +56,7 @@ DocumentShadowIndex.get_units                   ← 取完整 MemoryUnit（已�
 
 ### D3 content_hash 反查新增方法，复用已有 idx_content_hash 索引
 
-设计文档说「用 content_hash 在 shadowIndex 反查 unit_id」。调研确认 `idx_content_hash` 索引已建（`sqlite_shadow_index.py:154`）但**零查询使用**——没有 `find_by_content_hash` 方法。唯一能拿 content_hash→unit_id 映射的途径是 `list_units_by_md`（返回 `[(unit_id, content_hash)]`，看门狗跨 scope 诊断用，`sqlite_shadow_index.py:890`），调用方自己在内存建 dict。
+设计文档说「用 content_hash 在 shadowIndex 反查 unit_id」。调研确认 `idx_content_hash` 索引已建（`sqlite_shadow_index.py:154`）但**零查询使用**——没有 `find_by_content_hash` 方法。唯一能拿 content_hash→unit_id 映射的途径是 `list_units_by_md`（返回 `[(unit_id, content_hash)]`，按文件跨 Scope 读），调用方自己在内存建 dict。
 
 决策：在 `DocumentShadowIndex` ABC 新增 `find_unit_ids_by_content_hash(scope, content_hash) -> list[str]`，实现走 `WHERE content_hash = ? AND <scope 5 段等值>`，scope 隔离口径与 `get_units` 一致（非 `list_units_by_md` 的跨 scope 例外口径）。索引已存在，查询是 O(log n) 点查。
 
@@ -118,11 +118,11 @@ edit 的 old_text 可能跨多块（含块间 `\n\n`），替换后块数可能�
 
 **不对齐场景（合并/拆分，新块数 ≠ 旧块数）**：
 - 无法明确「新块继承哪个旧 unit」——跨块合并本就语义模糊
-- 退化兜底：新 unit 继承文件级兜底元数据——scope 取**本次 edit 的发起者 scope**（`edit_md_file` 入参 `context.scope`，非 `latest_scope_by_md`）、project/memory_class 从 md 路径反推、provenance 标记 `md_edit_fallback`
+- 退化兜底：新 unit 继承文件级兜底元数据——scope 取**本次 edit 的发起者 scope**（`edit_md_file` 入参 `context.scope`）、project/memory_class 从 md 路径反推、provenance 标记 `md_edit_fallback`
 - 不保留 `supersedes`（无明确继承源，不指向单一旧 unit）
 - 这是对齐策略的退化补充，覆盖「old_text 跨多块」的完整契约，但元数据精度低于对齐场景
 
-> **scope 取发起者而非 `latest_scope_by_md` 的理由**（实现期修正）：`edit_md_file` 有明确的发起者 scope，若退化兜底用 `latest_scope_by_md`（看门狗面对「文件被外部改乱、无明确发起者」时的口径），fallback 新 unit 可能落到他 scope，导致随后 `get_units(scope, [id])` 按发起者 scope 反查返回空、违反 `edit_md_file` 返回 `list[MemoryUnit]` 的契约。看门狗与 edit_md_file 的语义差异：看门狗是无明确发起者的被动同步、用 `latest_scope_by_md` 合理；edit_md_file 是有明确发起者的主动编辑，用发起者 scope 守住返回契约。project/memory_class 仍从 md 路径反推（路径即落点的事实记录，比发起者 coords 更可靠）。
+> **scope 取发起者的理由**：`edit_md_file` 用发起者 Scope 写入，确保后续 `get_units(scope, [id])` 能查回新 unit。主动编辑有明确的发起者，跨块拆分或合并时仍可按其 Scope 写入。看门狗被动同步外部文件变更，没有发起者可用，按存储层的对账规则解析归属。project/memory_class 仍从 md 路径反推。
 
 **消失的旧块（superseded）一律标记 SUPERSEDED**，无论对齐与否——旧块从 md 消失即意味着旧记忆被编辑取代，版本链应记录这一事实。
 
@@ -147,7 +147,7 @@ edit 的 old_text 可能跨多块（含块间 `\n\n`），替换后块数可能�
 
 ### R1 方式 B：adapter 层用已有接口组合翻译
 
-内核接口面没有「按 file path 反查 unit_id」入口——`list` 的 `extensions` 入参被忽略、`filters` 是否支持 md_filename 维度不确定；`search` 走语义检索不能按 path 返回该文件所有 unit；`get` 入参是 unit_id 不是 path；`shadow_index.list_units_by_md` 是看门狗内部方法不在对外契约。且 `get` 返回 MemoryUnit（segments[0].content，被 extractor 蒸馏）与 `read_memory` 期望的 md 原文（含 frontmatter / 标题 / 块结构）语义根本对不上，adapter 无法拼回。方式 B 要落地必然要在内核加 file path 能力，与方式 A 本质重合但额外要做「MemoryUnit → md 原文拼回」的语义适配，代价更高。详见 `jiuwen-memory-md文件接口设计.md` §3、§4。
+内核接口面没有「按 file path 反查 unit_id」入口——`list` 的 `extensions` 入参被忽略、`filters` 是否支持 md_filename 维度不确定；`search` 走语义检索不能按 path 返回该文件所有 unit；`get` 入参是 unit_id 不是 path；`shadow_index.list_units_by_md` 是存储层内部对账方法。且 `get` 返回 MemoryUnit（segments[0].content，被 extractor 蒸馏）与 `read_memory` 期望的 md 原文（含 frontmatter / 标题 / 块结构）语义根本对不上，adapter 无法拼回。方式 B 要落地必然要在内核加 file path 能力，与方式 A 本质重合但额外要做「MemoryUnit → md 原文拼回」的语义适配，代价更高。详见 `jiuwen-memory-md文件接口设计.md` §3、§4。
 
 ### R2 md ↔ unit_id 映射放在 agent-core 层
 
@@ -241,8 +241,8 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 ## 已知遗留
 
 1. **edit 继承式 SUPERSEDE 的版本链膨胀**：每次 edit 都生成新 unit + 旧版标记 SUPERSEDED（非物理删）。频繁编辑同一块会累积 superseded 旧版（shadow 表行数增长）。与现有 `update` SUPERSEDE 路径同款代价，由 `sweep_expired` 清理过期旧版（lifecycle 治理）。若后续发现高频 edit 场景版本链膨胀过快，可考虑对 edit 路径加「连续 edit 同一块合并为新版」优化，但首版不做。
-2. **不对齐场景的元数据精度低于对齐场景**：跨块合并/拆分时，新 unit 退化为文件级兜底元数据（`latest_scope_by_md` 取 scope + 路径反推 project/memory_class + `md_edit_fallback` provenance），不保留 `supersedes` 版本链。这是跨块语义模糊的固有代价——old_text 跨多块时无法明确归属单一旧 unit。覆盖完整契约（对齐 + 不对齐），但不对齐场景的元数据保真度有限，后续若有更精细的跨块归属算法可迭代。
+2. **不对齐场景的元数据精度低于对齐场景**：跨块合并/拆分时，新 unit 退化为文件级兜底元数据（发起者 Scope + 路径反推 project/memory_class + `md_edit_fallback` provenance），不保留 `supersedes` 版本链。这是跨块语义模糊的固有代价——old_text 跨多块时无法明确归属单一旧 unit。覆盖完整契约（对齐 + 不对齐），但不对齐场景的元数据保真度有限，后续若有更精细的跨块归属算法可迭代。
 3. **provider 层转换不在本特性范围**：`MdFileContent` / `MdFileEditResult` 转换、`_units_to_md_content` 选项 a/b 选择，归 provider 层（`JiuwenMemoryProvider` / `ExternalMemoryRail`），本特性只交付内核接口 + 返回 `list[MemoryUnit]`。
-4. **看门狗与 edit_md_file 两套构造逻辑不合并**：`collect_blocks_from_text`（原看门狗 `_collect_new_contents`）/ `_build_unit` 提取到 `_md_blocks.py` 共享模块后，看门狗的 scope 继承（`latest_scope_by_md`）与「删旧建新」逻辑须一并保留（看门狗面对任意文件修改，仍走删旧建新、不继承元数据——edit_md_file 的继承式 SUPERSEDE 是 DomainStore 专用路径，不改造看门狗），避免回归。
+4. **看门狗与 edit_md_file 两套构造逻辑**：共享 `_md_blocks.py` 的解析口径。看门狗对账时只继承 Scope，按需删旧建新。DomainStore 的主动编辑路径通过 SUPERSEDE 保留版本链。
 5. **InMemoryEngine 不支持**：read_md_file / edit_md_file 仅文档模式可用，`InMemoryEngine` 抛 `ValidationError`。若未来 InMemoryEngine 需支持，需另议非文档模式的 md 文件语义（当前非文档模式真源是 KV，无 md 文件）。
 6. **line_range 切断块的 hash 匹配**：read_md_file 按 line_range 切片后，被切断的不完整块算出的 hash 匹配不上 shadow 里的完整块 hash，自然跳过——这是预期行为（只返回完整块对应的 unit），但 provider 层转 `MdFileContent` 时若需要切断块的原文，应直接读 md 原文而非依赖 MemoryUnit list（见 `jiuwen-memory-md文件接口设计.md` §2.5 选项 a）。

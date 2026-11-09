@@ -7,8 +7,8 @@
 F07 §12.8 方案 B 变体）。
 
 **与 lite 的关键差异**：lite 的 ``sync`` 是文件级全量重建（整文件 chunks 删重建）；
-本实现是 **unit 粒度增量**——``shadow.list_units_by_md`` 拿旧 (unit_id, content_hash)
-list，读 md 按块算新 content_hash list，diff 出「新增/删除」集合只动变化的 unit。
+本实现是 **unit 粒度增量**——``shadow.list_watchdog_rows`` 拿影子索引快照，
+读 md 按块算新 content_hash list，diff 出「新增/删除」集合只动变化的 unit。
 否则改一行重建整个文件的 unit 会丢失其他 unit 的 id（破坏 supersedes 链，F07 §12）。
 
 **块格式对齐** ``MarkdownStore._render_block``：``# {标题}\\n{content}\\n\\n``
@@ -31,6 +31,7 @@ import re
 import threading
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from jiuwen_memory.common.factory.factory import Factory
@@ -77,6 +78,11 @@ _DEFAULT_DEBOUNCE_MS = 2000
 _INIT_GRACE_SECONDS = 1.0  # 启动后延迟置 watcher_initialized，避开初始扫描风暴
 
 _DAILY_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+
+
+def _recall_scope_key(scope: Scope) -> tuple[str, str, str, str]:
+    """影子索引召回的隔离维度，session 只参与点查和列表。"""
+    return scope.org, scope.space, scope.user, scope.agent
 
 
 def _is_watched_md(path: str) -> bool:
@@ -128,6 +134,8 @@ class LocalWatchdog(Watchdog):
         self._watcher_initialized = False
         self._closed = False
         self._sync_condition = threading.Condition()
+        self._sync_lock = threading.Lock()
+        self._shared_orders: dict[str, tuple[str, ...]] = {}
         self._active_syncs = 0
         self._generation = 0
 
@@ -209,6 +217,7 @@ class LocalWatchdog(Watchdog):
         if not os.path.isdir(watch_dir):
             os.makedirs(watch_dir, exist_ok=True)
 
+        self._seed_shared_orders()
         self._observer = Observer()
         handler = _MdFileHandler(self)
         self._observer.schedule(handler, watch_dir, recursive=True)
@@ -314,7 +323,7 @@ class LocalWatchdog(Watchdog):
         """异步同步主体：sqlite 操作推到独立线程（to_thread）避免阻塞事件循环。
 
         ``_sync_one`` 是同步函数（调 shadow 的同步 sqlite 方法），靠 ``to_thread``
-        推出事件循环；shadow 自带 ``threading.Lock`` 保证不并发跑同文件。
+        推出事件循环；看门狗串行对账，避免并发事件重复应用同一份快照。
 
         **写窗口推迟（F07 §12.9 风险 6，见 storage.sync_gate）**：正常写入路径
         （CompositeStorage 文档路径两步写：md 视图 + 影子索引）进行中时，md 与
@@ -331,8 +340,12 @@ class LocalWatchdog(Watchdog):
             logger.debug("LocalWatchdog: do_sync start %s deleted=%s", md_filename, deleted)
             deferred = 0.0
             deferral_logged = False
-            while write_window_open():
+            while True:
                 if self._closed or generation != self._generation:
+                    return
+                if not write_window_open() and await asyncio.to_thread(
+                    self._run_sync, md_filename, deleted, generation,
+                ):
                     return
                 # 「首次推迟只记一次」用布尔标志，不挂在 deferred 浮点累加值上——
                 # 避免 0.0/0.25 恰好精确可表示这一隐含数值假设，意图也更直白。
@@ -352,18 +365,23 @@ class LocalWatchdog(Watchdog):
                     return
                 await asyncio.sleep(SYNC_DEFERRAL_POLL_SECONDS)
                 deferred += SYNC_DEFERRAL_POLL_SECONDS
-            await asyncio.to_thread(self._run_sync, md_filename, deleted, generation)
         except Exception as exc:
             logger.warning("LocalWatchdog: sync failed for %s: %s", md_filename, exc)
 
-    def _run_sync(self, md_filename: str, deleted: bool, generation: int) -> None:
-        """线程池准入与 drain 记账独立于 loop，关闭不依赖协程恢复。"""
+    def _run_sync(self, md_filename: str, deleted: bool, generation: int) -> bool:
+        """返回 False 表示拿锁后发现写窗口已打开，调用方应推迟重试。"""
         with self._sync_condition:
             if self._closed or generation != self._generation:
-                return
+                return True
             self._active_syncs += 1
         try:
-            self._sync_one(md_filename, deleted)
+            with self._sync_lock:
+                if self._closed or generation != self._generation:
+                    return True
+                if write_window_open():
+                    return False
+                self._sync_one(md_filename, deleted)
+                return True
         finally:
             with self._sync_condition:
                 self._active_syncs -= 1
@@ -395,104 +413,119 @@ class LocalWatchdog(Watchdog):
             return None
         return rel.replace("\\", "/")
 
+    def _seed_shared_orders(self) -> None:
+        """只记录与影子索引吻合的共享文件，启动期间不应用已有漂移。"""
+        self._shared_orders.clear()
+        try:
+            root = Path(self._markdown_root).resolve()
+            filenames = self._shadow.list_shared_watchdog_files()
+        except Exception:
+            logger.warning("LocalWatchdog: cannot initialize shared file baselines", exc_info=True)
+            return
+        for md_filename in filenames:
+            try:
+                path = (root / md_filename).resolve()
+                if not path.is_relative_to(root):
+                    continue
+                blocks = collect_md_blocks(str(path), deduplicate=False)
+                rows = self._shadow.list_watchdog_rows(md_filename)
+            except Exception as exc:
+                logger.warning("LocalWatchdog: cannot read baseline for %s: %s", md_filename, exc)
+                continue
+            order = tuple(content_hash for content_hash, _, _ in blocks)
+            hashes = set(order)
+            known = {content_hash for _, content_hash, _, _ in rows}
+            active = [
+                content_hash for _, content_hash, lifecycle, _ in rows
+                if lifecycle == LifecycleState.ACTIVE.value
+            ]
+            active_hashes = set(active)
+            unique_hashes = len(hashes) == len(order) and len(active_hashes) == len(active)
+            if unique_hashes and active_hashes <= hashes <= known:
+                self._shared_orders[md_filename] = order
+
     def _sync_one(self, md_filename: str, deleted: bool) -> None:
-        """单文件 unit 粒度增量同步（F07 §12.3 流程）。
+        """按正文 hash 对账，历史行只用于去重，只有 active 行可删除。"""
+        rows = self._shadow.list_watchdog_rows(md_filename)
+        known_hashes = {content_hash for _, content_hash, _, _ in rows}
+        file_scope = rows[0][3] if rows else self._scope
+        file_key = _recall_scope_key(file_scope)
+        shared = any(_recall_scope_key(owner) != file_key for _, _, _, owner in rows)
 
-        ① old_all = shadow.list_units_by_md(scope, md_filename)
-           # 全集 [(unit_id, content_hash)]，供 insert 侧「已知块」扣除（known_hash_set）
-        ② old_active = shadow.list_units_by_md(scope, md_filename, lifecycle=active)
-           # 仅 active 行，供 delete 侧「现存块」基准（old_hash_set）
-        ③ 读 md 按行算 new (content_hash, content) list  (deleted=True 时 new 为空 → 全删)
-        ④ diff：
-           old_hash(active) - new_hash → delete_units(对应 unit_id)
-           new_hash - known_hash(全集) → insert_units(新建 unit，步骤 3 缺省元数据 + content 原文)
-
-        两侧基准分开（不同口径对称设计，缺一不可）：delete 侧只认 active 行——
-        superseded/archived/forgotten 历史版本（SUPERSEDE/治理后保留，md 已删旧块、shadow
-        留行做版本链/as_of）不参与 to_delete，否则看门狗会把旧版行物理删除、断版本链。
-        insert 侧用全集 hash 扣除——archived/forgotten 行的 md 块仍留在文件里（FORGET/
-        ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这
-        残留块重插为 active 重复行（遗忘语义失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
-        """
-        scope = self._scope
-        # ① 旧 unit 全集（含 content_hash）——insert 侧「已知块」扣除基准。用全集而非
-        #    active：archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改
-        #    lifecycle + remove(SOFT)，md 不删块），用 active 集合扣会把这残留块重插为
-        #    active 重复行（遗忘失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
-        all_pairs = self._shadow.list_units_by_md(scope, md_filename)
-        known_hash_set = {ch for _, ch in all_pairs}
-
-        # ② 旧 unit（仅 active 行）——delete 侧「现存块」基准。只认 active，排除
-        #    superseded/archived/forgotten 历史版本（md 已删旧块、shadow 留行做版本链
-        #    /as_of，md 无其 hash 是正确终态而非删除信号），避免物理删旧版行断版本链。
-        old_pairs = self._shadow.list_units_by_md(
-            scope, md_filename, lifecycle=LifecycleState.ACTIVE.value
-        )
-        old_by_hash: dict[str, str] = {}
-        for unit_id, ch in old_pairs:
-            old_by_hash[ch] = unit_id
-        old_hash_set = set(old_by_hash.keys())
-
-        # ② 新 (content_hash, content) list（按块结构解析 md，保留 content 原文供建 unit）。
-        # collect_md_blocks 返回三元组 (hash, content, block_index)，看门狗只取前两元
-        # （block_index 供 DomainStore._supersede_shadow_for_md 跨块对齐用，看门狗「删旧建新」
-        # 不按位置继承、不需要 block_index）。口径为块结构解析（跳过块首标题行、正文行
-        # 不判 # 前缀、sha256、保序去重），定义在共享 _md_blocks（与 edit_md_file 同口径）。
-        new_pairs: list[tuple[str, str]] = []  # (hash, content) 保序、去重
-        new_hash_set: set[str] = set()
+        blocks = []
         if not deleted:
             abs_path = os.path.join(self._markdown_root, md_filename)
-            if os.path.isfile(abs_path):
-                new_pairs = [(h, c) for h, c, _ in collect_md_blocks(abs_path)]
-                new_hash_set = {h for h, _ in new_pairs}
+            blocks = collect_md_blocks(abs_path, deduplicate=not shared)
 
-        # ④ diff
-        to_delete = old_hash_set - new_hash_set
-        to_insert_pairs = [(h, c) for h, c in new_pairs if h not in known_hash_set]
-
-        if not to_delete and not to_insert_pairs:
-            logger.debug("LocalWatchdog: no drift, skip sync %s", md_filename)
-            return  # md 与索引一致，无需同步
-
-        logger.debug(
-            "LocalWatchdog: diff %s to_delete=%d to_insert=%d",
-            md_filename,
-            len(to_delete),
-            len(to_insert_pairs),
+        new_by_hash = {content_hash: content for content_hash, content, _ in blocks}
+        active_rows = [
+            (unit_id, content_hash, owner)
+            for unit_id, content_hash, lifecycle, owner in rows
+            if lifecycle == LifecycleState.ACTIVE.value
+        ]
+        removed = [
+            (unit_id, content_hash, owner)
+            for unit_id, content_hash, owner in active_rows
+            if content_hash not in new_by_hash
+        ]
+        added = [
+            (content_hash, content) for content_hash, content in new_by_hash.items()
+            if content_hash not in known_hashes
+        ]
+        order = tuple(content_hash for content_hash, _, _ in blocks)
+        duplicate_blocks = len(new_by_hash) != len(blocks)
+        duplicate_active_rows = len({content_hash for _, content_hash, _ in active_rows}) != len(
+            active_rows
         )
+        if not shared or not blocks:
+            self._shared_orders.pop(md_filename, None)
+        if not removed and not added:
+            unique_baseline = not (duplicate_blocks or duplicate_active_rows)
+            if shared and blocks and unique_baseline:
+                self._shared_orders[md_filename] = order
+            return
 
-        # delete 分支
-        if to_delete:
-            del_ids = [old_by_hash[h] for h in to_delete]
-            self._shadow.delete_units(scope, del_ids)
-            logger.info(
-                "LocalWatchdog: deleted %d unit(s) from %s (md changed/removed)",
-                len(del_ids),
-                md_filename,
+        if shared and blocks:
+            previous_order = self._shared_orders.get(md_filename, ())
+            # 共享文件只接受原位置的单块替换，其余正文须保持原顺序。
+            single_replacement = (
+                len(removed) == len(added) == 1
+                and tuple(
+                    added[0][0] if content_hash == removed[0][1] else content_hash
+                    for content_hash in previous_order
+                ) == order
             )
+            can_add = single_replacement and not duplicate_active_rows
+            if can_add:
+                _, removed_hash, removed_owner = removed[0]
+                removed_key = _recall_scope_key(removed_owner)
+                # 同正文的历史版本只有在涉及其他召回归属时才使本次替换失去归属依据。
+                can_add = not any(
+                    content_hash == removed_hash and _recall_scope_key(owner) != removed_key
+                    for _, content_hash, _, owner in rows
+                )
+            if duplicate_blocks or (added and not can_add):
+                logger.warning("LocalWatchdog: ambiguous scope, keeping index for %s", md_filename)
+                return
 
-        # insert 分支：建新 unit（content 原文来自 new_pairs）
-        if to_insert_pairs:
-            # scope 继承：按 md_filename 查该文件最新一条 unit 的 scope（md 不编码 scope，
-            # 按同文件最新归属近似）；无历史返 None 落 self._scope（空 Scope，保持现行为）。
-            # 一次查询供本批次所有新 unit 复用，避免每条 unit 重复查。
-            inherited_scope = self._shadow.latest_scope_by_md(scope, md_filename) or self._scope
-            units = [
-                self._build_unit(md_filename, content, inherited_scope)
-                for _, content in to_insert_pairs
-            ]
-            self._shadow.insert_units(scope, units)
-            logger.info(
-                "LocalWatchdog: inserted %d unit(s) into %s (md new content)",
-                len(units),
-                md_filename,
-            )
+        # 跨召回归属的替换继承消失行。单归属文件沿用最近写入的会话。
+        inherited_scope = removed[0][2] if shared and added else file_scope
+        units = [self._build_unit(md_filename, content, inherited_scope) for _, content in added]
+        self._shadow.apply_watchdog_diff([unit_id for unit_id, _, _ in removed], units)
+        if shared and blocks:
+            self._shared_orders[md_filename] = order
+        logger.info(
+            "LocalWatchdog: synced %s (deleted=%d, inserted=%d)",
+            md_filename,
+            len(removed),
+            len(units),
+        )
 
     def _build_unit(self, md_filename: str, content: str, scope: Scope) -> MemoryUnit:
         """建新 MemoryUnit（F07 §12.6 缺省元数据）。
 
         缺省值：
-        - scope：由调用方传入（继承自 ``latest_scope_by_md`` 或默认空 Scope，见 _sync_one）
+        - scope：由 _sync_one 根据被替换行或文件归属决定
         - scope.project（coords）：从 md 路径反推
         - category(memory_class)：从 md 路径反推（USER.md→user_profile 等）
         - tier：SEMANTIC（与抽取产出的语义记忆一致）
@@ -543,8 +576,7 @@ def _build(config):
     shadow = storage.shadow_index()
     markdown_root = storage.markdown().root or "."
     debounce_ms = int(Factory.cfg_get(config, "debounce_ms", _DEFAULT_DEBOUNCE_MS))
-    # scope：看门狗跨 scope 诊断——list_units_by_md 不限 scope（见该方法注释），
-    # 影子索引其余方法已加 scope 原生隔离；看门狗用空 Scope 占位走不限 scope 的诊断路径。
+    # 无索引历史的文件沿用空 Scope。
     scope = Scope()
     return LocalWatchdog(
         shadow=shadow,

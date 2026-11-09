@@ -6,7 +6,7 @@ edit 走继承式 SUPERSEDE（元数据继承 + supersedes 版本链 + 旧版标
 
 失效方向：
 - edit 的 SUPERSEDE 不继承元数据 → 版本链断、元数据丢失（与看门狗删旧建新同病）；
-- 不对齐退化用 latest_scope_by_md 而非发起者 scope → fallback unit 落他 scope，
+- 不对齐退化按文件归属而非发起者 scope → fallback unit 落他 scope，
   get_units(scope,[id]) 返回空、违反返回契约（F08 D4.1 已修正）；
 - 非文档模式未拒绝 → InMemoryEngine 无 md 文件却返回空/静默成功，掩盖配置错误。
 """
