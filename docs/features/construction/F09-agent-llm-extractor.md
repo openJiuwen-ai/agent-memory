@@ -116,10 +116,11 @@ class AgentLlmExtractor(ExtractorImpl):
 
 @ExtractorProducer.register("agent_llm")
 def _build(config):
+    reject_deprecated_llm_attempt_keys(config, "extractor")
     return AgentLlmExtractor(
         llm=LlmProducer.dep(config, default="echo"),
         min_confidence=config.get("extractor_min_confidence", 0.5),
-        retry_max_retries=config.get("extractor_retry_max", 3),
+        max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
         language=config.get("extractor_language", "cn"),
@@ -138,6 +139,10 @@ extractor:
 ```
 
 自注册架构（`@ExtractorProducer.register`）保证新增 target 无需改 producer / build_kernel。
+
+LLM 尝试次数键与 `llm` target 同口径（S05「LLM 调用尝试策略」）：读 `extractor_max_attempts`
+（默认 3）与 `extractor_retry_backoff`（默认 1000）；旧键 `extractor_retry_max` 在装配期经
+`reject_deprecated_llm_attempt_keys` 抛 `ValidationError`，不静默生效也不静默回落默认值。
 
 ## 3. 对接链路：extractor 如何进 AgentEngine
 
@@ -426,10 +431,11 @@ Output schema:
   - memory_class 通路三态：合法值落 `system_metadata[MEMORY_CLASS_KEY]`、非法值兜底 `long_term_memory`、缺失静默兜底；
   - extract 继承 llm 管线（provenance / source_ref / tier 兜底 / tags 合并）；
   - user 侧模板双语（observation_date 前缀、context 参考段）+ fidelity suffix 双语 opt-in；
-  - `llm` target 回归（类属性化零行为变化）+ `_format_context_block` 缺省英文（外部消费者零改动）+ `agent_llm` 注册存在性。
+  - `llm` target 回归（类属性化零行为变化）+ `_format_context_block` 缺省英文（外部消费者零改动）+ `agent_llm` 注册存在性；
+  - 工厂读新键 `extractor_max_attempts` 生效；旧键 `extractor_retry_max` 的装配期拒绝由 `test_llm_attempt_policy.py` 的参数化用例覆盖。
 - **storage 侧** `tests/unit/storage/test_local_markdown_store.py`：新三类名 `_md_path` 共享路径用例（user_profile → USER.md、long_term_memory ± project、daily_memory 按天）。
 - **验证基线（2026-10-13；2026-10-14 增量后复验）**：`pytest tests/unit/construction/ tests/unit/storage/ -q` 全绿；`ruff check` 与改动前持平（新增文件干净，`local_markdown_store.py` 存量 6 项 / 测试文件存量 3 项非本次引入）。
-- **归档**：本特性影响公开配置面（新 target `agent_llm` + `extractor_language` 键）+ 多方案取舍，按仓库规约三提交拆分 feat / test / docs；实现列表归 `jiuwen_memory/construction/AGENTS.md`（specs 不列实现，S05 无需修订）。
+- **归档**：本特性影响公开配置面（新 target `agent_llm` + `extractor_language` 键）+ 多方案取舍，按仓库规约归档本特性文档，代码、测试与文档纳入同一个合并提交；实现列表归 `jiuwen_memory/construction/AGENTS.md`（specs 不列实现，S05 无需修订）。
 
 ## 6. 决策记录
 
