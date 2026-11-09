@@ -919,11 +919,36 @@ def test_extractor_relative_time_overflow_returns_empty_window(text: str) -> Non
     ],
 )
 def test_extractor_boundary_years_and_huge_digits_return_empty_window(text: str) -> None:
-    """年份越界（9999）与超长数字串（int 4300 位上限）与 timedelta 溢出同构：
-    一律空窗回落，不得穿透 extract()。"""
+    """年份越界（9999）、超长数字串（int 4300 位上限）与 timedelta 溢出同构空窗回落。"""
     extractor = SchemaTimeExtractor(now=lambda: datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
 
     result = extractor.extract(text)
 
     assert result == ExtractedTimeWindow()
     assert result.found is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", ["December 9999", "Dec 31, 9999"])
+def test_extractor_english_max_date_returns_empty_window(text: str) -> None:
+    """英文日期 9999 年：排他端越界（ValueError/OverflowError）同构空窗回落。"""
+    extractor = SchemaTimeExtractor(now=lambda: datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
+
+    result = extractor.extract(text)
+
+    assert result == ExtractedTimeWindow()
+    assert result.found is False
+
+
+@pytest.mark.unit
+def test_extractor_relative_overflow_falls_through_to_later_rules() -> None:
+    """相对时间溢出后继续尝试后续相对规则（与 time_parse 语义对齐）：
+    「最近1000000000天，今天」应取今天窗而非空窗。"""
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+    extractor = SchemaTimeExtractor(now=lambda: now)
+
+    result = extractor.extract("最近1000000000天，今天")
+
+    assert result.found is True
+    assert result.start == datetime(2026, 6, 16, 0, 0, tzinfo=UTC)
+    assert result.end == datetime(2026, 6, 17, 0, 0, tzinfo=UTC)

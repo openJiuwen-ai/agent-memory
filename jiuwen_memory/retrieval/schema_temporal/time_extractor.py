@@ -299,9 +299,10 @@ def _relative_range(
             delta = timedelta(weeks=amount) if unit in week_units else timedelta(days=amount)
             return now - delta, now, EventTimePrecision.DATETIME
         except (OverflowError, ValueError):
-            # N 超出 datetime 可表示范围或超出 int 转换上限：语义上等价于全部
-            # 历史，返回 None（未命中），上层按空窗处理而非让异常穿透整条链路。
-            return None
+            # N 超出 datetime 可表示范围或超出 int 转换上限：与 time_parse 同构，
+            # 本条相对规则放弃，继续尝试后续相对规则（今天/昨天/本周/…），
+            # 而非直接空窗——如「最近1000000000天，今天」应取今天窗。
+            pass
 
     lowered = text.casefold()
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -364,11 +365,15 @@ def _english_absolute_date(text: str) -> ExtractedTimeWindow:
                 _ENGLISH_MONTHS[match.group("month").casefold()],
                 int(match.group("day")),
             )
-        except (KeyError, ValueError):
+            # 排他端计算同在 try 内：英文日期允许 9999 年（Dec 31, 9999 经 DAY
+            # 精度加法越界 OverflowError、December 9999 经 _next_month 越界
+            # ValueError），与 chinese/iso 分支同构空窗回落。
+            end = _exclusive_end(start, precision)
+        except (KeyError, ValueError, OverflowError):
             return ExtractedTimeWindow()
         return ExtractedTimeWindow(
             start,
-            _exclusive_end(start, precision),
+            end,
             precision,
             TemporalIntentSource.RULE,
         )
@@ -386,11 +391,14 @@ def _english_absolute_date(text: str) -> ExtractedTimeWindow:
             _ENGLISH_MONTHS[month.group("month").casefold()],
             None,
         )
-    except (KeyError, ValueError):
+        # 排他端计算同在 try 内：December 9999 经 _next_month 越界抛
+        # ValueError，与 chinese/iso 分支同构空窗回落。
+        end = _exclusive_end(start, precision)
+    except (KeyError, ValueError, OverflowError):
         return ExtractedTimeWindow()
     return ExtractedTimeWindow(
         start,
-        _exclusive_end(start, precision),
+        end,
         precision,
         TemporalIntentSource.RULE,
     )

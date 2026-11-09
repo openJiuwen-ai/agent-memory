@@ -155,13 +155,11 @@ def test_overflow_falls_through_to_later_rules() -> None:
 
 @pytest.mark.parametrize("digits", [4300, 5000])
 def test_huge_digit_string_returns_no_window(digits: int) -> None:
-    """超长数字串触发 CPython int(str) 4300 位上限（ValueError 非 OverflowError）：
-    须与 timedelta 溢出同构回落空窗，不得穿透。"""
+    """超长数字串触发 int(str) 4300 位上限（ValueError），与 timedelta 溢出同构回落空窗。"""
     assert parse_time("最近" + "9" * digits + "天", now=NOW) == (None, None)
 
 
 @pytest.mark.parametrize("text", ["9999-12-31", "9999年12月31日"])
 def test_max_date_absolute_window_returns_none(text: str) -> None:
-    """绝对日期命中 datetime.max 边界（9999-12-31）：当日窗排他端越界，
-    同构回落 (None, None)，不得抛 OverflowError。"""
+    """绝对日期命中 datetime.max 边界（9999-12-31）：排他端越界同构回落 (None, None)。"""
     assert parse_time(text, now=NOW) == (None, None)
