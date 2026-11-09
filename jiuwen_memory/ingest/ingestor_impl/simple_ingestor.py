@@ -6,6 +6,12 @@
 LLM 分类/抽取 prompt（同步写路径分钟级阻塞：add 500KB → 全文单发 LLM 3×300s
 超时 ≈900s 无响应）。按段落聚合基本无信息丢失，单段超长时硬切兜底；
 ``max_unit_chars <= 0`` 关闭切分，保持旧行为。
+
+预切分默认对所有模态生效；唯一例外是规约器经 ``Normalizer.structured_modalities()``
+声明为**结构化中间产物**的模态——其 content 是给下游程序整体解析的包络（如视频规约的
+JSON 包络，由 VideoMemoryExtractor ``json.loads`` 后拆成 CLM/ELM），切分已在规约阶段按
+模态自身的边界完成，这里按字符数再切只会把包络切成非法片段、导致抽取零产出
+（issue #294）。谁生产该格式谁声明，接入层不维护模态白名单。
 """
 
 from __future__ import annotations
@@ -15,7 +21,12 @@ from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.ingest_cancellation import check_ingest_cancelled
-from jiuwen_memory.common.normalizer import Normalizer, ensure_normalizer_supports
+from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.normalizer import (
+    Normalizer,
+    ensure_normalizer_supports,
+    ensure_structured_modalities_declared,
+)
 from jiuwen_memory.common.normalizer.base import NormalizerProducer
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
@@ -23,6 +34,8 @@ from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Tempo
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.hierarchy_hints import extract_hierarchy_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
+
+logger = get_logger(__name__)
 
 
 def _now() -> datetime:
@@ -35,6 +48,8 @@ class SimpleIngestor(Ingestor):
     def __init__(self, normalizer: Normalizer, max_unit_chars: int = 8000) -> None:
         self._normalizer = normalizer
         self._max_unit_chars = max_unit_chars
+        # 规约器固定，其结构化产物声明在构造期取一次并校验（须是 modalities() 子集）。
+        self._structured_modalities = ensure_structured_modalities_declared(normalizer)
 
     @staticmethod
     def operator_type() -> IngestOperatorType:
@@ -54,7 +69,14 @@ class SimpleIngestor(Ingestor):
             hierarchy, base_system_metadata = extract_hierarchy_hints(payload.system_metadata)
             content = self._normalizer.normalize(payload)
             check_ingest_cancelled()
-            pieces = self._split(content)
+            if payload.modality in self._structured_modalities:
+                # 结构化中间产物：整体交付下游解析，不切分（Normalizer.structured_modalities）
+                logger.debug(
+                    "SimpleIngestor: %s 规约结果为结构化产物，跳过预切分", payload.modality
+                )
+                pieces = [content]
+            else:
+                pieces = self._split(content)
             total = len(pieces)
             # t_event 从完整 content 抽取（首个绝对日期，无则 None），所有分片继承同一份：
             # 切分不改变事件时间，且与查询侧共用 common.time_utils 的同一份规则——否则
@@ -97,7 +119,7 @@ class SimpleIngestor(Ingestor):
         return units
 
     def _split(self, content: str) -> list[str]:
-        """按段落边界聚合为 ≤ max_unit_chars 的片段。
+        """按段落边界聚合为 ≤ max_unit_chars 的片段（结构化产物模态不调用）。
 
         段落聚合路径无损可逆：``"\n\n".join(pieces)`` 严格还原原文（含首部
         空段落与冲刷边界上的空段落分隔符）；单段超长时硬切兜底，硬切点拼接会

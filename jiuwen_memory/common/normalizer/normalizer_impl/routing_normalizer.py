@@ -39,6 +39,21 @@ class RoutingNormalizer(Normalizer):
         supported.update(self._routes)
         return sorted(supported, key=lambda item: item.value)
 
+    def structured_modalities(self) -> frozenset[Modality]:
+        # 与 normalize() 的分派一致：显式 route 的模态看该 delegate 的声明，
+        # 其余模态看 fallback 的声明。
+        routed = {
+            modality
+            for modality, normalizer in self._routes.items()
+            if modality in normalizer.structured_modalities()
+        }
+        inherited = {
+            modality
+            for modality in self._fallback.structured_modalities()
+            if modality not in self._routes
+        }
+        return frozenset(routed | inherited)
+
     @staticmethod
     def plugin_type() -> PluginType:
         return PluginType.NORMALIZER
