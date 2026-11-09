@@ -942,8 +942,7 @@ def test_extractor_english_max_date_returns_empty_window(text: str) -> None:
 
 @pytest.mark.unit
 def test_extractor_relative_overflow_falls_through_to_later_rules() -> None:
-    """相对时间溢出后继续尝试后续相对规则（与 time_parse 语义对齐）：
-    「最近1000000000天，今天」应取今天窗而非空窗。"""
+    """相对时间溢出后继续后续相对规则（「最近1000000000天，今天」应取今天窗）。"""
     now = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
     extractor = SchemaTimeExtractor(now=lambda: now)
 
