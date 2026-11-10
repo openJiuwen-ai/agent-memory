@@ -19,6 +19,7 @@ from jiuwen_memory.common.type_def.scope import Scope
 
 _DIMS = ("org", "space", "user", "agent", "session")
 _DENIED = "local media is outside the configured import scope"
+_VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpeg", ".mpg"})
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,20 @@ class LocalMediaImports:
 
     def stage(self, uri: str, scope: Scope, run_root: Path) -> Path:
         """Copy an admitted, safely opened file; downstream tools never reopen the input path."""
+        with self._open_admitted(uri, scope) as (path, source):
+            return _stage_copy(source, run_root, path.name)
+
+    def preflight_video(self, uri: str, scope: Scope) -> str:
+        """Validate an SDK video submission before enqueueing and return its canonical URI."""
+        with self._open_admitted(uri, scope, reject_links=True) as (path, _):
+            if path.suffix.lower() not in _VIDEO_SUFFIXES:
+                raise ValidationError("unsupported local video file extension")
+            return path.as_uri()
+
+    @contextmanager
+    def _open_admitted(
+        self, uri: str, scope: Scope, *, reject_links: bool = False,
+    ) -> Iterator[tuple[Path, BinaryIO]]:
         roots = self._roots.get(tuple(getattr(scope, dim) for dim in _DIMS), ())
         if not roots:
             raise PermissionDeniedError(_DENIED)
@@ -85,10 +100,12 @@ class LocalMediaImports:
             root = next((root for root in roots if resolved.is_relative_to(root.path)), None)
             if root is None or resolved == root.path:
                 raise PermissionDeniedError(_DENIED)
+            if reject_links and resolved != path:
+                raise PermissionDeniedError(_DENIED)
             with _open_local_file(resolved, root) as source:
                 if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
                     raise PermissionDeniedError(_DENIED)
-                return _stage_copy(source, run_root, resolved.name)
+                yield resolved, source
         except (OSError, ValueError, RuntimeError):
             # Do not reveal whether a non-admitted server path exists or how it is laid out.
             raise PermissionDeniedError(_DENIED) from None

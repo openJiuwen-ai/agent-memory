@@ -39,6 +39,10 @@ logger = get_logger(__name__)
 
 _JOB_KEY_PREFIX = "/ingest/jobs/"
 _PAYLOAD_KEY_PREFIX = "/ingest/payloads/"
+# Several SDK runtimes can share a job store inside one process. Serialize
+# admissions and distinguish a live job in another runtime from a restart.
+_ADMISSION_LOCK = RLock()
+_ACTIVE_JOB_OWNERS: dict[str, InProcessIngestJobController] = {}
 
 
 @dataclass(frozen=True)
@@ -103,7 +107,7 @@ class InProcessIngestJobController(IngestJobController):
             updated_at=now,
         )
         previous_job_id: str | None = None
-        with self._lock:
+        with self._lock, _ADMISSION_LOCK:
             if self._closed:
                 raise BackendError("ingest job controller is closed")
             existing = self._find_existing(scope, payload_id, key)
@@ -122,7 +126,7 @@ class InProcessIngestJobController(IngestJobController):
                 if existing.retry_requires_reconciliation:
                     raise ConflictError(
                         "ingest_payload", payload_id,
-                        "previous ingest may have written data; "
+                        f"previous ingest job {existing.id} may have written data; "
                         "reconcile before using a new payload_id",
                     )
                 # A failed submission is retryable. Let the caller correct an
@@ -158,6 +162,7 @@ class InProcessIngestJobController(IngestJobController):
                 self._update(job.id, status="failed", error=str(exc))
                 raise BackendError(f"failed to submit ingest job: {exc}") from exc
             self._futures[job.id] = future
+            _ACTIVE_JOB_OWNERS[job.id] = self
             future.add_done_callback(lambda completed: self._finished(job.id, completed))
         return IngestSubmission(job, reused=False)
 
@@ -188,6 +193,8 @@ class InProcessIngestJobController(IngestJobController):
             self._futures.pop(job_id, None)
             self._cancellations.pop(job_id, None)
             self._capacity.release()
+            with _ADMISSION_LOCK:
+                _ACTIVE_JOB_OWNERS.pop(job_id, None)
         if failure is not None:
             logger.error("Ingest worker failed: job_id=%s", job_id,
                          exc_info=(type(failure), failure, failure.__traceback__))
@@ -200,6 +207,19 @@ class InProcessIngestJobController(IngestJobController):
         return job
 
     def cancel(self, job_id: str, *, scope: Scope) -> None:
+        job = self.status(job_id, scope=scope)
+        if job.status not in {"pending", "running"} or job.cancel_requested:
+            return
+        with _ADMISSION_LOCK:
+            owner = _ACTIVE_JOB_OWNERS.get(job_id)
+        if owner is not None:
+            # Release the registry lock before taking another controller's lock.
+            owner.cancel_owned(job_id, scope)
+        elif self.status(job_id, scope=scope).status in {"pending", "running"}:
+            raise BackendError("ingest job has no active execution")
+
+    def cancel_owned(self, job_id: str, scope: Scope) -> None:
+        """Cancel an ingest job on the controller that owns its execution."""
         with self._lock:
             job = self.status(job_id, scope=scope)
             if job.status not in {"pending", "running"} or job.cancel_requested:
@@ -239,15 +259,15 @@ class InProcessIngestJobController(IngestJobController):
         key: _PayloadKey,
     ) -> IngestJob | None:
         job_id = self._job_id_by_payload.get(key)
-        existing = self._jobs.get(job_id or "")
-        if existing is None and self._kv is not None:
-            mapping_key = _payload_storage_key(payload_id)
-            if self._kv.exists(scope, mapping_key):
-                job_id = self._kv.get(scope, mapping_key).decode("utf-8")
-                existing = self._load(scope, job_id)
+        mapping_key = _payload_storage_key(payload_id)
+        if self._kv is not None and self._kv.exists(scope, mapping_key):
+            job_id = self._kv.get(scope, mapping_key).decode("utf-8")
+        existing = (self._jobs.get(job_id) or self._load(scope, job_id)) if job_id else None
         if existing is not None:
             if existing.scope != scope:
                 return None
+            if existing.id not in self._jobs and existing.id in _ACTIVE_JOB_OWNERS:
+                return existing  # Read fresh status from the shared store on the next call.
             if existing.id not in self._jobs:
                 # This is the authorized submit path, unlike the read-only status path.
                 self._persist(existing)
@@ -345,10 +365,13 @@ class InProcessIngestJobController(IngestJobController):
             self._kv.insert(job.scope, payload_key, payload_value)
 
     def _load(self, scope: Scope, job_id: str) -> IngestJob | None:
-        if self._kv is None or not self._kv.exists(scope, _job_storage_key(job_id)):
-            return None
+        with _ADMISSION_LOCK:
+            if self._kv is None or not self._kv.exists(scope, _job_storage_key(job_id)):
+                return None
+            raw = self._kv.get(scope, _job_storage_key(job_id))
+            active = job_id in _ACTIVE_JOB_OWNERS
         try:
-            data = json.loads(self._kv.get(scope, _job_storage_key(job_id)).decode("utf-8"))
+            data = json.loads(raw.decode("utf-8"))
             job = IngestJob(
                 id=str(data["id"]),
                 payload_id=str(data["payload_id"]),
@@ -367,7 +390,7 @@ class InProcessIngestJobController(IngestJobController):
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise BackendError(f"invalid persisted ingest job {job_id!r}") from exc
-        if job.status in {"pending", "running"}:
+        if job.status in {"pending", "running"} and not active:
             job = replace(
                 job,
                 status="failed",

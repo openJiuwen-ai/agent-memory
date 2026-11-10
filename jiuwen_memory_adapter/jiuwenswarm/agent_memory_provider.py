@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -60,11 +61,14 @@ except ImportError:
 
 from jiuwen_memory.api import (
     Channel,
+    ConflictError,
     Context,
     DisclosureLevel,
     EvolveMode,
+    LocalMediaImports,
     Modality,
     RequestSecurityContext,
+    ValidationError,
     assemble_runtime,
     install_privacy_filter,
     metadata_for_log,
@@ -84,6 +88,29 @@ install_privacy_filter(logger)
 # --------------------------------------------------------------------------- #
 # 工具 schema（OpenAI 风格，Rail 据此自动包 ToolCard，见 §4.8）
 # --------------------------------------------------------------------------- #
+
+VIDEO_SUBMIT_SCHEMA: dict[str, Any] = {
+    "name": "agent_memory_video_submit",
+    "description": (
+        "Submit a local video file URI to the memory engine for analysis and storage. "
+        "Returns a job ID. Use agent_memory_video_status to check completion."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"uri": {"type": "string", "description": "Local file:/// video URI"}},
+        "required": ["uri"],
+    },
+}
+
+VIDEO_STATUS_SCHEMA: dict[str, Any] = {
+    "name": "agent_memory_video_status",
+    "description": "Check a submitted video memory job and return its resulting memory IDs.",
+    "parameters": {
+        "type": "object",
+        "properties": {"job_id": {"type": "string"}},
+        "required": ["job_id"],
+    },
+}
 
 PROFILE_SCHEMA: dict[str, Any] = {
     "name": "agent_memory_profile",
@@ -394,7 +421,7 @@ def _agent_default_config() -> dict[str, Any]:
         # ---- 摄取 ---------------------------------------------------------- #
         "ingestor": {"default": {"target": "simple", "params": {"normalizer": "default"}}},
         # ---- 控制 ---------------------------------------------------------- #
-        # agent 场景（F09）：多空间无硬限制、纯文本模态。params 必须带全套具名引用——
+        # agent 场景（F09）：多空间无硬限制，默认文本模态。params 必须带全套具名引用——
         # 裸 target 会顶掉内置 engine.default.params，dep 全走匿名缺省一路劣化
         "engine": {"default": {"target": "agent", "params": {
             "ingestor": "default", "index_builder": "default", "retriever": "default",
@@ -624,6 +651,16 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     # -- MemoryProvider: 工具声明 + 调度 -------------------------------------- #
 
+    def _video_tools_enabled(self) -> bool:
+        if self._base_url:
+            return False
+        normalizer = (self._config_dict or {}).get("normalizer", {}).get("default", {})
+        return (
+            isinstance(normalizer, dict)
+            and normalizer.get("target") == "routing"
+            and "video" in normalizer.get("params", {}).get("routes", {})
+        )
+
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """返回 OpenAI 风格 schema；Rail 自动包成 ToolCard（§4.8）。
 
@@ -633,6 +670,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         重新注册时直接加回列表即可）。
         """
         schemas = [SEARCH_SCHEMA, CONCLUDE_SCHEMA, READ_MD_SCHEMA, EDIT_MD_SCHEMA]
+        if self._video_tools_enabled():
+            schemas.extend((VIDEO_SUBMIT_SCHEMA, VIDEO_STATUS_SCHEMA))
         logger.info(
             "[AgentMemoryMemoryProvider] get_tool_schemas CALLED -> returning %d schemas: %s",
             len(schemas),
@@ -656,6 +695,24 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         scope = self.bound_scope()
 
         try:
+            if tool_name in ("agent_memory_video_submit", "agent_memory_video_status"):
+                if not (
+                    self._video_tools_enabled() and isinstance(self._client, _InProcessClient)
+                ):
+                    return json.dumps({"error": "Video memory tools are disabled"})
+                if tool_name == "agent_memory_video_submit":
+                    uri = args.get("uri")
+                    if not isinstance(uri, str) or not uri.startswith("file:///"):
+                        return json.dumps({"error": "A local file:/// video URI is required"})
+                    project = str(args.get("project") or "").strip()
+                    result = await self._client.submit_video(uri, scope, project=project)
+                else:
+                    job_id = args.get("job_id")
+                    if not isinstance(job_id, str) or not job_id.strip():
+                        return json.dumps({"error": "An ingest job ID is required"})
+                    result = await self._client.video_status(job_id.strip(), scope)
+                return json.dumps(result, ensure_ascii=False)
+
             # -- 未注册工具（不在 get_tool_schemas，LLM 不可见；实现保留供内部直调）-- #
 
             if tool_name == "agent_memory_profile":
@@ -1004,7 +1061,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         # [本地修改 2026-10-17] 显式路由规则：新增→conclude（append-only），
         # 修改/更正→read_md_file 定位 + edit_md_file 原地替换。个人信息可能在
         # USER.md 也可能在 daily 文件（YYYY-MM-DD.md），修改前先读定位。
-        return (
+        prompt = (
             "# AgentMemory Memory\n"
             f"Active. User: {self._user_id}.\n"
             "Tool routing: agent_memory_search finds memories by meaning. "
@@ -1014,6 +1071,13 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             "personal info may be in a daily file), then agent_memory_edit_md_file to "
             "replace it in place."
         )
+        if self._video_tools_enabled():
+            prompt += (
+                "\nWhen the user asks to remember a video by local file URI, "
+                "use agent_memory_video_submit with that URI. "
+                "Use agent_memory_video_status to check the resulting job."
+            )
+        return prompt
 
     async def shutdown(self) -> None:
         if self._client is not None:
@@ -1688,6 +1752,17 @@ class _InProcessClient(_AgentMemoryClient):
                 _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
             )
             config = data
+        normalizers = (config or {}).get("normalizer", {})
+        default = normalizers.get("default", {})
+        route = None
+        if isinstance(default, dict) and default.get("target") == "routing":
+            route = default.get("params", {}).get("routes", {}).get("video")
+        if isinstance(route, str):
+            route = normalizers.get(route)
+        bindings = (
+            route.get("params", {}).get("local_media_roots") if isinstance(route, dict) else None
+        )
+        self._video_imports = LocalMediaImports(bindings)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
@@ -1697,6 +1772,64 @@ class _InProcessClient(_AgentMemoryClient):
     def _security(self) -> RequestSecurityContext:
         """本次调用的可信上下文：由注入的 provider 产出，业务 scope 只作 target。"""
         return self._security_provider()
+
+    async def submit_video(self, uri: str, scope: _Scope, *, project: str) -> dict[str, Any]:
+        return await asyncio.to_thread(self._submit_video, uri, self._to_api_scope(scope), project)
+
+    def _submit_video(self, uri: str, scope: ApiScope, project: str) -> dict[str, Any]:
+        security = self._security()
+        metadata = {"infer": True, "pipeline": "video", "project": project}
+        self._api.check_write(scope, security, system_metadata=metadata)
+        uri = self._video_imports.preflight_video(uri, scope)
+        identity = json.dumps(["video", project, uri], ensure_ascii=False)
+        payload_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        try:
+            submission = self._api.submit_ingest(
+                uri,
+                scope,
+                Modality.VIDEO,
+                security=security,
+                payload_id=payload_id,
+                source_ref=payload_id,
+                system_metadata={**metadata, "payload_id": payload_id},
+            )
+        except ConflictError as exc:
+            if exc.entity != "ingest_payload":
+                raise
+            return {
+                "error": (
+                    f"{exc}. Use agent_memory_video_status to check the previous job and "
+                    "reconcile any written units before submitting the video under a new file URI."
+                ),
+                "code": "video_ingest_conflict",
+            }
+        return {
+            "job_id": submission.job.id,
+            "status": submission.job.status,
+            "reused": submission.reused,
+        }
+
+    async def video_status(self, job_id: str, scope: _Scope) -> dict[str, Any]:
+        job = await asyncio.to_thread(
+            self._api.job_status,
+            job_id,
+            scope=self._to_api_scope(scope),
+            security=self._security(),
+        )
+        if job.mode != "ingest":
+            raise ValidationError("An ingest job ID is required")
+        result = {
+            "job_id": job.id,
+            "status": job.status.value,
+            "unit_ids": [uid for uid in job.detail.get("unit_ids", "").split(",") if uid],
+        }
+        if job.detail.get("error"):
+            result["error"] = "Video ingestion failed. Check the memory service logs."
+        if job.detail.get("partial_write") == "true":
+            result["partial_write"] = True
+        if job.detail.get("retry_requires_reconciliation") == "true":
+            result["retry_requires_reconciliation"] = True
+        return result
 
     async def initialize(self) -> None:
         # 内核已在 __init__ 装配完成；无网络资源要建。文档模式（watch_document=true）
@@ -1876,15 +2009,15 @@ class _InProcessClient(_AgentMemoryClient):
 
     async def close(self) -> None:
         # 停看门狗/释放 shadow sqlite（文档模式），幂等；runtime.close 是同步方法。
-        if self._runtime is not None:
+        runtime, self._runtime = self._runtime, None
+        if runtime is not None:
             try:
-                self._runtime.close()
+                await asyncio.to_thread(runtime.close)
             except Exception as exc:
                 logger.warning(
                     "[AgentMemoryMemoryProvider/in-process] runtime close failed: %s",
                     exc,
                 )
-            self._runtime = None
 
 
 def _load_yaml(path):

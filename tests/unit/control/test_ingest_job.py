@@ -7,6 +7,7 @@ import pytest
 
 from jiuwen_memory.common.errors import BackendError, ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import MemoryUnit, Modality, Scope, Segment
+from jiuwen_memory.control.ingest_job import check_ingest_cancelled
 from jiuwen_memory.control.job_impl.ingest_job import InProcessIngestJobController
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
@@ -222,4 +223,100 @@ def test_ingest_job_status_does_not_populate_idempotency_cache() -> None:
         assert not vars(reader).get("_jobs")
         assert not vars(reader).get("_job_id_by_payload")
     finally:
+        reader.close()
+
+
+def test_second_controller_reuses_a_live_job_from_the_shared_store() -> None:
+    scope = Scope(org="tnt", user="alice")
+    kv = InMemoryKVStore()
+    writer = InProcessIngestJobController(kv=kv)
+    reader = InProcessIngestJobController(kv=kv)
+    started = Event()
+    release = Event()
+
+    def task():
+        started.set()
+        assert release.wait(5)
+        return []
+
+    def duplicate_task():
+        pytest.fail("a live ingest job must not be submitted twice")
+
+    kwargs = {"payload_id": "video-001", "source_ref": "file:///a.mp4", "scope": scope}
+    try:
+        submission = writer.submit(**kwargs, task=task)
+        assert started.wait(2)
+        assert reader.status(submission.job.id, scope=scope).status == "running"
+        duplicate = reader.submit(**kwargs, task=duplicate_task)
+        assert duplicate.reused
+        assert duplicate.job.id == submission.job.id
+        assert duplicate.job.status == "running"
+        release.set()
+        writer.close()
+        assert reader.status(submission.job.id, scope=scope).status == "succeeded"
+    finally:
+        release.set()
+        writer.close()
+        reader.close()
+
+
+def test_old_controller_reuses_the_successful_retry_in_the_shared_store() -> None:
+    scope = Scope(org="tnt", user="alice")
+    kv = InMemoryKVStore()
+    writer = InProcessIngestJobController(kv=kv)
+    retry = InProcessIngestJobController(kv=kv)
+
+    def fail():
+        raise ValueError("retryable")
+
+    kwargs = {"payload_id": "video-001", "source_ref": "file:///a.mp4", "scope": scope}
+    try:
+        first = writer.submit(**kwargs, task=fail)
+        deadline = time.monotonic() + 2
+        while writer.status(first.job.id, scope=scope).status != "failed":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        second = retry.submit(**kwargs, task=lambda: [])
+        assert second.job.id != first.job.id
+        retry.close()
+        repeated = writer.submit(**kwargs, task=fail)
+        assert repeated.reused
+        assert repeated.job.id == second.job.id
+        assert repeated.job.status == "succeeded"
+    finally:
+        writer.close()
+        retry.close()
+
+
+def test_second_controller_cancels_a_live_job_in_the_shared_store() -> None:
+    scope = Scope(org="tnt", user="alice")
+    kv = InMemoryKVStore()
+    writer = InProcessIngestJobController(kv=kv)
+    reader = InProcessIngestJobController(kv=kv)
+    started = Event()
+    release = Event()
+
+    def task():
+        started.set()
+        assert release.wait(5)
+        check_ingest_cancelled()
+        pytest.fail("a cancelled job must stop before writing")
+
+    try:
+        submission = writer.submit(
+            payload_id="video-001", source_ref="file:///a.mp4", scope=scope, task=task,
+        )
+        job_id = submission.job.id
+        assert started.wait(2)
+        with pytest.raises(NotFoundError):
+            reader.cancel(job_id, scope=Scope(org="tnt", user="bob"))
+        assert reader.status(job_id, scope=scope).status == "running"
+        reader.cancel(job_id, scope=scope)
+        assert writer.status(job_id, scope=scope).cancel_requested
+        release.set()
+        writer.close()
+        assert reader.status(job_id, scope=scope).status == "cancelled"
+    finally:
+        release.set()
+        writer.close()
         reader.close()

@@ -154,3 +154,24 @@ DomainStore 读取」对 CloudEngine 已确立的范式），且会复制 Domain
    InMemoryEngine/CloudEngine 文档模式下受影响，本次不修。
 4. **非文档模式 lifecycle 未变**：非文档模式（KV 即真源）维持 `lifecycle.supersede/transition`
    直调——KV 持有 MemoryUnit，lifecycle 数据源与真源一致，无断点。本次绕过仅文档模式触发。
+
+## Swarm SDK 文档模式的视频写入
+
+Swarm 的 `JiuwenMemoryRail` 通过 Provider 的 schema 注册视频提交和状态查询工具。
+工具仅在 SDK 内联配置的 `normalizer.default` 显式配置 `routing` 的 `video` 路由时启用。
+Provider 使用已绑定的 Scope 和可信身份提交原生摄入任务，`AgentEngine` 把 URI 填入视频
+`RawPayload.uri`，并将 `pipeline=video` 交给配置的 metadata pipeline 选择视频 Evolver。
+部署时为视频路由配置 Scope 精确匹配的 `local_media_roots` 和实际的 ASR、文本模型、视觉模型，
+为视频 profile 配置 `video_memory` 抽取器、独立的 `message_store` 和 `dedup_extract: false`，
+保留片段与事件的引用关系，并保留默认文本 profile 的 `classifier: default`。两条流水线
+共用文档 IndexBuilder，视频片段和事件的文本描述及
+元数据分别进入 Markdown 和影子索引，显式 `agent_memory_search` 可检索视频记忆。
+
+视频工具在入队前先做写入鉴权，再以同一套目录策略验证本地 URI 和扩展名，后台读取仍独立校验。
+同一 Scope、项目和规范化 URI 重复提交时沿用原生摄入任务的重试与去重规则。原地替换文件后，
+使用不同 URI 发起新导入。若旧作业可能部分写入，先核对旧作业及其产物。状态工具以 MemoryUnit ID
+回报写入结果。
+SDK 宿主可能重建 Provider。把 `ingest_job.default.params.kv_store` 指向独立的 SQLite KV
+可以在重建后查询任务状态。共享该任务库的同进程 SDK 实例会识别仍在执行的任务，避免误判
+中断并重复提交。取消请求由持有执行句柄的同进程控制器执行。该配置仅持久化作业元数据，
+任务仍由原进程执行。

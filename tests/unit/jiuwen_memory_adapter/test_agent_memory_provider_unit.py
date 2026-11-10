@@ -26,8 +26,9 @@ from pathlib import Path
 
 import pytest
 
+from jiuwen_memory.api import ConflictError, Modality, Surface
 from jiuwen_memory.api import Scope as ApiScope
-from jiuwen_memory.api import Surface
+from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
 from jiuwen_memory.common.security import new_request_context
 from jiuwen_memory.common.security.types import AuthContext, Role
 
@@ -229,6 +230,123 @@ class TestAvailability:
 
 
 class TestSdkMode:
+    def test_video_tool_writes_document_units(self, tmp_path, monkeypatch):
+        media = tmp_path / "imports"
+        media.mkdir()
+        video = media / "corgi.mp4"
+        video.write_bytes(b"fixture")
+        uri = video.as_uri()
+        outside = tmp_path / "outside.mp4"
+        outside.write_bytes(b"fixture")
+        other_format = media / "notes.txt"
+        other_format.write_text("fixture", encoding="utf-8")
+
+        def normalize(_self, payload):
+            assert payload.uri == uri
+            assert payload.data == b""
+            assert payload.modality == Modality.VIDEO
+            assert payload.id == payload.system_metadata["payload_id"]
+            return json.dumps({
+                "payload_id": payload.id,
+                "clips": [{"id": "clip-1", "visual_summary": "A corgi chases a ball",
+                           "start_seconds": 0, "end_seconds": 3}],
+                "events": [{"id": "event-1", "summary": "The corgi plays fetch",
+                            "clip_ids": ["clip-1"], "start_seconds": 0, "end_seconds": 3}],
+            })
+
+        monkeypatch.setattr(VideoNormalizer, "normalize", normalize)
+        config = {
+            "normalizer": {"default": {"target": "routing", "params": {
+                "routes": {"video": {"target": "video", "params": {
+                    "asr_port": "video", "llm_port": "default", "vlm_port": "default",
+                    "local_media_roots": [{
+                        "scope": {"org": "tenant", "user": "user", "agent": "jiuwenswarm"},
+                        "root": str(media),
+                    }],
+                }}},
+            }}},
+            "asr": {"video": {"target": "dashscope_filetrans", "params": {
+                "asr_model": "offline",
+                "asr_base_url": "https://example.invalid",
+                "asr_api_key": "test",
+            }}},
+            "extractor": {"video": "video_memory"},
+            "evolver": {"video": {"target": "orchestrating", "params": {
+                "extractor": "video", "index_builder": "default", "layer_annotator": None,
+                "dedup_extract": False,
+            }}},
+            "pipeline": {"default": {"target": "metadata", "params": {
+                "route_key": "pipeline", "routes": {"video": "video"},
+                "profiles": {
+                    "default": {"index_builder": "default", "retriever": "default",
+                                "evolver": "default", "classifier": "default"},
+                    "video": {
+                        "index_builder": "default", "retriever": "default", "evolver": "video",
+                    },
+                },
+            }}},
+        }
+
+        async def run():
+            provider = AgentMemoryMemoryProvider(
+                config_dict=config,
+                security_provider=_security_provider(ApiScope(org="tenant", user="user")),
+            )
+            assert "agent_memory_video_submit" in {s["name"] for s in provider.get_tool_schemas()}
+            await provider.initialize(user_id="user", scope_id="tenant", session_id="")
+            try:
+                for invalid_uri, reason in (
+                    (outside.as_uri(), "outside the configured import scope"),
+                    (media.as_uri() + "/%2e%2e/outside.mp4", "outside the configured import scope"),
+                    (other_format.as_uri(), "unsupported local video file extension"),
+                ):
+                    denied = json.loads(await provider.handle_tool_call(
+                        "agent_memory_video_submit", {"uri": invalid_uri},
+                    ))
+                    assert reason in denied["error"] and "job_id" not in denied
+                submission = json.loads(await provider.handle_tool_call(
+                    "agent_memory_video_submit", {"uri": uri},
+                ))
+                job_id = submission["job_id"]
+                repeated = json.loads(await provider.handle_tool_call(
+                    "agent_memory_video_submit", {"uri": uri},
+                ))
+                assert repeated["job_id"] == job_id and repeated["reused"]
+                async with asyncio.timeout(10):
+                    while True:
+                        status = json.loads(await provider.handle_tool_call(
+                            "agent_memory_video_status", {"job_id": job_id},
+                        ))
+                        if status["status"] not in {"pending", "running"}:
+                            break
+                        await asyncio.sleep(0.02)
+                assert status["status"] == "succeeded", status
+                assert len(status["unit_ids"]) == 2
+                document = json.loads(await provider.handle_tool_call(
+                    "agent_memory_read_md_file", {"md_filename": "MEMORY.md"},
+                ))
+                assert {block["item_id"] for block in document["blocks"]} == set(status["unit_ids"])
+                markdown = next(tmp_path.rglob("MEMORY.md")).read_text(encoding="utf-8")
+                assert "A corgi chases a ball" in markdown
+
+                def conflict(*_args, **_kwargs):
+                    raise ConflictError(
+                        "ingest_payload", "fixture", f"previous ingest job {job_id}",
+                    )
+
+                monkeypatch.setattr(provider._client._api, "submit_ingest", conflict)
+                blocked = json.loads(await provider.handle_tool_call(
+                    "agent_memory_video_submit", {"uri": uri},
+                ))
+                assert blocked["code"] == "video_ingest_conflict"
+                assert job_id in blocked["error"] and "reconcile" in blocked["error"]
+                assert "agent_memory_video_status" in blocked["error"]
+                assert "new file URI" in blocked["error"]
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(run())
+
     def test_conclude_then_search_tool_roundtrip(self):
         async def _run() -> None:
             provider = AgentMemoryMemoryProvider(
