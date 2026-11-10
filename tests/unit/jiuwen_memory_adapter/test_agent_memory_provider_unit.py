@@ -27,7 +27,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from jiuwen_memory.api import ConflictError, Modality, Surface
+from jiuwen_memory.api import (
+    ConflictError,
+    Modality,
+    Surface,
+    build_dev_authenticator,
+    internal_context,
+)
 from jiuwen_memory.api import Scope as ApiScope
 from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
 from jiuwen_memory.common.security import new_request_context
@@ -43,9 +49,63 @@ if _ADAPTER_DIR.is_dir() and str(_ADAPTER_DIR) not in sys.path:
 
 # ruff: noqa: E402
 # pylint: disable=wrong-import-order  # 顶层模块须晚于 sys.path.append，无法按 first/third-party 排序
-from agent_memory_provider import AgentMemoryMemoryProvider, _HttpClient, _recall_filters
+from agent_memory_provider import (
+    AgentMemoryMemoryProvider,
+    _HttpClient,
+    _InProcessClient,
+    _recall_filters,
+)
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("extension", ["json", "yaml"])
+def test_sdk_config_path_preserves_literal_prompt(tmp_path, monkeypatch, extension):
+    monkeypatch.delenv("PORTAL_TEST_PLACEHOLDER", raising=False)
+    prompt = "literal ${PORTAL_TEST_PLACEHOLDER}"
+    path = tmp_path / f"config.{extension}"
+    # JSON syntax is accepted by YAML as well.
+    path.write_text(json.dumps({"prompts": {"extract": {"fact": prompt}}}), encoding="utf-8")
+    client = _InProcessClient(
+        str(path),
+        security_provider=_security_provider(ApiScope(org="local", user="developer")),
+    )
+    try:
+        assert client.runtime._kernel.config_source.fetch("prompts.extract.fact") == prompt
+    finally:
+        asyncio.run(client.close())
+
+
+def test_sdk_kv_configuration_uses_only_the_loaded_config_file(tmp_path):
+    config = {"llm": {"default": {"target": "echo", "params": {"llm_model": "before"}}}}
+    path = tmp_path / "memory.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    auth = build_dev_authenticator()
+
+    def security():
+        return internal_context(auth)
+
+    client = _InProcessClient(str(path), security_provider=security)
+    try:
+        result = client.runtime.configuration.save(
+            0, {"llm.default.params.llm_model": "after"}, security=security(),
+        )
+        assert result == {"version": 1, "applied": True}
+    finally:
+        asyncio.run(client.close())
+
+    restarted = _InProcessClient(str(path), security_provider=security)
+    try:
+        assert restarted.runtime._kernel.config_source.fetch("llm.model") == "after"
+    finally:
+        asyncio.run(restarted.close())
+
+    from_dict = _InProcessClient(str(path), config_dict=config, security_provider=security)
+    try:
+        assert from_dict.runtime.configuration is None
+        assert from_dict.runtime._kernel.config_source.fetch("llm.model") == "before"
+    finally:
+        asyncio.run(from_dict.close())
 
 
 def _security_provider(actor: ApiScope, *, role: Role = Role.USER):
@@ -341,12 +401,18 @@ class TestSdkMode:
             )
             enabled = configuration not in {"no-pipeline", "wrong-evolver"}
             schemas = {s["name"]: s for s in provider.get_tool_schemas()}
+            runtime = provider.runtime
+            assert runtime is not None
             assert ("agent_memory_video_submit" in schemas) is enabled
             assert ("agent_memory_video_status" in schemas) is enabled
             early = await provider.handle_tool_call("agent_memory_video_submit", {"uri": uri})
             assert json.loads(early) == {"error": "provider not initialized"}
             await provider.initialize(user_id="user", scope_id="tenant", session_id="")
             try:
+                assert provider.runtime is runtime
+                if config_path:
+                    assert runtime.configuration is not None
+                    assert (tmp_path / "file-memory" / "memory/.shadow/portal-config.db").is_file()
                 if not enabled:
                     denied = json.loads(await provider.handle_tool_call(
                         "agent_memory_video_submit", {"uri": uri},
@@ -433,10 +499,39 @@ class TestSdkMode:
                 assert result["result"] == "Fact stored."
                 assert result["item_id"]
 
+                client = provider._client
+                assert provider.runtime is client._runtime
+                assert provider.runtime.api is client._api
+                scope = client._to_api_scope(provider.bound_scope())
+                listed = await asyncio.to_thread(
+                    client._api.list,
+                    scope,
+                    security=client._security(),
+                    filters={"system_metadata.source_app": "jiuwenswarm"},
+                )
+                assert any(
+                    unit.system_metadata.get("agent_label") == "jiuwenswarm"
+                    and "深色主题" in unit.content
+                    for unit in listed.items
+                ), "conclude 应写入可按来源筛选的派生记忆"
+
                 result = json.loads(
                     await provider.handle_tool_call("agent_memory_search", {"query": "深色主题"})
                 )
                 assert any("深色主题" in item["memory"] for item in result["results"]), result
+                from jiuwen_memory.api import Context
+
+                personal_page = await asyncio.to_thread(
+                    client._api.list, security=client._security(),
+                    extensions={"personal": {"source": "jiuwenswarm"}},
+                )
+                assert any("深色主题" in unit.content for unit in personal_page.items)
+                context = Context(extensions={"personal": {}})
+                personal_hits = await asyncio.to_thread(
+                    client._api.search, "深色主题", context, security=client._security(),
+                )
+                assert any("深色主题" in hit.item.content for hit in personal_hits.items)
+                assert all(hit.scope == scope for hit in personal_hits.items)
             finally:
                 await provider.shutdown()
 
@@ -515,3 +610,272 @@ class TestMergeConfigOverDefault:
         assert first is not second, "每次返回全新字面量"
         assert first["globals"] == {"a": 1, "b": 2}, "首次合并结果"
         assert second["globals"] == {"a": 1, "c": 3}, "无跨调用可变状态污染"
+
+
+def test_source_metadata_added_to_each_provider_write_path(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    import agent_memory_provider as provider_module
+
+    async def run():
+        provider = AgentMemoryMemoryProvider(agent_id="writer-agent", portal={"enabled": False})
+        client = SimpleNamespace(
+            initialize=AsyncMock(),
+            close=AsyncMock(),
+            is_unavailable=Mock(return_value=False),
+            add=AsyncMock(return_value=SimpleNamespace(item_id="unit")),
+        )
+        monkeypatch.setattr(provider_module, "_build_client", Mock(return_value=client))
+        await provider.initialize()
+        try:
+            await provider.handle_tool_call("agent_memory_conclude", {"conclusion": "first"})
+            await provider.handle_tool_call("agent_memory_procedural", {"content": "second"})
+            await provider.sync_turn("third", "fourth")
+            assert client.add.await_count == 3
+            for call in client.add.await_args_list:
+                metadata = call.kwargs["system_metadata"]
+                assert metadata["source_app"] == "jiuwenswarm"
+                assert metadata["agent_label"] == "writer-agent"
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+def test_sync_turn_writes_filterable_source_metadata():
+    async def run():
+        provider = AgentMemoryMemoryProvider(
+            agent_id="assistant-one",
+            security_provider=_security_provider(
+                ApiScope(org="tenant-sdk", user="source-test"), role=Role.ROOT
+            ),
+        )
+        await provider.initialize(user_id="source-test", scope_id="tenant-sdk")
+        try:
+            await provider.sync_turn("我的饮食偏好是素食", "我会记住。")
+            client = provider._client
+            result = await asyncio.to_thread(
+                client._api.list,
+                client._to_api_scope(provider.bound_scope()),
+                security=client._security(),
+                filters={"system_metadata.source_app": "jiuwenswarm"},
+            )
+            assert any(
+                unit.system_metadata.get("agent_label") == "assistant-one"
+                and "素食" in unit.content
+                for unit in result.items
+            )
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+def test_personal_memory_spans_agents_and_locates_hits():
+    from jiuwen_memory.api import Context
+
+    async def run():
+        provider = AgentMemoryMemoryProvider(
+            security_provider=_security_provider(
+                ApiScope(org="tenant-sdk", user="aggregate-user"), role=Role.ROOT
+            ),
+        )
+        await provider.initialize(user_id="aggregate-user", scope_id="tenant-sdk")
+        try:
+            client = provider._client
+            first = client._to_api_scope(provider.bound_scope())
+            second = ApiScope(org=first.org, user=first.user, agent="another-agent")
+            await client._api.add_async(
+                "海边旅行计划", first, security=client._security(),
+                system_metadata={"source_app": "first"},
+            )
+            await client._api.add_async(
+                "海边度假计划", second, security=client._security(),
+                system_metadata={"source_app": "second"},
+            )
+            extensions = {"personal": {}}
+            page = await asyncio.to_thread(
+                client._api.list, security=client._security(), extensions=extensions,
+            )
+            assert {unit.system_metadata.get("source_app") for unit in page.items} >= {
+                "first", "second"
+            }
+            result = await asyncio.to_thread(
+                client._api.search, "海边", Context(extensions=extensions),
+                security=client._security(),
+            )
+            assert {hit.scope.agent for hit in result.items} >= {first.agent, second.agent}
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+def test_personal_server_automatically_uses_existing_document_root(tmp_path):
+    import agent_memory_provider as provider_module
+
+    from jiuwen_memory_entry.core.profiles import load_config
+    from jiuwen_memory_entry.http_server.__main__ import HttpServer
+    from jiuwen_memory_entry.http_server.dev_security import build_dev_security_runtime
+
+    config = load_config([{"memory_api": provider_module._agent_default_config()}])
+    server = HttpServer.build_personal(
+        config,
+        llm_instances=["default"],
+        authorize=lambda security, operation: True,
+        security_runtime=build_dev_security_runtime(),
+    )
+    try:
+        assert server.portal_enabled
+        assert server._runtime.configuration is not None
+        assert (tmp_path / "memory" / ".shadow" / "portal-config.db").is_file()
+        result = server._runtime.configuration.save(
+            0, {"llm.default.params.llm_model": "persisted"}, security=object()
+        )
+        assert result["version"] == 1
+    finally:
+        server.close(wait=True)
+    restarted = HttpServer.build_personal(
+        config,
+        llm_instances=["default"],
+        authorize=lambda security, operation: True,
+        security_runtime=build_dev_security_runtime(),
+    )
+    try:
+        settings = restarted._runtime.configuration.read(security=object())
+        assert settings["version"] == 1
+        assert any(field["saved"] == "persisted" for field in settings["fields"])
+    finally:
+        restarted.close(wait=True)
+
+
+def test_discovered_personal_memory_filters_shared_scope_by_trusted_author():
+    from jiuwen_memory.api import Context
+
+    async def run():
+        actor = ApiScope(org="tenant-sdk", user="aggregate-user")
+        provider = AgentMemoryMemoryProvider(
+            security_provider=_security_provider(actor, role=Role.ROOT),
+        )
+        await provider.initialize(user_id="aggregate-user", scope_id="tenant-sdk")
+        try:
+            client = provider._client
+            own = ApiScope(org=actor.org, user=actor.user, agent="one")
+            second = ApiScope(org=actor.org, user=actor.user, agent="two")
+            shared = ApiScope(org=actor.org, agent="shared")
+            other = ApiScope(org=actor.org, user="another")
+            for scope, content in [(own, "个人记忆一"), (second, "个人记忆二"),
+                                   (shared, "共享范围我的记忆"), (other, "其他范围记忆")]:
+                await client._api.add_async(content, scope, security=client._security())
+            other_security = _security_provider(
+                ApiScope(org=actor.org, user="another"), role=Role.ROOT
+            )()
+            await client._api.add_async("共享范围他人记忆", shared, security=other_security)
+            extensions = {"personal": {}}
+            page = await asyncio.to_thread(
+                client._api.list, security=client._security(), extensions=extensions,
+            )
+            contents = [unit.content for unit in page.items]
+            assert any("个人记忆一" in item for item in contents)
+            assert any("个人记忆二" in item for item in contents)
+            assert any("共享范围我的记忆" in item for item in contents)
+            assert not any(
+                "其他范围记忆" in item or "共享范围他人记忆" in item for item in contents
+            )
+            result = await asyncio.to_thread(
+                client._api.search, "记忆", Context(extensions=extensions),
+                security=client._security(),
+            )
+            assert not any("共享范围他人记忆" in hit.item.content for hit in result.items)
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+def test_scope_discovery_rejects_untrusted_context_before_store_access():
+    from jiuwen_memory.api import PermissionDeniedError, RequestSecurityContext
+
+    async def run():
+        actor = ApiScope(org="tenant-sdk", user="source-test")
+        provider = AgentMemoryMemoryProvider(
+            security_provider=_security_provider(actor, role=Role.ROOT)
+        )
+        await provider.initialize(user_id="source-test", scope_id="tenant-sdk")
+        try:
+            client = provider._client
+            original = client._api._queries.candidate_scopes
+
+            def fail_if_accessed():
+                raise AssertionError("untrusted context reached storage")
+
+            client._api._queries.candidate_scopes = fail_if_accessed
+            try:
+                forged = RequestSecurityContext(auth=AuthContext(actor=actor))
+                with pytest.raises(PermissionDeniedError):
+                    await asyncio.to_thread(
+                        client._api.list, security=forged, extensions={"personal": {}},
+                    )
+            finally:
+                client._api._queries.candidate_scopes = original
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+def test_default_dev_server_auto_manages_existing_document_config(tmp_path, monkeypatch):
+    import agent_memory_provider as provider_module
+
+    from jiuwen_memory.api import Credentials
+    from jiuwen_memory.construction.prompt_registry import PromptRegistry
+    from jiuwen_memory_entry.core.dev_security import with_local_dev_security
+    from jiuwen_memory_entry.core.profiles import load_config
+    from jiuwen_memory_entry.http_server.__main__ import HttpServer
+
+    settings = provider_module._agent_default_config()
+    settings["extractor"] = {
+        "default": {"target": "dynamic_llm", "params": {"llm": "default", "fallback": "legacy"}},
+        "legacy": {"target": "keyword", "params": {"chunker": "default"}},
+    }
+    settings["prompts"] = {"extract": {"fact": "original"}}
+    config = with_local_dev_security(load_config([{"memory_api": settings}]))
+    server = HttpServer.build(config)
+    try:
+        assert server.portal_enabled
+        assert server._runtime.configuration is not None
+        assert (tmp_path / "memory" / ".shadow" / "portal-config.db").is_file()
+        security = server._runtime.authenticate(Credentials())
+        from jiuwen_memory.api import PermissionDeniedError, RequestSecurityContext
+
+        forged = RequestSecurityContext(auth=AuthContext(actor=security.auth.actor))
+        with pytest.raises(PermissionDeniedError):
+            server._runtime.configuration.save(
+                0, {"llm.default.params.llm_model": "forged"}, security=forged
+            )
+        settings = server.configuration.read(security=security)
+        fields = {field["key"]: field for field in settings["fields"]}
+        assert fields["llm.default.target"]["writable"]
+        assert "prompts.extract.fact" not in fields
+        source = server._runtime._runtime._kernel.config_source
+        assert PromptRegistry(config_source=source).get("extract", "fact") == "original"
+        result = server._runtime.configuration.save(
+            0, {"llm.default.params.llm_model": "changed"}, security=security
+        )
+        assert result["applied"]
+        assert PromptRegistry(config_source=source).get("extract", "fact") == "original"
+        from jiuwen_memory.common.errors import BackendError
+
+        def reject_unhealthy_audit():
+            raise BackendError("audit unavailable")
+
+        monkeypatch.setattr(server.api, "_ensure_audit_integrity_healthy", reject_unhealthy_audit)
+        with pytest.raises(BackendError):
+            server._runtime.configuration.save(
+                1, {"llm.default.params.llm_model": "must not save"}, security=security
+            )
+        assert server._runtime.configuration.read(security=security)["version"] == 1
+        assert PromptRegistry(config_source=source).get("extract", "fact") == "original"
+    finally:
+        server.close(wait=True)

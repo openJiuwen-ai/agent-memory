@@ -61,6 +61,7 @@ from jiuwen_memory.control import (
     SpaceStatus,
     SpaceUsage,
 )
+from jiuwen_memory.control.application.personal_memory import PersonalPage, PersonalSearchResult
 from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
 
 
@@ -209,8 +210,11 @@ class MemoryAPI(ABC):
         span_end: datetime | None = None,
         expand_depth: int = 1,
         rollup: bool = True,
-    ) -> RetrievalResult:
+    ) -> RetrievalResult | PersonalSearchResult:
         """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。
+
+        ``context.extensions["personal"]`` 为对象时启用个人检索，只接受可选来源，
+        根据认证身份确定范围，返回带真实 Scope 的命中。
 
         ``context.extensions`` 带 ``spaces`` 键时转为跨空间检索（F07「多空间读写」），
         取值为 ``list[str]``：**判据取键的有无，不取取值形态**——键不在即单空间检索，
@@ -241,10 +245,16 @@ class MemoryAPI(ABC):
         移除后不进入插件透传、权限路由或硬过滤；非法取值抛 ``ValidationError``。
         """
 
+    def check_configuration_access(
+        self, scope: Scope, *, security: RequestSecurityContext, write: bool
+    ) -> None:
+        """托管宿主的配置访问鉴权及写入前审计完整性预检。"""
+        raise UnsupportedCapabilityError("configuration_access", "", type(self).__name__)
+
     @abstractmethod
     def list(
         self,
-        scope: Scope,
+        scope: Scope | None = None,
         *,
         security: RequestSecurityContext,
         offset: int = 0,
@@ -252,7 +262,7 @@ class MemoryAPI(ABC):
         memory_types: list[str] | None = None,
         extensions: dict[str, Any] | None = None,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
-    ) -> MemoryListResult:
+    ) -> MemoryListResult | PersonalPage:
         """列出目标 ``scope`` 下已建索引的记忆单元。
 
         语义参考 mem1.0 ``list_memories``：支持 ``offset``/``limit`` 分页与
@@ -260,6 +270,8 @@ class MemoryAPI(ABC):
         支持结构化过滤。只返回 ``/memory/`` 真源记录，不包含
         ``/messages/`` 下的 infer 原文缓存。``security`` 为本次请求的安全上下文，
         本层据 ``scope`` 鉴权 READ 后委托 Engine。返回当前页 items 和分页前匹配总数 count。
+
+        个人汇总通过 ``extensions["personal"]`` 显式启用并省略 scope，返回 PersonalPage。
         """
 
     @abstractmethod

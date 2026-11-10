@@ -9,19 +9,23 @@ diff → 写），在此窗口插入会误判漂移：
 - update/delete（先索引后 md）：「索引已变、md 还是旧的」→ 看门狗删掉刚 update
   的真 unit + 建幽灵（update 丢失），或把刚 delete 的 unit 以新 uuid 复活（双写）。
 
-**防护**：写入编排层（``CompositeStorage`` 文档路径）在两步写之前 ``open_write_window``、
-完成后 ``close_write_window``（try/finally 配对，精确覆盖含慢 embed 的全过程）；
-看门狗 sync 入口查 ``write_window_open``——窗口开着则**推迟**本轮对账（轮询等窗口
-关闭后重跑，而非丢弃：窗口内用户手改 md 的真实漂移，窗口关闭后的重扫能补上）。
+**防护**：写入编排层在两步写前开启写窗口，在 finally 中关闭；
+看门狗只在无写入时读取对账版本，提交 diff 前再验证版本并独占提交窗口。
+期间发生过写入则重新对账；提交开始后，新的正常写入等待其结束。
 
-**进程内共享**：模块级单例——composite 与 watchdog 无需互相持有引用，同进程
-import 即共享。跨进程不防护（与 LocalMarkdownStore 的并发声明同口径：跨进程
-文件锁待后续加）。
+**进程内共享**：写入与看门狗按文档根目录共享门闸。不同根目录独立协调；
+同一目录的路径别名共用同一门闸。跨进程不防护。
 """
 
 from __future__ import annotations
 
+import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from weakref import WeakValueDictionary
+
+from jiuwen_memory.common.errors import BackendError
 
 # 看门狗推迟轮询间隔：窗口开着时 sync 以此间隔重查，窗口一关立即续跑。
 SYNC_DEFERRAL_POLL_SECONDS = 0.25
@@ -31,40 +35,64 @@ MAX_SYNC_DEFERRAL_SECONDS = 60.0
 
 
 class _WriteWindowGate:
-    """进程级写窗口计数门闸（open/close 配对，支持嵌套，线程安全）。"""
+    """单个文档根目录的写窗口门闸（支持嵌套，线程安全）。"""
 
     def __init__(self) -> None:
         self._depth = 0
-        self._lock = threading.Lock()
+        self._version = 0
+        self._committing = False
+        self._condition = threading.Condition()
 
     def open(self) -> None:
-        with self._lock:
+        with self._condition:
+            if not self._condition.wait_for(
+                lambda: not self._committing, timeout=MAX_SYNC_DEFERRAL_SECONDS
+            ):
+                raise BackendError("timed out waiting for document index synchronization")
             self._depth += 1
+            self._version += 1
 
     def close(self) -> None:
-        with self._lock:
+        with self._condition:
             if self._depth > 0:
                 self._depth -= 1
 
     def is_open(self) -> bool:
-        with self._lock:
+        with self._condition:
             return self._depth > 0
 
+    def snapshot_version(self) -> int | None:
+        with self._condition:
+            if self._depth or self._committing:
+                return None
+            return self._version
 
-# 模块级单例：composite（生产者）与 watchdog（消费者）import 同一对象。
-SYNC_GATE = _WriteWindowGate()
+    @contextmanager
+    def commit_sync(self, version: int) -> Iterator[bool]:
+        """只有对账快照仍有效时才允许修改影子索引。"""
+        with self._condition:
+            accepted = not self._depth and not self._committing and version == self._version
+            if accepted:
+                self._committing = True
+                self._version += 1
+        try:
+            yield accepted
+        finally:
+            if accepted:
+                with self._condition:
+                    self._committing = False
+                    self._condition.notify_all()
 
 
-def open_write_window() -> None:
-    """写入编排开始：挡住看门狗对账，直至 close_write_window（F07 §12.9 风险 6）。"""
-    SYNC_GATE.open()
+_gates: WeakValueDictionary[str, _WriteWindowGate] = WeakValueDictionary()
+_gates_lock = threading.Lock()
 
 
-def close_write_window() -> None:
-    """写入编排完成（或异常退出）：放行看门狗对账。"""
-    SYNC_GATE.close()
-
-
-def write_window_open() -> bool:
-    """写入编排是否在途（窗口开着时看门狗应推迟 sync）。"""
-    return SYNC_GATE.is_open()
+def document_sync_gate(root: str) -> _WriteWindowGate:
+    """返回当前进程内该文档根目录的门闸。"""
+    path = os.path.normcase(os.path.realpath(root))
+    with _gates_lock:
+        gate = _gates.get(path)
+        if gate is None:
+            gate = _gates[path] = _WriteWindowGate()
+        return gate

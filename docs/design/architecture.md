@@ -214,6 +214,15 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ## 6. 记忆接口层（Memory API）
 
+`MemoryAPI.list` 和 `MemoryAPI.search` 提供显式个人模式，默认 Portal 接入通过
+该模式发现并鉴权个人 Scope。可信宿主可通过 `HttpServer.build_personal` 为同一托管
+Runtime 提供配置管理能力。
+个人 list 支持来源、Agent、文档项目、生命周期、认知层级、记忆分类及正文／标签子串筛选，
+在完整授权集合上过滤后计数和分页，并返回来源／Agent／项目／分类选项。
+Portal 页面复用现有 `/v1` 记忆操作，模型配置使用同一实例的通用 HTTP 接口。具体字段见 S02。
+启用配置管理后，SDK 和 HTTP 共用配置库定位规则，优先使用文档根，其次使用启动配置文件
+旁的位置。具体条件见 [S08 配置规约](../specs/S08-config.md)。
+
 所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；当前由 `Authorizer` 判定，旧 `PermissionManager` 不参与生产授权。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
 
 本章**只列出当前代码已实现的 38 个对外接口**，一方法一行。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。

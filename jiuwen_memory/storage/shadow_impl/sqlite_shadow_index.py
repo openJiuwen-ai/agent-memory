@@ -32,7 +32,7 @@ import threading
 from datetime import datetime
 
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
-from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.time_utils import epoch_ms
@@ -201,7 +201,7 @@ def _t_event_of(unit: MemoryUnit) -> int:
 
 
 # 系统前置谓词（build_system_filters 产出）→ memory_unit 投影列映射。
-# lifecycle/t_valid/t_invalid/t_event 与 project 统一经 ``_compile_system_filters``
+# unit_id/id、lifecycle/t_valid/t_invalid/t_event 与 project 统一经 ``_compile_system_filters``
 # 编译成保留 AND/OR 逻辑的 SQL WHERE 片段下推——对齐非文档流程「先排除什么在
 # 索引级生效」的前置谓词下推（predicate_builder.build_system_filters），点读后
 # ``is_retrieval_candidate`` 仍作纵深防御兜底。
@@ -213,6 +213,8 @@ def _t_event_of(unit: MemoryUnit) -> int:
 # 原样编译成 SQL，AND/OR 关系在 SQL 层正确还原。单条
 # ``IN ["", value]`` 仍是一条 SQL 同时搜当前 project + 默认 project（不变）。
 _SYSTEM_PREDICATE_COLUMNS = {
+    "unit_id": "unit_id",
+    "id": "unit_id",
     "lifecycle": "lifecycle",
     "t_valid": "t_valid",
     "t_invalid": "t_invalid",
@@ -253,7 +255,7 @@ def _compile_clause(col: str, op: FilterOp, value) -> tuple[str | None, list]:
 
 
 def _compile_system_filters(expr) -> tuple[str | None, list]:
-    """把系统谓词（lifecycle/t_valid/t_invalid/t_event/project）编译成 SQL WHERE 片段。
+    """把系统谓词（unit_id/lifecycle/t_valid/t_invalid/t_event/project）编译成 SQL WHERE 片段。
 
     递归遍历 ``FilterExpr`` 树：系统字段叶子 → ``列 op ?``；非系统字段叶子（用户
     filters、其他 system_metadata 键）→ 返回 None 表示「该分支无约束」（由点读后
@@ -1097,7 +1099,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             match_expr = " OR ".join(_build_fts5_phrase(t) for t in tokens if _has_word_char(t))
             if not match_expr:
                 return []
-            # 系统前置谓词（lifecycle/t_valid/t_invalid/t_event/project）统一编译下推：
+            # 系统前置谓词（unit_id/lifecycle/t_valid/t_invalid/t_event/project）统一编译下推：
             # project 走编译路径保留 AND/OR（见 _SYSTEM_PREDICATE_COLUMNS 注释）。
             sys_sql, sys_params = _compile_system_filters(query.filters)
             # 无 project 谓词兜底：保留「只召回空串行」语义，避免无谓词即全库召回。
@@ -1117,14 +1119,16 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             scope_params = [scope.org, scope.space, scope.user, scope.agent]
             k = query.top_k
 
-            rows = conn.execute(
+            params = (match_expr, *sys_params, *scope_params, k)
+            rows = _fetch_search_rows(
+                conn,
                 f"SELECT m.unit_id, bm25(memory_fts) AS score "
                 f"FROM memory_fts JOIN memory_unit m ON m.rowid = memory_fts.rowid "
                 f"WHERE memory_fts MATCH ? "
                 f"{sys_where}{scope_where} "
                 f"ORDER BY score LIMIT ?",
-                (match_expr, *sys_params, *scope_params, k),
-            ).fetchall()
+                params,
+            )
         # 按 score 升序取 top_k（bm25 是负值，越小越相关 → 升序后最相关在前，取前 k 个）
         merged = list(rows)
         merged.sort(key=lambda r: r[1])
@@ -1139,6 +1143,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         按 distance 排序截断到目标 k）。无 project 谓词兜底 ``project = ''``（只召回
         跨项目可见空串行，与 search_fulltext 同口径）。
 
+        显式 ID 候选约束存在时，先筛选满足 ID、系统条件及 Scope 的候选，再计算
+        L2 距离排序截断；不走全库 KNN 后过滤，避免高分无关记录挤占候选。
+
         **降级模式**（``vec_enabled=False``）：返回空列表，不抛错——让上层检索编排照常运行，
         只是向量召回缺一路（倒排召回仍可用）。
         """
@@ -1146,7 +1153,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             return []
         with self._lock:
             conn = self._ensure_conn()
-            # 系统前置谓词（lifecycle/t_valid/t_invalid/t_event/project）统一编译下推
+            # 系统前置谓词（unit_id/lifecycle/t_valid/t_invalid/t_event/project）统一编译下推
             # （与 search_fulltext 同口径，见 _compile_system_filters）。
             sys_sql, sys_params = _compile_system_filters(query.filters)
             # 无 project 谓词兜底：保留「只召回空串行」语义。
@@ -1163,21 +1170,43 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             k = query.top_k
             qblob = _vec_to_blob(query.vector)
 
-            # 过采样兜底（post-filter 召回不足风险，§4.4.3）。
-            oversample = k * _DEFAULT_OVERSAMPLE
-            rows = conn.execute(
-                f"SELECT m.unit_id, v.distance AS score "
-                f"FROM memory_vec v JOIN memory_unit m ON m.rowid = v.rowid "
-                f"WHERE v.embedding MATCH ? AND k = ? "
-                f"{sys_where}{scope_where} "
-                f"ORDER BY v.distance LIMIT ?",
-                (qblob, oversample, *sys_params, *scope_params, k),
-            ).fetchall()
+            if any(clause.field in {"unit_id", "id"} for clause in iter_clauses(query.filters)):
+                # Score exact distances after filtering memory_unit. CROSS JOIN keeps
+                # memory_unit as the outer scan and does not require SQLite 3.35's CTE hint.
+                params = (qblob, *sys_params, *scope_params, k)
+                rows = _fetch_search_rows(
+                    conn,
+                    f"SELECT m.unit_id, vec_distance_l2(v.embedding, ?) AS score "
+                    f"FROM memory_unit m CROSS JOIN memory_vec v ON v.rowid = m.rowid "
+                    f"WHERE 1=1 {sys_where}{scope_where} ORDER BY score LIMIT ?",
+                    params,
+                )
+            else:
+                # 过采样兜底（post-filter 召回不足风险，§4.4.3）。
+                oversample = k * _DEFAULT_OVERSAMPLE
+                rows = conn.execute(
+                    f"SELECT m.unit_id, v.distance AS score "
+                    f"FROM memory_vec v JOIN memory_unit m ON m.rowid = v.rowid "
+                    f"WHERE v.embedding MATCH ? AND k = ? "
+                    f"{sys_where}{scope_where} "
+                    f"ORDER BY v.distance LIMIT ?",
+                    (qblob, oversample, *sys_params, *scope_params, k),
+                ).fetchall()
         merged = list(rows)
         # distance 越小越相关；升序取 top_k
         merged.sort(key=lambda r: r[1])
         # vec0 distance 是距离（越小越相关），转 ScoredID 时取负让"越大越相关"口径统一
         return [ScoredID(id=r[0], score=-r[1]) for r in merged[:k]]
+
+
+def _fetch_search_rows(conn: sqlite3.Connection, sql: str, params: tuple) -> list[tuple]:
+    """Use SQLite's effective parameter limit regardless of the Python driver."""
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as exc:
+        if str(exc) == "too many SQL variables":
+            raise ValidationError("document search exceeds the SQLite parameter limit") from exc
+        raise
 
 
 def _vec_to_blob(vec: list[float]) -> bytes:

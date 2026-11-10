@@ -3,9 +3,13 @@
 
 from .assembly import (
     AUTO_SECURITY_RUNTIME,
+    ManagedMemoryRuntime,
+    ManagedServerRuntime,
     MemoryRuntime,
     ServerRuntime,
     assemble,
+    assemble_managed_runtime,
+    assemble_managed_server_runtime,
     assemble_runtime,
     assemble_server_runtime,
 )
@@ -15,6 +19,10 @@ __all__ = [
     "LocalMemoryAPI",
     "MemoryRuntime",
     "assemble",
+    "ManagedMemoryRuntime",
+    "ManagedServerRuntime",
+    "assemble_managed_runtime",
+    "assemble_managed_server_runtime",
     "assemble_runtime",
     "ServerRuntime",
     "assemble_server_runtime",

@@ -37,7 +37,7 @@
 | `tokenizer/` | Tokenizer 插件目录 |
 | `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；passthrough 只接已是 UTF-8 文本的 TEXT/CODE，DOCUMENT 需专用解析器；`ensure_normalizer_supports` 是共用模态能力门禁；`structured_modalities()` 声明哪些模态的规约结果是结构化中间产物（video 声明 VIDEO，routing 按分派汇总，其余缺省空集），接入层据此跳过预切分；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans；内置视频文件读取统一经过 LocalMediaImports 准入及私有副本 |
 | `feature_extractor/` | FeatureExtractor 插件目录 |
-| `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
+| `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`）；托管配置源提供 `build_model` 时，具名 builder 在读取参数前交回当前完整快照构造，普通配置源沿用原装配路径 |
 | `reranker/` | Reranker 插件目录 |
 | `audit/` | AuditLogger 插件目录；内存 / SQLite 后端实现 ChainedAuditStore；`protected_audit_logger.py` 的 `ProtectedAuditLogger` 把 record 委派审计完整性 provider、query 透传，并在构造时校验 provider chain store 与 logger 是同一对象；经内核显式装配，写链失败锁存 degraded，mutation 预检失闭，detail 在写入边界过滤 |
 | `security/protection/local_media.py` | `LocalMediaImports`：服务端落点 Scope 与本地媒体目录绑定，仅接绝对源路径；POSIX 校验配置根设备号/inode 并从根 dir_fd 逐段打开，每次暂存使用独立任务子目录，描述符通过显式上下文成对释放；空策略拒绝，不依赖 privacy，也不把身份下传给业务层。 |
@@ -56,6 +56,10 @@
   Authorizer 暴露唯一委托真源，资源释放仍由统一生命周期根管理。
 
 - **非信封拒绝**：密码学插件可声明 is_ciphertext，识别不等于认证；PlaintextDataError 仅用于中断读取并沿既有 BackendError 契约传播，不开启明文回退或新增 API 返回类型。MIGRATE_MEMORY 不接受 Grant/Delegation 扩权，USER 的 space（含空值）必须精确匹配目标，非空 agent/session 绑定继续约束目标。
+
+- **固定个人主体声明**：安全 Runtime 与认证插件均须显式注册 `fixed_personal_owner`
+  配置检查能力，自动配置托管不得仅凭 target 名推断；替换实现不继承旧声明。
+  内联配置与具名引用都检查实际选定的认证插件。
 
 - **静态保护能力注册**：Factory 的 config_inspectors 随 target 注册或替换，
   registration_scope 同时恢复 builder 与检查器，不改变 AssemblyContext 的缓存所有权。

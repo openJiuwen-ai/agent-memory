@@ -437,6 +437,11 @@ def test_every_public_entry_rejects_before_business_access(
         value = values.get(name, missing)
         assert value is not missing, f"{entry}: missing required test argument {name!r}"
         kwargs[name] = value
+    if entry == "list":
+        # 只有显式启用个人模式时才能省略 scope。两个分支都须在读存储前拒绝。
+        with pytest.raises(PermissionDeniedError):
+            method(security=security, extensions={"personal": {}})
+        kwargs["scope"] = VICTIM_SCOPE
     with pytest.raises(PermissionDeniedError):
         result = method(**kwargs)
         if isawaitable(result):

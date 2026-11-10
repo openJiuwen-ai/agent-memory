@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-09 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
+| 最近一次修订日期 | 2026-11-10 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`；Portal 设计见 `docs/features/F08-personal-memory-portal.md` |
 
 ## 范围 / 边界
 
@@ -26,6 +26,100 @@
 - 不规定产品配置中心的推送/TTL/缓存失效运维接口（实现方可自管缓存，首版契约不要求 invalidate）
 - **不**在未使用 `RoutingStoreManager` 时原地拆换同一 `CompositeStoreManager` 内部端口拓扑；Store 级异质切换落在各 `*_store.active` + `Routing*Store`（方案 A，F01 §2.1.5）
 - **允许**装配期预装多套完整 `StoreManager`，经 `RoutingStoreManager` + `store_manager.active` 动态选用（F02/F07，已落地）；**禁止**把「同实现换连接 / 只换某一 Store」误做成多套 manager + `store_manager.active`
+
+## Portal 配置保存与恢复
+
+SDK 禁用 Portal 时，记忆实例直接使用启动配置，跳过 Portal 的配置库。旧库损坏时，
+也可以按启动配置继续运行。
+jiuwenswarm 适配器按原有 JSON／YAML 规则解析 `config_path`，将配置内容和实际加载的
+文件路径传给 Runtime。文件路径用于定位配置库，字符串中的环境变量占位符保留原样。
+
+可信宿主提供可管理的具名 LLM、配置存储、地址策略和授权回调。模块在创建模型前先
+校验并加载保存的修改，未修改的参数和依赖引用继续来自启动配置。普通 ConfigSource
+只负责读取，不因为打开 Portal 就自动成为可持久写入的配置源。
+
+内置实现用独立的 SQLite 配置库保存修改和版本。SDK 和 HTTP 共用定位规则，优先使用
+已有本地绝对文档根下的 `memory/.shadow/portal-config.db`。其次按实际加载的配置文件
+路径和顺序，在最后一个文件旁确定配置库。两处都不可用时，页面无法编辑配置。只传配置
+字典且没有可用文档根时，自动装配会使用启动配置。可信宿主也可通过公开装配接口提供配置存储。
+
+HTTP 只在安全配置声明固定个人身份，或宿主显式启用配置管理时访问配置库。
+其他 HTTP 启动方式跳过旧库，继续用启动配置运行。若所有候选位置都无法创建配置库，
+记忆服务继续运行，页面无法编辑设置。如果已有的配置库无法读取，启动会报错，
+避免悄悄回退到启动值。启用统一静态加密时，内置配置管理不可用。
+
+### 允许编辑的字段
+
+支持的模型实现为 echo、openai、dashscope。只对宿主确认且实际创建的具名模型开放
+以下字段，未知实现、锁定字段按只读原因显示：
+
+- target、llm_model、llm_base_url、llm_api_key；
+- llm_temperature、llm_max_tokens、llm_timeout、llm_max_retries；
+- DashScope 的 enable_thinking。
+
+字段键使用 llm.<name>.target 或 llm.<name>.params.<parameter>。保留实例的配置命名
+空间规则；多个实例共用名称、地址、Key 的命名空间时，不允许按单实例修改共享字段。
+模型地址须遵守已有 TLS 约束，并通过宿主提供的地址策略。拒绝未知键和非法值。
+模型服务的协议、主机或端口变化时，服务端要求在同一次保存中提交完整网址、非空
+API Key 和模型名。切换提供方也要按实际服务地址执行该规则。恢复整组启动设置时，
+使用启动地址及其配套的凭据。Portal 保存 Key 时会加密记录对应的服务地址。加载时，
+旧 Key 缺少地址绑定或与实际服务不匹配，或宿主锁定字段使已保存的一组设置无法使用，
+则该模型的服务设置回到启动值。保存记录保留，读取接口返回 `ignored_endpoint_fields`。
+提交温度或更换提供方时，按最终使用的提供方校验保存的温度。OpenAI 兼容模式为
+`[0, 2]`，DashScope 为 `[0, 2)`。切换时可以同时提交新的温度。
+
+Portal 不编辑 Prompt、Embedding 模型与维度、存储、全局检索策略或组件依赖。原
+ConfigSource／PromptRegistry 的读取规则和文档 agent_llm 内置模板使用原入口。
+
+### 保存和应用
+
+1. 页面预览与读取版本、草稿绑定；保存时比较版本并提交整份修改。冲突、校验或写入
+   失败不改变已保存配置或运行配置。恢复启动值表示删除指定覆盖后再保存、应用。
+   修改或恢复模型提供方后，以最终提供方判断参数适用性；不再使用 DashScope 时，
+   同步移除 enable_thinking 覆盖，不因隐藏参数残留导致恢复失败。
+   保存模型字段时保留配置库中其他未知字段。托管装配继续忽略这些字段。
+2. 优先级为宿主明确锁定值、允许的保存覆盖、启动输入、默认值。SDK／HTTP 在创建
+   模型前恢复保存值，不改环境变量解析或未修改字段的行为。
+3. 支持字段的 apply_mode 为 next_call，requires_reassembly 为 false。模块内部替换
+   模型客户端，不要求重启宿主；不支持编辑的实现保持只读。
+4. 一次调用使用同一版本的名称、地址、Key 和默认参数。在途调用用旧客户端完成后才
+   释放；延迟创建及 new_instance=true 的具名模型也按当前完整应用配置创建。新句柄
+   创建、登记与应用切换共用互斥边界，不能将旧构造参数与新端点混用。
+5. 保存成功但应用失败返回 applied=false，保留原运行配置；retry_publication 只读取
+   最新保存版本重试。旧请求不能使运行版本倒退。应用成功只表示本地切换完成，不表示
+   已访问远端服务。默认值不覆盖单次调用明确传入的 options。
+6. 刷新配置或发生冲突后，旧预览失效；草稿保留，重新比较最新值后才能提交。前端禁用
+   控件不能代替后端版本、字段和权限校验。
+
+### 配置描述与结果
+
+`ManagedConfiguration.read` 返回以下信息。HTTP 的 `/v1/read_config` 另加
+`available`，能力不可用时只返回 `{"available": false}`。
+
+| 字段 | 含义 |
+|---|---|
+| version | 已保存的版本，也是下一次提交的冲突检查依据 |
+| applied_version | 当前运行配置的版本 |
+| apply_state | applied 或 apply_failed，按保存版本与运行版本是否一致判断 |
+| fields | 字段描述，含 key、base、saved、has_override、effective、effective_known、writable、reason、secret、configured、apply_mode、requires_reassembly、options、visible_for_targets |
+| instance | 存储模式、Embedding 模型／维度和文档根等只读启动信息 |
+| ignored_overrides | 未识别字段和未采用的模型服务设置数量 |
+| ignored_endpoint_fields | 模型地址与 Key 无法配套时，跳过的字段名 |
+
+字段读取区分启动值、保存值和运行默认值；无法确认时 effective_known=false。
+API Key 不返回 base、saved 或 effective 原文，只返回 configured 等状态。模型服务地址
+只显示协议、主机和端口。
+save 和 retry_publication 返回 version、applied；应用失败时不返回可能包含凭据的
+任意 builder 异常正文，页面提示未应用并允许重试。
+
+### 模型凭据
+
+API Key 在受保护凭据存储中保存，普通覆盖只保留引用；空输入保持原值。新凭据准备
+完成后，与非密配置按同一版本提交。失败不改变旧引用，清理不影响在途调用。没有可靠
+凭据保存能力时仅将该字段设为只读，并提供原因。
+
+读取、预览、错误与日志不出现 Key 原文。不借用入站单向认证库，不落明文旁路；内置
+加密、密钥文件和部署保护边界见 S10 与既有 common/F04。
 
 ## 不变量
 
