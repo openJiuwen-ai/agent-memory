@@ -1,6 +1,7 @@
 """Maintenance iteration is bounded independently of ordinary whole-Scope scan."""
 
 import json
+import sqlite3
 import tracemalloc
 
 import pytest
@@ -55,21 +56,32 @@ def test_sqlite_oversized_blob_is_not_materialized(tmp_path):
 
 
 @pytest.mark.parametrize("expired", [False, True])
-def test_sqlite_insert_checks_existence_without_loading_the_old_blob(tmp_path, expired):
-    store = SQLiteKVStore(str(tmp_path / "memory.db"))
+def test_sqlite_insert_checks_existence_without_loading_the_old_blob(
+    tmp_path, monkeypatch, expired,
+):
+    connect = sqlite3.connect
+    db_path = str(tmp_path / "memory.db")
+
+    def authorize(action, table, column, _database, _source):
+        if (action, table, column) == (sqlite3.SQLITE_READ, "kv", "value"):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    def opened(database, *args, **kwargs):
+        connection = connect(database, *args, **kwargs)
+        if database == db_path:
+            connection.set_authorizer(authorize)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", opened)
+    store = SQLiteKVStore(db_path)
     try:
         store.insert(SCOPE, "key", b"x" * (16 * 1024 * 1024), ttl=-1 if expired else 0)
-        tracemalloc.start()
-        try:
-            if expired:
+        if expired:
+            store.insert(SCOPE, "key", b"new")
+        else:
+            with pytest.raises(ConflictError):
                 store.insert(SCOPE, "key", b"new")
-            else:
-                with pytest.raises(ConflictError):
-                    store.insert(SCOPE, "key", b"new")
-            _, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-        assert peak < 1024 * 1024, "existence checks must not materialize the old BLOB"
     finally:
         store.close()
 

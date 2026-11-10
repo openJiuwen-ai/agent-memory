@@ -3,12 +3,10 @@
 
 from __future__ import annotations
 
-import atexit
 import base64
 import gc
 import json
 import mimetypes
-import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,11 +30,6 @@ from .video_prompts import (
 from .video_prompts import (
     CHAPTER_CHUNK as CHAPTER_SEGMENT_PROMPT_JSON,
 )
-
-# Reduce CUDA fragmentation; must be set before CUDA init
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-# New unified allocator env var (PyTorch >= 2.4)
-os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 JSON_API_MAX_ATTEMPTS = 3
 DEFAULT_MAX_INLINE_VIDEO_BYTES = 50 * 1024 * 1024
@@ -85,22 +78,6 @@ UPDATE_EVENT_TABLE_PROMPT_FORCE_CONTINUE = (
     - The adjusted event_title must remain local, stable, and not expand to a global/session-level scope; it should only refine the original title to fit cumulative information of the same unit.
     """
 )
-
-
-def _cleanup_dist() -> None:
-    """Best-effort destroy any torch distributed/NCCL process group at exit."""
-    try:
-        import torch.distributed as dist
-    except ImportError:
-        return
-    try:
-        if dist.is_available() and dist.is_initialized():
-            dist.destroy_process_group()
-    except RuntimeError as exc:
-        logger.warning("VideoPipeline: failed to destroy process group: %s", exc)
-
-
-atexit.register(_cleanup_dist)
 
 
 def _parse_json_safe(text: str) -> dict[str, Any]:
@@ -2705,16 +2682,6 @@ def run_video_memory_pipeline_off(
             _finalize_session()
     finally:
         gc.collect()
-        import torch
-        import torch.distributed as dist
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        # Ensure any distributed/NCCL groups are torn down to avoid leaks
-        try:
-            if dist.is_available() and dist.is_initialized():
-                dist.destroy_process_group()
-        except RuntimeError as e:
-            logger.warning("VideoPipeline: failed to destroy process group: %s", e)
 
     logger.info(
         "VideoPipeline: completed clips=%d events=%d",

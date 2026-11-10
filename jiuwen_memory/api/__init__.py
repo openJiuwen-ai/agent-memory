@@ -30,6 +30,7 @@ from jiuwen_memory.common.security.capabilities import (
     CloseableSecurityCapability,
     share_security_lifecycle,
 )
+from jiuwen_memory.common.security.protection.local_media import LocalMediaImports
 from jiuwen_memory.common.security.request_context import (
     get_request_id,
     new_request_context,
@@ -213,6 +214,8 @@ __all__ = [
     "UnsupportedCapabilityError",
     "ValidationError",
     "safe_error_message",
+    # Access 本地视频导入预检（最终文件读取仍由内核执行）
+    "LocalMediaImports",
     # 安全上下文构造（access 面需要，替代 legacy_request_context）
     "internal_context",
     # Access 日志隐私能力（adapter 不直接依赖内核 common 包）

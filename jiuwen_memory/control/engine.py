@@ -23,6 +23,7 @@ from abc import abstractmethod
 from datetime import datetime
 
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -74,6 +75,10 @@ class MemoryEngine(ControlOperator):
         供 API 层 dreaming 编排读注册表（注册表与真源同 KV 才有恢复语义）；
         只读用途，不作为写入通道。
         """
+
+    def video_ingest_preflight(self) -> LocalMediaPreflight | None:
+        """Return local-file admission for the explicit video write route, when available."""
+        return None
 
     def candidate_scopes(self) -> list[Scope]:
         """返回演进候选数据面中已有记忆的作用域。"""

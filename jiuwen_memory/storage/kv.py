@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 from jiuwen_memory.common.errors import BackendError, NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
@@ -87,6 +88,17 @@ class KVStore(BaseStore):
         from jiuwen_memory.common.errors import UnsupportedCapabilityError
 
         raise UnsupportedCapabilityError("compare_exchange", "kv", "storage")
+
+    def coordination_key(self) -> tuple[str, str | int]:
+        """Identify a live KV resource for in-process coordination; default to object identity."""
+        return ("instance", id(self))
+
+    @contextmanager
+    def bind_coordination(self, key: tuple[str, str | int]) -> Iterator[None]:
+        """Keep operations in this context on the expected resource or fail closed."""
+        if self.coordination_key() != key:
+            raise BackendError("ingest job store changed; reassemble the runtime")
+        yield
 
     @abstractmethod
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
