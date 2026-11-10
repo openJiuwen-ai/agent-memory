@@ -12,11 +12,14 @@ caption/OCR/视觉描述，音频 → ASR 转录，视频 → 关键帧描述 + 
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Callable
 
 from ..base import Plugin
 from ..errors import UnsupportedCapabilityError, ValidationError
 from ..factory.factory import Factory
-from ..type_def import Modality, RawPayload
+from ..type_def import Modality, RawPayload, Scope
+
+LocalMediaPreflight = Callable[[str, Scope], str]
 
 
 class NormalizerProducer(Factory):
@@ -38,6 +41,10 @@ class Normalizer(Plugin):
     @abstractmethod
     def normalize(self, payload: RawPayload) -> str:
         """将原模态负载规约为可治理的文本/结构投影（content）。"""
+
+    def local_media_preflight(self, modality: Modality) -> LocalMediaPreflight | None:
+        """Return the configured local-file admission function, if supported."""
+        return None
 
     def structured_modalities(self) -> frozenset[Modality]:
         """返回规约结果为**结构化中间产物**的模态子集（缺省空集）。

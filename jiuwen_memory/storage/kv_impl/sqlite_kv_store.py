@@ -19,6 +19,8 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
@@ -55,6 +57,7 @@ class SQLiteKVStore(KVStore):
         config_namespace: str = "kv_store",
     ) -> None:
         self._fallback_db_path = db_path
+        self._bound_path: ContextVar[str | None] = ContextVar("sqlite_kv_bound_path", default=None)
         self._config_source = config_source
         self._config_namespace = config_namespace
         self._lock = threading.Lock()
@@ -66,6 +69,21 @@ class SQLiteKVStore(KVStore):
     @staticmethod
     def _expiry(ttl: float) -> float | None:
         return time.time() + ttl if ttl else None
+
+    def coordination_key(self) -> tuple[str, str | int]:
+        path = self._resolved_db_path()
+        if path in ("", ":memory:"):
+            return super().coordination_key()
+        return ("sqlite", str(Path(path).resolve()))
+
+    @contextmanager
+    def bind_coordination(self, key: tuple[str, str | int]) -> Iterator[None]:
+        token = self._bound_path.set(self._resolved_db_path())
+        try:
+            with super().bind_coordination(key):
+                yield
+        finally:
+            self._bound_path.reset(token)
 
     def store_type(self) -> StoreType:
         return StoreType.KV
@@ -86,7 +104,6 @@ class SQLiteKVStore(KVStore):
 
     def migration_identity(self) -> object:
         import os
-        from pathlib import Path
 
         path = self._resolved_db_path()
         return ("sqlite", id(self)) if path == ":memory:" else opaque_location(
@@ -301,6 +318,9 @@ class SQLiteKVStore(KVStore):
         ]
 
     def _resolved_db_path(self) -> str:
+        bound_path = self._bound_path.get()
+        if bound_path is not None:
+            return bound_path
         from jiuwen_memory.config.binding import resolve_connection_url
 
         live = resolve_connection_url(

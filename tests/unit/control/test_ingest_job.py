@@ -7,8 +7,12 @@ import pytest
 
 from jiuwen_memory.common.errors import BackendError, ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import MemoryUnit, Modality, Scope, Segment
+from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+from jiuwen_memory.config.routing import ActiveRouter, RoutingKVStore
+from jiuwen_memory.control.ingest_job import check_ingest_cancelled
 from jiuwen_memory.control.job_impl.ingest_job import InProcessIngestJobController
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
 
 pytestmark = pytest.mark.unit
 
@@ -223,3 +227,146 @@ def test_ingest_job_status_does_not_populate_idempotency_cache() -> None:
         assert not vars(reader).get("_job_id_by_payload")
     finally:
         reader.close()
+
+
+def test_second_controller_reuses_a_live_job_from_the_shared_store() -> None:
+    scope = Scope(org="tnt", user="alice")
+    kv = InMemoryKVStore()
+    writer = InProcessIngestJobController(kv=kv)
+    reader = InProcessIngestJobController(kv=kv)
+    started = Event()
+    release = Event()
+
+    def task():
+        started.set()
+        assert release.wait(5)
+        return []
+
+    def duplicate_task():
+        pytest.fail("a live ingest job must not be submitted twice")
+
+    kwargs = {"payload_id": "video-001", "source_ref": "file:///a.mp4", "scope": scope}
+    try:
+        submission = writer.submit(**kwargs, task=task)
+        assert started.wait(2)
+        assert reader.status(submission.job.id, scope=scope).status == "running"
+        duplicate = reader.submit(**kwargs, task=duplicate_task)
+        assert duplicate.reused
+        assert duplicate.job.id == submission.job.id
+        assert duplicate.job.status == "running"
+        release.set()
+        writer.close()
+        assert reader.status(submission.job.id, scope=scope).status == "succeeded"
+    finally:
+        release.set()
+        writer.close()
+        reader.close()
+
+
+def test_old_controller_reuses_the_successful_retry_in_the_shared_store() -> None:
+    scope = Scope(org="tnt", user="alice")
+    kv = InMemoryKVStore()
+    writer = InProcessIngestJobController(kv=kv)
+    retry = InProcessIngestJobController(kv=kv)
+
+    def fail():
+        raise ValueError("retryable")
+
+    kwargs = {"payload_id": "video-001", "source_ref": "file:///a.mp4", "scope": scope}
+    try:
+        first = writer.submit(**kwargs, task=fail)
+        deadline = time.monotonic() + 2
+        while writer.status(first.job.id, scope=scope).status != "failed":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        second = retry.submit(**kwargs, task=lambda: [])
+        assert second.job.id != first.job.id
+        retry.close()
+        repeated = writer.submit(**kwargs, task=fail)
+        assert repeated.reused
+        assert repeated.job.id == second.job.id
+        assert repeated.job.status == "succeeded"
+    finally:
+        writer.close()
+        retry.close()
+
+
+def test_sqlite_coordination_binding_pins_late_bound_path(tmp_path) -> None:
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    config = DictConfigSource({"kv_store.db_path": str(first)})
+    store = SQLiteKVStore(config_source=config)
+    scope = Scope(org="tnt", user="alice")
+    try:
+        original_key = store.coordination_key()
+        with store.bind_coordination(original_key):
+            config.put("kv_store.db_path", str(second))
+            store.insert(scope, "job", b"first")
+        assert not store.exists(scope, "job")
+        with pytest.raises(BackendError, match="ingest job store changed"):
+            with store.bind_coordination(original_key):
+                pytest.fail("a different store must be rejected")
+        config.put("kv_store.db_path", str(first))
+        assert store.get(scope, "job") == b"first"
+    finally:
+        store.close()
+
+
+def test_sqlite_job_coordination_uses_the_live_store_not_the_job_id(tmp_path) -> None:
+    scope = Scope(org="tnt", user="alice")
+    db = tmp_path / "jobs.sqlite"
+    source = SQLiteKVStore(str(db))
+    shared = SQLiteKVStore(str(db))
+    snapshot = SQLiteKVStore(str(tmp_path / "snapshot.sqlite"))
+    writer = InProcessIngestJobController(kv=source)
+    config = DictConfigSource({"kv_store.active": "shared"})
+    routed = RoutingKVStore(ActiveRouter(
+        namespace="kv_store", instances={"shared": shared, "snapshot": snapshot},
+        config_source=config, default_name="shared",
+    ))
+    reader = InProcessIngestJobController(kv=routed)
+    isolated = InProcessIngestJobController(kv=snapshot)
+    started = Event()
+    release = Event()
+
+    def task():
+        started.set()
+        assert release.wait(5)
+        check_ingest_cancelled()
+        pytest.fail("a cancelled job must stop before writing")
+
+    try:
+        submission = writer.submit(
+            payload_id="video-001", source_ref="file:///a.mp4", scope=scope, task=task,
+        )
+        job_id = submission.job.id
+        assert started.wait(2)
+        with pytest.raises(NotFoundError):
+            reader.cancel(job_id, scope=Scope(org="tnt", user="bob"))
+        assert reader.status(job_id, scope=scope).status == "running"
+        for key, value in source.scan(scope):
+            snapshot.insert(scope, key, value)
+        with routed.bind_coordination(shared.coordination_key()):
+            config.put("kv_store.active", "snapshot")
+            assert routed.coordination_key() == shared.coordination_key()
+        assert routed.coordination_key() == snapshot.coordination_key()
+        with pytest.raises(BackendError, match="ingest job store changed"):
+            reader.cancel(job_id, scope=scope)
+        config.put("kv_store.active", "shared")
+        interrupted = isolated.status(job_id, scope=scope)
+        assert interrupted.status == "failed"
+        assert interrupted.retry_requires_reconciliation
+        isolated.cancel(job_id, scope=scope)
+        assert not writer.status(job_id, scope=scope).cancel_requested
+        reader.cancel(job_id, scope=scope)
+        assert writer.status(job_id, scope=scope).cancel_requested
+        release.set()
+        writer.close()
+        assert reader.status(job_id, scope=scope).status == "cancelled"
+    finally:
+        release.set()
+        writer.close()
+        reader.close()
+        isolated.close()
+        for store in (source, shared, snapshot):
+            store.close()

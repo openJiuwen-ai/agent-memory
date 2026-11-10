@@ -30,6 +30,9 @@ _CALL_LEVEL_METADATA_KEYS = frozenset({"infer", "pipeline"})
 class VideoMemoryExtractor(Extractor):
     """Convert normalized video data into CLM and ELM MemoryUnits."""
 
+    def structured_modalities(self) -> frozenset[Modality]:
+        return frozenset({Modality.VIDEO})
+
     def operator_type(self) -> OperatorType:
         return OperatorType.EXTRACTOR
 

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.normalizer.base import (
+    LocalMediaPreflight,
     Normalizer,
     NormalizerProducer,
     ensure_normalizer_supports,
@@ -65,6 +66,9 @@ class RoutingNormalizer(Normalizer):
                 continue
             seen.add(id(normalizer))
             normalizer.health()
+
+    def local_media_preflight(self, modality: Modality) -> LocalMediaPreflight | None:
+        return self._routes.get(modality, self._fallback).local_media_preflight(modality)
 
     def normalize(self, payload: RawPayload) -> str:
         normalizer = self._routes.get(payload.modality, self._fallback)

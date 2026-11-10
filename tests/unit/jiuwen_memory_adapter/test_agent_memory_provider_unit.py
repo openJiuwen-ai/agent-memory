@@ -25,9 +25,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
+from jiuwen_memory.api import ConflictError, Modality, Surface
 from jiuwen_memory.api import Scope as ApiScope
-from jiuwen_memory.api import Surface
+from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
 from jiuwen_memory.common.security import new_request_context
 from jiuwen_memory.common.security.types import AuthContext, Role
 
@@ -94,8 +96,8 @@ def _offline_in_process_config(tmp_path, monkeypatch):
         cfg = _orig()
         cfg["globals"]["embedder_dim"] = 64
         cfg["globals"]["watch_document"] = False
-        cfg["llm"] = {"default": "echo"}
-        cfg["extractor"] = {"default": "keyword"}
+        cfg["llm"]["default"] = "echo"
+        cfg["extractor"]["default"] = "keyword"
         cfg["embedder"] = {"default": {"target": "hashing", "params": {"tokenizer": "default"}}}
         cfg["fulltext_store"] = {"default": {"target": "memory"}}
         cfg["markdown_store"] = {"default": {"target": "local", "params": {"root": str(tmp_path)}}}
@@ -229,6 +231,191 @@ class TestAvailability:
 
 
 class TestSdkMode:
+    def test_failed_video_discovery_preserves_standard_tools(self, tmp_path):
+        provider = AgentMemoryMemoryProvider(
+            config_path=str(tmp_path / "missing.yml"),
+            security_provider=_security_provider(ApiScope(org="tenant", user="user")),
+        )
+        assert len(provider.get_tool_schemas()) == 4
+        assert "agent_memory_video_submit" not in provider.system_prompt_block()
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(provider.initialize())
+
+    @pytest.mark.parametrize(
+        "configuration",
+        ["default", "file-json", "file-yaml", "inline", "globals", "no-pipeline", "wrong-evolver"],
+    )
+    def test_video_tool_writes_document_units(self, tmp_path, monkeypatch, configuration):
+        media = tmp_path / "imports"
+        media.mkdir()
+        video = media / "corgi.mp4"
+        video.write_bytes(b"fixture")
+        uri = video.as_uri()
+        outside = tmp_path / "outside.mp4"
+        outside.write_bytes(b"fixture")
+        other_format = media / "notes.txt"
+        other_format.write_text("fixture", encoding="utf-8")
+
+        def normalize(_self, payload):
+            assert payload.uri == uri
+            assert payload.data == b""
+            assert payload.modality == Modality.VIDEO
+            assert payload.id == payload.system_metadata["payload_id"]
+            return json.dumps({
+                "payload_id": payload.id,
+                "clips": [{"id": "clip-1", "visual_summary": "A corgi chases a ball",
+                           "start_seconds": 0, "end_seconds": 3}],
+                "events": [{"id": "event-1", "summary": "The corgi plays fetch",
+                            "clip_ids": ["clip-1"], "start_seconds": 0, "end_seconds": 3}],
+            })
+
+        monkeypatch.setattr(VideoNormalizer, "normalize", normalize)
+        config = {
+            "normalizer": {"default": {"target": "routing", "params": {
+                "routes": {"video": {"target": "video", "params": {
+                    "asr_port": "video", "llm_port": "default", "vlm_port": "default",
+                    "local_media_roots": [{
+                        "scope": {"org": "tenant", "user": "user", "agent": "jiuwenswarm"},
+                        "root": str(media),
+                    }],
+                }}},
+            }}},
+            "asr": {"video": {"target": "dashscope_filetrans", "params": {
+                "asr_model": "offline",
+                "asr_base_url": "https://example.invalid",
+                "asr_api_key": "test",
+            }}},
+            "extractor": {"video": "video_memory"},
+            "evolver": {"video": {"target": "orchestrating", "params": {
+                "extractor": "video", "index_builder": "default", "layer_annotator": None,
+                "dedup_extract": False,
+            }}},
+            "pipeline": {"default": {"target": "metadata", "params": {
+                "route_key": "pipeline", "routes": {"video": "video"},
+                "profiles": {
+                    "default": {"index_builder": "default", "retriever": "default",
+                                "evolver": "default", "classifier": "default"},
+                    "video": {
+                        "index_builder": "default", "retriever": "default", "evolver": "video",
+                    },
+                },
+            }}},
+        }
+
+        config_path = None
+        if configuration in {"default", "file-json", "file-yaml"}:
+            route = config["normalizer"]["default"]["params"]["routes"]["video"]
+            monkeypatch.setenv("JIUWEN_MEMORY_VIDEO_ROOTS", json.dumps(
+                route["params"]["local_media_roots"],
+            ))
+            for name, value in {
+                "ASR_API_BASE": "https://example.invalid/v1",
+                "ASR_MODEL_NAME": "offline-asr",
+                "VIDEO_API_BASE": "https://example.invalid/v1",
+                "VIDEO_MODEL_NAME": "offline-vision",
+            }.items():
+                monkeypatch.setenv(name, value)
+            if configuration.startswith("file-"):
+                extension = configuration.removeprefix("file-")
+                path = tmp_path / f"agent.{extension}"
+                file_config = {"markdown_store": {"default": {"params": {
+                    "root": str(tmp_path / "file-memory"),
+                }}}}
+                serialize = json.dumps if extension == "json" else yaml.safe_dump
+                path.write_text(serialize(file_config), encoding="utf-8")
+                config_path = str(path)
+            config = None
+        elif configuration == "globals":
+            route = config["normalizer"]["default"]["params"]["routes"]["video"]
+            config["globals"] = {"local_media_roots": route["params"].pop("local_media_roots")}
+        elif configuration == "no-pipeline":
+            del config["pipeline"]
+        elif configuration == "wrong-evolver":
+            config["pipeline"]["default"]["params"]["profiles"]["video"]["evolver"] = "default"
+
+        async def run():
+            provider = AgentMemoryMemoryProvider(
+                config_dict=config,
+                config_path=config_path,
+                security_provider=_security_provider(ApiScope(org="tenant", user="user")),
+            )
+            enabled = configuration not in {"no-pipeline", "wrong-evolver"}
+            schemas = {s["name"]: s for s in provider.get_tool_schemas()}
+            assert ("agent_memory_video_submit" in schemas) is enabled
+            assert ("agent_memory_video_status" in schemas) is enabled
+            early = await provider.handle_tool_call("agent_memory_video_submit", {"uri": uri})
+            assert json.loads(early) == {"error": "provider not initialized"}
+            await provider.initialize(user_id="user", scope_id="tenant", session_id="")
+            try:
+                if not enabled:
+                    denied = json.loads(await provider.handle_tool_call(
+                        "agent_memory_video_submit", {"uri": uri},
+                    ))
+                    assert denied == {"error": "Video memory tools are disabled"}
+                    assert not list(tmp_path.rglob("MEMORY.md"))
+                    return
+                for invalid_uri, reason in (
+                    (outside.as_uri(), "outside the configured import scope"),
+                    (media.as_uri() + "/%2e%2e/outside.mp4", "outside the configured import scope"),
+                    (other_format.as_uri(), "unsupported local video file extension"),
+                ):
+                    denied = json.loads(await provider.handle_tool_call(
+                        "agent_memory_video_submit", {"uri": invalid_uri},
+                    ))
+                    assert reason in denied["error"] and "job_id" not in denied
+                parameters = schemas["agent_memory_video_submit"]["parameters"]
+                assert parameters["properties"]["project"]["type"] == "string"
+                assert parameters["required"] == ["uri"]
+                # Exercise both explicit project routing and the no-project default.
+                project = {"project": "video-review"} if configuration == "globals" else {}
+                submit_args = {"uri": uri, **project}
+                submission = json.loads(await provider.handle_tool_call(
+                    "agent_memory_video_submit", submit_args,
+                ))
+                job_id = submission["job_id"]
+                repeated = json.loads(await provider.handle_tool_call(
+                    "agent_memory_video_submit", submit_args,
+                ))
+                assert repeated["job_id"] == job_id and repeated["reused"]
+                async with asyncio.timeout(10):
+                    while True:
+                        status = json.loads(await provider.handle_tool_call(
+                            "agent_memory_video_status", {"job_id": job_id},
+                        ))
+                        if status["status"] not in {"pending", "running"}:
+                            break
+                        await asyncio.sleep(0.02)
+                assert status["status"] == "succeeded", status
+                assert len(status["unit_ids"]) == 2
+                document = json.loads(await provider.handle_tool_call(
+                    "agent_memory_read_md_file", {"md_filename": "MEMORY.md", **project},
+                ))
+                assert {block["item_id"] for block in document["blocks"]} == set(status["unit_ids"])
+                md_path = next(tmp_path.rglob("MEMORY.md"))
+                assert md_path.parent.name == project.get("project", "memory")
+                if config_path:
+                    assert md_path.is_relative_to(tmp_path / "file-memory")
+                markdown = md_path.read_text(encoding="utf-8")
+                assert "A corgi chases a ball" in markdown
+
+                def conflict(*_args, **_kwargs):
+                    raise ConflictError(
+                        "ingest_payload", "fixture", f"previous ingest job {job_id}",
+                    )
+
+                monkeypatch.setattr(provider._client._api, "submit_ingest", conflict)
+                blocked = json.loads(await provider.handle_tool_call(
+                    "agent_memory_video_submit", submit_args,
+                ))
+                assert blocked["code"] == "video_ingest_conflict"
+                assert job_id in blocked["error"] and "reconcile" in blocked["error"]
+                assert "agent_memory_video_status" in blocked["error"]
+                assert "new file URI" in blocked["error"]
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(run())
+
     def test_conclude_then_search_tool_roundtrip(self):
         async def _run() -> None:
             provider = AgentMemoryMemoryProvider(

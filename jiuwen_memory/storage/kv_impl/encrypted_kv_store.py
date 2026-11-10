@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from typing import Any
 
 from jiuwen_memory.common.errors import (
@@ -99,6 +100,12 @@ class EncryptedKVStore(KVStore):
     @property
     def security(self) -> StoreSecurity:
         return self._store_security
+
+    def coordination_key(self) -> tuple[str, str | int]:
+        return self._raw.coordination_key()
+
+    def bind_coordination(self, key: tuple[str, str | int]) -> AbstractContextManager[None]:
+        return self._raw.bind_coordination(key)
 
     def store_type(self) -> StoreType:
         return StoreType.KV

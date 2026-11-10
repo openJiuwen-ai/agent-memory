@@ -16,7 +16,7 @@ from jiuwen_memory.common.embedder.base import EmbedderProducer
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.common.type_def import MemoryUnit, Modality
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
@@ -204,6 +204,10 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             self._index.update([source], mode=IndexWriteMode.ALL)
             updated_ids.append(source.id)
         return updated_ids
+
+    def structured_modalities(self) -> frozenset[Modality]:
+        # Schema extraction can report source evidence alone after extractor failure.
+        return frozenset()
 
     def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         if self._is_procedural(units):

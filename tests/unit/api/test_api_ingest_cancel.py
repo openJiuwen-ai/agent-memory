@@ -30,13 +30,12 @@ pytestmark = pytest.mark.unit
     [("job_status", "authorize"), ("job_cancel", "authorize"), ("job_cancel", "audit")],
 )
 def test_recovery_lookup_before_denial_never_mutates_storage(monkeypatch, method, failure) -> None:
-    runtime = assemble_runtime()
+    kv = InMemoryKVStore()
+    runtime = assemble_runtime(kv=kv)
     api = runtime.api
     scope = Scope(org="acme", user="alice")
     security = security_for(api, scope)
-    kv = InMemoryKVStore()
     jobs = api._ingest_jobs
-    monkeypatch.setattr(jobs, "_kv", kv)
     now = datetime.now(UTC)
     job = IngestJob("ing_interrupted", "p", "s", scope, "running", now, now)
     jobs._persist(job, update_payload=True)

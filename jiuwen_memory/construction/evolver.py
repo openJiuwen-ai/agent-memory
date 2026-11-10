@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import HierarchyKind, MemoryUnit
+from jiuwen_memory.common.type_def import HierarchyKind, MemoryUnit, Modality
 
 from .base import ConstructionOperator
 from .hierarchy_composer import (
@@ -79,6 +79,10 @@ class EvolverProducer(Factory):
 
 
 class Evolver(ConstructionOperator):
+    def structured_modalities(self) -> frozenset[Modality]:
+        """Declare structured inputs supported by the EXTRACT path."""
+        return frozenset()
+
     @staticmethod
     def hierarchy_profile(kind: HierarchyKind) -> HierarchyComposeProfile | None:
         """返回绑定 Composer 的配置快照；未声明能力时不启用自动建树。"""
