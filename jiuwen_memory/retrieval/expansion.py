@@ -59,19 +59,24 @@ class PreparedRetrievalResult(RetrievalResult):
     """内部中间结果，不得直接交付给 API 调用方或序列化。"""
 
     expansion_roots: list[ExpansionRoot] = field(default_factory=list)
-    recalled_children: list[tuple[ExpansionRoot, ScoredMemoryUnit]] = field(default_factory=list)
+    recalled_children: list[tuple[ExpansionRoot, ScoredMemoryUnit, int]] = field(
+        default_factory=list,
+    )
     recalled_children_ready: bool = False  # 区分合法空候选与提供方未准备。
 
     def keep_recalled(
-        self, candidates: list[ScoredMemoryUnit], parents: dict[NodeKey, NodeKey],
+        self, candidates: list[ScoredMemoryUnit], parents: dict[NodeKey, tuple[NodeKey, int]],
     ) -> None:
         """按融合原序保留已物化且归属、深度经上卷校验的后代。"""
         roots = {node_key(root.candidate.unit): root for root in self.expansion_roots}
         for candidate in candidates:
-            parent_key = parents.get(node_key(candidate.unit))
-            root = roots.get(parent_key) if parent_key is not None else None
+            parent = parents.get(node_key(candidate.unit))
+            if parent is None:
+                continue
+            parent_key, depth = parent
+            root = roots.get(parent_key)
             if root is not None:
-                self.recalled_children.append((root, candidate))
+                self.recalled_children.append((root, candidate, depth))
         self.recalled_children_ready = True
 
 
@@ -139,6 +144,41 @@ def prepare_expansion(
 
 
 @dataclass
+class _RecalledProgress:
+    """单根补位统计；不影响候选选择或共享预算。"""
+
+    root: ExpansionRoot
+    outcome: ExpandResult = field(default_factory=ExpandResult)
+    cost_ms: float = 0.0
+    stop_reason: str = ""
+
+    def stop(self, reason: str) -> None:
+        """标记未完成的候选补位，不新增通道错误。"""
+        self.stop_reason = reason
+        self.outcome.complete = False
+        # 窗口预先占满时未检查候选，不能声称已发现被截掉的后代。
+        self.outcome.truncated = reason != "top_k_full"
+
+
+def _recalled_candidates(
+    prepared: list[PreparedRetrievalResult], selected: set[NodeKey],
+) -> list[tuple[ExpansionRoot, ScoredMemoryUnit, int]]:
+    """保持空间及融合原序；仅检查参与补位的提供方。"""
+    candidates: list[tuple[ExpansionRoot, ScoredMemoryUnit, int]] = []
+    for result in prepared:
+        if not result.recalled_children_ready and any(
+            node_key(root.candidate.unit) in selected for root in result.expansion_roots
+        ):
+            raise UnsupportedCapabilityError(
+                "defer_expansion", "true", "Retriever", "检索实现未完成已召回后代的准备",
+            )
+        for entry in result.recalled_children:
+            if node_key(entry[0].candidate.unit) in selected:
+                candidates.append(entry)
+    return candidates
+
+
+@dataclass
 class _Completion:
     query: RetrievalQuery
     result: RetrievalResult
@@ -178,42 +218,30 @@ class _Completion:
         self, prepared: list[PreparedRetrievalResult], roots: list[ExpansionRoot],
     ) -> None:
         """按空间处理顺序、空间内融合原序补位，仅保留所选父的后代。"""
-        parent_count = len(self.result.items)
-        if parent_count >= self.query.top_k:
-            return
         started = perf_counter()
-        selected = {node_key(root.candidate.unit) for root in roots}
-        # prepared 沿用扇出目标顺序；不按完成时间或跨空间分数重排。
-        candidates: list[tuple[ExpansionRoot, ScoredMemoryUnit]] = []
-        for result in prepared:
-            # 只检查参与本次补位的提供方；未选中的空间不阻断查询。
-            if not result.recalled_children_ready and any(
-                node_key(root.candidate.unit) in selected for root in result.expansion_roots
-            ):
-                raise UnsupportedCapabilityError(
-                    "defer_expansion", "true", "Retriever",
-                    "检索实现未完成已召回后代的准备",
-                )
-            for root, candidate in result.recalled_children:
-                if node_key(root.candidate.unit) in selected:
-                    candidates.append((root, candidate))
-        for root, candidate in candidates:
-            if len(self.result.items) >= self.query.top_k:
-                break
-            if node_key(candidate.unit) in self.seen:
-                continue
-            if self.remaining_nodes <= 0:
-                outcome = ExpandResult()
-                outcome.exclude("node_limit", truncated=True)
-                self.record(root, outcome, 0.0)
-                break
-            self.remaining_nodes -= 1
-            if not self.select(root, candidate.unit, 1):
-                outcome = ExpandResult()
-                outcome.exclude("budget_exhausted", truncated=True)
-                self.record(root, outcome, 0.0)
-                break
-        if self.query.with_trajectory:
+        parent_count = len(self.result.items)
+        progress = {node_key(root.candidate.unit): _RecalledProgress(root) for root in roots}
+        if parent_count >= self.query.top_k:
+            for state in progress.values():
+                state.stop("top_k_full")
+            candidates = []
+        else:
+            candidates = _recalled_candidates(prepared, set(progress))
+            stop_reason = ""
+            for entry in candidates:
+                root, candidate, _ = entry
+                if node_key(candidate.unit) in self.seen:
+                    continue
+                state = progress[node_key(root.candidate.unit)]
+                if not stop_reason:
+                    stop_reason = self.select_recalled_candidate(entry, state)
+                if stop_reason:
+                    state.stop(stop_reason)
+        for state in progress.values():
+            self.record(state.root, state.outcome, state.cost_ms, detail={
+                "mode": "recalled_children", "stop_reason": state.stop_reason,
+            })
+        if parent_count < self.query.top_k and self.query.with_trajectory:
             self.result.trajectory.append(TrajectoryStep(
                 stage="child_select", cost_ms=(perf_counter() - started) * 1000,
                 candidate_count=len(candidates), detail={
@@ -223,6 +251,30 @@ class _Completion:
                     "ranking_cutoff": str(self.query.top_k),
                 },
             ))
+
+    def select_recalled_candidate(
+        self, entry: tuple[ExpansionRoot, ScoredMemoryUnit, int], state: _RecalledProgress,
+    ) -> str:
+        """尝试一个候选；停止后只记录原因，不再披露或消耗预算。"""
+        if len(self.result.items) >= self.query.top_k:
+            return "top_k_limit"
+        if self.remaining_nodes <= 0:
+            state.outcome.exclude("node_limit", truncated=True)
+            return "node_limit"
+        root, candidate, depth = entry
+        self.remaining_nodes -= 1
+        state.outcome.visited_count += 1
+        before = len(self.result.items)
+        started = perf_counter()
+        admitted = self.select(root, candidate.unit, depth)
+        state.cost_ms += (perf_counter() - started) * 1000
+        if not admitted:
+            state.outcome.exclude("budget_exhausted", truncated=True)
+            return "budget_exhausted"
+        if len(self.result.items) > before:
+            state.outcome.selected_count += 1
+            state.outcome.actual_depth = max(state.outcome.actual_depth, depth)
+        return ""
 
     def expand(self, root: ExpansionRoot) -> None:
         """根按最终命中顺序执行 BFS；共享节点上限和预算不会在空间边界重置。"""
@@ -246,7 +298,10 @@ class _Completion:
         self.remaining_nodes -= outcome.visited_count
         self.record(root, outcome, (perf_counter() - started) * 1000)
 
-    def record(self, root: ExpansionRoot, outcome: ExpandResult, cost_ms: float) -> None:
+    def record(
+        self, root: ExpansionRoot, outcome: ExpandResult, cost_ms: float,
+        *, detail: dict[str, str] | None = None,
+    ) -> None:
         """缺子、拒绝与截断在 errors 中可见，轨迹开关不会隐藏不完整状态。"""
         for issue in outcome.issues:
             self.result.errors.append(ChannelError(
@@ -270,6 +325,7 @@ class _Completion:
                     "complete": str(outcome.complete).lower(),
                     "issues": ",".join(issue.code for issue in outcome.issues),
                     "estimated_tokens": str(self.budget.spent),
+                    **(detail or {}),
                 },
             ))
 
