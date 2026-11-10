@@ -100,7 +100,7 @@ globals:
 #       dedup: default
 #       llm: default
 #       # dedup_medium_similarity: 0.7   # 可选：consolidate 中段阈值（< 此值直接 ADD）
-#       # dedup_high_similarity: 0.9     # 可选：consolidate 高相似阈值（≥ 此值直接 NOOP）
+#       # dedup_high_similarity: 1.0   # 可选：高相似阈值（1.0 仅让精确重复短路）
 
 # ====================================================================== #
 # 群体记忆：空间治理 + 归属判定

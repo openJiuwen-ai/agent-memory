@@ -116,9 +116,14 @@ Evolver.evolve(units, mode):
    `DynamicEvolver._evolve_extract`（dynamic）在 consolidate 只判定，reflect 后统一落盘。
    装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`，保证 fulltext-only 下去重仍可用。
    模型改选目标后，执行时使用该目标自身的召回分数，不能继续携带最高分命中的分数。
+   LLM 返回 UPDATE/SUPERSEDE 时应给出 `existing_id`；执行时只能在该候选本次
+   recall 命中中解析目标。`OrchestratingEvolver` 仅在一个可见命中且 ID 缺省时使用
+   该唯一命中；多命中缺省或 ID 非法时降级 ADD，禁止改用最高相似项。
+   `DynamicEvolver` 的自定义 consolidate prompt 仍要求显式 ID。
    高相似 direct_noop 短路（`score ≥ dedup_high_similarity`）须经
    `evolver_impl/dedup_direct_noop.should_direct_noop` 校验：仅当相对已有记忆无
    `has_meaningful_delta`（`t_event` 冲突、更正词、日期 span 集合差）时才允许跳过 LLM。
+   `dedup_high_similarity` 默认 `1.0`；仅精确重复且无实质差异时才允许 direct_noop。
 
 8. **构建层不依赖 control**
    SUPERSEDE/FORGET 标记由 `OrchestratingEvolver`/`DynamicEvolver` 经
