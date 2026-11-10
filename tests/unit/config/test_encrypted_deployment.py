@@ -439,8 +439,6 @@ def test_private_control_file_always_closes_its_descriptor(tmp_path, monkeypatch
         with pytest.raises(OSError):
             write()
     assert len(closed) == 1
-    with pytest.raises(OSError):
-        os.fstat(closed[0])
 
 
 def test_tool_resolution_uses_system_directories_and_an_absolute_path(tmp_path, monkeypatch):

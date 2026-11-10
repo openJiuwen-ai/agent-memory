@@ -38,6 +38,8 @@
    仍为 no-op，恢复能力尚未落地。
 3. **接口与实现严格分离**：顶层 `.py` 纯抽象（不 import `*_impl/`），实现经 `@Producer.register` 自注册。端侧用规则/小模型（keyword classifier、hashing embedder）、云侧用强 LLM，只改配置不改代码。共享插件（Embedder/Tokenizer/Chunker/FeatureExtractor）须与 retrieval 侧同一实例，装配按字段名缓存保证同实例。
 4. **去重召回与判定分离**：去重召回抽象成独立 `Dedup` 接口，Evolver 只做阈值 + LLM 判定。装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`——只配倒排时去重仍可用（向量路在 fulltext-only 下 VectorStore 恒空会失效）。两路 score 同为 0~1 量纲（cosine / 词重叠率），medium/high 阈值统一复用。
+   LLM 判定 UPDATE/SUPERSEDE 时同时返回 `existing_id`，执行层只在同一候选的本次召回命中中解析目标；最高相似项是排序结果，不是语义更正目标。`OrchestratingEvolver` 仅在一个可见命中且 ID 缺省时保留单命中兼容；多命中缺省、非法或越界的 ID 降级为 ADD，防止误覆盖相似但并非被更正的事实。`DynamicEvolver` 自定义 prompt 仍要求显式 ID。
+   `dedup_high_similarity` 默认取 `1.0`，使未达到精确重复的候选都进入 LLM 判定；`1.0` 仍需 `should_direct_noop` 确认无实质差异，避免相同向量分数掩盖更正语义。
 5. **SUPERSEDE 不经 LifecycleManager**：Evolver 标记旧版 SUPERSEDED 直接 `KVStore.update`，不经 control 层 LifecycleManager（construction → control 严禁）。版本链由 `supersedes` 字段记录，非破坏式、保留血缘。
 6. **去重不用 Reranker**：LLM 直接做最终语义判定，Reranker 中间层不增精度只增开销。若未来需降 LLM 调用成本，可考虑在 LLM 前加 Reranker 过滤器。
 7. **LLM 上限按总尝试次数命名**：Construction 层统一使用 `max_attempts` 表示
@@ -153,7 +155,7 @@
 
 ### 单元测试
 
-- `tests/unit/construction/test_evolver_dedup.py` — 去重决策四态（ADD/UPDATE/SUPERSEDE/NOOP）+ 降级场景（Embedder/VectorStore/LLM 失败）+ 自身过滤 + 高相似实质差异改走 LLM（`TestDedupDirectNoopDelta`）。其中 supersede/update/json-fallback 三例用 `dedup_high_similarity=1.01` 抬高短路阈值，强制走 LLM 判定分支（默认高相似且无实质差异才 direct_noop，测 LLM 路径时需抬高阈值或构造 `has_meaningful_delta`）
+- `tests/unit/construction/test_evolver_dedup.py` — 去重决策四态（ADD/UPDATE/SUPERSEDE/NOOP）+ 降级场景（Embedder/VectorStore/LLM 失败）+ 自身过滤 + 高相似实质差异改走 LLM（`TestDedupDirectNoopDelta`）。其中 supersede/update/json-fallback 等四例用 `dedup_high_similarity=1.01` 抬高短路阈值，强制走 LLM 判定分支（默认高相似且无实质差异才 direct_noop，测 LLM 路径时需抬高阈值或构造 `has_meaningful_delta`）
 - `tests/unit/construction/test_dedup_direct_noop.py` — `should_direct_noop` / `has_meaningful_delta` 启发式闸门
 - `tests/unit/construction/test_extractor.py` — Extractor 4 Phase；`test_extract_batch` 验证批量提取一次 LLM 调用返回全部候选、`source_id` 回指正确源 unit
 - `tests/unit/construction/test_e2e_evolution.py` — 演进闭环端到端

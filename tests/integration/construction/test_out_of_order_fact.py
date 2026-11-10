@@ -30,6 +30,22 @@ from tests.unit.construction.test_dynamic_extraction_consolidation import (
 pytestmark = pytest.mark.integration
 
 
+class _SupersedeExistingTargetLLM(_ScriptedLLM):
+    """Return a modification decision bound to the first recalled existing unit."""
+
+    def chat(self, messages, **options):
+        self.messages.append(messages)
+        content = messages[-1].content
+        target = re.search(
+            r"Existing(?: similar)? memories:\n\[Memory ID: ([^\]]+)\]",
+            content,
+        )
+        assert target is not None, "test prompt must list a recalled existing memory"
+        return json.dumps(
+            {"decision": "supersede", "existing_id": target.group(1)}
+        )
+
+
 def _setup(kind, unified=False, *, llm=None, prompts=None):
     stores = create_test_stores()
     plugins = create_test_plugins()
@@ -45,9 +61,7 @@ def _setup(kind, unified=False, *, llm=None, prompts=None):
         extractor=object(), abstractor=object(), associator=object(),
         index_builder=builder, storage=manager, message_store=stores["kv"],
         dedup=KeywordDedup(manager),
-        llm=llm if llm is not None else _ScriptedLLM(
-            [json.dumps({"decision": "supersede"})] * 20
-        ),
+        llm=llm if llm is not None else _SupersedeExistingTargetLLM(),
         dedup_high_similarity=1.1,
         **options,
     )
