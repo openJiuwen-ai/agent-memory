@@ -343,6 +343,7 @@ class Action(str, Enum):
     # -- 审计动作 -------------------------------------------------------- #
     READ_AUDIT = "read_audit"  # 查询审计事件
     VERIFY_AUDIT = "verify_audit"  # 校验审计链完整性
+    MIGRATE_MEMORY = "migrate_memory"  # 显式明文记忆迁移；不可委托或借 Grant 扩权
 
     # -- 系统动作 -------------------------------------------------------- #
     ADMINISTER_SYSTEM = "administer_system"  # 跨 org 的系统级操作
@@ -355,6 +356,7 @@ MANAGEMENT_ACTIONS: frozenset[Action] = frozenset(
         Action.MANAGE_POLICY,
         Action.READ_AUDIT,
         Action.VERIFY_AUDIT,
+        Action.MIGRATE_MEMORY,
         Action.ADMINISTER_SYSTEM,
     }
 )

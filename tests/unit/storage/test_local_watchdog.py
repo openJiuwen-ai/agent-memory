@@ -30,7 +30,6 @@ from jiuwen_memory.common.type_def import (
     LifecycleState,
     Scope,
 )
-
 from jiuwen_memory.storage.markdown_impl._md_blocks import (
     collect_blocks_from_text,
     collect_md_blocks,

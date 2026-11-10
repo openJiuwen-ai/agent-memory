@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -18,6 +18,16 @@
 规约结果假报成功。上传/轮询退避等待允许提前唤醒，不修改公共模型插件方法签名。
 无信号时普通调用行为不变；SDK 内部重试、正在执行的同步请求或外部进程不保证中断，
 停止本地轮询不保证停止远端任务或计费。临时目录仍由已有 finally/上下文管理器释放。
+
+## 明文拒绝与格式识别增量
+
+`CryptographyProvider.is_ciphertext(value: bytes) -> bool | None` 为非抽象可选能力。
+true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信封输入，不能据此授权
+修复、迁移或把损坏密文降级为明文；None 表示未声明识别能力，旧 provider 解密行为不变，
+维护工具不得据此声称能可靠扫描。具体格式由插件识别，核心不按具体实现或私有状态判定。
+`common.plaintext.PlaintextDataError` 是继承 BackendError 的内部拒绝信号，正常读取继续
+按既有异常契约失败，不新增公共 API 返回类型。错误消息不携带存储路径、内容、密钥或
+未经授权的记录身份。
 
 ## Metadata 领域模型契约
 

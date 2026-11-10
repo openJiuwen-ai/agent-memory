@@ -21,6 +21,7 @@
 | `_import_support.py` | 导入容错样板的唯一归属地（`import_optional`/`import_required`/`import_required_attr`）：装配各 `*_impl` 包触发 `@Producer.register` 时逐个隔离可选依赖，单个缺失只让该插件缺席、不连坐同批其他插件、不阻断 `MemoryAPI` 构造。刻意与 `_support.py` 分家——后者讲配置值语义且连带 `type_def`/`Factory`/`errors`，本模块讲导入机制且**只依赖标准库**（51 个 `*_impl`/bootstrap 消费点各自 import 一次，自身须停在零项目依赖）；**不得**引入任何 `jiuwen_memory` 内部对象，以免装配期导入顺序反受各层先后影响。接入侧另有一份 `jiuwen_memory_entry/core/import_support.py`——Access 只允许依赖 `jiuwen_memory.api`（见 `tests/unit/api/test_access_api_boundary.py`），两侧不复用 |
 | `log/` | 统一运行日志入口：`base.py` 提供 `get_logger` / `setup_logging`，`privacy_filter.py` 提供默认全局启用的 `SensitiveDataFilter` 及 `install_privacy_filter` / `redact_for_log` / `metadata_for_log` / `scope_for_log`；普通服务端日志在 Formatter 前脱敏，保留字段结构和经调用点确认的 MemoryUnit 技术 ID，不修改业务对象或正式 API 响应 |
 | `time_utils.py` | 纯时间转换 as_utc/epoch_ms：无时区按 UTC，有时区保持实际时刻；不依赖服务器时区、不改写真源 |
+| `plaintext.py` | 继承 BackendError 的内部非信封拒绝信号；不实现密码学算法或新增 API 错误结果值 |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。另有 `KERNEL_COORD_KEYS`——内核自带的归属坐标实体名，三项取值必须是 `Scope` 的字段名，故与该类同处 |
@@ -53,6 +54,8 @@
   通过公开真源能力取得按对象身份去重后的唯一 Store；缺失或多个不同真源拒绝启动。
   `security.params.delegation_store` 不再接受，旧配置必须删除该项；未启用绑定时不要求
   Authorizer 暴露唯一委托真源，资源释放仍由统一生命周期根管理。
+
+- **非信封拒绝**：密码学插件可声明 is_ciphertext，识别不等于认证；PlaintextDataError 仅用于中断读取并沿既有 BackendError 契约传播，不开启明文回退或新增 API 返回类型。MIGRATE_MEMORY 不接受 Grant/Delegation 扩权，USER 的 space（含空值）必须精确匹配目标，非空 agent/session 绑定继续约束目标。
 
 - **静态保护能力注册**：Factory 的 config_inspectors 随 target 注册或替换，
   registration_scope 同时恢复 builder 与检查器，不改变 AssemblyContext 的缓存所有权。
