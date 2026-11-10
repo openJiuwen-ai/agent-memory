@@ -699,7 +699,14 @@ def test_re_register_within_tick_window_clears_stale_stopped_reason() -> None:
 
     async def _run():
         jid = await scheduler.submit(_SwitchJob(scope, interval=1), Channel.BACKGROUND)
-        await asyncio.sleep(1.8)  # 首触即拒 → FAILED + stopped_reason
+        # 首触即拒 → FAILED + stopped_reason。这里用状态轮询代替固定 sleep：
+        # 固定等待在负载高的 CI 上会跨过下一个 tick，Timer 判定"全部 entry 已完成"
+        # 后退出并清理 wheel，重注册就会走新建路径（job_id 变化），造成偶发失败。
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if scheduler._jobs[jid].status == JobStatus.FAILED:
+                break
+            await asyncio.sleep(0.02)
         assert scheduler._jobs[jid].status == JobStatus.FAILED
 
         _SwitchJob.denied = False
