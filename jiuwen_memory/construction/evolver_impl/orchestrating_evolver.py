@@ -47,6 +47,7 @@ from jiuwen_memory.common.type_def import (
     HierarchyRef,
     LifecycleState,
     MemoryUnit,
+    Modality,
     Relation,
     Scope,
     inherited_system_metadata,
@@ -304,6 +305,9 @@ class OrchestratingEvolver(Evolver):
         return any(
             str(u.system_metadata.get("procedural", "")).strip().lower() == "true" for u in units
         )
+
+    def structured_modalities(self) -> frozenset[Modality]:
+        return self._extractor.structured_modalities()
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EVOLVER

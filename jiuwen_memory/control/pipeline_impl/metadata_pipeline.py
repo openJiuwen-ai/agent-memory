@@ -13,6 +13,7 @@ from jiuwen_memory.common.log import (
 from jiuwen_memory.common.type_def import (
     MEMORY_TYPE_FILTER_FIELD,
     MemoryUnit,
+    MetadataValueType,
     extract_required_equality,
 )
 from jiuwen_memory.construction.classifier import ClassifierProducer
@@ -61,6 +62,12 @@ class MetadataPipeline(MemoryPipeline):
             binding.evolver.health()
             if binding.classifier is not None:
                 binding.classifier.health()
+
+    def explicit_write_binding(
+        self, metadata: Mapping[str, MetadataValueType],
+    ) -> PipelineBinding | None:
+        value = str(metadata.get(self._route_key, "")).strip()
+        return self._profiles.get(self._routes.get(value, value)) if value else None
 
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:
         value = _route_value_from_units(units, self._route_key)

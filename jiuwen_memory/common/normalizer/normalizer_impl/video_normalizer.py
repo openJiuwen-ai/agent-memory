@@ -16,6 +16,7 @@ from jiuwen_memory.common.ingest_cancellation import IngestCancelled, check_inge
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.normalizer.base import (
+    LocalMediaPreflight,
     Normalizer,
     NormalizerProducer,
     ensure_normalizer_supports,
@@ -122,6 +123,11 @@ class VideoNormalizer(Normalizer):
                 "multimodal system dependencies are missing: "
                 + ", ".join(missing_binaries)
             )
+
+    def local_media_preflight(self, modality: Modality) -> LocalMediaPreflight | None:
+        if modality != Modality.VIDEO or not self._local_media.has_bindings:
+            return None
+        return self._local_media.preflight_video
 
     def normalize(self, payload: RawPayload) -> str:
         check_ingest_cancelled()

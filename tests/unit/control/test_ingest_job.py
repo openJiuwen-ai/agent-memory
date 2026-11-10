@@ -7,9 +7,12 @@ import pytest
 
 from jiuwen_memory.common.errors import BackendError, ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import MemoryUnit, Modality, Scope, Segment
+from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+from jiuwen_memory.config.routing import ActiveRouter, RoutingKVStore
 from jiuwen_memory.control.ingest_job import check_ingest_cancelled
 from jiuwen_memory.control.job_impl.ingest_job import InProcessIngestJobController
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
 
 pytestmark = pytest.mark.unit
 
@@ -288,11 +291,41 @@ def test_old_controller_reuses_the_successful_retry_in_the_shared_store() -> Non
         retry.close()
 
 
-def test_second_controller_cancels_a_live_job_in_the_shared_store() -> None:
+def test_sqlite_coordination_binding_pins_late_bound_path(tmp_path) -> None:
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    config = DictConfigSource({"kv_store.db_path": str(first)})
+    store = SQLiteKVStore(config_source=config)
     scope = Scope(org="tnt", user="alice")
-    kv = InMemoryKVStore()
-    writer = InProcessIngestJobController(kv=kv)
-    reader = InProcessIngestJobController(kv=kv)
+    try:
+        original_key = store.coordination_key()
+        with store.bind_coordination(original_key):
+            config.put("kv_store.db_path", str(second))
+            store.insert(scope, "job", b"first")
+        assert not store.exists(scope, "job")
+        with pytest.raises(BackendError, match="ingest job store changed"):
+            with store.bind_coordination(original_key):
+                pytest.fail("a different store must be rejected")
+        config.put("kv_store.db_path", str(first))
+        assert store.get(scope, "job") == b"first"
+    finally:
+        store.close()
+
+
+def test_sqlite_job_coordination_uses_the_live_store_not_the_job_id(tmp_path) -> None:
+    scope = Scope(org="tnt", user="alice")
+    db = tmp_path / "jobs.sqlite"
+    source = SQLiteKVStore(str(db))
+    shared = SQLiteKVStore(str(db))
+    snapshot = SQLiteKVStore(str(tmp_path / "snapshot.sqlite"))
+    writer = InProcessIngestJobController(kv=source)
+    config = DictConfigSource({"kv_store.active": "shared"})
+    routed = RoutingKVStore(ActiveRouter(
+        namespace="kv_store", instances={"shared": shared, "snapshot": snapshot},
+        config_source=config, default_name="shared",
+    ))
+    reader = InProcessIngestJobController(kv=routed)
+    isolated = InProcessIngestJobController(kv=snapshot)
     started = Event()
     release = Event()
 
@@ -311,6 +344,20 @@ def test_second_controller_cancels_a_live_job_in_the_shared_store() -> None:
         with pytest.raises(NotFoundError):
             reader.cancel(job_id, scope=Scope(org="tnt", user="bob"))
         assert reader.status(job_id, scope=scope).status == "running"
+        for key, value in source.scan(scope):
+            snapshot.insert(scope, key, value)
+        with routed.bind_coordination(shared.coordination_key()):
+            config.put("kv_store.active", "snapshot")
+            assert routed.coordination_key() == shared.coordination_key()
+        assert routed.coordination_key() == snapshot.coordination_key()
+        with pytest.raises(BackendError, match="ingest job store changed"):
+            reader.cancel(job_id, scope=scope)
+        config.put("kv_store.active", "shared")
+        interrupted = isolated.status(job_id, scope=scope)
+        assert interrupted.status == "failed"
+        assert interrupted.retry_requires_reconciliation
+        isolated.cancel(job_id, scope=scope)
+        assert not writer.status(job_id, scope=scope).cancel_requested
         reader.cancel(job_id, scope=scope)
         assert writer.status(job_id, scope=scope).cancel_requested
         release.set()
@@ -320,3 +367,6 @@ def test_second_controller_cancels_a_live_job_in_the_shared_store() -> None:
         release.set()
         writer.close()
         reader.close()
+        isolated.close()
+        for store in (source, shared, snapshot):
+            store.close()

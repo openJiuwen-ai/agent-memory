@@ -230,7 +230,18 @@ class TestAvailability:
 
 
 class TestSdkMode:
-    def test_video_tool_writes_document_units(self, tmp_path, monkeypatch):
+    def test_failed_video_discovery_preserves_standard_tools(self, tmp_path):
+        provider = AgentMemoryMemoryProvider(
+            config_path=str(tmp_path / "missing.yml"),
+            security_provider=_security_provider(ApiScope(org="tenant", user="user")),
+        )
+        assert len(provider.get_tool_schemas()) == 4
+        assert "agent_memory_video_submit" not in provider.system_prompt_block()
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(provider.initialize())
+
+    @pytest.mark.parametrize("configuration", ["inline", "globals", "no-pipeline", "wrong-evolver"])
+    def test_video_tool_writes_document_units(self, tmp_path, monkeypatch, configuration):
         media = tmp_path / "imports"
         media.mkdir()
         video = media / "corgi.mp4"
@@ -287,14 +298,34 @@ class TestSdkMode:
             }}},
         }
 
+        if configuration == "globals":
+            route = config["normalizer"]["default"]["params"]["routes"]["video"]
+            config["globals"] = {"local_media_roots": route["params"].pop("local_media_roots")}
+        elif configuration == "no-pipeline":
+            del config["pipeline"]
+        elif configuration == "wrong-evolver":
+            config["pipeline"]["default"]["params"]["profiles"]["video"]["evolver"] = "default"
+
         async def run():
             provider = AgentMemoryMemoryProvider(
                 config_dict=config,
                 security_provider=_security_provider(ApiScope(org="tenant", user="user")),
             )
-            assert "agent_memory_video_submit" in {s["name"] for s in provider.get_tool_schemas()}
+            enabled = configuration in {"inline", "globals"}
+            schemas = {s["name"]: s for s in provider.get_tool_schemas()}
+            assert ("agent_memory_video_submit" in schemas) is enabled
+            assert ("agent_memory_video_status" in schemas) is enabled
+            early = await provider.handle_tool_call("agent_memory_video_submit", {"uri": uri})
+            assert json.loads(early) == {"error": "provider not initialized"}
             await provider.initialize(user_id="user", scope_id="tenant", session_id="")
             try:
+                if not enabled:
+                    denied = json.loads(await provider.handle_tool_call(
+                        "agent_memory_video_submit", {"uri": uri},
+                    ))
+                    assert denied == {"error": "Video memory tools are disabled"}
+                    assert not list(tmp_path.rglob("MEMORY.md"))
+                    return
                 for invalid_uri, reason in (
                     (outside.as_uri(), "outside the configured import scope"),
                     (media.as_uri() + "/%2e%2e/outside.mp4", "outside the configured import scope"),
@@ -304,12 +335,18 @@ class TestSdkMode:
                         "agent_memory_video_submit", {"uri": invalid_uri},
                     ))
                     assert reason in denied["error"] and "job_id" not in denied
+                parameters = schemas["agent_memory_video_submit"]["parameters"]
+                assert parameters["properties"]["project"]["type"] == "string"
+                assert parameters["required"] == ["uri"]
+                # Exercise both explicit project routing and the no-project default.
+                project = {"project": "video-review"} if configuration == "globals" else {}
+                submit_args = {"uri": uri, **project}
                 submission = json.loads(await provider.handle_tool_call(
-                    "agent_memory_video_submit", {"uri": uri},
+                    "agent_memory_video_submit", submit_args,
                 ))
                 job_id = submission["job_id"]
                 repeated = json.loads(await provider.handle_tool_call(
-                    "agent_memory_video_submit", {"uri": uri},
+                    "agent_memory_video_submit", submit_args,
                 ))
                 assert repeated["job_id"] == job_id and repeated["reused"]
                 async with asyncio.timeout(10):
@@ -323,10 +360,12 @@ class TestSdkMode:
                 assert status["status"] == "succeeded", status
                 assert len(status["unit_ids"]) == 2
                 document = json.loads(await provider.handle_tool_call(
-                    "agent_memory_read_md_file", {"md_filename": "MEMORY.md"},
+                    "agent_memory_read_md_file", {"md_filename": "MEMORY.md", **project},
                 ))
                 assert {block["item_id"] for block in document["blocks"]} == set(status["unit_ids"])
-                markdown = next(tmp_path.rglob("MEMORY.md")).read_text(encoding="utf-8")
+                md_path = next(tmp_path.rglob("MEMORY.md"))
+                assert md_path.parent.name == project.get("project", "memory")
+                markdown = md_path.read_text(encoding="utf-8")
                 assert "A corgi chases a ball" in markdown
 
                 def conflict(*_args, **_kwargs):
@@ -336,7 +375,7 @@ class TestSdkMode:
 
                 monkeypatch.setattr(provider._client._api, "submit_ingest", conflict)
                 blocked = json.loads(await provider.handle_tool_call(
-                    "agent_memory_video_submit", {"uri": uri},
+                    "agent_memory_video_submit", submit_args,
                 ))
                 assert blocked["code"] == "video_ingest_conflict"
                 assert job_id in blocked["error"] and "reconcile" in blocked["error"]

@@ -37,12 +37,18 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
+from jiuwen_memory.common.errors import (
+    AgentMemoryError,
+    NotFoundError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -269,6 +275,19 @@ class AgentEngine(MemoryEngine):
     def health(self) -> None:
         self._retrieval_pipelines.health()
 
+    def _video_write_binding(self) -> PipelineBinding | None:
+        if self._pipeline is None:
+            return None
+        binding = self._pipeline.explicit_write_binding({"pipeline": "video"})
+        if binding is None or Modality.VIDEO not in binding.evolver.structured_modalities():
+            return None
+        return binding
+
+    def video_ingest_preflight(self) -> LocalMediaPreflight | None:
+        if self._video_write_binding() is None:
+            return None
+        return self._ingestor.local_media_preflight(Modality.VIDEO)
+
     async def write(
         self,
         content: str,
@@ -298,6 +317,11 @@ class AgentEngine(MemoryEngine):
         infer = _is_true("infer")
 
         is_video = source == Modality.VIDEO
+        video_binding = None
+        if is_video and str(meta.get("pipeline", "")).strip() == "video":
+            video_binding = self._video_write_binding()
+            if not infer or video_binding is None:
+                raise UnsupportedCapabilityError("write_pipeline", "video", type(self).__name__)
         payload_id = str(meta.get("payload_id", "")).strip() if is_video else ""
         payload = RawPayload(
             id=payload_id or str(uuid.uuid4()),
@@ -319,7 +343,7 @@ class AgentEngine(MemoryEngine):
             if "session_id" in meta:
                 unit.system_metadata["session_id"] = meta["session_id"]
 
-        binding = self._write_binding(units)
+        binding = video_binding or self._write_binding(units)
         evolver = binding.evolver if binding is not None else self._evolver
         index_builder = binding.index_builder if binding is not None else self._index
         classifier = binding.classifier if binding is not None else self._classifier

@@ -75,6 +75,11 @@ class LocalMediaImports:
             entry = _ImportRoot(root, identity.st_dev, identity.st_ino)
             self._roots[key] = (*self._roots.get(key, ()), entry)
 
+    @property
+    def has_bindings(self) -> bool:
+        """Whether any local import roots are configured."""
+        return bool(self._roots)
+
     def stage(self, uri: str, scope: Scope, run_root: Path) -> Path:
         """Copy an admitted, safely opened file; downstream tools never reopen the input path."""
         with self._open_admitted(uri, scope) as (path, source):

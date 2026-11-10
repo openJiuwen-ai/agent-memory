@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.common.type_def import MemoryUnit, Modality
 
 from .base import ConstructionOperator, ExtractContext
 
@@ -29,6 +29,10 @@ class ExtractorProducer(Factory):
 
 
 class Extractor(ConstructionOperator):
+    def structured_modalities(self) -> frozenset[Modality]:
+        """Declare supported structured normalizer outputs."""
+        return frozenset()
+
     @abstractmethod
     def extract(
         self,

@@ -65,7 +65,6 @@ from jiuwen_memory.api import (
     Context,
     DisclosureLevel,
     EvolveMode,
-    LocalMediaImports,
     Modality,
     RequestSecurityContext,
     ValidationError,
@@ -97,7 +96,13 @@ VIDEO_SUBMIT_SCHEMA: dict[str, Any] = {
     ),
     "parameters": {
         "type": "object",
-        "properties": {"uri": {"type": "string", "description": "Local file:/// video URI"}},
+        "properties": {
+            "uri": {"type": "string", "description": "Local file:/// video URI"},
+            "project": {
+                "type": "string",
+                "description": "Project coordinate. Omit to use the current project, if set.",
+            },
+        },
         "required": ["uri"],
     },
 }
@@ -627,17 +632,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if "space" in kwargs:
             self._space = kwargs.get("space") or ""
 
-        if self._client is None:
-            self._client = _build_client(
-                self._base_url,
-                self._config_path,
-                security_provider=self._security_provider,
-                config_dict=self._config_dict,
-                api_key=self._api_key,
-                identity_org=self._identity_org,
-                identity_user=self._identity_user,
-            )
-        await self._client.initialize()
+        await self._ensure_client().initialize()
         self._initialized = True
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, config=%s, scope=%s)",
@@ -651,15 +646,31 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     # -- MemoryProvider: 工具声明 + 调度 -------------------------------------- #
 
+    def _ensure_client(self) -> _AgentMemoryClient:
+        if self._client is None:
+            self._client = _build_client(
+                self._base_url,
+                self._config_path,
+                security_provider=self._security_provider,
+                config_dict=self._config_dict,
+                api_key=self._api_key,
+                identity_org=self._identity_org,
+                identity_user=self._identity_user,
+            )
+        return self._client
+
     def _video_tools_enabled(self) -> bool:
-        if self._base_url:
+        if self._base_url or not self.is_available():
             return False
-        normalizer = (self._config_dict or {}).get("normalizer", {}).get("default", {})
-        return (
-            isinstance(normalizer, dict)
-            and normalizer.get("target") == "routing"
-            and "video" in normalizer.get("params", {}).get("routes", {})
-        )
+        # Rail asks for schemas before initialize; assemble once, then reuse that client.
+        if self._client is None and self._config_dict is None and not self._config_path:
+            return False
+        try:
+            client = self._ensure_client()
+        except Exception as exc:
+            logger.warning("Video tool capability discovery failed: %s", type(exc).__name__)
+            return False
+        return isinstance(client, _InProcessClient) and client.supports_video_ingest()
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """返回 OpenAI 风格 schema；Rail 自动包成 ToolCard（§4.8）。
@@ -686,7 +697,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             tool_name,
             metadata_for_log(args),
         )
-        if self._client is None:
+        if not self._initialized or self._client is None:
             return json.dumps({"error": "provider not initialized"})
         if self._client.is_unavailable():
             return json.dumps(
@@ -944,7 +955,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             redact_for_log(query),
             bool(self._client),
         )
-        if not query or self._client is None:
+        if not query or not self._initialized or self._client is None:
             return ""
         # §6.2-E：剥 TUI 信封，用纯 content 检索，避免命中对话原文壳。
         search_query = self._prepare(query)
@@ -1013,7 +1024,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         保证检索 query 与落盘内容形态一致（此前 prefetch 剥壳、sync_turn 存壳，
         记忆里会存进带壳信封文本）。
         """
-        if not user_msg or not assistant_msg or self._client is None:
+        if not user_msg or not assistant_msg:
+            return
+        if not self._initialized or self._client is None:
             return
         user_msg = self._prepare(user_msg)
         if not user_msg:
@@ -1091,7 +1104,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         触发 ``evolve(EXTRACT)`` 让 AgentMemory Extractor 从累积原文抽取事实。
         需配 ``extractor:llm``+``llm:openai`` 才真抽取（默认 keyword 空转）。
         """
-        if self._client is None:
+        if not self._initialized or self._client is None:
             return
         logger.info(
             "[AgentMemoryMemoryProvider] on_session_end CALLED scope=%s, triggering EXTRACT",
@@ -1752,17 +1765,6 @@ class _InProcessClient(_AgentMemoryClient):
                 _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
             )
             config = data
-        normalizers = (config or {}).get("normalizer", {})
-        default = normalizers.get("default", {})
-        route = None
-        if isinstance(default, dict) and default.get("target") == "routing":
-            route = default.get("params", {}).get("routes", {}).get("video")
-        if isinstance(route, str):
-            route = normalizers.get(route)
-        bindings = (
-            route.get("params", {}).get("local_media_roots") if isinstance(route, dict) else None
-        )
-        self._video_imports = LocalMediaImports(bindings)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
@@ -1773,14 +1775,16 @@ class _InProcessClient(_AgentMemoryClient):
         """本次调用的可信上下文：由注入的 provider 产出，业务 scope 只作 target。"""
         return self._security_provider()
 
+    def supports_video_ingest(self) -> bool:
+        return self._api.supports_video_ingest()
+
     async def submit_video(self, uri: str, scope: _Scope, *, project: str) -> dict[str, Any]:
         return await asyncio.to_thread(self._submit_video, uri, self._to_api_scope(scope), project)
 
     def _submit_video(self, uri: str, scope: ApiScope, project: str) -> dict[str, Any]:
         security = self._security()
         metadata = {"infer": True, "pipeline": "video", "project": project}
-        self._api.check_write(scope, security, system_metadata=metadata)
-        uri = self._video_imports.preflight_video(uri, scope)
+        uri = self._api.prepare_video_ingest(uri, scope, security=security, project=project)
         identity = json.dumps(["video", project, uri], ensure_ascii=False)
         payload_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
         try:
