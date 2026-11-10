@@ -8,7 +8,7 @@
 | 最近一次修订日期 | 2026-11-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md，docs/features/common/F11-new-trace.md |
 
 ## 摄入协作取消
 
@@ -44,6 +44,7 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
 - 审计日志（AuditLogger）
 - 安全域横切能力（认证、资源保护与密码学，归 `common/security/`，接口与实装齐备）
 - 跨实例互斥横切接口（LockProvider）
+- 请求级处理过程追踪横切接口（TraceCollector）
 - 安全域契约（授权、审计完整性、隐私保护、独立人机认证及请求上下文受控构造入口；现行契约见 S10）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
@@ -293,6 +294,118 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 
 `LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
 静默退化成不跨实例的单机锁。
+
+### TraceCollector（`trace/trace.py`，横切）
+
+请求级处理过程追踪，存储为**调用树**：节点按「组件（模块名）→ 执行阶段」两级命名，
+span 节点包住一段执行并记 `cost_ms`，其内的事件与子 span 挂为 children，同名事件按
+发生顺序逐条保留。横切组件（不继承 Plugin、不进 PluginType），实现全部**无状态**——
+请求级调用树存于 ContextVar 携带的 `_TraceRequest` 容器，当前 span 另存一个
+ContextVar（`asyncio.gather` / `to_thread` 复制 context，子任务挂在发起时的 span 下），
+消费方经模块级函数调用，无需传递 collector 实例。
+
+| 入口 | 语义 |
+|------|------|
+| `trace_event(component, stage, data, *, level=INFO)` | 在当前 span 下记录一条事件；无活动作用域或低于阈值静默返回 |
+| `trace_span(component, stage, data=None, *, level=INFO)` | 上下文管理器：包住一段执行成为 span，异常只记类型名 |
+| `@traced(stage, component=None, *, level=INFO)` | 方法装饰器（同步/异步），component 缺省 `type(self).__name__` |
+| `trace_annotate(data, *, level=INFO)` | 把 data 合并进当前 span（结束前补结果计数） |
+| `begin_trace(target=None, trace_id=None, *, level=None)` | 开启请求作用域；target 缺省用 config 默认；trace_id 缺省取当前 request_id；level 缺省取实现的 `params.level` |
+| `parse_trace_spec(spec) -> (target, level)` | 解析请求级覆盖 `<target>[:<level>]`，空 target 沿用默认实现 |
+| `end_trace(token) -> dict` | 关闭作用域，返回 `{"trace_id", "spans", "dropped"?}`；无 buffer 语义或无节点返回 `{}` |
+| `configure_default(collector)` | 装配期注入 config 默认实现 |
+
+**详细程度** `TraceLevel` 两档：`info`（缺省，计数/耗时/路径）与 `debug`（逐条明细，
+节点标 `"level": "debug"`）。作用域阈值来源：请求覆盖 > 实现 `params.level`
+（`trace.default: {target, params: {level}}`，只读本实例 params，不回退 globals）> info；
+低于阈值的埋点在拷贝数据前丢弃，低于阈值的 span 不建节点、其内事件挂到外层 span。
+不设 warn/error/fatal：失败由异常与日志承载，span 已记 `error` 类型名。
+
+`TraceCollector.record(trace_id, path, data, level)` 只定义 sink 行为，`path` 为根到本节点
+的 `组件.阶段` 以 `/` 连接；事件记录时调用一次，span 退出时调用一次（data 含 `cost_ms`）。
+`enabled = False` 的实现（noop）使 `begin_trace` 把作用域置空，埋点与无作用域同价，
+并屏蔽外层作用域。
+
+四种实现（`TraceProducer.TOP_NAME = "trace"`，`trace.default.target` 选择）：
+`noop`（默认）/ `memory`（仅调用树，供响应填充）/ `log`（仅日志，行内带 trace_id 与 path）/
+`both`（log 子类 + 调用树）。log 行格式 `trace[<id>] <level> <path> <data>`，一律以
+INFO 写出，不按 trace 级别映射 logger 级别，避免「请求开了 debug 但被日志级别二次过滤」。
+以上为工作区当前注册名；F11 目标将 both 统一更名 memory_log，见下文待实现契约。
+请求级覆盖 `extensions["trace"]`（`"memory"` / `"memory:debug"` / `":debug"`）由入口层
+（`api_contract.pop_trace_target`，legacy dispatch 同用）在参数校验前剥离，剥空时整键
+移除，其余 extensions 键照常交签名校验。HTTP 可直接提交顶层覆盖；CLI add/search
+没有对应顶层参数，batch 还会提前执行签名校验；MCP add/search 工具也没有顶层
+extensions，通常使用 config 默认。CLI list / MCP memory_list 已有顶层 extensions，
+可传同一覆盖键；是否返回快照取决于链路是否产出埋点。context.extensions 不作该覆盖入口。
+响应填充：dict 结果加 `trace` 键，其他结果（如 `add` 的列表）仅在有 trace 时包成
+`{"result": ..., "trace": ...}`；失败时调用树挂在异常上，HTTP/CLI 经 `error_trace(exc)`
+放进一般 `AgentMemoryError` 或上游 `RateLimitError` 错误体（HTTP 的 AuthenticationError / RateLimitedError
+单独分支、InternalError 与 MCP 错误不附加）；`trace` verb 不叠加响应快照。
+体积护栏：单请求调用树最多保留 128 个节点，超出计入 `dropped`，不限制 log sink
+输出数量；字符串叶子保留前 256 字符再加截断标记，容器深度限 4，尚无总字节预算。
+memory 调用树返回当前调用方，不做内容审查；埋点 data 不得含
+正文/凭证。现有日志 Filter 只处理显式敏感值标记，log sink 直接传普通 dict，
+不自动脱敏其字符串叶子；检索错误 detail 仍可能带入异常文本。设计、拒绝方案与限制见
+[F11-new-trace.md](../features/common/F11-new-trace.md)。默认 collector 与按 target 的
+覆盖实例缓存为进程全局，后续 assemble 会覆盖默认值；请求 target 覆盖使用空 params
+构建，不引用配置中的具名实例。自定义 sink 的 record 异常当前会传播到业务调用。
+
+#### trajectory 统一与可配置限制（已设计、尚未实现，F11）
+
+现有实现仍使用固定 128 / 256 / 4 限制及检索 trajectory 双写；以下为目标契约。
+
+保留 API 的 with_trajectory 和 trajectory 步骤列表，由 common.trace 单一事件记录源
+支持捕获与非破坏性局部快照，检索层负责投影。显式 with_trajectory=true 应为当前
+检索临时开启 / 增强 buffer，即使选择 noop / log；保留原日志选择，不能因此自动开启
+通用快照响应。子分支继承根捕获预算，结束时恢复增强，读取轨迹不能关闭外层作用域。
+common 不依赖 TrajectoryStep，公开投影字段与截断步骤契约见 S02 / S04。
+
+限制为服务端执行策略，装配时解析、请求或后台任务开始时固定，独立于 collector target：
+
+| 配置键 | 默认 | 合法值 |
+|---|---|---|
+| `globals.trace_max_nodes` | 128 | 正整数或 null，null 不限制 buffer 节点数 |
+| `globals.trace_max_value_chars` | 256 | 正整数或 null，null 不截断字符串值 |
+| `globals.trace_max_depth` | 4 | 正整数或 null，null 不按深度替换值 |
+
+拒绝 bool、0、负数、字符串和小数，装配期抛 ValidationError；省略为默认，显式 null
+必须保留。所有 target、请求覆盖及 trajectory 临时 buffer 共享该策略，切换 target
+不回退或绕过限制。节点数仍不限制 log 行数；字符串和深度处理同时作用于两种视图及
+sink 数据。节点丢弃按请求和捕获区间分别计数，通用 dropped 与轨迹 trace_truncated
+据此输出；不得靠额外无限制列表恢复被丢弃记录。设计和验收见 F11。
+
+#### 后台任务、memory_log 与日志文件（已设计、尚未实现，F11）
+
+目标 target 集合为 noop / memory / log / memory_log；memory_log 表示内存调用树与
+日志同时输出，取代 both，不保留旧名别名。注册名、请求覆盖、实现类和配置同步迁移，
+实现类目标名称 MemoryLogTraceCollector。当前代码仍只注册 both，不能提前使用新名。
+
+后台任务复用同一套模块级埋点与 begin_trace / end_trace，在实际执行入口独立建立
+作用域。trace_id 显式取 scope 与 job_id 拼接，格式为
+`job|org=<org>|space=<space>|user=<user>|agent=<agent>|session=<session>|job_id=<job_id>`，
+各值按 UTF-8 百分号编码，仅保留 URI 非保留字符（字母、数字、`-._~`），空维度
+保留空值。不复用提交请求的
+request_id / 容器，不以该 ID 作为文件路径。周期 / 重试每次重建容器与预算，执行实例
+优先使用独立 job_id；复用 job_id 时另记 execution_id / attempt。
+
+启动配置 `globals.trace_jobs.types` 将执行器提供的任务类型键映射到 trace 具名实例，
+`globals.trace_jobs.default` 为未匹配类型的具名默认。优先级为 types 精确匹配 >
+trace_jobs.default > trace.default；显式 noop 不回退。任务不读取触发请求的覆盖值。
+未知引用 / 非法配置装配期拒绝，级别、文件及参数从选中实例完整保留。目标 begin_trace
+增加 collector 可选参数，与 target 互斥；可信执行器通过已装配的实例调用
+`begin_trace(trace_id=..., collector=...)`，其余埋点接口和 end_trace 不变。
+
+log / memory_log 目标接受实例参数 log_file：省略 / null 走统一日志，非空路径改走
+专用文件 sink，使用统一命名空间、格式和隐私 filter，不重复向默认 sink 传播。
+noop / memory 配 log_file、空白路径为配置错误；相对路径以启动工作目录为基准，
+装配期建目录并验证可打开。路径只能来自启动配置，不能由请求、scope 或 job_id 指定。
+不同文件不得被按 target 缓存合并；相同文件 handler 受控共享，runtime 在任务收尾后
+flush / close，end_trace 不关闭共享文件，多个 runtime 共享时按引用释放。
+文件以 UTF-8 追加，日志轮转由部署设施管理。
+
+后台 memory / memory_log 快照返回执行器内部处理，未消费则释放，不自动写回原请求
+或扩展 JobInfo，也不新增历史查询。globals 的体积策略同样适用于每次任务作用域。
+控制层执行责任见 S03，完整配置、任务键约定和验收见 F11 第 7 节。
 
 ### 安全域契约（`security/`）
 

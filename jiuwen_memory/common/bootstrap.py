@@ -28,4 +28,5 @@ def register_plugins() -> None:
     import_optional("jiuwen_memory.common.audit.audit_impl")
     import_required("jiuwen_memory.common.security.bootstrap").register_security()
     import_optional("jiuwen_memory.common.lock.lock_impl")
+    import_optional("jiuwen_memory.common.trace.trace_impl")
     _REGISTERED = True

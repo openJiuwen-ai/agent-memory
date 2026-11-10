@@ -23,7 +23,7 @@
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
 | `retriever.py` | Retriever 接口与 Producer；完整链路入口及可选 query_parsers 依赖声明 |
-| `staged_retriever.py` | StagedRetriever 抽象阶段与请求独占 RetrieveState / RetrieveRun；不提供 retrieve 编排 |
+| `staged_retriever.py` | StagedRetriever 抽象阶段与请求独占 RetrieveState / RetrieveRun；不提供 retrieve 编排；`RetrieveRun.record` 同时记录过程 trace 事件与按需返回的 trajectory |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理；`secondary_scorer/` 子目录是次级排序算子（`SecondaryScorer` 接口 + `default` 分带实现，非 Fuser） |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |

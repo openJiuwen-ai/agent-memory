@@ -25,6 +25,7 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
+from jiuwen_memory.common.trace import traced
 from jiuwen_memory.common.type_def import (
     ChannelError,
     MemoryUnit,
@@ -207,8 +208,10 @@ class PipelineRetriever(StagedRetriever):
     def query_parsers(self) -> tuple[QueryParser, ...]:
         return (self._parser,)
 
+    @traced("retrieve")
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         state = RetrieveState.start(scope, query)
+        state.run.component = type(self).__name__
         self.validate(state)
         state.log_start()
         if not self.parse(state):

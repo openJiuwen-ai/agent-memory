@@ -54,6 +54,14 @@ from jiuwen_memory.common.security.types import (
     set_current,
     validate_actor_form,
 )
+from jiuwen_memory.common.trace.trace import (
+    TRACE_OVERRIDE_KEY,
+    TraceLevel,
+    begin_trace,
+    end_trace,
+    parse_trace_spec,
+    trace_event,
+)
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
     EXT_QUERY_CONTEXT,
@@ -253,6 +261,13 @@ __all__ = [
     "set_current",
     "reset_current",
     "validate_actor_form",
+    # 横切 trace（common.trace；请求作用域与埋点，供入口层 begin/end 与填充）
+    "TRACE_OVERRIDE_KEY",
+    "TraceLevel",
+    "begin_trace",
+    "end_trace",
+    "parse_trace_spec",
+    "trace_event",
     # Access 错误映射（公开异常，transport 不识别内核内部模块）
     "AgentMemoryError",
     "AuthenticationError",

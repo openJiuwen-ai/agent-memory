@@ -51,6 +51,7 @@
 | `security/authentication/key_store.py` | PrincipalKeyStore 契约与可选 PrincipalRegistrationCapability；Trusted 无 Key 初始化采用增量能力，不扩充旧 ABC |
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
 | `security/_assembly_lifecycle.py` | 私有装配作用域：经 Factory 公开创建观察记录本次新建对象，启动失败回滚；成功将所有者显式绑定缓存纪元，保护借用依赖与较新装配。 |
+| `trace/` | TraceCollector 横切接口目录：请求级处理过程追踪（`trace/trace.py` 接口 + ContextVar 作用域 + 调用树；模块级 `trace_event(component, stage, data)` / `trace_span` / `@traced` 零参数埋点，`level=TraceLevel.DEBUG` 标逐条明细；`trace_impl/` 四种无状态实现 noop/memory/log/both）。config `trace.default.target` 选默认实现，请求级 `extensions["trace"] = "<target>[:<level>]"` 覆盖（入口层在参数校验前剥离）；使用方法与边界见 [F11-new-trace.md](../../docs/features/common/F11-new-trace.md) |
 
 ### 隐私与用户访问控制能力
 
@@ -168,11 +169,13 @@ privacy_rule_ids / privacy_categories 诊断摘要，客户端不可赋值。私
    `default` 使用 `llm`，其他具名实例使用 `llm.<name>`。显式 `config_namespace` 只从实例
    `params` 读取，不从 `globals` 回退，必须是非空字符串；空白或非字符串装配期拒绝。
 7. 横切能力（Authenticator / PrincipalKeyStore / RateLimiter / WorkloadGuard /
-   BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger / LockProvider）
+   BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger / LockProvider / TraceCollector）
    不继承 `Plugin`、不进入 `PluginType`；接口统一在能力目录的 `base.py`（安全域为
-   `security/<能力域>/`，`lock/` 因早于该约定沿用 `lock.py`），实现统一在同级
+   `security/<能力域>/`，`lock/` 因早于该约定沿用 `lock.py`，`trace/` 同理沿用 `trace.py`），实现统一在同级
    `*_impl/`，YAML 只能选择已经注册的 target 并传递 params。当前不从 YAML import
-   Python 类，也不自动发现未被应用启动代码 import 的外部包。
+   Python 类，也不自动发现未被应用启动代码 import 的外部包。TraceCollector 的实现必须
+   无状态：请求级数据存于 ContextVar 容器（`begin_trace`/`end_trace`），实现只定义
+   sink 行为，不设 `fork()` 类协议。
 8. 安全能力一律落 `security/<能力域>/`，不新开顶层目录。核心不得按 target 名或
    `mode()` 字符串分支——需要区分的行为差异由 capability 方法（如
    `requires_loopback_binding()`）显式声明，详见 S10。

@@ -23,6 +23,7 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.security.privacy.base import PrivacyProtection, optional_privacy
+from jiuwen_memory.common.trace import trace_event, traced
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -293,6 +294,7 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
     def health(self) -> None:
         self._retrieval_pipelines.health()
 
+    @traced("write")
     async def write(
         self,
         content: str,
@@ -350,6 +352,14 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
             for unit in units:
                 unit.temporal.t_event = event_time
         self._prepare_ingested_units(units, scope, meta, tags=tags)
+        write_path = (
+            "procedural" if procedural else ("middle" if middle else "infer") if infer else "raw"
+        )
+        trace_event(
+            type(self).__name__,
+            "ingest",
+            {"units": len(units), "modality": source.value, "path": write_path},
+        )
 
         binding = self._write_binding(units)
         pipeline_name = binding.name if binding is not None else self._default_pipeline_name
@@ -385,12 +395,17 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
                 scope_for_log(scope),
                 pipeline_name,
             )
+            trace_event(
+                type(self).__name__,
+                "result",
+                {"path": write_path, "originals": len(units), "returned": len(derived)},
+            )
             return derived
 
         # infer=true 下按 middle 二级分流
         if infer:
             if middle:
-                return await self._write_middle_path(
+                buffered = await self._write_middle_path(
                     units,
                     scope,
                     index_builder,
@@ -398,6 +413,13 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
                     pipeline_name,
                     middle_interval=parse_middle_interval(middle_interval),
                 )
+                trace_event(
+                    type(self).__name__,
+                    "result",
+                    {"path": write_path, "originals": len(units), "returned": len(buffered)},
+                )
+                return buffered
+            # 既有同步抽取路径，不动
             if evolver is None:
                 raise RuntimeError(
                     "CloudEngine.write infer=True requires an Evolver (装配未注入 evolver)"
@@ -422,6 +444,11 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
                 scope_for_log(scope),
                 pipeline_name,
             )
+            trace_event(
+                type(self).__name__,
+                "result",
+                {"path": write_path, "originals": len(units), "returned": len(derived)},
+            )
             return derived
 
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引
@@ -445,6 +472,11 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
             len(units),
             scope_for_log(scope),
             metadata_for_log(indexed_metadata),
+        )
+        trace_event(
+            type(self).__name__,
+            "result",
+            {"path": write_path, "originals": len(units), "returned": len(units)},
         )
         return units
 

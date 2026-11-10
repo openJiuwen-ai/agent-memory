@@ -9,6 +9,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.trace import trace_event
 from jiuwen_memory.common.type_def import (
     ChannelError,
     FilterExpr,
@@ -64,11 +65,16 @@ class RetrieveRun:
     started_at: float = field(default_factory=perf_counter)
     trajectory: list[TrajectoryStep] = field(default_factory=list)
     fused_count: int = 0
+    component: str = "PipelineRetriever"
 
     def record(
         self, stage: str, cost_ms: float, n: int = 0,
         channel: RecallChannel | None = None, detail: dict[str, str] | None = None,
     ) -> None:
+        data: dict[str, object] = {"candidates": n, "cost_ms": round(cost_ms, 3)}
+        if channel is not None:
+            data["channel"] = channel.value
+        trace_event(self.component, stage, {**data, **(detail or {})})
         if self.trace:
             self.trajectory.append(TrajectoryStep(
                 stage=stage, channel=channel, candidate_count=n,

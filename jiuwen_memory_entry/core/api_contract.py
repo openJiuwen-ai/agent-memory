@@ -22,10 +22,15 @@ from functools import cache
 from typing import Any, get_args, get_origin, get_type_hints
 
 from jiuwen_memory.api import (
+    TRACE_OVERRIDE_KEY,
     ManagedConfiguration,
     MemoryAPI,
     RequestSecurityContext,
+    TraceLevel,
     ValidationError,
+    begin_trace,
+    end_trace,
+    parse_trace_spec,
 )
 
 CONFIG_VERBS = frozenset({"read_config", "save_config"})
@@ -131,14 +136,71 @@ async def _await_api_result(result: Awaitable[Any]) -> Any:
 
 
 def invoke_api(api: Any, verb: str, payload: Any, security: Any) -> Any:
-    """Call the same-named MemoryAPI method and serialize its original result."""
-    arguments = parse_request(verb, payload)
-    result = getattr(api, verb)(**arguments, security=security)
-    if method_contract(verb).is_async:
-        if not inspect.isawaitable(result):
-            raise TypeError(f"MemoryAPI.{verb} did not return an awaitable")
-        result = asyncio.run(_await_api_result(result))
-    return to_jsonable(result)
+    """Call the same-named MemoryAPI method and serialize its original result.
+
+    横切 trace：一次调用即一个 trace 作用域（begin/end）。请求级覆盖
+    ``payload["extensions"]["trace"] = "<target>[:<level>]"`` 在参数校验前剥离，
+    不进入 MemoryAPI 签名校验。
+    收集到的调用树填进响应 ``trace`` 键：dict 结果直接加键，其余结果（如 ``add``
+    的列表）包成 ``{"result": ..., "trace": ...}``——仅在有 trace 时变形。
+    异常时调用树挂在异常上，由各 surface 经 :func:`error_trace` 取出放进错误体。
+    ``trace`` verb 是血缘回溯接口，语义不同，不叠加。
+    """
+    payload, target, level = pop_trace_target(payload)
+    token = begin_trace(target, level=level)
+    try:
+        arguments = parse_request(verb, payload)
+        result = getattr(api, verb)(**arguments, security=security)
+        if method_contract(verb).is_async:
+            if not inspect.isawaitable(result):
+                raise TypeError(f"MemoryAPI.{verb} did not return an awaitable")
+            result = asyncio.run(_await_api_result(result))
+        result = to_jsonable(result)
+    except BaseException as exc:
+        snapshot = end_trace(token)
+        if snapshot and verb != "trace":
+            setattr(exc, _ERROR_TRACE_ATTR, snapshot)
+        raise
+    snapshot = end_trace(token)
+    if not snapshot or verb == "trace":
+        return result
+    if isinstance(result, dict):
+        return {**result, "trace": snapshot}
+    return {"result": result, "trace": snapshot}
+
+
+_ERROR_TRACE_ATTR = "_memory_trace"
+
+
+def error_trace(exc: BaseException) -> dict[str, Any] | None:
+    """取 :func:`invoke_api` 失败时挂在异常上的调用树（无则 None）。"""
+    snapshot = getattr(exc, _ERROR_TRACE_ATTR, None)
+    return snapshot if isinstance(snapshot, dict) else None
+
+
+def pop_trace_target(payload: Any) -> tuple[Any, str | None, TraceLevel | None]:
+    """剥离请求级 trace 覆盖（仅诊断开关，不参与鉴权/路由）；非法值 fail-fast。
+
+    返回 ``(剥离后的 payload 副本, target, level)``，不改调用方对象；``extensions``
+    剥空时整键移除，其余键原样留给 :func:`parse_request` 校验。覆盖值形如
+    ``"memory"`` / ``"memory:debug"`` / ``":debug"``（空 target 沿用默认实现）。
+    """
+    if not isinstance(payload, Mapping):
+        return payload, None, None
+    extensions = payload.get("extensions")
+    if not isinstance(extensions, Mapping) or TRACE_OVERRIDE_KEY not in extensions:
+        return payload, None, None
+    spec = extensions[TRACE_OVERRIDE_KEY]
+    if not isinstance(spec, str):
+        raise ValidationError(
+            f"extensions.{TRACE_OVERRIDE_KEY} must be a string '<target>[:<level>]'"
+        )
+    target, level = parse_trace_spec(spec)
+    rest = {k: v for k, v in extensions.items() if k != TRACE_OVERRIDE_KEY}
+    stripped = {k: v for k, v in payload.items() if k != "extensions"}
+    if rest:
+        stripped["extensions"] = rest
+    return stripped, target, level
 
 
 def invoke_configuration(

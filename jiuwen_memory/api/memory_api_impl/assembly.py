@@ -67,6 +67,7 @@ from jiuwen_memory.common.security.protection.workload_guard import (
 from jiuwen_memory.common.security.request_context import new_request_context
 from jiuwen_memory.common.security.runtime import SecurityRuntime
 from jiuwen_memory.common.security.types import Credentials, RequestSecurityContext, Surface
+from jiuwen_memory.common.trace.trace import TraceProducer, configure_default
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
@@ -755,6 +756,9 @@ def _assemble_kernel(
         )
         human_limiter.health()
         human_guard.health()
+    # 横切 trace 组件：config 指定默认实现（trace.default.target，缺省 noop），
+    # 请求级覆盖经 extensions["trace"]（见 common/trace/trace.py）。
+    configure_default(TraceProducer.dep(root, default="noop"))
 
     # API 业务审计与 surface 入口审计必须共用同一个具名实例。
     audit_logger = AuditProducer.dep(root, default="sqlite")
