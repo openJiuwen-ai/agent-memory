@@ -11,7 +11,7 @@
 | 文件/目录 | 职责 |
 |---|---|
 | `config.py` | `Config`：YAML/字典入口 → `AssemblyContext`（`from_yaml` 读文件、`from_yaml_str` 读文本，均展开 `${VAR}` / `${VAR:-默认}`，优先级 显式传参（`None` 视同未传）> 环境变量 > 默认值 > 空串；只支持单层占位符，嵌套与含 `}` 的默认值抛 `ValidationError`；`from_dict` 不展开） |
-| `context.py` | `AssemblyContext` / `ComponentConfig` / `RawSpec` |
+| `context.py` | `AssemblyContext` / `ComponentConfig` / `RawSpec`；保留 `params` 是否显式声明，合并只处理 globals 键和具名实例 |
 | `defaults.py` | 内置默认装配拓扑与 `ROOT_PARAMS` |
 | `encryption.py` | PR1-1 的 AtRestLocation / EncryptionPolicy / deployment_bindings / EncryptionBoundConfigSource：严格装配期开关、消费插件自注册的 at_rest_locations 核查部署声明及受保护位置变更拒绝 |
 | `config_source.py` | `ConfigSource` ABC + `ConfigSourceProducer` |

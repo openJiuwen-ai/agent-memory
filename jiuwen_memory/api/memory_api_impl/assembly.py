@@ -14,7 +14,7 @@
 - **真源 kv 注入**：``kv`` 入参经 ``KvProducer.put`` 预置进缓存，覆盖配置选择并被各处共享。
 
 - **默认装配**：无 config 时用内置默认上下文（:mod:`config.defaults`）——离线进程内栈，用
-  显式具名 + 引用复刻共享拓扑；用户 config **合并覆盖**到其上（只写要改动的部分）。
+  显式具名 + 引用复刻共享拓扑；用户 config 以全局键和具名实例为单位覆盖默认配置。
 
 注册靠 import 各实现模块触发，组装前由各层 bootstrap 统一拉起（句柄住在接口层）。
 """
@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, runtime_checkable
 
 from jiuwen_memory.common._support import as_bool
@@ -68,11 +68,12 @@ from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl import register_config_sources
-from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
+from jiuwen_memory.config.context import AssemblyContext, ComponentConfig, RawSpec
 from jiuwen_memory.config.defaults import KV_DEFAULT_NAME, ROOT_PARAMS, default_context
 from jiuwen_memory.config.document_flag import (
     WATCH_DOCUMENT_KEY,
     WRITE_DOCUMENT_KEY,
+    resolve_index_builder_default,
     resolve_watch_document,
     should_write_document,
 )
@@ -593,6 +594,33 @@ def _audit_verify_guard(ctx: AssemblyContext) -> WorkloadGuard:
     return WorkloadGuardProducer.dep(config, "audit_verify_guard", default="semaphore")
 
 
+def _merge_kernel_config(defaults: AssemblyContext, overrides: AssemblyContext) -> AssemblyContext:
+    """合并配置，并为默认 AgentEngine 保留未覆写的具名依赖。"""
+    ctx = defaults.merged(overrides)
+    engine = overrides.namespaces.get("engine", {}).get("default")
+    if engine is None or engine.target != "agent":
+        return ctx
+    if engine.params_explicit and not engine.params:
+        return ctx
+
+    base = defaults.lookup("engine", "default")
+    ctx.namespaces["engine"]["default"] = replace(
+        engine, params={**base.params, **engine.params}
+    )
+    if "default" not in overrides.namespaces.get("constructor", {}):
+        target = resolve_index_builder_default(ctx.globals)
+        # 关闭向量后仍需真源读写，纯倒排 builder 无法提供该能力。
+        if target == "fulltext":
+            target = "unified"
+        if target != defaults.lookup("constructor", "default").target:
+            ctx.namespaces["constructor"]["default"] = RawSpec(target=target)
+    if not ctx.globals.get("vector_enabled", True) and "default" not in overrides.namespaces.get(
+        "dedup", {}
+    ):
+        ctx.namespaces["dedup"]["default"] = RawSpec(target="keyword")
+    return ctx
+
+
 def _build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
@@ -602,6 +630,8 @@ def _build_kernel(
 
     - ``config``：用户配置（两级命名空间 ``Config`` 或等价 dict），**合并覆盖**到内置默认
       （:mod:`config.defaults`）之上；``None`` 时纯用内置默认（离线进程内栈）。
+      同名实例整体替换；默认引擎选 ``agent`` 时，省略或填写非空 ``params`` 会保留
+      未覆盖的默认依赖，并按运行模式选择未显式配置的默认索引实现。
       Access 只传 dict，不 import ``jiuwen_memory.config``。
     - ``policies``：便捷覆盖运行时策略（折进 ``globals.policies``）。
     - ``kv``：显式注入真源后端，覆盖配置的 kv_store 选择（如传 ``SQLiteKVStore`` 即落盘）。
@@ -610,7 +640,7 @@ def _build_kernel(
     _register_all()
     ctx = default_context()
     if config is not None and not config.is_empty():
-        ctx = ctx.merged(config.context(known_top_names=Factory.known_top_names()))
+        ctx = _merge_kernel_config(ctx, config.context(known_top_names=Factory.known_top_names()))
     with _assembly_lifecycle(ctx) as lifecycle:
         kernel = _assemble_kernel(policies, kv, ctx, config)
         owner = (

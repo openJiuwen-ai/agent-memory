@@ -20,6 +20,9 @@ from jiuwen_memory.api import (
     assemble_server_runtime,
     internal_context,
 )
+from jiuwen_memory.construction.index_builder_impl.document_index_builder import (
+    DocumentIndexBuilder,
+)
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
@@ -51,6 +54,27 @@ def _doc_config(root, *, watch: bool = True) -> dict:
             }
         },
     }
+
+
+@pytest.mark.parametrize("engine", [
+    {"target": "agent"},
+    {"target": "agent", "params": {"evolver": "default"}},
+])
+def test_agent_keeps_document_index_for_engine_and_evolver(tmp_path, engine) -> None:
+    config = _doc_config(tmp_path, watch=False)
+    del config["constructor"]
+    config["engine"] = {"default": engine}
+
+    runtime = assemble_runtime(config=config)
+    try:
+        # 验证装配后的索引类型及实例共享关系。
+        # pylint: disable=protected-access
+        built_engine = runtime.api._engine
+        assert isinstance(built_engine._index, DocumentIndexBuilder)
+        assert built_engine._evolver._index is built_engine._index
+        # pylint: enable=protected-access
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("kind", ["sdk", "server"])
