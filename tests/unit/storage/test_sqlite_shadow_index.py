@@ -1,8 +1,9 @@
 """SQLite 影子索引（``SqliteDocumentShadowIndex``）——静态派生与降级模式 CRUD/召回。
 
 影子索引是文档模式的机器真源：memory_unit（全量）+ memory_fts（FTS5 倒排）+ memory_vec
-（vec0 向量，仅完整模式），三表同库靠隐式 rowid 关联。本文件不依赖 sqlite-vec / embedder，
-全部走降级模式（embedder=None）——两表 + 倒排照常，向量路返空。失效方向：
+（vec0 向量，仅完整模式），三表同库靠隐式 rowid 关联。基础用例走降级模式
+（embedder=None）；候选截断用例另以可选的真实 sqlite-vec 和离线 hashing 验证向量路径。
+失效方向：
 
 - ``get_units`` 缺失 id 省略（与 KV ``mget`` 抛 NotFoundError 刻意不同）：召回物化侧
   命中的 unit_id 中途被删应静默跳过，而非整批失败。
@@ -16,12 +17,15 @@ from __future__ import annotations
 
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
 import hashlib
+import sqlite3
 import struct
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
     WhitespaceTokenizer,
 )
@@ -897,3 +901,71 @@ def test_find_unit_ids_by_content_hash_handles_multiple_units_same_content(tmp_p
     store.insert_units(SCOPE, [_unit("u2", "dup")])
     ids = store.find_unit_ids_by_content_hash(SCOPE, _content_hash("dup"))
     assert set(ids) == {"u1", "u2"}, f"expect both u1 and u2, got {ids}"
+
+
+@pytest.mark.parametrize("channel", ["fulltext", "vector"])
+@pytest.mark.parametrize("id_field", ["unit_id", "id"])
+def test_explicit_ids_filter_before_candidate_truncation(tmp_path, channel, id_field):
+    from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
+    from jiuwen_memory.storage.types import VectorQuery
+
+    tokenizer = WhitespaceTokenizer()
+    embedder = None
+    if channel == "vector":
+        pytest.importorskip("sqlite_vec")
+        embedder = HashingEmbedder(tokenizer, dim=64)
+    store = SqliteDocumentShadowIndex(
+        str(tmp_path / "candidates.db"), tokenizer=tokenizer, embedder=embedder,
+    )
+    own = Scope(org="acme", user="u1", agent="same", session="a")
+    other = Scope(org="acme", user="u1", agent="same", session="b")
+    try:
+        store.insert_units(own, [_unit_scope("own", "ocean " + "filler " * 40, own)])
+        store.insert_units(other, [
+            _unit_scope(f"other-{index}", "ocean", other) for index in range(65)
+        ])
+        filters = FilterGroup(FilterLogic.AND, [
+            FilterClause(id_field, FilterOp.IN, ["own"]),
+            FilterClause("lifecycle", FilterOp.EQ, "active"),
+        ])
+        if channel == "fulltext":
+            unfiltered = store.search_fulltext(own, TextQuery(text="ocean", top_k=60))
+            assert "own" not in {hit.id for hit in unfiltered}
+            search = store.search_fulltext
+            query = TextQuery(text="ocean", top_k=1, filters=filters)
+        else:
+            assert store.vec_enabled, "sqlite-vec must be active to verify vector truncation"
+            vector = embedder.embed(["ocean"])[0]
+            unfiltered = store.search_vector(own, VectorQuery(vector=vector, top_k=1))
+            assert "own" not in {hit.id for hit in unfiltered}
+            search = store.search_vector
+            query = VectorQuery(vector=vector, top_k=1, filters=filters)
+        assert [hit.id for hit in search(own, query)] == ["own"]
+    finally:
+        store.close()
+
+
+def test_search_handles_sqlite_driver_without_limit_methods(tmp_path, monkeypatch):
+    from jiuwen_memory.storage.shadow_impl import sqlite_shadow_index
+
+    connection = Mock(
+        spec_set=["execute", "executescript", "close"],
+        wraps=sqlite3.connect(":memory:", isolation_level=None),
+    )
+    driver = SimpleNamespace(
+        connect=Mock(return_value=connection), OperationalError=sqlite3.OperationalError,
+    )
+    monkeypatch.setattr(sqlite_shadow_index, "sqlite3", driver)
+    store = _store(tmp_path)
+    query = TextQuery(text="ocean")
+    try:
+        store.insert_units(SCOPE, [_unit("own", "ocean")])
+        assert [hit.id for hit in store.search_fulltext(SCOPE, query)] == ["own"]
+        connection.execute.side_effect = sqlite3.OperationalError("too many SQL variables")
+        with pytest.raises(ValidationError, match="SQLite parameter limit"):
+            store.search_fulltext(SCOPE, query)
+        connection.execute.side_effect = sqlite3.OperationalError("database is locked")
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            store.search_fulltext(SCOPE, query)
+    finally:
+        store.close()

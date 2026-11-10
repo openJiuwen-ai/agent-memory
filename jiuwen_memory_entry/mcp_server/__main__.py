@@ -357,7 +357,7 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
 
 @mcp.tool()
 async def memory_list(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
-    scope: dict,
+    scope: dict | None = None,
     offset: int = 0,
     limit: int = 100,
     memory_types: list[str] | None = None,
@@ -366,12 +366,13 @@ async def memory_list(  # pylint: disable=too-many-arguments,huawei-too-many-arg
     ctx: Context = None,
 ) -> dict:
     """
-    列出目标 scope 下已建索引的记忆单元（分页）。
+    分页列出指定范围内的记忆，或汇总当前用户有权读取的个人记忆。
 
+    scope: 按指定范围查询时必填。使用个人模式时省略此参数。
     memory_types: 可选记忆类型过滤（如 ["episodic","semantic"]）。
-    extensions: 可选透传扩展对象（自定义检索模块按约定 key 读取）。
-    filters: 可选结构化过滤，DSL 同 memory_search 的 filters。
-    返回 {"items": [...], "count": 分页前匹配总数}。
+    extensions: 可选扩展。传 {"personal": {}} 启用个人模式，筛选条件放在 personal 内。
+    filters: 普通查询的可选结构化过滤，DSL 同 memory_search 的 filters。
+    个人模式不与 memory_types 或 filters 混用。items 为当前页，count 为分页前匹配总数。
     """
     return await _invoke(
         "list",

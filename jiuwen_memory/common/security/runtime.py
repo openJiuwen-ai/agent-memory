@@ -194,7 +194,32 @@ class SecurityRuntime:
         return pairs
 
 
-@SecurityRuntimeProducer.register("standard")
+def _fixed_personal_owner(config):
+    """只传递认证插件显式声明的固定个人主体，不按 target 名推断身份。"""
+    from jiuwen_memory.config.context import ComponentConfig
+
+    auth = config.params.get("authenticator")
+    try:
+        if isinstance(auth, str):
+            spec = config.ctx.lookup(AuthProducer.TOP_NAME, auth)
+            auth_config = ComponentConfig(
+                params=dict(spec.params), ctx=config.ctx, target=spec.target, name=auth,
+            )
+        elif isinstance(auth, dict) and auth.get("target"):
+            auth_config = ComponentConfig(
+                params=dict(auth.get("params") or {}), ctx=config.ctx,
+                target=str(auth["target"]), name=str(auth.get("name") or ""),
+            )
+        else:
+            return None
+        return AuthProducer.inspect_config(auth_config.target, "fixed_personal_owner", auth_config)
+    except ValidationError:
+        return None
+
+
+@SecurityRuntimeProducer.register(
+    "standard", config_inspectors={"fixed_personal_owner": _fixed_personal_owner}
+)
 def _build(config) -> SecurityRuntime:
     """组合具名安全能力。
 

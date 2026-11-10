@@ -131,6 +131,18 @@ class ContinuityOpsMixin:
                 continue
         return names
 
+    @staticmethod
+    def _requires_continuity_point_read(metadata) -> bool:
+        if metadata.get("continuity_source_refs"):
+            return True
+        envelope = metadata.get("continuity_envelope")
+        if not envelope:
+            return False
+        try:
+            return bool(json.loads(str(envelope)).get("evidence_refs"))
+        except (ValueError, TypeError):
+            return True
+
     def _guard_continuity_search(self, result, scope=None, *, item_scopes=None):
         # Ordinary retrieval has no per-item real Scope/path contract. Structured records
         # with dependency-bearing payloads are disclosed only through guarded point reads.
@@ -144,14 +156,8 @@ class ContinuityOpsMixin:
             real_scope = item_scopes.get(id(item)) if item_scopes is not None else scope
             if connector and not self._source_available(real_scope, connector):
                 continue
-            if metadata.get("continuity_source_refs"):
+            if self._requires_continuity_point_read(metadata):
                 continue
-            if metadata.get("continuity_envelope"):
-                try:
-                    if json.loads(str(metadata["continuity_envelope"])).get("evidence_refs"):
-                        continue
-                except (ValueError, TypeError):
-                    continue
             visible.append(item)
         if len(visible) != len(result.items):
             result.items = visible

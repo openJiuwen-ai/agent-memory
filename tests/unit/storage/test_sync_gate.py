@@ -1,27 +1,12 @@
-"""写抑制门闸（``storage.sync_gate``）——正常写入与看门狗对账的回环竞态防护。
-
-``_WriteWindowGate`` 是 open/close 配对的进程级计数门闸：正常写入路径在「md 视图 +
-影子索引」两步写之间 ``open_write_window`` / ``close_write_window``（try/finally 配对），
-看门狗 sync 入口查 ``write_window_open`` 决定是否推迟对账。失效方向：
-
-- close 计数不配对（少 close 或多 close）→ 门闸恒开（看门狗永久推迟）或恒关（防护失效）。
-- 嵌套写路径需要深度计数而非布尔位——布尔位会在内层 close 时提前放行，让看门狗插进
-  外层的两步写窗口。
-
-故本文件锁死：嵌套配对、close 不把深度降到负、模块级单例初始为关闭。
-"""
+"""覆盖文档写窗口的嵌套计数与目录隔离。"""
 
 from __future__ import annotations
 
 import pytest
 
-from jiuwen_memory.storage.sync_gate import (
-    SYNC_GATE,
-    _WriteWindowGate,
-    close_write_window,
-    open_write_window,
-    write_window_open,
-)
+from jiuwen_memory.common.errors import BackendError
+from jiuwen_memory.storage import sync_gate
+from jiuwen_memory.storage.sync_gate import _WriteWindowGate, document_sync_gate
 
 pytestmark = pytest.mark.unit
 
@@ -59,13 +44,32 @@ def test_close_never_goes_negative() -> None:
     assert gate.is_open() is True
 
 
-def test_module_singleton_functions_share_one_gate() -> None:
-    """composite（生产者）与 watchdog（消费者）import 同一模块级单例。"""
-    assert write_window_open() is False
-    open_write_window()
+def test_document_gates_share_path_aliases_but_isolate_roots(tmp_path) -> None:
+    root = tmp_path / "documents"
+    root.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    gate = document_sync_gate(str(root))
+    same_root = document_sync_gate(str(alias))
+    other_root = document_sync_gate(str(tmp_path / "other"))
+    assert same_root is gate
+    gate.open()
     try:
-        assert write_window_open() is True
-        assert SYNC_GATE.is_open() is True
+        assert same_root.is_open()
+        assert not other_root.is_open()
     finally:
-        close_write_window()
-    assert write_window_open() is False
+        gate.close()
+    assert not same_root.is_open()
+
+
+def test_write_fails_if_index_sync_does_not_release_its_window(monkeypatch) -> None:
+    monkeypatch.setattr(sync_gate, "MAX_SYNC_DEFERRAL_SECONDS", 0)
+    gate = _WriteWindowGate()
+    with gate.commit_sync(gate.snapshot_version()) as accepted:
+        assert accepted
+        with pytest.raises(BackendError, match="timed out"):
+            gate.open()
+        assert not gate.is_open()
+    gate.open()
+    assert gate.is_open()
+    gate.close()

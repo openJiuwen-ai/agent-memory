@@ -44,6 +44,11 @@ def _content_text(content: str | list[dict]) -> str:
 # -- 注册到 LlmProducer（实现自注册，新增无需改 producer/make_plugins） ------ #
 
 
-@LlmProducer.register("echo")
+@LlmProducer.register("echo", config_inspectors={"portal_model_fields": lambda config: True})
 def _build(config):
+    from jiuwen_memory.config.config_source import ConfigSourceProducer
+
+    source = ConfigSourceProducer.get_cached("default")
+    if config.name and callable(getattr(source, "build_model", None)):
+        return source.build_model(config.name)
     return EchoLLM()

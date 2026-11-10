@@ -130,7 +130,10 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **单行清洗**（`_sanitize_document_content`）：块格式契约（单行正文、看门狗按行遍历、replace/remove 按行比对）建立在「一个 unit 一行正文」上，但上游不保证——content 含换行时 md 块被切碎、看门狗把第 2+ 行当独立幽灵 unit。故在 md.write / shadow.insert_units 分叉**之前**对 unit 本体原地折叠空白为单空格——md 视图、unit_json、content_hash、replace_content 锚点四方看到同一份 content。收口在文档路径入口而非 extractor：单行是**存储层约束**，KV 路径不受影响。
 
-**写窗口防护**（`storage/sync_gate.py`，F07 §12.9 风险 6）：文档路径是两步写（md + 索引），两步之间 md 与索引短暂不一致，看门狗 check-then-act 对账会误判漂移（add 窗口 → 幽灵 unit 双写；update/delete 反序窗口 → 删真 unit / 复活已删 unit）。防护：写入编排层在两步写之前 `open_write_window()`、`finally` 里 `close_write_window()`（精确覆盖含慢 embed 的全过程——完整模式逐条 embed 是远端 HTTP，窗口可达秒级，2s debounce 挡不住）；看门狗 sync 入口查 `write_window_open()`——窗口开着**推迟**本轮对账（0.25s 轮询，窗口一关立即续跑），超过 60s 上限放弃本次（防写路径 bug 永不关窗卡死任务；放弃不丢数据，下一次 md 文件事件会重新触发）。门闸是**深度计数**非布尔位（支持嵌套写路径），模块级单例——composite 与 watchdog 无需互相持有引用，同进程 import 即共享。
+**写窗口防护**（`storage/sync_gate.py`）。正常写入需要同时更新 Markdown 和索引，看门狗会等
+两边写完再读取。如果读取后发生了新写入，看门狗会重新读取，避免把旧结果写回索引。提交
+同步结果时，同一目录的新写入会等待。每隔 0.25 秒重试，超过 60 秒结束本轮。同一进程中的
+各个文档根目录独立协调，写窗口支持嵌套。
 
 **写失败补偿**（S09 第 12 条：真源与派生数据须定义提交顺序/幂等/重试/恢复，部分成功不能报为完整成功）：写窗口只防并发观察，不解决部分成功——后一步失败时前一步已落盘，调用抛异常但 md/shadow 漂移。四处文档路径加失败补偿，失败时**尽力回滚**到调用前状态（shadow 侧回滚到旧快照、md 侧靠 `replace_content`/`remove_content` 自身 `_safe_restore` 原子写恢复调用前字节态）。"等价于未发生"是**尽力而非保证**，存在三处落空（见下方「补偿失败处理」与「已知遗留-写失败补偿的残留风险」）：① `_safe_restore` 自身失败只记 warning 不抛，md 侧恢复落空；② 补偿动作失败被内层吞掉，原异常照常抛但 md/shadow 漂移留下；③ 补偿整体失败无 reconcile 兜底，漂移交看门狗对账。补偿仅在 md 调用**抛异常**时触发（未命中返 False 不触发，见下方「重要边界」）：
 
@@ -149,7 +152,9 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **md 侧原子写**（`replace_content` / `remove_content` 的 `_safe_restore`）：`open("w")` 截断重写中 `write` 抛错会让旧内容永久丢失——上层补偿（回滚 shadow）救不回 md，"异常等价于未发生"对 md 侧落空。两方法的 `open("w")+write` 包进 try，写失败时先 `_safe_restore(abs_path, text)` 回写读出的旧全文恢复调用前字节态，再重新抛原异常。`_safe_restore` 自身失败只记 warning 不抛（避免掩盖原异常），md 残缺漂移交看门狗。单块 `remove_content` 的写失败由自身原子写恢复；delete 多块循环的中途失败（前 N-1 块已真删、第 N 块抛错）不在单块原子写范围内，由 delete 补偿的 `md.restore_blocks(removed)` 显式回写已删块。
 
-**补偿失败处理**：补偿动作抛错用内层 try/except 吞掉（记 warning），不掩盖原异常。补偿失败 = 原异常照常抛 + md/shadow 漂移留下，交看门狗后续对账（当前看门狗按 content_hash 回灌新 UUID，是已知遗留，见已知遗留「写失败补偿的残留风险」）。补偿动作在 `open_write_window()`/`close_write_window()` 的 try/finally 内执行——补偿期间窗口仍开着，挡住看门狗对补偿过程的并发观察；`finally` 关窗后才放行看门狗对最终状态对账。
+**补偿失败处理**。写入失败后会在同一写窗口内尝试恢复 Markdown 和索引。恢复也失败时，
+日志记录恢复错误，调用方仍收到最初的写入错误。窗口关闭后，看门狗再检查文件和索引的
+差异。恢复的限制见「写失败补偿的残留风险」。
 
 ### 五、召回路径：`ShadowRecaller` + `PipelineRetriever` 文档模式
 
@@ -183,11 +188,13 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **关键机制**：
 
-- **unit 粒度增量 diff**（非 lite 的文件级全量重建）：`shadow.list_units_by_md(scope, md_filename, lifecycle=active)` 拿旧 **active** `(unit_id, content_hash)` 作 delete 侧基准，另取 `list_units_by_md(scope, md_filename)` **全集** hash 作 insert 侧「已知块」扣除基准 → 读 md 按行算新 hash → diff 出新增/删除集合只动变化的 unit。整文件重建会丢其他 unit 的 id（破坏 supersedes 链）。**两侧基准分开（对称设计）**：delete 侧只取 active 行——superseded/archived/forgotten 历史行不参与删除对账（它们本就不该在 md 里，md 无其块是 SUPERSEDE / lifecycle 治理的正确终态而非「用户手删」删除信号——否则会二次物理清除 SUPERSEDE 旧版行，断版本链/as_of）；insert 侧用全集 hash 扣除——archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这残留块重插为 active 重复行（遗忘语义失效 + 内容重复），全集扣除命中历史行、跳过 insert。
+- **按记忆条目同步**。监听器比较 Markdown 和索引中的正文哈希，只处理发生变化的条目。
+  正文从文件中消失时，只会删除对应的有效记录，历史记录仍保留。插入前用该文件全部
+  已知正文判重，已纠正、遗忘或归档的正文留在文件里时也不会重新生效。
 - **按块结构解析**（`collect_blocks_from_text` 统一口径）：块间空行切块、每块首行（标题）跳过、正文行算 sha256，正文行**不判 `#` 前缀**——`#1 里程碑` 等 `#` 开头的合法正文与标题行文本不可区分，靠块结构区分（标题是块首行、正文在块内首行之后），否则这类正文被误当标题跳过、同文件任意手改时被连坐删除（issue #264 的 `#1 里程碑` 连坐删除场景）。前提即决策四的单行约束。**首块首行不总落在块边界**：`read_md_file` 传 `line_range` 切片，切片首行可能是上一块以 `#` 开头的正文行——`collect_blocks_from_text` 的 ``first_line_is_title`` 参数供切片调用方声明首行角色（`read_md_file` 传 `False`：宁可把可能是标题的首行多算成正文、hash 反查落空是空集无害，也不漏算正文行致 unit 被误判「待删」）；首块之后的块落在空行切出的真实块边界，首行恢复按标题处理。
 - **debounce 按文件分键**：`_watch_timers` 按 md_filename 各持一个 timer——单一 timer 时 B 文件的事件会 cancel 掉 A 文件待执行的同步，而 A 无新事件不会再补（纯事件驱动），改动永久丢失。
 - **初始宽限期**：启动后延迟 1s 置 `watcher_initialized`，避开 Observer 刚起时对存量文件的初始扫描风暴（存量 md 是写入流程产物，不是「用户手改」）。
-- **写窗口推迟**：见决策四。`_do_sync` 里轮询 `write_window_open()`。
+- **写窗口推迟**：见决策四。`_do_sync` 等待写窗口关闭，并在 diff 提交因版本变化被拒绝时重试。
 - **unit_id 策略**：用户改某行 content → 旧 hash 消失 + 新 hash 出现 → 删旧 unit + 建新 unit（**新 uuid**），不保留旧 id（F07 §12.9 风险 5 当前版本策略——改行即断版本链，见已知遗留）。新建 unit 的缺省元数据：tier=SEMANTIC、t_ingest=now、provenance=`["watchdog_sync"]`、project 与 memory_class 从 md 路径反推（统一收口 `markdown_impl/_md_path.py`，看门狗与 `edit_md_file` 兜底共用：project 取 `memory/{project}/...` 第二段，`memory/MEMORY.md`、`memory/daily_memory/日期.md`、`USER.md` 等无 project 落空串；memory_class 按 `daily_memory/` → daily_memory、`MEMORY.md` → long_term_memory、`USER.md` → user_profile）。
 - **scope 继承**：新建 unit 的 scope 由 `latest_scope_by_md`（按 md_filename 查该文件最新一条 unit 的 scope，`rowid DESC LIMIT 1`，不限 scope WHERE 对齐 `list_units_by_md` 跨 scope 诊断例外）继承——md 文件不编码 org/space/user/agent/session，按同文件最新归属近似；无历史（该 md 文件首次补登）返 None 落看门狗构造期空 Scope 保持现行为。这修正 scope 原生隔离下补登 unit 落空 scope 列、真实 scope 召回不可见的遗留（补登 unit 落真实 scope 列后，真实 scope 的 get/list/search 能拉到它）。
 - **监听目录**：`{root}` 递归（root 顶层 `USER.md` 与 `memory/` 子树均在监听内；`_MdFileHandler` 按文件名白名单过滤，只认三类记忆文件——`USER.md` / `MEMORY.md` / `YYYY-MM-DD.md` 日期文件名（`_is_watched_md`），`memory/.shadow/shadow.db` 等非 md 及 `notes.md`/`README.md` 等非记忆 md 均不误触发）；目录尚不存在时先 `makedirs` 再监听（不能 schedule 不存在的目录）。
@@ -258,7 +265,6 @@ content 重复类三者的共同后果：md 与影子索引漂移，但看门狗
 ## 已知遗留
 
 - **看门狗改行断版本链**：用户改某行 content → 删旧 unit + 建新 uuid unit，supersedes 链断裂（F07 §12.9 风险 5 当前版本策略）。后续可探索按标题行锚定保留旧 id。
-- **看门狗二次清除 SUPERSEDE 旧版行**：`list_units_by_md` 当前全量对账（无 lifecycle 过滤）——`edit_md_file` 把旧版标 SUPERSEDED 且 md 已换成新 content 后，看门狗下轮对账会把 SUPERSEDE 旧版的 hash 判为「用户手删」→ `delete_units` 物理删掉该历史行，版本链/as_of 断裂。修向 A（`list_units_by_md` 加 lifecycle 参数 + 看门狗传 active）尚未实现，待另行修复。
 - **重复正文的定位边界**：remove_content 仍删除首个正文命中；replace_content 未提供旧标题时替换首个正文命中，提供旧标题时按标题消歧。标题漂移且可替换正文重复时返回 False，避免误改；相同标题与正文仍无法区分，后续可加 unit_id 锚点优化。
 - **跨进程文件锁未做**：md 与 sqlite 都是进程内 `threading.Lock` 串行化，多进程并发写同一 root 无防护（与 sync_gate 跨进程不防护同口径）。
 - **TOCTOU 窗口**：`_safe_abs_path` realpath 校验与 open 之间存在竞争窗口，收口面向恶意字符串威胁模型。

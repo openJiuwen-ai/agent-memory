@@ -11,21 +11,43 @@
 审计完整性接线保留返回快照判权、完整工具参数、授权插件能力和 Runtime 生命周期；
 当前能力及部署边界见 [F04](../../docs/features/common/F04-security-interfaces-and-encryption.md)。
 
+个人记忆纠正／遗忘先复核绑定与真源读取权限，再委托 MemoryAPI.update／delete 判定修改权限；纠正采用 SUPERSEDE，遗忘采用 FORGET。
+
+Portal 入口确定手动新增的范围和来源。实际写入由 `MemoryAPI.add` 执行授权。
+
+个人列表的来源、Agent、文档项目、认知层级、记忆分类、生命周期及正文／标签子串筛选委托控制层在完整
+授权集合上执行后分页；过滤字段不改变授权。Agent 使用 scope.agent，文档项目使用
+system_metadata.project（缺失时回退 coords.project）；选项来自完整授权集合，不从当前页或应用名猜测。
+memory_class 读取 system_metadata.memory_class，支持自定义分类和未分类；tier 使用完整
+MemoryTier 枚举，两者独立，不把 archival 层级和 archived 生命周期混为一谈。
+个人全量检索显式组合全部项目谓词（含缺失项目的旧 KV 记录），来源／作者谓词仍以 AND
+约束，普通 MemoryAPI.search 的默认项目范围不变，不直接访问影子索引或改全局策略。
+每个检索子查询先通过 MemoryAPI.list 取得精确绑定 Scope 且满足来源／作者条件的
+已授权 ID 集合，并以
+unit_id IN 在召回截断前收窄，避免文档跨 session 召回与严格点查口径冲突；候选总量
+超过 10000、快照不完整或候选 Scope 不匹配时拒绝，不吞掉回读错误。
+
+HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可信启动器提供，
+必须来自实际加载的配置文件。`document_llm_instances` 只列出配置声明的具名模型，
+读取和写入授权仍由宿主负责。
+
 ## 模块地图
 
 | 文件 | 职责 |
 |---|---|
 | `memory_api_impl/continuity_ops.py` | 角色接续 PEP、可信连接匹配、原引用/关系依赖核验；入口为 `continuity_task`/`continuity_relation`/`continuity_recover`/`quarantine_source`/`release_source`，可靠写入与职责视图分别并入 `add`/`batch_add` 的 `continuity` 参数与 `search` 的 `task_id`/`anchor`/`duty`/`view_budget`；`list` 下推不可用来源谓词，并对每页条目逐条复核依赖证据、剔除不合规条目（不整页报错）；`batch_add` 的相邻接续项按 scope 分组后各合成一次 `record_batch`，正文批写复用 `add` 的作者标记/`source_ref`/审计步骤，`search` 的视图组装委托 `Continuity.view_result`，本层只做类型转换 |
 | `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化、SDK 本地视频导入预检与日志脱敏辅助函数；一次性维护工具用 `assemble_maintenance_ports` |
-| `access_security.py` | 公开安全装配辅助：提供 dev Authenticator 与 `register_trusted_principal`；Trusted 初始化按增量能力委派实际认证器，不依赖实现类或另建主体 Store；私有 `_build_security_runtime` 从同一装配上下文选择、健康检查 Runtime，公开 mapping helper 复用它；不暴露 common 实现路径 |
+| `access_security.py` | 公开安全装配辅助。提供 dev Authenticator 与 `register_trusted_principal`，Trusted 初始化委派实际认证器。私有 `_build_security_runtime` 从同一装配上下文选择并检查 Runtime，公开 mapping helper 复用它。`fixed_personal_owner` 沿用 Runtime 选择规则并读取插件声明 |
+| `managed_configuration.py` | `ManagedConfiguration`：通过可信宿主授权回调访问配置管理，不向页面暴露内核或存储 |
+| `personal_memory.py` | 按认证身份判定个人范围和历史记录归属，复用 MemoryAPI 做单条读取和检索候选限制 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/supports_video_ingest/prepare_video_ingest/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
+| `memory_api_impl/assembly.py` / `managed_assembly.py` | 公开装配及托管配置注入：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
-| `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write` |
+| `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write`、`check_configuration_access` |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
-| `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；无路由文档模式的 search 在 API 层把 project 坐标折算为收窄谓词；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
+| `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve，鉴权后走 Query/Command；无路由文档模式的 search 在 API 层把 project 坐标折算为收窄谓词；个人模式逐范围授权读取；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator` |
 | `memory_api_impl/md_ops.py` | MdOpsMixin（F08）：`read_md_file` / `edit_md_file`，经 Engine 窄端口委托（非经 `_commands.write`/`_queries.get`）。鉴权对齐 `get`（READ 单段）/ `add`（WRITE 单段，edit 走继承式 SUPERSEDE 本质是写新记忆，D5）；`read_md_file` 的鉴权与审计 target 是折算后的空间级反查 scope（与写入侧对落点判权对称，空 space 不绕过空间轴判权），折算不出退回 raw scope 时判权/审计/反查三轴同轴；project 解析在 Engine 层 `project_from_context`，本层不拆 Context。返回前剥瞬态键（coords 等是路径解析依据，不是条目属性）。`edit_md_file` 经 `_ensure_space_writable`（与 `add` 同，装配空间级判定时由 `ENTRY_RULES` 登记 `edit_md_file` 触发状态校验） |
 | `memory_api_impl/dreaming.py` | DreamingCoordinator + DreamingDriverJob：dreaming 编排（PEP 边界）——leader-only 注册、`CANCEL_REQUESTED` 持久化幂等注销、generation 隔离旧代 Driver、生命周期操作串行与短状态锁分离、按 leader 任期缓存恢复结果、每 tick 持续授权（`created_by` 复验）、fan-out 逐桶裁决；Coordinator 只持鉴权、提交、调度、注册表、Engine 候选 scope 枚举窄端口，不反向持有完整 API；驱动 Job 每 tick 经 `commands.evolve` 提交一次性 EvolveJob |
 | `memory_api_impl/admin_ops.py` | AdminOpsMixin：`submit_ingest`、任务、admin、治理、verify_audit、grant/revoke |

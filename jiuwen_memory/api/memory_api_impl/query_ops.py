@@ -8,8 +8,14 @@ import json
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
+from jiuwen_memory.api.personal_memory import (
+    PersonalScopeBinding,
+    personal_scope_binding,
+    search_personal_records,
+)
 from jiuwen_memory.api.search_options import SearchOptions
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
@@ -50,6 +56,12 @@ from jiuwen_memory.construction.router import (
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
+from jiuwen_memory.control.application.personal_memory import (
+    PersonalPage,
+    PersonalSearchResult,
+    list_personal,
+    scope_key,
+)
 from jiuwen_memory.control.evolution.validation import (
     scope_contains,
     validate_evolve_options,
@@ -145,8 +157,37 @@ class QueryOpsMixin:
         anchor: MemoryRef | None = None,
         duty: str | list[str] | None = None,
         view_budget: ViewBudget | None = None,
-    ) -> RetrievalResult:
+    ) -> RetrievalResult | PersonalSearchResult:
         """将原有平铺参数装成选项，委托统一查询入口。"""
+        if "personal" in context.extensions:
+            selection = context.extensions["personal"]
+            valid_selection = isinstance(selection, dict) and selection.keys() <= {"source"}
+            personal_only = (
+                context.scope == Scope() and set(context.extensions) == {"personal"}
+                and valid_selection
+            )
+            has_recall_options = filters is not None or as_of is not None or with_trajectory
+            options = (
+                disclosure, hierarchy_kind, hierarchy_role, span_start, span_end, expand_depth,
+                rollup, task_id, anchor, duty, view_budget,
+            )
+            defaults = (
+                DisclosureLevel.L0, HierarchyKind.TIME, HierarchyRole.TIME_SPAN,
+                None, None, 1, True, "", None, None, None,
+            )
+            if not personal_only or has_recall_options or options != defaults:
+                raise ValidationError("personal search only accepts a query, source and top_k")
+            if not isinstance(query, str) or not query.strip():
+                raise ValidationError("query must be a non-empty string")
+            hits = search_personal_records(
+                self, self._personal_candidates(security), query,
+                security=security, top_k=top_k, source=selection.get("source"),
+                read_scope=partial(self._list_scope, skip_unavailable_scope=True),
+                skip_candidate=lambda unit: self._requires_continuity_point_read(
+                    unit.system_metadata
+                ),
+            )
+            return PersonalSearchResult(hits, scores_comparable=False)
         return self._search(
             query, context, SearchOptions(
                 filters=filters, as_of=as_of, top_k=top_k, disclosure=disclosure,
@@ -617,7 +658,64 @@ class QueryOpsMixin:
             candidates = candidates[:limit]
         return candidates
 
+    def _personal_candidates(self, security: RequestSecurityContext) -> list[PersonalScopeBinding]:
+        """按当前身份发现个人候选；读取时仍逐范围鉴权。"""
+        identity = security.auth.actor
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.READ, "personal_scope_discovery", identity)
+        )
+        principal.require_principal(identity)
+        eligible: list[PersonalScopeBinding] = []
+        for scope in self._queries.candidate_scopes():
+            binding = personal_scope_binding(identity, scope)
+            if binding is not None:
+                eligible.append(deepcopy(binding))
+        return eligible
+
     def list(
+        self,
+        scope: Scope | None = None,
+        *,
+        security: RequestSecurityContext,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+        extensions: dict[str, Any] | None = None,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
+    ) -> MemoryListResult | PersonalPage:
+        normalized_extensions = _normalize_list_extensions(extensions)
+        if "personal" in normalized_extensions:
+            selection = normalized_extensions["personal"]
+            personal_only = scope is None and set(normalized_extensions) == {"personal"}
+            has_scoped_filters = memory_types is not None or filters is not None
+            valid_selection = isinstance(selection, dict) and selection.keys() <= {
+                "source", "agent", "project", "query", "tier", "memory_class", "lifecycle",
+                "snapshot", "include_lifecycle_counts",
+            }
+            if not personal_only or has_scoped_filters or not valid_selection:
+                raise ValidationError("invalid personal list options; omit scope")
+            candidates = self._personal_candidates(security)
+            bindings = {scope_key(binding.scope): binding for binding in candidates}
+
+            def read_scope(target, start, size):
+                return self._list_scope(
+                    target, security=security, offset=start, limit=size,
+                    filters=bindings[scope_key(target)].author_filter(),
+                    skip_unavailable_scope=True,
+                )
+
+            return list_personal(
+                [binding.scope for binding in candidates], read_scope,
+                offset=offset, limit=limit, **selection,
+            )
+        if scope is None:
+            raise ValidationError("missing required field(s) for list: scope")
+        return self._list_scope(
+            scope, security=security, offset=offset, limit=limit, memory_types=memory_types,
+            extensions=normalized_extensions, filters=filters,
+        )
+
+    def _list_scope(
         self,
         scope: Scope,
         *,
@@ -627,9 +725,10 @@ class QueryOpsMixin:
         memory_types: list[str] | None = None,
         extensions: dict[str, Any] | None = None,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
+        skip_unavailable_scope: bool = False,
     ) -> MemoryListResult:
         identity = security.auth.actor
-        normalized_extensions = _normalize_list_extensions(extensions)
+        normalized_extensions = extensions if extensions is not None else {}
         normalized_filters = normalize(filters)
         permission_contexts = _list_permission_contexts(
             scope,
@@ -640,14 +739,19 @@ class QueryOpsMixin:
         )
         auth: dict[str, str] = {}
         auth_context: PermissionContext | None = None
-        for permission_context in permission_contexts:
-            auth, auth_context = self._authorize_with_context(
-                security,
-                scope,
-                Action.READ,
-                "list",
-                context=permission_context,
-            )
+        try:
+            for permission_context in permission_contexts:
+                auth, auth_context = self._authorize_with_context(
+                    security,
+                    scope,
+                    Action.READ,
+                    "list",
+                    context=permission_context,
+                )
+        except (PermissionDeniedError, NotFoundError):
+            if skip_unavailable_scope:
+                return MemoryListResult()
+            raise
         routing_clauses = _list_routing_clauses(
             permission_contexts,
             self._routing_fields_for("list"),

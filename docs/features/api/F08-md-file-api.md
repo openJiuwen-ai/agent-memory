@@ -52,7 +52,7 @@ DocumentShadowIndex.get_units                   ← 取完整 MemoryUnit（已�
 
 若依赖异步链，`edit_md_file` 返回 `list[MemoryUnit]`（新 unit）的契约无法满足——返回时新 unit 尚未落 shadow，`shadow.get_units` 查不到。故决策：在 `CompositeDomainStore` 内**内联同步**执行 diff + delete + insert（与 `_sync_one` 同构逻辑），保证接口返回时新 unit 已落库。
 
-写窗保护仍用现有 `open_write_window` / `close_write_window`（`sync_gate.py:58/63`）包住「md 替换 + shadow 重建」两步；关窗后看门狗的 inotify 会再触发一次 `_sync_one`，但 shadow 已同步、diff 为空，幂等无副作用（`write_window_open()` 让看门狗推迟至窗口关闭后重跑）。
+用文档根目录对应的写窗口包住「md 替换 + shadow 重建」两步。看门狗等待该目录的窗口关闭后对账，若 shadow 已同步，diff 为空。
 
 ### D3 content_hash 反查新增方法，复用已有 idx_content_hash 索引
 
@@ -105,7 +105,7 @@ edit 后新块继承旧 unit 的元数据；其中 `md_title` 是例外，须从
 
 **与现有 `domain_store.update` SUPERSEDE 路径的差异**：现有 `update` 是「先改 shadow 再改 md」（`composite_domain_store.py:289-336`，`shadow.update_units` + `md.replace_content`/`remove_content`）；edit_md_file 是「md 已改，只同步 shadow」——因 `edit_content` 已原子改好整个 md 文件，shadow 同步无需再动 md。故 edit_md_file 在 DomainStore 走专用同步路径，不复用 `domain_store.add`（会重复写 md 块）或 `domain_store.update`（它假设 md 还没改、自己改 md）。
 
-**写窗保护**：`open_write_window` / `close_write_window`（`sync_gate.py:58/63`）包住「edit_content 改 md + shadow 同步」全程；关窗后看门狗 inotify 再触发 `_sync_one`，但 shadow 已同步、diff 为空，幂等无副作用。
+**写窗保护**。同一文档根目录的写窗口覆盖「edit_content 改 md + shadow 同步」全程。关窗后看门狗对账，若 shadow 已同步，diff 为空。
 
 ### D4.1 跨块对齐策略：对齐继承 + 不对齐退化兜底
 
@@ -213,7 +213,7 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 ### edit_md_file 实现路径
 
 1. 解析 basename + project → md 路径
-2. `open_write_window()`
+2. 打开文档根目录的写窗口。
 3. `md.read_content(...)` 读旧全文做快照（既算块 diff 又留 md 补偿数据）
 4. `md.edit_content(...)` 文件级唯一替换（原子写）——md 文件已改为最终态
 5. `_supersede_shadow_for_md(scope, rel_path)` 同步重建（继承式 SUPERSEDE，见 D4 落库动作）：
@@ -223,7 +223,7 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
    - 纯内存构造整批 inserted_units → 批量 `insert_units`（单事务）→ 批量 `update_units`（单事务）
    - md 侧不再触碰（edit_content 已改好）
 6. shadow 同步失败时补偿（见 D4 写失败补偿）：shadow 侧 `delete_units(new_unit_ids)` 删已插新 unit；md 侧 `restore_content(raw_old)` 回写旧全文；再重抛原异常
-7. 成功返回 `get_units(new_unit_ids)`；`close_write_window()`（finally）
+7. 成功返回 `get_units(new_unit_ids)`，在 finally 中关闭写窗口。
 
 > **md 侧零触碰**：步骤 4 后 md 已是最终态，步骤 5 只动 shadow 表（标旧版 + 插新版），不再调 `md.write`/`md.replace_content`/`md.remove_content`——这是与现有 `domain_store.update` SUPERSEDE 路径（先改 shadow 再改 md）的根本差异，因 edit_md_file 的 md 改动在 edit_content 阶段就完成了。
 
