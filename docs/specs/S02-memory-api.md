@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-09 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -289,7 +289,9 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 
 `scope` 语义不变：它就是落点，且保持必填。落点也可以不由调用方指定、改由归属判定选择，这时在写入侧参数袋里放 `system_metadata["coords"]` 请求判定，候选空间集合由归属坐标推出、落点由判定算子在集内选择。分流判据是该键在不在，与 `scope` 的取值形态无关——键由调用方主动放入，而 `space` 为空是调用方什么都没表达时的取值，拿它触发另一条路径等于由内核解读缺省状态。`space` 非空也不否决判定请求：上游网关按自己的租户或应用标识填 `space` 是常见形态，那个取值不是本系统的空间标识，以它否决则这类接入方无路可走（直写要求空间已登记，未登记即判权拒绝）。给了 `coords` 即交出落点决定权，`scope.space` 在这条路径上不参与落点计算，真实落点由返回的记忆单元携带。两处都没有声明时拒绝，替换的是同一形态下原本含义模糊的判权拒绝。走判定路径时入参 `scope` 的主体维与 `org` 仍须与身份一致，不静默丢弃。条目的可读范围由所在空间的权限决定，写入侧不设条目级的可见性声明入参（F07）。
 
-**归属坐标不占形参，经参数袋传入**：写入侧 `system_metadata["coords"]`，检索侧 `Context.extensions["coords"]`，取值为 `dict[str, str]`。该键在 API 层入口即被取出，不落盘、不进鉴权入参、不随 options 透传给自定义检索模块。检索侧的取出以装配了判定表为条件：未装配的部署里本特性整体不可达，该键不产生任何收窄谓词，取出它只会让自定义检索模块少收到一个调用方明确传入的字段。取值不受 `MetadataValueType` 约束（该联合类型不含 `dict`），与 `route_ctx` 承载判定上下文对象同例；判型改在运行期做。由此，六个入口的形参列表与本特性之前逐字一致。身份入参不新增：随上游安全模块交付的 `security` 是唯一可信身份来源。
+**归属坐标经参数袋传入**。写入侧使用 `system_metadata["coords"]`，检索侧使用 `Context.extensions["coords"]`，取值为 `dict[str, str]`，由 API 在运行期解析，免于扩展接口形参或 `MetadataValueType`。启用路由时，API 在入口取出坐标，用于归属判定或生成判定表声明的收窄谓词。该参数是瞬态字段，检索侧取出后不随 options 透传给自定义检索模块。检索坐标不进入鉴权入参，可信身份仍来自 `security`。
+
+无路由时，检索保留 `coords` 扩展字段供自定义检索模块使用。文档模式下，`search` 同时读取非空字符串 `coords.project`，生成 `system_metadata.project IN ["", project]`，与调用方的 `filters` 取交集。项目坐标缺失或为空时，仍可用显式 `filters` 选择项目。索引在没有项目谓词时只召回未指定项目的文档。
 
 **跨空间检索不另设入口，同样经参数袋分流**：`Context.extensions["spaces"]` 键在即跨空间，取值 `list[str]`，空列表表示「调用方可读的全部空间」。跨空间不是新的检索算法，是在单空间召回之上套的一层编排（候选空间 → 逐空间判权 → 按上界分配取数 → 逐空间召回 → 轮转合并），两族谓词与召回复用同一份实现；拆成两个入口即同一件事有两处契约，接入方须先判断部署形态才知道该调哪个，且两处一旦分叉就出现「一个入口挂了谓词、另一个没挂」的绕过通道。判据同样取键的有无：取值判空则「查我能读的全部空间」这层意图只能靠缺省状态表达，与「没打算跨空间」不可区分。取值为 `None` 按非法拒绝，不当作空列表——网关把未填字段序列化成 `null` 时若按空列表处置，一次本意为单空间的检索会静默扩到全部可读空间。
 

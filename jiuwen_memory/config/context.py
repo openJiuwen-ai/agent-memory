@@ -151,11 +151,12 @@ def _wrap_secrets(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class RawSpec:
-    """一个具名实例的纯数据：选哪个实现 + 字面参数 + 是否退出共享。"""
+    """具名实例的实现、字面参数、共享策略及参数是否显式声明。"""
 
     target: str
     params: dict[str, Any] = field(default_factory=dict)
     new_instance: bool = False
+    params_explicit: bool = field(default=False, kw_only=True)
 
 
 @dataclass
@@ -217,10 +218,7 @@ class AssemblyContext:
         return ns[name]
 
     def merged(self, other: AssemblyContext) -> AssemblyContext:
-        """把 ``other`` 覆盖到本上下文之上：globals 按 key 覆盖、命名空间按实例名覆盖/新增。
-
-        用于 ``build_kernel`` 把用户配置叠加到内置默认之上——用户只需写要改动的部分。
-        """
+        """globals 按 key 覆盖，同名实例整体替换。"""
         namespaces: dict[str, dict[str, RawSpec]] = {
             top: dict(insts) for top, insts in self.namespaces.items()
         }
@@ -247,6 +245,7 @@ def _parse_instance(top_name: str, inst_name: str, raw: Any) -> RawSpec:
         target=str(target),
         params=_wrap_secrets(dict(raw.get("params", {}) or {})),
         new_instance=bool(raw.get("new_instance", False)),
+        params_explicit="params" in raw,
     )
 
 

@@ -9,6 +9,8 @@ import pytest
 from jiuwen_memory.api import (
     Context,
     DeleteSelector,
+    FilterClause,
+    FilterOp,
     MemoryPatch,
     PermissionDeniedError,
     Scope,
@@ -17,6 +19,9 @@ from jiuwen_memory.api import (
     assemble_runtime,
     assemble_server_runtime,
     internal_context,
+)
+from jiuwen_memory.construction.index_builder_impl.document_index_builder import (
+    DocumentIndexBuilder,
 )
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
@@ -49,6 +54,27 @@ def _doc_config(root, *, watch: bool = True) -> dict:
             }
         },
     }
+
+
+@pytest.mark.parametrize("engine", [
+    {"target": "agent"},
+    {"target": "agent", "params": {"evolver": "default"}},
+])
+def test_agent_keeps_document_index_for_engine_and_evolver(tmp_path, engine) -> None:
+    config = _doc_config(tmp_path, watch=False)
+    del config["constructor"]
+    config["engine"] = {"default": engine}
+
+    runtime = assemble_runtime(config=config)
+    try:
+        # 验证装配后的索引类型及实例共享关系。
+        # pylint: disable=protected-access
+        built_engine = runtime.api._engine
+        assert isinstance(built_engine._index, DocumentIndexBuilder)
+        assert built_engine._evolver._index is built_engine._index
+        # pylint: enable=protected-access
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("kind", ["sdk", "server"])
@@ -246,5 +272,35 @@ def test_document_memory_uses_real_scope_and_authorization(tmp_path) -> None:
         assert runtime.api.delete(
             DeleteSelector(scope=scope, unit_ids=[updated.id]), security=alice
         )
+    finally:
+        runtime.close()
+
+
+def test_unrouted_agent_document_search_uses_project_coords(tmp_path) -> None:
+    config = _doc_config(tmp_path, watch=False)
+    config["engine"]["default"]["target"] = "agent"
+    scope = Scope(org="acme", user="alice")
+    security = internal_context(ScopedAuthenticator(scope))
+    runtime = assemble_runtime(config=config)
+    try:
+        api = runtime.api
+        assert api.route_table.is_empty()
+        p1 = api.add(
+            "zephyr first", scope, system_metadata={"project": "p1"}, security=security
+        )[0]
+        p2 = api.add(
+            "zephyr second", scope, system_metadata={"project": "p2"}, security=security
+        )[0]
+        common = api.add("zephyr shared", scope, security=security)[0]
+        p1_context = Context(scope=scope, extensions={"coords": {"project": "p1"}})
+        result = api.search("zephyr", p1_context, security=security)
+        assert {item.unit_id for item in result.items} == {p1.id, common.id}
+        unscoped = Context(scope=scope)
+        result = api.search("zephyr", unscoped, security=security)
+        assert {item.unit_id for item in result.items} == {common.id}
+        p2_filter = [FilterClause("system_metadata.project", FilterOp.IN, ["p2"])]
+        assert not api.search("zephyr", p1_context, filters=p2_filter, security=security).items
+        explicit = api.search("zephyr", unscoped, filters=p2_filter, security=security)
+        assert {item.unit_id for item in explicit.items} == {p2.id}
     finally:
         runtime.close()

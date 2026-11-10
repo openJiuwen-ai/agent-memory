@@ -34,7 +34,7 @@
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
 | `tokenizer/` | Tokenizer 插件目录 |
-| `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；passthrough 只接已是 UTF-8 文本的 TEXT/CODE，DOCUMENT 需专用解析器；`ensure_normalizer_supports` 是共用模态能力门禁；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans；内置视频文件读取统一经过 LocalMediaImports 准入及私有副本 |
+| `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；passthrough 只接已是 UTF-8 文本的 TEXT/CODE，DOCUMENT 需专用解析器；`ensure_normalizer_supports` 是共用模态能力门禁；`structured_modalities()` 声明哪些模态的规约结果是结构化中间产物（video 声明 VIDEO，routing 按分派汇总，其余缺省空集），接入层据此跳过预切分；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans；内置视频文件读取统一经过 LocalMediaImports 准入及私有副本 |
 | `feature_extractor/` | FeatureExtractor 插件目录 |
 | `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
 | `reranker/` | Reranker 插件目录 |
@@ -42,12 +42,17 @@
 | `security/protection/local_media.py` | `LocalMediaImports`：服务端落点 Scope 与本地媒体目录绑定，仅接绝对源路径；POSIX 校验配置根设备号/inode 并从根 dir_fd 逐段打开，每次暂存使用独立任务子目录，描述符通过显式上下文成对释放；空策略拒绝，不依赖 privacy，也不把身份下传给业务层。 |
 | `security/` | 安全能力的唯一归属地（设计维护页 F04，公开契约 S10）。PR1 已实装认证、保护与静态加密；`authentication/` 提供 Authenticator、PrincipalKeyStore 与 CredentialStatusRegistry，唯一实现目录是其内部的 `authentication/authentication_impl/`，包含 api_key / dev / trusted 三种认证器及凭据存储实现。进程内调用方经 `request_context.internal_context(authenticator)` 显式穿过认证边界，身份由传入的认证器产出、调用方不能自述身份（legacy 桥与公共 `ScopedAuthenticator` 均已删除，测试替身在 `tests/support/`）。PR2 在 `authorization/authorization_impl/` 提供 Standard/Routing/SpaceAware Authorizer 及 memory/SQLite GrantStore、DelegationStore；冻结约束是 MemoryAPI/Authorizer 唯一 PEP/PDP、凭据逐请求在线复核且旧 PermissionManager 不进入生产路径。`audit_integrity/` 注册可选 chained_hmac provider，提供版本化 HMAC、稳定快照增量验证及有界 CAS。`request_context.py` 提供受控上下文构造。安全注册入口统一使用 `import_required` 记录并重抛依赖导入错误。另含空间级授权事实与谓词纯函数（见 `docs/features/control/F07-collective-memory-design.md`）。 |
 | `lock/` | LockProvider 横切接口目录：跨实例互斥原语（接口 + `redis` / `memory` 实现）。**common 层唯一的异步契约**，只交付原语、不在业务路径加锁，见 [F06-distributed-lock.md](../../docs/features/common/F06-distributed-lock.md) |
-| `security/_delegation_binding.py` | 私有服务端装配适配：凭据指纹绑定现有委托 ID，认证 actor 不变，记录与 Authorizer 必须同源；供 PEP/PDP 共用绑定复核，不注册新认证 target、不扩展冻结接口。 |
+| `security/_delegation_binding.py` | 私有服务端装配适配：凭据指纹绑定现有委托 ID，认证 actor 不变；启用绑定时直接复用 Authorizer 公开能力暴露的唯一委托真源，不另建或按默认名查找 Store；供 PEP/PDP 共用绑定复核，不注册新认证 target、不扩展冻结接口。 |
 | `security/authentication/key_store.py` | PrincipalKeyStore 契约与可选 PrincipalRegistrationCapability；Trusted 无 Key 初始化采用增量能力，不扩充旧 ABC |
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
 | `security/_assembly_lifecycle.py` | 私有装配作用域：经 Factory 公开创建观察记录本次新建对象，启动失败回滚；成功将所有者显式绑定缓存纪元，保护借用依赖与较新装配。 |
 
 ## 行为铁律
+
+- **委托真源单点选择**：委托存储由 Authorizer 选择。启用凭据委托绑定时，Security
+  通过公开真源能力取得按对象身份去重后的唯一 Store；缺失或多个不同真源拒绝启动。
+  `security.params.delegation_store` 不再接受，旧配置必须删除该项；未启用绑定时不要求
+  Authorizer 暴露唯一委托真源，资源释放仍由统一生命周期根管理。
 
 - **静态保护能力注册**：Factory 的 config_inspectors 随 target 注册或替换，
   registration_scope 同时恢复 builder 与检查器，不改变 AssemblyContext 的缓存所有权。
@@ -90,7 +95,7 @@
    `RawPayload.assets` 是输入 Ingestor 的 `list[str]`，数据类型本身不解释如何分配给 MemoryUnit 或 Segment，也不限制模态。
 
 8. **Normalizer 能力声明必须可执行**
-   `modalities()` 不是说明性信息：显式 routing route 在装配时校验，真实 payload 在规约前校验。装配矛盾抛 `ValidationError`，运行时不支持抛 `UnsupportedCapabilityError`。它只决定“是否支持”，不决定 `RawPayload.data` / `uri` 的载体选择。Passthrough 只允许 TEXT 使用 URI 文本回退；CODE 只接 UTF-8 源码文本，DOCUMENT 与不支持的媒体不得借 URI 回退绕过能力门禁。
+   `modalities()` 不是说明性信息：显式 routing route 在装配时校验，真实 payload 在规约前校验。装配矛盾抛 `ValidationError`，运行时不支持抛 `UnsupportedCapabilityError`。它只决定“是否支持”，不决定 `RawPayload.data` / `uri` 的载体选择。`structured_modalities()` 同为可执行声明：命中的模态接入层不预切分（S01 第 7 条）；产出结构化包络的 Normalizer 必须声明，否则包络会被按长度切碎、下游解析失败（issue #294）；声明必须是 `modalities()` 的子集，消费方构造时经 `ensure_structured_modalities_declared` 校验，越界声明抛 `ValidationError`。Passthrough 只允许 TEXT 使用 URI 文本回退；CODE 只接 UTF-8 源码文本，DOCUMENT 与不支持的媒体不得借 URI 回退绕过能力门禁。
 
 9. **普通运行日志默认脱敏**
    通过 `get_logger()` 获取的 logger 默认安装 `SensitiveDataFilter`；正文、用户身份、Scope

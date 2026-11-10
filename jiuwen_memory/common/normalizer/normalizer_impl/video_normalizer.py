@@ -99,6 +99,12 @@ class VideoNormalizer(Normalizer):
         return [Modality.VIDEO]
 
     @staticmethod
+    def structured_modalities() -> frozenset[Modality]:
+        # normalize() 产出单条 JSON 包络（clips + events），由 VideoMemoryExtractor 整体
+        # 解析后拆成 CLM/ELM；接入层按长度切开它会得到非法 JSON、抽取零产出（issue #294）。
+        return frozenset({Modality.VIDEO})
+
+    @staticmethod
     def plugin_type() -> PluginType:
         return PluginType.NORMALIZER
 

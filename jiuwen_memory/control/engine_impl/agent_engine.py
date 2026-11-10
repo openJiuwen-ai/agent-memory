@@ -889,6 +889,27 @@ def _build(config):
         return JobFactoryProducer.build_named("default", ctx)
 
     manager = StoreManagerProducer.resolve(config)
+    if config.name == "default":
+        # JobFactory 由 _opt_job_factory 按名称获取，不走匿名缺省。
+        fallbacks = (
+            ("ingestor", IngestorProducer.TOP_NAME, "simple"),
+            ("index_builder", IndexBuilderProducer.TOP_NAME, ib_default),
+            ("retriever", RetrieverProducer.TOP_NAME, "pipeline"),
+            ("scheduler", SchedulerProducer.TOP_NAME, "in_process"),
+            ("evolver", EvolverProducer.TOP_NAME, "orchestrating"),
+            ("lifecycle", LifecycleProducer.TOP_NAME, "kv"),
+        )
+        bypassed = []
+        for field, namespace, target in fallbacks:
+            if config.params.get(field) is None and "default" in config.ctx.namespaces.get(
+                namespace, {}
+            ):
+                bypassed.append(
+                    f"engine.default.params.{field} bypasses {namespace}.default"
+                    f" (anonymous {target})"
+                )
+        if bypassed:
+            logger.warning("AgentEngine dependency fallback: %s", ", ".join(bypassed))
     return AgentEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),

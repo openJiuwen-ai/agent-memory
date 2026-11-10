@@ -28,7 +28,6 @@ from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolv
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
-from tests.unit.construction.fixtures import RecordingLLM
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     InvalidExtractionCandidateError,
     InvalidExtractionJSONError,
@@ -44,6 +43,7 @@ from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexWriteMode
 from tests.conftest import make_storage
 from tests.support.scoped_authenticator import ScopedAuthenticator
+from tests.unit.construction.fixtures import RecordingLLM
 
 _TEST_KEY_HEX = "00" * 32
 
@@ -525,6 +525,7 @@ def test_dynamic_evolver_high_similarity_skips_llm_judge():
     existing = _unit("existing", "完全相同的记忆")
     evolver, kv, _ = _make_evolver(dedup_hits=[(existing, 0.95)])
     candidate = _unit("candidate", "完全相同的记忆")
+    setattr(evolver, "_dedup_high_similarity", 0.9)
 
     result = evolver.evolve([candidate], EvolveMode.EXTRACT)
 

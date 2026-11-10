@@ -305,6 +305,7 @@ constructor:             # Producer.TOP_NAME
 |---|---|---|---|
 | `keyword` | `KeywordExtractor` | 按 Chunker 切分原文，生成带血缘的 SEMANTIC 单元；procedural 时合并为一条过程记忆 | `chunker`，默认 `fixed_window` |
 | `llm` | `ExtractorImpl` | LLM 结构化抽取，校验来源、置信度、tier 和 tags | `llm`；`extractor_min_confidence`、`extractor_max_attempts`、`extractor_retry_backoff`、`extract_batch_size` |
+| `agent_llm` | `AgentLlmExtractor` | `llm` 的 agent 方向版：继承抽取管线与输出契约，prompt 面向 user↔agent 对话，并在抽取时同步判定 `memory_class` | `llm`；参数同 `llm`，另有 `extractor_language`（`cn` / `en`，默认 `cn`） |
 | `dynamic_llm` | `DynamicLLMExtractor` | 按 `_extract_prompt_<strategy>` 逐策略抽取；无策略时委托 fallback | `llm`、`fallback`、`prompts`；参数同 `llm` |
 | `video_memory` | `VideoMemoryExtractor` | 将视频规约结果转换为 CLM/ELM 多模态 MemoryUnit | 无配置依赖；输入需包含约定的视频 metadata |
 
@@ -344,7 +345,7 @@ constructor:             # Producer.TOP_NAME
 | `evolver` | `orchestrating` | `OrchestratingEvolver` | legacy 四模式；EXTRACT 中去重判定与落盘耦合 | extractor、abstractor、associator、index_builder、storage、message_store、dedup、llm；可用 `params.layer_annotator` 选择、禁用标注器 |
 | `evolver` | `dynamic` | `DynamicEvolver` | 动态 prompt 四步 EXTRACT；其他模式继承 orchestrating | 同上，额外使用 `PromptRegistry`；存在 `layer_annotator.default` 时自动注入 |
 
-两个 Evolver 都使用 `dedup_medium_similarity`（默认 `0.7`）与 `dedup_high_similarity`（默认 `0.9`）。`vector_enabled=false` 时，未显式指定的 IndexBuilder/Dedup 默认分别切换为 `fulltext` 和 `keyword`。
+两个 Evolver 都使用 `dedup_medium_similarity`（默认 `0.7`）与 `dedup_high_similarity`（默认 `1.0`）。`vector_enabled=false` 时，未显式指定的 IndexBuilder/Dedup 默认分别切换为 `fulltext` 和 `keyword`。
 
 ## 14. 默认装配
 
@@ -404,7 +405,7 @@ evolver:
       dedup: default
       llm: default
       dedup_medium_similarity: 0.7
-      dedup_high_similarity: 0.9
+      dedup_high_similarity: 1.0
 ```
 
 `dynamic` 的当前 builder 会直接查找 `layer_annotator.default`，不读取
@@ -514,10 +515,11 @@ rebuild() -> None
 
 | 参数 | 类型 | 默认值 | 适用实现 | 作用/约束 |
 |---|---|---:|---|---|
-| `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` | 过滤低置信抽取候选 |
-| `extractor_max_attempts` | `int` | `3` | `llm` / `dynamic_llm` | LLM 总调用次数；`1` 表示不重试 |
-| `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` | 重试退避，毫秒 |
-| `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` | 单次 LLM 抽取的原文条数上限 |
+| `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` / `agent_llm` | 过滤低置信抽取候选 |
+| `extractor_max_attempts` | `int` | `3` | `llm` / `dynamic_llm` / `agent_llm` | LLM 总调用次数；`1` 表示不重试 |
+| `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` / `agent_llm` | 重试退避，毫秒 |
+| `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` / `agent_llm` | 单次 LLM 抽取的原文条数上限 |
+| `extractor_language` | `str` | `cn` | `agent_llm` | prompt 指令面语言，`cn` / `en`；非法值兜底 `cn`，输出契约恒为英文 |
 | `abstractor_min_confidence` | `float` | `0.5` | `abstractor.llm` | 最低置信度 |
 | `abstractor_min_group_size_summary` | `int` | `1` | `abstractor.llm` | summary 分组下限 |
 | `abstractor_min_group_size_pattern` | `int` | `3` | `abstractor.llm` | pattern 分组下限 |
@@ -545,7 +547,7 @@ rebuild() -> None
 | `dedup_tier_filter` | `bool` | `false` | 两种 Dedup | 是否限制相同 tier |
 | `dedup_scope_filter` | `bool` | `true` | 两种 Dedup | 是否按候选 Scope 限定召回 |
 | `dedup_medium_similarity` | `float` | `0.7` | 两种 Evolver | 中相似判定阈值 |
-| `dedup_high_similarity` | `float` | `0.9` | 两种 Evolver | 高相似判定阈值，应不小于 medium |
+| `dedup_high_similarity` | `float` | `1.0` | 两种 Evolver | 高相似判定阈值，应不小于 medium；仅精确重复可绕过 LLM |
 | `layer_annotator_threshold` | `int` | `512` | 两种 LayerAnnotator | 只标注 content 长度超过阈值的单元 |
 | `layer_annotator_l1_chars` | `int` | `200` | `layer_annotator.keyword` | L1 截取字符数 |
 | `layer_annotator_max_attempts` | `int` | `3` | `layer_annotator.llm` | LLM 标注总调用次数；`1` 表示不重试 |
