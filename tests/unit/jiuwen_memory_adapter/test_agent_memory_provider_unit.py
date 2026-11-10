@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from jiuwen_memory.api import ConflictError, Modality, Surface
 from jiuwen_memory.api import Scope as ApiScope
@@ -95,8 +96,8 @@ def _offline_in_process_config(tmp_path, monkeypatch):
         cfg = _orig()
         cfg["globals"]["embedder_dim"] = 64
         cfg["globals"]["watch_document"] = False
-        cfg["llm"] = {"default": "echo"}
-        cfg["extractor"] = {"default": "keyword"}
+        cfg["llm"]["default"] = "echo"
+        cfg["extractor"]["default"] = "keyword"
         cfg["embedder"] = {"default": {"target": "hashing", "params": {"tokenizer": "default"}}}
         cfg["fulltext_store"] = {"default": {"target": "memory"}}
         cfg["markdown_store"] = {"default": {"target": "local", "params": {"root": str(tmp_path)}}}
@@ -240,7 +241,10 @@ class TestSdkMode:
         with pytest.raises(FileNotFoundError):
             asyncio.run(provider.initialize())
 
-    @pytest.mark.parametrize("configuration", ["inline", "globals", "no-pipeline", "wrong-evolver"])
+    @pytest.mark.parametrize(
+        "configuration",
+        ["default", "file-json", "file-yaml", "inline", "globals", "no-pipeline", "wrong-evolver"],
+    )
     def test_video_tool_writes_document_units(self, tmp_path, monkeypatch, configuration):
         media = tmp_path / "imports"
         media.mkdir()
@@ -298,7 +302,30 @@ class TestSdkMode:
             }}},
         }
 
-        if configuration == "globals":
+        config_path = None
+        if configuration in {"default", "file-json", "file-yaml"}:
+            route = config["normalizer"]["default"]["params"]["routes"]["video"]
+            monkeypatch.setenv("JIUWEN_MEMORY_VIDEO_ROOTS", json.dumps(
+                route["params"]["local_media_roots"],
+            ))
+            for name, value in {
+                "ASR_API_BASE": "https://example.invalid/v1",
+                "ASR_MODEL_NAME": "offline-asr",
+                "VIDEO_API_BASE": "https://example.invalid/v1",
+                "VIDEO_MODEL_NAME": "offline-vision",
+            }.items():
+                monkeypatch.setenv(name, value)
+            if configuration.startswith("file-"):
+                extension = configuration.removeprefix("file-")
+                path = tmp_path / f"agent.{extension}"
+                file_config = {"markdown_store": {"default": {"params": {
+                    "root": str(tmp_path / "file-memory"),
+                }}}}
+                serialize = json.dumps if extension == "json" else yaml.safe_dump
+                path.write_text(serialize(file_config), encoding="utf-8")
+                config_path = str(path)
+            config = None
+        elif configuration == "globals":
             route = config["normalizer"]["default"]["params"]["routes"]["video"]
             config["globals"] = {"local_media_roots": route["params"].pop("local_media_roots")}
         elif configuration == "no-pipeline":
@@ -309,9 +336,10 @@ class TestSdkMode:
         async def run():
             provider = AgentMemoryMemoryProvider(
                 config_dict=config,
+                config_path=config_path,
                 security_provider=_security_provider(ApiScope(org="tenant", user="user")),
             )
-            enabled = configuration in {"inline", "globals"}
+            enabled = configuration not in {"no-pipeline", "wrong-evolver"}
             schemas = {s["name"]: s for s in provider.get_tool_schemas()}
             assert ("agent_memory_video_submit" in schemas) is enabled
             assert ("agent_memory_video_status" in schemas) is enabled
@@ -365,6 +393,8 @@ class TestSdkMode:
                 assert {block["item_id"] for block in document["blocks"]} == set(status["unit_ids"])
                 md_path = next(tmp_path.rglob("MEMORY.md"))
                 assert md_path.parent.name == project.get("project", "memory")
+                if config_path:
+                    assert md_path.is_relative_to(tmp_path / "file-memory")
                 markdown = md_path.read_text(encoding="utf-8")
                 assert "A corgi chases a ball" in markdown
 

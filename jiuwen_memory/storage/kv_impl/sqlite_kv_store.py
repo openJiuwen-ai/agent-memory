@@ -104,7 +104,6 @@ class SQLiteKVStore(KVStore):
 
     def migration_identity(self) -> object:
         import os
-        from pathlib import Path
 
         path = self._resolved_db_path()
         return ("sqlite", id(self)) if path == ":memory:" else opaque_location(

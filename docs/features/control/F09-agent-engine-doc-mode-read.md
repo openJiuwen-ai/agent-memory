@@ -164,11 +164,21 @@ Swarm 的 `JiuwenMemoryRail` 通过 Provider 的 schema 注册视频提交和状
 该路由不可用，提交工具不入队。
 Provider 使用已绑定的 Scope 和可信身份提交原生摄入任务，`AgentEngine` 把 URI 填入视频
 `RawPayload.uri`，并将 `pipeline=video` 交给配置的 metadata pipeline 选择视频 Evolver。
-部署时为视频路由配置 Scope 精确匹配的 `local_media_roots` 和实际的 ASR、文本模型、视觉模型，
-为视频 profile 配置 `video_memory` 抽取器、独立的 `message_store` 和 `dedup_extract: false`，
-保留片段与事件的引用关系，并保留默认文本 profile 的 `classifier: default`。两条流水线
+视频路由使用 Scope 精确匹配的 `local_media_roots` 和配置好的 ASR、文本模型、视觉模型。
+内置视频 profile 使用 `video_memory` 抽取器、独立的 `message_store` 和 `dedup_extract: false`，
+保留片段与事件的引用关系。默认文本 profile 使用 `classifier: default`。两条流水线
 共用文档 IndexBuilder，视频片段和事件的文本描述及
 元数据分别进入 Markdown 和影子索引，显式 `agent_memory_search` 可检索视频记忆。
+
+Swarm 选择 AgentMemory 的 SDK 模式后，可直接使用 Provider 内置的视频算子和路由。
+部署环境用 `JIUWEN_MEMORY_VIDEO_ROOTS` 提供 JSON 数组，每项包含 `scope` 和 `root`。
+该变量为空时，Provider 默认只装配文本栈。启用内置视频时，使用 `ASR_API_BASE`、`ASR_MODEL_NAME`、
+`ASR_API_KEY` 配置语音转写服务，并用 `VIDEO_API_BASE`、`VIDEO_MODEL_NAME`、
+`VIDEO_API_KEY` 配置视觉服务。若需跨 SDK 实例或重启保留作业状态，可用
+`JIUWEN_MEMORY_VIDEO_JOB_DB` 指定专用 SQLite 文件。Swarm YAML 中现有的 SDK 显式覆盖仍可使用。
+SDK 通过 `config_path` 读取 YAML 或 JSON 时，设置 `JIUWEN_MEMORY_VIDEO_ROOTS` 后，
+Provider 也会先装配内置视频默认值，再应用文件里的显式配置。未设置该变量时，
+显式配置文件仍直接交给内核装配。
 
 视频工具通过公开 API 在入队前先做写入鉴权，再委托已装配的规约器验证本地 URI 和扩展名。
 `local_media_roots` 可按标准配置规则由实例参数覆盖全局配置。后台暂存文件时仍独立校验。

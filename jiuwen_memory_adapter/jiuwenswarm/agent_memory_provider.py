@@ -21,8 +21,8 @@
 - [本地修改 2026-10-17] 进程内默认装配：``config_path`` 缺省时不再要求外部配置文件，
   直接用内置的 agent 场景（F09）默认配置 ``_agent_default_config()``（即
   ``config.serve-doc.yml`` 的代码化副本：md 真源 + shadow 索引 + agent engine +
-  agent_llm 抽取，凭证/md root/ES 端点均按该文件字面值写死）。外部 yml 仍可经
-  ``config_path`` 覆盖内置默认。
+  agent_llm 抽取）。启用内置视频能力时，外部 YAML/JSON 配置经
+  ``config_path`` 覆盖内置默认。其余情况下外部文件直接交给内核装配。
 - HTTP scope 用**身份覆盖式**映射（§6.2-D）：服务端授权要求认证身份覆盖 target
   （org/space 硬边界 + user 精确相等），故 org/user 轴由 ``identity_org``/
   ``identity_user`` 占据（dev 认证缺省 local/developer），rail 的 ``user_id``/
@@ -306,6 +306,63 @@ def _recall_filters() -> dict[str, Any]:
     return {"tier": {"in": list(_RECALL_TIERS)}}
 
 
+_VIDEO_ROOTS_ENV = "JIUWEN_MEMORY_VIDEO_ROOTS"
+
+
+def _configure_default_video(config: dict[str, Any], roots: str) -> None:
+    """Install the SDK video profile from deployment inputs."""
+    try:
+        bindings = json.loads(roots)
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"{_VIDEO_ROOTS_ENV} must be a JSON array") from exc
+    if not isinstance(bindings, list) or not bindings:
+        raise ValidationError(f"{_VIDEO_ROOTS_ENV} must contain at least one scope/root binding")
+
+    asr_base_url = os.getenv("ASR_API_BASE", "").strip()
+    asr_model = os.getenv("ASR_MODEL_NAME", "").strip()
+    video_base_url = os.getenv("VIDEO_API_BASE", "").strip()
+    video_model = os.getenv("VIDEO_MODEL_NAME", "").strip()
+    if not all((asr_base_url, asr_model, video_base_url, video_model)):
+        raise ValidationError(
+            "SDK video requires ASR_API_BASE, ASR_MODEL_NAME, VIDEO_API_BASE and VIDEO_MODEL_NAME"
+        )
+    config["asr"] = {"video": {"target": "openai_transcription", "params": {
+        "asr_base_url": asr_base_url, "asr_model": asr_model,
+        "asr_api_key": os.getenv("ASR_API_KEY", ""),
+    }}}
+    config["llm"]["video_vision"] = {"target": "openai", "params": {
+        "llm_base_url": video_base_url, "llm_model": video_model,
+        "llm_api_key": os.getenv("VIDEO_API_KEY", ""), "llm_temperature": 0.0,
+    }}
+    config["normalizer"]["default"] = {"target": "routing", "params": {
+        "routes": {"video": {"target": "video", "params": {
+            "asr_port": "video", "llm_port": "default", "vlm_port": "video_vision",
+            "local_media_roots": bindings,
+        }}},
+    }}
+    config["kv_store"]["video_messages"] = "memory"
+    config["extractor"]["video"] = "video_memory"
+    config["evolver"]["video"] = {"target": "orchestrating", "params": {
+        **config["evolver"]["default"]["params"],
+        "extractor": "video", "message_store": "video_messages",
+        "layer_annotator": None, "dedup_extract": False,
+    }}
+    config["pipeline"] = {"default": {"target": "metadata", "params": {
+        "route_key": "pipeline", "fallback": "default", "routes": {"video": "video"},
+        "profiles": {
+            "default": {"index_builder": "default", "retriever": "default",
+                        "evolver": "default", "classifier": "default"},
+            "video": {"index_builder": "default", "retriever": "default", "evolver": "video"},
+        },
+    }}}
+    job_db = os.getenv("JIUWEN_MEMORY_VIDEO_JOB_DB", "").strip()
+    if job_db:
+        config["kv_store"]["video_jobs"] = {"target": "sqlite", "params": {"db_path": job_db}}
+        config["ingest_job"] = {"default": {"target": "in_process", "params": {
+            "kv_store": "video_jobs",
+        }}}
+
+
 def _agent_default_config() -> dict[str, Any]:
     """ 进程内默认装配——agent 场景（F09）内核配置。
     - 真源 = document（md 文件 + sqlite3/sqlite-vec 影子索引，watchdog 监听手改）；
@@ -316,7 +373,7 @@ def _agent_default_config() -> dict[str, Any]:
     - fulltext = elasticsearch（文档模式召回走 shadow FTS5，此端口闲置备用）
     - 每次调用返回**全新字面量**——无共享可变状态，调用方（装配/改写）互不影响
     """
-    return {
+    config: dict[str, Any] = {
         "globals": {
             "vector_enabled": True,
             "graph_enabled": False,          # 本地联调先关图，减少装配面
@@ -445,6 +502,10 @@ def _agent_default_config() -> dict[str, Any]:
         "space": {"default": {"target": "kv", "params": {}}},
         "config_source": {"default": "yaml_defaults"},
     }
+    roots = os.getenv(_VIDEO_ROOTS_ENV, "").strip()
+    if roots:
+        _configure_default_video(config, roots)
+    return config
 
 
 def _merge_config_over_default(config_dict: dict[str, Any]) -> dict[str, Any]:
@@ -485,7 +546,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     - ``config_path``：进程内模式的 AgentMemory 配置文件路径（YAML/JSON），
       **可选**——[本地修改 2026-10-17] 缺省时用内置 agent 场景默认装配
       ``_agent_default_config()``（F09 文档真源：md + shadow 索引 + agent_llm
-      抽取，即 serve-doc 的代码化副本）；外部 yml 传入则覆盖内置默认。
+      抽取，即 serve-doc 的代码化副本）。启用内置视频能力时，外部文件作为
+      agent 默认配置的覆盖层。其余情况下外部文件直接交给内核装配。
     - ``config_dict``：进程内模式的两级命名空间配置 dict，**优先于
       ``config_path`` 与内置默认**。[本地修改 2026-10-20] 传给进程内分支时不再
       整体替换内置默认，而是经 ``_merge_config_over_default()`` 深合并到
@@ -663,7 +725,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if self._base_url or not self.is_available():
             return False
         # Rail asks for schemas before initialize; assemble once, then reuse that client.
-        if self._client is None and self._config_dict is None and not self._config_path:
+        has_config = (
+            self._config_dict is not None or self._config_path or os.getenv(_VIDEO_ROOTS_ENV)
+        )
+        if self._client is None and not has_config:
             return False
         try:
             client = self._ensure_client()
@@ -1757,14 +1822,18 @@ class _InProcessClient(_AgentMemoryClient):
         self._security_provider = security_provider
         config = config_dict
         if config is None and config_path:
-            import json as _json
             from pathlib import Path
 
             p = Path(config_path)
-            data = (
-                _json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
+            config = (
+                json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
             )
-            config = data
+            if os.getenv(_VIDEO_ROOTS_ENV, "").strip():
+                if config is None:
+                    config = {}
+                if not isinstance(config, dict):
+                    raise ValidationError("SDK config file must contain a mapping")
+                config = _merge_config_over_default(config)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
