@@ -3,7 +3,7 @@
 
 把 AgentMemory 的 ``MemoryAPI``（进程内 ``assemble_runtime()`` 或 HTTP ``/v1/<verb>``）
 适配成 openjiuwen ``MemoryProvider`` ABC 的实现，供 ``ExternalMemoryRail`` /
-``JiuwenMemoryRail`` 驱动。
+``JiuwenMemoryRail`` 驱动；``scene="code"`` 由 ``JiuwenMemoryCodingRail`` 驱动。
 
 - ABC：``openjiuwen/core/memory/external/provider.py`` 的 ``MemoryProvider``
 - HTTP 表面：``jiuwen_memory_entry/core/api_contract.py``（F05 对齐后）——
@@ -29,7 +29,7 @@
   ``agent_id`` 下沉到 session/agent 轴；SDK 模式维持五维直映射（actor==target）。
 - ``prefetch`` 与 ``sync_turn`` 共用 ``_prepare`` 剥 TUI 信封（§6.2-E），保证检索
   query 与落盘内容形态一致。
-- prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
+- 工作场景 prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
   EPISODIC 对话原文；``agent_memory_search`` 工具不过滤（显式检索允许命中原文）。
   过滤器是 dict DSL，两模式共用（HTTP 直接下发；进程内经 RetrievalQuery 边界
   normalize）。rail 传入 ``project`` 时 prefetch 追加
@@ -83,6 +83,12 @@ from jiuwen_memory.api import (
     scope_for_log,
 )
 from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory_adapter.jiuwenswarm.coding_memory import (
+    CodingMemoryScene,
+)
+from jiuwen_memory_adapter.jiuwenswarm.coding_memory import (
+    tool_schemas as coding_tool_schemas,
+)
 
 # provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
 # __name__="agent_memory_provider" 不在 jiuwenswarm/openjiuwen 的 logger 树下，INFO 默认不落文件。
@@ -750,6 +756,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         continuity_mode: str = "role",
         default_duty: str | list[str] = "general",
         portal: dict[str, Any] | None = None,
+        scene: str = "agent",
+        project: str = "default",
         **_kwargs: Any,
     ) -> None:
         self._continuity_enabled = continuity_enabled
@@ -781,6 +789,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._portal_handle = None
         self._portal_error = None
         self._initialize_lock = asyncio.Lock()
+        if scene not in {"agent", "code"}:
+            raise ValueError("scene must be agent or code")
+        self._coding = CodingMemoryScene(project) if scene == "code" else None
         self._base_url = base_url or ""
         self._config_path = config_path
         self._config_dict = config_dict
@@ -1001,6 +1012,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 identity_org=self._identity_org,
                 identity_user=self._identity_user,
                 manage_configuration=self._portal_settings.get("enabled", True),
+                write_document=self._coding is not None,
             )
         return self._client
 
@@ -1029,6 +1041,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         重新注册时直接加回列表即可）。
         """
         schemas = [SEARCH_SCHEMA, CONCLUDE_SCHEMA, READ_MD_SCHEMA, EDIT_MD_SCHEMA]
+        if self._coding is not None:
+            return coding_tool_schemas(schemas)
         if self._video_tools_enabled():
             schemas.extend((VIDEO_SUBMIT_SCHEMA, VIDEO_STATUS_SCHEMA))
         if self._continuity_enabled:
@@ -1072,7 +1086,15 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         scope = self.bound_scope()
 
         try:
-            if tool_name in ("agent_memory_video_submit", "agent_memory_video_status"):
+            if self._coding is not None:
+                action, args = self._coding.bind_tool(tool_name, args)
+                if action == "write":
+                    return await self._coding.write(self._client, scope, args)
+                if action == "search":
+                    return await self._coding.search_tool(self._client, scope, args)
+                tool_name = {"read": "agent_memory_read_md_file",
+                             "edit": "agent_memory_edit_md_file"}[action]
+            elif tool_name in ("agent_memory_video_submit", "agent_memory_video_status"):
                 if not (
                     self._video_tools_enabled() and isinstance(self._client, _InProcessClient)
                 ):
@@ -1350,7 +1372,14 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             redact_for_log(query),
             bool(self._client),
         )
-        if not query or not self._initialized or self._client is None:
+        if not self._initialized or self._client is None:
+            return ""
+        if self._coding is not None:
+            return await self._coding.prefetch(
+                self._client, self.bound_scope(), self._prepare(query),
+                top_k=kwargs.get("top_k"), background=bool(kwargs.get("background")),
+            )
+        if not query:
             return ""
         # §6.2-E：剥 TUI 信封，用纯 content 检索，避免命中对话原文壳。
         search_query = self._prepare(query)
@@ -1492,7 +1521,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         }
         # rail 经 _resolve_project 传入 project；与 conclude 分支同口径直传标量
         # system_metadata["project"]，让 md 落盘按 memory/{project}/... 分流。
-        project = str(kwargs.get("project") or "").strip()
+        project = (self._coding.project if self._coding is not None
+                   else str(kwargs.get("project") or "").strip())
         if project:
             system_metadata["project"] = project
         logger.info(
@@ -1528,6 +1558,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     # -- MemoryProvider: 静态提示词 + 生命周期（非抽象，有默认） -------------- #
 
     def system_prompt_block(self) -> str:
+        if self._coding is not None:
+            return self._coding.system_prompt()
         # [本地修改 2026-10-17] 显式路由规则：新增→conclude（append-only），
         # 修改/更正→read_md_file 定位 + edit_md_file 原地替换。个人信息可能在
         # USER.md 也可能在 daily 文件（YYYY-MM-DD.md），修改前先读定位。
@@ -1764,6 +1796,7 @@ def _build_client(
     identity_org: str = "local",
     identity_user: str = "developer",
     manage_configuration: bool = True,
+    write_document: bool = False,
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
@@ -1793,18 +1826,21 @@ def _build_client(
             config_dict=_merge_config_over_default(config_dict),
             security_provider=security_provider,
             manage_configuration=manage_configuration,
+            write_document=write_document,
         )
     if config_path:
         return _InProcessClient(
             config_path,
             security_provider=security_provider,
             manage_configuration=manage_configuration,
+            write_document=write_document,
         )
     return _InProcessClient(
         None,
         config_dict=_merge_config_over_default({}),
         security_provider=security_provider,
         manage_configuration=manage_configuration,
+        write_document=write_document,
     )
 
 
@@ -2300,6 +2336,7 @@ class _InProcessClient(_AgentMemoryClient):
         config_dict: dict[str, Any] | None = None,
         security_provider: Any = None,
         manage_configuration: bool = True,
+        write_document: bool = False,
     ) -> None:
         if security_provider is None:
             # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
@@ -2323,6 +2360,10 @@ class _InProcessClient(_AgentMemoryClient):
                 config if config is not None else {}, standalone=True,
             )
             config_paths = (str(p),)
+        if write_document:
+            # Preserve the selected configuration baseline; only enable document writes.
+            config = deepcopy(config or {})
+            config.setdefault("globals", {})["write_document"] = True
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。

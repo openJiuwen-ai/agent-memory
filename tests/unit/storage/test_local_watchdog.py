@@ -17,6 +17,9 @@ from __future__ import annotations
 # pylint: disable=protected-access  # 测试直取内部装配与状态以断言接线行为
 import hashlib
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 
@@ -36,6 +39,8 @@ from jiuwen_memory.storage.markdown_impl._md_blocks import (
     content_hash,
 )
 from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
+from jiuwen_memory.storage.sync_gate import document_operation
+from jiuwen_memory.storage.watchdog_impl import local_watchdog
 from jiuwen_memory.storage.watchdog_impl.local_watchdog import (
     LocalWatchdog,
     _class_from_md_path,
@@ -458,7 +463,8 @@ def test_started_reflects_lifecycle_and_stop_start_resets_closed(tmp_path) -> No
     assert wd.started is False
 
 
-def test_sync_one_inherits_scope_from_latest(tmp_path) -> None:
+@pytest.mark.parametrize("replace_all", [False, True])
+def test_sync_one_inherits_scope_from_latest(tmp_path, replace_all) -> None:
     """sync 补登的 unit 继承该 md 最新一条 unit 的 scope（修正 scope 原生隔离下补登可见性）。
 
     历史 unit 落 scope_a，手动改 md 加新行 → 看门狗补登的新 unit 应继承 scope_a
@@ -480,7 +486,8 @@ def test_sync_one_inherits_scope_from_latest(tmp_path) -> None:
     # md 文件加新行（看门狗补登）
     md = tmp_path / "memory" / "p1" / "MEMORY.md"
     md.parent.mkdir(parents=True)
-    md.write_text("# t\nold content\nnew line\n\n", encoding="utf-8")
+    previous = "" if replace_all else "old content\n"
+    md.write_text(f"# t\n{previous}new line\n\n", encoding="utf-8")
 
     wd._sync_one(md_filename, deleted=False)
 
@@ -522,3 +529,34 @@ def test_sync_one_inherits_scope_from_latest(tmp_path) -> None:
     assert watchdog._shadow is manager.shadow_index()
     # markdown root 来自 markdown store 实例（晚绑定解析后）
     assert watchdog._markdown_root == str(tmp_path)
+
+
+def test_stop_skips_sync_waiting_for_shared_resource(tmp_path, monkeypatch):
+    """关闭时等待锁的旧任务退出，且不再访问索引。"""
+    watcher = _watchdog(tmp_path)
+    waiting, stopping, called = threading.Event(), threading.Event(), threading.Event()
+    original_wait = watcher._sync_condition.wait
+
+    @contextmanager
+    def observed_operation(*args, **kwargs):
+        waiting.set()
+        with document_operation(*args, **kwargs):
+            yield
+
+    def observed_wait(*args, **kwargs):
+        stopping.set()
+        return original_wait(*args, **kwargs)
+
+    monkeypatch.setattr(local_watchdog, "document_operation", observed_operation)
+    monkeypatch.setattr(watcher._sync_condition, "wait", observed_wait)
+    monkeypatch.setattr(watcher, "_sync_one", lambda *args: called.set())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with document_operation(str(tmp_path), watcher._shadow.write_lock_key, writing=True):
+            sync = pool.submit(watcher._run_sync, "USER.md", False, watcher._generation)
+            assert waiting.wait(2), "sync did not reach resource lock"
+            stop = pool.submit(watcher.stop)
+            assert stopping.wait(2), "stop did not wait for in-flight sync"
+        sync.result(timeout=2)
+        stop.result(timeout=2)
+    assert not called.is_set(), "closed watchdog accessed its dependencies"
+    assert watcher._active_syncs == 0

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-12 |
+| 最近一次修订日期 | 2026-11-13 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -557,18 +557,22 @@ ID 限制的向量召回路径保持不变。
 两者要求显式位置，SQLite :memory: 仅免部署证明，位置仍固定，详见 common/F04。
 
 两端口是文档记忆的双写对——`CompositeDomainStore.add/update/delete` 文档分支同步写 md 块 +
-shadow 索引。同进程内，写入与文件监听按解析后的文档根目录共用写窗口。监听器写回索引前
-须校验该目录的版本。版本变化时重新读取和计算，提交时只与该目录的写入互斥。
-正常写入等候超过上限时返回后端错误。
-文件同步只对有效记录执行删除，保留纠正历史、遗忘和归档记录。这些记录的正文留在文件
-时，同步不会将其重新写为有效记忆。写失败时尽力恢复。完整算子
+shadow 索引；同进程的写入、`edit_md_file` 及完整对账须在读取旧状态前，按固定顺序获取
+根目录与影子索引的共享资源锁，保持到成功或补偿结束。共享任一资源串行，两者独立可并行。
+写窗口按资源计数；等待锁期间关闭的看门狗不得继续访问依赖。跨进程与外部编辑器不在保证范围。
+`DocumentShadowIndex.write_lock_key: str` 是进程内协调标识：默认按实例，跨实例共享后端
+必须返回相同稳定标识；SQLite 按实际数据库的归一绝对路径（含符号链接解析），`:memory:`
+按连接实例区分。标识不包含 Scope，不改变授权或查询过滤；存储位置不在单次操作中途切换。
+获取整组资源锁的等待有界，超过上限抛后端错误，并释放已取得的锁。
+文件同步只删除有效记录；纠正历史、遗忘和归档记录保留，其正文不会因同步重新生效。
+写失败沿用既有尽力补偿语义，不保证补偿本身一定成功。完整算子
 契约见 F08-document-memory.md（§2 MarkdownStore / §3 影子索引 / §4 写入路径分流 / 决策四写失败
 补偿）。**scope 原生隔离**：影子索引 `memory_unit` 表加 org/space/user/agent/session 五列
 （对齐 KV 五段等值 WHERE），与 project+category 列隔离正交——project 是收窄维
 （`IN ['', value]`），scope 是身份隔离维（严格等值）。`list_units_by_md`（看门狗跨 scope
 诊断）/`delete_units`（幂等按 unit_id）例外不限 scope。看门狗建新 unit 时按
 `latest_scope_by_md`（同 `list_units_by_md` 跨 scope 不限 WHERE 例外，`rowid DESC LIMIT 1`）
-继承该 md 文件最新一条 unit 的 scope，无历史返 None 落空 Scope——修正补登 unit 落空 scope
+在删除旧记录之前保存该 md 文件最新一条 unit 的 scope，供新增记录继承；文件全部正文被替换时仍保留原归属。无历史返 None 落空 Scope——修正补登 unit 落空 scope
 列、真实 scope 召回不可见的遗留。**召回放宽 session**：`search_fulltext`/`search_vector`
 的 scope WHERE 只对 org/space/user/agent 四段严格等值，不做 session 等值（记忆跨 session
 共享）；`get_units`/`list_units` 仍五段严格等值（点查/列表不放宽）——召回与点查/列表口径

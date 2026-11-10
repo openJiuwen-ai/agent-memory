@@ -82,7 +82,7 @@ from jiuwen_memory.storage.store_manager import (
     StoreManagerProducer,
     resolve_name,
 )
-from jiuwen_memory.storage.sync_gate import document_sync_gate
+from jiuwen_memory.storage.sync_gate import document_operation
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -261,26 +261,23 @@ class CompositeDomainStore(DomainStore):
             self._sanitize_document_content(units)
             md = self._raw_markdown()
             shadow = self._raw_shadow_index()
-            gate = document_sync_gate(md.root)
-            gate.open()
-            try:
-                md.write(scope, units)
-                shadow.insert_units(scope, units)
-            except Exception as exc:
-                logger.error("doc add failed: %s", exc)
-                for u in units:
-                    fn = (u.system_metadata or {}).get(MD_FILENAME_KEY, "")
-                    c = u.segments[0].content if u.segments else ""
-                    if fn and c:
-                        try:
-                            md.remove_content(scope, fn, c)
-                        except Exception as comp_exc:
-                            logger.warning(
-                                "add 补偿失败 unit=%s: %s", u.id[:8], comp_exc
-                            )
-                raise
-            finally:
-                gate.close()
+            with document_operation(md.root, shadow.write_lock_key, writing=True):
+                try:
+                    md.write(scope, units)
+                    shadow.insert_units(scope, units)
+                except Exception as exc:
+                    logger.error("doc add failed: %s", exc)
+                    for u in units:
+                        fn = (u.system_metadata or {}).get(MD_FILENAME_KEY, "")
+                        c = u.segments[0].content if u.segments else ""
+                        if fn and c:
+                            try:
+                                md.remove_content(scope, fn, c)
+                            except Exception as comp_exc:
+                                logger.warning(
+                                    "add 补偿失败 unit=%s: %s", u.id[:8], comp_exc
+                                )
+                    raise
         else:
             # 非文档路径：KV 真源（原样）。
             kv = self._kv()
@@ -315,9 +312,7 @@ class CompositeDomainStore(DomainStore):
             self._sanitize_document_content(units)
             shadow = self._raw_shadow_index()
             md = self._raw_markdown()
-            gate = document_sync_gate(md.root)
-            gate.open()
-            try:
+            with document_operation(md.root, shadow.write_lock_key, writing=True):
                 for unit in units:
                     # 先取旧 unit 拿 old content + md_filename（replace_content 的定位锚与路径）。
                     olds = shadow.get_units(scope, [unit.id])
@@ -434,8 +429,6 @@ class CompositeDomainStore(DomainStore):
                                 "doc update: md block not found, drift suspected "
                                 "unit=%s md_filename=%s", unit.id[:8], md_filename
                             )
-            finally:
-                gate.close()
         else:
             # 非文档路径：KV 真源（原样）。
             kv = self._kv()
@@ -472,9 +465,7 @@ class CompositeDomainStore(DomainStore):
             )
             shadow = self._raw_shadow_index()
             md = self._raw_markdown()
-            gate = document_sync_gate(md.root)
-            gate.open()
-            try:
+            with document_operation(md.root, shadow.write_lock_key, writing=True):
                 olds = shadow.get_units(scope, unit_ids)
                 # 影子索引删三表（幂等，缺失静默跳过，§12.7 显式删三表不级联）。
                 shadow.delete_units(scope, unit_ids)
@@ -522,8 +513,6 @@ class CompositeDomainStore(DomainStore):
                                 len(removed), md_comp_exc,
                             )
                     raise
-            finally:
-                gate.close()
         else:
             # 非文档路径：KV 真源（原样）。
             kv = self._kv()
@@ -698,9 +687,7 @@ class CompositeDomainStore(DomainStore):
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
         rel_path = MarkdownStore.resolve_md_path(md_basename, project)
-        gate = document_sync_gate(md.root)
-        gate.open()
-        try:
+        with document_operation(md.root, shadow.write_lock_key, writing=True):
             # edit 前旧全文快照（md 侧失败补偿用：shadow 同步失败时回写整个文件到编辑前
             # 字节态）。同一次读既算块 diff 又留快照，避免二次读文件。
             raw_old = md.read_content(scope, md_basename, project=project)
@@ -738,8 +725,6 @@ class CompositeDomainStore(DomainStore):
                     )
                 raise
             return shadow.get_units(scope, new_unit_ids)
-        finally:
-            gate.close()
 
     def _supersede_shadow_for_md(
         self,

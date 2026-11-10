@@ -54,6 +54,7 @@ from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.config.encryption import AtRestLocation
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
+from jiuwen_memory.storage.sync_gate import resource_path_key
 from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
 _DEFAULT_PROJECT = ""  # 无 project 时的兜底值：空串=跨项目可见（IN ['', value] 命中）
@@ -402,6 +403,14 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 self._conn.close()
                 self._conn = None
                 self._conn_path = None
+
+    @property
+    def write_lock_key(self) -> str:
+        """按实际 SQLite 路径共享锁，独立 :memory: 连接保持实例隔离。"""
+        path = self._resolved_db_path()
+        if path == ":memory:":
+            return super().write_lock_key
+        return resource_path_key("sqlite", path)
 
     def _resolved_db_path(self) -> str:
         """解析 db_path：

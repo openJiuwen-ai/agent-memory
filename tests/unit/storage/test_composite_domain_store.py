@@ -382,15 +382,18 @@ def test_edit_md_file_rejects_non_document_mode(tmp_path) -> None:
 
 
 def test_edit_md_file_write_window_protects_against_watchdog(tmp_path) -> None:
-    """edit 完成后释放文档根目录的写窗口。"""
-    from jiuwen_memory.storage.sync_gate import document_sync_gate
+    """写窗保护：edit 的操作上下文在退出时保证关窗（即使异常也关）。
+
+    用 edit 成功后验证写窗状态已关闭（写入期间 write_window_open 为真，
+    edit 完成后应为假）。这守护看门狗在 edit 同步 shadow 期间误触发 _sync_one。
+    """
+    from jiuwen_memory.storage.sync_gate import write_window_open
 
     ds = _build_doc_store(tmp_path)
     _write_unit(ds, "u1", "hello")
-    gate = document_sync_gate(ds._raw_markdown().root)
-    assert not gate.is_open(), "window should be closed before edit"
+    assert not write_window_open(), "window should be closed before edit"
     ds.edit_md_file(SCOPE, "MEMORY.md", "hello", "world", project="")
-    assert not gate.is_open(), "window must be closed after edit (finally)"
+    assert not write_window_open(), "window must be closed after edit (finally)"
 
 
 def test_edit_md_file_rolls_back_on_shadow_failure(tmp_path, monkeypatch) -> None:

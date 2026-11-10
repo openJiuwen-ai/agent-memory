@@ -1,0 +1,113 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# HTTP document-memory service. Credentials are read only by this service.
+# See jiuwen_memory_adapter/jiuwenswarm/README.md for startup and client setup.
+profile: document-http
+memory_api:
+  globals:
+    write_document: true
+    watch_document: true
+    vector_enabled: true
+    graph_enabled: false
+    rerank_enabled: true
+    embedder_dim: 1024
+    chunk_size: 120
+    store_manager: default
+    llm_base_url: ${MEMORY_LLM_BASE_URL}
+    llm_api_key: ${MEMORY_LLM_API_KEY}
+    llm_model: ${MEMORY_LLM_MODEL}
+    llm_temperature: 0.0
+    llm_max_tokens: 4096
+    llm_timeout: 90
+    llm_max_retries: 0
+    embedder_base_url: ${MEMORY_EMBED_BASE_URL}
+    embedder_api_key: ${MEMORY_EMBED_API_KEY}
+    embedder_model: ${MEMORY_EMBED_MODEL}
+    embedder_max_batch: 64
+  kv_store:
+    default: memory
+  markdown_store:
+    default:
+      target: local
+      params:
+        root: ${MEMORY_DOCUMENT_ROOT}
+  shadow_index:
+    default: {target: sqlite, params: {embedder: default}}
+  watchdog:
+    default: {target: watchdog, params: {debounce_ms: 2000}}
+  store_manager:
+    default:
+      target: composite
+      params:
+        domain_stores:
+          default:
+            kv_store: default
+            shadow_recaller: shadow
+            preferred_retrieval_pipeline: recall_and_get_rank
+  tokenizer:
+    default: jieba
+  embedder:
+    default: {target: openai, params: {tokenizer: default}}
+  llm:
+    default: openai
+  feature_extractor:
+    default: {target: keyword, params: {tokenizer: default}}
+  reranker:
+    default: {target: overlap, params: {tokenizer: default}}
+  query_parser:
+    default:
+      target: simple
+      params:
+        tokenizer: default
+        embedder: default
+        llm: default
+        feature_extractor: default
+        sanitize_enabled: true
+        sanitize_strip_code: false
+  recaller:
+    shadow: {target: shadow}
+  retriever:
+    default:
+      target: pipeline
+      params:
+        query_parser: default
+        reranker: default
+        fuser: default
+        discloser: default
+        over_fetch_factor: 4
+        over_fetch_floor: 60
+        recall_max: 100
+        rerank_max: 60
+        min_score: 0.0
+        min_score_ratio: 0.0
+        min_score_ratio_uncalibrated: 0.0
+        min_results: 0
+  extractor:
+    default: {target: agent_llm, params: {llm: default, extractor_language: cn}}
+  classifier:
+    default: llm
+  constructor:
+    default: {target: document, params: {domain_store: default}}
+  dedup:
+    default: {target: shadow, params: {embedder: default}}
+  evolver:
+    default:
+      target: orchestrating
+      params:
+        extractor: default
+        abstractor: default
+        associator: default
+        index_builder: default
+        message_store: default
+        dedup: default
+        llm: default
+  engine:
+    default:
+      target: agent
+      params:
+        ingestor: default
+        index_builder: default
+        retriever: default
+        scheduler: default
+        evolver: default
+        lifecycle: default
+        job_factory: default
