@@ -5,9 +5,13 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-02 |
+| 最近一次修订日期 | 2026-11-05 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
+
+## 明文拒绝的传播边界
+
+明文拒绝属于不得降级的失败：可选扩展、rollup、多模态及时间视图继续传播 PlaintextDataError，沿已有 BackendError 异常契约向调用方报错。索引未命中而未实际读取明文时不额外扫描真源；不在检索中迁移或回退明文。
 
 ## Metadata 检索契约
 

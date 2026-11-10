@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import (
     HierarchyRole,
     MemoryUnit,
@@ -69,6 +70,8 @@ class _Rollup:
             except NotFoundError:
                 self.result.exclude("missing_parent")
                 return None
+            except PlaintextDataError:
+                raise
             except Exception:
                 self.result.exclude("read_error")
                 return None

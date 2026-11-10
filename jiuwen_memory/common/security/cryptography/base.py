@@ -54,6 +54,13 @@ class KeyMismatchError(CryptographyError):
 class CryptographyProvider(ABC):
     """字节级数据保护能力。"""
 
+    def is_ciphertext(self, value: bytes) -> bool | None:
+        """Optional format recognition, not authentication. None means unsupported.
+
+        False only refuses input; it never authorizes treating damaged bytes as plaintext.
+        """
+        return None
+
     @abstractmethod
     def encrypt(self, plaintext: bytes, *, context: CryptoContext, aad: bytes = b"") -> bytes:
         """加密明文字节，返回自描述信封。

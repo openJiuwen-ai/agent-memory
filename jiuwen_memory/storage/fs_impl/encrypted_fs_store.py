@@ -8,6 +8,7 @@ import json
 from typing import BinaryIO
 
 from jiuwen_memory.common.errors import BackendError, ValidationError
+from jiuwen_memory.common.plaintext import require_ciphertext
 from jiuwen_memory.common.security.cryptography import CryptographyProducer, CryptographyProvider
 from jiuwen_memory.common.security.types import CryptoContext
 from jiuwen_memory.common.type_def import Scope
@@ -135,6 +136,7 @@ class EncryptedFSStore(FSStore):
             raise ValidationError("encrypted FS ciphertext exceeds configured limit")
         with self._inner.get(scope, ref) as stream:
             ciphertext = _read_bounded(stream, self._max_ciphertext_bytes)
+        require_ciphertext(self._encryption, ciphertext)
         try:
             plaintext = self._encryption.decrypt(
                 ciphertext, context=_context(scope, object_id), aad=_aad(scope, object_id)

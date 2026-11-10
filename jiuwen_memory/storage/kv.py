@@ -12,8 +12,9 @@ Space offboarding，MemoryUnit 的过滤、计数和分页则由独立 list 契�
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Iterator
 
-from jiuwen_memory.common.errors import NotFoundError
+from jiuwen_memory.common.errors import BackendError, NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, MemoryUnit, Scope
@@ -21,6 +22,7 @@ from jiuwen_memory.common.type_def.memory import memory_key
 from jiuwen_memory.common.type_def.memory_codec import loads
 
 from .base import BaseStore
+from .migration import MigrationRecord
 from .types import KVMemoryListResult
 
 logger = get_logger(__name__)
@@ -37,7 +39,55 @@ class KvProducer(Factory):
     TOP_NAME = "kv_store"
 
 
+class MigrationVerificationError(BackendError):
+    """Mutation committed, but persisted readback could not be verified."""
+
+    committed = True
+
+    def __init__(self) -> None:
+        super().__init__("migration committed but readback verification failed")
+
+
 class KVStore(BaseStore):
+    def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
+        """Optional bounded exact read; None is oversized, missing still raises NotFoundError."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("bounded_migration_read", "kv", "storage")
+
+    def migration_scan_supported(self) -> bool:
+        return False
+
+    def migration_records(
+        self, scope: Scope, *, after: str = "", max_value_bytes: int = 134217728
+    ) -> Iterator[MigrationRecord]:
+        """Optional bounded /memory/ iteration; oversized values must not be materialized."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("bounded_migration_scan", "kv", "storage")
+
+    def migration_scope_supported(self, scope: Scope) -> bool:
+        """Whether this resource Scope round-trips through the physical namespace."""
+        return True
+
+    def migration_identity(self) -> object:
+        """Optional opaque physical location identity for maintenance deduplication."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("migration_identity", "kv", "storage")
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None
+    ) -> bool:
+        """Optional atomic replace/delete preserving absolute expiry; no missing-key insert.
+
+        False means missing, expired or changed. None deletes only the matching value.
+        Plugins must implement atomically or refuse; read-then-write is not a fallback.
+        """
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("compare_exchange", "kv", "storage")
+
     @abstractmethod
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""

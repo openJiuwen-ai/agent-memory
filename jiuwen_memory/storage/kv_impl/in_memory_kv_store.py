@@ -8,13 +8,17 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import defaultdict
+from collections.abc import Iterator
+from heapq import nsmallest
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.migration import MigrationRecord
 from jiuwen_memory.storage.types import KVMemoryListResult
 
 from .memory_list import list_memory_entries
@@ -31,6 +35,7 @@ class InMemoryKVStore(KVStore):
     """纯内存键值存储：``{scope: {key: (value, expires_at)}}``，按 scope 隔离。"""
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._data: dict[_ScopeKey, dict[str, tuple[bytes, float | None]]] = (
             defaultdict(dict)
         )
@@ -38,53 +43,63 @@ class InMemoryKVStore(KVStore):
     def store_type(self) -> StoreType:
         return StoreType.KV
 
+    def migration_identity(self) -> object:
+        return ("memory", id(self))
+
     def health(self) -> None:
         return None
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
-        sk = _skey(scope)
-        if self._live(sk, key) is not None:
-            raise ConflictError("kv", key)
-        self._data[sk][key] = (value, time.time() + ttl if ttl else None)
+        with self._lock:
+            sk = _skey(scope)
+            if self._live(sk, key) is not None:
+                raise ConflictError("kv", key)
+            self._data[sk][key] = (value, time.time() + ttl if ttl else None)
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
-        sk = _skey(scope)
-        if self._live(sk, key) is None:
-            raise NotFoundError("kv", key)
-        self._data[sk][key] = (value, time.time() + ttl if ttl else None)
+        with self._lock:
+            sk = _skey(scope)
+            if self._live(sk, key) is None:
+                raise NotFoundError("kv", key)
+            self._data[sk][key] = (value, time.time() + ttl if ttl else None)
 
     def delete(self, scope: Scope, key: str) -> None:
-        self._data[_skey(scope)].pop(key, None)
+        with self._lock:
+            self._data[_skey(scope)].pop(key, None)
 
     def get(self, scope: Scope, key: str) -> bytes:
-        value = self._live(_skey(scope), key)
-        if value is None:
-            raise NotFoundError("kv", key)
-        return value
+        with self._lock:
+            value = self._live(_skey(scope), key)
+            if value is None:
+                raise NotFoundError("kv", key)
+            return value
 
     def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
         # 按下标一一对应；不去重，重复 key 各下标独立返回。任一缺失即报
         # NotFoundError（与 get 一致），不在批量点读里静默省略。
-        sk = _skey(scope)
-        out: list[bytes] = []
-        for key in keys:
-            value = self._live(sk, key)
-            if value is None:
-                raise NotFoundError("kv", key)
-            out.append(value)
-        return out
+        with self._lock:
+            sk = _skey(scope)
+            out: list[bytes] = []
+            for key in keys:
+                value = self._live(sk, key)
+                if value is None:
+                    raise NotFoundError("kv", key)
+                out.append(value)
+            return out
 
     def exists(self, scope: Scope, key: str) -> bool:
-        return self._live(_skey(scope), key) is not None
+        with self._lock:
+            return self._live(_skey(scope), key) is not None
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
-        sk = _skey(scope)
-        out: list[tuple[str, bytes]] = []
-        for key in list(self._data[sk].keys()):  # list(...) 固化键，便于惰性删除
-            value = self._live(sk, key)
-            if value is not None and key.startswith(prefix):
-                out.append((key, value))
-        return out
+        with self._lock:
+            sk = _skey(scope)
+            out: list[tuple[str, bytes]] = []
+            for key in list(self._data[sk].keys()):  # list(...) 固化键，便于惰性删除
+                value = self._live(sk, key)
+                if value is not None and key.startswith(prefix):
+                    out.append((key, value))
+            return out
 
     def list(
         self,
@@ -107,10 +122,54 @@ class InMemoryKVStore(KVStore):
         )
 
     def scopes(self) -> list[Scope]:
-        return [
-            Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4])
-            for k in self._data
-        ]
+        with self._lock:
+            return [
+                Scope(org=k[0], space=k[1], user=k[2], agent=k[3], session=k[4])
+                for k in self._data
+            ]
+
+    def migration_scan_supported(self) -> bool:
+        return True
+
+    def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
+        with self._lock:
+            value = self._live(_skey(scope), key)
+            if value is None:
+                raise NotFoundError("kv", key)
+            return value if len(value) <= max_value_bytes else None
+
+    def migration_records(
+        self, scope: Scope, *, after: str = "", max_value_bytes: int = 134217728
+    ) -> Iterator[MigrationRecord]:
+        sk = _skey(scope)
+        while True:
+            with self._lock:
+                keys = nsmallest(
+                    64, (key for key in self._data[sk]
+                         if key > after and key.startswith(MEMORY_KEY_PREFIX))
+                )
+            if not keys:
+                return
+            for key in keys:
+                after = key
+                try:
+                    value = self.migration_read(scope, key, max_value_bytes=max_value_bytes)
+                except NotFoundError:
+                    continue
+                yield MigrationRecord(key, value, key)
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None
+    ) -> bool:
+        with self._lock:
+            sk = _skey(scope)
+            if self._live(sk, key) != expected:
+                return False
+            if replacement is None:
+                del self._data[sk][key]
+            else:
+                self._data[sk][key] = (replacement, self._data[sk][key][1])
+            return True
 
     def _live(self, sk: _ScopeKey, key: str) -> bytes | None:
         """返回未过期的值；已过期则惰性删除并返回 None。"""

@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 
 import httpx
 import openai
-
 import pytest
 
 from jiuwen_memory.common.base import PluginType
