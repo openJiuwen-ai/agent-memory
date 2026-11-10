@@ -332,6 +332,9 @@ def _relative_range(
         return month_start, now, EventTimePrecision.DATETIME
 
     year_start = month_start.replace(month=1)
+    year_month_window = _year_month_window(text, now)
+    if year_month_window is not None:
+        return year_month_window
     if "去年" in text or "last year" in lowered:
         return _next_year(year_start, -1), year_start, EventTimePrecision.YEAR
     if "明年" in text or "next year" in lowered:
@@ -439,6 +442,40 @@ def _exclusive_end(start: datetime, precision: EventTimePrecision) -> datetime:
     if precision is EventTimePrecision.DAY:
         return start + timedelta(days=1)
     return start + timedelta(microseconds=1)
+
+
+_YEAR_MONTH_PATTERN = re.compile(r"(?P<year>去年|今年|明年)\s*(?P<month>\d{1,2})\s*月")
+
+
+def _year_month_window(
+    text: str,
+    now: datetime,
+) -> tuple[datetime, datetime, EventTimePrecision] | None:
+    """Resolve "去年12月 / 今年3月 / 明年1月" into a single-month window.
+
+    The year branch fires on any occurrence of 去年/今年/明年, so without this
+    check "今年3月" collapses into the whole year and the month is dropped.
+    """
+    match = _YEAR_MONTH_PATTERN.search(text)
+    if match is None:
+        return None
+    month = int(match.group("month"))
+    if not 1 <= month <= 12:
+        return None
+    offset = {"去年": -1, "今年": 0, "明年": 1}[match.group("year")]
+    try:
+        start = now.replace(
+            year=now.year + offset,
+            month=month,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    except ValueError:
+        return None
+    return start, _next_month(start), EventTimePrecision.MONTH
 
 
 def _next_year(value: datetime, amount: int = 1) -> datetime:
