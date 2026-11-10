@@ -49,6 +49,7 @@
 | `store_manager_impl/` | 管理面实现目录；`CompositeStoreManager` 以 `composite` target 自注册。双入口：`__init__` 收已构造的 Store 实例（手工/测试），`from_config` 从配置内部构造九类 Store 与全部命名数据面（装配路径，`_build` 即其一行封装）。含 `_AuthorizedStoreProxy` + ENTITY 专用的 `_AuthorizedEntityStoreProxy` 授权代理、九类端口全量聚合、分片装配校验 `_validate_shard_support`、拓扑登记 `_register_shard_topology`、定位器装配期绑定 `_bind_shard_locators`、连接预算汇总 `_validate_connection_budget`、`_build_domain_stores`（`domain_stores` 段逐套装配，`default` 必建且是命名实例的 overlay base）。**manager 段 params 不承载数据面配置**：端口来自命名空间聚合，数据面参数全在 `domain_stores.<name>` |
 | `domain_store_impl/` | 数据面实现目录；`CompositeDomainStore`（`recallers` property + `bind_recallers` 手工接线口 + `for_manager(manager, config)` 供 manager 装配期直接构造——profile 派生、召回路组装与绑定一次完成；真源 KV 端口名由装配期指名，非硬编码 default）、`_assemble_recallers`（F06 内收设计）与**召回路全家**：契约 `recaller.py`（`Recaller` + `RecallerProducer`，`TOP_NAME=recaller`）+ 实现 `keyword_recaller.py` / `vector_recaller.py` / `graph_recaller.py` + 共用的 `unit_aggregation.py`（chunk→unit MaxP 归并）。Recaller 是数据面内部件而非检索层算子，不继承 `RetrievalOperator`（F07） |
 | `markdown.py` / `shadow.py` | 文档视图与机器真源接口及 Producer；local Markdown 与 SQLite shadow 可选装配 |
+| `sync_gate.py` | 同进程根目录与索引资源锁、资源写窗口计数；完整文档修改/补偿与对账共用，独立资源可并行 |
 | `watchdog.py` / `watchdog_impl/` | 文件监听公共生命周期；LocalWatchdog 停止准入后通过线程条件等待已进入 shadow 的工作，排队旧代不再访问依赖；不等待调用方 loop 恢复协程 |
 | `bootstrap.py` | 统一触发普通 Store、独立 PrivacyStore、watchdog 与 Storage 实现注册 |
 
@@ -270,6 +271,10 @@
 
 ## 本地约束
 
+- 文档 add/update/delete/edit 及 LocalWatchdog 对账必须先获取 `document_operation` 资源锁再读取旧状态，补偿结束后才释放；锁范围内不得跨 await。资源锁先于各存储实例锁，根目录与 shadow.write_lock_key 分别登记并按稳定顺序获取，不以 Scope 或项目作为锁键。关闭后排队的看门狗任务在取得锁后须复查代次。
+
+- LocalWatchdog 对账时，新增记录的 Scope 必须在删除旧记录之前从同文件历史取出；不能等删空后再回查归属。
+
 配置工厂选中 ES 全文、ES 实体、Milvus 向量或 `milvus_graph` 融合后，在同步装配期经 `preload_backend`
 加载 `elasticsearch` / `pymilvus`，记录开始、完成与耗时；仅对依赖导入期间的普通
 `Exception` 归一为 `BackendError` 并保留原始异常链，`KeyboardInterrupt` / `SystemExit` /
@@ -386,10 +391,10 @@ DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。文档模�
 18. **看门狗只删 active，历史状态不因 md 块消失而清掉**
     `_sync_one` 用该文件的全部已知正文判重，纠正、遗忘或归档的正文都不会因同步重新生效。
     删除 diff 只对 `lifecycle="active"` 生效，历史记录仍保留在 shadow；
-    `list_units_by_md` 的 `lifecycle` 参数承载该过滤。写入和看门狗按解析后的文档根目录
-    共用 `sync_gate`，对账 diff 仅在该目录的版本仍一致时提交，并与该目录的正常写入互斥。
-    快照过期后重读再计算。
-    写入等待超过上限时报后端错误。
+    `list_units_by_md` 的 `lifecycle` 参数承载该过滤。写入和看门狗在读取旧状态前，
+    通过 `document_operation` 获取文档根目录与索引资源锁，持有到完成或补偿结束。
+    共享任一资源的操作串行，根目录与索引均独立时可并行。整组锁共用等待预算，
+    超时释放已取得的锁并抛后端错误；等待期间关闭的看门狗不再访问依赖。
 
 ### 内存索引过滤
 

@@ -5,10 +5,16 @@
 | 文件 | 职责 |
 |---|---|
 | agent_memory_provider.py | Provider、HTTP/普通 SDK 客户端、共享 SDK continuity 客户端；continuity_request 校验 DTO 并注入可信上下文 |
+| memory_scene.py / memory_scenes.py | 场景协议、请求级上下文与独立实例工厂注册表 |
+| work_memory.py / coding_memory.py | Work/Coding 工具、预取、项目归属、提示词及普通 SDK 配置要求 |
+| memory_tools.py | 共用工具定义与文档读取、编辑操作 |
 | sdk_runtime.py | 同进程共享 runtime、lease、统一有界执行池和真实在途操作计数、关闭状态机 |
 
 ## 行为铁律
 
+- 普通 Work/Coding 按场景策略执行；接续预取与回写保持优先，SDK 接续只注册任务/恢复工具，不将文档工具交给接续客户端。
+- 普通 Coding 在配置来源解析后覆盖 write_document=true；SDK 接续保留独立配置基准，不应用场景覆盖，HTTP 不应用本地 SDK 配置。
+- 注册表仅保存工厂，每个 Provider 创建独立场景；普通文档 Runtime 仍各自持有，通过根目录与影子索引资源锁协调，并非接续共享池的租约。
 - 共享池只适用于 mode=continuity、持久 fixed_path SQLite Registry；HTTP 和普通 SDK 不进入共享池。
 - Pool 按规范 Registry 路径排他，同路径不同配置/主体返回冲突；Provider 不共享请求安全上下文。
 - Registry 路径与配置摘要通过 `jiuwen_memory.api.sdk_continuity_runtime_identity` 取得；Adapter 不直接导入内核配置或安全类型包。

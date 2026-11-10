@@ -3,7 +3,7 @@
 
 把 AgentMemory 的 ``MemoryAPI``（进程内 ``assemble_runtime()`` 或 HTTP ``/v1/<verb>``）
 适配成 openjiuwen ``MemoryProvider`` ABC 的实现，供 ``ExternalMemoryRail`` /
-``JiuwenMemoryRail`` 驱动。
+``JiuwenMemoryRail`` 驱动；``scene="code"`` 由 ``JiuwenMemoryCodingRail`` 驱动。
 
 - ABC：``openjiuwen/core/memory/external/provider.py`` 的 ``MemoryProvider``
 - HTTP 表面：``jiuwen_memory_entry/core/api_contract.py``（F05 对齐后）——
@@ -29,7 +29,7 @@
   ``agent_id`` 下沉到 session/agent 轴；SDK 模式维持五维直映射（actor==target）。
 - ``prefetch`` 与 ``sync_turn`` 共用 ``_prepare`` 剥 TUI 信封（§6.2-E），保证检索
   query 与落盘内容形态一致。
-- prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
+- 工作场景 prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
   EPISODIC 对话原文；``agent_memory_search`` 工具不过滤（显式检索允许命中原文）。
   过滤器是 dict DSL，两模式共用（HTTP 直接下发；进程内经 RetrievalQuery 边界
   normalize）。rail 传入 ``project`` 时 prefetch 追加
@@ -90,7 +90,20 @@ from jiuwen_memory.api import (
     scope_for_log,
 )
 from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+from jiuwen_memory_adapter.jiuwenswarm.memory_scenes import create_memory_scene
+from jiuwen_memory_adapter.jiuwenswarm.memory_tools import MAX_TOP_K as _MAX_TOP_K
+from jiuwen_memory_adapter.jiuwenswarm.memory_tools import parse_line_range
 from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import OperationWaitTimeout
+from jiuwen_memory_adapter.jiuwenswarm.work_memory import (
+    _merge_prefetch_lines as _merge_prefetch_lines,
+)
+from jiuwen_memory_adapter.jiuwenswarm.work_memory import (
+    _recall_filters as _recall_filters,
+)
+from jiuwen_memory_adapter.jiuwenswarm.work_memory import (
+    _tail_within_budget as _tail_within_budget,
+)
 
 # provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
 # __name__="agent_memory_provider" 不在 jiuwenswarm/openjiuwen 的 logger 树下，INFO 默认不落文件。
@@ -99,208 +112,6 @@ logger = logging.getLogger(
     "jiuwenswarm.agents.harness.common.memory.external.agent_memory_provider"
 )
 install_privacy_filter(logger)
-
-# --------------------------------------------------------------------------- #
-# 工具 schema（OpenAI 风格，Rail 据此自动包 ToolCard，见 §4.8）
-# --------------------------------------------------------------------------- #
-
-VIDEO_SUBMIT_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_video_submit",
-    "description": (
-        "Submit a local video file URI to the memory engine for analysis and storage. "
-        "Returns a job ID. Use agent_memory_video_status to check completion."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "uri": {"type": "string", "description": "Local file:/// video URI"},
-            "project": {
-                "type": "string",
-                "description": "Project coordinate. Omit to use the current project, if set.",
-            },
-        },
-        "required": ["uri"],
-    },
-}
-
-VIDEO_STATUS_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_video_status",
-    "description": "Check a submitted video memory job and return its resulting memory IDs.",
-    "parameters": {
-        "type": "object",
-        "properties": {"job_id": {"type": "string"}},
-        "required": ["job_id"],
-    },
-}
-
-PROFILE_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_profile",
-    "description": (
-        "Retrieve stored memories about the user — preferences, facts, project context. "
-        "Use at conversation start for a full overview."
-    ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
-}
-
-READ_MD_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_read_md_file",
-    "description": (
-        "Read a markdown memory file by filename and return the memory blocks it "
-        "contains. md_filename is a basename: USER.md (user profile), MEMORY.md "
-        "(long-term memory), or a daily file like 2026-09-30.md. Optionally read "
-        "only a line range via offset/limit (1-based lines)."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "md_filename": {
-                "type": "string",
-                "description": "Basename of the md file, e.g. USER.md, MEMORY.md, 2026-09-30.md.",
-            },
-            "project": {
-                "type": "string",
-                "description": (
-                    "Project coordinate; omit to read the cross-project file (memory root)."
-                ),
-            },
-            "offset": {
-                "type": "integer",
-                "description": "1-based start line (default: 1).",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max lines to read (default: whole file).",
-            },
-        },
-        "required": ["md_filename"],
-    },
-}
-
-SEARCH_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_search",
-    "description": "Search memories by meaning. Returns relevant memories ranked by similarity.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "What to search for."},
-            "top_k": {
-                "type": "integer",
-                "description": "Max results (default: 10, max: 50).",
-            },
-            "project": {
-                "type": "string",
-                "description": (
-                    "Project coordinate; omit to search only cross-project memories "
-                    "(those stored without a project). When set, recalls this "
-                    "project's memories plus cross-project memories."
-                ),
-            },
-        },
-        "required": ["query"],
-    },
-}
-
-CONCLUDE_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_conclude",
-    "description": (
-        # [本地修改 2026-10-17] 原描述含 "corrections"，会把「修改个人信息」类指令
-        # 路由到 conclude（append 式写入）而非 edit_md_file（原地替换），产生新旧
-        # 矛盾事实共存。改为明确 append-only + 把更正路由到 edit_md_file。
-        # [本地修改] infer 恢复为 true：conclude 走 LLM 抽取并分类落盘，但语义仍是
-        # 新增不改已有（更正仍路由到 edit_md_file）。
-        "Store a new durable memory (extracted and classified). It NEVER modifies or "
-        "removes existing memories — to change or correct what is already stored, use "
-        "agent_memory_edit_md_file (read the file first to locate the exact text)."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "conclusion": {"type": "string", "description": "The fact/memory to store."},
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional labels for later filtering.",
-            },
-            "project": {
-                "type": "string",
-                "description": "Project coordinate; omit for cross-project storage.",
-            },
-        },
-        "required": ["conclusion"],
-    },
-}
-
-PROCEDURAL_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_procedural",
-    "description": (
-        "Store a structured procedural memory — a summary of what was done this turn "
-        "(goal / steps / outcome). The raw conversation is NOT stored; the LLM summarizes "
-        "it into ONE procedural memory record. Use to record how-to / execution history "
-        "worth recalling later. No deduplication or context retrieval is performed."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "content": {
-                "type": "string",
-                "description": (
-                    "The conversation/turn content to summarize into a procedural memory."
-                ),
-            }
-        },
-        "required": ["content"],
-    },
-}
-
-EDIT_MD_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_edit_md_file",
-    "description": (
-        "Modify or correct an EXISTING memory — the only way to change what is already "
-        "stored: replaces old_text with new_text in place (old_text must appear exactly "
-        "once in the file, an error otherwise; the edit supersedes the affected memory "
-        "units and returns the new ones). Use agent_memory_read_md_file FIRST to locate "
-        "the exact current text — personal info may live in USER.md or a daily file "
-        "(YYYY-MM-DD.md)."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "md_filename": {
-                "type": "string",
-                "description": "Basename of the md file, e.g. USER.md, MEMORY.md, 2026-09-30.md.",
-            },
-            "old_text": {
-                "type": "string",
-                "description": "Exact text to replace; must be unique within the file.",
-            },
-            "new_text": {
-                "type": "string",
-                "description": "Replacement text (empty string deletes old_text).",
-            },
-            "project": {
-                "type": "string",
-                "description": (
-                    "Project coordinate; omit to edit the cross-project file (memory root)."
-                ),
-            },
-        },
-        "required": ["md_filename", "old_text", "new_text"],
-    },
-}
-
-_MAX_TOP_K = 50
-_DEFAULT_PREFETCH_TOP_K = 5
-# prefetch 直接注入用户画像：USER.md 不分项目、条目少、与多数任务相关，
-# 不经相关度筛选——overlap 重排按共同词打分，换一种问法画像条目就可能得 0 分被丢。
-# 文件为追加写入，超出上限时保留末尾（最新）的条目。
-_PROFILE_MD_FILENAME = "USER.md"
-_PROFILE_INJECT_MAX_ITEMS = 20
-_PROFILE_INJECT_MAX_CHARS = 2000
-_DEFAULT_SEARCH_TOP_K = 10
-
-# read 工具「offset 起到文件尾」的 line_range end 上界：内核 read_content 对越界
-# end clamp 到文件实际行数（local_markdown_store.read_content），大数 end 即无上界。
-_UNBOUNDED_END = 10**9
 
 # HTTP 客户端：分操作超时（秒）。infer=true 的 add 触发真实 LLM 抽取 + dedup，
 # 写路径超时须长于读路径（§6.2-C，对齐 mem2_provider）。
@@ -311,29 +122,6 @@ _WRITE_TIMEOUT = 120.0
 # prefetch/sync_turn 都等满超时拖慢宿主（§6.2-C）。
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN = 120.0
-
-# prefetch 召回口径（§6.2-F）：只召回提炼产物，排除 EPISODIC 对话原文——
-# 原文已由 /messages/ 承载、且会注入整轮对话噪音。显式 search 工具不过滤。
-_RECALL_TIERS = ("semantic", "core", "procedural")
-
-
-def _recall_filters(project: str = "") -> dict[str, Any]:
-    """prefetch 召回过滤（dict DSL，HTTP/进程内两模式共用）。
-
-    实测确认（design doc §8.2.1）：``{"tier": {"in": [...]}}`` 被服务端真实执行，
-    episodic 原文被正确排除。进程内路径经 ``RetrievalQuery`` 边界的 ``normalize``
-    接收同一份 dict DSL。
-
-    ``project`` 非空时追加 ``system_metadata.project IN ['', project]``（顶层多键
-    默认 AND），与 ``agent_memory_search`` 同口径：召回本项目记忆与跨项目可见记忆。
-    不带该谓词时影子索引兜底 ``project = ''``，项目内写入的记忆在同项目会话的
-    prefetch 里取不到（F08 D2）。
-    """
-    filters: dict[str, Any] = {"tier": {"in": list(_RECALL_TIERS)}}
-    if project:
-        filters["system_metadata.project"] = {"in": ["", project]}
-    return filters
-
 
 _VIDEO_ROOTS_ENV = "JIUWEN_MEMORY_VIDEO_ROOTS"
 _VIDEO_MODEL_ENV = {
@@ -429,45 +217,6 @@ def _configure_default_video(config: dict[str, Any], settings: dict[str, Any]) -
         config["ingest_job"] = {"default": {"target": "in_process", "params": {
             "kv_store": "video_jobs",
         }}}
-
-
-def _tail_within_budget(
-    items: list[dict[str, Any]], *, max_items: int, max_chars: int
-) -> list[dict[str, Any]]:
-    """从列表末尾起取条数与字数预算内的条目（放不下的跳过），返回时保持原顺序。"""
-    kept: list[dict[str, Any]] = []
-    used = 0
-    for item in reversed(items):
-        size = len(item.get("content", ""))
-        if len(kept) >= max_items:
-            break
-        if used + size > max_chars:
-            # 放不下的条目跳过、继续向前取：单条超长不应让整个画像空掉
-            continue
-        kept.append(item)
-        used += size
-    kept.reverse()
-    return kept
-
-
-def _merge_prefetch_lines(
-    profile: list[dict[str, Any]], items: list[dict[str, Any]]
-) -> list[str]:
-    """用户画像条目在前、检索命中在后，按 item_id 与正文去重，返回正文列表。"""
-    lines: list[str] = []
-    seen_ids: set[str] = set()
-    seen_text: set[str] = set()
-    for item in [*profile, *items]:
-        content = item.get("content", "")
-        item_id = item.get("item_id") or ""
-        # 空 item_id 从不进 seen_ids，无需单独判空
-        if not content or content in seen_text or item_id in seen_ids:
-            continue
-        if item_id:
-            seen_ids.add(item_id)
-        seen_text.add(content)
-        lines.append(content)
-    return lines
 
 
 def _agent_default_config() -> dict[str, Any]:
@@ -672,6 +421,14 @@ def _agent_default_config() -> dict[str, Any]:
     return config
 
 
+def _merge_config(base: Any, override: Any) -> Any:
+    if isinstance(base, dict) and isinstance(override, dict):
+        for key, value in override.items():
+            base[key] = _merge_config(base[key], value) if key in base else value
+        return base
+    return override
+
+
 def _merge_config_over_default(
     config_dict: dict[str, Any], *, standalone: bool = False,
 ) -> dict[str, Any]:
@@ -692,13 +449,6 @@ def _merge_config_over_default(
     全新字面量被就地改写后的结果，默认配置本身每次调用都重建、无跨调用共享状态。
     """
 
-    def _merge(base: Any, override: Any) -> Any:
-        if isinstance(base, dict) and isinstance(override, dict):
-            for key, value in override.items():
-                base[key] = _merge(base[key], value) if key in base else value
-            return base
-        return override
-
     settings = _sdk_globals(config_dict)
     requested = _default_video_requested(settings)
     if standalone and not requested:
@@ -709,7 +459,7 @@ def _merge_config_over_default(
             _configure_default_video(config, settings)
         except ValidationError as exc:
             logger.warning("Built-in SDK video profile skipped: %s", str(exc))
-    return _merge(config, config_dict)
+    return _merge_config(config, config_dict)
 
 
 class AgentMemoryMemoryProvider(MemoryProvider):
@@ -760,6 +510,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         continuity_mode: str = "role",
         default_duty: str | list[str] = "general",
         portal: dict[str, Any] | None = None,
+        scene: str = "agent",
+        project: str = "default",
         **_kwargs: Any,
     ) -> None:
         self._continuity_enabled = continuity_enabled
@@ -809,6 +561,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._portal_identity = None
         self._portal_error = None
         self._initialize_lock = asyncio.Lock()
+        self._scene = create_memory_scene(scene, project)
         self._base_url = base_url or ""
         self._config_path = config_path
         self._config_dict = config_dict
@@ -884,22 +637,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         """统一剥壳入口：检索 query 与落盘内容共用，保证两者形态一致（§6.2-E）。"""
         return self._strip_tui_envelope(text) if text else text
 
-    @staticmethod
-    def _parse_line_range(args: dict) -> tuple[int, int] | None:
-        """read 工具 ``offset``/``limit`` → 内核 ``line_range``（1-based 闭区间，F08）。
-
-        offset 缺省 1；limit 缺省 → 无上界（end 传 ``_UNBOUNDED_END``，内核 clamp
-        到文件实际行数）；两者都缺省 → None（整文件）。``limit <= 0`` 得
-        ``end < start``，内核切出空串（读 0 行），如实返回空。
-        """
-        offset = args.get("offset")
-        limit = args.get("limit")
-        if offset is None and limit is None:
-            return None
-        start = max(int(offset or 1), 1)
-        if limit is None:
-            return (start, _UNBOUNDED_END)
-        return (start, start + int(limit) - 1)
+    _parse_line_range = staticmethod(parse_line_range)
 
     def is_available(self) -> bool:
         """配置就绪探测（契约要求无网络调用）。
@@ -1096,6 +834,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 manage_configuration=self._portal_settings.get("enabled", True),
                 continuity_enabled=self._continuity_enabled,
                 portal_instance_id=self._portal_settings.get("instance_id"),
+                config_overrides=self._scene.sdk_config_overrides(),
             )
         return self._client
 
@@ -1115,32 +854,19 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return False
         return isinstance(client, _InProcessClient) and client.supports_video_ingest()
 
-    def get_tool_schemas(self) -> list[dict[str, Any]]:
-        """返回 OpenAI 风格 schema；Rail 自动包成 ToolCard（§4.8）。
+    def _scene_context(self) -> MemorySceneContext:
+        return MemorySceneContext(
+            client=self._client, scope=self.bound_scope(), prepare=self._prepare,
+            video_enabled=self._video_tools_enabled,
+            continuity_enabled=self._continuity_enabled, continuity_mode=self._continuity_mode,
+        )
 
-        [本地修改 2026-10-17] ``agent_memory_profile`` / ``agent_memory_procedural``
-        **不在注册列表**——LLM 看不到、不会主动调用；但两者的 schema 与
-        ``handle_tool_call`` 实现完整保留，供内部直调（测试 / 排查 / 后续
-        重新注册时直接加回列表即可）。
-        """
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         if self._continuity_enabled and not self._base_url:
             from jiuwen_memory_adapter.continuity import tool_schemas
 
             return tool_schemas(mode="continuity")
-        schemas = [SEARCH_SCHEMA, CONCLUDE_SCHEMA, READ_MD_SCHEMA, EDIT_MD_SCHEMA]
-        if self._video_tools_enabled():
-            schemas.extend((VIDEO_SUBMIT_SCHEMA, VIDEO_STATUS_SCHEMA))
-        if self._continuity_enabled:
-            from jiuwen_memory_adapter.continuity import tool_schemas
-
-            # 工具清单跟部署档位走：接续档不注册关系工具，治理工具永不进 Agent 清单。
-            schemas.extend(tool_schemas(mode=self._continuity_mode))
-        logger.info(
-            "[AgentMemoryMemoryProvider] get_tool_schemas CALLED -> returning %d schemas: %s",
-            len(schemas),
-            [s.get("name") for s in schemas],
-        )
-        return schemas
+        return self._scene.get_tool_schemas(self._scene_context())
 
     async def handle_tool_call(self, tool_name: str, args: dict) -> str:
         """LLM 调工具时触发；返 JSON 字符串（Rail 会 ``json.loads``）。"""
@@ -1168,249 +894,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return json.dumps(
                 {"error": "AgentMemory temporarily unavailable (repeated failures); will retry."}
             )
-        scope = self.bound_scope()
-
         try:
-            if tool_name in ("agent_memory_video_submit", "agent_memory_video_status"):
-                if not (
-                    self._video_tools_enabled() and isinstance(self._client, _InProcessClient)
-                ):
-                    return json.dumps({"error": "Video memory tools are disabled"})
-                if tool_name == "agent_memory_video_submit":
-                    uri = args.get("uri")
-                    if not isinstance(uri, str) or not uri.startswith("file:///"):
-                        return json.dumps({"error": "A local file:/// video URI is required"})
-                    project = str(args.get("project") or "").strip()
-                    result = await self._client.submit_video(uri, scope, project=project)
-                else:
-                    job_id = args.get("job_id")
-                    if not isinstance(job_id, str) or not job_id.strip():
-                        return json.dumps({"error": "An ingest job ID is required"})
-                    result = await self._client.video_status(job_id.strip(), scope)
-                return json.dumps(result, ensure_ascii=False)
-
-            # -- 未注册工具（不在 get_tool_schemas，LLM 不可见；实现保留供内部直调）-- #
-
-            if tool_name == "agent_memory_profile":
-                items = await self._client.list_semantic(scope)
-                if not items:
-                    logger.info("[AgentMemoryMemoryProvider] agent_memory_profile -> no memories")
-                    return json.dumps({"result": "No memories stored yet."})
-                lines = [it["content"] for it in items if it.get("content")]
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_profile -> count=%d", len(lines)
-                )
-                for idx, line in enumerate(lines):
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] profile hit[%d]: %s",
-                        idx,
-                        redact_for_log(line),
-                    )
-                return json.dumps({"result": "\n".join(lines), "count": len(lines)})
-
-            if tool_name == "agent_memory_read_md_file":
-                md_filename = str(args.get("md_filename") or "")
-                if not md_filename:
-                    return json.dumps({"error": "Missing required parameter: md_filename"})
-                project = str(args.get("project") or "")
-                line_range = self._parse_line_range(args)
-                # F08：按 md_filename + 行范围读 md 文件，返回命中的 MemoryUnit 块。
-                # 文件不存在/行范围无完整块 → 空列表（内核 read_content 容错空串）；
-                # 非文档模式服务端抛 ValidationError（经 client 透出）。
-                units = await self._client.read_md_file(
-                    md_filename, scope, project=project, line_range=line_range
-                )
-                if units is None:
-                    return json.dumps(
-                        {"error": "AgentMemory read_md_file failed (server unavailable)."}
-                    )
-                if not units:
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] agent_memory_read_md_file file=%s "
-                        "-> no blocks",
-                        md_filename,
-                    )
-                    return json.dumps({"result": f"No memory blocks found in {md_filename}."})
-                blocks = [
-                    {
-                        "item_id": it.get("item_id", ""),
-                        "tier": it.get("tier", ""),
-                        "memory": it.get("content", ""),
-                    }
-                    for it in units
-                ]
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_read_md_file file=%s -> count=%d",
-                    md_filename,
-                    len(blocks),
-                )
-                for idx, blk in enumerate(blocks):
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] read_md hit[%d]: %s",
-                        idx,
-                        redact_for_log(blk.get("memory")),
-                    )
-                return json.dumps(
-                    {"md_filename": md_filename, "count": len(blocks), "blocks": blocks}
-                )
-
-            if tool_name == "agent_memory_search":
-                query = args.get("query", "")
-                if not query:
-                    return json.dumps({"error": "Missing required parameter: query"})
-                # [本地修改 2026-10-17] LLM 可能显式传 "top_k": null——key 存在时
-                # dict.get 的缺省值不生效，int(None) 直接 TypeError。用 or 同时覆盖
-                # 「key 缺省」与「显式 null」（top_k=0 无意义，同样回落缺省）。
-                top_k = min(int(args.get("top_k") or _DEFAULT_SEARCH_TOP_K), _MAX_TOP_K)
-                # [本地修改 2026-10-19] 对齐 mem2_search：project 走 filters 下推为
-                # system_metadata.project 谓词，与写入侧 add（project 作标量
-                # system_metadata["project"]）同口径；IN ['', project] 同时召回跨项目
-                # 可见记忆与同 project 记忆。
-                project = str(args.get("project") or "").strip()
-                filters = {"system_metadata.project": {"in": ["", project]}} if project else None
-                # 显式检索不过滤 tier（§6.2-F）：LLM 主动检索允许命中 EPISODIC 原文。
-                items = await self._client.search(query, scope, top_k=top_k, filters=filters)
-                if not items:
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] agent_memory_search query=%s -> no relevant",
-                        redact_for_log(query),
-                    )
-                    return json.dumps({"result": "No relevant memories found."})
-                payload = [
-                    {"memory": it.get("content", ""), "score": it.get("score", 0)} for it in items
-                ]
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_search query=%s -> count=%d",
-                    redact_for_log(query),
-                    len(payload),
-                )
-                for idx, p in enumerate(payload):
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] search hit[%d] score=%s: %s",
-                        idx,
-                        p.get("score"),
-                        redact_for_log(p.get("memory")),
-                    )
-                return json.dumps({"results": payload, "count": len(payload)})
-
-            if tool_name == "agent_memory_conclude":
-                conclusion = args.get("conclusion", "")
-                if not conclusion:
-                    return json.dumps({"error": "Missing required parameter: conclusion"})
-                # infer=true：conclude 走 LLM 抽取（与 sync_turn 同口径），抽取派生的
-                # 记忆按 memory_class + project 分流落盘。project 作标量
-                # system_metadata["project"] 直传（agent 场景无 router，coords 嵌套
-                # dict 会被 _reject_non_scalar_metadata 拒）。
-                tags = args.get("tags") or ["conclude"]
-                project = str(args.get("project") or "").strip()
-                system_metadata: dict[str, str] = {
-                    "infer": "true",
-                    "source_app": "jiuwenswarm",
-                    "agent_label": self._agent_id,
-                }
-                if project:
-                    system_metadata["project"] = project
-                data = await self._client.add(
-                    conclusion,
-                    scope,
-                    tags=tags,
-                    system_metadata=system_metadata,
-                )
-                if data is None:
-                    return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_conclude stored=%s "
-                    "tags=%s project=%s",
-                    redact_for_log(conclusion),
-                    tags,
-                    project or "",
-                )
-                if data.item_id is None:
-                    return json.dumps({"result": "Fact stored (deduped, no new unit)."})
-                return json.dumps({"result": "Fact stored.", "item_id": data.item_id})
-
-            # -- 未注册工具（不在 get_tool_schemas，LLM 不可见；实现保留供内部直调）-- #
-
-            if tool_name == "agent_memory_procedural":
-                content = args.get("content", "")
-                if not content:
-                    return json.dumps({"error": "Missing required parameter: content"})
-                # 过程记忆：经 add(procedural=true) 触发 engine 的 procedural 分支——
-                # 原文不落 KV，evolver 让 extractor 把本轮汇总成 1 条 PROCEDURAL 执行历史，
-                # 落 /memory/ 建索引；不走去重、不收集 context（见 F02「过程记忆抽取」）。
-                # 需配 extractor:llm 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
-                data = await self._client.add(
-                    content,
-                    scope,
-                    system_metadata={
-                        "procedural": "true",
-                        "source_app": "jiuwenswarm",
-                        "agent_label": self._agent_id,
-                    },
-                )
-                if data is None:
-                    return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_procedural summarized=%s item_id=%s",
-                    redact_for_log(content),
-                    data.item_id,
-                )
-                # add 返回 item_id=None：extractor 产空（LLM 返回不可解析/未产出候选）→
-                # 未持久化任何记忆。不可报成功（false success）——evolver 吞掉 LLM 失败
-                # 返回空 EvolveResult，需如实告知调用方。content 已在上文校验非空。
-                if not data.item_id:
-                    return json.dumps(
-                        {
-                            "error": "Procedural memory not stored: extractor produced nothing "
-                            "(LLM returned unparseable content or no candidates).",
-                        }
-                    )
-                return json.dumps({"result": "Procedural memory stored.", "item_id": data.item_id})
-
-            if tool_name == "agent_memory_edit_md_file":
-                md_filename = str(args.get("md_filename") or "")
-                old_text = args.get("old_text", "")
-                new_text = args.get("new_text", "")
-                if not md_filename:
-                    return json.dumps({"error": "Missing required parameter: md_filename"})
-                if not old_text:
-                    return json.dumps({"error": "Missing required parameter: old_text"})
-                # new_text 允许空串（old_text → "" 即删除该片段）。
-                project = str(args.get("project") or "")
-                # F08：按 md_filename + old_text 文件内唯一替换，继承式 SUPERSEDE——
-                # 返回受影响的**新** unit（旧版已失效）。old_text 不存在/不唯一由
-                # 内核抛 NotFoundError/ValidationError（经 client 透出给 LLM）。
-                units = await self._client.edit_md_file(
-                    md_filename, scope, old_text, new_text, project=project
-                )
-                if units is None:
-                    return json.dumps(
-                        {"error": "AgentMemory edit_md_file failed (server unavailable)."}
-                    )
-                blocks = [
-                    {
-                        "item_id": it.get("item_id", ""),
-                        "tier": it.get("tier", ""),
-                        "memory": it.get("content", ""),
-                    }
-                    for it in units
-                ]
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_edit_md_file file=%s -> count=%d",
-                    md_filename,
-                    len(blocks),
-                )
-                return json.dumps(
-                    {
-                        "result": "Edited.",
-                        "md_filename": md_filename,
-                        "count": len(blocks),
-                        "units": blocks,
-                    }
-                )
-
-            logger.info("[AgentMemoryMemoryProvider] handle_tool_call unknown tool=%s", tool_name)
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            return await self._scene.handle_tool_call(self._scene_context(), tool_name, args)
         except Exception as exc:
             logger.warning(
                 "[AgentMemoryMemoryProvider] handle_tool_call '%s' failed: error_type=%s",
@@ -1528,94 +1013,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             redact_for_log(query),
             bool(self._client),
         )
-        if not query or not self._initialized or self._client is None:
+        if not self._initialized or self._client is None:
             return ""
-        # §6.2-E：剥 TUI 信封，用纯 content 检索，避免命中对话原文壳。
-        search_query = self._prepare(query)
-        if search_query != query:
-            logger.info(
-                "[AgentMemoryMemoryProvider] prefetch stripped envelope: %s -> %s",
-                redact_for_log(query),
-                redact_for_log(search_query),
-            )
-        # [本地修改 2026-10-17] 同 agent_memory_search：null 防御（or 覆盖缺省与显式 null）。
-        top_k = min(int(kwargs.get("top_k") or _DEFAULT_PREFETCH_TOP_K), _MAX_TOP_K)
-        # rail 经 _resolve_project 传入 project；与 sync_turn / agent_memory_search 同口径。
-        project = str(kwargs.get("project") or "").strip()
-        try:
-            logger.info(
-                "[AgentMemoryMemoryProvider] prefetch before search scope=%s top_k=%d",
-                scope_for_log(self.bound_scope()),
-                top_k,
-            )
-            # §6.2-F：prefetch 只召回提炼产物（semantic/core/procedural）。
-            try:
-                items = await self._client.search(
-                    search_query,
-                    self.bound_scope(),
-                    top_k=top_k,
-                    filters=_recall_filters(project),
-                )
-            except Exception as exc:
-                # 检索失败不连带丢掉用户画像：降级为只注入 USER.md 的条目
-                logger.warning(
-                    "[AgentMemoryMemoryProvider] prefetch search failed, profile only: "
-                    "error_type=%s",
-                    type(exc).__name__,
-                    exc_info=True,
-                )
-                items = []
-            logger.info("[AgentMemoryMemoryProvider] prefetch after search items=%d", len(items))
-            profile = await self._profile_items()
-            lines = _merge_prefetch_lines(profile, items)
-            logger.info(
-                "[AgentMemoryMemoryProvider] prefetch search_query=%s scope=%s "
-                "top_k=%d recalled=%d profile=%d injected=%d",
-                redact_for_log(search_query),
-                scope_for_log(self.bound_scope()),
-                top_k,
-                len(items),
-                len(profile),
-                len(lines),
-            )
-            for idx, line in enumerate(lines):
-                logger.info(
-                    "[AgentMemoryMemoryProvider] prefetch hit[%d]: %s",
-                    idx,
-                    redact_for_log(line),
-                )
-            return (
-                ("## AgentMemory Memory\n" + "\n".join(f"- {line}" for line in lines))
-                if lines
-                else ""
-            )
-        except Exception as exc:
-            logger.warning(
-                "[AgentMemoryMemoryProvider] prefetch failed: error_type=%s",
-                type(exc).__name__,
-                exc_info=True,
-            )
-            return ""
-
-    async def _profile_items(self) -> list[dict[str, Any]]:
-        """读 USER.md 的条目供 prefetch 直接注入；任何失败都降级为空，不影响检索结果。
-
-        文件不存在、非文档模式、传输失败都返回空列表。超出条数或字数上限时保留文件
-        末尾的条目（USER.md 追加写入，末尾即最新）。
-        """
-        try:
-            items = await self._client.read_md_file(_PROFILE_MD_FILENAME, self.bound_scope())
-        except Exception as exc:
-            logger.info(
-                "[AgentMemoryMemoryProvider] prefetch profile unavailable: error_type=%s",
-                type(exc).__name__,
-            )
-            return []
-        return _tail_within_budget(
-            [it for it in items or [] if it.get("content")],
-            max_items=_PROFILE_INJECT_MAX_ITEMS,
-            max_chars=_PROFILE_INJECT_MAX_CHARS,
-        )
+        return await self._scene.prefetch(self._scene_context(), query, **kwargs)
 
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
 
@@ -1670,7 +1070,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         }
         # rail 经 _resolve_project 传入 project；与 conclude 分支同口径直传标量
         # system_metadata["project"]，让 md 落盘按 memory/{project}/... 分流。
-        project = str(kwargs.get("project") or "").strip()
+        project = self._scene.resolve_project(kwargs)
         if project:
             system_metadata["project"] = project
         logger.info(
@@ -1706,34 +1106,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     # -- MemoryProvider: 静态提示词 + 生命周期（非抽象，有默认） -------------- #
 
     def system_prompt_block(self) -> str:
-        # [本地修改 2026-10-17] 显式路由规则：新增→conclude（append-only），
-        # 修改/更正→read_md_file 定位 + edit_md_file 原地替换。个人信息可能在
-        # USER.md 也可能在 daily 文件（YYYY-MM-DD.md），修改前先读定位。
-        prompt = (
-            "# AgentMemory Memory\n"
-            f"Active. User: {self._user_id}.\n"
-            "Tool routing: agent_memory_search finds memories by meaning. "
-            "agent_memory_conclude ONLY appends a brand-new fact — it never modifies "
-            "existing memories. To CHANGE or CORRECT a stored memory, first locate it "
-            "with agent_memory_read_md_file (USER.md / MEMORY.md / daily YYYY-MM-DD.md — "
-            "personal info may be in a daily file), then agent_memory_edit_md_file to "
-            "replace it in place."
-        )
-        if self._video_tools_enabled():
-            prompt += (
-                "\nWhen the user asks to remember a video by local file URI, "
-                "use agent_memory_video_submit with that URI. "
-                "Use agent_memory_video_status to check the resulting job."
-            )
-        if self._continuity_enabled:
-            prompt += (
-                " Restore saved task background with agent_memory_search (task_id) before "
-                "continuing; select a duty to expand typed relations and inspect paths/gaps. "
-                "Record observations/results through agent_memory_add with the continuity "
-                "parameter, and review relations explicitly. "
-                "No predecessor handoff is required; Rail hooks do not capture all history."
-            )
-        return prompt
+        return self._scene.system_prompt(self._scene_context())
 
     async def shutdown(self) -> None:
         async with self._initialize_lock:
@@ -1957,6 +1330,7 @@ def _build_client(
     manage_configuration: bool = True,
     continuity_enabled: bool = False,
     portal_instance_id: str | None = None,
+    config_overrides: dict[str, Any] | None = None,
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
@@ -2001,12 +1375,14 @@ def _build_client(
             security_provider=security_provider,
             manage_configuration=manage_configuration,
             portal_instance_id=portal_instance_id,
+            config_overrides=config_overrides,
         )
     return _InProcessClient(
         config_path,
         security_provider=security_provider,
         manage_configuration=manage_configuration,
         portal_instance_id=portal_instance_id,
+        config_overrides=config_overrides,
     )
 
 
@@ -2771,6 +2147,26 @@ class _SharedSDKClient(_AgentMemoryClient):
             logger.error("SDK runtime cleanup failed", exc_info=result.exception())
 
 
+def _resolve_sdk_config(
+    config_path: str | None, config_dict: dict[str, Any] | None,
+    overrides: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    """Load the selected baseline, then apply scene requirements without mutating inputs."""
+    config = config_dict
+    config_paths = ()
+    if config is None and config_path:
+        path = Path(config_path)
+        config = (json.loads(path.read_text(encoding="utf-8"))
+                  if path.suffix == ".json" else _load_yaml(path))
+        config = _merge_config_over_default(
+            config if config is not None else {}, standalone=True,
+        )
+        config_paths = (str(path),)
+    if overrides:
+        config = _merge_config(deepcopy(config or {}), deepcopy(overrides))
+    return config, config_paths
+
+
 class _InProcessClient(_AgentMemoryClient):
     """直接持有 ``LocalMemoryAPI`` 的进程内客户端。
 
@@ -2797,6 +2193,7 @@ class _InProcessClient(_AgentMemoryClient):
         security_provider: Any = None,
         manage_configuration: bool = True,
         portal_instance_id: str | None = None,
+        config_overrides: dict[str, Any] | None = None,
     ) -> None:
         if security_provider is None:
             # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
@@ -2807,17 +2204,7 @@ class _InProcessClient(_AgentMemoryClient):
                 "provider (composition root); production should use HTTP + API key"
             )
         self._security_provider = security_provider
-        config = config_dict
-        config_paths = ()
-        if config is None and config_path:
-            p = Path(config_path)
-            config = (
-                json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
-            )
-            config = _merge_config_over_default(
-                config if config is not None else {}, standalone=True,
-            )
-            config_paths = (str(p),)
+        config, config_paths = _resolve_sdk_config(config_path, config_dict, config_overrides)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
