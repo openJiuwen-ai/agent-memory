@@ -202,16 +202,11 @@ class MilvusVectorStore(VectorStore):
         return self._client
 
     def _wait_for_load_complete(self, client: Any, timeout: float | None = None) -> None:
-        """Poll load state until collection is fully loaded or timeout.
-
-        ``load_collection`` may return before the collection is actually
-        loaded into query nodes, especially for freshly created collections.
-        This causes ``code=101 (collection not loaded)`` on the immediate
-        subsequent search (e.g. dedup search after the first ``mem2_add``).
-
-        ``timeout`` defaults to the store's configured ``load_timeout`` —
-        raise it for slow clusters, lower it for fail-fast deployments.
-        """
+        """Poll load state until the collection is fully loaded or timeout elapses."""
+        # load_collection 可能在集合真正载入 query node 之前就返回，紧随其后的
+        # search 会撞 code=101 (collection not loaded)（如首次 mem2_add 后的
+        # dedup search）；故轮询 get_load_state 直到 Loaded。
+        # timeout 缺省取 load_timeout——慢集群调大、fail-fast 部署调小。
         if not callable(getattr(client, "get_load_state", None)):
             return
         if timeout is None:
