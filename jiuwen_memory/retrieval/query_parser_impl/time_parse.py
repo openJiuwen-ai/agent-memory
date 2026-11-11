@@ -44,6 +44,41 @@ def _month_start(d: datetime) -> datetime:
     return d.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
+_YEAR_MONTH_PATTERN = re.compile(r"(?P<year>去年|今年|明年)\s*(?P<month>\d{1,2})\s*月")
+
+
+def _year_month_window(text: str, now: datetime) -> tuple[datetime, datetime] | None:
+    """Resolve "去年12月 / 今年3月 / 明年1月" into a single-month window.
+
+    The year rules below fire on any occurrence of 去年/今年/明年, so without this
+    check "今年3月" collapses into the whole year and the month is dropped.
+    """
+    match = _YEAR_MONTH_PATTERN.search(text)
+    if match is None:
+        return None
+    month = int(match.group("month"))
+    if not 1 <= month <= 12:
+        return None
+    offset = {"去年": -1, "今年": 0, "明年": 1}[match.group("year")]
+    try:
+        start = now.replace(
+            year=now.year + offset,
+            month=month,
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+    except ValueError:
+        return None
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
+
+
 def _rule_based(text: str, now: datetime) -> TimeWindow:
     t = text.strip()
 
@@ -86,6 +121,9 @@ def _rule_based(text: str, now: datetime) -> TimeWindow:
         return month_start, now
 
     year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    year_month_window = _year_month_window(t, now)
+    if year_month_window is not None:
+        return year_month_window
     if "去年" in t:
         return year_start.replace(year=year_start.year - 1), year_start
     if "今年" in t:
