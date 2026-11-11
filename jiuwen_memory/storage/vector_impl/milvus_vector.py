@@ -494,6 +494,7 @@ class MilvusVectorStore(VectorStore):
         return live or self._fallback_uri
 
     def _ensure_collection(self, client: Any) -> None:
+        """Ensure collection exists and is loaded, on the given (possibly unpublished) client."""
         if client.has_collection(self._collection):
             client.load_collection(self._collection)
             self._wait_for_load_complete(client)
