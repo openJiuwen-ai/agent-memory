@@ -444,25 +444,65 @@ def _exclusive_end(start: datetime, precision: EventTimePrecision) -> datetime:
     return start + timedelta(microseconds=1)
 
 
-_YEAR_MONTH_PATTERN = re.compile(r"(?P<year>去年|今年|明年)\s*(?P<month>\d{1,2})\s*月")
+_ZH_YEAR_OFFSETS = {"去年": -1, "今年": 0, "明年": 1}
+_EN_YEAR_OFFSETS = {"last": -1, "this": 0, "next": 1}
+
+_YEAR_MONTH_ZH_PATTERN = re.compile(r"(?P<year>去年|今年|明年)\s*(?P<month>\d{1,2})\s*月")
+
+# The year branch below is bilingual ("last/this/next year"), so this rule has to
+# be too: otherwise "december last year" still hits the year branch and the month
+# is dropped -- the exact failure #307 this rule exists to prevent. English puts
+# the month on either side of the relative year, hence two patterns.
+_YEAR_MONTH_EN_PATTERNS = (
+    re.compile(
+        rf"\b(?P<year>last|this|next)\s+year\b\s*,?\s*(?:in\s+)?"
+        rf"(?P<month>{_ENGLISH_MONTH_PATTERN})\b\.?",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?P<month>{_ENGLISH_MONTH_PATTERN})\b\.?\s*,?\s*(?:of\s+)?"
+        rf"(?P<year>last|this|next)\s+year\b",
+        flags=re.IGNORECASE,
+    ),
+)
+
+
+def _english_year_month(text: str) -> tuple[int, int] | None:
+    """Resolve "december last year" / "last year december" into (year offset, month)."""
+    for pattern in _YEAR_MONTH_EN_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        month_name = match.group("month").casefold()
+        if month_name == "may":
+            # "next year may ..." is the modal verb far more often than the month;
+            # inventing a May window would silently narrow the recall.
+            return None
+        return _EN_YEAR_OFFSETS[match.group("year").casefold()], _ENGLISH_MONTHS[month_name]
+    return None
 
 
 def _year_month_window(
     text: str,
     now: datetime,
 ) -> tuple[datetime, datetime, EventTimePrecision] | None:
-    """Resolve "去年12月 / 今年3月 / 明年1月" into a single-month window.
+    """Resolve "去年12月" / "december last year" into a single-month window.
 
-    The year branch fires on any occurrence of 去年/今年/明年, so without this
-    check "今年3月" collapses into the whole year and the month is dropped.
+    The year branch fires on any occurrence of 去年/今年/明年 (or last/this/next
+    year), so without this check "今年3月" collapses into the whole year and the
+    month is dropped.
     """
-    match = _YEAR_MONTH_PATTERN.search(text)
-    if match is None:
-        return None
-    month = int(match.group("month"))
+    match = _YEAR_MONTH_ZH_PATTERN.search(text)
+    if match is not None:
+        month = int(match.group("month"))
+        offset = _ZH_YEAR_OFFSETS[match.group("year")]
+    else:
+        english = _english_year_month(text)
+        if english is None:
+            return None
+        offset, month = english
     if not 1 <= month <= 12:
         return None
-    offset = {"去年": -1, "今年": 0, "明年": 1}[match.group("year")]
     try:
         start = now.replace(
             year=now.year + offset,

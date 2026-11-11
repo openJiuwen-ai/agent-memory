@@ -27,6 +27,7 @@ from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.discloser import Discloser
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
 from jiuwen_memory.retrieval.query_parser import QueryParser
+from jiuwen_memory.retrieval.query_parser_impl.time_parse import parse_time
 from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from jiuwen_memory.retrieval.schema_temporal import (
     EventTimePrecision,
@@ -951,3 +952,85 @@ def test_extractor_relative_overflow_falls_through_to_later_rules() -> None:
     assert result.found is True
     assert result.start == datetime(2026, 6, 16, 0, 0, tzinfo=UTC)
     assert result.end == datetime(2026, 6, 17, 0, 0, tzinfo=UTC)
+
+
+# -- 「相对年份 + 月份」：单月窗而非整年 -------------------------------------- #
+_YEAR_MONTH_NOW = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "start", "end"),
+    [
+        ("去年12月", datetime(2025, 12, 1, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)),
+        ("去年3月", datetime(2025, 3, 1, tzinfo=UTC), datetime(2025, 4, 1, tzinfo=UTC)),
+        ("今年3月", datetime(2026, 3, 1, tzinfo=UTC), datetime(2026, 4, 1, tzinfo=UTC)),
+        ("明年1月", datetime(2027, 1, 1, tzinfo=UTC), datetime(2027, 2, 1, tzinfo=UTC)),
+        ("今年12月", datetime(2026, 12, 1, tzinfo=UTC), datetime(2027, 1, 1, tzinfo=UTC)),
+    ],
+)
+def test_extractor_keeps_month_for_relative_year_expression(
+    text: str,
+    start: datetime,
+    end: datetime,
+) -> None:
+    """「去年12月」是 MONTH 精度的单月窗，不能被年份分支吞成整年。"""
+    extractor = SchemaTimeExtractor(now=lambda: _YEAR_MONTH_NOW)
+
+    result = extractor.extract(text)
+
+    assert result.start == start
+    assert result.end == end
+    assert result.precision == EventTimePrecision.MONTH
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "december last year",
+        "last year december",
+        "December, last year",
+        "december of last year",
+        "DEC LAST YEAR",
+    ],
+)
+def test_extractor_english_month_before_or_after_relative_year(text: str) -> None:
+    """英文两种语序都覆盖：「december last year」与「last year december」。
+
+    年份分支是双语的（last/this/next year）；这条规则若只认中文，英文月份
+    仍会被年份分支吞掉，退化为整年窗（issue #307 的同一处故障）。
+    """
+    extractor = SchemaTimeExtractor(now=lambda: _YEAR_MONTH_NOW)
+
+    result = extractor.extract(text)
+
+    assert result.start == datetime(2025, 12, 1, tzinfo=UTC)
+    assert result.end == datetime(2026, 1, 1, tzinfo=UTC)
+    assert result.precision == EventTimePrecision.MONTH
+
+
+@pytest.mark.unit
+def test_extractor_does_not_treat_modal_may_as_month() -> None:
+    """「next year may ...」里的 may 是情态动词：不臆造 5 月窗，回落整年。"""
+    extractor = SchemaTimeExtractor(now=lambda: _YEAR_MONTH_NOW)
+
+    result = extractor.extract("next year may be better")
+
+    assert result.start == datetime(2027, 1, 1, tzinfo=UTC)
+    assert result.end == datetime(2028, 1, 1, tzinfo=UTC)
+    assert result.precision == EventTimePrecision.YEAR
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", ["去年12月", "去年3月", "今年3月", "明年1月", "今年12月"])
+def test_query_and_extractor_agree_on_year_month_window(text: str) -> None:
+    """跨侧一致性：同一输入在 parse_time 与 SchemaTimeExtractor 上窗口起止相同。
+
+    Windows 上 test_time_consistency.py 整体 skip，这条单测把那条无人看守的
+    写入侧 / 查询侧契约固定在单测层。
+    """
+    lo, hi = parse_time(text, now=_YEAR_MONTH_NOW)
+    result = SchemaTimeExtractor(now=lambda: _YEAR_MONTH_NOW).extract(text)
+
+    assert (result.start, result.end) == (lo, hi)
