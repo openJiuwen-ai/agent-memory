@@ -233,25 +233,33 @@ def test_local_media_closes_descriptors_when_stream_wrapper_fails(tmp_path, monk
     root, source, work = _paths(tmp_path)
     policy = _policy(root)
     opened = set()
+    closed = []
     real_open = os.open
+    real_close = os.close
 
     def record_open(*args, **kwargs):
         descriptor = real_open(*args, **kwargs)
         opened.add(descriptor)
         return descriptor
 
+    def record_close(descriptor):
+        closed.append(descriptor)
+        real_close(descriptor)
+
     def fail_wrapper(descriptor, *_args, **_kwargs):
         opened.add(descriptor)
         raise OSError("stream wrapper could not be constructed")
 
     monkeypatch.setattr(os, "open", record_open)
+    monkeypatch.setattr(os, "close", record_close)
     monkeypatch.setattr(os, "fdopen", fail_wrapper)
     with pytest.raises(PermissionDeniedError):
         policy.stage(source.as_uri(), SCOPE, work)
     assert opened, "the regression must fail after acquiring a descriptor"
-    for descriptor in opened:
-        with pytest.raises(OSError):
-            os.fstat(descriptor)
+    # fd 号在 close 返回后可被同进程其他 open 复用，fstat(EBADF) 探测不可靠
+    #（CI 高负载下偶发误报 DID NOT RAISE）；以 close 真实调用为准，与
+    # test_encrypted_deployment 的修复对齐。
+    assert sorted(closed) == sorted(opened)
 
 
 @pytest.mark.parametrize("uri", ["meeting video.mp4", "file:meeting%20video.mp4"])
