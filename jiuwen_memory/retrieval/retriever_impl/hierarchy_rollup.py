@@ -134,7 +134,7 @@ class _Rollup:
         key = node_key(parent)
         if depth <= self.request.child_depth:
             # 祖先链已校验可见性、双向引用和时间覆盖，只复用请求深度内的实际命中。
-            self.result.recalled_parents[node_key(source.unit)] = key
+            self.result.recalled_parents[node_key(source.unit)] = (key, depth)
         previous = self.selected.get(key)
         if previous is None:
             # 不把子命中的通道 evidence 冒充父自身的索引证据。
