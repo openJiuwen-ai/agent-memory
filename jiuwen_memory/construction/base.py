@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def.memory import MemoryUnit
 
 
 class OperatorType(str, Enum):
+    CONFLICT_RESOLVER = "conflict_resolver"
     EXTRACTOR = "extractor"
     ABSTRACTOR = "abstractor"
     ASSOCIATOR = "associator"

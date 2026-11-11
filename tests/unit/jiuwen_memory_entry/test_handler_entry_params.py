@@ -445,7 +445,7 @@ def test_update_rejects_blank_mode() -> None:
 # --- 视频摄入 --------------------------------------------------------------- #
 
 
-def test_video_add_forwards_occurred_at_and_rejects_bad_assets() -> None:
+def test_video_add_forwards_times_and_rejects_bad_assets() -> None:
     calls: list[dict] = []
 
     def submit_ingest(*args, **kwargs):
@@ -468,12 +468,14 @@ def test_video_add_forwards_occurred_at_and_rejects_bad_assets() -> None:
         "source": "video",
         "uri": "file:///video.mp4",
         "occurred_at": occurred_at,
+        "event_time": "2024-02-03T12:00:00+00:00",
     }
 
     status, body = handler.dispatch(srv, _request("add", base))
 
     assert status == 200, body
     assert calls[0]["occurred_at"] == datetime(2025, 3, 4, 5, 6, 7, tzinfo=UTC)
+    assert calls[0]["event_time"] == datetime(2024, 2, 3, 12, tzinfo=UTC)
 
     status, body = handler.dispatch(srv, _request("add", {**base, "assets": {"bad": "shape"}}))
 

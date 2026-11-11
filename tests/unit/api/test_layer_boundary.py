@@ -44,6 +44,7 @@ _ALLOWED_CONSTRUCTION_CALLS = {
 _ALLOWED_RETRIEVAL_CALLS = {
     "RetrievalQuery",  # 数据类
     "RetrievalResult",  # 数据类
+    "RetrievedItem",  # 数据类
     "space_error",  # 纯构造，不访问存储
 }
 

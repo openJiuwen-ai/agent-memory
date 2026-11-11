@@ -819,3 +819,21 @@ def test_evolve_null_mode_returns_400() -> None:
     assert body["error"] == "ValidationError"
     assert "mode must be one of" in body["message"]
     assert api.calls == [], "null mode 不应触达 API 层"
+
+
+def test_batch_add_forwards_event_time_defaults_and_items(authenticated_request) -> None:
+    captured = {}
+
+    def batch_add(items, scope, source, **kwargs):
+        captured.update(items=items, **kwargs)
+        return SimpleNamespace(outcomes=[])
+
+    request = authenticated_request("batch_add", {
+        "defaults": {"event_time": "2024-02-03T12:00:00+00:00"},
+        "items": [{"content": "x", "event_time": "2023-01-01T00:00:00+00:00"}],
+    })
+    handler.dispatch(SimpleNamespace(api=SimpleNamespace(batch_add=batch_add)), request)
+
+    assert captured["event_time"] == datetime.fromisoformat("2024-02-03T12:00:00+00:00")
+    assert captured["items"][0].event_time == datetime.fromisoformat("2023-01-01T00:00:00+00:00")
+

@@ -24,6 +24,10 @@ class MemoryQueryService:
     def validate_retrieval_pipeline(self, name: str | None) -> None:
         self._engine.validate_retrieval_pipeline(name)
 
+    @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        return self._engine.supports_exact_metadata_lookup
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         return await self._engine.recall(scope, query)
 

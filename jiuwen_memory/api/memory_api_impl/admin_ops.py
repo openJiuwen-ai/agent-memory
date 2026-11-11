@@ -39,6 +39,7 @@ from jiuwen_memory.control.types import (
 from .local_support import (
     _ROOT,
     _evolve_space_action,
+    _reject_invalid_event_time,
     _TrustedRequestTarget,
     _unit_snapshot_permission_context,
 )
@@ -76,7 +77,9 @@ class AdminOpsMixin:
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> IngestSubmission:
+        _reject_invalid_event_time(event_time)
         self.check_write(
             scope,
             security,
@@ -101,6 +104,7 @@ class AdminOpsMixin:
                 system_metadata=system_metadata,
                 user_metadata=user_metadata,
                 occurred_at=occurred_at,
+                event_time=event_time,
             ),
         )
 
@@ -227,6 +231,7 @@ class AdminOpsMixin:
     ) -> None:
         # 只使用本次真源返回的条目，避免二次读取与最终返回内容的快照错位。
         for unit in units:
+            self._guard_continuity_snapshot(unit, security)
             context = _unit_snapshot_permission_context(unit)
             self._authorize(security, unit.scope, Action.READ, entry, unit.id, context=context)
 

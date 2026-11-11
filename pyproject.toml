@@ -50,6 +50,9 @@ deploy = [
     "redis>=5",
     "asyncpg>=0.30",
     "pyyaml>=6",
+    # 角色记忆证据图的持久图后端（F10 §3.4）。代码惰性导入：未安装时注册仍成功，
+    # 装配该后端时报明确错误。
+    "neo4j>=5.0",
     # api_reranker 出站 HTTP（部署镜像走外部 rerank 服务时必需）。
     "httpx>=0.27,<1",
     "watchdog>=4.0",

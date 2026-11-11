@@ -1,0 +1,9 @@
+# 六种内置关系已存在，只可覆盖展示名和说明。新增类型需明确定义语义。
+mitigates:
+  display_name: 缓解
+  description: A 是对 B 风险的缓解措施，不表示已执行或已验证。
+  direction: forward
+  symmetric: false
+  transitive: false
+  valid_source_kinds: [statement, experience, judgment]
+  valid_target_kinds: [statement, observation, judgment]

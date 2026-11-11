@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from jiuwen_memory.common.type_def import FilterClause, FilterExpr, HierarchyKind, HierarchyRole
+from jiuwen_memory.common.type_def.continuity import MemoryRef, ViewBudget
 from jiuwen_memory.retrieval.types import DisclosureLevel
 
 
@@ -23,3 +24,7 @@ class SearchOptions:
     span_end: datetime | None = None
     expand_depth: int = 0
     rollup: bool = False
+    task_id: str = ""
+    anchor: MemoryRef | None = None
+    duty: str | list[str] | None = None
+    view_budget: ViewBudget | None = None

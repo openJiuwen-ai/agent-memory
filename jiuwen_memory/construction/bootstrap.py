@@ -17,6 +17,7 @@ def register_constructors() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
+    import_optional("jiuwen_memory.construction.conflict_resolver_impl")
     import_optional("jiuwen_memory.construction.abstractor_impl")
     import_optional("jiuwen_memory.construction.associator_impl")
     import_optional("jiuwen_memory.construction.classifier_impl")
