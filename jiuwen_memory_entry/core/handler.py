@@ -512,11 +512,17 @@ def _ingest_job_status(srv, job, *, security: RequestSecurityContext) -> Body:
         "item_ids": [item["item_id"] for item in items],
         "items": items,
     }
+    for key in ("cancel_requested", "partial_write", "retry_requires_reconciliation"):
+        body[key] = job.detail.get(key, "false")
     if job.status.value == "succeeded":
         body["feedback_message"] = f"视频处理完成，共生成 {len(items)} 条多模态记忆。"
     elif job.status.value == "failed":
         body["error"] = job.detail.get("error", "")
         body["feedback_message"] = "视频处理失败。"
+    elif job.status.value == "cancelled":
+        body["feedback_message"] = "视频处理已取消，已完成的写入不会回滚。"
+    elif job.detail.get("cancel_requested") == "true":
+        body["feedback_message"] = "已请求取消，正在等待当前处理步骤结束。"
     else:
         body["feedback_message"] = "视频正在处理中。"
     return body

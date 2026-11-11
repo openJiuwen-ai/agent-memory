@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
 from types import ModuleType
 from typing import Any
@@ -47,16 +48,40 @@ def _display_name(module_name: str, package: str | None) -> str:
     return module_name
 
 
-def import_optional(module_name: str, package: str | None = None) -> None:
-    """导入可选插件模块；失败只记录，不向上抛出。
+def _is_internal_import_failure(
+    error: ImportError, module_name: str, package: str | None
+) -> bool:
+    """Whether ``error`` is a project-internal import bug, not a missing plugin.
 
-    捕获范围限定 ``ImportError``：实现模块内部的其他异常（配置、语法、副作用）
-    属于真实缺陷，必须照常冒泡，不能被当作"依赖未安装"吞掉。
+    A missing target module means the optional plugin itself is not installed
+    and may be skipped. A target plugin that exists but fails to import another
+    ``jiuwen_memory`` module is a broken implementation/configuration and must
+    not be silently downgraded to "optional dependency absent".
+    """
+    missing = getattr(error, "name", None)
+    if not missing:
+        return False
+    if module_name.startswith("."):
+        target = importlib.util.resolve_name(module_name, package or "")
+    else:
+        target = module_name
+    return missing.startswith("jiuwen_memory.") and missing != target
+
+
+def import_optional(module_name: str, package: str | None = None) -> None:
+    """导入可选插件模块；仅外部依赖缺失时记录并继续。
+
+    捕获范围限定 ``ImportError``，且只吞掉**目标插件自身缺失**或外部第三方依赖
+    缺失；目标模块内部漏导入 ``jiuwen_memory`` 模块是代码/配置缺陷，必须冒泡，
+    不能被当作"依赖未安装"静默跳过。
     """
     target = _display_name(module_name, package)
     try:
         importlib.import_module(module_name, package)
     except ImportError as error:
+        if _is_internal_import_failure(error, module_name, package):
+            logger.error("optional import failed inside project module: %s: %s", target, error)
+            raise
         logger.warning("optional import skipped: %s: %s", target, error)
 
 

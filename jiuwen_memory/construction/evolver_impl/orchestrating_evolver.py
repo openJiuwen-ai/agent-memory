@@ -40,12 +40,14 @@ from jiuwen_memory.common.log import (
 )
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
+    MD_TITLE_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
     HierarchyKind,
     HierarchyRef,
     LifecycleState,
     MemoryUnit,
+    Modality,
     Relation,
     Scope,
     inherited_system_metadata,
@@ -119,7 +121,8 @@ of an existing memory.
 
 Output ONLY a JSON object with:
 - "decision": "add" | "update" | "supersede" | "noop"
-- "existing_id": the listed memory this decision refers to (required for update/supersede)
+- "existing_id": the exact [Memory ID] that this update or supersede targets;
+  use null for "add" and "noop"
 - "reason": brief explanation (one sentence)
 
 Decision rules:
@@ -129,6 +132,10 @@ has extra details).
 - "supersede": The candidate completely replaces an existing memory (same topic, candidate is \
 more complete/accurate/recent).
 - "noop": The candidate is fully covered by an existing memory (no new information).
+
+For "update" and "supersede", existing_id MUST be non-null and identify the fact
+actually being changed or invalidated, not merely the highest similarity score. Copy it
+exactly from one of the supplied [Memory ID] values.
 
 If unsure, prefer "add" (to avoid losing information)."""
 
@@ -146,8 +153,9 @@ Output ONLY a JSON array (one entry per candidate, in input order). No explanati
 fences.
 Each entry:
 - "candidate_id": the candidate's id (the value after [ and before ])
-- "existing_id": the listed memory this decision refers to (required for update/supersede)
 - "decision": "add" | "update" | "supersede" | "noop"
+- "existing_id": the exact existing id that this update or supersede targets; use null
+  for "add" and "noop"
 - "reason": brief explanation (one sentence)
 
 Decision rules:
@@ -157,6 +165,10 @@ has extra details).
 - "supersede": The candidate completely replaces an existing memory (same topic, candidate is \
 more complete/accurate/recent).
 - "noop": The candidate is fully covered by an existing memory (no new information).
+
+For "update" and "supersede", existing_id MUST be non-null and copied exactly from the
+candidate's OWN e|<existing_id> entries. Choose the fact actually being changed or invalidated,
+not merely the highest similarity score. Never target another candidate's entries.
 
 Judge each candidate independently against its OWN listed existing memories. If unsure, prefer \
 "add"."""
@@ -249,7 +261,8 @@ class OrchestratingEvolver(Evolver):
         domain_store: DomainStore | None = None,
         graph_name: str = "default",
         dedup_medium_similarity: float = 0.7,
-        dedup_high_similarity: float = 0.9,
+        dedup_high_similarity: float = 1.0,
+        dedup_extract: bool = True,
     ) -> None:
         self._extractor = extractor
         self._abstractor = abstractor
@@ -261,6 +274,7 @@ class OrchestratingEvolver(Evolver):
         # 原文（/messages/）专用：不是索引形式，不经 IndexBuilder。缺省与正排 KV 同实例。
         self._message_store = message_store
         self._dedup = dedup
+        self._dedup_extract = dedup_extract
         self._llm = llm
         # 分层标注算子：None 表示不标注（向后兼容）；非 None 时在抽取/升华后标注 L0/L1。
         self._layer_annotator = layer_annotator
@@ -291,6 +305,9 @@ class OrchestratingEvolver(Evolver):
         return any(
             str(u.system_metadata.get("procedural", "")).strip().lower() == "true" for u in units
         )
+
+    def structured_modalities(self) -> frozenset[Modality]:
+        return self._extractor.structured_modalities()
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EVOLVER
@@ -422,8 +439,8 @@ class OrchestratingEvolver(Evolver):
 
         两段式（批量 LLM 优化）：
         1. 逐条 ``Dedup.recall`` 召回 + 阈值筛选——无命中或低相似(< medium)直接判 ADD；
-           分数 ≥ high(默认 0.9)直接判 NOOP（确定性重复，跳过 LLM）；
-           medium ~ high 之间的候选收集成 ``need_llm`` 列表。
+           分数 ≥ high(默认 1.0)且 ``should_direct_noop`` 为真时判 NOOP；
+           高相似但存在实质差异，以及 medium ~ high 之间的候选收集成 ``need_llm`` 列表。
         2. ``need_llm`` 批量喂一次 LLM 判定（``_llm_dedup_decide_batch``），按返回的
            decision 逐条执行。批量失败则降级为逐条单次 LLM 判定。
         """
@@ -683,7 +700,14 @@ class OrchestratingEvolver(Evolver):
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
             # 合并 metadata
+            had_md_title = MD_TITLE_KEY in existing_unit.system_metadata
             existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
+            # 标题描述本次更新后的事实，不是新旧记忆共有的属性。
+            # 新候选无标题时清空旧标题，避免继续展示已经过时的事实。
+            if MD_TITLE_KEY in candidate.system_metadata or had_md_title:
+                existing_unit.system_metadata[MD_TITLE_KEY] = candidate.system_metadata.get(
+                    MD_TITLE_KEY, ""
+                )
             existing_unit.user_metadata = inherited_user_metadata([existing_unit, candidate])
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
@@ -785,9 +809,10 @@ class OrchestratingEvolver(Evolver):
     ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         """单条候选的去重判定：Dedup.recall → 阈值短路 → LLM 语义判定。
 
-        返回 (decision, most_similar_existing_unit, max_similarity_score)。
+        返回 (decision, selected_existing_unit, selected_similarity_score)。
         召回 + min 阈值过滤 + 加载 + 聚合取 max 全在 recaller 内完成；本方法做
-        high/medium 阈值短路与 LLM 判定。
+        high/medium 阈值短路与 LLM 判定。阈值判断使用最高命中的分数；LLM 选择
+        其他目标时，返回该目标自身在本次召回中的分数。
         """
         # Step A+B: 召回已有相似记忆（已滤自身、已按 min_similarity 过滤、已聚合取 max）
         hit_units: list[tuple[MemoryUnit, float]] = self._dedup.recall(candidate)
@@ -842,7 +867,7 @@ class OrchestratingEvolver(Evolver):
         visible = {unit.id: unit for unit, _ in hits[:3]}
         target_id = payload.get("existing_id")
         if target_id is None and len(visible) == 1:
-            return next(iter(visible.values()))  # Compatible with single-target old prompts.
+            return next(iter(visible.values()))
         if not isinstance(target_id, str) or target_id not in visible:
             raise ValueError("modification requires a listed existing_id")
         return visible[target_id]
@@ -932,16 +957,25 @@ class OrchestratingEvolver(Evolver):
         decision_str = result.get("decision", "add").lower()
         try:
             decision = DedupDecision(decision_str)
-            target = self._validated_target(result, hits, decision)
-            if target is not None and targets is not None:
-                targets[candidate.id] = target
-            return decision
         except ValueError:
             logger.warning(
                 "Evolver._llm_dedup_decide: unknown decision '%s', fallback ADD",
                 redact_for_log(decision_str),
             )
             return DedupDecision.ADD
+
+        try:
+            target = self._validated_target(result, hits, decision)
+        except ValueError:
+            logger.warning(
+                "Evolver._llm_dedup_decide: modification target is missing or invalid "
+                "for candidate %s, fallback ADD",
+                candidate.id[:8],
+            )
+            return DedupDecision.ADD
+        if target is not None and targets is not None:
+            targets[candidate.id] = target
+        return decision
 
     def _llm_dedup_decide_batch(
         self,
@@ -1060,17 +1094,10 @@ class OrchestratingEvolver(Evolver):
             if not isinstance(cid, str) or cid not in known_candidate_ids:
                 continue
             decision_str = str(entry.get("decision", "add")).lower()
+            candidate_id_for_log = cid
             try:
-                results[cid] = DedupDecision(decision_str)
-                target = self._validated_target(entry, hit_map[cid], results[cid])
-                if target is not None and targets is not None:
-                    targets[cid] = target
+                decision = DedupDecision(decision_str)
             except ValueError:
-                candidate_id_for_log = (
-                    cid
-                    if isinstance(cid, str) and cid in known_candidate_ids
-                    else redact_for_log(cid)
-                )
                 logger.warning(
                     "Evolver._llm_dedup_decide_batch: unknown decision metadata=%s "
                     "for candidate_id=%s, fallback ADD",
@@ -1078,6 +1105,21 @@ class OrchestratingEvolver(Evolver):
                     candidate_id_for_log,
                 )
                 results[cid] = DedupDecision.ADD
+                continue
+
+            try:
+                target = self._validated_target(entry, hit_map[cid], decision)
+            except ValueError:
+                logger.warning(
+                    "Evolver._llm_dedup_decide_batch: modification target is missing or "
+                    "invalid for candidate_id=%s, fallback ADD",
+                    candidate_id_for_log,
+                )
+                results[cid] = DedupDecision.ADD
+            else:
+                results[cid] = decision
+                if target is not None and targets is not None:
+                    targets[cid] = target
 
         # 缺项候选（LLM 漏了某条）→ 单条补判
         missing = [(c, h) for c, h in items if c.id not in results]
@@ -1404,6 +1446,9 @@ class OrchestratingEvolver(Evolver):
         if not extracted:
             return EvolveResult()
         self._annotate_layers(extracted)
+        if not self._dedup_extract:
+            created = self._persist(extracted)
+            return EvolveResult(created_ids=created, created_units=list(extracted))
         return self._dedup_batch(extracted)
 
     def _evolve_consolidate(self, units: list[MemoryUnit]) -> EvolveResult:
@@ -1566,5 +1611,6 @@ def _build(config):
         router=optional_router(config),
         graph_name=resolve_name(config, "graph_store"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
-        dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
+        dedup_extract=config.get("dedup_extract", True),
     )

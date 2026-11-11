@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -312,8 +314,6 @@ def test_instance_names_cannot_escape_the_application_data_directory(tmp_path):
 
 @pytest.mark.parametrize("metadata,uid", [('""', 0), ('"1000:0"', 1000), ('"65532"', 65532)])
 def test_backend_image_user_is_read_instead_of_assuming_root(metadata, uid, monkeypatch):
-    from types import SimpleNamespace
-
     monkeypatch.setattr(
         compose.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=metadata)
     )
@@ -321,8 +321,6 @@ def test_backend_image_user_is_read_instead_of_assuming_root(metadata, uid, monk
 
 
 def test_named_image_user_is_resolved_without_running_the_backend_entrypoint(monkeypatch):
-    from types import SimpleNamespace
-
     commands = []
 
     def run(args, **kwargs):
@@ -341,8 +339,6 @@ def test_remote_docker_endpoint_cannot_borrow_local_volume_evidence(endpoint):
 
 
 def test_unix_socket_proxy_to_a_different_host_is_rejected(monkeypatch):
-    from types import SimpleNamespace
-
     monkeypatch.setattr(
         compose.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout='"remote"')
     )
@@ -352,8 +348,6 @@ def test_unix_socket_proxy_to_a_different_host_is_rejected(monkeypatch):
 
 
 def test_native_local_docker_daemon_passes(monkeypatch):
-    from types import SimpleNamespace
-
     monkeypatch.setattr(
         compose.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout='"local"')
     )
@@ -362,8 +356,6 @@ def test_native_local_docker_daemon_passes(monkeypatch):
 
 
 def test_docker_context_override_cannot_be_hidden_by_a_local_host_variable(monkeypatch):
-    from types import SimpleNamespace
-
     monkeypatch.setattr(
         compose.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout='"ssh://remote"')
     )
@@ -410,24 +402,19 @@ def test_document_backend_paths_use_verified_application_bind_or_require_migrati
 def test_private_control_file_always_closes_its_descriptor(tmp_path, monkeypatch, stage):
     import os
 
-    closed = []
-    real_close = os.close
-
-    def close(descriptor):
-        closed.append(descriptor)
-        real_close(descriptor)
-
-    monkeypatch.setattr(compose.os, "close", close)
+    file_ops = SimpleNamespace(
+        open=Mock(wraps=os.open),
+        close=Mock(wraps=os.close),
+        fdopen=Mock(wraps=os.fdopen),
+    )
     if stage == "wrap":
-
-        def fail_wrap(*args, **kwargs):
-            raise OSError("text wrapper failed")
-
-        monkeypatch.setattr(compose.os, "fdopen", fail_wrap)
+        file_ops.fdopen.side_effect = OSError("wrap failed")
+    monkeypatch.setattr(compose, "os", file_ops)
     path = tmp_path / "control"
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
 
     def write():
-        with compose.private_text_file(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY) as stream:
+        with compose.private_text_file(path, flags) as stream:
             stream.write("private control data")
             if stage == "write":
                 raise OSError("write failed")
@@ -436,11 +423,14 @@ def test_private_control_file_always_closes_its_descriptor(tmp_path, monkeypatch
         write()
         assert path.read_text(encoding="utf-8") == "private control data"
     else:
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, match=f"{stage} failed"):
             write()
-    assert len(closed) == 1
-    with pytest.raises(OSError):
-        os.fstat(closed[0])
+    file_ops.open.assert_called_once_with(path, flags, 0o600)
+    file_ops.fdopen.assert_called_once()
+    descriptor = file_ops.fdopen.call_args.args[0]
+    assert file_ops.fdopen.call_args.kwargs["closefd"] is False
+    # Another thread can reuse the descriptor number after close returns.
+    file_ops.close.assert_called_once_with(descriptor)
 
 
 def test_tool_resolution_uses_system_directories_and_an_absolute_path(tmp_path, monkeypatch):
@@ -467,8 +457,6 @@ def test_missing_system_tool_fails_before_launch(monkeypatch):
 
 
 def test_volume_command_executes_the_resolved_absolute_binary(monkeypatch):
-    from types import SimpleNamespace
-
     commands = []
     monkeypatch.setattr(volume, "executable", lambda name: f"/usr/sbin/{name}")
 

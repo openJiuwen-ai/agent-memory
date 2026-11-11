@@ -20,6 +20,7 @@ from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
+    MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
     LifecycleState,
     MemoryUnit,
@@ -181,6 +182,63 @@ def test_read_md_file_rejects_non_document_mode(tmp_path) -> None:
 
 
 # -- edit_md_file：继承式 SUPERSEDE（F08 §D4）------------------------------- #
+
+
+@pytest.mark.parametrize("memory_class,filename", [
+    ("user_profile", "USER.md"), ("long_term_memory", "MEMORY.md"),
+])
+def test_edit_md_file_refreshes_stale_heading_and_shadow(tmp_path, memory_class, filename) -> None:
+    ds = _build_doc_store(tmp_path)
+    _write_unit(ds, "u1", "用户居住在上海。", metadata={
+        MEMORY_CLASS_KEY: memory_class, MD_TITLE_KEY: "居住地上海",
+    })
+    _write_unit(ds, "u2", "喜欢游泳", metadata={
+        MEMORY_CLASS_KEY: memory_class, MD_TITLE_KEY: "爱好",
+    })
+
+    (updated,) = ds.edit_md_file(SCOPE, filename, "用户居住在上海。", "用户居住在杭州。")
+
+    assert (tmp_path / updated.system_metadata["md_filename"]).read_text(encoding="utf-8") == (
+        "# 居住地杭州\n用户居住在杭州。\n\n# 爱好\n喜欢游泳\n\n"
+    )
+    assert updated.system_metadata[MD_TITLE_KEY] == "居住地杭州"
+    assert updated.supersedes == "u1"
+    assert ds.get(SCOPE, ["u1"])[0].lifecycle is LifecycleState.SUPERSEDED
+
+
+def test_explicit_title_edit_updates_shadow_anchor_for_next_body_edit(tmp_path) -> None:
+    ds = _build_doc_store(tmp_path)
+    _write_unit(ds, "u1", "用户居住在上海。", metadata={
+        MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "居住地上海",
+    })
+
+    (title_updated,) = ds.edit_md_file(
+        SCOPE, "USER.md", "# 居住地上海", "# 常住城市上海",
+    )
+    (body_updated,) = ds.edit_md_file(
+        SCOPE, "USER.md", "用户居住在上海。", "用户居住在杭州。",
+    )
+
+    assert title_updated.id == "u1"
+    assert title_updated.system_metadata[MD_TITLE_KEY] == "常住城市上海"
+    assert (tmp_path / "USER.md").read_text(encoding="utf-8") == (
+        "# 常住城市杭州\n用户居住在杭州。\n\n"
+    )
+    assert body_updated.system_metadata[MD_TITLE_KEY] == "常住城市杭州"
+    assert body_updated.supersedes == "u1"
+
+
+def test_title_edit_targets_duplicate_body_by_old_heading(tmp_path) -> None:
+    ds = _build_doc_store(tmp_path)
+    for uid, title in (("u1", "# 上海"), ("u2", "杭州")):
+        _write_unit(ds, uid, "相同正文", metadata={
+            MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: title,
+        })
+    (updated,) = ds.edit_md_file(SCOPE, "USER.md", "# # 上海", "# # 北京")
+    assert updated.id == "u1"
+    units = {unit.id: unit for unit in ds.get(SCOPE, ["u2", "u1"])}
+    assert units["u1"].system_metadata[MD_TITLE_KEY] == "# 北京"
+    assert units["u2"].system_metadata[MD_TITLE_KEY] == "杭州"
 
 
 def test_edit_md_file_aligned_inherits_metadata_and_supersedes(tmp_path) -> None:

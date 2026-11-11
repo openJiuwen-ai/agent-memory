@@ -90,6 +90,12 @@ KV/DomainStore 双适配（`CandidateStore = KVStore | DomainStore`，`_is_kv_st
 本身不改（resolver 由 `submit_evolve` 经 `build_resolver` 装配并注入，EvolveJob 的 `self._kv`
 仅是 resolver=None 时的兜底，本路径不触达）。
 
+### 无路由部署的项目检索
+
+Agent 文档模式可直接通过 `system_metadata.project` 写入项目记忆。搜索时传入
+`Context.extensions["coords"]["project"]`，召回该项目和未指定项目的记忆。
+项目条件复用 F08 的影子索引过滤，显式 `filters` 可进一步收窄结果。
+
 ## 拒绝的方案
 
 ### 方案 A（当时未选，后由 issue #261 采纳）：lifecycle 数据源根治——KVLifecycleManager 注入 DomainStore
@@ -148,3 +154,40 @@ DomainStore 读取」对 CloudEngine 已确立的范式），且会复制 Domain
    InMemoryEngine/CloudEngine 文档模式下受影响，本次不修。
 4. **非文档模式 lifecycle 未变**：非文档模式（KV 即真源）维持 `lifecycle.supersede/transition`
    直调——KV 持有 MemoryUnit，lifecycle 数据源与真源一致，无断点。本次绕过仅文档模式触发。
+
+## Swarm SDK 文档模式的视频写入
+
+Swarm 的 `JiuwenMemoryRail` 通过 Provider 的 schema 注册视频提交和状态查询工具。
+视频提交工具接受可选的 `project`。省略时，Rail 使用当前项目。无项目时写入根记忆目录。
+工具声明取自 SDK 装配结果。只有接入层声明支持本地结构化视频，且显式 `pipeline=video`
+路由绑定了能消费该结构的 Evolver 时才注册工具。缺少视频 profile 或绑定普通文本抽取器时，
+该路由不可用，提交工具不入队。
+Provider 使用已绑定的 Scope 和可信身份提交原生摄入任务，`AgentEngine` 把 URI 填入视频
+`RawPayload.uri`，并将 `pipeline=video` 交给配置的 metadata pipeline 选择视频 Evolver。
+视频路由使用 Scope 精确匹配的 `local_media_roots` 和配置好的 ASR、文本模型、视觉模型。
+内置视频 profile 使用 `video_memory` 抽取器、独立的 `message_store` 和 `dedup_extract: false`，
+保留片段与事件的引用关系。默认文本 profile 使用 `classifier: default`。两条流水线
+共用文档 IndexBuilder，视频片段和事件的文本描述及
+元数据分别进入 Markdown 和影子索引，显式 `agent_memory_search` 可检索视频记忆。
+
+Swarm 选择 AgentMemory 的 SDK 模式后，可直接使用 Provider 内置的视频算子和路由。
+部署环境用 `JIUWEN_MEMORY_VIDEO_ROOTS` 提供 JSON 数组，每项包含 `scope` 和 `root`。
+该变量为空时，Provider 默认只装配文本栈。启用内置视频时，使用 `ASR_API_BASE`、`ASR_MODEL_NAME`、
+`ASR_API_KEY` 配置语音转写服务，并用 `VIDEO_API_BASE`、`VIDEO_MODEL_NAME`、
+`VIDEO_API_KEY` 配置视觉服务。若需跨 SDK 实例或重启保留作业状态，可用
+`JIUWEN_MEMORY_VIDEO_JOB_DB` 指定专用 SQLite 文件。Swarm YAML 中现有的 SDK 显式覆盖仍可使用。
+SDK 通过 `config_path` 读取 YAML 或 JSON 时，设置 `JIUWEN_MEMORY_VIDEO_ROOTS` 后，
+Provider 也会先装配内置视频默认值，再应用文件里的显式配置。未设置该变量时，
+显式配置文件仍直接交给内核装配。
+
+视频工具通过公开 API 在入队前先做写入鉴权，再委托已装配的规约器验证本地 URI 和扩展名。
+`local_media_roots` 可按标准配置规则由实例参数覆盖全局配置。后台暂存文件时仍独立校验。
+同一 Scope、项目和规范化 URI 重复提交时沿用原生摄入任务的重试与去重规则。原地替换文件后，
+使用不同 URI 发起新导入。若旧作业可能部分写入，先核对旧作业及其产物。状态工具以 MemoryUnit ID
+回报写入结果。
+SDK 宿主可能重建 Provider。把 `ingest_job.default.params.kv_store` 指向独立的 SQLite KV
+可以在重建后查询任务状态。共享该任务库的同进程 SDK 实例会识别仍在执行的任务，避免误判
+中断并重复提交。取消请求由持有执行句柄的同进程控制器执行。协调器绑定到任务库的资源身份，
+SQLite 按规范化文件路径共享，独立数据库及快照即使含有相同任务 ID 也相互隔离。其他 KV
+默认仅在同一存储实例上共享进程内协调。切换任务库的路由后端或 SQLite 路径前，应停止接收新任务，
+等待已提交任务结束，再切换并重新装配运行时。该配置仅持久化作业元数据，任务仍由原进程执行。

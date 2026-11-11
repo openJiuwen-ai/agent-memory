@@ -118,6 +118,17 @@ def test_local_media_denies_symlink_outside_root(tmp_path):
     assert source.read_bytes() == b"authorized media", "valid source must remain intact"
 
 
+def test_video_preflight_denies_symlink_inside_root(tmp_path):
+    root, source, _ = _paths(tmp_path)
+    alias = root / "alias.mp4"
+    try:
+        alias.symlink_to(source)
+    except OSError:
+        pytest.skip("host does not allow symlink creation")
+    with pytest.raises(PermissionDeniedError):
+        _policy(root).preflight_video(alias.as_uri(), SCOPE)
+
+
 def test_local_media_denies_leaf_replaced_after_resolution(tmp_path, monkeypatch):
     root, source, work = _paths(tmp_path)
     outside = tmp_path / "secret.mp4"

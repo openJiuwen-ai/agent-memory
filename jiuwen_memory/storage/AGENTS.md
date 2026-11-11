@@ -22,6 +22,7 @@
 | `base.py` | BaseStore 基类：所有存储后端的自描述契约（store_type / health） |
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
 | `_schema_property_index.py` | Schema Entity → Property MemoryUnit ID 的 KV 派生反向索引；以 Scope watermark 作为全量回填提交标记，membership/pointer 支持幂等更新与硬删；canonical identity 按 `schema_entity_id` → `schema_entity_key` → `type::name` 解析且要求非空 `schema_property_name`；支持按 Scope 批量反查（`lookup_batch` 按实体数阈值分流：≤阈值走窄前缀、>阈值走一次全 Scope scan）；不缓存 watermark——派生索引在检索/构建/演进多实例间维护，缓存会让 invalidate 失效后读者仍信任派生索引；`indexed=True` 但 membership 为空时回退 `_list_properties` 真源复核，覆盖并发写窗口的主要漏召场景 |
+| `migration.py` | 受保护插件的可选明文记忆维护契约，插件声明枚举、物理身份和原子转换，不依赖实现私有状态 |
 | `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 三件——`load_memory_unit(raw, scope, key)` 解码隔离（坏字节记 warning 后返 `None`），`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤），`list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
@@ -58,6 +59,8 @@
 `exists` / `scan` / `scopes`；fs 提供 `stat`。
 
 ## 行为铁律
+
+- **显式维护能力**：内置 KV 通过公开 migration_identity、原子 compare_exchange 和声明过的有界 migration_records 迭代支持受控维护，不回退全量 scan。内存 KV 的读写、枚举和 CAS 在实例方法内持有同一把锁，过期清理也在锁内；SQLite 的 insert/CAS 在取得实例锁和数据库写锁后检查状态与到期时间，冲突插入不覆盖。EncryptedKV 的扫描/迁移能力不用于正常读取，保留到期语义且不复活扫描后消失的记录。缺少可靠枚举/CAS 时明确不支持。
 
 - **统一静态加密准入**：`StoreManagerProducer.resolve` 在开关开启时验证完整
   encryption_inventory，清单与公开端口须为同一对象。Composite manager 通过 Producer
@@ -183,6 +186,9 @@ ES 实体未配置 hosts/endpoint 时先返回 None。
 向量构造函数与融合工厂共用；融合工厂的错误使用 `milvus_graph fusion` 标明后端。
 
 - `LocalMarkdownStore` 的正常写入与补偿恢复共享标题渲染；标题、`md_title`、团队坐标与 `memory_class`（含未知非空值）必须通过 `redact_for_log` 记录，日志脱敏不修改实际 Markdown、正文或元数据。
+- 文档更新同步写回显式提供的 `md_title`（含仅标题变化和空标题）；缺失时保留文件原标题，daily 文件保留团队标题。标题和正文在同次文件写入及失败补偿中处理。
+- 文件编辑工具仅改 USER.md/MEMORY.md 正文时，同步替换标题中对应的旧事实片段并更新影子索引标题；显式改过的标题与 daily 团队标题不自动改写。
+- 标题漂移时仅在正文唯一的情况下回退匹配；跨块编辑不按位置推断事实标题。文件编辑的标题同步使用块位置与旧标题区分重复正文，解析标题仅去掉一个 Markdown 标题前缀。
 
 1. 所有 Store 必须实现 `store_type()` 和 `health()`（继承自 `BaseStore`）。
 2. 实现通过 `@XxxProducer.register("name")` 自注册。

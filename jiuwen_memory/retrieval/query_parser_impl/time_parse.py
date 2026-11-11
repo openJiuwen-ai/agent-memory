@@ -50,9 +50,17 @@ def _rule_based(text: str, now: datetime) -> TimeWindow:
     # 最近/过去 N 天｜周（到 now）
     m = re.search(r"(最近|过去|近)\s*(\d+)\s*(天|日|周|星期)", t)
     if m:
-        n = int(m.group(2))
-        delta = timedelta(weeks=n) if m.group(3) in ("周", "星期") else timedelta(days=n)
-        return now - delta, now
+        try:
+            # int 转换须在 try 内：正则 \d+ 可匹配超长数字串，CPython 3.11+ 对
+            # int(str) 有 4300 位上限，超限抛 ValueError（非 OverflowError）。
+            n = int(m.group(2))
+            delta = timedelta(weeks=n) if m.group(3) in ("周", "星期") else timedelta(days=n)
+            return now - delta, now
+        except (OverflowError, ValueError):
+            # N 超出 datetime 可表示范围（如「最近1000000000天」）或超出 int 转换
+            # 上限（≥4300 位数字串）：语义上等价于全部历史，不下推时间窗；
+            # 继续尝试后续规则，最终自然回落 (None, None)。
+            pass
 
     if "前天" in t:
         return _day_bounds(now - timedelta(days=2))
@@ -88,7 +96,12 @@ def _rule_based(text: str, now: datetime) -> TimeWindow:
     # common.time_utils 的同一份规则，无年份日期两侧都按各自 now 的年份补齐。
     date_hit = first_absolute_date(t, now)
     if date_hit is not None:
-        return _day_bounds(date_hit)
+        try:
+            # 当日窗的排他端（start + 1 天）在 date_hit 为 9999-12-31 时越过
+            # datetime.max 抛 OverflowError，与相对时间溢出同构回落空窗。
+            return _day_bounds(date_hit)
+        except (ValueError, OverflowError):
+            return None, None
 
     return None, None
 

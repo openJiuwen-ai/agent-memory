@@ -35,11 +35,13 @@ from jiuwen_memory.retrieval.query_parser import QueryParser
 from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from jiuwen_memory.retrieval.schema_temporal import (
     EventTimePrecision,
+    ExtractedTimeWindow,
     SchemaTemporalMode,
     SchemaTemporalQuery,
     SchemaTemporalReader,
     SchemaTemporalResult,
     SchemaTemporalShrinker,
+    SchemaTimeExtractor,
     TemporalEntityAssembler,
     TemporalEntitySelector,
 )
@@ -1559,3 +1561,79 @@ def test_read_entities_falls_back_when_indexed_but_empty() -> None:
     }
     for i, eid in enumerate(entity_ids):
         assert visible.get(eid) == {units[i].id}, f"实体 {eid} 回退 list 后丢数据"
+
+
+@pytest.mark.unit
+def test_extractor_invalid_month_range_returns_empty_window() -> None:
+    """「2026年13月」非法年月：区间分支返回空窗，不让 ValueError 穿透检索链路。"""
+    extractor = SchemaTimeExtractor(now=lambda: datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
+
+    result = extractor.extract("2026年13月到2027年2月的会议")
+
+    assert result == ExtractedTimeWindow()
+    assert result.found is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "过去9999999999天",
+        "过去200000周",
+        "last 1000000000 days",
+    ],
+)
+def test_extractor_relative_time_overflow_returns_empty_window(text: str) -> None:
+    """相对时间 N 溢出：语义≈全部历史，返回空窗而非 OverflowError 穿透。"""
+    extractor = SchemaTimeExtractor(now=lambda: datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
+
+    result = extractor.extract(text)
+
+    assert result == ExtractedTimeWindow()
+    assert result.found is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "过去" + "9" * 5000 + "天",       # int(str) 4300 位上限 → ValueError
+        "2020年到9999年的会议",           # 区间右端 9999 年 → _next_year 越界 ValueError
+        "9999年12月",                     # chinese 单日期 → _exclusive_end 越界 ValueError
+        "9999-12-31",                     # iso 单日期 → DAY 精度加法越过 datetime.max OverflowError
+        "2020-01到9999-12",               # iso 区间 → 右端 _exclusive_end 越界 ValueError
+    ],
+)
+def test_extractor_boundary_years_and_huge_digits_return_empty_window(text: str) -> None:
+    """年份越界（9999）、超长数字串（int 4300 位上限）与 timedelta 溢出同构空窗回落。"""
+    extractor = SchemaTimeExtractor(now=lambda: datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
+
+    result = extractor.extract(text)
+
+    assert result == ExtractedTimeWindow()
+    assert result.found is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", ["December 9999", "Dec 31, 9999"])
+def test_extractor_english_max_date_returns_empty_window(text: str) -> None:
+    """英文日期 9999 年：排他端越界（ValueError/OverflowError）同构空窗回落。"""
+    extractor = SchemaTimeExtractor(now=lambda: datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
+
+    result = extractor.extract(text)
+
+    assert result == ExtractedTimeWindow()
+    assert result.found is False
+
+
+@pytest.mark.unit
+def test_extractor_relative_overflow_falls_through_to_later_rules() -> None:
+    """相对时间溢出后继续后续相对规则（「最近1000000000天，今天」应取今天窗）。"""
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=UTC)
+    extractor = SchemaTimeExtractor(now=lambda: now)
+
+    result = extractor.extract("最近1000000000天，今天")
+
+    assert result.found is True
+    assert result.start == datetime(2026, 6, 16, 0, 0, tzinfo=UTC)
+    assert result.end == datetime(2026, 6, 17, 0, 0, tzinfo=UTC)

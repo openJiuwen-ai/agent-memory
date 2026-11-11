@@ -1,6 +1,6 @@
 # CLI 与 MemoryAPI 对齐
 
-最近一次修订日期：2026-09-09
+最近一次修订日期：2026-11-04
 
 CLI 是 MemoryAPI 的命令行入口，不再兼容 Mem0 风格命令或 legacy payload。
 它与 HTTP 使用同一套方法名、参数名、默认值和返回结构，不包含额外业务编排。
@@ -69,6 +69,22 @@ scripts/run-cli.sh --auth-mode dev search \
 远程用 `--server` 或 `AGENT_MEMORY_SERVER` 指定地址；
 `AGENT_MEMORY_API_KEY` 作为 Bearer 凭据发送。认证模式由服务器决定，
 不能用 CLI 的 `--auth-mode dev` 改变远程服务认证。
+远程 HTTP 客户端的 socket 阻塞超时默认 300 秒，参考 SDK 的 `llm_timeout` /
+`embedder_timeout` 单次模型调用配置（[F05-model-service-ssl](../../docs/features/common/F05-model-service-ssl.md)）。
+它不是单命令总 deadline：`urllib` 的 timeout 只约束连接建立和每次 socket 读写的阻塞上限，
+服务端持续有数据返回时总耗时可超过该值。
+可通过 `--timeout <seconds>` 或 `AGENT_MEMORY_TIMEOUT` 调整，只接受有限正数，
+命令行参数优先于环境变量；非法环境变量在报错信息里点名 `AGENT_MEMORY_TIMEOUT`。
+`--timeout` 只在指定 `--server` 时有效，本地执行显式传入按参数错误处理（退出 2）；
+仅设置环境变量时本地模式忽略该值，远程配置不会打断本地调用。
+默认值不保证覆盖整个业务操作；包含多次模型调用的 `evolve`、慢 `add`
+以及 `add_async` / `batch_add_async` 等「等待原结果」的长调用可能需要显式调高。
+`batch` 的 NDJSON 逐条请求各自应用该超时，整体没有总预算或全局 deadline。
+该值只约束客户端等待，不改变服务端请求体读取超时
+（[F04](../../docs/features/common/F04-security-interfaces-and-encryption.md) 的 30 秒 socket 读超时）
+或业务执行预算；客户端超时后服务端请求可能继续执行。
+超时与连接失败同口径：client 返回 `(0, {"error": "ConnectionError", "message": ...})`，
+CLI 写 stderr 并退出 1，不打印 traceback。
 
 HTTP 配置了 `http.dev_identities` 时，设置 `AGENT_MEMORY_API_KEY=test-u1` 即发送
 `Authorization: Bearer test-u1`，由服务端选择预设身份；缺失或未知标识返回 401。

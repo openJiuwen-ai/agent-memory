@@ -5,10 +5,29 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+
+## 摄入协作取消
+
+摄入控制器绑定任务局部的取消信号，common 只提供检查与可唤醒等待，不依赖 control。
+内置视频规约、ASR 共享同一信号；在分片、模型请求及应用层重试之前检查，调用返回后
+再次观察取消。取消异常原样穿过规约与重试边界，由控制器记录 cancelled，不返回部分
+规约结果假报成功。上传/轮询退避等待允许提前唤醒，不修改公共模型插件方法签名。
+无信号时普通调用行为不变；SDK 内部重试、正在执行的同步请求或外部进程不保证中断，
+停止本地轮询不保证停止远端任务或计费。临时目录仍由已有 finally/上下文管理器释放。
+
+## 明文拒绝与格式识别增量
+
+`CryptographyProvider.is_ciphertext(value: bytes) -> bool | None` 为非抽象可选能力。
+true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信封输入，不能据此授权
+修复、迁移或把损坏密文降级为明文；None 表示未声明识别能力，旧 provider 解密行为不变，
+维护工具不得据此声称能可靠扫描。具体格式由插件识别，核心不按具体实现或私有状态判定。
+`common.plaintext.PlaintextDataError` 是继承 BackendError 的内部拒绝信号，正常读取继续
+按既有异常契约失败，不新增公共 API 返回类型。错误消息不携带存储路径、内容、密钥或
+未经授权的记录身份。
 
 ## Metadata 领域模型契约
 
@@ -149,9 +168,16 @@ class Plugin(ABC):
 |------|------|------|
 | `normalize` | `(payload: RawPayload) -> str` | 从原始负载提取/翻译为可治理文本 |
 | `modalities` | `() -> list[Modality]` | 返回本 normalizer 支持的模态类型 |
+| `structured_modalities` | `() -> frozenset[Modality]` | 返回规约结果为**结构化中间产物**（给下游程序整体解析的包络）的模态子集；缺省实现返回空集，非抽象，既有实现无需改动 |
 | `ensure_normalizer_supports` | `(normalizer, modality) -> None` | 公共能力门禁；支持时返回 `None`，否则抛含 capability/value/component 的 `UnsupportedCapabilityError` |
+| `ensure_structured_modalities_declared` | `(normalizer) -> frozenset[Modality]` | 装配期门禁：`structured_modalities()` 必须是 `modalities()` 的子集，否则抛 `ValidationError`；消费方（如 `SimpleIngestor`）构造时调用并缓存返回值 |
 
 `modalities()` 是“是否支持该模态”的单一能力声明，不描述输入使用 `data` 还是 `uri`。
+`structured_modalities()` 是“该模态的 content 能否被接入层按长度切分”的声明：命中的模态由
+接入层整体交付（S01 第 7 条），未命中的视为整块纯文本投影可预切分。声明归生产该格式的
+Normalizer——`VideoNormalizer` 声明 `VIDEO`（JSON 包络由 `VideoMemoryExtractor` 整体解析），
+`PassthroughNormalizer` 走缺省空集；`RoutingNormalizer` 的声明与其 `normalize` 分派一致：显式
+route 的模态取 delegate 的声明，其余取 fallback 的声明。
 `RoutingNormalizer` 构造时必须校验每个显式 route key 属于其 delegate 的能力集合，矛盾时按
 装配错误抛 `ValidationError`；运行时真实 payload 不受支持时抛
 `UnsupportedCapabilityError`。HTTP 视频入口缺少视频 Normalizer 时使用同一能力错误，

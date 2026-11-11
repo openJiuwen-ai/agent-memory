@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.normalizer.base import (
+    LocalMediaPreflight,
     Normalizer,
     NormalizerProducer,
     ensure_normalizer_supports,
@@ -39,6 +40,21 @@ class RoutingNormalizer(Normalizer):
         supported.update(self._routes)
         return sorted(supported, key=lambda item: item.value)
 
+    def structured_modalities(self) -> frozenset[Modality]:
+        # 与 normalize() 的分派一致：显式 route 的模态看该 delegate 的声明，
+        # 其余模态看 fallback 的声明。
+        routed = {
+            modality
+            for modality, normalizer in self._routes.items()
+            if modality in normalizer.structured_modalities()
+        }
+        inherited = {
+            modality
+            for modality in self._fallback.structured_modalities()
+            if modality not in self._routes
+        }
+        return frozenset(routed | inherited)
+
     @staticmethod
     def plugin_type() -> PluginType:
         return PluginType.NORMALIZER
@@ -50,6 +66,9 @@ class RoutingNormalizer(Normalizer):
                 continue
             seen.add(id(normalizer))
             normalizer.health()
+
+    def local_media_preflight(self, modality: Modality) -> LocalMediaPreflight | None:
+        return self._routes.get(modality, self._fallback).local_media_preflight(modality)
 
     def normalize(self, payload: RawPayload) -> str:
         normalizer = self._routes.get(payload.modality, self._fallback)

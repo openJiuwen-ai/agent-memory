@@ -58,7 +58,7 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 
 ### 二、md 视图存储：`MarkdownStore`（`storage/markdown.py` + `markdown_impl/local_markdown_store.py`）
 
-落盘路径按 `memory_class` + `coords.project` 映射（空值兜底 `long_term_memory` / 空串，落 memory 根下跨项目可见）：
+落盘路径按 `memory_class` 和项目映射。项目优先取标量 `system_metadata.project`，其次取写入坐标 `coords.project`。缺省类别为 `long_term_memory`，缺省项目为空串，对应 memory 根下的跨项目文档。
 
 | memory_class | md 路径 | 说明 |
 |---|---|---|
@@ -70,12 +70,12 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 
 块格式恒为 `# {标题}\n{正文单行}\n\n`：
 
-- **标题分流**：daily 文件用 `coords["team"]`（标识来源团队，缺失兜底 `unit.id`）；其余文件用 `system_metadata["md_title"]`（LLM 抽取时与 tier/tags 同 prompt 生成），缺失兜底 `unit.id`。标题行在任何机器读回路径中不被解析，内容变化对机器路径零影响。
+- **标题分流**：daily 文件用 `coords["team"]`（标识来源团队）；其余文件用 `system_metadata["md_title"]`（LLM 抽取时与 tier/tags 同 prompt 生成），缺失均为空标题。文件编辑后同步解析标题回填影子索引，但召回不依赖解析 md。
 - **正文单行**是存储层强约束（见决策六）。
 
 `write` 落盘后**就地回填** `unit.system_metadata[MD_FILENAME_KEY]`（md 相对路径），供影子索引落 `memory_unit.md_filename` 列、看门狗定位文件。整批共持一次锁、按文件分组一次追加写（同文件多 unit 的块拼一起，减少 IO）。
 
-`replace_content` / `remove_content` 服务 update / delete 的 md 侧同步：按 `\n\n` 切块、标题行后正文 == 目标 content 命中，整块替换 / 删除**首个**命中；未命中返回 False（md 与索引漂移，交看门狗对账，不抛错）。
+`replace_content` / `remove_content` 服务 update / delete 的 md 侧同步：按 `\n\n` 切块。删除仍按正文删除首个命中；替换未提供旧标题时按正文替换首个命中，提供旧标题时优先联合匹配标题和正文。标题漂移时仅在可替换块的正文唯一时退化匹配；无换行的裸正文块不参与统计或替换。未命中返回 False（md 与索引漂移，交看门狗对账，不抛错）。显式新标题与正文同次写入，空标题表示清空，未提供则保留原标题；daily 更新保留团队标题。
 
 **路径安全收口**（`_safe_abs_path`）：`md_filename` 源于调用方可写的 `system_metadata`，不可信——绝对路径直接拒绝；`realpath` 归一双方后 `commonpath` 前缀校验（消解 `..`、双斜杠、symlink；Windows 跨盘符 ValueError 视为逃逸）。逃逸抛 `ValidationError` fail-closed。已知边界：realpath 与 open 之间存在 TOCTOU 窗口，本收口面向「恶意字符串」威胁模型，非对抗本地竞争者的沙箱。
 
@@ -106,6 +106,8 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 - `list_units`：拉该 scope 的 `(unit_id, unit_json bytes)`，过滤/排序/分页交上层复用 `list_memory_entries`（与 KV `scan→list` 同构）。**按 scope 原生隔离**（对齐 KV scan 按 scope 物理约束）。`list_units_by_md`（看门狗诊断用）例外不限 scope。
 
 **召回（`search_fulltext` / `search_vector`）**，project 谓词经 `_compile_system_filters` 编译下推（保留 AND/OR 语义）：
+
+无路由的文档模式也支持按项目检索。写入时可用标量 `system_metadata.project` 指定项目，搜索时用 `Context.extensions["coords"]["project"]` 生成项目谓词。这样直写的项目文档能与公共文档一同进入候选集。只查指定项目时可使用显式 `filters`，同时传坐标与过滤条件时两者取交集。
 
 project 谓词取自 `query.filters` 里的 `system_metadata.project`（上层 coords 折算下推，`_narrow_predicates` 产 `IN ["", value]`），与其他系统谓词（lifecycle/t_valid/t_invalid/t_event）一起经 `_compile_system_filters` 统一编译成保留 AND/OR 逻辑的 SQL WHERE 下推。单条 `IN ["", value]` 编译成 `project IN ('', value)`——一条 SQL 同时搜当前 project + 默认 project（跨项目可见的空串行 + 本项目行）。多条 project 谓词（系统收窄 AND 用户过滤）按 AND/OR 逻辑编译，不再降级成 OR 并集（已移除的旧平铺路径把多谓词值合并成单一 `IN (...)` 丢 AND/OR，会让「系统收窄 p1 AND 用户 p2」泄露 p2）。无 project 谓词（未带 coords）→ 兜底追加 `project = ''`，只召回跨项目可见的空串行（保留旧无谓词只返空串行语义，避免放宽成全库召回）。category 维度不在召回 SQL 过滤——若需按类别收窄，上层应通过 `query.filters` 显式传 category 谓词。**scope 原生隔离**：影子索引 `memory_unit` 表加 org/space/user/agent/session 五列（对齐 KV 五段等值 WHERE），`scope` 入参与 `sys_where`（系统前置谓词）并列 AND 下推——scope 是身份隔离维（严格等值，无空串跨 scope 可见语义），与 project（收窄维，`IN ['', value]`）+ category（落盘键）正交。`list_units_by_md`（看门狗跨 scope 诊断）/ `delete_units`（幂等按 unit_id）例外不限 scope。**召回放宽 session**：`search_fulltext`/`search_vector` 的 scope WHERE 只对 org/space/user/agent 四段严格等值，**不做 session 等值**——记忆应跨 session 共享（同一 user/agent 在不同 session 的记忆互通）。`get_units`/`list_units` 仍保留 session 等值（点查/列表不放宽），故跨 session 召回的 unit 在 list 看不到、get 拉不到——召回侧有意放宽的已知边界。
 
@@ -257,7 +259,7 @@ content 重复类三者的共同后果：md 与影子索引漂移，但看门狗
 
 - **看门狗改行断版本链**：用户改某行 content → 删旧 unit + 建新 uuid unit，supersedes 链断裂（F07 §12.9 风险 5 当前版本策略）。后续可探索按标题行锚定保留旧 id。
 - **看门狗二次清除 SUPERSEDE 旧版行**：`list_units_by_md` 当前全量对账（无 lifecycle 过滤）——`edit_md_file` 把旧版标 SUPERSEDED 且 md 已换成新 content 后，看门狗下轮对账会把 SUPERSEDE 旧版的 hash 判为「用户手删」→ `delete_units` 物理删掉该历史行，版本链/as_of 断裂。修向 A（`list_units_by_md` 加 lifecycle 参数 + 看门狗传 active）尚未实现，待另行修复。
-- **replace_content / remove_content 首个命中**：content 重复时只改/删第一处，可能误替多块（§5.2.3 注）；后续可加 unit_id 锚点优化。
+- **重复正文的定位边界**：remove_content 仍删除首个正文命中；replace_content 未提供旧标题时替换首个正文命中，提供旧标题时按标题消歧。标题漂移且可替换正文重复时返回 False，避免误改；相同标题与正文仍无法区分，后续可加 unit_id 锚点优化。
 - **跨进程文件锁未做**：md 与 sqlite 都是进程内 `threading.Lock` 串行化，多进程并发写同一 root 无防护（与 sync_gate 跨进程不防护同口径）。
 - **TOCTOU 窗口**：`_safe_abs_path` realpath 校验与 open 之间存在竞争窗口，收口面向恶意字符串威胁模型。
 - **SOFT remove 是 no-op**：依赖调用方「先 transition 再 remove(SOFT)」契约，裸调 SOFT 不会使 unit 退出检索。

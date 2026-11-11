@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from threading import BoundedSemaphore, RLock
+from threading import BoundedSemaphore, Event, RLock
+from weakref import WeakValueDictionary
 
 from jiuwen_memory.common.errors import (
     BackendError,
@@ -16,16 +18,21 @@ from jiuwen_memory.common.errors import (
     NotFoundError,
     ValidationError,
 )
+from jiuwen_memory.common.ingest_cancellation import ingest_cancel_signal
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.ingest_job import (
     INGEST_JOB_PREFIX,
+    IngestCancellation,
+    IngestCancelled,
     IngestJob,
     IngestJobController,
     IngestJobProducer,
     IngestSubmission,
     IngestTask,
+    check_ingest_cancelled,
+    ingest_cancellation,
 )
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
@@ -34,6 +41,31 @@ logger = get_logger(__name__)
 
 _JOB_KEY_PREFIX = "/ingest/jobs/"
 _PAYLOAD_KEY_PREFIX = "/ingest/payloads/"
+
+
+class _IngestCoordinator:
+    """Admission and active ownership for controllers using one job store."""
+
+    def __init__(self) -> None:
+        self.lock = RLock()
+        self.owners: dict[str, InProcessIngestJobController] = {}
+
+
+_COORDINATORS_LOCK = RLock()
+_COORDINATORS: WeakValueDictionary[tuple[str, str | int], _IngestCoordinator] = (
+    WeakValueDictionary()
+)
+
+
+def _coordinator_for(key: tuple[str, str | int] | None) -> _IngestCoordinator:
+    if key is None:
+        return _IngestCoordinator()
+    with _COORDINATORS_LOCK:
+        coordinator = _COORDINATORS.get(key)
+        if coordinator is None:
+            coordinator = _IngestCoordinator()
+            _COORDINATORS[key] = coordinator
+        return coordinator
 
 
 @dataclass(frozen=True)
@@ -61,10 +93,14 @@ class InProcessIngestJobController(IngestJobController):
         if max_pending_jobs < 0:
             raise ValidationError("max_pending_jobs must be non-negative")
         self._kv = kv
+        self._store_key = kv.coordination_key() if kv is not None else None
+        self._coordination = _coordinator_for(self._store_key)
         self._max_workers = max_workers
         self._executor: ThreadPoolExecutor | None = None
         self._capacity = BoundedSemaphore(max_workers + max_pending_jobs)
         self._jobs: dict[str, IngestJob] = {}
+        self._futures: dict[str, Future[None]] = {}
+        self._cancellations: dict[str, IngestCancellation] = {}
         self._job_id_by_payload: dict[_PayloadKey, str] = {}
         self._lock = RLock()
         self._closed = False
@@ -96,7 +132,7 @@ class InProcessIngestJobController(IngestJobController):
             updated_at=now,
         )
         previous_job_id: str | None = None
-        with self._lock:
+        with self._lock, self._coordination.lock, self._store_binding():
             if self._closed:
                 raise BackendError("ingest job controller is closed")
             existing = self._find_existing(scope, payload_id, key)
@@ -112,6 +148,12 @@ class InProcessIngestJobController(IngestJobController):
                     )
                 if existing.status in {"pending", "running", "succeeded"}:
                     return IngestSubmission(existing, reused=True)
+                if existing.retry_requires_reconciliation:
+                    raise ConflictError(
+                        "ingest_payload", payload_id,
+                        f"previous ingest job {existing.id} may have written data; "
+                        "reconcile before using a new payload_id",
+                    )
                 # A failed submission is retryable. Let the caller correct an
                 # invalid URI while retaining the same idempotency key.
                 previous_job_id = existing.id
@@ -120,7 +162,7 @@ class InProcessIngestJobController(IngestJobController):
             self._jobs[job.id] = job
             self._job_id_by_payload[key] = job.id
             try:
-                self._persist(job)
+                self._persist(job, update_payload=True)
             except Exception:
                 self._capacity.release()
                 self._jobs.pop(job.id, None)
@@ -135,21 +177,91 @@ class InProcessIngestJobController(IngestJobController):
                     thread_name_prefix="memory-ingest",
                 )
             executor = self._executor
-        try:
-            future = executor.submit(self._run, job.id, task)
-            future.add_done_callback(lambda _future: self._capacity.release())
-        except RuntimeError as exc:
-            self._capacity.release()
-            self._update(job.id, status="failed", error=str(exc))
-            raise BackendError(f"failed to submit ingest job: {exc}") from exc
+            # Publish the future and cancellation signal before a worker can start.
+            self._cancellations[job.id] = IngestCancellation(Event())
+            try:
+                future = executor.submit(self._run, job.id, task)
+            except RuntimeError as exc:
+                self._cancellations.pop(job.id, None)
+                self._capacity.release()
+                self._update(job.id, status="failed", error=str(exc))
+                raise BackendError(f"failed to submit ingest job: {exc}") from exc
+            self._futures[job.id] = future
+            self._coordination.owners[job.id] = self
+            future.add_done_callback(lambda completed: self._finished(job.id, completed))
         return IngestSubmission(job, reused=False)
 
-    def status(self, job_id: str, *, scope: Scope) -> IngestJob:
+    def _finished(self, job_id: str, future: Future[None]) -> None:
+        failure = None if future.cancelled() else future.exception()
         with self._lock:
+            if failure is not None:
+                current = self._jobs[job_id]
+                state = self._cancellations[job_id]
+                # Execution is over even when a state-store write failed. Preserve an
+                # already computed outcome and its IDs; never leave an orphan running.
+                self._jobs[job_id] = replace(
+                    current,
+                    status="failed" if current.status in {"pending", "running"} else current.status,
+                    unit_ids=tuple(dict.fromkeys((*current.unit_ids, *state.unit_ids))),
+                    error="; ".join(filter(None, (
+                        current.error, f"ingest state persistence failed: {failure}"
+                    ))),
+                    partial_write=(
+                        current.partial_write
+                        or (state.write_started and current.status != "succeeded")
+                    ),
+                    retry_requires_reconciliation=(
+                        current.retry_requires_reconciliation
+                        or (state.write_started and current.status != "succeeded")
+                    ),
+                )
+            self._futures.pop(job_id, None)
+            self._cancellations.pop(job_id, None)
+            self._capacity.release()
+            with self._coordination.lock:
+                self._coordination.owners.pop(job_id, None)
+        if failure is not None:
+            logger.error("Ingest worker failed: job_id=%s", job_id,
+                         exc_info=(type(failure), failure, failure.__traceback__))
+
+    def status(self, job_id: str, *, scope: Scope) -> IngestJob:
+        with self._lock, self._store_binding():
             job = self._jobs.get(job_id) or self._load(scope, job_id)
         if job is None or job.scope != scope:
             raise NotFoundError("ingest_job", job_id)
         return job
+
+    def cancel(self, job_id: str, *, scope: Scope) -> None:
+        job = self.status(job_id, scope=scope)
+        if job.status not in {"pending", "running"} or job.cancel_requested:
+            return
+        with self._coordination.lock:
+            owner = self._coordination.owners.get(job_id)
+        if owner is not None:
+            # Release the registry lock before taking another controller's lock.
+            owner.cancel_owned(job_id, scope)
+        elif self.status(job_id, scope=scope).status in {"pending", "running"}:
+            raise BackendError("ingest job has no active execution")
+
+    def cancel_owned(self, job_id: str, scope: Scope) -> None:
+        """Cancel an ingest job on the controller that owns its execution."""
+        with self._lock:
+            job = self.status(job_id, scope=scope)
+            if job.status not in {"pending", "running"} or job.cancel_requested:
+                return
+            state = self._cancellations.get(job_id)
+            future = self._futures.get(job_id)
+            if state is None or future is None:
+                raise BackendError("ingest job has no active execution")
+            updated = replace(
+                job, cancel_requested=True, updated_at=datetime.now(UTC),
+                status="cancelled" if job.status == "pending" else job.status,
+            )
+            self._persist(updated)
+            self._jobs[job_id] = updated
+            state.requested.set()
+            # If the worker is already waiting for the lock, _run observes cancelled.
+            future.cancel()
 
     def close(self, *, wait: bool = True) -> None:
         with self._lock:
@@ -172,32 +284,52 @@ class InProcessIngestJobController(IngestJobController):
         key: _PayloadKey,
     ) -> IngestJob | None:
         job_id = self._job_id_by_payload.get(key)
-        existing = self._jobs.get(job_id or "")
-        if existing is None and self._kv is not None:
-            mapping_key = _payload_storage_key(payload_id)
-            if self._kv.exists(scope, mapping_key):
-                job_id = self._kv.get(scope, mapping_key).decode("utf-8")
-                existing = self._load(scope, job_id)
+        mapping_key = _payload_storage_key(payload_id)
+        if self._kv is not None and self._kv.exists(scope, mapping_key):
+            job_id = self._kv.get(scope, mapping_key).decode("utf-8")
+        existing = (self._jobs.get(job_id) or self._load(scope, job_id)) if job_id else None
         if existing is not None:
             if existing.scope != scope:
                 return None
+            if existing.id not in self._jobs and existing.id in self._coordination.owners:
+                return existing  # Read fresh status from the shared store on the next call.
+            if existing.id not in self._jobs:
+                # This is the authorized submit path, unlike the read-only status path.
+                self._persist(existing)
             self._jobs[existing.id] = existing
             self._job_id_by_payload[key] = existing.id
         return existing
 
     def _run(self, job_id: str, task: IngestTask) -> None:
-        self._update(job_id, status="running")
+        with self._lock:
+            if self._jobs[job_id].status == "cancelled":
+                return
+            self._update(job_id, status="running")
+            state = self._cancellations[job_id]
+        token = ingest_cancellation.set(state)
+        signal_token = ingest_cancel_signal.set(state.requested)
+        status, error = "succeeded", ""
+        unit_ids = state.unit_ids
         try:
+            check_ingest_cancelled()
             units = task()
+            unit_ids = tuple(dict.fromkeys((*state.unit_ids, *(u.id for u in units))))
+        except IngestCancelled as exc:
+            status, error, unit_ids = "cancelled", str(exc), state.unit_ids
         except Exception as exc:
             logger.exception("Ingest job failed: job_id=%s", job_id)
-            self._update(job_id, status="failed", error=str(exc))
-            return
-        self._update(
-            job_id,
-            status="succeeded",
-            unit_ids=tuple(unit.id for unit in units),
-        )
+            status, error, unit_ids = "failed", str(exc), state.unit_ids
+        finally:
+            ingest_cancel_signal.reset(signal_token)
+            ingest_cancellation.reset(token)
+        with self._lock:
+            if status == "succeeded" and state.requested.is_set():
+                status = "cancelled"
+            self._update(
+                job_id, status=status, error=error, unit_ids=unit_ids,
+                partial_write=state.write_started and status != "succeeded",
+                retry_requires_reconciliation=state.write_started and status != "succeeded",
+            )
 
     def _update(
         self,
@@ -206,6 +338,8 @@ class InProcessIngestJobController(IngestJobController):
         status: str,
         unit_ids: tuple[str, ...] = (),
         error: str = "",
+        partial_write: bool = False,
+        retry_requires_reconciliation: bool = False,
     ) -> None:
         with self._lock:
             current = self._jobs[job_id]
@@ -215,11 +349,18 @@ class InProcessIngestJobController(IngestJobController):
                 updated_at=datetime.now(UTC),
                 unit_ids=unit_ids,
                 error=error,
+                partial_write=partial_write,
+                retry_requires_reconciliation=retry_requires_reconciliation,
             )
             self._jobs[job_id] = updated
             self._persist(updated)
 
-    def _persist(self, job: IngestJob) -> None:
+    def _store_binding(self) -> AbstractContextManager[None]:
+        if self._kv is None or self._store_key is None:
+            return nullcontext()
+        return self._kv.bind_coordination(self._store_key)
+
+    def _persist(self, job: IngestJob, *, update_payload: bool = False) -> None:
         if self._kv is None:
             return
         value = json.dumps(
@@ -232,27 +373,36 @@ class InProcessIngestJobController(IngestJobController):
                 "updated_at": job.updated_at.isoformat(),
                 "unit_ids": list(job.unit_ids),
                 "error": job.error,
+                "cancel_requested": job.cancel_requested,
+                "partial_write": job.partial_write,
+                "retry_requires_reconciliation": job.retry_requires_reconciliation,
             },
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
-        job_key = _job_storage_key(job.id)
-        if self._kv.exists(job.scope, job_key):
-            self._kv.update(job.scope, job_key, value)
-        else:
-            self._kv.insert(job.scope, job_key, value)
-        payload_key = _payload_storage_key(job.payload_id)
-        payload_value = job.id.encode("utf-8")
-        if self._kv.exists(job.scope, payload_key):
-            self._kv.update(job.scope, payload_key, payload_value)
-        else:
-            self._kv.insert(job.scope, payload_key, payload_value)
+        with self._store_binding():
+            job_key = _job_storage_key(job.id)
+            if self._kv.exists(job.scope, job_key):
+                self._kv.update(job.scope, job_key, value)
+            else:
+                self._kv.insert(job.scope, job_key, value)
+            if not update_payload:
+                return
+            payload_key = _payload_storage_key(job.payload_id)
+            payload_value = job.id.encode("utf-8")
+            if self._kv.exists(job.scope, payload_key):
+                self._kv.update(job.scope, payload_key, payload_value)
+            else:
+                self._kv.insert(job.scope, payload_key, payload_value)
 
     def _load(self, scope: Scope, job_id: str) -> IngestJob | None:
-        if self._kv is None or not self._kv.exists(scope, _job_storage_key(job_id)):
-            return None
+        with self._coordination.lock:
+            if self._kv is None or not self._kv.exists(scope, _job_storage_key(job_id)):
+                return None
+            raw = self._kv.get(scope, _job_storage_key(job_id))
+            active = job_id in self._coordination.owners
         try:
-            data = json.loads(self._kv.get(scope, _job_storage_key(job_id)).decode("utf-8"))
+            data = json.loads(raw.decode("utf-8"))
             job = IngestJob(
                 id=str(data["id"]),
                 payload_id=str(data["payload_id"]),
@@ -263,17 +413,25 @@ class InProcessIngestJobController(IngestJobController):
                 updated_at=datetime.fromisoformat(str(data["updated_at"])),
                 unit_ids=tuple(str(item) for item in data.get("unit_ids", [])),
                 error=str(data.get("error", "")),
+                cancel_requested=bool(data.get("cancel_requested", False)),
+                partial_write=bool(data.get("partial_write", False)),
+                retry_requires_reconciliation=bool(
+                    data.get("retry_requires_reconciliation", False)
+                ),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise BackendError(f"invalid persisted ingest job {job_id!r}") from exc
-        if job.status in {"pending", "running"}:
+        if job.status in {"pending", "running"} and not active:
             job = replace(
                 job,
                 status="failed",
                 updated_at=datetime.now(UTC),
                 error="ingest job was interrupted by server restart",
+                partial_write=job.status == "running",
+                retry_requires_reconciliation=job.status == "running",
             )
-            self._persist(job)
+            # Recovery here is a read-only projection. Status is called before PEP
+            # authorization; only authorized mutation paths may persist recovery.
         return job
 
 

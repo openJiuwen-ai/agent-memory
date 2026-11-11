@@ -64,7 +64,9 @@ content_hash 口径 = `sha256(segments[0].content.encode("utf-8")).hexdigest()`�
 
 ### D4 edit 走「继承式 SUPERSEDE」：新 unit 继承旧 unit 元数据，旧版标记 superseded
 
-edit 的语义是「只改 segments 内容」，元数据理应保留——md 文件不存元数据（块结构只有 `# 标题\n正文\n\n`，memory_class/coords/tags/tier/user_metadata 全在 shadow 的 unit_json 里，见 `local_markdown_store.py:413-450` `_render_block`），故改 md 后新块的元数据**只能从旧 unit 继承**。
+edit 后新块继承旧 unit 的元数据；其中 `md_title` 是例外，须从文件最终标题同步回填，保持视图与索引一致。块结构为 `# 标题\n正文\n\n`，memory_class/coords/tags/tier/user_metadata 仍只存于 shadow 的 unit_json。
+
+标题回填以正文哈希与块位置记录编辑前后标题，正文未变时结合旧标题定位可见单元；重复正文不再仅凭哈希回填到任意一条记录。标题解析只去掉一个 `# ` 前缀，保留标题自身的 `#`。无法唯一定位时不猜测目标。仅标题变化的单元与被替代的旧版本在同一批 shadow 更新中处理，失败时沿用文件快照与 shadow 补偿。
 
 看门狗 `_sync_one` 的「删旧建新」（`local_watchdog.py:420-438`）会**丢失原 unit 的全部业务元数据**——`_build_unit`（`:444-479`）建的新 unit 只有从路径反推的 project/memory_class + `watchdog_sync` provenance + SEMANTIC tier，原 unit 的 md_title/tags/user_metadata/provenance 历史全丢。看门狗面对的是可能被改乱的文件，丢元数据可接受；edit_md_file 是受控精确替换，丢元数据是实质语义损失。
 
@@ -161,7 +163,9 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 
 ### R5 复用现有 replace_content 做任意子串替换
 
-`MarkdownStore.replace_content`（`local_markdown_store.py:185-264`）按 `\n\n` 切块、逐块比对「块正文 == old_content」命中后整块替换——它定位的是整个块的正文行，不是文件中的任意子串；且不做唯一性校验（重复 content 只改第一处）。edit_md_file 要对齐 agent-core `edit_memory` 契约（old_text 任意文本、跨块均可、必须唯一），现有 `replace_content` 不直接适用。故新增 `edit_content` 做文件级任意子串唯一替换（`str.count` 校验唯一性 + `replace(old, new, 1)` + 原子写）。
+`MarkdownStore.replace_content` 按 `\n\n` 切块，定位整个块的正文；提供旧标题时联合匹配标题，标题漂移时仅在可替换正文唯一时退化匹配，未提供旧标题时保留首个正文命中的行为。它不适合文件级任意子串编辑。edit_md_file 仍要求 old_text 任意文本（含跨块）且必须唯一，由 `edit_content` 完成 `str.count` 校验、一次替换和原子写。
+
+对于 USER.md/MEMORY.md 的单行正文编辑，块数不变、原标题非空且未显式修改时，同步刷新标题中可唯一定位的旧事实片段。选择带上下文的最长唯一片段，搜索范围受标题长度限制；无法对应时保留概括性标题（如“居住地”）。跨块或含换行的编辑跳过自动标题推断，daily 团队标题与显式修改后的标题均不自动改写。拒绝一律保留旧事实标题（会产生“标题上海、正文杭州”），也拒绝一律用正文重写标题（会破坏概括性标题）。
 
 ### R6 edit_md_file 用 Action.UPDATE 两段鉴权
 

@@ -7,7 +7,7 @@
 | 日期 | 2026-09-05 |
 | 影响范围 | jiuwen_memory/api/，jiuwen_memory/control/，jiuwen_memory/storage/，jiuwen_memory/common/type_def/，jiuwen_memory_entry/，docs/specs/S02-memory-api.md，docs/specs/S03-control.md，docs/specs/S06-storage.md，docs/specs/S07-common.md |
 | 测试基线 | 历史基线：API/handler/HTTP 专项通过；完整 `tests/unit` 除两个 entity logger caplog 用例外通过。当前 HTTP 评审修补与契约测试更名后的验证结果见 [F05](F05-http-memory-api-alignment.md#验证) |
-| Refs | —（如有 issue 补 `Refs: #<n>`） |
+| Refs | #285（摄入任务取消与故障收尾修补） |
 
 > 本文档归档**记忆接口层实现的设计与取舍**：`MemoryAPI` 的单进程实现 `LocalMemoryAPI`（鉴权/审计执行点）与装配落点 `assembly.py`（公开 `assemble` / `assemble_runtime`，内部 `_build_kernel` / `_Kernel`）。
 > `MemoryAPI` 的**公开方法签名 / 参数语义 / 返回类型**以接口 `jiuwen_memory/api/memory_api.py` 与 [S02](../../specs/S02-memory-api.md) 为准，本文不重复罗列签名，只记录「为什么这样实现」。
@@ -54,7 +54,7 @@ from jiuwen_memory.api import (
 
 `LocalMemoryAPI` 是策略执行点（PEP）。每个涉及租户数据/治理的方法，统一走两个私有公共点：
 
-- `_authorize(security.auth.actor, target, action)` → `PermissionManager.check(...)`，不通过抛 `PermissionDeniedError`；
+- `_authorize(security, target, action, ...)` → `Authorizer.authorize(...)`，不通过抛 `PermissionDeniedError`；
 - `_log(security.auth.actor, action, target_id)` → 落一条 `layer="api"` 的入口审计事件（带认证 actor）。
 
 通过后才委托引擎/控制算子，且**只下沉已鉴权的 target `scope`，security 不下沉**（下游信任 target）。常见「本人操作自己」场景是 `security.auth.actor == scope`。
@@ -83,7 +83,7 @@ from jiuwen_memory.api import (
 ### 5. 数据面委托引擎，管理面直达控制算子
 
 - **数据面** add/search/list/get/update/delete/evolve → `MemoryEngine`；
-- **管理面** job_status/job_cancel → `Scheduler`，admin_* → `PolicyManager`，inspect/trace/audit → `Governor`，grant/revoke → `PermissionManager`，create/get/list/update/archive/delete/export/usage/policy/member space 管理 → `SpaceManager`。
+- **管理面** job_status/job_cancel → `Scheduler` 或 `IngestJobController`（按 `ing_` 前缀分派），admin_* → `PolicyManager`，inspect/trace/audit → `Governor`，grant/revoke → `Authorizer` 的授权管理能力，create/get/list/update/archive/delete/export/usage/policy/member space 管理 → `SpaceManager`。
 
 接口层不替管理面做编排，直达对应控制算子，职责清晰。
 
@@ -93,7 +93,15 @@ admin（运行时策略）与全局 audit 查询**没有具体 target scope**，
 
 ### 7. 任务鉴权：先取任务、再按其 scope 判权
 
-`job_status`/`job_cancel` 先 `Scheduler.status(job_id)` 取到任务（含其 scope），再据 identity 对该 scope 判权（status 为只读查询，先取后判权不产生副作用；cancel 按 WRITE，与 evolve 触发一致）——保证只能查/操作自身或已授权范围的任务。
+`job_status`/`job_cancel` 先校验可信请求上下文，再读取任务真实 scope 并判 READ/WRITE。
+演进任务从 Scheduler 读取，`ing_` 摄入任务要求显式 target scope，从 IngestJobController
+读取；错域与未知任务均拒绝。摄入状态查询不写库、不更新幂等缓存：重启遗留任务只投影为
+failed，running 遗留同时标明可能写入及需要核对；授权的提交路径才持久化恢复结果。
+取消在 WRITE 鉴权、入口审计及完整性健康预检通过后才修改状态和发出信号。
+
+终态持久化失败不得把实际已结束的任务留在 running：内存保留实际终态及已知产物 ID，
+失败通过任务 error 与后台日志可观察，执行句柄仍正常释放；不得把状态写库故障重新解释
+为摄入业务失败。重启后以持久化记录保守恢复，禁止可能已有写入的原 payload_id 自动重试。
 
 ### 8. delete 的 scope 兜底：未限定 scope 退根闸门
 
@@ -104,7 +112,7 @@ admin（运行时策略）与全局 audit 查询**没有具体 target scope**，
 `assemble` / `_build_kernel` 的串接策略：
 
 - **取依赖统一走 `dep`**：`XProducer.dep(root, default=...)` 按配置值分派（引用名→`build_named` 共享 / 内联 dict→`build` 匿名 / 缺省→按 `default` 匿名新建）；字段名默认取各 Producer 的 `TOP_NAME`。根组件经 `ROOT_PARAMS` 引用各命名空间下的 `default` 实例。
-- **默认装配**：无 config 时用内置默认上下文（`config.defaults`）——纯内存离线栈，用显式具名 + 引用复刻共享拓扑；用户 config 经 `AssemblyContext.merged` **合并覆盖**到其上（只写要改动的部分）。
+- **默认装配**：无 config 时使用内置默认上下文（`config.defaults`）和具名依赖拓扑。用户配置按键覆盖 globals，按实例名整体替换同名实例。默认 AgentEngine 的依赖继承规则见 S08。
 - **policies 便捷覆盖**：`policies` 折进 `globals["policies"]`。
 - **真源 kv 注入**：`kv` 入参经 `KvProducer.put(KV_DEFAULT_NAME, kv)` 预置进缓存，**覆盖配置的 kv_store 选择并被各处共享**（如传 `SQLiteKVStore` 即落盘）。
 - **多次装配隔离**：组装前 `_register_all()`（各层 bootstrap 幂等自注册）+ `Factory.reset_all()` 清空具名实例缓存。
@@ -123,7 +131,7 @@ api = assemble(kv=SQLiteKVStore("mem.db"))        # 注入落盘真源
 
 ### 10. HTTP/多 surface 的结构化 dispatch 边界
 
-HTTP 与 CLI 不再经过 MCP 使用的 legacy handler，稳定边界均为 `MemoryAPI` 本身：
+HTTP、CLI、MCP 均绕过 legacy handler，稳定边界为 `MemoryAPI` 本身：
 `POST /v1/<method_name>` 的 JSON 字段直接对应同名方法参数，反射 API 签名取得字段集合、
 必填/默认关系和类型注解，再机械构造 `Scope`、`Context`、`MemoryPatch` 等公开对象。
 服务端拒绝未知字段以及 `target`、`item_id`、`k` 等历史 HTTP 别名，避免 DTO 与 API
@@ -142,8 +150,8 @@ CLI 命令和 `--参数名` 直接从 API 签名生成，所有对象使用与 H
 不再转换旧参数或还原旧返回 envelope。本地 CLI 经受控认证入口直接调用 API，
 远程 CLI 原样发送同名 HTTP 请求。两者共用 `core/api_contract.py`，以及
 `core/error_response.py` 的领域错误映射。本地开发认证须显式使用 `--auth-mode dev`，
-不会根据业务 scope 推导身份。MCP 和旧调用方的 flat 输入仍可经过
-`core/legacy_request_adapter.py` 与 shared handler；详细取舍见 F05。
+不会根据业务 scope 推导身份。MCP 手写工具将同名参数透传通用 API 契约；仅历史进程内
+调用方的 flat 输入保留 `core/legacy_request_adapter.py` 与 shared handler。
 
 ### 11. list 升级为正式数据面接口
 
@@ -176,7 +184,7 @@ def list(
 
 - `MemoryAPI.list` 做 READ 鉴权、入口审计和参数委托。
 - `MemoryEngine.list` 校验分页参数并把查询参数完整委托 `KVStore.list`。
-- HTTP / CLI 直接调用 `MemoryAPI.list`；MCP 等旧调用方的 `handler._list` 仍委托
+- HTTP / CLI / MCP 直接调用 `MemoryAPI.list`；历史调用方的 `handler._list` 仍委托
   `srv.api.list(...)`，不再直连 KV。
 - 返回范围只包含 `/memory/` 前缀的已建索引 `MemoryUnit`，不返回 `/messages/` 下的 infer 原文缓存。
 - list 是范围枚举，不走 `MemoryPipeline`；pipeline 仍只负责构建/查询组件绑定。
@@ -197,7 +205,7 @@ KV 层列表语义：
 - 按 `unit.temporal.t_ingest` 倒序返回，`unit.id` 作为稳定次级排序键。
 - 返回当前页 `items`；响应中的 `count` 是过滤后的分页前总数。
 
-legacy handler payload 兼容（仅 MCP 和旧调用方，不适用于 HTTP / CLI）：
+legacy handler payload 兼容（仅历史进程内调用方，不适用于 HTTP / CLI / MCP）：
 
 | 字段 | 语义 |
 |---|---|
@@ -468,6 +476,14 @@ count。
 ---
 
 ## 已知遗留
+
+- **摄入取消不保证远端请求立即终止**：内置视频路径在 ASR 分片、视频模型调用及应用层
+  重试前后检查同一任务取消信号；取消后不再发送下一分片或发起下一次视频模型调用，
+  DashScope 上传/查询重试与轮询等待也会响应取消。当前已经进入的同步模型请求、SDK
+  内部自动重试和 ffmpeg 调用仍允许收尾；本地停止轮询不代表远端任务停止计算或计费。
+  第三方插件未接入检查点时仍以插件调用返回为边界。取消不回滚写入。
+  legacy handler 只兼容状态展示，不新增取消动词；
+  取消统一使用公开 job_cancel（HTTP / CLI / MCP / SDK）。
 
 - **同步方法不可在运行中的事件循环内调用**：`add`/`search`/… 内部 `asyncio.run`，在已有 event loop 的环境（如 async 框架内）须改用 `add_async` 等协程入口，否则 `asyncio.run` 报错。
 - **security 不下沉 = 下游信任 target**：鉴权只在接口层做一次，下游算子信任传入的 target scope；若未来出现「下游需二次校验」的场景，需要显式传递鉴权上下文。

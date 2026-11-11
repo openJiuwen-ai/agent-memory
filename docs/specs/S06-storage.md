@@ -5,9 +5,58 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
+## Markdown 块更新契约
+
+`MarkdownStore.replace_content(scope, md_filename, old_content, new_content, *,
+new_title=None, old_title=None) -> bool` 定位并替换首个符合条件的块。
+`new_title=None` 保留原标题，空串清空标题，非空标题归一为单行。
+`old_title` 非 None 时联合匹配标题与正文；标题漂移时仅在可替换块正文唯一时
+退化匹配，重复正文不猜测目标。候选统计与实际替换共用首个换行拆分口径，
+无换行的裸正文块不参与；未提供旧标题时按正文首个命中替换。
+未命中返回 False，`remove_content` 仍按正文删除首个命中。
+
+`edit_content` 要求 old_text 在文件全文中唯一，支持任意子串及跨块编辑。
+USER.md/MEMORY.md 单行正文变化时，可同步替换未显式编辑标题中的唯一旧事实片段；
+概括性标题、daily 团队标题及跨块编辑标题不自动改写。
+文件编辑后标题同步到 shadow，重复正文结合块位置和旧标题定位，不仅按哈希覆盖。
+标题与正文同次文件写入，shadow 更新失败时恢复文件快照并补偿索引。
+
+## 显式明文维护增量能力
+
+KVStore 增量提供非抽象 `compare_exchange(scope, key, expected, replacement) -> bool`：
+完整 Scope/key/value 原子匹配，保留原绝对到期时间；replacement=None 为比较删除。
+缺失、过期、变化返回 false，不创建记录。无法提供原子性时明确报不支持，禁止读后
+普通 update/delete 兜底。`migration_identity()` 返回仅供维护去重的物理位置身份，
+不能输出连接秘密。既有 ABC 抽象方法集合不变。
+SQLite 的 insert 在数据库写事务中判断缺失并以唯一主键插入，不能用 REPLACE 覆盖竞争
+写入；CAS 的有效期时钟在实例锁与 SQLite 写锁取得后采样，保留原绝对到期时间。
+
+受保护端口的可选 PlaintextMigrationTarget（storage/migration.py）契约包括
+migration_validate_scope/migration_identity/migration_scopes/migration_scan_supported/
+migration_records(scope, *, after="", max_value_bytes=...)/
+migration_key(unit_id)/migrate_plaintext(scope, key, expected, *, operation,
+existing_only=False)。记录扫描仅在已判权 Scope 内，密文仍需认证；迁移通过公开 provider
+加密，写前及持久化回读校验，现有记录以 CAS 保留 TTL。existing_only=true 禁止把扫描后
+消失或到期的记录重新插入。显式文件导入可插入缺失目标；clear 不删除密文。
+MigrationVerificationError.committed=true 标识提交后的回读失败，不自动回滚为明文。
+
+有界扫描须显式声明支持；KV 默认拒绝，不允许以全量 scan 兼容。migration_records 返回
+MigrationRecord(key, value, cursor) 迭代器，cursor 表示该条之后的位置；value=None 表示
+超过单条读取上限，后端须在传回 Python 前拒绝物化大值，工具报 record_too_large。
+KV 的可选 migration_read(scope,key,*,max_value_bytes) 同样在后端限值；None 表示超大，
+缺失抛 NotFoundError。转换前比较及提交后校验均须使用有界读取，不能退回普通 get。
+内存/SQLite/PG 按至多 64 个 key 分页并逐条有界读取；Redis 用 SCAN 游标及未处理 key
+列表保留页内进度，Lua STRLEN/GET 在一次原子调用中限制返回体。Redis SCAN 可重复键，
+已有转换须保持幂等；同一批预算耗尽时应返回续跑位置，不能丢掉未处理页内键。
+
+位置和保护依赖来自实际 manager 清单与公开插件能力，未知枚举/CAS 能力须明确失败。
+FS 资产、索引投影和治理记录不能按 MemoryUnit 猜测迁移；索引维持部署加密契约。
+非信封输入的专用 PlaintextDataError 仍在底层终止读取，沿原 BackendError 异常契约传播；
+存储不得返回原明文、错误对象冒充 bytes 或空内容。
+
 ## Metadata 物理存储契约
 
 索引记录保留 `system_metadata.<key>` 和 `user_metadata.<key>` 的逻辑路径。Milvus 与

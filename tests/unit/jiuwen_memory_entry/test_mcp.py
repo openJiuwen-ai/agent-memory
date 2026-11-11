@@ -320,6 +320,15 @@ def test_mcp_tool_registry_covers_expected_verbs() -> None:
         assert is_known_verb(verb), verb
 
 
+def test_mcp_ingest_cancel_forwards_target_scope(monkeypatch) -> None:
+    invoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(mcp_main, "_invoke", invoke)
+    asyncio.run(mcp_main.memory_job_cancel(job_id="ing_test", scope=SCOPE))
+    invoke.assert_awaited_once_with(
+        "job_cancel", {"job_id": "ing_test", "scope": SCOPE}, context=None
+    )
+
+
 @pytest.mark.parametrize("tool_name", list(TOOL_CASES))
 def test_tool_signature_matches_api_contract(tool_name: str) -> None:
     verb, _payload = TOOL_CASES[tool_name]
@@ -775,6 +784,75 @@ def test_submit_ingest_schema_preserves_flat_required_and_optional_arguments() -
 
 
 # --- F. 协议编组层：FastMCP.call_tool 真实调用路径 ------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "tool_name,payload",
+    [
+        ("memory_get", {"unit_id": "plaintext-id", "scope": SCOPE}),
+        ("memory_list", {"scope": SCOPE}),
+    ],
+)
+def test_plaintext_read_is_mcp_protocol_error(tmp_path, monkeypatch, tool_name, payload) -> None:
+    """SDK client/server dispatch must report a tool error before output-schema validation."""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from jiuwen_memory.api import MemoryUnit, Segment
+    from jiuwen_memory.common.type_def import memory_key
+    from jiuwen_memory.common.type_def.memory_codec import dumps
+    from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+
+    scope = Scope(**SCOPE)
+    unit = MemoryUnit(id="plaintext-id", scope=scope, segments=[Segment(content="old plaintext")])
+    raw = dumps(unit)
+    path = str(tmp_path / "memory.db")
+    store = SQLiteKVStore(path)
+    try:
+        store.insert(scope, memory_key(unit.id), raw)
+        config = mcp_main.with_local_dev_security(
+            mcp_main.load_config(
+                [
+                    mcp_main.OFFLINE,
+                    {
+                        "memory_api": {
+                            "globals": {"storage_encryption_enabled": True},
+                            "kv_store": {
+                                "default": {"target": "sqlite", "params": {"db_path": path}}
+                            },
+                            "key_provider": {
+                                "default": {"target": "local", "params": {"key_hex": "11" * 32}}
+                            },
+                            "cryptography": {
+                                "default": {
+                                    "target": "local", "params": {"key_provider": "default"}
+                                }
+                            },
+                        }
+                    },
+                ]
+            )
+        )
+        server = mcp_main.Server.build(config)
+        monkeypatch.setattr(mcp_main, "_SRV", server)
+        try:
+            async def call():
+                async with create_connected_server_and_client_session(
+                    mcp_main.mcp, read_timeout_seconds=timedelta(seconds=10)
+                ) as client:
+                    return await client.call_tool(tool_name, payload)
+
+            result = asyncio.run(call())
+            assert result.isError is True
+            assert result.structuredContent is None
+            message = " ".join(block.text for block in result.content if block.type == "text")
+            assert "explicit migration or clearing" in message
+            assert "output validation" not in message.lower()
+            assert "old plaintext" not in message
+            assert store.get(scope, memory_key(unit.id)) == raw
+        finally:
+            server.close(wait=True)
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("line_range", [None, [1, 2]])

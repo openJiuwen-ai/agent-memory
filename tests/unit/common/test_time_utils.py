@@ -80,9 +80,13 @@ def test_year_separator_insertions_keep_explicit_year() -> None:
 def test_first_occurrence_wins_across_forms() -> None:
     # 评审#2：「第一个绝对日期」按文本位置计且跨形态一致——无年日期更靠前时，
     # 不应被更靠后的带年日期压过
-    assert first_absolute_date("6月6日团建，2026年6月8日吃饭", NOW) == datetime(2026, 6, 6, tzinfo=UTC)
+    assert first_absolute_date("6月6日团建，2026年6月8日吃饭", NOW) == datetime(
+        2026, 6, 6, tzinfo=UTC
+    )
 
 
 def test_position_order_skips_invalid_leading_with_year_form() -> None:
     # 位置优先与非法跳过的组合：非法带年日期不挡住更靠后的合法无年日期
-    assert first_absolute_date("2026年13月40日，6月6日团建", NOW) == datetime(2026, 6, 6, tzinfo=UTC)
+    assert first_absolute_date("2026年13月40日，6月6日团建", NOW) == datetime(
+        2026, 6, 6, tzinfo=UTC
+    )

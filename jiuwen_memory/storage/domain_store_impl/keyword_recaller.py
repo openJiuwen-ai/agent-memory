@@ -18,6 +18,7 @@ from collections import defaultdict
 from statistics import median
 
 from jiuwen_memory.common.log import get_logger, scope_for_log
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import ParsedQuery, RecallChannel, Scope, ScoredUnit
 from jiuwen_memory.common.type_def.entity import (
     EntityStoreFilters,
@@ -197,6 +198,8 @@ class KeywordRecaller(Recaller):
                 filters=filters,
                 limit=self._entity_list_limit(len(hashes)),
             )
+        except PlaintextDataError:
+            raise
         except Exception:
             logger.warning("entity_expansion_lookup_failed space_id=%s", space_id, exc_info=True)
             return []

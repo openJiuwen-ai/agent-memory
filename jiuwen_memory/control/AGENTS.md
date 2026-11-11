@@ -20,7 +20,7 @@
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
 | `permission.py` | `PermissionManager` 历史兼容接口——不参与生产请求授权 |
 | `scheduler.py` | `Scheduler` 接口——hot/background 双通道演进调度；`supports_recurring` 周期能力、`link_child` 父子任务观测关联、`RecurringJobStoppedError` 永久停摆信号、`validate_shutdown` 关闭上下文校验、`shutdown` 优雅关闭 |
-| `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer——长耗时摄入任务管理 |
+| `ingest_job.py` | `IngestJobController` 接口、任务数据类型与 Producer；任务私有取消上下文及 Engine 检查点——长耗时摄入任务管理 |
 | `policy.py` | `PolicyManager` 接口——运行时可变策略读写 |
 | `space.py` | `SpaceManager` 接口——space 创建/读取/列表/更新/归档/`begin_delete`/删除/导出/用量/策略/成员 |
 | `collective/` | 群体记忆的控制层纯逻辑子包，三个模块均非算子（无 Producer 注册、不访问存储与模型），不由 `bootstrap` 触发注册。`routing.py`：结论直写路径的归属判定调用，API 层传入成品 `RouteContext`（含已鉴权候选集）与 `Router` 实例，本模块调 `route_batch` 并归一结果，存在的理由是分层边界——判定由构建层承担、判定输入由 API 层的鉴权点构造，二者之间的调用不能落在 API 层（S02「不调用构建」）。`write_targets.py`：写入候选空间集合的渲染、排序、截断与取交，收 `can_write` 回调而不收 `identity`。`cross_space_recall.py`：跨空间召回的取数上界摊配、扇出与轮转合并，收 `recall` 回调与 API 层判权后给出的空间目标（含逐空间谓词）；使用 `retrieval/cross_space.py` 合并，并将选中的物化根交给 `retrieval/expansion.py` 统一收尾；不持有引擎、不依赖检索实现；空间级扇出失败与判权剔除分两路交回，不并进 `merged.errors`。三者共同形态是「裁决留 PEP，裁决之后的机械换算与 I/O 编排落本层」，上下之间经回调或成品数据衔接。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
@@ -34,7 +34,7 @@
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
 | `space_impl/` | SpaceManager 实现目录（kv） |
-| `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化与 payload 幂等） |
+| `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化、同任务库协调与 payload 幂等） |
 | `jobs.py` | `Job` 抽象（scope + interval 标识，`run() -> JobInfo` 唯一执行入口，不自带循环；`schedule_key` 调度去重键——默认类名，Scheduler 只按此通用键去重，业务身份区分由子类覆写，如 EvolveJob 含 mode）+ `JobFactory`（按 job_type + scope + 运行时参数生成实例）+ `JobType` 枚举 + `JobFactoryProducer` |
 | `evolution/` | 显式建树请求验证、树开关分流与任务提交，以及 background 周期注册，不鉴权、不做分组算法 |
 | `jobs_impl/` | 后台 Job 实现目录：`evolve_job.py`（EvolveJob + EvolveJobSpec）、`middle_to_long_job.py`（MiddleToLongJob + MiddleToLongJobSpec + default JobFactory 装配）。Spec 装配期固化业务参数与 storage/lifecycle/llm 依赖；index/evolver 不在装配期解析（行为铁律 17） |
@@ -49,6 +49,11 @@
 - Producer 工厂定义在对应顶层接口文件中（如 `engine.py` 的 `EngineProducer`），不要新增独立 `*_producer.py`
 
 ## 行为铁律
+
+- `AgentEngine` 装配 `engine.default` 时，若缺失或为 null 的依赖引用使其回退到匿名实现并
+  绕过已声明的具名默认实例，应汇总记录装配告警。JobFactory 经具名查找，沿用其独立装配路径。
+
+- **明文拒绝不可合并成部分成功**：跨空间 recall 的 gather 结果遇到 PlaintextDataError 必须继续传播至 API，不只记录通道错误后返回空结果。
 
 - **提交循环分支一致**：AsyncTimerScheduler.submit 以当前运行循环是否为所属循环决定直接提交或跨线程提交；同线程异循环显式拒绝，不允许落入未初始化 future 的路径。等待关闭不设整体期限，自定义 Job 须能正常结束或在执行边界响应取消，外部调用配置超时。
 
@@ -121,6 +126,14 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 
 ## 本地约束
 
+- 摄入取消与任务开始/完成在控制器状态锁内串行；Future 完成回调统一释放容量与执行句柄。
+  控制器为任务体绑定 common.ingest_cancellation 的共享信号并在 finally 中 reset，
+  使内置视频模型调用和 ASR 分片可检查取消，不把 control 类型下传到 common 插件。
+  回调观察并记录 Future 异常；终态持久化失败不覆盖内存实际结果，不留下无句柄的 running。
+  `status -> _load` 只返回重启恢复投影，不写库；恢复持久化只发生在授权的提交路径。
+  Engine 只检查任务私有 ContextVar 中的取消信号，普通 write 无信号时行为不变；
+  已进入的同步写入先收尾，不提前报告终态。写入后取消保留产物并阻止原 payload 自动重试。
+
 - `job_impl/ingest_job.py` 分开记录 `_closed`（停止接收）与 `_drained`（工作线程结束）。
   wait=False 后仍允许 wait=True 完成 drain；线程等待不持状态锁，确保任务可写入终态。
 
@@ -189,3 +202,13 @@ AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘�
 周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。
 只接受构建层明确的 HierarchyPreparationError 作为本层未写入证据，失败后允许下轮重试；
 部分写入、未分类插件异常和强制取消的未知结果保持暂停，不按空变更 ID 推断无写入。
+
+
+### 可选检索 pipeline
+
+- engine_impl/retrieval_pipelines.py 统一装配白名单与运行期选择；in_memory/cloud/agent 三个
+  Engine 都通过它执行 query > profile > default 路由，不改写共享默认实例。
+- 装配只通过 RetrieverProducer 与 Retriever.query_parsers 公共声明，不读取插件私有字段，
+  不按具体实现类型或 target 增加分支。显式白名单内依赖未知或 parser 不共享则启动失败。
+- MemoryQueryService 转发公共名称校验，API 在空间分流前调用；recall 再兜底校验。
+- 原 candidate_resolver 等直接注入 Retriever 的组件继续使用固定实例。

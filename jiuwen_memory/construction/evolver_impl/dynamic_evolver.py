@@ -378,5 +378,5 @@ def _build(config):
         router=optional_router(config),
         prompt_registry=registry,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
-        dedup_high_similarity=config.get("dedup_high_similarity", 0.9),
+        dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
     )

@@ -17,6 +17,7 @@ from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import W
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_FILENAME_KEY,
+    MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
     MemoryUnit,
     RetrievalPipeline,
@@ -439,6 +440,77 @@ def test_document_mode_update_replaces_md_block(tmp_path) -> None:
     assert "old content" not in md
 
 
+@pytest.mark.parametrize("title_only", [False, True])
+@pytest.mark.parametrize("memory_class", ["user_profile", "long_term_memory"])
+def test_document_mode_update_syncs_title(tmp_path, title_only, memory_class) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    unit = _doc_unit(scope, "u1", "居住在上海")
+    unit.system_metadata.update({MEMORY_CLASS_KEY: memory_class, MD_TITLE_KEY: "上海居民"})
+    other = _doc_unit(scope, "u2", "喜欢游泳")
+    other.system_metadata.update({MEMORY_CLASS_KEY: memory_class, MD_TITLE_KEY: "爱好"})
+    storage.add(scope, [unit, other])
+
+    (updated,) = storage.get(scope, ["u1"])
+    updated.system_metadata[MD_TITLE_KEY] = "杭州居民"
+    if not title_only:
+        updated.segments[0].content = "居住在杭州"
+    storage.update(scope, [updated])
+
+    content = "居住在上海" if title_only else "居住在杭州"
+    md_path = tmp_path / unit.system_metadata[MD_FILENAME_KEY]
+    assert md_path.read_text(encoding="utf-8") == (
+        f"# 杭州居民\n{content}\n\n# 爱好\n喜欢游泳\n\n"
+    )
+    (stored,) = storage.get(scope, ["u1"])
+    assert stored.system_metadata[MD_TITLE_KEY] == "杭州居民"
+    assert stored.segments[0].content == content
+
+
+def test_document_mode_update_keeps_daily_team_title(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    unit = _doc_unit(scope, "u1", "old content")
+    unit.system_metadata.update({
+        MEMORY_CLASS_KEY: "daily_memory", MD_TITLE_KEY: "old title",
+        COORDS_KEY: {"project": "p1", "team": "infra"},
+    })
+    storage.add(scope, [unit])
+    (updated,) = storage.get(scope, ["u1"])
+    updated.system_metadata[MD_TITLE_KEY] = "new title"
+    updated.segments[0].content = "new content"
+    storage.update(scope, [updated])
+
+    md_path = tmp_path / unit.system_metadata[MD_FILENAME_KEY]
+    assert md_path.read_text(encoding="utf-8") == "# infra\nnew content\n\n"
+
+
+def test_document_mode_title_update_matches_old_heading_and_body(tmp_path) -> None:
+    scope = Scope(org="org", user="user")
+    storage = _doc_storage(tmp_path)
+    first = _doc_unit(scope, "u1", "same content")
+    second = _doc_unit(scope, "u2", "same content")
+    first.system_metadata[MD_TITLE_KEY] = "first title"
+    second.system_metadata[MD_TITLE_KEY] = "second title"
+    storage.add(scope, [first, second])
+    (updated,) = storage.get(scope, ["u2"])
+    updated.system_metadata[MD_TITLE_KEY] = "updated\n  title"
+    storage.update(scope, [updated])
+
+    md_path = tmp_path / second.system_metadata[MD_FILENAME_KEY]
+    assert md_path.read_text(encoding="utf-8") == (
+        "# first title\nsame content\n\n# updated title\nsame content\n\n"
+    )
+    assert storage.get(scope, ["u1"])[0].system_metadata[MD_TITLE_KEY] == "first title"
+    assert storage.get(scope, ["u2"])[0].system_metadata[MD_TITLE_KEY] == "updated title"
+    (updated,) = storage.get(scope, ["u2"])
+    updated.system_metadata[MD_TITLE_KEY] = "final title"
+    storage.update(scope, [updated])
+    assert md_path.read_text(encoding="utf-8") == (
+        "# first title\nsame content\n\n# final title\nsame content\n\n"
+    )
+
+
 def test_document_mode_update_finds_md_via_old_when_new_unit_lacks_md_filename(tmp_path) -> None:
     """new unit 不带 MD_FILENAME_KEY 时，OVERWRITE 分支须从 old.system_metadata 取 md_filename，
     否则 if md_filename 守卫失败 → md.replace_content 被静默跳过 → md 与 shadow 漂移。
@@ -452,9 +524,9 @@ def test_document_mode_update_finds_md_via_old_when_new_unit_lacks_md_filename(t
     calls: list[tuple] = []
     orig = LocalMarkdownStore.replace_content
 
-    def spy(self, scope_arg, md_filename, old_content, new_content):
+    def spy(self, scope_arg, md_filename, old_content, new_content, **kwargs):
         calls.append((md_filename, old_content, new_content))
-        return orig(self, scope_arg, md_filename, old_content, new_content)
+        return orig(self, scope_arg, md_filename, old_content, new_content, **kwargs)
 
     # 读回 old（自带 MD_FILENAME_KEY），构造 new unit：同 id、改 content，但清掉 MD_FILENAME_KEY
     (old,) = storage.get(scope, ["u1"])
@@ -696,7 +768,9 @@ def test_document_mode_update_compensates_shadow_on_md_failure(tmp_path, monkeyp
     """update：md.replace_content 抛错 → shadow.update_units([old]) 还原，原异常抛出。"""
     scope = Scope(org="org", user="user")
     storage = _doc_storage(tmp_path)
-    storage.add(scope, [_doc_unit(scope, "u1", "old content")])
+    unit = _doc_unit(scope, "u1", "old content")
+    unit.system_metadata[MD_TITLE_KEY] = "old title"
+    storage.add(scope, [unit])
 
     shadow = storage._raw_shadow_index()
     md = storage._raw_markdown()
@@ -718,6 +792,7 @@ def test_document_mode_update_compensates_shadow_on_md_failure(tmp_path, monkeyp
 
     (old,) = storage.get(scope, ["u1"])
     old.segments[0].content = "new content"
+    old.system_metadata[MD_TITLE_KEY] = "new title"
     with pytest.raises(RuntimeError, match="md replace failed"):
         storage.update(scope, [old])
 
@@ -725,9 +800,11 @@ def test_document_mode_update_compensates_shadow_on_md_failure(tmp_path, monkeyp
     assert update_calls == [["u1"], ["u1"]]
     # shadow 还原成 old content（补偿生效）。
     assert storage.get(scope, ["u1"])[0].segments[0].content == "old content"
+    assert storage.get(scope, ["u1"])[0].system_metadata[MD_TITLE_KEY] == "old title"
     # md 仍是 old content（replace_content 抛错未改）。
     md_text = (tmp_path / "memory" / "p1" / "MEMORY.md").read_text(encoding="utf-8")
     assert "old content" in md_text
+    assert "# old title\n" in md_text
 
 
 def test_document_mode_delete_compensates_shadow_on_md_failure(tmp_path, monkeypatch) -> None:

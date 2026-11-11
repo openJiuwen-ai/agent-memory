@@ -30,6 +30,9 @@ _CALL_LEVEL_METADATA_KEYS = frozenset({"infer", "pipeline"})
 class VideoMemoryExtractor(Extractor):
     """Convert normalized video data into CLM and ELM MemoryUnits."""
 
+    def structured_modalities(self) -> frozenset[Modality]:
+        return frozenset({Modality.VIDEO})
+
     def operator_type(self) -> OperatorType:
         return OperatorType.EXTRACTOR
 
@@ -57,7 +60,8 @@ class VideoMemoryExtractor(Extractor):
                 video_data = _load_video_data(source)
             except BackendError as exc:
                 logger.warning(
-                    "skip non-video memory unit %s during extract: %s",
+                    "skip video source unit %s during extract: "
+                    "content is not a parsable video envelope (%s)",
                     source.id,
                     exc,
                 )

@@ -371,7 +371,17 @@ Store / Storage 切换后旧库数据不自动迁移。`memory` 等无连接串�
 
 
 
+### 默认 AgentEngine 的依赖继承（GitCode #299）
+
+在内核装配阶段保留省略的依赖引用，让只换引擎或只覆写部分参数的配置继续使用具名组件。
+未显式配置的索引随文档和向量开关选择，关闭向量时保留真源读写并使用关键词去重。
+
 ## 拒绝的方案
+
+### 拒绝对所有实例深合并参数
+
+通用深合并会改变其他组件的实例覆盖语义，也可能把旧实现专用参数带到新实现。
+默认 AgentEngine 的依赖继承限于内核装配。
 
 
 
@@ -426,6 +436,9 @@ PolicyManager 是少量已知键的策略表，不适合 prompt 长文本、连�
 
 实现基线：
 
+- GitCode #299 回归覆盖引擎简写、部分参数、显式空参数、具名依赖回退告警、文档模式共享索引、
+  关闭向量的索引与去重，以及纯数据合并保持整体替换（`test_build_kernel_config.py`、
+  `test_document_security_lifecycle.py`）。
 - OpenAI Embedder/LLM、API Reranker：同实例改 `*.model`/`*.api_key`/`*.base_url` 后，下次调用使用新值（`tests/unit/config/test_late_binding.py`）。
 - 多 LLM 实例：同时存在 `llm.default` 与 `llm.alt` 且 alt 未配置 `config_namespace` 时，
   alt 的 model/API Key/base URL 仍来自自身；OpenAI 与 DashScope 均由同一用例参数化覆盖。
@@ -441,6 +454,9 @@ PolicyManager 是少量已知键的策略表，不适合 prompt 长文本、连�
 
 
 ## 已知遗留
+
+- 默认 AgentEngine 仍支持通过显式空参数选择匿名缺省。绕过已有具名默认依赖时，
+  装配日志会列出回退路径和所选实现。
 
 - 与 `PolicyManager` 键集合是否长期合并/迁移，待策略面整理时另开特性。
 - 多租户「每 space 一份 ConfigSource」还是「全局一份 + key 带 space 前缀」待产品隔离模型确定后补充（demo 采用进程级适配器 + 请求 `bind_identity` + 远程按身份取值）。

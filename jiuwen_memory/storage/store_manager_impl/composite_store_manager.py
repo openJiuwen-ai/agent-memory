@@ -72,6 +72,11 @@ class _AuthorizedStoreProxy:
         if not callable(member):
             return member
 
+        # Coordination identifies/pins a backend without reading or writing scoped data.
+        # CRUD still passes through the authorization wrapper.
+        if name in {"coordination_key", "bind_coordination"}:
+            return member
+
         def authorized(*args: Any, **kwargs: Any) -> Any:
             access = kwargs.pop("access", None)
             scope = args[0] if args and isinstance(args[0], Scope) else Scope()

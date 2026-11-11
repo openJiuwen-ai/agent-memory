@@ -445,3 +445,35 @@ def test_vec_many_ops_consistency(vec):
         else:
             assert "upd" not in rec.metadata
             assert rec.metadata["n"] == i
+
+
+def test_redis_maintenance_compare_exchange_preserves_ttl_and_conflicts(kv):
+    store, scope = kv
+    store.insert(scope, "maintenance", b"plaintext", ttl=30)
+    physical_key = ":".join((*scope_segments(scope), "maintenance"))
+    before = store.client.pttl(physical_key)
+    assert store.compare_exchange(scope, "maintenance", b"plaintext", b"ciphertext")
+    after = store.client.pttl(physical_key)
+    assert 0 < after <= before
+    assert not store.compare_exchange(scope, "maintenance", b"plaintext", None)
+    assert store.get(scope, "maintenance") == b"ciphertext"
+    assert store.compare_exchange(scope, "maintenance", b"ciphertext", None)
+    assert not store.exists(scope, "maintenance")
+
+
+def test_redis_bounded_maintenance_iteration_and_resume(kv):
+    store, scope = kv
+    for index in range(135):
+        store.insert(scope, f"/memory/{index:04d}", b"value")
+    store.insert(scope, "/memory/oversized", b"x" * 128)
+    records = store.migration_records(scope, max_value_bytes=16)
+    first = next(records)
+    records.close()
+    store.delete(scope, first.key)
+    remaining = list(store.migration_records(scope, after=first.cursor, max_value_bytes=16))
+    # SCAN may repeat keys; the maintenance CAS is idempotent, but must never miss survivors.
+    keys = {record.key for record in remaining}
+    assert keys == ({f"/memory/{index:04d}" for index in range(135)} | {"/memory/oversized"}) - {
+        first.key
+    }
+    assert all(record.value is None for record in remaining if record.key.endswith("oversized"))

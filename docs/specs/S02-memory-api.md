@@ -5,9 +5,21 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+
+## 明文读取与独立维护边界
+
+MemoryAPI 的方法、参数、返回类型及公共导出保持原契约。加密读取遇到明文时继续
+按既有 BackendError 异常契约失败，错误信息提示显式迁移或清空；不能返回明文、空结果
+或新增错误结果对象，不增加 HTTP/CLI/MCP 的业务方法及专用状态码转换。
+
+源码部署工具 `python -m deploy.migration.encrypt` 独立提供 inspect/migrate/clear；
+编排、格式校验和逐项结果属于 deploy/migration，不从 jiuwen_memory.api 导出，
+也不在启动、搜索或读取中调用。部署配置、凭据、支持范围及退出码见 F04 §5.3，
+底层可选维护能力见 S06。
+
 
 ## 文档分工
 
@@ -236,6 +248,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `batch_add` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `batch_add_async` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
+| SDK 数据面 | `supports_video_ingest` / `prepare_video_ingest` | 已实现 | [本地视频准入](#本地视频准入) | F09 文档模式 |
 | 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05；`occurred_at` 见 F06 |
 | 数据面 | `search` | 已实现；平铺参数包含可选层级查询与 query rewrite | [search](#search) | F01、F04、retrieval/F08；层级见 common/F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
@@ -245,7 +258,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `evolve` | 原有四种演进与 dreaming | [evolve](#evolve) | F01、F02 |
 | 数据面（文档模式，经 Engine 窄端口） | `read_md_file` | 已实现；仅文档模式可用 | [read_md_file](#read_md_file) | F08 |
 | 数据面（文档模式） | `edit_md_file` | 已实现；仅文档模式可用 | [edit_md_file](#edit_md_file) | F08 |
-| 任务面（委托 Scheduler） | `job_status` | 已实现 | [job_status](#job_status) | F01 |
+| 任务面（委托 Scheduler / IngestJobController） | `job_status` | 已实现 | [job_status](#job_status) | F01 |
 | 任务面 | `job_cancel` | 已实现 | [job_cancel](#job_cancel) | F01 |
 | 治理面（委托 Governor） | `inspect` | 已实现 | [inspect](#inspect) | F01 |
 | 治理面 | `trace` | 已实现 | [trace](#trace) | F01 |
@@ -285,11 +298,13 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | `list` | 不读归属坐标，但注入第一族系统谓词 | 行为变更：个体空间内不再返回不可见条目 | 已落地 |
 | `list_spaces` | `cursor` 标记废弃；`limit` 由每页条数改为返回条数上限 | 签名不变，翻页语义变更 | 已落地 |
 | `create_space` | 签名不变；入参 `SpaceSpec` 新增 `owner` 字段，供开通服务声明归属主体或显式不登记 | 向后兼容 | 已落地 |
-| `job_status` / `job_cancel` | 签名不变；返回值 `JobInfo.mode` 的取值域由任务类名改为演进模式（`EvolveMode` 的值），无演进模式的任务仍回落类名 | 行为变更，不受两个开关约束：鉴权点按该取值决定任务入口取哪个动作，类名区分不了遗忘与抽取 | 已落地 |
+| `job_status` / `job_cancel` | 本表归属判定改造未改签名；返回值 `JobInfo.mode` 的取值域由任务类名改为演进模式（`EvolveMode` 的值），无演进模式的任务仍回落类名。后续 #285 为 job_cancel 增加可选 scope，见任务面契约 | 行为变更，不受两个开关约束：鉴权点按该取值决定任务入口取哪个动作，类名区分不了遗忘与抽取 | 已落地 |
 
 `scope` 语义不变：它就是落点，且保持必填。落点也可以不由调用方指定、改由归属判定选择，这时在写入侧参数袋里放 `system_metadata["coords"]` 请求判定，候选空间集合由归属坐标推出、落点由判定算子在集内选择。分流判据是该键在不在，与 `scope` 的取值形态无关——键由调用方主动放入，而 `space` 为空是调用方什么都没表达时的取值，拿它触发另一条路径等于由内核解读缺省状态。`space` 非空也不否决判定请求：上游网关按自己的租户或应用标识填 `space` 是常见形态，那个取值不是本系统的空间标识，以它否决则这类接入方无路可走（直写要求空间已登记，未登记即判权拒绝）。给了 `coords` 即交出落点决定权，`scope.space` 在这条路径上不参与落点计算，真实落点由返回的记忆单元携带。两处都没有声明时拒绝，替换的是同一形态下原本含义模糊的判权拒绝。走判定路径时入参 `scope` 的主体维与 `org` 仍须与身份一致，不静默丢弃。条目的可读范围由所在空间的权限决定，写入侧不设条目级的可见性声明入参（F07）。
 
-**归属坐标不占形参，经参数袋传入**：写入侧 `system_metadata["coords"]`，检索侧 `Context.extensions["coords"]`，取值为 `dict[str, str]`。该键在 API 层入口即被取出，不落盘、不进鉴权入参、不随 options 透传给自定义检索模块。检索侧的取出以装配了判定表为条件：未装配的部署里本特性整体不可达，该键不产生任何收窄谓词，取出它只会让自定义检索模块少收到一个调用方明确传入的字段。取值不受 `MetadataValueType` 约束（该联合类型不含 `dict`），与 `route_ctx` 承载判定上下文对象同例；判型改在运行期做。由此，六个入口的形参列表与本特性之前逐字一致。身份入参不新增：随上游安全模块交付的 `security` 是唯一可信身份来源。
+**归属坐标经参数袋传入**。写入侧使用 `system_metadata["coords"]`，检索侧使用 `Context.extensions["coords"]`，取值为 `dict[str, str]`，由 API 在运行期解析，免于扩展接口形参或 `MetadataValueType`。启用路由时，API 在入口取出坐标，用于归属判定或生成判定表声明的收窄谓词。该参数是瞬态字段，检索侧取出后不随 options 透传给自定义检索模块。检索坐标不进入鉴权入参，可信身份仍来自 `security`。
+
+无路由时，检索保留 `coords` 扩展字段供自定义检索模块使用。文档模式下，`search` 同时读取非空字符串 `coords.project`，生成 `system_metadata.project IN ["", project]`，与调用方的 `filters` 取交集。项目坐标缺失或为空时，仍可用显式 `filters` 选择项目。索引在没有项目谓词时只召回未指定项目的文档。
 
 **跨空间检索不另设入口，同样经参数袋分流**：`Context.extensions["spaces"]` 键在即跨空间，取值 `list[str]`，空列表表示「调用方可读的全部空间」。跨空间不是新的检索算法，是在单空间召回之上套的一层编排（候选空间 → 逐空间判权 → 按上界分配取数 → 逐空间召回 → 轮转合并），两族谓词与召回复用同一份实现；拆成两个入口即同一件事有两处契约，接入方须先判断部署形态才知道该调哪个，且两处一旦分叉就出现「一个入口挂了谓词、另一个没挂」的绕过通道。判据同样取键的有无：取值判空则「查我能读的全部空间」这层意图只能靠缺省状态表达，与「没打算跨空间」不可区分。取值为 `None` 按非法拒绝，不当作空列表——网关把未填字段序列化成 `null` 时若按空列表处置，一次本意为单空间的检索会静默扩到全部可读空间。
 
@@ -431,6 +446,16 @@ def check_write(
 ```
 
 Pre-flight WRITE 鉴权，不落盘。用于长耗时摄入任务入队前拒绝无权限请求，避免 DoS（队列被无权限请求占满）。镜像 `add` 的鉴权路径与 space 可写校验，但不调 `engine.write`。后台实际写入仍保留一次鉴权作防御层。
+
+#### 本地视频准入
+
+`supports_video_ingest() -> bool` 查询已装配的本地视频能力。可用时，显式
+`pipeline=video` 必须路由到支持结构化视频输入的抽取链。
+
+`prepare_video_ingest(uri, scope, *, security, project) -> str` 先按视频写入的 Scope
+和项目鉴权，再使用已装配的本地导入策略检查 URI，返回规范化 URI。能力缺失时抛
+`UnsupportedCapabilityError`。这一步只做准入，不提交任务、不写入记忆。
+调用方可用规范化 URI 计算幂等键，再调用 `submit_ingest`。后台写入仍独立鉴权并验证文件。
 
 #### submit_ingest
 
@@ -776,10 +801,32 @@ def job_status(
 **状态：已实现**
 
 ```python
-def job_cancel(job_id: str, *, security: RequestSecurityContext) -> None: ...
+def job_cancel(
+    job_id: str, *, security: RequestSecurityContext, scope: Scope | None = None
+) -> None: ...
 ```
 
-取消尚未完成的演进任务（幂等，委托 Scheduler）。按其任务 scope 鉴权 WRITE（与 evolve 触发一致）。
+取消演进或长耗时摄入任务，终态重复取消幂等。演进任务委托 Scheduler，原调用兼容；
+`ing_` 摄入任务必须提供 target `scope`，缺失抛 ValidationError，任务不存在或 Scope
+不匹配抛 NotFoundError。可信上下文校验先于任务查询，随后按任务真实 Scope 鉴权 WRITE、
+记录审计并执行完整性预检，通过后才委托摄入控制器取消。
+
+摄入排队任务取消后不执行任务体；运行中取消为协作式，当前已进入的同步分类、演进或写入
+允许收尾。内置视频规约在 ASR 分片、文本/VLM 请求及应用层重试之间也有检查点，
+取消后不再发送下一请求，轮询与退避等待可被唤醒；已发出的请求和 SDK 内部重试不能
+保证立即终止。第三方插件未响应检查点时仍允许整个调用收尾。返回 None 表示请求已接受，不代表执行
+已结束：`job_status` 在收尾期间仍返回 running，`detail.cancel_requested="true"`，
+结束后返回 cancelled；真实业务错误仍返回 failed。取消不回滚写入，已知产物保留在
+`detail.unit_ids`；进入写入后的取消或失败以 `partial_write="true"` 和
+`retry_requires_reconciliation="true"` 保守标记可能残留，不以空 ID 推断零写入。
+调用方应先核对真源并处理残留，再显式使用新 payload_id 重提；原 payload_id 自动重试
+被 ConflictError 拒绝。确认未进入写入的取消任务可以复用原 payload_id 重新提交。
+
+状态查询为纯读取，重启遗留任务只返回恢复后的 failed 投影，不在 READ/WRITE 鉴权或
+审计完整性预检前持久化恢复。运行中遗留任务因无法证明零写入，即使未请求取消也要求
+先核对结果，再使用新 payload_id 重提，这是对原有重启后直接重试行为的保守收紧。
+后台终态写库失败时，当前进程仍报告实际执行终态及已知 ID，并在任务 error 与日志中
+报告持久化失败；不能将业务已结束的任务留在 running，也不能吞掉真实业务错误。
 
 周期任务注销或本地失锁停摆时，取消信号覆盖其已排队驱动和已关联的派生演进任务；后续演进桶不再开始。已进入的同步 Evolver 调用可以结束，取消不回滚已完成写入，也不提供存储 fencing 保证。同步调用返回后才观察到取消时，任务状态为 `CANCELLED`，但 `detail` 必须保留已返回的变更 ID，并回显 `partial_write`、`completed_groups`、`retry_requires_reconciliation`；调用方须先查询真源核对结果，不得把 CANCELLED 当作“零写入”直接全量重试。
 
@@ -827,8 +874,7 @@ def audit(
 ```
 
 按条件（actor/action/layer/时间段等）检索审计留痕。无具体 target scope 时以根 `Scope()` 为鉴权闸门。
-当前实现为兼容存量按 action 精确匹配的授权记录，继续使用 `Action.READ`；目标动作
-`Action.READ_AUDIT` 的启用须作为独立兼容性变更并配套授权数据迁移。
+当前 audit 使用独立 `Action.READ_AUDIT`，不与普通 READ 授权互认。
 
 #### 审计完整性面（接口先行，PR3）
 
@@ -1217,7 +1263,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 并在构造边界把 `list[Action]` 等动作迭代归一为 `frozenset[Action]`；非 `Action` 成员立即
 抛 `TypeError`。`Action`：`READ`/`WRITE`/`UPDATE`/`DELETE`/`SHARE`/
 `REVOKE_SHARE`/`MANAGE_PRINCIPAL`/`MANAGE_SPACE`/`MANAGE_POLICY`/`READ_AUDIT`/
-`VERIFY_AUDIT`/`ADMINISTER_SYSTEM`。
+`VERIFY_AUDIT`/`MIGRATE_MEMORY`/`ADMINISTER_SYSTEM`。
 
 `control/types.py` 为兼容既有内部与仓外导入路径，再导出同一个安全域 `Grant`/`Action`
 对象，不再维护第二套字段或枚举；API 将服务端生成 ID 的 `Grant` 写入与 Authorizer
@@ -1394,3 +1440,16 @@ AsyncTimerScheduler 自有循环独立于调用方循环，允许用 `asyncio.ru
 父定时任务状态不等于某轮执行结果：通过 detail 的 `last_run_id`、`last_run_status`、
 `last_run_detail`（JSON 字符串）查看最近一次结果，也可用 last_run_id 查询该轮任务。
 诊断计数、跳过语义与故障保护见 S03；注册仅存于本进程，重启后由宿主重新注册。
+
+
+## search 的检索 pipeline 选择扩展键
+
+`context.extensions["retrieval_pipeline"]` 接受非空字符串或 None；名称精确匹配，不做 trim
+或大小写转换。缺省/None 保留原 profile/default 路由。API 复制参数袋后消费此键，转换为
+`RetrievalQuery.pipeline`，不修改调用方 Context，也不继续透传给 ParsedQuery 或自定义召回插件。
+SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 search 参数。
+
+请求上下文可信校验之后、单空间/跨空间分流之前，经 query application port 调用 Engine 的
+公共校验方法；未知名称抛 ValidationError，附公开可选名单。即使跨空间目标为空也必须拒绝
+未知名称，不把调用参数错误转换成空间 ChannelError。API 不访问 Engine 或 Retriever 私有配置。
+选择只影响检索算法，不替代 scope/授权谓词校验；优先级与装配约束见 S03/S04。

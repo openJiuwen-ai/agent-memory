@@ -12,12 +12,9 @@ metadata 保留原生类型落库、admin_* 不落引擎（API 层直达 PolicyM
 
 1. **多空间**：不设 ``scope.space == ""`` 本地域校验——delete / 候选枚举扫
    全部 scopes，支撑个人 agent 的 project 分目录等多空间落点。
-2. **纯文本模态**：jiuwenswarm 侧记忆 rail（MemoryRail / CodingMemoryRail）
-   写入/存储/检索全链路纯文本（工具签名 ``content: str``，存储 .md，检索
-   文本向量 + BM25），无 VIDEO 的 uri 载体与 payload_id 幂等需求——
-   ``data`` 恒 ``content.encode("utf-8")``、``uri`` 恒空串。非文本模态由
-   normalizer 能力门禁在规约前拒绝（UnsupportedCapabilityError）。若未来
-   rail 层出现多模态写入工具，需恢复模态特判。
+2. **文本和可选视频输入**：文本编码到 ``data``；视频 URI 放入 ``uri`` 并沿用
+   调用方提供的 ``payload_id``。启用视频需要配置支持 VIDEO 的 normalizer 和
+   对应抽取流水线，文档模式仍存储可通过文本向量和 BM25 检索的抽取结果。
 3. **无 procedural / middle 分流**：agent 链路无过程性记忆与中位延迟写入
    语义，write 只保留 infer=true 的派生抽取与缺省直写两路。middle /
    middle_interval 是调用级开关，本引擎不识别、不剥除、不生效——文档模式
@@ -40,12 +37,18 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
+from jiuwen_memory.common.errors import (
+    AgentMemoryError,
+    NotFoundError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -71,6 +74,10 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
     restore_coords_from_md_filename,
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
+    RetrievalPipelines,
+    build_retrieval_pipelines,
+)
 from jiuwen_memory.control.engine_impl.schema_update_support import (
     commit_schema_update,
     is_schema_update_candidate,
@@ -83,6 +90,12 @@ from jiuwen_memory.control.engine_impl.temporal_support import (
 )
 from jiuwen_memory.control.engine_impl.temporal_support import (
     valid_sort_key as _valid_sort_key,
+)
+from jiuwen_memory.control.ingest_job import (
+    begin_ingest_write,
+    check_ingest_cancelled,
+    record_ingest_ids,
+    record_ingest_units,
 )
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -223,10 +236,12 @@ class AgentEngine(MemoryEngine):
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
+        retrieval_pipelines: dict[str, Retriever] | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
+        self._retrieval_pipelines = RetrievalPipelines(retriever, retrieval_pipelines)
         self._domain_store = domain_store
         self._kv = kv
         self._scheduler = scheduler
@@ -258,7 +273,20 @@ class AgentEngine(MemoryEngine):
         return self._domain_store.scopes()
 
     def health(self) -> None:
-        return None
+        self._retrieval_pipelines.health()
+
+    def _video_write_binding(self) -> PipelineBinding | None:
+        if self._pipeline is None:
+            return None
+        binding = self._pipeline.explicit_write_binding({"pipeline": "video"})
+        if binding is None or Modality.VIDEO not in binding.evolver.structured_modalities():
+            return None
+        return binding
+
+    def video_ingest_preflight(self) -> LocalMediaPreflight | None:
+        if self._video_write_binding() is None:
+            return None
+        return self._ingestor.local_media_preflight(Modality.VIDEO)
 
     async def write(
         self,
@@ -288,30 +316,34 @@ class AgentEngine(MemoryEngine):
 
         infer = _is_true("infer")
 
-        # agent 场景仅文本模态：jiuwenswarm 侧记忆 rail（MemoryRail /
-        # CodingMemoryRail）写入/存储/检索全链路纯文本（工具签名
-        # content: str，存储 .md，检索文本向量+BM25），无 VIDEO 的 uri 载体
-        # 与 payload_id 幂等需求；非文本模态由 normalizer 能力门禁在规约前
-        # 拒绝（UnsupportedCapabilityError）。
+        is_video = source == Modality.VIDEO
+        video_binding = None
+        if is_video and str(meta.get("pipeline", "")).strip() == "video":
+            video_binding = self._video_write_binding()
+            if not infer or video_binding is None:
+                raise UnsupportedCapabilityError("write_pipeline", "video", type(self).__name__)
+        payload_id = str(meta.get("payload_id", "")).strip() if is_video else ""
         payload = RawPayload(
-            id=str(uuid.uuid4()),
+            id=payload_id or str(uuid.uuid4()),
             scope=scope,
             modality=source,
-            data=content.encode("utf-8"),
-            uri="",
+            data=b"" if is_video else content.encode("utf-8"),
+            uri=content if is_video else "",
             assets=list(assets or []),
             system_metadata=meta,
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
         )
         # 两条路径共用：Ingestor 规约。
+        check_ingest_cancelled()
         units = self._ingestor.ingest([payload])
+        check_ingest_cancelled()
         for unit in units:
             unit.tags = list(tags or [])
             if "session_id" in meta:
                 unit.system_metadata["session_id"] = meta["session_id"]
 
-        binding = self._write_binding(units)
+        binding = video_binding or self._write_binding(units)
         evolver = binding.evolver if binding is not None else self._evolver
         index_builder = binding.index_builder if binding is not None else self._index
         classifier = binding.classifier if binding is not None else self._classifier
@@ -321,11 +353,13 @@ class AgentEngine(MemoryEngine):
                 raise RuntimeError(
                     "AgentEngine.write infer=True requires an Evolver (装配未注入 evolver)"
                 )
+            begin_ingest_write()
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            record_ingest_ids(result.created_ids)
             derived = list(result.created_units) or [
                 self._load(scope, uid) for uid in result.created_ids
             ]
@@ -341,10 +375,13 @@ class AgentEngine(MemoryEngine):
 
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引。
         # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
+        check_ingest_cancelled()
         if classifier is not None:
             classifier.classify(units)
         # 记忆写入只经 IndexBuilder：交付 Storage + 建 hot 轻量索引由其统一编排。
+        begin_ingest_write()
         await asyncio.to_thread(index_builder.build, units)
+        record_ingest_units(units)
         return units
 
     async def batch_write(
@@ -392,10 +429,13 @@ class AgentEngine(MemoryEngine):
                     break
         return BatchWriteResult(outcomes=outcomes)
 
+    def retrieval_pipeline_names(self) -> tuple[str, ...]:
+        return self._retrieval_pipelines.names()
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
-        binding = self._recall_binding(query)
-        retriever = binding.retriever if binding is not None else self._retriever
-        return retriever.retrieve(scope, query)
+        self.validate_retrieval_pipeline(query.pipeline)
+        binding = self._recall_binding(query) if query.pipeline is None else None
+        return self._retrieval_pipelines.retrieve(scope, query, binding)
 
     async def list(
         self,
@@ -876,15 +916,39 @@ def _build(config):
         return JobFactoryProducer.build_named("default", ctx)
 
     manager = StoreManagerProducer.resolve(config)
+    retriever = RetrieverProducer.dep(config, default="pipeline")
+    retrieval_pipelines = build_retrieval_pipelines(config)
+    if config.name == "default":
+        # JobFactory 由 _opt_job_factory 按名称获取，不走匿名缺省。
+        fallbacks = (
+            ("ingestor", IngestorProducer.TOP_NAME, "simple"),
+            ("index_builder", IndexBuilderProducer.TOP_NAME, ib_default),
+            ("retriever", RetrieverProducer.TOP_NAME, "pipeline"),
+            ("scheduler", SchedulerProducer.TOP_NAME, "in_process"),
+            ("evolver", EvolverProducer.TOP_NAME, "orchestrating"),
+            ("lifecycle", LifecycleProducer.TOP_NAME, "kv"),
+        )
+        bypassed = []
+        for field, namespace, target in fallbacks:
+            if config.params.get(field) is None and "default" in config.ctx.namespaces.get(
+                namespace, {}
+            ):
+                bypassed.append(
+                    f"engine.default.params.{field} bypasses {namespace}.default"
+                    f" (anonymous {target})"
+                )
+        if bypassed:
+            logger.warning("AgentEngine dependency fallback: %s", ", ".join(bypassed))
     return AgentEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        RetrieverProducer.dep(config, default="pipeline"),
+        retriever,
         manager.domain_store(resolve_name(config, "domain_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
         kv=manager.kv(resolve_name(config, "kv_store")),
+        retrieval_pipelines=retrieval_pipelines,
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),

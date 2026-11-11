@@ -477,9 +477,9 @@ async def memory_job_status(job_id: str, scope: dict | None = None, ctx: Context
 
 
 @mcp.tool()
-async def memory_job_cancel(job_id: str, ctx: Context = None) -> None:
-    """取消一个尚未完成的后台任务（幂等：对已结束的任务再取消不报错）。"""
-    return await _invoke("job_cancel", {"job_id": job_id}, context=ctx)
+async def memory_job_cancel(job_id: str, ctx: Context = None, scope: dict | None = None) -> None:
+    """取消后台任务（终态幂等）；摄入任务须提供 scope，运行中协作取消且不回滚写入。"""
+    return await _invoke("job_cancel", {"job_id": job_id, "scope": scope}, context=ctx)
 
 
 @mcp.tool()

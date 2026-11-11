@@ -60,8 +60,8 @@ def system_predicates(
 ) -> list[FilterClause]:
     """两族谓词合起来。调用方表达式与它们合成一个 AND 一次下推。
 
-    ``narrow`` 是已折算的收窄维取值（``标签键 -> 取值``），由
-    :func:`~construction.router.narrow_dims_of` 从已以身份覆盖过内核三项的坐标算出。
+    ``narrow`` 是已折算的收窄维取值（``标签键 -> 取值``）。启用路由时由判定表
+    声明的维度生成，无路由文档检索可直接提供 project 收窄值。
     """
     return individual_space_predicates(facts, actor) + _narrow_predicates(narrow or {})
 

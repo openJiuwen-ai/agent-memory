@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import inspect
 import io
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -137,6 +140,218 @@ def test_http_client_preserves_payload_and_original_response(monkeypatch, body) 
     assert seen[0][0].full_url == "http://example.test/v1/list"
     assert json.loads(seen[0][0].data) == payload
     assert seen[0][0].get_header("Authorization") == "Bearer test-key"
+    assert seen[0][1] == 300.0
+
+
+def test_http_client_uses_configured_timeout(monkeypatch) -> None:
+    seen = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    def urlopen(request, *, timeout):
+        seen.append(timeout)
+        return Response(b"[]")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    client = client_module.make_client("http://example.test", timeout=451.5)
+
+    assert client.call("list", {"scope": SCOPE}) == (200, [])
+    assert seen == [451.5]
+
+
+def test_cli_timeout_precedence_and_client_forwarding(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_MEMORY_TIMEOUT", "420")
+
+    seen = {}
+
+    class Client:
+        @staticmethod
+        def healthz():
+            return 200, {"status": "ok"}
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    def make_client(*args, **kwargs):
+        seen.update(kwargs)
+        return Client()
+
+    monkeypatch.setattr(cli, "make_client", make_client)
+
+    assert cli.main(["--server", "http://example.test", "healthz"]) == 0
+    assert seen["timeout"] == 420.0
+    assert cli.main(["--server", "http://example.test", "--timeout", "510.5", "healthz"]) == 0
+    assert seen["timeout"] == 510.5
+
+
+def test_cli_flag_overrides_invalid_env_timeout(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_MEMORY_TIMEOUT", "bad")
+    seen = {}
+
+    class Client:
+        @staticmethod
+        def healthz():
+            return 200, {"status": "ok"}
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    def make_client(*args, **kwargs):
+        seen.update(kwargs)
+        return Client()
+
+    monkeypatch.setattr(cli, "make_client", make_client)
+
+    assert cli.main(["--server", "http://example.test", "--timeout", "12", "healthz"]) == 0
+    assert seen["timeout"] == 12.0
+
+
+def test_cli_rejects_invalid_env_timeout(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_MEMORY_TIMEOUT", "abc")
+    monkeypatch.setattr(cli, "make_client", Mock(side_effect=AssertionError("client built")))
+    exit_mock = Mock(side_effect=RuntimeError("parser exit"))
+    monkeypatch.setattr(argparse.ArgumentParser, "exit", exit_mock)
+
+    with pytest.raises(RuntimeError, match="^parser exit$"):
+        cli.main(["--server", "http://example.test", "healthz"])
+
+    exit_mock.assert_called_once()
+    assert exit_mock.call_args.args[0] == 2
+    expected = "AGENT_MEMORY_TIMEOUT must be a finite positive number: 'abc'"
+    assert expected in exit_mock.call_args.args[1]
+
+
+def test_cli_local_mode_ignores_env_timeout(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_MEMORY_TIMEOUT", "abc")
+
+    assert cli.main(["--auth-mode", "dev", "healthz"]) == 0
+
+
+def test_cli_rejects_timeout_without_remote_server(monkeypatch) -> None:
+    exit_mock = Mock(side_effect=RuntimeError("parser exit"))
+    monkeypatch.setattr(argparse.ArgumentParser, "exit", exit_mock)
+    with pytest.raises(RuntimeError, match="^parser exit$"):
+        cli.main(["--timeout", "5", "--auth-mode", "dev", "healthz"])
+
+    exit_mock.assert_called_once()
+    assert exit_mock.call_args.args[0] == 2
+    assert "--timeout applies only to remote execution" in exit_mock.call_args.args[1]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "bad"])
+def test_cli_rejects_invalid_timeout(value, monkeypatch) -> None:
+    exit_mock = Mock(side_effect=RuntimeError("parser exit"))
+    monkeypatch.setattr(argparse.ArgumentParser, "exit", exit_mock)
+    with pytest.raises(RuntimeError, match="^parser exit$"):
+        cli.build_parser().parse_args(["--timeout", value, "healthz"])
+
+    exit_mock.assert_called_once()
+    assert exit_mock.call_args.args[0] == 2
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), "bad"])
+def test_client_rejects_invalid_programmatic_timeout(value) -> None:
+    with pytest.raises(ValueError, match="finite positive"):
+        client_module.HttpClient("http://example.test", timeout=value)
+    with pytest.raises(ValueError, match="finite positive"):
+        client_module.make_client("http://example.test", timeout=value)
+
+
+@contextmanager
+def _slow_http_server(monkeypatch):
+    """Start a real HTTP server whose response arrives after one second."""
+    delay = 1.0
+
+    class Handler(BaseHTTPRequestHandler):
+        def handle_get(self):
+            time.sleep(delay)
+            body = json.dumps({"status": "ok"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            try:
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                # Timeout tests deliberately close the client before the response.
+                pass
+
+        def log_message(self, *args):
+            return None
+
+    # BaseHTTPRequestHandler dispatches GET requests through this exact attribute.
+    setattr(Handler, "do_GET", Handler.handle_get)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    # server_close() must join request threads before pytest stops capturing stderr.
+    httpd.daemon_threads = False
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    monkeypatch.setattr(urllib.request, "urlopen", opener.open)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.fixture
+def slow_http_server(monkeypatch):
+    with _slow_http_server(monkeypatch) as url:
+        yield url
+
+
+def test_slow_http_server_timeout_cleanup_is_quiet(monkeypatch, capsys) -> None:
+    with _slow_http_server(monkeypatch) as url:
+        status, body = client_module.HttpClient(url, timeout=0.2).healthz()
+        assert status == 0
+        assert body["error"] == "ConnectionError"
+
+    # Inspect only after server_close() has joined the delayed response handler.
+    assert capsys.readouterr().err == ""
+
+
+def test_http_client_reports_timeout_as_connection_failure(slow_http_server) -> None:
+    status, body = client_module.HttpClient(slow_http_server, timeout=0.2).healthz()
+
+    assert status == 0
+    assert body["error"] == "ConnectionError"
+    assert body["message"] == ("HTTP socket operation timed out (error=TimeoutError, timeout=0.2s)")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        http.client.RemoteDisconnected("peer closed connection"),
+        ConnectionResetError("connection reset"),
+        http.client.IncompleteRead(b"partial", 20),
+    ],
+    ids=["remote-disconnected", "connection-reset", "incomplete-response"],
+)
+def test_http_client_maps_unwrapped_transport_failures(monkeypatch, failure) -> None:
+    monkeypatch.setattr(urllib.request, "urlopen", Mock(side_effect=failure))
+
+    status, body = client_module.HttpClient("http://example.test").healthz()
+
+    assert status == 0
+    assert body == {
+        "error": "ConnectionError",
+        "message": f"HTTP transport failed (error={type(failure).__name__})",
+    }
+
+
+def test_cli_exit_code_for_remote_timeout(slow_http_server, capsys) -> None:
+    assert cli.main(["--server", slow_http_server, "--timeout", "0.2", "healthz"]) == 1
+    stderr = capsys.readouterr().err
+    assert "ConnectionError" in stderr
+    assert "Traceback" not in stderr
+
+    assert cli.main(["--server", slow_http_server, "--timeout", "5", "healthz"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "ok"}
 
 
 @pytest.fixture(params=["local", "http"])

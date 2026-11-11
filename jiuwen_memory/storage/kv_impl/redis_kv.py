@@ -12,6 +12,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+from collections.abc import Iterator
 from typing import Any
 
 from jiuwen_memory.common.errors import (
@@ -19,10 +22,12 @@ from jiuwen_memory.common.errors import (
     ConflictError,
     HealthCheckError,
     NotFoundError,
+    ValidationError,
 )
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.migration import MigrationRecord, opaque_location
 
 from .._support import (
     read_ssl_config,
@@ -109,6 +114,13 @@ class RedisKVStore(KVStore):
         """返回存储类型 ``KV``。"""
         return StoreType.KV
 
+    def migration_identity(self) -> object:
+        return opaque_location("redis", self._client_key())
+
+    def migration_scope_supported(self, scope: Scope) -> bool:
+        values = (scope.org, scope.space, scope.user, scope.agent, scope.session)
+        return tuple(_decode_scope_segment(part) for part in scope_segments(scope)) == values
+
     def health(self) -> None:
         """对 Redis 执行 ``PING``；失败抛 :class:`HealthCheckError`。"""
         try:
@@ -138,6 +150,75 @@ class RedisKVStore(KVStore):
         """删除 ``scope`` 下的 ``key``（幂等）。"""
         with wrap_backend(f"redis delete {key!r}"):
             self.client.delete(self._namespaced(scope, key))  # 幂等
+
+    def migration_scan_supported(self) -> bool:
+        return True
+
+    def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
+        script = """
+        if redis.call('STRLEN',KEYS[1])>tonumber(ARGV[1]) then return {false,1} end
+        return {redis.call('GET',KEYS[1]),0}
+        """
+        with wrap_backend("redis bounded migration read"):
+            value, oversized = self.client.eval(
+                script, 1, self._namespaced(scope, key), max_value_bytes
+            )
+        if oversized:
+            return None
+        if value is None:
+            raise NotFoundError("kv", key)
+        return bytes(value)
+
+    def migration_records(
+        self, scope: Scope, *, after: str = "", max_value_bytes: int = 134217728
+    ) -> Iterator[MigrationRecord]:
+        namespace = ":".join(scope_segments(scope)) + ":"
+        prefix = namespace + MEMORY_KEY_PREFIX
+        state = json.loads(after) if after else {"scan": 0, "pending": []}
+        scan, pending = state["scan"], state["pending"]
+        if type(scan) is not int or scan < 0:
+            raise ValidationError("invalid migration cursor")
+        if not isinstance(pending, list):
+            raise ValidationError("invalid migration cursor")
+        if any(not isinstance(key, str) or not key.startswith(prefix) for key in pending):
+            raise ValidationError("invalid migration cursor")
+        initial = not after
+        pattern = re.sub(r"([\\*?\[\]])", r"\\\1", prefix) + "*"
+        while pending or initial or scan:
+            if not pending:
+                with wrap_backend("redis bounded migration scan"):
+                    scan, keys = self.client.scan(cursor=scan, match=pattern, count=64)
+                pending = [key.decode() if isinstance(key, bytes) else key for key in keys]
+                initial = False
+                continue
+            key, *pending = pending
+            if not key.startswith(prefix):
+                raise ValidationError("migration cursor differs from physical Scope")
+            cursor = json.dumps({"scan": int(scan), "pending": pending}, separators=(",", ":"))
+            logical = key[len(namespace):]
+            try:
+                value = self.migration_read(scope, logical, max_value_bytes=max_value_bytes)
+            except NotFoundError:
+                continue
+            yield MigrationRecord(logical, value, cursor)
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None
+    ) -> bool:
+        script = """
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+        if ARGV[2] == 'delete' then return redis.call('DEL', KEYS[1]) end
+        local ttl = redis.call('PTTL', KEYS[1])
+        if ttl == 0 or ttl == -2 then return 0 end
+        redis.call('SET', KEYS[1], ARGV[3])
+        if ttl > 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
+        return 1
+        """
+        with wrap_backend("redis compare_exchange"):
+            return bool(self.client.eval(
+                script, 1, self._namespaced(scope, key), expected,
+                "delete" if replacement is None else "replace", replacement or b"",
+            ))
 
     def get(self, scope: Scope, key: str) -> bytes:
         """读取 ``scope`` 下 ``key`` 的值；不存在时报缺失。"""

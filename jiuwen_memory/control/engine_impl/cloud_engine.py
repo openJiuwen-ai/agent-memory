@@ -49,6 +49,10 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
+from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
+    RetrievalPipelines,
+    build_retrieval_pipelines,
+)
 from jiuwen_memory.control.engine_impl.schema_update_support import (
     commit_schema_update,
     is_schema_update_candidate,
@@ -69,6 +73,12 @@ from jiuwen_memory.control.evolution.background import (
 from jiuwen_memory.control.evolution.hierarchy_submission import (
     HierarchySubmissionDependencies,
     submit_hierarchy,
+)
+from jiuwen_memory.control.ingest_job import (
+    begin_ingest_write,
+    check_ingest_cancelled,
+    record_ingest_ids,
+    record_ingest_units,
 )
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -226,10 +236,12 @@ class CloudEngine(MemoryEngine):
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
         policy: PolicyManager | None = None,
+        retrieval_pipelines: dict[str, Retriever] | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
+        self._retrieval_pipelines = RetrievalPipelines(retriever, retrieval_pipelines)
         self._domain_store = domain_store
         self._kv = kv
         self._scheduler = scheduler
@@ -259,7 +271,7 @@ class CloudEngine(MemoryEngine):
         return self._domain_store.scopes()
 
     def health(self) -> None:
-        return None
+        self._retrieval_pipelines.health()
 
     async def write(
         self,
@@ -306,7 +318,9 @@ class CloudEngine(MemoryEngine):
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
         )
+        check_ingest_cancelled()
         units = self._ingestor.ingest([payload])
+        check_ingest_cancelled()
         self._prepare_ingested_units(units, scope, meta, tags=tags)
 
         binding = self._write_binding(units)
@@ -323,11 +337,13 @@ class CloudEngine(MemoryEngine):
                 raise RuntimeError(
                     "CloudEngine.write procedural=True requires an Evolver (装配未注入 evolver)"
                 )
+            begin_ingest_write()
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            record_ingest_ids(result.created_ids)
             derived = list(result.created_units) or [
                 self._load(scope, unit_id) for unit_id in result.created_ids
             ]
@@ -354,16 +370,17 @@ class CloudEngine(MemoryEngine):
                     pipeline_name,
                     middle_interval=parse_middle_interval(middle_interval),
                 )
-            # 既有同步抽取路径，不动
             if evolver is None:
                 raise RuntimeError(
                     "CloudEngine.write infer=True requires an Evolver (装配未注入 evolver)"
                 )
+            begin_ingest_write()
             result = await asyncio.to_thread(
                 evolver.evolve, units, EvolveMode.EXTRACT
             )
             # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
             # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
+            record_ingest_ids(result.created_ids)
             derived = list(result.created_units) or [
                 self._load(scope, unit_id) for unit_id in result.created_ids
             ]
@@ -380,13 +397,16 @@ class CloudEngine(MemoryEngine):
             return derived
 
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引
+        check_ingest_cancelled()
         if classifier is not None:
             # 分类含出站 LLM 调用（秒级~分钟级），必须让出事件循环线程（与下方
             # index_builder.build 同样处理）；内联同步调用会冻结共享事件循环上的
             # 所有并发请求。
             await asyncio.to_thread(classifier.classify, units)
         # 记忆写入只经 IndexBuilder：交付 Storage + 建索引由其统一编排。
+        begin_ingest_write()
         await asyncio.to_thread(index_builder.build, units)
+        record_ingest_units(units)
         indexed_metadata = {
             "message_type_key": self._message_type_key,
             "message_type": meta.get(self._message_type_key, ""),
@@ -493,7 +513,10 @@ class CloudEngine(MemoryEngine):
         for unit in units:
             unit.tier = MemoryTier.WORKING
             unit.system_metadata["middle"] = "true"
+        begin_ingest_write()
         await asyncio.to_thread(index_builder.build, units)
+        record_ingest_units(units)
+        check_ingest_cancelled()
 
         await self._scheduler.submit(job, channel=Channel.BACKGROUND)
         middle_metadata = {
@@ -509,11 +532,14 @@ class CloudEngine(MemoryEngine):
         )
         return units
 
+    def retrieval_pipeline_names(self) -> tuple[str, ...]:
+        return self._retrieval_pipelines.names()
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         routed_query = self._normalized_query(query)
-        binding = self._recall_binding(routed_query)
-        retriever = binding.retriever if binding is not None else self._retriever
-        return retriever.retrieve(scope, routed_query)
+        self.validate_retrieval_pipeline(routed_query.pipeline)
+        binding = self._recall_binding(routed_query) if routed_query.pipeline is None else None
+        return self._retrieval_pipelines.retrieve(scope, routed_query, binding)
 
     async def list(
         self,
@@ -1092,15 +1118,18 @@ def _build(config):
     # 同一份装配拿到不一致的 IndexBuilder（见 config.document_flag docstring）。
     ib_default = resolve_index_builder_default(config)
     manager = StoreManagerProducer.resolve(config)
+    retriever = RetrieverProducer.dep(config, default="pipeline")
+    retrieval_pipelines = build_retrieval_pipelines(config)
     return CloudEngine(
         IngestorProducer.dep(config, default="simple"),
         IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
-        RetrieverProducer.dep(config, default="pipeline"),
+        retriever,
         manager.domain_store(resolve_name(config, "domain_store")),
         SchedulerProducer.dep(config, default="in_process"),
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
         kv=manager.kv(resolve_name(config, "kv_store")),
+        retrieval_pipelines=retrieval_pipelines,
         classifier=_optional_classifier(config),
         pipeline=_optional_pipeline(config),
         message_type_key=str(config.get("message_type_key", "message_type")),

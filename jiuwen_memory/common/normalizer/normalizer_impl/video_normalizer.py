@@ -12,9 +12,11 @@ from typing import Any
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.errors import BackendError, HealthCheckError, ValidationError
+from jiuwen_memory.common.ingest_cancellation import IngestCancelled, check_ingest_cancelled
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.normalizer.base import (
+    LocalMediaPreflight,
     Normalizer,
     NormalizerProducer,
     ensure_normalizer_supports,
@@ -98,6 +100,12 @@ class VideoNormalizer(Normalizer):
         return [Modality.VIDEO]
 
     @staticmethod
+    def structured_modalities() -> frozenset[Modality]:
+        # normalize() 产出单条 JSON 包络（clips + events），由 VideoMemoryExtractor 整体
+        # 解析后拆成 CLM/ELM；接入层按长度切开它会得到非法 JSON、抽取零产出（issue #294）。
+        return frozenset({Modality.VIDEO})
+
+    @staticmethod
     def plugin_type() -> PluginType:
         return PluginType.NORMALIZER
 
@@ -116,9 +124,16 @@ class VideoNormalizer(Normalizer):
                 + ", ".join(missing_binaries)
             )
 
+    def local_media_preflight(self, modality: Modality) -> LocalMediaPreflight | None:
+        if modality != Modality.VIDEO or not self._local_media.has_bindings:
+            return None
+        return self._local_media.preflight_video
+
     def normalize(self, payload: RawPayload) -> str:
+        check_ingest_cancelled()
         ensure_normalizer_supports(self, payload.modality)
         clips, events = self._extract_video_memory(payload)
+        check_ingest_cancelled()
         video_memory = {
             "payload_id": payload.id,
             "asset_uri": payload.uri,
@@ -181,6 +196,8 @@ class VideoNormalizer(Normalizer):
                 _object_list(outputs.get("short_term"), "short_term"),
                 _object_list(outputs.get("medium_term"), "medium_term"),
             )
+        except IngestCancelled:
+            raise
         except Exception as exc:
             logger.exception(
                 "VideoNormalizer: pipeline failed for video=%s",

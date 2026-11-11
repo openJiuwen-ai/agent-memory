@@ -18,11 +18,14 @@ from jiuwen_memory.common.embedder.base import Embedder
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import (
+    MD_TITLE_KEY,
+    MEMORY_CLASS_KEY,
     DedupDecision,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
     Modality,
+    RetrievalPipeline,
     Scope,
     Segment,
     Temporal,
@@ -32,8 +35,12 @@ from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.construction.abstractor import Abstractor
 from jiuwen_memory.construction.associator import Associator
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.evolver import EvolveMode
-from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+from jiuwen_memory.construction.evolver import EvolveMode, EvolveResult
+from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    _DEDUP_BATCH_SYSTEM_PROMPT,
+    _DEDUP_SYSTEM_PROMPT,
+    OrchestratingEvolver,
+)
 from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.storage.base import StoreType
@@ -374,6 +381,62 @@ def _make_evolver(
     )
 
 
+@pytest.mark.parametrize("candidate_title", ["杭州居民", "", None])
+def test_dedup_update_syncs_title_to_user_md(tmp_path, candidate_title) -> None:
+    """#288：UPDATE 的新标题须贯穿去重、影子索引及 USER.md 写回。"""
+    from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+        WhitespaceTokenizer,
+    )
+    from jiuwen_memory.construction.index_builder_impl.document_index_builder import (
+        DocumentIndexBuilder,
+    )
+    from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+    from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
+    from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import SqliteDocumentShadowIndex
+    from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
+
+    manager = CompositeStoreManager(
+        markdown=LocalMarkdownStore(root=str(tmp_path)),
+        shadow_index=SqliteDocumentShadowIndex(
+            db_path=str(tmp_path / "shadow.db"), tokenizer=WhitespaceTokenizer()
+        ),
+    )
+    domain = CompositeDomainStore(
+        manager=manager, write_document=True,
+        preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK,
+    )
+    llm = _MockLLM(responses=["用户居住在杭州"])
+    evolver = OrchestratingEvolver(
+        extractor=NoopExtractor(), abstractor=NoopAbstractor(), associator=NoopAssociator(),
+        index_builder=DocumentIndexBuilder(domain), storage=manager,
+        message_store=_MemoryKVStore(), dedup=None, llm=llm,
+    )
+    existing = _make_unit("e1", "用户居住在上海")
+    existing.system_metadata = {MEMORY_CLASS_KEY: "user_profile", MD_TITLE_KEY: "上海居民"}
+    domain.add(existing.scope, [existing])
+    candidate = _make_unit("c1", "用户居住在杭州")
+    candidate.system_metadata[MEMORY_CLASS_KEY] = "user_profile"
+    if candidate_title is not None:
+        candidate.system_metadata[MD_TITLE_KEY] = candidate_title
+    result = EvolveResult()
+
+    # 定向验证内部去重决策，避免模型路由影响此存储回归。
+    # pylint: disable-next=protected-access
+    evolver._apply_decision(candidate, DedupDecision.UPDATE, existing, 0.8, result)
+
+    title = candidate_title or ""
+    assert result.updated_ids == [existing.id]
+    assert (tmp_path / "USER.md").read_text(encoding="utf-8") == (
+        f"# {title}\n用户居住在杭州\n\n"
+    )
+    (updated,) = domain.get(existing.scope, [existing.id])
+    assert updated.system_metadata[MD_TITLE_KEY] == title
+    assert updated.content == "用户居住在杭州"
+    assert existing.system_metadata[MD_TITLE_KEY] == "上海居民"
+    # 验证测试替身的调用计数，防止额外模型调用。
+    assert llm._call_count == 1  # pylint: disable=protected-access
+
+
 def _create_stores():
     """创建内存 Store 实例。"""
     return {"kv": _MemoryKVStore(), "vector": _MemoryVectorStore()}
@@ -494,8 +557,8 @@ class TestDedupNoop:
     """NOOP 场景：候选与已有记忆完全重叠 → 跳过。"""
 
     @staticmethod
-    def test_high_similarity_llm_noop():
-        """高相似度 + LLM 判定 noop → NOOP（不写库）。"""
+    def test_exact_duplicate_direct_noop():
+        """完全相同且无实质差异 → direct NOOP（不写库）。"""
         stores = _create_stores()
         # HashEmbedder：同文本 → cosine=1.0，不同文本 → cosine<1.0
         # 需要构造同文本场景来触发高相似度
@@ -512,13 +575,35 @@ class TestDedupNoop:
         existing_unit = _make_unit("e1", "用户偏好简洁回答风格")
         _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
 
-        # 候选：与已有记忆文本完全相同 → cosine=1.0 → LLM 判定 noop
+        # 候选：与已有记忆文本完全相同 → cosine=1.0 → direct NOOP
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
         decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
 
         assert decision == DedupDecision.NOOP
         assert existing is not None
         assert similarity >= 0.85
+        assert getattr(llm, "_call_count") == 0
+
+    @staticmethod
+    def test_score_below_default_high_similarity_routes_to_llm():
+        """默认 high=1.0：0.99 相似仍交 LLM，避免阈值短路语义更正。"""
+        stores = _create_stores()
+        llm = _MockLLM(responses=[json.dumps({"decision": "noop", "reason": "重复"})])
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+        )
+        existing = _make_unit("e1", "用户偏好简洁回答风格")
+        candidate = _make_unit("c1", "用户偏好简洁回答风格")
+        setattr(getattr(evolver, "_dedup"), "recall", lambda unit: [(existing, 0.99)])
+
+        result = getattr(evolver, "_dedup_batch")([candidate])
+
+        assert getattr(llm, "_call_count") == 1
+        assert result.created_ids == []
 
     @staticmethod
     def test_noop_not_written_to_kv():
@@ -554,7 +639,7 @@ class TestDedupDirectNoopDelta:
     def test_high_similarity_month_change_routes_to_llm():
         stores = _create_stores()
         llm = _MockLLM(
-            responses=[json.dumps({"decision": "supersede", "reason": "月份更新"})]
+            responses=[json.dumps({"decision": "supersede", "existing_id": "e1", "reason": "更新"})]
         )
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
         evolver = _make_evolver(
@@ -585,7 +670,7 @@ class TestDedupDirectNoopDelta:
         """_dedup_batch 路径：高相似但有月份差异 → 不入 direct_noop，改入 need_llm。"""
         stores = _create_stores()
         llm = _MockLLM(
-            responses=[json.dumps({"decision": "supersede", "reason": "月份更新"})]
+            responses=[json.dumps({"decision": "supersede", "existing_id": "e1", "reason": "更新"})]
         )
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
         evolver = _make_evolver(
@@ -612,6 +697,58 @@ class TestDedupDirectNoopDelta:
         assert result.updated_ids == []
 
 
+class TestDedupLLMTargetSelection:
+    """LLM 明确指定的旧单元必须覆盖默认最高相似项。"""
+
+    @pytest.mark.parametrize(
+        "prompt", [_DEDUP_SYSTEM_PROMPT, _DEDUP_BATCH_SYSTEM_PROMPT]
+    )
+    def test_prompt_requires_existing_target(self, prompt: str):
+        assert '"existing_id"' in prompt
+        assert "MUST be non-null" in prompt
+        assert "highest similarity score" in prompt
+
+    @pytest.mark.parametrize("existing_id", [None, "e999"])
+    def test_modifying_decision_target_validation(
+        self,
+        existing_id: str | None,
+    ):
+        stores = _create_stores()
+        payload = {"decision": "supersede", "reason": "目标缺失或非法"}
+        if existing_id is not None:
+            payload["existing_id"] = existing_id
+        llm = _MockLLM(responses=[json.dumps(payload)])
+        plugins = {"embedder": _HashEmbedder(), "llm": llm}
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            plugins["embedder"],
+            plugins["llm"],
+        )
+        existing = _make_unit("e1", "中午吃了麦当劳")
+        _index_unit(existing, stores["kv"], stores["vector"], plugins["embedder"])
+        candidate = _make_unit("c1", "中午实际吃了汉堡王")
+
+        setattr(
+            getattr(evolver, "_dedup"),
+            "recall",
+            lambda unit: [(existing, 0.95)],
+        )
+
+        result = getattr(evolver, "_dedup_batch")([candidate])
+
+        assert result.created_ids == ["c1"]
+        if existing_id is None:
+            assert result.superseded_ids == ["e1"]
+            expected_lifecycle = LifecycleState.SUPERSEDED
+        else:
+            assert result.superseded_ids == []
+            expected_lifecycle = LifecycleState.ACTIVE
+        assert loads(
+            stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1"))
+        ).lifecycle == expected_lifecycle
+
+
 class TestDedupSupersede:
     """SUPERSEDE 场景：新版替代旧版 → 新版落盘 + 旧版标记 SUPERSEDED。"""
 
@@ -623,7 +760,11 @@ class TestDedupSupersede:
         所以用同文本触发高相似度，LLM 判定 supersede 来测试。
         """
         stores = _create_stores()
-        llm = _MockLLM(responses=[json.dumps({"decision": "supersede", "reason": "新版更完整"})])
+        llm = _MockLLM(
+            responses=[
+                json.dumps({"decision": "supersede", "existing_id": "e1", "reason": "新版更完整"})
+            ]
+        )
         plugins = {"embedder": _HashEmbedder(), "llm": llm}
         # 抬高 high 阈值（>1.0），让同文本 cosine=1.0 落入 medium~high 的 LLM 判定区间，
         # 强制走 mock LLM 判 supersede（否则 1.0≥high 会被短路成 NOOP 跳过 LLM）。
@@ -669,7 +810,7 @@ class TestDedupUpdate:
         merge_content = "用户偏好简洁回答风格，不喜欢冗长解释"
         llm = _MockLLM(
             responses=[
-                json.dumps({"decision": "update", "reason": "候选补充了不喜欢冗长解释"}),
+                json.dumps({"decision": "update", "existing_id": "e1", "reason": "补充"}),
                 merge_content,  # 第二次调用：merge content
             ]
         )
@@ -712,7 +853,7 @@ class TestDedupUpdate:
         stores = _create_stores()
         llm = _MockLLM(
             responses=[
-                json.dumps({"decision": "update", "reason": "候选补充信息"}),
+                json.dumps({"decision": "update", "existing_id": "e1", "reason": "候选补充信息"}),
                 "",  # 第二次调用（merge content）：HTTP 200 但 content 为空
             ]
         )

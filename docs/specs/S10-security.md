@@ -5,8 +5,37 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-11-04 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+
+## 显式明文记忆维护
+
+新增封闭动作 `Action.MIGRATE_MEMORY`，归专用管理动作、不可委托；普通 WRITE、Grant
+或 Delegation 不能扩大范围。StandardAuthorizer 对该动作终局裁决：ROOT 全域、ADMIN
+仅本 org、USER 仅自身主体且 space 必须与凭据精确相等（包括空 space），保留 USER
+凭据非空 agent/session 限制。空 space 不授予其他空间的维护权限。第三方 Authorizer
+仍须明确允许，工具额外执行同一角色范围上界，不因替换 PDP 放宽硬边界。
+
+独立维护入口用实际配置的认证器取得受控身份；按实际 manager/端口和公开位置身份去重，
+先按身份过滤 Scope 再读取候选值，逐项执行在线撤销/时效复核、PDP 与物理身份校验。
+扫描和 JSONL 输入均须在鉴权及操作前通过目标插件的无损 Scope 校验；无法无损表达的
+命名空间明确拒绝，不因显式输入而跳过存储约束。
+写前持久化尝试审计，不将原文或凭据写入结果/审计 detail。配置、位置和角色不能由
+业务 payload 自述。inspect/migrate/clear 均不挂到正常启动或读取流程；操作失败返回
+工具自己的结构化结果；正常读取的非信封拒绝沿原 BackendError 异常契约失败，不当作空结果。
+迁移编排、结果和格式校验位于 deploy/migration，使用独立装配根，不导入私有 Kernel、
+不装配 MemoryAPI 或启动调度/摄入/文件监听后台任务；配置来源位置守卫、认证撤销真源、
+审计完整性与共享资源关闭沿用现有公开插件契约。具体维护和清空边界见 F04 §5.3 与 S02/S06。
+
+独立 CLI 的 --config 同时接受内核 YAML 和包含 memory_api 映射的服务 YAML；后者仅提取
+memory_api，不将 profile 等外层键当作内核命名空间，不在该段类型非法时回退默认配置。
+环境变量按选中内核段的既有规则展开；文件读取、YAML/基础结构失败返回错误码和可读
+message，不回显原文或秘密值。此输入适配与诊断不改变 Config 或 MemoryAPI 的公共契约。
+
+存储扫描按 --batch-size/--batch-bytes 分批，达到预算返回 partial 和 cursor，已成功项保留。
+--cursor 绑定原操作及实际端口位置清单，仅为进度；每次续跑重新认证、复核 Scope、凭据
+状态与 PDP，不能靠游标扩权。各批失败项需独立汇总，不因后批完成而视为前批已成功。
+
 
 ## 范围 / 边界
 
@@ -116,6 +145,11 @@
     凭据绑定与 PDP 共用同一 Store；认证后缓存的上下文仍须逐次复核委托有效期、撤销、
     动作、凭据/会话和空间限制。代理权限不得超过委托人当前内容权限，治理权不随委托转移。
     作者标记和检索坐标可以由有效委托派生，审计 actor 不得替换为委托人。
+    委托存储只由 Authorizer 选择；启用凭据委托绑定时，Security 必须复用其公开真源能力
+    返回的唯一 Store（按对象身份去重），不得独立选择、重建或回退到具名 `default`。
+    缺失或多个不同真源时装配失败；未启用绑定时不要求唯一委托真源。
+    `security.<name>.params.delegation_store` 不再接受；绑定映射与可信初始化记录仍归
+    `security.<name>.params.delegation_bindings` / `delegations`，共享资源由装配根管理生命周期。
 33. 治理读取 `inspect` / `trace` 的每个返回条目（含祖先）必须按其同一真源快照的
     Scope、作者和类型路由逐项 READ 判权；请求 Scope 的授权不替代条目级授权。
     `get` 同样必须检查最终返回快照；请求 ID 的权限检查不替代 `as_of` 所选版本的
@@ -349,10 +383,10 @@ security:
     target: standard
     params:
       authenticator: default          # 必填，无默认实现
-      authorizer: default              # 必填，与 MemoryAPI PEP 使用同一具名实例
+      authorizer: default              # 省略时解析 default；与 MemoryAPI PEP 使用同一实例
       rate_limiter: default
       workload_guard: shared_budget   # 具名引用 = 跨 surface 共享同一份预算
-      binding_policy: loopback        # 省略时按 target 名取默认实现
+      binding_policy: loopback        # 省略时使用 loopback，按认证器能力校验绑定地址
       cryptography: default           # 可选；不配则 SecurityRuntime 不持有密码学能力
       audit_integrity: default        # 可选；不配则普通审计（无链式证明）
 authenticator:

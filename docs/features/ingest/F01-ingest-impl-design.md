@@ -39,7 +39,7 @@
 
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
-| `simple` | `SimpleIngestor` | `normalizer`（`dep`，缺省 `passthrough`） | `list[MemoryUnit]` | 对每条 `RawPayload`：先校验 modality 在 `Normalizer.modalities()` 中，再调 `normalize` 规约出 content，包成单 `Segment(content, assets=list(payload.assets), source=modality)` 的 `MemoryUnit`；分配 `uuid4` id、`scope` 透传、`source_ref=payload.id`、双 metadata 拷贝 |
+| `simple` | `SimpleIngestor` | `normalizer`（`dep`，缺省 `passthrough`） | `list[MemoryUnit]` | 对每条 `RawPayload`：先校验 modality 在 `Normalizer.modalities()` 中，再调 `normalize` 规约出 content；超过 `max_unit_chars`（缺省 8000）时按段落边界预切分为多个 `MemoryUnit`（`system_metadata` 记 `_part`/`_parts`），Normalizer 经 `structured_modalities()` 声明的模态（如 video 的 JSON 包络）除外、不切分；每个 unit 包成单 `Segment(content, assets=list(payload.assets), source=modality)`；分配 `uuid4` id、`scope` 透传、`source_ref=payload.id`、双 metadata 拷贝 |
 
 **双时间写入**（`Temporal`）：
 
@@ -47,7 +47,7 @@
 - `t_ingest` = `now`（接入时刻）
 - `t_valid` = `now`（自接入起有效）；`t_invalid` 不设（未失效）
 
-**不做的事**（边界）：`tags` 不在此设置，仍由控制层处理；**不落盘**（归构建/控制层）；不分块、不向量化（归构建层）。资产映射是 Ingestor 责任，但“一个 payload 产出单 MemoryUnit/单 Segment、全部 assets 放该 Segment”只是当前 `simple` 实现策略，不是接口固定数量契约。
+**不做的事**（边界）：`tags` 不在此设置，仍由控制层处理；**不落盘**（归构建/控制层）；不分块、不向量化（归构建层）。资产映射是 Ingestor 责任，但“一个 payload 产出单 Segment unit、全部 assets 放每个 Segment”只是当前 `simple` 实现策略，不是接口固定数量契约；唯一的跨层不变量是非文本模态的规约结果不被物理切分（S01 第 7 条）。
 
 ### Source（`ingest/source.py` · 无 Producer，手动构造）
 
@@ -79,6 +79,6 @@
 
 ## 已知遗留
 
-- **仅 `simple` 一种 Ingestor**：当前接入编排只有单 Segment 最小实现；更复杂的多 MemoryUnit/多 Segment 映射策略留给后续 Ingestor 实现。
+- **仅 `simple` 一种 Ingestor**：当前接入编排只有「每 unit 单 Segment + 文本类模态按长度预切分」的最小实现；更复杂的多 Segment 映射策略留给后续 Ingestor 实现。
 - **仅 `TextSource` 一种连接器**：真实信息源（对话流/文档/代码库/工具轨迹/图像/音视频/外部导入）的连接器尚未落地，目前以预置文本模拟。
 - **资产原件存储不在本次范围**：当前贯通的是 `list[str]` 引用传递与映射；引用对应的原件是否由 FSStore 管理，仍由具体接入/部署方案决定。

@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
 
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
     DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
@@ -392,6 +393,16 @@ class MemoryAPI(ABC):
         避免 DoS（队列被无权限请求占满）。后台实际写入仍保留一次鉴权作防御层。
         """
 
+    def supports_video_ingest(self) -> bool:
+        """Whether the explicit local-video ingest route is fully assembled."""
+        return False
+
+    def prepare_video_ingest(
+        self, uri: str, scope: Scope, *, security: RequestSecurityContext, project: str,
+    ) -> str:
+        """Authorize local video ingest and return its canonical URI before queueing."""
+        raise UnsupportedCapabilityError("local_ingest", "video", type(self).__name__)
+
     @abstractmethod
     def submit_ingest(
         self,
@@ -422,15 +433,17 @@ class MemoryAPI(ABC):
         scope: Scope | None = None,
     ) -> JobInfo:
         """
-        查询演进任务状态（委托 Scheduler）；``security`` 为本次请求的安全上下文，本层
-        据其鉴权（仅可查自身/已授权范围的任务）。
+        查询演进或摄入任务状态；摄入任务必须提供 target scope。security 为本次请求
+        安全上下文，本层据其鉴权（仅可查自身/已授权范围的任务）。
         """
 
     @abstractmethod
-    def job_cancel(self, job_id: str, *, security: RequestSecurityContext) -> None:
+    def job_cancel(
+        self, job_id: str, *, security: RequestSecurityContext, scope: Scope | None = None
+    ) -> None:
         """
-        取消尚未完成的演进任务（幂等，委托 Scheduler）；``security`` 为本次请求的
-        安全上下文，本层据其鉴权。
+        取消演进或摄入任务（终态幂等）。摄入任务必须提供 target scope；运行中协作取消，
+        已进入的同步调用允许收尾，不回滚已写入数据。security 为本次请求安全上下文。
         """
 
     @abstractmethod

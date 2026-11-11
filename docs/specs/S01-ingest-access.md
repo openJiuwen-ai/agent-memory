@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-10-22 |
+| 最近一次修订日期 | 2026-11-09 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -37,7 +37,7 @@ Ingestor 必须分别复制两个 dict，不得合并或在两者之间 fallback
 4. **所有算子必须实现 `operator_type()` 和 `health()`**：继承自 `IngestOperator`，自描述 + 存活探测。
 5. **Source 只拉不规约**：Source 只产出 `RawPayload`，不做格式转换——规约归 Normalizer。
 6. **资产映射归 Ingestor**：调用方通过 `RawPayload.assets` 传入资产引用，Ingestor 决定如何将其映射到产出的 `MemoryUnit.segments`；Engine 不得在 ingest 返回后改写 `Segment.assets`。
-7. **不固定数量关系**：契约不规定一个 `RawPayload` 必须产生几个 `MemoryUnit` 或 `Segment`，也不规定资产引用必须分配给某个固定 Segment；具体策略由 Ingestor 实现定义。
+7. **不固定数量关系**：契约不规定一个 `RawPayload` 必须产生几个 `MemoryUnit` 或 `Segment`，也不规定资产引用必须分配给某个固定 Segment；具体策略由 Ingestor 实现定义。但有一条跨层不变量：**Normalizer 经 `structured_modalities()` 声明为结构化中间产物的模态，其规约结果是给构建层整体解析的包络，Ingestor 不得将其物理切分**（如 `VideoNormalizer` 声明的 VIDEO：JSON 包络必须以单个 `MemoryUnit` 完整交付 `VideoMemoryExtractor`）；未声明的模态视为整块纯文本投影，Ingestor 可按长度预切分。声明归生产该格式的 Normalizer，Ingestor 不维护模态白名单。
 8. **模态声明是能力边界**：Ingestor 调用 `normalize` 前必须确认 `RawPayload.modality` 在 `Normalizer.modalities()` 中；不支持时抛 `UnsupportedCapabilityError`，不得读取 data/uri、产生 MemoryUnit 或触发后续写入。RoutingNormalizer 中显式 route 与 delegate 的能力矛盾属于装配错误，在构造时抛 `ValidationError`。
 
 ## 接口契约

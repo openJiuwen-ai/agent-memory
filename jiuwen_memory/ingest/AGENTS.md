@@ -14,7 +14,7 @@
 | `source.py` | Source 接口：多模态信息源连接器（fetch 拉取原始数据 → RawPayload） |
 | `hierarchy_hints.py` | 纯叶提示解析与消息时间补齐；不读策略或存储，拒绝边与父角色 |
 | `ingestor.py` | Ingestor 接口：编排 Source → Normalizer → 组装 MemoryUnit |
-| `ingestor_impl/simple_ingestor.py` | SimpleIngestor：规约后按 `max_unit_chars` 预切分——超限文本产出多个 MemoryUnit（每 unit 单 Segment，`system_metadata` 记 `_part`/`_parts` 序号），未超限产出单个；该 payload 的全部 assets 复制到每个 Segment |
+| `ingestor_impl/simple_ingestor.py` | SimpleIngestor：规约后按 `max_unit_chars` 预切分——超限文本产出多个 MemoryUnit（每 unit 单 Segment，`system_metadata` 记 `_part`/`_parts` 序号），未超限产出单个；规约器经 `Normalizer.structured_modalities()` 声明为结构化产物的模态（如 video 的 JSON 包络）不切分、单 unit 完整交付；该 payload 的全部 assets 复制到每个 Segment |
 | `source_impl/` | Source 实现目录 |
 | `source_impl/text_source.py` | TextSource：纯文本信息源（当前唯一实现） |
 | `bootstrap.py` | 统一触发 Ingestor 实现注册 |
@@ -73,6 +73,9 @@
 
 ## 本地约束
 
+- SimpleIngestor 在每个 payload 规约前后检查 common 的任务局部取消信号，不吞掉取消
+  异常，不把已取消规约的部分结果继续交付构建层；未绑定信号时保持同步接口行为。
+
 1. 所有 Operator 必须实现 `operator_type()` 和 `health()`（继承自 `IngestOperator`）。
 2. Source 实现不走 Producer，由信息源接入侧按连接参数直接构造。
 3. Ingestor 接收 `list[RawPayload]`，返回 `list[MemoryUnit]`，不做持久化。
@@ -82,7 +85,7 @@
 7. 默认 `PassthroughNormalizer` 只接已经是 UTF-8 文本的 TEXT/CODE；DOCUMENT 原件必须配置专用解析型 Normalizer，不能把文件 URI 当作解析后的正文。
 
 8. `SimpleIngestor` 在 normalize 前校验并消费叶提示，不创建父子边；无提示保持空结构。
-9. 预切分 `_part`/`_parts` 是 `SimpleIngestor` 的内部序号约定，不对输入开放：payload `system_metadata` 携带的同名键一律剔除，多片时强制覆盖为真实序号，单片时不残留。`max_unit_chars` 缺省 8000；显式 null/空串/非整数在装配期显式拒绝（`or 0` 式兜底会静默关闭切分），0/负数是文档化的关闭开关。段落聚合路径 `"\n\n".join(pieces)` 严格还原原文；单段超长硬切兜底，硬切点拼接引入一个段落分隔（不影响记忆语义）。
+9. 预切分 `_part`/`_parts` 是 `SimpleIngestor` 的内部序号约定，不对输入开放：payload `system_metadata` 携带的同名键一律剔除，多片时强制覆盖为真实序号，单片时不残留。`max_unit_chars` 缺省 8000；显式 null/空串/非整数在装配期显式拒绝（`or 0` 式兜底会静默关闭切分），0/负数是文档化的关闭开关。段落聚合路径 `"\n\n".join(pieces)` 严格还原原文；单段超长硬切兜底，硬切点拼接引入一个段落分隔（不影响记忆语义）。**预切分默认对所有模态生效，唯一例外由规约器自声明**：`SimpleIngestor` 查询 `Normalizer.structured_modalities()`，命中的模态（如 `VideoNormalizer` 声明的 VIDEO）content 是给下游程序整体解析的结构化中间产物（视频 JSON 包络由 `VideoMemoryExtractor` `json.loads` 后拆成 CLM/ELM），其切分已在规约阶段按模态自身边界完成，接入层按字符数再切会把包络切成非法片段、抽取零产出（issue #294）；未声明的模态（含自定义 IMAGE / AUDIO 规约器的纯文本投影）一律照常预切分。接入层不维护模态白名单，谁生产该格式谁声明；`SimpleIngestor` 构造期经 `ensure_structured_modalities_declared` 取一次声明并校验其为 `modalities()` 子集，错误声明在装配期抛 `ValidationError`。
 10. `enrich_snapshot_hints` 由 Engine 传入开关；补齐只用 occurred_at，完整提示优先。
    无 occurred_at 时保持原输入；显式 TIME/Snapshot 单边区间不自动修补，已有端点原样保存。
    开启时缺时不使写入失败，非法身份、时间格式、逆序区间或边提示仍拒绝。

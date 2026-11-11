@@ -13,7 +13,8 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import MemoryUnit, RawPayload
+from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
+from jiuwen_memory.common.type_def import MemoryUnit, Modality, RawPayload
 
 from .base import IngestOperator
 
@@ -30,6 +31,10 @@ class IngestorProducer(Factory):
 
 
 class Ingestor(IngestOperator):
+    def local_media_preflight(self, modality: Modality) -> LocalMediaPreflight | None:
+        """Declare admitted local media that this ingestor passes through as a structured unit."""
+        return None
+
     @abstractmethod
     def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
         """接入一批原始负载：记录资产引用 + 规约投影 + 转换为记忆单元（不落盘）。"""

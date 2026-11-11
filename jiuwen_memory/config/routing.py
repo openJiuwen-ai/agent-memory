@@ -17,7 +17,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, BinaryIO, Generic, TypeVar
 
 from jiuwen_memory.common.base import PluginType
@@ -192,33 +194,51 @@ class RoutingKVStore(KVStore):
 
     def __init__(self, router: ActiveRouter[KVStore]) -> None:
         self._router = router
+        self._bound_store: ContextVar[KVStore | None] = ContextVar("routed_kv_bound", default=None)
+
+    def _active_store(self) -> KVStore:
+        bound = self._bound_store.get()
+        return bound if bound is not None else self._router.get()
+
+    def coordination_key(self) -> tuple[str, str | int]:
+        return self._active_store().coordination_key()
+
+    @contextmanager
+    def bind_coordination(self, key: tuple[str, str | int]) -> Iterator[None]:
+        store = self._active_store()
+        with store.bind_coordination(key):
+            token = self._bound_store.set(store)
+            try:
+                yield
+            finally:
+                self._bound_store.reset(token)
 
     def store_type(self) -> StoreType:
-        return self._router.get().store_type()
+        return self._active_store().store_type()
 
     def health(self) -> None:
-        self._router.get().health()
+        self._active_store().health()
 
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
-        self._router.get().insert(scope, key, value, ttl)
+        self._active_store().insert(scope, key, value, ttl)
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
-        self._router.get().update(scope, key, value, ttl)
+        self._active_store().update(scope, key, value, ttl)
 
     def delete(self, scope: Scope, key: str) -> None:
-        self._router.get().delete(scope, key)
+        self._active_store().delete(scope, key)
 
     def get(self, scope: Scope, key: str) -> bytes:
-        return self._router.get().get(scope, key)
+        return self._active_store().get(scope, key)
 
     def mget(self, scope: Scope, keys: list[str]) -> list[bytes]:
-        return self._router.get().mget(scope, keys)
+        return self._active_store().mget(scope, keys)
 
     def exists(self, scope: Scope, key: str) -> bool:
-        return self._router.get().exists(scope, key)
+        return self._active_store().exists(scope, key)
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
-        return self._router.get().scan(scope, prefix)
+        return self._active_store().scan(scope, prefix)
 
     def list(
         self,
@@ -230,7 +250,7 @@ class RoutingKVStore(KVStore):
         filters: FilterExpr | None = None,
         extensions: dict[str, str] | None = None,
     ) -> KVMemoryListResult:
-        return self._router.get().list(
+        return self._active_store().list(
             scope,
             offset=offset,
             limit=limit,
@@ -240,7 +260,7 @@ class RoutingKVStore(KVStore):
         )
 
     def scopes(self) -> list[Scope]:
-        return self._router.get().scopes()
+        return self._active_store().scopes()
 
 
 class RoutingVectorStore(VectorStore):

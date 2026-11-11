@@ -8,6 +8,7 @@ from dataclasses import replace
 
 from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
@@ -15,6 +16,7 @@ from jiuwen_memory.common.type_def import (
     and_merge,
 )
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.query_parser import QueryParser
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import (
     RetrievalQuery,
@@ -45,6 +47,9 @@ class MultimodalRetriever(Retriever):
         self._clip_top_k = clip_top_k
         self._event_top_k = event_top_k
         self._rrf_k = rrf_k
+
+    def query_parsers(self) -> tuple[QueryParser, ...] | None:
+        return self._base.query_parsers()
 
     def operator_type(self) -> RetrievalOperatorType:
         return RetrievalOperatorType.RETRIEVER
@@ -93,6 +98,8 @@ class MultimodalRetriever(Retriever):
                 branch = futures[future]
                 try:
                     results[branch] = future.result()
+                except PlaintextDataError:
+                    raise
                 except Exception as exc:
                     logger.warning(
                         "MultimodalRetriever branch %s failed: %s",

@@ -12,11 +12,14 @@ caption/OCR/视觉描述，音频 → ASR 转录，视频 → 关键帧描述 + 
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Callable
 
 from ..base import Plugin
-from ..errors import UnsupportedCapabilityError
+from ..errors import UnsupportedCapabilityError, ValidationError
 from ..factory.factory import Factory
-from ..type_def import Modality, RawPayload
+from ..type_def import Modality, RawPayload, Scope
+
+LocalMediaPreflight = Callable[[str, Scope], str]
 
 
 class NormalizerProducer(Factory):
@@ -38,6 +41,38 @@ class Normalizer(Plugin):
     @abstractmethod
     def normalize(self, payload: RawPayload) -> str:
         """将原模态负载规约为可治理的文本/结构投影（content）。"""
+
+    def local_media_preflight(self, modality: Modality) -> LocalMediaPreflight | None:
+        """Return the configured local-file admission function, if supported."""
+        return None
+
+    def structured_modalities(self) -> frozenset[Modality]:
+        """返回规约结果为**结构化中间产物**的模态子集（缺省空集）。
+
+        这些模态的 content 是给下游程序整体解析的包络（如视频规约的 JSON，由
+        VideoMemoryExtractor ``json.loads`` 后拆成 CLM/ELM），接入层不得按长度预切分；
+        未声明的模态一律视为整块纯文本投影，照常预切分。声明与产出同处一个实现——
+        谁生产该格式，谁负责声明；组合型实现（如 RoutingNormalizer）按路由汇总 delegate
+        的声明。
+        """
+        return frozenset()
+
+
+def ensure_structured_modalities_declared(normalizer: Normalizer) -> frozenset[Modality]:
+    """装配期门禁：``structured_modalities()`` 必须是 ``modalities()`` 的子集，返回该声明。
+
+    对不支持的模态声明「结构化产物」没有意义，只能是实现写错；在消费方构造时拒绝，
+    不让错误声明静默存在。
+    """
+    structured = frozenset(normalizer.structured_modalities())
+    unsupported = structured - set(normalizer.modalities())
+    if unsupported:
+        names = sorted(item.value for item in unsupported)
+        raise ValidationError(
+            f"{type(normalizer).__name__}.structured_modalities() declares {names}, "
+            "which are not in modalities()"
+        )
+    return structured
 
 
 def ensure_normalizer_supports(normalizer: Normalizer, modality: Modality) -> None:

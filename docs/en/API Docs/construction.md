@@ -347,6 +347,7 @@ required. In HTTP/deployment configuration, these sections are nested under `mem
 |---|---|---|---|
 | `keyword` | `KeywordExtractor` | Splits source text with a Chunker and produces SEMANTIC units with lineage; combines procedural content into one procedural memory | `chunker`, default `fixed_window` |
 | `llm` | `ExtractorImpl` | Performs structured LLM extraction and validates source, confidence, tier, and tags | `llm`; `extractor_min_confidence`, `extractor_max_attempts`, `extractor_retry_backoff`, `extract_batch_size` |
+| `agent_llm` | `AgentLlmExtractor` | Agent-oriented variant of `llm`: inherits the extraction pipeline and output contract, targets user↔agent conversations, and assigns `memory_class` during extraction | `llm`; same parameters as `llm`, plus `extractor_language` (`cn` / `en`, default `cn`) |
 | `dynamic_llm` | `DynamicLLMExtractor` | Extracts once per `_extract_prompt_<strategy>`; delegates to fallback when no strategy is present | `llm`, `fallback`, `prompts`; same parameters as `llm` |
 | `video_memory` | `VideoMemoryExtractor` | Converts video normalization results into CLM/ELM multimodal MemoryUnit objects | No configuration dependency; input must contain the expected video metadata |
 
@@ -392,7 +393,7 @@ continue to operate.
 | `evolver` | `dynamic` | `DynamicEvolver` | Dynamic-prompt four-step EXTRACT; inherits other modes from orchestrating | Same dependencies plus `PromptRegistry`; automatically injects `layer_annotator.default` when present |
 
 Both Evolvers use `dedup_medium_similarity` (default `0.7`) and `dedup_high_similarity` (default
-`0.9`). When `vector_enabled=false`, unspecified IndexBuilder and Dedup targets switch to `fulltext`
+`1.0`). When `vector_enabled=false`, unspecified IndexBuilder and Dedup targets switch to `fulltext`
 and `keyword`, respectively.
 
 ## 14. Default Assembly
@@ -453,7 +454,7 @@ evolver:
       dedup: default
       llm: default
       dedup_medium_similarity: 0.7
-      dedup_high_similarity: 0.9
+      dedup_high_similarity: 1.0
 ```
 
 The current `dynamic` builder looks up `layer_annotator.default` directly and does not read
@@ -569,10 +570,11 @@ Producer rules above.
 
 | Parameter | Type | Default | Applicable implementation | Purpose/constraint |
 |---|---|---:|---|---|
-| `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` | Filters low-confidence extraction candidates |
-| `extractor_max_attempts` | `int` | `3` | `llm` / `dynamic_llm` | Total LLM call attempts; `1` means no retry |
-| `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` | Retry backoff in milliseconds |
-| `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` | Maximum source units per LLM extraction call |
+| `extractor_min_confidence` | `float` | `0.5` | `llm` / `dynamic_llm` / `agent_llm` | Filters low-confidence extraction candidates |
+| `extractor_max_attempts` | `int` | `3` | `llm` / `dynamic_llm` / `agent_llm` | Total LLM call attempts; `1` means no retry |
+| `extractor_retry_backoff` | `int` | `1000` | `llm` / `dynamic_llm` / `agent_llm` | Retry backoff in milliseconds |
+| `extract_batch_size` | `int` | `10` | `llm` / `dynamic_llm` / `agent_llm` | Maximum source units per LLM extraction call |
+| `extractor_language` | `str` | `cn` | `agent_llm` | Prompt instruction language, `cn` / `en`; invalid values fall back to `cn`, and the output contract stays in English |
 | `abstractor_min_confidence` | `float` | `0.5` | `abstractor.llm` | Minimum confidence |
 | `abstractor_min_group_size_summary` | `int` | `1` | `abstractor.llm` | Minimum summary group size |
 | `abstractor_min_group_size_pattern` | `int` | `3` | `abstractor.llm` | Minimum pattern group size |
@@ -600,7 +602,7 @@ Producer rules above.
 | `dedup_tier_filter` | `bool` | `false` | Both Dedup implementations | Restricts recall to the same tier |
 | `dedup_scope_filter` | `bool` | `true` | Both Dedup implementations | Restricts recall to the candidate Scope |
 | `dedup_medium_similarity` | `float` | `0.7` | Both Evolvers | Medium-similarity decision threshold |
-| `dedup_high_similarity` | `float` | `0.9` | Both Evolvers | High-similarity threshold; must not be below medium |
+| `dedup_high_similarity` | `float` | `1.0` | Both Evolvers | High-similarity threshold; must not be below medium; only exact duplicates bypass the LLM |
 | `layer_annotator_threshold` | `int` | `512` | Both LayerAnnotators | Annotates only units whose content length exceeds this threshold |
 | `layer_annotator_l1_chars` | `int` | `200` | `layer_annotator.keyword` | Number of characters retained for L1 |
 | `layer_annotator_max_attempts` | `int` | `3` | `layer_annotator.llm` | Total LLM annotation calls; `1` means no retry |

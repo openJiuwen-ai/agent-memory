@@ -1,0 +1,17 @@
+memory_api:
+  security:
+    default:
+      target: standard
+      params: {authenticator: local_dev, authorizer: default}
+  authenticator:
+    local_dev:
+      target: dev
+      params: {role: user}
+  authorizer:
+    default:
+      target: standard
+      params: {grant_store: default, delegation_store: default}
+  grant_store:
+    default: {target: memory}
+  delegation_store:
+    default: {target: memory}

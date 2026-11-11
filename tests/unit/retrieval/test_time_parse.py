@@ -129,3 +129,37 @@ def test_year_insertion_form_resolves_explicit_year() -> None:
 
     assert lo == datetime(2025, 6, 8, tzinfo=UTC)
     assert hi == datetime(2025, 6, 9, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "最近1000000000天",  # timedelta(days=10**9) 构造即溢出（上限 999999999）
+        "过去1000000000周",
+        "最近800000天",  # 构造成功（≈2190 年），now - delta 越过 datetime.min 溢出
+        "过去200000周",  # ≈3800 年，减法溢出
+    ],
+)
+def test_recent_n_days_overflow_returns_no_window(text: str) -> None:
+    """N 超出 datetime 可表示范围：不下推时间窗（语义≈全部历史），不抛 OverflowError。"""
+    assert parse_time(text, now=NOW) == (None, None)
+
+
+def test_overflow_falls_through_to_later_rules() -> None:
+    """相对时间溢出后继续尝试后续规则：文本同时含合法日期时取日期窗。"""
+    lo, hi = parse_time("最近1000000000天，截止2026年6月8日", now=NOW)
+
+    assert lo == datetime(2026, 6, 8, tzinfo=UTC)
+    assert hi == datetime(2026, 6, 9, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("digits", [4300, 5000])
+def test_huge_digit_string_returns_no_window(digits: int) -> None:
+    """超长数字串触发 int(str) 4300 位上限（ValueError），与 timedelta 溢出同构回落空窗。"""
+    assert parse_time("最近" + "9" * digits + "天", now=NOW) == (None, None)
+
+
+@pytest.mark.parametrize("text", ["9999-12-31", "9999年12月31日"])
+def test_max_date_absolute_window_returns_none(text: str) -> None:
+    """绝对日期命中 datetime.max 边界（9999-12-31）：排他端越界同构回落 (None, None)。"""
+    assert parse_time(text, now=NOW) == (None, None)
