@@ -16,6 +16,7 @@ pymilvus 2.4+）。``score``
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any
 
@@ -157,6 +158,9 @@ class MilvusVectorStore(VectorStore):
         self._options = options
         self._client: Any = None
         self._client_uri: str | None = None
+        # 建连互斥：并发首访会各自 MilvusClient(...) 建连，后者的连接被前者
+        # 覆盖后未关闭即泄漏 gRPC channel；同时 ensure 竞态。
+        self._connect_lock = threading.Lock()
 
     @property
     def client(self) -> Any:
@@ -169,13 +173,34 @@ class MilvusVectorStore(VectorStore):
             raise BackendError(
                 "pymilvus client not installed (pip install pymilvus)"
             ) from exc
-        with wrap_backend("milvus connect"):
-            kwargs: dict[str, Any] = dict(self._options)
-            if self._token:
-                kwargs["token"] = self._token
-            self._client = MilvusClient(uri=uri, **kwargs)
-            self._client_uri = uri
-            self._ensure_collection()
+        with self._connect_lock:
+            # 双检：等锁期间另一线程可能已完成建连 + ensure。
+            if self._client is not None and self._client_uri == uri:
+                return self._client
+            with wrap_backend("milvus connect"):
+                kwargs: dict[str, Any] = dict(self._options)
+                if self._token:
+                    kwargs["token"] = self._token
+                client = MilvusClient(uri=uri, **kwargs)
+            previous, previous_uri = self._client, self._client_uri
+            try:
+                self._client, self._client_uri = client, uri
+                with wrap_backend("milvus connect"):
+                    self._ensure_collection()
+            except Exception:
+                # ensure 失败不得缓存半初始化 client：否则后续访问直接命中坏
+                # 缓存，「重新建连 + ensure」的恢复路径永不触发。回滚缓存并
+                # 关闭本次连接，下次访问走完整流程重试。
+                self._client, self._client_uri = previous, previous_uri
+                closer = getattr(client, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:
+                        logger.debug(
+                            "milvus client close after failed ensure raised", exc_info=True
+                        )
+                raise
         return self._client
 
     def _wait_for_load_complete(self, timeout: float | None = None) -> None:
