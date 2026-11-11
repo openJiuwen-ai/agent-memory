@@ -71,10 +71,10 @@ under `memory.builtin.jiuwen.sdk.globals`. WorkSwarm passes them to the AgentMem
 
 Use a local absolute path on the AgentMemory host for `root`. The `scope` must match the ingest
 Scope exactly. Nonblank fields take precedence over environment variables. Omitted fields, `null`,
-blank strings, and empty root lists fall back to the corresponding environment variables. With
-an empty form and no import-root environment variable, the Provider loads text memory only. If
-settings are partial and a required value is missing, the Provider logs a warning and keeps text
-memory available.
+blank strings, and empty root lists fall back to the corresponding environment variables. The
+Provider trims model URLs and names. With an empty form and no import-root environment variable,
+it loads text memory only. Missing required settings, invalid directories, and invalid Scope
+bindings produce a warning and leave text memory available.
 
 Choose either the compact fields above or a complete video component configuration. When supplied
 together, explicit components and pipeline settings override the generated defaults. Tool

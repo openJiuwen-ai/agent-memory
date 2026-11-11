@@ -65,6 +65,7 @@ from jiuwen_memory.api import (
     Context,
     DisclosureLevel,
     EvolveMode,
+    LocalMediaImports,
     Modality,
     RequestSecurityContext,
     ValidationError,
@@ -356,9 +357,13 @@ def _configure_default_video(config: dict[str, Any], settings: dict[str, Any]) -
         value = settings.get(key)
         if not _video_input_present(value):
             value = os.getenv(env_name, "")
-        if not isinstance(value, str) or (not value.strip() and not key.endswith("api_key")):
+        is_api_key = key.endswith("api_key")
+        if not isinstance(value, str) or (not value.strip() and not is_api_key):
             raise ValidationError(f"SDK video requires a valid globals.{key} or {env_name}")
-        values[key] = value
+        values[key] = value if is_api_key else value.strip()
+
+    # Validate before changing defaults so an invalid import binding only skips video assembly.
+    LocalMediaImports(bindings)
     config["asr"] = {"video": {"target": "openai_transcription", "params": {
         "asr_base_url": values.get("asr_base_url", ""),
         "asr_model": values.get("asr_model", ""),
@@ -577,8 +582,6 @@ def _merge_config_over_default(
             _configure_default_video(config, settings)
         except ValidationError as exc:
             logger.warning("Built-in SDK video profile skipped: %s", str(exc))
-            if standalone:
-                return config_dict
     return _merge(config, config_dict)
 
 

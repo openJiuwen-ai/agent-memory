@@ -235,6 +235,21 @@ class TestAvailability:
 # --------------------------------------------------------------------------- #
 
 
+async def _assert_text_only_memory_works(provider: AgentMemoryMemoryProvider) -> None:
+    assert {schema["name"] for schema in provider.get_tool_schemas()} == {
+        "agent_memory_search", "agent_memory_conclude", "agent_memory_read_md_file",
+        "agent_memory_edit_md_file",
+    }
+    await provider.initialize(user_id="user", scope_id="tenant")
+    try:
+        result = json.loads(await provider.handle_tool_call(
+            "agent_memory_conclude", {"conclusion": "Still stores text."},
+        ))
+        assert result["item_id"]
+    finally:
+        await provider.shutdown()
+
+
 class TestSdkMode:
     @pytest.mark.parametrize("settings, warning", [
         ({"local_media_roots": [], "asr_model": None, "video_model": " "}, None),
@@ -249,23 +264,54 @@ class TestSdkMode:
             security_provider=_security_provider(ApiScope(org="tenant", user="user")),
         )
 
-        async def run():
-            assert len(provider.get_tool_schemas()) == 4
-            await provider.initialize(user_id="user", scope_id="tenant")
-            try:
-                result = json.loads(await provider.handle_tool_call(
-                    "agent_memory_conclude", {"conclusion": "Still stores text."},
-                ))
-                assert result["item_id"]
-            finally:
-                await provider.shutdown()
-
-        asyncio.run(run())
+        asyncio.run(_assert_text_only_memory_works(provider))
         if warning:
             assert "Built-in SDK video profile skipped" in caplog.text
             assert warning in caplog.text
         else:
             assert "Built-in SDK video profile skipped" not in caplog.text
+
+    @pytest.mark.parametrize("root, scope, reason", [
+        ("missing", {"org": "tenant"}, "existing non-volume directory"),
+        ("relative", {"org": "tenant"}, "absolute local directory"),
+        ("present", {"user": "user"}, "scope requires a nonempty org"),
+        ("present", {"org": "tenant", "project": "p"}, "scope requires a nonempty org"),
+    ])
+    def test_invalid_video_import_bindings_keep_text_memory(
+        self, tmp_path, root, scope, reason, caplog,
+    ):
+        paths = {"missing": str(tmp_path / "missing"), "relative": "imports"}
+        provider = AgentMemoryMemoryProvider(
+            config_dict={"globals": {
+                "local_media_roots": [{"scope": scope, "root": paths.get(root, str(tmp_path))}],
+                "asr_base_url": "https://asr.example.invalid/v1", "asr_model": "asr",
+                "video_base_url": "https://vision.example.invalid/v1", "video_model": "vision",
+            }},
+            security_provider=_security_provider(ApiScope(org="tenant", user="user")),
+        )
+
+        asyncio.run(_assert_text_only_memory_works(provider))
+        assert "Built-in SDK video profile skipped" in caplog.text
+        assert reason in caplog.text
+
+    @pytest.mark.parametrize("extension", ["json", "yaml"])
+    def test_partial_video_file_keeps_document_memory(self, tmp_path, extension):
+        md_root = tmp_path / "document-memory"
+        config = {
+            "globals": {"video_model": "vision-model"},
+            "markdown_store": {"default": {"params": {"root": str(md_root)}}},
+        }
+        path = tmp_path / f"partial-video.{extension}"
+        serialize = json.dumps if extension == "json" else yaml.safe_dump
+        path.write_text(serialize(config), encoding="utf-8")
+        provider = AgentMemoryMemoryProvider(
+            config_path=str(path),
+            security_provider=_security_provider(ApiScope(org="tenant", user="user")),
+        )
+
+        asyncio.run(_assert_text_only_memory_works(provider))
+        document = md_root / "memory" / "MEMORY.md"
+        assert "Still stores text." in document.read_text(encoding="utf-8")
 
     @pytest.mark.parametrize("contents, error", [
         ([], "SDK config must contain a mapping"),
@@ -552,28 +598,82 @@ class TestSdkMode:
 
 
 class TestMergeConfigOverDefault:
+    @pytest.mark.parametrize("source", ["globals", "env"])
+    def test_video_model_urls_and_names_are_trimmed(self, tmp_path, monkeypatch, source):
+        import agent_memory_provider as _amp
+
+        settings = {"local_media_roots": [{"scope": {"org": "tenant"}, "root": str(tmp_path)}]}
+        inputs = [
+            ("asr_base_url", "ASR_API_BASE", "https://asr.example.invalid/v1"),
+            ("asr_model", "ASR_MODEL_NAME", "asr-model"),
+            ("video_base_url", "VIDEO_API_BASE", "https://vision.example.invalid/v1"),
+            ("video_model", "VIDEO_MODEL_NAME", "vision-model"),
+        ]
+        for key, env_name, value in inputs:
+            if source == "env":
+                monkeypatch.setenv(env_name, f"  {value}  ")
+            else:
+                settings[key] = f"  {value}  "
+
+        merged = _amp._merge_config_over_default({"globals": settings})
+        asr = merged["asr"]["video"]["params"]
+        vision = merged["llm"]["video_vision"]["params"]
+        assert asr["asr_base_url"] == "https://asr.example.invalid/v1"
+        assert asr["asr_model"] == "asr-model"
+        assert vision["llm_base_url"] == "https://vision.example.invalid/v1"
+        assert vision["llm_model"] == "vision-model"
+
     def test_compact_video_overrides_env_and_preserves_input(self, tmp_path, monkeypatch):
         import copy
 
         import agent_memory_provider as _amp
 
-        monkeypatch.setenv("JIUWEN_MEMORY_VIDEO_ROOTS", "invalid JSON")
-        monkeypatch.setenv("ASR_MODEL_NAME", "wrong-env-model")
-        monkeypatch.setenv("VIDEO_API_KEY", "env-vision-key")
-        monkeypatch.setenv("ASR_API_KEY", "env-asr-key")
+        env_root = tmp_path / "env-imports"
+        env_root.mkdir()
+        monkeypatch.setenv("JIUWEN_MEMORY_VIDEO_ROOTS", json.dumps([
+            {"scope": {"org": "tenant"}, "root": str(env_root)},
+        ]))
+        for name, value in {
+            "ASR_API_BASE": "https://env-asr.example.invalid/v1",
+            "ASR_MODEL_NAME": "env-asr-model",
+            "ASR_API_KEY": "env-asr-key",
+            "VIDEO_API_BASE": "https://env-vision.example.invalid/v1",
+            "VIDEO_MODEL_NAME": "env-vision-model",
+            "VIDEO_API_KEY": "env-vision-key",
+        }.items():
+            monkeypatch.setenv(name, value)
+        roots = [{"scope": {"org": "tenant"}, "root": str(tmp_path)}]
         supplied = {"globals": {
-            "local_media_roots": [{"scope": {"org": "tenant"}, "root": str(tmp_path)}],
-            "asr_base_url": "https://example.invalid", "asr_model": "portal-asr",
-            "video_base_url": "https://example.invalid", "video_model": "portal-vision",
-            "video_api_key": "", "asr_api_key": None,
-        }, "asr": {"video": {"params": {"asr_model": "explicit-instance"}}}}
+            "local_media_roots": roots,
+            "asr_base_url": "https://portal-asr.example.invalid/v1",
+            "asr_model": "portal-asr",
+            "video_base_url": "https://portal-video.example.invalid/v1",
+            "video_model": "portal-vision",
+            "video_api_key": "",
+            "asr_api_key": None,
+        }}
         original = copy.deepcopy(supplied)
         merged = _amp._merge_config_over_default(supplied)
-        assert merged["asr"]["video"]["params"]["asr_model"] == "explicit-instance"
-        assert merged["llm"]["video_vision"]["params"]["llm_api_key"] == "env-vision-key"
-        assert merged["asr"]["video"]["params"]["asr_api_key"] == "env-asr-key"
+        routes = merged["normalizer"]["default"]["params"]["routes"]
+        assert routes["video"]["params"]["local_media_roots"] == roots
+        assert merged["asr"]["video"]["params"] == {
+            "asr_base_url": "https://portal-asr.example.invalid/v1",
+            "asr_model": "portal-asr",
+            "asr_api_key": "env-asr-key",
+        }
+        assert merged["llm"]["video_vision"]["params"] == {
+            "llm_base_url": "https://portal-video.example.invalid/v1",
+            "llm_model": "portal-vision",
+            "llm_api_key": "env-vision-key",
+            "llm_temperature": 0.0,
+        }
         assert merged["pipeline"]["default"]["params"]["profiles"]["video"]["evolver"] == "video"
         assert supplied == original
+
+        with_explicit_component = _amp._merge_config_over_default({
+            **supplied, "asr": {"video": {"params": {"asr_model": "explicit-instance"}}},
+        })
+        assert with_explicit_component["asr"]["video"]["params"]["asr_model"] == "explicit-instance"
 
     def test_globals_creds_override_preserves_agent_stack(self, monkeypatch):
         import agent_memory_provider as _amp
