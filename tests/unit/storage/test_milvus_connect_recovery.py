@@ -78,11 +78,16 @@ def test_failed_ensure_does_not_poison_client_cache(monkeypatch: pytest.MonkeyPa
         _ = store.client
     assert len(_FlakyEnsureClient.instances) == 1
     assert _FlakyEnsureClient.instances[0].closed is True
+    # 发布时机：ensure 成功才写共享缓存——失败后缓存保持为空，
+    # 未就绪连接不会经快路径泄漏给并发访问者。
+    assert store._client is None
+    assert store._client_uri is None
 
     _FlakyEnsureClient.fail_first = False
     client = store.client  # 第二次访问：重新建连并成功
     assert client is _FlakyEnsureClient.instances[1]
     assert len(_FlakyEnsureClient.instances) == 2
+    assert store._client is client
 
 
 def test_failed_ensure_closes_new_connection(monkeypatch: pytest.MonkeyPatch) -> None:

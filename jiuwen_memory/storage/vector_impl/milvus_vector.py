@@ -182,16 +182,13 @@ class MilvusVectorStore(VectorStore):
                 if self._token:
                     kwargs["token"] = self._token
                 client = MilvusClient(uri=uri, **kwargs)
-            previous, previous_uri = self._client, self._client_uri
+            # ensure 全程走局部 client，成功后才发布缓存：发布前快路径不会把
+            # 「尚未 ensure」的连接发给其他线程，失败也不产生共享状态回滚，
+            # 与 _recover_connection 的缓存清空互不踩踏。
             try:
-                self._client, self._client_uri = client, uri
                 with wrap_backend("milvus connect"):
-                    self._ensure_collection()
+                    self._ensure_collection(client)
             except Exception:
-                # ensure 失败不得缓存半初始化 client：否则后续访问直接命中坏
-                # 缓存，「重新建连 + ensure」的恢复路径永不触发。回滚缓存并
-                # 关闭本次连接，下次访问走完整流程重试。
-                self._client, self._client_uri = previous, previous_uri
                 closer = getattr(client, "close", None)
                 if callable(closer):
                     try:
@@ -201,9 +198,10 @@ class MilvusVectorStore(VectorStore):
                             "milvus client close after failed ensure raised", exc_info=True
                         )
                 raise
+            self._client, self._client_uri = client, uri
         return self._client
 
-    def _wait_for_load_complete(self, timeout: float | None = None) -> None:
+    def _wait_for_load_complete(self, client: Any, timeout: float | None = None) -> None:
         """Poll load state until collection is fully loaded or timeout.
 
         ``load_collection`` may return before the collection is actually
@@ -214,7 +212,7 @@ class MilvusVectorStore(VectorStore):
         ``timeout`` defaults to the store's configured ``load_timeout`` —
         raise it for slow clusters, lower it for fail-fast deployments.
         """
-        if not callable(getattr(self._client, "get_load_state", None)):
+        if not callable(getattr(client, "get_load_state", None)):
             return
         if timeout is None:
             timeout = self._load_timeout
@@ -222,7 +220,7 @@ class MilvusVectorStore(VectorStore):
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             try:
-                state = self._client.get_load_state(collection_name=self._collection)
+                state = client.get_load_state(collection_name=self._collection)
                 load_state = state.get("state") if isinstance(state, dict) else state
                 if str(load_state) == "Loaded":
                     return
@@ -359,8 +357,11 @@ class MilvusVectorStore(VectorStore):
             op,
             self._collection,
         )
-        self._client = None
-        self._client_uri = None
+        # 缓存写入统一收敛到 _connect_lock 内：property 的建连与这里的清空
+        # 是仅有的两个写入口，避免恢复路径与在建线程互踩共享状态。
+        with self._connect_lock:
+            self._client = None
+            self._client_uri = None
         _ = self.client  # 触发重建 + ensure_collection
 
     def _search_with_not_loaded_retry(
@@ -492,14 +493,14 @@ class MilvusVectorStore(VectorStore):
         )
         return live or self._fallback_uri
 
-    def _ensure_collection(self) -> None:
-        if self._client.has_collection(self._collection):
-            self._client.load_collection(self._collection)
-            self._wait_for_load_complete()
+    def _ensure_collection(self, client: Any) -> None:
+        if client.has_collection(self._collection):
+            client.load_collection(self._collection)
+            self._wait_for_load_complete(client)
             return
         from pymilvus import DataType
 
-        schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
         schema.add_field(
             "id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len
         )
@@ -508,18 +509,18 @@ class MilvusVectorStore(VectorStore):
         for fld in _SCOPE_FIELDS:
             schema.add_field(fld, DataType.VARCHAR, max_length=self._scope_len)
         schema.add_field("metadata", DataType.JSON)  # scope 之外的元数据整体存 JSON
-        index_params = self._client.prepare_index_params()
+        index_params = client.prepare_index_params()
         index_params.add_index(
             field_name="vector", index_type="AUTOINDEX", metric_type=self._metric_type
         )
-        self._client.create_collection(
+        client.create_collection(
             collection_name=self._collection,
             schema=schema,
             index_params=index_params,
             consistency_level=self._consistency,
         )
-        self._client.load_collection(self._collection)
-        self._wait_for_load_complete()
+        client.load_collection(self._collection)
+        self._wait_for_load_complete(client)
 
     def _scope_expr(self, scope: Scope) -> str:
         return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
