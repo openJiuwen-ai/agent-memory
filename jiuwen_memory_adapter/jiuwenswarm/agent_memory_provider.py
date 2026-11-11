@@ -307,32 +307,67 @@ def _recall_filters() -> dict[str, Any]:
 
 
 _VIDEO_ROOTS_ENV = "JIUWEN_MEMORY_VIDEO_ROOTS"
+_VIDEO_MODEL_ENV = {
+    "asr_base_url": "ASR_API_BASE", "asr_model": "ASR_MODEL_NAME", "asr_api_key": "ASR_API_KEY",
+    "video_base_url": "VIDEO_API_BASE", "video_model": "VIDEO_MODEL_NAME",
+    "video_api_key": "VIDEO_API_KEY",
+}
 
 
-def _configure_default_video(config: dict[str, Any], roots: str) -> None:
-    """Install the SDK video profile from deployment inputs."""
-    try:
-        bindings = json.loads(roots)
-    except json.JSONDecodeError as exc:
-        raise ValidationError(f"{_VIDEO_ROOTS_ENV} must be a JSON array") from exc
+def _sdk_globals(config: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        raise ValidationError("SDK config must contain a mapping")
+    settings = config.get("globals")
+    if settings is None:
+        return {}
+    if not isinstance(settings, dict):
+        raise ValidationError("SDK config globals must contain a mapping")
+    return settings
+
+
+def _video_input_present(value: Any) -> bool:
+    return value is not None and (not isinstance(value, str) or bool(value.strip()))
+
+
+def _default_video_requested(settings: dict[str, Any]) -> bool:
+    roots = settings.get("local_media_roots")
+    return (
+        (_video_input_present(roots) and roots != [])
+        or any(_video_input_present(settings.get(key)) for key in _VIDEO_MODEL_ENV)
+        or bool(os.getenv(_VIDEO_ROOTS_ENV, "").strip())
+    )
+
+
+def _configure_default_video(config: dict[str, Any], settings: dict[str, Any]) -> None:
+    """Install one video profile from explicit globals, falling back to deployment env."""
+    bindings = settings.get("local_media_roots")
+    if not _video_input_present(bindings) or bindings == []:
+        bindings = os.getenv(_VIDEO_ROOTS_ENV, "").strip() or None
+    if isinstance(bindings, str):
+        try:
+            bindings = json.loads(bindings)
+        except json.JSONDecodeError as exc:
+            raise ValidationError("Video local_media_roots must be a JSON array") from exc
     if not isinstance(bindings, list) or not bindings:
-        raise ValidationError(f"{_VIDEO_ROOTS_ENV} must contain at least one scope/root binding")
+        raise ValidationError("Video local_media_roots requires at least one scope/root binding")
 
-    asr_base_url = os.getenv("ASR_API_BASE", "").strip()
-    asr_model = os.getenv("ASR_MODEL_NAME", "").strip()
-    video_base_url = os.getenv("VIDEO_API_BASE", "").strip()
-    video_model = os.getenv("VIDEO_MODEL_NAME", "").strip()
-    if not all((asr_base_url, asr_model, video_base_url, video_model)):
-        raise ValidationError(
-            "SDK video requires ASR_API_BASE, ASR_MODEL_NAME, VIDEO_API_BASE and VIDEO_MODEL_NAME"
-        )
+    values = {}
+    for key, env_name in _VIDEO_MODEL_ENV.items():
+        value = settings.get(key)
+        if not _video_input_present(value):
+            value = os.getenv(env_name, "")
+        if not isinstance(value, str) or (not value.strip() and not key.endswith("api_key")):
+            raise ValidationError(f"SDK video requires a valid globals.{key} or {env_name}")
+        values[key] = value
     config["asr"] = {"video": {"target": "openai_transcription", "params": {
-        "asr_base_url": asr_base_url, "asr_model": asr_model,
-        "asr_api_key": os.getenv("ASR_API_KEY", ""),
+        "asr_base_url": values.get("asr_base_url", ""),
+        "asr_model": values.get("asr_model", ""),
+        "asr_api_key": values.get("asr_api_key", ""),
     }}}
     config["llm"]["video_vision"] = {"target": "openai", "params": {
-        "llm_base_url": video_base_url, "llm_model": video_model,
-        "llm_api_key": os.getenv("VIDEO_API_KEY", ""), "llm_temperature": 0.0,
+        "llm_base_url": values.get("video_base_url", ""),
+        "llm_model": values.get("video_model", ""),
+        "llm_api_key": values.get("video_api_key", ""), "llm_temperature": 0.0,
     }}
     config["normalizer"]["default"] = {"target": "routing", "params": {
         "routes": {"video": {"target": "video", "params": {
@@ -502,13 +537,12 @@ def _agent_default_config() -> dict[str, Any]:
         "space": {"default": {"target": "kv", "params": {}}},
         "config_source": {"default": "yaml_defaults"},
     }
-    roots = os.getenv(_VIDEO_ROOTS_ENV, "").strip()
-    if roots:
-        _configure_default_video(config, roots)
     return config
 
 
-def _merge_config_over_default(config_dict: dict[str, Any]) -> dict[str, Any]:
+def _merge_config_over_default(
+    config_dict: dict[str, Any], *, standalone: bool = False,
+) -> dict[str, Any]:
     """[本地修改 2026-10-20] 把上层 ``config_dict`` 深合并到内置 agent 默认装配之上。
 
     进程内 ``config_dict`` 的语义从「整体替换」改为「以 ``_agent_default_config()``
@@ -533,7 +567,19 @@ def _merge_config_over_default(config_dict: dict[str, Any]) -> dict[str, Any]:
             return base
         return override
 
-    return _merge(_agent_default_config(), config_dict)
+    settings = _sdk_globals(config_dict)
+    requested = _default_video_requested(settings)
+    if standalone and not requested:
+        return config_dict
+    config = _agent_default_config()
+    if requested:
+        try:
+            _configure_default_video(config, settings)
+        except ValidationError as exc:
+            logger.warning("Built-in SDK video profile skipped: %s", str(exc))
+            if standalone:
+                return config_dict
+    return _merge(config, config_dict)
 
 
 class AgentMemoryMemoryProvider(MemoryProvider):
@@ -1380,7 +1426,7 @@ def _build_client(
     if config_path:
         return _InProcessClient(config_path, security_provider=security_provider)
     return _InProcessClient(
-        None, config_dict=_agent_default_config(), security_provider=security_provider
+        None, config_dict=_merge_config_over_default({}), security_provider=security_provider
     )
 
 
@@ -1828,12 +1874,9 @@ class _InProcessClient(_AgentMemoryClient):
             config = (
                 json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
             )
-            if os.getenv(_VIDEO_ROOTS_ENV, "").strip():
-                if config is None:
-                    config = {}
-                if not isinstance(config, dict):
-                    raise ValidationError("SDK config file must contain a mapping")
-                config = _merge_config_over_default(config)
+            config = _merge_config_over_default(
+                config if config is not None else {}, standalone=True,
+            )
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
