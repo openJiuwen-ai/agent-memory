@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from collections import defaultdict
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
@@ -45,6 +46,10 @@ class InMemoryVectorStore(VectorStore):
 
     def __init__(self) -> None:
         self._data: dict[_ScopeKey, dict[str, VectorRecord]] = defaultdict(dict)
+        # 写方法两阶段（先全量校验后全量提交），读方法持锁快照后锁外计算：
+        # 无锁时 search 迭代 bucket.values() 与并发 insert 交错会抛
+        # "dictionary changed size during iteration"。
+        self._lock = threading.Lock()
 
     def store_type(self) -> StoreType:
         return StoreType.VECTOR
@@ -53,30 +58,40 @@ class InMemoryVectorStore(VectorStore):
         return None
 
     def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
-        bucket = self._data[_skey(scope)]
-        for rec in records:
-            if rec.id in bucket:
-                raise ConflictError("vector", rec.id)
-            bucket[rec.id] = rec
+        with self._lock:
+            bucket = self._data[_skey(scope)]
+            # 先全量校验再提交：中途冲突不得留下部分写入，否则重试会因
+            # 前半批已入库而永久冲突。
+            for rec in records:
+                if rec.id in bucket:
+                    raise ConflictError("vector", rec.id)
+            for rec in records:
+                bucket[rec.id] = rec
 
     def update(self, scope: Scope, records: list[VectorRecord]) -> None:
-        bucket = self._data[_skey(scope)]
-        for rec in records:
-            if rec.id not in bucket:
-                raise NotFoundError("vector", rec.id)
-            bucket[rec.id] = rec
+        with self._lock:
+            bucket = self._data[_skey(scope)]
+            for rec in records:
+                if rec.id not in bucket:
+                    raise NotFoundError("vector", rec.id)
+            for rec in records:
+                bucket[rec.id] = rec
 
     def delete(self, scope: Scope, ids: list[str]) -> None:
-        bucket = self._data[_skey(scope)]
-        for rec_id in ids:
-            bucket.pop(rec_id, None)
+        with self._lock:
+            bucket = self._data[_skey(scope)]
+            for rec_id in ids:
+                bucket.pop(rec_id, None)
 
     def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
-        bucket = self._data[_skey(scope)]
-        return [bucket[i] for i in ids if i in bucket]
+        with self._lock:
+            bucket = self._data[_skey(scope)]
+            return [bucket[i] for i in ids if i in bucket]
 
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
-        bucket = self._data[_skey(scope)]
+        with self._lock:
+            bucket = self._data[_skey(scope)]
+            rows = list(bucket.values())
         scored: list[ScoredID] = []
         for rec in bucket.values():
             if not evaluate(query.filters, lambda clause: matches_filter_value(
@@ -107,9 +122,10 @@ class InMemoryVectorStore(VectorStore):
             msg = "InMemoryVectorStore.recall: output_fields only supports 'metadata', ignoring %s"
             if unknown:
                 logger.info(msg, unknown)
-        bucket = self._data[_skey(scope)]
+        with self._lock:
+            rows = list(self._data[_skey(scope)].values())
         scored: list[ScoredHit] = []
-        for rec in bucket.values():
+        for rec in rows:
             if not evaluate(query.filters, lambda clause: matches_filter_value(
                 rec.metadata.get(filter_field_metadata_key(clause.field)), clause
             )):
