@@ -902,8 +902,8 @@ class WriteOpsMixin:
                         operation_id=self._continuity_operation_id(item.scope, item.continuity),
                         continuity_status="committed",
                     )
-                if stopped_index is not None:
-                    return
+                # 不要在这里提前 return：同一批里排在失败项**之前**的合法项，
+                # 其结果可能排在本条之后，提前退出会让它们的下标永远拿不到结果。
 
         for index, item, auth in sorted(authorized, key=lambda entry: entry[0]):
             # 失败点之前的项已由上面的裁剪保留；之后的项已在 outcomes 里标 skipped。

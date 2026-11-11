@@ -63,6 +63,32 @@ def test_history_identity_preflight_and_unknown_boundary(tmp_path):
     assert result["imported"] == 0 and result["remaining"] == len(events)
 
 
+def test_continuity_client_accepts_batch_add_for_history_import():
+    """历史导入走 batch_add：白名单漏了它会让 CLI --apply 直接 ValueError。"""
+    seen = []
+
+    def transport(request):
+        seen.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={"outcomes": [{"continuity_status": "committed", "operation_id": "op"}]},
+        )
+
+    client = ContinuityClient(
+        "https://memory.example", "test-key", transport=httpx.MockTransport(transport)
+    )
+    try:
+        result = client.call(
+            "batch_add",
+            {"items": [{"content": "x", "scope": {"org": "o", "space": "p"}}],
+             "scope": {"org": "o", "space": "p"}},
+        )
+    finally:
+        client.close()
+    assert seen == ["/v1/batch_add"]
+    assert result["outcomes"][0]["continuity_status"] == "committed"
+
+
 def test_adapter_schema_includes_nested_fields_and_custom_duty():
     schemas = {s["name"]: s["parameters"] for s in tool_schemas()}
     relation = schemas["agent_memory_continuity_relation"]["properties"]["relation"]

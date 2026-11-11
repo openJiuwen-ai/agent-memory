@@ -98,6 +98,9 @@ def import_history(
             {
                 "content": event["content"],
                 "scope": scope,
+                # S11：历史事件的发生时间进 event_time（写入 temporal.t_event），
+                # 否则导入后只能靠正文日期推断，时间检索与接续顺序都会退化。
+                "event_time": event.get("occurred_at"),
                 # 经验适用职责经 `duty:<id>` 标签承载；prepare_history 单独产出的
                 # duty_ids 必须折回标签，否则导入后视图里的 duties 全丢。
                 "tags": [
@@ -124,8 +127,22 @@ def import_history(
             "batch_add",
             {"items": items, "scope": scope, "continue_on_error": False},
         )
+        chunk_outcomes = outcome.get("outcomes")
+        if not isinstance(chunk_outcomes, list) or len(chunk_outcomes) != len(chunk):
+            # 传输失败或服务端少返回结果：这一块的写入状态未知，必须停下来，
+            # 既不能继续导入下一块，也不能把它算成已导入。
+            results.append(
+                {
+                    "event_id": chunk[0]["event_id"] if chunk else "",
+                    "status": str(outcome.get("status") or "unknown"),
+                    "operation_id": "",
+                    "refs": [],
+                    "error": str(outcome.get("error") or "missing batch outcomes"),
+                }
+            )
+            break
         stopped = False
-        for event, item_outcome in zip(chunk, outcome.get("outcomes") or [], strict=False):
+        for event, item_outcome in zip(chunk, chunk_outcomes, strict=True):
             status = item_outcome.get("continuity_status") or ""
             results.append(
                 {

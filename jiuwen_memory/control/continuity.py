@@ -157,13 +157,14 @@ class Continuity(ABC):
         results = []
         for index, event in enumerate(events):
             fingerprint_value = (request_fingerprints or [""] * len(events))[index]
+            key = self.event_key(connectors[index], event.binding_id, event.event_id)
             results.append(
                 self.record(
                     scope,
                     event,
                     connectors[index],
                     read,
-                    self._single_event_writer(write_batch),
+                    self._legacy_writer(write_batch, key),
                     query_output=query_output,
                     request_fingerprint=fingerprint_value,
                 )
@@ -171,9 +172,38 @@ class Continuity(ABC):
         return results
 
     @staticmethod
-    def _single_event_writer(write_batch):
+    def _batch_item(operation_id: str, content: str, metadata: dict, *, derived: bool):
+        from jiuwen_memory.common.type_def.continuity import ContinuityBatchWrite
+
+        return ContinuityBatchWrite(
+            operation_id=operation_id, content=content, metadata=metadata, derived=derived
+        )
+
+    @classmethod
+    def _derived_writer(cls, write_batch, operation_id: str):
+        """派生输出的写入回调：显式标记 ``derived``，``operation_id`` 指向源事件。"""
+
         def write(content, metadata):
-            batches = write_batch([(content, metadata)])
+            batches = write_batch(
+                [cls._batch_item(operation_id, content, metadata, derived=True)]
+            )
+            return list(batches[0]) if batches else []
+
+        return write
+
+    @classmethod
+    def _legacy_writer(cls, write_batch, operation_id: str):
+        """单条 ``record`` 的回调形状 → 类型化批量条目（仅用于回退实现）。
+
+        ``record`` 用同一个回调写正文和派生输出，这里只能按 metadata 区分两者；
+        ``record_batch`` 的真实实现不走这里，派生写入用 ``_derived_writer``。
+        """
+
+        def write(content, metadata):
+            derived = "continuity_output" in (metadata or {})
+            batches = write_batch(
+                [cls._batch_item(operation_id, content, metadata, derived=derived)]
+            )
             return list(batches[0]) if batches else []
 
         return write

@@ -272,6 +272,20 @@ class ContinuityEvent:
 
 
 @dataclass
+class ContinuityBatchWrite:
+    """一次批量正文写入的条目。
+
+    ``operation_id`` 是所属事件的幂等键（派生写入指向**源事件**），``derived`` 标明
+    这是派生输出而不是事件正文——派生输出不继承源事件的发生时间，来源位置照常保留。
+    """
+
+    operation_id: str
+    content: str
+    metadata: dict = field(default_factory=dict)
+    derived: bool = False
+
+
+@dataclass
 class ContinuityWrite:
     """接续信息（不含正文与时间）：``add(continuity=...)`` 与 ``BatchWriteItem.continuity``。
 

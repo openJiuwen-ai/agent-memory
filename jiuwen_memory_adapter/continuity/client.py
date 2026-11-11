@@ -12,6 +12,7 @@ VERBS = frozenset(
         "continuity_task",
         "continuity_relation",
         "continuity_recover",
+        "batch_add",
         "get",
     }
 )

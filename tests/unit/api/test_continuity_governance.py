@@ -1436,3 +1436,240 @@ def test_public_batch_item_cannot_forge_source_ref(tmp_path):
         ]
     finally:
         runtime.close()
+
+
+def test_batch_continuity_writes_valid_items_before_the_failing_one(tmp_path):
+    """[good, bad] + continue_on_error=False：好项必须写入且拿得到结果，不能整批丢。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        result = api.batch_add(
+            [
+                BatchWriteItem("good first", project,
+                               continuity=ContinuityWrite(task["task_id"], binding, "g-1")),
+                BatchWriteItem("bad second", project,
+                               continuity=ContinuityWrite(task["task_id"], "missing", "b-1")),
+                BatchWriteItem("never third", project,
+                               continuity=ContinuityWrite(task["task_id"], binding, "g-2")),
+            ],
+            project, security=wb, continue_on_error=False,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert sorted(by_index) == [0, 1, 2]
+        assert not by_index[0].error, by_index[0].error
+        assert by_index[0].units, "失败项之前的合法项必须真正写入"
+        assert by_index[1].error
+        assert by_index[2].error_type == "Skipped"
+        assert "good first" in [
+            unit.content for unit in api.list(project, security=wb).items
+        ]
+        assert "never third" not in [
+            unit.content for unit in api.list(project, security=wb).items
+        ]
+    finally:
+        runtime.close()
+
+
+def test_batch_continuity_keeps_input_order_across_interleaved_scopes(tmp_path):
+    """交错 scope 时按输入顺序逐段写入：不能乱序，也不能留下没有结果的下标。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    admin = _security(owner, Role.ADMIN)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    other = Scope(org="demo", space="other-project")
+    try:
+        # 第二个项目：把 connector 的 projects 扩上它（连接配置在装配期已拷贝进来）。
+        api._continuity_connectors["workbuddy"]["projects"].append("other-project")
+        api.create_space(SpaceSpec(org="demo", space="other-project", owner=owner),
+                         security=admin)
+        for value in config["globals"]["continuity_connectors"].values():
+            api.add_space_member("demo", "other-project",
+                                 SpaceMember(scope=Scope(**value["actor"])), security=admin)
+        tasks, bindings = {}, {}
+        for label, scope in (("a", project), ("b", other)):
+            task = api.continuity_task(
+                scope, TaskRequest("create", f"create-{label}"), security=admin
+            )
+            bound = api.continuity_task(
+                scope,
+                TaskRequest("bind", f"bind-{label}", task["task_id"], task["revision"],
+                            connector_id="workbuddy", context_id="s"),
+                security=admin,
+            )
+            tasks[label] = task["task_id"]
+            bindings[label] = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        result = api.batch_add(
+            [
+                BatchWriteItem("a0", project, continuity=ContinuityWrite(
+                    tasks["a"], bindings["a"], "a-0")),
+                BatchWriteItem("b1", other, continuity=ContinuityWrite(
+                    tasks["b"], bindings["b"], "b-1")),
+                BatchWriteItem("a2", project, continuity=ContinuityWrite(
+                    tasks["a"], bindings["a"], "a-2")),
+            ],
+            security=wb,
+        )
+        assert sorted(outcome.index for outcome in result.outcomes) == [0, 1, 2]
+        assert all(not outcome.error for outcome in result.outcomes), [
+            (outcome.index, outcome.error) for outcome in result.outcomes
+        ]
+        assert [unit.content for unit in result.outcomes[0].units] == ["a0"]
+        assert [unit.content for unit in result.outcomes[1].units] == ["b1"]
+        assert [unit.content for unit in result.outcomes[2].units] == ["a2"]
+    finally:
+        runtime.close()
+
+
+def test_batch_continuity_retry_pairs_each_body_with_its_own_event(tmp_path):
+    """中断后重试：只重写新事件，但元数据/时间/来源必须按事件身份配对。
+
+    重试时 ``write_batch`` 只收到“还没有回执”的事件，条数少于这一段的总条目；
+    按位置配对会把已在库的事件的元数据写到新事件上（且正文已落盘、不会再纠正）。
+    """
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+
+        def item(content, event_id, *, when, duty, locator):
+            return BatchWriteItem(
+                content, project,
+                continuity=ContinuityWrite(
+                    task["task_id"], binding, event_id, source_locator=locator
+                ),
+                tags=[f"duty:{duty}"],
+                event_time=datetime.fromisoformat(when),
+            )
+
+        # 第一次只写 e0；第二次重试 e0 并追加 e1（导入中断后重试的真实形态）。
+        first = api.batch_add([item("body e0", "e-0", when="2020-01-01T00:00:00+08:00",
+                                    duty="d0", locator="loc:0")], project, security=wb)
+        assert first.outcomes[0].continuity_status == "committed"
+        second = api.batch_add(
+            [
+                item("body e0", "e-0", when="2020-01-01T00:00:00+08:00",
+                     duty="d0", locator="loc:0"),
+                item("body e1", "e-1", when="2020-01-20T00:00:00+08:00",
+                     duty="d1", locator="loc:1"),
+            ],
+            project, security=wb,
+        )
+        assert [outcome.continuity_status for outcome in second.outcomes] == [
+            "committed", "committed"
+        ]
+        fresh = second.outcomes[1].units[0]
+        assert fresh.content == "body e1"
+        assert fresh.temporal.t_event == datetime.fromisoformat("2020-01-20T00:00:00+08:00")
+        assert "duty:d1" in (fresh.tags or []), fresh.tags
+        assert fresh.source_ref == "loc:1", fresh.source_ref
+    finally:
+        runtime.close()
+
+
+def test_batch_continuity_runs_derivation_when_extractor_configured(tmp_path):
+    """配了抽取器时批量接续也要派生：不能报 query_output 缺失，也不能静默 partial。"""
+    from unittest.mock import Mock
+
+    from jiuwen_memory.api import BatchWriteItem
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        extractor = Mock()
+        extractor.extract.return_value = [
+            MemoryUnit(id="proposed", scope=project,
+                       segments=[Segment(content="batch derived fact")])
+        ]
+        # White-box fixture/fault injection; do not expose a production test API.
+        api._continuity.derivation_extractor = extractor
+        api._continuity.derivation_version = "test/1"
+        wb = _security(actors["workbuddy"])
+        result = api.batch_add(
+            [
+                BatchWriteItem(
+                    "batch source", project,
+                    continuity=ContinuityWrite(
+                        task["task_id"], binding, "d-1", source_locator="jira:DERIVE-1"
+                    ),
+                    event_time=datetime.fromisoformat("2020-03-04T00:00:00+08:00"),
+                )
+            ],
+            project, security=wb,
+        )
+        outcome = result.outcomes[0]
+        assert outcome.continuity_status == "committed", outcome.error
+        service = api._role_service(project)
+        receipt = service.repository.get(project, "events", outcome.operation_id)
+        assert receipt["derivation_status"] != "partial", receipt.get("derivation_status")
+        assert receipt.get("derived"), "配置了抽取器就必须有派生产出"
+        derived = [
+            unit
+            for unit in api.list(project, security=wb, limit=20).items
+            if unit.system_metadata.get("continuity_output")
+        ]
+        assert any(unit.content == "batch derived fact" for unit in derived), [
+            unit.content for unit in derived
+        ]
+        # 派生输出不继承源事件的发生时间。
+        produced = [unit for unit in derived if unit.content == "batch derived fact"]
+        assert produced[0].temporal.t_event is None
+        # 只有发生时间不继承：来源位置和单条路径一样保留，派生记忆才能追溯到原始位置。
+        assert produced[0].source_ref == "jira:DERIVE-1", produced[0].source_ref
+        # 派生记忆是一条独立写入，审计里必须有它自己的 add 记录（目标是 output_key）。
+        output_key = produced[0].system_metadata["continuity_output"]
+        audited = api.audit({}, security=_security(owner, Role.ROOT), limit=200)
+        assert any(
+            event.action == "add" and event.target_id == output_key for event in audited
+        ), "派生写入缺少 add 审计"
+    finally:
+        runtime.close()

@@ -37,6 +37,23 @@ from .local_support import (
 )
 
 
+def _same_scope(left: Scope, right: Scope) -> bool:
+    """Whether two items belong to the same project space (one record_batch per scope)."""
+    return (
+        left.org,
+        left.space,
+        left.user,
+        left.agent,
+        left.session,
+    ) == (
+        right.org,
+        right.space,
+        right.user,
+        right.agent,
+        right.session,
+    )
+
+
 class _Skipped:
     """Batch item skipped because an earlier item in the same run failed."""
 
@@ -335,11 +352,12 @@ class ContinuityOpsMixin:
             except AgentMemoryError as exc:
                 rejected.append((index, exc))
                 if stop_on_error:
-                    # 批内顺序执行：第一处失败后剩余项不再写入，标成 Skipped。
+                    # 只跳过失败项**之后**的项：失败项之前的合法项已经通过校验，必须
+                    # 继续写入，否则它们的下标拿不到结果（collect_batch_result 会 KeyError）。
                     rejected.extend(
                         (later, _Skipped()) for later, _ in entries[position + 1:]
                     )
-                    return rejected
+                    break
                 continue
             duty_ids = [
                 str(tag).removeprefix("duty:")
@@ -351,6 +369,8 @@ class ContinuityOpsMixin:
                     "index": index,
                     "item": item,
                     "connector": connector,
+                    # 事件身份：write_batch 只收到待写事件，必须靠它找回同一条目。
+                    "operation_id": expected_key,
                     "event": ContinuityEvent(
                         task_id=continuity.task_id,
                         binding_id=continuity.binding_id,
@@ -381,93 +401,138 @@ class ContinuityOpsMixin:
                     ),
                 }
             )
-        if not prepared:
-            return rejected
         results: list[tuple[int, list[MemoryUnit] | Exception]] = list(rejected)
-        # 不同项目空间不能塞进同一个 record_batch（任务与写者都属于某个项目）：按首个
-        # 出现的顺序分组，各自走一次批处理，只影响不同项目的那几项。
-        groups: dict[tuple, list[dict]] = {}
-        for entry in prepared:
-            item_scope = entry["item"].scope
-            groups.setdefault(
-                (item_scope.org, item_scope.space, item_scope.user,
-                 item_scope.agent, item_scope.session),
-                [],
-            ).append(entry)
-        for group in groups.values():
-            group_scope = group[0]["item"].scope
-            service = self._role_service(group_scope)
+        handled = {index for index, _result in results}
 
-            def write_batch(pairs, _group=group, _scope=group_scope):
+        def skip_unhandled() -> None:
+            """为尚未有结果的项补 Skipped：绝不能留空洞，否则上层按 range 取会 KeyError。"""
+            for index, _item in entries:
+                if index in handled:
+                    continue
+                results.append((index, _Skipped()))
+                handled.add(index)
+
+        if not prepared:
+            skip_unhandled()
+            return results
+        # 同一 record_batch 只能服务一个项目空间；按**输入顺序**切成连续段，逐段写入。
+        # 不能按全局分组：交错的 scope 会打乱副作用顺序，也可能在停批时留下空洞。
+        runs: list[list[dict]] = []
+        for entry in prepared:
+            if runs and _same_scope(runs[-1][0]["item"].scope, entry["item"].scope):
+                runs[-1].append(entry)
+            else:
+                runs.append([entry])
+
+        for run in runs:
+            scope = run[0]["item"].scope
+            service = self._role_service(scope)
+            failed = False
+
+            def write_batch(writes, _run=run, _scope=scope):
                 return asyncio.run(
-                    self._add_many_impl(pairs, _scope, _group, security=security)
+                    self._add_many_impl(writes, _scope, _run, security=security)
                 )
 
             try:
                 receipts = service.record_batch(
-                    group_scope,
-                    [entry["event"] for entry in group],
-                    [entry["connector"] for entry in group],
-                    self._role_reader(security, group_scope),
+                    scope,
+                    [entry["event"] for entry in run],
+                    [entry["connector"] for entry in run],
+                    self._role_reader(security, scope),
                     write_batch,
-                    request_fingerprints=[
-                        entry["request_fingerprint"] for entry in group
-                    ],
+                    request_fingerprints=[entry["request_fingerprint"] for entry in run],
+                    # 派生构建需要「写后可读的精确元数据查询」，与单条路径同一口径。
+                    query_output=(
+                        lambda output_key: (
+                            self.list(
+                                scope,
+                                security=security,
+                                limit=2,
+                                filters={
+                                    "system_metadata.continuity_output": {"eq": output_key}
+                                },
+                            ).items
+                        )
+                    )
+                    if self._queries.supports_exact_metadata_lookup
+                    else None,
                 )
             except AgentMemoryError as exc:
                 # 批次级失败（例如任务在预检后被关闭）无法按条归属，统一记为该项错误。
-                results.extend((entry["index"], exc) for entry in group)
-                if stop_on_error:
-                    break
-                continue
-            for entry, receipt in zip(group, receipts):
-                status = receipt.get("status")
-                if status == "committed":
-                    units = []
-                    for ref in receipt.get("refs") or []:
-                        link = MemoryRef.parse(ref)
-                        units.append(self.get(link.unit_id, link.scope, security=security))
-                    results.append((entry["index"], units))
-                else:
-                    results.append(
-                        (
-                            entry["index"],
-                            WriteIncompleteError(
-                                operation_id=receipt.get("operation_id", ""),
-                                status=str(status),
-                                refs=tuple(
-                                    MemoryRef.parse(json.dumps(ref))
-                                    for ref in receipt.get("refs") or []
+                for entry in run:
+                    results.append((entry["index"], exc))
+                    handled.add(entry["index"])
+                failed = True
+            else:
+                for entry, receipt in zip(run, receipts):
+                    status = receipt.get("status")
+                    if status == "committed":
+                        units = []
+                        for ref in receipt.get("refs") or []:
+                            link = MemoryRef.parse(ref)
+                            units.append(self.get(link.unit_id, link.scope, security=security))
+                        results.append((entry["index"], units))
+                    else:
+                        failed = True
+                        results.append(
+                            (
+                                entry["index"],
+                                WriteIncompleteError(
+                                    operation_id=receipt.get("operation_id", ""),
+                                    status=str(status),
+                                    refs=tuple(
+                                        MemoryRef.parse(json.dumps(ref))
+                                        for ref in receipt.get("refs") or []
+                                    ),
+                                    retry_action=(
+                                        "retry_original_write"
+                                        if status == "partial"
+                                        else "recover_then_retry"
+                                    ),
                                 ),
-                                retry_action=(
-                                    "retry_original_write"
-                                    if status == "partial"
-                                    else "recover_then_retry"
-                                ),
-                            ),
+                            )
                         )
-                    )
-            if stop_on_error and any(
-                isinstance(result, Exception) for _index, result in results
-            ):
-                break
+                    handled.add(entry["index"])
+            if failed and stop_on_error:
+                skip_unhandled()
+                return results
         return results
 
-    async def _add_many_impl(self, pairs, scope, prepared, *, security):
+    async def _add_many_impl(self, writes, scope, prepared, *, security):
         """Write several continuity bodies through one engine batch call.
 
-        Mirrors ``_add_impl``'s per-item steps (author marks, ``source_ref`` and audit)
-        instead of calling the engine directly: otherwise imported memories would differ
-        from ``add``-written ones in exactly the fields later authorization reads.
+        ``writes`` are :class:`ContinuityBatchWrite` items carrying their own event
+        identity, so pairing never depends on position: a retry only sends the events
+        without a receipt, while ``prepared`` holds the whole run.
+
+        Derived outputs are flagged ``derived``: like the single-item ``_role_writer``
+        they keep the source location but must not inherit the source event's occurrence
+        time, and each one is audited as its own write.
         """
+        by_operation: dict[str, list[dict]] = {}
+        for entry in prepared:
+            by_operation.setdefault(entry["operation_id"], []).append(entry)
+
+        resolved: list[tuple[object, dict]] = []
+        for write in writes:
+            candidates = by_operation.get(write.operation_id) or []
+            if not candidates:
+                raise ValidationError(
+                    "batch write item does not match any event in this run"
+                )
+            resolved.append((write, candidates.pop(0)))
+
         items = []
-        for (content, metadata), entry in zip(pairs, prepared):
+        for write, entry in resolved:
             item = entry["item"]
             target = item.scope
-            merged = {**metadata, **(item.system_metadata or {})}
+            # 与单条 _role_writer 一致：接续写入固定 infer/middle=false。
+            merged = {**(write.metadata or {}), **(item.system_metadata or {}),
+                      "infer": "false", "middle": "false"}
             items.append(
                 BatchWriteItem(
-                    content=content,
+                    content=write.content,
                     scope=target,
                     source=item.source or Modality.TEXT,
                     assets=list(item.assets or []),
@@ -478,13 +543,14 @@ class ContinuityOpsMixin:
                     ),
                     user_metadata=item.user_metadata,
                     occurred_at=item.occurred_at,
-                    event_time=item.event_time,
+                    # 派生输出是按构建时刻生成的新记忆，不继承源事件的发生时间。
+                    event_time=None if write.derived else item.event_time,
                     source_ref=item.continuity.source_locator or "",
                 )
             )
         result = await self._commands.batch_write(items, continue_on_error=False)
         produced = []
-        for outcome, entry in zip(result.outcomes, prepared):
+        for outcome, (write, entry) in zip(result.outcomes, resolved):
             if outcome.error:
                 raise WriteIncompleteError(
                     operation_id="",
@@ -492,8 +558,13 @@ class ContinuityOpsMixin:
                     refs=(),
                     retry_action="recover_then_retry",
                 )
+            # 派生输出是独立写入的新记忆，和单条路径一样有自己的 add 审计。
             self._log(
-                security.auth.actor, "add", entry["event"].event_id,
+                security.auth.actor,
+                "add",
+                str(write.metadata.get("continuity_output", ""))
+                if write.derived
+                else entry["event"].event_id,
                 target_scope=entry["item"].scope,
             )
             produced.append([_strip_transient_metadata(unit) for unit in outcome.units])

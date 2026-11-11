@@ -436,8 +436,10 @@ class ContinuityService(Continuity):
         4. bump each affected task revision **once**;
         5. persist one receipt per event (then run per-event derivation).
 
-        ``write_batch(items)`` takes ``[(content, metadata), ...]`` and returns one unit
-        list per item. A batch write failure leaves every pending event ``unknown`` so a
+        ``write_batch(items)`` takes a list of :class:`ContinuityBatchWrite` (each carries
+        its event ``operation_id`` and a ``derived`` flag; derived outputs point at their
+        source event) and returns one unit list per item. A batch write failure leaves
+        every pending event ``unknown`` so a
         retry reconciles instead of rewriting bodies.
         """
         if self.derivation_extractor is not None and query_output is None:
@@ -516,11 +518,16 @@ class ContinuityService(Continuity):
                 try:
                     batches = write_batch(
                         [
-                            (
+                            self._batch_item(
+                                entry["key"],
                                 entry["event"].content,
                                 self._event_metadata(
-                                    entry["event"], entry["connector"], entry["key"]
+                                    entry["event"],
+                                    entry["connector"],
+                                    entry["key"],
+                                    entry["envelope"],
                                 ),
+                                derived=False,
                             )
                             for entry in pending
                         ]
@@ -612,14 +619,14 @@ class ContinuityService(Continuity):
                     task,
                     receipt,
                     read,
-                    self._single_event_writer(write_batch),
+                    self._derived_writer(write_batch, entry["key"]),
                     query_output,
                 )
         ordered = dict(results)
         return [ordered[index] for index in range(len(events))]
 
     @staticmethod
-    def _event_metadata(event, connector, key) -> dict:
+    def _event_metadata(event, connector, key, envelope) -> dict:
         return {
             "continuity_kind": event.kind,
             "continuity_classification_confidence": event.classification_confidence,
@@ -631,7 +638,7 @@ class ContinuityService(Continuity):
             "continuity_source_locator": event.source_locator or "",
             "continuity_claimed_author": event.claimed_author or "",
             "continuity_duties": event.duty_ids,
-            "continuity_envelope": canonical(asdict(event)),
+            "continuity_envelope": canonical(envelope),
         }
 
     @staticmethod

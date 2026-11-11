@@ -1191,7 +1191,7 @@ sequenceDiagram
 2. API 逐项做入口校验：公开调用方不能自带 `source_ref`（它只由 `source_locator` 映射而来）；项目 WRITE 判权；绑定所属连接必须等于当前认证主体；若同时给了 `idempotency_key`，必须等于接续幂等键。任何一项不合格只拒绝这一项，同批其他项照常处理。
 3. 接续项按项目空间分组，每组调用一次 `record_batch`；不同项目的条目不会被塞进同一组。
 4. 服务批量读回执，按幂等键分流：已 committed 的项直接读回原单元；请求摘要不同的项标 rejected（`ConflictError`）；其余为待写项。
-5. 待写项先全部登记为 `status=unknown` 并落盘，再调用一次 `write_batch` 写全部正文。正文写入复用 `add` 的处理：作者标记、`source_ref`、`t_event`、审计都与单条写入一致，embedding 与建索引按批进行。这一步是导入变快的关键。
+5. 待写项先全部登记为 `status=unknown` 并落盘，再调用一次 `write_batch` 写全部正文。正文写入复用 `add` 的处理：作者标记、`source_ref`、`t_event`、审计都与单条写入一致，embedding 与建索引按批进行。这一步是导入变快的关键。`write_batch` 的入参是 `ContinuityBatchWrite` 列表，每项显式携带 `operation_id`（所属事件的幂等键）和 `derived`；重试时只有未写过的事件会进入这次调用，实现必须按 `operation_id` 找回对应条目，不能按位置配对。提交后的派生写入同样走 `write_batch`（`derived=True`，`operation_id` 指向源事件）：保留来源位置 `source_ref`，不继承发生时间，并各自记一条 `add` 审计，与单条路径一致。
 6. 写成功的项批量转 partial 并记下引用；`write_batch` 整体失败时这些项保持 unknown，等待恢复核对，不会被当成没写过。
 7. 按任务分组，每个任务只追加一次背景、修订号只加 1，然后把这些项批量转 committed。导入 1000 条事件到同一个任务，任务修订号只涨一次。
 8. 派生构建和关系发现按项排在提交之后执行，不阻塞批量写入返回。

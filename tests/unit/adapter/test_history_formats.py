@@ -66,3 +66,52 @@ def test_import_stops_at_every_uncommitted_boundary(status):
     # 停在第一个未提交项：该行与它后面的行都还没写入，`remaining` 按实际导入数算。
     assert result["imported"] == 0
     assert result["remaining"] == 2
+
+
+def test_import_sends_occurred_at_as_event_time():
+    """S11：历史事件的发生时间必须进 event_time（写入 t_event），不能只留在源数据里。"""
+    captured = {}
+
+    class Client:
+        @staticmethod
+        def call(verb, payload):
+            captured.setdefault("payloads", []).append(payload)
+            items = payload["items"]
+            return {
+                "outcomes": [
+                    {"continuity_status": "committed", "operation_id": "op", "units": []}
+                    for _ in items
+                ]
+            }
+
+    events = [
+        {
+            "event_id": "1",
+            "content": "a",
+            "task_id": "t",
+            "binding_id": "b",
+            "occurred_at": "2020-02-03T04:05:06+08:00",
+        }
+    ]
+    import_history(Client(), {}, {}, events)
+    item = captured["payloads"][0]["items"][0]
+    assert item["event_time"] == "2020-02-03T04:05:06+08:00"
+
+
+def test_import_stops_when_outcomes_are_missing_or_short():
+    """传输失败或服务端少返回结果时，这一块状态未知：必须停止，且不能算已导入。"""
+
+    class Client:
+        @staticmethod
+        def call(verb, payload):
+            return {"status": "unknown", "error": "transport_unavailable"}
+
+    events = [
+        {"event_id": "1", "content": "a", "task_id": "t", "binding_id": "b"},
+        {"event_id": "2", "content": "b", "task_id": "t", "binding_id": "b"},
+    ]
+    result = import_history(Client(), {}, {}, events, chunk_size=1)
+    assert result["imported"] == 0
+    assert result["remaining"] == 2
+    assert result["results"][0]["status"] == "unknown"
+    assert "error" in result["results"][0]

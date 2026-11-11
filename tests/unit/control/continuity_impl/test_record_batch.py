@@ -1,5 +1,7 @@
 """Five-phase reliable batch write: bodies in one call, background/revision per task."""
 
+import json
+
 import pytest
 
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
@@ -8,6 +10,7 @@ from jiuwen_memory.common.type_def.continuity import (
     ContinuityRecovery,
     MemoryRef,
     TaskRequest,
+    fingerprint,
 )
 from jiuwen_memory.control.continuity_impl.repository import ContinuityRepository
 from jiuwen_memory.control.continuity_impl.service import ContinuityService
@@ -51,11 +54,11 @@ def test_record_batch_writes_bodies_once_and_bumps_task_once(tmp_path):
         ]
         calls = []
 
-        def write_batch(pairs):
-            calls.append(len(pairs))
+        def write_batch(writes):
+            calls.append(len(writes))
             return [
-                [MemoryUnit(id=f"u-{i}", scope=_SCOPE, segments=[Segment(content=content)])]
-                for i, (content, _meta) in enumerate(pairs)
+                [MemoryUnit(id=f"u-{i}", scope=_SCOPE, segments=[Segment(content=w.content)])]
+                for i, w in enumerate(writes)
             ]
 
         receipts = service.record_batch(
@@ -78,17 +81,17 @@ def test_record_batch_replays_without_rewriting_bodies(tmp_path):
         task_id, binding = _bind(service)
         event = ContinuityEvent(task_id, binding, "e1", "body")
 
-        def write_batch(pairs):
+        def write_batch(writes):
             return [
-                [MemoryUnit(id=f"u-{i}", scope=_SCOPE, segments=[Segment(content=c)])]
-                for i, (c, _m) in enumerate(pairs)
+                [MemoryUnit(id=f"u-{i}", scope=_SCOPE, segments=[Segment(content=w.content)])]
+                for i, w in enumerate(writes)
             ]
 
         first = service.record_batch(_SCOPE, [event], ["wb"], _read, write_batch)
         calls = []
 
-        def replay_batch(pairs):
-            calls.append(pairs)
+        def replay_batch(writes):
+            calls.append(writes)
             return []
 
         second = service.record_batch(_SCOPE, [event], ["wb"], _read, replay_batch)
@@ -113,13 +116,13 @@ def test_crash_after_body_write_leaves_recoverable_unknown_receipts(tmp_path):
 
         written = []
 
-        def crashing_write(pairs):
-            for index, (content, metadata) in enumerate(pairs):
+        def crashing_write(writes):
+            for index, write in enumerate(writes):
                 unit = MemoryUnit(
                     id=f"u{index}",
                     scope=_SCOPE,
-                    segments=[Segment(content=content)],
-                    system_metadata=dict(metadata),
+                    segments=[Segment(content=write.content)],
+                    system_metadata=dict(write.metadata),
                 )
                 store[unit.id] = unit
                 written.append(unit)
@@ -168,14 +171,14 @@ def test_batch_maps_partial_body_results_per_item(tmp_path):
             for index in range(2)
         ]
 
-        def half_write(pairs):
+        def half_write(writes):
             return [
                 [
                     MemoryUnit(
                         id="only-first",
                         scope=_SCOPE,
-                        segments=[Segment(content=pairs[0][0])],
-                        system_metadata=dict(pairs[0][1]),
+                        segments=[Segment(content=writes[0].content)],
+                        system_metadata=dict(writes[0].metadata),
                     )
                 ],
                 [],
@@ -183,6 +186,53 @@ def test_batch_maps_partial_body_results_per_item(tmp_path):
 
         receipts = service.record_batch(_SCOPE, events, ["wb"] * 2, _read, half_write)
         assert [receipt["status"] for receipt in receipts] == ["committed", "unknown"]
+    finally:
+        service.close()
+        kv.close()
+
+
+def test_batch_receipt_digest_is_recomputable_from_stored_envelope(tmp_path):
+    """批量路径的落盘 envelope 必须带请求指纹，否则 recover(kind=event) 必然冲突。"""
+    service, kv = _service(tmp_path)
+    try:
+        task_id, binding = _bind(service)
+        event = ContinuityEvent(task_id, binding, "e1", "body")
+        store: dict = {}
+
+        def read(ref):
+            return store.get(ref.unit_id)
+
+        def crashing_write(writes):
+            for index, write in enumerate(writes):
+                unit = MemoryUnit(
+                    id=f"u{index}",
+                    scope=_SCOPE,
+                    segments=[Segment(content=write.content)],
+                    system_metadata=dict(write.metadata),
+                )
+                store[unit.id] = unit
+            raise RuntimeError("crash after the body commit")
+
+        receipts = service.record_batch(
+            _SCOPE,
+            [event],
+            ["wb"],
+            read,
+            crashing_write,
+            request_fingerprints=["fp-1"],
+        )
+        assert receipts[0]["status"] == "unknown"
+        # 落盘记录里的 envelope 必须能复算出同一摘要（这正是 recover 的比对方式）。
+        stored = service.repository.get(_SCOPE, "events", receipts[0]["operation_id"])
+        envelope = json.loads(str(store["u0"].system_metadata["continuity_envelope"]))
+        assert fingerprint(envelope) == stored["digest"]
+        recovered = service.recover(
+            _SCOPE,
+            ContinuityRecovery("event", receipts[0]["operation_id"],
+                               [MemoryRef.of(unit) for unit in store.values()]),
+            read,
+        )
+        assert recovered["status"] == "partial"
     finally:
         service.close()
         kv.close()
