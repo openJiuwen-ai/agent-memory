@@ -174,7 +174,8 @@ class RollupResult:
     visited_count: int = 0
     admitted_count: int = 0
     boosted_count: int = 0
-    recalled_parents: dict[NodeKey, NodeKey] = field(default_factory=dict)
+    # 已校验的目标父及实际边距离，供补位与逐根轨迹复用。
+    recalled_parents: dict[NodeKey, tuple[NodeKey, int]] = field(default_factory=dict)
 
     def exclude(self, code: str) -> None:
         """单请求按首次出现顺序去重诊断码。"""
