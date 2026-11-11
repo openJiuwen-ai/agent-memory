@@ -63,6 +63,7 @@ def run_sweep(
     ``remove_from_index`` 由调用方注入（InMemoryEngine 直调共享 IndexBuilder，
     CloudEngine 按各 pipeline 的 builder 分组删除），须表达 ``remove(mode=SOFT)``。
     """
+    transitions = [t for t in transitions if not lifecycle.retains(t.unit)]
     groups: dict[_GroupKey, tuple[Scope, LifecycleState, list[SweepTransition]]] = {}
     for transition in transitions:
         _, _, group = groups.setdefault(

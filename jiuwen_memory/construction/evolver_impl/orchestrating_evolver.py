@@ -339,6 +339,16 @@ class OrchestratingEvolver(Evolver):
             units, mode = request.units, request.mode
         if not isinstance(mode, EvolveMode) or mode is EvolveMode.HIERARCHY:
             raise ValidationError("HIERARCHY 必须使用含有界区间的 EvolveRequest")
+        eligible_units = []
+        for unit in units:
+            if unit.system_metadata.get("continuity_kind") == "relation":
+                continue
+            if unit.system_metadata.get("continuity_event"):
+                continue
+            eligible_units.append(unit)
+        units = eligible_units
+        if not units:
+            return EvolveResult()
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
             logger.info(
@@ -1490,7 +1500,12 @@ class OrchestratingEvolver(Evolver):
         ``remove(mode=SOFT)`` 让它退出检索。两条指令互不重叠，检索索引不会
         被先重建再删除。IndexBuilder 不解读 lifecycle，只执行被要求的操作。
         """
-        targets = [u for u in units if u.lifecycle == LifecycleState.SUPERSEDED]
+        targets = []
+        for unit in units:
+            if unit.lifecycle != LifecycleState.SUPERSEDED:
+                continue
+            if not self.retains(unit):
+                targets.append(unit)
         if not targets:
             logger.info("Evolver: FORGET marked 0 units as forgotten")
             return EvolveResult(forgotten_ids=[])

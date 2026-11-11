@@ -17,6 +17,7 @@ from jiuwen_memory.common.errors import (
     RateLimitedError,
     UnsupportedCapabilityError,
     ValidationError,
+    WriteIncompleteError,
     safe_error_message,
 )
 from jiuwen_memory.common.log import (
@@ -70,6 +71,19 @@ from jiuwen_memory.common.type_def import (
     Segment,
     normalize,
 )
+from jiuwen_memory.common.type_def.continuity import (
+    ContinuityEvent,
+    ContinuityRecovery,
+    ContinuityWrite,
+    Duty,
+    EvidenceRelation,
+    MemoryRef,
+    RelationRecord,
+    RelationStatus,
+    RoleViewQuery,
+    TaskRequest,
+    ViewBudget,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
@@ -113,12 +127,15 @@ from .access_security import (
 from .memory_api import MemoryAPI
 from .memory_api_impl import (
     AUTO_SECURITY_RUNTIME,
+    MaintenancePorts,
     MemoryRuntime,
     ServerRuntime,
     assemble,
+    assemble_maintenance_ports,
     assemble_runtime,
     assemble_server_runtime,
 )
+from .search_options import SearchOptions
 
 __all__ = [
     "SearchOptions",
@@ -128,6 +145,8 @@ __all__ = [
     "HierarchyRole",
     "MemoryAPI",
     "assemble",
+    "MaintenancePorts",
+    "assemble_maintenance_ports",
     "assemble_runtime",
     "share_security_lifecycle",
     "CloseableSecurityCapability",
@@ -208,6 +227,7 @@ __all__ = [
     "ConflictError",
     "NotFoundError",
     "PartialFailureError",
+    "WriteIncompleteError",
     "PermissionDeniedError",
     "PolicyError",
     "RateLimitedError",
@@ -225,4 +245,9 @@ __all__ = [
     "scope_for_log",
 ]
 
-from .search_options import SearchOptions
+
+__all__ += [
+    "ContinuityRecovery",
+    "ContinuityWrite", "ContinuityEvent", "Duty", "EvidenceRelation", "MemoryRef",
+    "RelationRecord", "RelationStatus", "RoleViewQuery", "TaskRequest", "ViewBudget",
+]

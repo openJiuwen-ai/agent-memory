@@ -32,11 +32,64 @@ class InMemoryGraphStore(GraphStore):
     def __init__(self) -> None:
         self._nodes: dict[_ScopeKey, dict[str, Node]] = defaultdict(dict)
         self._edges: dict[_ScopeKey, dict[str, Edge]] = defaultdict(dict)
+        self._tombs: dict[_ScopeKey, dict[str, int]] = defaultdict(dict)
+
+    @property
+    def supports_incident_edges(self) -> bool:
+        return True
+
+    @property
+    def supports_conditional_projection(self) -> bool:
+        return True
+
+    def project_edge(self, scope: Scope, edge: Edge, *, revision: int, nodes=None) -> None:
+        sk = _skey(scope)
+        for node in nodes or []:
+            self._nodes[sk][node.id] = node  # merge: create or reuse, never delete
+        props = {**(edge.properties or {}), "revision": revision}
+        projected = Edge(edge.id, edge.source, edge.target, edge.relation, props)
+        current = self._edges[sk].get(edge.id)
+        tomb = self._tombs[sk].get(edge.id, 0)
+        if current is None:
+            if tomb >= revision:
+                raise ConflictError("edge", edge.id)
+            self._edges[sk][edge.id] = projected
+            return
+        existing = int((current.properties or {}).get("revision") or 0)
+        if existing == revision:
+            if current == projected:
+                return
+            raise ConflictError("edge", edge.id)
+        if existing > revision:
+            raise ConflictError("edge", edge.id)
+        self._edges[sk][edge.id] = projected
+
+    def unproject_edge(self, scope: Scope, edge_id: str, *, revision: int) -> None:
+        sk = _skey(scope)
+        current = self._edges[sk].get(edge_id)
+        self._tombs[sk][edge_id] = max(self._tombs[sk].get(edge_id, 0), revision)
+        if current is None:
+            return
+        if int((current.properties or {}).get("revision") or 0) > revision:
+            return
+        self._edges[sk].pop(edge_id, None)
+
+    def incident_edges(self, scope: Scope, node_id: str, *, limit: int = 100) -> list[Edge]:
+        from copy import deepcopy
+
+        return deepcopy(sorted(
+            (e for e in self._edges[_skey(scope)].values()
+             if e.source == node_id or e.target == node_id),
+            key=lambda e: e.id,
+        )[:limit])
 
     def store_type(self) -> StoreType:
         return StoreType.GRAPH
 
     def health(self) -> None:
+        return None
+
+    def close(self) -> None:
         return None
 
     def insert(

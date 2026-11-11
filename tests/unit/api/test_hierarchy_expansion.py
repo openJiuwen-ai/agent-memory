@@ -86,7 +86,7 @@ def test_http_cli_shared_contract_serializes_only_flat_public_results(api) -> No
             "hierarchy_kind": "time", "hierarchy_role": "time_span", "expand_depth": 1,
         },
     }, security_for(api, HOME))
-    assert set(result) == {"items", "trajectory", "errors"}
+    assert set(result) == {"items", "trajectory", "errors", "paths", "gaps", "view_meta"}
     assert result["items"][1]["unit_id"] == leaf.id
     assert "expansion_roots" not in result
 

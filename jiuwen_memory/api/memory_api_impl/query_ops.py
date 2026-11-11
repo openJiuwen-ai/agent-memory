@@ -12,7 +12,9 @@ from typing import Any
 
 from jiuwen_memory.api.search_options import SearchOptions
 from jiuwen_memory.common.errors import (
+    AgentMemoryError,
     BackendError,
+    ConflictError,
     NotFoundError,
     PermissionDeniedError,
     ValidationError,
@@ -21,6 +23,7 @@ from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_lo
 from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.security import principal, space_predicates
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     EXT_MAX_TOKENS,
@@ -29,6 +32,7 @@ from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
     FilterExpr,
+    FilterOp,
     HierarchyKind,
     HierarchyRole,
     MemoryUnit,
@@ -36,7 +40,9 @@ from jiuwen_memory.common.type_def import (
     and_merge,
     normalize,
 )
+from jiuwen_memory.common.type_def.continuity import MemoryRef, ViewBudget
 from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
+from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.construction.router import (
@@ -135,6 +141,10 @@ class QueryOpsMixin:
         span_end: datetime | None = None,
         expand_depth: int = 1,
         rollup: bool = True,
+        task_id: str = "",
+        anchor: MemoryRef | None = None,
+        duty: str | list[str] | None = None,
+        view_budget: ViewBudget | None = None,
     ) -> RetrievalResult:
         """将原有平铺参数装成选项，委托统一查询入口。"""
         return self._search(
@@ -143,6 +153,7 @@ class QueryOpsMixin:
                 with_trajectory=with_trajectory,
                 hierarchy_kind=hierarchy_kind, hierarchy_role=hierarchy_role,
                 span_start=span_start, span_end=span_end, expand_depth=expand_depth, rollup=rollup,
+                task_id=task_id, anchor=anchor, duty=duty, view_budget=view_budget,
             ), security=security,
         )
 
@@ -209,6 +220,13 @@ class QueryOpsMixin:
             expand_depth=options.expand_depth, rollup=options.rollup,
             query_context=query_context, pipeline=pipeline,
         )
+        view_requested = bool(options.task_id or options.anchor is not None or options.duty)
+        if view_requested:
+            if spaces is not None:
+                raise ValidationError(
+                    "continuity view cannot be combined with cross-space retrieval"
+                )
+            return self._search_view(query, context, options, security=security)
         if spaces is not None:
             self._require_trusted_context(
                 security, _TrustedRequestTarget(Action.READ, "search", Scope(org=context.scope.org))
@@ -246,7 +264,144 @@ class QueryOpsMixin:
             rq.filters = and_merge(rq.filters, system_clauses)
         result = asyncio.run(self._queries.recall(context.scope, rq))
         self._log(identity, "search", target_scope=context.scope, detail=auth)
-        return result
+        return self._guard_continuity_search(result, scope=context.scope)
+
+    def _search_view(
+        self, query: str, context: Context, options: SearchOptions,
+        *, security: RequestSecurityContext,
+    ) -> RetrievalResult:
+        """Task background / duty view path of ``search`` (S11 5.2, 6.2.6)."""
+        from jiuwen_memory.common.type_def.continuity import RoleViewQuery
+        from jiuwen_memory.retrieval.types import RetrievedItem
+
+        scope = context.scope
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.READ, "search", scope)
+        )
+        self._authorize(security, scope, Action.READ, "search")
+        service = self._role_service(scope)
+        request = RoleViewQuery(
+            query=query,
+            anchor=options.anchor,
+            task_id=options.task_id,
+            duty=options.duty if options.duty is not None else "general",
+            budget=options.view_budget or ViewBudget(),
+        )
+        # 调用方的过滤与时间约束在视图路径同样生效：锚点、任务背景与关系端点逐条判过，
+        # 语义候选发现也带上同一份条件（否则明确不匹配的条目仍会经 anchor 漏出）。
+        normalized_filters = normalize(options.filters)
+        raw_read = self._role_reader(security, scope)
+
+        def admits(unit) -> bool:
+            if normalized_filters is not None and not matches_memory_unit(
+                unit, normalized_filters
+            ):
+                return False
+            if options.as_of is not None:
+                moment = as_utc(options.as_of)
+                valid_from = unit.temporal.t_valid
+                valid_until = unit.temporal.t_invalid
+                if valid_from is not None and as_utc(valid_from) > moment:
+                    return False
+                if valid_until is not None and as_utc(valid_until) <= moment:
+                    return False
+            return True
+
+        def read(ref):
+            unit = raw_read(ref)
+            if not admits(unit):
+                # 视图构建器把不可读引用当作「跳过这条边/条目」，与权限不足同一形态。
+                raise NotFoundError("filtered")
+            return unit
+
+        if service.mode == "continuity":
+            # 接续模式：普通检索提供语义召回，起点（anchor/任务背景）与合并顺序由插件
+            # 归一化，本层只做类型转换。
+            base = self._search(
+                query,
+                context,
+                replace(options, task_id="", anchor=None, duty=None, view_budget=None),
+                security=security,
+            )
+            bundled = service.continuity_view_result(
+                scope,
+                request,
+                read,
+                extra_items=[
+                    {
+                        "unit_id": item.unit_id,
+                        "content": item.content,
+                        "system_metadata": dict(item.system_metadata),
+                    }
+                    for item in base.items
+                ],
+                top_k=options.top_k,
+            )
+            return RetrievalResult(
+                items=[
+                    RetrievedItem(
+                        unit_id=entry["unit_id"],
+                        abstract=entry["text"],
+                        overview=entry["text"],
+                        content=entry["text"],
+                        view=entry["annotation"],
+                    )
+                    for entry in bundled["items"]
+                ],
+                # 部分通道失败必须对调用方可见：视图是补充，不是把底层错误吞掉。
+                errors=list(base.errors),
+                paths=bundled["paths"],
+                gaps=bundled["gaps"],
+                view_meta=bundled["meta"],
+            )
+
+        discover_errors: list = []
+
+        def discover(text, limit):
+            results = self.search(
+                text,
+                Context(scope, dict(context.extensions)),
+                security=security,
+                top_k=limit,
+                disclosure=DisclosureLevel.L2,
+                filters=options.filters,
+                as_of=options.as_of,
+            )
+            discover_errors.extend(results.errors)
+            units = []
+            for item in results.items:
+                try:
+                    unit = self.get(item.unit_id, scope, security=security)
+                    read(MemoryRef.of(unit))
+                    units.append(unit)
+                except (PermissionDeniedError, ConflictError, NotFoundError):
+                    continue
+            return units
+
+        # 视图组装（条目归一化、排序、截断缺口、元信息）在插件里完成；本层只做类型
+        # 转换与审计。
+        bundled = service.view_result(scope, request, read, discover, top_k=options.top_k)
+        items = [
+            RetrievedItem(
+                unit_id=entry["unit_id"],
+                abstract=entry["text"],
+                overview=entry["text"],
+                content=entry["text"],
+                view=entry["annotation"],
+            )
+            for entry in bundled["items"]
+        ]
+        self._log(
+            security.auth.actor, "search", target_scope=scope,
+            detail={"view": "role", "duty": request.duty},
+        )
+        return RetrievalResult(
+            items=items,
+            errors=discover_errors,
+            paths=bundled["paths"],
+            gaps=bundled["gaps"],
+            view_meta=bundled["meta"],
+        )
 
     def _search_spaces(
         self, context: Context, retrieval_query: RetrievalQuery, access: _SearchAccess,
@@ -377,12 +532,21 @@ class QueryOpsMixin:
         # 查询骨架装配一次，逐空间只差取数上界与本空间谓词，两项都由控制层补齐。
         # 逐空间构造 RetrievalQuery 的循环本身就是取数编排，不留本层。
         # 同步桥接留本层（S02「同步/异步桥接」）：控制层给协程，本层 asyncio.run。
+        item_scopes = {}
+
+        async def guarded_recall(target_scope, query):
+            result = await self._queries.recall(target_scope, query)
+            # Trusted fan-out origin, never a Scope supplied in memory metadata.
+            for item in result.items:
+                item_scopes[id(item)] = target_scope
+            return self._guard_continuity_search(result, scope=target_scope)
+
         merged, space_failures = asyncio.run(
             collective.recall_spaces(
                 targets,
                 retrieval_query,
                 top_k=retrieval_query.top_k,
-                recall=self._queries.recall,
+                recall=guarded_recall,
             )
         )
         for failure in space_failures:
@@ -417,7 +581,7 @@ class QueryOpsMixin:
                 "count": str(len(merged.items)),
             },
         )
-        return merged
+        return self._guard_continuity_search(merged, item_scopes=item_scopes)
 
     def _hierarchy_enabled(self) -> bool:
         """仅在可信请求通过校验后读取运行时树总开关。"""
@@ -498,6 +662,20 @@ class QueryOpsMixin:
         )
         if system_clauses:
             effective_filters = and_merge(effective_filters, system_clauses)
+        # 不可用来源（停用 ∪ 隔离）在分页与 count 之前下推：逐条复核的失败形态是抛异常，
+        # 一条被隔离即整页失败；下推后表现为少返回几条，且 count 与页面一致。
+        unavailable = self._unavailable_continuity_connectors(scope)
+        if unavailable:
+            effective_filters = and_merge(
+                effective_filters,
+                [
+                    FilterClause(
+                        "system_metadata.continuity_connector",
+                        FilterOp.NOT_IN,
+                        list(unavailable),
+                    )
+                ],
+            )
         result, unit_contexts = asyncio.run(
             self._queries.list_with_permission_contexts(
                 scope,
@@ -536,6 +714,23 @@ class QueryOpsMixin:
                 "page_count": str(len(result.items)),
             },
         )
+        # 来源过滤已下推（分页前生效），但**依赖证据复核不可省**：依据被修订/撤回后，
+        # get 会拒绝而 list 若只靠谓词仍会返回该结论。逐条复核并**剔除**不合规条目，
+        # 不用抛异常（整页失败）也不用 continue（什么也滤不掉）。
+        visible = []
+        for unit in result.items:
+            try:
+                self._guard_continuity_snapshot(unit, security)
+            except AgentMemoryError:
+                # 依赖不可读、摘要已变或来源不可用都表现为「这条不再可披露」；
+                # 列表按条剔除，不整页报错（get 仍按点读语义抛错）。
+                continue
+            visible.append(unit)
+        if len(visible) != len(result.items):
+            # 逐条剔除发生在分页之后，count 必须同步扣掉，否则调用方按 count 翻页会
+            # 反复落到全是空页的区间。
+            result.count = max(0, result.count - (len(result.items) - len(visible)))
+            result.items = visible
         return result
 
     def get(
@@ -579,6 +774,7 @@ class QueryOpsMixin:
             unit.id,
             context=_unit_snapshot_permission_context(unit),
         )
+        self._guard_continuity_snapshot(unit, security)
         self._log(
             identity,
             "get",

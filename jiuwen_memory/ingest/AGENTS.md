@@ -92,3 +92,5 @@
    关闭时只移除四个合法叶提示，不补齐时间；未知结构键和边提示仍拒绝，原输入不修改。
 
 11. 叶区间比较复用 common/time_utils.as_utc；补齐与解析保留输入时间表示。
+
+SimpleIngestor 将 payload.event_time 优先写入所有分片的 t_event；不解析接续信封；普通 payload.occurred_at 仍写 t_message。

@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import (
@@ -34,6 +34,45 @@ from jiuwen_memory.retrieval.schema_temporal.model import (
 
 if TYPE_CHECKING:
     from jiuwen_memory.retrieval.expander import NodeKey
+
+
+class ViewAnnotation(TypedDict, total=False):
+    """职责视图条目标注（S11）。两档都给出全部键，没有的值为空而不省略。
+
+    ``kind`` 是条目语义类型，``status`` 是证据状态，``discovery`` 说明它是怎么被
+    纳入视图的（background / anchor / relation / semantic_candidate），``required``
+    标记必需依据；``path_ids`` 指向 ``RetrievalResult.paths``，``valid_duties`` 与
+    ``common`` 表达多职责下各自成立的范围。
+    """
+
+    kind: str
+    status: str
+    discovery: str
+    required: bool
+    classification_confidence: str
+    evidence_refs: list[dict]
+    conditions: list
+    duty_ids: list[str]
+    valid_duties: list[str]
+    common: bool
+    path_ids: list[str]
+
+
+class ViewPath(TypedDict, total=False):
+    """职责视图的一条路径（起点、步骤与适用职责）。"""
+
+    path_id: str
+    steps: list[dict]
+    valid_duties: list[str]
+
+
+class ViewGap(TypedDict, total=False):
+    """职责视图的缺口：机器可读码、说明、是否阻塞与受影响条目。"""
+
+    code: str
+    message: str
+    blocking: bool
+    affected_item_ids: list[str]
 
 
 __all__ = [
@@ -134,6 +173,7 @@ class RetrievedItem:
     level: DisclosureLevel = DisclosureLevel.L0  # 本次披露主层级
     system_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     parent_id: str = ""  # 真源父节点 id；未挂父或普通查询时为空
+    view: ViewAnnotation | None = None  # 职责视图条目标注；普通检索为 None
 
 
 @dataclass
@@ -156,6 +196,9 @@ class RetrievalResult:
         default_factory=list
     )  # 检索轨迹（with_trajectory 时返回）
     errors: list[ChannelError] = field(default_factory=list)  # 部分通道失败，不依赖轨迹开关
+    paths: list[ViewPath] = field(default_factory=list)  # 职责视图路径；普通检索为空
+    gaps: list[ViewGap] = field(default_factory=list)  # 职责视图缺口；普通检索为空
+    view_meta: dict | None = None  # 职责视图元信息；普通检索为 None
 
 
 @dataclass

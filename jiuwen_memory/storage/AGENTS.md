@@ -16,6 +16,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `graph_impl/kv_graph_store.py` | 持久 KV 图投影与邻接查询；旧邻接不决定删除新边 |
 | `store_manager.py` | 管理面契约 `StoreManager`（端口单一入口 `kv(name)`/`has_kv(name)` 等、`domain_store(name)`/`has_domain_store(name)`、能力/健康聚合）+ `StoreManagerProducer`（TOP_NAME=`store_manager`；`resolve` 按 params → `globals.store_manager` → default 三级链解析全局唯一 manager，不做匿名兜底）+ `resolve_name`（消费者具名端口/数据面选择键统一读取：params 直读、拒 inline dict）+ `StorageCapability` |
 | `domain_store.py` | 数据面契约 `DomainStore`（MemoryUnit 领域操作：`add`/`update` 带 `IndexWriteMode`、`delete` 带 `IndexRemoveMode`、get/list/scopes、recall/recall_and_get/retrieve/preferred_retrieval_pipeline、`read_md_file`/`edit_md_file`（F08 md 文件级读写，仅文档模式））+ `DomainStoreProducer`（非平级 YAML 入口，由 manager 工厂内构建）。原文不在此列——由构建层注入独立 `KVStore` 自行读写 |
 | `security.py` | StorageSecurity 通用授权、StoreSecurity 数据保护能力标识及公开 StoreEncryptionBinding 依赖契约 |
@@ -35,7 +36,7 @@
 | `_pg.py` | PostgreSQL 后端共享基础：asyncpg 惰性连接池（专职事件循环线程桥接同步调用）、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
 | `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector）；`uri`/`dsn` 晚绑定 |
-| `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag）；`working_dir` 晚绑定 |
+| `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag / kv / neo4j）；`working_dir` 晚绑定；`kv`/`memory`/`neo4j` 声明条件投影能力（`project_edge`/`unproject_edge`），`neo4j` 驱动惰性导入、连接参数 `graph_store.<field>` 晚绑定 |
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
 | `fs_impl/` | FSStore 实现目录（memory / local / encrypted）；local 的 `root` 晚绑定；encrypted_fs_store.py 用稳定 object_id 绑定 AAD、有界读写并声明 StoreSecurity |
@@ -201,7 +202,7 @@ ES 实体未配置 hosts/endpoint 时先返回 None。
 9. 接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert`（默认关闭），经 `_support.read_ssl_config`
    读取后由各 builder 自行翻译为客户端参数：redis `ssl_ca_certs`、elasticsearch `ca_certs`、
    postgres/pgvector `SSLContext`（`CERT_REQUIRED` + `check_hostname`）、milvus `server_pem_path`（配
-   `secure=True`）。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
+   `secure=True`）、neo4j `encrypted=True` + `TrustCustomCAs`。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
    [F04-storage-ssl.md](../../docs/features/storage/F04-storage-ssl.md)。
    `SslConfig`、归一（`build_ssl_config`）与 scheme 校验（`require_tls_scheme`）住在
    `common._support`，与出站客户端共用；storage 侧只保留缺证书即报错这条自有策略。
@@ -306,3 +307,7 @@ StoreManager.domain_store_for_kv(name) 定义可选领域读契约，默认抛�
 CompositeStoreManager 实现该方法，返回显式绑定受管 KV 的领域门面，用于正排写入前复核。
 该门面仍执行 memory_unit 授权并通过受管 KV 代理读数，不借用默认数据面的真源端口、
 文档模式或召回配置，不注册或替换 manager 的具名数据面。
+
+KV 与 DomainStore 不提供 compare_and_swap / 条件更新（原仅服务角色记忆派生 updated，已随 updated 推迟一并删除，见 S06「原子条件更新」）；Registry 并发依赖单写者声明。
+
+Neo4j 启用 SSL 时在装配与 URI 晚绑定处验证 TLS scheme，显式加密与自定义 CA 同时传给驱动；health 只探测，首次写入前创建唯一约束。

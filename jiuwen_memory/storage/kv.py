@@ -15,7 +15,11 @@ from abc import abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from jiuwen_memory.common.errors import BackendError, NotFoundError
+from jiuwen_memory.common.errors import (
+    BackendError,
+    NotFoundError,
+    UnsupportedCapabilityError,
+)
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, MemoryUnit, Scope
@@ -52,8 +56,6 @@ class MigrationVerificationError(BackendError):
 class KVStore(BaseStore):
     def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
         """Optional bounded exact read; None is oversized, missing still raises NotFoundError."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
         raise UnsupportedCapabilityError("bounded_migration_read", "kv", "storage")
 
     def migration_scan_supported(self) -> bool:
@@ -63,8 +65,6 @@ class KVStore(BaseStore):
         self, scope: Scope, *, after: str = "", max_value_bytes: int = 134217728
     ) -> Iterator[MigrationRecord]:
         """Optional bounded /memory/ iteration; oversized values must not be materialized."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
         raise UnsupportedCapabilityError("bounded_migration_scan", "kv", "storage")
 
     def migration_scope_supported(self, scope: Scope) -> bool:
@@ -73,8 +73,6 @@ class KVStore(BaseStore):
 
     def migration_identity(self) -> object:
         """Optional opaque physical location identity for maintenance deduplication."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
         raise UnsupportedCapabilityError("migration_identity", "kv", "storage")
 
     def compare_exchange(
@@ -85,8 +83,6 @@ class KVStore(BaseStore):
         False means missing, expired or changed. None deletes only the matching value.
         Plugins must implement atomically or refuse; read-then-write is not a fallback.
         """
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
         raise UnsupportedCapabilityError("compare_exchange", "kv", "storage")
 
     def coordination_key(self) -> tuple[str, str | int]:
@@ -99,6 +95,23 @@ class KVStore(BaseStore):
         if self.coordination_key() != key:
             raise BackendError("ingest job store changed; reassemble the runtime")
         yield
+
+    @property
+    def persistent_atomic_records(self) -> bool:
+        """Fixed durable namespace with atomic single-record replacement (not CAS)."""
+        return False
+
+    def claim_single_writer(self, namespace: str) -> None:
+        """Hold an exclusive management writer claim until store.close(); fail if unsupported."""
+        raise UnsupportedCapabilityError(
+            "single_writer", namespace, "storage", "KV backend cannot enforce a single writer"
+        )
+
+    def release_single_writer(self, namespace: str) -> None:
+        """Release an acquired claim without closing a borrowed Store connection."""
+        raise UnsupportedCapabilityError(
+            "single_writer", namespace, "storage", "KV backend cannot release a writer claim"
+        )
 
     @abstractmethod
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:

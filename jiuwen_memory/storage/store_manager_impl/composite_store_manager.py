@@ -90,11 +90,11 @@ class _AuthorizedStoreProxy:
 def _action_for_store_method(name: str) -> Any:
     if name == "insert":
         return StorageAction.ADD
-    if name == "update":
+    if name in {"update"}:
         return StorageAction.UPDATE
     if name == "delete":
         return StorageAction.DELETE
-    if name in {"search", "recall", "seed_ids"}:
+    if name in {"search", "recall", "seed_ids", "incident_edges"}:
         return StorageAction.SEARCH
     if name in {"get", "mget", "exists", "scan", "list", "stat"}:
         return StorageAction.GET

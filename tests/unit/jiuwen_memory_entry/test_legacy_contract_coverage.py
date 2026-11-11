@@ -98,6 +98,8 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
         "system_metadata": "system_metadata",
         "user_metadata": "user_metadata",
         "occurred_at": "occurred_at",
+        "event_time": "event_time",
+        "continuity": gap("接续写入由 add 的可选 continuity 参数承载，legacy 扁平面未展开"),
     },
     "batch_add": {
         "items": DERIVED,
@@ -107,6 +109,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
         "system_metadata": "defaults.system_metadata",
         "user_metadata": "defaults.user_metadata",
         "occurred_at": "defaults.occurred_at",
+        "event_time": "defaults.event_time",
         "stream_id": "defaults.stream_id",
         "continue_on_error": "continue_on_error",
     },
@@ -121,6 +124,10 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
         "hierarchy_kind": "hierarchy_kind", "hierarchy_role": "hierarchy_role",
         "span_start": "span_start", "span_end": "span_end",
         "expand_depth": "expand_depth", "rollup": "rollup",
+        "task_id": gap("职责视图入参，legacy 扁平面未展开"),
+        "anchor": gap("职责视图入参，legacy 扁平面未展开"),
+        "duty": gap("职责视图入参，legacy 扁平面未展开"),
+        "view_budget": gap("职责视图入参，legacy 扁平面未展开"),
     },
     "list": {
         "scope": DERIVED,
