@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from jiuwen_memory.api import RequestSecurityContext, Scope
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest
 
 _SCOPE_KEYS = {"tenant_id", "scope", "space", "space_id", "agent", "session"}
@@ -102,24 +103,37 @@ def build_legacy_dispatch_request(
     grantee = None
     if "grantee" in payload or "grantee_tenant_id" in payload:
         grantee_raw = payload.get("grantee")
-        grantee = (
-            Scope(org=target.org, space=target.space, user=str(grantee_raw))
-            if isinstance(grantee_raw, str)
-            else _nested_scope(grantee_raw, target)
-            if isinstance(grantee_raw, Mapping)
-            else _scope(payload, "grantee_", target)
-        )
+        if isinstance(grantee_raw, str):
+            grantee = Scope(org=target.org, space=target.space, user=str(grantee_raw))
+        elif isinstance(grantee_raw, Mapping):
+            grantee = _nested_scope(grantee_raw, target)
+        elif grantee_raw is None and any(key.startswith("grantee_") for key in payload):
+            # null + 扁平 grantee_* 字段：既有合法形态，继续扁平解析。
+            grantee = _scope(payload, "grantee_", target)
+        else:
+            # 数值/列表/布尔等非法类型，或 null 且无任何 grantee_* 字段：原实现
+            # 静默兜底成 target 自身，产出 grantor == grantee 的自授权记录。
+            # fail-fast 报 400，由调用方修正后重试。
+            raise ValidationError(
+                "'grantee' must be a user string, a scope object, or grantee_* fields"
+            )
     member = None
     if "member" in payload or "member_tenant_id" in payload:
         member_raw = payload.get("member")
-        member = (
-            Scope(org=target.org, space=target.space, user=str(member_raw))
-            if isinstance(member_raw, str)
-            else _nested_scope(member_raw.get("scope", member_raw), target)
-            if isinstance(member_raw, Mapping)
-            and isinstance(member_raw.get("scope", member_raw), Mapping)
-            else _scope(payload, "member_", target)
-        )
+        if isinstance(member_raw, str):
+            member = Scope(org=target.org, space=target.space, user=str(member_raw))
+        elif isinstance(member_raw, Mapping) and isinstance(
+            member_raw.get("scope", member_raw), Mapping
+        ):
+            member = _nested_scope(member_raw.get("scope", member_raw), target)
+        elif member_raw is None and any(key.startswith("member_") for key in payload):
+            # null + 扁平 member_* 字段：既有合法形态，继续扁平解析。
+            member = _scope(payload, "member_", target)
+        else:
+            # 同 grantee：非法类型或 null 且无 member_* 字段，拒绝静默自授权。
+            raise ValidationError(
+                "'member' must be a user string, a scope object, or member_* fields"
+            )
 
     items: list[DispatchBatchItem] = []
     for item in payload.get("items", ()) if isinstance(payload.get("items"), list) else ():

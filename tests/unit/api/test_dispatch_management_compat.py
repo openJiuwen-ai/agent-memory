@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.common.errors import AuthenticationError
+from jiuwen_memory.common.errors import AuthenticationError, ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Scope, Segment
 from jiuwen_memory.control import MemoryListResult, PrincipalPath, SpaceInfo, SpaceStatus
@@ -394,3 +394,49 @@ def test_dispatch_create_space_delegates_to_api_with_space_spec() -> None:
     assert srv.api.call["spec"].principal_path == PrincipalPath.AGENT_USER
     assert srv.api.call["spec"].policy.pipeline_profiles == {"coding": "coding"}
     assert body["space"]["metadata"] == {"env": "prod"}
+
+
+@pytest.mark.parametrize("raw", [None, 12345, ["reader"], True])
+def test_grantee_invalid_type_rejected_instead_of_silent_self_grant(raw) -> None:
+    """非法类型 grantee 须 400，不得静默退化成 target 自身（grantor == grantee 自授权）。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "grant",
+            {"tenant_id": "acme", "scope": "owner", "grantee": raw},
+            security=security,
+        )
+
+
+def test_grantee_null_with_flat_fields_still_resolves() -> None:
+    """grantee=null 但存在 grantee_* 扁平字段：既有扁平解析形态保持不变。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "grant",
+        {"tenant_id": "acme", "scope": "owner", "grantee": None, "grantee_scope": "reader"},
+        security=security,
+    )
+    assert request.grantee == Scope(org="acme", user="reader")
+
+
+@pytest.mark.parametrize("raw", [None, 12345, ["m1"]])
+def test_member_invalid_type_rejected_instead_of_silent_self_member(raw) -> None:
+    """非法类型 member 须 400，不得静默退化成 target 自身。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "add_space_member",
+            {"tenant_id": "acme", "scope": "team", "member": raw},
+            security=security,
+        )
+
+
+def test_member_null_with_flat_fields_still_resolves() -> None:
+    """member=null 但存在 member_* 扁平字段：既有扁平解析形态保持不变。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "add_space_member",
+        {"tenant_id": "acme", "scope": "team", "member": None, "member_scope": "m1"},
+        security=security,
+    )
+    assert request.member == Scope(org="acme", user="m1")
