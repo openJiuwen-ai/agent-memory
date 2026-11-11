@@ -29,9 +29,11 @@ import yaml
 
 from jiuwen_memory.api import ConflictError, Modality, Surface, ValidationError
 from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory.api import normalize as normalize_filters
 from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
 from jiuwen_memory.common.security import new_request_context
 from jiuwen_memory.common.security.types import AuthContext, Role
+from jiuwen_memory.common.type_def.filter import FilterLogic
 
 # 本文件 -> tests/unit/jiuwen_memory_adapter -> tests/unit -> tests -> 仓库根
 # append（而非 insert(0)）：避免模块重名告警；adapter 作为顶层模块 agent_memory_provider
@@ -158,6 +160,24 @@ class TestRecallFilters:
         assert "episodic" not in flattened
         assert "working" not in flattened
         assert "archival" not in flattened
+
+    def test_filters_with_project_add_cross_project_in_predicate(self):
+        filters = _recall_filters("proj-a")
+        assert filters["system_metadata.project"] == {"in": ["", "proj-a"]}, filters
+        assert filters["tier"] == {"in": ["semantic", "core", "procedural"]}, filters
+
+    def test_filters_without_project_carry_no_project_predicate(self):
+        assert "system_metadata.project" not in _recall_filters(""), "空 project 不应带项目谓词"
+
+    def test_filters_with_project_normalize_to_and_of_two_clauses(self):
+        # 顶层双键由 API 边界的 normalize 解析为 AND；HTTP 服务端与进程内共用同一解析。
+        expr = normalize_filters(_recall_filters("proj-a"))
+        assert expr.logic is FilterLogic.AND, expr
+        clauses = {(c.field, c.op.value): c.value for c in expr.children}
+        assert clauses == {
+            ("tier", "in"): ["semantic", "core", "procedural"],
+            ("system_metadata.project", "in"): ["", "proj-a"],
+        }, clauses
 
 
 # --------------------------------------------------------------------------- #
@@ -586,6 +606,73 @@ class TestSdkMode:
                 assert result is not None
                 assert result.item_id
                 assert result.content == "SDK 原文直写"
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    def test_prefetch_forwards_project_to_search_filters(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-prefetch-user"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-prefetch-user", scope_id="tenant-sdk")
+            try:
+                seen: list[dict | None] = []
+                original = provider._client.search
+
+                async def _spy(query, scope, *, top_k=10, filters=None):
+                    seen.append(filters)
+                    return await original(query, scope, top_k=top_k, filters=filters)
+
+                provider._client.search = _spy
+                await provider.prefetch("部署区域", project="proj-a")
+                await provider.prefetch("部署区域", project="  ")
+                await provider.prefetch("部署区域")
+                assert seen[0]["system_metadata.project"] == {"in": ["", "proj-a"]}, seen[0]
+                assert "system_metadata.project" not in seen[1], seen[1]
+                assert "system_metadata.project" not in seen[2], seen[2]
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    def test_prefetch_recalls_project_memory_only_in_same_project(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-project-user"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-project-user", scope_id="tenant-sdk")
+            try:
+                for conclusion, project in (
+                    ("项目部署区域选了杭州", "proj-a"),
+                    ("通用部署区域默认上海", ""),
+                ):
+                    args = {"conclusion": conclusion}
+                    if project:
+                        args["project"] = project
+                    stored = json.loads(
+                        await provider.handle_tool_call("agent_memory_conclude", args)
+                    )
+                    assert stored.get("result") == "Fact stored.", stored
+
+                same = await provider.prefetch("部署区域", project="proj-a")
+                assert "杭州" in same, f"同项目会话应召回项目内记忆: {same!r}"
+                assert "上海" in same, f"同项目会话应召回跨项目记忆: {same!r}"
+
+                other = await provider.prefetch("部署区域", project="proj-b")
+                assert "杭州" not in other, f"其他项目不应看到 proj-a 的记忆: {other!r}"
+                assert "上海" in other, f"其他项目应召回跨项目记忆: {other!r}"
+
+                # 不带 project 时过滤条件里没有项目谓词，由影子索引兜底 project=''：
+                # 只召回跨项目可见的记忆，不会放宽成全库召回。
+                projectless = await provider.prefetch("部署区域")
+                assert "杭州" not in projectless, f"无项目会话不应看到项目记忆: {projectless!r}"
+                assert "上海" in projectless, f"无项目会话应召回跨项目记忆: {projectless!r}"
             finally:
                 await provider.shutdown()
 
