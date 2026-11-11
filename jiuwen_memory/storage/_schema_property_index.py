@@ -422,9 +422,12 @@ def _membership_entity_digest(membership_key: str) -> str | None:
     if not membership_key.startswith(prefix):
         return None
     parts = membership_key[len(prefix):].split("/")
-    if len(parts) != 3 or parts[1] != "members" or not parts[0] or not parts[2]:
+    if len(parts) != 3 or parts[1] != "members":
         return None
-    return parts[0]
+    entity_digest, _, unit_digest = parts
+    if not entity_digest or not unit_digest:
+        return None
+    return entity_digest
 
 
 def _membership_key(entity_key: str, unit_id: str) -> str:

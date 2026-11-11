@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwen_memory.common.type_def import (
+    ChannelError,
     FilterOp,
     LifecycleState,
     MemoryTier,
@@ -1106,7 +1107,8 @@ def test_shrink_uses_local_clipping_before_per_entity_recall() -> None:
 
 def test_reranker_called_batch_first_with_per_entity_fallback() -> None:
     """rerank 批量优先：正常路径 1 次调用覆盖全部超预算实体；批量失败时退化为逐实体
-    重试，单实体失败只降级该实体，不影响其他实体。"""
+    重试，单实体失败只降级该实体，不影响其他实体。
+    """
 
     class _CountingReranker:
         def __init__(
@@ -1270,12 +1272,14 @@ def test_read_entities_single_entity_uses_narrow_lookup() -> None:
     batch_calls: list[list[str]] = []
 
     class _SplitLookup:
-        def __call__(self, scope: Scope, eid: str) -> _Lookup:
+        @staticmethod
+        def __call__(scope: Scope, eid: str) -> _Lookup:
             del scope
             narrow_calls.append(eid)
             return _Lookup(True, [unit.id])
 
-        def lookup_batch(self, scope: Scope, entity_ids: list[str]) -> dict[str, _Lookup]:
+        @staticmethod
+        def lookup_batch(scope: Scope, entity_ids: list[str]) -> dict[str, _Lookup]:
             del scope
             batch_calls.append(list(entity_ids))
             return {eid: _Lookup(True, [unit.id]) for eid in entity_ids}
@@ -1305,11 +1309,13 @@ def test_read_entities_plain_list_lookup_form_is_supported() -> None:
     ids_by_entity = {eid: [u.id] for eid, u in zip(entity_ids, units, strict=True)}
 
     class _PlainListBatchLookup:
-        def __call__(self, scope: Scope, eid: str):
+        @staticmethod
+        def __call__(scope: Scope, eid: str):
             del scope
             return ids_by_entity[eid]
 
-        def lookup_batch(self, scope: Scope, eids: list[str]) -> dict[str, list[str]]:
+        @staticmethod
+        def lookup_batch(scope: Scope, eids: list[str]) -> dict[str, list[str]]:
             del scope
             return {eid: ids_by_entity[eid] for eid in eids}
 
@@ -1343,8 +1349,6 @@ def test_recall_errors_are_thread_local_across_concurrent_searches() -> None:
 
     def _worker(tag: str, sink: list[int]) -> None:
         recaller.reset_errors()
-        from jiuwen_memory.common.type_def import ChannelError, RecallChannel
-
         recaller.add_errors(
             [ChannelError(RecallChannel.TEMPORAL, f"src-{tag}", "Err", "x")]
         )
@@ -1364,7 +1368,8 @@ def test_recall_errors_are_thread_local_across_concurrent_searches() -> None:
 
 def test_parallel_recall_times_out_and_degrades() -> None:
     """Property 直达召回超过 schema_temporal_recall_timeout 时降级为 TEMPORAL 错误，
-    普通结果仍正常返回（search 串行重跑 Property 召回）。"""
+    普通结果仍正常返回（search 串行重跑 Property 召回）。
+    """
 
     source = _source("source-timeout", "entity-alice")
     property_unit = _property(
@@ -1446,12 +1451,14 @@ def test_parallel_recall_reuses_shared_executor() -> None:
         extensions={"schema_temporal": {"mode": "history"}},
     )
 
-    assert retriever._schema_temporal_executor is None
+    # 私有属性用 vars() 读取：断言的是"同一实例复用"，不需要公开入口。
+    private_state = vars(retriever)
+    assert private_state.get("_schema_temporal_executor") is None
     retriever.retrieve(_SCOPE, query)
-    first = retriever._schema_temporal_executor
+    first = private_state["_schema_temporal_executor"]
     assert first is not None, "首次 retrieve 后共享 executor 未创建"
     retriever.retrieve(_SCOPE, query)
-    assert retriever._schema_temporal_executor is first, "第二次 retrieve 新建了 executor"
+    assert private_state["_schema_temporal_executor"] is first, "第二次 retrieve 新建了 executor"
 
 
 def test_lookup_batch_uses_narrow_scan_below_threshold() -> None:
@@ -1527,7 +1534,8 @@ def test_lookup_batch_full_scan_above_threshold() -> None:
 
 def test_read_entities_falls_back_when_indexed_but_empty() -> None:
     """lookup_batch 返回 indexed=True 但 unit_ids 为空时，reader 回退 _list_properties
-    真源复核，避免漏召（并发写期间 membership 被删但 watermark 仍 complete 的窗口）。"""
+    真源复核，避免漏召（并发写期间 membership 被删但 watermark 仍 complete 的窗口）。
+    """
 
     entity_ids = [f"entity-empty-{i}" for i in range(3)]
     units = [
@@ -1537,11 +1545,13 @@ def test_read_entities_falls_back_when_indexed_but_empty() -> None:
     domain = _FakeDomain(units)
 
     class _EmptyBatchLookup:
-        def __call__(self, scope: Scope, eid: str):
+        @staticmethod
+        def __call__(scope: Scope, eid: str):
             del scope
             return _Lookup(True, [])
 
-        def lookup_batch(self, scope: Scope, eids: list[str]) -> dict[str, _Lookup]:
+        @staticmethod
+        def lookup_batch(scope: Scope, eids: list[str]) -> dict[str, _Lookup]:
             del scope
             return {eid: _Lookup(True, []) for eid in eids}
 

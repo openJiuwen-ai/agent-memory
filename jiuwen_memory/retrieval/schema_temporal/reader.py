@@ -198,8 +198,8 @@ class SchemaTemporalReader:
         matched = self._matching_units(entity_id, unit_ids, units, query, filters)
         return matched, len(matched)
 
+    @staticmethod
     def _matching_units(
-        self,
         entity_id: str,
         unit_ids: list[str],
         units: dict[str, MemoryUnit],
