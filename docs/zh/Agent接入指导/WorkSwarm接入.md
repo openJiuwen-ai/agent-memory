@@ -50,3 +50,25 @@ after_invoke（每轮结束）
 4. **验证**：启动后日志出现 `JiuwenMemory provider built` 关键行即挂载成功；对话中让 Agent 记一件事，隔几轮或换会话再问，能召回即接入生效。
 
 每一步的具体命令、字段说明、环境变量总表与常见问题，见 [JiuwenMemory-SDK 接入指导](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/zh/JiuwenMemory-SDK%E6%8E%A5%E5%85%A5.md)。
+
+## 3. 文档记忆 SDK 的视频配置
+
+使用 `memory.builtin.provider: jiuwen` 和 `memory.builtin.jiuwen.mode: sdk` 时，
+将 Portal 的配置放入 `memory.builtin.jiuwen.sdk.globals`。WorkSwarm 通过 `config_dict` 传给
+AgentMemory Provider，由 Provider 组装视频处理链。
+
+| `globals` 字段 | 用途 | 对应环境变量 |
+| --- | --- | --- |
+| `local_media_roots` | 允许导入的本地目录列表，每项包含 `scope` 和 `root` | `JIUWEN_MEMORY_VIDEO_ROOTS`（JSON 数组） |
+| `asr_base_url`、`asr_model` | ASR 服务地址和模型名 | `ASR_API_BASE`、`ASR_MODEL_NAME` |
+| `asr_api_key` | ASR 凭证，按服务要求填写 | `ASR_API_KEY` |
+| `video_base_url`、`video_model` | 视频模型服务地址和模型名 | `VIDEO_API_BASE`、`VIDEO_MODEL_NAME` |
+| `video_api_key` | 视频模型凭证，按服务要求填写 | `VIDEO_API_KEY` |
+
+`root` 使用 AgentMemory 所在机器的本地绝对路径，`scope` 必须与摄入任务的 Scope 精确匹配。
+非空字段优先于环境变量。缺省、`null`、空白字符串和空目录列表按未填写处理，可回退到环境变量。
+模型地址和名称会去除首尾空白。表单全空且未设置目录环境变量时沿用文本能力。
+缺少必填项、导入目录无效或 Scope 绑定不合法时，Provider 记录原因并保留文本能力。
+
+可以填写上述简化字段，也可以传入完整算子图。两种方式同时使用时，显式算子和 pipeline 配置覆盖
+生成的默认值，视频提交与状态工具按最终装配的能力注册。配置示例见 [F09](../../features/control/F09-agent-engine-doc-mode-read.md#swarm-sdk-文档模式的视频写入)。
