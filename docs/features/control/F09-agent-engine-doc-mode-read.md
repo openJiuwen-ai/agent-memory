@@ -172,13 +172,42 @@ Provider 使用已绑定的 Scope 和可信身份提交原生摄入任务，`Age
 
 Swarm 选择 AgentMemory 的 SDK 模式后，可直接使用 Provider 内置的视频算子和路由。
 部署环境用 `JIUWEN_MEMORY_VIDEO_ROOTS` 提供 JSON 数组，每项包含 `scope` 和 `root`。
-该变量为空时，Provider 默认只装配文本栈。启用内置视频时，使用 `ASR_API_BASE`、`ASR_MODEL_NAME`、
+也可由 Portal 经 Swarm 透传 `config_dict.globals`。提供非空目录、ASR 或视频模型字段，
+或者设置目录环境变量，都会触发内置视频配置检查。三类部署输入的示例如下，
+模型地址与凭证填写实际值，Scope 与 Provider 绑定的目标 Scope 精确一致。
+
+```python
+config_dict = {
+    "globals": {
+        "local_media_roots": [{
+            "scope": {"org": "tenant", "user": "alice", "agent": "jiuwenswarm"},
+            "root": "D:/TestVideo",
+        }],
+        "asr_base_url": "https://asr.example/v1",
+        "asr_model": "asr-model",
+        "asr_api_key": "<asr-key>",
+        "video_base_url": "https://vision.example/v1",
+        "video_model": "vision-model",
+        "video_api_key": "<vision-key>",
+    },
+}
+```
+
+非空 globals 字段优先于对应环境变量。缺省、`null`、空白字符串和空目录列表可回退环境变量。
+模型地址和名称会去除首尾空白。表单全空且没有目录环境变量时，直接装配文本能力。
+缺少必填项、导入目录无效或 Scope 绑定不合法时，Provider 记录原因，跳过内置视频装配，
+继续初始化文本记忆。
+两种入口复用同一套视频 profile 装配，随后应用内核配置的显式覆盖。接入时选择简化字段或完整算子图，
+同时提供时，显式的 normalizer、evolver 和 pipeline 项优先，视频工具按最终装配结果注册。
+调用方字典保持原样，每次装配独立配置。只传三类参数即可生成视频算子和路由。
+未提供简化视频字段且未设置目录环境变量时，内置默认只装配文本栈。
+启用内置视频时，环境变量使用 `ASR_API_BASE`、`ASR_MODEL_NAME`、
 `ASR_API_KEY` 配置语音转写服务，并用 `VIDEO_API_BASE`、`VIDEO_MODEL_NAME`、
 `VIDEO_API_KEY` 配置视觉服务。若需跨 SDK 实例或重启保留作业状态，可用
 `JIUWEN_MEMORY_VIDEO_JOB_DB` 指定专用 SQLite 文件。Swarm YAML 中现有的 SDK 显式覆盖仍可使用。
-SDK 通过 `config_path` 读取 YAML 或 JSON 时，设置 `JIUWEN_MEMORY_VIDEO_ROOTS` 后，
-Provider 也会先装配内置视频默认值，再应用文件里的显式配置。未设置该变量时，
-显式配置文件仍直接交给内核装配。
+SDK 通过 `config_path` 读取 YAML 或 JSON 时，提供上述 globals 视频字段或设置目录环境变量后，
+Provider 也会基于 Agent 文档记忆默认配置应用文件覆盖。视频配置无效时保留文本的文档记忆装配。
+未触发内置视频配置检查的独立配置文件仍直接交给内核装配。
 
 视频工具通过公开 API 在入队前先做写入鉴权，再委托已装配的规约器验证本地 URI 和扩展名。
 `local_media_roots` 可按标准配置规则由实例参数覆盖全局配置。后台暂存文件时仍独立校验。
