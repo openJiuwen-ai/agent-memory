@@ -68,6 +68,8 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 ## 行为铁律
 
+- **明文拒绝不可降级**：扩展、rollup、多模态及 Schema Temporal 的容错分支必须继续传播 PlaintextDataError，由 API 返回明确错误，不吞成缺失节点或成功空结果。
+
 0. **metadata 过滤不跨命名空间**：`user_metadata.<key>` 和
    `system_metadata.<key>` 从对应真源字段复核，不 fallback。`RetrievedItem` 同时附带
    两个命名空间，调用方按接入形态决定是否暴露系统字段。
@@ -209,4 +211,8 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - 其他展开请求继续 BFS，按遍历顺序返回。跨空间先延迟至全局选根，再按现有空间
   处理顺序、空间内融合原序补入所选父的后代；不比较跨空间分数或按完成时间重排。
 - 共用披露预算及完整 Scope+id 去重；空正文在预算准入后按真源排除，不退还预算。
-  空父仍可带回合法后代。score 仍表示原根分或继承分，轨迹以 child_select 记录补位。
+  空父仍可带回合法后代。score 仍表示原根分或继承分。
+- 上卷结果保留后代到目标父的真实边距离，经 keep_recalled 传给补位，不为轨迹另查子树。
+  expansion 按完整 Scope+id 累计实际返回后代数量、最大深度及停止原因，逐根记录
+  expand（mode=recalled_children），最后保留 child_select 汇总。预算/节点上限触发根
+  保留原错误；后续未完成根只记录原因。满窗口不新增错误或提供方校验。

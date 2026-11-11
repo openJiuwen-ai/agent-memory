@@ -9,11 +9,12 @@ construction / retrieval 仍保持不知道 control 的单向依赖边界。
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.common.type_def import MemoryUnit, MetadataValueType
 from jiuwen_memory.retrieval.types import RetrievalQuery
 
 from .base import ControlOperator
@@ -48,6 +49,12 @@ class PipelineBinding:
 
 class MemoryPipeline(ControlOperator):
     """按写入/查询上下文选择 pipeline profile。"""
+
+    def explicit_write_binding(
+        self, metadata: Mapping[str, MetadataValueType],
+    ) -> PipelineBinding | None:
+        """Resolve an explicit write route without a fallback profile."""
+        return None
 
     @abstractmethod
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:

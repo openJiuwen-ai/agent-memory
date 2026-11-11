@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.type_def import (
     FilterExpr,
@@ -236,6 +237,8 @@ class SchemaTemporalSearcher:
                 expected=len(rerankable),
                 label="direct property",
             )
+        except PlaintextDataError:
+            raise
         except Exception as exc:
             logger.warning(
                 "SchemaTemporalSearcher: direct Property rerank degraded: %s",
@@ -271,6 +274,8 @@ class SchemaTemporalSearcher:
                 expected=len(result.entities),
                 label="final entity",
             )
+        except PlaintextDataError:
+            raise
         except Exception as exc:
             logger.warning(
                 "SchemaTemporalSearcher: final Entity rerank degraded: %s",

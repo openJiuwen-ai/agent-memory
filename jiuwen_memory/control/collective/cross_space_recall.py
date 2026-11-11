@@ -43,6 +43,7 @@ from dataclasses import dataclass, replace
 
 from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import ChannelError, FilterClause, Scope, and_merge
 from jiuwen_memory.retrieval.cross_space import allocate_quota, merge, space_error
 from jiuwen_memory.retrieval.expansion import PreparedRetrievalResult, complete_expansion
@@ -110,6 +111,8 @@ async def recall_spaces(
     failures: list[ChannelError] = []
     for target, outcome in zip(targets, gathered):
         space = target.scope.space
+        if isinstance(outcome, PlaintextDataError):
+            raise outcome
         if isinstance(outcome, BaseException):
             failures.append(space_error(space, type(outcome).__name__, str(outcome)))
             continue

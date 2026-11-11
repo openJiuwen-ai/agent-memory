@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from math import isfinite
 
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import (
     HierarchyRole,
     MemoryUnit,
@@ -45,7 +46,8 @@ class RollupResult:
     visited_count: int = 0
     admitted_count: int = 0
     boosted_count: int = 0
-    recalled_parents: dict[NodeKey, NodeKey] = field(default_factory=dict)
+    # 已校验的目标父及实际边距离，供补位与逐根轨迹复用。
+    recalled_parents: dict[NodeKey, tuple[NodeKey, int]] = field(default_factory=dict)
 
     def exclude(self, code: str) -> None:
         """单请求按首次出现顺序去重诊断码。"""
@@ -85,6 +87,8 @@ class _Rollup:
             except NotFoundError:
                 self.result.exclude("missing_parent")
                 return None
+            except PlaintextDataError:
+                raise
             except Exception:
                 self.result.exclude("read_error")
                 return None
@@ -147,7 +151,7 @@ class _Rollup:
         key = node_key(parent)
         if depth <= self.request.child_depth:
             # 祖先链已校验可见性、双向引用和时间覆盖，只复用请求深度内的实际命中。
-            self.result.recalled_parents[node_key(source.unit)] = key
+            self.result.recalled_parents[node_key(source.unit)] = (key, depth)
         previous = self.selected.get(key)
         if previous is None:
             # 不把子命中的通道 evidence 冒充父自身的索引证据。

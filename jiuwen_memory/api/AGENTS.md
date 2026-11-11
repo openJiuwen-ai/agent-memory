@@ -15,9 +15,9 @@
 
 | 文件 | 职责 |
 |---|---|
-| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化与日志脱敏辅助函数 |
+| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化、SDK 本地视频导入预检与日志脱敏辅助函数 |
 | `access_security.py` | 公开安全装配辅助与 `register_trusted_principal`；初始化按增量能力委派实际认证器，不依赖实现类或另建主体 Store |
-| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
+| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/supports_video_ingest/prepare_video_ingest/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` | 公开装配：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
@@ -36,6 +36,9 @@
 
 - **内核配置装配**：默认 AgentEngine 的依赖继承和运行模式选择由内核装配入口处理，
   规则见 S08。独立安全 Runtime 和纯配置读取沿用通用数据合并。
+
+- **明文拒绝边界**：加密读取遇到明文沿原 BackendError 异常契约失败，跨空间部分失败不能吞掉专用拒绝信号。MemoryAPI 签名、返回类型与公共导出不增加迁移或错误结果类型；维护工具独立位于 deploy/migration，不在 API、启动或后台读取中执行。
+
 - **静态加密装配边界**：构建组件前核查部署声明，ConfigSource 安装位置变更门禁后
   回填当前上下文；公共 manager 解析执行保护清单准入，替代插件不得绕过统一开关。
   包装接线遵循同一装配作用域和上游资源所有权/失败回滚生命周期。

@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import (
     HierarchyRef,
     HierarchyStatus,
@@ -156,9 +157,13 @@ class DefaultExpander(Expander):
                     found.extend(self._domain.get(scope, [unit_id]))
                 except NotFoundError:
                     result.exclude("missing_child")
+                except PlaintextDataError:
+                    raise
                 except Exception:
                     result.exclude("read_error")
             return found
+        except PlaintextDataError:
+            raise
         except Exception:
             result.exclude("read_error")
             return []

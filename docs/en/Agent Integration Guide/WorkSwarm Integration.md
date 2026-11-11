@@ -54,3 +54,28 @@ The rail also exposes two tools to the Agent — `mem2_search` / `mem2_add` — 
 4. **Verify**: on startup, a `JiuwenMemory provider built` line in the logs means the rail is mounted. Then ask the Agent to remember something in a conversation, and ask again a few turns later or in a new session — successful recall confirms the integration works.
 
 For the exact commands of each step, field reference, the full environment-variable table, and FAQs, see the [JiuwenMemory SDK Access guide](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/JiuwenMemory-SDK.md).
+
+## 3. Video configuration for the document memory SDK
+
+With `memory.builtin.provider: jiuwen` and `memory.builtin.jiuwen.mode: sdk`, place Portal settings
+under `memory.builtin.jiuwen.sdk.globals`. WorkSwarm passes them to the AgentMemory Provider in
+`config_dict`. The Provider assembles the video pipeline.
+
+| `globals` field | Purpose | Environment variable |
+| --- | --- | --- |
+| `local_media_roots` | List of local import directories, each with `scope` and `root` | `JIUWEN_MEMORY_VIDEO_ROOTS` (JSON array) |
+| `asr_base_url`, `asr_model` | ASR service URL and model name | `ASR_API_BASE`, `ASR_MODEL_NAME` |
+| `asr_api_key` | ASR credential, if required by the service | `ASR_API_KEY` |
+| `video_base_url`, `video_model` | Video model service URL and model name | `VIDEO_API_BASE`, `VIDEO_MODEL_NAME` |
+| `video_api_key` | Video model credential, if required by the service | `VIDEO_API_KEY` |
+
+Use a local absolute path on the AgentMemory host for `root`. The `scope` must match the ingest
+Scope exactly. Nonblank fields take precedence over environment variables. Omitted fields, `null`,
+blank strings, and empty root lists fall back to the corresponding environment variables. The
+Provider trims model URLs and names. With an empty form and no import-root environment variable,
+it loads text memory only. Missing required settings, invalid directories, and invalid Scope
+bindings produce a warning and leave text memory available.
+
+Choose either the compact fields above or a complete video component configuration. When supplied
+together, explicit components and pipeline settings override the generated defaults. Tool
+registration depends on the assembled video capability. See the [F09 configuration example](../../features/control/F09-agent-engine-doc-mode-read.md#swarm-sdk-文档模式的视频写入).

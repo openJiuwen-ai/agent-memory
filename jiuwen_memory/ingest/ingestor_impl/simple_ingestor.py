@@ -27,10 +27,10 @@ from jiuwen_memory.common.normalizer import (
     ensure_normalizer_supports,
     ensure_structured_modalities_declared,
 )
-from jiuwen_memory.common.normalizer.base import NormalizerProducer
+from jiuwen_memory.common.normalizer.base import LocalMediaPreflight, NormalizerProducer
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
-from jiuwen_memory.common.type_def import MemoryUnit, RawPayload, Segment, Temporal
+from jiuwen_memory.common.type_def import MemoryUnit, Modality, RawPayload, Segment, Temporal
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.hierarchy_hints import extract_hierarchy_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
@@ -58,6 +58,11 @@ class SimpleIngestor(Ingestor):
     @staticmethod
     def health() -> None:
         return None
+
+    def local_media_preflight(self, modality: Modality) -> LocalMediaPreflight | None:
+        if modality not in self._structured_modalities:
+            return None
+        return self._normalizer.local_media_preflight(modality)
 
     def ingest(self, payloads: list[RawPayload]) -> list[MemoryUnit]:
         units: list[MemoryUnit] = []

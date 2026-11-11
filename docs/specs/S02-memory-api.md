@@ -5,9 +5,21 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+
+## 明文读取与独立维护边界
+
+MemoryAPI 的方法、参数、返回类型及公共导出保持原契约。加密读取遇到明文时继续
+按既有 BackendError 异常契约失败，错误信息提示显式迁移或清空；不能返回明文、空结果
+或新增错误结果对象，不增加 HTTP/CLI/MCP 的业务方法及专用状态码转换。
+
+源码部署工具 `python -m deploy.migration.encrypt` 独立提供 inspect/migrate/clear；
+编排、格式校验和逐项结果属于 deploy/migration，不从 jiuwen_memory.api 导出，
+也不在启动、搜索或读取中调用。部署配置、凭据、支持范围及退出码见 F04 §5.3，
+底层可选维护能力见 S06。
+
 
 ## 文档分工
 
@@ -236,6 +248,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `batch_add` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `batch_add_async` | 已实现 | [batch_add / batch_add_async](#batch_add--batch_add_async) | F03、F04 |
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
+| SDK 数据面 | `supports_video_ingest` / `prepare_video_ingest` | 已实现 | [本地视频准入](#本地视频准入) | F09 文档模式 |
 | 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05；`occurred_at` 见 F06 |
 | 数据面 | `search` | 已实现；平铺参数包含可选层级查询与 query rewrite | [search](#search) | F01、F04、retrieval/F08；层级见 common/F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
@@ -433,6 +446,16 @@ def check_write(
 ```
 
 Pre-flight WRITE 鉴权，不落盘。用于长耗时摄入任务入队前拒绝无权限请求，避免 DoS（队列被无权限请求占满）。镜像 `add` 的鉴权路径与 space 可写校验，但不调 `engine.write`。后台实际写入仍保留一次鉴权作防御层。
+
+#### 本地视频准入
+
+`supports_video_ingest() -> bool` 查询已装配的本地视频能力。可用时，显式
+`pipeline=video` 必须路由到支持结构化视频输入的抽取链。
+
+`prepare_video_ingest(uri, scope, *, security, project) -> str` 先按视频写入的 Scope
+和项目鉴权，再使用已装配的本地导入策略检查 URI，返回规范化 URI。能力缺失时抛
+`UnsupportedCapabilityError`。这一步只做准入，不提交任务、不写入记忆。
+调用方可用规范化 URI 计算幂等键，再调用 `submit_ingest`。后台写入仍独立鉴权并验证文件。
 
 #### submit_ingest
 
@@ -851,8 +874,7 @@ def audit(
 ```
 
 按条件（actor/action/layer/时间段等）检索审计留痕。无具体 target scope 时以根 `Scope()` 为鉴权闸门。
-当前实现为兼容存量按 action 精确匹配的授权记录，继续使用 `Action.READ`；目标动作
-`Action.READ_AUDIT` 的启用须作为独立兼容性变更并配套授权数据迁移。
+当前 audit 使用独立 `Action.READ_AUDIT`，不与普通 READ 授权互认。
 
 #### 审计完整性面（接口先行，PR3）
 
@@ -1241,7 +1263,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 并在构造边界把 `list[Action]` 等动作迭代归一为 `frozenset[Action]`；非 `Action` 成员立即
 抛 `TypeError`。`Action`：`READ`/`WRITE`/`UPDATE`/`DELETE`/`SHARE`/
 `REVOKE_SHARE`/`MANAGE_PRINCIPAL`/`MANAGE_SPACE`/`MANAGE_POLICY`/`READ_AUDIT`/
-`VERIFY_AUDIT`/`ADMINISTER_SYSTEM`。
+`VERIFY_AUDIT`/`MIGRATE_MEMORY`/`ADMINISTER_SYSTEM`。
 
 `control/types.py` 为兼容既有内部与仓外导入路径，再导出同一个安全域 `Grant`/`Action`
 对象，不再维护第二套字段或枚举；API 将服务端生成 ID 的 `Grant` 写入与 Authorizer

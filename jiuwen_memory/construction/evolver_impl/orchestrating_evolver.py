@@ -47,6 +47,7 @@ from jiuwen_memory.common.type_def import (
     HierarchyRef,
     LifecycleState,
     MemoryUnit,
+    Modality,
     Relation,
     Scope,
     inherited_system_metadata,
@@ -261,6 +262,7 @@ class OrchestratingEvolver(Evolver):
         graph_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 1.0,
+        dedup_extract: bool = True,
     ) -> None:
         self._extractor = extractor
         self._abstractor = abstractor
@@ -272,6 +274,7 @@ class OrchestratingEvolver(Evolver):
         # 原文（/messages/）专用：不是索引形式，不经 IndexBuilder。缺省与正排 KV 同实例。
         self._message_store = message_store
         self._dedup = dedup
+        self._dedup_extract = dedup_extract
         self._llm = llm
         # 分层标注算子：None 表示不标注（向后兼容）；非 None 时在抽取/升华后标注 L0/L1。
         self._layer_annotator = layer_annotator
@@ -302,6 +305,9 @@ class OrchestratingEvolver(Evolver):
         return any(
             str(u.system_metadata.get("procedural", "")).strip().lower() == "true" for u in units
         )
+
+    def structured_modalities(self) -> frozenset[Modality]:
+        return self._extractor.structured_modalities()
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EVOLVER
@@ -1440,6 +1446,9 @@ class OrchestratingEvolver(Evolver):
         if not extracted:
             return EvolveResult()
         self._annotate_layers(extracted)
+        if not self._dedup_extract:
+            created = self._persist(extracted)
+            return EvolveResult(created_ids=created, created_units=list(extracted))
         return self._dedup_batch(extracted)
 
     def _evolve_consolidate(self, units: list[MemoryUnit]) -> EvolveResult:
@@ -1603,4 +1612,5 @@ def _build(config):
         graph_name=resolve_name(config, "graph_store"),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
+        dedup_extract=config.get("dedup_extract", True),
     )

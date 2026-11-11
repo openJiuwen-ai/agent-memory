@@ -12,12 +12,9 @@ metadata 保留原生类型落库、admin_* 不落引擎（API 层直达 PolicyM
 
 1. **多空间**：不设 ``scope.space == ""`` 本地域校验——delete / 候选枚举扫
    全部 scopes，支撑个人 agent 的 project 分目录等多空间落点。
-2. **纯文本模态**：jiuwenswarm 侧记忆 rail（MemoryRail / CodingMemoryRail）
-   写入/存储/检索全链路纯文本（工具签名 ``content: str``，存储 .md，检索
-   文本向量 + BM25），无 VIDEO 的 uri 载体与 payload_id 幂等需求——
-   ``data`` 恒 ``content.encode("utf-8")``、``uri`` 恒空串。非文本模态由
-   normalizer 能力门禁在规约前拒绝（UnsupportedCapabilityError）。若未来
-   rail 层出现多模态写入工具，需恢复模态特判。
+2. **文本和可选视频输入**：文本编码到 ``data``；视频 URI 放入 ``uri`` 并沿用
+   调用方提供的 ``payload_id``。启用视频需要配置支持 VIDEO 的 normalizer 和
+   对应抽取流水线，文档模式仍存储可通过文本向量和 BM25 检索的抽取结果。
 3. **无 procedural / middle 分流**：agent 链路无过程性记忆与中位延迟写入
    语义，write 只保留 infer=true 的派生抽取与缺省直写两路。middle /
    middle_interval 是调用级开关，本引擎不识别、不剥除、不生效——文档模式
@@ -40,12 +37,18 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
+from jiuwen_memory.common.errors import (
+    AgentMemoryError,
+    NotFoundError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -266,6 +269,19 @@ class AgentEngine(MemoryEngine):
     def health(self) -> None:
         return None
 
+    def _video_write_binding(self) -> PipelineBinding | None:
+        if self._pipeline is None:
+            return None
+        binding = self._pipeline.explicit_write_binding({"pipeline": "video"})
+        if binding is None or Modality.VIDEO not in binding.evolver.structured_modalities():
+            return None
+        return binding
+
+    def video_ingest_preflight(self) -> LocalMediaPreflight | None:
+        if self._video_write_binding() is None:
+            return None
+        return self._ingestor.local_media_preflight(Modality.VIDEO)
+
     async def write(
         self,
         content: str,
@@ -294,17 +310,19 @@ class AgentEngine(MemoryEngine):
 
         infer = _is_true("infer")
 
-        # agent 场景仅文本模态：jiuwenswarm 侧记忆 rail（MemoryRail /
-        # CodingMemoryRail）写入/存储/检索全链路纯文本（工具签名
-        # content: str，存储 .md，检索文本向量+BM25），无 VIDEO 的 uri 载体
-        # 与 payload_id 幂等需求；非文本模态由 normalizer 能力门禁在规约前
-        # 拒绝（UnsupportedCapabilityError）。
+        is_video = source == Modality.VIDEO
+        video_binding = None
+        if is_video and str(meta.get("pipeline", "")).strip() == "video":
+            video_binding = self._video_write_binding()
+            if not infer or video_binding is None:
+                raise UnsupportedCapabilityError("write_pipeline", "video", type(self).__name__)
+        payload_id = str(meta.get("payload_id", "")).strip() if is_video else ""
         payload = RawPayload(
-            id=str(uuid.uuid4()),
+            id=payload_id or str(uuid.uuid4()),
             scope=scope,
             modality=source,
-            data=content.encode("utf-8"),
-            uri="",
+            data=b"" if is_video else content.encode("utf-8"),
+            uri=content if is_video else "",
             assets=list(assets or []),
             system_metadata=meta,
             user_metadata=dict(user_metadata or {}),
@@ -319,7 +337,7 @@ class AgentEngine(MemoryEngine):
             if "session_id" in meta:
                 unit.system_metadata["session_id"] = meta["session_id"]
 
-        binding = self._write_binding(units)
+        binding = video_binding or self._write_binding(units)
         evolver = binding.evolver if binding is not None else self._evolver
         index_builder = binding.index_builder if binding is not None else self._index
         classifier = binding.classifier if binding is not None else self._classifier

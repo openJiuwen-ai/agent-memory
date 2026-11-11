@@ -18,6 +18,7 @@ from jiuwen_memory.common.errors import (
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.security import principal, space_predicates
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
@@ -325,6 +326,8 @@ class QueryOpsMixin:
                         "search",
                         info=facts.info if facts is not None else None,
                     )
+            except PlaintextDataError:
+                raise
             except BackendError as exc:
                 backend_failures.append(_space_denied(space, type(exc).__name__, str(exc)))
                 continue

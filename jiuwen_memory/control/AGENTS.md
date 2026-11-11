@@ -34,7 +34,7 @@
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
 | `space_impl/` | SpaceManager 实现目录（kv） |
-| `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化与 payload 幂等） |
+| `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化、同任务库协调与 payload 幂等） |
 | `jobs.py` | `Job` 抽象（scope + interval 标识，`run() -> JobInfo` 唯一执行入口，不自带循环；`schedule_key` 调度去重键——默认类名，Scheduler 只按此通用键去重，业务身份区分由子类覆写，如 EvolveJob 含 mode）+ `JobFactory`（按 job_type + scope + 运行时参数生成实例）+ `JobType` 枚举 + `JobFactoryProducer` |
 | `evolution/` | 显式建树请求验证、树开关分流与任务提交，以及 background 周期注册，不鉴权、不做分组算法 |
 | `jobs_impl/` | 后台 Job 实现目录：`evolve_job.py`（EvolveJob + EvolveJobSpec）、`middle_to_long_job.py`（MiddleToLongJob + MiddleToLongJobSpec + default JobFactory 装配）。Spec 装配期固化业务参数与 storage/lifecycle/llm 依赖；index/evolver 不在装配期解析（行为铁律 17） |
@@ -52,6 +52,8 @@
 
 - `AgentEngine` 装配 `engine.default` 时，若缺失或为 null 的依赖引用使其回退到匿名实现并
   绕过已声明的具名默认实例，应汇总记录装配告警。JobFactory 经具名查找，沿用其独立装配路径。
+
+- **明文拒绝不可合并成部分成功**：跨空间 recall 的 gather 结果遇到 PlaintextDataError 必须继续传播至 API，不只记录通道错误后返回空结果。
 
 - **提交循环分支一致**：AsyncTimerScheduler.submit 以当前运行循环是否为所属循环决定直接提交或跨线程提交；同线程异循环显式拒绝，不允许落入未初始化 future 的路径。等待关闭不设整体期限，自定义 Job 须能正常结束或在执行边界响应取消，外部调用配置超时。
 

@@ -8,6 +8,7 @@ from dataclasses import replace
 
 from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
@@ -93,6 +94,8 @@ class MultimodalRetriever(Retriever):
                 branch = futures[future]
                 try:
                     results[branch] = future.result()
+                except PlaintextDataError:
+                    raise
                 except Exception as exc:
                     logger.warning(
                         "MultimodalRetriever branch %s failed: %s",

@@ -9,6 +9,7 @@ from datetime import datetime
 
 from jiuwen_memory.common.errors import (
     RateLimitedError,
+    UnsupportedCapabilityError,
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger
@@ -47,6 +48,19 @@ logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
 class AdminOpsMixin:
     """Jobs, admin policy, governance, audit verify, grant/revoke."""
+
+    def supports_video_ingest(self) -> bool:
+        return self._engine.video_ingest_preflight() is not None
+
+    def prepare_video_ingest(
+        self, uri: str, scope: Scope, *, security: RequestSecurityContext, project: str,
+    ) -> str:
+        metadata = {"infer": True, "pipeline": "video", "project": project}
+        self.check_write(scope, security, system_metadata=metadata)
+        preflight = self._engine.video_ingest_preflight()
+        if preflight is None:
+            raise UnsupportedCapabilityError("local_ingest", "video", type(self._engine).__name__)
+        return preflight(uri, scope)
 
     def submit_ingest(
         self,

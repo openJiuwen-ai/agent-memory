@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.kv import KvProducer
+from jiuwen_memory.storage.migration import MigrationRecord, opaque_location
 
 from .._pg import PgStoreBase, _quote_ident, pg_scope_clause
 from .._support import read_ssl_config, wrap_backend
@@ -70,6 +72,9 @@ class PostgresKVStore(PgStoreBase, KVStore):
     def store_type(self) -> StoreType:
         return StoreType.KV
 
+    def migration_identity(self) -> object:
+        return opaque_location("postgres", self._resolved_dsn(), self._table_ref)
+
     def health(self) -> None:
         self._health()
 
@@ -117,6 +122,58 @@ class PostgresKVStore(PgStoreBase, KVStore):
         statement = f"DELETE FROM {self._table_ref} WHERE {clause} AND key = %s"
         with wrap_backend(f"postgres delete {key!r}"):
             self._execute(statement, (*params, key))
+
+    def migration_scan_supported(self) -> bool:
+        return True
+
+    def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
+        clause, params = pg_scope_clause(scope, exact=True)
+        with wrap_backend("postgres bounded migration read"):
+            row = self._fetch_one(
+                f"SELECT CASE WHEN octet_length(value)<=%s THEN value END "
+                f"FROM {self._table_ref} WHERE {clause} AND key=%s AND "
+                "(expires_at IS NULL OR expires_at>extract(epoch from clock_timestamp()))",
+                (max_value_bytes, *params, key),
+            )
+        if row is None:
+            raise NotFoundError("kv", key)
+        return bytes(row[0]) if row[0] is not None else None
+
+    def migration_records(
+        self, scope: Scope, *, after: str = "", max_value_bytes: int = 134217728
+    ) -> Iterator[MigrationRecord]:
+        clause, params = pg_scope_clause(scope, exact=True)
+        while True:
+            with wrap_backend("postgres bounded migration scan"):
+                keys = self._fetch_all(
+                    f"SELECT key FROM {self._table_ref} WHERE {clause} "
+                    "AND starts_with(key,%s) AND key>%s ORDER BY key LIMIT 64",
+                    (*params, MEMORY_KEY_PREFIX, after),
+                )
+            if not keys:
+                return
+            for (key,) in keys:
+                after = str(key)
+                try:
+                    value = self.migration_read(scope, after, max_value_bytes=max_value_bytes)
+                except NotFoundError:
+                    continue
+                yield MigrationRecord(after, value, after)
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None
+    ) -> bool:
+        clause, params = pg_scope_clause(scope, exact=True)
+        where = (f"{clause} AND key=%s AND value=%s AND "
+                 "(expires_at IS NULL OR expires_at > extract(epoch from clock_timestamp()))")
+        if replacement is None:
+            statement = f"DELETE FROM {self._table_ref} WHERE {where} RETURNING 1"
+            values = (*params, key, expected)
+        else:
+            statement = f"UPDATE {self._table_ref} SET value=%s WHERE {where} RETURNING 1"
+            values = (replacement, *params, key, expected)
+        with wrap_backend("postgres compare_exchange"):
+            return self._fetch_one(statement, values) is not None
 
     def get(self, scope: Scope, key: str) -> bytes:
         clause, params = pg_scope_clause(scope, exact=True)

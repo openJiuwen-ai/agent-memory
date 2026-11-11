@@ -390,6 +390,9 @@ class LocalEnvelopeCryptographyProvider(CryptographyProvider):
     原始 bytes。是否允许未加密存储由上层选用不同的存储适配器表达，不在本类里开关。
     """
 
+    def is_ciphertext(self, value: bytes) -> bool:
+        return value.startswith(b"ENC1")
+
     def __init__(self, key_provider: KeyProvider) -> None:
         _ensure_crypto()
         self._key_provider = key_provider

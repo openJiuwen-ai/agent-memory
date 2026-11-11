@@ -11,12 +11,14 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.jobs import Job, JobCancelledError
+from jiuwen_memory.control.scheduler_impl import async_timer_scheduler
 from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import (
     AsyncTimerScheduler,
     TimerWheel,
@@ -669,7 +671,7 @@ def test_permission_denied_marks_parent_timer_failed_not_succeeded() -> None:
     scheduler.shutdown()
 
 
-def test_re_register_within_tick_window_clears_stale_stopped_reason() -> None:
+def test_re_register_within_tick_window_clears_stale_stopped_reason(monkeypatch) -> None:
     """F1：拒绝停摆后一个 tick 窗口内重新注册 → 复活态不得残留停摆痕迹。
 
     拒绝停摆把父定时器置 FAILED + stopped_reason；entry 清理要等下一个
@@ -677,44 +679,54 @@ def test_re_register_within_tick_window_clears_stale_stopped_reason() -> None:
     清 stopped_reason，job_status 会回显"在跑却带着停摆原因"的矛盾状态。
     """
 
+    first_run = asyncio.Event()
+    clock = 100.0
+
+    def now() -> float:
+        return clock
+
     class _SwitchJob(Job):
-        """首次 run 拒绝、后续放行的 fake Job——类变量翻转。"""
+        """The original registration is denied and its replacement can run."""
 
-        denied = True
-        run_count: int = 0
-
-        def __init__(self, scope: Scope, *, interval: int = 1) -> None:
-            super().__init__(scope=scope, interval=interval)
+        def __init__(self, scope: Scope, *, denied: bool = False) -> None:
+            super().__init__(scope=scope, interval=1)
+            self._denied = denied
 
         async def run(self) -> JobInfo:
-            _SwitchJob.run_count += 1
-            if _SwitchJob.denied:
+            if self._denied:
+                first_run.set()
                 raise PermissionDeniedError("evolve", "denied first")
             return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED, detail={})
 
-    _SwitchJob.denied = True
-    _SwitchJob.run_count = 0
     scheduler = AsyncTimerScheduler(tick_interval=1)
     scope = Scope(user="u1")
 
-    async def _run():
-        jid = await scheduler.submit(_SwitchJob(scope, interval=1), Channel.BACKGROUND)
-        await asyncio.sleep(1.8)  # 首触即拒 → FAILED + stopped_reason
-        assert scheduler._jobs[jid].status == JobStatus.FAILED
+    async def _run() -> None:
+        nonlocal clock
+        jid = await scheduler.submit(_SwitchJob(scope, denied=True), Channel.BACKGROUND)
+        await asyncio.sleep(0)  # Let the timer arm its first tick before advancing the clock.
+        # Advance only one tick so the stopped entry cannot be cleaned up before resubmission.
+        clock += 1
+        await first_run.wait()
+        stopped = scheduler.status(jid)
+        assert stopped.status == JobStatus.FAILED
+        assert stopped.detail.get("stopped_reason") == "permission_denied"
 
-        _SwitchJob.denied = False
-        new_jid = await scheduler.submit(
-            _SwitchJob(scope, interval=1), Channel.BACKGROUND
-        )
+        new_jid = await scheduler.submit(_SwitchJob(scope), Channel.BACKGROUND)
         assert new_jid == jid, "同 schedule_key 走刷新路径复用 job_id"
 
-        info = scheduler._jobs[jid]
+        info = scheduler.status(jid)
         assert info.status == JobStatus.RUNNING, "复活为 RUNNING"
         assert "stopped_reason" not in info.detail, "停摆原因不残留"
         assert "finished_at" not in info.detail, "上一生命周期的完成时间不残留"
 
-    asyncio.run(_run())
-    scheduler.shutdown()
+    try:
+        loop = scheduler._runner.ensure_loop()
+        monkeypatch.setattr(loop, "time", now)
+        monkeypatch.setattr(async_timer_scheduler, "time", SimpleNamespace(monotonic=now))
+        asyncio.run_coroutine_threadsafe(_run(), loop).result(timeout=10)
+    finally:
+        scheduler.shutdown()
 
 
 # ---- 退出语义 ----

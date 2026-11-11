@@ -17,12 +17,17 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.migration import MigrationRecord, opaque_location
 from jiuwen_memory.storage.types import KVMemoryListResult
 
 from .memory_list import list_memory_entries
@@ -52,6 +57,7 @@ class SQLiteKVStore(KVStore):
         config_namespace: str = "kv_store",
     ) -> None:
         self._fallback_db_path = db_path
+        self._bound_path: ContextVar[str | None] = ContextVar("sqlite_kv_bound_path", default=None)
         self._config_source = config_source
         self._config_namespace = config_namespace
         self._lock = threading.Lock()
@@ -63,6 +69,21 @@ class SQLiteKVStore(KVStore):
     @staticmethod
     def _expiry(ttl: float) -> float | None:
         return time.time() + ttl if ttl else None
+
+    def coordination_key(self) -> tuple[str, str | int]:
+        path = self._resolved_db_path()
+        if path in ("", ":memory:"):
+            return super().coordination_key()
+        return ("sqlite", str(Path(path).resolve()))
+
+    @contextmanager
+    def bind_coordination(self, key: tuple[str, str | int]) -> Iterator[None]:
+        token = self._bound_path.set(self._resolved_db_path())
+        try:
+            with super().bind_coordination(key):
+                yield
+        finally:
+            self._bound_path.reset(token)
 
     def store_type(self) -> StoreType:
         return StoreType.KV
@@ -81,14 +102,79 @@ class SQLiteKVStore(KVStore):
 
     # -- KVStore 契约 -------------------------------------------------------- #
 
-    def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+    def migration_identity(self) -> object:
+        import os
+
+        path = self._resolved_db_path()
+        return ("sqlite", id(self)) if path == ":memory:" else opaque_location(
+            "sqlite", os.path.normcase(str(Path(path).resolve()))
+        )
+
+    def migration_scan_supported(self) -> bool:
+        return True
+
+    def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
         with self._lock:
-            self._ensure_conn()
-            if self._live_value(scope, key) is not None:
-                raise ConflictError("kv", key)
-            conn = self._ensure_conn()
+            row = self._ensure_conn().execute(
+                'SELECT CASE WHEN length(value)<=? THEN value END FROM kv WHERE '
+                'org=? AND space=? AND "user"=? AND agent=? AND session=? AND key=? '
+                'AND (expires_at IS NULL OR expires_at>?)',
+                (max_value_bytes, scope.org, scope.space, scope.user, scope.agent,
+                 scope.session, key, time.time()),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("kv", key)
+        return bytes(row[0]) if row[0] is not None else None
+
+    def migration_records(
+        self, scope: Scope, *, after: str = "", max_value_bytes: int = 134217728
+    ) -> Iterator[MigrationRecord]:
+        clause = 'org=? AND space=? AND "user"=? AND agent=? AND session=?'
+        params = (scope.org, scope.space, scope.user, scope.agent, scope.session)
+        while True:
+            with self._lock:
+                keys = self._ensure_conn().execute(
+                    f"SELECT key FROM kv WHERE {clause} AND key LIKE ? AND key>? "
+                    "ORDER BY key LIMIT 64", (*params, MEMORY_KEY_PREFIX + "%", after),
+                ).fetchall()
+            if not keys:
+                return
+            for (key,) in keys:
+                after = key
+                try:
+                    value = self.migration_read(scope, key, max_value_bytes=max_value_bytes)
+                except NotFoundError:
+                    continue
+                yield MigrationRecord(key, value, key)
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None
+    ) -> bool:
+        clause = ('org=? AND space=? AND "user"=? AND agent=? AND session=? '
+                  'AND key=? AND value=? AND (expires_at IS NULL OR expires_at>?)')
+        with self._lock, self._write_transaction() as connection:
+            # Both the instance lock and SQLite's cross-connection write lock are held.
+            params = (scope.org, scope.space, scope.user, scope.agent, scope.session,
+                      key, expected, time.time())
+            if replacement is None:
+                cursor = connection.execute(f"DELETE FROM kv WHERE {clause}", params)
+            else:
+                cursor = connection.execute(
+                    f"UPDATE kv SET value=? WHERE {clause}", (replacement, *params)
+                )
+            return cursor.rowcount == 1
+
+    def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
+        with self._lock, self._write_transaction() as conn:
+            identity = (scope.org, scope.space, scope.user, scope.agent, scope.session, key)
+            clause = 'org=? AND space=? AND "user"=? AND agent=? AND session=? AND key=?'
+            row = conn.execute(f"SELECT expires_at FROM kv WHERE {clause}", identity).fetchone()
+            if row is not None:
+                if row[0] is None or row[0] > time.time():
+                    raise ConflictError("kv", key)
+                conn.execute(f"DELETE FROM kv WHERE {clause}", identity)
             conn.execute(
-                'INSERT OR REPLACE INTO kv (org,space,"user",agent,session,key,value,expires_at) '
+                'INSERT INTO kv (org,space,"user",agent,session,key,value,expires_at) '
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (
                     scope.org,
@@ -101,6 +187,18 @@ class SQLiteKVStore(KVStore):
                     self._expiry(ttl),
                 ),
             )
+
+    @contextmanager
+    def _write_transaction(self):
+        """Caller holds the instance lock; acquire SQLite's writer before checking state."""
+        connection = self._ensure_conn()
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
 
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         with self._lock:
@@ -220,6 +318,9 @@ class SQLiteKVStore(KVStore):
         ]
 
     def _resolved_db_path(self) -> str:
+        bound_path = self._bound_path.get()
+        if bound_path is not None:
+            return bound_path
         from jiuwen_memory.config.binding import resolve_connection_url
 
         live = resolve_connection_url(
@@ -280,8 +381,9 @@ class SQLiteKVStore(KVStore):
         if expires_at is not None and expires_at <= time.time():
             conn.execute(
                 'DELETE FROM kv WHERE org=? AND space=? AND "user"=? '
-                "AND agent=? AND session=? AND key=?",
-                (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
+                "AND agent=? AND session=? AND key=? AND value=? AND expires_at=?",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session,
+                 key, value, expires_at),
             )
             return None
         return bytes(value)

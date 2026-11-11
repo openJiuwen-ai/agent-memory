@@ -163,3 +163,40 @@ def test_huge_digit_string_returns_no_window(digits: int) -> None:
 def test_max_date_absolute_window_returns_none(text: str) -> None:
     """绝对日期命中 datetime.max 边界（9999-12-31）：排他端越界同构回落 (None, None)。"""
     assert parse_time(text, now=NOW) == (None, None)
+
+
+# -- 「年份词 + 月份」不得退化为整年 ----------------------------------------- #
+@pytest.mark.parametrize(
+    ("text", "start", "end"),
+    [
+        ("去年12月", datetime(2025, 12, 1, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)),
+        ("去年3月", datetime(2025, 3, 1, tzinfo=UTC), datetime(2025, 4, 1, tzinfo=UTC)),
+        ("今年3月", datetime(2026, 3, 1, tzinfo=UTC), datetime(2026, 4, 1, tzinfo=UTC)),
+        ("明年1月", datetime(2027, 1, 1, tzinfo=UTC), datetime(2027, 2, 1, tzinfo=UTC)),
+        # 12 月的右端必须跨到次年 1 月 1 日，而非当年 12 月 31 日。
+        ("今年12月", datetime(2026, 12, 1, tzinfo=UTC), datetime(2027, 1, 1, tzinfo=UTC)),
+    ],
+)
+def test_year_month_expression_returns_single_month_window(
+    text: str,
+    start: datetime,
+    end: datetime,
+) -> None:
+    """「去年12月」这类表达给出单月窗；否则月份被年份规则吃掉，整年下推。"""
+    assert parse_time(text, now=NOW) == (start, end)
+
+
+@pytest.mark.parametrize(
+    ("text", "start", "end"),
+    [
+        ("今年13月", datetime(2026, 1, 1, tzinfo=UTC), NOW),
+        ("去年0月", datetime(2025, 1, 1, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)),
+    ],
+)
+def test_out_of_range_month_falls_back_to_year_rule(
+    text: str,
+    start: datetime,
+    end: datetime,
+) -> None:
+    """月份不在 1..12 时不构造单月窗，回落到原有「今年/去年」整年语义。"""
+    assert parse_time(text, now=NOW) == (start, end)
