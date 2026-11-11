@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -60,9 +61,12 @@ def test_concurrent_insert_and_search_is_safe() -> None:
     reader_errors: list[RuntimeError] = []
 
     def writer() -> None:
-        for i in range(2000):
-            store.insert(_SCOPE, [VectorRecord(id=f"v{i}", vector=[1.0])])
-        stop.set()
+        try:
+            for i in range(2000):
+                store.insert(_SCOPE, [VectorRecord(id=f"v{i}", vector=[1.0])])
+        finally:
+            # 异常路径也必须置位，否则 reader 死循环拖住解释器无法退出。
+            stop.set()
 
     def reader() -> None:
         while not stop.is_set():
@@ -71,13 +75,20 @@ def test_concurrent_insert_and_search_is_safe() -> None:
             except RuntimeError as exc:
                 reader_errors.append(exc)
                 stop.set()
+            time.sleep(0.001)  # 极短让步：避免无检索可做时满核忙等抖动 CI。
 
-    threads = [threading.Thread(target=writer)]
-    threads += [threading.Thread(target=reader) for _ in range(2)]
+    threads = [threading.Thread(target=writer, daemon=True)]
+    threads += [threading.Thread(target=reader, daemon=True) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=30)
 
+    # join 超时仍有存活线程：显式置位让 daemon reader 退出，并判定失败。
+    alive = [t for t in threads if t.is_alive()]
+    stop.set()
+    for t in alive:
+        t.join(timeout=5)
+    assert not alive, "writer/reader 未在超时内结束，疑似死循环"
     assert not reader_errors
     assert stop.is_set()

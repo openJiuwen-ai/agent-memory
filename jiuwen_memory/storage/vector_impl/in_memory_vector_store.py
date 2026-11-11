@@ -90,10 +90,9 @@ class InMemoryVectorStore(VectorStore):
 
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
         with self._lock:
-            bucket = self._data[_skey(scope)]
-            rows = list(bucket.values())
+            rows = list(self._data[_skey(scope)].values())
         scored: list[ScoredID] = []
-        for rec in bucket.values():
+        for rec in rows:
             if not evaluate(query.filters, lambda clause: matches_filter_value(
                 rec.metadata.get(filter_field_metadata_key(clause.field)), clause
             )):
