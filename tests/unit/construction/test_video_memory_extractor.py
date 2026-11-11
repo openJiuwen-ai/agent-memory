@@ -263,3 +263,47 @@ def test_oversized_video_envelope_survives_ingest_and_extracts_all_memories() ->
     assert len(derived) == 6, "4 个 clip + 2 个 event 应全部抽出"
     levels = sorted(str(u.system_metadata.get("memory_level")) for u in derived)
     assert levels == ["clm"] * 4 + ["elm"] * 2, "应产出 4 条 CLM 与 2 条 ELM"
+
+
+def test_derived_clm_and_elm_write_origin_inferred_and_table_importance() -> None:
+    """F10：CLM/ELM 是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖源值）。"""
+    source = MemoryUnit(
+        id="source-1",
+        scope=Scope(user="user-1"),
+        segments=[
+            Segment(
+                content=json.dumps(
+                    {
+                        "payload_id": "video-1",
+                        "clips": [
+                            {
+                                "id": "clip-1",
+                                "start_seconds": 0.0,
+                                "end_seconds": 1.0,
+                                "visual_summary": "v",
+                            }
+                        ],
+                        "events": [
+                            {
+                                "id": "event-1",
+                                "start_seconds": 0.0,
+                                "end_seconds": 1.0,
+                                "topic": "e",
+                                "clip_ids": ["clip-1"],
+                            }
+                        ],
+                    }
+                ),
+                source=Modality.VIDEO,
+            )
+        ],
+        source_ref="video-1",
+        system_metadata={"origin": "original", "importance": "0.95"},
+    )
+
+    units = VideoMemoryExtractor(importance_category_map={"default": "0.35"}).extract([source])
+
+    assert len(units) == 2
+    for unit in units:
+        assert unit.system_metadata["origin"] == "inferred"
+        assert unit.system_metadata["importance"] == "0.35"

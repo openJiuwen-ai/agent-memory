@@ -47,7 +47,8 @@ def test_stage_sequence_and_rerank_degradation(pipeline, degraded):
     ))
     assert isinstance(retriever, StagedRetriever)
     assert [step.stage for step in result.trajectory] == [
-        "parse", "recall", "fuse", "recheck", "rerank", "threshold", "disclose",
+        "parse", "recall", "fuse", "recheck", "rerank", "threshold",
+        "secondary_rank", "disclose",
     ]
     assert [item.unit_id for item in result.items] == ["parent"]
     threshold = next(step for step in result.trajectory if step.stage == "threshold")

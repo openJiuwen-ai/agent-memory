@@ -25,7 +25,7 @@
 | `time_utils.py` | 纯时间转换 as_utc/epoch_ms：无时区按 UTC，有时区保持实际时刻；不依赖服务器时区、不改写真源 |
 | `plaintext.py` | 继承 BackendError 的内部非信封拒绝信号；不实现密码学算法或新增 API 错误结果值 |
 | `type_def/` | 核心数据类型定义目录 |
-| `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
+| `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出。`ImportanceCategory` 枚举（七个默认重要度类别，与 `MemoryTier` 正交）及 `system_metadata` 语义键常量 `ORIGIN_KEY` / `ORIGIN_ORIGINAL="original"` / `ORIGIN_INFER="inferred"` / `IMPORTANCE_KEY` |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。另有 `KERNEL_COORD_KEYS`——内核自带的归属坐标实体名，三项取值必须是 `Scope` 的字段名，故与该类同处 |
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
 | `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用 |

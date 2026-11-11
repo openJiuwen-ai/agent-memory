@@ -31,6 +31,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    inferred_attribution,
     merge_unit_tags,
     reject_deprecated_llm_attempt_keys,
 )
@@ -357,6 +359,7 @@ class EntitySchemaExtractor(Extractor):
         max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
         extract_max_tokens: int = _DEFAULT_EXTRACT_MAX_TOKENS,
+        importance_category_map: dict[str, str] | None = None,
     ) -> None:
         if batch_size < 1:
             raise ValueError("schema batch_size 必须 >= 1")
@@ -369,6 +372,7 @@ class EntitySchemaExtractor(Extractor):
         if extract_max_tokens < 1:
             raise ValueError("schema extract_max_tokens 必须 >= 1")
         self._llm = llm
+        self._importance_category_map = importance_category_map
         self._catalog = (
             schema
             if isinstance(schema, EntitySchemaCatalog)
@@ -721,6 +725,8 @@ class EntitySchemaExtractor(Extractor):
             if candidate.identity_kind:
                 metadata["schema_entity_identity_kind"] = candidate.identity_kind
             metadata.update(_event_time_metadata(candidate.property_time))
+            # F10：属性记忆是派生记忆，origin=inferred，重要度取 default 类别值（覆盖继承值）
+            metadata.update(inferred_attribution(None, self._importance_category_map))
             event_fields = _event_time_fields(candidate.property_time)
             result.append(
                 MemoryUnit(
@@ -1559,4 +1565,5 @@ def _build(config):
         extract_max_tokens=int(
             config.get("schema_extract_max_tokens", _DEFAULT_EXTRACT_MAX_TOKENS)
         ),
+        importance_category_map=importance_category_map_from_config(config),
     )

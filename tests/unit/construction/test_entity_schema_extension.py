@@ -795,6 +795,40 @@ def test_each_property_becomes_one_unit_and_named_speaker_owns_it() -> None:
         assert unit.source_ref == "source-1"
 
 
+def test_property_units_write_origin_inferred_and_table_importance() -> None:
+    """F10：属性记忆是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖源继承值）。"""
+    response = json.dumps(
+        {
+            "entities": [
+                {
+                    "name": "User",
+                    "entity_type": "person",
+                    "properties": [
+                        {
+                            "property_name": "occupation",
+                            "value": "User became an engineer in 2023-08",
+                            "time": "2023-08",
+                            "source_unit_ids": ["source-1"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    source = _source()
+    source.system_metadata = {"origin": "original", "importance": "0.95"}
+    extractor = EntitySchemaExtractor(
+        llm=_ConstantResponseLLM(response),
+        schema=_catalog(),
+        importance_category_map={"default": "0.35"},
+    )
+
+    [unit] = extractor.extract([source])
+
+    assert unit.system_metadata["origin"] == "inferred"
+    assert unit.system_metadata["importance"] == "0.35"
+
+
 def test_invalid_source_binding_is_corrected_inside_validation_retries() -> None:
     source = _source()
     llm = _SequenceResponseLLM(

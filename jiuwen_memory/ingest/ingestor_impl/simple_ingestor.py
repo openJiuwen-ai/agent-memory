@@ -12,6 +12,9 @@ LLM 分类/抽取 prompt（同步写路径分钟级阻塞：add 500KB → 全文
 JSON 包络，由 VideoMemoryExtractor ``json.loads`` 后拆成 CLM/ELM），切分已在规约阶段按
 模态自身的边界完成，这里按字符数再切只会把包络切成非法片段、导致抽取零产出
 （issue #294）。谁生产该格式谁声明，接入层不维护模态白名单。
+
+来源标识（construction F10）：调用方未显式给 ``system_metadata["origin"]`` 时默认写 ``original``；
+派生记忆的 ``inferred`` 由构建层产出算子自己写。
 """
 
 from __future__ import annotations
@@ -30,7 +33,15 @@ from jiuwen_memory.common.normalizer import (
 from jiuwen_memory.common.normalizer.base import LocalMediaPreflight, NormalizerProducer
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
-from jiuwen_memory.common.type_def import MemoryUnit, Modality, RawPayload, Segment, Temporal
+from jiuwen_memory.common.type_def import (
+    ORIGIN_KEY,
+    ORIGIN_ORIGINAL,
+    MemoryUnit,
+    Modality,
+    RawPayload,
+    Segment,
+    Temporal,
+)
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.hierarchy_hints import extract_hierarchy_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
@@ -98,6 +109,8 @@ class SimpleIngestor(Ingestor):
                 if total > 1:
                     system_metadata["_part"] = part
                     system_metadata["_parts"] = total
+                if system_metadata.get(ORIGIN_KEY) in (None, ""):
+                    system_metadata[ORIGIN_KEY] = ORIGIN_ORIGINAL
                 units.append(
                     MemoryUnit(
                         id=str(uuid.uuid4()),

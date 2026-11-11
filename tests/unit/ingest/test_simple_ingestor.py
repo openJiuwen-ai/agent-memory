@@ -357,6 +357,35 @@ def test_simple_ingestor_still_splits_code_modality() -> None:
     assert all(len(u.content) <= 200 for u in units), "每片都不应超过 max_unit_chars"
 
 
+def _ingest_with_metadata(system_metadata: dict) -> list:
+    payload = RawPayload(
+        id="payload-origin",
+        scope=Scope(org="acme", user="alice"),
+        modality=Modality.TEXT,
+        data=b"short",
+        system_metadata=system_metadata,
+    )
+    return SimpleIngestor(PassthroughNormalizer()).ingest([payload])
+
+
+def test_simple_ingestor_defaults_origin_to_original() -> None:
+    (unit,) = _ingest_with_metadata({})
+    assert unit.system_metadata["origin"] == "original"
+    assert "importance" not in unit.system_metadata, "原文路径不由 ingestor 写重要度"
+
+
+def test_simple_ingestor_preserves_explicit_origin_from_caller() -> None:
+    (unit,) = _ingest_with_metadata({"origin": "imported", "importance": "0.95"})
+    assert unit.system_metadata["origin"] == "imported"
+    assert unit.system_metadata["importance"] == "0.95"
+
+
+def test_simple_ingestor_origin_inferred_value_spelling() -> None:
+    from jiuwen_memory.common.type_def import ORIGIN_INFER, ORIGIN_KEY, ORIGIN_ORIGINAL
+
+    assert (ORIGIN_KEY, ORIGIN_ORIGINAL, ORIGIN_INFER) == ("origin", "original", "inferred")
+
+
 def test_parse_max_unit_chars_rejects_invalid_values() -> None:
     """显式 null/空串/非整数非法值显式拒绝；缺省 8000；0/负数是文档化关闭开关。"""
     from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import _parse_max_unit_chars

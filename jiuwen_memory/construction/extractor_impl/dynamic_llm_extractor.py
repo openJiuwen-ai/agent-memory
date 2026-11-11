@@ -17,7 +17,11 @@ from jiuwen_memory.common.log import (
 from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
-from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
+from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    importance_category_prompt_enabled_from_config,
+    reject_deprecated_llm_attempt_keys,
+)
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.prompt_guard import (
     CONTENT_MAX_UNIT_CHARS,
@@ -63,6 +67,8 @@ class DynamicLLMExtractor(Extractor):
         max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
         extract_batch_size: int = _DEFAULT_EXTRACT_BATCH_SIZE,
+        importance_category_map: dict[str, str] | None = None,
+        importance_category_prompt_enabled: bool = False,
     ) -> None:
         self._llm = llm
         self._fallback = fallback
@@ -73,6 +79,8 @@ class DynamicLLMExtractor(Extractor):
             max_attempts=max_attempts,
             retry_backoff_ms=retry_backoff_ms,
             extract_batch_size=extract_batch_size,
+            importance_category_map=importance_category_map,
+            importance_category_prompt_enabled=importance_category_prompt_enabled,
         )
 
     def operator_type(self) -> OperatorType:
@@ -232,4 +240,6 @@ def _build(config):
         max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
+        importance_category_map=importance_category_map_from_config(config),
+        importance_category_prompt_enabled=importance_category_prompt_enabled_from_config(config),
     )

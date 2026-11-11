@@ -25,6 +25,10 @@ from __future__ import annotations
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MEMORY_CLASS_KEY, MemoryUnit
+from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    importance_category_prompt_enabled_from_config,
+)
 
 from ..base import ExtractContext
 from ..common import reject_deprecated_llm_attempt_keys
@@ -422,6 +426,7 @@ class AgentLlmExtractor(ExtractorImpl):
             self.EXTRACTION_FIDELITY_SUFFIX = _EXTRACTION_FIDELITY_SUFFIX_CN
             self.OBSERVATION_DATE_PREFIX = _OBSERVATION_DATE_PREFIX_CN
             self.CONTEXT_SECTION_TEMPLATES = _CONTEXT_SECTION_TEMPLATES_CN
+            self.IMPORTANCE_PROMPT_LANGUAGE = "cn"
         else:
             self.EXTRACT_SYSTEM_PROMPT = _EXTRACT_SYSTEM_PROMPT_EN
             self.PROCEDURAL_SYSTEM_PROMPT = _PROCEDURAL_SYSTEM_PROMPT_EN
@@ -473,4 +478,6 @@ def _build(config):
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
         language=config.get("extractor_language", "cn"),
+        importance_category_map=importance_category_map_from_config(config),
+        importance_category_prompt_enabled=importance_category_prompt_enabled_from_config(config),
     )

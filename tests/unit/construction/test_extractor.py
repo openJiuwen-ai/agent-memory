@@ -3,6 +3,7 @@
 使用 MockLLM 隔离外部 LLM API 依赖。
 """
 
+import hashlib
 import io
 import json
 import logging
@@ -28,6 +29,9 @@ from tests.unit.construction.fixtures import (
 # ---------------------------------------------------------------------------
 # Helper: 创建 ExtractorImpl with MockLLM
 # ---------------------------------------------------------------------------
+
+
+_EXTRACT_PROMPT_15419DC_SHA256 = "0cd7cfbffb40d74472e0c656e60d0991691737a9b7bc606ec4a49afb6acd494a"
 
 
 def _make_extractor(
@@ -940,3 +944,169 @@ def test_extract_oversized_unit_fully_consumed_in_chunks():
     assert middle_fact in texts[1]
     assert len(result) == 2  # 两批候选都保留
     assert all(u.provenance == ["u1"] for u in result)
+
+
+# ---------------------------------------------------------------------------
+# F10：派生记忆按 LLM 类别查表写重要度 + origin=inferred（覆盖从源继承的值）
+# ---------------------------------------------------------------------------
+
+
+def _f09_extractor(item: dict, category_map: dict[str, str] | None = None) -> ExtractorImpl:
+    payload = {
+        "source_id": "u1",
+        "target": "fact",
+        "content": "用户叫张三",
+        "confidence": 1.0,
+    } | item
+    return ExtractorImpl(
+        llm=MockLLM(responses=[json.dumps([payload])]),
+        max_attempts=1,
+        importance_category_prompt_enabled=True,
+        retry_backoff_ms=0,
+        importance_category_map=category_map,
+    )
+
+
+def test_extracted_unit_writes_importance_by_category_and_origin_inferred():
+    extractor = _f09_extractor({"importance_category": "identity"})
+    [unit] = extractor.extract([create_test_unit("u1", "我叫张三")])
+    assert unit.system_metadata["importance"] == "0.95"
+    assert unit.system_metadata["origin"] == "inferred"
+
+
+def test_extracted_unit_overrides_importance_inherited_from_source():
+    # 源原文的 importance/origin 会经 inherited_system_metadata 继承；派生须按自身类别覆盖。
+    source = create_test_unit("u1", "今天先跑一下脚本")
+    source.system_metadata = {"importance": "0.95", "origin": "original"}
+    extractor = _f09_extractor({"importance_category": "transient"})
+    [unit] = extractor.extract([source])
+    assert unit.system_metadata["importance"] == "0.30"
+    assert unit.system_metadata["origin"] == "inferred"
+
+
+def test_extracted_unit_importance_default_when_category_missing():
+    extractor = _f09_extractor({}, {"identity": "0.95", "default": "0.45"})
+    [unit] = extractor.extract([create_test_unit("u1", "我叫张三")])
+    assert unit.system_metadata["importance"] == "0.45"
+
+
+def test_extracted_unit_importance_uses_default_when_category_unknown():
+    extractor = _f09_extractor({"importance_category": "galaxy"}, {"default": "0.45"})
+    [unit] = extractor.extract([create_test_unit("u1", "我叫张三")])
+    assert unit.system_metadata["importance"] == "0.45"
+
+
+def test_extracted_unit_importance_clamps_out_of_range_config_value():
+    extractor = _f09_extractor({"importance_category": "identity"}, {"identity": "1.7"})
+    [unit] = extractor.extract([create_test_unit("u1", "我叫张三")])
+    assert unit.system_metadata["importance"] == "1.00"
+
+
+def test_extracted_unit_importance_fallback_on_non_numeric_config_value():
+    extractor = _f09_extractor({"importance_category": "identity"}, {"identity": "high"})
+    [unit] = extractor.extract([create_test_unit("u1", "我叫张三")])
+    assert unit.system_metadata["importance"] == "0.50"
+
+
+def test_extract_prompt_carries_importance_category_section():
+    from jiuwen_memory.construction.common import importance_category_prompt
+
+    llm = MockLLM(responses=[json.dumps([])])
+    calls: list = []
+    original_chat = llm.chat
+
+    def recording_chat(messages, **kwargs):
+        calls.append(messages)
+        return original_chat(messages, **kwargs)
+
+    llm.chat = recording_chat
+    ExtractorImpl(
+        llm=llm, max_attempts=1, retry_backoff_ms=0, importance_category_prompt_enabled=True
+    ).extract([create_test_unit("u1", "我叫张三")])
+    assert calls[0][0].content.endswith(importance_category_prompt(None))
+
+
+def test_extract_category_prompt_off_matches_baseline_and_ignores_category():
+    llm = MockLLM(
+        responses=[
+            json.dumps(
+                [
+                    {
+                        "content": "用户叫张三",
+                        "source_id": "u1",
+                        "confidence": 0.9,
+                        "importance_category": "identity",
+                    }
+                ]
+            )
+        ]
+    )
+    calls: list = []
+    original_chat = llm.chat
+
+    def recording_chat(messages, **kwargs):
+        calls.append(messages)
+        return original_chat(messages, **kwargs)
+
+    llm.chat = recording_chat
+    result = ExtractorImpl(llm=llm, max_attempts=1, retry_backoff_ms=0).extract(
+        [create_test_unit("u1", "我叫张三")]
+    )
+    digest = hashlib.sha256(calls[0][0].content.encode("utf-8")).hexdigest()
+    assert digest == _EXTRACT_PROMPT_15419DC_SHA256, "同 15419dc"
+    derived = [u for u in result if u.system_metadata.get("origin") == "inferred"]
+    assert derived and all(u.system_metadata["importance"] == "0.50" for u in derived)
+
+
+def test_llm_procedural_path_writes_importance_and_origin():
+    extractor = ExtractorImpl(
+        llm=MockLLM(responses=[json.dumps({"content": "目标:构建;步骤:npm run build;结果:成功"})]),
+        max_attempts=1,
+        retry_backoff_ms=0,
+        importance_category_map={"default": "0.55"},
+    )
+    source = create_test_unit("u1", "执行了 npm run build")
+    source.system_metadata = {"procedural": "true", "importance": "0.95"}
+    [unit] = extractor.extract([source])
+    assert unit.system_metadata["importance"] == "0.55"
+    assert unit.system_metadata["origin"] == "inferred"
+
+
+def _keyword_extractor(category_map: dict[str, str] | None = None):
+    from jiuwen_memory.common.chunker.chunker_impl.recursive_chunker import RecursiveChunker
+    from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
+
+    return KeywordExtractor(
+        RecursiveChunker(chunk_size_chars=200, overlap_chars=0),
+        importance_category_map=category_map,
+    )
+
+
+def test_keyword_extractor_chunk_path_writes_importance_and_origin():
+    source = create_test_unit("u1", "用户偏好用 Python 写代码")
+    source.system_metadata = {"origin": "original", "importance": "0.95"}
+    derived = _keyword_extractor({"default": "0.55"}).extract([source])
+    assert derived
+    for unit in derived:
+        assert unit.system_metadata["importance"] == "0.55"
+        assert unit.system_metadata["origin"] == "inferred"
+    assert source.system_metadata["origin"] == "original", "源原文的元数据不得被改写"
+
+
+def test_keyword_extractor_procedural_path_writes_importance_and_origin():
+    source = create_test_unit("u1", "执行了 npm run build")
+    source.system_metadata = {"procedural": "true"}
+    [unit] = _keyword_extractor().extract([source])
+    assert unit.system_metadata["importance"] == "0.50"
+    assert unit.system_metadata["origin"] == "inferred"
+
+
+def test_concat_abstractor_writes_importance_and_origin():
+    from jiuwen_memory.construction.abstractor_impl.concat_abstractor import ConcatAbstractor
+
+    sources = [create_test_unit("u1", "喜欢咖啡"), create_test_unit("u2", "喜欢茶")]
+    for source in sources:
+        source.system_metadata = {"origin": "original", "importance": "0.85"}
+    [unit] = ConcatAbstractor(importance_category_map={"default": "0.60"}).abstract(sources)
+    assert unit.system_metadata["importance"] == "0.60"
+    assert unit.system_metadata["origin"] == "inferred"

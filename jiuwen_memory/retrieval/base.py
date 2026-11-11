@@ -33,6 +33,7 @@ class RetrievalOperatorType(str, Enum):
     DISCLOSER = "discloser"
     EXPANDER = "expander"
     RETRIEVER = "retriever"
+    SECONDARY_SCORER = "secondary_scorer"
 
 
 class RetrievalOperator(ABC):
