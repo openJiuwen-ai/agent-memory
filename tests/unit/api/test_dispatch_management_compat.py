@@ -440,3 +440,46 @@ def test_member_null_with_flat_fields_still_resolves() -> None:
         security=security,
     )
     assert request.member == Scope(org="acme", user="m1")
+
+
+@pytest.mark.parametrize("raw", [{}, {"org": "acme"}, {"space": "team"}])
+def test_grantee_object_without_identity_rejected(raw) -> None:
+    """嵌套对象缺身份维度（user/scope/agent）：user 将回落 target，须 400。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "grant", {"tenant_id": "acme", "scope": "owner", "grantee": raw}, security=security
+        )
+
+
+def test_grantee_null_with_only_tenant_id_rejected() -> None:
+    """null + 仅 grantee_tenant_id（定位键）：user 仍回落 target，须 400。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "grant",
+            {"grantee": None, "grantee_tenant_id": "acme", "scope": "owner", "tenant_id": "acme"},
+            security=security,
+        )
+
+
+def test_member_nested_scope_alias_resolves_user() -> None:
+    """member 嵌套对象用旧别名 scope 表示 user：与 grantee 分支对齐，正常解析。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "add_space_member",
+        {"tenant_id": "acme", "scope": "team", "member": {"scope": "alice"}},
+        security=security,
+    )
+    assert request.member == Scope(org="acme", user="alice")
+
+
+def test_member_object_without_identity_rejected() -> None:
+    """member 嵌套对象缺身份维度：同 grantee 收紧为 400。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "add_space_member",
+            {"tenant_id": "acme", "scope": "team", "member": {}},
+            security=security,
+        )

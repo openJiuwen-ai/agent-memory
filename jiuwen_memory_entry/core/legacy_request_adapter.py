@@ -6,8 +6,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from jiuwen_memory.api import RequestSecurityContext, Scope
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.api import RequestSecurityContext, Scope, ValidationError
 from jiuwen_memory_entry.core.dispatch_request import DispatchBatchItem, DispatchRequest
 
 _SCOPE_KEYS = {"tenant_id", "scope", "space", "space_id", "agent", "session"}
@@ -73,6 +72,13 @@ def _nested_scope(payload: Mapping[str, Any], base: Scope) -> Scope:
     )
 
 
+def _has_identity(raw: Mapping[str, Any]) -> bool:
+    """嵌套 scope 对象须携带身份维度：user / scope 别名 / agent 至少一个非空。"""
+    # org/space 只是定位维度：{"org": "acme"} 不携带身份，解析后 user 会回落
+    # target 自身——那正是本守卫要杜绝的静默自授权。
+    return bool(raw.get("user") or raw.get("scope") or raw.get("agent"))
+
+
 def _business_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     business: dict[str, Any] = {}
     for key, value in payload.items():
@@ -106,14 +112,19 @@ def build_legacy_dispatch_request(
         if isinstance(grantee_raw, str):
             grantee = Scope(org=target.org, space=target.space, user=str(grantee_raw))
         elif isinstance(grantee_raw, Mapping):
+            if not _has_identity(grantee_raw):
+                # 空对象/仅 org·space：user 维度将回落 target 自身（静默自授权）。
+                raise ValidationError("'grantee' object must carry a user, scope, or agent field")
             grantee = _nested_scope(grantee_raw, target)
-        elif grantee_raw is None and any(key.startswith("grantee_") for key in payload):
-            # null + 扁平 grantee_* 字段：既有合法形态，继续扁平解析。
+        elif grantee_raw is None and (payload.get("grantee_scope") or payload.get("grantee_agent")):
+            # null + 扁平 grantee_* 字段：既有合法形态。判据须为身份维度
+            # （scope/agent）非空——仅有 grantee_tenant_id 等定位键时 user
+            # 仍会回落 target，静默自授权经由该路径依旧可达。
             grantee = _scope(payload, "grantee_", target)
         else:
-            # 数值/列表/布尔等非法类型，或 null 且无任何 grantee_* 字段：原实现
-            # 静默兜底成 target 自身，产出 grantor == grantee 的自授权记录。
-            # fail-fast 报 400，由调用方修正后重试。
+            # 数值/列表/布尔等非法类型，或 null 且无身份维度的 grantee_* 字段：
+            # 原实现静默兜底成 target 自身，产出 grantor == grantee 的自授权
+            # 记录。fail-fast 报 400，由调用方修正后重试。
             raise ValidationError(
                 "'grantee' must be a user string, a scope object, or grantee_* fields"
             )
@@ -122,15 +133,21 @@ def build_legacy_dispatch_request(
         member_raw = payload.get("member")
         if isinstance(member_raw, str):
             member = Scope(org=target.org, space=target.space, user=str(member_raw))
-        elif isinstance(member_raw, Mapping) and isinstance(
-            member_raw.get("scope", member_raw), Mapping
-        ):
-            member = _nested_scope(member_raw.get("scope", member_raw), target)
-        elif member_raw is None and any(key.startswith("member_") for key in payload):
-            # null + 扁平 member_* 字段：既有合法形态，继续扁平解析。
+        elif isinstance(member_raw, Mapping):
+            # 与 grantee 分支对齐：scope 为嵌套 scope 对象时用之解析，标量时
+            # 由 _nested_scope 的 legacy 别名（scope→user）解析——
+            # {"scope": "alice"} 与 {"user": "alice"} 语义一致，均为合法形态。
+            nested = member_raw.get("scope")
+            nested = nested if isinstance(nested, Mapping) else member_raw
+            if not _has_identity(nested):
+                raise ValidationError("'member' object must carry a user, scope, or agent field")
+            member = _nested_scope(nested, target)
+        elif member_raw is None and (payload.get("member_scope") or payload.get("member_agent")):
+            # null + 扁平 member_* 字段：既有合法形态（判据同 grantee 收窄）。
             member = _scope(payload, "member_", target)
         else:
-            # 同 grantee：非法类型或 null 且无 member_* 字段，拒绝静默自授权。
+            # 同 grantee：非法类型或 null 且无身份维度的 member_* 字段，拒绝
+            # 静默自授权。
             raise ValidationError(
                 "'member' must be a user string, a scope object, or member_* fields"
             )
