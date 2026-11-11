@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
@@ -279,7 +279,8 @@ TIME 的 time_span/scene/event 查询同时满足 rollup=True、expand_depth>0 �
 
 普通查询的可选 Reranker 保留；子候选补位顺序不随其精排结果重排。
 RetrievedItem.score 仍为根召回分或继承分，不改成子候选融合分。
-补位轨迹为 child_select，记录 candidate_count、parent_count、selected_children、ranking_cutoff。
+补位保留 child_select 汇总轨迹，记录 candidate_count、parent_count、selected_children、ranking_cutoff；
+同时按完整 Scope+id 为每个已准入根记录 expand，具体口径见下方「轨迹」。
 内部上卷参数 child_depth 必须为非负整数且不能为 bool；0 表示不记录后代补位映射。
 非法值在上卷读取前抛出 ValidationError。
 
@@ -546,7 +547,7 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 |---|---|
 | `ScoredUnit` | `unit_id` / `score` / `channel` / `evidence` |
 | `ChannelEvidence` | `channel` / `rank` / `score` / `weight` / `contribution` |
-| `RetrievedItem` | `unit_id` / `score` / `abstract` / `overview` / `content` / `user_metadata` / `system_metadata` / `level` |
+| `RetrievedItem` | `unit_id` / `score` / `abstract` / `overview` / `content` / `user_metadata` / `system_metadata` / `level` / `parent_id` |
 | `TrajectoryStep` | `stage` / `channel` / `candidate_count` / `cost_ms` / `detail` |
 | `RetrievalResult` | `items` / `trajectory` / `errors` |
 | `SchemaTemporalRetrievalResult` | 继承 `RetrievalResult`，仅在有结构化结果时增加 `schema_temporal` |
@@ -558,7 +559,7 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 | 枚举 | 值 |
 |------|------|
 | `DisclosureLevel` | L0 / L1 / L2 / ADAPTIVE |
-| `RecallChannel` | DOCUMENT / KEYWORD / VECTOR / GRAPH / TEMPORAL |
+| `RecallChannel` | DOCUMENT / KEYWORD / VECTOR / ENTITY / GRAPH / TEMPORAL；SPACE/HIERARCHY 仅用于诊断 |
 
 ### 轨迹
 
@@ -567,10 +568,28 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 执行失败时记录降级原因并继续使用已融合候选。
 层级召回额外使用：
 
-- `parent_recall`：`detail` 至少记录 `kind`、`role`、span、父候选数。
+- `parent_recall`：`candidate_count` 记录选中的根数量，`detail.top_k` 记录请求窗口。
 - `expand`：每个 root 一步，`detail` 至少记录 `root_id`、`kind`、`requested_depth`、`actual_depth`、`item_count`、`truncated` 和截断原因。
 
-`with_trajectory=false` 时 `RetrievalResult.trajectory=[]`；公开 `expand` 的 `with_trajectory` 独立控制 `ExpandResult.trajectory`。
+补位路径的 `expand.detail.mode=recalled_children`，不表示执行了 BFS。每个已准入根
+均记录一次（含空正文根），`item_count` 只计实际返回的后代，排除重复及空正文；
+`actual_depth` 为这些后代相对根的最大真实边距离，无返回时为 0。深度复用上卷校验值，
+不新增存储访问；`visited_count` 计实际尝试披露的去重候选，含预算拒绝和空正文。
+`cost_ms` 累计该根候选的披露及准入耗时；`estimated_tokens` 保持共享预算累计值。
+
+`stop_reason` 为空表示本轮合法候选处理完毕；`complete=true` 仅针对本轮候选，不保证
+全子树覆盖。没有候选时数量/深度为 0、complete=true、truncated=false，不增加错误。
+停止时保留已返回数量与深度，并设置 complete=false：
+
+- `top_k_full`：父节点已占满窗口，未准备/检查后代，不增加读取或提供方校验；
+  数量/深度为 0，truncated=false，表示跳过而非确认有后代被截掉。
+- `top_k_limit`：补位中窗口达到上限且该根仍有未处理候选，truncated=true，不增加 errors。
+- `budget_exhausted` / `node_limit`：共享预算或节点上限阻止继续补位，truncated=true；
+  触发根保留既有 issue/error，后续仍有候选的根只记录停止原因，不重复增加错误。
+
+逐根 expand 在 child_select 汇总之前记录；父节点预先占满窗口时只记录逐根跳过原因。
+BFS 路径保持原有统计与遍历语义。`with_trajectory=false` 时 `RetrievalResult.trajectory=[]`；
+错误仍按既有规则返回。没有独立的公开 expand 接口。
 
 ## 错误语义
 

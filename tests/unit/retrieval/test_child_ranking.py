@@ -1,5 +1,6 @@
 """复用真实召回候选：父优先、融合原序、深度与预算；不再向量化子正文。"""
 
+import json
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -12,6 +13,8 @@ from jiuwen_memory.common.type_def import (
     RetrievalPipeline,
     Segment,
 )
+from jiuwen_memory.retrieval.expander import MAX_EXPANSION_NODES
+from jiuwen_memory.retrieval.expander_impl.default_expander import DefaultExpander
 from jiuwen_memory.retrieval.expansion import PreparedRetrievalResult, complete_expansion
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
 from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
@@ -65,9 +68,26 @@ def test_recalled_children_keep_fusion_order_without_expansion_or_embedding(pipe
     assert not result.errors
     assert result.trajectory[-1].stage == "child_select"
     assert result.trajectory[-1].candidate_count == 2
+    steps = [step for step in result.trajectory if step.stage == "expand"]
+    assert len(steps) == 1
+    assert steps[0].detail.items() >= {
+        "root_id": "root", "mode": "recalled_children", "requested_depth": "1",
+        "actual_depth": "1", "item_count": "2", "truncated": "false", "complete": "true",
+    }.items()
     for limit in (1, 2):
         limited = retriever.retrieve(QUERY_SCOPE, replace(query, top_k=limit))
         assert limited.items == result.items[:limit]
+        assert not limited.errors
+        steps = [step for step in limited.trajectory if step.stage == "expand"]
+        assert len(steps) == 1
+        assert steps[0].detail["item_count"] == str(limit - 1)
+        assert steps[0].detail["actual_depth"] == str(limit - 1)
+        assert steps[0].detail["stop_reason"] == ("top_k_full" if limit == 1 else "top_k_limit")
+        assert steps[0].detail["truncated"] == str(limit == 2).lower()
+        assert steps[0].detail["complete"] == "false"
+    limited = retriever.retrieve(QUERY_SCOPE, replace(query, with_trajectory=False))
+    assert limited.items == result.items and limited.errors == result.errors
+    assert limited.trajectory == []
     forbid.assert_not_called()
 
 
@@ -102,7 +122,7 @@ def test_recalled_descendants_respect_actual_ancestor_depth(role, depth):
         link(parent, [child])
     tree.base.add(chain)
     result = tree.base.retriever.retrieve(QUERY_SCOPE, hierarchy_query(
-        hierarchy_role=role, rollup=True, expand_depth=depth,
+        hierarchy_role=role, rollup=True, expand_depth=depth, with_trajectory=True,
         channels=[RecallChannel.KEYWORD],
     ))
     index = next(i for i, unit in enumerate(chain) if unit.hierarchy.role is role)
@@ -111,6 +131,10 @@ def test_recalled_descendants_respect_actual_ancestor_depth(role, depth):
         unit.id for unit in chain[max(0, index - depth):index + 1]
     }
     assert not result.errors
+    step = next(step for step in result.trajectory if step.stage == "expand")
+    assert step.detail["root_id"] == chain[index].id
+    assert step.detail["actual_depth"] == str(depth)
+    assert step.detail["item_count"] == str(depth)
 
 
 def test_empty_recalled_children_are_prepared_without_errors():
@@ -127,12 +151,18 @@ def test_empty_recalled_children_are_prepared_without_errors():
     assert result.trajectory[-1].stage == "child_select"
     assert result.trajectory[-1].candidate_count == 0
     assert result.trajectory[-1].detail["selected_children"] == "0"
+    step = next(step for step in result.trajectory if step.stage == "expand")
+    assert step.detail["actual_depth"] == step.detail["item_count"] == "0"
+    assert step.detail["complete"] == "true"
+    assert step.detail["truncated"] == "false"
 
 
 @pytest.mark.parametrize("top_k", [1, 3])
 def test_unprepared_selected_provider_is_rejected_only_with_spare_window(top_k):
     tree = make_tree(index_children=True)
-    query = hierarchy_query(rollup=True, expand_depth=1, top_k=top_k, defer_expansion=True)
+    query = hierarchy_query(
+        rollup=True, expand_depth=1, top_k=top_k, defer_expansion=True, with_trajectory=True,
+    )
     prepared = tree.base.retriever.retrieve(QUERY_SCOPE, query)
     provider = PreparedRetrievalResult(
         items=prepared.items, expansion_roots=prepared.expansion_roots,
@@ -141,6 +171,7 @@ def test_unprepared_selected_provider_is_rejected_only_with_spare_window(top_k):
         result = complete_expansion(provider, [provider], query)
         assert [item.unit_id for item in result.items] == ["root"]
         assert not result.errors
+        assert result.trajectory[-1].detail["stop_reason"] == "top_k_full"
     else:
         with pytest.raises(UnsupportedCapabilityError, match="未完成已召回后代的准备"):
             complete_expansion(provider, [provider], query)
@@ -174,9 +205,15 @@ def test_blank_children_consume_budget_before_exclusion(rollup):
     tree.children[0].segments = [Segment(content="   ")]
     tree.children[0].layers.l0 = ""
     tree.save(tree.children)
-    query = hierarchy_query(rollup=rollup, expand_depth=1, disclosure=DisclosureLevel.L0)
+    query = hierarchy_query(
+        rollup=rollup, expand_depth=1, disclosure=DisclosureLevel.L0, with_trajectory=True,
+    )
     result = tree.base.retriever.retrieve(QUERY_SCOPE, query)
     assert [item.unit_id for item in result.items] == ["root", "second"]
+    if rollup:
+        step = next(step for step in result.trajectory if step.stage == "expand")
+        assert step.detail["item_count"] == "1"
+        assert step.detail["visited_count"] == "2"
     limited = tree.base.retriever.retrieve(QUERY_SCOPE, replace(query, max_tokens=2))
     assert [item.unit_id for item in limited.items] == ["root"]
     assert any(error.error_type == "budget_exhausted" for error in limited.errors)
@@ -212,3 +249,69 @@ def test_blank_structural_root_still_expands_nonempty_children():
     prepared.expansion_roots[0].candidate.unit.segments = [Segment(content="  ")]
     result = complete_expansion(prepared, [prepared], query)
     assert [item.unit_id for item in result.items] == ["first"]
+
+
+@pytest.mark.parametrize("stop_reason", ["budget_exhausted", "top_k_limit", ""])
+def test_recalled_trace_is_scoped_and_retains_partial_progress(stop_reason):
+    """跨空间同名根独立计数，停止不丢失已返回证据或重复报错。"""
+    first, second = make_rollup_space("first"), make_rollup_space("second")
+    query = hierarchy_query(rollup=True, expand_depth=1, defer_expansion=True, with_trajectory=True)
+    prepared = [
+        tree.base.retriever.retrieve(tree.root.scope, query) for tree in (first, second)
+    ]
+    selected = replace(prepared[0], items=prepared[0].items + prepared[1].items)
+    # 第一根的首个子成功，第二个子因预算或窗口停止；第二根只记录跳过原因。
+    if stop_reason == "budget_exhausted":
+        query = replace(query, max_tokens=3)
+        prepared[0].recalled_children.append(prepared[0].recalled_children[0])
+    elif stop_reason == "top_k_limit":
+        query = replace(query, top_k=3)
+    result = complete_expansion(selected, prepared, query)
+    steps = [step for step in result.trajectory if step.stage == "expand"]
+    assert len(steps) == 2
+    assert [json.loads(step.detail["root_scope"])["space"] for step in steps] == ["first", "second"]
+    assert all(step.detail["root_id"] == "parent" for step in steps)
+    expected_counts = ["1", "0"] if stop_reason else ["2", "2"]
+    expected_depths = ["1", "0"] if stop_reason else ["1", "1"]
+    assert [step.detail["item_count"] for step in steps] == expected_counts
+    assert [step.detail["actual_depth"] for step in steps] == expected_depths
+    assert all(step.detail["stop_reason"] == stop_reason for step in steps)
+    assert all(step.detail["truncated"] == str(bool(stop_reason)).lower() for step in steps)
+    assert steps[0].detail["visited_count"] == ("1" if stop_reason == "top_k_limit" else "2")
+    assert [error.error_type for error in result.errors] == (
+        ["budget_exhausted"] if stop_reason == "budget_exhausted" else []
+    )
+    plain = complete_expansion(selected, prepared, replace(query, with_trajectory=False))
+    assert plain.items == result.items and plain.errors == result.errors
+
+
+def test_recalled_node_limit_preserves_selected_count():
+    """全局节点上限截断时，轨迹保留已完成根和部分完成根的计数。"""
+    # 单空间上卷本身也有 1000 节点上限；两个提供方才能触达共享补位上限。
+    size = MAX_EXPANSION_NODES // 2 + 1
+    query = hierarchy_query(
+        rollup=True, expand_depth=1, top_k=2 * size + 2,
+        with_trajectory=True, defer_expansion=True,
+    )
+    prepared = []
+    for group in range(2):
+        base = make_harness(RetrievalPipeline.RECALL_GET_RANK, recall_limit=size + 1)
+        parent = tree_unit(f"parent-{group}")
+        children = [
+            tree_unit(f"child-{group}-{index}", HierarchyRole.SNAPSHOT) for index in range(size)
+        ]
+        link(parent, children)
+        base.add([parent, *children])
+        base.retriever.bind_expander(DefaultExpander(base.domain))
+        prepared.append(base.retriever.retrieve(QUERY_SCOPE, query))
+    selected = replace(prepared[0], items=prepared[0].items + prepared[1].items)
+    result = complete_expansion(selected, prepared, query)
+    steps = [step for step in result.trajectory if step.stage == "expand"]
+    assert len(result.items) == MAX_EXPANSION_NODES + 2
+    assert sum(int(step.detail["item_count"]) for step in steps) == MAX_EXPANSION_NODES
+    assert sum(int(step.detail["visited_count"]) for step in steps) == MAX_EXPANSION_NODES
+    assert steps[0].detail["complete"] == "true"
+    assert steps[1].detail["actual_depth"] == "1"
+    assert steps[1].detail["stop_reason"] == "node_limit"
+    assert steps[1].detail["truncated"] == "true"
+    assert [error.error_type for error in result.errors] == ["node_limit"]
