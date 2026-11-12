@@ -78,10 +78,7 @@ from jiuwen_memory.storage.store_manager import (
     StoreManagerProducer,
     resolve_name,
 )
-from jiuwen_memory.storage.sync_gate import (
-    close_write_window,
-    open_write_window,
-)
+from jiuwen_memory.storage.sync_gate import document_sync_gate
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, MemoryListResult
 
 from .recaller import RecallerProducer
@@ -255,7 +252,8 @@ class CompositeDomainStore(DomainStore):
             self._sanitize_document_content(units)
             md = self._raw_markdown()
             shadow = self._raw_shadow_index()
-            open_write_window()
+            gate = document_sync_gate(md.root)
+            gate.open()
             try:
                 md.write(scope, units)
                 shadow.insert_units(scope, units)
@@ -273,7 +271,7 @@ class CompositeDomainStore(DomainStore):
                             )
                 raise
             finally:
-                close_write_window()
+                gate.close()
         else:
             # 非文档路径：KV 真源（原样）。
             kv = self._kv()
@@ -308,7 +306,8 @@ class CompositeDomainStore(DomainStore):
             self._sanitize_document_content(units)
             shadow = self._raw_shadow_index()
             md = self._raw_markdown()
-            open_write_window()
+            gate = document_sync_gate(md.root)
+            gate.open()
             try:
                 for unit in units:
                     # 先取旧 unit 拿 old content + md_filename（replace_content 的定位锚与路径）。
@@ -427,7 +426,7 @@ class CompositeDomainStore(DomainStore):
                                 "unit=%s md_filename=%s", unit.id[:8], md_filename
                             )
             finally:
-                close_write_window()
+                gate.close()
         else:
             # 非文档路径：KV 真源（原样）。
             kv = self._kv()
@@ -464,7 +463,8 @@ class CompositeDomainStore(DomainStore):
             )
             shadow = self._raw_shadow_index()
             md = self._raw_markdown()
-            open_write_window()
+            gate = document_sync_gate(md.root)
+            gate.open()
             try:
                 olds = shadow.get_units(scope, unit_ids)
                 # 影子索引删三表（幂等，缺失静默跳过，§12.7 显式删三表不级联）。
@@ -514,7 +514,7 @@ class CompositeDomainStore(DomainStore):
                             )
                     raise
             finally:
-                close_write_window()
+                gate.close()
         else:
             # 非文档路径：KV 真源（原样）。
             kv = self._kv()
@@ -689,7 +689,8 @@ class CompositeDomainStore(DomainStore):
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
         rel_path = MarkdownStore.resolve_md_path(md_basename, project)
-        open_write_window()
+        gate = document_sync_gate(md.root)
+        gate.open()
         try:
             # edit 前旧全文快照（md 侧失败补偿用：shadow 同步失败时回写整个文件到编辑前
             # 字节态）。同一次读既算块 diff 又留快照，避免二次读文件。
@@ -729,7 +730,7 @@ class CompositeDomainStore(DomainStore):
                 raise
             return shadow.get_units(scope, new_unit_ids)
         finally:
-            close_write_window()
+            gate.close()
 
     def _supersede_shadow_for_md(
         self,

@@ -5,13 +5,13 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-11 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
+| 最近一次修订日期 | 2026-11-12 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F08-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
 
 ## 明文读取与独立维护边界
 
-MemoryAPI 的方法、参数、返回类型及公共导出保持原契约。加密读取遇到明文时继续
+独立维护工具不改变 MemoryAPI 的方法、参数、返回类型及公共导出。加密读取遇到明文时继续
 按既有 BackendError 异常契约失败，错误信息提示显式迁移或清空；不能返回明文、空结果
 或新增错误结果对象，不增加 HTTP/CLI/MCP 的业务方法及专用状态码转换。
 
@@ -33,6 +33,149 @@ MemoryAPI 的方法、参数、返回类型及公共导出保持原契约。加�
 | `docs/features/api/`（F01–F07） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
 
 已设计但尚未实现的接口完成代码开发上库时：去掉本文（及受影响 F 文档）中的尚未实现标注，并把该方法（或增量入参）补进 architecture.md §6。
+## 个人记忆公开接口
+
+普通 `list(scope, ...)` 和 `search(query, context, ...)` 继续使用原返回结构。
+默认个人视图复用这两个公开方法，个人模式需显式启用：
+
+- `list` 通过 `extensions={"personal": {...}}` 传列表筛选条件及可选的
+  `snapshot`、`include_lifecycle_counts`，省略 `scope`。个人模式使用
+  `personal` 中的筛选条件，不与普通 `filters`、`memory_types` 或其他扩展混用。
+  MCP 的 `memory_list` 遵循同一规则。按指定范围查询时仍需提供 `scope`。
+- `search` 在 `context.extensions` 传 `{"personal": {"source": "应用标识"}}`，
+  `context.scope` 留空。支持 `query`、`top_k` 和可选来源。与 `spaces`、
+  职责视图参数（`duty`、`task_id`、`anchor`、`view_budget`）或其他检索选项组合时，
+  返回 `ValidationError`。个人结果包含各命中的完整 Scope 和排序口径。
+
+SDK 和 HTTP Portal 共用这两个入口。API 在当前记忆实例内按认证身份发现候选范围，
+并逐范围执行原接口鉴权。宿主可为新增绑定写入位置，列表与检索仍按个人可读范围查询。
+
+发现前先校验可信请求身份，随后逐范围判权。个人范围有用户标识时只选择本人；已有
+共享范围中的记录还须具有可验证的作者归属。不能确认属于当前用户的记录不自动纳入。
+这条规则不赋予 Portal 共享管理权限。
+
+| 操作 | 行为 |
+|---|---|
+| list | 各范围读取完成后汇总、筛选、计数和分页，返回 PersonalPage |
+| get | 读取指定范围和 ID 的当前记录，复核绑定与作者归属 |
+| add | Portal 入口确定个人写入范围并标记 `source_app=portal`，再调用原 `MemoryAPI.add` |
+| correct | 先复核当前记录，再调用 update(SUPERSEDE) 创建新版本，返回实际新记录 |
+| forget | 先复核当前记录，再调用 delete(FORGET)，返回实际处理的 ID |
+| search | 逐范围调用 MemoryAPI.search，每个结果再通过 get 读取最新授权正文和属性 |
+
+列表按 Scope 和记录 ID 固定排序。默认模式对每个候选范围执行一次授权读取，
+跳过范围级拒绝，不在读取记录后吞掉鉴权或存储错误。跨 Scope 没有全局事务快照。聚合上限为10000条，超过则返回容量错误，不静默截断。
+后续页必须携带第一次读取的 snapshot；成员或来源变化时返回冲突，要求重新分页。
+snapshot 检查成员和来源，不冻结正文，详情仍需重新读取。
+
+### 列表筛选与选项
+
+所有条件在完整授权集合上执行，再计算 count、snapshot 和分页。来源、Agent、项目及
+分类选项从筛选前的完整集合生成，不能只使用当前页。None 表示不限制该条件。
+
+| 参数 | 匹配对象 | 空字符串的含义 |
+|---|---|---|
+| source | system_metadata.source_app | 未标注来源 |
+| agent | scope.agent，agent_label 仅作显示名 | 未关联 Agent |
+| project | system_metadata.project 优先，coords.project 兜底 | 跨项目／未标注 |
+| tier | MemoryTier.value | 不接受空串，须使用有效枚举或 None |
+| memory_class | system_metadata.memory_class | 未分类 |
+| lifecycle | active／superseded／forgotten／archived；None 为全部状态 | 不接受空串 |
+| query | 正文或标签的大小写不敏感子串 | 不增加文字条件 |
+
+MemoryTier 完整枚举为 working、core、episodic、semantic、procedural、archival。
+记忆分类为独立字符串，支持自定义类别；tier=archival 与 lifecycle=archived 是不同维度。
+
+PersonalPage 返回 items、count、snapshot、sources、agents、projects、memory_classes。
+传 `include_lifecycle_counts=true` 时，`lifecycle_counts` 返回应用其他筛选条件之后、
+应用状态条件之前的各状态计数。
+agents 在 Python 接口中是一组 `(id, label)` 元组，HTTP 返回对应的二元素数组。
+其他选项集合使用字符串。
+
+### 个人检索
+
+来源过滤先于候选数量截取。个人全量检索显式包含全部项目及缺少项目字段的旧 KV 记录，
+并与作者、来源条件按 AND 合并；原有 Scope、权限及内核策略限制继续生效。普通
+MemoryAPI.search 的默认项目行为不变。
+
+个人检索的每个子查询须在 top_k 截断前限定到精确绑定 Scope（包含 session）的已授权
+记录集合，来源与作者过滤也须先应用于候选集合。需要按条复核角色证据的记录按普通检索
+规则排除在召回候选之外，列表和详情继续按原规则检查证据。返回定位符必须能在同一 Scope
+严格回读。普通文档召回跨 session 的行为
+不变。个人检索候选总量上限为 10000，文档模式还受 SQLite 连接的查询参数上限约束。
+无法取得完整候选快照时明确失败，不丢弃异常
+命中后把剩余结果当成完整结果。
+
+个人检索从各个 Scope 的排名中轮流取结果，再截取 top_k，响应的 scores_comparable
+为 false。分组以完整 Scope 为准。子查询失败返回错误，不能
+将部分结果当成完整结果。返回正文、摘要及 metadata 来自刚通过鉴权的原记录。
+
+## 配置管理公开接口
+
+`assemble_managed_runtime` 和 `assemble_managed_server_runtime` 接受可信宿主提供的
+配置存储、可管理的具名 LLM、地址策略及授权回调，在同一次装配中返回 configuration。
+`ManagedConfiguration.read`、save、retry_publication 每次调用都要求授权回调明确放行；
+宿主负责校验可信身份、实例权限及审计。保存返回持久版本和 applied，不返回密钥。
+此能力不改变通用 admin_set 的行为。
+
+`HttpServer.build_personal` 在同一个 Runtime 中提供个人记忆和配置接口。普通 HTTP
+启动时自动发现个人记忆范围，安全配置声明固定个人身份时才会自动定位配置库。
+SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实际加载的配置文件路径。
+可信宿主可以显式接入配置存储和授权。
+
+所有候选位置都无法创建配置库时，记忆服务仍可运行，页面无法编辑设置。已有的保存配置
+无法读取时，启动报错。字段校验、版本、凭据和应用规则见 S08。
+
+## HTTP 托管配置接口
+
+两个接口使用与现有 HTTP API 相同的认证方式，也接受 Portal 浏览器会话。
+当前实例的 `ManagedConfiguration` 决定调用方是否有权读写，以及哪些配置项可以管理。
+`fields` 列出当前开放的配置项；`changes` 和 `restore` 使用其中的完整配置键。
+当前可写项来自已装配的 LLM 字段。响应禁止缓存。
+
+| HTTP 路径 | JSON 请求 | 主要响应字段 |
+|---|---|---|
+| `POST /v1/read_config` | 空对象 `{}` | 未装配配置管理时返回 `available: false`。可用时返回 `available: true` 及 `version`、`applied_version`、`apply_state`、`fields`、`instance` |
+| `POST /v1/save_config` | 保存并应用时传 `version`、`changes` 和可选的 `restore`。应用失败后可单独发送 `{"retry": true}` 重试应用最新已保存版本 | `version`、`applied` |
+
+## Portal 页面操作与接口对应
+
+浏览器使用同源 JSON POST。页面通过会话获取认证身份，使用 Scope 和记录 ID 定位已有
+记录。服务端按当前身份检查记录归属和权限，历史记录缺少用户标识时还会核对作者。
+普通 HTTP 客户端继续使用原认证、请求和返回格式。
+
+| 页面操作 | HTTP 路径 | 请求内容 | 主要响应字段 |
+|---|---|---|---|
+| 列表、筛选和概览 | `/v1/list` | `offset`、`limit`；筛选、分页快照和概览计数选项放在 `extensions.personal` | 个人列表原始结果；浏览器会话额外取得 `add_context`，包含 `agent` 和 `agent_locked` |
+| 语义检索 | `/v1/search` | `query`、`top_k`；来源放在 `context.extensions.personal.source` | `items`、`scores_comparable`；每个命中携带 `scope` 和 `item` |
+| 读取详情 | `/v1/get` | `scope`、`unit_id` | 一条 `MemoryUnit` |
+| 新增记忆 | `/v1/add` | `content`、`scope`（只允许选填 `agent`）、可选 `system_metadata.project` | 新增的 `MemoryUnit` 数组 |
+| 纠正记忆 | `/v1/update` | `scope`、`unit_id`、`patch.content` | 新版 `MemoryUnit`，通过 `supersedes` 指向旧版 |
+| 遗忘记忆 | `/v1/delete` | `selector.scope`、只含一个 ID 的 `selector.unit_ids`、`selector.mode: "forget"` | 已遗忘的 ID 数组 |
+| 模型设置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口 | 同上 |
+| HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`） | `portal_url` |
+| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 独立页面建立 HttpOnly Cookie，iframe 获得页面会话票据 |
+
+页面从 `MemoryUnit.segments` 拼接正文，时间取 `temporal.t_ingest`。HTTP
+`write_target` 由宿主提供，与认证身份合成完整写入范围，随会话绑定。独立访问可以
+选择 Agent，组织和用户取自认证身份。新增、纠正、遗忘继续由原 `MemoryAPI` 执行写入鉴权；
+浏览器纠正使用 SUPERSEDE，遗忘使用 FORGET。两种操作都要求目标仍有效，否则返回 409。
+文档写入和索引仍使用原链路。
+启用文件监听时，普通文件同步会保留纠正历史和遗忘状态。
+
+SDK 插件默认启动本地页面服务，`portal.enabled` 可关闭它。`portal.port=0` 时自动分配
+端口。重复初始化会复用原实例和监听。端口冲突时，记忆实例继续运行，`portal_status`
+报告页面不可用，显式打开页面时会重试。HTTP 模式使用原服务端口。两种模式都通过
+`open_portal()` 为每次打开取得一次性链接。SDK 页面句柄只关闭自己的网络资源，
+Runtime 仍由宿主负责关闭。
+宿主可在初始化前读取 `portal_status["supported"]` 来决定是否显示入口。
+SDK 模式的 `available` 表示页面监听已启动。HTTP 模式在首次请求链接前为 `False`，
+之后反映取链接是否成功。HTTP 初始化沿用 `/healthz` 探活，在调用 `await open_portal()`
+时签发链接。`portal_url` 仅提供 SDK 本地链接。
+
+身份复用既有认证或本地会话，浏览器不能声明 actor 或角色，也不能指定列表或检索的授权范围。本机部署的 Host、
+同源检查和会话规则见 S10；Prompt 管理、通用模型依赖追踪和宿主重启不属于 Portal 能力。
+
 ## Runtime 关闭契约
 
 `MemoryRuntime.close(*, wait: bool = True)` 幂等。关闭时先停止看门狗和新调度/摄入，
@@ -50,6 +193,11 @@ leader 锁与存储；确认停止后，锁释放失败不阻断存储清理。�
 失败时，不继续阻塞等待其线程退出，也不宣称循环已关闭。
 
 ## Metadata 公共 API 契约
+
+接入来源标记约定：jiuwenswarm 写入的 `system_metadata.source_app` 为 `jiuwenswarm`，
+`agent_label` 为适配器配置的 agent 标识，供展示与 `system_metadata.<key>` 筛选；
+它们不是可信身份或授权依据。历史记录及多来源派生记录可能缺少这些字段。
+
 
 `add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收
 `system_metadata` 和 `user_metadata`，不再接收混合 `metadata`。`MemoryPatch` 对两个
@@ -404,9 +552,8 @@ target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema 
 - **infer=true 时 evolver 内部收集上下文**（evolve 接口不变）：`recent_originals`（最近 10 条 infer 原文，做指代消解/语境，不参与去重）+ `related_memories`（`dedup.recall` 召回 10 条相关记忆，做去重提示）。两类参考项只拼进 extractor prompt，不进提取来源；最终判定由所选 Evolver 完成：`OrchestratingEvolver` 走 `_dedup_batch`，`DynamicEvolver` 走 consolidate → reflect → 落盘。详见 F02 决策7。
 - **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
 - **engine.write infer=false 调 classify**：默认路径调 `classifier.classify` 给原文打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + tags）；infer=true 不经 classifier（extractor 产派生时自定）。详见 F02 决策9。
-- **`list` 收窄并上收为 API 契约**：HTTP `/v1/list` 与 CLI `list` 直接调用
-  `MemoryAPI.list(scope, security=..., offset, limit, memory_types, extensions, filters)`，
-  不经过 handler；MCP 等旧调用方的 legacy `_list` 也委托同一 API。
+- **`list` 收窄并上收为 API 契约**：HTTP `/v1/list`、CLI `list` 和 MCP `memory_list`
+  都通过共享契约调用 `MemoryAPI.list`。
   `KVStore.list` 只查询 `/memory/` 记忆并返回当前页与分页前总数。详见 F02 决策10与
   F01 的 list 决策。
 
@@ -542,7 +689,11 @@ def search(
     span_end: datetime | None = None,
     expand_depth: int = 1,
     rollup: bool = True,
-) -> RetrievalResult: ...
+    task_id: str = "",
+    anchor: MemoryRef | None = None,
+    duty: str | list[str] | None = None,
+    view_budget: ViewBudget | None = None,
+) -> RetrievalResult | PersonalSearchResult: ...
 ```
 
 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine。`filters/as_of/top_k/disclosure/with_trajectory` 和 `context.extensions["max_tokens"]` 的既有处理不变。
@@ -588,7 +739,7 @@ HTTP/CLI 仅暴露原 search，MCP 仅暴露 memory_search；参数与 SDK 同�
 
 ```python
 def list(
-    scope: Scope,
+    scope: Scope | None = None,
     *,
     security: RequestSecurityContext,
     offset: int = 0,
@@ -596,7 +747,7 @@ def list(
     memory_types: list[str] | None = None,
     extensions: dict[str, Any] | None = None,
     filters: FilterExpr | list[FilterClause] | dict | None = None,
-) -> MemoryListResult: ...
+) -> MemoryListResult | PersonalPage: ...
 ```
 
 列出已建索引记忆：支持类型/FilterExpr 过滤、自定义参数透传和分页前精确总数；只返回 `/memory/` 真源记录。

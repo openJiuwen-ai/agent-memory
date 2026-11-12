@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -70,9 +71,12 @@ from jiuwen_memory.api import (
     Modality,
     RequestSecurityContext,
     ValidationError,
+    assemble_managed_runtime,
     assemble_runtime,
+    document_llm_instances,
     install_privacy_filter,
     metadata_for_log,
+    open_config_overlay,
     redact_for_log,
     scope_for_log,
 )
@@ -691,6 +695,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         continuity_enabled: bool = False,
         continuity_mode: str = "role",
         default_duty: str | list[str] = "general",
+        portal: dict[str, Any] | None = None,
         **_kwargs: Any,
     ) -> None:
         self._continuity_enabled = continuity_enabled
@@ -710,6 +715,18 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
             probe = ContinuityClient(base_url or "", api_key)
             probe.close()
+        self._portal_settings = dict(portal or {})
+        unknown = set(self._portal_settings) - {"enabled", "port", "allowed_frame_origins"}
+        if unknown:
+            raise ValueError("unknown Portal option")
+        if not isinstance(self._portal_settings.get("enabled", True), bool):
+            raise ValueError("Portal enabled must be a boolean")
+        port = self._portal_settings.get("port", 0)
+        if type(port) is not int or not 0 <= port <= 65535:
+            raise ValueError("Portal port must be between 0 and 65535")
+        self._portal_handle = None
+        self._portal_error = None
+        self._initialize_lock = asyncio.Lock()
         self._base_url = base_url or ""
         self._config_path = config_path
         self._config_dict = config_dict
@@ -740,6 +757,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     @property
     def is_initialized(self) -> bool:
         return self._initialized
+
+    @property
+    def runtime(self) -> Any:
+        """进程内模式返回本地 Portal 与 Agent 共用的 Runtime；HTTP 模式返回 None。"""
+        return getattr(self._client, "runtime", None) if self._client is not None else None
 
     # -- TUI 信封剥离（§6.2-E：prefetch / sync_turn 共用统一入口） ------------- #
 
@@ -809,7 +831,82 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return True
         return self._security_provider is not None
 
+    @property
+    def portal_url(self):
+        """One-use SDK launch URL. HTTP callers use open_portal() to request a fresh URL."""
+        return (
+            self._portal_handle.launch_url(self._portal_write_scope())
+            if self._portal_handle is not None
+            else None
+        )
+
+    @property
+    def portal_status(self):
+        """Use supported for menu visibility. HTTP available reflects the last link request."""
+        return {
+            "supported": self._portal_settings.get("enabled", True),
+            "available": self._portal_handle is not None
+            or bool(getattr(self._client, "portal_available", False)),
+            "reason": self._portal_error,
+            "address": self._portal_handle.address if self._portal_handle else None,
+        }
+
+    async def open_portal(self):
+        """Return a fresh authenticated launch URL for either SDK or HTTP mode."""
+        if not self._portal_settings.get("enabled", True):
+            return None
+        if not self._initialized:
+            await self.initialize()
+        elif not self._base_url and self._portal_handle is None:
+            async with self._initialize_lock:
+                if self._initialized and self._portal_handle is None:
+                    self._start_local_portal()
+        if self._portal_handle is not None:
+            return self._portal_handle.launch_url(self._portal_write_scope())
+        opener = getattr(self._client, "open_portal", None)
+        if self._base_url and callable(opener):
+            try:
+                link = await opener(self.bound_scope())
+            except Exception as exc:
+                self._portal_error = type(exc).__name__
+                raise
+            self._portal_error = None
+            return link
+        return None
+
+    def _portal_write_scope(self):
+        scope = self.bound_scope()
+        actor = self._security_provider().auth.actor
+        if (scope.org, scope.user) != (actor.org, actor.user):
+            return None
+        return ApiScope(org=scope.org, space=scope.space, user=scope.user,
+                        agent=scope.agent, session=scope.session)
+
     async def initialize(self, **kwargs: Any) -> None:
+        async with self._initialize_lock:
+            await self._initialize(**kwargs)
+            local_portal_enabled = not self._base_url and self._portal_settings.get("enabled", True)
+            can_start = self._portal_handle is None and self._portal_error is None
+            if local_portal_enabled and can_start:
+                self._start_local_portal()
+
+    def _start_local_portal(self):
+        from jiuwen_memory_entry.portal.hosting import start_portal
+
+        try:
+            self._portal_handle = start_portal(
+                self.runtime,
+                security_provider=self._security_provider,
+                port=self._portal_settings.get("port", 0),
+                allowed_frame_origins=self._portal_settings.get("allowed_frame_origins", ()),
+            )
+            self._portal_error = None
+            logger.info("memory Portal available at %s", self._portal_handle.address)
+        except Exception as exc:
+            self._portal_error = type(exc).__name__
+            logger.warning("memory Portal unavailable: %s", self._portal_error)
+
+    async def _initialize(self, **kwargs: Any) -> None:
         """Rail ``before_invoke`` 首次调，传 ``user_id``/``scope_id``/``session_id``。
 
         ``scope_id`` 只映射到 ``org``；``space`` 只认显式传入，不从 ``scope_id`` 猜测。
@@ -824,7 +921,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if "space" in kwargs:
             self._space = kwargs.get("space") or ""
 
-        await self._ensure_client().initialize()
+        if not self._initialized:
+            await self._ensure_client().initialize()
         self._initialized = True
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, config=%s, scope=%s)",
@@ -848,6 +946,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 api_key=self._api_key,
                 identity_org=self._identity_org,
                 identity_user=self._identity_user,
+                manage_configuration=self._portal_settings.get("enabled", True),
             )
         return self._client
 
@@ -1051,7 +1150,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 # dict 会被 _reject_non_scalar_metadata 拒）。
                 tags = args.get("tags") or ["conclude"]
                 project = str(args.get("project") or "").strip()
-                system_metadata: dict[str, str] = {"infer": "true"}
+                system_metadata: dict[str, str] = {
+                    "infer": "true",
+                    "source_app": "jiuwenswarm",
+                    "agent_label": self._agent_id,
+                }
                 if project:
                     system_metadata["project"] = project
                 data = await self._client.add(
@@ -1084,7 +1187,13 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 # 落 /memory/ 建索引；不走去重、不收集 context（见 F02「过程记忆抽取」）。
                 # 需配 extractor:llm 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
                 data = await self._client.add(
-                    content, scope, system_metadata={"procedural": "true"}
+                    content,
+                    scope,
+                    system_metadata={
+                        "procedural": "true",
+                        "source_app": "jiuwenswarm",
+                        "agent_label": self._agent_id,
+                    },
                 )
                 if data is None:
                     return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
@@ -1289,7 +1398,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if not user_msg:
             return
         content = f"user: {user_msg}\nassistant: {assistant_msg}"
-        system_metadata: dict[str, str] = {"infer": "true"}
+        system_metadata: dict[str, str] = {
+            "infer": "true",
+            "source_app": "jiuwenswarm",
+            "agent_label": self._agent_id,
+        }
         # rail 经 _resolve_project 传入 project；与 conclude 分支同口径直传标量
         # system_metadata["project"]，让 md 落盘按 memory/{project}/... 分流。
         project = str(kwargs.get("project") or "").strip()
@@ -1358,10 +1471,18 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         return prompt
 
     async def shutdown(self) -> None:
+        async with self._initialize_lock:
+            await self._shutdown()
+
+    async def _shutdown(self) -> None:
+        if self._portal_handle is not None:
+            await asyncio.to_thread(self._portal_handle.close)
+            self._portal_handle = None
         if self._client is not None:
             await self._client.close()
         self._client = None
         self._initialized = False
+        self._portal_error = None
 
     async def on_session_end(self, messages: list[dict[str, Any]] | None = None) -> None:
         """会话结束时批量抽取一次（infer 模式下基本冗余，保留为显式入口）。
@@ -1555,6 +1676,7 @@ def _build_client(
     api_key: str = "",
     identity_org: str = "local",
     identity_user: str = "developer",
+    manage_configuration: bool = True,
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
@@ -1583,11 +1705,19 @@ def _build_client(
             None,
             config_dict=_merge_config_over_default(config_dict),
             security_provider=security_provider,
+            manage_configuration=manage_configuration,
         )
     if config_path:
-        return _InProcessClient(config_path, security_provider=security_provider)
+        return _InProcessClient(
+            config_path,
+            security_provider=security_provider,
+            manage_configuration=manage_configuration,
+        )
     return _InProcessClient(
-        None, config_dict=_merge_config_over_default({}), security_provider=security_provider
+        None,
+        config_dict=_merge_config_over_default({}),
+        security_provider=security_provider,
+        manage_configuration=manage_configuration,
     )
 
 
@@ -1621,6 +1751,7 @@ class _HttpClient(_AgentMemoryClient):
         write_timeout: float = _WRITE_TIMEOUT,
     ) -> None:
         self._base_url = base_url.rstrip("/") if base_url else ""
+        self.portal_available = False
         self._api_key = api_key
         # 服务端认证身份（org/user）。授权模型要求身份覆盖 target scope（org 是
         # 硬边界），故这两轴不能承载 per-call 租户/用户数据——必须与服务端认证
@@ -2024,6 +2155,24 @@ class _HttpClient(_AgentMemoryClient):
         job_id = await self._post_verb("evolve", payload, write=True)
         logger.info("[AgentMemoryMemoryProvider/http] /v1/evolve -> job_id=%s", job_id)
 
+    async def open_portal(self, scope=None):
+        self.portal_available = False
+        if self._http is None:
+            await self.initialize()
+        payload = {}
+        if scope is not None:
+            mapped = self._scope_payload(scope)
+            payload["write_target"] = {name: mapped[name] for name in ("space", "agent", "session")}
+        response = await self._http.post(
+            f"{self._base_url}/portal/api/launch",
+            json=payload,
+            headers={"Origin": self._base_url},
+        )
+        response.raise_for_status()
+        link = response.json()["portal_url"]
+        self.portal_available = True
+        return link
+
     async def close(self) -> None:
         if self._http is not None:
             try:
@@ -2063,6 +2212,7 @@ class _InProcessClient(_AgentMemoryClient):
         *,
         config_dict: dict[str, Any] | None = None,
         security_provider: Any = None,
+        manage_configuration: bool = True,
     ) -> None:
         if security_provider is None:
             # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
@@ -2074,6 +2224,7 @@ class _InProcessClient(_AgentMemoryClient):
             )
         self._security_provider = security_provider
         config = config_dict
+        config_paths = ()
         if config is None and config_path:
             from pathlib import Path
 
@@ -2084,11 +2235,36 @@ class _InProcessClient(_AgentMemoryClient):
             config = _merge_config_over_default(
                 config if config is not None else {}, standalone=True,
             )
+            config_paths = (str(p),)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
-        self._runtime = assemble_runtime(config=config)
-        self._api = self._runtime.api
+        store = None
+        if manage_configuration:
+            owner = deepcopy(security_provider().auth.actor)
+            store = open_config_overlay(config, config_paths)
+        if store is None:
+            runtime = assemble_runtime(config=config)
+        else:
+            def authorize(security, operation):
+                if security.auth.actor != owner or security_provider().auth.actor != owner:
+                    return False
+                runtime.api.check_configuration_access(
+                    owner, security=security, write=operation == "write",
+                )
+                return True
+
+            runtime = assemble_managed_runtime(
+                config=config, store=store, llm_instances=document_llm_instances(config),
+                authorize=authorize,
+            )
+        self._runtime = runtime
+        self._api = runtime.api
+
+    @property
+    def runtime(self) -> Any:
+        """返回插件与本地 Portal 共用的 Runtime。"""
+        return self._runtime
 
     def _security(self) -> RequestSecurityContext:
         """本次调用的可信上下文：由注入的 provider 产出，业务 scope 只作 target。"""

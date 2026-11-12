@@ -98,6 +98,21 @@ def _serialize_source_parsing() -> Any:
         ast.parse = original
 
 
+@pytest.fixture
+def managed_models():
+    from jiuwen_memory.common.factory.factory import Factory
+    from jiuwen_memory.config.model_runtime import ManagedLLM
+
+    models = []
+
+    def record(instance):
+        if isinstance(instance, ManagedLLM):
+            models.append(instance)
+
+    with Factory.observe_builds(record):
+        yield models
+
+
 DEFAULT_SCOPE = Scope(org="acme", user="u1", agent="a1", session="s1")
 
 

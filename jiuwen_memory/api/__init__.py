@@ -84,6 +84,12 @@ from jiuwen_memory.common.type_def.continuity import (
     TaskRequest,
     ViewBudget,
 )
+from jiuwen_memory.config.auto_overlay import (
+    document_llm_instances,
+    open_config_overlay,
+    open_document_overlay,
+    open_file_overlay,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
@@ -122,22 +128,40 @@ from jiuwen_memory.retrieval import (
 from .access_security import (
     build_configured_security_runtime,
     build_dev_authenticator,
+    fixed_personal_owner,
     register_trusted_principal,
 )
+from .managed_configuration import ManagedConfiguration
 from .memory_api import MemoryAPI
 from .memory_api_impl import (
     AUTO_SECURITY_RUNTIME,
     MaintenancePorts,
+    ManagedMemoryRuntime,
+    ManagedServerRuntime,
     MemoryRuntime,
     ServerRuntime,
     assemble,
     assemble_maintenance_ports,
+    assemble_managed_runtime,
+    assemble_managed_server_runtime,
     assemble_runtime,
     assemble_server_runtime,
 )
+from .personal_memory import read_personal_record
 from .search_options import SearchOptions
 
 __all__ = [
+    "read_personal_record",
+    "open_config_overlay",
+    "open_document_overlay",
+    "open_file_overlay",
+    "document_llm_instances",
+    "fixed_personal_owner",
+    "ManagedConfiguration",
+    "ManagedMemoryRuntime",
+    "ManagedServerRuntime",
+    "assemble_managed_runtime",
+    "assemble_managed_server_runtime",
     "SearchOptions",
     "EvolveTaskOptions",
     "HierarchyComposeOptions",

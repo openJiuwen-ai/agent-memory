@@ -684,6 +684,10 @@ def test_list_drops_entries_whose_dependency_evidence_changed(tmp_path, monkeypa
             ),
         )[0]
         assert "conclusion" in [u.content for u in api.list(project, security=wb).items]
+        personal = api.search(
+            "evidence conclusion", Context(extensions={"personal": {}}), security=wb,
+        )
+        assert [hit.item.unit_id for hit in personal.items] == [evidence.id]
 
         # Revise the evidence: its digest changes, so the conclusion's dependency is stale.
         from jiuwen_memory.api import MemoryPatch

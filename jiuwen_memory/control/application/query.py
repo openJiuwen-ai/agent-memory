@@ -28,6 +28,10 @@ class MemoryQueryService:
     def supports_exact_metadata_lookup(self) -> bool:
         return self._engine.supports_exact_metadata_lookup
 
+    def candidate_scopes(self) -> list[Scope]:
+        """返回数据面候选范围；调用方必须先校验可信上下文并逐范围鉴权。"""
+        return self._engine.candidate_scopes()
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         return await self._engine.recall(scope, query)
 

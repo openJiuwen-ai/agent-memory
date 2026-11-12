@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from threading import RLock
 from typing import TYPE_CHECKING
 
 import openai
@@ -86,6 +87,7 @@ class OpenAILLM(LLM):
         self._ssl_ca_cert = (ssl_ca_cert or "").strip() or None
         self._config_source = config_source
         self._config_namespace = config_namespace
+        self._client_lock = RLock()
         self._client = None  # 惰性创建（见 client 属性）
         self._client_fingerprint: tuple[str, str | None, bool, str | None] | None = None
 
@@ -96,28 +98,35 @@ class OpenAILLM(LLM):
         只有真正 chat/health 时才要求凭证（与存储后端惰性连接的约定一致）。
         凭证经 ConfigSource 晚绑定；变化时重建客户端。
         """
-        ep = self._endpoint()
-        fingerprint = (ep.api_key, ep.base_url, self._ssl_verify, self._ssl_ca_cert)
-        if self._client is None or self._client_fingerprint != fingerprint:
-            client_kwargs: dict = {
-                "api_key": ep.api_key,
-                "timeout": openai.Timeout(
-                    timeout=self._timeout,
-                    connect=OUTBOUND_CONNECT_TIMEOUT_SECONDS
-                ),
-                "max_retries": self._max_retries,
-            }
-            if ep.base_url:
-                client_kwargs["base_url"] = ep.base_url
-            if self._ssl_verify:
-                # 使用 SDK 提供的默认客户端，在注入信任锚的同时保留其
-                # 连接池和重定向等默认参数；等待策略由客户端参数显式管理。
-                client_kwargs["http_client"] = openai.DefaultHttpxClient(
-                    verify=outbound_verify(self._ssl_ca_cert)
-                )
-            self._client = openai.OpenAI(**client_kwargs)
-            self._client_fingerprint = fingerprint
-        return self._client
+        with self._client_lock:
+            ep = self._endpoint()
+            fingerprint = (ep.api_key, ep.base_url, self._ssl_verify, self._ssl_ca_cert)
+            if self._client is None or self._client_fingerprint != fingerprint:
+                client_kwargs: dict = {
+                    "api_key": ep.api_key,
+                    "timeout": openai.Timeout(
+                        timeout=self._timeout,
+                        connect=OUTBOUND_CONNECT_TIMEOUT_SECONDS
+                    ),
+                    "max_retries": self._max_retries,
+                }
+                if ep.base_url:
+                    client_kwargs["base_url"] = ep.base_url
+                if self._ssl_verify:
+                    # 使用 SDK 提供的默认客户端，在注入信任锚的同时保留其
+                    # 连接池和重定向等默认参数；等待策略由客户端参数显式管理。
+                    client_kwargs["http_client"] = openai.DefaultHttpxClient(
+                        verify=outbound_verify(self._ssl_ca_cert)
+                    )
+                self._client = openai.OpenAI(**client_kwargs)
+                self._client_fingerprint = fingerprint
+            return self._client
+
+    def close(self):
+        """Release this immutable client's connections after its final in-flight call."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
     def plugin_type(self) -> PluginType:
         """返回插件类型 ``LLM``。"""
@@ -237,21 +246,25 @@ class OpenAILLM(LLM):
 # -- 注册到 LlmProducer（实现自注册，新增无需改 producer/make_plugins） ------ #
 
 
-@LlmProducer.register("openai")
+@LlmProducer.register("openai", config_inspectors={"portal_model_fields": lambda config: True})
 def _build(config):
     """从装配 ComponentConfig 构造；注入内核共享的 default ConfigSource（若已装配）。"""
+    from jiuwen_memory.config.config_source import ConfigSourceProducer
+    from jiuwen_memory.config.keys import NS_LLM, resolve_instance_namespace
+
+    source = ConfigSourceProducer.get_cached("default")
+    if config.name and callable(getattr(source, "build_model", None)):
+        return source.build_model(config.name)
     base_url = config.get("llm_base_url", "")
     ssl = read_outbound_ssl(config, "llm")
     call_policy = read_outbound_call_policy(config, "llm")
     if ssl.verify:
         require_https(base_url, component="openai LLM", param="llm")
         require_ca_file(ssl.ca_cert, component="openai LLM", param="llm")
-    from jiuwen_memory.config.config_source import ConfigSourceProducer
-    from jiuwen_memory.config.keys import NS_LLM, resolve_instance_namespace
-
     config_namespace = resolve_instance_namespace(
         NS_LLM, config.name, config.params
     )
+    frozen = source.for_model() if callable(getattr(source, "for_model", None)) else source
     return OpenAILLM(
         model_name=config.get("llm_model") or "gpt-4o",
         base_url=base_url,
@@ -262,6 +275,6 @@ def _build(config):
         max_retries=call_policy.max_retries,
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
-        config_source=ConfigSourceProducer.get_cached("default"),
+        config_source=frozen,
         config_namespace=config_namespace,
     )

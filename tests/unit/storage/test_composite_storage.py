@@ -870,35 +870,36 @@ def test_document_mode_compensation_failure_does_not_mask_original(tmp_path, mon
 
 def test_document_mode_write_window_open_during_compensation(tmp_path, monkeypatch) -> None:
     """补偿期间写窗口仍开（挡看门狗观察），finally 后关闭。"""
-    from jiuwen_memory.storage.sync_gate import write_window_open
+    from jiuwen_memory.storage.sync_gate import document_sync_gate
 
     scope = Scope(org="org", user="user")
     storage = _doc_storage(tmp_path)
     shadow = storage._raw_shadow_index()
     md = storage._raw_markdown()
+    gate = document_sync_gate(md.root)
 
     observed: dict[str, bool] = {}
 
     def fail_insert(*a, **k):
-        observed["during_insert"] = write_window_open()
+        observed["during_insert"] = gate.is_open()
         raise RuntimeError("boom")
 
     monkeypatch.setattr(shadow, "insert_units", fail_insert)
 
     def sample_compensation(*a, **k):
-        observed["during_compensation"] = write_window_open()
+        observed["during_compensation"] = gate.is_open()
 
     monkeypatch.setattr(md, "remove_content", sample_compensation)
 
     with pytest.raises(RuntimeError):
         storage.add(scope, [_doc_unit(scope, "u1", "x")])
 
-    # insert_units 抛错时窗口已开（处于 open_write_window 与 close 之间）。
+    # insert_units 抛错时窗口已开。
     assert observed["during_insert"] is True
     # 补偿（except 块内调 md.remove_content）期间窗口仍开（finally 尚未执行）。
     assert observed["during_compensation"] is True
     # finally 执行后窗口关闭。
-    assert write_window_open() is False
+    assert not gate.is_open()
 
 
 # -- md 原子写恢复（层次一）：写阶段失败时 md 文件回到调用前状态 --------------- #

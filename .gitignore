@@ -19,6 +19,7 @@ dist/
 logs/
 *.log
 *.db
+*.model-key
 # SQLite 单写者锁文件（Registry single_writer）
 *.writer
 

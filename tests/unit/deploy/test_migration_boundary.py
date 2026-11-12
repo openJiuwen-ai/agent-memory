@@ -24,8 +24,9 @@ def test_memory_api_has_no_migration_or_error_result_exports():
     "method,result",
     [
         ("get", "MemoryUnit"),
-        ("list", "MemoryListResult"),
-        ("search", "RetrievalResult"),
+        # The second result shape is used only by the explicit personal mode.
+        ("list", "MemoryListResult | PersonalPage"),
+        ("search", "RetrievalResult | PersonalSearchResult"),
         ("inspect", "list[MemoryUnit]"),
         ("trace", "list[MemoryUnit]"),
         ("read_md_file", "list[MemoryUnit]"),

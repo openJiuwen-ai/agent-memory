@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from jiuwen_memory.api.managed_configuration import ManagedConfiguration
 
 from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
@@ -157,6 +160,7 @@ class _Kernel:
     audit: AuditLogger | None = None
     config_source: ConfigSource | None = None
     ctx: AssemblyContext | None = None
+    configuration: Any = None
     scheduler: Scheduler | None = None
     watchdog: Watchdog | None = None
     security_runtime: SecurityRuntime | None = None
@@ -231,6 +235,14 @@ class MemoryRuntime(Protocol):
         ...
 
 
+class ManagedMemoryRuntime(MemoryRuntime, Protocol):
+    """持有同次装配的公开配置管理能力。"""
+
+    @property
+    def configuration(self) -> ManagedConfiguration:
+        ...
+
+
 @runtime_checkable
 class ServerRuntime(MemoryRuntime, Protocol):
     """公开 Server 装配结果；安全绑定与资源所有权已在内核完成。"""
@@ -246,6 +258,10 @@ class ServerRuntime(MemoryRuntime, Protocol):
         ...
 
 
+class ManagedServerRuntime(ServerRuntime, ManagedMemoryRuntime, Protocol):
+    """同时公开 Server 安全组合和同实例配置管理。"""
+
+
 @dataclass(frozen=True)
 class _ServerRuntime:
     _runtime: MemoryRuntime
@@ -255,6 +271,10 @@ class _ServerRuntime:
     @property
     def api(self) -> MemoryAPI:
         return self._runtime.api
+
+    @property
+    def configuration(self) -> Any:
+        return getattr(self._runtime, "configuration", None)
 
     async def start_background_jobs(
         self, scope: Scope, *, security: RequestSecurityContext,
@@ -285,6 +305,7 @@ class _MemoryRuntime:
 
     api: MemoryAPI
     _kernel: _Kernel
+    configuration: Any = None
     _resources: SecurityResourceOwner | None = field(default=None, repr=False)
     _register_background_jobs: Callable[..., Awaitable[BackgroundJobStartResult]] | None = field(
         default=None, repr=False,
@@ -631,6 +652,8 @@ def _build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    managed_plan: Any = None,
 ) -> _Kernel:
     """把配置装配成内部内核（api + 真源）。各组件经引用自取依赖、缺省随调用点给出。
 
@@ -647,8 +670,15 @@ def _build_kernel(
     ctx = default_context()
     if config is not None and not config.is_empty():
         ctx = _merge_kernel_config(ctx, config.context(known_top_names=Factory.known_top_names()))
+    if managed_plan is not None:
+        ctx = managed_plan.prepare(ctx)
     with _assembly_lifecycle(ctx) as lifecycle:
-        kernel = _assemble_kernel(policies, kv, ctx, config)
+        if managed_plan is not None:
+            lifecycle.failure_cleanup.append(managed_plan.close)
+        kernel = _assemble_kernel(policies, kv, ctx, config, managed_plan=managed_plan)
+        if managed_plan is not None:
+            managed_plan.validate_version()
+            managed_plan.finalize(ctx)
         owner = (
             kernel.security_runtime.security_resource_owner()
             if kernel.security_runtime is not None
@@ -661,6 +691,8 @@ def _build_kernel(
         stores = tuple(resource for resource in reversed(lifecycle.created)
                        if isinstance(resource, BaseStore))
         owner.share_with(SecurityResourceOwner(stores))
+        if managed_plan is not None:
+            owner.add_close_callback(managed_plan.close)
         lifecycle.bind(owner)
         return kernel
 
@@ -670,6 +702,8 @@ def _assemble_kernel(
     kv: KVStore | None,
     ctx: AssemblyContext,
     config: Config | None,
+    *,
+    managed_plan: Any = None,
 ) -> _Kernel:
     """在创建观察作用域内解析依赖，失败由外层按本次拥有关系回滚。"""
 
@@ -706,6 +740,8 @@ def _assemble_kernel(
         )
     if protected_bindings:
         config_source = EncryptionBoundConfigSource(config_source, protected_bindings)
+    if managed_plan is not None:
+        config_source = managed_plan.bind_source(config_source)
     ConfigSourceProducer.put("default", config_source, ctx=ctx)
 
     storage = StoreManagerProducer.resolve(root)
@@ -874,6 +910,7 @@ def _assemble_kernel(
         space=space,
         audit=audit_logger,
         config_source=config_source,
+        configuration=managed_plan.configuration if managed_plan is not None else None,
         scheduler=scheduler,
         watchdog=watchdog,
         security_runtime=security_runtime,
@@ -1021,11 +1058,31 @@ def assemble_maintenance_ports(
     )
 
 
+def assemble_managed_runtime(
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    store: Any,
+    llm_instances: Sequence[str],
+    authorize: Callable[[RequestSecurityContext, str], bool],
+    url_allowed: Callable[[str], bool] | None = None,
+    locked_keys: frozenset[str] = frozenset(),
+    policies: dict[str, str] | None = None,
+    kv: KVStore | None = None,
+) -> ManagedMemoryRuntime:
+    """可信宿主提供配置能力与授权，覆盖层在同一次 Runtime 装配前恢复。"""
+    from .managed_assembly import ManagedAssemblyPlan
+
+    plan = ManagedAssemblyPlan(store, llm_instances, authorize, url_allowed, locked_keys)
+    kernel = _build_kernel(policies, kv, config, managed_plan=plan)
+    return _runtime_from_kernel(kernel)
+
+
 def _runtime_from_kernel(kernel: _Kernel) -> _MemoryRuntime:
     """私有装配工作对象转换为公共生命周期句柄。"""
     runtime = _MemoryRuntime(
         api=kernel.api,
         _kernel=kernel,
+        configuration=kernel.configuration,
         _resources=kernel.security_resources,
     )
     # 本包 facade 持有委托闭包，不将 Runtime/Store 端口公开给业务层。
@@ -1049,6 +1106,29 @@ def assemble_server_runtime(
     生命周期；失败只关闭本次内核，不接管调用方注入对象。
     """
     kernel = _build_kernel(policies=policies, config=config)
+    return _server_runtime_from_kernel(kernel, security_runtime)
+
+
+def assemble_managed_server_runtime(
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    store: Any,
+    llm_instances: Sequence[str],
+    authorize: Callable[[RequestSecurityContext, str], bool],
+    url_allowed: Callable[[str], bool] | None = None,
+    locked_keys: frozenset[str] = frozenset(),
+    policies: dict[str, str] | None = None,
+    security_runtime: Any = AUTO_SECURITY_RUNTIME,
+) -> ManagedServerRuntime:
+    """在同一 Server Runtime 中装配持久配置与公开配置门面。"""
+    from .managed_assembly import ManagedAssemblyPlan
+
+    plan = ManagedAssemblyPlan(store, llm_instances, authorize, url_allowed, locked_keys)
+    kernel = _build_kernel(policies=policies, config=config, managed_plan=plan)
+    return _server_runtime_from_kernel(kernel, security_runtime)
+
+
+def _server_runtime_from_kernel(kernel: _Kernel, security_runtime: Any) -> ServerRuntime:
     runtime = _runtime_from_kernel(kernel)
     try:
         auto_security = security_runtime is AUTO_SECURITY_RUNTIME

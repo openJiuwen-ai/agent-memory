@@ -743,6 +743,15 @@ def test_list_memory_types_filters_results(kernel) -> None:
     assert other["items"] == [] and other["count"] == 0, "core 类型不应命中"
 
 
+def test_list_tool_allows_omitted_scope_for_personal_mode(kernel) -> None:
+    added = asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE))[0]
+    blocks = asyncio.run(mcp_main.mcp.call_tool("memory_list", {"extensions": {"personal": {}}}))
+    result = json.loads(blocks[0].text)
+    assert [item["id"] for item in result["items"]] == [added["id"]]
+    with pytest.raises(ToolError, match="missing required field.*scope"):
+        asyncio.run(mcp_main.mcp.call_tool("memory_list", {}))
+
+
 def test_search_filters_narrow_results(kernel) -> None:
     asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE, tags=["brew"]))
     asyncio.run(mcp_main.memory_add(content="hello tea", scope=SCOPE, tags=["leaf"]))

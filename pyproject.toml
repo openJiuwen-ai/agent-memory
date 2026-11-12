@@ -116,6 +116,9 @@ exclude = [
     "jiuwen_memory_entry.mcp_server*",
 ]
 
+[tool.setuptools.package-data]
+"jiuwen_memory_entry.portal" = ["index.html"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

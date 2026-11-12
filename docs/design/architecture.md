@@ -216,6 +216,15 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 可选角色关系记忆（2026-11-05 设计修订）分接续 / 角色两档：可靠写入并入 `add` / `batch_add` 的 `continuity` 参数，任务背景与职责视图并入 `search` 的 `duty` / `task_id` / `anchor` / `view_budget` 参数（结果为 `RetrievalResult` 可选字段）；专用入口只保留 `continuity_task`、`continuity_relation`（角色模式）、`continuity_recover`，以及治理面的 `quarantine_source`、`release_source`。保持同一 PEP 与传输契约，详见 [S11](../specs/S11-cross-agent-continuity.md)。代码已落地为目标形态（43 个方法，两档模式），剩余差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。
 
+`MemoryAPI.list` 和 `MemoryAPI.search` 提供显式个人模式，默认 Portal 接入通过
+该模式发现并鉴权个人 Scope。可信宿主可通过 `HttpServer.build_personal` 为同一托管
+Runtime 提供配置管理能力。
+个人 list 支持来源、Agent、文档项目、生命周期、认知层级、记忆分类及正文／标签子串筛选，
+在完整授权集合上过滤后计数和分页，并返回来源／Agent／项目／分类选项。
+Portal 页面复用现有 `/v1` 记忆操作，模型配置使用同一实例的通用 HTTP 接口。具体字段见 S02。
+启用配置管理后，SDK 和 HTTP 共用配置库定位规则，优先使用文档根，其次使用启动配置文件
+旁的位置。具体条件见 [S08 配置规约](../specs/S08-config.md)。
+
 所有接入形态最终映射到同一组语义。接口已落地为 `jiuwen_memory/api/memory_api.py` 的 `MemoryAPI`（统一 Core API，形态无关）。它是**控制层的薄封装且为鉴权/审计执行点（PEP）**：数据面（add/search/list/get/update/delete/evolve）委托 `jiuwen_memory/control/engine.py` 的 `MemoryEngine`（编排中枢），管理面查询（任务状态、治理、授权、space 管理）直达对应控制算子（Scheduler/Governor/PermissionManager/SpaceManager），admin 直达 PolicyManager。每个涉及租户数据/治理的方法都收 `scope`（目标范围 target）与必填 `security: RequestSecurityContext`——除 `check_write` 为兼容旧第二位置参数外均为 keyword-only。调用方身份只取自 `security.auth.actor`；当前由 `Authorizer` 判定，旧 `PermissionManager` 不参与生产授权。鉴权通过后才委托，下游只收已鉴权的 target scope（签名以代码为准）。写入类方法及 `MemoryPatch` 分别接收 `system_metadata` 与 `user_metadata`，不再接收混合 `metadata`。Space 管理接口已由 `SpaceManager` 承接。
 
 本章列出 43 个对外接口，一方法一行；其中五个接续入口已实现（`continuity_task`、`continuity_relation`、`continuity_recover`、`quarantine_source`、`release_source`）。旧 `role_record` / `role_view` / `role_publish` / `role_mark_source_cutover` 已删除，前两者能力并入 `add` / `batch_add` / `search`。详细用法、数据结构、特性文档对照、**已设计但尚未实现**的增量见 [S02-memory-api.md](../specs/S02-memory-api.md)。代码落地后须：去掉 S02（及受影响 F 文档）中的「尚未实现」标注，并把该方法（或增量入参）补进本表。
@@ -228,8 +237,8 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 | `batch_add_async` | **异步**批量写入：签名/语义同 `batch_add`，串行保序 | 同 `batch_add` | `BatchWriteResult` |
 | `submit_ingest` | 受鉴权的长耗时摄入入队；先校验 WRITE，再委托 Control 创建或复用任务，后台执行 `add` 时再次鉴权。返回提交状态，不表示摄入已完成 | `content: str`；`scope: Scope`；`source: Modality`；`*`；`security: RequestSecurityContext`；`payload_id: str`；`source_ref: str`；`assets: list[str] \| None = None`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`）；`occurred_at: datetime \| None = None`；`event_time: datetime \| None = None`（含时区事件时间，入队前校验） | `IngestSubmission` |
 | `check_write` | Pre-flight WRITE 鉴权，不落盘。镜像 `add` 的鉴权与 space 可写校验，供长耗时摄入任务入队前拒绝无权限请求 | `scope: Scope`；`security: RequestSecurityContext`；`*`；`tags: list[str] \| None = None`；`system_metadata` / `user_metadata`（同 `add`） | `None` |
-| `search` | 混合检索召回。`context.scope` 为目标范围；`context.extensions["max_tokens"]` 由本层解析为披露预算后从透传中移除。`filters` 为结构化过滤（FilterExpr / 旧 list / dict DSL）。`as_of` 为 valid-time 回溯。`RetrievalResult` 含命中项、可选轨迹和通道错误 | `query: str`；`context: Context`；`*`；`security: RequestSecurityContext`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None`；`as_of: datetime \| None = None`；`top_k: int = 10`；`disclosure: DisclosureLevel = L0`；`with_trajectory: bool = False`；末尾追加 hierarchy_kind/hierarchy_role/span_start/span_end/expand_depth/rollup | `RetrievalResult` |
-| `list` | 列出 scope 下已建索引记忆（只含 `/memory/`，不含 infer 原文）。支持类型/结构化过滤、自定义透传与分页；`items` 为当前页，`count` 为分页前精确总数。`memory_types` 与 `filters` 取 AND；`org/space/user/agent/session` 不得出现在 filters | `scope: Scope`；`*`；`security: RequestSecurityContext`；`offset: int = 0`；`limit: int = 100`；`memory_types: list[str] \| None = None`；`extensions: dict[str, Any] \| None = None`；`filters: FilterExpr \| list[FilterClause] \| dict \| None = None` | `MemoryListResult` |
+| `search` | 混合检索，支持指定范围、个人模式或职责视图。普通检索支持结构化过滤、历史回溯和树检索 | `query`、`context`、`security` 及可选参数，见 [S02](../specs/S02-memory-api.md#search) | `RetrievalResult` 或 `PersonalSearchResult` |
+| `list` | 列出已建索引记忆，按指定范围查询或汇总个人记忆。普通列表支持类型和结构化过滤。`items` 为当前页，`count` 为分页前总数 | `scope`、`security`、`offset`、`limit`、`memory_types`、`extensions`、`filters`。个人模式省略 `scope` | `MemoryListResult` 或 `PersonalPage` |
 | `get` | 按 id 读取记忆单元；`as_of` 非空时沿 `supersedes` 版本链返回当时有效版本；不存在抛 `NotFoundError` | `unit_id: str`；`scope: Scope`；`*`；`security: RequestSecurityContext`；`as_of: datetime \| None = None` | `MemoryUnit` |
 | `update` | 修正记忆（仅非 None 字段生效）：`patch.mode` = **SUPERSEDE**（默认、非破坏式：生成新 id 版本、旧版标记 superseded、新版 `supersedes` 记链）/ **OVERWRITE**（同 id 原地覆写、旧内容仅留审计）。`system_metadata` / `user_metadata` 分别合并 | `unit_id: str`；`scope: Scope`；`patch: MemoryPatch`；`*`；`security: RequestSecurityContext` | `MemoryUnit` |
 | `delete` | 按选择器（id / scope / 标签 / 时间，条件取「与」，至少一项）批量执行；`mode` = forget 遗忘 / archive 归档 / downweight 降权（均非破坏式）/ **purge 完全删除**（物理删除真源与全部派生索引，合规删除、不可恢复、仅留审计记录）；返回命中的 id。未给 `selector.scope` 时鉴权退到根 scope | `selector: DeleteSelector`；`*`；`security: RequestSecurityContext` | `list[str]` |

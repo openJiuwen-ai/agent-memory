@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="default" data-color-mode="light">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>记忆管理 · agent_memory</title><style>
+    :root {
+      color-scheme: light;
+      --font-body: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+      --color-surface-page: #f5f7f9;
+      --color-surface-content: #ffffff;
+      --color-sidebar-surface: #f5f5f5;
+      --color-sidebar-nav-active: #e6e6e6;
+      --color-text-primary: #191919;
+      --color-text-secondary: #777777;
+      --color-border-default: #e4e4e7;
+      --color-action-primary: #2563eb;
+      --color-action-primary-hover: #3b82f6;
+      --surface: var(--color-surface-content);
+      --raised: var(--color-surface-page);
+      --line: var(--color-border-default);
+      --muted: var(--color-text-secondary);
+      --accent: var(--color-action-primary);
+      --green: #eff8f2;
+      --red: #c0332b;
+      font: 400 14px/1.55 var(--font-body);
+      color: var(--color-text-primary);
+      background: var(--color-surface-page);
+      -webkit-font-smoothing: antialiased;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button,input,select,textarea { font: inherit; color: inherit; }
+    button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:34px; padding:7px 12px; border:1px solid var(--line); border-radius:6px; background:var(--surface); cursor:pointer; transition:background .12s,border-color .12s; }
+    button:hover { background:#fafafa; border-color:#c2c2c2; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    button.primary { color:#fff; background:var(--accent); border-color:var(--accent); }
+    button.primary:hover { background:var(--color-action-primary-hover); }
+    button.danger { color:var(--red); }
+    button.quiet { border-color:transparent; background:transparent; }
+    button.link { color:var(--accent); border:0; background:transparent; padding:3px 0; min-height:24px; font-size:12px; justify-content:flex-start; }
+    button.emphasis { background:#191919; color:white; border-color:#191919; }
+    input,select,textarea { width:100%; min-width:0; padding:9px 11px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }
+    textarea { resize:vertical; line-height:1.8; }
+    input::placeholder,textarea::placeholder { color:#999; }
+    input[type=checkbox] { width:16px; height:16px; padding:0; accent-color:var(--accent); cursor:pointer; }
+    :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+    input:focus,textarea:focus,select:focus { border-color:var(--accent); }
+    h1,h2,h3,p { margin:0; }
+    h1 { font-size:24px; line-height:32px; font-weight:600; letter-spacing:-.02em; }
+    h2 { font-size:18px; line-height:28px; font-weight:600; }
+    h3 { font-size:14px; font-weight:600; }
+    a { color:var(--accent); }
+    svg { width:18px; height:18px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+    [hidden] { display:none!important; }
+    .muted { color:var(--muted); font-size:13px; line-height:1.75; }
+    .small { font-size:12px; }
+    .row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+    .spacer { flex:1; }
+    .stack { display:grid; gap:6px; }
+    .mono { font:12px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    .app-shell { display:grid; grid-template-columns:208px minmax(0,1fr); min-height:100dvh; }
+    .module-sidebar { position:sticky; top:0; height:100dvh; padding:24px 16px 16px; background:var(--color-sidebar-surface); display:flex; flex-direction:column; border-right:1px solid #ededed; }
+    .brand { display:flex; align-items:center; gap:10px; padding:0 8px 25px; }
+    .brand-icon { width:34px; height:34px; display:grid; place-items:center; background:#fff; border:1px solid var(--line); border-radius:10px; color:#191919; }
+    .brand strong { display:block; font-size:16px; font-weight:600; }
+    .brand small { font-size:10px; letter-spacing:.04em; color:#929292; }
+    .nav-label { padding:0 10px 8px; font-size:11px; color:#999; }
+    nav { display:grid; gap:6px; }
+    nav button { width:100%; justify-content:flex-start; padding:10px 12px; border:0; background:transparent; color:#595959; min-height:40px; }
+    nav button:hover { background:#eee; }
+    nav button.active { background:var(--color-sidebar-nav-active); color:#191919; font-weight:600; }
+    .sidebar-footer { margin-top:auto; padding-top:24px; display:grid; gap:10px; }
+    .sidebar-footer button { justify-content:flex-start; color:#777; font-size:12px; }
+    .sidebar-note { font-size:11px; color:#999; padding:0 10px; }
+    .app-main { min-width:0; background:var(--color-surface-page); }
+    .topbar { height:56px; display:flex; align-items:center; gap:8px; padding:0 32px; background:var(--surface); border-bottom:1px solid #ededed; }
+    .breadcrumb { color:#999; font-size:12px; }
+    #breadcrumb-current { color:#191919; }
+    .connection-pill { margin-left:auto; display:flex; align-items:center; gap:6px; font-size:11px; color:#777; }
+    .connected { width:6px; height:6px; border-radius:50%; background:#16a34a; display:inline-block; }
+    main { max-width:1450px; padding:30px 32px 60px; margin:auto; }
+    .page-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:24px; }
+    .page-heading p { margin-top:6px; }
+    .notice { border:1px solid #cce8d5; background:#eff8f2; color:#23653c; border-radius:8px; padding:12px 16px; margin-bottom:20px; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .notice:empty { display:none; }
+    .notice.error { background:#fff4f3; border-color:#f1d0cb; color:#b03028; }
+    .memory-surface,.search-form,.settings-group,.info-card,.overview-card { border:1px solid var(--line); background:var(--surface); border-radius:12px; }
+    .memory-surface { padding:20px; }
+    .filter-search { display:flex; align-items:center; gap:10px; padding:0 12px; border:1px solid var(--line); border-radius:6px; background:var(--surface); margin-bottom:16px; }
+    .filter-search input { border:0; outline:0; background:transparent; padding-left:0; }
+    .filter-search:focus-within { border-color:var(--accent); }
+    .filter-search svg { color:#999; }
+    kbd { font:11px ui-monospace,monospace; color:#999; border:1px solid var(--line); padding:1px 5px; border-radius:4px; }
+    .filters { display:grid; grid-template-columns:1fr 1fr auto; gap:12px; align-items:end; margin-bottom:14px; }
+    label { display:block; color:#777; font-size:12px; margin-bottom:6px; }
+    .filter-more { border-top:1px solid #f0f0f0; padding-top:10px; margin-top:12px; }
+    summary { cursor:pointer; color:#777; font-size:12px; padding:5px 0; }
+    details[open]>summary { margin-bottom:10px; }
+    .filter-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; padding:14px 0 3px; }
+    .status-tabs { display:flex; flex-wrap:wrap; gap:6px; }
+    .status-tabs button,.view-switch button { min-height:30px; font-size:12px; padding:5px 10px; border-color:transparent; background:transparent; color:#777; }
+    .status-tabs button[aria-pressed=true] { background:#deecff; color:#0f5ed4; }
+    .list-tools { display:flex; align-items:center; gap:14px; justify-content:space-between; margin:20px 0 12px; min-height:30px; }
+    .list-caption { display:flex; align-items:center; gap:8px; font-size:12px; color:#777; }
+    .list-count { color:#191919; font-weight:500; }
+    .view-switch { display:flex; padding:2px; border:1px solid var(--line); border-radius:6px; background:var(--surface); }
+    .view-switch button[aria-pressed=true] { color:#191919; background:#f0f0f0; }
+    .memory-list { display:grid; gap:10px; }
+    .memory-list.grid-view { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .memory-row { display:flex; align-items:flex-start; gap:12px; padding:17px 18px; border:1px solid var(--line); border-radius:10px; background:var(--surface); min-width:0; transition:border-color .15s,box-shadow .15s; }
+    .memory-row:hover { border-color:#b9c9e6; box-shadow:0 2px 6px #19191905; }
+    .memory-row.selected { border-color:#93b4ef; background:#f8fbff; }
+    .memory-row .row-select { margin:4px 0 0; flex-shrink:0; }
+    .card-open { display:block; text-align:left; padding:0; min-width:0; flex:1; border:0; background:transparent; border-radius:2px; }
+    .card-open:hover { background:transparent; }
+    .memory-title { display:block; font-size:14px; line-height:1.7; font-weight:600; overflow-wrap:anywhere; margin-bottom:6px; color:#191919; }
+    .memory-preview { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; color:#777; line-height:1.8; font-size:13px; overflow-wrap:anywhere; }
+    .memory-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; font-size:11px; color:#888; margin-top:12px; }
+    .memory-meta span { overflow-wrap:anywhere; }
+    .card-chevron { color:#aaa; margin:2px 0 0 auto; }
+    .badge { display:inline-flex; align-items:center; padding:2px 7px; border-radius:4px; font-size:11px; color:#595959; background:#f5f5f5; }
+    .badge.green { background:#eaf9ee; color:#1a8a3d; }
+    .badge.blue { background:#deecff; color:#0f5ed4; }
+    .badge.amber { color:#9c6519; background:#fff5df; }
+    .badge.red { color:#b73b33; background:#fff0ee; }
+    .batch-bar { position:sticky; top:8px; z-index:4; display:flex; align-items:center; flex-wrap:wrap; gap:8px; background:#eef5ff; border:1px solid #bdd3f7; padding:12px 14px; border-radius:8px; margin-bottom:12px; box-shadow:0 3px 10px #00000005; }
+    .batch-bar strong { font-size:12px; margin-right:auto; }
+    .batch-bar button { font-size:12px; min-height:30px; background:#fff; }
+    .pager { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:20px; padding-top:16px; border-top:1px solid #ededed; font-size:12px; color:#777; }
+    .pager select { width:88px; padding:5px 8px; font-size:12px; }
+    .pager button { font-size:12px; min-height:30px; }
+    .empty { padding:58px 22px; text-align:center; color:#888; line-height:1.9; border:1px dashed var(--line); border-radius:10px; background:#fff; grid-column:1/-1; }
+    .empty strong { display:block; color:#52525b; font-size:15px; margin-bottom:7px; }
+    .empty button { margin-top:18px; }
+    .metric-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:16px; margin-bottom:24px; }
+    .metric { display:block; padding:20px; text-align:left; border:1px solid var(--line); border-radius:12px; background:#fff; min-width:0; }
+    .metric-label { display:block; color:#777; font-size:12px; }
+    .metric-value { display:block; font-size:30px; font-weight:600; color:#191919; letter-spacing:-.04em; margin:10px 0 6px; }
+    .metric-hint { display:block; color:#999; font-size:11px; }
+    .overview-columns { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(250px,1fr); gap:20px; }
+    .overview-card { padding:22px; min-width:0; margin-bottom:20px; }
+    .overview-card .card-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; }
+    .quick-entry { display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:14px 0; border:0; border-top:1px solid #f0f0f0; border-radius:0; }
+    .quick-entry span { display:block; font-size:12px; color:#888; margin-top:3px; }
+    .source-chips { display:flex; gap:8px; flex-wrap:wrap; }
+    .source-chips button { font-size:12px; }
+    .overview-sample { display:block; text-align:left; width:100%; border:0; border-bottom:1px solid #f0f0f0; border-radius:0; padding:14px 0; }
+    .overview-sample strong { display:block; font-size:13px; font-weight:500; }
+    .overview-sample small { display:block; margin-top:5px; color:#888; font-size:11px; }
+    .search-form { padding:22px; margin-bottom:20px; }
+    .search-query { display:flex; gap:10px; margin-bottom:16px; }
+    .search-query input { flex:1; }
+    .search-options { display:grid; grid-template-columns:minmax(0,1fr) 110px; gap:16px; }
+    .search-explanation { margin-bottom:18px; color:#777; font-size:12px; }
+    .settings-layout { display:grid; grid-template-columns:minmax(0,1fr) 250px; gap:20px; align-items:start; }
+    .settings-group,.info-card { padding:22px; margin-bottom:18px; }
+    .settings-group>.row { margin-bottom:20px; }
+    .fields-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    .field { min-width:0; }
+    .field.wide { grid-column:1/-1; }
+    .field>label { color:#3f3f46; font-size:13px; display:flex; gap:8px; align-items:center; }
+    .field-state { color:#01802b; font-size:10px; }
+    .field-state.draft { color:#b47a22; }
+    .field-hint { color:#888; font-size:11px; line-height:1.7; margin-top:7px; }
+    .field-hint button { font-size:11px; }
+    .field>details { margin-top:6px; }
+    .field>details summary { font-size:11px; }
+    .field>details dl { font-size:11px; gap:6px; grid-template-columns:60px minmax(0,1fr); }
+    .settings-advanced { margin-top:22px; padding-top:12px; border-top:1px solid #ededed; }
+    .settings-bar { display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px; align-items:center; background:#fff; border:1px solid var(--line); padding:15px 20px; border-radius:10px; position:sticky; bottom:14px; z-index:2; box-shadow:0 4px 16px #00000006; }
+    .settings-bar strong { font-size:13px; }
+    .config-state { border:1px solid #dceadd; color:#397346; background:#f5faf5; padding:11px 15px; border-radius:8px; margin-bottom:20px; font-size:12px; }
+    .settings-unavailable { padding:30px; border:1px dashed var(--line); border-radius:10px; color:#777; line-height:1.8; }
+    #diff { white-space:pre-wrap; font-size:13px; line-height:1.9; margin-top:16px; overflow-wrap:anywhere; }
+    dl { display:grid; grid-template-columns:80px minmax(0,1fr); gap:12px 16px; margin:16px 0; font-size:12px; }
+    dt { color:#888; }
+    dd { margin:0; overflow-wrap:anywhere; }
+    .info-card dl { grid-template-columns:60px minmax(0,1fr); }
+    dialog { color:var(--color-text-primary); background:var(--surface); border:1px solid var(--line); border-radius:12px; width:min(600px,calc(100vw - 32px)); max-height:calc(100dvh - 40px); padding:0; box-shadow:0 24px 72px #0f172a30; }
+    dialog::backdrop { background:#0005; }
+    .dialog-header { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:22px 24px 18px; border-bottom:1px solid #ededed; }
+    .dialog-header button { min-height:28px; padding:0; width:28px; font-size:22px; }
+    .dialog-header p { margin-top:6px; }
+    .dialog-body { padding:22px 24px; }
+    .dialog-body textarea { min-height:190px; }
+    .dialog-footer { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; padding:16px 24px; border-top:1px solid #ededed; }
+    #add-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+    @media(max-width:480px) { #add-fields { grid-template-columns:1fr; } }
+    .dialog-tip { padding:11px 13px; background:#f5f7f9; border-radius:6px; font-size:12px; line-height:1.8; color:#777; margin-bottom:18px; }
+    .counter { text-align:right; color:#999; font-size:11px; margin-top:8px; }
+    .inline-error { color:#bd3028; font-size:12px; line-height:1.8; margin-top:12px; }
+    .preview-block { padding:14px; border:1px solid var(--line); border-radius:8px; margin-top:12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; line-height:1.85; }
+    .preview-block.before { background:#fafafa; color:#777; }
+    .preview-block.after { background:#f1f7ff; border-color:#c2d7f6; }
+    .mapping { width:min(820px,calc(100vw - 32px)); }
+    .mapping table { width:100%; border-collapse:collapse; font-size:12px; line-height:1.8; }
+    .mapping th,.mapping td { padding:12px 8px; border-bottom:1px solid #ededed; text-align:left; vertical-align:top; overflow-wrap:anywhere; }
+    .mapping th { color:#888; font-weight:500; }
+    .mapping code { color:#245dab; font:11px ui-monospace,monospace; word-break:break-word; }
+    .mapping p { margin-bottom:14px; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; padding:14px; background:#f5f7f9; border:1px solid #ededed; border-radius:8px; font:12px/1.8 ui-monospace,monospace; }
+    .detail-drawer { position:fixed; inset:0 0 0 auto; margin:0; height:100dvh; max-height:100dvh; width:min(590px,100vw); max-width:100vw; border:0; border-left:1px solid var(--line); border-radius:0; }
+    .detail-drawer .dialog-header { position:sticky; top:0; z-index:2; background:#fff; }
+    .detail-pane { padding:24px; }
+    .detail-heading { font-size:20px; line-height:1.65; margin:18px 0; overflow-wrap:anywhere; }
+    .detail-body { font-size:14px; line-height:1.9; overflow-wrap:anywhere; white-space:pre-wrap; }
+    .detail-body h3 { font-size:16px; margin:14px 0 8px; }
+    .detail-body p { margin-bottom:10px; }
+    .detail-body ul,.detail-body ol { padding-left:23px; margin:8px 0; }
+    .detail-body code { font:12px/1.8 ui-monospace,monospace; }
+    .detail-body pre { margin:10px 0; }
+    .detail-body.raw { white-space:pre-wrap; }
+    .detail-actions { display:flex; flex-wrap:wrap; gap:8px; margin:22px 0; }
+    .detail-divider { border:0; border-top:1px solid #ededed; margin:22px 0; }
+    .detail-empty { padding:60px 16px; text-align:center; color:#888; }
+    .reading-switch { display:flex; gap:4px; margin-bottom:14px; }
+    .reading-switch button { font-size:11px; min-height:26px; padding:3px 9px; }
+    .reading-switch button[aria-pressed=true] { background:#f0f0f0; }
+    @media(min-width:1600px) { main { padding:36px 44px 70px; } }
+    @media(max-width:1100px) { .metric-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .app-shell { grid-template-columns:176px minmax(0,1fr); } main { padding:26px 22px 50px; } .settings-layout { grid-template-columns:minmax(0,1fr); } .settings-side { display:grid; grid-template-columns:1fr 1fr; gap:18px; } .filter-grid { grid-template-columns:1fr 1fr; } .overview-columns { grid-template-columns:minmax(0,1fr); } }
+    @media(max-width:760px) { .app-shell { display:block; } .module-sidebar { position:static; height:auto; padding:14px 16px 10px; border-right:0; border-bottom:1px solid var(--line); } .brand { padding:0 0 12px; } .brand strong { font-size:15px; } .brand small { display:none; } .brand-icon { width:28px; height:28px; } .nav-label,.sidebar-note { display:none; } nav { display:flex; gap:4px; overflow-x:auto; } nav button { width:auto; flex:0 0 auto; justify-content:center; padding:8px 4px; font-size:12px; min-height:34px; } nav button svg { display:none; } .sidebar-footer { position:absolute; top:14px; right:12px; padding:0; } .sidebar-footer button { min-height:28px; padding:0 6px; } .topbar { height:40px; padding:0 16px; } .connection-pill { font-size:10px; } .connection-pill #connection-state { max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } main { padding:22px 16px 44px; } h1 { font-size:22px; } .page-heading { gap:12px; margin-bottom:20px; } .page-heading p { max-width:230px; font-size:12px; } .memory-surface { padding:14px; } .filters { grid-template-columns:1fr 1fr; gap:10px; } .filters>button { grid-column:1/-1; justify-self:start; padding:2px 0; min-height:24px; } .filter-grid { grid-template-columns:1fr 1fr; } .status-tabs { gap:2px; } .status-tabs button { padding:4px 7px; font-size:11px; } .memory-list.grid-view { grid-template-columns:1fr; } .memory-row { padding:14px; } .memory-title { font-size:13px; } .memory-preview { font-size:12px; } .list-tools { gap:6px; flex-wrap:wrap; } .pager { flex-wrap:wrap; gap:10px; } .pager .page-size-group { order:3; width:100%; } .batch-bar { gap:6px; } .batch-bar strong { flex-basis:100%; } .metric-grid { grid-template-columns:1fr 1fr; gap:10px; } .metric { padding:15px; } .metric-value { font-size:25px; } .overview-card { padding:18px; } .search-form { padding:16px; } .search-query { flex-wrap:wrap; } .search-query input { flex-basis:100%; } .search-query button { width:100%; } .fields-grid { grid-template-columns:1fr; } .field.wide { grid-column:auto; } .settings-side { display:block; } .settings-group,.info-card { padding:18px; } .settings-bar { padding:14px; bottom:8px; } .settings-bar>.row { width:100%; } .settings-bar .primary { margin-left:auto; } .dialog-header,.dialog-body { padding:20px; } .dialog-footer { padding:16px 20px; } .detail-pane { padding:20px; } .mapping th,.mapping td { padding:9px 4px; } kbd { display:none; } }
+    @media(prefers-reduced-motion:reduce) { * { transition:none!important; scroll-behavior:auto!important; } }
+</style></head>
+<body><main id="session-expired" class="notice error" role="alert" hidden>访问会话已失效，请从应用重新打开记忆管理。</main><div id="portal-shell" class="app-shell"><aside class="module-sidebar"><div class="brand"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><strong>记忆管理</strong><small>agent_memory</small></div></div><div class="nav-label">个人记忆</div><nav role="tablist" aria-label="页面导航" aria-orientation="vertical"><button id="tab-overview" class="active" data-tab="overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>记忆概览</button>
+<button id="tab-memories" class="" data-tab="memories" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M3 7h4M3 12h4M3 17h4M10 8h5M10 12h5"/></svg>我的记忆</button>
+<button id="tab-profile" data-tab="profile" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>用户画像</button>
+<button id="tab-knowledge" data-tab="knowledge" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a20 20 0 0 1 0 18 20 20 0 0 1 0-18Z"/></svg>项目知识</button>
+<button id="tab-procedure" data-tab="procedure" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 12-12 4 4L8 24M14 3v4M12 5h4M4 5v4M2 7h4M19 18v4M17 20h4"/></svg>过程与做法</button>
+<button id="tab-settings" class="" data-tab="settings" role="tab" aria-selected="false" aria-controls="settings" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h6M14 6h6M4 12h10M18 12h2M4 18h2M10 18h10M10 3v6M14 9v6M6 15v6"/></svg>模型设置</button>
+</nav><div class="sidebar-footer"><button id="data-sources" type="button" class="quiet">ⓘ 数据来源说明</button><p class="sidebar-note">使用当前实例与已有身份</p></div></aside><div class="app-main"><header class="topbar"><span class="breadcrumb">记忆管理</span><span class="breadcrumb">/</span><span id="breadcrumb-current" class="small">记忆概览</span><div class="connection-pill"><span class="connected" id="connection-dot" hidden></span><span id="connection-state">正在连接…</span></div></header><main><div id="notice" class="notice" role="status" aria-live="polite"></div><section id="overview" role="tabpanel" aria-labelledby="tab-overview">
+<div class="page-heading"><div><h1>记忆概览</h1><p class="muted">了解当前实例的记忆情况，让每一条记忆都有迹可循</p></div><button id="refresh-overview" class="quiet" type="button">刷新概览</button></div>
+<div id="overview-error" class="notice error" role="status"></div>
+<div class="metric-grid"><button class="metric" id="metric-all"><span class="metric-label">全部记录</span><span class="metric-value" id="stat-all">—</span><span class="metric-hint">包括有效、历史、遗忘与归档</span></button><button class="metric" id="metric-active"><span class="metric-label">有效记忆</span><span class="metric-value" id="stat-active">—</span><span class="metric-hint">参与默认记忆查询</span></button><button class="metric" id="metric-superseded"><span class="metric-label">纠正历史</span><span class="metric-value" id="stat-superseded">—</span><span class="metric-hint">被新版本取代的旧记录</span></button><button class="metric" id="metric-forgotten"><span class="metric-label">已遗忘</span><span class="metric-value" id="stat-forgotten">—</span><span class="metric-hint">已退出默认检索</span></button><button class="metric" id="metric-archived"><span class="metric-label">已归档</span><span class="metric-value" id="stat-archived">—</span><span class="metric-hint">保留的归档记录</span></button><div class="metric"><span class="metric-label">来源应用</span><span class="metric-value" id="stat-sources">—</span><span class="metric-hint">有来源标记的应用数量</span></div></div>
+<p class="muted small" style="margin:-10px 0 24px">全部记录 = 有效记忆 + 纠正历史 + 已遗忘 + 已归档；来源应用单独计数。</p><div class="overview-columns"><div class="overview-card"><div class="card-header"><h2>有效记忆速览</h2><button id="overview-all" type="button" class="link">查看全部 →</button></div><div id="overview-samples" class="muted">正在读取记忆…</div></div><div><div class="overview-card"><div class="card-header"><h3>记忆来源</h3><span class="badge">当前实例</span></div><div id="overview-sources" class="source-chips"></div><p class="muted small" style="margin-top:16px">应用接入同一记忆实例后，带来源标记的记录会出现在这里。</p></div><div class="overview-card"><h3 style="margin-bottom:12px">管理你的记忆</h3><button id="overview-add" type="button" class="quick-entry"><div><strong>新增一条记忆</strong><span>记录偏好、事实或以后会用到的经验</span></div><span class="spacer"></span>＋</button><button id="overview-search" type="button" class="quick-entry"><div><strong>用问题搜索记忆</strong><span>输入问题，看看能找回哪些内容</span></div><span class="spacer"></span>→</button><button id="overview-settings" type="button" class="quick-entry"><div><strong>调整模型设置</strong><span>查看已保存和已应用的配置</span></div><span class="spacer"></span>→</button></div></div></div>
+</section><section id="memories" role="tabpanel" aria-labelledby="tab-memories" hidden>
+      <div class="page-heading"><div><h1 id="memory-page-title">我的全部记忆</h1><p id="memory-page-description" class="muted">汇总所有来源，按需筛选与管理</p></div><button id="open-add" class="primary" type="button"><span aria-hidden="true">＋</span>新增记忆</button></div>
+      <div class="memory-surface"><div id="search-modes" class="status-tabs" role="group" aria-label="查找方式" style="margin-bottom:12px"><button id="mode-text" type="button" aria-pressed="true">按文字查找</button><button id="mode-semantic" type="button" aria-pressed="false">按含义查找</button></div><form id="search-form"><div class="row" style="flex-wrap:nowrap"><div class="filter-search" style="flex:1;margin:0"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" id="memory-filter" aria-label="查找记忆" placeholder="输入正文或标签中的文字"><kbd>/</kbd></div><button id="search-submit" class="primary" type="submit" hidden>查找</button><button id="refresh" class="quiet small" type="button">↻ 刷新</button></div><div id="semantic-options" hidden><p class="muted small" style="margin-top:12px">按意思查找当前用户有权访问的有效记忆，仅支持来源应用筛选；不使用文字模式中的分类、层级、项目、Agent 和状态条件。</p><div class="search-options"><div><label for="search-source">检索来源</label><select id="search-source"><option value="*">全部应用</option></select></div><div><label for="top-k">最多返回</label><input id="top-k" type="number" min="1" max="100" value="10"></div></div></div></form><details class="filter-more" id="more-filters"><summary>筛选 <span id="filter-count"></span></summary><div class="filter-grid"><div><label for="source">来源应用</label><select id="source"><option value="*">全部应用</option></select></div><div><label for="agent">Agent</label><select id="agent"><option value="*">全部 Agent</option></select></div><div><label for="project">项目</label><select id="project"><option value="*">全部项目</option></select></div><div><label for="lifecycle">记忆状态</label><select id="lifecycle"><option value="active">有效记忆</option><option value="superseded">已纠正旧版本</option><option value="forgotten">已遗忘</option><option value="archived">已归档</option><option value="*">全部状态</option></select></div><div id="tier-filter"><label for="tier">认知层级（MemoryTier）</label><select id="tier"><option value="*">全部层级</option></select></div><div id="class-filter"><label for="memory-class">记忆分类（memory_class）</label><select id="memory-class"><option value="*">全部分类</option></select></div><button id="reset-filters" class="link" type="button">重置筛选</button></div></details></div><div id="semantic-results" style="margin-top:20px" hidden><p id="search-explanation" class="search-explanation">输入问题后检索。来源筛选在结果数量限制之前生效。</p>
+      <div><div><div class="list-caption" id="search-count">尚未开始检索</div><div id="search-list" class="memory-list"><div class="empty"><strong>从一个问题开始</strong>输入关键词或自然语言，验证当前实例的记忆检索。</div></div></div></div>
+    </div><div id="browse-results">
+      <div class="list-tools"><div class="list-caption"><span id="memory-count" class="list-count">正在加载记忆…</span><span id="filter-description"></span></div><div class="view-switch" role="group" aria-label="记忆布局"><button id="view-list" type="button" aria-pressed="true">列表</button><button id="view-grid" type="button" aria-pressed="false">卡片</button></div></div>
+      <div class="row" style="justify-content:space-between;margin-bottom:12px"><div id="status-shortcuts" class="status-tabs" role="group" aria-label="快捷状态筛选"><button data-status="active" aria-pressed="true">有效记忆</button><button data-status="superseded" aria-pressed="false">纠正历史</button><button data-status="forgotten" aria-pressed="false">已遗忘</button><button data-status="*" aria-pressed="false">全部</button></div><label class="row small" style="margin:0"><input id="select-page" type="checkbox">选择本页</label></div>
+      <div id="batch-bar" class="batch-bar" role="region" aria-label="所选记忆操作" hidden><strong id="batch-count"></strong><button id="copy-selected" type="button">复制所选</button><button id="export-selected" type="button">导出 Markdown</button><button id="export-json" type="button">导出 JSON</button><button id="forget-selected" type="button" class="danger">遗忘所选</button><button id="clear-selection" type="button" class="quiet">取消选择</button></div>
+      <div id="memory-list" class="memory-list" aria-label="记忆列表"></div>
+      <div class="pager"><div class="row page-size-group"><label for="page-size" style="margin:0">每页</label><select id="page-size"><option value="20">20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div><div class="row"><button id="previous" type="button" disabled>上一页</button><span id="page-info"></span><button id="next" type="button" disabled>下一页</button></div></div>
+    </div></section><section id="settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      <div class="page-heading"><div><h1>模型设置</h1><p class="muted">调整记忆使用的模型，保存后应用到后续调用</p></div><button id="reload-settings" class="quiet small" type="button">↻ 刷新配置</button></div>
+      <div id="configuration-state" class="config-state">正在读取配置…</div>
+      <div class="settings-layout"><div><div id="settings-list"></div><div class="settings-bar"><div><strong id="draft-summary">没有待保存的更改</strong><p class="muted small">先预览，确认后保存并应用</p></div><div class="row"><button id="discard-drafts" type="button">放弃更改</button><button id="preview" class="primary" type="button">预览更改</button></div></div><div id="diff" role="status"></div><button id="save" class="primary" type="button" hidden style="margin-top:16px">确认保存并应用</button></div><aside class="settings-side"><div class="info-card"><h3>当前记忆实例</h3><div id="instance-info" class="muted">从当前实例读取</div></div><div class="info-card"><h3>配置如何生效</h3><p class="muted">保存后，支持的模型设置会应用到后续调用；正在进行的调用使用原配置完成。</p><p class="muted" style="margin-top:10px">Embedding 模型与维度只读，修改需要迁移已有索引。Prompt 继续使用原配置入口。</p><button id="apply-settings" type="button" style="margin-top:16px" disabled>重试应用已保存配置</button></div></aside></div>
+    </section></main></div></div><dialog id="memory-dialog" aria-labelledby="memory-dialog-title" aria-describedby="memory-dialog-description">
+  <div class="dialog-header"><div><h2 id="memory-dialog-title">新增记忆</h2><p id="memory-dialog-description" class="muted">写下希望 Agent 记住的内容</p></div><button id="close-memory-dialog" class="quiet" type="button" aria-label="关闭记忆编辑窗口">×</button></div>
+  <form id="add-form"><div class="dialog-body"><div id="memory-dialog-tip" class="dialog-tip">记忆会保存到当前用户的个人范围，来源标记为 portal。</div><div id="memory-editor"><div id="add-fields" class="field-grid"><div><label for="new-memory-agent">Agent</label><input id="new-memory-agent" list="add-agent-options" maxlength="128" placeholder="留空保存为个人记忆"><datalist id="add-agent-options"></datalist></div><div><label for="new-memory-project">项目（选填）</label><input id="new-memory-project" list="add-project-options" maxlength="128" placeholder="留空表示无指定项目"><datalist id="add-project-options"></datalist></div></div><label for="new-memory">记忆内容</label><textarea id="new-memory" required placeholder="例如：讨论方案时先给结论，再说明理由与取舍。" maxlength="50000"></textarea><div id="memory-counter" class="counter">0 字</div></div><div id="correction-preview" hidden></div><div id="memory-dialog-error" class="inline-error" role="alert"></div></div><div class="dialog-footer"><button id="cancel-memory-dialog" type="button">取消</button><button id="memory-back" type="button" hidden>返回编辑</button><button id="submit-memory" class="primary" type="submit">保存记忆</button></div></form>
+</dialog>
+<dialog id="forget-dialog" aria-labelledby="forget-title">
+  <div class="dialog-header"><div><h2 id="forget-title">遗忘这条记忆？</h2><p class="muted">遗忘后将退出有效记忆和默认检索</p></div><button id="close-forget-dialog" class="quiet" type="button" aria-label="关闭遗忘确认窗口">×</button></div><div class="dialog-body"><p class="muted">这不会永久擦除磁盘数据。你仍可在“已遗忘”状态中核对记录，不提供恢复操作。</p><div id="forget-content" class="preview-block before"></div><div id="forget-error" class="inline-error" role="alert"></div></div><div class="dialog-footer"><button id="cancel-forget" type="button">取消</button><button id="confirm-forget" class="danger" type="button">确认遗忘</button></div>
+</dialog>
+<dialog id="sources-dialog" class="mapping" aria-labelledby="sources-title">
+  <div class="dialog-header"><div><h2 id="sources-title">页面数据从哪里来</h2><p class="muted">当前页面使用真实接口数据，不含示例记忆</p></div><button id="close-sources" class="quiet" type="button" aria-label="关闭数据来源说明">×</button></div>
+  <div class="dialog-body"><p class="muted">页面使用同源 <code>/v1/</code> 接口。服务端从浏览器会话识别用户；详情、纠正和遗忘携带记录的 Scope 和 ID，用于定位并重新检查权限。</p><table><thead><tr><th>页面区域</th><th>接口</th><th>字段与原始含义</th></tr></thead><tbody>
+    <tr><td>记忆概览</td><td><code>POST /v1/list</code></td><td>一次读取 <code>lifecycle_counts</code>，汇总全部、有效、纠正历史、已遗忘和已归档数量；应用数来自非空 <code>sources</code>；速览来自有效记忆的前 5 条，不代表访问热度。</td></tr><tr><td>复制 / 导出 / 批量遗忘</td><td><code>/v1/get、/v1/delete</code></td><td>只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。</td></tr><tr><td>记忆列表与筛选</td><td><code>POST /v1/list</code></td><td><code>items / count / snapshot</code>；筛选后计数、再分页；<code>sources / agents / projects / memory_classes</code> 来自完整授权集合。</td></tr>
+    <tr><td>来源应用</td><td><code>/v1/list、/v1/get</code></td><td><code>source</code> ← <code>system_metadata.source_app</code>；缺失显示“未标注来源”。</td></tr>
+    <tr><td>Agent / 项目</td><td><code>/v1/list、/v1/get</code></td><td><code>agent</code> ← <code>scope.agent</code>；<code>agent_label</code> 是显示名称。<code>project</code> ← 文档记忆的 <code>system_metadata.project</code>（直传）或 <code>coords.project</code>（router 回写），空值显示“跨项目 / 未标注”。</td></tr>
+    <tr><td>内容快捷筛选</td><td><code>POST /v1/list</code></td><td>用户画像：<code>memory_class=user_profile</code>；项目知识：<code>memory_class=long_term_memory + tier=semantic</code>；过程与做法：<code>tier=procedural</code>。保留其他筛选，不新增分类或自动识别。</td></tr><tr><td>层级 / 记忆分类</td><td><code>/v1/list、/v1/get</code></td><td><code>tier</code> ← <code>MemoryTier.value</code>；筛选项对应六个认知层级。<code>memory_class</code> ← <code>system_metadata.memory_class</code>；<code>memory_classes</code> 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。</td></tr>
+    <tr><td>完整详情与时间</td><td><code>POST /v1/get</code></td><td>每次重读 <code>segments / lifecycle / tags / source_ref / supersedes / temporal.t_ingest</code>；时间来自 <code>temporal.t_ingest</code>，不是文件修改时间。</td></tr>
+    <tr><td>新增 / 纠正 / 遗忘</td><td><code>/v1/add、/v1/update、/v1/delete</code></td><td>新增提交正文、Agent 和可选项目；宿主可绑定实际 Agent 范围。纠正与遗忘通过 <code>scope</code> 和 <code>unit_id</code> 定位，服务端再次检查归属和权限。纠正创建 SUPERSEDE 新版；遗忘使用 FORGET。</td></tr>
+    <tr><td>检索结果</td><td><code>POST /v1/search</code></td><td><code>items / scores_comparable</code>；来源先筛选再 top_k。按记忆范围轮转合并。</td></tr>
+    <tr><td>模型配置与应用</td><td><code>/v1/read_config、/v1/save_config</code></td><td><code>fields / version / applied_version / apply_state / instance</code>；API Key 不回填，只显示已配置状态。</td></tr>
+  </tbody></table><p class="muted">来源标签用于展示和筛选，不承担授权。未标注来源不会被猜成当前应用。</p></div>
+</dialog>
+<dialog id="detail-dialog" class="detail-drawer" aria-labelledby="detail-dialog-title"><div class="dialog-header"><div><h2 id="detail-dialog-title">记忆详情</h2><p class="muted">完整内容、来源与版本关联</p></div><button id="close-detail" type="button" class="quiet" aria-label="关闭记忆详情">×</button></div><div id="memory-detail" class="detail-pane" aria-live="polite"></div><div id="search-detail" class="detail-pane" aria-live="polite" hidden></div></dialog><script>
+'use strict';
+const $ = id => document.getElementById(id);
+const notice = (text, error=false) => { $('notice').textContent=text; $('notice').classList.toggle('error',error); };
+let offset=0,total=0,snapshot=null,version=null,fields=[],drafts=new Map(),restores=new Set();
+let preview=null,saving=false,settingsLoaded=false,settingControls=[],configAvailable=false,settingsRequest=0;
+let memoryRequest=0,detailRequest={memories:0,search:0},rows={memories:[],search:[]};
+let filterTimer,searchRequest=0,hasSearched=false,activeTab='overview',editorMode='add',editorItem=null,editorPreview=false,mutationBusy=false;
+let memoryView='memories',searchMode='text';
+let pageSize=20, batchBusy=false, memoryLoading=false, overviewRequest=0;
+const checked=new Set();
+let forgetItems=[];
+const lifecycleLabels={active:'有效',superseded:'已纠正旧版本',forgotten:'已遗忘',archived:'已归档'};
+const tierLabels={working:'工作记忆',core:'核心记忆',episodic:'情景记忆',semantic:'语义记忆',procedural:'程序性记忆',archival:'归档记忆'};
+const topicPresets={all:{label:'我的记忆',memoryClass:'*',tier:'*',description:'不限记忆分类与认知层级，可继续组合下方筛选。'},profile:{label:'用户画像',memoryClass:'user_profile',tier:'*',description:'关于用户的身份、偏好、习惯等稳定信息。'},knowledge:{label:'项目知识',memoryClass:'long_term_memory',tier:'semantic',description:'长期语义记忆，包含项目事实、决定等长期知识，也可能包含其他长期事实；可继续按项目筛选。'},procedure:{label:'过程与做法',memoryClass:'*',tier:'procedural',description:'执行过程与做事方法，展示程序性记忆。'}};
+const classLabels={user_profile:'用户画像',long_term_memory:'长期记忆',daily_memory:'日常记忆'};
+let portalSession, addContext, sessionExpired=false, addContextReady=false, addAgentLocked=false, addContextRequest=0;
+const sessionExpiredMessage='访问会话已失效，请从应用重新打开记忆管理。';
+function expireSession(){
+  sessionExpired=true;
+  $('portal-shell').hidden=true;
+  $('session-expired').hidden=false;
+  for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
+}
+const browserReady=(async()=>{
+  const grant=new URLSearchParams(location.hash.slice(1)).get('access');
+  if(!grant)return;
+  history.replaceState(null,'',location.pathname+location.search);
+  const embedded=typeof window!=='undefined'&&window.self!==window.top;
+  const response=await fetch('/portal/api/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:grant,embedded}),credentials:'same-origin'});
+  if(response.status===401){expireSession();return;}
+  if(!response.ok)throw new Error('无法打开记忆管理，请从应用重新打开。');
+  if(embedded)portalSession=(await response.json()).session_token;
+})();
+async function request(action,payload={}) {
+  await browserReady;
+  if(sessionExpired)throw new Error(sessionExpiredMessage);
+  const headers={'Content-Type':'application/json','X-Memory-Portal-Browser':'1'};
+  if(portalSession)headers['X-Memory-Portal-Session']=portalSession;
+  const response=await fetch('/v1/'+action,{method:'POST',headers,body:JSON.stringify(payload),credentials:'same-origin'});
+  if(response.status===401)expireSession();
+  if(sessionExpired)throw new Error(sessionExpiredMessage);
+  const data=await response.json();
+  if(!response.ok){
+    let message=data.message||data.error||'请求失败';
+    if(response.status===404&&['get','update','delete'].includes(action)){
+      message='这条记忆已变化或不可访问，请刷新列表后重试。';
+    }else if(response.status===409&&['update','delete'].includes(action)){
+      message='这条记忆已不再有效，请关闭弹窗并刷新列表。';
+    }
+    const error=new Error(message);
+    error.status=response.status;throw error;
+  }
+  if(action==='list'&&data.add_context)addContext=data.add_context;
+  $('connection-state').textContent='已连接当前实例 · 汇总个人授权范围';$('connection-dot').hidden=false;
+  return data;
+}
+// The record address is stable across list, search and detail. Authorization stays on the server.
+function recordKey(scope,unit_id){return JSON.stringify({scope,unit_id});}
+function memoryViewOf(unit){
+  const metadata=unit.system_metadata||{},scope=unit.scope;
+  const project=typeof metadata.project==='string'&&metadata.project.trim()
+    ||(typeof metadata.coords?.project==='string'?metadata.coords.project:'');
+  return {
+    ref:recordKey(scope,unit.id),content:unit.segments.map(segment=>segment.content).join('\n'),
+    source:metadata.source_app||'',agent_label:metadata.agent_label||'',agent:scope.agent,
+    project,session:scope.session,tier:unit.tier,lifecycle:unit.lifecycle,tags:unit.tags,
+    source_ref:unit.source_ref,supersedes:unit.supersedes,memory_class:metadata.memory_class||'',
+    created_at:unit.temporal.t_ingest,
+  };
+}
+async function listMemories({offset=0,limit=50,...personal}={}){
+  const data=await request('list',{offset,limit,extensions:{personal}});
+  return {...data,items:data.items.map(memoryViewOf)};
+}
+async function fetchRecord(ref){return memoryViewOf(await request('get',JSON.parse(ref)));}
+function forgetRecord(ref){
+  const {scope,unit_id}=JSON.parse(ref);
+  return request('delete',{selector:{scope,unit_ids:[unit_id],mode:'forget'}});
+}
+function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;}
+function button(text,handler,cls=''){const el=node('button',text,cls);el.type='button';el.onclick=handler;return el;}
+function titleOf(item){let first=(item.content||'').trim().split(/\n/).find(line=>line.trim())||'无正文记忆';const space=first.indexOf(' ');if(space>3&&space<32&&/[\u3400-\u9fff]/.test(first.slice(0,space)))first=first.slice(0,space);return first.length>32?first.slice(0,32)+'…':first;}
+function summaryOf(item){const text=(item.content||'').trim(),title=titleOf(item);return text.startsWith(title+' ')||text.startsWith(title+'\n')?text.slice(title.length).trim():text;}
+function timeLabel(value){if(!value)return '时间未记录';const date=new Date(value);return Number.isNaN(date.getTime())?'时间未记录':new Intl.DateTimeFormat('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(date);}
+function addPair(root,label,value){root.append(node('dt',label),node('dd',value||'未标注'));}
+function emptyState(root,title,description,action){root.replaceChildren();const el=node('div',undefined,'empty');el.append(node('strong',title),node('p',description));if(action)el.append(action);root.append(el);}
+function fillOptions(id,options,label){
+  const el=$(id),previous=el.value,previousLabel=[...el.options].find(o=>o.value===previous)?.textContent||previous;
+  el.replaceChildren(new Option(label,'*'));for(const [value,text] of options)el.add(new Option(text,value));
+  if(previous!=='*'&&![...el.options].some(o=>o.value===previous))el.add(new Option(previousLabel,previous));
+  el.value=previous;
+}
+function setFilterValue(id,value,label){const el=$(id);if(![...el.options].some(o=>o.value===value))el.add(new Option(label||value,value));el.value=value;}
+function isMemoryView(name){return ['memories','profile','knowledge','procedure'].includes(name);}
+function renderNavigation(name){
+  const labels={overview:'记忆概览',memories:'我的记忆',profile:'用户画像',knowledge:'项目知识',procedure:'过程与做法',settings:'模型设置'};
+  activeTab=name;if(isMemoryView(name))memoryView=name;for(const key of Object.keys(labels)){const b=$('tab-'+key);b.classList.toggle('active',key===name);b.setAttribute('aria-selected',String(key===name));b.tabIndex=key===name?0:-1;}
+  for(const id of ['overview','memories','settings'])$(id).hidden=id!==(isMemoryView(name)?'memories':name);
+  $('mode-semantic').hidden=name!=='memories';if(name!=='memories')setSearchMode('text',false);$('breadcrumb-current').textContent=labels[name];
+  if(isMemoryView(name)){$('memories').setAttribute('aria-labelledby','tab-'+name);$('memory-page-title').textContent=name==='memories'?'我的全部记忆':labels[name];}
+}
+function syncTopicShortcut(){
+  const fixed=memoryView!=='memories',preset=topicPresets[fixed?memoryView:'all'];
+  if(fixed){setFilterValue('memory-class',preset.memoryClass,classLabels[preset.memoryClass]);setFilterValue('tier',preset.tier,tierLabels[preset.tier]);}
+  for(const [id,wrapper]of [['tier','tier-filter'],['memory-class','class-filter']]){$(id).disabled=fixed;$(wrapper).hidden=fixed;}
+  $('memory-page-description').textContent=fixed?preset.description:($('memory-class').value!=='*'||$('tier').value!=='*'?'按当前分类与层级筛选全部来源的记忆。':'汇总所有来源，按需筛选与管理');
+}
+function selectionValue(id){return $(id).value==='*'?null:$(id).value;}
+function showDialog(id){if(!$(id).open)$(id).showModal();}
+function sourceHelp(){showDialog('sources-dialog');}
+function updateSelection(){
+  const count=checked.size;$('batch-bar').hidden=!count;$('batch-count').textContent='已选 '+count+' 条';
+  $('select-page').checked=!!rows.memories.length&&rows.memories.every(item=>checked.has(item.ref));
+  $('select-page').indeterminate=count>0&&!$('select-page').checked;
+  for(const id of ['copy-selected','export-selected','export-json','forget-selected','clear-selection','select-page'])$(id).disabled=batchBusy||memoryLoading;
+  $('forget-selected').disabled=batchBusy||memoryLoading||!rows.memories.filter(item=>checked.has(item.ref)).every(item=>item.lifecycle==='active');
+}
+function cards(target,items){
+  const kind=target==='search-list'?'search':'memories';rows[kind]=items;
+  const root=$(target);root.replaceChildren();
+  if(!items.length){emptyState(root,kind==='search'?'没有找到相关记忆':'没有符合条件的记忆',kind==='search'?'试试调整问题或切换来源。':'调整筛选条件，或添加一条记忆。',kind==='memories'?button('新增记忆',openAdd,'primary'):null);return;}
+  for(const item of items){
+    const row=node('article',undefined,'memory-row');row.dataset.ref=item.ref;
+    if(kind==='memories'){const label=node('label',undefined,'row-select'),check=node('input');check.type='checkbox';check.checked=checked.has(item.ref);check.disabled=batchBusy;check.setAttribute('aria-label','选择 '+titleOf(item));check.onchange=()=>{if(check.checked)checked.add(item.ref);else checked.delete(item.ref);updateSelection();};label.append(check);row.append(label);}
+    const open=button('',()=>selectMemory(item,kind),'card-open');open.setAttribute('aria-label','查看 '+titleOf(item));
+    const heading=node('div',undefined,'row');heading.append(node('span',titleOf(item),'memory-title'),node('span',lifecycleLabels[item.lifecycle]||'记忆','badge '+(item.lifecycle==='active'?'green':'')));
+    open.append(heading,node('span',summaryOf(item),'memory-preview'));
+    const meta=node('span',undefined,'memory-meta');meta.append(node('span',item.source||'未标注来源'));
+    if(item.agent_label||item.agent)meta.append(node('span',item.agent_label||item.agent));
+    if(item.project)meta.append(node('span',item.project));
+    if(item.tier)meta.append(node('span',tierLabels[item.tier]||item.tier));
+    if(item.memory_class)meta.append(node('span',classLabels[item.memory_class]||item.memory_class));
+    if(item.score!==undefined)meta.append(node('span','范围内相关度 '+Number(item.score).toFixed(3)));
+    else meta.append(node('span',timeLabel(item.created_at)));
+    open.append(meta);row.append(open);root.append(row);
+  }
+}
+function renderDetail(item,kind){
+  const root=$(kind==='search'?'search-detail':'memory-detail');root.replaceChildren();
+  const badges=node('div',undefined,'row');badges.append(node('span','层级 · '+(tierLabels[item.tier]||item.tier||'未记录'),'badge'),node('span','分类 · '+(classLabels[item.memory_class]||item.memory_class||'未分类'),'badge'),node('span',lifecycleLabels[item.lifecycle]||'状态未记录','badge '+(item.lifecycle==='active'?'green':'')));
+  root.append(badges,node('h2',titleOf(item),'detail-heading'),node('p',item.content||'','detail-body'));
+  const actions=node('div',undefined,'detail-actions');
+  if(item.lifecycle==='active'){actions.append(button('纠正',()=>openCorrection(item),'primary'),button('遗忘',()=>openForget(item),'danger'));}
+  actions.append(button('复制内容',async()=>{try{await navigator.clipboard.writeText(item.content||'');notice('记忆内容已复制。');}catch(e){notice('无法自动复制，请选择正文后复制。',true);}},'quiet small'));
+  root.append(actions,node('hr',undefined,'detail-divider'),node('h3','来源与记录'));
+  const meta=node('dl');addPair(meta,'应用',item.source||'未标注来源');addPair(meta,'Agent',item.agent_label||item.agent||'未关联 Agent');
+  if(item.agent_label&&item.agent)addPair(meta,'Agent ID',item.agent);
+  addPair(meta,'项目',item.project||'跨项目 / 未标注');addPair(meta,'会话',item.session||'未关联');addPair(meta,'记录时间',timeLabel(item.created_at));addPair(meta,'来源引用',item.source_ref||'未提供');addPair(meta,'标签',(item.tags||[]).join('、')||'无');
+  if(item.supersedes)addPair(meta,'此前版本',item.supersedes);
+  root.append(meta);
+  const raw=node('details');raw.append(node('summary','查看当前记录的来源字段'),node('pre',JSON.stringify({source_app:item.source||'',agent_label:item.agent_label||'',agent:item.agent||'',project:item.project||'',session:item.session||'',source_ref:item.source_ref||''},null,2)));
+  root.append(raw,button('详情与操作的数据来源 ↗',sourceHelp,'link'));
+}
+async function selectMemory(item,kind){
+  closeDetail();const sequence=++detailRequest[kind];
+  $('memory-detail').hidden=kind!=='memories';$('search-detail').hidden=kind!=='search';showDialog('detail-dialog');
+  const list=$(kind==='search'?'search-list':'memory-list');
+  for(const row of list.children){row.classList.toggle('selected',row.dataset.ref===item.ref);row.setAttribute('aria-pressed',String(row.dataset.ref===item.ref));}
+  const root=$(kind==='search'?'search-detail':'memory-detail');root.replaceChildren(node('p','正在读取最新详情…','detail-empty'));
+  try{const record=await fetchRecord(item.ref);if(sequence!==detailRequest[kind])return;renderDetail(record,kind);}
+  catch(e){
+    if(sequence!==detailRequest[kind])return;
+    const retry=e.status===404?button('刷新列表',()=>{
+      closeDetail();if(kind==='search')$('search-form').requestSubmit();else loadMemories(true);
+    }):button('重新读取',()=>selectMemory(item,kind));
+    emptyState(root,'无法读取这条记忆',e.message,retry);
+  }
+}
+async function loadMemories(reset=false){
+  const sequence=++memoryRequest;memoryLoading=true;$('memory-list').inert=true;$('memory-list').setAttribute('aria-busy','true');checked.clear();updateSelection();closeDetail();
+  for(const b of document.querySelectorAll('[data-status]')){const active=b.dataset.status===$('lifecycle').value;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}
+  syncTopicShortcut();if(reset){offset=0;snapshot=null;}
+  $('memory-count').textContent='正在加载记忆…';$('previous').disabled=true;$('next').disabled=true;
+  try{
+    const data=await listMemories({offset,limit:pageSize,lifecycle:selectionValue('lifecycle'),source:selectionValue('source'),agent:selectionValue('agent'),project:selectionValue('project'),tier:selectionValue('tier'),memory_class:selectionValue('memory-class'),query:$('memory-filter').value.trim(),snapshot});
+    if(sequence!==memoryRequest)return;
+    total=data.count;snapshot=data.snapshot;checked.clear();cards('memory-list',data.items);
+    fillOptions('source',(data.sources||[]).map(v=>[v,v||'未标注来源']),'全部应用');
+    fillOptions('search-source',(data.sources||[]).map(v=>[v,v||'未标注来源']),'全部应用');
+    fillOptions('agent',(data.agents||[]).map(([value,label])=>[value,label||value||'未关联 Agent']),'全部 Agent');
+    fillOptions('project',(data.projects||[]).map(v=>[v,v||'跨项目 / 未标注']),'全部项目');
+    fillOptions('tier',Object.entries(tierLabels).map(([value,label])=>[value,label+' · '+value]),'全部层级');
+    $('add-agent-options').replaceChildren(...(data.agents||[]).filter(([value])=>value).map(([value,label])=>new Option(label||value,value)));
+    $('add-project-options').replaceChildren(...(data.projects||[]).filter(Boolean).map(v=>new Option(v,v)));
+    fillOptions('memory-class',(data.memory_classes||[]).map(v=>[v,v?(classLabels[v]?classLabels[v]+' · '+v:v):'未分类']),'全部分类');
+    $('memory-count').textContent=total+' 条记忆';$('page-info').textContent=`${total?offset+1:0}–${Math.min(offset+pageSize,total)} / ${total}`;
+    $('previous').disabled=offset===0;$('next').disabled=offset+pageSize>=total;
+    const activeFilters=(memoryView==='memories'?['source','agent','project','tier','memory-class']:['source','agent','project']).filter(id=>selectionValue(id)!==null).length+($('lifecycle').value!=='*'?1:0);
+    $('filter-count').textContent=activeFilters?'· '+activeFilters+' 项筛选':'';
+    $('filter-description').textContent=(selectionValue('source')??'全部应用')+' · '+(lifecycleLabels[selectionValue('lifecycle')]||'全部状态');
+    syncTopicShortcut();updateSelection();
+    return true;
+  }catch(e){if(sequence!==memoryRequest)return false;$('memory-count').textContent='加载失败';emptyState($('memory-list'),'无法加载记忆',e.status===409?'记忆在翻页期间发生变化，请重新加载第一页。':e.message,button('重新加载',()=>loadMemories(true)));$('memory-detail').replaceChildren(node('div','列表加载成功后可查看详情','detail-empty'));notice('无法加载记忆：'+e.message,true);return false;}
+  finally{if(sequence===memoryRequest){memoryLoading=false;$('memory-list').inert=false;$('memory-list').setAttribute('aria-busy','false');updateSelection();}}
+}
+function mutationControls(busy){mutationBusy=busy;for(const id of ['new-memory','new-memory-agent','new-memory-project','submit-memory','cancel-memory-dialog','close-memory-dialog','memory-back','confirm-forget','cancel-forget','close-forget-dialog'])$(id).disabled=busy;}
+async function openAdd(){
+  const sequence=++addContextRequest;
+  editorMode='add';editorItem=null;editorPreview=false;addContextReady=false;addAgentLocked=false;
+  $('new-memory').value='';$('new-memory-agent').value='';$('new-memory-project').value='';
+  prepareEditor();$('submit-memory').disabled=true;showDialog('memory-dialog');$('new-memory').focus();
+  try{
+    const context=addContext||(await listMemories({limit:1})).add_context;
+    if(sequence!==addContextRequest||editorMode!=='add'||!$('memory-dialog').open)return;
+    addAgentLocked=context.agent_locked;
+    $('new-memory-agent').value=context.agent||'';$('new-memory-agent').readOnly=addAgentLocked;
+    $('memory-dialog-tip').textContent=addAgentLocked?'将写入宿主指定的 Agent 范围。':'选择或填写 Agent；留空会保存为个人记忆。';
+    addContextReady=true;$('submit-memory').disabled=false;
+  }catch(e){
+    if(sequence===addContextRequest&&editorMode==='add')$('memory-dialog-error').textContent='无法读取写入位置：'+e.message;
+  }
+}
+function prepareEditor(){
+  $('add-fields').hidden=editorMode!=='add';$('submit-memory').disabled=false;
+  $('memory-dialog-title').textContent=editorMode==='add'?'新增记忆':'纠正记忆';$('memory-dialog-description').textContent=editorMode==='add'?'写下希望 Agent 记住的内容':'创建新的正确版本，旧版本保留为历史';
+  $('memory-dialog-tip').textContent=editorMode==='add'?'正在读取写入位置…':'只修改正文，保留原来源。确认后原记录将退出有效记忆，纠正历史可在状态筛选中查看。';
+  $('memory-dialog-error').textContent='';$('memory-editor').hidden=false;$('correction-preview').hidden=true;$('memory-back').hidden=true;$('submit-memory').textContent=editorMode==='add'?'保存记忆':'预览纠正';$('memory-counter').textContent=$('new-memory').value.length+' 字';
+}
+async function openCorrection(item){
+  try{const fresh=await fetchRecord(item.ref);editorMode='correct';editorItem=fresh;editorPreview=false;$('new-memory').value=fresh.content;prepareEditor();showDialog('memory-dialog');$('new-memory').focus();}
+  catch(e){notice('无法读取待纠正记忆：'+e.message,true);}
+}
+function openForget(item){$('forget-title').textContent='遗忘这条记忆？';forgetItems=[item];$('forget-content').textContent=item.content;$('forget-error').textContent='';showDialog('forget-dialog');$('cancel-forget').focus();}
+async function refreshAfterMutation(){
+  await loadMemories(true);
+  ++searchRequest;++detailRequest.search;$('search-submit').disabled=false;
+  if(activeTab==='overview')loadOverview();
+  if(hasSearched){$('search-count').textContent='记忆已变化，请重新检索';$('search-list').replaceChildren(node('p','请重新检索以获取最新结果。','muted'));$('search-detail').replaceChildren(node('p','检索结果已失效','detail-empty'));}
+}
+function fieldLabel(key){
+  const labels={target:'模型提供方',llm_model:'模型名称',llm_base_url:'服务地址',llm_api_key:'API Key',llm_temperature:'温度',llm_max_tokens:'最大输出 Token',llm_timeout:'请求超时（秒）',llm_max_retries:'失败重试次数',enable_thinking:'思考模式'};
+  return labels[key.split('.').pop()]||key;
+}
+function invalidatePreview(message=''){preview=null;$('save').hidden=true;$('diff').textContent=message;}
+function updateDraftSummary(){const count=new Set([...drafts.keys(),...restores]).size;$('draft-summary').textContent=count?count+' 项更改尚未保存':'没有待保存的更改';$('discard-drafts').disabled=saving||!count;}
+function inputFor(field){
+  const key=field.key,value=restores.has(key)?field.base:(drafts.has(key)?drafts.get(key):(field.has_override&&!field.endpoint_ignored?field.saved:field.base));let input;
+  if(key.endsWith('.target')){input=node('select');for(const v of field.options||[])input.add(new Option(v==='echo'?'echo（离线回显）':v==='openai'?'OpenAI 兼容服务':v==='dashscope'?'阿里云 DashScope':v,v));input.value=value||'echo';}
+  else if(key.endsWith('.enable_thinking')){input=node('select');input.add(new Option('关闭','false'));input.add(new Option('开启','true'));input.value=String(value===true||value==='true');}
+  else{input=node('input');input.type=field.secret?'password':/\.(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries)$/.test(key)?'number':'text';input.autocomplete='new-password';if(input.type==='number')input.step=key.endsWith('llm_temperature')?'0.1':key.endsWith('llm_timeout')?'any':'1';if(key.endsWith('llm_base_url')){input.value=drafts.get(key)||'';input.placeholder=(field.endpoint_ignored?field.effective:field.saved)||field.base||'https://…';}else{input.value=field.secret?(drafts.get(key)||''):(value??'');if(field.secret)input.placeholder=field.configured?'已配置 · 留空保持原值':'输入新的 API Key';}}
+  input.dataset.readonly=field.writable?'0':'1';input.dataset.key=key;input.disabled=!field.writable||saving;
+  input.addEventListener('input',()=>{
+    restores.delete(key);drafts.set(key,input.value);invalidatePreview();updateDraftSummary();
+    const state=$('state-'+key);if(state){state.textContent='未保存';state.classList.add('draft');}
+    if(key.endsWith('.target')){if(input.value!=='dashscope'){const thinking=key.slice(0,-7)+'.params.enable_thinking';drafts.delete(thinking);restores.delete(thinking);}renderSettings();}
+  });return input;
+}
+function renderField(field){
+  const box=node('div',undefined,'field'+(/(llm_api_key|llm_base_url)$/.test(field.key)?' wide':''));
+  const label=node('label',fieldLabel(field.key)),state=node('span',!field.writable?'只读':restores.has(field.key)?'将恢复':drafts.has(field.key)?'未保存':field.endpoint_ignored?'未应用':field.has_override?'已保存':'','field-state');state.id='state-'+field.key;if(drafts.has(field.key)||restores.has(field.key))state.classList.add('draft');label.append(state);
+  const input=inputFor(field);input.id='field-'+field.key;label.htmlFor=input.id;box.append(label,input);settingControls.push(input);
+  const hint=node('div',undefined,'field-hint');
+  if(field.reason)hint.append(node('span',field.reason));
+  else if(field.secret)hint.append(node('span','凭据加密保存，不回填原文；留空保持原值。'));
+  else if(field.key.endsWith('llm_base_url'))hint.append(node('span','当前值只显示协议、域名和端口。修改时请填写完整网址。换服务时请同时填写对应的 API Key 和模型名。'));
+  else if(field.requires_reassembly)hint.append(node('span','此项需要重新装配；请按宿主原启动方式重新加载。'));
+  if(field.has_override&&field.writable){const reset=button(restores.has(field.key)?'已选择恢复启动值':'恢复启动值',()=>{restores.add(field.key);drafts.delete(field.key);invalidatePreview();renderSettings();},'link');reset.dataset.readonly='0';reset.disabled=saving;settingControls.push(reset);hint.append(reset);}
+  box.append(hint);
+  if(!field.secret){const details=node('details');details.append(node('summary','查看启动 / 保存 / 应用值'));const values=node('dl');addPair(values,'启动值',String(field.base??'未设置'));addPair(values,'保存值',field.has_override?String(field.saved??'未设置'):'未覆盖');addPair(values,'已应用',field.effective_known?String(field.effective??'未设置'):'当前值未确认');details.append(values);box.append(details);}
+  return box;
+}
+function renderSettings(){
+  const root=$('settings-list');root.replaceChildren();settingControls=[];const groups=new Map();
+  for(const field of fields){const name=field.key.split('.')[1];if(!groups.has(name))groups.set(name,[]);groups.get(name).push(field);}
+  for(const [name,modelFields]of groups){const group=node('div',undefined,'settings-group'),heading=node('div',undefined,'row');heading.append(node('h2',name==='default'?'主模型':name),node('span',name==='default'?'default':'具名模型','badge'));group.append(heading);const basic=node('div',undefined,'fields-grid'),advanced=node('details',undefined,'settings-advanced'),extra=node('div',undefined,'fields-grid');advanced.append(node('summary','高级参数'));
+    for(const field of modelFields){if(field.visible_for_targets?.length){const targetKey=field.key.split('.params.')[0]+'.target',target=fields.find(f=>f.key===targetKey),current=restores.has(targetKey)?target?.base:drafts.get(targetKey)??(target?.has_override&&!target.endpoint_ignored?target.saved:target?.base);if(!field.visible_for_targets.includes(current))continue;}
+      const control=renderField(field);if(/(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries|enable_thinking)$/.test(field.key))extra.append(control);else basic.append(control);}
+    group.append(basic);if(extra.childElementCount){advanced.append(extra);group.append(advanced);}root.append(group);
+  }
+  updateDraftSummary();
+}
+function setSettingsBusy(busy){saving=busy;for(const el of settingControls)el.disabled=busy||el.dataset.readonly==='1';for(const id of ['preview','save','reload-settings','apply-settings','discard-drafts'])$(id).disabled=busy;updateDraftSummary();}
+async function loadSettings(message){
+  const sequence=++settingsRequest;
+  try{const data=await request('read_config');if(sequence!==settingsRequest)return false;configAvailable=!!data.available;
+    if(!data.available){$('settings-list').replaceChildren(node('div','当前实例使用启动配置。若需在运行时修改，请由宿主启用模型配置管理。','settings-unavailable'));$('configuration-state').textContent='当前实例未启用可写配置';$('preview').disabled=true;$('apply-settings').disabled=true;invalidatePreview();return false;}
+    if(data.instance){const info=data.instance,meta=node('dl');addPair(meta,'模式',info.storage_mode==='document'?'文档记忆':'KV 记忆');addPair(meta,'Embedding',info.embedding_model||'未知');addPair(meta,'维度',String(info.embedding_dimension??'未知'));$('instance-info').replaceChildren(meta);if(info.document_root){const details=node('details');details.append(node('summary','查看文档位置'),node('p',info.document_root,'mono'));$('instance-info').append(details);}}
+    version=data.version;$('configuration-state').textContent=data.apply_state==='applied'?`已应用 · 保存版本 ${data.version} / 应用版本 ${data.applied_version??'未知'}`:`已保存，尚未应用 · 保存版本 ${data.version} / 运行版本 ${data.applied_version??'未知'}`;
+    if(data.ignored_endpoint_fields?.length){
+      $('configuration-state').textContent='部分模型正在使用启动设置。保存的网址或 Key 无法配套使用，请检查并重新填写。';
+    }
+    $('apply-settings').disabled=saving||data.apply_state==='applied';$('preview').disabled=saving;
+    fields=data.fields.filter(field=>!field.key.startsWith('prompts.'));if(data.ignored_overrides)notice('部分保存值因宿主锁定或当前实现不支持而未应用。');
+    invalidatePreview(message!==undefined?message:(settingsLoaded?'配置已刷新；草稿已保留，请重新预览。':''));settingsLoaded=true;renderSettings();return true;
+  }catch(e){if(sequence!==settingsRequest)return false;notice('无法读取设置：'+e.message,true);return false;}
+}
+function changes(){const result={};for(const [key,value]of drafts){if(key.endsWith('.llm_api_key')&&!value)continue;if(key.endsWith('.llm_base_url')&&!value.trim())continue;if(key.endsWith('.enable_thinking'))result[key]=value==='true';else if(/\.(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries)$/.test(key)){if(!String(value).trim()||!Number.isFinite(Number(value)))throw new Error(fieldLabel(key)+'需要有效数字');result[key]=Number(value);}else result[key]=value;}return result;}
+async function switchTab(name,load=true){
+  if(name==='search'){await switchTab('memories');setSearchMode('semantic');$('memory-filter').focus();return;}
+  notice('');closeDetail();clearTimeout(filterTimer);renderNavigation(name);
+  if(isMemoryView(name)&&load){const preset=topicPresets[name==='memories'?'all':name];setFilterValue('memory-class',preset.memoryClass,classLabels[preset.memoryClass]||'全部分类');setFilterValue('tier',preset.tier,tierLabels[preset.tier]||'全部层级');return loadMemories(true);}
+  if(name==='overview')return loadOverview();
+  if(name==='settings'&&!saving)return loadSettings();
+}
+for(const b of document.querySelectorAll('nav button[data-tab]')){b.addEventListener('click',()=>switchTab(b.dataset.tab));b.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(event.key))return;event.preventDefault();const tabs=[...document.querySelectorAll('nav button[data-tab]')],index=tabs.indexOf(b),next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(['ArrowRight','ArrowDown'].includes(event.key)?1:-1)+tabs.length)%tabs.length;tabs[next].focus();switchTab(tabs[next].dataset.tab);});}
+function setSearchMode(mode,reload=true){
+  if(mode==='semantic'&&memoryView!=='memories')return;
+  const changed=mode!==searchMode;searchMode=mode;clearTimeout(filterTimer);
+  $('mode-text').setAttribute('aria-pressed',String(mode==='text'));$('mode-semantic').setAttribute('aria-pressed',String(mode==='semantic'));
+  $('semantic-options').hidden=mode!=='semantic';$('semantic-results').hidden=mode!=='semantic';$('browse-results').hidden=mode!=='text';$('more-filters').hidden=mode!=='text';$('refresh').hidden=mode!=='text';$('search-submit').hidden=mode!=='semantic';
+  $('memory-filter').placeholder=mode==='semantic'?'用一句话描述想找的记忆，例如：我喜欢喝什么？':'输入正文或标签中的文字';$('memory-filter').required=mode==='semantic';$('top-k').disabled=mode!=='semantic';$('search-source').disabled=mode!=='semantic';
+  if(changed){++searchRequest;$('search-submit').disabled=false;closeDetail();$('search-count').textContent='输入问题后点击查找';$('search-list').replaceChildren();if(mode==='text'&&reload)loadMemories(true);}
+}
+$('mode-text').onclick=()=>setSearchMode('text');$('mode-semantic').onclick=()=>setSearchMode('semantic');
+$('refresh').onclick=()=>{notice('');loadMemories(true);};for(const id of ['source','agent','project','tier','memory-class','lifecycle'])$(id).onchange=()=>{clearTimeout(filterTimer);notice('');loadMemories(true);};
+$('memory-filter').oninput=()=>{clearTimeout(filterTimer);if(searchMode==='text')filterTimer=setTimeout(()=>loadMemories(true),250);else{++searchRequest;$('search-submit').disabled=false;$('search-count').textContent='输入已更改，请点击查找';$('search-list').replaceChildren();closeDetail();}};
+$('reset-filters').onclick=async()=>{clearTimeout(filterTimer);for(const id of ['source','agent','project','tier','memory-class'])$(id).value='*';$('lifecycle').value='active';$('memory-filter').value='';notice('');await loadMemories(true);};
+$('previous').onclick=()=>{offset=Math.max(0,offset-pageSize);loadMemories();};$('next').onclick=()=>{offset+=pageSize;loadMemories();};
+$('open-add').onclick=openAdd;$('data-sources').onclick=sourceHelp;$('close-sources').onclick=()=>$('sources-dialog').close();
+for(const id of ['close-memory-dialog','cancel-memory-dialog'])$(id).onclick=()=>{if(!mutationBusy)$('memory-dialog').close();};
+for(const id of ['close-forget-dialog','cancel-forget'])$(id).onclick=()=>{if(!mutationBusy)$('forget-dialog').close();};
+for(const id of ['memory-dialog','forget-dialog'])$(id).addEventListener('cancel',event=>{if(mutationBusy)event.preventDefault();});
+for(const id of ['memory-dialog','forget-dialog','sources-dialog','detail-dialog'])$(id).addEventListener('keydown',event=>{if(event.key!=='Tab')return;const controls=[...$(id).querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),summary,a[href]')].filter(el=>el.getClientRects().length);const first=controls[0],last=controls.at(-1);if(!first){event.preventDefault();return;}if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}});
+$('new-memory').oninput=()=>{$('memory-counter').textContent=$('new-memory').value.length+' 字';};
+$('memory-back').onclick=()=>{editorPreview=false;prepareEditor();$('new-memory').focus();};
+$('add-form').onsubmit=async event=>{
+  event.preventDefault();if(mutationBusy||(editorMode==='add'&&!addContextReady))return;const content=$('new-memory').value.trim();if(!content){$('memory-dialog-error').textContent='记忆内容不能为空。';return;}
+  if(editorMode==='correct'&&!editorPreview){if(content===editorItem.content.trim()){$('memory-dialog-error').textContent='内容尚未更改。';return;}editorPreview=true;$('memory-editor').hidden=true;$('correction-preview').hidden=false;$('correction-preview').replaceChildren(node('p','原记忆','muted'),node('div',editorItem.content,'preview-block before'),node('p','纠正后的记忆','muted'),node('div',content,'preview-block after'));$('memory-back').hidden=false;$('submit-memory').textContent='确认纠正';$('memory-dialog-error').textContent='';return;}
+  mutationControls(true);$('memory-dialog-error').textContent='';$('submit-memory').textContent='正在保存…';
+  try{
+    let message='已创建纠正版本；旧版本可在状态筛选中查看。';
+    if(editorMode==='add'){
+      const scope=addAgentLocked?{}:{agent:$('new-memory-agent').value.trim()};
+      const items=await request('add',{content,scope,system_metadata:{project:$('new-memory-project').value.trim()}});
+      if(!items.length)throw new Error('未产生可保存的记忆，请检查内容或服务状态。');
+      message=`已保存 ${items.length} 条记忆。`;
+    }else{
+      await request('update',{...JSON.parse(editorItem.ref),patch:{content}});
+    }
+    $('memory-dialog').close();$('new-memory').value='';await refreshAfterMutation();notice(message);
+  }
+  catch(e){$('memory-dialog-error').textContent='保存失败，内容已保留：'+e.message;}
+  finally{mutationControls(false);$('submit-memory').textContent=editorMode==='add'?'保存记忆':'确认纠正';}
+};
+$('confirm-forget').onclick=async()=>{
+  if(mutationBusy||!forgetItems.length)return;
+  mutationControls(true);batchBusy=true;updateSelection();const pending=[...forgetItems],failures=[];let done=0;
+  try{for(const item of pending){$('confirm-forget').textContent=`正在遗忘 ${done+failures.length+1}/${pending.length}…`;try{await forgetRecord(item.ref);done++;}catch(e){failures.push(titleOf(item)+'：'+e.message);}}
+    forgetItems=[];$('forget-dialog').close();await refreshAfterMutation();
+    notice(`已遗忘 ${done} 条记忆。`+(failures.length?` ${failures.length} 条未完成，请刷新核对后重试。\n`+failures.join('\n'):'可切换到“已遗忘”状态核对记录。'),!!failures.length);
+  }finally{mutationControls(false);batchBusy=false;updateSelection();$('confirm-forget').textContent='确认遗忘';}
+};
+$('search-form').onsubmit=async event=>{
+  event.preventDefault();
+  if(searchMode==='text'){clearTimeout(filterTimer);return loadMemories(true);}
+  const sequence=++searchRequest;
+  hasSearched=true;$('search-submit').disabled=true;$('search-count').textContent='正在检索…';notice('');
+  try{
+    const data=await request('search',{
+      query:$('memory-filter').value,top_k:Number($('top-k').value),
+      context:{extensions:{personal:{source:selectionValue('search-source')}}},
+    });
+    if(sequence!==searchRequest)return;
+    const items=data.items.map(({scope,item})=>({
+      ref:recordKey(scope,item.unit_id),content:item.content,
+      source:item.system_metadata?.source_app||'',score:item.score,
+    }));
+    cards('search-list',items);
+    $('search-count').textContent=`找到 ${items.length} 条记忆`;
+    $('search-explanation').textContent='结果从不同记忆范围轮流取出。相关度分数只用于同一范围内排序。';
+    ++detailRequest.search;closeDetail();
+  }
+  catch(e){if(sequence!==searchRequest)return;$('search-count').textContent='检索失败';emptyState($('search-list'),'检索未完成',e.message);$('search-detail').replaceChildren();notice('检索失败：'+e.message,true);}
+  finally{if(sequence===searchRequest)$('search-submit').disabled=false;}
+};
+$('reload-settings').onclick=()=>{if(!saving)loadSettings();};
+$('discard-drafts').onclick=()=>{if(saving)return;drafts.clear();restores.clear();invalidatePreview();renderSettings();};
+$('preview').onclick=()=>{
+  try{const c=changes(),lines=Object.entries(c).map(([key,value])=>{const f=fields.find(x=>x.key===key),before=f?(f.has_override?f.saved:f.base):null;return key.endsWith('llm_api_key')?`${fieldLabel(key)}: 替换凭据（不显示原文）`:`${fieldLabel(key)} · ${key.split('.')[1]}: ${before??'未设置'} → ${value}`;}).concat([...restores].map(key=>{const f=fields.find(x=>x.key===key);return `${fieldLabel(key)}: ${f?.secret?'恢复启动凭据':String(f?.saved??'未设置')+' → '+String(f?.base??'未设置')}（启动配置）`;}));
+    if(!lines.length){invalidatePreview('没有可提交的更改。');return;}preview={version,changes:c,restores:[...restores]};$('diff').textContent='确认以下更改：\n'+lines.join('\n');$('save').hidden=false;
+  }catch(e){invalidatePreview();notice(e.message,true);}
+};
+$('save').onclick=async()=>{
+  if(saving||!configAvailable)return;
+  if(!preview||preview.version!==version){invalidatePreview('配置已变化，请重新预览。');return;}
+  const {changes:submitted,restores:submittedRestores}=preview;
+  const submittedDrafts=new Map(drafts);
+  invalidatePreview();
+  setSettingsBusy(true);
+  try{
+    const saved=await request('save_config',{version,changes:submitted,restore:submittedRestores});
+    for(const key of Object.keys(submitted)){
+      if(drafts.get(key)===submittedDrafts.get(key))drafts.delete(key);
+    }
+    for(const key of submittedRestores)restores.delete(key);
+    setSettingsBusy(false);
+    await loadSettings(saved.applied?'已保存并应用，后续调用使用新配置。':'已保存但应用失败，当前继续使用旧配置；可以重试应用。');
+  }catch(e){
+    setSettingsBusy(false);
+    if(e.status===409)await loadSettings('其他页面已更新配置。草稿已保留，请按最新值重新预览。');
+    else notice('保存失败，草稿已保留：'+e.message,true);
+  }
+};
+$('apply-settings').onclick=async()=>{if(saving)return;setSettingsBusy(true);try{const result=await request('save_config',{retry:true});setSettingsBusy(false);await loadSettings(result.applied?'已应用最新保存配置。':'应用失败，当前仍使用旧配置。');}catch(e){setSettingsBusy(false);notice(e.message,true);}};
+function closeDetail(){++detailRequest.memories;++detailRequest.search;if($('detail-dialog').open)$('detail-dialog').close();}
+$('close-detail').onclick=closeDetail;
+$('detail-dialog').addEventListener('cancel',closeDetail);
+$('page-size').onchange=()=>{pageSize=Number($('page-size').value);loadMemories(true);};
+for(const [id,grid]of [['view-list',false],['view-grid',true]])$(id).onclick=()=>{$('memory-list').classList.toggle('grid-view',grid);$('view-list').setAttribute('aria-pressed',String(!grid));$('view-grid').setAttribute('aria-pressed',String(grid));};
+for(const b of document.querySelectorAll('[data-status]'))b.onclick=()=>{$('lifecycle').value=b.dataset.status;loadMemories(true);};
+$('select-page').onchange=()=>{checked.clear();if($('select-page').checked)for(const item of rows.memories)checked.add(item.ref);cards('memory-list',rows.memories);updateSelection();};
+$('clear-selection').onclick=()=>{checked.clear();cards('memory-list',rows.memories);updateSelection();};
+$('forget-selected').onclick=()=>{
+  if(batchBusy)return;const items=rows.memories.filter(item=>checked.has(item.ref));if(!items.length||items.some(item=>item.lifecycle!=='active'))return;
+  openForget(items[0]);forgetItems=items;$('forget-title').textContent='遗忘所选 '+items.length+' 条记忆？';$('forget-content').textContent=`确认遗忘所选 ${items.length} 条记忆？逐条处理，失败的记录会单独列出。\n\n`+items.map(titleOf).join('\n');
+};
+async function exportSelected(format){
+  if(batchBusy)return;const items=rows.memories.filter(item=>checked.has(item.ref));if(!items.length)return;
+  batchBusy=true;updateSelection();cards('memory-list',rows.memories);
+  try{const fresh=[];for(const item of items)fresh.push(await fetchRecord(item.ref));
+    const text=format==='json'?JSON.stringify(fresh.map(({ref,...item})=>item),null,2):fresh.map(item=>item.content||'').join('\n\n---\n\n');
+    if(format==='copy'){await navigator.clipboard.writeText(text);notice(`已复制 ${fresh.length} 条记忆。`);}
+    else{const url=URL.createObjectURL(new Blob([text],{type:format==='json'?'application/json;charset=utf-8':'text/markdown;charset=utf-8'}));const link=node('a');link.href=url;link.download='memories-'+new Date().toISOString().slice(0,10)+(format==='json'?'.json':'.md');document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notice(`已导出所选 ${fresh.length} 条记忆。`);}
+  }catch(e){notice('复制或导出失败，未输出数据：'+e.message,true);}
+  finally{batchBusy=false;cards('memory-list',rows.memories);updateSelection();}
+}
+$('copy-selected').onclick=()=>exportSelected('copy');$('export-selected').onclick=()=>exportSelected('markdown');$('export-json').onclick=()=>exportSelected('json');
+async function loadOverview(){
+  const sequence=++overviewRequest;$('overview-error').textContent='';for(const id of ['stat-all','stat-active','stat-superseded','stat-forgotten','stat-archived','stat-sources'])$(id).textContent='—';
+  $('overview-samples').replaceChildren(node('p','正在读取记忆…','muted'));$('overview-sources').replaceChildren();
+  try{
+    const data=await listMemories({lifecycle:'active',limit:5,include_lifecycle_counts:true});if(sequence!==overviewRequest)return;
+    const counts=data.lifecycle_counts;
+    $('stat-all').textContent=counts.active+counts.forgotten+counts.superseded+counts.archived;$('stat-active').textContent=counts.active;$('stat-forgotten').textContent=counts.forgotten;$('stat-superseded').textContent=counts.superseded;$('stat-archived').textContent=counts.archived;$('stat-sources').textContent=(data.sources||[]).filter(Boolean).length;
+    $('overview-samples').replaceChildren();for(const item of data.items){const row=button('',()=>selectMemory(item,'memories'),'overview-sample');row.append(node('strong',titleOf(item)),node('small',(item.source||'未标注来源')+' · '+timeLabel(item.created_at)));$('overview-samples').append(row);}
+    if(!data.items.length)$('overview-samples').append(node('p','还没有有效记忆，可以先新增一条。','muted'));
+    for(const source of data.sources||[])$('overview-sources').append(button(source||'未标注来源',()=>openMemoryFilter('*',source),'source-chip'));
+    if(!(data.sources||[]).length)$('overview-sources').append(node('p','暂无来源记录','muted'));
+  }catch(e){if(sequence!==overviewRequest)return;$('overview-error').textContent='无法读取概览：'+e.message;$('overview-samples').replaceChildren(node('p','数据读取失败，请刷新重试。','muted'));}
+}
+async function openMemoryFilter(status,source=null){
+  for(const id of ['source','agent','project','tier','memory-class'])$(id).value='*';$('memory-filter').value='';$('lifecycle').value=status;
+  if(source!==null){const select=$('source');if(![...select.options].some(o=>o.value===source))select.add(new Option(source||'未标注来源',source));select.value=source;}
+  switchTab('memories',false);await loadMemories(true);
+}
+$('refresh-overview').onclick=loadOverview;$('overview-all').onclick=()=>openMemoryFilter('active');
+$('metric-superseded').onclick=()=>openMemoryFilter('superseded');$('metric-archived').onclick=()=>openMemoryFilter('archived');
+$('metric-all').onclick=()=>openMemoryFilter('*');$('metric-active').onclick=()=>openMemoryFilter('active');$('metric-forgotten').onclick=()=>openMemoryFilter('forgotten');
+$('overview-add').onclick=openAdd;$('overview-search').onclick=()=>switchTab('search');$('overview-settings').onclick=()=>switchTab('settings');
+document.addEventListener('keydown',event=>{if(event.key==='/'&&isMemoryView(activeTab)&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)&&!document.querySelector('dialog[open]')){event.preventDefault();$('memory-filter').focus();}});
+setSearchMode('text',false);
+loadOverview();
+</script></body></html>
