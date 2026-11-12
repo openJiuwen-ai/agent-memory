@@ -32,7 +32,10 @@
 - prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
   EPISODIC 对话原文；``agent_memory_search`` 工具不过滤（显式检索允许命中原文）。
   过滤器是 dict DSL，两模式共用（HTTP 直接下发；进程内经 RetrievalQuery 边界
-  normalize）。
+  normalize）。rail 传入 ``project`` 时 prefetch 追加
+  ``system_metadata.project IN ['', project]``，与 ``agent_memory_search`` 同口径。
+  prefetch 另用 ``read_md_file`` 读取 ``USER.md`` 的条目直接注入，不经相关度筛选，
+  与检索命中去重后一并返回。
 - HTTP 客户端带熔断器（连续 5 次失败冷却 120s）、分操作超时（读 30s / 写 120s，
   infer=true 的 add 含真实 LLM 抽取）、可选 Bearer 认证（§6.2-B/C）、healthz 探活。
 - ``sync_turn`` 经 ``infer="true"`` 同步抽取派生事实（原文落 /messages/ 不建索引）；
@@ -176,8 +179,9 @@ SEARCH_SCHEMA: dict[str, Any] = {
             "project": {
                 "type": "string",
                 "description": (
-                    "Project coordinate; omit to search across all projects. When "
-                    "set, recalls this project's memories plus cross-project memories."
+                    "Project coordinate; omit to search only cross-project memories "
+                    "(those stored without a project). When set, recalls this "
+                    "project's memories plus cross-project memories."
                 ),
             },
         },
@@ -276,6 +280,12 @@ EDIT_MD_SCHEMA: dict[str, Any] = {
 
 _MAX_TOP_K = 50
 _DEFAULT_PREFETCH_TOP_K = 5
+# prefetch 直接注入用户画像：USER.md 不分项目、条目少、与多数任务相关，
+# 不经相关度筛选——overlap 重排按共同词打分，换一种问法画像条目就可能得 0 分被丢。
+# 文件为追加写入，超出上限时保留末尾（最新）的条目。
+_PROFILE_MD_FILENAME = "USER.md"
+_PROFILE_INJECT_MAX_ITEMS = 20
+_PROFILE_INJECT_MAX_CHARS = 2000
 _DEFAULT_SEARCH_TOP_K = 10
 
 # read 工具「offset 起到文件尾」的 line_range end 上界：内核 read_content 对越界
@@ -297,14 +307,22 @@ _BREAKER_COOLDOWN = 120.0
 _RECALL_TIERS = ("semantic", "core", "procedural")
 
 
-def _recall_filters() -> dict[str, Any]:
+def _recall_filters(project: str = "") -> dict[str, Any]:
     """prefetch 召回过滤（dict DSL，HTTP/进程内两模式共用）。
 
     实测确认（design doc §8.2.1）：``{"tier": {"in": [...]}}`` 被服务端真实执行，
     episodic 原文被正确排除。进程内路径经 ``RetrievalQuery`` 边界的 ``normalize``
     接收同一份 dict DSL。
+
+    ``project`` 非空时追加 ``system_metadata.project IN ['', project]``（顶层多键
+    默认 AND），与 ``agent_memory_search`` 同口径：召回本项目记忆与跨项目可见记忆。
+    不带该谓词时影子索引兜底 ``project = ''``，项目内写入的记忆在同项目会话的
+    prefetch 里取不到（F08 D2）。
     """
-    return {"tier": {"in": list(_RECALL_TIERS)}}
+    filters: dict[str, Any] = {"tier": {"in": list(_RECALL_TIERS)}}
+    if project:
+        filters["system_metadata.project"] = {"in": ["", project]}
+    return filters
 
 
 _VIDEO_ROOTS_ENV = "JIUWEN_MEMORY_VIDEO_ROOTS"
@@ -401,6 +419,45 @@ def _configure_default_video(config: dict[str, Any], settings: dict[str, Any]) -
         config["ingest_job"] = {"default": {"target": "in_process", "params": {
             "kv_store": "video_jobs",
         }}}
+
+
+def _tail_within_budget(
+    items: list[dict[str, Any]], *, max_items: int, max_chars: int
+) -> list[dict[str, Any]]:
+    """从列表末尾起取条数与字数预算内的条目（放不下的跳过），返回时保持原顺序。"""
+    kept: list[dict[str, Any]] = []
+    used = 0
+    for item in reversed(items):
+        size = len(item.get("content", ""))
+        if len(kept) >= max_items:
+            break
+        if used + size > max_chars:
+            # 放不下的条目跳过、继续向前取：单条超长不应让整个画像空掉
+            continue
+        kept.append(item)
+        used += size
+    kept.reverse()
+    return kept
+
+
+def _merge_prefetch_lines(
+    profile: list[dict[str, Any]], items: list[dict[str, Any]]
+) -> list[str]:
+    """用户画像条目在前、检索命中在后，按 item_id 与正文去重，返回正文列表。"""
+    lines: list[str] = []
+    seen_ids: set[str] = set()
+    seen_text: set[str] = set()
+    for item in [*profile, *items]:
+        content = item.get("content", "")
+        item_id = item.get("item_id") or ""
+        # 空 item_id 从不进 seen_ids，无需单独判空
+        if not content or content in seen_text or item_id in seen_ids:
+            continue
+        if item_id:
+            seen_ids.add(item_id)
+        seen_text.add(content)
+        lines.append(content)
+    return lines
 
 
 def _agent_default_config() -> dict[str, Any]:
@@ -513,13 +570,29 @@ def _agent_default_config() -> dict[str, Any]:
         "classifier": {"default": "llm"},
         # 文档模式（write_document=true）：IndexBuilder 全委托 domain_store.add 文档分流
         "constructor": {"default": {"target": "document", "params": {"domain_store": "default"}}},
-        # 文档模式去重（F08）：两路并跑（shadow FTS5 + vec）+ embedder cosine 精排
-        "dedup": {"default": {"target": "shadow", "params": {"embedder": "default"}}},
-        "evolver": {"default": {"target": "orchestrating", "params": {
-            "extractor": "default", "abstractor": "default", "associator": "default",
-            "index_builder": "default", "message_store": "default",
-            "dedup": "default", "llm": "default",
-        }}},
+        # 文档模式去重（F08）：两路并跑（shadow FTS5 + vec）+ embedder cosine 精排。
+        # dedup_tier_filter：只与同 tier 的记忆比较——抽取会为可复用标识另出一条
+        # semantic 稳定事实，不隔离时它会被同批的 episodic 事件判重丢弃。
+        "dedup": {
+            "default": {
+                "target": "shadow",
+                "params": {"embedder": "default", "dedup_tier_filter": True},
+            }
+        },
+        "evolver": {
+            "default": {
+                "target": "orchestrating",
+                "params": {
+                    "extractor": "default",
+                    "abstractor": "default",
+                    "associator": "default",
+                    "index_builder": "default",
+                    "message_store": "default",
+                    "dedup": "default",
+                    "llm": "default",
+                },
+            }
+        },
         # ---- 摄取 ---------------------------------------------------------- #
         "ingestor": {"default": {"target": "simple", "params": {"normalizer": "default"}}},
         # ---- 控制 ---------------------------------------------------------- #
@@ -1081,6 +1154,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             )
         # [本地修改 2026-10-17] 同 agent_memory_search：null 防御（or 覆盖缺省与显式 null）。
         top_k = min(int(kwargs.get("top_k") or _DEFAULT_PREFETCH_TOP_K), _MAX_TOP_K)
+        # rail 经 _resolve_project 传入 project；与 sync_turn / agent_memory_search 同口径。
+        project = str(kwargs.get("project") or "").strip()
         try:
             logger.info(
                 "[AgentMemoryMemoryProvider] prefetch before search scope=%s top_k=%d",
@@ -1088,20 +1163,33 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 top_k,
             )
             # §6.2-F：prefetch 只召回提炼产物（semantic/core/procedural）。
-            items = await self._client.search(
-                search_query,
-                self.bound_scope(),
-                top_k=top_k,
-                filters=_recall_filters(),
-            )
+            try:
+                items = await self._client.search(
+                    search_query,
+                    self.bound_scope(),
+                    top_k=top_k,
+                    filters=_recall_filters(project),
+                )
+            except Exception as exc:
+                # 检索失败不连带丢掉用户画像：降级为只注入 USER.md 的条目
+                logger.warning(
+                    "[AgentMemoryMemoryProvider] prefetch search failed, profile only: "
+                    "error_type=%s",
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                items = []
             logger.info("[AgentMemoryMemoryProvider] prefetch after search items=%d", len(items))
-            lines = [it.get("content", "") for it in items if it.get("content")]
+            profile = await self._profile_items()
+            lines = _merge_prefetch_lines(profile, items)
             logger.info(
                 "[AgentMemoryMemoryProvider] prefetch search_query=%s scope=%s "
-                "top_k=%d recalled=%d",
+                "top_k=%d recalled=%d profile=%d injected=%d",
                 redact_for_log(search_query),
                 scope_for_log(self.bound_scope()),
                 top_k,
+                len(items),
+                len(profile),
                 len(lines),
             )
             for idx, line in enumerate(lines):
@@ -1122,6 +1210,26 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 exc_info=True,
             )
             return ""
+
+    async def _profile_items(self) -> list[dict[str, Any]]:
+        """读 USER.md 的条目供 prefetch 直接注入；任何失败都降级为空，不影响检索结果。
+
+        文件不存在、非文档模式、传输失败都返回空列表。超出条数或字数上限时保留文件
+        末尾的条目（USER.md 追加写入，末尾即最新）。
+        """
+        try:
+            items = await self._client.read_md_file(_PROFILE_MD_FILENAME, self.bound_scope())
+        except Exception as exc:
+            logger.info(
+                "[AgentMemoryMemoryProvider] prefetch profile unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            return []
+        return _tail_within_budget(
+            [it for it in items or [] if it.get("content")],
+            max_items=_PROFILE_INJECT_MAX_ITEMS,
+            max_chars=_PROFILE_INJECT_MAX_CHARS,
+        )
 
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
 

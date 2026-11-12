@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,9 +30,12 @@ import yaml
 
 from jiuwen_memory.api import ConflictError, Modality, Surface, ValidationError
 from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory.api import normalize as normalize_filters
 from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
 from jiuwen_memory.common.security import new_request_context
 from jiuwen_memory.common.security.types import AuthContext, Role
+from jiuwen_memory.common.type_def.filter import FilterLogic
+from jiuwen_memory.construction.extractor_impl.agent_llm_extractor import AgentLlmExtractor
 
 # 本文件 -> tests/unit/jiuwen_memory_adapter -> tests/unit -> tests -> 仓库根
 # append（而非 insert(0)）：避免模块重名告警；adapter 作为顶层模块 agent_memory_provider
@@ -43,7 +47,13 @@ if _ADAPTER_DIR.is_dir() and str(_ADAPTER_DIR) not in sys.path:
 
 # ruff: noqa: E402
 # pylint: disable=wrong-import-order  # 顶层模块须晚于 sys.path.append，无法按 first/third-party 排序
-from agent_memory_provider import AgentMemoryMemoryProvider, _HttpClient, _recall_filters
+from agent_memory_provider import (
+    AgentMemoryMemoryProvider,
+    _HttpClient,
+    _merge_prefetch_lines,
+    _recall_filters,
+    _tail_within_budget,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -158,6 +168,158 @@ class TestRecallFilters:
         assert "episodic" not in flattened
         assert "working" not in flattened
         assert "archival" not in flattened
+
+    def test_filters_with_project_add_cross_project_in_predicate(self):
+        filters = _recall_filters("proj-a")
+        assert filters["system_metadata.project"] == {"in": ["", "proj-a"]}, filters
+        assert filters["tier"] == {"in": ["semantic", "core", "procedural"]}, filters
+
+    def test_filters_without_project_carry_no_project_predicate(self):
+        assert "system_metadata.project" not in _recall_filters(""), "空 project 不应带项目谓词"
+
+    def test_filters_with_project_normalize_to_and_of_two_clauses(self):
+        # 顶层双键由 API 边界的 normalize 解析为 AND；HTTP 服务端与进程内共用同一解析。
+        expr = normalize_filters(_recall_filters("proj-a"))
+        assert expr.logic is FilterLogic.AND, expr
+        clauses = {(c.field, c.op.value): c.value for c in expr.children}
+        assert clauses == {
+            ("tier", "in"): ["semantic", "core", "procedural"],
+            ("system_metadata.project", "in"): ["", "proj-a"],
+        }, clauses
+
+
+# --------------------------------------------------------------------------- #
+# prefetch 直接注入 USER.md
+# --------------------------------------------------------------------------- #
+
+
+class TestProfileInjection:
+    def test_tail_within_budget_keeps_latest_items_in_order(self):
+        items = [{"content": f"事实{i}"} for i in range(5)]
+
+        assert [it["content"] for it in _tail_within_budget(items, max_items=2, max_chars=100)] == [
+            "事实3",
+            "事实4",
+        ]
+        assert [it["content"] for it in _tail_within_budget(items, max_items=10, max_chars=7)] == [
+            "事实3",
+            "事实4",
+        ], "字数预算同样从末尾起算"
+        assert _tail_within_budget([], max_items=2, max_chars=10) == []
+
+    def test_tail_within_budget_skips_oversized_item(self):
+        items = [{"content": "旧事实"}, {"content": "超长" * 10}]
+
+        kept = _tail_within_budget(items, max_items=5, max_chars=10)
+
+        assert [it["content"] for it in kept] == ["旧事实"], "最新一条超长时跳过它，仍注入其余条目"
+
+    def test_merge_puts_profile_first_and_dedups_by_id_and_text(self):
+        profile = [
+            {"item_id": "p1", "content": "发件邮箱是 a@qq.com"},
+            {"item_id": "p2", "content": "偏好简洁回答"},
+        ]
+        hits = [
+            {"item_id": "p2", "content": "偏好简洁回答"},
+            {"item_id": "h1", "content": "发件邮箱是 a@qq.com"},
+            {"item_id": "h2", "content": "项目部署在杭州"},
+        ]
+
+        assert _merge_prefetch_lines(profile, hits) == [
+            "发件邮箱是 a@qq.com",
+            "偏好简洁回答",
+            "项目部署在杭州",
+        ]
+
+    def test_prefetch_injects_profile_regardless_of_query_wording(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-profile-user"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-profile-user", scope_id="tenant-sdk")
+            try:
+                seen: list[tuple] = []
+
+                async def _read(md_filename, scope, *, project="", line_range=None):
+                    seen.append((md_filename, project))
+                    fact = "用户的发件邮箱是 a@qq.com"
+                    return [{"item_id": "p1", "content": fact, "tier": "semantic"}]
+
+                provider._client.read_md_file = _read
+                # 与画像条目没有任何共同词的问法：检索侧取不到，画像仍被注入
+                text = await provider.prefetch("把这个 PDF 发一下")
+                assert "用户的发件邮箱是 a@qq.com" in text, text
+                assert seen == [("USER.md", "")], seen
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    def test_prefetch_survives_profile_read_failure(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-profile-fail"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-profile-fail", scope_id="tenant-sdk")
+            try:
+                async def _boom(md_filename, scope, *, project="", line_range=None):
+                    raise RuntimeError("read failed")
+
+                provider._client.read_md_file = _boom
+                text = await provider.prefetch("把这个 PDF 发一下")
+                assert text == "", "读画像失败时降级为只用检索结果"
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    def test_prefetch_tolerates_profile_read_returning_none(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-profile-none"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-profile-none", scope_id="tenant-sdk")
+            try:
+                async def _none(md_filename, scope, *, project="", line_range=None):
+                    return None
+
+                provider._client.read_md_file = _none
+                assert await provider._profile_items() == [], "读取返回 None 时按无画像处理"
+                assert await provider.prefetch("把这个 PDF 发一下") == ""
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    def test_prefetch_keeps_profile_when_search_fails(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-search-fail"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-search-fail", scope_id="tenant-sdk")
+            try:
+                async def _read(md_filename, scope, *, project="", line_range=None):
+                    return [{"item_id": "p1", "content": "用户的发件邮箱是 a@qq.com"}]
+
+                async def _boom(*args, **kwargs):
+                    raise RuntimeError("search failed")
+
+                provider._client.read_md_file = _read
+                provider._client.search = _boom
+                text = await provider.prefetch("把这个 PDF 发一下")
+                assert "用户的发件邮箱是 a@qq.com" in text, "检索失败时仍注入用户画像"
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
 
 
 # --------------------------------------------------------------------------- #
@@ -591,6 +753,137 @@ class TestSdkMode:
 
         asyncio.run(_run())
 
+    def test_prefetch_forwards_project_to_search_filters(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-prefetch-user"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-prefetch-user", scope_id="tenant-sdk")
+            try:
+                seen: list[dict | None] = []
+                original = provider._client.search
+
+                async def _spy(query, scope, *, top_k=10, filters=None):
+                    seen.append(filters)
+                    return await original(query, scope, top_k=top_k, filters=filters)
+
+                provider._client.search = _spy
+                await provider.prefetch("部署区域", project="proj-a")
+                await provider.prefetch("部署区域", project="  ")
+                await provider.prefetch("部署区域")
+                assert seen[0]["system_metadata.project"] == {"in": ["", "proj-a"]}, seen[0]
+                assert "system_metadata.project" not in seen[1], seen[1]
+                assert "system_metadata.project" not in seen[2], seen[2]
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    def test_prefetch_recalls_project_memory_only_in_same_project(self):
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-project-user"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-project-user", scope_id="tenant-sdk")
+            try:
+                for conclusion, project in (
+                    ("项目部署区域选了杭州", "proj-a"),
+                    ("通用部署区域默认上海", ""),
+                ):
+                    args = {"conclusion": conclusion}
+                    if project:
+                        args["project"] = project
+                    stored = json.loads(
+                        await provider.handle_tool_call("agent_memory_conclude", args)
+                    )
+                    assert stored.get("result") == "Fact stored.", stored
+
+                same = await provider.prefetch("部署区域", project="proj-a")
+                assert "杭州" in same, f"同项目会话应召回项目内记忆: {same!r}"
+                assert "上海" in same, f"同项目会话应召回跨项目记忆: {same!r}"
+
+                other = await provider.prefetch("部署区域", project="proj-b")
+                assert "杭州" not in other, f"其他项目不应看到 proj-a 的记忆: {other!r}"
+                assert "上海" in other, f"其他项目应召回跨项目记忆: {other!r}"
+
+                # 不带 project 时过滤条件里没有项目谓词，由影子索引兜底 project=''：
+                # 只召回跨项目可见的记忆，不会放宽成全库召回。
+                projectless = await provider.prefetch("部署区域")
+                assert "杭州" not in projectless, f"无项目会话不应看到项目记忆: {projectless!r}"
+                assert "上海" in projectless, f"无项目会话应召回跨项目记忆: {projectless!r}"
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize("explicit_write", [False, True])
+    def test_sync_turn_keeps_project_fact_out_of_unbound_prefetch(
+        self, monkeypatch, tmp_path, explicit_write,
+    ):
+        import agent_memory_provider as adapter
+
+        offline_config = adapter._agent_default_config
+
+        def config():
+            result = offline_config()
+            result["extractor"]["default"] = {"target": "agent_llm"}
+            return result
+
+        path_fact = "这个项目的论文终稿放在 /work/paper/final"
+        profile_fact = "用户常用邮箱是 user@example.org"
+
+        def extract(_self, messages):
+            source_id = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+            candidates = [(path_fact, True)]
+            if profile_fact in messages[1].content:
+                candidates.append((profile_fact, False))
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "content": content,
+                    "memory_class": "user_profile",
+                    "project_fact": project_fact,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                }
+                for content, project_fact in candidates
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-project-user"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-project-user", scope_id="tenant-sdk")
+            try:
+                if explicit_write:
+                    stored = json.loads(await provider.handle_tool_call(
+                        "agent_memory_conclude", {"conclusion": path_fact, "project": "KVCache"},
+                    ))
+                    assert stored.get("result") == "Fact stored.", stored
+                else:
+                    await provider.sync_turn(path_fact, "记下了。", project="KVCache")
+                assert path_fact in await provider.prefetch(path_fact, project="KVCache")
+                assert path_fact not in await provider.prefetch(path_fact)
+
+                await provider.sync_turn(f"{path_fact}。{profile_fact}。", "记下了。")
+                unbound = await provider.prefetch(path_fact)
+                assert path_fact not in unbound
+                assert profile_fact in unbound
+                assert path_fact not in (tmp_path / "USER.md").read_text(encoding="utf-8")
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(run())
+
 
 # --------------------------------------------------------------------------- #
 # _merge_config_over_default：上层 config_dict 深合并到内置 agent 默认装配
@@ -694,6 +987,18 @@ class TestMergeConfigOverDefault:
         assert md_default["target"] == "local", "只改 root 不应丢 target"
         assert md_default["params"]["root"] == "/data/md", "params.root 覆盖"
         assert merged["engine"]["default"]["target"] == "agent", "未提及 namespace 保留"
+
+    def test_agent_default_dedup_isolates_by_tier(self):
+        """agent 默认装配的去重只与同 tier 的记忆比较。
+
+        抽取会为可复用标识另出一条 semantic 稳定事实；不隔离时它会被同批的
+        episodic 事件判重丢弃。
+        """
+        import agent_memory_provider as _amp
+
+        params = _amp._agent_default_config()["dedup"]["default"]["params"]
+        assert params.get("dedup_tier_filter") is True, params
+        assert params.get("embedder") == "default", params
 
     def test_each_call_returns_fresh_dict(self, monkeypatch):
         import agent_memory_provider as _amp
