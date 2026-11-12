@@ -32,7 +32,8 @@
 - prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
   EPISODIC 对话原文；``agent_memory_search`` 工具不过滤（显式检索允许命中原文）。
   过滤器是 dict DSL，两模式共用（HTTP 直接下发；进程内经 RetrievalQuery 边界
-  normalize）。
+  normalize）。rail 传入 ``project`` 时 prefetch 追加
+  ``system_metadata.project IN ['', project]``，与 ``agent_memory_search`` 同口径。
 - HTTP 客户端带熔断器（连续 5 次失败冷却 120s）、分操作超时（读 30s / 写 120s，
   infer=true 的 add 含真实 LLM 抽取）、可选 Bearer 认证（§6.2-B/C）、healthz 探活。
 - ``sync_turn`` 经 ``infer="true"`` 同步抽取派生事实（原文落 /messages/ 不建索引）；
@@ -176,8 +177,9 @@ SEARCH_SCHEMA: dict[str, Any] = {
             "project": {
                 "type": "string",
                 "description": (
-                    "Project coordinate; omit to search across all projects. When "
-                    "set, recalls this project's memories plus cross-project memories."
+                    "Project coordinate; omit to search only cross-project memories "
+                    "(those stored without a project). When set, recalls this "
+                    "project's memories plus cross-project memories."
                 ),
             },
         },
@@ -297,14 +299,22 @@ _BREAKER_COOLDOWN = 120.0
 _RECALL_TIERS = ("semantic", "core", "procedural")
 
 
-def _recall_filters() -> dict[str, Any]:
+def _recall_filters(project: str = "") -> dict[str, Any]:
     """prefetch 召回过滤（dict DSL，HTTP/进程内两模式共用）。
 
     实测确认（design doc §8.2.1）：``{"tier": {"in": [...]}}`` 被服务端真实执行，
     episodic 原文被正确排除。进程内路径经 ``RetrievalQuery`` 边界的 ``normalize``
     接收同一份 dict DSL。
+
+    ``project`` 非空时追加 ``system_metadata.project IN ['', project]``（顶层多键
+    默认 AND），与 ``agent_memory_search`` 同口径：召回本项目记忆与跨项目可见记忆。
+    不带该谓词时影子索引兜底 ``project = ''``，项目内写入的记忆在同项目会话的
+    prefetch 里取不到（F08 D2）。
     """
-    return {"tier": {"in": list(_RECALL_TIERS)}}
+    filters: dict[str, Any] = {"tier": {"in": list(_RECALL_TIERS)}}
+    if project:
+        filters["system_metadata.project"] = {"in": ["", project]}
+    return filters
 
 
 _VIDEO_ROOTS_ENV = "JIUWEN_MEMORY_VIDEO_ROOTS"
@@ -1081,6 +1091,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             )
         # [本地修改 2026-10-17] 同 agent_memory_search：null 防御（or 覆盖缺省与显式 null）。
         top_k = min(int(kwargs.get("top_k") or _DEFAULT_PREFETCH_TOP_K), _MAX_TOP_K)
+        # rail 经 _resolve_project 传入 project；与 sync_turn / agent_memory_search 同口径。
+        project = str(kwargs.get("project") or "").strip()
         try:
             logger.info(
                 "[AgentMemoryMemoryProvider] prefetch before search scope=%s top_k=%d",
@@ -1092,7 +1104,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 search_query,
                 self.bound_scope(),
                 top_k=top_k,
-                filters=_recall_filters(),
+                filters=_recall_filters(project),
             )
             logger.info("[AgentMemoryMemoryProvider] prefetch after search items=%d", len(items))
             lines = [it.get("content", "") for it in items if it.get("content")]
