@@ -5,4 +5,6 @@
 
 - `locomo/`：LoCoMo 原始数据和可提交的微型样本。
 - `longmemeval/`：LongMemEval 原始数据和可提交的微型样本。
-完整数据文件默认被 `.gitignore` 排除，微型样本作为本地冒烟输入保留。
+- `memoryagentbench/`：MemoryAgentBench Conflict Resolution 的原始 parquet 与单子集 JSON；
+  评测只读 JSON，仅 `mh_6k` 入库（生成方式见该目录 README）。
+完整数据文件默认被 `.gitignore` 排除，仅保留冒烟输入。
