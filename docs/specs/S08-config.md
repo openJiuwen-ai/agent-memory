@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-09 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
+| 最近一次修订日期 | 2026-11-12 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`；Portal 设计见 `docs/features/F08-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
 
@@ -26,6 +26,100 @@
 - 不规定产品配置中心的推送/TTL/缓存失效运维接口（实现方可自管缓存，首版契约不要求 invalidate）
 - **不**在未使用 `RoutingStoreManager` 时原地拆换同一 `CompositeStoreManager` 内部端口拓扑；Store 级异质切换落在各 `*_store.active` + `Routing*Store`（方案 A，F01 §2.1.5）
 - **允许**装配期预装多套完整 `StoreManager`，经 `RoutingStoreManager` + `store_manager.active` 动态选用（F02/F07，已落地）；**禁止**把「同实现换连接 / 只换某一 Store」误做成多套 manager + `store_manager.active`
+
+## Portal 配置保存与恢复
+
+SDK 禁用 Portal 时，记忆实例直接使用启动配置，跳过 Portal 的配置库。旧库损坏时，
+也可以按启动配置继续运行。
+jiuwenswarm 适配器按原有 JSON／YAML 规则解析 `config_path`，将配置内容和实际加载的
+文件路径传给 Runtime。文件路径用于定位配置库，字符串中的环境变量占位符保留原样。
+
+可信宿主提供可管理的具名 LLM、配置存储、地址策略和授权回调。模块在创建模型前先
+校验并加载保存的修改，未修改的参数和依赖引用继续来自启动配置。普通 ConfigSource
+只负责读取，不因为打开 Portal 就自动成为可持久写入的配置源。
+
+内置实现用独立的 SQLite 配置库保存修改和版本。SDK 和 HTTP 共用定位规则，优先使用
+已有本地绝对文档根下的 `memory/.shadow/portal-config.db`。其次按实际加载的配置文件
+路径和顺序，在最后一个文件旁确定配置库。两处都不可用时，页面无法编辑配置。只传配置
+字典且没有可用文档根时，自动装配会使用启动配置。可信宿主也可通过公开装配接口提供配置存储。
+
+HTTP 只在安全配置声明固定个人身份，或宿主显式启用配置管理时访问配置库。
+其他 HTTP 启动方式跳过旧库，继续用启动配置运行。若所有候选位置都无法创建配置库，
+记忆服务继续运行，页面无法编辑设置。如果已有的配置库无法读取，启动会报错，
+避免悄悄回退到启动值。启用统一静态加密时，内置配置管理不可用。
+
+### 允许编辑的字段
+
+支持的模型实现为 echo、openai、dashscope。只对宿主确认且实际创建的具名模型开放
+以下字段，未知实现、锁定字段按只读原因显示：
+
+- target、llm_model、llm_base_url、llm_api_key；
+- llm_temperature、llm_max_tokens、llm_timeout、llm_max_retries；
+- DashScope 的 enable_thinking。
+
+字段键使用 llm.<name>.target 或 llm.<name>.params.<parameter>。保留实例的配置命名
+空间规则；多个实例共用名称、地址、Key 的命名空间时，不允许按单实例修改共享字段。
+模型地址须遵守已有 TLS 约束，并通过宿主提供的地址策略。拒绝未知键和非法值。
+模型服务的协议、主机或端口变化时，服务端要求在同一次保存中提交完整网址、非空
+API Key 和模型名。切换提供方也要按实际服务地址执行该规则。恢复整组启动设置时，
+使用启动地址及其配套的凭据。Portal 保存 Key 时会加密记录对应的服务地址。加载时，
+旧 Key 缺少地址绑定或与实际服务不匹配，或宿主锁定字段使已保存的一组设置无法使用，
+则该模型的服务设置回到启动值。保存记录保留，读取接口返回 `ignored_endpoint_fields`。
+提交温度或更换提供方时，按最终使用的提供方校验保存的温度。OpenAI 兼容模式为
+`[0, 2]`，DashScope 为 `[0, 2)`。切换时可以同时提交新的温度。
+
+Portal 不编辑 Prompt、Embedding 模型与维度、存储、全局检索策略或组件依赖。原
+ConfigSource／PromptRegistry 的读取规则和文档 agent_llm 内置模板使用原入口。
+
+### 保存和应用
+
+1. 页面预览与读取版本、草稿绑定；保存时比较版本并提交整份修改。冲突、校验或写入
+   失败不改变已保存配置或运行配置。恢复启动值表示删除指定覆盖后再保存、应用。
+   修改或恢复模型提供方后，以最终提供方判断参数适用性；不再使用 DashScope 时，
+   同步移除 enable_thinking 覆盖，不因隐藏参数残留导致恢复失败。
+   保存模型字段时保留配置库中其他未知字段。托管装配继续忽略这些字段。
+2. 优先级为宿主明确锁定值、允许的保存覆盖、启动输入、默认值。SDK／HTTP 在创建
+   模型前恢复保存值，不改环境变量解析或未修改字段的行为。
+3. 支持字段的 apply_mode 为 next_call，requires_reassembly 为 false。模块内部替换
+   模型客户端，不要求重启宿主；不支持编辑的实现保持只读。
+4. 一次调用使用同一版本的名称、地址、Key 和默认参数。在途调用用旧客户端完成后才
+   释放；延迟创建及 new_instance=true 的具名模型也按当前完整应用配置创建。新句柄
+   创建、登记与应用切换共用互斥边界，不能将旧构造参数与新端点混用。
+5. 保存成功但应用失败返回 applied=false，保留原运行配置；retry_publication 只读取
+   最新保存版本重试。旧请求不能使运行版本倒退。应用成功只表示本地切换完成，不表示
+   已访问远端服务。默认值不覆盖单次调用明确传入的 options。
+6. 刷新配置或发生冲突后，旧预览失效；草稿保留，重新比较最新值后才能提交。前端禁用
+   控件不能代替后端版本、字段和权限校验。
+
+### 配置描述与结果
+
+`ManagedConfiguration.read` 返回以下信息。HTTP 的 `/v1/read_config` 另加
+`available`，能力不可用时只返回 `{"available": false}`。
+
+| 字段 | 含义 |
+|---|---|
+| version | 已保存的版本，也是下一次提交的冲突检查依据 |
+| applied_version | 当前运行配置的版本 |
+| apply_state | applied 或 apply_failed，按保存版本与运行版本是否一致判断 |
+| fields | 字段描述，含 key、base、saved、has_override、effective、effective_known、writable、reason、secret、configured、apply_mode、requires_reassembly、options、visible_for_targets |
+| instance | 存储模式、Embedding 模型／维度和文档根等只读启动信息 |
+| ignored_overrides | 未识别字段和未采用的模型服务设置数量 |
+| ignored_endpoint_fields | 模型地址与 Key 无法配套时，跳过的字段名 |
+
+字段读取区分启动值、保存值和运行默认值；无法确认时 effective_known=false。
+API Key 不返回 base、saved 或 effective 原文，只返回 configured 等状态。模型服务地址
+只显示协议、主机和端口。
+save 和 retry_publication 返回 version、applied；应用失败时不返回可能包含凭据的
+任意 builder 异常正文，页面提示未应用并允许重试。
+
+### 模型凭据
+
+API Key 在受保护凭据存储中保存，普通覆盖只保留引用；空输入保持原值。新凭据准备
+完成后，与非密配置按同一版本提交。失败不改变旧引用，清理不影响在途调用。没有可靠
+凭据保存能力时仅将该字段设为只读，并提供原因。
+
+读取、预览、错误与日志不出现 Key 原文。不借用入站单向认证库，不落明文旁路；内置
+加密、密钥文件和部署保护边界见 S10 与既有 common/F04。
 
 ## 不变量
 
@@ -100,6 +194,9 @@ Schema 构建参数中，`schema_entity_resolution_enabled` 与
 `schema_entity_merge_decision_enabled` 默认均为 `true`，用于 canonical identity 的
 精确名称、别名与 LLM CREATE/UPDATE 判断；`use_property_merge` 默认 `false`，只有显式
 开启后才合并普通 set 属性。显式 delete 始终由 Schema Planner 消费并归档命中旧事实。
+`schema_extract_max_tokens` 是单次属性抽取 LLM 调用的输出上限，默认 `8192`（与 LLM
+客户端默认一致；评测配置显式设为 `16384`）；`conflict_consolidate_min_cluster_size`
+是冲突巩固的最小簇大小，默认 `2`。
 
 `vector_store.schema_entities` 与 `fulltext_store.schema_entities` 是 canonical Schema
 Entity 的独立命名端口，避免 Entity 与普通 MemoryUnit 混索引。`schema_enabled=true`
@@ -372,3 +469,117 @@ normalizer:
 `temp_root` 仅控制处理临时目录，不是源文件白名单。旧视频部署须先创建导入目录并新增
 绑定；API 参数与正常视频处理流程保持原样。配置不能由业务 metadata 或请求体覆盖。
 该准入能力不依赖隐私分级模块或其开关。
+
+## 隐私配置
+
+隐私策略在装配期生效，修改总开关、规则、密钥引用或认证器配置后须重建 Runtime；
+不属于 `ConfigSource` 晚绑定或 PolicyManager 动态策略。与全后端静态加密总开关独立。
+
+### 总开关与共享装配
+
+| 配置条件 | 装配行为 |
+|---|---|
+| 未写 `globals.privacy_enabled`，无 `privacy` 段 | 关闭隐私能力 |
+| 未写总开关，有 `privacy.default` | 启用该显式配置 |
+| 总开关为 `false` | 保留策略，停止新保护和用户访问控制入口；不扫描或解密既有占位符 |
+| 总开关为 `true`，缺少 `privacy.default` | 拒绝启动 |
+
+总开关只接受真正布尔值。启用时 `privacy` 仅允许一个共享 `default` 实例，禁止
+`new_instance=true`。没有人机认证器仍可脱敏写入及召回，但不能查看原文。开启前检查
+已装配逻辑 KV 中的 `/memory/`、`/messages/`；未迁移语料、文档模式和文件监听组合拒绝
+启动，不在普通读请求里改写旧数据。
+
+### `privacy.default.target=regex`
+
+下表字段位于 `privacy.default.params`。
+
+| 字段 | 默认值 / 要求 | 语义 |
+|---|---|---|
+| `privacy_store` | 推荐显式配置 | 受保护的私有 Store 具名引用或内联定义；不进入普通召回端口 |
+| `cryptography` | 兼容配置需填 | 未指定 privacy_store 时的密码学依赖；失败不回退明文 |
+| `vault_path` | 兼容配置需填 | 未指定 privacy_store 时的独立 SQLite 路径，自动装配受保护 Store |
+| `levels` | S1/S2/S3 | 自定义等级列表；显式列表替换默认等级 |
+| `rules` | 内置规则 | 自定义列表；缺省沿用目录，显式列表保持替换旧语义 |
+| `use_builtin_rules` | 按 rules 是否提供决定 | 显式 true 将自定义规则叠加目录；false 只使用自定义规则 |
+| `category_levels` | `pii.* → S2`、`credential.* → S3` | 类别到配置等级的映射；精确项优先，其次最长 `.*` 前缀 |
+| `rule_overrides` | 无 | 按内置规则名称覆盖 enabled / validator；未知规则或字段拒绝 |
+| `rules[].group` | `0` | 完整命中或有效捕获组名称/序号，确定要保护的片段 |
+| `staging_ttl` | `300` 秒 | 暂存片段的正数有效期 |
+| `staging_limit` | `10000` | 暂存片段正数容量上限 |
+| `regex_timeout` | `2.0` 秒 | 只接受 (0, 30] 内有限数值；单次文本/元数据保护的总匹配预算 |
+| `llm_enabled` / `llm` | `false` / 无 | 保留分类开关及引用；开启分类明确拒绝，引用不解析、不调用 |
+
+`privacy_store.<name>.target=encrypted` 的 params 包含 `cryptography` 和
+`raw_privacy_store`；推荐后者选择 `target=kv`，其 params 包含内联 `kv_store` 定义及
+`max_state_bytes`（默认 67108864，正整数，每个完整 Scope 的编码状态大小上限）。
+内联 KV 支持既有 `memory`、`sqlite`、`redis`、`postgres` target；分别填写对应后端
+的 `db_path`、`url`、`dsn` 等参数，业务代码不变。后端必须声明原子条件写能力，
+第三方不具备该能力时拒绝装配。私有 KV 的递归 KV 依赖也必须内联，不能引用
+`kv_store.<name>` 普通端口；密码学依赖仍可具名共享。
+隐私模块只接受声明已保护的 PrivacyStore，直接选择未加密后端会拒绝装配。
+`privacy_store` 的显式选择优先于旧 `vault_path/cryptography` 配置；旧配置和既有
+SQLite 密文保持兼容，使用旧专用表时显式保留 `raw_privacy_store.target=sqlite` 及
+`params.db_path`，或继续使用旧配置。新 KV 状态格式不读取、迁移或覆盖旧专用表，
+示例使用独立文件；切换后端前由部署方完成数据迁移，不包含 MySQL 等新驱动。
+私有后端连接参数在装配时固定，不通过业务 KV ConfigSource 热切换。
+片段值及清单主体加密，定位元数据和备份仍须部署侧保护；不声明整个 SQLite 文件加密。
+
+自定义规则兼容原 `level/pattern/group`，并支持 `level_id`、`keywords`、
+`patterns`。`level` 与 `level_id` 同时出现时必须相同；`pattern` 与非空 `patterns`
+互斥。keywords 按不区分大小写的字面子串匹配；patterns 按大小写不敏感、
+多行正则匹配。单项 pattern 不自动启用这两项，可使用 `(?i)`、`(?m)` 显式开启。
+每项可配置 `name/category/enabled/validator`；缺省名称为 custom.<序号>、类别为
+custom.rule。等级可直接指定或由 category_levels 推导，未知等级及空匹配配置拒绝。
+名称和类别使用以字母起头、最长 80 字符的 ASCII 字母/数字/点/下划线/短横线标识。
+validator 仅支持 `luhn`、`id_card_cn` 或 null，不从 YAML 加载代码；分类与替换逐个
+使用同样的校验结果。即使用户规则给出更低等级，组合中的高敏内置命中仍保留。
+
+内置规则目录覆盖手机号、身份证形态、邮箱、银行卡、护照、车牌、军官证、社保号，以及
+AWS/GitHub/Google/Slack 凭据、JWT、含密码连接串、标记凭据和完整私钥块。
+银行卡默认使用 Luhn，身份证继续按既有形态保护，不要求校验位正确。
+姓名、地址、IPv4/IPv6 和宽泛微信密钥规则默认关闭；例如显式
+`rule_overrides: {ip_v4: {enabled: true}}` 开启对应项。
+injection.prompt 默认只产生分类依据，不改变等级或正文；显式映射其等级才参与保护，
+不因此宣称能够隔离处理阶段的提示注入。新规则可能要求对已有未保护内容受控迁移。
+默认目录不承诺全部语义隐私。
+等级序号、保留秒数和匹配超时不接受布尔值；`reveal` 及总开关只接受布尔值。
+规则必须引用已配置等级；重叠命中采用较高 `rank`。超时拒绝本次处理，该预算不替代
+业务或 LLM 超时。可选 `[security]` 提供有界正则和 WebAuthn 依赖，选中实现时才加载。
+
+| 等级字段 | 默认值 / 要求 | 语义 |
+|---|---|---|
+| `name` / `rank` | 必填且各自唯一 | 非空标识和非负整数敏感度；未命中使用配置中最低等级 |
+| `label` / `description` | 空字符串 | 展示标签及说明 |
+| `write` | 自定义等级缺省 `redact` | 仅 `allow`（完整直接写入豁免）或 `redact` |
+| `reveal` | `true` | 允许经本次人的证明及资源授权还原，不表示免认证 |
+| `sync_mode` | 自定义等级缺省 `none` | `full / none / index_only`，仅保留，TODO |
+| `retention_mode` / `retention_seconds` | `keep` / `0` | `keep / purge_after_ttl` 及非负秒数，仅保留，TODO |
+| `share_mode` | 自定义等级缺省 `no_share` | `shareable / internal_only / no_share`，仅保留，TODO |
+
+内置 S1 为 `allow / reveal=true / sync_mode=full / share_mode=shareable`；S2/S3 为
+`redact / reveal=true / sync_mode=none / share_mode=no_share`。均为 `retention_mode=keep`。
+显式改写等级时须同步规则映射；关闭某等级 `reveal` 后相应片段继续显示为占位符。
+
+### `human_authenticator.default.target=passkey`
+
+字段位于该实例的 `params`；启用用户访问控制时同样只允许共享 `default` 实例。
+
+| 字段 | 默认值 / 要求 | 语义 |
+|---|---|---|
+| `rp_id` | 必填 | 与 `origin` 的主机名完全一致，不含端口 |
+| `origin` | 必填 | 固定 HTTPS origin，无路径/查询/片段/用户信息；仅 `http://localhost[:port]` 例外 |
+| `credential_path` | 必填 | 人机凭据、公钥计数器及挑战的独立状态路径 |
+| `challenge_ttl` | `120` 秒 | 范围 10～300 秒，一次使用，失败及过期不可重放 |
+| `enrollment_invites` | `[]` | 每项为 `digest` 与 `actor`；空列表不提供新登记邀请 |
+
+`digest` 是高熵登记码的 64 位小写十六进制 SHA-256；登记码至少 32 字符，经独立可信
+渠道交给本人，不写入配置。`actor` 是服务端确定的具名 USER Scope（有 `user`、无
+`agent`），不从机器 API Key、目标 Scope 或浏览器自述推导。
+
+可选具名 `rate_limiter.human`、`workload_guard.human` 控制独立查看预算；未配置时分别
+使用容量 10、补充 1/s 的令牌桶和并发 4 的信号量。限流按 HTTP 真实对端地址执行，代理
+部署须评估共享对端的预算，不信任客户端转发头。
+
+完整叠加示例见 [privacy-human-view.yml](../../examples/privacy-human-view.yml)，部署及
+首次登记见[配置指南](../zh/API文档/config.md#45-隐私分级与用户访问控制)，协议见
+[S10](S10-security.md#隐私保护与用户访问控制)。

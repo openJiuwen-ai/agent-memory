@@ -23,6 +23,7 @@ from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.common import merge_unit_tags
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
+from jiuwen_memory.construction.evolver_impl.conflict_consolidator import ConflictConsolidator
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
     _resolve_message_store,
@@ -74,12 +75,14 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         layer_annotator: LayerAnnotator | None = None,
         schema_entity_resolver: SchemaEntityResolver | None = None,
         schema_property_merge_planner: SchemaPropertyMergePlanner | None = None,
+        conflict_consolidator: ConflictConsolidator | None = None,
         *,
         hierarchy_composer: HierarchyComposer | None = None,
         domain_store: DomainStore | None = None,
         kv_name: str = "default",
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 1.0,
+        privacy=None,
     ) -> None:
         super().__init__(
             extractor=extractor,
@@ -91,10 +94,12 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             dedup=dedup,
             llm=llm,
             layer_annotator=layer_annotator,
+            conflict_consolidator=conflict_consolidator,
             hierarchy_composer=hierarchy_composer,
             domain_store=domain_store,
             dedup_medium_similarity=dedup_medium_similarity,
             dedup_high_similarity=dedup_high_similarity,
+            privacy=privacy,
         )
         # IndexBuilder owns memory writes; KV is used only to read source/property records.
         self._source_kv = storage.kv(kv_name)
@@ -236,6 +241,9 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             return EvolveResult(created_ids=source_ids)
 
         copy_consolidation_prompts(units, extracted)
+        if self._privacy is not None:
+            for unit in extracted:
+                self._privacy.inherit_classification(unit, units)
         self._annotate_layers(extracted)
         if self._schema_entity_resolver is not None:
             self._schema_entity_resolver.resolve(extracted)
@@ -294,6 +302,8 @@ def _optional_layer_annotator(config):
 
 @EvolverProducer.register("schema_orchestrating")
 def _build(config):
+    from jiuwen_memory.common.security.privacy.base import optional_privacy
+
     vector_on = config.get("vector_enabled", True)
     # index_builder 缺省经公共函数 resolve_index_builder_default：文档模式 → document
     # 三处消费方（engine/evolver/job_factory）必须共用本函数，否则缺省判定分叉会让
@@ -307,6 +317,7 @@ def _build(config):
     llm = LlmProducer.dep(config, default="echo")
     registry = SchemaEntityRegistry(
         kv,
+        privacy=optional_privacy(config),
         vector_store=(
             storage.vector("schema_entities")
             if storage.has_vector("schema_entities")
@@ -343,6 +354,11 @@ def _build(config):
         merge_enabled=as_bool(config.get("use_property_merge"), default=False),
     )
     hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=index_default)
+    conflict_consolidator = ConflictConsolidator(
+        kv=kv,
+        llm=llm,
+        min_cluster_size=int(config.get("conflict_consolidate_min_cluster_size", 2)),
+    )
     return SchemaOrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="entity_schema"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -359,7 +375,9 @@ def _build(config):
         layer_annotator=_optional_layer_annotator(config),
         schema_entity_resolver=resolver,
         schema_property_merge_planner=property_merge,
+        conflict_consolidator=conflict_consolidator,
         kv_name=kv_name,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
+        privacy=optional_privacy(config),
     )

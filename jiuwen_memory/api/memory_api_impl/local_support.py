@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import fields, replace
+from datetime import datetime
 from math import isfinite
 from typing import Any, NamedTuple
 
@@ -184,6 +185,12 @@ def _resolve_space_owner(spec: SpaceSpec, identity: Scope) -> SpaceSpec:
     return spec
 
 
+def _reject_invalid_event_time(value: Any, *, name: str = "event_time") -> None:
+    """显式事件时间必须是含时区的 datetime；缺省（None）表示沿用正文日期抽取。"""
+    if value is not None and (not isinstance(value, datetime) or value.utcoffset() is None):
+        raise ValidationError(f"{name} must be a timezone-aware datetime")
+
+
 def _reject_kernel_system_metadata(metadata: dict[str, Any] | None) -> None:
     """写入/更新边界拒绝调用方占用内核系统元数据 key（F07）。
 
@@ -193,7 +200,10 @@ def _reject_kernel_system_metadata(metadata: dict[str, Any] | None) -> None:
     """
     if not metadata:
         return
-    clash = sorted(set(metadata) & KERNEL_SYSTEM_METADATA_KEYS)
+    clash = sorted(
+        (set(metadata) & KERNEL_SYSTEM_METADATA_KEYS)
+        | {key for key in metadata if isinstance(key, str) and key.startswith("continuity_")}
+    )
     if clash:
         raise ValidationError(f"system_metadata 不得使用内核保留 key：{clash}")
 
@@ -823,9 +833,8 @@ def _trim_space_policy(info: SpaceInfo, axis: str) -> SpaceInfo:
 def _evolve_space_action(mode: EvolveMode | str) -> SpaceAction:
     """演进模式对应的判定动作（F07「入口到轴与动作的映射」）。
 
-    去重（``CONSOLIDATE``）与遗忘（``FORGET``）改写既有条目，取 ``UPDATE``；其余模式
-    产出新条目，取 ``WRITE``。两者都不放宽到「本人所写」——输入是一批条目，逐条判会使
-    一次调用部分生效部分被拒。
+    去重、冲突巩固与遗忘改写既有条目，取 ``UPDATE``；其余模式产出新条目，取 ``WRITE``。
+    两者都不放宽到「本人所写」——输入是一批条目，逐条判会使一次调用部分生效部分被拒。
 
     任务入口按发起该作业的模式取同一动作，因此与 ``evolve`` 共用本函数。取值无法解析
     时取 ``WRITE``：存量任务记录的 ``mode`` 是自由字符串，解析失败按默认动作处置而不是
@@ -835,7 +844,12 @@ def _evolve_space_action(mode: EvolveMode | str) -> SpaceAction:
         resolved = EvolveMode(mode)
     except ValueError:
         return SpaceAction.WRITE
-    if resolved in (EvolveMode.CONSOLIDATE, EvolveMode.FORGET, EvolveMode.HIERARCHY):
+    if resolved in (
+        EvolveMode.CONSOLIDATE,
+        EvolveMode.CONFLICT_CONSOLIDATE,
+        EvolveMode.FORGET,
+        EvolveMode.HIERARCHY,
+    ):
         return SpaceAction.UPDATE
     return SpaceAction.WRITE
 
@@ -873,6 +887,7 @@ def _project_space_facts(facts: SpaceFacts) -> SpaceAuthorizationFacts:
 
 
 __all__ = [
+    "_reject_invalid_event_time",
     "_ROOT",
     "_SPACE_SCAN_CAP",
     "_GRANT_ACTION_BACK",

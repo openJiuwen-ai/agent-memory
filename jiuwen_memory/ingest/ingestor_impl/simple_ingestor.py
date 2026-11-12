@@ -12,6 +12,9 @@ LLM 分类/抽取 prompt（同步写路径分钟级阻塞：add 500KB → 全文
 JSON 包络，由 VideoMemoryExtractor ``json.loads`` 后拆成 CLM/ELM），切分已在规约阶段按
 模态自身的边界完成，这里按字符数再切只会把包络切成非法片段、导致抽取零产出
 （issue #294）。谁生产该格式谁声明，接入层不维护模态白名单。
+
+来源标识（construction F10）：调用方未显式给 ``system_metadata["origin"]`` 时默认写 ``original``；
+派生记忆的 ``inferred`` 由构建层产出算子自己写。
 """
 
 from __future__ import annotations
@@ -28,9 +31,22 @@ from jiuwen_memory.common.normalizer import (
     ensure_structured_modalities_declared,
 )
 from jiuwen_memory.common.normalizer.base import LocalMediaPreflight, NormalizerProducer
+from jiuwen_memory.common.security.privacy.base import (
+    PrivacyProtection,
+    optional_privacy,
+    split_protected_text,
+)
 from jiuwen_memory.common.text_split import split_within_limit
 from jiuwen_memory.common.time_utils import first_absolute_date
-from jiuwen_memory.common.type_def import MemoryUnit, Modality, RawPayload, Segment, Temporal
+from jiuwen_memory.common.type_def import (
+    ORIGIN_KEY,
+    ORIGIN_ORIGINAL,
+    MemoryUnit,
+    Modality,
+    RawPayload,
+    Segment,
+    Temporal,
+)
 from jiuwen_memory.ingest.base import IngestOperatorType
 from jiuwen_memory.ingest.hierarchy_hints import extract_hierarchy_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
@@ -45,11 +61,18 @@ def _now() -> datetime:
 class SimpleIngestor(Ingestor):
     """规约 + 转换为记忆单元（不落盘）；超限文本预切分为多个 unit。"""
 
-    def __init__(self, normalizer: Normalizer, max_unit_chars: int = 8000) -> None:
+    def __init__(
+        self,
+        normalizer: Normalizer,
+        max_unit_chars: int = 8000,
+        *,
+        privacy: PrivacyProtection | None = None,
+    ) -> None:
         self._normalizer = normalizer
         self._max_unit_chars = max_unit_chars
         # 规约器固定，其结构化产物声明在构造期取一次并校验（须是 modalities() 子集）。
         self._structured_modalities = ensure_structured_modalities_declared(normalizer)
+        self._privacy = privacy
 
     @staticmethod
     def operator_type() -> IngestOperatorType:
@@ -80,13 +103,17 @@ class SimpleIngestor(Ingestor):
                     "SimpleIngestor: %s 规约结果为结构化产物，跳过预切分", payload.modality
                 )
                 pieces = [content]
+            elif self._privacy is not None:
+                pieces = self._privacy.split_input(content, self._max_unit_chars)
+            elif "privacy_level" in payload.system_metadata:
+                pieces = split_protected_text(content, self._max_unit_chars)
             else:
                 pieces = self._split(content)
             total = len(pieces)
             # t_event 从完整 content 抽取（首个绝对日期，无则 None），所有分片继承同一份：
             # 切分不改变事件时间，且与查询侧共用 common.time_utils 的同一份规则——否则
             # 写入侧标注的日期与查询侧解析的窗口对不上，时间窗谓词依旧空转（issue #252）。
-            t_event = first_absolute_date(content, now)
+            t_event = payload.event_time or first_absolute_date(content, now)
             # 每个分片继承同一份（消毒后的）结构提示与元数据；多片时记 _part/_parts。
             # 这两个键是 simple 实现的内部序号约定，不对输入开放：用户注入的同名键
             # 一律剔除——多片时强制覆盖为真实序号（setdefault 会让注入值污染全部
@@ -98,6 +125,8 @@ class SimpleIngestor(Ingestor):
                 if total > 1:
                     system_metadata["_part"] = part
                     system_metadata["_parts"] = total
+                if system_metadata.get(ORIGIN_KEY) in (None, ""):
+                    system_metadata[ORIGIN_KEY] = ORIGIN_ORIGINAL
                 units.append(
                     MemoryUnit(
                         id=str(uuid.uuid4()),
@@ -109,7 +138,7 @@ class SimpleIngestor(Ingestor):
                                 source=payload.modality,
                             )
                         ],
-                        source_ref=payload.id,
+                        source_ref=payload.source_ref or payload.id,
                         temporal=Temporal(
                             t_event=t_event,
                             t_ingest=now,
@@ -160,4 +189,5 @@ def _build(config):
     return SimpleIngestor(
         NormalizerProducer.dep(config, default="passthrough"),
         max_unit_chars=_parse_max_unit_chars(config.get("max_unit_chars")),
+        privacy=optional_privacy(config),
     )

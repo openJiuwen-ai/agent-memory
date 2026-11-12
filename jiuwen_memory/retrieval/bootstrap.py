@@ -19,9 +19,11 @@ def register_operators() -> None:
     global _REGISTERED
     if _REGISTERED:
         return
+    import_optional("jiuwen_memory.retrieval.role_view_impl")
     import_optional("jiuwen_memory.retrieval.discloser_impl")
     import_optional("jiuwen_memory.retrieval.expander_impl")
     import_optional("jiuwen_memory.retrieval.fuser_impl")
+    import_optional("jiuwen_memory.retrieval.fuser_impl.secondary_scorer")
     import_optional("jiuwen_memory.retrieval.query_parser_impl")
     import_optional("jiuwen_memory.retrieval.retriever_impl")
     _REGISTERED = True

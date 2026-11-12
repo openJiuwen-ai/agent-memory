@@ -47,7 +47,7 @@ jiuwen_memory/
 ### construction/ — 构建层
 
 接收接入层产出的 MemoryUnit，经 IndexBuilder 交付本体和索引。可插拔能力包含 Extractor、
-Abstractor、Classifier、Associator、IndexBuilder、Router、Dedup、LayerAnnotator、Evolver 与 HierarchyComposer。
+Abstractor、Classifier、Associator、IndexBuilder、Router、Dedup、LayerAnnotator、Evolver 、ConflictResolver 与 HierarchyComposer。
 
 ### retrieval/ — 检索层
 
@@ -91,8 +91,9 @@ Recaller 属于 storage 数据面内部，不是 retrieval 的公共算子。
 4. **scope 隔离是存储层的原生职责**  
    检索型 Store 的 `search` 物理约束在 `query.scope` 内，绝不跨 scope 返回。隔离必须在存储层强制，上层不依赖调用纪律。
 
-5. **MemoryUnit 是唯一跨层数据结构**  
+5. **MemoryUnit 是普通记忆流的跨层结构**
    接入层产出它，构建层落盘并建索引，检索层与控制层读取它。不要在层间传递原始字典或临时结构。
+   用户访问控制的还原正文使用安全域 HumanViewContent，只沿专用终端响应路径返回，不作为记忆本体流转。
 
 ## 子模块 AGENTS.md 规则
 

@@ -68,6 +68,12 @@ class DomainStore(ABC):
     """
 
     @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        """Whether list metadata equality reads committed truth without index lag."""
+        return False
+
+
+    @property
     @abstractmethod
     def security(self) -> StorageSecurity:
         ...

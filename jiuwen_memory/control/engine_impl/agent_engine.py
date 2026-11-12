@@ -65,7 +65,11 @@ from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
-from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.index_builder import (
+    IndexBuilder,
+    IndexBuilderProducer,
+    require_full_write_chain,
+)
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
@@ -74,6 +78,7 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
     restore_coords_from_md_filename,
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
     RetrievalPipelines,
     build_retrieval_pipelines,
@@ -86,6 +91,7 @@ from jiuwen_memory.control.engine_impl.schema_update_support import (
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.engine_impl.temporal_support import (
     matches_delete_selector,
+    matches_update_selector,
     valid_at,
 )
 from jiuwen_memory.control.engine_impl.temporal_support import (
@@ -113,6 +119,7 @@ from jiuwen_memory.control.types import (
     PermissionContext,
     SweepResult,
     UpdateMode,
+    UpdateSelector,
 )
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
@@ -219,8 +226,13 @@ def _expand_provenance_descendants(
     return purge_ids
 
 
-class AgentEngine(MemoryEngine):
+class AgentEngine(HumanViewEngineMixin, MemoryEngine):
     """ToC（个人 agent）编排中枢：驱动接入/构建/检索算子与真源 KVStore 完成。"""
+
+    def configure_retention(self, guard) -> None:
+        self._lifecycle.configure_retention(guard)
+        if self._evolver is not None:
+            self._evolver.configure_retention(guard)
 
     def __init__(
         self,
@@ -299,6 +311,8 @@ class AgentEngine(MemoryEngine):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
+        source_ref: str = "",
     ) -> list[MemoryUnit]:
         # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
@@ -333,11 +347,17 @@ class AgentEngine(MemoryEngine):
             system_metadata=meta,
             user_metadata=dict(user_metadata or {}),
             occurred_at=occurred_at,
+            event_time=event_time,
+            source_ref=source_ref,
         )
         # 两条路径共用：Ingestor 规约。
         check_ingest_cancelled()
         units = self._ingestor.ingest([payload])
         check_ingest_cancelled()
+        # Explicit input time is a write contract, independent of Ingestor choice.
+        if event_time is not None:
+            for unit in units:
+                unit.temporal.t_event = event_time
         for unit in units:
             unit.tags = list(tags or [])
             if "session_id" in meta:
@@ -402,6 +422,8 @@ class AgentEngine(MemoryEngine):
                     system_metadata=item.system_metadata,
                     user_metadata=item.user_metadata,
                     occurred_at=item.occurred_at,
+                    event_time=item.event_time,
+                    source_ref=item.source_ref,
                 )
                 outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
             except Exception as exc:
@@ -501,7 +523,32 @@ class AgentEngine(MemoryEngine):
         contexts: list[PermissionContext] = []
         for scope in scopes:
             for unit in self._list_units(scope):
+                # 排除 SUPERSEDED 历史版本：FORGET/ARCHIVE 流转非法（SUPERSEDED→
+                # ARCHIVED 禁止）；PURGE 物理删除仍需覆盖历史版本（S02/S03
+                # 合规硬删，不得残留明文）。
+                if (
+                    unit.lifecycle == LifecycleState.SUPERSEDED
+                    and selector.mode is not DeleteMode.PURGE
+                ):
+                    continue
                 if matches_delete_selector(unit, selector):
+                    contexts.append(_permission_context_from_unit(unit))
+        return contexts
+
+    async def permission_contexts_for_update(
+        self, selector: UpdateSelector
+    ) -> list[PermissionContext]:
+        scopes = [selector.scope] if selector.scope is not None else self._domain_store.scopes()
+        if not scopes:
+            scopes = [Scope()]
+        contexts: list[PermissionContext] = []
+        for scope in scopes:
+            for unit in self._list_units(scope):
+                self._ensure_unit_scope(unit, scope)
+                # 仅匹配 ACTIVE 态：SUPERSEDED 历史版本不应参与批量更新（Issue #8）
+                if unit.lifecycle != LifecycleState.ACTIVE:
+                    continue
+                if matches_update_selector(unit, selector):
                     contexts.append(_permission_context_from_unit(unit))
         return contexts
 
@@ -612,6 +659,7 @@ class AgentEngine(MemoryEngine):
             )
         return new
 
+
     async def delete(self, selector: DeleteSelector) -> list[str]:
         selector_is_empty = (
             not selector.unit_ids
@@ -635,11 +683,17 @@ class AgentEngine(MemoryEngine):
         for scope in scopes:
             scanned.extend((scope, unit.id, unit) for unit in self._list_units(scope))
 
-        matches = [
-            (scope, unit_id, unit)
-            for scope, unit_id, unit in scanned
-            if matches_delete_selector(unit, selector)
-        ]
+        matches = []
+        for scope, unit_id, unit in scanned:
+            # PURGE 物理删除需覆盖 SUPERSEDED 历史版本（S02/S03 合规硬删）；
+            # FORGET/ARCHIVE 因流转非法（SUPERSEDED→ARCHIVED 禁止）仍排除。
+            if (
+                unit.lifecycle == LifecycleState.SUPERSEDED
+                and selector.mode is not DeleteMode.PURGE
+            ):
+                continue
+            if matches_delete_selector(unit, selector):
+                matches.append((scope, unit_id, unit))
         affected = [unit.id for _, _, unit in matches]
         if not affected:
             logger.info(
@@ -916,6 +970,10 @@ def _build(config):
         return JobFactoryProducer.build_named("default", ctx)
 
     manager = StoreManagerProducer.resolve(config)
+    # 写入链校验先于检索依赖解析：非法 IndexBuilder 是装配错误，应最先失败。
+    index_builder = require_full_write_chain(
+        IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
+    )
     retriever = RetrieverProducer.dep(config, default="pipeline")
     retrieval_pipelines = build_retrieval_pipelines(config)
     if config.name == "default":
@@ -941,7 +999,7 @@ def _build(config):
             logger.warning("AgentEngine dependency fallback: %s", ", ".join(bypassed))
     return AgentEngine(
         IngestorProducer.dep(config, default="simple"),
-        IndexBuilderProducer.dep(config, "index_builder", default=ib_default),
+        index_builder,
         retriever,
         manager.domain_store(resolve_name(config, "domain_store")),
         SchedulerProducer.dep(config, default="in_process"),

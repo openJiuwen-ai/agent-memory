@@ -86,12 +86,15 @@ class DashScopeLLM(OpenAILLM):
         return {"extra_body": {"enable_thinking": self._enable_thinking}}
 
 
-@LlmProducer.register("dashscope")
+@LlmProducer.register("dashscope", config_inspectors={"portal_model_fields": lambda config: True})
 def _build(config):
     """装配 DashScope LLM，并挂接内核共享 ConfigSource（若已装配）。"""
     from jiuwen_memory.config.config_source import ConfigSourceProducer
     from jiuwen_memory.config.keys import NS_LLM, resolve_instance_namespace
 
+    source = ConfigSourceProducer.get_cached("default")
+    if config.name and callable(getattr(source, "build_model", None)):
+        return source.build_model(config.name)
     base_url = (
         config.get("llm_base_url") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
     )
@@ -103,6 +106,7 @@ def _build(config):
     config_namespace = resolve_instance_namespace(
         NS_LLM, config.name, config.params
     )
+    frozen = source.for_model() if callable(getattr(source, "for_model", None)) else source
     return DashScopeLLM(
         model_name=config.get("llm_model") or "qwen-plus",
         base_url=base_url,
@@ -114,6 +118,6 @@ def _build(config):
         enable_thinking=_parse_enable_thinking(config.get("enable_thinking", False)),
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
-        config_source=ConfigSourceProducer.get_cached("default"),
+        config_source=frozen,
         config_namespace=config_namespace,
     )

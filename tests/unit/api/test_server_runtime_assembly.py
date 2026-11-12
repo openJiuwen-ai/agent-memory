@@ -1,17 +1,22 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """公开 Server 装配句柄的选择、失败清理和生命周期契约。"""
 
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
 
 from jiuwen_memory.api import (
     MemoryRuntime,
+    Scope,
     ValidationError,
     assemble_server_runtime,
     build_configured_security_runtime,
+    fixed_personal_owner,
 )
 from jiuwen_memory.api.memory_api_impl import assembly
+from jiuwen_memory.common.security.authentication.base import AuthProducer
+from jiuwen_memory.common.security.runtime import SecurityRuntimeProducer
 
 pytestmark = pytest.mark.unit
 
@@ -45,6 +50,43 @@ def test_server_runtime_auto_uses_configured_runtime() -> None:
     finally:
         runtime.close()
     assert selected.security_resource_owner().is_closed()
+
+
+def test_fixed_identity_inspection_and_multi_identity_denial() -> None:
+    assert fixed_personal_owner(_DEV_CONFIG) == Scope(org="local", user="developer")
+    config = deepcopy(_DEV_CONFIG)
+    authenticator = config["security"]["default"]["params"]["authenticator"]
+    authenticator["params"] = {"identities": {"key": {"actor": {"org": "x", "user": "y"}}}}
+    assert fixed_personal_owner(config) is None
+
+
+def test_fixed_identity_inspection_follows_named_authenticator() -> None:
+    config = deepcopy(_DEV_CONFIG)
+    params = config["security"]["default"]["params"]
+    config["authenticator"] = {"local_dev": params["authenticator"]}
+    params["authenticator"] = "local_dev"
+    assert fixed_personal_owner(config) == Scope(org="local", user="developer")
+    params["authenticator"] = "missing"
+    assert fixed_personal_owner(config) is None
+
+
+def test_fixed_identity_inspection_matches_runtime_selection() -> None:
+    config = deepcopy(_DEV_CONFIG)
+    security = config["security"]
+    security["local"] = security.pop("default")
+    assert fixed_personal_owner(config) == Scope(org="local", user="developer")
+    security["other"] = security["local"]
+    assert fixed_personal_owner(config) is None
+
+
+def test_replaced_plugins_do_not_inherit_fixed_identity_capability() -> None:
+    assert fixed_personal_owner(_DEV_CONFIG) is not None
+    with AuthProducer.registration_scope():
+        AuthProducer.register("dev")(lambda config: None)
+        assert fixed_personal_owner(_DEV_CONFIG) is None
+    with SecurityRuntimeProducer.registration_scope():
+        SecurityRuntimeProducer.register("standard")(lambda config: None)
+        assert fixed_personal_owner(_DEV_CONFIG) is None
 
 
 @pytest.mark.parametrize("error_type", [ValidationError, KeyboardInterrupt])

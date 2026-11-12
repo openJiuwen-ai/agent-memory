@@ -15,6 +15,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `role_view.py` / `role_view_impl/bounded.py` | 职责视图接口/Producer 与有界关系展开实现：单/多职责（duty 列表）逐职责边判定、带剩余深度的路径状态与支配、跨职责路径、`matched_duties`/`valid_duties`/`common`/`duty_coverage`，保留证据路径与缺口；经验条目按 candidate/supported_in_conditions/needs_review/refuted 流转。由 search 的接续参数触发，结果经 `Continuity.view_result` 归一化后写入 `RetrievalResult.paths/gaps/view_meta` 与 `RetrievedItem.view`，角色模式装配；关系从 Registry KV 关系头回查 |
 | `base.py` | RetrievalOperator 基类：所有检索层算子的自描述契约 |
 | `types.py` | 检索对外类型；Storage 共用的 ParsedQuery/候选/错误类型从 common 重导出 |
 | `cross_space.py` | 跨空间检索的取数上界（`allocate_quota`）与结果合并（`merge`）；不访问存储、不调模型的纯函数，与算子并列而非算子，不进工厂 |
@@ -24,7 +25,7 @@
 | `retriever.py` | Retriever 接口与 Producer；完整链路入口及可选 query_parsers 依赖声明 |
 | `staged_retriever.py` | StagedRetriever 抽象阶段与请求独占 RetrieveState / RetrieveRun；不提供 retrieve 编排 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
-| `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理 |
+| `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理；`secondary_scorer/` 子目录是次级排序算子（`SecondaryScorer` 接口 + `default` 分带实现，非 Fuser） |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
 | `retriever_impl/` | Retriever 实现目录；pipeline 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；multimodal 组合原生、CLM、ELM 三个过滤分支并执行 RRF 融合 |
 | `schema_temporal/` | 只读 Schema TemporalEntity 视图：双轴查询、实体/Property 双路、实体内裁剪、邻居扩展与最终 Source fallback；正式输出为每 Entity 一个结果 |
@@ -46,8 +47,11 @@
      ↓
 6. 可选 Reranker 用 `ParsedQuery.rewritten` 精排（记 calibrated 标志；fallback/off 时该值即 sanitized raw）
      ↓
+6b. 可选 `Reranker.resolve` 语义去重 + 冲突消解（锦上添花；失败降级 keep_all，轨迹记 degraded；复用精排 score 不二次打分，送 LLM 候选受条数上限 + 总字符预算约束，被截断候选只保留不丢）
+     ↓
 7. 相关性阈值：绝对 min_score（仅校准路径）+ 相对 ratio（校准/未校准两路，默认关闭）
      ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
+     ↓ + 可选次级排序（secondary_rank_enabled，globals 或 retriever params，默认关）：SecondaryScorer 带内按重要度/时效 tie-break
 8. 截断 top_k
      ↓
 9. Discloser.disclose(...) → list[RetrievedItem]
@@ -109,6 +113,13 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 10. **Discloser 只做内容塑形**
    候选记忆单元已由 Retriever 经 UnitReader 点读、有效性过滤、（可选）重排后给定。Discloser 不再做点读/过滤/重排，只按 level 截/取内容产出结果。
+
+10a. **次级排序只做带内 tie-break**
+   `SecondaryScorer` 是独立算子（`RetrievalOperatorType.SECONDARY_SCORER`），不是 Fuser；
+   `PipelineRetriever.secondary_rank` 步骤在阈值（及 rollup MaxP）之后、top_k 之前执行，默认关闭。只在
+   `calibrated=True`（精排成功）路径生效——RRF 融合分量纲下绝对带宽会把全部候选并成
+   一带。默认实现按带首锚定分带（带宽 ≤ `score_band`），带间严格保持相关性顺序；
+   算子只能重排、不得增删候选，违约或抛异常时保持原顺序并记 `secondary_rank` 错误 step。
 
 11. **Schema TemporalEntity 只读但正式返回**
    临时视图不持久化，所有 Property/Source 必须先经过点读和生命周期复核。
@@ -230,3 +241,6 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - pipeline 选择归 control，Retriever 不解析 query.pipeline；三个 DomainStore 执行路径保持原有语义。
 
 - 阶段前置状态缺失时显式抛出 RuntimeError，不使用会被 Python 优化模式移除的 assert。
+
+角色视图复用已判权关系快照传播依赖失效：supports 正向、requires 反向；视图内按此做保守降级。
+跨视图的复核聚合（`meta.review`、变更日志与影响面传播）已随 2026-11-05 接口合并删除，不再有视图外未检查范围的汇总。

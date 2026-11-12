@@ -187,3 +187,34 @@ class PartialFailureError(AgentMemoryError):
                 f"retry {retry_action}"
             )
         )
+
+
+class WriteIncompleteError(PartialFailureError):
+    """接续写入未完成（unknown / partial）：调用方不得当作成功，按 retry_action 处理。
+
+    HTTP 映射 409；字段 ``operation_id`` 是事件幂等键，``status`` 为 unknown 或 partial，
+    ``refs`` 是已确认保存的 MemoryRef（可能为空），``retry_action`` 为
+    ``retry_original_write``（partial）或 ``recover_then_retry``（unknown）。
+    """
+
+    def __init__(
+        self,
+        *,
+        operation_id: str,
+        status: str,
+        retry_action: str,
+        refs: tuple = (),
+        message: str = "",
+    ) -> None:
+        if status not in {"unknown", "partial"}:
+            raise ValueError("continuity write status must be 'unknown' or 'partial'")
+        self.operation_id = operation_id
+        self.status = status
+        self.refs = tuple(refs)
+        super().__init__(
+            completed=(),
+            failed=operation_id,
+            retry_action=retry_action,
+            message=message
+            or f"continuity write {status} for {operation_id}; retry {retry_action}",
+        )

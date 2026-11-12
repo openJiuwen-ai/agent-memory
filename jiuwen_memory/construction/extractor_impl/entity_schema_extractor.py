@@ -31,6 +31,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    inferred_attribution,
     merge_unit_tags,
     reject_deprecated_llm_attempt_keys,
 )
@@ -53,6 +55,7 @@ _DEFAULT_BATCH_SIZE = 8
 _DEFAULT_VALIDATION_ATTEMPTS = 3
 _DEFAULT_MAX_ENTITIES = 200
 _DEFAULT_MAX_PROPERTIES = 15
+_DEFAULT_EXTRACT_MAX_TOKENS = 8192
 _NAME_SUFFIX_RE = re.compile(r"[（(].*$")
 _PROPERTY_TIME_TOKEN_RE = re.compile(
     r"(?<![\d-])"
@@ -355,6 +358,8 @@ class EntitySchemaExtractor(Extractor):
         max_properties_per_entity: int = _DEFAULT_MAX_PROPERTIES,
         max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
+        extract_max_tokens: int = _DEFAULT_EXTRACT_MAX_TOKENS,
+        importance_category_map: dict[str, str] | None = None,
     ) -> None:
         if batch_size < 1:
             raise ValueError("schema batch_size 必须 >= 1")
@@ -364,7 +369,10 @@ class EntitySchemaExtractor(Extractor):
             raise ValueError("max_entities_per_conversation 必须 >= 1")
         if max_properties_per_entity < 1:
             raise ValueError("max_properties_per_entity 必须 >= 1")
+        if extract_max_tokens < 1:
+            raise ValueError("schema extract_max_tokens 必须 >= 1")
         self._llm = llm
+        self._importance_category_map = importance_category_map
         self._catalog = (
             schema
             if isinstance(schema, EntitySchemaCatalog)
@@ -373,6 +381,7 @@ class EntitySchemaExtractor(Extractor):
         self._enable_schema_selection = enable_schema_selection
         self._batch_size = batch_size
         self._validation_attempts = validation_attempts
+        self._extract_max_tokens = extract_max_tokens
         self._normalizer = SchemaExtractionNormalizer(
             self._catalog,
             max_entities_per_conversation=max_entities_per_conversation,
@@ -524,7 +533,10 @@ class EntitySchemaExtractor(Extractor):
         last_response = ""
         best_candidates: list[SchemaPropertyCandidate] = []
         for _attempt in range(self._validation_attempts):
-            response = self._helper.call_llm_with_retry([ChatMessage(role="user", content=prompt)])
+            response = self._helper.call_llm_with_retry(
+                [ChatMessage(role="user", content=prompt)],
+                max_tokens=self._extract_max_tokens,
+            )
             last_response = response
             try:
                 raw_memory = _parse_json_object(response)
@@ -713,6 +725,8 @@ class EntitySchemaExtractor(Extractor):
             if candidate.identity_kind:
                 metadata["schema_entity_identity_kind"] = candidate.identity_kind
             metadata.update(_event_time_metadata(candidate.property_time))
+            # F10：属性记忆是派生记忆，origin=inferred，重要度取 default 类别值（覆盖继承值）
+            metadata.update(inferred_attribution(None, self._importance_category_map))
             event_fields = _event_time_fields(candidate.property_time)
             result.append(
                 MemoryUnit(
@@ -1548,4 +1562,8 @@ def _build(config):
         ),
         max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
+        extract_max_tokens=int(
+            config.get("schema_extract_max_tokens", _DEFAULT_EXTRACT_MAX_TOKENS)
+        ),
+        importance_category_map=importance_category_map_from_config(config),
     )

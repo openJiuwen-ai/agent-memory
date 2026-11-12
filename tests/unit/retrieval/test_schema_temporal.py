@@ -1123,7 +1123,7 @@ def test_reranker_called_batch_first_with_per_entity_fallback() -> None:
             self._fail_entity_index = fail_entity_index
             self._entity_retries = 0
 
-        def rerank(self, query: str, texts: list[str]) -> list[float]:
+        def rerank_texts(self, query: str, texts: list[str]) -> list[float]:
             del query
             self.calls.append(list(texts))
             if self._fail_batch and len(self.calls) == 1:

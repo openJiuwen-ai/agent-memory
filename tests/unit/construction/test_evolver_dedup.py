@@ -36,6 +36,7 @@ from jiuwen_memory.construction.abstractor import Abstractor
 from jiuwen_memory.construction.associator import Associator
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.evolver import EvolveMode, EvolveResult
+from jiuwen_memory.construction.evolver_impl.conflict_consolidator import ConsolidatePlan
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     _DEDUP_BATCH_SYSTEM_PROMPT,
     _DEDUP_SYSTEM_PROMPT,
@@ -45,7 +46,7 @@ from jiuwen_memory.construction.extractor import Extractor
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.graph import GraphStore
-from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.kv import KVStore, load_units
 from jiuwen_memory.storage.types import (
     IndexRemoveMode,
     IndexWriteMode,
@@ -361,11 +362,10 @@ def _make_evolver(
         "tier_filter": dedup_kwargs.get("dedup_tier_filter", True),
         "scope_filter": dedup_kwargs.get("dedup_scope_filter", True),
     }
-    evolver_kwargs = {
-        k: dedup_kwargs[k]
-        for k in ("dedup_medium_similarity", "dedup_high_similarity")
-        if k in dedup_kwargs
-    }
+    evolver_kwargs: dict[str, object] = {}
+    for key in ("dedup_medium_similarity", "dedup_high_similarity", "conflict_consolidator"):
+        if key in dedup_kwargs:
+            evolver_kwargs[key] = dedup_kwargs[key]
     storage = make_storage(kv=kv, vector=vector_store, graph=NoopGraphStore())
     dedup = VectorDedup(storage=storage, embedder=embedder, **recaller_kwargs)
     return OrchestratingEvolver(
@@ -477,6 +477,158 @@ def _index_unit(
         metadata={"unit_id": unit.id, "tier": unit.tier.value, "seq": "0"},
     )
     vector_store.insert(unit.scope, [record])
+
+
+# ---------------------------------------------------------------------------
+# CONFLICT_CONSOLIDATE 落盘层（R1 / R2 / R3）
+# ---------------------------------------------------------------------------
+
+
+class _FakeConsolidator:
+    """直接返回固定计划的假 consolidator（重载语义复用真源 KV）。"""
+
+    def __init__(self, plan: ConsolidatePlan, kv) -> None:
+        self._plan = plan
+        self._kv = kv
+
+    def plan(self, seeds):  # noqa: ARG002
+        return self._plan
+
+    def load_fresh(self, scope, unit_ids):
+        return load_units(self._kv, scope, unit_ids)
+
+
+def _schema_property(
+    unit_id: str,
+    content: str,
+    *,
+    entity_id: str = "E-jon",
+    prop: str = "occupation",
+    lifecycle: LifecycleState = LifecycleState.ACTIVE,
+) -> MemoryUnit:
+    return MemoryUnit(
+        id=unit_id,
+        scope=_DEFAULT_SCOPE,
+        tier=MemoryTier.SEMANTIC,
+        segments=[Segment(content=content, source=Modality.TEXT)],
+        lifecycle=lifecycle,
+        temporal=Temporal(),
+        system_metadata={
+            "extraction_mode": "schema",
+            "schema_entity_id": entity_id,
+            "schema_entity_name": "Jon",
+            "schema_entity_type": "person",
+            "schema_property_name": prop,
+            "schema_property_operation": "set",
+        },
+    )
+
+
+class TestConflictConsolidateApply:
+    """验证 `_evolve_conflict_consolidate` 的落盘与标记语义。"""
+
+    @staticmethod
+    def test_additions_are_persisted_without_dedup():
+        """产物（create/merge）直接落盘，不过相似去重——同内容也不会被 NOOP。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+
+        seed = _schema_property("b1", "Jon is a banker")
+        _index_unit(seed, stores["kv"], stores["vector"], embedder)
+
+        # 产物与 seed 内容完全相同：若走 dedup 会被高相似 NOOP；直接落盘应保留
+        prod = _schema_property("p1", "Jon is a banker")
+        plan = ConsolidatePlan(run_id="run-1", additions=[prod], processed_unit_ids={"b1"})
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            _MockLLM(),
+            conflict_consolidator=_FakeConsolidator(plan, stores["kv"]),
+        )
+
+        result = evolver.evolve([seed], EvolveMode.CONFLICT_CONSOLIDATE)
+
+        assert "p1" in result.created_ids
+        assert loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("p1"))) is not None
+        # seed 本体内容不被产物影响，只追加 done 标记
+        stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("b1")))
+        assert stored.content == "Jon is a banker"
+        assert stored.system_metadata.get("consolidation_done_at")
+
+    @staticmethod
+    def test_retired_seed_is_not_marked():
+        """被退役的 seed 不得打 done 标记（P7 按 retired_ids 排除）。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+
+        seed = _schema_property("b1", "Jon is a banker")
+        _index_unit(seed, stores["kv"], stores["vector"], embedder)
+
+        plan = ConsolidatePlan(run_id="run-1", retire=[seed], processed_unit_ids={"b1"})
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            _MockLLM(),
+            conflict_consolidator=_FakeConsolidator(plan, stores["kv"]),
+        )
+
+        evolver.evolve([seed], EvolveMode.CONFLICT_CONSOLIDATE)
+
+        stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("b1")))
+        assert stored.lifecycle is LifecycleState.SUPERSEDED
+        assert not stored.system_metadata.get("consolidation_done_at")
+
+    @staticmethod
+    def test_failed_cluster_not_marked():
+        """R2：LLM 失败的簇（processed_unit_ids 为空）不得打 done 标记。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+
+        seed = _schema_property("b1", "Jon is a banker")
+        _index_unit(seed, stores["kv"], stores["vector"], embedder)
+
+        # 模拟 plan 失败：无任何产出、processed_unit_ids 为空
+        plan = ConsolidatePlan(run_id="run-x")
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            _MockLLM(),
+            conflict_consolidator=_FakeConsolidator(plan, stores["kv"]),
+        )
+
+        evolver.evolve([seed], EvolveMode.CONFLICT_CONSOLIDATE)
+
+        stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("b1")))
+        assert not stored.system_metadata.get("consolidation_done_at")
+
+    @staticmethod
+    def test_expanded_cluster_member_is_marked():
+        """簇内被展开拉入、但不在 seeds 里的老成员也要打标记，否则簇永不 settled。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+
+        seed = _schema_property("b2", "Jon is a teacher")
+        old = _schema_property("b1", "Jon is a banker")
+        for unit in (seed, old):
+            _index_unit(unit, stores["kv"], stores["vector"], embedder)
+
+        plan = ConsolidatePlan(run_id="run-1", processed_unit_ids={"b1", "b2"})
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            _MockLLM(),
+            conflict_consolidator=_FakeConsolidator(plan, stores["kv"]),
+        )
+
+        evolver.evolve([seed], EvolveMode.CONFLICT_CONSOLIDATE)
+
+        for unit_id in ("b1", "b2"):
+            stored = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(unit_id)))
+            assert stored.system_metadata.get("consolidation_done_at"), unit_id
 
 
 # ---------------------------------------------------------------------------
@@ -1195,3 +1347,101 @@ class TestDedupEvolveExtract:
         assert len(result.created_ids) == 2
         assert "ext-1" in result.created_ids
         assert "ext-2" in result.created_ids
+
+
+class TestDedupImportanceMax:
+    """F10：UPDATE/SUPERSEDE 合并时重要度取 max（只增不减）。"""
+
+    @staticmethod
+    def _run(decision: str, existing_importance, candidate_importance):
+        stores = _create_stores()
+        responses = [json.dumps({"decision": decision, "reason": "test"})]
+        if decision == "update":
+            responses.append("合并后的内容")
+        embedder = _HashEmbedder()
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], embedder, _MockLLM(responses=responses),
+            dedup_high_similarity=1.01,
+        )
+        existing = _make_unit("e1", "用户偏好简洁回答风格")
+        if existing_importance is not None:
+            existing.system_metadata["importance"] = existing_importance
+        _index_unit(existing, stores["kv"], stores["vector"], embedder)
+        candidate = _make_unit("c1", "用户偏好简洁回答风格")
+        if candidate_importance is not None:
+            candidate.system_metadata["importance"] = candidate_importance
+        getattr(evolver, "_dedup_batch")([candidate])
+        stored_id = "e1" if decision == "update" else "c1"
+        return loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(stored_id)))
+
+    def test_update_takes_max_importance(self):
+        merged = self._run("update", "0.50", "0.85")
+        assert merged.system_metadata["importance"] == "0.85"
+
+    def test_update_preserves_higher_importance_when_candidate_lower(self):
+        merged = self._run("update", "0.95", "0.30")
+        assert merged.system_metadata["importance"] == "0.95"
+
+    def test_update_importance_fallback_when_existing_missing(self):
+        merged = self._run("update", None, "0.80")
+        assert merged.system_metadata["importance"] == "0.80"
+
+    def test_update_compares_importance_numerically(self):
+        # 字符串字典序下 "0.5" > "0.45" 成立但 "0.5" > "0.95" 也成立——须按数值取 max。
+        merged = self._run("update", "0.5", "0.95")
+        assert merged.system_metadata["importance"] == "0.95"
+
+    def test_update_without_any_importance_writes_nothing(self):
+        merged = self._run("update", None, None)
+        assert "importance" not in merged.system_metadata
+
+    def test_supersede_takes_max_importance(self):
+        replacement = self._run("supersede", "0.50", "0.85")
+        assert replacement.system_metadata["importance"] == "0.85"
+
+    def test_supersede_preserves_higher_importance_when_candidate_lower(self):
+        replacement = self._run("supersede", "0.90", "0.30")
+        assert replacement.system_metadata["importance"] == "0.90"
+
+
+class TestDedupOriginPreserved:
+    """F10：UPDATE 合并保留被合并 existing 的 origin；SUPERSEDE 由新版本自带 origin。"""
+
+    @staticmethod
+    def _run(decision: str, existing_origin, candidate_origin):
+        stores = _create_stores()
+        responses = [json.dumps({"decision": decision, "reason": "test"})]
+        if decision == "update":
+            responses.append("合并后的内容")
+        embedder = _HashEmbedder()
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], embedder, _MockLLM(responses=responses),
+            dedup_high_similarity=1.01,
+        )
+        existing = _make_unit("e1", "用户偏好简洁回答风格")
+        if existing_origin is not None:
+            existing.system_metadata["origin"] = existing_origin
+        _index_unit(existing, stores["kv"], stores["vector"], embedder)
+        candidate = _make_unit("c1", "用户偏好简洁回答风格")
+        if candidate_origin is not None:
+            candidate.system_metadata["origin"] = candidate_origin
+        getattr(evolver, "_dedup_batch")([candidate])
+        stored_id = "e1" if decision == "update" else "c1"
+        return loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(stored_id)))
+
+    def test_update_keeps_existing_origin_when_candidate_differs(self):
+        merged = self._run("update", "original", "inferred")
+        assert merged.system_metadata["origin"] == "original"
+
+    def test_update_keeps_existing_inferred_origin(self):
+        merged = self._run("update", "inferred", "original")
+        assert merged.system_metadata["origin"] == "inferred"
+
+    def test_update_does_not_borrow_candidate_origin_when_existing_missing(self):
+        # 存量数据无 origin 时不猜：借候选的 inferred 可能把原文误标为派生。
+        merged = self._run("update", None, "inferred")
+        assert "origin" not in merged.system_metadata
+
+    def test_supersede_keeps_candidate_origin(self):
+        replacement = self._run("supersede", "original", "inferred")
+        assert replacement.system_metadata["origin"] == "inferred"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from unittest.mock import Mock
 
 import pytest
 
@@ -304,20 +305,24 @@ class _LongCaptionImageNormalizer(Normalizer):
         return "\n\n".join(f"caption line {i} " + "字" * 40 for i in range(20))
 
 
-def test_simple_ingestor_keeps_video_envelope_whole_over_limit() -> None:
+@pytest.mark.parametrize("privacy_enabled", [False, True])
+def test_simple_ingestor_keeps_video_envelope_whole_over_limit(privacy_enabled: bool) -> None:
     """issue #294：规约器声明为结构化产物的模态不参与预切分，超限仍是单个完整 unit。"""
     envelope = json.dumps({"payload_id": "v1", "clips": [{"id": "c1", "x": "甲" * 400}]})
     assert len(envelope) > 200, "用例前提：包络必须超过 max_unit_chars"
 
-    units = SimpleIngestor(_EnvelopeVideoNormalizer(envelope), max_unit_chars=200).ingest(
-        [RawPayload(id="video-1", modality=Modality.VIDEO, uri="file:///v.mp4")]
-    )
+    privacy = Mock() if privacy_enabled else None
+    units = SimpleIngestor(
+        _EnvelopeVideoNormalizer(envelope), max_unit_chars=200, privacy=privacy
+    ).ingest([RawPayload(id="video-1", modality=Modality.VIDEO, uri="file:///v.mp4")])
 
     assert len(units) == 1, "视频包络不应被按字符数切成多个 unit"
     assert units[0].content == envelope, "包络内容应原样保留"
     assert json.loads(units[0].content)["clips"][0]["id"] == "c1", "包络应仍是合法 JSON"
     assert "_part" not in units[0].system_metadata, "单 unit 不应残留 _part"
     assert "_parts" not in units[0].system_metadata, "单 unit 不应残留 _parts"
+    if privacy is not None:
+        privacy.split_input.assert_not_called()
 
 
 def test_simple_ingestor_rejects_misdeclared_structured_modalities_at_construction() -> None:
@@ -357,6 +362,35 @@ def test_simple_ingestor_still_splits_code_modality() -> None:
     assert all(len(u.content) <= 200 for u in units), "每片都不应超过 max_unit_chars"
 
 
+def _ingest_with_metadata(system_metadata: dict) -> list:
+    payload = RawPayload(
+        id="payload-origin",
+        scope=Scope(org="acme", user="alice"),
+        modality=Modality.TEXT,
+        data=b"short",
+        system_metadata=system_metadata,
+    )
+    return SimpleIngestor(PassthroughNormalizer()).ingest([payload])
+
+
+def test_simple_ingestor_defaults_origin_to_original() -> None:
+    (unit,) = _ingest_with_metadata({})
+    assert unit.system_metadata["origin"] == "original"
+    assert "importance" not in unit.system_metadata, "原文路径不由 ingestor 写重要度"
+
+
+def test_simple_ingestor_preserves_explicit_origin_from_caller() -> None:
+    (unit,) = _ingest_with_metadata({"origin": "imported", "importance": "0.95"})
+    assert unit.system_metadata["origin"] == "imported"
+    assert unit.system_metadata["importance"] == "0.95"
+
+
+def test_simple_ingestor_origin_inferred_value_spelling() -> None:
+    from jiuwen_memory.common.type_def import ORIGIN_INFER, ORIGIN_KEY, ORIGIN_ORIGINAL
+
+    assert (ORIGIN_KEY, ORIGIN_ORIGINAL, ORIGIN_INFER) == ("origin", "original", "inferred")
+
+
 def test_parse_max_unit_chars_rejects_invalid_values() -> None:
     """显式 null/空串/非整数非法值显式拒绝；缺省 8000；0/负数是文档化关闭开关。"""
     from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import _parse_max_unit_chars
@@ -370,3 +404,13 @@ def test_parse_max_unit_chars_rejects_invalid_values() -> None:
         _parse_max_unit_chars("abc")
     with pytest.raises(ValidationError):
         _parse_max_unit_chars(True)
+
+
+def test_ingestor_uses_explicit_time_without_parsing_continuity_metadata():
+    event_time = datetime(2001, 1, 1, tzinfo=UTC)
+    payload = RawPayload(
+        data=b"observation", event_time=event_time,
+        system_metadata={"continuity_envelope": "opaque to ingestion"},
+    )
+    unit = SimpleIngestor(PassthroughNormalizer()).ingest([payload])[0]
+    assert unit.temporal.t_event == event_time

@@ -20,7 +20,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
 
-from jiuwen_memory.common.errors import UnsupportedCapabilityError
+from jiuwen_memory.api.human_view import PrimaryAuthentication
+from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
     DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
@@ -40,9 +41,18 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
+from jiuwen_memory.common.type_def.continuity import (
+    ContinuityRecovery,
+    ContinuityWrite,
+    MemoryRef,
+    RelationRecord,
+    TaskRequest,
+    ViewBudget,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
+    BatchUpdateResult,
     BatchWriteItem,
     BatchWriteResult,
     Channel,
@@ -60,7 +70,9 @@ from jiuwen_memory.control import (
     SpaceSpec,
     SpaceStatus,
     SpaceUsage,
+    UpdateSelector,
 )
+from jiuwen_memory.control.application.personal_memory import PersonalPage, PersonalSearchResult
 from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
 
 
@@ -79,13 +91,61 @@ class MemoryAPI(ABC):
     的 target ``scope`` 与业务参数（调用方身份不下沉，下游信任 target）；同时在本层
     落带 actor 与稳定决策标识的入口审计事件。
 
-    ``security`` 是本层的**唯一显式安全输入**：除 ``check_write`` 为兼容旧第二位置
+    普通业务方法以 ``security`` 为**唯一显式安全输入**：除 ``check_write`` 为兼容旧第二位置
     参数外均为必填 keyword-only。调用方身份只来自 ``security.auth.actor``，业务
     payload 中不存在 ``identity`` /
     ``actor_*`` / ``role`` / ``acting_user`` 之类的身份声明（F05
     §RequestSecurityContext）。target 仍由业务参数表达，不与 actor 合并——二者
     同为 Scope 时若合并，「读自己的」和「读别人的」在签名上就分不出来了。
+
+    可选的用户访问控制入口独立承接认证与终端响应，不属于机器工具目录。
     """
+
+    def begin_human_view(
+        self,
+        payload: dict,
+        browser: str,
+        *,
+        security: RequestSecurityContext | None = None,
+        primary_auth: PrimaryAuthentication | None = None,
+    ) -> dict[str, Any]:
+        """认证并暂存已授权的脱敏快照，返回人机挑战；登记使用受控邀请。
+
+        ``primary_auth`` 仅由可信宿主提供，API 内部才执行该认证上下文；它不是
+        JSON 参数。进程内调用可改为提供既有 ``security``，两者不能同时传入。
+        未装配能力的实现默认拒绝，不改变既有实现的抽象方法集合。
+        """
+        raise ValidationError(f"{type(self).__name__}: user access control unavailable")
+
+    def finish_human_view(self, payload: dict, browser: str, *, peer: str = "") -> dict[str, Any]:
+        """验证一次性人机证明，复核资源后委托 Engine 还原并返回用户访问控制响应。"""
+        raise ValidationError(f"{type(self).__name__}: user access control unavailable")
+
+    @abstractmethod
+    def continuity_task(
+        self, scope: Scope, request: TaskRequest, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Register/bind/read task context without execution ownership transfer."""
+
+    @abstractmethod
+    def continuity_relation(self, scope: Scope, relation: RelationRecord, expected_revision: int,
+                      *, security: RequestSecurityContext) -> dict:
+        """Register or review a versioned evidence relation, then project its graph edge."""
+
+    @abstractmethod
+    def continuity_recover(self, scope: Scope, *, security: RequestSecurityContext,
+                     recovery: ContinuityRecovery | None = None) -> dict:
+        """Repair relation projections from authorized sources without re-extraction."""
+
+    @abstractmethod
+    def quarantine_source(self, scope: Scope, source_key: str, reason: str,
+                               *, security: RequestSecurityContext) -> dict:
+        """Isolate a source range with an auditable reason until it is released."""
+
+    @abstractmethod
+    def release_source(self, scope: Scope, source_key: str,
+                            *, security: RequestSecurityContext) -> bool:
+        """Release a previously quarantined source range; returns whether it was quarantined."""
 
     @abstractmethod
     def add(
@@ -100,6 +160,8 @@ class MemoryAPI(ABC):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
+        continuity: ContinuityWrite | None = None,
     ) -> list[MemoryUnit]:
         """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。
 
@@ -148,6 +210,8 @@ class MemoryAPI(ABC):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
+        continuity: ContinuityWrite | None = None,
     ) -> list[MemoryUnit]:
         """异步写入记忆；语义与 :meth:`add` 一致并直通引擎协程。"""
 
@@ -165,12 +229,14 @@ class MemoryAPI(ABC):
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
+        event_time: datetime | None = None,
     ) -> BatchWriteResult:
         """同步批量写入；结果按输入顺序逐项对齐。
 
         ``scope`` 是批级缺省值，逐项 ``BatchWriteItem.scope`` 为 ``None`` 时沿用它；两级都
         不给即该项没有落点，除非批级参数袋请求了判定（见 :meth:`add`）。判定请求是批级的，
-        逐项参数袋携带 ``coords`` 即拒绝——整批共用一次判定上下文。
+        逐项参数袋携带 ``coords`` 即拒绝——整批共用一次判定上下文。``event_time`` 是批级缺省的
+        含时区事件时间，逐项 ``BatchWriteItem.event_time`` 优先；不含时区时该项或整批被拒绝。
         """
 
     @abstractmethod
@@ -187,6 +253,7 @@ class MemoryAPI(ABC):
         occurred_at: datetime | None = None,
         stream_id: str = "",
         continue_on_error: bool = True,
+        event_time: datetime | None = None,
     ) -> BatchWriteResult:
         """异步批量写入；语义与 :meth:`batch_add` 一致。"""
 
@@ -209,8 +276,15 @@ class MemoryAPI(ABC):
         span_end: datetime | None = None,
         expand_depth: int = 1,
         rollup: bool = True,
-    ) -> RetrievalResult:
+        task_id: str = "",
+        anchor: MemoryRef | None = None,
+        duty: str | list[str] | None = None,
+        view_budget: ViewBudget | None = None,
+    ) -> RetrievalResult | PersonalSearchResult:
         """执行混合检索；由 ``context`` 指定 scope、透传 options 与披露预算。
+
+        ``context.extensions["personal"]`` 为对象时启用个人检索，只接受可选来源，
+        根据认证身份确定范围，返回带真实 Scope 的命中。个人检索与职责视图参数互斥。
 
         ``context.extensions`` 带 ``spaces`` 键时转为跨空间检索（F07「多空间读写」），
         取值为 ``list[str]``：**判据取键的有无，不取取值形态**——键不在即单空间检索，
@@ -241,10 +315,16 @@ class MemoryAPI(ABC):
         移除后不进入插件透传、权限路由或硬过滤；非法取值抛 ``ValidationError``。
         """
 
+    def check_configuration_access(
+        self, scope: Scope, *, security: RequestSecurityContext, write: bool
+    ) -> None:
+        """托管宿主的配置访问鉴权及写入前审计完整性预检。"""
+        raise UnsupportedCapabilityError("configuration_access", "", type(self).__name__)
+
     @abstractmethod
     def list(
         self,
-        scope: Scope,
+        scope: Scope | None = None,
         *,
         security: RequestSecurityContext,
         offset: int = 0,
@@ -252,7 +332,7 @@ class MemoryAPI(ABC):
         memory_types: list[str] | None = None,
         extensions: dict[str, Any] | None = None,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
-    ) -> MemoryListResult:
+    ) -> MemoryListResult | PersonalPage:
         """列出目标 ``scope`` 下已建索引的记忆单元。
 
         语义参考 mem1.0 ``list_memories``：支持 ``offset``/``limit`` 分页与
@@ -260,6 +340,8 @@ class MemoryAPI(ABC):
         支持结构化过滤。只返回 ``/memory/`` 真源记录，不包含
         ``/messages/`` 下的 infer 原文缓存。``security`` 为本次请求的安全上下文，
         本层据 ``scope`` 鉴权 READ 后委托 Engine。返回当前页 items 和分页前匹配总数 count。
+
+        个人汇总通过 ``extensions["personal"]`` 显式启用并省略 scope，返回 PersonalPage。
         """
 
     @abstractmethod
@@ -287,6 +369,15 @@ class MemoryAPI(ABC):
         旧 id；``OVERWRITE`` 原地覆写沿用同 id、旧内容仅留审计。返回结果记忆
         单元（SUPERSEDE 为新 id，OVERWRITE 为原 id）。
         """
+
+    @abstractmethod
+    def batch_update(
+        self, selector: UpdateSelector, patches: list[MemoryPatch], *,
+        security: RequestSecurityContext,
+        limit: int | None = None,
+        continue_on_error: bool = True,
+    ) -> BatchUpdateResult:
+        """批量更新记忆。patches len==1 统一 patch，len>1 逐条对应（需 unit_ids）。"""
 
     @abstractmethod
     def delete(self, selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]:
@@ -418,10 +509,12 @@ class MemoryAPI(ABC):
         system_metadata: dict[str, MetadataValueType] | None = None,
         user_metadata: dict[str, MetadataValueType] | None = None,
         occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
     ) -> IngestSubmission:
         """受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；
         调用方拿不到 ``IngestJobController``。后台 ``add`` 仍再鉴权一次，并原样接收
         ``occurred_at`` 作为消息发生时间——该字段属于消息时间轴，不借 metadata 旁路传递。
+        ``event_time`` 是含时区的事件时间，入队前校验，避免错误只在后台任务里才暴露。
         """
 
     @abstractmethod

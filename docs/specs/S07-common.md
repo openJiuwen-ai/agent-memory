@@ -5,10 +5,10 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md |
 
 ## 摄入协作取消
 
@@ -44,7 +44,7 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
 - 审计日志（AuditLogger）
 - 安全域横切能力（认证、资源保护与密码学，归 `common/security/`，接口与实装齐备）
 - 跨实例互斥横切接口（LockProvider）
-- 安全域契约（授权与审计完整性的抽象接口、请求上下文受控构造入口；接口先行，实现分别归 PR2 / PR3）
+- 安全域契约（授权、审计完整性、隐私保护、独立人机认证及请求上下文受控构造入口；现行契约见 S10）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
 
@@ -52,7 +52,7 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
 - 不做具体算子实现（算子由各层 `*_impl/` 实现）
 - 不做存储后端实现
 - 不做业务编排逻辑
-- 不做鉴权/策略管理
+- 不承担业务入口的 PEP 编排或应用策略治理；安全域提供 PDP 与授权存储能力
 
 ## 不变量
 
@@ -225,11 +225,20 @@ DashScope Adapter 的 `params.enable_thinking` 由 Adapter 转换为
 
 ### Reranker（`reranker/base.py`）
 
-重排能力：cross-encoder 精排。
+重排能力：cross-encoder 精排 + 可选语义去重/冲突消解（F10-llm-reranker）。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `rerank` | `(query: str, texts: list[str]) -> list[float]` | 对每条 text 计算与 query 的相关性得分 |
+| `rerank` | `(query: str, units: list[MemoryUnit]) -> list[float]` | 对每条 `MemoryUnit` 计算与 query 的相关性得分（顺序与输入一致）；实现可消费 `unit.content / tier / temporal / tags / entities / provenance` 等字段 |
+| `rerank_texts` | `(query: str, texts: list[str]) -> list[float]` | `str` 入参的兼容入口（非抽象）：把每个 text 包成空 `MemoryUnit` 再调 `rerank` |
+| `resolve` | `(query: str, units: list[MemoryUnit], scores: list[float] | None = None) -> RerankResolution` | 可选语义去重 + 冲突消解（非抽象）：默认 `keep_all`，仅 LLM 档覆写；`scores` 供调用方复用精排已算好的相关性分，避免重复打分 |
+
+数据结构（与 Reranker 契约同处 `reranker/base.py`）：
+
+- `RerankResolution`：`kept_indices`（保留的输入下标，稳定子序列）+ `duplicates`（`DuplicateGroup` 列表）+ `conflict_dropped`（冲突丢弃下标）；`keep_all(n)` 类方法构造全保留默认结果。
+- `DuplicateGroup`：重复簇的 `representative`（保留下标）+ `dropped`（被去重下标）。
+
+`kept_indices` 只做选择不合成内容——每个保留下标仍指向真源 `MemoryUnit`，`unit_id` ↔ 真源对应不断裂。
 
 ### AuditLogger（`audit/base.py`）
 
@@ -360,6 +369,7 @@ F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 
 |------|------|
 | `Modality` | TEXT / IMAGE / AUDIO / VIDEO / CODE / DOCUMENT |
 | `LifecycleState` | ACTIVE / SUPERSEDED / ARCHIVED / FORGOTTEN |
+| `ImportanceCategory` | IDENTITY / RULE / PREFERENCE / KNOWLEDGE / RELATION / DEFAULT / TRANSIENT（默认重要度类别；配置表可扩展自定义类别字符串，不强制枚举校验） |
 
 `HierarchyKind`、`HierarchyRole` 和 `HierarchyStatus` 只在下节定义一次，
 避免摘要表与精确枚举并存后发生漂移。
@@ -459,6 +469,12 @@ tree_memory: TreeMemoryData | None = None
 ### metadata 保留键与瞬态键（`type_def/memory.py`）
 
 `KERNEL_SYSTEM_METADATA_KEYS` 是内核占用的键名清单，写入路径据此拒绝调用方经 `system_metadata` 入参使用其中任何一个；`TRANSIENT_SYSTEM_METADATA_KEYS` 中的键只在内存中传递，编解码器序列化时剥除、不落盘。两者的作用域都是 `system_metadata`——`user_metadata` 不受这两份清单约束。
+
+`system_metadata` 的派生语义键常量同处定义：`ORIGIN_KEY="origin"`，取值
+`ORIGIN_ORIGINAL="original"`（原文）/ `ORIGIN_INFER="inferred"`（派生）；
+`IMPORTANCE_KEY="importance"`，值为 [0,1] 两位小数浮点字符串，由类别经配置查表得出。
+两键都不在不传播清单内，也不是内核保留键——调用方可显式传入，派生 unit 由产出算子
+自行重写。
 
 > F07 起：前者增六键——内核按调用方身份写入的两个作者标记键、判定算子写入的命中类别名（`memory_class`），以及三个后续阶段才写入、提前占位以防存量数据占用的溯源键；后者增判定上下文的透传键。两份清单均为扩充，条目结构与序列化版本不变。
 >
@@ -643,3 +659,19 @@ CryptographyProvider 与 `local` KeyProvider。
 任务私有副本；副本随成功/失败清理。原资产引用、文件名与规约输出结构保持稳定。
 可信注入的替代 backend 负责自身源访问，不由此获得内置文件读取能力。
 配置契约见 S08，安全边界见 F04。不向 Normalizer 传递请求身份或新增公共 API 参数。
+
+## 职责关系共享数据
+
+公开 DTO 包括 MemoryRef、TaskRequest、ContinuityWrite、ContinuityEvent（仅导入交换格式）、RelationRecord、ViewBudget、ViewAnnotation、RelationPath、Gap、ViewMeta、ContinuityRecovery；`RoleViewQuery` 仍作为 `search` 视图路径传给 `Continuity` 的内部查询对象；详细字段及兼容状态以 [S11](S11-cross-agent-continuity.md) 为准。MemoryRef 按真实 Scope/ID 与规范化内容摘要定位，不要求旧正文先增加任务/职责标签。
+
+RelationCatalog 是启动时验证的共享配置数据，不是每职责一个插件；`RelationTypeSpec` 与 `TraversalRule` 的字段见 [S11 数据结构](S11-cross-agent-continuity.md#relationcatalogrelationtypespectraversalrule)。构建与查询必须注入同一目录；未知名字失败，运行时不动态注册。职责字符串不是 SpaceContentRole，也不影响授权。
+
+## 隐私与独立人机认证能力
+
+PrivacyProtection 和 HumanAuthenticator 是独立安全横切契约，不加入模型 PluginType，
+不扩展原 Authenticator 的机机 Credentials，也不让 mode/target 字符串决定人的身份。
+配置命名空间为 privacy / human_authenticator；安全 bootstrap 在配置解析前注册。
+策略按显式 rank 排序，不依赖等级 ID 的字符串顺序。
+共享段落切分允许可选 boundary(text, limit) 回调，仅调整单段硬切位置，返回值必须在
+(0, limit] 内；默认切分行为不变。隐私能力据此保留完整引用，不承载认证或授权状态。
+完整契约、控制总开关、保留配置及故障语义统一见 S10/S08；实现地图维护在对应模块 AGENTS.md。

@@ -32,7 +32,10 @@
 - prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
   EPISODIC 对话原文；``agent_memory_search`` 工具不过滤（显式检索允许命中原文）。
   过滤器是 dict DSL，两模式共用（HTTP 直接下发；进程内经 RetrievalQuery 边界
-  normalize）。
+  normalize）。rail 传入 ``project`` 时 prefetch 追加
+  ``system_metadata.project IN ['', project]``，与 ``agent_memory_search`` 同口径。
+  prefetch 另用 ``read_md_file`` 读取 ``USER.md`` 的条目直接注入，不经相关度筛选，
+  与检索命中去重后一并返回。
 - HTTP 客户端带熔断器（连续 5 次失败冷却 120s）、分操作超时（读 30s / 写 120s，
   infer=true 的 add 含真实 LLM 抽取）、可选 Bearer 认证（§6.2-B/C）、healthz 探活。
 - ``sync_turn`` 经 ``infer="true"`` 同步抽取派生事实（原文落 /messages/ 不建索引）；
@@ -47,6 +50,7 @@ import json
 import logging
 import os
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,9 +73,12 @@ from jiuwen_memory.api import (
     Modality,
     RequestSecurityContext,
     ValidationError,
+    assemble_managed_runtime,
     assemble_runtime,
+    document_llm_instances,
     install_privacy_filter,
     metadata_for_log,
+    open_config_overlay,
     redact_for_log,
     scope_for_log,
 )
@@ -145,8 +152,7 @@ READ_MD_SCHEMA: dict[str, Any] = {
             "project": {
                 "type": "string",
                 "description": (
-                    "Project coordinate; omit to read the cross-project file "
-                    "(memory root)."
+                    "Project coordinate; omit to read the cross-project file (memory root)."
                 ),
             },
             "offset": {
@@ -176,8 +182,9 @@ SEARCH_SCHEMA: dict[str, Any] = {
             "project": {
                 "type": "string",
                 "description": (
-                    "Project coordinate; omit to search across all projects. When "
-                    "set, recalls this project's memories plus cross-project memories."
+                    "Project coordinate; omit to search only cross-project memories "
+                    "(those stored without a project). When set, recalls this "
+                    "project's memories plus cross-project memories."
                 ),
             },
         },
@@ -265,8 +272,7 @@ EDIT_MD_SCHEMA: dict[str, Any] = {
             "project": {
                 "type": "string",
                 "description": (
-                    "Project coordinate; omit to edit the cross-project file "
-                    "(memory root)."
+                    "Project coordinate; omit to edit the cross-project file (memory root)."
                 ),
             },
         },
@@ -276,6 +282,12 @@ EDIT_MD_SCHEMA: dict[str, Any] = {
 
 _MAX_TOP_K = 50
 _DEFAULT_PREFETCH_TOP_K = 5
+# prefetch 直接注入用户画像：USER.md 不分项目、条目少、与多数任务相关，
+# 不经相关度筛选——overlap 重排按共同词打分，换一种问法画像条目就可能得 0 分被丢。
+# 文件为追加写入，超出上限时保留末尾（最新）的条目。
+_PROFILE_MD_FILENAME = "USER.md"
+_PROFILE_INJECT_MAX_ITEMS = 20
+_PROFILE_INJECT_MAX_CHARS = 2000
 _DEFAULT_SEARCH_TOP_K = 10
 
 # read 工具「offset 起到文件尾」的 line_range end 上界：内核 read_content 对越界
@@ -297,14 +309,22 @@ _BREAKER_COOLDOWN = 120.0
 _RECALL_TIERS = ("semantic", "core", "procedural")
 
 
-def _recall_filters() -> dict[str, Any]:
+def _recall_filters(project: str = "") -> dict[str, Any]:
     """prefetch 召回过滤（dict DSL，HTTP/进程内两模式共用）。
 
     实测确认（design doc §8.2.1）：``{"tier": {"in": [...]}}`` 被服务端真实执行，
     episodic 原文被正确排除。进程内路径经 ``RetrievalQuery`` 边界的 ``normalize``
     接收同一份 dict DSL。
+
+    ``project`` 非空时追加 ``system_metadata.project IN ['', project]``（顶层多键
+    默认 AND），与 ``agent_memory_search`` 同口径：召回本项目记忆与跨项目可见记忆。
+    不带该谓词时影子索引兜底 ``project = ''``，项目内写入的记忆在同项目会话的
+    prefetch 里取不到（F08 D2）。
     """
-    return {"tier": {"in": list(_RECALL_TIERS)}}
+    filters: dict[str, Any] = {"tier": {"in": list(_RECALL_TIERS)}}
+    if project:
+        filters["system_metadata.project"] = {"in": ["", project]}
+    return filters
 
 
 _VIDEO_ROOTS_ENV = "JIUWEN_MEMORY_VIDEO_ROOTS"
@@ -403,8 +423,47 @@ def _configure_default_video(config: dict[str, Any], settings: dict[str, Any]) -
         }}}
 
 
+def _tail_within_budget(
+    items: list[dict[str, Any]], *, max_items: int, max_chars: int
+) -> list[dict[str, Any]]:
+    """从列表末尾起取条数与字数预算内的条目（放不下的跳过），返回时保持原顺序。"""
+    kept: list[dict[str, Any]] = []
+    used = 0
+    for item in reversed(items):
+        size = len(item.get("content", ""))
+        if len(kept) >= max_items:
+            break
+        if used + size > max_chars:
+            # 放不下的条目跳过、继续向前取：单条超长不应让整个画像空掉
+            continue
+        kept.append(item)
+        used += size
+    kept.reverse()
+    return kept
+
+
+def _merge_prefetch_lines(
+    profile: list[dict[str, Any]], items: list[dict[str, Any]]
+) -> list[str]:
+    """用户画像条目在前、检索命中在后，按 item_id 与正文去重，返回正文列表。"""
+    lines: list[str] = []
+    seen_ids: set[str] = set()
+    seen_text: set[str] = set()
+    for item in [*profile, *items]:
+        content = item.get("content", "")
+        item_id = item.get("item_id") or ""
+        # 空 item_id 从不进 seen_ids，无需单独判空
+        if not content or content in seen_text or item_id in seen_ids:
+            continue
+        if item_id:
+            seen_ids.add(item_id)
+        seen_text.add(content)
+        lines.append(content)
+    return lines
+
+
 def _agent_default_config() -> dict[str, Any]:
-    """ 进程内默认装配——agent 场景（F09）内核配置。
+    """进程内默认装配——agent 场景（F09）内核配置。
     - 真源 = document（md 文件 + sqlite3/sqlite-vec 影子索引，watchdog 监听手改）；
       md 按 memory_class × coords.project 分流（user_profile→USER.md；
       long_term→{project}/MEMORY.md；daily→daily_memory/日期.md）
@@ -416,7 +475,7 @@ def _agent_default_config() -> dict[str, Any]:
     config: dict[str, Any] = {
         "globals": {
             "vector_enabled": True,
-            "graph_enabled": False,          # 本地联调先关图，减少装配面
+            "graph_enabled": False,  # 本地联调先关图，减少装配面
             "rerank_enabled": True,
             "embedder_dim": 1024,
             "chunk_size": 120,
@@ -448,22 +507,34 @@ def _agent_default_config() -> dict[str, Any]:
         # vector / fulltext / graph 三个 KV 时代索引端口已删除：文档模式召回统一走
         # shadow（FTS5 + vec0），这三路无消费者——回落内核 defaults 的内存版（同样闲置）。
         # md 真源 root
-        "markdown_store": {"default": {"target": "local", "params": {
-            "root": "",
-        }}},
+        "markdown_store": {
+            "default": {
+                "target": "local",
+                "params": {
+                    "root": "",
+                },
+            }
+        },
         # 影子索引（document 真源的机器索引：sqlite3 + sqlite-vec 复合）
         "shadow_index": {"default": {"target": "sqlite", "params": {"embedder": "default"}}},
         # 文档看门狗：md 保存后 debounce 毫秒再同步影子索引
         "watchdog": {"default": {"target": "watchdog", "params": {"debounce_ms": 2000}}},
         # 全局唯一 StoreManager（F07）：文档模式召回统一走 shadow_recaller
-        "store_manager": {"default": {"target": "composite", "params": {
-            "domain_stores": {"default": {
-                "kv_store": "default",
-                "shadow_recaller": "shadow",
-                # 召回+物化在 storage 内一次完成（文档模式必须走此 pipeline）
-                "preferred_retrieval_pipeline": "recall_and_get_rank",
-            }},
-        }}},
+        "store_manager": {
+            "default": {
+                "target": "composite",
+                "params": {
+                    "domain_stores": {
+                        "default": {
+                            "kv_store": "default",
+                            "shadow_recaller": "shadow",
+                            # 召回+物化在 storage 内一次完成（文档模式必须走此 pipeline）
+                            "preferred_retrieval_pipeline": "recall_and_get_rank",
+                        }
+                    },
+                },
+            }
+        },
         # ---- 共享插件 ------------------------------------------------------ #
         # jieba 分词（中文召回，whitespace 会把整句当一个 token）
         "tokenizer": {"default": {"target": "jieba"}},
@@ -477,35 +548,49 @@ def _agent_default_config() -> dict[str, Any]:
         # ---- 检索 ---------------------------------------------------------- #
         # 文档模式唯一召回通道（shadow_search_fulltext + search_vector 复合算子）
         "recaller": {"shadow": {"target": "shadow"}},
-        "query_parser": {"default": {"target": "simple", "params": {
-            "tokenizer": "default",
-            "embedder": "default",
-            "llm": "default",
-            "feature_extractor": "default",
-            "sanitize_enabled": True,
-            "sanitize_strip_code": False,
-        }}},
+        "query_parser": {
+            "default": {
+                "target": "simple",
+                "params": {
+                    "tokenizer": "default",
+                    "embedder": "default",
+                    "llm": "default",
+                    "feature_extractor": "default",
+                    "sanitize_enabled": True,
+                    "sanitize_strip_code": False,
+                },
+            }
+        },
         "fuser": {"default": "rrf"},
         "discloser": {"default": "truncating"},
-        "retriever": {"default": {"target": "pipeline", "params": {
-            "reranker": "default",
-            "query_parser": "default",
-            "fuser": "default",
-            "discloser": "default",
-            "over_fetch_factor": 4,
-            "over_fetch_floor": 60,
-            "recall_max": 100,
-            "rerank_max": 60,
-            "min_score": 0.0,
-            "min_score_ratio": 0.0,
-            "min_score_ratio_uncalibrated": 0.0,
-            "min_results": 0,
-        }}},
+        "retriever": {
+            "default": {
+                "target": "pipeline",
+                "params": {
+                    "reranker": "default",
+                    "query_parser": "default",
+                    "fuser": "default",
+                    "discloser": "default",
+                    "over_fetch_factor": 4,
+                    "over_fetch_floor": 60,
+                    "recall_max": 100,
+                    "rerank_max": 60,
+                    "min_score": 0.0,
+                    "min_score_ratio": 0.0,
+                    "min_score_ratio_uncalibrated": 0.0,
+                    "min_results": 0,
+                },
+            }
+        },
         # ---- 构建 ---------------------------------------------------------- #
         # agent 场景（F09）：prompt user↔agent 重定向 + cn 指令面，抽取时同步判定
         # memory_class 三类（md 落盘分流键），无独立 fallback 路径
-        "extractor": {"default": {"target": "agent_llm",
-                                  "params": {"llm": "default", "extractor_language": "cn"}}},
+        "extractor": {
+            "default": {
+                "target": "agent_llm",
+                "params": {"llm": "default", "extractor_language": "cn"},
+            }
+        },
         "abstractor": {"default": "concat"},
         "associator": {
             "default": {"target": "keyword", "params": {"feature_extractor": "default"}}
@@ -513,28 +598,62 @@ def _agent_default_config() -> dict[str, Any]:
         "classifier": {"default": "llm"},
         # 文档模式（write_document=true）：IndexBuilder 全委托 domain_store.add 文档分流
         "constructor": {"default": {"target": "document", "params": {"domain_store": "default"}}},
-        # 文档模式去重（F08）：两路并跑（shadow FTS5 + vec）+ embedder cosine 精排
-        "dedup": {"default": {"target": "shadow", "params": {"embedder": "default"}}},
-        "evolver": {"default": {"target": "orchestrating", "params": {
-            "extractor": "default", "abstractor": "default", "associator": "default",
-            "index_builder": "default", "message_store": "default",
-            "dedup": "default", "llm": "default",
-        }}},
+        # 文档模式去重（F08）：两路并跑（shadow FTS5 + vec）+ embedder cosine 精排。
+        # dedup_tier_filter：只与同 tier 的记忆比较——抽取会为可复用标识另出一条
+        # semantic 稳定事实，不隔离时它会被同批的 episodic 事件判重丢弃。
+        "dedup": {
+            "default": {
+                "target": "shadow",
+                "params": {"embedder": "default", "dedup_tier_filter": True},
+            }
+        },
+        "evolver": {
+            "default": {
+                "target": "orchestrating",
+                "params": {
+                    "extractor": "default",
+                    "abstractor": "default",
+                    "associator": "default",
+                    "index_builder": "default",
+                    "message_store": "default",
+                    "dedup": "default",
+                    "llm": "default",
+                },
+            }
+        },
         # ---- 摄取 ---------------------------------------------------------- #
         "ingestor": {"default": {"target": "simple", "params": {"normalizer": "default"}}},
         # ---- 控制 ---------------------------------------------------------- #
         # agent 场景（F09）：多空间无硬限制，默认文本模态。params 必须带全套具名引用——
         # 裸 target 会顶掉内置 engine.default.params，dep 全走匿名缺省一路劣化
-        "engine": {"default": {"target": "agent", "params": {
-            "ingestor": "default", "index_builder": "default", "retriever": "default",
-            "scheduler": "default", "evolver": "default", "lifecycle": "default",
-            "job_factory": "default",
-        }}},
-        "job_factory": {"default": {"target": "default", "params": {
-            "evolver": "default", "lifecycle": "default", "index_builder": "default",
-            "llm": "default",
-            "middle_max_fetch": 100, "middle_batch_size": 10, "middle_concurrency": 4,
-        }}},
+        "engine": {
+            "default": {
+                "target": "agent",
+                "params": {
+                    "ingestor": "default",
+                    "index_builder": "default",
+                    "retriever": "default",
+                    "scheduler": "default",
+                    "evolver": "default",
+                    "lifecycle": "default",
+                    "job_factory": "default",
+                },
+            }
+        },
+        "job_factory": {
+            "default": {
+                "target": "default",
+                "params": {
+                    "evolver": "default",
+                    "lifecycle": "default",
+                    "index_builder": "default",
+                    "llm": "default",
+                    "middle_max_fetch": 100,
+                    "middle_batch_size": 10,
+                    "middle_concurrency": 4,
+                },
+            }
+        },
         "scheduler": {"default": {"target": "in_process", "params": {}}},
         "lifecycle": {"default": {"target": "kv", "params": {"policy": "default"}}},
         "policy": {"default": "dict"},
@@ -627,8 +746,41 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         api_key: str = "",
         identity_org: str = "local",
         identity_user: str = "developer",
+        continuity_enabled: bool = False,
+        continuity_mode: str = "role",
+        default_duty: str | list[str] = "general",
+        portal: dict[str, Any] | None = None,
         **_kwargs: Any,
     ) -> None:
+        self._continuity_enabled = continuity_enabled
+        if continuity_mode not in {"continuity", "role"}:
+            raise ValueError("continuity_mode must be 'continuity' or 'role'")
+        self._continuity_mode = continuity_mode
+        self._default_duty = default_duty
+        duties = [default_duty] if isinstance(default_duty, str) else default_duty
+        if (
+            not isinstance(duties, list)
+            or not 1 <= len(duties) <= 4
+            or any(not isinstance(d, str) or not d.strip() for d in duties)
+        ):
+            raise ValueError("unknown default duty")
+        if continuity_enabled:
+            from jiuwen_memory_adapter.continuity.client import ContinuityClient
+
+            probe = ContinuityClient(base_url or "", api_key)
+            probe.close()
+        self._portal_settings = dict(portal or {})
+        unknown = set(self._portal_settings) - {"enabled", "port", "allowed_frame_origins"}
+        if unknown:
+            raise ValueError("unknown Portal option")
+        if not isinstance(self._portal_settings.get("enabled", True), bool):
+            raise ValueError("Portal enabled must be a boolean")
+        port = self._portal_settings.get("port", 0)
+        if type(port) is not int or not 0 <= port <= 65535:
+            raise ValueError("Portal port must be between 0 and 65535")
+        self._portal_handle = None
+        self._portal_error = None
+        self._initialize_lock = asyncio.Lock()
         self._base_url = base_url or ""
         self._config_path = config_path
         self._config_dict = config_dict
@@ -659,6 +811,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     @property
     def is_initialized(self) -> bool:
         return self._initialized
+
+    @property
+    def runtime(self) -> Any:
+        """进程内模式返回本地 Portal 与 Agent 共用的 Runtime；HTTP 模式返回 None。"""
+        return getattr(self._client, "runtime", None) if self._client is not None else None
 
     # -- TUI 信封剥离（§6.2-E：prefetch / sync_turn 共用统一入口） ------------- #
 
@@ -728,7 +885,82 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return True
         return self._security_provider is not None
 
+    @property
+    def portal_url(self):
+        """One-use SDK launch URL. HTTP callers use open_portal() to request a fresh URL."""
+        return (
+            self._portal_handle.launch_url(self._portal_write_scope())
+            if self._portal_handle is not None
+            else None
+        )
+
+    @property
+    def portal_status(self):
+        """Use supported for menu visibility. HTTP available reflects the last link request."""
+        return {
+            "supported": self._portal_settings.get("enabled", True),
+            "available": self._portal_handle is not None
+            or bool(getattr(self._client, "portal_available", False)),
+            "reason": self._portal_error,
+            "address": self._portal_handle.address if self._portal_handle else None,
+        }
+
+    async def open_portal(self):
+        """Return a fresh authenticated launch URL for either SDK or HTTP mode."""
+        if not self._portal_settings.get("enabled", True):
+            return None
+        if not self._initialized:
+            await self.initialize()
+        elif not self._base_url and self._portal_handle is None:
+            async with self._initialize_lock:
+                if self._initialized and self._portal_handle is None:
+                    self._start_local_portal()
+        if self._portal_handle is not None:
+            return self._portal_handle.launch_url(self._portal_write_scope())
+        opener = getattr(self._client, "open_portal", None)
+        if self._base_url and callable(opener):
+            try:
+                link = await opener(self.bound_scope())
+            except Exception as exc:
+                self._portal_error = type(exc).__name__
+                raise
+            self._portal_error = None
+            return link
+        return None
+
+    def _portal_write_scope(self):
+        scope = self.bound_scope()
+        actor = self._security_provider().auth.actor
+        if (scope.org, scope.user) != (actor.org, actor.user):
+            return None
+        return ApiScope(org=scope.org, space=scope.space, user=scope.user,
+                        agent=scope.agent, session=scope.session)
+
     async def initialize(self, **kwargs: Any) -> None:
+        async with self._initialize_lock:
+            await self._initialize(**kwargs)
+            local_portal_enabled = not self._base_url and self._portal_settings.get("enabled", True)
+            can_start = self._portal_handle is None and self._portal_error is None
+            if local_portal_enabled and can_start:
+                self._start_local_portal()
+
+    def _start_local_portal(self):
+        from jiuwen_memory_entry.portal.hosting import start_portal
+
+        try:
+            self._portal_handle = start_portal(
+                self.runtime,
+                security_provider=self._security_provider,
+                port=self._portal_settings.get("port", 0),
+                allowed_frame_origins=self._portal_settings.get("allowed_frame_origins", ()),
+            )
+            self._portal_error = None
+            logger.info("memory Portal available at %s", self._portal_handle.address)
+        except Exception as exc:
+            self._portal_error = type(exc).__name__
+            logger.warning("memory Portal unavailable: %s", self._portal_error)
+
+    async def _initialize(self, **kwargs: Any) -> None:
         """Rail ``before_invoke`` 首次调，传 ``user_id``/``scope_id``/``session_id``。
 
         ``scope_id`` 只映射到 ``org``；``space`` 只认显式传入，不从 ``scope_id`` 猜测。
@@ -743,7 +975,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if "space" in kwargs:
             self._space = kwargs.get("space") or ""
 
-        await self._ensure_client().initialize()
+        if not self._initialized:
+            await self._ensure_client().initialize()
         self._initialized = True
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, config=%s, scope=%s)",
@@ -767,6 +1000,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 api_key=self._api_key,
                 identity_org=self._identity_org,
                 identity_user=self._identity_user,
+                manage_configuration=self._portal_settings.get("enabled", True),
             )
         return self._client
 
@@ -797,6 +1031,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         schemas = [SEARCH_SCHEMA, CONCLUDE_SCHEMA, READ_MD_SCHEMA, EDIT_MD_SCHEMA]
         if self._video_tools_enabled():
             schemas.extend((VIDEO_SUBMIT_SCHEMA, VIDEO_STATUS_SCHEMA))
+        if self._continuity_enabled:
+            from jiuwen_memory_adapter.continuity import tool_schemas
+
+            # 工具清单跟部署档位走：接续档不注册关系工具，治理工具永不进 Agent 清单。
+            schemas.extend(tool_schemas(mode=self._continuity_mode))
         logger.info(
             "[AgentMemoryMemoryProvider] get_tool_schemas CALLED -> returning %d schemas: %s",
             len(schemas),
@@ -813,6 +1052,19 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         )
         if not self._initialized or self._client is None:
             return json.dumps({"error": "provider not initialized"})
+        if tool_name.startswith("agent_memory_continuity_"):
+            if not self._continuity_enabled:
+                return json.dumps({"error": "continuity is not enabled"})
+            verb = tool_name.removeprefix("agent_memory_")
+            if verb not in {
+                "continuity_task",
+                "continuity_relation",
+                "continuity_recover",
+            }:
+                return json.dumps({"error": "unknown continuity tool"})
+            payload = dict(args)
+            result = await self._client.continuity_call(verb, payload)
+            return json.dumps(result, ensure_ascii=False)
         if self._client.is_unavailable():
             return json.dumps(
                 {"error": "AgentMemory temporarily unavailable (repeated failures); will retry."}
@@ -879,9 +1131,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                         "-> no blocks",
                         md_filename,
                     )
-                    return json.dumps(
-                        {"result": f"No memory blocks found in {md_filename}."}
-                    )
+                    return json.dumps({"result": f"No memory blocks found in {md_filename}."})
                 blocks = [
                     {
                         "item_id": it.get("item_id", ""),
@@ -918,9 +1168,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 # system_metadata["project"]）同口径；IN ['', project] 同时召回跨项目
                 # 可见记忆与同 project 记忆。
                 project = str(args.get("project") or "").strip()
-                filters = (
-                    {"system_metadata.project": {"in": ["", project]}} if project else None
-                )
+                filters = {"system_metadata.project": {"in": ["", project]}} if project else None
                 # 显式检索不过滤 tier（§6.2-F）：LLM 主动检索允许命中 EPISODIC 原文。
                 items = await self._client.search(query, scope, top_k=top_k, filters=filters)
                 if not items:
@@ -956,7 +1204,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 # dict 会被 _reject_non_scalar_metadata 拒）。
                 tags = args.get("tags") or ["conclude"]
                 project = str(args.get("project") or "").strip()
-                system_metadata: dict[str, str] = {"infer": "true"}
+                system_metadata: dict[str, str] = {
+                    "infer": "true",
+                    "source_app": "jiuwenswarm",
+                    "agent_label": self._agent_id,
+                }
                 if project:
                     system_metadata["project"] = project
                 data = await self._client.add(
@@ -989,7 +1241,13 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 # 落 /memory/ 建索引；不走去重、不收集 context（见 F02「过程记忆抽取」）。
                 # 需配 extractor:llm 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
                 data = await self._client.add(
-                    content, scope, system_metadata={"procedural": "true"}
+                    content,
+                    scope,
+                    system_metadata={
+                        "procedural": "true",
+                        "source_app": "jiuwenswarm",
+                        "agent_label": self._agent_id,
+                    },
                 )
                 if data is None:
                     return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
@@ -1064,6 +1322,29 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     async def prefetch(self, query: str, **kwargs: Any) -> str:
         """返 Markdown 字符串，Rail 包 ``<memory-context>`` 注入提示词。"""
+        if self._continuity_enabled:
+            if self._client is None:
+                raise RuntimeError("continuity provider not initialized")
+            scope = kwargs.get("scope")
+            if not isinstance(scope, dict):
+                raise ValueError("continuity prefetch requires explicit project scope")
+            request = {
+                "query": self._prepare(query),
+                "duty": kwargs.get("duty", self._default_duty),
+                "task_id": kwargs.get("task_id", ""),
+            }
+            result = await self._client.continuity_call(
+                "search",
+                {
+                    "query": request["query"],
+                    "context": {"scope": scope},
+                    "task_id": request["task_id"],
+                    "duty": request["duty"],
+                },
+            )
+            # Rail accepts text: preserve the complete structured view as JSON, including
+            # paths, gaps and explicit errors. Do not flatten it into a success summary.
+            return json.dumps(result, ensure_ascii=False)
         logger.info(
             "[AgentMemoryMemoryProvider] prefetch CALLED query=%s client=%s",
             redact_for_log(query),
@@ -1081,6 +1362,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             )
         # [本地修改 2026-10-17] 同 agent_memory_search：null 防御（or 覆盖缺省与显式 null）。
         top_k = min(int(kwargs.get("top_k") or _DEFAULT_PREFETCH_TOP_K), _MAX_TOP_K)
+        # rail 经 _resolve_project 传入 project；与 sync_turn / agent_memory_search 同口径。
+        project = str(kwargs.get("project") or "").strip()
         try:
             logger.info(
                 "[AgentMemoryMemoryProvider] prefetch before search scope=%s top_k=%d",
@@ -1088,20 +1371,33 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 top_k,
             )
             # §6.2-F：prefetch 只召回提炼产物（semantic/core/procedural）。
-            items = await self._client.search(
-                search_query,
-                self.bound_scope(),
-                top_k=top_k,
-                filters=_recall_filters(),
-            )
+            try:
+                items = await self._client.search(
+                    search_query,
+                    self.bound_scope(),
+                    top_k=top_k,
+                    filters=_recall_filters(project),
+                )
+            except Exception as exc:
+                # 检索失败不连带丢掉用户画像：降级为只注入 USER.md 的条目
+                logger.warning(
+                    "[AgentMemoryMemoryProvider] prefetch search failed, profile only: "
+                    "error_type=%s",
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                items = []
             logger.info("[AgentMemoryMemoryProvider] prefetch after search items=%d", len(items))
-            lines = [it.get("content", "") for it in items if it.get("content")]
+            profile = await self._profile_items()
+            lines = _merge_prefetch_lines(profile, items)
             logger.info(
                 "[AgentMemoryMemoryProvider] prefetch search_query=%s scope=%s "
-                "top_k=%d recalled=%d",
+                "top_k=%d recalled=%d profile=%d injected=%d",
                 redact_for_log(search_query),
                 scope_for_log(self.bound_scope()),
                 top_k,
+                len(items),
+                len(profile),
                 len(lines),
             )
             for idx, line in enumerate(lines):
@@ -1123,9 +1419,29 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             )
             return ""
 
+    async def _profile_items(self) -> list[dict[str, Any]]:
+        """读 USER.md 的条目供 prefetch 直接注入；任何失败都降级为空，不影响检索结果。
+
+        文件不存在、非文档模式、传输失败都返回空列表。超出条数或字数上限时保留文件
+        末尾的条目（USER.md 追加写入，末尾即最新）。
+        """
+        try:
+            items = await self._client.read_md_file(_PROFILE_MD_FILENAME, self.bound_scope())
+        except Exception as exc:
+            logger.info(
+                "[AgentMemoryMemoryProvider] prefetch profile unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            return []
+        return _tail_within_budget(
+            [it for it in items or [] if it.get("content")],
+            max_items=_PROFILE_INJECT_MAX_ITEMS,
+            max_chars=_PROFILE_INJECT_MAX_CHARS,
+        )
+
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
 
-    async def sync_turn(self, user_msg: str, assistant_msg: str, **kwargs: Any) -> None:
+    async def sync_turn(self, user_msg: str, assistant_msg: str, **kwargs: Any) -> dict | None:
         """存本轮对话并**同步抽取事实**（对齐常见记忆层 ``add(infer=True)``）。
 
         传 ``system_metadata={"infer": "true"}`` 给 AgentMemory ``add``：hot path 同步调
@@ -1138,6 +1454,29 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         保证检索 query 与落盘内容形态一致（此前 prefetch 剥壳、sync_turn 存壳，
         记忆里会存进带壳信封文本）。
         """
+        if self._continuity_enabled:
+            if self._client is None:
+                raise RuntimeError("continuity provider not initialized")
+            if not isinstance(kwargs.get("scope"), dict) or not all(
+                kwargs.get(key) for key in ("task_id", "binding_id", "event_id")
+            ):
+                raise ValueError(
+                    "continuity sync requires scope, task, binding and stable event ID"
+                )
+            content = f"user: {self._prepare(user_msg)}\nassistant: {assistant_msg}"
+            return await self._client.continuity_call(
+                "add",
+                {
+                    "content": content,
+                    "scope": kwargs["scope"],
+                    "continuity": {
+                        "task_id": kwargs["task_id"],
+                        "binding_id": kwargs["binding_id"],
+                        "event_id": kwargs["event_id"],
+                        "kind": "statement",
+                    },
+                },
+            )
         if not user_msg or not assistant_msg:
             return
         if not self._initialized or self._client is None:
@@ -1146,7 +1485,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if not user_msg:
             return
         content = f"user: {user_msg}\nassistant: {assistant_msg}"
-        system_metadata: dict[str, str] = {"infer": "true"}
+        system_metadata: dict[str, str] = {
+            "infer": "true",
+            "source_app": "jiuwenswarm",
+            "agent_label": self._agent_id,
+        }
         # rail 经 _resolve_project 传入 project；与 conclude 分支同口径直传标量
         # system_metadata["project"]，让 md 落盘按 memory/{project}/... 分流。
         project = str(kwargs.get("project") or "").strip()
@@ -1204,13 +1547,29 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 "use agent_memory_video_submit with that URI. "
                 "Use agent_memory_video_status to check the resulting job."
             )
+        if self._continuity_enabled:
+            prompt += (
+                " Restore saved task background with agent_memory_search (task_id) before "
+                "continuing; select a duty to expand typed relations and inspect paths/gaps. "
+                "Record observations/results through agent_memory_add with the continuity "
+                "parameter, and review relations explicitly. "
+                "No predecessor handoff is required; Rail hooks do not capture all history."
+            )
         return prompt
 
     async def shutdown(self) -> None:
+        async with self._initialize_lock:
+            await self._shutdown()
+
+    async def _shutdown(self) -> None:
+        if self._portal_handle is not None:
+            await asyncio.to_thread(self._portal_handle.close)
+            self._portal_handle = None
         if self._client is not None:
             await self._client.close()
         self._client = None
         self._initialized = False
+        self._portal_error = None
 
     async def on_session_end(self, messages: list[dict[str, Any]] | None = None) -> None:
         """会话结束时批量抽取一次（infer 模式下基本冗余，保留为显式入口）。
@@ -1218,6 +1577,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         触发 ``evolve(EXTRACT)`` 让 AgentMemory Extractor 从累积原文抽取事实。
         需配 ``extractor:llm``+``llm:openai`` 才真抽取（默认 keyword 空转）。
         """
+        if self._continuity_enabled:
+            # continuity add owns the frozen derivation plan and its durable receipt.
+            # A scope-wide EXTRACT would bypass that recovery and provenance boundary.
+            return
         if not self._initialized or self._client is None:
             return
         logger.info(
@@ -1329,6 +1692,9 @@ class _AgentMemoryClient:
     ) -> _AddResult | None:
         raise NotImplementedError
 
+    async def continuity_call(self, verb: str, payload: dict) -> dict:
+        raise NotImplementedError("continuity requires a remote client")
+
     async def search(
         self,
         query: str,
@@ -1397,6 +1763,7 @@ def _build_client(
     api_key: str = "",
     identity_org: str = "local",
     identity_user: str = "developer",
+    manage_configuration: bool = True,
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
@@ -1425,11 +1792,19 @@ def _build_client(
             None,
             config_dict=_merge_config_over_default(config_dict),
             security_provider=security_provider,
+            manage_configuration=manage_configuration,
         )
     if config_path:
-        return _InProcessClient(config_path, security_provider=security_provider)
+        return _InProcessClient(
+            config_path,
+            security_provider=security_provider,
+            manage_configuration=manage_configuration,
+        )
     return _InProcessClient(
-        None, config_dict=_merge_config_over_default({}), security_provider=security_provider
+        None,
+        config_dict=_merge_config_over_default({}),
+        security_provider=security_provider,
+        manage_configuration=manage_configuration,
     )
 
 
@@ -1463,6 +1838,7 @@ class _HttpClient(_AgentMemoryClient):
         write_timeout: float = _WRITE_TIMEOUT,
     ) -> None:
         self._base_url = base_url.rstrip("/") if base_url else ""
+        self.portal_available = False
         self._api_key = api_key
         # 服务端认证身份（org/user）。授权模型要求身份覆盖 target scope（org 是
         # 硬边界），故这两轴不能承载 per-call 租户/用户数据——必须与服务端认证
@@ -1590,7 +1966,7 @@ class _HttpClient(_AgentMemoryClient):
         避免拖垮宿主的每轮 prefetch/sync_turn。
 
         4xx 是**业务拒绝**而非服务不可用：``raise_on_client_error=True`` 的调用方
-        （显式工具）抛 :class:`AgentMemoryClientError` 把服务端错误信息透出给
+        （显式工具）抛:class:`AgentMemoryClientError` 把服务端错误信息透出给
         LLM（不计熔断）；其余调用方维持降级 None（既有行为不变）。
         """
         if self._http is None or not self._is_initialized or self._is_breaker_open():
@@ -1677,6 +2053,52 @@ class _HttpClient(_AgentMemoryClient):
             tier=unit.get("tier", ""),
         )
 
+    async def continuity_call(self, verb: str, payload: dict) -> dict:
+        """接续入口统一调用：``add``/``search`` 与三个 continuity_* 动词同一条通道。
+
+        返回一律为 dict：``add`` 的列表结果包成 ``{"units": [...]}``；409 是**未完成写入
+        回执**（``WriteIncompleteError``），必须原样带回 ``operation_id``/``status``/
+        ``refs``/``retry_action``，不能压成 ``rejected`` —— 那会让调用方以为换一个
+        event ID 重试就安全了。
+        """
+        import httpx
+
+        if verb not in {
+            "add",
+            "search",
+            "continuity_task",
+            "continuity_relation",
+            "continuity_recover",
+        }:
+            raise ValueError("unsupported continuity operation")
+        try:
+            response = await self._http.post(f"/v1/{verb}", json=payload, timeout=120.0)
+            if response.status_code == 409:
+                body = response.json()
+                if not isinstance(body, dict):
+                    raise ValueError("structured response required")
+                return {
+                    "status": str(body.get("status") or "unknown"),
+                    "operation_id": body.get("operation_id", ""),
+                    "refs": body.get("refs") or [],
+                    "retry_action": body.get("retry_action", ""),
+                    "error": body.get("message", "write incomplete"),
+                }
+            if response.status_code >= 400:
+                return {
+                    "status": "rejected" if response.status_code < 500 else "unknown",
+                    "error": f"http_{response.status_code}",
+                }
+            response.raise_for_status()
+            result = response.json()
+            if isinstance(result, list):
+                return {"units": result}
+            if not isinstance(result, dict):
+                raise ValueError("structured response required")
+            return result
+        except (httpx.HTTPError, ValueError):
+            return {"status": "unknown", "error": "transport_unavailable"}
+
     async def search(self, query, scope, *, top_k=10, filters=None) -> list[dict[str, Any]]:
         """混合检索。响应键是 ``items``（不是旧契约的 ``hits``）。"""
         payload: dict[str, Any] = {
@@ -1759,8 +2181,8 @@ class _HttpClient(_AgentMemoryClient):
     ) -> list[dict[str, Any]] | None:
         """读 md 文件（F08）。响应是 ``list[MemoryUnit]`` 序列化顶层数组（与 add 同构）。
 
-        空数组是合法结果（文件不存在/行范围无完整块）；4xx（非文档模式等）抛
-        :class:`AgentMemoryClientError` 透出；传输失败 None。
+        空数组是合法结果（文件不存在/行范围无完整块）；4xx（非文档模式等）
+        抛:class:`AgentMemoryClientError` 透出；传输失败 None。
         """
         payload: dict[str, Any] = {
             "context": self._context_payload(scope, project),
@@ -1787,7 +2209,7 @@ class _HttpClient(_AgentMemoryClient):
     ) -> list[dict[str, Any]] | None:
         """md 文件内唯一替换（F08）。响应是受影响**新** unit 的顶层数组。
 
-        4xx（old_text 不存在/不唯一、非文档模式）抛 :class:`AgentMemoryClientError`
+        4xx（old_text 不存在/不唯一、非文档模式）抛:class:`AgentMemoryClientError`
         透出；传输失败 None。写路径超时（edit 同步 supersede shadow）。
         """
         payload: dict[str, Any] = {
@@ -1819,6 +2241,24 @@ class _HttpClient(_AgentMemoryClient):
         logger.info("[AgentMemoryMemoryProvider/http] POST /v1/evolve mode=extract")
         job_id = await self._post_verb("evolve", payload, write=True)
         logger.info("[AgentMemoryMemoryProvider/http] /v1/evolve -> job_id=%s", job_id)
+
+    async def open_portal(self, scope=None):
+        self.portal_available = False
+        if self._http is None:
+            await self.initialize()
+        payload = {}
+        if scope is not None:
+            mapped = self._scope_payload(scope)
+            payload["write_target"] = {name: mapped[name] for name in ("space", "agent", "session")}
+        response = await self._http.post(
+            f"{self._base_url}/portal/api/launch",
+            json=payload,
+            headers={"Origin": self._base_url},
+        )
+        response.raise_for_status()
+        link = response.json()["portal_url"]
+        self.portal_available = True
+        return link
 
     async def close(self) -> None:
         if self._http is not None:
@@ -1859,6 +2299,7 @@ class _InProcessClient(_AgentMemoryClient):
         *,
         config_dict: dict[str, Any] | None = None,
         security_provider: Any = None,
+        manage_configuration: bool = True,
     ) -> None:
         if security_provider is None:
             # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
@@ -1870,6 +2311,7 @@ class _InProcessClient(_AgentMemoryClient):
             )
         self._security_provider = security_provider
         config = config_dict
+        config_paths = ()
         if config is None and config_path:
             from pathlib import Path
 
@@ -1880,11 +2322,36 @@ class _InProcessClient(_AgentMemoryClient):
             config = _merge_config_over_default(
                 config if config is not None else {}, standalone=True,
             )
+            config_paths = (str(p),)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
-        self._runtime = assemble_runtime(config=config)
-        self._api = self._runtime.api
+        store = None
+        if manage_configuration:
+            owner = deepcopy(security_provider().auth.actor)
+            store = open_config_overlay(config, config_paths)
+        if store is None:
+            runtime = assemble_runtime(config=config)
+        else:
+            def authorize(security, operation):
+                if security.auth.actor != owner or security_provider().auth.actor != owner:
+                    return False
+                runtime.api.check_configuration_access(
+                    owner, security=security, write=operation == "write",
+                )
+                return True
+
+            runtime = assemble_managed_runtime(
+                config=config, store=store, llm_instances=document_llm_instances(config),
+                authorize=authorize,
+            )
+        self._runtime = runtime
+        self._api = runtime.api
+
+    @property
+    def runtime(self) -> Any:
+        """返回插件与本地 Portal 共用的 Runtime。"""
+        return self._runtime
 
     def _security(self) -> RequestSecurityContext:
         """本次调用的可信上下文：由注入的 provider 产出，业务 scope 只作 target。"""

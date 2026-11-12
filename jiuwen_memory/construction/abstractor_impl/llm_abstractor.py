@@ -52,10 +52,15 @@ from jiuwen_memory.construction.prompt_guard import (
 
 from ..abstractor import Abstractor
 from ..base import OperatorType
-from ..common import reject_deprecated_llm_attempt_keys, validate_llm_attempt_policy
+from ..common import (
+    importance_category_map_from_config,
+    inferred_attribution,
+    reject_deprecated_llm_attempt_keys,
+    validate_llm_attempt_policy,
+)
 
-# 长记忆提炼视图（各分片候选拼接）的字符上限：归纳调用中每个超限 unit 只占这么多
-# 字符，保证跨记忆归纳批的 prompt 有界。
+# 长记忆提炼视图（各分片候选拼接）的字符上限：归纳调用中每个超限 unit
+# 只占这么多字符，保证跨记忆归纳批的 prompt 有界。
 _DIGEST_MAX_CHARS = 2000
 
 logger = get_logger(__name__)
@@ -207,9 +212,11 @@ class LLMAbstractor(Abstractor):
         max_context_tokens: int = 180000,
         max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
+        importance_category_map: dict[str, str] | None = None,
     ) -> None:
         self._llm = llm
         self._feature_extractor = feature_extractor
+        self._importance_category_map = importance_category_map
         self._min_confidence = min_confidence
         self._min_group_size_summary = min_group_size_summary
         self._min_group_size_pattern = min_group_size_pattern
@@ -687,7 +694,9 @@ class LLMAbstractor(Abstractor):
                 system_metadata=inherited_system_metadata(
                     [source_map[source_id] for source_id in valid_source_ids]
                 )
-                | metadata,
+                | metadata
+                # F10：抽象产物写 origin=inferred，重要度取 default 类别值（覆盖继承值）
+                | inferred_attribution(None, self._importance_category_map),
                 user_metadata=inherited_user_metadata(
                     [source_map[source_id] for source_id in valid_source_ids]
                 ),
@@ -727,4 +736,5 @@ def _build(config):
         max_context_tokens=config.get("abstractor_max_context_tokens", 180000),
         max_attempts=config.get("abstractor_max_attempts", 3),
         retry_backoff_ms=config.get("abstractor_retry_backoff", 1000),
+        importance_category_map=importance_category_map_from_config(config),
     )

@@ -8,11 +8,19 @@ import json
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
+from jiuwen_memory.api.personal_memory import (
+    PersonalScopeBinding,
+    personal_scope_binding,
+    search_personal_records,
+)
 from jiuwen_memory.api.search_options import SearchOptions
 from jiuwen_memory.common.errors import (
+    AgentMemoryError,
     BackendError,
+    ConflictError,
     NotFoundError,
     PermissionDeniedError,
     ValidationError,
@@ -20,7 +28,9 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.security import principal, space_predicates
+from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     EXT_MAX_TOKENS,
@@ -29,6 +39,7 @@ from jiuwen_memory.common.type_def import (
     Context,
     FilterClause,
     FilterExpr,
+    FilterOp,
     HierarchyKind,
     HierarchyRole,
     MemoryUnit,
@@ -36,7 +47,9 @@ from jiuwen_memory.common.type_def import (
     and_merge,
     normalize,
 )
+from jiuwen_memory.common.type_def.continuity import MemoryRef, ViewBudget
 from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
+from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.construction.router import (
@@ -44,6 +57,12 @@ from jiuwen_memory.construction.router import (
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
+from jiuwen_memory.control.application.personal_memory import (
+    PersonalPage,
+    PersonalSearchResult,
+    list_personal,
+    scope_key,
+)
 from jiuwen_memory.control.evolution.validation import (
     scope_contains,
     validate_evolve_options,
@@ -51,12 +70,15 @@ from jiuwen_memory.control.evolution.validation import (
 )
 from jiuwen_memory.control.types import (
     BackgroundJobStartResult,
+    BatchUpdateOutcome,
+    BatchUpdateResult,
     Channel,
     DeleteSelector,
     EvolveTaskOptions,
     MemoryListResult,
     MemoryPatch,
     PermissionContext,
+    UpdateSelector,
 )
 from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery, RetrievalResult
 
@@ -135,14 +157,48 @@ class QueryOpsMixin:
         span_end: datetime | None = None,
         expand_depth: int = 1,
         rollup: bool = True,
-    ) -> RetrievalResult:
+        task_id: str = "",
+        anchor: MemoryRef | None = None,
+        duty: str | list[str] | None = None,
+        view_budget: ViewBudget | None = None,
+    ) -> RetrievalResult | PersonalSearchResult:
         """将原有平铺参数装成选项，委托统一查询入口。"""
+        if "personal" in context.extensions:
+            selection = context.extensions["personal"]
+            valid_selection = isinstance(selection, dict) and selection.keys() <= {"source"}
+            personal_only = (
+                context.scope == Scope() and set(context.extensions) == {"personal"}
+                and valid_selection
+            )
+            has_recall_options = filters is not None or as_of is not None or with_trajectory
+            options = (
+                disclosure, hierarchy_kind, hierarchy_role, span_start, span_end, expand_depth,
+                rollup, task_id, anchor, duty, view_budget,
+            )
+            defaults = (
+                DisclosureLevel.L0, HierarchyKind.TIME, HierarchyRole.TIME_SPAN,
+                None, None, 1, True, "", None, None, None,
+            )
+            if not personal_only or has_recall_options or options != defaults:
+                raise ValidationError("personal search only accepts a query, source and top_k")
+            if not isinstance(query, str) or not query.strip():
+                raise ValidationError("query must be a non-empty string")
+            hits = search_personal_records(
+                self, self._personal_candidates(security), query,
+                security=security, top_k=top_k, source=selection.get("source"),
+                read_scope=partial(self._list_scope, skip_unavailable_scope=True),
+                skip_candidate=lambda unit: self._requires_continuity_point_read(
+                    unit.system_metadata
+                ),
+            )
+            return PersonalSearchResult(hits, scores_comparable=False)
         return self._search(
             query, context, SearchOptions(
                 filters=filters, as_of=as_of, top_k=top_k, disclosure=disclosure,
                 with_trajectory=with_trajectory,
                 hierarchy_kind=hierarchy_kind, hierarchy_role=hierarchy_role,
                 span_start=span_start, span_end=span_end, expand_depth=expand_depth, rollup=rollup,
+                task_id=task_id, anchor=anchor, duty=duty, view_budget=view_budget,
             ), security=security,
         )
 
@@ -182,6 +238,10 @@ class QueryOpsMixin:
         query_context = _pop_query_context(extensions)
         pipeline = extensions.pop("retrieval_pipeline", None)
         self._queries.validate_retrieval_pipeline(pipeline)
+        if self._privacy is not None:
+            query = self._privacy.preview(query)
+            if query_context is not None:
+                query_context = tuple(self._privacy.preview(turn) for turn in query_context)
         spaces = _pop_spaces(extensions)
         routing_enabled = self._routing_enabled()
         coords = _pop_coords(extensions, enabled=routing_enabled)
@@ -209,6 +269,13 @@ class QueryOpsMixin:
             expand_depth=options.expand_depth, rollup=options.rollup,
             query_context=query_context, pipeline=pipeline,
         )
+        view_requested = bool(options.task_id or options.anchor is not None or options.duty)
+        if view_requested:
+            if spaces is not None:
+                raise ValidationError(
+                    "continuity view cannot be combined with cross-space retrieval"
+                )
+            return self._search_view(query, context, options, security=security)
         if spaces is not None:
             self._require_trusted_context(
                 security, _TrustedRequestTarget(Action.READ, "search", Scope(org=context.scope.org))
@@ -246,7 +313,144 @@ class QueryOpsMixin:
             rq.filters = and_merge(rq.filters, system_clauses)
         result = asyncio.run(self._queries.recall(context.scope, rq))
         self._log(identity, "search", target_scope=context.scope, detail=auth)
-        return result
+        return self._guard_continuity_search(result, scope=context.scope)
+
+    def _search_view(
+        self, query: str, context: Context, options: SearchOptions,
+        *, security: RequestSecurityContext,
+    ) -> RetrievalResult:
+        """Task background / duty view path of ``search`` (S11 5.2, 6.2.6)."""
+        from jiuwen_memory.common.type_def.continuity import RoleViewQuery
+        from jiuwen_memory.retrieval.types import RetrievedItem
+
+        scope = context.scope
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.READ, "search", scope)
+        )
+        self._authorize(security, scope, Action.READ, "search")
+        service = self._role_service(scope)
+        request = RoleViewQuery(
+            query=query,
+            anchor=options.anchor,
+            task_id=options.task_id,
+            duty=options.duty if options.duty is not None else "general",
+            budget=options.view_budget or ViewBudget(),
+        )
+        # 调用方的过滤与时间约束在视图路径同样生效：锚点、任务背景与关系端点逐条判过，
+        # 语义候选发现也带上同一份条件（否则明确不匹配的条目仍会经 anchor 漏出）。
+        normalized_filters = normalize(options.filters)
+        raw_read = self._role_reader(security, scope)
+
+        def admits(unit) -> bool:
+            if normalized_filters is not None and not matches_memory_unit(
+                unit, normalized_filters
+            ):
+                return False
+            if options.as_of is not None:
+                moment = as_utc(options.as_of)
+                valid_from = unit.temporal.t_valid
+                valid_until = unit.temporal.t_invalid
+                if valid_from is not None and as_utc(valid_from) > moment:
+                    return False
+                if valid_until is not None and as_utc(valid_until) <= moment:
+                    return False
+            return True
+
+        def read(ref):
+            unit = raw_read(ref)
+            if not admits(unit):
+                # 视图构建器把不可读引用当作「跳过这条边/条目」，与权限不足同一形态。
+                raise NotFoundError("filtered")
+            return unit
+
+        if service.mode == "continuity":
+            # 接续模式：普通检索提供语义召回，起点（anchor/任务背景）与合并顺序由插件
+            # 归一化，本层只做类型转换。
+            base = self._search(
+                query,
+                context,
+                replace(options, task_id="", anchor=None, duty=None, view_budget=None),
+                security=security,
+            )
+            bundled = service.continuity_view_result(
+                scope,
+                request,
+                read,
+                extra_items=[
+                    {
+                        "unit_id": item.unit_id,
+                        "content": item.content,
+                        "system_metadata": dict(item.system_metadata),
+                    }
+                    for item in base.items
+                ],
+                top_k=options.top_k,
+            )
+            return RetrievalResult(
+                items=[
+                    RetrievedItem(
+                        unit_id=entry["unit_id"],
+                        abstract=entry["text"],
+                        overview=entry["text"],
+                        content=entry["text"],
+                        view=entry["annotation"],
+                    )
+                    for entry in bundled["items"]
+                ],
+                # 部分通道失败必须对调用方可见：视图是补充，不是把底层错误吞掉。
+                errors=list(base.errors),
+                paths=bundled["paths"],
+                gaps=bundled["gaps"],
+                view_meta=bundled["meta"],
+            )
+
+        discover_errors: list = []
+
+        def discover(text, limit):
+            results = self.search(
+                text,
+                Context(scope, dict(context.extensions)),
+                security=security,
+                top_k=limit,
+                disclosure=DisclosureLevel.L2,
+                filters=options.filters,
+                as_of=options.as_of,
+            )
+            discover_errors.extend(results.errors)
+            units = []
+            for item in results.items:
+                try:
+                    unit = self.get(item.unit_id, scope, security=security)
+                    read(MemoryRef.of(unit))
+                    units.append(unit)
+                except (PermissionDeniedError, ConflictError, NotFoundError):
+                    continue
+            return units
+
+        # 视图组装（条目归一化、排序、截断缺口、元信息）在插件里完成；本层只做类型
+        # 转换与审计。
+        bundled = service.view_result(scope, request, read, discover, top_k=options.top_k)
+        items = [
+            RetrievedItem(
+                unit_id=entry["unit_id"],
+                abstract=entry["text"],
+                overview=entry["text"],
+                content=entry["text"],
+                view=entry["annotation"],
+            )
+            for entry in bundled["items"]
+        ]
+        self._log(
+            security.auth.actor, "search", target_scope=scope,
+            detail={"view": "role", "duty": request.duty},
+        )
+        return RetrievalResult(
+            items=items,
+            errors=discover_errors,
+            paths=bundled["paths"],
+            gaps=bundled["gaps"],
+            view_meta=bundled["meta"],
+        )
 
     def _search_spaces(
         self, context: Context, retrieval_query: RetrievalQuery, access: _SearchAccess,
@@ -377,12 +581,21 @@ class QueryOpsMixin:
         # 查询骨架装配一次，逐空间只差取数上界与本空间谓词，两项都由控制层补齐。
         # 逐空间构造 RetrievalQuery 的循环本身就是取数编排，不留本层。
         # 同步桥接留本层（S02「同步/异步桥接」）：控制层给协程，本层 asyncio.run。
+        item_scopes = {}
+
+        async def guarded_recall(target_scope, query):
+            result = await self._queries.recall(target_scope, query)
+            # Trusted fan-out origin, never a Scope supplied in memory metadata.
+            for item in result.items:
+                item_scopes[id(item)] = target_scope
+            return self._guard_continuity_search(result, scope=target_scope)
+
         merged, space_failures = asyncio.run(
             collective.recall_spaces(
                 targets,
                 retrieval_query,
                 top_k=retrieval_query.top_k,
-                recall=self._queries.recall,
+                recall=guarded_recall,
             )
         )
         for failure in space_failures:
@@ -417,7 +630,7 @@ class QueryOpsMixin:
                 "count": str(len(merged.items)),
             },
         )
-        return merged
+        return self._guard_continuity_search(merged, item_scopes=item_scopes)
 
     def _hierarchy_enabled(self) -> bool:
         """仅在可信请求通过校验后读取运行时树总开关。"""
@@ -453,7 +666,64 @@ class QueryOpsMixin:
             candidates = candidates[:limit]
         return candidates
 
+    def _personal_candidates(self, security: RequestSecurityContext) -> list[PersonalScopeBinding]:
+        """按当前身份发现个人候选；读取时仍逐范围鉴权。"""
+        identity = security.auth.actor
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.READ, "personal_scope_discovery", identity)
+        )
+        principal.require_principal(identity)
+        eligible: list[PersonalScopeBinding] = []
+        for scope in self._queries.candidate_scopes():
+            binding = personal_scope_binding(identity, scope)
+            if binding is not None:
+                eligible.append(deepcopy(binding))
+        return eligible
+
     def list(
+        self,
+        scope: Scope | None = None,
+        *,
+        security: RequestSecurityContext,
+        offset: int = 0,
+        limit: int = 100,
+        memory_types: list[str] | None = None,
+        extensions: dict[str, Any] | None = None,
+        filters: FilterExpr | list[FilterClause] | dict | None = None,
+    ) -> MemoryListResult | PersonalPage:
+        normalized_extensions = _normalize_list_extensions(extensions)
+        if "personal" in normalized_extensions:
+            selection = normalized_extensions["personal"]
+            personal_only = scope is None and set(normalized_extensions) == {"personal"}
+            has_scoped_filters = memory_types is not None or filters is not None
+            valid_selection = isinstance(selection, dict) and selection.keys() <= {
+                "source", "agent", "project", "query", "tier", "memory_class", "lifecycle",
+                "snapshot", "include_lifecycle_counts",
+            }
+            if not personal_only or has_scoped_filters or not valid_selection:
+                raise ValidationError("invalid personal list options; omit scope")
+            candidates = self._personal_candidates(security)
+            bindings = {scope_key(binding.scope): binding for binding in candidates}
+
+            def read_scope(target, start, size):
+                return self._list_scope(
+                    target, security=security, offset=start, limit=size,
+                    filters=bindings[scope_key(target)].author_filter(),
+                    skip_unavailable_scope=True,
+                )
+
+            return list_personal(
+                [binding.scope for binding in candidates], read_scope,
+                offset=offset, limit=limit, **selection,
+            )
+        if scope is None:
+            raise ValidationError("missing required field(s) for list: scope")
+        return self._list_scope(
+            scope, security=security, offset=offset, limit=limit, memory_types=memory_types,
+            extensions=normalized_extensions, filters=filters,
+        )
+
+    def _list_scope(
         self,
         scope: Scope,
         *,
@@ -463,9 +733,10 @@ class QueryOpsMixin:
         memory_types: list[str] | None = None,
         extensions: dict[str, Any] | None = None,
         filters: FilterExpr | list[FilterClause] | dict | None = None,
+        skip_unavailable_scope: bool = False,
     ) -> MemoryListResult:
         identity = security.auth.actor
-        normalized_extensions = _normalize_list_extensions(extensions)
+        normalized_extensions = extensions if extensions is not None else {}
         normalized_filters = normalize(filters)
         permission_contexts = _list_permission_contexts(
             scope,
@@ -476,14 +747,19 @@ class QueryOpsMixin:
         )
         auth: dict[str, str] = {}
         auth_context: PermissionContext | None = None
-        for permission_context in permission_contexts:
-            auth, auth_context = self._authorize_with_context(
-                security,
-                scope,
-                Action.READ,
-                "list",
-                context=permission_context,
-            )
+        try:
+            for permission_context in permission_contexts:
+                auth, auth_context = self._authorize_with_context(
+                    security,
+                    scope,
+                    Action.READ,
+                    "list",
+                    context=permission_context,
+                )
+        except (PermissionDeniedError, NotFoundError):
+            if skip_unavailable_scope:
+                return MemoryListResult()
+            raise
         routing_clauses = _list_routing_clauses(
             permission_contexts,
             self._routing_fields_for("list"),
@@ -498,6 +774,20 @@ class QueryOpsMixin:
         )
         if system_clauses:
             effective_filters = and_merge(effective_filters, system_clauses)
+        # 不可用来源（停用 ∪ 隔离）在分页与 count 之前下推：逐条复核的失败形态是抛异常，
+        # 一条被隔离即整页失败；下推后表现为少返回几条，且 count 与页面一致。
+        unavailable = self._unavailable_continuity_connectors(scope)
+        if unavailable:
+            effective_filters = and_merge(
+                effective_filters,
+                [
+                    FilterClause(
+                        "system_metadata.continuity_connector",
+                        FilterOp.NOT_IN,
+                        list(unavailable),
+                    )
+                ],
+            )
         result, unit_contexts = asyncio.run(
             self._queries.list_with_permission_contexts(
                 scope,
@@ -536,6 +826,23 @@ class QueryOpsMixin:
                 "page_count": str(len(result.items)),
             },
         )
+        # 来源过滤已下推（分页前生效），但**依赖证据复核不可省**：依据被修订/撤回后，
+        # get 会拒绝而 list 若只靠谓词仍会返回该结论。逐条复核并**剔除**不合规条目，
+        # 不用抛异常（整页失败）也不用 continue（什么也滤不掉）。
+        visible = []
+        for unit in result.items:
+            try:
+                self._guard_continuity_snapshot(unit, security)
+            except AgentMemoryError:
+                # 依赖不可读、摘要已变或来源不可用都表现为「这条不再可披露」；
+                # 列表按条剔除，不整页报错（get 仍按点读语义抛错）。
+                continue
+            visible.append(unit)
+        if len(visible) != len(result.items):
+            # 逐条剔除发生在分页之后，count 必须同步扣掉，否则调用方按 count 翻页会
+            # 反复落到全是空页的区间。
+            result.count = max(0, result.count - (len(result.items) - len(visible)))
+            result.items = visible
         return result
 
     def get(
@@ -579,6 +886,7 @@ class QueryOpsMixin:
             unit.id,
             context=_unit_snapshot_permission_context(unit),
         )
+        self._guard_continuity_snapshot(unit, security)
         self._log(
             identity,
             "get",
@@ -588,6 +896,38 @@ class QueryOpsMixin:
         )
         return unit
 
+    def _do_single_update(
+        self,
+        unit_id: str,
+        scope: Scope,
+        patch: MemoryPatch,
+        security: RequestSecurityContext,
+    ) -> MemoryUnit:
+        """单条更新的 mutation 核心（不含 metadata 拒绝和顶层鉴权，供 batch_update 复用）。
+
+        走完整的 schema prepare→逐项鉴权→commit 流程；普通记忆直接 commands.update。
+        """
+        self._ensure_space_writable(scope)
+        before = asyncio.run(self._queries.get(unit_id, scope, None))
+        plan = None
+        if self._commands.requires_update_preparation(before, patch):
+            plan = asyncio.run(self._commands.prepare_update(unit_id, scope, patch))
+        if plan is not None:
+            for action, context in self._commands.update_permission_contexts(plan):
+                self._authorize(
+                    security,
+                    context.scope,
+                    action,
+                    "batch_update",
+                    context.unit_id,
+                    context=context,
+                )
+            unit = asyncio.run(self._commands.commit_update(plan))
+        else:
+            unit = asyncio.run(self._commands.update(unit_id, scope, patch))
+        return unit
+
+    @privacy_operation
     def update(
         self,
         unit_id: str,
@@ -628,6 +968,26 @@ class QueryOpsMixin:
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
         before = asyncio.run(self._queries.get(unit_id, scope, None))
+        if self._privacy is not None:
+            from dataclasses import replace as copy_patch
+
+            from jiuwen_memory.common.type_def import RawPayload
+
+            protected = self._privacy.ingress(RawPayload(
+                id=unit_id, scope=scope, data=(patch.content or "").encode("utf-8"),
+                system_metadata=dict(patch.system_metadata or {}),
+                user_metadata=dict(patch.user_metadata or {}),
+            ))
+            self._privacy.inherit_classification(protected, [before])
+            protected_tags = self._privacy.ingress(RawPayload(
+                id=unit_id, scope=scope, user_metadata={"tags": patch.tags or []},
+            )).user_metadata["tags"] if patch.tags is not None else None
+            patch = copy_patch(
+                patch, content=protected.data.decode() if patch.content is not None else None,
+                system_metadata=protected.system_metadata,
+                user_metadata=protected.user_metadata if patch.user_metadata is not None else None,
+                tags=protected_tags,
+            )
         plan = None
         if self._commands.requires_update_preparation(before, patch):
             plan = asyncio.run(self._commands.prepare_update(unit_id, scope, patch))
@@ -644,6 +1004,8 @@ class QueryOpsMixin:
             unit = asyncio.run(self._commands.commit_update(plan))
         else:
             unit = asyncio.run(self._commands.update(unit_id, scope, patch))
+        if self._privacy is not None:
+            unit = asyncio.run(self._queries.get(unit.id, unit.scope, None))
         update_detail = {}
         if plan is not None:
             affected_unit_ids = []
@@ -664,6 +1026,213 @@ class QueryOpsMixin:
             detail={**auth, **update_detail, "before_unit_id": before.id, "after_unit_id": unit.id},
         )
         return unit
+
+    @privacy_operation
+    def batch_update(
+        self,
+        selector: UpdateSelector,
+        patches: list[MemoryPatch],
+        *,
+        security: RequestSecurityContext,
+        limit: int | None = None,
+        continue_on_error: bool = True,
+    ) -> BatchUpdateResult:
+        identity = security.auth.actor
+        selector_is_empty = (
+            not selector.unit_ids
+            and not selector.tags
+            and selector.before is None
+            and selector.after is None
+            and selector.filters is None
+        )
+        if selector_is_empty:
+            raise ValidationError(
+                "UpdateSelector requires unit_ids, tags, before, after, or filters"
+            )
+        if not patches:
+            raise ValidationError("patches must be non-empty")
+        if limit is not None and limit <= 0:
+            raise ValidationError("limit must be a positive integer")
+        for patch in patches:
+            _reject_kernel_system_metadata(patch.system_metadata)
+            _reject_route_tag_keys(patch.system_metadata, self._route_table.tag_keys)
+            _reject_non_scalar_metadata(patch.system_metadata, field_name="system_metadata")
+            _reject_non_scalar_metadata(patch.user_metadata, field_name="user_metadata")
+        unified = len(patches) == 1
+        if not unified:
+            if not selector.unit_ids:
+                raise ValidationError(
+                    "per-item patches require selector.unit_ids to be non-empty"
+                )
+            if len(selector.unit_ids) != len(patches):
+                raise ValidationError(
+                    f"len(unit_ids)={len(selector.unit_ids)} must equal "
+                    f"len(patches)={len(patches)} in per-item mode"
+                )
+        target = selector.scope or _ROOT
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.UPDATE, "batch_update", target)
+        )
+        # selector 级跨范围鉴权闸门（对齐 delete 的 L761-768）
+        selector_context = PermissionContext(
+            resource_type="update_selector",
+            scope=target,
+            tags=tuple(selector.tags),
+        )
+        if selector.scope is not None or not selector.unit_ids:
+            self._authorize(
+                security,
+                target,
+                Action.UPDATE,
+                "batch_update",
+                context=selector_context,
+            )
+        contexts = asyncio.run(self._queries.permission_contexts_for_update(selector))
+        auth: dict[str, str] = {}
+        if not contexts:
+            auth = self._authorize(
+                security,
+                target,
+                Action.UPDATE,
+                "batch_update",
+                context=selector_context,
+            )
+        else:
+            auth = {"permission_check": "enabled", "permission_reason": "permission check passed"}
+            for permission_context in contexts:
+                unit_auth = self._authorize(
+                    security,
+                    permission_context.scope,
+                    Action.UPDATE,
+                    "batch_update",
+                    permission_context.unit_id,
+                    context=permission_context,
+                )
+                auth.update(unit_auth)
+        # mutation 前审计完整性预检（对齐 update/delete 的 R3 约束）
+        self._ensure_audit_integrity_healthy()
+        candidates = list(contexts)
+        effective_limit = limit if limit is not None else selector.limit
+        # selector.limit 与 API 参数 limit 同为显式契约，统一走正整数校验，
+        # 不静默忽略 0/-1（否则会宽放行为「更新全部候选」）。
+        if effective_limit is not None and effective_limit <= 0:
+            raise ValidationError("limit must be a positive integer")
+        # 逐条模式 limit 只做下界承诺（不得小于 patches 数量），不截断候选集：
+        # 截断会让 unit_ids 后段查不到 candidate_map 被误判 NotFoundError。
+        if effective_limit is not None and not unified and effective_limit < len(patches):
+            raise ValidationError(
+                f"limit={effective_limit} must be >= len(patches)={len(patches)} "
+                "in per-item mode"
+            )
+        if effective_limit is not None and not selector.unit_ids:
+            candidates = candidates[:effective_limit]
+        outcomes: list[BatchUpdateOutcome] = []
+        if not unified:
+            # 逐条模式：按 unit_ids 顺序逐项处理，补丁按 unit_ids 下标对应，
+            # 缺失 id 生成 error outcome，避免静默丢弃 + 补丁错位（Issue #6）。
+            candidate_map = {ctx.unit_id: ctx for ctx in candidates}
+            for i, uid in enumerate(selector.unit_ids):
+                ctx = candidate_map.get(uid)
+                if ctx is None:
+                    # 缺失 id：生成 error outcome
+                    outcomes.append(
+                        BatchUpdateOutcome(
+                            index=i,
+                            unit_id=uid,
+                            error="unit not found",
+                            error_type="NotFoundError",
+                        )
+                    )
+                    if not continue_on_error:
+                        for j in range(i + 1, len(selector.unit_ids)):
+                            outcomes.append(
+                                BatchUpdateOutcome(
+                                    index=j,
+                                    unit_id=selector.unit_ids[j],
+                                    error="skipped after previous item failed",
+                                    error_type="Skipped",
+                                )
+                            )
+                        break
+                    continue
+                patch = patches[i]
+                try:
+                    updated = self._do_single_update(
+                        ctx.unit_id, ctx.scope, patch, security,
+                    )
+                    outcomes.append(
+                        BatchUpdateOutcome(index=i, unit_id=ctx.unit_id, updated_unit=updated)
+                    )
+                except Exception as exc:
+                    is_domain_error = isinstance(exc, AgentMemoryError)
+                    if not is_domain_error:
+                        logger.exception("unexpected batch update failure at index %s", i)
+                    error_msg = str(exc) if is_domain_error else "unexpected batch update failure"
+                    outcomes.append(
+                        BatchUpdateOutcome(
+                            index=i,
+                            unit_id=ctx.unit_id,
+                            error=error_msg,
+                            error_type=type(exc).__name__ if is_domain_error else "InternalError",
+                        )
+                    )
+                    if not continue_on_error:
+                        for j in range(i + 1, len(selector.unit_ids)):
+                            outcomes.append(
+                                BatchUpdateOutcome(
+                                    index=j,
+                                    unit_id=selector.unit_ids[j],
+                                    error="skipped after previous item failed",
+                                    error_type="Skipped",
+                                )
+                            )
+                        break
+        else:
+            # 统一模式：按候选顺序处理，所有候选共用 patches[0]
+            for index, ctx in enumerate(candidates):
+                patch = patches[0]
+                try:
+                    updated = self._do_single_update(
+                        ctx.unit_id, ctx.scope, patch, security,
+                    )
+                    outcomes.append(
+                        BatchUpdateOutcome(index=index, unit_id=ctx.unit_id, updated_unit=updated)
+                    )
+                except Exception as exc:
+                    is_domain_error = isinstance(exc, AgentMemoryError)
+                    if not is_domain_error:
+                        logger.exception("unexpected batch update failure at index %s", index)
+                    error_msg = str(exc) if is_domain_error else "unexpected batch update failure"
+                    outcomes.append(
+                        BatchUpdateOutcome(
+                            index=index,
+                            unit_id=ctx.unit_id,
+                            error=error_msg,
+                            error_type=type(exc).__name__ if is_domain_error else "InternalError",
+                        )
+                    )
+                    if not continue_on_error:
+                        for skipped_index in range(index + 1, len(candidates)):
+                            outcomes.append(
+                                BatchUpdateOutcome(
+                                    index=skipped_index,
+                                    unit_id=candidates[skipped_index].unit_id,
+                                    error="skipped after previous item failed",
+                                    error_type="Skipped",
+                                )
+                            )
+                        break
+        self._log(
+            identity,
+            "batch_update",
+            target_scope=target,
+            detail={
+                **auth,
+                "candidate_count": str(len(candidates)),
+                "outcome_count": str(len(outcomes)),
+            },
+        )
+        return BatchUpdateResult(outcomes=outcomes)
 
     def delete(self, selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]:
         identity = security.auth.actor
@@ -714,6 +1283,12 @@ class QueryOpsMixin:
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
         deleted = asyncio.run(self._commands.delete(selector))
+        if self._privacy is not None:
+            # IndexBuilder covers normal removals; this also revokes raw-message
+            # records removed by a direct purge path.
+            for context in contexts:
+                if context.unit_id in deleted and selector.mode.value == "purge":
+                    self._privacy.discard(context.scope, [context.unit_id])
         self._log(
             identity,
             "delete",

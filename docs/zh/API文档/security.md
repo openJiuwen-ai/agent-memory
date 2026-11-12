@@ -1,16 +1,26 @@
 # Security 安全功能使用指南
 
-最近一次修订日期：2026-11-06
+最近一次修订日期：2026-11-12
+
+适用版本：面向 0.2.2 的安全能力，当前以包含 PR #406 的 `mem2.0` 代码为准。
 
 本文说明记忆服务的配置、调用和安全验收。存储后端的扩展开发请查阅
 [S06 存储契约](../../specs/S06-storage.md) 与 [S10 安全契约](../../specs/S10-security.md)；
 安全架构、实现取舍和内部检查流程见 [F04 安全设计](../../features/common/F04-security-interfaces-and-encryption.md)。
 配置的通用规则见 [Config 配置指南](config.md)。
 
+阅读导航：
+
+- **快速开始**：[部署选择](#1-部署时选择哪些安全配置)、[请求流程](#2-一次请求如何经过安全检查)、[本地演练与状态生命周期](#3-本地快速开始)。
+- **身份与权限**：[认证](#4-选择一种认证模式)、[参数传递](#5-安全参数填在哪里)、[授权隔离](#6-授权和隔离)、[委托](#7-delegation让-agent-有限期代用户工作)。
+- **数据保护**：[KV 加密](#9-kv-静态加密)、[全后端加密](#10-全后端静态加密)、[审计](#11-审计与日志)、[隐私与用户访问控制](#13-隐私分级脱敏与用户访问控制)。
+- **接入**：[资源保护与传输](#8-入口资源保护与传输)、[MCP 与生命周期](#12-mcp-与服务生命周期)。
+- **排障**：[错误](#14-错误与排障)、[维护检查](#15-配置检查与维护)。
+
 ## 1. 部署时选择哪些安全配置
 
 使用已有服务时，向管理员取得服务地址、本人凭据和允许访问的 Scope。自行部署时，
-按下表启用相应配置。认证、授权、加密与审计分别解决不同问题，不会因为其中一项
+按下表启用相应配置。认证、授权、隐私保护、加密与审计分别解决不同问题，不会因为其中一项
 启用就自动开启其他各项。
 
 | 你要保护什么 | 配置与验收入口 |
@@ -23,6 +33,7 @@
 | 保存审计记录 | 第 11.1 节，将审计器指向文件型数据库 |
 | 检查审计记录是否被改动 | 第 11.2 节，同时配置审计库、专用密钥和 `audit_integrity` |
 | 通过 MCP 接入 | 第 12 节，选择传输方式，并为 MCP 进程提供匹配的配置和凭据 |
+| 普通记忆脱敏、本人验证后查看原文 | 第 13 节，配置 `privacy`、独立私有 Store 和 `human_authenticator` |
 
 随附脚本和配置统一在 [examples/security](../../../examples/security/README.md)。
 它们使用内存数据面、回环临时端口和系统临时文件，不需要外部模型或数据库，
@@ -31,8 +42,9 @@
 ## 2. 一次请求如何经过安全检查
 
 以 Alice 读取自己的记忆为例：服务先验证她的凭据，得到真实身份；再检查她是否
-有权读取请求 Scope 内的数据；通过后才返回内容。若存储已加密，服务读取时解密，
-正常 API 响应仍是可读正文。审计记录这次操作。
+有权读取请求 Scope 内的数据；通过后才返回内容。只启用静态加密时，服务读取后解密，
+正常 API 响应仍是可读正文；同时启用第 13 节隐私保护时，普通响应保持脱敏，
+原文经专用用户访问控制入口返回。审计记录这些操作。
 
 客户端提交的 Scope 表示“想访问哪里”，不会改变“谁在调用”。Bob 将 Scope 写成
 Alice 的范围，并不能获得 Alice 的身份或权限。需要排查判权原理时，查阅
@@ -110,6 +122,43 @@ python examples/security/quickstart.py
 不需要模型或数据库。SDK 示例统一通过 `assemble_server_runtime` 装配，再调用
 `runtime.authenticate(Credentials(...))` 取得请求上下文。普通 API 调用方式见第 5.3 节。
 
+### 3.3 演练目录与密钥生命周期
+
+需要落盘的审计和隐私演练先创建一个独立临时目录，每次新的演练重新执行本步骤。
+Bash：
+
+```bash
+export JIUWEN_SECURITY_DEMO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jiuwen-security-demo-XXXXXX")"
+```
+
+PowerShell：
+
+```powershell
+$env:JIUWEN_SECURITY_DEMO_DIR = Join-Path ([IO.Path]::GetTempPath()) ("jiuwen-security-demo-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $env:JIUWEN_SECURITY_DEMO_DIR | Out-Null
+```
+
+认证 Root Key、审计密钥和隐私加密根密钥各自生成，不能互相复用。下文的随机密钥
+生成命令用于全新演练；继续已有演练时，须恢复原目录及对应的原密钥，跳过重新生成。
+新终端不会继承当前终端后来设置的环境变量；通过受保护渠道提供所需的相同值。
+不要把密钥提交到 Git，也不要只保留 SQLite 文件而丢失加密密钥。
+
+演练结束后先停止服务及其他占用数据库的进程，再在设置了该变量的终端执行以下
+清理代码。它只接受系统临时目录下由上述命令创建的目录；需要复用状态时不要清理。
+
+```python
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+state = Path(os.environ["JIUWEN_SECURITY_DEMO_DIR"]).resolve()
+temporary = Path(tempfile.gettempdir()).resolve()
+if state.parent != temporary or not state.name.startswith("jiuwen-security-demo-"):
+    raise ValueError("只允许清理本节创建的演练目录")
+shutil.rmtree(state)
+```
+
 ## 4. 选择一种认证模式
 
 一个服务使用 `security.default.params.authenticator` 选中的一个认证器。
@@ -137,24 +186,15 @@ memory_api:
     local_dev: {target: dev, params: {role: user}}
 ```
 
-切换为 API Key 时，先停止旧服务，设置第 4.2 节的 Root Key，再选择另一份完整配置：
-
-```bash
-scripts/run-server.sh examples/security/api-key.yml --host 127.0.0.1 --port 8137
-```
-
-PowerShell：
-
-```powershell
-python -m jiuwen_memory_entry.http_server examples/security/api-key.yml --host 127.0.0.1 --port 8137
-```
+切换为 API Key 时，先停止旧服务，再按第 4.2.1 节准备 Root Key 并启动完整的
+[api-key.yml](../../../examples/security/api-key.yml) 配置。
 
 两份文件二选一，不叠加加载。多个服务配置文件按顶层覆盖，后一个文件的整个
 `memory_api` 可能替换前一个文件的配置；新增具名认证器也不会自动切换已选中的引用。
 
 验收方式：DEV 业务请求不带认证头返回 200；API Key 模式不带认证头或带错误 Key
 返回 401，正确 Root Key 返回 200。`/healthz` 只检查存活，不能用来判定切换成功。
-第 4.2.1 节的脚本会自动完成这组验证。
+第 4.2.2 节的脚本会自动完成这组验证。
 
 `--auth-mode dev` 只在没有显式 `security` 时补入 DEV，不覆盖已有 API Key 配置。
 默认 `required` 不会替你生成安全配置；远程 CLI 也不能用 `--auth-mode dev` 改变服务端模式。
@@ -179,7 +219,40 @@ DEV 与 Root Key 在角色权限上对应，身份仍为 `local/developer`，认
 本地 Root 功能测试需要改 DEV 角色时，修改配置后重启；设置变量或请求 JSON 中的
 `role` 都不会提升 DEV 身份。
 
-#### 4.2.1 Root 管理签发与普通用户调用
+#### 4.2.1 API Key 本地服务标准启动流程
+
+停止占用 8137 端口的旧测试服务。先在服务终端准备本次本地 Root 测试的环境变量。
+已有演练使用原值，新的演练才生成新值。Bash：
+
+```bash
+export AGENT_MEMORY_ROOT_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export AGENT_MEMORY_API_KEY="$AGENT_MEMORY_ROOT_API_KEY"
+```
+
+PowerShell：
+
+```powershell
+$env:AGENT_MEMORY_ROOT_API_KEY = python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:AGENT_MEMORY_API_KEY = $env:AGENT_MEMORY_ROOT_API_KEY
+```
+
+然后启动 HTTP 服务。Bash：
+
+```bash
+scripts/run-server.sh examples/security/api-key.yml --host 127.0.0.1 --port 8137
+```
+
+PowerShell：
+
+```powershell
+python -m jiuwen_memory_entry.http_server examples/security/api-key.yml --host 127.0.0.1 --port 8137
+```
+
+保持服务运行，客户端请求见第 5.2 节。审计、MCP 和隐私章节引用本节时，先执行
+环境变量准备，再按相应章节选用配置和入口；不需要额外启动这份 HTTP 服务。
+这些 Root 命令仅供本地管理演练，普通客户端使用下一节签发的 USER Key。
+
+#### 4.2.2 Root 管理签发与普通用户调用
 
 普通用户不能用用户名、Scope 或环境变量自行生成有效 Key。“Root 签发”表示：
 受信管理代码先验证 Root 凭据并检查 ROOT 角色，再在**实际处理请求的同一 Runtime、
@@ -218,7 +291,7 @@ $env:AGENT_MEMORY_API_KEY = '<管理员交付的普通用户 Key>'
 再由管理方重签。如果主体已通过第 4.3.1 节显式登记，撤销全部 Key 也不会清除登记角色，
 不能通过重签 Key 改角色；当前公开初始化入口不支持动态改角色。
 
-#### 4.2.2 撤销普通用户 Key
+#### 4.2.3 撤销普通用户 Key
 
 受信管理代码调用 `key_store.revoke(fingerprint(token))` 撤销主体 Key。完整验证：
 
@@ -316,7 +389,7 @@ python examples/security/gateway.py --self-test
 
 预期显示两行 `PASS`：正确客户端凭据、缺凭据、伪造 Bob/Root 身份头、绕过网关
 直连后端的结果为 **200/401/200/401**；另验证 Alice 经网关写 Bob Scope 返回 403。
-当前主干的 `HttpServer.build` 已执行标准业务授权，不再是仅验证基础认证的入口。
+`HttpServer.build` 执行标准业务授权，网关确认身份后仍须通过目标资源的权限检查。
 
 [gateway.py](../../../examples/security/gateway.py) 加载同一份 `trusted.yml`，在服务开始
 监听前调用公开初始化函数登记 Alice，再启动测试网关与后端。不导入内部认证实现，
@@ -375,25 +448,11 @@ HTTP、CLI 和 MCP 服务文件的外层可含 profile 等入口设置；内核�
 
 ### 5.2 从 API Key 配置到一次请求
 
-以下为本机 Root 运维测试。先设置 Root Key 并启动第 4.2 节已经给出的配置。Bash：
+以下为本机 Root 运维测试。按第 4.2.1 节准备变量并启动服务。另开调用终端时，
+通过受保护渠道设置与服务相同的测试凭据，不要另生成 Root Key；客户端使用
+`AGENT_MEMORY_API_KEY`。Bash：
 
 ```bash
-export AGENT_MEMORY_ROOT_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-scripts/run-server.sh examples/security/api-key.yml --host 127.0.0.1 --port 8137
-```
-
-PowerShell：
-
-```powershell
-$env:AGENT_MEMORY_ROOT_API_KEY = python -c "import secrets; print(secrets.token_urlsafe(32))"
-python -m jiuwen_memory_entry.http_server examples/security/api-key.yml --host 127.0.0.1 --port 8137
-```
-
-另开终端调用时，新终端不会自动继承刚设置的变量；通过受保护渠道设置与服务相同
-的测试 Root Key，再显式赋给客户端变量。不要在新终端另生成不同的 Root Key。
-
-```bash
-export AGENT_MEMORY_API_KEY="$AGENT_MEMORY_ROOT_API_KEY"
 curl -i -X POST http://127.0.0.1:8137/v1/add \
   -H "Authorization: Bearer ${AGENT_MEMORY_API_KEY}" \
   -H 'Content-Type: application/json' \
@@ -403,7 +462,6 @@ scripts/run-cli.sh --server http://127.0.0.1:8137 add \
 ```
 
 ```powershell
-$env:AGENT_MEMORY_API_KEY = $env:AGENT_MEMORY_ROOT_API_KEY
 $body = @{content='Root parameter demo'; scope=@{org='system'; user='root'}} | ConvertTo-Json
 Invoke-RestMethod -Uri 'http://127.0.0.1:8137/v1/add' -Method Post `
   -Headers @{Authorization="Bearer $env:AGENT_MEMORY_API_KEY"} `
@@ -664,7 +722,8 @@ python examples/security/delegation.py
 ## 9. KV 静态加密
 
 KV 按键保存值，应用加密保护的是值中的正文，键与 Scope 仍可见。应用写入前加密、
-读取后解密，正常 API 返回明文是预期行为。算法为 AES-256-GCM，密文使用 ENC1 信封。
+读取后解密；只启用静态加密时，正常 API 返回明文是预期行为。启用第 13 节隐私保护后，
+普通 API 返回脱敏正文，敏感片段经独立用户访问控制流程还原。算法为 AES-256-GCM，密文使用 ENC1 信封。
 此应用加密不依赖 Linux 卷工具。
 
 在当前完整配置的 `memory_api` 内选择加密 KV，片段为：
@@ -692,7 +751,8 @@ key_provider:
 不要另声明具名 `kv_store.raw`：StoreManager 会把每个具名 KV 都暴露为端口，
 独立装饰器不会自动保护这个额外的原始端口，集成代码可能通过它写入明文。
 
-根密钥使用独立的 32 字节材料，环境变量接受 64 字符 hex 或对应 base64。仅配置
+根密钥使用独立的 32 字节材料。环境变量接受 64 字符 hex，也支持显式 `hex:` 前缀；
+使用 Base64 时必须写成 `base64:<标准 Base64 编码>`。不带前缀的值按 hex 解析。仅配置
 cryptography 组件不会加密端口；必须配置装饰器或第 10.2 节统一开关。
 
 | 保护范围 | 不自动保护 |
@@ -927,14 +987,13 @@ python examples/security/audit.py
 预期两行 `PASS`：HTTP 和 CLI 均成功调用真实服务并读到 `status=clean`；没有配置
 外部锚点时 `anchor.checked=false`。数据库放在系统临时目录，测试结束后清理。
 
-需要本地 CLI 单独验证时，设置环境变量并使用同一份完整配置。以下命令只生成全新
-测试库；已有库应保留原审计密钥与路径。Bash：
+需要本地 CLI 单独验证时，先按第 3.3 节创建演练目录，执行第 4.2.1 节的环境变量
+准备，再增加以下审计变量；无需启动 HTTP 服务。新演练使用新库，继续已有演练时
+保留原审计密钥与路径。Bash：
 
 ```bash
-export AGENT_MEMORY_ROOT_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export AGENT_MEMORY_API_KEY="$AGENT_MEMORY_ROOT_API_KEY"
 export AGENT_MEMORY_AUDIT_ROOT_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
-export AGENT_MEMORY_AUDIT_DB="$(python -c 'import tempfile; from pathlib import Path; print(Path(tempfile.mkdtemp(prefix="agent-memory-audit-")) / "audit.sqlite3")')"
+export AGENT_MEMORY_AUDIT_DB="$JIUWEN_SECURITY_DEMO_DIR/audit.sqlite3"
 scripts/run-cli.sh --config examples/security/audit.yml verify_audit \
   --after_sequence 0 --page_size 1000 --max_samples 20 --anchor_policy if_configured
 ```
@@ -942,10 +1001,8 @@ scripts/run-cli.sh --config examples/security/audit.yml verify_audit \
 PowerShell：
 
 ```powershell
-$env:AGENT_MEMORY_ROOT_API_KEY = python -c "import secrets; print(secrets.token_urlsafe(32))"
-$env:AGENT_MEMORY_API_KEY = $env:AGENT_MEMORY_ROOT_API_KEY
 $env:AGENT_MEMORY_AUDIT_ROOT_KEY = python -c "import secrets; print(secrets.token_hex(32))"
-$env:AGENT_MEMORY_AUDIT_DB = Join-Path ([IO.Path]::GetTempPath()) ("audit-" + [guid]::NewGuid() + '.sqlite3')
+$env:AGENT_MEMORY_AUDIT_DB = Join-Path $env:JIUWEN_SECURITY_DEMO_DIR 'audit.sqlite3'
 python -m jiuwen_memory_entry.cli --config examples/security/audit.yml verify_audit `
   --after_sequence 0 --page_size 1000 --max_samples 20 --anchor_policy if_configured
 ```
@@ -996,19 +1053,16 @@ python examples/security/mcp_stdio.py
 另一个进程签发的普通 Key 不会出现在新 MCP 进程里，见第 6.2.4 节。普通用户部署
 必须先完成同进程凭据初始化或持久 KeyStore 集成，不能长期分发 Root Key 代替。
 
-stdio 手动启动示例（与第 4.2 节相同的 api-key.yml，配置文件已在仓库中）：
+stdio 手动启动前，执行第 4.2.1 节的环境变量准备，不启动 HTTP 服务。
+仍使用同一份 api-key.yml：
 
 ```bash
-export AGENT_MEMORY_ROOT_API_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export AGENT_MEMORY_API_KEY="$AGENT_MEMORY_ROOT_API_KEY"
 JIUWEN_MEMORY_MCP_AUTH_MODE=required scripts/run-mcp.sh examples/security/api-key.yml
 ```
 
 服务使用标准输入输出等待 MCP 客户端消息，适合由 MCP 客户端启动和管理。PowerShell：
 
 ```powershell
-$env:AGENT_MEMORY_ROOT_API_KEY = python -c "import secrets; print(secrets.token_urlsafe(32))"
-$env:AGENT_MEMORY_API_KEY = $env:AGENT_MEMORY_ROOT_API_KEY
 $env:JIUWEN_MEMORY_MCP_AUTH_MODE = 'required'
 python -m jiuwen_memory_entry.mcp_server examples/security/api-key.yml
 ```
@@ -1029,7 +1083,397 @@ HTTP 客户端逐请求发送自己的 Bearer，不回退到服务进程的客�
 延长授权的办法。`wait=False` 也不保证立即返回，不要在工作尚未结束时关闭其存储。
 内部关闭顺序与共享资源规则见 [F04](../../features/common/F04-security-interfaces-and-encryption.md#41-dreaming-与生命周期)。
 
-## 13. 错误与排障
+## 13. 隐私分级、脱敏与用户访问控制
+
+面向用户访问敏感记忆的能力称为用户访问控制；面向 Agent 获取、处理和使用敏感记忆
+的能力称为使用控制。本节介绍用户访问控制，Agent 的普通调用仍使用脱敏内容。
+
+隐私保护控制普通记忆中保留什么内容，以及谁可以查看受保护片段。它与第 9、10 节
+的静态加密分别配置：普通 add/get/list/search/update 仍走原接口，按写入策略返回
+脱敏正文；有读取权限的人完成本次 Passkey 验证后，通过专用入口查看完整句子。
+
+| 默认等级 | 用途 | `write` | `reveal` |
+|---|---|---|---|
+| S1 | 公开信息 | `allow` | `true` |
+| S2 | 个人隐私，例如手机号、身份证号 | `redact` | `true` |
+| S3 | 凭据，例如 API Key、口令、私钥 | `redact` | `true` |
+
+`allow` 是直接写入豁免，内容可以进入普通索引和响应。`redact` 把敏感片段替换为
+`[JW-PRIVATE:随机标识]`，片段独立加密保存；普通召回使用脱敏版本。`reveal=true`
+表示允许经人的验证和资源授权后还原，并不免除认证；设为 false 时，相应片段在人的
+查看结果中也保留占位符。未配置人机认证器时仍可脱敏写入和检索，不能查看原文。
+
+可信规约、分类、抽取、摘要及去重可以使用本次输入原文；最终 MemoryUnit 在生成
+持久化索引前保护，原始消息落盘也使用保护副本。此能力不隔离处理插件、LLM、
+Embedder 及其外部服务对本次原文的访问。当前支持内联 TEXT/CODE；旧明文语料需先
+受控迁移，文档模式、URI、资产和文件监听组合暂不支持。
+
+### 13.1 选择配置与后端
+
+完整本地服务配置见 [privacy.yml](../../../examples/security/privacy.yml)。它包含正常
+认证、标准授权、隐私保护及 Passkey，固定 DEV USER 为 `local/developer`，无需模型
+或外部数据库。业务记忆采用内存后端，重启后消失；私有片段和 Passkey 状态使用独立
+SQLite 文件。需要业务持久化时另配业务 KV，并一起规划数据、密钥和状态库的备份。
+
+已有服务使用 [privacy-human-view.yml](../../../examples/privacy-human-view.yml) 作为
+配置参考，将相关组件合入现有 `memory_api`，保留原认证和授权。不要直接将两个
+服务文件依次传给启动器：第 4.1 节所述顶层覆盖可能替换整个 `memory_api`。
+
+| 配置位置 | 要填写的内容 |
+|---|---|
+| `globals.privacy_enabled` | true 启用；false 停止新保护和用户访问控制，保留既有占位符；不自动解密旧数据 |
+| `privacy.default` | 选择 `target: regex`，只允许一个共享 default；禁止 `new_instance=true` |
+| `privacy.default.params.privacy_store` | 私有 Store 引用，示例为 `private` |
+| `privacy_store.private` | `target: encrypted`，指定密码学依赖及内联 `raw_privacy_store` |
+| `raw_privacy_store.target` | 推荐 `kv`；其 `params.kv_store` 是独立内联 KV 实例 |
+| `raw_privacy_store.params.max_state_bytes` | 默认 67108864，即每个完整 Scope 的私有编码状态上限 64 MiB |
+| `cryptography.privacy` / `key_provider.privacy` | 指定独立加密根密钥，示例读取 `JIUWEN_PRIVACY_MASTER_KEY` |
+| `human_authenticator.default` | 选择 `target: passkey`；省略整个配置段则只提供脱敏能力 |
+
+未填写总开关且没有 privacy 段时关闭能力；显式配置 privacy.default 时默认启用。
+总开关 true 却缺少 privacy.default 会拒绝启动。配置、规则、密钥引用及人机认证设置
+在装配时生效，修改后重建 Runtime，不通过 admin_set 或 ConfigSource 热切换。
+
+私有存储链路是 `EncryptedPrivacyStore → KVPrivacyStore → 独立 KVStore`。切换后端
+只需调整内联 KV 的 target 与连接参数：
+
+| `kv_store` 定义 | 后端 |
+|---|---|
+| `{target: memory}` | 进程内，不跨重启保存 |
+| `{target: sqlite, params: {db_path: ./state/private.sqlite}}` | SQLite 文件 |
+| `{target: redis, params: {url: 'redis://localhost:6379/1'}}` | Redis，另安装相应 deploy 依赖 |
+| `{target: postgres, params: {dsn: '${JIUWEN_PRIVACY_POSTGRES_DSN}', table: privacy_state}}` | PostgreSQL，连接凭据由环境变量注入，显式选择独立表 |
+
+私有 KV 使用独立文件、Redis DB 或 PostgreSQL 数据库/表，避免与业务端口共用位置。
+其递归依赖都必须内联，不能引用普通具名 KV 端口。后端须支持原子条件写，
+第三方后端缺能力时拒绝装配；当前没有 MySQL 驱动。切换不迁移历史数据，不能把旧
+专用 SQLite 表直接当作新 KV 格式。旧 `vault_path/cryptography` 配置兼容，详见
+[S08 隐私配置](../../specs/S08-config.md#隐私配置)。片段及关联清单主体加密，定位元数据、
+Passkey 状态、审计和备份仍须各自落实访问与静态加密保护。
+
+### 13.2 等级、检测规则与人机认证参数
+
+以下字段位于 `privacy.default.params`：
+
+| 字段 | 默认值与使用方法 |
+|---|---|
+| `levels` | 缺省为 S1/S2/S3；显式列表替换默认等级，name 和非负整数 rank 必须各自唯一 |
+| `rules` | 缺省使用内置目录；显式列表替换目录，只有 `use_builtin_rules: true` 才叠加 |
+| `category_levels` | 默认 `pii.*: S2`、`credential.*: S3`；精确类别优先，再取最长前缀 |
+| `rule_overrides` | 按内置规则名覆盖 enabled 或 validator；未知名称和字段报错 |
+| `staging_ttl` / `staging_limit` | 默认 300 秒 / 10000 项，限制落盘前敏感片段暂存 |
+| `regex_timeout` | 默认 2.0 秒，范围 (0, 30]；单次文本和元数据保护的总匹配预算，超时拒绝 |
+| `llm_enabled` / `llm` | 默认 false / 无；LLM 分类仍为 TODO，开启会拒绝装配，引用不调用 |
+
+每个等级可配置 `name`、`label`、`description`、`rank`、`write` 和 `reveal`。未命中
+使用最低 rank，重叠命中取最高 rank；自定义等级未填写 write/reveal 时分别为
+redact/true。等级字段 `sync_mode`（full/none/index_only）、`retention_mode`
+（keep/purge_after_ttl）、`retention_seconds` 和 `share_mode`
+（shareable/internal_only/no_share）仅保留配置，暂不执行上云、自动硬删或分享管控。
+更改等级名时同步更改规则引用与 category_levels。
+
+例如，保留三级写入策略并关闭凭据还原，在 `privacy.default.params` 中填写完整等级
+列表；不要只写 S3，否则会替换整个默认列表：
+
+```yaml
+levels:
+  - {name: S1, label: 公开, rank: 1, write: allow, reveal: true}
+  - {name: S2, label: 个人隐私, rank: 2, write: redact, reveal: true}
+  - {name: S3, label: 凭据, rank: 3, write: redact, reveal: false}
+```
+
+例如，在完整配置的 `privacy.default.params` 中增加以下配置，保留默认目录，同时
+保护自定义口令字段的值和内部关键词，并开启默认关闭的 IPv4 规则：
+
+```yaml
+use_builtin_rules: true
+rule_overrides:
+  ip_v4: {enabled: true}
+rules:
+  - name: custom.internal_secret
+    category: credential.internal
+    level: S3
+    pattern: '内部口令\s*[:=]\s*(?P<secret>\S+)'
+    group: secret
+  - name: custom.project_term
+    category: pii.internal
+    level: S2
+    keywords: [未公开代号]
+```
+
+自定义项支持 name/category/enabled/validator、level 或 level_id、keywords、pattern
+或 patterns，以及 group。keywords 是大小写不敏感的字面子串；patterns 是大小写不
+敏感的多行正则列表；单项 pattern 不自动启用忽略大小写和多行匹配，可在正则中使用
+`(?i)`、`(?m)`；patterns 自动启用这两项。group 决定保护完整命中还是捕获组。
+pattern 与非空 patterns 互斥，level 与 level_id 同时填写须相同。validator 只能选择
+luhn、id_card_cn 或 null，不从配置加载代码。
+keywords 只保护所列的字面内容；要保护标签后面的值，使用上例的 pattern/group。
+
+内置目录覆盖个人证件、手机号、邮箱、银行卡及常见凭据；银行卡采用 Luhn 校验，
+身份证默认按形态保护。姓名、地址、IP 和宽泛微信密钥规则默认关闭，按业务数据验收
+误报后再开启。配置不能保证覆盖全部语义隐私。`injection.prompt` 默认只生成分类
+依据，显式映射等级后才参与保护；它不隔离可信处理阶段的提示注入。
+
+人机认证配置位于 `human_authenticator.default.params`：
+
+| 字段 | 默认值与要求 |
+|---|---|
+| `rp_id` | 必填，与 origin 主机名一致，不含端口；本地示例为 localhost |
+| `origin` | 必填，精确固定 origin；只允许 HTTPS，`http://localhost[:port]` 是本地例外 |
+| `credential_path` | 必填，独立保存公钥、计数器、已使用邀请和挑战状态 |
+| `challenge_ttl` | 默认 120 秒，范围 10～300 秒；挑战一次使用 |
+| `enrollment_invites` | 默认空列表；每项为高熵一次性登记码的 SHA-256 小写 hex digest 和固定 USER actor |
+
+邀请绑定的 actor 必须有 user、无 agent，并拥有目标记忆的正常读取权限。登记码至少
+32 字符，经独立可信渠道交给本人，配置只保存摘要；普通 API Key 不能替代登记邀请。
+`rate_limiter.human` 默认容量 10、补充 1/s，`workload_guard.human` 默认并发 4。
+这些是独立查看预算，代理汇聚后的来源地址会共享相应额度。
+
+### 13.3 启动本地演练服务
+
+先完成第 3 节依赖安装，并按第 3.3 节创建本次独立演练目录。以下命令只用于全新
+测试库：将状态路径放在该目录内，再准备独立 32 字节根密钥和登记码。继续已有演练时
+恢复原状态路径、根密钥和邀请配置，跳过生成步骤；已使用的邀请不能再次登记。
+Bash：
+
+```bash
+export JIUWEN_PRIVACY_STATE_DIR="$JIUWEN_SECURITY_DEMO_DIR/privacy"
+mkdir -p "$JIUWEN_PRIVACY_STATE_DIR"
+export JIUWEN_PRIVACY_MASTER_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export JIUWEN_PRIVACY_ENROLLMENT_CODE="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export JIUWEN_PRIVACY_INVITE_SHA256="$(python -c 'import hashlib, os; print(hashlib.sha256(os.environ["JIUWEN_PRIVACY_ENROLLMENT_CODE"].encode()).hexdigest())')"
+printf '本次登记码：%s\n' "$JIUWEN_PRIVACY_ENROLLMENT_CODE"
+scripts/run-server.sh examples/security/privacy.yml --host 127.0.0.1 --port 8137
+```
+
+PowerShell：
+
+```powershell
+$env:JIUWEN_PRIVACY_STATE_DIR = Join-Path $env:JIUWEN_SECURITY_DEMO_DIR 'privacy'
+New-Item -ItemType Directory -Path $env:JIUWEN_PRIVACY_STATE_DIR | Out-Null
+$env:JIUWEN_PRIVACY_MASTER_KEY = python -c "import secrets; print(secrets.token_hex(32))"
+$env:JIUWEN_PRIVACY_ENROLLMENT_CODE = python -c "import secrets; print(secrets.token_urlsafe(32))"
+$env:JIUWEN_PRIVACY_INVITE_SHA256 = python -c "import hashlib, os; print(hashlib.sha256(os.environ['JIUWEN_PRIVACY_ENROLLMENT_CODE'].encode()).hexdigest())"
+Write-Output ("本次登记码：" + $env:JIUWEN_PRIVACY_ENROLLMENT_CODE)
+python -m jiuwen_memory_entry.http_server examples/security/privacy.yml --host 127.0.0.1 --port 8137
+```
+
+保持同一服务运行。完整配置要求显式提供 `JIUWEN_PRIVACY_STATE_DIR`，不回退到固定
+目录。根密钥与 API Key、审计密钥分开管理，不能生成新密钥后继续读旧片段库。
+结束后按第 3.3 节停止服务并清理本次演练目录。
+本地示例的主认证为固定 DEV USER，所以浏览器不需要填 Bearer；生产按第 4 节选择
+API Key 或 Trusted，并由宿主认证接入，不能使用固定 DEV 身份对外服务。
+
+### 13.4 写入脱敏记忆并查看原文
+
+另开终端向同一服务写入虚构数据。Bash：
+
+```bash
+curl -i -X POST http://localhost:8137/v1/add \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"联系我：13800138000，api_key=privacy-demo-value","scope":{"org":"local","user":"developer"}}'
+```
+
+PowerShell：
+
+```powershell
+$body = @{content='联系我：13800138000，api_key=privacy-demo-value'; scope=@{org='local'; user='developer'}} | ConvertTo-Json
+$units = Invoke-RestMethod -Uri 'http://localhost:8137/v1/add' -Method Post `
+  -ContentType 'application/json' -Body $body
+$units[0]
+```
+
+预期返回记忆列表。正文 `segments[0].content` 中的手机号与凭据值变为占位符；保存
+该条 `id`、完整 `scope` 和 `system_metadata.privacy_revision`。按第 3.1 节调用
+`POST /v1/get`，或者调用 list/search，仍应取得脱敏内容。privacy_level、
+privacy_revision、privacy_rule_ids 和 privacy_categories 由服务生成，不能在写入中自填。
+
+然后在支持 WebAuthn 的浏览器中访问 **http://localhost:8137/security/privacy**：
+
+1. 展开“首次登记 Passkey”。复制启动服务前终端显示的本次登记码，
+   将它填入登记码框，点击“登记”，按浏览器
+   提示使用设备解锁或安全密钥完成本人验证。登记成功后，该邀请不可再次使用。
+2. 在 Scope 输入 `{"org":"local","user":"developer"}`，填入上一步返回的记忆 ID。
+   privacy_revision 可选，建议使用原结果的实际值；服务端始终绑定实际查询版本。
+3. 点击“验证并查看”，再次完成 Passkey 验证。预期页面显示完整句子
+   `联系我：13800138000，api_key=privacy-demo-value`。点击“清除显示”或刷新页面后清除正文。
+4. 再调用普通 get/search，结果仍为脱敏版本；人的一次验证不改变普通查询权限。
+
+服务监听可以用 127.0.0.1，浏览器地址必须与配置一致地使用 localhost，不能把二者
+混用。浏览器验证由用户设备完成，记忆服务所在 OS 不要求 Windows Hello 或交互桌面。
+真实设备与浏览器组合仍需部署验收。
+
+上述页面是最小真实查看终端。另一个 [静态交互示例](../../../examples/privacy-human-view/README.md)
+使用虚构记忆和模拟验证，不连接服务，不能代替 Passkey。正式产品通常从已授权结果
+自动携带 Scope、ID 和 revision，页面显示组织名和用户名；展示名称不生成认证身份。
+
+### 13.5 API Key 完整配置与用户隔离验收
+
+非 DEV 的完整配置见 [privacy-api-key.yml](../../../examples/security/privacy-api-key.yml)。
+它同时配置 API Key 主认证、标准授权、隐私分级、加密私有 Store 和 Passkey，
+不依赖与其他 YAML 合并。Alice 与 Bob 的邀请分别绑定 `demo/alice`、`demo/bob`。
+
+| 环境变量 | 配置用途 |
+|---|---|
+| `AGENT_MEMORY_ROOT_API_KEY` | 受信管理初始化使用的 Root 凭据，按第 4.2.1 节准备 |
+| `JIUWEN_PRIVACY_STATE_DIR` | 按第 3.3、13.3 节创建的独立状态目录 |
+| `JIUWEN_PRIVACY_MASTER_KEY` | 该状态库对应的独立 32 字节根密钥 |
+| `JIUWEN_PRIVACY_ALICE_INVITE_SHA256` | 管理方为 Alice 生成的独立登记码摘要 |
+| `JIUWEN_PRIVACY_BOB_INVITE_SHA256` | 管理方为 Bob 生成的另一登记码摘要 |
+
+每个登记码按第 13.3 节的方法生成随机值并计算 SHA-256，仅把摘要放入对应配置，
+原码经受保护渠道交付对应本人。邀请由受信管理方绑定身份，不采信客户端自填用户名。
+启动时用本文件替换第 4.2.1 节命令中的 api-key.yml，保留 localhost 的 RP 和 origin。
+
+该配置的主体 KeyStore 在内存中，YAML 不会自动签发 Alice/Bob 的 USER Key。
+按第 4.2.2 节在实际服务的同一 Runtime 中完成 Root 校验和主体 Key 签发，再分别
+交付 USER Key；不能在另一个临时进程签发后直接调用此服务。宿主将已登录用户的
+凭据接入 HTTP Bearer 或可信同源代理；演示页面没有生产登录流程，也不应嵌入
+Root Key 或共享服务 Key。正式持久化和网关接入分别见第 6.2.4、4.3 节。
+
+随附自动验收直接加载这份完整配置，使用临时状态库和真实 HTTP 请求。执行：
+
+```bash
+python -m pytest tests/integration/security/test_privacy_api_key_example.py -q
+```
+
+预期 3 项通过：Alice、Bob 各自登记 Passkey 后可以查看自己的完整记忆；Bob 的
+有效 Passkey 即使用于 Alice 已发起的查看挑战，finish 仍返回 403，Bob 的主凭据
+直接 begin/get Alice 的记忆也被拒绝。各自普通 get/search 始终返回脱敏内容。
+测试使用执行真实 ES256 签名的虚拟认证器，覆盖最终查看者授权；不能代替真实
+设备和浏览器组合的部署验收。完整管理初始化及请求代码见
+[测试文件](../../../tests/integration/security/test_privacy_api_key_example.py)。
+
+### 13.6 HTTP 接口与请求字段
+
+正式业务沿用下列安全路由；普通 `/v1/get`、`/v1/search` 不接收 reveal 开关。
+
+| 方法和路径 | 用途 |
+|---|---|
+| `GET /security/privacy` | 获取最小查看页，设置服务端浏览器绑定 cookie |
+| `GET /security/privacy/viewer.js` | 获取同源 WebAuthn 交互脚本 |
+| `POST /security/privacy/begin` | 登记时接收邀请；查看时在 MemoryAPI 内执行主认证、get 判权、查询脱敏快照并返回挑战 |
+| `POST /security/privacy/finish` | 在 MemoryAPI 内验证本人、复核当前资源，经 Engine 还原并由 API 返回正文 |
+
+POST 须携带 `Content-Type: application/json`、与配置一致的 Host/Origin，以及 GET
+设置的同一浏览器 cookie。正文为 1～65536 字节。cookie 为 HttpOnly/SameSite=Strict，
+HTTPS 下带 Secure；响应为 no-store，并设置 CSP。反向代理保留固定公开 Host，关闭
+正文缓存及正文日志。生产宿主通过已认证会话或同源代理接入主认证，不把服务根 Key
+或机器服务 Key 写入网页；最小页面不会替宿主完成生产登录。
+
+| 请求 | 字段 |
+|---|---|
+| begin 登记 | `invite`：独立取得的一次性登记码，须为字符串；非字符串返回 403。如还携带顶层 `scope/unit_id/revision`，finish 必须保持相同 |
+| begin 查看 | `scope`、`unit_id` 必填，`revision` 可选；主认证凭据在正常认证头中，不放 JSON |
+| finish | `challenge_id`、浏览器返回的 `credential`；查看时将 begin 返回的 target 中三个字段展开到请求顶层 |
+
+例如访问 begin 的正文为：
+
+```json
+{"scope":{"org":"local","user":"developer"},"unit_id":"实际记忆 ID","revision":"实际 privacy_revision"}
+```
+
+begin 返回 `challenge_id`、`operation`（enroll/view）、`publicKey`；查看时额外返回
+`target: {scope, unit_id, revision}`。finish 将 target 的三个字段展开到请求顶层，
+不要再包一层 target。HTTP 正文结构为：
+
+```json
+{
+  "scope": {"org": "local", "user": "developer"},
+  "unit_id": "实际记忆 ID",
+  "revision": "实际 privacy_revision",
+  "challenge_id": "begin 返回的挑战 ID",
+  "credential": {
+    "id": "浏览器返回的凭据 ID",
+    "rawId": "凭据 ID 的 base64url 编码",
+    "type": "public-key",
+    "response": {
+      "clientDataJSON": "base64url 编码",
+      "authenticatorData": "base64url 编码",
+      "signature": "base64url 编码",
+      "userHandle": null
+    },
+    "clientExtensionResults": {}
+  }
+}
+```
+
+上述示例为查看流程；credential 中的说明值必须替换为真实浏览器结果，userHandle
+按实际返回值编码或置空，不能用示例占位值完成验证。publicKey 用于浏览器
+`navigator.credentials.create`（登记）或 `navigator.credentials.get`（查看），
+其中 challenge、user.id 和 credential ID 等 base64url 字段须转成二进制。提交的
+credential 中 rawId、clientDataJSON、attestationObject 或 authenticatorData/signature
+等二进制字段再编码为 base64url；完整处理参考同源 viewer.js。
+
+finish 登记成功返回 `{"enrolled":true}`；查看成功返回
+`{"unit_id":"实际记忆 ID","content":"含获准还原片段的完整正文"}`。普通 HTTP 记忆
+正文位于 segments，专用查看响应才直接使用 content。不能用 `verified=true`、机器
+Key、ROOT/ADMIN 角色或曾经验证成功的结果代替本次人的证明。
+
+### 13.7 宿主直接调用 MemoryAPI
+
+宿主进程内接入也统一调用 MemoryAPI，不直接调用 HumanAuthenticator、PrivacyStore
+或 Engine 的还原方法。以下两个片段分别处于两次请求中，runtime 为同一个已装配
+Runtime；browser_binding 来自服务端 cookie，primary_security 来自正常认证：
+
+```python
+start = runtime.api.begin_human_view(
+    {"scope": {"org": "local", "user": "developer"}, "unit_id": unit_id, "revision": revision},
+    browser_binding,
+    security=primary_security,
+)
+```
+
+将 start 返回浏览器，等待本人完成 WebAuthn；下次请求将 begin 返回的 target 字段
+展开到顶层，携带真实 credential 和 challenge_id，再调用。组装形状如下：
+
+```python
+target = start["target"]
+payload = {
+    **target,
+    "challenge_id": start["challenge_id"],
+    "credential": credential,
+}
+result = runtime.api.finish_human_view(payload, browser_binding, peer=peer_address)
+```
+
+可信 HTTP 宿主还可向 begin 传入延迟执行的 `primary_auth` 上下文工厂，由 API 内进入
+原认证中间件，保留其限流和审计；它与 security 互斥，也不是 JSON 字段。finish 从
+Passkey 确定本人的身份并重新 get 判权，不能沿用初次机器身份作为最终查看者。
+Runtime.human_view.begin/finish 是这两个 API 的转发适配器。用户访问控制入口不注册为普通
+`/v1`、CLI 或 MCP 工具；还原结果只送人的展示响应，不交回 Agent、LLM 或共享缓存。
+
+### 13.8 验收与排障
+
+| 检查 | 预期结果 |
+|---|---|
+| 写入手机号、凭据并用 get/list/search 读取 | 默认 S2/S3 片段保持占位符，等级和诊断依据由服务生成 |
+| 未登记、未验证、普通权限不足或越权请求他人 Scope | 不返回敏感正文；主认证成功也不免除最终查看者的 READ 权限 |
+| 验证期间更新、软删、硬删或撤权 | finish 复查 ACTIVE、当前权限及 revision，失效后重新查询和 begin |
+| 重放 finish、改 cookie/target 或挑战过期 | 拒绝；失败、完成和过期的挑战均不可重用 |
+| 某等级 `reveal=false` | 查看成功后该等级片段仍保持占位符 |
+| 审计或私有存储故障 | 不释放原文；使用现有 AuditLogger 记录保护、挑战、验证与披露事件 |
+
+用户访问控制路由的主认证、证明或授权失败统一返回 403；它与普通 `/v1` 认证失败的 401
+不同。404 检查能力是否装配或路径是否正确；413 检查正文长度，415 检查 JSON 类型，
+429 检查 human 独立预算，503 检查后端或服务状态。来源、cookie、目标和版本错误
+同样可能返回 403，错误正文不会回显敏感值或断言。
+
+查看流程的脱敏快照与待访问关联只保存在当前 Runtime：最多 256 份、合计 8 MiB、
+最长 300 秒，并受本次 challenge_ttl 限制。查看的 begin/finish 应落到同一实例；
+重启后需重新发起查看。这些限额与 staging_ttl/staging_limit 管理的落盘前片段暂存不同。
+
+Passkey 挑战保存在 credential_path 指定的 SQLite 状态库中。登记流程复用同一状态库、
+浏览器绑定和 RP/origin 配置时，尚未过期或消费的登记挑战可以在重启后继续；不能将
+“重启即失效”作为登记保障。查看挑战即使仍在状态库，也不能恢复已经丢失的进程内
+快照；查看仍需重新 begin。两种流程分别按实际部署验收。
+
+保存原密钥、片段库和 Passkey 状态的恢复方案。缺少或损坏的关联清单不能还原，
+清空私有库、重新生成密钥或关闭总开关都不能替代迁移和恢复。硬删成功后才清理私有
+关联，删除失败保留存续记忆所需状态；逻辑清理不表示备份或介质已经擦除。协议和
+字段约束见 [S10](../../specs/S10-security.md#隐私保护与用户访问控制)。
+
+## 14. 错误与排障
 
 | 现象 | 优先检查 |
 |---|---|
@@ -1048,7 +1492,7 @@ HTTP 客户端逐请求发送自己的 Bearer，不回退到服务进程的客�
 及最小复现。不要通过改 JSON 角色、关闭授权/校验、删除数据库或重开私有连接来绕过。
 记录只包含排障所需信息，不附原始 token、密码 hash、根密钥或完整业务正文。
 
-## 14. 配置检查与维护
+## 15. 配置检查与维护
 
 1. 确认选中的认证器和授权器引用正确，生产关闭 DEV。
 2. 用 USER 凭据验证本人允许、他人拒绝、分享和撤销，不用 Root 代替普通用户测试。

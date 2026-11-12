@@ -15,6 +15,12 @@
 | `defaults.py` | 内置默认装配拓扑与 `ROOT_PARAMS` |
 | `encryption.py` | PR1-1 的 AtRestLocation / EncryptionPolicy / deployment_bindings / EncryptionBoundConfigSource：严格装配期开关、消费插件自注册的 at_rest_locations 核查部署声明及受保护位置变更拒绝 |
 | `config_source.py` | `ConfigSource` ABC + `ConfigSourceProducer` |
+| `auto_overlay.py` | `open_config_overlay` 是 HTTP 和 SDK 共用的定位规则，优先使用文档根，其次使用启动器实际加载的配置文件路径。无可用位置时返回不可用。`document_llm_instances` 列出配置声明的具名模型 |
+| `managed_service.py` | 模型配置的完整候选校验、恢复覆盖、持久化和运行应用状态协调 |
+| `managed_fields.py` | 根据可信装配提供的 LLM 实例建立可编辑字段列表，校验修改并将覆盖值合成到装配配置，保留其他参数 |
+| `overlay_store.py` | 版本化覆盖持久化及受保护模型凭据引用存储，由托管装配绑定，宿主负责实例位置与授权 |
+| `model_runtime.py` | 托管模型运行时：冻结整组模型配置；`build_model` 按当前完整快照创建具名／非共享句柄，与 apply 共用锁；原子切换完整客户端，在途调用持有旧客户端租约 |
+| `model_credentials.py` | 实例内部受保护模型凭据：信封加密存储与不可变引用，明文不进入配置覆盖 |
 | `config_source_impl/` | `yaml_defaults` / `dict` / `overlay` 实现与自注册（当前实现：`yaml_defaults_config_source.py` / `dict_config_source.py` / `overlay_config_source.py`） |
 | `keys.py` | 稳定 key 常量与拼接（`globals.*` / `prompts.*` / `<ns>.active`） |
 | `project.py` | `AssemblyContext` → 扁平 key→str 投影 |
@@ -99,6 +105,25 @@
     `schema_temporal_auto_enabled` 默认 `false`，否则必须由单次查询的
     `RetrievalQuery.schema_temporal` 或兼容扩展键显式启用。正式输出按实体投影，
     Source-first fallback 在最终结果阶段按预算融合。
+
+13. **覆盖库无法首次创建时允许回退，已有状态读取失败时报错**
+    `open_document_overlay` / `open_file_overlay` 仅在覆盖文件尚不存在时把创建失败
+    （如只读目录）降级为返回 `None`。有其他候选位置时继续尝试，否则以启动配置运行。若覆盖文件已存在
+    但无法打开，仍抛 `BackendError`，不得静默忽略已保存版本。无法确认文件是否存在时
+    按已存在处理。
+
+14. **模型配置整组生效且凭据只存引用**
+    更换模型服务时，网址、API Key 和模型名必须在同一次保存中提交。只改模型名可以沿用
+    现有 Key。恢复启动地址使用配套的启动 Key。保存模型设置时保留配置库中的其他字段。
+    Portal 保存的 Key 与服务来源一起加密。加载时，缺少绑定、地址不匹配或设置被宿主锁定
+    导致无法配套的模型使用启动值，原保存记录仍保留。页面通过 `ignored_endpoint_fields` 说明。
+    托管模型应用必须一次替换模型名、地址、凭据和默认参数的完整快照；在途调用持有
+    旧客户端租约，结束后才能释放。修改或恢复 target 时按最终提供方清理不适用的
+    DashScope enable_thinking 覆盖，不能只处理显式 changes。凭据原文只经受保护存储写入，普通覆盖、读取响应、
+    预览和日志只出现引用或已配置状态；凭据能力不可用时该字段只读并说明原因。
+    延迟创建和 `new_instance=true` 也必须由当前已应用快照构造，不能将原装配参数与
+    新端点拼接；具名句柄构造与登记和 apply 共用锁，不改变通用工厂或原 Prompt 行为。
+    持久化后的应用异常只记录版本与异常类型，诊断日志不得携带异常正文。
 
 ## 与其他子目录的边界
 

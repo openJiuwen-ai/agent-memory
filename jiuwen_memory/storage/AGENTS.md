@@ -16,6 +16,7 @@
 
 | 文件 | 职责 |
 |---|---|
+| `graph_impl/kv_graph_store.py` | 持久 KV 图投影与邻接查询；旧邻接不决定删除新边 |
 | `store_manager.py` | 管理面契约 `StoreManager`（端口单一入口 `kv(name)`/`has_kv(name)` 等、`domain_store(name)`/`has_domain_store(name)`、能力/健康聚合）+ `StoreManagerProducer`（TOP_NAME=`store_manager`；`resolve` 按 params → `globals.store_manager` → default 三级链解析全局唯一 manager，不做匿名兜底）+ `resolve_name`（消费者具名端口/数据面选择键统一读取：params 直读、拒 inline dict）+ `StorageCapability` |
 | `domain_store.py` | 数据面契约 `DomainStore`（MemoryUnit 领域操作：`add`/`update` 带 `IndexWriteMode`、`delete` 带 `IndexRemoveMode`、get/list/scopes、recall/recall_and_get/retrieve/preferred_retrieval_pipeline、`read_md_file`/`edit_md_file`（F08 md 文件级读写，仅文档模式））+ `DomainStoreProducer`（非平级 YAML 入口，由 manager 工厂内构建）。原文不在此列——由构建层注入独立 `KVStore` 自行读写 |
 | `security.py` | StorageSecurity 通用授权、StoreSecurity 数据保护能力标识及公开 StoreEncryptionBinding 依赖契约 |
@@ -23,6 +24,7 @@
 | `types.py` | 存储层数据类型：`IndexWriteMode`/`IndexRemoveMode` 写删语义枚举、KVMemoryListResult/VectorRecord/Document/Node/Edge/FusionRecord/FileStat 等 |
 | `_schema_property_index.py` | Schema Entity → Property MemoryUnit ID 的 KV 派生反向索引；以 Scope watermark 作为全量回填提交标记，membership/pointer 支持幂等更新与硬删；canonical identity 按 `schema_entity_id` → `schema_entity_key` → `type::name` 解析且要求非空 `schema_property_name`；支持按 Scope 批量反查（`lookup_batch` 按实体数阈值分流：≤阈值走窄前缀、>阈值走一次全 Scope scan）；不缓存 watermark——派生索引在检索/构建/演进多实例间维护，缓存会让 invalidate 失效后读者仍信任派生索引；`indexed=True` 但 membership 为空时回退 `_list_properties` 真源复核，覆盖并发写窗口的主要漏召场景 |
 | `migration.py` | 受保护插件的可选明文记忆维护契约，插件声明枚举、物理身份和原子转换，不依赖实现私有状态 |
+| `privacy.py` / `privacy_impl/` | PrivacyStore 私有状态契约及 Producer；KVPrivacyStore 以独立 KVStore 的原子条件写维护完整 Scope 状态，SQLitePrivacyStore 保留旧专用库兼容；EncryptedPrivacyStore 复用密码学能力保护片段和清单；安全模块独立持有，不进入管理面九类普通端口或 DomainStore 召回 |
 | `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 三件——`load_memory_unit(raw, scope, key)` 解码隔离（坏字节记 warning 后返 `None`），`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤），`list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担） |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
@@ -35,7 +37,7 @@
 | `_pg.py` | PostgreSQL 后端共享基础：asyncpg 惰性连接池（专职事件循环线程桥接同步调用）、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
 | `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector）；`uri`/`dsn` 晚绑定 |
-| `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag）；`working_dir` 晚绑定 |
+| `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag / kv / neo4j）；`working_dir` 晚绑定；`kv`/`memory`/`neo4j` 声明条件投影能力（`project_edge`/`unproject_edge`），`neo4j` 驱动惰性导入、连接参数 `graph_store.<field>` 晚绑定 |
 | `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch）；`hosts` 晚绑定 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
 | `fs_impl/` | FSStore 实现目录（memory / local / encrypted）；local 的 `root` 晚绑定；encrypted_fs_store.py 用稳定 object_id 绑定 AAD、有界读写并声明 StoreSecurity |
@@ -44,7 +46,7 @@
 | `domain_store_impl/` | 数据面实现目录；`CompositeDomainStore`（`recallers` property + `bind_recallers` 手工接线口 + `for_manager(manager, config)` 供 manager 装配期直接构造——profile 派生、召回路组装与绑定一次完成；真源 KV 端口名由装配期指名，非硬编码 default）、`_assemble_recallers`（F06 内收设计）与**召回路全家**：契约 `recaller.py`（`Recaller` + `RecallerProducer`，`TOP_NAME=recaller`）+ 实现 `keyword_recaller.py` / `vector_recaller.py` / `graph_recaller.py` + 共用的 `unit_aggregation.py`（chunk→unit MaxP 归并）。Recaller 是数据面内部件而非检索层算子，不继承 `RetrievalOperator`（F07） |
 | `markdown.py` / `shadow.py` | 文档视图与机器真源接口及 Producer；local Markdown 与 SQLite shadow 可选装配 |
 | `watchdog.py` / `watchdog_impl/` | 文件监听公共生命周期；LocalWatchdog 停止准入后通过线程条件等待已进入 shadow 的工作，排队旧代不再访问依赖；不等待调用方 loop 恢复协程 |
-| `bootstrap.py` | 统一触发九类 Store 后端、watchdog 与 Storage 实现注册 |
+| `bootstrap.py` | 统一触发普通 Store、独立 PrivacyStore、watchdog 与 Storage 实现注册 |
 
 ## 统一 CRUD 动词
 
@@ -57,6 +59,13 @@
 
 检索型存储额外提供 `search` 查询；kv 提供 MemoryUnit 专用 `list` 和通用 `mget` /
 `exists` / `scan` / `scopes`；fs 提供 `stat`。
+
+`_privacy_kv.py` 提供可选 PrivacyKVStore，由 KvProducer 包装逻辑 KV 边界，覆盖
+`/memory/` 和 `/messages/` 的直接写入与删除；其他系统记录原样传递。嵌套加密端口只在
+本次受控写入内跳过重复保护，底层 security 能力原样转发。片段密文不存到这些 KV 端口，
+关联失效时保留的本体只能是脱敏内容；原始消息淘汰不删除仍被正式记忆拥有的片段引用。
+写入通过隐私能力的 write 提交，异常后按真源回读恢复存续版本；旧关联的密文恢复引用
+保留至结果确认。真源删除成功后才 discard，失败不提前撤销，索引层不重复维护关联。
 
 ## 行为铁律
 
@@ -74,6 +83,7 @@
 1. **scope 原生隔离**  
    `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。`org/space/user/agent/session` 五段 scope 必须参与命名空间或过滤；空 `space` 只匹配空 space 兼容域。隔离必须在存储层强制，上层不依赖调用纪律。
    **文档影子索引（F08）已同构落地**：`memory_unit` 表加 org/space/user/agent/session 五列，scope 入参拼 WHERE AND 等值下推（对齐 KV 五段等值），与 project（收窄维 `IN ['', value]`）隔离正交。`list_units_by_md`（看门狗跨 scope 诊断）/`delete_units`（幂等按 unit_id）例外不限 scope。
+   显式 `unit_id` / `id` 候选过滤由 SQLite 编译器下推。全文召回在 LIMIT 前过滤；向量召回先筛选满足 ID、系统谓词和 Scope 的候选，再计算 L2 距离并截断。无 ID 约束的向量召回仍使用原 KNN 路径。
    **唯一例外是 ENTITY 端口**：`EntityStore` 四方法以 `space_id: str`（`space_id_from_scope` 的算值，走后端 routing）+ `EntityStoreFilters` 承担隔离。ES 对非空的 `actor_id` / `assistant_id` / `session_id` 分别下推 term；`from_scope` 对应映射 user / agent / session，空值不生成该维过滤。隔离仍在存储层强制，只是维度表达不同；该端口的授权由 `_AuthorizedEntityStoreProxy` 适配，其授权 Scope 仍仅保留 space/user 的有损近似。
 
 2. **记录 id 在 scope 内唯一**
@@ -95,11 +105,22 @@
 7. **后端不可用统一抛 BackendError**
    连接失败/超时/服务不可用等非预期失败统一抛 `BackendError`（不抛泛化的 Exception）。
 
-8. **EncryptedKVStore 只做装饰，不做算法**
+8. **加密 Store 只做装饰，不做算法**
    `encrypted` KV target 必须显式包装一个 raw KVStore，并调用
    `common.security.cryptography` 的 `CryptographyProvider` 做 value 加解密
    （旧 `SecurityProvider` 只保留一个发布周期的兼容导出）；`list` 必须在解密后执行
    MemoryUnit 过滤，不能把过滤下推到密文 raw KV。真实加密算法不放在 storage 层。
+
+   EncryptedPrivacyStore 同样通过 CryptographyProvider 加密，不自行实现算法。
+   PrivacyStore 的 stage_fragment 产生未落盘的不透明受保护引用，reference 和路由
+   搬运不解密；get/search 只解密关联清单，get_fragment 仅供已完成二次认证和判权的
+   用户访问控制读取原值。insert/update 原子更新清单及引用，checkpoint/reconcile/confirm
+   维护外部真源提交期间的密文恢复状态；事务只覆盖私有后端。SQLite 表及原加密上下文
+   保持兼容，显式未保护的 PrivacyStore 不允许接入隐私能力。KVPrivacyStore 使用
+   `/privacy/state/v1` 单键 CAS，原子发布完整 Scope 的片段、清单和恢复引用；嵌套
+   事务支持保存点，冲突拒绝覆盖，状态大小有界。memory/sqlite/redis/postgres 提供
+   原生 CAS；第三方默认不支持，不以 get/update 模拟。私有 KV 递归内联构造，
+   禁止引用公开具名端口并跳过业务隐私包装；连接不受业务 ConfigSource 晚绑定。
 
    PR1-1 的 `globals.storage_encryption_enabled` 在标准装配时统一保护全部具名 KV/FS。
    两类 raw 端口与显式 wrapper 全部构造后再包装并更新 Producer 缓存，禁止递归双包、
@@ -201,7 +222,7 @@ ES 实体未配置 hosts/endpoint 时先返回 None。
 9. 接外部后端的实现统一接受 `ssl_verify` / `ssl_ca_cert`（默认关闭），经 `_support.read_ssl_config`
    读取后由各 builder 自行翻译为客户端参数：redis `ssl_ca_certs`、elasticsearch `ca_certs`、
    postgres/pgvector `SSLContext`（`CERT_REQUIRED` + `check_hostname`）、milvus `server_pem_path`（配
-   `secure=True`）。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
+   `secure=True`）、neo4j `encrypted=True` + `TrustCustomCAs`。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
    [F04-storage-ssl.md](../../docs/features/storage/F04-storage-ssl.md)。
    `SslConfig`、归一（`build_ssl_config`）与 scheme 校验（`require_tls_scheme`）住在
    `common._support`，与出站客户端共用；storage 侧只保留缺证书即报错这条自有策略。
@@ -284,6 +305,14 @@ DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。文档模�
     有检索路径（`PipelineRetriever`）、一体化写路径（`UnifiedIndexBuilder`）与 Engine 读取路径
     （`CloudEngine`/`AgentEngine`）。
 
+18. **看门狗只删 active，历史状态不因 md 块消失而清掉**
+    `_sync_one` 用该文件的全部已知正文判重，纠正、遗忘或归档的正文都不会因同步重新生效。
+    删除 diff 只对 `lifecycle="active"` 生效，历史记录仍保留在 shadow；
+    `list_units_by_md` 的 `lifecycle` 参数承载该过滤。写入和看门狗按解析后的文档根目录
+    共用 `sync_gate`，对账 diff 仅在该目录的版本仍一致时提交，并与该目录的正常写入互斥。
+    快照过期后重读再计算。
+    写入等待超过上限时报后端错误。
+
 ### 内存索引过滤
 
 内存全文 `search`、向量 `search/recall` 在 top-k 前执行 FilterExpr，比较复用
@@ -306,3 +335,7 @@ StoreManager.domain_store_for_kv(name) 定义可选领域读契约，默认抛�
 CompositeStoreManager 实现该方法，返回显式绑定受管 KV 的领域门面，用于正排写入前复核。
 该门面仍执行 memory_unit 授权并通过受管 KV 代理读数，不借用默认数据面的真源端口、
 文档模式或召回配置，不注册或替换 manager 的具名数据面。
+
+KV 与 DomainStore 不提供 compare_and_swap / 条件更新（原仅服务角色记忆派生 updated，已随 updated 推迟一并删除，见 S06「原子条件更新」）；Registry 并发依赖单写者声明。
+
+Neo4j 启用 SSL 时在装配与 URI 晚绑定处验证 TLS scheme，显式加密与自定义 CA 同时传给驱动；health 只探测，首次写入前创建唯一约束。

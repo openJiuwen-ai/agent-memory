@@ -44,6 +44,21 @@ def default_config_dict() -> dict[str, Any]:
             # TemporalEntity 是 Schema Property 的只读检索视图；默认不装配，
             # 不影响普通召回。启用后仍需 query extension 或自动时间分支命中。
             "schema_temporal_enabled": False,
+            # construction F10 重要度类别 → 数值（浮点字符串）。LLM 只判类别，classifier/extractor/
+            # abstractor 装配期按此查表；YAML 覆盖时整张表替换，未命中类别取 "default"。
+            # 与 construction.common.DEFAULT_IMPORTANCE_CATEGORY_MAP 保持一致。
+            "importance_category_map": {
+                "identity": "0.95",
+                "rule": "0.90",
+                "preference": "0.85",
+                "knowledge": "0.80",
+                "relation": "0.75",
+                "default": "0.50",
+                "transient": "0.30",
+            },
+            # F10 类别段开关。默认关：LLM Classifier/Extractor 提示词不带类别段，重要度一律取
+            # "default" 类别值。打开会改变抽取产物，见 F10 特性文档「已知遗留」第 3 条。
+            "importance_category_prompt_enabled": False,
             # 算法预设；是否执行仍由 hierarchy.enabled 控制。
             "hierarchy_profiles": {
                 "time": {
@@ -77,6 +92,10 @@ def default_config_dict() -> dict[str, Any]:
             "vector_enabled": True,
             "graph_enabled": True,
             "rerank_enabled": True,
+            # 次级排序（retrieval F09）总开关：threshold 之后、top_k 之前，仅精排（校准）路径
+            # 生效；默认关闭，算子参数在 secondary_scorer 段。与 rerank_enabled 同放 globals：
+            # 检索器经 config.get 读取（本实例 params 优先、回退 globals），写在任一处都生效。
+            "secondary_rank_enabled": False,
             "embedder_dim": 64,
             "chunk_size": 120,
             # 全局唯一 StoreManager 指名（F07）：值为 store_manager 命名空间下的实例名。
@@ -189,6 +208,19 @@ def default_config_dict() -> dict[str, Any]:
             }
         },
         "fuser": {_D: "rrf"},
+        # 次级排序算子：分带 tie-break（score_band 为校准分上的带宽）+ 带内
+        # importance_weight·重要度 + recency_weight·时效性（1/(1+age/tau)，基于 t_ingest）。
+        "secondary_scorer": {
+            _D: {
+                "target": "default",
+                "params": {
+                    "score_band": 0.05,
+                    "importance_weight": 0.5,
+                    "recency_weight": 0.5,
+                    "recency_tau_days": 30.0,
+                },
+            }
+        },
         "discloser": {_D: "truncating"},
         "retriever": {
             _D: {
@@ -198,6 +230,7 @@ def default_config_dict() -> dict[str, Any]:
                     "query_parser": _D,
                     "fuser": _D,
                     "discloser": _D,
+                    "secondary_scorer": _D,
                     # 召回超采样 + 精排预算 + 相关性阈值（本算子私有调参，非跨切面）
                     "over_fetch_factor": 4,
                     "over_fetch_floor": 60,

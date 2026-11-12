@@ -60,24 +60,29 @@ class IndexBuilderProducer(Factory):
         from jiuwen_memory.config.context import ComponentConfig
 
         config = ComponentConfig(params=dict(params or {}), ctx=ctx, target=target, name=name)
+        from jiuwen_memory.common.security.privacy.base import optional_privacy
+        from jiuwen_memory.construction.privacy_index_builder import PrivacyIndexBuilder
+
+        privacy = optional_privacy(config)
         if not as_bool(config.get("schema_enabled"), default=False):
-            return builder
+            return PrivacyIndexBuilder(builder, privacy) if privacy else builder
 
         from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
         from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
         if isinstance(builder, SchemaPropertyIndexingBuilder):
-            return builder
+            return PrivacyIndexBuilder(builder, privacy) if privacy else builder
         manager = StoreManagerProducer.resolve(config)
         kv_name = resolve_name(config, "kv_store")
         if not manager.has_kv(kv_name):
             # A unified/custom data plane may intentionally expose no KV port.
             # Retrieval then uses its compatible DomainStore scope fallback.
-            return builder
-        return SchemaPropertyIndexingBuilder(
+            return PrivacyIndexBuilder(builder, privacy) if privacy else builder
+        builder = SchemaPropertyIndexingBuilder(
             builder,
             SchemaPropertyIndex(manager.kv(kv_name)),
         )
+        return PrivacyIndexBuilder(builder, privacy) if privacy else builder
 
 
 class IndexBuilder(ConstructionOperator):
@@ -142,6 +147,43 @@ class IndexBuilder(ConstructionOperator):
     @abstractmethod
     def rebuild(self) -> None:
         """从真源全量重建索引（删索引不丢数据的保障）。"""
+
+    def projection_graph(self):
+        """Return the injected graph dependency for graph-only projection, otherwise None."""
+        return None
+
+    def supported_write_modes(self) -> set[IndexWriteMode]:
+        """公开能力：声明本构建器实现的写入模式（S05）。
+
+        完整写入链的构建器必须声明 :data:`~storage.types.IndexWriteMode.ALL`（以及
+        :data:`~storage.types.IndexWriteMode.FORWARD_ONLY` 用于生命周期治理）；只声明
+        :data:`~storage.types.IndexWriteMode.RETRIEVAL_ONLY` 的构建器（如关系投影器）
+        只能被配置到投影位置，配到主写入链时装配期拒绝。装配器按此能力声明判断，不按
+        target 名、模块路径或具体类型识别（S09 §9）。
+        """
+        return {
+            IndexWriteMode.ALL,
+            IndexWriteMode.FORWARD_ONLY,
+            IndexWriteMode.RETRIEVAL_ONLY,
+        }
+
+
+def require_full_write_chain(builder: IndexBuilder) -> IndexBuilder:
+    """装配期守卫：主写入链构建器必须声明完整的正排/检索写入能力。
+
+    只声明 RETRIEVAL_ONLY 的构建器（如 ``evidence_graph`` 关系投影器）配到 Engine 主
+    写入链位置时在此拒绝——判断依据是 :meth:`IndexBuilder.supported_write_modes` 能力
+    声明，不按 target 名或具体类型识别（S05 / S09 §9）。
+    """
+    from jiuwen_memory.common.errors import ValidationError
+
+    modes = builder.supported_write_modes()
+    if IndexWriteMode.ALL not in modes:
+        raise ValidationError(
+            "main write chain requires an IndexBuilder that supports ALL write mode; "
+            f"{type(builder).__name__} declares {sorted(m.value for m in modes)}"
+        )
+    return builder
 
 
 class SchemaPropertyIndexingBuilder(IndexBuilder):
@@ -225,6 +267,12 @@ class SchemaPropertyIndexingBuilder(IndexBuilder):
 
     def rebuild(self) -> None:
         self._delegate.rebuild()
+
+    def projection_graph(self):
+        return self._delegate.projection_graph()
+
+    def supported_write_modes(self) -> set[IndexWriteMode]:
+        return self._delegate.supported_write_modes()
 
     def _invalidate_after_failure(self, units: list[MemoryUnit], original: Exception) -> None:
         try:

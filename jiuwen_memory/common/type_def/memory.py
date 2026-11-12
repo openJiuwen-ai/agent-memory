@@ -18,6 +18,16 @@ from .scope import Scope
 MetadataValueType = str | int | float | bool | None | list[str]
 _NON_PROPAGATED_SYSTEM_METADATA_KEYS = frozenset({"infer", "procedural", "middle"})
 
+# 来源标识（construction F10）：``system_metadata[ORIGIN_KEY]`` 二态。原文由接入层默认写 original，
+# 派生记忆由产出算子自己写 inferred——不靠继承，故不进上面的不传播键清单。
+ORIGIN_KEY = "origin"
+ORIGIN_ORIGINAL = "original"
+ORIGIN_INFER = "inferred"
+
+# 重要度（construction F10）：``system_metadata[IMPORTANCE_KEY]`` 存 0~1 浮点字符串
+# （如 ``"0.85"``）。
+IMPORTANCE_KEY = "importance"
+
 
 def inherited_system_metadata(units: list[MemoryUnit]) -> dict[str, MetadataValueType]:
     """返回派生记忆可安全继承的系统元数据交集。"""
@@ -71,6 +81,21 @@ class MemoryTier(str, Enum):
     SEMANTIC = "semantic"  # 语义记忆：知道什么（事实/概念/偏好）
     PROCEDURAL = "procedural"  # 程序性记忆：怎么做（技能/流程/模式）
     ARCHIVAL = "archival"  # 归档记忆：低频长尾，按需深挖
+
+
+class ImportanceCategory(str, Enum):
+    """重要度类别（construction F10，与 tier 正交）：LLM 只判类别，数值由配置查表。
+
+    业务可在 ``importance_category_map`` 中追加自定义类别字符串，查表不强制本枚举校验。
+    """
+
+    IDENTITY = "identity"  # 明确指令、身份/位置/职业/配置
+    RULE = "rule"  # 站立规则/策略（永远不要/必须/总是）
+    PREFERENCE = "preference"  # 偏好/意见
+    KNOWLEDGE = "knowledge"  # 技术上下文、决策/经验
+    RELATION = "relation"  # 关系/人/项目里程碑
+    DEFAULT = "default"  # 兜底：未能明确归类
+    TRANSIENT = "transient"  # 临时任务/瞬时状态
 
 
 class LifecycleState(str, Enum):
@@ -284,6 +309,11 @@ MD_TITLE_KEY = "md_title"
 # 按标签的批量删除范围。故在写入边界拒绝。
 KERNEL_SYSTEM_METADATA_KEYS = frozenset(
     {
+        "privacy_level",
+        "privacy_rule_ids",
+        "privacy_categories",
+        "privacy_revision",
+        "privacy_message_revision",
         # -- 索引投影字段：真源系统字段在索引里占用同名 key -----------------------
         # 调用方经 system_metadata 写这些 key 会与索引投影的取值不一致，两侧判定相反、
         # 过滤结果静默出错。用户元数据落在另一命名空间、占不到它们，本项只防入参。

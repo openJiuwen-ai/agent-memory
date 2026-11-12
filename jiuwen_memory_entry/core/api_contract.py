@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Shared JSON contract and direct invocation for HTTP and CLI MemoryAPI calls.
+"""JSON contracts for MemoryAPI calls and HTTP configuration management.
 
 HTTP and CLI expose every public ``MemoryAPI`` method under the same name.
 This module derives accepted fields, defaults and Python target types from the
 ``MemoryAPI`` signature so the transport cannot silently grow a second API.
 Authenticated ``security`` is the sole parameter that never comes from JSON.
+HTTP configuration calls use the running instance's configuration service.
 """
 
 from __future__ import annotations
@@ -20,7 +21,14 @@ from enum import Enum
 from functools import cache
 from typing import Any, get_args, get_origin, get_type_hints
 
-from jiuwen_memory.api import MemoryAPI, ValidationError
+from jiuwen_memory.api import (
+    ManagedConfiguration,
+    MemoryAPI,
+    RequestSecurityContext,
+    ValidationError,
+)
+
+CONFIG_VERBS = frozenset({"read_config", "save_config"})
 
 _RESERVED_SECURITY_FIELDS = {
     "security",
@@ -131,6 +139,34 @@ def invoke_api(api: Any, verb: str, payload: Any, security: Any) -> Any:
             raise TypeError(f"MemoryAPI.{verb} did not return an awaitable")
         result = asyncio.run(_await_api_result(result))
     return to_jsonable(result)
+
+
+def invoke_configuration(
+    configuration: ManagedConfiguration | None,
+    verb: str,
+    payload: Any,
+    security: RequestSecurityContext,
+) -> dict[str, Any]:
+    """Validate a configuration request and delegate to the instance."""
+    if not isinstance(payload, dict):
+        raise ValidationError("request body must be a JSON object")
+    if verb == "read_config":
+        if payload:
+            raise ValidationError("read_config does not accept fields")
+        if configuration is None:
+            return {"available": False}
+        return {"available": True, **configuration.read(security=security)}
+
+    if configuration is None:
+        raise ValidationError("configuration management is unavailable")
+    if payload.keys() == {"retry"} and payload["retry"] is True:
+        return configuration.retry_publication(security=security)
+    if payload.keys() - {"version", "changes", "restore"}:
+        raise ValidationError("invalid configuration request fields")
+    return configuration.save(
+        payload.get("version"), payload.get("changes", {}),
+        restore=payload.get("restore", []), security=security,
+    )
 
 
 def to_jsonable(value: Any) -> Any:

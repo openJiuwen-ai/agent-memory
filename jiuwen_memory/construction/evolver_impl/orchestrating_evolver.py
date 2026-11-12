@@ -38,6 +38,8 @@ from jiuwen_memory.common.log import (
     redact_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.schema_property import is_schema_property_unit
+from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_TITLE_KEY,
@@ -61,6 +63,11 @@ from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import Abstractor, AbstractorProducer
 from jiuwen_memory.construction.associator import Associator, AssociatorProducer
 from jiuwen_memory.construction.base import ExtractContext, OperatorType
+from jiuwen_memory.construction.common import (
+    IMPORTANCE_KEY,
+    ORIGIN_KEY,
+    merge_importance_max,
+)
 from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
 from jiuwen_memory.construction.evolver import (
     EvolveMode,
@@ -69,6 +76,7 @@ from jiuwen_memory.construction.evolver import (
     EvolveResult,
     EvolverProducer,
 )
+from jiuwen_memory.construction.evolver_impl.conflict_consolidator import ConflictConsolidator
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.evolver_impl.temporal_validity import (
     aware_utc,
@@ -208,6 +216,18 @@ def _route_ctx_of(units: list[MemoryUnit]) -> RouteContext | None:
     return None
 
 
+def _unique_units(units: list[MemoryUnit]) -> list[MemoryUnit]:
+    """按 id 去重并保序（冲突巩固的 retire 列表可能含同一条记忆的多个来源）。"""
+    seen: set[str] = set()
+    result: list[MemoryUnit] = []
+    for unit in units:
+        if unit.id in seen:
+            continue
+        seen.add(unit.id)
+        result.append(unit)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # OrchestratingEvolver
 # ---------------------------------------------------------------------------
@@ -256,6 +276,7 @@ class OrchestratingEvolver(Evolver):
         llm: LLM,
         layer_annotator: LayerAnnotator | None = None,
         router: Router | None = None,
+        conflict_consolidator: ConflictConsolidator | None = None,
         *,
         hierarchy_composer: HierarchyComposer | None = None,
         domain_store: DomainStore | None = None,
@@ -263,8 +284,10 @@ class OrchestratingEvolver(Evolver):
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 1.0,
         dedup_extract: bool = True,
+        privacy=None,
     ) -> None:
         self._extractor = extractor
+        self._privacy = privacy
         self._abstractor = abstractor
         self._associator = associator
         self._index = index_builder
@@ -280,6 +303,8 @@ class OrchestratingEvolver(Evolver):
         self._layer_annotator = layer_annotator
         # 归属判定算子：None 表示不判定，派生单元沿用源单元的 scope（向后兼容）。
         self._router = router
+        # 冲突巩固算子：None 表示该模式空跑。
+        self._conflict_consolidator = conflict_consolidator
         self._hierarchy_composer = hierarchy_composer
         self.relations: list[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
@@ -319,6 +344,7 @@ class OrchestratingEvolver(Evolver):
     # Evolver 契约
     # ------------------------------------------------------------------
 
+    @privacy_operation
     def evolve(
         self,
         units: list[MemoryUnit] | EvolveRequest,
@@ -339,6 +365,16 @@ class OrchestratingEvolver(Evolver):
             units, mode = request.units, request.mode
         if not isinstance(mode, EvolveMode) or mode is EvolveMode.HIERARCHY:
             raise ValidationError("HIERARCHY 必须使用含有界区间的 EvolveRequest")
+        eligible_units = []
+        for unit in units:
+            if unit.system_metadata.get("continuity_kind") == "relation":
+                continue
+            if unit.system_metadata.get("continuity_event"):
+                continue
+            eligible_units.append(unit)
+        units = eligible_units
+        if not units:
+            return EvolveResult()
         logger.info("Evolver: evolve mode=%s, %d units", mode.value, len(units))
         for u in units:
             logger.info(
@@ -353,6 +389,8 @@ class OrchestratingEvolver(Evolver):
             return self._evolve_extract(units)
         if mode == EvolveMode.CONSOLIDATE:
             return self._evolve_consolidate(units)
+        if mode == EvolveMode.CONFLICT_CONSOLIDATE:
+            return self._evolve_conflict_consolidate(units)
         if mode == EvolveMode.ASSOCIATE:
             return self._evolve_associate(units)
         if mode == EvolveMode.FORGET:
@@ -410,6 +448,12 @@ class OrchestratingEvolver(Evolver):
         if not units or self._graph is None:
             return
         scope = units[0].scope
+        if self._privacy is not None:
+            for unit in units:
+                self._privacy.prepare(unit)
+            for relation in relations:
+                relation.relation = self._privacy.preview_echo(relation.relation)
+                relation.metadata = self._privacy.preview_echo(relation.metadata)
         for u in units:
             node = Node(id=u.id, label=u.tier.value, properties={"content": u.content})
             try:
@@ -699,8 +743,14 @@ class OrchestratingEvolver(Evolver):
             existing_unit.provenance = list(
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
-            # 合并 metadata
+            # 合并 metadata；F10 重要度只增不减、origin 随被合并的 existing——先备份，
+            # 交集继承后写回（两侧 origin 不同时交集会丢掉该键）
             had_md_title = MD_TITLE_KEY in existing_unit.system_metadata
+            importance = merge_importance_max(
+                existing_unit.system_metadata.get(IMPORTANCE_KEY),
+                candidate.system_metadata.get(IMPORTANCE_KEY),
+            )
+            origin = existing_unit.system_metadata.get(ORIGIN_KEY)
             existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
             # 标题描述本次更新后的事实，不是新旧记忆共有的属性。
             # 新候选无标题时清空旧标题，避免继续展示已经过时的事实。
@@ -709,6 +759,10 @@ class OrchestratingEvolver(Evolver):
                     MD_TITLE_KEY, ""
                 )
             existing_unit.user_metadata = inherited_user_metadata([existing_unit, candidate])
+            if importance is not None:
+                existing_unit.system_metadata[IMPORTANCE_KEY] = importance
+            if origin not in (None, ""):
+                existing_unit.system_metadata[ORIGIN_KEY] = origin
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
@@ -730,6 +784,12 @@ class OrchestratingEvolver(Evolver):
             # 新版落盘
             candidate.supersedes = existing_unit.id
             candidate.provenance = list(set(candidate.provenance) | {existing_unit.id})
+            importance = merge_importance_max(
+                existing_unit.system_metadata.get(IMPORTANCE_KEY),
+                candidate.system_metadata.get(IMPORTANCE_KEY),
+            )
+            if importance is not None:
+                candidate.system_metadata[IMPORTANCE_KEY] = importance
             candidate.system_metadata["dedup_decision"] = "supersede"
             candidate.system_metadata["dedup_similarity"] = str(similarity)
             candidate.system_metadata["dedup_superseded"] = existing_unit.id
@@ -1370,10 +1430,17 @@ class OrchestratingEvolver(Evolver):
         两个落盘不变量与「落点须在候选集内」的兜底都在
         :func:`~construction.router.route_batch` 内完成，不在本方法重写一份。
         """
+        if self._privacy is not None:
+            for unit in derived:
+                self._privacy.inherit_classification(unit, sources)
         ctx = _route_ctx_of(sources)
         if ctx is None or not derived:
             return derived
         decisions = route_batch(self._router, derived, ctx)
+        if self._privacy is not None:
+            for decision in decisions:
+                if decision.unit is not None and not decision.discarded:
+                    self._privacy.relocate(decision.unit, decision.scope)
         kept = apply_decisions(decisions)
         # apply_decisions 改 scope/tags/memory_class 但不回写 coords。
         # 派生 unit 经 inherited_system_metadata 继承源单元 metadata，而源单元的 coords
@@ -1459,12 +1526,95 @@ class OrchestratingEvolver(Evolver):
         补判定插入点——没有可用的候选空间集合，判出的落点无从校验是否在调用方的写权范围内。
         """
         abstracted = self._abstractor.abstract(units)
+        if self._privacy is not None:
+            for unit in abstracted:
+                self._privacy.inherit_classification(unit, units)
         logger.info("Evolver: CONSOLIDATE abstractor returned %d units", len(abstracted))
         if not abstracted:
             return EvolveResult()
         copy_consolidation_prompts(units, abstracted)
         self._annotate_layers(abstracted)
         return self._dedup_batch(abstracted)
+
+    def _evolve_conflict_consolidate(self, units: list[MemoryUnit]) -> EvolveResult:
+        """冲突巩固分支：按 (entity_id, property_name) 成簇，收敛既有属性记忆。
+
+        聚类与规划在 :class:`ConflictConsolidator`（只读真源 + 两段 LLM，无副作用），
+        本方法只把计划落到**共享的落盘件**上：
+
+        - ``additions``（create / merge 产物）与 ``replacements``（update 产物）
+          一律经 ``_persist`` 直接建全索引，**不做相似去重**（理由见下方注释）；
+        - ``retire``（旧版本 / 被并源）置 ``SUPERSEDED``，走 ``FORWARD_ONLY`` 回写本体 +
+          ``SOFT`` 移出检索（与 FORGET 同款双指令，停在 SUPERSEDED 供 FORGET 二段清理）。
+
+        只作用于 schema 属性记忆（``is_schema_property_unit``）——source 记忆是证据链，
+        不是巩固对象。
+        """
+        if self._conflict_consolidator is None:
+            logger.info("Evolver: CONFLICT_CONSOLIDATE skipped (no consolidator configured)")
+            return EvolveResult()
+        seeds = [
+            unit
+            for unit in units
+            if is_schema_property_unit(unit) and unit.lifecycle is LifecycleState.ACTIVE
+        ]
+        if not seeds:
+            logger.info("Evolver: CONFLICT_CONSOLIDATE no ACTIVE property seeds")
+            return EvolveResult()
+        plan = self._conflict_consolidator.plan(seeds)
+
+        result = EvolveResult()
+        produced: list[MemoryUnit] = []  # 本次实际落盘的新产物，供 P7 打 done 标记
+        # 退役集先算：retire 与产物都可能有重复项，统一按 id 去重。
+        retirees = _unique_units(plan.retire)
+        retired_ids = {unit.id for unit in retirees}
+        # 产物直接落盘，不走相似去重：它们本就与被并的源高度相似，走 dedup 会被判
+        # NOOP，随后源被退役 → 该簇在属性层无活跃替代。
+        created_units = [*plan.additions, *plan.replacements]
+        if created_units:
+            created = self._persist(created_units)
+            result.created_ids.extend(created)
+            result.created_units.extend(created_units)
+            produced.extend(created_units)
+
+        if retirees:
+            invalid_at = datetime.now(UTC)
+            for unit in retirees:
+                unit.lifecycle = LifecycleState.SUPERSEDED
+                unit.temporal.t_invalid = invalid_at
+            self._index.update(retirees, mode=IndexWriteMode.FORWARD_ONLY)
+            self._index.remove(retirees, mode=IndexRemoveMode.SOFT)
+            result.superseded_ids.extend(unit.id for unit in retirees)
+
+        # P7：给成功处理的 seed 与本次产物打 done 标记；标记前从真源重载，
+        # 避免把本轮已改过的对象写回旧状态。
+        done_at = datetime.now(UTC).isoformat()
+        # 按 id 构造标记目标：plan.processed_unit_ids 含簇内**全部** ACTIVE 成员
+        # （含本轮展开拉入、但不在 seeds 里的老成员），漏掉它们会让簇永不 settled。
+        mark_ids = set(plan.processed_unit_ids) | {unit.id for unit in produced}
+        mark_ids -= retired_ids
+        mark_targets: list[MemoryUnit] = []
+        if mark_ids:
+            scope = seeds[0].scope  # F04 逐桶，同批 seeds 同 scope
+            # 重载留在规划器内（它本来就持有真源读端口），编排器不重复持有 KV。
+            reloaded = self._conflict_consolidator.load_fresh(scope, sorted(mark_ids))
+            mark_targets = [
+                unit for unit in reloaded if unit.lifecycle is LifecycleState.ACTIVE
+            ]
+        for unit in mark_targets:
+            unit.system_metadata["consolidation_run_id"] = plan.run_id
+            unit.system_metadata["consolidation_done_at"] = done_at
+        if mark_targets:
+            self._index.update(mark_targets, mode=IndexWriteMode.FORWARD_ONLY)
+
+        logger.info(
+            "Evolver: CONFLICT_CONSOLIDATE run=%s seeds=%d created=%d superseded=%d",
+            plan.run_id,
+            len(seeds),
+            len(result.created_ids),
+            len(result.superseded_ids),
+        )
+        return result
 
     def _evolve_associate(self, units: list[MemoryUnit]) -> EvolveResult:
         relations = self._associator.associate(units)
@@ -1490,7 +1640,12 @@ class OrchestratingEvolver(Evolver):
         ``remove(mode=SOFT)`` 让它退出检索。两条指令互不重叠，检索索引不会
         被先重建再删除。IndexBuilder 不解读 lifecycle，只执行被要求的操作。
         """
-        targets = [u for u in units if u.lifecycle == LifecycleState.SUPERSEDED]
+        targets = []
+        for unit in units:
+            if unit.lifecycle != LifecycleState.SUPERSEDED:
+                continue
+            if not self.retains(unit):
+                targets.append(unit)
         if not targets:
             logger.info("Evolver: FORGET marked 0 units as forgotten")
             return EvolveResult(forgotten_ids=[])
@@ -1594,6 +1749,8 @@ def _build(config):
 
     hierarchy_index = IndexBuilderProducer.dep(config, "index_builder", default=ib_default)
     hierarchy_llm = LlmProducer.dep(config, default="echo")
+    from jiuwen_memory.common.security.privacy.base import optional_privacy
+
     return OrchestratingEvolver(
         extractor=ExtractorProducer.dep(config, default="keyword"),
         abstractor=AbstractorProducer.dep(config, default="concat"),
@@ -1613,4 +1770,5 @@ def _build(config):
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
         dedup_extract=config.get("dedup_extract", True),
+        privacy=optional_privacy(config),
     )

@@ -39,7 +39,14 @@ pytestmark = pytest.mark.unit
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
-    assert len(api_contract.api_method_names()) == 38
+    assert len(api_contract.api_method_names()) == 44
+    assert {
+        "continuity_task",
+        "continuity_relation",
+        "continuity_recover",
+        "quarantine_source",
+        "release_source",
+    } <= api_contract.api_method_names()
     assert api_contract.is_known_verb("add_async") is True
     assert api_contract.is_known_verb("does_not_exist") is False
 
@@ -307,8 +314,16 @@ def test_search_serializer_only_emits_schema_temporal_for_extended_result() -> N
         )
     )
 
-    assert set(ordinary) == {"items", "trajectory", "errors"}
-    assert set(temporal) == {"items", "trajectory", "errors", "schema_temporal"}
+    assert set(ordinary) == {"items", "trajectory", "errors", "paths", "gaps", "view_meta"}
+    assert set(temporal) == {
+        "items",
+        "trajectory",
+        "errors",
+        "paths",
+        "gaps",
+        "view_meta",
+        "schema_temporal",
+    }
     assert temporal["schema_temporal"]["mode"] == "history"
 
 
@@ -344,13 +359,22 @@ def test_evolve_decodes_hierarchy_options_without_changing_normal_modes():
 
     scope = {"org": "acme", "user": "alice"}
     span = "2026-10-21T09:00:00+08:00"
-    parsed = api_contract.parse_request("evolve", {
-        "scope": scope, "mode": "hierarchy", "reuse_existing": True,
-        "hierarchy_options": {
-            "kind": "time", "leaf_role": "snapshot", "parent_roles": ["time_span"],
-            "tree_home_scope": scope, "span_start": span, "span_end": span,
+    parsed = api_contract.parse_request(
+        "evolve",
+        {
+            "scope": scope,
+            "mode": "hierarchy",
+            "reuse_existing": True,
+            "hierarchy_options": {
+                "kind": "time",
+                "leaf_role": "snapshot",
+                "parent_roles": ["time_span"],
+                "tree_home_scope": scope,
+                "span_start": span,
+                "span_end": span,
+            },
         },
-    })
+    )
     assert parsed["mode"] is EvolveMode.HIERARCHY and parsed["reuse_existing"] is True
     options = parsed["hierarchy_options"]
     assert options.parent_roles == [HierarchyRole.TIME_SPAN]
@@ -364,10 +388,15 @@ def test_search_transport_decodes_flat_hierarchy_parameters():
     from jiuwen_memory.api import HierarchyKind, HierarchyRole
 
     raw = {
-        "query": "evidence", "context": {"scope": {"org": "acme"}}, "top_k": 3,
-        "hierarchy_kind": "time", "hierarchy_role": "time_span",
-        "span_start": "2026-09-10T09:00:00", "span_end": "2026-09-10T09:00:01",
-        "expand_depth": 0, "rollup": False,
+        "query": "evidence",
+        "context": {"scope": {"org": "acme"}},
+        "top_k": 3,
+        "hierarchy_kind": "time",
+        "hierarchy_role": "time_span",
+        "span_start": "2026-09-10T09:00:00",
+        "span_end": "2026-09-10T09:00:01",
+        "expand_depth": 0,
+        "rollup": False,
     }
     parsed = api_contract.parse_request("search", raw)
     assert parsed["hierarchy_kind"] is HierarchyKind.TIME
@@ -383,3 +412,38 @@ def test_parallel_public_methods_are_not_exposed(verb):
     assert verb not in api_contract.api_method_names()
     with pytest.raises(ValidationError, match="unknown MemoryAPI method"):
         api_contract.parse_request(verb, {})
+
+
+def test_batch_add_decodes_continuity_into_its_dto() -> None:
+    """HTTP/MCP 形态的 payload 必须把 continuity 解成 ContinuityWrite，不能留 dict。"""
+    from jiuwen_memory.common.type_def.continuity import ContinuityWrite
+
+    parsed = api_contract.parse_request(
+        "batch_add",
+        {
+            "items": [
+                {
+                    "content": "imported",
+                    "continuity": {
+                        "task_id": "t",
+                        "binding_id": "b",
+                        "event_id": "e",
+                    },
+                }
+            ],
+            "scope": {"org": "o", "space": "p"},
+        },
+    )
+    continuity = parsed["items"][0].continuity
+    assert isinstance(continuity, ContinuityWrite), type(continuity)
+    assert (continuity.task_id, continuity.binding_id, continuity.event_id) == ("t", "b", "e")
+
+
+def test_relation_recovery_does_not_require_refs() -> None:
+    """kind=relation 由服务端从真源重建，不读 refs；只有 event 需要已提交引用。"""
+    from jiuwen_memory.common.type_def.continuity import ContinuityRecovery
+
+    recovery = ContinuityRecovery(kind="relation", operation_id="op", refs=[])
+    assert recovery.refs == []
+    with pytest.raises(ValidationError):
+        ContinuityRecovery(kind="event", operation_id="op", refs=[])

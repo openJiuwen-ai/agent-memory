@@ -5,13 +5,13 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-10 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
+| 最近一次修订日期 | 2026-11-12 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F08-personal-memory-portal.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 明文读取与独立维护边界
 
-MemoryAPI 的方法、参数、返回类型及公共导出保持原契约。加密读取遇到明文时继续
+独立维护工具不改变 MemoryAPI 的方法、参数、返回类型及公共导出。加密读取遇到明文时继续
 按既有 BackendError 异常契约失败，错误信息提示显式迁移或清空；不能返回明文、空结果
 或新增错误结果对象，不增加 HTTP/CLI/MCP 的业务方法及专用状态码转换。
 
@@ -33,6 +33,149 @@ MemoryAPI 的方法、参数、返回类型及公共导出保持原契约。加�
 | `docs/features/api/`（F01–F07） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
 
 已设计但尚未实现的接口完成代码开发上库时：去掉本文（及受影响 F 文档）中的尚未实现标注，并把该方法（或增量入参）补进 architecture.md §6。
+## 个人记忆公开接口
+
+普通 `list(scope, ...)` 和 `search(query, context, ...)` 继续使用原返回结构。
+默认个人视图复用这两个公开方法，个人模式需显式启用：
+
+- `list` 通过 `extensions={"personal": {...}}` 传列表筛选条件及可选的
+  `snapshot`、`include_lifecycle_counts`，省略 `scope`。个人模式使用
+  `personal` 中的筛选条件，不与普通 `filters`、`memory_types` 或其他扩展混用。
+  MCP 的 `memory_list` 遵循同一规则。按指定范围查询时仍需提供 `scope`。
+- `search` 在 `context.extensions` 传 `{"personal": {"source": "应用标识"}}`，
+  `context.scope` 留空。支持 `query`、`top_k` 和可选来源。与 `spaces`、
+  职责视图参数（`duty`、`task_id`、`anchor`、`view_budget`）或其他检索选项组合时，
+  返回 `ValidationError`。个人结果包含各命中的完整 Scope 和排序口径。
+
+SDK 和 HTTP Portal 共用这两个入口。API 在当前记忆实例内按认证身份发现候选范围，
+并逐范围执行原接口鉴权。宿主可为新增绑定写入位置，列表与检索仍按个人可读范围查询。
+
+发现前先校验可信请求身份，随后逐范围判权。个人范围有用户标识时只选择本人；已有
+共享范围中的记录还须具有可验证的作者归属。不能确认属于当前用户的记录不自动纳入。
+这条规则不赋予 Portal 共享管理权限。
+
+| 操作 | 行为 |
+|---|---|
+| list | 各范围读取完成后汇总、筛选、计数和分页，返回 PersonalPage |
+| get | 读取指定范围和 ID 的当前记录，复核绑定与作者归属 |
+| add | Portal 入口确定个人写入范围并标记 `source_app=portal`，再调用原 `MemoryAPI.add` |
+| correct | 先复核当前记录，再调用 update(SUPERSEDE) 创建新版本，返回实际新记录 |
+| forget | 先复核当前记录，再调用 delete(FORGET)，返回实际处理的 ID |
+| search | 逐范围调用 MemoryAPI.search，每个结果再通过 get 读取最新授权正文和属性 |
+
+列表按 Scope 和记录 ID 固定排序。默认模式对每个候选范围执行一次授权读取，
+跳过范围级拒绝，不在读取记录后吞掉鉴权或存储错误。跨 Scope 没有全局事务快照。聚合上限为10000条，超过则返回容量错误，不静默截断。
+后续页必须携带第一次读取的 snapshot；成员或来源变化时返回冲突，要求重新分页。
+snapshot 检查成员和来源，不冻结正文，详情仍需重新读取。
+
+### 列表筛选与选项
+
+所有条件在完整授权集合上执行，再计算 count、snapshot 和分页。来源、Agent、项目及
+分类选项从筛选前的完整集合生成，不能只使用当前页。None 表示不限制该条件。
+
+| 参数 | 匹配对象 | 空字符串的含义 |
+|---|---|---|
+| source | system_metadata.source_app | 未标注来源 |
+| agent | scope.agent，agent_label 仅作显示名 | 未关联 Agent |
+| project | system_metadata.project 优先，coords.project 兜底 | 跨项目／未标注 |
+| tier | MemoryTier.value | 不接受空串，须使用有效枚举或 None |
+| memory_class | system_metadata.memory_class | 未分类 |
+| lifecycle | active／superseded／forgotten／archived；None 为全部状态 | 不接受空串 |
+| query | 正文或标签的大小写不敏感子串 | 不增加文字条件 |
+
+MemoryTier 完整枚举为 working、core、episodic、semantic、procedural、archival。
+记忆分类为独立字符串，支持自定义类别；tier=archival 与 lifecycle=archived 是不同维度。
+
+PersonalPage 返回 items、count、snapshot、sources、agents、projects、memory_classes。
+传 `include_lifecycle_counts=true` 时，`lifecycle_counts` 返回应用其他筛选条件之后、
+应用状态条件之前的各状态计数。
+agents 在 Python 接口中是一组 `(id, label)` 元组，HTTP 返回对应的二元素数组。
+其他选项集合使用字符串。
+
+### 个人检索
+
+来源过滤先于候选数量截取。个人全量检索显式包含全部项目及缺少项目字段的旧 KV 记录，
+并与作者、来源条件按 AND 合并；原有 Scope、权限及内核策略限制继续生效。普通
+MemoryAPI.search 的默认项目行为不变。
+
+个人检索的每个子查询须在 top_k 截断前限定到精确绑定 Scope（包含 session）的已授权
+记录集合，来源与作者过滤也须先应用于候选集合。需要按条复核角色证据的记录按普通检索
+规则排除在召回候选之外，列表和详情继续按原规则检查证据。返回定位符必须能在同一 Scope
+严格回读。普通文档召回跨 session 的行为
+不变。个人检索候选总量上限为 10000，文档模式还受 SQLite 连接的查询参数上限约束。
+无法取得完整候选快照时明确失败，不丢弃异常
+命中后把剩余结果当成完整结果。
+
+个人检索从各个 Scope 的排名中轮流取结果，再截取 top_k，响应的 scores_comparable
+为 false。分组以完整 Scope 为准。子查询失败返回错误，不能
+将部分结果当成完整结果。返回正文、摘要及 metadata 来自刚通过鉴权的原记录。
+
+## 配置管理公开接口
+
+`assemble_managed_runtime` 和 `assemble_managed_server_runtime` 接受可信宿主提供的
+配置存储、可管理的具名 LLM、地址策略及授权回调，在同一次装配中返回 configuration。
+`ManagedConfiguration.read`、save、retry_publication 每次调用都要求授权回调明确放行；
+宿主负责校验可信身份、实例权限及审计。保存返回持久版本和 applied，不返回密钥。
+此能力不改变通用 admin_set 的行为。
+
+`HttpServer.build_personal` 在同一个 Runtime 中提供个人记忆和配置接口。普通 HTTP
+启动时自动发现个人记忆范围，安全配置声明固定个人身份时才会自动定位配置库。
+SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实际加载的配置文件路径。
+可信宿主可以显式接入配置存储和授权。
+
+所有候选位置都无法创建配置库时，记忆服务仍可运行，页面无法编辑设置。已有的保存配置
+无法读取时，启动报错。字段校验、版本、凭据和应用规则见 S08。
+
+## HTTP 托管配置接口
+
+两个接口使用与现有 HTTP API 相同的认证方式，也接受 Portal 浏览器会话。
+当前实例的 `ManagedConfiguration` 决定调用方是否有权读写，以及哪些配置项可以管理。
+`fields` 列出当前开放的配置项；`changes` 和 `restore` 使用其中的完整配置键。
+当前可写项来自已装配的 LLM 字段。响应禁止缓存。
+
+| HTTP 路径 | JSON 请求 | 主要响应字段 |
+|---|---|---|
+| `POST /v1/read_config` | 空对象 `{}` | 未装配配置管理时返回 `available: false`。可用时返回 `available: true` 及 `version`、`applied_version`、`apply_state`、`fields`、`instance` |
+| `POST /v1/save_config` | 保存并应用时传 `version`、`changes` 和可选的 `restore`。应用失败后可单独发送 `{"retry": true}` 重试应用最新已保存版本 | `version`、`applied` |
+
+## Portal 页面操作与接口对应
+
+浏览器使用同源 JSON POST。页面通过会话获取认证身份，使用 Scope 和记录 ID 定位已有
+记录。服务端按当前身份检查记录归属和权限，历史记录缺少用户标识时还会核对作者。
+普通 HTTP 客户端继续使用原认证、请求和返回格式。
+
+| 页面操作 | HTTP 路径 | 请求内容 | 主要响应字段 |
+|---|---|---|---|
+| 列表、筛选和概览 | `/v1/list` | `offset`、`limit`；筛选、分页快照和概览计数选项放在 `extensions.personal` | 个人列表原始结果；浏览器会话额外取得 `add_context`，包含 `agent` 和 `agent_locked` |
+| 语义检索 | `/v1/search` | `query`、`top_k`；来源放在 `context.extensions.personal.source` | `items`、`scores_comparable`；每个命中携带 `scope` 和 `item` |
+| 读取详情 | `/v1/get` | `scope`、`unit_id` | 一条 `MemoryUnit` |
+| 新增记忆 | `/v1/add` | `content`、`scope`（只允许选填 `agent`）、可选 `system_metadata.project` | 新增的 `MemoryUnit` 数组 |
+| 纠正记忆 | `/v1/update` | `scope`、`unit_id`、`patch.content` | 新版 `MemoryUnit`，通过 `supersedes` 指向旧版 |
+| 遗忘记忆 | `/v1/delete` | `selector.scope`、只含一个 ID 的 `selector.unit_ids`、`selector.mode: "forget"` | 已遗忘的 ID 数组 |
+| 模型设置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口 | 同上 |
+| HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`） | `portal_url` |
+| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 独立页面建立 HttpOnly Cookie，iframe 获得页面会话票据 |
+
+页面从 `MemoryUnit.segments` 拼接正文，时间取 `temporal.t_ingest`。HTTP
+`write_target` 由宿主提供，与认证身份合成完整写入范围，随会话绑定。独立访问可以
+选择 Agent，组织和用户取自认证身份。新增、纠正、遗忘继续由原 `MemoryAPI` 执行写入鉴权；
+浏览器纠正使用 SUPERSEDE，遗忘使用 FORGET。两种操作都要求目标仍有效，否则返回 409。
+文档写入和索引仍使用原链路。
+启用文件监听时，普通文件同步会保留纠正历史和遗忘状态。
+
+SDK 插件默认启动本地页面服务，`portal.enabled` 可关闭它。`portal.port=0` 时自动分配
+端口。重复初始化会复用原实例和监听。端口冲突时，记忆实例继续运行，`portal_status`
+报告页面不可用，显式打开页面时会重试。HTTP 模式使用原服务端口。两种模式都通过
+`open_portal()` 为每次打开取得一次性链接。SDK 页面句柄只关闭自己的网络资源，
+Runtime 仍由宿主负责关闭。
+宿主可在初始化前读取 `portal_status["supported"]` 来决定是否显示入口。
+SDK 模式的 `available` 表示页面监听已启动。HTTP 模式在首次请求链接前为 `False`，
+之后反映取链接是否成功。HTTP 初始化沿用 `/healthz` 探活，在调用 `await open_portal()`
+时签发链接。`portal_url` 仅提供 SDK 本地链接。
+
+身份复用既有认证或本地会话，浏览器不能声明 actor 或角色，也不能指定列表或检索的授权范围。本机部署的 Host、
+同源检查和会话规则见 S10；Prompt 管理、通用模型依赖追踪和宿主重启不属于 Portal 能力。
+
 ## Runtime 关闭契约
 
 `MemoryRuntime.close(*, wait: bool = True)` 幂等。关闭时先停止看门狗和新调度/摄入，
@@ -51,6 +194,11 @@ leader 锁与存储；确认停止后，锁释放失败不阻断存储清理。�
 
 ## Metadata 公共 API 契约
 
+接入来源标记约定：jiuwenswarm 写入的 `system_metadata.source_app` 为 `jiuwenswarm`，
+`agent_label` 为适配器配置的 agent 标识，供展示与 `system_metadata.<key>` 筛选；
+它们不是可信身份或授权依据。历史记录及多来源派生记录可能缺少这些字段。
+
+
 `add` / `add_async` / `batch_add` 以及 `BatchWriteItem` 分别接收
 `system_metadata` 和 `user_metadata`，不再接收混合 `metadata`。`MemoryPatch` 对两个
 dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key>`；裸自定义
@@ -64,7 +212,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 ## HTTP / CLI 与协议适配契约
 
 HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
-`MemoryAPI.__abstractmethods__` 的 38 个公开方法全部按以下规则暴露：
+`MemoryAPI.__abstractmethods__` 的 43 个公开方法全部按以下规则暴露：
 
 ```text
 POST /v1/<MemoryAPI 方法名>
@@ -117,7 +265,7 @@ dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或�
 此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
 HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
-不再经过 legacy `DispatchRequest` / shared handler。CLI 的 38 个命令与参数直接从
+不再经过 legacy `DispatchRequest` / shared handler。CLI 的 43 个命令与参数直接从
 `MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
 对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
 本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
@@ -254,6 +402,7 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
+| 数据面 | `batch_update` | 已实现 | [batch_update](#batch_update) | F11 |
 | 数据面 | `delete` | 已实现 | [delete](#delete) | 无独立 F；实现见 F01 |
 | 数据面 | `evolve` | 原有四种演进与 dreaming | [evolve](#evolve) | F01、F02 |
 | 数据面（文档模式，经 Engine 窄端口） | `read_md_file` | 已实现；仅文档模式可用 | [read_md_file](#read_md_file) | F08 |
@@ -281,6 +430,11 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 运行时策略面（直达 PolicyManager） | `admin_get` | 已实现 | [admin_get](#admin_get) | F01 |
 | 运行时策略面 | `admin_set` | 已实现 | [admin_set](#admin_set) | F01 |
 | 运行时策略面 | `admin_all` | 已实现 | [admin_all](#admin_all) | F01 |
+| 接续面（委托 ContinuityService） | `continuity_task` | 已实现 | [continuity_task](#continuity_task登记查询和关联任务) | construction/F10 |
+| 接续面 | `continuity_relation` | 已实现；角色模式 | [continuity_relation](#continuity_relation登记复核或撤回关系) | construction/F10 |
+| 接续面 | `continuity_recover` | 已实现 | [continuity_recover](#continuity_recover核对未知写入与修复投影) | construction/F10 |
+| 治理面（接续来源） | `quarantine_source` | 已实现 | [quarantine_source / release_source](#quarantine_source--release_source来源隔离与解除) | construction/F10 |
+| 治理面（接续来源） | `release_source` | 已实现 | [quarantine_source / release_source](#quarantine_source--release_source来源隔离与解除) | construction/F10 |
 
 ---
 
@@ -338,6 +492,7 @@ def add(
     system_metadata: dict[str, MetadataValueType] | None = None,
     user_metadata: dict[str, MetadataValueType] | None = None,
     occurred_at: datetime | None = None,
+    event_time: datetime | None = None,
 ) -> list[MemoryUnit]: ...
 
 async def add_async(...) -> list[MemoryUnit]: ...  # 签名同 add
@@ -398,11 +553,12 @@ target。调用方还必须在配置中显式选择 Schema Extractor 和 Schema 
 - **infer=true 时 evolver 内部收集上下文**（evolve 接口不变）：`recent_originals`（最近 10 条 infer 原文，做指代消解/语境，不参与去重）+ `related_memories`（`dedup.recall` 召回 10 条相关记忆，做去重提示）。两类参考项只拼进 extractor prompt，不进提取来源；最终判定由所选 Evolver 完成：`OrchestratingEvolver` 走 `_dedup_batch`，`DynamicEvolver` 走 consolidate → reflect → 落盘。详见 F02 决策7。
 - **KV key 前缀分离**：真源 key 按「是否建索引」带前缀——`/memory/{id}`（建索引记忆）、`/messages/{id}`（未建索引 infer 原文）。前缀常量与 helper 在 `common.type_def.memory`/`raw`。详见 F02 决策6。
 - **engine.write infer=false 调 classify**：默认路径调 `classifier.classify` 给原文打 tier+tags（纯 LLM 抽取 episodic/semantic/procedural + tags）；infer=true 不经 classifier（extractor 产派生时自定）。详见 F02 决策9。
-- **`list` 收窄并上收为 API 契约**：HTTP `/v1/list` 与 CLI `list` 直接调用
-  `MemoryAPI.list(scope, security=..., offset, limit, memory_types, extensions, filters)`，
-  不经过 handler；MCP 等旧调用方的 legacy `_list` 也委托同一 API。
+- **`list` 收窄并上收为 API 契约**：HTTP `/v1/list`、CLI `list` 和 MCP `memory_list`
+  都通过共享契约调用 `MemoryAPI.list`。
   `KVStore.list` 只查询 `/memory/` 记忆并返回当前页与分页前总数。详见 F02 决策10与
   F01 的 list 决策。
+
+> 接续写入：`add` 另有可选 keyword 参数 `continuity: ContinuityWrite | None = None`，给出时按可靠写入语义登记到任务，见[角色关系记忆入口 / 可靠写入](#add--batch_add-的-continuity-参数可靠写入)。
 
 > 开关由来与"为何默认不同步、为何经 Evolver 而非独立 Extractor"的取舍见 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)；add 路径流程见 [`S03-control.md`](S03-control.md)。
 
@@ -423,12 +579,15 @@ def batch_add(
     occurred_at: datetime | None = None,
     stream_id: str = "",
     continue_on_error: bool = True,
+    event_time: datetime | None = None,
 ) -> BatchWriteResult: ...
 
 async def batch_add_async(...) -> BatchWriteResult: ...  # 签名同 batch_add
 ```
 
 同步桥接批量写入；逐项归一化、WRITE 鉴权、space 校验与审计，结果始终按输入索引对齐。`batch_add_async` 串行保序批量写入；默认归集单项错误，`continue_on_error=False` 时后续项为 `Skipped`。顶层 `system_metadata` / `user_metadata` 作批次默认值，单项可覆盖。设计取舍见 [`F03-batch-write-api.md`](../features/api/F03-batch-write-api.md)。
+
+接续批量写入：`BatchWriteItem.continuity` 逐项声明可靠写入，用于外部 Agent 历史快速导入，分阶段处理与逐项回执见[角色关系记忆入口 / 可靠写入](#add--batch_add-的-continuity-参数可靠写入)。
 
 #### check_write
 
@@ -475,12 +634,15 @@ def submit_ingest(
     system_metadata: dict[str, MetadataValueType] | None = None,
     user_metadata: dict[str, MetadataValueType] | None = None,
     occurred_at: datetime | None = None,
+    event_time: datetime | None = None,
 ) -> IngestSubmission: ...
 ```
 
 受鉴权的长耗时摄入入队。本层先做 WRITE 鉴权，再委托 Control 任务控制器；Access / `assemble_runtime()` 不得持有 `IngestJobController`。后台实际 `add` 仍再鉴权一次。
 
 `occurred_at` 为消息发生时间，随任务原样交给后台 `add`，语义与 `add` 的同名参数一致（见 [F06](../features/api/F06-access-parameter-forwarding.md)）；该字段属于消息时间轴，不借 `metadata` 旁路传递。
+
+`event_time` 为含时区的事件时间，在入队前校验（不含时区直接拒绝，不进队列），随任务原样交给后台 `add` 写入 `t_event`；不得将时间藏进 metadata，或把消息时间 `occurred_at` 当作 `t_event`。
 
 #### search
 
@@ -528,7 +690,11 @@ def search(
     span_end: datetime | None = None,
     expand_depth: int = 1,
     rollup: bool = True,
-) -> RetrievalResult: ...
+    task_id: str = "",
+    anchor: MemoryRef | None = None,
+    duty: str | list[str] | None = None,
+    view_budget: ViewBudget | None = None,
+) -> RetrievalResult | PersonalSearchResult: ...
 ```
 
 混合检索：鉴权 READ→拆 Context→装配 RetrievalQuery→委托 Engine。`filters/as_of/top_k/disclosure/with_trajectory` 和 `context.extensions["max_tokens"]` 的既有处理不变。
@@ -563,6 +729,8 @@ top_k、披露、Scope 与权限不变；普通召回可命中已有 Snapshot，
 逐空间分发。请求快照不修改调用者输入，运行时插件保留身份。
 
 HTTP/CLI 仅暴露原 search，MCP 仅暴露 memory_search；参数与 SDK 同义。
+
+接续检索：`search` 另有可选 keyword 参数 `duty`、`task_id`、`anchor`、`view_budget`，三者（duty/task_id/anchor）均缺省时行为不变；给出任一即进入任务/职责视图路径并填充 `RetrievalResult` 的可选字段。首版不支持跨空间职责视图：`context.extensions` 带 `spaces` 键且同时给出 `duty` / `task_id` / `anchor` 时返回 `ValidationError`。见[角色关系记忆入口 / 职责检索](#search-的接续参数职责检索)。
 历史进程内 handler 仅在显式提供树字段时按同一类型契约解码并转发，省略字段不补默认值。
 不再提供公开 search_v2/evolve_v2 或对应 MCP 工具，不新增公开 expand。
 
@@ -572,7 +740,7 @@ HTTP/CLI 仅暴露原 search，MCP 仅暴露 memory_search；参数与 SDK 同�
 
 ```python
 def list(
-    scope: Scope,
+    scope: Scope | None = None,
     *,
     security: RequestSecurityContext,
     offset: int = 0,
@@ -580,7 +748,7 @@ def list(
     memory_types: list[str] | None = None,
     extensions: dict[str, Any] | None = None,
     filters: FilterExpr | list[FilterClause] | dict | None = None,
-) -> MemoryListResult: ...
+) -> MemoryListResult | PersonalPage: ...
 ```
 
 列出已建索引记忆：支持类型/FilterExpr 过滤、自定义参数透传和分页前精确总数；只返回 `/memory/` 真源记录。
@@ -599,6 +767,8 @@ def list(
 边界 adapter 使用显式 codec 序列化；未知 key 原样透传。
 `filters` 与 search 共用 FilterExpr/旧 list/dict DSL 规范化语义，`memory_types` 与 filters
 取 AND。`org/space/user/agent/session` 属于 Scope 隔离轴，不得出现在 filters。
+
+接续来源过滤：启用接续时，不可用来源（配置 `enabled=false` 的连接 ∪ 项目内被隔离的连接）作为系统过滤谓词 `NOT system_metadata.continuity_connector IN {不可用连接}` 与用户 filters 取 AND 下推到 Engine，在分页与 `count` 之前生效；`list` 不得因页内含不可用来源条目而整页抛 `PermissionDeniedError`。`get` 单条命中仍返回 `PermissionDeniedError`。契约见 [S11「来源治理与列表过滤」](S11-cross-agent-continuity.md#来源治理与列表过滤)。
 
 #### get
 
@@ -664,6 +834,44 @@ hierarchy: HierarchyPatch | None = None
 
 `SUPERSEDE` 若目标已挂树，Engine 必须把结构位置从旧 id 一致迁移到新版本 id，再把旧版本设为 `SUPERSEDED`；不得留下指向旧版本的活动结构边。`OVERWRITE` 保持 id，但层级 patch 仍须经过相同校验。
 
+#### batch_update
+
+**状态：已实现**（F11）
+
+```python
+def batch_update(
+    selector: UpdateSelector,
+    patches: list[MemoryPatch],
+    *,
+    security: RequestSecurityContext,
+    limit: int | None = None,
+    continue_on_error: bool = True,
+) -> BatchUpdateResult: ...
+```
+
+批量更新记忆：鉴权 UPDATE 后由 API 层逐条编排（复用单条 `update` 的
+schema prepare→逐项鉴权→commit 链路，引擎不提供整批入口）。`UpdateSelector` 各条件取
+「与」，至少一项：`unit_ids` / `scope` / `tags` / `before` / `after` / `filters`。
+空 selector 抛 `ValidationError`；候选只含 `ACTIVE` 状态单元（历史版本/冷数据不参与，
+避免对已替代版本补丁错位）。
+
+`patches` 长度决定模式：`len==1` 为统一 patch（所有候选应用同一个 patch）；
+`len>1` 为逐条对应（必须给 `selector.unit_ids` 且 `len(unit_ids) == len(patches)`）。
+逐条模式无 `unit_ids` 或数量不匹配抛 `ValidationError`；`unit_ids` 逐项对应补丁，
+缺失 id 生成 `NotFoundError` 类型的 error outcome，不静默丢弃。
+
+`limit` 覆盖 `selector.limit`：必须为正整数（`0`/负数抛 `ValidationError`，不静默忽略）。
+统一 patch 模式做 post-match 截断（全量匹配后取前 N 条执行更新）；逐条模式只做下界承诺
+（不小于 `len(patches)`，否则抛 `ValidationError`），不截断候选集。
+`continue_on_error=True` 时单条失败不中断整批；`False` 时失败后后续标记 `Skipped`。
+
+鉴权流程：先 trusted_context 检查（`Action.UPDATE`, `"batch_update"`），再通过
+`engine.permission_contexts_for_update(selector)` 取候选 unit 权限上下文，逐条
+UPDATE 鉴权；无候选时对 selector scope 做 selector 级 fallback 鉴权。每个 `MemoryPatch`
+的 `system_metadata` / `user_metadata` 复用单条 `update` 的内核保留 key 与非标量校验。
+
+设计取舍见 [`F11-batch-update-api.md`](../features/api/F11-batch-update-api.md)。
+
 #### delete
 
 **状态：已实现**
@@ -672,7 +880,7 @@ hierarchy: HierarchyPatch | None = None
 def delete(selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]: ...
 ```
 
-删除/归档/降权：鉴权 DELETE→委托 Engine。按选择器删除，条件取「与」，至少一项：`unit_ids` / `scope` / `tags` / `before` / `mode`。返回命中 id。未给 `selector.scope` 时鉴权退到根 scope。
+删除/归档/降权：鉴权 DELETE→委托 Engine。按选择器删除，条件取「与」，至少一项：`unit_ids` / `scope` / `tags` / `before` / `mode`。返回命中 id。未给 `selector.scope` 时鉴权退到根 scope。候选生命周期规则：非 `PURGE` 模式排除 `SUPERSEDED` 历史版本（流转非法）；`PURGE` 覆盖 `SUPERSEDED` 历史版本（合规硬删，新旧版本一并物理删除，不残留明文）。
 
 #### evolve
 
@@ -1198,9 +1406,15 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 
 ### DeleteSelector / DeleteMode（delete，`control/types.py`）
 
-`DeleteSelector` 各条件取「与」，至少给一项：`unit_ids` / `scope`（鉴权依据）/ `tags`（命中任一）/ `before`（`t_event` 早于此）/ `mode`。
+`DeleteSelector` 各条件取「与」，至少给一项：`unit_ids` / `scope`（鉴权依据）/ `tags`（命中任一）/ `before`（`t_event` 早于此）/ `mode`。候选生命周期规则：非 `PURGE` 模式排除 `SUPERSEDED` 历史版本（FORGET/ARCHIVE 流转非法，`SUPERSEDED→ARCHIVED` 禁止）；`PURGE` 物理删除覆盖 `SUPERSEDED` 历史版本——合规硬删不残留明文，新旧版本一并删除。
 
-`DeleteMode`：`FORGET`（标记遗忘，可恢复，默认）/ `ARCHIVE`（归档转冷）/ `DOWNWEIGHT`（保持 active 仅降权）/ `PURGE`（物理删真源与索引，合规硬删，不可恢复）。
+`DeleteMode`：`FORGET`（标记遗忘，可恢复，默认）/ `ARCHIVE`（归档转冷）/ `DOWNWEIGHT`（保持 active 仅降权）/ `PURGE`（物理删真源与索引，合规硬删，不可恢复，含 `SUPERSEDED` 历史版本）。
+
+### UpdateSelector / BatchUpdateOutcome / BatchUpdateResult（batch_update，`control/types.py`）
+
+`UpdateSelector` 与 `DeleteSelector` 结构相同（`unit_ids` / `scope` / `tags` / `before` / `after` / `filters`），但**不携带 `mode`**——批量更新的版本语义由各 `MemoryPatch.mode` 逐条决定。新增 `after` 字段（`DeleteSelector` 没有），支持「只更新某时间段之后的消息」。`limit` 必须为正整数（`0`/负数抛 `ValidationError`）：统一 patch 模式做 post-match 截断（全量匹配后取前 N 条执行更新），逐条模式只做下界承诺（不小于 `len(patches)`），不截断候选集。各条件取「与」，至少给出一项；候选只含 `ACTIVE` 状态单元。
+
+`BatchUpdateOutcome` 包含候选索引、`unit_id`、成功时的 `updated_unit` 或失败时的 `error` / `error_type`。`BatchUpdateResult.outcomes` 与候选顺序对齐。
 
 ### FilterExpr / FilterClause / FilterGroup（search 前置过滤，`common/type_def`）
 
@@ -1230,9 +1444,11 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 ### BatchWriteItem / BatchWriteOutcome / BatchWriteResult（batch_add，`control/types.py`）
 
-- `BatchWriteItem` 表达单项内容与可选 scope/source/tags/`system_metadata`/`user_metadata`/occurred_at 覆盖；`stream_id`、`sequence`、`idempotency_key` 首版仅用于调度和回显，不写入真源。
+- `BatchWriteItem` 表达单项内容与可选 scope/source/tags/`system_metadata`/`user_metadata`/occurred_at/`event_time` 覆盖；`event_time` 未给时沿用批级缺省值，不含时区的单项按 `ValidationError` 归集，不影响其他项；`stream_id`、`sequence`、`idempotency_key` 首版仅用于调度和回显，不写入真源。
 - `BatchWriteOutcome` 包含输入索引、归一化 item、该项产生的 `units` 与可归集的 `error` / `error_type`；成功且 units 为空仍是成功。Engine 的非领域异常也必须归集为 `InternalError`，不能使整批 HTTP 请求退化为 500。
 - `BatchWriteResult.outcomes` 与输入严格一一对应。相同 `(Scope, stream_id)` 的非空 `sequence` 不得重复；接口不自动重排。
+- 内部字段：`BatchWriteItem.source_ref` 只由接续批量写入在内部设置（`source_locator` → `MemoryUnit.source_ref`）；公开调用方传非空值即 `ValidationError`。
+- 接续：`BatchWriteItem.continuity: ContinuityWrite | None`；`BatchWriteOutcome` 新增 `operation_id: str = ""` 与 `continuity_status: str = ""`（committed / partial / unknown / rejected，未带 continuity 的项为空）。
 
 ### DisclosureLevel / RetrievalResult（search 返回，`retrieval/types.py`）
 
@@ -1240,7 +1456,8 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 
 `RetrievalResult`：
 - `items: list[RetrievedItem]` —— 每项 `unit_id` / `score`（融合/重排后最终分）/ `content`（按层级加载）/ `level`（实际披露层级）。
-- `trajectory: list[TrajectoryStep]` —— 仅 `with_trajectory=True` 返回。每步 `stage`（parse/recall/fuse/recheck/rerank/threshold/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
+- 接续可选字段（仅给出 duty/task_id/anchor 时填充，否则为 null）：`paths: list[RelationPath] | None`、`gaps: list[Gap] | None`、`view_meta: ViewMeta | None`；`RetrievedItem.view: ViewAnnotation | None`。字段定义见 S11。
+- `trajectory: list[TrajectoryStep]` —— 仅 `with_trajectory=True` 返回。每步 `stage`（parse/recall/fuse/recheck/rerank/resolve/threshold/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
 
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
 
@@ -1302,6 +1519,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 | `UnsupportedCapabilityError` | 请求的 `source` 模态不在当前 Normalizer 声明的能力集合内；在规约、落盘和建索引前失败 |
 | `PolicyError` | `admin_set` 的键未知或为不可变配置；树开关关闭时忽略树参数，不因此抛 PolicyError |
 | `ConflictError` | 写入冲突（如 id 重复）或目标结构前置条件与当前状态冲突 |
+| `WriteIncompleteError` | `PartialFailureError` 子类，HTTP 409。带 `continuity` 的 `add` 回执停在 unknown / partial；携带 `operation_id`、`status`、`refs`、`retry_action` |
 | `BackendError` / `HealthCheckError` | 后端故障 / 健康探测失败 |
 
 ## 鉴权流程
@@ -1453,3 +1671,172 @@ SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 searc
 公共校验方法；未知名称抛 ValidationError，附公开可选名单。即使跨空间目标为空也必须拒绝
 未知名称，不把调用参数错误转换成空间 ChannelError。API 不访问 Engine 或 Retriever 私有配置。
 选择只影响检索算法，不替代 scope/授权谓词校验；优先级与装配约束见 S03/S04。
+
+## 角色关系记忆入口
+
+> **状态：已实现（2026-11-05 设计修订）**。`role_*` 已并入 `add`/`batch_add`/`search` 并改名为 `continuity_*`、`quarantine_source`、`release_source`；`role_record`、`role_view`、`role_publish`、`role_mark_source_cutover` 已删除。剩余差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。
+
+本节各 DTO 的字段级定义、内部回执与关系头结构见 [S11 数据结构](S11-cross-agent-continuity.md#数据结构)，含义与用法见 [F10 第 5 节](../features/construction/F10-role-memory.md#5-数据结构)。
+
+接续能力不再设独立的写入与视图方法：
+
+| 能力 | 入口 |
+|---|---|
+| 可靠写入、历史导入 | `add(..., continuity=ContinuityWrite)`；`batch_add` 的 `BatchWriteItem.continuity` |
+| 任务背景 / 职责视图 | `search(..., duty=, task_id=, anchor=, view_budget=)` |
+| 任务登记与绑定 | `continuity_task(scope, request: TaskRequest, *, security) -> dict` |
+| 关系登记、复核、撤回（角色模式） | `continuity_relation(scope, relation: RelationRecord, expected_revision: int, *, security) -> dict` |
+| 未知写入核对与投影修复 | `continuity_recover(scope, recovery: ContinuityRecovery, *, security) -> dict` |
+| 来源隔离与解除（治理面） | `quarantine_source(scope, connector, reason, *, security) -> dict`；`release_source(scope, connector, *, security) -> bool` |
+
+HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `memory_search` 携带接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover` 与（角色模式）`memory_continuity_relation`（沿用 `memory_<方法名>`；JiuwenSwarm 适配器为 `agent_memory_*`）；`quarantine_source` / `release_source` 只在管理面暴露，不进入 Agent 工具清单。不再提供跨空间发布（以现有 `grant` ＋ `continuity_task(attach)` 挂引用代替）与双写切换。
+
+仅显式配置 `continuity`（且 `mode` 为 `continuity` 或 `role`）才启用；未启用时带接续参数的 `add`/`batch_add`/`search` 与上述专用入口返回 `UnsupportedCapabilityError`。接续模式下 `continuity_relation`、`continuity_recover(kind=relation)` 返回 `UnsupportedCapabilityError`，`search` 带非 general duty 时降级（见下）。scope 必须是 org+space 的项目空间。API 执行项目权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。关系真源存于 Registry KV，不出现在普通 get/list/search 结果中。
+
+### 共同参数、返回状态与传输
+
+| 参数 | 含义与限制 |
+|---|---|
+| `scope: Scope` | Registry/事件/关系所属项目，必须给出 `org`、`space`，`user/agent/session` 为空；不是调用者身份 |
+| `security: RequestSecurityContext` | SDK 必填 keyword-only 可信上下文；HTTP/MCP 由认证边界注入，不放入业务 JSON。同步 SDK 方法须在无运行事件循环的线程调用 |
+| `MemoryRef` | `scope` 是原记忆完整五维 Scope，`unit_id` 是实际 MemoryUnit ID，`content_digest` 是 64 位小写 SHA-256；从已保存单元取得，不用消息 ID/任意摘要代替。摘要算法见 S11 |
+
+专用入口中 `release_source` 返回布尔值，其余返回 `dict`。`committed` 表示该操作所要求的真源/回执已保存，不表示任务完成；关系写入还要求投影完成。`partial` 表示已有可恢复进度；`unknown` 表示写入确认不足，不能换新 ID 再写。可选关联发现的 `association_status` 与事件的 `status` 分开。
+
+共通异常：`ValidationError` 为字段/模型/项目形状错误；`PermissionDeniedError` 为认证授权或依赖不可读；`NotFoundError` 为控制记录不存在；`ConflictError` 为修订过期、幂等键冲突、引用变化等；`WriteIncompleteError`（409）为可靠写入停在 unknown/partial；`UnsupportedCapabilityError` 为未装配接续能力或当前档位不支持。实际存储故障也可能抛出，不能把异常视为未写入证明。HTTP 状态映射沿用本规约「HTTP / CLI 与协议适配契约」。
+
+### add / batch_add 的 continuity 参数（可靠写入）
+
+`add(content, scope, source, *, security, ..., event_time=None, continuity: ContinuityWrite | None = None) -> list[MemoryUnit]`；`batch_add` 逐项 `BatchWriteItem.continuity`。
+
+| ContinuityWrite 字段 | 默认值 | 含义 |
+|---|---|---|
+| `task_id` / `binding_id` / `event_id` | 必填 | 全局任务、有效绑定、产品侧稳定事件 ID；幂等键 = 连接、绑定、事件 ID 的摘要（`operation_id`） |
+| `kind` | `"unclassified"` | observation / statement / judgment / result / experience / correction / unclassified |
+| `classification_confidence` | `"unknown"` | low / high / unknown；low 强制降级为 unclassified，high 不等于事实确认 |
+| `evidence_refs` | `[]` | 支撑事件的原记忆引用；写入及重试时核验 |
+| `claimed_author` | `None` | 原文声称作者，不覆盖服务端认证归属 |
+| `context_id` | `None` | 产品会话或上下文 ID |
+| `source_locator` | `None` | 原文定位信息，写入 `MemoryUnit.source_ref` |
+| `schema_version` | `"continuity-write/1"` | 固定版本；未知版本拒绝 |
+
+参数映射：正文用 `content`；原事件时间用 `event_time`（t_event），`occurred_at` 仍是消息时间；职责背景用 `tags`（`duty:<id>`）；其余字段由内部写路径写入 `continuity_*` 系统元数据，公开调用方不得直接设置该前缀。
+
+返回：committed 时返回正文单元；同键同内容重放返回已保存单元，不重复写正文；同键异内容 `ConflictError`；回执停在 unknown / partial 时抛 `WriteIncompleteError`，携带 `operation_id`、`status`、`refs`、`retry_action`（partial → `retry_original_write`；unknown → `recover_then_retry`，先调 `continuity_recover` 再重试）。服务端核对绑定连接与当前认证主体相同；`claimed_author` 不能替代此检查。
+
+`batch_add`：批级与逐项 scope 须为同一项目空间，不同任务可同批；`idempotency_key` 与 `continuity` 同时给出时须一致。处理分五阶段（批量 unknown 回执 → 批量写正文 → 批量转 partial → 每任务一次背景追加 → 批量转 committed），派生与关系发现排入后续阶段。逐项结果在 `BatchWriteOutcome.operation_id` / `continuity_status` 上表达，不抛 `WriteIncompleteError`；单项失败按 `continue_on_error` 归集。
+
+### search 的接续参数（职责检索）
+
+`search(query, context, *, security, ..., duty: str | list[str] | None = None, task_id: str | None = None, anchor: MemoryRef | None = None, view_budget: ViewBudget | None = None) -> RetrievalResult`。
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `duty` | `None` | general / diagnosis / testing / execution 或已配置职责名，或 1–4 个的列表；选择边类型、方向、优先级，不授予权限；视图路径下缺省解析为 general |
+| `task_id` | `None` | 读取任务登记的共同背景作为起点，不要求交接确认 |
+| `anchor` | `None` | 已知 MemoryRef 起点，优先于语义候选 |
+| `view_budget` | ViewBudget 默认值 | max_depth=2、max_nodes=30、max_edges=60、max_paths=60、timeout_ms=1000；正整数，上限依次为 4/200/500/500/10000，服务端职责策略可进一步收紧 |
+
+`duty`、`task_id`、`anchor` 均缺省时与改动前完全一致。任一给出时：`query`、`anchor`、`task_id` 至少一项非空（仅给 task_id 或 anchor 时 `query` 可为空串）；`context.extensions` 带 `spaces` 键时返回 `ValidationError`（首版不支持跨空间职责视图）；结果按 background → anchor → relation → semantic_candidate 排序，`top_k` 截断时追加非阻断 `budget_exhausted` gap；`RetrievalResult.paths` / `gaps` / `view_meta` 与 `RetrievedItem.view` 填充，schema 见 S11 `role-view/2`。权限不足的起点或路径以不泄露源身份的缺口表达；项目级权限不足直接拒绝。接续模式下不展开关系：返回普通任务背景与语义结果，`gaps` 追加非阻断 `relation_expansion_disabled`，`view_meta.mode="continuity"`。
+
+### continuity_task：登记、查询和关联任务
+
+签名：`continuity_task(scope, request: TaskRequest, *, security) -> dict`。
+
+| TaskRequest 字段 | 默认值 | 含义 |
+|---|---|---|
+| `operation` | 必填 | create / get / find / bind / unbind / attach / close |
+| `request_id` | `""` | 变更必填稳定幂等键，同键重试必须保持请求内容；get/find 无需填写 |
+| `task_id` | `""` | create 由服务端生成，其他定点操作使用返回的全局任务 ID；find 通过本地上下文查找 |
+| `expected_revision` | `0` | create 使用 0；其他变更使用最近读取的任务 revision。查询忽略此值 |
+| `connector_id` / `context_id` | `""` | bind/find 使用：可信连接配置标识和该产品的本地上下文标识；不根据标题自动关联 |
+| `context_source` | `"native"` | native 表示原生上下文 ID；adapter 表示桥接层生成的稳定标识 |
+| `binding_id` | `""` | unbind 指定此前返回的绑定 ID |
+| `background` | `[]` | 需要登记的 MemoryRef 列表；通常用于 attach，也可随其他变更提交；登记不复制正文、不授予读权限 |
+| `required` | `true` | 本次 background 是否属于必需证据；不可读必需证据会影响接续就绪判断 |
+| `reason` | `""` | 解绑原因，随撤销主体保存 |
+
+变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [{task_id, revision}]}`，不证明调用者拥有其中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
+
+### continuity_relation：登记、复核或撤回关系
+
+签名：`continuity_relation(scope, relation: RelationRecord, expected_revision: int, *, security) -> dict`。角色模式；接续模式返回 `UnsupportedCapabilityError`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `expected_revision` | 方法必填 | 首次 0；更新填写当前关系修订。要求 `relation.revision = expected_revision + 1` |
+| `relation_id` | 必填 | 稳定逻辑 ID，不使用保留前缀 `continuity:`；同修订重试内容必须一致 |
+| `source` / `target` | 必填 | 两端 MemoryRef；方向按关系语义定义，不随查询方向变化；不允许自环 |
+| `relation_type` | 必填 | 内置六类或启动配置注册的类型；定义见 S11。修订不改变既有端点和类型 |
+| `revision` | `1` | 本次新修订，不是任务 revision |
+| `status` | `"candidate"` | candidate / confirmed / needs_review / revoked；旧 proposed/retracted 兼容读取 |
+| `evidence_refs` / `conditions` | `[]` | 可核查依据及适用条件；confirmed 必须有依据，verifies 必须有条件。确认关系不自动确认端点事实 |
+| `schema_version` / `model_version` | `memory-relation/1` / `memory-relations/1` | 当前受支持的结构及关系模型版本 |
+| `batch_id` | `""` | 选择性补建批次，供撤回核对，不改变权限 |
+| `conflict_kind` | `""` | factual / temporal / advisory，空表示未分类 |
+| `resolution` | `""` | prefer_a（source）/ prefer_b（target）/ both_valid / escalate / defer；仅 contradicts 可填写，advisory 不允许选胜者 |
+| `resolution_reason` | `""` | 提交裁决时必填的依据说明 |
+| `resolution_origin` / `resolution_refs` | `""` / `[]` | 裁决来源及验证关系依赖；显式人工裁决由服务端标为 human，自动策略填写其来源。不能靠自述来源获得信任 |
+
+返回 `{status, relation_id, revision}`，`status` 为 projecting / committed。关系真源写入 Registry KV（先不可变修订记录，再原子替换关系头），不生成 MemoryUnit。首次需项目 WRITE；修改与撤回走**双条件**：①内容侧——对两端记忆都有 UPDATE 权；②登记侧——当前认证主体对应的连接须等于关系头记录的 `connector`，或调用者在项目上有 `MANAGE_SPACE`。旧关系头 `connector` 为空时只允许 `MANAGE_SPACE`。旧修订仅可为复核/撤回进行受控读取，不因此披露失效依赖。同修订同内容重试只补投影；projecting 可用 `continuity_recover(kind=relation)` 补投影。撤回写新修订，历史与正文保留。
+
+### continuity_recover：核对未知写入与修复投影
+
+签名：`continuity_recover(scope, recovery: ContinuityRecovery, *, security) -> dict`。
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `recovery.kind` | 必填 | event / relation / derivation；relation 角色模式 |
+| `recovery.operation_id` | 必填 | event、derivation 使用写入回执的 operation_id；relation 使用 relation_id |
+| `recovery.refs` | event 必填非空 | 已实际提交、可核对的 MemoryRef，必须位于当前项目 Scope；relation、derivation 可为空 |
+
+事件恢复返回 `{status, refs, next_action: "retry_original_write"}`，恢复本身不完成背景关联；关系恢复从 KV 关系头核对 `payload_digest` 并补投影，返回 `{status, relation_id, revision}`；派生恢复只核对计划与输出标识。均需项目 WRITE；事件恢复逐条要求 UPDATE 并校验原连接主体。引用/内容与原回执不匹配时报 ConflictError，无可靠引用不能调用此方法猜测成功。MemoryAPI 不提供公开的全量索引重建入口，本方法不重新抽取正文、不做全量记忆迁移。
+
+### quarantine_source / release_source：来源隔离与解除
+
+签名：`quarantine_source(scope, connector, reason, *, security) -> dict`；`release_source(scope, connector, *, security) -> bool`。
+
+| 参数/字段 | 默认值 | 含义 |
+|---|---|---|
+| `connector` | 必填 | 隔离的来源连接名 |
+| `reason` | 必填非空 | 隔离原因，随记录持久化并写入入口审计 detail |
+
+两方法归入治理面，按项目空间 `MANAGE_SPACE` 判权并落入口审计；隔离记录持久化于 Registry `/continuity/sources/{connector}`，含 `reason`、`operator`（主体指纹）与 `quarantined_at`，释放即删除。隔离后：search（含视图）过滤该来源条目与其提交的关系；list 以系统过滤谓词下推、分页与 count 一致；get 单条返回 `PermissionDeniedError`。隔离只影响该来源，不改写正文、不删除关系；`release_source` 对未隔离来源返回 `False`。
+
+### 显式事件时间与接续字段保留
+
+`add` / `add_async` 新增可选 `event_time: datetime | None`，必须含有效时区，否则抛 ValidationError；映射 temporal.t_event，独立于 occurred_at（t_message）。显式时间是调用方提供的业务声明，不证明来源或事件真实性。`batch_add` / `batch_add_async` 接收批级 `event_time`，`BatchWriteItem.event_time` 逐项覆盖；`submit_ingest` 接收 `event_time` 并在入队前校验。三者的 `occurred_at` 仍只写消息时间，不能替代事件时间。派生输出不继承来源事件时间（见 F10 4.2）。MCP 的 add、add_async、batch_add、batch_add_async、submit_ingest 都透传该字段；legacy 文本 add、视频异步提交和 batch_add（`defaults.event_time` 与单项 `event_time`）同样支持。
+
+公开 add/add_async、batch_add/batch_add_async（公共参数与每项合并后）、update 的 system_metadata 拒绝整个 continuity_* 前缀（含未来扩展键），统一返回 ValidationError；批量逐项失败沿用 BatchWriteOutcome.error_type。user_metadata 同名键只是用户数据，不具有接续语义。仅通过 `continuity` 参数经已鉴权的内部写路径生成系统接续字段，内部路径仍执行信任上下文校验、WRITE、空间可写、作者归属与审计，不向外暴露绕过标志。
+
+## 可逆脱敏与用户访问边界
+
+开启保护后，普通 add/batch_add/get/list/search/update 仍使用原方法签名，对 `redact` 片段
+返回脱敏表示。路由预览、检索文本/query_context 及批量输入回显遵守同一策略；更新准备
+与其他可信构建处理可使用本次原文，最终 MemoryUnit 在持久化及索引生成前保护。
+受保护片段的原文不进入普通召回、后处理或响应缓存。`privacy_level`、`privacy_revision`、
+`privacy_message_revision`、`privacy_rule_ids`、`privacy_categories` 是内核保留
+system_metadata 键，调用方不能赋值；后两项仅为有限判级依据，不构成授权证明。
+
+MemoryAPI 提供两个可选用户访问控制入口，不加入普通机器方法目录：
+
+| 方法 | 契约 |
+|---|---|
+| `begin_human_view(payload, browser, *, security=None, primary_auth=None)` | 认证、READ 判权并暂存脱敏快照，返回人机挑战；登记使用受控邀请 |
+| `finish_human_view(payload, browser, *, peer="")` | 验证一次性人机证明、复核资源，经 Engine 还原并返回专用终端响应 |
+
+`primary_auth` 是可信宿主注入的延迟认证上下文工厂，不是 JSON 字段；API 内部进入它，
+保留宿主常规认证的限流、审计和生命周期。进程内调用也可提供既有可信 `security`，
+二者不可同时传入。未装配能力默认拒绝；采用非抽象可选方法保持已有实现兼容。
+增量 `HumanViewRuntime.human_view` 只作转发适配，begin/finish 均调用上述 API 方法。
+HTTP 提供
+`GET /security/privacy`、同源静态脚本及 `POST /security/privacy/begin|finish`；
+访问 begin 在 API 内执行常规认证，经 get PEP 和 Engine 查询脱敏快照，交由
+PrivacyProtection 短期暂存；认证挑战绑定服务端实际 Scope/ID/revision、请求身份和浏览器。
+finish 在 API 内委派人的证明验证，仍调用正常 get PEP 检查当前权限和快照；仅 ACTIVE
+且版本有效时，由 API 经 Engine 的独立 HumanViewRenderer 能力组装首次快照，结果经
+API 返回终端。普通 HTTP `/v1`、CLI 与 MCP 机器工具不注册这些用户访问控制入口。
+不提供 reveal 布尔参数、可复用解密 bearer token、明文结果轮询或 SDK/MCP 还原工具。
+该能力关闭/未装配不改变普通接口。`allow` 的直接写入豁免不属于仅人可见保证；
+逐项请求/响应、挑战消费、审计及故障语义见
+[S10 用户访问控制契约](S10-security.md#隐私保护与用户访问控制)，配置见 S08。

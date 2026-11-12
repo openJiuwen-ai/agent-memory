@@ -31,4 +31,6 @@ def register_security() -> None:
     import_required("jiuwen_memory.common.security.audit_integrity.audit_integrity_impl")
     import_required("jiuwen_memory.common.security.protection.protection_impl")
     import_required("jiuwen_memory.common.security.cryptography.cryptography_impl")
+    import_required("jiuwen_memory.common.security.privacy.privacy_impl")
+    import_required("jiuwen_memory.common.security.human_authentication.human_authentication_impl")
     _REGISTERED = True

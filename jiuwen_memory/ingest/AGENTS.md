@@ -14,10 +14,17 @@
 | `source.py` | Source 接口：多模态信息源连接器（fetch 拉取原始数据 → RawPayload） |
 | `hierarchy_hints.py` | 纯叶提示解析与消息时间补齐；不读策略或存储，拒绝边与父角色 |
 | `ingestor.py` | Ingestor 接口：编排 Source → Normalizer → 组装 MemoryUnit |
-| `ingestor_impl/simple_ingestor.py` | SimpleIngestor：规约后按 `max_unit_chars` 预切分——超限文本产出多个 MemoryUnit（每 unit 单 Segment，`system_metadata` 记 `_part`/`_parts` 序号），未超限产出单个；规约器经 `Normalizer.structured_modalities()` 声明为结构化产物的模态（如 video 的 JSON 包络）不切分、单 unit 完整交付；该 payload 的全部 assets 复制到每个 Segment |
+| `ingestor_impl/simple_ingestor.py` | SimpleIngestor：规约后按 `max_unit_chars` 预切分——超限文本产出多个 MemoryUnit（每 unit 单 Segment，`system_metadata` 记 `_part`/`_parts` 序号），未超限产出单个；规约器经 `Normalizer.structured_modalities()` 声明为结构化产物的模态（如 video 的 JSON 包络）不切分、单 unit 完整交付；该 payload 的全部 assets 复制到每个 Segment；`system_metadata.origin` 缺省写 `"original"`（调用方显式值保留） |
 | `source_impl/` | Source 实现目录 |
 | `source_impl/text_source.py` | TextSource：纯文本信息源（当前唯一实现） |
 | `bootstrap.py` | 统一触发 Ingestor 实现注册 |
+
+`privacy_ingestor.py` 提供可选 PrivacyIngestor；IngestorProducer 在显式启用隐私配置时
+包装任何 target。入口只校验支持范围、拒绝客户端占位符并保留原始分级，具体 Ingestor/
+Normalizer 使用原文，输出不脱敏、不创建片段密文。实际保护交给构建/存储写入边界。
+SimpleIngestor 对非结构化规约结果通过共享 PrivacyProtection.split_input 保留原文中的敏感跨度，单个跨度
+超过正数上限时拒绝；不丢字、不扩大上限。未启用隐私时继续使用原段落切分。
+规约器声明的结构化中间产物完整交付下游，不进入字符预切分；隐私入口的模态与资产准入保持不变。
 
 ## 行为铁律
 
@@ -42,6 +49,11 @@
 
 6. **Ingestor 在规约前执行模态门禁**
    调用 `Normalizer.normalize` 前先以 `Normalizer.modalities()` 校验当前 `RawPayload.modality`；不支持时抛 `UnsupportedCapabilityError`，不产生 MemoryUnit、不进入落盘和建索引。
+
+7. **原文来源标识由 Ingestor 写**
+   `system_metadata.origin` 取值二态：`"original"`（本层产出的原文记忆，缺省时写入）/
+   `"inferred"`（构建层派生 unit，由产出算子写）。常量取自 `common.type_def`，不 import
+   construction；本层不写 `importance`。
 
 ## 规约投影（Normalization）
 
@@ -92,3 +104,5 @@
    关闭时只移除四个合法叶提示，不补齐时间；未知结构键和边提示仍拒绝，原输入不修改。
 
 11. 叶区间比较复用 common/time_utils.as_utc；补齐与解析保留输入时间表示。
+
+SimpleIngestor 将 payload.event_time 优先写入所有分片的 t_event；不解析接续信封；普通 payload.occurred_at 仍写 t_message。

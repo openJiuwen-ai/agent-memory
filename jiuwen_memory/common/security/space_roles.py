@@ -186,8 +186,14 @@ class EntryRule:
 # 而散落的形态无法一眼核对完整性。表外的入口由鉴权点按「未登记即不做空间级判定」
 # 处置，与组织级入口一并维持现状判据。
 ENTRY_RULES: dict[str, EntryRule] = {
+    "continuity_task_read": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
+    "continuity_task_write": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
+    "continuity_relation": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
+    "continuity_recover": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
     # -- 组织级：角色闸门终局，本特性内维持现状判据 ------------------------- #
     "create_space": EntryRule(SpaceAxis.ORG, SpaceAction.MANAGE_SPACE),
+    "quarantine_source": EntryRule(SpaceAxis.ORG, SpaceAction.MANAGE_SPACE),
+    "release_source": EntryRule(SpaceAxis.ORG, SpaceAction.MANAGE_SPACE),
     "audit": EntryRule(SpaceAxis.ORG, SpaceAction.READ_AUDIT),
     "verify_audit": EntryRule(SpaceAxis.ORG, SpaceAction.VERIFY_AUDIT),
     "admin_get": EntryRule(SpaceAxis.ORG, SpaceAction.ADMINISTER_SYSTEM),
@@ -208,6 +214,7 @@ ENTRY_RULES: dict[str, EntryRule] = {
     # 归属主体档第一级（主体维逐维相同）裁决。
     "export_space": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     "update": EntryRule(SpaceAxis.CONTENT, SpaceAction.UPDATE),
+    "batch_update": EntryRule(SpaceAxis.CONTENT, SpaceAction.UPDATE),
     "delete": EntryRule(SpaceAxis.CONTENT, SpaceAction.DELETE),
     # md 文件级接口（F08）：read 对齐 get/list（内容轴 READ），edit 对齐 add
     # （内容轴 WRITE——继承式 SUPERSEDE 本质写新记忆）。文件级操作不按 unit_id，单段鉴权（D5）。

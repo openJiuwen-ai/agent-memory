@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/` |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-12 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 显式明文记忆维护
@@ -36,6 +36,49 @@ message，不回显原文或秘密值。此输入适配与诊断不改变 Config
 --cursor 绑定原操作及实际端口位置清单，仅为进度；每次续跑重新认证、复核 Scope、凭据
 状态与 PDP，不能靠游标扩权。各批失败项需独立汇总，不因后批完成而视为前批已成功。
 
+
+## 个人实例的配置权限
+
+HTTP 自动开放 Portal 配置编辑时，安全 Runtime 和认证插件都须通过 fixed_personal_owner
+能力明确声明固定的个人身份，不能从插件 target 名字推断。内置 standard + 固定身份 DEV
+声明 local/developer；DEV 多身份映射不作该声明。替换插件实现不继承旧实现的能力声明。
+身份检查与启动装配选用同一个安全 Runtime；内联和具名引用的认证配置都按实际引用的插件检查能力。
+
+HTTP 启动先检查上述身份声明，再决定是否打开或创建配置库。没有声明或宿主直接传入
+自定义安全组件时，普通启动跳过配置库。宿主仍可显式接入配置存储和授权。每次读取
+或修改都执行 MemoryAPI 的 READ／WRITE 判权，写入前检查审计完整性并记录配置访问。
+
+### 浏览器会话
+
+宿主为当前实例生成随机的一次性访问授权，5分钟有效。授权放在 URL 的 # 片段中，
+页面交换前清除片段；bootstrap 只接受有效授权，不接受浏览器声明的身份。
+授权只兑换一次，随后使用 1 小时有效的浏览器会话。独立页面的 Cookie 必须为 HttpOnly、
+SameSite=Strict，路径限定为 `/v1/`。配置了精确的嵌入来源后，页面响应通过 CSP
+`frame-ancestors` 限定宿主。iframe 兑换会话票据并只保存在页面内存，经
+`X-Memory-Portal-Session` 发送同源请求。未配置嵌入来源时拒绝 iframe。会话存于实例内的
+有界注册表，关闭时清空。SDK 和 HTTP 的本机 Host 与 Origin 校验继续生效。
+Portal 页面、浏览器会话请求和托管配置接口的响应使用 `Cache-Control: no-store`。
+Portal 页面通过 `X-Memory-Portal-Browser: 1` 标记业务请求。此类请求必须有有效的浏览器
+会话，只能调用个人记忆管理和模型配置所需的接口。会话失效返回 401，页面提示重新打开。
+HTTP DEV 的直接 API 调用仍使用原认证规则。
+
+SDK 每次请求重新取得并复核宿主的可信身份。HTTP 会话用原凭据重新认证，并保留原来的
+限流和并发保护。认证结果与打开页面时的身份不一致时返回 401。服务端用记录的 Scope
+和 ID 定位，并执行 MemoryAPI 判权。宿主签发的写入范围必须
+属于同一认证组织和用户，浏览器不能重新签发该范围，写入仍执行原权限检查。
+
+### 模型 API Key
+
+模型 API Key 用于调用出站模型服务，与用户访问记忆服务的入站凭据分开管理。普通配置
+只保存引用，Key 原文由已有 local CryptographyProvider／KeyProvider 加密后单独保存。
+密钥文件权限、路径绑定和丢失后的行为见 F04 §5.2。
+Portal 更换模型服务时要求显式提交服务网址、API Key 和模型名，避免将原 Key 随请求
+发送到新服务。加载 Portal 保存的 Key 时复核其绑定地址。恢复启动时的模型服务使用
+启动配置里配套的凭据。地址与 TLS 约束见 S08。
+
+读取、错误、日志和差异预览不返回 Key 原文，空输入保持原值。缺少受保护保存能力时
+该字段只读，不能写明文文件替代。统一存储加密部署不支持内置配置覆盖，不能绕过原
+部署保护。入站 KeyStore 使用单向验证，不能拿来保存需要读取的模型 Key。
 
 ## 范围 / 边界
 
@@ -375,7 +418,7 @@ import，注册装饰器才会生效。当前核心不自动发现任意外部 P
 
 顶层段名：`security`、`authenticator`、`key_store`、`authorizer`、`grant_store`、
 `delegation_store`、`rate_limiter`、`workload_guard`、`binding_policy`、`cryptography`、
-`key_provider`、`audit_integrity`。
+`key_provider`、`audit_integrity`、`privacy`、`human_authenticator`。
 
 ```yaml
 security:
@@ -528,3 +571,197 @@ PR1 阶段曾暂用旧权限链，那是迁移历史而非当前要求；不得�
 源文件不存在的 400 收紧为 403，不提供服务器文件存在性探测。临时目录创建或副本写入
 失败报 BackendError（HTTP 503），不误报源越界；同一任务每次暂存使用独立子目录，
 相同文件名可重复处理，原有副本不被覆盖。
+
+## 隐私保护与用户访问控制
+
+术语统一：面向真实用户访问敏感记忆的认证、授权与内容交付称为**用户访问控制**；
+面向 Agent 获取、处理和使用敏感记忆的控制称为**使用控制**。本节的原文还原链路
+实现用户访问控制，Agent 的普通调用继续返回脱敏内容。现有代码标识 HumanView、
+begin_human_view/finish_human_view 与 HTTP 路径保持兼容，不作为能力的展示名称。
+
+### 分级与普通处理不变量
+
+默认 S1 公开 `allow`、S2 个人隐私 `redact`、S3 凭据 `redact`，以显式 `rank` 比较。
+`allow` 是完整直接写入豁免，原文可进入普通索引和响应；以下持久化及披露约束适用
+于 `redact` 片段。可信规约、分类、抽取、摘要和去重可使用本次输入原文；处理运行环境、
+LLM/Embedder 出站及日志不在本能力的原文隔离保证内。`reveal` 缺省为 `true`，持久化
+片段还原仍要求每次人的证明、正常授权和有效快照。
+
+1. 原入口负责机机认证及唯一 PEP/PDP；摄入校验并保留分级，可信处理使用原文，不提前替换。
+2. MemoryUnit 在生成持久化索引前统一保护；直接 KV 原始消息和真源写入也保护副本。
+   存储向量从脱敏内容生成，原文临时向量不得混入。分级不因占位符或摘要消失而下降。
+3. 持久化及普通召回使用占位符，未知、过期、损坏或无来源引用失闭；客户端不得自述保护完成、
+   等级或修订号。privacy_level、privacy_revision、privacy_message_revision、
+   privacy_rule_ids、privacy_categories 均为内核字段，客户端不可赋值。
+4. 构建和通过候选目标校验的同组织路由可认证引用、搬运密文，不解密敏感片段。
+5. 查询、召回、重排、普通 SDK/MCP 返回及 Agent 上下文保持脱敏；人的认证不修改
+   RetrievalQuery、DisclosureLevel 或普通访问权限，不写回原文。
+6. 原始消息和正式记忆分别拥有引用；显式硬删和回滚撤销关联。分级自动硬删、云同步、
+   分享和 LLM 分类只保留配置，不能宣称已经执行。
+
+### 检测、分级与业务决策
+
+处理按规则目录 → 全量命中 → PrivacyMark → 等级/写入决策 → 可还原替换分层。
+检测返回位置、规则标识、类别与映射等级，不携带原值；分类与替换共享检测和
+逐命中校验。以显式 rank 取最高等级，保持同 Scope 来源继承。用户与内置规则组合
+不按用户规则先返回，不将检测失败或超时回退为公开等级。类别映射和配置兼容见 S08。
+
+privacy_rule_ids / privacy_categories 分别保存服务端生成、最多 64 个标识的诊断摘要，
+不代表完整命中全集，不参与正文指纹，不替代资源授权或修订校验。依据只含配置标识，
+不记录命中原值、关键词、正则正文和自由理由；审计仍使用现有 AuditLogger。
+未映射等级的 injection 只生成依据；检测不承诺解决可信处理阶段的提示注入。
+
+### 隐私能力契约
+
+`PrivacyProducer` 使用 `privacy` 命名空间。能力由同次装配共享，方法职责如下；这不是
+面向普通调用方的解密 API。
+
+| 方法 | 契约 |
+|---|---|
+| `preview(text, *, label="") -> str` | 保护路由/查询文本，不保留原值 |
+| `preview_echo(value, *, label="") -> Any` | 保护输入回显，包含嵌套元数据及非法占位符尝试 |
+| `ingress(payload) -> RawPayload` | 校验支持的输入和保留源分级，返回原文副本；不替换、不暂存密文 |
+| `split_input(text, limit) -> list[str]` | 原文切分不截断已识别的敏感跨度；单个跨度超过正数上限时拒绝 |
+| `prepare(unit) -> None` | 落盘边界保护正文、摘要、标签、实体、业务元数据及事实文本，校验引用来源；不发布清单 |
+| `inherit_classification(unit, sources) -> None` | 继承同 Scope 来源的最高已知分级 |
+| `persist(unit, *, channel="memory") -> None` | 提交密文及认证清单；通道仅 `memory / message` |
+| `write(unit, commit, read, *, channel="memory") -> None` | 保护并提交真源；`commit(protected_unit)` 写入，异常时 `read()` 返回当前单元或 `None`，按实际存续版本恢复关联 |
+| `refresh_revision(unit) -> None` | 将内容指纹匹配的已提交清单修订号同步到调用方对象，不新建或替换清单 |
+| `relocate(unit, target) -> None` | 原候选授权校验后搬运同组织密文引用，保留来源绑定 |
+| `discard(scope, unit_ids, *, channel="memory", commit=None) -> None` | 可选 `commit()` 先删除真源，成功后撤销引用并清理无引用片段；与写入共享实例内互斥边界 |
+| `discard_scope(scope) -> None` | 清理匹配完整或前缀 Scope 的私有状态 |
+| `validate_existing(unit, *, channel="memory") -> None` | 发布 Runtime 前拒绝无保护标记或需按新规则迁移的旧内容 |
+| `staging_scope(*, retain_on_success=False)` | 管理本操作新暂存密文的上下文，不传递身份/授权 |
+| `render(unit) -> str` | 仅由受控用户访问控制边界在证明及资源检查后调用，返回当前正文 |
+| `stage_disclosure(unit) -> str` | 暂存服务端已授权的脱敏快照，返回仅服务端持有的操作句柄 |
+| `cancel_disclosure(operation)` | 清理待查看快照，不解密片段 |
+| `render_disclosure(operation, current) -> HumanViewContent` | 人的证明及资源检查通过后消费快照，核对当前 Scope/ID/revision/内容指纹并组装首次快照 |
+| `bind_audit(audit)` / `health()` | 绑定最终共享审计器及检查依赖 |
+
+正则匹配共享单次保护调用的时间预算，超时失闭。完整写入/构建结束、失败或取消后释放
+本操作的新暂存项，迟到回调不得重新暂存；显式 prepare 的输出可在 TTL/容量限制内
+保留至后续持久化，普通摄入不创建片段密文。清理暂存不删除已提交的关联。
+隐私策略层经 PrivacyStore 读写，不直接调用密码学或数据库；受保护的 Store 负责加解密。
+私有 Store 可适配独立 KVStore；持久化后端替换不改变脱敏时机、人的证明、正常资源
+PEP 或 Engine 返回链路。私有状态原子条件写与失败恢复仍须满足 S06，不能因更换
+后端而把敏感片段注册到普通管理面端口或直接向 agent 还原。
+reference/清单检索不解密片段，get_fragment 必须位于二次认证、正常 READ、状态及版本
+复查之后；透明解密不是披露授权。引用、指纹与加密上下文见
+[S06](S06-storage.md#敏感片段与脱敏真源)，切分约束见 S01/S05，配置见 S08。
+
+索引包装层复检投影，不提前覆盖或回收真源关联。KV 边界在委托写入前保留旧清单的
+密文恢复引用；冲突及其他委托异常均回读真源，保留实际存续快照。真源已写、索引后续
+失败时保留新快照。回读也失败时持久保留候选版本和引用，后续成功写入或硬删再清理；
+这些恢复记录不作为普通历史记忆开放，用户访问仍须从当前真源取得匹配的版本。
+删除必须在真源删除成功后回收；仅移除检索投影不得撤销私有状态。各后端不提供全局事务。
+
+### 独立人机认证与 Runtime 能力
+
+`HumanAuthenticatorProducer` 使用 `human_authenticator` 命名空间，不扩展机机
+Authenticator 或 Credentials。认证器提供下列契约：
+
+| 方法 / 属性 | 契约 |
+|---|---|
+| `origin: str` | 用户访问请求必须验证的精确浏览器 origin |
+| `begin(binding, *, invite="") -> dict` | 创建绑定到具体浏览器操作的短时一次性挑战 |
+| `finish(challenge_id, binding, credential) -> (AuthContext, str)` | 先消费挑战再验证，返回登记的用户及服务端确定的 `enroll / view` 操作 |
+| `health()` | 检查认证状态依赖 |
+
+WebAuthn 实现验证 RP ID、精确 origin、签名、user verification 及计数器，登记要求
+可发现 Passkey。可信部署邀请绑定固定 USER；邀请、公钥及实际断言共同确定用户身份，
+不从机器 key、客户端 `acting_user` 或目标 Scope 推导。成功产生本操作使用的短时 USER
+上下文，不向浏览器或机器发放可复用解密权限。ROOT/ADMIN 不替代人的证明。
+
+`HumanViewRuntime.human_view` 是可选增量 capability。其 `HumanView` 提供 `origin`、
+`admission(peer)`、`begin(payload, browser, *, security=None, primary_auth=None)` 和
+`finish(payload, browser, *, peer="")`。begin/finish 必须分别转发到 MemoryAPI 的
+`begin_human_view` / `finish_human_view`，不得在接入层直接调用披露协调器或 Engine。
+访问 begin 传入延迟执行的可信 `primary_auth` 上下文工厂，由 API 内部执行常规认证；
+进程内调用可改传可信 security，两者互斥。认证工厂不是可序列化的请求字段；
+登记仍由独立邀请与人的证明建立身份，不要求机器凭据。
+传输先进入独立预算，再读请求体；`browser` 是服务端产生的浏览器绑定标识，`peer` 来自
+真实传输对端。MemoryAPI 的两个用户访问控制入口为可选非抽象方法，未装配时默认拒绝；
+普通业务方法与原安全 ABC 签名不变，普通 SDK/MCP 不接收人机证明。
+
+### 用户访问控制 HTTP 接口
+
+| 路径 | 用途 |
+|---|---|
+| `GET /security/privacy` | 最小查看页，设置浏览器绑定 cookie |
+| `GET /security/privacy/viewer.js` | 同源脚本 |
+| `POST /security/privacy/begin` | 查看时先常规认证和 get PEP 查询，暂存脱敏快照并创建挑战；登记使用邀请 |
+| `POST /security/privacy/finish` | 提交登记证明或查看断言 |
+
+POST 使用 JSON 对象，正文为 1～65536 字节。Host 须与固定 origin 的 netloc 精确一致，
+POST Origin 须与完整 origin 一致；浏览器 cookie 为 HttpOnly/SameSite=Strict，HTTPS 下
+带 Secure。响应设置 CSP、no-store、Referrer-Policy 和 nosniff，不允许嵌入第三方页面。
+localhost 之外使用固定 HTTPS origin，服务端不依赖交互桌面或 Windows Hello。
+
+| 字段 | `begin` | `finish` |
+|---|---|---|
+| `scope` | 查看必填的完整目标 Scope；登记可为空 | 与本次挑战完全相同 |
+| `unit_id` | 查看必填 | 与本次挑战完全相同 |
+| `revision` | 查看可选；传入时须匹配实际查询版本，服务端始终绑定实际版本 | 使用 begin 返回的 target.revision |
+| `invite` | 登记时携带经独立渠道取得的字符串登记码；查看可省略或传空字符串；非字符串返回 403 | 不作为身份或操作声明 |
+| `challenge_id` | 不传 | 服务端返回的挑战 ID |
+| `credential` | 不传 | 浏览器 WebAuthn credential 的 JSON 序列化结果，二进制字段为 base64url |
+
+begin 返回 `challenge_id`、`operation`（`enroll / view`）和 `publicKey`；查看额外返回
+服务端查询得到的 `target: {scope, unit_id, revision}`。finish 将该对象中的三个字段
+展开到请求顶层，与 challenge_id/credential 并列；不接受嵌套的 target 代替这些字段。
+访问 begin 在 MemoryAPI 内进入既有 HTTP 常规认证上下文，再执行 get PEP；
+请求身份不从目标 Scope 推导，认证审计与资源预算保留原语义。
+登记成功返回
+`{"enrolled": true}`；查看成功返回 `{"unit_id": "...", "content": "当前完整正文"}`。
+绑定字段改变必须重新 begin，不能复用旧证明。链接或 URL fragment 只可用于预填非明文
+目标，不构成授权，不签发通用解密 token，也不提供原文轮询结果。
+
+首次查询后，PrivacyProtection 暂存序列化脱敏快照，HumanDisclosure 将服务端操作句柄与
+挑战、浏览器、目标、版本及服务端取得的初次请求身份绑定。暂存与认证挑战有界且一次消费；
+当前实现最多 256 个快照、合计 8 MiB、最长 300 秒，查看操作还受挑战 timeout 约束。
+等待人的操作不占用 Engine 请求线程；快照只在当前 Runtime 进程内，begin/finish 必须
+路由到同一实例，重启或切换实例须重新 begin，不持久化明文结果。
+
+Passkey 挑战独立持久化到 credential_path 状态库；登记不依赖查看快照，未过期、
+未消费的登记挑战在复用同一状态库及绑定配置后可跨重启完成。查看流程重启后仍因
+缺少进程内快照/待访问关联而拒绝还原，不将挑战持久化等同于查看操作可恢复。
+
+MemoryAPI.finish_human_view 内委派协调器取得并消费本次待查看操作，再消费和验证挑战；
+失败/过期也不可重放，跨连接竞争
+至多一次成功。证明通过后使用已登记 USER 和真实传输对端调用现有 `API.get`，重新检查
+实际返回资源的权限，要求 `LifecycleState.ACTIVE` 且修订号匹配。这次读取用于检查当前
+状态，不替换首次组装底稿。记录检查通过的审计后，回到 API 调用安全 capability
+`HumanViewRenderer.render_human_view(privacy, operation, current)`，由 Engine 在线程中
+委托 `render_disclosure` 消费首次快照，核对内容指纹后解密拼装。Engine 只返回独立的
+`HumanViewContent(unit_id, content)`，由 API 返回终端；其正文不进入 repr，也不回写
+MemoryUnit 或普通查询。API 的还原回调只允许在本次 finish 上下文中执行。
+PrivacyProtection 不处理浏览器证明或自行调用 Authorizer；调用方必须先完成证明和 PEP，
+操作句柄不发给浏览器，普通 MemoryAPI 查询、SDK/MCP 工具不暴露上述还原能力。缺失或
+无法认证的清单、状态/版本失效、撤权及审计失败均不能释放原文。`reveal=false` 的片段
+继续保留占位符，返回的是当前记忆正文，不重建摘要丢弃的原句。
+
+| HTTP 状态 | 条件 |
+|---|---|
+| 403 | 来源/浏览器绑定、证明、资源授权或快照检查失败；不回显正文或断言 |
+| 404 | 未装配用户访问控制能力或未知路径 |
+| 413 / 415 | 数字正文长度超限 / 不是 JSON Content-Type |
+| 429 | 用户访问控制入口预算耗尽 |
+| 503 | 未预期的服务或依赖异常 |
+
+### 审计与信任边界
+
+复用最终 AuditLogger，启用审计完整性时经过同一保护链。当前事件如下：
+
+| action | 语义 |
+|---|---|
+| `privacy_protection` | 新保护清单提交；detail 仅含等级、片段数和通道 |
+| `human_challenge` / `human_authentication` | 挑战创建成功 / 创建过程认证拒绝 |
+| `human_verification` | 验证证明前的尝试审计 |
+| `human_enrollment` | 登记成功 |
+| `human_disclosure` | 释放前检查通过或处理拒绝；allow 不表示客户端已经收到明文 |
+
+审计不记录正文、片段值、登记码、完整断言或密钥。内容只进入本次用户访问响应与页面展示，
+不写回本体、索引、普通轨迹或共享缓存。相同进程中能够访问密钥/私有对象的恶意插件、
+宿主权限主体和可以读取人的浏览器的 Agent 不在此服务边界保证内；密钥可在加密阶段
+已加载，不能把认证后解密解释为认证前服务端绝无解密能力。真实设备与浏览器组合需要
+部署验收，自动测试不构成硬件或生物认证承诺。取舍与遗留统一见 F04。

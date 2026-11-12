@@ -56,10 +56,12 @@ def test_abstract_mixed_group_induces_across_units():
     llm = RecordingLLM([
         json.dumps([{"content": "长片提炼甲", "evidence": "头部", "confidence": 0.9}]),
         json.dumps([{"content": "长片提炼乙", "evidence": "中段", "confidence": 0.9}]),
-        json.dumps([{
-            "content": "共同模式X", "evidence": "甲乙丙", "confidence": 0.9,
-            "pattern_name": "weekly"
-        }]),
+        json.dumps([
+            {
+                "content": "共同模式X", "evidence": "甲乙丙",
+                "confidence": 0.9, "pattern_name": "weekly",
+            }
+        ]),
     ])
     abst = _make_abstractor(llm)
     result = abst.abstract([s1, s2, l1])
@@ -70,3 +72,24 @@ def test_abstract_mixed_group_induces_across_units():
     assert "长片提炼甲" in final_text and "长片提炼乙" in final_text  # 长记忆以提炼视图同批参与
     contents = [u.content for u in result]
     assert "共同模式X" in contents  # 跨记忆归纳产出
+
+
+def test_abstract_output_writes_origin_inferred_and_table_importance():
+    """F10：抽象产物是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖继承值）。"""
+    source = create_test_unit("s1", "周五团队例会固定在上午十点。")
+    source.system_metadata = {"origin": "original", "importance": "0.95"}
+    llm = RecordingLLM([
+        json.dumps([{"content": "例会时间固定", "evidence": "周五上午十点", "confidence": 0.9}]),
+    ])
+    abst = LLMAbstractor(
+        llm=llm,
+        feature_extractor=RuleFeatureExtractor(),
+        min_confidence=0.5,
+        max_attempts=1,
+        retry_backoff_ms=0,
+        importance_category_map={"default": "0.35"},
+    )
+    [unit] = abst.abstract([source])
+
+    assert unit.system_metadata["origin"] == "inferred"
+    assert unit.system_metadata["importance"] == "0.35"

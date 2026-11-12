@@ -27,11 +27,13 @@ from enum import Enum
 
 
 class RetrievalOperatorType(str, Enum):
+    ROLE_VIEW = "role_view"
     QUERY_PARSER = "query_parser"
     FUSER = "fuser"
     DISCLOSER = "discloser"
     EXPANDER = "expander"
     RETRIEVER = "retriever"
+    SECONDARY_SCORER = "secondary_scorer"
 
 
 class RetrievalOperator(ABC):

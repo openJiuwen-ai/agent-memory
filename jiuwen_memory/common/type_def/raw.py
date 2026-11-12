@@ -24,8 +24,11 @@ class RawPayload:
     uri: str = ""  # 原始数据的外部引用（文件路径/URL/对象存储 key）
     system_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
     user_metadata: dict[str, MetadataValueType] = field(default_factory=dict)
+    event_time: datetime | None = field(default=None, kw_only=True)  # 显式事件时间，含时区
     occurred_at: datetime | None = None  # 消息/对话发生时间（写入 temporal.t_message）
     assets: list[str] = field(default_factory=list)  # 待 Ingestor 映射的资产引用
+    # 原始来源定位（接续事件的 source_locator）；空表示沿用 payload.id。
+    source_ref: str = field(default="", kw_only=True)
 
 
 # -- KV key 前缀（未建索引的 infer 原文） ------------------------------------- #

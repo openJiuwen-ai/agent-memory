@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-07-31 |
-| 影响范围 | `jiuwen_memory/common/_support.py`（共用件）、`jiuwen_memory/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector 五个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
+| 影响范围 | `jiuwen_memory/common/_support.py`（共用件）、`jiuwen_memory/storage/_support.py`、redis / elasticsearch / milvus / postgres / pgvector / neo4j 六个 builder、`deploy/docker/online/`、`deploy/docker/postgres/` |
 | 测试基线 | `tests/unit/storage` 118 passed, 2 skipped |
 | Refs | [S06-storage.md](../../specs/S06-storage.md) 不变量 17、[F05-model-service-ssl.md](../common/F05-model-service-ssl.md) |
 
@@ -37,6 +37,7 @@ params:
 | elasticsearch | 校验 hosts 为 `https://` | `ca_certs` |
 | postgres / pgvector | `ssl.SSLContext`（`CERT_REQUIRED` + `check_hostname`） | `load_verify_locations` |
 | milvus | `secure=True` | `server_pem_path` |
+| neo4j | 校验 uri 为 `bolt+s://` 或 `neo4j+s://`，晚绑定同样校验 | `encrypted=True` + `TrustCustomCAs`（驱动侧 URI 转为无后缀 scheme） |
 
 不做跨后端的参数抽象层：四个客户端的参数名、类型与语义切分互不相同（"是否校验"
 在 redis 是 `ssl_cert_reqs` 枚举 + `ssl_check_hostname` 两维、在 pg（asyncpg）是

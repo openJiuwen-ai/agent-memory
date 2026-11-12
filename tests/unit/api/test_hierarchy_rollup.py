@@ -62,7 +62,7 @@ def test_public_rollup_returns_parent_and_optional_original_evidence(api) -> Non
             "rollup": True, "expand_depth": 1,
         },
     }, security_for(api, HOME))
-    assert set(result) == {"items", "trajectory", "errors"}
+    assert set(result) == {"items", "trajectory", "errors", "paths", "gaps", "view_meta"}
     assert {item["unit_id"] for item in result["items"][1:]} == {leaf.id for leaf in leaves}
     assert result["errors"] == []
 

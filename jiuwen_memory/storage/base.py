@@ -55,6 +55,7 @@ class StoreType(str, Enum):
     ENTITY = "entity"
     MARKDOWN = "markdown"
     DOCUMENT_SHADOW = "document_shadow"
+    PRIVACY = "privacy"
 
 
 class BaseStore(ABC):

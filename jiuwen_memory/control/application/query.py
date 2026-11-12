@@ -7,7 +7,12 @@ from datetime import datetime
 
 from jiuwen_memory.common.type_def import Context, FilterExpr, MemoryUnit, Scope
 from jiuwen_memory.control.engine import MemoryEngine
-from jiuwen_memory.control.types import DeleteSelector, MemoryListResult, PermissionContext
+from jiuwen_memory.control.types import (
+    DeleteSelector,
+    MemoryListResult,
+    PermissionContext,
+    UpdateSelector,
+)
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 
 
@@ -23,6 +28,14 @@ class MemoryQueryService:
 
     def validate_retrieval_pipeline(self, name: str | None) -> None:
         self._engine.validate_retrieval_pipeline(name)
+
+    @property
+    def supports_exact_metadata_lookup(self) -> bool:
+        return self._engine.supports_exact_metadata_lookup
+
+    def candidate_scopes(self) -> list[Scope]:
+        """返回数据面候选范围；调用方必须先校验可信上下文并逐范围鉴权。"""
+        return self._engine.candidate_scopes()
 
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         return await self._engine.recall(scope, query)
@@ -75,3 +88,8 @@ class MemoryQueryService:
         PEP 完成后才进入本端口，与 ``get`` / ``list`` 的鉴权后委托模式一致。
         """
         return await self._engine.read_md_file(context, md_filename, line_range=line_range)
+
+    async def permission_contexts_for_update(
+        self, selector: UpdateSelector
+    ) -> list[PermissionContext]:
+        return await self._engine.permission_contexts_for_update(selector)

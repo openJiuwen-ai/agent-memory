@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from jiuwen_memory.api.managed_configuration import ManagedConfiguration
 
 from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
@@ -156,10 +159,14 @@ class _Kernel:
     space: SpaceManager | None = None
     audit: AuditLogger | None = None
     config_source: ConfigSource | None = None
+    ctx: AssemblyContext | None = None
+    configuration: Any = None
     scheduler: Scheduler | None = None
     watchdog: Watchdog | None = None
     security_runtime: SecurityRuntime | None = None
     security_resources: SecurityResourceOwner | None = None
+    continuity: Any | None = None
+    human_view: Any = None
 
     async def start_background(self) -> None:
         """启动需事件循环就绪的后台组件。
@@ -175,15 +182,19 @@ class _Kernel:
             logger.info("start_background: watchdog.start() called")
 
     def close(self) -> None:
-        """后台屏障成功后，统一释放自有 shadow 与安全资源。"""
-        if self.security_runtime is not None:
-            self.security_runtime.close()
-        elif self.security_resources is not None:
-            self.security_resources.close()
-        elif self.storage.has_shadow_index():
-            shadow = self.storage.shadow_index()
-            if shadow is not None:
-                shadow.close()
+        """后台屏障成功后，统一释放自有 shadow、接续与安全资源。"""
+        try:
+            if self.continuity is not None:
+                self.continuity.close()
+        finally:
+            if self.security_runtime is not None:
+                self.security_runtime.close()
+            elif self.security_resources is not None:
+                self.security_resources.close()
+            elif self.storage.has_shadow_index():
+                shadow = self.storage.shadow_index()
+                if shadow is not None:
+                    shadow.close()
 
 
 @runtime_checkable
@@ -225,6 +236,14 @@ class MemoryRuntime(Protocol):
         ...
 
 
+class ManagedMemoryRuntime(MemoryRuntime, Protocol):
+    """持有同次装配的公开配置管理能力。"""
+
+    @property
+    def configuration(self) -> ManagedConfiguration:
+        ...
+
+
 @runtime_checkable
 class ServerRuntime(MemoryRuntime, Protocol):
     """公开 Server 装配结果；安全绑定与资源所有权已在内核完成。"""
@@ -240,15 +259,24 @@ class ServerRuntime(MemoryRuntime, Protocol):
         ...
 
 
+class ManagedServerRuntime(ServerRuntime, ManagedMemoryRuntime, Protocol):
+    """同时公开 Server 安全组合和同实例配置管理。"""
+
+
 @dataclass(frozen=True)
 class _ServerRuntime:
     _runtime: MemoryRuntime
     security_runtime: Any
     audit: AuditLogger | None
+    human_view: Any = None
 
     @property
     def api(self) -> MemoryAPI:
         return self._runtime.api
+
+    @property
+    def configuration(self) -> Any:
+        return getattr(self._runtime, "configuration", None)
 
     async def start_background_jobs(
         self, scope: Scope, *, security: RequestSecurityContext,
@@ -279,6 +307,7 @@ class _MemoryRuntime:
 
     api: MemoryAPI
     _kernel: _Kernel
+    configuration: Any = None
     _resources: SecurityResourceOwner | None = field(default=None, repr=False)
     _register_background_jobs: Callable[..., Awaitable[BackgroundJobStartResult]] | None = field(
         default=None, repr=False,
@@ -625,6 +654,8 @@ def _build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    managed_plan: Any = None,
 ) -> _Kernel:
     """把配置装配成内部内核（api + 真源）。各组件经引用自取依赖、缺省随调用点给出。
 
@@ -641,13 +672,29 @@ def _build_kernel(
     ctx = default_context()
     if config is not None and not config.is_empty():
         ctx = _merge_kernel_config(ctx, config.context(known_top_names=Factory.known_top_names()))
+    if managed_plan is not None:
+        ctx = managed_plan.prepare(ctx)
     with _assembly_lifecycle(ctx) as lifecycle:
-        kernel = _assemble_kernel(policies, kv, ctx, config)
+        if managed_plan is not None:
+            lifecycle.failure_cleanup.append(managed_plan.close)
+        kernel = _assemble_kernel(policies, kv, ctx, config, managed_plan=managed_plan)
+        if managed_plan is not None:
+            managed_plan.validate_version()
+            managed_plan.finalize(ctx)
         owner = (
             kernel.security_runtime.security_resource_owner()
             if kernel.security_runtime is not None
             else kernel.security_resources
         )
+        # Track only stores constructed in this assembly. Explicitly injected stores
+        # are not observed and must remain usable after this runtime closes.
+        from jiuwen_memory.storage.base import BaseStore
+
+        stores = tuple(resource for resource in reversed(lifecycle.created)
+                       if isinstance(resource, BaseStore))
+        owner.share_with(SecurityResourceOwner(stores))
+        if managed_plan is not None:
+            owner.add_close_callback(managed_plan.close)
         lifecycle.bind(owner)
         return kernel
 
@@ -657,6 +704,8 @@ def _assemble_kernel(
     kv: KVStore | None,
     ctx: AssemblyContext,
     config: Config | None,
+    *,
+    managed_plan: Any = None,
 ) -> _Kernel:
     """在创建观察作用域内解析依赖，失败由外层按本次拥有关系回滚。"""
 
@@ -681,6 +730,31 @@ def _assemble_kernel(
     # 根组件（LocalMemoryAPI）经 ROOT_PARAMS 引用各命名空间下的 default 实例。
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
     setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
+    from jiuwen_memory.common.security.human_authentication.base import HumanAuthenticatorProducer
+    from jiuwen_memory.common.security.privacy.base import optional_privacy
+    from jiuwen_memory.common.security.protection.rate_limit import RateLimitProducer
+
+    privacy = optional_privacy(root)
+    human_specs = ctx.namespaces.get("human_authenticator", {})
+    human = None
+    human_limiter = human_guard = None
+    if privacy is not None and human_specs:
+        if set(human_specs) != {"default"} or human_specs["default"].new_instance:
+            raise ValidationError("human_authenticator requires one shared default instance")
+        human = HumanAuthenticatorProducer.build_named("default", ctx)
+        human.health()
+        human_limiter = (
+            RateLimitProducer.build_named("human", ctx)
+            if "human" in ctx.namespaces.get("rate_limiter", {}) else
+            RateLimitProducer.build("token_bucket", {"capacity": 10, "refill_per_sec": 1}, ctx)
+        )
+        human_guard = (
+            WorkloadGuardProducer.build_named("human", ctx)
+            if "human" in ctx.namespaces.get("workload_guard", {}) else
+            WorkloadGuardProducer.build("semaphore", {"max_concurrent": 4}, ctx)
+        )
+        human_limiter.health()
+        human_guard.health()
 
     # API 业务审计与 surface 入口审计必须共用同一个具名实例。
     audit_logger = AuditProducer.dep(root, default="sqlite")
@@ -693,6 +767,8 @@ def _assemble_kernel(
         )
     if protected_bindings:
         config_source = EncryptionBoundConfigSource(config_source, protected_bindings)
+    if managed_plan is not None:
+        config_source = managed_plan.bind_source(config_source)
     ConfigSourceProducer.put("default", config_source, ctx=ctx)
 
     storage = StoreManagerProducer.resolve(root)
@@ -705,6 +781,8 @@ def _assemble_kernel(
     # 同一实例），授权代理默认 AllowAll、行为与裸 KVStore 一致。ROOT_PARAMS 的
     # kv_store 键即端口名（用户可指名其他 kv 端口）。
     kv_store = storage.kv(resolve_name(root, "kv_store"))
+    if privacy is not None:
+        _validate_privacy_namespace(storage, root, privacy)
 
     ingest_jobs = IngestJobProducer.dep(root, default="in_process")
     if not isinstance(ingest_jobs, IngestJobController):
@@ -737,6 +815,17 @@ def _assemble_kernel(
     engine = EngineProducer.dep(root, default="in_memory")
     permission = PermissionProducer.dep(root, default="sqlite")
 
+    continuity = None
+    connectors = {}
+    if "continuity" in ctx.namespaces:
+        from jiuwen_memory.control.continuity import ContinuityProducer
+        from jiuwen_memory.retrieval import role_view  # noqa: F401
+
+        continuity = ContinuityProducer.build_named("default", ctx)
+        engine.configure_retention(continuity.retains)
+        connectors = ctx.globals.get("continuity_connectors", {})
+        if not isinstance(connectors, dict):
+            raise ValidationError("continuity_connectors must be a trusted connection mapping")
     api = LocalMemoryAPI(
         engine=engine,
         permission=permission,
@@ -769,6 +858,9 @@ def _assemble_kernel(
         document_mode=should_write_document(root.get(WRITE_DOCUMENT_KEY)),
         authorizer=authorizer,
         credential_registry=credential_registry,
+        continuity=continuity,
+        continuity_connectors=connectors,
+        privacy=privacy,
     )
     _reject_routing_without_space_authorization(api)
     watchdog: Watchdog | None = None
@@ -799,7 +891,9 @@ def _assemble_kernel(
     for name in sorted(shadow_names):
         if storage.has_shadow_index(name):
             shadows.append(storage.shadow_index(name))
-    resources = SecurityResourceOwner((authorizer, *shadows, audit_logger))
+    privacy_resources = tuple(item for item in (privacy, human, human_limiter, human_guard)
+                              if item is not None)
+    resources = SecurityResourceOwner((authorizer, *shadows, audit_logger, *privacy_resources))
     if security_runtime is not None:
         resources.share_with(security_runtime.security_resource_owner())
 
@@ -839,7 +933,13 @@ def _assemble_kernel(
             "必须经 security 段的 params.audit_integrity 显式启用（不配该段 = 普通审计）；"
             "只配 audit_integrity 而不接线，部署会以为已启用链式证明，实际仍是普通审计。"
         )
+    if privacy is not None:
+        privacy.bind_audit(audit_logger)
+    human_view = None
+    if human:
+        human_view = api.bind_human_view(human, audit_logger, human_limiter, human_guard)
     return _Kernel(
+        ctx=ctx,
         api=api,
         kv=kv_store,
         storage=storage,
@@ -847,11 +947,40 @@ def _assemble_kernel(
         space=space,
         audit=audit_logger,
         config_source=config_source,
+        configuration=managed_plan.configuration if managed_plan is not None else None,
         scheduler=scheduler,
         watchdog=watchdog,
         security_runtime=security_runtime,
         security_resources=resources,
+        continuity=getattr(api, "_continuity", None),
+        human_view=human_view,
     )
+
+
+def _validate_privacy_namespace(storage, root, privacy) -> None:
+    """Enabling protection must not silently expose a pre-existing plaintext corpus."""
+    from jiuwen_memory.common.type_def.memory_codec import loads
+
+    if storage.has_shadow_index() or as_bool(root.get("document_enabled"), default=False):
+        raise ValidationError("privacy does not yet support document mode or filesystem watchers")
+    names = {resolve_name(root, "kv_store"), *root.ctx.namespaces.get("kv_store", {})}
+    for name in names:
+        if not storage.has_kv(name):
+            continue
+        store = storage.kv(name)
+        for scope in store.scopes():
+            for prefix, channel in (("/memory/", "memory"), ("/messages/", "message")):
+                for _, raw in store.scan(scope, prefix=prefix):
+                    try:
+                        unit = loads(raw)
+                    except UnicodeDecodeError:
+                        # A declared raw port may sit inside an encrypted KV;
+                        # its outer logical port is also validated in this loop.
+                        continue
+                    if unit is not None:
+                        if unit.scope != scope:
+                            raise ValidationError("privacy memory scope mismatch")
+                        privacy.validate_existing(unit, channel=channel)
 
 
 def _reject_test_only_authorizer(authorizer: Authorizer, config: Config | None) -> None:
@@ -943,11 +1072,81 @@ def assemble_runtime(
     return _runtime_from_kernel(kernel)
 
 
+class MaintenancePorts:
+    """Offline maintenance handle: two KVs, the assembly context, and close().
+
+    Maintenance tooling must share the *same* assembly as the service: re-building a
+    second context would hand the projector a different GraphStore, and dropping the
+    kernel would leak the continuity single-writer lock it claimed.
+    """
+
+    def __init__(
+        self,
+        truth_kv: KVStore,
+        registry_kv: KVStore,
+        ctx: AssemblyContext,
+        runtime: _MemoryRuntime,
+    ) -> None:
+        self.truth_kv = truth_kv
+        self.registry_kv = registry_kv
+        self.ctx = ctx
+        self._runtime = runtime
+        self._closed = False
+
+    def close(self) -> None:
+        """Release everything this assembly created, including the writer lock."""
+        if self._closed:
+            return
+        self._closed = True
+        self._runtime.close()
+
+
+def assemble_maintenance_ports(
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    registry_store: str = "default",
+) -> MaintenancePorts:
+    """Assemble once and return a closable maintenance handle.
+
+    Same path as :func:`assemble_runtime` (defaults merge, plug-in registration,
+    ConfigSource) so an offline migration sees the configuration the service would see.
+    Not a data-plane entry: callers must own the deployment for the duration and close
+    the returned handle to release the continuity single-writer lock.
+    """
+    kernel = _build_kernel(config=config)
+    return MaintenancePorts(
+        truth_kv=kernel.kv,
+        registry_kv=kernel.storage.kv(registry_store),
+        ctx=kernel.ctx,
+        runtime=_runtime_from_kernel(kernel),
+    )
+
+
+def assemble_managed_runtime(
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    store: Any,
+    llm_instances: Sequence[str],
+    authorize: Callable[[RequestSecurityContext, str], bool],
+    url_allowed: Callable[[str], bool] | None = None,
+    locked_keys: frozenset[str] = frozenset(),
+    policies: dict[str, str] | None = None,
+    kv: KVStore | None = None,
+) -> ManagedMemoryRuntime:
+    """可信宿主提供配置能力与授权，覆盖层在同一次 Runtime 装配前恢复。"""
+    from .managed_assembly import ManagedAssemblyPlan
+
+    plan = ManagedAssemblyPlan(store, llm_instances, authorize, url_allowed, locked_keys)
+    kernel = _build_kernel(policies, kv, config, managed_plan=plan)
+    return _runtime_from_kernel(kernel)
+
+
 def _runtime_from_kernel(kernel: _Kernel) -> _MemoryRuntime:
     """私有装配工作对象转换为公共生命周期句柄。"""
     runtime = _MemoryRuntime(
         api=kernel.api,
         _kernel=kernel,
+        configuration=kernel.configuration,
         _resources=kernel.security_resources,
     )
     # 本包 facade 持有委托闭包，不将 Runtime/Store 端口公开给业务层。
@@ -971,12 +1170,35 @@ def assemble_server_runtime(
     生命周期；失败只关闭本次内核，不接管调用方注入对象。
     """
     kernel = _build_kernel(policies=policies, config=config)
+    return _server_runtime_from_kernel(kernel, security_runtime)
+
+
+def assemble_managed_server_runtime(
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    store: Any,
+    llm_instances: Sequence[str],
+    authorize: Callable[[RequestSecurityContext, str], bool],
+    url_allowed: Callable[[str], bool] | None = None,
+    locked_keys: frozenset[str] = frozenset(),
+    policies: dict[str, str] | None = None,
+    security_runtime: Any = AUTO_SECURITY_RUNTIME,
+) -> ManagedServerRuntime:
+    """在同一 Server Runtime 中装配持久配置与公开配置门面。"""
+    from .managed_assembly import ManagedAssemblyPlan
+
+    plan = ManagedAssemblyPlan(store, llm_instances, authorize, url_allowed, locked_keys)
+    kernel = _build_kernel(policies=policies, config=config, managed_plan=plan)
+    return _server_runtime_from_kernel(kernel, security_runtime)
+
+
+def _server_runtime_from_kernel(kernel: _Kernel, security_runtime: Any) -> ServerRuntime:
     runtime = _runtime_from_kernel(kernel)
     try:
         auto_security = security_runtime is AUTO_SECURITY_RUNTIME
         selected = kernel.security_runtime if auto_security else security_runtime
         _bind_server_security(kernel, selected, auto_security=auto_security)
-        facade = _ServerRuntime(runtime, selected, kernel.audit)
+        facade = _ServerRuntime(runtime, selected, kernel.audit, kernel.human_view)
         share_security_lifecycle(runtime, selected)
         if isinstance(selected, CloseableSecurityCapability) and not isinstance(
             selected, SecurityLifecycleCapability

@@ -22,7 +22,7 @@ from jiuwen_memory.common.security.runtime import SecurityRuntime, SecurityRunti
 from jiuwen_memory.common.security.types import Role
 from jiuwen_memory.common.type_def.scope import Scope
 from jiuwen_memory.config import Config
-from jiuwen_memory.config.context import AssemblyContext
+from jiuwen_memory.config.context import AssemblyContext, ComponentConfig
 from jiuwen_memory.config.defaults import default_context
 
 
@@ -51,20 +51,49 @@ def build_configured_security_runtime(
         return runtime
 
 
-def _build_security_runtime(ctx: AssemblyContext) -> SecurityRuntime | None:
-    """在内核的同一装配上下文选择运行时，不重置共享实例缓存。"""
+def fixed_personal_owner(config: Mapping[str, Any] | None):
+    """返回安全插件显式声明的固定主体；未知或多身份实现返回 None。"""
+    from jiuwen_memory.api.memory_api_impl.assembly import _register_all
+
+    _register_all()
+    ctx = default_context().merged(
+        Config.from_dict(config).context(known_top_names=Factory.known_top_names())
+    )
+    try:
+        name = _security_runtime_name(ctx)
+        if name is None:
+            return None
+        spec = ctx.lookup(SecurityRuntimeProducer.TOP_NAME, name)
+        component = ComponentConfig(
+            params=dict(spec.params), ctx=ctx, target=spec.target, name=name,
+        )
+        owner = SecurityRuntimeProducer.inspect_config(
+            spec.target, "fixed_personal_owner", component
+        )
+    except ValidationError:
+        return None
+    return owner if isinstance(owner, Scope) and owner.org and owner.user else None
+
+
+def _security_runtime_name(ctx: AssemblyContext) -> str | None:
     names = sorted(ctx.namespaces.get(SecurityRuntimeProducer.TOP_NAME, {}))
     if not names:
         return None
     if "default" in names:
-        name = "default"
-    elif len(names) == 1:
-        name = names[0]
-    else:
-        raise ValidationError(
-            f"security 定义了多个具名实例 {names!r}，但未定义 'default'；"
-            "安全组件选择存在歧义，拒绝启动。"
-        )
+        return "default"
+    if len(names) == 1:
+        return names[0]
+    raise ValidationError(
+        f"security 定义了多个具名实例 {names!r}，但未定义 'default'；"
+        "安全组件选择存在歧义，拒绝启动。"
+    )
+
+
+def _build_security_runtime(ctx: AssemblyContext) -> SecurityRuntime | None:
+    """在内核的同一装配上下文选择运行时，不重置共享实例缓存。"""
+    name = _security_runtime_name(ctx)
+    if name is None:
+        return None
     runtime = SecurityRuntimeProducer.build_named(name, ctx)
     if runtime.security_resource_owner().is_closed():
         raise ValidationError("selected security Runtime has already been closed")

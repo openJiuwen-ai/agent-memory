@@ -34,6 +34,7 @@ class Config:
     profile: str = "offline"
     policies: dict[str, str] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
+    config_paths: tuple[str, ...] = field(default_factory=tuple, repr=False)
 
     def __repr__(self) -> str:
         # settings 是 env 展开后的完整配置：secret 键必须脱敏后才能进诊断输出。

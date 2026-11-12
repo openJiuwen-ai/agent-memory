@@ -26,6 +26,7 @@ from jiuwen_memory.common.type_def import (
     Modality,
     Scope,
 )
+from jiuwen_memory.common.type_def.continuity import ContinuityWrite
 from jiuwen_memory.construction.evolver import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 
@@ -213,6 +214,10 @@ class BatchWriteItem:
     stream_id: str = ""
     sequence: int | None = None
     idempotency_key: str = ""
+    event_time: datetime | None = None  # 显式事件时间，含时区；写入 temporal.t_event
+    # 原始来源定位：仅接续内部写路径使用（source_locator → MemoryUnit.source_ref）。
+    source_ref: str = ""
+    continuity: ContinuityWrite | None = None  # 接续写入；批量历史导入用
 
 
 @dataclass
@@ -224,6 +229,8 @@ class BatchWriteOutcome:
     units: list[MemoryUnit] = field(default_factory=list)
     error: str = ""
     error_type: str = ""
+    operation_id: str = ""  # 接续项的事件幂等键
+    continuity_status: str = ""  # committed / partial / unknown / rejected
 
 
 @dataclass
@@ -355,6 +362,41 @@ class MemoryPatch:
     t_valid: datetime | None = None  # 调整生效时间（双时间模型）
     t_invalid: datetime | None = None  # 调整失效时间
     mode: UpdateMode = UpdateMode.SUPERSEDE  # 版本语义：保留原有(新 id) / 覆盖(同 id)
+
+
+@dataclass
+class UpdateSelector:
+    """``batch_update`` 的目标选择：各条件取「与」，至少给出一项。
+
+    与 :class:`DeleteSelector` 结构相同，但不携带 ``mode``——批量更新的版本语义
+    由各 :class:`MemoryPatch.mode` 逐条决定。
+    """
+
+    unit_ids: list[str] = field(default_factory=list)  # 按 id 指定
+    scope: Scope | None = None  # 限定归属 scope
+    tags: list[str] = field(default_factory=list)  # 命中任一标签
+    before: datetime | None = None  # 仅命中 t_message 早于此时间的
+    after: datetime | None = None  # 仅命中 t_message 晚于此时间的
+    filters: FilterExpr | None = None  # 结构化谓词
+    limit: int | None = None  # 最多更新 N 条匹配项（post-match 截断）
+
+
+@dataclass
+class BatchUpdateOutcome:
+    """批量更新的逐项结果。"""
+
+    index: int
+    unit_id: str
+    updated_unit: MemoryUnit | None = None
+    error: str = ""
+    error_type: str = ""
+
+
+@dataclass
+class BatchUpdateResult:
+    """与候选顺序对齐的批量更新结果。"""
+
+    outcomes: list[BatchUpdateOutcome] = field(default_factory=list)
 
 
 class DeleteMode(str, Enum):

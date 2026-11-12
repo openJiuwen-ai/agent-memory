@@ -20,6 +20,8 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.16",
     "argon2-cffi>=23.1",
+    "webauthn>=2.7,<3",
+    "regex>=2024.11.6",
     # 测试套件自身消费的三个未声明依赖（test_outbound_ssl / test_multimodal_adapter /
     # test_middle_e2e_real_llm），缺失会让 pytest 卡在 collection error。
     "httpx>=0.27,<1",
@@ -50,6 +52,9 @@ deploy = [
     "redis>=5",
     "asyncpg>=0.30",
     "pyyaml>=6",
+    # 角色记忆证据图的持久图后端（F10 §3.4）。代码惰性导入：未安装时注册仍成功，
+    # 装配该后端时报明确错误。
+    "neo4j>=5.0",
     # api_reranker 出站 HTTP（部署镜像走外部 rerank 服务时必需）。
     "httpx>=0.27,<1",
     "watchdog>=4.0",
@@ -57,6 +62,11 @@ deploy = [
     # 不装则降级为「全量+倒排」两表，向量召回缺一路但不抛错（倒排召回照常）。
     # 装上 + 配 embedder 才进入完整模式（建 memory_vec 表，向量召回可用）。
     "sqlite-vec>=0.1",
+]
+# 评测侧专用依赖：`evaluation/memoryagentbench` 直接读 MemoryAgentBench 的原始 parquet
+# （`Conflict_Resolution-*.parquet`）。内核不依赖该库。
+eval = [
+    "pyarrow>=15",
 ]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
@@ -70,6 +80,8 @@ mcp = [
 # 静态加密所需的 cryptography 已在主依赖里（common.security.cryptography 使用）。
 security = [
     "argon2-cffi>=23.1",
+    "webauthn>=2.7,<3",
+    "regex>=2024.11.6",
 ]
 # jiuwenswarm 宿主集成（jiuwen_memory_adapter/jiuwenswarm）：把 AgentMemory 适配成
 # openjiuwen 的 MemoryProvider ABC，供 ExternalMemoryRail / JiuwenMemoryRail 驱动。
@@ -86,6 +98,8 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "ruff>=0.16",
     "argon2-cffi>=23.1",
+    "webauthn>=2.7,<3",
+    "regex>=2024.11.6",
     "httpx>=0.27,<1",
     "requests>=2.31",
     "python-dotenv>=1.0",
@@ -107,6 +121,9 @@ exclude = [
     "jiuwen_memory_entry.cli*",
     "jiuwen_memory_entry.mcp_server*",
 ]
+
+[tool.setuptools.package-data]
+"jiuwen_memory_entry.portal" = ["index.html"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

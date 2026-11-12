@@ -30,3 +30,23 @@ def test_other_sdk_errors_remain_internal(status: int) -> None:
         {"error": "InternalError", "message": "internal server error", "retryable": False},
         None,
     )
+
+
+def test_write_incomplete_maps_to_409_with_recovery_fields() -> None:
+    from jiuwen_memory.api import WriteIncompleteError
+
+    error = WriteIncompleteError(
+        operation_id="evt-7",
+        status="unknown",
+        retry_action="recover_then_retry",
+        refs=(),
+    )
+    status, body, retry_after = error_response(error.__class__, error)
+    assert status == 409
+    assert retry_after is None
+    assert body["error"] == "WriteIncompleteError"
+    assert body["retryable"] is False
+    assert body["operation_id"] == "evt-7"
+    assert body["status"] == "unknown"
+    assert body["retry_action"] == "recover_then_retry"
+    assert body["refs"] == ()

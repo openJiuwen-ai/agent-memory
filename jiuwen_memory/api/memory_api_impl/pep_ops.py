@@ -1016,6 +1016,20 @@ class PepOpsMixin:
             detail=detail,
         )
 
+    def check_configuration_access(
+        self, scope: Scope, *, security: RequestSecurityContext, write: bool
+    ) -> None:
+        """固定个人实例配置权限：沿用 PEP，写入前核验审计完整性。"""
+        if not isinstance(write, bool):
+            raise ValidationError("configuration write flag must be a boolean")
+        action = Action.WRITE if write else Action.READ
+        entry = "configuration_write" if write else "configuration_read"
+        auth = self._authorize(security, scope, action, entry)
+        if write:
+            self._ensure_space_writable(scope)
+            self._ensure_audit_integrity_healthy()
+        self._log(security.auth.actor, entry, target_scope=scope, detail=auth)
+
     def check_write(
         self,
         scope: Scope,

@@ -136,7 +136,8 @@ class SchemaTemporalShrinker:
             if flat_texts:
                 try:
                     flat_scores = [
-                        float(score) for score in self._reranker.rerank(query_text, flat_texts)
+                        float(score)
+                        for score in self._reranker.rerank_texts(query_text, flat_texts)
                     ]
                     if len(flat_scores) != len(flat_texts) or not all(
                         math.isfinite(score) for score in flat_scores
@@ -158,7 +159,7 @@ class SchemaTemporalShrinker:
                         continue
                     try:
                         scores = [
-                            float(score) for score in self._reranker.rerank(query_text, texts)
+                            float(score) for score in self._reranker.rerank_texts(query_text, texts)
                         ]
                         if len(scores) != len(texts) or not all(
                             math.isfinite(score) for score in scores

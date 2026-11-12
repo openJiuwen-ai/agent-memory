@@ -20,6 +20,7 @@ from inspect import Parameter, isawaitable, signature
 
 import pytest
 
+from jiuwen_memory.api import ContinuityEvent, MemoryRef, RelationRecord, RoleViewQuery, TaskRequest
 from jiuwen_memory.api.memory_api import MemoryAPI
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import PermissionDeniedError
@@ -396,6 +397,17 @@ def test_every_public_entry_rejects_before_business_access(
     values = {
         "security": security,
         "scope": VICTIM_SCOPE,
+        "request": TaskRequest("create", "r")
+        if entry == "continuity_task"
+        else RoleViewQuery(query="q"),
+        "event": ContinuityEvent("t", "b", "e", "observation"),
+        "relation": RelationRecord(
+            "r",
+            MemoryRef(VICTIM_SCOPE, "a", "0" * 64),
+            MemoryRef(VICTIM_SCOPE, "b", "1" * 64),
+            "supports",
+        ),
+        "expected_revision": 0,
         "content": "content",
         "source": Modality.TEXT,
         "items": [BatchWriteItem(content="content", scope=VICTIM_SCOPE)],
@@ -405,6 +417,7 @@ def test_every_public_entry_rejects_before_business_access(
         "unit_ids": ["unknown"],
         "patch": SpacePatch() if entry == "update_space" else MemoryPatch(),
         "selector": DeleteSelector(unit_ids=["unknown"]),
+        "patches": [MemoryPatch()],
         "mode": EvolveMode.EXTRACT,
         "options": EvolveTaskOptions(mode=EvolveMode.EXTRACT),
         "payload_id": "payload",
@@ -416,6 +429,10 @@ def test_every_public_entry_rejects_before_business_access(
         "key": "key",
         "value": "value",
         "filters": {},
+        "source_key": "workbuddy",
+        "reason": "reason",
+        "connector": "workbuddy",
+        "context_id": "session",
         "grant": Grant(
             grant_id="unknown",
             grantor=VICTIM_SCOPE,
@@ -437,6 +454,11 @@ def test_every_public_entry_rejects_before_business_access(
         value = values.get(name, missing)
         assert value is not missing, f"{entry}: missing required test argument {name!r}"
         kwargs[name] = value
+    if entry == "list":
+        # 只有显式启用个人模式时才能省略 scope。两个分支都须在读存储前拒绝。
+        with pytest.raises(PermissionDeniedError):
+            method(security=security, extensions={"personal": {}})
+        kwargs["scope"] = VICTIM_SCOPE
     with pytest.raises(PermissionDeniedError):
         result = method(**kwargs)
         if isawaitable(result):

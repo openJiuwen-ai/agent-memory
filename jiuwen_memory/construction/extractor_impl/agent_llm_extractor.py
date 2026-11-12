@@ -7,13 +7,13 @@
   本版面向 user↔agent 对话——以用户为中心提取（用户的事实/偏好/决定/计划/身份/处境），
   助手的输出（解释/建议/代码/总结）本身不是条目，用户对其行动时才成条、记用户的决定。
 - **语言可配**：``extractor_language``（默认 ``cn``）切换指令面语言。输出契约不随语言
-  切换——source_id / tier / memory_class 枚举值 / JSON schema 骨架恒英文，解析端
-  ``build_candidates`` 零改动；条目 content 的语言仍跟源文本（「绝不翻译」规则两版都保留）。
+  切换——source_id / tier / memory_class 枚举值 / JSON schema 骨架恒英文；
+  条目 content 的语言仍跟源文本。
 - **抽取时同步判定 memory_class**（三类归属类别，见 ``_MEMORY_CLASSES``）：与
   Router 判定的差别在于省一次独立 LLM 调用——判定输入（content）本就是抽取产物。
   值经基类 ``build_candidates`` 透传进 ``system_metadata[MEMORY_CLASS_KEY]``，本类
   ``extract`` 收口值域（非法/缺失兜底 ``long_term_memory``）。该键同时是文档模式
-  md 落盘的分流键（F08 §3 ``_PATH_MAP`` 已加同名映射，三类各归其位）。
+  md 落盘的分流键。本类在构造候选前校验项目事实的来源坐标。
 
 prompt 面经 F09 §2.1 类属性化挂在 ``ExtractorImpl`` 类属性上，本子类构造时按
 language 选双语常量对赋实例属性，抽取管线零改动。
@@ -24,12 +24,21 @@ from __future__ import annotations
 
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import MEMORY_CLASS_KEY, MemoryUnit
+from jiuwen_memory.common.type_def import MEMORY_CLASS_KEY, MemoryTier, MemoryUnit
+from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    importance_category_prompt_enabled_from_config,
+)
 
 from ..base import ExtractContext
 from ..common import reject_deprecated_llm_attempt_keys
 from ..extractor import ExtractorProducer
-from .llm_extractor import _DEFAULT_EXTRACT_BATCH_SIZE, ExtractorImpl
+from .llm_extractor import (
+    _DEFAULT_EXTRACT_BATCH_SIZE,
+    ExtractionCandidate,
+    ExtractorImpl,
+    _strip_source_id_shell,
+)
 
 logger = get_logger(__name__)
 
@@ -106,6 +115,26 @@ macOS 的说法（episodic）、用户不使用 macOS（semantic）、用户使�
 外壳也不会让该行的其余部分消失——剥去外壳后判断该行增添了什么；仅当什么都不剩时\
 才返回 []。拿不准时，只记录在将来与该用户的对话中仍然要紧的东西。
 
+- 可复用标识：属于用户本人且跨项目适用、以后还会用到的标识——邮箱地址、账号名、\
+服务器或接口地址、常用收件人，以及用户给出的授权码、口令或密钥——除按上述规则\
+记录该行所做的事之外，另为它输出一条不带日期的稳定事实，逐字保留标识本身并写明\
+它的用途或归属："tier" 用 "semantic"，"memory_class" 用 "user_profile"，"target" 用 "fact"。
+  例 "[user]: 用 ops@example.com 把周报发给 lead@example.org" 产出两条：事件\
+"2026-03-14，用户要求助手用 ops@example.com 把周报发给 lead@example.org。"（episodic）\
+与事实 "用户发送周报使用的发件邮箱是 ops@example.com，收件人是 lead@example.org。"\
+（semantic，user_profile）。用户在回答助手提问时给出的标识同样适用：助手问授权码、\
+用户答出取值，即为该账号输出一条授权码的稳定事实，不论助手是否说过只用一次。这类\
+稳定事实是用户本人的属性，"memory_class" 一律为 "user_profile"，不归入 \
+"long_term_memory"；发件与收件地址等同属一件事的标识写在同一条里。过后即失效的\
+取值不算：短信验证码、只查这一次的订单号或流水号、临时文件名。只针对用户自己给出的\
+标识；助手提到或猜测的不算。
+
+- 项目事实：取值只对某个项目成立时，"project_fact" 为 true。终稿目录、项目专用账号、\
+部署地址以及针对项目的事件或待办都属于项目事实，即使用户只说「这个项目」。\
+例如「这个项目的论文终稿放在 /work/paper/final」归 "long_term_memory"，\
+"project_fact" 为 true。短期项目事项可以归 "daily_memory"。同一行还有个人信息时，\
+分成独立条目，个人信息的 "project_fact" 为 false。
+
 字段：
 - "source_id"："[ID: ...]" 标记中的裸 UUID，不带外壳、不带引号——即该条所述的行。\
 上下文可提供指称对象或省略句所回应的内容，但绝不改变此 id；仅由上下文提出的\
@@ -134,6 +163,7 @@ macOS 的说法（episodic）、用户不使用 macOS（semantic）、用户使�
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "memory_class": "user_profile" | "long_term_memory" | "daily_memory",
+  "project_fact": true | false,
   "tier": "episodic" | "semantic" | "procedural",
   "content": "一条自包含的陈述，一切具体细节保留",
   "title": "命名这件事的短标题",
@@ -228,6 +258,33 @@ does not make the rest of the line disappear - judge what the line adds once it 
 aside; return [] only when nothing is left. When in doubt, record only what would still
 matter in a future conversation with this user.
 
+- Reusable identifiers: identifiers that belong to the user and apply across projects,
+including email addresses, account names, server or endpoint addresses, usual recipients,
+and authorization codes, passwords or keys the user supplies. Besides recording what
+the line did under the rules above, also output one undated stable fact for it, keeping
+the identifier verbatim and stating what it is for or whom it belongs to: "tier" is
+"semantic", "memory_class" is "user_profile", "target" is "fact".
+  Example "[user]: send the weekly report to lead@example.org from ops@example.com"
+yields two items: the event "On 2026-03-14 the user asked the assistant to send the
+weekly report to lead@example.org from ops@example.com." (episodic) and the fact "The
+user sends the weekly report from ops@example.com to lead@example.org." (semantic,
+user_profile). Identifiers the user gives when answering the assistant's question count
+the same: when the assistant asks for an authorization code and the user states it,
+output a stable fact of that code for the account, whether or not the assistant said it
+would be used only once. Such stable facts are attributes of the user: "memory_class" is
+always "user_profile", never "long_term_memory"; identifiers that belong to one matter,
+such as the sender and recipient addresses, go into the same item. Values that expire
+after use do not count: SMS verification codes, an order or transaction number looked up
+only this once, temporary file names. Only identifiers the user gave count; those the
+assistant mentioned or guessed do not.
+
+- Project facts: set "project_fact" to true when an item applies to a specific project,
+including deliverable folders, project accounts, deployment addresses, events and to-dos.
+This applies even if the user only says "this project". For example, "This project's final
+paper is in /work/paper/final" is "long_term_memory" with "project_fact" set to true.
+Short-lived project items can be "daily_memory". Put personal details from the same source
+in separate items with "project_fact" set to false.
+
 Fields:
 - "source_id": the bare UUID from the "[ID: ...]" marker, no wrapper or quotes - the
 line the item is about. Context may supply a referent or what an elliptical line
@@ -260,6 +317,7 @@ Output schema:
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "memory_class": "user_profile" | "long_term_memory" | "daily_memory",
+  "project_fact": true | false,
   "tier": "episodic" | "semantic" | "procedural",
   "content": "one self-contained statement, every specific kept",
   "title": "short heading naming the matter",
@@ -402,6 +460,8 @@ _OBSERVATION_DATE_PREFIX_EN = (
 # 桶，拿不准时宁可长期保留，不按天丢弃。
 _MEMORY_CLASSES = frozenset({"user_profile", "long_term_memory", "daily_memory"})
 _DEFAULT_MEMORY_CLASS = "long_term_memory"
+# user_profile 是用户的稳定属性：模型把这类条目标成 episodic 时收口为 semantic。
+_USER_PROFILE_CLASS = "user_profile"
 
 
 class AgentLlmExtractor(ExtractorImpl):
@@ -422,6 +482,7 @@ class AgentLlmExtractor(ExtractorImpl):
             self.EXTRACTION_FIDELITY_SUFFIX = _EXTRACTION_FIDELITY_SUFFIX_CN
             self.OBSERVATION_DATE_PREFIX = _OBSERVATION_DATE_PREFIX_CN
             self.CONTEXT_SECTION_TEMPLATES = _CONTEXT_SECTION_TEMPLATES_CN
+            self.IMPORTANCE_PROMPT_LANGUAGE = "cn"
         else:
             self.EXTRACT_SYSTEM_PROMPT = _EXTRACT_SYSTEM_PROMPT_EN
             self.PROCEDURAL_SYSTEM_PROMPT = _PROCEDURAL_SYSTEM_PROMPT_EN
@@ -429,34 +490,64 @@ class AgentLlmExtractor(ExtractorImpl):
             self.OBSERVATION_DATE_PREFIX = _OBSERVATION_DATE_PREFIX_EN
             self.CONTEXT_SECTION_TEMPLATES = _CONTEXT_SECTION_TEMPLATES_EN
 
+    def build_candidates(
+        self, items: list[dict], units: list[MemoryUnit],
+    ) -> list[ExtractionCandidate]:
+        """约束项目候选的写入范围，项目坐标只取自来源元数据。"""
+        sources = {unit.id: unit for unit in units}
+        scoped_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                scoped_items.append(item)
+                continue
+            source_id = _strip_source_id_shell(str(item.get("source_id", "")))
+            source = sources.get(source_id)
+            metadata = source.system_metadata if source else {}
+            project_fact = item.get("project_fact")
+            if metadata.get("source_app") == "jiuwenswarm" and not isinstance(project_fact, bool):
+                continue
+            if project_fact is True:
+                project = metadata.get("project")
+                if not isinstance(project, str) or not project.strip():
+                    continue
+                if str(item.get("memory_class", "")).strip() == _USER_PROFILE_CLASS:
+                    item = {**item, "memory_class": _DEFAULT_MEMORY_CLASS}
+            scoped_items.append(item)
+        return super().build_candidates(scoped_items, units)
+
     def extract(
         self,
         units: list[MemoryUnit],
         *,
         context: ExtractContext | None = None,
     ) -> list[MemoryUnit]:
-        """抽取 + memory_class 值域收口。
+        """抽取 + memory_class 值域收口 + user_profile 层级收口。
 
         LLM 输出的 memory_class 经基类 ``build_candidates`` 透传进派生 unit 的
         ``system_metadata[MEMORY_CLASS_KEY]``；本方法对返回值做值域校验：合法三类
         保留，非法（warning 留痕）或缺失兜底 ``long_term_memory``。procedural 汇总
         路径的 prompt 未要求输出该字段，同样落默认类。
+
+        ``user_profile`` 而 tier 为 EPISODIC 的条目改为 SEMANTIC（PROCEDURAL 不动）：
+        用户画像是稳定属性，标成事件会在按 tier 隔离的去重里与同批事件比较而被判重。
         """
         derived = super().extract(units, context=context)
         for unit in derived:
             metadata = unit.system_metadata or {}
             memory_class = str(metadata.get(MEMORY_CLASS_KEY, "") or "").strip()
-            if memory_class in _MEMORY_CLASSES:
+            if memory_class not in _MEMORY_CLASSES:
+                if memory_class:
+                    logger.warning(
+                        "AgentLlmExtractor: 非法 memory_class=%r，兜底 %s（unit=%s）",
+                        memory_class,
+                        _DEFAULT_MEMORY_CLASS,
+                        unit.id[:8],
+                    )
+                metadata[MEMORY_CLASS_KEY] = _DEFAULT_MEMORY_CLASS
+                unit.system_metadata = metadata
                 continue
-            if memory_class:
-                logger.warning(
-                    "AgentLlmExtractor: 非法 memory_class=%r，兜底 %s（unit=%s）",
-                    memory_class,
-                    _DEFAULT_MEMORY_CLASS,
-                    unit.id[:8],
-                )
-            metadata[MEMORY_CLASS_KEY] = _DEFAULT_MEMORY_CLASS
-            unit.system_metadata = metadata
+            if memory_class == _USER_PROFILE_CLASS and unit.tier is MemoryTier.EPISODIC:
+                unit.tier = MemoryTier.SEMANTIC
         return derived
 
 
@@ -473,4 +564,6 @@ def _build(config):
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
         language=config.get("extractor_language", "cn"),
+        importance_category_map=importance_category_map_from_config(config),
+        importance_category_prompt_enabled=importance_category_prompt_enabled_from_config(config),
     )

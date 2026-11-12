@@ -13,17 +13,21 @@
 
 | 文件/目录 | 职责 |
 |---|---|
+| `relations/legacy.py` | 旧关系到候选证据关系的显式纯函数映射；相似/共指不升级为证据 |
+| `relations/catalog.py` / `type_def/continuity.py` | 关系与职责启动目录、接续 DTO；职责与权限角色分离 |
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |
 | `ingest_cancellation.py` | 摄入任务局部取消信号、检查点异常与可唤醒等待；不依赖 control、不读取业务 metadata |
+
+| `text_split.py` | 摄入与内容型 prompt 共用段落切分；可选 boundary 回调只向前调整硬切点，不扩大长度上限 |
 | `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、本地模型来源解析（`resolve_model_source`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`/`read_ssl_config`/`reject_url_tls_params`）、scope 命名空间渲染（`SCOPE_DIMS`/`scope_segments`）、后端异常归一（`wrap_backend`）；storage、lock 与出站客户端共用，避免各写一份 |
 | `_import_support.py` | 导入容错样板的唯一归属地（`import_optional`/`import_required`/`import_required_attr`）：装配各 `*_impl` 包触发 `@Producer.register` 时逐个隔离可选依赖，单个缺失只让该插件缺席、不连坐同批其他插件、不阻断 `MemoryAPI` 构造。刻意与 `_support.py` 分家——后者讲配置值语义且连带 `type_def`/`Factory`/`errors`，本模块讲导入机制且**只依赖标准库**（51 个 `*_impl`/bootstrap 消费点各自 import 一次，自身须停在零项目依赖）；**不得**引入任何 `jiuwen_memory` 内部对象，以免装配期导入顺序反受各层先后影响。接入侧另有一份 `jiuwen_memory_entry/core/import_support.py`——Access 只允许依赖 `jiuwen_memory.api`（见 `tests/unit/api/test_access_api_boundary.py`），两侧不复用 |
 | `log/` | 统一运行日志入口：`base.py` 提供 `get_logger` / `setup_logging`，`privacy_filter.py` 提供默认全局启用的 `SensitiveDataFilter` 及 `install_privacy_filter` / `redact_for_log` / `metadata_for_log` / `scope_for_log`；普通服务端日志在 Formatter 前脱敏，保留字段结构和经调用点确认的 MemoryUnit 技术 ID，不修改业务对象或正式 API 响应 |
 | `time_utils.py` | 纯时间转换 as_utc/epoch_ms：无时区按 UTC，有时区保持实际时刻；不依赖服务器时区、不改写真源 |
 | `plaintext.py` | 继承 BackendError 的内部非信封拒绝信号；不实现密码学算法或新增 API 错误结果值 |
 | `type_def/` | 核心数据类型定义目录 |
-| `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出 |
+| `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出。`ImportanceCategory` 枚举（七个默认重要度类别，与 `MemoryTier` 正交）及 `system_metadata` 语义键常量 `ORIGIN_KEY` / `ORIGIN_ORIGINAL="original"` / `ORIGIN_INFER="inferred"` / `IMPORTANCE_KEY` |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。另有 `KERNEL_COORD_KEYS`——内核自带的归属坐标实体名，三项取值必须是 `Scope` 的字段名，故与该类同处 |
 | `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
 | `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用 |
@@ -37,8 +41,8 @@
 | `tokenizer/` | Tokenizer 插件目录 |
 | `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；passthrough 只接已是 UTF-8 文本的 TEXT/CODE，DOCUMENT 需专用解析器；`ensure_normalizer_supports` 是共用模态能力门禁；`structured_modalities()` 声明哪些模态的规约结果是结构化中间产物（video 声明 VIDEO，routing 按分派汇总，其余缺省空集），接入层据此跳过预切分；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans；内置视频文件读取统一经过 LocalMediaImports 准入及私有副本 |
 | `feature_extractor/` | FeatureExtractor 插件目录 |
-| `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`） |
-| `reranker/` | Reranker 插件目录 |
+| `llm/` | LLM 插件目录（`echo` / `openai` / `dashscope`）；托管配置源提供 `build_model` 时，具名 builder 在读取参数前交回当前完整快照构造，普通配置源沿用原装配路径 |
+| `reranker/` | Reranker 插件目录（`base.py` 契约：`rerank(query, units)` 入参为 `list[MemoryUnit]`，实现可消费 `unit.content/tier/temporal/tags/entities/provenance` 多字段；`rerank_texts` 为 str 兼容入口、`resolve` 为可选去重/冲突消解入口——`resolve(query, units, scores=None)`，`scores` 供调用方复用精排分避免二次打分，两者非抽象默认实现，另含 `RerankResolution`/`DuplicateGroup` 数据结构）。实现目录当前：`overlap` / `bge_reranker` / `api` / `llm`（F10，`llm_reranker.py`：LLM 打分 + 语义去重/冲突消解，裁决为确定性元数据规则、不靠 LLM 自由发挥；送 LLM 候选受条数上限 + 总字符预算约束，被截断候选只保留不丢） |
 | `audit/` | AuditLogger 插件目录；内存 / SQLite 后端实现 ChainedAuditStore；`protected_audit_logger.py` 的 `ProtectedAuditLogger` 把 record 委派审计完整性 provider、query 透传，并在构造时校验 provider chain store 与 logger 是同一对象；经内核显式装配，写链失败锁存 degraded，mutation 预检失闭，detail 在写入边界过滤 |
 | `security/protection/local_media.py` | `LocalMediaImports`：服务端落点 Scope 与本地媒体目录绑定，仅接绝对源路径；POSIX 校验配置根设备号/inode 并从根 dir_fd 逐段打开，每次暂存使用独立任务子目录，描述符通过显式上下文成对释放；空策略拒绝，不依赖 privacy，也不把身份下传给业务层。 |
 | `security/` | 安全能力的唯一归属地（设计维护页 F04，公开契约 S10）。PR1 已实装认证、保护与静态加密；`authentication/` 提供 Authenticator、PrincipalKeyStore 与 CredentialStatusRegistry，唯一实现目录是其内部的 `authentication/authentication_impl/`，包含 api_key / dev / trusted 三种认证器及凭据存储实现。进程内调用方经 `request_context.internal_context(authenticator)` 显式穿过认证边界，身份由传入的认证器产出、调用方不能自述身份（legacy 桥与公共 `ScopedAuthenticator` 均已删除，测试替身在 `tests/support/`）。PR2 在 `authorization/authorization_impl/` 提供 Standard/Routing/SpaceAware Authorizer 及 memory/SQLite GrantStore、DelegationStore；冻结约束是 MemoryAPI/Authorizer 唯一 PEP/PDP、凭据逐请求在线复核且旧 PermissionManager 不进入生产路径。`audit_integrity/` 注册可选 chained_hmac provider，提供版本化 HMAC、稳定快照增量验证及有界 CAS。`request_context.py` 提供受控上下文构造。安全注册入口统一使用 `import_required` 记录并重抛依赖导入错误。另含空间级授权事实与谓词纯函数（见 `docs/features/control/F07-collective-memory-design.md`）。 |
@@ -48,6 +52,19 @@
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
 | `security/_assembly_lifecycle.py` | 私有装配作用域：经 Factory 公开创建观察记录本次新建对象，启动失败回滚；成功将所有者显式绑定缓存纪元，保护借用依赖与较新装配。 |
 
+### 隐私与用户访问控制能力
+
+`security/privacy/base.py` 定义独立的 PrivacyProtection/PrivacyProducer；
+`privacy/privacy_impl/` 按规则目录、静态分类、等级体系和写入决策分层；
+`regex.py` 承担现有保护边界的适配、内存不透明引用暂存及关联校验。服务端生成
+privacy_rule_ids / privacy_categories 诊断摘要，客户端不可赋值。私有持久化
+委托 storage 的 PrivacyStore，加解密由其 EncryptedPrivacyStore 装饰器调用密码学能力。
+`privacy/disclosure.py` 由 MemoryAPI 用户访问控制入口委派，begin/finish 分别经 API.get
+执行初次请求和人机认证后的资源判权；还原经 API 调用 Engine，并由 API 返回终端。
+`security/human_authentication/` 定义独立 HumanAuthenticator，passkey 实现在选中时才加载
+可选依赖。两者统一由 security/bootstrap 注册，未配置时不装配。私有 SQLite 状态的
+构造失败清理由 `security/_sqlite_state.py` 统一处理，不加入 StoreManager 检索端口。
+
 ## 行为铁律
 
 - **委托真源单点选择**：委托存储由 Authorizer 选择。启用凭据委托绑定时，Security
@@ -56,6 +73,10 @@
   Authorizer 暴露唯一委托真源，资源释放仍由统一生命周期根管理。
 
 - **非信封拒绝**：密码学插件可声明 is_ciphertext，识别不等于认证；PlaintextDataError 仅用于中断读取并沿既有 BackendError 契约传播，不开启明文回退或新增 API 返回类型。MIGRATE_MEMORY 不接受 Grant/Delegation 扩权，USER 的 space（含空值）必须精确匹配目标，非空 agent/session 绑定继续约束目标。
+
+- **固定个人主体声明**：安全 Runtime 与认证插件均须显式注册 `fixed_personal_owner`
+  配置检查能力，自动配置托管不得仅凭 target 名推断；替换实现不继承旧声明。
+  内联配置与具名引用都检查实际选定的认证插件。
 
 - **静态保护能力注册**：Factory 的 config_inspectors 随 target 注册或替换，
   registration_scope 同时恢复 builder 与检查器，不改变 AssemblyContext 的缓存所有权。
@@ -240,3 +261,5 @@ DeferredEmbedder 在首次调用时解析并共享实际插件，失败不缓存
 common.time_utils.as_utc，naive 按 UTC 解释，不改变原输入对象。
 `is_retrieval_candidate(unit, query, *, filters)` 接受 ParsedQuery，在三条存储路径
 共用 lifecycle、valid/event-time、结构字段及用户过滤的真源复核。
+
+RawPayload.event_time 是可选的 keyword-only 显式事件时间（含时区），独立于 occurred_at 消息时间；不通过系统元数据承载时间指令。

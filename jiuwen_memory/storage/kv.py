@@ -14,8 +14,13 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 
-from jiuwen_memory.common.errors import BackendError, NotFoundError
+from jiuwen_memory.common.errors import (
+    BackendError,
+    NotFoundError,
+    UnsupportedCapabilityError,
+)
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, MemoryUnit, Scope
@@ -27,6 +32,16 @@ from .migration import MigrationRecord
 from .types import KVMemoryListResult
 
 logger = get_logger(__name__)
+_PRIVATE_BUILD: ContextVar[bool] = ContextVar("private_kv_build", default=False)
+
+
+def kv_config_source():
+    """Private backend locations are fixed; ordinary KV keeps ConfigSource late binding."""
+    if _PRIVATE_BUILD.get():
+        return None
+    from jiuwen_memory.config.config_source import ConfigSourceProducer
+
+    return ConfigSourceProducer.get_cached("default")
 
 
 class KvProducer(Factory):
@@ -38,6 +53,40 @@ class KvProducer(Factory):
     """
 
     TOP_NAME = "kv_store"
+
+    @classmethod
+    def build(cls, target, params, ctx, *, name=""):
+        store = super().build(target, params, ctx, name=name)
+        if _PRIVATE_BUILD.get():
+            return store
+        from jiuwen_memory.common.security.privacy.base import optional_privacy
+        from jiuwen_memory.config.context import ComponentConfig
+        from jiuwen_memory.storage._privacy_kv import PrivacyKVStore
+
+        privacy = optional_privacy(ComponentConfig(dict(params or {}), ctx, target, name))
+        return PrivacyKVStore(store, privacy) if privacy is not None else store
+
+    @classmethod
+    def build_named(cls, name, ctx):
+        if _PRIVATE_BUILD.get():
+            from jiuwen_memory.common.errors import ValidationError
+
+            raise ValidationError("private KV dependencies must be inline, outside public ports")
+        return super().build_named(name, ctx)
+
+    @classmethod
+    def build_private(cls, config):
+        """Build an isolated inline backend without recursively assembling PrivacyProtection."""
+        from jiuwen_memory.common.errors import ValidationError
+
+        spec = config.params.get("kv_store")
+        if not isinstance(spec, dict) or not isinstance(spec.get("target"), str):
+            raise ValidationError("privacy KV requires an inline kv_store definition")
+        token = _PRIVATE_BUILD.set(True)
+        try:
+            return cls.dep(config)
+        finally:
+            _PRIVATE_BUILD.reset(token)
 
 
 class MigrationVerificationError(BackendError):
@@ -52,8 +101,6 @@ class MigrationVerificationError(BackendError):
 class KVStore(BaseStore):
     def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
         """Optional bounded exact read; None is oversized, missing still raises NotFoundError."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
         raise UnsupportedCapabilityError("bounded_migration_read", "kv", "storage")
 
     def migration_scan_supported(self) -> bool:
@@ -63,8 +110,6 @@ class KVStore(BaseStore):
         self, scope: Scope, *, after: str = "", max_value_bytes: int = 134217728
     ) -> Iterator[MigrationRecord]:
         """Optional bounded /memory/ iteration; oversized values must not be materialized."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
         raise UnsupportedCapabilityError("bounded_migration_scan", "kv", "storage")
 
     def migration_scope_supported(self, scope: Scope) -> bool:
@@ -73,8 +118,6 @@ class KVStore(BaseStore):
 
     def migration_identity(self) -> object:
         """Optional opaque physical location identity for maintenance deduplication."""
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
         raise UnsupportedCapabilityError("migration_identity", "kv", "storage")
 
     def compare_exchange(
@@ -85,8 +128,6 @@ class KVStore(BaseStore):
         False means missing, expired or changed. None deletes only the matching value.
         Plugins must implement atomically or refuse; read-then-write is not a fallback.
         """
-        from jiuwen_memory.common.errors import UnsupportedCapabilityError
-
         raise UnsupportedCapabilityError("compare_exchange", "kv", "storage")
 
     def coordination_key(self) -> tuple[str, str | int]:
@@ -99,6 +140,42 @@ class KVStore(BaseStore):
         if self.coordination_key() != key:
             raise BackendError("ingest job store changed; reassemble the runtime")
         yield
+
+    @property
+    def persistent_atomic_records(self) -> bool:
+        """Fixed durable namespace with atomic single-record replacement (not CAS)."""
+        return False
+
+    def claim_single_writer(self, namespace: str) -> None:
+        """Hold an exclusive management writer claim until store.close(); fail if unsupported."""
+        raise UnsupportedCapabilityError(
+            "single_writer", namespace, "storage", "KV backend cannot enforce a single writer"
+        )
+
+    def release_single_writer(self, namespace: str) -> None:
+        """Release an acquired claim without closing a borrowed Store connection."""
+        raise UnsupportedCapabilityError(
+            "single_writer", namespace, "storage", "KV backend cannot release a writer claim"
+        )
+
+    @staticmethod
+    def supports_compare_and_swap() -> bool:
+        """Whether this implementation supports atomic conditional byte replacement."""
+        return False
+
+    @staticmethod
+    def compare_and_swap(
+        scope: Scope, key: str, expected: bytes | None, value: bytes | None
+    ) -> bool:
+        """Atomically compare and replace a live value; None means absent/delete.
+
+        Successful replacements have no TTL. Expired values compare as absent.
+        Return False on mismatch; backend failures must raise, never report success.
+        This optional capability preserves compatibility with third-party plugins.
+        """
+        from jiuwen_memory.common.errors import ValidationError
+
+        raise ValidationError("KV backend does not support compare_and_swap")
 
     @abstractmethod
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:

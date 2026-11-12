@@ -104,7 +104,14 @@ class DevAuthenticator(Authenticator):
         return None
 
 
-@AuthProducer.register("dev")
+def _fixed_personal_owner(config) -> Scope | None:
+    """仅固定身份 DEV 声明其预先确定的个人主体。"""
+    if config.get("identities") is not None:
+        return None
+    return Scope(org="local", user="developer")
+
+
+@AuthProducer.register("dev", config_inspectors={"fixed_personal_owner": _fixed_personal_owner})
 def _build(config) -> DevAuthenticator:
     # 配置显式写 null 不是省略，拒绝误配；映射与固定角色也不得混用。
     role = _parse_role(config.get("role")) if "role" in config.params else None

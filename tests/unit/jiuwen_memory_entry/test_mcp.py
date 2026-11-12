@@ -74,6 +74,12 @@ pytestmark = pytest.mark.unit
 SCOPE = {"org": "local", "user": "developer"}
 
 
+@pytest.mark.parametrize("name", ["memory_quarantine_source", "memory_release_source"])
+def test_source_governance_tools_are_not_agent_facing(name) -> None:
+    """来源治理只在管理面暴露（F10 D4）：MCP 是 Agent 入口，不应注册这两个工具。"""
+    assert name not in {tool.name for tool in asyncio.run(mcp_main.mcp.list_tools())}
+
+
 @pytest.mark.parametrize("fail_in_session", [False, True])
 def test_stdio_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -> None:
     server = Mock(start_background=AsyncMock())
@@ -113,6 +119,14 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "new_text": "new",
         },
     ),
+    "memory_continuity_task": ("continuity_task", {"scope": {"org": "o", "space": "p"},
+                                      "request": {"operation": "create", "request_id": "r"}}),
+    "memory_continuity_relation": ("continuity_relation", {"scope": {"org": "o", "space": "p"},
+        "expected_revision": 0, "relation": {"relation_id": "r", "relation_type": "supports",
+        "source": {"scope": SCOPE, "unit_id": "a", "content_digest": "0" * 64},
+        "target": {"scope": SCOPE, "unit_id": "b", "content_digest": "1" * 64}}}),
+    "memory_continuity_recover": ("continuity_recover", {"scope": {"org": "o", "space": "p"}}),
+
     "memory_add": (
         "add",
         {
@@ -121,6 +135,7 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "source": "text",
             "assets": ["file:///a.png"],
             "occurred_at": "2026-06-17T10:00:00+00:00",
+            "event_time": "2001-01-01T00:00:00+00:00",
             "system_metadata": {"infer": "true"},
             "user_metadata": {"project": "x"},
         },
@@ -132,6 +147,7 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "scope": SCOPE,
             "source": "text",
             "occurred_at": "2026-06-17T10:00:00+00:00",
+            "event_time": "2001-01-01T00:00:00+00:00",
             "system_metadata": {"infer": "true"},
             "user_metadata": {"project": "x"},
         },
@@ -186,6 +202,15 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
     "memory_update": (
         "update",
         {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "x"}},
+    ),
+    "memory_batch_update": (
+        "batch_update",
+        {
+            "selector": {"unit_ids": ["u1"], "scope": SCOPE},
+            "patches": [{"tags": ["t"]}],
+            "limit": None,
+            "continue_on_error": True,
+        },
     ),
     "memory_delete": ("delete", {"selector": {"unit_ids": ["u1"], "scope": SCOPE}}),
     "memory_evolve": (
@@ -312,12 +337,21 @@ def _wait_job_terminal(job_id: str, scope: dict[str, Any]) -> dict[str, Any]:
 # --- A. 契约锁：工具签名与 MemoryAPI 契约零漂移 -------------------------------- #
 
 
+# 治理面只在 HTTP / CLI 暴露，不进 Agent 工具清单（F10 D4）。
+_MCP_HIDDEN_VERBS = {"quarantine_source", "release_source"}
+
+
 def test_mcp_tool_registry_covers_expected_verbs() -> None:
     registered = {name for name in dir(mcp_main) if name.startswith("memory_")}
     assert registered == set(TOOL_CASES), registered ^ set(TOOL_CASES)
-    assert registered == {f"memory_{verb}" for verb in api_method_names()}
+    # Agent 入口覆盖除治理面之外的每个公开方法，且治理面确实不暴露。
+    assert registered == {
+        f"memory_{verb}" for verb in api_method_names() if verb not in _MCP_HIDDEN_VERBS
+    }
+    assert not registered & {f"memory_{verb}" for verb in _MCP_HIDDEN_VERBS}
     for _tool_name, (verb, _payload) in TOOL_CASES.items():
         assert is_known_verb(verb), verb
+        assert verb not in _MCP_HIDDEN_VERBS, verb
 
 
 def test_mcp_ingest_cancel_forwards_target_scope(monkeypatch) -> None:
@@ -664,7 +698,11 @@ def test_search_returns_original_result_shape(kernel) -> None:
     asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE))
     result = asyncio.run(mcp_main.memory_search(query="coffee", context={"scope": SCOPE}, top_k=5))
     assert isinstance(result, dict)
-    assert set(result) == {"items", "errors", "trajectory"}
+    # 契约：RetrievalResult 的字段机械展开（F10 6.2.6 给 search 增加了职责视图可选字段）。
+    assert set(result) == {
+        "items", "errors", "trajectory", "paths", "gaps", "view_meta"
+    }
+    assert result["paths"] == [] and result["view_meta"] is None
     assert "hits" not in result
 
 
@@ -712,6 +750,15 @@ def test_list_memory_types_filters_results(kernel) -> None:
     assert matched["items"], "episodic 类型应命中（OFFLINE 缺省 tier）"
     other = asyncio.run(mcp_main.memory_list(scope=SCOPE, memory_types=["core"]))
     assert other["items"] == [] and other["count"] == 0, "core 类型不应命中"
+
+
+def test_list_tool_allows_omitted_scope_for_personal_mode(kernel) -> None:
+    added = asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE))[0]
+    blocks = asyncio.run(mcp_main.mcp.call_tool("memory_list", {"extensions": {"personal": {}}}))
+    result = json.loads(blocks[0].text)
+    assert [item["id"] for item in result["items"]] == [added["id"]]
+    with pytest.raises(ToolError, match="missing required field.*scope"):
+        asyncio.run(mcp_main.mcp.call_tool("memory_list", {}))
 
 
 def test_search_filters_narrow_results(kernel) -> None:
@@ -778,7 +825,7 @@ def test_submit_ingest_schema_preserves_flat_required_and_optional_arguments() -
     tool = next(tool for tool in tools if tool.name == "memory_submit_ingest")
     schema = tool.inputSchema or {}
     expected = {"content", "scope", "source", "payload_id", "source_ref"}
-    optional = {"assets", "tags", "system_metadata", "user_metadata", "occurred_at"}
+    optional = {"assets", "tags", "system_metadata", "user_metadata", "occurred_at", "event_time"}
     assert set(schema.get("properties", {})) == expected | optional
     assert set(schema.get("required", [])) == expected
 

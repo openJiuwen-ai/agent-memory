@@ -227,7 +227,7 @@ def test_ingestor_leaves_hierarchy_empty_without_hints() -> None:
     unit = ingestor.ingest([payload])[0]
 
     assert unit.hierarchy.is_empty, "普通写入路径必须保持零行为变化"
-    assert unit.system_metadata == {"app": "chat"}
+    assert unit.system_metadata == {"app": "chat", "origin": "original"}
 
 
 def test_ingestor_does_not_consume_hints_from_user_metadata() -> None:
@@ -252,7 +252,7 @@ def test_ingestor_preserves_input_metadata_and_infer_flag() -> None:
     unit = SimpleIngestor(PassthroughNormalizer()).ingest([payload])[0]
 
     assert metadata == original and payload.system_metadata == original
-    assert unit.system_metadata == {"infer": True, "app": "chat"}
+    assert unit.system_metadata == {"infer": True, "app": "chat", "origin": "original"}
     assert unit.hierarchy.role is HierarchyRole.SNAPSHOT
 
 

@@ -16,6 +16,7 @@ _HTTP_ERROR_POLICIES = {
     "MethodNotAllowed": (405, False, "method not allowed"),
     "ConflictError": (409, False, "resource conflict"),
     "PartialFailureError": (409, False, None),
+    "WriteIncompleteError": (409, False, None),
     "RateLimitedError": (429, True, "too many requests"),
     "RateLimitError": (429, True, "too many requests"),
     "BackendError": (503, True, "service temporarily unavailable"),
@@ -27,6 +28,7 @@ _HTTP_ERROR_POLICIES = {
     "StorageRetrievalError": (400, False, None),
 }
 _PARTIAL_FAILURE_FIELDS = ("completed", "failed", "retry_action")
+_WRITE_INCOMPLETE_FIELDS = ("operation_id", "status", "refs", "retry_action")
 _UNSET = object()
 
 
@@ -63,6 +65,11 @@ def error_response(error: object, detail: object = "") -> tuple[int, dict[str, o
     }
     if name == "PartialFailureError":
         for field in _PARTIAL_FAILURE_FIELDS:
+            value = getattr(detail, field, _UNSET)
+            if value is not _UNSET:
+                body[field] = value
+    elif name == "WriteIncompleteError":
+        for field in _WRITE_INCOMPLETE_FIELDS:
             value = getattr(detail, field, _UNSET)
             if value is not _UNSET:
                 body[field] = value
