@@ -221,14 +221,16 @@ class _TracingEntityStore(InMemoryEntityStore):
         super().__init__()
         self.seen: list[str] = []
 
-    def execute_operations(self, space_id, operations):
+    def execute_operations(self, scope, operations):
         self.seen.append("execute_operations")
-        return super().execute_operations(space_id, operations)
+        return super().execute_operations(scope, operations)
 
-    def find_by_entity_text_hash(self, space_id, entity_text_hashes, *, filters, limit=500):
+    def find_by_entity_text_hash(
+        self, scope, entity_text_hashes, *, filters, shards=None, limit=500
+    ):
         self.seen.append("find_by_entity_text_hash")
         return super().find_by_entity_text_hash(
-            space_id, entity_text_hashes, filters=filters, limit=limit
+            scope, entity_text_hashes, filters=filters, shards=shards, limit=limit
         )
 
 

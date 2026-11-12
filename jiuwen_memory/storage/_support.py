@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import re
 import time
+from urllib.parse import urlsplit
 
 from jiuwen_memory.common._import_support import import_required
 
@@ -54,6 +56,40 @@ def preload_backend(module_name: str) -> None:
         "backend dependency import completed: %s elapsed=%.3fs",
         module_name, time.perf_counter() - started,
     )
+
+# 物理标识会被持久化进拓扑登记，任何凭据都不能出现在其中。
+_SECRET_KEY_RE = re.compile(
+    r"(?i)\b([a-z0-9_]*(?:passw(?:or)?d|pwd|secret|token)[a-z0-9_]*)\s*=\s*\S+"
+)
+_USERINFO_RE = re.compile(r"//[^/@\s]*@")
+
+
+def sanitize_resource_id(raw: str) -> str:
+    """把连接串规范化为**不含凭据**的物理资源标识（F09 D13）。
+
+    ``postgresql://user:pass@host:5432/db`` → ``host:5432/db``；
+    ``redis://:pass@host:6379/0`` → ``host:6379/0``。
+
+    非 URL 形式（libpq ``key=value`` 串、半结构化 endpoint）无法靠 ``urlsplit``
+    解析，此时走保守脱敏而不是原样返回——物理标识会写进持久化的拓扑登记，
+    把 ``password=...`` 带进去等于把凭据落盘。
+    """
+    text = raw.strip()
+    if "://" in text:
+        try:
+            parts = urlsplit(text)
+        except ValueError:
+            parts = None
+        if parts is not None and parts.netloc:
+            host = parts.hostname or ""
+            netloc = host if parts.port is None else f"{host}:{parts.port}"
+            return f"{netloc}{parts.path or ''}"
+    return _USERINFO_RE.sub("//", _SECRET_KEY_RE.sub(r"\1=***", text))
+
+
+def sanitize_resource_ids(values: list[str]) -> str:
+    """多个连接串（如 ES hosts）的规范化拼接。"""
+    return ",".join(sorted(sanitize_resource_id(value) for value in values))
 
 
 def scope_dims(scope: Scope) -> list[tuple[str, str]]:

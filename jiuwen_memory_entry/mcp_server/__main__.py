@@ -312,7 +312,8 @@ async def memory_search(  # pylint: disable=too-many-arguments,huawei-too-many-a
     query: 查询文本。
     context: 检索上下文 {"scope": {...同 memory_add 的归属坐标...}, "extensions": {}}；
         其中 scope 决定在哪个范围内召回；context.extensions.query_context 可传入
-        字符串数组，作为上下文感知改写的最近对话片段。
+        字符串数组，作为上下文感知改写的最近对话片段。部署启用逻辑分片时，
+        context.extensions.shards 可传分片名数组，只检索这些分片；未配置的分片名报错。
     top_k: 返回条数上限。
     as_of: 可选 ISO 8601 时间点（如 "2026-06-17T10:30:00+00:00"）——valid-time
         回溯，只召回该时刻有效的记忆版本；缺省检索当前状态。
@@ -370,7 +371,8 @@ async def memory_list(  # pylint: disable=too-many-arguments,huawei-too-many-arg
 
     scope: 按指定范围查询时必填。使用个人模式时省略此参数。
     memory_types: 可选记忆类型过滤（如 ["episodic","semantic"]）。
-    extensions: 可选扩展。传 {"personal": {}} 启用个人模式，筛选条件放在 personal 内。
+    extensions: 可选扩展。个人模式传 {"personal": {}}；部署启用逻辑分片时
+        extensions.shards 可传分片名数组，只列出这些分片。
     filters: 普通查询的可选结构化过滤，DSL 同 memory_search 的 filters。
     个人模式不与 memory_types 或 filters 混用。items 为当前页，count 为分页前匹配总数。
     """

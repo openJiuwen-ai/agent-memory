@@ -58,6 +58,16 @@ def _field_value(unit: MemoryUnit, field: str):
     return None
 
 
+def memory_field_value(unit: MemoryUnit, field: str):
+    """读取 ``field`` 在真源上的投影值（与过滤求值同源）。
+
+    F09 分片规则需要「取字段值」而非「判断是否匹配」，两者必须共用同一套
+    投影语义（枚举取 ``value``、嵌套 metadata 走扁平路径、缺值返回 ``None``），
+    否则规则与 filters 会在同一字段上给出不同答案。
+    """
+    return _field_value(unit, field)
+
+
 def _matches_clause(unit: MemoryUnit, clause: FilterClause) -> bool:
     return matches_filter_value(_field_value(unit, clause.field), clause)
 

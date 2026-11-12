@@ -583,3 +583,20 @@ injection.prompt 默认只产生分类依据，不改变等级或正文；显式
 完整叠加示例见 [privacy-human-view.yml](../../examples/privacy-human-view.yml)，部署及
 首次登记见[配置指南](../zh/API文档/config.md#45-隐私分级与用户访问控制)，协议见
 [S10](S10-security.md#隐私保护与用户访问控制)。
+
+## 逻辑分片装配（第一阶段已实现）
+
+关联 [F09](../features/storage/F09-logical-sharding.md) 与 [S06](S06-storage.md)。
+
+**当前实现状态**：`shard_resolver` 命名空间、KV / 向量 / 全文 / 实体 `shard_routed` target、
+模板展开、能力与支持矩阵校验（Document Mode / FusionStore 拒绝，物理资源签名去重）已落地；
+拓扑登记在 manager 装配期自动执行（仅对有稳定物理标识的后端）；`--relocate-shard` 提供数据
+拷贝与登记更新；关联图 shared / split 已落地，证据图不分片。分片集合由解析器具名实例唯一声明，规则冻结于装配期。派生端口独立选择 shared/split：shared 只接受 inner，split 只接受模板及覆盖，两组互斥。模板由标准装配阶段展开成上下文内稳定内部实例，注册/安全校验/生命周期与具名实例一致，但不发布业务端口；不得由包装层另建配置系统。
+
+定位能力经具名 KV 注入并共享对象身份，**由装配器在端口构建完成后绑定**（未绑定即运行期报不支持，不在运行期重新解析拓扑）。根统一登记自有和借用资源、按身份去重，先关闭使用者，启动失败仅清理本次资源。能力/版本、分片覆盖、物理身份冲突、前置过滤、向量评分兼容及连接预算均启动校验；不按具体 target 判断。split 各 shard 物理身份必须不同（KV / 向量 / 全文 / 实体 / 图统一校验），shared 明确共享。持久资源身份登记不含凭据，改变数据集必须经迁移，不得以晚绑定绕过。
+
+**连接预算**：`globals.storage_connection_budget`（正整数，可选）是部署级总连接上限。装配期从端口表出发、按对象身份去重并沿 `BaseStore.connection_dependencies()` 递归（分片表 / 归属存储多为包装层内联实例，端口表看不到），累加各实例 `connection_budget()` 自报的上限；分片表各持一个池，这是分片数放大连接数的直接来源。超过预算即拒绝启动，未配置时只汇总并记日志。不暴露上限的后端（ES / Milvus / Redis 客户端池）不参与累加，不能按 0 估算成"安全"。
+
+**自动搬迁（F09 D16）**：`kv_store.<name>.params.relocate_on_update`（布尔，默认 `false`）开启后，`update` 只写 `relocate_to` 标记，由运维 / 定时任务调用 `relocate_pending()` 执行。`relocate_stale_after`（秒，默认 900）是判定遗留 `moving` 的阈值；`relocate_min_age`（秒，默认 30）是 `relocate_pending()` 缺省的最小标记时长，须大于派生后端的可见延迟；`relocate_max_failures`（正整数，默认 5）是同一记忆连续搬迁失败后放弃标记的上限；`recover_stale=True` 只允许在维护窗口使用。装配期校验：开关打开时必须能经 `SHARD_PLACEMENT` 端口取到搬迁控制面，且所有 `shard_routed` 的向量 / 全文 / 实体 / 关联图端口都声明 `SHARD_RELOCATABLE`（向量 / 全文 / 实体读取完整枚举的内层还必须声明 `UNIT_RECORD_LOOKUP`），否则拒绝启动；未开启时这些校验和归属记录扩展都不出现。
+
+向量、全文三层与实体默认 split，关联图默认 shared，各端口可显式覆盖；split 各分片必须声明互不相同的物理资源标识（Milvus 以 uri/collection 为身份），图不再需要额外的控制存储。Document Mode/Fusion 与本分片方案组合首版拒绝启动（依据能力声明判定，不按 target），Markdown 不拆分。未启用路由保持原装配行为。首版认证至 10 shard，更大部署显式放宽上限且重新评测。

@@ -104,6 +104,7 @@ def test_wrong_scope_or_id_returned_by_backend_is_not_accepted() -> None:
     forged = deepcopy(tree.children[0])
     forged.scope = replace(forged.scope, org="foreign")
     store = Mock()
+    store.requested_shards.return_value = None  # 默认实现：未指定分片
     store.get.return_value = [forged]
     collector = Collector()
     result = DefaultExpander(store).expand(QUERY_SCOPE, expand_request(tree.root, collector))
@@ -220,6 +221,7 @@ def test_batch_not_found_falls_back_without_losing_healthy_siblings() -> None:
     link(tree.root, tree.children)
     tree.base.domain.add(tree.children[1].scope, [tree.children[1]])
     store = Mock()
+    store.requested_shards.return_value = None  # 默认实现：未指定分片
     store.get.side_effect = [NotFoundError("batch"), NotFoundError("missing"), [tree.children[1]]]
     collector = Collector()
     result = DefaultExpander(store).expand(QUERY_SCOPE, expand_request(tree.root, collector))
@@ -230,6 +232,7 @@ def test_batch_not_found_falls_back_without_losing_healthy_siblings() -> None:
 def test_backend_failure_diagnostics_do_not_expose_exception_data() -> None:
     tree = make_tree()
     store = Mock()
+    store.requested_shards.return_value = None  # 默认实现：未指定分片
     store.get.side_effect = RuntimeError("secret payload")
     collector = Collector()
     result = DefaultExpander(store).expand(QUERY_SCOPE, expand_request(tree.root, collector))

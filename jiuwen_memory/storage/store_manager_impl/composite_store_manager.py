@@ -47,6 +47,11 @@ from jiuwen_memory.storage.security import (
     StorageSecurity,
 )
 from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
+from jiuwen_memory.storage.shard_port import (
+    ShardLocatorConsumer,
+    ShardPlacementOwner,
+    ShardRoutedPort,
+)
 from jiuwen_memory.storage.store_manager import (
     StorageCapability,
     StoreManager,
@@ -94,7 +99,7 @@ def _action_for_store_method(name: str) -> Any:
         return StorageAction.UPDATE
     if name == "delete":
         return StorageAction.DELETE
-    if name in {"search", "recall", "seed_ids", "incident_edges"}:
+    if name in {"search", "recall", "seed_ids", "incident_edges", "locate"}:
         return StorageAction.SEARCH
     if name in {"get", "mget", "exists", "scan", "list", "stat"}:
         return StorageAction.GET
@@ -102,27 +107,29 @@ def _action_for_store_method(name: str) -> Any:
 
 
 # -- ENTITY 端口的授权适配（F07）------------------------------------------------ #
-# EntityStore 是 BaseStore「scope 为显式第一入参」的唯一例外（首参 space_id: str），
-# 且 execute_operations 的动作必须按 batch 内 op 类型派生——方法名不足以判定。故不复用
-# 通用 _AuthorizedStoreProxy / _action_for_store_method，独立一套。
+# execute_operations 的动作必须按 batch 内 op 类型派生——方法名不足以判定，故不复用
+# 通用 _AuthorizedStoreProxy / _action_for_store_method，独立一套。F09 起 EntityStore
+# 首参已改为完整 Scope（与其它 Store 对齐），授权不再需要「由 space_id 反推 Scope」。
 
 _ENTITY_QUERY_METHODS = frozenset({"find_by_entity_text_hash", "find_by_linked_memory_id"})
 
 _ENTITY_OP_ACTIONS = {
     EntityOpType.INSERT: StorageAction.ADD,
     EntityOpType.LINK: StorageAction.UPDATE,
+    EntityOpType.UNLINK: StorageAction.UPDATE,
     EntityOpType.UNLINK_UPDATE: StorageAction.UPDATE,
+    EntityOpType.DELETE_IF_EMPTY: StorageAction.DELETE,
     EntityOpType.DELETE: StorageAction.DELETE,
 }
 
 
 def _entity_scope(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-    """从 ``(space_id, filters)`` 近似重建授权用 Scope（有损，见代理类 docstring）。"""
+    """取首参真实 Scope（F09）；缺失时回退为空 Scope（仅防御性）。"""
     from jiuwen_memory.common.type_def import Scope
 
-    space_id = args[0] if args and isinstance(args[0], str) else ""
-    filters = kwargs.get("filters")
-    return Scope(space=space_id, user=getattr(filters, "actor_id", None) or "")
+    if args and isinstance(args[0], Scope):
+        return args[0]
+    return Scope()
 
 
 def _entity_actions(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Any, ...]:
@@ -144,17 +151,12 @@ def _entity_actions(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) ->
 
 
 class _AuthorizedEntityStoreProxy:
-    """ENTITY 端口的授权代理：适配 ``space_id: str`` 首参与 entity 专属方法名。
+    """ENTITY 端口的授权代理：保持逐条动作推导，Scope 直接取自首参（F09）。
 
-    **scope 是有损近似**：entity 方法只带 ``space_id``（= ``space_id_from_scope`` 的算
-    值：space → org → 字面量 ``"default"`` 三级降级）与部分方法的 ``filters.actor_id``
-    （= ``scope.user``），无法无损反推原 Scope。本代理交给 ``StorageSecurity.authorize``
-    的 Scope 只有 ``space`` / ``user`` 两段有意义：``space`` 可能实际是 org id 或字面量
-    ``"default"``；``org`` / ``agent`` / ``session`` 恒为空；``execute_operations`` 无
-    ``filters`` 参数，故写入侧 ``user`` 也恒为空（写入侧的 actor 隔离由
-    ``EntityRecord.filters`` 记录内字段承担，不由授权入参承担）。自定义 StorageSecurity
-    **不得**对 ``resource == "entity"`` 的调用按 ``org`` / ``agent`` / ``session`` 判定，
-    应把 ``(space, user)`` 当作不透明的 routing/actor 二元组配合 ``action`` 使用。
+    F09 D9 起 entity 方法首参是完整 ``Scope``，授权不再有损：``org`` / ``space`` /
+    ``user`` / ``agent`` / ``session`` 都可用于判定。批量操作仍按 batch 内每条 op 的
+    类型推导动作（``INSERT``→ADD、``LINK``/``UNLINK``/``UNLINK_UPDATE``→UPDATE、
+    ``DELETE_IF_EMPTY``/``DELETE``→DELETE），任一动作被拒则整批不执行。
     """
 
     def __init__(self, store: Any, security: StorageSecurity, resource: str) -> None:
@@ -259,6 +261,19 @@ class CompositeStoreManager(StoreManager):
     def security(self) -> StorageSecurity:
         return self._security
 
+    def iter_named_ports(self) -> list[tuple[StorageCapability, str, Any]]:
+        """按 ``(capability, port_name, store)`` 遍历已装配端口。
+
+        装配期校验（支持矩阵、拓扑登记、能力绑定）用它代替直接读 ``_named_stores``：
+        端口表是 manager 的内部表示，校验逻辑不应依赖它的形状（S09 #7）。返回的是
+        端口对象本身（不是授权代理），调用方只用于自描述信息，不做数据操作。
+        """
+        return [
+            (capability, name, store)
+            for capability, ports in self._named_stores.items()
+            for name, store in ports.items()
+        ]
+
     @classmethod
     def from_config(cls, config: Any) -> CompositeStoreManager:
         """装配入口：内部构造全部 Store 与默认数据面，返回就绪的 manager。
@@ -299,6 +314,11 @@ class CompositeStoreManager(StoreManager):
         else:
             storage_ref = f"__anon_store_manager_{id(manager)}__"
         StoreManagerProducer.put(storage_ref, manager)
+        _validate_shard_support(config, manager)
+        _register_shard_topology(manager)
+        _bind_shard_locators(manager)
+        _bind_shard_relocation(manager)
+        _validate_connection_budget(config, manager)
 
         _build_domain_stores(config, manager, storage_ref)
         return manager
@@ -448,6 +468,295 @@ def _collect_ports(producer: type[Factory], config: Any) -> dict[str, Any]:
             continue
         ports[name] = store
     return ports
+
+
+#: 标准三层索引的端口名（向量 / 全文各一套）。`_validate_shard_support` 只对这三个
+#: 端口要求「全分片或全单资源」——它们构成同一条检索链路；`schema_entities` 等其它
+#: 向量空间独立选型。这里按配置名划定范围，不涉及实现类型或 target（S09 #9）。
+_SHARD_LAYER_PORTS = frozenset({"default", "layers_l0", "layers_l1"})
+
+
+def _shard_routed_ports(manager: CompositeStoreManager) -> dict[str, ShardRoutedPort]:
+    """按能力声明取出分片路由端口，标签为 ``{capability}:{port_name}``。
+
+    ``SHARD_ROUTED`` 现在同时承诺实现 :class:`~storage.shard_port.ShardRoutedPort`，
+    因此这里按能力筛完后直接按协议访问，不再逐个 ``getattr`` 探测方法（S09 #6 / #9）。
+    """
+    from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
+
+    return {
+        f"{capability.value}:{name}": cast(ShardRoutedPort, port)
+        for capability, name, port in manager.iter_named_ports()
+        if StoreCapability.SHARD_ROUTED in capabilities_of(port)
+    }
+
+
+def _validate_shard_support(config: Any, manager: CompositeStoreManager) -> None:
+    """分片部署的支持矩阵与资源一致性校验（F09 D12）。
+
+    - Document Mode（``write_document=true``）与分片组合不支持；
+    - 任何 FusionStore 消费者与分片组合不支持（FusionStore 当前不在召回链路）；
+    - 校验依据能力声明与端口形态，不按具体 target / 模块路径判断。
+    """
+    from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY
+    from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
+
+    ports_by_capability: dict[StorageCapability, dict[str, Any]] = {}
+    for capability, name, port in manager.iter_named_ports():
+        ports_by_capability.setdefault(capability, {})[name] = port
+    sharded_ports = _shard_routed_ports(manager)
+    if not sharded_ports:
+        return
+    kv_ports = ports_by_capability.get(StorageCapability.KV) or {}
+    kv_capabilities = {name: capabilities_of(port) for name, port in kv_ports.items()}
+    if not any(
+        StoreCapability.SHARD_LOCATOR in caps for caps in kv_capabilities.values()
+    ):
+        raise ValidationError(
+            "sharded deployment requires at least one kv port declaring SHARD_LOCATOR"
+        )
+    declared_shards = [(label, tuple(port.shards)) for label, port in sharded_ports.items()]
+    distinct = {shards for _, shards in declared_shards}
+    if len(distinct) > 1:
+        detail = ", ".join(f"{label}={list(shards)}" for label, shards in declared_shards)
+        raise ValidationError(f"sharded ports declare inconsistent shard sets: {detail}")
+    for label, port in sharded_ports.items():
+        locator_name = port.locator_name()
+        if locator_name is None:
+            continue
+        if (
+            locator_name not in kv_capabilities
+            or StoreCapability.SHARD_LOCATOR not in kv_capabilities[locator_name]
+        ):
+            raise ValidationError(
+                f"{label} locator {locator_name!r} must reference a kv port declaring "
+                "SHARD_LOCATOR"
+            )
+    for capability in (StorageCapability.VECTOR, StorageCapability.FULLTEXT):
+        ports = ports_by_capability.get(capability) or {}
+        # 只约束同一条分层索引的三个端口；schema_entities 等其它向量空间独立选型，
+        # 不参与三层一致性要求。这三个键是标准三层索引的**配置名**（向量/全文各一套），
+        # 不是某个实现的类名或 target，故只能按名字划定范围。
+        layers = {
+            name: port for name, port in ports.items() if name in _SHARD_LAYER_PORTS
+        }
+        if not layers:
+            continue
+        flags = {
+            name: StoreCapability.SHARD_ROUTED in capabilities_of(port)
+            for name, port in layers.items()
+        }
+        if any(flags.values()) and not all(flags.values()):
+            raise ValidationError(
+                f"{capability.value}_store layers must all be shard_routed or all be "
+                f"single-resource: {flags}"
+            )
+    if manager.has_fusion():
+        raise ValidationError(
+            "FusionStore consumers cannot be combined with logical sharding"
+        )
+    domain_configs = config.params.get("domain_stores") or {}
+    if not isinstance(domain_configs, dict):
+        raise ValidationError("domain_stores must be a mapping")
+    if bool(config.get(WRITE_DOCUMENT_KEY, False)):
+        raise ValidationError("document mode cannot be combined with logical sharding")
+    for name, entry in domain_configs.items():
+        if isinstance(entry, dict) and bool(entry.get(WRITE_DOCUMENT_KEY, False)):
+            raise ValidationError(
+                f"document mode cannot be combined with logical sharding (domain_stores.{name})"
+            )
+
+
+def _register_shard_topology(manager: CompositeStoreManager) -> None:
+    """启动期自动登记分片物理标识（F09 D13，运维见 deploy/sharding/README.md）。
+
+    每个端口用 ``{capability}:{port_name}`` 作登记键，避免向量 L2/L0/L1 三个端口
+    互相覆盖。只登记能声明稳定物理身份的后端（PG / Redis / ES / SQLite / Milvus）；
+    内存等进程内后端返回 ``None``，此时跳过自动登记并记 info——它们本来就没有跨重启
+    稳定的资源身份。KV 只声明了一部分分片的标识时视为装配错误，不再静默跳过。
+    """
+    from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
+
+    sharded = list(_shard_routed_ports(manager).items())
+    if not sharded:
+        return
+    owners = [
+        (label, port)
+        for label, port in sharded
+        if StoreCapability.SHARD_PLACEMENT in capabilities_of(port)
+    ]
+    if not owners:
+        raise ValidationError(
+            "sharded deployment requires a shard_routed KV port declaring "
+            "SHARD_PLACEMENT (placement ledger + topology registry)"
+        )
+    owner_label, owner = owners[0]
+    owner = cast(ShardPlacementOwner, owner)
+    owner_descriptors = owner.shard_descriptors(owner_label)
+    if not owner_descriptors:
+        logger.info(
+            "skip automatic shard topology registration: KV backend has no stable "
+            "resource identity (in-process storage)"
+        )
+        return
+    expected = set(owner.shards)
+    missing = sorted(expected - set(owner_descriptors))
+    if missing:
+        raise ValidationError(
+            f"shard topology registration is incomplete: shards {missing} have no "
+            "physical resource identity"
+        )
+    merged: dict[str, dict[str, str]] = {shard: {} for shard in expected}
+    for label, port in sharded:
+        for shard, mapping in port.shard_descriptors(label).items():
+            merged.setdefault(shard, {}).update(mapping)
+    owner.register_topology({shard: merged[shard] for shard in owner.shards})
+    logger.info("registered shard topology for %d shard(s)", len(expected))
+
+
+def _bind_shard_locators(manager: CompositeStoreManager) -> None:
+    """把各 ``shard_routed`` 包装层的定位器绑定到已构建的具名 KV 端口。
+
+    包装层的 ``locator`` 参数只是一个端口名（端口在 manager 构造前不存在），
+    必须在**装配期**完成绑定：定位端口缺失、未声明 ``SHARD_LOCATOR`` 都在这里
+    启动失败，而不是等第一次 ``locate`` 才暴露（S09 #3 / #4）。绑定的是
+    ``manager.kv(name)`` 的授权代理，保持 ``locate`` 走既有 SEARCH 判定。
+
+    解析器自己就是定位提供方（``locator_name() is None``）时跳过。
+    """
+    from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
+
+    kv_ports = {
+        name: port
+        for capability, name, port in manager.iter_named_ports()
+        if capability is StorageCapability.KV
+    }
+    for capability, name, port in manager.iter_named_ports():
+        if StoreCapability.SHARD_ROUTED not in capabilities_of(port):
+            continue
+        shard_port = cast(ShardRoutedPort, port)
+        locator_name = shard_port.locator_name()
+        if locator_name is None:
+            continue
+        target = kv_ports.get(locator_name)
+        if target is None or StoreCapability.SHARD_LOCATOR not in capabilities_of(target):
+            raise ValidationError(
+                f"{capability.value}:{name} locator {locator_name!r} must reference "
+                "an assembled kv port declaring SHARD_LOCATOR"
+            )
+        if not isinstance(shard_port, ShardLocatorConsumer):
+            raise ValidationError(
+                f"{capability.value}:{name} declares a locator but does not implement "
+                "the shard locator consumer protocol"
+            )
+        shard_port.bind_shard_locator(manager.kv(locator_name))
+
+
+def _bind_shard_relocation(manager: CompositeStoreManager) -> None:
+    """按显式 locator 依赖把派生端口绑定给各自的分片 KV，并校验搬迁能力（F09 D16）。
+
+    每个 ``shard_routed`` 派生端口经 ``locator_name()`` 指名它跟随的 KV 端口，搬迁只能
+    移动 / 清理跟随同一个 KV 的派生记录：两个独立 KV 即使分片名与 Scope / id 相同，
+    一方的搬迁也不能动另一方的索引。同一 KV 对象以多个具名别名出现、或同一派生端口
+    以多个名字出现时按对象身份去重。开关打开的 KV 所跟随的派生端口必须声明
+    ``SHARD_RELOCATABLE``，否则启动失败。
+    """
+    from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
+
+    kv_by_name: dict[str, Any] = {}
+    owners: dict[int, ShardPlacementOwner] = {}
+    for capability, name, port in manager.iter_named_ports():
+        if capability is not StorageCapability.KV:
+            continue
+        kv_by_name[name] = port
+        if StoreCapability.SHARD_PLACEMENT in capabilities_of(port):
+            owners.setdefault(id(port), cast(ShardPlacementOwner, port))
+    followers: dict[int, dict[int, tuple[str, Any]]] = {key: {} for key in owners}
+    for capability, name, port in manager.iter_named_ports():
+        if capability not in (
+            StorageCapability.VECTOR,
+            StorageCapability.FULLTEXT,
+            StorageCapability.ENTITY,
+            StorageCapability.GRAPH,
+        ):
+            continue
+        if StoreCapability.SHARD_ROUTED not in capabilities_of(port):
+            continue
+        locator_name = cast(ShardRoutedPort, port).locator_name()
+        owner = kv_by_name.get(locator_name) if locator_name is not None else None
+        if owner is None or id(owner) not in followers:
+            continue  # 定位端口的存在与能力已由 _bind_shard_locators 校验
+        followers[id(owner)].setdefault(id(port), (f"{capability.value}:{name}", port))
+    for key, owner in owners.items():
+        bound = followers[key]
+        if not owner.relocation_enabled():
+            owner.bind_relocatable_ports(())
+            continue
+        missing = sorted(
+            label
+            for label, port in bound.values()
+            if StoreCapability.SHARD_RELOCATABLE not in capabilities_of(port)
+        )
+        if missing:
+            raise ValidationError(
+                "relocate_on_update requires every shard_routed derived port that follows "
+                "this KV to declare SHARD_RELOCATABLE (with UNIT_RECORD_LOOKUP inner); "
+                f"missing: {missing}"
+            )
+        owner.bind_relocatable_ports(tuple(port for _, port in bound.values()))
+
+
+def _validate_connection_budget(config: Any, manager: CompositeStoreManager) -> None:
+    """装配期汇总全部分支的连接上限，并对部署预算做校验（F09 D13 / 性能基线）。
+
+    每个物理 Store 实例各持一个连接池（``PgStoreBase`` 实例级池），分片数直接
+    放大总连接数：N 张分片表就是 N 个池。只调小单表池上限不够——部署还需要一个
+    「总量」上限，超出在这里拒绝启动，而不是等运行期打满数据库连接。
+
+    - 总预算键：``globals.storage_connection_budget``（正整数）。未配置时只汇总并记
+      日志（不改变既有部署行为）；
+    - 从端口表出发按对象身份去重，并沿 ``connection_dependencies()`` 递归：分片表 /
+      归属存储多是包装层内联构建的实例，端口表看不到，必须跟着依赖走；
+    - 只累加能自报上限的后端（PG 返回 ``pool_max_size``）。不暴露上限的后端
+      （ES / Milvus / Redis 客户端池）不参与累加——按 0 估算会给出虚假的安全感。
+    """
+    seen: set[int] = set()
+    pending = [port for _, _, port in manager.iter_named_ports()]
+    total = 0
+    breakdown: list[str] = []
+    while pending:
+        store = pending.pop()
+        if id(store) in seen:
+            continue
+        seen.add(id(store))
+        pending.extend(store.connection_dependencies())
+        value = store.connection_budget()
+        if value is None:
+            continue
+        total += int(value)
+        breakdown.append(f"{store.resource_descriptor() or type(store).__name__}={value}")
+    configured = config.get("storage_connection_budget", None)
+    if configured is not None:
+        invalid_type = isinstance(configured, bool) or not isinstance(configured, int)
+        if invalid_type or configured <= 0:
+            # 配置错误必须报出来，即使当前拓扑没有可汇总的池（否则配错永远不生效）。
+            raise ValidationError(
+                "globals.storage_connection_budget must be a positive integer, "
+                f"got {configured!r}"
+            )
+    if not breakdown:
+        return
+    if configured is None:
+        logger.info(
+            "storage connection budget: total=%d (%s)", total, ", ".join(breakdown)
+        )
+        return
+    if total > configured:
+        raise ValidationError(
+            f"storage connection budget exceeded: {total} > {configured} "
+            f"({', '.join(breakdown)}). Reduce per-store pool sizes or raise "
+            "globals.storage_connection_budget"
+        )
 
 
 def _build_domain_stores(config: Any, manager: CompositeStoreManager, storage_ref: str) -> None:

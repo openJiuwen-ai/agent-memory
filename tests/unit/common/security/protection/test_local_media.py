@@ -233,25 +233,46 @@ def test_local_media_closes_descriptors_when_stream_wrapper_fails(tmp_path, monk
     root, source, work = _paths(tmp_path)
     policy = _policy(root)
     opened = set()
+    closed = set()
     real_open = os.open
+    real_close = os.close
 
     def record_open(*args, **kwargs):
         descriptor = real_open(*args, **kwargs)
         opened.add(descriptor)
         return descriptor
 
+    def record_close(descriptor):
+        closed.add(descriptor)
+        real_close(descriptor)
+
     def fail_wrapper(descriptor, *_args, **_kwargs):
         opened.add(descriptor)
         raise OSError("stream wrapper could not be constructed")
 
     monkeypatch.setattr(os, "open", record_open)
+    monkeypatch.setattr(os, "close", record_close)
     monkeypatch.setattr(os, "fdopen", fail_wrapper)
+    if os.name == "nt":
+        # Windows uses CreateFileW + open_osfhandle, not os.open; record the
+        # descriptor produced by the CRT before fdopen is attempted.
+        import msvcrt
+
+        real_handle = msvcrt.open_osfhandle
+
+        def record_handle(handle, flags):
+            descriptor = real_handle(handle, flags)
+            opened.add(descriptor)
+            return descriptor
+
+        monkeypatch.setattr(msvcrt, "open_osfhandle", record_handle)
+
     with pytest.raises(PermissionDeniedError):
         policy.stage(source.as_uri(), SCOPE, work)
     assert opened, "the regression must fail after acquiring a descriptor"
-    for descriptor in opened:
-        with pytest.raises(OSError):
-            os.fstat(descriptor)
+    # Assert by close calls rather than fstat: another thread/test can reuse the
+    # descriptor number after close, making fstat succeed spuriously.
+    assert opened <= closed
 
 
 @pytest.mark.parametrize("uri", ["meeting video.mp4", "file:meeting%20video.mp4"])

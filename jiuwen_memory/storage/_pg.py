@@ -323,6 +323,17 @@ class PgStoreBase:
         with self._init_lock:
             self._close_pool_unlocked()
 
+    def connection_budget(self) -> int:
+        """连接池上限（本实例**独占**一个池，分片表各持一份）。"""
+        return int(self._pool_max_size)
+
+    def resource_descriptor(self) -> str:
+        """``host:port/database/schema/table``（不含凭据）。"""
+        from ._support import sanitize_resource_id
+
+        endpoint = sanitize_resource_id(self._resolved_dsn())
+        return f"{endpoint}/{self._schema}/{self._table}"
+
     def _resolved_dsn(self) -> str:
         """当前应使用的 DSN（ConfigSource 优先，否则构造期回落）。"""
         from jiuwen_memory.config.binding import resolve_connection_url

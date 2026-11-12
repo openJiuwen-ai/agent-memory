@@ -60,6 +60,20 @@ class MemoryListResult:
 
 
 @dataclass
+class ShardedGetResult:
+    """``DomainStore.get_in_shards`` 的三类结果（F09 D3）。
+
+    - ``found``：在 ``shards`` 中且可读的记忆（按输入顺序）；
+    - ``missing_ids``：不存在（无 ``active`` 归属或数据缺失）；
+    - ``excluded_ids``：存在但不在 ``shards`` 中。
+    """
+
+    found: list[MemoryUnit] = field(default_factory=list)
+    missing_ids: list[str] = field(default_factory=list)
+    excluded_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ScoredHit:
     """检索命中项：id + 相关性得分 + 按需回带的元数据 payload。"""
 

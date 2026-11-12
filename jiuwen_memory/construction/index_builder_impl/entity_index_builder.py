@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from uuid import uuid4
 
 from jiuwen_memory.common.embedder.base import Embedder
@@ -225,7 +225,7 @@ class EntityLinkService:
         filters = EntityStoreFilters.from_scope(scope)
         try:
             entities = self._entity_store.find_by_linked_memory_id(
-                space_id, memory_id, filters=filters,
+                scope, memory_id, filters=filters,
             )
         except Exception as exc:
             logger.warning(
@@ -237,30 +237,32 @@ class EntityLinkService:
             )
             return EntityLinkResult(failed_count=1)
 
-        # Phase 1: 分类——剩余非空则 UNLINK_UPDATE，空则 DELETE
+        # Phase 1: 增量解除关联——总是发 UNLINK（单文档原子、不删记录）；
+        # 读到的剩余关联为空时才在同一批次追加 DELETE_IF_EMPTY。这样并发 LINK
+        # 新增的关联不会被「读出→整体替换」覆盖掉（F09 D9）。
         pending_ops: list[EntityOperation] = []
         updated_count = 0
         deleted_count = 0
         for entity in entities:
             remaining = tuple(mid for mid in entity.linked_memory_ids if mid != memory_id)
-            if remaining:
+            pending_ops.append(EntityOperation(
+                type=EntityOpType.UNLINK,
+                record_id=entity.id,
+                unlink_memory_ids=(memory_id,),
+            ))
+            updated_count += 1
+            if not remaining:
                 pending_ops.append(EntityOperation(
-                    type=EntityOpType.UNLINK_UPDATE,
-                    record=replace(entity, linked_memory_ids=remaining),
-                ))
-                updated_count += 1
-            else:
-                pending_ops.append(EntityOperation(
-                    type=EntityOpType.DELETE,
+                    type=EntityOpType.DELETE_IF_EMPTY,
                     record_id=entity.id,
                 ))
                 deleted_count += 1
 
-        # Phase 2: 一次 bulk 提交所有 update + delete
+        # Phase 2: 一次 bulk 提交所有 UNLINK（+ 必要时 DELETE_IF_EMPTY）
         failed_count = 0
         if pending_ops:
             try:
-                batch_result = self._entity_store.execute_operations(space_id, pending_ops)
+                batch_result = self._entity_store.execute_operations(scope, pending_ops)
             except Exception as exc:
                 failed_count = len(pending_ops)
                 logger.warning(
@@ -288,7 +290,7 @@ class EntityLinkService:
 
     def _semantic_lookup(
             self,
-            space_id: str,
+            scope: Scope,
             entity_text: str,
             filters: EntityStoreFilters,
     ) -> tuple[list[float] | None, EntityRecord | None, bool]:
@@ -306,6 +308,7 @@ class EntityLinkService:
         """
         if self._embedder is None or not entity_text:
             return None, None, False
+        space_id = space_id_from_scope(scope)
 
         try:
             embedding = self._embedder.embed([entity_text])[0]
@@ -323,7 +326,7 @@ class EntityLinkService:
 
         try:
             matches = self._entity_store.search(
-                space_id,
+                scope,
                 embedding,
                 top_k=1,
                 filters=filters,
@@ -355,7 +358,9 @@ class EntityLinkService:
         extracted_by_unit: list,
     ) -> EntityLinkResult:
         first_unit = group[0][0]
-        filters = EntityStoreFilters.from_scope(first_unit.scope)
+        scope = first_unit.scope
+        space_id = space_id_from_scope(scope)
+        filters = EntityStoreFilters.from_scope(scope)
 
         # 归一化 + hash 聚合：同 hash 的不同 unit_id 合并到一个 set
         entities_by_key: dict[str, tuple[str, str, str, set[str]]] = {}
@@ -381,7 +386,7 @@ class EntityLinkService:
         # 阶段1: hash 精确匹配——命中即 LINK，未命中直接 INSERT（不做向量归并）
         try:
             existing = self._entity_store.find_by_entity_text_hash(
-                space_id, tuple(entities_by_key.keys()),
+                scope, tuple(entities_by_key.keys()),
                 filters=filters, limit=self._list_limit,
             )
             existing_by_hash = {r.entity_text_hash: r for r in existing if r.entity_text_hash}
@@ -419,7 +424,7 @@ class EntityLinkService:
                     # top_k=1，score ≥ threshold 当同实体 LINK。embedder 为 None
                     # 时 _semantic_lookup 直接返回 (None, None, False) → 走 INSERT。
                     embedding, semantic_match, search_failed = self._semantic_lookup(
-                        space_id,
+                        scope,
                         entity_text,
                         filters,
                     )
@@ -438,6 +443,9 @@ class EntityLinkService:
                             EntityOperation(
                                 type=EntityOpType.LINK, record_id=match.id,
                                 link_memory_ids=ids_to_add,
+                                # 模板让 split 包装层在目标分片缺失物理文档时可 upsert，
+                                # 不依赖进程内目录（F09 D9）。
+                                record=match,
                             ),
                             key,
                         ))
@@ -480,7 +488,7 @@ class EntityLinkService:
                 op_id = op.record_id if op.record_id is not None else op.record.id
                 hash_by_id[op_id] = key
             try:
-                batch_result = self._entity_store.execute_operations(space_id, ops)
+                batch_result = self._entity_store.execute_operations(scope, ops)
             except Exception as exc:
                 failed_count += len(pending_ops)
                 logger.warning(

@@ -135,13 +135,14 @@ class _StaticEntityStore:
 
     def find_by_entity_text_hash(
         self,
-        space_id: str,
+        scope,
         entity_text_hashes: tuple[str, ...],
         *,
         filters: EntityStoreFilters,
+        shards=None,
         limit: int = 500,
     ) -> list[EntityRecord]:
-        del space_id, filters, limit
+        del scope, filters, shards, limit
         self.calls += 1
         self.requested_hashes.update(entity_text_hashes)
         return [self.record] if self.record.entity_text_hash in set(entity_text_hashes) else []

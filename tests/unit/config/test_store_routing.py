@@ -116,7 +116,7 @@ def test_routing_fulltext_graph_fusion_fs_switch() -> None:
     ft.search(_SCOPE, TextQuery(text="q"))
     ft_a.search.assert_called_once()
     gr.seed_ids(_SCOPE, {"t"})
-    g_a.seed_ids.assert_called_once()
+    g_a.seed_ids.assert_called_once_with(_SCOPE, {"t"})
     fu.search(_SCOPE, FusionQuery(vector=[0.1]))
     fu_a.search.assert_called_once()
     fs.stat(_SCOPE, "r")

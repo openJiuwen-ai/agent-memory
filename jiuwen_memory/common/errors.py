@@ -106,6 +106,22 @@ class ValidationError(AgentMemoryError):
     """
 
 
+class MissingShardPlacementError(ValidationError):
+    """写入目标没有生效的分片归属（记忆已删除或从未写入分片 KV）。
+
+    单独成类，便于后台构建（如 ASSOCIATE）只跳过这一种可预期的数据缺失，
+    不吞掉后端自身抛出的配置 / 数据 :class:`ValidationError`。
+    """
+
+    def __init__(self, node_ids: list[str] | None = None, message: str = "") -> None:
+        self.node_ids = list(node_ids or [])
+        super().__init__(
+            message
+            or f"no active shard placement for graph node(s) {self.node_ids[:5]}; "
+            "the memory was never written to the sharded KV or has been deleted"
+        )
+
+
 class PolicyError(AgentMemoryError):
     """
     运行时策略操作被拒：键未知，或试图修改不可变配置
@@ -152,6 +168,22 @@ class UnsupportedCapabilityError(AgentMemoryError):
             or f"{component or 'component'!r} does not support "
             f"{capability or 'capability'} {value!r}"
         )
+
+
+class RelocationInProgressError(ConflictError):
+    """记忆正在搬迁（F09 D16）：写入被拒绝，可重试；映射为 HTTP 409。
+
+    重试语义与 :class:`ConflictError` 一致（继承它），但单独成类便于调用方区分
+    「正在搬迁」和「同 id 已存在」，也避免把搬迁窗口当成永久冲突。
+    """
+
+    def __init__(self, unit_id: str = "", message: str = "") -> None:
+        super().__init__(
+            entity="memory_relocation",
+            key=unit_id,
+            message=message or f"memory {unit_id!r} is being relocated; retry later",
+        )
+        self.unit_id = unit_id
 
 
 class UnsupportedStorageCapabilityError(AgentMemoryError):

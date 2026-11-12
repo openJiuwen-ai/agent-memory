@@ -19,6 +19,7 @@ from jiuwen_memory.common.type_def import (
     matches_filter_value,
 )
 from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from jiuwen_memory.storage.vector import VectorProducer, VectorStore
 
@@ -52,6 +53,12 @@ class InMemoryVectorStore(VectorStore):
     def health(self) -> None:
         return None
 
+    def capabilities(self) -> frozenset[StoreCapability]:
+        # 内存后端在 top-k 截断前逐条求值 filters，可作共享索引的前置过滤内层。
+        return frozenset(
+            {StoreCapability.SHARD_PREFILTER, StoreCapability.UNIT_RECORD_LOOKUP}
+        )
+
     def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
         bucket = self._data[_skey(scope)]
         for rec in records:
@@ -74,6 +81,18 @@ class InMemoryVectorStore(VectorStore):
     def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
         bucket = self._data[_skey(scope)]
         return [bucket[i] for i in ids if i in bucket]
+
+    def record_ids_for_units(
+        self, scope: Scope, unit_ids: list[str]
+    ) -> dict[str, list[str]]:
+        """按 ``metadata.unit_id`` 找出该记忆的全部记录 id（F09 D16）。"""
+        wanted = set(unit_ids)
+        out: dict[str, list[str]] = {}
+        for rec in self._data[_skey(scope)].values():
+            unit_id = rec.metadata.get("unit_id")
+            if isinstance(unit_id, str) and unit_id in wanted:
+                out.setdefault(unit_id, []).append(rec.id)
+        return out
 
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
         bucket = self._data[_skey(scope)]

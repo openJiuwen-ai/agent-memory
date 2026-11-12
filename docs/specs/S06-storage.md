@@ -144,13 +144,10 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     `StorageSecurity.authorize`；默认 AllowAll 可省略 access。Store 自身 `security` 表示数据保护。
     **ENTITY 端口的授权适配**（`_AuthorizedEntityStoreProxy`，与通用代理分开实现）：
     `find_by_entity_text_hash` / `find_by_linked_memory_id` → `SEARCH`；`execute_operations`
-    → 按 batch 内 op 类型派生动作集逐个授权（`INSERT`→ADD、`LINK`/`UNLINK_UPDATE`→UPDATE、
-    `DELETE`→DELETE；空 batch 零授权，因为它不执行任何动作）；`ensure_index` → `ADMIN`。
-    交给 `authorize` 的 Scope 是**有损近似** `Scope(space=space_id, user=filters.actor_id)`：
-    `space` 是 `space_id_from_scope` 的算值（可能是 space id、org id 或字面量 `"default"`），
-    `org`/`agent`/`session` 恒空，`execute_operations` 无 `filters` 故 `user` 也恒空。
-    自定义 `StorageSecurity` 不得对 `resource == "entity"` 按 org/agent/session 判定；
-    写入侧的 actor 隔离由 `EntityRecord.filters` 记录内字段承担，不由授权入参承担。
+    → 按 batch 内 op 类型派生动作集逐个授权（`INSERT`→ADD、`LINK`/`UNLINK`/`UNLINK_UPDATE`→UPDATE、
+    `DELETE_IF_EMPTY`/`DELETE`→DELETE；空 batch 零授权，因为它不执行任何动作）；整批先授权、
+    全部通过才执行；`ensure_index` → `ADMIN`。交给 `authorize` 的 Scope 是方法首参的**真实
+    Scope**（契约 v2 起，不再由 `space_id` 有损近似）。
 27. **写接口覆盖范围由实现决定**：`DomainStore.add`/`update`/`delete` 落成哪些索引形式取决于该
     实现的能力，调用方不得假定「只写记忆本体」。`IndexWriteMode` / `IndexRemoveMode` 表达调用方
     意图，能否拆分由实现按自身能力决定——不具备检索索引能力的实现在 `RETRIEVAL_ONLY` /
@@ -409,7 +406,7 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `seed_ids` | `(scope, tokens: set[str]) -> list[str]` | 在 scope 内按关键词/词项定位种子节点 id |
+| `seed_ids` | `(scope, tokens: set[str], *, extensions=None) -> list[str]` | 在 scope 内按关键词/词项定位种子节点 id；`extensions["shards"]` 供共享图在截断前过滤，调用方不分片时不传该参数（兼容旧签名插件） |
 | `insert` | `(scope, nodes=None, edges=None) -> None` | 在 scope 下新建节点/边；id 已存在时报冲突 |
 | `update` | `(scope, nodes=None, edges=None) -> None` | 更新已有节点/边；id 不存在时报缺失 |
 | `delete` | `(scope, node_ids=None, edge_ids=None) -> None` | 在 scope 内按 id 删除节点（连带其关联边）/ 边（幂等） |
@@ -516,17 +513,22 @@ mapper、保留镜像供排查，不自动覆盖或修复已有卷。挂载后�
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `ensure_index` | `() -> None` | 确保索引已创建并就绪；实现可懒触发（首次读写时） |
-| `find_by_entity_text_hash` | `(space_id, entity_text_hashes, *, filters, limit=500) -> list[EntityRecord]` | 按 `entity_text_hash` keyword term 精确查询（不做向量归并） |
-| `find_by_linked_memory_id` | `(space_id, memory_id, *, filters) -> list[EntityRecord]` | 反查：哪些实体关联了该 memory（unlink 用） |
-| `execute_operations` | `(space_id, operations) -> EntityBatchResult` | bulk 变更（INSERT/LINK/UNLINK_UPDATE/DELETE 混合） |
+| `find_by_entity_text_hash` | `(scope, entity_text_hashes, *, filters, shards=None, limit=500) -> list[EntityRecord]` | 按 `entity_text_hash` keyword term 精确查询（不做向量归并）；`shards` 非空时只返回选中分片的关联，空记录不返回 |
+| `find_by_linked_memory_id` | `(scope, memory_id, *, filters, shards=None) -> list[EntityRecord]` | 反查：哪些实体关联了该 memory（unlink 用） |
+| `execute_operations` | `(scope, operations) -> EntityBatchResult` | bulk 变更（INSERT/LINK/UNLINK/DELETE_IF_EMPTY/DELETE，UNLINK_UPDATE 仅兼容） |
+| `search` | `(scope, query_vector, *, top_k, filters, shards=None) -> list[EntitySearchResult]` | 实体向量 kNN 检索；`shards` 非空时作为前置过滤 |
 
-**隔离模型是本层唯一的 scope 契约偏离**：第一入参是 `space_id: str`（`space_id_from_scope`
-的算值：`scope.space` → `scope.org` → 字面量 `"default"` 三级降级，走后端 routing）而非
-`Scope`；额外的隔离维度由 `EntityStoreFilters` 中非空的 `actor_id` / `assistant_id` /
+**LINK 的 `record` 是可选的**：带 `record` 时，目标文档缺失则用它创建（upsert）；不带时只对
+已存在的文档增量追加，文档缺失则该条失败。分片包装层在 `split` 模式下保持同一语义——首次关联
+到某个分片（该分片还没有这个实体的物理文档）且不带 `record` 时该条失败，已有物理文档时照常追加。
+`UNLINK` 只增量移除、从不删除记录；`DELETE_IF_EMPTY` 在存储内原子判空并删除。
+
+**隔离模型**：第一入参是 `scope: Scope`（契约 v2 起与其它 Store 对齐）；后端内部用
+`space_id_from_scope(scope)`（`scope.space` → `scope.org` → 字面量 `"default"` 三级降级）
+计算 routing；额外的隔离维度由 `EntityStoreFilters` 中非空的 `actor_id` / `assistant_id` /
 `session_id` 分别生成 term。`from_scope` 将 user / agent / session 映射到这三项；空值
 不生成该维过滤。后端按显式 filters 决定范围，不承诺同 user 下必然跨 agent/session 共享。
-隔离仍由存储层强制（不变量 1），只是维度表达与五段模型不同构；代价由授权代理承担
-（不变量 26 的有损 scope 近似）。
+隔离仍由存储层强制（不变量 1）；授权按真实 Scope 判定（不变量 26）。
 
 **partial failure 语义**：`execute_operations` 是 per-item 粒度——一条失败不影响其他，
 失败 id 经 `EntityBatchResult.failed_ids` 回传，**不抛异常**（与主链路 `BulkWriteError`
@@ -810,3 +812,220 @@ privacy_rule_ids / privacy_categories 只保存有限分类依据，不包含原
 
 原文精确检索、旧库自动迁移、文档/文件监听路径及分级 TTL/cloud/share 执行未提供。
 完整披露契约见 [S10](S10-security.md#隐私保护与用户访问控制)。
+
+## 逻辑分片能力协议（第一阶段已实现）
+
+本节是 F09 的契约。**第一阶段已落地**：`ShardResolver`（`rule_based`）、`ShardLocator`、
+`ConditionalKV`（内存 / PostgreSQL / Redis）、KV / 向量 / 全文 / 实体四类 `shard_routed`
+包装层与关联图 `shard_routed` 包装层（证据图不分片）、`DomainStore.get_in_shards`、拓扑登记与对账、
+`--relocate-shard` 数据搬迁与归属存储的 `encrypted` 条件 KV 转发、`resource_descriptor()` 与启动期自动拓扑登记。
+实现按 S09 注册与装配；决策与失败恢复流程见 [F09](../features/storage/F09-logical-sharding.md)。
+
+实现映射：Store 级能力由 `storage/capability.py` 的 `StoreCapability` 声明（`BaseStore.capabilities()`），
+而不是本节早期草案里的独立能力对象；能力集装配期固定。`SHARD_ROUTED` 标识分片路由包装层，
+装配器据此判定是否处于分片部署（不再从某个内层的 `SHARD_PREFILTER` 推断）；声明该能力即承诺实现
+`storage/shard_port.py` 的 `ShardRoutedPort` 协议（`shards` / `locator_name` / `shard_descriptors`），
+需要外部定位端口的实现同时实现 `ShardLocatorConsumer`（`bind_shard_locator`），持有归属台账与拓扑
+登记的实现额外声明 `SHARD_PLACEMENT`（`ShardPlacementOwner`：`register_topology` / `read_topology`）。
+装配器只按能力取端口、按协议访问，不 `getattr` 探测方法。`ConditionalKV` 是 `KVStore` 之外的
+独立 ABC（`storage/kv.py`），归属存储必须同时实现 `KVStore` 与它；当前只有 PostgreSQL / Redis /
+内存实现声明该能力，SQLite 等单写者后端不得作归属存储（仅限单机测试）。
+
+### 能力发现与代理
+
+Store 提供稳定的能力描述和按能力标识取得的类型化端口；描述包含协议版本，缺失或版本不兼容返回 `UnsupportedStorageCapabilityError`。能力对象不单独拥有连接资源，归提供 Store 管理。授权与加密代理显式实现/转发能力，保持 Scope、安全和资源身份；禁止通过私有属性找回原始 Store。暂时故障为 BackendError，不改变能力集合。
+
+加密代理**不得包装 `SHARD_ROUTED` 端口**：加密只作用于物理分片表 / `passthrough` / 归属存储（每分片独立密钥），
+外层再包一次会双重加密并丢掉分片粒度，因此该组合在装配期（含显式 `encrypted` 配置）直接拒绝，
+也不得靠方法名转发去"保持"分片能力。
+
+归属存储的部署形态属于该能力的前提：Redis 后端使用单节点客户端，只支持单机 / 主从，**不支持
+Redis Cluster**（需要 `redis.RedisCluster` 客户端与真实集群集成测试，当前未实现）。
+
+| 能力端口 | 输入 / 输出与约束 |
+|---|---|
+| ShardResolver | 创建时 MemoryUnit → 合法 shard；公开只读 shards/default_shard；纯函数，不访问存储 |
+| ShardLocator | Scope + unit_ids → active 的 id→shard 映射及未定位 id；批量部分结果，故障不得冒充未定位 |
+| ConditionalKV | Scope + key/value → 原子 create、按完整期望值 replace/delete；多 key 部分读取返回已存在映射；存储侧当前时间；比较失败与后端故障区分 |
+| ResourceDescriptor | 无凭据的规范化持久资源身份、端口类型、索引兼容描述；代理不改变身份；内存资源身份限定装配上下文。当前 PG / pgvector / Redis / ES / SQLite / Milvus（`uri/collection`）/ nano-graphrag（工作目录）/ Neo4j（`uri/database`）/ KV 图声明；split 包装层要求各分片的非空描述互不相同 |
+| ShardPrefilter | Scope + 查询 + shard 集合 → 截断前过滤的候选；系统/授权/用户谓词均 AND；标签由存储写入，不信任用户输入。当前由 pgvector / Milvus / Elasticsearch，以及图后端内存 / nano-graphrag / Neo4j 声明（图：遍历可经过任意节点，只在收集结果时按标签过滤） |
+| GroupedMemoryLinks | Scope + 记录身份 + 按 shard 分组引用 + 增量操作 → 逐项结果；原子 UNLINK、DELETE_IF_EMPTY；查询仅投影选中引用 |
+
+
+### 逻辑视图与模式
+
+KV 以归属记录控制可见性，记忆创建后归属固定；scan 覆盖全部逻辑可见键，scopes 去重，不暴露控制键及迁移旧副本。向量、全文、实体、图独立选择 shared/split。shared 前置过滤；split 查询所选物理资源；两者均在返回前验证归属，并从当前真源读取返回内容。
+
+DomainStore 新增 `get_in_shards(scope, unit_ids, shards)`，返回 found/missing_ids/excluded_ids；`shards` 为空或含未配置的分片名时返回 `ValidationError`，不得把拼写错误表现为 excluded_ids；不得因单个缺失整批失败，也不得借 excluded_ids 绕过授权披露跨 Scope 存在性。普通 get 保持旧契约。Schema 属性与层级扩展采用相同约束。
+
+`extensions["shards"]` 的语义由数据面拥有：`DomainStore` 提供 `requested_shards(extensions) -> frozenset[str] | None`，
+检索层只透传扩展参数、不解析存储内部 key。默认实现只做形状判定（缺键 → `None`；`[]` / `None` / 非集合 /
+空字符串成员 → `ValidationError`），启用分片的实现额外校验分片名已配置；启用的通道不支持分片时报
+`UnsupportedStorageCapabilityError`，不得静默退回全量。
+
+实体方法首参迁到 Scope；旧签名经有期限适配器，不能宣称具备分片或原子能力。`EntityStore.supports_complete_linked_enumeration` 显式声明能否完整枚举关联记忆（默认 false，第三方插件不会被误传 `complete=True`），包装层只在该能力为真时声明 `SHARD_RELOCATABLE`。实体契约以
+`EntityStore.CONTRACT_VERSION` 版本化（v2 = Scope 首参 + 增量 `UNLINK` / `DELETE_IF_EMPTY`）：旧签名实现
+不继承该属性，由适配器按版本识别，不靠方法签名自省。适配器无法履约的操作（如旧签名下的
+`DELETE_IF_EMPTY`）必须如实计入失败结果，不得静默当作成功。
+
+共享索引（向量 / 全文）由包装层写入的分片标签是 `system_metadata.storage_shard`：它落在既有
+metadata 命名空间内，各后端沿用既有 metadata 索引与过滤路径，公共层不需要为 storage 增加内置字段。
+该字段由 storage 覆盖调用方同名输入，用户 filters 只能与它取 AND。
+
+### 图分片协议（已实现）
+
+关联图节点 id 就是记忆 `unit_id`，节点属性不要求 `MemoryRef`。`GraphStore.seed_ids` 增加可选
+`extensions`，`GraphRecaller` 把 `extensions["shards"]` 同时传给 `seed_ids` 与 `GraphQuery`；
+未指定时保持原行为，普通后端不支持分片时明确报 `UnsupportedStorageCapabilityError`。
+
+- **shared**：单图，包装层按节点 id 经 `ShardLocator` 查归属，在
+  `Node.properties["storage_shard"]` 写标签；关联图节点就是记忆，**不存在公共节点**，查不到归属的写入直接 `ValidationError`。
+  内层后端须声明 `SHARD_PREFILTER`，在**截断 `limit` 之前**按 `storage_shard` /
+  `storage_shard_next` 过滤；遍历可以经过其它分片节点，只在返回结果时过滤（三个后端统一）。
+  已删除记忆留下的无标签旧节点在带 `shards` 的查询中不返回。
+- **split**：每个分片一个图存储，各分片的 `resource_descriptor()` 必须互不相同
+  （Milvus 以 `uri/collection` 为向量物理身份）；节点归属缺失同样报 `ValidationError`，边只有两端落在同一分片才写入，
+  跨分片的边丢弃（接受跨分片多跳丢失）；`search` / `seed_ids` 只访问选中分片，`get` 扇出全部图。
+- **缺归属**：两种模式写入缺归属节点抛 `MissingShardPlacementError`（`ValidationError` 子类），后台构建可只跳过这一类可预期缺失。
+- **搬迁中的写入**：`insert` / `update` 命中 `moving` 节点（含边端点）抛 `RelocationInProgressError`，
+  不能覆盖 `storage_shard_next` 过渡标签；`delete` 同样拒绝 `moving` 节点，避免切换后目标副本"复活"。
+- **搬迁（D16）**：shared 只改标签（`storage_shard_next` 过渡，`cleanup_unit` 转正或回滚），
+  split 复制节点到目标图后删除源节点及其关联边；跟随开启搬迁的 KV 的图端口必须声明
+  `SHARD_RELOCATABLE`。
+
+**证据图不分片**：它的节点引用其他 Scope 的记忆，角色视图按 `incident_edges` 读取，不经过
+`search`。`EvidenceGraphBuilder` 要求 `supports_incident_edges` 与
+`supports_conditional_projection`；`shard_routed` 图包装层不声明这两项，配成证据图时构建失败。
+不引入控制 KV、逻辑目录、每 Scope 写入占位、操作日志、提交代次或多引用节点 / split 占位节点。
+
+Schema watermark 与派生索引均纳入迁移/备份/重建。图 split 不承诺跨物理图多跳完整；共享模式不构成独立资源隔离。未完成真实后端认证不得声明支持。
+
+### 归属记录协议
+
+KV 是分片归属的唯一事实来源：只有分片 KV 在 `insert` 新的 `/memory/` 记录时按 `ShardResolver` 决定分片，此后归属固定（粘性归属）；同 id 原地写（分片 KV 的 `update`）修改 `tier`、显式分片键等字段照常更新，记忆留在原分片。生成新 id 的写入（如 `SUPERSEDE`）是一次新的 `insert`，按新内容落位。向量 / 全文 / 实体经 `ShardLocator` 读取归属并跟随，不自行按规则判定。非 `/memory/` 的 key 写 `passthrough`。
+
+**归属记录**：每条记忆在归属存储中有一条记录，key 为 `(scope, unit_id)`，值为 `{分片, 状态, 操作 token, 创建时间}`。
+
+| 字段 | 约束 |
+|---|---|
+| 状态 | `pending`（插入进行中）/ `active`（已生效）/ `cleaning`（删除或对账清理进行中） |
+| 操作 token | 每次创建归属时生成的随机值，只存在于归属记录中，用于区分不同的创建尝试；不扩散到数据 key 与索引 |
+| 创建时间 | 存储侧时间（`ConditionalKV.now()`），只用于对账判断超期，不用于识别操作 |
+
+数据 key 保持 `/memory/{unit_id}`，不带归属或代次信息。归属存储须声明 `CONDITIONAL_KV`；条件替换 / 删除比较整条归属值。
+
+**可见性**：一条记忆可见，当且仅当其归属为 `active`，且归属指向的分片中存在 `/memory/{unit_id}`。分片表中没有 `active` 归属指向的数据（无主数据）、归属指向别的分片的数据（错放副本）对任何读取都不可见。
+
+**协调规则**：
+
+1. 归属只能原子创建；同一 id 同时只能存在一条归属，持有归属的 insert 至多一个。
+2. 数据只用原子创建写入，遇到已有数据即中止，不覆写。
+3. 删除与对账先持有自己的 `cleaning` 归属，持有期间删除数据，最后按自己的 token 条件删除归属。
+4. 遗留的 `cleaning` 只能由创建它的操作完成，不在线接管；只在维护窗口、排空在途请求后由对账完成。
+5. 超期 `pending` 由对账按完整值条件清理，不允许新的 insert 接管它的 id。
+6. update 不参与协调：读到 `active` 后直接对分片表按 key 盲写，语义与单表 `KVStore.update` 相同。
+7. 协调全部依赖存储侧原子条件操作，不使用锁。
+
+| 操作 | 步骤 | 并发与失败 |
+|---|---|---|
+| `insert` | ① 求分片 S、生成 token；② 原子创建 `pending`；③ 在 S 中原子创建数据；④ 条件替换为 `active`，成功才返回成功 | ② 已有任何状态的归属 → `ConflictError`；③ 已有数据或后端失败 → 条件删除自己的 `pending` 后报错；④ 失败（归属已被删除或清理）→ insert 失败，已写数据成为不可见的无主数据 |
+| `update` | 读归属，须为 `active`；对 S 中数据执行 `update` | 无归属或非 `active` → `NotFoundError`；数据已被并发删除 → 内层 `NotFoundError` |
+| `delete` | ① 读归属；② 条件替换为自己的 `cleaning`；③ 删除数据；④ 按 token 条件删除归属 | 无归属 → 幂等成功；② 失败重读重试；读到他人的 `cleaning` → 视为删除已在进行并返回成功；对 `pending` 同样生效，进行中的 insert 在 ④ 失败 |
+| `get` / `exists` / `mget` | 读归属，为 `active` 才读 S | `pending`、`cleaning`、无归属、数据缺失都按不存在处理；`mget` 保持任一缺失整批 `NotFoundError` |
+
+**保证**：同一 id 同时至多一次 insert 成功；insert 返回成功的记忆在被删除前一直可见，内容为该次 insert 或其后某次 update 的内容；delete 返回成功后该记忆不可见；失效的 insert 不能提交归属，也不能覆盖已有数据，其晚到写入的内容不会可见。
+
+**不保证**：update 不拒绝跨「删除后同 id 重新插入」的陈旧写入（与单表相同）；失效在途 insert 的晚到写入会占住数据位置，使同 id 的下一次 insert 失败直到对账清理；遗留 `cleaning` 在维护窗口清理前该 id 无法重新插入；并发 insert 同一 id 时，赢家在提交前失败会使两者都失败。insert 不是幂等的：响应丢失后重试，若首次已成功返回 `ConflictError`。删除完成后允许以同一 id 重新插入，可能落到不同分片。
+
+**派生索引写入契约**（向量 / 全文 / 实体）：
+
+| 操作 | 约束 |
+|---|---|
+| insert / update | 记录 id 必须由 `metadata.unit_id` 派生（等于 `unit_id`，或以 `unit_id` 加 `-` / `:` 开头），否则拒绝；按 `active` 归属写入，定位不到的记录失败，不落默认分片；不到其它分片删除同 id 记录 |
+| delete | 按 id 在各分片幂等删除 |
+| get | 按 id 扇出到各分片，缺失语义同内层实现 |
+| 批量 | 按分片分组写入；某组失败不回滚成功组，返回失败记录列表 |
+
+检索返回的内容一律回读当前真源，索引记录只用于召回与排序。派生索引中归属分片与所在表不一致的残留记录、KV 错放副本不在在线对账范围内，只在维护窗口处理。
+
+### 改路由字段后的搬迁协议（已实现）
+
+本小节是 [F09 D16](../features/storage/F09-logical-sharding.md#d16-改路由字段后的自动搬迁已实现) 的契约。开关 `kv_store.<name>.params.relocate_on_update`（布尔，默认 `false`）；为 `false` 时归属记录序列化与上文完全一致，下列状态与字段都不出现。
+
+**归属记录扩展**
+
+| 字段 / 状态 | 约束 |
+|---|---|
+| 状态 `moving` | 搬迁进行中；记录源分片 `source` 与目标分片 `relocate_to`；`shard` 仍为源分片 |
+| `relocate_to` | `active` 上表示「待搬迁到该分片」；`moving` 上表示搬迁目标 |
+| `step` | 仅 `moving` 使用，取 `copy_kv` / `copy_derived` / `switch` / `rollback`；每步开始前持久化。切换后进入 `active(cleanup_from)`，清理进度即 `cleanup_from` 是否存在 |
+| `cleanup_from` | 仅 `active` 使用，表示已切换、源分片仍待清理 |
+| `failures` | 连续搬迁失败次数；达到 `relocate_max_failures` 时清除标记 |
+| `mark_digest` | 打标记时写入正文的 sha256；搬迁开始后与源分片当前正文比对，不一致即按当前真源重新裁决 |
+| `claim` / `claimed_at` | 仅 `active(cleanup_from)` 使用：清理执行权 token 与领取时间，切换时随同一次条件替换写入 |
+
+可选字段为空时不序列化；条件替换 / 删除仍比较整条归属值。打标记只改 `relocate_to` / `mark_digest` / `failures`，清理只改 `cleanup_from` / `claim` / `claimed_at`，两者都基于最新记录做字段替换，不得覆盖对方字段。
+
+**可见性**：一条记忆可见，当且仅当其归属为 `active` 或 `moving`，且归属的 `shard` 指向的分片中存在数据。`moving` 期间以源分片为准；目标分片中的副本在切换前视为错放副本。
+
+**定位**：`ShardLocator.locate` 把 `moving` 的 id 计入 `found`（值为源分片），同时放入结果的 `moving` 集合；派生写入遇到 `moving` 中的 id，该条以 `RelocationInProgressError` 失败。
+
+**触发**：`ShardResolver.resolve_on_update(old: MemoryUnit, new: MemoryUnit, current: str) -> str | None`，返回需要搬去的分片，`None` 表示不搬。默认实现：
+
+1. `shard_from` 字段在 `new` 中有值 → 以该值为目标；
+2. `shard_from` 字段在 `old` 中有值而在 `new` 中缺失 / `None` / 空串 → `None`；
+3. 其余按 `resolve(new)` 求值；
+4. 目标等于 `current` → `None`；目标为 `retiring` 分片时由分片 KV 在打标记前拒绝并告警（`resolve_on_update` 本身不读拓扑）。
+
+只在分片 KV 的 `update` 写入成功后求值；不同于当前标记（目标或 `mark_digest`）时以条件替换写入 `relocate_to` 与本次写入正文的 `mark_digest`，求得 `None` 时清除已有标记。条件替换失败不影响 update 本身的结果。**清除标记也要绑定数据版本**：只有本次写入的正文仍是源分片当前内容时才清除；CAS 重试读到的记录已被更晚的写入标记过（正文摘要不同）时保留该标记，旧请求不能取消新意图。
+
+**操作语义**
+
+| 操作 | 归属为 `active(relocate_to)` | 归属为 `moving` | 归属为 `active(cleanup_from)` |
+|---|---|---|---|
+| `get` / `exists` / `mget` / `scan` / `list` | 读 `shard` | 读源分片 | 读 `shard`（目标分片） |
+| `update` | 正常，可改写或清除标记 | `RelocationInProgressError` | 正常 |
+| `delete` | 正常，标记随归属删除 | `RelocationInProgressError` | 存在 `claim` 时 `RelocationInProgressError`；否则正常，持有 `cleaning` 期间一并删除 `cleanup_from` 分片中的数据 |
+| 同 id `insert` | `ConflictError`（与现有一致） | `ConflictError` | `ConflictError` |
+
+`RelocationInProgressError` 是 `ConflictError` 的子类，HTTP 映射 409，表示可在稍后重试；消息不暴露源 / 目标分片之外的信息。
+
+**待搬迁索引**：有搬迁工作的记忆（带 `relocate_to` / `cleanup_from` 或处于 `moving`）另在归属存储同 Scope 写一条 `/__shard_placement/relocation/<unit_id>`，值为写入时间与随机串。先写索引、再写标记；索引刷新遇到 CAS 冲突必须重读后重试创建 / 替换，不能假定「另一个写者已刷新」——旧清理任务可能刚按旧值删除了它；重试仍失败时不写标记，避免产生没有索引、永不被处理的搬迁。`relocate_pending` 只扫描这些条目。索引不是权威状态：执行者先读索引值、再读归属记录；指向的记录已无工作且索引超过 `stale_after` 时，按读到的值条件删除；搬迁完成后同样按**本轮读到的值**条件删除，期间被新标记刷新过的索引必须保留。对账、退役校验与外部扫描跳过该子前缀。
+
+**update 写后复核**（开关打开时）：分片 KV 的 `update` 写入数据后重读归属；若与写前读到的不是同一次生效占有（状态非 `active`，或 token / 分片变化），返回 `RelocationInProgressError`，由调用方重试。写源分片时数据已不存在且归属已换主，同样返回该错误而不是 `NotFoundError`。打标记的条件替换失败时重读一次：同一占有只是标记变化则按最新记录重试，已换主则返回该错误。
+
+**执行**（`relocate_pending(*, scope=None, limit=100, min_age=None, recover_stale=False, stale_after=None)`，由分片 KV 的控制面提供，非 MemoryAPI 方法；`min_age` 缺省取装配参数 `relocate_min_age`，默认 30 秒）：
+
+| 步骤 | 动作 | 失败处理 |
+|---|---|---|
+| 开始 | 对 `relocate_to` 标记已超过 `min_age`、且不带 `cleanup_from` 的 `active` 记录，条件替换为 `moving(step=copy_kv)` 并生成新 token | 条件替换失败 → 跳过（已被并发修改或由其他执行者处理） |
+| 校验标记 | 持有 `moving` 读源正文，与 `mark_digest` 比对 | 不一致 → 按当前正文 `resolve_on_update(new, new, 源)` 重新求目标，条件替换回 `active(源)` 并重新排队（目标为空则清除标记），不计失败 |
+| `copy_kv` | 读源数据与剩余 TTL，在目标分片原子创建 | TTL 无法给出、目标已有不同内容 → 回滚 |
+| `copy_derived` | 对每个声明 `SHARD_RELOCATABLE` 的派生端口调用 `relocate_unit` | 任一失败 → 回滚 |
+| `switch` | 先确认源数据仍等于复制时的版本、且目标 KV 副本存在并与源一致，再条件替换为 `active(shard=目标, cleanup_from=源, claim=新 token)` | 源数据已被改写 → 回滚（不计失败，下一轮按新内容重新裁决）；目标副本缺失 / 不一致 → 回滚（绝不切换）；条件替换失败 → 保持 `moving`，按遗留处理 |
+| `cleanup` | 持有 `claim`：各端口 `cleanup_unit(源)`，删除源分片数据，仅当记录的 `claim` 仍为本执行者时去掉 `cleanup_from` / `claim` | 失败 → 释放 `claim`、保留 `cleanup_from`，下次重新领取后继续；`claim` 未释放（执行者崩溃）且超过 `stale_after` 时只在 `recover_stale=True` 接管 |
+
+回滚：**开始前先把 `step` 条件替换为 `rollback`**，再各端口 `cleanup_unit(目标)`、最后删除目标分片 KV 副本（派生清理失败时保留目标副本，维护恢复仍可复核），条件替换回 `active(shard=源, relocate_to=目标, failures+1)`，标记时间重置。`failures` 达到 `relocate_max_failures`（默认 5）时改为清除标记与索引（报告计入 `abandoned`）。回滚失败时保持 `moving`。
+
+重新分区（`repartition_unit`）在开关打开时复用同一状态机：先打标记再执行，未完成则抛错且归属保持在源分片，不会出现 KV 已切换、派生记录仍在旧分片的状态；开关关闭时保持只搬 KV 的旧行为。
+
+遗留 `moving`（`now - created_at > stale_after`）只能由创建它的执行者完成；在线执行只计数，`recover_stale=True` 仅在维护窗口、排空在途操作后使用：`step` 早于 `switch` 回滚。`step=switch` 前滚前必须复核目标 KV 副本存在且（源仍在时）与源一致，不满足就按回滚处理（防止目标副本写入丢失或内容不一致时切到空目标并删除唯一有效数据）；回滚一开始就持久化 `step=rollback`，因此不会出现「回滚做了一半却停在 `step=switch`」。`step=rollback` 的记录一律继续回滚、绝不前滚：此时目标派生记录可能已被删除，前滚会清理源分片并永久丢掉唯一派生索引。在线对账跳过 `moving`。
+
+复制 KV 必须保留剩余 TTL；`remaining_ttl` 返回 `None` 时不得写成永久记录。目标分片为 `retiring` 时不开始搬迁。
+
+**派生端口能力**
+
+| 能力 | 方法 | 约束 |
+|---|---|---|
+| `UNIT_RECORD_LOOKUP`（后端） | `record_ids_for_units(scope, unit_ids) -> dict[str, list[str]]` | 按记录 `metadata.unit_id` 精确匹配，Scope 五维精确；覆盖分块与 L0 / L1 记录；不存在的 unit_id 不出现在结果中；**必须读到写入后已返回成功的全部记录**（近实时后端先刷新、弱一致后端用强一致查询）且不得静默截断（超出后端单次上限时报错）；未声明时调用抛 `UnsupportedStorageCapabilityError` |
+| `SHARD_RELOCATABLE`（分片包装层） | `relocate_unit(scope, unit_id, source, target) -> None`；`cleanup_unit(scope, unit_id, shard) -> None` | 二者幂等；`relocate_unit` 读取源记录必须覆盖 ID 枚举的全集（强一致读 / 完整枚举），少任何一条即抛 `BackendError` 并拒绝搬迁；`relocate_unit` 原样复制记录（含 embedding、正文与 metadata），不删除、不改写源分片上的记录与关联：共享模式只写过渡标签 `system_metadata.storage_shard_next=目标`，实体只追加目标关联（共享模式追加目标分组）；`cleanup_unit(源)` 才删除源分片记录、把共享记录的分片标签改为目标并去掉过渡标签、按分组解除源关联；`cleanup_unit(目标)`（回滚）只去掉指向目标的过渡标签 / 目标分组；不跨分片盲删；批量写入结果中 `failed_ids` 非空时抛 `BackendError`；内层后端须声明 `UNIT_RECORD_LOOKUP` 才可声明本能力。搬迁读取用 `VectorStore.get_for_relocation`、写入用 `insert_for_relocation`（默认等价 `get` / `insert`，强一致后端覆写为强一致读与强一致冲突预检），读回记录必须覆盖全部 id，否则拒绝；实体包装层只在内层 `supports_complete_linked_enumeration` 为真时声明本能力 |
+
+**共享模式检索过滤**：开关打开时，共享派生端口的分片过滤为「`system_metadata.storage_shard` 命中或 `system_metadata.storage_shard_next` 命中」，再由归属校验决定可见性，保证切换前后记录在当前归属分片上始终可被检索到。后端须对 `storage_shard_next` 建与 `storage_shard` 相同的过滤索引。
+
+**分组关联**（`GROUPED_LINKS`）：`UNLINK` 携带 `memory_shards` 时只从对应分组移除该记忆；记忆仍属于其它分组时保留在 `linked_memory_ids` 中。
+
+**装配**：派生端口按 `locator_name()` 绑定到对应的分片 KV，同一端口经别名重复出现只绑定一次。某个分片 KV 的 `relocate_on_update=true` 时，跟随它的 `shard_routed` 派生端口必须声明 `SHARD_RELOCATABLE`，否则启动失败；未开启的 KV 不绑定派生端口。新方法不加入 `KVStore` / `VectorStore` / `FulltextStore` / `EntityStore` 的抽象方法，只通过能力声明提供。
+
+**保证**：同一记忆任一时刻只有一个可见副本；`relocate_pending` 返回 moved 的记忆，此后读取与按分片检索都以目标分片为准；搬迁不改变记忆内容与剩余 TTL；被 `RelocationInProgressError` 拒绝的写入未生效。
+
+**不保证**：改字段后到新分片可见的延迟；派生写入若在打标记前已定位到源分片、却在复制之后才落地，目标分片的派生记录可能是复制时的版本（只影响召回与排序，返回内容回读真源）；遗留 `moving` 在维护窗口恢复前该记忆保持只读；遗留 `claim` 在维护窗口恢复前该记忆不能 delete、不能开始新搬迁。

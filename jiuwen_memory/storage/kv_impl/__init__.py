@@ -13,5 +13,6 @@ import_optional(".sqlite_kv_store", __name__)
 import_optional(".redis_kv", __name__)
 import_optional(".encrypted_kv_store", __name__)
 import_optional(".postgres_kv", __name__)
+import_optional(".shard_routed_kv", __name__)
 
 __all__ = ["KvProducer"]

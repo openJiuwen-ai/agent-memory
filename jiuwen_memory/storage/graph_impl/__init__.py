@@ -12,5 +12,6 @@ import_optional(".in_memory_graph_store", __name__)
 import_optional(".kv_graph_store", __name__)
 import_optional(".nano_graphrag_graph", __name__)
 import_optional(".neo4j_graph_store", __name__)
+import_optional(".shard_routed_graph", __name__)
 
 __all__ = ["GraphProducer"]
