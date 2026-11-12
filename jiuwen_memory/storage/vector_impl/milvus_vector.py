@@ -16,6 +16,7 @@ pymilvus 2.4+）。``score``
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any
 
@@ -157,6 +158,9 @@ class MilvusVectorStore(VectorStore):
         self._options = options
         self._client: Any = None
         self._client_uri: str | None = None
+        # 建连互斥：并发首访会各自 MilvusClient(...) 建连，后者的连接被前者
+        # 覆盖后未关闭即泄漏 gRPC channel；同时 ensure 竞态。
+        self._connect_lock = threading.Lock()
 
     @property
     def client(self) -> Any:
@@ -169,27 +173,44 @@ class MilvusVectorStore(VectorStore):
             raise BackendError(
                 "pymilvus client not installed (pip install pymilvus)"
             ) from exc
-        with wrap_backend("milvus connect"):
-            kwargs: dict[str, Any] = dict(self._options)
-            if self._token:
-                kwargs["token"] = self._token
-            self._client = MilvusClient(uri=uri, **kwargs)
-            self._client_uri = uri
-            self._ensure_collection()
-        return self._client
+        with self._connect_lock:
+            # 双检：等锁期间另一线程可能已完成建连 + ensure。
+            if self._client is not None and self._client_uri == uri:
+                return self._client
+            with wrap_backend("milvus connect"):
+                kwargs: dict[str, Any] = dict(self._options)
+                if self._token:
+                    kwargs["token"] = self._token
+                client = MilvusClient(uri=uri, **kwargs)
+            # ensure 全程走局部 client，成功后才发布缓存：发布前快路径不会把
+            # 「尚未 ensure」的连接发给其他线程，失败也不产生共享状态回滚，
+            # 与 _recover_connection 的缓存清空互不踩踏。
+            try:
+                with wrap_backend("milvus connect"):
+                    self._ensure_collection(client)
+            except Exception:
+                closer = getattr(client, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:
+                        logger.debug(
+                            "milvus client close after failed ensure raised", exc_info=True
+                        )
+                raise
+            self._client, self._client_uri = client, uri
+        # 返回本线程已 ensure 成功的局部 client：锁外复查共享缓存存在窄竞态，
+        # 窗口内被 _recover_connection 清空会返回 None，调用方 client.search(...)
+        # 将抛裸 AttributeError 而非归一化的 BackendError。
+        return client
 
-    def _wait_for_load_complete(self, timeout: float | None = None) -> None:
-        """Poll load state until collection is fully loaded or timeout.
-
-        ``load_collection`` may return before the collection is actually
-        loaded into query nodes, especially for freshly created collections.
-        This causes ``code=101 (collection not loaded)`` on the immediate
-        subsequent search (e.g. dedup search after the first ``mem2_add``).
-
-        ``timeout`` defaults to the store's configured ``load_timeout`` —
-        raise it for slow clusters, lower it for fail-fast deployments.
-        """
-        if not callable(getattr(self._client, "get_load_state", None)):
+    def _wait_for_load_complete(self, client: Any, timeout: float | None = None) -> None:
+        """Poll load state until the collection is fully loaded or timeout elapses."""
+        # load_collection 可能在集合真正载入 query node 之前就返回，紧随其后的
+        # search 会撞 code=101 (collection not loaded)（如首次 mem2_add 后的
+        # dedup search）；故轮询 get_load_state 直到 Loaded。
+        # timeout 缺省取 load_timeout——慢集群调大、fail-fast 部署调小。
+        if not callable(getattr(client, "get_load_state", None)):
             return
         if timeout is None:
             timeout = self._load_timeout
@@ -197,7 +218,7 @@ class MilvusVectorStore(VectorStore):
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             try:
-                state = self._client.get_load_state(collection_name=self._collection)
+                state = client.get_load_state(collection_name=self._collection)
                 load_state = state.get("state") if isinstance(state, dict) else state
                 if str(load_state) == "Loaded":
                     return
@@ -322,20 +343,27 @@ class MilvusVectorStore(VectorStore):
             )
         return [self._to_record(row) for row in rows]
 
-    def _recover_connection(self, op: str) -> None:
-        """连接丢失或 collection 未加载时的统一恢复：清缓存重建 client，
-        经 ``self.client`` property 重新建连 + ``_ensure_collection``（含 load+wait）。
-
-        连接已废时直接 load_collection 也会抛同款异常，故必须先重建连接。
-        """
+    def _recover_connection(self, op: str, failed: Any) -> None:
+        """统一恢复：仅当共享缓存仍指向调用方确认失效的连接时才清空重建。"""
         logger.warning(
             "MilvusVectorStore: %s failed with not-loaded/connection-lost, "
             "reconnecting and ensuring collection %s",
             op,
             self._collection,
         )
-        self._client = None
-        self._client_uri = None
+        # 缓存写入统一收敛到 _connect_lock 内：property 的建连与这里的清空
+        # 是仅有的两个写入口，避免恢复路径与在建线程互踩共享状态。
+        with self._connect_lock:
+            if self._client is not failed:
+                # 缓存已不是本次失败的那个连接：并发恢复时他人刚发布了新
+                # client（或正在重建），让位复用其成果——无条件清空会丢弃
+                # 新 client 且无 close，泄漏 gRPC channel。
+                return
+            self._client = None
+            self._client_uri = None
+        # 清空与重建不必同临界区：清空后缓存为 None，其余恢复者经 is 比较
+        # 自然让位；重建走 property 双检，并发下只建一个连接。
+        # 不可把 self.client 放进上面的锁内——Lock 不可重入，会死锁。
         _ = self.client  # 触发重建 + ensure_collection
 
     def _search_with_not_loaded_retry(
@@ -362,7 +390,7 @@ class MilvusVectorStore(VectorStore):
         except Exception as exc:
             if not _is_not_loaded(exc):
                 raise
-            self._recover_connection(op)
+            self._recover_connection(op, client)
             client = self.client
             with wrap_backend(op):
                 return client.search(
@@ -392,7 +420,7 @@ class MilvusVectorStore(VectorStore):
         except Exception as exc:
             if not _is_not_loaded(exc):
                 raise
-            self._recover_connection("milvus query")
+            self._recover_connection("milvus query", client)
             client = self.client
             with wrap_backend("milvus query"):
                 return client.query(self._collection, **kwargs)
@@ -467,14 +495,15 @@ class MilvusVectorStore(VectorStore):
         )
         return live or self._fallback_uri
 
-    def _ensure_collection(self) -> None:
-        if self._client.has_collection(self._collection):
-            self._client.load_collection(self._collection)
-            self._wait_for_load_complete()
+    def _ensure_collection(self, client: Any) -> None:
+        """Ensure collection exists and is loaded, on the given (possibly unpublished) client."""
+        if client.has_collection(self._collection):
+            client.load_collection(self._collection)
+            self._wait_for_load_complete(client)
             return
         from pymilvus import DataType
 
-        schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
         schema.add_field(
             "id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len
         )
@@ -483,18 +512,18 @@ class MilvusVectorStore(VectorStore):
         for fld in _SCOPE_FIELDS:
             schema.add_field(fld, DataType.VARCHAR, max_length=self._scope_len)
         schema.add_field("metadata", DataType.JSON)  # scope 之外的元数据整体存 JSON
-        index_params = self._client.prepare_index_params()
+        index_params = client.prepare_index_params()
         index_params.add_index(
             field_name="vector", index_type="AUTOINDEX", metric_type=self._metric_type
         )
-        self._client.create_collection(
+        client.create_collection(
             collection_name=self._collection,
             schema=schema,
             index_params=index_params,
             consistency_level=self._consistency,
         )
-        self._client.load_collection(self._collection)
-        self._wait_for_load_complete()
+        client.load_collection(self._collection)
+        self._wait_for_load_complete(client)
 
     def _scope_expr(self, scope: Scope) -> str:
         return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
