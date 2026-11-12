@@ -13,6 +13,7 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.reranker.base import Reranker
 from jiuwen_memory.common.type_def import (
+    ChannelError,
     FilterExpr,
     MemoryUnit,
     ParsedQuery,
@@ -30,7 +31,7 @@ from .model import (
     TemporalEntity,
 )
 from .query import resolve_temporal_query
-from .reader import PropertyIdLookup, SchemaTemporalReader
+from .reader import PropertyIdLookup, PropertyIdLookupBatch, SchemaTemporalReader
 from .recall import SchemaDualPathRecaller, SchemaPropertyRecallHit
 from .shrink import SchemaTemporalShrinker
 
@@ -51,6 +52,7 @@ class SchemaTemporalSearcher:
         *,
         auto_enabled: bool = False,
         property_id_lookup: PropertyIdLookup | None = None,
+        property_id_lookup_batch: PropertyIdLookupBatch | None = None,
         entity_fulltext_store: FulltextStore | None = None,
         entity_vector_store: VectorStore | None = None,
         entity_top_k: int = 20,
@@ -71,6 +73,7 @@ class SchemaTemporalSearcher:
         self._reader = SchemaTemporalReader(
             domain_store,
             property_id_lookup=property_id_lookup,
+            property_id_lookup_batch=property_id_lookup_batch,
         )
         self._recaller = SchemaDualPathRecaller(
             domain_store,
@@ -115,6 +118,34 @@ class SchemaTemporalSearcher:
         plan = resolve_temporal_query(explicit, parsed, auto_enabled=self._auto_enabled)
         return explicit is not None or plan.enabled
 
+    def recall_property_hits(
+        self,
+        scope: Scope,
+        parsed: ParsedQuery,
+        explicit: SchemaTemporalQuery | None,
+        *,
+        filters: FilterExpr | None = None,
+    ) -> tuple[list[SchemaPropertyRecallHit], list[ChannelError]]:
+        """Pre-recall the direct Property path without top-N truncation.
+
+        Returns hits and the channel errors collected during this call so the
+        caller (running on another thread after the join) can fold them into the
+        thread-local error state used by ``search``. Returning them avoids
+        relying on instance-level shared error state across threads.
+        """
+
+        plan = resolve_temporal_query(explicit, parsed, auto_enabled=self._auto_enabled)
+        if explicit is None and not plan.enabled:
+            return [], []
+        self._recaller.reset_errors()
+        hits = self._recaller.recall_property_hits(
+            scope,
+            parsed,
+            plan.query,
+            filters=filters,
+        )
+        return hits, list(self._recaller.last_errors)
+
     def search(
         self,
         scope: Scope,
@@ -123,8 +154,12 @@ class SchemaTemporalSearcher:
         *,
         seed_entity_ids: list[str] | None = None,
         filters: FilterExpr | None = None,
+        precollected_property_hits: list[SchemaPropertyRecallHit] | None = None,
+        precollected_errors: list[ChannelError] | None = None,
     ) -> SchemaTemporalResult | None:
         self._recaller.reset_errors()
+        if precollected_errors:
+            self._recaller.add_errors(precollected_errors)
         plan = resolve_temporal_query(explicit, parsed, auto_enabled=self._auto_enabled)
         if explicit is None and not plan.enabled:
             return None
@@ -136,12 +171,15 @@ class SchemaTemporalSearcher:
             allow_entity_index=filters is None,
             entity_limit=plan.query.entity_limit,
         )
-        property_hits = self._recaller.recall_property_hits(
-            scope,
-            parsed,
-            plan.query,
-            filters=filters,
-        )
+        if precollected_property_hits is None:
+            property_hits = self._recaller.recall_property_hits(
+                scope,
+                parsed,
+                plan.query,
+                filters=filters,
+            )
+        else:
+            property_hits = list(precollected_property_hits)
         property_hits, direct_reranked, direct_error = self._rerank_direct_property_hits(
             scope,
             parsed,
@@ -166,12 +204,12 @@ class SchemaTemporalSearcher:
             result = self._shrink.shrink(
                 result,
                 parsed,
-                entity_local_recall=lambda entity_id: self._recaller.recall_property_hits(
+                entity_local_recall=lambda entity_ids: self._recaller.recall_property_hits_batch(
                     scope,
                     parsed,
                     plan.query,
+                    entity_ids=entity_ids,
                     filters=filters,
-                    entity_id=entity_id,
                 ),
             )
 

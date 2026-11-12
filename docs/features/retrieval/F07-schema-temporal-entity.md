@@ -76,6 +76,16 @@ Property，从同实体、同属性的有序时间线向前和向后各扩展
 `property_extension_step` 条，默认为 3，使变化前后的事实同时可见；通用兜底
 属性 `default_property` 不做邻居扩展。
 
+Property 直达召回与普通召回并行：parse 阶段后立即提交直达召回 future，普通 pipeline
+完成（disclosure 后）再 join，使召回时间重叠；Entity 路径仍在普通结果产生后后处理，
+seed 语义不变。future 跑在 Retriever 实例级共享 `ThreadPoolExecutor` 上（惰性创建，
+不每请求新建），join 设 `schema_temporal_recall_timeout`（默认 30s，0=不限），超时按
+TEMPORAL 通道错误降级并由 `search` 串行重跑 Property 召回兜底。批次内部消除 N+1：
+反向索引按实体数阈值分流——≤ `schema_temporal_lookup_batch_threshold`（默认 8）时
+每实体走窄前缀 scan，>阈值才一次全 Scope scan + 一次批量水合；超预算实体合并为一次
+批量补召。Reranker 批量优先（1 次跨实体调用），仅当批量失败时退化为逐实体重试，
+单实体失败只降级该实体。
+
 ### 4. 两条时间轴独立计算
 
 Property 条目同时保留：
@@ -158,6 +168,52 @@ Property/Source 的鉴权、生命周期和血缘在组装前完成复核。
 回填，并用 Scope watermark 区分「已完整回填」与「尚未建好或维护失败」；watermark
 缺失或失效时才执行兼容回退，而不是在每次实体读取时扫描全 Scope。
 
+### 用词法信号判断本地裁剪是否足够（local-clip-only gate）
+
+拒绝。补召的 `recall_score` 用来把直达命中排进实体内预算，不只是补足词法缺失；
+仅在本地词法分全为 0 时才补召，会让有词法信号的查询跳过补召，
+`test_direct_property_hit_expands_three_neighbors_on_each_side` 的邻居数从 6 退化为 5。
+最终改为所有超预算实体一次性批量补召（一次调用覆盖多个实体）。
+
+### Scope watermark 进程内缓存
+
+拒绝。`SchemaPropertyIndex` 在检索器、IndexBuilder、Evolver 各持一个独立实例，
+任何实例的 `_indexed_cache` 都无法被另一实例的 `invalidate()` 失效。缓存 `True` 后，
+写侧因部分写失败删除 watermark 也不会让读侧回退——读者会持续信任已声明失效的派生索引
+直到进程重启，违反"watermark 缺失即回退真源"的安全网。缓存 `False` 则让新索引 Scope
+永远走 list 回退（结果正确但持续慢）。改为始终读 watermark（一次 KV get，相对 scan 可忽略）。
+
+### 每请求新建 ThreadPoolExecutor
+
+拒绝。并行 Property 直达召回若每次 `retrieve` 新建一个 `ThreadPoolExecutor(max_workers=1)`，
+高并发下线程数 ≈ 请求数、无全局上限；且 `future.result()` 无超时会让后端卡死把整条
+检索链拖死。改为 Retriever 实例级共享 executor（惰性创建、随 retriever GC 回收）+
+`schema_temporal_recall_timeout` 超时降级：超时记 TEMPORAL 错误，`search` 串行重跑
+Property 召回兜底，未启动的任务尽量取消（运行中的不可中断）。
+
+### 批量 Reranker 失败全局降级
+
+拒绝（部分采纳）。perf 提交曾用"一次跨实体 Reranker 调用"，任一实体文本超限/报错
+会让整批降级为 lexical，单实体失败拖垮全部。但完全退回逐实体（fix 提交的过渡方案）
+又把远程 reranker 的 N 次 RTT 放回来，与 perf 目标冲突。最终改为**批量优先 + 失败逐
+实体重试**：正常路径 1 次批量调用；仅当批量调用抛异常时对该批逐实体重试，单实体失败
+只降级该实体。远程 reranker 下正常路径仍是 1 次 RTT。
+
+### lookup_batch 无阈值全 Scope 扫描
+
+拒绝。原 `lookup_batch` 对 ≥2 个实体就触发一次全 Scope scan，大 Scope + 少实体场景
+从 O(这些实体的成员数) 退化到 O(整个 Scope 的成员数)。改为按
+`schema_temporal_lookup_batch_threshold`（默认 8）分流：≤阈值时每实体走窄前缀 scan
+（只扫该实体 membership），>阈值才全 Scope scan 把多次往返压成一次。
+
+### indexed=True 但 membership 为空不回退
+
+拒绝。并发写期间 `_begin_mutation` 删 watermark 与逐条更新 membership 之间存在窗口：
+读者可能在 watermark 仍为 complete 时 scan 到空 membership，`indexed=True + unit_ids=[]`
+会被当作"实体无 property"而不回退，导致漏召。改为 `indexed=True` 但 `unit_ids` 为空时
+回退 `_list_properties` 真源复核（单实体与批量路径同口径）。代价是该实多一次 list
+扫描，但漏召比慢更严重，且该路径只在并发写窗口命中。
+
 ### 用消息时间填充缺失的事件时间
 
 拒绝。`t_message` 表示来源消息的发送时间，不是事实必然发生的时间。
@@ -175,7 +231,11 @@ as-of 上下文，但 `t_event` 必须保持为空。
 - 验证每个 Entity 只返回一个格式化 `RetrievedItem`，并由扩展结果保留结构化
   `SchemaTemporalRetrievalResult.schema_temporal`；
 - 验证必要 Source 在最终投影后保留且显式携带消息时间；
-- 验证反向索引的增、改、携带 MemoryUnit 的硬删、权威空集和存量回退语义。
+- 验证反向索引的增、改、携带 MemoryUnit 的硬删、权威空集和存量回退语义；
+- 验证并行 Property 召回超时降级为 TEMPORAL 错误且普通结果仍返回；共享 executor
+  跨多次 retrieve 复用；`lookup_batch` ≤阈值走窄前缀、>阈值走全 Scope scan；
+  `indexed=True` 但 membership 空时回退 list；Reranker 批量优先、批量失败时逐实体
+  重试且单实体失败只降级该实体。
 
 ## 已知遗留
 
@@ -186,4 +246,9 @@ as-of 上下文，但 `t_event` 必须保持为空。
 3. Entity → Property 反向索引会在 Scope 首次维护时自动执行一次全量兼容回填，但当前
    `IndexBuilder.rebuild()` 仍未提供显式的全 Scope 运维重建入口；
 4. TemporalEntity 不自行解析别名或重做实体合并；它依赖上游 Entity Identity
-   产出的 canonical entity id，实体身份质量仍受抽取与 Resolver 判断质量影响。
+   产出的 canonical entity id，实体身份质量仍受抽取与 Resolver 判断质量影响；
+5. `SchemaPropertyIndex` 读路径（`lookup`/`lookup_batch`）不持 `_scope_lock`，与
+   写路径之间在并发写期间存在 watermark 仍 complete 但 membership 部分删除的窗口。
+   `indexed=True` 但 `unit_ids` 为空时已回退 `_list_properties` 复核覆盖主要漏召场景，
+   但非空但部分缺失的中间态仍可能短暂少召（`_matching_units` 真源复核保证不返回
+   已删除 unit，仅可能漏掉尚未 publish 的）。读路径加锁会与并行召回目标冲突，未采纳。

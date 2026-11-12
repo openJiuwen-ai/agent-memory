@@ -58,6 +58,7 @@
      ↓ 按层级加载内容（L0/L1/L2）
 10. 可选 Schema TemporalEntity（最终普通结果作 Entity seed，Property 独立召回）
      ↓ 组装、实体内裁剪、直达 Property 回融、时间线邻居和 Source fallback
+     ↓ Property 直达召回在 parse 阶段后并行提交，disclosure 后 join；时序组装位置不变
 → RetrievalResult（items + trajectory + errors）
 ```
 

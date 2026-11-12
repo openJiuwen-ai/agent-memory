@@ -233,25 +233,32 @@ def test_local_media_closes_descriptors_when_stream_wrapper_fails(tmp_path, monk
     root, source, work = _paths(tmp_path)
     policy = _policy(root)
     opened = set()
+    closed = set()
     real_open = os.open
+    real_close = os.close
 
     def record_open(*args, **kwargs):
         descriptor = real_open(*args, **kwargs)
         opened.add(descriptor)
         return descriptor
 
+    def record_close(descriptor, *args, **kwargs):
+        real_close(descriptor, *args, **kwargs)
+        closed.add(descriptor)
+
     def fail_wrapper(descriptor, *_args, **_kwargs):
         opened.add(descriptor)
         raise OSError("stream wrapper could not be constructed")
 
     monkeypatch.setattr(os, "open", record_open)
+    monkeypatch.setattr(os, "close", record_close)
     monkeypatch.setattr(os, "fdopen", fail_wrapper)
     with pytest.raises(PermissionDeniedError):
         policy.stage(source.as_uri(), SCOPE, work)
     assert opened, "the regression must fail after acquiring a descriptor"
-    for descriptor in opened:
-        with pytest.raises(OSError):
-            os.fstat(descriptor)
+    # Observing the close call instead of re-stating the descriptor keeps the regression free of
+    # fd-number reuse races, which are not a leak.
+    assert opened <= closed, "every acquired descriptor must be released"
 
 
 @pytest.mark.parametrize("uri", ["meeting video.mp4", "file:meeting%20video.mp4"])

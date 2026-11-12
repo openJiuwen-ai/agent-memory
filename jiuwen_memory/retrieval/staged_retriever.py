@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from time import perf_counter
 from uuid import uuid4
@@ -111,6 +112,7 @@ class RetrieveState:
     final: list[ScoredMemoryUnit] = field(default_factory=list)
     items: list[RetrievedItem] = field(default_factory=list)
     result: RetrievalResult | None = None
+    property_recall: Future | None = None
 
     @classmethod
     def start(cls, scope: Scope, query: RetrievalQuery) -> RetrieveState:

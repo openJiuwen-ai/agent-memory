@@ -37,6 +37,7 @@ from jiuwen_memory.storage.store_manager import StoreManager
 
 from .formatter import SchemaTemporalFormatter
 from .model import SchemaTemporalResult
+from .recall import SchemaPropertyRecallHit
 from .selector import TemporalEntitySelector
 
 logger = get_logger(__name__)
@@ -77,6 +78,20 @@ class SchemaTemporalPipelineExtension:
         self._formatting_max_chars = max(1, int(formatting_max_chars))
         self._source_max_chars = max(1, int(source_max_chars))
 
+    def should_select(self, parsed: ParsedQuery) -> bool:
+        return self._selector.should_select(parsed)
+
+    def recall_property_hits(
+        self,
+        scope: Scope,
+        parsed: ParsedQuery,
+        *,
+        user_filters: FilterExpr | None,
+    ) -> tuple[list[SchemaPropertyRecallHit], list[ChannelError]]:
+        """Pre-recall the direct Property path for the ordinary pipeline thread."""
+
+        return self._selector.recall_property_hits(scope, parsed, filters=user_filters)
+
     def apply(
         self,
         scope: Scope,
@@ -86,6 +101,8 @@ class SchemaTemporalPipelineExtension:
         *,
         user_filters: FilterExpr | None,
         record_step: RecordStep,
+        precollected_property_hits: list[SchemaPropertyRecallHit] | None = None,
+        precollected_errors: list[ChannelError] | None = None,
     ) -> RetrievalResult:
         """Replace the public result only when the temporal branch is selected."""
 
@@ -103,6 +120,8 @@ class SchemaTemporalPipelineExtension:
                 ordinary_candidates,
                 filters=user_filters,
                 limit=query.top_k,
+                precollected_property_hits=precollected_property_hits,
+                precollected_errors=precollected_errors,
             )
             errors = [*ordinary_result.errors, *self._selector.recall_errors]
             temporal = self._selector.last_result
@@ -111,6 +130,11 @@ class SchemaTemporalPipelineExtension:
                 started_at,
                 n=(len(temporal.entities) if temporal else 0),
                 channel=RecallChannel.TEMPORAL,
+                detail={
+                    "parallel_recall": (
+                        "true" if precollected_property_hits is not None else "false"
+                    )
+                },
             )
         except PlaintextDataError:
             raise
@@ -199,7 +223,16 @@ def build_schema_temporal_extension(
         return None
     kv_name = str(Factory.cfg_get(config, "kv_store", "default"))
     kv = manager.kv(kv_name) if manager.has_kv(kv_name) else None
-    property_index = SchemaPropertyIndex(kv) if kv is not None else None
+    property_index = (
+        SchemaPropertyIndex(
+            kv,
+            lookup_batch_threshold=int(
+                Factory.cfg_get(config, "schema_temporal_lookup_batch_threshold", 8)
+            ),
+        )
+        if kv is not None
+        else None
+    )
     selector = TemporalEntitySelector(
         domain,
         auto_enabled=as_bool(
@@ -207,6 +240,9 @@ def build_schema_temporal_extension(
             default=False,
         ),
         property_id_lookup=(property_index.lookup if property_index is not None else None),
+        property_id_lookup_batch=(
+            property_index.lookup_batch if property_index is not None else None
+        ),
         entity_fulltext_store=(
             manager.fulltext("schema_entities")
             if manager.has_fulltext("schema_entities")
