@@ -78,6 +78,7 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
     restore_coords_from_md_filename,
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
     RetrievalPipelines,
     build_retrieval_pipelines,
@@ -223,7 +224,7 @@ def _expand_provenance_descendants(
     return purge_ids
 
 
-class AgentEngine(MemoryEngine):
+class AgentEngine(HumanViewEngineMixin, MemoryEngine):
     """ToC（个人 agent）编排中枢：驱动接入/构建/检索算子与真源 KVStore 完成。"""
 
     def configure_retention(self, guard) -> None:

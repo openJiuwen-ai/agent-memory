@@ -60,24 +60,29 @@ class IndexBuilderProducer(Factory):
         from jiuwen_memory.config.context import ComponentConfig
 
         config = ComponentConfig(params=dict(params or {}), ctx=ctx, target=target, name=name)
+        from jiuwen_memory.common.security.privacy.base import optional_privacy
+        from jiuwen_memory.construction.privacy_index_builder import PrivacyIndexBuilder
+
+        privacy = optional_privacy(config)
         if not as_bool(config.get("schema_enabled"), default=False):
-            return builder
+            return PrivacyIndexBuilder(builder, privacy) if privacy else builder
 
         from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
         from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
         if isinstance(builder, SchemaPropertyIndexingBuilder):
-            return builder
+            return PrivacyIndexBuilder(builder, privacy) if privacy else builder
         manager = StoreManagerProducer.resolve(config)
         kv_name = resolve_name(config, "kv_store")
         if not manager.has_kv(kv_name):
             # A unified/custom data plane may intentionally expose no KV port.
             # Retrieval then uses its compatible DomainStore scope fallback.
-            return builder
-        return SchemaPropertyIndexingBuilder(
+            return PrivacyIndexBuilder(builder, privacy) if privacy else builder
+        builder = SchemaPropertyIndexingBuilder(
             builder,
             SchemaPropertyIndex(manager.kv(kv_name)),
         )
+        return PrivacyIndexBuilder(builder, privacy) if privacy else builder
 
 
 class IndexBuilder(ConstructionOperator):

@@ -274,6 +274,8 @@ Portal 页面复用现有 `/v1` 记忆操作，模型配置使用同一实例的
 | `admin_get` | admin：读取一项运行时可变策略的当前值（直达 PolicyManager）。管理面以根 `Scope()` 鉴权 | `key: str`；`*`；`security: RequestSecurityContext` | `str` |
 | `admin_set` | admin：调整一项运行时策略（启停索引、检索/演进开关等；键未知或不可变配置抛 `PolicyError`） | `key: str`；`value: str`；`*`；`security: RequestSecurityContext` | `None` |
 | `admin_all` | admin：列出全部运行时策略及当前值 | `*`；`security: RequestSecurityContext` | `dict[str, str]` |
+| `begin_human_view` | 可选用户访问控制入口：API 内认证、READ 判权、查询脱敏快照并返回人机挑战；不注册为机器工具 | `payload: dict`；`browser: str`；`*`；`security=None`；`primary_auth=None`（可信宿主延迟认证上下文） | `dict[str, Any]` |
+| `finish_human_view` | 可选用户访问控制入口：验证人机证明、复核资源，委托 Engine 还原并经 API 返回；不注册为机器工具 | `payload: dict`；`browser: str`；`*`；`peer: str = ""` | `dict[str, Any]` |
 
 
 > - **接口层 PEP 与 Storage 数据面授权是两道边界**：公开 API 以 `security.auth.actor`（调用方）和 `scope`（目标 target）执行鉴权与入口审计，actor 不自动下沉。统一 Storage 另提供可选的 `StorageAccessContext`，供嵌入式直调或需要纵深防御的装配显式传入；默认 `AllowAllStorageSecurity` 不增加授权限制。两者不能互相替代，当前 API 链路也不宣称已自动传播 Storage 授权上下文。

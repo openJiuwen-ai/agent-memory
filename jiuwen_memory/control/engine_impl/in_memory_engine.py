@@ -21,6 +21,7 @@ from jiuwen_memory.common.log import (
     metadata_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.security.privacy.base import PrivacyProtection, optional_privacy
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -47,6 +48,7 @@ from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
@@ -211,7 +213,7 @@ def _expand_provenance_descendants(
     return purge_ids
 
 
-class InMemoryEngine(MemoryEngine):
+class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
     """编排接口层各语义；驱动接入/构建/检索算子与真源 Store 完成。"""
 
     @property
@@ -239,6 +241,7 @@ class InMemoryEngine(MemoryEngine):
         job_factory: JobFactory | None = None,
         policy: PolicyManager | None = None,
         retrieval_pipelines: dict[str, Retriever] | None = None,
+        privacy: PrivacyProtection | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -254,6 +257,7 @@ class InMemoryEngine(MemoryEngine):
         self._classifier = classifier
         self._job_factory = job_factory
         self._policy = policy
+        self._privacy = privacy
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -1024,4 +1028,5 @@ def _build(config):
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),
         policy=PolicyProducer.build_named("default", config.ctx),
+        privacy=optional_privacy(config),
     )

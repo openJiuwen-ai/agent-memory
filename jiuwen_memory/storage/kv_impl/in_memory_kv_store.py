@@ -40,6 +40,21 @@ class InMemoryKVStore(KVStore):
             defaultdict(dict)
         )
 
+    @staticmethod
+    def supports_compare_and_swap() -> bool:
+        return True
+
+    def compare_and_swap(self, scope, key, expected, value) -> bool:
+        with self._lock:
+            namespace = _skey(scope)
+            if self._live(namespace, key) != expected:
+                return False
+            if value is None:
+                self._data[namespace].pop(key, None)
+            else:
+                self._data[namespace][key] = (value, None)
+            return True
+
     def store_type(self) -> StoreType:
         return StoreType.KV
 

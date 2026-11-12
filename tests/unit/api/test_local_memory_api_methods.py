@@ -21,6 +21,7 @@ _API_CLASSES = (
     "QueryOpsMixin",
     "AdminOpsMixin",
     "SpaceOpsMixin",
+    "HumanViewOpsMixin",
 )
 
 _PEP_HELPERS = (

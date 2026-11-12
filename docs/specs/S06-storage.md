@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-11 |
+| 最近一次修订日期 | 2026-11-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -324,7 +324,7 @@ MemoryUnit 记录自然过滤），返回 `(items, count)`；过滤/计数/分�
 
 ```python
 class StoreType(str, Enum):
-    KV / FULLTEXT / VECTOR / GRAPH / FUSION / FS
+    KV / FULLTEXT / VECTOR / GRAPH / FUSION / FS / ENTITY / MARKDOWN / DOCUMENT_SHADOW / PRIVACY
 
 class BaseStore(ABC):
     def store_type(self) -> StoreType  # 自描述
@@ -348,8 +348,15 @@ class BaseStore(ABC):
 | `list` | `(scope, *, offset=0, limit=100, memory_types=None, filters=None, extensions=None) -> KVMemoryListResult` | 查询 `/memory/` MemoryUnit；先执行 `memory_types AND filters`，再精确计数、稳定排序和分页 |
 | `scan` | `(scope, prefix="") -> list[tuple[str, bytes]]` | 扫描 scope 下的全部 (key, value)（可选只取 prefix 开头的 key）；顺序由实现定义 |
 | `scopes` | `() -> list[Scope]` | 枚举本存储中已用过的全部 scope |
+| `supports_compare_and_swap` | `() -> bool` | 可选原子条件写能力；默认 False，不增加第三方插件的必填抽象方法 |
+| `compare_and_swap` | `(scope, key, expected: bytes \| None, value: bytes \| None) -> bool` | 原子比较并替换；expected=None 表示不存在，value=None 表示删除；不匹配返回 False，后端失败抛异常 |
 
 **ttl** 单位为秒（float），`0` 表示永不过期。
+
+条件写按完整 Scope 隔离，过期值等同不存在，空 bytes 不等同不存在；成功替换清除
+TTL。未声明能力的后端拒绝调用，禁止用无锁 get/update 模拟原子性。加密包装层比较
+逻辑明文并在底层对原密文执行条件写，不得只比较明文后无条件覆盖。隐私业务 KV
+包装层拒绝对 `/memory/`、`/messages/` 使用此方法绕过正常保护流程；其他键透传。
 
 #### EncryptedKVStore（`kv_impl/encrypted_kv_store.py`）
 
@@ -717,8 +724,89 @@ Store 抽象、跨后端不变量与注册机制。
 
 `DomainStore.supports_exact_metadata_lookup` 默认 false；声明 true 必须保证系统元数据等值过滤查询从真源读取，写成功后立即可查，不能依赖异步索引。`KVStore.release_single_writer(namespace)` 只释放该命名空间写者声明，不关闭数据库；默认不支持。使用方释放自己的 claim，资源所有者负责 close，借用 KV 的图实现不关闭 KV。
 
-### 原子条件更新（已移除）
+### 角色记忆的条件更新
 
-`KVStore.supports_compare_and_swap` / `compare_and_swap`、`DomainStore.supports_conditional_update` / `update_if_unchanged` 及 IndexBuilder 的条件更新透传，仅为角色记忆派生 `updated` 动作引入，无其他调用方。派生 `updated` 推迟到后续版本（见 [F10 第 12 节](../features/construction/F10-role-memory.md#12-已知遗留与外部依赖)），这些能力已从存储契约与各实现中删除；Registry 并发依赖单写者声明与 `expected_revision`，不依赖 CAS。
+派生 `updated` 推迟到后续版本（见 [F10 第 12 节](../features/construction/F10-role-memory.md#12-已知遗留与外部依赖)）。Registry 并发依赖单写者声明与 `expected_revision`；隐私 KV 包装保留后端的资源绑定和单写者声明。
 
 Neo4j 的 ssl_verify=true 要求 bolt+s:// 或 neo4j+s:// 及 ssl_ca_cert，动态 URI 重绑定不得绕过校验。自定义 CA 通过驱动显式 encrypted=True 与 trusted_certificates 传递（驱动侧 URI 转为对应无后缀 scheme，仅作为加密参数表达方式，连接仍强制 TLS）。健康检查不得执行建约束 DDL，首次写入前须完成所需唯一约束。
+
+## 敏感片段与脱敏真源
+
+隐私能力经独立的 `PrivacyStore` 维护私有状态，复用 BaseStore、Producer、StoreSecurity
+和加密装饰器契约；不注册为 StoreManager 普通端口，不由普通 KV、DomainStore 或
+召回接口返回原文。片段值与引用清单主体加密；用于定位的 Scope、对象 ID、等级及修订
+标识属于控制元数据，不应被描述为整个私有数据库均已加密。部署须保护状态路径和备份。
+
+### 私有 Store 契约
+
+`PrivacyStoreProducer.TOP_NAME = "privacy_store"`；依赖由隐私配置显式选择。
+受保护 Store 必须声明有效 StoreSecurity；业务保护层不直接执行 SQL 或调用密码学。
+加密包装层调用既有 CryptographyProvider，原始后端负责持久化与事务。
+
+私有状态可以经适配层依赖独立 KVStore。适配层须将同一完整 Scope 的片段、当前
+清单、引用及恢复候选作为一个有界状态，使用原生条件写原子发布；冲突抛 ConflictError，
+不得覆盖其他发布者。嵌套事务失败回滚到保存点。该事务不扩展为跨业务真源的事务。
+`supports_compare_and_swap` / `compare_and_swap` 提供此处需要的条件创建、替换和删除，
+替换值不设 TTL。加密维护的 `compare_exchange` 仅更新或删除现有记录，保留绝对过期时间。
+隐私保护端口不提供明文迁移能力，受保护记忆的写入仍经隐私真源边界。
+私有 KV 及其递归 KV 依赖必须内联创建，不得引用普通具名 KV 端口，也不注册为普通
+端口；连接参数在装配时固定，不跟随业务 KV 的 ConfigSource 热切换。后端切换不迁移
+数据；旧专用私有库与 KV 状态格式须显式区分。
+
+| 操作 | 契约 |
+|---|---|
+| `stage_fragment(scope, token, value, level)` | 对本次原值生成不透明受保护引用，不落盘；上层按 TTL/容量管理暂存 |
+| `reference(scope, token)` | 点读不透明引用，不解密敏感值；来源绑定随合法路由保留 |
+| `get_fragment(scope, token)` | 点读并透明解密敏感值，调用方须已完成二次认证及资源判权 |
+| `get(scope, unit)` | 读取并认证当前关联清单；缺失抛 NotFoundError |
+| `search(scope, units, *, revision=None)` | 按记录 ID 与可选修订号定位当前/恢复清单；不检索敏感原文 |
+| `insert/update(scope, snapshot, fragments)` | 同一私有事务内保存清单、片段及引用；插入冲突/更新缺失分别报错 |
+| `checkpoint/confirm/reconcile` | 保留旧引用、确认外部写入、按实际存续版本恢复；未知结果保留候选 |
+| `delete(scope, units)` | 删除精确 Scope 内指定记录及恢复引用；units=None 清理该完整 Scope，返回被撤销的 token |
+| `transaction(scope)` | 私有后端事务，可嵌套；不承诺与业务 Store 的全局原子性 |
+
+数据方法显式接受完整 Scope；读取、检索和删除不得跨 Scope。维护枚举 `scopes()` 不
+读取敏感值；上层处理前缀清理时先枚举匹配，再逐个按精确 Scope 删除。
+清单读取可以用于正常处理中的关联认证，不能因此解密敏感片段。普通记忆读取仍走
+原来的脱敏真源 Store；加密装饰器不能替代二次认证、当前资源判权及修订校验。
+
+### 关联与密码学绑定
+
+| 对象 | 绑定与约束 |
+|---|---|
+| 脱敏占位符 | `[JW-PRIVATE:<48 位小写十六进制随机标识>]`，不编码原值，不构成访问凭据 |
+| 敏感片段 | AEAD 绑定来源完整 Scope、token、等级、用途 `privacy-fragment`；加密上下文版本为 1 |
+| 引用清单 | AEAD 绑定目标完整 Scope、`<memory/message>/<unit_id>:<revision>`、用途 `privacy-manifest`；主体包含 token 集合、指纹与段位置 |
+| 修订标识 | `privacy_revision` 与 `privacy_message_revision` 分别服务正式记忆和原始消息，由服务端生成 |
+| 内容指纹 | 覆盖段正文、L0/L1、标签、实体、用户元数据及事实文本；不含索引构建追加的技术性 system_metadata |
+
+非保留系统文本元数据仍需保护，其 token 纳入认证清单。相同指纹和 token 集合可以复用
+已认证修订号；未知、过期、无来源或损坏的引用拒绝写入。正常构建可认证仅含引用的清单，
+不能解密敏感片段。合法同组织路由保留片段的来源加密绑定，并密封目标清单。
+privacy_rule_ids / privacy_categories 只保存有限分类依据，不包含原值，且不参与
+保护正文指纹；它们不能替代关联和授权检查。修订号表示记忆/消息保护快照，不是独立的规则版本；当前不持久化策略版本历史，配置变更
+通过重建运行时及既有内容校验生效。
+
+### 提交、失败和清理
+
+正文、索引及直接 `/memory/`、`/messages/` 写入前均保护。
+原文消息写入保护反序列化副本，不修改当前抽取输入；持久化历史读取保持脱敏，不自动
+解密。普通正文及派生索引在索引构建入口统一保护，向量索引从脱敏内容生成。嵌套加密 KV 只在同一次
+精确 Scope/key 操作内跳过重复编码，不豁免其他键；StoreSecurity 能力保持透传。
+私有关联的提交和回收由 KV 真源边界维护；索引包装层只复检投影并同步已提交修订号。
+委托写入前持久保留旧清单与片段的密文恢复引用。插入冲突或其他写入异常时回读真源：
+旧值仍在则恢复旧关联，新值已写则保留新关联，确认不存在才清理。回读失败时保留候选
+快照及引用；下一次成功写入或硬删再回收，不将其开放为普通历史查询。
+实例内写入和删除共享互斥边界；各后端不共享全局事务。缺失、版本不符或无法认证的
+关联仍拒绝还原，业务真源中可留下的内容必须是脱敏表示。
+多个 Runtime 共用后端时，同一 Scope 的业务写入须串行路由；私有状态条件写不构成
+整个业务提交协议的分布式锁。
+
+原始消息和正式记忆分通道计引用。显式硬删、回滚删除及空间删除撤销相应关联，最后
+一个引用消失后清理片段。先完成真源删除再回收对应私有状态，删除异常保留未确认的引用；
+仅删除检索投影不回收私有状态。来源删除不自动推断为删除全部派生记忆；软删状态不允许人的
+原文展示，分级自动硬删仍是 TODO。指纹和清单校验不替代查看时的正常资源判权。
+清理针对逻辑记录和引用，不声明备份、数据库日志或存储介质已经完成可验证擦除。
+
+原文精确检索、旧库自动迁移、文档/文件监听路径及分级 TTL/cloud/share 执行未提供。
+完整披露契约见 [S10](S10-security.md#隐私保护与用户访问控制)。

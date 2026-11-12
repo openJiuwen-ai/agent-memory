@@ -135,6 +135,38 @@ class SQLiteKVStore(KVStore):
 
     # -- KVStore 契约 -------------------------------------------------------- #
 
+    @staticmethod
+    def supports_compare_and_swap() -> bool:
+        return True
+
+    def compare_and_swap(self, scope, key, expected, value) -> bool:
+        from jiuwen_memory.storage._support import wrap_backend
+
+        with self._lock, wrap_backend("sqlite conditional update"):
+            conn = self._ensure_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self._live_value(scope, key) != expected:
+                    conn.rollback()
+                    return False
+                dimensions = (scope.org, scope.space, scope.user, scope.agent, scope.session, key)
+                if value is None:
+                    conn.execute(
+                        'DELETE FROM kv WHERE org=? AND space=? AND "user"=? '
+                        "AND agent=? AND session=? AND key=?", dimensions,
+                    )
+                else:
+                    conn.execute(
+                        'INSERT OR REPLACE INTO kv '
+                        '(org,space,"user",agent,session,key,value,expires_at) '
+                        "VALUES (?,?,?,?,?,?,?,NULL)", (*dimensions, value),
+                    )
+                conn.commit()
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
+
     def migration_identity(self) -> object:
         import os
 
@@ -373,6 +405,8 @@ class SQLiteKVStore(KVStore):
             self._conn.close()
             self._conn = None
             self._conn_path = None
+        if path != ":memory:":
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._conn_path = path
         self._conn.execute(_SCHEMA)
@@ -427,12 +461,9 @@ class SQLiteKVStore(KVStore):
 
 @KvProducer.register("sqlite")
 def _build(config):
-    from jiuwen_memory.config.config_source import ConfigSourceProducer
+    from jiuwen_memory.storage.kv import kv_config_source
 
     return SQLiteKVStore(
         Factory.cfg_get(config, "db_path", "agent_memory.db"),
-        config_source=(
-            None if config.get("fixed_path", False)
-            else ConfigSourceProducer.get_cached("default")
-        ),
+        config_source=None if config.get("fixed_path", False) else kv_config_source(),
     )

@@ -20,7 +20,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
 
-from jiuwen_memory.common.errors import UnsupportedCapabilityError
+from jiuwen_memory.api.human_view import PrimaryAuthentication
+from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.security.audit_integrity.base import (
     DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
     DEFAULT_AUDIT_VERIFY_PAGE_SIZE,
@@ -88,13 +89,35 @@ class MemoryAPI(ABC):
     的 target ``scope`` 与业务参数（调用方身份不下沉，下游信任 target）；同时在本层
     落带 actor 与稳定决策标识的入口审计事件。
 
-    ``security`` 是本层的**唯一显式安全输入**：除 ``check_write`` 为兼容旧第二位置
+    普通业务方法以 ``security`` 为**唯一显式安全输入**：除 ``check_write`` 为兼容旧第二位置
     参数外均为必填 keyword-only。调用方身份只来自 ``security.auth.actor``，业务
     payload 中不存在 ``identity`` /
     ``actor_*`` / ``role`` / ``acting_user`` 之类的身份声明（F05
     §RequestSecurityContext）。target 仍由业务参数表达，不与 actor 合并——二者
     同为 Scope 时若合并，「读自己的」和「读别人的」在签名上就分不出来了。
+
+    可选的用户访问控制入口独立承接认证与终端响应，不属于机器工具目录。
     """
+
+    def begin_human_view(
+        self,
+        payload: dict,
+        browser: str,
+        *,
+        security: RequestSecurityContext | None = None,
+        primary_auth: PrimaryAuthentication | None = None,
+    ) -> dict[str, Any]:
+        """认证并暂存已授权的脱敏快照，返回人机挑战；登记使用受控邀请。
+
+        ``primary_auth`` 仅由可信宿主提供，API 内部才执行该认证上下文；它不是
+        JSON 参数。进程内调用可改为提供既有 ``security``，两者不能同时传入。
+        未装配能力的实现默认拒绝，不改变既有实现的抽象方法集合。
+        """
+        raise ValidationError(f"{type(self).__name__}: user access control unavailable")
+
+    def finish_human_view(self, payload: dict, browser: str, *, peer: str = "") -> dict[str, Any]:
+        """验证一次性人机证明，复核资源后委托 Engine 还原并返回用户访问控制响应。"""
+        raise ValidationError(f"{type(self).__name__}: user access control unavailable")
 
     @abstractmethod
     def continuity_task(

@@ -2,7 +2,7 @@
 """LocalMemoryAPI facade: PEP + typed Control application ports.
 
 Implementation helpers live in ``local_support.py`` and ``*_ops.py`` mixins.
-Public class and method signatures are unchanged.
+Optional user access-control entries remain separate from ordinary machine queries.
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ from jiuwen_memory.control.space import SpaceManager
 from .admin_ops import AdminOpsMixin
 from .continuity_ops import ContinuityOpsMixin
 from .dreaming import DreamingCoordinator
+from .human_view_ops import HumanViewOpsMixin
 from .local_support import (
     _first_family_predicate,
     _policy_int,
@@ -65,6 +66,7 @@ __all__ = ["LocalMemoryAPI", "_first_family_predicate", "_resolve_space_owner"]
 
 class LocalMemoryAPI(
     ContinuityOpsMixin,
+    HumanViewOpsMixin,
     WriteOpsMixin,
     QueryOpsMixin,
     MdOpsMixin,
@@ -100,6 +102,7 @@ class LocalMemoryAPI(
         document_mode: bool = False,
         continuity: Continuity | None = None,
         continuity_connectors: dict | None = None,
+        privacy=None,
     ) -> None:
         if audit_integrity_provider is not None and audit_verify_guard is None:
             raise ValidationError(
@@ -114,6 +117,8 @@ class LocalMemoryAPI(
             continuity_connectors if continuity_connectors is not None else {}
         )
         self._engine = engine
+        self._privacy = privacy
+        self._init_human_view()
         self._runtime_close: Callable[[], None] | None = None
         self._require_grant_management = False
         self._perm = permission
