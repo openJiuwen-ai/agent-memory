@@ -1347,3 +1347,101 @@ class TestDedupEvolveExtract:
         assert len(result.created_ids) == 2
         assert "ext-1" in result.created_ids
         assert "ext-2" in result.created_ids
+
+
+class TestDedupImportanceMax:
+    """F10：UPDATE/SUPERSEDE 合并时重要度取 max（只增不减）。"""
+
+    @staticmethod
+    def _run(decision: str, existing_importance, candidate_importance):
+        stores = _create_stores()
+        responses = [json.dumps({"decision": decision, "reason": "test"})]
+        if decision == "update":
+            responses.append("合并后的内容")
+        embedder = _HashEmbedder()
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], embedder, _MockLLM(responses=responses),
+            dedup_high_similarity=1.01,
+        )
+        existing = _make_unit("e1", "用户偏好简洁回答风格")
+        if existing_importance is not None:
+            existing.system_metadata["importance"] = existing_importance
+        _index_unit(existing, stores["kv"], stores["vector"], embedder)
+        candidate = _make_unit("c1", "用户偏好简洁回答风格")
+        if candidate_importance is not None:
+            candidate.system_metadata["importance"] = candidate_importance
+        getattr(evolver, "_dedup_batch")([candidate])
+        stored_id = "e1" if decision == "update" else "c1"
+        return loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(stored_id)))
+
+    def test_update_takes_max_importance(self):
+        merged = self._run("update", "0.50", "0.85")
+        assert merged.system_metadata["importance"] == "0.85"
+
+    def test_update_preserves_higher_importance_when_candidate_lower(self):
+        merged = self._run("update", "0.95", "0.30")
+        assert merged.system_metadata["importance"] == "0.95"
+
+    def test_update_importance_fallback_when_existing_missing(self):
+        merged = self._run("update", None, "0.80")
+        assert merged.system_metadata["importance"] == "0.80"
+
+    def test_update_compares_importance_numerically(self):
+        # 字符串字典序下 "0.5" > "0.45" 成立但 "0.5" > "0.95" 也成立——须按数值取 max。
+        merged = self._run("update", "0.5", "0.95")
+        assert merged.system_metadata["importance"] == "0.95"
+
+    def test_update_without_any_importance_writes_nothing(self):
+        merged = self._run("update", None, None)
+        assert "importance" not in merged.system_metadata
+
+    def test_supersede_takes_max_importance(self):
+        replacement = self._run("supersede", "0.50", "0.85")
+        assert replacement.system_metadata["importance"] == "0.85"
+
+    def test_supersede_preserves_higher_importance_when_candidate_lower(self):
+        replacement = self._run("supersede", "0.90", "0.30")
+        assert replacement.system_metadata["importance"] == "0.90"
+
+
+class TestDedupOriginPreserved:
+    """F10：UPDATE 合并保留被合并 existing 的 origin；SUPERSEDE 由新版本自带 origin。"""
+
+    @staticmethod
+    def _run(decision: str, existing_origin, candidate_origin):
+        stores = _create_stores()
+        responses = [json.dumps({"decision": decision, "reason": "test"})]
+        if decision == "update":
+            responses.append("合并后的内容")
+        embedder = _HashEmbedder()
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], embedder, _MockLLM(responses=responses),
+            dedup_high_similarity=1.01,
+        )
+        existing = _make_unit("e1", "用户偏好简洁回答风格")
+        if existing_origin is not None:
+            existing.system_metadata["origin"] = existing_origin
+        _index_unit(existing, stores["kv"], stores["vector"], embedder)
+        candidate = _make_unit("c1", "用户偏好简洁回答风格")
+        if candidate_origin is not None:
+            candidate.system_metadata["origin"] = candidate_origin
+        getattr(evolver, "_dedup_batch")([candidate])
+        stored_id = "e1" if decision == "update" else "c1"
+        return loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(stored_id)))
+
+    def test_update_keeps_existing_origin_when_candidate_differs(self):
+        merged = self._run("update", "original", "inferred")
+        assert merged.system_metadata["origin"] == "original"
+
+    def test_update_keeps_existing_inferred_origin(self):
+        merged = self._run("update", "inferred", "original")
+        assert merged.system_metadata["origin"] == "inferred"
+
+    def test_update_does_not_borrow_candidate_origin_when_existing_missing(self):
+        # 存量数据无 origin 时不猜：借候选的 inferred 可能把原文误标为派生。
+        merged = self._run("update", None, "inferred")
+        assert "origin" not in merged.system_metadata
+
+    def test_supersede_keeps_candidate_origin(self):
+        replacement = self._run("supersede", "original", "inferred")
+        assert replacement.system_metadata["origin"] == "inferred"

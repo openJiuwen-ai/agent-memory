@@ -16,6 +16,7 @@ pytestmark = pytest.mark.unit
         "recall_and_fuse",
         "rerank",
         "rollup",
+        "secondary_rank",
         "disclose",
         "expand",
         "finalize",

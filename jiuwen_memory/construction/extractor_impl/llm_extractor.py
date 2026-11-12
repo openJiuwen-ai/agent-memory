@@ -68,7 +68,14 @@ from jiuwen_memory.common.type_def import (
     inherited_system_metadata,
     inherited_user_metadata,
 )
-from jiuwen_memory.construction.common import reject_deprecated_llm_attempt_keys
+from jiuwen_memory.construction.common import (
+    importance_category_map_from_config,
+    importance_category_prompt,
+    importance_category_prompt_enabled_from_config,
+    inferred_attribution,
+    parse_importance_category,
+    reject_deprecated_llm_attempt_keys,
+)
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.prompt_guard import (
     CONTENT_MAX_UNIT_CHARS,
@@ -121,6 +128,7 @@ class ExtractionCandidate:
     tier: MemoryTier = MemoryTier.SEMANTIC  # LLM 判定的认知角色（非法值兜底 SEMANTIC）
     title: str = ""  # LLM 生成的 md 块标题（F08 §8，命名「这件事」非类别；清洗后单行 ≤50 字符）
     tags: list[str] = field(default_factory=list)  # LLM 抽的 1-3 个主题标签
+    importance_category: str = ""  # LLM 判的重要度类别（F10），按配置查表成数值；空=default
     keywords: list[str] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
     entities: list[Entity] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
     metadata: dict[str, str] = field(default_factory=dict)
@@ -436,6 +444,8 @@ class ExtractorImpl(Extractor):
     EXTRACTION_FIDELITY_SUFFIX: str = _EXTRACTION_FIDELITY_SUFFIX
     OBSERVATION_DATE_PREFIX: str = _OBSERVATION_DATE_PREFIX
     CONTEXT_SECTION_TEMPLATES: dict[str, str] = _CONTEXT_SECTION_TEMPLATES
+    # 追加到 EXTRACT_SYSTEM_PROMPT 末尾的 importance_category 字段说明的语言（F10）
+    IMPORTANCE_PROMPT_LANGUAGE: str = "en"
 
     def __init__(
         self,
@@ -444,8 +454,12 @@ class ExtractorImpl(Extractor):
         max_attempts: int = 3,
         retry_backoff_ms: int = 1000,
         extract_batch_size: int = _DEFAULT_EXTRACT_BATCH_SIZE,
+        importance_category_map: dict[str, str] | None = None,
+        importance_category_prompt_enabled: bool = False,
     ) -> None:
         self._llm = llm
+        self._importance_category_map = importance_category_map
+        self._importance_category_prompt_enabled = importance_category_prompt_enabled
         self._min_confidence = min_confidence
         self._max_attempts, self._retry_backoff_ms = validate_llm_attempt_policy(
             max_attempts,
@@ -672,6 +686,11 @@ class ExtractorImpl(Extractor):
             # 值域约束归消费侧——agent_llm 子类兜底自己的枚举，文档模式落盘对未知值静默
             # 兜底 long_term_memory。llm 基线 prompt 不输出该字段，恒空即零影响。
             memory_class = str(item.get("memory_class", "") or "").strip()
+            importance_category = (
+                parse_importance_category(item.get("importance_category"))
+                if self._importance_category_prompt_enabled
+                else ""
+            )
             candidates.append(ExtractionCandidate(
                 target=target,
                 content=content.strip(),
@@ -682,6 +701,7 @@ class ExtractorImpl(Extractor):
                 tier=tier,
                 title=title,
                 tags=tags,
+                importance_category=importance_category,
                 metadata={MEMORY_CLASS_KEY: memory_class} if memory_class else {},
             ))
             logger.info(
@@ -857,6 +877,8 @@ class ExtractorImpl(Extractor):
                 "confidence": str(candidate.confidence),
                 "target": candidate.target.value,
             }
+            # procedural 汇总不判类别，取 default 类别值；不沿用源原文的重要度
+            | inferred_attribution(None, self._importance_category_map)
             | ({MD_TITLE_KEY: candidate.title} if candidate.title else {})
             | candidate.metadata,
             user_metadata=inherited_user_metadata(units),
@@ -971,6 +993,10 @@ class ExtractorImpl(Extractor):
             for unit in units
         )
         system_prompt = self.EXTRACT_SYSTEM_PROMPT
+        if self._importance_category_prompt_enabled:
+            system_prompt += "\n" + importance_category_prompt(
+                self._importance_category_map, language=self.IMPORTANCE_PROMPT_LANGUAGE
+            )
         if fidelity_mode:
             system_prompt = system_prompt + "\n\n" + self.EXTRACTION_FIDELITY_SUFFIX
         messages = [
@@ -1075,6 +1101,8 @@ class ExtractorImpl(Extractor):
                     "evidence": c.evidence,
                     "extracted_statement": statement,
                 }
+                # 派生记忆按自身类别查表，覆盖从源原文继承来的 importance
+                | inferred_attribution(c.importance_category, self._importance_category_map)
                 | ({MD_TITLE_KEY: c.title} if c.title else {})
                 | c.metadata,
                 user_metadata=inherited_user_metadata([source]),
@@ -1116,4 +1144,6 @@ def _build(config):
         max_attempts=config.get("extractor_max_attempts", 3),
         retry_backoff_ms=config.get("extractor_retry_backoff", 1000),
         extract_batch_size=config.get("extract_batch_size", _DEFAULT_EXTRACT_BATCH_SIZE),
+        importance_category_map=importance_category_map_from_config(config),
+        importance_category_prompt_enabled=importance_category_prompt_enabled_from_config(config),
     )

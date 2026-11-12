@@ -10,6 +10,7 @@
 - llm target 类属性化回归（默认实例 prompt 面 = 模块常量，行为零变化）。
 """
 
+import hashlib
 import json
 
 import pytest
@@ -18,6 +19,7 @@ from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.type_def import MEMORY_CLASS_KEY, MemoryTier
 from jiuwen_memory.config import AssemblyContext
 from jiuwen_memory.construction.base import ExtractContext
+from jiuwen_memory.construction.common import importance_category_prompt
 from jiuwen_memory.construction.extractor import ExtractorProducer
 from jiuwen_memory.construction.extractor_impl.agent_llm_extractor import (
     _EXTRACT_SYSTEM_PROMPT_CN,
@@ -62,7 +64,10 @@ def _make(
     responses: list[str] | None = None, language: str = "cn"
 ) -> tuple[AgentLlmExtractor, RecordingLLM]:
     llm = RecordingLLM(responses=responses)
-    return AgentLlmExtractor(llm=llm, language=language), llm
+    extractor = AgentLlmExtractor(
+        llm=llm, language=language, importance_category_prompt_enabled=True
+    )
+    return extractor, llm
 
 
 def _candidate_json(
@@ -206,7 +211,23 @@ def test_extract_contract_inherited_cn():
     assert "聚餐" in derived.tags, "LLM 主题 tags 应并入"
     sys_msg = llm.calls[0][0]
     assert sys_msg.role == "system", "messages[0] 应为 system"
-    assert sys_msg.content is _EXTRACT_SYSTEM_PROMPT_CN, "CN 装配态应发送 CN system prompt"
+    assert sys_msg.content == (
+        _EXTRACT_SYSTEM_PROMPT_CN + "\n" + importance_category_prompt(None, language="cn")
+    ), "CN 装配态应发送 CN system prompt（末尾追加中文重要度类别段）"
+
+
+@pytest.mark.parametrize(
+    ("language", "digest"),
+    [
+        ("cn", "949d8eaca5d3ca7f81a90e28159d0f27cc2fd0b8e9516c5040136cd73786b64a"),
+        ("en", "80b90b690862a1d1846a96e6c28d5869faeaeb43576f424fb90c1b7f97ac68fc"),
+    ],
+)
+def test_category_prompt_off_matches_baseline(language: str, digest: str) -> None:
+    llm = RecordingLLM(responses=[_candidate_json()])
+    AgentLlmExtractor(llm=llm, language=language).extract([create_test_unit("u1", "就定周五")])
+    content = llm.calls[0][0].content
+    assert hashlib.sha256(content.encode("utf-8")).hexdigest() == digest, "同 48be7b3"
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +280,11 @@ def test_fidelity_suffix_bilingual():
     u_cn.system_metadata = {"extraction_fidelity_mode": "true"}
     ext_cn.extract([u_cn])
     assert llm_cn.calls[0][0].content == (
-        _EXTRACT_SYSTEM_PROMPT_CN + "\n\n" + _EXTRACTION_FIDELITY_SUFFIX_CN
+        _EXTRACT_SYSTEM_PROMPT_CN
+        + "\n"
+        + importance_category_prompt(None, language="cn")
+        + "\n\n"
+        + _EXTRACTION_FIDELITY_SUFFIX_CN
     ), "CN 态 fidelity 追加段应为中文"
 
     ext_en, llm_en = _make(responses=[_candidate_json()], language="en")

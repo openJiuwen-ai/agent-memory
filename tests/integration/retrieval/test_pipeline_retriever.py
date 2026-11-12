@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from time import perf_counter, sleep
 from types import SimpleNamespace
 
@@ -35,9 +36,14 @@ from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.common.type_def.scope import Scope, space_id_from_scope
 from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.config.defaults import default_config_dict
+from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.bootstrap import register_operators
 from jiuwen_memory.retrieval.discloser_impl.structured_discloser import StructuredDiscloser
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
+from jiuwen_memory.retrieval.fuser_impl.secondary_scorer import SecondaryScorer
+from jiuwen_memory.retrieval.fuser_impl.secondary_scorer.default_secondary_scorer import (
+    DefaultSecondaryScorer,
+)
 from jiuwen_memory.retrieval.fuser_impl.weighted_rrf_fuser import WeightedRRFFuser
 from jiuwen_memory.retrieval.query_parser_impl.simple_query_parser import SimpleQueryParser
 from jiuwen_memory.retrieval.retriever import RetrieverProducer
@@ -1405,3 +1411,232 @@ def test_default_config_attaches_l0_l1_recallers() -> None:
             assert _store_of(r) is not None, f"{key} recaller 未注入分层 store"
     finally:
         Factory.reset_all()
+
+
+# -- 次级排序（retrieval F09）：threshold 之后、top_k 之前 ------------------------ #
+
+
+class _ExplodingScorer(SecondaryScorer):
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.SECONDARY_SCORER
+
+    def health(self) -> None:
+        return None
+
+    def explain(self) -> dict[str, str]:
+        return {"strategy": "exploding"}
+
+    def score(self, query, candidates, *, calibrated):
+        raise RuntimeError("boom")
+
+
+class _MinimalScorer(SecondaryScorer):
+    """按契约只实现 score：不定义 explain，也不定义 score_with_detail。"""
+
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.SECONDARY_SCORER
+
+    def health(self) -> None:
+        return None
+
+    def score(self, query, candidates, *, calibrated):
+        return list(reversed(candidates))
+
+
+class _ExplainExplodingScorer(_MinimalScorer):
+    def explain(self) -> dict[str, str]:
+        raise RuntimeError("explain boom")
+
+
+def _secondary_world(importances: dict[str, str]):
+    world = make_world()
+    now = datetime.now(UTC)
+    for uid, importance in importances.items():
+        unit = make_unit(uid, f"{uid} candidate")
+        unit.system_metadata["importance"] = importance
+        unit.temporal.t_ingest = now
+        index_unit(world, unit)
+    recaller = StaticRecaller(
+        [
+            ScoredUnit(uid, 1.0 - index / 10.0, RecallChannel.KEYWORD)
+            for index, uid in enumerate(importances)
+        ]
+    )
+    return world, _storage_for(world, [recaller])
+
+
+def _secondary_retriever(world, domain_store, scores, **kwargs) -> PipelineRetriever:
+    return PipelineRetriever(
+        world.parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        StaticReranker(scores),
+        domain_store=domain_store,
+        **kwargs,
+    )
+
+
+def test_secondary_rank_trajectory_recorded() -> None:
+    world, domain = _secondary_world({"u1": "0.1", "u2": "0.9"})
+    retriever = _secondary_retriever(
+        world, domain, [0.9, 0.88],
+        secondary_rank_enabled=True, secondary_scorer=DefaultSecondaryScorer(),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=5, with_trajectory=True)
+    )
+
+    stages = [step.stage for step in result.trajectory]
+    assert stages.index("threshold") < stages.index("secondary_rank") < stages.index("disclose")
+    detail = [s for s in result.trajectory if s.stage == "secondary_rank"][0].detail
+    assert detail["enabled"] == "true"
+    assert detail["calibrated"] == "true"
+    assert detail["strategy"] == "band_tiebreak"
+    for key in ("band_count", "reordered", "max_band_size", "score_band",
+                "importance_weight", "recency_weight", "recency_tau_days"):
+        assert key in detail, key
+    assert [item.unit_id for item in result.items] == ["u2", "u1"]
+
+
+def test_secondary_rank_after_threshold_before_topk() -> None:
+    world, domain = _secondary_world({"u1": "0.1", "u2": "0.5", "u3": "0.9", "u4": "1.0"})
+    retriever = _secondary_retriever(
+        world, domain, [0.9, 0.88, 0.86, 0.3],
+        min_score=0.5,
+        secondary_rank_enabled=True, secondary_scorer=DefaultSecondaryScorer(),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=2, with_trajectory=True)
+    )
+
+    # u4 重要度最高但被阈值砍掉，不得复活；同带 u1..u3 先按次要键重排再截 top_k=2。
+    assert [item.unit_id for item in result.items] == ["u3", "u2"]
+
+
+def test_secondary_rank_disabled_keeps_order_and_records_skip() -> None:
+    world, domain = _secondary_world({"u1": "0.1", "u2": "0.9"})
+    retriever = _secondary_retriever(world, domain, [0.9, 0.88])
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=5, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+    detail = [s for s in result.trajectory if s.stage == "secondary_rank"][0].detail
+    assert detail == {"enabled": "false", "skipped": "disabled"}
+
+
+def test_secondary_rank_skipped_on_uncalibrated_path() -> None:
+    world, domain = _secondary_world({"u1": "0.1", "u2": "0.9"})
+    retriever = _secondary_retriever(
+        world, domain, [0.9, 0.88],
+        secondary_rank_enabled=True, secondary_scorer=DefaultSecondaryScorer(),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="candidate", top_k=5, rerank=False, with_trajectory=True),
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+    detail = [s for s in result.trajectory if s.stage == "secondary_rank"][0].detail
+    assert detail == {
+        "enabled": "true",
+        "calibrated": "false",
+        **DefaultSecondaryScorer().explain(),
+        "skipped": "uncalibrated",
+    }
+
+
+def test_secondary_rank_uncalibrated_gated_by_orchestrator() -> None:
+    # _MinimalScorer 不看 calibrated、总是反转：未精排路径由编排层门控，算子不被调用。
+    world, domain = _secondary_world({"u1": "0.1", "u2": "0.9"})
+    retriever = _secondary_retriever(
+        world, domain, [0.9, 0.88],
+        secondary_rank_enabled=True, secondary_scorer=_MinimalScorer(),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="candidate", top_k=5, rerank=False, with_trajectory=True),
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+    detail = [s for s in result.trajectory if s.stage == "secondary_rank"][0].detail
+    assert detail == {"enabled": "true", "calibrated": "false", "skipped": "uncalibrated"}
+
+
+def test_secondary_scorer_exception_falls_back_to_original_order() -> None:
+    world, domain = _secondary_world({"u1": "0.1", "u2": "0.9"})
+    retriever = _secondary_retriever(
+        world, domain, [0.9, 0.88],
+        secondary_rank_enabled=True, secondary_scorer=_ExplodingScorer(),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=5, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+    detail = [s for s in result.trajectory if s.stage == "secondary_rank"][0].detail
+    assert "error" in detail
+
+
+def test_secondary_rank_minimal_scorer_only_implements_score() -> None:
+    world, domain = _secondary_world({"u1": "0.1", "u2": "0.9"})
+    retriever = _secondary_retriever(
+        world, domain, [0.9, 0.88],
+        secondary_rank_enabled=True, secondary_scorer=_MinimalScorer(),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=5, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u2", "u1"]
+    detail = [s for s in result.trajectory if s.stage == "secondary_rank"][0].detail
+    assert detail == {"enabled": "true", "calibrated": "true"}
+
+
+def test_secondary_scorer_explain_exception_falls_back_to_original_order() -> None:
+    world, domain = _secondary_world({"u1": "0.1", "u2": "0.9"})
+    retriever = _secondary_retriever(
+        world, domain, [0.9, 0.88],
+        secondary_rank_enabled=True, secondary_scorer=_ExplainExplodingScorer(),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="candidate", top_k=5, with_trajectory=True)
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+    detail = [s for s in result.trajectory if s.stage == "secondary_rank"][0].detail
+    assert "explain boom" in detail["error"]
+
+
+def test_secondary_rank_enabled_requires_scorer() -> None:
+    world, domain = _secondary_world({"u1": "0.1"})
+    with pytest.raises(ValidationError):
+        _secondary_retriever(world, domain, [0.9], secondary_rank_enabled=True)
+
+
+@pytest.mark.parametrize("enabled", [True, "true"])
+def test_secondary_rank_assembled_from_config(enabled) -> None:
+    # pylint: disable=protected-access
+    raw = default_config_dict()
+    raw["retriever"]["default"]["params"]["secondary_rank_enabled"] = enabled
+    ctx = AssemblyContext.from_dict(raw)
+    register_plugins()
+    register_backends()
+    register_operators()
+    Factory.reset_all()
+    try:
+        retriever = RetrieverProducer.build_named("default", ctx)
+    finally:
+        Factory.reset_all()
+
+    assert isinstance(retriever._secondary_scorer, DefaultSecondaryScorer)
+    assert retriever._secondary_rank_enabled is True

@@ -645,3 +645,100 @@ def test_dynamic_extractor_oversized_unit_fully_consumed_in_chunks():
     assert middle_fact not in llm.user_texts[0]
     assert middle_fact in llm.user_texts[1]
     assert len(result) == 2
+
+
+def _dynamic_dedup(decision: str, existing_importance: str, candidate_importance: str):
+    existing = _unit("existing", "旧事实", {"importance": existing_importance})
+    kv = InMemoryKVStore()
+    kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
+    storage = make_storage(kv=kv, graph=InMemoryGraphStore())
+    responses = [json.dumps({"decision": decision, "existing_id": "existing", "reason": "t"})]
+    if decision == "update":
+        responses.append("合并事实")
+    candidate = _unit(
+        "candidate",
+        "新事实",
+        {
+            "_extraction_strategy": "episodic",
+            "_consolidation_prompt_episodic": "episodic",
+            "importance": candidate_importance,
+        },
+    )
+    evolver = DynamicEvolver(
+        extractor=_FallbackExtractor(),
+        abstractor=object(),
+        associator=object(),
+        index_builder=_Index(storage.domain_store()),
+        storage=storage,
+        message_store=storage.kv(),
+        dedup=_Dedup([(existing, 0.8)]),
+        llm=_ScriptedLLM(responses),
+        layer_annotator=None,
+        prompt_registry=PromptRegistry.from_dict({"consolidate": {"episodic": "巩固判定"}}),
+    )
+    evolver.evolve([candidate], EvolveMode.EXTRACT)
+    stored_id = "existing" if decision == "update" else "candidate"
+    return loads(kv.get(existing.scope, memory_key(stored_id)))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("decision", "existing_importance", "candidate_importance", "expected"),
+    [
+        ("update", "0.95", "0.30", "0.95"),
+        ("update", "0.50", "0.85", "0.85"),
+        ("supersede", "0.90", "0.30", "0.90"),
+        ("supersede", "0.50", "0.85", "0.85"),
+    ],
+)
+def test_dynamic_evolver_merge_takes_max_importance(
+    decision, existing_importance, candidate_importance, expected
+):
+    merged = _dynamic_dedup(decision, existing_importance, candidate_importance)
+    assert merged.system_metadata["importance"] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("decision", "existing_origin", "candidate_origin", "expected"),
+    [
+        ("update", "original", "inferred", "original"),
+        ("update", "inferred", "original", "inferred"),
+        ("update", None, "inferred", None),
+        ("supersede", "original", "inferred", "inferred"),
+    ],
+)
+def test_dynamic_evolver_merge_origin(decision, existing_origin, candidate_origin, expected):
+    existing_meta = {} if existing_origin is None else {"origin": existing_origin}
+    existing = _unit("existing", "旧事实", existing_meta)
+    kv = InMemoryKVStore()
+    kv.insert(existing.scope, memory_key(existing.id), dumps(existing))
+    storage = make_storage(kv=kv, graph=InMemoryGraphStore())
+    responses = [json.dumps({"decision": decision, "existing_id": "existing", "reason": "t"})]
+    if decision == "update":
+        responses.append("合并事实")
+    candidate = _unit(
+        "candidate",
+        "新事实",
+        {
+            "_extraction_strategy": "episodic",
+            "_consolidation_prompt_episodic": "episodic",
+            "origin": candidate_origin,
+        },
+    )
+    evolver = DynamicEvolver(
+        extractor=_FallbackExtractor(),
+        abstractor=object(),
+        associator=object(),
+        index_builder=_Index(storage.domain_store()),
+        storage=storage,
+        message_store=storage.kv(),
+        dedup=_Dedup([(existing, 0.8)]),
+        llm=_ScriptedLLM(responses),
+        layer_annotator=None,
+        prompt_registry=PromptRegistry.from_dict({"consolidate": {"episodic": "巩固判定"}}),
+    )
+    evolver.evolve([candidate], EvolveMode.EXTRACT)
+    stored_id = "existing" if decision == "update" else "candidate"
+    stored = loads(kv.get(existing.scope, memory_key(stored_id)))
+    assert stored.system_metadata.get("origin") == expected
