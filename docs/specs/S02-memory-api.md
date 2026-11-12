@@ -1457,7 +1457,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 `RetrievalResult`：
 - `items: list[RetrievedItem]` —— 每项 `unit_id` / `score`（融合/重排后最终分）/ `content`（按层级加载）/ `level`（实际披露层级）。
 - 接续可选字段（仅给出 duty/task_id/anchor 时填充，否则为 null）：`paths: list[RelationPath] | None`、`gaps: list[Gap] | None`、`view_meta: ViewMeta | None`；`RetrievedItem.view: ViewAnnotation | None`。字段定义见 S11。
-- `trajectory: list[TrajectoryStep]` —— 仅 `with_trajectory=True` 返回。每步 `stage`（parse/recall/fuse/recheck/rerank/threshold/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
+- `trajectory: list[TrajectoryStep]` —— 仅 `with_trajectory=True` 返回。每步 `stage`（parse/recall/fuse/recheck/rerank/resolve/threshold/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
 
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
 

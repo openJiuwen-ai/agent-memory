@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from jiuwen_memory.common.errors import BackendError
+from jiuwen_memory.common.reranker.base import RerankResolution
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
@@ -38,6 +39,7 @@ def test_stage_sequence_and_rerank_degradation(pipeline, degraded):
     reranker = Mock()
     reranker.rerank.side_effect = BackendError("offline") if degraded else None
     reranker.rerank.return_value = [0.8]
+    reranker.resolve.return_value = RerankResolution.keep_all(1)
     retriever = PipelineRetriever(
         harness.parser, RRFFuser(), harness.discloser, None, reranker,
         domain_store=harness.domain,
@@ -46,10 +48,14 @@ def test_stage_sequence_and_rerank_degradation(pipeline, degraded):
         with_trajectory=True, channels=[RecallChannel.KEYWORD],
     ))
     assert isinstance(retriever, StagedRetriever)
-    assert [step.stage for step in result.trajectory] == [
+    expected_stages = [
         "parse", "recall", "fuse", "recheck", "rerank", "threshold",
         "secondary_rank", "disclose",
     ]
+    if not degraded:
+        # 精排成功后才跑 resolve；精排降级（reranked=False）跳过 resolve。
+        expected_stages.insert(5, "resolve")
+    assert [step.stage for step in result.trajectory] == expected_stages
     assert [item.unit_id for item in result.items] == ["parent"]
     threshold = next(step for step in result.trajectory if step.stage == "threshold")
     assert threshold.detail["calibrated"] == str(not degraded)

@@ -11,5 +11,6 @@ from jiuwen_memory.common.reranker.base import RerankerProducer
 import_optional(".overlap_reranker", __name__)
 import_optional(".bge_reranker", __name__)
 import_optional(".api_reranker", __name__)
+import_optional(".llm_reranker", __name__)
 
 __all__ = ["RerankerProducer"]

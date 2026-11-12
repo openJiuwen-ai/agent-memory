@@ -47,6 +47,8 @@
      ↓
 6. 可选 Reranker 用 `ParsedQuery.rewritten` 精排（记 calibrated 标志；fallback/off 时该值即 sanitized raw）
      ↓
+6b. 可选 `Reranker.resolve` 语义去重 + 冲突消解（锦上添花；失败降级 keep_all，轨迹记 degraded；复用精排 score 不二次打分，送 LLM 候选受条数上限 + 总字符预算约束，被截断候选只保留不丢）
+     ↓
 7. 相关性阈值：绝对 min_score（仅校准路径）+ 相对 ratio（校准/未校准两路，默认关闭）
      ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
      ↓ + 可选次级排序（secondary_rank_enabled，globals 或 retriever params，默认关）：SecondaryScorer 带内按重要度/时效 tie-break
