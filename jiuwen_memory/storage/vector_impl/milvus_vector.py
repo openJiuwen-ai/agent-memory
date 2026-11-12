@@ -199,7 +199,10 @@ class MilvusVectorStore(VectorStore):
                         )
                 raise
             self._client, self._client_uri = client, uri
-        return self._client
+        # 返回本线程已 ensure 成功的局部 client：锁外复查共享缓存存在窄竞态，
+        # 窗口内被 _recover_connection 清空会返回 None，调用方 client.search(...)
+        # 将抛裸 AttributeError 而非归一化的 BackendError。
+        return client
 
     def _wait_for_load_complete(self, client: Any, timeout: float | None = None) -> None:
         """Poll load state until the collection is fully loaded or timeout elapses."""
@@ -340,12 +343,8 @@ class MilvusVectorStore(VectorStore):
             )
         return [self._to_record(row) for row in rows]
 
-    def _recover_connection(self, op: str) -> None:
-        """连接丢失或 collection 未加载时的统一恢复：清缓存重建 client，
-        经 ``self.client`` property 重新建连 + ``_ensure_collection``（含 load+wait）。
-
-        连接已废时直接 load_collection 也会抛同款异常，故必须先重建连接。
-        """
+    def _recover_connection(self, op: str, failed: Any) -> None:
+        """统一恢复：仅当共享缓存仍指向调用方确认失效的连接时才清空重建。"""
         logger.warning(
             "MilvusVectorStore: %s failed with not-loaded/connection-lost, "
             "reconnecting and ensuring collection %s",
@@ -355,8 +354,16 @@ class MilvusVectorStore(VectorStore):
         # 缓存写入统一收敛到 _connect_lock 内：property 的建连与这里的清空
         # 是仅有的两个写入口，避免恢复路径与在建线程互踩共享状态。
         with self._connect_lock:
+            if self._client is not failed:
+                # 缓存已不是本次失败的那个连接：并发恢复时他人刚发布了新
+                # client（或正在重建），让位复用其成果——无条件清空会丢弃
+                # 新 client 且无 close，泄漏 gRPC channel。
+                return
             self._client = None
             self._client_uri = None
+        # 清空与重建不必同临界区：清空后缓存为 None，其余恢复者经 is 比较
+        # 自然让位；重建走 property 双检，并发下只建一个连接。
+        # 不可把 self.client 放进上面的锁内——Lock 不可重入，会死锁。
         _ = self.client  # 触发重建 + ensure_collection
 
     def _search_with_not_loaded_retry(
@@ -383,7 +390,7 @@ class MilvusVectorStore(VectorStore):
         except Exception as exc:
             if not _is_not_loaded(exc):
                 raise
-            self._recover_connection(op)
+            self._recover_connection(op, client)
             client = self.client
             with wrap_backend(op):
                 return client.search(
@@ -413,7 +420,7 @@ class MilvusVectorStore(VectorStore):
         except Exception as exc:
             if not _is_not_loaded(exc):
                 raise
-            self._recover_connection("milvus query")
+            self._recover_connection("milvus query", client)
             client = self.client
             with wrap_backend("milvus query"):
                 return client.query(self._collection, **kwargs)

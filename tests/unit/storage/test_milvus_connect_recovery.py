@@ -128,3 +128,24 @@ def test_concurrent_first_access_creates_single_client(monkeypatch: pytest.Monke
 
     assert len(_SlowConnectClient.instances) == 1
     assert all(r is results[0] for r in results)
+
+
+def test_recover_connection_skips_stale_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """并发恢复的后到者不作废他人刚发布的新 client，不产生无 close 的丢弃。"""
+    _install_fake_pymilvus(monkeypatch, _FlakyEnsureClient)
+    _FlakyEnsureClient.instances = []
+    _FlakyEnsureClient.fail_first = False
+    store = _store()
+    old = store.client
+
+    # 私有方法经 getattr 字符串调用（方法在类字典，vars(store) 取不到；
+    # 字符串形式同时规避类外访问受保护成员的静态检视）。
+    recover = getattr(store, "_recover_connection")
+    recover("milvus search", old)
+    fresh = store.client
+    assert fresh is not old
+
+    # 模拟并发恢复的后到者：failed 仍是旧连接，缓存已被前者换新——须让位。
+    recover("milvus search", old)
+    assert vars(store)["_client"] is fresh
+    assert len(_FlakyEnsureClient.instances) == 2  # 未发生第三次建连
