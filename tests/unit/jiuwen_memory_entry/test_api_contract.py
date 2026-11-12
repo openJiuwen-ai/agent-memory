@@ -39,7 +39,7 @@ pytestmark = pytest.mark.unit
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
-    assert len(api_contract.api_method_names()) == 43
+    assert len(api_contract.api_method_names()) == 44
     assert {
         "continuity_task",
         "continuity_relation",

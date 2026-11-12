@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
-from jiuwen_memory.control.types import DeleteSelector
+from jiuwen_memory.control.types import DeleteSelector, UpdateSelector
 
 
 def _utc(value: datetime | None) -> datetime | None:
@@ -69,3 +69,28 @@ def valid_sort_key(unit: MemoryUnit) -> datetime:
     """历史版本按 UTC 生效时间排序；缺值沿用最早时间哨兵。"""
     value = unit.temporal.t_valid
     return datetime.min.replace(tzinfo=UTC) if value is None else as_utc(value)
+
+
+def matches_update_selector(unit: MemoryUnit, selector: UpdateSelector) -> bool:
+    """批量更新候选过滤（控制层唯一实现，三引擎共用）。
+
+    与 :func:`matches_delete_selector` 同构：unit_ids/tags/before/after/filters
+    取「与」，时间比较双侧 ``as_utc`` 归一（naive/aware 混比不抛错）。
+    """
+    wanted_ids = set(selector.unit_ids)
+    wanted_tags = set(selector.tags)
+    if wanted_ids and unit.id not in wanted_ids:
+        return False
+    if wanted_tags and not wanted_tags.intersection(unit.tags):
+        return False
+    if selector.before is not None:
+        t_message = unit.temporal.t_message
+        if t_message is None or as_utc(t_message) >= as_utc(selector.before):
+            return False
+    if selector.after is not None:
+        t_message = unit.temporal.t_message
+        if t_message is None or as_utc(t_message) <= as_utc(selector.after):
+            return False
+    if selector.filters is not None and not matches_memory_unit(unit, selector.filters):
+        return False
+    return True

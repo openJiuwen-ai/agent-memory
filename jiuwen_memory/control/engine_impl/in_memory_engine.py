@@ -63,6 +63,7 @@ from jiuwen_memory.control.engine_impl.schema_update_support import (
 from jiuwen_memory.control.engine_impl.sweep_support import run_sweep
 from jiuwen_memory.control.engine_impl.temporal_support import (
     matches_delete_selector,
+    matches_update_selector,
     valid_at,
 )
 from jiuwen_memory.control.engine_impl.temporal_support import (
@@ -102,6 +103,7 @@ from jiuwen_memory.control.types import (
     PermissionContext,
     SweepResult,
     UpdateMode,
+    UpdateSelector,
 )
 from jiuwen_memory.ingest.hierarchy_hints import enrich_snapshot_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
@@ -605,7 +607,37 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         contexts: list[PermissionContext] = []
         for scope in scopes:
             for unit in self._list_units(scope):
+                # 排除 SUPERSEDED 历史版本：FORGET/ARCHIVE 流转非法（SUPERSEDED→
+                # ARCHIVED 禁止）；PURGE 物理删除仍需覆盖历史版本（S02/S03
+                # 合规硬删，不得残留明文）。
+                if (
+                    unit.lifecycle == LifecycleState.SUPERSEDED
+                    and selector.mode is not DeleteMode.PURGE
+                ):
+                    continue
                 if matches_delete_selector(unit, selector):
+                    contexts.append(_permission_context_from_unit(unit))
+        return contexts
+
+    async def permission_contexts_for_update(
+        self, selector: UpdateSelector
+    ) -> list[PermissionContext]:
+        if selector.scope is not None:
+            _ensure_local_scope(selector.scope)
+        scopes = (
+            [selector.scope]
+            if selector.scope is not None
+            else [scope for scope in self._kv.scopes() if not scope.space]
+        )
+        if not scopes:
+            scopes = [Scope()]
+        contexts: list[PermissionContext] = []
+        for scope in scopes:
+            for unit in self._list_units(scope):
+                # 仅匹配 ACTIVE 态：SUPERSEDED 历史版本不应参与批量更新（Issue #8）
+                if unit.lifecycle != LifecycleState.ACTIVE:
+                    continue
+                if matches_update_selector(unit, selector):
                     contexts.append(_permission_context_from_unit(unit))
         return contexts
 
@@ -703,6 +735,7 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
             )
         return new
 
+
     async def delete(self, selector: DeleteSelector) -> list[str]:
         selector_is_empty = (
             not selector.unit_ids
@@ -727,12 +760,19 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         for scope in scopes:
             scanned.extend((scope, unit.id, unit) for unit in self._list_units(scope))
 
-        matches = [
-            (scope, unit_id, unit)
-            for scope, unit_id, unit in scanned
-            if matches_delete_selector(unit, selector)
-        ]
+        matches = []
+        for scope, unit_id, unit in scanned:
+            # PURGE 物理删除需覆盖 SUPERSEDED 历史版本（S02/S03 合规硬删）；
+            # FORGET/ARCHIVE 因流转非法（SUPERSEDED→ARCHIVED 禁止）仍排除。
+            if (
+                unit.lifecycle == LifecycleState.SUPERSEDED
+                and selector.mode is not DeleteMode.PURGE
+            ):
+                continue
+            if matches_delete_selector(unit, selector):
+                matches.append((scope, unit_id, unit))
         affected = [unit.id for _, _, unit in matches]
+
         if not affected:
             logger.info(
                 "Engine.delete no matches: mode=%s scope=%s",

@@ -52,6 +52,7 @@ from jiuwen_memory.common.type_def.continuity import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
+    BatchUpdateResult,
     BatchWriteItem,
     BatchWriteResult,
     Channel,
@@ -69,6 +70,7 @@ from jiuwen_memory.control import (
     SpaceSpec,
     SpaceStatus,
     SpaceUsage,
+    UpdateSelector,
 )
 from jiuwen_memory.control.application.personal_memory import PersonalPage, PersonalSearchResult
 from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
@@ -367,6 +369,15 @@ class MemoryAPI(ABC):
         旧 id；``OVERWRITE`` 原地覆写沿用同 id、旧内容仅留审计。返回结果记忆
         单元（SUPERSEDE 为新 id，OVERWRITE 为原 id）。
         """
+
+    @abstractmethod
+    def batch_update(
+        self, selector: UpdateSelector, patches: list[MemoryPatch], *,
+        security: RequestSecurityContext,
+        limit: int | None = None,
+        continue_on_error: bool = True,
+    ) -> BatchUpdateResult:
+        """批量更新记忆。patches len==1 统一 patch，len>1 逐条对应（需 unit_ids）。"""
 
     @abstractmethod
     def delete(self, selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]:

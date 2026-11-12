@@ -417,6 +417,7 @@ def test_every_public_entry_rejects_before_business_access(
         "unit_ids": ["unknown"],
         "patch": SpacePatch() if entry == "update_space" else MemoryPatch(),
         "selector": DeleteSelector(unit_ids=["unknown"]),
+        "patches": [MemoryPatch()],
         "mode": EvolveMode.EXTRACT,
         "options": EvolveTaskOptions(mode=EvolveMode.EXTRACT),
         "payload_id": "payload",
