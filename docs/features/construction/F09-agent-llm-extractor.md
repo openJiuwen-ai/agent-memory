@@ -196,7 +196,7 @@ flowchart TB
 
 两版均为新写（场景重定向），与 `_EXTRACT_SYSTEM_PROMPT` 的关系：**抽取纪律逐条继承**（不臆测、保持具体、粒度、否定撤回拆三条、言语行为、自包含、时间四款、语言跟源、省略句补全、社交外壳），**场景面重定向**（见 §1 重定向表）。写法参考 memory.py 风格：分节短句、例子内联、输出契约字段与枚举值保持英文。
 
-2026-10-14 精简为**十条规则**（忠实+具体+自包含合并为第一条、社交外壳与不记录合并为最后一条），并新增 **memory_class 字段**（字段描述 + 判定顺序 + 兜底值 + schema 行，见 §4.3）。以下为当前落地全文（与 `agent_llm_extractor.py` 常量逐字一致）。
+2026-10-14 精简为**十条规则**（忠实+具体+自包含合并为第一条、社交外壳与不记录合并为最后一条），并新增 **memory_class 字段**（字段描述 + 判定顺序 + 兜底值 + schema 行，见 §4.3）。2026-11-11 新增第十一条**可复用标识**规则：用户给出的邮箱、账号、授权码等另出一条不带日期的稳定事实，归 `user_profile`（#313：这类信息此前只被记成事件，新会话开场带不出）。2026-11-12 在该条内补一句排除项：过后即失效的取值（短信验证码、一次性订单号、临时文件名）不算——未加时短信验证码 8 次中有 7 次被写进 `USER.md`，加后 0/8，邮箱与授权码的抽取未受影响。以下为双语提示词，项目归属规则见 §4.4。
 
 ### 4.1 英文版（`_EXTRACT_SYSTEM_PROMPT_EN`，重定向版）
 
@@ -285,6 +285,33 @@ does not make the rest of the line disappear - judge what the line adds once it 
 aside; return [] only when nothing is left. When in doubt, record only what would still
 matter in a future conversation with this user.
 
+- Reusable identifiers: identifiers that belong to the user and apply across projects,
+including email addresses, account names, server or endpoint addresses, usual recipients,
+and authorization codes, passwords or keys the user supplies. Besides recording what
+the line did under the rules above, also output one undated stable fact for it, keeping
+the identifier verbatim and stating what it is for or whom it belongs to: "tier" is
+"semantic", "memory_class" is "user_profile", "target" is "fact".
+  Example "[user]: send the weekly report to lead@example.org from ops@example.com"
+yields two items: the event "On 2026-03-14 the user asked the assistant to send the
+weekly report to lead@example.org from ops@example.com." (episodic) and the fact "The
+user sends the weekly report from ops@example.com to lead@example.org." (semantic,
+user_profile). Identifiers the user gives when answering the assistant's question count
+the same: when the assistant asks for an authorization code and the user states it,
+output a stable fact of that code for the account, whether or not the assistant said it
+would be used only once. Such stable facts are attributes of the user: "memory_class" is
+always "user_profile", never "long_term_memory"; identifiers that belong to one matter,
+such as the sender and recipient addresses, go into the same item. Values that expire
+after use do not count: SMS verification codes, an order or transaction number looked up
+only this once, temporary file names. Only identifiers the user gave count; those the
+assistant mentioned or guessed do not.
+
+- Project facts: set "project_fact" to true when an item applies to a specific project,
+including deliverable folders, project accounts, deployment addresses, events and to-dos.
+This applies even if the user only says "this project". For example, "This project's final
+paper is in /work/paper/final" is "long_term_memory" with "project_fact" set to true.
+Short-lived project items can be "daily_memory". Put personal details from the same source
+in separate items with "project_fact" set to false.
+
 Fields:
 - "source_id": the bare UUID from the "[ID: ...]" marker, no wrapper or quotes - the
 line the item is about. Context may supply a referent or what an elliptical line
@@ -317,6 +344,7 @@ Output schema:
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "memory_class": "user_profile" | "long_term_memory" | "daily_memory",
+  "project_fact": true | false,
   "tier": "episodic" | "semantic" | "procedural",
   "content": "one self-contained statement, every specific kept",
   "title": "short heading naming the matter",
@@ -364,6 +392,11 @@ Output schema:
 
 - 不记录只有本次交流才需要的东西：社交外壳（问候、致谢、赞美、道别）、纯本地指称（"那段代码""如上所述"）、助手未经用户确认的建议、无长期价值的过程细节。社交外壳也不会让该行的其余部分消失——剥去外壳后判断该行增添了什么；仅当什么都不剩时才返回 []。拿不准时，只记录在将来与该用户的对话中仍然要紧的东西。
 
+- 可复用标识：属于用户本人且跨项目适用、以后还会用到的标识——邮箱地址、账号名、服务器或接口地址、常用收件人，以及用户给出的授权码、口令或密钥——除按上述规则记录该行所做的事之外，另为它输出一条不带日期的稳定事实，逐字保留标识本身并写明它的用途或归属："tier" 用 "semantic"，"memory_class" 用 "user_profile"，"target" 用 "fact"。
+  例 "[user]: 用 ops@example.com 把周报发给 lead@example.org" 产出两条：事件"2026-03-14，用户要求助手用 ops@example.com 把周报发给 lead@example.org。"（episodic）与事实 "用户发送周报使用的发件邮箱是 ops@example.com，收件人是 lead@example.org。"（semantic，user_profile）。用户在回答助手提问时给出的标识同样适用：助手问授权码、用户答出取值，即为该账号输出一条授权码的稳定事实，不论助手是否说过只用一次。这类稳定事实是用户本人的属性，"memory_class" 一律为 "user_profile"，不归入 "long_term_memory"；发件与收件地址等同属一件事的标识写在同一条里。过后即失效的取值不算：短信验证码、只查这一次的订单号或流水号、临时文件名。只针对用户自己给出的标识；助手提到或猜测的不算。
+
+- 项目事实：取值只对某个项目成立时，"project_fact" 为 true。终稿目录、项目专用账号、部署地址以及针对项目的事件或待办都属于项目事实，即使用户只说「这个项目」。例如「这个项目的论文终稿放在 /work/paper/final」归 "long_term_memory"，"project_fact" 为 true。短期项目事项可以归 "daily_memory"。同一行还有个人信息时，分成独立条目，个人信息的 "project_fact" 为 false。
+
 字段：
 - "source_id"："[ID: ...]" 标记中的裸 UUID，不带外壳、不带引号——即该条所述的行。上下文可提供指称对象或省略句所回应的内容，但绝不改变此 id；仅由上下文提出的事不是条目。
 - "memory_class"：条目的归属类别，三选一：
@@ -381,6 +414,7 @@ Output schema:
   "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "memory_class": "user_profile" | "long_term_memory" | "daily_memory",
+  "project_fact": true | false,
   "tier": "episodic" | "semantic" | "procedural",
   "content": "一条自包含的陈述，一切具体细节保留",
   "title": "命名这件事的短标题",
@@ -392,7 +426,7 @@ Output schema:
 
 **翻译对齐说明**：
 
-- 逐条对应英文版 10 条规则 + fields 六项（含 memory_class）+ output schema，语义一一对应（比人际基线多的面：「以用户为中心」记录中心、「不记录」清单、memory_class 归属判定）；
+- 逐条对应英文版规则、字段说明和输出 schema，语义一一对应（比人际基线多的面：「以用户为中心」记录中心、「不记录」清单、memory_class 归属判定）；
 - 例子与英文版一一对应并本地化（杭州区域选型、证书轮换、Rust 重写词法分析器）——源文本将是中文，例子贴近真实输入形态比字面对应更有约束力；
 - `source_id` / `tier` / `memory_class` 枚举值 / JSON 骨架保持英文，解析端 `build_candidates` 零改动；
 - 其余四组模板（procedural prompt、fidelity suffix、context 参考段、observation_date 前缀）已同批落地双语对（`agent_llm_extractor.py`），结构同此不逐条列出。
@@ -413,7 +447,7 @@ Output schema:
 
 1. LLM 输出 `memory_class` → 基类 `build_candidates` 透传进 `ExtractionCandidate.metadata`（`llm_extractor.py`，基类**纯搬运不校验值域**——`llm` 基线 prompt 不输出该字段，恒空即零影响）；
 2. `_build_units` 的 `system_metadata = inherited_system_metadata([source]) | {...} | c.metadata`——candidate.metadata 直接并入派生 unit 的 `system_metadata[MEMORY_CLASS_KEY]`；
-3. `AgentLlmExtractor.extract` 覆写做**值域收口**：合法三类保留；非法值 warning 留痕后兜底 `long_term_memory`；缺失静默兜底（procedural 汇总路径的 prompt 未要求输出该字段，同落默认类）；
+3. `AgentLlmExtractor.extract` 覆写做**值域收口**：合法三类保留；非法值 warning 留痕后兜底 `long_term_memory`；缺失静默兜底（procedural 汇总路径的 prompt 未要求输出该字段，同落默认类）；`user_profile` 而 tier 为 episodic 的条目同处收口为 semantic，procedural 不动（用户画像是稳定属性，标成事件会在按 tier 隔离的去重里被同批事件判重）；
 4. 文档模式落盘：`MEMORY_CLASS_KEY` 本就是 md 分流键，`_PATH_MAP` 以三类新名为键（收敛后单一命名口径，旧三类名已从 `_PATH_MAP` 移除，F08 §决策二）。
 
 **与 Router 判定的分工**：Router（`llm_router.py`）按 route_table 逐条判定并**改写 scope.space**（带空间路由语义）；本方案只产出归属类别**不动 scope**。agent 场景编排精简（绕开 `_route`）后，归属信息由抽取时同步产出，md 落盘分流不受影响。
@@ -421,6 +455,21 @@ Output schema:
 **已知代价**（接受）：
 - 看门狗反推（`_class_from_md_path`）已随命名收敛同步产出新三类名（`_FILE_NAME_TO_CLASS` 映射 `USER.md`→`user_profile`、`MEMORY.md`→`long_term_memory`、daily→`daily_memory`、未知→`long_term_memory`）——用户手改 md 触发补登的 unit 与 agent_llm 产出的 `memory_class` 同名，shadow category 列一致，无旧版「`user_memory` vs `user_profile`」不一致遗留；
 - `memory_class` 取值空间无跨层硬校验：配置解析层（`_parse_classes`）只查非空+不重复，本类 `extract` 收口自己的枚举，md 端对未知值静默兜底 `long_term_memory`——新类别要进系统必须同时改 `_MEMORY_CLASSES` 与 `_PATH_MAP` 两处。
+
+### 4.4 项目事实的写入范围
+
+WorkSwarm 实测中，同一轮显式写入 KVCache 项目终稿目录后，未绑定项目的轮末抽取
+又将相同内容写入全局 `USER.md`。预取直接读取该文件，导致未绑定项目的会话也看到目录。
+空项目的长期记忆同样全局可见，仅将候选从画像改成长期记忆仍会扩大可见范围。
+
+中英文提示词要求逐候选输出布尔字段 `project_fact`，将仅对特定项目成立的内容与个人
+画像分开。WorkSwarm 来源的候选缺少有效标记时跳过。标记为项目事实的候选只使用来源
+元数据的 `project`，缺少项目时跳过，误标成画像时改归长期记忆。短期项目事项仍走
+原有短期分流。这个标记用于候选校验，派生记忆只保存已有的类别和项目坐标。
+
+跨项目去重会让同文项目事实跨项目相互覆盖。修复沿用现有检索过滤，按候选约束写入范围。
+事实是否属于项目仍由抽取模型判断。现存错误画像需用记忆删除接口定点清理。
+回归覆盖有项目、无项目和同轮混合个人邮箱的落盘及预取。
 
 ## 5. 测试与归档
 
