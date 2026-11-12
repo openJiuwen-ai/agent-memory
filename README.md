@@ -110,6 +110,8 @@ pip install -e ".[deploy]"       # + real storage backends (Milvus / ES / Redis 
 pip install -e ".[embed]"        # + advanced embedding / reranking (torch, BGE, etc.)
 ```
 
+After installing, three commands are available: `agent-memory` (CLI), `agent-memory-server` (HTTP), and `agent-memory-mcp` (MCP; requires the `[mcp]` extra).
+
 ### Quick Integration (In-Process SDK)
 
 ```python

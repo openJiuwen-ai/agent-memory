@@ -22,7 +22,7 @@ def _install_fake_pymilvus(monkeypatch: pytest.MonkeyPatch, client_cls: type) ->
 class _FlakyEnsureClient:
     """首次 has_collection 抛错模拟瞬时故障，之后恢复正常。"""
 
-    instances: list["_FlakyEnsureClient"] = []
+    instances: list[_FlakyEnsureClient] = []
     fail_first = True
 
     def __init__(self, uri: str, **kwargs) -> None:
@@ -46,7 +46,7 @@ class _FlakyEnsureClient:
 class _SlowConnectClient:
     """建连耗时，用于并发首访只建一个连接的断言。"""
 
-    instances: list["_SlowConnectClient"] = []
+    instances: list[_SlowConnectClient] = []
 
     def __init__(self, uri: str, **kwargs) -> None:
         time.sleep(0.05)
