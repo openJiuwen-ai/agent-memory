@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.common.errors import AuthenticationError
+from jiuwen_memory.common.errors import AuthenticationError, ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Scope, Segment
 from jiuwen_memory.control import MemoryListResult, PrincipalPath, SpaceInfo, SpaceStatus
@@ -394,3 +394,125 @@ def test_dispatch_create_space_delegates_to_api_with_space_spec() -> None:
     assert srv.api.call["spec"].principal_path == PrincipalPath.AGENT_USER
     assert srv.api.call["spec"].policy.pipeline_profiles == {"coding": "coding"}
     assert body["space"]["metadata"] == {"env": "prod"}
+
+
+@pytest.mark.parametrize("raw", [None, 12345, ["reader"], True])
+def test_grantee_invalid_type_rejected_instead_of_silent_self_grant(raw) -> None:
+    """非法类型 grantee 须 400，不得静默退化成 target 自身（grantor == grantee 自授权）。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "grant",
+            {"tenant_id": "acme", "scope": "owner", "grantee": raw},
+            security=security,
+        )
+
+
+def test_grantee_null_with_flat_fields_still_resolves() -> None:
+    """grantee=null 但存在 grantee_* 扁平字段：既有扁平解析形态保持不变。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "grant",
+        {"tenant_id": "acme", "scope": "owner", "grantee": None, "grantee_scope": "reader"},
+        security=security,
+    )
+    assert request.grantee == Scope(org="acme", user="reader")
+
+
+@pytest.mark.parametrize("raw", [None, 12345, ["m1"]])
+def test_member_invalid_type_rejected_instead_of_silent_self_member(raw) -> None:
+    """非法类型 member 须 400，不得静默退化成 target 自身。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "add_space_member",
+            {"tenant_id": "acme", "scope": "team", "member": raw},
+            security=security,
+        )
+
+
+def test_member_null_with_flat_fields_still_resolves() -> None:
+    """member=null 但存在 member_* 扁平字段：既有扁平解析形态保持不变。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "add_space_member",
+        {"tenant_id": "acme", "scope": "team", "member": None, "member_scope": "m1"},
+        security=security,
+    )
+    assert request.member == Scope(org="acme", user="m1")
+
+
+@pytest.mark.parametrize("raw", [{}, {"org": "acme"}, {"space": "team"}])
+def test_grantee_object_without_identity_rejected(raw) -> None:
+    """嵌套对象缺身份维度（user/scope/agent）：user 将回落 target，须 400。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "grant", {"tenant_id": "acme", "scope": "owner", "grantee": raw}, security=security
+        )
+
+
+def test_grantee_null_with_only_tenant_id_rejected() -> None:
+    """null + 仅 grantee_tenant_id（定位键）：user 仍回落 target，须 400。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "grant",
+            {"grantee": None, "grantee_tenant_id": "acme", "scope": "owner", "tenant_id": "acme"},
+            security=security,
+        )
+
+
+def test_member_nested_scope_alias_resolves_user() -> None:
+    """member 嵌套对象用旧别名 scope 表示 user：与 grantee 分支对齐，正常解析。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "add_space_member",
+        {"tenant_id": "acme", "scope": "team", "member": {"scope": "alice"}},
+        security=security,
+    )
+    assert request.member == Scope(org="acme", user="alice")
+
+
+def test_member_object_without_identity_rejected() -> None:
+    """member 嵌套对象缺身份维度：同 grantee 收紧为 400。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "add_space_member",
+            {"tenant_id": "acme", "scope": "team", "member": {}},
+            security=security,
+        )
+
+
+def test_grantee_nested_scope_object_unwrapped() -> None:
+    """grantee 的嵌套 scope 对象须解包解析，不得 str() 成字面量用户名。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "grant",
+        {"tenant_id": "acme", "scope": "owner", "grantee": {"scope": {"user": "alice"}}},
+        security=security,
+    )
+    assert request.grantee == Scope(org="acme", user="alice")
+
+
+def test_grantee_nested_scope_object_without_identity_rejected() -> None:
+    """grantee 嵌套 scope 对象缺身份维度：解包后校验，同 member 收紧为 400。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "grant",
+            {"tenant_id": "acme", "scope": "owner", "grantee": {"scope": {}}},
+            security=security,
+        )
+
+
+def test_grantee_scalar_scope_alias_still_resolves() -> None:
+    """grantee={"scope": "alice"} 标量别名：解包不影响 legacy 别名解析。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "grant",
+        {"tenant_id": "acme", "scope": "owner", "grantee": {"scope": "alice"}},
+        security=security,
+    )
+    assert request.grantee == Scope(org="acme", user="alice")
