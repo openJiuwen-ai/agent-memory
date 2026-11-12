@@ -483,3 +483,36 @@ def test_member_object_without_identity_rejected() -> None:
             {"tenant_id": "acme", "scope": "team", "member": {}},
             security=security,
         )
+
+
+def test_grantee_nested_scope_object_unwrapped() -> None:
+    """grantee 的嵌套 scope 对象须解包解析，不得 str() 成字面量用户名。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "grant",
+        {"tenant_id": "acme", "scope": "owner", "grantee": {"scope": {"user": "alice"}}},
+        security=security,
+    )
+    assert request.grantee == Scope(org="acme", user="alice")
+
+
+def test_grantee_nested_scope_object_without_identity_rejected() -> None:
+    """grantee 嵌套 scope 对象缺身份维度：解包后校验，同 member 收紧为 400。"""
+    security = _security(Scope(org="acme", user="owner"))
+    with pytest.raises(ValidationError):
+        build_legacy_dispatch_request(
+            "grant",
+            {"tenant_id": "acme", "scope": "owner", "grantee": {"scope": {}}},
+            security=security,
+        )
+
+
+def test_grantee_scalar_scope_alias_still_resolves() -> None:
+    """grantee={"scope": "alice"} 标量别名：解包不影响 legacy 别名解析。"""
+    security = _security(Scope(org="acme", user="owner"))
+    request = build_legacy_dispatch_request(
+        "grant",
+        {"tenant_id": "acme", "scope": "owner", "grantee": {"scope": "alice"}},
+        security=security,
+    )
+    assert request.grantee == Scope(org="acme", user="alice")

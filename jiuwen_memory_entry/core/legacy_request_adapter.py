@@ -112,10 +112,16 @@ def build_legacy_dispatch_request(
         if isinstance(grantee_raw, str):
             grantee = Scope(org=target.org, space=target.space, user=str(grantee_raw))
         elif isinstance(grantee_raw, Mapping):
-            if not _has_identity(grantee_raw):
-                # 空对象/仅 org·space：user 维度将回落 target 自身（静默自授权）。
+            # 与 member 分支对齐：scope 为嵌套 scope 对象时解包解析，标量时由
+            # _nested_scope 的 legacy 别名（scope→user）解析——{"scope": "alice"}
+            # 与 {"user": "alice"} 语义一致。不解包则嵌套对象经 str() 变成字面量
+            # 用户名（如 "{'user': 'alice'}"），静默接受畸形身份且与 member 不一致。
+            nested = grantee_raw.get("scope")
+            nested = nested if isinstance(nested, Mapping) else grantee_raw
+            if not _has_identity(nested):
+                # 解包后仍无身份维度：user 将回落 target 自身（静默自授权）。
                 raise ValidationError("'grantee' object must carry a user, scope, or agent field")
-            grantee = _nested_scope(grantee_raw, target)
+            grantee = _nested_scope(nested, target)
         elif grantee_raw is None and (payload.get("grantee_scope") or payload.get("grantee_agent")):
             # null + 扁平 grantee_* 字段：既有合法形态。判据须为身份维度
             # （scope/agent）非空——仅有 grantee_tenant_id 等定位键时 user
