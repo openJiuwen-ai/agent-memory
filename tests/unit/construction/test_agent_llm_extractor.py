@@ -10,7 +10,6 @@
 - llm target 类属性化回归（默认实例 prompt 面 = 模块常量，行为零变化）。
 """
 
-import hashlib
 import json
 
 import pytest
@@ -71,7 +70,7 @@ def _make(
 
 
 def _candidate_json(
-    unit_id: str = "u1", memory_class: str | None = "daily_memory"
+    unit_id: str = "u1", memory_class: str | None = "daily_memory", tier: str | None = None
 ) -> str:
     """带合法 source_id 的单条候选（走通解析与回绑）。
 
@@ -88,6 +87,8 @@ def _candidate_json(
     }
     if memory_class is not None:
         item["memory_class"] = memory_class
+    if tier is not None:
+        item["tier"] = tier
     return json.dumps([item])
 
 
@@ -193,6 +194,88 @@ def test_memory_class_missing_falls_back():
 
 
 # ---------------------------------------------------------------------------
+# 可复用标识另抽稳定事实（prompt 规则）+ user_profile 层级收口
+# ---------------------------------------------------------------------------
+
+
+def test_reusable_identifier_rule_in_prompts():
+    """两版 prompt 都含可复用标识规则：另出稳定事实、归 user_profile、适用于回答提问。"""
+    cn, en = _EXTRACT_SYSTEM_PROMPT_CN, _EXTRACT_SYSTEM_PROMPT_EN
+    assert "可复用标识" in cn, "CN 版应含可复用标识规则"
+    assert "另为它输出一条不带日期的稳定事实" in cn, "CN 版应要求另出稳定事实"
+    assert '"memory_class" 一律为 "user_profile"' in cn, "CN 版应写明一律归 user_profile"
+    assert "用户在回答助手提问时给出的标识同样适用" in cn, "CN 版应覆盖回答提问的情形"
+    assert "为复用而提供" not in cn, "CN 版不应给授权码附加「为复用而提供」的条件"
+    assert "Reusable identifiers" in en, "EN 版应含可复用标识规则"
+    assert "also output one undated stable fact" in en, "EN 版应要求另出稳定事实"
+    assert 'always "user_profile"' in en, "EN 版应写明一律归 user_profile"
+    assert "answering the assistant's question" in en, "EN 版应覆盖回答提问的情形"
+    assert "过后即失效的取值不算" in cn, "CN 版应排除一次性取值"
+    assert "SMS verification codes" in en, "EN 版应排除一次性取值"
+    assert "属于用户本人且跨项目适用" in cn
+    assert "belong to the user and apply across projects" in en
+    for prompt in (cn, en):
+        assert '"project_fact": true | false' in prompt
+        assert "/work/paper/final" in prompt
+
+
+@pytest.mark.parametrize("project", ["", "   ", "KVCache"])
+def test_project_fact_uses_only_source_project(project):
+    """同一轮里，项目终稿路径受项目约束，个人邮箱仍按画像处理。"""
+    project_item = json.loads(_candidate_json(memory_class=" user_profile "))[0]
+    project_item.update(
+        content="项目的论文终稿放在 /work/paper/final",
+        project_fact=True,
+        project="model-supplied-project",
+    )
+    profile_item = json.loads(_candidate_json(memory_class="user_profile"))[0]
+    profile_item.update(content="用户常用邮箱是 user@example.org", project_fact=False)
+    unclassified_item = {**project_item, "content": "另一个项目的部署地址"}
+    del unclassified_item["project_fact"]
+    ext, _ = _make(responses=[json.dumps([project_item, unclassified_item, profile_item])])
+    source = create_test_unit("u1", "终稿放在 /work/paper/final，我的邮箱是 user@example.org")
+    source.system_metadata.update(source_app="jiuwenswarm", project=project)
+
+    result = ext.extract([source])
+
+    profile = result[-1]
+    assert profile.content == profile_item["content"]
+    assert profile.system_metadata[MEMORY_CLASS_KEY] == "user_profile"
+    if not project.strip():
+        assert len(result) == 1, "无项目时应跳过项目候选"
+        return
+    assert len(result) == 2
+    assert result[0].content == project_item["content"]
+    assert result[0].system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
+    assert result[0].system_metadata["project"] == project
+
+
+def test_user_profile_episodic_is_coerced_to_semantic():
+    """user_profile 条目被模型标成 episodic 时收口为 semantic（用户画像是稳定属性）。"""
+    ext, _ = _make(responses=[_candidate_json(memory_class="user_profile", tier="episodic")])
+    result = ext.extract([create_test_unit("u1", "用 a@example.com 发给 b@example.org")])
+
+    assert result[0].system_metadata[MEMORY_CLASS_KEY] == "user_profile", "归属类别不应被改写"
+    assert result[0].tier is MemoryTier.SEMANTIC, "user_profile + episodic 应收口为 semantic"
+
+
+def test_user_profile_procedural_is_kept():
+    """user_profile + procedural 不动：用户的习惯可以属于 procedural，同为稳定类。"""
+    ext, _ = _make(responses=[_candidate_json(memory_class="user_profile", tier="procedural")])
+    result = ext.extract([create_test_unit("u1", "用户发布前总是先跑测试")])
+
+    assert result[0].tier is MemoryTier.PROCEDURAL, "user_profile + procedural 不应被改写"
+
+
+def test_non_profile_episodic_is_kept():
+    """层级收口只针对 user_profile：daily_memory 的 episodic 事件保持不变。"""
+    ext, _ = _make(responses=[_candidate_json(memory_class="daily_memory", tier="episodic")])
+    result = ext.extract([create_test_unit("u1", "周五晚上聚餐，4个人")])
+
+    assert result[0].tier is MemoryTier.EPISODIC, "非 user_profile 的 episodic 不应被改写"
+
+
+# ---------------------------------------------------------------------------
 # T-AL-06：extract 继承 llm 管线（派生 unit 契约）
 # ---------------------------------------------------------------------------
 
@@ -217,17 +300,17 @@ def test_extract_contract_inherited_cn():
 
 
 @pytest.mark.parametrize(
-    ("language", "digest"),
+    ("language", "baseline"),
     [
-        ("cn", "949d8eaca5d3ca7f81a90e28159d0f27cc2fd0b8e9516c5040136cd73786b64a"),
-        ("en", "80b90b690862a1d1846a96e6c28d5869faeaeb43576f424fb90c1b7f97ac68fc"),
+        ("cn", _EXTRACT_SYSTEM_PROMPT_CN),
+        ("en", _EXTRACT_SYSTEM_PROMPT_EN),
     ],
 )
-def test_category_prompt_off_matches_baseline(language: str, digest: str) -> None:
+def test_category_prompt_off_matches_baseline(language: str, baseline: str) -> None:
     llm = RecordingLLM(responses=[_candidate_json()])
     AgentLlmExtractor(llm=llm, language=language).extract([create_test_unit("u1", "就定周五")])
     content = llm.calls[0][0].content
-    assert hashlib.sha256(content.encode("utf-8")).hexdigest() == digest, "同 48be7b3"
+    assert content == baseline, "关闭重要度类别时应逐字发送对应语言的基础提示词"
 
 
 # ---------------------------------------------------------------------------
