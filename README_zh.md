@@ -7,7 +7,7 @@
 <p align="center">
   <a href="README.md">英文</a>
   ·
-  <a href="docs/design/VISION.md">愿景(VISION)</a>
+  <a href="docs/design/vision.md">愿景(VISION)</a>
   ·
   <a href="docs/design/architecture.md">架构(ARCHITECTURE)</a>
   ·
@@ -104,20 +104,37 @@ pip install -e ".[embed]"        # 追加高级 embedding / 重排（torch、BGE
 ### 快速集成（SDK 进程内嵌入）
 
 ```python
-from jiuwen_memory.api import assemble
+from datetime import UTC, datetime
+
+from jiuwen_memory.api import Surface, assemble
+from jiuwen_memory.common.security import new_request_context
+from jiuwen_memory.common.security.types import AuthContext, Role
+from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
-from jiuwen_memory.common.type_def import Scope, Context
 
 # 从 YAML 装配（无 YAML 则按内置默认, 纯内存离线栈）
 api = assemble(config=Config.from_yaml("examples/config.yml"))
 
 scope = Scope(org="acme", user="alice", agent="assistant", session="s1")
 
+# 开发模式下的安全上下文：进程内示例可显式声明自己的可信身份；
+# 生产部署的身份必须由认证边界（API Key / 可信网关）产出。
+security = new_request_context(
+    AuthContext(
+        actor=Scope(org="acme", user="alice"),
+        role=Role.USER,
+        credential_type="internal",
+        auth_method="internal",
+        authenticated_at=datetime.now(UTC),
+    ),
+    surface=Surface.INTERNAL,
+)
+
 # 写入记忆
-units = api.add("Alice 喜欢在早上喝美式咖啡，不加糖。", scope, identity=scope, tags=["demo"])
+units = api.add("Alice 喜欢在早上喝美式咖啡，不加糖。", scope, security=security, tags=["demo"])
 
 # 检索记忆（混合召回 + trajectory 可观测）
-res = api.search("咖啡 早上", Context(scope), identity=scope, top_k=3, with_trajectory=True)
+res = api.search("咖啡 早上", Context(scope), security=security, top_k=3, with_trajectory=True)
 for item in res.items:
     print(item.content)
 ```
@@ -167,7 +184,7 @@ vector_store:
 
 | 文档 | 内容 |
 | --- | --- |
-| [愿景 VISION](docs/design/VISION.md) | 设计原则、五大能力支柱、竞品对标与差异化、成功标准 |
+| [愿景 VISION](docs/design/vision.md) | 设计原则、五大能力支柱、竞品对标与差异化、成功标准 |
 | [架构 ARCHITECTURE](docs/design/architecture.md) | 七层架构、数据模型（MemoryUnit/Scope）、检索/构建/存储/部署细节、开放问题 |
 | [竞品分析](docs/design/competitor_analysis.md) | 主流记忆系统调研 |
 | [Benchmark 调研](docs/design/memory_benchmarks.md) | LoCoMo / LongMemEval / BEAM 等基准选型 |
@@ -186,7 +203,7 @@ vector_store:
 
 **重要**：合入 PR/MR 时，base 分支请选择 `mem2.0`（当前开发分支）而非默认的 `main`。
 
-贡献前请阅读 [开发规范](.claude/CLAUDE.md)，了解代码风格、分层与测试策略。项目遵循「算子 + 插件 + 存储」三类契约，新功能请先在 `docs/design/architecture.md` 对应层确定落点。
+贡献前请阅读 [开发规范](AGENTS.md)，了解代码风格、分层与测试策略。项目遵循「算子 + 插件 + 存储」三类契约，新功能请先在 `docs/design/architecture.md` 对应层确定落点。
 
 ## 常见问题
 
