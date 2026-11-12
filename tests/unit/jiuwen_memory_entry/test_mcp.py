@@ -203,6 +203,15 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
         "update",
         {"unit_id": "u1", "scope": SCOPE, "patch": {"content": "x"}},
     ),
+    "memory_batch_update": (
+        "batch_update",
+        {
+            "selector": {"unit_ids": ["u1"], "scope": SCOPE},
+            "patches": [{"tags": ["t"]}],
+            "limit": None,
+            "continue_on_error": True,
+        },
+    ),
     "memory_delete": ("delete", {"selector": {"unit_ids": ["u1"], "scope": SCOPE}}),
     "memory_evolve": (
         "evolve",

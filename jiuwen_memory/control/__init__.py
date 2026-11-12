@@ -14,6 +14,8 @@ from .space import SpaceManager
 from .types import (
     Action,
     BackgroundJobStartResult,
+    BatchUpdateOutcome,
+    BatchUpdateResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -37,6 +39,7 @@ from .types import (
     SpaceStatus,
     SpaceUsage,
     UpdateMode,
+    UpdateSelector,
     WriteTargets,
 )
 
@@ -76,6 +79,9 @@ __all__ = [
     "BatchWriteItem",
     "BatchWriteOutcome",
     "BatchWriteResult",
+    "BatchUpdateOutcome",
+    "BatchUpdateResult",
+    "UpdateSelector",
     "PermissionContext",
     "UpdateMode",
     "DeleteMode",

@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
 | 最近一次修订日期 | 2026-11-12 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F11-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
@@ -118,9 +118,10 @@ class ControlOperator(ABC):
 | `permission_context_for_unit` | `async (unit_id, scope) -> PermissionContext` | 读取已有记忆的权限上下文，只返回 memory_type/tags/metadata 等鉴权元数据，不返回 content/assets |
 | `list_with_permission_contexts` | `async (同 list 参数) -> tuple[MemoryListResult, list[PermissionContext]]` | 从同一次列表查询的当前页构造逐项真源权限上下文，items/count/context 不做二次读取 |
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
+| `permission_contexts_for_update` | `async (selector: UpdateSelector) -> list[PermissionContext]` | 解析 batch_update selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权；与 `permission_contexts_for_delete` 对称 |
 | `get` | `async (unit_id, scope, as_of=None) -> MemoryUnit` | 真源点读；`as_of` 非空沿 supersedes 链返回当时有效版本 |
 | `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写；目标层级 patch 走结构事务 |
-| `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删 / 其他委托 LifecycleManager 非破坏式流转；目标需维护受影响层级边 |
+| `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删（覆盖 `SUPERSEDED` 历史版本，合规硬删不残留明文）/ 其他委托 LifecycleManager 非破坏式流转（排除 `SUPERSEDED`：`SUPERSEDED→ARCHIVED` 流转非法）；目标需维护受影响层级边 |
 | `purge_space` | `async (org: str, space: str) -> list[str]` | 物理删除该 Space 全部 user/agent/session 子 Scope 的 MemoryUnit 真源与索引，供 offboarding 调用 |
 | `sweep_expired` | `async () -> SweepResult` | 编排到期清扫：`LifecycleManager.sweep()` 纯计算 transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组先 `IndexBuilder.remove(SOFT)` 移出检索索引、成功后 `LifecycleManager.transition` 回写真源；ARCHIVED 组只回写（`include_archived` 召回与 `as_of` 回溯仍需索引，不删）。顺序不变量（先删索引、后回写真源）保证 remove 失败时单元保持 ACTIVE、下轮 sweep 重新发现自愈；任一步失败的组计入 `SweepResult.failed`，不静默当成功。共享编排在 `engine_impl/sweep_support.py`，InMemoryEngine 直调 IndexBuilder，CloudEngine 按各 pipeline 的 builder 分组删除 |
 | `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND, *, candidate=None, buckets=None, denied_scopes=None) -> str \| None` | 纯执行（PEP 边界，F04-dreaming）：只做立即执行链——candidate→resolver→一次性 EvolveJob 提交，返回 job_id；**不鉴权**（入口鉴权与 fan-out 逐桶裁决在 API 层 `DreamingCoordinator`，S02）。`buckets` / `denied_scopes` 为 API 层 fan-out 裁决产物：获准桶直接进料，拒绝只回显 `count:N` 脱敏摘要；`buckets=None` = 内核直调路径。resolver 在 InMemoryEngine 读 KVStore、在 CloudEngine 读 DomainStore；单桶与 fan-out 总量均上限 10000 条，fan-out 上限 1000 桶，显式 ID 和 recall top_k 各上限 10000，超限拒绝。dreaming 三态不在此层。Evolver 由 Engine 经 `get_job(evolver=...)` 注入装配给自身的同一实例，未装配时抛 `RuntimeError` |
@@ -221,6 +222,13 @@ Engine 在写入前必须一次性加载所有受影响 unit 并验证：同 org
 | ARCHIVE | lifecycle 设 ARCHIVED | 保留边；默认召回和展开按 lifecycle 排除，显式 include_archived 可见 |
 | FORGET | lifecycle 设 FORGOTTEN | 提交前双向断开所有直接父边和子边 |
 | PURGE | 物理删除真源与索引 | 先双向断边，再删除目标 |
+
+候选生命周期规则（S02/S03 一致）：非 `PURGE` 模式排除 `SUPERSEDED` 历史版本——
+FORGET/ARCHIVE 是非破坏式流转，`SUPERSEDED→ARCHIVED` 为非法迁移；`PURGE` 走物理删除
+不经流转，**必须覆盖 `SUPERSEDED` 历史版本**——合规硬删（S02 数据保留、S03 审计）不
+得让旧版明文按 id 残留可读。候选判定（含 delete/update selector 过滤）的唯一实现在
+`engine_impl/temporal_support.py`（`matches_delete_selector` / `matches_update_selector`，
+时间比较双侧 `as_utc` 归一），三引擎共用。
 
 删除父节点时，直接子仅清空指向该父的 `parent_id`，成为未挂接节点；不删除、归档或遗忘子。删除子节点时，从父 `child_ids` 移除并保持其余顺序。一个 selector 同时命中父子时先计算最终存活边，再一次提交。空父默认保留；任何 PURGE 都不得沿 hierarchy 级联删除权威叶。
 

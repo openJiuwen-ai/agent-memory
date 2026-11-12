@@ -214,6 +214,7 @@ ENTRY_RULES: dict[str, EntryRule] = {
     # 归属主体档第一级（主体维逐维相同）裁决。
     "export_space": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     "update": EntryRule(SpaceAxis.CONTENT, SpaceAction.UPDATE),
+    "batch_update": EntryRule(SpaceAxis.CONTENT, SpaceAction.UPDATE),
     "delete": EntryRule(SpaceAxis.CONTENT, SpaceAction.DELETE),
     # md 文件级接口（F08）：read 对齐 get/list（内容轴 READ），edit 对齐 add
     # （内容轴 WRITE——继承式 SUPERSEDE 本质写新记忆）。文件级操作不按 unit_id，单段鉴权（D5）。

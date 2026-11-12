@@ -1099,6 +1099,35 @@ def test_entries_tagged_with_one_project_are_removable_and_untagged_ones_are_kep
     assert [unit.content for unit in _units_in(api, ALICE_SPACE, ALICE)] == ["习惯早上工作"]
 
 
+def test_purge_removes_superseded_history_versions_too(api) -> None:
+    """PURGE 物理删除覆盖 SUPERSEDED 历史版本：新旧两版均不残留（S02/S03）。
+
+    非破坏式流转（FORGET/ARCHIVE）排除 SUPERSEDED 是流转约束（SUPERSEDED→
+    ARCHIVED 非法）；PURGE 走物理删除不经流转，历史版本同样含明文，漏删
+    即旧版内容按 id 仍可读到。
+    """
+    old = api.add(
+        "项目机密 v1", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1
+    )[0]
+    new = api.update(
+        old.id, old.scope, MemoryPatch(content="项目机密 v2"), security=SEC_ALICE
+    )
+
+    removed = api.delete(
+        DeleteSelector(
+            scope=Scope(org=ORG, space=PROJECT_SPACE),
+            filters=FilterClause("system_metadata.project_id", FilterOp.EQ, "p1"),
+            mode=DeleteMode.PURGE,
+        ),
+        security=SEC_ALICE,
+    )
+
+    assert set(removed) == {old.id, new.id}
+    assert _units_in(api, PROJECT_SPACE, ALICE) == []
+    with pytest.raises(NotFoundError):
+        api.get(old.id, old.scope, security=SEC_ALICE)
+
+
 def test_a_non_member_cannot_delete_entries_by_predicate(api) -> None:
     """谓词删除不绕过鉴权：非成员对协作空间的删除按空间鉴权拒绝。"""
     api.add("项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1)

@@ -52,6 +52,7 @@ from .types import (
     MemoryPatch,
     PermissionContext,
     SweepResult,
+    UpdateSelector,
 )
 
 
@@ -198,6 +199,12 @@ class MemoryEngine(ControlOperator):
         Engine 负责按 selector 扫描候选，但只暴露鉴权元数据；API 层据返回结果逐条
         调用 PermissionManager.check，全部通过后才执行 delete。
         """
+
+    @abstractmethod
+    async def permission_contexts_for_update(
+        self, selector: UpdateSelector
+    ) -> list[PermissionContext]:
+        """解析 batch_update selector 会命中的候选 unit 权限上下文。"""
 
     @abstractmethod
     async def get(

@@ -95,6 +95,8 @@ from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
     BackgroundJobStartResult,
+    BatchUpdateOutcome,
+    BatchUpdateResult,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -116,6 +118,7 @@ from jiuwen_memory.control import (
     SpaceStatus,
     SpaceUsage,
     UpdateMode,
+    UpdateSelector,
 )
 from jiuwen_memory.control.types import EvolveTaskOptions
 from jiuwen_memory.retrieval import (
@@ -201,6 +204,9 @@ __all__ = [
     "BatchWriteItem",
     "BatchWriteOutcome",
     "BatchWriteResult",
+    "BatchUpdateOutcome",
+    "BatchUpdateResult",
+    "UpdateSelector",
     "UpdateMode",
     "DeleteMode",
     "DeleteSelector",
