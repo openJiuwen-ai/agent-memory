@@ -7,7 +7,7 @@
 <p align="center">
   <a href="README_zh.md">Chinese</a>
   ·
-  <a href="docs/design/VISION.md">Vision</a>
+  <a href="docs/design/vision.md">Vision</a>
   ·
   <a href="docs/design/architecture.md">Architecture</a>
   ·
@@ -113,20 +113,37 @@ pip install -e ".[embed]"        # + advanced embedding / reranking (torch, BGE,
 ### Quick Integration (In-Process SDK)
 
 ```python
-from jiuwen_memory.api import assemble
+from datetime import UTC, datetime
+
+from jiuwen_memory.api import Surface, assemble
+from jiuwen_memory.common.security import new_request_context
+from jiuwen_memory.common.security.types import AuthContext, Role
+from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
-from jiuwen_memory.common.type_def import Scope, Context
 
 # Assemble from YAML (falls back to built-in defaults — pure in-memory offline stack)
 api = assemble(config=Config.from_yaml("examples/config.yml"))
 
 scope = Scope(org="acme", user="alice", agent="assistant", session="s1")
 
+# Dev-mode security context: an in-process example may declare its own trusted identity;
+# in production it must come from an auth boundary (API Key / trusted gateway).
+security = new_request_context(
+    AuthContext(
+        actor=Scope(org="acme", user="alice"),
+        role=Role.USER,
+        credential_type="internal",
+        auth_method="internal",
+        authenticated_at=datetime.now(UTC),
+    ),
+    surface=Surface.INTERNAL,
+)
+
 # Write memory
-units = api.add("Alice prefers Americano in the morning, no sugar.", scope, identity=scope, tags=["demo"])
+units = api.add("Alice prefers Americano in the morning, no sugar.", scope, security=security, tags=["demo"])
 
 # Retrieve memory (hybrid recall + observable trajectory)
-res = api.search("coffee morning", Context(scope), identity=scope, top_k=3, with_trajectory=True)
+res = api.search("coffee morning", Context(scope), security=security, top_k=3, with_trajectory=True)
 for item in res.items:
     print(item.content)
 ```
@@ -176,7 +193,7 @@ vector_store:
 
 | Document | Content |
 | --- | --- |
-| [Vision](docs/design/VISION.md) | Design principles, five capability pillars, competitive analysis & differentiation, success criteria |
+| [Vision](docs/design/vision.md) | Design principles, five capability pillars, competitive analysis & differentiation, success criteria |
 | [Architecture](docs/design/architecture.md) | Seven-layer architecture, data model (MemoryUnit/Scope), retrieval/construction/storage/deployment details, open questions |
 | [Competitor Analysis](docs/design/competitor_analysis.md) | Survey of mainstream memory systems |
 | [Benchmark Survey](docs/design/memory_benchmarks.md) | LoCoMo / LongMemEval / BEAM benchmark selection |
@@ -195,7 +212,7 @@ Contributions to agent-memory are welcome. You can contribute in the following w
 
 **Important**: When merging PRs/MRs, please select `mem2.0` (the current development branch) as the base branch instead of the default `main`.
 
-Before contributing, please read the [Development Guidelines](.claude/CLAUDE.md) for code style, layering, and testing strategy. The project follows three contract categories — operators, plugins, and storage — please identify the appropriate layer in `docs/design/architecture.md` before proposing new features.
+Before contributing, please read the [Development Guidelines](AGENTS.md) for code style, layering, and testing strategy. The project follows three contract categories — operators, plugins, and storage — please identify the appropriate layer in `docs/design/architecture.md` before proposing new features.
 
 ## FAQ
 
