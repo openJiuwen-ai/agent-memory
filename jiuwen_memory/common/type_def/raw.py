@@ -30,6 +30,12 @@ class RawPayload:
     # 原始来源定位（接续事件的 source_locator）；空表示沿用 payload.id。
     source_ref: str = field(default="", kw_only=True)
 
+    def __post_init__(self) -> None:
+        # RawPayload carries exactly one source. Accepting both silently makes
+        # the normalizer use data and drop the URI; fail instead of guessing.
+        if self.data and self.uri:
+            raise ValueError("RawPayload cannot carry both data and uri")
+
 
 # -- KV key 前缀（未建索引的 infer 原文） ------------------------------------- #
 # 真源 KV key 按「是否建索引」带前缀（见 F02 决策6）：未建索引的 infer=true 原文
