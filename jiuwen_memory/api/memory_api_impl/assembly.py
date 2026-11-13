@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -656,6 +657,7 @@ def _build_kernel(
     config: Config | Mapping[str, Any] | None = None,
     *,
     managed_plan: Any = None,
+    log_handler: logging.Handler | None = None,
 ) -> _Kernel:
     """把配置装配成内部内核（api + 真源）。各组件经引用自取依赖、缺省随调用点给出。
 
@@ -677,7 +679,9 @@ def _build_kernel(
     with _assembly_lifecycle(ctx) as lifecycle:
         if managed_plan is not None:
             lifecycle.failure_cleanup.append(managed_plan.close)
-        kernel = _assemble_kernel(policies, kv, ctx, config, managed_plan=managed_plan)
+        kernel = _assemble_kernel(
+            policies, kv, ctx, config, managed_plan=managed_plan, log_handler=log_handler
+        )
         if managed_plan is not None:
             managed_plan.validate_version()
             managed_plan.finalize(ctx)
@@ -706,6 +710,7 @@ def _assemble_kernel(
     config: Config | None,
     *,
     managed_plan: Any = None,
+    log_handler: logging.Handler | None = None,
 ) -> _Kernel:
     """在创建观察作用域内解析依赖，失败由外层按本次拥有关系回滚。"""
 
@@ -729,7 +734,11 @@ def _assemble_kernel(
 
     # 根组件（LocalMemoryAPI）经 ROOT_PARAMS 引用各命名空间下的 default 实例。
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
-    setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
+    if log_handler is None:
+        setup_logging(root)  # 保持旧无 handler 调用形状
+    else:
+        setup_logging(root, log_handler=log_handler)
+
     from jiuwen_memory.common.security.human_authentication.base import HumanAuthenticatorProducer
     from jiuwen_memory.common.security.privacy.base import optional_privacy
     from jiuwen_memory.common.security.protection.rate_limit import RateLimitProducer
@@ -1057,18 +1066,22 @@ def assemble(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
 ) -> MemoryAPI:
     """装配出一个可用的 ``MemoryAPI``。普通调用方只应使用本函数。"""
-    return assemble_runtime(policies, kv, config).api
+    return assemble_runtime(policies, kv, config, log_handler=log_handler).api
 
 
 def assemble_runtime(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
 ) -> MemoryRuntime:
     """一次装配 SDK 认证、业务 API 与启动/关闭句柄，不暴露存储或任务控制器端口。"""
-    kernel = _build_kernel(policies, kv, config)
+    kernel = _build_kernel(policies, kv, config, log_handler=log_handler)
     return _runtime_from_kernel(kernel)
 
 

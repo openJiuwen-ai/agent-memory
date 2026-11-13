@@ -5,10 +5,10 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-12 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 最近一次修订日期 | 2026-11-13 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F09-sdk-runtime-logging.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md |
 
 ## 摄入协作取消
 
@@ -44,6 +44,7 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
 - 审计日志（AuditLogger）
 - 安全域横切能力（认证、资源保护与密码学，归 `common/security/`，接口与实装齐备）
 - 跨实例互斥横切接口（LockProvider）
+- SDK 运行日志的命名、脱敏和输出方式（`common/log/`）
 - 安全域契约（授权、审计完整性、隐私保护、独立人机认证及请求上下文受控构造入口；现行契约见 S10）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
@@ -120,7 +121,32 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
     通过本地目录解析后再交给底层模型库，并以 `local_files_only=True` 查缓存；缓存缺失、
     依赖缺失或模型加载失败统一报告 `BackendError`，不得通过设置运行时环境变量或在线回退来下载。
 
+21. **SDK 只接管自身的运行日志**：接收名称以 `agent_memory.` 和 `jiuwen_memory.` 开头的
+    日志，不修改业务进程的全局日志器或第三方库的日志配置。输出前继续脱敏。业务日志
+    处理器抛出的普通异常不能中断 SDK 操作，也不能阻止双路模式下的另一边输出。
+    处理器由业务创建和关闭，关闭某个 SDK 实例不会关闭它。脱敏步骤发生普通异常时，
+    应拒绝向 SDK 管理的输出分发该条记录并报告安全诊断，不能输出未确认脱敏的内容，也不能向业务冒泡。
+
 ## 接口契约
+
+### 普通运行日志
+
+创建 SDK 时，可以通过 `assemble()` / `assemble_runtime()` 的 `log_handler` 参数传入业务
+日志处理器（`logging.Handler`）。同一进程中的 SDK 实例共用这套日志设置。处理器已有的
+格式、日志级别限制和过滤条件继续生效；SDK 不负责关闭它。
+
+双路输出时，每边拿到一份单独的日志记录（`LogRecord`），避免一边修改记录后影响另一边。
+哪些数据会复制、哪些自定义对象仍会共用，以及重复初始化时怎样处理配置，见
+[S02](S02-memory-api.md#sdk-运行日志接管)。配置字段和默认值见
+[S08](S08-config.md#sdk-运行日志配置)。
+
+业务和内置输出可分别设置正文正则；未配置时不过滤。规则在初始化时校验和编译，
+匹配脱敏后、填入参数的正文，不改原记录的正文和参数。正则匹配使用在业务 Handler
+处理前准备的内容，业务改写记录不能影响内置侧的筛选结果。规则错误不能静默忽略，
+运行中的匹配异常按输出隔离。字段、继承与错误约定见 [S08](S08-config.md#两路独立的正文正则过滤)。
+
+应用此前手工添加到 SDK 日志器的处理器会保留。不要把同一个处理器既手工添加，又通过
+`log_handler` 传入，否则同一条日志会收到两次。
 
 ### Plugin（基类，`base.py`）
 

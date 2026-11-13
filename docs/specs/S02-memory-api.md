@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-12 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F08-personal-memory-portal.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 最近一次修订日期 | 2026-11-13 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F08-personal-memory-portal.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 明文读取与独立维护边界
 
@@ -191,6 +191,109 @@ leader 锁与存储；确认停止后，锁释放失败不阻断存储清理。�
 静默忽略。`wait=True` 等待本次安全清理尝试结束后报告失败，多项失败通过 ExceptionGroup
 汇总；先 False 后 True 同样可获知后台异常，重复关闭不重复执行清理。自有循环停止请求
 失败时，不继续阻塞等待其线程退出，也不宣称循环已关闭。
+
+## SDK 运行日志接管
+
+```python
+def assemble(
+    policies: dict[str, str] | None = None,
+    kv: KVStore | None = None,
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
+) -> MemoryAPI: ...
+
+def assemble_runtime(
+    policies: dict[str, str] | None = None,
+    kv: KVStore | None = None,
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
+) -> MemoryRuntime: ...
+```
+
+`log_handler` 接收业务提供的标准日志处理器（`logging.Handler`）。处理器由业务创建和关闭，
+SDK 负责把脱敏后的日志记录交给它。`globals.log_output` 决定日志输出到哪里：
+
+| 配置值 | 输出方式 |
+|---|---|
+| `builtin` | SDK 打印到终端的标准错误输出（`stderr`）；配置了 `log_file` 时，也追加写入该文件，编码为 UTF-8 |
+| `business` | 只交给业务处理器，不创建 SDK 自己的终端和文件输出 |
+| `both` | 同时交给业务处理器，并使用 SDK 自己的终端和可选文件输出 |
+
+首次初始化日志时，没配置 `log_output` 就使用 `builtin`，传入业务处理器也不会自动启用它。
+要让业务处理器接收日志，需要明确选择 `business` 或 `both`；选择这两种模式却没有提供
+处理器，会抛出 `ValidationError`。
+
+同一个 Python 进程中的 SDK 实例共用日志设置，首次日志初始化成功后就不再更换：
+
+- 后续创建实例时，没指定的日志项沿用已有值，也可以不再传 `log_handler`。
+- 再次传入相同设置和同一个处理器对象，不会重复添加输出。
+- 传入不同设置或另一个处理器对象，会抛出 `ValidationError`，已有设置不变。
+- 日志设置完成后，即使接下来的模型或存储初始化失败，这套设置也会保留。
+- 关闭某个实例不会清除日志设置，也不会关闭业务处理器。不支持在运行中切换配置。
+
+业务处理器已有格式化器（`Formatter`）时，SDK 保留它；没有时，SDK 根据 `log_format` 和
+`log_datefmt` 设置格式。处理器原有的日志级别限制和过滤条件继续生效。
+
+SDK 管理的输出先按 `globals.log_level` 过滤，再检查各处理器的级别和过滤条件。
+子日志器单独设置的较低级别不能绕过 SDK 门槛，业务处理器的级别也不会被 SDK 覆盖。
+
+通过 `globals.log_filters.business` 和 `globals.log_filters.builtin`，可以分别为业务输出、
+SDK 内置输出设置正文正则过滤。默认不过滤；配置的正则、日志级别和处理器自有 Filter 都
+必须允许，该记录才会输出。规则只匹配脱敏后、填入参数的正文，不包括格式前缀和另附的
+异常堆栈，不修改原来的正文或样式。业务修改记录不会改变内置输出依据的匹配内容。
+
+规则也属于进程共享设置，按 `business/builtin` 下的 `include/exclude` 分别继承和比较：
+省略的规则沿用已有值；显式相同字符串可复用；不同字符串（即使含义相近）或用 `null`
+清除已有规则会报冲突。没有已有规则时，`null` 表示不限制。完整配置和错误语义见
+[S08 正则过滤](S08-config.md#两路独立的正文正则过滤)。
+
+为了让两边的输出互不影响，SDK 为每个输出准备单独的日志记录（`LogRecord`），并按以下
+规则复制记录中的数据：
+
+- 映射类型（`Mapping`，包括 `ChainMap`）复制为普通 `dict`，`list` 子类复制为普通 `list`。
+- `UserList`、`deque`、`tuple`、`set`、`frozenset`、`bytearray` 也会复制，嵌套的标准容器
+  按同样规则继续复制。
+- 其他自定义业务对象和异常信息 `exc_info` 不作深拷贝，两边的记录仍引用原对象。
+
+SDK 同时接收名称以 `agent_memory.` 和 `jiuwen_memory.` 开头的日志，保留原名称和源码
+位置。业务进程的全局日志器（Python root logger）和第三方库日志配置不变，现有脱敏规则
+继续生效。
+
+如果应用此前手工给 SDK 日志器添加过处理器，SDK 会保留它们。因此，`business` 模式也不会
+关闭那些已有输出。不要把同一个处理器既手工添加到 SDK 日志器，又通过 `log_handler`
+传入，否则同一条日志会输出两次。
+安装日志分发器及失败回滚时，不得因 SDK 调整处理器列表而让正在输出的记录重复调用
+原有处理器，或跳过后续处理器。初始化前已经产生的记录仍不要求补发给 SDK 输出。
+
+SDK 分发器处理记录期间，同一线程产生的嵌套 SDK 记录会跳过该分发器的全部输出，
+包括业务处理器、内置终端和文件；不改为只走内置输出。该保护不控制应用自行挂接的处理器
+或第三方日志。
+
+业务处理器抛出的普通异常不会中断 SDK 操作；双路模式下，SDK 自己的输出仍会继续。SDK 会
+直接向 `stderr` 写入故障提示，只保留处理器类名、异常类型、文件、行号和函数位置，
+不包含日志正文、异常消息或源码内容。正则匹配、准备匹配正文时抛出的普通异常同样
+按输出隔离；未配置规则的输出不需要为匹配提前生成正文。故障提示直接写入 `stderr`，
+不受正文正则过滤。
+
+脱敏本身抛出普通异常时，不能确认记录已安全处理，因此丢弃整条记录，不交给 SDK 管理的任何输出。
+SDK 只向 `stderr` 写安全故障提示，不让日志异常中断调用；源日志器上的脱敏 Filter 和
+SDK 分发器都遵守此约定。后续正常记录仍可继续输出。
+
+日志初始化失败后，若恢复业务 Handler 的 Formatter 也抛出普通异常，SDK 报告安全诊断，
+仍向调用方抛出最初的初始化异常。诊断输出自身失败时停止报告，不覆盖原始异常。
+
+接管从日志初始化成功后生效。此前导入模块、注册插件时已经产生的日志，不会补发给业务
+处理器；本次不改变插件注册顺序。
+
+`assemble_managed_runtime()`、`assemble_managed_server_runtime()` 和
+`assemble_server_runtime()` 沿用进程内已有的 SDK 日志设置。业务处理器通过
+`assemble()` 或 `assemble_runtime()` 注册。如果从托管或 Server 入口首次初始化日志，
+选择 `business` 或 `both` 会因缺少业务处理器抛出 `ValidationError`。
+
+方案选择见 [F09](../features/api/F09-sdk-runtime-logging.md)，配置字段见
+[S08](S08-config.md#sdk-运行日志配置)。
 
 ## Metadata 公共 API 契约
 
@@ -1578,9 +1681,9 @@ HTTP/MCP 的 peer、限流和协议解析仍由各入口负责。独立安全构
 `start_background()` 和 `close(*, wait=True)`。异步宿主绑定其持续运行的事件循环；同步
 宿主显式启动自有 loop，两者不暴露 Store 或任务控制器。默认无 watcher 时启动为 no-op，
 关闭后不得重启；启动故障必须传回调用方。`ServerRuntime` 在该协议上增量提供只读
-`security_runtime` 与 `audit`，转发同一启动/关闭路径。既有 `assemble`、`assemble_runtime`
-和冻结的 `MemoryAPI` 签名不变；自定义 Runtime 需实现公开认证与生命周期协议，
-并适配下述周期注册端口。
+`security_runtime` 与 `audit`，转发同一启动/关闭路径。`assemble` 和 `assemble_runtime`
+继续兼容原有调用方式。`MemoryAPI` 遵守冻结的接口契约。自定义 Runtime 需实现公开认证与
+生命周期协议，并适配下述周期注册端口。
 
 装配器在返回前完成 PDP 同源校验、显式 PDP 回绑、部署管理能力/空间路由约束复核和
 认证器实际凭据真源的 Registry 替换。默认哨兵选择配置 Runtime；显式 `None` 不选择
