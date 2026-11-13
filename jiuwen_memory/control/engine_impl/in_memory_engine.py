@@ -47,11 +47,18 @@ from jiuwen_memory.construction.index_builder import (
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
-from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.evolve_dispatch import (
+    ModeEvolverBinding,
+    build_mode_evolvers,
+    mode_candidate_scopes,
+    submit_evolve,
+    validate_mode_evolver_binding,
+)
 from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
+    RetrievalPipelineBinding,
     RetrievalPipelines,
     build_retrieval_pipelines,
 )
@@ -85,7 +92,12 @@ from jiuwen_memory.control.ingest_job import (
 )
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
-from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.pipeline import (
+    MemoryPipeline,
+    PipelineBinding,
+    PipelineProducer,
+    require_experience_profile,
+)
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
@@ -242,13 +254,15 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
         policy: PolicyManager | None = None,
-        retrieval_pipelines: dict[str, Retriever] | None = None,
+        retrieval_pipelines: dict[str, Retriever | RetrievalPipelineBinding] | None = None,
+        mode_evolvers: dict[EvolveMode, Evolver | ModeEvolverBinding] | None = None,
         privacy: PrivacyProtection | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
         self._retrieval_pipelines = RetrievalPipelines(retriever, retrieval_pipelines)
+        self._mode_evolvers = dict(mode_evolvers or {})
         self._kv = kv
         self._scheduler = scheduler
         self._evolver = evolver
@@ -268,6 +282,11 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
     def kv(self) -> KVStore:
         """真源 KV 端口（API 层 dreaming 编排读注册表用，见 MemoryEngine.kv）。"""
         return self._kv
+
+    @property
+    def pipeline(self) -> MemoryPipeline | None:
+        """流水线路由（API 层校验空间绑定 profile 用，见 MemoryEngine.pipeline）。"""
+        return self._pipeline
 
     def health(self) -> None:
         self._retrieval_pipelines.health()
@@ -317,6 +336,11 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
             raise ValueError(
                 "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
             )
+        require_experience_profile(
+            self._pipeline, str(raw_meta.get("memory_type", "")).strip(),
+            infer=infer, procedural=procedural, middle=middle,
+        )
+
         middle_interval = raw_meta.pop("middle_interval", None)
         raw_meta.pop("middle", None)
 
@@ -538,9 +562,25 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
     def retrieval_pipeline_names(self) -> tuple[str, ...]:
         return self._retrieval_pipelines.names()
 
+    def retrieval_pipeline_filter(self, name: str | None) -> FilterExpr | None:
+        self.validate_retrieval_pipeline(name)
+        return self._retrieval_pipelines.type_filter(name)
+
+    def prepare_retrieval_query(self, query: RetrievalQuery) -> RetrievalQuery:
+        self.validate_retrieval_pipeline(query.pipeline)
+        return self._retrieval_pipelines.prepare(query)
+
+    def candidate_scopes_for_mode(self, mode: EvolveMode) -> list[Scope]:
+        return mode_candidate_scopes(mode, self._mode_evolvers, self.candidate_scopes)
+
+    def validate_evolve_mode(
+        self, mode: EvolveMode, candidate: CandidateSource | dict | None = None,
+    ) -> None:
+        validate_mode_evolver_binding(mode, self._mode_evolvers, candidate)
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         _ensure_local_scope(scope)
-        self.validate_retrieval_pipeline(query.pipeline)
+        query = self.prepare_retrieval_query(query)
         binding = self._recall_binding(query) if query.pipeline is None else None
         return self._retrieval_pipelines.retrieve(scope, query, binding)
 
@@ -889,6 +929,8 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，
         # 不允许 Spec 侧自行解析另一套（middle 路径的 index/evolver 同理）。
         # 纯执行（鉴权在 API 层）：candidate→resolver 翻译 + 一次性 EvolveJob 提交。
+        # evolver_for_unit（mem2.0 §2.5.1 改动 1）与 CloudEngine 同款：条目按
+        # memory_type 分发到所属 profile 的 evolver。
         return await submit_evolve(
             scope=scope,
             mode=mode,
@@ -898,9 +940,11 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
             scheduler=self._scheduler,
             job_factory=self._job_factory,
             evolver=self._evolver,
+            mode_evolvers=self._mode_evolvers,
             retriever=self._retriever,
             buckets=buckets,
             denied_scopes=denied_scopes,
+            evolver_for_unit=self._evolver_for_unit,
         )
 
     async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
@@ -1064,6 +1108,7 @@ def _build(config):
         EvolverProducer.dep(config, default="orchestrating"),
         LifecycleProducer.dep(config, default="kv"),
         retrieval_pipelines=retrieval_pipelines,
+        mode_evolvers=build_mode_evolvers(config),
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),

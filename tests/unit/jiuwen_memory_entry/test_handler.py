@@ -218,6 +218,24 @@ def test_evolve_dreaming_three_states_pass_through() -> None:
     assert api.calls[2]["candidate"] is None
 
 
+@pytest.mark.parametrize("dreaming", [None, True, False])
+def test_experience_consolidate_mode_crosses_transport_boundary(dreaming) -> None:
+    """经验专用 mode 与定时三态沿用统一入口的枚举转换。"""
+    api = _RecordingEvolveApi(job_id="experience-job")
+    status, body = handler.dispatch(
+        SimpleNamespace(api=api),
+        _dispatch_request("evolve", {
+            "tenant_id": "acme", "scope": "alice",
+            "mode": "experience_consolidate", "dreaming": dreaming,
+            "interval": 604800 if dreaming is True else 0,
+        }),
+    )
+    assert status == 200, "新 mode 应通过接入层参数校验"
+    assert body["mode"] == "experience_consolidate", "回显应保留新 mode 名称"
+    assert api.calls[0]["mode"] is EvolveMode.EXPERIENCE_CONSOLIDATE, "应转换为正式枚举"
+    assert api.calls[0]["dreaming"] is dreaming, "立即执行/注册/注销语义应原样传递"
+
+
 def test_evolve_dreaming_field_type_validation() -> None:
     """畸形类型在 dispatch 边界拒绝（400），不下沉到 API 层。"""
     srv = SimpleNamespace(api=_RecordingEvolveApi(job_id="job-1"))

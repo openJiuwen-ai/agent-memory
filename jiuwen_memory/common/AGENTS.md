@@ -34,6 +34,7 @@
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，分别序列化 `system_metadata` / `user_metadata`，拒绝未迁移的 `_v<4` MemoryUnit |
 | `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
+| `experience.py` | 经验记忆的效用域共用部件（mem2.0，F08）：效用/统计/复现作者/类别计数/基线/清除标记的键构造与 `UtilityStore` 读写、`AttributionEvent`/`ReproductionEvent`/`StatsRecord`、策略取值常量（证据权重、质量与排序参数、隔离期 7 天、复现上限 2）、质量分四函数（`weighted_count`/`validity`/`freshness`/`quality_score`）、`usage_ref` 编解码、效用事件聚合（`aggregate_utility` 从事件全量重算，`prior` 只带过聚合不产生的字段）。构建侧（写入）与检索侧（选取）共用——分家线是读者：效用域记录的读取方横跨两层，轨迹/判定记录等构建侧专用部件留在 `construction/experience.py` |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`；注册表属 Producer，InstanceCache 属 AssemblyContext；builder 内继承缓存上下文，根注入/查询显式传 ctx（配置数据结构在 `config/context.py`） |
 | `loop_runner.py` | 实例持有的后台事件循环线程；惰性启动，`close` 停止循环并回收异步生成器、默认线程池和线程，关闭后不可重启 |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
@@ -192,7 +193,8 @@ privacy_rule_ids / privacy_categories 诊断摘要，客户端不可赋值。私
    引用，新增出站客户端不得再各写一份归一或校验逻辑。同理，scope 命名空间渲染
    （`SCOPE_DIMS` / `scope_segments`）与后端异常归一（`wrap_backend`）也只此一份，
    `storage/_support.py` 是再导出而非第二实现。
-11. LockProvider 的契约是异步的，`health()` 随之异步——这是 common 层唯一的异步组件。
+11. LockProvider 的契约是异步的。后端以 `is_distributed` 声明跨实例互斥能力，
+    专用实例的所有者在操作事件循环上调用异步 `close_connection()`。
     锁只交付原语，本层不在任何业务路径上加锁；在哪些临界区取锁由各消费方自行论证。
     锁是基于租约的协调机制而非共识算法，依赖方必须能容忍偶发互斥失效或自备第二道防线。
 12. `security/` 是安全域的契约层：消费方只 import 契约与值对象，不反向 import。旧

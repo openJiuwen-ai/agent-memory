@@ -102,6 +102,8 @@
 5. **KV list 先过滤再分页**
    `KVStore.list` 只查询 `/memory/` MemoryUnit；在完整 Scope 内依次执行
    `memory_types AND filters`、精确计数、稳定排序和分页。`count` 不受 offset/limit 影响。
+   `CompositeDomainStore.list` 在文档模式下只读取 `shadow.list_units`，不合并 KV；
+   即使同时装配 KV 端口，记忆列表、点读与文档更新/删除仍使用同一文档真源。
 
 6. **检索型 Store 的 search 物理约束在 scope 内**
    `FulltextStore.search(scope, query)` / `VectorStore.search(scope, query)` / `GraphStore.search(scope, query)` 绝不跨 scope 返回。

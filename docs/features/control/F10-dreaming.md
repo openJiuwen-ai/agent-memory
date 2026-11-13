@@ -1,12 +1,12 @@
-# F04 — dreaming：evolve 定时演进（三态分发 / 候选源 / 持续授权）
+# F10 — dreaming：evolve 定时演进（三态分发 / 候选源 / 持续授权）
 
 ## 元信息
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-22 |
+| 日期 | 2026-11-05 |
 | 影响范围 | `jiuwen_memory/api/memory_api_impl/dreaming.py`（DreamingCoordinator）、`common/type_def/candidate.py`、`common/type_def/filter.py`（t_ingest 入册）、`control/engine_impl/evolve_dispatch.py`、`control/engine_impl/dreaming_registry.py`、`control/jobs_impl/candidate_resolver.py`、`control/jobs_impl/evolve_job.py`、`control/scheduler.py` + `scheduler_impl/async_timer_scheduler.py`、`jiuwen_memory_entry/`（handler / server / http / mcp）、`deploy/config/`、`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S07-common.md` |
-| 测试基线 | dreaming / Scheduler / API / MCP 定向回归全绿；相关 Python 文件 `ruff check` 0 error。分文件基线见「验证」 |
+| 测试基线 | `pytest tests/unit -m unit`：5883 通过、7 跳过；相关 Python 文件 `ruff check` 0 error。分文件基线见「验证」 |
 | Refs | — |
 
 ## 背景
@@ -145,7 +145,7 @@ FanOutCandidate(child, require_empty, require_nonempty)  # ④ 枚举源：scope
   fan-out 裁决 → 经 `commands.evolve` 派生一次性 EvolveJob（唯一执行
   链条，`JobInfo.detail.spawned_job_id` 回显派生关系）。
 
-### D8：单实例部署模型
+### D8：单实例与主备部署
 
 1. **注册写序**：submit → `registry.save`；save 失败回滚 `cancel`（register
    抛错前 cancel 已提交 Job 再上抛；restore 换绑失败 cancel 新 Job +
@@ -158,8 +158,8 @@ FanOutCandidate(child, require_empty, require_nonempty)  # ④ 枚举源：scope
    `state + generation + job_id` 并自停，重启恢复只收口、不复活。Scheduler
    的阻塞调用不得发生在协调器状态锁内；生命周期操作由独立串行锁保序，
    tick 清理只拿短状态锁，避免 cancel 与授权失败清理互等。
-3. **leader 锁**（双路径）：支持周期任务的长命实例启动时无论注册表是否为空
-   都须取锁，register 前也复核领导权。注入 `LockProvider`（生产推荐，Redis）
+3. **leader 锁**（双路径）：支持周期任务的长命实例启动时即使注册表为空也参与竞选，
+   register 前复核领导权。注入 `LockProvider`（生产推荐，Redis）
    或使用 KV owner+TTL 兜底，两路都按 lease/3 自动续租；每个 tick 执行前再次
    复核。续租失败回调取消本实例全部 driver；tick 复核失锁时父任务以
    `stopped_reason=leadership_lost` 失败停摆。两条路径都停止后续执行步骤，
@@ -173,15 +173,26 @@ FanOutCandidate(child, require_empty, require_nonempty)  # ④ 枚举源：scope
    共享注册表。恢复幂等缓存只在当前 leader 任期内有效；失锁或主动
    放锁后清空，下次获锁必须重扫。恢复逐条在 submit 后和 registry.save 后
    复验租约，中途失锁取消本地驱动并立即中止，不继续处理后续记录。
-4. **restore fail-fast + 逐条隔离**：锁被他人持有（未过期）→ `RuntimeError`。
+4. **恢复与错误隔离**：单实例模式下，锁被其他实例持有时抛 `RuntimeError`。
    默认 in_process 且空表仍可 no-op；周期调度器即使空表也持 leader 锁。持锁后
-   重新扫描注册表，单条非法 interval/candidate/submit/save 失败只跳过该条。
+   重新扫描注册表，逐条复验注册身份和任务配置。主备模式下，启动恢复遇到后端故障
+   会报错，运行期间的竞选或恢复故障记录错误并重试。
 5. **长命 surface 钩子**：`Server.restore_dreaming()`（`jiuwen_memory_entry/core/server.py`）
    经 `getattr` 探测（不属于 MemoryAPI 公共契约——任意主体可触发的恢复
    会把部署模型决定权让渡给调用方）；HTTP / MCP server 启动时调用，
    短命进程（CLI）不得调用。
 6. **批次标记归属**：dreaming 批次标记若被系统行为依赖，必须落
    `system_metadata.*`；`user_metadata` 只放用户业务标注。
+7. **主备模式**：设置 `globals.dreaming_standby: true`。所有实例须使用支持周期任务的
+   调度器、同一份持久化任务注册表和同一把共享分布式锁，内置实现使用独立的
+   `lock.dreaming` Redis 实例配置。确认锁竞争时，备实例继续对外服务，每两秒重试。
+   抢到锁后重扫并换绑任务，恢复完成后才接受周期注册与注销。备实例上的这两类请求返回
+   HTTP 503，可由调用方在主实例重试。失锁后取消本机 driver 并重新参与竞选。
+   续租等待受本地租约截止时间约束，后端无响应时到期停止本机调度。
+   主备要求任务 KV 支持原子条件更新和删除。登记、换绑、注销和到期时间回写
+   都比较调用方先前读取的注册值，已被其他实例更新的记录保留。
+   Runtime 关闭先停止并等待竞选，再等待任务收尾，最后释放租约。
+   分区或进程停顿可能使租约在正在执行的同步写入完成前失效，此模式没有写入 fencing。
 
 ### D9：JobInfo 回显语义
 
@@ -219,13 +230,42 @@ HTTP 与 CLI 经 `api_contract` 从 `MemoryAPI.evolve` 签名机械派生契约
 
 ## 扩展指南
 
-**新增演进 mode**（三步，调度/注册表/持久化/恢复零改动）：
+### 经验整理任务与周期恢复
+
+`experience_consolidate` 是演进 mode，`dreaming=True` 仍只负责周期调度。
+同一轮先按 filter 取经验，再由配置好的实例执行 Curator → Abstractor → 落盘；
+专用 mode 不按条目 profile 分组，整理失败本轮不归纳，后续周期重试。
+普通 mode 未配置显式绑定时保留原有执行路径。
+
+`engine.params.mode_evolvers` 支持短值具名 Evolver 引用，或长值
+`{evolver: experience, domain_store: experience, retriever: experience}`。
+显式数据面用于本轮候选取数，不改变公共 get/list/update/delete。fan-out 鉴权枚举
+经 `candidate_scopes_for_mode(mode)` 读取同一真源；recall 候选在切换真源时必须
+同时绑定 Retriever，避免用普通索引召回 ID 后到经验真源点读。配置错误在注册/恢复
+前经 `validate_evolve_mode` 预检，执行入口也重复核对；不等到首次周期 tick 才报错。
+
+首次注册就保存 `next_due_at`，成功提交一次性演进后同时回写 `last_triggered`
+和下一次到期时间。重启按剩余秒数计算 `first_delay`，已过期为 0，覆盖首次执行
+前反复重启；重复注册沿用起算点，修改 interval 时保留已经等待的时间。
+旧记录优先从 `last_triggered + interval` 推导；无任何历史锚点时首次恢复补齐
+到期时间并保存。该回退无法还原旧版本没有记录的历史等待时长。
+generation 校验、领导租约、提交后保存与失败回滚顺序不变。
+
+仅保存 `last_triggered` 的方案无法覆盖第一次执行前重启，因此不采用；也不通过
+修改 Scheduler 的业务分支实现经验算法，或在文档 list 中拼接全部 KV 来补候选。
+
+验证包含 `test_mode_evolvers.py`、`test_dreaming_coordinator.py` 与 provider 的真实
+装配回归：专用数据面 fan-out/recall、缺绑定预检、首次到期跨多次重启、旧记录迁移、
+skill=false 仅整理，以及普通文档列举不混入经验 KV。
+
+**新增演进 mode**（复用调度/注册表/持久化/恢复）：
 
 | 步 | 改动 |
 |---|---|
 | 1 | `EvolveMode` 枚举加值（`construction/evolver.py`） |
 | 2 | Evolver 加分支方法（主体工作量） |
-| 3 | 调 `evolve(scope, mode, dreaming=true, interval=N)` 注册（无代码改动） |
+| 3 | 若需专用处理实例，配置 `engine.params.mode_evolvers` 显式绑定 Evolver；候选真源不同则同时声明 `domain_store`，recall 源还需绑定同源 `retriever` |
+| 4 | 调 `evolve(scope, mode, dreaming=true, interval=N)` 注册 |
 
 **新增候选源类型**（四条，零分支表改动）：新 dataclass（含 `kind: ClassVar[str]`
 + `__post_init__` 校验）+ `_CANDIDATE_CODECS` 一条 codec + 新 Resolver 类 +
@@ -257,7 +297,7 @@ HTTP 与 CLI 经 `api_contract` 从 `MemoryAPI.evolve` 签名机械派生契约
 | fan-out 整体鉴权（父 scope 一次过） | 子桶可能跨 space，父 scope 授权不代表子桶授权——逐桶是唯一正确粒度 |
 | Scheduler 识别 (scope, mode) 业务键 | 业务知识下沉调度器，各实现漂移；通用键在 Job 契约声明一次 |
 | InProcessScheduler 加周期支持 / 注册静默降级一次性跑 | 同步实现起线程伪装异步掩盖装配错误；fail fast 优于静默降级 |
-| 分布式调度器 / 无锁多实例 | 超出当前部署形态（单实例）；实例锁 + fail-fast 是当前形态最小正确解 |
+| 分布式调度器 / 无锁多实例 | 主备实例复用本地调度器，由共享租约协调任务接管 |
 | control 层 EvolveGuard 端口 + 闭包（初版落地形态） | 破坏 PEP 边界（S03：鉴权在 API 层，control 不持有 identity）；control 开第二鉴权口，判定漂移只是时间问题 |
 | API 层直接持有 EvolveJob 做持续授权 | 执行链捏在 API 层，破坏"演进必须经 EvolveJob 提交"红线 |
 | 恢复路径绕过复验直接重提 | 重启即洗白——与 D7 恢复即复验矛盾 |

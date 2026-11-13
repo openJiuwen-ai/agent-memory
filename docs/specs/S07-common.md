@@ -290,6 +290,9 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 | `renew` | `(handle, *, lease_ms=None) -> bool` | 按 token 做 CAS 续期；`False` 表示已失去持有权 |
 | `guard` | `(scope, name, **kwargs) -> AsyncContextManager[LockHandle]` | 获取 / 自动续期 / 释放的组合，推荐入口 |
 | `health` | `() -> None` | 存活探测；异步，与其余组件的同步 `health()` 不一致 |
+| `close_connection` | `() -> None` | 由专用 provider 的所有者在操作事件循环上异步关闭连接 |
+
+`is_distributed` 声明锁是否由共享后端提供。Redis 为 True，进程内实现为 False。
 
 `LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
 静默退化成不跨实例的单机锁。
@@ -343,7 +346,7 @@ F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 
 | `Chunk` | id / unit_id / seq / text / start / end / token_count / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息；content 为文本或多模态 parts |
 | `RawPayload` | id / scope / modality / data / uri / system_metadata / user_metadata / occurred_at / assets | 原始负载；`assets` 只承载待 Ingestor 映射的资产引用，不规定产出数量或 Segment 位置 |
-| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反。内置字段白名单（`filter.py` `_BUILTIN_FIELDS`）含 `t_ingest`（摄入时间，epoch 毫秒，恒非空；2026-09-15 入册，dreaming 时间窗下推依赖，见 F04-dreaming.md D5） |
+| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反。内置字段白名单（`filter.py` `_BUILTIN_FIELDS`）含 `t_ingest`（摄入时间，epoch 毫秒，恒非空；2026-09-15 入册，dreaming 时间窗下推依赖，见 F10-dreaming.md D5） |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_filter_value` | `(object, FilterClause) -> bool` | 真源与内存索引共用的标量/数组/缺值比较 |

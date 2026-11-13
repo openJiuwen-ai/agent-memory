@@ -1,12 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """DreamingRegistry——注册态演进任务（dreaming）的注册表 + KV 持久化。
 
-F04 D2 调度层设计：注册表 ``(scope五元组, mode) → Job``；interval 定时 /
+F10 D2 调度层设计：注册表 ``(scope五元组, mode) → Job``；interval 定时 /
 KV 持久化 / 重启恢复。本类只管**数据**（存取/删除/全量加载），不做调度、
 不做鉴权——submit/cancel 归 :class:`~control.scheduler.Scheduler`，授权与
 编排归 API 层的 ``DreamingCoordinator``（``api/memory_api_impl/dreaming.py``，
 PEP 边界：持续授权与 fan-out 逐桶裁决都在 API 层），candidate → resolver
-翻译归 Engine（装配与分发，F04 D3）。
+翻译归 Engine（装配与分发，F10 D3）。
 
 持久化形态：保留 scope（``org=__kernel__, space=dreaming``，不装
 MemoryUnit——``loads`` 对非 MemoryUnit 记录返回 None，list_units/scopes()
@@ -15,24 +15,25 @@ MemoryUnit——``loads`` 对非 MemoryUnit 记录返回 None，list_units/scope
 - key：``dreaming:v2:{base64url(canonical-json([scope..., mode]))}``，字段值可安全
   包含 ``/`` / ``:`` 等分隔符；读取兼容旧扁平键，下次 save 自动迁移；
 - value：JSON（scope/mode/interval/candidate/job_id/channel/created_by/state/
-  generation 九字段；旧记录缺后两项按 ACTIVE/1 兼容读取）。
+  generation/last_triggered/next_due_at；旧记录缺状态与代数按 ACTIVE/1 兼容读取，
+  缺到期时间由协调器恢复时补齐）。
 
 候选源存 **数据**（dict DSL，:func:`candidate_to_dict` 产物）不存 resolver
-对象——重启恢复后装配期重建 resolver、重绑 Job（F04 D3：候选源
+对象——重启恢复后装配期重建 resolver、重绑 Job（F10 D3：候选源
 必须是数据不是代码）。
 
-持续授权（F04 D7）：``created_by`` 记录**谁以什么身份注册**（actor scope
+持续授权（F10 D7）：``created_by`` 记录**谁以什么身份注册**（actor scope
 五元组）——重启恢复与每次 tick 都以它重新走授权判定，不因"注册时曾获准"
 而永久豁免。旧版本 entry 无该字段 → 恢复期 fail-closed 跳过。
 
-leader 部署模型（F04 D8）：周期实例启动和注册前须持实例锁，每个 tick 复核；
+leader 部署模型（F10 D8）：周期实例启动和注册前须持实例锁，每个 tick 复核；
 注册表与内存态 Scheduler 无跨实例事务，失锁实例必须立即停止本地 Timer。
 
 锁有两条互斥路径，按构造注入选择：
 
 - **LockProvider 注入（生产推荐）**：复用 common 层锁原语（Redis 实现跨
   实例互斥），租约 + **自动续租**——健康实例持锁超过初始 TTL 不会被
-  第二实例抢占（F04 D8，"TTL 过期双跑"遗留的修复）。acquire / renew /
+  第二实例抢占（F10 D8，"TTL 过期双跑"遗留的修复）。acquire / renew /
   release 全部在 registry 自有的"锁看守线程"专属事件循环内执行：Redis
   客户端惰性建连且绑定首次使用的事件循环，而 restore 的调用循环是
   ``asyncio.run`` 临时循环——锁操作必须落在一个长命循环上。续租失败
@@ -111,6 +112,13 @@ class DreamingEntry:
     # 每次重新注册递增。Scheduler 可能按 schedule_key 复用 job_id，generation
     # 用于挡住上一代已经排队的 DriverJob 删除或执行新一代声明。
     generation: int = 1
+    # 上次触发时间（墙钟 ISO；空 = 从未触发或旧版本记录）。每轮成功提交演进后
+    # 回写，供兼容旧记录与观测。恢复优先用 next_due_at 换算剩余时间，缺失时
+    # 才按本字段加 interval；重复注册仍保留上次触发时间。
+    last_triggered: str = ""
+    # 下次到期的墙钟 ISO 时间。首次注册就持久化，覆盖尚未触发过便重启的情况；
+    # 旧记录缺失时协调器从 last_triggered 推导或首次恢复时补齐。
+    next_due_at: str = ""
 
 
 def actor_to_dict(actor: Scope) -> dict[str, str]:
@@ -156,6 +164,7 @@ class DreamingRegistry:
         self._lock_renew_future: Any = None
         # 续租失败标记：失锁后不再释放（token 已易主），close 只做线程清理
         self._lock_lost = False
+        self._lock_expires_at = 0.0
         self._on_lock_lost = on_lock_lost
         # ---- KV TTL 路径（未注入时的兜底） ---- #
         self._lock_owner: str | None = None
@@ -166,10 +175,18 @@ class DreamingRegistry:
         self._on_lock_lost = callback
 
     @property
+    def has_distributed_lock(self) -> bool:
+        return self._lock is not None and self._lock.is_distributed
+
+    @property
     def owns_instance_lock(self) -> bool:
         """当前实例是否仍持有有效 leader 租约。"""
         if self._lock is not None:
-            return self._lock_handle is not None and not self._lock_lost
+            return (
+                self._lock_handle is not None
+                and not self._lock_lost
+                and time.monotonic() < self._lock_expires_at
+            )
         owner = self._lock_owner
         if owner is None:
             return False
@@ -210,9 +227,8 @@ class DreamingRegistry:
         legacy = self._legacy_key_of(scope, mode)
         return (current,) if current == legacy else (current, legacy)
 
-    def save(self, entry: DreamingEntry) -> None:
-        """写入/覆写一条注册（幂等；同键即换绑 job_id/interval/candidate）。"""
-        key = self.key_of(entry.scope, entry.mode)
+    @staticmethod
+    def _encode(entry: DreamingEntry) -> bytes:
         payload = {
             "scope": {f: getattr(entry.scope, f) for f in _SCOPE_FIELDS},
             "mode": entry.mode,
@@ -223,8 +239,15 @@ class DreamingRegistry:
             "created_by": entry.created_by,
             "state": entry.state,
             "generation": entry.generation,
+            "last_triggered": entry.last_triggered,
+            "next_due_at": entry.next_due_at,
         }
-        value = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def save(self, entry: DreamingEntry) -> None:
+        """写入/覆写一条注册（幂等；同键即换绑 job_id/interval/candidate）。"""
+        key = self.key_of(entry.scope, entry.mode)
+        value = self._encode(entry)
         if self._kv.exists(_DREAMING_SCOPE, key):
             self._kv.update(_DREAMING_SCOPE, key, value)
         else:
@@ -241,6 +264,31 @@ class DreamingRegistry:
                 and legacy_entry.mode == entry.mode
             ):
                 self._kv.delete(_DREAMING_SCOPE, legacy)
+
+    def replace_if_current(
+        self, scope: Scope, mode: str, expected: DreamingEntry | None,
+        replacement: DreamingEntry | None,
+    ) -> bool:
+        """更新或删除原来读到的注册，旧任期的写入不能覆盖已换绑的记录。"""
+        value = self._encode(replacement) if replacement is not None else None
+        for key in self._keys_of(scope, mode):
+            try:
+                raw = self._kv.get(_DREAMING_SCOPE, key)
+            except NotFoundError:
+                continue
+            current = self._decode(raw)
+            if current.scope != scope or current.mode != mode:
+                continue
+            return current == expected and self._kv.compare_exchange(
+                _DREAMING_SCOPE, key, raw, value,
+            )
+        if expected is not None or value is None:
+            return False
+        try:
+            self._kv.insert(_DREAMING_SCOPE, self.key_of(scope, mode), value)
+        except ConflictError:
+            return False
+        return True
 
     def find(self, scope: Scope, mode: str) -> DreamingEntry | None:
         """读一条注册（不动 KV）——注销"先查再撤"与换绑前取旧值用。"""
@@ -293,12 +341,12 @@ class DreamingRegistry:
                 )
         return [entry for _, entry in entries.values()]
 
-    # ---- 单实例锁（F04 D8 部署模型） ------------------------------------- #
+    # ---- 单实例锁（F10 D8 部署模型） ------------------------------------- #
 
     def acquire_instance_lock(self, ttl_seconds: float | None = None) -> bool:
         """取恢复实例锁（租约）：他实例持有且未过期 → False。
 
-        写序约定（F04 D8）：**持锁 → restore → 持锁期间进程存活**。同一份注册表
+        写序约定（F10 D8）：**持锁 → restore → 持锁期间进程存活**。同一份注册表
         不允许两个实例并发恢复——内存态 Scheduler 与 KV 注册表之间没有跨实例
         一致性协议，双恢复 = 双跑。锁原语按构造注入选择（见模块 docstring）：
         LockProvider 与 KV TTL 兜底都自动续租；崩溃实例的锁靠 TTL 自然过期。
@@ -324,46 +372,54 @@ class DreamingRegistry:
 
     # ---- LockProvider 路径 ------------------------------------------------ #
 
-    def _acquire_via_provider(self, ttl_seconds: float | None) -> bool:
-        # 幂等：二次 acquire 先放掉上一把（含看守线程收尾）
-        self._release_via_provider()
+    def _start_lock_keeper(self) -> asyncio.AbstractEventLoop:
+        if self._lock_loop is not None:
+            return self._lock_loop
         loop = asyncio.new_event_loop()
-        ready = threading.Event()
 
         def _run_keeper() -> None:
             asyncio.set_event_loop(loop)
-            ready.set()
             try:
                 loop.run_forever()
             finally:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                 loop.close()
 
         thread = threading.Thread(
             target=_run_keeper, name="dreaming-lock-keeper", daemon=True
         )
         thread.start()
-        ready.wait(timeout=5)
+        self._lock_loop, self._lock_thread = loop, thread
+        return loop
+
+    def _acquire_via_provider(self, ttl_seconds: float | None) -> bool:
+        # 竞争失败和失锁后的重试必须复用同一个事件循环，Redis 连接绑定在该循环。
+        loop = self._start_lock_keeper()
+        acquire_kwargs: dict[str, int] = {"wait_timeout_ms": 0}
+        if ttl_seconds is not None:
+            acquire_kwargs["lease_ms"] = int(ttl_seconds * 1000)
+
+        async def acquire() -> tuple[LockHandle, float]:
+            # 本地时钟已判定上一任期到期时，先清理旧 driver，再尝试抢占新任期。
+            if self._lock_handle is not None:
+                self._mark_provider_lock_lost()
+            started = time.monotonic()
+            handle = await self._lock.acquire(_DREAMING_SCOPE, _LOCK_NAME, **acquire_kwargs)
+            return handle, started + handle.lease_ms / 1000.0
+
+        future = asyncio.run_coroutine_threadsafe(acquire(), loop)
         try:
-            acquire_kwargs: dict[str, int] = {"wait_timeout_ms": 0}
-            if ttl_seconds is not None:
-                acquire_kwargs["lease_ms"] = int(ttl_seconds * 1000)
-            handle = asyncio.run_coroutine_threadsafe(
-                self._lock.acquire(_DREAMING_SCOPE, _LOCK_NAME, **acquire_kwargs),
-                loop,
-            ).result(timeout=15)
+            handle, expires_at = future.result(timeout=15)
         except LockTimeoutError:
-            # 他实例持锁未过期——关掉本次看守线程，保持 False（不等待重试）
-            loop.call_soon_threadsafe(loop.stop)
-            thread.join(timeout=5)
             return False
-        except Exception:
-            # acquire 异常（后端不可达等）——线程收尾后原样上抛，fail-fast
-            loop.call_soon_threadsafe(loop.stop)
-            thread.join(timeout=5)
+        except TimeoutError:
+            future.cancel()
             raise
-        self._lock_loop = loop
-        self._lock_thread = thread
         self._lock_handle = handle
+        self._lock_expires_at = expires_at
         self._lock_lost = False
         # 自动续租：每 lease/3 一次（与 LockProvider.guard 的 _renew_loop 同
         # 节拍约定）。续租失败 → 标记失锁 + 停止续租，锁靠租约自然过期。
@@ -376,29 +432,39 @@ class DreamingRegistry:
         """续租循环（跑在看守线程的循环内）；失败即退出，不抛出不释放。"""
         while True:
             await asyncio.sleep(interval_s)
+            if self._lock_handle is not handle or self._lock_lost:
+                return
+            started = time.monotonic()
+            remaining = self._lock_expires_at - started
             try:
-                renewed = await self._lock.renew(handle)
+                async with asyncio.timeout(remaining):
+                    renewed = remaining > 0 and await self._lock.renew(handle)
             except Exception as exc:
                 logger.warning(
                     "dreaming lock renew error: %s: %s", type(exc).__name__, exc
                 )
                 renewed = False
-            if not renewed:
-                self._lock_lost = True
-                logger.error(
-                    "dreaming instance lock LOST (renew failed) — stop renewing; "
-                    "lease expires naturally and another instance may take over"
-                )
-                self._notify_lock_lost()
+            if self._lock_handle is not handle or self._lock_lost:
                 return
+            if not renewed or time.monotonic() >= self._lock_expires_at:
+                self._mark_provider_lock_lost()
+                return
+            self._lock_expires_at = started + handle.lease_ms / 1000.0
+
+    def _mark_provider_lock_lost(self) -> None:
+        if self._lock_lost:
+            return
+        self._lock_lost = True
+        logger.error("dreaming instance lock lost; stopping local periodic jobs")
+        self._notify_lock_lost()
 
     def _release_via_provider(self) -> None:
         handle = self._lock_handle
-        if handle is None:
-            return  # 从未持锁（如共享 KV 的运维进程 close）——幂等
         loop, thread = self._lock_loop, self._lock_thread
+        if loop is None:
+            return
         try:
-            if not self._lock_lost:
+            if handle is not None and not self._lock_lost:
                 # 先停续租（停止供给租约）再释放；失锁路径 token 已易主，
                 # 释放无意义（CAS 也会挡住），跳过
                 if self._lock_renew_future is not None:
@@ -420,14 +486,15 @@ class DreamingRegistry:
                         "dreaming lock release error (lease will expire): "
                         "%s: %s", type(exc).__name__, exc,
                     )
+            asyncio.run_coroutine_threadsafe(self._lock.close_connection(), loop).result(timeout=10)
         finally:
             self._lock_handle = None
             self._lock_renew_future = None
             self._lock_lost = False
+            self._lock_expires_at = 0.0
             self._lock_loop = None
             self._lock_thread = None
-            if loop is not None:
-                loop.call_soon_threadsafe(loop.stop)
+            loop.call_soon_threadsafe(loop.stop)
             if thread is not None:
                 thread.join(timeout=5)
 
@@ -536,6 +603,12 @@ class DreamingRegistry:
         generation = payload.get("generation", 1)
         if not isinstance(generation, int) or isinstance(generation, bool) or generation <= 0:
             raise ValueError("dreaming generation 必须是正整数")
+        last_triggered = payload.get("last_triggered", "")
+        if not isinstance(last_triggered, str):
+            raise ValueError("dreaming last_triggered 必须是字符串")
+        next_due_at = payload.get("next_due_at", "")
+        if not isinstance(next_due_at, str):
+            raise ValueError("dreaming next_due_at 必须是字符串")
         return DreamingEntry(
             scope=Scope(**{f: payload["scope"].get(f, "") for f in _SCOPE_FIELDS}),
             mode=payload["mode"],
@@ -546,4 +619,6 @@ class DreamingRegistry:
             created_by=created_by,
             state=state,
             generation=generation,
+            last_triggered=last_triggered,
+            next_due_at=next_due_at,
         )

@@ -29,6 +29,12 @@ class MemoryQueryService:
     def validate_retrieval_pipeline(self, name: str | None) -> None:
         self._engine.validate_retrieval_pipeline(name)
 
+    def retrieval_pipeline_filter(self, name: str | None) -> FilterExpr | None:
+        return None if name is None else self._engine.retrieval_pipeline_filter(name)
+
+    def prepare_retrieval_query(self, query: RetrievalQuery) -> RetrievalQuery:
+        return query if query.pipeline is None else self._engine.prepare_retrieval_query(query)
+
     @property
     def supports_exact_metadata_lookup(self) -> bool:
         return self._engine.supports_exact_metadata_lookup

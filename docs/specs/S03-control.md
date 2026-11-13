@@ -106,7 +106,7 @@ class ControlOperator(ABC):
 
 ### MemoryEngine（`engine.py`）
 
-编排接口层各语义的中枢。共同依赖 Ingestor、Classifier、IndexBuilder、Evolver、Retriever、Scheduler、LifecycleManager，可选注入 MemoryPipeline 做按记忆类型或 message_type 的 profile 选择。存储面按实现区分：`InMemoryEngine` 注入 KVStore 并沿用 `load_units`/`list_units` helper；`CloudEngine` 注入 DomainStore 作为 MemoryUnit 领域真源读入口。Evolver 有两个平级注册实现：`OrchestratingEvolver`（注册名 `orchestrating`）与其子类 `DynamicEvolver`（注册名 `dynamic`，EXTRACT 走 extract→consolidate→reflect→落盘）；装配或 profile 选择决定实际路径。
+编排接口层各语义的中枢。共同依赖 Ingestor、Classifier、IndexBuilder、Evolver、Retriever、Scheduler、LifecycleManager，可选注入 MemoryPipeline 做按记忆类型或 message_type 的 profile 选择。存储面按实现区分：`InMemoryEngine` 注入 KVStore 并沿用 `load_units`/`list_units` helper；`CloudEngine` 注入 DomainStore 作为 MemoryUnit 领域真源读入口。Evolver 有两个平级注册实现：`OrchestratingEvolver`（注册名 `orchestrating`）与其子类 `DynamicEvolver`（注册名 `dynamic`，EXTRACT 走 extract→consolidate→reflect→落盘）；装配或 profile 选择决定实际路径。`MemoryEngine` 另暴露抽象 property `pipeline -> MemoryPipeline | None`（未注入为 None）——供 API 层读取路由键名并校验空间绑定 profile 的可达性（F08），不新增行为。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -124,7 +124,7 @@ class ControlOperator(ABC):
 | `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删（覆盖 `SUPERSEDED` 历史版本，合规硬删不残留明文）/ 其他委托 LifecycleManager 非破坏式流转（排除 `SUPERSEDED`：`SUPERSEDED→ARCHIVED` 流转非法）；目标需维护受影响层级边 |
 | `purge_space` | `async (org: str, space: str) -> list[str]` | 物理删除该 Space 全部 user/agent/session 子 Scope 的 MemoryUnit 真源与索引，供 offboarding 调用 |
 | `sweep_expired` | `async () -> SweepResult` | 编排到期清扫：`LifecycleManager.sweep()` 纯计算 transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组先 `IndexBuilder.remove(SOFT)` 移出检索索引、成功后 `LifecycleManager.transition` 回写真源；ARCHIVED 组只回写（`include_archived` 召回与 `as_of` 回溯仍需索引，不删）。顺序不变量（先删索引、后回写真源）保证 remove 失败时单元保持 ACTIVE、下轮 sweep 重新发现自愈；任一步失败的组计入 `SweepResult.failed`，不静默当成功。共享编排在 `engine_impl/sweep_support.py`，InMemoryEngine 直调 IndexBuilder，CloudEngine 按各 pipeline 的 builder 分组删除 |
-| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND, *, candidate=None, buckets=None, denied_scopes=None) -> str \| None` | 纯执行（PEP 边界，F04-dreaming）：只做立即执行链——candidate→resolver→一次性 EvolveJob 提交，返回 job_id；**不鉴权**（入口鉴权与 fan-out 逐桶裁决在 API 层 `DreamingCoordinator`，S02）。`buckets` / `denied_scopes` 为 API 层 fan-out 裁决产物：获准桶直接进料，拒绝只回显 `count:N` 脱敏摘要；`buckets=None` = 内核直调路径。resolver 在 InMemoryEngine 读 KVStore、在 CloudEngine 读 DomainStore；单桶与 fan-out 总量均上限 10000 条，fan-out 上限 1000 桶，显式 ID 和 recall top_k 各上限 10000，超限拒绝。dreaming 三态不在此层。Evolver 由 Engine 经 `get_job(evolver=...)` 注入装配给自身的同一实例，未装配时抛 `RuntimeError` |
+| `evolve` | `async (scope, mode: EvolveMode, channel=BACKGROUND, *, candidate=None, buckets=None, denied_scopes=None) -> str \| None` | 纯执行（PEP 边界，F10-dreaming）：只做立即执行链——candidate→resolver→一次性 EvolveJob 提交，返回 job_id；**不鉴权**（入口鉴权与 fan-out 逐桶裁决在 API 层 `DreamingCoordinator`，S02）。`buckets` / `denied_scopes` 为 API 层 fan-out 裁决产物：获准桶直接进料，拒绝只回显 `count:N` 脱敏摘要；`buckets=None` = 内核直调路径。resolver 在 InMemoryEngine 读 KVStore、在 CloudEngine 读 DomainStore；单桶与 fan-out 总量均上限 10000 条，fan-out 上限 1000 桶，显式 ID 和 recall top_k 各上限 10000，超限拒绝。dreaming 三态不在此层。Evolver 由 Engine 经 `get_job(evolver=...)` 注入装配给自身的同一实例，未装配时抛 `RuntimeError` |
 | `admin_get/set/all` | — | 管理面语义由 API 层直达 PolicyManager，Engine 不承载策略存储 |
 
 **write 路径**：
@@ -248,6 +248,9 @@ class PipelineBinding:
 class MemoryPipeline(ControlOperator):
     def select_for_write(units: list[MemoryUnit]) -> PipelineBinding
     def select_for_recall(query: RetrievalQuery) -> PipelineBinding
+    @property
+    def route_key(self) -> str                 # 路由键名（F09 新增）
+    def has_profile_for(memory_type: str) -> bool
 ```
 
 默认 `metadata` 实现的配置形态：
@@ -276,6 +279,8 @@ pipeline:
 
 路由规则：
 
+- `route_key`（缺省 `memory_type`）：查询侧从 `RetrievalQuery.extensions[route_key]` 读路由值；经验与技能显式类型优先于配置的通用路由键。
+- `has_profile_for(value)`：该路由值是否有对应 profile。引擎在选 profile 前用它核对 `NO_FALLBACK_MEMORY_TYPES`（`pipeline.py` 上的 `frozenset({"experience"})`，不回落类别）——不回落的取值没有 profile 即返回参数错误而非静默落默认。
 - 写入侧读取 `MemoryUnit.system_metadata[route_key]`。
 - 查询侧优先读取 `RetrievalQuery.extensions[route_key]`，其次从规范化
   `FilterExpr` 提取逻辑上强制成立的 `system_metadata.<route_key>` 唯一等值；
@@ -386,6 +391,8 @@ delegate，避免调用方理解授权记录应落在哪个后端。路由值只
 | `link_child` | `(child_job_id: str, parent_job_id: str) -> None` | 周期调度器关联派生任务的观测信息和协作式取消生命周期；子任务执行前完成关联，同一调度循环内 submit 返回后立即调用、不让出循环；不支持周期任务的实现可忽略 |
 | `validate_shutdown` | `(*, wait: bool = True) -> None` | 关闭前检查调用上下文，不改变生命周期状态；异步实现拒绝在所属循环内同步等待自身关闭，供 Runtime 在启动后台收尾前 fail fast。默认无约束 |
 | `shutdown` | `(*, wait: bool = True) -> None` | 幂等关闭：异步调度器立即拒绝新提交并停止新一轮触发，取消排队任务，通知在飞任务协作式收尾。`wait=True` 等待任务、默认线程池及私有循环线程退出；`wait=False` 安排后台收尾，之后可再次用 True 等待。任务历史保留，持久化注册表不受影响。同步实现默认无后台资源可关 |
+
+启用 Dreaming 主备时，实例共享持久化任务注册表与分布式租约。协调器完成恢复后才能受理周期注册与注销，失锁时取消本机驱动并重新参与竞选。Runtime 关闭时先等待竞选退出，再收尾调度任务，最后释放租约。
 
 **关闭与任务终态**：排队而未执行的任务取消；在飞任务正常返回则保持 SUCCEEDED，响应
 协作式取消提前结束则为 CANCELLED，真实执行错误仍为 FAILED。进入关闭状态本身不覆盖
@@ -525,7 +532,7 @@ MaxP、展开上限及预算由 S04 定义，不从尚未实现的策略键推�
 | `DeleteSelector` | dataclass | unit_ids / scope / tags / before / mode(DeleteMode) |
 | `PrincipalPath` | 枚举 | USER_AGENT / AGENT_USER |
 | `SpaceStatus` | 枚举 | ACTIVE / FROZEN / ARCHIVED / DELETING / DELETED |
-| `SpacePolicy` | dataclass | require_space / principal_path / storage_isolation_strategy / retention / quotas / index_profiles / pipeline_profiles |
+| `SpacePolicy` | dataclass | require_space / principal_path / storage_isolation_strategy / retention / quotas / index_profiles / pipeline_profiles（兼容配置字段）/ write_mode（`any` 缺省 / `derived_only` 只接受派生写入——derived_only 下 `get`/`list` 在 API 层改判为 UPDATE 并关闭「本人所写」附加集合，只对 editor 放行，见 S02 不变量 24） |
 | `SpaceSpec` | dataclass | org / space / display_name / principal_path / policy / metadata |
 | `SpaceInfo` | dataclass | org / space / display_name / status / principal_path / policy / metadata / created_at / archived_at |
 | `SpacePatch` | dataclass | display_name / status / principal_path / policy / metadata |

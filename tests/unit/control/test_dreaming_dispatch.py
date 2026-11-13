@@ -1,4 +1,4 @@
-"""evolve 立即执行链 + forget 全链（F04 dreaming，控制层纯执行件）。
+"""evolve 立即执行链 + forget 全链（F10 dreaming，控制层纯执行件）。
 
 PEP 边界（S03）改造后本文件只测控制层：
 

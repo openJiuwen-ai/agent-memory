@@ -60,6 +60,7 @@ from jiuwen_memory.common.security.space_decision import (
     decide_projected,
     on_behalf_paths_apply,
     projection_from_attributes,
+    resolve_own_actions,
     resolve_space_action,
 )
 from jiuwen_memory.common.security.space_decision import DenyReason as SpaceDenyReason
@@ -240,7 +241,9 @@ class SpaceAwareAuthorizer(Authorizer):
                 principal_path=path.value,
                 granted_actions=granted,
                 scope_covered=covered,
-                own_actions_apply=rule.own_actions_apply,
+                own_actions_apply=resolve_own_actions(
+                    rule.own_actions_apply, resource.attributes
+                ),
                 delegation=delegation,
             )
             if outcome.allowed:
@@ -323,7 +326,9 @@ class SpaceAwareAuthorizer(Authorizer):
                 author_principal=resource.attributes.get(AUTHOR_PRINCIPAL) or None,
                 principal_path=path.value,
                 scope_covered=False,
-                own_actions_apply=ENTRY_RULES[entry].own_actions_apply,
+                own_actions_apply=resolve_own_actions(
+                    ENTRY_RULES[entry].own_actions_apply, resource.attributes
+                ),
                 delegation=None,
             )
             source = decide_projected(**source_inputs)

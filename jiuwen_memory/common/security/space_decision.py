@@ -49,6 +49,10 @@ ATTR_SPACE_AXIS = "space_axis"
 ATTR_SPACE_ENTRY = "space_entry"
 ATTR_SPACE_ACTION = "space_action"
 ATTR_PRINCIPAL_PATH = "principal_path"
+# 「本人所写」附加集合是否适用的覆盖通道（mem2.0 §2.3）：值 "true"/"false" 覆盖入口表
+# 的 own_actions_apply，缺省不覆盖。经验条目（判定上下文 memory_type=experience）的
+# get/list 走它关闭附加集合。
+ATTR_OWN_ACTIONS = "own_actions_apply"
 
 # 空间事实经属性通道传递的投影键（F07「空间事实的两层投影」第二层）。判定宿主换成
 # Authorizer 后，事实不再以 ``PermissionContext.space_facts`` 的形态进宿主，而是由
@@ -279,6 +283,21 @@ def resolve_space_action(default: SpaceAction, attributes: Mapping[str, str]) ->
         return SpaceAction(override) if override else default
     except ValueError:
         return default
+
+
+def resolve_own_actions(default: bool, attributes: Mapping[str, str]) -> bool:
+    """「本人所写」附加集合是否适用：入口表默认值，可经属性通道覆盖。
+
+    覆盖通道由经验条目的 ``get`` / ``list`` 使用（mem2.0 §2.3，判定上下文
+    ``memory_type=experience``）：附加集合按读动作放行贡献者，而经验条目的
+    读取只对编辑者放行，鉴权点因此在装配上下文时把它关掉。
+    """
+    override = attributes.get(ATTR_OWN_ACTIONS, "")
+    if override == "true":
+        return True
+    if override == "false":
+        return False
+    return default
 
 
 def decide(

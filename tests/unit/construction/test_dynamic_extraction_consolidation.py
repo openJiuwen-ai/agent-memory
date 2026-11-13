@@ -43,6 +43,7 @@ from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexWriteMode
 from tests.conftest import make_storage
 from tests.support.scoped_authenticator import ScopedAuthenticator
+from tests.support.whitebox import private
 from tests.unit.construction.fixtures import RecordingLLM
 
 _TEST_KEY_HEX = "00" * 32
@@ -619,6 +620,32 @@ def test_evolver_producer_registers_dynamic():
 
     assert "dynamic" in EvolverProducer.known()
     assert "orchestrating" in EvolverProducer.known()
+
+
+@pytest.mark.unit
+def test_dynamic_assembly_wires_configured_curator():
+    """配置的 Curator 必须接入 DynamicEvolver，不能仅在直接构造时有效。"""
+    from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel
+    from jiuwen_memory.common.factory.factory import Factory
+    from jiuwen_memory.construction.curator_impl.experience_curator import ExperienceCurator
+
+    built = []
+    with Factory.observe_builds(built.append):
+        kernel = _build_kernel(config=Config.from_dict({
+            "globals": {"experience": {"default_space": "own"}},
+            "security": {"default": {"target": "local", "params": {"key_hex": _TEST_KEY_HEX}}},
+            "evolver": {"default": {"target": "dynamic", "params": {"curator": "experience"}}},
+            "curator": {"experience": {"target": "experience"}},
+        }))
+    try:
+        evolvers = [value for value in built if isinstance(value, DynamicEvolver)]
+        curators = [value for value in built if isinstance(value, ExperienceCurator)]
+        assert evolvers and curators, "正常装配创建配置中的两个算子"
+        assert all(private(evolver, "_curator") is curators[0] for evolver in evolvers), (
+            "DynamicEvolver 必须使用配置具名引用的同一整理算子"
+        )
+    finally:
+        kernel.close()
 
 
 @pytest.mark.unit

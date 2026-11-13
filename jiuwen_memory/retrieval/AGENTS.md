@@ -5,7 +5,9 @@
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
 混合检索的完整链路编排：查询理解 → 按 Storage 首选路径执行 recall/get/rank → 精排 →
-相关性阈值 → 渐进式披露 → 返回 + 检索轨迹。rank 只指 Fuser，Reranker 保持独立阶段。
+相关性阈值 →（可选）选取 → 渐进式披露 → 返回 + 检索轨迹。rank 只指 Fuser，Reranker 保持
+独立阶段；选取（Selector）是相关性过滤后、top_k 截断前的名额分配阶段（F10 经验记忆），
+对话记忆检索不配置、链路行为不变。
 
 **单路召回不在本层**：`Recaller` 契约与实现在 `storage/domain_store_impl/`——它是
 `CompositeDomainStore` 的内部件，本层只经数据面的 `recall`/`recall_and_get`/`retrieve`
@@ -22,11 +24,13 @@
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
+| `selector.py` | Selector 接口：选取——相关性过滤后、top_k 截断前的名额分配（F10 经验记忆；对话记忆不配置）|
 | `retriever.py` | Retriever 接口与 Producer；完整链路入口及可选 query_parsers 依赖声明 |
 | `staged_retriever.py` | StagedRetriever 抽象阶段与请求独占 RetrieveState / RetrieveRun；不提供 retrieve 编排 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理；`secondary_scorer/` 子目录是次级排序算子（`SecondaryScorer` 接口 + `default` 分带实现，非 Fuser） |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
+| `selector_impl/` | Selector 实现目录（experience：复现要求 → 排序分 → 探索名额 → 按能力分组；效用部件读 `common/experience.py`）|
 | `retriever_impl/` | Retriever 实现目录；pipeline 经 `StoreManagerProducer.resolve` 取全局 manager 并持其 `domain_store()`；multimodal 组合原生、CLM、ELM 三个过滤分支并执行 RRF 融合 |
 | `schema_temporal/` | 只读 Schema TemporalEntity 视图：双轴查询、实体/Property 双路、实体内裁剪、邻居扩展与最终 Source fallback；正式输出为每 Entity 一个结果 |
 | `bootstrap.py` | 统一触发所有检索算子注册 |
@@ -54,7 +58,7 @@
      ↓ + 可选次级排序（secondary_rank_enabled，globals 或 retriever params，默认关）：SecondaryScorer 带内按重要度/时效 tie-break
 8. 截断 top_k
      ↓
-9. Discloser.disclose(...) → list[RetrievedItem]
+10. Discloser.disclose(...) → list[RetrievedItem]
      ↓ 按层级加载内容（L0/L1/L2）
 10. 可选 Schema TemporalEntity（最终普通结果作 Entity seed，Property 独立召回）
      ↓ 组装、实体内裁剪、直达 Property 回融、时间线邻居和 Source fallback
@@ -138,6 +142,7 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - 多路召回结果的编排消费（Retriever；单路 Recaller 归 `storage` 数据面）
 - 融合与重排（Fuser）
 - 渐进式披露（Discloser）
+- 选取（Selector，F10 经验记忆的名额分配）
 - 检索轨迹记录（TrajectoryStep）
 - 只读 Schema TemporalEntity 候选选择（不创建或持久化新记忆）
 
@@ -181,6 +186,12 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    不将整个 Scope 平铺到候选。
 
 9. 查询时间边界的 epoch 投影复用 common/time_utils.epoch_ms；真源时间比较复用 as_utc。
+11. `Selector.select` 不原地修改入参（存储后端返回的可能是缓存中的同一对象）；
+   改写条目（如经验条目的 usage_ref）必须换条目副本，`PipelineRetriever` 接线处
+   据此重建 units 字典，副本才能进披露与返回结果。Selector 不依赖 construction
+   ——效用部件经 `common/experience.py` 共用（`test_experience_layer_boundary.py` 双重固定），
+   `selector_enabled` 缺省关闭，未配置时链路行为不变。
+
 
 
 ### 普通召回的树父隔离
@@ -240,7 +251,9 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 - RollupResult 位于 types.py，阶段契约不得反向依赖 retriever_impl。
 - PipelineRetriever.query_parsers 返回注入的 parser；MultimodalRetriever 经基础 Retriever
   的公共方法转交声明。装配校验不允许读取 _parser 或识别具体插件类型。
-- pipeline 选择归 control，Retriever 不解析 query.pipeline；三个 DomainStore 执行路径保持原有语义。
+- pipeline 选择和具名流程的固定类型范围归 control，Retriever 不解析 query.pipeline；
+  召回和真源复核使用同一类型过滤。三个 DomainStore 执行路径保持原有语义。
+- 经验 Selector 在 threshold 后、top_k 前执行，披露使用选取后的条目副本。
 
 - 阶段前置状态缺失时显式抛出 RuntimeError，不使用会被 Python 优化模式移除的 assert。
 
