@@ -3,9 +3,7 @@
 import asyncio
 import json
 import socket
-import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from http.cookiejar import CookieJar
 from threading import Event
 from urllib.error import HTTPError
@@ -15,7 +13,6 @@ from urllib.request import HTTPCookieProcessor, ProxyHandler, Request, build_ope
 import pytest
 
 from jiuwen_memory.api import Scope, build_dev_authenticator, internal_context
-from jiuwen_memory.storage.sync_gate import document_sync_gate
 from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import (
     AgentMemoryMemoryProvider,
     _agent_default_config,
@@ -332,7 +329,7 @@ def test_two_browser_sessions_keep_versions_monotonic(tmp_path):
     asyncio.run(run())
 
 
-def test_correction_invalidates_inflight_watcher_snapshot(
+def test_correction_waits_for_watcher_and_preserves_history(
     tmp_path, monkeypatch, document_watchdogs,
 ):
     from jiuwen_memory.api import assemble_runtime
@@ -347,7 +344,6 @@ def test_correction_invalidates_inflight_watcher_snapshot(
         old = runtime.api.add("old content", scope, security=security)[0]
         path = tmp_path / old.system_metadata["md_filename"]
         watchdog, = document_watchdogs
-        gate = document_sync_gate(str(tmp_path))
         original_list = SqliteDocumentShadowIndex.list_units_by_md
 
         def pause_after_snapshot(index, *args, **kwargs):
@@ -360,35 +356,36 @@ def test_correction_invalidates_inflight_watcher_snapshot(
         monkeypatch.setattr(SqliteDocumentShadowIndex, "list_units_by_md", pause_after_snapshot)
         runtime.start()
         watchdog.schedule_sync(str(path))
-        try:
-            assert snapshot_read.wait(5)
-            corrected = invoke_browser_api(
+        assert snapshot_read.wait(5), "watchdog did not start reconciliation"
+        with ThreadPoolExecutor(1) as pool:
+            correction = pool.submit(
+                invoke_browser_api,
                 runtime.api, "update",
                 {"scope": vars(scope), "unit_id": old.id, "patch": {"content": "new content"}},
                 security=security,
             )
-            version_after_correction = gate.snapshot_version()
-            assert version_after_correction is not None
-        finally:
-            resume.set()
+            try:
+                with pytest.raises(TimeoutError):
+                    correction.result(timeout=0.1)
+            finally:
+                resume.set()
+            corrected = correction.result(timeout=5)
 
-        for _ in range(100):
-            version = gate.snapshot_version()
-            if version is not None and version > version_after_correction:
-                break
-            time.sleep(0.05)
-        else:
-            pytest.fail("watchdog did not commit after the correction")
-
+        # Reconcile again after correction: old content must stay historical.
+        # Direct reconciliation makes the post-correction result deterministic.
+        # pylint: disable=protected-access
+        watchdog._run_sync(str(path.relative_to(tmp_path)), False, watchdog._generation)
+        # pylint: enable=protected-access
         items = runtime.api.list(scope, security=security).items
         assert sorted((item.content, item.lifecycle.value) for item in items) == [
             (memory_content(corrected), "active"), ("old content", "superseded"),
         ]
     finally:
+        resume.set()
         runtime.close()
 
 
-def test_watcher_commit_does_not_block_writes_in_another_document_root(
+def test_watcher_sync_does_not_block_writes_in_another_document_root(
     tmp_path, monkeypatch, document_watchdogs,
 ):
     from jiuwen_memory.api import assemble_runtime
@@ -401,33 +398,31 @@ def test_watcher_commit_does_not_block_writes_in_another_document_root(
     second = assemble_runtime(config=document_config(second_root))
     security = internal_context(build_dev_authenticator())
     scope = Scope(org="local", user="developer")
-    committing, release = Event(), Event()
+    syncing, release = Event(), Event()
     try:
         original = first.api.add("first content", scope, security=security)[0]
         path = first_root / original.system_metadata["md_filename"]
         watchdog, = document_watchdogs
-        gate = document_sync_gate(str(first_root))
-        commit = gate.commit_sync
+        # Hook the worker body to hold the actual resource locks during the test.
+        sync_one = watchdog._sync_one  # pylint: disable=protected-access
 
-        @contextmanager
-        def hold_commit(version):
-            with commit(version) as accepted:
-                if accepted:
-                    committing.set()
-                    assert release.wait(10)
-                yield accepted
+        def hold_sync(md_filename, deleted):
+            syncing.set()
+            assert release.wait(10)
+            return sync_one(md_filename, deleted)
 
-        monkeypatch.setattr(gate, "commit_sync", hold_commit)
+        monkeypatch.setattr(watchdog, "_sync_one", hold_sync)
         first.start()
         watchdog.schedule_sync(str(path))
         with ThreadPoolExecutor(1) as pool:
             try:
-                assert committing.wait(5)
+                assert syncing.wait(5)
                 written = pool.submit(second.api.add, "second content", scope, security=security)
                 assert written.result(timeout=5)
             finally:
                 release.set()
     finally:
+        release.set()
         second.close()
         first.close()
 
@@ -660,7 +655,8 @@ def test_personal_search_with_distractors_beyond_recall_window(tmp_path, vector)
         runtime.close()
 
 
-def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path):
+@pytest.mark.parametrize("scene", ["agent", "code"])
+def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path, scene):
     auth = build_dev_authenticator()
 
     def security():
@@ -668,8 +664,11 @@ def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path):
 
     async def run():
         parent = "http://localhost:8080"
+        config = document_config(tmp_path)
+        if scene == "code":
+            config["globals"]["write_document"] = False
         provider = AgentMemoryMemoryProvider(
-            config_dict=document_config(tmp_path), security_provider=security,
+            config_dict=config, security_provider=security, scene=scene, project="demo",
             portal={"allowed_frame_origins": [parent]},
         )
         await provider.initialize(
@@ -718,8 +717,10 @@ def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path):
             added = await asyncio.to_thread(use_portal)
             assert added[0]["system_metadata"]["project"] == "demo"
             assert added[0]["scope"]["agent"] == "rail"
+            tool = ("agent_memory_coding_memory_search" if scene == "code"
+                    else "agent_memory_search")
             result = await provider.handle_tool_call(
-                "agent_memory_search", {"query": "ocean", "project": "demo"},
+                tool, {"query": "ocean", "project": "demo"},
             )
             assert "ocean project memory" in result, result
         finally:

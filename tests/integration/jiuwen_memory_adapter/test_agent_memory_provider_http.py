@@ -65,7 +65,7 @@ ENVELOPE_ZH = '你收到一条消息：\n{"source": "tui", "content": "记住常
 
 
 @pytest.fixture(name="memory_http_url", scope="module")
-def memory_http_url_fixture():
+def memory_http_url_fixture(request, tmp_path_factory):
     """起真实 HttpServer（offline 内核 + dev 认证 allow_all），port 0 随机。"""
     ready: Queue[ThreadingHTTPServer] = Queue()
 
@@ -76,7 +76,13 @@ def memory_http_url_fixture():
 
     original_cls = http_server_module.ThreadingHTTPServer
     http_server_module.ThreadingHTTPServer = _ReadyHttpd
-    config = load_config([OFFLINE])
+    layers = [OFFLINE]
+    if getattr(request, "param", None) == "document":
+        from tests.unit.api.test_document_security_lifecycle import _doc_config
+
+        layers.append({"memory_api": _doc_config(
+            tmp_path_factory.mktemp("code-http-memory"), watch=False)})
+    config = load_config(layers)
     server = HttpServer.build(with_local_dev_security(config))
     with ThreadPoolExecutor(max_workers=1) as executor:
         serving = executor.submit(server.serve, "127.0.0.1", 0)
@@ -326,3 +332,150 @@ def test_breaker_opens_after_consecutive_failures(memory_http_url):
             assert await client.search("x", provider.bound_scope()) == []
 
     asyncio.run(_run())
+
+
+@pytest.mark.parametrize("memory_http_url", ["document"], indirect=True)
+def test_code_tools_document_roundtrip_and_project_boundary(memory_http_url):
+    """Use the same Code tools over HTTP; the server still authorizes each call."""
+    async def run():
+        provider = AgentMemoryMemoryProvider(
+            base_url=memory_http_url, scene="code", project="repo-a",
+        )
+        await provider.initialize(user_id="code-http", scope_id="tenant-http", session_id="")
+        prefix = "agent_memory_coding_memory_"
+        try:
+            result = json.loads(await provider.handle_tool_call(prefix + "write", {
+                "content": "repository uses Python", "project": "forged-other"}))
+            assert result["stored"] is True
+            read = await provider.handle_tool_call(prefix + "read", {"md_filename": "MEMORY.md"})
+            assert "Python" in read
+            edited = await provider.handle_tool_call(prefix + "edit", {
+                "md_filename": "MEMORY.md", "old_text": "Python", "new_text": "Rust"})
+            assert "error" not in json.loads(edited)
+            read = await provider.handle_tool_call(prefix + "read", {"md_filename": "MEMORY.md"})
+            assert "Rust" in read and "Python" not in read
+            hits = await provider.handle_tool_call(prefix + "search", {"query": "Rust"})
+            assert "Rust" in hits
+        finally:
+            await provider.shutdown()
+        other = AgentMemoryMemoryProvider(base_url=memory_http_url, scene="code", project="repo-b")
+        await other.initialize(user_id="code-http", scope_id="tenant-http", session_id="")
+        try:
+            hits = json.loads(await other.handle_tool_call(prefix + "search", {"query": "Rust"}))
+            assert hits["results"] == []
+        finally:
+            await other.shutdown()
+    asyncio.run(run())
+
+
+
+@pytest.mark.parametrize("memory_http_url", ["document"], indirect=True)
+def test_http_work_code_profile_scope_sync_and_restart(memory_http_url, monkeypatch):
+    """V-03/V-07/V-08: real HTTP documents, with deterministic classification."""
+    from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
+
+    original = KeywordExtractor.extract
+
+    def classify(self, units, **kwargs):
+        derived = original(self, units, **kwargs)
+        for unit in derived:
+            if unit.content.startswith("User prefers"):
+                unit.system_metadata["memory_class"] = "user_profile"
+        return derived
+
+    monkeypatch.setattr(KeywordExtractor, "extract", classify)
+
+    async def run():
+        providers = []
+
+        async def open_provider(scene="code", project="profile-repo-a", agent="profile-agent"):
+            provider = AgentMemoryMemoryProvider(
+                base_url=memory_http_url, scene=scene, project=project, agent_id=agent)
+            await provider.initialize(user_id="profile-user", scope_id="tenant", session_id="")
+            providers.append(provider)
+            assert type(provider._client).__name__ == "_HttpClient"
+            assert provider._config_dict is None and provider._security_provider is None
+            return provider
+
+        prefix = "agent_memory_coding_memory_"
+        try:
+            code = await open_provider()
+            await code.handle_tool_call(
+                prefix + "write", {"content": "User prefers concise answers"},
+            )
+            await code.sync_turn("The repository build marker is Cedar7319.", "Understood.")
+            work = await open_provider("agent")
+            recalled = await work.prefetch("User prefers concise answers Cedar7319")
+            assert "concise" in recalled and "Cedar7319" not in recalled
+            await work.handle_tool_call("agent_memory_conclude", {
+                "conclusion": "User prefers dark theme"})
+            for project, expected in [("profile-repo-a", True), ("profile-repo-b", False)]:
+                other = await open_provider(project=project)
+                recalled = await other.prefetch("Cedar7319 concise dark theme")
+                assert "dark theme" in recalled and "concise" in recalled
+                assert ("Cedar7319" in recalled) == expected
+            isolated = await open_provider(agent="another-profile-agent")
+            assert not await isolated.prefetch("Cedar7319 concise dark theme")
+            await code.shutdown()
+            reopened = await open_provider()
+            assert "Cedar7319" in await reopened.prefetch("Cedar7319")
+        finally:
+            for provider in providers:
+                await provider.shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("memory_http_url", ["document"], indirect=True)
+def test_http_denied_scope_does_not_claim_write_and_recovers(memory_http_url):
+    """The real server denies a target outside its authenticated USER boundary."""
+    async def run():
+        provider = AgentMemoryMemoryProvider(
+            base_url=memory_http_url, scene="code", project="denied-repo",
+            identity_user="not-the-authenticated-user")
+        await provider.initialize(user_id="denied-user", scope_id="tenant", session_id="")
+        prefix = "agent_memory_coding_memory_"
+        try:
+            result = json.loads(await provider.handle_tool_call(prefix + "write", {
+                "content": "Denied writes must not become memories."}))
+            assert "error" in result and result.get("stored") is not True
+            denied = json.loads(await provider.handle_tool_call(prefix + "read", {
+                "md_filename": "MEMORY.md"}))
+            assert "403" in denied["error"]
+            provider._client._identity_user = "developer"
+            before = json.loads(await provider.handle_tool_call(prefix + "read", {
+                "md_filename": "MEMORY.md"}))
+            assert not before.get("blocks")
+            accepted = json.loads(await provider.handle_tool_call(prefix + "write", {
+                "content": "Authorized repository fact."}))
+            assert accepted["stored"] is True
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+def test_http_unreachable_never_constructs_sdk_or_claims_success(monkeypatch):
+    import socket
+
+    import agent_memory_provider as provider_module
+
+    def reject_sdk(*args, **kwargs):
+        pytest.fail("HTTP must not construct an in-process runtime")
+
+    monkeypatch.setattr(provider_module._InProcessClient, "__init__", reject_sdk)
+
+    async def run(port):
+        provider = AgentMemoryMemoryProvider(base_url=f"http://127.0.0.1:{port}", scene="code")
+        try:
+            await provider.initialize(user_id="offline", scope_id="tenant", session_id="")
+            result = json.loads(await provider.handle_tool_call(
+                "agent_memory_coding_memory_write", {"content": "unreachable fact"}))
+            assert "error" in result and result.get("stored") is not True
+            assert type(provider._client).__name__ == "_HttpClient"
+        finally:
+            await provider.shutdown()
+
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        asyncio.run(run(reserved.getsockname()[1]))

@@ -62,7 +62,8 @@ from jiuwen_memory.storage.store_manager import StoreManagerProducer
 from jiuwen_memory.storage.sync_gate import (
     MAX_SYNC_DEFERRAL_SECONDS,
     SYNC_DEFERRAL_POLL_SECONDS,
-    document_sync_gate,
+    document_operation,
+    write_window_open,
 )
 from jiuwen_memory.storage.watchdog import Watchdog, WatchdogProducer
 
@@ -117,7 +118,6 @@ class LocalWatchdog(Watchdog):
     ) -> None:
         self._shadow = shadow
         self._markdown_root = markdown_root
-        self._sync_gate = document_sync_gate(markdown_root)
         self._scope = scope
         self._loop = loop
         self._debounce = debounce_ms / 1000.0
@@ -153,7 +153,7 @@ class LocalWatchdog(Watchdog):
 
         在事件循环线程调。``self._loop`` 未在构造期注入时，此处取
         ``asyncio.get_running_loop``（故 ``start`` 必须在 async 上下文/事件循环线程调）。
-        Observer 监听 ``{root}/memory/`` 递归；启动后延迟 ``_INIT_GRACE_SECONDS``
+        Observer 监听整个 ``{root}`` 递归；启动后延迟 ``_INIT_GRACE_SECONDS``
         置 ``_watcher_initialized``，避开 Observer 刚起时对存量文件的初始扫描风暴
         （存量 md 是写入流程产物，不应被看门狗当作"用户手改"触发同步——抄 lite）。
         """
@@ -314,8 +314,8 @@ class LocalWatchdog(Watchdog):
     async def _do_sync(self, md_filename: str, deleted: bool) -> None:
         """异步同步主体：sqlite 操作推到独立线程（to_thread）避免阻塞事件循环。
 
-        ``_sync_one`` 经 ``to_thread`` 执行。门闸在提交 diff 前检查快照，
-        拒绝已过时的删除和插入计划。
+        ``_sync_one`` 是同步函数（调 shadow 的同步 sqlite 方法），靠 ``to_thread``
+        推出事件循环；资源锁覆盖完整对账，串行化共目录/共索引的 Runtime。
 
         **写窗口推迟（F07 §12.9 风险 6，见 storage.sync_gate）**：正常写入路径
         （CompositeStorage 文档路径两步写：md 视图 + 影子索引）进行中时，md 与
@@ -332,26 +332,20 @@ class LocalWatchdog(Watchdog):
             logger.debug("LocalWatchdog: do_sync start %s deleted=%s", md_filename, deleted)
             deferred = 0.0
             deferral_logged = False
-            while True:
+            while write_window_open(self._markdown_root, self._shadow.write_lock_key):
                 if self._closed or generation != self._generation:
                     return
-                if not self._sync_gate.is_open():
-                    completed = await asyncio.to_thread(
-                        self._run_sync, md_filename, deleted, generation
-                    )
-                    if completed:
-                        return
                 # 「首次推迟只记一次」用布尔标志，不挂在 deferred 浮点累加值上——
                 # 避免 0.0/0.25 恰好精确可表示这一隐含数值假设，意图也更直白。
                 if not deferral_logged:
                     logger.debug(
-                        "LocalWatchdog: document state changed or busy, retrying sync %s",
+                        "LocalWatchdog: write window open, deferring sync %s",
                         md_filename,
                     )
                     deferral_logged = True
                 if deferred >= MAX_SYNC_DEFERRAL_SECONDS:
                     logger.warning(
-                        "LocalWatchdog: sync could not commit for %.0fs, give up this sync "
+                        "LocalWatchdog: write window open for %.0fs, give up this sync "
                         "for %s (next md event will re-trigger)",
                         deferred,
                         md_filename,
@@ -359,17 +353,23 @@ class LocalWatchdog(Watchdog):
                     return
                 await asyncio.sleep(SYNC_DEFERRAL_POLL_SECONDS)
                 deferred += SYNC_DEFERRAL_POLL_SECONDS
+            await asyncio.to_thread(self._run_sync, md_filename, deleted, generation)
         except Exception as exc:
             logger.warning("LocalWatchdog: sync failed for %s: %s", md_filename, exc)
 
-    def _run_sync(self, md_filename: str, deleted: bool, generation: int) -> bool:
-        """在线程池记录执行状态。同步成功或任务已失效时返回 True，调用方无需重试。"""
+    def _run_sync(self, md_filename: str, deleted: bool, generation: int) -> None:
+        """线程池准入与 drain 记账独立于 loop，关闭不依赖协程恢复。"""
         with self._sync_condition:
             if self._closed or generation != self._generation:
-                return True
+                return
             self._active_syncs += 1
         try:
-            return self._sync_one(md_filename, deleted)
+            with document_operation(self._markdown_root, self._shadow.write_lock_key):
+                # 等待其他 Runtime 操作时可能已关闭，不能再访问已失效依赖。
+                with self._sync_condition:
+                    if self._closed or generation != self._generation:
+                        return
+                self._sync_one(md_filename, deleted)
         finally:
             with self._sync_condition:
                 self._active_syncs -= 1
@@ -401,7 +401,7 @@ class LocalWatchdog(Watchdog):
             return None
         return rel.replace("\\", "/")
 
-    def _sync_one(self, md_filename: str, deleted: bool) -> bool:
+    def _sync_one(self, md_filename: str, deleted: bool) -> None:
         """单文件 unit 粒度增量同步（F07 §12.3 流程）。
 
         ① old_all = shadow.list_units_by_md(scope, md_filename)
@@ -420,9 +420,6 @@ class LocalWatchdog(Watchdog):
         ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这
         残留块重插为 active 重复行（遗忘语义失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
         """
-        version = self._sync_gate.snapshot_version()
-        if version is None:
-            return False
         scope = self._scope
         # ① 旧 unit 全集（含 content_hash）——insert 侧「已知块」扣除基准。用全集而非
         #    active：archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改
@@ -459,19 +456,25 @@ class LocalWatchdog(Watchdog):
         to_delete = old_hash_set - new_hash_set
         to_insert_pairs = [(h, c) for h, c in new_pairs if h not in known_hash_set]
 
-        with self._sync_gate.commit_sync(version) as accepted:
-            if not accepted:
-                return False
-            self._apply_diff(md_filename, [old_by_hash[h] for h in to_delete], to_insert_pairs)
-        return True
+        if not to_delete and not to_insert_pairs:
+            logger.debug("LocalWatchdog: no drift, skip sync %s", md_filename)
+            return  # md 与索引一致，无需同步
 
-    def _apply_diff(
-        self, md_filename: str, del_ids: list[str], to_insert_pairs: list[tuple[str, str]]
-    ) -> None:
-        scope = self._scope
+        logger.debug(
+            "LocalWatchdog: diff %s to_delete=%d to_insert=%d",
+            md_filename,
+            len(to_delete),
+            len(to_insert_pairs),
+        )
+
+        # Capture ownership before deleting the last old block from this file.
+        inherited_scope = self._scope
+        if to_insert_pairs:
+            inherited_scope = self._shadow.latest_scope_by_md(scope, md_filename) or self._scope
 
         # delete 分支
-        if del_ids:
+        if to_delete:
+            del_ids = [old_by_hash[h] for h in to_delete]
             self._shadow.delete_units(scope, del_ids)
             logger.info(
                 "LocalWatchdog: deleted %d unit(s) from %s (md changed/removed)",
@@ -484,7 +487,7 @@ class LocalWatchdog(Watchdog):
             # scope 继承：按 md_filename 查该文件最新一条 unit 的 scope（md 不编码 scope，
             # 按同文件最新归属近似）；无历史返 None 落 self._scope（空 Scope，保持现行为）。
             # 一次查询供本批次所有新 unit 复用，避免每条 unit 重复查。
-            inherited_scope = self._shadow.latest_scope_by_md(scope, md_filename) or self._scope
+            # inherited_scope 已在删除旧记录之前读取。
             units = [
                 self._build_unit(md_filename, content, inherited_scope)
                 for _, content in to_insert_pairs
