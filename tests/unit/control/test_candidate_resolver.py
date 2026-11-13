@@ -1,4 +1,4 @@
-"""CandidateResolver——四源统一 resolve()（F04 D3）。
+"""CandidateResolver——四源统一 resolve()（F10 D3）。
 
 验证四实现全部由已有存储原语组合（list_units / load_units / Retriever /
 scopes()）：筛选下推（含 t_ingest 时间窗）、差集回显、保序去重、父 scope

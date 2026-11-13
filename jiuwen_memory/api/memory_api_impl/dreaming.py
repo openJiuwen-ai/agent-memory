@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""API 层 dreaming 编排（F04 —— 定时演进的注册 / 注销 / 恢复 / 持续授权）。
+"""API 层 dreaming 编排（F10 —— 定时演进的注册 / 注销 / 恢复 / 持续授权）。
 
 PEP 边界（S03）下的分工：Control 层（Engine / EvolveJob / resolver）是**纯执行件**
 ——不认识 actor、不做鉴权；本模块是 API 层的 dreaming 调度服务，承担全部授权语义：
@@ -23,11 +23,19 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from math import ceil
 from typing import Any
 
-from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.errors import (
+    BackendError,
+    PermissionDeniedError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
@@ -44,7 +52,7 @@ from jiuwen_memory.control.engine_impl.dreaming_registry import (
     DreamingEntryState,
     DreamingRegistry,
 )
-from jiuwen_memory.control.jobs import Job
+from jiuwen_memory.control.jobs import Job, JobCancelledError
 from jiuwen_memory.control.jobs_impl.candidate_resolver import (
     MAX_FAN_OUT_BUCKETS,
     covered_by,
@@ -56,6 +64,50 @@ from .dreaming_security import _registration_identity, _restored_security
 from .local_support import _evolve_space_action
 
 logger = get_logger(__name__)
+
+_ELECTION_RETRY_SECONDS = 2.0
+
+
+class _DreamingLockHeld(RuntimeError):
+    """The shared lock is held by another instance."""
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    """兼容旧版无时区时间；损坏的计时字段不作为墙钟锚点。"""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def _due_at(entry: DreamingEntry) -> datetime | None:
+    due = _parse_timestamp(entry.next_due_at)
+    if due is not None:
+        return due
+    last = _parse_timestamp(entry.last_triggered)
+    return last + timedelta(seconds=entry.interval) if last is not None else None
+
+
+def _first_delay_from(entry: DreamingEntry) -> int | None:
+    """按持久化到期时间等剩余秒数；旧记录回退到上次触发时间。"""
+    due = _due_at(entry)
+    if due is None:
+        return None
+    return max(0, ceil((due - datetime.now(UTC)).total_seconds()))
+
+
+def _registration_due_at(old: DreamingEntry | None, interval: int) -> str:
+    """重复注册沿用起算点，修改 interval 时也不丢失已经等待的时间。"""
+    due = _due_at(old) if old is not None else None
+    anchor = (
+        due - timedelta(seconds=old.interval)
+        if due is not None and old is not None
+        else datetime.now(UTC)
+    )
+    return (anchor + timedelta(seconds=interval)).isoformat()
 
 
 def _scope_label(scope: Scope) -> str:
@@ -89,7 +141,7 @@ def _parse_fan_out(candidate: CandidateSource | dict | None) -> FanOutCandidate 
 class DreamingDriverJob(Job):
     """dreaming 驱动任务（API 层）——每 tick：复验授权 → fan-out 裁决 → 提交 EvolveJob。
 
-    持续授权的载体（F04 D7）：一次性入口鉴权不覆盖任务存续期——本 Job 持有
+    持续授权的载体（F10 D7）：一次性入口鉴权不覆盖任务存续期——本 Job 持有
     注册者 actor，每 tick 以它重新走 API 层鉴权（与入口同一套组件，判定不漂移）。
     拒绝 → 注销注册表（防重启复活）→ 抛 PermissionDeniedError（调度器停父
     定时器）。任务本体**不执行演进**——每 tick 经 ``commands.evolve`` 提交一次性
@@ -107,14 +159,18 @@ class DreamingDriverJob(Job):
         security: RequestSecurityContext,
         interval: int,
         generation: int,
+        first_delay: int | None = None,
+        registration_ready: Future[None] | None = None,
     ) -> None:
-        super().__init__(scope=scope, interval=interval)
+        # 注册与恢复均按持久化到期时间换算；第一次执行前重启也延续已等待时间。
+        super().__init__(scope=scope, interval=interval, first_delay=first_delay)
         self._coordinator = coordinator
         self._mode = mode
         self._channel = channel
         self._candidate = candidate
         self._security = security
         self._generation = generation
+        self._registration_ready = registration_ready
 
     @property
     def mode(self) -> str:
@@ -131,6 +187,10 @@ class DreamingDriverJob(Job):
 
     async def run(self) -> JobInfo:
         self.check_cancelled()
+        if self._registration_ready is not None and not self._registration_ready.done():
+            # The Scheduler can start a due tick as soon as submit returns.
+            await asyncio.shield(asyncio.wrap_future(self._registration_ready))
+            self.check_cancelled()
         coordinator = self._coordinator
         coordinator.check_leadership()
         coordinator.check_registration_active(
@@ -180,6 +240,12 @@ class DreamingDriverJob(Job):
             buckets=buckets,
             denied_scopes=denied,
         )
+        # 本轮已提交演进——回写注册记录的上次触发时间（改动 2）。generation
+        # 不匹配（注册已换代）时 note_triggered 内部跳过，防旧代任务改写新代
+        # 记录；此刻不写则重启后 first_delay 换算无锚点。
+        coordinator.note_triggered(
+            self.scope, self._mode, generation=self._generation, job_id=self.parent_job_id,
+        )
         if spawned and self.parent_job_id:
             coordinator.link_spawned_job(spawned, self.parent_job_id)
         detail: dict[str, str] = {"spawned_job_id": spawned or ""}
@@ -218,6 +284,9 @@ class DreamingCoordinator:
         authorize: Callable[..., None] | None = None,
         ensure_space_writable: Callable[[Scope], None] | None = None,
         scope_supplier: Callable[[], list[Scope]] | None = None,
+        mode_scope_supplier: Callable[[EvolveMode], list[Scope]] | None = None,
+        mode_validator: Callable[[EvolveMode, CandidateSource | dict | None], None] | None = None,
+        standby: bool = False,
     ) -> None:
         # api 参数仅作内部兼容；正式装配传窄端口，避免长命 Job 反向持有整个
         # LocalMemoryAPI 及其全部组件。
@@ -229,6 +298,10 @@ class DreamingCoordinator:
             scope_supplier = scope_supplier or getattr(
                 api._engine, "candidate_scopes", api._engine.kv.scopes
             )
+            mode_scope_supplier = mode_scope_supplier or getattr(
+                api._engine, "candidate_scopes_for_mode", None
+            )
+            mode_validator = mode_validator or getattr(api._engine, "validate_evolve_mode", None)
             registry = registry or DreamingRegistry(api._engine.kv)
         required = (
             scheduler,
@@ -240,11 +313,17 @@ class DreamingCoordinator:
         )
         if any(port is None for port in required):
             raise TypeError("DreamingCoordinator requires all narrow runtime ports")
+        if standby and not registry.has_distributed_lock:
+            raise ValidationError("dreaming_standby requires a distributed lock.dreaming provider")
+        if standby and not scheduler.supports_recurring:
+            raise ValidationError("dreaming_standby requires a recurring scheduler")
         self._scheduler = scheduler
         self._commands = commands
         self._authorize = authorize
         self._ensure_space_writable = ensure_space_writable
         self._scope_supplier = scope_supplier
+        self._mode_scope_supplier = mode_scope_supplier
+        self._mode_validator = mode_validator
         self._registry = registry
         self._active_jobs: dict[str, str] = {}
         # 生命周期操作串行锁可跨 Scheduler 阻塞调用持有；Scheduler loop 上的
@@ -253,6 +332,9 @@ class DreamingCoordinator:
         # 禁止调用 Scheduler。
         self._operation_lock = threading.RLock()
         self._mutation_lock = threading.RLock()
+        self._standby = standby
+        self._election_stop = threading.Event()
+        self._election_thread: threading.Thread | None = None
         # restore 幂等缓存只在当前 leader 任期内有效；失锁或主动
         # 释放后必须清空，使下一任期重扫共享注册表。
         self._restored: list[str] | None = None
@@ -278,7 +360,18 @@ class DreamingCoordinator:
         if self._registry.owns_instance_lock:
             return
         if not self._registry.acquire_instance_lock():
-            raise RuntimeError("dreaming 实例锁被其他实例持有：当前实例不是 leader，拒绝操作")
+            raise _DreamingLockHeld("dreaming 实例锁被其他实例持有：当前实例不是 leader，拒绝操作")
+
+    def _require_leader_for_mutation(self) -> None:
+        if not self._standby:
+            self._ensure_leader()
+            return
+        if (
+            self._election_stop.is_set()
+            or self._restored is None
+            or not self._registry.owns_instance_lock
+        ):
+            raise BackendError("dreaming leader is unavailable on this instance")
 
     def check_leadership(self) -> None:
         if not self._registry.owns_instance_lock:
@@ -286,6 +379,23 @@ class DreamingCoordinator:
                 "leadership_lost",
                 "dreaming leader 租约已丢失，停止周期任务以避免多实例双跑",
             )
+
+    def _save_registration(self, entry: DreamingEntry, expected: DreamingEntry | None) -> None:
+        if not self._standby:
+            self._registry.save(entry)
+            return
+        self.check_leadership()
+        if not self._registry.replace_if_current(entry.scope, entry.mode, expected, entry):
+            raise RecurringJobStoppedError(
+                "registration_changed", "dreaming registration changed before the write",
+            )
+
+    def _remove_registration(self, entry: DreamingEntry) -> None:
+        if self._standby:
+            self.check_leadership()
+            self._registry.replace_if_current(entry.scope, entry.mode, entry, None)
+        else:
+            self._registry.remove(entry.scope, entry.mode)
 
     def _detach_local_jobs(self) -> list[str]:
         """短锁内废弃当前任期并摘下本地任务；不等待 Scheduler。"""
@@ -315,10 +425,17 @@ class DreamingCoordinator:
         generation: int,
         job_id: str | None,
     ) -> None:
-        """tick 的持久化声明闸门：缺失、注销中或旧代任务一律停摆。"""
+        """tick 的持久化声明闸门；同一 timer 的换代只取消旧 tick。"""
         mode_value = mode.value if isinstance(mode, EvolveMode) else str(mode)
         with self._mutation_lock:
             entry = self._registry.find(scope, mode_value)
+        if (
+            entry is not None
+            and entry.state == DreamingEntryState.ACTIVE.value
+            and job_id == entry.job_id
+        ):
+            if generation != entry.generation:
+                raise JobCancelledError("dreaming timer 已切换注册代次")
         active = (
             entry is not None
             and entry.state == DreamingEntryState.ACTIVE.value
@@ -356,6 +473,32 @@ class DreamingCoordinator:
         )
         self._ensure_space_writable(scope)
 
+    def note_triggered(
+        self, scope: Scope, mode: EvolveMode | str, *, generation: int, job_id: str | None = None,
+    ) -> None:
+        """成功提交后记录触发时间与下一次到期时间。
+
+        DriverJob 每 tick 成功提交演进后调用；重启恢复据此换算首次触发延迟
+        （:func:`_first_delay_from`）。generation 不匹配（注册已换代或注销）
+        时跳过——防上一代任务的迟到回写覆盖新代记录。
+        """
+        mode_value = mode.value if isinstance(mode, EvolveMode) else str(mode)
+        with self._mutation_lock:
+            entry = self._registry.find(scope, mode_value)
+            if entry is None or entry.generation != generation:
+                return
+            if job_id and entry.job_id != job_id:
+                return
+            now = datetime.now(UTC)
+            self._save_registration(
+                replace(
+                    entry,
+                    last_triggered=now.isoformat(),
+                    next_due_at=(now + timedelta(seconds=entry.interval)).isoformat(),
+                ),
+                entry,
+            )
+
     def authorize_fan_out(
         self,
         security: RequestSecurityContext,
@@ -380,7 +523,11 @@ class DreamingCoordinator:
         hit: list[Scope] = []
         denied_count = 0
         matched_count = 0
-        for child in self._scope_supplier():
+        scopes = (
+            self._mode_scope_supplier(mode)
+            if self._mode_scope_supplier is not None else self._scope_supplier()
+        )
+        for child in scopes:
             if not covered_by(
                 scope,
                 child,
@@ -420,7 +567,7 @@ class DreamingCoordinator:
         顺序：调度器能力（``supports_recurring``）→ ``validate``（interval <
         tick_interval 拒绝）→ submit（拿到 job_id）→ 落盘。校验全部在副作用
         （落盘）之前——「注册了但任务拒绝」不产生残留注册；落盘失败回滚
-        ``cancel``（F04 D8 写序）——不留「定时器在跑、注册表无记录」的
+        ``cancel``（F10 D8 写序）——不留「定时器在跑、注册表无记录」的
         注销不掉幽灵任务。
         """
         scheduler = self._scheduler
@@ -430,13 +577,28 @@ class DreamingCoordinator:
                 "当前装配的调度器不支持，注册被拒绝"
             )
         self.check_authorization(security, scope, mode)
+        if self._mode_validator is not None:
+            self._mode_validator(mode, candidate)
         identity = _registration_identity(security)
         dsl = _candidate_dsl(candidate)
         with self._serialize_mutation(scope, mode):
-            self._ensure_leader()
+            self._require_leader_for_mutation()
             with self._mutation_lock:
                 old_entry = self._registry.find(scope, mode.value)
-            generation = (old_entry.generation + 1) if old_entry is not None else 1
+            entry = DreamingEntry(
+                scope=scope,
+                mode=mode.value,
+                interval=interval,
+                candidate=dsl,
+                job_id="",
+                channel=channel.value,
+                created_by=identity,
+                state=DreamingEntryState.ACTIVE.value,
+                generation=old_entry.generation + 1 if old_entry is not None else 1,
+                last_triggered=old_entry.last_triggered if old_entry is not None else "",
+                next_due_at=_registration_due_at(old_entry, interval),
+            )
+            ready: Future[None] = Future()
             job = DreamingDriverJob(
                 self,
                 scope=scope,
@@ -445,34 +607,30 @@ class DreamingCoordinator:
                 candidate=dsl,
                 security=security,
                 interval=interval,
-                generation=generation,
+                generation=entry.generation,
+                first_delay=_first_delay_from(entry),
+                registration_ready=ready,
             )
             scheduler.validate(job)
-            job_id = asyncio.run(scheduler.submit(job, channel))
+            job_id = None
             try:
+                job_id = asyncio.run(scheduler.submit(job, channel))
                 self.check_leadership()
                 with self._mutation_lock:
-                    self._registry.save(
-                        DreamingEntry(
-                            scope=scope,
-                            mode=mode.value,
-                            interval=interval,
-                            candidate=dsl,
-                            job_id=job_id,
-                            channel=channel.value,
-                            created_by=identity,
-                            state=DreamingEntryState.ACTIVE.value,
-                            generation=generation,
-                        )
-                    )
+                    self._save_registration(replace(entry, job_id=job_id), old_entry)
                 # save 可能阻塞到租约过期；落盘后再验一次，防止
                 # 失锁实例把新 timer 当作成功注册留在本地。
                 self.check_leadership()
+                with self._mutation_lock:
+                    self._active_jobs[self._registration_key(scope, mode)] = job_id
             except RecurringJobStoppedError:
-                scheduler.cancel(job_id)
+                if job_id is not None:
+                    scheduler.cancel(job_id)
                 self._cancel_local_jobs(self._detach_local_jobs())
                 raise
             except Exception:
+                if job_id is None:
+                    raise
                 if old_entry is None:
                     scheduler.cancel(job_id)
                 elif self._registry.owns_instance_lock:
@@ -488,6 +646,7 @@ class DreamingCoordinator:
                                 security=old_security,
                                 interval=old_entry.interval,
                                 generation=old_entry.generation,
+                                first_delay=_first_delay_from(old_entry),
                             )
                             asyncio.run(scheduler.submit(old_job, Channel(old_entry.channel)))
                         except Exception:
@@ -495,19 +654,19 @@ class DreamingCoordinator:
                                 "dreaming register rollback could not restore previous timer"
                             )
                 raise
-            with self._mutation_lock:
-                self._active_jobs[self._registration_key(scope, mode)] = job_id
+            finally:
+                ready.set_result(None)
             return job_id
 
     def unregister(self, scope: Scope, mode: EvolveMode) -> DreamingEntry | None:
         """注销定时演进（dreaming=False，幂等）：先持久化意图，再取消。
 
         未注册返回 None——**不退化为立即执行**（立即跑只能由 dreaming=None
-        明确触发，F04 D2）。Scheduler 取消在协调器状态锁外等待；失败时保留
+        明确触发，F10 D2）。Scheduler 取消在协调器状态锁外等待；失败时保留
         ``CANCEL_REQUESTED``，旧 Driver 下个 tick 会自停，重启恢复也不会复活。
         """
         with self._serialize_mutation(scope, mode):
-            self._ensure_leader()
+            self._require_leader_for_mutation()
             with self._mutation_lock:
                 entry = self._registry.find(scope, mode.value)
                 if entry is None:
@@ -516,7 +675,7 @@ class DreamingCoordinator:
                     entry,
                     state=DreamingEntryState.CANCEL_REQUESTED.value,
                 )
-                self._registry.save(pending)
+                self._save_registration(pending, entry)
                 self._active_jobs.pop(self._registration_key(scope, mode), None)
             # 绝不在 _mutation_lock 内等待 Scheduler 私有循环。
             self._scheduler.cancel(entry.job_id)
@@ -527,7 +686,8 @@ class DreamingCoordinator:
                 if current.job_id != entry.job_id:
                     return entry
                 if current.state == DreamingEntryState.CANCEL_REQUESTED.value:
-                    self._registry.remove(scope, mode.value)
+                    if not self._standby or self._registry.owns_instance_lock:
+                        self._remove_registration(current)
             return entry
 
     def remove_registration(
@@ -547,7 +707,7 @@ class DreamingCoordinator:
                 return
             if job_id is not None and entry.job_id != job_id:
                 return
-            self._registry.remove(scope, mode.value)
+            self._remove_registration(entry)
             self._active_jobs.pop(self._registration_key(scope, mode), None)
 
     async def submit_evolve(
@@ -573,12 +733,59 @@ class DreamingCoordinator:
     def link_spawned_job(self, job_id: str, parent_job_id: str) -> None:
         self._scheduler.link_child(job_id, parent_job_id)
 
-    # ---- 重启恢复（F04 D8 单实例部署模型） -------------------------------- #
+    # ---- 重启恢复（F10 D8 单实例部署模型） -------------------------------- #
 
     def restore(self) -> list[str]:
         """串行化恢复与在线注册/注销，避免同一声明被交叉换绑。"""
         with self._operation_lock:
-            return self._restore_locked()
+            if self._election_stop.is_set():
+                return []
+            try:
+                restored = self._restore_locked()
+            except _DreamingLockHeld:
+                if not self._standby:
+                    raise
+                logger.info("dreaming instance is on standby")
+                restored = []
+            except Exception:
+                if self._standby:
+                    self._cancel_local_jobs(self._detach_local_jobs())
+                raise
+            if self._standby and self._election_thread is None:
+                self._election_thread = threading.Thread(
+                    target=self._run_election, name="dreaming-election", daemon=True,
+                )
+                self._election_thread.start()
+            return restored
+
+    def _run_election(self) -> None:
+        while not self._election_stop.wait(_ELECTION_RETRY_SECONDS):
+            with self._operation_lock:
+                if self._election_stop.is_set():
+                    return
+                try:
+                    if self._restored is not None and self._registry.owns_instance_lock:
+                        continue
+                    self._restore_locked()
+                except _DreamingLockHeld:
+                    continue
+                except Exception:
+                    self._cancel_local_jobs(self._detach_local_jobs())
+                    logger.exception("dreaming election or recovery failed")
+
+    def stop_election(self) -> bool:
+        """Prevent further attempts without blocking the Runtime stop request."""
+        if self._standby:
+            self._election_stop.set()
+        return self._standby
+
+    def wait_for_election(self) -> None:
+        """Wait for any startup restore or background election already in progress."""
+        if self._standby:
+            with self._operation_lock:
+                thread = self._election_thread
+            if thread is not None:
+                thread.join()
 
     def _restore_locked(self) -> list[str]:
         """重启恢复注册态任务：单实例锁 → 逐条复验 → 重新提交（换绑 job_id）。
@@ -598,7 +805,9 @@ class DreamingCoordinator:
         幂等：二次调用返回首次结果，不重扫注册表（恢复后注册表的真相已由
         本协调器维护）。
         """
-        if self._restored is not None:
+        if self._restored is not None and (
+            not self._standby or self._registry.owns_instance_lock
+        ):
             return self._restored
         scheduler = self._scheduler
         with self._mutation_lock:
@@ -612,11 +821,15 @@ class DreamingCoordinator:
                 "dreaming 恢复要求支持周期任务的调度器（如 async_timer）；当前装配的调度器不支持"
             )
         self._ensure_leader()
+        if self._election_stop.is_set():
+            return []
         # 必须在持锁后重新读取，避免 load → acquire 窗口漏掉并发注册。
         with self._mutation_lock:
             entries = self._registry.load_all()
         restored: list[str] = []
         for entry in entries:
+            if self._election_stop.is_set():
+                return []
             try:
                 self.check_leadership()
             except RecurringJobStoppedError:
@@ -633,7 +846,7 @@ class DreamingCoordinator:
                         and current.generation == entry.generation
                         and current.state != DreamingEntryState.ACTIVE.value
                     ):
-                        self._registry.remove(entry.scope, entry.mode)
+                        self._remove_registration(current)
                 continue
             try:
                 security = _restored_security(entry.created_by)
@@ -660,7 +873,7 @@ class DreamingCoordinator:
                 self.check_authorization(security, entry.scope, entry.mode)
             except PermissionDeniedError:
                 with self._mutation_lock:
-                    self._registry.remove(entry.scope, entry.mode)
+                    self._remove_registration(entry)
                 logger.warning(
                     "dreaming restore unregister revoked entry: scope=%s mode=%s",
                     _scope_label(entry.scope),
@@ -669,15 +882,25 @@ class DreamingCoordinator:
                 continue
             except ValidationError:
                 with self._mutation_lock:
-                    self._registry.remove(entry.scope, entry.mode)
+                    self._remove_registration(entry)
                 logger.warning(
                     "dreaming restore unregister non-writable entry: scope=%s mode=%s",
                     _scope_label(entry.scope),
                     entry.mode,
                 )
                 continue
+            ready: Future[None] = Future()
+            expected = entry
             try:
                 candidate = _candidate_dsl(entry.candidate)
+                if self._mode_validator is not None:
+                    self._mode_validator(mode, candidate)
+                # 旧版本首次执行前没有计时锚点；只在首次恢复时补齐并持久化，
+                # 后续重启继续使用同一到期时间，而非反复等待完整 interval。
+                if _due_at(entry) is None:
+                    entry = replace(
+                        entry, next_due_at=_registration_due_at(None, entry.interval)
+                    )
                 job = DreamingDriverJob(
                     self,
                     scope=entry.scope,
@@ -687,6 +910,8 @@ class DreamingCoordinator:
                     security=security,
                     interval=entry.interval,
                     generation=entry.generation + 1,
+                    first_delay=_first_delay_from(entry),
+                    registration_ready=ready,
                 )
                 scheduler.validate(job)
                 job_id = asyncio.run(scheduler.submit(job, channel))
@@ -694,26 +919,32 @@ class DreamingCoordinator:
                     raise RuntimeError("scheduler returned an empty recurring job id")
                 self.check_leadership()
                 with self._mutation_lock:
-                    self._registry.save(
+                    self._save_registration(
                         replace(
                             entry,
                             job_id=job_id,
                             state=DreamingEntryState.ACTIVE.value,
                             generation=entry.generation + 1,
-                        )
+                        ),
+                        expected,
                     )
                 self.check_leadership()
+                with self._mutation_lock:
+                    self._active_jobs[self._registration_key(entry.scope, entry.mode)] = job_id
+                restored.append(job_id)
             except RecurringJobStoppedError:
                 if job_id is not None:
                     scheduler.cancel(job_id)
                 self._cancel_local_jobs(self._detach_local_jobs())
                 raise
             except Exception as exc:
-                # 同 register 写序（F04 D8）：换绑落盘失败回滚 cancel——否则
+                # 同 register 写序（F10 D8）：换绑落盘失败回滚 cancel——否则
                 # 注册表留着旧 job_id，注销 cancel 旧 id 是 no-op，新定时器成幽灵。entry
                 # 保留旧值（与损坏记录同待遇），装配修复后下次重启可恢复。
                 if job_id is not None:
                     scheduler.cancel(job_id)
+                if self._standby and isinstance(exc, (BackendError, UnsupportedCapabilityError)):
+                    raise
                 logger.warning(
                     "dreaming restore skip invalid/failed entry: scope=%s mode=%s error=%s: %s",
                     _scope_label(entry.scope),
@@ -722,9 +953,8 @@ class DreamingCoordinator:
                     exc,
                 )
                 continue
-            restored.append(job_id)
-            with self._mutation_lock:
-                self._active_jobs[self._registration_key(entry.scope, entry.mode)] = job_id
+            finally:
+                ready.set_result(None)
         try:
             self.check_leadership()
         except RecurringJobStoppedError:
@@ -732,14 +962,14 @@ class DreamingCoordinator:
             raise
         with self._mutation_lock:
             self._restored = restored
+        if self._standby:
+            logger.info("dreaming instance is leader: restored_jobs=%d", len(restored))
         return restored
 
     def release_lock(self) -> None:
         """释放恢复实例锁（优雅关闭路径）。幂等——未持锁 / 锁已易主均无害。"""
+        self.stop_election()
+        self.wait_for_election()
         with self._operation_lock:
-            try:
-                self._registry.release_instance_lock()
-            finally:
-                # 主动释放不会触发续租失败回调；先在短状态锁内废弃任期，
-                # 再在锁外等待 Scheduler，避免与 tick 清理锁反转。
-                self._cancel_local_jobs(self._detach_local_jobs())
+            self._cancel_local_jobs(self._detach_local_jobs())
+            self._registry.release_instance_lock()

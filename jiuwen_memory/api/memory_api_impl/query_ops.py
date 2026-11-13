@@ -48,8 +48,9 @@ from jiuwen_memory.common.type_def import (
     normalize,
 )
 from jiuwen_memory.common.type_def.continuity import MemoryRef, ViewBudget
+from jiuwen_memory.common.type_def.filter import evaluate
 from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
-from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
+from jiuwen_memory.common.type_def.memory_filter import matches_filter_value, matches_memory_unit
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.construction.router import (
@@ -68,6 +69,7 @@ from jiuwen_memory.control.evolution.validation import (
     validate_evolve_options,
     validate_evolve_request,
 )
+from jiuwen_memory.control.pipeline import route_value_of
 from jiuwen_memory.control.types import (
     BackgroundJobStartResult,
     BatchUpdateOutcome,
@@ -95,12 +97,14 @@ from .local_support import (
     _pop_spaces,
     _recall_permission_context,
     _reject_kernel_system_metadata,
+    _reject_memory_type_transition,
     _reject_non_scalar_metadata,
     _reject_route_tag_keys,
     _routing_clauses_of,
     _selector_permission_context,
     _space_denied,
     _TrustedRequestTarget,
+    _type_isolation_clause,
     _unit_lookup_permission_context,
     _unit_snapshot_permission_context,
 )
@@ -269,13 +273,17 @@ class QueryOpsMixin:
             expand_depth=options.expand_depth, rollup=options.rollup,
             query_context=query_context, pipeline=pipeline,
         )
+        # 配置中的类型范围在鉴权及视图组装前与调用方过滤一起生效。
+        rq = self._queries.prepare_retrieval_query(rq)
         view_requested = bool(options.task_id or options.anchor is not None or options.duty)
         if view_requested:
             if spaces is not None:
                 raise ValidationError(
                     "continuity view cannot be combined with cross-space retrieval"
                 )
-            return self._search_view(query, context, options, security=security)
+            return self._search_view(
+                query, context, replace(options, filters=rq.filters), security=security,
+            )
         if spaces is not None:
             self._require_trusted_context(
                 security, _TrustedRequestTarget(Action.READ, "search", Scope(org=context.scope.org))
@@ -301,6 +309,15 @@ class QueryOpsMixin:
         )
         if routing_clauses:
             rq.filters = and_merge(rq.filters, routing_clauses)
+        # 类型隔离的系统谓词（mem2.0 §2.3）：经验与技能可与对话记忆同空间，检索
+        # 互不可见由这条谓词承担——无路由值/非隔离路由值排除两类条目，隔离路由值
+        # 只取该类。路由值按 profile 选择同一口径解析（extensions 优先、其次含
+        # 授权回注谓词的 filters），追加在授权路由谓词之后：解析看到的 filters 与
+        # engine 选 profile 时将看到的一致，两边各解析一套即「选了经验 profile、
+        # 却被自己的谓词排除经验」。
+        if self._queries.retrieval_pipeline_filter(pipeline) is None:
+            route = route_value_of(rq.extensions, rq.filters, self._route_key())
+            rq.filters = and_merge(rq.filters, [_type_isolation_clause(route)])
         # 两族谓词与调用方表达式合成一个 AND 一次下推，在 top-k 截断之前生效——
         # 召回后二次过滤会让被筛掉的条目白占召回名额，最终返回条数少于 top_k。
         # 第二族由归属坐标折算：坐标缺项不生成对应谓词，表现为该维不收窄，失效方向是放宽。
@@ -486,7 +503,28 @@ class QueryOpsMixin:
         org = context.scope.org
         normalized_filters = retrieval_query.filters
 
-        candidates = self._search_candidates(resource_principal, org, spaces, audit_actor=identity)
+        candidates = self._search_candidates(
+            resource_principal, org, spaces, audit_actor=identity
+        )
+        # 经验检索一次只查一个空间（mem2.0 §2.4）：路由值为 experience 的跨空间
+        # 检索返回参数错误——选取算子按一次返回的条数安排探索名额、按能力分组与
+        # 补满，跨空间时各空间分别选出的结果还要轮转合并并截断，最终留下哪几条由
+        # 合并决定，探索与分组都失去作用。同时检索个人与团队两个空间的经验要求
+        # 选取在跨空间合并之后执行，首版不支持，列为已知遗留。
+        fixed_type_filter = self._queries.retrieval_pipeline_filter(retrieval_query.pipeline)
+        route_value = route_value_of(
+            retrieval_query.extensions, normalized_filters, self._route_key(),
+        ) if fixed_type_filter is None else ""
+        includes_experience = fixed_type_filter is not None and evaluate(
+            fixed_type_filter, lambda clause: matches_filter_value("experience", clause),
+        )
+        if route_value == "experience" or includes_experience:
+            raise ValidationError(
+                "路由值为 experience 的检索一次只查一个空间，不接受跨空间检索"
+            )
+        # 类型隔离的系统谓词（mem2.0 §2.3「跨空间检索走同一处」）：不随空间变，
+        # 循环外算一次，逐空间随两族系统谓词下推。
+        type_clause = _type_isolation_clause(route_value) if fixed_type_filter is None else None
         # 收窄谓词的实际取值只在此处成形，下游只能看到条数。缺这一行时「召回为空」
         # 无法区分坐标未传到、判定表未声明该维、以及该维确实过滤掉了全部条目。
         logger.info(
@@ -555,6 +593,8 @@ class QueryOpsMixin:
                         permission_context.space_facts, resource_principal, narrow
                     )
                 )
+                if type_clause is not None:
+                    clauses.append(type_clause)
                 targets.append(collective.SpaceRecallTarget(scope=target, clauses=tuple(clauses)))
             else:
                 denied.append(
@@ -635,6 +675,17 @@ class QueryOpsMixin:
     def _hierarchy_enabled(self) -> bool:
         """仅在可信请求通过校验后读取运行时树总开关。"""
         return str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower() == "true"
+
+    def _route_key(self) -> str:
+        """路由键：启用流水线时取其声明（缺省 ``memory_type``），未启用时取缺省。
+
+        类型隔离谓词的路由值解析（mem2.0 §2.3）与 profile 选择共用同一个键：
+        两侧键不一致即「按 A 键选了经验 profile、按 B 键解析出无路由值」，
+        追加的是排除经验的谓词。未启用流水线的部署没有 profile 可选，但仍按
+        同一键解析——请求 filters 点名 ``memory_type`` 时谓词取等值一侧。
+        """
+        pipeline = self._engine.pipeline
+        return getattr(pipeline, "route_key", None) or "memory_type"
 
     def _search_candidates(
         self, identity: Scope, org: str, spaces: list[str], *, audit_actor: Scope | None = None
@@ -766,6 +817,22 @@ class QueryOpsMixin:
             memory_types,
         )
         effective_filters = and_merge(normalized_filters, routing_clauses)
+        # 类型隔离（mem2.0 §2.3）：显式点名 memory_types 的请求由该参数在存储层
+        # 过滤，点名的类型即调用方所要，与 _list_routing_clauses 对 memory_type
+        # 字段的跳过同构；未点名时与 search 同一条谓词——默认列举不混入经验与
+        # 技能，按路由值点名的只取该类。list 不经 pipeline 选 profile，路由值仍
+        # 按同一口径从 extensions 与 filters 解析。
+        if not any(str(value).strip() for value in memory_types or ()):
+            effective_filters = and_merge(
+                effective_filters,
+                [
+                    _type_isolation_clause(
+                        route_value_of(
+                            normalized_extensions, normalized_filters, self._route_key()
+                        )
+                    )
+                ],
+            )
         # list 必须注入第一族，否则个体空间的隔离只在 search 上成立：它是同样按空间返回
         # 条目的批量入口，不注入的后果与 search 同因同向。第二段逐条鉴权不能替代谓词——
         # 逐条鉴权的失败形态是抛异常而非过滤，整次调用失败而不是少返回几条。
@@ -968,6 +1035,7 @@ class QueryOpsMixin:
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
         before = asyncio.run(self._queries.get(unit_id, scope, None))
+        _reject_memory_type_transition(before, patch.system_metadata)
         if self._privacy is not None:
             from dataclasses import replace as copy_patch
 
@@ -1410,7 +1478,7 @@ class QueryOpsMixin:
         ):
             raise ValidationError("仅 HIERARCHY 接受 hierarchy_options/reuse_existing")
         self._ensure_audit_integrity_healthy()
-        # 三态分发（F04 D2）：False=幂等注销（不命中不退化）；True=注册；
+        # 三态分发（F10 D2）：False=幂等注销（不命中不退化）；True=注册；
         # None=立即执行。持续授权（每 tick 复验）与 fan-out 逐桶裁决都在 API 层
         # 的 DreamingCoordinator（PEP 边界，S03）——Engine / EvolveJob 纯执行。
         if dreaming is False:
@@ -1475,17 +1543,25 @@ class QueryOpsMixin:
         return job_id
 
     def restore_dreaming(self) -> list[str]:
-        """重启恢复注册态 dreaming 任务（F04 D8 装配期钩子，非 HTTP verb）。
+        """重启恢复注册态 dreaming 任务（F10 D8 装配期钩子，非 HTTP verb）。
 
         启动路径专用（server 启动 / SDK 宿主拉起），不出现在 MemoryAPI 公共
         契约——恢复会持实例锁，任意请求主体可触发会把部署模型的决定权让渡
         给调用方。恢复期复验与每 tick 复验同一套鉴权（DreamingCoordinator
         绑定本 API 的鉴权组件，入口判定与持续判定不漂移）。
 
-        单实例部署模型下锁被他人持有（未过期）抛 :class:`RuntimeError`——
-        部署侧须感知"另一实例在跑"而非静默双跑。
+        单实例模式下锁竞争抛 :class:`RuntimeError`。主备模式下实例在锁竞争时
+        以待命身份启动，并定期重试接管。
         """
         return self._dreaming.restore()
+
+    def stop_dreaming_election(self) -> bool:
+        """Stop scheduling new election attempts and report whether to join the election."""
+        return self._dreaming.stop_election()
+
+    def wait_for_dreaming_election(self) -> None:
+        """Join any pending election before draining the scheduler."""
+        self._dreaming.wait_for_election()
 
     def release_dreaming_lock(self) -> None:
         """释放恢复实例锁（优雅关闭路径钩子，非 HTTP verb）。

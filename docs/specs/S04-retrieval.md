@@ -448,6 +448,30 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 |------|------|------|
 | `fuse` | `(query: ParsedQuery, candidates: list[list[ScoredMemoryUnit]]) -> list[ScoredMemoryUnit]` | 融合已物化的分入口候选，保持 MemoryUnit 与 evidence |
 
+### Selector（`selector.py`）
+
+相关性过滤之后、截断 `top_k` 之前的可选阶段：从通过过滤的候选中决定返回哪几条、
+按什么顺序（名额分配），与 Fuser 的分工是「Fuser 合并多路候选成一份按相关性排好
+的列表，Selector 在过滤后的候选上分配名额」。首版实现是经验条目的选取
+（`selector_impl/experience_selector.py`，注册名 `experience`：复现要求、排序分、
+探索名额、按能力分组四步），对话记忆检索不配置。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `select` | `(survivors: list[ScoredMemoryUnit], query: RetrievalQuery) -> list[ScoredMemoryUnit]` | 选出返回的条目并排序；被淘汰的候选不出现，调用方截断前 top_k 条即最终返回 |
+
+契约约束：
+
+- 不带 scope 参数——scope 是召回前置谓词，进入选取的候选同属一个空间，
+  实现取 `survivors[0].unit.scope`。
+- 不原地修改入参（存储后端返回的可能是缓存中的同一对象）；需要改写条目
+  （如经验条目的 `usage_ref`）时在候选上换条目副本，调用方
+  （`PipelineRetriever`）据此重建 units 字典。
+- `PipelineRetriever` 经 `selector_enabled` 开关装配（true 而未指名时取缺省
+  实现 `experience`，与 `rerank_enabled` 同构）；未配置时链路行为不变。
+- Selector 不依赖 construction：经验检索的效用部件（效用事件、统计记录、
+  质量分公式）经 `common/experience.py` 与构建侧共用。
+
 ### Discloser（`discloser.py`）
 
 | 方法 | 签名 | 语义 |
@@ -662,7 +686,7 @@ jiuwen_memory/retrieval/<算子>_impl/
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-各 Producer：`QueryParserProducer` / `FuserProducer` / `DiscloserProducer` / `RetrieverProducer`。
+各 Producer：`QueryParserProducer` / `FuserProducer` / `SelectorProducer` / `DiscloserProducer` / `RetrieverProducer`。
 注册由 `retrieval.bootstrap.register_operators` 统一触发。`RecallerProducer` 归存储层
 （`storage/domain_store_impl/recaller.py`，注册随 `storage.bootstrap.register_backends`
 触发）；YAML 命名空间仍是 `recaller`，配置写法不变。
@@ -718,7 +742,8 @@ valid-time 起点为空表示无下界：前置使用 NOT(t_valid > as_of)，真
 | rerank | 预算截断完成 | candidates，calibrated |
 | rollup | query.rollup=True；精排后阈值前 | candidates，rolled，errors，parsed.hierarchy_role |
 | threshold | 最终候选分已生成 | candidates |
-| cut_to_top_k（state 辅助） | 阈值之后 | final |
+| select（PipelineRetriever 可选阶段） | 阈值之后、top_k 之前 | candidates（选取顺序和条目副本） |
+| cut_to_top_k（state 辅助） | 阈值与已配置的选取之后 | final |
 | disclose | final 就绪 | items |
 | build_result（state 辅助） | 披露完成 | result |
 | expand | query.expand_depth>0；result 就绪 | result |
@@ -744,6 +769,9 @@ expand 先创建 PreparedRetrievalResult；defer_expansion=True 时直接交跨�
 `RetrievalQuery.pipeline: str | None` 是控制层选择键，与 DomainStore 的
 `RetrievalPipeline` 三种物理执行路径无关。直接调用 Retriever.retrieve 不解析该键，
 仍使用当前实例；选择发生在 Engine。API 消费保留扩展键，不传入 ParsedQuery.extensions。
+具名流程可配置固定包含或排除类型；控制层在鉴权和召回前与请求过滤做外层 AND，
+使用规范字段 system_metadata.memory_type。配置边界覆盖普通检索、树后代和职责视图
+的真源读取。显式类型范围允许经验时拒绝跨空间请求，避免破坏单空间的选取配额。
 
 `Retriever.query_parsers() -> tuple[QueryParser, ...] | None` 是可选依赖声明：
 None 表示未声明；声明时返回稳定、真实的已注入 parser 实例，不得在查询中构建依赖。

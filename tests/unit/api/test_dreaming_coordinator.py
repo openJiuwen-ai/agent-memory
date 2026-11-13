@@ -1,6 +1,6 @@
 """API 层 DreamingCoordinator —— 注册 / 注销 / 恢复 / 持续授权 / fan-out 逐桶裁决。
 
-PEP 边界（S03）改造后的 dreaming 编排测试（F04）：
+PEP 边界（S03）改造后的 dreaming 编排测试（F10）：
 
 - 注册（dreaming=True）：调度器周期能力校验 → validate 先于落盘（无残留）→
   注册表写入 dict DSL + created_by（持续授权锚点）；
@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -33,9 +36,11 @@ from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_ke
 from jiuwen_memory.api.memory_api_impl.dreaming import (
     DreamingCoordinator,
     DreamingDriverJob,
+    _first_delay_from,
 )
 from jiuwen_memory.api.memory_api_impl.dreaming_security import _registration_identity
-from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
+from jiuwen_memory.common.errors import BackendError, PermissionDeniedError, ValidationError
+from jiuwen_memory.common.lock import LockTimeoutError
 from jiuwen_memory.common.lock.lock_impl.in_memory_lock import InMemoryLockProvider
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import (
@@ -158,6 +163,23 @@ def test_registration_key_is_unambiguous_for_separator_values() -> None:
     assert DreamingRegistry.key_of(left, "extract") != DreamingRegistry.key_of(right, "extract")
 
 
+def test_dreaming_rebind_rejects_old_snapshot_write_and_delete() -> None:
+    kv = InMemoryKVStore()
+    first, second = DreamingRegistry(kv), DreamingRegistry(kv)
+    original = DreamingEntry(
+        scope=_SCOPE, mode="forget", interval=60, candidate=None,
+        job_id="old", channel="background",
+    )
+    first.save(original)
+    rebound = replace(original, job_id="new", generation=original.generation + 1)
+    assert second.replace_if_current(_SCOPE, "forget", original, rebound)
+    assert not first.replace_if_current(_SCOPE, "forget", original, None)
+    assert not first.replace_if_current(
+        _SCOPE, "forget", original, replace(rebound, job_id="stale"),
+    )
+    assert second.find(_SCOPE, "forget") == rebound
+
+
 def test_registry_uses_configured_lock_provider_lease() -> None:
     lock = InMemoryLockProvider(lease_ms=1_234, wait_timeout_ms=0)
     registry = DreamingRegistry(InMemoryKVStore(), lock=lock)
@@ -166,6 +188,140 @@ def test_registry_uses_configured_lock_provider_lease() -> None:
     assert registry._lock_handle is not None
     assert registry._lock_handle.lease_ms == 1_234
     registry.release_instance_lock()
+
+
+class _SharedTestLock(InMemoryLockProvider):
+    is_distributed = True
+
+    def __init__(self, entries, guard: threading.Lock) -> None:
+        super().__init__(lease_ms=300)
+        self._entries = entries
+        self.guard = guard
+        self.loop = None
+        self.fail_acquire = False
+        self.lose_lease = False
+        self.attempted = threading.Event()
+
+    async def _acquire(self, key, *, lease_ms, wait_timeout_ms):
+        loop = asyncio.get_running_loop()
+        if self.loop is None:
+            self.loop = loop
+        assert self.loop is loop, "Redis-style clients need the same loop across attempts"
+        self.attempted.set()
+        if self.fail_acquire:
+            raise BackendError("lock backend unavailable")
+        if self.lose_lease:
+            raise LockTimeoutError("lease unavailable")
+        assert wait_timeout_ms == 0
+        with self.guard:
+            return await super()._acquire(key, lease_ms=lease_ms, wait_timeout_ms=wait_timeout_ms)
+
+    async def renew(self, handle, *, lease_ms=None):
+        with self.guard:
+            if self.lose_lease:
+                await super()._release(handle)
+                return False
+            return await super().renew(handle, lease_ms=lease_ms)
+
+    async def _release(self, handle):
+        with self.guard:
+            await super()._release(handle)
+
+    async def close_connection(self):
+        assert self.loop is asyncio.get_running_loop()
+        self.loop = None
+
+
+def test_blocked_renewal_stops_the_local_lease_at_expiry():
+    class BlockingRenewal(_SharedTestLock):
+        async def renew(self, handle, *, lease_ms=None):
+            await asyncio.Event().wait()
+
+    lost = threading.Event()
+    lock = BlockingRenewal({}, threading.Lock())
+    registry = DreamingRegistry(InMemoryKVStore(), lock=lock, on_lock_lost=lost.set)
+    try:
+        assert registry.acquire_instance_lock()
+        assert lost.wait(3), "a stalled renewal must stop local periodic work by lease expiry"
+        assert not registry.owns_instance_lock
+    finally:
+        registry.release_instance_lock()
+
+
+def _wait_for_promotion(coordinator) -> list[str]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if coordinator._restored:
+            return coordinator._restored
+        time.sleep(0.01)
+    raise AssertionError("standby did not restore the persisted job")
+
+
+@pytest.mark.parametrize("lose_lease", [False, True])
+def test_standby_takes_over_persisted_jobs(monkeypatch, lose_lease):
+    monkeypatch.setattr(
+        "jiuwen_memory.api.memory_api_impl.dreaming._ELECTION_RETRY_SECONDS", 0.02,
+    )
+    kv = InMemoryKVStore()
+    entries, guard = {}, threading.Lock()
+    first_lock, second_lock = _SharedTestLock(entries, guard), _SharedTestLock(entries, guard)
+    first_api, second_api = _FakeApi(_FakeScheduler(), kv), _FakeApi(_FakeScheduler(), kv)
+    first = DreamingCoordinator(
+        first_api, registry=DreamingRegistry(kv, lock=first_lock), standby=True,
+    )
+    second = DreamingCoordinator(
+        second_api, registry=DreamingRegistry(kv, lock=second_lock), standby=True,
+    )
+    try:
+        assert first.restore() == []
+        old_job = _register(first, first_api._scheduler)
+        assert second.restore() == [], "contention must allow standby startup"
+        assert not second_api._scheduler.submitted
+        with pytest.raises(BackendError, match="leader is unavailable"):
+            second.unregister(_SCOPE, EvolveMode.FORGET)
+        assert DreamingRegistry(kv).find(_SCOPE, "forget").job_id == old_job
+        second_lock.attempted.clear()
+        assert second_lock.attempted.wait(2), "standby must keep trying while the leader is up"
+        if lose_lease:
+            first_lock.lose_lease = True
+        else:
+            first.release_lock()
+        jobs = _wait_for_promotion(second)
+        assert len(jobs) == 1 and jobs[0] != old_job
+        entry = DreamingRegistry(kv).find(_SCOPE, "forget")
+        assert entry.job_id == jobs[0] and entry.generation == 2
+        if lose_lease:
+            first_lock.attempted.clear()
+            assert first_lock.attempted.wait(2), "the old leader must return to election"
+        assert first_api._scheduler.cancelled == [old_job]
+    finally:
+        first.release_lock()
+        second.release_lock()
+
+
+def test_standby_does_not_hide_initial_lock_backend_failure():
+    kv = InMemoryKVStore()
+    lock = _SharedTestLock({}, threading.Lock())
+    lock.fail_acquire = True
+    coordinator = DreamingCoordinator(
+        _FakeApi(_FakeScheduler(), kv), registry=DreamingRegistry(kv, lock=lock), standby=True,
+    )
+    try:
+        with pytest.raises(BackendError, match="lock backend unavailable"):
+            coordinator.restore()
+        assert coordinator._election_thread is None
+    finally:
+        coordinator.release_lock()
+
+
+@pytest.mark.parametrize("lock_config", [{}, {"lock": {"dreaming": {"target": "memory"}}}])
+def test_standby_assembly_rejects_local_lock(lock_config):
+    with pytest.raises(ValidationError, match="requires a distributed lock"):
+        build_kernel(config=Config.from_dict({
+            "globals": {"dreaming_standby": True},
+            "scheduler": {"default": {"target": "async_timer"}},
+            **lock_config,
+        }))
 
 
 def _make_unit(uid: str, scope: Scope) -> MemoryUnit:
@@ -1196,3 +1352,297 @@ class TestQueryOpsThreeStates:
             ),
         )
         assert result is None
+
+
+# ====================================================================== #
+# 上次触发时间的连续计时（mem2.0 §2.5.1 改动 2）
+# ====================================================================== #
+
+
+def _entry_with(
+    *, interval: int = 60, last_triggered: str = "", generation: int = 1,
+    next_due_at: str = "",
+) -> DreamingEntry:
+    return DreamingEntry(
+        scope=_SCOPE,
+        mode="forget",
+        interval=interval,
+        candidate=None,
+        job_id="old",
+        channel="background",
+        created_by=_registration_identity(_SECURITY),
+        state=DreamingEntryState.ACTIVE.value,
+        generation=generation,
+        last_triggered=last_triggered,
+        next_due_at=next_due_at,
+    )
+
+
+class TestLastTriggered:
+    def test_first_delay_from_values(self) -> None:
+        """last_triggered → 首次触发延迟的四态换算（改动 2 的换算规则）。"""
+        now = datetime.now(UTC)
+        # 从未触发（旧版本记录）→ None（等一个 interval，现行为）。
+        assert _first_delay_from(_entry_with(last_triggered="")) is None
+        # 墙钟不可解析（被改坏）→ 同 None，不可信的值保守处理。
+        assert _first_delay_from(_entry_with(last_triggered="not-a-time")) is None
+        # 间隔未满（60s 间隔、30s 前触发）→ 等剩余的 ~30s。
+        pending = _entry_with(
+            last_triggered=(now - timedelta(seconds=30)).isoformat()
+        )
+        delay = _first_delay_from(pending)
+        assert delay is not None and 29 <= delay <= 30, "等剩余秒数（取整可差 1）"
+        # 已过期（1 小时前触发）→ 下一次轮询即触发。
+        expired = _entry_with(
+            last_triggered=(now - timedelta(hours=1)).isoformat()
+        )
+        assert _first_delay_from(expired) == 0
+
+    def test_registry_round_trips_last_triggered(self) -> None:
+        kv = InMemoryKVStore()
+        DreamingRegistry(kv).save(
+            _entry_with(last_triggered="2026-10-01T00:00:00+00:00")
+        )
+
+        loaded = DreamingRegistry(kv).load_all()[0]
+
+        assert loaded.last_triggered == "2026-10-01T00:00:00+00:00"
+
+    def test_note_triggered_matches_generation_writes(self) -> None:
+        kv = InMemoryKVStore()
+        scheduler = _FakeScheduler()
+        api = _FakeApi(scheduler, kv)
+        coordinator = _coordinator(api)
+        _register(coordinator, scheduler)  # generation=1
+
+        coordinator.note_triggered(_SCOPE, EvolveMode.FORGET, generation=1)
+
+        assert DreamingRegistry(kv).load_all()[0].last_triggered != "", (
+            "generation 匹配时回写墙钟 ISO 时间"
+        )
+
+    def test_note_triggered_generation_mismatch_skips(self) -> None:
+        """注册已换代时旧代任务的迟到回写不覆盖新代记录。"""
+        kv = InMemoryKVStore()
+        scheduler = _FakeScheduler()
+        api = _FakeApi(scheduler, kv)
+        coordinator = _coordinator(api)
+        _register(coordinator, scheduler)
+
+        coordinator.note_triggered(_SCOPE, EvolveMode.FORGET, generation=99)
+
+        assert DreamingRegistry(kv).load_all()[0].last_triggered == ""
+
+    def test_register_overwrite_carries_last_triggered(self) -> None:
+        """覆写注册沿用旧记录的上次触发时间——间隔计时跨注册连续。"""
+        kv = InMemoryKVStore()
+        scheduler = _FakeScheduler()
+        api = _FakeApi(scheduler, kv)
+        coordinator = _coordinator(api)
+        _register(coordinator, scheduler)
+        coordinator.note_triggered(_SCOPE, EvolveMode.FORGET, generation=1)
+        before = DreamingRegistry(kv).load_all()[0].last_triggered
+
+        _register(coordinator, scheduler)  # 第二次注册（generation=2）
+
+        after = DreamingRegistry(kv).load_all()[0]
+        assert after.generation == 2
+        assert after.last_triggered == before, "覆写不重置间隔计时"
+
+    def test_driver_tick_notes_triggered(self) -> None:
+        """tick 成功提交演进后回写注册记录的上次触发时间。"""
+        kv = InMemoryKVStore()
+        scheduler = _FakeScheduler()
+        api = _FakeApi(scheduler, kv)
+        coordinator = _coordinator(api)
+        _register(coordinator, scheduler)
+        job = scheduler.submitted[0][1]
+        assert DreamingRegistry(kv).load_all()[0].last_triggered == ""
+
+        asyncio.run(job.run())
+
+        assert DreamingRegistry(kv).load_all()[0].last_triggered != ""
+
+    def test_restore_passes_first_delay_to_submitted_job(self) -> None:
+        """恢复按 last_triggered 换算首次触发延迟——重启不整体推迟一个 interval。"""
+        kv = InMemoryKVStore()
+        DreamingRegistry(kv).save(
+            _entry_with(
+                last_triggered=(datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+            )
+        )
+        scheduler = _FakeScheduler()
+        coordinator = _coordinator(_FakeApi(scheduler, kv))
+
+        restored = coordinator.restore()
+
+        assert len(restored) == 1
+        job = scheduler.submitted[0][1]
+        assert job.first_delay is not None and 29 <= job.first_delay <= 30, (
+            "间隔未满的等剩余秒数（30s 前触发、60s 间隔）"
+        )
+
+    def test_restore_expired_entry_first_delay_zero(self) -> None:
+        """已过期的注册：恢复后下一次轮询即触发，不再推迟一个完整 interval。"""
+        kv = InMemoryKVStore()
+        DreamingRegistry(kv).save(
+            _entry_with(
+                last_triggered=(datetime.now(UTC) - timedelta(hours=1)).isoformat()
+            )
+        )
+        scheduler = _FakeScheduler()
+        coordinator = _coordinator(_FakeApi(scheduler, kv))
+
+        coordinator.restore()
+
+        assert scheduler.submitted[0][1].first_delay == 0
+
+
+def _freeze_dreaming_time(monkeypatch):
+    import jiuwen_memory.api.memory_api_impl.dreaming as module
+
+    class Clock(datetime):
+        current = datetime(2026, 11, 5, tzinfo=UTC)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    return Clock
+
+
+def test_first_execution_keeps_remaining_interval_across_multiple_restarts(monkeypatch) -> None:
+    clock = _freeze_dreaming_time(monkeypatch)
+    kv = InMemoryKVStore()
+    scheduler = _FakeScheduler()
+    coordinator = _coordinator(_FakeApi(scheduler, kv))
+    interval = 7 * 24 * 60 * 60
+    _register(coordinator, scheduler, interval=interval)
+    original = DreamingRegistry(kv).load_all()[0]
+    assert original.last_triggered == "", "尚未执行第一次任务"
+    assert original.next_due_at == "2026-11-12T00:00:00+00:00", "首次注册立即保存到期时间"
+    coordinator.release_lock()
+
+    for elapsed_days in (2, 5, 7):
+        clock.current = datetime(2026, 11, 5, tzinfo=UTC) + timedelta(days=elapsed_days)
+        restored_scheduler = _FakeScheduler()
+        restored = _coordinator(_FakeApi(restored_scheduler, kv))
+        try:
+            assert len(restored.restore()) == 1
+            assert restored_scheduler.submitted[0][1].first_delay == (7 - elapsed_days) * 86400, (
+                "首次执行前频繁重启仍沿用最初到期时间"
+            )
+            entry = DreamingRegistry(kv).load_all()[0]
+            assert entry.next_due_at == original.next_due_at, "恢复仅换绑任务，不重置周期"
+        finally:
+            restored.release_lock()
+
+
+def test_repeated_registration_preserves_pending_due_time_and_changed_interval(monkeypatch) -> None:
+    clock = _freeze_dreaming_time(monkeypatch)
+    kv = InMemoryKVStore()
+    scheduler = _FakeScheduler()
+    coordinator = _coordinator(_FakeApi(scheduler, kv))
+    try:
+        _register(coordinator, scheduler, interval=600)
+        clock.current += timedelta(seconds=200)
+        _register(coordinator, scheduler, interval=600)
+        assert scheduler.submitted[-1][1].first_delay == 400, "重复注册延续已等待的200秒"
+        _register(coordinator, scheduler, interval=900)
+        assert scheduler.submitted[-1][1].first_delay == 700, "改周期也沿用原起算点"
+    finally:
+        coordinator.release_lock()
+
+
+def test_legacy_untriggered_record_receives_persisted_anchor_on_first_restore(monkeypatch) -> None:
+    clock = _freeze_dreaming_time(monkeypatch)
+    kv = InMemoryKVStore()
+    DreamingRegistry(kv).save(_entry_with())
+    first_scheduler = _FakeScheduler()
+    first = _coordinator(_FakeApi(first_scheduler, kv))
+    first.restore()
+    assert first_scheduler.submitted[0][1].first_delay == 60, "旧记录无历史锚点时等一个周期"
+    due = DreamingRegistry(kv).load_all()[0].next_due_at
+    assert due, "首次恢复补齐到期时间并保存"
+    first.release_lock()
+    clock.current += timedelta(seconds=40)
+    second_scheduler = _FakeScheduler()
+    second = _coordinator(_FakeApi(second_scheduler, kv))
+    try:
+        second.restore()
+        assert second_scheduler.submitted[0][1].first_delay == 20, "后续恢复不再重置旧任务周期"
+        assert DreamingRegistry(kv).load_all()[0].next_due_at == due
+    finally:
+        second.release_lock()
+
+
+def test_successful_tick_sets_next_due_and_old_generation_cannot_replace_it(monkeypatch) -> None:
+    clock = _freeze_dreaming_time(monkeypatch)
+    kv = InMemoryKVStore()
+    scheduler = _FakeScheduler()
+    coordinator = _coordinator(_FakeApi(scheduler, kv))
+    try:
+        _register(coordinator, scheduler)
+        clock.current += timedelta(seconds=60)
+        asyncio.run(scheduler.submitted[0][1].run())
+        entry = DreamingRegistry(kv).load_all()[0]
+        assert entry.next_due_at == "2026-11-05T00:02:00+00:00", "成功提交后推算下次到期时间"
+        _register(coordinator, scheduler)
+        clock.current += timedelta(seconds=30)
+        coordinator.note_triggered(_SCOPE, EvolveMode.FORGET, generation=1)
+        assert DreamingRegistry(kv).load_all()[0].next_due_at == entry.next_due_at, (
+            "旧代迟到回写不覆盖新代声明"
+        )
+    finally:
+        coordinator.release_lock()
+
+
+def test_registry_round_trips_and_validates_next_due_at() -> None:
+    kv = InMemoryKVStore()
+    registry = DreamingRegistry(kv)
+    registry.save(_entry_with(next_due_at="2026-11-12T00:00:00+00:00"))
+    assert registry.load_all()[0].next_due_at == "2026-11-12T00:00:00+00:00"
+
+
+def test_fan_out_authorization_uses_mode_specific_scope_supplier() -> None:
+    kv = InMemoryKVStore()
+    scheduler = _FakeScheduler()
+    api = _FakeApi(scheduler, kv)
+    experience_scope = Scope(org=_SCOPE.org, space="experience-only")
+    coordinator = DreamingCoordinator(
+        api, registry=DreamingRegistry(kv),
+        mode_scope_supplier=lambda mode: (
+            [experience_scope] if mode is EvolveMode.EXPERIENCE_CONSOLIDATE else []
+        ),
+    )
+    buckets, denied = coordinator.authorize_fan_out(
+        _SECURITY, Scope(org=_SCOPE.org), FanOutCandidate(), EvolveMode.EXPERIENCE_CONSOLIDATE,
+    )
+    assert buckets == [experience_scope], "默认数据面没有的经验桶仍进入逐桶鉴权"
+    assert denied is None
+    assert api.authorized == [(_ACTOR, experience_scope)]
+
+
+def test_register_and_restore_reject_missing_mode_binding_before_submit() -> None:
+    kv = InMemoryKVStore()
+    scheduler = _FakeScheduler()
+    api = _FakeApi(scheduler, kv)
+
+    def reject(_mode, _candidate):
+        raise ValidationError("missing mode binding")
+
+    coordinator = DreamingCoordinator(api, registry=DreamingRegistry(kv), mode_validator=reject)
+    with pytest.raises(ValidationError, match="missing mode binding"):
+        _register(coordinator, scheduler, mode=EvolveMode.EXPERIENCE_CONSOLIDATE)
+    assert scheduler.submitted == [], "坏配置在提交定时器前拒绝"
+    assert DreamingRegistry(kv).load_all() == [], "不留下延迟到首次tick才失败的注册"
+    registry = DreamingRegistry(kv)
+    entry = _entry_with()
+    entry.mode = EvolveMode.EXPERIENCE_CONSOLIDATE.value
+    registry.save(entry)
+    try:
+        assert coordinator.restore() == [], "恢复也不为缺绑定mode启动定时器"
+        assert scheduler.submitted == []
+    finally:
+        coordinator.release_lock()

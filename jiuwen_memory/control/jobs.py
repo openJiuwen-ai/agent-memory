@@ -48,6 +48,11 @@ class Job(ABC):
 
     scope: Scope = field(default_factory=Scope)
     interval: int = 0  # 0=一次性任务；>0=定时任务声明（秒，须 >= scheduler.tick_interval）
+    # 定时任务的可选首次触发延迟（秒；None=等一个 interval，现行为）。调度器
+    # 据此设首次触发时间（mem2.0 §2.5.1 改动 2）：服务重启恢复按注册记录的
+    # 「上次触发时间」换算——间隔未满的等剩余时间，已过期的下一次轮询即触发，
+    # 两次发布相隔不足一个间隔时整理与归纳不再被重置推迟。
+    first_delay: int | None = None
     parent_job_id: str = ""  # Scheduler 触发的周期实例及其派生任务使用
     _cancel_event: Event = field(default_factory=Event, init=False, repr=False, compare=False)
 

@@ -35,6 +35,10 @@ def set_private(instance: Any, name: str, value: Any) -> None:
 
 
 def private_method(instance: Any, name: str):
-    """Bind a private method from the class dictionary to ``instance``."""
-    descriptor = vars(type(instance))[name]
-    return descriptor.__get__(instance, type(instance))
+    """Bind a private method, including one inherited from a base class."""
+    cls = type(instance)
+    for base in cls.__mro__:
+        descriptor = vars(base).get(name)
+        if descriptor is not None:
+            return descriptor.__get__(instance, cls)
+    raise AttributeError(f"{cls.__name__} has no method {name!r}")

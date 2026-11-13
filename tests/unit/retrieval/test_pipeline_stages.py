@@ -135,3 +135,29 @@ def test_rollup_stage_restores_role_and_delayed_expansion_skips_finalize():
     assert state.parsed.hierarchy_role is HierarchyRole.TIME_SPAN
     assert state.recalled_children == snapshot
     assert state.result is None
+
+
+def test_optional_selector_remains_before_top_k_and_discloses_copied_units():
+    harness = make_harness(RetrievalPipeline.RECALL_AND_GET_RANK)
+    original = tree_unit("parent")
+    harness.add([original])
+
+    class CopyingSelector:
+        @staticmethod
+        def select(candidates, query):
+            assert candidates, "选取阶段接收阈值后的候选"
+            return [replace(candidate, unit=replace(
+                candidate.unit, system_metadata={"usage_ref": "0.e"},
+            )) for candidate in candidates]
+
+    retriever = PipelineRetriever(
+        harness.parser, RRFFuser(), harness.discloser, None,
+        domain_store=harness.domain, selector=CopyingSelector(),
+    )
+    result = retriever.retrieve(QUERY_SCOPE, hierarchy_query(
+        top_k=1, with_trajectory=True,
+    ))
+    stages = [step.stage for step in result.trajectory]
+    assert stages.index("threshold") < stages.index("select") < stages.index("disclose")
+    assert result.items[0].system_metadata["usage_ref"] == "0.e", "披露必须消费选取后的副本"
+    assert "usage_ref" not in original.system_metadata, "不得改写原存储条目"

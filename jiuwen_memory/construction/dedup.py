@@ -21,7 +21,14 @@ from abc import abstractmethod
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
-from jiuwen_memory.common.type_def import MemoryUnit, Scope
+from jiuwen_memory.common.type_def import (
+    ISOLATED_MEMORY_TYPES,
+    MEMORY_TYPE_FILTER_FIELD,
+    FilterClause,
+    FilterOp,
+    MemoryUnit,
+    Scope,
+)
 from jiuwen_memory.storage.kv import KVStore, load_units
 
 from .base import ConstructionOperator
@@ -101,3 +108,37 @@ def same_scope(a, b) -> bool:
         and getattr(a, "space", "") == getattr(b, "space", "")
         and getattr(a, "user", "") == getattr(b, "user", "")
     )
+
+
+def memory_type_filter_clauses(candidate: MemoryUnit) -> list[FilterClause]:
+    """类型隔离的去重召回谓词（mem2.0 §2.3「去重按类型隔离」）。
+
+    按候选的 ``memory_type`` 加过滤：隔离值取等值、其余取 ``NOT_IN``——对话记忆
+    与经验不互判为重复，不会把一条对话记忆记成经验的一次复现（复现作者记录、
+    复现要求都建立在去重能把同类认作同一条之上，跨类型的误判会污染计数）。
+    ``NOT_IN`` 的字段缺失命中（不带 ``memory_type`` 的对话条目不被排除）由
+    存储层的 metadata 形态语义保证。谓词供消费 ``filters`` 的后端下推（防经验
+    条目占满 top_k 名额）；不消费的后端由 :func:`memory_type_matches` 在加载
+    unit 后兜底。
+    """
+    value = str(candidate.system_metadata.get("memory_type", "")).strip()
+    if value in ISOLATED_MEMORY_TYPES:
+        return [FilterClause(MEMORY_TYPE_FILTER_FIELD, FilterOp.EQ, value)]
+    return [
+        FilterClause(
+            MEMORY_TYPE_FILTER_FIELD, FilterOp.NOT_IN, sorted(ISOLATED_MEMORY_TYPES)
+        )
+    ]
+
+
+def memory_type_matches(candidate: MemoryUnit, unit: MemoryUnit) -> bool:
+    """:func:`memory_type_filter_clauses` 的加载后判定形态（两个 Dedup 实现都在
+    加载 unit 后调用——倒排路的 ``TextQuery`` filters 与向量路的 ``VectorQuery``
+    filters 均不被内存后端消费，谓词下推只对 milvus/pgvector 等后端生效，内存
+    后端靠这一层兜底）。候选是隔离类型时只认同类；否则排除两类隔离条目。
+    """
+    candidate_type = str(candidate.system_metadata.get("memory_type", "")).strip()
+    unit_type = str(unit.system_metadata.get("memory_type", "")).strip()
+    if candidate_type in ISOLATED_MEMORY_TYPES:
+        return unit_type == candidate_type
+    return unit_type not in ISOLATED_MEMORY_TYPES

@@ -132,6 +132,11 @@ class LockProvider(ABC):
     属于**契约级行为**而非后端细节：下沉会在两个实现里重复，且两份重入语义可能分叉。
     """
 
+    is_distributed = False
+
+    async def close_connection(self) -> None:
+        """Close resources owned by a dedicated provider on its operating loop."""
+
     def __init__(
         self,
         *,

@@ -420,6 +420,13 @@ import，注册装饰器才会生效。当前核心不自动发现任意外部 P
 `delegation_store`、`rate_limiter`、`workload_guard`、`binding_policy`、`cryptography`、
 `key_provider`、`audit_integrity`、`privacy`、`human_authenticator`。
 
+跨顶层段共用的 secret 参数名登记在 `common/security/types.py` 的
+`SECRET_PARAM_KEYS`（当前：`root_api_key` / `gateway_key` / `key_hex` / `key_b64` /
+`shared_secret` / `experience_author_key` / `author_key`）。其中 `author_key`（mem2.0，
+经验作者摘要的 HMAC 部署密钥，经验算子 params 使用）要求部署后固定不换、不随
+加密密钥轮换——跨用户复现计数与来源轨迹定位都以「同一作者的摘要不变」为前提；
+经 `${VAR}` 从环境变量注入，未配置时经验 profile 装配失败。
+
 ```yaml
 security:
   default:

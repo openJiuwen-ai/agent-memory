@@ -5,8 +5,8 @@
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 
 接收接入层产出的 `MemoryUnit`，统一经 `IndexBuilder` 交付本体并构建多形式索引。
-可插拔算子由 Extractor、Abstractor、Associator、Classifier、IndexBuilder、Router、
-Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四步
+可插拔算子由 Extractor、Appraiser、Curator、Abstractor、Associator、Classifier、
+IndexBuilder、Router、Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四步
 `DynamicEvolver`，以及显式启用的 `SchemaOrchestratingEvolver`）组成。
 
 > 契约（接口签名/数据结构/不变量）见 [`docs/specs/S05-construction.md`](../../docs/specs/S05-construction.md)；设计理念与决策取舍（双通道/演进闭环/依赖关系）见 [`docs/features/construction/F01-construction-spec-design.md`](../../docs/features/construction/F01-construction-spec-design.md)。本文件只记当前实现地图与本地约束。
@@ -18,9 +18,12 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `conflict_resolver.py` / `conflict_resolver_impl/` | 冲突消解契约/Producer；verification、recency、llm、chain 实现；`pipeline.py` 提供 `resolve_discovered_conflicts`（旧关联器 contradicts 转候选证据、注入式消解、绝不自动确认） |
 | `associator_impl/evidence_llm.py` | 按共享关系目录发现有原文依据的候选 |
 | `index_builder_impl/evidence_graph.py` | 已提交关系的 RETRIEVAL_ONLY 图投影；不写正文；要求有向邻接与条件投影能力，证据图只能用普通图后端，`shard_routed` 构建期拒绝 |
-| `base.py` | ConstructionOperator 基类 + OperatorType 枚举 |
+| `base.py` | ConstructionOperator 基类 + OperatorType 枚举；`ExtractContext` 携带 `appraisal`（评价结论，可选） |
 | `extractor.py` | Extractor 接口：信息提取（低抽象粒度） |
-| `abstractor.py` | Abstractor 接口：抽象与精炼/升华（高抽象粒度） |
+| `appraiser.py` | Appraiser 接口：写入准入与评价（抽取之前 `appraise`、流程结束 `finalize`）+ `Appraisal`（`proceed` 短路 / `data` 实现自定义）+ AppraiserProducer 工厂；可选装配，不配置即不接线（同 Router/LayerAnnotator 形态） |
+| `experience.py` | 经验记忆的构建侧部件单文件（轨迹与判定记录及两 Store——轨迹记录带生产者主体 `producer` 与凭据指纹 `credential_id`、背景块 `context`（v3 §2.1，生产者只认认证结果注入的内核保留键）/ 报错规则 / 轨迹消息（含工具调用摘要 `tool_call_digest`）/ 密钥清洗与脱敏 / 危险操作清单 `risky_operation_hit` / 作者摘要 HMAC / 部署配置解析 `parse_experience_config`（`ExperienceConfig`：`memory_class`/`default_space`/`curated_spaces`，v3 §2）及其 `resolved_repro_unit`（`auto` 口径装配期按落点解析到底：写入者自己的空间按 trajectory、其余按 user）与 `space_naming_of` / `ExperienceAppraisal` / 按作者清除的登记回调 `make_erasure_callback`），评价与抽取算子共用；技能归纳的轨迹选取与命令覆盖、技能识别共用 `tool_call_digest`。效用域部件（效用事件、统计记录、`UtilityStore`、策略取值、质量分、`usage_ref`）下沉 `common/experience.py`——检索侧选取算子也读，按 F09 分家线（读者）拆分 |
+| `curator.py` | Curator 接口：周期整理（CONSOLIDATE 与 EXPERIENCE_CONSOLIDATE 归纳之前 `curate`，返回参与归纳的条目）+ CuratorProducer 工厂；可选装配，不配置即不接线（同 Appraiser 形态） |
+| `abstractor.py` | Abstractor 接口：抽象与精炼/升华（高抽象粒度）；类属性 `dedup_products`（缺省 True）声明产物是否过语义去重，技能实现置 False |
 | `associator.py` | Associator 接口：关联分析（实体共指/因果链/引用关系） |
 | `common.py` | 构建层共享工具：LLM 尝试策略、派生 metadata 继承，以及 F10 重要度（`parse_importance` / 类别查表 `importance_category_map_from_config` / `inferred_attribution` / `fill_missing_importance` / `merge_importance_max` / prompt 类别段） |
 | `classifier.py` | Classifier 接口：多维分类（认知角色/主题/重要度） |
@@ -28,20 +31,22 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `prompt_registry.py` | PromptRegistry：从 yml `prompts` 段加载命名 prompt，按 phase+key 查询 |
 | `prompt_guard.py` | LLM prompt 输入护栏：`unit.content` 拼 prompt 的调用点统一经 `truncate_unit_content` 限长——判定类任务（分类/路由/关联）默认 4000；内容型任务（抽取/动态抽取/抽象/分层标注）用 `CONTENT_MAX_UNIT_CHARS=8000` 与 ingest 预切分上限对齐，超限**不截断**（中段截断=静默漏事实）而是分批完整消费：抽取/动态抽取分片逐批调用候选按 source 叠加，抽象两段式（分片提炼→原分组归纳），分层标注分片生成且全部有效才合并写回；只截判定输入，不动存储与索引（embed/全文索引仍用全文） |
 | `index_builder.py` | IndexBuilder 接口：多形式索引构建（文档/关键词/向量/图）；`supported_write_modes()` 公开写入模式能力，`require_full_write_chain()` 主写入链装配守卫（拒绝只声明 RETRIEVAL_ONLY 的构建器） |
-| `router.py` | Router 接口与判定表：按归属坐标判定条目落哪个空间，产出候选空间集合与收窄维标签；另含归属坐标的入口校验 `reject_kernel_coords` 与折算 `narrow_dims_of`（后者入参须为已以身份覆盖过内核三项的坐标，本层不接收 `identity`）。内核三项坐标名 `KERNEL_COORD_KEYS` 在 `common/type_def/scope.py`，本模块引用 |
+| `router.py` | Router 接口与判定表：按归属坐标判定条目落哪个空间，产出候选空间集合与收窄维标签；`SpaceNaming.is_fallback_space` 判空间名是否由 fallback 模板渲染（repro_unit 的 auto 按落点解析用，v3 §2.4）；另含归属坐标的入口校验 `reject_kernel_coords` 与折算 `narrow_dims_of`（后者入参须为已以身份覆盖过内核三项的坐标，本层不接收 `identity`）。内核三项坐标名 `KERNEL_COORD_KEYS` 在 `common/type_def/scope.py`，本模块引用 |
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
-| `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘/显式建树）+ EvolveMode/EvolveRequest/EvolveResult |
+| `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/归纳/经验整理/属性冲突巩固/遗忘/显式建树）+ EvolveMode/EvolveRequest/EvolveResult |
 | `source_update.py` | 可选 Schema source 更新能力、完整抽取结果、请求内变更计划与严格实体写入上下文；不依赖 control |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
-| `extractor_impl/` | Extractor 实现目录（keyword / llm / agent_llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；entity_schema 为 Property 产出稳定实体分组 key、Source 时间上下文与事件精度/区间；video_memory 将视频规约结果转换为 CLM/ELM；`agent_llm` 是 `llm` 的 agent 方向版——继承管线与输出契约，prompt 指令面 user↔agent 场景重定向 + `extractor_language` cn/en 切换（输出契约恒英文），并抽取时同步判定 `memory_class` 三类（`user_profile`/`long_term_memory`/`daily_memory`，基类 `build_candidates` 纯透传、子类 `extract` 收口值域，非法/缺失兜底 `long_term_memory`；该键是文档模式 md 落盘分流键）； |
-| `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
+| `extractor_impl/` | Extractor 实现目录（keyword / llm / agent_llm / dynamic_llm / video_memory，以及显式启用的 entity_schema 与 experience）；entity_schema 为 Property 产出稳定实体分组 key、Source 时间上下文与事件精度/区间；video_memory 将视频规约结果转换为 CLM/ELM；`agent_llm` 是 `llm` 的 agent 方向版——继承管线与输出契约，prompt 指令面 user↔agent 场景重定向 + `extractor_language` cn/en 切换（输出契约恒英文），并抽取时同步判定 `memory_class` 三类（`user_profile`/`long_term_memory`/`daily_memory`，基类 `build_candidates` 纯透传、子类 `extract` 收口值域，非法/缺失兜底 `long_term_memory`；该键是文档模式 md 落盘分流键） |
+| `appraiser_impl/` | Appraiser 实现目录（experience：轨迹沉淀八步中的 1-5 与 8 步；轨迹请求的 `context` 背景块校验（预定义字段 turn/started_at/ended_at/end_state/project/model/framework/extra 与 extra 的键数/键名/值约束，v3 §2.1）；第 5 步归因含技能识别——轨迹 `skill_tool` 调用在经验落点空间找同名已发布技能（v3 §2.5 技能与经验同空间），与取用过的经验同一次模型调用归因，见 F10；补报与反馈回填更新判定后补做——补报须与轨迹同一生产者（三主体维比对）、反馈回填按会话核对（session 相同且 turn 递增，只 gate 回填不 gate Pair P），按 `derived_ids` 补写复现事件、结论翻转时复用第 5 步重新归因，事件键带新修订号、聚合取最新一轮，见 F10） |
+| `curator_impl/` | Curator 实现目录（experience：经验空间周期整理——第 0 步按作者清除、聚合（`trajectory_spaces` 内的空间按轨迹数复现、不按作者限计，v3 §3.2）、退闲置/有害、合并删除（模型可选+簇级容错）、竞争淘汰、控规模、第 7 步技能维护（同空间的聚合回写/有害退休/试用转正/旧版取代，v3 §2.5）、类别重数；运行摘要条目 `memory_type=experience`；失败隔离见 F10） |
+| `abstractor_impl/` | Abstractor 实现目录（concat / llm / skill：技能归纳——类别+相似度+capability 分组、五条件门槛（repro_unit 的 auto 已在装配期按落点解析到底，判定处只认 user/trajectory）、逐组一次模型、技能名/脱敏/命令覆盖三项校验，草稿与来源经验同空间且 `dedup_products=False`（v3 §2.5），见 F10） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
 | `index_builder_impl/` | IndexBuilder 实现目录（forward / fulltext / hybrid / unified / vector / entity + 共享 `_index_ops.py`）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）纯编排，组合 forward / fulltext / vector / entity 四个子 builder；`unified` 全部写委托 DomainStore 领域接口（`add`/`update`/`delete`，`mode` 原样透传，不触碰任何底层端口），构建侧完成两件事——(a) `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed，经 `_index_ops.vectorize_unit` 与 vector builder 共用实现）回填 `MemoryUnit.vectors`（`list[ChunkVector]`）随本体下传（一体化数据面实现消费该字段自建 chunk 级向量索引，CompositeDomainStore 仅随本体落盘）；(b) 把 `index_metadata` 的过滤投影字段（`content_layer`/`t_valid`/`t_event`/`t_invalid` 哨兵与 epoch 毫秒）直接补进 `unit.system_metadata`，一体化后端从 `system_metadata`/`user_metadata` 直接读取建索引、无需 `index_metadata` 投影下传；`forward` 只交付记忆本体（正排 KV），`fulltext`/`vector`/`entity` 只建各自的检索索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。`_index_ops.py` 承载 fulltext / vector 共享的投影与流水线（metadata 投影、scope 分组、端口解析、全文文档构造、向量切片-embed-写库、L0/L1 分层建删），unified 复用其 scope 分组与 `vectorize_unit` 切片-embed 单元管线。另提供分片装配守卫 `require_forward_index_when_sharded`（分片部署的归属由 KV insert 创建，只写派生索引的构建器 fulltext / vector 在装配期直接拒绝并提示改用 forward / hybrid / unified）。写接口用 `IndexWriteMode`（`ALL`/`FORWARD_ONLY`/`RETRIEVAL_ONLY`）表达写入范围，`remove` 用 `IndexRemoveMode`（`SOFT`/`HARD`）表达删除语义：`SOFT` 只移出检索索引、本体保留且 get/list 可读；`HARD` 物理删除。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword / shadow）；shadow 显式选配，读取文档机器真源 |
 | `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类 |
-| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步 / schema_orchestrating=Source-first Schema 属性抽取） |
+| `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步（可配 `dedup_decisions` 按抽取策略限定允许的去重结论）/ schema_orchestrating=Source-first Schema 属性抽取）；前两者共享 Appraiser/Curator 可选装配。`orchestrating_evolver.py` 定义每次调用独立的 `ExtractState` 及上下文、抽取、候选准备、整理、归纳、产物准备与持久化阶段；主方法显式编排路由、分层和判定 |
 | `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录 |
 | `evolver_impl/conflict_consolidator.py` | `CONFLICT_CONSOLIDATE` 的规划器：按 `(schema_entity_id, schema_property_name)` 成簇，两段 LLM 产出无副作用的 `ConsolidatePlan`；不落盘 |
 | `evolver_impl/temporal_validity.py` | UPDATE/SUPERSEDE 的时间护栏纯函数；只以显式 aware `t_message` 排陈述先后，已有 valid-time 区间独立校验 |
@@ -74,10 +79,13 @@ trace 均使用 common/log 的敏感参数标记，不能因调试文档路径�
 默认直写到此返回，不自动提交后台 EXTRACT。
 infer=true 由 Engine 等待抽取；显式 evolve/dreaming 经 Scheduler 执行：
 Evolver.evolve(units, mode):
-  EXTRACT     → [orchestrating] _evolve_extract: extract→route→annotate→_dedup_batch(判定+落盘)
-              → [dynamic]     _evolve_extract: extract→route→consolidate(判定)→reflect→落盘
+  EXTRACT     → [orchestrating] _evolve_extract: (可选)appraise→proceed=False短路 |
+                context→extract→prepare→route→annotate→按配置直写/去重写→(可选)finalize
+              → [dynamic]     _evolve_extract: (可选)appraise→短路 |
+                context→extract→prepare→route→annotate→consolidate(判定)→reflect→落盘→(可选)finalize
               → [schema]      _evolve_extract: Source-first→属性抽取→属性落盘→Source entities 写回
-  CONSOLIDATE → _evolve_consolidate: abstract→annotate→_dedup_batch
+  CONSOLIDATE → _evolve_consolidate: (可选)curate→abstract→prepare→annotate→按产物契约直写/去重写
+  EXPERIENCE_CONSOLIDATE → 校验经验类型与 Curator→复用上述整理归纳流程一次
   CONFLICT_CONSOLIDATE → _evolve_conflict_consolidate: 成簇→两段 LLM 规划→
                产物 build 全索引 + 旧版 SUPERSEDED/SOFT→done 标记（FORWARD_ONLY）
   ASSOCIATE   → _evolve_associate: associate→冲突消解→图索引 Edge（逐个节点、逐条边写入；分片图缺归属 / 搬迁中的那一条跳过记日志，不连累同批）
@@ -88,7 +96,8 @@ Evolver.evolve(units, mode):
 
 三个 Evolver 同属 `evolver` 顶层命名空间。`DynamicEvolver` 与显式启用的
 `SchemaOrchestratingEvolver` 都继承 `OrchestratingEvolver`，通过覆盖 `_evolve_extract` 切换抽取路径；
-其他模式（含 HIERARCHY）继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
+其他模式继承父类。装配或 pipeline profile 选择注册名即启用对应 EXTRACT 路径。
+阶段状态只存在于单次调用，不保存在共享 Evolver 上。
 
 ### 隐私保护装配
 
@@ -130,12 +139,16 @@ prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正�
    字段，也不把 Scope 放进 metadata/filters，后端负责命名空间或专用过滤。
 
 6. **Evolver 内容演进与结构演进独立**
-   `EvolveMode.EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（冲突消解/近重复融合）/ `CONFLICT_CONSOLIDATE`（Schema 属性簇内冲突巩固）/ `FORGET`（遗忘/降权）五种内容模式独立，可单独触发。HIERARCHY 只委托 Composer，不进入抽取/去重。索引维护不作为 evolve 模式。
+   `EXTRACT`（信息提取）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（归纳整理）/
+   `EXPERIENCE_CONSOLIDATE`（经验整理与技能归纳）/
+   `CONFLICT_CONSOLIDATE`（Schema 属性簇内冲突巩固）/ `FORGET`（遗忘/降权）独立触发。
+   一次 add 不串行触发抽取与周期整理。HIERARCHY 只委托 Composer，不进入抽取/去重。
+   经验专用模式要求 Curator 且仅接受 experience 条目。索引维护不作为 evolve 模式。
 
 7. **去重召回与判定分离**
    `Dedup` 接口只管召回（向量化/分词 → Store.search → 加载 → 聚合取 max），判定
    （ADD/UPDATE/SUPERSEDE/NOOP）与落盘归 Evolver 实现：
-   `OrchestratingEvolver._evolve_extract`（legacy）由 `_dedup_batch` 耦合判定与落盘；
+   `OrchestratingEvolver._evolve_extract`（legacy）启用 `dedup_extract` 时由 `_dedup_batch` 耦合判定与落盘；
    `DynamicEvolver._evolve_extract`（dynamic）在 consolidate 只判定，reflect 后统一落盘。
    装配按 `vector_enabled` 选 `VectorDedup`/`KeywordDedup`，保证 fulltext-only 下去重仍可用。
    模型改选目标后，执行时使用该目标自身的召回分数，不能继续携带最高分命中的分数。
@@ -143,6 +156,9 @@ prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正�
    recall 命中中解析目标。`OrchestratingEvolver` 仅在一个可见命中且 ID 缺省时使用
    该唯一命中；多命中缺省或 ID 非法时降级 ADD，禁止改用最高相似项。
    `DynamicEvolver` 的自定义 consolidate prompt 仍要求显式 ID。
+   `_evolve_consolidate` 的归纳产物按 `Abstractor.dedup_products` 决定是否过
+   `_dedup_batch`——技能实现置 False 跳过语义去重直接落盘（F10：技能新旧版本
+   内容天然相近，语义去重会误杀新版）。
    高相似 direct_noop 短路（`score ≥ dedup_high_similarity`）须经
    `evolver_impl/dedup_direct_noop.should_direct_noop` 校验：仅当相对已有记忆无
    `has_meaningful_delta`（`t_event` 冲突、更正词、日期 span 集合差）时才允许跳过 LLM。
@@ -243,6 +259,12 @@ prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正�
 - 记忆本体落盘（经 IndexBuilder 调用 Storage）
 - 原文（`/messages/`）读写（调用独立注入的 `message_store: KVStore`）
 - 信息提取与抽象升华（Extractor / Abstractor）
+- 写入准入与评价（Appraiser，mem2.0 经验记忆）
+- 技能归纳与使用反馈（mem2.0 四期：SkillAbstractor 归纳草稿、Curator 第 7 步
+  维护、Appraiser 从轨迹识别加载并归因；技能条目与来源经验同空间
+  （v3 §2.5），不经检索使用——同步到 agent 技能目录、按名加载，见 F10）
+- 经验记忆的专用记录读写（轨迹/判定记录与效用事件的写入；效用域部件在
+  `common/experience.py` 供检索侧共用——F08。都不建索引、不参与检索）
 - 关联分析（Associator）
 - 多维分类（Classifier）
 - 动态 prompt 四步演进（DynamicEvolver：extract→consolidate→reflect→落盘，Evolver 的子类实现）

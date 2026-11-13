@@ -136,7 +136,9 @@ API 边界保护路由预览、查询文本/上下文和批量回显；更新准
    `delete_space` 鉴权后调用 `SpaceLifecycleService`：先 `MemoryEngine.purge_space`
    清理同一 `org + space` 下所有 user/agent/session 子 Scope 的真源和索引，再委托
    `SpaceManager` 清理 messages 与管理元数据，并汇总 `deleted_counts`。本层只做
-   membership 缓存失效与入口审计，不得内联 purge+delete。
+   membership 缓存失效与入口审计，不得内联 purge+delete。装配在经验空间与
+   `author_key` 都已配置时把按作者清除的登记回调经 `space_lifecycle.on_deleted`
+   注入该服务（mem2.0 §2.5.2，见 F10）；条件不满足传 None，服务内部按缺省构造。
 
 ## PEP 鉴权流程
 
@@ -173,6 +175,7 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
   `job_status` 保留取消请求、部分写入及重试核对标记；终态取消不覆盖原结果。
 
 - dreaming 驱动提交派生任务后须立即调用 `link_child`，两步之间不得让出调度循环，以便执行前绑定父任务取消生命周期。注销先持久化 `CANCEL_REQUESTED`，Driver 在 tick 开头和提交前复核 `state + generation + job_id`；阻塞式 Scheduler 调用不得发生在协调器短状态锁内。
+- 主备模式仅将分布式锁竞争视为正常待命。Coordinator 串行处理竞选、恢复和周期写请求，Runtime 在调度器收尾前停止并等待竞选。
 - dreaming 的 `created_by` 保留五维 actor，并由 API 写入私有 `_request_context_v1` 字符串快照。
   恢复只从服务端注册表读快照，保留原角色、到期时间、凭据复核能力及委托 ID；每 tick
   生成新的受控请求上下文，再走唯一 PEP。只有 actor 的旧记录跳过恢复，不能补猜身份。

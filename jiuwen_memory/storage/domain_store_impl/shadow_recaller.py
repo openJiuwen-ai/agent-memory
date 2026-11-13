@@ -10,9 +10,9 @@
 ``ParsedQuery`` 里有 ``vector`` 时走 ANN、否则走 FTS5——与 KEYWORD/VECTOR 两路
 recaller 并列但合并为单通道，通道值取 ``RecallChannel.DOCUMENT``（语义即文档记忆召回）。
 
-**本文件当前为接口骨架（F08 §5.6）：** recall 主流程已接通 ``shadow.search_fulltext``
+**本文件当前为接口骨架（F09 §5.6）：** recall 主流程已接通 ``shadow.search_fulltext``
 （核心关键词召回可跑），向量路、实体扩展、生产过滤、ScoredID→ScoredUnit 的完整聚合
-按依赖进度逐步补齐——详见各方法内 ``# TODO(F08 §5.6)`` 标注。
+按依赖进度逐步补齐——详见各方法内 ``# TODO(F09 §5.6)`` 标注。
 
 与 KeywordRecaller/VectorRecaller 的分工：那两者取 ``storage.fulltext()`` /
 ``storage.vector()``（KV 时代端口，文档模式为 None → recall 返空）；本算子取
@@ -68,7 +68,7 @@ class ShadowRecaller(Recaller):
         故 retriever 文档模式需把 DOCUMENT 注入 enabled channels（见
         ``pipeline_retriever.retrieve`` 的 channels 补全），否则本算子被
         ``storage._recall`` 的 ``r.channel() in channels`` 过滤掉 → 召回落空
-        （F08 §5.6 S14 根因之二）。
+        （F09 §5.6 S14 根因之二）。
         """
         return RecallChannel.DOCUMENT
 
@@ -154,7 +154,7 @@ class ShadowRecaller(Recaller):
         """sqlite-vec ANN 召回：用 ``query.vector`` 构造 ``VectorQuery``。
 
         代码已实现（VectorQuery 构造 + shadow.search_vector 调用齐备），联调验证待
-        F08 §5.6 全链路跑通时补——查询向量维度须与影子索引建表时 ``embedder_dim``
+        F09 §5.6 全链路跑通时补——查询向量维度须与影子索引建表时 ``embedder_dim``
         一致（装配期固化），post-filter 过采样兜底属算子内部已处理的机制。
         ``return_metadata`` 取默认 False：物化侧走 ``shadow.get_units`` 重取完整
         ``MemoryUnit``，召回阶段不需 metadata。

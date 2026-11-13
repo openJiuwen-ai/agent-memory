@@ -50,6 +50,7 @@ from jiuwen_memory.common.log import (
 )
 from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
 from jiuwen_memory.common.type_def import (
+    ISOLATED_MEMORY_TYPES,
     CandidateSource,
     Context,
     FilterExpr,
@@ -77,9 +78,16 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
     project_from_context,
     restore_coords_from_md_filename,
 )
-from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.evolve_dispatch import (
+    ModeEvolverBinding,
+    build_mode_evolvers,
+    mode_candidate_scopes,
+    submit_evolve,
+    validate_mode_evolver_binding,
+)
 from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
+    RetrievalPipelineBinding,
     RetrievalPipelines,
     build_retrieval_pipelines,
 )
@@ -105,7 +113,12 @@ from jiuwen_memory.control.ingest_job import (
 )
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
-from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.pipeline import (
+    MemoryPipeline,
+    PipelineBinding,
+    PipelineProducer,
+    require_experience_profile,
+)
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
     BatchWriteItem,
@@ -248,12 +261,14 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         classifier: Classifier | None = None,
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
-        retrieval_pipelines: dict[str, Retriever] | None = None,
+        retrieval_pipelines: dict[str, Retriever | RetrievalPipelineBinding] | None = None,
+        mode_evolvers: dict[EvolveMode, Evolver | ModeEvolverBinding] | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
         self._retrieval_pipelines = RetrievalPipelines(retriever, retrieval_pipelines)
+        self._mode_evolvers = dict(mode_evolvers or {})
         self._domain_store = domain_store
         self._kv = kv
         self._scheduler = scheduler
@@ -283,6 +298,15 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         文档模式下 KV 不持有 MemoryUnit，默认实现走 ``self.kv.scopes()`` 会漏 scope。
         """
         return self._domain_store.scopes()
+
+    @property
+    def pipeline(self) -> MemoryPipeline | None:
+        """流水线路由（API 层校验空间绑定 profile 用，见 MemoryEngine.pipeline）。
+
+        AgentEngine 可选注入（``pipeline.default`` 具名实例存在时，``_opt_pipeline``）；
+        未注入的部署为 ``None``——与 CloudEngine 同构。
+        """
+        return self._pipeline
 
     def health(self) -> None:
         self._retrieval_pipelines.health()
@@ -329,6 +353,10 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             return str(meta.get(key, "")).strip().lower() == "true"
 
         infer = _is_true("infer")
+        require_experience_profile(
+            self._pipeline, str(meta.get("memory_type", "")).strip(),
+            infer=infer, procedural=_is_true("procedural"), middle=_is_true("middle"),
+        )
 
         is_video = source == Modality.VIDEO
         video_binding = None
@@ -454,8 +482,24 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
     def retrieval_pipeline_names(self) -> tuple[str, ...]:
         return self._retrieval_pipelines.names()
 
-    async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+    def retrieval_pipeline_filter(self, name: str | None) -> FilterExpr | None:
+        self.validate_retrieval_pipeline(name)
+        return self._retrieval_pipelines.type_filter(name)
+
+    def prepare_retrieval_query(self, query: RetrievalQuery) -> RetrievalQuery:
         self.validate_retrieval_pipeline(query.pipeline)
+        return self._retrieval_pipelines.prepare(query)
+
+    def candidate_scopes_for_mode(self, mode: EvolveMode) -> list[Scope]:
+        return mode_candidate_scopes(mode, self._mode_evolvers, self.candidate_scopes)
+
+    def validate_evolve_mode(
+        self, mode: EvolveMode, candidate: CandidateSource | dict | None = None,
+    ) -> None:
+        validate_mode_evolver_binding(mode, self._mode_evolvers, candidate)
+
+    async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        query = self.prepare_retrieval_query(query)
         binding = self._recall_binding(query) if query.pipeline is None else None
         return self._retrieval_pipelines.retrieve(scope, query, binding)
 
@@ -473,7 +517,11 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             raise ValidationError("offset must be >= 0")
         if limit <= 0:
             raise ValidationError("limit must be > 0")
-        result = self._domain_store.list(
+        store = self._domain_store
+        requested_types = {str(value).strip() for value in memory_types or ()} - {""}
+        if requested_types and requested_types <= ISOLATED_MEMORY_TYPES:
+            store = self._experience_domain() or store
+        result = store.list(
             scope,
             offset=offset,
             limit=limit,
@@ -609,15 +657,28 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
     async def update(
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
-        old = self._load(scope, unit_id)
+        old, store = self._load_with_domain(scope, unit_id)
         if self.requires_update_preparation(old, patch):
             plan = await self._prepare_update_from_old(old, patch)
             if plan is not None:
                 return await self.commit_update(plan)
         new = _apply_patch(old, patch)
+        isolated = store is not self._domain_store
+        index = self._index
+        if isolated:
+            binding = (
+                self._pipeline.explicit_write_binding(old.system_metadata)
+                if self._pipeline is not None else None
+            )
+            if binding is None and self._pipeline is not None:
+                binding = self._pipeline.explicit_write_binding({"memory_type": "experience"})
+            if binding is None:
+                raise ValidationError("experience updates require a matching index profile")
+            index = binding.index_builder
+        document_mode = store.should_write_document()
         if patch.mode == UpdateMode.OVERWRITE:
             new.id = old.id
-            self._index.update([new])
+            index.update([new])
             logger.info(
                 "AgentEngine.update overwrite: unit_id=%s scope=%s",
                 new.id,
@@ -629,7 +690,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             new.lifecycle = LifecycleState.ACTIVE
             if patch.t_valid is None:
                 new.temporal.t_valid = _now()
-            if self._domain_store.should_write_document():
+            if document_mode:
                 # 文档模式 supersede：old 经 shadow 读回 coords 是 TRANSIENT 键（dumps
                 # 剥除），deepcopy 的 new 无 coords → domain_store.add 内 _project_of
                 # 读 coords 落空 → 新版落错 md 文件。从 old 的 md_filename（落盘键，不
@@ -637,8 +698,8 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
                 restore_coords_from_md_filename(new, old)
             # 新版先落地再废旧版：任何时刻都有一个可读版本。反过来的话，若 build 失败，
             # 旧版已 SUPERSEDED 而新版尚未存在，这条记忆既退出活跃召回又无新版可读。
-            self._index.build([new])
-            if self._domain_store.should_write_document():
+            index.build([new])
+            if document_mode or isolated:
                 # 文档模式绕过 KV lifecycle（doc-mode-supersede-kv-lifecycle-break）：
                 # KVLifecycleManager.supersede 从 KVStore 取 unit，文档模式真源在
                 # shadow、KV 不持有 MemoryUnit，走它必 NotFoundError。直接改 old 落
@@ -646,10 +707,10 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
                 # lifecycle 投影列，F08 决策三）。对齐 CloudEngine。
                 old.lifecycle = LifecycleState.SUPERSEDED
                 old.temporal.t_invalid = new.temporal.t_valid or _now()
-                self._index.update([old])
+                index.update([old])
             else:
                 old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
-                self._index.update([old])
+                index.update([old])
             logger.info(
                 "AgentEngine.update supersede: old_id=%s new_id=%s scope=%s t_valid=%s",
                 old.id,
@@ -824,6 +885,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             scheduler=self._scheduler,
             job_factory=self._job_factory,
             evolver=self._evolver,
+            mode_evolvers=self._mode_evolvers,
             retriever=self._retriever,
             buckets=buckets,
             denied_scopes=denied_scopes,
@@ -900,12 +962,27 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             return None
         return self._pipeline.select_for_recall(query)
 
-    def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
-        """从真源点读（对齐 CloudEngine，经 DomainStore 文档模式分流到 shadow）。"""
+    def _experience_domain(self) -> DomainStore | None:
+        binding = self._mode_evolvers.get(EvolveMode.EXPERIENCE_CONSOLIDATE)
+        if isinstance(binding, ModeEvolverBinding) and isinstance(
+            binding.candidate_store, DomainStore
+        ):
+            return binding.candidate_store
+        return None
+
+    def _load_with_domain(self, scope: Scope, unit_id: str) -> tuple[MemoryUnit, DomainStore]:
         units = self._domain_store.get(scope, [unit_id])
-        if not units:
-            raise NotFoundError("memory_unit", unit_id)
-        return units[0]
+        if units:
+            return units[0], self._domain_store
+        store = self._experience_domain()
+        if store is not None and store is not self._domain_store:
+            units = store.get(scope, [unit_id])
+            if units and units[0].system_metadata.get("memory_type") in ISOLATED_MEMORY_TYPES:
+                return units[0], store
+        raise NotFoundError("memory_unit", unit_id)
+
+    def _load(self, scope: Scope, unit_id: str) -> MemoryUnit:
+        return self._load_with_domain(scope, unit_id)[0]
 
     def _list_units(self, scope: Scope) -> list[MemoryUnit]:
         # 经 DomainStore 列建索引记忆：文档模式走 shadow.list_units，非文档走 KV.list。
@@ -913,7 +990,12 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         return self._domain_store.list(scope, limit=1_000_000).items
 
     def _version_family(self, scope: Scope, unit_id: str) -> list[MemoryUnit]:
-        units_by_id = {unit.id: unit for unit in self._list_units(scope)}
+        _, store = self._load_with_domain(scope, unit_id)
+        memory_types = sorted(ISOLATED_MEMORY_TYPES) if store is not self._domain_store else None
+        units_by_id = {
+            unit.id: unit
+            for unit in store.list(scope, limit=1_000_000, memory_types=memory_types).items
+        }
         if unit_id not in units_by_id:
             raise NotFoundError("memory_unit", unit_id)
 
@@ -1007,6 +1089,7 @@ def _build(config):
         LifecycleProducer.dep(config, default="kv"),
         kv=manager.kv(resolve_name(config, "kv_store")),
         retrieval_pipelines=retrieval_pipelines,
+        mode_evolvers=build_mode_evolvers(config),
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),

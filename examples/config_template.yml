@@ -8,6 +8,7 @@
 
 # ---- 跨切面参数（写一处，各组件经 globals 读到；具名实例 params 可覆盖）----
 globals:
+  # dreaming_standby: true    # 要求共享任务 KV、lock.dreaming 分布式锁及周期调度器
   vector_enabled: true        # 向量索引 + 向量召回路
   graph_enabled: true         # 图召回路
   rerank_enabled: true        # 披露前精排
@@ -48,12 +49,12 @@ globals:
 #   default: { target: bge_reranker, params: { reranker_bge_model: /models-local/bge-reranker-v2-m3 } }
 #   # 仅使用本地目录或已准备好的 HuggingFace 缓存，运行时不会下载权重。
 
-# ---- 跨实例分布式锁（横切原语，当前无消费方，配了也只在有人 dep 时才实例化）----
+# ---- 跨实例分布式锁 ----
 # 不设默认实现：要用就必须显式配，避免「忘了配 Redis」静默退化成不跨实例的单机锁。
 # memory 实现只供单测与本地开发，不提供跨实例互斥；生产一律用 redis。
 # ssl_verify 只管是否校验服务端证书，加密开关在 url 的 scheme 上（须 rediss://）。
 # lock:
-#   default:
+#   dreaming:                          # 主备实例使用同一 Redis 库与锁名
 #     target: redis
 #     params:
 #       url: "redis://localhost:6379/1"   # 与 kv_store 分库，便于单独观测与清理

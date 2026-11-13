@@ -76,6 +76,19 @@ def _aad_payload(aad: bytes) -> dict:
     return json.loads(aad.decode("utf-8"))
 
 
+def test_encrypted_kv_compares_plaintext_and_changes_ciphertext_atomically() -> None:
+    kv, raw, _ = _kv()
+    scope = Scope(org="acme")
+    key = "registration"
+    kv.insert(scope, key, b"old")
+    assert kv.compare_exchange(scope, key, b"old", b"rebound")
+    assert raw.get(scope, key).startswith(_PREFIX)
+    assert not kv.compare_exchange(scope, key, b"old", None)
+    assert kv.get(scope, key) == b"rebound"
+    assert kv.compare_exchange(scope, key, b"rebound", None)
+    assert not kv.exists(scope, key)
+
+
 def test_encrypted_kv_store_encrypts_raw_value_and_decrypts_get() -> None:
     kv, raw, encryption = _kv()
     scope = Scope(org="acme", user="alice")
@@ -131,6 +144,22 @@ def test_encrypted_kv_store_mget_decrypts_each_value_with_its_own_aad() -> None:
     assert out == [b"one", b"two"]
     purposes = [_aad_payload(aad)["purpose"] for _, aad, _ in security.decrypt_calls]
     assert purposes == ["memory_unit", "raw_message"]
+
+
+def test_encrypted_kv_store_trajectory_keys_use_raw_message_purpose() -> None:
+    # 轨迹记录与对话原文同为「对话原文」性质（含用户消息明文），AAD purpose 与
+    # /messages/ 一致（mem2.0 §2.1）；purpose 不一致时 AAD 不匹配、解不开。
+    kv, _, encryption = _kv()
+    scope = Scope(org="acme", user="alice")
+    key = "/trajectories/d0123456789abcdef/t-0001"
+
+    kv.insert(scope, key, b"trajectory payload")
+
+    _, aad, _ = encryption.encrypt_calls[0]
+    assert _aad_payload(aad)["purpose"] == "raw_message", (
+        "轨迹键归入 raw_message purpose，AAD 与原文消息一致"
+    )
+    assert kv.get(scope, key) == b"trajectory payload"
 
 
 def test_encrypted_kv_store_mget_missing_raises_not_found() -> None:

@@ -67,6 +67,7 @@ from jiuwen_memory.retrieval.schema_temporal.pipeline import (
     SchemaTemporalPipelineExtension,
     build_schema_temporal_extension,
 )
+from jiuwen_memory.retrieval.selector import Selector, SelectorProducer
 from jiuwen_memory.retrieval.staged_retriever import RetrieveState, StagedRetriever
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
@@ -139,6 +140,7 @@ class PipelineRetriever(StagedRetriever):
         rerank_max_query_chars: int = _MAX_RERANK_QUERY_CHARS,
         rerank_max_doc_chars: int = _MAX_RERANK_DOC_CHARS,
         # 次级排序（retrieval F09）：总开关默认关；开启时须注入 SecondaryScorer。
+        selector: Selector | None = None,
         secondary_rank_enabled: bool = False,
         secondary_scorer: SecondaryScorer | None = None,
     ) -> None:
@@ -149,10 +151,13 @@ class PipelineRetriever(StagedRetriever):
         self._domain = domain_store
         self._schema_temporal_extension = schema_temporal_extension
         self._expander: Expander | None = None
+        # 选取算子（mem2.0 §2.4）：相关性过滤后、截断 top_k 前的可选阶段。
+        # 未配置（对话记忆检索）时链路行为不变。
+        self._selector = selector
         # 文档模式标志：ShadowRecaller.channel()=DOCUMENT，但 parser 产出的
         # parsed.channels 默认含 [KEYWORD, GRAPH]（+VECTOR）不含 DOCUMENT。
         # _domain.recall 用 `r.channel() in channels` 过滤 recaller——DOCUMENT 不在
-        # enabled 里则 ShadowRecaller 被过滤 → 召回落空（F08 §5.6 S14 根因之二）。
+        # enabled 里则 ShadowRecaller 被过滤 → 召回落空（F09 §5.6 S14 根因之二）。
         # retrieve() 据此标志把 DOCUMENT 补进 enabled（不改 ShadowRecaller.channel()，
         # 保持其 DOCUMENT 语义）。
         self._doc_mode = doc_mode
@@ -223,6 +228,7 @@ class PipelineRetriever(StagedRetriever):
             self.rollup(state)
         self.threshold(state)
         self.secondary_rank(state)
+        self.select(state)
         state.cut_to_top_k()
         self.disclose(state)
         state.build_result()
@@ -343,13 +349,13 @@ class PipelineRetriever(StagedRetriever):
         enabled = query.channels if query.channels is not None else (parsed.channels or None)
         # 文档模式：ShadowRecaller.channel()=DOCUMENT 不在 parser 默认 channels 内
         # （[KEYWORD, GRAPH]+可选 VECTOR），这里补进去——否则 ShadowRecaller 被
-        # `r.channel() in channels` 过滤掉 → 召回落空（F08 §5.6 S14 根因之二）。
+        # `r.channel() in channels` 过滤掉 → 召回落空（F09 §5.6 S14 根因之二）。
         # 调用方若显式传 query.channels 仍尊重其选择（仅补、不替；DOCUMENT 缺失时才加）。
         if self._doc_mode and enabled is not None:
             if RecallChannel.DOCUMENT not in enabled:
                 enabled = [*enabled, RecallChannel.DOCUMENT]
                 # 文档模式召回能否命中的关键：DOCUMENT 缺失即 ShadowRecaller 被
-                # channels 过滤掉 → 召回恒空（F08 §5.6 S14 根因之二）。
+                # channels 过滤掉 → 召回恒空（F09 §5.6 S14 根因之二）。
                 logger.info(
                     "PipelineRetriever: DOCUMENT injected into channels "
                     "(doc_mode=%s)", self._doc_mode,
@@ -608,6 +614,14 @@ class PipelineRetriever(StagedRetriever):
 
         state.candidates = survivors
 
+    def select(self, state: RetrieveState) -> None:
+        """在阈值之后、top_k 之前分配经验名额并保留选取生成的条目副本。"""
+        if self._selector is None:
+            return
+        started_at = perf_counter()
+        state.candidates = self._selector.select(state.candidates, state.query)
+        state.run.step("select", started_at, n=len(state.candidates))
+
     def secondary_rank(self, state: RetrieveState) -> None:
         """可选次级排序：阈值之后、top_k 截断之前，只重排不增删候选。"""
         parsed = state.parsed
@@ -770,6 +784,13 @@ def _build(config):
         Factory.cfg_get(config, "secondary_rank_enabled", None), default=False
     )
     doc_mode = should_write_document(config.get(WRITE_DOCUMENT_KEY, False))
+    # 选取算子默认关（对话记忆检索不配置；经验 profile 显式打开，mem2.0 §2.4）。
+    # 开关与 reranker 的 rerank_enabled 同构：true 而未指名时取缺省实现 experience。
+    selector = (
+        SelectorProducer.dep(config, default="experience")
+        if config.get("selector_enabled", False)
+        else None
+    )
     unit_reader = None if doc_mode else (
         UnitReader(manager.kv(kv_name)) if manager.has_kv(kv_name) else None
     )
@@ -806,6 +827,7 @@ def _build(config):
         rerank_max_doc_chars=int(
             Factory.cfg_get(config, "rerank_max_doc_chars", _MAX_RERANK_DOC_CHARS)
         ),
+        selector=selector,
         secondary_rank_enabled=secondary_rank_enabled,
         secondary_scorer=(
             SecondaryScorerProducer.dep(config, default="default")

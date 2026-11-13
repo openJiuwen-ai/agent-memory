@@ -10,17 +10,17 @@ from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
 )
-from jiuwen_memory.common.type_def import (
-    MEMORY_TYPE_FILTER_FIELD,
-    MemoryUnit,
-    MetadataValueType,
-    extract_required_equality,
-)
+from jiuwen_memory.common.type_def import ISOLATED_MEMORY_TYPES, MemoryUnit, MetadataValueType
 from jiuwen_memory.construction.classifier import ClassifierProducer
 from jiuwen_memory.construction.evolver import EvolverProducer
 from jiuwen_memory.construction.index_builder import IndexBuilderProducer
 from jiuwen_memory.control.base import ControlOperatorType
-from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.pipeline import (
+    MemoryPipeline,
+    PipelineBinding,
+    PipelineProducer,
+    route_value_from_query,
+)
 from jiuwen_memory.retrieval.retriever import RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery
 
@@ -55,6 +55,10 @@ class MetadataPipeline(MemoryPipeline):
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.PIPELINE
 
+    @property
+    def route_key(self) -> str:
+        return self._route_key
+
     def health(self) -> None:
         for binding in self._profiles.values():
             binding.index_builder.health()
@@ -66,16 +70,31 @@ class MetadataPipeline(MemoryPipeline):
     def explicit_write_binding(
         self, metadata: Mapping[str, MetadataValueType],
     ) -> PipelineBinding | None:
-        value = str(metadata.get(self._route_key, "")).strip()
+        value = self._write_route_value(metadata)
         return self._profiles.get(self._routes.get(value, value)) if value else None
 
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:
-        value = _route_value_from_units(units, self._route_key)
+        value = ""
+        for unit in units:
+            value = self._write_route_value(unit.system_metadata)
+            if value:
+                break
         return self._select(value, "write")
 
+    def _write_route_value(self, metadata: Mapping[str, MetadataValueType]) -> str:
+        memory_type = str(metadata.get("memory_type", "")).strip()
+        if self._route_key == "memory_type" or memory_type in ISOLATED_MEMORY_TYPES:
+            return memory_type
+        return str(metadata.get(self._route_key, "")).strip()
+
     def select_for_recall(self, query: RetrievalQuery) -> PipelineBinding:
-        value = _route_value_from_query(query, self._route_key)
+        value = route_value_from_query(query, self._route_key)
         return self._select(value, "recall")
+
+    def has_profile_for(self, memory_type: str) -> bool:
+        """经 routes 映射后能解析到已定义 profile 即真；需回落 fallback 即假。"""
+        profile_name = self._routes.get(memory_type, memory_type)
+        return profile_name in self._profiles
 
     def _select(self, value: str, surface: str) -> PipelineBinding:
         profile_name = self._routes.get(value, value) if value else self._fallback
@@ -104,28 +123,6 @@ class MetadataPipeline(MemoryPipeline):
             metadata_for_log(routing_metadata),
         )
         return binding
-
-
-def _route_value_from_units(units: list[MemoryUnit], route_key: str) -> str:
-    for unit in units:
-        value = str(unit.system_metadata.get(route_key, "")).strip()
-        if value:
-            return value
-    return ""
-
-
-def _route_value_from_query(query: RetrievalQuery, route_key: str) -> str:
-    value = str(query.extensions.get(route_key, "")).strip()
-    if value:
-        return value
-    # query.filters 已在 RetrievalQuery 边界规范化；memory_type 使用共享规范字段常量。
-    filter_field = (
-        MEMORY_TYPE_FILTER_FIELD
-        if route_key == "memory_type"
-        else f"system_metadata.{route_key}"
-    )
-    routed = extract_required_equality(query.filters, filter_field)
-    return str(routed).strip() if routed is not None else ""
 
 
 def _string_param(raw: object, *, field: str, default: str | None = None) -> str:

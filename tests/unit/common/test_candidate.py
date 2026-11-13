@@ -1,6 +1,6 @@
 """CandidateSource——四类候选源的 dict DSL 序列化（candidate_to_dict / candidate_from_dict）。
 
-契约：注册表持久化的形态就是 dict DSL（F04 D3——候选源是数据不是
+契约：注册表持久化的形态就是 dict DSL（F10 D3——候选源是数据不是
 代码），round-trip 必须无损；非法形态 ValidationError fail fast。
 """
 

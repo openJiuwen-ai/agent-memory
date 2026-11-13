@@ -901,7 +901,7 @@ def _delete(srv, request: DispatchRequest) -> Body:
 
 
 def _parse_dreaming(value: Any) -> bool | None:
-    """dreaming 三态开关（F04 D2）：JSON true/false，缺省 None（立即执行）。"""
+    """dreaming 三态开关（F10 D2）：JSON true/false，缺省 None（立即执行）。"""
     if value is None:
         return None
     if not isinstance(value, bool):
@@ -919,7 +919,7 @@ def _parse_candidate(value: Any) -> dict | None:
 
 
 def _evolve(srv, request: DispatchRequest) -> Body:
-    """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。
+    """触发内容演进（含 experience_consolidate 经验整理）→ Evolver + Scheduler。
 
     dreaming 三态（与 MemoryAPI.evolve 契约一致，HTTP/CLI 经 api_contract 已同构）：
     缺省 = 立即跑一次；true = 注册定时（interval 秒，每 tick 复验授权）；

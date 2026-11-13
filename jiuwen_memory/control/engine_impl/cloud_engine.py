@@ -52,10 +52,17 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
     project_from_context,
     restore_coords_from_md_filename,
 )
-from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.evolve_dispatch import (
+    ModeEvolverBinding,
+    build_mode_evolvers,
+    mode_candidate_scopes,
+    submit_evolve,
+    validate_mode_evolver_binding,
+)
 from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
 from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
+    RetrievalPipelineBinding,
     RetrievalPipelines,
     build_retrieval_pipelines,
 )
@@ -89,7 +96,14 @@ from jiuwen_memory.control.ingest_job import (
 )
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
-from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding, PipelineProducer
+from jiuwen_memory.control.pipeline import (
+    MemoryPipeline,
+    PipelineBinding,
+    PipelineProducer,
+    require_experience_profile,
+    route_value_from_query,
+    route_value_of,
+)
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.types import (
@@ -254,13 +268,15 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         default_pipeline_name: str = "default",
         job_factory: JobFactory | None = None,
         policy: PolicyManager | None = None,
-        retrieval_pipelines: dict[str, Retriever] | None = None,
+        retrieval_pipelines: dict[str, Retriever | RetrievalPipelineBinding] | None = None,
+        mode_evolvers: dict[EvolveMode, Evolver | ModeEvolverBinding] | None = None,
         privacy: PrivacyProtection | None = None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
         self._retriever = retriever
         self._retrieval_pipelines = RetrievalPipelines(retriever, retrieval_pipelines)
+        self._mode_evolvers = dict(mode_evolvers or {})
         self._domain_store = domain_store
         self._kv = kv
         self._scheduler = scheduler
@@ -286,6 +302,11 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         if self._kv is None:
             raise RuntimeError("CloudEngine dreaming requires a KVStore")
         return self._kv
+
+    @property
+    def pipeline(self) -> MemoryPipeline | None:
+        """流水线路由（API 层校验空间绑定 profile 用，见 MemoryEngine.pipeline）。"""
+        return self._pipeline
 
     def candidate_scopes(self) -> list[Scope]:
         return self._domain_store.scopes()
@@ -322,6 +343,15 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
             raise ValueError(
                 "metadata.middle=true requires infer=true (middle 是 infer 下的二级开关)"
             )
+        # 不回落的取值（§2.1「experience 不回落」）在选 profile 之前核对：无 profile、
+        # 或不经过对应 profile 的派生流程（infer 非 true / procedural / middle）即
+        # 参数错误，不写入任何内容。
+        self._require_profile(
+            route_value_of(raw_meta, None, self._message_type_key),
+            infer=infer,
+            procedural=procedural,
+            middle=middle,
+        )
 
         middle_interval = raw_meta.pop("middle_interval", None)
         raw_meta.pop("middle", None)
@@ -565,10 +595,30 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
     def retrieval_pipeline_names(self) -> tuple[str, ...]:
         return self._retrieval_pipelines.names()
 
+    def retrieval_pipeline_filter(self, name: str | None) -> FilterExpr | None:
+        self.validate_retrieval_pipeline(name)
+        return self._retrieval_pipelines.type_filter(name)
+
+    def prepare_retrieval_query(self, query: RetrievalQuery) -> RetrievalQuery:
+        self.validate_retrieval_pipeline(query.pipeline)
+        return self._retrieval_pipelines.prepare(query)
+
+    def candidate_scopes_for_mode(self, mode: EvolveMode) -> list[Scope]:
+        return mode_candidate_scopes(mode, self._mode_evolvers, self.candidate_scopes)
+
+    def validate_evolve_mode(
+        self, mode: EvolveMode, candidate: CandidateSource | dict | None = None,
+    ) -> None:
+        validate_mode_evolver_binding(mode, self._mode_evolvers, candidate)
+
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
-        routed_query = self._normalized_query(query)
-        self.validate_retrieval_pipeline(routed_query.pipeline)
-        binding = self._recall_binding(routed_query) if routed_query.pipeline is None else None
+        routed_query = self.prepare_retrieval_query(self._normalized_query(query))
+        binding = None
+        if routed_query.pipeline is None:
+            self._require_profile(
+                route_value_from_query(routed_query, self._message_type_key)
+            )
+            binding = self._recall_binding(routed_query)
         return self._retrieval_pipelines.retrieve(scope, routed_query, binding)
 
     async def list(
@@ -904,7 +954,7 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         buckets: list[Scope] | None = None,
         denied_scopes: list[str] | None = None,
     ) -> str | None:
-        """提交 EvolveJob——一次性演进执行共用件（F04 D3，纯执行）。"""
+        """提交 EvolveJob——一次性演进执行共用件（F10 D3，纯执行）。"""
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
@@ -916,6 +966,9 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
             )
         # E-06：evolver 必传注入——Job 使用 Engine 装配的同一实例，Spec 不自行解析。
         # 纯执行（鉴权在 API 层）：candidate→resolver 翻译 + 一次性 EvolveJob 提交。
+        # evolver_for_unit（mem2.0 §2.5.1 改动 1）：条目按 memory_type 分发到所属
+        # profile 的 evolver（引擎现有的逐条选取方法），经验条目不再被对话记忆的
+        # 整理规则处理。
         return await submit_evolve(
             scope=scope,
             mode=mode,
@@ -925,9 +978,11 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
             scheduler=self._scheduler,
             job_factory=self._job_factory,
             evolver=self._evolver,
+            mode_evolvers=self._mode_evolvers,
             retriever=self._retriever,
             buckets=buckets,
             denied_scopes=denied_scopes,
+            evolver_for_unit=self._evolver_for_unit,
         )
 
     async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:
@@ -1077,6 +1132,31 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         for unit in units:
             unit.system_metadata["pipeline"] = pipeline_name
 
+    def _require_profile(
+        self,
+        value: str,
+        *,
+        infer: bool | None = None,
+        procedural: bool = False,
+        middle: bool = False,
+    ) -> None:
+        """不回落的 ``memory_type`` 取值（:data:`NO_FALLBACK_MEMORY_TYPES`）的准入核对。
+
+        无对应 profile 即 ``ValidationError``：回落会把轨迹 JSON 当作一段对话抽取、写入
+        用户自己的空间，而 ``add`` 仍返回成功（§2.1）。``write`` 侧另核对三个写入开关
+        （``infer=None`` 表示检索侧，不核对）；这三种请求都不经过对应 profile 的派生流程：
+        ``infer`` 不为真走直接写入、``procedural=true`` 转过程记忆分支、``middle=true``
+        走工作记忆建索引。
+
+        ``skill`` 在写入侧整体拒绝（§2.3「类型不能伪造」）：技能由技能归纳算子从多条
+        复现的经验里产出（§2.5），不经写入接口——放行即贡献者可把自己的一条记忆写成
+        技能注入其他用户。检索侧（``infer=None``）放行：技能条目按等值谓词可读，读
+        权限沿用空间的现有规则。
+        """
+        require_experience_profile(
+            self._pipeline, value, infer=infer, procedural=procedural, middle=middle,
+        )
+
     def _write_binding(self, units: list[MemoryUnit]) -> PipelineBinding | None:
         if self._pipeline is None:
             return None
@@ -1194,6 +1274,7 @@ def _build(config):
         LifecycleProducer.dep(config, default="kv"),
         kv=manager.kv(resolve_name(config, "kv_store")),
         retrieval_pipelines=retrieval_pipelines,
+        mode_evolvers=build_mode_evolvers(config),
         classifier=_optional_classifier(config),
         pipeline=_optional_pipeline(config),
         message_type_key=str(config.get("message_type_key", "message_type")),

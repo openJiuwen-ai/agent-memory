@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.errors import ValidationError
@@ -55,6 +55,9 @@ __all__ = [
     "reject_deprecated_llm_attempt_keys",
     "validate_llm_attempt_policy",
 ]
+
+if TYPE_CHECKING:
+    from jiuwen_memory.storage.kv import KVStore
 
 # LLM 抽的 tags 上限（prompt 要求 1-3 个，解析端兜底截断）。
 MAX_TAGS = 3
@@ -333,3 +336,28 @@ def importance_category_prompt(
         lines += [f'  - "{name}": {guide.get(name, "business-defined category")}' for name in names]
         lines.append('When unsure, use "default".')
     return "\n".join(lines) + "\n"
+
+
+def resolve_message_store(config: Any) -> KVStore:
+    """取原文 store：params 声明了就按引用取，没声明则复用 ``kv_store.default`` 具名实例。
+
+    不能简单用 ``KvProducer.dep(config, "message_store", default="memory")``——``dep`` 的
+    ``default`` 分支是**匿名新建**，会造出一个与配置后端无关的进程内 KV，原文从此写进谁也
+    看不见的 dict（不落盘、重启即失、``storage.scan`` 查不到、无告警）。
+
+    而字段缺失是常态：``AssemblyContext.merged`` 按具名实例整体覆盖，用户一旦声明
+    ``evolver.default``（如 examples/config_template.yml 里启用 dynamic 的写法），内置
+    params 里的 ``message_store`` 就随之消失。
+
+    与 :meth:`StoreManagerProducer.resolve` 同款兜底——两者都是**有状态**依赖，新建一个等于换后端。
+
+    mem2.0 起经验的评价算子与抽取算子装配也用它取轨迹所在 KV（轨迹记录、判定记录
+    与原文同一后端，§2.2）。
+    """
+    from jiuwen_memory.storage.kv import KvProducer
+
+    if "message_store" in config.params:
+        return KvProducer.dep(config, "message_store")
+    if "default" in config.ctx.namespaces.get(KvProducer.TOP_NAME, {}):
+        return KvProducer.build_named("default", config.ctx)
+    return KvProducer.build("memory", {}, config.ctx)

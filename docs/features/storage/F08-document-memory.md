@@ -4,8 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-09 |
-| 对应 commit | `f84097a` feat(memory): 文档记忆初版实现（markdown 真源 + 影子索引 + 看门狗） |
+| 日期 | 2026-11-05 |
 | 影响范围 | `jiuwen_memory/storage/`（markdown / shadow / watchdog / sync_gate / domain_store / store_manager）、`jiuwen_memory/config/document_flag.py`、`jiuwen_memory/construction/`（document_index_builder / llm_extractor / llm_router / 两个 evolver）、`jiuwen_memory/retrieval/`（pipeline_retriever / shadow_recaller）、`jiuwen_memory/api/memory_api_impl/`（assembly / write_ops / local_support）、`jiuwen_memory_entry/`（server / http_server / mcp_server）、`pyproject.toml`（deploy extras） |
 | 测试基线 | `tests/unit/storage/`（test_local_markdown_store / test_sqlite_shadow_index / test_local_watchdog / test_sync_gate / test_composite_storage / test_storage_base）、`tests/unit/config/test_document_flag.py`、`tests/unit/construction/`（test_document_index_builder / test_extractor_title / test_llm_router）、`tests/unit/retrieval/`（test_shadow_recaller / test_pipeline_retriever_doc_mode）、`tests/unit/api/test_memory_runtime_lifecycle.py`、`tests/unit/api/test_collective_routing.py`、`tests/unit/config/test_storage_routing.py` |
 | Refs | 仓根设计文档 `F07-document-memory-redesign.md`、`F08-document-memory-impl.md`（本文以已落地代码为准） |
@@ -127,6 +126,14 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 | `get` | `shadow.get_units`（缺失省略、保序），替代 `kv.mget` |
 | `list` | `shadow.list_units` 全量拉 → 复用 `list_memory_entries` 内存过滤排序分页 |
 | `SOFT` remove | no-op——检索退出由调用方先 `lifecycle.transition` 改状态（`update(FORWARD_ONLY)` 同步 lifecycle 投影列），检索侧靠谓词下推 + retriever 复核排除；**调用方契约：先 transition 再 remove(SOFT)** |
+
+**文档列表的数据源保持单一**：即使部署同时装配 KV，`list` 仍只列举 shadow 中的条目。
+拒绝仅在列表中拼接全部 KV 的方案：同 ID 的旧副本会污染计数和分页，KV 独有条目又无法
+经同一文档数据面的点读、更新和删除完整处理。经验/技能类型过滤只约束当前真源中的条目，
+不改变真源选择；混合存储若需要，应另行定义完整的读写、召回和去重契约。
+
+回归覆盖同时存在文档、同 ID 的旧 KV 副本、KV 独有普通/经验/技能及轨迹记录的情况，验证
+文档列表的过滤、精确计数、分页和点读一致性（`test_composite_storage.py`）。
 
 **单行清洗**（`_sanitize_document_content`）：块格式契约（单行正文、看门狗按行遍历、replace/remove 按行比对）建立在「一个 unit 一行正文」上，但上游不保证——content 含换行时 md 块被切碎、看门狗把第 2+ 行当独立幽灵 unit。故在 md.write / shadow.insert_units 分叉**之前**对 unit 本体原地折叠空白为单空格——md 视图、unit_json、content_hash、replace_content 锚点四方看到同一份 content。收口在文档路径入口而非 extractor：单行是**存储层约束**，KV 路径不受影响。
 

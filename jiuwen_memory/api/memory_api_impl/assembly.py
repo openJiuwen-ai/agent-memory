@@ -35,6 +35,7 @@ from jiuwen_memory.common.audit.base import AuditLogger, AuditProducer
 from jiuwen_memory.common.audit.protected_audit_logger import ProtectedAuditLogger
 from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import RateLimitedError, ValidationError
+from jiuwen_memory.common.experience import UtilityStore
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.lock import LockProducer
 from jiuwen_memory.common.log import get_logger, setup_logging
@@ -66,7 +67,12 @@ from jiuwen_memory.common.security.protection.workload_guard import (
 )
 from jiuwen_memory.common.security.request_context import new_request_context
 from jiuwen_memory.common.security.runtime import SecurityRuntime
-from jiuwen_memory.common.security.types import Credentials, RequestSecurityContext, Surface
+from jiuwen_memory.common.security.types import (
+    Credentials,
+    RequestSecurityContext,
+    Surface,
+    reveal_secret,
+)
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
@@ -85,7 +91,15 @@ from jiuwen_memory.config.encryption import (
     deployment_bindings,
 )
 from jiuwen_memory.construction.bootstrap import register_constructors
+from jiuwen_memory.construction.common import resolve_message_store
+from jiuwen_memory.construction.experience import (
+    DEFAULT_SPACE_OWN,
+    ExperienceConfig,
+    make_erasure_callback,
+    parse_experience_config,
+)
 from jiuwen_memory.construction.router import optional_router
+from jiuwen_memory.control.application import SpaceLifecycleService
 from jiuwen_memory.control.bootstrap import register_controllers
 from jiuwen_memory.control.engine import EngineProducer
 from jiuwen_memory.control.governance import GovernorProducer
@@ -445,11 +459,21 @@ class _MemoryRuntime:
             if self._closing:
                 return
             self._closing = True
+            stop_election = getattr(self.api, "stop_dreaming_election", None)
+            defer_scheduler_stop = False
+            if callable(stop_election):
+                # 主备模式的恢复可能正在向 Scheduler 换绑任务，收尾线程先等竞选退出。
+                def request_election_stop() -> None:
+                    nonlocal defer_scheduler_stop
+                    defer_scheduler_stop = stop_election()
+
+                if not self._close_step("stop_dreaming_election", request_election_stop):
+                    defer_scheduler_stop = True
             if self._kernel.watchdog is not None:
                 self._watchdog_stopped = self._close_step(
                     "watchdog.stop", self._kernel.watchdog.stop
                 )
-            if self._kernel.scheduler is not None:
+            if self._kernel.scheduler is not None and not defer_scheduler_stop:
                 self._close_step(
                     "scheduler.shutdown(wait=False)",
                     lambda: self._kernel.scheduler.shutdown(wait=False),
@@ -478,6 +502,10 @@ class _MemoryRuntime:
                 self._watchdog_stopped = self._close_step(
                     "watchdog.stop retry", self._kernel.watchdog.stop
                 )
+            wait_election = getattr(self.api, "wait_for_dreaming_election", None)
+            election_stopped = not callable(wait_election) or self._close_step(
+                "wait_for_dreaming_election", wait_election,
+            )
             ingest_stopped = self._close_step(
                 "ingest_jobs.close(wait=True)", lambda: self._kernel.ingest_jobs.close(wait=True)
             )
@@ -487,7 +515,9 @@ class _MemoryRuntime:
                     "scheduler.shutdown(wait=True)",
                     lambda: self._kernel.scheduler.shutdown(wait=True),
                 )
-            stopped = self._watchdog_stopped and ingest_stopped and scheduler_stopped
+            stopped = (
+                election_stopped and self._watchdog_stopped and ingest_stopped and scheduler_stopped
+            )
             if stopped:
                 # 锁释放失败不阻断已安全的资源清理；停止不确定时不释放锁或资源。
                 release = getattr(self.api, "release_dreaming_lock", None)
@@ -650,6 +680,84 @@ def _merge_kernel_config(defaults: AssemblyContext, overrides: AssemblyContext) 
     return ctx
 
 
+def _experience_config(root: ComponentConfig) -> ExperienceConfig | None:
+    """解析 ``globals.experience``（v3 §2 部署配置）；未配置返回 ``None``。
+
+    形态校验集中在 :func:`construction.experience.parse_experience_config`，
+    本层只关心「不带 coords 的经验写入落哪个空间、按作者清除登记到哪些空间」。
+    """
+    return parse_experience_config(root.get("experience"))
+
+
+def _experience_author_key(root: ComponentConfig) -> str:
+    """经验作者摘要密钥——与评价算子同值（§2.5.2「按作者清除」）。
+
+    读法与评价算子 ``_build`` 的 ``config.get("author_key")`` 同语义：appraiser
+    命名空间实例 params 优先、globals 回退。实例名不固定（evolver 的引用名或
+    ``default``），故扫全部实例的 params。多实例各配不同密钥时评价算子之间的
+    作者摘要互相错位——事件键对不上、按作者清除静默失效，装配期报错（检视
+    遗留 #9 的防线）。
+    """
+    fallback = root.get("author_key", "")
+    keys = {
+        reveal_secret(spec.params.get("author_key", fallback)).strip()
+        for spec in root.ctx.namespaces.get("appraiser", {}).values()
+    }
+    if len(keys) > 1:
+        raise ValidationError(
+            "appraiser 多实例的 author_key 不一致：作者摘要按密钥计算，评价算子"
+            "之间的效用事件键将互相错位、按作者清除静默失效（v3 §2.5.2）"
+        )
+    return next(iter(keys), reveal_secret(fallback).strip())
+
+
+def _validate_experience_store_affinity(
+    root: ComponentConfig, erasure_kv: KVStore
+) -> None:
+    """经验算子的原文 store 须与清除标记同一后端实例（检视遗留 #1 的装配期防线）。
+
+    curator / appraiser 实例 params 显式声明 ``message_store`` 引用时，解析出的
+    KV 若与按作者清除的标记 store 不是同一实例，清除标记会写进算子读不到的
+    存储、注销后的合规清除静默失效——装配期报错，不留到运行期。未声明引用的
+    实例与标记 store 同走 ``kv_store.default`` 兜底（具名单例），天然同源不比对。
+    """
+    for top_name in ("appraiser", "curator"):
+        for name, spec in root.ctx.namespaces.get(top_name, {}).items():
+            if "message_store" not in spec.params:
+                continue
+            config = ComponentConfig(
+                params=spec.params, ctx=root.ctx, target=spec.target, name=name
+            )
+            if resolve_message_store(config) is not erasure_kv:
+                raise ValidationError(
+                    f"{top_name}.{name} 的 message_store 引用与按作者清除的标记 "
+                    "store（kv_store.default）不是同一后端实例：清除标记将写进算子"
+                    "读不到的存储，合规清除静默失效（v3 §2.5.2；部署约束改为"
+                    "装配期强制，见 F10）"
+                )
+
+
+def _make_erasure_callback(root: ComponentConfig, experience: ExperienceConfig | None):
+    """构造按作者清除的登记回调（§2.5.2）；条件不满足返回 ``None``。
+
+    ``experience`` 是装配期已解析的 ``globals.experience``（None = 未配置）。
+    启用条件：周期整理空间已配置（``curated_spaces`` 非空）+ author_key 非空。
+    author_key 缺失时评价算子本就装配不了（构造函数拒绝）——没有作者摘要可
+    清除，登记无意义，静默关闭特性而不是装配失败。标记与事件、统计须同源：
+    curator / appraiser 实例另声明 ``message_store`` 引用时必须与标记 store
+    同一后端，装配期校验（``_validate_experience_store_affinity``）。
+    """
+    author_key = _experience_author_key(root)
+    if experience is None or not experience.curated_space_names or not author_key:
+        return None
+    erasure_kv = resolve_message_store(root)
+    _validate_experience_store_affinity(root, erasure_kv)
+    utility = UtilityStore(erasure_kv)
+    return make_erasure_callback(
+        utility, author_key=author_key, curated_spaces=experience.curated_space_names,
+    )
+
+
 def _build_kernel(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
@@ -795,6 +903,9 @@ def _assemble_kernel(
     with _assembly_lifecycle(ctx) as lifecycle:
         lifecycle.failure_cleanup.append(scheduler.shutdown)
     lock_specs = root.ctx.namespaces.get(LockProducer.TOP_NAME, {})
+    dreaming_standby = root.get("dreaming_standby", False)
+    if not isinstance(dreaming_standby, bool):
+        raise ValidationError("globals.dreaming_standby must be bool")
     dreaming_lock = (
         LockProducer.build_named("dreaming", root.ctx) if "dreaming" in lock_specs else None
     )
@@ -812,8 +923,15 @@ def _assemble_kernel(
 
     # 在同一装配纪元建立 Registry，随后从实际认证器绑定签发真源；SDK 与 Server 同路。
     credential_registry = CredentialStatusRegistry()
+    # engine 提出变量：按作者清除的登记回调注入删除事务时须与 API 同一实例
+    # （dep 的 default 分支匿名新建，二次调用会得到另一个实例）。
     engine = EngineProducer.dep(root, default="in_memory")
     permission = PermissionProducer.dep(root, default="sqlite")
+    # 部署配置的经验沉淀（v3 §2）：装配期解析一次，erasure 回关与缺省落点
+    # 鉴权共用。未配置（None）= 特性关闭。
+    experience_config = _experience_config(root)
+    # 按作者清除的登记回调（§2.5.2）：周期整理空间与 author_key 都已配置才构造。
+    erasure_callback = _make_erasure_callback(root, experience_config)
 
     continuity = None
     connectors = {}
@@ -831,6 +949,7 @@ def _assemble_kernel(
         permission=permission,
         scheduler=scheduler,
         dreaming_lock=dreaming_lock,
+        dreaming_standby=dreaming_standby,
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
         audit_logger=audit_logger,
@@ -856,6 +975,21 @@ def _assemble_kernel(
         # 是同一实例内不出现两份表，跨实例的一致由本处的配置写法决定。
         router=optional_router(root),
         document_mode=should_write_document(root.get(WRITE_DOCUMENT_KEY)),
+        # 部署配置的经验缺省落点（v3 §2）：不带 coords 且 default_space 填了
+        # 空间名的 experience 写入按它鉴权（own 时落点就是写入落点，已由现有
+        # 逻辑校验）。未配置经验的部署传缺省 own，鉴权逻辑空过。
+        experience_default_space=(
+            experience_config.default_space
+            if experience_config is not None
+            else DEFAULT_SPACE_OWN
+        ),
+        # 按作者清除的登记回调注入删除事务（§2.5.2）：None 时 API 内部按
+        # 缺省构造（现有行为），装配不因特性关闭而改 SpaceLifecycleService。
+        space_lifecycle=(
+            SpaceLifecycleService(engine, space, on_deleted=(erasure_callback,))
+            if erasure_callback is not None
+            else None
+        ),
         authorizer=authorizer,
         credential_registry=credential_registry,
         continuity=continuity,

@@ -25,6 +25,7 @@ Agent、文档项目、生命周期、认知层级、记忆分类及正文／标
 | `base.py` | `ControlOperator` 抽象基类 + `ControlOperatorType` 枚举；所有算子的自描述契约 |
 | `types.py` | 控制层数据类型（Channel/JobInfo/MemoryPatch/DeleteSelector/BatchWrite*/WriteTargets 等）+ 安全域 Action/Grant 兼容再导出，被本层所有文件及上游 `api/` 依赖 |
 | `engine.py` | `MemoryEngine` 抽象接口——跨层编排中枢，异步协程 |
+| `engine_impl/retrieval_pipelines.py` | 具名完整 Retriever 与固定类型范围的装配、纯查询约束与选择；跨流程共享同一 QueryParser |
 | `pipeline.py` | `MemoryPipeline` 抽象接口——按记忆类型选择构建/查询 profile |
 | `lifecycle.py` | `LifecycleManager` 接口——状态流转（transition）与到期清扫（sweep） |
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
@@ -98,7 +99,7 @@ Agent、文档项目、生命周期、认知层级、记忆分类及正文／标
 15. **授权值对象与路由 capability 单一真源**：`Action` / `Grant` 只从 `common.security.types` 兼容再导出，不在 control 重定义；`PermissionManager.routing_fields()` 继承自 `common.security.authorization.RoutingFieldsProvider`，只允许路由实现覆盖。
 16. **Engine 不回填 Segment assets**：`write` 将 API 入参中的 `assets` 复制到 `RawPayload`，之后由 Ingestor 负责映射。Engine 可继续处理 tags 和引擎管理的 metadata，但不得假设首 Segment 并改写 `Segment.assets`。
 17. **后台 Job 的 IndexBuilder/Evolver 由 Engine 运行时注入**：`EvolveJobSpec` / `MiddleToLongJobSpec` 装配期不解析 Evolver/IndexBuilder（不按 `vector_enabled` 猜默认、不调 `EvolverProducer` / `IndexBuilderProducer`）；Engine 提交 Job 时必传注入与写入/演进同源的实例（middle 路径传 pipeline binding 或单 profile 的 `index=` / `evolver=`，`evolve` 传 Engine 装配的 `evolver=`），运行时注入优先于 Spec 兜底字段；缺失注入时 `with_scope` 抛 `ValidationError`，不静默回退默认实现（见 docs/features/control/F08-engine-job-builder-alignment.md）。
-18. **dreaming 控制层纯执行**（F04 D7，PEP 边界）：Engine / EvolveJob / FanOutResolver **不鉴权**——不接收 identity、不调 `PermissionManager.check`、不收 guard 闭包。三态分发、持续授权、fan-out 逐桶裁决与恢复编排在 API 层 `DreamingCoordinator`；Engine.evolve 只保留 candidate→resolver→一次性 EvolveJob。拒绝桶只以 `count:N` 脱敏摘要回显。定时注册要求 `scheduler.supports_recurring`。首次注册写序 submit→save，失败 cancel；更新复用 schedule_key 时 save 失败必须恢复旧 Job 声明。注销先持久化 `CANCEL_REQUESTED`，旧代 Driver 用 generation 自停；API 协调器不得在短状态锁内等待 Scheduler。周期实例空表启动也持 leader 租约，register 与每 tick 均复核；失锁以 `RecurringJobStoppedError` 停父 Timer。Scheduler 的 cancel/status 必须在其私有循环串行化，shutdown 必须 await 已取消任务后才能关循环。EvolveJob 的同步 Evolver 返回后须先合并结果再检查取消，使 CANCELLED 状态保留部分写入 ID。
+18. **dreaming 控制层纯执行**（F10 D7，PEP 边界）：Engine / EvolveJob / FanOutResolver **不鉴权**——不接收 identity、不调 `PermissionManager.check`、不收 guard 闭包。三态分发、持续授权、fan-out 逐桶裁决与恢复编排在 API 层 `DreamingCoordinator`；Engine.evolve 只保留 candidate→resolver→一次性 EvolveJob。拒绝桶只以 `count:N` 脱敏摘要回显。定时注册要求 `scheduler.supports_recurring`。首次注册写序 submit→save，失败 cancel；更新复用 schedule_key 时 save 失败必须恢复旧 Job 声明。注销先持久化 `CANCEL_REQUESTED`，旧代 Driver 用 generation 自停；API 协调器不得在短状态锁内等待 Scheduler。周期实例空表启动也持 leader 租约，register 与每 tick 均复核；失锁以 `RecurringJobStoppedError` 停父 Timer。Scheduler 的 cancel/status 必须在其私有循环串行化，shutdown 必须 await 已取消任务后才能关循环。EvolveJob 的同步 Evolver 返回后须先合并结果再检查取消，使 CANCELLED 状态保留部分写入 ID。
 
 ## 双通道调度机制
 
@@ -138,6 +139,23 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - `CloudEngine` 使用 `message_type`（默认 metadata key）选择构建/查询 profile，写入后固化 `system_metadata["message_type"]` 与 `system_metadata["pipeline"]`，并校验真源 unit.scope 与 target scope 一致。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
+### 具名检索与专用演进任务
+
+- `engine_impl/retrieval_pipelines.py` 装配具名 Retriever 与固定记忆类型范围；
+  `retrieval_pipeline_names` / `retrieval_pipeline_filter` / `prepare_retrieval_query`
+  是 Engine 的纯查询配置能力。API 在鉴权前装配固定类型范围，Engine 直调同样下推，
+  请求条件只能继续收窄。所有具名 Retriever 共享默认 Retriever 声明的 QueryParser。
+- `engine_impl/evolve_dispatch.py` 的 `ModeEvolverBinding` 绑定 mode 的处理实例，
+  长值可显式指定候选 `domain_store` 与 `retriever`；普通未绑定 mode 沿用原执行路径。
+  `experience_consolidate` 必须显式绑定，候选在取数与 Job 执行边界均限定为经验，
+  不逐条选择写入 profile；Curator/Abstractor 的算法仍在 construction。
+- `candidate_scopes_for_mode` 让 fan-out 授权枚举与本轮候选真源一致；
+  `validate_evolve_mode` 在定时注册、恢复及执行前检查模式绑定。显式候选数据面的
+  recall 源还必须显式绑定同源 Retriever，禁止默用其他数据面的召回结果。
+- Dreaming 主备要求共享任务注册表及分布式锁。共享注册变更用 KV 条件更新或删除，锁操作在同一专属事件循环执行。
+- `DreamingEntry.next_due_at` 在首次注册就持久化；成功提交一次性演进后更新下一次到期。
+  重启、重复注册及旧记录迁移都延续已等待时间，首次执行前重启也不重置周期。
+
 ## 本地约束
 
 - 摄入取消与任务开始/完成在控制器状态锁内串行；Future 完成回调统一释放容量与执行句柄。
@@ -158,7 +176,7 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - `DeleteMode.DOWNWEIGHT` 不改变 lifecycle，只降低 `system_metadata.importance`
 - 运行时策略的读写职责归 `PolicyManager`；Engine 不承载具体策略存储或策略键校验逻辑
 - space 元数据、space policy、成员和 offboarding 状态职责归 `SpaceManager`；Engine 的 `purge_space` 负责枚举目标 `org + space` 的全部子 Scope 并清理记忆真源与索引
-- `delete_space` 鉴权后的 purge → `SpaceManager.delete` → `deleted_counts` 汇总只允许出现在 `application/SpaceLifecycleService`；该服务不执行 PEP、不失效 membership 缓存、不写入口审计
+- `delete_space` 鉴权后的 purge → `SpaceManager.delete` → `deleted_counts` 汇总只允许出现在 `application/SpaceLifecycleService`；该服务不执行 PEP、不失效 membership 缓存、不写入口审计。删除完成后可选调用注入的 `on_deleted` 回调组（mem2.0 按作者清除，缺省空 = 现有行为）：owners 在元数据删除之前读出，回调异常不上抛、不拦后续回调（`SpaceManager.delete` 不幂等，上抛即重试死循环）；回调实现在 construction 侧、装配注入
 - `application/` 四个端口由已注入的算子组成，不是 `ControlOperator`，无 Producer，不引入 Service Locator
 - `PolicyManager` 只管理运行时可变策略；未知 key 或试图新增 key 必须抛 `PolicyError`
 - 所有算子必须实现 `operator_type()` 和 `health()`（继承自 `ControlOperator`）

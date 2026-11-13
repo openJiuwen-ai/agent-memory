@@ -24,6 +24,7 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -55,6 +56,7 @@ if _ADAPTER_DIR.is_dir() and str(_ADAPTER_DIR) not in sys.path:
 # ruff: noqa: E402
 # pylint: disable=wrong-import-order  # 顶层模块须晚于 sys.path.append，无法按 first/third-party 排序
 from agent_memory_provider import (
+    AgentMemoryClientError,
     AgentMemoryMemoryProvider,
     _HttpClient,
     _InProcessClient,
@@ -164,8 +166,8 @@ def _offline_in_process_config(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     _orig = _amp._agent_default_config
 
-    def _offline() -> dict:
-        cfg = _orig()
+    def _offline(*, experience_space: str = "") -> dict:
+        cfg = _orig(experience_space=experience_space)
         cfg["globals"]["embedder_dim"] = 64
         cfg["globals"]["watch_document"] = False
         cfg["llm"]["default"] = "echo"
@@ -848,6 +850,41 @@ class TestSdkMode:
 
         asyncio.run(_run())
 
+    def test_experience_enabled_sdk_assembles_and_tool_roundtrip(self):
+        """开启形态（experience_space 非空）的真实进程内装配链路（2026-10-27）。
+
+        缺省翻转（「配置了才启用」）后 TestSdkMode 默认构造走关闭形态，开启
+        形态的「经验算子组装配 + 查经验工具 + 经验检索」链路由此钉住——条件
+        拼装把经验段拼坏会在装配期或检索期炸。
+        """
+
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-exp-user"), role=Role.ROOT
+                ),
+                experience_space="shared-experience",
+            )
+            await provider.initialize(user_id="sdk-exp-user", scope_id="tenant-sdk")
+            try:
+                names = [s["name"] for s in provider.get_tool_schemas()]
+                assert "agent_memory_experience" in names, "开启形态注册查经验工具"
+                # initialize 已过 _setup_experience_jobs（restore_dreaming +
+                # register_consolidation，失败按设计只记日志）；空库检索走
+                # retriever.experience 全链（经验数据面 + 三段过滤），无结果容错。
+                result = json.loads(
+                    await provider.handle_tool_call(
+                        "agent_memory_experience",
+                        {"query": "部署经验", "category": "other"},
+                    )
+                )
+                assert result["result"] == "No relevant experience found.", result
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+
     def test_prefetch_forwards_project_to_search_filters(self):
         async def _run() -> None:
             provider = AgentMemoryMemoryProvider(
@@ -1066,7 +1103,7 @@ class TestMergeConfigOverDefault:
     def test_globals_creds_override_preserves_agent_stack(self, monkeypatch):
         import agent_memory_provider as _amp
 
-        monkeypatch.setattr(_amp, "_agent_default_config", lambda: {
+        monkeypatch.setattr(_amp, "_agent_default_config", lambda *a, **k: {
             "globals": {"write_document": True, "embedder_dim": 1024, "llm_api_key": ""},
             "markdown_store": {"default": {"target": "local", "params": {"root": ""}}},
             "engine": {"default": {"target": "agent"}},
@@ -1098,7 +1135,7 @@ class TestMergeConfigOverDefault:
     def test_each_call_returns_fresh_dict(self, monkeypatch):
         import agent_memory_provider as _amp
 
-        monkeypatch.setattr(_amp, "_agent_default_config", lambda: {"globals": {"a": 1}})
+        monkeypatch.setattr(_amp, "_agent_default_config", lambda *a, **k: {"globals": {"a": 1}})
         first = _amp._merge_config_over_default({"globals": {"b": 2}})
         second = _amp._merge_config_over_default({"globals": {"c": 3}})
         assert first is not second, "每次返回全新字面量"
@@ -1108,7 +1145,7 @@ class TestMergeConfigOverDefault:
 
 def test_source_metadata_added_to_each_provider_write_path(monkeypatch):
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import Mock
 
     import agent_memory_provider as provider_module
 
@@ -1373,3 +1410,531 @@ def test_default_dev_server_auto_manages_existing_document_config(tmp_path, monk
         assert PromptRegistry(config_source=source).get("extract", "fact") == "original"
     finally:
         server.close(wait=True)
+
+
+class _FakeExperienceClient:
+    """经验链路的桩 client：记录调用参数、按预设返回/抛错，不装配内核。
+
+    只实现 provider 经验分支触到的方法面（handle_tool_call 的前置 guard 需要
+    is_unavailable；initialize 真实路径需要 initialize/close 空实现）。
+    """
+
+    def __init__(self, *, skills=None, search_items=None, error=None):
+        self.add_calls: list[tuple[str, object, dict | None]] = []
+        self.search_calls: list[dict] = []
+        self.consolidation_calls: list[tuple[object, int]] = []
+        self.restore_calls = 0
+        self._skills = skills or []
+        self._search_items = search_items or []
+        self._error = error
+
+    def is_unavailable(self) -> bool:
+        return False
+
+    async def initialize(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def add_trajectory(self, content, scope, *, system_metadata=None):
+        if self._error is not None:
+            raise self._error
+        self.add_calls.append((content, scope, system_metadata))
+
+    async def search_experience(
+        self, query, scope, *, category, capabilities, top_k=5
+    ):
+        self.search_calls.append(
+            {
+                "query": query,
+                "scope": scope,
+                "category": category,
+                "capabilities": list(capabilities),
+                "top_k": top_k,
+            }
+        )
+        if self._error is not None:
+            raise self._error
+        return self._search_items
+
+    async def list_published_skills(self, scope):
+        if self._error is not None:
+            raise self._error
+        return self._skills
+
+    async def restore_dreaming(self) -> bool:
+        self.restore_calls += 1
+        return True
+
+    async def register_consolidation(self, scope, interval):
+        self.consolidation_calls.append((scope, interval))
+
+
+def _experience_provider(**kwargs) -> AgentMemoryMemoryProvider:
+    """预置桩 client 的 provider：不走 _build_client，直接测 provider 层行为。
+
+    经验能力显式开（构造缺省已是空串=关闭，对齐方案 §2.3）；测试关闭形态时
+    显式传 ``experience_space=""`` 覆盖。
+    """
+    kwargs.setdefault("experience_space", "shared-experience")
+    provider = AgentMemoryMemoryProvider(**kwargs)
+    provider._client = _FakeExperienceClient()
+    provider._initialized = True
+    return provider
+
+
+class TestExperienceDefaultConfig:
+    """内置默认装配的经验段结构（经 _offline 包装仍保留：只改 llm/embedder 等
+    连接键，不动 pipeline/evolver/domain_stores 结构，见 autouse fixture）。
+    """
+
+    def test_experience_profile_wired_into_pipeline(self):
+        import agent_memory_provider as _amp
+
+        cfg = _amp._agent_default_config(experience_space="shared-experience")
+        profiles = cfg["pipeline"]["default"]["params"]["profiles"]
+        assert set(profiles) == {"default", "experience"}, "metadata 双 profile"
+        exp = profiles["experience"]
+        assert exp["index_builder"] == "experience", "经验索引算子指名"
+        assert exp["retriever"] == "experience", "经验检索算子指名"
+        assert exp["evolver"] == "experience", "经验演进算子指名"
+        assert cfg["pipeline"]["default"]["params"]["fallback"] == "default", (
+            "对话单元无路由值时回落 default（行为不变）"
+        )
+
+    def test_experience_mode_explicitly_binds_kv_domain_and_periodic_operators(self):
+        import agent_memory_provider as _amp
+
+        cfg = _amp._agent_default_config(experience_space="shared-experience")
+        assert cfg["engine"]["default"]["params"]["mode_evolvers"] == {
+            "experience_consolidate": {
+                "evolver": "experience", "domain_store": "experience", "retriever": "experience",
+            },
+        }, "经验周期任务显式读经验数据面，不依赖文档list合并KV"
+        params = cfg["evolver"]["experience"]["params"]
+        assert params["curator"] == "experience", "周期整理依赖具名接线"
+        assert params["abstractor"] == "experience_skill", "技能归纳依赖具名接线"
+        assert cfg["curator"]["experience"]["params"]["index_builder"] == "experience"
+        assert cfg["abstractor"]["experience_skill"]["target"] == "skill"
+
+    @pytest.mark.parametrize("skill_enabled", [True, False])
+    def test_experience_mode_reads_kv_candidates_while_ordinary_document_list_stays_separate(
+        self, monkeypatch, skill_enabled,
+    ):
+        from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, Temporal, memory_key
+        from jiuwen_memory.common.type_def.memory_codec import dumps
+        from jiuwen_memory.construction import EvolveMode
+        from jiuwen_memory.control.types import JobStatus, MemoryPatch, UpdateMode
+
+        async def run():
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="mode-test", user="owner"), role=Role.ROOT,
+                ),
+                experience_space="mode-experience",
+                config_dict={"globals": {"experience": {"curated_spaces": [
+                    {"space": "mode-experience", "skill": skill_enabled},
+                ]}}},
+            )
+            await provider.initialize(user_id="owner", scope_id="mode-test")
+            try:
+                engine = provider._client._api._engine
+                scope = Scope(org="mode-test", space="mode-experience")
+                ordinary_scope = Scope(org="mode-test", space="mode-ordinary")
+                ordinary = MemoryUnit(
+                    id="document", scope=ordinary_scope, segments=[Segment(content="普通文档记忆")],
+                    system_metadata={"memory_class": "long_term_memory"},
+                )
+                engine._domain_store.add(ordinary_scope, [ordinary])
+                experience = MemoryUnit(
+                    id="experience", scope=scope, segments=[Segment(content="可复用经验")],
+                    temporal=Temporal(t_ingest=datetime.now(UTC)),
+                    system_metadata={"memory_type": "experience", "category": "other"},
+                )
+                engine.kv.insert(scope, memory_key(experience.id), dumps(experience))
+                skill = MemoryUnit(
+                    id="published-skill", scope=scope, tags=["approved"],
+                    segments=[Segment(content="Published SKILL.md")],
+                    system_metadata={"memory_type": "skill", "skill_name": "published-skill"},
+                )
+                engine.kv.insert(scope, memory_key(skill.id), dumps(skill))
+                assert [u.id for u in (await engine.list(scope, memory_types=["skill"])).items] == [
+                    skill.id,
+                ]
+                assert provider._experience_scope().org == scope.org
+                published = await provider._client.list_published_skills(
+                    provider._experience_scope()
+                )
+                assert [item["item_id"] for item in published] == [skill.id]
+                assert (await engine.get(experience.id, scope)).id == experience.id
+                updated = await engine.update(
+                    skill.id, scope,
+                    MemoryPatch(content="Revised skill", mode=UpdateMode.OVERWRITE),
+                )
+                assert (await engine.get(updated.id, scope)).content == "Revised skill"
+                assert engine._domain_store.get(scope, [skill.id]) == []
+                document_ids = [u.id for u in engine._domain_store.list(ordinary_scope).items]
+                assert document_ids == ["document"], (
+                    "原文档list仍只列文档，不合并KV"
+                )
+                binding = engine._mode_evolvers[EvolveMode.EXPERIENCE_CONSOLIDATE]
+                assert scope not in engine.candidate_scopes(), "普通文档数据面不存在经验桶"
+                assert scope in engine.candidate_scopes_for_mode(EvolveMode.EXPERIENCE_CONSOLIDATE)
+                seen = []
+
+                def record(units):
+                    seen.extend(unit.id for unit in units)
+                    return [] if skill_enabled else units
+
+                def forbidden_generation(*_args, **_kwargs):
+                    raise AssertionError("关闭技能时不应进入技能生成阶段")
+
+                monkeypatch.setattr(binding.evolver._curator, "curate", record)
+                monkeypatch.setattr(
+                    binding.evolver._abstractor, "_generate_group", forbidden_generation,
+                )
+                job_id = await engine.evolve(scope, EvolveMode.EXPERIENCE_CONSOLIDATE)
+                async with asyncio.timeout(5):
+                    while engine._scheduler.status(job_id).status in (
+                        JobStatus.PENDING, JobStatus.RUNNING,
+                    ):
+                        await asyncio.sleep(0.01)
+                assert engine._scheduler.status(job_id).status is JobStatus.SUCCEEDED
+                assert seen == ["experience"], "专用mode从显式KV数据面取候选，普通文档不混入"
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(run())
+
+    def test_experience_domain_store_is_non_document(self):
+        import agent_memory_provider as _amp
+
+        cfg = _amp._agent_default_config(experience_space="shared-experience")
+        stores = cfg["store_manager"]["default"]["params"]["domain_stores"]
+        assert "experience" in stores, "经验数据面存在"
+        exp = stores["experience"]
+        assert exp["write_document"] is False, "经验数据面非文档模式（KV 真源）"
+        assert exp["kv_store"] == "default", "与对话共用同一 KV 端口"
+        assert stores["default"].get("write_document") is None, (
+            "对话数据面不显式配 write_document（回退 globals=true 走文档分流）"
+        )
+
+    def test_experience_evolver_pins_non_document_operators(self):
+        import agent_memory_provider as _amp
+
+        cfg = _amp._agent_default_config(experience_space="shared-experience")
+        params = cfg["evolver"]["experience"]["params"]
+        # index_builder/dedup 必须显式指名——dep 缺省按 globals.write_document=true
+        # 解析成 document/shadow（文档算子），经验条目会被写进 md 文档。
+        assert params["index_builder"] == "experience"
+        assert params["dedup"] == "experience"
+        assert params["extractor"] == "experience"
+        assert params["appraiser"] == "experience"
+        # embedder 同理：匿名缺省 hashing 与查询侧 parser 的 embedder 不同源，
+        # 向量召回会失真。
+        assert cfg["constructor"]["experience"]["params"]["embedder"] == "default"
+        assert cfg["dedup"]["experience"]["params"]["embedder"] == "default"
+
+    def test_experience_space_renders_into_globals(self):
+        import agent_memory_provider as _amp
+
+        cfg = _amp._agent_default_config(experience_space="p_agent-memory")
+        exp = cfg["globals"]["experience"]
+        assert exp["default_space"] == "p_agent-memory", "经验落点随参数渲染"
+        assert exp["curated_spaces"] == [{"space": "p_agent-memory", "skill": True}], (
+            "周期整理空间与技能沉淀空间同步渲染"
+        )
+
+    def test_experience_filters_shape(self):
+        import agent_memory_provider as _amp
+
+        filters = _amp._experience_filters("software-engineering-devops", ["bash"])
+        assert filters == {
+            "AND": [
+                {"system_metadata.memory_type": "experience"},
+                {"system_metadata.category": "software-engineering-devops"},
+                {
+                    "OR": [
+                        {"tier": {"ne": "procedural"}},
+                        {"system_metadata.capability": {"in": ["bash"]}},
+                    ]
+                },
+            ]
+        }, "三段过滤形态（类型/类别/能力，mem2.0 §2.4）"
+
+    def test_experience_filters_empty_capabilities_only_facts(self):
+        import agent_memory_provider as _amp
+
+        filters = _amp._experience_filters("other", [])
+        assert filters["AND"][2] == {"tier": {"ne": "procedural"}}, (
+            "空能力清单：右支恒假退化为单条件，只返回环境事实（保守口径）；"
+            "不能用 in 空列表表达——内核 filter 校验拒绝空列表"
+        )
+
+    def test_experience_segments_absent_by_default(self):
+        """缺省（空串）关闭——对齐方案 §2.3「配置了才启用，缺省关闭」。
+
+        输出与无经验段的对话装配完全一致：无 pipeline 段（AgentEngine 不注入）、
+        无 experience 数据面与六个具名算子、globals 无经验落点——闲置算子根本
+        不装配，不只是行为面关闭。
+        """
+        import agent_memory_provider as _amp
+
+        cfg = _amp._agent_default_config()
+        assert "experience" not in cfg["globals"], "无经验落点"
+        assert "pipeline" not in cfg, "无 pipeline 段（引擎不注入路由）"
+        stores = cfg["store_manager"]["default"]["params"]["domain_stores"]
+        assert set(stores) == {"default"}, "只建 default 数据面"
+        for namespace in (
+            "retriever", "extractor", "constructor", "dedup", "evolver", "appraiser"
+        ):
+            assert "experience" not in cfg.get(namespace, {}), (
+                f"{namespace} 无经验算子（appraiser 整段缺省不存在）"
+            )
+
+
+class TestExperienceTool:
+    def test_schema_registered_when_enabled(self):
+        provider = _experience_provider()
+        names = [s["name"] for s in provider.get_tool_schemas()]
+        assert "agent_memory_experience" in names, "经验能力开启时注册查经验工具"
+
+    def test_schema_absent_when_disabled(self):
+        provider = _experience_provider(experience_space="")
+        names = [s["name"] for s in provider.get_tool_schemas()]
+        assert "agent_memory_experience" not in names, "空串关闭经验能力"
+
+    def test_system_prompt_includes_category_catalog(self):
+        provider = _experience_provider()
+        block = provider.system_prompt_block()
+        assert "agent_memory_experience" in block
+        assert "software-engineering-devops" in block, "类别目录进提示词（§2.4）"
+        disabled = _experience_provider(experience_space="")
+        assert "agent_memory_experience" not in disabled.system_prompt_block()
+
+    def test_tool_call_records_retrieved_refs(self):
+        provider = _experience_provider()
+        fake: _FakeExperienceClient = provider._client
+        fake._search_items = [
+            {
+                "item_id": "m-0001",
+                "content": "uvicorn 启动前先检查端口占用",
+                "score": 0.9,
+                "system_metadata": {
+                    "category": "software-engineering-devops",
+                    "usage_ref": "ref-abc",
+                },
+            },
+        ]
+        result = json.loads(
+            asyncio.run(
+                provider.handle_tool_call(
+                    "agent_memory_experience",
+                    {
+                        "query": "启动 Python 服务",
+                        "category": "software-engineering-devops",
+                    },
+                )
+            )
+        )
+        assert result["count"] == 1
+        assert result["results"][0]["memory"].startswith("uvicorn")
+        assert "unverified" in result["source"], "标明不可信参考资料（§2.4）"
+        # record_retrieved：每条 id + 引用值
+        refs = provider.take_retrieved_refs()
+        assert refs == [{"id": "m-0001", "usage_ref": "ref-abc"}]
+        assert provider.take_retrieved_refs() == [], "取走即清空"
+
+    def test_tool_call_scope_is_experience_space_without_user(self):
+        provider = _experience_provider()
+        fake: _FakeExperienceClient = provider._client
+        asyncio.run(
+            provider.handle_tool_call(
+                "agent_memory_experience",
+                {"query": "部署服务", "category": "other"},
+            )
+        )
+        call = fake.search_calls[0]
+        assert call["scope"].space == "shared-experience", "检索目标是经验空间"
+        assert call["scope"].user == "", "经验条目不属于任何用户（§2.4）"
+        assert call["top_k"] == 5, "固定返回条数（模型不可改）"
+        assert call["capabilities"] == [], "未声明能力清单的保守口径"
+
+    def test_tool_call_missing_params_returns_error(self):
+        provider = _experience_provider()
+        result = json.loads(
+            asyncio.run(provider.handle_tool_call("agent_memory_experience", {}))
+        )
+        assert "error" in result, "缺 query 报参数错误"
+
+
+class TestAddTrajectory:
+    def test_passes_route_keys_and_session_axis(self):
+        provider = _experience_provider()
+        asyncio.run(provider.initialize(user_id="exp-user", scope_id="tenant-exp"))
+        fake: _FakeExperienceClient = provider._client
+        asyncio.run(
+            provider.add_trajectory(
+                '{"messages": []}',
+                {"trajectory_id": "t-1", "tool_call_count": "3"},
+                "session-42",
+            )
+        )
+        content, scope, metadata = fake.add_calls[0]
+        assert content == '{"messages": []}'
+        assert scope.session == "session-42", "会话标识来自轨迹参数（§2.1）"
+        assert scope.org == "tenant-exp" and scope.user == "exp-user"
+        assert metadata["memory_type"] == "experience", "路由键并入"
+        assert metadata["infer"] == "true"
+        assert metadata["trajectory_id"] == "t-1", "调用方的概要字段透传"
+
+    def test_raises_back_on_client_error(self):
+        provider = _experience_provider()
+        provider._client = _FakeExperienceClient(error=RuntimeError("boom"))
+        # 出错抛回供发送方重发（§2.1）——不吞、不降级。
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(provider.add_trajectory("{}", {"trajectory_id": "t-2"}, "s"))
+
+
+class TestSkillSync:
+    @staticmethod
+    def _skill(name, version, content=None, capabilities=None):
+        return {
+            "item_id": f"s-{name}-{version}",
+            "content": content or f"# {name} SKILL v{version}\nbody",
+            "skill_name": name,
+            "capabilities": capabilities or [],
+            "system_metadata": {
+                "skill_name": name,
+                "skill_version": version,
+                "capabilities": capabilities or [],
+            },
+        }
+
+    def test_writes_latest_version_and_cleans_stale(self, tmp_path):
+        provider = _experience_provider(
+            skills_dir=str(tmp_path), experience_capabilities=["bash"]
+        )
+        fake: _FakeExperienceClient = provider._client
+        fake._skills = [
+            self._skill("start-service", 1, content="# start-service v1\nold"),
+            self._skill("start-service", 2, content="# start-service v2\nnew"),
+            self._skill("stale-skill", 1),
+        ]
+        mem2 = tmp_path / "_mem2"
+        (mem2 / "removed-earlier").mkdir(parents=True)
+        (mem2 / "removed-earlier" / "SKILL.md").write_text("stale", encoding="utf-8")
+        asyncio.run(provider.sync_skills())
+        written = (mem2 / "start-service" / "SKILL.md").read_text(encoding="utf-8")
+        assert written == "# start-service v2\nnew", "同名取版本号最大的一版"
+        assert not (mem2 / "removed-earlier").exists(), "清理不在结果里的目录"
+        assert (mem2 / "stale-skill" / "SKILL.md").exists(), "结果内的合规技能保留"
+
+    def test_skips_invalid_local_existing_and_beyond_capability(self, tmp_path):
+        provider = _experience_provider(
+            skills_dir=str(tmp_path), experience_capabilities=["bash"]
+        )
+        fake: _FakeExperienceClient = provider._client
+        (tmp_path / "local-skill").mkdir()
+        fake._skills = [
+            self._skill("Bad_Name!", 1),  # 不合规字符集
+            self._skill("../escape", 1),  # 路径逃逸形态（同样不合规）
+            self._skill("local-skill", 1),  # 本地已有同名技能
+            self._skill("needs-docker", 1, capabilities=["docker"]),  # 清单外工具
+            self._skill("ok-skill", 1, capabilities=["bash"]),
+        ]
+        asyncio.run(provider.sync_skills())
+        mem2 = tmp_path / "_mem2"
+        assert (mem2 / "ok-skill" / "SKILL.md").exists(), "合规技能写入"
+        assert not (mem2 / "Bad_Name!").exists(), "不合规名跳过"
+        assert not (tmp_path / "local-skill" / "SKILL.md").exists(), (
+            "本地已有同名技能跳过（本地优先）"
+        )
+        assert not (mem2 / "needs-docker").exists(), "清单外工具的技能跳过"
+        written_names = [p.name for p in mem2.iterdir() if p.is_dir()]
+        assert "escape" not in written_names, "路径逃逸形态不落盘"
+
+    def test_no_rewrite_when_content_unchanged(self, tmp_path):
+        provider = _experience_provider(skills_dir=str(tmp_path))
+        fake: _FakeExperienceClient = provider._client
+        fake._skills = [self._skill("stable-skill", 3, content="# stable\nfixed")]
+        target = tmp_path / "_mem2" / "stable-skill" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("# stable\nfixed", encoding="utf-8")
+        before = target.stat().st_mtime_ns
+        asyncio.run(provider.sync_skills())
+        assert target.stat().st_mtime_ns == before, "内容无变化不重写（保留 mtime）"
+
+    def test_takes_no_action_on_fetch_error(self, tmp_path):
+        provider = _experience_provider(skills_dir=str(tmp_path))
+        provider._client = _FakeExperienceClient(error=RuntimeError("list failed"))
+        target = tmp_path / "_mem2" / "keep-me" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("existing", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="list failed"):
+            asyncio.run(provider.sync_skills())
+        assert target.read_text(encoding="utf-8") == "existing", (
+            "取不到时不动现有文件，下次再试（§2.5.6）"
+        )
+
+    def test_http_partial_listing_keeps_existing_skills(self, tmp_path, monkeypatch):
+        provider = _experience_provider(skills_dir=str(tmp_path))
+        client = _HttpClient("http://localhost")
+        provider._client = client
+        monkeypatch.setattr("agent_memory_provider._SKILL_PAGE_SIZE", 1)
+        client._post_verb = AsyncMock(side_effect=[
+            {"count": 2, "items": [{"id": "one"}]},
+            None,
+        ])
+        target = tmp_path / "_mem2" / "keep-me" / "SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("existing", encoding="utf-8")
+        asyncio.run(provider.sync_skills())
+        assert target.read_text(encoding="utf-8") == "existing"
+        assert [call.args[1]["offset"] for call in client._post_verb.await_args_list] == [0, 1]
+
+    def test_http_registration_reports_missing_job_id(self):
+        client = _HttpClient("http://localhost")
+        client._post_verb = AsyncMock(return_value=None)
+        with pytest.raises(AgentMemoryClientError, match="no job ID"):
+            asyncio.run(client.register_consolidation(ApiScope(org="local"), 60))
+
+
+class TestExperienceJobs:
+    def test_initialize_registers_restore_and_consolidation(self):
+        provider = _experience_provider()
+
+        async def _run() -> None:
+            await provider.initialize(user_id="exp-user", scope_id="tenant-exp")
+
+        asyncio.run(_run())
+        fake: _FakeExperienceClient = provider._client
+        assert fake.restore_calls == 1, "恢复 dreaming 注册（§2.5.1）"
+        assert len(fake.consolidation_calls) == 1, "注册周期整理"
+        scope, interval = fake.consolidation_calls[0]
+        assert scope.space == "shared-experience"
+        assert interval == 604800, "一周一次"
+
+    def test_initialize_failure_does_not_block(self):
+        # restore/consolidation 抛错（多进程共用存储他人持锁的常态）——
+        # initialize 不应失败，记忆主链路照常可用。
+        provider = _experience_provider()
+        provider._client = _FakeExperienceClient(error=RuntimeError("lock held"))
+
+        async def _run() -> None:
+            await provider.initialize(user_id="exp-user", scope_id="tenant-exp")
+
+        asyncio.run(_run())
+        assert provider.is_initialized, "失败记日志继续（§2.5.1）"
+
+    def test_disabled_experience_skips_jobs(self):
+        provider = _experience_provider(experience_space="")
+
+        async def _run() -> None:
+            await provider.initialize(user_id="exp-user", scope_id="tenant-exp")
+
+        asyncio.run(_run())
+        fake: _FakeExperienceClient = provider._client
+        assert fake.restore_calls == 0
+        assert fake.consolidation_calls == []
