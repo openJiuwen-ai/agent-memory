@@ -41,11 +41,13 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.graph import GraphProducer
 
 from .._support import scope_segments, wrap_backend
 from ..base import StoreType
 from ..graph import GraphStore
+from ..shard_search import graph_node_allowed, graph_shard_filter
 from ..types import Edge, GraphQuery, Node
 
 _NX_STORAGE_CLS: Any = None
@@ -146,15 +148,32 @@ class NanoGraphRAGGraphStore(GraphStore):
                 f"graph working_dir not a directory: {self._resolved_working_dir()}"
             )
 
-    def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset({StoreCapability.SHARD_PREFILTER})
+
+    def resource_descriptor(self) -> str | None:
+        # 工作目录即物理图文件；进程内实现由后端自行返回。
+        return f"nano-graphrag://{self._resolved_working_dir()}"
+
+    def seed_ids(
+        self,
+        scope: Scope,
+        tokens: set[str],
+        *,
+        extensions: dict | None = None,
+    ) -> list[str]:
         if not tokens:
             return []
+        selected = graph_shard_filter(extensions)
         storage = self._store(scope)
         graph = networkx_graph(storage)
         out: list[str] = []
         with wrap_backend("nano-graphrag seed_ids"):
             for nid, data in graph.nodes(data=True):
-                content = str(self._to_node(nid, data).properties.get("content", ""))
+                properties = self._to_node(nid, data).properties
+                if not graph_node_allowed(properties, selected):
+                    continue
+                content = str(properties.get("content", ""))
                 if any(tok and tok in content for tok in tokens):
                     out.append(nid)
         return out
@@ -259,9 +278,13 @@ class NanoGraphRAGGraphStore(GraphStore):
         return out
 
     def search(self, scope: Scope, query: GraphQuery) -> list[Node]:
+        selected = graph_shard_filter(query.extensions)
         storage = self._store(scope)
         graph = networkx_graph(storage)
         if not graph.has_node(query.start_id):
+            return []
+        start = self._to_node(query.start_id, graph.nodes[query.start_id])
+        if not graph_node_allowed(start.properties, selected):
             return []
         with wrap_backend("nano-graphrag search"):
             visited = {query.start_id}
@@ -277,9 +300,16 @@ class NanoGraphRAGGraphStore(GraphStore):
                             and edge_data.get("relation") != query.relation
                         ):
                             continue
-                        if neighbor not in visited:
-                            visited.add(neighbor)
-                            nxt.append(neighbor)
+                        if neighbor in visited:
+                            continue
+                        # 遍历经过任何节点（含其它分片的节点），只在返回结果时过滤；
+                        # 与内存后端保持一致，不能在后端扩展阶段就剪枝。
+                        visited.add(neighbor)
+                        nxt.append(neighbor)
+                        neighbor_props = self._to_node(
+                            neighbor, graph.nodes[neighbor]
+                        ).properties
+                        if graph_node_allowed(neighbor_props, selected):
                             found.append(neighbor)
                             if len(found) >= query.limit:
                                 break

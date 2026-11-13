@@ -17,7 +17,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 |---|---|
 | `conflict_resolver.py` / `conflict_resolver_impl/` | 冲突消解契约/Producer；verification、recency、llm、chain 实现；`pipeline.py` 提供 `resolve_discovered_conflicts`（旧关联器 contradicts 转候选证据、注入式消解、绝不自动确认） |
 | `associator_impl/evidence_llm.py` | 按共享关系目录发现有原文依据的候选 |
-| `index_builder_impl/evidence_graph.py` | 已提交关系的 RETRIEVAL_ONLY 图投影；不写正文 |
+| `index_builder_impl/evidence_graph.py` | 已提交关系的 RETRIEVAL_ONLY 图投影；不写正文；要求有向邻接与条件投影能力，证据图只能用普通图后端，`shard_routed` 构建期拒绝 |
 | `base.py` | ConstructionOperator 基类 + OperatorType 枚举 |
 | `extractor.py` | Extractor 接口：信息提取（低抽象粒度） |
 | `abstractor.py` | Abstractor 接口：抽象与精炼/升华（高抽象粒度） |
@@ -37,7 +37,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm） |
 | `associator_impl/` | Associator 实现目录（keyword / llm） |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm） |
-| `index_builder_impl/` | IndexBuilder 实现目录（forward / fulltext / hybrid / unified / vector / entity + 共享 `_index_ops.py`）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）纯编排，组合 forward / fulltext / vector / entity 四个子 builder；`unified` 全部写委托 DomainStore 领域接口（`add`/`update`/`delete`，`mode` 原样透传，不触碰任何底层端口），构建侧完成两件事——(a) `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed，经 `_index_ops.vectorize_unit` 与 vector builder 共用实现）回填 `MemoryUnit.vectors`（`list[ChunkVector]`）随本体下传（一体化数据面实现消费该字段自建 chunk 级向量索引，CompositeDomainStore 仅随本体落盘）；(b) 把 `index_metadata` 的过滤投影字段（`content_layer`/`t_valid`/`t_event`/`t_invalid` 哨兵与 epoch 毫秒）直接补进 `unit.system_metadata`，一体化后端从 `system_metadata`/`user_metadata` 直接读取建索引、无需 `index_metadata` 投影下传；`forward` 只交付记忆本体（正排 KV），`fulltext`/`vector`/`entity` 只建各自的检索索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。`_index_ops.py` 承载 fulltext / vector 共享的投影与流水线（metadata 投影、scope 分组、端口解析、全文文档构造、向量切片-embed-写库、L0/L1 分层建删），unified 复用其 scope 分组与 `vectorize_unit` 切片-embed 单元管线。写接口用 `IndexWriteMode`（`ALL`/`FORWARD_ONLY`/`RETRIEVAL_ONLY`）表达写入范围，`remove` 用 `IndexRemoveMode`（`SOFT`/`HARD`）表达删除语义：`SOFT` 只移出检索索引、本体保留且 get/list 可读；`HARD` 物理删除。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
+| `index_builder_impl/` | IndexBuilder 实现目录（forward / fulltext / hybrid / unified / vector / entity + 共享 `_index_ops.py`）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）纯编排，组合 forward / fulltext / vector / entity 四个子 builder；`unified` 全部写委托 DomainStore 领域接口（`add`/`update`/`delete`，`mode` 原样透传，不触碰任何底层端口），构建侧完成两件事——(a) `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed，经 `_index_ops.vectorize_unit` 与 vector builder 共用实现）回填 `MemoryUnit.vectors`（`list[ChunkVector]`）随本体下传（一体化数据面实现消费该字段自建 chunk 级向量索引，CompositeDomainStore 仅随本体落盘）；(b) 把 `index_metadata` 的过滤投影字段（`content_layer`/`t_valid`/`t_event`/`t_invalid` 哨兵与 epoch 毫秒）直接补进 `unit.system_metadata`，一体化后端从 `system_metadata`/`user_metadata` 直接读取建索引、无需 `index_metadata` 投影下传；`forward` 只交付记忆本体（正排 KV），`fulltext`/`vector`/`entity` 只建各自的检索索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。`_index_ops.py` 承载 fulltext / vector 共享的投影与流水线（metadata 投影、scope 分组、端口解析、全文文档构造、向量切片-embed-写库、L0/L1 分层建删），unified 复用其 scope 分组与 `vectorize_unit` 切片-embed 单元管线。另提供分片装配守卫 `require_forward_index_when_sharded`（分片部署的归属由 KV insert 创建，只写派生索引的构建器 fulltext / vector 在装配期直接拒绝并提示改用 forward / hybrid / unified）。写接口用 `IndexWriteMode`（`ALL`/`FORWARD_ONLY`/`RETRIEVAL_ONLY`）表达写入范围，`remove` 用 `IndexRemoveMode`（`SOFT`/`HARD`）表达删除语义：`SOFT` 只移出检索索引、本体保留且 get/list 可读；`HARD` 物理删除。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
 | `dedup_impl/` | Dedup 实现目录（vector / keyword / shadow）；shadow 显式选配，读取文档机器真源 |
 | `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类 |
@@ -50,7 +50,11 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `schema_bootstrap.py` | 由统一 assembly 在 Schema 开关开启时内部调用，注册 Schema Extractor/Evolver target；不是独立公共装配入口 |
 
 注册的 IndexBuilder target 为 forward/fulltext/vector/hybrid/unified/document；EntityIndexBuilder
-是 hybrid 的内部辅助组件，不注册独立 entity target。标题、正文、prompt、模型响应和 Scope
+是 hybrid 的内部辅助组件，不注册独立 entity target。实体端口（F09 起）以 `Scope` 为首参；
+解除关联改发增量 `UNLINK`（单文档原子，不整读替换），读到的剩余关联为空时同批追加
+`DELETE_IF_EMPTY`，构建层不感知分片。唯一例外：`_index_ops.require_forward_index_when_sharded`
+由 `vector` / `fulltext` 构建器在装配期调用，只按 KV 端口的 `SHARD_ROUTED` 能力拒绝「分片部署却不写
+正排 KV」的组合，不读分片规则、不参与路由（F09）。标题、正文、prompt、模型响应和 Scope
 trace 均使用 common/log 的敏感参数标记，不能因调试文档路径恢复明文日志。
 
 ## 构建链路
@@ -76,7 +80,7 @@ Evolver.evolve(units, mode):
   CONSOLIDATE → _evolve_consolidate: abstract→annotate→_dedup_batch
   CONFLICT_CONSOLIDATE → _evolve_conflict_consolidate: 成簇→两段 LLM 规划→
                产物 build 全索引 + 旧版 SUPERSEDED/SOFT→done 标记（FORWARD_ONLY）
-  ASSOCIATE   → _evolve_associate: associate→冲突消解→图索引 Edge
+  ASSOCIATE   → _evolve_associate: associate→冲突消解→图索引 Edge（逐个节点、逐条边写入；分片图缺归属 / 搬迁中的那一条跳过记日志，不连累同批）
   FORGET     → _evolve_forget: 遗忘候选筛选→lifecycle 置 FORGOTTEN→
                IndexBuilder.update(mode=FORWARD_ONLY) 回写本体 +
                IndexBuilder.remove(mode=SOFT) 移出检索

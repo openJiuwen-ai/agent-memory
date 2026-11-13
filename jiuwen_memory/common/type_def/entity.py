@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from jiuwen_memory.common.type_def.scope import Scope
@@ -117,22 +117,31 @@ class EntityOpType(str, Enum):
 
     INSERT = "INSERT"  # 新建实体，index 全文档
     LINK = "LINK"  # 脚本追加 memory_id 到 linked_memory_ids
-    UNLINK_UPDATE = "UNLINK_UPDATE"  # doc 局部更新 linked_memory_ids（unlink 后非空）
-    DELETE = "DELETE"  # 删除实体（unlink 后为空）
+    UNLINK = "UNLINK"  # 增量移除关联（单文档原子，从不删除记录，F09 D9）
+    DELETE_IF_EMPTY = "DELETE_IF_EMPTY"  # 记录关联为空时原子删除，否则 noop
+    UNLINK_UPDATE = "UNLINK_UPDATE"  # 已废弃：整体替换 linked_memory_ids，存在覆盖竞态
+    DELETE = "DELETE"  # 删除实体
 
 
 @dataclass(frozen=True)
 class EntityOperation:
     """单条 entity-store 变更命令，用于批量提交。
 
-    INSERT/UNLINK_UPDATE 携带 ``record``；DELETE 携带 ``record_id``；
-    LINK 携带 ``record_id`` + ``link_memory_ids``。
+    INSERT/UNLINK_UPDATE 携带 ``record``；DELETE / DELETE_IF_EMPTY 携带 ``record_id``；
+    LINK 携带 ``record_id`` + ``link_memory_ids``；UNLINK 携带 ``record_id`` +
+    ``unlink_memory_ids``。
+
+    ``memory_shards`` 为每个关联 id 标注所属分片（F09 D9 分组关联能力）：``LINK`` /
+    ``UNLINK`` / ``INSERT`` 可以携带，声明了 ``GROUPED_LINKS`` 能力的实现据此维护
+    分片分组；未声明该能力的实现可忽略（不得据此拒绝整批）。
     """
 
     type: EntityOpType
     record: EntityRecord | None = None
     record_id: str | None = None
     link_memory_ids: tuple[str, ...] = ()
+    unlink_memory_ids: tuple[str, ...] = ()
+    memory_shards: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

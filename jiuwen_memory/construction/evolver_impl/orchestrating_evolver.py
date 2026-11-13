@@ -30,7 +30,12 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import NamedTuple
 
-from jiuwen_memory.common.errors import ConflictError, ValidationError
+from jiuwen_memory.common.errors import (
+    ConflictError,
+    MissingShardPlacementError,
+    RelocationInProgressError,
+    ValidationError,
+)
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
     get_logger,
@@ -458,21 +463,31 @@ class OrchestratingEvolver(Evolver):
             node = Node(id=u.id, label=u.tier.value, properties={"content": u.content})
             try:
                 self._graph.insert(scope, nodes=[node])
+            except RelocationInProgressError:
+                logger.info("skip graph node %s: memory is being relocated", u.id)
             except ConflictError:
                 pass  # 节点已存在
-        edges = []
+            except MissingShardPlacementError as exc:
+                # 归属已删除 / 从未写入分片 KV：只跳过这一种可预期缺失，
+                # 不吞掉后端自身的配置 / 数据 ValidationError。
+                logger.warning("skip graph node %s: %s", u.id, exc)
         for relation in relations:
-            edges.append(
-                Edge(
-                    id=str(uuid.uuid4()),
-                    source=relation.source_id,
-                    target=relation.target_id,
-                    relation=relation.relation,
-                    properties=dict(relation.metadata),
-                )
+            edge = Edge(
+                id=str(uuid.uuid4()),
+                source=relation.source_id,
+                target=relation.target_id,
+                relation=relation.relation,
+                properties=dict(relation.metadata),
             )
-        if edges:
-            self._graph.insert(scope, edges=edges)
+            # 逐条写入、逐条跳过：一条端点在搬迁/已删除不能连累同批其它关系。
+            try:
+                self._graph.insert(scope, edges=[edge])
+            except RelocationInProgressError:
+                logger.info(
+                    "skip graph edge %s: endpoint memory is being relocated", edge.id
+                )
+            except MissingShardPlacementError as exc:
+                logger.warning("skip graph edge %s: %s", edge.id, exc)
 
     # ------------------------------------------------------------------
     # 去重核心方法

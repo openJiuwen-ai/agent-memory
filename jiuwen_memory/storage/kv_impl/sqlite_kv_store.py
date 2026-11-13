@@ -26,6 +26,7 @@ from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.migration import MigrationRecord, opaque_location
 from jiuwen_memory.storage.types import KVMemoryListResult
@@ -114,6 +115,15 @@ class SQLiteKVStore(KVStore):
                 yield
         finally:
             self._bound_path.reset(token)
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset({StoreCapability.RESOURCE_DESCRIPTOR})
+
+    def resource_descriptor(self) -> str | None:
+        path = self._resolved_db_path()
+        if not path or path == ":memory:":
+            return None  # 进程内数据库没有跨重启稳定身份
+        return f"sqlite://{Path(path).expanduser().resolve()}"
 
     def store_type(self) -> StoreType:
         return StoreType.KV
@@ -332,6 +342,23 @@ class SQLiteKVStore(KVStore):
         with self._lock:
             self._ensure_conn()
             return self._live_value(scope, key) is not None
+
+    def remaining_ttl(self, scope: Scope, key: str) -> float | None:
+        now = time.time()
+        with self._lock:
+            conn = self._ensure_conn()
+            row = conn.execute(
+                'SELECT expires_at FROM kv WHERE org=? AND space=? AND "user"=? '
+                "AND agent=? AND session=? AND key=?",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session, key),
+            ).fetchone()
+        if row is None:
+            return None
+        if row[0] is None:
+            return 0.0
+        remaining = float(row[0]) - now
+        # 已过期（尚未物理删除）按缺失处理：迁移层不能把它写成 ttl=0 的永久副本。
+        return remaining if remaining > 0 else None
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         now = time.time()

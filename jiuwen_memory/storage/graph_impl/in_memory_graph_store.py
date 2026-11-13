@@ -16,7 +16,9 @@ from collections import defaultdict
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.graph import GraphProducer, GraphStore
+from jiuwen_memory.storage.shard_search import graph_node_allowed, graph_shard_filter
 from jiuwen_memory.storage.types import Edge, GraphQuery, Node
 
 _ScopeKey = tuple[str, str, str, str, str]
@@ -37,6 +39,10 @@ class InMemoryGraphStore(GraphStore):
     @property
     def supports_incident_edges(self) -> bool:
         return True
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        # 共享图在遍历前按节点 storage_shard 过滤，可作 shared 模式内层。
+        return frozenset({StoreCapability.SHARD_PREFILTER})
 
     @property
     def supports_conditional_projection(self) -> bool:
@@ -146,7 +152,11 @@ class InMemoryGraphStore(GraphStore):
         return [bucket[i] for i in node_ids if i in bucket]
 
     def search(self, scope: Scope, query: GraphQuery) -> list[Node]:
+        selected = graph_shard_filter(query.extensions)
         sk = _skey(scope)
+        start = self._nodes[sk].get(query.start_id)
+        if start is not None and not graph_node_allowed(start.properties, selected):
+            return []
         adj: dict[str, list[str]] = defaultdict(list)
         for e in self._edges[sk].values():
             if query.relation and e.relation != query.relation:
@@ -165,15 +175,28 @@ class InMemoryGraphStore(GraphStore):
                         nxt.append(nb)
                         reached.append(nb)
             frontier = nxt
-        nodes = [self._nodes[sk][i] for i in reached if i in self._nodes[sk]]
+        nodes: list[Node] = []
+        for node_id in reached:
+            node = self._nodes[sk].get(node_id)
+            if node is not None and graph_node_allowed(node.properties, selected):
+                nodes.append(node)
         return nodes[: query.limit]
 
     # -- GraphStore 契约：按关键词找种子节点（属性子串命中） ------------------ #
-    def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
+    def seed_ids(
+        self,
+        scope: Scope,
+        tokens: set[str],
+        *,
+        extensions: dict | None = None,
+    ) -> list[str]:
         if not tokens:
             return []
+        selected = graph_shard_filter(extensions)
         out: list[str] = []
         for nid, node in self._nodes[_skey(scope)].items():
+            if not graph_node_allowed(node.properties, selected):
+                continue
             content = str(node.properties.get("content", ""))
             if any(tok and tok in content for tok in tokens):
                 out.append(nid)

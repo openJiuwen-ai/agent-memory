@@ -41,6 +41,7 @@ class _Walk:
     scope: Scope
     request: ExpandRequest
     result: ExpandResult
+    shards: frozenset[str] | None = None
 
 
 @dataclass
@@ -75,7 +76,9 @@ class DefaultExpander(Expander):
         if not hierarchy.enabled or not matches_hierarchy(request.root, hierarchy):
             raise ValidationError("展开根的结构与查询不匹配")
         result = ExpandResult()
-        state = _Walk(scope, request, result)
+        # 「哪些分片」由数据面解析：检索层只透传扩展参数，不解释存储内部 key。
+        shards = self._domain.requested_shards(request.query.extensions)
+        state = _Walk(scope, request, result, shards)
         root_key = node_key(request.root)
         request.seen.add(root_key)
         frontier = [_Parent(request.root, frozenset({root_key}))]
@@ -119,13 +122,16 @@ class DefaultExpander(Expander):
                     state.result.exclude("scope_excluded")
                     continue
                 wanted.append((child_scope, reference.child_ids[index]))
-            yield from self._read(wanted, state.result)
+            yield from self._read(wanted, state.result, state)
             if stop < min(offset + _READ_BATCH_SIZE, len(reference.child_ids)):
                 state.result.exclude("node_limit", truncated=True)
                 return
 
     def _read(
-        self, wanted: list[tuple[Scope, str]], result: ExpandResult,
+        self,
+        wanted: list[tuple[Scope, str]],
+        result: ExpandResult,
+        state: _Walk,
     ) -> Iterator[MemoryUnit]:
         """按 Scope 分批点读，再恢复父声明的顺序；错误不回显外部数据。"""
         grouped: dict[tuple[str, ...], tuple[Scope, list[str]]] = {}
@@ -134,7 +140,7 @@ class DefaultExpander(Expander):
             grouped.setdefault(key, (scope, []))[1].append(unit_id)
         fetched: dict[NodeKey, MemoryUnit] = {}
         for scope, unit_ids in grouped.values():
-            units = self._load(scope, list(dict.fromkeys(unit_ids)), result)
+            units = self._load(scope, list(dict.fromkeys(unit_ids)), result, state)
             for unit in units:
                 if unit.scope == scope and unit.id in unit_ids:
                     fetched[node_key(unit)] = unit
@@ -146,7 +152,16 @@ class DefaultExpander(Expander):
             else:
                 yield child
 
-    def _load(self, scope: Scope, unit_ids: list[str], result: ExpandResult) -> list[MemoryUnit]:
+    def _load(
+        self, scope: Scope, unit_ids: list[str], result: ExpandResult, state: _Walk
+    ) -> list[MemoryUnit]:
+        if state.shards is not None:
+            sharded = self._domain.get_in_shards(scope, unit_ids, state.shards)
+            for _ in sharded.missing_ids:
+                result.exclude("missing_child")
+            for _ in sharded.excluded_ids:
+                result.exclude("shard_excluded")
+            return sharded.found
         try:
             return self._domain.get(scope, unit_ids)
         except NotFoundError:

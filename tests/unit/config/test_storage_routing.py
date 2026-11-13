@@ -127,11 +127,10 @@ def test_entity_port_follows_active() -> None:
 
     cfg.put("store_manager.active", "ent")
     assert storage.has_entity()
-    # 缓存的惰性端口在切换后解析到新实例；entity 首参是 space_id 而非 Scope，
-    # _LazyStorePort 透明转发不做签名假设
+    # 缓存的惰性端口在切换后解析到新实例；_LazyStorePort 透明转发不做签名假设
     cached_entity.ensure_index()
     assert cached_entity.find_by_entity_text_hash(
-        "space", ("h1",), filters=EntityStoreFilters(actor_id="u1")
+        Scope(space="space"), ("h1",), filters=EntityStoreFilters(actor_id="u1")
     ) == []
 
 

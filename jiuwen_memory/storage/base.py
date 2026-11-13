@@ -42,6 +42,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import Enum
 
+from .capability import StoreCapability
 from .security import PASSTHROUGH_STORE_SECURITY, StoreSecurity
 
 
@@ -65,6 +66,38 @@ class BaseStore(ABC):
     def security(self) -> StoreSecurity:
         """返回本 Store 的数据保护模块；默认明确表示未启用保护。"""
         return PASSTHROUGH_STORE_SECURITY
+
+    def resource_descriptor(self) -> str | None:
+        """返回不含凭据的规范化持久资源标识（F09 D13）；无法声明时返回 ``None``。
+
+        进程内 / 内存后端返回 ``None``（不具备跨重启稳定的物理身份）。
+        """
+        return None
+
+    def connection_budget(self) -> int | None:
+        """返回本实例连接池的**上限**（连接数），无法声明时返回 ``None``。
+
+        装配期按实例汇总成部署总预算（``globals.storage_connection_budget``）：
+        每个物理 Store 各持一个池，分片数直接放大总连接数，只调小单表池上限不够。
+        返回 ``None`` 表示「后端不暴露上限」，汇总时计入未知，不按 0 估算。
+        """
+        return None
+
+    def connection_dependencies(self) -> tuple[BaseStore, ...]:
+        """返回本实例持有的、带连接池的子依赖（装配期汇总预算用）。
+
+        组合层（分片包装层、加密装饰器）把内联构建的物理实例挂在这里，装配期按
+        对象身份去重后统一汇总，避免「端口表看不到内联实例 → 预算漏算」。
+        """
+        return ()
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        """返回本实例声明的细粒度能力（F09）；默认不声明任何能力。
+
+        能力集在实例生命周期内固定，运行期不得按请求动态增减；消费方用
+        :func:`~storage.capability.require_capability` 在装配期校验。
+        """
+        return frozenset()
 
     @abstractmethod
     def store_type(self) -> StoreType:

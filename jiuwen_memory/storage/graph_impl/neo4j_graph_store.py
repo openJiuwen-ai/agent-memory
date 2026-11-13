@@ -22,7 +22,9 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.graph import GraphProducer, GraphStore
+from jiuwen_memory.storage.shard_search import graph_node_allowed, graph_shard_filter
 from jiuwen_memory.storage.types import Edge, GraphQuery, Node
 
 from .._support import read_ssl_config, require_tls_scheme, wrap_backend
@@ -60,6 +62,16 @@ class Neo4jGraphStore(GraphStore):
 
     # -- properties --------------------------------------------------------
 
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset({StoreCapability.SHARD_PREFILTER})
+
+    def resource_descriptor(self) -> str | None:
+        from .._support import sanitize_resource_id
+
+        uri = sanitize_resource_id(str(self._resolved("uri", self._fallback_uri)))
+        database = str(self._resolved("database", self._fallback_database))
+        return f"neo4j://{uri}/{database}"
+
     @property
     def supports_incident_edges(self) -> bool:
         return True
@@ -86,6 +98,8 @@ class Neo4jGraphStore(GraphStore):
             "label": node.label,
             "content": content,
             "props": json.dumps(props, ensure_ascii=False),
+            "shard": node.properties.get("storage_shard"),
+            "shard_next": node.properties.get("storage_shard_next"),
         }
 
     @staticmethod
@@ -241,7 +255,8 @@ class Neo4jGraphStore(GraphStore):
                 self._rows(
                     tx.run(
                         "CREATE (n:MemNode {scope_key:$sk, id:$id, label:$label, "
-                        "content:$content, props:$props})",
+                        "content:$content, props:$props, storage_shard:$shard, "
+                        "storage_shard_next:$shard_next})",
                         sk=sk,
                         **self._node_params(node),
                     )
@@ -260,7 +275,8 @@ class Neo4jGraphStore(GraphStore):
                 self._rows(
                     tx.run(
                         "MATCH (n:MemNode {scope_key:$sk, id:$id}) "
-                        "SET n.label=$label, n.content=$content, n.props=$props",
+                        "SET n.label=$label, n.content=$content, n.props=$props, "
+                        "n.storage_shard=$shard, n.storage_shard_next=$shard_next",
                         sk=sk,
                         **self._node_params(node),
                     )
@@ -323,15 +339,27 @@ class Neo4jGraphStore(GraphStore):
         )
         return [self._edge_from_record(r) for r in rows]
 
-    def seed_ids(self, scope: Scope, tokens: set[str]):
+    def seed_ids(
+        self,
+        scope: Scope,
+        tokens: set[str],
+        *,
+        extensions: dict | None = None,
+    ):
         if not tokens:
             return []
+        selected = graph_shard_filter(extensions)
         sk = self._scope_key(scope)
         rows = self._run(
             "MATCH (n:MemNode {scope_key:$sk}) "
-            "WHERE any(t IN $tokens WHERE n.content CONTAINS t) RETURN n.id AS id",
+            "WHERE any(t IN $tokens WHERE n.content CONTAINS t) "
+            "AND ($shards IS NULL OR n.storage_shard IN $shards "
+            "OR n.storage_shard_next IN $shards "
+            "OR (n.storage_shard IS NULL AND n.storage_shard_next IS NULL)) "
+            "RETURN n.id AS id",
             sk=sk,
             tokens=list(tokens),
+            shards=sorted(selected) if selected is not None else None,
         )
         return [r["id"] for r in rows]
 
@@ -340,6 +368,11 @@ class Neo4jGraphStore(GraphStore):
         # versions. Bounded BFS also checks every intermediate node's real Scope.
         if query.depth <= 0 or query.limit <= 0:
             return []
+        selected = graph_shard_filter(query.extensions)
+        if selected is not None:
+            start = self.get(scope, [query.start_id])
+            if not start or not graph_node_allowed(start[0].properties, selected):
+                return []
         visited = {query.start_id}
         frontier = [query.start_id]
         reached = []
@@ -349,19 +382,30 @@ class Neo4jGraphStore(GraphStore):
                 rows = self._run(
                     "MATCH (n:MemNode {scope_key:$sk, id:$id})"
                     "-[e:MEM_EDGE {scope_key:$sk}]-(m:MemNode {scope_key:$sk}) "
-                    "WHERE $relation IS NULL OR e.relation=$relation "
-                    "RETURN DISTINCT m.id AS id ORDER BY id LIMIT $limit",
+                    "WHERE ($relation IS NULL OR e.relation=$relation) "
+                    "RETURN DISTINCT m.id AS id, m.storage_shard AS shard, "
+                    "m.storage_shard_next AS shard_next ORDER BY id LIMIT $cap",
                     sk=self._scope_key(scope),
                     id=node,
                     relation=query.relation,
-                    limit=query.limit + len(visited),
+                    # 枢纽节点可能有大量邻居；保守上限避免单跳读爆，但不改变
+                    # 正常分片数据的遍历语义。超限属于已知遗留。
+                    cap=max(64, (query.limit + len(visited)) * 8),
                 )
                 for row in rows:
                     if row["id"] in visited:
                         continue
+                    # 先经过节点，再决定是否返回；分片条件不能放进邻居匹配，
+                    # 否则无法经由其它分片的节点继续多跳。
                     visited.add(row["id"])
-                    reached.append(row["id"])
                     following.append(row["id"])
+                    props = {
+                        "storage_shard": row.get("shard"),
+                        "storage_shard_next": row.get("shard_next"),
+                    }
+                    if not graph_node_allowed(props, selected):
+                        continue
+                    reached.append(row["id"])
                     if len(reached) >= query.limit:
                         return self.get(scope, reached)
             frontier = following

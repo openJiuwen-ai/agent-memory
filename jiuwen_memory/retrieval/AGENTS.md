@@ -208,6 +208,9 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
   PreparedRetrievalResult 只在内部传递，不序列化、不直接返回公开调用者。
 - 越权 Scope 在点读前拒绝；kind、状态、双向引用、区间覆盖和可见性逐边复核。
   缺节点、坏结构、读失败及截断用 HIERARCHY 诊断表示，不泄露被排除内容。
+- 请求带 `extensions["shards"]` 时点读改走 `DomainStore.get_in_shards`：缺失记
+  `missing_child`，存在但不在选中分片记 `shard_excluded`（F09 D3）；展开器只透传分片名，
+  不理解分片规则。
 - 展开收尾限制父子总数为 top_k；补位达到窗口即停止，结构 BFS 最后统一截断。
 - 保留文档模式与可选 Reranker 的 BackendError 降级路径，不用原分支旧实现覆盖。
 

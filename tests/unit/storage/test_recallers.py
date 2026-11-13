@@ -57,7 +57,7 @@ class _RecordingGraphStore:
         self.seed_terms = None
         self.query = None
 
-    def seed_ids(self, scope, terms):
+    def seed_ids(self, scope, terms, *, extensions=None):
         self.seed_terms = terms
         return ["seed"]
 

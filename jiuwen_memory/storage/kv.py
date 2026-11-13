@@ -7,11 +7,16 @@ scope 下互不可见）。``ttl`` 单位为秒（float），``0`` 表示永不�
 在 CRUD 之上，``list`` 查询某 scope 下的 MemoryUnit，``scan`` 扫描原始
 ``(key, value)``，``scopes`` 列出有哪些 scope。通用扫描继续承载 lifecycle sweep /
 Space offboarding，MemoryUnit 的过滤、计数和分页则由独立 list 契约承载。
+
+本模块另定义 **存储能力契约** :class:`ConditionalKV`：原子创建、按完整值的条件
+替换 / 条件删除、批量部分读取与存储侧当前时间。它是分片归属记录（F09 D6/D7）的
+依赖，不是 ``KVStore`` 的一部分——普通 KV 实现可以只声明能力而不实现该接口时
+在装配期被拒绝。
 """
 
 from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -229,6 +234,17 @@ class KVStore(BaseStore):
     ) -> KVMemoryListResult:
         """查询 ``scope`` 下的 MemoryUnit，返回当前页条目和分页前匹配总数。"""
 
+    def remaining_ttl(self, scope: Scope, key: str) -> float | None:
+        """返回 key 的剩余 TTL（秒），契约见下；默认实现不声明该能力。
+
+        - **永久记录**（无过期）→ ``0.0``；
+        - key 不存在、**已过期但尚未被物理删除**、或后端无法给出剩余 TTL → ``None``。
+
+        迁移 / 重新分区只在拿到正数或 ``0.0`` 时才写入目标：把「已过期」当成 ``0.0``
+        会让一条本该消失的记录变成永久副本。
+        """
+        return None
+
     @abstractmethod
     def scopes(self) -> list[Scope]:
         """
@@ -237,6 +253,49 @@ class KVStore(BaseStore):
         scope 入参做全局 sweep/offboarding」的管理任务使用。目标治理/生命周期操作
         必须携带显式 Scope，不得仅按 id 借此跨 scope 猜测。顺序由实现定义。
         """
+
+
+class ConditionalKV(ABC):
+    """``KVStore`` 的原子条件操作能力契约（F09 D6 / D7）。
+
+    归属记录依赖这些操作保证「同一 id 同时至多一次 insert 成功」：
+
+    - :meth:`create_if_absent`：不存在才创建（原子）；
+    - :meth:`replace_if_value` / :meth:`delete_if_value`：比较**整条值**后再写入 /
+      删除，用于按操作 token 提交与回收归属；
+    - :meth:`read_many`：批量部分读取，缺失的 key 不报错（这不是 ``mget``）；
+    - :meth:`now`：存储侧当前时间，用于判断 ``pending`` 是否超期；
+    - :meth:`scan_entries`：范围枚举（对账用）。
+
+    声明为 :class:`~storage.capability.StoreCapability.CONDITIONAL_KV` 的实现必须
+    保证上述每个方法各自原子；批量读取不要求跨 key 快照一致。
+    """
+
+    @abstractmethod
+    def create_if_absent(self, scope: Scope, key: str, value: bytes) -> None:
+        """``key`` 不存在时创建；已存在抛 :class:`~common.errors.ConflictError`。"""
+
+    @abstractmethod
+    def replace_if_value(
+        self, scope: Scope, key: str, expected: bytes, value: bytes
+    ) -> None:
+        """当前值等于 ``expected`` 时替换为 ``value``；不等抛 ``ConflictError``。"""
+
+    @abstractmethod
+    def delete_if_value(self, scope: Scope, key: str, expected: bytes) -> bool:
+        """当前值等于 ``expected`` 时删除，返回是否删除；不等返回 ``False``。"""
+
+    @abstractmethod
+    def read_many(self, scope: Scope, keys: list[str]) -> dict[str, bytes]:
+        """批量读取存在的 key；缺失的 key 不出现在结果里（部分结果）。"""
+
+    @abstractmethod
+    def now(self) -> float:
+        """返回存储侧当前时间（Unix 秒），用于超期判断。"""
+
+    @abstractmethod
+    def scan_entries(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        """扫描 ``prefix`` 开头的键值对（对账用，顺序不承诺）。"""
 
 
 # ---------------------------------------------------------------------------

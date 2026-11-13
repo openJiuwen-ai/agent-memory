@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -25,6 +26,7 @@ from typing import Any, cast
 from jiuwen_memory.common.errors import (
     NotFoundError,
     StorageRetrievalError,
+    UnsupportedStorageCapabilityError,
     ValidationError,
     safe_error_message,
 )
@@ -55,6 +57,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
+from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
 from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
 from jiuwen_memory.storage.kv import load_memory_unit
 from jiuwen_memory.storage.kv_impl.memory_list import list_memory_entries
@@ -73,13 +76,19 @@ from jiuwen_memory.storage.security import (
     StorageSecurity,
 )
 from jiuwen_memory.storage.shadow import DocumentShadowIndex
+from jiuwen_memory.storage.shard_search import configured_shards
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
     resolve_name,
 )
 from jiuwen_memory.storage.sync_gate import document_sync_gate
-from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, MemoryListResult
+from jiuwen_memory.storage.types import (
+    IndexRemoveMode,
+    IndexWriteMode,
+    MemoryListResult,
+    ShardedGetResult,
+)
 
 from .recaller import RecallerProducer
 
@@ -912,6 +921,102 @@ class CompositeDomainStore(DomainStore):
         # 端口缺失时 manager 抛 UnsupportedStorageCapabilityError 并指明缺失端口。
         return cast(Any, self._manager.kv(self._kv_name))
 
+    # -- 分片（F09 D11） ------------------------------------------------------- #
+
+    def _locator(self) -> Any:
+        """返回声明了 ``SHARD_LOCATOR`` 的 KV 端口；未启用分片时抛统一「不支持」。"""
+        kv = self._kv()
+        if StoreCapability.SHARD_LOCATOR not in capabilities_of(kv):
+            raise UnsupportedStorageCapabilityError(
+                "shards selection requires the configured kv port to declare "
+                "SHARD_LOCATOR (logical sharding is not enabled)"
+            )
+        return kv
+
+    def requested_shards(self, extensions: dict[str, Any] | None) -> frozenset[str] | None:
+        """解析 ``extensions["shards"]`` 并校验分片名（缺键查全部）。
+
+        这是「哪些分片」的存储侧入口：检索层只把扩展参数交下来，不再自己解析
+        存储内部 key（F09 D11 / 分层）。
+        """
+        selected = super().requested_shards(extensions)
+        if selected is None:
+            return None
+        self._reject_unknown_shards(selected)
+        return frozenset(selected)
+
+    def _reject_unknown_shards(self, selected: Iterable[str]) -> None:
+        """未配置的分片名一律 ``ValidationError``（F09 D11）。
+
+        ``requested_shards`` 与 ``get_in_shards`` 共用：否则拼写错误的分片名会被
+        伪装成「记忆不在目标分片」（全部落进 ``excluded_ids``）。
+        """
+        configured = configured_shards(self._locator())
+        unknown = [name for name in selected if name not in configured]
+        if unknown:
+            raise ValidationError(
+                f"unknown shard(s) {unknown}; configured shards: {list(configured)}"
+            )
+
+    def _filter_candidates_by_shards(
+        self, scope: Scope, candidates: list[ScoredUnit], shards: frozenset[str]
+    ) -> list[ScoredUnit]:
+        """返回前按生效归属做一次批量真源校验（不是逐条点读内容）。"""
+        unit_ids = list(dict.fromkeys(candidate.unit_id for candidate in candidates))
+        if not unit_ids:
+            return []
+        location = self._locator().locate(scope, unit_ids)
+        return [
+            candidate
+            for candidate in candidates
+            if location.found.get(candidate.unit_id) in shards
+        ]
+
+    def get_in_shards(
+        self,
+        scope: Scope,
+        unit_ids: list[str],
+        shards: frozenset[str],
+        *,
+        access: StorageAccessContext | None = None,
+        **kwargs: Any,
+    ) -> ShardedGetResult:
+        """按 id 点读并区分 found / missing / excluded（F09 D3）。"""
+        self._authorize(access, scope, StorageAction.GET, "memory_unit")
+        if not shards:
+            raise ValidationError("get_in_shards requires at least one shard")
+        self._reject_unknown_shards(shards)
+        locator = self._locator()
+        unique = list(dict.fromkeys(unit_ids))
+        location = locator.locate(scope, unique)
+        grouped: dict[str, list[str]] = {}
+        selected_order: list[str] = []
+        missing: list[str] = []
+        excluded: list[str] = []
+        for unit_id in unique:
+            shard = location.found.get(unit_id)
+            if shard is None:
+                missing.append(unit_id)
+            elif shard not in shards:
+                excluded.append(unit_id)
+            else:
+                grouped.setdefault(shard, []).append(unit_id)
+                selected_order.append(unit_id)
+        units: dict[str, MemoryUnit] = {}
+        for group in grouped.values():
+            for unit in self._get_units(scope, group, relax_session=True):
+                units[unit.id] = unit
+        found: list[MemoryUnit] = []
+        for unit_id in selected_order:
+            unit = units.get(unit_id)
+            if unit is None:
+                missing.append(unit_id)
+            else:
+                found.append(unit)
+        return ShardedGetResult(
+            found=found, missing_ids=missing, excluded_ids=excluded
+        )
+
     def _get_units(
         self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False
     ) -> list[MemoryUnit]:
@@ -972,8 +1077,21 @@ class CompositeDomainStore(DomainStore):
             for recaller in self._recallers
             if channels is None or recaller.channel() in channels
         ]
+        # 先校验 shards 再判空：非法分片参数必须报错，不能因为恰好没有选中通道而被放行。
+        shards = self.requested_shards(query.extensions)
         if not selected:
             return RecallResult()
+        if shards is not None:
+            unsupported = [
+                recaller.channel()
+                for recaller in selected
+                if not recaller.supports_shards()
+            ]
+            if unsupported:
+                # S09 错误语义：请求使用未声明能力 → 统一「不支持」，不与参数非法混用。
+                raise UnsupportedStorageCapabilityError(
+                    f"enabled recall channel(s) {unsupported} do not support shards"
+                )
         batches: list[RecallBatch[ScoredUnit] | None] = [None] * len(selected)
         errors: list[ChannelError] = []
         with ThreadPoolExecutor(max_workers=len(selected)) as executor:
@@ -1002,6 +1120,15 @@ class CompositeDomainStore(DomainStore):
         if errors and len(errors) == len(selected):
             raise StorageRetrievalError(errors)
         successful = [batch for batch in batches if batch is not None]
+        if shards is not None:
+            successful = [
+                RecallBatch(
+                    batch.channel,
+                    batch.source,
+                    self._filter_candidates_by_shards(scope, batch.candidates, shards),
+                )
+                for batch in successful
+            ]
         return RecallResult(batches=successful, errors=errors)
 
     def _recall_and_get(

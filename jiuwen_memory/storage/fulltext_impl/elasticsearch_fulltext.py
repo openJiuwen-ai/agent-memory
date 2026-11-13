@@ -43,12 +43,18 @@ from .._support import (
     wrap_backend,
 )
 from ..base import StoreType
+from ..capability import StoreCapability
 from ..fulltext import FulltextStore
 from ..types import Document, ScoredID, TextQuery
 from .retrieval_stopwords import RETRIEVAL_STOPWORDS
 
 _RANGE_OPS = {FilterOp.GT: "gt", FilterOp.GTE: "gte", FilterOp.LT: "lt", FilterOp.LTE: "lte"}
 _METADATA_ARRAY_FIELDS = "metadata_array_fields"
+
+
+#: ``record_ids_for_units`` 的分页大小与上限（不超过 ES 默认 max_result_window）。
+_RECORD_LOOKUP_PAGE = 500
+_RECORD_LOOKUP_WINDOW = 10_000
 
 
 class ElasticsearchFulltextStore(FulltextStore):
@@ -186,6 +192,72 @@ class ElasticsearchFulltextStore(FulltextStore):
         raise ValidationError(f"unsupported filter logic for fulltext: {expr.logic}")
 
     # --------------------------------------------------------------- CRUD
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset(
+            {
+                StoreCapability.RESOURCE_DESCRIPTOR,
+                StoreCapability.SHARD_PREFILTER,
+                StoreCapability.UNIT_RECORD_LOOKUP,
+            }
+        )
+
+    def record_ids_for_units(
+        self, scope: Scope, unit_ids: list[str]
+    ) -> dict[str, list[str]]:
+        """按 ``metadata.unit_id`` 找出该记忆的全部记录 id（F09 D16）。
+
+        依赖 ``metadata.unit_id`` 的 keyword 映射（F09 D16 运维前置条件）。
+
+        ES 是近实时的：刚写入、尚未 refresh 的文档对 search 不可见。搬迁随后会清理
+        源分片，漏查即丢记录，所以查询前先显式 refresh 本索引，并分页取全，
+        不能只取一页。
+        """
+        if not unit_ids:
+            return {}
+        query = {
+            "bool": {
+                "filter": [
+                    *self._scope_filters(scope),
+                    {"terms": {"metadata.unit_id": list(unit_ids)}},
+                ]
+            }
+        }
+        out: dict[str, list[str]] = {}
+        page = _RECORD_LOOKUP_PAGE
+        offset = 0
+        with wrap_backend(f"elasticsearch record lookup {len(unit_ids)} units"):
+            self.client.indices.refresh(index=self._index)
+            while True:
+                if offset + page > _RECORD_LOOKUP_WINDOW:
+                    raise BackendError(
+                        f"record lookup for {len(unit_ids)} unit(s) exceeds "
+                        f"{_RECORD_LOOKUP_WINDOW} documents; split the request"
+                    )
+                resp = self.client.search(
+                    index=self._index,
+                    query=query,
+                    from_=offset,
+                    size=page,
+                    sort=["_doc"],
+                    source=["metadata.unit_id"],
+                )
+                hits = resp.get("hits", {}).get("hits", [])
+                for hit in hits:
+                    metadata = (hit.get("_source") or {}).get("metadata") or {}
+                    unit_id = metadata.get("unit_id")
+                    if isinstance(unit_id, str):
+                        out.setdefault(unit_id, []).append(self._logical_id(hit["_id"]))
+                if len(hits) < page:
+                    return out
+                offset += page
+
+    def resource_descriptor(self) -> str:
+        from .._support import sanitize_resource_ids
+
+        hosts = self._resolved_hosts()
+        values = [hosts] if isinstance(hosts, str) else list(hosts)
+        return f"{sanitize_resource_ids(values)}/{self._index}"
+
     def store_type(self) -> StoreType:
         return StoreType.FULLTEXT
 

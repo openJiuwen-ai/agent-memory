@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import ParsedQuery, RecallChannel, Scope, ScoredUnit
+from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -42,12 +43,23 @@ class GraphRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return RecallChannel.GRAPH
 
+    def supports_shards(self) -> bool:
+        return self._graph is not None and StoreCapability.SHARD_ROUTED in capabilities_of(
+            self._graph
+        )
+
     def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         if self._graph is None:
             return []  # store 未注入（该端口未配）→ 跳过
         # 种子词项 = 关键词 ∪ 实体文本（实体更精准地定位图入口）。
         terms = set(query.keywords) | {e.text for e in query.entities if e.text}
-        seeds = self._graph.seed_ids(scope, terms)
+        if "shards" in query.extensions:
+            seeds = self._graph.seed_ids(
+                scope, terms, extensions=dict(query.extensions)
+            )
+        else:
+            # 普通后端可能没有 extensions 形参；不带 shards 时保持旧调用形态。
+            seeds = self._graph.seed_ids(scope, terms)
         scores: dict[str, float] = {}
         for seed in seeds:
             for node in self._graph.search(
