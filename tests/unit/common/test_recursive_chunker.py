@@ -270,3 +270,32 @@ def test_deterministic_output():
         assert c1.start == c2.start
         assert c1.end == c2.end
         assert c1.seq == c2.seq
+
+
+def test_long_text_without_separators_is_hard_split():
+    """无任何分隔符的超长文本必须硬截断，不能整段成为一个超长 chunk。
+
+    压缩 JSON / base64 / 无标点长句在记忆内容里并不少见，embedding 窗口
+    依赖 chunk_size 上限；整段返回会让下游 embedder 截断或报错。
+    """
+    chunker = _make_chunker(chunk_size=100, overlap=20, min_chunk=10)
+    text = "x" * 1000
+    chunks = chunker.chunk(text, "u1")
+
+    assert len(chunks) == 10
+    assert all(c.token_count <= 100 for c in chunks)
+    assert "".join(c.text for c in chunks) == text
+    assert chunks[0].start == 0
+    assert chunks[-1].end == len(text)
+    for previous, current in zip(chunks, chunks[1:]):
+        assert current.start == previous.end
+
+
+def test_zero_overlap_does_not_duplicate_boundary_text():
+    """overlap_chars=0 表示不重叠，拼接结果必须与原文严格一致。"""
+    chunker = _make_chunker(chunk_size=20, overlap=0, min_chunk=1, separators=[[" "]])
+    text = "word " * 10
+    chunks = chunker.chunk(text, "u1")
+
+    assert all(c.token_count <= 20 for c in chunks)
+    assert "".join(c.text for c in chunks) == text
