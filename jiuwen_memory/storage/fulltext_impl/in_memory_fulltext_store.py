@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
+from threading import Lock
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.tokenizer import Tokenizer
@@ -39,6 +41,14 @@ class InMemoryFulltextStore(FulltextStore):
         self._tokenizer = tokenizer
         self._docs: dict[_ScopeKey, dict[str, Document]] = defaultdict(dict)
         self._tokens: dict[_ScopeKey, dict[str, list[str]]] = defaultdict(dict)
+        self._lock = Lock()
+
+    def _snapshot(self, scope: Scope) -> list[tuple[Document, list[str]]]:
+        # Documents and tokens must come from the same index revision.
+        with self._lock:
+            key = _skey(scope)
+            tokens = self._tokens.get(key, {})
+            return [(doc, tokens[doc_id]) for doc_id, doc in self._docs.get(key, {}).items()]
 
     def store_type(self) -> StoreType:
         return StoreType.FULLTEXT
@@ -54,31 +64,39 @@ class InMemoryFulltextStore(FulltextStore):
 
     def insert(self, scope: Scope, docs: list[Document]) -> None:
         key = _skey(scope)
-        bucket = self._docs[key]
         for doc in docs:
-            if doc.id in bucket:
-                raise ConflictError("document", doc.id)
-            bucket[doc.id] = doc
-            self._tokens[key][doc.id] = self._tokenizer.tokenize(doc.text)
+            owned = deepcopy(doc)
+            tokens = list(self._tokenizer.tokenize(owned.text))
+            with self._lock:
+                bucket = self._docs[key]
+                if owned.id in bucket:
+                    raise ConflictError("document", owned.id)
+                bucket[owned.id] = owned
+                self._tokens[key][owned.id] = tokens
 
     def update(self, scope: Scope, docs: list[Document]) -> None:
         key = _skey(scope)
-        bucket = self._docs[key]
         for doc in docs:
-            if doc.id not in bucket:
-                raise NotFoundError("document", doc.id)
-            bucket[doc.id] = doc
-            self._tokens[key][doc.id] = self._tokenizer.tokenize(doc.text)
+            owned = deepcopy(doc)
+            tokens = list(self._tokenizer.tokenize(owned.text))
+            with self._lock:
+                bucket = self._docs[key]
+                if owned.id not in bucket:
+                    raise NotFoundError("document", owned.id)
+                bucket[owned.id] = owned
+                self._tokens[key][owned.id] = tokens
 
     def delete(self, scope: Scope, ids: list[str]) -> None:
         key = _skey(scope)
-        for doc_id in ids:
-            self._docs[key].pop(doc_id, None)
-            self._tokens[key].pop(doc_id, None)
+        with self._lock:
+            for doc_id in ids:
+                self._docs[key].pop(doc_id, None)
+                self._tokens[key].pop(doc_id, None)
 
     def get(self, scope: Scope, ids: list[str]) -> list[Document]:
-        bucket = self._docs[_skey(scope)]
-        return [bucket[i] for i in ids if i in bucket]
+        with self._lock:
+            bucket = self._docs.get(_skey(scope), {})
+            return [deepcopy(bucket[i]) for i in ids if i in bucket]
 
     def record_ids_for_units(
         self, scope: Scope, unit_ids: list[str]
@@ -86,30 +104,29 @@ class InMemoryFulltextStore(FulltextStore):
         """按 ``metadata.unit_id`` 找出该记忆的全部记录 id（F09 D16）。"""
         wanted = set(unit_ids)
         out: dict[str, list[str]] = {}
-        for doc in self._docs[_skey(scope)].values():
+        for doc, _ in self._snapshot(scope):
             unit_id = doc.metadata.get("unit_id")
             if isinstance(unit_id, str) and unit_id in wanted:
                 out.setdefault(unit_id, []).append(doc.id)
         return out
 
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
-        key = _skey(scope)
         q_tokens = self._tokenizer.tokenize(query.text)
         if not q_tokens:
             return []
         q_set = set(q_tokens)
         scored: list[ScoredID] = []
-        for doc_id, tokens in self._tokens[key].items():
+        for doc, tokens in self._snapshot(scope):
             if not tokens:
                 continue
-            metadata = self._docs[key][doc_id].metadata
+            metadata = doc.metadata
             if not evaluate(query.filters, lambda clause: matches_filter_value(
                 metadata.get(filter_field_metadata_key(clause.field)), clause
             )):
                 continue
             hits = sum(1 for t in tokens if t in q_set)
             if hits:
-                scored.append(ScoredID(id=doc_id, score=hits / len(tokens)))
+                scored.append(ScoredID(id=doc.id, score=hits / len(tokens)))
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[: query.top_k]
 

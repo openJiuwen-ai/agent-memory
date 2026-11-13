@@ -397,6 +397,10 @@ DocumentIndexBuilder 委托 DomainStore，ShadowDedup 读取 shadow。文档模�
 `common.type_def.matches_filter_value`；与 KV 真源复核保持相同的标量/数组/缺值语义。
 层级六字段读取索引投影，显式 metadata 命名空间独立，Scope 仍由端口原生隔离。
 
+内存向量与全文索引在实例锁内修改或取得稳定快照，评分/过滤/排序在锁外执行；
+全文文档与分词数据必须成对发布及取快照。索引持有输入副本，get 返回副本，
+更新替换记录而不原地修改，避免外部对象绕过锁改变查询快照。
+
 ### 时间投影
 
 SQLite 影子索引的 temporal 列复用 common/time_utils.epoch_ms，与构建投影和真源过滤一致；缺值哨兵保持字段原有契约。
@@ -415,5 +419,8 @@ CompositeStoreManager 实现该方法，返回显式绑定受管 KV 的领域门
 文档模式或召回配置，不注册或替换 manager 的具名数据面。
 
 KV 与 DomainStore 不提供 compare_and_swap / 条件更新（原仅服务角色记忆派生 updated，已随 updated 推迟一并删除，见 S06「原子条件更新」）；Registry 并发依赖单写者声明。
+
+SQLite Registry 单写声明使用固定路径旁的锁文件，POSIX 用非阻塞 flock，Windows 用
+msvcrt 非阻塞字节锁；重复写者返回 ConflictError，release/close 必须关闭持锁句柄。
 
 Neo4j 启用 SSL 时在装配与 URI 晚绑定处验证 TLS scheme，显式加密与自定义 CA 同时传给驱动；health 只探测，首次写入前创建唯一约束。

@@ -87,12 +87,15 @@ class AuthenticationError(AgentMemoryError):
 
 class RateLimitedError(AgentMemoryError):
     """
-    调用方超出速率上限：资源保护（``jiuwen_memory/common/security/protection/``）产出。
+    调用方超出速率、认证预算或 SDK 执行容量上限。
 
-    与 :class:`AuthenticationError` 必须可分（429 对 401）：限流发生在认证
+    与 :class:`AuthenticationError` 必须可分（429 对 401）：HTTP 入口限流发生在认证
     **之前**，此时还不知道凭据对不对——把它报成 401 会让「你被限流了」和
     「你的 key 错了」混在一起，运维排障时无法区分，客户端也不知道该重试
     还是该换凭据。
+
+    SDK 共享池在执行队列满时也使用此异常，表示操作尚未准入、未执行，可以稍后重试；
+    已准入操作的等待超时不属于本异常，不能据此推断操作未发生。
 
     对外消息同样笼统：不透露桶容量、剩余令牌、已计数的请求数——那些都能
     用来反推限流参数并贴着阈值发请求。

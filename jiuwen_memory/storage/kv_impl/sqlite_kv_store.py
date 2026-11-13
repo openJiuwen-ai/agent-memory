@@ -71,19 +71,31 @@ class SQLiteKVStore(KVStore):
         return self._config_source is None and self._fallback_db_path != ":memory:"
 
     def claim_single_writer(self, namespace: str) -> None:
-        import fcntl
         import hashlib
+        import sys
 
         if not self.persistent_atomic_records:
             super().claim_single_writer(namespace)
         suffix = hashlib.sha256(namespace.encode()).hexdigest()[:16]
         lock_path = str(Path(self._fallback_db_path).resolve()) + f".{suffix}.writer"
+        Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
             if namespace in self._writer_claims:
                 raise ConflictError("writer", message="Registry writer already exists")
             handle = open(lock_path, "a+b")
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    if handle.seek(0, 2) == 0:
+                        handle.write(b"\0")
+                        handle.flush()
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 handle.close()
                 raise ConflictError("writer", message="Registry writer already exists") from None

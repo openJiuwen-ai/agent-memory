@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-11-12 |
+| 最近一次修订日期 | 2026-11-13 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F11-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
@@ -748,6 +748,13 @@ API 经 MemoryQueryService 的校验端口在单/跨空间分流前调用；Engi
 接续服务仅释放自己申请的单写 claim，装配根按资源创建记录关闭自有 Store；借用的 Store 不关闭。单个组件释放失败仍需尝试其余自有资源清理。
 
 Engine.write 的可选 event_time 为含时区事件时间，随 RawPayload 显式传递；batch_write 逐项转发 `BatchWriteItem.event_time`，语义与 write 相同；非空时 Engine 必须在原文落盘/建索引前保障全部摄入输出的 temporal.t_event 等于该值，不依赖 Ingestor 的特定实现。普通调用省略该值保持原有行为。
+
+### 单 Agent SDK 任务发现与层级
+
+TaskRegistry 的 find 先查开放任务的上下文有效绑定，再用可选描述检索当前项目开放任务；
+标题/说明优先使用共享 Embedder 缓存，缺少 Embedder 时用共享 Tokenizer 计算 BM25。
+两者均为可重建投影，不创建 MemoryUnit 或宿主业务映射；Embedder 故障不触发回退。
+父任务只在 create 登记，root_task_id 由 Registry 继承；字段和错误契约见 S11。
 
 ## 隐私保护与生命周期
 
