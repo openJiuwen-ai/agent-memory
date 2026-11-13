@@ -94,7 +94,7 @@ _SRV = _build_server()
 
 
 @asynccontextmanager
-async def _lifespan(_app: Any) -> AsyncIterator[None]:
+async def lifespan(_app: Any) -> AsyncIterator[None]:
     """传输宿主生命周期：在宿主 loop 启动后台组件，停止接收会话后关闭内核。"""
     server = _SRV
     try:
@@ -108,7 +108,7 @@ class _RuntimeFastMCP(FastMCP):
     """共享内核随传输宿主启停，不能随 HTTP 客户端会话关闭。"""
 
     async def run_stdio_async(self) -> None:
-        async with _lifespan(self):
+        async with lifespan(self):
             await super().run_stdio_async()
 
     def streamable_http_app(self) -> Any:
@@ -118,7 +118,7 @@ class _RuntimeFastMCP(FastMCP):
         @asynccontextmanager
         async def application_lifespan(application: Any) -> AsyncIterator[Any]:
             # 先启动内核；退出时先让 SDK 停止全部会话，再关闭共享内核。
-            async with _lifespan(self), transport_lifespan(application) as state:
+            async with lifespan(self), transport_lifespan(application) as state:
                 yield state
 
         app.router.lifespan_context = application_lifespan
