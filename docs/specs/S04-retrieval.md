@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/retrieval/ |
 | 最近一次修订日期 | 2026-11-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/retrieval/F09-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/retrieval/F09-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
 ## 明文拒绝的传播边界
 
@@ -644,6 +644,29 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 逐根 expand 在 child_select 汇总之前记录；父节点预先占满窗口时只记录逐根跳过原因。
 BFS 路径保持原有统计与遍历语义。`with_trajectory=false` 时 `RetrievalResult.trajectory=[]`；
 错误仍按既有规则返回。没有独立的公开 expand 接口。
+
+#### trajectory 统一实现（已设计、尚未实现，F11）
+
+公开步骤列表及开关保持不变。common.trace 负责请求作用域、事件收集、预算、截断及
+可嵌套的捕获区间 / 非破坏性局部快照，检索层负责将带内部投影元信息的阶段事件转换为
+TrajectoryStep；common 不导入 retrieval 类型。检索阶段不再独立维护 trajectory 列表。
+事件保留独立 stage / channel / candidate_count / 原精度 cost_ms / detail，不能通过
+将 detail 摊平到通用 data 后反推兼容字段。
+
+with_trajectory=true 必须在检索调用边界保证可用 buffer；复用已有作用域，或建立临时
+作用域，调用结束投影后恢复增强 / 关闭临时作用域。noop / log 不能抑制显式轨迹请求；
+临时 buffer 不隐式开启日志或通用 trace 响应。仅投影本检索区间的阶段事件，不包含
+无关业务节点、包装 span 或普通 debug 明细。是否输出通用 trace 与 trajectory 分开控制。
+
+多模态须传播线程上下文并记录分支降级和最终融合，轨迹保持原分支顺序及 detail.branch；
+跨空间按既有优先级合并。内部子检索共享根捕获区间预算，不重复投影，不按并发完成顺序
+改变兼容列表的编排顺序；共享节点容器的计数和挂载须并发安全。
+
+默认限制及 globals 的 null 语义见 S07；限制后的记录同时用于两种视图，不另留无界列表。
+本次检索区间若丢弃 N 个节点，末尾增加一个不占预算的 trace_truncated 步骤，字段为
+channel=None、candidate_count=0、cost_ms=0，detail={"reason":"max_nodes","dropped":"N"}；
+多分支只汇总一次。字符串保留截断标记，设置对应限制为 null 才取消限制。
+设计、使用示例和验收计划见 [F11-new-trace.md](../features/common/F11-new-trace.md)。
 
 ## 错误语义
 

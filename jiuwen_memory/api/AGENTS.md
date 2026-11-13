@@ -204,7 +204,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 8. Access（`jiuwen_memory_entry/`、`jiuwen_memory_adapter/`）只 `import jiuwen_memory.api`，
    且不得 import `jiuwen_memory.api.memory_api_impl`。本包重导出协议转换所需的 DTO /
    枚举 / 异常 / `Credentials`，以及 Access 日志脱敏所需的
-   `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`。
+   `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`；横切 trace 入口
+   （`begin_trace` / `end_trace` / `trace_event` / `TRACE_OVERRIDE_KEY` / `TraceLevel` / `parse_trace_spec`；`trace_span` / `traced` / `trace_annotate` 从 `common.trace` 导入）。
    公开装配是
    `assemble` / `assemble_runtime` / `assemble_server_runtime`（接受 `dict | Config | None`），Access composition
    root 不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI`

@@ -56,6 +56,7 @@ from jiuwen_memory.common.log import (
     metadata_for_log,
     redact_for_log,
 )
+from jiuwen_memory.common.trace import trace_event
 from jiuwen_memory.common.type_def import (
     MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
@@ -1027,7 +1028,18 @@ class ExtractorImpl(Extractor):
             len(items),
             [type(it).__name__ for it in items],
         )
-        return self.build_candidates(items, units)
+        candidates = self.build_candidates(items, units)
+        trace_event(
+            type(self).__name__,
+            "extract",
+            {
+                "inputs": len(units),
+                "response_chars": len(response) if response else 0,
+                "items": len(items),
+                "candidates": len(candidates),
+            },
+        )
+        return candidates
 
     def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""

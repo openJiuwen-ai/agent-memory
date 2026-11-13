@@ -183,6 +183,10 @@ def default_config_dict() -> dict[str, Any]:
         # 无链式 proof）。要启用须显式配置 audit_integrity 段（chained_hmac + 独立具名
         # audit key provider + 实现 ChainedAuditStore 的具名 audit 后端），并经
         # security.params.audit_integrity 显式接线（S10 §审计完整性）。
+        # 横切 trace 组件：默认 noop（零开销）；可选 memory / log / both。
+        # 详细程度经内联 params.level（info 缺省 / debug），如
+        # {"default": {"target": "memory", "params": {"level": "debug"}}}。
+        "trace": {_D: "noop"},
         # -- 检索 ------------------------------------------------------------ #
         "recaller": {
             "keyword": {"target": "keyword"},
@@ -405,6 +409,7 @@ ROOT_PARAMS: dict[str, str] = {
     "membership": _D,
     "config_source": _D,
     "key_store": _D,
+    "trace": _D,
 }
 
 KV_DEFAULT_NAME = _D  # 注入的真源 kv 预置进缓存时用的具名键（与各处引用一致）

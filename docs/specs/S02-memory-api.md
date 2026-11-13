@@ -7,7 +7,7 @@
 | 关联模块 | jiuwen_memory/api/ |
 | 最近一次修订日期 | 2026-11-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F08-personal-memory-portal.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
 ## 明文读取与独立维护边界
 
@@ -19,7 +19,6 @@
 编排、格式校验和逐项结果属于 deploy/migration，不从 jiuwen_memory.api 导出，
 也不在启动、搜索或读取中调用。部署配置、凭据、支持范围及退出码见 F04 §5.3，
 底层可选维护能力见 S06。
-
 
 ## 文档分工
 
@@ -702,6 +701,14 @@ def search(
 树参数的默认值直接体现在签名中，不使用内部二次补默认值。开启树功能时，省略参数
 即使用 TIME/time_span、一级展开和 MaxP 上卷；显式 `expand_depth=0` 或 `rollup=False`
 原样生效，即使只传其中一项。
+
+**状态：已设计、尚未实现**（[F11 trajectory 统一](../features/common/F11-new-trace.md)）：
+保留 with_trajectory 及返回 trajectory 步骤列表，底层使用 common.trace 的单一记录源。
+with_trajectory=true 保证本次检索具备内存收集能力，即使通用 target 为 noop / log；
+false 时 trajectory=[]，不阻止独立开启通用 trace。仅为 trajectory 临时收集不会自动
+增加 trace 响应键或包装业务结果。该行为须同时覆盖进程内、CLI、HTTP、MCP，不能只在
+接入层序列化时生成。
+
 
 最近上下文经 `context.extensions["query_context"]` 传入，取值是 `list[str]` 或
 `tuple[str, ...]`，顺序由调用方保证；key 不存在与空序列均表示无上下文。API 边界将其
@@ -1455,9 +1462,18 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 `DisclosureLevel`：`L0`（摘要）/ `L1`（片段）/ `L2`（全文）/ `ADAPTIVE`（按 `max_tokens` 预算自动选层级）。
 
 `RetrievalResult`：
-- `items: list[RetrievedItem]` —— 每项 `unit_id` / `score`（融合/重排后最终分）/ `content`（按层级加载）/ `level`（实际披露层级）。
+- `items: list[RetrievedItem]` —— 每项 `unit_id` / `score`（融合/重排后最终分）/ `abstract` / `overview` / `content`（三层内容）/ `user_metadata` / `system_metadata` / `level`（实际披露层级）。
 - 接续可选字段（仅给出 duty/task_id/anchor 时填充，否则为 null）：`paths: list[RelationPath] | None`、`gaps: list[Gap] | None`、`view_meta: ViewMeta | None`；`RetrievedItem.view: ViewAnnotation | None`。字段定义见 S11。
-- `trajectory: list[TrajectoryStep]` —— 仅 `with_trajectory=True` 返回。每步 `stage`（parse/recall/fuse/recheck/rerank/resolve/threshold/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
+- `trajectory: list[TrajectoryStep]` —— `with_trajectory=False` 时为空列表，True 时填充步骤。每步 `stage`（parse/recall/fuse/recheck/rerank/resolve/threshold/secondary_rank/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
+- `errors: list[ChannelError]` —— 部分通道错误，不依赖 with_trajectory。
+
+**状态：已设计、尚未实现**（F11）：trajectory 由受限 trace 记录投影，字段类型不变。
+默认节点上限 128、字符串值截断 256 字符，深度限制 4；服务端
+`globals.trace_max_nodes` / `trace_max_value_chars` / `trace_max_depth` 可分别设 null
+取消对应限制，完整配置契约见 S07。节点丢弃时，trajectory 末尾增加一个
+`stage="trace_truncated"` 步骤，其 channel=None、candidate_count=0、cost_ms=0，
+detail 为 `{"reason":"max_nodes","dropped":"N"}`，N 为本次检索捕获区间丢弃的节点数。
+此步骤不占预算；字符串截断保留 `...[truncated]` 标记。默认轨迹不再承诺无损完整返回。
 
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
 

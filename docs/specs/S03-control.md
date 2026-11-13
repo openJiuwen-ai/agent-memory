@@ -8,7 +8,7 @@
 | 最近一次修订日期 | 2026-11-12 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F11-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
 ## 明文拒绝的传播边界
 
@@ -409,6 +409,29 @@ repair_required_count、complete、built、reused、skipped、skipped_incomplete
 失败附 error，部分持久化附 JSON repair_required。JobInfo 不新增 result 字段。
 complete=false 或 repair_required 非空必须 FAILED；Scheduler 保留 Job 返回的
 SUCCEEDED/FAILED/CANCELLED，非终态返回视为错误。auto derive 已接入下述周期任务；ensure 尚未实现。
+
+#### 后台任务 trace（已设计、尚未实现，F11）
+
+Scheduler 实际执行入口、IngestJobController 工作入口及 dreaming 驱动执行入口复用
+common.trace 的 begin/end 与模块级埋点，不复用提交请求作用域。任务类型由执行器
+显式提供：evolve / middle_to_long 沿用既有 JobType 值，ingest / dreaming 是执行入口
+策略键，不新增 JobType 枚举值。自定义执行器提供稳定类型键，不根据 Python 类名猜测。
+
+启动时按 `globals.trace_jobs.types[task_type]` > `globals.trace_jobs.default` >
+`trace.default` 解析具名 collector；完整保留 level / log_file 参数，显式 noop 不回退。
+任务不使用提交请求的 extensions.trace。trace_id 为实际任务 scope 与执行 job_id
+的固定顺序编码拼接，编码规则及 collector 参数扩展见 S07；通过 begin_trace 显式传入。
+
+一次实际执行建立独立根 Job.run span；周期执行优先使用实例 job_id，复用 job_id 的
+入口须记录 execution_id / attempt。根节点记录 task_type、job_id、parent_job_id（如有）、
+状态及耗时；派生 job 另建作用域，通过 parent_job_id 关联，不共享可关闭的父容器。
+每次执行独立预算；子协程与工作线程传播本次任务 context，直接线程池须显式复制。
+成功 / 失败 / 取消均在 finally 配对结束作用域，不改变既有取消与失败传播语义。
+
+memory / memory_log 的快照交给执行器内部完成处理，未消费则释放，不新增 JobInfo
+字段或改变 job_status。文件 sink 资源由装配 runtime 管理，在任务停止 / 收尾之后
+flush / close，不能每个任务关闭共享 handler。设计及配置示例见
+[F11-new-trace.md](../features/common/F11-new-trace.md) 第 7 节。
 
 ### IngestJobController（`ingest_job.py`）
 

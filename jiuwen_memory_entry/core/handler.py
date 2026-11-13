@@ -15,6 +15,7 @@ from business payload fields.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 import uuid
@@ -22,6 +23,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
+from jiuwen_memory_entry.core.api_contract import pop_trace_target
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 
 _SRC = os.path.join(
@@ -71,6 +73,8 @@ from jiuwen_memory.api import (
     UpdateMode,
     ValidationError,
     WriteIncompleteError,
+    begin_trace,
+    end_trace,
 )
 from jiuwen_memory.api import normalize as normalize_filters
 from jiuwen_memory_entry.core.api_contract import parse_request  # noqa: E402
@@ -1333,14 +1337,28 @@ def dispatch(srv, request: DispatchRequest) -> tuple[int, Body]:
     if handler is None:
         return 404, {"error": "UnknownVerb", "message": f"no such verb: {request.verb!r}"}
     try:
-        return 200, handler(srv, request)
-    except AgentMemoryError as exc:
-        status = next((code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400)
-        body: Body = {"error": type(exc).__name__, "message": str(exc)}
-        if isinstance(exc, PartialFailureError):
-            body["completed"] = list(exc.completed)
-            body["failed"] = exc.failed
-            body["retry_action"] = exc.retry_action
-        return status, body
-    except Exception as exc:  # surface unexpected failures as 500
-        return 500, {"error": "InternalError", "message": str(exc)}
+        payload, target, level = pop_trace_target(request.payload)
+        token = begin_trace(target, level=level)  # 未注册 target 同样是 400
+    except ValidationError as exc:
+        return 400, {"error": type(exc).__name__, "message": str(exc)}
+    if payload is not request.payload:
+        request = dataclasses.replace(request, payload=payload)
+    try:
+        try:
+            status, body = 200, handler(srv, request)
+        except AgentMemoryError as exc:
+            status = next((code for cls, code in _STATUS.items() if isinstance(exc, cls)), 400)
+            body = {"error": type(exc).__name__, "message": str(exc)}
+            if isinstance(exc, PartialFailureError):
+                body["completed"] = list(exc.completed)
+                body["failed"] = exc.failed
+                body["retry_action"] = exc.retry_action
+        except Exception as exc:  # surface unexpected failures as 500
+            status, body = 500, {"error": "InternalError", "message": str(exc)}
+    finally:
+        snapshot = end_trace(token)
+    # 非 trace verb 且收集非空时把请求级 trace 填充进响应（trace 动词本身是
+    # 血缘回溯接口，语义不同，不叠加）。body 原样替换键，不改各 handler 返回结构。
+    if snapshot and request.verb != "trace":
+        body = {**body, "trace": snapshot}
+    return status, body
