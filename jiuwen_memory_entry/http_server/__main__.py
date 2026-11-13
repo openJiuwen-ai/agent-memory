@@ -608,11 +608,12 @@ class HttpServer(Server):
             self.close(wait=True)
 
 
-def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
-    )
+def build_parser() -> argparse.ArgumentParser:
+    """构造 HTTP 入口的参数解析器。
+
+    独立于 :func:`main`，供测试直接检查 ``prog`` 与参数集合，无需真实解析
+    （``--help`` / 非法参数会让 argparse 抛 ``SystemExit``）。
+    """
     parser = argparse.ArgumentParser(prog="agent-memory-server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=_server_port, default=8137)
@@ -623,6 +624,15 @@ def main(argv: list[str] | None = None) -> int:
         help=f"HTTP authentication mode (default: ${_AUTH_MODE_ENV} or required)",
     )
     parser.add_argument("config", nargs="*", help="JSON/YAML config layers stacked on OFFLINE")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
+    )
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.auth_mode not in _AUTH_MODES:
         parser.error(f"invalid {_AUTH_MODE_ENV}: {args.auth_mode!r}")

@@ -150,7 +150,9 @@ def _cc_init_patched(self, **kwargs):
 _ConflictConsolidator.__init__ = _cc_init_patched
 
 SUB_DATASET = "factconsolidation_mh_6k"
-DEFAULT_DATA = REPO / "evaluation" / "datasets" / "memoryagentbench" / "factconsolidation_mh_6k.json"
+DEFAULT_DATA = (
+    REPO / "evaluation" / "datasets" / "memoryagentbench" / "factconsolidation_mh_6k.json"
+)
 DEFAULT_CONFIG = EVAL_DIR / "config.yml"
 
 _MEMORIZE = (
@@ -166,11 +168,14 @@ _QUERY = (
     "based on this rule. You should give a very concise answer without saying other words "
     "for the question **only** from the knowledge pool you have memorized rather than the "
     "real facts in real world. \n\nFor example:\n\n [Archival Memory] \n\n "
-    "Question: Based on the Archival Memory, what is the name of the current president of Russia? \n"
+    "Question: Based on the Archival Memory, what is the name of the current president "
+    "of Russia? \n"
     "Answer: Donald Trump \n\n Now Answer the Question: Based on the  Archival Memory, "
     "{question} \nAnswer:"
 )
-_ANSWER_SYSTEM = "You are a helpful AI. Answer the question based on query and memories.\n{memories}\n"
+_ANSWER_SYSTEM = (
+    "You are a helpful AI. Answer the question based on query and memories.\n{memories}\n"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +198,8 @@ def parse_output(output_text: str, answer_prefix: str = "Answer:") -> str:
         match = pattern.search(output_text or "")
         if match:
             extracted = match[1].strip()
-            return re.sub(f"^{re.escape(answer_prefix)}", "", extracted, flags=re.IGNORECASE).strip()
+            stripped = re.sub(f"^{re.escape(answer_prefix)}", "", extracted, flags=re.IGNORECASE)
+            return stripped.strip()
     return ""
 
 
@@ -465,7 +471,13 @@ def main(argv=None) -> int:
     out_dir = Path(args.output_root) / f"{run_id}_{args.run_tag}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("=== MAB %s | stage=%s | QA=%d | scope_org=%s ===", sub_dataset, args.stage, len(questions), scope.org)
+    logger.info(
+        "=== MAB %s | stage=%s | QA=%d | scope_org=%s ===",
+        sub_dataset,
+        args.stage,
+        len(questions),
+        scope.org,
+    )
     runner = MabRunner(Path(args.config), top_k=args.top_k, chunk_chars=args.chunk_chars)
 
     report: dict = {"sub_dataset": sub_dataset, "stage": args.stage,
