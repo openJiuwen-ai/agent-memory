@@ -213,7 +213,7 @@ add / batch_add（continuity=ContinuityWrite）──写入──▶ MemoryUnit�
 | attach | 把 `MemoryRef` 加入背景（标注必需或可选），逐个点读校验存在、可读、摘要一致 | 同上；背景按值去重 |
 | close | `state=closed`；之后拒绝变更和新事件，不删除记录 | 同上 |
 | get | 读取任务快照，去掉回执窗口；背景按调用者权限裁剪，有不可读项时 `background_partial=true` | 只读 |
-| find | 按连接 ＋ 本地上下文找出有活跃绑定的任务 | 只读；多个匹配全部返回，不默选 |
+| find | 优先按连接 ＋ 本地上下文找出有活跃绑定的开放任务；无精确结果时按可选描述检索 | 只读；多个精确匹配全部返回，不默选；关闭任务排除，仍可 get 查看 |
 
 **并发与持久化**：所有变更在 Repository 的进程内锁下执行"读记录 → 校验修订 → 应用变更 → 修订号加一 → 写回执 → 整条记录写回"。整条记录一次写入具名持久 KV，依赖 KV 的单记录原子替换；跨进程由 `claim_single_writer` 保证只有一个写服务。回执窗口 256 条，超出按修订号淘汰最旧的；淘汰后旧请求重放会因修订号不符被拒绝，不会被当成新操作执行。
 
@@ -716,7 +716,7 @@ search（task_id / anchor / duty）＋ Duty ─▶ TraversalRule ─▶ Retrieva
 
 #### TaskRecord 与 Binding（内部）
 
-- **含义**：TaskRecord 是任务控制记录，键为 `task_id, owner, revision, state, bindings, background, receipts`。Binding 是其中的产品绑定，键为 `binding_id, connector_id, context_id, context_source, created_by, active`，解绑后增加 `revoked_by, revocation_reason`。`background` 每项为 `{ref, required}`。
+- **含义**：TaskRecord 是任务控制记录，包含 `task_id, owner, revision, state, bindings, background, receipts`，以及任务发现用的 `title/description` 和任务树 `parent_task_id/root_task_id`。Binding 是其中的产品绑定，键为 `binding_id, connector_id, context_id, context_source, created_by, active`，解绑后增加 `revoked_by, revocation_reason`。`background` 每项为 `{ref, required}`。
 - **创建者与读取者**：Registry 在 create 时生成（`task_id` 由负责人摘要与 `request_id` 计算），后续 bind、unbind、attach、close 和带 `continuity` 的写入修改；`continuity_task(get)`、视图读取。`get` 返回时去掉 `receipts`，并按调用者权限裁剪 `background`，标出 `background_partial`。
 - **生命周期**：创建后持久保留；close 只把 `state` 改为 `closed`，不删除。`receipts` 窗口最多 256 条，按修订号淘汰最旧的；淘汰后的旧修订请求仍被拒绝。`batch_add` 对同一任务的多个事件只递增一次修订。
 - **示例**：
@@ -1511,13 +1511,70 @@ continuity:
 | 走 MCP 的产品（WorkBuddy、Hermes 等） | 在产品的 MCP 配置里启动 `python -m jiuwen_memory_adapter.continuity.mcp`，环境变量 `AGENT_MEMORY_URL`（远程须 HTTPS，仅 loopback 允许 HTTP）和 `AGENT_MEMORY_API_KEY`（该连接的凭据）由产品的受控凭据配置提供，不写进提示词 |
 | 历史导入脚本 | `python -m jiuwen_memory_adapter.continuity.history <文件.jsonl> --batch-id … --task-id … --binding-id … --product … --version … --context-id … --org … --space … --report …`；默认只校验，加 `--apply` 才写入（按批调用 `batch_add`），写入时同样读取上述两个环境变量 |
 
+### 6.5 单 Agent SDK 接续与任务发现
+
+单 Agent 的多个 Session 可使用同一宿主进程的 SDK：各 Provider 仍独立，Adapter
+按固定 Registry 路径共享一个 runtime，并校验有效配置与认证主体。普通 SDK 和 HTTP
+保留原生命周期。选用共享资源避免逐 Session 新建写者；引用数和实际在途调用均为零
+时才关闭，关闭失败不复用。每次调用从当前 Provider 取得可信安全上下文，在线程中走
+相同 MemoryAPI PEP；不接受业务参数中的身份。超时仅停止等待，冻结事件保留原 ID 恢复。
+
+原共享池把查询与写入都放进单工作线程，慢写入会阻塞其他 Session 的背景预取。
+现在保留共享内核及 Registry 单写锁，读写请求共用一个有界执行池，默认 16 个工作
+线程和 256 个等待槽位，分别由内核配置 globals.sdk_max_workers 和
+globals.sdk_max_queue_size 调整。Registry 修改在内核实例锁处互斥，不在客户端按读写分池。
+满载时以 RateLimitedError 拒绝尚未准入的操作，调用方可稍后重试；已经准入的操作
+即使等待方超时或取消，也要追踪至实际结束才归还容量。最后一个使用者退出时一起排空。
+这避免为改善查询延迟而重复装配内核或引入 Registry 多写协议，不改变 MemoryAPI
+参数和持久格式。JiuwenSwarm 用户可在 memory.builtin.jiuwen.sdk.globals 下调整这两个
+参数，已有完整 SDK 配置透传路径无需额外接线；参数改变后须释放旧 runtime 并重装。
+
+查询与写入交叉会触及共享内存索引，原向量/全文实现直接遍历可变字典，可能迭代失败。
+存储层现在在短锁内取得快照，锁外评分；全文文档与分词数据成对取快照，内部持有
+输入副本并隔离 get 返回值。保留现有召回、过滤和排序逻辑，不引入全局检索锁。
+调用方依赖刚写入的结果时仍须先等待写入完成；单索引快照不承诺跨存储一致快照。
+
+本地 Portal 原由各 Provider 启动并关闭；共享 runtime 后，入口会复用同一个 Portal，
+单个 Provider 退出却会提前关闭其他 Session 的页面。共享 SDK 现在由 pool entry
+持有 Portal，沿用 runtime 的 lease 计数；最后一个使用者离开后先停止 Portal 并等浏览器
+请求结束，再关闭内核。身份、端口和嵌入来源仍复用原入口校验，普通 SDK 的所有权不变。
+Portal 若被外部关闭，Provider 报告不可用，用户再次打开时重建；宿主无需改配置。
+
+共享 Portal 的浏览器授权按 Provider 分开绑定可信安全上下文来源，不能用 actor 相同
+推断角色、凭据或委托权限相同。请求时重新调用签发方的安全上下文来源；某 Provider
+退出后，其会话失效，其他 Provider 的会话与共享 Portal 继续可用。拒绝在共享 handle
+上覆盖单一全局 Provider 回调，因为后注册者可能改变已有会话的权限，也拒绝将回调按
+角色或凭据字段去重，因为独立 Provider 可能具有相同字段但不同的授权策略。
+默认启动链接也在签发时绑定唯一来源；多来源时要求调用方显式指定 key，未知 key
+拒绝签发。浏览器请求不再对空 key 做动态回退，避免来源注销后旧会话转用剩余身份。
+
+Provider 新增 continuity_request，接受 continuity_task/search/add/continuity_recover；
+prefetch 透传 top_k，sync_turn 沿用逐条可靠写入。HTTP 角色与关系工具继续可用。
+HTTP 409 需区分 WriteIncompleteError 和一般 ConflictError，修订冲突不得伪装成未知写入。
+
+Registry 的 find 优先按 connector_id/context_id 精确查有效 binding；无结果时才用
+可选 query 按任务标题和说明返回候选，query-only 可用于切换其他任务。
+候选附带 task_id/revision/title/description/state/match_type，描述候选有 score，
+须用户确认后再 bind。标题/说明存在 Registry，由共享 Embedder 建可重建的进程内缓存，
+不要求宿主再保存业务任务映射；hashing 配置仅提供词项相似度，真实语义需要语义模型。
+未注入 Embedder 或显式配置 `continuity.default.params.embedder: null` 时，描述查询使用
+BM25 和共享 Tokenizer，在当前开放任务标题/说明上计算，返回 `description_bm25`；
+无需新增存储或下载模型。已配置 Embedder 的运行错误继续上报，不以回退掩盖故障。
+BM25 为关键词匹配，无法替代近义语义理解；score 与向量余弦量纲不同。
+create 可登记父任务，root_task_id 由 Registry 继承；bind 可为历史任务补录空标题/说明。
+新宿主应提供明确标题；旧 create 省略新增字段和旧 mutation 回执保持兼容。
+
+仅 continuity 档调整背景顺序：必需背景优先，其他背景按登记倒序，再走原 top_k 截断。
+Windows 持久 Registry 使用非阻塞 msvcrt 字节锁，POSIX 沿用 flock，重复写者立即冲突。
+宿主的用户选择界面、ContinuityRail 和激活指针仍需上游适配；本仓实现不证明真实宿主联调完成。
+
 ## 7. 外部 Agent 接入
 
 ### 7.1 通用接入模型
 
 **统一决策：以带接续参数的 add / search、任务绑定工具（角色模式再加关系登记）接入，不要求主动交接，不扩展 Rail 协议。** 用户可明确要求 Agent 调用，也可通过同一受鉴权入口的脚本操作；未调用或未采集的信息不得假定已保存。任务和绑定由 agent-memory 维护，不要求外部产品增加全局 task_id。事件、历史交换文件和回写结果的契约见 [S11 Adapter 接入契约](../../specs/S11-cross-agent-continuity.md#adapter-接入契约)。
 
-所有产品连接**同一个 agent-memory 服务**，远程走 HTTPS（只有 loopback 允许 HTTP），每个连接独立配置服务端签发的 Bearer/API 凭据，由 agent-memory 校验并通过 `continuity_connectors` 映射到参与者身份。不共享外部产品的业务账号，不把产品名字段当凭据。适配器只负责注册工具、传递可信上下文、转换参数和回写结构化结果，不执行图算法，不在产品进程内另建 Registry。
+跨产品接续连接同一个 agent-memory 服务，远程走 HTTPS（只有 loopback 允许 HTTP），每个连接独立配置服务端签发的 Bearer/API 凭据，由 agent-memory 校验并通过 `continuity_connectors` 映射到参与者身份。单 Agent 同进程 SDK 的共享部署见 6.5。不共享外部产品的业务账号，不把产品名字段当凭据。适配器只负责资源共享、注册工具、传递可信上下文、转换参数和回写结构化结果。
 
 没有生命周期钩子的产品采用显式工具模式，只保证**已提交事件**的接续，不保证完整对话自动捕获。接入指引需明确工具使用流程："恢复任务时绑定并用 search(task_id) 读背景、结果形成后 add 带 continuity、缺证时带 duty 补查、复核后提交关系（角色模式）"。用户手工片段可导入，但标记覆盖不足。
 
@@ -1538,7 +1595,7 @@ continuity:
 | on_session_end | 普通模式可触发额外抽取 | 接续模式不再触发独立抽取；它不是关系查询或复核的触发点，也不是"原文已入库"的回执 |
 | 客户端 add/search/list/evolve | 连接、异步调用和公开 API 桥接 | 带 `continuity` 的 add 才是可靠接续写入，未完成以 409 `WriteIncompleteError` 返回；`continuity_call` 转发接续方法 |
 | get_tool_schemas / handle_tool_call | 主动工具注册与分发 | 接续模式按服务端 `continuity_mode` 注册工具（7.3）；JSON 字符串只是宿主传输包装，内容须符合结构化契约 |
-| bound_scope / HTTP 客户端 | 旧隔离坐标与连接配置 | 接续模式连统一远程服务，项目落点与历史坐标分开配置 |
+| bound_scope / HTTP 客户端 | 旧隔离坐标与连接配置 | HTTP 连统一远程服务；同进程 SDK 接续由 Adapter 共享 runtime，项目落点与历史坐标分开配置 |
 
 - **需要产品配合**：在目标版本验证工具注册、调用和结果展示。
 - **当前实现**：provider 有 `continuity_enabled`、`default_duty`、`continuity_mode`（构造参数，缺省 `role`，不从服务端探测），按档位注册 `agent_memory_continuity_*` 工具；`sync_turn` 调 `add`（带 `continuity`）、`prefetch` 调 `search`（带 `duty` / `task_id`）；未与真实 JiuwenSwarm 版本联调（12.2）。
@@ -1921,6 +1978,13 @@ P0 是首版闭环必须满足的行为；P1 是可独立增强的能力。权�
 
 ### 11.4 测试基线
 
+单 Agent SDK 增量定向回归：2026-11-12 Windows，控制层接续、API/治理、Adapter、
+HTTP/MCP 契约与普通 Provider 选定用例 535 passed、11 deselected；该轮排除已有视频
+错误信息断言组和旧 argon2 缺少 InvalidHashError 的用例。视频 inline 失败已使用原版
+Provider 复现。补充 SDK 生命周期定向测试 8 passed，覆盖初始化取消后退出事件循环、
+等待超时/取消、关闭竞争、配置冲突、启动回滚、关闭失败和持久任务重开；Ruff 通过。
+未调用真实语义模型，任务候选质量需由部署的 Embedder 决定；宿主候选确认仍待上游联调。
+
 以下基线均针对 2026-11-05 设计修订之前的代码形态（九个 `role_*` 入口）。修订后，覆盖已删除能力的测试（`test_sync.py` 的切换用例、`test_review_changes.py`、`test_review_impact.py`、`test_derivation_updated.py`、`role_publish` / `role_mark_source_cutover` 用例）随实现一起删除，基线按开发计划重新建立。
 
 - 2026-11-03 本实现轮次落地：验证裁决改用 supports、多职责查询、条件投影（kv/memory/neo4j）、Neo4j 后端（驱动替身）、经验状态演进、role_rebuild 工具暴露、关系覆盖清单、生命周期重装、同一图对象校验与 IndexBuilder 写入模式声明、冲突消解候选转换流水线、派生构建核对恢复核心、证据保留引用守卫、影响传播与三档聚合复核、RETRIEVAL_ONLY 主写入链拒绝、按来源范围隔离；新增 `test_multi_duty.py`、`test_experience_states.py`、`test_conditional_projection.py`、`test_neo4j_graph_store.py`、`test_relation_coverage.py`、`test_assembly.py`、`test_continuity_lifecycle.py`、`test_conflict_pipeline.py`、`test_derivation.py`、`test_evidence_retention.py`、`test_review_impact.py`、`test_source_governance.py`、`test_continuity_governance.py` 及对既有 `test_latest_design.py`/`test_continuity.py` 的修正。F10 范围单测（control/continuity_impl、retrieval/role_view_impl、construction/conflict_resolver_impl、construction/index_builder_impl、construction/test_conflict_pipeline、storage 图契约与 neo4j、adapter/api 接续）139 passed。真实 Neo4j、产品 G0、存量迁移与收益评测仍未执行。
@@ -2114,3 +2178,18 @@ P0 是首版闭环必须满足的行为；P1 是可独立增强的能力。权�
 ### 接口与配置一致性结论
 
 Neo4j 启用 ssl_verify 时要求 bolt+s/neo4j+s URI 与 CA，运行时 URI 重绑定也不能降级；驱动连接使用显式加密与自定义 CA（驱动禁止 +s 与自定义 CA 参数混用）。health 只探测连接，约束在首次写入前建立。AgentEngine 与其余 Engine 一样按公开写模式能力拒绝仅检索构建器。修订前的接续信封把 occurred_at 映射至 t_event；修订后接续写入与普通 add 一致，原始时间走 `event_time`（t_event），`occurred_at` 始终是 t_message，不混淆两者。
+
+
+### SDK 共享配置检查的公开边界
+
+SDK 共享池的配置身份计算通过公开 `sdk_continuity_runtime_identity` 辅助函数交给内核，
+返回规范 Registry 路径和有效配置摘要。Adapter 只依赖 `jiuwen_memory.api`；不为配置检查
+预装配第二个 runtime，也不公开 Config 或 SecretValue，保持原共享、配置冲突和资源关闭语义。
+
+### 2026-11-12 SDK 接续调试日志
+
+Provider 补充 INFO 级别 `[continuity.request.start/success]`、`[continuity.prefetch.start/result]`，记录任务管理动作、当前 Session、任务与绑定编号、请求/事件身份、返回条数、gaps 和耗时。异常/不确定结果保留 error_type、operation_id、retry_action；不输出正文、查询描述或凭证。共享池补充 created/reuse/release/closed 和等待超时/取消事件，方便区分 Provider 生命周期与底层同步操作生命周期；不改变返回值、错误或资源所有权协议。
+
+宿主 Provider 原有 logger 已使用 JiuwenSwarm 命名空间；sdk_runtime 的模块日志通过宿主一次性 handler 转发到 agent_server.log。配置使用独立 continuity-debug 项目和固定 SQLite，未配置 Embedding 时显式使用 hashing；这用于本地流程调试，不代表真实语义检索效果。
+
+验证：`pytest tests/unit/adapter/test_sdk_continuity.py -q --tb=short`，8 个用例通过，包含绑定/预取/复用日志以及正文不进入新日志的断言。JiuwenSwarm 相关 54 个用例通过。实际用户配置下的双 Session 自检完成 A 写入并关闭、B 绑定并读取背景；正常关闭内核并关闭自检任务。在实际 agent_server.log 读到 activated 2 次、prefetch.result 2 次、context.injected 2 次、write.frozen 1 次、deliver.committed 4 次、runtime.reuse/closed 各 1 次，未发现自检正文。自检使用真实 SDK/SQLite 和替身 prompt attachment writer，没有调用真实 LLM。

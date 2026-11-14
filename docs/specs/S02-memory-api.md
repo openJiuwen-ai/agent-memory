@@ -5,9 +5,18 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-12 |
+| 最近一次修订日期 | 2026-11-13 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F08-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+
+## SDK 接续共享配置检查
+
+公开包导出 `sdk_continuity_runtime_identity(config: dict) -> tuple[str, str]`，返回规范化的
+Registry 文件路径和有效配置摘要，供进程内 SDK 共享池判断是否可以复用 runtime。
+只检查 continuity 档、single_writer、持久 fixed_path SQLite 等共享前提，不创建 runtime、
+Store 或文件锁，也不授予权限。配置摘要包含默认配置与凭据真值，但不返回凭据或配置对象。
+Adapter 通过该辅助函数读取共享身份，不导入内核 Config、ComponentConfig 或 SecretValue。
+MemoryAPI 方法及 HTTP/CLI/MCP 请求契约不变。
 
 ## 明文读取与独立维护边界
 
@@ -1755,8 +1764,18 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 | `background` | `[]` | 需要登记的 MemoryRef 列表；通常用于 attach，也可随其他变更提交；登记不复制正文、不授予读权限 |
 | `required` | `true` | 本次 background 是否属于必需证据；不可读必需证据会影响接续就绪判断 |
 | `reason` | `""` | 解绑原因，随撤销主体保存 |
+| `title` / `description` | `""` | create 的任务检索文本；bind 仅补录历史记录空字段；兼容旧 create 省略标题 |
+| `parent_task_id` | `null` | create 的直接父任务；Registry 计算 root_task_id，不由调用方传入 |
+| `query` | `null` | find 先精确匹配 connector_id/context_id，无结果时再查询任务描述；只传 query 直接查询描述 |
+| `top_k` | `5` | find 描述候选上限，1–100；精确结果不截断 |
 
-变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [{task_id, revision}]}`，不证明调用者拥有其中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
+变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定、title/description、parent_task_id/root_task_id 及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [...]}`，各项有 task_id/revision/title/description/state/match_type，语义项另含 score。connector_id/context_id 必须成对提供或省略；有精确结果时不回退语义检索，语义候选须用户确认后 bind。find 不证明调用者拥有任务中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。创建子任务还需父任务所在项目 READ。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
+
+描述候选默认使用 Embedder，返回 `match_type=description_semantic` 和余弦 score。
+`continuity.default.params.embedder: null` 时改用 BM25，返回
+`match_type=description_bm25` 和正数 BM25 score；两种分数不能直接比较。
+两种方式均只返回开放任务，保留精确 binding 优先及用户确认后绑定的流程；
+已配置的 Embedder 故障仍报错，不回退。分词器及装配说明见 S11。
 
 ### continuity_relation：登记、复核或撤回关系
 

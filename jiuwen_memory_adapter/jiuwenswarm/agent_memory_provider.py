@@ -51,7 +51,7 @@ import logging
 import os
 import time
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 try:
@@ -83,6 +83,7 @@ from jiuwen_memory.api import (
     scope_for_log,
 )
 from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import OperationWaitTimeout
 
 # provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
 # __name__="agent_memory_provider" 不在 jiuwenswarm/openjiuwen 的 logger 树下，INFO 默认不落文件。
@@ -764,11 +765,16 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             or any(not isinstance(d, str) or not d.strip() for d in duties)
         ):
             raise ValueError("unknown default duty")
-        if continuity_enabled:
+        if continuity_enabled and base_url:
             from jiuwen_memory_adapter.continuity.client import ContinuityClient
 
             probe = ContinuityClient(base_url or "", api_key)
             probe.close()
+        if continuity_enabled and not base_url:
+            if continuity_mode != "continuity":
+                raise ValueError("SDK continuity requires continuity_mode='continuity'")
+            if security_provider is None:
+                raise ValueError("SDK continuity requires a trusted security_provider")
         self._portal_settings = dict(portal or {})
         unknown = set(self._portal_settings) - {"enabled", "port", "allowed_frame_origins"}
         if unknown:
@@ -779,6 +785,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Portal port must be between 0 and 65535")
         self._portal_handle = None
+        self._portal_identity = None
         self._portal_error = None
         self._initialize_lock = asyncio.Lock()
         self._base_url = base_url or ""
@@ -889,7 +896,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     def portal_url(self):
         """One-use SDK launch URL. HTTP callers use open_portal() to request a fresh URL."""
         return (
-            self._portal_handle.launch_url(self._portal_write_scope())
+            self._portal_handle.launch_url(
+                self._portal_write_scope(), identity=self._portal_identity,
+            )
             if self._portal_handle is not None
             else None
         )
@@ -897,18 +906,21 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     @property
     def portal_status(self):
         """Use supported for menu visibility. HTTP available reflects the last link request."""
+        local_available = self._portal_handle is not None and not self._portal_handle.closed
         return {
             "supported": self._portal_settings.get("enabled", True),
-            "available": self._portal_handle is not None
+            "available": local_available
             or bool(getattr(self._client, "portal_available", False)),
             "reason": self._portal_error,
-            "address": self._portal_handle.address if self._portal_handle else None,
+            "address": self._portal_handle.address if local_available else None,
         }
 
     async def open_portal(self):
         """Return a fresh authenticated launch URL for either SDK or HTTP mode."""
         if not self._portal_settings.get("enabled", True):
             return None
+        if self._portal_handle is not None and self._portal_handle.closed:
+            self._portal_handle = None
         if not self._initialized:
             await self.initialize()
         elif not self._base_url and self._portal_handle is None:
@@ -916,7 +928,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 if self._initialized and self._portal_handle is None:
                     self._start_local_portal()
         if self._portal_handle is not None:
-            return self._portal_handle.launch_url(self._portal_write_scope())
+            return self._portal_handle.launch_url(
+                self._portal_write_scope(), identity=self._portal_identity,
+            )
         opener = getattr(self._client, "open_portal", None)
         if self._base_url and callable(opener):
             try:
@@ -945,15 +959,21 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 self._start_local_portal()
 
     def _start_local_portal(self):
-        from jiuwen_memory_entry.portal.hosting import start_portal
+        from jiuwen_memory_entry.portal.hosting import new_provider_key, start_portal
 
         try:
-            self._portal_handle = start_portal(
-                self.runtime,
-                security_provider=self._security_provider,
-                port=self._portal_settings.get("port", 0),
-                allowed_frame_origins=self._portal_settings.get("allowed_frame_origins", ()),
-            )
+            options = {
+                "port": self._portal_settings.get("port", 0),
+                "allowed_frame_origins": self._portal_settings.get("allowed_frame_origins", ()),
+            }
+            self._portal_identity = new_provider_key()
+            options["identity"] = self._portal_identity
+            if isinstance(self._client, _SharedSDKClient):
+                self._portal_handle = self._client.start_portal(**options)
+            else:
+                self._portal_handle = start_portal(
+                    self.runtime, security_provider=self._security_provider, **options,
+                )
             self._portal_error = None
             logger.info("memory Portal available at %s", self._portal_handle.address)
         except Exception as exc:
@@ -1001,6 +1021,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 identity_org=self._identity_org,
                 identity_user=self._identity_user,
                 manage_configuration=self._portal_settings.get("enabled", True),
+                continuity_enabled=self._continuity_enabled,
             )
         return self._client
 
@@ -1028,6 +1049,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         ``handle_tool_call`` 实现完整保留，供内部直调（测试 / 排查 / 后续
         重新注册时直接加回列表即可）。
         """
+        if self._continuity_enabled and not self._base_url:
+            from jiuwen_memory_adapter.continuity import tool_schemas
+
+            return tool_schemas(mode="continuity")
         schemas = [SEARCH_SCHEMA, CONCLUDE_SCHEMA, READ_MD_SCHEMA, EDIT_MD_SCHEMA]
         if self._video_tools_enabled():
             schemas.extend((VIDEO_SUBMIT_SCHEMA, VIDEO_STATUS_SCHEMA))
@@ -1063,7 +1088,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             }:
                 return json.dumps({"error": "unknown continuity tool"})
             payload = dict(args)
-            result = await self._client.continuity_call(verb, payload)
+            result = await self.continuity_request(verb, payload)
             return json.dumps(result, ensure_ascii=False)
         if self._client.is_unavailable():
             return json.dumps(
@@ -1320,6 +1345,71 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             )
             return json.dumps({"error": str(exc)})
 
+    async def continuity_request(self, verb: str, payload: dict) -> dict:
+        """Validate task requests and attach a fresh trusted context for local calls."""
+        if not self._continuity_enabled or self._client is None:
+            raise RuntimeError("continuity provider not initialized")
+        allowed = {"continuity_task", "search", "add", "continuity_recover"}
+        if self._base_url:
+            allowed.add("continuity_relation")
+        if verb not in allowed:
+            raise ValueError("unsupported continuity operation")
+        from jiuwen_memory_entry.core.api_contract import parse_request
+
+        request = payload.get("request") or payload.get("continuity") or {}
+        request = request if isinstance(request, dict) else {}
+        task_id = request.get("task_id") or payload.get("task_id", "")
+        operation = request.get("operation", "")
+        request_id = request.get("request_id") or request.get("event_id", "")
+        started = time.monotonic()
+        logger.info(
+            "[continuity.request.start] mode=%s session_id=%s verb=%s operation=%s "
+            "task_id=%s request_id=%s",
+            "http" if self._base_url else "sdk", self._session_id, verb, operation,
+            task_id, request_id,
+        )
+        try:
+            arguments = parse_request(verb, deepcopy(payload))
+            if self._base_url:
+                result = await self._client.continuity_call(verb, deepcopy(payload))
+            else:
+                security = self._security_provider()
+                if not isinstance(security, RequestSecurityContext):
+                    raise ValidationError("trusted RequestSecurityContext required")
+                security = replace(security, auth=replace(
+                    security.auth, actor=deepcopy(security.auth.actor),
+                ))
+                arguments["security"] = security
+                result = await self._client.continuity_call(verb, arguments)
+        except BaseException as exc:
+            logger.warning(
+                "[continuity.request.failed] session_id=%s verb=%s operation=%s task_id=%s "
+                "request_id=%s error_type=%s operation_id=%s retry_action=%s elapsed_ms=%.1f",
+                self._session_id, verb, operation, task_id, request_id, type(exc).__name__,
+                getattr(exc, "operation_id", ""), getattr(exc, "retry_action", ""),
+                (time.monotonic() - started) * 1000,
+            )
+            raise
+        failed = bool(result.get("error")) or result.get("ok") is False
+        task = result.get("task", {})
+        task = task if isinstance(task, dict) else {}
+        bindings = task.get("bindings", [])
+        binding_ids = [b.get("binding_id", "") for b in bindings
+                       if b.get("active") and b.get("context_id") == self._session_id]
+        (logger.warning if failed else logger.info)(
+            "[continuity.request.%s] session_id=%s verb=%s operation=%s task_id=%s "
+            "binding_ids=%s request_id=%s revision=%s items=%s candidates=%s units=%s "
+            "status=%s operation_id=%s retry_action=%s elapsed_ms=%.1f",
+            "unconfirmed" if failed else "success", self._session_id, verb, operation,
+            result.get("task_id") or task_id or task.get("task_id", ""), binding_ids,
+            request_id, result.get("revision", task.get("revision", "")),
+            len(result.get("items") or []), len(result.get("tasks") or []),
+            len(result.get("units") or []), result.get("status", ""),
+            result.get("operation_id", ""), result.get("retry_action", ""),
+            (time.monotonic() - started) * 1000,
+        )
+        return result
+
     async def prefetch(self, query: str, **kwargs: Any) -> str:
         """返 Markdown 字符串，Rail 包 ``<memory-context>`` 注入提示词。"""
         if self._continuity_enabled:
@@ -1333,17 +1423,31 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 "duty": kwargs.get("duty", self._default_duty),
                 "task_id": kwargs.get("task_id", ""),
             }
-            result = await self._client.continuity_call(
+            logger.info(
+                "[continuity.prefetch.start] session_id=%s task_id=%s org=%s space=%s top_k=%s",
+                self._session_id, request["task_id"], scope.get("org", ""),
+                scope.get("space", ""), kwargs.get("top_k", 10),
+            )
+            result = await self.continuity_request(
                 "search",
                 {
                     "query": request["query"],
                     "context": {"scope": scope},
                     "task_id": request["task_id"],
                     "duty": request["duty"],
+                    "top_k": kwargs.get("top_k", 10),
                 },
             )
             # Rail accepts text: preserve the complete structured view as JSON, including
             # paths, gaps and explicit errors. Do not flatten it into a success summary.
+            gaps = result.get("gaps") or []
+            logger.info(
+                "[continuity.prefetch.result] session_id=%s task_id=%s items=%s gaps=%s "
+                "blocking_gaps=%s gap_codes=%s has_error=%s",
+                self._session_id, request["task_id"], len(result.get("items") or []), len(gaps),
+                sum(bool(g.get("blocking")) for g in gaps if isinstance(g, dict)),
+                [g.get("code", "") for g in gaps if isinstance(g, dict)], bool(result.get("error")),
+            )
             return json.dumps(result, ensure_ascii=False)
         logger.info(
             "[AgentMemoryMemoryProvider] prefetch CALLED query=%s client=%s",
@@ -1464,7 +1568,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     "continuity sync requires scope, task, binding and stable event ID"
                 )
             content = f"user: {self._prepare(user_msg)}\nassistant: {assistant_msg}"
-            return await self._client.continuity_call(
+            return await self.continuity_request(
                 "add",
                 {
                     "content": content,
@@ -1563,7 +1667,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     async def _shutdown(self) -> None:
         if self._portal_handle is not None:
-            await asyncio.to_thread(self._portal_handle.close)
+            if not isinstance(self._client, _SharedSDKClient):
+                await asyncio.to_thread(self._portal_handle.close)
             self._portal_handle = None
         if self._client is not None:
             await self._client.close()
@@ -1693,7 +1798,7 @@ class _AgentMemoryClient:
         raise NotImplementedError
 
     async def continuity_call(self, verb: str, payload: dict) -> dict:
-        raise NotImplementedError("continuity requires a remote client")
+        raise NotImplementedError("client does not implement continuity")
 
     async def search(
         self,
@@ -1764,6 +1869,7 @@ def _build_client(
     identity_org: str = "local",
     identity_user: str = "developer",
     manage_configuration: bool = True,
+    continuity_enabled: bool = False,
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
@@ -1784,6 +1890,18 @@ def _build_client(
             identity_org=identity_org,
             identity_user=identity_user,
         )
+    if continuity_enabled:
+        config = config_dict
+        if config is None and config_path:
+            from pathlib import Path
+
+            path = Path(config_path)
+            config = (json.loads(path.read_text(encoding="utf-8"))
+                      if path.suffix == ".json" else _load_yaml(path))
+            config = _merge_config_over_default(config or {}, standalone=True)
+        else:
+            config = _merge_config_over_default(config or {}, standalone=True)
+        return _SharedSDKClient(config, security_provider)
     if config_dict:
         # [本地修改 2026-10-20] 上层 config_dict 深合并到内置 agent 默认装配之上，
         # 而非整体替换——宿主只传要覆盖的片段（globals 凭证/端点、embedder_dim、
@@ -2077,6 +2195,11 @@ class _HttpClient(_AgentMemoryClient):
                 body = response.json()
                 if not isinstance(body, dict):
                     raise ValueError("structured response required")
+                if body.get("error") != "WriteIncompleteError" and body.get("status") not in {
+                    "unknown", "partial",
+                }:
+                    return {"status": "rejected", "error": body.get("error", "ConflictError"),
+                            "message": body.get("message", "request conflict")}
                 return {
                     "status": str(body.get("status") or "unknown"),
                     "operation_id": body.get("operation_id", ""),
@@ -2273,6 +2396,125 @@ class _HttpClient(_AgentMemoryClient):
 # --------------------------------------------------------------------------- #
 # 进程内客户端 —— 低延迟，search/list/evolve 是同步方法，须 to_thread 包
 # --------------------------------------------------------------------------- #
+
+
+class _SharedSDKClient(_AgentMemoryClient):
+    """One Provider's lease on the process-local SDK continuity runtime."""
+
+    def __init__(self, config: dict, security_provider):
+        self._config = deepcopy(config)
+        self._security_provider = security_provider
+        self._lease = None
+        self._principal = ""
+        self._lock = asyncio.Lock()
+        self._portal_handle = None
+        self._portal_identity = None
+
+    @property
+    def runtime(self):
+        return self._lease.entry.runtime if self._lease is not None else None
+
+    def start_portal(self, **options):
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import _SDK_RUNTIME_POOL
+        from jiuwen_memory_entry.portal.hosting import start_portal
+
+        if self._lease is None:
+            raise RuntimeError("SDK continuity client is not initialized")
+        handle = _SDK_RUNTIME_POOL.attach_portal(
+            self._lease,
+            lambda runtime: start_portal(
+                runtime, security_provider=self._security_provider, **options,
+            ),
+        )
+        self._portal_handle, self._portal_identity = handle, options.get("identity")
+        return handle
+
+    async def initialize(self) -> None:
+        import threading
+
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import _SDK_RUNTIME_POOL, principal_key
+
+        async with self._lock:
+            if self._lease is not None:
+                return
+            security = self._security_provider()
+            if not isinstance(security, RequestSecurityContext):
+                raise ValidationError("trusted RequestSecurityContext required")
+            principal = principal_key(security)
+            handoff_lock = threading.Lock()
+            handoff = {"cancelled": False, "lease": None}
+
+            def acquire_lease():
+                lease = _SDK_RUNTIME_POOL.acquire(
+                    self._config, principal, lambda: assemble_runtime(config=self._config),
+                )
+                with handoff_lock:
+                    if not handoff["cancelled"]:
+                        handoff["lease"] = lease
+                        return lease
+                # The event loop may already have gone away; cleanup must not need it.
+                try:
+                    _SDK_RUNTIME_POOL.release(lease)
+                except BaseException:
+                    logger.exception("Cancelled SDK initialization cleanup failed")
+                return None
+
+            acquire = asyncio.create_task(asyncio.to_thread(acquire_lease))
+            acquire.add_done_callback(
+                lambda done: done.exception() if not done.cancelled() else None
+            )
+            try:
+                lease = await asyncio.shield(acquire)
+            except asyncio.CancelledError:
+                with handoff_lock:
+                    handoff["cancelled"] = True
+                    lease = handoff["lease"]
+                if lease is not None:
+                    cleanup = _SDK_RUNTIME_POOL.release_in_background(lease)
+                    cleanup.add_done_callback(self._observe_cleanup)
+                raise
+            self._lease, self._principal = lease, principal
+
+    async def continuity_call(self, verb: str, payload: dict) -> dict:
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import _SDK_RUNTIME_POOL, principal_key
+        from jiuwen_memory_entry.core.api_contract import to_jsonable
+
+        if verb not in {"continuity_task", "search", "add", "continuity_recover"}:
+            raise ValueError("unsupported SDK continuity operation")
+        lease = self._lease
+        if lease is None:
+            raise RuntimeError("SDK continuity client is not initialized")
+        if principal_key(payload["security"]) != self._principal:
+            raise ConflictError("runtime", message="SDK authentication principal changed")
+        result = await _SDK_RUNTIME_POOL.submit(
+            lease, lambda: getattr(lease.entry.runtime.api, verb)(**payload),
+        )
+        result = to_jsonable(result)
+        return {"units": result} if isinstance(result, list) else result
+
+    async def close(self) -> None:
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import _SDK_RUNTIME_POOL
+
+        async with self._lock:
+            handle, self._portal_handle = self._portal_handle, None
+            identity, self._portal_identity = self._portal_identity, None
+            if handle is not None and identity is not None:
+                # Drop only this Provider's credential source; other sessions keep theirs.
+                handle.unregister_provider(identity)
+            lease, self._lease = self._lease, None
+            if lease is not None:
+                cleanup = _SDK_RUNTIME_POOL.release_in_background(lease)
+                cleanup.add_done_callback(self._observe_cleanup)
+                wrapped = asyncio.wrap_future(cleanup)
+                wrapped.add_done_callback(
+                    lambda done: done.exception() if not done.cancelled() else None
+                )
+                await asyncio.shield(wrapped)
+
+    @staticmethod
+    def _observe_cleanup(result) -> None:
+        if not result.cancelled() and result.exception() is not None:
+            logger.error("SDK runtime cleanup failed", exc_info=result.exception())
 
 
 class _InProcessClient(_AgentMemoryClient):
@@ -2617,4 +2859,4 @@ def _load_yaml(path):
         return yaml.safe_load(f)
 
 
-__all__ = ["AgentMemoryMemoryProvider"]
+__all__ = ["AgentMemoryMemoryProvider", "OperationWaitTimeout"]

@@ -6,7 +6,7 @@
 | --- | --- |
 | 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；剩余实现差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
 | 关联模块 | jiuwen_memory_adapter/、jiuwen_memory_entry/、jiuwen_memory/api/、jiuwen_memory/control/、jiuwen_memory/common/、jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-06 |
+| 最近一次修订日期 | 2026-11-14 |
 | 关联特性文档 | [F10-role-memory](../features/construction/F10-role-memory.md) |
 | 关联规约 | [S02](S02-memory-api.md)、[S03](S03-control.md)、[S04](S04-retrieval.md)、[S06](S06-storage.md)、[S07](S07-common.md)、[S09](S09-plugin-development.md) |
 
@@ -81,6 +81,23 @@
 | `background` | MemoryRef[] | `[]` | 随任一变更登记的背景引用，提交前逐个读取校验 |
 | `required` | bool | `true` | 本次 background 是否为必需证据 |
 | `reason` | string | `""` | 解绑原因 |
+| `title` | string | `""` | create 登记任务标题；bind 可补齐旧记录空标题，不覆盖非空值；旧 create 调用可省略 |
+| `description` | string | `""` | create 登记说明；bind 可补齐旧记录空说明 |
+| `parent_task_id` | string 或 null | `null` | 仅 create 使用；父任务须存在于当前项目且调用者具备项目 READ；`continuity_task_parent` 登记为内容轴 READ 入口，与任务查询采用同一项目读取判定 |
+| `query` | string 或 null | `null` | find 的可选任务描述查询；精确 binding 无结果时才用 |
+| `top_k` | int | `5` | find 描述候选数，范围 1–100；不截断已有上下文的精确结果 |
+
+`find` 的 connector_id/context_id 须成对提供或成对省略。提供时先查开放任务的有效 binding，
+有任意精确结果即返回；无结果且 query 非空时才按标题/说明检索开放任务。
+仅提供 query 时直接检索描述候选；没有 query 时保留原精确查找行为。
+返回 `{tasks: [...]}`，每项包含 task_id、revision、title、description、state、match_type；
+match_type 为 context_exact、description_semantic 或 description_bm25；后两者另含 score，
+分别为余弦相似度和 BM25 分数，量纲不同，不能跨检索方式直接比较。
+两种匹配均排除已关闭任务；关闭任务仍可通过 get 查看。
+描述查询未配置 Embedder 时使用 BM25；已配置的 Embedder 调用失败时仍返回原错误，
+不静默回退。精确查询不依赖 Embedder。
+项目 READ 是任务元数据的读取门槛，候选不会授予背景来源权限。
+宿主须让用户确认语义候选后才 bind；切换至尚未绑定的其他任务时使用 query-only 查找。
 
 ### TaskRecord 与 Binding（内部）
 
@@ -92,6 +109,9 @@ TaskRecord（`/continuity/tasks/<task_id>`）：
 | `owner` | string | 创建者身份摘要；首版只有 owner 可修改任务，未实现委托表 |
 | `revision` | int | 每次变更加一；事件提交关联背景时也递增 |
 | `state` | string | open / closed；closed 后拒绝变更和新事件 |
+| `title` / `description` | string | 任务标题与说明；历史缺值按空串读取；空描述记录不被自动猜测匹配 |
+| `parent_task_id` | string 或 null | 不可变直接父任务；根任务为 null |
+| `root_task_id` | string | 根任务为自身 task_id，子任务继承父任务 root_task_id；旧记录缺值按自身 task_id 读取 |
 | `bindings` | Binding[] | 见下 |
 | `background` | `{ref: MemoryRef, required: bool}[]` | 按值去重 |
 | `receipts` | `{request_id: {digest, revision}}` | 最多 256 条，超出按修订号淘汰最旧；淘汰后的旧修订请求仍因修订号不符被拒绝 |
@@ -430,11 +450,53 @@ TaskRecord 与 Binding 的字段见[数据结构](#taskrecord-与-binding内部)
 
 首版采用**一个有权写入的 Registry 服务实例**，按 task 串行处理修订检查及持久写入；持久端口需保证单任务控制记录原子替换和故障后可读。现有通用 KV 接口不声明 CAS，不能把“先 get 再 update”包装成跨实例原子保证。首版禁止多个写实例；无法保证单写部署或持久能力时拒绝启用。多写实例支持需另增条件写/租约等契约，本期不承担。
 
-三方接续调用必须指向**同一个 agent-memory 服务中的 Registry 写入口**，不是各产品各自 assemble 一个 SDK 内核再共享同一个 KV。独立 SDK 实例只可维持原有非接续模式；不得成为第二个 Registry 写者或在远端失败后本地接管。单进程内嵌测试可共享同一具名 Registry 实例，但不替代三方真实集成的统一服务部署验证。
+跨产品、跨进程接续调用指向同一个 agent-memory 服务中的 Registry 写入口。
+单 Agent、同一宿主进程的 SDK 接续可由 Adapter 共享一个 runtime：固定 SQLite Registry、
+single_writer=true、mode=continuity；同路径的配置或认证主体不兼容时返回冲突。
+共享池只管理资源与在途调用，每个 Provider 仍为每次请求取得独立可信安全上下文。
+SDK 的 search、任务操作、add 和 recover 共用有界执行池，不按读写分配独立线程。
+装配配置 globals.sdk_max_workers 为正整数，默认 16；globals.sdk_max_queue_size 为
+非负整数，默认 256，0 表示不预留等待容量。工作与等待槽位合计至多 272（默认值），
+等待 Registry 锁的调用也占用工作线程。满载时新请求在执行前抛 RateLimitedError，
+不会执行或改变在途计数；等待超时/取消的已准入操作仍保留槽位直到实际结束。
+实际结束指底层函数成功返回或抛异常退出，不代表调用方已收到结果；排队中的操作
+不会因等待方退出而移除，仍按原调度执行一次，不自动重试。底层调用若一直不退出，
+其容量持续占用，故存储或远程客户端仍需配置自身 I/O 超时。
+参数变更需关闭旧实例后重装；同 Registry 的并发参数不兼容时报配置冲突，省略与显式默认值兼容。
+Registry 修改的读改写仍由同一实例锁保护，不允许通过调大线程数绕过它。
+查询使用的组件须支持并发读取与读写交叉；索引快照不构成跨存储事务快照。
+调用方需要读到某次写入时须先等待该写入完成，不能依赖读写入队顺序。
+最后使用者释放且已提交操作实际结束后才关闭 runtime；关闭期间新申请等待，关闭失败的实例禁止复用。
+共享 SDK 的本地 Portal 跟随 runtime 的共享生命周期。每个 Provider 签发的浏览器授权
+绑定该 Provider 自己的可信安全上下文来源；每次请求重新取得并复核该来源，不能仅凭
+相同 actor 合并不同角色、凭据或委托权限。Provider 退出撤销其自身会话的授权来源，
+不影响其他 Provider 的会话或共享 Portal。最后使用者退出时先停止 Portal 并等待浏览器
+请求结束，再关闭内核。已关闭的 Portal 不得报告可用，再次打开可创建新实例；端口、身份
+和嵌入来源的兼容校验保持不变。
+Portal 启动授权必须在签发时保存具体 Provider key。省略 key 仅在唯一来源时兼容，
+否则返回 ValidationError；显式 key 未注册时返回 PermissionDeniedError。
+未绑定来源的浏览器会话不得根据当前注册表选择其他来源，其请求返回 401。
+HTTP 失败不切到本地 SDK；多个独立 runtime 不能同时写同一 Registry。
 
 修改已有任务的请求须携带 expected_revision 和稳定 request_id；创建请求以调用身份、项目和 request_id 形成稳定创建键，避免重试创建多个任务。同修订并发更新只有一个成功，其余返回 conflict；在声明的回执保留窗口内，同一已提交请求返回既有结果，同 request_id 不同操作或内容返回冲突。回执过期后旧修订请求仍拒绝，不能当成新操作重新执行；调用方改为查询当前状态核对。重试也须重新认证授权，不回显已失去权限的内容。状态及操作回执作为同一任务控制记录提交，不能先报告成功再异步落盘。审计记录请求和实际结果，不把失败请求记为完成。
 
 具名持久 KV 须声明单记录原子替换（`persistent_atomic_records`），并支持 `claim_single_writer(namespace)`，持有到 Store 关闭。SQLite 用独立文件锁拒绝第二写者，仅限单机文件系统，不支持跨主机网络文件系统多写；`allow_ephemeral` 仅用于测试。
+
+SQLite 单写声明在 POSIX 使用非阻塞 flock，在 Windows 使用 msvcrt 非阻塞字节锁；
+重复写者立即收到 ConflictError，锁在显式 release/close 或进程退出时释放。
+continuity 档的任务背景在 top_k 截断前按必需背景优先、其余背景登记倒序排列；
+角色档排序保留原行为，超预算仍追加 blocking=false 的 budget_exhausted。
+
+任务描述查找复用装配上下文中的共享 Embedder，以 TaskRecord 的 title/description
+生成可重建的进程内向量缓存，查询前重新扫描当前项目的开放任务；缓存不作为任务真源，
+重启或文本变化时重新生成。实际语义能力取决于 Embedder 配置，hashing 仅提供词项相似度。
+`continuity.default.params.embedder` 默认引用 `default`；显式设为 `null` 时，任务描述查询
+改用 BM25（k1=1.2、b=0.75），通过 `tokenizer` 参数引用共享分词器（默认 `default`）。
+BM25 每次在当前项目开放任务的标题/说明上计算，不新增数据库或持久索引，仅返回正分候选，
+按分数倒序、同分按 task_id 排序后取 top_k。默认分词器对英文小写化、中文逐字切分；
+可配置 jieba 改善中文词语匹配。此配置只控制任务描述查询，不关闭普通记忆链路的 Embedder。
+旧任务可通过精确 find 找回，再由 owner 在 bind 时补齐空标题/说明。
+新增请求字段全部缺省时保留旧变更请求的幂等摘要，既有回执可继续重放。
 
 装配与生命周期：角色模式下 Continuity 查询使用的 GraphStore 与关系投影写入的 GraphStore 必须是同一对象：两者由同一装配上下文按具名依赖解析，Continuity 装配时校验投影器实际持有的图与视图使用的图是同一对象（对象身份，端口名只用于声明依赖、不能仅靠字符串比较）；不一致即启动失败。IndexBuilder 以公开能力声明支持的写入模式（契约见 S05 `supported_write_modes`），只声明 RETRIEVAL_ONLY 的构建器（如关系投影器）配到主写入链位置时启动期拒绝，判断依据是能力声明而非 target 名或具体类型（S09 §9；能力声明已落地，主写入链的装配期拒绝检查仍未接入 Engine 装配）。Registry KV（含单写锁）、证据图及其 KV 由装配根持有，`runtime.close()` 按"停止接续准入 → 关闭 Continuity → 关闭图存储 → 关闭底层 KV"释放，共享 KV 只关闭一次（按对象身份去重），单写锁随 KV 关闭释放，关闭后同进程可重新装配；借用资源不由当前装配根关闭；装配中途失败只释放本次创建的资源与本次获取的单写锁。显式配置的可选组件（关系发现、LLM 冲突策略）启动期 health 失败即启动失败，运行期失败显式降级（`association_status=partial` 或 escalate）。重新装配与同一图对象校验已落地并经验证（`runtime.close()` 后重装成功、投影器/视图图不一致启动失败）；装配中途失败回滚与借用资源区分仍待验证。
 
@@ -559,3 +621,11 @@ S02 是公开 API 和鉴权入口，登记 `add` / `batch_add` 的 `continuity` 
 | `task_not_found` | 给定 `task_id` 未登记 | 否 |
 | `background_unreadable` | 任务背景引用无法解析（不披露条目标识） | 按存储的 `required` |
 | `background_unavailable` | 任务背景条目不可读（不披露条目标识） | 按存储的 `required` |
+
+### JiuwenSwarm Adapter 调试日志
+
+启用 continuity 后，Provider 的 INFO 日志包含 `[continuity.request.start/success]` 和 `[continuity.prefetch.start/result]`。任务请求记录 operation、task_id、当前 Session 的有效 binding_ids、request_id 与 revision；预取记录 items、gaps、blocking_gaps 和 gap_codes，不输出正文、查询描述和凭证。成功返回不代表宿主已接受或注入背景；该阶段由宿主自己的日志确认。
+
+异常记录 `[continuity.request.failed]`；HTTP 错误响应记录 `[continuity.request.unconfirmed]`，保留 status/operation_id/retry_action。日志不是恢复真源，恢复仍读取冻结请求及结构化结果。
+
+共享 SDK 池记录 `[continuity.runtime.created/reuse/release/closed]` 的 runtime_id、使用计数和在途数量。等待超时或取消记录 `wait_timeout/wait_cancelled`，不表示底层操作已终止。

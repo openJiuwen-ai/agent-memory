@@ -60,4 +60,52 @@ python -m jiuwen_memory_adapter.continuity.history history.jsonl \
 
 ## 验收边界
 
+单 Agent 多 Session 也可选择同进程 SDK。配置须包含 `mode: continuity`、
+`single_writer: true` 和 `fixed_path: true` 的 SQLite Registry；`config_dict` 在此模式
+作为完整内核配置加载，不隐式叠加普通 SDK 的文档场景配置。可信 security_provider
+由宿主认证组合根提供，每次请求重新取上下文。以下示例参数由调用方提供：
+
+```python
+from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import AgentMemoryMemoryProvider
+
+
+async def find_previous_task(config, security_provider, session_id, description):
+    provider = AgentMemoryMemoryProvider(
+        config_dict=config, security_provider=security_provider,
+        continuity_enabled=True, continuity_mode="continuity", portal={"enabled": False},
+    )
+    try:
+        await provider.initialize(session_id=session_id)
+        return await provider.continuity_request("continuity_task", {
+            "scope": {"org": "demo", "space": "role-project"},
+            "request": {"operation": "find", "query": description},
+        })
+    finally:
+        await provider.shutdown()
+```
+
+多个 Provider 使用相同配置和主体时内部复用 runtime，最后释放后关闭；宿主只保存当前
+选择的 task_id/binding_id。find 的语义结果需展示给用户确认后才 bind；若已有上下文精确
+绑定但要搜索其他任务，省略 connector_id/context_id，只提交 query。
+实际语义匹配取决于配置的 Embedder，离线 hashing 只体现词项重叠。
+
+SDK 接续的读写请求共用线程池，可在完整内核配置的 `globals` 中调整容量：
+
+```yaml
+globals:
+  sdk_max_workers: 16       # 正整数，默认 16；同时执行的调用上限
+  sdk_max_queue_size: 256   # 非负整数，默认 256；0 表示不预留等待槽位
+```
+
+JiuwenSwarm 的对应位置为 `memory.builtin.jiuwen.sdk.globals`，无需更改宿主代码。
+同一个 runtime 的所有 Session 共用这些容量；默认最多准入 272 个执行或等待中的操作。
+满载时新调用抛出 `RateLimitedError`，该调用未执行，可稍后重试。已准入操作即使
+等待超时或取消，也要实际结束后才释放容量。Registry 修改仍在内部锁处互斥，
+等待锁的调用占用工作线程。修改容量参数须关闭旧 runtime 后重新装配；HTTP 及
+普通非接续 SDK 不使用这两个参数，Portal 浏览器请求仍走自己的入口预算。
+
+这里的“实际结束”是底层函数返回或抛异常退出，不代表调用方收到结果。排队请求
+不会因调用方超时/取消而移除；它仍执行一次，不会自动重试。调用方主动重试接续
+写入时应沿用原事件 ID。底层调用一直不退出会持续占用槽位，应配置后端自身的 I/O 超时。
+
 仓内测试覆盖接口契约、三主体权限、持久化、重试和职责路径。正式交付仍需逐产品记录：客户端版本、工具注册/调用、认证成功与拒绝、上下文 ID 来源、持久回执、无交接恢复结果；另外验证一批真实历史与已有 JiuwenSwarm 记忆。缺少真实产品和数据时，这两项保持未完成。
