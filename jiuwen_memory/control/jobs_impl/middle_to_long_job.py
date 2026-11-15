@@ -84,6 +84,10 @@ _LOCK_NAME = "middle_to_long"
 class MiddleToLongJob(Job):
     """中期转长期任务。"""
 
+    @property
+    def trace_type(self) -> str:
+        return "middle_to_long"
+
     def __init__(
         self,
         scope: Scope,

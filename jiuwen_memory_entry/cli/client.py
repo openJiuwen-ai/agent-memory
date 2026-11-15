@@ -18,7 +18,7 @@ from typing import Any, Protocol
 from openai import RateLimitError
 
 from jiuwen_memory.api import AgentMemoryError, Credentials, Surface
-from jiuwen_memory_entry.core.api_contract import invoke_api, is_known_verb
+from jiuwen_memory_entry.core.api_contract import error_trace, invoke_api, is_known_verb
 from jiuwen_memory_entry.core.auth_middleware import authenticated
 from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.error_response import error_response
@@ -100,6 +100,7 @@ class InProcessClient:
         request_id = uuid.uuid4().hex
         error: object = "SecurityUnavailable"
         detail: object = ""
+        trace: dict[str, Any] | None = None
         try:
             if not is_known_verb(verb):
                 error = "UnknownVerb"
@@ -120,7 +121,7 @@ class InProcessClient:
                     ) as security:
                         return 200, invoke_api(self._srv.api, verb, payload, security)
         except (AgentMemoryError, RateLimitError) as exc:
-            error, detail = type(exc), exc
+            error, detail, trace = type(exc), exc, error_trace(exc)
         except Exception as exc:
             error = "InternalError"
             logger.error(
@@ -132,6 +133,8 @@ class InProcessClient:
                 "CLI authentication is not configured; use --auth-mode dev for testing"
             )
         body["request_id"] = request_id
+        if trace:
+            body["trace"] = trace
         return status, body
 
     def healthz(self) -> tuple[int, dict[str, Any]]:

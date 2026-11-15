@@ -58,6 +58,10 @@ class EvolveJob(Job):
         self._resolver = resolver or PredicateResolver(scope=scope, kv=kv)
 
     @property
+    def trace_type(self) -> str:
+        return "evolve"
+
+    @property
     def mode(self) -> str:
         return self._mode.value
 

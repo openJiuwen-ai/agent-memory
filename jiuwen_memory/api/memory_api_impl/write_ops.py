@@ -20,6 +20,7 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
+from jiuwen_memory.common.trace import TraceLevel, traced
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     ROUTE_CTX_KEY,
@@ -98,6 +99,7 @@ class WriteOpsMixin:
         )
 
     @privacy_operation
+    @traced("add_async", component="MemoryAPI", level=TraceLevel.DEBUG)
     async def add_async(
         self,
         content: str,

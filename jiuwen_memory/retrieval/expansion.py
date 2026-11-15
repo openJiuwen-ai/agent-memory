@@ -24,6 +24,7 @@ from jiuwen_memory.common.type_def.hierarchy import TIME_PARENT_ROLES
 
 from .discloser import Discloser
 from .expander import MAX_EXPANSION_NODES, Expander, ExpandRequest, ExpandResult, NodeKey, node_key
+from .trace_projection import append_step
 from .types import (
     ChannelError,
     DisclosureLevel,
@@ -65,7 +66,9 @@ class PreparedRetrievalResult(RetrievalResult):
     recalled_children_ready: bool = False  # 区分合法空候选与提供方未准备。
 
     def keep_recalled(
-        self, candidates: list[ScoredMemoryUnit], parents: dict[NodeKey, tuple[NodeKey, int]],
+        self,
+        candidates: list[ScoredMemoryUnit],
+        parents: dict[NodeKey, tuple[NodeKey, int]],
     ) -> None:
         """按融合原序保留已物化且归属、深度经上卷校验的后代。"""
         roots = {node_key(root.candidate.unit): root for root in self.expansion_roots}
@@ -85,7 +88,8 @@ def uses_recalled_children(query: RetrievalQuery) -> bool:
     return (
         query.hierarchy_kind is HierarchyKind.TIME
         and query.hierarchy_role in TIME_PARENT_ROLES
-        and query.rollup and query.expand_depth > 0
+        and query.rollup
+        and query.expand_depth > 0
     )
 
 
@@ -100,7 +104,8 @@ class DisclosureBudget:
         """固定层级不降级；ADAPTIVE 按 L2→L1→L0 选择当前能容纳的主层级。"""
         if level is DisclosureLevel.ADAPTIVE:
             levels = (
-                (DisclosureLevel.L1, DisclosureLevel.L0) if self.remaining is None
+                (DisclosureLevel.L1, DisclosureLevel.L0)
+                if self.remaining is None
                 else (DisclosureLevel.L2, DisclosureLevel.L1, DisclosureLevel.L0)
             )
         else:
@@ -128,13 +133,17 @@ def disclosed_tokens(item: RetrievedItem, level: DisclosureLevel | None = None) 
 
 
 def prepare_expansion(
-    result: RetrievalResult, source: ExpansionSource, candidates: list[ScoredMemoryUnit],
+    result: RetrievalResult,
+    source: ExpansionSource,
+    candidates: list[ScoredMemoryUnit],
 ) -> PreparedRetrievalResult:
     """捕获根及其来源；只有完成全局选根后才调用展开算子。"""
     if len(result.items) != len(candidates):
         raise BackendError("Discloser 未按候选顺序返回全部展开根")
     prepared = PreparedRetrievalResult(
-        items=result.items, trajectory=result.trajectory, errors=result.errors,
+        items=result.items,
+        trajectory=result.trajectory,
+        errors=result.errors,
     )
     for item, candidate in zip(result.items, candidates):
         if item.unit_id != candidate.unit_id:
@@ -161,7 +170,8 @@ class _RecalledProgress:
 
 
 def _recalled_candidates(
-    prepared: list[PreparedRetrievalResult], selected: set[NodeKey],
+    prepared: list[PreparedRetrievalResult],
+    selected: set[NodeKey],
 ) -> list[tuple[ExpansionRoot, ScoredMemoryUnit, int]]:
     """保持空间及融合原序；仅检查参与补位的提供方。"""
     candidates: list[tuple[ExpansionRoot, ScoredMemoryUnit, int]] = []
@@ -170,7 +180,10 @@ def _recalled_candidates(
             node_key(root.candidate.unit) in selected for root in result.expansion_roots
         ):
             raise UnsupportedCapabilityError(
-                "defer_expansion", "true", "Retriever", "检索实现未完成已召回后代的准备",
+                "defer_expansion",
+                "true",
+                "Retriever",
+                "检索实现未完成已召回后代的准备",
             )
         for entry in result.recalled_children:
             if node_key(entry[0].candidate.unit) in selected:
@@ -198,7 +211,10 @@ class _Completion:
             return True
         candidate = ScoredMemoryUnit(unit, root.item.score, root.candidate.channel)
         rendered = root.source.discloser.disclose(
-            root.source.query, [candidate], {unit.id: unit}, DisclosureLevel.L0,
+            root.source.query,
+            [candidate],
+            {unit.id: unit},
+            DisclosureLevel.L0,
         )
         if len(rendered) != 1 or rendered[0].unit_id != unit.id:
             raise BackendError("Discloser 未返回对应的展开节点")
@@ -215,7 +231,9 @@ class _Completion:
         return True
 
     def select_recalled(
-        self, prepared: list[PreparedRetrievalResult], roots: list[ExpansionRoot],
+        self,
+        prepared: list[PreparedRetrievalResult],
+        roots: list[ExpansionRoot],
     ) -> None:
         """按空间处理顺序、空间内融合原序补位，仅保留所选父的后代。"""
         started = perf_counter()
@@ -238,22 +256,37 @@ class _Completion:
                 if stop_reason:
                     state.stop(stop_reason)
         for state in progress.values():
-            self.record(state.root, state.outcome, state.cost_ms, detail={
-                "mode": "recalled_children", "stop_reason": state.stop_reason,
-            })
-        if parent_count < self.query.top_k and self.query.with_trajectory:
-            self.result.trajectory.append(TrajectoryStep(
-                stage="child_select", cost_ms=(perf_counter() - started) * 1000,
-                candidate_count=len(candidates), detail={
-                    "algorithm": "parent_search_order_then_recalled_children",
-                    "parent_count": str(parent_count),
-                    "selected_children": str(len(self.result.items) - parent_count),
-                    "ranking_cutoff": str(self.query.top_k),
+            self.record(
+                state.root,
+                state.outcome,
+                state.cost_ms,
+                detail={
+                    "mode": "recalled_children",
+                    "stop_reason": state.stop_reason,
                 },
-            ))
+            )
+        if parent_count < self.query.top_k:
+            append_step(
+                self.result.trajectory,
+                "Expansion",
+                TrajectoryStep(
+                    stage="child_select",
+                    cost_ms=(perf_counter() - started) * 1000,
+                    candidate_count=len(candidates),
+                    detail={
+                        "algorithm": "parent_search_order_then_recalled_children",
+                        "parent_count": str(parent_count),
+                        "selected_children": str(len(self.result.items) - parent_count),
+                        "ranking_cutoff": str(self.query.top_k),
+                    },
+                ),
+                enabled=self.query.with_trajectory,
+            )
 
     def select_recalled_candidate(
-        self, entry: tuple[ExpansionRoot, ScoredMemoryUnit, int], state: _RecalledProgress,
+        self,
+        entry: tuple[ExpansionRoot, ScoredMemoryUnit, int],
+        state: _RecalledProgress,
     ) -> str:
         """尝试一个候选；停止后只记录原因，不再披露或消耗预算。"""
         if len(self.result.items) >= self.query.top_k:
@@ -299,20 +332,30 @@ class _Completion:
         self.record(root, outcome, (perf_counter() - started) * 1000)
 
     def record(
-        self, root: ExpansionRoot, outcome: ExpandResult, cost_ms: float,
-        *, detail: dict[str, str] | None = None,
+        self,
+        root: ExpansionRoot,
+        outcome: ExpandResult,
+        cost_ms: float,
+        *,
+        detail: dict[str, str] | None = None,
     ) -> None:
         """缺子、拒绝与截断在 errors 中可见，轨迹开关不会隐藏不完整状态。"""
         for issue in outcome.issues:
-            self.result.errors.append(ChannelError(
-                channel=RecallChannel.HIERARCHY,
-                source="expand",
-                error_type=issue.code,
-                message=f"root={root.item.unit_id}: {issue.code}",
-            ))
-        if self.query.with_trajectory:
-            self.result.trajectory.append(TrajectoryStep(
-                stage="expand", cost_ms=cost_ms, candidate_count=outcome.selected_count,
+            self.result.errors.append(
+                ChannelError(
+                    channel=RecallChannel.HIERARCHY,
+                    source="expand",
+                    error_type=issue.code,
+                    message=f"root={root.item.unit_id}: {issue.code}",
+                )
+            )
+        append_step(
+            self.result.trajectory,
+            "Expansion",
+            TrajectoryStep(
+                stage="expand",
+                cost_ms=cost_ms,
+                candidate_count=outcome.selected_count,
                 detail={
                     "root_id": root.item.unit_id,
                     "root_scope": json.dumps(asdict(root.candidate.unit.scope), sort_keys=True),
@@ -327,11 +370,15 @@ class _Completion:
                     "estimated_tokens": str(self.budget.spent),
                     **(detail or {}),
                 },
-            ))
+            ),
+            enabled=self.query.with_trajectory,
+        )
 
 
 def complete_expansion(
-    selected: RetrievalResult, prepared: list[PreparedRetrievalResult], query: RetrievalQuery,
+    selected: RetrievalResult,
+    prepared: list[PreparedRetrievalResult],
+    query: RetrievalQuery,
 ) -> RetrievalResult:
     """选中根先消耗预算，复用命中后代或按边展开，父子总数不超过 top_k。"""
     roots_by_key: dict[NodeKey, ExpansionRoot] = {}
@@ -349,7 +396,9 @@ def complete_expansion(
         key = _resolve_root_key(item, ordered_roots, claimed)
         if key is None:
             raise UnsupportedCapabilityError(
-                "defer_expansion", "true", "Retriever",
+                "defer_expansion",
+                "true",
+                "Retriever",
                 "检索实现未提供延迟展开的物化根",
             )
         root = roots_by_key[key]
@@ -372,7 +421,7 @@ def complete_expansion(
     else:
         for root in roots:
             state.expand(root)
-    output.items = output.items[:query.top_k]
+    output.items = output.items[: query.top_k]
     return output
 
 

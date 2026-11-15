@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, scope_for_log
+from jiuwen_memory.common.trace import TraceLevel, trace_event
 from jiuwen_memory.common.type_def import ParsedQuery, RecallChannel, Scope, ScoredUnit
 from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.store_manager import (
@@ -99,6 +102,11 @@ class VectorRecaller(Recaller):
             filters=query.scalar_filters,
             extensions=dict(query.extensions),
         )
+        trace_event(type(self).__name__, "recall_syntax", lambda: {
+            "vector_dimensions": len(vq.vector),
+            "filters": asdict(vq.filters) if vq.filters else None,
+            "top_k": top_k, "layer": self._layer,
+        }, level=TraceLevel.DEBUG)
         # 优先走 store.recall：在召回请求内一并回带 metadata，省掉再发一次 get 的
         # 网络 RTT 与服务端 id 匹配开销（远端后端如 milvus 收益显著）。store 未实现
         # recall 时抛 NotImplementedError，回退到 search + get 两段式（内存后端零成本）。

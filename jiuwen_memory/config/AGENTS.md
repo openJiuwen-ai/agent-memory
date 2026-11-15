@@ -139,3 +139,6 @@
 层级总开关仍由 policy 控制，自定义 policies 完整替换默认表。
 ConfigSourceProducer.get_cached 必须走 Factory 绑定缓存上下文，确保旧运行实例
 在延迟解析树模型时仍读取原配置源。装配期不强制解析未用的可选 Embedder。
+
+trace 的 globals.trace_max_nodes / trace_max_value_chars / trace_max_depth 在装配期严格
+校验正整数或 null；trace_jobs 引用已声明的 trace 具名实例，完整保留插件参数。

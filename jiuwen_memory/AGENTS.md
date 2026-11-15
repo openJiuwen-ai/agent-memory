@@ -68,7 +68,8 @@ Recaller 属于 storage 数据面内部，不是 retrieval 的公共算子。
 
 ### common/ — 共享插件 + 类型
 
-共享插件协议与横切能力均采用 `base.py + *_impl + Producer`，由 YAML 选择已注册 target。
+共享插件协议与横切能力通常采用 `base.py + *_impl + Producer`，由 YAML 选择已注册 target；
+`lock/lock.py` 与 `trace/trace.py` 沿用各自的接口文件名。
 安全能力（认证、凭据存储、资源保护、密码学）统一归 `common/security/`，其请求身份与
 加密上下文类型住 `security/types.py`；`type_def/` 定义 `MemoryUnit`、`Scope`、
 `AuditEvent` 等跨层类型，`errors.py` 统一异常体系。

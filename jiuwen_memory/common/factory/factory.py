@@ -340,3 +340,11 @@ class Factory:
     def known(cls) -> list[str]:
         """已注册的实现名（排序）。"""
         return sorted(cls._registry)
+
+    @classmethod
+    def registration_key(cls, target: str) -> object | None:
+        """返回当前 builder 的 opaque 身份；未注册返回 None，仅用于身份比较。
+
+        同名 builder 替换后身份改变，registration_scope 退出时恢复；不暴露注册表。
+        """
+        return cls._registry.get(target)
