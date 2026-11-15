@@ -424,3 +424,8 @@ SQLite Registry 单写声明使用固定路径旁的锁文件，POSIX 用非阻�
 msvcrt 非阻塞字节锁；重复写者返回 ConflictError，release/close 必须关闭持锁句柄。
 
 Neo4j 启用 SSL 时在装配与 URI 晚绑定处验证 TLS scheme，显式加密与自定义 CA 同时传给驱动；health 只探测，首次写入前创建唯一约束。
+
+召回 trace：CompositeDomainStore 的线程池每次提交独立 copy_context；KeywordRecaller /
+VectorRecaller 在 debug 记录逻辑召回语法，ElasticsearchFulltextStore 在 debug 记录已编译
+DSL。只记录查询/过滤与向量维数，不记录凭证或完整向量；正文/过滤值的日志保护由
+内置 trace sink 处理。

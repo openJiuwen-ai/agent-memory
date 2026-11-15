@@ -49,6 +49,7 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
+from jiuwen_memory.common.trace import TraceLevel, trace_event, traced
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -300,6 +301,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             return None
         return self._ingestor.local_media_preflight(Modality.VIDEO)
 
+    @traced("write", level=TraceLevel.SIMPLE)
     async def write(
         self,
         content: str,
@@ -352,6 +354,9 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         )
         # 两条路径共用：Ingestor 规约。
         check_ingest_cancelled()
+        trace_event(type(self).__name__, "write_input", lambda: {
+            "content": content, "modality": source.value,
+        }, level=TraceLevel.DEBUG)
         units = self._ingestor.ingest([payload])
         check_ingest_cancelled()
         # Explicit input time is a write contract, independent of Ingestor choice.
@@ -363,6 +368,9 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             if "session_id" in meta:
                 unit.system_metadata["session_id"] = meta["session_id"]
 
+        trace_event(type(self).__name__, "ingest", {
+            "units": len(units), "modality": source.value, "infer": infer,
+        })
         binding = video_binding or self._write_binding(units)
         evolver = binding.evolver if binding is not None else self._evolver
         index_builder = binding.index_builder if binding is not None else self._index
@@ -391,6 +399,9 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
                 len(derived),
                 scope_for_log(scope),
             )
+            trace_event(type(self).__name__, "result", {
+                "originals": len(units), "returned": len(derived),
+            }, level=TraceLevel.SIMPLE)
             return derived
 
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引。
@@ -402,6 +413,8 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         begin_ingest_write()
         await asyncio.to_thread(index_builder.build, units)
         record_ingest_units(units)
+        trace_event(type(self).__name__, "result", {"returned": len(units)},
+                    level=TraceLevel.SIMPLE)
         return units
 
     async def batch_write(

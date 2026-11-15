@@ -39,7 +39,7 @@ find 上下文参数成对校验，语义候选不代表选定任务或拥有来
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，分别序列化 `system_metadata` / `user_metadata`，拒绝未迁移的 `_v<4` MemoryUnit |
 | `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
-| `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`；注册表属 Producer，InstanceCache 属 AssemblyContext；builder 内继承缓存上下文，根注入/查询显式传 ctx（配置数据结构在 `config/context.py`） |
+| `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`；`registration_key` 提供不暴露注册表的 builder 身份比较；注册表属 Producer，InstanceCache 属 AssemblyContext；builder 内继承缓存上下文，根注入/查询显式传 ctx（配置数据结构在 `config/context.py`） |
 | `loop_runner.py` | 实例持有的后台事件循环线程；惰性启动，`close` 停止循环并回收异步生成器、默认线程池和线程，关闭后不可重启 |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
@@ -56,6 +56,8 @@ find 上下文参数成对校验，语义候选不代表选定任务或拥有来
 | `security/authentication/key_store.py` | PrincipalKeyStore 契约与可选 PrincipalRegistrationCapability；Trusted 无 Key 初始化采用增量能力，不扩充旧 ABC |
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
 | `security/_assembly_lifecycle.py` | 私有装配作用域：经 Factory 公开创建观察记录本次新建对象，启动失败回滚；成功将所有者显式绑定缓存纪元，保护借用依赖与较新装配。 |
+| `trace/runtime.py` | 具名 Factory 插件、API/执行器策略绑定、后台独立作用域；资源由 runtime 收尾，详情见 trace/AGENTS.md |
+| `trace/` | TraceCollector 横切接口目录：请求级处理过程追踪（`trace/trace.py` 接口 + ContextVar 作用域 + 调用树；模块级 `trace_event(component, stage, data)` / `trace_span` / `@traced` 零参数埋点，`simple < info < debug` 三级详细程度，debug data 支持惰性 callable；`trace_impl/` 四种内置实现 noop/memory/log/memory_log）。config `trace.default.target` 选默认实现，请求级 `extensions["trace"] = "<target>[:<level>]"` 覆盖（入口层在参数校验前剥离）；使用方法与边界见 [F11-new-trace.md](../../docs/features/common/F11-new-trace.md) |
 
 ### 隐私与用户访问控制能力
 
@@ -173,11 +175,13 @@ privacy_rule_ids / privacy_categories 诊断摘要，客户端不可赋值。私
    `default` 使用 `llm`，其他具名实例使用 `llm.<name>`。显式 `config_namespace` 只从实例
    `params` 读取，不从 `globals` 回退，必须是非空字符串；空白或非字符串装配期拒绝。
 7. 横切能力（Authenticator / PrincipalKeyStore / RateLimiter / WorkloadGuard /
-   BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger / LockProvider）
+   BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger / LockProvider / TraceCollector）
    不继承 `Plugin`、不进入 `PluginType`；接口统一在能力目录的 `base.py`（安全域为
-   `security/<能力域>/`，`lock/` 因早于该约定沿用 `lock.py`），实现统一在同级
+   `security/<能力域>/`，`lock/` 因早于该约定沿用 `lock.py`，`trace/` 同理沿用 `trace.py`），实现统一在同级
    `*_impl/`，YAML 只能选择已经注册的 target 并传递 params。当前不从 YAML import
-   Python 类，也不自动发现未被应用启动代码 import 的外部包。
+   Python 类，也不自动发现未被应用启动代码 import 的外部包。TraceCollector 的实现不得
+   保存请求状态：请求级数据存于 ContextVar 容器（`begin_trace`/`end_trace`），实现只持有
+   配置与线程安全 sink 资源，定义 sink 行为，不设 `fork()` 类协议。
 8. 安全能力一律落 `security/<能力域>/`，不新开顶层目录。核心不得按 target 名或
    `mode()` 字符串分支——需要区分的行为差异由 capability 方法（如
    `requires_loopback_binding()`）显式声明，详见 S10。

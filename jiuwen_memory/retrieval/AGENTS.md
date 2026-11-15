@@ -23,7 +23,8 @@
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
 | `retriever.py` | Retriever 接口与 Producer；完整链路入口及可选 query_parsers 依赖声明 |
-| `staged_retriever.py` | StagedRetriever 抽象阶段与请求独占 RetrieveState / RetrieveRun；不提供 retrieve 编排 |
+| `trace_projection.py` | 统一阶段记录到 TrajectoryStep 的有界投影、截断步骤与延迟展开记录；保留 detail 和原精度 cost_ms |
+| `staged_retriever.py` | StagedRetriever 抽象阶段与请求独占 RetrieveState / RetrieveRun；不提供 retrieve 编排；`RetrieveRun.record` 只写统一 trace 事件与独立投影字段 |
 | `query_parser_impl/` | QueryParser 实现目录（simple_query_parser / sanitize / time_parse） |
 | `fuser_impl/` | Fuser 实现目录（rrf【默认】/ weighted_rrf / score_max）+ `layered_merge` 分层归并前处理；`secondary_scorer/` 子目录是次级排序算子（`SecondaryScorer` 接口 + `default` 分带实现，非 Fuser） |
 | `discloser_impl/` | Discloser 实现目录（structured / truncating） |
@@ -246,3 +247,6 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
 
 角色视图复用已判权关系快照传播依赖失效：supports 正向、requires 反向；视图内按此做保守降级。
 跨视图的复核聚合（`meta.review`、变更日志与影响面传播）已随 2026-11-05 接口合并删除，不再有视图外未检查范围的汇总。
+
+检索 trace 使用 common 的三级过滤与局部捕获；PipelineRetriever 与多模态分支共用预算，
+多模态直接线程池逐次复制 context，轨迹按既有分支编排顺序合并。

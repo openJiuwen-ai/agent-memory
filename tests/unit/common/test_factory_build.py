@@ -54,6 +54,20 @@ def test_top_name_registered():
     assert {"part", "holder"} <= names
 
 
+@pytest.mark.unit
+def test_registration_key_tracks_replacement_and_scope_restoration():
+    original = _PartProducer.registration_key("simple")
+    assert original is not None
+    assert _HolderProducer.registration_key("simple") is None, "各 Producer 的注册身份须隔离"
+    with _PartProducer.registration_scope():
+        _PartProducer.register("simple")(lambda config: _Part(size=7))
+        replacement = _PartProducer.registration_key("simple")
+        assert replacement is not original, "同名 builder 替换必须使缓存身份失效"
+        assert _PartProducer.registration_key("simple") is replacement
+        assert _PartProducer.build("simple", {}, ctx=None).size == 7
+    assert _PartProducer.registration_key("simple") is original, "退出临时注册须恢复原身份"
+
+
 def test_build_anonymous_not_cached():
     ctx = AssemblyContext.from_dict({})
     a = _PartProducer.build("simple", {"size": 1}, ctx)

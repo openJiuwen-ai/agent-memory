@@ -207,7 +207,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 8. Access（`jiuwen_memory_entry/`、`jiuwen_memory_adapter/`）只 `import jiuwen_memory.api`，
    且不得 import `jiuwen_memory.api.memory_api_impl`。本包重导出协议转换所需的 DTO /
    枚举 / 异常 / `Credentials`，以及 Access 日志脱敏所需的
-   `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`。
+   `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`；横切 trace 入口
+   （`begin_api_trace` / `begin_trace` / `end_trace` / `trace_event` / `TRACE_OVERRIDE_KEY` / `TraceLevel` / `parse_trace_spec`；`trace_span` / `traced` / `trace_annotate` 从 `common.trace` 导入）。
    公开装配是
    `assemble` / `assemble_runtime` / `assemble_server_runtime`（接受 `dict | Config | None`），Access composition
    root 不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI`
@@ -314,3 +315,7 @@ query_ops 消费 retrieval_pipeline 扩展键并写入 RetrievalQuery.pipeline�
 公开写入/更新拒绝整个 continuity_* 系统元数据前缀；`_role_writer` 通过私有 `_add_impl` 注入接续字段，仍复用原有鉴权、作者归属与审计。`_continuity_add` 服务 `add(continuity=)`；`batch_add` 的接续项经 `_continuity_batch` 按项目分组后调用 `Continuity.record_batch`，正文经 `_add_many_impl` 一次批量写入并复用作者标记、`source_ref` 与审计；事件幂等键统一由 `Continuity.event_key`（连接, binding, event）计算；回执摘要另含完整请求指纹（正文/来源/资产/标签/metadata/时间），改内容后重试必须冲突。`batch_add` 混合批次按输入顺序推进（普通项成批、接续项冲刷前后批）。接续写入透传 `source`/`assets`/`system_metadata`/`user_metadata`/`occurred_at`，并拒绝 `infer`/`procedural`/`middle` 这类与「原文直落」冲突的系统键。add/add_async、batch_add/batch_add_async（批级与 BatchWriteItem 逐项）、submit_ingest 的 event_time 必须含时区，经 `_reject_invalid_event_time` 统一校验，与消息 occurred_at 分离；submit_ingest 在入队前校验。
 
 接续服务和可信连接映射由装配根通过 LocalMemoryAPI 构造参数注入，不在构造后改写其私有成员。一次性维护工具（如关系迁移脚本）走公开的 `assemble_maintenance_ports`，不 import 内核私有装配函数。
+
+Trace 装配为每个 API、Scheduler 与摄入执行器绑定独立策略及具名插件，Access 通过
+begin_api_trace 选择本实例策略。成功装配才更新进程内 begin_trace 的 legacy 默认值。
+trace 文件插件与其他 runtime 资源共同在后台屏障后释放，装配失败关闭新建 sink。

@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from dataclasses import asdict
 from statistics import median
 
 from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError
 from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.plaintext import PlaintextDataError
+from jiuwen_memory.common.trace import TraceLevel, trace_event
 from jiuwen_memory.common.type_def import ParsedQuery, RecallChannel, Scope, ScoredUnit
 from jiuwen_memory.common.type_def.entity import (
     EntityStoreFilters,
@@ -138,6 +140,10 @@ class KeywordRecaller(Recaller):
             filters=query.scalar_filters,  # scope 不混进 filters，单独走入参
             extensions=dict(query.extensions),
         )
+        trace_event(type(self).__name__, "recall_syntax", lambda: {
+            "text": tq.text, "filters": asdict(tq.filters) if tq.filters else None,
+            "top_k": top_k, "layer": self._layer,
+        }, level=TraceLevel.DEBUG)
         hits = self._fulltext.search(scope, tq)
         records = self._fulltext.get(scope, [h.id for h in hits])
         batch1 = aggregate_to_units(hits, records, RecallChannel.KEYWORD)

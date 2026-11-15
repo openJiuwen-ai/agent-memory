@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
+from contextvars import copy_context
 from dataclasses import replace
 
 from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.plaintext import PlaintextDataError
+from jiuwen_memory.common.trace import TraceLevel, capture_trace, traced
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
@@ -18,6 +21,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.query_parser import QueryParser
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.retrieval.trace_projection import record_step, trajectory_steps
 from jiuwen_memory.retrieval.types import (
     RetrievalQuery,
     RetrievalResult,
@@ -58,6 +62,18 @@ class MultimodalRetriever(Retriever):
         self._base.health()
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        with capture_trace() if query.with_trajectory else nullcontext() as capture:
+            result = self._retrieve(scope, query)
+            if capture is not None and capture.dropped:
+                result.trajectory = [s for s in result.trajectory if s.stage != "trace_truncated"]
+                result.trajectory.append(TrajectoryStep(
+                    stage="trace_truncated",
+                    detail={"reason": "max_nodes", "dropped": str(capture.dropped)},
+                ))
+            return result
+
+    @traced("retrieve", level=TraceLevel.SIMPLE)
+    def _retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         if query.rollup:
             raise UnsupportedCapabilityError("rollup", "true", "MultimodalRetriever")
         if query.expand_depth:
@@ -91,7 +107,9 @@ class MultimodalRetriever(Retriever):
         degraded: dict[str, str] = {}
         with ThreadPoolExecutor(max_workers=len(queries)) as executor:
             futures = {
-                executor.submit(self._base.retrieve, scope, branch_query): branch
+                executor.submit(
+                    copy_context().run, self._base.retrieve, scope, branch_query
+                ): branch
                 for branch, branch_query in queries.items()
             }
             for future in as_completed(futures):
@@ -109,6 +127,7 @@ class MultimodalRetriever(Retriever):
                     results[branch] = RetrievalResult()
                     degraded[branch] = type(exc).__name__
 
+
         branch_order = ("native", "multimodal_clip", "multimodal_event")
         items = _rrf_merge(
             [results[branch].items for branch in branch_order],
@@ -116,31 +135,25 @@ class MultimodalRetriever(Retriever):
             rrf_k=self._rrf_k,
         )
         trajectory: list[TrajectoryStep] = []
-        if query.with_trajectory:
-            for branch in branch_order:
+        for branch in branch_order:
+            if query.with_trajectory:
                 trajectory.extend(_branch_trajectory(results[branch].trajectory, branch))
-                if branch in degraded:
-                    trajectory.append(
-                        TrajectoryStep(
-                            stage="recall",
-                            candidate_count=0,
-                            detail={
-                                "branch": branch,
-                                "degraded": degraded[branch],
-                            },
-                        )
-                    )
-            trajectory.append(
-                TrajectoryStep(
-                    stage="fuse",
-                    candidate_count=len(items),
-                    detail={
-                        "strategy": "rrf",
-                        "branches": ",".join(branch_order),
-                        "rrf_k": str(self._rrf_k),
-                    },
-                )
-            )
+            if branch in degraded:
+                with capture_trace() if query.with_trajectory else nullcontext() as capture:
+                    record_step(type(self).__name__, TrajectoryStep(
+                        stage="recall", detail={"branch": branch, "degraded": degraded[branch]},
+                    ), enabled=query.with_trajectory)
+                    if capture is not None:
+                        trajectory.extend(trajectory_steps(capture))
+        with capture_trace() if query.with_trajectory else nullcontext() as capture:
+            record_step(type(self).__name__, TrajectoryStep(
+                stage="fuse", candidate_count=len(items), detail={
+                    "strategy": "rrf", "branches": ",".join(branch_order),
+                    "rrf_k": str(self._rrf_k),
+                },
+            ), enabled=query.with_trajectory, level=TraceLevel.SIMPLE)
+            if capture is not None:
+                trajectory.extend(trajectory_steps(capture))
         return RetrievalResult(items=items, trajectory=trajectory)
 
 

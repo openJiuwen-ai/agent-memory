@@ -56,6 +56,7 @@ from jiuwen_memory.common.log import (
     metadata_for_log,
     redact_for_log,
 )
+from jiuwen_memory.common.trace import TraceLevel, trace_event, traced
 from jiuwen_memory.common.type_def import (
     MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
@@ -518,6 +519,7 @@ class ExtractorImpl(Extractor):
     # 主入口
     # ------------------------------------------------------------------
 
+    @traced("extract", level=TraceLevel.SIMPLE)
     def extract(
         self,
         units: list[MemoryUnit],
@@ -532,9 +534,14 @@ class ExtractorImpl(Extractor):
         若 ``units`` 标记了 ``metadata["procedural"]=="true"``，走过程记忆抽取：LLM 把
         本轮汇总成 **1 条** 结构化执行历史（PROCEDURAL tier），不走走重、不收 context。
         """
+        trace_event(type(self).__name__, "extract_input", lambda: {
+            "items": [{"unit_id": unit.id, "content": unit.content} for unit in units],
+        }, level=TraceLevel.DEBUG)
         # 过程记忆模式：产 1 条 PROCEDURAL 执行历史汇总，直接返回（不经 _dedup_batch）。
         if self._is_procedural(units):
-            return self._extract_procedural(units)
+            result = self._extract_procedural(units)
+            self._trace_results(result)
+            return result
 
         # Phase 1: 预处理
         accepted = self._preprocess(units)
@@ -543,6 +550,9 @@ class ExtractorImpl(Extractor):
             len(units),
             len(accepted),
         )
+        trace_event(type(self).__name__, "preprocess", {
+            "inputs": len(units), "accepted": len(accepted),
+        })
         if not accepted:
             return []
 
@@ -600,7 +610,17 @@ class ExtractorImpl(Extractor):
 
         # Phase 3: 构建 MemoryUnit（tier/tags 取自 candidate，由 LLM 在 Phase 2 产出）
         # L0/L1 分层标注不由本算子负责——由 Evolver 抽取后委托 LayerAnnotator 生成。
-        return self._build_units(all_candidates, accepted)
+        result = self._build_units(all_candidates, accepted)
+        self._trace_results(result)
+        return result
+
+    def _trace_results(self, result: list[MemoryUnit]) -> None:
+        trace_event(type(self).__name__, "extract_result", {"units": len(result)},
+                    level=TraceLevel.SIMPLE)
+        trace_event(type(self).__name__, "extraction_results", lambda: {
+            "extracted": [{"unit_id": unit.id, "content": unit.content,
+                           "tier": unit.tier.value, "tags": unit.tags} for unit in result],
+        }, level=TraceLevel.DEBUG)
 
     # ------------------------------------------------------------------
     # Phase 1: 预处理
@@ -1027,7 +1047,20 @@ class ExtractorImpl(Extractor):
             len(items),
             [type(it).__name__ for it in items],
         )
-        return self.build_candidates(items, units)
+        trace_event(type(self).__name__, "extraction_items", lambda: {"items": items},
+                    level=TraceLevel.DEBUG)
+        candidates = self.build_candidates(items, units)
+        trace_event(
+            type(self).__name__,
+            "extract",
+            {
+                "inputs": len(units),
+                "response_chars": len(response) if response else 0,
+                "items": len(items),
+                "candidates": len(candidates),
+            },
+        )
+        return candidates
 
     def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""

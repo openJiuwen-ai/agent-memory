@@ -325,3 +325,23 @@ def test_delete_raises_backend_error_on_failed_bulk_item(
 
     with pytest.raises(BackendError, match="elasticsearch delete failed"):
         store.delete(Scope(org="acme"), ["m1"])
+
+
+def test_debug_trace_records_the_executed_elasticsearch_syntax(monkeypatch):
+    from jiuwen_memory.common.bootstrap import register_plugins
+    from jiuwen_memory.common.trace import begin_trace, end_trace
+
+    register_plugins()
+    client = _FakeClient()
+    client.indices.analyze_tokens = ["coffee"]
+    store = _store_with_fake_client(monkeypatch, client)
+    token = begin_trace("memory", level="debug")
+    try:
+        store.search(Scope(org="o"), TextQuery(text="coffee", top_k=4))
+    finally:
+        snapshot = end_trace(token)
+    (node,) = snapshot["spans"]
+    assert node["stage"] == "recall_syntax"
+    assert node["data"]["size"] == client.searches[0]["size"] == 4
+    assert node["data"]["query"]["bool"]["must"], "DSL 不能只记录长度或方法名"
+    assert node["data"]["index"] == client.searches[0]["index"]

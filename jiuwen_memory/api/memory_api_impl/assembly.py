@@ -67,6 +67,8 @@ from jiuwen_memory.common.security.protection.workload_guard import (
 from jiuwen_memory.common.security.request_context import new_request_context
 from jiuwen_memory.common.security.runtime import SecurityRuntime
 from jiuwen_memory.common.security.types import Credentials, RequestSecurityContext, Surface
+from jiuwen_memory.common.trace import TraceCollector, configure_default
+from jiuwen_memory.common.trace.runtime import TraceRuntime, bind_trace, build_trace_runtime
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
@@ -167,6 +169,7 @@ class _Kernel:
     security_resources: SecurityResourceOwner | None = None
     continuity: Any | None = None
     human_view: Any = None
+    trace_runtime: TraceRuntime | None = None
 
     async def start_background(self) -> None:
         """启动需事件循环就绪的后台组件。
@@ -690,12 +693,17 @@ def _build_kernel(
         # are not observed and must remain usable after this runtime closes.
         from jiuwen_memory.storage.base import BaseStore
 
+        trace_resources = tuple(resource for resource in reversed(lifecycle.created)
+                                if isinstance(resource, TraceCollector))
+        owner.share_with(SecurityResourceOwner(trace_resources))
         stores = tuple(resource for resource in reversed(lifecycle.created)
                        if isinstance(resource, BaseStore))
         owner.share_with(SecurityResourceOwner(stores))
         if managed_plan is not None:
             owner.add_close_callback(managed_plan.close)
         lifecycle.bind(owner)
+        if kernel.trace_runtime is not None:
+            configure_default(kernel.trace_runtime.default, limits=kernel.trace_runtime.limits)
         return kernel
 
 
@@ -755,6 +763,9 @@ def _assemble_kernel(
         )
         human_limiter.health()
         human_guard.health()
+    # 横切 trace 组件：config 指定默认实现（trace.default.target，缺省 noop），
+    # 请求级覆盖经 extensions["trace"]（见 common/trace/trace.py）。
+    trace_runtime = build_trace_runtime(root)
 
     # API 业务审计与 surface 入口审计必须共用同一个具名实例。
     audit_logger = AuditProducer.dep(root, default="sqlite")
@@ -938,7 +949,7 @@ def _assemble_kernel(
     human_view = None
     if human:
         human_view = api.bind_human_view(human, audit_logger, human_limiter, human_guard)
-    return _Kernel(
+    kernel = _Kernel(
         ctx=ctx,
         api=api,
         kv=kv_store,
@@ -954,7 +965,13 @@ def _assemble_kernel(
         security_resources=resources,
         continuity=getattr(api, "_continuity", None),
         human_view=human_view,
+        trace_runtime=trace_runtime,
     )
+
+    bind_trace(kernel.api, trace_runtime)
+    bind_trace(kernel.scheduler, trace_runtime)
+    bind_trace(kernel.ingest_jobs, trace_runtime)
+    return kernel
 
 
 def _validate_privacy_namespace(storage, root, privacy) -> None:

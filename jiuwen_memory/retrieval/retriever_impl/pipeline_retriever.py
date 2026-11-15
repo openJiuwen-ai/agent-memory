@@ -12,7 +12,8 @@ storage 层工厂按配置装配）。
 
 from __future__ import annotations
 
-from dataclasses import replace
+from contextlib import nullcontext
+from dataclasses import asdict, replace
 from time import perf_counter
 
 from jiuwen_memory.common._support import as_bool
@@ -25,6 +26,12 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.reranker.base import Reranker, RerankerProducer
+from jiuwen_memory.common.trace import (
+    TraceLevel,
+    capture_trace,
+    trace_event,
+    traced,
+)
 from jiuwen_memory.common.type_def import (
     ChannelError,
     MemoryUnit,
@@ -68,6 +75,7 @@ from jiuwen_memory.retrieval.schema_temporal.pipeline import (
     build_schema_temporal_extension,
 )
 from jiuwen_memory.retrieval.staged_retriever import RetrieveState, StagedRetriever
+from jiuwen_memory.retrieval.trace_projection import trajectory_steps
 from jiuwen_memory.retrieval.types import (
     DisclosureLevel,
     RecallChannel,
@@ -208,14 +216,36 @@ class PipelineRetriever(StagedRetriever):
         return (self._parser,)
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        # 捕获必须包住完整编排；直接调用和 Access 调用共用相同边界。
+        with capture_trace() if query.with_trajectory else nullcontext() as capture:
+            result = self._retrieve(scope, query)
+            if capture is not None:
+                result.trajectory = trajectory_steps(capture)
+            return result
+
+    @traced("retrieve", level=TraceLevel.SIMPLE)
+    def _retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         state = RetrieveState.start(scope, query)
+        state.run.component = type(self).__name__
         self.validate(state)
         state.log_start()
+        trace_event(type(self).__name__, "request", lambda: {
+            "query": query.text, "query_context": list(query.query_context or ()),
+            "top_k": query.top_k, "pipeline": query.pipeline,
+        }, level=TraceLevel.DEBUG)
         if not self.parse(state):
             return state.empty_result()
         self.build_filters(state)
         self.select_channels(state)
         self.plan_budget(state)
+        trace_event(type(self).__name__, "recall_query", lambda: {
+            "rewritten": state.parsed.rewritten,
+            "tokens": state.parsed.tokens, "keywords": state.parsed.keywords,
+            "filters": asdict(state.parsed.scalar_filters) if state.parsed.scalar_filters else None,
+            "channels": [c.value for c in state.channels] if state.channels else [],
+            "recall_limit": state.recall_k, "rank_limit": state.budget_n,
+            "vector_dimensions": len(state.parsed.vector),
+        }, level=TraceLevel.DEBUG)
         self.recall_and_fuse(state)
         state.cut_to_budget()
         self.rerank(state)
@@ -295,6 +325,11 @@ class PipelineRetriever(StagedRetriever):
             parse_detail["skipped"] = "no_retrieval_intent"
         step("parse", t0, n=len(parsed.tokens), detail=parse_detail)
 
+        trace_event(type(self).__name__, "query_rewrite", lambda: {
+            "raw": parsed.raw, "rewritten": parsed.rewritten, "intent": parsed.intent,
+            "tokens": parsed.tokens, "keywords": parsed.keywords,
+            "rewrite_status": parsed.rewrite_status,
+        }, level=TraceLevel.DEBUG)
         if parsed.rewrite_status == "no_intent":
             logger.debug(
                 "Retriever.retrieve no retrieval intent: trace_id=%s scope_dims=%s",
@@ -456,6 +491,10 @@ class PipelineRetriever(StagedRetriever):
         fusion_detail = explain_fusion() if callable(explain_fusion) else {}
         record_step("fuse", 0.0, n=len(fused), detail=fusion_detail)
 
+        trace_event(type(self).__name__, "recall_results", lambda: {
+            "candidates": [{"unit_id": c.unit_id, "score": c.score,
+                            "channel": c.channel.value} for c in fused],
+        }, level=TraceLevel.DEBUG)
         state.candidates, state.errors = fused, list(errors)
 
     def rerank(self, state: RetrieveState) -> None:
@@ -555,6 +594,10 @@ class PipelineRetriever(StagedRetriever):
                     detail=detail,
                 )
 
+        trace_event(type(self).__name__, "rerank_results", lambda: {
+            "calibrated": reranked,
+            "candidates": [{"unit_id": c.unit_id, "score": c.score} for c in survivors],
+        }, level=TraceLevel.DEBUG)
         state.candidates, state.calibrated = survivors, reranked
 
     def rollup(self, state: RetrieveState) -> None:
@@ -645,6 +688,10 @@ class PipelineRetriever(StagedRetriever):
             }
         step("disclose", t0, n=len(items), detail=disclose_detail)
 
+        trace_event(type(self).__name__, "retrieval_results", lambda: {
+            "items": [{"unit_id": item.unit_id, "content": item.content,
+                       "score": item.score} for item in items],
+        }, level=TraceLevel.DEBUG)
         state.items = items
 
     def expand(self, state: RetrieveState) -> None:
