@@ -186,7 +186,7 @@ class RoleViewQuery:
     budget: ViewBudget = field(default_factory=ViewBudget)
 
     def __post_init__(self) -> None:
-        if isinstance(self.duty, (list, tuple)):
+        if isinstance(self.duty, list | tuple):
             duties: list[str] = []
             seen: set[str] = set()
             for item in self.duty:
@@ -216,6 +216,11 @@ class TaskRequest:
     background: list[MemoryRef] = field(default_factory=list)
     required: bool = True
     reason: str = ""
+    title: str = ""
+    description: str = ""
+    parent_task_id: str | None = None
+    query: str | None = None
+    top_k: int = 5
 
     def __post_init__(self) -> None:
         if type(self.expected_revision) is not int or self.expected_revision < 0:
@@ -226,6 +231,21 @@ class TaskRequest:
             raise ValidationError("stable request_id required")
         if self.context_source not in {"native", "adapter"}:
             raise ValidationError("unknown context source")
+        for name in ("title", "description"):
+            if not isinstance(getattr(self, name), str):
+                raise ValidationError(f"{name} must be a string")
+        if self.parent_task_id is not None and (
+            not isinstance(self.parent_task_id, str) or not self.parent_task_id.strip()
+        ):
+            raise ValidationError("parent_task_id must be a nonempty string or null")
+        if self.parent_task_id is not None and self.operation != "create":
+            raise ValidationError("parent_task_id is only accepted on create")
+        if self.query is not None and not isinstance(self.query, str):
+            raise ValidationError("task query must be a string or null")
+        if type(self.top_k) is not int or not 1 <= self.top_k <= 100:
+            raise ValidationError("task top_k must be between 1 and 100")
+        if self.operation == "find" and bool(self.connector_id) != bool(self.context_id):
+            raise ValidationError("find requires both connector_id and context_id, or neither")
 
 
 @dataclass

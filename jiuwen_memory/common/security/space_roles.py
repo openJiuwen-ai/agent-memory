@@ -187,6 +187,7 @@ class EntryRule:
 # 处置，与组织级入口一并维持现状判据。
 ENTRY_RULES: dict[str, EntryRule] = {
     "continuity_task_read": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
+    "continuity_task_parent": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     "continuity_task_write": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
     "continuity_relation": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
     "continuity_recover": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),

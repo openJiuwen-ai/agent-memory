@@ -664,6 +664,9 @@ CryptographyProvider 与 `local` KeyProvider。
 
 公开 DTO 包括 MemoryRef、TaskRequest、ContinuityWrite、ContinuityEvent（仅导入交换格式）、RelationRecord、ViewBudget、ViewAnnotation、RelationPath、Gap、ViewMeta、ContinuityRecovery；`RoleViewQuery` 仍作为 `search` 视图路径传给 `Continuity` 的内部查询对象；详细字段及兼容状态以 [S11](S11-cross-agent-continuity.md) 为准。MemoryRef 按真实 Scope/ID 与规范化内容摘要定位，不要求旧正文先增加任务/职责标签。
 
+TaskRequest 追加 title、description、parent_task_id、query、top_k；既有位置参数顺序保留。
+find 的上下文参数成对校验；可选 query 扩展描述候选查找，不增加新的 operation 枚举。
+
 RelationCatalog 是启动时验证的共享配置数据，不是每职责一个插件；`RelationTypeSpec` 与 `TraversalRule` 的字段见 [S11 数据结构](S11-cross-agent-continuity.md#relationcatalogrelationtypespectraversalrule)。构建与查询必须注入同一目录；未知名字失败，运行时不动态注册。职责字符串不是 SpaceContentRole，也不影响授权。
 
 ## 隐私与独立人机认证能力

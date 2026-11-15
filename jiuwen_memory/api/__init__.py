@@ -153,9 +153,11 @@ from .memory_api_impl import (
     assemble_server_runtime,
 )
 from .personal_memory import read_personal_record
+from .runtime_configuration import sdk_continuity_runtime_identity
 from .search_options import SearchOptions
 
 __all__ = [
+    "sdk_continuity_runtime_identity",
     "read_personal_record",
     "open_config_overlay",
     "open_document_overlay",

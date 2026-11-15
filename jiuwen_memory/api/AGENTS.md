@@ -33,6 +33,9 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 
 ## 模块地图
 
+`runtime_configuration.py` 提供公开的 `sdk_continuity_runtime_identity` 配置检查辅助，
+只返回规范 Registry 路径与有效配置摘要；不构造 runtime、Store 或锁，不暴露 Config/SecretValue。
+
 | 文件 | 职责 |
 |---|---|
 | `memory_api_impl/continuity_ops.py` | 角色接续 PEP、可信连接匹配、原引用/关系依赖核验；入口为 `continuity_task`/`continuity_relation`/`continuity_recover`/`quarantine_source`/`release_source`，可靠写入与职责视图分别并入 `add`/`batch_add` 的 `continuity` 参数与 `search` 的 `task_id`/`anchor`/`duty`/`view_budget`；`list` 下推不可用来源谓词，并对每页条目逐条复核依赖证据、剔除不合规条目（不整页报错）；`batch_add` 的相邻接续项按 scope 分组后各合成一次 `record_batch`，正文批写复用 `add` 的作者标记/`source_ref`/审计步骤，`search` 的视图组装委托 `Continuity.view_result`，本层只做类型转换 |

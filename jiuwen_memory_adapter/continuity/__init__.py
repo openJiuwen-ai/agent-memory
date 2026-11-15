@@ -49,7 +49,10 @@ def tool_schemas(*, mode: str = "role", include_governance: bool = False) -> lis
             "request",
             TaskRequest,
             "Create/get/find/bind/unbind/attach/close task mappings. Mutations require stable "
-            "request_id and expected_revision. Bindings never grant source read permissions.",
+            "request_id and expected_revision. Find checks connector_id/context_id first; "
+            "if no exact match, optional query searches task title/description. Omit both "
+            "context fields to search for another task. Confirm semantic candidates before bind. "
+            "Bindings never grant source read permissions.",
         ),
     ]
     if mode == "role":

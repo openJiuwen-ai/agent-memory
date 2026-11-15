@@ -1,5 +1,8 @@
 # 与部署的认证配置一起加载。这里只声明可信连接，不创建身份或授予空间权限。
 globals:
+  # 仅共享 SDK 接续使用；HTTP 服务沿用其入口预算。
+  # sdk_max_workers: 16     # 同时执行的读写调用数（正整数）
+  # sdk_max_queue_size: 256 # 等待槽位数（非负整数，0 表示不预留等待容量）
   continuity_connectors:
     workbuddy:
       actor: {org: demo, space: '', user: wb, agent: '', session: ''}
@@ -68,6 +71,8 @@ continuity:
       mode: role            # 必填：role（角色模式，需图存储与 role_view）或 continuity
       single_writer: true
       registry_store: registry
+      # 任务描述查询默认使用 embedder.default；设 embedder: null 则使用 BM25。
+      # tokenizer: default  # BM25 使用同一分词器处理查询和任务标题/说明。
       graph_store: evidence
       relation_index_builder: evidence
       role_view: default
