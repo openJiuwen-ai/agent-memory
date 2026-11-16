@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """默认日志初始化实现——注册为 ``"default"``。
 
-按配置树节点（``memory_api.params``）的 log_level / log_format / log_datefmt / log_file
-配置 ``agent-memory`` 根 logger：添加 StreamHandler + Formatter，设置级别，阻断向上传播。
+按配置 ``globals`` 的日志项初始化 SDK 日志路由；默认输出到 stderr，并阻断 SDK
+命名空间向 Python 根 logger 传播。
 """
 
 from __future__ import annotations
