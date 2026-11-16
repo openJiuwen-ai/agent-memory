@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-15 |
+| 最近一次修订日期 | 2026-11-16 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F08-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
@@ -160,9 +160,9 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 | 新增记忆 | `/v1/add` | `content`、`scope`（只允许选填 `agent`）、可选 `system_metadata.project` | 新增的 `MemoryUnit` 数组 |
 | 纠正记忆 | `/v1/update` | `scope`、`unit_id`、`patch.content` | 新版 `MemoryUnit`，通过 `supersedes` 指向旧版 |
 | 遗忘记忆 | `/v1/delete` | `selector.scope`、只含一个 ID 的 `selector.unit_ids`、`selector.mode: "forget"` | 已遗忘的 ID 数组 |
-| 模型设置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口 | 同上 |
+| 模型设置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口。跨进程共享页面为指定实例的请求附加 `instance_id` | 同上。跨进程共享页面用空请求体调用 `read_config` 时返回 `instances`、`default_instance_id` |
 | HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`） | `portal_url` |
-| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 独立页面建立 HttpOnly Cookie，iframe 获得页面会话票据 |
+| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 普通独立页面建立 HttpOnly Cookie。iframe 和跨进程共享页面返回 `session_token`。跨进程共享页面另返回 `shared: true` |
 
 页面从 `MemoryUnit.segments` 拼接正文，时间取 `temporal.t_ingest`。HTTP
 `write_target` 由宿主提供，与认证身份合成完整写入范围，随会话绑定。独立访问可以
@@ -177,9 +177,31 @@ SDK 插件默认启动本地页面服务，`portal.enabled` 可关闭它。`port
 `open_portal()` 为每次打开取得一次性链接。SDK 页面句柄只关闭自己的网络资源，
 Runtime 仍由宿主负责关闭。
 宿主可在初始化前读取 `portal_status["supported"]` 来决定是否显示入口。
-SDK 模式的 `available` 表示页面监听已启动。HTTP 模式在首次请求链接前为 `False`，
+SDK 模式的 `available` 表示页面监听已启动。共享页面的状态读取会检查页面进程是否
+可响应，并返回实际的页面地址。HTTP 模式在首次请求链接前为 `False`，
 之后反映取链接是否成功。HTTP 初始化沿用 `/healthz` 探活，在调用 `await open_portal()`
 时签发链接。`portal_url` 仅提供 SDK 本地链接。
+
+在同一台 macOS、Linux 或 Windows 机器上，使用同一个固定本地 Markdown 目录和 SQLite
+索引的 SDK 文档实例在同一系统账号下自动共用 Portal。两个存储位置均须为绝对路径，
+Windows 上还须位于本地 NTFS。实例须通过文档数据面读取该索引。macOS 和 Windows
+以磁盘上的实际路径识别文档库。KV 模式
+和未满足共享条件的 SDK 实例各自提供本地页面。`portal.instance_id` 适用于共享实例，
+可省略，默认使用 `default`。在同一文档目录内同时启动的共享实例必须使用不同 ID。
+ID 被占用时，SDK 记忆实例仍可启动，`portal_status["reason"]` 报告冲突，该实例无法
+接入共享页面。浏览器会话绑定记忆库、可信身份和可选的记忆写入范围，使用
+`X-Memory-Portal-Session` 请求头。
+从普通 SDK 实例打开的页面，记忆请求优先交给该实例。该实例退出后，连接失败或在执行业务前
+拒绝会话身份的备选实例可以跳过。已经发送且结果未知的请求不得重放。`read_config({})`
+校验在线实例的当前身份，返回可访问的实例列表和默认选中项。读取具体配置、保存和重试
+明确指定 `instance_id`，未运行或身份不匹配返回 404，
+选中实例仍执行配置权限校验。页面服务意外退出后，下次 `open_portal()` 恢复监听和在线
+实例列表并取得新链接。复用 iframe 时应传入完整的新链接，含用于触发页面加载的查询参数
+与一次性授权片段。共享实例的 `shutdown()` 会等已取消的初始化收尾。Runtime 成功关闭
+后释放 ID，失败时报告异常并保留 ID。独立 SDK 页面和 HTTP 的配置接口沿用原请求格式。
+SDK 接续模式下，共用一个 Runtime 的 Provider 使用同一个 ID，实例列表只返回一次。
+每次请求继续校验签发会话的 Provider，来源注销后返回 401。未满足文档库共享条件时，
+接续模式在同一进程内按 Runtime 复用页面，见 S11。
 
 身份复用既有认证或本地会话，浏览器不能声明 actor 或角色，也不能指定列表或检索的授权范围。本机部署的 Host、
 同源检查和会话规则见 S10；Prompt 管理、通用模型依赖追踪和宿主重启不属于 Portal 能力。

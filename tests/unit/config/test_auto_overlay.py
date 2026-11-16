@@ -1,6 +1,15 @@
 """自动定位配置库，并优先复用已确定的文档根目录。"""
 
-from jiuwen_memory.config.auto_overlay import open_config_overlay, open_document_overlay
+import os
+from pathlib import Path
+
+import pytest
+
+from jiuwen_memory.config.auto_overlay import (
+    _prepare_shared_document_portal,
+    open_config_overlay,
+    open_document_overlay,
+)
 
 
 def test_document_root_automatically_persists_overlay(tmp_path):
@@ -31,6 +40,61 @@ def test_unknown_or_unsafe_locations_do_not_guess_path(tmp_path):
     assert open_document_overlay(base) is None
 
 
+@pytest.mark.skipif(os.name not in ("posix", "nt"), reason="requires shared SDK Portal")
+def test_shared_portal_uses_effective_paths(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    if os.name == "nt":
+        alias = Path(f"\\\\?\\{root}")
+    else:
+        alias = tmp_path / "alias"
+        alias.symlink_to(root, target_is_directory=True)
+    config = {
+        "globals": {"write_document": True},
+        "engine": {"default": "agent"},
+        "markdown_store": {"default": {"target": "local", "params": {"root": str(alias)}}},
+        "shadow_index": {"default": "sqlite"},
+    }
+    paths, open_overlay = _prepare_shared_document_portal(config, instance_id="a")
+    assert paths == (
+        str(root.resolve()), str(root.resolve() / "memory/.shadow/shadow.db"),
+    )
+    assert not (root / "memory/.shadow/portal-config.db").exists()
+    assert open_overlay().read().version == 0
+    config["shadow_index"]["default"] = {
+        "target": "sqlite", "params": {"shadow_index_db_path": str(alias / "explicit.db")},
+    }
+    paths, _ = _prepare_shared_document_portal(config, instance_id="a")
+    assert paths[1] == str(root.resolve() / "explicit.db")
+    config["globals"]["storage_encryption_enabled"] = True
+    encrypted_paths, open_overlay = _prepare_shared_document_portal(config, instance_id="a")
+    assert encrypted_paths == paths and open_overlay() is None
+    config["globals"]["storage_encryption_enabled"] = False
+    config["engine"]["default"] = "in_memory"
+    assert _prepare_shared_document_portal(config, instance_id="a") is None
+    config["engine"]["default"] = "agent"
+    config["config_source"] = {"default": {
+        "target": "yaml_defaults",
+        "params": {"values": {"shadow_index.db_path": ":memory:"}},
+    }}
+    assert _prepare_shared_document_portal(config, instance_id="a") is None
+
+
+@pytest.mark.parametrize("domain_stores", ["invalid", {"default": None}, {"custom": "invalid"}])
+def test_shared_portal_declines_invalid_domain_configuration(tmp_path, domain_stores):
+    config = {
+        "globals": {"write_document": True},
+        "engine": {"default": {"target": "agent", "params": {"domain_store": "custom"}}},
+        "store_manager": {"default": {
+            "target": "composite", "params": {"domain_stores": domain_stores},
+        }},
+        "markdown_store": {"default": {"target": "local", "params": {"root": str(tmp_path)}}},
+        "shadow_index": {"default": "sqlite"},
+    }
+
+    assert _prepare_shared_document_portal(config, instance_id="a") is None
+
+
 def test_first_creation_failure_degrades_to_read_only(tmp_path, monkeypatch):
     from jiuwen_memory.config.overlay_store import SQLiteOverlayStore
 
@@ -47,8 +111,6 @@ def test_first_creation_failure_degrades_to_read_only(tmp_path, monkeypatch):
 
 
 def test_existing_overlay_failure_does_not_silently_discard_saved_state(tmp_path, monkeypatch):
-    import pytest
-
     from jiuwen_memory.common.errors import BackendError
     from jiuwen_memory.config.overlay_store import SQLiteOverlayStore
 
@@ -67,8 +129,6 @@ def test_existing_overlay_failure_does_not_silently_discard_saved_state(tmp_path
 
 
 def test_corrupt_existing_overlay_fails_closed(tmp_path):
-    import pytest
-
     from jiuwen_memory.common.errors import BackendError
 
     config = {

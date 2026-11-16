@@ -39,18 +39,22 @@ def frame_headers(origins: tuple[str, ...]) -> dict[str, str]:
     return {"Content-Security-Policy": "frame-ancestors " + " ".join(origins)}
 
 
-def bootstrap(sessions, body, origins):
-    """Use a page-local token in iframes, where cookies may be blocked."""
+def bootstrap(sessions, body, origins, *, shared=False):
+    """Use page-local tokens for iframes and for portals shared by several runtimes."""
     if not isinstance(body, dict):
         return None, None
     embedded = body.get("embedded", False)
     if not isinstance(embedded, bool) or (embedded and not origins):
         return None, None
-    session = sessions.redeem(body.get("token"), embedded=embedded)
+    tab_session = embedded or shared
+    session = sessions.redeem(body.get("token"), embedded=tab_session)
     if session is None:
         return None, None
-    if embedded:
-        return {"ready": True, "session_token": session}, None
+    if tab_session:
+        response = {"ready": True, "session_token": session}
+        if shared:
+            response["shared"] = True
+        return response, None
     return {"ready": True}, session
 
 
@@ -119,6 +123,14 @@ class BrowserSessions:
             if entry is None or entry[2] != embedded:
                 return False, None
             return True, entry[1]
+
+    def revoke(self, matches):
+        """Revoke both unused grants and established sessions matching a binding."""
+        with self.lock:
+            for table in (self.grants, self.sessions):
+                for token, entry in tuple(table.items()):
+                    if matches(entry[1]):
+                        del table[token]
 
     def close(self):
         with self.lock:

@@ -95,6 +95,14 @@ from jiuwen_memory.common.type_def.continuity import (
     TaskRequest,
     ViewBudget,
 )
+
+# Private assembly dependency of the bundled SDK adapter.
+from jiuwen_memory.config.auto_overlay import (
+    _config_overlay_candidates as _config_overlay_candidates,
+)
+from jiuwen_memory.config.auto_overlay import (
+    _prepare_shared_document_portal as _prepare_shared_document_portal,
+)
 from jiuwen_memory.config.auto_overlay import (
     document_llm_instances,
     open_config_overlay,

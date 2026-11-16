@@ -153,6 +153,7 @@
     .search-explanation { margin-bottom:18px; color:#777; font-size:12px; }
     .settings-layout { display:grid; grid-template-columns:minmax(0,1fr) 250px; gap:20px; align-items:start; }
     .settings-group,.info-card { padding:22px; margin-bottom:18px; }
+    .settings-instance { max-width:320px; margin-bottom:16px; }
     .settings-group>.row { margin-bottom:20px; }
     .fields-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
     .field { min-width:0; }
@@ -243,6 +244,7 @@
       <div class="pager"><div class="row page-size-group"><label for="page-size" style="margin:0">每页</label><select id="page-size"><option value="20">20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div><div class="row"><button id="previous" type="button" disabled>上一页</button><span id="page-info"></span><button id="next" type="button" disabled>下一页</button></div></div>
     </div></section><section id="settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
       <div class="page-heading"><div><h1>模型设置</h1><p class="muted">调整记忆使用的模型，保存后应用到后续调用</p></div><button id="reload-settings" class="quiet small" type="button">↻ 刷新配置</button></div>
+      <div id="configuration-instance" class="settings-instance" hidden><label for="settings-instance">配置实例</label><select id="settings-instance" disabled aria-describedby="settings-instance-hint"></select><p id="settings-instance-hint" class="field-hint">切换实例只影响模型设置。</p></div>
       <div id="configuration-state" class="config-state">正在读取配置…</div>
       <div class="settings-layout"><div><div id="settings-list"></div><div class="settings-bar"><div><strong id="draft-summary">没有待保存的更改</strong><p class="muted small">先预览，确认后保存并应用</p></div><div class="row"><button id="discard-drafts" type="button">放弃更改</button><button id="preview" class="primary" type="button">预览更改</button></div></div><div id="diff" role="status"></div><button id="save" class="primary" type="button" hidden style="margin-top:16px">确认保存并应用</button></div><aside class="settings-side"><div class="info-card"><h3>当前记忆实例</h3><div id="instance-info" class="muted">从当前实例读取</div></div><div class="info-card"><h3>配置如何生效</h3><p class="muted">保存后，支持的模型设置会应用到后续调用；正在进行的调用使用原配置完成。</p><p class="muted" style="margin-top:10px">Embedding 模型与维度只读，修改需要迁移已有索引。Prompt 继续使用原配置入口。</p><button id="apply-settings" type="button" style="margin-top:16px" disabled>重试应用已保存配置</button></div></aside></div>
     </section></main></div></div><dialog id="memory-dialog" aria-labelledby="memory-dialog-title" aria-describedby="memory-dialog-description">
@@ -262,6 +264,7 @@
     <tr><td>完整详情与时间</td><td><code>POST /v1/get</code></td><td>每次重读 <code>segments / lifecycle / tags / source_ref / supersedes / temporal.t_ingest</code>；时间来自 <code>temporal.t_ingest</code>，不是文件修改时间。</td></tr>
     <tr><td>新增 / 纠正 / 遗忘</td><td><code>/v1/add、/v1/update、/v1/delete</code></td><td>新增提交正文、Agent 和可选项目；宿主可绑定实际 Agent 范围。纠正与遗忘通过 <code>scope</code> 和 <code>unit_id</code> 定位，服务端再次检查归属和权限。纠正创建 SUPERSEDE 新版；遗忘使用 FORGET。</td></tr>
     <tr><td>检索结果</td><td><code>POST /v1/search</code></td><td><code>items / scores_comparable</code>；来源先筛选再 top_k。按记忆范围轮转合并。</td></tr>
+    <tr id="configuration-instance-source" hidden><td>配置实例</td><td><code>POST /v1/read_config</code></td><td><code>instances</code> 为当前可管理的实例 ID，<code>default_instance_id</code> 为初始选中项。设置的读取和保存使用选中的 <code>instance_id</code>。</td></tr>
     <tr><td>模型配置与应用</td><td><code>/v1/read_config、/v1/save_config</code></td><td><code>fields / version / applied_version / apply_state / instance</code>；API Key 不回填，只显示已配置状态。</td></tr>
   </tbody></table><p class="muted">来源标签用于展示和筛选，不承担授权。未标注来源不会被猜成当前应用。</p></div>
 </dialog>
@@ -271,6 +274,8 @@ const $ = id => document.getElementById(id);
 const notice = (text, error=false) => { $('notice').textContent=text; $('notice').classList.toggle('error',error); };
 let offset=0,total=0,snapshot=null,version=null,fields=[],drafts=new Map(),restores=new Set();
 let preview=null,saving=false,settingsLoaded=false,settingControls=[],configAvailable=false,settingsRequest=0;
+let sharedPortal=false,settingsInstance=null,settingsLoading=false,settingsNeedApply=false;
+const instanceDrafts=new Map();
 let memoryRequest=0,detailRequest={memories:0,search:0},rows={memories:[],search:[]};
 let filterTimer,searchRequest=0,hasSearched=false,activeTab='overview',editorMode='add',editorItem=null,editorPreview=false,mutationBusy=false;
 let memoryView='memories',searchMode='text';
@@ -285,19 +290,32 @@ let portalSession, addContext, sessionExpired=false, addContextReady=false, addA
 const sessionExpiredMessage='访问会话已失效，请从应用重新打开记忆管理。';
 function expireSession(){
   sessionExpired=true;
+  portalSession=undefined;
+  if(history.state?.sharedPortalToken)history.replaceState(null,'');
   $('portal-shell').hidden=true;
   $('session-expired').hidden=false;
   for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
 }
 const browserReady=(async()=>{
   const grant=new URLSearchParams(location.hash.slice(1)).get('access');
-  if(!grant)return;
-  history.replaceState(null,'',location.pathname+location.search);
-  const embedded=typeof window!=='undefined'&&window.self!==window.top;
-  const response=await fetch('/portal/api/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:grant,embedded}),credentials:'same-origin'});
-  if(response.status===401){expireSession();return;}
-  if(!response.ok)throw new Error('无法打开记忆管理，请从应用重新打开。');
-  if(embedded)portalSession=(await response.json()).session_token;
+  let session;
+  if(grant){
+    history.replaceState(null,'',location.pathname+location.search);
+    const embedded=typeof window!=='undefined'&&window.self!==window.top;
+    const response=await fetch('/portal/api/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:grant,embedded}),credentials:'same-origin'});
+    if(response.status===401){expireSession();return;}
+    if(!response.ok)throw new Error('无法打开记忆管理，请从应用重新打开。');
+    session=await response.json();
+    if(session.shared===true)history.replaceState({sharedPortalToken:session.session_token},'');
+  }else if(history.state?.sharedPortalToken){
+    session={shared:true,session_token:history.state.sharedPortalToken};
+  }
+  portalSession=session?.session_token;
+  sharedPortal=session?.shared===true;
+  if(sharedPortal){
+    $('configuration-instance').hidden=false;
+    $('configuration-instance-source').hidden=false;
+  }
 })();
 async function request(action,payload={}) {
   await browserReady;
@@ -319,7 +337,7 @@ async function request(action,payload={}) {
     error.status=response.status;throw error;
   }
   if(action==='list'&&data.add_context)addContext=data.add_context;
-  $('connection-state').textContent='已连接当前实例 · 汇总个人授权范围';$('connection-dot').hidden=false;
+  $('connection-state').textContent=sharedPortal?'已连接共享记忆库':'已连接当前实例 · 汇总个人授权范围';$('connection-dot').hidden=false;
   return data;
 }
 // The record address is stable across list, search and detail. Authorization stays on the server.
@@ -500,7 +518,19 @@ function fieldLabel(key){
   return labels[key.split('.').pop()]||key;
 }
 function invalidatePreview(message=''){preview=null;$('save').hidden=true;$('diff').textContent=message;}
-function updateDraftSummary(){const count=new Set([...drafts.keys(),...restores]).size;$('draft-summary').textContent=count?count+' 项更改尚未保存':'没有待保存的更改';$('discard-drafts').disabled=saving||!count;}
+function updateDraftSummary(){
+  const count=new Set([...drafts.keys(),...restores]).size;
+  let otherCount=0;
+  for(const [instanceId,draftSet] of instanceDrafts){
+    if(instanceId!==settingsInstance)otherCount+=new Set([...draftSet.drafts.keys(),...draftSet.restores]).size;
+  }
+  const scope=sharedPortal?'当前实例':'';
+  const current=count?`${scope}${sharedPortal?'有 ':''}${count} 项更改尚未保存`:`${scope}没有待保存的更改`;
+  $('draft-summary').textContent=otherCount?`${current} · 其他实例还有 ${otherCount} 项未保存`:current;
+  const discard=$('discard-drafts');
+  discard.textContent=sharedPortal?'放弃当前实例的更改':'放弃更改';
+  discard.disabled=saving||settingsLoading||!count;
+}
 function inputFor(field){
   const key=field.key,value=restores.has(key)?field.base:(drafts.has(key)?drafts.get(key):(field.has_override&&!field.endpoint_ignored?field.saved:field.base));let input;
   if(key.endsWith('.target')){input=node('select');for(const v of field.options||[])input.add(new Option(v==='echo'?'echo（离线回显）':v==='openai'?'OpenAI 兼容服务':v==='dashscope'?'阿里云 DashScope':v,v));input.value=value||'echo';}
@@ -537,20 +567,92 @@ function renderSettings(){
   }
   updateDraftSummary();
 }
-function setSettingsBusy(busy){saving=busy;for(const el of settingControls)el.disabled=busy||el.dataset.readonly==='1';for(const id of ['preview','save','reload-settings','apply-settings','discard-drafts'])$(id).disabled=busy;updateDraftSummary();}
-async function loadSettings(message){
+function syncSettingsControls(){
+  const busy=saving||settingsLoading;
+  for(const el of settingControls)el.disabled=busy||!configAvailable||el.dataset.readonly==='1';
+  $('settings-instance').disabled=saving||$('settings-instance').options.length<2;
+  $('reload-settings').disabled=saving;
+  $('preview').disabled=busy||!configAvailable;
+  $('save').disabled=busy||!configAvailable;
+  $('apply-settings').disabled=busy||!configAvailable||!settingsNeedApply;
+  updateDraftSummary();
+}
+function setSettingsBusy(busy){saving=busy;syncSettingsControls();}
+function selectSettingsInstance(instanceId){
+  if(instanceId===settingsInstance)return;
+  settingsInstance=instanceId;
+  if(!instanceDrafts.has(instanceId))instanceDrafts.set(instanceId,{drafts:new Map(),restores:new Set()});
+  ({drafts,restores}=instanceDrafts.get(instanceId));
+  fields=[];version=null;settingsLoaded=false;
+  $('instance-info').textContent='';
+  renderSettings();
+}
+function configurationRequest(action,payload={}){
+  return request(action,sharedPortal?{...payload,instance_id:settingsInstance}:payload);
+}
+async function loadSettings(message,{refreshInstances=true}={}){
   const sequence=++settingsRequest;
-  try{const data=await request('read_config');if(sequence!==settingsRequest)return false;configAvailable=!!data.available;
-    if(!data.available){$('settings-list').replaceChildren(node('div','当前实例使用启动配置。若需在运行时修改，请由宿主启用模型配置管理。','settings-unavailable'));$('configuration-state').textContent='当前实例未启用可写配置';$('preview').disabled=true;$('apply-settings').disabled=true;invalidatePreview();return false;}
-    if(data.instance){const info=data.instance,meta=node('dl');addPair(meta,'模式',info.storage_mode==='document'?'文档记忆':'KV 记忆');addPair(meta,'Embedding',info.embedding_model||'未知');addPair(meta,'维度',String(info.embedding_dimension??'未知'));$('instance-info').replaceChildren(meta);if(info.document_root){const details=node('details');details.append(node('summary','查看文档位置'),node('p',info.document_root,'mono'));$('instance-info').append(details);}}
-    version=data.version;$('configuration-state').textContent=data.apply_state==='applied'?`已应用 · 保存版本 ${data.version} / 应用版本 ${data.applied_version??'未知'}`:`已保存，尚未应用 · 保存版本 ${data.version} / 运行版本 ${data.applied_version??'未知'}`;
-    if(data.ignored_endpoint_fields?.length){
-      $('configuration-state').textContent='部分模型正在使用启动设置。保存的网址或 Key 无法配套使用，请检查并重新填写。';
+  settingsLoading=true;
+  invalidatePreview();
+  $('configuration-state').textContent='正在读取配置…';
+  syncSettingsControls();
+  try{
+    await browserReady;
+    if(sequence!==settingsRequest)return false;
+    if(sharedPortal&&refreshInstances){
+      const {instances,default_instance_id}=await request('read_config');
+      if(sequence!==settingsRequest)return false;
+      const selected=instances.includes(settingsInstance)?settingsInstance:default_instance_id;
+      selectSettingsInstance(selected);
+      const picker=$('settings-instance');
+      picker.replaceChildren(...instances.map(id=>new Option(id,id)));
+      picker.value=selected;
+      syncSettingsControls();
     }
-    $('apply-settings').disabled=saving||data.apply_state==='applied';$('preview').disabled=saving;
-    fields=data.fields.filter(field=>!field.key.startsWith('prompts.'));if(data.ignored_overrides)notice('部分保存值因宿主锁定或当前实现不支持而未应用。');
-    invalidatePreview(message!==undefined?message:(settingsLoaded?'配置已刷新；草稿已保留，请重新预览。':''));settingsLoaded=true;renderSettings();return true;
-  }catch(e){if(sequence!==settingsRequest)return false;notice('无法读取设置：'+e.message,true);return false;}
+    const data=await configurationRequest('read_config');
+    if(sequence!==settingsRequest)return false;
+    configAvailable=!!data.available;
+    if(!data.available){
+      fields=[];settingControls=[];version=null;
+      $('instance-info').textContent='';
+      $('settings-list').replaceChildren(node('div','当前实例使用启动配置。若需在运行时修改，请由宿主启用模型配置管理。','settings-unavailable'));
+      $('configuration-state').textContent='当前实例未启用可写配置';
+      return false;
+    }
+    if(data.instance){
+      const info=data.instance,meta=node('dl');
+      addPair(meta,'模式',info.storage_mode==='document'?'文档记忆':'KV 记忆');
+      addPair(meta,'Embedding',info.embedding_model||'未知');
+      addPair(meta,'维度',String(info.embedding_dimension??'未知'));
+      $('instance-info').replaceChildren(meta);
+      if(info.document_root){
+        const details=node('details');
+        details.append(node('summary','查看文档位置'),node('p',info.document_root,'mono'));
+        $('instance-info').append(details);
+      }
+    }
+    version=data.version;
+    settingsNeedApply=data.apply_state!=='applied';
+    $('configuration-state').textContent=data.ignored_endpoint_fields?.length
+      ?'部分模型正在使用启动设置。保存的网址或 Key 无法配套使用，请检查并重新填写。'
+      :settingsNeedApply
+        ?`已保存，尚未应用 · 保存版本 ${data.version} / 运行版本 ${data.applied_version??'未知'}`
+        :`已应用 · 保存版本 ${data.version} / 应用版本 ${data.applied_version??'未知'}`;
+    fields=data.fields.filter(field=>!field.key.startsWith('prompts.'));
+    if(data.ignored_overrides)notice('部分保存值因宿主锁定或当前实现不支持而未应用。');
+    invalidatePreview(message!==undefined?message:(settingsLoaded?'配置已刷新；草稿已保留，请重新预览。':''));
+    settingsLoaded=true;
+    renderSettings();
+    return true;
+  }catch(e){
+    if(sequence!==settingsRequest)return false;
+    configAvailable=false;
+    $('configuration-state').textContent=e.status===404?'配置实例已不可用，请刷新配置或选择其他实例。':'无法读取设置';
+    notice('无法读取设置：'+e.message,true);
+    return false;
+  }finally{
+    if(sequence===settingsRequest){settingsLoading=false;syncSettingsControls();}
+  }
 }
 function changes(){const result={};for(const [key,value]of drafts){if(key.endsWith('.llm_api_key')&&!value)continue;if(key.endsWith('.llm_base_url')&&!value.trim())continue;if(key.endsWith('.enable_thinking'))result[key]=value==='true';else if(/\.(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries)$/.test(key)){if(!String(value).trim()||!Number.isFinite(Number(value)))throw new Error(fieldLabel(key)+'需要有效数字');result[key]=Number(value);}else result[key]=value;}return result;}
 async function switchTab(name,load=true){
@@ -632,34 +734,56 @@ $('search-form').onsubmit=async event=>{
   finally{if(sequence===searchRequest)$('search-submit').disabled=false;}
 };
 $('reload-settings').onclick=()=>{if(!saving)loadSettings();};
-$('discard-drafts').onclick=()=>{if(saving)return;drafts.clear();restores.clear();invalidatePreview();renderSettings();};
+$('settings-instance').onchange=()=>{
+  const picker=$('settings-instance');
+  if(saving){picker.value=settingsInstance;return;}
+  notice('');
+  selectSettingsInstance(picker.value);
+  return loadSettings(undefined,{refreshInstances:false});
+};
+$('discard-drafts').onclick=()=>{if(saving||settingsLoading)return;drafts.clear();restores.clear();invalidatePreview();renderSettings();syncSettingsControls();};
 $('preview').onclick=()=>{
+  if(saving||settingsLoading||!configAvailable)return;
   try{const c=changes(),lines=Object.entries(c).map(([key,value])=>{const f=fields.find(x=>x.key===key),before=f?(f.has_override?f.saved:f.base):null;return key.endsWith('llm_api_key')?`${fieldLabel(key)}: 替换凭据（不显示原文）`:`${fieldLabel(key)} · ${key.split('.')[1]}: ${before??'未设置'} → ${value}`;}).concat([...restores].map(key=>{const f=fields.find(x=>x.key===key);return `${fieldLabel(key)}: ${f?.secret?'恢复启动凭据':String(f?.saved??'未设置')+' → '+String(f?.base??'未设置')}（启动配置）`;}));
-    if(!lines.length){invalidatePreview('没有可提交的更改。');return;}preview={version,changes:c,restores:[...restores]};$('diff').textContent='确认以下更改：\n'+lines.join('\n');$('save').hidden=false;
+    if(!lines.length){invalidatePreview('没有可提交的更改。');return;}
+    preview={instanceId:settingsInstance,version,changes:c,restores:[...restores]};
+    $('diff').textContent=(sharedPortal?`配置实例 · ${settingsInstance}\n`:'')+'确认以下更改：\n'+lines.join('\n');
+    $('save').hidden=false;
   }catch(e){invalidatePreview();notice(e.message,true);}
 };
 $('save').onclick=async()=>{
-  if(saving||!configAvailable)return;
-  if(!preview||preview.version!==version){invalidatePreview('配置已变化，请重新预览。');return;}
+  if(saving||settingsLoading||!configAvailable)return;
+  if(!preview||preview.version!==version||preview.instanceId!==settingsInstance){invalidatePreview('配置已变化，请重新预览。');return;}
   const {changes:submitted,restores:submittedRestores}=preview;
   const submittedDrafts=new Map(drafts);
   invalidatePreview();
   setSettingsBusy(true);
   try{
-    const saved=await request('save_config',{version,changes:submitted,restore:submittedRestores});
+    const saved=await configurationRequest('save_config',{version,changes:submitted,restore:submittedRestores});
     for(const key of Object.keys(submitted)){
       if(drafts.get(key)===submittedDrafts.get(key))drafts.delete(key);
     }
     for(const key of submittedRestores)restores.delete(key);
-    setSettingsBusy(false);
-    await loadSettings(saved.applied?'已保存并应用，后续调用使用新配置。':'已保存但应用失败，当前继续使用旧配置；可以重试应用。');
+    await loadSettings(saved.applied?'已保存并应用，后续调用使用新配置。':'已保存但应用失败，当前继续使用旧配置；可以重试应用。',{refreshInstances:false});
   }catch(e){
-    setSettingsBusy(false);
-    if(e.status===409)await loadSettings('其他页面已更新配置。草稿已保留，请按最新值重新预览。');
-    else notice('保存失败，草稿已保留：'+e.message,true);
-  }
+    if(e.status===409)await loadSettings('其他页面已更新配置。草稿已保留，请按最新值重新预览。',{refreshInstances:false});
+    else {
+      if(e.status===404)configAvailable=false;
+      notice('保存失败，草稿已保留：'+e.message,true);
+    }
+  }finally{setSettingsBusy(false);}
 };
-$('apply-settings').onclick=async()=>{if(saving)return;setSettingsBusy(true);try{const result=await request('save_config',{retry:true});setSettingsBusy(false);await loadSettings(result.applied?'已应用最新保存配置。':'应用失败，当前仍使用旧配置。');}catch(e){setSettingsBusy(false);notice(e.message,true);}};
+$('apply-settings').onclick=async()=>{
+  if(saving||settingsLoading||!configAvailable)return;
+  setSettingsBusy(true);
+  try{
+    const result=await configurationRequest('save_config',{retry:true});
+    await loadSettings(result.applied?'已应用最新保存配置。':'应用失败，当前仍使用旧配置。',{refreshInstances:false});
+  }catch(e){
+    if(e.status===404)configAvailable=false;
+    notice(e.message,true);
+  }finally{setSettingsBusy(false);}
+};
 function closeDetail(){++detailRequest.memories;++detailRequest.search;if($('detail-dialog').open)$('detail-dialog').close();}
 $('close-detail').onclick=closeDetail;
 $('detail-dialog').addEventListener('cancel',closeDetail);
