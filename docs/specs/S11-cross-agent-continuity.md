@@ -6,7 +6,7 @@
 | --- | --- |
 | 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；剩余实现差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
 | 关联模块 | jiuwen_memory_adapter/、jiuwen_memory_entry/、jiuwen_memory/api/、jiuwen_memory/control/、jiuwen_memory/common/、jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-14 |
+| 最近一次修订日期 | 2026-11-16 |
 | 关联特性文档 | [F10-role-memory](../features/construction/F10-role-memory.md) |
 | 关联规约 | [S02](S02-memory-api.md)、[S03](S03-control.md)、[S04](S04-retrieval.md)、[S06](S06-storage.md)、[S07](S07-common.md)、[S09](S09-plugin-development.md) |
 
@@ -467,13 +467,15 @@ Registry 修改的读改写仍由同一实例锁保护，不允许通过调大�
 查询使用的组件须支持并发读取与读写交叉；索引快照不构成跨存储事务快照。
 调用方需要读到某次写入时须先等待该写入完成，不能依赖读写入队顺序。
 最后使用者释放且已提交操作实际结束后才关闭 runtime；关闭期间新申请等待，关闭失败的实例禁止复用。
-共享 SDK 的本地 Portal 跟随 runtime 的共享生命周期。每个 Provider 签发的浏览器授权
-绑定该 Provider 自己的可信安全上下文来源；每次请求重新取得并复核该来源，不能仅凭
-相同 actor 合并不同角色、凭据或委托权限。Provider 退出撤销其自身会话的授权来源，
-不影响其他 Provider 的会话或共享 Portal。最后使用者退出时先停止 Portal 并等待浏览器
-请求结束，再关闭内核。已关闭的 Portal 不得报告可用，再次打开可创建新实例；端口、身份
-和嵌入来源的兼容校验保持不变。
-Portal 启动授权必须在签发时保存具体 Provider key。省略 key 仅在唯一来源时兼容，
+符合 S02 条件的 SDK 文档 Runtime 按 Markdown 目录和 SQLite 索引共用 Portal。
+共用 Runtime 的 Provider 在配置页对应同一个 `instance_id`。其他接续 SDK 的本地 Portal
+跟随 Runtime 的共享生命周期。每个 Provider 签发的浏览器授权
+绑定该 Provider 自己的可信安全上下文来源。签发链接和处理请求时，来源的认证主体须与
+Provider 取得 Runtime 时相同。每次请求还要复核角色、凭据及委托权限。Provider 退出时撤销
+其自身会话的授权来源，其他 Provider 的会话仍可使用。关闭 Runtime 前，先注销它的页面
+请求来源并等待在途请求结束。文档库共享页在最后一个注册来源退出后关闭，进程内页面在
+最后一个 Runtime 使用者退出后关闭。已关闭的 Portal 不得报告可用，再次打开可重新启动页面。
+进程内 Portal 启动授权必须在签发时保存具体 Provider key。省略 key 仅在唯一来源时兼容，
 否则返回 ValidationError；显式 key 未注册时返回 PermissionDeniedError。
 未绑定来源的浏览器会话不得根据当前注册表选择其他来源，其请求返回 401。
 HTTP 失败不切到本地 SDK；多个独立 runtime 不能同时写同一 Registry。

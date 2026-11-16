@@ -30,6 +30,7 @@ unit_id IN 在召回截断前收窄，避免文档跨 session 召回与严格点
 HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可信启动器提供，
 必须来自实际加载的配置文件。`document_llm_instances` 只列出配置声明的具名模型，
 读取和写入授权仍由宿主负责。
+内置 SDK 适配器的 Portal 装配辅助函数只供仓库内接线。页面请求由已有公开 API 处理。
 
 ## 模块地图
 

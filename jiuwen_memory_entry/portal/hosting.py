@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import socket
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -19,6 +21,7 @@ from jiuwen_memory.api import (
     ValidationError,
     new_request_context,
 )
+from jiuwen_memory_entry.core.api_contract import CONFIG_VERBS
 from jiuwen_memory_entry.portal.requests import BROWSER_VERBS, invoke_browser_api
 from jiuwen_memory_entry.portal.sessions import (
     SESSION_HEADER,
@@ -42,6 +45,12 @@ class _BoundedServer(ThreadingHTTPServer):
         self.slots = BoundedSemaphore(16)
         super().__init__(*args)
 
+    def server_bind(self):
+        if os.name == "nt":
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
             request.close()
@@ -59,22 +68,41 @@ class _BoundedServer(ThreadingHTTPServer):
             self.slots.release()
 
 
-class PortalHandle:
-    """Owns only web resources. Closing never closes the borrowed memory Runtime."""
+def runtime_request(runtime, auth, verb, payload, write_scope, *, peer="127.0.0.1"):
+    security = new_request_context(auth, surface=Surface.HTTP, peer=peer)
+    return invoke_browser_api(
+        runtime.api, verb, payload, security=security, write_scope=write_scope,
+        configuration=getattr(runtime, "configuration", None),
+    )
 
-    def __init__(self, runtime, security_provider, *, identity=None, port=0,
-                 allowed_frame_origins=()):
+
+def request_error(error):
+    if isinstance(error, PermissionDeniedError):
+        return 403, {"error": "PermissionDeniedError"}
+    if isinstance(error, AgentMemoryError):
+        kind = type(error).__name__
+        status = {
+            "NotFoundError": 404,
+            "ConflictError": 409,
+            "AuthenticationError": 401,
+            "RateLimitedError": 429,
+            "BackendError": 503,
+        }.get(kind, 400)
+    elif isinstance(error, ValueError):
+        status, kind = 400, "RequestFailed"
+    else:
+        return 500, {"error": "InternalError"}
+    return status, {"error": kind, "message": "请求失败，请检查权限、输入或实例状态"}
+
+
+class _PortalServer:
+    def __init__(self, dispatch, *, port, allowed_frame_origins, shared=False):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValidationError("Portal port must be an integer from 0 to 65535")
         self.frame_origins = frame_origins(allowed_frame_origins)
-        self.runtime = runtime
         self.sessions = BrowserSessions()
         self.close_lock = Lock()
         self.closed = False
-        self.owner = None
-        self._providers_lock = Lock()
-        self._providers = {}
-        self.register_provider(identity or new_provider_key(), security_provider)
         handle = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -112,7 +140,8 @@ class PortalHandle:
                 self.wfile.write(data)
 
             def handle_get(self):
-                if not self.allowed() or self.path.rstrip("/") != "/portal":
+                path = self.path.partition("?")[0] if shared else self.path
+                if not self.allowed() or path.rstrip("/") != "/portal":
                     self.respond(404, {"error": "NotFound"})
                     return
                 self.respond(
@@ -141,13 +170,15 @@ class PortalHandle:
                     if not isinstance(payload, dict):
                         raise ValidationError("payload must be an object")
                     if is_bootstrap:
-                        body, cookie = bootstrap(handle.sessions, payload, handle.frame_origins)
+                        body, cookie = bootstrap(
+                            handle.sessions, payload, handle.frame_origins, shared=shared,
+                        )
                         if body is None:
                             self.respond(401, {"error": "AuthenticationError"})
                         else:
                             self.respond(200, body, cookie=cookie)
                         return
-                    valid, grant = handle.sessions.lookup(
+                    valid, binding = handle.sessions.lookup(
                         self.headers.get("Cookie"), token=self.headers.get(SESSION_HEADER),
                     )
                     if not valid:
@@ -156,56 +187,9 @@ class PortalHandle:
                             {"error": "AuthenticationError", "message": "请从宿主重新打开记忆管理"},
                         )
                         return
-                    if isinstance(grant, dict):
-                        write_scope, identity = grant.get("write_scope"), grant.get("identity")
-                    else:
-                        write_scope, identity = grant, None
-                    entry = handle.provider_entry(identity)
-                    if entry is None:
-                        # The granting Provider is gone; never fall back to another identity.
-                        self.respond(
-                            401,
-                            {"error": "AuthenticationError", "message": "请从宿主重新打开记忆管理"},
-                        )
-                        return
-                    supplied = entry["provider"]()
-                    if supplied.auth.actor != entry["owner"]:
-                        raise PermissionDeniedError(message="personal instance identity changed")
-                    security = new_request_context(
-                        supplied.auth, surface=Surface.HTTP, peer=self.client_address[0]
-                    )
-                    self.respond(200, invoke_browser_api(
-                        handle.runtime.api, verb, payload, security=security,
-                        write_scope=write_scope,
-                        configuration=getattr(handle.runtime, "configuration", None),
-                    ))
-                except PermissionDeniedError:
-                    self.respond(403, {"error": "PermissionDeniedError"})
-                except AgentMemoryError as error:
-                    status = {
-                        "NotFoundError": 404,
-                        "ConflictError": 409,
-                        "AuthenticationError": 401,
-                        "RateLimitedError": 429,
-                        "BackendError": 503,
-                    }.get(type(error).__name__, 400)
-                    self.respond(
-                        status,
-                        {
-                            "error": type(error).__name__,
-                            "message": "请求失败，请检查权限、输入或实例状态",
-                        },
-                    )
-                except ValueError:
-                    self.respond(
-                        400,
-                        {
-                            "error": "RequestFailed",
-                            "message": "请求失败，请检查权限、输入或实例状态",
-                        },
-                    )
-                except Exception:
-                    self.respond(500, {"error": "InternalError"})
+                    self.respond(*dispatch(verb, payload, binding, self.client_address[0]))
+                except Exception as error:
+                    self.respond(*request_error(error))
 
             def log_message(self, *_args):
                 pass
@@ -221,7 +205,41 @@ class PortalHandle:
             self.server.server_close()
             raise
 
-    def register_provider(self, identity, security_provider):
+    def launch_url(self, write_scope=None):
+        if self.closed:
+            return None
+        return self.address + "#access=" + self.sessions.issue(deepcopy(write_scope))
+
+    def close(self):
+        with self.close_lock:
+            if self.closed:
+                return
+            self.closed = True
+            self.server.shutdown()
+            self.server.server_close()
+            self.thread.join()
+            self.sessions.close()
+
+
+class PortalHandle(_PortalServer):
+    """Owns only web resources. Closing never closes the borrowed memory Runtime."""
+
+    def __init__(
+        self, runtime, security_provider, *, identity=None, port=0, allowed_frame_origins=(),
+        configuration_conflict=False,
+    ):
+        self.runtime = runtime
+        self.owner = deepcopy(security_provider().auth.actor)
+        self._providers_lock = Lock()
+        self._providers = {
+            identity or new_provider_key(): {
+                "provider": security_provider, "owner": self.owner,
+                "configuration_conflict": configuration_conflict,
+            },
+        }
+        super().__init__(self.dispatch, port=port, allowed_frame_origins=allowed_frame_origins)
+
+    def register_provider(self, identity, security_provider, *, configuration_conflict=False):
         """Register one credential source; identical sources share an entry."""
         actor = deepcopy(security_provider().auth.actor)
         with self._providers_lock:
@@ -229,15 +247,17 @@ class PortalHandle:
                 raise RuntimeError("portal is closed")
             entry = self._providers.get(identity)
             if entry is not None:
-                if entry["provider"] is not security_provider:
+                if (
+                    entry["provider"] is not security_provider
+                    or entry["configuration_conflict"] != configuration_conflict
+                ):
                     raise PermissionDeniedError(message="Portal provider key is already registered")
                 return
-            if self.owner is None:
-                self.owner = actor
-            elif actor != self.owner:
+            if actor != self.owner:
                 raise PermissionDeniedError(message="Runtime is already bound to another identity")
             self._providers[identity] = {
                 "provider": security_provider, "owner": actor,
+                "configuration_conflict": configuration_conflict,
             }
 
     def unregister_provider(self, identity):
@@ -261,32 +281,42 @@ class PortalHandle:
                 identity = next(iter(self._providers))
             if identity not in self._providers:
                 raise PermissionDeniedError(message="Portal provider is not registered")
-            return self.address + "#access=" + self.sessions.issue(
-                {"write_scope": deepcopy(write_scope), "identity": identity},
-            )
+            return super().launch_url({"write_scope": write_scope, "identity": identity})
+
+    def dispatch(self, verb, payload, binding, peer):
+        identity = binding.get("identity") if isinstance(binding, dict) else None
+        entry = self.provider_entry(identity)
+        if entry is None:
+            return 401, {"error": "AuthenticationError", "message": "请从宿主重新打开记忆管理"}
+        auth = entry["provider"]().auth
+        if auth.actor != entry["owner"]:
+            raise PermissionDeniedError(message="personal instance identity changed")
+        if verb in CONFIG_VERBS and entry["configuration_conflict"]:
+            return 409, {
+                "error": "ConflictError",
+                "message": "当前入口与运行中的记忆实例使用了不同的配置库",
+            }
+        return 200, runtime_request(
+            self.runtime, auth, verb, payload, binding.get("write_scope"), peer=peer,
+        )
 
     def close(self):
-        with self.close_lock:
-            if self.closed:
-                return
-            self.closed = True
-            self.server.shutdown()
-            self.server.server_close()
-            self.thread.join()
-            self.sessions.close()
-            with self._providers_lock:
-                self._providers.clear()
-            with _registry_lock:
-                if _handles.get(id(self.runtime), lambda: None)() is self:
-                    del _handles[id(self.runtime)]
+        super().close()
+        with self._providers_lock:
+            self._providers.clear()
+        with _registry_lock:
+            if _handles.get(id(self.runtime), lambda: None)() is self:
+                del _handles[id(self.runtime)]
 
 
 _registry_lock = RLock()
 _handles = {}
 
 
-def start_portal(runtime, *, security_provider, identity=None, port=0,
-                 allowed_frame_origins=()):
+def start_portal(
+    runtime, *, security_provider, identity=None, port=0, allowed_frame_origins=(),
+    configuration_conflict=False,
+):
     """Attach to an existing instance; the host must call once and own the handle."""
     origins = frame_origins(allowed_frame_origins)
     identity = identity or new_provider_key()
@@ -297,12 +327,13 @@ def start_portal(runtime, *, security_provider, identity=None, port=0,
                 raise ValidationError("Runtime already has a Portal on another port")
             if origins != existing.frame_origins:
                 raise ValidationError("Runtime already has a different Portal framing policy")
-            # Register this Provider's own credential source; sessions stay bound to it.
-            existing.register_provider(identity, security_provider)
+            existing.register_provider(
+                identity, security_provider, configuration_conflict=configuration_conflict,
+            )
             return existing
         handle = PortalHandle(
-            runtime, security_provider, identity=identity, port=port,
-            allowed_frame_origins=origins,
+            runtime, security_provider, identity=identity, port=port, allowed_frame_origins=origins,
+            configuration_conflict=configuration_conflict,
         )
         _handles[id(runtime)] = ref(handle)
         return handle

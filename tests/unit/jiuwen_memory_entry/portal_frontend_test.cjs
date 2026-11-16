@@ -44,19 +44,27 @@ const unit = content => ({
   id:'r',scope:{agent:'agent'},segments:[{content}],temporal:{},tier:'episodic',
   system_metadata:{source_app:'app',agent_label:'agent'},
 });
-function setup(handler, listHandler) {
+function setup(handler, listHandler, {
+  bootstrap, onHeaders, history={state:null,replaceState(state){this.state=state;}},
+} = {}) {
   const copied=[];
   const nodes = new Map();
   const get = id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   for (const id of ['source', 'search-source', 'agent', 'project', 'tier', 'memory-class']) get(id).value = '*';
   get('lifecycle').value = 'active';
   const context = vm.createContext({
-    location: {hash:"",pathname:"/portal/",search:""},URLSearchParams,history:{replaceState(){}},
+    location: {hash:bootstrap?'#access=grant':'',pathname:"/portal/",search:""},
+    URLSearchParams,history,
     document: {getElementById: get, createElement: tag => new Element(tag), querySelectorAll: () => [], querySelector: () => null, addEventListener() {}},
     setTimeout, clearTimeout, navigator: {clipboard: {writeText: async text => {copied.push(text);}}},
     Option: function (text, value) { const el = new Element('option'); el.textContent = text; el.value = value; return el; },
     fetch: async (url, args) => {
+      if (url === '/portal/api/bootstrap' && bootstrap) {
+        assert.deepEqual(JSON.parse(args.body), {token:'grant', embedded:false});
+        return response(bootstrap);
+      }
       assert.match(url, /^\/v1\//);
+      onHeaders?.(args.headers);
       const action = url.split('/').pop();
       if (action === 'list' && listHandler) {
         const {offset,limit,extensions}=JSON.parse(args.body);
@@ -144,25 +152,6 @@ async function detailContent() {
   await card.children.find(el => el.className === 'card-open').onclick();
   assert.match(page.get('memory-detail').textContent, /fresh detail content/);
   assert.doesNotMatch(page.get('memory-detail').textContent, /old list content/);
-}
-
-async function outOfOrderSettings() {
-  let release, calls = 0;
-  const page = setup(async action => {
-    if (action === 'read_config' && ++calls === 1) {
-      return new Promise(resolve => {
-        release = () => resolve(response({available: true, version: 1, fields: [field(1)]}));
-      });
-    }
-    return response({available: true, version: 2, fields: [field(9)]});
-  });
-  const older = page.run('loadSettings()');
-  await new Promise(resolve => setImmediate(resolve));
-  await page.run('loadSettings()');
-  release();
-  await older;
-  assert.equal(page.run('version'), 2, 'a delayed response must not roll back the displayed version');
-  assert.equal(page.run('fields[0].base'), 9);
 }
 
 async function modalDuplicateSubmission() {
@@ -317,13 +306,86 @@ async function expiredReferenceOffersListRefresh(){
 }
 async function expiredSessionStopsPortalActions(){
   let requests=0;
-  const page=setup(async()=>{requests++;return response({},false,401);});
+  const history={state:{sharedPortalToken:'stale'},replaceState(state){this.state=state;}};
+  const page=setup(async()=>{requests++;return response({},false,401);},undefined,{history});
   await new Promise(resolve=>setImmediate(resolve));
   await assert.rejects(page.run("request('get',{ref:'old'})"),/从应用重新打开/);
   assert.equal(page.get('portal-shell').hidden,true);
   assert.equal(page.get('session-expired').hidden,false);
+  assert.equal(history.state,null);
   await assert.rejects(page.run("request('add',{content:'wrong scope'})"),/从应用重新打开/);
   assert.equal(requests,1);
+}
+async function sharedPageManagesBothInstances(){
+  const tokens=[],saves=[];
+  const base={design:0.2,engineering:0.7};
+  const history={state:null,replaceState(state){this.state=state;}};
+  let releaseRead,releaseSave;
+  let instances=['design','engineering'];
+  const handler=async(action,body)=>{
+    if(action==='read_config'){
+      if(!body.instance_id)return response({
+        instances,default_instance_id:instances[0],
+      });
+      const version=body.instance_id==='design'?3:1;
+      const data=response({available:true,version,apply_state:'applied',fields:[field(base[body.instance_id])]});
+      if(body.instance_id==='design'&&releaseRead===null){
+        return new Promise(resolve=>{releaseRead=()=>resolve(data);});
+      }
+      return data;
+    }
+    assert.equal(action,'save_config');
+    saves.push(body);
+    return new Promise(resolve=>{releaseSave=()=>resolve(response({version:2,applied:true}));});
+  };
+  const onHeaders=headers=>tokens.push(headers['X-Memory-Portal-Session']);
+  const page=setup(handler,undefined,{
+    bootstrap:{session_token:'tab-token',shared:true},
+    onHeaders,history,
+  });
+  await page.run('loadSettings()');
+  const picker=page.get('settings-instance');
+  assert.deepEqual(picker.options.map(option=>option.value),['design','engineering']);
+  assert.equal(picker.value,'design');
+  assert.equal(page.get('configuration-instance-source').hidden,false);
+  const key='llm.default.params.llm_temperature';
+  const preview=value=>page.run(`drafts.set('${key}','${value}'); $('preview').onclick()`);
+  const switchTo=id=>{picker.value=id;return picker.onchange();};
+  preview('0.3');
+  assert.match(page.get('diff').textContent,/配置实例 · design/);
+  await switchTo('engineering');
+  assert.equal(page.get('save').hidden,true,'switching clears the old preview');
+  assert.equal(page.run('drafts.size'),0,'other instances have separate drafts');
+  assert.match(page.get('draft-summary').textContent,/其他实例还有 1 项未保存/);
+  assert.equal(page.get('discard-drafts').disabled,true);
+  preview('0.8');
+  const pending=page.run("$('save').onclick()");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(picker.disabled,true);
+  await switchTo('design');
+  assert.equal(picker.value,'engineering');
+  releaseSave();
+  await pending;
+  assert.deepEqual(saves,[{instance_id:'engineering',version:1,changes:{[key]:0.8},restore:[]}]);
+  assert.match(page.get('draft-summary').textContent,/其他实例还有 1 项未保存/);
+  await switchTo('design');
+  assert.equal(page.run(`drafts.get('${key}')`),'0.3');
+  releaseRead=null;
+  const older=switchTo('design');
+  await new Promise(resolve=>setImmediate(resolve));
+  await switchTo('engineering');
+  releaseRead();
+  await older;
+  assert.equal(page.run('fields[0].base'),0.7,'late read must not replace selected instance');
+  assert.equal(page.run('version'),1,'late read must not replace selected instance version');
+
+  instances=['engineering'];
+  const reloaded=setup(handler,undefined,{onHeaders,history});
+  await reloaded.run('loadSettings()');
+  assert.equal(reloaded.get('configuration-instance').hidden,false);
+  assert.deepEqual(reloaded.get('settings-instance').options.map(o=>o.value),['engineering']);
+  assert.equal(reloaded.run('fields[0].base'),0.7);
+  assert.ok(tokens.length&&tokens.every(token=>token==='tab-token'));
 }
 (async () => {
   await filterBadgeCountsAdditionalPanelConditions();
@@ -339,7 +401,7 @@ async function expiredSessionStopsPortalActions(){
   await detailContent();
   await expiredReferenceOffersListRefresh();
   await expiredSessionStopsPortalActions();
-  await outOfOrderSettings();
+  await sharedPageManagesBothInstances();
   await modalDuplicateSubmission();
   console.log('portal frontend fixed-behavior checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

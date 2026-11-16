@@ -223,13 +223,45 @@ def test_closed_portal_is_reported_unavailable_and_can_be_reopened(tmp_path):
         def security():
             return internal_context(ScopedAuthenticator(Scope(org="demo", user="owner")))
 
+        path = tmp_path / "memory.yaml"
+        path.write_text(yaml.safe_dump(sdk_config(tmp_path)), encoding="utf-8")
+        other_path = tmp_path / "other.yaml"
+        other_path.write_bytes(path.read_bytes())
         provider = AgentMemoryMemoryProvider(
-            config_dict=sdk_config(tmp_path), continuity_enabled=True, continuity_mode="continuity",
+            config_path=str(path), continuity_enabled=True, continuity_mode="continuity",
+            user_id="owner", security_provider=security,
+        )
+        other = AgentMemoryMemoryProvider(
+            config_path=str(other_path), continuity_enabled=True, continuity_mode="continuity",
             user_id="owner", security_provider=security,
         )
         try:
             await provider.initialize(scope_id="demo")
             old_portal = start_portal(provider.runtime, security_provider=security)
+            model_key = "llm.default.params.llm_model"
+            assert provider.runtime.configuration.save(
+                0, {model_key: "restored-model"}, security=security(),
+            ) == {"version": 1, "applied": True}
+            await other.initialize(scope_id="demo")
+            assert other.runtime is provider.runtime
+            link = urlsplit(await other.open_portal())
+            origin = f"{link.scheme}://{link.netloc}"
+            async with httpx.AsyncClient(
+                base_url=origin, headers={"Origin": origin}, trust_env=False, timeout=5,
+            ) as browser:
+                response = await browser.post(
+                    "/portal/api/bootstrap", json={"token": parse_qs(link.fragment)["access"][0]},
+                )
+                assert response.status_code == 200
+                response = await browser.post("/v1/list", json={"extensions": {"personal": {}}})
+                assert response.status_code == 200
+                response = await browser.post("/v1/read_config", json={})
+                assert response.status_code == 409 and "配置库" in response.json()["message"]
+                response = await browser.post("/v1/save_config", json={
+                    "version": 1, "changes": {model_key: "wrong-target"},
+                })
+                assert response.status_code == 409
+            await other.shutdown()
             await asyncio.to_thread(old_portal.close)
             assert not provider.portal_status["available"]
             assert provider.portal_status["address"] is None
@@ -238,6 +270,16 @@ def test_closed_portal_is_reported_unavailable_and_can_be_reopened(tmp_path):
             assert reopened is not old_portal
             await provider.shutdown()
             assert reopened.closed
+            await provider.initialize(scope_id="demo")
+            settings = provider.runtime.configuration.read(security=security())
+            assert settings["applied_version"] == 1
+            assert next(field["effective"] for field in settings["fields"]
+                        if field["key"] == model_key) == "restored-model"
+            await provider.shutdown()
+            await other.initialize(scope_id="demo")
+            assert await other.open_portal()
+            assert other.runtime.configuration.read(security=security())["version"] == 0
         finally:
+            await other.shutdown()
             await provider.shutdown()
     asyncio.run(run())

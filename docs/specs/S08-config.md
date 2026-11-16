@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-12 |
+| 最近一次修订日期 | 2026-11-16 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`；Portal 设计见 `docs/features/F08-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -29,7 +29,7 @@
 
 ## Portal 配置保存与恢复
 
-SDK 禁用 Portal 时，记忆实例直接使用启动配置，跳过 Portal 的配置库。旧库损坏时，
+启动新的 SDK Runtime 时禁用 Portal，只使用启动配置，跳过 Portal 的配置库。旧库损坏时，
 也可以按启动配置继续运行。
 jiuwenswarm 适配器按原有 JSON／YAML 规则解析 `config_path`，将配置内容和实际加载的
 文件路径传给 Runtime。文件路径用于定位配置库，字符串中的环境变量占位符保留原样。
@@ -42,6 +42,25 @@ jiuwenswarm 适配器按原有 JSON／YAML 规则解析 `config_path`，将配�
 已有本地绝对文档根下的 `memory/.shadow/portal-config.db`。其次按实际加载的配置文件
 路径和顺序，在最后一个文件旁确定配置库。两处都不可用时，页面无法编辑配置。只传配置
 字典且没有可用文档根时，自动装配会使用启动配置。可信宿主也可通过公开装配接口提供配置存储。
+
+跨进程共享 Portal 的配置库固定使用文档根下的 `portal-config.db`。配置库按稳定的
+`instance_id` 保存覆盖、版本及加密凭据引用。省略 ID 时使用 `default`。同一页面可选择
+不同实例，保存时检查所选实例的版本，并将设置应用到该实例。其他实例可以同时保存相同
+字段。新版首次打开旧配置库时，在同一事务中迁移整张表，已有版本、改动和凭据归入
+`default`。迁移前先停掉仍在访问该库的旧版 SDK 或 HTTP 服务，或停用它们的配置管理。
+使用不同实例 ID 的设置仍在同一张表中，均使用迁移后的表结构。
+接续 SDK 的多个 Provider 借用同一个文档 Runtime 时，应使用同一个 `instance_id`。
+接续 SDK 的独立页面按同样的规则定位配置库。配置覆盖在启用 Portal 的 Runtime 创建时加载。
+若 Runtime 创建时禁用了 Portal，后来启用 Portal 的 Provider 可复用该 Runtime 并管理记忆。
+要允许编辑配置，需要启用 Portal 并重新创建 Runtime。
+Provider 复用接续 Runtime 时，若启动配置定位的数据库与 Runtime 实际使用的配置库不同，
+该 Provider 的 Portal 配置请求返回 409，记忆操作仍可通过这个 Runtime 完成。
+接续旧设置的共享实例可以省略 ID。同一文档目录下仅一个共享实例能使用 `default`，
+其余共享实例使用各自的 ID。独立 SDK 和 HTTP 也使用 `default`。若这些服务仍在管理
+同一个配置库，共享 SDK 应使用其他 ID，以便分别管理配置。
+macOS 和 Windows 上凭据绑定到数据库在磁盘上的实际路径。旧版如果用了不同的路径拼写，
+例如 Windows 的扩展路径前缀，需要先沿用原路径启动一次。读取时会按实际路径重新加密，
+保留原有引用和配置版本。
 
 HTTP 只在安全配置声明固定个人身份，或宿主显式启用配置管理时访问配置库。
 其他 HTTP 启动方式跳过旧库，继续用启动配置运行。若所有候选位置都无法创建配置库，

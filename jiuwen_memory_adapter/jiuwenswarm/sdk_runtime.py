@@ -12,9 +12,12 @@ import logging
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import ExitStack
 from contextvars import copy_context
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from jiuwen_memory.api import (
     ConflictError,
@@ -45,10 +48,28 @@ class _Entry:
     max_queue_size: int
     runtime: Any = None
     portal: Any = None
+    document_portal: Any = None
+    overlay_path: Path | None = None
+    portal_key: str = field(default_factory=lambda: uuid4().hex)
+    portal_claim: ExitStack = field(default_factory=ExitStack)
     state: str = "starting"
     references: int = 0
     pending: int = 0
     error: BaseException | None = None
+
+    def bind_portal(self, setup) -> None:
+        if self.overlay_path is not None and not setup.matches_overlay(self.overlay_path):
+            setup.configuration_conflict = True
+            return
+        document = setup.document
+        if document is None:
+            return
+        if self.document_portal is None:
+            setup.claim_document(self.portal_claim)
+            if setup.error is None:
+                self.document_portal = document
+        elif self.document_portal.instance_id != document.instance_id:
+            setup.error = "Providers sharing one SDK runtime must use the same portal.instance_id."
 
 
 @dataclass(eq=False)
@@ -63,7 +84,9 @@ class _SharedSDKRuntimePool:
         self._condition = threading.Condition(threading.RLock())
         self._entries: dict[str, _Entry] = {}
 
-    def acquire(self, config: dict, principal: str, factory: Callable[[], Any]) -> _Lease:
+    def acquire(
+        self, config: dict, principal: str, factory: Callable[[], Any], *, portal_setup=None,
+    ) -> _Lease:
         globals_ = config.get("globals", {})
         max_workers = globals_.get("sdk_max_workers", 16)
         max_queue_size = globals_.get("sdk_max_queue_size", 256)
@@ -87,6 +110,8 @@ class _SharedSDKRuntimePool:
                 if entry.state == "failed":
                     raise RuntimeError("previous SDK runtime cleanup failed") from entry.error
                 if entry.state == "open":
+                    if portal_setup is not None:
+                        entry.bind_portal(portal_setup)
                     entry.references += 1
                     logger.info("[continuity.runtime.reuse] runtime_id=%s references=%s pending=%s",
                                 id(entry.runtime), entry.references, entry.pending)
@@ -99,17 +124,22 @@ class _SharedSDKRuntimePool:
             self._entries[key] = entry
         try:
             def create():
+                if portal_setup is not None:
+                    entry.bind_portal(portal_setup)
                 entry.runtime = factory()
+                if portal_setup is not None:
+                    entry.overlay_path = portal_setup.overlay_path
                 entry.runtime.start()
 
             entry.executor.submit(copy_context().run, create).result()
         except BaseException as exc:
             cleanup = None
-            if entry.runtime is not None:
-                try:
+            try:
+                if entry.runtime is not None:
                     entry.runtime.close(wait=True)
-                except BaseException as error:
-                    cleanup = error
+                entry.portal_claim.close()
+            except BaseException as error:
+                cleanup = error
             entry.executor.shutdown(wait=True)
             with self._condition:
                 if cleanup is None:
@@ -210,6 +240,7 @@ class _SharedSDKRuntimePool:
                 if entry.portal is not None:
                     entry.portal.close()
                 entry.runtime.close(wait=True)
+                entry.portal_claim.close()
             finally:
                 entry.executor.shutdown(wait=True)
         except BaseException as exc:
