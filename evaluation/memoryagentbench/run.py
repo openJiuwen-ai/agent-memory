@@ -448,7 +448,7 @@ def main(argv=None) -> int:
     if args.consolidate_max_tokens is not None:
         _CONSOLIDATE_OPTS["max_tokens"] = args.consolidate_max_tokens
 
-    sample = json.loads(Path(args.data).read_text())[0]
+    sample = json.loads(Path(args.data).read_text(encoding="utf-8"))[0]
     questions = sample["questions"]
     answers = sample["answers"]
     if args.max_questions > 0:
@@ -496,7 +496,7 @@ def main(argv=None) -> int:
         report["eval_after"] = runner.eval(scope, questions, answers, "after")
 
     out = out_dir / f"report_{args.stage}.json"
-    out.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("=== 报告: %s ===", out)
     if args.stage == "all" and "eval_before" in report and "eval_after" in report:
         before, after = report["eval_before"], report["eval_after"]
