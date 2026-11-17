@@ -1,4 +1,4 @@
-"""Scope 覆盖规则（F05 §Authorization 决策顺序第 4 步）。
+"""Scope 覆盖规则（安全能力 F04 §Authorization 决策顺序第 4 步）。
 
 覆盖规则同时服务 owner 判定与 Grant 匹配，判错的后果是越权，故单独测。
 """
@@ -35,7 +35,7 @@ def test_empty_scope_does_not_cover_everything() -> None:
     """与旧 ``_owner_scope_covers`` 的关键差异：空 parent 不再通配。
 
     旧实现用「parent == Scope() 即覆盖一切」同时表达 platform admin 与 grant 行的
-    宽松匹配。F05 §授权不变量 1 要求 ROOT 只由 role 表达，这条通配分支必须消失——
+    宽松匹配。安全能力 F04 §授权不变量 1 要求 ROOT 只由 role 表达，这条通配分支必须消失——
     否则一个空 actor 或一条 grantor 留空的 Grant 就能横扫全平台。
     """
     assert not scope_covers(Scope(), Scope(org="acme", user="alice"))

@@ -80,7 +80,7 @@ def _aad(scope: Scope, key: str, purpose: str) -> bytes:
 def _crypto_context(scope: Scope, key: str, purpose: str) -> CryptoContext:
     """对象标识与格式版本走 :class:`CryptoContext` 的专有字段，不再塞 metadata。
 
-    它们是 F05 §信封格式要求 AAD 必须绑定的项，由类型显式承载才能保证每个调用点
+    它们是 安全能力 F04 §信封格式要求 AAD 必须绑定的项，由类型显式承载才能保证每个调用点
     都带上——放 metadata 里漏掉一个不会有任何提示。
     """
     return CryptoContext(

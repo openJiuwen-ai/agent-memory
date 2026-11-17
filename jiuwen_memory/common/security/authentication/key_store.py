@@ -101,7 +101,7 @@ class PrincipalKeyStore(ABC):
         """按指纹撤销一把 key（幂等）。撤销后 :meth:`resolve` 立即不再命中。"""
 
     def is_revoked(self, credential_id: str) -> bool:
-        """凭据是否已撤销（供 PEP 在线复核缓存的 AuthContext，F05 §认证不变量 6）。
+        """凭据是否已撤销（供 PEP 在线复核缓存的 AuthContext，安全能力 F04 §认证不变量 6）。
 
         ``credential_id`` 即 :meth:`resolve` 写进 ``AuthContext`` 的指纹。撤销后返回
         ``True``；未撤销或本注册表不认识该指纹返回 ``False``。

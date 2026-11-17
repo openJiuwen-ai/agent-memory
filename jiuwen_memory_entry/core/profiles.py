@@ -19,7 +19,7 @@ OFFLINE: dict[str, Any] = {"profile": "offline"}
 
 
 def _redact(obj: Any) -> Any:
-    """递归把 secret 键的值替换成占位符：``repr(Config)`` 不落明文（F05 装配不变量 7）。"""
+    """递归把 secret 键的值替换成占位符：``repr(Config)`` 不落明文（安全能力 F04 装配不变量 7）。"""
     if isinstance(obj, dict):
         return {k: ("<redacted>" if k in SECRET_PARAM_KEYS else _redact(v)) for k, v in obj.items()}
     if isinstance(obj, list):

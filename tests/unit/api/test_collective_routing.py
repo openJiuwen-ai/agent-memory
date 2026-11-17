@@ -1,4 +1,4 @@
-"""归属判定与多空间读写的端到端行为（F07「多空间读写」，F07 分能力用例）。
+"""归属判定与多空间读写的端到端行为（群体记忆 F07「多空间读写」，群体记忆 F07 分能力用例）。
 
 判定表与两个落盘不变量的单测在 ``tests/unit/construction/test_router_table.py``；本文件测
 的是接线：写入侧的候选空间集合与落点、检索侧的两族谓词与跨空间合并、按谓词的批量删除。
@@ -63,7 +63,7 @@ SEC_BOB = internal_context(ScopedAuthenticator(BOB))
 SEC_OPS = internal_context(ScopedAuthenticator(OPS, role=Role.ADMIN))
 
 
-# 归属坐标经参数袋传入、不占形参（F07 「归属坐标的承载」）。同一取值在本模块高频复用，
+# 归属坐标经参数袋传入、不占形参（群体记忆 F07 「归属坐标的承载」）。同一取值在本模块高频复用，
 # 抽成常量：每处重复字面量既拉长调用行，也让「坐标取值变了」与「坐标形态变了」两类改动
 # 混在一起。取值不就地修改——API 层取出时做的是拷贝。
 COORDS_P1 = {"coords": {"project": "p1"}}
@@ -1049,7 +1049,7 @@ def test_a_cross_space_search_truncates_the_candidate_set_at_the_fanout_limit(ap
 
 # -- 按谓词的批量删除 ------------------------------------------------------ #
 #
-# 实体删除的连带清理不由内核编排，由接入方按业务侧的实体关系逐个调 ``delete``（F07
+# 实体删除的连带清理不由内核编排，由接入方按业务侧的实体关系逐个调 ``delete``（群体记忆 F07
 # 「删除连带不由内核编排」）。这里测的是内核为此提供的那一项能力：``DeleteSelector``
 # 的结构化谓词，它使「按作者主体标记」与「按判定标签」的批量删除可表达——两者都落在
 # 条目 metadata 上，原有的 ``tags``（标签数组）表达不了。
@@ -1430,7 +1430,7 @@ def test_a_middle_write_without_a_landing_space_is_rejected(api) -> None:
 
 
 def test_a_cross_space_search_checks_the_space_lifecycle_state(api) -> None:
-    """跨空间检索与单空间路径同一口径地校验空间状态（F07「空间状态校验」）。
+    """跨空间检索与单空间路径同一口径地校验空间状态（群体记忆 F07「空间状态校验」）。
 
     不校验时调用方在 ``extensions["spaces"]`` 里点名一个正在清理的空间即可照常拿到内容，
     同一个 ``search`` 的两条路径对该空间给出两种结果。
@@ -1473,7 +1473,7 @@ def test_a_cross_space_search_checks_the_space_lifecycle_state(api) -> None:
 
 
 def test_the_write_candidate_set_truncates_by_render_order_not_by_write_permission() -> None:
-    """截断按渲染顺序计，不按已通过写权的空间数计（F07「写入候选空间集合」）。
+    """截断按渲染顺序计，不按已通过写权的空间数计（群体记忆 F07「写入候选空间集合」）。
 
     判权要读空间事实并走判定链，是候选集计算唯一的外部调用，成本上界正是由这条截断给出。
     按写权结果计时，渲染出但不可写的空间不占名额，会全部被送去判权。
@@ -1496,7 +1496,7 @@ def test_the_write_candidate_set_truncates_by_render_order_not_by_write_permissi
 
 
 def test_an_item_level_entry_authorizes_its_second_segment_against_the_stored_scope(api) -> None:
-    """``get`` / ``update`` 第二段的鉴权目标取条目真源 scope，不沿用入参（F07）。
+    """``get`` / ``update`` 第二段的鉴权目标取条目真源 scope，不沿用入参（群体记忆 F07）。
 
     它是「判定第 8 步不会命中」的两个前置条件之一，与「回填后条目 scope 只有两维」各兜
     一重，两条的失效方向相反。沿用入参即把两重约束落在同一个取值上。四个条目级入口同一

@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""ProtectedAuditLogger - record 走完整性链、query 透传的契约（F05 §Audit Integrity）。
+"""ProtectedAuditLogger - record 走完整性链、query 透传的契约（安全能力 F04 §Audit Integrity）。
 
 接口先行版：wrapper 属纯委托契约层，用 stub provider / stub logger 验证委托方向，
 不含任何密码学。

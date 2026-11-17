@@ -190,7 +190,7 @@ def test_in_process_target_change_does_not_change_authenticated_actor() -> None:
 
 
 def test_tool_schemas_hide_profile_procedural_and_add_md_file_tools() -> None:
-    """工具面板：profile/procedural 不注册（LLM 不可见），read/edit_md_file 上线（F08）。
+    """工具面板：profile/procedural 不注册（LLM 不可见），read/edit_md_file 上线（md文件接口 F08）。
 
     两者实现保留在 handle_tool_call（内部直调入口），仅从 get_tool_schemas 移除。
     """

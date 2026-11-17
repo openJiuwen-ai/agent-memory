@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""SecondaryScorer — 相关性阈值之后的次级排序算子（retrieval F09 决策 9）。
+"""SecondaryScorer — 相关性阈值之后的次级排序算子（retrieval 次级排序 F11 决策 9）。
 
 ``PipelineRetriever`` 在 threshold 之后、top_k 截断之前调用本算子：对已通过相关性
 门槛的候选做带内重排（如按重要度 / 时效性 tie-break）。本算子与

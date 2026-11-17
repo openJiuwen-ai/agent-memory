@@ -1,11 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""密钥提供与轮换契约（F05 §Cryptography §KeyProvider）。
+"""密钥提供与轮换契约（安全能力 F04 §Cryptography §KeyProvider）。
 
 密码学能力**只能通过本接口获取密钥**，不得自己读环境变量或配置文件里的根密钥
 ——否则「密钥从哪来」这条最敏感的路径会散落在每个 provider 里，KMS/Vault/HSM
 也就无从接入。
 
-用途隔离（F05 §密钥隔离）由 :meth:`KeyProvider.wrap` 的 ``purpose`` 参数承担：
+用途隔离（安全能力 F04 §密钥隔离）由 :meth:`KeyProvider.wrap` 的 ``purpose`` 参数承担：
 加密、审计完整性、token 签名各自派生独立子密钥。API Key 与 Encryption Root Key
 永远不是同一密钥体系——前者归
 :mod:`common.security.authentication.key_store`，两边不共享任何材料。
@@ -31,7 +31,7 @@ class KeyProviderProducer(Factory):
 
 @dataclass(frozen=True)
 class KeyRef:
-    """一把密钥的标识：id + epoch（F05 §信封格式）。
+    """一把密钥的标识：id + epoch（安全能力 F04 §信封格式）。
 
     ``key_id`` 标识密钥体系中的哪一把，``epoch`` 标识它的第几代。两者都进信封头
     与 AAD：只有 id 没有 epoch 时，轮换后的密文可以被替换成同一把 key 的旧代密文
@@ -63,12 +63,12 @@ class KeyProvider(ABC):
 
     @abstractmethod
     def rotate(self) -> KeyRef:
-        """轮换到新一代活动密钥，返回新的 :class:`KeyRef`（F05 §KeyProvider）。
+        """轮换到新一代活动密钥，返回新的 :class:`KeyRef`（安全能力 F04 §KeyProvider）。
 
         轮换后 :meth:`active_key` 与新 :meth:`wrap` 都落到新 epoch；旧 epoch 密文仍按
         自带 ref 解开，前提是实现保留了历史 epoch 的验证材料。能否安全轮换是
         KeyProvider 的契约能力，而不只是 ``active_key`` 之外的一个可选项--只有 epoch
-        字段、没有轮换入口的实现不满足 F05。实现必须真正推进 epoch（或更换 key_id），
+        字段、没有轮换入口的实现不满足 安全能力 F04。实现必须真正推进 epoch（或更换 key_id），
         不得永远抛错冒充 fail-closed。
         """
 
@@ -76,7 +76,7 @@ class KeyProvider(ABC):
     def wrap(self, data_key: bytes, *, purpose: str, org: str) -> WrappedKey:
         """用当前活动密钥包裹一把数据密钥。
 
-        ``purpose`` 与 ``org`` 参与密钥派生与包裹层 AAD：前者实现用途隔离（F05
+        ``purpose`` 与 ``org`` 参与密钥派生与包裹层 AAD：前者实现用途隔离（安全能力 F04
         §密钥隔离），后者实现租户隔离——两者不同的调用绝不能解开彼此的数据密钥。
         """
 
@@ -94,15 +94,15 @@ class KeyProvider(ABC):
     def health(self) -> None:
         """存活探测：密钥可用时返回 ``None``，否则抛出异常。
 
-        不得在异常消息里泄露密钥材料、密钥文件内容或 KMS 凭据（F05 §装配不变量 8）。
+        不得在异常消息里泄露密钥材料、密钥文件内容或 KMS 凭据（安全能力 F04 §装配不变量 8）。
         """
 
-    # -- MAC / 签名 capability（审计完整性用，F05 §Audit Integrity §Key 生命周期）- #
+    # -- MAC / 签名 capability（审计完整性用，安全能力 F04 §Audit Integrity §Key 生命周期）- #
     # 默认不支持：本地信封 provider 覆写为支持（实装 PR），KMS/HSM 不可导出 key 的
     # 部署同样需要本 capability。审计完整性装配时调用 :meth:`supports_mac`，不支持即
-    # 拒绝（capability 不满足组合要求时拒绝启动）--不靠 target 名判断（F05 §依据
+    # 拒绝（capability 不满足组合要求时拒绝启动）--不靠 target 名判断（安全能力 F04 §依据
     # capability 做安全决策）。``purpose`` 实现用途隔离：审计完整性固定用版本化常量
-    # （如 ``audit-integrity:hmac:v1``），与加密的包裹密钥派生互不复用（F05 §密钥隔离）。
+    # （如 ``audit-integrity:hmac:v1``），与加密的包裹密钥派生互不复用（安全能力 F04 §密钥隔离）。
 
     def supports_mac(self) -> bool:
         """本 provider 是否提供 MAC/sign capability。默认 ``False``。"""

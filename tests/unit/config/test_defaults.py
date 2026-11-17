@@ -1,4 +1,4 @@
-"""出厂默认配置（config/defaults.py）中 retrieval F09 / construction F10 相关项的契约测试。"""
+"""出厂默认配置（config/defaults.py）中 retrieval 次级排序 F11 / construction 次级排序 F11 相关项的契约测试。"""
 
 from __future__ import annotations
 

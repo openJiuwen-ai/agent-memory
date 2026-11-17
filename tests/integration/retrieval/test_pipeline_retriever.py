@@ -1415,7 +1415,7 @@ def test_default_config_attaches_l0_l1_recallers() -> None:
         Factory.reset_all()
 
 
-# -- 次级排序（retrieval F09）：threshold 之后、top_k 之前 ------------------------ #
+# -- 次级排序（retrieval 次级排序 F11）：threshold 之后、top_k 之前 ------------------------ #
 
 
 class _ExplodingScorer(SecondaryScorer):

@@ -1,6 +1,6 @@
 """API 层 DreamingCoordinator —— 注册 / 注销 / 恢复 / 持续授权 / fan-out 逐桶裁决。
 
-PEP 边界（S03）改造后的 dreaming 编排测试（F04）：
+PEP 边界（S03）改造后的 dreaming 编排测试（dreaming F13）：
 
 - 注册（dreaming=True）：调度器周期能力校验 → validate 先于落盘（无残留）→
   注册表写入 dict DSL + created_by（持续授权锚点）；

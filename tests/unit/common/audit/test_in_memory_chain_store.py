@@ -131,7 +131,7 @@ def test_stable_snapshot_head_matches_last() -> None:
 
 
 def test_stable_snapshot_returns_requested_checkpoint() -> None:
-    """after_sequence>0 时快照携带该序号的 checkpoint（增量验证依据，F05 §6.1）。"""
+    """after_sequence>0 时快照携带该序号的 checkpoint（增量验证依据，安全能力 F04 §6.1）。"""
     store = InMemoryAuditLogger()
     provider = _provider(store)
     for i in range(3):

@@ -1,4 +1,4 @@
-"""Authorizer 契约层（F05 §PEP 与 PDP / §授权不变量 8）。
+"""Authorizer 契约层（安全能力 F04 §PEP 与 PDP / §授权不变量 8）。
 
 接口先行版：``authorization_impl`` 未合入，test-only capability 用测试内
 stub 表达；``AuthorizationDecision`` 的构造期不变量照测。

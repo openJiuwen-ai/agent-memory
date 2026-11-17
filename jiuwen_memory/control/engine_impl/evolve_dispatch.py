@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """evolve 执行分发 + 候选源装配（Engine 层共用件，纯执行）。
 
-F04 D3 层级分工：**EvolveJob 拥有链条**（候选→演进→回显），**Engine 拥有
+dreaming F13 D3 层级分工：**EvolveJob 拥有链条**（候选→演进→回显），**Engine 拥有
 装配与分发**（candidate→resolver 翻译、提交），**Scheduler 拥有调度**（通道/
 并发）。本模块是 Engine 分发逻辑的共用实现——InMemoryEngine / CloudEngine
 的 ``evolve`` 都委托到这里，不各自复制。
@@ -114,7 +114,7 @@ _RESOLVER_FACTORIES: dict[str, ResolverFactory] = {
 def register_resolver_factory(kind: str, factory: ResolverFactory) -> None:
     """第三方候选源 resolver 工厂注册入口（装配期，fail-fast 不覆盖）。
 
-    装配协议（F04 D4，与 candidate.py 的 ``register_candidate_codec`` 成对）：
+    装配协议（dreaming F13 D4，与 candidate.py 的 ``register_candidate_codec`` 成对）：
 
     - 注册发生在**装配期**（server 启动 / kernel 组装），运行期注册视为装配
       错误——工厂在 ``build_resolver`` 的查表路径上，运行期改动等于热改判别逻辑；

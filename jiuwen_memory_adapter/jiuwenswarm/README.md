@@ -2,7 +2,7 @@
 
 `AgentMemoryMemoryProvider` 提供 SDK/HTTP 两种连接方式。工作模式使用默认 `scene="agent"`；Coding 使用 `scene="code", project="宿主生成的项目键"`，搭配 core 的 `JiuwenMemoryCodingRail`。
 
-- 实施决策：[Coding 文档记忆](../../docs/features/F08-coding-document-memory.md)。
+- 实施决策：[Coding 文档记忆](../../docs/features/F06-coding-document-memory.md)。
 - 调用时机、开关、项目键及旧 AutoMemory 的独立运行由 Swarm 宿主负责。
 
 SDK 必须注入可信 `security_provider`，文档目录由 `markdown_store.default.params.root` 指定。HTTP 必须使用已启用文档记忆、可正常认证的服务。两种方式都复用原 MemoryAPI，不新增 search/evolve 平行接口。

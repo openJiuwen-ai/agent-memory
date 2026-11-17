@@ -1,4 +1,4 @@
-"""Scope 覆盖规则（F05 §Authorization 决策顺序第 4 步）。
+"""Scope 覆盖规则（安全能力 F04 §Authorization 决策顺序第 4 步）。
 
 从 ``control.permission_impl.sqlite_permission_manager._owner_scope_covers`` 迁出。
 独立成模块的理由：owner 判定与 Grant 匹配用的是**同一套**覆盖规则（「grantee 覆盖
@@ -6,7 +6,7 @@ actor」且「grantor 覆盖 target」），把它留在某个 Authorizer 实现
 会抄一份，两份迟早分叉——而这条规则分叉的表现形式是越权。
 
 与旧实现的一处**行为差异**：不再有「``parent == Scope()`` 即覆盖一切」的通配分支。
-旧实现靠它同时表达两件事——platform admin 与 grant 行的宽松匹配——而 F05 §授权
+旧实现靠它同时表达两件事——platform admin 与 grant 行的宽松匹配——而 安全能力 F04 §授权
 不变量 1 要求 ROOT 只由 role 表达。特权判定移到 Authorizer 的角色闸门，这里只剩
 纯粹的「父 scope 是否包含子 scope」。
 """

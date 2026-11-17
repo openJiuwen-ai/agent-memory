@@ -235,7 +235,7 @@ def test_dev_default_has_no_allow_all_bypass(dev_srv) -> None:
     的分支；``AllowAllAuthorizer`` 则是判定实装前的必填字段占位。PR2 两者都不需要了，
     所以两者都必须不在场：只要还有一个恒放行件默认装上，「本地开发方便」就会变成
     「默认部署有一条放行旁路」。断言取 ``is_test_only()`` 这个 capability，不看 target
-    名（F05 §授权不变量 8）。
+    名（安全能力 F04 §授权不变量 8）。
     """
     assert not isinstance(dev_srv.api._perm, AllowAllPermissionManager)
     assert not isinstance(dev_srv.security_runtime.authorizer, AllowAllAuthorizer)

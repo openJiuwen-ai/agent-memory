@@ -695,7 +695,7 @@ class LLMAbstractor(Abstractor):
                     [source_map[source_id] for source_id in valid_source_ids]
                 )
                 | metadata
-                # F10：抽象产物写 origin=inferred，重要度取 default 类别值（覆盖继承值）
+                # 重要度 F12：抽象产物写 origin=inferred，重要度取 default 类别值（覆盖继承值）
                 | inferred_attribution(None, self._importance_category_map),
                 user_metadata=inherited_user_metadata(
                     [source_map[source_id] for source_id in valid_source_ids]

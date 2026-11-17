@@ -1,4 +1,4 @@
-"""RoutingStoreManager/RoutingDomainStore：按 ``store_manager.active`` 动态选用（F02/F07）。"""
+"""RoutingStoreManager/RoutingDomainStore：按 ``store_manager.active`` 动态选用（F02/Store拆分 F07）。"""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def test_capabilities_follow_active() -> None:
 
 
 def test_entity_port_follows_active() -> None:
-    """ENTITY 端口（F07 第七席）与其余六类同样随 active 切换，走同一 _lazy_port 机制。"""
+    """ENTITY 端口（Store拆分 F07 第七席）与其余六类同样随 active 切换，走同一 _lazy_port 机制。"""
     from tests.unit.construction.test_entity_linker import InMemoryEntityStore
 
     ent = InMemoryEntityStore()
@@ -157,7 +157,7 @@ def test_routing_store_manager_delegates_management_to_mock() -> None:
 
 
 def test_routing_store_manager_document_ports_follow_active() -> None:
-    """markdown/shadow_index 端口（F07 文档模式）与其余端口同机制随 active 切换。"""
+    """markdown/shadow_index 端口（Store拆分 F07 文档模式）与其余端口同机制随 active 切换。"""
     a = MagicMock(name="store-manager-a")
     b = MagicMock(name="store-manager-b")
     a.capabilities.return_value = frozenset()

@@ -7,7 +7,7 @@
 | 日期 | 2026-10-14 |
 | 影响范围 | `jiuwen_memory/common/_support.py`、LLM（openai / dashscope）、embedder（openai / bge_m3）、reranker（api / bge_reranker）、`deploy/docker/online/`、`deploy/docker/postgres/`、OpenAI 兼容出站调用等待策略、本地 BGE 模型离线加载与精排降级 |
 | 测试基线 | `tests/unit/common/test_outbound_ssl.py` 44 passed；`tests/unit/common/test_model_call_timeout.py` 29 passed；`pytest -m unit` 1835 passed、8 skipped；全量 `tests/unit` 925 passed、2 failed、2 skipped（失败因环境缺少 `torch`，与本特性无关） |
-| Refs | [S07-common.md](../../specs/S07-common.md)、[F04-storage-ssl.md](../storage/F04-storage-ssl.md) |
+| Refs | [S07-common.md](../../specs/S07-common.md)、[F03-storage-ssl.md](../storage/F03-storage-ssl.md) |
 
 ## 背景
 

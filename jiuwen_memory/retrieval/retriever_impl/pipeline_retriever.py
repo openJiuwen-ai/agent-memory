@@ -167,7 +167,7 @@ class PipelineRetriever(StagedRetriever):
         rerank_max_doc_chars: int = _MAX_RERANK_DOC_CHARS,
         schema_temporal_executor_max_workers: int = _SCHEMA_TEMPORAL_EXECUTOR_MAX_WORKERS,
         schema_temporal_recall_timeout: float = _SCHEMA_TEMPORAL_RECALL_TIMEOUT,
-        # 次级排序（retrieval F09）：总开关默认关；开启时须注入 SecondaryScorer。
+        # 次级排序（retrieval 次级排序 F11）：总开关默认关；开启时须注入 SecondaryScorer。
         secondary_rank_enabled: bool = False,
         secondary_scorer: SecondaryScorer | None = None,
     ) -> None:
@@ -228,7 +228,7 @@ class PipelineRetriever(StagedRetriever):
     def storage(self) -> DomainStore:
         """当前 Retriever 使用的数据面 DomainStore 实例。
 
-        F07：需要管理面能力时由装配层经 ``StoreManagerProducer`` 取 manager，
+        Store拆分 F07：需要管理面能力时由装配层经 ``StoreManagerProducer`` 取 manager，
         Retriever 运行期只持数据面。
         """
         return self._domain

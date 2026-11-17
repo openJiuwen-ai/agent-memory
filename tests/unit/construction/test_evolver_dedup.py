@@ -1356,7 +1356,7 @@ class TestDedupEvolveExtract:
 
 
 class TestDedupImportanceMax:
-    """F10：UPDATE/SUPERSEDE 合并时重要度取 max（只增不减）。"""
+    """重要度 F12：UPDATE/SUPERSEDE 合并时重要度取 max（只增不减）。"""
 
     @staticmethod
     def _run(decision: str, existing_importance, candidate_importance):
@@ -1411,7 +1411,7 @@ class TestDedupImportanceMax:
 
 
 class TestDedupOriginPreserved:
-    """F10：UPDATE 合并保留被合并 existing 的 origin；SUPERSEDE 由新版本自带 origin。"""
+    """重要度 F12：UPDATE 合并保留被合并 existing 的 origin；SUPERSEDE 由新版本自带 origin。"""
 
     @staticmethod
     def _run(decision: str, existing_origin, candidate_origin):

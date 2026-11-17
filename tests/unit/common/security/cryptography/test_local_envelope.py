@@ -140,7 +140,7 @@ def test_windows_restrict_strips_preexisting_world_ace(tmp_path) -> None:
 
 
 def test_writes_version_two_envelopes() -> None:
-    """写出一律 v2：v1 只读兼容，不再产出（F05 §信封格式要求 key id 与 epoch）。"""
+    """写出一律 v2：v1 只读兼容，不再产出（安全能力 F04 §信封格式要求 key id 与 epoch）。"""
     ciphertext = _provider_from_hex().encrypt(b"payload", context=_context())
     assert ciphertext[len(ENVELOPE_MAGIC)] == ENVELOPE_VERSION
 
@@ -157,7 +157,7 @@ def test_envelope_carries_key_id_and_epoch() -> None:
     assert provider.decrypt(ciphertext, context=_context()) == b"payload"
 
 
-# -- 无明文回退（F05 §明文策略）--------------------------------------------- #
+# -- 无明文回退（安全能力 F04 §明文策略）--------------------------------------------- #
 
 
 def test_plaintext_is_always_rejected() -> None:
@@ -203,7 +203,7 @@ def test_rejects_object_id_mismatch() -> None:
 
 
 def test_rejects_purpose_mismatch() -> None:
-    """用途隔离（F05 §密钥隔离）：包裹密钥按 purpose 派生，换用途就解不开。"""
+    """用途隔离（安全能力 F04 §密钥隔离）：包裹密钥按 purpose 派生，换用途就解不开。"""
     provider = _provider_from_hex()
     ciphertext = provider.encrypt(b"secret payload", context=_context(purpose="memory_unit"))
 
@@ -276,7 +276,7 @@ def test_unwrap_rejects_other_key_generation() -> None:
 
 
 def test_rotate_advances_epoch_and_keeps_old_epoch_readable() -> None:
-    """rotate 推进 epoch，且旧 epoch 信封仍可解（F05 §KeyProvider 轮换契约）。"""
+    """rotate 推进 epoch，且旧 epoch 信封仍可解（安全能力 F04 §KeyProvider 轮换契约）。"""
     provider = LocalKeyProvider(key_hex=_KEY_HEX)
     data_key = b"\x02" * 32
     wrapped = provider.wrap(data_key, purpose="memory_unit", org="acme")
@@ -551,7 +551,7 @@ def test_producer_builds_local_provider_from_config(tmp_path) -> None:
 
 
 def test_key_provider_producer_is_separately_addressable(tmp_path) -> None:
-    """KeyProvider 是独立 Producer：换 KMS/Vault 不必改加密实现（F05 §Producer 清单）。"""
+    """KeyProvider 是独立 Producer：换 KMS/Vault 不必改加密实现（安全能力 F04 §Producer 清单）。"""
     key_file = tmp_path / "named.key"
     ctx = AssemblyContext.from_dict(
         {

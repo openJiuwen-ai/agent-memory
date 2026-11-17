@@ -1,4 +1,4 @@
-# F06 — PostgreSQL 驱动从 psycopg 迁移到 asyncpg
+# F05 — PostgreSQL 驱动从 psycopg 迁移到 asyncpg
 
 **日期**：2026-08-28
 **状态**：已实施

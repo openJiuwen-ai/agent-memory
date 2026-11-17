@@ -725,7 +725,7 @@ class EntitySchemaExtractor(Extractor):
             if candidate.identity_kind:
                 metadata["schema_entity_identity_kind"] = candidate.identity_kind
             metadata.update(_event_time_metadata(candidate.property_time))
-            # F10：属性记忆是派生记忆，origin=inferred，重要度取 default 类别值（覆盖继承值）
+            # 重要度 F12：属性记忆是派生记忆，origin=inferred，重要度取 default 类别值（覆盖继承值）
             metadata.update(inferred_attribution(None, self._importance_category_map))
             event_fields = _event_time_fields(candidate.property_time)
             result.append(

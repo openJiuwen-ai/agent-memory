@@ -81,11 +81,11 @@
 
 - 治理层只做可检视、可回溯、可审计；编辑和遗忘仍走 API 的 update/delete，以便统一鉴权和审计。
 - `trace` 只沿 `provenance`，不沿 `supersedes`。前者表示「这条记忆从哪些来源演进而来」，后者表示版本替换链，服务 `get(as_of)`。
-- Governor 不跨 Scope 扫描，也不执行 PEP；API 对每个实际返回快照再次鉴权，安全能力见 F04/S10。
+- Governor 不跨 Scope 扫描，也不执行 PEP；API 对每个实际返回快照再次鉴权，安全能力见 common/F04/S10。
 
 ### 决策 4：权限第一版用 allow-all 占位，保留 Grant 记录形状
 
-**历史方案**：早期 `AllowAllPermissionManager` 注册为 `permission: allow_all`，以恒放行与内存记录占位。PR2 后 PermissionManager 只保留历史兼容，不进入生产判定或授权管理路径；当前安全能力统一见 F04/S10。
+**历史方案**：早期 `AllowAllPermissionManager` 注册为 `permission: allow_all`，以恒放行与内存记录占位。PR2 后 PermissionManager 只保留历史兼容，不进入生产判定或授权管理路径；当前安全能力统一见 common/F04/S10。
 
 **关键权衡**：
 
@@ -230,7 +230,7 @@ scheduler:
 
 ## 已知遗留
 
-1. **权限占位已替换**：生产请求由 MemoryAPI/Authorizer 唯一 PEP/PDP 判定，授权真源为具名 GrantStore；不再依赖 allow-all PermissionManager。能力与部署边界见 F04/S10。
+1. **权限占位已替换**：生产请求由 MemoryAPI/Authorizer 唯一 PEP/PDP 判定，授权真源为具名 GrantStore；不再依赖 allow-all PermissionManager。能力与部署边界见 common/F04/S10。
 
 2. **默认 Scheduler 同步执行**：`defaults.py` 默认装配 `in_process`，需要异步周期任务时显式配置 `async_timer`。`AsyncTimerScheduler` 的 per scope Timer/drain 托管于自有 `LoopRunner`，不再受同步 API 临时事件循环关闭影响；实例结束时通过 Runtime 级联关闭并回收线程，见 S02/S03。
 

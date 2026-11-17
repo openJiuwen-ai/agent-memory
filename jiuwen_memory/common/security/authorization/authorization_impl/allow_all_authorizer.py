@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""恒放行 Authorizer：仅供隔离测试使用（F05 §授权不变量 8）。
+"""恒放行 Authorizer：仅供隔离测试使用（安全能力 F04 §授权不变量 8）。
 
 **为什么 PR1 需要它**：上游已把 ``SecurityRuntime.authorizer`` 固定为必填字段，
 但真正做判定的 ``StandardAuthorizer`` 归 PR2。必填字段总得有值可填，于是 PR1
@@ -47,7 +47,7 @@ class AllowAllAuthorizer(Authorizer):
         return AuthorizationDecision.allow("allow_all_placeholder")
 
     def is_test_only(self) -> bool:
-        """恒放行实现只允许出现在测试/过渡装配中（F05 §授权不变量 8）。"""
+        """恒放行实现只允许出现在测试/过渡装配中（安全能力 F04 §授权不变量 8）。"""
         return True
 
     def health(self) -> None:

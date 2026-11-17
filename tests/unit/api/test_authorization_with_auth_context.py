@@ -1,4 +1,4 @@
-"""安全上下文经 PEP 抵达 PDP（F05 §Authorization / §PEP-PDP 分离）。
+"""安全上下文经 PEP 抵达 PDP（安全能力 F04 §Authorization / §PEP-PDP 分离）。
 
 `tests/unit/common/security/authorization/` 覆盖的是 PDP 自身的判定规则；本文件覆盖
 **接线**：`LocalMemoryAPI._authorize` 是否真的把调用方传进来的 `RequestSecurityContext`
@@ -43,7 +43,7 @@ def test_promoted_root_reaches_admin_plane(api) -> None:
     """一个绑了具体 org/user 的 ROOT 能用管理面。
 
     接线前它做不到：`_authorize` 只传 `identity`，PDP 看到的是个普通 alice，
-    而管理面的鉴权 target 是空 `Scope()`——跨 org 直接拒。F05 明写两种 ROOT
+    而管理面的鉴权 target 是空 `Scope()`——跨 org 直接拒。安全能力 F04 明写两种 ROOT
     「在运行时权限检查中等价」，这条就是那句话的可执行形式。
     """
     root_alice = internal_context(ScopedAuthenticator(_ALICE, role=Role.ROOT))
@@ -77,7 +77,7 @@ def test_agent_cannot_reach_a_user_scope(api) -> None:
 
     这里原有三条用例，钉的是 ``AuthContext.acting_user`` 触发的端到端代操作：agent
     带着一个 user 名就能读写那个 user 的 scope。该字段与判定路径已删除，因为 header
-    里的一个 user 名证明不了那个 user 真的授权过（F05 §从 header 直接产生 Delegation）。
+    里的一个 user 名证明不了那个 user 真的授权过（安全能力 F04 §从 header 直接产生 Delegation）。
 
     委托的端到端形态由 ``DelegationStore`` 复核 ``delegation_id`` 重建，认证产物里
     的一个名字不再是依据。此刻的正确行为就是拒。

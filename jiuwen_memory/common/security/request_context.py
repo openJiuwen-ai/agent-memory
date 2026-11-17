@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""``RequestSecurityContext`` 的受控构造入口（F05 §RequestSecurityContext、§进程内调用）。
+"""``RequestSecurityContext`` 的受控构造入口（安全能力 F04 §RequestSecurityContext、§进程内调用）。
 
 构造点收在这里，不散在各 surface：``request_id`` 由服务端生成、``started_at`` 取服务端
 时钟、``attributes`` 只由系统组件写入——这三条不变量只有一处实现，新增一个接入形态时
@@ -10,7 +10,7 @@
 - :func:`new_request_context` 给**已完成认证**的 surface 用（HTTP / MCP / CLI 经
   ``jiuwen_memory_entry.core.auth_middleware`` 调它）；
 - :func:`internal_context` 给**进程内直连**的调用方用（示例脚本、评测 harness、
-  嵌入式插件）——它们没有网络对端，但契约与外部请求完全相同（F05 §进程内调用）。
+  嵌入式插件）——它们没有网络对端，但契约与外部请求完全相同（安全能力 F04 §进程内调用）。
 """
 
 from __future__ import annotations
@@ -87,9 +87,9 @@ def new_request_context(
 
 
 def internal_context(authenticator) -> RequestSecurityContext:
-    """进程内直连调用方的受控上下文入口（F05 §进程内调用）。
+    """进程内直连调用方的受控上下文入口（安全能力 F04 §进程内调用）。
 
-    身份仍**由 authenticator 产出**，不由调用方声明--这正是 F05 拒绝 ``auth=None``
+    身份仍**由 authenticator 产出**，不由调用方声明--这正是 安全能力 F04 拒绝 ``auth=None``
     与「传入 Scope 直接当已认证 actor」的那条线（迁移计划 §5.3）。调用方要操作哪个
     Scope，照旧走业务参数；它决定不了自己是谁。
 

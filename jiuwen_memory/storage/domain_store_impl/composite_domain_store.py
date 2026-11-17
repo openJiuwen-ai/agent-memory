@@ -176,7 +176,7 @@ class CompositeDomainStore(DomainStore):
 
     @staticmethod
     def _sanitize_document_content(units: list[MemoryUnit]) -> None:
-        """文档路径 content 单行清洗（F07 §12.4 的 enforcement point）。
+        """文档路径 content 单行清洗（文档记忆根设计 §12.4 的 enforcement point）。
 
         块格式契约（``<标题>\\n<正文单行>\\n\\n``、看门狗按块解析、replace/remove 按
         ``\\n\\n`` 切块比对正文）建立在「一个 unit 一行正文」上，但上游（LLM 抽取/
@@ -187,7 +187,7 @@ class CompositeDomainStore(DomainStore):
         故在 md.write / shadow.insert_units 分叉**之前**对 unit 本体原地折叠
         ``" ".join(content.split())``——md 视图、unit_json、content_hash、后续
         replace_content 锚点四方看到同一份单行 content。收口在文档路径入口
-        而非 extractor：单行是文档记忆的**存储层约束**（F07 §12.4），非抽取层
+        而非 extractor：单行是文档记忆的**存储层约束**（文档记忆根设计 §12.4），非抽取层
         约束；KV 路径（结构化记忆）不受影响。
         """
         for unit in units:
@@ -252,7 +252,7 @@ class CompositeDomainStore(DomainStore):
             # md.write 内部按文件分组批量写、回填 unit.system_metadata["md_filename"]
             # + 兜底 memory_class（空落 long_term_memory）；shadow.insert_units
             # 从 system_metadata 读 md_filename 建 three-table 索引。
-            # 写窗口：两步写期间 md 与索引短暂不一致，挡住看门狗对账（F07 §12.9 风险 6，
+            # 写窗口：两步写期间 md 与索引短暂不一致，挡住看门狗对账（文档记忆根设计 §12.9 风险 6，
             # sync_gate 模块说明）——insert_units 含逐条 embed（完整模式远端 HTTP），
             # 窗口可达秒级，2s debounce 挡不住。
             logger.info(
@@ -302,7 +302,7 @@ class CompositeDomainStore(DomainStore):
             # 文档路径：影子索引 update_units 覆写 unit_json（content_hash 判定自动处理——
             # OVERWRITE content 变 → 重建 FTS5/vec0；SUPERSEDE 状态变 → 只覆写 unit_json），
             # content 变时同步 md.replace_content 改 md 文件（F07 §5.2.1 步骤③⑤）。
-            # 写窗口（sync_gate，F07 §12.9 风险 6）：update 是「先索引后 md」反序——
+            # 写窗口（sync_gate，文档记忆根设计 §12.9 风险 6）：update 是「先索引后 md」反序——
             # update_units（含 OVERWRITE 重建的 re-embed）与 replace_content 之间，索引
             # 已变而 md 还是旧的，看门狗在此插入会「删真 unit + 建幽灵」。整个 for 循环
             # 共持一个窗口（批量 update 中途关窗会出现同类窗口）。
@@ -457,7 +457,7 @@ class CompositeDomainStore(DomainStore):
             # （F07 §5.4）。先 get_units 拿旧 unit（md_filename + content 定位 md 块）——
             # delete_units 幂等不返存在信息，md 块定位靠旧 unit 的 content（类比 update 的
             # replace_content 用 old_content 定位，§5.2.1 步骤⑤）。
-            # 写窗口（sync_gate，F07 §12.9 风险 6）：delete 也是「先索引后 md」反序——
+            # 写窗口（sync_gate，文档记忆根设计 §12.9 风险 6）：delete 也是「先索引后 md」反序——
             # delete_units 与 remove_content 之间，索引已删而 md 还有行，看门狗在此插入
             # 会把刚删的 unit 以新 uuid 复活（双写）。
             logger.info(

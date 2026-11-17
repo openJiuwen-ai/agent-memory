@@ -1,4 +1,4 @@
-"""CredentialStatusRegistry：PEP 持有的凭据撤销在线复核入口（F05 §认证不变量 6）。"""
+"""CredentialStatusRegistry：PEP 持有的凭据撤销在线复核入口（安全能力 F04 §认证不变量 6）。"""
 
 from __future__ import annotations
 

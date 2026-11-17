@@ -227,7 +227,7 @@ class WriteOpsMixin:
         | 是 | 无 | 非空 | 直写 |
         | 是 | 无 | 空 | 拒绝：既未指定落点，也未请求判定 |
 
-        **``middle=true`` 不判定**（F07「归属判定的生效范围」），按无 ``coords`` 键的三行
+        **``middle=true`` 不判定**（群体记忆 F07「归属判定的生效范围」），按无 ``coords`` 键的三行
         处置。该路径把原文按 ``tier=WORKING`` 直接建索引（见
         :meth:`~control.engine_impl.in_memory_engine.InMemoryEngine._write_middle_path`），
         与 ``infer`` / ``procedural`` 的载体不同——后两者的原文进 ``message_store``、不参与
@@ -418,7 +418,7 @@ class WriteOpsMixin:
         它止于本层——``decision_metadata`` 只回写判定标签与类别记录键，不带 reason，落盘
         条目上因此看不出本条是判出来的还是回落来的。
 
-        **本路径落审计而非日志，判据是记录的消费者**（F07「降级记录按消费者分通道」）：
+        **本路径落审计而非日志，判据是记录的消费者**（群体记忆 F07「降级记录按消费者分通道」）：
         结论直写的落点是调用方动作的直接结果，须可按 actor / target 检索并逐次回放。派生
         单元的判定在构建层，消费者是运维告警，落 ``WARNING`` 日志——见
         ``OrchestratingEvolver._route``。两条路径共用同一套 ``reason`` 词汇。

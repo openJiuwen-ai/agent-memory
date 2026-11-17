@@ -1,4 +1,4 @@
-"""认证能力契约：Authenticator 与注册式 Producer（F05 §Authentication）。
+"""认证能力契约：Authenticator 与注册式 Producer（安全能力 F04 §Authentication）。
 
 把一次请求的凭据材料校验成 :class:`~common.security.types.AuthContext`。
 实现按认证模式区分（dev / trusted / api_key），由配置在装配期选定；运行期

@@ -1238,7 +1238,7 @@ def test_batch_and_single_continuity_writes_match_on_marks_source_ref_and_audit(
 
 
 def test_derived_output_does_not_inherit_source_event_time(tmp_path):
-    """F10 4.2：派生输出是按构建时刻生成的新记忆，不继承来源的发生时间。"""
+    """角色记忆 F11 4.2：派生输出是按构建时刻生成的新记忆，不继承来源的发生时间。"""
     from unittest.mock import Mock
 
     from jiuwen_memory.common.type_def import MemoryUnit, Segment

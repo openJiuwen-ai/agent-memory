@@ -28,7 +28,7 @@ ensure、完整结构治理、普通记忆后补 Snapshot 和自动修复仍未�
 1. **同 unit 披露轴**：`ContentLayers` 与 `DisclosureLevel` 决定一条
    `MemoryUnit` 以 L0 概要、L1 片段还是 L2 全文进入上下文。L0/L1/L2 只表示
    same-unit compression，不表示节点之间的关系。
-2. **多模态构建轴**：多模态构建（F05）对**一条原始媒体源**（首期视频）产出
+2. **多模态构建轴**：多模态构建（construction/F05）对**一条原始媒体源**（首期视频）产出
    CLM/ELM 等多条不同概括粒度的 `MemoryUnit`，用 `metadata.memory_level` +
    `provenance` 表达单媒体源构建粒度，不表示跨源的结构包含。
 3. **认知抽象轴**：`MemoryTier` 与既有演进模式区分工作记忆、情景、语义、
@@ -45,7 +45,7 @@ ensure、完整结构治理、普通记忆后补 Snapshot 和自动修复仍未�
 | 轴 | 载体 | 作用域                   |
 |---|---|-----------------------|
 | 同 unit 披露 | `ContentLayers` | 单 unit                |
-| 多模态构建 | CLM/ELM metadata + provenance | 单媒体源 → 多 unit（见 F05）  |
+| 多模态构建 | CLM/ELM metadata + provenance | 单媒体源 → 多 unit（见 construction/F05）  |
 | 认知抽象 | `MemoryTier` | 单 unit 认知角色，unit 可以演进 |
 | 树结构 | `HierarchyRef`（本文，首期 TIME） | 跨 unit / 跨源           |
 
@@ -64,11 +64,11 @@ ensure、完整结构治理、普通记忆后补 Snapshot 和自动修复仍未�
 
 ### 与多模态构建轴
 
-1. **禁止**用 `HierarchyRef` 表达同视频内 ELM⊃CLM——只用 F05 的 provenance/metadata。
-2. TIME 建树的叶可以是文本直写 unit，也可以是 F05 产出的 CLM/ELM（或其它模态记忆）。
+1. **禁止**用 `HierarchyRef` 表达同视频内 ELM⊃CLM——只用 construction/F05 的 provenance/metadata。
+2. TIME 建树的叶可以是文本直写 unit，也可以是 construction/F05 产出的 CLM/ELM（或其它模态记忆）。
 3. **建议叶粒度**：默认以 CLM（及文本叶）作为细粒度权威叶；ELM 可作为并行候选，
    首期**不要**自动把 ELM 写成 TIME 父节点（父由 `HierarchyComposer` 生成）。
-4. `evolve(HIERARCHY)` **不**调用、不替代视频理解流水线；缺 F05 时对视频源可降级或跳过。
+4. `evolve(HIERARCHY)` **不**调用、不替代视频理解流水线；缺 construction/F05 时对视频源可降级或跳过。
 5. 未来若将单视频 CLM/ELM 升为 `HierarchyKind.MEDIA`，单独立项 RFC，不在首期混用。
 
 ### 与认知抽象轴

@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""昂贵安全操作的全局并发预算契约（F05 §Protection §WorkloadGuard）。
+"""昂贵安全操作的全局并发预算契约（安全能力 F04 §Protection §WorkloadGuard）。
 
 入口限流限的是「单地址的请求速率」，限不住「同时在跑的昂贵校验数」——后者才是
 CPU/内存耗尽攻击的真正向量：单 IP 30 个并发错误 key = 30 × 128 MiB Argon2 同时
@@ -61,7 +61,7 @@ class WorkloadGuard(ABC):
         """预算上限，供诊断与启动期日志展示。"""
 
     def supports_distributed_budget(self) -> bool:
-        """本实现的预算是否**跨副本共享**（F05 §Protection §分布式部署）。
+        """本实现的预算是否**跨副本共享**（安全能力 F04 §Protection §分布式部署）。
 
         默认 ``False``：进程内信号量只约束本副本，N 个副本 = N 倍实际并发。
         与 :meth:`~common.security.protection.rate_limit.RateLimiter.

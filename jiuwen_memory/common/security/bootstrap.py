@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""安全能力的统一注册入口（F05 §装配不变量 2：注册在装配前统一完成）。
+"""安全能力的统一注册入口（安全能力 F04 §装配不变量 2：注册在装配前统一完成）。
 
 各实现包不互相 import；注册顺序由本模块单点管理。import 实现包即触发其
 ``@<X>Producer.register(...)`` 自注册，本函数只负责按固定顺序把它们 import 进来。

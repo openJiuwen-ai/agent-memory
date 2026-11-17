@@ -93,12 +93,12 @@ def authenticated(
     ``request_id`` 仅允许受控适配层传入。HTTP 入口生成后传给这里，使认证失败、
     限流拒绝也能关联响应和拒绝审计；缺省时由 ``new_request_context`` 生成 ID。
 
-    ``limiter`` 在 ``authenticate`` **之前**执行（F05 §请求执行流程）：认证本身就是
+    ``limiter`` 在 ``authenticate`` **之前**执行（安全能力 F04 §请求执行流程）：认证本身就是
     要保护的资源——API_KEY 模式下每次 authenticate 跑一次 Argon2id verify（128 MiB ×
     time_cost=4），放在认证之后限流就等于「先让攻击者把 CPU 用掉，再告诉他
     超限了」。``limiter=None`` 表示不限流（进程内直连 / MCP stdio 无网络对端）。
 
-    ``workload_guard`` 是昂贵操作的全局并发预算（F05 §Protection §WorkloadGuard）：
+    ``workload_guard`` 是昂贵操作的全局并发预算（安全能力 F04 §Protection §WorkloadGuard）：
     IP 桶限请求速率，限不住「同时在跑的 Argon2 verify 数」。耗尽即快速拒绝（429）
     而不是排队——无界排队只是把资源耗尽从 CPU/内存转移到线程和请求队列。在 limiter
     之后、authenticate 之前执行；acquire 成功后用 ``finally`` 释放。``None`` 表示

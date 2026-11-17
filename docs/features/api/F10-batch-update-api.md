@@ -1,4 +1,4 @@
-# F11 — batch_update 批量更新接口设计
+# F10 — batch_update 批量更新接口设计
 
 ## 元信息
 

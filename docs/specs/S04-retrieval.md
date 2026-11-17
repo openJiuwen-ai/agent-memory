@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-15 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/retrieval/F09-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-schema-temporal-entity.md、docs/features/retrieval/F09-query-rewrite.md、docs/features/retrieval/F11-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
 ## 明文拒绝的传播边界
 
@@ -179,7 +179,7 @@ Property 直达召回可在 parse 阶段后立即并行提交，并在普通 pip
 
 `RecallChannel.TEMPORAL` 仅应用 event-time/valid-time 条件，不创建、过滤或展开 `HierarchyKind.TIME` 树。TIME 层级过滤必须来自明确的 hierarchy 字段。
 
-`RecallChannel.SPACE`（F07 随跨空间检索新增）不是召回通道，是「某个空间整体没进结果」的标记位，只出现在 `RetrievalResult.errors` 的 `ChannelError.channel` 上。它不进候选、不参与融合，也不出现在 `ChannelEvidence.channel` 里，因此按通道配置融合权重或按通道打点的消费方不为它配权重。该取值的构造点是本层的 `cross_space.space_error`，由 API 层（判权剔除）与控制层（扇出失败）两侧共用。
+`RecallChannel.SPACE`（control/F07 随跨空间检索新增）不是召回通道，是「某个空间整体没进结果」的标记位，只出现在 `RetrievalResult.errors` 的 `ChannelError.channel` 上。它不进候选、不参与融合，也不出现在 `ChannelEvidence.channel` 里，因此按通道配置融合权重或按通道打点的消费方不为它配权重。该取值的构造点是本层的 `cross_space.space_error`，由 API 层（判权剔除）与控制层（扇出失败）两侧共用。
 
 `cross_space.py` 只提供取数上界、结果合并与失败编码三个纯函数；跨空间的召回扇出编排落控制层 `control/collective/cross_space_recall.py`，它 import 本模块，本模块不反向依赖控制层。
 
@@ -221,7 +221,7 @@ class SecondaryScorer(RetrievalOperator):
 `@SecondaryScorerProducer.register("<名>")` 自注册并把 `target` 指向它即可替换算法。
 **启用前须按所用 Reranker 的分数分布校准 `score_band`**：带宽是绝对值，`overlap` 的
 `hits/(len+1)` 与 BGE 经 sigmoid 后数量级下降的分数域都与出厂 0.05 不匹配，固定带宽会
-过度并带（见 F09-recency-importance-secondary-rank 已知遗留 3、9）。
+过度并带（见 F11-recency-importance-secondary-rank 已知遗留 3、9）。
 
 `PipelineRetriever` 恒记 `secondary_rank` 轨迹 step：关闭时 `skipped=disabled`；算子
 返回非排列、`explain` 或打分抛异常时记 `error` 并保持原顺序，不阻断检索。
@@ -437,7 +437,7 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 
 事件时间窗 `[time_from, time_to)` 下推为 `OR(AND(GTE from, LT to), EQ 0)` 子树：
 `AND` 子组放行窗内已知事件时间 unit，`EQ 0` 分支放行 `t_event=None` 的派生
-（F07 净化后此类派生常见）。真源 `t_event=None` 在索引投影与 `memory_filter`
+（common/F07 净化后此类派生常见）。真源 `t_event=None` 在索引投影与 `memory_filter`
 后置复核两侧都投影为哨兵 `T_EVENT_UNKNOWN=0`，使下推与复核语义不分叉。
 `in_event_window` 后置仍读真源 datetime、对 None / naive 放行，与下推的
 「窗内 OR 未知放行」意图对齐。半开边界与原扁平 GTE+LT 一致，不引入 LTE。

@@ -1,4 +1,4 @@
-"""入口限流契约：认证前按调用方地址执行低成本准入（F05 §Protection §入口限流）。
+"""入口限流契约：认证前按调用方地址执行低成本准入（安全能力 F04 §Protection §入口限流）。
 
 限流挂在**认证之前**：认证本身就是要保护的资源。API_KEY 模式下每次
 ``authenticate`` 都跑一次 Argon2id verify（128 MiB × time_cost=4，约
@@ -53,7 +53,7 @@ class RateLimiter(ABC):
         """
 
     def supports_distributed_quota(self) -> bool:
-        """本实现是否提供**跨副本共享**的配额（F05 §Protection §分布式部署）。
+        """本实现是否提供**跨副本共享**的配额（安全能力 F04 §Protection §分布式部署）。
 
         默认 ``False``：进程内计数只是单实例保护，N 个副本 = N 倍实际额度。
         默认值取「不宣称」而非「宣称」，是为了让「进程内限流被当成集群配额」

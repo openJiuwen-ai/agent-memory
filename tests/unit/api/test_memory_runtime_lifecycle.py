@@ -1,4 +1,4 @@
-"""F07 §12.10：``MemoryRuntime`` 生命周期——start 语义与 close 组合释放。"""
+"""文档记忆根设计 §12.10：``MemoryRuntime`` 生命周期——start 语义与 close 组合释放。"""
 
 from __future__ import annotations
 

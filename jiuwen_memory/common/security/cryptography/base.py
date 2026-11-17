@@ -1,10 +1,10 @@
-"""CryptographyProvider — bytes 边界的加解密契约（F05 §Cryptography）。
+"""CryptographyProvider — bytes 边界的加解密契约（安全能力 F04 §Cryptography）。
 
 安全能力不是无状态模型插件，不继承 :class:`common.base.Plugin`，但仍使用
 ``Factory`` 提供注册式装配。调用方以**字节**为边界调用本接口：写入持久化字节前
 加密，读取持久化字节后解密。
 
-契约边界（F05 §CryptographyProvider）：本接口不接收 MemoryUnit、KV key 或文件
+契约边界（安全能力 F04 §CryptographyProvider）：本接口不接收 MemoryUnit、KV key 或文件
 路径等业务对象，也**不决定数据是否应该加密**——那是存储适配器的选择，由上层配
 不同适配器表达，不是本接口内部的开关。
 
@@ -66,7 +66,7 @@ class CryptographyProvider(ABC):
         """加密明文字节，返回自描述信封。
 
         ``context`` **必填**：AAD 必须绑定规范化 Scope、存储用途、对象标识和格式
-        版本（F05 §信封格式），缺了它密文就能被复制到其他租户、对象或存储位置后
+        版本（安全能力 F04 §信封格式），缺了它密文就能被复制到其他租户、对象或存储位置后
         照样解开。旧接口允许 ``context=None`` 并静默用空 Scope，是这条不变量的缺口。
 
         ``aad`` 是调用方追加的附加认证数据，参与完整性保护但不写入密文。
@@ -76,7 +76,7 @@ class CryptographyProvider(ABC):
     def decrypt(self, ciphertext: bytes, *, context: CryptoContext, aad: bytes = b"") -> bytes:
         """解密密文字节并校验完整性。
 
-        **不提供明文回退**（F05 §明文策略）：入参不是合法信封时抛
+        **不提供明文回退**（安全能力 F04 §明文策略）：入参不是合法信封时抛
         :class:`InvalidMagicError`，解密失败时抛
         :class:`AuthenticationFailedError`，两种情况都不得返回原始 bytes。是否允许
         未加密存储由上层选用不同存储适配器表达。

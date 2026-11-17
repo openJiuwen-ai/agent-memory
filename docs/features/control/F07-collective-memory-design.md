@@ -1259,7 +1259,7 @@ AND  metadata.session_id IN ["", "S1"]    ← 第二族
 
 ## metadata 命名空间与内核字段
 
-上游把 `MemoryUnit.metadata` 拆成 `system_metadata` 与 `user_metadata` 两个命名空间（F04），本特性的全部内核字段落 `system_metadata`：
+上游把 `MemoryUnit.metadata` 拆成 `system_metadata` 与 `user_metadata` 两个命名空间（api/F04），本特性的全部内核字段落 `system_metadata`：
 
 | 字段 | 写入方 | 说明 |
 |---|---|---|

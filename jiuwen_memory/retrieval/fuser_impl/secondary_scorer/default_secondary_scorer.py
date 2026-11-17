@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""默认 SecondaryScorer：分带 tie-break + 重要度 / 时效性线性次要键（retrieval F09）。
+"""默认 SecondaryScorer：分带 tie-break + 重要度 / 时效性线性次要键（retrieval 次级排序 F11）。
 
 算法（候选已按校准相关性分降序）：
 

@@ -1,4 +1,4 @@
-"""Cryptography 能力：字节级加解密契约与密钥提供（F05 §Cryptography）。"""
+"""Cryptography 能力：字节级加解密契约与密钥提供（安全能力 F04 §Cryptography）。"""
 
 from .base import (
     AuthenticationFailedError,

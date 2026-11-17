@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""审计完整性能力（F05 §Audit Integrity）。
+"""审计完整性能力（安全能力 F04 §Audit Integrity）。
 
 与 :mod:`jiuwen_memory.common.audit` 的职责分工：
 

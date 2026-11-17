@@ -28,7 +28,7 @@ NS_FULLTEXT_STORE = "fulltext_store"
 NS_GRAPH_STORE = "graph_store"
 NS_FUSION_STORE = "fusion_store"
 NS_FS_STORE = "fs_store"
-# StoreManager 命名空间（F07 起顶层段名从 storage 改为 store_manager；与底层 *_store 命名空间分层）
+# StoreManager 命名空间（Store拆分 F07 起顶层段名从 storage 改为 store_manager；与底层 *_store 命名空间分层）
 NS_STORE_MANAGER = "store_manager"
 
 # 晚绑定字段名

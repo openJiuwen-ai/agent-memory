@@ -15,7 +15,7 @@
 
 ## 背景
 
-**A. 双面拆分**。`Storage` ABC 落地（F05-unified-storage-design）后一身二任：
+**A. 双面拆分**。`Storage` ABC 落地（F04-unified-storage-design）后一身二任：
 
 - **管理面（端口管理）**：`capabilities()` / `has_*()` / `kv`·`vector`·`fulltext`·`graph`·`fusion`·`fs` 端口 / `security` / `health()`
 - **数据面（领域操作）**：`add` / `update` / `delete` / `get` / `list` / `scopes` / `recall` / `recall_and_get` / `retrieve` / `preferred_retrieval_pipeline` / `bind_recallers`
@@ -89,7 +89,7 @@ manager params 的键，且默认数据面与命名数据面对 params/globals �
 ### A. 双面拆分
 
 1. **删 `Storage` ABC，拆为两个独立 ABC（分处不同文件）**：`store_manager.py` 的 `StoreManager`（管理面 ABC）+ `StoreManagerProducer` + `StorageCapability`；`domain_store.py` 的 `DomainStore`（数据面 ABC）+ `DomainStoreProducer`。
-2. **端口接口统一为单一入口（消除双写法）**：原 F05 的 property 快捷方式与 `*_port(name)` 后缀接口功能重复（24 个端口成员里一半是另一半的特例）。统一为每 capability 一对带 name 参数的短名方法：`kv(name="default")` / `has_kv(name="default")`（其余五类同理），删 property 与 `*_port`/`has_*_port` 名。`RoutingStoreManager` 按 `(capability, name)` 缓存 `_LazyStorePort`，同键代理身份稳定。
+2. **端口接口统一为单一入口（消除双写法）**：原 F04 的 property 快捷方式与 `*_port(name)` 后缀接口功能重复（24 个端口成员里一半是另一半的特例）。统一为每 capability 一对带 name 参数的短名方法：`kv(name="default")` / `has_kv(name="default")`（其余五类同理），删 property 与 `*_port`/`has_*_port` 名。`RoutingStoreManager` 按 `(capability, name)` 缓存 `_LazyStorePort`，同键代理身份稳定。
 3. **`CompositeStorage` 拆为两个独立实现类（impl 目录同步拆分）**：`CompositeStoreManager` 持六类 Store + capabilities + security + 授权代理表，实现端口方法/健康聚合，`domain_store()` 返回已绑定实例；`CompositeDomainStore` 构造注入 `manager` + `preferred_pipeline`，实现领域方法与首选路径，`security` 委托 manager。实现类随 ABC 改名（`CompositeStorageManager` → `CompositeStoreManager`；`RoutingStorageManager` → `RoutingStoreManager`）。
 4. **`DomainStoreProducer` 支持 Factory 装配，但 manager 仍是唯一装配入口**：domain_store 不是平级 YAML 入口；装配链路为 manager `_build` → 预注册（打破循环依赖）→ `DomainStoreProducer.build(..., {"store_manager": <引用>, ...})` → domain builder 内 `StoreManagerProducer.dep` 回取 manager（命中预注册缓存）→ 构造 `CompositeDomainStore` → `bind_domain_store`。domain builder 的 `store_manager` 引用**必填**——独立构建会触发 manager 匿名重建的无限递归，缺引用 fail-fast；`preferred_retrieval_pipeline` 从 manager config 显式透传。
 5. **召回路装配的内收设计保留**（沿用 F06）：`_assemble_recallers` 移至 `domain_store_impl`（recallers 是数据面资源），**调用时机留在 manager `_build` 末尾**（开关键在 globals/manager params，domain 的新造 config 读不全）；isinstance 守卫后 `bind_recallers`。

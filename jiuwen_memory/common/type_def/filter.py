@@ -223,7 +223,7 @@ def validate(expr: FilterExpr) -> None:
 
 
 def from_dict(node: Any) -> FilterExpr:
-    """解析 F03 dict DSL 为 :data:`FilterExpr`（HTTP/SDK 边界用；不做 validate）。
+    """解析 元数据过滤 F03 dict DSL 为 :data:`FilterExpr`（HTTP/SDK 边界用；不做 validate）。
 
     规则：``{field: value}`` → ``EQ``；``{field: {op: value}}`` → 指定算子；
     ``AND``/``OR`` 值为非空 list；``NOT`` 值为单个表达式；顶层多键默认 ``AND``。

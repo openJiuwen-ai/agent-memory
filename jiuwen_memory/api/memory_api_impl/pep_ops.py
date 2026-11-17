@@ -316,7 +316,7 @@ class PepOpsMixin:
         info: SpaceInfo | None = None,
         patch: SpacePatch | None = None,
     ) -> None:
-        """空间生命周期状态校验（F07「空间状态校验」）。
+        """空间生命周期状态校验（群体记忆 F07「空间状态校验」）。
 
         排在授权通过之后、入口返回之前。位置是刻意的：排在授权之前，无权调用方也能凭
         错误类型判断出该空间处于冻结或归档，与「不泄露空间是否存在」的方向相反；排在
@@ -340,7 +340,7 @@ class PepOpsMixin:
         区分性由调用次序保证，不是自动成立的——次序被改动不会使任何既有用例失败。
 
         平台级角色一律通过那一行在本特性内无判据来源（平台级角色不属本特性范围），缺失
-        方向是更严格：冻结空间的运维介入须先解冻。见 F07 决策 4「四步无判据来源」。
+        方向是更严格：冻结空间的运维介入须先解冻。见 群体记忆 F07 决策 4「四步无判据来源」。
         """
         if not target.org or not target.space:
             return
@@ -675,7 +675,7 @@ class PepOpsMixin:
         *,
         now: datetime,
     ) -> _SpaceEntryDecision:
-        """空间级入口经唯一 PDP 判定（F04 §3.1：Authorizer 是唯一判定真源）。
+        """空间级入口经唯一 PDP 判定（安全能力 F04 §3.1：Authorizer 是唯一判定真源）。
 
         空间事实由 PEP 折算成属性投影随资源描述传入，Authorizer 不自行读取。逐轴
         调用而非一次判完：``AuthorizationDecision`` 的字段面已冻结、不带轴，鉴权点

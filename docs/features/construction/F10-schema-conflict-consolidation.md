@@ -70,7 +70,7 @@ seed（property + ACTIVE）
 ### 1. 新增 `EvolveMode.CONFLICT_CONSOLIDATE`，不扩现有 `CONSOLIDATE`
 
 两者语义、输入形态、产物都不同：`CONSOLIDATE` 消费单条写入流水、产出合成记忆；
-冲突巩固消费成簇历史、收敛既有记忆。新枚举值对 F04 调度框架零改动即可用（mode 无白名单
+冲突巩固消费成簇历史、收敛既有记忆。新枚举值对 F13 调度框架零改动即可用（mode 无白名单
 假设），入口层经 `_enum_value(EvolveMode, ...)` 自动接受，不需要新增透传分支。分支做在
 公用 `OrchestratingEvolver` 上，由装配注入 `ConflictConsolidator`；未注入时该模式
 空跑并返回空结果。
@@ -88,7 +88,7 @@ seed（property + ACTIVE）
 Schema 的同簇记忆天然同实体、同谓词，这些补丁全部不需要。
 动作也不携带实体/属性：归属键由簇继承，不靠 LLM 反推。处理范围由 seed 决定——实体取
 seed 命中的实体，且只有 `(实体, 属性)` 键被 seed 命中的簇参与本轮，同实体其它属性不
-扩散；规模由 F04 候选源（`window` / `filters`）收窄，聚类层不做簇数截断。
+扩散；规模由 F13 候选源（`window` / `filters`）收窄，聚类层不做簇数截断。
 
 ### 4. 两段 LLM：关系检测 → 动作规划
 
@@ -196,7 +196,7 @@ runner 为 evaluation/locomo，指标沿用其 top_k 10/20/50/200 多档切片�
 ## 已知遗留
 
 1. 只处理 seed 触及的 `(实体, 属性)` 键，没有按 Scope 全量扫描的后台入口；覆盖度取决于
-   F04 候选源能否把相关记忆带进本轮候选。
+   F13 候选源能否把相关记忆带进本轮候选。
 2. `ConflictConsolidator.max_tokens` 默认 2048，大簇的 JSON 可能被截断；本次评测在调用侧
    覆盖为 8192，尚未按簇大小自适应。
 3. 簇间与簇内两段 LLM 全部串行，单簇一次调用；成本与延迟随簇大小和 issue group 数线性

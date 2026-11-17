@@ -174,7 +174,7 @@ class UnsupportedCapabilityError(AgentMemoryError):
 
 
 class RelocationInProgressError(ConflictError):
-    """记忆正在搬迁（F09 D16）：写入被拒绝，可重试；映射为 HTTP 409。
+    """记忆正在搬迁（逻辑分片 F09 D16）：写入被拒绝，可重试；映射为 HTTP 409。
 
     重试语义与 :class:`ConflictError` 一致（继承它），但单独成类便于调用方区分
     「正在搬迁」和「同 id 已存在」，也避免把搬迁窗口当成永久冲突。

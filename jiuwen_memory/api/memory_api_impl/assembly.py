@@ -611,12 +611,12 @@ def _audit_verify_limits(root: ComponentConfig) -> AuditVerificationLimits:
 
 
 def _audit_verify_guard(ctx: AssemblyContext) -> WorkloadGuard:
-    """verify_audit 的专用 WorkloadGuard 预算（F05 §Protection §WorkloadGuard）。
+    """verify_audit 的专用 WorkloadGuard 预算（安全能力 F04 §Protection §WorkloadGuard）。
 
     引用名经 ``security.<name>.params.audit_verify_guard`` 指向 workload_guard 命名
     空间下的具名实例；未配置时匿名新建 semaphore（与 Runtime 其余 guard 的保守默认
     一致）。不与请求路径的 security_budget 共享预算——审计全量验证是重操作，与认证
-    风暴互挤槽位会让一边饿死另一边（F05 §WorkloadGuard：审计验证必须使用专用实例）。
+    风暴互挤槽位会让一边饿死另一边（安全能力 F04 §WorkloadGuard：审计验证必须使用专用实例）。
     """
     names = sorted(ctx.namespaces.get("security", {}))
     if not names:
@@ -872,7 +872,7 @@ def _assemble_kernel(
         # 具名引用时 Factory 缓存具名实例，本层与两个 Evolver 取到同一个对象；而 Evolver
         # 的组件配置里内联 router 参数时，optional_router 走 dep 的内联分支建匿名实例，
         # 两侧判定表可以不同。此时写入边界拒绝的键集合按本层的表算、实际落点按构建层的
-        # 表算，两者错位。判定表不另设解析路径的理由见 F07「归属判定算子」，那一条约束的
+        # 表算，两者错位。判定表不另设解析路径的理由见 群体记忆 F07「归属判定算子」，那一条约束的
         # 是同一实例内不出现两份表，跨实例的一致由本处的配置写法决定。
         router=optional_router(root),
         document_mode=should_write_document(root.get(WRITE_DOCUMENT_KEY)),
@@ -1025,7 +1025,7 @@ def _reject_test_only_authorizer(authorizer: Authorizer, config: Config | None) 
 
 
 def _reject_routing_without_space_authorization(api: LocalMemoryAPI) -> None:
-    """拒绝「判定表已配置而判定实现不读空间事实」的组合（F07「两个开关」）。
+    """拒绝「判定表已配置而判定实现不读空间事实」的组合（群体记忆 F07「两个开关」）。
 
     两个开关互不相关、可各自开启，四种组合里只有这一种是配置错误：内容按坐标分流进协作
     空间，而协作空间没有任何权限边界，等于把内容写进一个组织内任意主体可读的位置。方向
@@ -1050,7 +1050,7 @@ def _warn_inert_permission_namespace(
 ) -> None:
     """permission 段与 authorizer 的空间语义一致性守卫。
 
-    空间级判定已收敛到 authorizer（F04 §3.1），permission 段在内容读写路径上不再
+    空间级判定已收敛到 authorizer（权限路由 F04 §3.1），permission 段在内容读写路径上不再
     被调用。两个处置分支：
 
     - permission 段显式选了声明 ``requires_space_facts`` 的管理器（如 space_aware），

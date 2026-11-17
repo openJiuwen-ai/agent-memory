@@ -1,4 +1,4 @@
-"""授权能力契约：Authorizer 与注册式 Producer（F05 §Authorization）。
+"""授权能力契约：Authorizer 与注册式 Producer（安全能力 F04 §Authorization）。
 
 Authorizer 是 **PDP**（决策点）：根据可信身份、动作和真实资源属性回答「这次操作
 是否允许」。它不知道 HTTP、不知道 MemoryUnit、不读存储真源——那些是 **PEP**
@@ -7,12 +7,12 @@ Authorizer 是 **PDP**（决策点）：根据可信身份、动作和真实资�
 与被它取代的 ``control.permission.PermissionManager`` 的三点差别：
 
 1. **输入封闭**。固定为 ``AuthContext + ResourceDescriptor + AuthorizationEnvironment``
-   （F05 §Authorization），不再有 ``auth=None`` 这条「没有认证上下文时退回纯 ACL」
+   （安全能力 F04 §Authorization），不再有 ``auth=None`` 这条「没有认证上下文时退回纯 ACL」
    的兼容线——那条线的实际效果是「谁都不传 auth 就都按无角色处理」。
-2. **不读 ContextVar**（F05 §授权不变量 7）。全部判定依据显式入参：单测不必先布置
+2. **不读 ContextVar**（安全能力 F04 §授权不变量 7）。全部判定依据显式入参：单测不必先布置
    环境态，判定依据在调用点就能读全。
 3. **输出带原因**。返回 :class:`AuthorizationDecision` 而非 ``bool``：审计要记稳定
-   reason code（F05 §可观测性），布尔值到了审计那里只剩「拒了」。
+   reason code（安全能力 F04 §可观测性），布尔值到了审计那里只剩「拒了」。
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ class Authorizer(RoutingFieldsProvider, ABC):
         """
 
     def is_test_only(self) -> bool:
-        """本实现是否只允许出现在测试装配中（F05 §授权不变量 8）。
+        """本实现是否只允许出现在测试装配中（安全能力 F04 §授权不变量 8）。
 
         默认 ``False``。allow-all 这类恒放行实现返回 ``True``，装配层据此在生产模式
         拒绝启动。用 capability 而非 ``target == "allow_all"`` 判断，是 S08 不变量 7

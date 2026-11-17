@@ -16,7 +16,7 @@
 AgentEngine（`engine_impl/agent_engine.py`）的 agent 场景配置显式开启文档模式（`write_document=true`，
 真源是 markdown + 影子索引，**不写 KV**——KV 仅保留为 vector chunk_tracking）。但
 AgentEngine 照搬 InMemoryEngine 的 KV 直读路径，没接上 `CompositeDomainStore` 早已实现
-的文档模式 shadow 分流（F08 §5.3：`get`→`shadow.get_units` line126、`list`→
+的文档模式 shadow 分流（storage/F08 §5.3：`get`→`shadow.get_units` line126、`list`→
 `shadow.list_units` line127、`scopes`→`shadow.scopes`）。文档模式下 KV 不持有
 MemoryUnit，导致多条路径断口：
 
@@ -63,7 +63,7 @@ issue #261 落地（见「方案 A（后采纳）」），engine 侧绕过仍保
   `unit.lifecycle = target; index.update([...])` 落 shadow——不调 `lifecycle.transition`。
   DOWNWEIGHT 不改 lifecycle（上方已单独处理），不受影响。非文档模式维持 `lifecycle.transition`。
   `index.update→domain.update` 文档分支按「md 可见性」删块（#261 方案 C，见
-  [F08](../../storage/F08-document-memory.md)「写入路径分流」update 行）：`FORGOTTEN`
+  [F08](../storage/F08-document-memory.md)「写入路径分流」update 行）：`FORGOTTEN`
   物理删 md 块（遗忘=从文档消失），`ARCHIVED` 保留 md 块（转冷可回溯），`SUPERSEDED` 维持
   已删；sweep FORGOTTEN（经 `lifecycle.transition` 回写真源 → `domain.update`）同口径统一删块。
 - 绕过不校验 `_ensure_transition_allowed`（对齐 CloudEngine SUPERSEDE 绕过不校验的简化风格）。
@@ -94,7 +94,7 @@ KV/DomainStore 双适配（`CandidateStore = KVStore | DomainStore`，`_is_kv_st
 
 Agent 文档模式可直接通过 `system_metadata.project` 写入项目记忆。搜索时传入
 `Context.extensions["coords"]["project"]`，召回该项目和未指定项目的记忆。
-项目条件复用 F08 的影子索引过滤，显式 `filters` 可进一步收窄结果。
+项目条件复用 storage/F08 的影子索引过滤，显式 `filters` 可进一步收窄结果。
 
 ## 拒绝的方案
 

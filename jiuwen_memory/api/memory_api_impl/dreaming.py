@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""API 层 dreaming 编排（F04 —— 定时演进的注册 / 注销 / 恢复 / 持续授权）。
+"""API 层 dreaming 编排（dreaming F13 —— 定时演进的注册 / 注销 / 恢复 / 持续授权）。
 
 PEP 边界（S03）下的分工：Control 层（Engine / EvolveJob / resolver）是**纯执行件**
 ——不认识 actor、不做鉴权；本模块是 API 层的 dreaming 调度服务，承担全部授权语义：
@@ -15,7 +15,7 @@ PEP 边界（S03）下的分工：Control 层（Engine / EvolveJob / resolver）
   拒绝桶标签回显不静默吞、不中断其余桶。
 
 驱动链：DriverJob（定时）→ 每 tick 复验 + 逐桶裁决 → ``commands.evolve`` →
-Engine.evolve → 一次性 EvolveJob（唯一执行链条，F04 红线：不得另写执行链）。
+Engine.evolve → 一次性 EvolveJob（唯一执行链条，dreaming F13 红线：不得另写执行链）。
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def _parse_fan_out(candidate: CandidateSource | dict | None) -> FanOutCandidate 
 class DreamingDriverJob(Job):
     """dreaming 驱动任务（API 层）——每 tick：复验授权 → fan-out 裁决 → 提交 EvolveJob。
 
-    持续授权的载体（F04 D7）：一次性入口鉴权不覆盖任务存续期——本 Job 持有
+    持续授权的载体（dreaming F13 D7）：一次性入口鉴权不覆盖任务存续期——本 Job 持有
     注册者 actor，每 tick 以它重新走 API 层鉴权（与入口同一套组件，判定不漂移）。
     拒绝 → 注销注册表（防重启复活）→ 抛 PermissionDeniedError（调度器停父
     定时器）。任务本体**不执行演进**——每 tick 经 ``commands.evolve`` 提交一次性
@@ -424,7 +424,7 @@ class DreamingCoordinator:
         顺序：调度器能力（``supports_recurring``）→ ``validate``（interval <
         tick_interval 拒绝）→ submit（拿到 job_id）→ 落盘。校验全部在副作用
         （落盘）之前——「注册了但任务拒绝」不产生残留注册；落盘失败回滚
-        ``cancel``（F04 D8 写序）——不留「定时器在跑、注册表无记录」的
+        ``cancel``（dreaming F13 D8 写序）——不留「定时器在跑、注册表无记录」的
         注销不掉幽灵任务。
         """
         scheduler = self._scheduler
@@ -507,7 +507,7 @@ class DreamingCoordinator:
         """注销定时演进（dreaming=False，幂等）：先持久化意图，再取消。
 
         未注册返回 None——**不退化为立即执行**（立即跑只能由 dreaming=None
-        明确触发，F04 D2）。Scheduler 取消在协调器状态锁外等待；失败时保留
+        明确触发，dreaming F13 D2）。Scheduler 取消在协调器状态锁外等待；失败时保留
         ``CANCEL_REQUESTED``，旧 Driver 下个 tick 会自停，重启恢复也不会复活。
         """
         with self._serialize_mutation(scope, mode):
@@ -577,7 +577,7 @@ class DreamingCoordinator:
     def link_spawned_job(self, job_id: str, parent_job_id: str) -> None:
         self._scheduler.link_child(job_id, parent_job_id)
 
-    # ---- 重启恢复（F04 D8 单实例部署模型） -------------------------------- #
+    # ---- 重启恢复（dreaming F13 D8 单实例部署模型） -------------------------------- #
 
     def restore(self) -> list[str]:
         """串行化恢复与在线注册/注销，避免同一声明被交叉换绑。"""
@@ -713,7 +713,7 @@ class DreamingCoordinator:
                 self._cancel_local_jobs(self._detach_local_jobs())
                 raise
             except Exception as exc:
-                # 同 register 写序（F04 D8）：换绑落盘失败回滚 cancel——否则
+                # 同 register 写序（dreaming F13 D8）：换绑落盘失败回滚 cancel——否则
                 # 注册表留着旧 job_id，注销 cancel 旧 id 是 no-op，新定时器成幽灵。entry
                 # 保留旧值（与损坏记录同待遇），装配修复后下次重启可恢复。
                 if job_id is not None:

@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""进程内信号量预算：昂贵安全操作的并发上限（F05 §Protection §WorkloadGuard）。
+"""进程内信号量预算：昂贵安全操作的并发上限（安全能力 F04 §Protection §WorkloadGuard）。
 
 ``BoundedSemaphore`` 非阻塞 acquire：有空槽立刻占用，耗尽即返回 ``False`` 让调用方
 翻译成 429。不排队——排队会把资源耗尽从 CPU/内存转移到线程与请求队列。

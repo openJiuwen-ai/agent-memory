@@ -156,7 +156,7 @@ class LocalMemoryAPI(
             space_lifecycle if space_lifecycle is not None else SpaceLifecycleService(engine, space)
         )
         self._governance = governance if governance is not None else GovernanceService(governor)
-        # dreaming 调度服务（F04，PEP 边界）：注册 / 注销 / 恢复 / 持续授权与
+        # dreaming 调度服务（dreaming F13，PEP 边界）：注册 / 注销 / 恢复 / 持续授权与
         # fan-out 逐桶裁决都在 API 层——Engine / EvolveJob 是纯执行件。须在全部
         # 组件装配完成后创建（它反向引用本 API 的鉴权组件、Engine 与 Scheduler）。
         self._dreaming = DreamingCoordinator(

@@ -76,7 +76,7 @@ SCOPE = {"org": "local", "user": "developer"}
 
 @pytest.mark.parametrize("name", ["memory_quarantine_source", "memory_release_source"])
 def test_source_governance_tools_are_not_agent_facing(name) -> None:
-    """来源治理只在管理面暴露（F10 D4）：MCP 是 Agent 入口，不应注册这两个工具。"""
+    """来源治理只在管理面暴露（角色记忆 F11 D4）：MCP 是 Agent 入口，不应注册这两个工具。"""
     assert name not in {tool.name for tool in asyncio.run(mcp_main.mcp.list_tools())}
 
 
@@ -337,7 +337,7 @@ def _wait_job_terminal(job_id: str, scope: dict[str, Any]) -> dict[str, Any]:
 # --- A. 契约锁：工具签名与 MemoryAPI 契约零漂移 -------------------------------- #
 
 
-# 治理面只在 HTTP / CLI 暴露，不进 Agent 工具清单（F10 D4）。
+# 治理面只在 HTTP / CLI 暴露，不进 Agent 工具清单（角色记忆 F11 D4）。
 _MCP_HIDDEN_VERBS = {"quarantine_source", "release_source"}
 
 
@@ -698,7 +698,7 @@ def test_search_returns_original_result_shape(kernel) -> None:
     asyncio.run(mcp_main.memory_add(content="hello coffee", scope=SCOPE))
     result = asyncio.run(mcp_main.memory_search(query="coffee", context={"scope": SCOPE}, top_k=5))
     assert isinstance(result, dict)
-    # 契约：RetrievalResult 的字段机械展开（F10 6.2.6 给 search 增加了职责视图可选字段）。
+    # 契约：RetrievalResult 的字段机械展开（角色记忆 F11 6.2.6 给 search 增加了职责视图可选字段）。
     assert set(result) == {
         "items", "errors", "trajectory", "paths", "gaps", "view_meta"
     }
@@ -974,7 +974,7 @@ def test_fastmcp_call_tool_marshals_arguments(kernel) -> None:
     # -> list[dict]（如 memory_add）带 structured 输出，返回 (blocks, {"result": ...})；
     # -> dict（如 memory_get）无 structured 输出，直接返回 [TextContent(结果 JSON)]。
     # occurred_at 走 call_tool 锁两件事：pydantic 编组层按 str 放行 ISO 字符串；
-    # 且按 F07 语义落 temporal.t_message——t_event 由 Extractor 从内容提取，恒 None。
+    # 且按 t_message F07 语义落 temporal.t_message——t_event 由 Extractor 从内容提取，恒 None。
     occurred_at = "2026-06-17T10:00:00+00:00"
     blocks, structured = asyncio.run(
         mcp_main.mcp.call_tool(
@@ -986,7 +986,7 @@ def test_fastmcp_call_tool_marshals_arguments(kernel) -> None:
     assert units[0]["segments"][0]["content"] == "marshalled"
     assert json.loads(blocks[0].text)["id"] == units[0]["id"]
     assert units[0]["temporal"]["t_message"] == occurred_at, (
-        "occurred_at 应落 temporal.t_message（F07 消息时间语义）"
+        "occurred_at 应落 temporal.t_message（t_message F07 消息时间语义）"
     )
     assert units[0]["temporal"]["t_event"] is None, "t_event 由内容提取，不经 occurred_at 下传"
     got = asyncio.run(

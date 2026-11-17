@@ -63,12 +63,12 @@ _DEFAULT_CLASS = (
 )
 # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
 _DEFAULT_LIFECYCLE = "active"
-_DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，F07 §4.4.3）
+_DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，文档记忆根设计 §4.4.3）
 
 # project 作为配置声明的收窄维，coords 折算后以 ``system_metadata.project`` 谓词
 # 下推（``IN ["", <value>]``，空串兜底：该维不适用/判否的条目一并命中，见
 # ``space_predicates._narrow_predicates``）。召回侧从此谓词取 project 值，
-# 而非从 Scope（团队记忆根本不走 scope 字段，F08 §1.2 复用 coords）。
+# 而非从 Scope（团队记忆根本不走 scope 字段，文档记忆根设计 §1.2 复用 coords）。
 _PROJECT_FILTER_FIELD = "system_metadata.project"
 
 # 召回按 project 过滤单批下推，不再按 category 分批（路径甲：召回只看过滤条件，
@@ -121,15 +121,15 @@ def _build_schema(vec_dim: int | None) -> str:
     只建 ``memory_unit`` + ``memory_fts`` 两表，跳过 ``memory_vec``——
     降级场景下向量召回缺一路，倒排与全量存储照常。
 
-    ``memory_unit.category`` 列名保留（不改表结构），但 F08 复用 memory_class 后落的
-    是 memory_class 值（如 ``daily_memory``），默认值取 F08 §2 兜底 ``long_term_memory``——
+    ``memory_unit.category`` 列名保留（不改表结构），但 文档记忆根设计 复用 memory_class 后落的
+    是 memory_class 值（如 ``daily_memory``），默认值取 文档记忆根设计 §2 兜底 ``long_term_memory``——
     非 F07 原设计的 ``diary``。
 
     FTS5 ``tokenize``： ``'simple'``（"不二次分词，分词归 jieba 预处理"），
     但当前运行环境的 SQLite 不含 ``simple`` tokenizer（仅 ``unicode61``/``ascii``/``porter``）。
     改用 ``'unicode61'``——写入前已用注入 tokenizer 预分词成空格分隔 token 串，
     unicode61 按空格切分即还原 token，满足"FTS5 只管倒排结构、分词归预处理器"的设计意图
-    （见 F08 §4 步骤4 待定项4 修订）。
+    （见 文档记忆根设计 §4 步骤4 待定项4 修订）。
 
     FTS5 external content 模式： 用 ``content='memory_unit'`` 关联回 memory_unit
     以「不重复存正文」。但 external content 要求关联表有同名 ``content`` 列，而 memory_unit
@@ -137,7 +137,7 @@ def _build_schema(vec_dim: int | None) -> str:
     ``no such column: T.content``。改用**普通 FTS5 表**（自存 token 串），靠 INSERT 时显式
     给相同 ``rowid`` 与 memory_unit 对齐——代价是 token 串存两份（FTS5 一份 + unit_json 内含
     原 content），但 token 串非原正文体积可控，且消除列名约束的运维负担
-    （见 F08 §4 步骤4 修订）。
+    （见 文档记忆根设计 §4 步骤4 修订）。
     """
     ddl = f"""
 CREATE TABLE IF NOT EXISTS memory_unit (
@@ -306,12 +306,12 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
 def _ensure_system_columns(conn: sqlite3.Connection) -> None:
     """迁移：旧版 ``memory_unit`` 表缺投影列时补齐。
 
-    F08 实现期 schema 演进——``CREATE TABLE IF NOT EXISTS`` 不会给已存在的旧表加列，
+    文档记忆根设计 实现期 schema 演进——``CREATE TABLE IF NOT EXISTS`` 不会给已存在的旧表加列，
     故用 ``PRAGMA table_info`` 探测 + ``ALTER TABLE ADD COLUMN`` 幂等补齐，不丢已写入
     unit 数据（对比 DROP 重建）。NOT NULL 列须带默认值（SQLite 约束）。
 
     补齐两类列：
-    - lifecycle/t_valid/t_invalid/t_event：F08 初版投影列；
+    - lifecycle/t_valid/t_invalid/t_event：文档记忆根设计 初版投影列；
     - org/space/user/agent/session：scope 原生隔离五列（对齐 KV 五段等值 WHERE）。
 
     旧表迁移**不回填**：旧行 scope 五列落 ``DEFAULT ''``，严格等值下只对空 Scope()
@@ -497,7 +497,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 vec_dim = None
         # _build_schema(vec_dim=None) 时跳过 memory_vec DDL；executescript 一次跑完
         conn.executescript(_build_schema(vec_dim))
-        # 迁移：旧表缺 lifecycle/t_valid/t_invalid/t_event 投影列时幂等补齐（F08 实现期演进）
+        # 迁移：旧表缺 lifecycle/t_valid/t_invalid/t_event 投影列时幂等补齐（文档记忆根设计 实现期演进）
         _ensure_system_columns(conn)
         return conn
 
@@ -511,20 +511,20 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _content_of(unit: MemoryUnit) -> str:
-        """取 ``segments[0].content`` 作正文（F07 §11.2/§11.5）。"""
+        """取 ``segments[0].content`` 作正文（文档记忆根设计 §11.2/§11.5）。"""
         segs = unit.segments or []
         return segs[0].content if segs else ""
 
     @staticmethod
     def _content_hash(content: str) -> str:
-        """``content`` 整段 sha256，不归一化（F08 §4 步骤4 待定项3，取最简）。"""
+        """``content`` 整段 sha256，不归一化（文档记忆根设计 §4 步骤4 待定项3，取最简）。"""
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _project_of(unit: MemoryUnit) -> str:
         """取 project：``system_metadata.project``（agent 场景标量直传）优先，
         ``coords.project``（router 场景 ``_route`` 回写）兜底，空落空串
-        （``_DEFAULT_PROJECT``，跨项目可见；F08 §1.2/§3）。与召回侧
+        （``_DEFAULT_PROJECT``，跨项目可见；文档记忆根设计 §1.2/§3）。与召回侧
         ``_PROJECT_FILTER_FIELD`` 同 key 口径一致——
         召回按 ``system_metadata.project`` 谓词下推，写入侧同此 key 取值。
         """
@@ -579,9 +579,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _category_of(unit: MemoryUnit) -> str:
-        """落 memory_class 值，空落 ``long_term_memory``（F08 §2/§5）。
+        """落 memory_class 值，空落 ``long_term_memory``（文档记忆根设计 §2/§5）。
 
-        md.write 已在写入 md 前兜底回填 memory_class（F08 §4 步骤6 关键细节），
+        md.write 已在写入 md 前兜底回填 memory_class（文档记忆根设计 §4 步骤6 关键细节），
         故此处一般非空；留兜底是为防直接调 ``insert_units``（不经 md.write）的场景。
         """
         metadata = unit.system_metadata or {}
@@ -608,7 +608,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 raise
 
     def _insert_one(self, conn: sqlite3.Connection, unit: MemoryUnit) -> None:
-        # 冲突预检：unit_id 已存在报 ConflictError（对齐 KVStore.insert 语义，F07 §11.3）
+        # 冲突预检：unit_id 已存在报 ConflictError（对齐 KVStore.insert 语义，文档记忆根设计 §11.3）
         existing = conn.execute("SELECT 1 FROM memory_unit WHERE unit_id=?", (unit.id,)).fetchone()
         if existing is not None:
             raise ConflictError("shadow", unit.id)
@@ -631,7 +631,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         t_event = _t_event_of(unit)
         unit_json = dumps(unit)
 
-        # ① memory_unit（拿隐式 rowid，FTS5/vec0 靠它关联，F07 §11.2 注 A）。
+        # ① memory_unit（拿隐式 rowid，FTS5/vec0 靠它关联，文档记忆根设计 §11.2 注 A）。
         # scope 五列与 project 同级下推：org/space/user/agent/session 严格等值隔离
         # （对齐 KV 五段等值 WHERE，见 sqlite_kv_store），与 project（收窄维，
         # IN ['', value]）正交。user_profile 的 project 空串守卫（见上方）不延伸到 scope
@@ -660,7 +660,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         rowid = row[0]
 
         # ② memory_fts：注入 tokenizer 预分词成 token 串，
-        # FTS5 tokenize='simple' 不二次分词（F07 §11.5）。
+        # FTS5 tokenize='simple' 不二次分词（文档记忆根设计 §11.5）。
         tokens = self._tokenizer.tokenize(content)
         fts_content = " ".join(tokens)
         conn.execute(
@@ -682,7 +682,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
     def get_units(
         self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False
     ) -> list[MemoryUnit]:
-        """按 ``unit_id`` 点查全量 ``MemoryUnit``（F07 §11.3 / F08 §5.1）。
+        """按 ``unit_id`` 点查全量 ``MemoryUnit``（文档记忆根设计 §11.3 / 文档记忆根设计 §5.1）。
 
         ``scope`` 原生隔离——影子索引靠 scope 保等值 WHERE 隔离（对齐 KV 保等值
         过滤），与 project（收窄维）+ category（落盘键）正交。点查按 scope
@@ -730,7 +730,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         return [hits[uid] for uid in unit_ids if uid in hits]
 
     def find_unit_ids_by_content_hash(self, scope: Scope, content_hash: str) -> list[str]:
-        """按 ``content_hash`` 在 scope 内反查 ``unit_id``（F08 §D3）。
+        """按 ``content_hash`` 在 scope 内反查 ``unit_id``（文档记忆根设计 §D3）。
 
         ``read_md_file`` / ``edit_md_file`` 的 hash 反查落点：读 md 按块算
         ``content_hash``（与 :meth:`_content_hash` 同口径 ``sha256`` 不归一化）后，用
@@ -767,7 +767,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         return [uid for (uid,) in rows]
 
     def update_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """覆写全量 ``unit_json``，按 ``content_hash`` 变化判定投影是否重建（F07 §11.3）。
+        """覆写全量 ``unit_json``，按 ``content_hash`` 变化判定投影是否重建（文档记忆根设计 §11.3）。
 
         id 不存在报 :class:`NotFoundError`（对齐 :meth:`KVStore.update`）。``scope`` 不参与
         过滤（与 insert/get/list 同口径，靠 project+category 隔离）。
@@ -801,7 +801,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 raise
 
     def _update_one(self, conn: sqlite3.Connection, unit: MemoryUnit) -> None:
-        # 旧行定位：id 不存在报缺失（对齐 KVStore.update 语义，F07 §11.3）。
+        # 旧行定位：id 不存在报缺失（对齐 KVStore.update 语义，文档记忆根设计 §11.3）。
         # project/md_filename/category 一并取出，供下方「空兜底守卫」保留旧列值。
         row = conn.execute(
             "SELECT rowid, content_hash, project, md_filename, category "
@@ -895,7 +895,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         if new_hash == old_hash:
             return
 
-        # FTS5 重建：删旧行再插新行（token 串重分词，F07 §11.5）。
+        # FTS5 重建：删旧行再插新行（token 串重分词，文档记忆根设计 §11.5）。
         conn.execute("DELETE FROM memory_fts WHERE rowid=?", (rowid,))
         tokens = self._tokenizer.tokenize(content)
         fts_content = " ".join(tokens)
@@ -914,7 +914,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             )
 
     def delete_units(self, scope: Scope, unit_ids: list[str]) -> None:
-        """按 ``unit_id`` 删全量 + 投影（幂等），同事务显式删三表（F07 §11.3）。
+        """按 ``unit_id`` 删全量 + 投影（幂等），同事务显式删三表（文档记忆根设计 §11.3）。
 
         **幂等**：删不存在的 id 静默跳过（不报 NotFoundError），与 :meth:`KVStore.delete`
         「缺失不报错」对齐——delete 语义是「确保不存在」，非「必须已存在」。
@@ -1000,10 +1000,10 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
     def list_units_by_md(
         self, scope: Scope, md_filename: str, *, lifecycle: str | None = None
     ) -> list[tuple[str, str]]:
-        """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用（F07 §12.3）。
+        """按 ``md_filename`` 查该文件所有 unit，供看门狗同步用（文档记忆根设计 §12.3）。
 
         返回 ``(unit_id, content_hash)`` 二元组。看门狗比 md 文件现存 unit 与 shadow
-        索引登记的 content_hash 判定漂移（F07 §12.3），故只需 ``content_hash`` 不需
+        索引登记的 content_hash 判定漂移（文档记忆根设计 §12.3），故只需 ``content_hash`` 不需
         ``unit_json`` 全量。``scope`` 不参与过滤——看门狗跨 scope 诊断（用空 Scope() 占位，
         加 scope WHERE 会断对账）。md 文件按 memory_class+coords.project 组织、不按 scope
         组织，单文件可含多 scope unit。影子索引其余方法已加 scope 原生隔离，本方法是看门狗诊断例外。
@@ -1089,7 +1089,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         category 谓词。
 
         query.text 先用注入 tokenizer 预分词成 token 串再 MATCH，与写入侧 insert_units
-        口径一致（F07 §11.5）。FTS5 是前置过滤，无召回不足风险（§4.4.2）。
+        口径一致（文档记忆根设计 §11.5）。FTS5 是前置过滤，无召回不足风险（§4.4.2）。
         """
         with self._lock:
             conn = self._ensure_conn()

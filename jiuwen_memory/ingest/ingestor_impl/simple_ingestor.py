@@ -13,7 +13,7 @@ JSON 包络，由 VideoMemoryExtractor ``json.loads`` 后拆成 CLM/ELM），切
 模态自身的边界完成，这里按字符数再切只会把包络切成非法片段、导致抽取零产出
 （issue #294）。谁生产该格式谁声明，接入层不维护模态白名单。
 
-来源标识（construction F10）：调用方未显式给 ``system_metadata["origin"]`` 时默认写 ``original``；
+来源标识（construction 重要度 F12）：调用方未显式给 ``system_metadata["origin"]`` 时默认写 ``original``；
 派生记忆的 ``inferred`` 由构建层产出算子自己写。
 """
 

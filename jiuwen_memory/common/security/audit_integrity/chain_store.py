@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""ChainedAuditStore - 后端原子链式追加 capability（F05 §Audit Integrity）。
+"""ChainedAuditStore - 后端原子链式追加 capability（安全能力 F04 §Audit Integrity）。
 
 接口**表达行为保证**，而不是只提供若干方法：``ChainStoreCapability`` 声明持久化、
 原子追加、稳定链头快照、key epoch、外部锚点、流式扫描六项能力。完整性能力不根据
-target 名判断后端性质；必需 capability 缺失时装配拒绝（F05 §依据 capability 做安全
+target 名判断后端性质；必需 capability 缺失时装配拒绝（安全能力 F04 §依据 capability 做安全
 决策）。
 
 核心操作语义::
@@ -110,7 +110,7 @@ class ChainSnapshot:
 class ChainStoreCapability:
     """后端显式声明的行为保证。
 
-    装配期据此判断后端能否承担完整性保护，不从 target 名或类名推断（F05 §依据
+    装配期据此判断后端能否承担完整性保护，不从 target 名或类名推断（安全能力 F04 §依据
     capability 做安全决策）。任一必需 capability 缺失即拒绝装配。
     """
 

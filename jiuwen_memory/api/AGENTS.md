@@ -4,7 +4,7 @@
 
 > 本文档只记录相对稳定的模块本地规约（职责边界、行为铁律、本地约束）。特性设计与方案取舍记录在 `docs/features/` 下。
 >
-> **文档分工**：`docs/design/architecture.md` §6 = 已实现接口清单；本目录 = 已实现代码；S02 = 详细用法与方法总览（含尚未实现标注）；`docs/features/api/`（F01–F07）= 特性决策。尚未实现接口上库后须同步 S02 与 §6。
+> **文档分工**：`docs/design/architecture.md` §6 = 已实现接口清单；本目录 = 已实现代码；S02 = 详细用法与方法总览（含尚未实现标注）；`docs/features/api/`（F01–F10）= 特性决策。尚未实现接口上库后须同步 S02 与 §6。
 
 统一对外 Core API，所有接入形态（SDK/CLI/MCP/HTTP）最终映射到 `MemoryAPI`。本层是控制层的薄封装：做参数装配与鉴权，编排逻辑全部在 `jiuwen_memory/control`。
 

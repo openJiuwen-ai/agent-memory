@@ -440,7 +440,7 @@ def test_index_builders_write_sentinel_for_open_ended_t_invalid():
 
 
 def test_index_builders_write_sentinel_for_unknown_t_event():
-    """t_event 为空（F07 派生常为此值）时索引落哨兵 0，非空时落真实时间戳。
+    """t_event 为空（t_message F07 派生常为此值）时索引落哨兵 0，非空时落真实时间戳。
 
     字段缺失会被事件窗下推 ``t_event GTE/LT`` 按缺失字段排他，对含时间词 query
     系统性空召回——哨兵使 OR(AND(GTE,LT), EQ 0) 谓词的 EQ 分支成立。哨兵只在

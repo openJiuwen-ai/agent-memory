@@ -9,7 +9,7 @@
 ``merge_unit_tags`` 负责把调用方 write tags 与 LLM/系统标记合并进派生 unit，
 不对最终列表套 :data:`MAX_TAGS`（``MAX_TAGS`` 只约束 LLM 产出段）。
 
-重要度与来源标识（F10）：LLM 只判重要度类别，数值由 ``importance_category_map``
+重要度与来源标识（重要度 F12）：LLM 只判重要度类别，数值由 ``importance_category_map``
 （globals）查表；原文路径（classifier）只补缺不覆盖调用方显式值，派生路径（抽取/抽象）
 总写查表值与 ``origin=inferred``；去重 UPDATE/SUPERSEDE 取 max。
 """
@@ -157,7 +157,7 @@ def merge_unit_tags(*tag_lists: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# 重要度与来源标识（F10）
+# 重要度与来源标识（重要度 F12）
 # ---------------------------------------------------------------------------
 
 DEFAULT_IMPORTANCE = "0.50"
@@ -267,7 +267,7 @@ def default_importance_for_category(
 def inferred_attribution(
     category: str | None, category_map: Mapping[str, str] | None
 ) -> dict[str, str]:
-    """派生记忆的 F10 元数据：总写查表重要度 + ``origin=inferred``。
+    """派生记忆的 重要度 F12 元数据：总写查表重要度 + ``origin=inferred``。
 
     放在 ``inherited_system_metadata(...) | {...}`` 的右侧，覆盖从源继承来的值——派生
     记忆的重要度由它自己的类别决定，不沿用源原文的。

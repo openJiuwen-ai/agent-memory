@@ -646,7 +646,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
                 # 文档模式 supersede：old 经 shadow 读回 coords 是 TRANSIENT 键（dumps
                 # 剥除），deepcopy 的 new 无 coords → domain_store.add 内 _project_of
                 # 读 coords 落空 → 新版落错 md 文件。从 old 的 md_filename（落盘键，不
-                # 剥除）反推 project 回写 new 的 coords（对齐 CloudEngine，F08 §5.2.1）。
+                # 剥除）反推 project 回写 new 的 coords（对齐 CloudEngine，文档记忆 F08 §5.2.1）。
                 restore_coords_from_md_filename(new, old)
             # 新版先落地再废旧版：任何时刻都有一个可读版本。反过来的话，若 build 失败，
             # 旧版已 SUPERSEDED 而新版尚未存在，这条记忆既退出活跃召回又无新版可读。
@@ -656,7 +656,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
                 # KVLifecycleManager.supersede 从 KVStore 取 unit，文档模式真源在
                 # shadow、KV 不持有 MemoryUnit，走它必 NotFoundError。直接改 old 落
                 # shadow（content_hash 不变→shadow.update_units 只覆写 unit_json +
-                # lifecycle 投影列，F08 决策三）。对齐 CloudEngine。
+                # lifecycle 投影列，文档记忆 F08 决策三）。对齐 CloudEngine。
                 old.lifecycle = LifecycleState.SUPERSEDED
                 old.temporal.t_invalid = new.temporal.t_valid or _now()
                 self._index.update([old])
@@ -858,7 +858,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         *,
         line_range: tuple[int, int] | None = None,
     ) -> list[MemoryUnit]:
-        """异步协程：委托 DomainStore.read_md_file（``asyncio.to_thread``），F08。
+        """异步协程：委托 DomainStore.read_md_file（``asyncio.to_thread``），文档记忆 F08。
 
         与 :meth:`CloudEngine.read_md_file` 同构——project 从 ``context.extensions``
         拆出（:func:`project_from_context`），scope 从 ``context.scope`` 取，经
@@ -880,7 +880,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         old_text: str,
         new_text: str,
     ) -> list[MemoryUnit]:
-        """异步协程：委托 DomainStore.edit_md_file（``asyncio.to_thread``），F08。
+        """异步协程：委托 DomainStore.edit_md_file（``asyncio.to_thread``），文档记忆 F08。
 
         与 :meth:`CloudEngine.edit_md_file` 同构。AgentEngine 默认文档模式，DomainStore
         内部完成继承式 SUPERSEDE 同步（scope 取 ``context.scope``——AgentEngine 多空间、

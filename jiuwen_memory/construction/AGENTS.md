@@ -22,7 +22,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `extractor.py` | Extractor 接口：信息提取（低抽象粒度） |
 | `abstractor.py` | Abstractor 接口：抽象与精炼/升华（高抽象粒度） |
 | `associator.py` | Associator 接口：关联分析（实体共指/因果链/引用关系） |
-| `common.py` | 构建层共享工具：LLM 尝试策略、派生 metadata 继承，以及 F10 重要度（`parse_importance` / 类别查表 `importance_category_map_from_config` / `inferred_attribution` / `fill_missing_importance` / `merge_importance_max` / prompt 类别段） |
+| `common.py` | 构建层共享工具：LLM 尝试策略、派生 metadata 继承，以及 F12 重要度（`parse_importance` / 类别查表 `importance_category_map_from_config` / `inferred_attribution` / `fill_missing_importance` / `merge_importance_max` / prompt 类别段） |
 | `classifier.py` | Classifier 接口：多维分类（认知角色/主题/重要度） |
 | `prompt_strategy.py` | 动态抽取/巩固/反思 prompt metadata 的解析与传递（key 透传） |
 | `prompt_registry.py` | PromptRegistry：从 yml `prompts` 段加载命名 prompt，按 phase+key 查询 |

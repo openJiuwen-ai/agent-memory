@@ -178,7 +178,7 @@ def make_storage(
     security: Any = None,
     pipeline: RetrievalPipeline = RetrievalPipeline.RECALL_GET_RANK,
 ) -> CompositeStoreManager:
-    """CompositeStoreManager + 已绑定 default 数据面（F07 双面结构）。
+    """CompositeStoreManager + 已绑定 default 数据面（Store拆分 F07 双面结构）。
 
     端口消费者直接持返回的 manager；数据面消费者经 ``manager.domain_store()``
     取 DomainStore。recallers 不在此装配——需召回的测试自建

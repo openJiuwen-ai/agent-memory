@@ -14,7 +14,7 @@ tier 限定 ``episodic`` / ``semantic`` / ``procedural``（与 extractor 一致�
 EPISODIC（原文未分类时的保守默认，区别于派生兜底 SEMANTIC）。tags 1-3 个，清洗截断。
 LLM 不可用/解析失败降级为空 tags + EPISODIC tier，不阻断。
 
-重要度（F10）：同一次调用一并产出 ``importance_category``，按 ``importance_category_map``
+重要度（重要度 F12）：同一次调用一并产出 ``importance_category``，按 ``importance_category_map``
 查表写 ``system_metadata["importance"]``；调用方已显式给值时不覆盖。未判出类别（含批次
 失败）的 unit 取 ``default`` 类别值。类别段受 ``importance_category_prompt_enabled`` 控制，
 默认关：提示词不带类别段，重要度一律取 ``default`` 类别值。

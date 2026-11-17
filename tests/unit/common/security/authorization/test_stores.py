@@ -463,7 +463,7 @@ def test_revoked_delegation_cannot_be_resurrected_by_replay(
 
 @pytest.mark.parametrize("target", ["memory", "sqlite"])
 def test_stores_are_registered(target: str) -> None:
-    """两个后端都能从注册名装出来（F05 §独立 Producer）。"""
+    """两个后端都能从注册名装出来（安全能力 F04 §独立 Producer）。"""
     from jiuwen_memory.common.security.bootstrap import register_security
 
     register_security()
@@ -490,7 +490,7 @@ def test_sqlite_store_ignores_unknown_actions(tmp_path) -> None:
     # pylint: disable=protected-access
     """库里存着核心不认识的动作名时，跳过该动作而不是让整条查询失败。
 
-    降级部署（新版写入、旧版读取）会造出这种记录。认不出就当没有，是 F05 §授权
+    降级部署（新版写入、旧版读取）会造出这种记录。认不出就当没有，是 安全能力 F04 §授权
     不变量 5「新 Action 默认拒绝」在存储层的形态；抛异常则会让一条脏记录瘫掉所有
     授权查询。
     """

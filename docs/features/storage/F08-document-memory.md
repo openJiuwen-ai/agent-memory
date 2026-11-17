@@ -8,7 +8,7 @@
 | 对应 commit | `f84097a` feat(memory): 文档记忆初版实现（markdown 真源 + 影子索引 + 看门狗） |
 | 影响范围 | `jiuwen_memory/storage/`（markdown / shadow / watchdog / sync_gate / domain_store / store_manager）、`jiuwen_memory/config/document_flag.py`、`jiuwen_memory/construction/`（document_index_builder / llm_extractor / llm_router / 两个 evolver）、`jiuwen_memory/retrieval/`（pipeline_retriever / shadow_recaller）、`jiuwen_memory/api/memory_api_impl/`（assembly / write_ops / local_support）、`jiuwen_memory_entry/`（server / http_server / mcp_server）、`pyproject.toml`（deploy extras） |
 | 测试基线 | `tests/unit/storage/`（test_local_markdown_store / test_sqlite_shadow_index / test_local_watchdog / test_sync_gate / test_composite_storage / test_storage_base）、`tests/unit/config/test_document_flag.py`、`tests/unit/construction/`（test_document_index_builder / test_extractor_title / test_llm_router）、`tests/unit/retrieval/`（test_shadow_recaller / test_pipeline_retriever_doc_mode）、`tests/unit/api/test_memory_runtime_lifecycle.py`、`tests/unit/api/test_collective_routing.py`、`tests/unit/config/test_storage_routing.py` |
-| Refs | 仓根设计文档 `F07-document-memory-redesign.md`、`F08-document-memory-impl.md`（本文以已落地代码为准） |
+| Refs | 仓根设计文档 `F07-document-memory-redesign.md`、`F08-document-memory-impl.md`（本文以已落地代码为准）；代码注释中简称「文档记忆根设计」 |
 
 ## 背景
 

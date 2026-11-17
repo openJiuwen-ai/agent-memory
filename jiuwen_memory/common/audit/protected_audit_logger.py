@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""ProtectedAuditLogger - 把普通 AuditLogger 升级为链式完整性审计（F05 §Audit Integrity）。
+"""ProtectedAuditLogger - 把普通 AuditLogger 升级为链式完整性审计（安全能力 F04 §Audit Integrity）。
 
 启用审计完整性期时，PEP（LocalMemoryAPI）与 surface 记录入口事件都不再直连
 :class:`~jiuwen_memory.common.audit.base.AuditLogger`，而是经本 wrapper：

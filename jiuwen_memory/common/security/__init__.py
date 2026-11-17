@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""安全域：认证、密码学、资源保护与请求安全上下文（F05 Common Security）。
+"""安全域：认证、密码学、资源保护与请求安全上下文（安全能力 F04 Common Security）。
 
 本包是安全能力的**唯一归属地**。消费方（Bootstrap/Surface、MemoryAPI、Storage
 适配器、Audit）只 import 本包的契约与值对象，不反向被 import。
 
-各能力子包按 F05 目录组织。PR1 已实装 authentication / cryptography / protection；
+各能力子包按 安全能力 F04 目录组织。PR1 已实装 authentication / cryptography / protection；
 PR2 已由真实 Authorizer 接管判定，``allow_all`` 仅保留为测试替身；audit_integrity 保持
 PR3 固定契约。能力契约从各自子包获取，顶层只导出跨能力共享类型、受控请求上下文入口
 与 Runtime。

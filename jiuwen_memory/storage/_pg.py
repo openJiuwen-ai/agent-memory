@@ -4,7 +4,7 @@
 客户端，而 Store 接口是同步的：经模块级专职事件循环线程（``_LOOP``）桥接——同步
 调用方把协程经 ``run_coroutine_threadsafe`` 提交到常驻 loop 并阻塞等待结果；
 多个调用线程可并发提交，连接池并发能力不受影响（spike 实测 4 写 + 4 读线程并发
-40/40 成功，见 docs/features/storage/F06-asyncpg-driver.md）。
+40/40 成功，见 docs/features/storage/F05-asyncpg-driver.md）。
 
 驱动适配三铁律（spike 实测）：
 1. jsonb 走 type codec（json.dumps / json.loads），参数类型为 jsonb 时 dict 直传

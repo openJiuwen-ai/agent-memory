@@ -1,4 +1,4 @@
-"""``LLMRouter`` 的响应解析、缺判回落与重试（F07「归属判定算子」）。
+"""``LLMRouter`` 的响应解析、缺判回落与重试（群体记忆 F07「归属判定算子」）。
 
 本文件测的是模型实现内部的三段无覆盖分支，判定表解析与两个落盘不变量在
 ``test_router_table.py``、接线在 ``tests/unit/api/test_collective_routing.py``。

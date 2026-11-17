@@ -2,7 +2,7 @@
 
 > 文档性质：总体架构设计（概念、分层、组件与依赖方向）
 > 版本：v0.2 ｜ 日期：2026-09-05
-> 关联文档：[愿景 VISION](./vision.md) ｜ [统一 Storage](../features/storage/F05-unified-storage-design.md) ｜ [Storage 检索 Pipeline](../features/retrieval/F05-storage-retrieval-pipelines.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
+> 关联文档：[愿景 VISION](./vision.md) ｜ [统一 Storage](../features/storage/F04-unified-storage-design.md) ｜ [Storage 检索 Pipeline](../features/retrieval/F05-storage-retrieval-pipelines.md) ｜ [Benchmark 调研](./memory_benchmarks.md)
 > 说明：本文描述系统级架构方向；精确接口契约以 `docs/specs/` 为准，特性取舍与首版实现边界以 `docs/features/` 为准。
 
 ---
@@ -214,7 +214,7 @@ scope 的前缀”。这样同一套 `Scope` 字段既能表达 `user -> agent`�
 
 ## 6. 记忆接口层（Memory API）
 
-可选角色关系记忆（2026-11-05 设计修订）分接续 / 角色两档：可靠写入并入 `add` / `batch_add` 的 `continuity` 参数，任务背景与职责视图并入 `search` 的 `duty` / `task_id` / `anchor` / `view_budget` 参数（结果为 `RetrievalResult` 可选字段）；专用入口只保留 `continuity_task`、`continuity_relation`（角色模式）、`continuity_recover`，以及治理面的 `quarantine_source`、`release_source`。保持同一 PEP 与传输契约，详见 [S11](../specs/S11-cross-agent-continuity.md)。代码已落地为目标形态（两档模式），剩余差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。
+可选角色关系记忆（2026-11-05 设计修订）分接续 / 角色两档：可靠写入并入 `add` / `batch_add` 的 `continuity` 参数，任务背景与职责视图并入 `search` 的 `duty` / `task_id` / `anchor` / `view_budget` 参数（结果为 `RetrievalResult` 可选字段）；专用入口只保留 `continuity_task`、`continuity_relation`（角色模式）、`continuity_recover`，以及治理面的 `quarantine_source`、`release_source`。保持同一 PEP 与传输契约，详见 [S11](../specs/S11-cross-agent-continuity.md)。代码已落地为目标形态（两档模式），剩余差距见 [F11 12.2](../features/construction/F11-role-memory.md#122-实现差距)。
 
 `MemoryAPI.list` 和 `MemoryAPI.search` 提供显式个人模式，默认 Portal 接入通过
 该模式发现并鉴权个人 Scope。可信宿主可通过 `HttpServer.build_personal` 为同一托管
@@ -460,7 +460,7 @@ Portal 页面复用现有 `/v1` 记忆操作，模型配置使用同一实例的
 > Construction 与 Control 仍保留部分直接 Store 依赖，后续按模块迁移。
 > `IntegratedStorage` 是已定义的实现方向，尚未提供仓内实现。精确契约见
 > [S06-storage.md](../specs/S06-storage.md)，设计取舍见
-> [F05-unified-storage-design.md](../features/storage/F05-unified-storage-design.md)。
+> [F04-unified-storage-design.md](../features/storage/F04-unified-storage-design.md)。
 > **hierarchy 存储边界**：首期 `HierarchyRef` 内嵌于 KV 真源的 `MemoryUnit`；kind/role/span 等字段投影到全文/向量索引 metadata 供前置过滤，目标索引可从 KV 重建（当前 rebuild 实现缺口见 §9.2）。GraphStore 只表达实体、因果、引用等非包含关系，不作为首期父子树真源；当同 kind 多父、丰富边属性或跨 kind 组合查询成为主路径时，再评估独立边存储。
 
 ---

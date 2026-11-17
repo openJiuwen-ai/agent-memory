@@ -189,7 +189,7 @@ class ConflictConsolidator:
         - 实体维度：seed 决定哪些实体参与本轮；
         - 属性维度：命中键后从真源**全量**展开同实体记忆，再按 ``(实体, 属性)`` 分组，
           因此「新证据 vs 同属性旧值」的对照始终成立（旧值不依赖 seed）；
-        - seed 未触及的属性簇**不处理**——范围由候选源（F04）决定，聚类层不扩散。
+        - seed 未触及的属性簇**不处理**——范围由候选源（dreaming F13）决定，聚类层不扩散。
         """
 
         seed_properties = [unit for unit in seed_units if is_schema_property_unit(unit)]
