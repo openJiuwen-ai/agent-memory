@@ -129,7 +129,9 @@ def _run(argv: list[str] | None = None) -> int:
             f"errors={stats['errors']}/{stats['iterations']}"
         )
     if args.json:
-        Path(args.json).write_text(json.dumps(report, ensure_ascii=False, indent=2))
+        Path(args.json).write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         logger.info(f"report written to {args.json}")
     return 0
 

@@ -231,7 +231,9 @@ def apply_moves(target_kv, moves: list[Move]) -> tuple[int, list[str]]:
 
 def print_ddl(resolver: ShardResolver, out=None) -> None:
     out = out or sys.stdout
-    template = (Path(__file__).resolve().parent / "pg_schema_shard_template.sql").read_text()
+    template = (Path(__file__).resolve().parent / "pg_schema_shard_template.sql").read_text(
+        encoding="utf-8"
+    )
     for shard in resolver.shards:
         out.write(template.replace("{{shard}}", shard))
         out.write("\n")
