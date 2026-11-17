@@ -348,8 +348,9 @@ class TestProfileInjection:
                     return None
 
                 provider._client.read_md_file = _none
-                assert await provider._profile_items() == [], "读取返回 None 时按无画像处理"
-                assert await provider.prefetch("把这个 PDF 发一下") == ""
+                assert await provider.prefetch("把这个 PDF 发一下") == "", (
+                    "读取返回 None 时按无画像处理"
+                )
             finally:
                 await provider.shutdown()
 

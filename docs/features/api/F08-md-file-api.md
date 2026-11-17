@@ -50,9 +50,9 @@ DocumentShadowIndex.get_units                   ← 取完整 MemoryUnit（已�
 
 设计文档 §2.1.2 说「关窗后同步触发 shadowIndex 重建（LocalWatchdog._sync_one）」。调研确认 `_sync_one` 是**私有方法**，且唯一触发入口是 inotify 文件监听 → 2s debounce → async task（`local_watchdog.py:378` / `:308-346`），进程内无公开同步入口。
 
-若依赖异步链，`edit_md_file` 返回 `list[MemoryUnit]`（新 unit）的契约无法满足——返回时新 unit 尚未落 shadow，`shadow.get_units` 查不到。故决策：在 `CompositeDomainStore` 内**内联同步**执行 diff + delete + insert（与 `_sync_one` 同构逻辑），保证接口返回时新 unit 已落库。
+若依赖异步链，`edit_md_file` 返回 `list[MemoryUnit]`（新 unit）的契约无法满足——返回时新 unit 尚未落 shadow，`shadow.get_units` 查不到。故决策：在 `CompositeDomainStore` 内**内联同步**执行 diff + 新版插入 + 旧版标记 SUPERSEDED（见 D4），保证接口返回时新 unit 已落库。
 
-用文档根目录对应的写窗口包住「md 替换 + shadow 重建」两步。看门狗等待该目录的窗口关闭后对账，若 shadow 已同步，diff 为空。
+资源保护使用 `document_operation(root, shadow_key, writing=True)`，在读取旧全文前获取根目录与索引锁，覆盖「md 替换 + shadow 同步 + 失败补偿」全过程；看门狗使用同一组资源锁完整对账，正常同步后 diff 为空。写窗口按资源推迟对账，独立根目录与独立索引不互相阻塞。
 
 ### D3 content_hash 反查新增方法，复用已有 idx_content_hash 索引
 
@@ -105,7 +105,7 @@ edit 后新块继承旧 unit 的元数据；其中 `md_title` 是例外，须从
 
 **与现有 `domain_store.update` SUPERSEDE 路径的差异**：现有 `update` 是「先改 shadow 再改 md」（`composite_domain_store.py:289-336`，`shadow.update_units` + `md.replace_content`/`remove_content`）；edit_md_file 是「md 已改，只同步 shadow」——因 `edit_content` 已原子改好整个 md 文件，shadow 同步无需再动 md。故 edit_md_file 在 DomainStore 走专用同步路径，不复用 `domain_store.add`（会重复写 md 块）或 `domain_store.update`（它假设 md 还没改、自己改 md）。
 
-**写窗保护**。同一文档根目录的写窗口覆盖「edit_content 改 md + shadow 同步」全程。关窗后看门狗对账，若 shadow 已同步，diff 为空。
+**写窗保护**：`document_operation(..., writing=True)` 包住读取旧全文、编辑、索引同步与补偿全程。同资源的其他 Runtime 写入或看门狗必须等待，防止整文件回滚覆盖另一方成功编辑。
 
 ### D4.1 跨块对齐策略：对齐继承 + 不对齐退化兜底
 
@@ -213,7 +213,7 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
 ### edit_md_file 实现路径
 
 1. 解析 basename + project → md 路径
-2. 打开文档根目录的写窗口。
+2. 进入 `document_operation(root, shadow_key, writing=True)`，获取资源锁并开启写窗口
 3. `md.read_content(...)` 读旧全文做快照（既算块 diff 又留 md 补偿数据）
 4. `md.edit_content(...)` 文件级唯一替换（原子写）——md 文件已改为最终态
 5. `_supersede_shadow_for_md(scope, rel_path)` 同步重建（继承式 SUPERSEDE，见 D4 落库动作）：
@@ -223,7 +223,7 @@ agent-core 的 `ExternalMemoryRail` 是纯透传机制（从 provider 拿 schema
    - 纯内存构造整批 inserted_units → 批量 `insert_units`（单事务）→ 批量 `update_units`（单事务）
    - md 侧不再触碰（edit_content 已改好）
 6. shadow 同步失败时补偿（见 D4 写失败补偿）：shadow 侧 `delete_units(new_unit_ids)` 删已插新 unit；md 侧 `restore_content(raw_old)` 回写旧全文；再重抛原异常
-7. 成功返回 `get_units(new_unit_ids)`，在 finally 中关闭写窗口。
+7. 成功返回 `get_units(new_unit_ids)`；退出操作上下文，在成功或完成补偿后关闭写窗口并释放资源锁
 
 > **md 侧零触碰**：步骤 4 后 md 已是最终态，步骤 5 只动 shadow 表（标旧版 + 插新版），不再调 `md.write`/`md.replace_content`/`md.remove_content`——这是与现有 `domain_store.update` SUPERSEDE 路径（先改 shadow 再改 md）的根本差异，因 edit_md_file 的 md 改动在 edit_content 阶段就完成了。
 

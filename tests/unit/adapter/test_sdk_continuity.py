@@ -120,8 +120,9 @@ def test_pool_waits_for_close_and_rejects_configuration_conflict(tmp_path):
     pool.release(obtained[0])
 
 
+@pytest.mark.parametrize("scene", ["agent", "code"])
 @pytest.mark.parametrize("task_embedding", [True, False])
-def test_two_providers_resume_after_shutdown_and_restart(tmp_path, caplog, task_embedding):
+def test_two_providers_resume_after_shutdown_and_restart(tmp_path, caplog, task_embedding, scene):
     provider_logger = "jiuwenswarm.agents.harness.common.memory.external.agent_memory_provider"
     caplog.set_level("INFO", logger="jiuwen_memory_adapter")
     caplog.set_level("INFO", logger=provider_logger)
@@ -137,6 +138,7 @@ def test_two_providers_resume_after_shutdown_and_restart(tmp_path, caplog, task_
 
         def provider():
             return AgentMemoryMemoryProvider(
+                scene=scene,
                 config_dict=config, continuity_enabled=True, continuity_mode="continuity",
                 security_provider=security, portal={"enabled": False},
             )
@@ -146,6 +148,9 @@ def test_two_providers_resume_after_shutdown_and_restart(tmp_path, caplog, task_
         try:
             await asyncio.gather(a.initialize(session_id="A"), b.initialize(session_id="B"))
             assert a.runtime is b.runtime
+            assert {tool["name"] for tool in a.get_tool_schemas()} == {
+                "agent_memory_continuity_task", "agent_memory_continuity_recover",
+            }
             a.runtime.api.create_space(SpaceSpec(org="demo", space="role-project", owner=owner),
                                        security=security(Role.ADMIN))
             task = await a.continuity_request("continuity_task", {"scope": scope, "request": {
@@ -751,3 +756,29 @@ def test_real_sdk_parallel_progress_writes_do_not_lose_task_background(tmp_path)
         finally:
             await asyncio.gather(*(p.shutdown() for p in providers))
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("source", ["inline", "file"])
+@pytest.mark.parametrize("scene", ["agent", "code"])
+def test_continuity_configuration_does_not_inherit_document_defaults(
+    tmp_path, monkeypatch, source, scene,
+):
+    """The continuity client keeps its baseline instead of scene document overrides."""
+    from unittest.mock import Mock
+
+    config = {"globals": {"write_document": False, "custom_option": "kept"}}
+    path = tmp_path / "continuity.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    options = {"config_dict": config} if source == "inline" else {"config_path": str(path)}
+    module = AgentMemoryMemoryProvider.__module__
+    shared_client = Mock()
+    monkeypatch.setattr(f"{module}._SharedSDKClient", shared_client)
+    provider = AgentMemoryMemoryProvider(
+        scene=scene, continuity_enabled=True, continuity_mode="continuity",
+        security_provider=lambda: None, portal={"enabled": False}, **options,
+    )
+    # Check factory selection without starting a Registry or any model clients.
+    # pylint: disable-next=protected-access
+    assert provider._ensure_client() is shared_client.return_value
+    assert shared_client.call_args.args[0] == config
+    assert config["globals"]["write_document"] is False
