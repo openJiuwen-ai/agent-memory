@@ -37,7 +37,8 @@ from .._support import (
     wrap_backend,
 )
 from ..base import StoreType
-from ..kv import KVStore
+from ..capability import StoreCapability
+from ..kv import ConditionalKV, KVStore
 from ..types import KVMemoryListResult
 from .memory_list import list_memory_entries
 
@@ -46,8 +47,18 @@ def _decode_scope_segment(segment: str) -> str:
     return "" if segment == "_" else segment
 
 
-class RedisKVStore(KVStore):
-    """Redis KV 后端；支持构造期 url/host 与运行时 ``kv_store.*`` 晚绑定。"""
+class RedisKVStore(KVStore, ConditionalKV):
+    """Redis KV 后端；支持构造期 url/host 与运行时 ``kv_store.*`` 晚绑定。
+
+    **部署形态：仅支持单机 / 主从（含 Sentinel 的普通客户端场景）**。客户端固定为
+    ``redis.Redis``（单节点）：连到 Redis Cluster 时所有命令都发往同一节点，非该节点
+    的 key 会收到 ``MOVED``，因此 Cluster 部署**不被支持**——要支持需要接入
+    ``redis.RedisCluster`` 客户端并补真实集群集成测试，目前没有实现，也不宣称支持。
+
+    同时实现 :class:`~storage.kv.ConditionalKV`：``SET NX`` 原子创建、Lua 脚本
+    完成整值比较后再替换 / 删除（保留原 TTL）、逐 key ``GET`` 的部分读、``TIME``
+    存储侧时间。
+    """
 
     def __init__(
         self,
@@ -113,6 +124,11 @@ class RedisKVStore(KVStore):
     def store_type(self) -> StoreType:
         """返回存储类型 ``KV``。"""
         return StoreType.KV
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset(
+            {StoreCapability.CONDITIONAL_KV, StoreCapability.RESOURCE_DESCRIPTOR}
+        )
 
     def migration_identity(self) -> object:
         return opaque_location("redis", self._client_key())
@@ -339,6 +355,104 @@ class RedisKVStore(KVStore):
                 )
             )
         return scopes
+
+    # -- ConditionalKV（F09 D6）：Lua 保证「比较 + 写入」原子 --------------------- #
+
+    #: 比较后替换。**保留原 TTL**：归属记录当前不设过期，但本方法是通用
+    #: ``ConditionalKV`` 契约的一部分，替换丢掉 TTL 会让「有 TTL 的条件记录」
+    #: 变成永久值。用 ``PTTL`` + ``PX`` 而不是 ``KEEPTTL``，避免抬高 Redis 版本门槛。
+    _CAS_SCRIPT = """
+        local current = redis.call('GET', KEYS[1])
+        if not current or current ~= ARGV[1] then return 0 end
+        local ttl = redis.call('PTTL', KEYS[1])
+        if ttl and ttl > 0 then
+            redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+        else
+            redis.call('SET', KEYS[1], ARGV[2])
+        end
+        return 1
+    """
+
+    _CAD_SCRIPT = """
+        local current = redis.call('GET', KEYS[1])
+        if not current or current ~= ARGV[1] then return 0 end
+        redis.call('DEL', KEYS[1])
+        return 1
+    """
+
+    def create_if_absent(self, scope: Scope, key: str, value: bytes) -> None:
+        name = self._namespaced(scope, key)
+        with wrap_backend(f"redis conditional create {key!r}"):
+            created = self.client.set(name, value, nx=True)
+        if not created:
+            raise ConflictError("key", key)
+
+    def replace_if_value(
+        self, scope: Scope, key: str, expected: bytes, value: bytes
+    ) -> None:
+        name = self._namespaced(scope, key)
+        with wrap_backend(f"redis conditional replace {key!r}"):
+            ok = self.client.eval(self._CAS_SCRIPT, 1, name, expected, value)
+        if not ok:
+            raise ConflictError("key", key)
+
+    def delete_if_value(self, scope: Scope, key: str, expected: bytes) -> bool:
+        name = self._namespaced(scope, key)
+        with wrap_backend(f"redis conditional delete {key!r}"):
+            return bool(self.client.eval(self._CAD_SCRIPT, 1, name, expected))
+
+    def read_many(self, scope: Scope, keys: list[str]) -> dict[str, bytes]:
+        """逐 key 读取（部分结果）；**不用 ``MGET``**。
+
+        归属 key 按 unit_id 散列，``MGET`` 要求同一次命令的所有 key 落在同一 slot，
+        在 Cluster 客户端下会 ``CROSSSLOT``；逐 key ``GET`` 不引入这个额外约束，也
+        不需要把归属 key 绑定到同一个 hash tag（那会牺牲归属表的分布性）。注意这只是
+        **命令层面**的前置条件：当前客户端仍是单节点的 ``redis.Redis``，Cluster 部署
+        本身不受支持（见类 docstring），不要据此认为已支持集群。
+        """
+        if not keys:
+            return {}
+        names = [self._namespaced(scope, key) for key in keys]
+        with wrap_backend(f"redis conditional read {len(keys)} keys"):
+            pipe = self.client.pipeline(transaction=False)
+            for name in names:
+                pipe.get(name)
+            values = pipe.execute()
+        return {
+            key: bytes(value)
+            for key, value in zip(keys, values, strict=True)
+            if value is not None
+        }
+
+    def resource_descriptor(self) -> str:
+        from .._support import sanitize_resource_id
+
+        url = self._resolved_url()
+        if url:
+            return sanitize_resource_id(url)
+        conn = self._resolved_host_conn()
+        return f"{conn.get('host')}:{conn.get('port')}/{conn.get('db')}"
+
+    def remaining_ttl(self, scope: Scope, key: str) -> float | None:
+        name = self._namespaced(scope, key)
+        with wrap_backend(f"redis ttl {key!r}"):
+            millis = self.client.pttl(name)
+        if millis == -2:
+            return None  # key 不存在
+        if millis == -1:
+            return 0.0  # 永久记录
+        if millis <= 0:
+            # PTTL=0：key 仍存在但剩余不足 1ms，等价于「已过期尚未删除」。
+            return None
+        return millis / 1000.0
+
+    def now(self) -> float:
+        with wrap_backend("redis time"):
+            seconds, micros = self.client.time()
+        return float(seconds) + float(micros) / 1_000_000
+
+    def scan_entries(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        return self.scan(scope, prefix)
 
     def _resolved_url(self) -> str | None:
         """解析当前应连接的 Redis URL（ConfigSource ``kv_store.url`` 优先）。"""

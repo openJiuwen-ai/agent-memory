@@ -10,6 +10,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.trace import TraceLevel, trace_enabled, trace_event
 from jiuwen_memory.common.type_def import (
     ChannelError,
     FilterExpr,
@@ -65,16 +66,25 @@ class RetrieveRun:
     started_at: float = field(default_factory=perf_counter)
     trajectory: list[TrajectoryStep] = field(default_factory=list)
     fused_count: int = 0
+    component: str = "PipelineRetriever"
 
     def record(
         self, stage: str, cost_ms: float, n: int = 0,
         channel: RecallChannel | None = None, detail: dict[str, str] | None = None,
     ) -> None:
-        if self.trace:
-            self.trajectory.append(TrajectoryStep(
-                stage=stage, channel=channel, candidate_count=n,
-                cost_ms=cost_ms, detail=detail or {},
-            ))
+        data: dict[str, object] = {"candidates": n, "cost_ms": round(cost_ms, 3)}
+        if channel is not None:
+            data["channel"] = channel.value
+        trace_event(
+            self.component, stage, lambda: {
+                **data, **((detail or {}) if trace_enabled(TraceLevel.INFO) else {}),
+            },
+            level=TraceLevel.SIMPLE if stage in {"recall", "fuse", "disclose"} else TraceLevel.INFO,
+            projection={
+                "stage": stage, "channel": channel.value if channel else None,
+                "candidate_count": n, "cost_ms": cost_ms, "detail": detail or {},
+            } if self.trace else None,
+        )
 
     def step(
         self, stage: str, t0: float, n: int = 0,
@@ -132,6 +142,7 @@ class RetrieveState:
         )
 
     def empty_result(self) -> RetrievalResult:
+        trace_event(self.run.component, "result", {"returned": 0}, level=TraceLevel.SIMPLE)
         return RetrievalResult(trajectory=self.run.trajectory)
 
     def cut_to_budget(self) -> None:

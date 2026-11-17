@@ -41,6 +41,7 @@ from jiuwen_memory.storage.vector import VectorProducer
 
 from .._support import preload_backend, read_ssl_config, scope_dims, scope_segments, wrap_backend
 from ..base import StoreType
+from ..capability import StoreCapability
 from ..types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from ..vector import VectorStore
 
@@ -117,6 +118,10 @@ def require_positive_dim(dim: int, *, backend: str = "milvus vector store") -> N
     """向量后端与融合工厂共用正维度规则，错误标明实际后端。"""
     if dim <= 0:
         raise ValidationError(f"{backend} requires positive 'dim'")
+
+
+#: ``record_ids_for_units`` 单次查询上限（Milvus 默认 query 结果窗口）；达到即报错，不静默截断。
+_RECORD_LOOKUP_LIMIT = 16_384
 
 
 class MilvusVectorStore(VectorStore):
@@ -291,6 +296,61 @@ class MilvusVectorStore(VectorStore):
         raise ValidationError(f"unsupported filter logic for vector: {expr.logic}")
 
     # --------------------------------------------------------------- CRUD
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset(
+            {
+                StoreCapability.RESOURCE_DESCRIPTOR,
+                StoreCapability.SHARD_PREFILTER,
+                StoreCapability.UNIT_RECORD_LOOKUP,
+            }
+        )
+
+    def record_ids_for_units(
+        self, scope: Scope, unit_ids: list[str]
+    ) -> dict[str, list[str]]:
+        """按 ``metadata.unit_id`` 找出该记忆的全部记录 id（F09 D16）。
+
+        依赖 Milvus 对 ``metadata`` JSON 字段的标量索引；未建索引时按表达式扫描。
+        """
+        if not unit_ids:
+            return {}
+        literals = ", ".join(_lit(unit_id) for unit_id in unit_ids)
+        expr = f'metadata["unit_id"] in [{literals}]'
+        scope_expr = self._expr(scope, None)
+        if scope_expr:
+            expr = f"({expr}) && ({scope_expr})"
+        with wrap_backend(f"milvus record lookup {len(unit_ids)} units"):
+            rows = self.client.query(
+                self._collection,
+                filter=expr,
+                output_fields=["logical_id", "metadata"],
+                # 搬迁随后会清理源分片：查漏即丢记录，这里不跟随部署配置的较弱一致性。
+                consistency_level="Strong",
+                limit=_RECORD_LOOKUP_LIMIT,
+            )
+        if len(rows) >= _RECORD_LOOKUP_LIMIT:
+            raise BackendError(
+                f"record lookup for {len(unit_ids)} unit(s) reached the Milvus query limit "
+                f"{_RECORD_LOOKUP_LIMIT}; split the request"
+            )
+        out: dict[str, list[str]] = {}
+        for row in rows:
+            metadata = row.get("metadata") or {}
+            unit_id = metadata.get("unit_id") if isinstance(metadata, dict) else None
+            if isinstance(unit_id, str):
+                out.setdefault(unit_id, []).append(str(row["logical_id"]))
+        return out
+
+    def resource_descriptor(self) -> str | None:
+        from .._support import sanitize_resource_id
+
+        uri = self._resolved_uri()
+        if not uri:
+            return None
+        # 分片 split 的隔离单位是 collection，不是实例；不同分片共用实例时
+        # 必须靠 collection 名区分，不能把整个实例误判成同一物理资源。
+        return f"milvus://{sanitize_resource_id(uri).rstrip('/')}/{self._collection}"
+
     def store_type(self) -> StoreType:
         return StoreType.VECTOR
 
@@ -308,6 +368,22 @@ class MilvusVectorStore(VectorStore):
             raise ConflictError(entity="vector", key=next(iter(existing)))
         with wrap_backend("milvus insert"):
             self.client.insert(self._collection, data=[self._row(scope, r) for r in records])
+
+    def insert_for_relocation(
+        self, scope: Scope, records: list[VectorRecord]
+    ) -> None:
+        """搬迁复制用强一致预检：弱一致下重复调用不会产生同主键重复行。"""
+        if not records:
+            return
+        existing = self._existing_ids(
+            scope, [r.id for r in records], consistency="Strong"
+        )
+        if existing:
+            raise ConflictError(entity="vector", key=next(iter(existing)))
+        with wrap_backend("milvus insert"):
+            self.client.insert(
+                self._collection, data=[self._row(scope, r) for r in records]
+            )
 
     def update(self, scope: Scope, records: list[VectorRecord]) -> None:
         if not records:
@@ -329,6 +405,20 @@ class MilvusVectorStore(VectorStore):
             self.client.delete(self._collection, filter=filter_)  # scope 内幂等删除
 
     def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
+        return self._get(scope, ids, self._consistency)
+
+    def get_for_relocation(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
+        """搬迁读取固定强一致：ID 由强一致枚举得到，读记录不能再用弱一致。
+
+        部署配置为 Eventually / Bounded 时，枚举后立即 ``get`` 可能读不到刚写入的记录，
+        若包装层把缺记录当成成功并清理源分片，就会丢索引。这里与枚举用同一一致性级别，
+        包装层还会再校验覆盖全部 ID。
+        """
+        return self._get(scope, ids, "Strong")
+
+    def _get(
+        self, scope: Scope, ids: list[str], consistency: str
+    ) -> list[VectorRecord]:
         if not ids:
             return []
         items = ", ".join(_lit(self._physical_id(scope, i)) for i in ids)
@@ -339,7 +429,7 @@ class MilvusVectorStore(VectorStore):
                 self._collection,
                 filter=filter_,
                 output_fields=["id", "logical_id", "vector", *_SCOPE_FIELDS, "metadata"],
-                consistency_level=self._consistency,
+                consistency_level=consistency,
             )
         return [self._to_record(row) for row in rows]
 
@@ -408,10 +498,14 @@ class MilvusVectorStore(VectorStore):
         *,
         filter_: str,
         output_fields: list[str] | None = None,
+        consistency: str | None = None,
     ) -> Any:
         """执行一次 milvus query；撞 code=101 / 连接丢失则重建后重试一次。"""
         client = self.client
-        kwargs: dict[str, Any] = {"filter": filter_, "consistency_level": self._consistency}
+        kwargs: dict[str, Any] = {
+            "filter": filter_,
+            "consistency_level": consistency or self._consistency,
+        }
         if output_fields is not None:
             kwargs["output_fields"] = output_fields
         try:
@@ -535,11 +629,15 @@ class MilvusVectorStore(VectorStore):
             parts.append(compiled)
         return " && ".join(p for p in parts if p)
 
-    def _existing_ids(self, scope: Scope, ids: list[str]) -> set[str]:
+    def _existing_ids(
+        self, scope: Scope, ids: list[str], *, consistency: str | None = None
+    ) -> set[str]:
         physical_ids = [self._physical_id(scope, rec_id) for rec_id in ids]
         items = ", ".join(_lit(i) for i in physical_ids)
         filter_ = f"id in [{items}]"
-        rows = self._query_with_not_loaded_retry(filter_=filter_)
+        rows = self._query_with_not_loaded_retry(
+            filter_=filter_, consistency=consistency
+        )
         return {row["logical_id"] for row in rows}
 
 

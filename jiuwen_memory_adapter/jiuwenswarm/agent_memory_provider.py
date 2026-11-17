@@ -3,7 +3,7 @@
 
 把 AgentMemory 的 ``MemoryAPI``（进程内 ``assemble_runtime()`` 或 HTTP ``/v1/<verb>``）
 适配成 openjiuwen ``MemoryProvider`` ABC 的实现，供 ``ExternalMemoryRail`` /
-``JiuwenMemoryRail`` 驱动。
+``JiuwenMemoryRail`` 驱动；``scene="code"`` 由 ``JiuwenMemoryCodingRail`` 驱动。
 
 - ABC：``openjiuwen/core/memory/external/provider.py`` 的 ``MemoryProvider``
 - HTTP 表面：``jiuwen_memory_entry/core/api_contract.py``（F05 对齐后）——
@@ -29,7 +29,7 @@
   ``agent_id`` 下沉到 session/agent 轴；SDK 模式维持五维直映射（actor==target）。
 - ``prefetch`` 与 ``sync_turn`` 共用 ``_prepare`` 剥 TUI 信封（§6.2-E），保证检索
   query 与落盘内容形态一致。
-- prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
+- 工作场景 prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
   EPISODIC 对话原文；``agent_memory_search`` 工具不过滤（显式检索允许命中原文）。
   过滤器是 dict DSL，两模式共用（HTTP 直接下发；进程内经 RetrievalQuery 边界
   normalize）。rail 传入 ``project`` 时 prefetch 追加
@@ -50,8 +50,12 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
+from concurrent.futures import Future
+from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 try:
@@ -64,6 +68,8 @@ except ImportError:
     MemoryProvider = object
 
 from jiuwen_memory.api import (
+    AuthenticationError,
+    BackendError,
     Channel,
     ConflictError,
     Context,
@@ -73,16 +79,31 @@ from jiuwen_memory.api import (
     Modality,
     RequestSecurityContext,
     ValidationError,
+    _config_overlay_candidates,
+    _prepare_shared_document_portal,
     assemble_managed_runtime,
     assemble_runtime,
     document_llm_instances,
     install_privacy_filter,
     metadata_for_log,
-    open_config_overlay,
     redact_for_log,
     scope_for_log,
 )
 from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+from jiuwen_memory_adapter.jiuwenswarm.memory_scenes import create_memory_scene
+from jiuwen_memory_adapter.jiuwenswarm.memory_tools import MAX_TOP_K as _MAX_TOP_K
+from jiuwen_memory_adapter.jiuwenswarm.memory_tools import parse_line_range
+from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import OperationWaitTimeout
+from jiuwen_memory_adapter.jiuwenswarm.work_memory import (
+    _merge_prefetch_lines as _merge_prefetch_lines,
+)
+from jiuwen_memory_adapter.jiuwenswarm.work_memory import (
+    _recall_filters as _recall_filters,
+)
+from jiuwen_memory_adapter.jiuwenswarm.work_memory import (
+    _tail_within_budget as _tail_within_budget,
+)
 
 # provider 通过 PYTHONPATH 以顶层模块 agent_memory_provider 被 import，
 # __name__="agent_memory_provider" 不在 jiuwenswarm/openjiuwen 的 logger 树下，INFO 默认不落文件。
@@ -91,208 +112,6 @@ logger = logging.getLogger(
     "jiuwenswarm.agents.harness.common.memory.external.agent_memory_provider"
 )
 install_privacy_filter(logger)
-
-# --------------------------------------------------------------------------- #
-# 工具 schema（OpenAI 风格，Rail 据此自动包 ToolCard，见 §4.8）
-# --------------------------------------------------------------------------- #
-
-VIDEO_SUBMIT_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_video_submit",
-    "description": (
-        "Submit a local video file URI to the memory engine for analysis and storage. "
-        "Returns a job ID. Use agent_memory_video_status to check completion."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "uri": {"type": "string", "description": "Local file:/// video URI"},
-            "project": {
-                "type": "string",
-                "description": "Project coordinate. Omit to use the current project, if set.",
-            },
-        },
-        "required": ["uri"],
-    },
-}
-
-VIDEO_STATUS_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_video_status",
-    "description": "Check a submitted video memory job and return its resulting memory IDs.",
-    "parameters": {
-        "type": "object",
-        "properties": {"job_id": {"type": "string"}},
-        "required": ["job_id"],
-    },
-}
-
-PROFILE_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_profile",
-    "description": (
-        "Retrieve stored memories about the user — preferences, facts, project context. "
-        "Use at conversation start for a full overview."
-    ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
-}
-
-READ_MD_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_read_md_file",
-    "description": (
-        "Read a markdown memory file by filename and return the memory blocks it "
-        "contains. md_filename is a basename: USER.md (user profile), MEMORY.md "
-        "(long-term memory), or a daily file like 2026-09-30.md. Optionally read "
-        "only a line range via offset/limit (1-based lines)."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "md_filename": {
-                "type": "string",
-                "description": "Basename of the md file, e.g. USER.md, MEMORY.md, 2026-09-30.md.",
-            },
-            "project": {
-                "type": "string",
-                "description": (
-                    "Project coordinate; omit to read the cross-project file (memory root)."
-                ),
-            },
-            "offset": {
-                "type": "integer",
-                "description": "1-based start line (default: 1).",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max lines to read (default: whole file).",
-            },
-        },
-        "required": ["md_filename"],
-    },
-}
-
-SEARCH_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_search",
-    "description": "Search memories by meaning. Returns relevant memories ranked by similarity.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "What to search for."},
-            "top_k": {
-                "type": "integer",
-                "description": "Max results (default: 10, max: 50).",
-            },
-            "project": {
-                "type": "string",
-                "description": (
-                    "Project coordinate; omit to search only cross-project memories "
-                    "(those stored without a project). When set, recalls this "
-                    "project's memories plus cross-project memories."
-                ),
-            },
-        },
-        "required": ["query"],
-    },
-}
-
-CONCLUDE_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_conclude",
-    "description": (
-        # [本地修改 2026-10-17] 原描述含 "corrections"，会把「修改个人信息」类指令
-        # 路由到 conclude（append 式写入）而非 edit_md_file（原地替换），产生新旧
-        # 矛盾事实共存。改为明确 append-only + 把更正路由到 edit_md_file。
-        # [本地修改] infer 恢复为 true：conclude 走 LLM 抽取并分类落盘，但语义仍是
-        # 新增不改已有（更正仍路由到 edit_md_file）。
-        "Store a new durable memory (extracted and classified). It NEVER modifies or "
-        "removes existing memories — to change or correct what is already stored, use "
-        "agent_memory_edit_md_file (read the file first to locate the exact text)."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "conclusion": {"type": "string", "description": "The fact/memory to store."},
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional labels for later filtering.",
-            },
-            "project": {
-                "type": "string",
-                "description": "Project coordinate; omit for cross-project storage.",
-            },
-        },
-        "required": ["conclusion"],
-    },
-}
-
-PROCEDURAL_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_procedural",
-    "description": (
-        "Store a structured procedural memory — a summary of what was done this turn "
-        "(goal / steps / outcome). The raw conversation is NOT stored; the LLM summarizes "
-        "it into ONE procedural memory record. Use to record how-to / execution history "
-        "worth recalling later. No deduplication or context retrieval is performed."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "content": {
-                "type": "string",
-                "description": (
-                    "The conversation/turn content to summarize into a procedural memory."
-                ),
-            }
-        },
-        "required": ["content"],
-    },
-}
-
-EDIT_MD_SCHEMA: dict[str, Any] = {
-    "name": "agent_memory_edit_md_file",
-    "description": (
-        "Modify or correct an EXISTING memory — the only way to change what is already "
-        "stored: replaces old_text with new_text in place (old_text must appear exactly "
-        "once in the file, an error otherwise; the edit supersedes the affected memory "
-        "units and returns the new ones). Use agent_memory_read_md_file FIRST to locate "
-        "the exact current text — personal info may live in USER.md or a daily file "
-        "(YYYY-MM-DD.md)."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "md_filename": {
-                "type": "string",
-                "description": "Basename of the md file, e.g. USER.md, MEMORY.md, 2026-09-30.md.",
-            },
-            "old_text": {
-                "type": "string",
-                "description": "Exact text to replace; must be unique within the file.",
-            },
-            "new_text": {
-                "type": "string",
-                "description": "Replacement text (empty string deletes old_text).",
-            },
-            "project": {
-                "type": "string",
-                "description": (
-                    "Project coordinate; omit to edit the cross-project file (memory root)."
-                ),
-            },
-        },
-        "required": ["md_filename", "old_text", "new_text"],
-    },
-}
-
-_MAX_TOP_K = 50
-_DEFAULT_PREFETCH_TOP_K = 5
-# prefetch 直接注入用户画像：USER.md 不分项目、条目少、与多数任务相关，
-# 不经相关度筛选——overlap 重排按共同词打分，换一种问法画像条目就可能得 0 分被丢。
-# 文件为追加写入，超出上限时保留末尾（最新）的条目。
-_PROFILE_MD_FILENAME = "USER.md"
-_PROFILE_INJECT_MAX_ITEMS = 20
-_PROFILE_INJECT_MAX_CHARS = 2000
-_DEFAULT_SEARCH_TOP_K = 10
-
-# read 工具「offset 起到文件尾」的 line_range end 上界：内核 read_content 对越界
-# end clamp 到文件实际行数（local_markdown_store.read_content），大数 end 即无上界。
-_UNBOUNDED_END = 10**9
 
 # HTTP 客户端：分操作超时（秒）。infer=true 的 add 触发真实 LLM 抽取 + dedup，
 # 写路径超时须长于读路径（§6.2-C，对齐 mem2_provider）。
@@ -303,29 +122,6 @@ _WRITE_TIMEOUT = 120.0
 # prefetch/sync_turn 都等满超时拖慢宿主（§6.2-C）。
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN = 120.0
-
-# prefetch 召回口径（§6.2-F）：只召回提炼产物，排除 EPISODIC 对话原文——
-# 原文已由 /messages/ 承载、且会注入整轮对话噪音。显式 search 工具不过滤。
-_RECALL_TIERS = ("semantic", "core", "procedural")
-
-
-def _recall_filters(project: str = "") -> dict[str, Any]:
-    """prefetch 召回过滤（dict DSL，HTTP/进程内两模式共用）。
-
-    实测确认（design doc §8.2.1）：``{"tier": {"in": [...]}}`` 被服务端真实执行，
-    episodic 原文被正确排除。进程内路径经 ``RetrievalQuery`` 边界的 ``normalize``
-    接收同一份 dict DSL。
-
-    ``project`` 非空时追加 ``system_metadata.project IN ['', project]``（顶层多键
-    默认 AND），与 ``agent_memory_search`` 同口径：召回本项目记忆与跨项目可见记忆。
-    不带该谓词时影子索引兜底 ``project = ''``，项目内写入的记忆在同项目会话的
-    prefetch 里取不到（F08 D2）。
-    """
-    filters: dict[str, Any] = {"tier": {"in": list(_RECALL_TIERS)}}
-    if project:
-        filters["system_metadata.project"] = {"in": ["", project]}
-    return filters
-
 
 _VIDEO_ROOTS_ENV = "JIUWEN_MEMORY_VIDEO_ROOTS"
 _VIDEO_MODEL_ENV = {
@@ -421,45 +217,6 @@ def _configure_default_video(config: dict[str, Any], settings: dict[str, Any]) -
         config["ingest_job"] = {"default": {"target": "in_process", "params": {
             "kv_store": "video_jobs",
         }}}
-
-
-def _tail_within_budget(
-    items: list[dict[str, Any]], *, max_items: int, max_chars: int
-) -> list[dict[str, Any]]:
-    """从列表末尾起取条数与字数预算内的条目（放不下的跳过），返回时保持原顺序。"""
-    kept: list[dict[str, Any]] = []
-    used = 0
-    for item in reversed(items):
-        size = len(item.get("content", ""))
-        if len(kept) >= max_items:
-            break
-        if used + size > max_chars:
-            # 放不下的条目跳过、继续向前取：单条超长不应让整个画像空掉
-            continue
-        kept.append(item)
-        used += size
-    kept.reverse()
-    return kept
-
-
-def _merge_prefetch_lines(
-    profile: list[dict[str, Any]], items: list[dict[str, Any]]
-) -> list[str]:
-    """用户画像条目在前、检索命中在后，按 item_id 与正文去重，返回正文列表。"""
-    lines: list[str] = []
-    seen_ids: set[str] = set()
-    seen_text: set[str] = set()
-    for item in [*profile, *items]:
-        content = item.get("content", "")
-        item_id = item.get("item_id") or ""
-        # 空 item_id 从不进 seen_ids，无需单独判空
-        if not content or content in seen_text or item_id in seen_ids:
-            continue
-        if item_id:
-            seen_ids.add(item_id)
-        seen_text.add(content)
-        lines.append(content)
-    return lines
 
 
 def _agent_default_config() -> dict[str, Any]:
@@ -664,6 +421,14 @@ def _agent_default_config() -> dict[str, Any]:
     return config
 
 
+def _merge_config(base: Any, override: Any) -> Any:
+    if isinstance(base, dict) and isinstance(override, dict):
+        for key, value in override.items():
+            base[key] = _merge_config(base[key], value) if key in base else value
+        return base
+    return override
+
+
 def _merge_config_over_default(
     config_dict: dict[str, Any], *, standalone: bool = False,
 ) -> dict[str, Any]:
@@ -684,13 +449,6 @@ def _merge_config_over_default(
     全新字面量被就地改写后的结果，默认配置本身每次调用都重建、无跨调用共享状态。
     """
 
-    def _merge(base: Any, override: Any) -> Any:
-        if isinstance(base, dict) and isinstance(override, dict):
-            for key, value in override.items():
-                base[key] = _merge(base[key], value) if key in base else value
-            return base
-        return override
-
     settings = _sdk_globals(config_dict)
     requested = _default_video_requested(settings)
     if standalone and not requested:
@@ -701,7 +459,7 @@ def _merge_config_over_default(
             _configure_default_video(config, settings)
         except ValidationError as exc:
             logger.warning("Built-in SDK video profile skipped: %s", str(exc))
-    return _merge(config, config_dict)
+    return _merge_config(config, config_dict)
 
 
 class AgentMemoryMemoryProvider(MemoryProvider):
@@ -731,6 +489,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     - ``identity_org``/``identity_user``：HTTP 模式服务端认证身份的 org/user
       （身份覆盖式 scope 的身份轴，§6.2-D）。缺省对齐 dev 认证器的固定身份
       ``local``/``developer``；生产配真实认证身份。
+    - ``portal``：符合条件的 SDK 文档实例自动共用本机 Portal。
+      ``instance_id`` 默认是 ``default``，同一文档目录下的其他实例使用稳定的不同 ID。
+      ``language`` 设为 ``en`` 时以英文打开页面，缺省以简体中文打开。
     """
 
     def __init__(
@@ -750,6 +511,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         continuity_mode: str = "role",
         default_duty: str | list[str] = "general",
         portal: dict[str, Any] | None = None,
+        scene: str = "agent",
+        project: str = "default",
         **_kwargs: Any,
     ) -> None:
         self._continuity_enabled = continuity_enabled
@@ -764,23 +527,49 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             or any(not isinstance(d, str) or not d.strip() for d in duties)
         ):
             raise ValueError("unknown default duty")
-        if continuity_enabled:
+        if continuity_enabled and base_url:
             from jiuwen_memory_adapter.continuity.client import ContinuityClient
 
             probe = ContinuityClient(base_url or "", api_key)
             probe.close()
+        if continuity_enabled and not base_url:
+            if continuity_mode != "continuity":
+                raise ValueError("SDK continuity requires continuity_mode='continuity'")
+            if security_provider is None:
+                raise ValueError("SDK continuity requires a trusted security_provider")
         self._portal_settings = dict(portal or {})
-        unknown = set(self._portal_settings) - {"enabled", "port", "allowed_frame_origins"}
+        unknown = set(self._portal_settings) - {
+            "enabled", "port", "allowed_frame_origins", "instance_id", "language",
+        }
         if unknown:
             raise ValueError("unknown Portal option")
         if not isinstance(self._portal_settings.get("enabled", True), bool):
             raise ValueError("Portal enabled must be a boolean")
+        instance_id = self._portal_settings.get("instance_id")
+        if instance_id is not None:
+            if base_url:
+                raise ValueError("Portal instance_id requires SDK document mode")
+            if not isinstance(instance_id, str) or not instance_id.isprintable():
+                raise ValueError("Portal instance_id must be a non-empty printable string")
+            if len(instance_id) > 128:
+                raise ValueError("Portal instance_id allows up to 128 printable characters")
+            if instance_id != instance_id.strip():
+                raise ValueError("Portal instance_id cannot start or end with whitespace")
         port = self._portal_settings.get("port", 0)
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Portal port must be between 0 and 65535")
+        language_option = self._portal_settings.get("language")
+        if language_option is not None and not isinstance(language_option, str):
+            raise ValueError("Portal language must be a string")
+        language = "" if language_option is None else language_option.strip().lower()
+        if language not in ("", "zh", "zh-cn", "en"):
+            raise ValueError("Portal language must be 'zh', 'zh-CN' or 'en'")
+        self._portal_language = "zh-CN" if language in ("zh", "zh-cn") else language or None
         self._portal_handle = None
+        self._portal_identity = None
         self._portal_error = None
         self._initialize_lock = asyncio.Lock()
+        self._scene = create_memory_scene(scene, project)
         self._base_url = base_url or ""
         self._config_path = config_path
         self._config_dict = config_dict
@@ -856,22 +645,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         """统一剥壳入口：检索 query 与落盘内容共用，保证两者形态一致（§6.2-E）。"""
         return self._strip_tui_envelope(text) if text else text
 
-    @staticmethod
-    def _parse_line_range(args: dict) -> tuple[int, int] | None:
-        """read 工具 ``offset``/``limit`` → 内核 ``line_range``（1-based 闭区间，F08）。
-
-        offset 缺省 1；limit 缺省 → 无上界（end 传 ``_UNBOUNDED_END``，内核 clamp
-        到文件实际行数）；两者都缺省 → None（整文件）。``limit <= 0`` 得
-        ``end < start``，内核切出空串（读 0 行），如实返回空。
-        """
-        offset = args.get("offset")
-        limit = args.get("limit")
-        if offset is None and limit is None:
-            return None
-        start = max(int(offset or 1), 1)
-        if limit is None:
-            return (start, _UNBOUNDED_END)
-        return (start, start + int(limit) - 1)
+    _parse_line_range = staticmethod(parse_line_range)
 
     def is_available(self) -> bool:
         """配置就绪探测（契约要求无网络调用）。
@@ -888,49 +662,81 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     @property
     def portal_url(self):
         """One-use SDK launch URL. HTTP callers use open_portal() to request a fresh URL."""
-        return (
-            self._portal_handle.launch_url(self._portal_write_scope())
-            if self._portal_handle is not None
-            else None
-        )
+        handle = self._portal_handle
+        if handle is None:
+            return None
+        scope = self._portal_write_scope()
+        if self._portal_identity is None:
+            link = handle.launch_url(scope)
+        else:
+            link = handle.launch_url(scope, identity=self._portal_identity)
+        return self._with_portal_language(link) if link is not None else None
+
+    def _with_portal_language(self, link: str) -> str:
+        if self._portal_language is None:
+            return link
+        separator = "&" if "#" in link else "#"
+        return f"{link}{separator}language={self._portal_language}"
 
     @property
     def portal_status(self):
-        """Use supported for menu visibility. HTTP available reflects the last link request."""
+        """Use supported for menu visibility. Remote availability reflects the last link request."""
+        handle = self._portal_handle
+        address = None
+        if handle is not None and not handle.closed:
+            address = getattr(handle, "active_address", handle.address)
         return {
             "supported": self._portal_settings.get("enabled", True),
-            "available": self._portal_handle is not None
+            "available": (address is not None and self._portal_error is None)
             or bool(getattr(self._client, "portal_available", False)),
-            "reason": self._portal_error,
-            "address": self._portal_handle.address if self._portal_handle else None,
+            "reason": getattr(self._client, "portal_error", None) or self._portal_error,
+            "address": address,
         }
 
     async def open_portal(self):
         """Return a fresh authenticated launch URL for either SDK or HTTP mode."""
         if not self._portal_settings.get("enabled", True):
             return None
-        if not self._initialized:
+        was_initialized = self._initialized
+        if not was_initialized:
             await self.initialize()
-        elif not self._base_url and self._portal_handle is None:
+        if not self._base_url:
             async with self._initialize_lock:
-                if self._initialized and self._portal_handle is None:
-                    self._start_local_portal()
-        if self._portal_handle is not None:
-            return self._portal_handle.launch_url(self._portal_write_scope())
+                if self._portal_handle is not None and self._portal_handle.closed:
+                    self._portal_handle = None
+                if was_initialized and self._initialized and self._portal_handle is None:
+                    await self._start_portal()
+                handle = self._portal_handle
+                if handle is None:
+                    return None
+                try:
+                    scope = self._portal_write_scope()
+                    if self._portal_identity is None:
+                        link = await asyncio.to_thread(handle.launch_url, scope)
+                    else:
+                        link = handle.launch_url(scope, identity=self._portal_identity)
+                except Exception as exc:
+                    self._portal_error = type(exc).__name__
+                    raise
+                self._portal_error = None
+                return self._with_portal_language(link) if link is not None else None
         opener = getattr(self._client, "open_portal", None)
-        if self._base_url and callable(opener):
+        if callable(opener):
             try:
                 link = await opener(self.bound_scope())
             except Exception as exc:
                 self._portal_error = type(exc).__name__
                 raise
             self._portal_error = None
-            return link
+            return self._with_portal_language(link) if link is not None else None
         return None
 
     def _portal_write_scope(self):
         scope = self.bound_scope()
-        actor = self._security_provider().auth.actor
+        if isinstance(self._client, _SharedSDKClient):
+            actor = self._client.portal_security().auth.actor
+        else:
+            actor = self._security_provider().auth.actor
         if (scope.org, scope.user) != (actor.org, actor.user):
             return None
         return ApiScope(org=scope.org, space=scope.space, user=scope.user,
@@ -942,23 +748,64 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             local_portal_enabled = not self._base_url and self._portal_settings.get("enabled", True)
             can_start = self._portal_handle is None and self._portal_error is None
             if local_portal_enabled and can_start:
-                self._start_local_portal()
+                await self._start_portal()
 
-    def _start_local_portal(self):
-        from jiuwen_memory_entry.portal.hosting import start_portal
-
+    async def _start_portal(self):
+        reason = getattr(self._client, "portal_error", None)
+        if reason is not None:
+            self._portal_error = reason
+            logger.warning("memory Portal unavailable: %s", reason)
+            return
+        interrupted = False
         try:
-            self._portal_handle = start_portal(
-                self.runtime,
-                security_provider=self._security_provider,
-                port=self._portal_settings.get("port", 0),
-                allowed_frame_origins=self._portal_settings.get("allowed_frame_origins", ()),
-            )
+            if getattr(self._client, "portal_location", None) is None:
+                handle = self._start_local_portal()
+            else:
+                startup = asyncio.create_task(asyncio.to_thread(self._start_local_portal))
+                # Keep the lifecycle lock while the startup thread borrows the Runtime.
+                while not startup.done():
+                    try:
+                        await asyncio.shield(startup)
+                    except asyncio.CancelledError:
+                        interrupted = True
+                handle = startup.result()
+            self._portal_handle = handle
             self._portal_error = None
-            logger.info("memory Portal available at %s", self._portal_handle.address)
+            logger.info("memory Portal available at %s", handle.address)
         except Exception as exc:
             self._portal_error = type(exc).__name__
             logger.warning("memory Portal unavailable: %s", self._portal_error)
+        if interrupted:
+            raise asyncio.CancelledError
+
+    def _start_local_portal(self):
+        options = dict(
+            port=self._portal_settings.get("port", 0),
+            allowed_frame_origins=self._portal_settings.get("allowed_frame_origins", ()),
+        )
+        client = self._client
+        location = getattr(client, "portal_location", None)
+        self._portal_identity = None
+        if location is None:
+            from jiuwen_memory_entry.portal.hosting import new_provider_key
+
+            self._portal_identity = new_provider_key()
+            options["identity"] = self._portal_identity
+        if isinstance(client, _SharedSDKClient):
+            return client.start_portal(**options)
+        if location is not None:
+            from jiuwen_memory_entry.portal.shared import SharedPortalHandle
+
+            return SharedPortalHandle(
+                self.runtime, self._security_provider, location,
+                client.portal_instance_id, **options,
+            )
+
+        from jiuwen_memory_entry.portal.hosting import start_portal
+
+        return start_portal(
+            self.runtime, security_provider=self._security_provider, **options,
+        )
 
     async def _initialize(self, **kwargs: Any) -> None:
         """Rail ``before_invoke`` 首次调，传 ``user_id``/``scope_id``/``session_id``。
@@ -1001,6 +848,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 identity_org=self._identity_org,
                 identity_user=self._identity_user,
                 manage_configuration=self._portal_settings.get("enabled", True),
+                continuity_enabled=self._continuity_enabled,
+                portal_instance_id=self._portal_settings.get("instance_id"),
+                config_overrides=self._scene.sdk_config_overrides(),
             )
         return self._client
 
@@ -1020,28 +870,19 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return False
         return isinstance(client, _InProcessClient) and client.supports_video_ingest()
 
-    def get_tool_schemas(self) -> list[dict[str, Any]]:
-        """返回 OpenAI 风格 schema；Rail 自动包成 ToolCard（§4.8）。
+    def _scene_context(self) -> MemorySceneContext:
+        return MemorySceneContext(
+            client=self._client, scope=self.bound_scope(), prepare=self._prepare,
+            video_enabled=self._video_tools_enabled,
+            continuity_enabled=self._continuity_enabled, continuity_mode=self._continuity_mode,
+        )
 
-        [本地修改 2026-10-17] ``agent_memory_profile`` / ``agent_memory_procedural``
-        **不在注册列表**——LLM 看不到、不会主动调用；但两者的 schema 与
-        ``handle_tool_call`` 实现完整保留，供内部直调（测试 / 排查 / 后续
-        重新注册时直接加回列表即可）。
-        """
-        schemas = [SEARCH_SCHEMA, CONCLUDE_SCHEMA, READ_MD_SCHEMA, EDIT_MD_SCHEMA]
-        if self._video_tools_enabled():
-            schemas.extend((VIDEO_SUBMIT_SCHEMA, VIDEO_STATUS_SCHEMA))
-        if self._continuity_enabled:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
+        if self._continuity_enabled and not self._base_url:
             from jiuwen_memory_adapter.continuity import tool_schemas
 
-            # 工具清单跟部署档位走：接续档不注册关系工具，治理工具永不进 Agent 清单。
-            schemas.extend(tool_schemas(mode=self._continuity_mode))
-        logger.info(
-            "[AgentMemoryMemoryProvider] get_tool_schemas CALLED -> returning %d schemas: %s",
-            len(schemas),
-            [s.get("name") for s in schemas],
-        )
-        return schemas
+            return tool_schemas(mode="continuity")
+        return self._scene.get_tool_schemas(self._scene_context())
 
     async def handle_tool_call(self, tool_name: str, args: dict) -> str:
         """LLM 调工具时触发；返 JSON 字符串（Rail 会 ``json.loads``）。"""
@@ -1063,255 +904,14 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             }:
                 return json.dumps({"error": "unknown continuity tool"})
             payload = dict(args)
-            result = await self._client.continuity_call(verb, payload)
+            result = await self.continuity_request(verb, payload)
             return json.dumps(result, ensure_ascii=False)
         if self._client.is_unavailable():
             return json.dumps(
                 {"error": "AgentMemory temporarily unavailable (repeated failures); will retry."}
             )
-        scope = self.bound_scope()
-
         try:
-            if tool_name in ("agent_memory_video_submit", "agent_memory_video_status"):
-                if not (
-                    self._video_tools_enabled() and isinstance(self._client, _InProcessClient)
-                ):
-                    return json.dumps({"error": "Video memory tools are disabled"})
-                if tool_name == "agent_memory_video_submit":
-                    uri = args.get("uri")
-                    if not isinstance(uri, str) or not uri.startswith("file:///"):
-                        return json.dumps({"error": "A local file:/// video URI is required"})
-                    project = str(args.get("project") or "").strip()
-                    result = await self._client.submit_video(uri, scope, project=project)
-                else:
-                    job_id = args.get("job_id")
-                    if not isinstance(job_id, str) or not job_id.strip():
-                        return json.dumps({"error": "An ingest job ID is required"})
-                    result = await self._client.video_status(job_id.strip(), scope)
-                return json.dumps(result, ensure_ascii=False)
-
-            # -- 未注册工具（不在 get_tool_schemas，LLM 不可见；实现保留供内部直调）-- #
-
-            if tool_name == "agent_memory_profile":
-                items = await self._client.list_semantic(scope)
-                if not items:
-                    logger.info("[AgentMemoryMemoryProvider] agent_memory_profile -> no memories")
-                    return json.dumps({"result": "No memories stored yet."})
-                lines = [it["content"] for it in items if it.get("content")]
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_profile -> count=%d", len(lines)
-                )
-                for idx, line in enumerate(lines):
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] profile hit[%d]: %s",
-                        idx,
-                        redact_for_log(line),
-                    )
-                return json.dumps({"result": "\n".join(lines), "count": len(lines)})
-
-            if tool_name == "agent_memory_read_md_file":
-                md_filename = str(args.get("md_filename") or "")
-                if not md_filename:
-                    return json.dumps({"error": "Missing required parameter: md_filename"})
-                project = str(args.get("project") or "")
-                line_range = self._parse_line_range(args)
-                # F08：按 md_filename + 行范围读 md 文件，返回命中的 MemoryUnit 块。
-                # 文件不存在/行范围无完整块 → 空列表（内核 read_content 容错空串）；
-                # 非文档模式服务端抛 ValidationError（经 client 透出）。
-                units = await self._client.read_md_file(
-                    md_filename, scope, project=project, line_range=line_range
-                )
-                if units is None:
-                    return json.dumps(
-                        {"error": "AgentMemory read_md_file failed (server unavailable)."}
-                    )
-                if not units:
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] agent_memory_read_md_file file=%s "
-                        "-> no blocks",
-                        md_filename,
-                    )
-                    return json.dumps({"result": f"No memory blocks found in {md_filename}."})
-                blocks = [
-                    {
-                        "item_id": it.get("item_id", ""),
-                        "tier": it.get("tier", ""),
-                        "memory": it.get("content", ""),
-                    }
-                    for it in units
-                ]
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_read_md_file file=%s -> count=%d",
-                    md_filename,
-                    len(blocks),
-                )
-                for idx, blk in enumerate(blocks):
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] read_md hit[%d]: %s",
-                        idx,
-                        redact_for_log(blk.get("memory")),
-                    )
-                return json.dumps(
-                    {"md_filename": md_filename, "count": len(blocks), "blocks": blocks}
-                )
-
-            if tool_name == "agent_memory_search":
-                query = args.get("query", "")
-                if not query:
-                    return json.dumps({"error": "Missing required parameter: query"})
-                # [本地修改 2026-10-17] LLM 可能显式传 "top_k": null——key 存在时
-                # dict.get 的缺省值不生效，int(None) 直接 TypeError。用 or 同时覆盖
-                # 「key 缺省」与「显式 null」（top_k=0 无意义，同样回落缺省）。
-                top_k = min(int(args.get("top_k") or _DEFAULT_SEARCH_TOP_K), _MAX_TOP_K)
-                # [本地修改 2026-10-19] 对齐 mem2_search：project 走 filters 下推为
-                # system_metadata.project 谓词，与写入侧 add（project 作标量
-                # system_metadata["project"]）同口径；IN ['', project] 同时召回跨项目
-                # 可见记忆与同 project 记忆。
-                project = str(args.get("project") or "").strip()
-                filters = {"system_metadata.project": {"in": ["", project]}} if project else None
-                # 显式检索不过滤 tier（§6.2-F）：LLM 主动检索允许命中 EPISODIC 原文。
-                items = await self._client.search(query, scope, top_k=top_k, filters=filters)
-                if not items:
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] agent_memory_search query=%s -> no relevant",
-                        redact_for_log(query),
-                    )
-                    return json.dumps({"result": "No relevant memories found."})
-                payload = [
-                    {"memory": it.get("content", ""), "score": it.get("score", 0)} for it in items
-                ]
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_search query=%s -> count=%d",
-                    redact_for_log(query),
-                    len(payload),
-                )
-                for idx, p in enumerate(payload):
-                    logger.info(
-                        "[AgentMemoryMemoryProvider] search hit[%d] score=%s: %s",
-                        idx,
-                        p.get("score"),
-                        redact_for_log(p.get("memory")),
-                    )
-                return json.dumps({"results": payload, "count": len(payload)})
-
-            if tool_name == "agent_memory_conclude":
-                conclusion = args.get("conclusion", "")
-                if not conclusion:
-                    return json.dumps({"error": "Missing required parameter: conclusion"})
-                # infer=true：conclude 走 LLM 抽取（与 sync_turn 同口径），抽取派生的
-                # 记忆按 memory_class + project 分流落盘。project 作标量
-                # system_metadata["project"] 直传（agent 场景无 router，coords 嵌套
-                # dict 会被 _reject_non_scalar_metadata 拒）。
-                tags = args.get("tags") or ["conclude"]
-                project = str(args.get("project") or "").strip()
-                system_metadata: dict[str, str] = {
-                    "infer": "true",
-                    "source_app": "jiuwenswarm",
-                    "agent_label": self._agent_id,
-                }
-                if project:
-                    system_metadata["project"] = project
-                data = await self._client.add(
-                    conclusion,
-                    scope,
-                    tags=tags,
-                    system_metadata=system_metadata,
-                )
-                if data is None:
-                    return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_conclude stored=%s "
-                    "tags=%s project=%s",
-                    redact_for_log(conclusion),
-                    tags,
-                    project or "",
-                )
-                if data.item_id is None:
-                    return json.dumps({"result": "Fact stored (deduped, no new unit)."})
-                return json.dumps({"result": "Fact stored.", "item_id": data.item_id})
-
-            # -- 未注册工具（不在 get_tool_schemas，LLM 不可见；实现保留供内部直调）-- #
-
-            if tool_name == "agent_memory_procedural":
-                content = args.get("content", "")
-                if not content:
-                    return json.dumps({"error": "Missing required parameter: content"})
-                # 过程记忆：经 add(procedural=true) 触发 engine 的 procedural 分支——
-                # 原文不落 KV，evolver 让 extractor 把本轮汇总成 1 条 PROCEDURAL 执行历史，
-                # 落 /memory/ 建索引；不走去重、不收集 context（见 F02「过程记忆抽取」）。
-                # 需配 extractor:llm 才真汇总（默认 keyword 降级为原文原样存 1 条 PROCEDURAL）。
-                data = await self._client.add(
-                    content,
-                    scope,
-                    system_metadata={
-                        "procedural": "true",
-                        "source_app": "jiuwenswarm",
-                        "agent_label": self._agent_id,
-                    },
-                )
-                if data is None:
-                    return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_procedural summarized=%s item_id=%s",
-                    redact_for_log(content),
-                    data.item_id,
-                )
-                # add 返回 item_id=None：extractor 产空（LLM 返回不可解析/未产出候选）→
-                # 未持久化任何记忆。不可报成功（false success）——evolver 吞掉 LLM 失败
-                # 返回空 EvolveResult，需如实告知调用方。content 已在上文校验非空。
-                if not data.item_id:
-                    return json.dumps(
-                        {
-                            "error": "Procedural memory not stored: extractor produced nothing "
-                            "(LLM returned unparseable content or no candidates).",
-                        }
-                    )
-                return json.dumps({"result": "Procedural memory stored.", "item_id": data.item_id})
-
-            if tool_name == "agent_memory_edit_md_file":
-                md_filename = str(args.get("md_filename") or "")
-                old_text = args.get("old_text", "")
-                new_text = args.get("new_text", "")
-                if not md_filename:
-                    return json.dumps({"error": "Missing required parameter: md_filename"})
-                if not old_text:
-                    return json.dumps({"error": "Missing required parameter: old_text"})
-                # new_text 允许空串（old_text → "" 即删除该片段）。
-                project = str(args.get("project") or "")
-                # F08：按 md_filename + old_text 文件内唯一替换，继承式 SUPERSEDE——
-                # 返回受影响的**新** unit（旧版已失效）。old_text 不存在/不唯一由
-                # 内核抛 NotFoundError/ValidationError（经 client 透出给 LLM）。
-                units = await self._client.edit_md_file(
-                    md_filename, scope, old_text, new_text, project=project
-                )
-                if units is None:
-                    return json.dumps(
-                        {"error": "AgentMemory edit_md_file failed (server unavailable)."}
-                    )
-                blocks = [
-                    {
-                        "item_id": it.get("item_id", ""),
-                        "tier": it.get("tier", ""),
-                        "memory": it.get("content", ""),
-                    }
-                    for it in units
-                ]
-                logger.info(
-                    "[AgentMemoryMemoryProvider] agent_memory_edit_md_file file=%s -> count=%d",
-                    md_filename,
-                    len(blocks),
-                )
-                return json.dumps(
-                    {
-                        "result": "Edited.",
-                        "md_filename": md_filename,
-                        "count": len(blocks),
-                        "units": blocks,
-                    }
-                )
-
-            logger.info("[AgentMemoryMemoryProvider] handle_tool_call unknown tool=%s", tool_name)
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            return await self._scene.handle_tool_call(self._scene_context(), tool_name, args)
         except Exception as exc:
             logger.warning(
                 "[AgentMemoryMemoryProvider] handle_tool_call '%s' failed: error_type=%s",
@@ -1319,6 +919,71 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 type(exc).__name__,
             )
             return json.dumps({"error": str(exc)})
+
+    async def continuity_request(self, verb: str, payload: dict) -> dict:
+        """Validate task requests and attach a fresh trusted context for local calls."""
+        if not self._continuity_enabled or self._client is None:
+            raise RuntimeError("continuity provider not initialized")
+        allowed = {"continuity_task", "search", "add", "continuity_recover"}
+        if self._base_url:
+            allowed.add("continuity_relation")
+        if verb not in allowed:
+            raise ValueError("unsupported continuity operation")
+        from jiuwen_memory_entry.core.api_contract import parse_request
+
+        request = payload.get("request") or payload.get("continuity") or {}
+        request = request if isinstance(request, dict) else {}
+        task_id = request.get("task_id") or payload.get("task_id", "")
+        operation = request.get("operation", "")
+        request_id = request.get("request_id") or request.get("event_id", "")
+        started = time.monotonic()
+        logger.info(
+            "[continuity.request.start] mode=%s session_id=%s verb=%s operation=%s "
+            "task_id=%s request_id=%s",
+            "http" if self._base_url else "sdk", self._session_id, verb, operation,
+            task_id, request_id,
+        )
+        try:
+            arguments = parse_request(verb, deepcopy(payload))
+            if self._base_url:
+                result = await self._client.continuity_call(verb, deepcopy(payload))
+            else:
+                security = self._security_provider()
+                if not isinstance(security, RequestSecurityContext):
+                    raise ValidationError("trusted RequestSecurityContext required")
+                security = replace(security, auth=replace(
+                    security.auth, actor=deepcopy(security.auth.actor),
+                ))
+                arguments["security"] = security
+                result = await self._client.continuity_call(verb, arguments)
+        except BaseException as exc:
+            logger.warning(
+                "[continuity.request.failed] session_id=%s verb=%s operation=%s task_id=%s "
+                "request_id=%s error_type=%s operation_id=%s retry_action=%s elapsed_ms=%.1f",
+                self._session_id, verb, operation, task_id, request_id, type(exc).__name__,
+                getattr(exc, "operation_id", ""), getattr(exc, "retry_action", ""),
+                (time.monotonic() - started) * 1000,
+            )
+            raise
+        failed = bool(result.get("error")) or result.get("ok") is False
+        task = result.get("task", {})
+        task = task if isinstance(task, dict) else {}
+        bindings = task.get("bindings", [])
+        binding_ids = [b.get("binding_id", "") for b in bindings
+                       if b.get("active") and b.get("context_id") == self._session_id]
+        (logger.warning if failed else logger.info)(
+            "[continuity.request.%s] session_id=%s verb=%s operation=%s task_id=%s "
+            "binding_ids=%s request_id=%s revision=%s items=%s candidates=%s units=%s "
+            "status=%s operation_id=%s retry_action=%s elapsed_ms=%.1f",
+            "unconfirmed" if failed else "success", self._session_id, verb, operation,
+            result.get("task_id") or task_id or task.get("task_id", ""), binding_ids,
+            request_id, result.get("revision", task.get("revision", "")),
+            len(result.get("items") or []), len(result.get("tasks") or []),
+            len(result.get("units") or []), result.get("status", ""),
+            result.get("operation_id", ""), result.get("retry_action", ""),
+            (time.monotonic() - started) * 1000,
+        )
+        return result
 
     async def prefetch(self, query: str, **kwargs: Any) -> str:
         """返 Markdown 字符串，Rail 包 ``<memory-context>`` 注入提示词。"""
@@ -1333,111 +998,40 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 "duty": kwargs.get("duty", self._default_duty),
                 "task_id": kwargs.get("task_id", ""),
             }
-            result = await self._client.continuity_call(
+            logger.info(
+                "[continuity.prefetch.start] session_id=%s task_id=%s org=%s space=%s top_k=%s",
+                self._session_id, request["task_id"], scope.get("org", ""),
+                scope.get("space", ""), kwargs.get("top_k", 10),
+            )
+            result = await self.continuity_request(
                 "search",
                 {
                     "query": request["query"],
                     "context": {"scope": scope},
                     "task_id": request["task_id"],
                     "duty": request["duty"],
+                    "top_k": kwargs.get("top_k", 10),
                 },
             )
             # Rail accepts text: preserve the complete structured view as JSON, including
             # paths, gaps and explicit errors. Do not flatten it into a success summary.
+            gaps = result.get("gaps") or []
+            logger.info(
+                "[continuity.prefetch.result] session_id=%s task_id=%s items=%s gaps=%s "
+                "blocking_gaps=%s gap_codes=%s has_error=%s",
+                self._session_id, request["task_id"], len(result.get("items") or []), len(gaps),
+                sum(bool(g.get("blocking")) for g in gaps if isinstance(g, dict)),
+                [g.get("code", "") for g in gaps if isinstance(g, dict)], bool(result.get("error")),
+            )
             return json.dumps(result, ensure_ascii=False)
         logger.info(
             "[AgentMemoryMemoryProvider] prefetch CALLED query=%s client=%s",
             redact_for_log(query),
             bool(self._client),
         )
-        if not query or not self._initialized or self._client is None:
+        if not self._initialized or self._client is None:
             return ""
-        # §6.2-E：剥 TUI 信封，用纯 content 检索，避免命中对话原文壳。
-        search_query = self._prepare(query)
-        if search_query != query:
-            logger.info(
-                "[AgentMemoryMemoryProvider] prefetch stripped envelope: %s -> %s",
-                redact_for_log(query),
-                redact_for_log(search_query),
-            )
-        # [本地修改 2026-10-17] 同 agent_memory_search：null 防御（or 覆盖缺省与显式 null）。
-        top_k = min(int(kwargs.get("top_k") or _DEFAULT_PREFETCH_TOP_K), _MAX_TOP_K)
-        # rail 经 _resolve_project 传入 project；与 sync_turn / agent_memory_search 同口径。
-        project = str(kwargs.get("project") or "").strip()
-        try:
-            logger.info(
-                "[AgentMemoryMemoryProvider] prefetch before search scope=%s top_k=%d",
-                scope_for_log(self.bound_scope()),
-                top_k,
-            )
-            # §6.2-F：prefetch 只召回提炼产物（semantic/core/procedural）。
-            try:
-                items = await self._client.search(
-                    search_query,
-                    self.bound_scope(),
-                    top_k=top_k,
-                    filters=_recall_filters(project),
-                )
-            except Exception as exc:
-                # 检索失败不连带丢掉用户画像：降级为只注入 USER.md 的条目
-                logger.warning(
-                    "[AgentMemoryMemoryProvider] prefetch search failed, profile only: "
-                    "error_type=%s",
-                    type(exc).__name__,
-                    exc_info=True,
-                )
-                items = []
-            logger.info("[AgentMemoryMemoryProvider] prefetch after search items=%d", len(items))
-            profile = await self._profile_items()
-            lines = _merge_prefetch_lines(profile, items)
-            logger.info(
-                "[AgentMemoryMemoryProvider] prefetch search_query=%s scope=%s "
-                "top_k=%d recalled=%d profile=%d injected=%d",
-                redact_for_log(search_query),
-                scope_for_log(self.bound_scope()),
-                top_k,
-                len(items),
-                len(profile),
-                len(lines),
-            )
-            for idx, line in enumerate(lines):
-                logger.info(
-                    "[AgentMemoryMemoryProvider] prefetch hit[%d]: %s",
-                    idx,
-                    redact_for_log(line),
-                )
-            return (
-                ("## AgentMemory Memory\n" + "\n".join(f"- {line}" for line in lines))
-                if lines
-                else ""
-            )
-        except Exception as exc:
-            logger.warning(
-                "[AgentMemoryMemoryProvider] prefetch failed: error_type=%s",
-                type(exc).__name__,
-                exc_info=True,
-            )
-            return ""
-
-    async def _profile_items(self) -> list[dict[str, Any]]:
-        """读 USER.md 的条目供 prefetch 直接注入；任何失败都降级为空，不影响检索结果。
-
-        文件不存在、非文档模式、传输失败都返回空列表。超出条数或字数上限时保留文件
-        末尾的条目（USER.md 追加写入，末尾即最新）。
-        """
-        try:
-            items = await self._client.read_md_file(_PROFILE_MD_FILENAME, self.bound_scope())
-        except Exception as exc:
-            logger.info(
-                "[AgentMemoryMemoryProvider] prefetch profile unavailable: error_type=%s",
-                type(exc).__name__,
-            )
-            return []
-        return _tail_within_budget(
-            [it for it in items or [] if it.get("content")],
-            max_items=_PROFILE_INJECT_MAX_ITEMS,
-            max_chars=_PROFILE_INJECT_MAX_CHARS,
-        )
+        return await self._scene.prefetch(self._scene_context(), query, **kwargs)
 
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
 
@@ -1464,7 +1058,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     "continuity sync requires scope, task, binding and stable event ID"
                 )
             content = f"user: {self._prepare(user_msg)}\nassistant: {assistant_msg}"
-            return await self._client.continuity_call(
+            return await self.continuity_request(
                 "add",
                 {
                     "content": content,
@@ -1492,7 +1086,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         }
         # rail 经 _resolve_project 传入 project；与 conclude 分支同口径直传标量
         # system_metadata["project"]，让 md 落盘按 memory/{project}/... 分流。
-        project = str(kwargs.get("project") or "").strip()
+        project = self._scene.resolve_project(kwargs)
         if project:
             system_metadata["project"] = project
         logger.info(
@@ -1528,48 +1122,34 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     # -- MemoryProvider: 静态提示词 + 生命周期（非抽象，有默认） -------------- #
 
     def system_prompt_block(self) -> str:
-        # [本地修改 2026-10-17] 显式路由规则：新增→conclude（append-only），
-        # 修改/更正→read_md_file 定位 + edit_md_file 原地替换。个人信息可能在
-        # USER.md 也可能在 daily 文件（YYYY-MM-DD.md），修改前先读定位。
-        prompt = (
-            "# AgentMemory Memory\n"
-            f"Active. User: {self._user_id}.\n"
-            "Tool routing: agent_memory_search finds memories by meaning. "
-            "agent_memory_conclude ONLY appends a brand-new fact — it never modifies "
-            "existing memories. To CHANGE or CORRECT a stored memory, first locate it "
-            "with agent_memory_read_md_file (USER.md / MEMORY.md / daily YYYY-MM-DD.md — "
-            "personal info may be in a daily file), then agent_memory_edit_md_file to "
-            "replace it in place."
-        )
-        if self._video_tools_enabled():
-            prompt += (
-                "\nWhen the user asks to remember a video by local file URI, "
-                "use agent_memory_video_submit with that URI. "
-                "Use agent_memory_video_status to check the resulting job."
-            )
-        if self._continuity_enabled:
-            prompt += (
-                " Restore saved task background with agent_memory_search (task_id) before "
-                "continuing; select a duty to expand typed relations and inspect paths/gaps. "
-                "Record observations/results through agent_memory_add with the continuity "
-                "parameter, and review relations explicitly. "
-                "No predecessor handoff is required; Rail hooks do not capture all history."
-            )
-        return prompt
+        return self._scene.system_prompt(self._scene_context())
 
     async def shutdown(self) -> None:
         async with self._initialize_lock:
-            await self._shutdown()
+            # Keep the instance ID and lifecycle lock until shutdown completes.
+            closing = asyncio.create_task(self._shutdown())
+            interrupted = False
+            while not closing.done():
+                try:
+                    await asyncio.shield(closing)
+                except asyncio.CancelledError:
+                    interrupted = True
+            closing.result()
+            if interrupted:
+                raise asyncio.CancelledError
 
     async def _shutdown(self) -> None:
-        if self._portal_handle is not None:
-            await asyncio.to_thread(self._portal_handle.close)
+        try:
+            if self._portal_handle is not None and not isinstance(self._client, _SharedSDKClient):
+                await asyncio.to_thread(self._portal_handle.close)
+        finally:
             self._portal_handle = None
-        if self._client is not None:
-            await self._client.close()
-        self._client = None
-        self._initialized = False
-        self._portal_error = None
+            self._portal_identity = None
+            if self._client is not None:
+                await self._client.close()
+            self._client = None
+            self._initialized = False
+            self._portal_error = None
 
     async def on_session_end(self, messages: list[dict[str, Any]] | None = None) -> None:
         """会话结束时批量抽取一次（infer 模式下基本冗余，保留为显式入口）。
@@ -1693,7 +1273,7 @@ class _AgentMemoryClient:
         raise NotImplementedError
 
     async def continuity_call(self, verb: str, payload: dict) -> dict:
-        raise NotImplementedError("continuity requires a remote client")
+        raise NotImplementedError("client does not implement continuity")
 
     async def search(
         self,
@@ -1764,6 +1344,9 @@ def _build_client(
     identity_org: str = "local",
     identity_user: str = "developer",
     manage_configuration: bool = True,
+    continuity_enabled: bool = False,
+    portal_instance_id: str | None = None,
+    config_overrides: dict[str, Any] | None = None,
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
@@ -1784,27 +1367,38 @@ def _build_client(
             identity_org=identity_org,
             identity_user=identity_user,
         )
-    if config_dict:
+    if continuity_enabled:
+        config = config_dict
+        config_paths = ()
+        if config is None and config_path:
+            path = Path(config_path)
+            config = (json.loads(path.read_text(encoding="utf-8"))
+                      if path.suffix == ".json" else _load_yaml(path))
+            config_paths = (str(path),)
+        config = _merge_config_over_default(config or {}, standalone=True)
+        return _SharedSDKClient(
+            config, security_provider,
+            config_paths=config_paths,
+            manage_configuration=manage_configuration, portal_instance_id=portal_instance_id,
+        )
+    if config_dict or not config_path:
         # [本地修改 2026-10-20] 上层 config_dict 深合并到内置 agent 默认装配之上，
         # 而非整体替换——宿主只传要覆盖的片段（globals 凭证/端点、embedder_dim、
         # markdown_store.default.params.root），未提及的 F09 栈缺省原样保留。
         return _InProcessClient(
             None,
-            config_dict=_merge_config_over_default(config_dict),
+            config_dict=_merge_config_over_default(config_dict or {}),
             security_provider=security_provider,
             manage_configuration=manage_configuration,
-        )
-    if config_path:
-        return _InProcessClient(
-            config_path,
-            security_provider=security_provider,
-            manage_configuration=manage_configuration,
+            portal_instance_id=portal_instance_id,
+            config_overrides=config_overrides,
         )
     return _InProcessClient(
-        None,
-        config_dict=_merge_config_over_default({}),
+        config_path,
         security_provider=security_provider,
         manage_configuration=manage_configuration,
+        portal_instance_id=portal_instance_id,
+        config_overrides=config_overrides,
     )
 
 
@@ -2077,6 +1671,11 @@ class _HttpClient(_AgentMemoryClient):
                 body = response.json()
                 if not isinstance(body, dict):
                     raise ValueError("structured response required")
+                if body.get("error") != "WriteIncompleteError" and body.get("status") not in {
+                    "unknown", "partial",
+                }:
+                    return {"status": "rejected", "error": body.get("error", "ConflictError"),
+                            "message": body.get("message", "request conflict")}
                 return {
                     "status": str(body.get("status") or "unknown"),
                     "operation_id": body.get("operation_id", ""),
@@ -2275,6 +1874,315 @@ class _HttpClient(_AgentMemoryClient):
 # --------------------------------------------------------------------------- #
 
 
+@dataclass(frozen=True)
+class _DocumentPortal:
+    location: Any
+    instance_id: str
+    open_overlay: Callable[[], Any]
+
+
+@dataclass
+class _PortalSetup:
+    config: dict[str, Any] | None
+    config_paths: tuple[str, ...]
+    document: _DocumentPortal | None
+    overlay_path: Path | None = None
+    error: str | None = None
+    configuration_conflict: bool = False
+
+    def claim_document(self, resources: ExitStack) -> None:
+        document = self.document
+        if document is None:
+            return
+        try:
+            document.location.claim_instance(document.instance_id, resources)
+        except ConflictError as exc:
+            self.error = (
+                f"{exc}. Choose a distinct portal.instance_id and restart this SDK instance."
+            )
+
+    def matches_overlay(self, path: Path) -> bool:
+        if self.document is not None:
+            return False
+        try:
+            return any(
+                candidate.resolve() == path
+                for candidate, _ in _config_overlay_candidates(self.config, self.config_paths)
+            )
+        except (BackendError, OSError):
+            return False
+
+    def open_overlay(self):
+        if self.error is not None:
+            return None
+        if self.document is not None:
+            return self.document.open_overlay()
+        for path, open_overlay in _config_overlay_candidates(self.config, self.config_paths):
+            store = open_overlay()
+            if store is not None:
+                self.overlay_path = path.resolve()
+                return store
+        return None
+
+
+def _prepare_document_portal(
+    config: dict[str, Any] | None, requested_id: str | None,
+) -> _DocumentPortal | None:
+    instance_id = requested_id or "default"
+    shared_portal = (
+        _prepare_shared_document_portal(config, instance_id=instance_id)
+        if os.name in ("posix", "nt") else None
+    )
+    if shared_portal is not None:
+        from jiuwen_memory_entry.portal.shared import SharedPortalLocation
+
+        paths, open_overlay = shared_portal
+        return _DocumentPortal(SharedPortalLocation(paths), instance_id, open_overlay)
+    if requested_id is not None:
+        raise ValidationError("Portal instance_id requires a fixed local SDK document store")
+    return None
+
+
+def _assemble_sdk_runtime(config, store, owner, current_security=None):
+    if store is None:
+        return assemble_runtime(config=config)
+
+    def authorize(security, operation):
+        if security.auth.actor != owner:
+            return False
+        if current_security is not None and current_security().auth.actor != owner:
+            return False
+        runtime.api.check_configuration_access(
+            owner, security=security, write=operation == "write",
+        )
+        return True
+
+    runtime = assemble_managed_runtime(
+        config=config, store=store, llm_instances=document_llm_instances(config),
+        authorize=authorize,
+    )
+    return runtime
+
+
+class _SharedSDKClient(_AgentMemoryClient):
+    """One Provider's lease on the process-local SDK continuity runtime."""
+
+    def __init__(
+        self, config: dict, security_provider, *,
+        config_paths: tuple[str, ...], manage_configuration: bool, portal_instance_id: str | None,
+    ):
+        self._config = deepcopy(config)
+        self._security_provider = security_provider
+        self._config_paths = config_paths
+        self._manage_configuration = manage_configuration
+        self._requested_instance_id = portal_instance_id
+        self._lease = None
+        self._principal = ""
+        self._lock = asyncio.Lock()
+        self._portal_handle = None
+        self._portal_identity = None
+        self.portal_error = None
+        self._configuration_conflict = False
+        self._cancelled_startup: Future | None = None
+
+    @property
+    def runtime(self):
+        return self._lease.entry.runtime if self._lease is not None else None
+
+    @property
+    def portal_location(self):
+        document = self._lease.entry.document_portal if self._lease is not None else None
+        return document.location if document is not None else None
+
+    def portal_security(self) -> RequestSecurityContext:
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import principal_key
+
+        security = self._security_provider()
+        if not isinstance(security, RequestSecurityContext):
+            raise AuthenticationError("trusted RequestSecurityContext required")
+        if principal_key(security) != self._principal:
+            raise AuthenticationError("SDK authentication principal changed")
+        return security
+
+    def start_portal(self, **options):
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import _SDK_RUNTIME_POOL
+        from jiuwen_memory_entry.portal.hosting import start_portal
+
+        if self._lease is None:
+            raise RuntimeError("SDK continuity client is not initialized")
+        entry = self._lease.entry
+        document = entry.document_portal
+        if document is not None:
+            from jiuwen_memory_entry.portal.shared import SharedPortalHandle
+
+            self._portal_handle = SharedPortalHandle(
+                entry.runtime, self.portal_security, document.location, document.instance_id,
+                runtime_key=entry.portal_key, **options,
+            )
+            return self._portal_handle
+        handle = _SDK_RUNTIME_POOL.attach_portal(
+            self._lease,
+            lambda runtime: start_portal(
+                runtime, security_provider=self.portal_security,
+                configuration_conflict=self._configuration_conflict, **options,
+            ),
+        )
+        self._portal_handle, self._portal_identity = handle, options.get("identity")
+        return handle
+
+    async def initialize(self) -> None:
+        import threading
+
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import _SDK_RUNTIME_POOL, principal_key
+
+        async with self._lock:
+            if self._lease is not None:
+                return
+            await self._wait_for_cancelled_startup()
+            security = self._security_provider()
+            if not isinstance(security, RequestSecurityContext):
+                raise ValidationError("trusted RequestSecurityContext required")
+            principal = principal_key(security)
+            handoff_lock = threading.Lock()
+            handoff = {"cancelled": False, "lease": None, "acquiring": False}
+            startup_done = Future()
+
+            def acquire_lease():
+                setup = None
+                if self._manage_configuration:
+                    setup = _PortalSetup(
+                        self._config, self._config_paths,
+                        _prepare_document_portal(self._config, self._requested_instance_id),
+                    )
+                with handoff_lock:
+                    if handoff["cancelled"]:
+                        return None, None
+                    handoff["acquiring"] = True
+                owner = deepcopy(security.auth.actor)
+
+                def assemble():
+                    store = setup.open_overlay() if setup is not None else None
+                    return _assemble_sdk_runtime(self._config, store, owner)
+
+                lease = _SDK_RUNTIME_POOL.acquire(
+                    self._config, principal, assemble, portal_setup=setup,
+                )
+                with handoff_lock:
+                    if not handoff["cancelled"]:
+                        handoff["lease"] = lease
+                        return lease, setup
+                # The event loop may already have gone away; cleanup must not need it.
+                try:
+                    _SDK_RUNTIME_POOL.release(lease)
+                except BaseException:
+                    logger.exception("Cancelled SDK initialization cleanup failed")
+                    raise
+                return None, None
+
+            def tracked_acquire():
+                try:
+                    return acquire_lease()
+                except BaseException as error:
+                    startup_done.set_exception(error)
+                    raise
+                finally:
+                    if not startup_done.done():
+                        startup_done.set_result(None)
+
+            acquire = asyncio.create_task(asyncio.to_thread(tracked_acquire))
+            acquire.add_done_callback(
+                lambda done: done.exception() if not done.cancelled() else None
+            )
+            try:
+                lease, setup = await asyncio.shield(acquire)
+            except asyncio.CancelledError:
+                with handoff_lock:
+                    handoff["cancelled"] = True
+                    lease = handoff["lease"]
+                    acquiring = handoff["acquiring"]
+                if lease is not None:
+                    cleanup = _SDK_RUNTIME_POOL.release_in_background(lease)
+                    cleanup.add_done_callback(self._observe_cleanup)
+                else:
+                    cleanup = startup_done
+                # A reused Runtime can own a shared ID even when this Provider disables Portal.
+                if acquiring:
+                    self._cancelled_startup = cleanup
+                raise
+            self._lease, self._principal = lease, principal
+            self.portal_error = setup.error if setup is not None else None
+            self._configuration_conflict = setup is not None and setup.configuration_conflict
+
+    async def _wait_for_cancelled_startup(self) -> None:
+        if self._cancelled_startup is not None:
+            await asyncio.shield(asyncio.wrap_future(self._cancelled_startup))
+            self._cancelled_startup = None
+
+    async def continuity_call(self, verb: str, payload: dict) -> dict:
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import _SDK_RUNTIME_POOL, principal_key
+        from jiuwen_memory_entry.core.api_contract import to_jsonable
+
+        if verb not in {"continuity_task", "search", "add", "continuity_recover"}:
+            raise ValueError("unsupported SDK continuity operation")
+        lease = self._lease
+        if lease is None:
+            raise RuntimeError("SDK continuity client is not initialized")
+        if principal_key(payload["security"]) != self._principal:
+            raise ConflictError("runtime", message="SDK authentication principal changed")
+        result = await _SDK_RUNTIME_POOL.submit(
+            lease, lambda: getattr(lease.entry.runtime.api, verb)(**payload),
+        )
+        result = to_jsonable(result)
+        return {"units": result} if isinstance(result, list) else result
+
+    async def close(self) -> None:
+        from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import _SDK_RUNTIME_POOL
+
+        async with self._lock:
+            await self._wait_for_cancelled_startup()
+            handle = self._portal_handle
+            if handle is not None:
+                if self._portal_identity is None:
+                    await asyncio.to_thread(handle.close)
+                else:
+                    handle.unregister_provider(self._portal_identity)
+            self._portal_handle = self._portal_identity = None
+            lease, self._lease = self._lease, None
+            if lease is not None:
+                cleanup = _SDK_RUNTIME_POOL.release_in_background(lease)
+                cleanup.add_done_callback(self._observe_cleanup)
+                wrapped = asyncio.wrap_future(cleanup)
+                wrapped.add_done_callback(
+                    lambda done: done.exception() if not done.cancelled() else None
+                )
+                await asyncio.shield(wrapped)
+
+    @staticmethod
+    def _observe_cleanup(result) -> None:
+        if not result.cancelled() and result.exception() is not None:
+            logger.error("SDK runtime cleanup failed", exc_info=result.exception())
+
+
+def _resolve_sdk_config(
+    config_path: str | None, config_dict: dict[str, Any] | None,
+    overrides: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    """Load the selected baseline, then apply scene requirements without mutating inputs."""
+    config = config_dict
+    config_paths = ()
+    if config is None and config_path:
+        path = Path(config_path)
+        config = (json.loads(path.read_text(encoding="utf-8"))
+                  if path.suffix == ".json" else _load_yaml(path))
+        config = _merge_config_over_default(
+            config if config is not None else {}, standalone=True,
+        )
+        config_paths = (str(path),)
+    if overrides:
+        config = _merge_config(deepcopy(config or {}), deepcopy(overrides))
+    return config, config_paths
+
+
 class _InProcessClient(_AgentMemoryClient):
     """直接持有 ``LocalMemoryAPI`` 的进程内客户端。
 
@@ -2300,6 +2208,8 @@ class _InProcessClient(_AgentMemoryClient):
         config_dict: dict[str, Any] | None = None,
         security_provider: Any = None,
         manage_configuration: bool = True,
+        portal_instance_id: str | None = None,
+        config_overrides: dict[str, Any] | None = None,
     ) -> None:
         if security_provider is None:
             # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
@@ -2310,43 +2220,31 @@ class _InProcessClient(_AgentMemoryClient):
                 "provider (composition root); production should use HTTP + API key"
             )
         self._security_provider = security_provider
-        config = config_dict
-        config_paths = ()
-        if config is None and config_path:
-            from pathlib import Path
-
-            p = Path(config_path)
-            config = (
-                json.loads(p.read_text(encoding="utf-8")) if p.suffix == ".json" else _load_yaml(p)
-            )
-            config = _merge_config_over_default(
-                config if config is not None else {}, standalone=True,
-            )
-            config_paths = (str(p),)
+        config, config_paths = _resolve_sdk_config(config_path, config_dict, config_overrides)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
-        store = None
-        if manage_configuration:
-            owner = deepcopy(security_provider().auth.actor)
-            store = open_config_overlay(config, config_paths)
-        if store is None:
-            runtime = assemble_runtime(config=config)
-        else:
-            def authorize(security, operation):
-                if security.auth.actor != owner or security_provider().auth.actor != owner:
-                    return False
-                runtime.api.check_configuration_access(
-                    owner, security=security, write=operation == "write",
+        self.portal_location = None
+        self.portal_instance_id = portal_instance_id or "default"
+        self.portal_error = None
+        self._portal_claim = ExitStack()
+        try:
+            store = None
+            if manage_configuration:
+                setup = _PortalSetup(
+                    config, config_paths, _prepare_document_portal(config, portal_instance_id),
                 )
-                return True
-
-            runtime = assemble_managed_runtime(
-                config=config, store=store, llm_instances=document_llm_instances(config),
-                authorize=authorize,
-            )
-        self._runtime = runtime
-        self._api = runtime.api
+                setup.claim_document(self._portal_claim)
+                self.portal_error = setup.error
+                if setup.document is not None and setup.error is None:
+                    self.portal_location = setup.document.location
+                store = setup.open_overlay()
+            owner = deepcopy(security_provider().auth.actor) if store is not None else None
+            self._runtime = _assemble_sdk_runtime(config, store, owner, security_provider)
+        except BaseException:
+            self._portal_claim.close()
+            raise
+        self._api = self._runtime.api
 
     @property
     def runtime(self) -> Any:
@@ -2595,15 +2493,20 @@ class _InProcessClient(_AgentMemoryClient):
 
     async def close(self) -> None:
         # 停看门狗/释放 shadow sqlite（文档模式），幂等；runtime.close 是同步方法。
-        runtime, self._runtime = self._runtime, None
+        runtime = self._runtime
         if runtime is not None:
             try:
                 await asyncio.to_thread(runtime.close)
             except Exception as exc:
+                if self.portal_location is not None:
+                    self.portal_error = "Runtime shutdown failed. Keeping the Portal instance ID."
+                    raise
                 logger.warning(
                     "[AgentMemoryMemoryProvider/in-process] runtime close failed: %s",
                     exc,
                 )
+            self._runtime = None
+            self._portal_claim.close()
 
 
 def _load_yaml(path):
@@ -2617,4 +2520,4 @@ def _load_yaml(path):
         return yaml.safe_load(f)
 
 
-__all__ = ["AgentMemoryMemoryProvider"]
+__all__ = ["AgentMemoryMemoryProvider", "OperationWaitTimeout"]

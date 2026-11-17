@@ -15,6 +15,11 @@
 |---|---|
 | `relations/legacy.py` | 旧关系到候选证据关系的显式纯函数映射；相似/共指不升级为证据 |
 | `relations/catalog.py` / `type_def/continuity.py` | 关系与职责启动目录、接续 DTO；职责与权限角色分离 |
+
+TaskRequest 的 title/description/parent_task_id/query/top_k 追加在旧位置字段之后；
+find 上下文参数成对校验，语义候选不代表选定任务或拥有来源读取权限。
+创建带 parent_task_id 的任务时，continuity_task_parent 必须登记到 ENTRY_RULES 的内容 READ 轴，
+与任务查询使用同一项目读取权限；不能落回条目级授权路径。
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |
@@ -23,18 +28,18 @@
 | `text_split.py` | 摄入与内容型 prompt 共用段落切分；可选 boundary 回调只向前调整硬切点，不扩大长度上限 |
 | `_support.py` | 跨层共用的小工具：配置值布尔归一（`as_bool`）、本地模型来源解析（`resolve_model_source`）、SSL 配置读取与装配期校验（`SslConfig`/`build_ssl_config`/`require_tls_scheme`/`require_ca_file`/`outbound_verify`/`read_ssl_config`/`reject_url_tls_params`）、scope 命名空间渲染（`SCOPE_DIMS`/`scope_segments`）、后端异常归一（`wrap_backend`）；storage、lock 与出站客户端共用，避免各写一份 |
 | `_import_support.py` | 导入容错样板的唯一归属地（`import_optional`/`import_required`/`import_required_attr`）：装配各 `*_impl` 包触发 `@Producer.register` 时逐个隔离可选依赖，单个缺失只让该插件缺席、不连坐同批其他插件、不阻断 `MemoryAPI` 构造。刻意与 `_support.py` 分家——后者讲配置值语义且连带 `type_def`/`Factory`/`errors`，本模块讲导入机制且**只依赖标准库**（51 个 `*_impl`/bootstrap 消费点各自 import 一次，自身须停在零项目依赖）；**不得**引入任何 `jiuwen_memory` 内部对象，以免装配期导入顺序反受各层先后影响。接入侧另有一份 `jiuwen_memory_entry/core/import_support.py`——Access 只允许依赖 `jiuwen_memory.api`（见 `tests/unit/api/test_access_api_boundary.py`），两侧不复用 |
-| `log/` | 统一运行日志入口：`base.py` 提供 `get_logger` / `setup_logging`，`privacy_filter.py` 提供默认全局启用的 `SensitiveDataFilter` 及 `install_privacy_filter` / `redact_for_log` / `metadata_for_log` / `scope_for_log`；普通服务端日志在 Formatter 前脱敏，保留字段结构和经调用点确认的 MemoryUnit 技术 ID，不修改业务对象或正式 API 响应 |
+| `log/` | SDK 运行日志入口：`base.py` 的 `get_logger` 用于获取日志器，`setup_logging` 设置当前进程共用的 SDK 日志输出，接收 `agent_memory.*` 和 `jiuwen_memory.*` 两种名称。`privacy_filter.py` 同时提供安全故障诊断（独立 StreamHandler 直接 emit 到 stderr，不挂日志器、不经过业务 Handler，失败返回状态并防止递归）、脱敏过滤器及 `install_privacy_filter` / `redact_for_log` / `metadata_for_log` / `scope_for_log`。输出前先脱敏，`log_filters` 按业务/内置分别编译和应用正文正则，每个输出拿到单独的日志记录；不修改业务进程的全局日志器、业务对象或 API 响应，仍保留字段结构和经调用点确认的 MemoryUnit 技术 ID |
 | `time_utils.py` | 纯时间转换 as_utc/epoch_ms：无时区按 UTC，有时区保持实际时刻；不依赖服务器时区、不改写真源 |
 | `plaintext.py` | 继承 BackendError 的内部非信封拒绝信号；不实现密码学算法或新增 API 错误结果值 |
 | `type_def/` | 核心数据类型定义目录 |
 | `type_def/memory.py` | MemoryUnit/Relation/Segment/Temporal/ContentLayers 等；MemoryUnit id 在完整 Scope 内唯一；KV key 前缀 `MEMORY_KEY_PREFIX`/`memory_key`（建索引记忆 `/memory/{id}`）。`ContentLayers`(l0/l1) 为分层披露标注，由 LayerAnnotator 对超阈 content 产出。`ImportanceCategory` 枚举（七个默认重要度类别，与 `MemoryTier` 正交）及 `system_metadata` 语义键常量 `ORIGIN_KEY` / `ORIGIN_ORIGINAL="original"` / `ORIGIN_INFER="inferred"` / `IMPORTANCE_KEY` |
 | `type_def/scope.py` | Scope：`org/space/user/agent/session` 五维归属；非空 `space` 是全局唯一的逻辑隔离标识且为 keyword-only，旧位置参数保持 `org/user/agent/session` 顺序。另有 `KERNEL_COORD_KEYS`——内核自带的归属坐标实体名，三项取值必须是 `Scope` 的字段名，故与该类同处 |
-| `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约 |
-| `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用 |
+| `type_def/filter.py` | FilterClause/FilterGroup/FilterExpr 及 normalize/evaluate；统一 API、检索和存储的树形过滤契约。保留字段 `storage_shard` 是内置过滤字段（共享向量/全文索引的分片标签，由 storage 写入并覆盖同名输入，F09 D8） |
+| `type_def/memory_filter.py` | MemoryUnit 字段投影与 FilterExpr 公共求值；供 retrieval 真源复核和 KV list 兼容实现共用。`memory_field_value(unit, field)` 公开只读取值投影（与过滤同源），供 F09 分片规则复用 |
 | `type_def/memory_codec.py` | `MemoryUnit` ↔ bytes 编解码（`dumps`/`loads`）；当前 `_v=4`，分别序列化 `system_metadata` / `user_metadata`，拒绝未迁移的 `_v<4` MemoryUnit |
 | `type_def/raw.py` | RawPayload（含交给 Ingestor 映射的 `assets` 资产引用）；KV key 前缀 `MESSAGES_KEY_PREFIX`/`messages_key`（未建索引 infer 原文 `/messages/{id}`） |
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
-| `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`；注册表属 Producer，InstanceCache 属 AssemblyContext；builder 内继承缓存上下文，根注入/查询显式传 ctx（配置数据结构在 `config/context.py`） |
+| `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`；`registration_key` 提供不暴露注册表的 builder 身份比较；注册表属 Producer，InstanceCache 属 AssemblyContext；builder 内继承缓存上下文，根注入/查询显式传 ctx（配置数据结构在 `config/context.py`） |
 | `loop_runner.py` | 实例持有的后台事件循环线程；惰性启动，`close` 停止循环并回收异步生成器、默认线程池和线程，关闭后不可重启 |
 | `embedder/` | Embedder 插件目录（接口 + 实现） |
 | `chunker/` | Chunker 插件目录 |
@@ -51,6 +56,8 @@
 | `security/authentication/key_store.py` | PrincipalKeyStore 契约与可选 PrincipalRegistrationCapability；Trusted 无 Key 初始化采用增量能力，不扩充旧 ABC |
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
 | `security/_assembly_lifecycle.py` | 私有装配作用域：经 Factory 公开创建观察记录本次新建对象，启动失败回滚；成功将所有者显式绑定缓存纪元，保护借用依赖与较新装配。 |
+| `trace/runtime.py` | 具名 Factory 插件、API/执行器策略绑定、后台独立作用域；资源由 runtime 收尾，详情见 trace/AGENTS.md |
+| `trace/` | TraceCollector 横切接口目录：请求级处理过程追踪（`trace/trace.py` 接口 + ContextVar 作用域 + 调用树；模块级 `trace_event(component, stage, data)` / `trace_span` / `@traced` 零参数埋点，`simple < info < debug` 三级详细程度，debug data 支持惰性 callable；`trace_impl/` 四种内置实现 noop/memory/log/memory_log）。config `trace.default.target` 选默认实现，请求级 `extensions["trace"] = "<target>[:<level>]"` 覆盖（入口层在参数校验前剥离）；使用方法与边界见 [F11-new-trace.md](../../docs/features/common/F11-new-trace.md) |
 
 ### 隐私与用户访问控制能力
 
@@ -125,6 +132,32 @@ privacy_rule_ids / privacy_categories 诊断摘要，客户端不可赋值。私
    通过 `get_logger()` 获取的 logger 默认安装 `SensitiveDataFilter`；正文、用户身份、Scope
    实值、标签、模型原始响应和 metadata 叶子值必须先用对应日志标记函数包装。仅 MemoryUnit
    技术 ID 可由调用点显式列入可见集合；过滤器不得修改业务对象、持久化数据或 API 响应。
+   脱敏普通异常必须在源日志器 Filter 和分发入口得到隔离；脱敏失败的整条记录不得进入 SDK 管理的输出，
+   只报告不含正文、异常值和源码内容的诊断。不能用继续分发原记录的方式绕过失败。
+10. **SDK 原有运行日志按配置选择输出位置**：SDK 各模块保留原来的打印语句，接管本身不删减
+    打印点。SDK 接管从 `agent_memory` 和 `jiuwen_memory` 两个命名空间传播到分发器的
+    运行日志。业务进程的全局日志器（Python root logger）和第三方库继续按各自配置输出。
+    Trace 实例配置 `params.log_file` 后通过专用日志器直接写文件，记录在该日志器处停止
+    传播，专用文件资源按 Trace 运行时生命周期释放。
+
+    首次未指定 `log_output` 时默认使用 `builtin`。传入 `log_handler` 后，还需明确选择
+    `business` 或 `both` 才会把日志交给业务处理器。`business` 模式下，SDK 自己的终端和
+    文件输出不再启用，应去业务配置的目的地查看日志。日志级别限制、脱敏规则和业务处理器
+    的过滤条件继续生效，因此两边最终可见的日志数量也取决于这些设置。
+    SDK 管理的输出必须先检查 `globals.log_level`，再执行各处理器自己的级别和过滤条件；
+    子日志器单独设置较低级别不能绕过 SDK 门槛，不覆盖业务处理器已有的级别。
+    正文正则在日志初始化时校验并编译，按两路分别筛选；匹配脱敏后、填入参数的正文，
+    不包括格式前缀和另附异常堆栈，不改日志模板和参数。业务处理前准备匹配内容，
+    业务修改不得影响内置侧筛选。规则缺省不提前生成正文，匹配普通异常按输出隔离；
+    配置结构、逐项继承和冲突规则见 S08，不修改业务 Handler 的 Filter 列表。
+
+    业务处理器由调用方负责关闭。应用此前手工添加的 SDK 日志处理器会保留，不要把同一个
+    处理器既手工添加，又通过 `log_handler` 传入。SDK 路由前置安装和失败回滚必须在 logging
+    模块锁内发布新的 handlers 列表，不就地改写正在被其他线程遍历的旧列表，不调用业务
+    Handler。分发期间同线程的嵌套 SDK 记录跳过全部 SDK 管理输出，不能只跳过业务端。
+    每个输出使用单独的日志记录，字典、列表等
+    标准容器分别复制；自定义业务对象仍可能共用，具体规则见 S02。业务处理器抛出的普通
+    异常不能中断 SDK 操作，也不能阻止双路模式下 SDK 自己的输出。
 
 ### Trusted 初始化本地约束
 
@@ -168,11 +201,13 @@ privacy_rule_ids / privacy_categories 诊断摘要，客户端不可赋值。私
    `default` 使用 `llm`，其他具名实例使用 `llm.<name>`。显式 `config_namespace` 只从实例
    `params` 读取，不从 `globals` 回退，必须是非空字符串；空白或非字符串装配期拒绝。
 7. 横切能力（Authenticator / PrincipalKeyStore / RateLimiter / WorkloadGuard /
-   BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger / LockProvider）
+   BindingPolicy / CryptographyProvider / KeyProvider / AuditLogger / LockProvider / TraceCollector）
    不继承 `Plugin`、不进入 `PluginType`；接口统一在能力目录的 `base.py`（安全域为
-   `security/<能力域>/`，`lock/` 因早于该约定沿用 `lock.py`），实现统一在同级
+   `security/<能力域>/`，`lock/` 因早于该约定沿用 `lock.py`，`trace/` 同理沿用 `trace.py`），实现统一在同级
    `*_impl/`，YAML 只能选择已经注册的 target 并传递 params。当前不从 YAML import
-   Python 类，也不自动发现未被应用启动代码 import 的外部包。
+   Python 类，也不自动发现未被应用启动代码 import 的外部包。TraceCollector 的实现不得
+   保存请求状态：请求级数据存于 ContextVar 容器（`begin_trace`/`end_trace`），实现只持有
+   配置与线程安全 sink 资源，定义 sink 行为，不设 `fork()` 类协议。
 8. 安全能力一律落 `security/<能力域>/`，不新开顶层目录。核心不得按 target 名或
    `mode()` 字符串分支——需要区分的行为差异由 capability 方法（如
    `requires_loopback_binding()`）显式声明，详见 S10。

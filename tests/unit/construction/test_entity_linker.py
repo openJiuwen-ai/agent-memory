@@ -82,12 +82,14 @@ class InMemoryEntityStore(EntityStore):
 
     def find_by_entity_text_hash(
         self,
-        space_id: str,
+        scope: Scope,
         entity_text_hashes: tuple[str, ...],
         *,
         filters: EntityStoreFilters,
+        shards: frozenset[str] | None = None,
         limit: int = 500,
     ) -> list[EntityRecord]:
+        space_id = space_id_from_scope(scope)
         want = set(entity_text_hashes)
         out: list[EntityRecord] = []
         for rec in self._space(space_id).values():
@@ -99,11 +101,13 @@ class InMemoryEntityStore(EntityStore):
 
     def find_by_linked_memory_id(
         self,
-        space_id: str,
+        scope: Scope,
         memory_id: str,
         *,
         filters: EntityStoreFilters,
+        shards: frozenset[str] | None = None,
     ) -> list[EntityRecord]:
+        space_id = space_id_from_scope(scope)
         return [
             rec for rec in self._space(space_id).values()
             if memory_id in rec.linked_memory_ids and self._matches_filters(rec, filters)
@@ -111,10 +115,10 @@ class InMemoryEntityStore(EntityStore):
 
     def execute_operations(
         self,
-        space_id: str,
+        scope: Scope,
         operations: list[EntityOperation],
     ) -> EntityBatchResult:
-        space = self._space(space_id)
+        space = self._space(space_id_from_scope(scope))
         successful: list[str] = []
         failed: list[str] = []
         for op in operations:
@@ -128,6 +132,21 @@ class InMemoryEntityStore(EntityStore):
                     rec = space[op.record_id]
                     merged = tuple(sorted(set(rec.linked_memory_ids) | set(op.link_memory_ids)))
                     space[op.record_id] = replace(rec, linked_memory_ids=merged)
+                    successful.append(op.record_id)
+                elif op.type is EntityOpType.UNLINK:
+                    assert op.record_id is not None
+                    rec = space[op.record_id]
+                    remaining = tuple(
+                        mid for mid in rec.linked_memory_ids
+                        if mid not in set(op.unlink_memory_ids)
+                    )
+                    space[op.record_id] = replace(rec, linked_memory_ids=remaining)
+                    successful.append(op.record_id)
+                elif op.type is EntityOpType.DELETE_IF_EMPTY:
+                    assert op.record_id is not None
+                    rec = space.get(op.record_id)
+                    if rec is not None and not rec.linked_memory_ids:
+                        space.pop(op.record_id)
                     successful.append(op.record_id)
                 elif op.type is EntityOpType.UNLINK_UPDATE:
                     assert op.record is not None
@@ -147,11 +166,12 @@ class InMemoryEntityStore(EntityStore):
 
     def search(
         self,
-        space_id: str,
+        scope: Scope,
         query_vector: list[float],
         *,
         top_k: int,
         filters: EntityStoreFilters,
+        shards: frozenset[str] | None = None,
     ) -> list[EntitySearchResult]:
         # hash-only 内存实现：无 kNN，返回空（语义归并阶段在 embedder 为 None
         # 时不会走到这里，见 EntityLinkService._semantic_lookup 的短路）。
@@ -369,8 +389,9 @@ def test_unlink_delete_when_no_memory_remains(store: InMemoryEntityStore) -> Non
         scope=u1.scope, memory_id="u1",
     )
 
+    # 新流程总是先发增量 UNLINK（计 updated），剩余为空时同批追加 DELETE_IF_EMPTY
     assert result.deleted_count == 1
-    assert result.updated_count == 0
+    assert result.updated_count == 1
     assert store.records(space_id_from_scope(u1.scope)) == []
 
 
@@ -403,10 +424,10 @@ def test_unlink_removes_only_targeted_memory_id(store: InMemoryEntityStore) -> N
         scope=u1.scope, memory_id="u1",
     )
 
-    # Alice 关联 u1,u2 → 删 u1 后剩 u2 → UNLINK_UPDATE
-    # Paris 只关联 u1 → 删 u1 后空 → DELETE
+    # Alice 关联 u1,u2 → 删 u1 后剩 u2 → UNLINK
+    # Paris 只关联 u1 → 删 u1 后空 → UNLINK + DELETE_IF_EMPTY
     # Berlin 只关联 u2 → 不受影响
-    assert result.updated_count == 1
+    assert result.updated_count == 2
     assert result.deleted_count == 1
 
 
@@ -443,7 +464,7 @@ def test_unlink_does_not_touch_other_user_entity(store: InMemoryEntityStore) -> 
     result = linker.unlink_memory(scope=scope_u1, memory_id="colliding-id")
 
     assert result.deleted_count == 1
-    assert result.updated_count == 0
+    assert result.updated_count == 1
     recs_after = store.records(space_id_from_scope(scope_u1))
     assert len(recs_after) == 1
     survivor = recs_after[0]

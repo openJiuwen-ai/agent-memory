@@ -60,6 +60,9 @@ def _reset_factory_cache():
     Factory.reset_all()
 
 
+s1 = Scope(org="acme", space="sp", user="u1")
+
+
 class _RecordingEntityStore(EntityStore):
     """记录调用的 ENTITY 端口 spy；health 可切换失败以覆盖聚合。"""
 
@@ -67,7 +70,8 @@ class _RecordingEntityStore(EntityStore):
         self.calls: list[tuple[str, tuple, dict]] = []
         self._healthy = healthy
 
-    def store_type(self) -> StoreType:
+    @staticmethod
+    def store_type() -> StoreType:
         return StoreType.ENTITY
 
     def health(self) -> None:
@@ -79,45 +83,56 @@ class _RecordingEntityStore(EntityStore):
 
     def find_by_entity_text_hash(
         self,
-        space_id: str,
+        scope: Scope,
         entity_text_hashes: tuple[str, ...],
         *,
         filters: EntityStoreFilters,
+        shards: frozenset[str] | None = None,
         limit: int = 500,
     ) -> list[EntityRecord]:
         self.calls.append(
-            ("find_by_entity_text_hash", (space_id, entity_text_hashes), {"filters": filters})
+            (
+                "find_by_entity_text_hash",
+                (scope, entity_text_hashes),
+                {"filters": filters, "shards": shards},
+            )
         )
         return []
 
     def find_by_linked_memory_id(
         self,
-        space_id: str,
+        scope: Scope,
         memory_id: str,
         *,
         filters: EntityStoreFilters,
+        shards: frozenset[str] | None = None,
     ) -> list[EntityRecord]:
         self.calls.append(
-            ("find_by_linked_memory_id", (space_id, memory_id), {"filters": filters})
+            (
+                "find_by_linked_memory_id",
+                (scope, memory_id),
+                {"filters": filters, "shards": shards},
+            )
         )
         return []
 
     def execute_operations(
-        self, space_id: str, operations: list[EntityOperation]
+        self, scope: Scope, operations: list[EntityOperation]
     ) -> EntityBatchResult:
-        self.calls.append(("execute_operations", (space_id, operations), {}))
+        self.calls.append(("execute_operations", (scope, operations), {}))
         return EntityBatchResult(successful_ids=[], failed_ids=[])
 
     def search(
         self,
-        space_id: str,
+        scope: Scope,
         query_vector: list[float],
         *,
         top_k: int,
         filters: EntityStoreFilters,
+        shards: frozenset[str] | None = None,
     ) -> list[EntitySearchResult]:
         self.calls.append(
-            ("search", (space_id, query_vector), {"top_k": top_k, "filters": filters})
+            ("search", (scope, query_vector), {"top_k": top_k, "filters": filters})
         )
         return []
 
@@ -143,8 +158,8 @@ class _RecordingSecurity(StorageSecurity):
 
 
 class _DenyWritesSecurity(StorageSecurity):
+    @staticmethod
     def authorize(
-        self,
         access: StorageAccessContext | None,
         scope: Scope,
         action: StorageAction,
@@ -225,14 +240,34 @@ def test_entity_proxy_maps_query_methods_to_search() -> None:
     )
     filters = EntityStoreFilters(actor_id="u1")
 
-    manager.entity().find_by_entity_text_hash("s1", ("h1",), filters=filters)
-    manager.entity().find_by_linked_memory_id("s1", "m1", filters=filters)
+    manager.entity().find_by_entity_text_hash(s1, ("h1",), filters=filters)
+    manager.entity().find_by_linked_memory_id(s1, "m1", filters=filters)
 
     assert security.actions == [StorageAction.SEARCH, StorageAction.SEARCH]
     for _, scope, _, resource in security.seen:
         assert resource == "entity"
-        # scope 是有损近似：只有 space / user 两段有意义
-        assert scope == Scope(space="s1", user="u1")
+        # F09 起授权用真实 Scope，不再有 lossy 近似
+        assert scope == s1
+
+
+def test_store_proxy_maps_locate_to_search() -> None:
+    """P1：locate 不能落到 ADMIN；内部定位归 SEARCH。"""
+    from jiuwen_memory.storage.capability import StoreCapability
+    from jiuwen_memory.storage.shard_routing import ShardLocation
+
+    class _Locator:
+        @staticmethod
+        def capabilities():
+            return frozenset({StoreCapability.SHARD_LOCATOR})
+
+        @staticmethod
+        def locate(scope, unit_ids):
+            return ShardLocation()
+
+    security = _RecordingSecurity()
+    manager = CompositeStoreManager(kv=_Locator(), security=security)
+    manager.kv().locate(s1, ["u1"])
+    assert security.actions == [StorageAction.SEARCH]
 
 
 def test_entity_proxy_maps_ensure_index_to_admin() -> None:
@@ -244,7 +279,7 @@ def test_entity_proxy_maps_ensure_index_to_admin() -> None:
     manager.entity().ensure_index()
 
     assert security.actions == [StorageAction.ADMIN]
-    assert security.seen[0][1] == Scope()  # 无 space_id 入参
+    assert security.seen[0][1] == Scope()  # 无 scope 入参
 
 
 def test_entity_proxy_derives_actions_from_batch() -> None:
@@ -254,24 +289,25 @@ def test_entity_proxy_derives_actions_from_batch() -> None:
     manager = CompositeStoreManager(kv=InMemoryKVStore(), entity=stub, security=security)
 
     manager.entity().execute_operations(
-        "s1",
+        s1,
         [
             _op(EntityOpType.INSERT),
             _op(EntityOpType.LINK),
+            _op(EntityOpType.UNLINK),
             _op(EntityOpType.UNLINK_UPDATE),
+            _op(EntityOpType.DELETE_IF_EMPTY),
             _op(EntityOpType.DELETE),
         ],
     )
 
-    # LINK 与 UNLINK_UPDATE 同归 UPDATE，去重后三个动作
+    # LINK / UNLINK / UNLINK_UPDATE 同归 UPDATE，去重后三个动作
     assert set(security.actions) == {
         StorageAction.ADD,
         StorageAction.UPDATE,
         StorageAction.DELETE,
     }
     assert len(security.actions) == 3
-    # execute_operations 无 filters 参数，故 user 恒空
-    assert security.seen[0][1] == Scope(space="s1")
+    assert security.seen[0][1] == s1
 
 
 def test_entity_proxy_empty_batch_skips_authorize() -> None:
@@ -280,7 +316,7 @@ def test_entity_proxy_empty_batch_skips_authorize() -> None:
     stub = _RecordingEntityStore()
     manager = CompositeStoreManager(kv=InMemoryKVStore(), entity=stub, security=security)
 
-    manager.entity().execute_operations("s1", [])
+    manager.entity().execute_operations(s1, [])
 
     assert security.actions == []
     assert [name for name, _, _ in stub.calls] == ["execute_operations"]
@@ -293,12 +329,12 @@ def test_entity_port_denies_writes_but_allows_query() -> None:
     )
 
     with pytest.raises(PermissionDeniedError):
-        manager.entity().execute_operations("s1", [_op(EntityOpType.INSERT)])
+        manager.entity().execute_operations(s1, [_op(EntityOpType.INSERT)])
     # 授权发生在委托之前：被拒的调用不得触达后端
     assert stub.calls == []
 
     manager.entity().find_by_entity_text_hash(
-        "s1", ("h1",), filters=EntityStoreFilters(actor_id="u1")
+        s1, ("h1",), filters=EntityStoreFilters(actor_id="u1")
     )
     assert [name for name, _, _ in stub.calls] == ["find_by_entity_text_hash"]
 

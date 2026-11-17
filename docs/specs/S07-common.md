@@ -5,10 +5,10 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-12 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
+| 最近一次修订日期 | 2026-11-16 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F09-sdk-runtime-logging.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md，docs/features/common/F11-new-trace.md |
 
 ## 摄入协作取消
 
@@ -44,6 +44,8 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
 - 审计日志（AuditLogger）
 - 安全域横切能力（认证、资源保护与密码学，归 `common/security/`，接口与实装齐备）
 - 跨实例互斥横切接口（LockProvider）
+- 请求级处理过程追踪横切接口（TraceCollector）
+- SDK 运行日志的命名、脱敏和输出方式（`common/log/`）
 - 安全域契约（授权、审计完整性、隐私保护、独立人机认证及请求上下文受控构造入口；现行契约见 S10）
 - 错误类型（自定义异常）
 - 工具函数（ID 生成/时间解析等）
@@ -120,7 +122,36 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
     通过本地目录解析后再交给底层模型库，并以 `local_files_only=True` 查缓存；缓存缺失、
     依赖缺失或模型加载失败统一报告 `BackendError`，不得通过设置运行时环境变量或在线回退来下载。
 
+21. **SDK 运行日志接管范围**。SDK 接收从 `agent_memory` 和 `jiuwen_memory` 两个命名空间
+    传播到分发器的运行日志，业务全局日志器和第三方库沿用原配置。输出前继续脱敏。业务日志
+    处理器抛出的普通异常不能中断 SDK 操作，也不能阻止双路模式下的另一边输出。
+    处理器由业务创建和关闭，关闭某个 SDK 实例不会关闭它。脱敏步骤发生普通异常时，
+    应拒绝向 SDK 管理的输出分发该条记录并报告安全诊断，不能输出未确认脱敏的内容，也不能向业务冒泡。
+
 ## 接口契约
+
+### 普通运行日志
+
+创建 SDK 时，可以通过 `assemble()` / `assemble_runtime()` 的 `log_handler` 参数传入业务
+日志处理器（`logging.Handler`）。同一进程中的 SDK 实例共用这套日志设置。处理器已有的
+格式、日志级别限制和过滤条件继续生效；SDK 不负责关闭它。
+
+双路输出时，每边拿到一份单独的日志记录（`LogRecord`），避免一边修改记录后影响另一边。
+哪些数据会复制、哪些自定义对象仍会共用，以及重复初始化时怎样处理配置，见
+[S02](S02-memory-api.md#sdk-运行日志接管)。配置字段和默认值见
+[S08](S08-config.md#sdk-运行日志配置)。
+
+业务和内置输出可分别设置正文正则；未配置时不过滤。规则在初始化时校验和编译，
+匹配脱敏后、填入参数的正文，不改原记录的正文和参数。正则匹配使用在业务 Handler
+处理前准备的内容，业务改写记录不能影响内置侧的筛选结果。规则错误不能静默忽略，
+运行中的匹配异常按输出隔离。字段、继承与错误约定见 [S08](S08-config.md#两路独立的正文正则过滤)。
+
+应用此前手工添加到 SDK 日志器的处理器会保留。不要把同一个处理器既手工添加，又通过
+`log_handler` 传入，否则同一条日志会收到两次。
+
+Trace 的 `log` / `memory_log` 实例省略 `params.log_file` 或设为 `null` 时，日志进入
+这套 SDK 分发流程。指定文件路径时，Trace 通过自己的处理器写入专用文件，记录在专用
+日志器处停止传播。专用文件与 `globals.log_file` 配置的 SDK 内置输出各自管理。
 
 ### Plugin（基类，`base.py`）
 
@@ -293,6 +324,85 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 
 `LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
 静默退化成不跨实例的单机锁。
+
+### TraceCollector（横切 Factory 插件）
+
+TraceCollector 不继承 Plugin、不进入 PluginType。TraceProducer 继承 Factory，命名空间
+为 `trace`，支持 register / build / build_named / dep；应用在装配前 import 外部插件注册。
+YAML 只选择注册 target，不导入任意 Python 类。请求数据存于框架 ContextVar 容器，
+共享插件持有配置与线程安全 sink；record 定义输出，buffers 控制响应调用树，enabled
+控制是否采集。可选 close() 在 runtime 后台收尾后调用，必须幂等。
+
+| 接口 | 语义 |
+|---|---|
+| `trace_event(component, stage, data, *, level=INFO, projection=None)` | 新增事件；data 为 Mapping 或零参数 callable，过滤后才求值；projection 为检索独立阶段字段 |
+| `trace_span(component, stage, data=None, *, level=INFO)` | 建立父子区间并计时，异常只记录类型名 |
+| `traced(stage, component=None, *, level=INFO)` | 同步/异步方法 span 装饰器 |
+| `trace_annotate(data, *, level=INFO)` | 合并当前 span 数据，不创建事件 |
+| `trace_enabled(level=INFO)` | 在昂贵数据构造前判断本次执行是否采集 |
+| `begin_trace(target=None, trace_id=None, *, level=None, collector=None, limits=None)` | target 与 collector 互斥；显式完整插件实例优先；返回 opaque TraceToken |
+| `end_trace(token)` | 同 context 配对关闭并恢复外层容器/策略，返回通用快照或 {} |
+| `configure_default(collector, *, limits=None)` | 进程内显式调用的缺省策略 |
+| `noop_collector()` | 返回禁用采集的 TraceCollector；不读取配置、不依赖插件注册，供未装配时屏蔽外层作用域 |
+| `parse_trace_spec(spec)` | 解析 `<target>[:<level>]`；空 target 沿用默认 |
+| `capture_trace()` | 局部捕获独立阶段字段；复用执行 ID/预算；不改变通用输出选择 |
+| `begin_api_trace(api, target=None, *, level=None)` | 选择绑定本 API 的默认/具名策略；Access 从 jiuwen_memory.api 获取 |
+
+详细程度为 `simple < info < debug`，默认 info。simple 记录关键计数、通道和耗时；info
+增加阶段、路径及策略/降级原因；debug 增加请求、改写、抽取、召回语法与候选结果明细。
+高级别包含低级别。过滤先于数据复制与惰性求值；被过滤 span 的符合级别子事件挂在外层。
+info 节点省略 level，simple/debug 节点显式携带 level。异常文本和凭证不得作为普通数据写入。
+
+record(trace_id, path, data, level) 在事件记录时及 span 退出时调用，path 是根到节点的
+组件.阶段，以 / 连接；span 带 cost_ms 和可选 error 类型名。内置输出为 noop / memory /
+log / memory_log；组合名称从 both 迁移，不保留别名。日志一律按 logger.INFO 写出，
+trace 详细程度放在行内；普通统一日志的 handler 仍可过滤 INFO。
+内置日志 sink 对查询、正文、过滤值、抽取结果等字段加现有隐私标记，不改变内存视图；
+自定义插件负责其输出的隐私处理。自定义 record 故障仍传播，未引入吞错策略。
+
+请求顶层 extensions.trace 在参数校验前复制并剥离，其余扩展继续校验。覆盖先匹配当前
+API 的具名 trace 实例（保留完整 params），再按已注册 target 构建；不改变鉴权/路由。
+显式级别 > 实例 params.level > info，params.level 不回退 globals。
+API/执行器策略按装配绑定；显式 begin_trace() 缺省使用最近成功装配的进程默认值。
+快照包含 trace_id / spans / 可选 dropped；字典响应加 trace，其余响应有快照时包为
+result + trace；血缘 trace 动词不附过程快照。错误附带保持既有 surface 契约。
+
+#### trajectory 与执行预算
+
+保留 with_trajectory 与 TrajectoryStep。common 不依赖 retrieval；检索使用显式投影字段
+stage / channel / candidate_count / 原精度 cost_ms / 独立 detail，不能从摊平 data 反推。
+noop/log 可临时捕获阶段记录，不启用额外通用响应或 debug 明细。局部结束不关闭外层，
+同名阶段逐条保留，分支与跨空间结果按兼容编排顺序组合。API search 覆盖延迟展开与
+跨空间的完整预算，直接 Retriever 调用也建立捕获边界。
+
+| 服务端配置 | 默认 | null |
+|---|---|---|
+| globals.trace_max_nodes | 128 | 不限制内存节点 |
+| globals.trace_max_value_chars | 256 | 不截断数据字符串 |
+| globals.trace_max_depth | 4 | 不替换深层容器 |
+
+非 null 必须为严格正整数，bool/0/负数/小数/字符串装配期拒绝。策略在执行开始时固定，
+target 覆盖不绕过限制。限制只裁剪数据，不改 component/stage/channel 等协议字段。
+节点超限计数 dropped，trajectory 末尾增加 trace_truncated 步骤，detail 为
+reason=max_nodes 与 dropped 字符串；同一次组合捕获只汇总一次。字符串追加
+...[truncated]，深容器用类型标记替换。节点限制不限制日志行数，无总字节预算。
+线程池逐次复制 context；容器计数/挂载/收尾使用锁，已关闭容器与局部捕获拒绝延迟写入。
+
+#### 后台与文件生命周期
+
+globals.trace_jobs.types[task_type] > globals.trace_jobs.default > trace.default；引用值必须
+是已配置 trace 实例，显式 noop 不回退。Job.trace_type 显式声明稳定策略键，默认 default，
+内置 evolve / middle_to_long / dreaming，摄入入口使用 ingest。实际执行入口建独立作用域，
+不继承在线请求覆盖。trace ID 为固定维度与 job_id 的百分号编码拼接：
+job|org=...|space=...|user=...|agent=...|session=...|job_id=...。
+Job.run 根节点带 task_type / job_id / execution_id / parent_job_id、执行状态及耗时，
+成功、失败、取消均收尾。memory 快照内部释放，不扩展 JobInfo。
+
+log / memory_log 的 params.log_file 省略/null 时沿用统一日志；非空路径装配期创建并验证。
+noop/memory 拒绝 log_file。专用文件使用 agent_memory 命名空间、统一格式和隐私 filter，
+不向默认 sink 传播；同路径 handler 按引用共享，不同实例保持各自参数。runtime 在后台
+屏障后关闭资源，失败装配回滚新建资源；end_trace 不关闭文件。文件为 UTF-8 追加。
+设计、取舍、插件示例和限制见 [F11](../features/common/F11-new-trace.md)。
 
 ### 安全域契约（`security/`）
 
@@ -515,6 +625,7 @@ tree_memory: TreeMemoryData | None = None
 |------|------|------|
 | `register(target, *, config_inspectors=None)` | `@classmethod -> Callable` | 注册 builder 与可选的具名配置检查器；替换 target 同时替换全部检查器，未声明的不继承 |
 | `registration_scope()` | `@classmethod -> ContextManager[None]` | 临时注册边界；正常/异常退出均恢复该 Producer 的 builder 与检查器快照，支持嵌套；不恢复实例缓存，不作为并发注册事务 |
+| `registration_key(target)` | `@classmethod -> object or None` | 当前 builder 的 opaque 身份，只用于 `is` 比较；未注册返回 None；替换 builder 时改变，退出临时注册时恢复，不构建实例 |
 | `for_namespace(namespace)` | `@classmethod -> type[Factory]` | 查命名空间的 Producer；未知命名空间抛 ValidationError，不构建实例 |
 | `inspect_config(target, inspector, config)` | `@classmethod -> Any` | 执行插件注册的无副作用配置检查器；缺失能力抛 ValidationError，返回值契约由消费方定义 |
 | `build(target, params, ctx, *, name="")` | `@classmethod -> T` | **接口 1（匿名）**：按 `target` 新建，**不入缓存** |
@@ -663,6 +774,9 @@ CryptographyProvider 与 `local` KeyProvider。
 ## 职责关系共享数据
 
 公开 DTO 包括 MemoryRef、TaskRequest、ContinuityWrite、ContinuityEvent（仅导入交换格式）、RelationRecord、ViewBudget、ViewAnnotation、RelationPath、Gap、ViewMeta、ContinuityRecovery；`RoleViewQuery` 仍作为 `search` 视图路径传给 `Continuity` 的内部查询对象；详细字段及兼容状态以 [S11](S11-cross-agent-continuity.md) 为准。MemoryRef 按真实 Scope/ID 与规范化内容摘要定位，不要求旧正文先增加任务/职责标签。
+
+TaskRequest 追加 title、description、parent_task_id、query、top_k；既有位置参数顺序保留。
+find 的上下文参数成对校验；可选 query 扩展描述候选查找，不增加新的 operation 枚举。
 
 RelationCatalog 是启动时验证的共享配置数据，不是每职责一个插件；`RelationTypeSpec` 与 `TraversalRule` 的字段见 [S11 数据结构](S11-cross-agent-continuity.md#relationcatalogrelationtypespectraversalrule)。构建与查询必须注入同一目录；未知名字失败，运行时不动态注册。职责字符串不是 SpaceContentRole，也不影响授权。
 

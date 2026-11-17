@@ -48,6 +48,14 @@ class Recaller(ABC):
         过滤；不把 scope 混进 filters 透传。
         """
 
+    def supports_shards(self) -> bool:
+        """本通道是否支持 ``extensions["shards"]``（默认不支持）。
+
+        请求带 ``shards`` 而启用通道不支持时，``CompositeDomainStore`` 必须报错，
+        不能静默返回全部（F09 D11）。
+        """
+        return False
+
     @abstractmethod
     def health(self) -> None:
         """存活探测：健康时返回 ``None``，否则抛出异常。"""

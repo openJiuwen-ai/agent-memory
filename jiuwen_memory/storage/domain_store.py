@@ -20,6 +20,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import (
     CandidateFuser,
@@ -36,7 +37,7 @@ from jiuwen_memory.common.type_def import (
 )
 
 from .security import StorageAccessContext, StorageSecurity
-from .types import IndexRemoveMode, IndexWriteMode, MemoryListResult
+from .types import IndexRemoveMode, IndexWriteMode, MemoryListResult, ShardedGetResult
 
 
 class DomainStoreProducer(Factory):
@@ -152,6 +153,37 @@ class DomainStore(ABC):
         **kwargs: Any,
     ) -> list[MemoryUnit]:
         ...
+
+    def requested_shards(self, extensions: dict[str, Any] | None) -> frozenset[str] | None:
+        """解析 ``extensions["shards"]``；未指定返回 ``None``。
+
+        存储层拥有这个 key 的语义：检索层只透传扩展参数，不解析存储内部字段。
+        默认实现只做形状判定（``[]`` / ``None`` / 非法类型报 ``ValidationError``）；
+        启用分片的实现额外校验分片名是否已配置。
+        """
+        from jiuwen_memory.storage.shard_search import parse_shards
+
+        selected = parse_shards(extensions)
+        return frozenset(selected) if selected is not None else None
+
+    def get_in_shards(
+        self,
+        scope: Scope,
+        unit_ids: list[str],
+        shards: frozenset[str],
+        *,
+        access: StorageAccessContext | None = None,
+        **kwargs: Any,
+    ) -> ShardedGetResult:
+        """按 id 点读并区分「找到 / 缺失 / 不在选中分片」（F09 D3）。
+
+        未启用分片的实现返回「不支持」错误；调用方（层级展开器）在请求带
+        ``shards`` 时改调本方法，缺失与排除分别记 ``missing_child`` /
+        ``shard_excluded``。本方法不因单个 id 缺失抛 ``NotFoundError``。
+        """
+        raise UnsupportedStorageCapabilityError(
+            f"{type(self).__name__} does not support shard-scoped reads"
+        )
 
     @abstractmethod
     def list(

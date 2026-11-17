@@ -14,10 +14,14 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, scope_for_log
+from jiuwen_memory.common.trace import TraceLevel, trace_event
 from jiuwen_memory.common.type_def import ParsedQuery, RecallChannel, Scope, ScoredUnit
+from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -70,6 +74,19 @@ class VectorRecaller(Recaller):
         """注入的向量 store（只读；None 表示该层未注入，recall 返空）。"""
         return self._vector
 
+    def supports_shards(self) -> bool:
+        """向量通道支持分片当且仅当注入的向量端口是分片路由包装层。
+
+        只认 ``SHARD_ROUTED``：裸向量后端声明 ``SHARD_PREFILTER`` 只说明「给它分片
+        条件就能在截断前过滤」，不代表这条通道会注入分片条件。否则「普通向量索引 +
+        分片 KV」会自称支持，实际先召回全部再后过滤（S09 #6 / S02）。
+        """
+        store = self._vector
+        capabilities = getattr(store, "capabilities", None)
+        return callable(capabilities) and (
+            StoreCapability.SHARD_ROUTED in capabilities()
+        )
+
     def health(self) -> None:
         return None
 
@@ -85,6 +102,11 @@ class VectorRecaller(Recaller):
             filters=query.scalar_filters,
             extensions=dict(query.extensions),
         )
+        trace_event(type(self).__name__, "recall_syntax", lambda: {
+            "vector_dimensions": len(vq.vector),
+            "filters": asdict(vq.filters) if vq.filters else None,
+            "top_k": top_k, "layer": self._layer,
+        }, level=TraceLevel.DEBUG)
         # 优先走 store.recall：在召回请求内一并回带 metadata，省掉再发一次 get 的
         # 网络 RTT 与服务端 id 匹配开销（远端后端如 milvus 收益显著）。store 未实现
         # recall 时抛 NotImplementedError，回退到 search + get 两段式（内存后端零成本）。

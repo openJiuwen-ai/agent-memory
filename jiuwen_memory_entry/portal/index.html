@@ -75,8 +75,9 @@
     .topbar { height:56px; display:flex; align-items:center; gap:8px; padding:0 32px; background:var(--surface); border-bottom:1px solid #ededed; }
     .breadcrumb { color:#999; font-size:12px; }
     #breadcrumb-current { color:#191919; }
-    .connection-pill { margin-left:auto; display:flex; align-items:center; gap:6px; font-size:11px; color:#777; }
-    .connected { width:6px; height:6px; border-radius:50%; background:#16a34a; display:inline-block; }
+    .connection-pill { margin-left:auto; min-width:0; display:flex; align-items:center; gap:6px; font-size:11px; color:#777; }
+    .connected { width:6px; height:6px; flex-shrink:0; border-radius:50%; background:#16a34a; display:inline-block; }
+    .language-toggle { flex-shrink:0; min-height:28px; padding:3px 8px; font-size:12px; }
     main { max-width:1450px; padding:30px 32px 60px; margin:auto; }
     .page-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:24px; }
     .page-heading p { margin-top:6px; }
@@ -153,6 +154,7 @@
     .search-explanation { margin-bottom:18px; color:#777; font-size:12px; }
     .settings-layout { display:grid; grid-template-columns:minmax(0,1fr) 250px; gap:20px; align-items:start; }
     .settings-group,.info-card { padding:22px; margin-bottom:18px; }
+    .settings-instance { max-width:320px; margin-bottom:16px; }
     .settings-group>.row { margin-bottom:20px; }
     .fields-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
     .field { min-width:0; }
@@ -220,106 +222,610 @@
     @media(max-width:760px) { .app-shell { display:block; } .module-sidebar { position:static; height:auto; padding:14px 16px 10px; border-right:0; border-bottom:1px solid var(--line); } .brand { padding:0 0 12px; } .brand strong { font-size:15px; } .brand small { display:none; } .brand-icon { width:28px; height:28px; } .nav-label,.sidebar-note { display:none; } nav { display:flex; gap:4px; overflow-x:auto; } nav button { width:auto; flex:0 0 auto; justify-content:center; padding:8px 4px; font-size:12px; min-height:34px; } nav button svg { display:none; } .sidebar-footer { position:absolute; top:14px; right:12px; padding:0; } .sidebar-footer button { min-height:28px; padding:0 6px; } .topbar { height:40px; padding:0 16px; } .connection-pill { font-size:10px; } .connection-pill #connection-state { max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } main { padding:22px 16px 44px; } h1 { font-size:22px; } .page-heading { gap:12px; margin-bottom:20px; } .page-heading p { max-width:230px; font-size:12px; } .memory-surface { padding:14px; } .filters { grid-template-columns:1fr 1fr; gap:10px; } .filters>button { grid-column:1/-1; justify-self:start; padding:2px 0; min-height:24px; } .filter-grid { grid-template-columns:1fr 1fr; } .status-tabs { gap:2px; } .status-tabs button { padding:4px 7px; font-size:11px; } .memory-list.grid-view { grid-template-columns:1fr; } .memory-row { padding:14px; } .memory-title { font-size:13px; } .memory-preview { font-size:12px; } .list-tools { gap:6px; flex-wrap:wrap; } .pager { flex-wrap:wrap; gap:10px; } .pager .page-size-group { order:3; width:100%; } .batch-bar { gap:6px; } .batch-bar strong { flex-basis:100%; } .metric-grid { grid-template-columns:1fr 1fr; gap:10px; } .metric { padding:15px; } .metric-value { font-size:25px; } .overview-card { padding:18px; } .search-form { padding:16px; } .search-query { flex-wrap:wrap; } .search-query input { flex-basis:100%; } .search-query button { width:100%; } .fields-grid { grid-template-columns:1fr; } .field.wide { grid-column:auto; } .settings-side { display:block; } .settings-group,.info-card { padding:18px; } .settings-bar { padding:14px; bottom:8px; } .settings-bar>.row { width:100%; } .settings-bar .primary { margin-left:auto; } .dialog-header,.dialog-body { padding:20px; } .dialog-footer { padding:16px 20px; } .detail-pane { padding:20px; } .mapping th,.mapping td { padding:9px 4px; } kbd { display:none; } }
     @media(prefers-reduced-motion:reduce) { * { transition:none!important; scroll-behavior:auto!important; } }
 </style></head>
-<body><main id="session-expired" class="notice error" role="alert" hidden>访问会话已失效，请从应用重新打开记忆管理。</main><div id="portal-shell" class="app-shell"><aside class="module-sidebar"><div class="brand"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><strong>记忆管理</strong><small>agent_memory</small></div></div><div class="nav-label">个人记忆</div><nav role="tablist" aria-label="页面导航" aria-orientation="vertical"><button id="tab-overview" class="active" data-tab="overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>记忆概览</button>
-<button id="tab-memories" class="" data-tab="memories" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M3 7h4M3 12h4M3 17h4M10 8h5M10 12h5"/></svg>我的记忆</button>
-<button id="tab-profile" data-tab="profile" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg>用户画像</button>
-<button id="tab-knowledge" data-tab="knowledge" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a20 20 0 0 1 0 18 20 20 0 0 1 0-18Z"/></svg>项目知识</button>
-<button id="tab-procedure" data-tab="procedure" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 12-12 4 4L8 24M14 3v4M12 5h4M4 5v4M2 7h4M19 18v4M17 20h4"/></svg>过程与做法</button>
-<button id="tab-settings" class="" data-tab="settings" role="tab" aria-selected="false" aria-controls="settings" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h6M14 6h6M4 12h10M18 12h2M4 18h2M10 18h10M10 3v6M14 9v6M6 15v6"/></svg>模型设置</button>
-</nav><div class="sidebar-footer"><button id="data-sources" type="button" class="quiet">ⓘ 数据来源说明</button><p class="sidebar-note">使用当前实例与已有身份</p></div></aside><div class="app-main"><header class="topbar"><span class="breadcrumb">记忆管理</span><span class="breadcrumb">/</span><span id="breadcrumb-current" class="small">记忆概览</span><div class="connection-pill"><span class="connected" id="connection-dot" hidden></span><span id="connection-state">正在连接…</span></div></header><main><div id="notice" class="notice" role="status" aria-live="polite"></div><section id="overview" role="tabpanel" aria-labelledby="tab-overview">
-<div class="page-heading"><div><h1>记忆概览</h1><p class="muted">了解当前实例的记忆情况，让每一条记忆都有迹可循</p></div><button id="refresh-overview" class="quiet" type="button">刷新概览</button></div>
+<body><main id="session-expired" class="notice error" role="alert" hidden data-i18n="sessionExpired">访问会话已失效，请从应用重新打开记忆管理。</main><div id="portal-shell" class="app-shell"><aside class="module-sidebar"><div class="brand"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><strong data-i18n="brand">记忆管理</strong><small>agent_memory</small></div></div><div class="nav-label" data-i18n="personalMemories">个人记忆</div><nav role="tablist" aria-label="页面导航" aria-orientation="vertical" data-i18n-label="pageNavigation"><button id="tab-overview" class="active" data-tab="overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span data-i18n="overview">记忆概览</span></button>
+<button id="tab-memories" class="" data-tab="memories" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M3 7h4M3 12h4M3 17h4M10 8h5M10 12h5"/></svg><span data-i18n="myMemories">我的记忆</span></button>
+<button id="tab-profile" data-tab="profile" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg><span data-i18n="userProfile">用户画像</span></button>
+<button id="tab-knowledge" data-tab="knowledge" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a20 20 0 0 1 0 18 20 20 0 0 1 0-18Z"/></svg><span data-i18n="projectKnowledge">项目知识</span></button>
+<button id="tab-procedure" data-tab="procedure" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 12-12 4 4L8 24M14 3v4M12 5h4M4 5v4M2 7h4M19 18v4M17 20h4"/></svg><span data-i18n="procedures">过程与做法</span></button>
+<button id="tab-settings" class="" data-tab="settings" role="tab" aria-selected="false" aria-controls="settings" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h6M14 6h6M4 12h10M18 12h2M4 18h2M10 18h10M10 3v6M14 9v6M6 15v6"/></svg><span data-i18n="modelSettings">模型设置</span></button>
+</nav><div class="sidebar-footer"><button id="data-sources" type="button" class="quiet" data-i18n="dataSources">ⓘ 数据来源说明</button><p class="sidebar-note" data-i18n="sidebarIdentity">使用当前实例与已有身份</p></div></aside><div class="app-main"><header class="topbar"><span class="breadcrumb" data-i18n="brand">记忆管理</span><span class="breadcrumb">/</span><span id="breadcrumb-current" class="small" data-i18n="overview">记忆概览</span><div class="connection-pill"><span class="connected" id="connection-dot" hidden></span><span id="connection-state" data-i18n="connecting">正在连接…</span></div><button id="language-toggle" type="button" class="language-toggle" lang="en" aria-label="Switch to English">English</button></header><main><div id="notice" class="notice" role="status" aria-live="polite"></div><section id="overview" role="tabpanel" aria-labelledby="tab-overview">
+<div class="page-heading"><div><h1 data-i18n="overview">记忆概览</h1><p class="muted" data-i18n="overviewIntro">了解当前实例的记忆情况，让每一条记忆都有迹可循</p></div><button id="refresh-overview" class="quiet" type="button" data-i18n="refreshOverview">刷新概览</button></div>
 <div id="overview-error" class="notice error" role="status"></div>
-<div class="metric-grid"><button class="metric" id="metric-all"><span class="metric-label">全部记录</span><span class="metric-value" id="stat-all">—</span><span class="metric-hint">包括有效、历史、遗忘与归档</span></button><button class="metric" id="metric-active"><span class="metric-label">有效记忆</span><span class="metric-value" id="stat-active">—</span><span class="metric-hint">参与默认记忆查询</span></button><button class="metric" id="metric-superseded"><span class="metric-label">纠正历史</span><span class="metric-value" id="stat-superseded">—</span><span class="metric-hint">被新版本取代的旧记录</span></button><button class="metric" id="metric-forgotten"><span class="metric-label">已遗忘</span><span class="metric-value" id="stat-forgotten">—</span><span class="metric-hint">已退出默认检索</span></button><button class="metric" id="metric-archived"><span class="metric-label">已归档</span><span class="metric-value" id="stat-archived">—</span><span class="metric-hint">保留的归档记录</span></button><div class="metric"><span class="metric-label">来源应用</span><span class="metric-value" id="stat-sources">—</span><span class="metric-hint">有来源标记的应用数量</span></div></div>
-<p class="muted small" style="margin:-10px 0 24px">全部记录 = 有效记忆 + 纠正历史 + 已遗忘 + 已归档；来源应用单独计数。</p><div class="overview-columns"><div class="overview-card"><div class="card-header"><h2>有效记忆速览</h2><button id="overview-all" type="button" class="link">查看全部 →</button></div><div id="overview-samples" class="muted">正在读取记忆…</div></div><div><div class="overview-card"><div class="card-header"><h3>记忆来源</h3><span class="badge">当前实例</span></div><div id="overview-sources" class="source-chips"></div><p class="muted small" style="margin-top:16px">应用接入同一记忆实例后，带来源标记的记录会出现在这里。</p></div><div class="overview-card"><h3 style="margin-bottom:12px">管理你的记忆</h3><button id="overview-add" type="button" class="quick-entry"><div><strong>新增一条记忆</strong><span>记录偏好、事实或以后会用到的经验</span></div><span class="spacer"></span>＋</button><button id="overview-search" type="button" class="quick-entry"><div><strong>用问题搜索记忆</strong><span>输入问题，看看能找回哪些内容</span></div><span class="spacer"></span>→</button><button id="overview-settings" type="button" class="quick-entry"><div><strong>调整模型设置</strong><span>查看已保存和已应用的配置</span></div><span class="spacer"></span>→</button></div></div></div>
+<div class="metric-grid"><button class="metric" id="metric-all"><span class="metric-label" data-i18n="allRecords">全部记录</span><span class="metric-value" id="stat-all">—</span><span class="metric-hint" data-i18n="allRecordsHint">包括有效、历史、遗忘与归档</span></button><button class="metric" id="metric-active"><span class="metric-label" data-i18n="activeMemories">有效记忆</span><span class="metric-value" id="stat-active">—</span><span class="metric-hint" data-i18n="activeMemoriesHint">参与默认记忆查询</span></button><button class="metric" id="metric-superseded"><span class="metric-label" data-i18n="correctionHistory">纠正历史</span><span class="metric-value" id="stat-superseded">—</span><span class="metric-hint" data-i18n="correctionHistoryHint">被新版本取代的旧记录</span></button><button class="metric" id="metric-forgotten"><span class="metric-label" data-i18n="forgotten">已遗忘</span><span class="metric-value" id="stat-forgotten">—</span><span class="metric-hint" data-i18n="forgottenHint">已退出默认检索</span></button><button class="metric" id="metric-archived"><span class="metric-label" data-i18n="archived">已归档</span><span class="metric-value" id="stat-archived">—</span><span class="metric-hint" data-i18n="archivedHint">保留的归档记录</span></button><div class="metric"><span class="metric-label" data-i18n="sourceApps">来源应用</span><span class="metric-value" id="stat-sources">—</span><span class="metric-hint" data-i18n="sourceAppsHint">有来源标记的应用数量</span></div></div>
+<p class="muted small" style="margin:-10px 0 24px" data-i18n="overviewTotals">全部记录 = 有效记忆 + 纠正历史 + 已遗忘 + 已归档；来源应用单独计数。</p><div class="overview-columns"><div class="overview-card"><div class="card-header"><h2 data-i18n="activeMemorySamples">有效记忆速览</h2><button id="overview-all" type="button" class="link" data-i18n="viewAll">查看全部 →</button></div><div id="overview-samples" class="muted"><span data-i18n="loadingOverview">正在读取记忆…</span></div></div><div><div class="overview-card"><div class="card-header"><h3 data-i18n="memorySources">记忆来源</h3><span class="badge" data-i18n="currentInstance">当前实例</span></div><div id="overview-sources" class="source-chips"></div><p class="muted small" style="margin-top:16px" data-i18n="memorySourcesHint">应用接入同一记忆实例后，带来源标记的记录会出现在这里。</p></div><div class="overview-card"><h3 style="margin-bottom:12px" data-i18n="manageMemories">管理你的记忆</h3><button id="overview-add" type="button" class="quick-entry"><div><strong data-i18n="addOneMemory">新增一条记忆</strong><span data-i18n="addOneMemoryHint">记录偏好、事实或以后会用到的经验</span></div><span class="spacer"></span>＋</button><button id="overview-search" type="button" class="quick-entry"><div><strong data-i18n="searchByQuestion">用问题搜索记忆</strong><span data-i18n="searchByQuestionHint">输入问题，看看能找回哪些内容</span></div><span class="spacer"></span>→</button><button id="overview-settings" type="button" class="quick-entry"><div><strong data-i18n="adjustSettings">调整模型设置</strong><span data-i18n="adjustSettingsHint">查看已保存和已应用的配置</span></div><span class="spacer"></span>→</button></div></div></div>
 </section><section id="memories" role="tabpanel" aria-labelledby="tab-memories" hidden>
-      <div class="page-heading"><div><h1 id="memory-page-title">我的全部记忆</h1><p id="memory-page-description" class="muted">汇总所有来源，按需筛选与管理</p></div><button id="open-add" class="primary" type="button"><span aria-hidden="true">＋</span>新增记忆</button></div>
-      <div class="memory-surface"><div id="search-modes" class="status-tabs" role="group" aria-label="查找方式" style="margin-bottom:12px"><button id="mode-text" type="button" aria-pressed="true">按文字查找</button><button id="mode-semantic" type="button" aria-pressed="false">按含义查找</button></div><form id="search-form"><div class="row" style="flex-wrap:nowrap"><div class="filter-search" style="flex:1;margin:0"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" id="memory-filter" aria-label="查找记忆" placeholder="输入正文或标签中的文字"><kbd>/</kbd></div><button id="search-submit" class="primary" type="submit" hidden>查找</button><button id="refresh" class="quiet small" type="button">↻ 刷新</button></div><div id="semantic-options" hidden><p class="muted small" style="margin-top:12px">按意思查找当前用户有权访问的有效记忆，仅支持来源应用筛选；不使用文字模式中的分类、层级、项目、Agent 和状态条件。</p><div class="search-options"><div><label for="search-source">检索来源</label><select id="search-source"><option value="*">全部应用</option></select></div><div><label for="top-k">最多返回</label><input id="top-k" type="number" min="1" max="100" value="10"></div></div></div></form><details class="filter-more" id="more-filters"><summary>筛选 <span id="filter-count"></span></summary><div class="filter-grid"><div><label for="source">来源应用</label><select id="source"><option value="*">全部应用</option></select></div><div><label for="agent">Agent</label><select id="agent"><option value="*">全部 Agent</option></select></div><div><label for="project">项目</label><select id="project"><option value="*">全部项目</option></select></div><div><label for="lifecycle">记忆状态</label><select id="lifecycle"><option value="active">有效记忆</option><option value="superseded">已纠正旧版本</option><option value="forgotten">已遗忘</option><option value="archived">已归档</option><option value="*">全部状态</option></select></div><div id="tier-filter"><label for="tier">认知层级（MemoryTier）</label><select id="tier"><option value="*">全部层级</option></select></div><div id="class-filter"><label for="memory-class">记忆分类（memory_class）</label><select id="memory-class"><option value="*">全部分类</option></select></div><button id="reset-filters" class="link" type="button">重置筛选</button></div></details></div><div id="semantic-results" style="margin-top:20px" hidden><p id="search-explanation" class="search-explanation">输入问题后检索。来源筛选在结果数量限制之前生效。</p>
-      <div><div><div class="list-caption" id="search-count">尚未开始检索</div><div id="search-list" class="memory-list"><div class="empty"><strong>从一个问题开始</strong>输入关键词或自然语言，验证当前实例的记忆检索。</div></div></div></div>
+      <div class="page-heading"><div><h1 id="memory-page-title" data-i18n="allMyMemories">我的全部记忆</h1><p id="memory-page-description" class="muted" data-i18n="allMyMemoriesHint">汇总所有来源，按需筛选与管理</p></div><button id="open-add" class="primary" type="button"><span aria-hidden="true">＋</span><span data-i18n="addMemory">新增记忆</span></button></div>
+      <div class="memory-surface"><div id="search-modes" class="status-tabs" role="group" aria-label="查找方式" style="margin-bottom:12px" data-i18n-label="searchMethod"><button id="mode-text" type="button" aria-pressed="true" data-i18n="textSearch">按文字查找</button><button id="mode-semantic" type="button" aria-pressed="false" data-i18n="semanticSearch">按含义查找</button></div><form id="search-form"><div class="row" style="flex-wrap:nowrap"><div class="filter-search" style="flex:1;margin:0"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" id="memory-filter" aria-label="查找记忆" placeholder="输入正文或标签中的文字" data-i18n-label="searchMemories" data-i18n-placeholder="textSearchPlaceholder"><kbd>/</kbd></div><button id="search-submit" class="primary" type="submit" hidden data-i18n="search">查找</button><button id="refresh" class="quiet small" type="button" data-i18n="refresh">↻ 刷新</button></div><div id="semantic-options" hidden><p class="muted small" style="margin-top:12px" data-i18n="semanticSearchHint">按意思查找当前用户有权访问的有效记忆，仅支持来源应用筛选；不使用文字模式中的分类、层级、项目、Agent 和状态条件。</p><div class="search-options"><div><label for="search-source" data-i18n="searchSource">检索来源</label><select id="search-source"><option value="*" data-i18n="allApps">全部应用</option></select></div><div><label for="top-k" data-i18n="maxResults">最多返回</label><input id="top-k" type="number" min="1" max="100" value="10"></div></div></div></form><details class="filter-more" id="more-filters"><summary><span data-i18n="filters">筛选 </span><span id="filter-count"></span></summary><div class="filter-grid"><div><label for="source" data-i18n="sourceApps">来源应用</label><select id="source"><option value="*" data-i18n="allApps">全部应用</option></select></div><div><label for="agent">Agent</label><select id="agent"><option value="*" data-i18n="allAgents">全部 Agent</option></select></div><div><label for="project" data-i18n="project">项目</label><select id="project"><option value="*" data-i18n="allProjects">全部项目</option></select></div><div><label for="lifecycle" data-i18n="memoryStatus">记忆状态</label><select id="lifecycle"><option value="active" data-i18n="activeMemories">有效记忆</option><option value="superseded" data-i18n="superseded">已纠正旧版本</option><option value="forgotten" data-i18n="forgotten">已遗忘</option><option value="archived" data-i18n="archived">已归档</option><option value="*" data-i18n="allStatuses">全部状态</option></select></div><div id="tier-filter"><label for="tier" data-i18n="memoryTierField">认知层级（MemoryTier）</label><select id="tier"><option value="*" data-i18n="allTiers">全部层级</option></select></div><div id="class-filter"><label for="memory-class" data-i18n="memoryClassField">记忆分类（memory_class）</label><select id="memory-class"><option value="*" data-i18n="allClasses">全部分类</option></select></div><button id="reset-filters" class="link" type="button" data-i18n="resetFilters">重置筛选</button></div></details></div><div id="semantic-results" style="margin-top:20px" hidden><p id="search-explanation" class="search-explanation" data-i18n="searchExplanation">输入问题后检索。来源筛选在结果数量限制之前生效。</p>
+      <div><div><div class="list-caption" id="search-count" data-i18n="searchNotStarted">尚未开始检索</div><div id="search-list" class="memory-list"><div class="empty"><strong data-i18n="startWithQuestion">从一个问题开始</strong><span data-i18n="startWithQuestionHint">输入关键词或自然语言，验证当前实例的记忆检索。</span></div></div></div></div>
     </div><div id="browse-results">
-      <div class="list-tools"><div class="list-caption"><span id="memory-count" class="list-count">正在加载记忆…</span><span id="filter-description"></span></div><div class="view-switch" role="group" aria-label="记忆布局"><button id="view-list" type="button" aria-pressed="true">列表</button><button id="view-grid" type="button" aria-pressed="false">卡片</button></div></div>
-      <div class="row" style="justify-content:space-between;margin-bottom:12px"><div id="status-shortcuts" class="status-tabs" role="group" aria-label="快捷状态筛选"><button data-status="active" aria-pressed="true">有效记忆</button><button data-status="superseded" aria-pressed="false">纠正历史</button><button data-status="forgotten" aria-pressed="false">已遗忘</button><button data-status="*" aria-pressed="false">全部</button></div><label class="row small" style="margin:0"><input id="select-page" type="checkbox">选择本页</label></div>
-      <div id="batch-bar" class="batch-bar" role="region" aria-label="所选记忆操作" hidden><strong id="batch-count"></strong><button id="copy-selected" type="button">复制所选</button><button id="export-selected" type="button">导出 Markdown</button><button id="export-json" type="button">导出 JSON</button><button id="forget-selected" type="button" class="danger">遗忘所选</button><button id="clear-selection" type="button" class="quiet">取消选择</button></div>
-      <div id="memory-list" class="memory-list" aria-label="记忆列表"></div>
-      <div class="pager"><div class="row page-size-group"><label for="page-size" style="margin:0">每页</label><select id="page-size"><option value="20">20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div><div class="row"><button id="previous" type="button" disabled>上一页</button><span id="page-info"></span><button id="next" type="button" disabled>下一页</button></div></div>
+      <div class="list-tools"><div class="list-caption"><span id="memory-count" class="list-count" data-i18n="loadingMemories">正在加载记忆…</span><span id="filter-description"></span></div><div class="view-switch" role="group" aria-label="记忆布局" data-i18n-label="memoryLayout"><button id="view-list" type="button" aria-pressed="true" data-i18n="listView">列表</button><button id="view-grid" type="button" aria-pressed="false" data-i18n="cardView">卡片</button></div></div>
+      <div class="row" style="justify-content:space-between;margin-bottom:12px"><div id="status-shortcuts" class="status-tabs" role="group" aria-label="快捷状态筛选" data-i18n-label="quickStatusFilters"><button data-status="active" aria-pressed="true" data-i18n="activeMemories">有效记忆</button><button data-status="superseded" aria-pressed="false" data-i18n="correctionHistory">纠正历史</button><button data-status="forgotten" aria-pressed="false" data-i18n="forgotten">已遗忘</button><button data-status="*" aria-pressed="false" data-i18n="all">全部</button></div><label class="row small" style="margin:0"><input id="select-page" type="checkbox"><span data-i18n="selectPage">选择本页</span></label></div>
+      <div id="batch-bar" class="batch-bar" role="region" aria-label="所选记忆操作" hidden data-i18n-label="selectedMemoryActions"><strong id="batch-count"></strong><button id="copy-selected" type="button" data-i18n="copySelected">复制所选</button><button id="export-selected" type="button" data-i18n="exportMarkdown">导出 Markdown</button><button id="export-json" type="button" data-i18n="exportJson">导出 JSON</button><button id="forget-selected" type="button" class="danger" data-i18n="forgetSelected">遗忘所选</button><button id="clear-selection" type="button" class="quiet" data-i18n="clearSelection">取消选择</button></div>
+      <div id="memory-list" class="memory-list" aria-label="记忆列表" data-i18n-label="memoryList"></div>
+      <div class="pager"><div class="row page-size-group"><label for="page-size" style="margin:0" data-i18n="perPage">每页</label><select id="page-size"><option value="20" data-i18n="pageSize20">20 条</option><option value="50" data-i18n="pageSize50">50 条</option><option value="100" data-i18n="pageSize100">100 条</option></select></div><div class="row"><button id="previous" type="button" disabled data-i18n="previousPage">上一页</button><span id="page-info"></span><button id="next" type="button" disabled data-i18n="nextPage">下一页</button></div></div>
     </div></section><section id="settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
-      <div class="page-heading"><div><h1>模型设置</h1><p class="muted">调整记忆使用的模型，保存后应用到后续调用</p></div><button id="reload-settings" class="quiet small" type="button">↻ 刷新配置</button></div>
-      <div id="configuration-state" class="config-state">正在读取配置…</div>
-      <div class="settings-layout"><div><div id="settings-list"></div><div class="settings-bar"><div><strong id="draft-summary">没有待保存的更改</strong><p class="muted small">先预览，确认后保存并应用</p></div><div class="row"><button id="discard-drafts" type="button">放弃更改</button><button id="preview" class="primary" type="button">预览更改</button></div></div><div id="diff" role="status"></div><button id="save" class="primary" type="button" hidden style="margin-top:16px">确认保存并应用</button></div><aside class="settings-side"><div class="info-card"><h3>当前记忆实例</h3><div id="instance-info" class="muted">从当前实例读取</div></div><div class="info-card"><h3>配置如何生效</h3><p class="muted">保存后，支持的模型设置会应用到后续调用；正在进行的调用使用原配置完成。</p><p class="muted" style="margin-top:10px">Embedding 模型与维度只读，修改需要迁移已有索引。Prompt 继续使用原配置入口。</p><button id="apply-settings" type="button" style="margin-top:16px" disabled>重试应用已保存配置</button></div></aside></div>
+      <div class="page-heading"><div><h1 data-i18n="modelSettings">模型设置</h1><p class="muted" data-i18n="modelSettingsHint">调整记忆使用的模型，保存后应用到后续调用</p></div><button id="reload-settings" class="quiet small" type="button" data-i18n="refreshSettings">↻ 刷新配置</button></div>
+      <div id="configuration-instance" class="settings-instance" hidden><label for="settings-instance" data-i18n="settingsInstance">配置实例</label><select id="settings-instance" disabled aria-describedby="settings-instance-hint"></select><p id="settings-instance-hint" class="field-hint" data-i18n="settingsInstanceHint">切换实例只影响模型设置。</p></div>
+      <div id="configuration-state" class="config-state" data-i18n="loadingSettings">正在读取配置…</div>
+      <div class="settings-layout"><div><div id="settings-list"></div><div class="settings-bar"><div><strong id="draft-summary" data-i18n="noDrafts">没有待保存的更改</strong><p class="muted small" data-i18n="previewHint">先预览，确认后保存并应用</p></div><div class="row"><button id="discard-drafts" type="button" data-i18n="discardChanges">放弃更改</button><button id="preview" class="primary" type="button" data-i18n="previewChanges">预览更改</button></div></div><div id="diff" role="status"></div><button id="save" class="primary" type="button" hidden style="margin-top:16px" data-i18n="saveAndApply">确认保存并应用</button></div><aside class="settings-side"><div class="info-card"><h3 data-i18n="currentMemoryInstance">当前记忆实例</h3><div id="instance-info" class="muted"><span data-i18n="instanceInfo">从当前实例读取</span></div></div><div class="info-card"><h3 data-i18n="settingsApplyTitle">配置如何生效</h3><p class="muted" data-i18n="settingsApplyHint">保存后，支持的模型设置会应用到后续调用；正在进行的调用使用原配置完成。</p><p class="muted" style="margin-top:10px" data-i18n="embeddingReadOnly">Embedding 模型与维度只读，修改需要迁移已有索引。Prompt 继续使用原配置入口。</p><button id="apply-settings" type="button" style="margin-top:16px" disabled data-i18n="retryApplySettings">重试应用已保存配置</button></div></aside></div>
     </section></main></div></div><dialog id="memory-dialog" aria-labelledby="memory-dialog-title" aria-describedby="memory-dialog-description">
-  <div class="dialog-header"><div><h2 id="memory-dialog-title">新增记忆</h2><p id="memory-dialog-description" class="muted">写下希望 Agent 记住的内容</p></div><button id="close-memory-dialog" class="quiet" type="button" aria-label="关闭记忆编辑窗口">×</button></div>
-  <form id="add-form"><div class="dialog-body"><div id="memory-dialog-tip" class="dialog-tip">记忆会保存到当前用户的个人范围，来源标记为 portal。</div><div id="memory-editor"><div id="add-fields" class="field-grid"><div><label for="new-memory-agent">Agent</label><input id="new-memory-agent" list="add-agent-options" maxlength="128" placeholder="留空保存为个人记忆"><datalist id="add-agent-options"></datalist></div><div><label for="new-memory-project">项目（选填）</label><input id="new-memory-project" list="add-project-options" maxlength="128" placeholder="留空表示无指定项目"><datalist id="add-project-options"></datalist></div></div><label for="new-memory">记忆内容</label><textarea id="new-memory" required placeholder="例如：讨论方案时先给结论，再说明理由与取舍。" maxlength="50000"></textarea><div id="memory-counter" class="counter">0 字</div></div><div id="correction-preview" hidden></div><div id="memory-dialog-error" class="inline-error" role="alert"></div></div><div class="dialog-footer"><button id="cancel-memory-dialog" type="button">取消</button><button id="memory-back" type="button" hidden>返回编辑</button><button id="submit-memory" class="primary" type="submit">保存记忆</button></div></form>
+  <div class="dialog-header"><div><h2 id="memory-dialog-title" data-i18n="addMemory">新增记忆</h2><p id="memory-dialog-description" class="muted" data-i18n="addMemoryDescription">写下希望 Agent 记住的内容</p></div><button id="close-memory-dialog" class="quiet" type="button" aria-label="关闭记忆编辑窗口" data-i18n-label="closeMemoryEditor">×</button></div>
+  <form id="add-form"><div class="dialog-body"><div id="memory-dialog-tip" class="dialog-tip" data-i18n="addMemoryTip">记忆会保存到当前用户的个人范围，来源标记为 portal。</div><div id="memory-editor"><div id="add-fields" class="field-grid"><div><label for="new-memory-agent">Agent</label><input id="new-memory-agent" list="add-agent-options" maxlength="128" placeholder="留空保存为个人记忆" data-i18n-placeholder="newMemoryAgentPlaceholder"><datalist id="add-agent-options"></datalist></div><div><label for="new-memory-project" data-i18n="optionalProject">项目（选填）</label><input id="new-memory-project" list="add-project-options" maxlength="128" placeholder="留空表示无指定项目" data-i18n-placeholder="newMemoryProjectPlaceholder"><datalist id="add-project-options"></datalist></div></div><label for="new-memory" data-i18n="memoryContent">记忆内容</label><textarea id="new-memory" required placeholder="例如：讨论方案时先给结论，再说明理由与取舍。" maxlength="50000" data-i18n-placeholder="newMemoryPlaceholder"></textarea><div id="memory-counter" class="counter" data-i18n="zeroCharacters">0 字</div></div><div id="correction-preview" hidden></div><div id="memory-dialog-error" class="inline-error" role="alert"></div></div><div class="dialog-footer"><button id="cancel-memory-dialog" type="button" data-i18n="cancel">取消</button><button id="memory-back" type="button" hidden data-i18n="backToEdit">返回编辑</button><button id="submit-memory" class="primary" type="submit" data-i18n="saveMemory">保存记忆</button></div></form>
 </dialog>
 <dialog id="forget-dialog" aria-labelledby="forget-title">
-  <div class="dialog-header"><div><h2 id="forget-title">遗忘这条记忆？</h2><p class="muted">遗忘后将退出有效记忆和默认检索</p></div><button id="close-forget-dialog" class="quiet" type="button" aria-label="关闭遗忘确认窗口">×</button></div><div class="dialog-body"><p class="muted">这不会永久擦除磁盘数据。你仍可在“已遗忘”状态中核对记录，不提供恢复操作。</p><div id="forget-content" class="preview-block before"></div><div id="forget-error" class="inline-error" role="alert"></div></div><div class="dialog-footer"><button id="cancel-forget" type="button">取消</button><button id="confirm-forget" class="danger" type="button">确认遗忘</button></div>
+  <div class="dialog-header"><div><h2 id="forget-title" data-i18n="forgetMemoryQuestion">遗忘这条记忆？</h2><p class="muted" data-i18n="forgetMemoryHint">遗忘后将退出有效记忆和默认检索</p></div><button id="close-forget-dialog" class="quiet" type="button" aria-label="关闭遗忘确认窗口" data-i18n-label="closeForgetDialog">×</button></div><div class="dialog-body"><p class="muted" data-i18n="forgetMemoryExplanation">这不会永久擦除磁盘数据。你仍可在“已遗忘”状态中核对记录，不提供恢复操作。</p><div id="forget-content" class="preview-block before"></div><div id="forget-error" class="inline-error" role="alert"></div></div><div class="dialog-footer"><button id="cancel-forget" type="button" data-i18n="cancel">取消</button><button id="confirm-forget" class="danger" type="button" data-i18n="confirmForget">确认遗忘</button></div>
 </dialog>
 <dialog id="sources-dialog" class="mapping" aria-labelledby="sources-title">
-  <div class="dialog-header"><div><h2 id="sources-title">页面数据从哪里来</h2><p class="muted">当前页面使用真实接口数据，不含示例记忆</p></div><button id="close-sources" class="quiet" type="button" aria-label="关闭数据来源说明">×</button></div>
-  <div class="dialog-body"><p class="muted">页面使用同源 <code>/v1/</code> 接口。服务端从浏览器会话识别用户；详情、纠正和遗忘携带记录的 Scope 和 ID，用于定位并重新检查权限。</p><table><thead><tr><th>页面区域</th><th>接口</th><th>字段与原始含义</th></tr></thead><tbody>
-    <tr><td>记忆概览</td><td><code>POST /v1/list</code></td><td>一次读取 <code>lifecycle_counts</code>，汇总全部、有效、纠正历史、已遗忘和已归档数量；应用数来自非空 <code>sources</code>；速览来自有效记忆的前 5 条，不代表访问热度。</td></tr><tr><td>复制 / 导出 / 批量遗忘</td><td><code>/v1/get、/v1/delete</code></td><td>只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。</td></tr><tr><td>记忆列表与筛选</td><td><code>POST /v1/list</code></td><td><code>items / count / snapshot</code>；筛选后计数、再分页；<code>sources / agents / projects / memory_classes</code> 来自完整授权集合。</td></tr>
-    <tr><td>来源应用</td><td><code>/v1/list、/v1/get</code></td><td><code>source</code> ← <code>system_metadata.source_app</code>；缺失显示“未标注来源”。</td></tr>
-    <tr><td>Agent / 项目</td><td><code>/v1/list、/v1/get</code></td><td><code>agent</code> ← <code>scope.agent</code>；<code>agent_label</code> 是显示名称。<code>project</code> ← 文档记忆的 <code>system_metadata.project</code>（直传）或 <code>coords.project</code>（router 回写），空值显示“跨项目 / 未标注”。</td></tr>
-    <tr><td>内容快捷筛选</td><td><code>POST /v1/list</code></td><td>用户画像：<code>memory_class=user_profile</code>；项目知识：<code>memory_class=long_term_memory + tier=semantic</code>；过程与做法：<code>tier=procedural</code>。保留其他筛选，不新增分类或自动识别。</td></tr><tr><td>层级 / 记忆分类</td><td><code>/v1/list、/v1/get</code></td><td><code>tier</code> ← <code>MemoryTier.value</code>；筛选项对应六个认知层级。<code>memory_class</code> ← <code>system_metadata.memory_class</code>；<code>memory_classes</code> 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。</td></tr>
-    <tr><td>完整详情与时间</td><td><code>POST /v1/get</code></td><td>每次重读 <code>segments / lifecycle / tags / source_ref / supersedes / temporal.t_ingest</code>；时间来自 <code>temporal.t_ingest</code>，不是文件修改时间。</td></tr>
-    <tr><td>新增 / 纠正 / 遗忘</td><td><code>/v1/add、/v1/update、/v1/delete</code></td><td>新增提交正文、Agent 和可选项目；宿主可绑定实际 Agent 范围。纠正与遗忘通过 <code>scope</code> 和 <code>unit_id</code> 定位，服务端再次检查归属和权限。纠正创建 SUPERSEDE 新版；遗忘使用 FORGET。</td></tr>
-    <tr><td>检索结果</td><td><code>POST /v1/search</code></td><td><code>items / scores_comparable</code>；来源先筛选再 top_k。按记忆范围轮转合并。</td></tr>
-    <tr><td>模型配置与应用</td><td><code>/v1/read_config、/v1/save_config</code></td><td><code>fields / version / applied_version / apply_state / instance</code>；API Key 不回填，只显示已配置状态。</td></tr>
-  </tbody></table><p class="muted">来源标签用于展示和筛选，不承担授权。未标注来源不会被猜成当前应用。</p></div>
+  <div class="dialog-header"><div><h2 id="sources-title" data-i18n="sourcesTitle">页面数据从哪里来</h2><p class="muted" data-i18n="sourcesDescription">当前页面使用真实接口数据，不含示例记忆</p></div><button id="close-sources" class="quiet" type="button" aria-label="关闭数据来源说明" data-i18n-label="closeSources">×</button></div>
+  <div class="dialog-body"><p class="muted"><span data-i18n="sourcesApiIntro">页面使用同源 </span><code>/v1/</code><span data-i18n="sourcesSessionIdentity"> 接口。服务端从浏览器会话识别用户；详情、纠正和遗忘携带记录的 Scope 和 ID，用于定位并重新检查权限。</span></p><table><thead><tr><th data-i18n="sourcesPageArea">页面区域</th><th data-i18n="sourcesEndpoint">接口</th><th data-i18n="sourcesFields">字段与原始含义</th></tr></thead><tbody>
+    <tr><td data-i18n="overview">记忆概览</td><td><code>POST /v1/list</code></td><td><span data-i18n="sourcesCountIntro">一次读取 </span><code>lifecycle_counts</code><span data-i18n="sourcesCountAndApps">，汇总全部、有效、纠正历史、已遗忘和已归档数量；应用数来自非空 </span><code>sources</code><span data-i18n="sourcesOverviewSamples">；速览来自有效记忆的前 5 条，不代表访问热度。</span></td></tr><tr><td data-i18n="sourcesBatchActions">复制 / 导出 / 批量遗忘</td><td><code>/v1/get, /v1/delete</code></td><td data-i18n="sourcesBatchActionsHint">只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。</td></tr><tr><td data-i18n="sourcesListAndFilters">记忆列表与筛选</td><td><code>POST /v1/list</code></td><td><code>items / count / snapshot</code><span data-i18n="sourcesListPagination">；筛选后计数、再分页；</span><code>sources / agents / projects / memory_classes</code><span data-i18n="sourcesListFacets"> 来自完整授权集合。</span></td></tr>
+    <tr><td data-i18n="sourceApps">来源应用</td><td><code>/v1/list, /v1/get</code></td><td><code>source</code> ← <code>system_metadata.source_app</code><span data-i18n="sourcesMissingSource">；缺失显示“未标注来源”。</span></td></tr>
+    <tr><td data-i18n="sourcesAgentAndProject">Agent / 项目</td><td><code>/v1/list, /v1/get</code></td><td><code>agent</code> ← <code>scope.agent</code><span data-i18n="sourcesNextField">；</span><code>agent_label</code><span data-i18n="sourcesAgentLabel"> 是显示名称。</span><code>project</code><span data-i18n="sourcesProjectFrom"> ← 文档记忆的 </span><code>system_metadata.project</code><span data-i18n="sourcesProjectDirect">（直传）或 </span><code>coords.project</code><span data-i18n="sourcesProjectFromRouter">（router 回写），空值显示“跨项目 / 未标注”。</span></td></tr>
+    <tr><td data-i18n="sourcesQuickFilters">内容快捷筛选</td><td><code>POST /v1/list</code></td><td><span data-i18n="sourcesProfileFilter">用户画像：</span><code>memory_class=user_profile</code><span data-i18n="sourcesKnowledgeFilter">；项目知识：</span><code>memory_class=long_term_memory + tier=semantic</code><span data-i18n="sourcesProcedureFilter">；过程与做法：</span><code>tier=procedural</code><span data-i18n="sourcesShortcutScope">。保留其他筛选，不新增分类或自动识别。</span></td></tr><tr><td data-i18n="sourcesTierAndClass">层级 / 记忆分类</td><td><code>/v1/list, /v1/get</code></td><td><code>tier</code> ← <code>MemoryTier.value</code><span data-i18n="sourcesTierCount">；筛选项对应六个认知层级。</span><code>memory_class</code> ← <code>system_metadata.memory_class</code><span data-i18n="sourcesNextField">；</span><code>memory_classes</code><span data-i18n="sourcesCustomClasses"> 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。</span></td></tr>
+    <tr><td data-i18n="sourcesDetailAndTime">完整详情与时间</td><td><code>POST /v1/get</code></td><td><span data-i18n="sourcesFreshDetails">每次重读 </span><code>segments / lifecycle / tags / source_ref / supersedes / temporal.t_ingest</code><span data-i18n="sourcesIngestTime">；时间来自 </span><code>temporal.t_ingest</code><span data-i18n="sourcesIngestTimeExplanation">，不是文件修改时间。</span></td></tr>
+    <tr><td data-i18n="sourcesMutations">新增 / 纠正 / 遗忘</td><td><code>/v1/add, /v1/update, /v1/delete</code></td><td><span data-i18n="sourcesMutationScope">新增提交正文、Agent 和可选项目；宿主可绑定实际 Agent 范围。纠正与遗忘通过 </span><code>scope</code><span data-i18n="sourcesAnd"> 和 </span><code>unit_id</code><span data-i18n="sourcesMutationPermission"> 定位，服务端再次检查归属和权限。纠正创建 SUPERSEDE 新版；遗忘使用 FORGET。</span></td></tr>
+    <tr><td data-i18n="sourcesSearchResults">检索结果</td><td><code>POST /v1/search</code></td><td><code>items / scores_comparable</code><span data-i18n="sourcesSearchOrdering">；来源先筛选再 top_k。按记忆范围轮转合并。</span></td></tr>
+    <tr id="configuration-instance-source" hidden><td data-i18n="settingsInstance">配置实例</td><td><code>POST /v1/read_config</code></td><td><code>instances</code><span data-i18n="sourcesAvailableInstances"> 为当前可管理的实例 ID，</span><code>default_instance_id</code><span data-i18n="sourcesDefaultInstance"> 为初始选中项。设置的读取和保存使用选中的 </span><code>instance_id</code><span data-i18n="sourcesEndSentence">。</span></td></tr>
+    <tr><td data-i18n="sourcesModelConfiguration">模型配置与应用</td><td><code>/v1/read_config, /v1/save_config</code></td><td><code>fields / version / applied_version / apply_state / instance</code><span data-i18n="sourcesCredentialStatus">；API Key 不回填，只显示已配置状态。</span></td></tr>
+  </tbody></table><p class="muted" data-i18n="sourcesLabelsAndPermissions">来源标签用于展示和筛选，不承担授权。未标注来源不会被猜成当前应用。</p></div>
 </dialog>
-<dialog id="detail-dialog" class="detail-drawer" aria-labelledby="detail-dialog-title"><div class="dialog-header"><div><h2 id="detail-dialog-title">记忆详情</h2><p class="muted">完整内容、来源与版本关联</p></div><button id="close-detail" type="button" class="quiet" aria-label="关闭记忆详情">×</button></div><div id="memory-detail" class="detail-pane" aria-live="polite"></div><div id="search-detail" class="detail-pane" aria-live="polite" hidden></div></dialog><script>
+<dialog id="detail-dialog" class="detail-drawer" aria-labelledby="detail-dialog-title"><div class="dialog-header"><div><h2 id="detail-dialog-title" data-i18n="memoryDetail">记忆详情</h2><p class="muted" data-i18n="memoryDetailDescription">完整内容、来源与版本关联</p></div><button id="close-detail" type="button" class="quiet" aria-label="关闭记忆详情" data-i18n-label="closeMemoryDetail">×</button></div><div id="memory-detail" class="detail-pane" aria-live="polite"></div><div id="search-detail" class="detail-pane" aria-live="polite" hidden></div></dialog><script>
 'use strict';
+
+const messages = {
+  // Navigation and overview
+  pageTitle: ["记忆管理 · agent_memory", "Memory Management · agent_memory"],
+  sessionExpired: ["访问会话已失效，请从应用重新打开记忆管理。", "Your session has expired. Reopen Memory Management from the app."],
+  brand: ["记忆管理", "Memory Management"],
+  personalMemories: ["个人记忆", "Personal Memories"],
+  pageNavigation: ["页面导航", "Page navigation"],
+  overview: ["记忆概览", "Memory Overview"],
+  myMemories: ["我的记忆", "My Memories"],
+  userProfile: ["用户画像", "User Profile"],
+  projectKnowledge: ["项目知识", "Project Knowledge"],
+  procedures: ["过程与做法", "Procedures"],
+  modelSettings: ["模型设置", "Model Settings"],
+  dataSources: ["ⓘ 数据来源说明", "ⓘ Data Sources"],
+  sidebarIdentity: ["使用当前实例与已有身份", "Uses the current instance and your existing identity"],
+  connecting: ["正在连接…", "Connecting…"],
+  overviewIntro: ["了解当前实例的记忆情况，让每一条记忆都有迹可循", "Review the memories and sources in this instance."],
+  refreshOverview: ["刷新概览", "Refresh Overview"],
+  allRecords: ["全部记录", "All Records"],
+  allRecordsHint: ["包括有效、历史、遗忘与归档", "Includes active, corrected, forgotten, and archived records"],
+  activeMemories: ["有效记忆", "Active Memories"],
+  activeMemoriesHint: ["参与默认记忆查询", "Included in default memory queries"],
+  correctionHistory: ["纠正历史", "Correction History"],
+  correctionHistoryHint: ["被新版本取代的旧记录", "Older records replaced by newer versions"],
+  forgotten: ["已遗忘", "Forgotten"],
+  forgottenHint: ["已退出默认检索", "Excluded from default search"],
+  archived: ["已归档", "Archived"],
+  archivedHint: ["保留的归档记录", "Retained as archived records"],
+  sourceApps: ["来源应用", "Source Apps"],
+  sourceAppsHint: ["有来源标记的应用数量", "Number of apps with a recorded source"],
+  overviewTotals: ["全部记录 = 有效记忆 + 纠正历史 + 已遗忘 + 已归档；来源应用单独计数。", "All records = active + corrected + forgotten + archived. Source apps are counted separately."],
+  activeMemorySamples: ["有效记忆速览", "Active Memory Preview"],
+  viewAll: ["查看全部 →", "View All →"],
+  loadingOverview: ["正在读取记忆…", "Reading memories…"],
+  memorySources: ["记忆来源", "Memory Sources"],
+  currentInstance: ["当前实例", "Current Instance"],
+  memorySourcesHint: ["应用接入同一记忆实例后，带来源标记的记录会出现在这里。", "Memories with a source appear here when apps connect to the same instance."],
+  manageMemories: ["管理你的记忆", "Manage Your Memories"],
+  addOneMemory: ["新增一条记忆", "Add a Memory"],
+  addOneMemoryHint: ["记录偏好、事实或以后会用到的经验", "Record preferences, facts, or experiences you want to reuse."],
+  searchByQuestion: ["用问题搜索记忆", "Ask a Question"],
+  searchByQuestionHint: ["输入问题，看看能找回哪些内容", "Enter a question to see which memories it retrieves."],
+  adjustSettings: ["调整模型设置", "Adjust Model Settings"],
+  adjustSettingsHint: ["查看已保存和已应用的配置", "Review saved and applied settings."],
+  // Memory browsing and search
+  allMyMemories: ["我的全部记忆", "All My Memories"],
+  allMyMemoriesHint: ["汇总所有来源，按需筛选与管理", "Browse, filter, and manage memories from all sources."],
+  addMemory: ["新增记忆", "Add Memory"],
+  searchMethod: ["查找方式", "Search method"],
+  textSearch: ["按文字查找", "Search by Text"],
+  semanticSearch: ["按含义查找", "Search by Meaning"],
+  searchMemories: ["查找记忆", "Search memories"],
+  textSearchPlaceholder: ["输入正文或标签中的文字", "Enter text from a memory or tag"],
+  search: ["查找", "Search"],
+  refresh: ["↻ 刷新", "↻ Refresh"],
+  semanticSearchHint: ["按意思查找当前用户有权访问的有效记忆，仅支持来源应用筛选；不使用文字模式中的分类、层级、项目、Agent 和状态条件。", "Search active memories you have access to. Only the source app filter applies in this mode."],
+  searchSource: ["检索来源", "Search Source"],
+  allApps: ["全部应用", "All Apps"],
+  maxResults: ["最多返回", "Max Results"],
+  filters: ["筛选 ", "Filters "],
+  allAgents: ["全部 Agent", "All Agents"],
+  project: ["项目", "Project"],
+  allProjects: ["全部项目", "All Projects"],
+  memoryStatus: ["记忆状态", "Memory Status"],
+  superseded: ["已纠正旧版本", "Superseded"],
+  allStatuses: ["全部状态", "All Statuses"],
+  memoryTierField: ["认知层级（MemoryTier）", "Cognitive Tier (MemoryTier)"],
+  allTiers: ["全部层级", "All Tiers"],
+  memoryClassField: ["记忆分类（memory_class）", "Memory Class (memory_class)"],
+  allClasses: ["全部分类", "All Classes"],
+  resetFilters: ["重置筛选", "Reset Filters"],
+  searchExplanation: ["输入问题后检索。来源筛选在结果数量限制之前生效。", "Enter a question to search. Source filtering happens before the result limit is applied."],
+  searchNotStarted: ["尚未开始检索", "No search yet"],
+  startWithQuestion: ["从一个问题开始", "Start with a question"],
+  startWithQuestionHint: ["输入关键词或自然语言，验证当前实例的记忆检索。", "Enter keywords or a question in your own words to try memory search."],
+  loadingMemories: ["正在加载记忆…", "Loading memories…"],
+  memoryLayout: ["记忆布局", "Memory layout"],
+  listView: ["列表", "List"],
+  cardView: ["卡片", "Cards"],
+  quickStatusFilters: ["快捷状态筛选", "Quick status filters"],
+  all: ["全部", "All"],
+  selectPage: ["选择本页", "Select This Page"],
+  selectedMemoryActions: ["所选记忆操作", "Actions for selected memories"],
+  copySelected: ["复制所选", "Copy Selected"],
+  exportMarkdown: ["导出 Markdown", "Export Markdown"],
+  exportJson: ["导出 JSON", "Export JSON"],
+  forgetSelected: ["遗忘所选", "Forget Selected"],
+  clearSelection: ["取消选择", "Clear Selection"],
+  memoryList: ["记忆列表", "Memory list"],
+  perPage: ["每页", "Per Page"],
+  pageSize20: ["20 条", "20"],
+  pageSize50: ["50 条", "50"],
+  pageSize100: ["100 条", "100"],
+  previousPage: ["上一页", "Previous"],
+  nextPage: ["下一页", "Next"],
+  // Settings
+  modelSettingsHint: ["调整记忆使用的模型，保存后应用到后续调用", "Update the models used for memory. Saved settings apply to future calls."],
+  refreshSettings: ["↻ 刷新配置", "↻ Refresh Settings"],
+  settingsInstance: ["配置实例", "Configuration Instance"],
+  settingsInstanceHint: ["切换实例只影响模型设置。", "Changing the instance only affects model settings."],
+  loadingSettings: ["正在读取配置…", "Reading configuration…"],
+  noDrafts: ["没有待保存的更改", "No unsaved changes"],
+  previewHint: ["先预览，确认后保存并应用", "Preview your changes before saving and applying them."],
+  discardChanges: ["放弃更改", "Discard Changes"],
+  previewChanges: ["预览更改", "Preview Changes"],
+  saveAndApply: ["确认保存并应用", "Save and Apply"],
+  currentMemoryInstance: ["当前记忆实例", "Current Memory Instance"],
+  instanceInfo: ["从当前实例读取", "Read from the current instance"],
+  settingsApplyTitle: ["配置如何生效", "How Settings Take Effect"],
+  settingsApplyHint: ["保存后，支持的模型设置会应用到后续调用；正在进行的调用使用原配置完成。", "After saving, supported settings apply to future calls. Calls in progress finish with the settings they started with."],
+  embeddingReadOnly: ["Embedding 模型与维度只读，修改需要迁移已有索引。Prompt 继续使用原配置入口。", "The embedding model and dimension are read-only here. Changing them requires migrating existing indexes. Prompts use the existing configuration."],
+  retryApplySettings: ["重试应用已保存配置", "Retry Applying Saved Settings"],
+  // Memory editor and confirmation
+  addMemoryDescription: ["写下希望 Agent 记住的内容", "Write down what you want the Agent to remember."],
+  closeMemoryEditor: ["关闭记忆编辑窗口", "Close memory editor"],
+  addMemoryTip: ["记忆会保存到当前用户的个人范围，来源标记为 portal。", "The memory will be saved to your personal scope and tagged with portal as its source."],
+  newMemoryAgentPlaceholder: ["留空保存为个人记忆", "Leave blank for a personal memory"],
+  optionalProject: ["项目（选填）", "Project (optional)"],
+  newMemoryProjectPlaceholder: ["留空表示无指定项目", "Leave blank for no project"],
+  memoryContent: ["记忆内容", "Memory Content"],
+  newMemoryPlaceholder: ["例如：讨论方案时先给结论，再说明理由与取舍。", "For example, share the conclusion first, then explain the reasoning and trade-offs."],
+  zeroCharacters: ["0 字", "0 characters"],
+  cancel: ["取消", "Cancel"],
+  backToEdit: ["返回编辑", "Back to Editing"],
+  saveMemory: ["保存记忆", "Save Memory"],
+  forgetMemoryQuestion: ["遗忘这条记忆？", "Forget this memory?"],
+  forgetMemoryHint: ["遗忘后将退出有效记忆和默认检索", "Forgotten memories leave the active list and default search."],
+  closeForgetDialog: ["关闭遗忘确认窗口", "Close the forget confirmation"],
+  forgetMemoryExplanation: ["这不会永久擦除磁盘数据。你仍可在“已遗忘”状态中核对记录，不提供恢复操作。", "Forgetting preserves data on disk. You can review the record under Forgotten. This action cannot be undone."],
+  confirmForget: ["确认遗忘", "Confirm Forget"],
+  // Data sources and record details
+  sourcesTitle: ["页面数据从哪里来", "Where Page Data Comes From"],
+  sourcesDescription: ["当前页面使用真实接口数据，不含示例记忆", "This page shows live data from the service."],
+  closeSources: ["关闭数据来源说明", "Close data sources"],
+  sourcesApiIntro: ["页面使用同源 ", "The page calls the same-origin "],
+  sourcesSessionIdentity: [" 接口。服务端从浏览器会话识别用户；详情、纠正和遗忘携带记录的 Scope 和 ID，用于定位并重新检查权限。", " APIs. The server identifies you from your browser session. Detail, correction, and forget requests include the record’s scope and ID so the server can locate it and check access again."],
+  sourcesPageArea: ["页面区域", "Page Area"],
+  sourcesEndpoint: ["接口", "Endpoint"],
+  sourcesFields: ["字段与原始含义", "Fields and Meaning"],
+  sourcesCountIntro: ["一次读取 ", "One request reads "],
+  sourcesCountAndApps: ["，汇总全部、有效、纠正历史、已遗忘和已归档数量；应用数来自非空 ", " for the total, active, corrected, forgotten, and archived counts. The app count comes from nonempty "],
+  sourcesOverviewSamples: ["；速览来自有效记忆的前 5 条，不代表访问热度。", ". The preview shows the first five active records in the default order."],
+  sourcesBatchActions: ["复制 / 导出 / 批量遗忘", "Copy, Export, and Batch Forget"],
+  sourcesBatchActionsHint: ["只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。", "These actions use the records selected on this page. Copy and export reread their details. JSON exports omit internal record identifiers. Forget requests run one at a time and report partial failures."],
+  sourcesListAndFilters: ["记忆列表与筛选", "Memory List and Filters"],
+  sourcesListPagination: ["；筛选后计数、再分页；", ". Counts are calculated after filtering and before pagination. "],
+  sourcesListFacets: [" 来自完整授权集合。", " cover all authorized records."],
+  sourcesMissingSource: ["；缺失显示“未标注来源”。", ". An empty source is shown as Source Unknown."],
+  sourcesAgentAndProject: ["Agent / 项目", "Agent / Project"],
+  sourcesNextField: ["；", ". "],
+  sourcesAgentLabel: [" 是显示名称。", " is the display name. "],
+  sourcesProjectFrom: [" ← 文档记忆的 ", " ← document memory’s "],
+  sourcesProjectDirect: ["（直传）或 ", " (supplied directly) or "],
+  sourcesProjectFromRouter: ["（router 回写），空值显示“跨项目 / 未标注”。", " (set by the router). An empty project is shown as Cross-project / Unspecified."],
+  sourcesQuickFilters: ["内容快捷筛选", "Content Shortcuts"],
+  sourcesProfileFilter: ["用户画像：", "User Profile uses "],
+  sourcesKnowledgeFilter: ["；项目知识：", "; Project Knowledge uses "],
+  sourcesProcedureFilter: ["；过程与做法：", "; Procedures uses "],
+  sourcesShortcutScope: ["。保留其他筛选，不新增分类或自动识别。", ". The other filters still apply. These shortcuts use the existing classifications."],
+  sourcesTierAndClass: ["层级 / 记忆分类", "Tier / Memory Class"],
+  sourcesTierCount: ["；筛选项对应六个认知层级。", ". The filter covers six cognitive tiers. "],
+  sourcesCustomClasses: [" 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。", " come from the authorized records and may include custom classes. The archival tier and the archived status track separate properties."],
+  sourcesDetailAndTime: ["完整详情与时间", "Details and Timestamps"],
+  sourcesFreshDetails: ["每次重读 ", "Each detail view rereads "],
+  sourcesIngestTime: ["；时间来自 ", ". The displayed time comes from "],
+  sourcesIngestTimeExplanation: ["，不是文件修改时间。", ", which records when the memory was ingested."],
+  sourcesMutations: ["新增 / 纠正 / 遗忘", "Add, Correct, and Forget"],
+  sourcesMutationScope: ["新增提交正文、Agent 和可选项目；宿主可绑定实际 Agent 范围。纠正与遗忘通过 ", "Add sends the content, Agent, and optional project. The host can bind the Agent scope. Correction and forget requests use "],
+  sourcesAnd: [" 和 ", " and "],
+  sourcesMutationPermission: [" 定位，服务端再次检查归属和权限。纠正创建 SUPERSEDE 新版；遗忘使用 FORGET。", " to locate the record before the server checks ownership and permissions again. Correction creates a new version with SUPERSEDE. Forgetting uses FORGET."],
+  sourcesSearchResults: ["检索结果", "Search Results"],
+  sourcesSearchOrdering: ["；来源先筛选再 top_k。按记忆范围轮转合并。", ". Source filtering happens before top_k is applied. Results are merged in rotation across memory scopes."],
+  sourcesAvailableInstances: [" 为当前可管理的实例 ID，", " lists the IDs you can manage. "],
+  sourcesDefaultInstance: [" 为初始选中项。设置的读取和保存使用选中的 ", " is selected by default. Reading or saving settings uses the selected "],
+  sourcesEndSentence: ["。", "."],
+  sourcesModelConfiguration: ["模型配置与应用", "Model Configuration and Apply"],
+  sourcesCredentialStatus: ["；API Key 不回填，只显示已配置状态。", ". The API Key field shows its configuration status, with an empty input for a replacement."],
+  sourcesLabelsAndPermissions: ["来源标签用于展示和筛选，不承担授权。未标注来源不会被猜成当前应用。", "Sources are labels for display and filtering. Access is checked separately. A record with an empty source stays unlabeled."],
+  memoryDetail: ["记忆详情", "Memory Details"],
+  memoryDetailDescription: ["完整内容、来源与版本关联", "Full content, source, and version history"],
+  closeMemoryDetail: ["关闭记忆详情", "Close memory details"],
+
+  // Connection and request errors
+  connectedShared: ["已连接共享记忆库", "Connected to shared memory"],
+  connectedInstance: ["已连接当前实例 · 汇总个人授权范围", "Connected to this instance · Personal access"],
+  bootstrapFailed: ["无法打开记忆管理，请从应用重新打开。", "Could not open Memory Management. Reopen it from the app."],
+  requestFailed: ["请求失败", "Request failed"],
+  recordUnavailable: ["这条记忆已变化或不可访问，请刷新列表后重试。", "This memory has changed or is unavailable. Refresh the list and try again."],
+  recordInactive: ["这条记忆已不再有效，请关闭弹窗并刷新列表。", "This memory is no longer active. Close the dialog and refresh the list."],
+
+  // Memory labels and browse results
+  emptyMemoryTitle: ["无正文记忆", "Memory without text"],
+  timeUnknown: ["时间未记录", "Time not recorded"],
+  unspecified: ["未标注", "Unspecified"],
+  lifecycleActive: ["有效", "Active"],
+  workingMemory: ["工作记忆", "Working Memory"],
+  coreMemory: ["核心记忆", "Core Memory"],
+  episodicMemory: ["情景记忆", "Episodic Memory"],
+  semanticMemory: ["语义记忆", "Semantic Memory"],
+  proceduralMemory: ["程序性记忆", "Procedural Memory"],
+  archivalMemory: ["归档记忆", "Archival Memory"],
+  longTermMemory: ["长期记忆", "Long-term Memory"],
+  dailyMemory: ["日常记忆", "Daily Memory"],
+  profileDescription: ["关于用户的身份、偏好、习惯等稳定信息。", "Lasting information about the user, such as identity, preferences, and habits."],
+  knowledgeDescription: ["长期语义记忆，包含项目事实、决定等长期知识，也可能包含其他长期事实；可继续按项目筛选。", "Long-term semantic memories can include project facts, decisions, and other lasting knowledge. Use the project filter to narrow the list."],
+  procedureDescription: ["执行过程与做事方法，展示程序性记忆。", "Procedural memories describe how to carry out tasks."],
+  filteredMemoryHint: ["按当前分类与层级筛选全部来源的记忆。", "Memories from all sources matching the selected class and tier."],
+  selectedCount: [n => `已选 ${n} 条`, n => `${n} selected`],
+  noSearchMatches: ["没有找到相关记忆", "No relevant memories found"],
+  noFilteredMemories: ["没有符合条件的记忆", "No memories match the filters"],
+  noSearchMatchesHint: ["试试调整问题或切换来源。", "Try rephrasing the question or changing the source."],
+  noFilteredMemoriesHint: ["调整筛选条件，或添加一条记忆。", "Adjust the filters or add a memory."],
+  selectRecord: [title => `选择 ${title}`, title => `Select ${title}`],
+  viewRecord: [title => `查看 ${title}`, title => `View ${title}`],
+  memory: ["记忆", "Memory"],
+  sourceUnknown: ["未标注来源", "Source Unknown"],
+  scoreWithinScope: [score => `范围内相关度 ${score}`, score => `Relevance within scope ${score}`],
+  tierBadge: [tier => `层级 · ${tier}`, tier => `Tier · ${tier}`],
+  classBadge: [label => `分类 · ${label}`, label => `Class · ${label}`],
+  unrecorded: ["未记录", "Unrecorded"],
+  uncategorized: ["未分类", "Uncategorized"],
+  statusUnknown: ["状态未记录", "Status Unknown"],
+  correctRecord: ["纠正", "Correct"],
+  forgetRecord: ["遗忘", "Forget"],
+  copyContent: ["复制内容", "Copy Content"],
+  copiedMemory: ["记忆内容已复制。", "Memory content copied."],
+  copyMemoryFailed: ["无法自动复制，请选择正文后复制。", "Could not copy automatically. Select the text and copy it."],
+  sourceAndRecord: ["来源与记录", "Source and Record"],
+  app: ["应用", "App"],
+  noAgent: ["未关联 Agent", "No Agent"],
+  projectUnspecified: ["跨项目 / 未标注", "Cross-project / Unspecified"],
+  session: ["会话", "Session"],
+  notLinked: ["未关联", "Not linked"],
+  recordedAt: ["记录时间", "Recorded At"],
+  sourceReference: ["来源引用", "Source Reference"],
+  notProvided: ["未提供", "Not provided"],
+  tags: ["标签", "Tags"],
+  none: ["无", "None"],
+  previousVersion: ["此前版本", "Previous Version"],
+  recordSourceFields: ["查看当前记录的来源字段", "View Source Fields"],
+  detailDataSources: ["详情与操作的数据来源 ↗", "Data Sources for Details and Actions ↗"],
+  readingDetail: ["正在读取最新详情…", "Reading the latest details…"],
+  refreshList: ["刷新列表", "Refresh List"],
+  retryDetail: ["重新读取", "Try Again"],
+  detailFailed: ["无法读取这条记忆", "Could not read this memory"],
+  memoryCount: [n => `${n} 条记忆`, n => `${n} ${n === 1 ? 'memory' : 'memories'}`],
+  filterCount: [n => `· ${n} 项筛选`, n => `· ${n} ${n === 1 ? 'filter' : 'filters'}`],
+  listLoadFailed: ["加载失败", "Loading failed"],
+  listUnavailable: ["无法加载记忆", "Could not load memories"],
+  reloadFirstPage: ["记忆在翻页期间发生变化，请重新加载第一页。", "Memories changed while paging. Reload the first page."],
+  reload: ["重新加载", "Reload"],
+  detailAfterList: ["列表加载成功后可查看详情", "Details are available once the list loads"],
+  listLoadError: [error => `无法加载记忆：${error}`, error => `Could not load memories: ${error}`],
+  overviewLoadError: [error => `无法读取概览：${error}`, error => `Could not load the overview: ${error}`],
+  overviewLoadFailed: ["数据读取失败，请刷新重试。", "Could not load the data. Refresh and try again."],
+  noActiveMemories: ["还没有有效记忆，可以先新增一条。", "No active memories yet. Add a memory to get started."],
+  noSources: ["暂无来源记录", "No recorded sources yet"],
+
+  // Memory editor, mutations, and semantic search
+  lockedAgentScope: ["将写入宿主指定的 Agent 范围。", "This memory will use the Agent scope set by the host."],
+  chooseAgentScope: ["选择或填写 Agent；留空会保存为个人记忆。", "Select or enter an Agent. Leave it blank to save a personal memory."],
+  writeLocationLoading: ["正在读取写入位置…", "Reading the write scope…"],
+  writeLocationError: [error => `无法读取写入位置：${error}`, error => `Could not read the write scope: ${error}`],
+  correctMemory: ["纠正记忆", "Correct Memory"],
+  correctionDescription: ["创建新的正确版本，旧版本保留为历史", "Create a corrected version and keep the previous version in history."],
+  correctionTip: ["只修改正文，保留原来源。确认后原记录将退出有效记忆，纠正历史可在状态筛选中查看。", "Editing the text keeps the original source. On confirmation, the previous record moves to Correction History in the status filter."],
+  previewCorrection: ["预览纠正", "Preview Correction"],
+  characterCount: [n => `${n} 字`, n => `${n} ${n === 1 ? 'character' : 'characters'}`],
+  correctionLoadError: [error => `无法读取待纠正记忆：${error}`, error => `Could not load the memory to correct: ${error}`],
+  searchStale: ["记忆已变化，请重新检索", "Memories changed. Search again."],
+  searchAgain: ["请重新检索以获取最新结果。", "Search again for the latest results."],
+  searchResultsExpired: ["检索结果已失效", "Search results have expired"],
+  emptyMemoryContent: ["记忆内容不能为空。", "Enter the memory content."],
+  unchangedContent: ["内容尚未更改。", "Edit the content before previewing the correction."],
+  originalMemory: ["原记忆", "Original Memory"],
+  correctedMemory: ["纠正后的记忆", "Corrected Memory"],
+  confirmCorrection: ["确认纠正", "Confirm Correction"],
+  savingMemory: ["正在保存…", "Saving…"],
+  correctionSaved: ["已创建纠正版本；旧版本可在状态筛选中查看。", "Corrected version created. Use the status filter to view the previous version."],
+  noMemoryProduced: ["未产生可保存的记忆，请检查内容或服务状态。", "No memory was created. Check the content or the service status."],
+  memoriesSaved: [count => `已保存 ${count}。`, count => `Saved ${count}.`],
+  saveMemoryError: [error => `保存失败，内容已保留：${error}`, error => `Could not save the memory. Your text was kept. ${error}`],
+  forgetProgress: [(current, total) => `正在遗忘 ${current}/${total}…`, (current, total) => `Forgetting ${current}/${total}…`],
+  forgetFailureLine: [(title, error) => `${title}：${error}`, (title, error) => `${title}: ${error}`],
+  memoriesForgotten: [count => `已遗忘 ${count}。`, count => `Forgot ${count}.`],
+  forgetFailures: [n => ` ${n} 条未完成，请刷新核对后重试。`, n => ` ${n} failed. Refresh and review the list before trying again.`],
+  forgetDoneHint: ["可切换到“已遗忘”状态核对记录。", " Switch to Forgotten to review the records."],
+  forgetSelectedQuestion: [count => `遗忘所选 ${count}？`, count => `Forget ${count}?`],
+  forgetBatchDetails: [count => `确认遗忘所选 ${count}？逐条处理，失败的记录会单独列出。`, count => `Forget the ${count} you selected? Memories are processed one at a time. Any failures are listed separately.`],
+  semanticSearchPlaceholder: ["用一句话描述想找的记忆，例如：我喜欢喝什么？", "Describe the memory you want to find, such as “What do I like to drink?”"],
+  runSearch: ["输入问题后点击查找", "Enter a question and select Search"],
+  queryChanged: ["输入已更改，请点击查找", "The query changed. Select Search."],
+  searchInProgress: ["正在检索…", "Searching…"],
+  foundMemories: [count => `找到 ${count}`, count => `Found ${count}`],
+  searchScoreExplanation: ["结果从不同记忆范围轮流取出。相关度分数只用于同一范围内排序。", "Results alternate between memory scopes. Relevance scores rank results within each scope."],
+  searchFailed: ["检索失败", "Search failed"],
+  searchIncomplete: ["检索未完成", "Search could not finish"],
+  searchError: [error => `检索失败：${error}`, error => `Search failed: ${error}`],
+  memoriesCopied: [count => `已复制 ${count}。`, count => `Copied ${count}.`],
+  memoriesExported: [count => `已导出所选 ${count}。`, count => `Exported ${count}.`],
+  copyExportError: [error => `复制或导出失败，未输出数据：${error}`, error => `Copy or export failed. No data was written. ${error}`],
+
+  // Model fields and settings states
+  modelProvider: ["模型提供方", "Model Provider"],
+  modelName: ["模型名称", "Model Name"],
+  modelUrl: ["服务地址", "Service URL"],
+  temperature: ["温度", "Temperature"],
+  maxTokens: ["最大输出 Token", "Max Output Tokens"],
+  requestTimeout: ["请求超时（秒）", "Request Timeout (seconds)"],
+  maxRetries: ["失败重试次数", "Max Retries"],
+  thinkingMode: ["思考模式", "Thinking Mode"],
+  instanceDraftCount: [n => `当前实例有 ${n} 项更改尚未保存`, n => `${n} unsaved ${n === 1 ? 'change' : 'changes'} in this instance`],
+  noInstanceDrafts: ["当前实例没有待保存的更改", "No unsaved changes in this instance"],
+  draftCount: [n => `${n} 项更改尚未保存`, n => `${n} unsaved ${n === 1 ? 'change' : 'changes'}`],
+  otherDraftCount: [n => `其他实例还有 ${n} 项未保存`, n => `${n} unsaved ${n === 1 ? 'change' : 'changes'} in other instances`],
+  discardInstanceChanges: ["放弃当前实例的更改", "Discard This Instance’s Changes"],
+  echoProvider: ["echo（离线回显）", "echo (offline)"],
+  openAiProvider: ["OpenAI 兼容服务", "OpenAI-compatible Service"],
+  dashscopeProvider: ["阿里云 DashScope", "Alibaba Cloud DashScope"],
+  off: ["关闭", "Off"],
+  on: ["开启", "On"],
+  apiKeyConfigured: ["已配置 · 留空保持原值", "Configured · leave blank to keep it"],
+  newApiKey: ["输入新的 API Key", "Enter a new API key"],
+  readOnly: ["只读", "Read-only"],
+  willRestore: ["将恢复", "Restore pending"],
+  unsaved: ["未保存", "Unsaved"],
+  notApplied: ["未应用", "Not applied"],
+  saved: ["已保存", "Saved"],
+  credentialStoreMissing: ["宿主未提供可靠凭据持久化能力", "The host has no persistent credential store"],
+  credentialStoreUnavailable: ["受保护凭据存储不可用", "Protected credential storage is unavailable"],
+  fieldLocked: ["由宿主锁定", "Locked by the host"],
+  modelNotAssembled: ["当前实例未装配此模型", "This model is not configured in the current instance"],
+  customModelReadOnly: ["自定义模型暂不支持配置修改", "Settings for custom models are read-only"],
+  secretHint: ["凭据加密保存，不回填原文；留空保持原值。", "Credentials are encrypted. Leave the field blank to keep the current key."],
+  endpointHint: ["当前值只显示协议、域名和端口。修改时请填写完整网址。换服务时请同时填写对应的 API Key 和模型名。", "The displayed URL shows the scheme, hostname, and port. Enter the full URL to edit it. When changing services, also enter the corresponding API key and model name."],
+  reassemblyHint: ["此项需要重新装配；请按宿主原启动方式重新加载。", "Restart the host using its usual startup method to apply this setting."],
+  restorePending: ["已选择恢复启动值", "Startup Value Selected"],
+  restoreStartup: ["恢复启动值", "Restore Startup Value"],
+  viewFieldValues: ["查看启动 / 保存 / 应用值", "View Startup, Saved, and Applied Values"],
+  startupValue: ["启动值", "Startup Value"],
+  savedValue: ["保存值", "Saved Value"],
+  appliedValue: ["已应用", "Applied"],
+  notSet: ["未设置", "Not set"],
+  noOverride: ["未覆盖", "No override"],
+  unknownCurrentValue: ["当前值未确认", "Current value unconfirmed"],
+  defaultModel: ["主模型", "Default Model"],
+  namedModel: ["具名模型", "Named Model"],
+  advancedParameters: ["高级参数", "Advanced Parameters"],
+  settingsUnavailableHint: ["当前实例使用启动配置。若需在运行时修改，请由宿主启用模型配置管理。", "This instance uses its startup settings. The host can enable model configuration to allow changes at runtime."],
+  settingsUnavailable: ["当前实例未启用可写配置", "Model settings are read-only in this instance"],
+  storageMode: ["模式", "Mode"],
+  documentMemory: ["文档记忆", "Document Memory"],
+  kvMemory: ["KV 记忆", "KV Memory"],
+  dimension: ["维度", "Dimension"],
+  unknown: ["未知", "Unknown"],
+  viewDocumentLocation: ["查看文档位置", "View Document Location"],
+  endpointIgnored: ["部分模型正在使用启动设置。保存的网址或 Key 无法配套使用，请检查并重新填写。", "Some models are using their startup settings. Check the saved service URL and API key and enter a compatible pair."],
+  applyPending: [(saved, applied) => `已保存，尚未应用 · 保存版本 ${saved} / 运行版本 ${applied}`, (saved, applied) => `Saved, pending application · Saved version ${saved} / Running version ${applied}`],
+  appliedConfig: [(saved, applied) => `已应用 · 保存版本 ${saved} / 应用版本 ${applied}`, (saved, applied) => `Applied · Saved version ${saved} / Applied version ${applied}`],
+  ignoredOverrides: ["部分保存值因宿主锁定或当前实现不支持而未应用。", "Some saved values were skipped because they are locked by the host or unsupported."],
+  settingsRefreshed: ["配置已刷新；草稿已保留，请重新预览。", "Settings refreshed. Your draft was kept. Preview it again before saving."],
+  instanceUnavailable: ["配置实例已不可用，请刷新配置或选择其他实例。", "This instance is unavailable. Refresh the settings or choose another instance."],
+  settingsLoadFailed: ["无法读取设置", "Could not read settings"],
+  settingsLoadError: [error => `无法读取设置：${error}`, error => `Could not read settings: ${error}`],
+  invalidNumber: [field => `${field}需要有效数字`, field => `Enter a valid number for ${field}`],
+  credentialReplacement: [field => `${field}: 替换凭据（不显示原文）`, field => `${field}: Replace credential (value hidden)`],
+  fieldChange: [(field, model, before, after) => `${field} · ${model}: ${before} → ${after}`, (field, model, before, after) => `${field} · ${model}: ${before} → ${after}`],
+  restoreCredential: ["恢复启动凭据", "Restore startup credential"],
+  restoreChange: [(field, change) => `${field}: ${change}（启动配置）`, (field, change) => `${field}: ${change} (startup settings)`],
+  noChangesToSubmit: ["没有可提交的更改。", "No changes to submit."],
+  previewInstance: [instance => `配置实例 · ${instance}`, instance => `Configuration Instance · ${instance}`],
+  confirmChanges: ["确认以下更改：", "Review these changes"],
+  staleConfiguration: ["配置已变化，请重新预览。", "The settings have changed. Preview your changes again."],
+  settingsSaved: ["已保存并应用，后续调用使用新配置。", "Settings saved and applied to future calls."],
+  settingsApplyFailed: ["已保存但应用失败，当前继续使用旧配置；可以重试应用。", "Settings were saved. Applying them failed and the previous settings are still active. You can retry applying them."],
+  settingsConflict: ["其他页面已更新配置。草稿已保留，请按最新值重新预览。", "Another page updated the settings. Your draft was kept. Preview it against the latest values."],
+  settingsSaveError: [error => `保存失败，草稿已保留：${error}`, error => `Could not save settings. Your draft was kept. ${error}`],
+  latestSettingsApplied: ["已应用最新保存配置。", "The latest saved settings are now active."],
+  settingsRetryFailed: ["应用失败，当前仍使用旧配置。", "Could not apply settings. The previous settings are still active."],
+};
 const $ = id => document.getElementById(id);
-const notice = (text, error=false) => { $('notice').textContent=text; $('notice').classList.toggle('error',error); };
+const languageStorageKey = 'agent-memory.portal.language';
+const localizedText = new WeakMap();
+
+function readPageLanguage() {
+  const launch = new URLSearchParams(location.hash.slice(1));
+  if (launch.get('access')) return launch.getAll('language').at(-1) === 'en' ? 'en' : 'zh-CN';
+  const saved = history.state?.portalLanguage;
+  return saved === 'en' || saved === 'zh-CN' ? saved : null;
+}
+function readStoredLanguage() {
+  try {
+    return localStorage.getItem(languageStorageKey) === 'en' ? 'en' : 'zh-CN';
+  } catch {
+    return 'zh-CN';
+  }
+}
+let language = readPageLanguage() ?? readStoredLanguage();
+
+function textOf(value) {
+  return typeof value === 'function' ? value() : value;
+}
+function msg(key, ...values) {
+  return () => {
+    const [chinese, english] = messages[key];
+    const text = language === 'en' ? english : chinese;
+    return typeof text === 'function' ? text(...values.map(textOf)) : text;
+  };
+}
+function joinText(parts, separator = '') {
+  return () => parts.map(textOf).join(separator);
+}
+function writeText(el, text, attribute) {
+  if (attribute) el.setAttribute(attribute, textOf(text));
+  else el.textContent = textOf(text);
+}
+// Bind the displayed text to its element so switching languages keeps the controls and results in place.
+function setText(el, text, attribute = null) {
+  let bindings = localizedText.get(el);
+  if (typeof text === 'function') {
+    if (!bindings) {
+      bindings = new Map();
+      localizedText.set(el, bindings);
+      el.setAttribute('data-localized', '');
+    }
+    bindings.set(attribute, text);
+  } else {
+    bindings?.delete(attribute);
+  }
+  writeText(el, text, attribute);
+}
+function bindStaticText() {
+  for (const [marker, attribute] of [
+    ['data-i18n', null],
+    ['data-i18n-label', 'aria-label'],
+    ['data-i18n-placeholder', 'placeholder'],
+  ]) {
+    for (const el of document.querySelectorAll(`[${marker}]`)) {
+      setText(el, msg(el.getAttribute(marker)), attribute);
+    }
+  }
+}
+function applyLanguage() {
+  document.documentElement.lang = language;
+  document.title = textOf(msg('pageTitle'));
+  for (const el of document.querySelectorAll('[data-localized]')) {
+    for (const [attribute, text] of localizedText.get(el)) writeText(el, text, attribute);
+  }
+  const toggle = $('language-toggle');
+  const switchToEnglish = language === 'zh-CN';
+  toggle.lang = switchToEnglish ? 'en' : 'zh-CN';
+  toggle.textContent = switchToEnglish ? 'English' : '中文';
+  toggle.setAttribute('aria-label', switchToEnglish ? 'Switch to English' : '切换到中文');
+}
+$('language-toggle').onclick = () => {
+  language = language === 'en' ? 'zh-CN' : 'en';
+  applyLanguage();
+  if (history.state?.portalLanguage) {
+    history.replaceState({...history.state, portalLanguage:language}, '');
+  }
+  try {
+    localStorage.setItem(languageStorageKey, language);
+  } catch {
+    // An embedded page can have restricted storage access.
+  }
+};
+
+function portalError(message, status) {
+  const error = new Error(textOf(message));
+  if (typeof message === 'function') error.localizedMessage = message;
+  error.status = status;
+  return error;
+}
+const errorText = error => error.localizedMessage ?? error.message;
+const notice = (text, error=false) => { setText($('notice'),text); $('notice').classList.toggle('error',error); };
 let offset=0,total=0,snapshot=null,version=null,fields=[],drafts=new Map(),restores=new Set();
 let preview=null,saving=false,settingsLoaded=false,settingControls=[],configAvailable=false,settingsRequest=0;
+let sharedPortal=false,settingsInstance=null,settingsLoading=false,settingsNeedApply=false;
+const instanceDrafts=new Map();
 let memoryRequest=0,detailRequest={memories:0,search:0},rows={memories:[],search:[]};
 let filterTimer,searchRequest=0,hasSearched=false,activeTab='overview',editorMode='add',editorItem=null,editorPreview=false,mutationBusy=false;
 let memoryView='memories',searchMode='text';
 let pageSize=20, batchBusy=false, memoryLoading=false, overviewRequest=0;
 const checked=new Set();
 let forgetItems=[];
-const lifecycleLabels={active:'有效',superseded:'已纠正旧版本',forgotten:'已遗忘',archived:'已归档'};
-const tierLabels={working:'工作记忆',core:'核心记忆',episodic:'情景记忆',semantic:'语义记忆',procedural:'程序性记忆',archival:'归档记忆'};
-const topicPresets={all:{label:'我的记忆',memoryClass:'*',tier:'*',description:'不限记忆分类与认知层级，可继续组合下方筛选。'},profile:{label:'用户画像',memoryClass:'user_profile',tier:'*',description:'关于用户的身份、偏好、习惯等稳定信息。'},knowledge:{label:'项目知识',memoryClass:'long_term_memory',tier:'semantic',description:'长期语义记忆，包含项目事实、决定等长期知识，也可能包含其他长期事实；可继续按项目筛选。'},procedure:{label:'过程与做法',memoryClass:'*',tier:'procedural',description:'执行过程与做事方法，展示程序性记忆。'}};
-const classLabels={user_profile:'用户画像',long_term_memory:'长期记忆',daily_memory:'日常记忆'};
+const lifecycleLabels=new Map([
+  ['active',msg('lifecycleActive')], ['superseded',msg('superseded')],
+  ['forgotten',msg('forgotten')], ['archived',msg('archived')],
+]);
+const tierLabels=new Map([
+  ['working',msg('workingMemory')], ['core',msg('coreMemory')], ['episodic',msg('episodicMemory')],
+  ['semantic',msg('semanticMemory')], ['procedural',msg('proceduralMemory')], ['archival',msg('archivalMemory')],
+]);
+const topicPresets={
+  all:{memoryClass:'*',tier:'*'},
+  profile:{memoryClass:'user_profile',tier:'*',description:msg('profileDescription')},
+  knowledge:{memoryClass:'long_term_memory',tier:'semantic',description:msg('knowledgeDescription')},
+  procedure:{memoryClass:'*',tier:'procedural',description:msg('procedureDescription')},
+};
+const classLabels=new Map([
+  ['user_profile',msg('userProfile')], ['long_term_memory',msg('longTermMemory')],
+  ['daily_memory',msg('dailyMemory')],
+]);
 let portalSession, addContext, sessionExpired=false, addContextReady=false, addAgentLocked=false, addContextRequest=0;
-const sessionExpiredMessage='访问会话已失效，请从应用重新打开记忆管理。';
+const sessionExpiredMessage=msg('sessionExpired');
 function expireSession(){
   sessionExpired=true;
+  portalSession=undefined;
+  if(history.state?.sharedPortalToken)history.replaceState(null,'');
   $('portal-shell').hidden=true;
   $('session-expired').hidden=false;
   for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
 }
 const browserReady=(async()=>{
   const grant=new URLSearchParams(location.hash.slice(1)).get('access');
-  if(!grant)return;
-  history.replaceState(null,'',location.pathname+location.search);
-  const embedded=typeof window!=='undefined'&&window.self!==window.top;
-  const response=await fetch('/portal/api/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:grant,embedded}),credentials:'same-origin'});
-  if(response.status===401){expireSession();return;}
-  if(!response.ok)throw new Error('无法打开记忆管理，请从应用重新打开。');
-  if(embedded)portalSession=(await response.json()).session_token;
+  let session;
+  if(grant){
+    history.replaceState({portalLanguage:language},'',location.pathname+location.search);
+    const embedded=typeof window!=='undefined'&&window.self!==window.top;
+    const response=await fetch('/portal/api/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:grant,embedded}),credentials:'same-origin'});
+    if(response.status===401){expireSession();return;}
+    if(!response.ok)throw portalError(msg('bootstrapFailed'));
+    session=await response.json();
+    if(session.shared===true)history.replaceState({...history.state,sharedPortalToken:session.session_token},'');
+  }else if(history.state?.sharedPortalToken){
+    session={shared:true,session_token:history.state.sharedPortalToken};
+  }
+  portalSession=session?.session_token;
+  sharedPortal=session?.shared===true;
+  if(sharedPortal){
+    $('configuration-instance').hidden=false;
+    $('configuration-instance-source').hidden=false;
+  }
 })();
 async function request(action,payload={}) {
   await browserReady;
-  if(sessionExpired)throw new Error(sessionExpiredMessage);
+  if(sessionExpired)throw portalError(sessionExpiredMessage);
   const headers={'Content-Type':'application/json','X-Memory-Portal-Browser':'1'};
   if(portalSession)headers['X-Memory-Portal-Session']=portalSession;
   const response=await fetch('/v1/'+action,{method:'POST',headers,body:JSON.stringify(payload),credentials:'same-origin'});
   if(response.status===401)expireSession();
-  if(sessionExpired)throw new Error(sessionExpiredMessage);
+  if(sessionExpired)throw portalError(sessionExpiredMessage);
   const data=await response.json();
   if(!response.ok){
-    let message=data.message||data.error||'请求失败';
+    let message=data.message||data.error||msg('requestFailed');
     if(response.status===404&&['get','update','delete'].includes(action)){
-      message='这条记忆已变化或不可访问，请刷新列表后重试。';
+      message=msg('recordUnavailable');
     }else if(response.status===409&&['update','delete'].includes(action)){
-      message='这条记忆已不再有效，请关闭弹窗并刷新列表。';
+      message=msg('recordInactive');
     }
-    const error=new Error(message);
-    error.status=response.status;throw error;
+    throw portalError(message,response.status);
   }
   if(action==='list'&&data.add_context)addContext=data.add_context;
-  $('connection-state').textContent='已连接当前实例 · 汇总个人授权范围';$('connection-dot').hidden=false;
+  setText($('connection-state'),msg(sharedPortal?'connectedShared':'connectedInstance'));$('connection-dot').hidden=false;
   return data;
 }
 // The record address is stable across list, search and detail. Authorization stays on the server.
@@ -345,39 +851,48 @@ function forgetRecord(ref){
   const {scope,unit_id}=JSON.parse(ref);
   return request('delete',{selector:{scope,unit_ids:[unit_id],mode:'forget'}});
 }
-function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;}
+function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)setText(el,text);if(cls)el.className=cls;return el;}
 function button(text,handler,cls=''){const el=node('button',text,cls);el.type='button';el.onclick=handler;return el;}
-function titleOf(item){let first=(item.content||'').trim().split(/\n/).find(line=>line.trim())||'无正文记忆';const space=first.indexOf(' ');if(space>3&&space<32&&/[\u3400-\u9fff]/.test(first.slice(0,space)))first=first.slice(0,space);return first.length>32?first.slice(0,32)+'…':first;}
-function summaryOf(item){const text=(item.content||'').trim(),title=titleOf(item);return text.startsWith(title+' ')||text.startsWith(title+'\n')?text.slice(title.length).trim():text;}
-function timeLabel(value){if(!value)return '时间未记录';const date=new Date(value);return Number.isNaN(date.getTime())?'时间未记录':new Intl.DateTimeFormat('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(date);}
-function addPair(root,label,value){root.append(node('dt',label),node('dd',value||'未标注'));}
+function titleOf(item){let first=(item.content||'').trim().split(/\n/).find(line=>line.trim());if(!first)return msg('emptyMemoryTitle');const space=first.indexOf(' ');if(space>3&&space<32&&/[\u3400-\u9fff]/.test(first.slice(0,space)))first=first.slice(0,space);return first.length>32?first.slice(0,32)+'…':first;}
+function summaryOf(item){const text=(item.content||'').trim();if(!text)return '';const title=titleOf(item);return text.startsWith(title+' ')||text.startsWith(title+'\n')?text.slice(title.length).trim():text;}
+const dateFormats=Object.fromEntries(['zh-CN','en'].map(locale=>[
+  locale,new Intl.DateTimeFormat(locale,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}),
+]));
+function timeLabel(value){
+  const date=value?new Date(value):null;
+  return !date||Number.isNaN(date.getTime())?msg('timeUnknown'):()=>dateFormats[language].format(date);
+}
+function addPair(root,label,value){root.append(node('dt',label),node('dd',value||msg('unspecified')));}
 function emptyState(root,title,description,action){root.replaceChildren();const el=node('div',undefined,'empty');el.append(node('strong',title),node('p',description));if(action)el.append(action);root.append(el);}
+function option(label,value){const el=new Option('',value);setText(el,label);return el;}
 function fillOptions(id,options,label){
-  const el=$(id),previous=el.value,previousLabel=[...el.options].find(o=>o.value===previous)?.textContent||previous;
-  el.replaceChildren(new Option(label,'*'));for(const [value,text] of options)el.add(new Option(text,value));
-  if(previous!=='*'&&![...el.options].some(o=>o.value===previous))el.add(new Option(previousLabel,previous));
+  const el=$(id),previous=el.value,previousOption=[...el.options].find(o=>o.value===previous);
+  const previousLabel=localizedText.get(previousOption)?.get(null)??previousOption?.textContent;
+  el.replaceChildren(option(label,'*'));for(const [value,text] of options)el.add(option(text,value));
+  if(previous!=='*'&&![...el.options].some(o=>o.value===previous))el.add(option(previousLabel||previous,previous));
   el.value=previous;
 }
-function setFilterValue(id,value,label){const el=$(id);if(![...el.options].some(o=>o.value===value))el.add(new Option(label||value,value));el.value=value;}
+function setFilterValue(id,value,label){const el=$(id);if(![...el.options].some(o=>o.value===value))el.add(option(label||value,value));el.value=value;}
 function isMemoryView(name){return ['memories','profile','knowledge','procedure'].includes(name);}
+const navigationLabels={overview:'overview',memories:'myMemories',profile:'userProfile',knowledge:'projectKnowledge',procedure:'procedures',settings:'modelSettings'};
 function renderNavigation(name){
-  const labels={overview:'记忆概览',memories:'我的记忆',profile:'用户画像',knowledge:'项目知识',procedure:'过程与做法',settings:'模型设置'};
-  activeTab=name;if(isMemoryView(name))memoryView=name;for(const key of Object.keys(labels)){const b=$('tab-'+key);b.classList.toggle('active',key===name);b.setAttribute('aria-selected',String(key===name));b.tabIndex=key===name?0:-1;}
+  activeTab=name;if(isMemoryView(name))memoryView=name;for(const key of Object.keys(navigationLabels)){const b=$('tab-'+key);b.classList.toggle('active',key===name);b.setAttribute('aria-selected',String(key===name));b.tabIndex=key===name?0:-1;}
   for(const id of ['overview','memories','settings'])$(id).hidden=id!==(isMemoryView(name)?'memories':name);
-  $('mode-semantic').hidden=name!=='memories';if(name!=='memories')setSearchMode('text',false);$('breadcrumb-current').textContent=labels[name];
-  if(isMemoryView(name)){$('memories').setAttribute('aria-labelledby','tab-'+name);$('memory-page-title').textContent=name==='memories'?'我的全部记忆':labels[name];}
+  $('mode-semantic').hidden=name!=='memories';if(name!=='memories')setSearchMode('text',false);setText($('breadcrumb-current'),msg(navigationLabels[name]));
+  if(isMemoryView(name)){$('memories').setAttribute('aria-labelledby','tab-'+name);setText($('memory-page-title'),msg(name==='memories'?'allMyMemories':navigationLabels[name]));}
 }
 function syncTopicShortcut(){
   const fixed=memoryView!=='memories',preset=topicPresets[fixed?memoryView:'all'];
-  if(fixed){setFilterValue('memory-class',preset.memoryClass,classLabels[preset.memoryClass]);setFilterValue('tier',preset.tier,tierLabels[preset.tier]);}
+  if(fixed){setFilterValue('memory-class',preset.memoryClass,classLabels.get(preset.memoryClass));setFilterValue('tier',preset.tier,tierLabels.get(preset.tier));}
   for(const [id,wrapper]of [['tier','tier-filter'],['memory-class','class-filter']]){$(id).disabled=fixed;$(wrapper).hidden=fixed;}
-  $('memory-page-description').textContent=fixed?preset.description:($('memory-class').value!=='*'||$('tier').value!=='*'?'按当前分类与层级筛选全部来源的记忆。':'汇总所有来源，按需筛选与管理');
+  const filtered=$('memory-class').value!=='*'||$('tier').value!=='*';
+  setText($('memory-page-description'),fixed?preset.description:msg(filtered?'filteredMemoryHint':'allMyMemoriesHint'));
 }
 function selectionValue(id){return $(id).value==='*'?null:$(id).value;}
 function showDialog(id){if(!$(id).open)$(id).showModal();}
 function sourceHelp(){showDialog('sources-dialog');}
 function updateSelection(){
-  const count=checked.size;$('batch-bar').hidden=!count;$('batch-count').textContent='已选 '+count+' 条';
+  const count=checked.size;$('batch-bar').hidden=!count;setText($('batch-count'),msg('selectedCount',count));
   $('select-page').checked=!!rows.memories.length&&rows.memories.every(item=>checked.has(item.ref));
   $('select-page').indeterminate=count>0&&!$('select-page').checked;
   for(const id of ['copy-selected','export-selected','export-json','forget-selected','clear-selection','select-page'])$(id).disabled=batchBusy||memoryLoading;
@@ -386,79 +901,102 @@ function updateSelection(){
 function cards(target,items){
   const kind=target==='search-list'?'search':'memories';rows[kind]=items;
   const root=$(target);root.replaceChildren();
-  if(!items.length){emptyState(root,kind==='search'?'没有找到相关记忆':'没有符合条件的记忆',kind==='search'?'试试调整问题或切换来源。':'调整筛选条件，或添加一条记忆。',kind==='memories'?button('新增记忆',openAdd,'primary'):null);return;}
+  if(!items.length){
+    const isSearch=kind==='search';
+    emptyState(root,msg(isSearch?'noSearchMatches':'noFilteredMemories'),msg(isSearch?'noSearchMatchesHint':'noFilteredMemoriesHint'),isSearch?null:button(msg('addMemory'),openAdd,'primary'));
+    return;
+  }
   for(const item of items){
-    const row=node('article',undefined,'memory-row');row.dataset.ref=item.ref;
-    if(kind==='memories'){const label=node('label',undefined,'row-select'),check=node('input');check.type='checkbox';check.checked=checked.has(item.ref);check.disabled=batchBusy;check.setAttribute('aria-label','选择 '+titleOf(item));check.onchange=()=>{if(check.checked)checked.add(item.ref);else checked.delete(item.ref);updateSelection();};label.append(check);row.append(label);}
-    const open=button('',()=>selectMemory(item,kind),'card-open');open.setAttribute('aria-label','查看 '+titleOf(item));
-    const heading=node('div',undefined,'row');heading.append(node('span',titleOf(item),'memory-title'),node('span',lifecycleLabels[item.lifecycle]||'记忆','badge '+(item.lifecycle==='active'?'green':'')));
+    const row=node('article',undefined,'memory-row'),title=titleOf(item);row.dataset.ref=item.ref;
+    if(kind==='memories'){const label=node('label',undefined,'row-select'),check=node('input');check.type='checkbox';check.checked=checked.has(item.ref);check.disabled=batchBusy;setText(check,msg('selectRecord',title),'aria-label');check.onchange=()=>{if(check.checked)checked.add(item.ref);else checked.delete(item.ref);updateSelection();};label.append(check);row.append(label);}
+    const open=button('',()=>selectMemory(item,kind),'card-open');setText(open,msg('viewRecord',title),'aria-label');
+    const heading=node('div',undefined,'row');heading.append(node('span',title,'memory-title'),node('span',lifecycleLabels.get(item.lifecycle)||msg('memory'),'badge '+(item.lifecycle==='active'?'green':'')));
     open.append(heading,node('span',summaryOf(item),'memory-preview'));
-    const meta=node('span',undefined,'memory-meta');meta.append(node('span',item.source||'未标注来源'));
+    const meta=node('span',undefined,'memory-meta');meta.append(node('span',item.source||msg('sourceUnknown')));
     if(item.agent_label||item.agent)meta.append(node('span',item.agent_label||item.agent));
     if(item.project)meta.append(node('span',item.project));
-    if(item.tier)meta.append(node('span',tierLabels[item.tier]||item.tier));
-    if(item.memory_class)meta.append(node('span',classLabels[item.memory_class]||item.memory_class));
-    if(item.score!==undefined)meta.append(node('span','范围内相关度 '+Number(item.score).toFixed(3)));
+    if(item.tier)meta.append(node('span',tierLabels.get(item.tier)||item.tier));
+    if(item.memory_class)meta.append(node('span',classLabels.get(item.memory_class)||item.memory_class));
+    if(item.score!==undefined)meta.append(node('span',msg('scoreWithinScope',Number(item.score).toFixed(3))));
     else meta.append(node('span',timeLabel(item.created_at)));
     open.append(meta);row.append(open);root.append(row);
   }
 }
 function renderDetail(item,kind){
   const root=$(kind==='search'?'search-detail':'memory-detail');root.replaceChildren();
-  const badges=node('div',undefined,'row');badges.append(node('span','层级 · '+(tierLabels[item.tier]||item.tier||'未记录'),'badge'),node('span','分类 · '+(classLabels[item.memory_class]||item.memory_class||'未分类'),'badge'),node('span',lifecycleLabels[item.lifecycle]||'状态未记录','badge '+(item.lifecycle==='active'?'green':'')));
+  const badges=node('div',undefined,'row');
+  badges.append(
+    node('span',msg('tierBadge',tierLabels.get(item.tier)||item.tier||msg('unrecorded')),'badge'),
+    node('span',msg('classBadge',classLabels.get(item.memory_class)||item.memory_class||msg('uncategorized')),'badge'),
+    node('span',lifecycleLabels.get(item.lifecycle)||msg('statusUnknown'),'badge '+(item.lifecycle==='active'?'green':'')),
+  );
   root.append(badges,node('h2',titleOf(item),'detail-heading'),node('p',item.content||'','detail-body'));
   const actions=node('div',undefined,'detail-actions');
-  if(item.lifecycle==='active'){actions.append(button('纠正',()=>openCorrection(item),'primary'),button('遗忘',()=>openForget(item),'danger'));}
-  actions.append(button('复制内容',async()=>{try{await navigator.clipboard.writeText(item.content||'');notice('记忆内容已复制。');}catch(e){notice('无法自动复制，请选择正文后复制。',true);}},'quiet small'));
-  root.append(actions,node('hr',undefined,'detail-divider'),node('h3','来源与记录'));
-  const meta=node('dl');addPair(meta,'应用',item.source||'未标注来源');addPair(meta,'Agent',item.agent_label||item.agent||'未关联 Agent');
+  if(item.lifecycle==='active'){actions.append(button(msg('correctRecord'),()=>openCorrection(item),'primary'),button(msg('forgetRecord'),()=>openForget(item),'danger'));}
+  actions.append(button(msg('copyContent'),async()=>{try{await navigator.clipboard.writeText(item.content||'');notice(msg('copiedMemory'));}catch(e){notice(msg('copyMemoryFailed'),true);}},'quiet small'));
+  root.append(actions,node('hr',undefined,'detail-divider'),node('h3',msg('sourceAndRecord')));
+  const meta=node('dl');addPair(meta,msg('app'),item.source||msg('sourceUnknown'));addPair(meta,'Agent',item.agent_label||item.agent||msg('noAgent'));
   if(item.agent_label&&item.agent)addPair(meta,'Agent ID',item.agent);
-  addPair(meta,'项目',item.project||'跨项目 / 未标注');addPair(meta,'会话',item.session||'未关联');addPair(meta,'记录时间',timeLabel(item.created_at));addPair(meta,'来源引用',item.source_ref||'未提供');addPair(meta,'标签',(item.tags||[]).join('、')||'无');
-  if(item.supersedes)addPair(meta,'此前版本',item.supersedes);
+  addPair(meta,msg('project'),item.project||msg('projectUnspecified'));
+  addPair(meta,msg('session'),item.session||msg('notLinked'));addPair(meta,msg('recordedAt'),timeLabel(item.created_at));addPair(meta,msg('sourceReference'),item.source_ref||msg('notProvided'));
+  const tags=()=> (item.tags||[]).join(language==='en'?', ':'、')||textOf(msg('none'));
+  addPair(meta,msg('tags'),tags);
+  if(item.supersedes)addPair(meta,msg('previousVersion'),item.supersedes);
   root.append(meta);
-  const raw=node('details');raw.append(node('summary','查看当前记录的来源字段'),node('pre',JSON.stringify({source_app:item.source||'',agent_label:item.agent_label||'',agent:item.agent||'',project:item.project||'',session:item.session||'',source_ref:item.source_ref||''},null,2)));
-  root.append(raw,button('详情与操作的数据来源 ↗',sourceHelp,'link'));
+  const raw=node('details');raw.append(node('summary',msg('recordSourceFields')),node('pre',JSON.stringify({source_app:item.source||'',agent_label:item.agent_label||'',agent:item.agent||'',project:item.project||'',session:item.session||'',source_ref:item.source_ref||''},null,2)));
+  root.append(raw,button(msg('detailDataSources'),sourceHelp,'link'));
 }
 async function selectMemory(item,kind){
   closeDetail();const sequence=++detailRequest[kind];
   $('memory-detail').hidden=kind!=='memories';$('search-detail').hidden=kind!=='search';showDialog('detail-dialog');
   const list=$(kind==='search'?'search-list':'memory-list');
   for(const row of list.children){row.classList.toggle('selected',row.dataset.ref===item.ref);row.setAttribute('aria-pressed',String(row.dataset.ref===item.ref));}
-  const root=$(kind==='search'?'search-detail':'memory-detail');root.replaceChildren(node('p','正在读取最新详情…','detail-empty'));
+  const root=$(kind==='search'?'search-detail':'memory-detail');root.replaceChildren(node('p',msg('readingDetail'),'detail-empty'));
   try{const record=await fetchRecord(item.ref);if(sequence!==detailRequest[kind])return;renderDetail(record,kind);}
   catch(e){
     if(sequence!==detailRequest[kind])return;
-    const retry=e.status===404?button('刷新列表',()=>{
+    const retry=e.status===404?button(msg('refreshList'),()=>{
       closeDetail();if(kind==='search')$('search-form').requestSubmit();else loadMemories(true);
-    }):button('重新读取',()=>selectMemory(item,kind));
-    emptyState(root,'无法读取这条记忆',e.message,retry);
+    }):button(msg('retryDetail'),()=>selectMemory(item,kind));
+    emptyState(root,msg('detailFailed'),errorText(e),retry);
   }
 }
 async function loadMemories(reset=false){
   const sequence=++memoryRequest;memoryLoading=true;$('memory-list').inert=true;$('memory-list').setAttribute('aria-busy','true');checked.clear();updateSelection();closeDetail();
   for(const b of document.querySelectorAll('[data-status]')){const active=b.dataset.status===$('lifecycle').value;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}
   syncTopicShortcut();if(reset){offset=0;snapshot=null;}
-  $('memory-count').textContent='正在加载记忆…';$('previous').disabled=true;$('next').disabled=true;
+  setText($('memory-count'),msg('loadingMemories'));$('previous').disabled=true;$('next').disabled=true;
   try{
     const data=await listMemories({offset,limit:pageSize,lifecycle:selectionValue('lifecycle'),source:selectionValue('source'),agent:selectionValue('agent'),project:selectionValue('project'),tier:selectionValue('tier'),memory_class:selectionValue('memory-class'),query:$('memory-filter').value.trim(),snapshot});
     if(sequence!==memoryRequest)return;
     total=data.count;snapshot=data.snapshot;checked.clear();cards('memory-list',data.items);
-    fillOptions('source',(data.sources||[]).map(v=>[v,v||'未标注来源']),'全部应用');
-    fillOptions('search-source',(data.sources||[]).map(v=>[v,v||'未标注来源']),'全部应用');
-    fillOptions('agent',(data.agents||[]).map(([value,label])=>[value,label||value||'未关联 Agent']),'全部 Agent');
-    fillOptions('project',(data.projects||[]).map(v=>[v,v||'跨项目 / 未标注']),'全部项目');
-    fillOptions('tier',Object.entries(tierLabels).map(([value,label])=>[value,label+' · '+value]),'全部层级');
+    const sourceOptions=(data.sources||[]).map(v=>[v,v||msg('sourceUnknown')]);
+    fillOptions('source',sourceOptions,msg('allApps'));
+    fillOptions('search-source',sourceOptions,msg('allApps'));
+    fillOptions('agent',(data.agents||[]).map(([value,label])=>[value,label||value||msg('noAgent')]),msg('allAgents'));
+    fillOptions('project',(data.projects||[]).map(v=>[v,v||msg('projectUnspecified')]),msg('allProjects'));
+    fillOptions('tier',[...tierLabels].map(([value,label])=>[value,joinText([label,value],' · ')]),msg('allTiers'));
     $('add-agent-options').replaceChildren(...(data.agents||[]).filter(([value])=>value).map(([value,label])=>new Option(label||value,value)));
     $('add-project-options').replaceChildren(...(data.projects||[]).filter(Boolean).map(v=>new Option(v,v)));
-    fillOptions('memory-class',(data.memory_classes||[]).map(v=>[v,v?(classLabels[v]?classLabels[v]+' · '+v:v):'未分类']),'全部分类');
-    $('memory-count').textContent=total+' 条记忆';$('page-info').textContent=`${total?offset+1:0}–${Math.min(offset+pageSize,total)} / ${total}`;
+    fillOptions('memory-class',(data.memory_classes||[]).map(v=>{
+      const label=classLabels.get(v);
+      return [v,label?joinText([label,v],' · '):v||msg('uncategorized')];
+    }),msg('allClasses'));
+    setText($('memory-count'),msg('memoryCount',total));$('page-info').textContent=`${total?offset+1:0}–${Math.min(offset+pageSize,total)} / ${total}`;
     $('previous').disabled=offset===0;$('next').disabled=offset+pageSize>=total;
     const activeFilters=(memoryView==='memories'?['source','agent','project','tier','memory-class']:['source','agent','project']).filter(id=>selectionValue(id)!==null).length+($('lifecycle').value!=='*'?1:0);
-    $('filter-count').textContent=activeFilters?'· '+activeFilters+' 项筛选':'';
-    $('filter-description').textContent=(selectionValue('source')??'全部应用')+' · '+(lifecycleLabels[selectionValue('lifecycle')]||'全部状态');
+    setText($('filter-count'),activeFilters?msg('filterCount',activeFilters):'');
+    setText($('filter-description'),joinText([selectionValue('source')??msg('allApps'),lifecycleLabels.get(selectionValue('lifecycle'))||msg('allStatuses')],' · '));
     syncTopicShortcut();updateSelection();
     return true;
-  }catch(e){if(sequence!==memoryRequest)return false;$('memory-count').textContent='加载失败';emptyState($('memory-list'),'无法加载记忆',e.status===409?'记忆在翻页期间发生变化，请重新加载第一页。':e.message,button('重新加载',()=>loadMemories(true)));$('memory-detail').replaceChildren(node('div','列表加载成功后可查看详情','detail-empty'));notice('无法加载记忆：'+e.message,true);return false;}
+  }catch(e){
+    if(sequence!==memoryRequest)return false;
+    setText($('memory-count'),msg('listLoadFailed'));
+    emptyState($('memory-list'),msg('listUnavailable'),e.status===409?msg('reloadFirstPage'):errorText(e),button(msg('reload'),()=>loadMemories(true)));
+    $('memory-detail').replaceChildren(node('div',msg('detailAfterList'),'detail-empty'));
+    notice(msg('listLoadError',errorText(e)),true);
+    return false;
+  }
   finally{if(sequence===memoryRequest){memoryLoading=false;$('memory-list').inert=false;$('memory-list').setAttribute('aria-busy','false');updateSelection();}}
 }
 function mutationControls(busy){mutationBusy=busy;for(const id of ['new-memory','new-memory-agent','new-memory-project','submit-memory','cancel-memory-dialog','close-memory-dialog','memory-back','confirm-forget','cancel-forget','close-forget-dialog'])$(id).disabled=busy;}
@@ -472,91 +1010,206 @@ async function openAdd(){
     if(sequence!==addContextRequest||editorMode!=='add'||!$('memory-dialog').open)return;
     addAgentLocked=context.agent_locked;
     $('new-memory-agent').value=context.agent||'';$('new-memory-agent').readOnly=addAgentLocked;
-    $('memory-dialog-tip').textContent=addAgentLocked?'将写入宿主指定的 Agent 范围。':'选择或填写 Agent；留空会保存为个人记忆。';
+    setText($('memory-dialog-tip'),msg(addAgentLocked?'lockedAgentScope':'chooseAgentScope'));
     addContextReady=true;$('submit-memory').disabled=false;
   }catch(e){
-    if(sequence===addContextRequest&&editorMode==='add')$('memory-dialog-error').textContent='无法读取写入位置：'+e.message;
+    if(sequence===addContextRequest&&editorMode==='add')setText($('memory-dialog-error'),msg('writeLocationError',errorText(e)));
   }
 }
 function prepareEditor(){
-  $('add-fields').hidden=editorMode!=='add';$('submit-memory').disabled=false;
-  $('memory-dialog-title').textContent=editorMode==='add'?'新增记忆':'纠正记忆';$('memory-dialog-description').textContent=editorMode==='add'?'写下希望 Agent 记住的内容':'创建新的正确版本，旧版本保留为历史';
-  $('memory-dialog-tip').textContent=editorMode==='add'?'正在读取写入位置…':'只修改正文，保留原来源。确认后原记录将退出有效记忆，纠正历史可在状态筛选中查看。';
-  $('memory-dialog-error').textContent='';$('memory-editor').hidden=false;$('correction-preview').hidden=true;$('memory-back').hidden=true;$('submit-memory').textContent=editorMode==='add'?'保存记忆':'预览纠正';$('memory-counter').textContent=$('new-memory').value.length+' 字';
+  const isAdd=editorMode==='add';
+  $('add-fields').hidden=!isAdd;$('submit-memory').disabled=false;
+  setText($('memory-dialog-title'),msg(isAdd?'addMemory':'correctMemory'));
+  setText($('memory-dialog-description'),msg(isAdd?'addMemoryDescription':'correctionDescription'));
+  setText($('memory-dialog-tip'),msg(isAdd?'writeLocationLoading':'correctionTip'));
+  setText($('memory-dialog-error'),'');$('memory-editor').hidden=false;$('correction-preview').hidden=true;$('memory-back').hidden=true;
+  setText($('submit-memory'),msg(isAdd?'saveMemory':'previewCorrection'));
+  updateMemoryCounter();
 }
 async function openCorrection(item){
   try{const fresh=await fetchRecord(item.ref);editorMode='correct';editorItem=fresh;editorPreview=false;$('new-memory').value=fresh.content;prepareEditor();showDialog('memory-dialog');$('new-memory').focus();}
-  catch(e){notice('无法读取待纠正记忆：'+e.message,true);}
+  catch(e){notice(msg('correctionLoadError',errorText(e)),true);}
 }
-function openForget(item){$('forget-title').textContent='遗忘这条记忆？';forgetItems=[item];$('forget-content').textContent=item.content;$('forget-error').textContent='';showDialog('forget-dialog');$('cancel-forget').focus();}
+function openForget(item){setText($('forget-title'),msg('forgetMemoryQuestion'));forgetItems=[item];setText($('forget-content'),item.content);$('forget-error').textContent='';showDialog('forget-dialog');$('cancel-forget').focus();}
 async function refreshAfterMutation(){
   await loadMemories(true);
   ++searchRequest;++detailRequest.search;$('search-submit').disabled=false;
   if(activeTab==='overview')loadOverview();
-  if(hasSearched){$('search-count').textContent='记忆已变化，请重新检索';$('search-list').replaceChildren(node('p','请重新检索以获取最新结果。','muted'));$('search-detail').replaceChildren(node('p','检索结果已失效','detail-empty'));}
+  if(hasSearched){setText($('search-count'),msg('searchStale'));$('search-list').replaceChildren(node('p',msg('searchAgain'),'muted'));$('search-detail').replaceChildren(node('p',msg('searchResultsExpired'),'detail-empty'));}
 }
+const fieldLabels=new Map([
+  ['target',msg('modelProvider')], ['llm_model',msg('modelName')], ['llm_base_url',msg('modelUrl')], ['llm_api_key','API Key'],
+  ['llm_temperature',msg('temperature')], ['llm_max_tokens',msg('maxTokens')], ['llm_timeout',msg('requestTimeout')],
+  ['llm_max_retries',msg('maxRetries')], ['enable_thinking',msg('thinkingMode')],
+]);
 function fieldLabel(key){
-  const labels={target:'模型提供方',llm_model:'模型名称',llm_base_url:'服务地址',llm_api_key:'API Key',llm_temperature:'温度',llm_max_tokens:'最大输出 Token',llm_timeout:'请求超时（秒）',llm_max_retries:'失败重试次数',enable_thinking:'思考模式'};
-  return labels[key.split('.').pop()]||key;
+  return fieldLabels.get(key.split('.').pop())??key;
 }
-function invalidatePreview(message=''){preview=null;$('save').hidden=true;$('diff').textContent=message;}
-function updateDraftSummary(){const count=new Set([...drafts.keys(),...restores]).size;$('draft-summary').textContent=count?count+' 项更改尚未保存':'没有待保存的更改';$('discard-drafts').disabled=saving||!count;}
+function configValue(value){return value==null?msg('notSet'):String(value);}
+function invalidatePreview(message=''){preview=null;$('save').hidden=true;setText($('diff'),message);}
+function updateDraftSummary(){
+  const count=new Set([...drafts.keys(),...restores]).size;
+  let otherCount=0;
+  for(const [instanceId,draftSet] of instanceDrafts){
+    if(instanceId!==settingsInstance)otherCount+=new Set([...draftSet.drafts.keys(),...draftSet.restores]).size;
+  }
+  const current=sharedPortal?msg(count?'instanceDraftCount':'noInstanceDrafts',count):msg(count?'draftCount':'noDrafts',count);
+  setText($('draft-summary'),otherCount?joinText([current,msg('otherDraftCount',otherCount)],' · '):current);
+  const discard=$('discard-drafts');
+  setText(discard,msg(sharedPortal?'discardInstanceChanges':'discardChanges'));
+  discard.disabled=saving||settingsLoading||!count;
+}
+const providerLabels=new Map([
+  ['echo',msg('echoProvider')], ['openai',msg('openAiProvider')], ['dashscope',msg('dashscopeProvider')],
+]);
 function inputFor(field){
   const key=field.key,value=restores.has(key)?field.base:(drafts.has(key)?drafts.get(key):(field.has_override&&!field.endpoint_ignored?field.saved:field.base));let input;
-  if(key.endsWith('.target')){input=node('select');for(const v of field.options||[])input.add(new Option(v==='echo'?'echo（离线回显）':v==='openai'?'OpenAI 兼容服务':v==='dashscope'?'阿里云 DashScope':v,v));input.value=value||'echo';}
-  else if(key.endsWith('.enable_thinking')){input=node('select');input.add(new Option('关闭','false'));input.add(new Option('开启','true'));input.value=String(value===true||value==='true');}
-  else{input=node('input');input.type=field.secret?'password':/\.(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries)$/.test(key)?'number':'text';input.autocomplete='new-password';if(input.type==='number')input.step=key.endsWith('llm_temperature')?'0.1':key.endsWith('llm_timeout')?'any':'1';if(key.endsWith('llm_base_url')){input.value=drafts.get(key)||'';input.placeholder=(field.endpoint_ignored?field.effective:field.saved)||field.base||'https://…';}else{input.value=field.secret?(drafts.get(key)||''):(value??'');if(field.secret)input.placeholder=field.configured?'已配置 · 留空保持原值':'输入新的 API Key';}}
+  if(key.endsWith('.target')){input=node('select');for(const v of field.options||[])input.add(option(providerLabels.get(v)??v,v));input.value=value||'echo';}
+  else if(key.endsWith('.enable_thinking')){input=node('select');input.add(option(msg('off'),'false'));input.add(option(msg('on'),'true'));input.value=String(value===true||value==='true');}
+  else{
+    input=node('input');input.type=field.secret?'password':/\.(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries)$/.test(key)?'number':'text';input.autocomplete='new-password';
+    if(input.type==='number')input.step=key.endsWith('llm_temperature')?'0.1':key.endsWith('llm_timeout')?'any':'1';
+    if(key.endsWith('llm_base_url')){
+      input.value=drafts.get(key)||'';input.placeholder=(field.endpoint_ignored?field.effective:field.saved)||field.base||'https://…';
+    }else{
+      input.value=field.secret?(drafts.get(key)||''):(value??'');
+      if(field.secret)setText(input,msg(field.configured?'apiKeyConfigured':'newApiKey'),'placeholder');
+    }
+  }
   input.dataset.readonly=field.writable?'0':'1';input.dataset.key=key;input.disabled=!field.writable||saving;
   input.addEventListener('input',()=>{
     restores.delete(key);drafts.set(key,input.value);invalidatePreview();updateDraftSummary();
-    const state=$('state-'+key);if(state){state.textContent='未保存';state.classList.add('draft');}
+    const state=$('state-'+key);if(state){setText(state,msg('unsaved'));state.classList.add('draft');}
     if(key.endsWith('.target')){if(input.value!=='dashscope'){const thinking=key.slice(0,-7)+'.params.enable_thinking';drafts.delete(thinking);restores.delete(thinking);}renderSettings();}
   });return input;
 }
+const fieldReasonLabels=new Map([
+  'credentialStoreMissing','credentialStoreUnavailable','fieldLocked','modelNotAssembled','customModelReadOnly',
+].map(key=>[messages[key][0],msg(key)]));
 function renderField(field){
   const box=node('div',undefined,'field'+(/(llm_api_key|llm_base_url)$/.test(field.key)?' wide':''));
-  const label=node('label',fieldLabel(field.key)),state=node('span',!field.writable?'只读':restores.has(field.key)?'将恢复':drafts.has(field.key)?'未保存':field.endpoint_ignored?'未应用':field.has_override?'已保存':'','field-state');state.id='state-'+field.key;if(drafts.has(field.key)||restores.has(field.key))state.classList.add('draft');label.append(state);
+  const label=node('label'),stateKey=!field.writable?'readOnly':restores.has(field.key)?'willRestore':drafts.has(field.key)?'unsaved':field.endpoint_ignored?'notApplied':field.has_override?'saved':null;
+  const state=node('span',stateKey?msg(stateKey):'','field-state');state.id='state-'+field.key;
+  if(drafts.has(field.key)||restores.has(field.key))state.classList.add('draft');
+  label.append(node('span',fieldLabel(field.key)),state);
   const input=inputFor(field);input.id='field-'+field.key;label.htmlFor=input.id;box.append(label,input);settingControls.push(input);
   const hint=node('div',undefined,'field-hint');
-  if(field.reason)hint.append(node('span',field.reason));
-  else if(field.secret)hint.append(node('span','凭据加密保存，不回填原文；留空保持原值。'));
-  else if(field.key.endsWith('llm_base_url'))hint.append(node('span','当前值只显示协议、域名和端口。修改时请填写完整网址。换服务时请同时填写对应的 API Key 和模型名。'));
-  else if(field.requires_reassembly)hint.append(node('span','此项需要重新装配；请按宿主原启动方式重新加载。'));
-  if(field.has_override&&field.writable){const reset=button(restores.has(field.key)?'已选择恢复启动值':'恢复启动值',()=>{restores.add(field.key);drafts.delete(field.key);invalidatePreview();renderSettings();},'link');reset.dataset.readonly='0';reset.disabled=saving;settingControls.push(reset);hint.append(reset);}
+  if(field.reason)hint.append(node('span',fieldReasonLabels.get(field.reason)??field.reason));
+  else if(field.secret)hint.append(node('span',msg('secretHint')));
+  else if(field.key.endsWith('llm_base_url'))hint.append(node('span',msg('endpointHint')));
+  else if(field.requires_reassembly)hint.append(node('span',msg('reassemblyHint')));
+  if(field.has_override&&field.writable){const reset=button(msg(restores.has(field.key)?'restorePending':'restoreStartup'),()=>{restores.add(field.key);drafts.delete(field.key);invalidatePreview();renderSettings();},'link');reset.dataset.readonly='0';reset.disabled=saving;settingControls.push(reset);hint.append(reset);}
   box.append(hint);
-  if(!field.secret){const details=node('details');details.append(node('summary','查看启动 / 保存 / 应用值'));const values=node('dl');addPair(values,'启动值',String(field.base??'未设置'));addPair(values,'保存值',field.has_override?String(field.saved??'未设置'):'未覆盖');addPair(values,'已应用',field.effective_known?String(field.effective??'未设置'):'当前值未确认');details.append(values);box.append(details);}
+  if(!field.secret){
+    const details=node('details'),values=node('dl');
+    addPair(values,msg('startupValue'),configValue(field.base));
+    addPair(values,msg('savedValue'),field.has_override?configValue(field.saved):msg('noOverride'));
+    addPair(values,msg('appliedValue'),field.effective_known?configValue(field.effective):msg('unknownCurrentValue'));
+    details.append(node('summary',msg('viewFieldValues')),values);box.append(details);
+  }
   return box;
 }
 function renderSettings(){
   const root=$('settings-list');root.replaceChildren();settingControls=[];const groups=new Map();
   for(const field of fields){const name=field.key.split('.')[1];if(!groups.has(name))groups.set(name,[]);groups.get(name).push(field);}
-  for(const [name,modelFields]of groups){const group=node('div',undefined,'settings-group'),heading=node('div',undefined,'row');heading.append(node('h2',name==='default'?'主模型':name),node('span',name==='default'?'default':'具名模型','badge'));group.append(heading);const basic=node('div',undefined,'fields-grid'),advanced=node('details',undefined,'settings-advanced'),extra=node('div',undefined,'fields-grid');advanced.append(node('summary','高级参数'));
+  for(const [name,modelFields]of groups){const group=node('div',undefined,'settings-group'),heading=node('div',undefined,'row');heading.append(node('h2',name==='default'?msg('defaultModel'):name),node('span',name==='default'?'default':msg('namedModel'),'badge'));group.append(heading);const basic=node('div',undefined,'fields-grid'),advanced=node('details',undefined,'settings-advanced'),extra=node('div',undefined,'fields-grid');advanced.append(node('summary',msg('advancedParameters')));
     for(const field of modelFields){if(field.visible_for_targets?.length){const targetKey=field.key.split('.params.')[0]+'.target',target=fields.find(f=>f.key===targetKey),current=restores.has(targetKey)?target?.base:drafts.get(targetKey)??(target?.has_override&&!target.endpoint_ignored?target.saved:target?.base);if(!field.visible_for_targets.includes(current))continue;}
       const control=renderField(field);if(/(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries|enable_thinking)$/.test(field.key))extra.append(control);else basic.append(control);}
     group.append(basic);if(extra.childElementCount){advanced.append(extra);group.append(advanced);}root.append(group);
   }
   updateDraftSummary();
 }
-function setSettingsBusy(busy){saving=busy;for(const el of settingControls)el.disabled=busy||el.dataset.readonly==='1';for(const id of ['preview','save','reload-settings','apply-settings','discard-drafts'])$(id).disabled=busy;updateDraftSummary();}
-async function loadSettings(message){
-  const sequence=++settingsRequest;
-  try{const data=await request('read_config');if(sequence!==settingsRequest)return false;configAvailable=!!data.available;
-    if(!data.available){$('settings-list').replaceChildren(node('div','当前实例使用启动配置。若需在运行时修改，请由宿主启用模型配置管理。','settings-unavailable'));$('configuration-state').textContent='当前实例未启用可写配置';$('preview').disabled=true;$('apply-settings').disabled=true;invalidatePreview();return false;}
-    if(data.instance){const info=data.instance,meta=node('dl');addPair(meta,'模式',info.storage_mode==='document'?'文档记忆':'KV 记忆');addPair(meta,'Embedding',info.embedding_model||'未知');addPair(meta,'维度',String(info.embedding_dimension??'未知'));$('instance-info').replaceChildren(meta);if(info.document_root){const details=node('details');details.append(node('summary','查看文档位置'),node('p',info.document_root,'mono'));$('instance-info').append(details);}}
-    version=data.version;$('configuration-state').textContent=data.apply_state==='applied'?`已应用 · 保存版本 ${data.version} / 应用版本 ${data.applied_version??'未知'}`:`已保存，尚未应用 · 保存版本 ${data.version} / 运行版本 ${data.applied_version??'未知'}`;
-    if(data.ignored_endpoint_fields?.length){
-      $('configuration-state').textContent='部分模型正在使用启动设置。保存的网址或 Key 无法配套使用，请检查并重新填写。';
-    }
-    $('apply-settings').disabled=saving||data.apply_state==='applied';$('preview').disabled=saving;
-    fields=data.fields.filter(field=>!field.key.startsWith('prompts.'));if(data.ignored_overrides)notice('部分保存值因宿主锁定或当前实现不支持而未应用。');
-    invalidatePreview(message!==undefined?message:(settingsLoaded?'配置已刷新；草稿已保留，请重新预览。':''));settingsLoaded=true;renderSettings();return true;
-  }catch(e){if(sequence!==settingsRequest)return false;notice('无法读取设置：'+e.message,true);return false;}
+function syncSettingsControls(){
+  const busy=saving||settingsLoading;
+  for(const el of settingControls)el.disabled=busy||!configAvailable||el.dataset.readonly==='1';
+  $('settings-instance').disabled=saving||$('settings-instance').options.length<2;
+  $('reload-settings').disabled=saving;
+  $('preview').disabled=busy||!configAvailable;
+  $('save').disabled=busy||!configAvailable;
+  $('apply-settings').disabled=busy||!configAvailable||!settingsNeedApply;
+  updateDraftSummary();
 }
-function changes(){const result={};for(const [key,value]of drafts){if(key.endsWith('.llm_api_key')&&!value)continue;if(key.endsWith('.llm_base_url')&&!value.trim())continue;if(key.endsWith('.enable_thinking'))result[key]=value==='true';else if(/\.(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries)$/.test(key)){if(!String(value).trim()||!Number.isFinite(Number(value)))throw new Error(fieldLabel(key)+'需要有效数字');result[key]=Number(value);}else result[key]=value;}return result;}
+function setSettingsBusy(busy){saving=busy;syncSettingsControls();}
+function selectSettingsInstance(instanceId){
+  if(instanceId===settingsInstance)return;
+  settingsInstance=instanceId;
+  if(!instanceDrafts.has(instanceId))instanceDrafts.set(instanceId,{drafts:new Map(),restores:new Set()});
+  ({drafts,restores}=instanceDrafts.get(instanceId));
+  fields=[];version=null;settingsLoaded=false;
+  $('instance-info').textContent='';
+  renderSettings();
+}
+function configurationRequest(action,payload={}){
+  return request(action,sharedPortal?{...payload,instance_id:settingsInstance}:payload);
+}
+async function loadSettings(message,{refreshInstances=true}={}){
+  const sequence=++settingsRequest;
+  settingsLoading=true;
+  invalidatePreview();
+  setText($('configuration-state'),msg('loadingSettings'));
+  syncSettingsControls();
+  try{
+    await browserReady;
+    if(sequence!==settingsRequest)return false;
+    if(sharedPortal&&refreshInstances){
+      const {instances,default_instance_id}=await request('read_config');
+      if(sequence!==settingsRequest)return false;
+      const selected=instances.includes(settingsInstance)?settingsInstance:default_instance_id;
+      selectSettingsInstance(selected);
+      const picker=$('settings-instance');
+      picker.replaceChildren(...instances.map(id=>new Option(id,id)));
+      picker.value=selected;
+      syncSettingsControls();
+    }
+    const data=await configurationRequest('read_config');
+    if(sequence!==settingsRequest)return false;
+    configAvailable=!!data.available;
+    if(!data.available){
+      fields=[];settingControls=[];version=null;
+      $('instance-info').textContent='';
+      $('settings-list').replaceChildren(node('div',msg('settingsUnavailableHint'),'settings-unavailable'));
+      setText($('configuration-state'),msg('settingsUnavailable'));
+      return false;
+    }
+    if(data.instance){
+      const info=data.instance,meta=node('dl');
+      addPair(meta,msg('storageMode'),msg(info.storage_mode==='document'?'documentMemory':'kvMemory'));
+      addPair(meta,'Embedding',info.embedding_model||msg('unknown'));
+      addPair(meta,msg('dimension'),info.embedding_dimension==null?msg('unknown'):String(info.embedding_dimension));
+      $('instance-info').replaceChildren(meta);
+      if(info.document_root){
+        const details=node('details');
+        details.append(node('summary',msg('viewDocumentLocation')),node('p',info.document_root,'mono'));
+        $('instance-info').append(details);
+      }
+    }
+    version=data.version;
+    settingsNeedApply=data.apply_state!=='applied';
+    const state=data.ignored_endpoint_fields?.length
+      ?msg('endpointIgnored')
+      :msg(settingsNeedApply?'applyPending':'appliedConfig',data.version,data.applied_version??msg('unknown'));
+    setText($('configuration-state'),state);
+    fields=data.fields.filter(field=>!field.key.startsWith('prompts.'));
+    if(data.ignored_overrides)notice(msg('ignoredOverrides'));
+    invalidatePreview(message??(settingsLoaded?msg('settingsRefreshed'):''));
+    settingsLoaded=true;
+    renderSettings();
+    return true;
+  }catch(e){
+    if(sequence!==settingsRequest)return false;
+    configAvailable=false;
+    setText($('configuration-state'),msg(e.status===404?'instanceUnavailable':'settingsLoadFailed'));
+    notice(msg('settingsLoadError',errorText(e)),true);
+    return false;
+  }finally{
+    if(sequence===settingsRequest){settingsLoading=false;syncSettingsControls();}
+  }
+}
+function changes(){const result={};for(const [key,value]of drafts){if(key.endsWith('.llm_api_key')&&!value)continue;if(key.endsWith('.llm_base_url')&&!value.trim())continue;if(key.endsWith('.enable_thinking'))result[key]=value==='true';else if(/\.(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries)$/.test(key)){if(!String(value).trim()||!Number.isFinite(Number(value)))throw portalError(msg('invalidNumber',fieldLabel(key)));result[key]=Number(value);}else result[key]=value;}return result;}
 async function switchTab(name,load=true){
   if(name==='search'){await switchTab('memories');setSearchMode('semantic');$('memory-filter').focus();return;}
   notice('');closeDetail();clearTimeout(filterTimer);renderNavigation(name);
-  if(isMemoryView(name)&&load){const preset=topicPresets[name==='memories'?'all':name];setFilterValue('memory-class',preset.memoryClass,classLabels[preset.memoryClass]||'全部分类');setFilterValue('tier',preset.tier,tierLabels[preset.tier]||'全部层级');return loadMemories(true);}
+  if(isMemoryView(name)&&load){const preset=topicPresets[name==='memories'?'all':name];setFilterValue('memory-class',preset.memoryClass,classLabels.get(preset.memoryClass)||msg('allClasses'));setFilterValue('tier',preset.tier,tierLabels.get(preset.tier)||msg('allTiers'));return loadMemories(true);}
   if(name==='overview')return loadOverview();
   if(name==='settings'&&!saving)return loadSettings();
 }
@@ -566,12 +1219,12 @@ function setSearchMode(mode,reload=true){
   const changed=mode!==searchMode;searchMode=mode;clearTimeout(filterTimer);
   $('mode-text').setAttribute('aria-pressed',String(mode==='text'));$('mode-semantic').setAttribute('aria-pressed',String(mode==='semantic'));
   $('semantic-options').hidden=mode!=='semantic';$('semantic-results').hidden=mode!=='semantic';$('browse-results').hidden=mode!=='text';$('more-filters').hidden=mode!=='text';$('refresh').hidden=mode!=='text';$('search-submit').hidden=mode!=='semantic';
-  $('memory-filter').placeholder=mode==='semantic'?'用一句话描述想找的记忆，例如：我喜欢喝什么？':'输入正文或标签中的文字';$('memory-filter').required=mode==='semantic';$('top-k').disabled=mode!=='semantic';$('search-source').disabled=mode!=='semantic';
-  if(changed){++searchRequest;$('search-submit').disabled=false;closeDetail();$('search-count').textContent='输入问题后点击查找';$('search-list').replaceChildren();if(mode==='text'&&reload)loadMemories(true);}
+  setText($('memory-filter'),msg(mode==='semantic'?'semanticSearchPlaceholder':'textSearchPlaceholder'),'placeholder');$('memory-filter').required=mode==='semantic';$('top-k').disabled=mode!=='semantic';$('search-source').disabled=mode!=='semantic';
+  if(changed){++searchRequest;$('search-submit').disabled=false;closeDetail();setText($('search-count'),msg('runSearch'));$('search-list').replaceChildren();if(mode==='text'&&reload)loadMemories(true);}
 }
 $('mode-text').onclick=()=>setSearchMode('text');$('mode-semantic').onclick=()=>setSearchMode('semantic');
 $('refresh').onclick=()=>{notice('');loadMemories(true);};for(const id of ['source','agent','project','tier','memory-class','lifecycle'])$(id).onchange=()=>{clearTimeout(filterTimer);notice('');loadMemories(true);};
-$('memory-filter').oninput=()=>{clearTimeout(filterTimer);if(searchMode==='text')filterTimer=setTimeout(()=>loadMemories(true),250);else{++searchRequest;$('search-submit').disabled=false;$('search-count').textContent='输入已更改，请点击查找';$('search-list').replaceChildren();closeDetail();}};
+$('memory-filter').oninput=()=>{clearTimeout(filterTimer);if(searchMode==='text')filterTimer=setTimeout(()=>loadMemories(true),250);else{++searchRequest;$('search-submit').disabled=false;setText($('search-count'),msg('queryChanged'));$('search-list').replaceChildren();closeDetail();}};
 $('reset-filters').onclick=async()=>{clearTimeout(filterTimer);for(const id of ['source','agent','project','tier','memory-class'])$(id).value='*';$('lifecycle').value='active';$('memory-filter').value='';notice('');await loadMemories(true);};
 $('previous').onclick=()=>{offset=Math.max(0,offset-pageSize);loadMemories();};$('next').onclick=()=>{offset+=pageSize;loadMemories();};
 $('open-add').onclick=openAdd;$('data-sources').onclick=sourceHelp;$('close-sources').onclick=()=>$('sources-dialog').close();
@@ -579,40 +1232,54 @@ for(const id of ['close-memory-dialog','cancel-memory-dialog'])$(id).onclick=()=
 for(const id of ['close-forget-dialog','cancel-forget'])$(id).onclick=()=>{if(!mutationBusy)$('forget-dialog').close();};
 for(const id of ['memory-dialog','forget-dialog'])$(id).addEventListener('cancel',event=>{if(mutationBusy)event.preventDefault();});
 for(const id of ['memory-dialog','forget-dialog','sources-dialog','detail-dialog'])$(id).addEventListener('keydown',event=>{if(event.key!=='Tab')return;const controls=[...$(id).querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),summary,a[href]')].filter(el=>el.getClientRects().length);const first=controls[0],last=controls.at(-1);if(!first){event.preventDefault();return;}if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}});
-$('new-memory').oninput=()=>{$('memory-counter').textContent=$('new-memory').value.length+' 字';};
+function updateMemoryCounter(){setText($('memory-counter'),msg('characterCount',$('new-memory').value.length));}
+$('new-memory').oninput=updateMemoryCounter;
 $('memory-back').onclick=()=>{editorPreview=false;prepareEditor();$('new-memory').focus();};
 $('add-form').onsubmit=async event=>{
-  event.preventDefault();if(mutationBusy||(editorMode==='add'&&!addContextReady))return;const content=$('new-memory').value.trim();if(!content){$('memory-dialog-error').textContent='记忆内容不能为空。';return;}
-  if(editorMode==='correct'&&!editorPreview){if(content===editorItem.content.trim()){$('memory-dialog-error').textContent='内容尚未更改。';return;}editorPreview=true;$('memory-editor').hidden=true;$('correction-preview').hidden=false;$('correction-preview').replaceChildren(node('p','原记忆','muted'),node('div',editorItem.content,'preview-block before'),node('p','纠正后的记忆','muted'),node('div',content,'preview-block after'));$('memory-back').hidden=false;$('submit-memory').textContent='确认纠正';$('memory-dialog-error').textContent='';return;}
-  mutationControls(true);$('memory-dialog-error').textContent='';$('submit-memory').textContent='正在保存…';
+  event.preventDefault();if(mutationBusy||(editorMode==='add'&&!addContextReady))return;const content=$('new-memory').value.trim();if(!content){setText($('memory-dialog-error'),msg('emptyMemoryContent'));return;}
+  if(editorMode==='correct'&&!editorPreview){
+    if(content===editorItem.content.trim()){setText($('memory-dialog-error'),msg('unchangedContent'));return;}
+    editorPreview=true;$('memory-editor').hidden=true;$('correction-preview').hidden=false;
+    $('correction-preview').replaceChildren(node('p',msg('originalMemory'),'muted'),node('div',editorItem.content,'preview-block before'),node('p',msg('correctedMemory'),'muted'),node('div',content,'preview-block after'));
+    $('memory-back').hidden=false;setText($('submit-memory'),msg('confirmCorrection'));setText($('memory-dialog-error'),'');return;
+  }
+  mutationControls(true);setText($('memory-dialog-error'),'');setText($('submit-memory'),msg('savingMemory'));
   try{
-    let message='已创建纠正版本；旧版本可在状态筛选中查看。';
+    let message=msg('correctionSaved');
     if(editorMode==='add'){
       const scope=addAgentLocked?{}:{agent:$('new-memory-agent').value.trim()};
       const items=await request('add',{content,scope,system_metadata:{project:$('new-memory-project').value.trim()}});
-      if(!items.length)throw new Error('未产生可保存的记忆，请检查内容或服务状态。');
-      message=`已保存 ${items.length} 条记忆。`;
+      if(!items.length)throw portalError(msg('noMemoryProduced'));
+      message=msg('memoriesSaved',msg('memoryCount',items.length));
     }else{
       await request('update',{...JSON.parse(editorItem.ref),patch:{content}});
     }
     $('memory-dialog').close();$('new-memory').value='';await refreshAfterMutation();notice(message);
   }
-  catch(e){$('memory-dialog-error').textContent='保存失败，内容已保留：'+e.message;}
-  finally{mutationControls(false);$('submit-memory').textContent=editorMode==='add'?'保存记忆':'确认纠正';}
+  catch(e){setText($('memory-dialog-error'),msg('saveMemoryError',errorText(e)));}
+  finally{mutationControls(false);setText($('submit-memory'),msg(editorMode==='add'?'saveMemory':'confirmCorrection'));}
 };
 $('confirm-forget').onclick=async()=>{
   if(mutationBusy||!forgetItems.length)return;
   mutationControls(true);batchBusy=true;updateSelection();const pending=[...forgetItems],failures=[];let done=0;
-  try{for(const item of pending){$('confirm-forget').textContent=`正在遗忘 ${done+failures.length+1}/${pending.length}…`;try{await forgetRecord(item.ref);done++;}catch(e){failures.push(titleOf(item)+'：'+e.message);}}
+  try{
+    for(const item of pending){
+      setText($('confirm-forget'),msg('forgetProgress',done+failures.length+1,pending.length));
+      try{await forgetRecord(item.ref);done++;}
+      catch(e){failures.push(msg('forgetFailureLine',titleOf(item),errorText(e)));}
+    }
     forgetItems=[];$('forget-dialog').close();await refreshAfterMutation();
-    notice(`已遗忘 ${done} 条记忆。`+(failures.length?` ${failures.length} 条未完成，请刷新核对后重试。\n`+failures.join('\n'):'可切换到“已遗忘”状态核对记录。'),!!failures.length);
-  }finally{mutationControls(false);batchBusy=false;updateSelection();$('confirm-forget').textContent='确认遗忘';}
+    const summary=[msg('memoriesForgotten',msg('memoryCount',done))];
+    if(failures.length)summary.push(msg('forgetFailures',failures.length),'\n',joinText(failures,'\n'));
+    else summary.push(msg('forgetDoneHint'));
+    notice(joinText(summary),!!failures.length);
+  }finally{mutationControls(false);batchBusy=false;updateSelection();setText($('confirm-forget'),msg('confirmForget'));}
 };
 $('search-form').onsubmit=async event=>{
   event.preventDefault();
   if(searchMode==='text'){clearTimeout(filterTimer);return loadMemories(true);}
   const sequence=++searchRequest;
-  hasSearched=true;$('search-submit').disabled=true;$('search-count').textContent='正在检索…';notice('');
+  hasSearched=true;$('search-submit').disabled=true;setText($('search-count'),msg('searchInProgress'));notice('');
   try{
     const data=await request('search',{
       query:$('memory-filter').value,top_k:Number($('top-k').value),
@@ -624,42 +1291,77 @@ $('search-form').onsubmit=async event=>{
       source:item.system_metadata?.source_app||'',score:item.score,
     }));
     cards('search-list',items);
-    $('search-count').textContent=`找到 ${items.length} 条记忆`;
-    $('search-explanation').textContent='结果从不同记忆范围轮流取出。相关度分数只用于同一范围内排序。';
+    setText($('search-count'),msg('foundMemories',msg('memoryCount',items.length)));
+    setText($('search-explanation'),msg('searchScoreExplanation'));
     ++detailRequest.search;closeDetail();
   }
-  catch(e){if(sequence!==searchRequest)return;$('search-count').textContent='检索失败';emptyState($('search-list'),'检索未完成',e.message);$('search-detail').replaceChildren();notice('检索失败：'+e.message,true);}
+  catch(e){if(sequence!==searchRequest)return;setText($('search-count'),msg('searchFailed'));emptyState($('search-list'),msg('searchIncomplete'),errorText(e));$('search-detail').replaceChildren();notice(msg('searchError',errorText(e)),true);}
   finally{if(sequence===searchRequest)$('search-submit').disabled=false;}
 };
 $('reload-settings').onclick=()=>{if(!saving)loadSettings();};
-$('discard-drafts').onclick=()=>{if(saving)return;drafts.clear();restores.clear();invalidatePreview();renderSettings();};
+$('settings-instance').onchange=()=>{
+  const picker=$('settings-instance');
+  if(saving){picker.value=settingsInstance;return;}
+  notice('');
+  selectSettingsInstance(picker.value);
+  return loadSettings(undefined,{refreshInstances:false});
+};
+$('discard-drafts').onclick=()=>{if(saving||settingsLoading)return;drafts.clear();restores.clear();invalidatePreview();renderSettings();syncSettingsControls();};
 $('preview').onclick=()=>{
-  try{const c=changes(),lines=Object.entries(c).map(([key,value])=>{const f=fields.find(x=>x.key===key),before=f?(f.has_override?f.saved:f.base):null;return key.endsWith('llm_api_key')?`${fieldLabel(key)}: 替换凭据（不显示原文）`:`${fieldLabel(key)} · ${key.split('.')[1]}: ${before??'未设置'} → ${value}`;}).concat([...restores].map(key=>{const f=fields.find(x=>x.key===key);return `${fieldLabel(key)}: ${f?.secret?'恢复启动凭据':String(f?.saved??'未设置')+' → '+String(f?.base??'未设置')}（启动配置）`;}));
-    if(!lines.length){invalidatePreview('没有可提交的更改。');return;}preview={version,changes:c,restores:[...restores]};$('diff').textContent='确认以下更改：\n'+lines.join('\n');$('save').hidden=false;
-  }catch(e){invalidatePreview();notice(e.message,true);}
+  if(saving||settingsLoading||!configAvailable)return;
+  try{
+    const c=changes();
+    const lines=Object.entries(c).map(([key,value])=>{
+      const f=fields.find(x=>x.key===key),before=f?.has_override?f.saved:f?.base;
+      return key.endsWith('llm_api_key')
+        ?msg('credentialReplacement',fieldLabel(key))
+        :msg('fieldChange',fieldLabel(key),key.split('.')[1],configValue(before),value);
+    });
+    for(const key of restores){
+      const f=fields.find(x=>x.key===key);
+      const change=f?.secret?msg('restoreCredential'):joinText([configValue(f?.saved),configValue(f?.base)],' → ');
+      lines.push(msg('restoreChange',fieldLabel(key),change));
+    }
+    if(!lines.length){invalidatePreview(msg('noChangesToSubmit'));return;}
+    preview={instanceId:settingsInstance,version,changes:c,restores:[...restores]};
+    const heading=sharedPortal?[msg('previewInstance',settingsInstance)]:[];
+    setText($('diff'),joinText([...heading,msg('confirmChanges'),...lines],'\n'));
+    $('save').hidden=false;
+  }catch(e){invalidatePreview();notice(errorText(e),true);}
 };
 $('save').onclick=async()=>{
-  if(saving||!configAvailable)return;
-  if(!preview||preview.version!==version){invalidatePreview('配置已变化，请重新预览。');return;}
+  if(saving||settingsLoading||!configAvailable)return;
+  if(!preview||preview.version!==version||preview.instanceId!==settingsInstance){invalidatePreview(msg('staleConfiguration'));return;}
   const {changes:submitted,restores:submittedRestores}=preview;
   const submittedDrafts=new Map(drafts);
   invalidatePreview();
   setSettingsBusy(true);
   try{
-    const saved=await request('save_config',{version,changes:submitted,restore:submittedRestores});
+    const saved=await configurationRequest('save_config',{version,changes:submitted,restore:submittedRestores});
     for(const key of Object.keys(submitted)){
       if(drafts.get(key)===submittedDrafts.get(key))drafts.delete(key);
     }
     for(const key of submittedRestores)restores.delete(key);
-    setSettingsBusy(false);
-    await loadSettings(saved.applied?'已保存并应用，后续调用使用新配置。':'已保存但应用失败，当前继续使用旧配置；可以重试应用。');
+    await loadSettings(msg(saved.applied?'settingsSaved':'settingsApplyFailed'),{refreshInstances:false});
   }catch(e){
-    setSettingsBusy(false);
-    if(e.status===409)await loadSettings('其他页面已更新配置。草稿已保留，请按最新值重新预览。');
-    else notice('保存失败，草稿已保留：'+e.message,true);
-  }
+    if(e.status===409)await loadSettings(msg('settingsConflict'),{refreshInstances:false});
+    else {
+      if(e.status===404)configAvailable=false;
+      notice(msg('settingsSaveError',errorText(e)),true);
+    }
+  }finally{setSettingsBusy(false);}
 };
-$('apply-settings').onclick=async()=>{if(saving)return;setSettingsBusy(true);try{const result=await request('save_config',{retry:true});setSettingsBusy(false);await loadSettings(result.applied?'已应用最新保存配置。':'应用失败，当前仍使用旧配置。');}catch(e){setSettingsBusy(false);notice(e.message,true);}};
+$('apply-settings').onclick=async()=>{
+  if(saving||settingsLoading||!configAvailable)return;
+  setSettingsBusy(true);
+  try{
+    const result=await configurationRequest('save_config',{retry:true});
+    await loadSettings(msg(result.applied?'latestSettingsApplied':'settingsRetryFailed'),{refreshInstances:false});
+  }catch(e){
+    if(e.status===404)configAvailable=false;
+    notice(errorText(e),true);
+  }finally{setSettingsBusy(false);}
+};
 function closeDetail(){++detailRequest.memories;++detailRequest.search;if($('detail-dialog').open)$('detail-dialog').close();}
 $('close-detail').onclick=closeDetail;
 $('detail-dialog').addEventListener('cancel',closeDetail);
@@ -670,35 +1372,44 @@ $('select-page').onchange=()=>{checked.clear();if($('select-page').checked)for(c
 $('clear-selection').onclick=()=>{checked.clear();cards('memory-list',rows.memories);updateSelection();};
 $('forget-selected').onclick=()=>{
   if(batchBusy)return;const items=rows.memories.filter(item=>checked.has(item.ref));if(!items.length||items.some(item=>item.lifecycle!=='active'))return;
-  openForget(items[0]);forgetItems=items;$('forget-title').textContent='遗忘所选 '+items.length+' 条记忆？';$('forget-content').textContent=`确认遗忘所选 ${items.length} 条记忆？逐条处理，失败的记录会单独列出。\n\n`+items.map(titleOf).join('\n');
+  openForget(items[0]);forgetItems=items;
+  const count=msg('memoryCount',items.length);
+  setText($('forget-title'),msg('forgetSelectedQuestion',count));
+  setText($('forget-content'),joinText([msg('forgetBatchDetails',count),'',...items.map(titleOf)],'\n'));
 };
 async function exportSelected(format){
   if(batchBusy)return;const items=rows.memories.filter(item=>checked.has(item.ref));if(!items.length)return;
   batchBusy=true;updateSelection();cards('memory-list',rows.memories);
   try{const fresh=[];for(const item of items)fresh.push(await fetchRecord(item.ref));
     const text=format==='json'?JSON.stringify(fresh.map(({ref,...item})=>item),null,2):fresh.map(item=>item.content||'').join('\n\n---\n\n');
-    if(format==='copy'){await navigator.clipboard.writeText(text);notice(`已复制 ${fresh.length} 条记忆。`);}
-    else{const url=URL.createObjectURL(new Blob([text],{type:format==='json'?'application/json;charset=utf-8':'text/markdown;charset=utf-8'}));const link=node('a');link.href=url;link.download='memories-'+new Date().toISOString().slice(0,10)+(format==='json'?'.json':'.md');document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notice(`已导出所选 ${fresh.length} 条记忆。`);}
-  }catch(e){notice('复制或导出失败，未输出数据：'+e.message,true);}
+    const count=msg('memoryCount',fresh.length);
+    if(format==='copy'){await navigator.clipboard.writeText(text);notice(msg('memoriesCopied',count));}
+    else{const url=URL.createObjectURL(new Blob([text],{type:format==='json'?'application/json;charset=utf-8':'text/markdown;charset=utf-8'}));const link=node('a');link.href=url;link.download='memories-'+new Date().toISOString().slice(0,10)+(format==='json'?'.json':'.md');document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notice(msg('memoriesExported',count));}
+  }catch(e){notice(msg('copyExportError',errorText(e)),true);}
   finally{batchBusy=false;cards('memory-list',rows.memories);updateSelection();}
 }
 $('copy-selected').onclick=()=>exportSelected('copy');$('export-selected').onclick=()=>exportSelected('markdown');$('export-json').onclick=()=>exportSelected('json');
 async function loadOverview(){
-  const sequence=++overviewRequest;$('overview-error').textContent='';for(const id of ['stat-all','stat-active','stat-superseded','stat-forgotten','stat-archived','stat-sources'])$(id).textContent='—';
-  $('overview-samples').replaceChildren(node('p','正在读取记忆…','muted'));$('overview-sources').replaceChildren();
+  const sequence=++overviewRequest;setText($('overview-error'),'');for(const id of ['stat-all','stat-active','stat-superseded','stat-forgotten','stat-archived','stat-sources'])$(id).textContent='—';
+  $('overview-samples').replaceChildren(node('p',msg('loadingOverview'),'muted'));$('overview-sources').replaceChildren();
   try{
     const data=await listMemories({lifecycle:'active',limit:5,include_lifecycle_counts:true});if(sequence!==overviewRequest)return;
     const counts=data.lifecycle_counts;
     $('stat-all').textContent=counts.active+counts.forgotten+counts.superseded+counts.archived;$('stat-active').textContent=counts.active;$('stat-forgotten').textContent=counts.forgotten;$('stat-superseded').textContent=counts.superseded;$('stat-archived').textContent=counts.archived;$('stat-sources').textContent=(data.sources||[]).filter(Boolean).length;
-    $('overview-samples').replaceChildren();for(const item of data.items){const row=button('',()=>selectMemory(item,'memories'),'overview-sample');row.append(node('strong',titleOf(item)),node('small',(item.source||'未标注来源')+' · '+timeLabel(item.created_at)));$('overview-samples').append(row);}
-    if(!data.items.length)$('overview-samples').append(node('p','还没有有效记忆，可以先新增一条。','muted'));
-    for(const source of data.sources||[])$('overview-sources').append(button(source||'未标注来源',()=>openMemoryFilter('*',source),'source-chip'));
-    if(!(data.sources||[]).length)$('overview-sources').append(node('p','暂无来源记录','muted'));
-  }catch(e){if(sequence!==overviewRequest)return;$('overview-error').textContent='无法读取概览：'+e.message;$('overview-samples').replaceChildren(node('p','数据读取失败，请刷新重试。','muted'));}
+    $('overview-samples').replaceChildren();
+    for(const item of data.items){
+      const row=button('',()=>selectMemory(item,'memories'),'overview-sample');
+      row.append(node('strong',titleOf(item)),node('small',joinText([item.source||msg('sourceUnknown'),timeLabel(item.created_at)],' · ')));
+      $('overview-samples').append(row);
+    }
+    if(!data.items.length)$('overview-samples').append(node('p',msg('noActiveMemories'),'muted'));
+    for(const source of data.sources||[])$('overview-sources').append(button(source||msg('sourceUnknown'),()=>openMemoryFilter('*',source),'source-chip'));
+    if(!(data.sources||[]).length)$('overview-sources').append(node('p',msg('noSources'),'muted'));
+  }catch(e){if(sequence!==overviewRequest)return;setText($('overview-error'),msg('overviewLoadError',errorText(e)));$('overview-samples').replaceChildren(node('p',msg('overviewLoadFailed'),'muted'));}
 }
 async function openMemoryFilter(status,source=null){
   for(const id of ['source','agent','project','tier','memory-class'])$(id).value='*';$('memory-filter').value='';$('lifecycle').value=status;
-  if(source!==null){const select=$('source');if(![...select.options].some(o=>o.value===source))select.add(new Option(source||'未标注来源',source));select.value=source;}
+  if(source!==null){const select=$('source');if(![...select.options].some(o=>o.value===source))select.add(option(source||msg('sourceUnknown'),source));select.value=source;}
   switchTab('memories',false);await loadMemories(true);
 }
 $('refresh-overview').onclick=loadOverview;$('overview-all').onclick=()=>openMemoryFilter('active');
@@ -706,6 +1417,8 @@ $('metric-superseded').onclick=()=>openMemoryFilter('superseded');$('metric-arch
 $('metric-all').onclick=()=>openMemoryFilter('*');$('metric-active').onclick=()=>openMemoryFilter('active');$('metric-forgotten').onclick=()=>openMemoryFilter('forgotten');
 $('overview-add').onclick=openAdd;$('overview-search').onclick=()=>switchTab('search');$('overview-settings').onclick=()=>switchTab('settings');
 document.addEventListener('keydown',event=>{if(event.key==='/'&&isMemoryView(activeTab)&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)&&!document.querySelector('dialog[open]')){event.preventDefault();$('memory-filter').focus();}});
+bindStaticText();
+applyLanguage();
 setSearchMode('text',false);
 loadOverview();
 </script></body></html>

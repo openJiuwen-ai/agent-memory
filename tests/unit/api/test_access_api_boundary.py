@@ -89,6 +89,7 @@ def test_public_api_does_not_export_kernel_or_impl() -> None:
         "ServerRuntime",
         "assemble_server_runtime",
         "AUTO_SECURITY_RUNTIME",
+        "sdk_continuity_runtime_identity",
     )
     missing = [name for name in required_exports if name not in api_pkg.__all__]
     leaked = [name for name in _PUBLIC_FORBIDDEN if name in api_pkg.__all__]

@@ -113,4 +113,23 @@ class EnabledStoreSecurity(StoreSecurity):
         self._health_check()
 
 
+class CompositeStoreSecurity(StoreSecurity):
+    """包装层的数据保护聚合：全部子依赖启用保护才算启用。
+
+    组合层不伪造单一 ``encryption_binding``——各叶子通过资源依赖清单接受加密准入
+    （F09 D13）。``health()`` 逐个检查子依赖，任一失败即向上抛。
+    """
+
+    def __init__(self, stores: list[Any]) -> None:
+        self._stores = tuple(stores)
+
+    def enabled(self) -> bool:
+        return all(store.security.enabled() for store in self._stores)
+
+    def health(self) -> None:
+        for store in self._stores:
+            security = store.security
+            security.health()
+
+
 PASSTHROUGH_STORE_SECURITY = PassthroughStoreSecurity()

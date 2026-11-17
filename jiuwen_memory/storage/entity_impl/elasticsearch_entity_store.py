@@ -20,6 +20,7 @@ from jiuwen_memory.common._support import read_ssl_config, require_tls_scheme, w
 from jiuwen_memory.common.errors import BackendError, UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, redact_for_log
+from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.common.type_def.entity import (
     EntityBatchResult,
     EntityOperation,
@@ -28,9 +29,11 @@ from jiuwen_memory.common.type_def.entity import (
     EntitySearchResult,
     EntityStoreFilters,
 )
+from jiuwen_memory.common.type_def.scope import space_id_from_scope
 
 from .._support import preload_backend
 from ..base import StoreType
+from ..capability import StoreCapability
 from ..entity_store import EntityStore, EntityStoreProducer
 
 logger = get_logger(__name__)
@@ -117,7 +120,31 @@ class ElasticsearchEntityStore(EntityStore):
         return EntityBatchResult(successful_ids=successful_ids, failed_ids=failed_ids)
 
     @staticmethod
-    def _link_script_body(memory_ids: list[str]) -> dict:
+    def _parse_bulk_response_with_tolerance(
+        response: dict, action_meta: list[tuple[str, bool]]
+    ) -> EntityBatchResult:
+        """404 对幂等操作（DELETE/UNLINK/DELETE_IF_EMPTY）视为成功。"""
+        successful: list[str] = []
+        failed: list[str] = []
+        for index, item in enumerate(response.get("items", [])):
+            action_type = next(iter(item))
+            result = item[action_type]
+            record_id, tolerant = (
+                action_meta[index] if index < len(action_meta) else ("", False)
+            )
+            status = result.get("status", 0)
+            if status in (200, 201) or (tolerant and status == 404):
+                successful.append(record_id or str(result.get("_id", "")))
+            else:
+                failed.append(record_id or str(result.get("_id", "")))
+        return EntityBatchResult(successful_ids=successful, failed_ids=failed)
+
+    @staticmethod
+    def _link_script_body(
+        memory_ids: list[str],
+        memory_shards: dict[str, str] | None = None,
+        upsert_document: dict | None = None,
+    ) -> dict:
         """Build the painless script body that atomically appends memory ids.
 
         Shared by LINK bulk operations. painless is ES native — ES/OS 语法零差异,
@@ -130,13 +157,89 @@ class ElasticsearchEntityStore(EntityStore):
                     "if (ctx._source.linked_memory_ids == null) { "
                     "ctx._source.linked_memory_ids = new ArrayList(); "
                     "} "
+                    "if (ctx._source.linked_by_shard == null) { "
+                    "ctx._source.linked_by_shard = new HashMap(); "
+                    "} "
+                    "if (ctx._source.linked_shards == null) { "
+                    "ctx._source.linked_shards = new ArrayList(); "
+                    "} "
                     "for (def memory_id : params.memory_ids) { "
                     "if (!ctx._source.linked_memory_ids.contains(memory_id)) { "
                     "ctx._source.linked_memory_ids.add(memory_id); "
                     "} "
+                    "def shard = params.shards.get(memory_id); "
+                    "if (shard != null) { "
+                    "if (!ctx._source.linked_shards.contains(shard)) { "
+                    "ctx._source.linked_shards.add(shard); "
+                    "} "
+                    "if (ctx._source.linked_by_shard.get(shard) == null) { "
+                    "ctx._source.linked_by_shard.put(shard, new ArrayList()); "
+                    "} "
+                    "def bucket = ctx._source.linked_by_shard.get(shard); "
+                    "if (!bucket.contains(memory_id)) { bucket.add(memory_id); } "
+                    "} "
                     "}"
                 ),
-                "params": {"memory_ids": memory_ids},
+                "params": {"memory_ids": memory_ids, "shards": dict(memory_shards or {})},
+                **({"upsert": upsert_document} if upsert_document is not None else {}),
+            }
+        }
+
+    @staticmethod
+    def _unlink_script_body(
+        memory_ids: list[str], memory_shards: dict[str, str] | None = None
+    ) -> dict:
+        """增量移除关联（单文档原子，不删除记录）。
+
+        ``memory_shards`` 给出某个 id 的分组时只从该分组移除（GROUPED_LINKS 语义）；
+        该 id 不再出现在任何分组里才从 ``linked_memory_ids`` 移除。未给分组的 id 从
+        所有分组及 ``linked_memory_ids`` 移除。
+        """
+        return {
+            "script": {
+                "lang": "painless",
+                "source": (
+                    "if (ctx._source.linked_by_shard == null) { "
+                    "ctx._source.linked_by_shard = new HashMap(); "
+                    "} "
+                    "for (def memory_id : params.memory_ids) { "
+                    "def scoped = params.shards.get(memory_id); "
+                    "for (def shard : ctx._source.linked_by_shard.keySet().toArray()) { "
+                    "if (scoped != null && shard != scoped) { continue; } "
+                    "def bucket = ctx._source.linked_by_shard.get(shard); "
+                    "bucket.removeIf(x -> x.equals(memory_id)); "
+                    "if (bucket.isEmpty()) { ctx._source.linked_by_shard.remove(shard); } "
+                    "} "
+                    "boolean still = false; "
+                    "for (def bucket : ctx._source.linked_by_shard.values()) { "
+                    "if (bucket.contains(memory_id)) { still = true; } "
+                    "} "
+                    "if (!still && ctx._source.linked_memory_ids != null) { "
+                    "ctx._source.linked_memory_ids.removeIf(x -> x.equals(memory_id)); "
+                    "} "
+                    "} "
+                    "ctx._source.linked_shards = "
+                    "new ArrayList(ctx._source.linked_by_shard.keySet());"
+                ),
+                "params": {
+                    "memory_ids": memory_ids,
+                    "shards": dict(memory_shards or {}),
+                },
+            }
+        }
+
+    @staticmethod
+    def _delete_if_empty_script_body() -> dict:
+        """判空与删除在同一个 painless 脚本里原子完成。"""
+        return {
+            "script": {
+                "lang": "painless",
+                "source": (
+                    "if (ctx._source.linked_memory_ids == null "
+                    "|| ctx._source.linked_memory_ids.isEmpty()) { "
+                    "ctx.op = 'delete'; "
+                    "} else { ctx.op = 'noop'; }"
+                ),
             }
         }
 
@@ -154,7 +257,15 @@ class ElasticsearchEntityStore(EntityStore):
         return query_filters
 
     @staticmethod
-    def _to_document(record: EntityRecord) -> dict:
+    def _to_document(
+        record: EntityRecord, memory_shards: dict[str, str] | None = None
+    ) -> dict:
+        shards = dict(memory_shards or {})
+        linked_by_shard: dict[str, list[str]] = {}
+        for memory_id in record.linked_memory_ids:
+            shard = shards.get(memory_id)
+            if shard is not None:
+                linked_by_shard.setdefault(shard, []).append(memory_id)
         doc = {
             "space_id": record.space_id,
             "entity_text_hash": record.entity_text_hash,
@@ -164,11 +275,25 @@ class ElasticsearchEntityStore(EntityStore):
             "assistant_id": record.filters.assistant_id,
             "session_id": record.filters.session_id,
         }
+        if linked_by_shard:
+            doc["linked_by_shard"] = linked_by_shard
+            doc["linked_shards"] = sorted(linked_by_shard)
         return doc
 
     @classmethod
-    def _hit_to_entity_record(cls, hit: dict) -> EntityRecord:
+    def _hit_to_entity_record(
+        cls, hit: dict, shards: frozenset[str] | None = None
+    ) -> EntityRecord:
         source = hit["_source"]
+        linked: list[str]
+        if shards:
+            by_shard = source.get("linked_by_shard") or {}
+            linked = []
+            for shard, ids in by_shard.items():
+                if shard in shards:
+                    linked.extend(ids)
+        else:
+            linked = source.get("linked_memory_ids", [])
         return EntityRecord(
             id=hit["_id"],
             space_id=source["space_id"],
@@ -178,7 +303,7 @@ class ElasticsearchEntityStore(EntityStore):
             entity_text="",
             entity_text_hash=source.get("entity_text_hash", ""),
             entity_type=source["entity_type"],
-            linked_memory_ids=tuple(source.get("linked_memory_ids", [])),
+            linked_memory_ids=tuple(dict.fromkeys(linked)),
             filters=EntityStoreFilters(
                 actor_id=source.get("actor_id"),
                 assistant_id=source.get("assistant_id"),
@@ -189,6 +314,24 @@ class ElasticsearchEntityStore(EntityStore):
     # ------------------------------------------------------------------
     # 索引初始化与校验（lazy）
     # ------------------------------------------------------------------
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        # 增量 UNLINK / DELETE_IF_EMPTY 走单文档 painless 脚本；关联按分片分组；
+        # hash 查询可下推 linked_shards 过滤。
+        return frozenset(
+            {
+                StoreCapability.ATOMIC_UNLINK,
+                StoreCapability.GROUPED_LINKS,
+                StoreCapability.SHARD_PREFILTER,
+                StoreCapability.RESOURCE_DESCRIPTOR,
+            }
+        )
+
+    def resource_descriptor(self) -> str:
+        from .._support import sanitize_resource_ids
+
+        values = self._hosts if isinstance(self._hosts, list) else [self._hosts]
+        return f"{sanitize_resource_ids(values)}/{self._index}"
 
     def ensure_index(self) -> None:
         """端口契约：确保 index 已创建并就绪。
@@ -228,14 +371,16 @@ class ElasticsearchEntityStore(EntityStore):
 
     def find_by_entity_text_hash(
         self,
-        space_id: str,
+        scope: Scope,
         entity_text_hashes: tuple[str, ...],
         *,
         filters: EntityStoreFilters,
+        shards: frozenset[str] | None = None,
         limit: int = 500,
     ) -> list[EntityRecord]:
         """按 entity_text_hash keyword term 查询，返回命中的实体记录。"""
         self._require_index_ready()
+        space_id = space_id_from_scope(scope)
         hashes = tuple(sorted({h for h in entity_text_hashes if h}))
         if not hashes:
             return []
@@ -244,6 +389,8 @@ class ElasticsearchEntityStore(EntityStore):
 
         query_filters = self._build_filters(space_id, filters)
         query_filters.append({"terms": {"entity_text_hash": list(hashes)}})
+        if shards:
+            query_filters.append({"terms": {"linked_shards": sorted(shards)}})
         try:
             response = self._client.search(
                 index=self._index,
@@ -257,38 +404,102 @@ class ElasticsearchEntityStore(EntityStore):
                 f"Entity hash lookup failed on index {self._index}: {exc}"
             ) from exc
 
-        return [self._hit_to_entity_record(hit) for hit in response["hits"]["hits"]]
+        records = [
+            self._hit_to_entity_record(hit, shards) for hit in response["hits"]["hits"]
+        ]
+        return [record for record in records if record.linked_memory_ids]
+
+    @property
+    def supports_complete_linked_enumeration(self) -> bool:
+        return True
 
     def find_by_linked_memory_id(
         self,
-        space_id: str,
+        scope: Scope,
         memory_id: str,
         *,
         filters: EntityStoreFilters,
+        shards: frozenset[str] | None = None,
+        complete: bool = False,
     ) -> list[EntityRecord]:
         """反查：哪些实体关联了该 memory_id（unlink 用）。
 
         filter 复用 ``_build_filters``，与写入侧 ``find_by_entity_text_hash`` 对称：
         space_id term + actor_id term（actor_id 来自调用方 scope）。把 actor 隔离
         下沉到反查，避免 space 内跨 user 的孤立误删。
+
+        ``complete=True``（搬迁）必须返回全部关联：分页取完并核对 total；超过
+        ``index.max_result_window`` 无法用 from/size 完整枚举时**拒绝**，不静默截断。
         """
         self._require_index_ready()
+        space_id = space_id_from_scope(scope)
         query_filters = self._build_filters(space_id, filters)
         query_filters.append({"term": {"linked_memory_ids": memory_id}})
+        if shards:
+            query_filters.append({"terms": {"linked_shards": sorted(shards)}})
+        query = {"bool": {"filter": query_filters}}
         try:
-            response = self._client.search(
-                index=self._index,
-                query={"bool": {"filter": query_filters}},
-                size=self._list_limit,
-                _source=True,
-                routing=space_id,
-            )
+            if not complete:
+                response = self._client.search(
+                    index=self._index,
+                    query=query,
+                    size=self._list_limit,
+                    _source=True,
+                    routing=space_id,
+                )
+                records = [
+                    self._hit_to_entity_record(hit, shards)
+                    for hit in response["hits"]["hits"]
+                ]
+                return [record for record in records if record.linked_memory_ids]
+
+            # 搬迁要求完整集合：分页读取并核对 total；ES 默认 max_result_window=10000，
+            # 超过时 from/size 无法翻页，明确拒绝而不是返回前 N 条。
+            page_size = min(self._list_limit, 1000)
+            records = []
+            offset = 0
+            total = 0
+            while True:
+                response = self._client.search(
+                    index=self._index,
+                    query=query,
+                    size=page_size,
+                    from_=offset,
+                    track_total_hits=True,
+                    _source=True,
+                    routing=space_id,
+                )
+                hits = response["hits"]["hits"]
+                total_value = response["hits"]["total"]
+                total = int(
+                    total_value["value"]
+                    if isinstance(total_value, dict)
+                    else total_value
+                )
+                if total > 10000:
+                    raise BackendError(
+                        f"Entity find_by_linked_memory_id cannot enumerate {total} "
+                        f"linked entities in {self._index} (index.max_result_window); "
+                        "refusing an incomplete relocation"
+                    )
+                records.extend(
+                    self._hit_to_entity_record(hit, shards) for hit in hits
+                )
+                offset += len(hits)
+                if not hits or offset >= total:
+                    break
+            if len(records) < total:
+                raise BackendError(
+                    f"Entity find_by_linked_memory_id returned {len(records)} of "
+                    f"{total} linked entities in {self._index}; refusing incomplete data"
+                )
+            return [record for record in records if record.linked_memory_ids]
+        except BackendError:
+            raise
         except Exception as exc:
             raise BackendError(
                 f"Entity find_by_linked_memory_id failed on index {self._index}: {exc}"
             ) from exc
-
-        return [self._hit_to_entity_record(hit) for hit in response["hits"]["hits"]]
 
     # ------------------------------------------------------------------
     # bulk 变更（INSERT/LINK/UNLINK_UPDATE/DELETE 混合，per-item 粒度返回）
@@ -296,7 +507,7 @@ class ElasticsearchEntityStore(EntityStore):
 
     def execute_operations(
         self,
-        space_id: str,
+        scope: Scope,
         operations: list[EntityOperation],
     ) -> EntityBatchResult:
         """Apply a batch of INSERT/LINK/UNLINK_UPDATE/DELETE mutations via one bulk call.
@@ -306,19 +517,22 @@ class ElasticsearchEntityStore(EntityStore):
         failure does not raise, so the linker can count failed_count per entity.
         """
         self._require_index_ready()
+        space_id = space_id_from_scope(scope)
         routing = space_id
 
         bulk_ops: list[dict] = []
+        action_meta: list[tuple[str, bool]] = []
         for op in operations:
             if op.type is EntityOpType.INSERT:
                 if op.record is None:
                     continue
-                bulk_ops.append({"index": {
+                bulk_ops.append({"create": {
                     "_index": self._index,
                     "_id": op.record.id,
                     "routing": routing,
                 }})
-                bulk_ops.append(self._to_document(op.record))
+                action_meta.append((op.record.id, False))
+                bulk_ops.append(self._to_document(op.record, op.memory_shards))
             elif op.type is EntityOpType.LINK:
                 if op.record_id is None:
                     continue
@@ -330,7 +544,38 @@ class ElasticsearchEntityStore(EntityStore):
                     "_id": op.record_id,
                     "routing": routing,
                 }})
-                bulk_ops.append(self._link_script_body(unique_memory_ids))
+                action_meta.append((op.record_id, False))
+                bulk_ops.append(
+                    self._link_script_body(
+                        unique_memory_ids,
+                        op.memory_shards,
+                        self._to_document(op.record, op.memory_shards)
+                        if op.record is not None
+                        else None,
+                    )
+                )
+            elif op.type is EntityOpType.UNLINK:
+                if op.record_id is None or not op.unlink_memory_ids:
+                    continue
+                bulk_ops.append({"update": {
+                    "_index": self._index,
+                    "_id": op.record_id,
+                    "routing": routing,
+                }})
+                action_meta.append((op.record_id, True))
+                bulk_ops.append(
+                    self._unlink_script_body(list(op.unlink_memory_ids), op.memory_shards)
+                )
+            elif op.type is EntityOpType.DELETE_IF_EMPTY:
+                if op.record_id is None:
+                    continue
+                bulk_ops.append({"update": {
+                    "_index": self._index,
+                    "_id": op.record_id,
+                    "routing": routing,
+                }})
+                action_meta.append((op.record_id, True))
+                bulk_ops.append(self._delete_if_empty_script_body())
             elif op.type is EntityOpType.UNLINK_UPDATE:
                 if op.record is None:
                     continue
@@ -348,6 +593,7 @@ class ElasticsearchEntityStore(EntityStore):
                     "_id": op.record_id,
                     "routing": routing,
                 }})
+                action_meta.append((op.record_id, True))
 
         if not bulk_ops:
             return EntityBatchResult(successful_ids=[], failed_ids=[])
@@ -359,10 +605,11 @@ class ElasticsearchEntityStore(EntityStore):
                 f"Entity bulk write failed on index {self._index}: {exc}"
             ) from exc
 
-        return self._parse_bulk_response(response)
+        return self._parse_bulk_response_with_tolerance(response, action_meta)
 
-    def search(self, space_id: str, query_vector: list[float], *, top_k: int,
-               filters: EntityStoreFilters,) -> list[EntitySearchResult]:
+    def search(self, scope: Scope, query_vector: list[float], *, top_k: int,
+               filters: EntityStoreFilters, shards: frozenset[str] | None = None,
+               ) -> list[EntitySearchResult]:
         raise UnsupportedCapabilityError(
             capability="vector_search",
             value="elasticsearch",
@@ -421,6 +668,8 @@ class ElasticsearchEntityStore(EntityStore):
                 "entity_text_hash": {"type": "keyword"},
                 "entity_type": {"type": "keyword"},
                 "linked_memory_ids": {"type": "keyword"},
+                "linked_shards": {"type": "keyword"},
+                "linked_by_shard": {"type": "object"},
                 "actor_id": {"type": "keyword"},
                 "assistant_id": {"type": "keyword"},
                 "session_id": {"type": "keyword"},

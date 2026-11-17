@@ -66,6 +66,20 @@ from agent_memory_provider import (
 pytestmark = pytest.mark.unit
 
 
+class _EnglishLikeValue:
+    """Compare equal to the English language code."""
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str) and other == "en"
+
+
+@pytest.mark.parametrize("language", ["fr", False, ["en"], _EnglishLikeValue()])
+def test_provider_rejects_unsupported_portal_language(language):
+    """Check type validation before matching supported language codes."""
+    with pytest.raises(ValueError, match="Portal language"):
+        AgentMemoryMemoryProvider(portal={"language": language})
+
+
 @pytest.mark.parametrize("extension", ["json", "yaml"])
 def test_sdk_config_path_preserves_literal_prompt(tmp_path, monkeypatch, extension):
     monkeypatch.delenv("PORTAL_TEST_PLACEHOLDER", raising=False)
@@ -94,6 +108,7 @@ def test_sdk_kv_configuration_uses_only_the_loaded_config_file(tmp_path):
 
     client = _InProcessClient(str(path), security_provider=security)
     try:
+        assert client.portal_location is None
         result = client.runtime.configuration.save(
             0, {"llm.default.params.llm_model": "after"}, security=security(),
         )
@@ -347,8 +362,9 @@ class TestProfileInjection:
                     return None
 
                 provider._client.read_md_file = _none
-                assert await provider._profile_items() == [], "读取返回 None 时按无画像处理"
-                assert await provider.prefetch("把这个 PDF 发一下") == ""
+                assert await provider.prefetch("把这个 PDF 发一下") == "", (
+                    "读取返回 None 时按无画像处理"
+                )
             finally:
                 await provider.shutdown()
 

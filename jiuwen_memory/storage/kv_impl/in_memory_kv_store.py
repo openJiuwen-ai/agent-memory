@@ -17,7 +17,8 @@ from heapq import nsmallest
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
-from jiuwen_memory.storage.kv import KvProducer, KVStore
+from jiuwen_memory.storage.capability import StoreCapability
+from jiuwen_memory.storage.kv import ConditionalKV, KvProducer, KVStore
 from jiuwen_memory.storage.migration import MigrationRecord
 from jiuwen_memory.storage.types import KVMemoryListResult
 
@@ -31,8 +32,12 @@ def _skey(scope: Scope) -> _ScopeKey:
     return (scope.org, scope.space, scope.user, scope.agent, scope.session)
 
 
-class InMemoryKVStore(KVStore):
-    """纯内存键值存储：``{scope: {key: (value, expires_at)}}``，按 scope 隔离。"""
+class InMemoryKVStore(KVStore, ConditionalKV):
+    """纯内存键值存储：``{scope: {key: (value, expires_at)}}``，按 scope 隔离。
+
+    同时实现 :class:`~storage.kv.ConditionalKV`（单把可重入锁内完成原子条件
+    操作），可作为分片归属存储在测试与无外部服务部署中使用。
+    """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -57,6 +62,9 @@ class InMemoryKVStore(KVStore):
 
     def store_type(self) -> StoreType:
         return StoreType.KV
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset({StoreCapability.CONDITIONAL_KV})
 
     def migration_identity(self) -> object:
         return ("memory", id(self))
@@ -185,6 +193,62 @@ class InMemoryKVStore(KVStore):
             else:
                 self._data[sk][key] = (replacement, self._data[sk][key][1])
             return True
+
+    # -- ConditionalKV（F09 D6）：单锁内完成原子条件操作 ------------------------- #
+
+    def create_if_absent(self, scope: Scope, key: str, value: bytes) -> None:
+        sk = _skey(scope)
+        with self._lock:
+            if self._live(sk, key) is not None:
+                raise ConflictError("key", key)
+            self._data[sk][key] = (value, None)
+
+    def replace_if_value(
+        self, scope: Scope, key: str, expected: bytes, value: bytes
+    ) -> None:
+        sk = _skey(scope)
+        with self._lock:
+            current = self._live(sk, key)
+            if current is None or current != expected:
+                raise ConflictError("key", key)
+            self._data[sk][key] = (value, None)
+
+    def delete_if_value(self, scope: Scope, key: str, expected: bytes) -> bool:
+        sk = _skey(scope)
+        with self._lock:
+            current = self._live(sk, key)
+            if current is None or current != expected:
+                return False
+            del self._data[sk][key]
+            return True
+
+    def read_many(self, scope: Scope, keys: list[str]) -> dict[str, bytes]:
+        sk = _skey(scope)
+        out: dict[str, bytes] = {}
+        with self._lock:
+            for key in keys:
+                value = self._live(sk, key)
+                if value is not None:
+                    out[key] = value
+        return out
+
+    def remaining_ttl(self, scope: Scope, key: str) -> float | None:
+        sk = _skey(scope)
+        with self._lock:
+            value = self._live(sk, key)
+            if value is None:
+                return None
+            _, expires_at = self._data[sk][key]
+        if expires_at is None:
+            return 0.0
+        remaining = expires_at - time.time()
+        return remaining if remaining > 0 else None
+
+    def now(self) -> float:
+        return time.time()
+
+    def scan_entries(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        return self.scan(scope, prefix)
 
     def _live(self, sk: _ScopeKey, key: str) -> bytes | None:
         """返回未过期的值；已过期则惰性删除并返回 None。"""

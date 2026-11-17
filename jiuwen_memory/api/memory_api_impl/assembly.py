@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -67,6 +68,8 @@ from jiuwen_memory.common.security.protection.workload_guard import (
 from jiuwen_memory.common.security.request_context import new_request_context
 from jiuwen_memory.common.security.runtime import SecurityRuntime
 from jiuwen_memory.common.security.types import Credentials, RequestSecurityContext, Surface
+from jiuwen_memory.common.trace import TraceCollector, configure_default
+from jiuwen_memory.common.trace.runtime import TraceRuntime, bind_trace, build_trace_runtime
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
@@ -167,6 +170,7 @@ class _Kernel:
     security_resources: SecurityResourceOwner | None = None
     continuity: Any | None = None
     human_view: Any = None
+    trace_runtime: TraceRuntime | None = None
 
     async def start_background(self) -> None:
         """启动需事件循环就绪的后台组件。
@@ -656,6 +660,7 @@ def _build_kernel(
     config: Config | Mapping[str, Any] | None = None,
     *,
     managed_plan: Any = None,
+    log_handler: logging.Handler | None = None,
 ) -> _Kernel:
     """把配置装配成内部内核（api + 真源）。各组件经引用自取依赖、缺省随调用点给出。
 
@@ -677,7 +682,9 @@ def _build_kernel(
     with _assembly_lifecycle(ctx) as lifecycle:
         if managed_plan is not None:
             lifecycle.failure_cleanup.append(managed_plan.close)
-        kernel = _assemble_kernel(policies, kv, ctx, config, managed_plan=managed_plan)
+        kernel = _assemble_kernel(
+            policies, kv, ctx, config, managed_plan=managed_plan, log_handler=log_handler
+        )
         if managed_plan is not None:
             managed_plan.validate_version()
             managed_plan.finalize(ctx)
@@ -690,12 +697,17 @@ def _build_kernel(
         # are not observed and must remain usable after this runtime closes.
         from jiuwen_memory.storage.base import BaseStore
 
+        trace_resources = tuple(resource for resource in reversed(lifecycle.created)
+                                if isinstance(resource, TraceCollector))
+        owner.share_with(SecurityResourceOwner(trace_resources))
         stores = tuple(resource for resource in reversed(lifecycle.created)
                        if isinstance(resource, BaseStore))
         owner.share_with(SecurityResourceOwner(stores))
         if managed_plan is not None:
             owner.add_close_callback(managed_plan.close)
         lifecycle.bind(owner)
+        if kernel.trace_runtime is not None:
+            configure_default(kernel.trace_runtime.default, limits=kernel.trace_runtime.limits)
         return kernel
 
 
@@ -706,6 +718,7 @@ def _assemble_kernel(
     config: Config | None,
     *,
     managed_plan: Any = None,
+    log_handler: logging.Handler | None = None,
 ) -> _Kernel:
     """在创建观察作用域内解析依赖，失败由外层按本次拥有关系回滚。"""
 
@@ -729,7 +742,11 @@ def _assemble_kernel(
 
     # 根组件（LocalMemoryAPI）经 ROOT_PARAMS 引用各命名空间下的 default 实例。
     root = ComponentConfig(params=dict(ROOT_PARAMS), ctx=ctx, target="local", name="memory_api")
-    setup_logging(root)  # 初始化 agent-memory 根 logger（按 globals 的 log_* 配置；幂等）
+    if log_handler is None:
+        setup_logging(root)  # 保持旧无 handler 调用形状
+    else:
+        setup_logging(root, log_handler=log_handler)
+
     from jiuwen_memory.common.security.human_authentication.base import HumanAuthenticatorProducer
     from jiuwen_memory.common.security.privacy.base import optional_privacy
     from jiuwen_memory.common.security.protection.rate_limit import RateLimitProducer
@@ -755,6 +772,9 @@ def _assemble_kernel(
         )
         human_limiter.health()
         human_guard.health()
+    # 横切 trace 组件：config 指定默认实现（trace.default.target，缺省 noop），
+    # 请求级覆盖经 extensions["trace"]（见 common/trace/trace.py）。
+    trace_runtime = build_trace_runtime(root)
 
     # API 业务审计与 surface 入口审计必须共用同一个具名实例。
     audit_logger = AuditProducer.dep(root, default="sqlite")
@@ -938,7 +958,7 @@ def _assemble_kernel(
     human_view = None
     if human:
         human_view = api.bind_human_view(human, audit_logger, human_limiter, human_guard)
-    return _Kernel(
+    kernel = _Kernel(
         ctx=ctx,
         api=api,
         kv=kv_store,
@@ -954,7 +974,13 @@ def _assemble_kernel(
         security_resources=resources,
         continuity=getattr(api, "_continuity", None),
         human_view=human_view,
+        trace_runtime=trace_runtime,
     )
+
+    bind_trace(kernel.api, trace_runtime)
+    bind_trace(kernel.scheduler, trace_runtime)
+    bind_trace(kernel.ingest_jobs, trace_runtime)
+    return kernel
 
 
 def _validate_privacy_namespace(storage, root, privacy) -> None:
@@ -1057,18 +1083,22 @@ def assemble(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
 ) -> MemoryAPI:
     """装配出一个可用的 ``MemoryAPI``。普通调用方只应使用本函数。"""
-    return assemble_runtime(policies, kv, config).api
+    return assemble_runtime(policies, kv, config, log_handler=log_handler).api
 
 
 def assemble_runtime(
     policies: dict[str, str] | None = None,
     kv: KVStore | None = None,
     config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
 ) -> MemoryRuntime:
     """一次装配 SDK 认证、业务 API 与启动/关闭句柄，不暴露存储或任务控制器端口。"""
-    kernel = _build_kernel(policies, kv, config)
+    kernel = _build_kernel(policies, kv, config, log_handler=log_handler)
     return _runtime_from_kernel(kernel)
 
 

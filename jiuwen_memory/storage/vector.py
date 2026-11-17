@@ -44,6 +44,18 @@ class VectorStore(BaseStore):
     def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
         """在 ``scope`` 内按 id 点查向量行；缺失/越界的 id 从结果中省略。"""
 
+    def insert_for_relocation(self, scope: Scope, records: list[VectorRecord]) -> None:
+        """搬迁复制写入；强一致后端应用强一致冲突预检，避免弱一致下重复行。"""
+        self.insert(scope, records)
+
+    def get_for_relocation(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
+        """搬迁读取：默认等价于 ``get``；强一致后端应覆写为强一致读。
+
+        调用方（分片包装层）会校验返回记录覆盖全部 ``ids``，缺任何一条即拒绝搬迁，
+        不能把只读回一部分的批次当成完整复制。
+        """
+        return self.get(scope, ids)
+
     @abstractmethod
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
         """在 ``scope`` 内做 ANN 近邻检索，按相似度返回 top-k。"""

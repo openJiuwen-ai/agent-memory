@@ -37,6 +37,14 @@ class ShadowIndexProducer(Factory):
 class DocumentShadowIndex(BaseStore):
     """文档场景影子索引契约。"""
 
+    @property
+    def write_lock_key(self) -> str:
+        """进程内写协调标识；共享后端须覆写为相同资源的稳定标识。
+
+        默认按实例隔离，兼容独立内存后端；不得编码 Scope 或调用方身份。
+        """
+        return f"shadow-instance:{id(self)}"
+
     @abstractmethod
     def insert_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """存全量 ``MemoryUnit``（``memory_codec.dumps`` 序列化为 ``unit_json``），

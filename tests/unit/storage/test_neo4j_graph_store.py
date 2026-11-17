@@ -11,7 +11,7 @@ import pytest
 from jiuwen_memory.common.errors import BackendError, ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.storage.graph_impl.neo4j_graph_store import Neo4jGraphStore
-from jiuwen_memory.storage.types import Edge, Node
+from jiuwen_memory.storage.types import Edge, GraphQuery, Node
 
 pytestmark = pytest.mark.unit
 
@@ -276,3 +276,41 @@ def test_ssl_misconfiguration_fails_during_build(params):
 
     with pytest.raises(ValidationError):
         build({"username": "user", "password": "password", "ssl_verify": True, **params})
+
+
+def _node_row(node_id: str, shard: str | None, next_shard: str | None = None) -> dict:
+    props = {}
+    if shard is not None:
+        props["storage_shard"] = shard
+    if next_shard is not None:
+        props["storage_shard_next"] = next_shard
+    return {
+        "id": node_id,
+        "label": "memory",
+        "content": "alpha",
+        "props": json.dumps(props),
+    }
+
+
+def test_search_traverses_other_shard_nodes_and_filters_before_limit() -> None:
+    """Neo4j 先在邻居匹配阶段经过其它分片节点，收集结果时再按分片过滤。"""
+    store, _ = _store(
+        responses=[
+            [_node_row("p1", "profile")],
+            [
+                {"id": "w", "shard": "working", "shard_next": None},
+                {"id": "p2", "shard": "profile", "shard_next": None},
+            ],
+            [_node_row("p2", "profile")],
+        ]
+    )
+    result = store.search(
+        SCOPE,
+        GraphQuery(
+            start_id="p1",
+            depth=1,
+            limit=1,
+            extensions={"shards": ["profile"]},
+        ),
+    )
+    assert [node.id for node in result] == ["p2"]

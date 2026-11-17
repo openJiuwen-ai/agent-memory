@@ -32,6 +32,7 @@ from jiuwen_memory.storage.vector import VectorStore
 from ._index_ops import (
     build_layer_vector_indexes,
     clear_unit_vector_index,
+    require_forward_index_when_sharded,
     vector_port,
     vectorize_units,
     write_chunk_trackings,
@@ -196,8 +197,12 @@ class VectorIndexBuilder(IndexBuilder):
 
 @IndexBuilderProducer.register("vector")
 def _build(config):
+    manager = StoreManagerProducer.resolve(config)
+    require_forward_index_when_sharded(
+        manager, resolve_name(config, "kv_store"), builder="vector"
+    )
     return VectorIndexBuilder(
-        storage=StoreManagerProducer.resolve(config),
+        storage=manager,
         chunker=ChunkerProducer.dep(config, default="fixed_window"),
         embedder=EmbedderProducer.dep(config, default="hashing"),
         vector_name=resolve_name(config, "vector_store"),

@@ -42,6 +42,7 @@ from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
 from .projection import IndexBuilderRelationProjector
 from .repository import ContinuityRepository
+from .task_search import TaskSearchIndex
 
 logger = get_logger(__name__)
 
@@ -153,6 +154,8 @@ class ContinuityService(Continuity):
         derivation_version="",
         relation_projector=None,
         connectors: dict | None = None,
+        task_embedder=None,
+        task_tokenizer=None,
     ):
         # 关系投影走独立端口（接收 RelationRecord）；没有专门投影器时用适配器包住
         # 既有的 IndexBuilder，伪造 MemoryUnit 的知识只留在 projection.py 一处。
@@ -196,6 +199,7 @@ class ContinuityService(Continuity):
         self.view_builder = view_builder
         self.repository = repository
         self.graph = graph
+        self.task_search = TaskSearchIndex(task_embedder, task_tokenizer)
 
     def health(self) -> dict:
         self.repository.kv.health()
@@ -230,16 +234,26 @@ class ContinuityService(Continuity):
         repo = self.repository
         if request.operation == "find":
             matches = []
-            for task in repo.list(scope, "tasks"):
+            tasks = repo.list(scope, "tasks")
+            for task in tasks:
+                if task.get("state") != "open":
+                    continue
                 for binding in task["bindings"]:
                     if not binding["active"]:
                         continue
                     if binding["connector_id"] != request.connector_id:
                         continue
                     if binding["context_id"] == request.context_id:
-                        matches.append({"task_id": task["task_id"], "revision": task["revision"]})
+                        matches.append({"task_id": task["task_id"], "revision": task["revision"],
+                                        "title": task.get("title", ""),
+                                        "description": task.get("description", ""),
+                                        "state": task["state"], "match_type": "context_exact"})
                         break
-            return {"tasks": matches}
+            if matches or not (request.query or "").strip():
+                return {"tasks": matches}
+            return {"tasks": self.task_search.search(
+                scope, tasks, request.query.strip(), request.top_k,
+            )}
         if request.operation == "get":
             task = repo.get(scope, "tasks", request.task_id)
             view = self.task_view(task, read)
@@ -248,8 +262,14 @@ class ContinuityService(Continuity):
         initial = None
         if request.operation == "create":
             task_id = fingerprint({"owner": owner, "request_id": request.request_id})
+            parent = (repo.get(scope, "tasks", request.parent_task_id)
+                      if request.parent_task_id else None)
             initial = dict(
-                task_id=task_id, owner=owner, revision=0, state="open", bindings=[], background=[]
+                task_id=task_id, owner=owner, revision=0, state="open", bindings=[], background=[],
+                title=request.title.strip(), description=request.description.strip(),
+                parent_task_id=request.parent_task_id,
+                root_task_id=(parent.get("root_task_id") or parent["task_id"])
+                if parent else task_id,
             )
         for ref in request.background:
             read(ref)
@@ -260,6 +280,9 @@ class ContinuityService(Continuity):
             if request.operation == "bind":
                 if not request.connector_id or not request.context_id:
                     raise ValidationError("connector and context required")
+                for field in ("title", "description"):
+                    if not task.get(field) and getattr(request, field).strip():
+                        task[field] = getattr(request, field).strip()
                 task["bindings"].append(
                     dict(
                         binding_id=fingerprint({"task": task_id, "request": request.request_id}),
@@ -282,13 +305,19 @@ class ContinuityService(Continuity):
                 if item not in task["background"]:
                     task["background"].append(item)
 
+        payload = asdict(request)
+        # Keep pre-extension mutation receipts replayable when all new fields are omitted.
+        for field, default in (("title", ""), ("description", ""), ("parent_task_id", None),
+                               ("query", None), ("top_k", 5)):
+            if payload[field] == default:
+                payload.pop(field)
         receipt = repo.mutate(
             scope,
             "tasks",
             task_id,
             request.expected_revision,
             request.request_id,
-            asdict(request),
+            payload,
             change,
             initial=initial,
         )
@@ -301,6 +330,10 @@ class ContinuityService(Continuity):
     @staticmethod
     def task_view(task: dict, read: ReadMemory) -> dict:
         visible = {k: v for k, v in task.items() if k not in {"receipts", "background"}}
+        visible.setdefault("title", "")
+        visible.setdefault("description", "")
+        visible.setdefault("parent_task_id", None)
+        visible.setdefault("root_task_id", task["task_id"])
         visible["background"] = []
         visible["background_partial"] = False
         for item in task["background"]:
@@ -1304,7 +1337,10 @@ class ContinuityService(Continuity):
             background = self.task_background(scope, request.task_id, read)
             required_ids = set(background.get("required_ids") or [])
             gaps.extend(background.get("gaps") or [])
-            for unit in background.get("units") or []:
+            registered = background.get("units") or []
+            ordered = [unit for unit in registered if unit.id in required_ids]
+            ordered.extend(unit for unit in reversed(registered) if unit.id not in required_ids)
+            for unit in ordered:
                 if unit.id in seen:
                     continue
                 seen.add(unit.id)
@@ -1651,6 +1687,8 @@ def build(config):
                 else ConflictResolverProducer.build("chain", {}, config.ctx)
             )
 
+        from jiuwen_memory.common.embedder.base import EmbedderProducer
+        from jiuwen_memory.common.tokenizer.base import TokenizerProducer
         from jiuwen_memory.construction.dedup import DedupProducer
         from jiuwen_memory.construction.extractor import ExtractorProducer
 
@@ -1684,6 +1722,12 @@ def build(config):
             if projector is not None
             else None,
             connectors=connectors,
+            task_embedder=EmbedderProducer.build_named(
+                config.get("embedder", "default"), config.ctx,
+            ) if config.get("embedder", "default") is not None else None,
+            task_tokenizer=TokenizerProducer.build_named(
+                config.get("tokenizer", "default"), config.ctx,
+            ),
         )
         service.health()
         return service

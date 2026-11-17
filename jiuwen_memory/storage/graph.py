@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from typing import Any
 
 from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
@@ -81,13 +82,19 @@ class GraphStore(BaseStore):
         raise UnsupportedCapabilityError("conditional edge projection is not supported")
 
     @abstractmethod
-    def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
+    def seed_ids(
+        self,
+        scope: Scope,
+        tokens: set[str],
+        *,
+        extensions: dict[str, Any] | None = None,
+    ) -> list[str]:
         """
         在 ``scope`` 内按关键词/词项定位**种子节点 id**：图召回路在
         query 不携带显式起点时，先据此找到入口节点，再以其为 ``start_id``
         调 :meth:`search` 多跳扩展。匹配语义（节点哪些属性、是否子串/词项）
-        由后端定义；``tokens`` 为空时返回空。后端可用其原生查询能力实现
-        （如 Neo4j 全文索引、Cypher）。
+        由后端定义；``tokens`` 为空时返回空。``extensions['shards']`` 用于共享图在截断前
+        按分片过滤；后端可用其原生查询能力实现（如 Neo4j 全文索引、Cypher）。
         """
 
     @abstractmethod

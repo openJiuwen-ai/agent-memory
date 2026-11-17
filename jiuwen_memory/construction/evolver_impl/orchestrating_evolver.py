@@ -30,7 +30,12 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import NamedTuple
 
-from jiuwen_memory.common.errors import ConflictError, ValidationError
+from jiuwen_memory.common.errors import (
+    ConflictError,
+    MissingShardPlacementError,
+    RelocationInProgressError,
+    ValidationError,
+)
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
     get_logger,
@@ -40,6 +45,7 @@ from jiuwen_memory.common.log import (
 )
 from jiuwen_memory.common.schema_property import is_schema_property_unit
 from jiuwen_memory.common.security.privacy.base import privacy_operation
+from jiuwen_memory.common.trace import TraceLevel, trace_annotate, trace_event, traced
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_TITLE_KEY,
@@ -345,6 +351,7 @@ class OrchestratingEvolver(Evolver):
     # ------------------------------------------------------------------
 
     @privacy_operation
+    @traced("evolve", level=TraceLevel.SIMPLE)
     def evolve(
         self,
         units: list[MemoryUnit] | EvolveRequest,
@@ -386,16 +393,29 @@ class OrchestratingEvolver(Evolver):
                 redact_for_log(u.content),
             )
         if mode == EvolveMode.EXTRACT:
-            return self._evolve_extract(units)
-        if mode == EvolveMode.CONSOLIDATE:
-            return self._evolve_consolidate(units)
-        if mode == EvolveMode.CONFLICT_CONSOLIDATE:
-            return self._evolve_conflict_consolidate(units)
-        if mode == EvolveMode.ASSOCIATE:
-            return self._evolve_associate(units)
-        if mode == EvolveMode.FORGET:
-            return self._evolve_forget(units)
-        return EvolveResult()
+            result = self._evolve_extract(units)
+        elif mode == EvolveMode.CONSOLIDATE:
+            result = self._evolve_consolidate(units)
+        elif mode == EvolveMode.CONFLICT_CONSOLIDATE:
+            result = self._evolve_conflict_consolidate(units)
+        elif mode == EvolveMode.ASSOCIATE:
+            result = self._evolve_associate(units)
+        elif mode == EvolveMode.FORGET:
+            result = self._evolve_forget(units)
+        else:
+            result = EvolveResult()
+        trace_annotate(
+            {
+                "mode": mode.value,
+                "inputs": len(units),
+                "created": len(result.created_ids),
+                "updated": len(result.updated_ids),
+                "superseded": len(result.superseded_ids),
+                "forgotten": len(result.forgotten_ids),
+            },
+            level=TraceLevel.SIMPLE,
+        )
+        return result
 
     # ------------------------------------------------------------------
     # 落盘辅助
@@ -458,21 +478,31 @@ class OrchestratingEvolver(Evolver):
             node = Node(id=u.id, label=u.tier.value, properties={"content": u.content})
             try:
                 self._graph.insert(scope, nodes=[node])
+            except RelocationInProgressError:
+                logger.info("skip graph node %s: memory is being relocated", u.id)
             except ConflictError:
                 pass  # 节点已存在
-        edges = []
+            except MissingShardPlacementError as exc:
+                # 归属已删除 / 从未写入分片 KV：只跳过这一种可预期缺失，
+                # 不吞掉后端自身的配置 / 数据 ValidationError。
+                logger.warning("skip graph node %s: %s", u.id, exc)
         for relation in relations:
-            edges.append(
-                Edge(
-                    id=str(uuid.uuid4()),
-                    source=relation.source_id,
-                    target=relation.target_id,
-                    relation=relation.relation,
-                    properties=dict(relation.metadata),
-                )
+            edge = Edge(
+                id=str(uuid.uuid4()),
+                source=relation.source_id,
+                target=relation.target_id,
+                relation=relation.relation,
+                properties=dict(relation.metadata),
             )
-        if edges:
-            self._graph.insert(scope, edges=edges)
+            # 逐条写入、逐条跳过：一条端点在搬迁/已删除不能连累同批其它关系。
+            try:
+                self._graph.insert(scope, edges=[edge])
+            except RelocationInProgressError:
+                logger.info(
+                    "skip graph edge %s: endpoint memory is being relocated", edge.id
+                )
+            except MissingShardPlacementError as exc:
+                logger.warning("skip graph edge %s: %s", edge.id, exc)
 
     # ------------------------------------------------------------------
     # 去重核心方法
@@ -553,11 +583,13 @@ class OrchestratingEvolver(Evolver):
 
         # ---- 第三段：逐条执行 ----
         for candidate, best_unit, best_score in direct_add:
+            self._trace_decision(candidate, DedupDecision.ADD, best_unit, best_score, "direct")
             noop_count += self._apply_decision(
                 candidate, DedupDecision.ADD, best_unit, best_score, result, successors=successors
             )
 
         for candidate, best_unit, best_score in direct_noop:
+            self._trace_decision(candidate, DedupDecision.NOOP, best_unit, best_score, "direct")
             noop_count += self._apply_decision(
                 candidate, DedupDecision.NOOP, best_unit, best_score, result, successors=successors
             )
@@ -570,6 +602,7 @@ class OrchestratingEvolver(Evolver):
                     (unit, score) for unit, score in hits
                     if unit.id == target.id and same_scope(unit.scope, target.scope)
                 )
+            self._trace_decision(candidate, decision, best_unit, best_score, "llm")
             noop_count += self._apply_decision(
                 candidate, decision, best_unit, best_score, result, successors=successors
             )
@@ -586,7 +619,44 @@ class OrchestratingEvolver(Evolver):
             len(need_llm),
             1 if need_llm else 0,
         )
+        trace_event(
+            type(self).__name__,
+            "dedup",
+            {
+                "dedup_impl": type(self._dedup).__name__,
+                "candidates": len(candidates),
+                "add": len(result.created_ids),
+                "update": len(result.updated_ids),
+                "supersede": len(result.superseded_ids),
+                "noop": noop_count,
+                "direct_noop": len(direct_noop),
+                "need_llm": len(need_llm),
+            },
+            level=TraceLevel.SIMPLE,
+        )
         return result
+
+    def _trace_decision(
+        self,
+        candidate: MemoryUnit,
+        decision: DedupDecision,
+        best_unit: MemoryUnit | None,
+        best_score: float,
+        via: str,
+    ) -> None:
+        """逐条去重决定（debug 明细）：只记 id 与分数，不记正文。"""
+        trace_event(
+            type(self).__name__,
+            "dedup_decision",
+            {
+                "candidate": candidate.id,
+                "decision": decision.value,
+                "best": best_unit.id if best_unit is not None else None,
+                "score": round(best_score, 4),
+                "via": via,
+            },
+            level=TraceLevel.DEBUG,
+        )
 
     def _apply_decision(
         self,

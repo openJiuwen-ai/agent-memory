@@ -1,11 +1,14 @@
 """验证配置覆盖的版本化事务及重启恢复。"""
 
+import hashlib
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
 
-from jiuwen_memory.common.errors import ConflictError, ValidationError
+from jiuwen_memory.common.errors import BackendError, ConflictError, ValidationError
+from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config.overlay_store import SQLiteOverlayStore
 
 pytestmark = pytest.mark.unit
@@ -20,6 +23,51 @@ def test_commit_survives_reopen_and_removes_deleted_overrides(tmp_path):
     assert SQLiteOverlayStore(path).read() == saved
     saved = store.commit(1, {"prompts.extract.a": "新文本"})
     assert SQLiteOverlayStore(path).read() == saved
+
+
+def test_legacy_overlay_and_credentials_remain_owned_by_default(tmp_path):
+    root = tmp_path / "Library"
+    root.mkdir()
+    path = root / "config.db"
+    alternate_root = root.with_name("library")
+    original_path = alternate_root / path.name if alternate_root.exists() else path
+    legacy = SQLiteOverlayStore(original_path)
+    key_field = "llm.default.params.llm_api_key"
+    original_credentials = legacy.credential_store()
+    legacy_identity = hashlib.sha256(str(original_path.resolve()).encode()).hexdigest()
+    original_credentials.scope = Scope(org="model-config", user=legacy_identity)
+    default_ref = original_credentials.put("default-key")
+    saved = legacy.commit(0, {key_field: default_ref})
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            ALTER TABLE config_overlay RENAME TO newer_overlay;
+            CREATE TABLE config_overlay (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                version INTEGER NOT NULL, payload TEXT NOT NULL
+            );
+            INSERT INTO config_overlay SELECT 1, version, payload FROM newer_overlay;
+            DROP TABLE newer_overlay;
+            ALTER TABLE model_credentials RENAME TO newer_credentials;
+            CREATE TABLE model_credentials (reference TEXT PRIMARY KEY, ciphertext BLOB NOT NULL);
+            INSERT INTO model_credentials SELECT reference, ciphertext FROM newer_credentials;
+            DROP TABLE newer_credentials;
+        """)
+
+    separate = SQLiteOverlayStore(path, instance_id="separate")
+    assert separate.read().version == 0
+    credentials = separate.credential_store()
+    with pytest.raises(BackendError, match="unavailable"):
+        credentials.get(default_ref)
+    own_ref = credentials.put("separate-key")
+    own_saved = separate.commit(0, {key_field: own_ref})
+    credentials.retire([default_ref, own_ref])
+    assert SQLiteOverlayStore(original_path, instance_id="separate").credential_store().get(
+        own_ref,
+    ) == "separate-key"
+    assert SQLiteOverlayStore(path, instance_id="separate").read() == own_saved
+    assert SQLiteOverlayStore(path).read() == saved
+    assert SQLiteOverlayStore(original_path).credential_store().get(default_ref) == "default-key"
+    assert SQLiteOverlayStore(path).credential_store().get(default_ref) == "default-key"
 
 
 def test_same_version_competing_writers_only_one_commits(tmp_path):
@@ -60,8 +108,6 @@ def test_memory_backend_is_not_mistaken_for_persistence():
 
 
 def test_database_failure_rolls_back_previous_state(tmp_path):
-    import sqlite3
-
     path = tmp_path / "config.db"
     store = SQLiteOverlayStore(path)
     saved = store.commit(0, {"prompts.extract.a": "original"})

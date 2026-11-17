@@ -26,7 +26,13 @@ from jiuwen_memory.common.security.cryptography import CryptographyProducer, Cry
 from jiuwen_memory.common.security.types import CryptoContext
 from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
 from jiuwen_memory.storage.base import StoreType
-from jiuwen_memory.storage.kv import KvProducer, KVStore, MigrationVerificationError
+from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
+from jiuwen_memory.storage.kv import (
+    ConditionalKV,
+    KvProducer,
+    KVStore,
+    MigrationVerificationError,
+)
 from jiuwen_memory.storage.migration import MigrationRecord
 from jiuwen_memory.storage.security import (
     EnabledStoreSecurity,
@@ -85,10 +91,22 @@ def _crypto_context(scope: Scope, key: str, purpose: str) -> CryptoContext:
     )
 
 
-class EncryptedKVStore(KVStore):
-    """对任意 KVStore 做透明加解密的装饰器。"""
+class EncryptedKVStore(KVStore, ConditionalKV):
+    """对任意 KVStore 做透明加解密的装饰器。
+
+    底层声明 ``CONDITIONAL_KV`` 时同步转发该能力：条件替换 / 删除先解密比较明文，
+    再用**读到的密文**做 CAS——并发变更会生成不同密文，比较自然失败，原子性不打折。
+    """
 
     def __init__(self, raw: KVStore, encryption: CryptographyProvider) -> None:
+        if StoreCapability.SHARD_ROUTED in capabilities_of(raw):
+            # 分片包装层不是物理表：加密必须落在每个物理分片表 / passthrough /
+            # 归属存储上（每分片独立密钥）。外层再包一次会双重加密并丢掉分片粒度，
+            # 而「靠方法名转发分片 API」又会让通用装饰器认识某个具体实现（S09 #1 / #9）。
+            raise ValidationError(
+                "encrypted cannot wrap a shard_routed port: encrypt each physical "
+                "shard store instead (table_template / tables / placement_store)"
+            )
         self._raw = raw
         self._encryption = encryption
         # 上游 StoreSecurity 契约：加密 Store 覆写 BaseStore 默认的 passthrough，
@@ -109,6 +127,18 @@ class EncryptedKVStore(KVStore):
 
     def store_type(self) -> StoreType:
         return StoreType.KV
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return capabilities_of(self._raw)
+
+    def resource_descriptor(self) -> str | None:
+        return self._raw.resource_descriptor()
+
+    def connection_budget(self) -> int | None:
+        return self._raw.connection_budget()
+
+    def connection_dependencies(self) -> tuple:
+        return (self._raw,)
 
     def health(self) -> None:
         self._raw.health()
@@ -152,6 +182,43 @@ class EncryptedKVStore(KVStore):
 
     def exists(self, scope: Scope, key: str) -> bool:
         return self._raw.exists(scope, key)
+
+    def create_if_absent(self, scope: Scope, key: str, value: bytes) -> None:
+        self._raw.create_if_absent(scope, key, self._encrypt(scope, key, value))
+
+    def replace_if_value(
+        self, scope: Scope, key: str, expected: bytes, value: bytes
+    ) -> None:
+        current = self._raw.read_many(scope, [key]).get(key)
+        if current is None or self._decrypt(scope, key, current) != expected:
+            raise ConflictError("key", key)
+        self._raw.replace_if_value(
+            scope, key, current, self._encrypt(scope, key, value)
+        )
+
+    def delete_if_value(self, scope: Scope, key: str, expected: bytes) -> bool:
+        current = self._raw.read_many(scope, [key]).get(key)
+        if current is None or self._decrypt(scope, key, current) != expected:
+            return False
+        return self._raw.delete_if_value(scope, key, current)
+
+    def read_many(self, scope: Scope, keys: list[str]) -> dict[str, bytes]:
+        return {
+            key: self._decrypt(scope, key, value)
+            for key, value in self._raw.read_many(scope, keys).items()
+        }
+
+    def remaining_ttl(self, scope: Scope, key: str) -> float | None:
+        return self._raw.remaining_ttl(scope, key)
+
+    def now(self) -> float:
+        return self._raw.now()
+
+    def scan_entries(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        return [
+            (key, self._decrypt(scope, key, value))
+            for key, value in self._raw.scan_entries(scope, prefix)
+        ]
 
     def scan(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
         return [

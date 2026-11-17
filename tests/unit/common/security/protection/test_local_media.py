@@ -253,6 +253,20 @@ def test_local_media_closes_descriptors_when_stream_wrapper_fails(tmp_path, monk
     monkeypatch.setattr(os, "open", record_open)
     monkeypatch.setattr(os, "close", record_close)
     monkeypatch.setattr(os, "fdopen", fail_wrapper)
+    if os.name == "nt":
+        # Windows uses CreateFileW + open_osfhandle, not os.open; record the
+        # descriptor produced by the CRT before fdopen is attempted.
+        import msvcrt
+
+        real_handle = msvcrt.open_osfhandle
+
+        def record_handle(handle, flags):
+            descriptor = real_handle(handle, flags)
+            opened.add(descriptor)
+            return descriptor
+
+        monkeypatch.setattr(msvcrt, "open_osfhandle", record_handle)
+
     with pytest.raises(PermissionDeniedError):
         policy.stage(source.as_uri(), SCOPE, work)
     assert opened, "the regression must fail after acquiring a descriptor"

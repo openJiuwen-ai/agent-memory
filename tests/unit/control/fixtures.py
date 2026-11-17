@@ -16,7 +16,6 @@ from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.common.type_def.entity import EntityStoreFilters, hash_entity_text
 from jiuwen_memory.common.type_def.memory_codec import loads
-from jiuwen_memory.common.type_def.scope import space_id_from_scope
 from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import EntitySchemaExtractor
 from jiuwen_memory.construction.index_builder_impl.entity_index_builder import EntityLinkService
 from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
@@ -194,7 +193,7 @@ class SchemaWorld:
 
     def linked(self, name):
         records = self.entity_store.find_by_entity_text_hash(
-            space_id_from_scope(self.scope),
+            self.scope,
             (hash_entity_text(name),),
             filters=EntityStoreFilters.from_scope(self.scope),
         )

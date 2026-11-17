@@ -1114,3 +1114,33 @@ def test_concat_abstractor_writes_importance_and_origin():
     [unit] = ConcatAbstractor(importance_category_map={"default": "0.60"}).abstract(sources)
     assert unit.system_metadata["importance"] == "0.60"
     assert unit.system_metadata["origin"] == "inferred"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("level", ["simple", "info", "debug"])
+def test_extraction_trace_level_exposes_counts_and_gates_content(level):
+    from jiuwen_memory.common.bootstrap import register_plugins
+    from jiuwen_memory.common.trace import begin_trace, end_trace
+
+    register_plugins()
+    extractor = _make_extractor([json.dumps([{
+        "source_id": "trace-source", "target": "preference",
+        "content": "用户偏好 Python", "evidence": "偏好 Python", "confidence": 1.0,
+    }])])
+    token = begin_trace("memory", level=level)
+    try:
+        result = extractor.extract([create_test_unit("trace-source", "用户偏好 Python")])
+    finally:
+        snapshot = end_trace(token)
+    assert result, "trace 不能改变抽取结果"
+    (root,) = snapshot["spans"]
+    assert root["stage"] == "extract" and root["cost_ms"] >= 0
+    nodes = {node["stage"]: node for node in root.get("children", [])}
+    assert nodes["extract_result"]["data"]["units"] == len(result)
+    if level == "debug":
+        assert nodes["extraction_items"]["data"]["items"][0]["content"] == "用户偏好 Python"
+        assert nodes["extraction_results"]["data"]["extracted"][0]["content"] == result[0].content
+    else:
+        assert "extraction_items" not in nodes and "extract_input" not in nodes
+    if level == "simple":
+        assert set(nodes) == {"extract_result"}, "simple 不包含抽取正文或内部阶段"

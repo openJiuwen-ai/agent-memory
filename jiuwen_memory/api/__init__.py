@@ -16,6 +16,7 @@ from jiuwen_memory.common.errors import (
     PermissionDeniedError,
     PolicyError,
     RateLimitedError,
+    RelocationInProgressError,
     UnsupportedCapabilityError,
     ValidationError,
     WriteIncompleteError,
@@ -54,6 +55,15 @@ from jiuwen_memory.common.security.types import (
     set_current,
     validate_actor_form,
 )
+from jiuwen_memory.common.trace import (
+    TRACE_OVERRIDE_KEY,
+    TraceLevel,
+    begin_api_trace,
+    begin_trace,
+    end_trace,
+    parse_trace_spec,
+    trace_event,
+)
 from jiuwen_memory.common.type_def import (
     EXT_MAX_TOKENS,
     EXT_QUERY_CONTEXT,
@@ -84,6 +94,14 @@ from jiuwen_memory.common.type_def.continuity import (
     RoleViewQuery,
     TaskRequest,
     ViewBudget,
+)
+
+# Private assembly dependency of the bundled SDK adapter.
+from jiuwen_memory.config.auto_overlay import (
+    _config_overlay_candidates as _config_overlay_candidates,
+)
+from jiuwen_memory.config.auto_overlay import (
+    _prepare_shared_document_portal as _prepare_shared_document_portal,
 )
 from jiuwen_memory.config.auto_overlay import (
     document_llm_instances,
@@ -152,9 +170,11 @@ from .memory_api_impl import (
     assemble_server_runtime,
 )
 from .personal_memory import read_personal_record
+from .runtime_configuration import sdk_continuity_runtime_identity
 from .search_options import SearchOptions
 
 __all__ = [
+    "sdk_continuity_runtime_identity",
     "read_personal_record",
     "open_config_overlay",
     "open_document_overlay",
@@ -253,6 +273,14 @@ __all__ = [
     "set_current",
     "reset_current",
     "validate_actor_form",
+    # 横切 trace（common.trace；请求作用域与埋点，供入口层 begin/end 与填充）
+    "TRACE_OVERRIDE_KEY",
+    "TraceLevel",
+    "begin_trace",
+    "begin_api_trace",
+    "end_trace",
+    "parse_trace_spec",
+    "trace_event",
     # Access 错误映射（公开异常，transport 不识别内核内部模块）
     "AgentMemoryError",
     "AuthenticationError",
@@ -264,6 +292,7 @@ __all__ = [
     "PermissionDeniedError",
     "PolicyError",
     "RateLimitedError",
+    "RelocationInProgressError",
     "UnsupportedCapabilityError",
     "ValidationError",
     "safe_error_message",

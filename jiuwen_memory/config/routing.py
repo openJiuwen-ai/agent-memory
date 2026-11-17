@@ -352,8 +352,14 @@ class RoutingGraphStore(GraphStore):
     def health(self) -> None:
         self._router.get().health()
 
-    def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
-        return self._router.get().seed_ids(scope, tokens)
+    def seed_ids(
+        self, scope: Scope, tokens: set[str], *, extensions: dict | None = None
+    ) -> list[str]:
+        target = self._router.get()
+        if extensions is None:
+            # 兼容没有 extensions 形参的旧图插件；不开分片时保持旧调用形态。
+            return target.seed_ids(scope, tokens)
+        return target.seed_ids(scope, tokens, extensions=extensions)
 
     def insert(
         self,
@@ -657,6 +663,24 @@ class RoutingDomainStore(DomainStore):
         **kwargs: Any,
     ) -> list[MemoryUnit]:
         return self._active_domain().get(scope, unit_ids, access=access, **kwargs)
+
+    def requested_shards(self, extensions: dict[str, Any] | None) -> frozenset[str] | None:
+        """委托 active 数据面解析分片选择（F09 D11）。"""
+        return self._active_domain().requested_shards(extensions)
+
+    def get_in_shards(
+        self,
+        scope: Scope,
+        unit_ids: list[str],
+        shards: frozenset[str],
+        *,
+        access: StorageAccessContext | None = None,
+        **kwargs: Any,
+    ):
+        """委托 active 数据面的分片点读（F09 D3）；未支持时由实现抛不支持错误。"""
+        return self._active_domain().get_in_shards(
+            scope, unit_ids, shards, access=access, **kwargs
+        )
 
     def list(
         self,

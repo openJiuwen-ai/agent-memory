@@ -15,13 +15,19 @@ from jiuwen_memory.storage.migration import MigrationRecord, opaque_location
 from .._pg import PgStoreBase, _quote_ident, pg_scope_clause
 from .._support import read_ssl_config, wrap_backend
 from ..base import StoreType
-from ..kv import KVStore
+from ..capability import StoreCapability
+from ..kv import ConditionalKV, KVStore
 from ..types import KVMemoryListResult
 from .memory_list import list_memory_entries
 
 
-class PostgresKVStore(PgStoreBase, KVStore):
-    """一张 PostgreSQL 表承载全部 scope 的 bytes 值与 TTL。"""
+class PostgresKVStore(PgStoreBase, KVStore, ConditionalKV):
+    """一张 PostgreSQL 表承载全部 scope 的 bytes 值与 TTL。
+
+    同时实现 :class:`~storage.kv.ConditionalKV`（``INSERT ... ON CONFLICT``、
+    条件 ``UPDATE`` / ``DELETE ... RETURNING``、``SELECT ... = ANY`` 部分读、
+    ``clock_timestamp()`` 存储侧时间），可作分片归属存储。
+    """
 
     def __init__(
         self,
@@ -55,6 +61,87 @@ class PostgresKVStore(PgStoreBase, KVStore):
             config_dsn_field="dsn",
         )
 
+    # -- ConditionalKV（F09 D6）：整值比较的原子条件操作 ------------------------- #
+
+    def create_if_absent(self, scope: Scope, key: str, value: bytes) -> None:
+        statement = f"""
+            INSERT INTO {self._table_ref} (
+                scope_org, scope_space, scope_user, scope_agent, scope_session,
+                key, value, expires_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NULL)
+            ON CONFLICT (
+                scope_org, scope_space, scope_user, scope_agent, scope_session, key
+            )
+            DO NOTHING
+            RETURNING 1
+        """
+        with wrap_backend(f"postgres conditional create {key!r}"):
+            if self._fetch_one(statement, (*self._scope_params(scope), key, value)) is None:
+                raise ConflictError(entity="key", key=key)
+
+    def replace_if_value(
+        self, scope: Scope, key: str, expected: bytes, value: bytes
+    ) -> None:
+        clause, params = pg_scope_clause(scope, exact=True)
+        statement = f"""
+            UPDATE {self._table_ref} SET value = %s
+            WHERE {clause} AND key = %s AND value = %s
+            RETURNING 1
+        """
+        with wrap_backend(f"postgres conditional replace {key!r}"):
+            row = self._fetch_one(statement, (value, *params, key, expected))
+        if row is None:
+            raise ConflictError(entity="key", key=key)
+
+    def delete_if_value(self, scope: Scope, key: str, expected: bytes) -> bool:
+        clause, params = pg_scope_clause(scope, exact=True)
+        statement = f"""
+            DELETE FROM {self._table_ref}
+            WHERE {clause} AND key = %s AND value = %s
+            RETURNING 1
+        """
+        with wrap_backend(f"postgres conditional delete {key!r}"):
+            return self._fetch_one(statement, (*params, key, expected)) is not None
+
+    def read_many(self, scope: Scope, keys: list[str]) -> dict[str, bytes]:
+        if not keys:
+            return {}
+        clause, params = pg_scope_clause(scope, exact=True)
+        statement = f"""
+            SELECT key, value FROM {self._table_ref}
+            WHERE {clause} AND key = ANY(%s)
+        """
+        with wrap_backend(f"postgres conditional read {len(keys)} keys"):
+            rows = self._fetch_all(statement, (*params, keys))
+        return {str(row[0]): bytes(row[1]) for row in rows}
+
+    def remaining_ttl(self, scope: Scope, key: str) -> float | None:
+        clause, params = pg_scope_clause(scope, exact=True)
+        statement = f"""
+            SELECT expires_at,
+                   expires_at - extract(epoch from clock_timestamp()) AS remaining
+            FROM {self._table_ref}
+            WHERE {clause} AND key = %s
+        """
+        with wrap_backend(f"postgres ttl {key!r}"):
+            row = self._fetch_one(statement, (*params, key))
+        if row is None:
+            return None
+        if row[0] is None:
+            return 0.0
+        remaining = float(row[1])
+        # 已过期（尚未物理删除）按缺失处理：迁移层不能把它写成 ttl=0 的永久副本。
+        return remaining if remaining > 0 else None
+
+    def now(self) -> float:
+        with wrap_backend("postgres clock"):
+            row = self._fetch_one("SELECT extract(epoch from clock_timestamp())", ())
+        return float(row[0])
+
+    def scan_entries(self, scope: Scope, prefix: str = "") -> list[tuple[str, bytes]]:
+        return self.scan(scope, prefix)
+
     @staticmethod
     def _expiry_sql() -> str:
         # 守卫参数须显式 ::numeric：裸参数与整数 0 比较时 PG 推断为 int4，
@@ -71,6 +158,11 @@ class PostgresKVStore(PgStoreBase, KVStore):
 
     def store_type(self) -> StoreType:
         return StoreType.KV
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset(
+            {StoreCapability.CONDITIONAL_KV, StoreCapability.RESOURCE_DESCRIPTOR}
+        )
 
     def migration_identity(self) -> object:
         return opaque_location("postgres", self._resolved_dsn(), self._table_ref)

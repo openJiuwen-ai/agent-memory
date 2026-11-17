@@ -15,6 +15,7 @@ _HTTP_ERROR_POLICIES = {
     "UnknownVerb": (404, False, "resource not found"),
     "MethodNotAllowed": (405, False, "method not allowed"),
     "ConflictError": (409, False, "resource conflict"),
+    "RelocationInProgressError": (409, True, "memory relocation in progress"),
     "PartialFailureError": (409, False, None),
     "WriteIncompleteError": (409, False, None),
     "RateLimitedError": (429, True, "too many requests"),

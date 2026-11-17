@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-12 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`；Portal 设计见 `docs/features/F08-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 最近一次修订日期 | 2026-11-16 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F08-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
 
@@ -29,7 +29,7 @@
 
 ## Portal 配置保存与恢复
 
-SDK 禁用 Portal 时，记忆实例直接使用启动配置，跳过 Portal 的配置库。旧库损坏时，
+启动新的 SDK Runtime 时禁用 Portal，只使用启动配置，跳过 Portal 的配置库。旧库损坏时，
 也可以按启动配置继续运行。
 jiuwenswarm 适配器按原有 JSON／YAML 规则解析 `config_path`，将配置内容和实际加载的
 文件路径传给 Runtime。文件路径用于定位配置库，字符串中的环境变量占位符保留原样。
@@ -42,6 +42,25 @@ jiuwenswarm 适配器按原有 JSON／YAML 规则解析 `config_path`，将配�
 已有本地绝对文档根下的 `memory/.shadow/portal-config.db`。其次按实际加载的配置文件
 路径和顺序，在最后一个文件旁确定配置库。两处都不可用时，页面无法编辑配置。只传配置
 字典且没有可用文档根时，自动装配会使用启动配置。可信宿主也可通过公开装配接口提供配置存储。
+
+跨进程共享 Portal 的配置库固定使用文档根下的 `portal-config.db`。配置库按稳定的
+`instance_id` 保存覆盖、版本及加密凭据引用。省略 ID 时使用 `default`。同一页面可选择
+不同实例，保存时检查所选实例的版本，并将设置应用到该实例。其他实例可以同时保存相同
+字段。新版首次打开旧配置库时，在同一事务中迁移整张表，已有版本、改动和凭据归入
+`default`。迁移前先停掉仍在访问该库的旧版 SDK 或 HTTP 服务，或停用它们的配置管理。
+使用不同实例 ID 的设置仍在同一张表中，均使用迁移后的表结构。
+接续 SDK 的多个 Provider 借用同一个文档 Runtime 时，应使用同一个 `instance_id`。
+接续 SDK 的独立页面按同样的规则定位配置库。配置覆盖在启用 Portal 的 Runtime 创建时加载。
+若 Runtime 创建时禁用了 Portal，后来启用 Portal 的 Provider 可复用该 Runtime 并管理记忆。
+要允许编辑配置，需要启用 Portal 并重新创建 Runtime。
+Provider 复用接续 Runtime 时，若启动配置定位的数据库与 Runtime 实际使用的配置库不同，
+该 Provider 的 Portal 配置请求返回 409，记忆操作仍可通过这个 Runtime 完成。
+接续旧设置的共享实例可以省略 ID。同一文档目录下仅一个共享实例能使用 `default`，
+其余共享实例使用各自的 ID。独立 SDK 和 HTTP 也使用 `default`。若这些服务仍在管理
+同一个配置库，共享 SDK 应使用其他 ID，以便分别管理配置。
+macOS 和 Windows 上凭据绑定到数据库在磁盘上的实际路径。旧版如果用了不同的路径拼写，
+例如 Windows 的扩展路径前缀，需要先沿用原路径启动一次。读取时会按实际路径重新加密，
+保留原有引用和配置版本。
 
 HTTP 只在安全配置声明固定个人身份，或宿主显式启用配置管理时访问配置库。
 其他 HTTP 启动方式跳过旧库，继续用启动配置运行。若所有候选位置都无法创建配置库，
@@ -155,6 +174,11 @@ API Key 在受保护凭据存储中保存，普通覆盖只保留引用；空输
     单次查询仍需 `RetrievalQuery.schema_temporal`（或兼容扩展键）显式请求，
     或同时开启 `schema_temporal_auto_enabled`，且 Parser 已有时间窗或内置
     规则能从原始 query 解析出时间窗。
+12. **同一进程共用一套 SDK 日志配置**：`globals.log_level`、`log_format`、`log_datefmt`、
+    `log_file`、`log_output` 和 `log_filters` 在首次日志初始化成功后固定。后续实例省略的配置沿用已有值；
+    相同配置可以重复使用，不会重复添加输出；换配置或换业务处理器对象会报错。不能通过
+    `ConfigSource` 在运行中修改这些设置。日志设置完成后，即使后续组件初始化失败，
+    这套设置仍然保留。
 
 ## 接口契约
 
@@ -189,6 +213,81 @@ API Key 在受保护凭据存储中保存，普通覆盖只保留引用；空输
 服务装配/关闭，不将 health 故障解释为拓扑切换，也不增加 ConfigSource 热切换键。
 `globals.schema_enabled` 是装配期扩展注册开关：为 `true` 时先注册 Schema target，
 再按命名空间中显式配置的 target 解析依赖；为 `false` 时不导入该扩展。
+
+### SDK 运行日志配置
+
+下列字段放在 `assemble(config=...)` / `assemble_runtime(config=...)` 所接收配置的
+`globals` 下。可以直接传 Python 字典，也可以先用 `Config.from_yaml("文件路径")` 读取
+业务自己的 YAML 文件再传入。SDK 没有固定的日志配置文件，也不会自动查找文件。
+首次日志初始化成功后，这些设置不再随运行中的配置更新而改变。
+
+| 全局字段 | 默认值 | 语义 |
+|---|---|---|
+| `log_level` | `INFO` | SDK 管理的两路输出使用的统一最低级别，子日志器不能降低此门槛；业务处理器自身的级别限制和过滤条件也继续生效 |
+| `log_format` | `[%(asctime)s] %(name)s %(levelname)s %(message)s` | SDK 自己的输出格式；业务处理器没有格式化器（`Formatter`）时也使用它 |
+| `log_datefmt` | `%Y-%m-%d %H:%M:%S` | SDK 设置的日志时间格式；不覆盖业务已有的格式化器 |
+| `log_file` | 空字符串 | SDK 自己的日志文件路径，使用 UTF-8 编码并追加写入；只在 `builtin` / `both` 模式创建 |
+| `log_output` | `builtin` | 选择 `builtin`、`business` 或 `both`，含义见下文 |
+| `log_filters.business.include` / `exclude` | 无限制 | 业务输出的正文包含、排除正则 |
+| `log_filters.builtin.include` / `exclude` | 无限制 | SDK 终端和内置文件共用的正文包含、排除正则 |
+
+`log_output` 的三个选项分别是：
+
+- `builtin`：SDK 输出到终端的标准错误输出（`stderr`），配置了 `log_file` 时也写入文件。
+- `business`：只交给 `log_handler` 指定的业务处理器，不创建 SDK 自己的终端或文件输出。
+- `both`：同时使用业务处理器和 SDK 自己的输出。
+
+首次调用没有指定 `log_output` 时，一律使用 `builtin`；传入业务处理器不会自动启用业务
+输出。明确选择 `business` 或 `both` 却没有提供处理器，会初始化失败。后续创建 SDK 实例时，
+可以省略 `log_handler`，继续使用首次注册的处理器。
+
+业务处理器已有的格式、日志级别限制和过滤条件继续生效。SDK 也会保留应用之前手工给 SDK
+日志器添加的处理器；选择 `business` 不会关闭这些已有输出。
+
+重复初始化和配置冲突的处理规则见 [S02](S02-memory-api.md#sdk-运行日志接管)。完整的配置与
+装配示例见 [F09](../features/api/F09-sdk-runtime-logging.md#配置文件和-sdk-装配示例)，由业务按示例准备自己的 YAML 和处理器。
+
+#### 两路独立的正文正则过滤
+
+```yaml
+globals:
+  log_output: both
+  log_level: INFO
+  log_filters:
+    business:
+      include: '超时|连接失败'
+      exclude: '健康检查'
+    builtin:
+      exclude: '健康检查'
+```
+
+本例的业务处理器只接收正文包含“超时”或“连接失败”、且不包含“健康检查”的日志。
+SDK 终端和内置文件只排除健康检查，其他达到级别门槛的日志照常输出。删除整个
+`builtin` 配置块后，内置输出不再按正文筛选。设置规则不会自动启用对应输出，仍由
+`log_output` 决定是否启用；业务处理器仍需通过 `log_handler` 提供。
+
+- 配置结构必须是映射：`log_filters` 只接受 `business`、`builtin`，各输出块只接受
+  `include`、`exclude`，未知字段和错误层级报 `ValidationError`。
+- 首次初始化时，省略规则或规则值为 `null` 表示无此限制；空字符串、非字符串及非法正则
+  均报 `ValidationError`。`null` 只能作为叶子规则值，不能代替整个配置块。
+- `include` 不匹配则不输出，`exclude` 匹配则不输出，同时匹配时排除优先。
+  使用 Python 标准 `re.search()`，允许在正文任意位置匹配，默认区分大小写。
+  需要忽略大小写可写 `(?i)`；正则建议用 YAML 单引号包裹。
+- 匹配脱敏后、日志参数填入后的正文，不含 Formatter 添加的时间、级别、路径，
+  不含另附的异常堆栈。正文内原有换行保留，遵循 Python 正则默认换行语义。
+  本次不提供按日志器名称匹配、正则替换或单独的 flags 配置项。
+- 两路匹配依据在业务处理前准备，不受业务 Handler 修改记录影响。Handler 仍接收标准
+  LogRecord 副本，SDK 不把原来的 `msg` / `args` 强制改成已拼接字符串。
+- 规则、SDK 级别、目标 Handler 级别和其自有 Filter 必须全部允许。SDK 不修改业务的
+  Filter 列表，也不对应用自行挂接的处理器施加这些正则。
+- 初始化时编译所有显式规则，包括尚未启用输出的规则；错误提示指出配置路径和错误位置，
+  不回显正则全文或日志正文。校验失败不会安装半套日志设置，已有设置也不会被覆盖。
+- 进程共享设置按叶子规则继承：后续省略规则沿用已有值，相同原文可重复使用，
+  不同原文或用 `null` 清除已配置规则报冲突。不根据正则语义判断等价，不支持热更新。
+- 未配置规则的输出不提前生成匹配正文。准备正文或匹配中的普通异常按输出隔离，
+  继续尝试其他输出；直接写到 `stderr` 的处理故障提示不参与正则过滤。
+
+匹配同步执行，不新增匹配超时机制。业务应使用简洁规则；复杂正则可能增加 SDK 调用耗时。
 
 Schema 构建参数中，`schema_entity_resolution_enabled` 与
 `schema_entity_merge_decision_enabled` 默认均为 `true`，用于 canonical identity 的
@@ -583,3 +682,20 @@ injection.prompt 默认只产生分类依据，不改变等级或正文；显式
 完整叠加示例见 [privacy-human-view.yml](../../examples/privacy-human-view.yml)，部署及
 首次登记见[配置指南](../zh/API文档/config.md#45-隐私分级与用户访问控制)，协议见
 [S10](S10-security.md#隐私保护与用户访问控制)。
+
+## 逻辑分片装配（第一阶段已实现）
+
+关联 [F09](../features/storage/F09-logical-sharding.md) 与 [S06](S06-storage.md)。
+
+**当前实现状态**：`shard_resolver` 命名空间、KV / 向量 / 全文 / 实体 `shard_routed` target、
+模板展开、能力与支持矩阵校验（Document Mode / FusionStore 拒绝，物理资源签名去重）已落地；
+拓扑登记在 manager 装配期自动执行（仅对有稳定物理标识的后端）；`--relocate-shard` 提供数据
+拷贝与登记更新；关联图 shared / split 已落地，证据图不分片。分片集合由解析器具名实例唯一声明，规则冻结于装配期。派生端口独立选择 shared/split：shared 只接受 inner，split 只接受模板及覆盖，两组互斥。模板由标准装配阶段展开成上下文内稳定内部实例，注册/安全校验/生命周期与具名实例一致，但不发布业务端口；不得由包装层另建配置系统。
+
+定位能力经具名 KV 注入并共享对象身份，**由装配器在端口构建完成后绑定**（未绑定即运行期报不支持，不在运行期重新解析拓扑）。根统一登记自有和借用资源、按身份去重，先关闭使用者，启动失败仅清理本次资源。能力/版本、分片覆盖、物理身份冲突、前置过滤、向量评分兼容及连接预算均启动校验；不按具体 target 判断。split 各 shard 物理身份必须不同（KV / 向量 / 全文 / 实体 / 图统一校验），shared 明确共享。持久资源身份登记不含凭据，改变数据集必须经迁移，不得以晚绑定绕过。
+
+**连接预算**：`globals.storage_connection_budget`（正整数，可选）是部署级总连接上限。装配期从端口表出发、按对象身份去重并沿 `BaseStore.connection_dependencies()` 递归（分片表 / 归属存储多为包装层内联实例，端口表看不到），累加各实例 `connection_budget()` 自报的上限；分片表各持一个池，这是分片数放大连接数的直接来源。超过预算即拒绝启动，未配置时只汇总并记日志。不暴露上限的后端（ES / Milvus / Redis 客户端池）不参与累加，不能按 0 估算成"安全"。
+
+**自动搬迁（F09 D16）**：`kv_store.<name>.params.relocate_on_update`（布尔，默认 `false`）开启后，`update` 只写 `relocate_to` 标记，由运维 / 定时任务调用 `relocate_pending()` 执行。`relocate_stale_after`（秒，默认 900）是判定遗留 `moving` 的阈值；`relocate_min_age`（秒，默认 30）是 `relocate_pending()` 缺省的最小标记时长，须大于派生后端的可见延迟；`relocate_max_failures`（正整数，默认 5）是同一记忆连续搬迁失败后放弃标记的上限；`recover_stale=True` 只允许在维护窗口使用。装配期校验：开关打开时必须能经 `SHARD_PLACEMENT` 端口取到搬迁控制面，且所有 `shard_routed` 的向量 / 全文 / 实体 / 关联图端口都声明 `SHARD_RELOCATABLE`（向量 / 全文 / 实体读取完整枚举的内层还必须声明 `UNIT_RECORD_LOOKUP`），否则拒绝启动；未开启时这些校验和归属记录扩展都不出现。
+
+向量、全文三层与实体默认 split，关联图默认 shared，各端口可显式覆盖；split 各分片必须声明互不相同的物理资源标识（Milvus 以 uri/collection 为身份），图不再需要额外的控制存储。Document Mode/Fusion 与本分片方案组合首版拒绝启动（依据能力声明判定，不按 target），Markdown 不拆分。未启用路由保持原装配行为。首版认证至 10 shard，更大部署显式放宽上限且重新评测。

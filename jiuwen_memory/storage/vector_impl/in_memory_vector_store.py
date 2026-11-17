@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from copy import deepcopy
+from threading import Lock
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.log import get_logger
@@ -19,6 +21,7 @@ from jiuwen_memory.common.type_def import (
     matches_filter_value,
 )
 from jiuwen_memory.storage.base import StoreType
+from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from jiuwen_memory.storage.vector import VectorProducer, VectorStore
 
@@ -45,6 +48,12 @@ class InMemoryVectorStore(VectorStore):
 
     def __init__(self) -> None:
         self._data: dict[_ScopeKey, dict[str, VectorRecord]] = defaultdict(dict)
+        self._lock = Lock()
+
+    def _snapshot(self, scope: Scope) -> list[VectorRecord]:
+        # Owned records are replaced, never mutated; scoring needs no store lock.
+        with self._lock:
+            return list(self._data.get(_skey(scope), {}).values())
 
     def store_type(self) -> StoreType:
         return StoreType.VECTOR
@@ -52,33 +61,54 @@ class InMemoryVectorStore(VectorStore):
     def health(self) -> None:
         return None
 
+    def capabilities(self) -> frozenset[StoreCapability]:
+        # 内存后端在 top-k 截断前逐条求值 filters，可作共享索引的前置过滤内层。
+        return frozenset(
+            {StoreCapability.SHARD_PREFILTER, StoreCapability.UNIT_RECORD_LOOKUP}
+        )
+
     def insert(self, scope: Scope, records: list[VectorRecord]) -> None:
-        bucket = self._data[_skey(scope)]
-        for rec in records:
-            if rec.id in bucket:
-                raise ConflictError("vector", rec.id)
-            bucket[rec.id] = rec
+        with self._lock:
+            bucket = self._data[_skey(scope)]
+            for rec in records:
+                if rec.id in bucket:
+                    raise ConflictError("vector", rec.id)
+                bucket[rec.id] = deepcopy(rec)
 
     def update(self, scope: Scope, records: list[VectorRecord]) -> None:
-        bucket = self._data[_skey(scope)]
-        for rec in records:
-            if rec.id not in bucket:
-                raise NotFoundError("vector", rec.id)
-            bucket[rec.id] = rec
+        with self._lock:
+            bucket = self._data[_skey(scope)]
+            for rec in records:
+                if rec.id not in bucket:
+                    raise NotFoundError("vector", rec.id)
+                bucket[rec.id] = deepcopy(rec)
 
     def delete(self, scope: Scope, ids: list[str]) -> None:
-        bucket = self._data[_skey(scope)]
-        for rec_id in ids:
-            bucket.pop(rec_id, None)
+        with self._lock:
+            bucket = self._data[_skey(scope)]
+            for rec_id in ids:
+                bucket.pop(rec_id, None)
 
     def get(self, scope: Scope, ids: list[str]) -> list[VectorRecord]:
-        bucket = self._data[_skey(scope)]
-        return [bucket[i] for i in ids if i in bucket]
+        with self._lock:
+            bucket = self._data.get(_skey(scope), {})
+            return [deepcopy(bucket[i]) for i in ids if i in bucket]
+
+    def record_ids_for_units(
+        self, scope: Scope, unit_ids: list[str]
+    ) -> dict[str, list[str]]:
+        """按 ``metadata.unit_id`` 找出该记忆的全部记录 id（F09 D16）。"""
+        wanted = set(unit_ids)
+        out: dict[str, list[str]] = {}
+        for rec in self._snapshot(scope):
+            unit_id = rec.metadata.get("unit_id")
+            if isinstance(unit_id, str) and unit_id in wanted:
+                out.setdefault(unit_id, []).append(rec.id)
+        return out
 
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
-        bucket = self._data[_skey(scope)]
         scored: list[ScoredID] = []
-        for rec in bucket.values():
+        for rec in self._snapshot(scope):
             if not evaluate(query.filters, lambda clause: matches_filter_value(
                 rec.metadata.get(filter_field_metadata_key(clause.field)), clause
             )):
@@ -88,7 +118,7 @@ class InMemoryVectorStore(VectorStore):
                 scored.append(ScoredID(
                     id=rec.id,
                     score=score,
-                    metadata=dict(rec.metadata) if query.return_metadata else None,
+                    metadata=deepcopy(rec.metadata) if query.return_metadata else None,
                 ))
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[: query.top_k]
@@ -107,9 +137,8 @@ class InMemoryVectorStore(VectorStore):
             msg = "InMemoryVectorStore.recall: output_fields only supports 'metadata', ignoring %s"
             if unknown:
                 logger.info(msg, unknown)
-        bucket = self._data[_skey(scope)]
         scored: list[ScoredHit] = []
-        for rec in bucket.values():
+        for rec in self._snapshot(scope):
             if not evaluate(query.filters, lambda clause: matches_filter_value(
                 rec.metadata.get(filter_field_metadata_key(clause.field)), clause
             )):
@@ -121,7 +150,7 @@ class InMemoryVectorStore(VectorStore):
                 ScoredHit(
                     id=rec.id,
                     score=sim,
-                    metadata=dict(rec.metadata) if fetch_meta else {},
+                    metadata=deepcopy(rec.metadata) if fetch_meta else {},
                 )
             )
         scored.sort(key=lambda s: s.score, reverse=True)

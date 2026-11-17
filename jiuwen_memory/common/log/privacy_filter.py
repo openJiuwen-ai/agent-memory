@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import logging
+import sys
+import threading
 from collections.abc import Iterable, Mapping
 from types import TracebackType
 from typing import Any
@@ -55,6 +57,62 @@ _MEMORY_UNIT_ID_FIELD_NAMES = frozenset(
         "updated_ids",
     }
 )
+
+
+_DIAGNOSTIC_LOCAL = threading.local()
+
+
+class _DiagnosticHandler(logging.StreamHandler):
+    """独立故障出口；不挂接日志器，且禁止标准 handleError 再次向 stderr 报错。"""
+
+    def __init__(self) -> None:
+        super().__init__(sys.stderr)
+        self.failed = False
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        del record
+        self.failed = True
+
+
+def _stack_location(exception: Exception) -> str:
+    try:
+        frames: list[str] = []
+        traceback = exception.__traceback__
+        while traceback is not None:
+            code = traceback.tb_frame.f_code
+            frames.append(f"{code.co_filename}:{traceback.tb_lineno} in {code.co_name}")
+            traceback = traceback.tb_next
+        return "; ".join(frames) if frames else "unknown location"
+    except Exception:
+        return "unknown location"
+
+
+def write_diagnostic(target: str, exception: Exception, *, operation: str) -> bool:
+    """报告安全故障提示；成功返回 True，写入失败或重入返回 False，不再递归报告。"""
+    if getattr(_DIAGNOSTIC_LOCAL, "active", False):
+        return False
+    _DIAGNOSTIC_LOCAL.active = True
+    try:
+        try:
+            message = (
+                f"SDK logging {operation} for {target} failed with "
+                f"{type(exception).__name__} at {_stack_location(exception)}"
+            )
+            # 直接调用单独的标准 Handler，不经过 SDK 路由、业务 Handler 或 root logger。
+            handler = _DiagnosticHandler()
+            try:
+                record = logging.LogRecord(
+                    "sdk.logging.diagnostic", logging.ERROR, "", 0, message, (), None
+                )
+                handler.emit(record)
+                return not handler.failed
+            finally:
+                handler.close()
+        except Exception:
+            # 最后一个诊断出口失败时返回状态；不能再调用日志系统或打断业务。
+            return False
+    finally:
+        _DIAGNOSTIC_LOCAL.active = False
 
 
 def _field_leaf(field_name: str) -> str:
@@ -227,19 +285,25 @@ class SensitiveDataFilter(logging.Filter):
     """在日志 Formatter 运行前统一解析敏感参数标记。"""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = _resolve_markers(record.msg)
-        record.args = _resolve_markers(record.args)
-        if record.exc_info is not None:
-            exception_type, _, exception_traceback = record.exc_info
-            record.exc_info = (
-                exception_type,
-                Exception(LOG_MASK),
-                exception_traceback,
+        try:
+            record.msg = _resolve_markers(record.msg)
+            record.args = _resolve_markers(record.args)
+            if record.exc_info is not None:
+                exception_type, _, exception_traceback = record.exc_info
+                record.exc_info = (
+                    exception_type,
+                    Exception(LOG_MASK),
+                    exception_traceback,
+                )
+                record.exc_text = _redacted_exception_text(
+                    exception_type,
+                    exception_traceback,
+                )
+        except Exception as exc:
+            write_diagnostic(
+                type(self).__name__, exc, operation="privacy filtering"
             )
-            record.exc_text = _redacted_exception_text(
-                exception_type,
-                exception_traceback,
-            )
+            return False
         return True
 
 

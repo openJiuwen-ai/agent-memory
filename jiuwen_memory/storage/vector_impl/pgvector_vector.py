@@ -21,6 +21,7 @@ from .._pg import (
 )
 from .._support import read_ssl_config, wrap_backend
 from ..base import StoreType
+from ..capability import StoreCapability
 from ..types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from ..vector import VectorStore
 
@@ -121,6 +122,38 @@ class PgVectorStore(PgStoreBase, VectorStore):
                 return id_
             seen.add(id_)
         return None
+
+    def capabilities(self) -> frozenset[StoreCapability]:
+        return frozenset(
+            {
+                StoreCapability.RESOURCE_DESCRIPTOR,
+                StoreCapability.SHARD_PREFILTER,
+                StoreCapability.UNIT_RECORD_LOOKUP,
+            }
+        )
+
+    def record_ids_for_units(
+        self, scope: Scope, unit_ids: list[str]
+    ) -> dict[str, list[str]]:
+        """按 ``metadata.unit_id`` 找出该记忆的全部记录 id（F09 D16）。
+
+        依赖 ``metadata`` 上的 jsonb 索引（``create_metadata_index``）；没有索引时
+        退化为顺序扫描。
+        """
+        if not unit_ids:
+            return {}
+        clause, params = pg_scope_clause(scope, exact=True)
+        statement = f"""
+            SELECT id, metadata->>'unit_id' AS unit_id
+            FROM {self._table_ref}
+            WHERE {clause} AND metadata->>'unit_id' = ANY(%s)
+        """
+        with wrap_backend(f"pgvector record lookup {len(unit_ids)} units"):
+            rows = self._fetch_all(statement, (*params, list(unit_ids)))
+        out: dict[str, list[str]] = {}
+        for row in rows:
+            out.setdefault(str(row[1]), []).append(str(row[0]))
+        return out
 
     def store_type(self) -> StoreType:
         return StoreType.VECTOR

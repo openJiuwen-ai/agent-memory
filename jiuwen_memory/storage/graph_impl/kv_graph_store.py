@@ -109,6 +109,10 @@ class KVGraphStore(GraphStore):
                 if edge_id in ids:
                     self._set_adj(scope, endpoint, [i for i in ids if i != edge_id])
 
+    def resource_descriptor(self) -> str | None:
+        descriptor = self._kv.resource_descriptor()
+        return None if descriptor is None else f"kv-graph://{descriptor}"
+
     def store_type(self):
         return StoreType.GRAPH
 
@@ -205,7 +209,7 @@ class KVGraphStore(GraphStore):
                         break
             return edges
 
-    def seed_ids(self, scope: Scope, tokens: set[str]):
+    def seed_ids(self, scope: Scope, tokens: set[str], *, extensions=None):
         if not tokens:
             return []
         matches = []

@@ -87,12 +87,15 @@ class AuthenticationError(AgentMemoryError):
 
 class RateLimitedError(AgentMemoryError):
     """
-    调用方超出速率上限：资源保护（``jiuwen_memory/common/security/protection/``）产出。
+    调用方超出速率、认证预算或 SDK 执行容量上限。
 
-    与 :class:`AuthenticationError` 必须可分（429 对 401）：限流发生在认证
+    与 :class:`AuthenticationError` 必须可分（429 对 401）：HTTP 入口限流发生在认证
     **之前**，此时还不知道凭据对不对——把它报成 401 会让「你被限流了」和
     「你的 key 错了」混在一起，运维排障时无法区分，客户端也不知道该重试
     还是该换凭据。
+
+    SDK 共享池在执行队列满时也使用此异常，表示操作尚未准入、未执行，可以稍后重试；
+    已准入操作的等待超时不属于本异常，不能据此推断操作未发生。
 
     对外消息同样笼统：不透露桶容量、剩余令牌、已计数的请求数——那些都能
     用来反推限流参数并贴着阈值发请求。
@@ -104,6 +107,22 @@ class ValidationError(AgentMemoryError):
     入参非法或不满足约束：如 ``DeleteSelector`` 未给任何条件、参数越界、
     向量维度与索引不一致等。
     """
+
+
+class MissingShardPlacementError(ValidationError):
+    """写入目标没有生效的分片归属（记忆已删除或从未写入分片 KV）。
+
+    单独成类，便于后台构建（如 ASSOCIATE）只跳过这一种可预期的数据缺失，
+    不吞掉后端自身抛出的配置 / 数据 :class:`ValidationError`。
+    """
+
+    def __init__(self, node_ids: list[str] | None = None, message: str = "") -> None:
+        self.node_ids = list(node_ids or [])
+        super().__init__(
+            message
+            or f"no active shard placement for graph node(s) {self.node_ids[:5]}; "
+            "the memory was never written to the sharded KV or has been deleted"
+        )
 
 
 class PolicyError(AgentMemoryError):
@@ -152,6 +171,22 @@ class UnsupportedCapabilityError(AgentMemoryError):
             or f"{component or 'component'!r} does not support "
             f"{capability or 'capability'} {value!r}"
         )
+
+
+class RelocationInProgressError(ConflictError):
+    """记忆正在搬迁（F09 D16）：写入被拒绝，可重试；映射为 HTTP 409。
+
+    重试语义与 :class:`ConflictError` 一致（继承它），但单独成类便于调用方区分
+    「正在搬迁」和「同 id 已存在」，也避免把搬迁窗口当成永久冲突。
+    """
+
+    def __init__(self, unit_id: str = "", message: str = "") -> None:
+        super().__init__(
+            entity="memory_relocation",
+            key=unit_id,
+            message=message or f"memory {unit_id!r} is being relocated; retry later",
+        )
+        self.unit_id = unit_id
 
 
 class UnsupportedStorageCapabilityError(AgentMemoryError):

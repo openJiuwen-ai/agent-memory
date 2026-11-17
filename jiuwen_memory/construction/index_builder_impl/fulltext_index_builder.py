@@ -27,6 +27,7 @@ from ._index_ops import (
     content_document,
     delete_layer_documents,
     fulltext_port,
+    require_forward_index_when_sharded,
 )
 
 logger = get_logger(__name__)
@@ -152,8 +153,12 @@ class FulltextIndexBuilder(IndexBuilder):
 
 @IndexBuilderProducer.register("fulltext")
 def _build(config):
+    manager = StoreManagerProducer.resolve(config)
+    require_forward_index_when_sharded(
+        manager, resolve_name(config, "kv_store"), builder="fulltext"
+    )
     return FulltextIndexBuilder(
-        StoreManagerProducer.resolve(config),
+        manager,
         fulltext_name=resolve_name(config, "fulltext_store"),
         layers_enabled=config.get("layers_index_enabled", True),
     )

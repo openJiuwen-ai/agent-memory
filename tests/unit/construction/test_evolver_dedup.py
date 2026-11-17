@@ -15,7 +15,11 @@ import pytest
 
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import Embedder
-from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.errors import (
+    ConflictError,
+    MissingShardPlacementError,
+    NotFoundError,
+)
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import (
     MD_TITLE_KEY,
@@ -31,6 +35,7 @@ from jiuwen_memory.common.type_def import (
     Temporal,
     memory_key,
 )
+from jiuwen_memory.common.type_def.feature import Relation
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.construction.abstractor import Abstractor
 from jiuwen_memory.construction.associator import Associator
@@ -55,6 +60,7 @@ from jiuwen_memory.storage.types import (
 )
 from jiuwen_memory.storage.vector import VectorStore
 from tests.conftest import make_storage
+from tests.support.whitebox import private, private_method, set_private
 
 pytestmark = pytest.mark.unit
 
@@ -323,7 +329,7 @@ class NoopGraphStore(GraphStore):
     def health(self) -> None:
         return None
 
-    def seed_ids(self, scope, tokens):
+    def seed_ids(self, scope, tokens, *, extensions=None):
         return []
 
     def insert(self, scope, nodes=None, edges=None):
@@ -652,7 +658,7 @@ class TestDedupAdd:
         )
 
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
 
         assert decision == DedupDecision.ADD
         assert existing is None
@@ -678,7 +684,7 @@ class TestDedupAdd:
 
         # 候选：与已有记忆不相似（hash embedder 下不同文本 cosine<1.0）
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
 
         # HashEmbedder 对不同文本产出不同向量，cosine 应低于 medium_threshold
         assert decision == DedupDecision.ADD
@@ -696,7 +702,7 @@ class TestDedupAdd:
         )
 
         candidates = [_make_unit("c1", "新事实")]
-        result = getattr(evolver, "_dedup_batch")(candidates)
+        result = private(evolver, "_dedup_batch")(candidates)
 
         assert result.created_ids == ["c1"]
         # 验证 KVStore 中有记录（evolver 落盘用 memory_key 前缀）
@@ -729,12 +735,12 @@ class TestDedupNoop:
 
         # 候选：与已有记忆文本完全相同 → cosine=1.0 → direct NOOP
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
 
         assert decision == DedupDecision.NOOP
         assert existing is not None
         assert similarity >= 0.85
-        assert getattr(llm, "_call_count") == 0
+        assert private(llm, "_call_count") == 0
 
     @staticmethod
     def test_score_below_default_high_similarity_routes_to_llm():
@@ -750,11 +756,11 @@ class TestDedupNoop:
         )
         existing = _make_unit("e1", "用户偏好简洁回答风格")
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        setattr(getattr(evolver, "_dedup"), "recall", lambda unit: [(existing, 0.99)])
+        setattr(private(evolver, "_dedup"), "recall", lambda unit: [(existing, 0.99)])
 
-        result = getattr(evolver, "_dedup_batch")([candidate])
+        result = private(evolver, "_dedup_batch")([candidate])
 
-        assert getattr(llm, "_call_count") == 1
+        assert private(llm, "_call_count") == 1
         assert result.created_ids == []
 
     @staticmethod
@@ -774,7 +780,7 @@ class TestDedupNoop:
         _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
 
         candidates = [_make_unit("c1", "用户偏好简洁回答风格")]
-        result = getattr(evolver, "_dedup_batch")(candidates)
+        result = private(evolver, "_dedup_batch")(candidates)
 
         assert result.created_ids == []
         assert result.updated_ids == []
@@ -808,11 +814,11 @@ class TestDedupDirectNoopDelta:
         def fake_recall(unit: MemoryUnit):
             return [(existing_unit, 0.95)]
 
-        setattr(getattr(evolver, "_dedup"), "recall", fake_recall)
+        setattr(private(evolver, "_dedup"), "recall", fake_recall)
 
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
 
-        assert getattr(llm, "_call_count") == 1, "有实质差异时应走 LLM 而非 direct_noop"
+        assert private(llm, "_call_count") == 1, "有实质差异时应走 LLM 而非 direct_noop"
         assert decision == DedupDecision.SUPERSEDE
         assert existing.id == "e1"
         assert similarity == pytest.approx(0.95)
@@ -839,11 +845,11 @@ class TestDedupDirectNoopDelta:
         def fake_recall(unit: MemoryUnit):
             return [(existing_unit, 0.95)]
 
-        setattr(getattr(evolver, "_dedup"), "recall", fake_recall)
+        setattr(private(evolver, "_dedup"), "recall", fake_recall)
 
-        result = getattr(evolver, "_dedup_batch")([candidate])
+        result = private(evolver, "_dedup_batch")([candidate])
 
-        assert getattr(llm, "_call_count") == 1, "有实质差异时 batch 应走 LLM"
+        assert private(llm, "_call_count") == 1, "有实质差异时 batch 应走 LLM"
         assert result.superseded_ids == ["e1"]
         assert result.created_ids == ["c1"]
         assert result.updated_ids == []
@@ -882,12 +888,12 @@ class TestDedupLLMTargetSelection:
         candidate = _make_unit("c1", "中午实际吃了汉堡王")
 
         setattr(
-            getattr(evolver, "_dedup"),
+            private(evolver, "_dedup"),
             "recall",
             lambda unit: [(existing, 0.95)],
         )
 
-        result = getattr(evolver, "_dedup_batch")([candidate])
+        result = private(evolver, "_dedup_batch")([candidate])
 
         assert result.created_ids == ["c1"]
         if existing_id is None:
@@ -934,7 +940,7 @@ class TestDedupSupersede:
 
         # 候选：与旧版**同文本** → cosine=1.0 → LLM 判定 supersede
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        result = getattr(evolver, "_dedup_batch")([candidate])
+        result = private(evolver, "_dedup_batch")([candidate])
 
         assert "c1" in result.created_ids
         assert "e1" in result.superseded_ids
@@ -983,7 +989,7 @@ class TestDedupUpdate:
 
         # 候选：与已有记忆**同文本**触发 cosine=1.0 → LLM 判定 update
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        result = getattr(evolver, "_dedup_batch")([candidate])
+        result = private(evolver, "_dedup_batch")([candidate])
 
         assert "e1" in result.updated_ids
         assert "c1" not in result.created_ids
@@ -1022,7 +1028,7 @@ class TestDedupUpdate:
         _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
 
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        result = getattr(evolver, "_dedup_batch")([candidate])
+        result = private(evolver, "_dedup_batch")([candidate])
 
         # UPDATE 照常执行，但 content 为降级拼接（非空串）
         assert result.updated_ids == ["e1"]
@@ -1054,9 +1060,9 @@ class TestDedupDegradation:
         def failing_embed(texts):
             raise RuntimeError("Embedder unavailable")
 
-        getattr(getattr(evolver, "_dedup"), "_embedder").embed = failing_embed
+        private(private(evolver, "_dedup"), "_embedder").embed = failing_embed
 
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
         assert decision == DedupDecision.ADD
         assert similarity == pytest.approx(0.0)
 
@@ -1078,9 +1084,9 @@ class TestDedupDegradation:
         def failing_search(scope, query):
             raise RuntimeError("VectorStore unavailable")
 
-        getattr(getattr(evolver, "_dedup"), "_vector_store").search = failing_search
+        private(private(evolver, "_dedup"), "_vector_store").search = failing_search
 
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
         assert decision == DedupDecision.ADD
 
     @staticmethod
@@ -1105,11 +1111,11 @@ class TestDedupDegradation:
         def failing_chat(messages, **options):
             raise RuntimeError("LLM unavailable")
 
-        getattr(evolver, "_llm").chat = failing_chat
+        private(evolver, "_llm").chat = failing_chat
 
         # 候选与已有记忆文本相同 → cosine=1.0 ≥ high_threshold → 降级判定 NOOP
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
 
         assert decision == DedupDecision.NOOP
         assert similarity >= 0.85
@@ -1136,7 +1142,7 @@ class TestDedupDegradation:
         _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
 
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
 
         # LLM 返回非 JSON → fallback ADD
         assert decision == DedupDecision.ADD
@@ -1168,7 +1174,7 @@ class TestDedupSelfFilter:
         stores["vector"].insert(candidate.scope, [record])
 
         # 候选自身的向量会被过滤掉（因为 id 以 "c1-" 开头）
-        decision, existing, similarity = getattr(evolver, "_dedup_single")(candidate)
+        decision, existing, similarity = private(evolver, "_dedup_single")(candidate)
 
         assert decision == DedupDecision.ADD
         assert existing is None
@@ -1370,7 +1376,7 @@ class TestDedupImportanceMax:
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
         if candidate_importance is not None:
             candidate.system_metadata["importance"] = candidate_importance
-        getattr(evolver, "_dedup_batch")([candidate])
+        private(evolver, "_dedup_batch")([candidate])
         stored_id = "e1" if decision == "update" else "c1"
         return loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(stored_id)))
 
@@ -1425,7 +1431,7 @@ class TestDedupOriginPreserved:
         candidate = _make_unit("c1", "用户偏好简洁回答风格")
         if candidate_origin is not None:
             candidate.system_metadata["origin"] = candidate_origin
-        getattr(evolver, "_dedup_batch")([candidate])
+        private(evolver, "_dedup_batch")([candidate])
         stored_id = "e1" if decision == "update" else "c1"
         return loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(stored_id)))
 
@@ -1445,3 +1451,32 @@ class TestDedupOriginPreserved:
     def test_supersede_keeps_candidate_origin(self):
         replacement = self._run("supersede", "original", "inferred")
         assert replacement.system_metadata["origin"] == "inferred"
+
+
+class _EdgeCollectingGraph(NoopGraphStore):
+    def __init__(self) -> None:
+        self.edges: list[tuple[str, str]] = []
+
+    def insert(self, scope, nodes=None, edges=None):
+        for edge in edges or []:
+            if edge.source == "deleted":
+                raise MissingShardPlacementError([edge.source])
+            self.edges.append((edge.source, edge.target))
+
+
+def test_persist_graph_skips_only_bad_edge() -> None:
+    evolver = object.__new__(OrchestratingEvolver)
+    graph = _EdgeCollectingGraph()
+    set_private(evolver, "_graph", graph)
+    set_private(evolver, "_privacy", None)
+    unit = _make_unit("e-good", "good")
+
+    private_method(evolver, "_persist_graph")(
+        [unit],
+        [
+            Relation("deleted", "e-good", "related"),
+            Relation("e-good", "e-other", "related"),
+        ],
+    )
+
+    assert graph.edges == [("e-good", "e-other")]

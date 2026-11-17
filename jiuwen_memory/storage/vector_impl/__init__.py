@@ -12,4 +12,6 @@ import_optional(".in_memory_vector_store", __name__)
 import_optional(".milvus_vector", __name__)
 import_optional(".pgvector_vector", __name__)
 
+import_optional(".shard_routed_vector", __name__)
+
 __all__ = ["VectorProducer"]

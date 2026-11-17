@@ -268,6 +268,8 @@ class ContinuityOpsMixin:
             self._authorize(security, scope, Action.WRITE, "continuity_task_write")
         service = self._role_service(scope)
         owner = fingerprint(asdict(security.auth.actor))
+        if request.operation == "create" and request.parent_task_id:
+            self._authorize(security, scope, Action.READ, "continuity_task_parent")
         if request.operation not in {"create", "get", "find"}:
             if service.task_owner(scope, request.task_id) != owner:
                 raise PermissionDeniedError("continuity_task_write")

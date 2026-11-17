@@ -12,6 +12,7 @@ from collections.abc import Iterable
 
 from jiuwen_memory.common.chunker.base import Chunker
 from jiuwen_memory.common.embedder.base import Embedder
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.log import get_logger, redact_for_log, scope_for_log
 from jiuwen_memory.common.time_utils import epoch_ms
 from jiuwen_memory.common.type_def import (
@@ -33,6 +34,33 @@ from jiuwen_memory.storage.vector import VectorStore
 logger = get_logger(__name__)
 
 ScopeKey = tuple[str, str, str, str, str]
+
+
+def require_forward_index_when_sharded(
+    manager: StoreManager, kv_name: str, *, builder: str
+) -> None:
+    """分片部署要求 IndexBuilder 写正排 KV——否则记忆永远没有归属记录。
+
+    分片归属由 ``ShardRoutedKVStore.insert`` 在写 KV 时创建。只写派生索引的构建器
+    （``fulltext`` / ``vector``）不碰 KV，随后的派生写入按 id 定位必然失败，表现为
+    每条 add 都报 "no active shard placement"——那个错误看不出真正原因（构建器选错）。
+    这里在装配期直接拒绝并指出可用实现。
+
+    非分片部署不受影响：只有 KV 端口声明 ``SHARD_ROUTED`` 时才校验。
+    """
+    from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
+
+    if not manager.has_kv(kv_name):
+        return
+    if StoreCapability.SHARD_ROUTED not in capabilities_of(manager.kv(kv_name)):
+        return
+    raise ValidationError(
+        f"index_builder target {builder!r} only writes a derived index and never writes "
+        "the forward KV; logical sharding creates the shard placement during the KV "
+        "insert, so this deployment would fail every add with "
+        "'no active shard placement'. Use index_builder 'forward' / 'hybrid' / "
+        "'unified', or disable logical sharding."
+    )
 
 # ---------------------------------------------------------------------------
 # Scope 辅助

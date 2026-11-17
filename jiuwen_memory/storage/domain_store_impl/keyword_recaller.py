@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from dataclasses import asdict
 from statistics import median
 
+from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError
 from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.plaintext import PlaintextDataError
+from jiuwen_memory.common.trace import TraceLevel, trace_event
 from jiuwen_memory.common.type_def import ParsedQuery, RecallChannel, Scope, ScoredUnit
 from jiuwen_memory.common.type_def.entity import (
     EntityStoreFilters,
@@ -27,9 +30,11 @@ from jiuwen_memory.common.type_def.entity import (
 from jiuwen_memory.common.type_def.normalizer import EntityNormalizer
 from jiuwen_memory.common.type_def.retrieval_filter import is_retrieval_candidate
 from jiuwen_memory.common.type_def.scope import space_id_from_scope
+from jiuwen_memory.storage.capability import StoreCapability
 from jiuwen_memory.storage.entity_store import EntityStore
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.kv import load_units
+from jiuwen_memory.storage.shard_search import parse_shards
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -98,6 +103,28 @@ class KeywordRecaller(Recaller):
         merged.sort(key=lambda u: u.score, reverse=True)
         return merged
 
+    def _entity_supports_shards(self) -> bool:
+        store = self._entity_store
+        capabilities = getattr(store, "capabilities", None)
+        return callable(capabilities) and StoreCapability.SHARD_ROUTED in capabilities()
+
+    def supports_shards(self) -> bool:
+        """关键词通道要求全文与实体两个下游都能按分片收窄。
+
+        只认 ``SHARD_ROUTED``：``SHARD_PREFILTER`` 说明「给了分片条件就能在截断前
+        过滤」，不代表**这条通道会注入**分片条件。把内层能力当作通道能力会让
+        「普通全文索引 + 分片 KV」的混合拓扑自称支持，实际却先召回全部再后过滤
+        （S09 #6 / S02）。
+        """
+        store = self._fulltext
+        capabilities = getattr(store, "capabilities", None)
+        fulltext_ok = callable(capabilities) and (
+            StoreCapability.SHARD_ROUTED in capabilities()
+        )
+        if self._entity_store is None:
+            return fulltext_ok
+        return fulltext_ok and self._entity_supports_shards()
+
     def health(self) -> None:
         return None
 
@@ -113,6 +140,10 @@ class KeywordRecaller(Recaller):
             filters=query.scalar_filters,  # scope 不混进 filters，单独走入参
             extensions=dict(query.extensions),
         )
+        trace_event(type(self).__name__, "recall_syntax", lambda: {
+            "text": tq.text, "filters": asdict(tq.filters) if tq.filters else None,
+            "top_k": top_k, "layer": self._layer,
+        }, level=TraceLevel.DEBUG)
         hits = self._fulltext.search(scope, tq)
         records = self._fulltext.get(scope, [h.id for h in hits])
         batch1 = aggregate_to_units(hits, records, RecallChannel.KEYWORD)
@@ -191,11 +222,19 @@ class KeywordRecaller(Recaller):
 
         space_id = space_id_from_scope(scope)
         filters = EntityStoreFilters.from_scope(scope)
+        requested = parse_shards(query.extensions)
+        shards = frozenset(requested) if requested is not None else None
+        if shards is not None and not self._entity_supports_shards():
+            # 不支持即报错，不能吞掉后静默退回全分片（F09 D11 / P2）。
+            raise UnsupportedStorageCapabilityError(
+                "entity channel does not support shards narrowing"
+            )
         try:
             entity_records = self._entity_store.find_by_entity_text_hash(
-                space_id,
+                scope,
                 tuple(hashes),
                 filters=filters,
+                shards=shards,
                 limit=self._entity_list_limit(len(hashes)),
             )
         except PlaintextDataError:

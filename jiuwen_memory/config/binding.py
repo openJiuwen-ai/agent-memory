@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jiuwen_memory.config.active import resolve_bound_value
@@ -91,6 +94,37 @@ def resolve_connection_url(
         return None
     text = str(live).strip()
     return text or None
+
+
+def _canonical_local_path(path: Path, *, create: bool = False) -> str:
+    """Resolve a configured path, including its on-disk spelling when needed."""
+    if sys.platform == "win32" and create:
+        # Two starters using different casing must resolve the same first-created name.
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(descriptor)
+    resolved = path.resolve()
+    if sys.platform == "win32" and resolved.drive.endswith(":"):
+        # Use one identity for the ordinary and extended forms of a local drive path.
+        return str(resolved).removeprefix("\\\\?\\")
+    if sys.platform != "darwin":
+        return str(resolved)
+
+    import fcntl
+
+    # On case-insensitive volumes, realpath can retain the caller's spelling.
+    flags = os.O_RDONLY | os.O_NONBLOCK
+    if create:
+        flags |= os.O_CREAT
+    fd = os.open(resolved, flags, 0o600)
+    try:
+        stored_path = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+        return os.fsdecode(stored_path.split(b"\0", 1)[0])
+    finally:
+        os.close(fd)
 
 
 def endpoint_key(namespace: str, field: str) -> str:

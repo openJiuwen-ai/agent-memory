@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.trace import capture_trace
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config.context import ComponentConfig
 from jiuwen_memory.control.pipeline import PipelineBinding
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
+from jiuwen_memory.retrieval.trace_projection import record_step, trajectory_steps
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, TrajectoryStep
 
 logger = get_logger(__name__)
@@ -74,10 +78,18 @@ class RetrievalPipelines:
         else:
             retriever, name, source = self._default, "default", "default"
         logger.debug("Retriever selected: pipeline=%s source=%s", name, source)
-        result = retriever.retrieve(scope, query)
-        if query.with_trajectory:
-            # 保留 Prepared/SchemaTemporal 结果子类型及内部展开来源，只更新轨迹。
-            result.trajectory.insert(0, TrajectoryStep(
-                stage="pipeline", detail={"name": name, "source": source},
-            ))
-        return result
+        with capture_trace() if query.with_trajectory else nullcontext() as capture:
+            with capture_trace() if query.with_trajectory else nullcontext() as selection:
+                record_step("RetrievalPipelines", TrajectoryStep(
+                    stage="pipeline", detail={"name": name, "source": source},
+                ), enabled=query.with_trajectory)
+            result = retriever.retrieve(scope, query)
+            if selection is not None:
+                result.trajectory[0:0] = trajectory_steps(selection)
+            if capture is not None and capture.dropped:
+                result.trajectory = [s for s in result.trajectory if s.stage != "trace_truncated"]
+                result.trajectory.append(TrajectoryStep(
+                    stage="trace_truncated",
+                    detail={"reason": "max_nodes", "dropped": str(capture.dropped)},
+                ))
+            return result
