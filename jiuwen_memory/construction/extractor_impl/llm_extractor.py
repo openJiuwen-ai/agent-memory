@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -307,6 +308,99 @@ def _strip_source_id_shell(raw: str) -> str:
     """
     m = _SOURCE_ID_SHELL_RE.match(raw)
     return m.group("id").strip() if m else raw.strip()
+
+
+_SOURCE_ID_EDIT_DISTANCE = 1
+
+
+def _edit_distance_within(a: str, b: str, limit: int) -> bool:
+    """a 与 b 的编辑距离是否不超过 ``limit``（带早停的 Levenshtein）。
+
+    只用于短 id 的抄写容错：长度差超过 limit 直接判否，其余按行最小值早停。
+    """
+    if abs(len(a) - len(b)) > limit:
+        return False
+    if a == b:
+        return True
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        current = [i]
+        row_min = i
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > limit:
+            return False
+        previous = current
+    return previous[-1] <= limit
+
+
+def resolve_source_id(raw_id: str, batch_ids: Sequence[str]) -> str | None:
+    """把 LLM 返回的 source_id 解析到本批次中的真实 unit id；无法唯一确定时返回 None。
+
+    解析顺序：
+
+    1. 剥掉 ``[ID: ...]`` 外壳后精确匹配；
+    2. 取 UUID 第一段比较（模型常把短 id 补成完整 UUID）；
+    3. 编辑距离 ≤1 且**批次内唯一**时容错。
+
+    第 3 步刻意要求唯一：多个候选距离相同时无法判定归属，宁可丢弃该候选
+    （触发重试或跳过）也不能绑错——绑错会污染记忆真源。
+
+    该校验的职责是「防止候选绑到错误的 unit」，不是「拒绝近似写法」。
+    LLM 抄写短 id 时的单字符错误属于同类失败，不应升级为整轮流程的致命错误。
+    """
+    candidate = _strip_source_id_shell(raw_id or "")
+    if not candidate or not batch_ids:
+        return None
+
+    if candidate in batch_ids:
+        return candidate
+
+    # 模型把短 id 补成完整 UUID。按 UUID 第一段取，不按 batch id 长度截断——
+    # 抄写错误会改变长度（ccbf1798 -> ccb1798-018c-...）。
+    head = candidate.split("-", 1)[0]
+    prefix_hits = [bid for bid in batch_ids if head == bid]
+    if len(prefix_hits) == 1:
+        return prefix_hits[0]
+
+    prefix_close = [
+        bid
+        for bid in batch_ids
+        if _edit_distance_within(head, bid, _SOURCE_ID_EDIT_DISTANCE)
+    ]
+    if len(prefix_close) == 1 and not prefix_hits:
+        logger.warning(
+            "Extractor: source_id %r matched to %r by prefix edit distance 1",
+            candidate,
+            prefix_close[0],
+        )
+        return prefix_close[0]
+
+    close_hits = [
+        bid
+        for bid in batch_ids
+        if _edit_distance_within(candidate, bid, _SOURCE_ID_EDIT_DISTANCE)
+    ]
+    if len(close_hits) == 1 and not prefix_hits:
+        logger.warning(
+            "Extractor: source_id %r matched to %r by edit distance 1 "
+            "(LLM transcription error tolerated)",
+            candidate,
+            close_hits[0],
+        )
+        return close_hits[0]
+
+    if len(prefix_close) > 1 or len(close_hits) > 1:
+        logger.error(
+            "Extractor: source_id %r is ambiguous (%s / %s); candidate dropped",
+            candidate,
+            prefix_close,
+            close_hits,
+        )
+    return None
 
 
 def _parse_event_date(raw: str) -> datetime | None:
@@ -649,8 +743,10 @@ class ExtractorImpl(Extractor):
                 invalid_reasons.append(f"item {item_index} confidence is outside [0, 1]")
                 continue
 
-            source_id = _strip_source_id_shell(str(item.get("source_id", "")))
-            if source_id not in unit_map:
+            source_id = resolve_source_id(
+                str(item.get("source_id", "")), list(unit_map)
+            )
+            if source_id is None:
                 unmatched += 1
                 invalid_reasons.append(
                     f"item {item_index} source_id {source_id!r} is not in the batch"

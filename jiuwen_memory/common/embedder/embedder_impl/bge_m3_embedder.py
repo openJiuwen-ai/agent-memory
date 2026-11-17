@@ -21,6 +21,7 @@ L2 归一化在 encode 之后手动完成（而非传 normalize_embeddings 给�
 from __future__ import annotations
 
 import math
+import threading
 
 from jiuwen_memory.common._support import resolve_model_source
 from jiuwen_memory.common.base import PluginType
@@ -71,6 +72,10 @@ class BGEM3Embedder(Embedder):
         self._normalize_embeddings = normalize_embeddings
         self._use_fp16 = use_fp16
         self._model = None  # lazy load
+        # 底层 FlagEmbedding 模型非线程安全：encode 内部会按需 model.to(device)，
+        # 并发进入时后到线程只能看到 meta 占位权重（Cannot copy out of meta tensor）。
+        # 同一把可重入锁覆盖「加载」与「推理」，保证加载只发生一次、推理串行。
+        self._model_lock = threading.RLock()
 
     def plugin_type(self) -> PluginType:
         return PluginType.EMBEDDER
@@ -110,6 +115,11 @@ class BGEM3Embedder(Embedder):
         repo id 只从本地 HuggingFace 缓存解析，模型加载过程不联网。
         本地目录直接加载。
         """
+        with self._model_lock:
+            self._load_model_locked()
+
+    def _load_model_locked(self):
+        """调用方必须已持有 ``self._model_lock``。"""
         if self._model is not None:
             return
         # CPU 环境下强制 fp32：fp16 是 CUDA tensor 优化，CPU 上 FlagEmbedding 的设备
@@ -158,14 +168,16 @@ class BGEM3Embedder(Embedder):
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         # normalize_embeddings 不传给底层 tokenizer（避免版本兼容问题），
         # 而在 encode 之后手动做 L2 归一化。
-        result = self._model.encode(
-            texts,
-            return_dense=True,
-            return_sparse=False,
-            return_colbert_vecs=False,
-            max_length=self._max_length,
-            batch_size=self._max_batch_size,
-        )
+        # 推理串行：底层模型在多线程下会破坏自身设备状态。
+        with self._model_lock:
+            result = self._model.encode(
+                texts,
+                return_dense=True,
+                return_sparse=False,
+                return_colbert_vecs=False,
+                max_length=self._max_length,
+                batch_size=self._max_batch_size,
+            )
         dense = result["dense_vecs"]
         # dense 是 numpy ndarray (batch, dim) → 转为 list[list[float]]
         vectors = [row.tolist() for row in dense]

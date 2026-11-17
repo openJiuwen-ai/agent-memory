@@ -270,6 +270,13 @@ privacy_rule_ids / privacy_categories 诊断摘要，客户端不可赋值。私
     非法值在装配阶段报错；ASR 同一客户端的探活与各分片转写共用该策略；
     详见 [F05-model-service-ssl.md](../../docs/features/common/F05-model-service-ssl.md) 第八节。
 
+10. **本地推理插件必须并发安全**：`BGEM3Embedder` / `BGEReranker` 懒加载的底层模型
+    非线程安全——`encode()` / `compute_score()` 内部会按需 `model.to(device)`，
+    多线程并发进入时后到线程只能看到 meta 占位权重
+    （`Cannot copy out of meta tensor; no data!`）。两处实现都用 `threading.RLock`
+    同时覆盖「加载」与「推理」：锁内二次检查保证模型只构造一次，推理串行保证
+    设备状态不被破坏。新增同类插件时照此处理。
+
 ### 树结构基础
 
 - `type_def/hierarchy.py` 提供结构枚举、`HierarchyRef`、纯校验与索引六字段投影；不依赖存储与构建实现。
