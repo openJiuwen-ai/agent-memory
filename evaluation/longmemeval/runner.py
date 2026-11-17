@@ -45,8 +45,15 @@ class Runner:
         config: Config | None = None,
         concurrency: int = 1,
         artifact_dir: str | Path | None = None,
+        checkpoint_dir: str | Path | None = None,
+        checkpoint_fingerprint: str = "",
     ) -> RunResult:
-        harness = EvalHarness(config=config, artifact_dir=artifact_dir)
+        harness = EvalHarness(
+            config=config,
+            artifact_dir=artifact_dir,
+            checkpoint_dir=checkpoint_dir,
+            checkpoint_fingerprint=checkpoint_fingerprint,
+        )
         try:
             outcomes = harness.evaluate(dataset, concurrency=concurrency)
         finally:

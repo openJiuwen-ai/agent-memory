@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from inspect import signature
 from pathlib import Path
@@ -31,8 +32,11 @@ from jiuwen_memory.common.type_def import Context
 from jiuwen_memory.config.config import Config
 
 from .artifacts import sha256_file, to_jsonable, write_json
+from .checkpoint import CheckpointError, load_checkpoint, save_checkpoint
 from .no_source import assert_no_source, no_source_extraction
 from .types import CaseOutcome, Dataset, MemorySeed, QueryCase
+
+logger = logging.getLogger(__name__)
 
 
 def _shared_evaluation_kv(api: Any) -> Any:
@@ -57,9 +61,16 @@ class EvalHarness:
         self,
         config: Config | None = None,
         artifact_dir: str | Path | None = None,
+        checkpoint_dir: str | Path | None = None,
+        checkpoint_fingerprint: str = "",
     ) -> None:
         runtime = assemble_runtime(config=config)
         self._runtime: MemoryRuntime | None = runtime
+        self._checkpoint_dir: Path | None = Path(checkpoint_dir) if checkpoint_dir else None
+        self._checkpoint_fingerprint = checkpoint_fingerprint
+        self._enable_timing = True
+        if not hasattr(self, "_failed_scopes"):
+            self._failed_scopes = []
         # 本地跨主体评测显式选择 ROOT，不依赖 DEV 缺省提权；数据集 scope 只作目标。
         self._authenticator = build_dev_authenticator(
             identities={
@@ -147,12 +158,17 @@ class EvalHarness:
 
         setattr(extractor, "_build_units", captured_build_units)
 
-    def ingest(self, seeds: list[MemorySeed]) -> None:
-        """逐条写入语料，捕获每个数据集 key 对应的真实 unit_id（可为多条：规约/切分）。"""
+    def ingest(self, seeds: list[MemorySeed]) -> dict[str, list[str]]:
+        """逐条写入语料，返回本 scope 的 key→unit_id 映射（可为多条：规约/切分）。
+
+        返回而非写入实例状态，使并发执行时各 scope 天然隔离：
+        两个 scope 的 key 可能重名，共享一个字典会互相覆盖。
+        """
         add = getattr(self._api, "add", None) or getattr(self._api, "write")
         metadata_arg = (
             "system_metadata" if "system_metadata" in signature(add).parameters else "metadata"
         )
+        key2ids: dict[str, list[str]] = {}
         for seed in seeds:
             kwargs = {
                 "tags": list(seed.tags),
@@ -165,9 +181,19 @@ class EvalHarness:
                 seed.scope,
                 **kwargs,
             )
-            self._key2ids[seed.key] = [u.id for u in units]
+            key2ids[seed.key] = [u.id for u in units]
+        return key2ids
 
-    def run_query(self, case: QueryCase) -> CaseOutcome:
+    def run_query(
+        self,
+        case: QueryCase,
+        key2ids: dict[str, list[str]] | None = None,
+        *,
+        enable_timing: bool = True,
+    ) -> CaseOutcome:
+        if key2ids is None:
+            key2ids = {}
+
         """执行一次 recall，把相关性标注 key 映射为物理 id，连同轨迹打包为观测。"""
         search = getattr(self._api, "search", None) or getattr(self._api, "recall")
         search_security = self._security_kwargs(search, case.scope)
@@ -251,12 +277,12 @@ class EvalHarness:
         relevant_ids = set()
         relevant_key_unit_ids: dict[str, list[str]] = {}
         for key in case.relevant_keys:
-            unit_ids = list(self._key2ids.get(key, []))
+            unit_ids = list(key2ids.get(key, []))
             relevant_ids.update(unit_ids)
         source_keys = case.relevant_source_keys or {key: {key} for key in case.relevant_keys}
         for source_key, keys in source_keys.items():
             relevant_key_unit_ids[source_key] = [
-                unit_id for key in keys for unit_id in self._key2ids.get(key, [])
+                unit_id for key in keys for unit_id in key2ids.get(key, [])
             ]
         return CaseOutcome(
             query_id=case.query_id,
@@ -286,6 +312,9 @@ class EvalHarness:
         """按 scope 隔离执行 write→recall；可并行不同 sample 的 scope。"""
         if concurrency <= 0:
             raise ValueError(f"evaluation concurrency must be positive, got {concurrency}")
+        # 计时依赖替换 storage.recall（进程级共享对象），并发线程会互相覆盖补丁；
+        # 性能指标在并发下也不成立，故仅在串行时启用。
+        self._enable_timing = concurrency == 1
         seeds_by_scope: dict[tuple[str, ...], list[MemorySeed]] = {}
         cases_by_scope: dict[tuple[str, ...], list[tuple[int, QueryCase]]] = {}
         for seed in dataset.seeds():
@@ -299,13 +328,34 @@ class EvalHarness:
         ]
         if self._artifact_dir is not None and len(jobs) != 1:
             raise ValueError("--artifact-dir requires exactly one isolated sample scope")
+        if self._artifact_dir is not None and concurrency > 1:
+            raise ValueError(
+                "--artifact-dir 记录跨 scope 共享的采集状态，不支持 --concurrency > 1"
+            )
         with no_source_extraction():
             if concurrency == 1:
-                indexed_outcomes = [
-                    result
-                    for seeds, indexed_cases in jobs
-                    for result in self._evaluate_scope(seeds, indexed_cases)
-                ]
+                indexed_outcomes = []
+                for seeds, indexed_cases in jobs:
+                    query_ids = [case.query_id for _, case in indexed_cases]
+                    cached = self._load_cached(query_ids)
+                    if cached is not None:
+                        logger.info(
+                            "EvalHarness: checkpoint hit, reusing %d result(s): %s",
+                            len(cached),
+                            query_ids,
+                        )
+                        by_id = {outcome.query_id: outcome for outcome in cached}
+                        indexed_outcomes.extend(
+                            (index, by_id[case.query_id])
+                            for index, case in indexed_cases
+                            if case.query_id in by_id
+                        )
+                        continue
+                    results = self._evaluate_scope_or_fail(seeds, indexed_cases)
+                    if results is None:
+                        continue
+                    self._save_cached(results)
+                    indexed_outcomes.extend(results)
             else:
                 indexed_outcomes = []
                 with ThreadPoolExecutor(
@@ -313,11 +363,13 @@ class EvalHarness:
                     thread_name_prefix="memory-eval",
                 ) as executor:
                     futures = [
-                        executor.submit(self._evaluate_scope, seeds, indexed_cases)
+                        executor.submit(self._evaluate_scope_or_fail, seeds, indexed_cases)
                         for seeds, indexed_cases in jobs
                     ]
                     for future in as_completed(futures):
-                        indexed_outcomes.extend(future.result())
+                        results = future.result()
+                        if results is not None:
+                            indexed_outcomes.extend(results)
         return [outcome for _, outcome in sorted(indexed_outcomes, key=lambda item: item[0])]
 
     def _evaluate_scope(
@@ -325,14 +377,17 @@ class EvalHarness:
         seeds: list[MemorySeed],
         indexed_cases: list[tuple[int, QueryCase]],
     ) -> list[tuple[int, CaseOutcome]]:
-        self.ingest(seeds)
+        key2ids = self.ingest(seeds)
         persisted_units = self._list_persisted_units(indexed_cases[0][1].scope)
         assert_no_source(
             self._kv,
             indexed_cases[0][1].scope,
             persisted_units,
         )
-        results = [(index, self.run_query(case)) for index, case in indexed_cases]
+        results = [
+            (index, self.run_query(case, key2ids, enable_timing=self._enable_timing))
+            for index, case in indexed_cases
+        ]
         if self._artifact_dir is not None:
             self._write_scope_artifacts(
                 indexed_cases[0][1].scope,
@@ -438,6 +493,49 @@ class EvalHarness:
                 },
             },
         )
+
+    # ---------------------------------------------------------- 断点与容错
+    def _load_cached(self, query_ids: list[str]):
+        """命中返回 outcomes；未启用或不满足前提返回 None（调用方重跑）。"""
+        if self._checkpoint_dir is None:
+            return None
+        return load_checkpoint(
+            self._checkpoint_dir, self._checkpoint_fingerprint, query_ids
+        )
+
+    def _save_cached(self, results) -> None:
+        """落盘失败只记日志，绝不丢弃已算出的结果。"""
+        if self._checkpoint_dir is None:
+            return
+        try:
+            save_checkpoint(
+                self._checkpoint_dir,
+                self._checkpoint_fingerprint,
+                [outcome for _, outcome in results],
+            )
+        except CheckpointError as exc:
+            logger.error("EvalHarness: checkpoint save failed, result kept: %s", exc)
+
+    def _evaluate_scope_or_fail(self, seeds, indexed_cases):
+        """单 scope 失败不中断整轮评测；返回 None 表示该 scope 被跳过。"""
+        try:
+            return self._evaluate_scope(seeds, indexed_cases)
+        except Exception as exc:
+            query_ids = [case.query_id for _, case in indexed_cases]
+            logger.error(
+                "EvalHarness: scope failed and was skipped; queries=%s error=%s: %s",
+                query_ids,
+                type(exc).__name__,
+                exc,
+            )
+            self._failed_scopes.append(
+                {
+                    "query_ids": query_ids,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:2000],
+                }
+            )
+            return None
 
     @staticmethod
     def _scope_key(scope) -> tuple[str, ...]:
