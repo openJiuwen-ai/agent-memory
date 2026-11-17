@@ -14,7 +14,7 @@
 ├── deploy/             # 部署配置（docker / local）
 ├── evaluation/         # 评测框架（benchmark / metrics / smoke_test）
 ├── examples/           # 使用示例与快速上手
-├── scripts/            # 运行脚本（run-cli / run-server / run-mcp，见「环境与运行」）
+├── scripts/            # 源码树运行脚本（run-cli / run-server / run-mcp，见「环境与运行」）
 └── .claude/            # AI 辅助工具配置（rules / skills / settings）
 ```
 
@@ -41,10 +41,10 @@ docs/AGENTS.md                   ← 文档归档规约：文档目录结构、�
 
 - **Python**：`>=3.11`。包为顶层布局（`jiuwen_memory` / `jiuwen_memory_entry` / `jiuwen_memory_adapter`），**无 `src/` 布局**——仓库根存在空的 `src/` 目录但未纳入 `[tool.setuptools.packages.find]`，不要往里放代码或从中导入。
 - **安装**：`pip install -e ".[dev]"` 装开发依赖。按需追加 extras：`deploy`（Milvus/ES/Redis/PG 真后端 + api_reranker 出站 httpx）、`mcp`（MCP server）、`nlp`（spacy/hanlp）、`embed`（FlagEmbedding/torch）。`pyproject.toml` 已配 uv 阿里云镜像。
-- **运行入口用 `scripts/run-{cli,server,mcp}.sh`**：它们已把 `PYTHONPATH` 设为 `仓库根:jiuwen_memory_entry/core`；直接 `python -m jiuwen_memory_entry...` 会因缺 `jiuwen_memory_entry/core` 路径导致导入失败。
-  - CLI：`scripts/run-cli.sh`
-  - HTTP server：`scripts/run-server.sh`
-  - MCP：`scripts/run-mcp.sh`（需先 `pip install ".[mcp]"`；默认 stdio，设 `MCP_TRANSPORT=http` + `MCP_PORT` 切 Streamable HTTP）
+- **运行入口**：安装后（`pip install -e .` / `pip install .`）直接使用三个 console_scripts；未安装的源码树用 `scripts/run-{cli,server,mcp}.sh`，它们把 `PYTHONPATH` 设为 `仓库根:jiuwen_memory_entry/core`。
+  - CLI：`agent-memory`（源码树：`scripts/run-cli.sh`）
+  - HTTP server：`agent-memory-server`（源码树：`scripts/run-server.sh`）
+  - MCP：`agent-memory-mcp`（源码树：`scripts/run-mcp.sh`；需先 `pip install ".[mcp]"`，未装时命令以退出码 2 提示安装；默认 stdio，设 `MCP_TRANSPORT=http` + `MCP_PORT` 切 Streamable HTTP）
 - **Postgres schema**：`scripts/pg_schema.sql`（deploy 后端用）。
 
 ## 测试

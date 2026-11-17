@@ -101,6 +101,8 @@ pip install -e ".[deploy]"       # 追加真实存储后端（Milvus / ES / Redi
 pip install -e ".[embed]"        # 追加高级 embedding / 重排（torch、BGE 等）
 ```
 
+安装后即可直接使用三个命令：`agent-memory`（CLI）、`agent-memory-server`（HTTP）、`agent-memory-mcp`（MCP，需 `[mcp]` extra）。
+
 ### 快速集成（SDK 进程内嵌入）
 
 ```python
