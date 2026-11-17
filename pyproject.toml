@@ -121,6 +121,8 @@ include = [
 exclude = [
     "jiuwen_memory_entry.cli*",
     "jiuwen_memory_entry.mcp_server*",
+    # MindVault SDK 通过其目录内的 pyproject 独立分发，避免两个 wheel 拥有相同文件。
+    "jiuwen_memory_adapter.agent_security*",
 ]
 
 [tool.setuptools.package-data]
