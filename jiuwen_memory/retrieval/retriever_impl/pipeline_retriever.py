@@ -201,11 +201,14 @@ class PipelineRetriever(StagedRetriever):
         # 精排输入限长上限（护栏旋钮，上调须自行承担精排超时风险）。
         self._rerank_max_query_chars = max(1, int(rerank_max_query_chars))
         self._rerank_max_doc_chars = max(1, int(rerank_max_doc_chars))
-        # Schema temporal Property 直达召回的共享线程池：避免每请求新建 executor
-        # 造成线程数失控；join 设超时，超时按 TEMPORAL 通道错误降级，不阻塞整条链路。
-        self._schema_temporal_executor: ThreadPoolExecutor | None = None
-        self._schema_temporal_executor_max_workers = max(
-            1, int(schema_temporal_executor_max_workers)
+        # Schema temporal Property 直达召回的共享线程池：构造期创建，避免每请求新建
+        # executor 造成线程数失控，也避免惰性初始化的 check-then-set 竞态（并发首请求
+        # 可能各建一个 executor，旧池未 shutdown 即被覆盖）。ThreadPoolExecutor 构造
+        # 不创建线程（submit 时才建），未启用 schema_temporal 的请求无线程成本；
+        # join 设超时，超时按 TEMPORAL 通道错误降级，不阻塞整条链路。
+        self._schema_temporal_executor = ThreadPoolExecutor(
+            max_workers=max(1, int(schema_temporal_executor_max_workers)),
+            thread_name_prefix="schema-temporal-property",
         )
         self._schema_temporal_recall_timeout = max(0.0, float(schema_temporal_recall_timeout))
         if secondary_rank_enabled and secondary_scorer is None:
@@ -234,23 +237,6 @@ class PipelineRetriever(StagedRetriever):
 
     def query_parsers(self) -> tuple[QueryParser, ...]:
         return (self._parser,)
-
-    def _schema_temporal_executor_pool(self) -> ThreadPoolExecutor:
-        """Lazily create the shared executor for parallel Property pre-recall.
-
-        Created on first use so a retriever that never opts into schema_temporal
-        pays no thread cost; the pool lives for the retriever's lifetime and is
-        reclaimed when the retriever is GC'd.
-        """
-
-        pool = self._schema_temporal_executor
-        if pool is None:
-            pool = ThreadPoolExecutor(
-                max_workers=self._schema_temporal_executor_max_workers,
-                thread_name_prefix="schema-temporal-property",
-            )
-            self._schema_temporal_executor = pool
-        return pool
 
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
         state = RetrieveState.start(scope, query)
@@ -444,7 +430,7 @@ class PipelineRetriever(StagedRetriever):
                 )
                 parallel = False
             if parallel:
-                parallel_recall = self._schema_temporal_executor_pool().submit(
+                parallel_recall = self._schema_temporal_executor.submit(
                     self._schema_temporal_extension.recall_property_hits,
                     scope,
                     parsed,
@@ -790,6 +776,9 @@ class PipelineRetriever(StagedRetriever):
                         ),
                     ],
                 )
+                # 失败后不再串行重跑 Property 直达召回：重试无法被同一条超时约束，后端已慢
+                # 时会把尾延迟翻倍；本次请求以零直达命中继续，Entity/Source 路径不受影响。
+                precollected_property_hits = []
             except Exception as exc:
                 logger.warning(
                     "Retriever.parallel property recall degraded: trace_id=%s error_type=%s "
@@ -810,6 +799,7 @@ class PipelineRetriever(StagedRetriever):
                         ),
                     ],
                 )
+                precollected_property_hits = []
         if self._schema_temporal_extension is None:
             return result
         return self._schema_temporal_extension.apply(

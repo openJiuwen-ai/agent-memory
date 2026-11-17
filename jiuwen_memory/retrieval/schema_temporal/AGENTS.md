@@ -39,8 +39,10 @@ fallback 仍来自真实 `MemoryUnit`。
 8. **失败可降级**：Schema 时序支路失败时记录 TEMPORAL 通道错误，普通候选链路继续工作。
 9. **Property 直达召回可与普通召回并行**：parse 后立即提交 Property 直达召回 future，
    普通 pipeline 完成后（disclosure 后）join；Entity 路径仍后处理，Entity seed 仍依赖
-   普通最终结果。future 跑在 Retriever 实例级共享 `ThreadPoolExecutor`（惰性创建），
-   join 设 `schema_temporal_recall_timeout` 超时降级。批次内部保持单次调用：批量反查与
+   普通最终结果。future 跑在 Retriever 实例级共享 `ThreadPoolExecutor`（构造期创建；
+   ThreadPoolExecutor 构造不建线程，submit 才建），join 设 `schema_temporal_recall_timeout`
+   超时降级；超时或异常后不串行重跑 Property 直达召回（本次请求以零直达命中继续，
+   TEMPORAL 错误照记）。批次内部保持单次调用：批量反查与
    批量水合、一次批量实体召回；Reranker 批量优先（1 次跨实体调用），仅当批量失败时
    退化为逐实体重试，单实体失败只降级该实体。`lookup_batch` 按实体数阈值
    `schema_temporal_lookup_batch_threshold` 分流：≤阈值走窄前缀、>阈值走全 Scope scan。

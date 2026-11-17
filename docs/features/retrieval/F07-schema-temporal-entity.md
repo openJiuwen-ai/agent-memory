@@ -78,9 +78,13 @@ Property，从同实体、同属性的有序时间线向前和向后各扩展
 
 Property 直达召回与普通召回并行：parse 阶段后立即提交直达召回 future，普通 pipeline
 完成（disclosure 后）再 join，使召回时间重叠；Entity 路径仍在普通结果产生后后处理，
-seed 语义不变。future 跑在 Retriever 实例级共享 `ThreadPoolExecutor` 上（惰性创建，
-不每请求新建），join 设 `schema_temporal_recall_timeout`（默认 30s，0=不限），超时按
-TEMPORAL 通道错误降级并由 `search` 串行重跑 Property 召回兜底。批次内部消除 N+1：
+seed 语义不变。future 跑在 Retriever 实例级共享 `ThreadPoolExecutor` 上（构造期创建，
+不每请求新建；`ThreadPoolExecutor` 构造不创建线程，submit 后才建，因此未启用
+schema_temporal 的请求依然没有线程成本，构造期创建同时消除了惰性初始化的
+check-then-set 竞态），join 设 `schema_temporal_recall_timeout`（默认 30s，0=不限）；
+超时或异常按 TEMPORAL 通道错误降级，并且本次请求**放弃** Property 直达路径（以零直达
+Property 命中继续，Entity 路径与 Source fallback 不受影响），不再在主线程串行重跑：
+同步重跑无法被同一条超时约束，后端已慢时会把尾延迟翻倍。批次内部消除 N+1：
 反向索引按实体数阈值分流——≤ `schema_temporal_lookup_batch_threshold`（默认 8）时
 每实体走窄前缀 scan，>阈值才一次全 Scope scan + 一次批量水合；超预算实体合并为一次
 批量补召。Reranker 批量优先（1 次跨实体调用），仅当批量失败时退化为逐实体重试，
@@ -187,9 +191,16 @@ Property/Source 的鉴权、生命周期和血缘在组装前完成复核。
 
 拒绝。并行 Property 直达召回若每次 `retrieve` 新建一个 `ThreadPoolExecutor(max_workers=1)`，
 高并发下线程数 ≈ 请求数、无全局上限；且 `future.result()` 无超时会让后端卡死把整条
-检索链拖死。改为 Retriever 实例级共享 executor（惰性创建、随 retriever GC 回收）+
-`schema_temporal_recall_timeout` 超时降级：超时记 TEMPORAL 错误，`search` 串行重跑
-Property 召回兜底，未启动的任务尽量取消（运行中的不可中断）。
+检索链拖死。改为 Retriever 实例级共享 executor（构造期创建、随 retriever GC 回收）+
+`schema_temporal_recall_timeout` 超时降级：超时记 TEMPORAL 错误，未启动的任务尽量取消
+（运行中的不可中断）。
+
+### 超时/异常后串行重跑 Property 直达召回
+
+拒绝。早期实现让 join 超时后由 `search` 在主线程串行重跑 Property 召回兜底，但同步重跑
+不受 `schema_temporal_recall_timeout` 约束——后端已经变慢时，等于把同一批召回再做一遍，
+尾延迟直接翻倍，还丢掉并行收益。改为不重跑：超时或异常时本次请求以零直达 Property 命中
+继续（Entity 路径与 Source fallback 不受影响），TEMPORAL 通道错误照记。
 
 ### 批量 Reranker 失败全局降级
 
@@ -232,8 +243,9 @@ as-of 上下文，但 `t_event` 必须保持为空。
   `SchemaTemporalRetrievalResult.schema_temporal`；
 - 验证必要 Source 在最终投影后保留且显式携带消息时间；
 - 验证反向索引的增、改、携带 MemoryUnit 的硬删、权威空集和存量回退语义；
-- 验证并行 Property 召回超时降级为 TEMPORAL 错误且普通结果仍返回；共享 executor
-  跨多次 retrieve 复用；`lookup_batch` ≤阈值走窄前缀、>阈值走全 Scope scan；
+- 验证并行 Property 召回超时降级为 TEMPORAL 错误且普通结果仍返回，且超时路径不再串行
+  重跑（只召回 1 次）；共享 executor 在构造期创建并跨多次 retrieve 复用；
+  `lookup_batch` ≤阈值走窄前缀、>阈值走全 Scope scan；
   `indexed=True` 但 membership 空时回退 list；Reranker 批量优先、批量失败时逐实体
   重试且单实体失败只降级该实体。
 

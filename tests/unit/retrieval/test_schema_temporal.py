@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import Lock
@@ -1369,7 +1370,7 @@ def test_recall_errors_are_thread_local_across_concurrent_searches() -> None:
 
 def test_parallel_recall_times_out_and_degrades() -> None:
     """Property 直达召回超过 schema_temporal_recall_timeout 时降级为 TEMPORAL 错误，
-    普通结果仍正常返回（search 串行重跑 Property 召回）。
+    普通结果仍正常返回；本次请求不再串行重跑 Property 召回，直达命中为零。
     """
 
     source = _source("source-timeout", "entity-alice")
@@ -1379,9 +1380,12 @@ def test_parallel_recall_times_out_and_degrades() -> None:
         provenance=[source.id],
     )
 
+    schema_recall_calls: list[str] = []
+
     class _SlowSchemaDomain(_FakeDomain):
         def recall_and_get(self, scope, query, *, channels, recall_limit):
             if _is_schema_recall(query):
+                schema_recall_calls.append(query.raw)
                 sleep(0.3)
             return super().recall_and_get(
                 scope, query, channels=channels, recall_limit=recall_limit
@@ -1411,6 +1415,9 @@ def test_parallel_recall_times_out_and_degrades() -> None:
 
     result = retriever.retrieve(_SCOPE, query)
 
+    # 等被超时抛下的后台召回真正结束，再数调用次数，避免时序误判。
+    sleep(0.4)
+
     temporal_errors = [
         error for error in result.errors if error.channel == RecallChannel.TEMPORAL
     ]
@@ -1420,10 +1427,13 @@ def test_parallel_recall_times_out_and_degrades() -> None:
     ), (
         f"未记录超时降级错误：{temporal_errors}"
     )
+    assert len(schema_recall_calls) == 1, (
+        f"超时后不应串行重跑 Property 召回，实际调用 {len(schema_recall_calls)} 次"
+    )
 
 
 def test_parallel_recall_reuses_shared_executor() -> None:
-    """多次 retrieve 复用同一个共享 executor，不每请求新建。"""
+    """共享 executor 在构造期创建，多次 retrieve 复用同一实例（不每请求新建）。"""
 
     source = _source("source-reuse", "entity-alice")
     property_unit = _property(
@@ -1452,14 +1462,17 @@ def test_parallel_recall_reuses_shared_executor() -> None:
         extensions={"schema_temporal": {"mode": "history"}},
     )
 
-    # 私有属性用 vars() 读取：断言的是"同一实例复用"，不需要公开入口。
+    # 私有属性用 vars() 读取：断言的是"构造期创建 + 同一实例复用"，不需要公开入口。
     private_state = vars(retriever)
-    assert private_state.get("_schema_temporal_executor") is None
+    created = private_state.get("_schema_temporal_executor")
+    assert created is not None, "构造后共享 executor 未创建"
+    assert isinstance(created, ThreadPoolExecutor), (
+        f"共享 executor 类型异常：{type(created)!r}"
+    )
     retriever.retrieve(_SCOPE, query)
-    first = private_state["_schema_temporal_executor"]
-    assert first is not None, "首次 retrieve 后共享 executor 未创建"
+    assert private_state["_schema_temporal_executor"] is created, "首次 retrieve 替换了 executor"
     retriever.retrieve(_SCOPE, query)
-    assert private_state["_schema_temporal_executor"] is first, "第二次 retrieve 新建了 executor"
+    assert private_state["_schema_temporal_executor"] is created, "第二次 retrieve 新建了 executor"
 
 
 def test_lookup_batch_uses_narrow_scan_below_threshold() -> None:
