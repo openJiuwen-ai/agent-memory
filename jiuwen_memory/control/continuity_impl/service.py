@@ -384,6 +384,19 @@ class ContinuityService(Continuity):
             try:
                 receipt = repo.get(scope, "events", key)
             except NotFoundError:
+                receipt = None
+            # A receipt left at unknown with no committed refs means the previous
+            # write() failed before any unit landed. There is nothing for recover()
+            # to reconcile (event recovery requires non-empty refs), so the only
+            # way out is to re-run the original write on retry. Treat this receipt
+            # as if it did not exist rather than returning a permanent unknown.
+            # Guard on digest so a reused key with different content still conflicts.
+            if receipt is not None and receipt.get("status") == "unknown" and not receipt.get("refs"):
+                if receipt.get("digest") != digest:
+                    raise ConflictError("event", message="event ID reused with different content")
+                repo.delete(scope, "events", key)
+                receipt = None
+            if receipt is None:
                 receipt = {
                     "digest": digest,
                     "status": "unknown",
