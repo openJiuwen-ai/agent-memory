@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-16 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F08-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
@@ -181,6 +181,11 @@ SDK 模式的 `available` 表示页面监听已启动。共享页面的状态读
 可响应，并返回实际的页面地址。HTTP 模式在首次请求链接前为 `False`，
 之后反映取链接是否成功。HTTP 初始化沿用 `/healthz` 探活，在调用 `await open_portal()`
 时签发链接。`portal_url` 仅提供 SDK 本地链接。
+
+`portal.language` 指定 Provider 打开的新链接的首屏语言，SDK 和 HTTP 模式均适用。
+`en` 表示英文，`zh-CN` 和 `zh` 表示简体中文，省略或留空时使用简体中文。共用
+同一个 Portal 的 Provider 可以各自设置启动语言。页面内切换即时生效，刷新时沿用
+当前页的语言。
 
 在同一台 macOS、Linux 或 Windows 机器上，使用同一个固定本地 Markdown 目录和 SQLite
 索引的 SDK 文档实例在同一系统账号下自动共用 Portal。两个存储位置均须为绝对路径，

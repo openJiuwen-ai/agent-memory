@@ -27,6 +27,7 @@ class Element {
   replaceWith(child) { this.replacement = child; }
   addEventListener(name, fn) { this.events[name] = fn; }
   setAttribute(name, value) { this[name] = value; }
+  getAttribute(name) { return this[name] ?? null; }
   focus() {}
   showModal() { this.open = true; }
   close() { this.open = false; }
@@ -44,18 +45,45 @@ const unit = content => ({
   id:'r',scope:{agent:'agent'},segments:[{content}],temporal:{},tier:'episodic',
   system_metadata:{source_app:'app',agent_label:'agent'},
 });
+function memoryStorage() {
+  const values = new Map();
+  return {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value)};
+}
 function setup(handler, listHandler, {
-  bootstrap, onHeaders, history={state:null,replaceState(state){this.state=state;}},
+  bootstrap, hash=bootstrap?'#access=grant':'', onHeaders,
+  history={state:null,replaceState(state){this.state=state;}},
+  storage=memoryStorage(),
 } = {}) {
   const copied=[];
   const nodes = new Map();
   const get = id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   for (const id of ['source', 'search-source', 'agent', 'project', 'tier', 'memory-class']) get(id).value = '*';
   get('lifecycle').value = 'active';
+  for (const [tag, id] of html.matchAll(/<[^>]+ id="([^"]+)"[^>]*>/g)) {
+    for (const [, marker, key] of tag.matchAll(/ (data-i18n(?:-label|-placeholder)?)="(\w+)"/g)) {
+      get(id).setAttribute(marker, key);
+    }
+  }
+  const document = {
+    documentElement: new Element('html'),
+    getElementById: get, createElement: tag => new Element(tag),
+    querySelector: () => null, addEventListener() {},
+    querySelectorAll(selector) {
+      if (!/^\[data-(i18n(-label|-placeholder)?|localized)\]$/.test(selector)) return [];
+      const marker = selector.slice(1, -1);
+      const matches = [];
+      function collect(el) {
+        if (el.getAttribute(marker) !== null) matches.push(el);
+        el.children.forEach(collect);
+      }
+      nodes.forEach(collect);
+      return matches;
+    },
+  };
   const context = vm.createContext({
-    location: {hash:bootstrap?'#access=grant':'',pathname:"/portal/",search:""},
+    location: {hash,pathname:"/portal/",search:""},
     URLSearchParams,history,
-    document: {getElementById: get, createElement: tag => new Element(tag), querySelectorAll: () => [], querySelector: () => null, addEventListener() {}},
+    document, localStorage: storage,
     setTimeout, clearTimeout, navigator: {clipboard: {writeText: async text => {copied.push(text);}}},
     Option: function (text, value) { const el = new Element('option'); el.textContent = text; el.value = value; return el; },
     fetch: async (url, args) => {
@@ -77,7 +105,148 @@ function setup(handler, listHandler, {
     },
   });
   vm.runInContext(source, context);
-  return {nodes, get, copied, run: code => vm.runInContext(code, context)};
+  return {nodes, get, copied, document, run: code => vm.runInContext(code, context)};
+}
+
+async function languageSwitchKeepsFiltersAndResults() {
+  const content = '用户原文';
+  const source = '原始应用';
+  const date = '2026-07-05T12:34:00Z';
+  const record = {...unit(content), lifecycle:'active', temporal:{t_ingest:date},
+    system_metadata:{source_app:source, memory_class:'constructor'}};
+  let requests = 0;
+  let searchFails = false;
+  const page = setup(async action => {
+    requests++;
+    assert.equal(action, 'search');
+    return searchFails ? response({message:'原始服务错误'}, false, 503) : response({
+      items:[{scope:record.scope,item:{unit_id:record.id,content,score:0.75}}],
+    });
+  }, async () => {
+    requests++;
+    return response({items:[record],count:1,snapshot:'s',sources:[source],memory_classes:['constructor'],
+      lifecycle_counts:{active:1,superseded:0,forgotten:0,archived:0}});
+  });
+  await page.run("switchTab('memories')");
+  page.run("setFilterValue('source','原始应用'); $('memory-filter').value='关键词'");
+  await page.run('loadMemories(true)');
+  const row = page.get('memory-list').children[0];
+  const select = row.children[0].children[0];
+  select.checked = true;
+  select.onchange();
+  const toggle = page.get('language-toggle');
+  assert.equal(page.document.documentElement.lang, 'zh-CN');
+  assert.equal(toggle.textContent, 'English');
+  const requestsBeforeSwitch = requests;
+  toggle.onclick();
+  assert.equal(page.document.documentElement.lang, 'en');
+  assert.equal(page.document.title, 'Memory Management · agent_memory');
+  assert.equal(toggle.textContent, '中文');
+  assert.equal(page.get('breadcrumb-current').textContent, 'My Memories');
+  assert.equal(page.get('memory-filter')['aria-label'], 'Search memories');
+  assert.equal(page.get('memory-filter').value, '关键词');
+  assert.equal(page.get('source').value, source);
+  assert.equal(page.get('source').options[0].textContent, 'All Apps');
+  assert.equal(page.get('batch-count').textContent, '1 selected');
+  assert.equal(select['aria-label'], 'Select 用户原文');
+  assert.equal(page.get('memory-list').children[0], row);
+  assert.equal(requests, requestsBeforeSwitch);
+  const formatted = new Intl.DateTimeFormat('en', {
+    month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',
+  }).format(new Date(date));
+  assert.ok(row.textContent.includes(formatted));
+  assert.ok(row.textContent.includes(source));
+  assert.ok(row.textContent.includes('constructor'), 'custom class keys are displayed verbatim');
+
+  page.run("setSearchMode('semantic'); $('top-k').value='10'");
+  await page.run("$('search-form').onsubmit({preventDefault(){}})");
+  assert.equal(page.get('search-count').textContent, 'Found 1 memory');
+  const result = page.get('search-list').children[0];
+  toggle.onclick();
+  assert.equal(page.get('search-count').textContent, '找到 1 条记忆');
+  assert.equal(page.get('search-list').children[0], result);
+  assert.match(result.textContent, /用户原文.*范围内相关度 0\.750/);
+  searchFails = true;
+  await page.run("$('search-form').onsubmit({preventDefault(){}})");
+  toggle.onclick();
+  assert.equal(page.get('notice').textContent, 'Search failed: 原始服务错误');
+}
+
+async function languageSwitchKeepsDraftAndPreference() {
+  let requests = 0;
+  const saves = [];
+  const storage = memoryStorage();
+  const handler = async (action, body) => {
+    requests++;
+    if (action === 'read_config') return response({available:true,version:1,fields:[field(0.2)]});
+    assert.equal(action, 'save_config');
+    saves.push(body);
+    return response({applied:true});
+  };
+  const page = setup(handler, undefined, {storage});
+  await page.run("switchTab('settings')");
+  const input = page.run('settingControls[0]');
+  input.value = '0.7';
+  input.events.input();
+  page.get('preview').onclick();
+  const preview = page.run('preview');
+  const configRequests = requests;
+  page.get('language-toggle').onclick();
+  assert.equal(page.get('draft-summary').textContent, '1 unsaved change');
+  assert.match(page.get('diff').textContent, /Temperature · default: 0\.2 → 0\.7/);
+  assert.equal(page.get('save').hidden, false);
+  assert.equal(page.run('preview'), preview);
+  assert.equal(page.run('settingControls[0]'), input);
+  assert.equal(input.value, '0.7');
+  assert.equal(requests, configRequests);
+  await page.get('save').onclick();
+  assert.deepEqual(saves, [{version:1,changes:{'llm.default.params.llm_temperature':0.7},restore:[]}]);
+
+  const reloaded = setup(handler, undefined, {storage});
+  await reloaded.run('browserReady');
+  assert.equal(reloaded.document.documentElement.lang, 'en');
+  assert.equal(reloaded.get('language-toggle').textContent, '中文');
+  const denied = () => { throw Error('storage blocked'); };
+  const embedded = setup(handler, undefined, {storage:{getItem:denied,setItem:denied}});
+  assert.equal(embedded.document.documentElement.lang, 'zh-CN');
+  embedded.get('language-toggle').onclick();
+  assert.equal(embedded.document.documentElement.lang, 'en');
+}
+
+async function portalLaunchUsesConfiguredLanguage() {
+  const key = 'agent-memory.portal.language';
+  const storage = memoryStorage();
+  storage.setItem(key, 'zh-CN');
+  const history = {
+    state: null,
+    replaceState(state, _, url) {
+      this.state = state;
+      if (url !== undefined) this.url = url;
+    },
+  };
+  const handler = async action => { throw Error(action); };
+  const page = setup(handler, undefined, {
+    bootstrap:{shared:true,session_token:'tab-session'},
+    hash:'#access=grant&language=zh-CN&language=en', history, storage,
+  });
+  await page.run('browserReady');
+  assert.equal(page.document.documentElement.lang, 'en');
+  assert.equal(history.url, '/portal/');
+  assert.equal(history.state.sharedPortalToken, 'tab-session');
+  assert.equal(history.state.portalLanguage, 'en');
+  assert.equal(storage.getItem(key), 'zh-CN');
+
+  const reloaded = setup(handler, undefined, {history, storage});
+  assert.equal(reloaded.document.documentElement.lang, 'en');
+  reloaded.get('language-toggle').onclick();
+  assert.equal(history.state.sharedPortalToken, 'tab-session');
+  assert.equal(history.state.portalLanguage, 'zh-CN');
+  storage.setItem(key, 'en');
+  const switched = setup(handler, undefined, {history, storage});
+  assert.equal(switched.document.documentElement.lang, 'zh-CN');
+
+  const defaultLaunch = setup(handler, undefined, {bootstrap:{ready:true}, storage});
+  assert.equal(defaultLaunch.document.documentElement.lang, 'zh-CN');
 }
 
 async function inFlightDraft() {
@@ -388,6 +557,9 @@ async function sharedPageManagesBothInstances(){
   assert.ok(tokens.length&&tokens.every(token=>token==='tab-token'));
 }
 (async () => {
+  await languageSwitchKeepsFiltersAndResults();
+  await languageSwitchKeepsDraftAndPreference();
+  await portalLaunchUsesConfiguredLanguage();
   await filterBadgeCountsAdditionalPanelConditions();
   await unifiedSearchKeepsScopesSeparate();
   await topicShortcutsUseExistingFilters();

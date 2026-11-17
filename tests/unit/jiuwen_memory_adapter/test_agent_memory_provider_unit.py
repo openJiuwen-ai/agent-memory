@@ -66,6 +66,20 @@ from agent_memory_provider import (
 pytestmark = pytest.mark.unit
 
 
+class _EnglishLikeValue:
+    """Compare equal to the English language code."""
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str) and other == "en"
+
+
+@pytest.mark.parametrize("language", ["fr", False, ["en"], _EnglishLikeValue()])
+def test_provider_rejects_unsupported_portal_language(language):
+    """Check type validation before matching supported language codes."""
+    with pytest.raises(ValueError, match="Portal language"):
+        AgentMemoryMemoryProvider(portal={"language": language})
+
+
 @pytest.mark.parametrize("extension", ["json", "yaml"])
 def test_sdk_config_path_preserves_literal_prompt(tmp_path, monkeypatch, extension):
     monkeypatch.delenv("PORTAL_TEST_PLACEHOLDER", raising=False)

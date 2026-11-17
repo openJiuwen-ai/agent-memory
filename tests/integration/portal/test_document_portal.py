@@ -430,10 +430,11 @@ def test_document_continuity_uses_one_portal_and_one_config_per_runtime(tmp_path
         first, second = [AgentMemoryMemoryProvider(
             config_dict=config, security_provider=security,
             continuity_enabled=True, continuity_mode="continuity",
-        ) for _ in range(2)]
+            portal={"language": language},
+        ) for language in ("en", "zh")]
         ordinary = AgentMemoryMemoryProvider(
             config_dict=document_config(tmp_path), security_provider=security,
-            portal={"instance_id": "ordinary"},
+            portal={"instance_id": "ordinary", "language": ""},
         )
         try:
             await first.initialize(scope_id="local")
@@ -441,15 +442,22 @@ def test_document_continuity_uses_one_portal_and_one_config_per_runtime(tmp_path
             await ordinary.initialize(scope_id="local")
             assert first.runtime is second.runtime
             assert ordinary.runtime is not first.runtime
+            first_link = await asyncio.to_thread(lambda: first.portal_url)
+            launch_links = [first_link, await second.open_portal(), await ordinary.open_portal()]
+            languages = [
+                parse_qs(urlsplit(launch_link).fragment).get("language")
+                for launch_link in launch_links
+            ]
+            assert languages == [["en"], ["zh-CN"], None]
             a, b, c = [
-                await asyncio.to_thread(Browser, await provider.open_portal())
-                for provider in (first, second, ordinary)
+                await asyncio.to_thread(Browser, launch_link) for launch_link in launch_links
             ]
             start.set()
             pipe.send("open")
             assert await asyncio.to_thread(pipe.poll, 20), "remote Portal link missing"
             link, broker_pid = pipe.recv()
             assert isinstance(link, str), link
+            assert "language" not in parse_qs(urlsplit(link).fragment)
             d = await asyncio.to_thread(Browser, link)
             assert broker_pid is None
             assert a.origin == b.origin == c.origin == d.origin
