@@ -173,6 +173,8 @@ def _offline_in_process_config(tmp_path, monkeypatch):
         cfg["globals"]["watch_document"] = False
         cfg["llm"]["default"] = "echo"
         cfg["extractor"]["default"] = "keyword"
+        cfg["tokenizer"] = {"default": {"target": "whitespace"}}
+        cfg["shadow_index"]["default"]["params"]["tokenizer"] = "default"
         cfg["embedder"] = {"default": {"target": "hashing", "params": {"tokenizer": "default"}}}
         cfg["fulltext_store"] = {"default": {"target": "memory"}}
         cfg["markdown_store"] = {"default": {"target": "local", "params": {"root": str(tmp_path)}}}
@@ -1520,8 +1522,9 @@ class TestExperienceDefaultConfig:
         assert cfg["abstractor"]["experience_skill"]["target"] == "skill"
 
     @pytest.mark.parametrize("skill_enabled", [True, False])
-    def test_experience_mode_reads_kv_candidates_while_ordinary_document_list_stays_separate(
-        self, monkeypatch, skill_enabled,
+    @pytest.mark.parametrize("write_document", [False, True])
+    def test_experience_mode_reads_only_its_candidates(
+        self, monkeypatch, skill_enabled, write_document,
     ):
         from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, Temporal, memory_key
         from jiuwen_memory.common.type_def.memory_codec import dumps
@@ -1536,7 +1539,7 @@ class TestExperienceDefaultConfig:
                 experience_space="mode-experience",
                 config_dict={"globals": {"experience": {"curated_spaces": [
                     {"space": "mode-experience", "skill": skill_enabled},
-                ]}}},
+                ]}}, "retriever": {"experience": {"params": {"write_document": write_document}}}},
             )
             await provider.initialize(user_id="owner", scope_id="mode-test")
             try:
@@ -1553,7 +1556,10 @@ class TestExperienceDefaultConfig:
                     temporal=Temporal(t_ingest=datetime.now(UTC)),
                     system_metadata={"memory_type": "experience", "category": "other"},
                 )
-                engine.kv.insert(scope, memory_key(experience.id), dumps(experience))
+                if write_document:
+                    engine._index_for_unit(experience).build([experience])
+                else:
+                    engine.kv.insert(scope, memory_key(experience.id), dumps(experience))
                 skill = MemoryUnit(
                     id="published-skill", scope=scope, tags=["approved"],
                     segments=[Segment(content="Published SKILL.md")],
@@ -1602,7 +1608,113 @@ class TestExperienceDefaultConfig:
                     ):
                         await asyncio.sleep(0.01)
                 assert engine._scheduler.status(job_id).status is JobStatus.SUCCEEDED
-                assert seen == ["experience"], "专用mode从显式KV数据面取候选，普通文档不混入"
+                assert seen == ["experience"], "专用 mode 只从经验数据面取候选"
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(run())
+
+    def test_experience_document_rejects_conflicting_configuration(self):
+        import agent_memory_provider as provider
+
+        with pytest.raises(provider.ValidationError, match="Conflicting experience"):
+            provider._merge_config_over_default(
+                {
+                    "store_manager": {"default": {"params": {"domain_stores": {
+                        "experience": {"write_document": False},
+                    }}}},
+                    "retriever": {"experience": {"params": {"write_document": True}}},
+                },
+                experience_space="shared",
+            )
+        with pytest.raises(provider.ValidationError, match="Incompatible experience constructor"):
+            provider._merge_config_over_default(
+                {"constructor": {"experience": "hybrid"}}, experience_space="shared",
+            )
+
+    def test_experience_document_writes_through_provider_binding(self, monkeypatch):
+        from dataclasses import replace
+
+        from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
+        from jiuwen_memory.construction import EvolveMode
+        from jiuwen_memory.control.types import DeleteMode, DeleteSelector, MemoryPatch, UpdateMode
+        from jiuwen_memory.storage.markdown_impl.experience_blocks import path_for
+        from jiuwen_memory.storage.watchdog_impl.local_watchdog import LocalWatchdog
+
+        async def run():
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="doc-tenant", user="owner"), role=Role.ROOT,
+                ),
+                experience_space="doc-experience",
+            )
+            await provider.initialize(user_id="owner", scope_id="doc-tenant")
+            try:
+                engine = provider._client._api._engine
+                scope = Scope(org="doc-tenant", space="doc-experience")
+                unit = MemoryUnit(
+                    id="document-experience", scope=scope,
+                    segments=[Segment(content="verified deployment steps")],
+                    system_metadata={"memory_type": "experience", "category": "other"},
+                )
+                binding = engine._mode_evolvers[EvolveMode.EXPERIENCE_CONSOLIDATE]
+                monkeypatch.setattr(binding.evolver._appraiser, "appraise", lambda units: None)
+                monkeypatch.setattr(
+                    binding.evolver._extractor, "extract", lambda units, context: [unit],
+                )
+                await provider.add_trajectory("Deployment completed", {}, "test-trajectory")
+                domain = engine._experience_domain()
+                assert domain.should_write_document()
+                async with asyncio.timeout(5):
+                    while not domain.get(scope, [unit.id]):
+                        await asyncio.sleep(0.01)
+                file = Path(domain._raw_markdown().root) / path_for(scope)
+                assert "verified deployment steps" in file.read_text(encoding="utf-8")
+                assert (await engine.get(unit.id, scope)).id == unit.id
+                assert not engine._domain_store.list(scope).items
+                assert not domain.list(Scope(org="other-tenant", space=scope.space)).items
+                result = json.loads(await provider.handle_tool_call(
+                    "agent_memory_experience", {"query": "deployment", "category": "other"},
+                ))
+                assert result["results"][0]["memory"] == unit.content
+                assert [ref["id"] for ref in provider.take_retrieved_refs()] == [unit.id]
+                dedup = binding.evolver._dedup
+                duplicate = replace(unit, id="candidate")
+                assert [match.id for match, _ in dedup.recall(duplicate)] == [unit.id]
+                assert not dedup.recall(replace(duplicate, scope=Scope(org="other-tenant")))
+                await engine.update(
+                    unit.id, scope,
+                    MemoryPatch(
+                        content="verified deployment steps updated", mode=UpdateMode.OVERWRITE,
+                    ),
+                )
+                assert "verified deployment steps updated" in file.read_text(encoding="utf-8")
+                shadow = domain._raw_shadow_index()
+                watcher = LocalWatchdog(shadow, domain._raw_markdown().root, Scope())
+                path = path_for(scope)
+                shadow.delete_units(scope, [unit.id])
+                assert watcher._sync_one(path, False)
+                file.write_text(
+                    file.read_text(encoding="utf-8").replace("verified", "revised"),
+                    encoding="utf-8",
+                )
+                assert watcher._sync_one(path, False)
+                restored = await engine.get(unit.id, scope)
+                assert restored.content == "revised deployment steps updated"
+                result = json.loads(await provider.handle_tool_call(
+                    "agent_memory_experience", {"query": "revised", "category": "other"},
+                ))
+                assert result["results"][0]["memory"] == restored.content
+                file.unlink()
+                assert watcher._sync_one(path, True)
+                assert not domain.get(scope, [unit.id])
+                engine._index_for_unit(restored).build([restored])
+                selector = DeleteSelector(scope=scope, unit_ids=[unit.id], mode=DeleteMode.PURGE)
+                contexts = await engine.permission_contexts_for_delete(selector)
+                assert [context.unit_id for context in contexts] == [unit.id]
+                assert await engine.delete(selector) == [unit.id]
+                assert not domain.get(scope, [unit.id])
+                assert file.read_text(encoding="utf-8") == ""
             finally:
                 await provider.shutdown()
 
@@ -1939,3 +2051,40 @@ class TestExperienceJobs:
         fake: _FakeExperienceClient = provider._client
         assert fake.restore_calls == 0
         assert fake.consolidation_calls == []
+
+
+def test_experience_document_sync_from_markdown(tmp_path):
+    from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
+    from jiuwen_memory.storage.markdown_impl.experience_blocks import path_for
+    from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
+    from jiuwen_memory.storage.watchdog_impl.local_watchdog import LocalWatchdog
+
+    scope = Scope(org="org/../one", space="support")
+    unit = MemoryUnit(
+        id="experience-one", scope=scope, segments=[Segment(content="First\nstep")],
+        system_metadata={"memory_type": "experience", "category": "other"},
+    )
+    path = path_for(scope)
+    md = LocalMarkdownStore(root=str(tmp_path))
+    md.write(scope, [unit])
+    file = tmp_path / path
+    assert file.is_file()
+
+    class Shadow:
+        def __init__(self):
+            self.units: dict[str, MemoryUnit] = {}
+
+        def sync_experience_document(self, scope, path, units):
+            self.units = units
+
+    shadow = Shadow()
+    watcher = LocalWatchdog(markdown_root=str(tmp_path), shadow=shadow, scope=Scope())
+    assert watcher._sync_one(path, False)
+    assert shadow.units[unit.id].content == "First\nstep"
+    file.write_text(file.read_text(encoding="utf-8").replace("First", "Revised"), encoding="utf-8")
+    assert watcher._sync_one(path, False)
+    restored = shadow.units[unit.id]
+    assert (restored.scope, restored.content) == (scope, "Revised\nstep")
+    assert restored.system_metadata["category"] == "other"
+    assert watcher._sync_one(path, True)
+    assert not shadow.units

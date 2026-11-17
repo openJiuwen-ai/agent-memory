@@ -253,6 +253,11 @@ prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正�
     `merge_importance_max` 按数值取 max；UPDATE 先备份 existing 的 origin，交集继承后
     写回（两侧不同时交集会丢键），SUPERSEDE 不动 origin。新增 Evolver 实现若自写合并须同步。
 
+### 经验文档数据面
+
+经验写入与查重显式绑定同一存储模式。文档模式下经验提炼与评价通过经验数据面
+读取被引用条目，轨迹、反馈和发布技能继续使用 KV。
+
 ## 与其他子目录的边界
 
 **本模块管**：

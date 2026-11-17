@@ -573,27 +573,15 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
     async def permission_contexts_for_delete(
         self, selector: DeleteSelector
     ) -> list[PermissionContext]:
-        # 多空间：selector 未指定 scope 时扫全部 scopes（不滤 space）。
-        scopes = (
-            [selector.scope]
-            if selector.scope is not None
-            else list(self._domain_store.scopes())
-        )
-        if not scopes:
-            scopes = [Scope()]
         contexts: list[PermissionContext] = []
-        for scope in scopes:
-            for unit in self._list_units(scope):
-                # 排除 SUPERSEDED 历史版本：FORGET/ARCHIVE 流转非法（SUPERSEDED→
-                # ARCHIVED 禁止）；PURGE 物理删除仍需覆盖历史版本（S02/S03
-                # 合规硬删，不得残留明文）。
-                if (
-                    unit.lifecycle == LifecycleState.SUPERSEDED
-                    and selector.mode is not DeleteMode.PURGE
-                ):
-                    continue
-                if matches_delete_selector(unit, selector):
-                    contexts.append(_permission_context_from_unit(unit))
+        for _, _, unit in self._scan_delete_units(selector):
+            if (
+                unit.lifecycle == LifecycleState.SUPERSEDED
+                and selector.mode is not DeleteMode.PURGE
+            ):
+                continue
+            if matches_delete_selector(unit, selector):
+                contexts.append(_permission_context_from_unit(unit))
         return contexts
 
     async def permission_contexts_for_update(
@@ -734,6 +722,32 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         return new
 
 
+    def _scan_delete_units(
+        self, selector: DeleteSelector,
+    ) -> list[tuple[Scope, str, MemoryUnit]]:
+        """Read the same document candidates for permission checks and deletion."""
+        # 多空间：selector 未指定 scope 时扫全部 scopes（不滤 space）。
+        scopes = (
+            [selector.scope]
+            if selector.scope is not None
+            else list(self._domain_store.scopes())
+        )
+        experience_store = self._experience_domain()
+        if experience_store is not None and not experience_store.should_write_document():
+            experience_store = None
+        if experience_store is not None and selector.scope is None:
+            scopes = list(scopes)
+            scopes.extend(scope for scope in experience_store.scopes() if scope not in scopes)
+        if not scopes:
+            scopes = [Scope()]
+        scanned: list[tuple[Scope, str, MemoryUnit]] = []
+        for scope in scopes:
+            scanned.extend((scope, unit.id, unit) for unit in self._list_units(scope))
+            if experience_store is not None:
+                page = experience_store.list(scope, limit=1_000_000, memory_types=["experience"])
+                scanned.extend((scope, unit.id, unit) for unit in page.items)
+        return scanned
+
     async def delete(self, selector: DeleteSelector) -> list[str]:
         selector_is_empty = (
             not selector.unit_ids
@@ -745,17 +759,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             logger.warning("AgentEngine.delete rejected empty selector")
             raise ValidationError("DeleteSelector requires unit_ids, tags, before, or filters")
 
-        # 多空间：selector 未指定 scope 时扫全部 scopes（不滤 space）。
-        scopes = (
-            [selector.scope]
-            if selector.scope is not None
-            else list(self._domain_store.scopes())
-        )
-        if not scopes:
-            scopes = [Scope()]
-        scanned: list[tuple[Scope, str, MemoryUnit]] = []
-        for scope in scopes:
-            scanned.extend((scope, unit.id, unit) for unit in self._list_units(scope))
+        scanned = self._scan_delete_units(selector)
 
         matches = []
         for scope, unit_id, unit in scanned:
@@ -787,7 +791,8 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
                 if _scoped_unit_id(scope, unit.id) in purge_ids:
                     purged_units.append(unit)
             # 物理删除：记忆本体与派生索引由 IndexBuilder 一并移除。
-            self._index.remove(purged_units)
+            for unit in purged_units:
+                self._index_for_unit(unit).remove([unit])
             logger.info(
                 "AgentEngine.delete purge: count=%d scope=%s",
                 len(purged_units),
@@ -800,7 +805,8 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             for scope, _, unit in matches:
                 _downweight_importance(unit)
                 update_index.append(unit)
-            self._index.update(update_index)
+            for unit in update_index:
+                self._index_for_unit(unit).update([unit])
             logger.info(
                 "AgentEngine.delete downweight: count=%d scope=%s",
                 len(affected),
@@ -817,7 +823,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             # 范式；DOWNWEIGHT 在上方已单独处理，此处只 FORGET/ARCHIVE）。
             for _, _, unit in matches:
                 unit.lifecycle = target
-            self._index.update([unit for _, _, unit in matches])
+                self._index_for_unit(unit).update([unit])
         else:
             by_scope: dict[tuple[str, str, str, str, str], tuple[Scope, list[str]]] = {}
             for matched_scope, _, unit in matches:
@@ -834,7 +840,8 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
                 self._lifecycle.transition(matched_scope, unit_ids, target)
         # 非破坏式：lifecycle 已改（文档模式落 shadow / 非文档回写 KV）并保留，
         # 此处仅让检索索引退出检索。
-        self._index.remove([unit for _, _, unit in matches], mode=IndexRemoveMode.SOFT)
+        for _, _, unit in matches:
+            self._index_for_unit(unit).remove([unit], mode=IndexRemoveMode.SOFT)
         logger.info(
             "AgentEngine.delete transition: mode=%s target=%s count=%d scope=%s",
             selector.mode.value,

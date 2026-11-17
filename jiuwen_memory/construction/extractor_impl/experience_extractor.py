@@ -60,7 +60,9 @@ from jiuwen_memory.construction.experience import (
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.prompt_registry import PHASE_EXTRACT, PromptRegistry
 from jiuwen_memory.construction.prompt_strategy import EXTRACTION_STRATEGY_KEY
+from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
 logger = get_logger(__name__)
 
@@ -230,6 +232,7 @@ class ExperienceExtractor(Extractor):
         *,
         llm: LLM,
         kv: KVStore,
+        entry_store: DomainStore | None = None,
         experience: ExperienceConfig,
         prompt_registry: PromptRegistry | None = None,
         category_write_limit: int = CATEGORY_WRITE_LIMIT,
@@ -239,6 +242,7 @@ class ExperienceExtractor(Extractor):
     ) -> None:
         self._llm = llm
         self._kv = kv
+        self._entry_store = entry_store
         # 经验配置（v3 §2）：候选落点（default_space 解析）与类别标记
         # （memory_class）都从这一份取。
         self._experience = experience
@@ -381,7 +385,11 @@ class ExperienceExtractor(Extractor):
             if not entry_id:
                 continue
             try:
-                unit = load_unit(self._kv.get(exp_scope, memory_key(entry_id)))
+                if self._entry_store is None:
+                    unit = load_unit(self._kv.get(exp_scope, memory_key(entry_id)))
+                else:
+                    units = self._entry_store.get(exp_scope, [entry_id])
+                    unit = units[0] if units else None
             except Exception:
                 unit = None
             if unit is None:
@@ -665,6 +673,10 @@ def _build(config):
     return ExperienceExtractor(
         llm=LlmProducer.dep(config, default="echo"),
         kv=resolve_message_store(config),
+        entry_store=(
+            StoreManagerProducer.resolve(config).domain_store(config.params["entry_store"])
+            if "entry_store" in config.params else None
+        ),
         experience=experience,
         prompt_registry=registry,
         category_write_limit=config.get("category_write_limit", CATEGORY_WRITE_LIMIT),

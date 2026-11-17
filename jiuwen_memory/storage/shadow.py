@@ -87,6 +87,12 @@ class DocumentShadowIndex(BaseStore):
     def list_units(self, scope: Scope) -> list[tuple[str, bytes]]:
         """按 scope 全量拉 ``(unit_id, unit_json bytes)``，供 list 接口内存过滤排序分页。"""
 
+    def sync_experience_document(
+        self, scope: Scope, path: str, units: dict[str, MemoryUnit],
+    ) -> None:
+        """Reconcile one experience document by stable ID."""
+        raise NotImplementedError
+
     @abstractmethod
     def list_units_by_md(
         self, scope: Scope, md_filename: str, *, lifecycle: str | None = None

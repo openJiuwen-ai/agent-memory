@@ -100,7 +100,9 @@ from jiuwen_memory.construction.prompt_registry import (
     PHASE_APPRAISE,
     PromptRegistry,
 )
+from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore
+from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
 logger = get_logger(__name__)
 
@@ -205,6 +207,7 @@ class ExperienceAppraiser(Appraiser):
         *,
         llm: LLM,
         kv: KVStore,
+        entry_store: DomainStore | None = None,
         author_key: str,
         experience: ExperienceConfig,
         prompt_registry: PromptRegistry | None = None,
@@ -222,6 +225,7 @@ class ExperienceAppraiser(Appraiser):
             )
         self._llm = llm
         self._kv = kv
+        self._entry_store = entry_store
         self._author_key = author_key
         # 经验配置（v3 §2）：落点解析（default_space）与技能沉淀开关
         # （curated_spaces 中 skill 为真的空间）都从这一份取。
@@ -771,7 +775,11 @@ class ExperienceAppraiser(Appraiser):
             if not entry_id or entry_id in entries:
                 continue
             try:
-                unit = load_unit(self._kv.get(exp_scope, memory_key(entry_id)))
+                if self._entry_store is None:
+                    unit = load_unit(self._kv.get(exp_scope, memory_key(entry_id)))
+                else:
+                    units = self._entry_store.get(exp_scope, [entry_id])
+                    unit = units[0] if units else None
             except Exception:
                 unit = None
             if unit is None:
@@ -1347,6 +1355,10 @@ def _build(config):
     return ExperienceAppraiser(
         llm=LlmProducer.dep(config, default="echo"),
         kv=resolve_message_store(config),
+        entry_store=(
+            StoreManagerProducer.resolve(config).domain_store(config.params["entry_store"])
+            if "entry_store" in config.params else None
+        ),
         author_key=reveal_secret(config.get("author_key", "")).strip(),
         experience=experience,
         prompt_registry=registry,

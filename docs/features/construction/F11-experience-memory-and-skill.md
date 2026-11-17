@@ -429,8 +429,9 @@ Dreaming 周期触发（EXPERIENCE_CONSOLIDATE）
    `last_triggered + interval`，两者都缺失时首次恢复补齐到期时间并持久化，之后
    不再随重启重置。generation 不匹配时拒绝迟到回写。
 
-文档模式 `list` 仍只列举 shadow，不拼接全部 KV。经验任务需要其他数据面时通过
-上述 mode 绑定显式选择，不把混合存储 CRUD 兼容加入公共文档流程。
+普通文档列表仅列举 shadow 中属于普通数据面的条目。
+经验任务通过上述 mode 绑定选择经验数据面，经验列表排除普通记忆。
+发布技能仍由 KV 维护并按技能类型显式查询。
 
 ### 拒绝的方案
 
@@ -913,3 +914,11 @@ skills_superseded 是设计三项（自动发布/转正/退休）之外的补充
   `tests/unit/api/test_experience_space_authorization.py`）：KV 同源——
   curator / appraiser 显式 `message_store` 引用与标记 store 非同一实例
   即拒绝；author_key 多实例一致性——评价算子密钥不一致即拒绝。
+
+## Provider 文档模式
+
+进程内 Provider 启用 `experience_space` 时，经验默认随全局文档模式启用。
+经验存储和检索可覆盖 `write_document=false`，此时使用原有 KV、全文和向量索引。
+两个位置给出相反值时装配失败。Provider 与内核复用公开 API 暴露的同一开关归一逻辑。
+两套真源各自保留，切换时不会自动迁移历史 KV 条目。
+周期整理、归因和修订从当前经验数据面读取经验条目，轨迹、评估记录和发布技能继续使用原有 KV。

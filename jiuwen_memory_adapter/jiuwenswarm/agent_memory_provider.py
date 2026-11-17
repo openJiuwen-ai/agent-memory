@@ -89,6 +89,7 @@ from jiuwen_memory.api import (
     metadata_for_log,
     redact_for_log,
     scope_for_log,
+    should_write_document,
 )
 from jiuwen_memory.api import Scope as ApiScope
 from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import OperationWaitTimeout
@@ -832,7 +833,7 @@ def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
         "default_space": experience_space,
         "curated_spaces": [{"space": experience_space, "skill": True}],
     }
-    # experience 数据面：经验/技能条目不走文档分流——write_document 显式 false
+    # 先声明 KV 回退所需的组件，Provider 合并配置时按有效开关装配文档组件。
     # 盖过 globals（ComponentConfig.get params 优先），KV 真源 + keyword/vector
     # 召回（fulltext/vector 端口走内核 defaults 内存版，与对话的 shadow 索引
     # 互不占用）。
@@ -844,8 +845,7 @@ def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
         "preferred_retrieval_pipeline": "recall_and_get_rank",
     }
     # 经验检索（§2.4）：经验数据面 + 选取算子。parser/reranker 与对话检索共用
-    # 具名实例（查询向量同源）；write_document 显式 false——本实例按非文档装配
-    # （unit_reader 走 KV 点读、不补 DOCUMENT 通道）。
+    # 具名实例（查询向量同源）。装配时将开关与经验数据面统一。
     config["retriever"]["experience"] = {"target": "pipeline", "params": {
         "reranker": "default",
         "query_parser": "default",
@@ -885,9 +885,7 @@ def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
         "kv_store": "default",
     }}
     # 经验 evolver（§2.2）：DynamicEvolver + 经验 extractor/appraiser（评价包住
-    # 抽取）。index_builder/dedup 必须显式指名——dep 缺省按 globals.
-    # write_document=true 解析成 document/shadow（文档算子），经验条目会被
-    # 写进 md 文档。
+    # 抽取）。index_builder/dedup 显式绑定经验组件，随经验文档开关一并切换。
     config["evolver"]["experience"] = {"target": "dynamic", "params": {
         "extractor": "experience",
         "appraiser": "experience",
@@ -944,6 +942,66 @@ def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
     return config
 
 
+def _configure_experience_document(config: dict[str, Any], overrides: dict[str, Any]) -> None:
+    stores = config["store_manager"]["default"]["params"]["domain_stores"]
+    store = stores["experience"]
+    retriever = config["retriever"]["experience"]
+    if not isinstance(retriever, dict) or retriever.get("target") != "pipeline":
+        raise ValidationError("Experience retriever must use the pipeline target")
+    search = retriever["params"]
+    explicit_store = (
+        overrides.get("store_manager", {}).get("default", {}).get("params", {})
+        .get("domain_stores", {}).get("experience", {})
+    )
+    explicit_search = overrides.get("retriever", {}).get("experience", {}).get("params", {})
+    flags = [
+        should_write_document(params["write_document"])
+        for params in (explicit_store, explicit_search) if "write_document" in params
+    ]
+    global_document = should_write_document(config["globals"].get("write_document", False))
+    enabled = flags[0] if flags else global_document
+    if any(flag != enabled for flag in flags) or (enabled and not global_document):
+        raise ValidationError("Conflicting experience write_document configuration")
+    for params in (store, search):
+        params["write_document"] = enabled
+    stores["default"]["experience_partition"] = "ordinary"
+    if search.get("domain_store") != "experience":
+        raise ValidationError("Experience retriever must use the experience domain")
+    if enabled:
+        if explicit_store.get("shadow_recaller", "shadow") != "shadow":
+            raise ValidationError("Experience document storage must use the shadow recaller")
+        store["shadow_recaller"] = "shadow"
+        store["experience_partition"] = "experience"
+        for namespace in ("extractor", "appraiser"):
+            config[namespace]["experience"]["params"]["entry_store"] = "experience"
+        config["constructor"]["experience_skill"] = {
+            "target": "hybrid",
+            "params": {"embedder": "default", "kv_store": "default",
+                       "fulltext_store": "default", "vector_store": "default"},
+        }
+    for namespace, target, params in (
+        ("constructor", "document", {
+            "domain_store": "experience", "skill_index_builder": "experience_skill",
+        }),
+        ("dedup", "shadow", {"embedder": "default"}),
+    ):
+        expected = target if enabled else {"constructor": "hybrid", "dedup": "vector"}[namespace]
+        override = overrides.get(namespace, {}).get("experience")
+        if override is not None:
+            selected = override if isinstance(override, str) else override.get("target", expected)
+            if selected != expected:
+                raise ValidationError(f"Incompatible experience {namespace}: {selected}")
+        if enabled:
+            explicit_params = override.get("params", {}) if isinstance(override, dict) else {}
+            config[namespace]["experience"] = {
+                "target": target,
+                "params": {**params, **explicit_params},
+            }
+    constructor = config["constructor"]["experience"]
+    if enabled and constructor["params"].get("domain_store") != "experience":
+        raise ValidationError("Experience document components must use the experience domain")
+
+
 def _merge_config_over_default(
     config_dict: dict[str, Any], experience_space: str = "", *, standalone: bool = False,
 ) -> dict[str, Any]:
@@ -989,6 +1047,11 @@ def _merge_config_over_default(
             _configure_default_video(config, settings)
         except ValidationError as exc:
             logger.warning("Built-in SDK video profile skipped: %s", str(exc))
+    if experience_space:
+        # Merge first to honor user settings, while retaining the caller's explicit flags.
+        config = _merge(config, deepcopy(config_dict))
+        _configure_experience_document(config, config_dict)
+        return config
     return _merge(config, config_dict)
 
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import tempfile
 import threading
 
 from jiuwen_memory.common.errors import NotFoundError, ValidationError
@@ -37,6 +38,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.config.binding import resolve_connection_url
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
+from jiuwen_memory.storage.markdown_impl import experience_blocks
 
 # memory_class → (子路径模板, 是否进 project 子目录)
 # user_profile 不进 project 子目录（跨项目用户画像，落 root 顶层）；
@@ -98,7 +100,7 @@ class LocalMarkdownStore(MarkdownStore):
         self._fallback_root = root
         self._config_source = config_source
         self._config_namespace = config_namespace
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def store_type(self) -> StoreType:
         return StoreType.MARKDOWN
@@ -136,7 +138,9 @@ class LocalMarkdownStore(MarkdownStore):
                 metadata[MD_FILENAME_KEY] = md_filename
                 unit.system_metadata = metadata  # 回填最终值
                 content = self._unit_content(unit)
-                block = self._render_block(unit, content, memory_class)
+                block = "" if md_filename.endswith("/" + experience_blocks.FILE_NAME) else (
+                    self._render_block(unit, content, memory_class)
+                )
                 groups.setdefault(md_filename, []).append((unit, block))
 
             # 每个文件一次追加写：把同文件所有块拼一起写
@@ -146,8 +150,57 @@ class LocalMarkdownStore(MarkdownStore):
                 abs_path = self._safe_abs_path(root, md_filename)
                 self._ensure_dir(os.path.dirname(abs_path))
                 merged = "".join(block for _, block in pairs)
-                with open(abs_path, "a", encoding="utf-8") as fh:
-                    fh.write(merged)
+                if md_filename.endswith("/" + experience_blocks.FILE_NAME):
+                    self._change_experience(
+                        md_filename, {unit.id: unit for unit, _ in pairs}, inserting=True,
+                    )
+                else:
+                    with open(abs_path, "a", encoding="utf-8") as fh:
+                        fh.write(merged)
+
+    def _change_experience(
+        self, path: str, changes: dict[str, MemoryUnit | None], *, inserting: bool = False,
+    ) -> None:
+        with self._lock:
+            absolute = self._safe_abs_path(self._resolved_root(), path)
+            self._ensure_dir(os.path.dirname(absolute))
+            try:
+                with open(absolute, encoding="utf-8") as handle:
+                    original = handle.read()
+            except FileNotFoundError:
+                original = ""
+            units = experience_blocks.parse(path, original)
+            if inserting and units.keys() & changes.keys():
+                raise ValidationError("Experience document already contains the unit ID")
+            for unit_id, unit in changes.items():
+                if unit is None:
+                    units.pop(unit_id, None)
+                else:
+                    units[unit_id] = unit
+            rendered = "".join(map(experience_blocks.render, units.values()))
+            if rendered == original:
+                return
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=os.path.dirname(absolute), delete=False,
+                ) as handle:
+                    temporary = handle.name
+                    handle.write(rendered)
+                os.replace(temporary, absolute)
+            finally:
+                if temporary is not None and os.path.exists(temporary):
+                    os.unlink(temporary)
+
+    def change_experience(
+        self, scope: Scope, previous: MemoryUnit, unit: MemoryUnit | None,
+    ) -> None:
+        if previous.scope != scope:
+            raise ValidationError("Experience document update cannot change ID or scope")
+        if unit is not None and (unit.scope != scope or unit.id != previous.id):
+            raise ValidationError("Experience document update cannot change ID or scope")
+        path = experience_blocks.path_for(scope)
+        self._change_experience(path, {previous.id: unit})
 
     def restore_blocks(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """补偿专用：按各 unit 的 ``md_filename``（system_metadata 保留键）直接追加块。
@@ -171,6 +224,9 @@ class LocalMarkdownStore(MarkdownStore):
             for unit in units:
                 metadata = unit.system_metadata or {}
                 md_filename = metadata.get(MD_FILENAME_KEY, "")
+                if unit.system_metadata.get("memory_type") == "experience":
+                    self.change_experience(scope, unit, unit)
+                    continue
                 if not md_filename:
                     continue
                 memory_class = self._resolved_memory_class(dict(metadata))
@@ -540,6 +596,8 @@ class LocalMarkdownStore(MarkdownStore):
         project 列空串 = 跨项目可见的语义对齐：
         ``memory/MEMORY.md``、``memory/daily_memory/YYYY-MM-DD.md``。
         """
+        if unit.system_metadata.get("memory_type") == "experience":
+            return experience_blocks.path_for(unit.scope)
         metadata = unit.system_metadata or {}
         memory_class = self._resolved_memory_class(metadata)
         project = self._project_of(unit)

@@ -129,13 +129,13 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 **文档列表的数据源保持单一**：即使部署同时装配 KV，`list` 仍只列举 shadow 中的条目。
 拒绝仅在列表中拼接全部 KV 的方案：同 ID 的旧副本会污染计数和分页，KV 独有条目又无法
-经同一文档数据面的点读、更新和删除完整处理。经验/技能类型过滤只约束当前真源中的条目，
-不改变真源选择；混合存储若需要，应另行定义完整的读写、召回和去重契约。
+经同一文档数据面的点读、更新和删除完整处理。Provider 的共享经验使用具名数据面，
+经验文档条目和普通条目分别查询。显式列举已发布技能时仍从 KV 读取技能。
 
 回归覆盖同时存在文档、同 ID 的旧 KV 副本、KV 独有普通/经验/技能及轨迹记录的情况，验证
 文档列表的过滤、精确计数、分页和点读一致性（`test_composite_storage.py`）。
 
-**单行清洗**（`_sanitize_document_content`）：块格式契约（单行正文、看门狗按行遍历、replace/remove 按行比对）建立在「一个 unit 一行正文」上，但上游不保证——content 含换行时 md 块被切碎、看门狗把第 2+ 行当独立幽灵 unit。故在 md.write / shadow.insert_units 分叉**之前**对 unit 本体原地折叠空白为单空格——md 视图、unit_json、content_hash、replace_content 锚点四方看到同一份 content。收口在文档路径入口而非 extractor：单行是**存储层约束**，KV 路径不受影响。
+**普通记忆单行清洗**（`_sanitize_document_content`）：块格式契约（单行正文、看门狗按行遍历、replace/remove 按行比对）建立在「一个 unit 一行正文」上，但上游不保证——content 含换行时 md 块被切碎、看门狗把第 2+ 行当独立幽灵 unit。故在 md.write / shadow.insert_units 分叉**之前**对 unit 本体原地折叠空白为单空格——md 视图、unit_json、content_hash、replace_content 锚点四方看到同一份 content。收口在文档路径入口而非 extractor：单行是**存储层约束**，KV 路径不受影响。
 
 **写窗口防护**（`storage/sync_gate.py`）。正常写入需要同时更新 Markdown 和索引，看门狗会等
 两边写完再读取。如果读取后发生了新写入，看门狗会重新读取，避免把旧结果写回索引。提交
@@ -289,3 +289,10 @@ content 重复类三者的共同后果：md 与影子索引漂移，但看门狗
 - **`MemoryRuntime` 协议面推广**（F07 §12.10）：SDK 面 `assemble_runtime` + `start_background` 已落地，venv 侧旧版 provider（0.1.17 identity=/metadata= 旧契约）与新 API 不兼容，端到端装配缺口见 doc-memory-e2e-assembly-gap 记录。
 - **文档记忆对外 add 端点**：SDK 侧文档记忆覆盖与凭证注入缺口（e2e-doc-memory-sdk-config-gaps 记录）。
 - **md 块 unit_id 锚点 + 看门狗 reconcile**：当前补偿按 content 匹配（受重复 content 误删限制）且无兜底。引入 `<!-- id:{unit_id} -->` 锚点后，补偿与看门狗对账均可按 unit_id 精确命中，消除重复 content 误匹配、保留版本链，同时让看门狗从「新 UUID 回灌」改为「按 unit_id reconcile」。
+
+## 共享经验文档
+
+经验按 `experience/<org>/<space>/EXPERIENCE.md` 归档，路径中的组织和空间使用
+`x` 前缀加小写 UTF-8 十六进制编码。每个块包含可编辑 Markdown 正文和携带
+稳定 ID、作用域、生命周期及其他重建字段的版本化元数据注释。
+文件监听按 ID 重建和同步影子索引，非法块报错。经验与普通文档列表分别读取各自条目。
