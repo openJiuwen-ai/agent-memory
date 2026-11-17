@@ -948,18 +948,14 @@ def test_property_recall_runs_parallel_with_ordinary_recall() -> None:
         extensions={"schema_temporal": {"mode": "history"}},
     )
 
-    started = perf_counter()
     retriever.retrieve(_SCOPE, query)
-    elapsed = perf_counter() - started
 
     schema_calls = [call for call in domain.recall_calls if call["is_schema"]]
     ordinary_calls = [call for call in domain.recall_calls if not call["is_schema"]]
     assert len(schema_calls) >= 1, "Property 直达召回未发生"
     assert len(ordinary_calls) >= 1, "普通召回未发生"
-    serial_cost = ordinary_calls[0]["duration"] + schema_calls[0]["duration"] - 0.03
-    assert elapsed < serial_cost, (
-        "总耗时 >= 普通召回 + Property 直达召回耗时（串行未并行）"
-    )
+    # 并行性只以「两次召回的时间区间重叠」这一事实判据验证：
+    # 总墙钟耗时比较会混入线程提交/融合等开销，CI 负载下的调度噪声足以击穿容差
     overlap = (
         ordinary_calls[0]["start"] < schema_calls[0]["end"]
         and schema_calls[0]["start"] < ordinary_calls[0]["end"]
