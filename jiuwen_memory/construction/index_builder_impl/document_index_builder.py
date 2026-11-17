@@ -59,7 +59,9 @@ class DocumentIndexBuilder(IndexBuilder):
     :class:`CompositeDomainStore` 内部经注入的 ``StoreManager`` 保证，非本算子职责。
     """
 
-    def __init__(self, domain_store: DomainStore) -> None:
+    def __init__(
+        self, domain_store: DomainStore, *, skill_index_builder: IndexBuilder | None = None,
+    ) -> None:
         should_write = getattr(domain_store, "should_write_document", None)
         if should_write is None or not should_write():
             raise UnsupportedStorageCapabilityError(
@@ -67,6 +69,7 @@ class DocumentIndexBuilder(IndexBuilder):
                 "但注入的 DomainStore 非文档模式"
             )
         self._domain = domain_store
+        self._skill_index_builder = skill_index_builder
 
     def read_domain_store(self) -> DomainStore:
         """Expose the same domain used by build/update for pre-write rechecks."""
@@ -83,7 +86,10 @@ class DocumentIndexBuilder(IndexBuilder):
             return
         logger.info("DocumentIndexBuilder: building document memory for %d units", len(units))
         for unit in units:
-            self._domain.add(unit.scope, [unit], mode=mode)
+            if self._skill_index_builder and unit.system_metadata.get("memory_type") == "skill":
+                self._skill_index_builder.build([unit], mode=mode)
+            else:
+                self._domain.add(unit.scope, [unit], mode=mode)
 
     def update(
         self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
@@ -92,14 +98,20 @@ class DocumentIndexBuilder(IndexBuilder):
             return
         logger.info("DocumentIndexBuilder: updating document memory for %d units", len(units))
         for unit in units:
-            self._domain.update(unit.scope, [unit], mode=mode)
+            if self._skill_index_builder and unit.system_metadata.get("memory_type") == "skill":
+                self._skill_index_builder.update([unit], mode=mode)
+            else:
+                self._domain.update(unit.scope, [unit], mode=mode)
 
     def remove(
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
     ) -> None:
         logger.info("DocumentIndexBuilder: removing %d units (mode=%s)", len(units), mode)
         for unit in units:
-            self._domain.delete(unit.scope, [unit.id], mode=mode)
+            if self._skill_index_builder and unit.system_metadata.get("memory_type") == "skill":
+                self._skill_index_builder.remove([unit], mode=mode)
+            else:
+                self._domain.delete(unit.scope, [unit.id], mode=mode)
 
     def rebuild(self) -> None:
         # 文档真源（md 文件）与影子索引同生命周期，无独立重建路径——与 HybridIndexBuilder 一致。
@@ -114,5 +126,9 @@ def _build(config):
     return DocumentIndexBuilder(
         StoreManagerProducer.resolve(config).domain_store(
             resolve_name(config, "domain_store")
-        )
+        ),
+        skill_index_builder=(
+            IndexBuilderProducer.dep(config, "skill_index_builder", default="hybrid")
+            if "skill_index_builder" in config.params else None
+        ),
     )

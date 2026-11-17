@@ -19,12 +19,15 @@ from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
     MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
+    FilterClause,
+    FilterOp,
     MemoryUnit,
     RetrievalPipeline,
     Scope,
     Segment,
     memory_key,
 )
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config import AssemblyContext
 from jiuwen_memory.storage.bootstrap import register_backends
 from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
@@ -304,8 +307,9 @@ def test_domain_store_uses_named_kv_port_from_config() -> None:
 # 验证 add/update/delete/get/list 的分流，不 mock 算子——md 落盘与影子索引三表
 # 是文档记忆的核心契约。
 
-def _doc_storage(tmp_path) -> CompositeDomainStore:
+def _doc_storage(tmp_path, *, kv: InMemoryKVStore | None = None) -> CompositeDomainStore:
     manager = CompositeStoreManager(
+        kv=kv,
         markdown=LocalMarkdownStore(root=str(tmp_path)),
         shadow_index=SqliteDocumentShadowIndex(
             db_path=str(tmp_path / "shadow.db"), tokenizer=WhitespaceTokenizer()
@@ -423,6 +427,46 @@ def test_document_mode_get_and_list(tmp_path) -> None:
     page = storage.list(scope)
     assert page.count == 2
     assert {u.id for u in page.items} == {"u1", "u2"}
+
+
+def test_document_list_keeps_shadow_as_its_only_source_with_kv_present(tmp_path) -> None:
+    """已有 KV 端口不改变文档真源，也不让旧副本污染计数、过滤和分页。"""
+    scope = Scope(org="org", user="user")
+    kv = InMemoryKVStore()
+    storage = _doc_storage(tmp_path, kv=kv)
+    first = _doc_unit(scope, "u1", "document one")
+    second = _doc_unit(scope, "u2", "document two")
+    first.user_metadata = {"keep": True}
+    second.user_metadata = {"keep": True}
+    storage.add(scope, [first, second])
+
+    # 同 ID 的旧 KV 副本、KV 独有的普通/经验/技能，以及内部记录均不属于文档真源。
+    for unit_id, memory_type in (
+        ("u1", "semantic"),
+        ("kv-only", "semantic"),
+        ("experience-only", "experience"),
+        ("skill-only", "skill"),
+    ):
+        stale = MemoryUnit(
+            id=unit_id,
+            scope=scope,
+            segments=[Segment(content="KV entry")],
+            system_metadata={"memory_type": memory_type},
+            user_metadata={"keep": True},
+        )
+        kv.insert(scope, memory_key(unit_id), dumps(stale))
+    kv.insert(scope, "/trajectories/t1", b'{"trajectory_id":"t1"}')
+
+    page = storage.list(
+        scope, offset=1, limit=1,
+        filters=FilterClause("user_metadata.keep", FilterOp.EQ, True),
+    )
+    assert page.count == 2, "KV 残留条目不得增加文档列表总数"
+    assert [unit.id for unit in page.items] == ["u1"], "分页只针对 shadow 中的文档"
+    assert page.items[0].content == "document one", "同 ID 的 KV 副本不得覆盖文档真源"
+    assert storage.list(scope, memory_types=["experience"]).count == 0, "不能混入 KV 经验"
+    assert storage.list(scope, memory_types=["skill"]).count == 0, "不能混入 KV 技能"
+    assert storage.get(scope, ["experience-only"]) == [], "列表与点读沿用同一文档真源"
 
 
 def test_document_mode_update_replaces_md_block(tmp_path) -> None:
@@ -644,7 +688,7 @@ def test_document_mode_soft_delete_exits_retrieval_via_lifecycle(tmp_path) -> No
     锁定三重排除机制的第①②环：谓词下推 + 投影列同步。若谓词下推
     （_compile_system_filters）或 update 投影列覆写被改坏，本测试失败。
     """
-    from jiuwen_memory.common.type_def import FilterClause, FilterGroup, FilterLogic, FilterOp
+    from jiuwen_memory.common.type_def import FilterGroup, FilterLogic
     from jiuwen_memory.common.type_def.memory import LifecycleState
     from jiuwen_memory.storage.types import IndexWriteMode, TextQuery
 
@@ -707,7 +751,6 @@ def test_document_mode_soft_delete_bare_call_keeps_recall(tmp_path) -> None:
     no-op 的现状契约，调用方必须先 lifecycle.transition（见上测试）。防止有人
     以为 SOFT 会删投影而依赖它。
     """
-    from jiuwen_memory.common.type_def import FilterClause, FilterOp
     from jiuwen_memory.storage.types import TextQuery
 
     scope = Scope(org="org", user="user")

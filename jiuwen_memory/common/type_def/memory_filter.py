@@ -47,7 +47,7 @@ def _field_value(unit: MemoryUnit, field: str):
     if field == "t_message":
         return _epoch_ms(unit.temporal.t_message)
     if field == "t_ingest":
-        # 恒非空（内核接入路径强制盖章，F04 D5）；防御性对齐 t_message 的
+        # 恒非空（内核接入路径强制盖章，F10 D5）；防御性对齐 t_message 的
         # None 语义（None 只匹配 NE/NOT_IN），恒写投影下不会有实际 None。
         return _epoch_ms(unit.temporal.t_ingest)
     key = filter_field_metadata_key(field)

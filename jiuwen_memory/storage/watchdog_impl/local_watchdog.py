@@ -47,6 +47,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
     Temporal,
 )
+from jiuwen_memory.storage.markdown_impl import experience_blocks
 from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks
 from jiuwen_memory.storage.markdown_impl._md_path import (
     _FILE_NAME_TO_CLASS,
@@ -92,7 +93,7 @@ def _is_watched_md(path: str) -> bool:
     非 ``.md``（如 shadow.db）也在此自然排除。
     """
     base = os.path.basename(path.replace("\\", "/"))
-    if base in _FILE_NAME_TO_CLASS:
+    if base == experience_blocks.FILE_NAME or base in _FILE_NAME_TO_CLASS:
         return True
     return _DAILY_NAME_RE.match(base) is not None
 
@@ -203,6 +204,14 @@ class LocalWatchdog(Watchdog):
                     return
                 self._owner.schedule_sync(event.src_path, deleted=True)
 
+            def on_moved(self, event: Any) -> None:
+                if event.is_directory or not self._owner.watcher_initialized:
+                    return
+                if _is_watched_md(event.src_path):
+                    self._owner.schedule_sync(event.src_path, deleted=True)
+                if _is_watched_md(event.dest_path):
+                    self._owner.schedule_sync(event.dest_path)
+
         # 监听整个 markdown_root（recursive=True）：USER.md 落 root 顶层（不在 memory/ 下），
         # memory/ 下的其余 md 由 recursive 监听自然捕获。memory/ 子目录由写入侧
         # _ensure_dir 自动创建，创建后其下变更即被监听。不能 schedule 不存在的目录。
@@ -261,6 +270,10 @@ class LocalWatchdog(Watchdog):
         """延迟置 initialized（避开初始扫描风暴，抄 lite）。"""
         if not self._closed:
             self._watcher_initialized = True
+            experience_root = os.path.join(self._markdown_root, "experience")
+            for directory, _, filenames in os.walk(experience_root):
+                if experience_blocks.FILE_NAME in filenames:
+                    self._schedule_sync(os.path.join(directory, experience_blocks.FILE_NAME))
         logger.debug("LocalWatchdog: watcher initialized (post grace period)")
 
     def _schedule_sync(self, abs_path: str, *, deleted: bool = False) -> None:
@@ -401,6 +414,26 @@ class LocalWatchdog(Watchdog):
             return None
         return rel.replace("\\", "/")
 
+    def _sync_experience(self, path: str, deleted: bool) -> bool:
+        version = self._sync_gate.snapshot_version()
+        if version is None:
+            return False
+        scope = experience_blocks.scope_from_path(path)
+        source = ""
+        absolute = os.path.realpath(os.path.join(self._markdown_root, path))
+        root = os.path.realpath(self._markdown_root)
+        if os.path.commonpath([root, absolute]) != root:
+            raise ValueError("Experience document is outside the Markdown root")
+        if not deleted:
+            with open(absolute, encoding="utf-8") as handle:
+                source = handle.read()
+        units = experience_blocks.parse(path, source)
+        with self._sync_gate.commit_sync(version) as accepted:
+            if not accepted:
+                return False
+            self._shadow.sync_experience_document(scope, path, units)
+        return True
+
     def _sync_one(self, md_filename: str, deleted: bool) -> bool:
         """单文件 unit 粒度增量同步（F07 §12.3 流程）。
 
@@ -420,6 +453,8 @@ class LocalWatchdog(Watchdog):
         ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这
         残留块重插为 active 重复行（遗忘语义失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
         """
+        if md_filename.rsplit("/", 1)[-1] == experience_blocks.FILE_NAME:
+            return self._sync_experience(md_filename, deleted)
         version = self._sync_gate.snapshot_version()
         if version is None:
             return False

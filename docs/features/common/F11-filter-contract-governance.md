@@ -1,8 +1,8 @@
-# F05 — filters 契约治理：把公共过滤语言当产品治理
+# F11 — filters 契约治理：把公共过滤语言当产品治理
 
 - 日期：2026-09-14
-- 状态：设计定稿；团队执行版规范见 [F06-filter-governance-playbook.md](F06-filter-governance-playbook.md)
-- 关联：`docs/features/F04-dreaming.md`（演进侧消费方）、`jiuwen_memory/common/type_def/filter.py`（契约本体）
+- 状态：设计定稿；团队执行版规范见 [F12-filter-governance-playbook.md](F12-filter-governance-playbook.md)
+- 关联：`docs/features/control/F10-dreaming.md`（演进侧消费方）、`jiuwen_memory/common/type_def/filter.py`（契约本体）
 
 ## 0. 背景与动机
 
@@ -91,7 +91,7 @@ L1 契约层（FilterExpr：9 算子 + 13 内置字段 + 2 命名空间）
 | 1 | **裸名吞噬**：裸名不在 13 白名单 → 自动归入 `user_metadata.<name>`。将来往 `_BUILTIN_FIELDS` 加新字段（如 priority）时，所有存量 `{"priority": ...}` 一夜之间从"查用户标签"变"查新内置字段"——静默语义翻转 | `canonical_filter_field` | **高（治理级）** |
 | 2 | Python 求值器 `1 == True` 判真；pg jsonb / ES term 判否。内存后端与 ES/pg 分歧——"测试过、线上挂"型 | `memory_filter._matches_clause` | 中 |
 | 3 | `metadata.*` 命名空间移除先例——破坏性变更历史上发生过一次，证明风险真实 | `filter._check_field` 报错文案 | 中（先例） |
-| 4 | `t_message` 无哨兵约定（t_event→0、t_invalid→哨兵有），真源 None 在窗口谓词下被各后端一致排外但静默 | `memory_filter._field_value` | 中（F04 遗留 #3） |
+| 4 | `t_message` 无哨兵约定（t_event→0、t_invalid→哨兵有），真源 None 在窗口谓词下被各后端一致排外但静默 | `memory_filter._field_value` | 中（Dreaming F10 遗留 #3） |
 | 5 | ES 数值字段映射 double，>2^53 整数丢精度 vs Python 任意精度；normalize 未拒绝超大整数 | `T_INVALID_OPEN` 注释 | 低 |
 | 6 | ES 标量守卫依赖写侧投影 array_marker——隐式跨层契约，只活在代码注释未进 specs | `_scalar_match` / `_array_marker` | 低-中 |
 
@@ -125,5 +125,5 @@ L1 契约层（FilterExpr：9 算子 + 13 内置字段 + 2 命名空间）
   换"任何老查询永不坏"。
 - 契约矩阵测试是持续负债：每次动 L1 全表跑——这份负债正是"影响检索"的保险单。
 - 本文档是**治理动机与方案**；可执行规范（检查单、决策树路径、冻结令、优先级）在
-  [F06-filter-governance-playbook.md](F06-filter-governance-playbook.md)。CI 强制项（表态
+  [F12-filter-governance-playbook.md](F12-filter-governance-playbook.md)。CI 强制项（表态
   矩阵测试）落地时机 = 第一次真实的 L1 变更提案。

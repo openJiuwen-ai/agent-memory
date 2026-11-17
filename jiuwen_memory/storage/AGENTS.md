@@ -102,6 +102,8 @@
 5. **KV list 先过滤再分页**
    `KVStore.list` 只查询 `/memory/` MemoryUnit；在完整 Scope 内依次执行
    `memory_types AND filters`、精确计数、稳定排序和分页。`count` 不受 offset/limit 影响。
+   `CompositeDomainStore.list` 在文档模式下只读取 `shadow.list_units`，不合并 KV；
+   即使同时装配 KV 端口，记忆列表、点读与文档更新/删除仍使用同一文档真源。
 
 6. **检索型 Store 的 search 物理约束在 scope 内**
    `FulltextStore.search(scope, query)` / `VectorStore.search(scope, query)` / `GraphStore.search(scope, query)` 绝不跨 scope 返回。
@@ -429,3 +431,8 @@ Neo4j 启用 SSL 时在装配与 URI 晚绑定处验证 TLS scheme，显式加�
 VectorRecaller 在 debug 记录逻辑召回语法，ElasticsearchFulltextStore 在 debug 记录已编译
 DSL。只记录查询/过滤与向量维数，不记录凭证或完整向量；正文/过滤值的日志保护由
 内置 trace sink 处理。
+
+### 共享经验文档
+
+经验 Markdown 以组织和空间划分文件。块格式的稳定 ID 和元数据是索引重建契约，
+修改正文或删除块时按 ID 同步。普通 Markdown 块仍按既有规则解析。

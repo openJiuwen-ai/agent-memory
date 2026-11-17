@@ -24,7 +24,13 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.plaintext import require_ciphertext
 from jiuwen_memory.common.security.cryptography import CryptographyProducer, CryptographyProvider
 from jiuwen_memory.common.security.types import CryptoContext
-from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MESSAGES_KEY_PREFIX, FilterExpr, Scope
+from jiuwen_memory.common.type_def import (
+    MEMORY_KEY_PREFIX,
+    MESSAGES_KEY_PREFIX,
+    TRAJECTORIES_KEY_PREFIX,
+    FilterExpr,
+    Scope,
+)
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
 from jiuwen_memory.storage.kv import (
@@ -53,6 +59,9 @@ def _purpose_for_key(key: str) -> str:
     if key.startswith(MEMORY_KEY_PREFIX):
         return _PURPOSE_MEMORY_UNIT
     if key.startswith(MESSAGES_KEY_PREFIX):
+        return _PURPOSE_RAW_MESSAGE
+    # 轨迹记录与原文消息同为"对话原文"性质（含用户消息明文），AAD purpose 一致
+    if key.startswith(TRAJECTORIES_KEY_PREFIX):
         return _PURPOSE_RAW_MESSAGE
     return _PURPOSE_KV_VALUE
 
@@ -168,6 +177,18 @@ class EncryptedKVStore(KVStore, ConditionalKV):
 
     def delete(self, scope: Scope, key: str) -> None:
         self._raw.delete(scope, key)
+
+    def compare_exchange(
+        self, scope: Scope, key: str, expected: bytes, replacement: bytes | None,
+    ) -> bool:
+        try:
+            raw = self._raw.get(scope, key)
+        except NotFoundError:
+            return False
+        if self._decrypt(scope, key, raw) != expected:
+            return False
+        ciphertext = self._encrypt(scope, key, replacement) if replacement is not None else None
+        return self._raw.compare_exchange(scope, key, raw, ciphertext)
 
     def get(self, scope: Scope, key: str) -> bytes:
         return self._decrypt(scope, key, self._raw.get(scope, key))

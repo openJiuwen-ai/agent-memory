@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""演进候选源的数据契约（F04 dreaming）。
+"""演进候选源的数据契约（F10 dreaming）。
 
 evolve 的候选不再固定为「list scope 全量」——候选从哪来、怎么筛，由
 ``CandidateSource`` 声明（谓词 / 点名 / 召回 / 扇出四型），由 control 层
@@ -8,7 +8,7 @@ resolver 消费产出 :class:`CandidateOutcome`。本模块只有**数据**：
 - 纯 dataclass + 原生字段，可经 :func:`candidate_to_dict` /
   :func:`candidate_from_dict` 与 dict DSL 互转——注册态 dreaming 任务把它随
   interval 持久化到 KV，重启恢复后原样重建 resolver（候选源必须是数据不是
-  代码，F04 D3）；
+  代码，F10 D3）；
 - 时间窗 ``window``（秒）不落盘绝对时间戳——resolver 在**每次 resolve 时**
   现算 ``t_ingest GTE now-window`` 下推，重启后窗口随 tick 自然滑动。
 
@@ -19,7 +19,7 @@ kind）+ 两侧各一条注册表条目，无分支表要改（与 ``EvolverProd
 注册表风格，S09 §1/§9 基线一致）。
 
 filters 的契约：谓词源为本体、点名源恒无（id 列表即完整答案）、召回源为
-收窄用（与 query 正交）、枚举源嵌套在 child（F04 D3）——不为形式统一给
+收窄用（与 query 正交）、枚举源嵌套在 child（F10 D3）——不为形式统一给
 每源塞 filters。
 """
 
@@ -45,7 +45,7 @@ class PredicateCandidate:
     """① 谓词源：``list_units`` + filters 下推，恒单桶。
 
     ``window``（秒）在 resolver 内现算 ``t_ingest GTE cutoff`（毫秒）合并
-    进 filters 下推（F04 D5：t_ingest 恒非空，内核接入路径强制
+    进 filters 下推（F10 D5：t_ingest 恒非空，内核接入路径强制
     盖章）；``None`` 表示不限时间（全量型）。
     """
 
@@ -136,7 +136,7 @@ _SHAPE_FIELDS: frozenset[str] = frozenset({"space", "user", "agent", "session"})
 class FanOutCandidate:
     """④ 枚举源：``scopes()`` × 子谓词，多桶（演进按桶进行）。
 
-    形状约束（F04 D3）：父子 scope 前缀匹配只表达「覆盖范围」，表达
+    形状约束（F10 D3）：父子 scope 前缀匹配只表达「覆盖范围」，表达
     不了「桶形状」——如「所有用户桶」需在前缀 ``org=acme`` 之外再要求
     agent/session 为空。``require_empty`` / ``require_nonempty`` 指定子桶
     scope 字段的空/非空硬约束，缺省空集 = 不约束（现行为）；只会从覆盖集
@@ -355,7 +355,7 @@ def _parse_shape_set(value: Any, name: str) -> frozenset[str]:
 def candidate_from_dict(data: dict) -> CandidateSource:
     """dict DSL → CandidateSource（HTTP/SDK 边界解析 + 重启恢复）。
 
-    形态（F04 D3）：``{"type": "predicate"|"ids"|"recall"|"fan_out", ...}``；
+    形态（F10 D3）：``{"type": "predicate"|"ids"|"recall"|"fan_out", ...}``；
     filters 走 :func:`~common.type_def.filter.normalize`（解析 + 校验 + 规范化）。
     非法形态（未知 type / 缺必填 / filters 不合法）一律 :class:`ValidationError`。
     分派按 ``"type"`` 查 ``_CANDIDATE_CODECS`` 注册表（与 candidate_to_dict、

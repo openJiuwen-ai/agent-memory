@@ -1,8 +1,8 @@
-# F06 — filters 契约治理落地规范（团队执行版）
+# F12 — filters 契约治理落地规范（团队执行版）
 
 - 日期：2026-09-14
 - 状态：生效（作为评审纪律；矩阵测试与 CI 门禁仍是规划项，落地时机 = 第一次真实的 L1 变更提案）
-- 上游：[F05-filter-contract-governance.md](F05-filter-contract-governance.md)（方案与动机）
+- 上游：[F11-filter-contract-governance.md](F11-filter-contract-governance.md)（方案与动机）
 - 适用对象：所有改动 `jiuwen_memory/common/type_def/filter.py`、`memory_filter.py`、
   四个后端编译器（`_pg.py` / `elasticsearch_fulltext.py` / `milvus_vector.py` /
   `in_memory_fusion_store.py`）或新增 filters 消费方（检索/演进/未来）的提交人。
@@ -91,7 +91,7 @@
 对应 AGENTS.md 约束 #2：跨模块规约变动必须同步修订 specs——filters 契约的
 spec 文档里"最近一次修订日期"填当天。
 
-## 6. 冻结令：`_BUILTIN_FIELDS` 只减不增（对应 F04 审计 #1）
+## 6. 冻结令：`_BUILTIN_FIELDS` 只减不增（对应 Filter 治理 F11 审计 #1）
 
 **当前基线（含已批准的 `t_ingest`）之后，禁止再往 13 个内置字段白名单加
 新成员**。裸名吞噬链路：
@@ -117,15 +117,15 @@ spec 文档里"最近一次修订日期"填当天。
 | ES array_marker | 写侧投影 | `elasticsearch_fulltext._scalar_match` 守卫 | （ES 内闭环） |
 
 已知缺口：`t_message` **无哨兵约定**（真源 None 在窗口谓词下静默排外）——已定论绕开：
-消费方时间窗一律用 `t_ingest`（内核接入强制盖章、恒非空）+ 后置筛选（F04 D5），
+消费方时间窗一律用 `t_ingest`（内核接入强制盖章、恒非空）+ 后置筛选（F10 D5），
 `t_message` 不作 filters 时间窗轴。
 
-## 8. 存量瑕疵优先级（F04 §4 审计的行动版）
+## 8. 存量瑕疵优先级（Filter 治理 F11 §4 审计的行动版）
 
 | 优先级 | 项 | 动作 | 时限 |
 |---|---|---|---|
 | **P0** | #1 裸名吞噬 | 冻结令已写入本文 §6——**立纪律，零代码** | 即刻生效 |
-| **P0** | #4 t_message 无哨兵 | **已定论（2026-09-15）**：t_message 确认可空（`payload.occurred_at` 调用方可选）；dreaming 时间窗轴改 `t_ingest`（内核接入强制盖章、恒非空）+ resolver 后置筛选，**绕开哨兵需求**。详见 F04 D5。剩余动作：dreaming 实现按新轴落地；t_message 若将来进 filters 时间窗场景再议哨兵 | dreaming 实现时 |
+| **P0** | #4 t_message 无哨兵 | **已定论（2026-09-15）**：t_message 确认可空（`payload.occurred_at` 调用方可选）；dreaming 时间窗轴改 `t_ingest`（内核接入强制盖章、恒非空）+ resolver 后置筛选，**绕开哨兵需求**。详见 F10 D5。Dreaming 已使用该时间轴；t_message 若将来用于 filters 时间窗，再议哨兵 | 已落地 |
 | P1 | #6 ES array_marker 隐式契约 | 归档进 specs（现仅活在代码注释） | 下次动 specs |
 | P1 | #2 bool/number 求值分歧 | specs 已知分歧清单记录"内存 1==True，ES/pg 判否"；修不修另议 | 下次动 specs |
 | P2 | #5 >2^53 精度丢失 | 下次动 `_normalize_value` 时顺手拒绝超大整数 | 无限拖可接受 |

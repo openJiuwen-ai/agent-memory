@@ -93,13 +93,17 @@ def _dedup_recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
     候选 project 为空（user_profile）时保持 lifecycle-only：兜底 ``project=''``
     恰好召回全部可对照的跨项目记忆，语义正确。
     """
-    project = _candidate_project(candidate)
+    is_experience = candidate.system_metadata.get("memory_type") == "experience"
+    op = FilterOp.EQ if is_experience else FilterOp.NE
+    filters = and_merge(_active_lifecycle_filter(), [
+        FilterClause("system_metadata.memory_type", op, "experience"),
+    ])
+    project = "" if is_experience else _candidate_project(candidate)
     if not project:
-        return _active_lifecycle_filter()
+        return filters
     return and_merge(
-        None,
+        filters,
         [
-            FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value]),
             FilterClause("system_metadata.project", FilterOp.IN, ["", project]),
         ],
     )
@@ -276,6 +280,10 @@ class ShadowDedup(Dedup):
             if self._tier_filter and unit.tier != candidate.tier:
                 continue
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):
+                continue
+            if (candidate.system_metadata.get("memory_type") == "experience") != (
+                unit.system_metadata.get("memory_type") == "experience"
+            ):
                 continue
             if unit.id == candidate.id:
                 continue

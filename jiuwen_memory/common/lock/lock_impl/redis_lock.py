@@ -58,6 +58,8 @@ class RedisLockProvider(LockProvider):
     且锁的高频短写与业务读写混在同一池里会互相影响尾延迟。
     """
 
+    is_distributed = True
+
     def __init__(
         self,
         *,
@@ -103,6 +105,13 @@ class RedisLockProvider(LockProvider):
         client = self.client
         with wrap_backend("redis lock ping"):
             await client.ping()
+
+    async def close_connection(self) -> None:
+        client, self._client = self._client, None
+        self._release_script = self._renew_script = None
+        if client is not None:
+            with wrap_backend("redis lock close"):
+                await client.aclose()
 
     async def _acquire(self, key: str, *, lease_ms: int, wait_timeout_ms: int) -> LockHandle:
         token = uuid.uuid4().hex

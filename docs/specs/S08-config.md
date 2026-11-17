@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-16 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F08-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -699,3 +699,10 @@ injection.prompt 默认只产生分类依据，不改变等级或正文；显式
 **自动搬迁（F09 D16）**：`kv_store.<name>.params.relocate_on_update`（布尔，默认 `false`）开启后，`update` 只写 `relocate_to` 标记，由运维 / 定时任务调用 `relocate_pending()` 执行。`relocate_stale_after`（秒，默认 900）是判定遗留 `moving` 的阈值；`relocate_min_age`（秒，默认 30）是 `relocate_pending()` 缺省的最小标记时长，须大于派生后端的可见延迟；`relocate_max_failures`（正整数，默认 5）是同一记忆连续搬迁失败后放弃标记的上限；`recover_stale=True` 只允许在维护窗口使用。装配期校验：开关打开时必须能经 `SHARD_PLACEMENT` 端口取到搬迁控制面，且所有 `shard_routed` 的向量 / 全文 / 实体 / 关联图端口都声明 `SHARD_RELOCATABLE`（向量 / 全文 / 实体读取完整枚举的内层还必须声明 `UNIT_RECORD_LOOKUP`），否则拒绝启动；未开启时这些校验和归属记录扩展都不出现。
 
 向量、全文三层与实体默认 split，关联图默认 shared，各端口可显式覆盖；split 各分片必须声明互不相同的物理资源标识（Milvus 以 uri/collection 为身份），图不再需要额外的控制存储。Document Mode/Fusion 与本分片方案组合首版拒绝启动（依据能力声明判定，不按 target），Markdown 不拆分。未启用路由保持原装配行为。首版认证至 10 shard，更大部署显式放宽上限且重新评测。
+
+### 文档模式开关
+
+SDK 接入层可通过 `jiuwen_memory.api.should_write_document(raw)` 归一文档模式开关。
+布尔值原样返回，空值为假，数字按是否为零转换。
+字符串支持 `true/false`、`1/0`、`yes/no`、`on/off`，忽略首尾空白和大小写。
+无法识别的值抛出 `ValidationError`。

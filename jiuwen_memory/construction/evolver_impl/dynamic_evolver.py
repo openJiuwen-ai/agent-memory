@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
@@ -30,12 +32,14 @@ from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import AbstractorProducer
 from jiuwen_memory.construction.associator import AssociatorProducer
-from jiuwen_memory.construction.base import ExtractContext
 from jiuwen_memory.construction.dedup import DedupProducer
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+    ExtractState,
     OrchestratingEvolver,
+    _opt_appraiser,
+    _opt_curator,
     _resolve_message_store,
     _resolve_read_domain,
 )
@@ -50,14 +54,10 @@ from jiuwen_memory.construction.prompt_registry import (
 from jiuwen_memory.construction.prompt_strategy import (
     CONSOLIDATION_PROMPT_PREFIX,
     EXTRACTION_STRATEGY_KEY,
-    copy_consolidation_prompts,
     copy_reflect_prompts,
     parse_prompt_strategies,
 )
 from jiuwen_memory.construction.router import optional_router
-from jiuwen_memory.construction.snapshot_inheritance import (
-    inherit_infer_snapshots,
-)
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
 
 logger = get_logger(__name__)
@@ -76,7 +76,9 @@ class ConsolidateDecision:
 class DynamicEvolver(OrchestratingEvolver):
     """EXTRACT 走动态 prompt 四步编排的 Evolver。
 
-    构造参数在父类基础上新增 ``prompt_registry``（consolidate/reflect 步按 key 查 prompt）。
+    构造参数在父类基础上新增 ``prompt_registry``（consolidate/reflect 步按 key 查
+    prompt）与 ``dedup_decisions``（按抽取策略名限定允许的去重结论，未列出的策略
+    四种都允许——经验 profile 用它把误判的「更新」挡在合并分支外，§2.2）。
     其余依赖（extractor/abstractor/associator/index_builder/kv/graph/dedup/llm/layer_annotator）
     与父类同构，由装配注入。
     """
@@ -85,53 +87,57 @@ class DynamicEvolver(OrchestratingEvolver):
         self,
         *args,
         prompt_registry: PromptRegistry | None = None,
+        dedup_decisions: dict[str, set[DedupDecision]] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._prompts = prompt_registry or PromptRegistry()
+        self._dedup_decisions = dict(dedup_decisions) if dedup_decisions else {}
 
     def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         """动态四步：extract → consolidate(判定) → reflect → 落盘。
 
         procedural 路径仍走父类行为（不收集 context、不判定、直接落盘）——
         procedural 语义是"把这轮做了什么记成一条 how-to"，无需动态判定。
+
+        评价算子的调用点在过程记忆的转交之后：带 ``procedural=true`` 的写入只经过
+        父类的调用点，本类的调用点只覆盖非 procedural 路径（经验请求恒非
+        procedural，§2.2）。准入评价在抽取之前，收尾在流程结束（含流程出错时以
+        ``None`` 调），与父类 `_evolve_extract` 的接法相同。
         """
         if self._is_procedural(units):
             return super()._evolve_extract(units)
 
-        # 非 procedural：infer 同步抽取 / background EXTRACT
-        recent = self._persist_and_maintain_messages(units)
-        context = self._maybe_collect_extract_context(units, recent)
-        candidates = self._extract_step(units, context)
-        if not candidates:
+        state = ExtractState(units)
+        state.appraisal = self._appraise(state.sources)
+        if state.appraisal is not None and not state.appraisal.proceed:
             return EvolveResult()
-        decisions = self._consolidate_step(candidates)
-        reflected = self._reflect_step(candidates, decisions)
-        return self._persist_decisions(reflected, decisions)
+        result = EvolveResult()
+        try:
+            self._prepare_extract_context(state)
+            state.candidates = self._extract_step(state.sources, state.context)
+            if state.candidates:
+                self._prepare_extract_candidates(state)
+                state.candidates = self._route(state.sources, state.candidates)
+            if state.candidates:
+                self._annotate_layers(state.candidates)
+                decisions = self._consolidate_step(state.candidates)
+                reflected = self._reflect_step(state.candidates, decisions)
+                result = self._persist_decisions(reflected, decisions)
+        except Exception:
+            self._finalize(state.sources, state.appraisal, None)
+            raise
+        self._finalize(state.sources, state.appraisal, result)
+        return result
 
     # ------------------------------------------------------------------
-    # 步骤 1：抽取
+    # 抽取候选准备：在公共来源约束与巩固 prompt 之外携带反思 prompt
     # ------------------------------------------------------------------
 
-    def _extract_step(
-        self,
-        units: list[MemoryUnit],
-        context: ExtractContext | None,
-    ) -> list[MemoryUnit]:
-        extracted = self._extractor.extract(units, context=context)
-        inherit_infer_snapshots(units, extracted)
-        logger.info("DynamicEvolver: EXTRACT extractor returned %d units", len(extracted))
-        if not extracted:
-            return []
-        copy_consolidation_prompts(units, extracted)
-        copy_reflect_prompts(units, extracted)
-        # 归属判定与父类同一插入点：抽取之后、分层标注与后续判定之前。两个分支各自接线，
-        # 因为本类覆盖了 _evolve_extract，父类插入点在本路径上不经过。
-        extracted = self._route(units, extracted)
-        if not extracted:
-            return []
-        self._annotate_layers(extracted)
-        return extracted
+    def _prepare_extract_candidates(self, state: ExtractState) -> None:
+        super()._prepare_extract_candidates(state)
+        if not state.procedural:
+            copy_reflect_prompts(state.sources, state.candidates)
 
     # ------------------------------------------------------------------
     # 步骤 2：巩固（只判定不落盘）
@@ -206,6 +212,22 @@ class DynamicEvolver(OrchestratingEvolver):
         _strategy, prompt_key = prompts[0]
         return self._prompts.get(PHASE_CONSOLIDATE, prompt_key)
 
+    def _dedup_decisions_for(self, candidate: MemoryUnit) -> set[DedupDecision] | None:
+        """候选所属抽取策略允许的去重结论；未限定返回 ``None``（四种都允许）。
+
+        经验 profile 的取法（§2.2）：``experience_tip`` 为新增、重复；``experience_fact``
+        为新增、重复、取代。范围外的结论一律按新增处理，见 :meth:`_llm_judge`。
+        """
+        if not self._dedup_decisions:
+            return None
+        strategy = str(
+            candidate.system_metadata.get(EXTRACTION_STRATEGY_KEY, "")
+        ).strip()
+        if not strategy:
+            return None
+        declared = self._dedup_decisions.get(strategy)
+        return set(declared) if declared else None
+
     def _llm_judge(
         self,
         candidate: MemoryUnit,
@@ -234,6 +256,18 @@ class DynamicEvolver(OrchestratingEvolver):
         decision = DedupDecision(
             str(payload.get("decision", "add")).strip().lower()
         )
+        # 去重结论的范围限定（§2.2）：策略声明了允许的结论时，范围外的一律按新增
+        # 处理。误判为新增多出一条近似条目，由周期整理合并；误判为重复则复现计数
+        # 失真——复现计数是可执行条目放行的依据。范围外的结论跳过 existing_id 校验
+        # （按新增处理不需要已有条目）。
+        allowed = self._dedup_decisions_for(candidate)
+        if allowed is not None and decision not in allowed:
+            logger.warning(
+                "DynamicEvolver LLM judge returned out-of-scope decision %s for "
+                "candidate %s, fallback ADD",
+                decision.value, candidate.id[:8],
+            )
+            return DedupDecision.ADD, None, 0.0
         existing_id = str(payload.get("existing_id", "")).strip()
         existing, score = hit_map.get(existing_id, (None, 0.0))
         if decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE} and existing is None:
@@ -334,19 +368,48 @@ def _build(config):
 
     prompts 从 ``ctx.globals["prompts"]`` 加载（yml 顶层 ``prompts`` 段）；
     ``config.get("prompts")`` 在 params 无 prompts 时回退 globals。
+    ``dedup_decisions`` 按抽取策略名声明允许的去重结论（§2.2），值非法时装配失败。
     """
+    from jiuwen_memory.construction.layer_annotator import LayerAnnotatorProducer
+
     vector_on = config.get("vector_enabled", True)
     ib_default = resolve_index_builder_default(config)
     dr_default = "vector" if vector_on else "keyword"
 
     def _opt_annotator():
-        from jiuwen_memory.construction.layer_annotator import LayerAnnotatorProducer
-
+        # 先读实例参数：置空即本实例不标注，与 OrchestratingEvolver 的装配一致
+        # （此前只看全局 default，实例无法单独关闭）。
+        if "layer_annotator" in config.params:
+            name = config.params.get("layer_annotator")
+            if not name:  # None / "" → 显式禁用
+                return None
+            return LayerAnnotatorProducer.build_named(str(name), config.ctx)
         ctx = config.ctx
         ns = ctx.namespaces.get(LayerAnnotatorProducer.TOP_NAME, {})
         if "default" not in ns:
             return None
         return LayerAnnotatorProducer.build_named("default", ctx)
+
+    def _parse_dedup_decisions(raw):
+        if not raw:
+            return {}
+        if not isinstance(raw, Mapping):
+            raise ValidationError(
+                f"dedup_decisions 须是「策略名 → 结论列表」的映射，得到 {type(raw).__name__}"
+            )
+        parsed: dict[str, set[DedupDecision]] = {}
+        for strategy, decisions in raw.items():
+            if not isinstance(decisions, (list, tuple)) or not decisions:
+                raise ValidationError(
+                    f"dedup_decisions[{strategy!r}] 须是非空列表（add/update/supersede/noop）"
+                )
+            try:
+                parsed[str(strategy)] = {DedupDecision(str(item)) for item in decisions}
+            except ValueError as exc:
+                raise ValidationError(
+                    f"dedup_decisions[{strategy!r}] 含非法结论：{exc}"
+                ) from exc
+        return parsed
 
     prompts_data = config.get("prompts")
     from jiuwen_memory.config.config_source import ConfigSourceProducer
@@ -378,7 +441,12 @@ def _build(config):
         ),
         layer_annotator=_opt_annotator(),
         router=optional_router(config),
+        appraiser=_opt_appraiser(config),
+        recent_originals_limit=config.get("recent_originals_limit", 10),
+        related_memories_top_k=config.get("related_memories_top_k", 10),
+        curator=_opt_curator(config),
         prompt_registry=registry,
+        dedup_decisions=_parse_dedup_decisions(config.get("dedup_decisions")),
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
         privacy=optional_privacy(config),

@@ -109,6 +109,7 @@ from jiuwen_memory.config.auto_overlay import (
     open_document_overlay,
     open_file_overlay,
 )
+from jiuwen_memory.config.document_flag import should_write_document
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
@@ -174,6 +175,7 @@ from .runtime_configuration import sdk_continuity_runtime_identity
 from .search_options import SearchOptions
 
 __all__ = [
+    "should_write_document",
     "sdk_continuity_runtime_identity",
     "read_personal_record",
     "open_config_overlay",

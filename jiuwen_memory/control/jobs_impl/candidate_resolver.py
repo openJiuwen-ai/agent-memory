@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""候选源 resolver——四源一个接口、一个产出、一个调用点（F04 D3）。
+"""候选源 resolver——四源一个接口、一个产出、一个调用点（F10 D3）。
 
 ``EvolveJob.run`` 只调 ``resolver.resolve()``，不感知源类型（换源零改动）；
 筛选过程发生在同一阶段：③的召回、④的子桶枚举都包在各自 resolver 内部。
@@ -92,7 +92,7 @@ class CandidateResolver(Protocol):
 def _effective_filters(filters: FilterExpr | None, window: int | None) -> FilterExpr | None:
     """谓词源静态子句 + 本次 resolve 现算的 ``t_ingest`` 时间窗子句 → AND 合并。
 
-    时间窗走 filters 下推（F04 D5）：t_ingest 恒非空（内核接入
+    时间窗走 filters 下推（F10 D5）：t_ingest 恒非空（内核接入
     路径强制盖章，防御投影落 T_EVENT_UNKNOWN 哨兵=「史前」不入任何新近窗口），
     ``t_ingest GTE cutoff``（毫秒）进 ``list_units`` 由各后端 FilterExpr 求值器
     统一裁决。cutoff 不落盘、每次现算——重启后窗口随 tick 自然滑动。
@@ -111,7 +111,7 @@ def covered_by(
     require_empty: frozenset[str] = frozenset(),
     require_nonempty: frozenset[str] = frozenset(),
 ) -> bool:
-    """parent 是否覆盖 child：前缀相等 + 形状约束（F04 D3）。
+    """parent 是否覆盖 child：前缀相等 + 形状约束（F10 D3）。
 
     前缀：parent 的每个非空字段须与 child 相等——(org=acme) 覆盖 org=acme
     的全部子 scope；五元组全指定则只覆盖自身。形状：``require_empty`` /
@@ -165,7 +165,7 @@ class IdsResolver:
     """② 点名源：``load_units`` 点读 + 差集回显，恒单桶。
 
     ``load_units`` 契约：不过滤不复核、缺失 id 省略不报错——越权/缺失 id
-    自然出批；superseded 项照常演进（裁决权在演进模式，F04 D3）。
+    自然出批；superseded 项照常演进（裁决权在演进模式，F10 D3）。
     """
 
     def __init__(self, scope: Scope, kv: CandidateStore, unit_ids: list[str]) -> None:
@@ -194,7 +194,7 @@ class RecallResolver:
     query 管「像什么」（相关性，谓词表达不了）、filters 管「还须满足什么」
     （收窄，与 search 接口同构）。检索层产出的 unit_ids 走 ``load_units``
     点读回完整 MemoryUnit——不过滤不复核（forget 等模式需要 SUPERSEDED
-    也能进批）。每 tick 重新召回：top-k 是「当前时刻」的答案（F04 D3）。
+    也能进批）。每 tick 重新召回：top-k 是「当前时刻」的答案（F10 D3）。
     """
 
     def __init__(
@@ -240,7 +240,7 @@ class FanOutResolver:
     ``require_nonempty`` 在前缀之外按子桶 scope 字段形状收窄（只会剔除、
     不会放大，缺省不约束 = 现行为），子桶选料复用①。
 
-    桶集合来源（F04 D7，PEP 边界下的分工）：
+    桶集合来源（F10 D7，PEP 边界下的分工）：
 
     - API 层注入 ``buckets``（已获准桶列表）+ ``denied_scopes``（拒绝桶
       标签）——API 层 dreaming 编排先枚举命中桶（``covered_by``）、逐桶

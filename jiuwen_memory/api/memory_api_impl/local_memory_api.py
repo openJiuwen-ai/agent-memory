@@ -97,6 +97,8 @@ class LocalMemoryAPI(
         space_lifecycle: SpaceLifecycleService | None = None,
         governance: GovernanceService | None = None,
         dreaming_lock: LockProvider | None = None,
+        dreaming_standby: bool = False,
+        experience_default_space: str = "own",
         authorizer: Authorizer | None = None,
         credential_registry: CredentialStatusRegistry | None = None,
         document_mode: bool = False,
@@ -156,7 +158,7 @@ class LocalMemoryAPI(
             space_lifecycle if space_lifecycle is not None else SpaceLifecycleService(engine, space)
         )
         self._governance = governance if governance is not None else GovernanceService(governor)
-        # dreaming 调度服务（F04，PEP 边界）：注册 / 注销 / 恢复 / 持续授权与
+        # dreaming 调度服务（F10，PEP 边界）：注册 / 注销 / 恢复 / 持续授权与
         # fan-out 逐桶裁决都在 API 层——Engine / EvolveJob 是纯执行件。须在全部
         # 组件装配完成后创建（它反向引用本 API 的鉴权组件、Engine 与 Scheduler）。
         self._dreaming = DreamingCoordinator(
@@ -166,7 +168,15 @@ class LocalMemoryAPI(
             authorize=self._authorize,
             ensure_space_writable=self._ensure_space_writable,
             scope_supplier=engine.candidate_scopes,
+            mode_scope_supplier=engine.candidate_scopes_for_mode,
+            mode_validator=engine.validate_evolve_mode,
+            standby=dreaming_standby,
         )
+        # 部署配置的经验缺省落点（globals.experience 的 default_space，v3 §2）。
+        # 不带 coords 且 default_space 填了空间名的 experience 写入按它鉴权
+        # （见 WriteOpsMixin._authorize_experience_space）；own 时落点就是写入
+        # 落点，已由现有逻辑校验，鉴权逻辑空过。
+        self._experience_default_space = str(experience_default_space or "own").strip()
 
     def _bind_credential_sources(self, authenticator: object) -> None:
         """用已装配 Authenticator 的签发真源填充本 PEP 的 CredentialStatusRegistry。

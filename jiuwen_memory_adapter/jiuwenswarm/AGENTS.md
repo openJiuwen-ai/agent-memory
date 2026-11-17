@@ -12,6 +12,7 @@
 - 共享池只适用于 mode=continuity、持久 fixed_path SQLite Registry；HTTP 和普通 SDK 不进入共享池。
 - Pool 按规范 Registry 路径排他，同路径不同配置/主体返回冲突；Provider 不共享请求安全上下文。
 - Registry 路径与配置摘要通过 `jiuwen_memory.api.sdk_continuity_runtime_identity` 取得；Adapter 不直接导入内核配置或安全类型包。
+- 经验文档开关通过 `jiuwen_memory.api.should_write_document` 归一。
 - Provider 在调用线程取得可信安全上下文，客户端只执行已经转换的参数；业务 payload 不能注入 security。
 - submit 接受的任务追踪到 concurrent future 实际结束，超时/取消不得传播成底层任务取消。
 - SDK continuity 的读写操作共用执行池；globals.sdk_max_workers 默认 16（正整数），globals.sdk_max_queue_size 默认 256（非负整数，0 表示不预留等待容量）。执行及等待槽位合计限制为两者之和，满载时在提交前抛 RateLimitedError，不执行请求。Registry 修改仍由内部实例锁保护；不承诺读写提交顺序，需要读到本次写入时先等待写入完成。

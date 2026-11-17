@@ -42,6 +42,7 @@ from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.kv import KVStore
 
 from .base import ControlOperator
+from .pipeline import MemoryPipeline
 from .types import (
     BatchWriteItem,
     BatchWriteResult,
@@ -89,6 +90,16 @@ class MemoryEngine(ControlOperator):
         只读用途，不作为写入通道。
         """
 
+    @property
+    @abstractmethod
+    def pipeline(self) -> MemoryPipeline | None:
+        """流水线路由（装配注入；未启用流水线的部署为 ``None``）。
+
+        供 API 层校验空间绑定 profile 的可达性（mem2.0 §2.3）：``search`` 的
+        目标空间按空间策略绑定 profile，绑定的取值没有对应 profile 时返回
+        参数错误，而不是静默回落默认 profile。只读用途。
+        """
+
     def video_ingest_preflight(self) -> LocalMediaPreflight | None:
         """Return local-file admission for the explicit video write route, when available."""
         return None
@@ -96,6 +107,15 @@ class MemoryEngine(ControlOperator):
     def candidate_scopes(self) -> list[Scope]:
         """返回演进候选数据面中已有记忆的作用域。"""
         return self.kv.scopes()
+
+    def candidate_scopes_for_mode(self, mode: EvolveMode) -> list[Scope]:
+        """返回该 mode 候选真源的作用域；旧实现默认沿用原枚举端口。"""
+        return self.candidate_scopes()
+
+    def validate_evolve_mode(
+        self, mode: EvolveMode, candidate: CandidateSource | dict | None = None,
+    ) -> None:
+        """预检模式配置，执行入口继续校验旧插件支持的模式。"""
 
     @abstractmethod
     async def write(
@@ -133,6 +153,16 @@ class MemoryEngine(ControlOperator):
             raise ValidationError(
                 f"unknown retrieval_pipeline {name!r}; available: {', '.join(names)}"
             )
+
+    def retrieval_pipeline_filter(self, name: str | None) -> FilterExpr | None:
+        """具名流程的固定类型边界；API 在鉴权和扇出前读取。"""
+        self.validate_retrieval_pipeline(name)
+        return None
+
+    def prepare_retrieval_query(self, query: RetrievalQuery) -> RetrievalQuery:
+        """按配置收窄查询，保留调用方输入。"""
+        self.validate_retrieval_pipeline(query.pipeline)
+        return query
 
     @abstractmethod
     async def recall(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:

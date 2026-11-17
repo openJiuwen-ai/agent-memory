@@ -72,6 +72,12 @@ class MarkdownStore(BaseStore):
         影子索引 ``category`` 列落值一致。
         """
 
+    def change_experience(
+        self, scope: Scope, previous: MemoryUnit, unit: MemoryUnit | None,
+    ) -> None:
+        """Replace or remove the experience block identified by the previous unit ID."""
+        raise NotImplementedError
+
     @abstractmethod
     def replace_content(
         self, scope: Scope, md_filename: str, old_content: str, new_content: str,

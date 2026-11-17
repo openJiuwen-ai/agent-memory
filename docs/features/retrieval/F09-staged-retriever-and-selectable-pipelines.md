@@ -356,3 +356,43 @@ S03 同步明确「数据操作异步、能力查询和无 I/O 校验同步」�
 ## 待提交确认
 
 1. Refs issue 号。
+
+## 固定类型范围绑定
+
+具名流程既可保持 PR #414 的字符串引用，也可配置为绑定声明：
+
+```yaml
+engine:
+  default:
+    target: cloud
+    params:
+      retriever: default
+      retrieval_pipelines:
+        default:
+          retriever: default
+          exclude_memory_types: [experience, skill]
+        experience:
+          retriever: experience
+          memory_types: [experience]
+```
+
+所有可选 Retriever 仍须以 `query_parser: default` 显式引用同一个实际 QueryParser。
+流程名称与记忆类型没有硬编码关系；开发者可将 `experience` 重命名为 `lessons`，
+或让两个名称引用同一个 Retriever，仅固定类型范围不同。
+
+`memory_types` 与 `exclude_memory_types` 是可选、非空字符串列表。包含和排除集合
+不得重叠；未知声明键、空名称、坏引用、无效列表均在装配期拒绝。类型谓词采用
+`system_metadata.memory_type`，与调用方过滤以外层 AND 合并，调用方不能覆盖固定范围。
+
+API 在构造授权所用的查询上下文之前经 `prepare_retrieval_query` 施加配置边界，
+此时即确定类型。显式配置了类型范围时，不再追加旧默认的经验/技能排除谓词，
+避免选了经验流程后又被默认隔离排除。直接 Engine recall 也施加相同约束，
+跨空间子查询继续保留该约束。未选择流程或字符串引用未声明范围时，原 profile
+选择与类型隔离保持兼容。
+
+经验 Selector 的实现和职责保持原样：分阶段 Retriever 在 threshold 后、top-k
+之前保留 select 阶段；候选副本随后进入 disclosure。检索流程名称选择完整编排，
+不开放单次请求任意拼接算子的阶段列表。
+
+验证增加真实三引擎 API/Engine 回归：仅选名称即可隔离普通/经验/技能、任意别名、
+用户条件冲突为空、调用方对象不变、坏配置拒绝；同时运行原 Selector 和树检索回归。

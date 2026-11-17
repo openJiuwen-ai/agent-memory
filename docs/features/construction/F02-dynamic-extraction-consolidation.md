@@ -38,7 +38,7 @@ SUPERSEDE/NOOP 判定和写入动作长期藏在 Evolver 内，职责上属于�
 3. **移除 `Consolidator` 接口与 `consolidation_impl/`**。判定 + 落盘合并的接口被拆开：
    - 判定（ADD/UPDATE/SUPERSEDE/NOOP）归 `DynamicEvolver._consolidate_step`，只产出 `ConsolidateDecision`，不调 KVStore / IndexBuilder；
    - 落盘延后到 reflect 步之后统一执行。
-4. **新增 `DynamicEvolver`**（`evolver_impl/dynamic_evolver.py`），继承 `OrchestratingEvolver`，覆盖 `_evolve_extract` 走四步：`extract → consolidate(判定) → reflect → 落盘`。与 `OrchestratingEvolver` 平级（同属 `evolver` 顶层命名空间，注册名 `dynamic` / `orchestrating`）；其余三模式（CONSOLIDATE/ASSOCIATE/FORGET）继承父类。装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径——不再需要 `evolver_mode` 开关或 `memory_operator` 注入。
+4. **新增 `DynamicEvolver`**（`evolver_impl/dynamic_evolver.py`），继承 `OrchestratingEvolver`，覆盖 `_evolve_extract` 走四步：`extract → consolidate(判定) → reflect → 落盘`。与 `OrchestratingEvolver` 平级（同属 `evolver` 顶层命名空间，注册名 `dynamic` / `orchestrating`）；其他 mode（含 HIERARCHY、EXPERIENCE_CONSOLIDATE）继承父类。装配或 pipeline profile 选哪个 evolver 实例即启用哪条 EXTRACT 路径——不再需要 `evolver_mode` 开关或 `memory_operator` 注入。
 5. **consolidate 只判定不落盘**：consolidate 步对每个候选调 `Dedup.recall` 召回已有
    记忆，按相似度阈值 + LLM 判定产出 `ConsolidateDecision`。无命中 → ADD；高相似度且
    `should_direct_noop` 为真 → NOOP；高相似但有实质差异（`has_meaningful_delta`）→ 走
@@ -56,8 +56,13 @@ SUPERSEDE/NOOP 判定和写入动作长期藏在 Evolver 内，职责上属于�
 9. **`InMemoryEngine` 默认直写**：移除 `consolidator` 注入与默认路径里的 consolidate 调用，
    还原"原文落 /memory/ + 建索引"的直写语义。去重交给显式 `evolve()` 触发（装配选
    `orchestrating` 或 `dynamic` evolver 均可）。
-10. metadata 是 `dict[str, str]`。调用方使用赋值或 `update` 传 prompt key；不新增
+10. prompt key 位于 `system_metadata`，其值为字符串；其它 metadata 值遵循 MemoryUnit 的
+    `MetadataValueType` 契约。调用方使用赋值或 `update` 传 prompt key；不新增
     `metadata.append()` 这种与 Python 字典不兼容的 API。
+11. **主流程显式展示阶段**：当前 `_evolve_extract` 将上下文准备、抽取、候选准备、
+    路由、分层、判定、反思、写入与收尾列在同一方法中；`_extract_step` 只产候选。
+    CONSOLIDATE 同样分阶段展示，装配的 Curator 与父类同源。扩展与兼容约束见
+    [F12-staged-evolver.md](F12-staged-evolver.md)。
 
 ## 拒绝的方案
 

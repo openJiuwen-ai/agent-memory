@@ -26,6 +26,7 @@ from jiuwen_memory.retrieval.retriever_impl.multimodal_retriever import Multimod
 from jiuwen_memory.retrieval.retriever_impl.pipeline_retriever import PipelineRetriever
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.store_manager import StoreManagerProducer
+from tests.support.whitebox import private
 from tests.unit.control.fixtures import selectable_retrieval_config
 
 pytestmark = pytest.mark.unit
@@ -242,3 +243,52 @@ def test_composite_pipeline_is_selectable_through_public_parser_declaration():
         assert any(step.detail.get("strategy") == "rrf" for step in result.trajectory)
     finally:
         kernel.close()
+
+
+@pytest.mark.parametrize("engine_kind", ["in_memory", "cloud", "agent"])
+def test_named_binding_constrains_direct_engine_queries_without_mutating_input(engine_kind):
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment, matches_memory_unit
+
+    config = selectable_retrieval_config(engine_kind)
+    config["engine"]["default"]["params"]["retrieval_pipelines"] = {
+        "ordinary": {"retriever": "default", "exclude_memory_types": ["experience", "skill"]},
+        "lessons": {"retriever": "default", "memory_types": ["experience"]},
+    }
+    kernel = _build_kernel(config=config)
+    try:
+        engine = private(kernel.api, "_engine")
+        scope = Scope(org="o", user="u")
+        units = [MemoryUnit(
+            id=kind, scope=scope, segments=[Segment(content="evidence")],
+            system_metadata={"memory_type": kind},
+        ) for kind in ["chat", "experience", "skill"]]
+        private(engine, "_index").build(units)
+        ordinary = asyncio.run(engine.recall(scope, RetrievalQuery(
+            text="evidence", pipeline="ordinary",
+        )))
+        assert {item.unit_id for item in ordinary.items} == {"chat"}, "普通流程只查普通条目"
+        query = RetrievalQuery(text="evidence", pipeline="lessons")
+        lessons = asyncio.run(engine.recall(scope, query))
+        assert {item.unit_id for item in lessons.items} == {"experience"}, "配置名无需等于类型名"
+        assert query.filters is None, "不把固定条件写回调用方查询对象"
+        predicate = engine.retrieval_pipeline_filter("lessons")
+        assert matches_memory_unit(units[1], predicate), "配置边界使用标准FilterExpr"
+        assert not matches_memory_unit(units[0], predicate), "普通条目在召回前被排除"
+    finally:
+        kernel.close()
+
+
+@pytest.mark.parametrize("binding", [
+    {"retriever": "default", "memory_types": "experience"},
+    {"retriever": "default", "memory_types": []},
+    {"retriever": "default", "memory_types": [""]},
+    {"retriever": "default", "exclude_memory_types": [1]},
+    {"retriever": "default", "memory_types": ["experience"],
+     "exclude_memory_types": ["experience"]},
+    {"retriever": "default", "memory_type": "experience"},
+])
+def test_invalid_type_bindings_are_rejected_during_assembly(binding):
+    config = selectable_retrieval_config()
+    config["engine"]["default"]["params"]["retrieval_pipelines"] = {"lessons": binding}
+    with pytest.raises(ValidationError, match="retrieval_pipelines"):
+        _build_kernel(config=config)

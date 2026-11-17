@@ -24,7 +24,15 @@ from jiuwen_memory.common.security.space_roles import (
     SpaceMemberFact,
 )
 from jiuwen_memory.common.security.types import Delegation, Role
-from jiuwen_memory.common.type_def import Context, Scope
+from jiuwen_memory.common.type_def import (
+    Context,
+    MemoryUnit,
+    Scope,
+    Segment,
+    Temporal,
+    memory_key,
+)
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.control import (
@@ -801,6 +809,125 @@ def test_state_check_reuses_the_facts_read_by_authorization(api, monkeypatch) ->
     monkeypatch.setattr(type(api), "_space_info_if_exists", staticmethod(_must_not_be_called))
     assert api.add("不触发独立点读", SPACE_SCOPE, security=SEC_ALICE)
     api.get_space(ORG, SPACE, security=SEC_ALICE)
+
+
+# -- 经验条目的条目读（mem2.0 §2.3）------------------------------------------ #
+
+
+def test_own_actions_override_channel_reads_metadata() -> None:
+    """ATTR_OWN_ACTIONS 覆盖入口表的「本人所写」开关：true/false 覆盖，其余不覆盖。
+
+    覆盖通道由经验条目（判定上下文 memory_type=experience）的 get/list 使用：
+    附加集合按读动作放行贡献者，而经验条目的读取只对编辑者放行，鉴权点在装配
+    上下文时把它关掉。
+    """
+    from jiuwen_memory.common.security.space_decision import ATTR_OWN_ACTIONS
+    from jiuwen_memory.common.security.space_roles import ENTRY_RULES
+    from jiuwen_memory.control.permission_impl.space_aware_permission_manager import (
+        SpaceAwarePermissionManager,
+    )
+
+    def _ctx(value: str) -> PermissionContext:
+        return PermissionContext(
+            resource_type="", scope=SPACE_SCOPE, metadata={ATTR_OWN_ACTIONS: value}
+        )
+
+    get_rule = ENTRY_RULES["get"]        # own_actions_apply=True
+    evolve_rule = ENTRY_RULES["evolve"]  # own_actions_apply=False
+    resolve = SpaceAwarePermissionManager._own_actions_apply
+    assert resolve(get_rule, _ctx("false")) is False, "显式关掉覆盖入口表默认开"
+    assert resolve(evolve_rule, _ctx("true")) is True, "显式打开覆盖入口表默认关"
+    assert resolve(get_rule, _ctx("true")) is True, "显式打开与默认一致仍打开"
+    assert resolve(evolve_rule, _ctx("false")) is False, "显式关掉与默认一致仍关掉"
+    no_key = PermissionContext(resource_type="", scope=SPACE_SCOPE, metadata={})
+    assert resolve(get_rule, no_key) is True, "缺省不覆盖"
+    assert resolve(get_rule, _ctx("bogus")) is True, "非法值不覆盖"
+    assert resolve(get_rule, None) is True, "无上下文取入口表默认"
+
+
+def test_experience_entries_restrict_get_and_list_to_editors(api) -> None:
+    """经验条目（判定上下文 memory_type=experience）的 get/list 只对编辑者放行。
+
+    读动作改判更新并关闭「本人所写」附加集合：贡献者的更新只存在于附加集合里，
+    两处改写叠加即被拒；编辑者的更新在基础集合里，照常通过。同一空间里贡献者对
+    对话条目（不带 memory_type）的 get、list 不受影响。
+    """
+    api.add_space_member(
+        ORG, SPACE, _member("bob", SpaceContentRole.EDITOR, SpaceGovernanceRole.NONE),
+        security=SEC_ALICE,
+    )
+    api.add_space_member(
+        ORG, SPACE, _member("carol", SpaceContentRole.CONTRIBUTOR, SpaceGovernanceRole.NONE),
+        security=SEC_ALICE,
+    )
+    # 对照条目：普通对话记忆（不带 memory_type），经写入入口正常落盘
+    plain = api.add("空间里的一条对话记忆", SPACE_SCOPE, security=SEC_ALICE)[0]
+    # 经验条目：experience 是不回落取值，无 profile 部署的写入入口拒绝直写
+    # （§2.3 类型不可伪造；经验由 extractor 从反馈会话产出），此处直落 KV 真源
+    # 构造判定输入——get 的第二段鉴权按条目真源元数据组上下文。
+    experience = MemoryUnit(
+        id="exp-restricts-reads",
+        scope=SPACE_SCOPE,
+        segments=[Segment(content="先冻结再改名，避免改一半被打断")],
+        temporal=Temporal(),
+        system_metadata={"memory_type": "experience"},
+    )
+    api._engine.kv.insert(SPACE_SCOPE, memory_key(experience.id), dumps(experience))
+
+    assert api.get(
+        experience.id, SPACE_SCOPE, security=SEC_BOB
+    ).id == experience.id, "编辑者读经验条目经改判后的更新动作照常通过"
+    with pytest.raises(PermissionDeniedError):
+        api.get(experience.id, SPACE_SCOPE, security=SEC_CAROL)
+    listed = api.list(SPACE_SCOPE, memory_types=["experience"], security=SEC_BOB)
+    assert [unit.id for unit in listed.items] == [experience.id], (
+        "编辑者按类型点名列举经验条目照常"
+    )
+    with pytest.raises(PermissionDeniedError):
+        api.list(SPACE_SCOPE, memory_types=["experience"], security=SEC_CAROL)
+    # 对照：贡献者对同一空间对话条目的 get/list 不受影响；默认列举（未点名
+    # 类型）不混入经验条目——接口层的类型隔离谓词按 NOT_IN 排除（§2.3）
+    assert api.get(plain.id, SPACE_SCOPE, security=SEC_CAROL).id == plain.id
+    default_listed = api.list(SPACE_SCOPE, security=SEC_CAROL)
+    assert [unit.id for unit in default_listed.items] == [plain.id]
+
+
+def test_update_cannot_transition_memory_type_into_isolation(api) -> None:
+    """update 不得把 memory_type 改入隔离类型（§2.3 类型不可伪造——update 侧）。
+
+    改入经验/技能即绕过写入侧的防伪（add 拒绝直写经验、技能不经写入接口）。
+    """
+    plain = api.add("空间里的一条对话记忆", SPACE_SCOPE, security=SEC_ALICE)[0]
+
+    with pytest.raises(ValidationError, match="memory_type"):
+        api.update(
+            plain.id,
+            SPACE_SCOPE,
+            MemoryPatch(system_metadata={"memory_type": "experience"}),
+            security=SEC_ALICE,
+        )
+
+
+def test_update_cannot_transition_memory_type_out_of_isolation(api) -> None:
+    """update 同样不得把隔离类型改出——经验条目不能经 update 洗成对话类型，
+    洗类型即绕开经验条目的读写收紧（读动作改判更新、只对编辑者放行）。
+    """
+    experience = MemoryUnit(
+        id="exp-no-wash",
+        scope=SPACE_SCOPE,
+        segments=[Segment(content="先冻结再改名，避免改一半被打断")],
+        temporal=Temporal(),
+        system_metadata={"memory_type": "experience"},
+    )
+    api._engine.kv.insert(SPACE_SCOPE, memory_key(experience.id), dumps(experience))
+
+    with pytest.raises(ValidationError, match="memory_type"):
+        api.update(
+            experience.id,
+            SPACE_SCOPE,
+            MemoryPatch(system_metadata={"memory_type": "chat"}),
+            security=SEC_ALICE,
+        )
 
 
 def test_space_fact_backend_failure_is_not_disguised_as_permission_deny(api, monkeypatch) -> None:

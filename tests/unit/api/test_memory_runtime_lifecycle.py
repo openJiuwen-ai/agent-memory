@@ -215,6 +215,35 @@ def test_nonblocking_close_keeps_resources_and_leader_until_job_finishes() -> No
         runtime.close()
 
 
+def test_close_joins_dreaming_election_before_draining_scheduler() -> None:
+    events = []
+
+    def stop_election():
+        events.append("stop_election")
+        return True
+
+    api = SimpleNamespace(
+        stop_dreaming_election=stop_election,
+        wait_for_dreaming_election=lambda: events.append("join_election"),
+        release_dreaming_lock=lambda: events.append("release_lease"),
+    )
+    scheduler = SimpleNamespace(
+        validate_shutdown=lambda **_: None,
+        shutdown=lambda *, wait: events.append(("stop_scheduler", wait)),
+    )
+    runtime = _MemoryRuntime(
+        api=api,
+        _kernel=SimpleNamespace(
+            watchdog=None,
+            scheduler=scheduler,
+            ingest_jobs=InProcessIngestJobController(),
+            close=lambda: None,
+        ),
+    )
+    runtime.close()
+    assert events == ["stop_election", "join_election", ("stop_scheduler", True), "release_lease"]
+
+
 def test_assembled_runtimes_have_independent_scheduler_lifetimes() -> None:
     config = {"scheduler": {"default": {"target": "async_timer"}}}
     first, second = assemble_runtime(config=config), assemble_runtime(config=config)
