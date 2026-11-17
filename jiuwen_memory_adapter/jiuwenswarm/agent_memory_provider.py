@@ -491,6 +491,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
       ``local``/``developer``；生产配真实认证身份。
     - ``portal``：符合条件的 SDK 文档实例自动共用本机 Portal。
       ``instance_id`` 默认是 ``default``，同一文档目录下的其他实例使用稳定的不同 ID。
+      ``language`` 设为 ``en`` 时以英文打开页面，缺省以简体中文打开。
     """
 
     def __init__(
@@ -538,7 +539,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 raise ValueError("SDK continuity requires a trusted security_provider")
         self._portal_settings = dict(portal or {})
         unknown = set(self._portal_settings) - {
-            "enabled", "port", "allowed_frame_origins", "instance_id",
+            "enabled", "port", "allowed_frame_origins", "instance_id", "language",
         }
         if unknown:
             raise ValueError("unknown Portal option")
@@ -557,6 +558,13 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         port = self._portal_settings.get("port", 0)
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValueError("Portal port must be between 0 and 65535")
+        language_option = self._portal_settings.get("language")
+        if language_option is not None and not isinstance(language_option, str):
+            raise ValueError("Portal language must be a string")
+        language = "" if language_option is None else language_option.strip().lower()
+        if language not in ("", "zh", "zh-cn", "en"):
+            raise ValueError("Portal language must be 'zh', 'zh-CN' or 'en'")
+        self._portal_language = "zh-CN" if language in ("zh", "zh-cn") else language or None
         self._portal_handle = None
         self._portal_identity = None
         self._portal_error = None
@@ -659,8 +667,16 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return None
         scope = self._portal_write_scope()
         if self._portal_identity is None:
-            return handle.launch_url(scope)
-        return handle.launch_url(scope, identity=self._portal_identity)
+            link = handle.launch_url(scope)
+        else:
+            link = handle.launch_url(scope, identity=self._portal_identity)
+        return self._with_portal_language(link) if link is not None else None
+
+    def _with_portal_language(self, link: str) -> str:
+        if self._portal_language is None:
+            return link
+        separator = "&" if "#" in link else "#"
+        return f"{link}{separator}language={self._portal_language}"
 
     @property
     def portal_status(self):
@@ -703,7 +719,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     self._portal_error = type(exc).__name__
                     raise
                 self._portal_error = None
-                return link
+                return self._with_portal_language(link) if link is not None else None
         opener = getattr(self._client, "open_portal", None)
         if callable(opener):
             try:
@@ -712,7 +728,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 self._portal_error = type(exc).__name__
                 raise
             self._portal_error = None
-            return link
+            return self._with_portal_language(link) if link is not None else None
         return None
 
     def _portal_write_scope(self):

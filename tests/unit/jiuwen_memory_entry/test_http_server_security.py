@@ -2065,7 +2065,7 @@ def test_portal_mutations_preserve_personal_target_and_lifecycle(dev_http_endpoi
 
 def test_http_portal_browser_launch_reuses_authentication_and_service_port(http_endpoint):
     import asyncio
-    from urllib.parse import urlsplit
+    from urllib.parse import parse_qs, urlsplit
 
     from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import AgentMemoryMemoryProvider
     from tests.integration.portal.test_document_portal import Browser, personal_list
@@ -2074,7 +2074,7 @@ def test_http_portal_browser_launch_reuses_authentication_and_service_port(http_
 
     async def run():
         provider = AgentMemoryMemoryProvider(
-            base_url=base_url, api_key="test-key", portal={"port": 12345}
+            base_url=base_url, api_key="test-key", portal={"port": 12345, "language": "en"}
         )
         assert provider.portal_status["supported"]
         assert not provider.portal_status["available"]
@@ -2086,6 +2086,7 @@ def test_http_portal_browser_launch_reuses_authentication_and_service_port(http_
             assert len(server.portal_sessions.grants) == 1
             assert provider.portal_status["available"]
             assert urlsplit(url).port == urlsplit(base_url).port
+            assert parse_qs(urlsplit(url).fragment).get("language") == ["en"]
             assert provider.runtime is None
             browser = await asyncio.to_thread(Browser, url)
             status, result = await asyncio.to_thread(browser.call, "list", personal_list())
