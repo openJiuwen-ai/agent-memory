@@ -85,7 +85,7 @@ class PasskeyAuthenticator(HumanAuthenticator):
         with self._lock:
             self._db.execute("SELECT 1")
 
-    def begin(self, binding: str, *, invite: str = "") -> dict:
+    def begin(self, binding: str, *, invite: str = "", expected_owner: Scope | None = None) -> dict:
         if not isinstance(invite, str):
             raise AuthenticationError("human authentication failed")
         challenge, challenge_id = secrets.token_bytes(32), secrets.token_urlsafe(32)
@@ -103,6 +103,10 @@ class PasskeyAuthenticator(HumanAuthenticator):
                     or self._db.execute(
                         "SELECT 1 FROM human_invites WHERE digest=?", (digest,)
                     ).fetchone()
+                ):
+                    raise AuthenticationError("human authentication failed")
+                if expected_owner is not None and (actor.org, actor.user) != (
+                    expected_owner.org, expected_owner.user,
                 ):
                     raise AuthenticationError("human authentication failed")
                 actor_json = json.dumps(asdict(actor), sort_keys=True)

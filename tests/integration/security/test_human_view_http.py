@@ -3,17 +3,22 @@
 import http.client
 import json
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from http.cookiejar import CookieJar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 import pytest
 
 from jiuwen_memory_entry.core.profiles import load_config
 from jiuwen_memory_entry.http_server.__main__ import HttpServer
+from jiuwen_memory_entry.portal.sessions import BROWSER_HEADER, SESSION_HEADER
 from tests.integration.security.test_memory_privacy import INVITE, SCOPE, TEXT, config, security
 from tests.support.virtual_passkey import VirtualPasskey
 
 pytestmark = pytest.mark.integration
+BOB = replace(SCOPE, user="bob")
 
 
 @pytest.fixture
@@ -32,6 +37,7 @@ def http_view(tmp_path):
                     "params": {
                         "identities": {
                             "test-machine": {"actor": asdict(SCOPE), "role": "user"},
+                            "test-bob": {"actor": asdict(BOB), "role": "user"},
                         }
                     },
                 },
@@ -64,6 +70,116 @@ def http_view(tmp_path):
     httpd.server_close()
     thread.join(5)
     server.close()
+
+
+def _portal_headers(request, *, credential="test-machine"):
+    status, _, body = request(
+        "/portal/api/launch", {}, headers={"Authorization": f"Bearer {credential}"}
+    )
+    assert status == 200
+    url = urlsplit(json.loads(body)["portal_url"])
+    token = parse_qs(url.fragment)["access"][0]
+    status, headers, _ = request("/portal/api/bootstrap", {"token": token, "embedded": False})
+    assert status == 200
+    return {"Cookie": headers["Set-Cookie"].split(";", 1)[0], BROWSER_HEADER: "1"}
+
+
+def test_portal_passkey_uses_same_authenticated_session_and_preserves_masked_record(http_view):
+    server, request, origin = http_view
+    unit = server.api.add(TEXT, SCOPE, security=security())[0]
+    target = {
+        "scope": asdict(SCOPE), "unit_id": unit.id,
+        "revision": unit.system_metadata["privacy_revision"],
+    }
+    status, _, page = request("/portal/")
+    assert status == 200 and b'data-privacy="on"' in page
+    status, _, script = request("/security/privacy/passkey.js")
+    assert status == 200 and b"export async function verifyPasskey" in script
+
+    alice = _portal_headers(request)
+    alice_other_session = _portal_headers(request)
+    bob = _portal_headers(request, credential="test-bob")
+    assert request("/security/privacy/begin", {"invite": INVITE}, headers=bob)[0] == 403
+    assert request("/security/privacy/begin", target, headers={BROWSER_HEADER: "1"})[0] == 403
+    assert request("/security/privacy/begin", target, headers={
+        **alice, SESSION_HEADER: "embedded",
+    })[0] == 403
+
+    key = VirtualPasskey(origin=origin)
+    status, _, body = request("/security/privacy/begin", {"invite": INVITE}, headers=alice)
+    assert status == 200
+    start = json.loads(body)
+    assert start["operation"] == "enroll"
+    status, _, body = request("/security/privacy/finish", {
+        "challenge_id": start["challenge_id"], "credential": key.response(start, enroll=True),
+    }, headers=alice)
+    assert status == 200 and json.loads(body) == {"enrolled": True}
+
+    status, _, body = request("/security/privacy/begin", target, headers=alice)
+    assert status == 200
+    start = json.loads(body)
+    assert start["operation"] == "view"
+    status, _, body = request("/security/privacy/finish", {
+        **start["target"], "challenge_id": start["challenge_id"],
+        "credential": key.response(start, counter=1),
+    }, headers=alice_other_session)
+    assert status == 403 and TEXT.encode() not in body
+
+    status, _, body = request("/security/privacy/begin", target, headers=alice)
+    assert status == 200
+    start = json.loads(body)
+    status, headers, body = request("/security/privacy/finish", {
+        **start["target"], "challenge_id": start["challenge_id"],
+        "credential": key.response(start, counter=2),
+    }, headers=alice)
+    assert status == 200 and json.loads(body)["content"] == TEXT
+    assert headers["Cache-Control"] == "no-store"
+    status, _, body = request("/v1/get", {
+        "scope": asdict(SCOPE), "unit_id": unit.id,
+    }, headers=alice)
+    assert status == 200 and b"JW-PRIVATE" in body and b"private-demo-value" not in body
+
+
+def test_portal_privacy_receives_path_scoped_cookies_without_manual_headers(http_view):
+    server, _, origin = http_view
+    unit = server.api.add(TEXT, SCOPE, security=security())[0]
+    jar = CookieJar()
+    browser = build_opener(HTTPCookieProcessor(jar))
+
+    def post(path, payload, *, launch=False):
+        headers = {"Content-Type": "application/json", "Origin": origin}
+        if launch:
+            headers["Authorization"] = "Bearer test-machine"
+        else:
+            headers[BROWSER_HEADER] = "1"
+        req = Request(origin + path, json.dumps(payload).encode(), headers)
+        with browser.open(req, timeout=5) as response:
+            return json.loads(response.read())
+
+    launch = post("/portal/api/launch", {}, launch=True)
+    token = parse_qs(urlsplit(launch["portal_url"]).fragment)["access"][0]
+    post("/portal/api/bootstrap", {"token": token, "embedded": False})
+    assert {cookie.path for cookie in jar} == {"/v1/", "/security/privacy"}
+    assert len({cookie.value for cookie in jar}) == 1
+    assert all(cookie.has_nonstandard_attr("HttpOnly") for cookie in jar)
+    assert all(cookie.get_nonstandard_attr("SameSite") == "Strict" for cookie in jar)
+
+    key = VirtualPasskey(origin=origin)
+    start = post("/security/privacy/begin", {"invite": INVITE})
+    assert start["operation"] == "enroll"
+    assert post("/security/privacy/finish", {
+        "challenge_id": start["challenge_id"], "credential": key.response(start, enroll=True),
+    }) == {"enrolled": True}
+    target = {"scope": asdict(SCOPE), "unit_id": unit.id}
+    start = post("/security/privacy/begin", target)
+    assert start["operation"] == "view"
+    result = post("/security/privacy/finish", {
+        **start["target"], "challenge_id": start["challenge_id"],
+        "credential": key.response(start, counter=2),
+    })
+    assert result["content"] == TEXT
+    ordinary = json.dumps(post("/v1/get", target))
+    assert "JW-PRIVATE" in ordinary and "private-demo-value" not in ordinary
 
 
 @pytest.mark.parametrize("invite", [{"code": "invalid"}, 123, [], 0, False, None])

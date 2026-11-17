@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from jiuwen_memory_entry.http_server.human_view import _PASSKEY_JS
+
 ROOT = Path(__file__).resolve().parents[3]
 PAGE = ROOT / "jiuwen_memory_entry" / "portal" / "index.html"
 SCRIPT = Path(__file__).with_name("portal_frontend_test.cjs")
@@ -25,4 +27,21 @@ def test_portal_frontend_keeps_drafts_and_uses_fresh_detail() -> None:
         timeout=60,
     )
 
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.unit
+def test_shared_passkey_script_encodes_enrollment_and_assertion() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the Passkey frontend regression")
+
+    result = subprocess.run(
+        [node, str(SCRIPT.with_name("human_view_frontend_test.cjs"))],
+        input=_PASSKEY_JS,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=60,
+    )
     assert result.returncode == 0, result.stdout + result.stderr

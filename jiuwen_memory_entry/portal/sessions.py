@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import secrets
 import time
@@ -110,6 +111,13 @@ class BrowserSessions:
 
     def has_cookie(self, header):
         return self._read_cookie(header) is not None
+
+    def privacy_session(self, header):
+        token = self._read_cookie(header)
+        valid, access = self.lookup(header)
+        if not valid or access is None:
+            return None
+        return "portal:" + hashlib.sha256(token.encode()).hexdigest(), access
 
     def lookup(self, header, *, token=None):
         embedded = token is not None

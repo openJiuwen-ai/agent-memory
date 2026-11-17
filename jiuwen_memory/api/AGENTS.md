@@ -50,7 +50,7 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write`、`check_configuration_access` |
-| `memory_api_impl/human_view_ops.py` | HumanViewOpsMixin：可选 begin_human_view/finish_human_view 安全入口；Runtime 适配器转发到 API，API 内执行认证并经 Engine 返回用户访问正文 |
+| `memory_api_impl/human_view_ops.py` | HumanViewOpsMixin：可选 begin_human_view/finish_human_view 安全入口；Runtime 适配器转发到 API，API 内执行认证并经 Engine 返回用户访问正文；独立 HTTP Portal 在两次请求中均执行会话认证 |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService |
 | `memory_api_impl/query_ops.py` | QueryOpsMixin：search/list/get/update/delete/evolve/batch_update，鉴权后走 Query/Command；无路由文档模式的 search 在 API 层把 project 坐标折算为收窄谓词；个人模式逐范围授权读取；Schema 更新对 Command 返回的计划逐项鉴权后提交；evolve 的 dreaming 三态分发委托 `DreamingCoordinator`；batch_update 编排唯一真源在此层——`engine.permission_contexts_for_update(selector)` 取候选鉴权后逐条走单条 update 的 prepare→鉴权→commit 链路（引擎不提供整批方法），`selector.limit`/参数 `limit` 统一正整数校验，逐条模式 limit 只做下界承诺不截断候选集 |
 | `memory_api_impl/md_ops.py` | MdOpsMixin（F08）：`read_md_file` / `edit_md_file`，经 Engine 窄端口委托（非经 `_commands.write`/`_queries.get`）。鉴权对齐 `get`（READ 单段）/ `add`（WRITE 单段，edit 走继承式 SUPERSEDE 本质是写新记忆，D5）；`read_md_file` 的鉴权与审计 target 是折算后的空间级反查 scope（与写入侧对落点判权对称，空 space 不绕过空间轴判权），折算不出退回 raw scope 时判权/审计/反查三轴同轴；project 解析在 Engine 层 `project_from_context`，本层不拆 Context。返回前剥瞬态键（coords 等是路径解析依据，不是条目属性）。`edit_md_file` 经 `_ensure_space_writable`（与 `add` 同，装配空间级判定时由 `ENTRY_RULES` 登记 `edit_md_file` 触发状态校验） |

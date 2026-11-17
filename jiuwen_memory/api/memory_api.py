@@ -117,7 +117,10 @@ class MemoryAPI(ABC):
         """
         raise ValidationError(f"{type(self).__name__}: user access control unavailable")
 
-    def finish_human_view(self, payload: dict, browser: str, *, peer: str = "") -> dict[str, Any]:
+    def finish_human_view(
+        self, payload: dict, browser: str, *, peer: str = "",
+        primary_auth: PrimaryAuthentication | None = None,
+    ) -> dict[str, Any]:
         """验证一次性人机证明，复核资源后委托 Engine 还原并返回用户访问控制响应。"""
         raise ValidationError(f"{type(self).__name__}: user access control unavailable")
 

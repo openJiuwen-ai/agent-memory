@@ -27,7 +27,10 @@ class HumanView(Protocol):
     ) -> dict[str, Any]:
         """Query and stage an authorized snapshot before disclosure; enrollment is independent."""
 
-    def finish(self, payload: dict, browser: str, *, peer: str = "") -> dict[str, Any]:
+    def finish(
+        self, payload: dict, browser: str, *, peer: str = "",
+        primary_auth: PrimaryAuthentication | None = None,
+    ) -> dict[str, Any]:
         """Consume proof and recheck resource access before disclosure."""
 
 

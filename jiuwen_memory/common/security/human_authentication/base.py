@@ -5,6 +5,7 @@ from typing import Any
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.security.types import AuthContext
+from jiuwen_memory.common.type_def import Scope
 
 
 class HumanAuthenticatorProducer(Factory):
@@ -21,8 +22,10 @@ class HumanAuthenticator(ABC):
         """Exact browser origin required by the human-only transport."""
 
     @abstractmethod
-    def begin(self, binding: str, *, invite: str = "") -> dict[str, Any]:
-        """Issue a short-lived, one-use challenge bound to one browser operation."""
+    def begin(
+        self, binding: str, *, invite: str = "", expected_owner: Scope | None = None
+    ) -> dict[str, Any]:
+        """Issue a one-use challenge and enforce the expected invitation owner when supplied."""
 
     @abstractmethod
     def finish(self, challenge_id: str, binding: str, credential: dict) -> tuple[AuthContext, str]:
