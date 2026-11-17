@@ -66,6 +66,10 @@ class EvolveJob(Job):
         self._evolver_for_unit = evolver_for_unit
 
     @property
+    def trace_type(self) -> str:
+        return "evolve"
+
+    @property
     def mode(self) -> str:
         return self._mode.value
 

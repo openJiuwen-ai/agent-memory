@@ -22,6 +22,7 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.security.privacy.base import PrivacyProtection, optional_privacy
+from jiuwen_memory.common.trace import TraceLevel, trace_event, traced
 from jiuwen_memory.common.type_def import (
     CandidateSource,
     Context,
@@ -291,6 +292,7 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
     def health(self) -> None:
         self._retrieval_pipelines.health()
 
+    @traced("write", level=TraceLevel.SIMPLE)
     async def write(
         self,
         content: str,
@@ -364,6 +366,9 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         )
         # 三条路径共用：Ingestor 规约。
         check_ingest_cancelled()
+        trace_event(type(self).__name__, "write_input", lambda: {
+            "content": content, "modality": source.value,
+        }, level=TraceLevel.DEBUG)
         units = self._ingestor.ingest([payload])
         check_ingest_cancelled()
         # Explicit input time is a write contract, independent of Ingestor choice.
@@ -376,6 +381,14 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
                 unit.system_metadata["middle"] = "true"
             if "session_id" in meta:
                 unit.system_metadata["session_id"] = meta["session_id"]
+        write_path = (
+            "procedural" if procedural else ("middle" if middle else "infer") if infer else "raw"
+        )
+        trace_event(
+            type(self).__name__,
+            "ingest",
+            {"units": len(units), "modality": source.value, "path": write_path},
+        )
 
         binding = self._write_binding(units)
         evolver = binding.evolver if binding is not None else self._evolver
@@ -406,18 +419,32 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
                 len(derived),
                 scope_for_log(scope),
             )
+            trace_event(
+                type(self).__name__,
+                "result",
+                {"path": write_path, "originals": len(units), "returned": len(derived)},
+                level=TraceLevel.SIMPLE,
+            )
             return derived
 
         # infer=true 下按 middle 二级分流
         if infer:
             if middle:
-                return await self._write_middle_path(
+                buffered = await self._write_middle_path(
                     units,
                     scope,
                     index_builder,
                     evolver,
                     parse_middle_interval(middle_interval),
                 )
+                trace_event(
+                    type(self).__name__,
+                    "result",
+                    {"path": write_path, "originals": len(units), "returned": len(buffered)},
+                    level=TraceLevel.SIMPLE,
+                )
+                return buffered
+            # 既有 infer=true 同步抽取路径，不动
             if evolver is None:
                 raise RuntimeError(
                     "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
@@ -440,6 +467,12 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
                 len(derived),
                 scope_for_log(scope),
             )
+            trace_event(
+                type(self).__name__,
+                "result",
+                {"path": write_path, "originals": len(units), "returned": len(derived)},
+                level=TraceLevel.SIMPLE,
+            )
             return derived
 
         # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引。
@@ -451,6 +484,12 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         begin_ingest_write()
         await asyncio.to_thread(index_builder.build, units)
         record_ingest_units(units)
+        trace_event(
+            type(self).__name__,
+            "result",
+            {"path": write_path, "originals": len(units), "returned": len(units)},
+            level=TraceLevel.SIMPLE,
+        )
         return units
 
     # ---- 中期缓冲子路径 ----

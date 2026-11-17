@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import NotFoundError
 from jiuwen_memory.common.log import get_logger, scope_for_log
+from jiuwen_memory.common.trace.runtime import background_trace
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.jobs import Job, JobCancelledError
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
@@ -55,7 +56,10 @@ class InProcessScheduler(Scheduler):
         info.status = JobStatus.RUNNING
         info.detail["started_at"] = self._now_iso()
         try:
-            result = await job.run()
+            with background_trace(
+                self, job.scope, job_id, job.trace_type, job.parent_job_id,
+            ):
+                result = await job.run()
             for k, v in result.detail.items():
                 info.detail[k] = v
             info.status = terminal_job_status(result)

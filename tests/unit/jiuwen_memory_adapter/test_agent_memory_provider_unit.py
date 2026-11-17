@@ -96,6 +96,7 @@ def test_sdk_kv_configuration_uses_only_the_loaded_config_file(tmp_path):
 
     client = _InProcessClient(str(path), security_provider=security)
     try:
+        assert client.portal_location is None
         result = client.runtime.configuration.save(
             0, {"llm.default.params.llm_model": "after"}, security=security(),
         )

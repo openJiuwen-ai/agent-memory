@@ -24,6 +24,7 @@ from jiuwen_memory.common.errors import (
     ValidationError,
 )
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.trace import TraceLevel, trace_event
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterExpr,
@@ -358,6 +359,9 @@ class ElasticsearchFulltextStore(FulltextStore):
             }
         }
         bool_query = {"must": [keyword_query], "filter": filters}
+        trace_event(type(self).__name__, "recall_syntax", lambda: {
+            "query": {"bool": bool_query}, "size": query.top_k, "index": self._index,
+        }, level=TraceLevel.DEBUG)
         with wrap_backend("elasticsearch search"):
             resp = self.client.search(
                 index=self._index, query={"bool": bool_query}, size=query.top_k

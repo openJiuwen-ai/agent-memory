@@ -46,7 +46,7 @@ Agent、文档项目、生命周期、认知层级、记忆分类及正文／标
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
 | `space_impl/` | SpaceManager 实现目录（kv） |
 | `job_impl/` | IngestJobController 实现目录（in_process：后台队列、状态持久化、同任务库协调与 payload 幂等） |
-| `jobs.py` | `Job` 抽象（scope + interval 标识，`run() -> JobInfo` 唯一执行入口，不自带循环；`schedule_key` 调度去重键——默认类名，Scheduler 只按此通用键去重，业务身份区分由子类覆写，如 EvolveJob 含 mode）+ `JobFactory`（按 job_type + scope + 运行时参数生成实例）+ `JobType` 枚举 + `JobFactoryProducer` |
+| `jobs.py` | `Job` 抽象（scope + interval 标识，`run() -> JobInfo` 唯一执行入口、`trace_type` 稳定追踪策略键，不自带循环；`schedule_key` 调度去重键——默认类名，Scheduler 只按此通用键去重，业务身份区分由子类覆写，如 EvolveJob 含 mode）+ `JobFactory`（按 job_type + scope + 运行时参数生成实例）+ `JobType` 枚举 + `JobFactoryProducer` |
 | `evolution/` | 显式建树请求验证、树开关分流与任务提交，以及 background 周期注册，不鉴权、不做分组算法 |
 | `jobs_impl/` | 后台 Job 实现目录：`evolve_job.py`（EvolveJob + EvolveJobSpec）、`middle_to_long_job.py`（MiddleToLongJob + MiddleToLongJobSpec + default JobFactory 装配）。Spec 装配期固化业务参数与 storage/lifecycle/llm 依赖；index/evolver 不在装配期解析（行为铁律 17） |
 
@@ -252,3 +252,7 @@ Command/Engine.write 显式透传 event_time，batch_write 逐项转发 BatchWri
 接续引用保留检查无法读取或解析关系真源时保守保留候选记忆，并仅记录异常类型；未预期的编程异常向上传播，不按“无引用”放行清理。
 
 关系真源存 Registry KV，保留检查读关系头而非关系 MemoryUnit；EvolveJob 仍排除 `continuity_kind=relation` 的单元，仅保护尚未迁移的旧关系单元。Engine.list 接收 API 下推的接续来源系统过滤谓词，在分页与 count 前生效；三种 Engine 的 batch_write 均保持逐项结果对齐，并把 `BatchWriteItem.source_ref` 透传给 write，供接续层分阶段提交回执。
+
+Scheduler 的实际 job.run 与摄入控制器 task 执行入口使用 common.trace.runtime 的
+background_trace。任务策略在装配时绑定，不读取提交请求覆盖；Job.trace_type 显式声明
+类型（默认 default，内置 evolve/middle_to_long/dreaming），取消路径也成对结束作用域。

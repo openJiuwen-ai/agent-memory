@@ -12,6 +12,7 @@ dependencies = [
     "openai>=1.0",
     "jieba>=0.42",
     "pyyaml>=6.0",
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

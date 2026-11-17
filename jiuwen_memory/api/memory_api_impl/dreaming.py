@@ -173,6 +173,10 @@ class DreamingDriverJob(Job):
         self._registration_ready = registration_ready
 
     @property
+    def trace_type(self) -> str:
+        return "dreaming"
+
+    @property
     def mode(self) -> str:
         return self._mode.value
 

@@ -5,9 +5,18 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-12 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/F08-personal-memory-portal.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 最近一次修订日期 | 2026-11-16 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F08-personal-memory-portal.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
+
+## SDK 接续共享配置检查
+
+公开包导出 `sdk_continuity_runtime_identity(config: dict) -> tuple[str, str]`，返回规范化的
+Registry 文件路径和有效配置摘要，供进程内 SDK 共享池判断是否可以复用 runtime。
+只检查 continuity 档、single_writer、持久 fixed_path SQLite 等共享前提，不创建 runtime、
+Store 或文件锁，也不授予权限。配置摘要包含默认配置与凭据真值，但不返回凭据或配置对象。
+Adapter 通过该辅助函数读取共享身份，不导入内核 Config、ComponentConfig 或 SecretValue。
+MemoryAPI 方法及 HTTP/CLI/MCP 请求契约不变。
 
 ## 明文读取与独立维护边界
 
@@ -19,7 +28,6 @@
 编排、格式校验和逐项结果属于 deploy/migration，不从 jiuwen_memory.api 导出，
 也不在启动、搜索或读取中调用。部署配置、凭据、支持范围及退出码见 F04 §5.3，
 底层可选维护能力见 S06。
-
 
 ## 文档分工
 
@@ -152,9 +160,9 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 | 新增记忆 | `/v1/add` | `content`、`scope`（只允许选填 `agent`）、可选 `system_metadata.project` | 新增的 `MemoryUnit` 数组 |
 | 纠正记忆 | `/v1/update` | `scope`、`unit_id`、`patch.content` | 新版 `MemoryUnit`，通过 `supersedes` 指向旧版 |
 | 遗忘记忆 | `/v1/delete` | `selector.scope`、只含一个 ID 的 `selector.unit_ids`、`selector.mode: "forget"` | 已遗忘的 ID 数组 |
-| 模型设置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口 | 同上 |
+| 模型设置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口。跨进程共享页面为指定实例的请求附加 `instance_id` | 同上。跨进程共享页面用空请求体调用 `read_config` 时返回 `instances`、`default_instance_id` |
 | HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`） | `portal_url` |
-| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 独立页面建立 HttpOnly Cookie，iframe 获得页面会话票据 |
+| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 普通独立页面建立 HttpOnly Cookie。iframe 和跨进程共享页面返回 `session_token`。跨进程共享页面另返回 `shared: true` |
 
 页面从 `MemoryUnit.segments` 拼接正文，时间取 `temporal.t_ingest`。HTTP
 `write_target` 由宿主提供，与认证身份合成完整写入范围，随会话绑定。独立访问可以
@@ -169,9 +177,31 @@ SDK 插件默认启动本地页面服务，`portal.enabled` 可关闭它。`port
 `open_portal()` 为每次打开取得一次性链接。SDK 页面句柄只关闭自己的网络资源，
 Runtime 仍由宿主负责关闭。
 宿主可在初始化前读取 `portal_status["supported"]` 来决定是否显示入口。
-SDK 模式的 `available` 表示页面监听已启动。HTTP 模式在首次请求链接前为 `False`，
+SDK 模式的 `available` 表示页面监听已启动。共享页面的状态读取会检查页面进程是否
+可响应，并返回实际的页面地址。HTTP 模式在首次请求链接前为 `False`，
 之后反映取链接是否成功。HTTP 初始化沿用 `/healthz` 探活，在调用 `await open_portal()`
 时签发链接。`portal_url` 仅提供 SDK 本地链接。
+
+在同一台 macOS、Linux 或 Windows 机器上，使用同一个固定本地 Markdown 目录和 SQLite
+索引的 SDK 文档实例在同一系统账号下自动共用 Portal。两个存储位置均须为绝对路径，
+Windows 上还须位于本地 NTFS。实例须通过文档数据面读取该索引。macOS 和 Windows
+以磁盘上的实际路径识别文档库。KV 模式
+和未满足共享条件的 SDK 实例各自提供本地页面。`portal.instance_id` 适用于共享实例，
+可省略，默认使用 `default`。在同一文档目录内同时启动的共享实例必须使用不同 ID。
+ID 被占用时，SDK 记忆实例仍可启动，`portal_status["reason"]` 报告冲突，该实例无法
+接入共享页面。浏览器会话绑定记忆库、可信身份和可选的记忆写入范围，使用
+`X-Memory-Portal-Session` 请求头。
+从普通 SDK 实例打开的页面，记忆请求优先交给该实例。该实例退出后，连接失败或在执行业务前
+拒绝会话身份的备选实例可以跳过。已经发送且结果未知的请求不得重放。`read_config({})`
+校验在线实例的当前身份，返回可访问的实例列表和默认选中项。读取具体配置、保存和重试
+明确指定 `instance_id`，未运行或身份不匹配返回 404，
+选中实例仍执行配置权限校验。页面服务意外退出后，下次 `open_portal()` 恢复监听和在线
+实例列表并取得新链接。复用 iframe 时应传入完整的新链接，含用于触发页面加载的查询参数
+与一次性授权片段。共享实例的 `shutdown()` 会等已取消的初始化收尾。Runtime 成功关闭
+后释放 ID，失败时报告异常并保留 ID。独立 SDK 页面和 HTTP 的配置接口沿用原请求格式。
+SDK 接续模式下，共用一个 Runtime 的 Provider 使用同一个 ID，实例列表只返回一次。
+每次请求继续校验签发会话的 Provider，来源注销后返回 401。未满足文档库共享条件时，
+接续模式在同一进程内按 Runtime 复用页面，见 S11。
 
 身份复用既有认证或本地会话，浏览器不能声明 actor 或角色，也不能指定列表或检索的授权范围。本机部署的 Host、
 同源检查和会话规则见 S10；Prompt 管理、通用模型依赖追踪和宿主重启不属于 Portal 能力。
@@ -191,6 +221,109 @@ leader 锁与存储；确认停止后，锁释放失败不阻断存储清理。�
 静默忽略。`wait=True` 等待本次安全清理尝试结束后报告失败，多项失败通过 ExceptionGroup
 汇总；先 False 后 True 同样可获知后台异常，重复关闭不重复执行清理。自有循环停止请求
 失败时，不继续阻塞等待其线程退出，也不宣称循环已关闭。
+
+## SDK 运行日志接管
+
+```python
+def assemble(
+    policies: dict[str, str] | None = None,
+    kv: KVStore | None = None,
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
+) -> MemoryAPI: ...
+
+def assemble_runtime(
+    policies: dict[str, str] | None = None,
+    kv: KVStore | None = None,
+    config: Config | Mapping[str, Any] | None = None,
+    *,
+    log_handler: logging.Handler | None = None,
+) -> MemoryRuntime: ...
+```
+
+`log_handler` 接收业务提供的标准日志处理器（`logging.Handler`）。处理器由业务创建和关闭，
+SDK 负责把脱敏后的日志记录交给它。`globals.log_output` 决定日志输出到哪里：
+
+| 配置值 | 输出方式 |
+|---|---|
+| `builtin` | SDK 打印到终端的标准错误输出（`stderr`）；配置了 `log_file` 时，也追加写入该文件，编码为 UTF-8 |
+| `business` | 只交给业务处理器，不创建 SDK 自己的终端和文件输出 |
+| `both` | 同时交给业务处理器，并使用 SDK 自己的终端和可选文件输出 |
+
+首次初始化日志时，没配置 `log_output` 就使用 `builtin`，传入业务处理器也不会自动启用它。
+要让业务处理器接收日志，需要明确选择 `business` 或 `both`；选择这两种模式却没有提供
+处理器，会抛出 `ValidationError`。
+
+同一个 Python 进程中的 SDK 实例共用日志设置，首次日志初始化成功后就不再更换：
+
+- 后续创建实例时，没指定的日志项沿用已有值，也可以不再传 `log_handler`。
+- 再次传入相同设置和同一个处理器对象，不会重复添加输出。
+- 传入不同设置或另一个处理器对象，会抛出 `ValidationError`，已有设置不变。
+- 日志设置完成后，即使接下来的模型或存储初始化失败，这套设置也会保留。
+- 关闭某个实例不会清除日志设置，也不会关闭业务处理器。不支持在运行中切换配置。
+
+业务处理器已有格式化器（`Formatter`）时，SDK 保留它；没有时，SDK 根据 `log_format` 和
+`log_datefmt` 设置格式。处理器原有的日志级别限制和过滤条件继续生效。
+
+SDK 管理的输出先按 `globals.log_level` 过滤，再检查各处理器的级别和过滤条件。
+子日志器单独设置的较低级别不能绕过 SDK 门槛，业务处理器的级别也不会被 SDK 覆盖。
+
+通过 `globals.log_filters.business` 和 `globals.log_filters.builtin`，可以分别为业务输出、
+SDK 内置输出设置正文正则过滤。默认不过滤；配置的正则、日志级别和处理器自有 Filter 都
+必须允许，该记录才会输出。规则只匹配脱敏后、填入参数的正文，不包括格式前缀和另附的
+异常堆栈，不修改原来的正文或样式。业务修改记录不会改变内置输出依据的匹配内容。
+
+规则也属于进程共享设置，按 `business/builtin` 下的 `include/exclude` 分别继承和比较：
+省略的规则沿用已有值；显式相同字符串可复用；不同字符串（即使含义相近）或用 `null`
+清除已有规则会报冲突。没有已有规则时，`null` 表示不限制。完整配置和错误语义见
+[S08 正则过滤](S08-config.md#两路独立的正文正则过滤)。
+
+为了让两边的输出互不影响，SDK 为每个输出准备单独的日志记录（`LogRecord`），并按以下
+规则复制记录中的数据：
+
+- 映射类型（`Mapping`，包括 `ChainMap`）复制为普通 `dict`，`list` 子类复制为普通 `list`。
+- `UserList`、`deque`、`tuple`、`set`、`frozenset`、`bytearray` 也会复制，嵌套的标准容器
+  按同样规则继续复制。
+- 其他自定义业务对象和异常信息 `exc_info` 不作深拷贝，两边的记录仍引用原对象。
+
+SDK 接管从 `agent_memory` 和 `jiuwen_memory` 两个日志命名空间传播到分发器的运行日志，
+保留原名称、源码位置和脱敏规则。业务进程的全局日志器（Python root logger）和第三方库
+继续使用各自的配置。Trace 的专用文件输出边界见 [S07](S07-common.md#普通运行日志)。
+
+如果应用此前手工给 SDK 日志器添加过处理器，SDK 会保留它们。因此，`business` 模式也不会
+关闭那些已有输出。不要把同一个处理器既手工添加到 SDK 日志器，又通过 `log_handler`
+传入，否则同一条日志会输出两次。
+安装日志分发器及失败回滚时，不得因 SDK 调整处理器列表而让正在输出的记录重复调用
+原有处理器，或跳过后续处理器。初始化前已经产生的记录仍不要求补发给 SDK 输出。
+
+SDK 分发器处理记录期间，同一线程产生的嵌套 SDK 记录会跳过该分发器的全部输出，
+包括业务处理器、内置终端和文件；不改为只走内置输出。该保护不控制应用自行挂接的处理器
+或第三方日志。
+
+业务处理器抛出的普通异常不会中断 SDK 操作；双路模式下，SDK 自己的输出仍会继续。SDK 会
+直接向 `stderr` 写入故障提示，只保留处理器类名、异常类型、文件、行号和函数位置，
+不包含日志正文、异常消息或源码内容。正则匹配、准备匹配正文时抛出的普通异常同样
+按输出隔离；未配置规则的输出不需要为匹配提前生成正文。故障提示直接写入 `stderr`，
+不受正文正则过滤。
+
+脱敏本身抛出普通异常时，不能确认记录已安全处理，因此丢弃整条记录，不交给 SDK 管理的任何输出。
+SDK 只向 `stderr` 写安全故障提示，不让日志异常中断调用；源日志器上的脱敏 Filter 和
+SDK 分发器都遵守此约定。后续正常记录仍可继续输出。
+
+日志初始化失败后，若恢复业务 Handler 的 Formatter 也抛出普通异常，SDK 报告安全诊断，
+仍向调用方抛出最初的初始化异常。诊断输出自身失败时停止报告，不覆盖原始异常。
+
+接管从日志初始化成功后生效。此前导入模块、注册插件时已经产生的日志，不会补发给业务
+处理器；本次不改变插件注册顺序。
+
+`assemble_managed_runtime()`、`assemble_managed_server_runtime()` 和
+`assemble_server_runtime()` 沿用进程内已有的 SDK 日志设置。业务处理器通过
+`assemble()` 或 `assemble_runtime()` 注册。如果从托管或 Server 入口首次初始化日志，
+选择 `business` 或 `both` 会因缺少业务处理器抛出 `ValidationError`。
+
+方案选择见 [F09](../features/api/F09-sdk-runtime-logging.md)，配置字段见
+[S08](S08-config.md#sdk-运行日志配置)。
 
 ## Metadata 公共 API 契约
 
@@ -715,6 +848,14 @@ def search(
 树参数的默认值直接体现在签名中，不使用内部二次补默认值。开启树功能时，省略参数
 即使用 TIME/time_span、一级展开和 MaxP 上卷；显式 `expand_depth=0` 或 `rollup=False`
 原样生效，即使只传其中一项。
+
+**状态：已实现**（[F11 trajectory 统一](../features/common/F11-new-trace.md)）：
+保留 with_trajectory 及返回 trajectory 步骤列表，底层使用 common.trace 的单一记录源。
+with_trajectory=true 保证本次检索具备内存收集能力，即使通用 target 为 noop / log；
+false 时 trajectory=[]，不阻止独立开启通用 trace。仅为 trajectory 临时收集不会自动
+增加 trace 响应键或包装业务结果。该行为须同时覆盖进程内、CLI、HTTP、MCP，不能只在
+接入层序列化时生成。
+
 
 最近上下文经 `context.extensions["query_context"]` 传入，取值是 `list[str]` 或
 `tuple[str, ...]`，顺序由调用方保证；key 不存在与空序列均表示无上下文。API 边界将其
@@ -1468,9 +1609,18 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 `DisclosureLevel`：`L0`（摘要）/ `L1`（片段）/ `L2`（全文）/ `ADAPTIVE`（按 `max_tokens` 预算自动选层级）。
 
 `RetrievalResult`：
-- `items: list[RetrievedItem]` —— 每项 `unit_id` / `score`（融合/重排后最终分）/ `content`（按层级加载）/ `level`（实际披露层级）。
+- `items: list[RetrievedItem]` —— 每项 `unit_id` / `score`（融合/重排后最终分）/ `abstract` / `overview` / `content`（三层内容）/ `user_metadata` / `system_metadata` / `level`（实际披露层级）。
 - 接续可选字段（仅给出 duty/task_id/anchor 时填充，否则为 null）：`paths: list[RelationPath] | None`、`gaps: list[Gap] | None`、`view_meta: ViewMeta | None`；`RetrievedItem.view: ViewAnnotation | None`。字段定义见 S11。
-- `trajectory: list[TrajectoryStep]` —— 仅 `with_trajectory=True` 返回。每步 `stage`（parse/recall/fuse/recheck/rerank/resolve/threshold/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
+- `trajectory: list[TrajectoryStep]` —— `with_trajectory=False` 时为空列表，True 时填充步骤。每步 `stage`（parse/recall/fuse/recheck/rerank/resolve/threshold/secondary_rank/disclose）/ `channel`（召回通道，非召回步为 None）/ `candidate_count` / `cost_ms` / `detail`。
+- `errors: list[ChannelError]` —— 部分通道错误，不依赖 with_trajectory。
+
+**状态：已实现**（F11）：trajectory 由受限 trace 记录投影，字段类型不变。
+默认节点上限 128、字符串值截断 256 字符，深度限制 4；服务端
+`globals.trace_max_nodes` / `trace_max_value_chars` / `trace_max_depth` 可分别设 null
+取消对应限制，完整配置契约见 S07。节点丢弃时，trajectory 末尾增加一个
+`stage="trace_truncated"` 步骤，其 channel=None、candidate_count=0、cost_ms=0，
+detail 为 `{"reason":"max_nodes","dropped":"N"}`，N 为本次检索捕获区间丢弃的节点数。
+此步骤不占预算；字符串截断保留 `...[truncated]` 标记。默认轨迹不再承诺无损完整返回。
 
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
 
@@ -1591,9 +1741,9 @@ HTTP/MCP 的 peer、限流和协议解析仍由各入口负责。独立安全构
 `start_background()` 和 `close(*, wait=True)`。异步宿主绑定其持续运行的事件循环；同步
 宿主显式启动自有 loop，两者不暴露 Store 或任务控制器。默认无 watcher 时启动为 no-op，
 关闭后不得重启；启动故障必须传回调用方。`ServerRuntime` 在该协议上增量提供只读
-`security_runtime` 与 `audit`，转发同一启动/关闭路径。既有 `assemble`、`assemble_runtime`
-和冻结的 `MemoryAPI` 签名不变；自定义 Runtime 需实现公开认证与生命周期协议，
-并适配下述周期注册端口。
+`security_runtime` 与 `audit`，转发同一启动/关闭路径。`assemble` 和 `assemble_runtime`
+继续兼容原有调用方式。`MemoryAPI` 遵守冻结的接口契约。自定义 Runtime 需实现公开认证与
+生命周期协议，并适配下述周期注册端口。
 
 装配器在返回前完成 PDP 同源校验、显式 PDP 回绑、部署管理能力/空间路由约束复核和
 认证器实际凭据真源的 Registry 替换。默认哨兵选择配置 Runtime；显式 `None` 不选择
@@ -1768,8 +1918,18 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 | `background` | `[]` | 需要登记的 MemoryRef 列表；通常用于 attach，也可随其他变更提交；登记不复制正文、不授予读权限 |
 | `required` | `true` | 本次 background 是否属于必需证据；不可读必需证据会影响接续就绪判断 |
 | `reason` | `""` | 解绑原因，随撤销主体保存 |
+| `title` / `description` | `""` | create 的任务检索文本；bind 仅补录历史记录空字段；兼容旧 create 省略标题 |
+| `parent_task_id` | `null` | create 的直接父任务；Registry 计算 root_task_id，不由调用方传入 |
+| `query` | `null` | find 先精确匹配 connector_id/context_id，无结果时再查询任务描述；只传 query 直接查询描述 |
+| `top_k` | `5` | find 描述候选上限，1–100；精确结果不截断 |
 
-变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [{task_id, revision}]}`，不证明调用者拥有其中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
+变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定、title/description、parent_task_id/root_task_id 及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [...]}`，各项有 task_id/revision/title/description/state/match_type，语义项另含 score。connector_id/context_id 必须成对提供或省略；有精确结果时不回退语义检索，语义候选须用户确认后 bind。find 不证明调用者拥有任务中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。创建子任务还需父任务所在项目 READ。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
+
+描述候选默认使用 Embedder，返回 `match_type=description_semantic` 和余弦 score。
+`continuity.default.params.embedder: null` 时改用 BM25，返回
+`match_type=description_bm25` 和正数 BM25 score；两种分数不能直接比较。
+两种方式均只返回开放任务，保留精确 binding 优先及用户确认后绑定的流程；
+已配置的 Embedder 故障仍报错，不回退。分词器及装配说明见 S11。
 
 ### continuity_relation：登记、复核或撤回关系
 

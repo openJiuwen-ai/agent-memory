@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-11-12 |
+| 最近一次修订日期 | 2026-11-15 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F11-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
 ## 明文拒绝的传播边界
 
@@ -417,6 +417,30 @@ repair_required_count、complete、built、reused、skipped、skipped_incomplete
 complete=false 或 repair_required 非空必须 FAILED；Scheduler 保留 Job 返回的
 SUCCEEDED/FAILED/CANCELLED，非终态返回视为错误。auto derive 已接入下述周期任务；ensure 尚未实现。
 
+#### 后台任务 trace（已实现，F11）
+
+Scheduler 实际执行入口、IngestJobController 工作入口及 dreaming 驱动执行入口复用
+common.trace 的 begin/end 与模块级埋点，不复用提交请求作用域。任务类型由
+Job.trace_type 显式声明、执行器传入：evolve / middle_to_long 沿用既有 JobType 值，
+ingest / dreaming 是执行入口
+策略键，不新增 JobType 枚举值。自定义执行器提供稳定类型键，不根据 Python 类名猜测。
+
+启动时按 `globals.trace_jobs.types[task_type]` > `globals.trace_jobs.default` >
+`trace.default` 解析具名 collector；完整保留 level / log_file 参数，显式 noop 不回退。
+任务不使用提交请求的 extensions.trace。trace_id 为实际任务 scope 与执行 job_id
+的固定顺序编码拼接，编码规则及 collector 参数扩展见 S07；通过 begin_trace 显式传入。
+
+一次实际执行建立独立根 Job.run span；周期执行优先使用实例 job_id，复用 job_id 的
+入口须记录 execution_id / attempt。根节点记录 task_type、job_id、parent_job_id（如有）、
+状态及耗时；派生 job 另建作用域，通过 parent_job_id 关联，不共享可关闭的父容器。
+每次执行独立预算；子协程与工作线程传播本次任务 context，直接线程池须显式复制。
+成功 / 失败 / 取消均在 finally 配对结束作用域，不改变既有取消与失败传播语义。
+
+memory / memory_log 的快照交给执行器内部完成处理，未消费则释放，不新增 JobInfo
+字段或改变 job_status。文件 sink 资源由装配 runtime 管理，在任务停止 / 收尾之后
+flush / close，不能每个任务关闭共享 handler。设计及配置示例见
+[F11-new-trace.md](../features/common/F11-new-trace.md) 第 8 节。
+
 ### IngestJobController（`ingest_job.py`）
 
 长耗时摄入任务使用独立 Control 算子管理，具体线程池实现位于 `job_impl/`。`status`
@@ -755,6 +779,13 @@ API 经 MemoryQueryService 的校验端口在单/跨空间分流前调用；Engi
 接续服务仅释放自己申请的单写 claim，装配根按资源创建记录关闭自有 Store；借用的 Store 不关闭。单个组件释放失败仍需尝试其余自有资源清理。
 
 Engine.write 的可选 event_time 为含时区事件时间，随 RawPayload 显式传递；batch_write 逐项转发 `BatchWriteItem.event_time`，语义与 write 相同；非空时 Engine 必须在原文落盘/建索引前保障全部摄入输出的 temporal.t_event 等于该值，不依赖 Ingestor 的特定实现。普通调用省略该值保持原有行为。
+
+### 单 Agent SDK 任务发现与层级
+
+TaskRegistry 的 find 先查开放任务的上下文有效绑定，再用可选描述检索当前项目开放任务；
+标题/说明优先使用共享 Embedder 缓存，缺少 Embedder 时用共享 Tokenizer 计算 BM25。
+两者均为可重建投影，不创建 MemoryUnit 或宿主业务映射；Embedder 故障不触发回退。
+父任务只在 create 登记，root_task_id 由 Registry 继承；字段和错误契约见 S11。
 
 ## 隐私保护与生命周期
 

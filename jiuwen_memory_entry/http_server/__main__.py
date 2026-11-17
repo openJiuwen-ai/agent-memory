@@ -35,6 +35,7 @@ from openai import RateLimitError
 
 from jiuwen_memory_entry.core.api_contract import (
     CONFIG_VERBS,
+    error_trace,
     invoke_api,
     invoke_configuration,
     is_known_verb,
@@ -460,7 +461,12 @@ class HttpServer(Server):
                 except RateLimitedError:
                     self._send_error("RateLimitedError", request_id=request_id)
                 except (AgentMemoryError, RateLimitError) as api_error:
-                    self._send_error(type(api_error), api_error, request_id=context_request_id)
+                    self._send_error(
+                        type(api_error),
+                        api_error,
+                        request_id=context_request_id,
+                        trace=error_trace(api_error),
+                    )
                 except Exception as request_error:
                     logger.error(
                         "HTTP request failed request_id=%s error_type=%s",
@@ -525,9 +531,12 @@ class HttpServer(Server):
                 detail: object = "",
                 *,
                 request_id: str,
+                trace: dict[str, Any] | None = None,
             ) -> None:
                 status, body, retry_after = error_response(error, detail)
                 body["request_id"] = request_id
+                if trace:
+                    body["trace"] = trace
                 self._send(status, body, request_id=request_id, retry_after=retry_after)
 
             def _send(

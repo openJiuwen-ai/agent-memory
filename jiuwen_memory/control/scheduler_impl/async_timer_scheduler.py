@@ -40,6 +40,7 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.loop_runner import LoopRunner
+from jiuwen_memory.common.trace.runtime import background_trace
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.jobs import Job, JobCancelledError
@@ -423,7 +424,10 @@ class AsyncTimerScheduler(Scheduler):
             info.detail["started_at"] = self._now_iso()
             try:
                 job.check_cancelled()
-                result = await job.run()
+                with background_trace(
+                    self, job.scope, job_id, job.trace_type, job.parent_job_id,
+                ):
+                    result = await job.run()
                 self._merge_info(info, result)
                 info.status = terminal_job_status(result)
                 logger.info(

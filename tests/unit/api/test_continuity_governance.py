@@ -68,6 +68,44 @@ def _runtime(tmp_path):
     return RuntimeFixture(runtime, api, project, owner, ops, config)
 
 
+def test_task_hierarchy_uses_project_read_permission_for_parent(tmp_path):
+    runtime, api, project, owner, _ops, _config = _runtime(tmp_path)
+    try:
+        root = api.continuity_task(
+            project, TaskRequest("create", "hierarchy-root", title="Report"),
+            security=_security(owner),
+        )
+        child = api.continuity_task(
+            project, TaskRequest(
+                "create", "hierarchy-child", title="Chapter", parent_task_id=root["task_id"],
+            ),
+            security=_security(owner),
+        )
+        leaf = api.continuity_task(
+            project, TaskRequest(
+                "create", "hierarchy-leaf", title="Section", parent_task_id=child["task_id"],
+            ),
+            security=_security(owner),
+        )
+        details = api.continuity_task(
+            project, TaskRequest("get", task_id=leaf["task_id"]), security=_security(owner),
+        )
+        assert details["parent_task_id"] == child["task_id"]
+        assert details["root_task_id"] == root["task_id"]
+        outsider = _security(Scope(org="demo", user="outside-project"))
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project, TaskRequest("get", task_id=root["task_id"]), security=outsider,
+            )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project, TaskRequest("create", "outsider-child", parent_task_id=root["task_id"]),
+                security=outsider,
+            )
+    finally:
+        runtime.close()
+
+
 def _gov(ops):
     return _security(ops, Role.ADMIN)
 

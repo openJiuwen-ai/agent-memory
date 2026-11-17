@@ -30,19 +30,23 @@ unit_id IN 在召回截断前收窄，避免文档跨 session 召回与严格点
 HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可信启动器提供，
 必须来自实际加载的配置文件。`document_llm_instances` 只列出配置声明的具名模型，
 读取和写入授权仍由宿主负责。
+内置 SDK 适配器的 Portal 装配辅助函数只供仓库内接线。页面请求由已有公开 API 处理。
 
 ## 模块地图
+
+`runtime_configuration.py` 提供公开的 `sdk_continuity_runtime_identity` 配置检查辅助，
+只返回规范 Registry 路径与有效配置摘要；不构造 runtime、Store 或锁，不暴露 Config/SecretValue。
 
 | 文件 | 职责 |
 |---|---|
 | `memory_api_impl/continuity_ops.py` | 角色接续 PEP、可信连接匹配、原引用/关系依赖核验；入口为 `continuity_task`/`continuity_relation`/`continuity_recover`/`quarantine_source`/`release_source`，可靠写入与职责视图分别并入 `add`/`batch_add` 的 `continuity` 参数与 `search` 的 `task_id`/`anchor`/`duty`/`view_budget`；`list` 下推不可用来源谓词，并对每页条目逐条复核依赖证据、剔除不合规条目（不整页报错）；`batch_add` 的相邻接续项按 scope 分组后各合成一次 `record_batch`，正文批写复用 `add` 的作者标记/`source_ref`/审计步骤，`search` 的视图组装委托 `Continuity.view_result`，本层只做类型转换 |
-| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化、SDK 本地视频导入预检与日志脱敏辅助函数；一次性维护工具用 `assemble_maintenance_ports` |
+| `__init__.py` | Access 唯一公共导入面：重导出 Core API 所需类型、异常、装配函数、Trusted 初始化、SDK 本地视频导入预检与日志脱敏辅助函数；`assemble` 和 `assemble_runtime` 可用具名参数 `log_handler` 传入业务日志处理器；一次性维护工具用 `assemble_maintenance_ports` |
 | `access_security.py` | 公开安全装配辅助。提供 dev Authenticator 与 `register_trusted_principal`，Trusted 初始化委派实际认证器。私有 `_build_security_runtime` 从同一装配上下文选择并检查 Runtime，公开 mapping helper 复用它。`fixed_personal_owner` 沿用 Runtime 选择规则并读取插件声明 |
 | `managed_configuration.py` | `ManagedConfiguration`：通过可信宿主授权回调访问配置管理，不向页面暴露内核或存储 |
 | `personal_memory.py` | 按认证身份判定个人范围和历史记录归属，复用 MemoryAPI 做单条读取和检索候选限制 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/supports_video_ingest/prepare_video_ingest/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
-| `memory_api_impl/assembly.py` / `managed_assembly.py` | 公开装配及托管配置注入：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
+| `memory_api_impl/assembly.py` / `managed_assembly.py` | 公开装配及托管配置注入：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄，并在创建 SDK 时设置进程共用的日志输出；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
 | `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write`、`check_configuration_access` |
@@ -207,7 +211,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 8. Access（`jiuwen_memory_entry/`、`jiuwen_memory_adapter/`）只 `import jiuwen_memory.api`，
    且不得 import `jiuwen_memory.api.memory_api_impl`。本包重导出协议转换所需的 DTO /
    枚举 / 异常 / `Credentials`，以及 Access 日志脱敏所需的
-   `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`。
+   `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`；横切 trace 入口
+   （`begin_api_trace` / `begin_trace` / `end_trace` / `trace_event` / `TRACE_OVERRIDE_KEY` / `TraceLevel` / `parse_trace_spec`；`trace_span` / `traced` / `trace_annotate` 从 `common.trace` 导入）。
    公开装配是
    `assemble` / `assemble_runtime` / `assemble_server_runtime`（接受 `dict | Config | None`），Access composition
    root 不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI`
@@ -262,6 +267,11 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
     后台线程不再访问连接后才释放 shadow。同步启动将 Observer 故障传回调用方，关闭后拒绝重启。
 15. 成员/Grant 授予上界接收完整可信上下文，只有 ROOT 免除普通成员上界；不得从 actor
     的 Scope 形状推导特权。路由写入和跨空间查询必须区分后端故障与正常权限拒绝。
+16. 创建 SDK 时，`assemble()` / `assemble_runtime()` 接收的业务日志处理器由调用方负责关闭。
+    同一进程共用首次成功初始化的日志设置；即使后续组件初始化失败，这套设置也会保留。
+    后续实例可以不再传处理器，继续使用已有对象。关闭某个实例不会重置日志设置或关闭
+    处理器。输出选项和配置冲突的处理规则见 S02、F09；本功能不自动接管 Server、CLI、HTTP、
+    MCP 各自的入口日志。
 
 
 ### 显式建树边界
@@ -314,3 +324,7 @@ query_ops 消费 retrieval_pipeline 扩展键并写入 RetrievalQuery.pipeline�
 公开写入/更新拒绝整个 continuity_* 系统元数据前缀；`_role_writer` 通过私有 `_add_impl` 注入接续字段，仍复用原有鉴权、作者归属与审计。`_continuity_add` 服务 `add(continuity=)`；`batch_add` 的接续项经 `_continuity_batch` 按项目分组后调用 `Continuity.record_batch`，正文经 `_add_many_impl` 一次批量写入并复用作者标记、`source_ref` 与审计；事件幂等键统一由 `Continuity.event_key`（连接, binding, event）计算；回执摘要另含完整请求指纹（正文/来源/资产/标签/metadata/时间），改内容后重试必须冲突。`batch_add` 混合批次按输入顺序推进（普通项成批、接续项冲刷前后批）。接续写入透传 `source`/`assets`/`system_metadata`/`user_metadata`/`occurred_at`，并拒绝 `infer`/`procedural`/`middle` 这类与「原文直落」冲突的系统键。add/add_async、batch_add/batch_add_async（批级与 BatchWriteItem 逐项）、submit_ingest 的 event_time 必须含时区，经 `_reject_invalid_event_time` 统一校验，与消息 occurred_at 分离；submit_ingest 在入队前校验。
 
 接续服务和可信连接映射由装配根通过 LocalMemoryAPI 构造参数注入，不在构造后改写其私有成员。一次性维护工具（如关系迁移脚本）走公开的 `assemble_maintenance_ports`，不 import 内核私有装配函数。
+
+Trace 装配为每个 API、Scheduler 与摄入执行器绑定独立策略及具名插件，Access 通过
+begin_api_trace 选择本实例策略。成功装配才更新进程内 begin_trace 的 legacy 默认值。
+trace 文件插件与其他 runtime 资源共同在后台屏障后释放，装配失败关闭新建 sink。

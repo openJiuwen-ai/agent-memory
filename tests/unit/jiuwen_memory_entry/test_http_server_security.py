@@ -1691,7 +1691,7 @@ def test_personal_build_binds_one_runtime_and_falls_back_to_read_only(tmp_path):
 def test_http_build_starts_when_overlay_cannot_be_created(tmp_path, monkeypatch):
     from jiuwen_memory.config.overlay_store import SQLiteOverlayStore
 
-    def denied(self, path):
+    def denied(self, path, *, instance_id="default"):
         raise PermissionError("configuration directory is read-only")
 
     monkeypatch.setattr(SQLiteOverlayStore, "__init__", denied)

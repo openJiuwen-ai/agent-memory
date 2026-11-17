@@ -20,6 +20,7 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.ingest_cancellation import ingest_cancel_signal
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.trace.runtime import background_trace
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.ingest_job import (
@@ -312,7 +313,8 @@ class InProcessIngestJobController(IngestJobController):
         unit_ids = state.unit_ids
         try:
             check_ingest_cancelled()
-            units = task()
+            with background_trace(self, self._jobs[job_id].scope, job_id, "ingest"):
+                units = task()
             unit_ids = tuple(dict.fromkeys((*state.unit_ids, *(u.id for u in units))))
         except IngestCancelled as exc:
             status, error, unit_ids = "cancelled", str(exc), state.unit_ids

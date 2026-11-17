@@ -31,10 +31,12 @@ class OverlaySnapshot:
 class SQLiteOverlayStore:
     """使用事务比较版本并整版替换；路径由可信装配方从实例位置确定。"""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, instance_id: str = "default") -> None:
         path_text = str(path)
         if not path_text or not Path(path_text).is_absolute():
             raise ValidationError("an absolute persistent overlay file is required")
+        if not isinstance(instance_id, str) or not instance_id.strip():
+            raise ValidationError("configuration instance ID must be a non-empty string")
         try:
             descriptor = os.open(path_text, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -47,28 +49,53 @@ class SQLiteOverlayStore:
         if os.name == "posix" and (info.st_mode & 0o077 or info.st_uid != os.geteuid()):
             raise ValidationError("configuration overlay must be private to the current user")
         self._path = path_text
+        self._instance_id = instance_id
         with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self._ensure_schema(db)
             db.execute(
-                "CREATE TABLE IF NOT EXISTS config_overlay "
-                "(id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, "
-                "payload TEXT NOT NULL)"
+                "INSERT OR IGNORE INTO config_overlay (instance_id, version, payload) "
+                "VALUES (?, 0, '{}')", (instance_id,),
             )
+
+    @staticmethod
+    def _ensure_schema(db: sqlite3.Connection) -> None:
+        legacy = any(row[1] == "id" for row in db.execute("PRAGMA table_info(config_overlay)"))
+        if legacy:
+            db.execute("ALTER TABLE config_overlay RENAME TO legacy_config_overlay")
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS config_overlay "
+            "(instance_id TEXT PRIMARY KEY NOT NULL, "
+            "version INTEGER NOT NULL, payload TEXT NOT NULL)"
+        )
+        if legacy:
             db.execute(
-                "INSERT OR IGNORE INTO config_overlay (id, version, payload) VALUES (1, 0, '{}')"
+                "INSERT INTO config_overlay SELECT 'default', version, payload "
+                "FROM legacy_config_overlay WHERE id = 1"
+            )
+            db.execute("DROP TABLE legacy_config_overlay")
+        credentials = {row[1] for row in db.execute("PRAGMA table_info(model_credentials)")}
+        if credentials and "instance_id" not in credentials:
+            db.execute(
+                "ALTER TABLE model_credentials "
+                "ADD COLUMN instance_id TEXT NOT NULL DEFAULT 'default'"
             )
 
     def credential_store(self):
         """Credentials use the same private database, with existing envelope encryption."""
         from jiuwen_memory.config.model_credentials import ModelCredentials
 
-        return ModelCredentials(self._path)
+        return ModelCredentials(self._path, self._instance_id)
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path, timeout=30)
 
     def read(self) -> OverlaySnapshot:
         with closing(self._connect()) as db:
-            row = db.execute("SELECT version, payload FROM config_overlay WHERE id = 1").fetchone()
+            row = db.execute(
+                "SELECT version, payload FROM config_overlay WHERE instance_id = ?",
+                (self._instance_id,),
+            ).fetchone()
         if row is None:
             raise ValidationError("configuration overlay record is missing")
         values = json.loads(row[1])
@@ -91,8 +118,8 @@ class SQLiteOverlayStore:
             db.execute("BEGIN IMMEDIATE")
             cursor = db.execute(
                 "UPDATE config_overlay SET version = version + 1, payload = ? "
-                "WHERE id = 1 AND version = ?",
-                (payload, expected_version),
+                "WHERE instance_id = ? AND version = ?",
+                (payload, self._instance_id, expected_version),
             )
             if cursor.rowcount != 1:
                 raise ConflictError(message="configuration overlay version changed")

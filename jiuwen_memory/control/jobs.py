@@ -79,6 +79,11 @@ class Job(ABC):
         """执行任务，返回 JobInfo。"""
 
     @property
+    def trace_type(self) -> str:
+        """执行器选择追踪策略的稳定任务类型；自定义任务可覆写。"""
+        return "default"
+
+    @property
     def mode(self) -> str:
         """本任务的演进模式取值；无演进模式的任务取空串。
 

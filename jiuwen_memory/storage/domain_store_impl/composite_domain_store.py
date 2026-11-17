@@ -20,6 +20,7 @@ import copy
 import uuid
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -1096,7 +1097,9 @@ class CompositeDomainStore(DomainStore):
         errors: list[ChannelError] = []
         with ThreadPoolExecutor(max_workers=len(selected)) as executor:
             futures = {
-                executor.submit(recaller.recall, scope, query, recall_limit): (index, recaller)
+                executor.submit(
+                    copy_context().run, recaller.recall, scope, query, recall_limit
+                ): (index, recaller)
                 for index, recaller in enumerate(selected)
             }
             for future in as_completed(futures):

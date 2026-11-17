@@ -31,6 +31,7 @@ from jiuwen_memory.common.security import principal, space_predicates
 from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.time_utils import as_utc
+from jiuwen_memory.common.trace import TraceLevel, traced
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     EXT_MAX_TOKENS,
@@ -82,6 +83,7 @@ from jiuwen_memory.control.types import (
     PermissionContext,
     UpdateSelector,
 )
+from jiuwen_memory.retrieval.trace_projection import capture_retrieval
 from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery, RetrievalResult
 
 from .local_support import (
@@ -144,6 +146,8 @@ class QueryOpsMixin:
     """Data-plane read/update/delete/evolve after PEP."""
 
     # 与公开 MemoryAPI 保持平铺签名，内部以选项对象传递。
+    @capture_retrieval
+    @traced("search", component="MemoryAPI", level=TraceLevel.DEBUG)
     def search(  # pylint: disable=too-many-arguments,unknown-option-value,huawei-too-many-arguments
         self,
         query: str,
