@@ -333,43 +333,7 @@ class EvalHarness:
                 "--artifact-dir 记录跨 scope 共享的采集状态，不支持 --concurrency > 1"
             )
         with no_source_extraction():
-            if concurrency == 1:
-                indexed_outcomes = []
-                for seeds, indexed_cases in jobs:
-                    query_ids = [case.query_id for _, case in indexed_cases]
-                    cached = self._load_cached(query_ids)
-                    if cached is not None:
-                        logger.info(
-                            "EvalHarness: checkpoint hit, reusing %d result(s): %s",
-                            len(cached),
-                            query_ids,
-                        )
-                        by_id = {outcome.query_id: outcome for outcome in cached}
-                        indexed_outcomes.extend(
-                            (index, by_id[case.query_id])
-                            for index, case in indexed_cases
-                            if case.query_id in by_id
-                        )
-                        continue
-                    results = self._evaluate_scope_or_fail(seeds, indexed_cases)
-                    if results is None:
-                        continue
-                    self._save_cached(results)
-                    indexed_outcomes.extend(results)
-            else:
-                indexed_outcomes = []
-                with ThreadPoolExecutor(
-                    max_workers=concurrency,
-                    thread_name_prefix="memory-eval",
-                ) as executor:
-                    futures = [
-                        executor.submit(self._evaluate_scope_or_fail, seeds, indexed_cases)
-                        for seeds, indexed_cases in jobs
-                    ]
-                    for future in as_completed(futures):
-                        results = future.result()
-                        if results is not None:
-                            indexed_outcomes.extend(results)
+            indexed_outcomes = self._run_jobs(jobs, concurrency)
         return [outcome for _, outcome in sorted(indexed_outcomes, key=lambda item: item[0])]
 
     def _evaluate_scope(
@@ -515,6 +479,75 @@ class EvalHarness:
             )
         except CheckpointError as exc:
             logger.error("EvalHarness: checkpoint save failed, result kept: %s", exc)
+
+    # ---------------------------------------------------------- 执行编排
+    # 「读断点 → 执行 → 写断点」与「串行 / 并发」正交：
+    # 两种并发度走同一套流程，只是执行器不同。曾因把二者写成两段独立代码，
+    # 导致并发分支漏掉断点（8 小时评测崩溃后全部重做）。
+
+    def _partition_pending(self, jobs):
+        """把 jobs 分成「断点已命中」与「待执行」两组。
+
+        返回 ``(reused, pending)``：``reused`` 是 ``(index, outcome)`` 列表，
+        ``pending`` 是待执行 job 列表。每道题是独立 scope，逐题查断点。
+        """
+        reused: list[tuple[int, object]] = []
+        pending: list[tuple[list[MemorySeed], list[tuple[int, QueryCase]]]] = []
+        for seeds, indexed_cases in jobs:
+            query_ids = [case.query_id for _, case in indexed_cases]
+            cached = self._load_cached(query_ids)
+            if cached is None:
+                pending.append((seeds, indexed_cases))
+                continue
+            logger.info(
+                "EvalHarness: checkpoint hit, reusing %d result(s): %s",
+                len(cached),
+                query_ids,
+            )
+            by_id = {outcome.query_id: outcome for outcome in cached}
+            reused.extend(
+                (index, by_id[case.query_id])
+                for index, case in indexed_cases
+                if case.query_id in by_id
+            )
+        return reused, pending
+
+    def _run_jobs(self, jobs, concurrency: int) -> list:
+        """执行全部 job，返回 ``(index, outcome)`` 列表。
+
+        两种并发度共用「先分红、再执行、边完成边落盘」的流程：
+        - 断点命中的直接复用，不重新执行；
+        - 未命中的按并发度调度；
+        - 每完成一个 scope 立即落盘，崩溃时已完成的题不会丢失。
+        """
+        reused, pending = self._partition_pending(jobs)
+        executed: list[tuple[int, object]] = []
+        if concurrency == 1:
+            for seeds, indexed_cases in pending:
+                results = self._evaluate_scope_or_fail(seeds, indexed_cases)
+                if results is None:
+                    continue
+                self._save_cached(results)
+                executed.extend(results)
+            return reused + executed
+
+        with ThreadPoolExecutor(
+            max_workers=concurrency,
+            thread_name_prefix="memory-eval",
+        ) as executor:
+            future_to_job = {
+                executor.submit(self._evaluate_scope_or_fail, seeds, indexed_cases):
+                (seeds, indexed_cases)
+                for seeds, indexed_cases in pending
+            }
+            for future in as_completed(future_to_job):
+                results = future.result()
+                if results is None:
+                    continue
+                # 落盘放在主线程：并发写同一目录时避免多写者竞争。
+                self._save_cached(results)
+                executed.extend(results)
+        return reused + executed
 
     def _evaluate_scope_or_fail(self, seeds, indexed_cases):
         """单 scope 失败不中断整轮评测；返回 None 表示该 scope 被跳过。"""

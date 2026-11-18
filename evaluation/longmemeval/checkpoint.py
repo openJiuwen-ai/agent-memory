@@ -160,9 +160,14 @@ def fingerprint_of(**fields: object) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 
-def _path_for(directory: Path, query_ids: tuple[str, ...]) -> Path:
-    """断点文件按 query_id 集合命名，跨运行稳定。"""
-    digest = hashlib.sha256("\x00".join(sorted(query_ids)).encode("utf-8")).hexdigest()[:16]
+def _path_for(directory: Path, query_id: str) -> Path:
+    """断点文件按单个 query_id 命名。
+
+    粒度必须是「一道题一个文件」：若按题目集合命名，存了 q0,q1 之后请求
+    q0,q1,q2,q3 会落到不同文件，续跑永远命不中（已实测）。
+    逐题命名也让并发写者天然分片——不同题写不同文件，无共享可变状态。
+    """
+    digest = hashlib.sha256(query_id.encode("utf-8")).hexdigest()[:16]
     return directory / f"ckpt_{digest}.json"
 
 
@@ -198,18 +203,21 @@ def save_checkpoint(
 ) -> None:
     """原子写入。失败抛 CheckpointError，由调用方决定是否保留已算结果。"""
     _require_outcomes(outcomes)
-    query_ids = tuple(sorted(outcome.query_id for outcome in outcomes))
-    payload = {
-        "schema_version": _SCHEMA_VERSION,
-        "fingerprint": fingerprint,
-        "query_ids": list(query_ids),
-        "results": [checkpoint_encode(outcome) for outcome in outcomes],
-    }
-    try:
-        serialized = json.dumps(payload, ensure_ascii=False)
-    except (TypeError, ValueError) as exc:
-        raise CheckpointError(f"checkpoint serialization failed: {exc}") from exc
-    _write_atomically(_path_for(Path(directory), query_ids), serialized)
+    directory = Path(directory)
+    for outcome in outcomes:
+        payload = {
+            "schema_version": _SCHEMA_VERSION,
+            "fingerprint": fingerprint,
+            "query_id": outcome.query_id,
+            "result": checkpoint_encode(outcome),
+        }
+        try:
+            serialized = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise CheckpointError(
+                f"checkpoint serialization failed for {outcome.query_id}: {exc}"
+            ) from exc
+        _write_atomically(_path_for(directory, outcome.query_id), serialized)
 
 
 def _read_payload(target: Path) -> dict[str, object] | None:
@@ -225,43 +233,37 @@ def _read_payload(target: Path) -> dict[str, object] | None:
     return payload
 
 
-def _matches_envelope(
-    payload: dict[str, object],
+def _load_one(
+    directory: Path,
     fingerprint: str,
-    requested: tuple[str, ...],
+    query_id: str,
     schema_version: int,
-) -> bool:
-    """校验信封字段：schema、指纹、题目集合。任一不符即不可复用。"""
+) -> CaseOutcome | None:
+    """读一道题的断点；任何不满足前提的情况返回 None。"""
+    target = _path_for(directory, query_id)
+    if not target.is_file():
+        return None
+    payload = _read_payload(target)
+    if payload is None:
+        return None
     if payload.get("schema_version") != schema_version:
-        logger.warning("checkpoint schema mismatch, rerunning")
-        return False
+        logger.warning("checkpoint schema mismatch for %s, rerunning", query_id)
+        return None
     if payload.get("fingerprint") != fingerprint:
-        logger.warning("checkpoint fingerprint mismatch, rerunning")
-        return False
-    if tuple(sorted(payload.get("query_ids") or ())) != requested:
-        logger.warning("checkpoint query set mismatch, rerunning")
-        return False
-    return True
-
-
-def _decode_results(
-    payload: dict[str, object],
-    requested: tuple[str, ...],
-) -> list[CaseOutcome] | None:
-    """解码结果并核对内容确实覆盖请求的题目。"""
-    raw_results = payload.get("results")
-    if not isinstance(raw_results, list) or not raw_results:
-        logger.warning("checkpoint has no results, rerunning")
+        logger.warning("checkpoint fingerprint mismatch for %s, rerunning", query_id)
+        return None
+    if payload.get("query_id") != query_id:
+        logger.warning("checkpoint query_id mismatch for %s, rerunning", query_id)
         return None
     try:
-        outcomes = [checkpoint_decode(item) for item in raw_results]
+        outcome = checkpoint_decode(payload.get("result"))
     except (CheckpointError, TypeError) as exc:
-        logger.warning("checkpoint decode failed (%s), rerunning", exc)
+        logger.warning("checkpoint decode failed for %s (%s), rerunning", query_id, exc)
         return None
-    if tuple(sorted(outcome.query_id for outcome in outcomes)) != requested:
-        logger.warning("checkpoint contents do not match requested questions, rerunning")
+    if outcome.query_id != query_id:
+        logger.warning("checkpoint contents mismatch for %s, rerunning", query_id)
         return None
-    return outcomes
+    return outcome
 
 
 def load_checkpoint(
@@ -271,20 +273,19 @@ def load_checkpoint(
     *,
     schema_version: int = _SCHEMA_VERSION,
 ) -> list[CaseOutcome] | None:
-    """读取断点；任何不满足前提的情况都返回 None（视为未命中）。
+    """读取一组题的断点。
 
-    返回 None 的条件：文件不存在、无法解析、结构不符、schema 不符、
-    指纹不符、或结果未恰好覆盖 ``query_ids``。
+    **全部命中才返回**；任何一道缺失或不合格都返回 None，由调用方整批重跑。
+    这样调用方的「命中即跳过」不会漏掉未完成的题。
     """
     if not query_ids:
         return None
-    requested = tuple(sorted(query_ids))
-    target = _path_for(Path(directory), requested)
-    if not target.is_file():
-        return None
-    payload = _read_payload(target)
-    if payload is None:
-        return None
-    if not _matches_envelope(payload, fingerprint, requested, schema_version):
-        return None
-    return _decode_results(payload, requested)
+    directory = Path(directory)
+    outcomes: list[CaseOutcome] = []
+    for query_id in query_ids:
+        outcome = _load_one(directory, fingerprint, query_id, schema_version)
+        if outcome is None:
+            return None
+        outcomes.append(outcome)
+    return outcomes
+
