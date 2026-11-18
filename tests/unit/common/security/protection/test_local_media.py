@@ -242,9 +242,9 @@ def test_local_media_closes_descriptors_when_stream_wrapper_fails(tmp_path, monk
         opened.add(descriptor)
         return descriptor
 
-    def record_close(descriptor):
+    def record_close(descriptor, *args, **kwargs):
+        real_close(descriptor, *args, **kwargs)
         closed.add(descriptor)
-        real_close(descriptor)
 
     def fail_wrapper(descriptor, *_args, **_kwargs):
         opened.add(descriptor)
@@ -270,9 +270,9 @@ def test_local_media_closes_descriptors_when_stream_wrapper_fails(tmp_path, monk
     with pytest.raises(PermissionDeniedError):
         policy.stage(source.as_uri(), SCOPE, work)
     assert opened, "the regression must fail after acquiring a descriptor"
-    # Assert by close calls rather than fstat: another thread/test can reuse the
-    # descriptor number after close, making fstat succeed spuriously.
-    assert opened <= closed
+    # Observing the close call instead of re-stating the descriptor keeps the regression free of
+    # fd-number reuse races, which are not a leak.
+    assert opened <= closed, "every acquired descriptor must be released"
 
 
 @pytest.mark.parametrize("uri", ["meeting video.mp4", "file:meeting%20video.mp4"])

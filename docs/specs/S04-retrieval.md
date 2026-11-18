@@ -157,6 +157,10 @@ Entity 路径的名额不得剪掉已直接命中的 Property；直达属性按 
 不允许因一个实体到达全局上限而中止后续实体。Source fallback 只作为结构化
 Property 缺失或不完整时的证据保全通道，不扫描并平铺整个 Scope。
 
+Property 直达召回可在 parse 阶段后立即并行提交，并在普通 pipeline 完成（disclosure）
+后 join；时序选择仍在普通 Reranker、阈值、top-k 与 disclosure 之后执行，`Fuser.fuse`
+与 `RecallChannel` 契约不变。
+
 该链路以 `SchemaTemporalRetrievalResult.schema_temporal` 返回结构化时间线，并将
 `items` 替换为实体级视图与必要 Source。未启用硬门、未指定
 `RetrievalQuery.schema_temporal`/`extensions["schema_temporal"]` 且未命中自动

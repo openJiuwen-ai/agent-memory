@@ -11,6 +11,7 @@ MemoryUnit result.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from threading import local
 
 from jiuwen_memory.common.schema_property import (
     is_schema_property_unit,
@@ -100,12 +101,27 @@ class SchemaDualPathRecaller:
         self._entity_top_k = max(1, int(entity_top_k))
         self._property_top_k = max(1, int(property_top_k))
         self._rrf_k = max(1, int(rrf_k))
-        self.last_errors: list[ChannelError] = []
+        # 线程局部：预召回在 worker 线程跑、与主线程串行 search 并发存在；
+        # 实例级共享 list 会让并发请求互相清空/串扰错误归属。
+        self._errors = local()
+
+    @property
+    def last_errors(self) -> list[ChannelError]:
+        return getattr(self._errors, "items", [])
+
+    @last_errors.setter
+    def last_errors(self, value: list[ChannelError]) -> None:
+        self._errors.items = list(value)
 
     def reset_errors(self) -> None:
         """Discard errors collected by the previous top-level search."""
 
-        self.last_errors.clear()
+        self._errors.items = []
+
+    def add_errors(self, errors: list[ChannelError]) -> None:
+        current: list[ChannelError] = getattr(self._errors, "items", [])
+        current.extend(errors)
+        self._errors.items = current
 
     def recall(
         self,
@@ -234,7 +250,11 @@ class SchemaDualPathRecaller:
         """
 
         recall_limit = max(1, int(limit or self._property_top_k))
-        effective_filters = _property_filters(filters, temporal_query, entity_id)
+        effective_filters = _property_filters(
+            filters,
+            temporal_query,
+            [entity_id] if entity_id else None,
+        )
         property_query = replace(
             query,
             scalar_filters=effective_filters,
@@ -250,7 +270,7 @@ class SchemaDualPathRecaller:
             channels=[RecallChannel.KEYWORD, RecallChannel.VECTOR],
             recall_limit=recall_limit,
         )
-        self.last_errors.extend(result.errors)
+        self.add_errors(result.errors)
         return _fuse_property_batches(
             result.batches,
             temporal_query,
@@ -258,6 +278,62 @@ class SchemaDualPathRecaller:
             entity_id=entity_id,
             rrf_k=self._rrf_k,
         )[:recall_limit]
+
+    def recall_property_hits_batch(
+        self,
+        scope: Scope,
+        query: ParsedQuery,
+        temporal_query: SchemaTemporalQuery,
+        *,
+        entity_ids: list[str],
+        filters: FilterExpr | None = None,
+        limit: int | None = None,
+    ) -> dict[str, list[SchemaPropertyRecallHit]]:
+        """Recall Property units for several entities with one domain call.
+
+        The per-entity limit scales the recall size so each entity keeps the
+        coverage it would have received from its own single-entity pass.  Hits
+        are fused globally (RRF uses the global rank across all entities, so
+        per-entity scores differ from a single-entity pass; within-entity
+        relative order is normally preserved), then grouped back per owner
+        while preserving that fused order.
+        """
+
+        normalized = [entity_id for entity_id in dict.fromkeys(entity_ids) if entity_id]
+        if not normalized:
+            return {}
+        recall_limit = max(1, int(limit or self._property_top_k)) * len(normalized)
+        effective_filters = _property_filters(filters, temporal_query, normalized)
+        property_query = replace(
+            query,
+            scalar_filters=effective_filters,
+            recheck_filters=effective_filters,
+            as_of=temporal_query.knowledge_as_of,
+            time_from=None,
+            time_to=None,
+            include_archived=temporal_query.include_archived,
+        )
+        result = self._domain.recall_and_get(
+            scope,
+            property_query,
+            channels=[RecallChannel.KEYWORD, RecallChannel.VECTOR],
+            recall_limit=recall_limit,
+        )
+        self.add_errors(result.errors)
+        hits = _fuse_property_batches(
+            result.batches,
+            temporal_query,
+            effective_filters,
+            entity_id=None,
+            rrf_k=self._rrf_k,
+        )
+        grouped: dict[str, list[SchemaPropertyRecallHit]] = {
+            entity_id: [] for entity_id in normalized
+        }
+        for hit in hits:
+            if hit.entity_id in grouped:
+                grouped[hit.entity_id].append(hit)
+        return grouped
 
 
 def schema_entity_id(unit: MemoryUnit) -> str:
@@ -273,7 +349,7 @@ def is_schema_property(unit: MemoryUnit) -> bool:
 def _property_filters(
     filters: FilterExpr | None,
     query: SchemaTemporalQuery,
-    entity_id: str | None,
+    entity_ids: list[str] | None,
 ) -> FilterExpr | None:
     clauses: list[FilterExpr] = [FilterClause(_SCHEMA_MODE_FIELD, FilterOp.EQ, "schema")]
     if query.knowledge_as_of is not None:
@@ -292,31 +368,38 @@ def _property_filters(
                 [LifecycleState.ARCHIVED.value, LifecycleState.SUPERSEDED.value]
             )
         clauses.append(FilterClause("lifecycle", FilterOp.IN, allowed))
-    if entity_id:
-        identities: list[FilterExpr] = [
-            FilterClause(field, FilterOp.EQ, entity_id) for field in _ENTITY_ID_FIELDS
-        ]
-        if "::" in entity_id:
-            entity_type, entity_name = entity_id.split("::", 1)
-            identities.append(
-                FilterGroup(
-                    FilterLogic.AND,
-                    [
-                        FilterClause(
-                            "system_metadata.schema_entity_type",
-                            FilterOp.EQ,
-                            entity_type,
-                        ),
-                        FilterClause(
-                            "system_metadata.schema_entity_name",
-                            FilterOp.EQ,
-                            entity_name,
-                        ),
-                    ],
-                )
-            )
+    identities: list[FilterExpr] = []
+    for entity_id in entity_ids or []:
+        identities.extend(_entity_identity_clauses(entity_id))
+    if identities:
         clauses.append(FilterGroup(FilterLogic.OR, identities))
     return and_merge(filters, clauses)
+
+
+def _entity_identity_clauses(entity_id: str) -> list[FilterExpr]:
+    identities: list[FilterExpr] = [
+        FilterClause(field, FilterOp.EQ, entity_id) for field in _ENTITY_ID_FIELDS
+    ]
+    if "::" in entity_id:
+        entity_type, entity_name = entity_id.split("::", 1)
+        identities.append(
+            FilterGroup(
+                FilterLogic.AND,
+                [
+                    FilterClause(
+                        "system_metadata.schema_entity_type",
+                        FilterOp.EQ,
+                        entity_type,
+                    ),
+                    FilterClause(
+                        "system_metadata.schema_entity_name",
+                        FilterOp.EQ,
+                        entity_name,
+                    ),
+                ],
+            )
+        )
+    return identities
 
 
 def _fuse_property_batches(

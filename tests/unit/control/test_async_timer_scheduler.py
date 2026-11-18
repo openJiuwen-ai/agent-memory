@@ -753,19 +753,23 @@ def test_timer_loop_exits_when_all_entries_done() -> None:
     scheduler = AsyncTimerScheduler(tick_interval=1)
     scope = Scope(user="u1")
     job = _DoneJob(scope, interval=1)
+    scope_key = scheduler._scope_key(scope)
 
     async def _run():
         jid = await scheduler.submit(job, Channel.BACKGROUND)
-        # 等 Timer 触发一次（is_done=true 标记 entry）+ 下一 tick 检测全 done 退出
-        await asyncio.sleep(2.5)
+        # 等 Timer 触发一次（is_done=true 标记 entry）+ 下一 tick 检测全 done 退出。
+        # 按「wheel 已移除」这一退出不变量轮询——固定 sleep 只有 0.5s 余量，
+        # CI 负载下 tick 延迟即误报（实测同一份代码历史多轮 SUCCESS/FAILED 交替）。
+        deadline = time.monotonic() + 10
+        while scope_key in scheduler._wheels and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
         return jid
 
     jid = asyncio.run(_run())
     # 定时任务标 SUCCEEDED（wheel 退出时标记）
     assert scheduler.status(jid).status == JobStatus.SUCCEEDED
     # wheel 已从 _wheels 移除
-    scope_key = scheduler._scope_key(scope)
-    assert scope_key not in scheduler._wheels
+    assert scope_key not in scheduler._wheels, "Timer 未在超时内退出"
     scheduler.shutdown()  # 停私有循环（wheel 已空，只收线程）
 
 
