@@ -44,7 +44,12 @@ from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.error_response import error_response
 from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
 from jiuwen_memory_entry.http_server.human_view import handle_human_request
-from jiuwen_memory_entry.portal.requests import BROWSER_VERBS, invoke_browser_api
+from jiuwen_memory_entry.portal.multi_agent import (
+    VIEW_HEADER,
+    VIEW_VALUE,
+    multi_agent_portal,
+)
+from jiuwen_memory_entry.portal.requests import PORTAL_VERBS, invoke_browser_api
 from jiuwen_memory_entry.portal.sessions import (
     BROWSER_HEADER,
     SESSION_HEADER,
@@ -185,6 +190,7 @@ class HttpServer(Server):
             raise ValidationError("http configuration must be an object")
         if "portal_frame_origins" in http_settings:
             logger.warning("HTTP option http.portal_frame_origins is obsolete and ignored")
+        self.portal_multi_agent = multi_agent_portal(config.settings)
         self.portal_sessions = BrowserSessions()
 
     @property
@@ -320,6 +326,26 @@ class HttpServer(Server):
                     self.send_header("X-Content-Type-Options", "nosniff")
                     self.end_headers()
                     self.wfile.write(data)
+                elif (
+                    self.path in {"/portal/multi_agent.js", "/portal/multi_agent.css"}
+                    and srv.portal_enabled
+                ):
+                    if not self._portal_origin_allowed(require_origin=False):
+                        self._send_error("NotFound", request_id=request_id)
+                        return
+                    name = self.path.rsplit("/", 1)[-1]
+                    content_type = (
+                        "application/javascript; charset=utf-8" if name.endswith(".js")
+                        else "text/css; charset=utf-8"
+                    )
+                    data = files("jiuwen_memory_entry.portal").joinpath(name).read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    self.wfile.write(data)
                 elif self.path.rstrip("/") == "/healthz":
                     body = {"status": "ok", "profile": srv.config.profile}
                     authenticator = srv.authenticator
@@ -345,10 +371,14 @@ class HttpServer(Server):
                         return
                 elif self.path.startswith("/v1/"):
                     verb = self.path.removeprefix("/v1/").strip("/")
-                    if browser_request and verb not in BROWSER_VERBS:
+                    if browser_request and verb not in PORTAL_VERBS:
                         self._send_error("NotFound", request_id=request_id)
                         return
-                    if not is_known_verb(verb) and verb not in CONFIG_VERBS:
+                    if (
+                        not is_known_verb(verb)
+                        and verb not in CONFIG_VERBS
+                        and verb != "portal_context"
+                    ):
                         self._send_error("UnknownVerb", verb, request_id=request_id)
                         return
                 else:
@@ -396,6 +426,11 @@ class HttpServer(Server):
                     return
                 credentials = credentials_from_headers(self.headers, peer_address=peer)
                 write_scope = None
+                view = self.headers.get(VIEW_HEADER)
+                if view not in (None, VIEW_VALUE):
+                    self._send_error("NotFound", request_id=request_id)
+                    return
+                multi_agent = srv.portal_multi_agent if view == VIEW_VALUE else None
                 if browser_request:
                     valid, access = srv.portal_sessions.lookup(
                         self.headers.get("Cookie"), token=self.headers.get(SESSION_HEADER),
@@ -458,6 +493,7 @@ class HttpServer(Server):
                             body = invoke_browser_api(
                                 srv.api, verb, payload, configuration=srv.configuration,
                                 security=security, write_scope=write_scope,
+                                multi_agent=multi_agent,
                             )
                         elif verb in CONFIG_VERBS:
                             body = invoke_configuration(
@@ -484,7 +520,7 @@ class HttpServer(Server):
                         type(api_error),
                         api_error,
                         request_id=context_request_id,
-                        trace=error_trace(api_error),
+                        trace=None if multi_agent is not None else error_trace(api_error),
                     )
                 except Exception as request_error:
                     logger.error(
@@ -497,6 +533,7 @@ class HttpServer(Server):
             def _uses_portal_session(self) -> bool:
                 return (
                     self.headers.get(BROWSER_HEADER) is not None
+                    or self.headers.get(VIEW_HEADER) is not None
                     or self.headers.get(SESSION_HEADER) is not None
                     or (
                         not (self.headers.get("Authorization") or self.headers.get("X-API-Key"))

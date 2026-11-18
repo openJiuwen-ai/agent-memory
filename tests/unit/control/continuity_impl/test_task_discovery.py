@@ -5,7 +5,8 @@ from math import log1p
 
 import pytest
 
-from jiuwen_memory.api import MemoryRef, Scope, TaskRequest, ValidationError
+from jiuwen_memory.api import MemoryRef, MemoryUnit, Scope, TaskRequest, ValidationError
+from jiuwen_memory.common.type_def import Segment
 from jiuwen_memory.common.type_def.continuity import RoleViewQuery, fingerprint
 from jiuwen_memory.control.continuity_impl.task_search import TaskSearchIndex
 
@@ -186,6 +187,50 @@ def test_continuity_required_then_latest_with_original_budget_gap(setup):
     assert [entry["text"] for entry in view["items"]] == ["required", "latest"]
     assert any(gap["code"] == "budget_exhausted" and not gap["blocking"]
                for gap in view["gaps"])
+
+
+def test_continuity_background_and_semantic_hits_use_scope_and_id(setup):
+    service, scope, _, _, _, _ = setup
+    service.mode = "continuity"
+    same_id = "shared-id"
+    units = [
+        MemoryUnit(
+            id=same_id, scope=Scope(org=scope.org, space=space),
+            segments=[Segment(content=space)],
+        )
+        for space in ("required-source", "optional-source")
+    ]
+    references = [MemoryRef.of(unit) for unit in units]
+    by_scope = {unit.scope.space: unit for unit in units}
+
+    def read(ref):
+        return by_scope[ref.scope.space]
+
+    task = service.task(scope, TaskRequest("create", "create"), "owner", read)
+    for revision, ref in enumerate(references, 1):
+        service.task(
+            scope,
+            TaskRequest("attach", str(revision), task["task_id"], revision,
+                        background=[ref], required=revision == 1),
+            "owner", read,
+        )
+    view = service.continuity_view_result(
+        scope, RoleViewQuery(task_id=task["task_id"]), read, top_k=3,
+        extra_items=[
+            {"unit_id": same_id, "content": "local search hit", "system_metadata": {}},
+            {"unit_id": same_id, "content": "duplicate search hit", "system_metadata": {}},
+        ],
+    )
+    assert [entry["text"] for entry in view["items"]] == [
+        "required-source", "optional-source", "local search hit",
+    ]
+    annotations = [entry["annotation"] for entry in view["items"]]
+    assert [annotation["evidence_refs"] for annotation in annotations] == [
+        [asdict(references[0])],
+        [asdict(references[1])],
+        [],
+    ]
+    assert [annotation["required"] for annotation in annotations] == [True, False, False]
 
 
 @pytest.mark.parametrize("arguments", [{"connector_id": "host"}, {"context_id": "A"},

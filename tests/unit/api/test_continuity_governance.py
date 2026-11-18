@@ -4,6 +4,7 @@
 # 属于测试专用手法，不在生产代码里开放测试钩子。
 # pylint: disable=protected-access
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -22,10 +23,15 @@ from jiuwen_memory.api import (
     SpaceSpec,
     TaskRequest,
     assemble_runtime,
+    read_continuity_catalog,
 )
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.continuity_scope import restrict_continuity_delivery
+from jiuwen_memory.common.errors import NotFoundError, ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.types import Role
+from jiuwen_memory.control.continuity_impl.service import _background_for_delivery
+from jiuwen_memory_entry.portal.multi_agent import build_multi_agent_portal
+from jiuwen_memory_entry.portal.requests import invoke_browser_api
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
@@ -108,6 +114,157 @@ def test_task_hierarchy_uses_project_read_permission_for_parent(tmp_path):
 
 def _gov(ops):
     return _security(ops, Role.ADMIN)
+
+
+def test_task_background_checks_source_access_and_portal_filters_delivery(tmp_path):
+    runtime, api, project, owner, ops, _config = _runtime(tmp_path)
+    other = Scope(org=project.org, space="other-project", user="source-owner", agent="old")
+    source_owner = Scope(org=project.org, user=other.user)
+    owner_security = _security(owner)
+    configured = build_multi_agent_portal({"scope": asdict(project), "project_name": "Shared"})
+    try:
+        api.create_space(
+            SpaceSpec(org=other.org, space=other.space, owner=source_owner),
+            security=_gov(ops),
+        )
+        foreign = api.add("historical source fact", other, security=_security(source_owner))[0]
+        reference = MemoryRef.of(foreign)
+        task = api.continuity_task(
+            project, TaskRequest("create", "existing-task"), security=owner_security,
+        )
+        attach = TaskRequest(
+            "attach", "attach-history", task_id=task["task_id"],
+            expected_revision=task["revision"], background=[reference],
+        )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(project, attach, security=owner_security)
+        api.add_space_member(
+            other.org, other.space, SpaceMember(scope=owner), security=_security(source_owner),
+        )
+        api.continuity_task(project, attach, security=owner_security)
+
+        get = TaskRequest("get", task_id=task["task_id"])
+        details = api.continuity_task(project, get, security=owner_security)
+        assert details["background"] == [{"ref": asdict(reference), "required": True}]
+        assert details["background_partial"] is False
+        result = api.search("", Context(project), security=owner_security, task_id=get.task_id)
+        assert [item.content for item in result.items] == [foreign.content]
+
+        portal_task = invoke_browser_api(
+            api, "continuity_task",
+            {"scope": asdict(project), "request": {"operation": "get", "task_id": get.task_id}},
+            security=owner_security, multi_agent=configured,
+        )
+        assert portal_task["background"] == []
+        assert portal_task["background_partial"] is True
+        portal_view = invoke_browser_api(
+            api, "search",
+            {"query": "", "context": {"scope": asdict(project)}, "task_id": get.task_id},
+            security=owner_security, multi_agent=configured,
+        )
+        assert portal_view["items"] == []
+        assert portal_view["gaps"][-1]["code"] == "portal_scope_filtered"
+
+        successor = Scope(org=project.org, user="successor")
+        api.add_space_member(
+            project.org, project.space, SpaceMember(scope=successor), security=owner_security,
+        )
+        details = api.continuity_task(project, get, security=_security(successor))
+        assert details["background"] == []
+        assert details["background_partial"] is True
+        api.add_space_member(
+            other.org, other.space, SpaceMember(scope=successor), security=_security(source_owner),
+        )
+        details = api.continuity_task(project, get, security=_security(successor))
+        assert details["background"] == [{"ref": asdict(reference), "required": True}]
+        assert details["background_partial"] is False
+        api.remove_space_member(
+            other.org, other.space, successor, security=_security(source_owner),
+        )
+        details = api.continuity_task(project, get, security=_security(successor))
+        assert details["background"] == []
+        assert details["background_partial"] is True
+
+        with pytest.raises(PermissionDeniedError, match="cross-organization"):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "create", "foreign-org-background", background=[MemoryRef(
+                        Scope(org="other-org", space=other.space), reference.unit_id,
+                        reference.content_digest,
+                    )],
+                ),
+                security=owner_security,
+            )
+    finally:
+        runtime.close()
+
+
+def test_continuity_control_records_are_isolated_by_full_scope(tmp_path):
+    runtime, api, project, owner, _ops, _config = _runtime(tmp_path)
+    first = Scope(org=project.org, space=project.space, user="owner", agent="codex", session="one")
+    second = Scope(org=project.org, space=project.space, user="owner", agent="codex", session="two")
+    try:
+        unit = api.add("scope-bound background", first, security=_security(owner))[0]
+        reference = MemoryRef.of(unit)
+        task = api.continuity_task(
+            first,
+            TaskRequest(
+                "create", "full-scope-task", title="full scope target",
+                background=[reference],
+            ),
+            security=_security(owner),
+        )
+        assert task["task"]["background"] == [{"ref": {
+            "scope": {
+                "org": first.org, "space": first.space, "user": first.user,
+                "agent": first.agent, "session": first.session,
+            },
+            "unit_id": reference.unit_id,
+            "content_digest": reference.content_digest,
+        }, "required": True}]
+
+        found = api.continuity_task(
+            second, TaskRequest("find", query="full scope target"), security=_security(owner),
+        )
+        assert found == {"tasks": []}
+
+        with pytest.raises(NotFoundError):
+            api.search(
+                "", Context(second), security=_security(owner), task_id=task["task_id"],
+            )
+
+        with pytest.raises(NotFoundError):
+            api.continuity_task(
+                second, TaskRequest("get", task_id=task["task_id"]), security=_security(owner),
+            )
+    finally:
+        runtime.close()
+
+
+def test_continuity_relations_and_source_governance_are_isolated_by_full_scope(tmp_path):
+    runtime, api, project, owner, ops, _config = _runtime(tmp_path)
+    first = Scope(org=project.org, space=project.space, user="owner", agent="codex", session="one")
+    second = Scope(org=project.org, space=project.space, user="owner", agent="codex", session="two")
+    try:
+        source = api.add("relation source", first, security=_security(owner))[0]
+        target = api.add("relation target", first, security=_security(owner))[0]
+        relation = RelationRecord(
+            "scope-bound-relation", MemoryRef.of(source), MemoryRef.of(target), "supports",
+        )
+        api.continuity_relation(first, relation, 0, security=_security(owner))
+        api.quarantine_source(
+            first, "workbuddy", "scope-bound quarantine", security=_gov(ops),
+        )
+
+        service = api._role_service(first)
+        assert service.relation_head(first, relation.relation_id)["current"]
+        with pytest.raises(NotFoundError):
+            service.relation_head(second, relation.relation_id)
+        assert service.source_quarantine(first, "workbuddy") is not None
+        assert service.source_quarantine(second, "workbuddy") is None
+    finally:
+        runtime.close()
 
 
 def test_quarantined_source_is_blocked_without_leaking_to_other_sources(tmp_path):
@@ -859,6 +1016,97 @@ def _continuity_only_runtime(tmp_path):
         }
     )
     return assemble_runtime(config=config)
+
+
+def test_portal_background_filter_treats_malformed_items_as_blocking():
+    scope = Scope(org="demo", space="role-project")
+    cases = [
+        ("legacy", [], True),
+        (None, [], True),
+        ({"ref": None, "required": False}, [], False),
+    ]
+    for item, visible, blocking in cases:
+        with restrict_continuity_delivery(scope):
+            assert _background_for_delivery([item]) == (visible, blocking)
+
+
+@pytest.mark.parametrize("mode", ["role", "continuity"])
+def test_portal_filters_task_background_before_reads_and_budget(tmp_path, monkeypatch, mode):
+    project = Scope(org="demo", space="role-project")
+    owner = Scope(org="demo", user="owner")
+    security = _security(owner)
+    outside = Scope(org=project.org, space="historical-project")
+    runtime = (
+        _runtime(tmp_path).runtime if mode == "role" else _continuity_only_runtime(tmp_path)
+    )
+    api = runtime.api
+    try:
+        scopes = [outside] if mode == "role" else [outside, project]
+        for scope in scopes:
+            api.create_space(
+                SpaceSpec(org=scope.org, space=scope.space, owner=owner),
+                security=_security(owner, Role.ADMIN),
+            )
+        historical = api.add("historical outside evidence", outside, security=security)[0]
+        visible = api.add("visible project evidence", project, security=security)[0]
+        historical_ref, visible_ref = MemoryRef.of(historical), MemoryRef.of(visible)
+        task = api.continuity_task(
+            project,
+            TaskRequest("create", "portal-budget", background=[historical_ref, visible_ref]),
+            security=security,
+        )
+        task_id = task["task_id"]
+        real_get, real_search = api.get, api.search
+        reads, queries = [], []
+
+        def get(unit_id, scope, **kwargs):
+            reads.append(scope)
+            return real_get(unit_id, scope, **kwargs)
+
+        def search(query, context, **kwargs):
+            queries.append(query)
+            return real_search(query, context, **kwargs)
+
+        monkeypatch.setattr(api, "get", get)
+        monkeypatch.setattr(api, "search", search)
+        portal = build_multi_agent_portal({"scope": asdict(project), "project_name": "Shared"})
+        details = invoke_browser_api(
+            api, "continuity_task",
+            {"scope": asdict(project), "request": {"operation": "get", "task_id": task_id}},
+            security=security, multi_agent=portal,
+        )
+        assert details["background_partial"] is True
+        assert [entry["ref"] for entry in details["background"]] == [asdict(visible_ref)]
+        result = invoke_browser_api(
+            api, "search",
+            {"query": "", "context": {"scope": asdict(project)}, "task_id": task_id, "top_k": 1},
+            security=security, multi_agent=portal,
+        )
+        assert [item["content"] for item in result["items"]] == [visible.content]
+        assert [(gap["code"], gap["blocking"], gap["affected_item_ids"])
+                for gap in result["gaps"] if gap["code"] == "portal_scope_filtered"
+                ] == [("portal_scope_filtered", True, [])]
+        assert not any(gap["code"] == "budget_exhausted" for gap in result["gaps"])
+        assert historical.id not in repr(result)
+        assert outside.space not in repr(result)
+        assert outside not in reads
+        if mode == "role":
+            assert queries == ["", visible.content]
+            assert result["view_meta"]["continuation_ready"] is False
+
+        restored = real_search("", Context(project), security=security, task_id=task_id)
+        assert {item.content for item in restored.items} == {historical.content, visible.content}
+        assert outside in reads
+        restored = real_search(
+            "", Context(project), security=security, task_id=task_id, anchor=historical_ref,
+        )
+        assert {item.content for item in restored.items} == {historical.content, visible.content}
+        assert any(gap["code"] == "reference_unavailable" for gap in restored.gaps)
+        assert next(item for item in restored.items if item.unit_id == historical.id).view[
+            "discovery"
+        ] == "background"
+    finally:
+        runtime.close()
 
 
 def test_continuity_mode_search_restores_task_background(tmp_path):
@@ -2182,5 +2430,68 @@ def test_continuity_skipped_across_ordinary_item_reports_empty_status(tmp_path):
         assert by_index[0].continuity_status == "rejected"
         assert by_index[2].continuity_status == "", by_index[2]
         assert by_index[2].error_type == "Skipped", by_index[2]
+    finally:
+        runtime.close()
+
+
+def test_catalog_inspection_uses_effective_runtime_and_project_read(tmp_path):
+    runtime, api, project, owner, _ops, _config = _runtime(tmp_path)
+    try:
+        first = read_continuity_catalog(
+            api, project, security=_security(owner),
+        )
+        assert first["mode"] == "role"
+        catalog = first["role_catalog"]
+        assert catalog["available"] is True
+        assert catalog["default_duty"] == "general"
+        assert catalog["policy_version"]
+        duties = {item["id"]: item for item in catalog["duties"]}
+        assert {"general", "diagnosis", "testing", "execution", "security"} <= set(duties)
+        assert duties["security"]["display_name"] == "安全审查"
+        assert {
+            rule["edge_type"] for rule in duties["security"]["traversal"]
+        } >= {"mitigates", "verifies", "contradicts", "requires"}
+        relations = {item["id"]: item for item in catalog["relation_types"]}
+        assert relations["mitigates"]["display_name"] == "缓解"
+
+        duties["security"]["display_name"] = "mutated"
+        second = read_continuity_catalog(
+            api, project, security=_security(owner),
+        )
+        assert next(
+            item for item in second["role_catalog"]["duties"] if item["id"] == "security"
+        )["display_name"] == "安全审查"
+
+        with pytest.raises(PermissionDeniedError):
+            read_continuity_catalog(
+                api, project,
+                security=_security(Scope(org="demo", user="outsider")),
+            )
+    finally:
+        runtime.close()
+
+
+def test_catalog_inspection_is_explicitly_unavailable_in_continuity_mode(tmp_path):
+    runtime = _continuity_only_runtime(tmp_path)
+    api = runtime.api
+    project = Scope(org="demo", space="role-project")
+    owner = Scope(org="demo", user="owner")
+    try:
+        api.create_space(
+            SpaceSpec(org="demo", space="role-project", owner=owner),
+            security=_security(owner, Role.ADMIN),
+        )
+        snapshot = read_continuity_catalog(
+            api, project, security=_security(owner),
+        )
+        assert snapshot["mode"] == "continuity"
+        assert snapshot["role_catalog"] == {
+            "available": False,
+            "reason": "role_mode_required",
+            "policy_version": None,
+            "default_duty": None,
+            "duties": [],
+            "relation_types": [],
+        }
     finally:
         runtime.close()

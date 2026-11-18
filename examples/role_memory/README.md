@@ -10,7 +10,7 @@
 
 从仓库根目录加载 `server.yaml`，并叠加部署方的认证、模型及业务存储配置。示例的三份 SQLite 文件分别保存正文、Registry、证据图；后两者是不同的具名端口。SQLite Registry 用文件锁拒绝第二个写服务，限单机文件系统部署，不宣称分布式多写。
 
-部署方需要先创建 `demo/role-project` 项目空间、添加参与主体的内容权限，并为每个连接配置真实凭据。`globals.continuity_connectors` 是服务端身份映射，不是认证器，也不会自动授予空间权限。部署方须配置现有 API Key 或可信网关认证器及凭据真源；不得用 dev 身份替代生产验证。示例通过 `authorizer.default=space_aware` 装配空间成员判权，`permission` 配置不能替代 Authorizer。
+部署方需要先创建 `demo/role-project` 租户空间，添加参与主体的内容权限，并为每个连接配置真实凭据。这里的 `space` 是租户逻辑隔离维度，`role-project` 只是示例 ID，不是业务项目维度；职责任务、记忆和 Portal 都应使用同一个完整五维 Scope。`globals.continuity_connectors` 是服务端身份映射，不是认证器，也不会自动授予空间权限。部署方须配置现有 API Key 或可信网关认证器及凭据真源；不得用 dev 身份替代生产验证。示例通过 `authorizer.default=space_aware` 装配空间成员判权，`permission` 配置不能替代 Authorizer。
 
 `relation_types_path` 和 `duty_policies_path` 在服务启动时读取，示例路径相对启动目录。也可在 `continuity.default.params` 内使用 `relation_types` / `duty_policies` 字典；同一项不能同时指定文件和字典。新增类型需说明端点类型和语义；策略自动追加反证与前置条件检查。启用自动关系候选发现时，配置具名 `associator: evidence_llm` 及其 `llm` 引用，再设置 `relation_associator`。模型输出始终先作为候选，不能仅凭高置信升级为已验证。
 
@@ -26,7 +26,7 @@ python -m jiuwen_memory_adapter.continuity.mcp
 
 该桥只转发 HTTP，不在产品进程内另建 Registry。HTTPS 为远程默认要求；只允许 loopback 使用 HTTP。产品原生配置字段和工具注册能力按选定版本现场验证，不把通用 MCP 桥通过等同于各产品联调通过。
 
-JiuwenSwarm 继续使用 `AgentMemoryMemoryProvider`，设置 `base_url`、`api_key`、`continuity_enabled=True`、与服务端 `mode` 一致的 `continuity_mode`（`role` 或 `continuity`，缺省 `role`）和可选 `default_duty`。它通过 `get_tool_schemas` 注册接续工具，并经 `handle_tool_call` 转发结构化结果。开启后 Rail 的 `sync_turn` 要求显式项目 Scope、任务、绑定和稳定 event_id 并返回持久回执，`prefetch` 返回结构化视图的 JSON 文本；未开启时保持既有原文写入和文本检索。关系复核仍需显式工具调用。
+JiuwenSwarm 继续使用 `AgentMemoryMemoryProvider`，设置 `base_url`、`api_key`、`continuity_enabled=True`、与服务端 `mode` 一致的 `continuity_mode`（`role` 或 `continuity`，缺省 `role`）和可选 `default_duty`。它通过 `get_tool_schemas` 注册接续工具，并经 `handle_tool_call` 转发结构化结果。开启后 Rail 的 `sync_turn` 要求显式完整五维 Scope、任务、绑定和稳定 event_id 并返回持久回执，`prefetch` 返回结构化视图的 JSON 文本；未开启时保持既有原文写入和文本检索。关系复核仍需显式工具调用。
 
 Agent 工具为：带接续参数的 `memory_add` / `memory_search`，以及 `memory_continuity_task`、`memory_continuity_recover`；角色模式另注册 `memory_continuity_relation`（内核 MCP 沿用 `memory_<方法名>`；JiuwenSwarm 适配器对应 `agent_memory_add` / `agent_memory_search` / `agent_memory_continuity_*`）。来源治理 `quarantine_source` / `release_source` 只在管理面使用，不进入 Agent 工具清单。嵌套参数 schema 来自公开 DTO。传输失败返回 `unknown`，不能当作未写入再换一个 event_id 重试。
 
@@ -77,7 +77,7 @@ async def find_previous_task(config, security_provider, session_id, description)
     try:
         await provider.initialize(session_id=session_id)
         return await provider.continuity_request("continuity_task", {
-            "scope": {"org": "demo", "space": "role-project"},
+            "scope": {"org": "demo", "space": "role-project", "user": "", "agent": "", "session": ""},
             "request": {"operation": "find", "query": description},
         })
     finally:

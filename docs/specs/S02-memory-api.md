@@ -173,6 +173,79 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 | HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`） | `portal_url` |
 | 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 普通独立页面建立 HttpOnly Cookie。iframe 和跨进程共享页面返回 `session_token`。跨进程共享页面另返回 `shared: true` |
 
+### 多 Agent 角色记忆只读视图
+
+Portal 增加独立一级入口时，浏览器必须同时携带原有 Browser 标记和
+`X-Memory-Portal-View: multi-agent`。该请求头只选择 Portal 的只读视图，不授予权限；
+底层认证、Space 成员关系、任务和记录读取权仍由原 `MemoryAPI` 判定。浏览器会话有效时可调用
+`POST /v1/portal_context` 读取部署能力，请求体必须为 `{}`：
+
+```json
+{
+  "available": true,
+  "reason": "",
+  "scope": {"org": "demo", "space": "project", "user": "", "agent": "", "session": ""},
+  "project_name": "共享空间名称",
+  "mode": "role",
+  "connectors": [{"id": "codex", "label": "Codex"}],
+  "role_catalog": {
+    "available": true,
+    "reason": "",
+    "policy_version": "<Runtime Catalog 摘要>",
+    "default_duty": "general",
+    "duties": [{
+      "id": "security",
+      "display_name": "安全审查",
+      "description": "检查风险缓解与验证依据",
+      "traversal": [{"edge_type": "contradicts", "direction": "both", "priority": 0, "max_depth": 4}],
+      "budget": {"max_depth": 2, "max_nodes": 30, "max_edges": 60, "max_paths": 60, "timeout_ms": 1000}
+    }],
+    "relation_types": [{
+      "id": "mitigates",
+      "display_name": "缓解",
+      "description": "A 是对 B 风险的缓解措施，不表示已执行或已验证。",
+      "direction": "forward", "symmetric": false, "transitive": false,
+      "valid_source_kinds": ["statement", "experience", "judgment"],
+      "valid_target_kinds": ["statement", "observation", "judgment"]
+    }]
+  }
+}
+```
+
+能力来自部署配置 `http.multi_agent`（SDK 为 `portal.multi_agent`），而不是浏览器自动发现；
+配置包含 `enabled`、共享范围 `scope`、显示名称 `project_name` 以及 connector ID 到显示名的映射，
+不声明运行模式。`org` 表示组织，`space` 是租户逻辑隔离空间，不代表业务项目；一个空间内可以有
+多个业务项目或任务。`project_name` 是页面显示名称，不参与项目过滤或授权。
+`scope` 是 Portal 的完整五维绑定。`org`、`space` 必填，`user`、`agent`、`session` 可为空也可
+非空；空值表示精确的空命名空间，不是通配符或“覆盖全部”。记录、任务、目录、任务背景、
+职责视图及间接引用全部使用这同一个完整 Scope，只有五维完全相等才允许通过 Portal 边界，
+随后仍执行原有 READ、WRITE、UPDATE 或 MANAGE_SPACE 鉴权。配置了 `user`、`agent` 或
+`session` 不会禁用任务背景和职责检索。
+`/v1/portal_context` 返回的实际 `mode` 只来自 Runtime 的公开目录检查能力，不读取或推断配置
+结构，因此标准 SDK 配置和替换的 Continuity 插件均以装配后的真实能力为准。该接口不新增
+MemoryAPI 方法，也不返回记忆、任务或密钥。
+`role_catalog` 不重新解析启动 YAML，而是通过公开只读检查辅助读取当前 Runtime 已装配的
+`RelationCatalog`，先执行可信上下文与空间 READ 判权。职责和关系 ID、展示名、说明、最终遍历规则、
+职责预算及真实 `catalog.version` 均来自同一快照，并按 ID 稳定排序。`mode=continuity` 时返回
+`available=false`、`reason=role_mode_required`，空职责/关系列表与 null 版本；没有检查能力或目录异常时
+不得回退到内置四职责，必须明确报告不可用。
+`continuity_catalog` 使用内容轴 READ，`ENTRY_RULES` 与 search/list/get 同口径；能力不新增
+`MemoryAPI` 抽象方法、HTTP 业务 verb 或 MCP 工具。
+
+多 Agent 视图的浏览器请求只允许以下只读操作。请求 Scope 必须与绑定 Scope 五维完全相等；
+记录 anchor 和间接引用也使用同一口径：
+
+| 页面操作 | HTTP 路径 | 请求约束 |
+|---|---|---|
+| 共享搜索 | `/v1/search` | 允许普通共享空间搜索、task_id、anchor 和 duty；拒绝 `personal`、`spaces`；拒绝跨空间或超出配置范围的 anchor |
+| 来源浏览 | `/v1/list` | 使用 scoped list、offset/limit 和 filters；拒绝 personal/spaces |
+| 详情与路径端点 | `/v1/get` | 精确 `scope` + `unit_id`，不接受 `as_of`；每次打开重新判权读取 |
+| 任务查找/读取 | `/v1/continuity_task` | 只允许 `find` 和 `get`；find 只接受非空 query 与 top_k；写操作拒绝 |
+
+多 Agent 视图不通过 Portal 创建任务、绑定、写记忆、编辑关系或恢复历史。`shared=true`、
+connector ID、duty 和当前 UI 筛选条件都不是共享授权；来源平台只能显示记录
+`system_metadata.continuity_connector`，缺失时通过真实 `get` 补全或明确标记失败。
+
 页面从 `MemoryUnit.segments` 拼接正文，时间取 `temporal.t_ingest`。HTTP
 `write_target` 由宿主提供，与认证身份合成完整写入范围，随会话绑定。独立访问可以
 选择 Agent，组织和用户取自认证身份。新增、纠正、遗忘继续由原 `MemoryAPI` 执行写入鉴权；
@@ -478,6 +551,8 @@ HTTP edge 将成功或失败响应统一写入 JSON；错误响应固定包含�
 每个 HTTP 请求由服务端在入口生成唯一 `request_id`，并在所有响应的 `X-Request-ID`
 header 返回；客户端提交的同名 header 会被忽略。错误响应同时在 JSON body 写入同一个
 `request_id`，成功响应体仍保持 `MemoryAPI` 原返回值，不插入额外字段。该 ID 只用于响应、
+下表「特性文档」列的裸编号均指 `docs/features/api/`；跨目录文档以目录名标注。
+
 日志和审计关联，不参与 actor、target 或权限判定。429 响应额外返回 `Retry-After: 1`，表示
 客户端可按整数秒退避；其他状态不返回该 header。CLI 本地调用与 HTTP 共用
 `core/error_response.py` 的领域错误状态及脱敏规则，本地错误也带独立 request ID；
@@ -545,8 +620,6 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 `MemoryAPI` 定义在 `jiuwen_memory/api/memory_api.py`。下列各节按委托面划分；方法总览标明状态与详细介绍所在小节。文档明确**不对外暴露**的能力（`link`、独立 `MemoryAPI.expand`）不列入本契约。
 
 ### MemoryAPI 方法总览
-
-下表「特性文档」列的裸编号均指 `docs/features/api/`；跨目录文档以目录名标注。
 
 | 分面 | 方法 | 状态 | 详细介绍 | 特性文档 |
 |---|---|---|---|---|
@@ -1884,13 +1957,13 @@ SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 searc
 
 HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `memory_search` 携带接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover` 与（角色模式）`memory_continuity_relation`（沿用 `memory_<方法名>`；JiuwenSwarm 适配器为 `agent_memory_*`）；`quarantine_source` / `release_source` 只在管理面暴露，不进入 Agent 工具清单。不再提供跨空间发布（以现有 `grant` ＋ `continuity_task(attach)` 挂引用代替）与双写切换。
 
-仅显式配置 `continuity`（且 `mode` 为 `continuity` 或 `role`）才启用；未启用时带接续参数的 `add`/`batch_add`/`search` 与上述专用入口返回 `UnsupportedCapabilityError`。接续模式下 `continuity_relation`、`continuity_recover(kind=relation)` 返回 `UnsupportedCapabilityError`，`search` 带非 general duty 时降级（见下）。scope 必须是 org+space 的项目空间。API 执行项目权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。关系真源存于 Registry KV，不出现在普通 get/list/search 结果中。
+仅显式配置 `continuity`（且 `mode` 为 `continuity` 或 `role`）才启用；未启用时带接续参数的 `add`/`batch_add`/`search` 与上述专用入口返回 `UnsupportedCapabilityError`。接续模式下 `continuity_relation`、`continuity_recover(kind=relation)` 返回 `UnsupportedCapabilityError`，`search` 带非 general duty 时降级（见下）。所有接续控制数据、事件、任务、关系、目录和视图使用同一个完整五维 Scope：`org`、`space` 必填，其余维可空，但五维按精确命名空间匹配，空值不代表通配或无鉴权。API 执行目标 Scope 权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用必须与该目标 Scope 五维完全一致并按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。关系真源存于 Registry KV，不出现在普通 get/list/search 结果中。
 
 ### 共同参数、返回状态与传输
 
 | 参数 | 含义与限制 |
 |---|---|
-| `scope: Scope` | Registry/事件/关系所属项目，必须给出 `org`、`space`，`user/agent/session` 为空；不是调用者身份 |
+| `scope: Scope` | Registry/事件/关系所属的完整五维命名空间，必须给出 `org`、`space`；`user/agent/session` 可空但全部参与精确隔离，不是调用者身份 |
 | `security: RequestSecurityContext` | SDK 必填 keyword-only 可信上下文；HTTP/MCP 由认证边界注入，不放入业务 JSON。同步 SDK 方法须在无运行事件循环的线程调用 |
 | `MemoryRef` | `scope` 是原记忆完整五维 Scope，`unit_id` 是实际 MemoryUnit ID，`content_digest` 是 64 位小写 SHA-256；从已保存单元取得，不用消息 ID/任意摘要代替。摘要算法见 S11 |
 
@@ -1917,7 +1990,7 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 
 返回：committed 时返回正文单元；同键同内容重放返回已保存单元，不重复写正文；同键异内容 `ConflictError`；回执停在 unknown / partial 时抛 `WriteIncompleteError`，携带 `operation_id`、`status`、`refs`、`retry_action`（partial → `retry_original_write`；unknown → `recover_then_retry`，先调 `continuity_recover` 再重试）。服务端核对绑定连接与当前认证主体相同；`claimed_author` 不能替代此检查。
 
-`batch_add`：批级与逐项 scope 须为同一项目空间，不同任务可同批；`idempotency_key` 与 `continuity` 同时给出时须一致。处理分五阶段（批量 unknown 回执 → 批量写正文 → 批量转 partial → 每任务一次背景追加 → 批量转 committed），派生与关系发现排入后续阶段。逐项结果在 `BatchWriteOutcome.operation_id` / `continuity_status` 上表达，不抛 `WriteIncompleteError`；单项失败按 `continue_on_error` 归集，被拒绝的接续项给 `continuity_status="rejected"`；`operation_id` 在写入路径回填（回执带下来的事件键）；鉴权拒绝及连接校验之前的失败不回填——事件键要先查绑定，有键/无键的差异会泄露绑定是否存在；连接校验通过后的失败（幂等键不一致、冲突系统键等）带回事件键；`continue_on_error=False` 时其后未执行的项留空串，以 `error_type="Skipped"` 标识。
+`batch_add`：批级与逐项 scope 须为同一个完整五维 Scope，不同任务可同批；`idempotency_key` 与 `continuity` 同时给出时须一致。处理分五阶段（批量 unknown 回执 → 批量写正文 → 批量转 partial → 每任务一次背景追加 → 批量转 committed），派生与关系发现排入后续阶段。逐项结果在 `BatchWriteOutcome.operation_id` / `continuity_status` 上表达，不抛 `WriteIncompleteError`；单项失败按 `continue_on_error` 归集，被拒绝的接续项给 `continuity_status="rejected"`；`operation_id` 在写入路径回填（回执带下来的事件键）；鉴权拒绝及连接校验之前的失败不回填——事件键要先查绑定，有键/无键的差异会泄露绑定是否存在；连接校验通过后的失败（幂等键不一致、冲突系统键等）带回事件键；`continue_on_error=False` 时其后未执行的项留空串，以 `error_type="Skipped"` 标识。
 
 ### search 的接续参数（职责检索）
 
@@ -1953,7 +2026,7 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 | `query` | `null` | find 先精确匹配 connector_id/context_id，无结果时再查询任务描述；只传 query 直接查询描述 |
 | `top_k` | `5` | find 描述候选上限，1–100；精确结果不截断 |
 
-变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定、title/description、parent_task_id/root_task_id 及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [...]}`，各项有 task_id/revision/title/description/state/match_type，语义项另含 score。connector_id/context_id 必须成对提供或省略；有精确结果时不回退语义检索，语义候选须用户确认后 bind。find 不证明调用者拥有任务中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。创建子任务还需父任务所在项目 READ。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
+变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定、title/description、parent_task_id/root_task_id 及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [...]}`，各项有 task_id/revision/title/description/state/match_type，语义项另含 score。connector_id/context_id 必须成对提供或省略；有精确结果时不回退语义检索，语义候选须用户确认后 bind。find 不证明调用者拥有任务中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要目标完整 Scope READ，变更需要 WRITE，修改既有任务还限创建负责人。创建子任务还需父任务位于同一五维 Scope。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
 
 描述候选默认使用 Embedder，返回 `match_type=description_semantic` 和余弦 score。
 `continuity.default.params.embedder: null` 时改用 BM25，返回
@@ -1981,7 +2054,7 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 | `resolution_reason` | `""` | 提交裁决时必填的依据说明 |
 | `resolution_origin` / `resolution_refs` | `""` / `[]` | 裁决来源及验证关系依赖；显式人工裁决由服务端标为 human，自动策略填写其来源。不能靠自述来源获得信任 |
 
-返回 `{status, relation_id, revision}`，`status` 为 projecting / committed。关系真源写入 Registry KV（先不可变修订记录，再原子替换关系头），不生成 MemoryUnit。首次需项目 WRITE；修改与撤回走**双条件**：①内容侧——对两端记忆都有 UPDATE 权；②登记侧——当前认证主体对应的连接须等于关系头记录的 `connector`，或调用者在项目上有 `MANAGE_SPACE`。旧关系头 `connector` 为空时只允许 `MANAGE_SPACE`。旧修订仅可为复核/撤回进行受控读取，不因此披露失效依赖。同修订同内容重试只补投影；projecting 可用 `continuity_recover(kind=relation)` 补投影。撤回写新修订，历史与正文保留。
+返回 `{status, relation_id, revision}`，`status` 为 projecting / committed。关系真源写入 Registry KV（先不可变修订记录，再原子替换关系头），不生成 MemoryUnit。首次需目标完整 Scope WRITE；修改与撤回走**双条件**：①内容侧——对两端记忆都有 UPDATE 权；②登记侧——当前认证主体对应的连接须等于关系头记录的 `connector`，或调用者在目标 Scope 上有 `MANAGE_SPACE`。旧关系头 `connector` 为空时只允许 `MANAGE_SPACE`。旧修订仅可为复核/撤回进行受控读取，不因此披露失效依赖。同修订同内容重试只补投影；projecting 可用 `continuity_recover(kind=relation)` 补投影。撤回写新修订，历史与正文保留。
 
 ### continuity_recover：核对未知写入与修复投影
 
@@ -1991,9 +2064,9 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 |---|---|---|
 | `recovery.kind` | 必填 | event / relation / derivation；relation 角色模式 |
 | `recovery.operation_id` | 必填 | event、derivation 使用写入回执的 operation_id；relation 使用 relation_id |
-| `recovery.refs` | event 必填非空 | 已实际提交、可核对的 MemoryRef，必须位于当前项目 Scope；relation、derivation 可为空 |
+| `recovery.refs` | event 必填非空 | 已实际提交、可核对的 MemoryRef，必须与目标五维 Scope 完全一致；relation、derivation 可为空 |
 
-事件恢复返回 `{status, refs, next_action: "retry_original_write"}`，恢复本身不完成背景关联；关系恢复从 KV 关系头核对 `payload_digest` 并补投影，返回 `{status, relation_id, revision}`；派生恢复只核对计划与输出标识。均需项目 WRITE；事件恢复逐条要求 UPDATE 并校验原连接主体。引用/内容与原回执不匹配时报 ConflictError，无可靠引用不能调用此方法猜测成功。MemoryAPI 不提供公开的全量索引重建入口，本方法不重新抽取正文、不做全量记忆迁移。
+事件恢复返回 `{status, refs, next_action: "retry_original_write"}`，恢复本身不完成背景关联；关系恢复从 KV 关系头核对 `payload_digest` 并补投影，返回 `{status, relation_id, revision}`；派生恢复只核对计划与输出标识。均需目标完整 Scope WRITE；事件恢复逐条要求 UPDATE 并校验原连接主体。引用/内容与原回执不匹配时报 ConflictError，无可靠引用不能调用此方法猜测成功。MemoryAPI 不提供公开的全量索引重建入口，本方法不重新抽取正文、不做全量记忆迁移。
 
 ### quarantine_source / release_source：来源隔离与解除
 
@@ -2004,7 +2077,7 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 | `connector` | 必填 | 隔离的来源连接名 |
 | `reason` | 必填非空 | 隔离原因，随记录持久化并写入入口审计 detail |
 
-两方法归入治理面，按项目空间 `MANAGE_SPACE` 判权并落入口审计；隔离记录持久化于 Registry `/continuity/sources/{connector}`，含 `reason`、`operator`（主体指纹）与 `quarantined_at`，释放即删除。隔离后：search（含视图）过滤该来源条目与其提交的关系；list 以系统过滤谓词下推、分页与 count 一致；get 单条返回 `PermissionDeniedError`。隔离只影响该来源，不改写正文、不删除关系；`release_source` 对未隔离来源返回 `False`。
+两方法归入治理面，按目标完整五维 Scope 的 `MANAGE_SPACE` 判权并落入口审计；隔离记录持久化于该 Scope 下的 Registry `/continuity/sources/{connector}`，含 `reason`、`operator`（主体指纹）与 `quarantined_at`，释放即删除。隔离只作用于同一完整 Scope 的来源条目与关系；search（含视图）按该 Scope 过滤，list 以系统过滤谓词下推、分页与 count 一致，get 单条返回 `PermissionDeniedError`。隔离不改写正文、不删除关系；`release_source` 对未隔离来源返回 `False`。
 
 ### 显式事件时间与接续字段保留
 

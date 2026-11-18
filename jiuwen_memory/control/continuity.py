@@ -41,6 +41,18 @@ class Continuity(ABC):
     def health(self) -> dict:
         ...
 
+    def catalog_snapshot(self) -> dict:
+        """Return the effective duty and relation catalog without reading configuration again."""
+        reason = "role_mode_required" if self.mode != "role" else "catalog_unavailable"
+        return {
+            "available": False,
+            "reason": reason,
+            "policy_version": None,
+            "default_duty": None,
+            "duties": [],
+            "relation_types": [],
+        }
+
     def close(self) -> None:
         """Release owned storage resources (graph store, registry KV and its single-writer lock).
 
@@ -257,10 +269,12 @@ class Continuity(ABC):
         ...
 
     def task_background(self, scope: Scope, task_id: str, read: ReadMemory) -> dict:
-        """Task background as ``{units, required_ids, gaps}``.
+        """Task background as ``{units, required_ids, required_keys, gaps}``.
 
         Continuity mode has no relation expansion but must still restore the task's
         background, so this stays a public capability rather than a role-mode-only path.
+        Required keys pair the five Scope coordinates with the unit ID; required_ids
+        is retained for callers that only consume the legacy ID list.
         Implementations must report missing/unreadable background as ``gaps`` (with the
         stored ``required`` flag) instead of returning an empty success: "no background"
         and "a required premise is unreadable" are different answers to the caller.

@@ -22,7 +22,13 @@ from jiuwen_memory.api import (
     new_request_context,
 )
 from jiuwen_memory_entry.core.api_contract import CONFIG_VERBS
-from jiuwen_memory_entry.portal.requests import BROWSER_VERBS, invoke_browser_api
+from jiuwen_memory_entry.portal.multi_agent import (
+    VIEW_HEADER,
+    VIEW_VALUE,
+    MultiAgentPortal,
+    build_multi_agent_portal,
+)
+from jiuwen_memory_entry.portal.requests import MULTI_AGENT_VERBS, PORTAL_VERBS, invoke_browser_api
 from jiuwen_memory_entry.portal.sessions import (
     SESSION_HEADER,
     BrowserSessions,
@@ -66,11 +72,15 @@ class _BoundedServer(ThreadingHTTPServer):
             self.slots.release()
 
 
-def runtime_request(runtime, auth, verb, payload, write_scope, *, peer="127.0.0.1"):
+def runtime_request(
+    runtime, auth, verb, payload, write_scope, *, peer="127.0.0.1",
+    multi_agent: MultiAgentPortal | None = None,
+):
     security = new_request_context(auth, surface=Surface.HTTP, peer=peer)
     return invoke_browser_api(
         runtime.api, verb, payload, security=security, write_scope=write_scope,
         configuration=getattr(runtime, "configuration", None),
+        multi_agent=multi_agent,
     )
 
 
@@ -120,12 +130,12 @@ class _PortalServer:
                     return False
                 return True
 
-            def respond(self, status, payload, *, cookie=None, html=False):
+            def respond(self, status, payload, *, cookie=None, html=False, content_type=None):
                 data = payload if html else json.dumps(payload, ensure_ascii=False).encode()
                 self.send_response(status)
-                self.send_header(
-                    "Content-Type", "text/html; charset=utf-8" if html else "application/json"
-                )
+                if content_type is None:
+                    content_type = "text/html; charset=utf-8" if html else "application/json"
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
@@ -136,8 +146,22 @@ class _PortalServer:
 
             def handle_get(self):
                 path = self.path.partition("?")[0] if shared else self.path
-                if not self.allowed() or path.rstrip("/") != "/portal":
+                asset = {
+                    "/portal/multi_agent.js": (
+                        "multi_agent.js", "application/javascript; charset=utf-8",
+                    ),
+                    "/portal/multi_agent.css": ("multi_agent.css", "text/css; charset=utf-8"),
+                }.get(path)
+                if not self.allowed() or (path.rstrip("/") != "/portal" and asset is None):
                     self.respond(404, {"error": "NotFound"})
+                    return
+                if asset is not None:
+                    name, content_type = asset
+                    self.respond(
+                        200,
+                        files("jiuwen_memory_entry.portal").joinpath(name).read_bytes(),
+                        html=True, content_type=content_type,
+                    )
                     return
                 self.respond(
                     200,
@@ -150,7 +174,8 @@ class _PortalServer:
                     is_bootstrap = self.path.rstrip("/") == "/portal/api/bootstrap"
                     verb = self.path.removeprefix("/v1/").strip("/")
                     if not self.allowed(origin=True) or not (
-                        is_bootstrap or (self.path.startswith("/v1/") and verb in BROWSER_VERBS)
+                        is_bootstrap
+                        or (self.path.startswith("/v1/") and verb in PORTAL_VERBS)
                     ):
                         self.respond(404, {"error": "NotFound"})
                         return
@@ -171,6 +196,9 @@ class _PortalServer:
                         else:
                             self.respond(200, body, cookie=cookie)
                         return
+                    view = self.headers.get(VIEW_HEADER)
+                    if view not in (None, VIEW_VALUE):
+                        raise ValidationError("unknown Portal view")
                     valid, binding = handle.sessions.lookup(
                         self.headers.get("Cookie"), token=self.headers.get(SESSION_HEADER),
                     )
@@ -180,7 +208,9 @@ class _PortalServer:
                             {"error": "AuthenticationError", "message": "请从宿主重新打开记忆管理"},
                         )
                         return
-                    self.respond(*dispatch(verb, payload, binding, self.client_address[0]))
+                    self.respond(*dispatch(
+                        verb, payload, binding, self.client_address[0], view,
+                    ))
                 except Exception as error:
                     self.respond(*request_error(error))
 
@@ -220,6 +250,7 @@ class PortalHandle(_PortalServer):
     def __init__(
         self, runtime, security_provider, *, identity=None, port=0,
         configuration_conflict=False,
+        multi_agent: MultiAgentPortal | None = None,
     ):
         self.runtime = runtime
         self.owner = deepcopy(security_provider().auth.actor)
@@ -228,11 +259,15 @@ class PortalHandle(_PortalServer):
             identity or new_provider_key(): {
                 "provider": security_provider, "owner": self.owner,
                 "configuration_conflict": configuration_conflict,
+                "multi_agent": multi_agent,
             },
         }
         super().__init__(self.dispatch, port=port)
 
-    def register_provider(self, identity, security_provider, *, configuration_conflict=False):
+    def register_provider(
+        self, identity, security_provider, *, configuration_conflict=False,
+        multi_agent: MultiAgentPortal | None = None,
+    ):
         """Register one credential source; identical sources share an entry."""
         actor = deepcopy(security_provider().auth.actor)
         with self._providers_lock:
@@ -243,6 +278,7 @@ class PortalHandle(_PortalServer):
                 if (
                     entry["provider"] is not security_provider
                     or entry["configuration_conflict"] != configuration_conflict
+                    or entry["multi_agent"] != multi_agent
                 ):
                     raise PermissionDeniedError(message="Portal provider key is already registered")
                 return
@@ -251,6 +287,7 @@ class PortalHandle(_PortalServer):
             self._providers[identity] = {
                 "provider": security_provider, "owner": actor,
                 "configuration_conflict": configuration_conflict,
+                "multi_agent": multi_agent,
             }
 
     def unregister_provider(self, identity):
@@ -276,7 +313,7 @@ class PortalHandle(_PortalServer):
                 raise PermissionDeniedError(message="Portal provider is not registered")
             return super().launch_url({"write_scope": write_scope, "identity": identity})
 
-    def dispatch(self, verb, payload, binding, peer):
+    def dispatch(self, verb, payload, binding, peer, view=None):
         identity = binding.get("identity") if isinstance(binding, dict) else None
         entry = self.provider_entry(identity)
         if entry is None:
@@ -284,6 +321,11 @@ class PortalHandle(_PortalServer):
         auth = entry["provider"]().auth
         if auth.actor != entry["owner"]:
             raise PermissionDeniedError(message="personal instance identity changed")
+        multi_agent = None
+        if view == VIEW_VALUE:
+            if verb not in MULTI_AGENT_VERBS | {"portal_context"}:
+                raise ValidationError("multi-agent Portal is read-only")
+            multi_agent = entry["multi_agent"] or build_multi_agent_portal(None)
         if verb in CONFIG_VERBS and entry["configuration_conflict"]:
             return 409, {
                 "error": "ConflictError",
@@ -291,6 +333,7 @@ class PortalHandle(_PortalServer):
             }
         return 200, runtime_request(
             self.runtime, auth, verb, payload, binding.get("write_scope"), peer=peer,
+            multi_agent=multi_agent,
         )
 
     def close(self):
@@ -309,6 +352,7 @@ _handles = {}
 def start_portal(
     runtime, *, security_provider, identity=None, port=0,
     configuration_conflict=False,
+    multi_agent: MultiAgentPortal | None = None,
 ):
     """Attach to an existing instance; the host must call once and own the handle."""
     identity = identity or new_provider_key()
@@ -319,11 +363,13 @@ def start_portal(
                 raise ValidationError("Runtime already has a Portal on another port")
             existing.register_provider(
                 identity, security_provider, configuration_conflict=configuration_conflict,
+                multi_agent=multi_agent,
             )
             return existing
         handle = PortalHandle(
             runtime, security_provider, identity=identity, port=port,
             configuration_conflict=configuration_conflict,
+            multi_agent=multi_agent,
         )
         _handles[id(runtime)] = ref(handle)
         return handle

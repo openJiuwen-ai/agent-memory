@@ -38,6 +38,9 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 
 `runtime_configuration.py` 提供公开的 `sdk_continuity_runtime_identity` 配置检查辅助，
 只返回规范 Registry 路径与有效配置摘要；不构造 runtime、Store 或锁，不暴露 Config/SecretValue。
+`continuity_catalog.py` 提供 `read_continuity_catalog`：只调用当前 API 实例的可选检查能力，
+先执行可信上下文与目标完整 Scope READ 判权，再返回 Runtime 已装配的职责/关系目录；不重读配置、
+不新增 MemoryAPI 抽象方法、普通 HTTP verb 或 MCP 工具。
 
 | 文件 | 职责 |
 |---|---|
@@ -48,6 +51,7 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 | `personal_memory.py` | 按认证身份判定个人范围和历史记录归属，复用 MemoryAPI 做单条读取和检索候选限制 |
 | `collective.py` | SDK 和受信 HTTP 宿主的群体坐标绑定与子集验证 |
 | `memory_api_impl/collective_ops.py` | 结构化来源写入和成员治理的 PEP，读取成员事实后由 PDP 生成群体召回计划 |
+| `continuity_catalog.py` | 公开只读目录检查辅助；入口 `read_continuity_catalog(api, scope, *, security)`，返回 `{mode, role_catalog}`，无检查能力时明确返回 `catalog_unavailable` |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/supports_video_ingest/prepare_video_ingest/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` / `managed_assembly.py` | 公开装配及托管配置注入（含写入编排：执行器、per-user 锁、`WriteOrchestrator`，并在 `deployment.multi_instance=true` 配进程内锁时装配失败）：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄，并在创建 SDK 时设置进程共用的日志输出；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
@@ -325,7 +329,9 @@ query_ops 消费 retrieval_pipeline 扩展键并写入 RetrievalQuery.pipeline�
 
 带 `continuity` 参数的 `add` 返回类型仍为 `list[MemoryUnit]`，unknown/partial 抛 `WriteIncompleteError`（`PartialFailureError` 子类，HTTP 409）；`search` 的 duty/task_id/anchor 全空时行为不变，与 `extensions.spaces` 同传拒绝；视图路径沿用调用方的 `filters`/`as_of`（锚点、任务背景、关系端点与语义候选逐条判过）；接续模式保留任务背景与 anchor、只跳过关系展开：背景按存储顺序先合并去重（含已被语义召回的条目），再追加语义结果，`required` 取 `task_background` 返回的真实标记；`list` 把不可用接续来源作为系统过滤谓词在分页前下推，并逐条复核依赖证据后剔除，不整页抛 PermissionDeniedError。
 
-公开写入/更新拒绝整个 continuity_* 系统元数据前缀；`_role_writer` 通过私有 `_add_impl` 注入接续字段，仍复用原有鉴权、作者归属与审计。`_continuity_add` 服务 `add(continuity=)`；`batch_add` 的接续项经 `_continuity_batch` 按项目分组后调用 `Continuity.record_batch`，正文经 `_add_many_impl` 一次批量写入并复用作者标记、`source_ref` 与审计；事件幂等键统一由 `Continuity.event_key`（连接, binding, event）计算；回执摘要另含完整请求指纹（正文/来源/资产/标签/metadata/时间），改内容后重试必须冲突。`batch_add` 混合批次按输入顺序推进（普通项成批、接续项冲刷前后批）。接续写入透传 `source`/`assets`/`system_metadata`/`user_metadata`/`occurred_at`，并拒绝 `infer`/`procedural`/`middle` 这类与「原文直落」冲突的系统键。add/add_async、batch_add/batch_add_async（批级与 BatchWriteItem 逐项）、submit_ingest 的 event_time 必须含时区，经 `_reject_invalid_event_time` 统一校验，与消息 occurred_at 分离；submit_ingest 在入队前校验。
+接续任务、事件、目录、关系、恢复和来源治理统一使用完整五维 Scope：`org`、`space` 必填，`user`/`agent`/`session` 可空但五维精确匹配；空值不是通配。任务背景的 `MemoryRef` 可指向同组织的其他 Scope，必须以真实源 Scope 独立鉴权；关系端点、事件证据和显式锚点仍必须与目标 Scope 五维一致。多 Agent Portal 的请求级交付限制在读取引用前生效，不替代源 Scope 鉴权。
+
+公开写入/更新拒绝整个 continuity_* 系统元数据前缀；`_role_writer` 通过私有 `_add_impl` 注入接续字段，仍复用原有鉴权、作者归属与审计。`_continuity_add` 服务 `add(continuity=)`；`batch_add` 的接续项经 `_continuity_batch` 按完整五维 Scope 分组后调用 `Continuity.record_batch`，正文经 `_add_many_impl` 一次批量写入并复用作者标记、`source_ref` 与审计；事件幂等键统一由 `Continuity.event_key`（连接, binding, event）计算；回执摘要另含完整请求指纹（正文/来源/资产/标签/metadata/时间），改内容后重试必须冲突。`batch_add` 混合批次按输入顺序推进（普通项成批、接续项冲刷前后批）。接续写入透传 `source`/`assets`/`system_metadata`/`user_metadata`/`occurred_at`，并拒绝 `infer`/`procedural`/`middle` 这类与「原文直落」冲突的系统键。add/add_async、batch_add/batch_add_async（批级与 BatchWriteItem 逐项）、submit_ingest 的 event_time 必须含时区，经 `_reject_invalid_event_time` 统一校验，与消息 occurred_at 分离；submit_ingest 在入队前校验。
 
 接续服务和可信连接映射由装配根通过 LocalMemoryAPI 构造参数注入，不在构造后改写其私有成员。一次性维护工具（如关系迁移脚本）走公开的 `assemble_maintenance_ports`，不 import 内核私有装配函数。
 

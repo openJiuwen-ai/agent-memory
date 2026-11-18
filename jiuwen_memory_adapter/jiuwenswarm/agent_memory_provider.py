@@ -913,11 +913,18 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         # Keep accepting the retired option in existing host configurations.
         if self._portal_settings.pop("allowed_frame_origins", None):
             logger.warning("Portal option allowed_frame_origins is obsolete and ignored")
-        unknown = set(self._portal_settings) - {"enabled", "port", "instance_id", "language"}
+        unknown = set(self._portal_settings) - {
+            "enabled", "port", "instance_id", "language", "multi_agent",
+        }
         if unknown:
             raise ValueError("unknown Portal option")
         if not isinstance(self._portal_settings.get("enabled", True), bool):
             raise ValueError("Portal enabled must be a boolean")
+        from jiuwen_memory_entry.portal.multi_agent import build_multi_agent_portal
+
+        self._multi_agent = build_multi_agent_portal(
+            self._portal_settings.get("multi_agent"),
+        )
         instance_id = self._portal_settings.get("instance_id")
         if instance_id is not None:
             if base_url:
@@ -1177,7 +1184,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             raise asyncio.CancelledError
 
     def _start_local_portal(self):
-        options = {"port": self._portal_settings.get("port", 0)}
+        options = {
+            "port": self._portal_settings.get("port", 0),
+            "multi_agent": self._multi_agent,
+        }
         client = self._client
         location = getattr(client, "portal_location", None)
         self._portal_identity = None

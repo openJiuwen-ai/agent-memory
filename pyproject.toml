@@ -128,7 +128,7 @@ exclude = [
 ]
 
 [tool.setuptools.package-data]
-"jiuwen_memory_entry.portal" = ["index.html"]
+"jiuwen_memory_entry.portal" = ["index.html", "multi_agent.js", "multi_agent.css"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

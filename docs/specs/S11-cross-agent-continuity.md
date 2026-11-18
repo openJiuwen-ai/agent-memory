@@ -19,14 +19,14 @@
 ## 不变量
 
 1. 调用身份来自认证链，`product`、职责名称、会话 ID 和业务字段均不能替代认证。每个连接配置映射到可信主体及连接标识；绑定标识不是访问令牌。
-2. 全局任务属于一个组织内的项目空间。任务绑定和来源引用不授予原记忆访问权限，所有读取仍按真实 Scope 判权。
+2. 任务及全部接续控制数据属于一个完整五维 Scope；`org`、`space` 必填，`user`、`agent`、`session` 可空但始终参与精确隔离。任务绑定和来源引用不授予原记忆访问权限，所有读取仍按真实 Scope 判权。
 3. 本地会话是上下文，不与全局任务简单等同。一任务可关联多个会话；同一会话涉及多任务时必须显式选择绑定或事件范围，不按标题或时钟自动合并。
 4. TaskRegistry 是任务 ID、绑定及背景引用的唯一真源；客户端缓存、记忆摘要和产品侧任务列表都不能覆盖登记结果。
 5. 职责只选择关系扩展策略，不授予权限；图路径不自动证明结论，关系类型/方向必须明确，共现不能冒充因果。
-6. 旧 MemoryUnit 只要有合法 Scope、ID 且可读，就可被精确引用；职责标签、task_id 和向量索引不是引用资格的前提。
+6. 任务背景可精确引用同组织其他 Scope 的旧 MemoryUnit。登记与每次回读均按引用的真实源 Scope 独立鉴权；职责标签、task_id 和向量索引不是引用资格的前提。多 Agent Portal 在回读、检索种子选择与排序截断前应用绑定 Scope 限制，不改变任务登记或 SDK / HTTP API 的源授权语义。显式锚点仍限于目标 Scope；锚点被拒绝不影响同一引用作为独立登记背景的资格。
 7. 视图中的未知、缺证和部分失败必须结构化表达；空列表不等于完成检查。受限记录的身份、数量或 Scope 不得借缺口说明泄露。
 8. 登记状态更新和回执要先持久化再返回成功。普通聊天的 best-effort 写入不能作为可靠写入确认。
-9. 角色入口与其他公开方法一样向 PEP 传递完整 `RequestSecurityContext`，先验证来源、时效和凭据撤销状态；不能只传 actor。项目空间成员授权由 `space_aware` Authorizer 执行。
+9. 角色入口与其他公开方法一样向 PEP 传递完整 `RequestSecurityContext`，先验证来源、时效和凭据撤销状态；不能只传 actor。目标完整 Scope 的成员与覆盖授权由 `space_aware` Authorizer 执行。
 10. 角色入口沿用同步 MemoryAPI 契约；异步宿主通过工作线程调用（MCP 已如此接线）。关系修订和恢复判权使用已读取的关系记录与端点 MemoryUnit 的同一快照，不为判权额外读取另一版本。
 11. 接续能力分两档：`continuity`（接续模式，不需要图存储）与 `role`（角色模式，需要图存储）。档位由配置显式声明，运行期不自动升降档；接续模式下不得伪装具备关系扩展（见[模式与能力矩阵](#模式与能力矩阵)）。
 
@@ -83,7 +83,7 @@
 | `reason` | string | `""` | 解绑原因 |
 | `title` | string | `""` | create 登记任务标题；bind 可补齐旧记录空标题，不覆盖非空值；旧 create 调用可省略 |
 | `description` | string | `""` | create 登记说明；bind 可补齐旧记录空说明 |
-| `parent_task_id` | string 或 null | `null` | 仅 create 使用；父任务须存在于当前项目且调用者具备项目 READ；`continuity_task_parent` 登记为内容轴 READ 入口，与任务查询采用同一项目读取判定 |
+| `parent_task_id` | string 或 null | `null` | 仅 create 使用；父任务须存在于同一个完整五维 Scope，且调用者具备该目标 Scope READ；`continuity_task_parent` 登记为内容轴 READ 入口，与任务查询采用同一判定 |
 | `query` | string 或 null | `null` | find 的可选任务描述查询；精确 binding 无结果时才用 |
 | `top_k` | int | `5` | find 描述候选数，范围 1–100；不截断已有上下文的精确结果 |
 
@@ -96,7 +96,7 @@ match_type 为 context_exact、description_semantic 或 description_bm25；后�
 两种匹配均排除已关闭任务；关闭任务仍可通过 get 查看。
 描述查询未配置 Embedder 时使用 BM25；已配置的 Embedder 调用失败时仍返回原错误，
 不静默回退。精确查询不依赖 Embedder。
-项目 READ 是任务元数据的读取门槛，候选不会授予背景来源权限。
+目标完整 Scope 的 READ 是任务元数据读取门槛，候选不会授予背景来源权限。
 宿主须让用户确认语义候选后才 bind；切换至尚未绑定的其他任务时使用 query-only 查找。
 
 ### TaskRecord 与 Binding（内部）
@@ -137,7 +137,7 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 字段映射：正文取 `add` 的 `content`；原始时间取 `add` 的 `event_time`（写 `temporal.t_event`），`occurred_at` 保持消息时间（t_message）语义；职责背景取 `tags`（`duty:<id>`），不产生权限；`kind` 写 `continuity_kind`，原始事件统一 `tier=episodic`（不经 classifier 改写）；其余字段由内部写路径注入 `continuity_*` 系统元数据（`continuity_task`、`continuity_binding`、`continuity_event`、`continuity_connector`、`continuity_confidence`、`continuity_evidence_refs`、`continuity_claimed_author`、`continuity_envelope_digest`）。公开调用方不得直接设置 `continuity_*`。
 
-带 `continuity` 的写入：scope 必须是项目空间（user、agent、session 为空）；连接由认证链解析并核对属于该项目；只有这类写入使用幂等键，普通 `add` 不变。
+带 `continuity` 的写入：scope 为完整五维目标命名空间，`org`、`space` 必填，主体维可空但参与精确隔离；连接由认证链解析，并核对属于该组织且允许该 space；只有这类写入使用幂等键，普通 `add` 不变。想跨 Agent 共享时把 `agent` 留空，想跨会话共享时把 `session` 留空，想跨用户共享时把 `user` 留空；空值只表示该维为空，不做通配聚合。
 
 ### `ContinuityEvent`（交换格式）
 
@@ -199,7 +199,7 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 ### 关系头与修订历史（内部）
 
-关系真源存于 Registry KV，**不是** MemoryUnit（construction/F11 §4.1 的例外，理由见 §4.1 与第 10 节）。项目 Scope 隔离：
+关系真源存于 Registry KV，**不是** MemoryUnit（construction/F11 §4.1 的例外，理由见 §4.1 与第 10 节）。完整五维 Scope 精确隔离：
 
 | KV 路径 | 内容 |
 | --- | --- |
@@ -217,7 +217,7 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 写入顺序：先写不可变修订记录，再原子替换关系头（单记录原子替换即真源提交点，不再有 unknown 状态），然后条件投影，投影完成后置 committed。并发沿用单写者 Registry（`claim_single_writer`）与 `expected_revision` 校验，不依赖 KV CAS。
 
-读取判权：调用方对项目 Scope 有 READ，关系两端及证据均可读，提交连接未停用、未隔离。关系不进入普通 `search` / `list` / `get` 的候选集，也不进入 Evolve。
+读取判权：调用方对目标完整 Scope 有 READ，关系两端及证据均与目标 Scope 五维一致且可读，提交连接未停用、未隔离。关系不进入普通 `search` / `list` / `get` 的候选集，也不进入 Evolve。
 
 图投影：节点 ID 为 `continuity:memory:` 加 Scope 与 unit ID 的摘要，边 ID 为 `continuity:relation:<relation_id>`，边属性保存 `relation_id` 与 `revision`（不再保存关系 MemoryRef），视图回查 KV 关系头核验当前状态。投影由 `evidence_graph` IndexBuilder 以 RETRIEVAL_ONLY 模式完成；撤回时删除对应边。旧的无前缀投影不再作为角色关系使用，需要重建；存量关系 MemoryUnit 由一次性迁移搬入 KV 并重建投影（F11 12.2）。
 
@@ -344,7 +344,7 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 | --- | --- | --- |
 | `kind` | string | event / relation / derivation；relation 角色模式可用，接续模式返回 `UnsupportedCapabilityError` |
 | `operation_id` | string | event、derivation 为回执的 `operation_id`；relation 为 `relation_id` |
-| `refs` | MemoryRef[] | event 时非空，必须位于当前项目 Scope；relation、derivation 可为空 |
+| `refs` | MemoryRef[] | event 时非空，必须与目标五维 Scope 完全一致；relation、derivation 可为空 |
 
 事件恢复核对每个引用的 `continuity_event`、信封摘要和拼接后的正文，一致时把回执置为 partial，返回 `next_action=retry_original_write`；调用方用原写入请求重试完成背景关联。关系恢复从 KV 读取关系头与当前修订，核对 `payload_digest` 后补建投影并置 committed（关系真源单记录提交，不需要客户端提供引用）。派生恢复只核对已保存计划和输出标识，不写业务正文。不匹配返回 `ConflictError`；恢复不创建第二份内容，也不自动认定写入失败。
 
@@ -355,7 +355,7 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 | 字段 | 类型 | 约束 |
 | --- | --- | --- |
 | `actor` | 五维身份 | 必须与该连接的认证主体完全一致 |
-| `projects` | string[] | 允许绑定和写入的 space |
+| `projects` | string[] | 允许绑定和写入的租户 space ID；字段名保留历史名称，不表示业务项目 metadata |
 | `enabled` | bool | 缺省视为启用；false 时拒绝该连接的新事件，并在普通读取、搜索、列表和视图中隐藏其来源内容（规则见[来源治理与列表过滤](#来源治理与列表过滤)） |
 
 它是服务端身份映射，不是认证器，也不授予空间权限；不是 dict 时装配失败。
@@ -401,7 +401,7 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 
 外部 Agent 历史导入与高频回写使用 `batch_add`，`BatchWriteItem.continuity: ContinuityWrite | None` 逐项声明。
 
-- 批级 `scope` 与逐项 scope 必须是同一项目空间；同一批可包含不同任务。
+- 批级 `scope` 与逐项 scope 必须是同一个完整五维 Scope；同一批可包含不同任务。
 - 已有 `BatchWriteItem.idempotency_key` 与 `continuity` 同时出现时，两者须一致，否则该项拒绝；以 `continuity` 幂等键为准。
 - 分阶段处理：① 批量写入全部项的 unknown 回执 → ② 正文走现有批量写入链（批量向量化与索引）→ ③ 批量转 partial 并保存引用 → ④ 按任务分组，每个任务**只追加一次**背景并递增一次修订 → ⑤ 批量转 committed。派生构建与关系发现按项排入后续阶段，不阻塞批写返回。
 - `BatchWriteOutcome` 新增 `operation_id` 与 `continuity_status`（committed / partial / unknown / rejected）。被拒绝的接续项给 `continuity_status="rejected"`；`operation_id` 按回执回填；鉴权拒绝及连接校验之前的失败不回填（事件键需先查绑定，有键/无键会泄露绑定是否存在），连接校验通过后的失败带回事件键；单项失败按 `continue_on_error` 处理，不中断其他项；`continue_on_error=false` 时其后未执行的项 `continuity_status` 为空、`error_type="Skipped"`（没执行，可原样重放，不冒充 rejected）。
@@ -433,7 +433,7 @@ Adapter 交付 UTF-8 JSONL：每行一个 [`ContinuityEvent`](#continuityevent�
 
 | 操作 | 行为 | 权限与错误 |
 | --- | --- | --- |
-| 注册任务 | 创建稳定 task_id，保存组织、项目空间、负责人及目标引用；初始为 open，可同时登记背景引用；绑定需另行 bind | 需要项目 WRITE；背景引用逐个读取校验 |
+| 注册任务 | 在目标完整五维 Scope 下创建稳定 task_id，保存负责人及目标引用；初始为 open，可同时登记背景引用；绑定需另行 bind | 需要目标 Scope WRITE；背景引用逐个读取校验 |
 | 绑定上下文 | 将可信连接＋本地上下文及 ID 来源关联任务，返回 binding_id | 首版仅创建负责人可建立；须验证连接属于本组织且允许该项目 |
 | 查询任务/绑定 | 按 task_id 或连接＋上下文读取有权查看的映射及当前修订 | 多个匹配不得默选；背景引用按源权限裁剪，不暴露其他项目绑定或私有来源 |
 | 解除绑定 | 软撤销映射，记录操作者、原因和修订，历史关联仍可审计 | 解除不等于删除历史或撤销源记录授权 |
@@ -492,11 +492,11 @@ continuity 档的任务背景在 top_k 截断前按必需背景优先、其余�
 角色档排序保留原行为，超预算仍追加 blocking=false 的 budget_exhausted。
 
 任务描述查找复用装配上下文中的共享 Embedder，以 TaskRecord 的 title/description
-生成可重建的进程内向量缓存，查询前重新扫描当前项目的开放任务；缓存不作为任务真源，
+生成可重建的进程内向量缓存，查询前重新扫描当前完整 Scope 的开放任务；缓存不作为任务真源，
 重启或文本变化时重新生成。实际语义能力取决于 Embedder 配置，hashing 仅提供词项相似度。
 `continuity.default.params.embedder` 默认引用 `default`；显式设为 `null` 时，任务描述查询
 改用 BM25（k1=1.2、b=0.75），通过 `tokenizer` 参数引用共享分词器（默认 `default`）。
-BM25 每次在当前项目开放任务的标题/说明上计算，不新增数据库或持久索引，仅返回正分候选，
+BM25 每次在当前完整 Scope 开放任务的标题/说明上计算，不新增数据库或持久索引，仅返回正分候选，
 按分数倒序、同分按 task_id 排序后取 top_k。默认分词器对英文小写化、中文逐字切分；
 可配置 jieba 改善中文词语匹配。此配置只控制任务描述查询，不关闭普通记忆链路的 Embedder。
 旧任务可通过精确 find 找回，再由 owner 在 bind 时补齐空标题/说明。
@@ -575,7 +575,7 @@ Provider/MCP Adapter 只负责注册、可信上下文、参数转换及结构�
 
 ## 来源治理与列表过滤
 
-来源治理入口为 `quarantine_source(scope, connector, reason)` 与 `release_source(scope, connector)`，归入治理组（管理面暴露，不进入 Agent 工具清单）。不可用来源集合 = 配置 `enabled=false` 的连接 ∪ 当前项目被隔离的连接。
+来源治理入口为 `quarantine_source(scope, connector, reason)` 与 `release_source(scope, connector)`，归入治理组（管理面暴露，不进入 Agent 工具清单）。不可用来源集合 = 配置 `enabled=false` 的连接 ∪ 当前完整五维 Scope 被隔离的连接。
 
 - `search`（含视图路径）：不可用来源的条目在候选阶段过滤，关系的提交连接不可用时该关系不参与展开。
 - `list`：不可用来源集合作为系统过滤谓词 `NOT system_metadata.continuity_connector IN {不可用连接}` 下推到 Engine，在分页与 `count` 之前生效，保证 `count`、`offset` / `limit` 一致；不得在取页后逐条抛 `PermissionDeniedError` 导致整页失败。
@@ -625,6 +625,7 @@ S02 是公开 API 和鉴权入口，登记 `add` / `batch_add` 的 `continuity` 
 | `task_not_found` | 给定 `task_id` 未登记 | 否 |
 | `background_unreadable` | 任务背景引用无法解析（不披露条目标识） | 按存储的 `required` |
 | `background_unavailable` | 任务背景条目不可读（不披露条目标识） | 按存储的 `required` |
+| `portal_scope_filtered` | 多 Agent Portal 省略绑定 Scope 外的背景；不披露条目的 ID、数量或 Scope | 省略任一必需背景时阻断 |
 
 ### JiuwenSwarm Adapter 调试日志
 

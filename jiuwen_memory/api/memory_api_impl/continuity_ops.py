@@ -10,6 +10,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from functools import cache
 
+from jiuwen_memory.common.continuity_scope import continuity_delivery_scope
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
     ConflictError,
@@ -93,7 +94,7 @@ def _call_record_batch(
 
 
 def _same_scope(left: Scope, right: Scope) -> bool:
-    """Whether two items belong to the same project space (one record_batch per scope)."""
+    """Whether two items have the exact same five-dimensional Scope."""
     return (
         left.org,
         left.space,
@@ -227,10 +228,8 @@ class ContinuityOpsMixin:
         return result
 
     def _role_service(self, scope):
-        has_project = bool(scope.org and scope.space)
-        has_personal_context = bool(scope.user or scope.agent or scope.session)
-        if not has_project or has_personal_context:
-            raise ValidationError("continuity scope must be an org/project space")
+        if not scope.org or not scope.space:
+            raise ValidationError("continuity scope requires organization and space")
         if self._continuity is None:
             # value 是「实际状态」而非模式名：未装配 Continuity 时两档都不成立。
             raise UnsupportedCapabilityError(
@@ -238,10 +237,31 @@ class ContinuityOpsMixin:
             )
         return self._continuity
 
-    def _role_reader(self, security, project):
+    def continuity_catalog_snapshot(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Inspect the effective runtime catalog after target Scope READ authorization."""
+        auth = self._authorize(security, scope, Action.READ, "continuity_catalog")
+        service = self._role_service(scope)
+        snapshot = {
+            "mode": service.mode,
+            "role_catalog": service.catalog_snapshot(),
+        }
+        self._log(
+            security.auth.actor, "continuity_catalog", target_scope=scope, detail=auth,
+        )
+        return snapshot
+
+    def _role_reader(self, security, scope, *, allow_background_source=False):
+        delivery_scope = continuity_delivery_scope()
+
         def read(ref):
-            if ref.scope.org != project.org:
+            if delivery_scope is not None and ref.scope != delivery_scope:
+                raise PermissionDeniedError("reference outside the delivery scope")
+            if ref.scope.org != scope.org:
                 raise PermissionDeniedError("cross-organization reference")
+            if ref.scope != scope and not allow_background_source:
+                raise PermissionDeniedError("cross-scope reference")
             unit = self.get(ref.unit_id, ref.scope, security=security)
             connector = unit.system_metadata.get("continuity_connector")
             if connector and not self._source_available(ref.scope, connector):
@@ -259,8 +279,8 @@ class ContinuityOpsMixin:
 
         return read
 
-    def _role_management_reader(self, security, project):
-        read = self._role_reader(security, project)
+    def _role_management_reader(self, security, scope):
+        read = self._role_reader(security, scope)
 
         def managed(ref):
             token = _MANAGE_RELATION.set(True)
@@ -336,13 +356,14 @@ class ContinuityOpsMixin:
             if not connector or connector.get("actor", {}).get("org") != scope.org:
                 raise ValidationError("connector is not configured for this organization")
             if scope.space not in connector.get("projects", []):
-                raise ValidationError("connector is not configured for this project")
-        result = service.task(scope, request, owner, self._role_reader(security, scope))
+                raise ValidationError("connector is not configured for this space")
+        read = self._role_reader(security, scope, allow_background_source=True)
+        result = service.task(scope, request, owner, read)
         self._log(security.auth.actor, "continuity_task", request.task_id, target_scope=scope)
         return result
 
     def _require_relation_submitter(self, scope: Scope, security, connector: str) -> None:
-        """Registration-side gate: the submitting connector, or project governance."""
+        """Registration-side gate: the submitting connector, or target Scope governance."""
         if connector and self._connector_for_actor(scope, security) == connector:
             return
         self._authorize(security, scope, Action.MANAGE_SPACE, "continuity_relation")
@@ -350,7 +371,7 @@ class ContinuityOpsMixin:
     def _connector_for_actor(self, scope: Scope, security) -> str:
         """The connector that submitted this request ("" when the caller is not one).
 
-        Only enabled connectors that cover the current project count; if the same actor is
+        Only enabled connectors that cover the current tenant space count; if the same actor is
         behind several of them the attribution is ambiguous and we refuse to guess.
         """
         actor = asdict(security.auth.actor)
@@ -489,8 +510,8 @@ class ContinuityOpsMixin:
         if not prepared:
             skip_unhandled()
             return results
-        # 同一 record_batch 只能服务一个项目空间：按**输入顺序**切成连续段逐段写入，
-        # 既不打乱副作用顺序，也不会在停批时留下没有结果的下标。
+        # 同一 record_batch 只能服务一个完整五维 Scope；按**输入顺序**切成连续段，逐段写入。
+        # 不能按全局分组：交错的 scope 会打乱副作用顺序，也可能在停批时留下没有结果的下标。
         runs: list[list[dict]] = []
         for entry in prepared:
             if runs and _same_scope(runs[-1][0]["item"].scope, entry["item"].scope):

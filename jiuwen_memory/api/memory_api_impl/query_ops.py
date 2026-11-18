@@ -378,10 +378,27 @@ class QueryOpsMixin:
             duty=options.duty if options.duty is not None else "general",
             budget=options.view_budget or ViewBudget(),
         )
+        # Scope validation applies to the explicit anchor, not to a matching
+        # reference that the task independently registered as background.
+        anchor_excluded = request.anchor is not None and request.anchor.scope != scope
+        if anchor_excluded:
+            request.anchor = None
+
+        def view_gaps(bundled):
+            gaps = bundled["gaps"]
+            if not anchor_excluded:
+                return gaps
+            return [*gaps, {
+                "code": "reference_unavailable",
+                "message": "the anchor reference is not readable",
+                "blocking": service.mode == "role",
+                "affected_item_ids": [],
+            }]
+
         # 调用方的过滤与时间约束在视图路径同样生效：锚点、任务背景与关系端点逐条判过，
         # 语义候选发现也带上同一份条件（否则明确不匹配的条目仍会经 anchor 漏出）。
         normalized_filters = normalize(options.filters)
-        raw_read = self._role_reader(security, scope)
+        raw_read = self._role_reader(security, scope, allow_background_source=bool(request.task_id))
 
         def admits(unit) -> bool:
             if normalized_filters is not None and not matches_memory_unit(
@@ -442,7 +459,7 @@ class QueryOpsMixin:
                 # 部分通道失败必须对调用方可见：视图是补充，不是把底层错误吞掉。
                 errors=list(base.errors),
                 paths=bundled["paths"],
-                gaps=bundled["gaps"],
+                gaps=view_gaps(bundled),
                 view_meta=bundled["meta"],
             )
 
@@ -490,7 +507,7 @@ class QueryOpsMixin:
             items=items,
             errors=discover_errors,
             paths=bundled["paths"],
-            gaps=bundled["gaps"],
+            gaps=view_gaps(bundled),
             view_meta=bundled["meta"],
         )
 
