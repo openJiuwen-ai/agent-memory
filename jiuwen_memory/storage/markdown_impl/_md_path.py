@@ -19,6 +19,9 @@
 from __future__ import annotations
 
 import os
+import re
+
+from jiuwen_memory.common.errors import ValidationError
 
 # 无 project 兜底值：空串 = 跨项目可见（对齐 SqliteDocumentShadowIndex._DEFAULT_PROJECT
 # 与 LocalMarkdownStore._DEFAULT_PROJECT 语义）。
@@ -44,6 +47,9 @@ def project_from_md_path(md_filename: str) -> str:
     - ``memory/daily_memory/日期.md``（无 project daily，第二段是目录名 daily_memory）；
     - ``USER.md``（root 顶层用户画像）与未知形态。
     """
+    team = team_from_md_path(md_filename)
+    if team:
+        return team_project(team)
     parts = md_filename.replace("\\", "/").split("/")
     if len(parts) >= 3 and parts[0] == "memory" and parts[1] != "daily_memory":
         return parts[1]
@@ -52,6 +58,8 @@ def project_from_md_path(md_filename: str) -> str:
 
 def class_from_md_path(md_filename: str) -> str:
     """从 md 相对路径反推 memory_class（F08 §3 映射，对称 LocalMarkdownStore._PATH_MAP）。"""
+    if team_from_md_path(md_filename):
+        return "team_memory"
     normalized = md_filename.replace("\\", "/")
     if "daily_memory/" in normalized:
         return "daily_memory"
@@ -60,3 +68,22 @@ def class_from_md_path(md_filename: str) -> str:
         return _FILE_NAME_TO_CLASS[base]
     # 未知路径兜底 long_term_memory（与 LocalMarkdownStore._DEFAULT_CLASS 一致）
     return _DEFAULT_CLASS
+
+
+def team_from_md_path(md_filename: str) -> str:
+    """Return the stable team key only for the canonical team document."""
+    parts = md_filename.replace("\\", "/").split("/")
+    if len(parts) == 4 and parts[:2] == ["memory", "teams"] and parts[3] == "MEMORY.md":
+        team_project(parts[2])
+        return parts[2]
+    return ""
+
+
+def team_project(team: str) -> str:
+    """Validate a project--identity digest key and recover its project."""
+    project, separator, digest = team.rpartition("--")
+    if not separator or not project or re.fullmatch(r"[0-9a-f]{24}", digest) is None:
+        raise ValidationError("Invalid team memory key")
+    if project in {".", "..", "teams"} or any(char in project for char in "/\\\x00"):
+        raise ValidationError("Invalid team memory key")
+    return project

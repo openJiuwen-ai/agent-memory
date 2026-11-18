@@ -4,11 +4,13 @@ from collections.abc import Callable
 
 from jiuwen_memory_adapter.jiuwenswarm.coding_memory import CodingMemoryScene
 from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemoryScene
+from jiuwen_memory_adapter.jiuwenswarm.team_memory import TeamMemoryScene
 from jiuwen_memory_adapter.jiuwenswarm.work_memory import WorkMemoryScene
 
 SCENE_FACTORIES: dict[str, Callable[[str], MemoryScene]] = {
     "agent": lambda _project: WorkMemoryScene(),
     "code": CodingMemoryScene,
+    "team": TeamMemoryScene,
 }
 
 

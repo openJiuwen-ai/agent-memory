@@ -75,7 +75,7 @@ from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.doc_mode_support import (
-    project_from_context,
+    document_options,
     restore_coords_from_md_filename,
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
@@ -869,7 +869,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             self._domain_store.read_md_file,
             context.scope,
             md_filename,
-            project=project_from_context(context),
+            **document_options(context),
             line_range=line_range,
         )
 
@@ -892,7 +892,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
             md_filename,
             old_text,
             new_text,
-            project=project_from_context(context),
+            **document_options(context),
         )
 
     def _write_binding(self, units: list[MemoryUnit]) -> PipelineBinding | None:

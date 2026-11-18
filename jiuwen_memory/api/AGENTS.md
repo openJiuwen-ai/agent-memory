@@ -31,6 +31,8 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 必须来自实际加载的配置文件。`document_llm_instances` 只列出配置声明的具名模型，
 读取和写入授权仍由宿主负责。
 内置 SDK 适配器的 Portal 装配辅助函数只供仓库内接线。页面请求由已有公开 API 处理。
+私有 `_should_write_document` 重导出现有配置归一函数，供内置适配器判断文档流程装配，
+不新增 MemoryAPI 方法，也不公开底层配置对象。
 
 ## 模块地图
 

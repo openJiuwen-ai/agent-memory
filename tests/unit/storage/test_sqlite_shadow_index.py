@@ -25,6 +25,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
 from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
     WhitespaceTokenizer,
@@ -58,7 +59,7 @@ from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import (
     _t_valid_of,
     _vec_to_blob,
 )
-from jiuwen_memory.storage.types import ScoredID, TextQuery
+from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
 # 这几个是 ``SqliteDocumentShadowIndex`` 的 @staticmethod（非模块级函数），
 # 以别名暴露，测试体调用保持简洁（与上方模块级纯函数区分开）。
@@ -600,7 +601,6 @@ def test_search_fulltext_returns_empty_for_empty_tokens(tmp_path) -> None:
 def test_search_vector_is_empty_in_degraded_mode(tmp_path) -> None:
     store = _store(tmp_path)
     assert store.vec_enabled is False
-    from jiuwen_memory.storage.types import VectorQuery
 
     assert store.search_vector(SCOPE, VectorQuery(vector=[0.1])) == []
 
@@ -906,8 +906,6 @@ def test_find_unit_ids_by_content_hash_handles_multiple_units_same_content(tmp_p
 @pytest.mark.parametrize("channel", ["fulltext", "vector"])
 @pytest.mark.parametrize("id_field", ["unit_id", "id"])
 def test_explicit_ids_filter_before_candidate_truncation(tmp_path, channel, id_field):
-    from jiuwen_memory.common.embedder.embedder_impl.hashing_embedder import HashingEmbedder
-    from jiuwen_memory.storage.types import VectorQuery
 
     tokenizer = WhitespaceTokenizer()
     embedder = None
@@ -967,5 +965,114 @@ def test_search_handles_sqlite_driver_without_limit_methods(tmp_path, monkeypatc
         connection.execute.side_effect = sqlite3.OperationalError("database is locked")
         with pytest.raises(sqlite3.OperationalError, match="database is locked"):
             store.search_fulltext(SCOPE, query)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("channel", ["fulltext", "vector"])
+@pytest.mark.parametrize("target", ["project", "team"])
+def test_team_partition_filters_before_top_k(tmp_path, channel, target):
+    if channel == "vector":
+        pytest.importorskip("sqlite_vec")
+
+
+    tokenizer = WhitespaceTokenizer()
+    embedder = HashingEmbedder(tokenizer, dim=64) if channel == "vector" else None
+    store = SqliteDocumentShadowIndex(
+        str(tmp_path / "teams.db"), tokenizer=tokenizer, embedder=embedder,
+    )
+    selected_class = "team_memory" if target == "team" else "long_term_memory"
+    own = _unit("own", "ocean " + "filler " * 40)
+    own.system_metadata.update(project="repo", memory_class=selected_class, team="ours")
+    others = [_unit(f"other-{i}", "ocean") for i in range(70)]
+    for unit in others:
+        unit.system_metadata.update(project="repo", memory_class="team_memory", team="other")
+    filters = FilterGroup(FilterLogic.AND, [
+        FilterClause("system_metadata.project", FilterOp.EQ, "repo"),
+        FilterClause("system_metadata.memory_class", FilterOp.EQ, selected_class),
+    ] + ([FilterClause("system_metadata.team", FilterOp.EQ, "ours")] if target == "team" else []))
+    try:
+        store.insert_units(SCOPE, [own, *others])
+        if channel == "vector":
+            assert store.vec_enabled
+            hits = store.search_vector(SCOPE, VectorQuery(
+                vector=embedder.embed(["ocean"])[0], top_k=1, filters=filters))
+        else:
+            hits = store.search_fulltext(SCOPE, TextQuery(text="ocean", top_k=1, filters=filters))
+        assert [hit.id for hit in hits] == ["own"]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(("team_count", "extra_filter", "expected"), [
+    pytest.param(1, None, ["own"], id="knn-filters-team-project-and-scope"),
+    pytest.param(5, None, [], id="knn-does-not-refill"),
+    pytest.param(5, FilterClause("unit_id", FilterOp.IN, ["own"]), ["own"], id="id-prefilter"),
+    pytest.param(5, FilterClause("system_metadata.team", FilterOp.EQ, "ours"),
+                 ["own"], id="team-prefilter"),
+    pytest.param(5, FilterClause("system_metadata.memory_class", FilterOp.EQ, "long_term_memory"),
+                 ["own"], id="class-equality-prefilter"),
+    pytest.param(5, FilterClause("system_metadata.memory_class", FilterOp.NE, "daily_memory"),
+                 ["own"], id="other-class-exclusion-prefilter"),
+    pytest.param(5, FilterGroup(FilterLogic.OR, [
+        FilterClause("system_metadata.memory_class", FilterOp.NE, "team_memory"),
+        FilterClause("system_metadata.project", FilterOp.EQ, "missing"),
+    ]), ["own"], id="or-preserves-prefilter"),
+])
+def test_vector_team_exclusion_query_path(tmp_path, team_count, extra_filter, expected):
+    pytest.importorskip("sqlite_vec")
+
+    tokenizer = WhitespaceTokenizer()
+    embedder = HashingEmbedder(tokenizer, dim=64)
+    store = SqliteDocumentShadowIndex(
+        str(tmp_path / "exclusion.db"), tokenizer=tokenizer, embedder=embedder,
+    )
+    own = _unit("own", "ocean " + "filler " * 40,
+                {"project": "repo", "memory_class": "long_term_memory", "team": "ours"})
+    others = [_unit(f"team-{i}", "ocean", {"project": "repo", "memory_class": "team_memory"})
+              for i in range(team_count)]
+    other_scope = Scope(org="acme", user="other")
+    filters = and_merge(extra_filter, [
+        FilterClause("system_metadata.project", FilterOp.EQ, "repo"),
+        FilterClause("system_metadata.memory_class", FilterOp.NE, "team_memory"),
+        FilterClause("lifecycle", FilterOp.EQ, "active"),
+    ])
+    try:
+        store.insert_units(SCOPE, [
+            own, *others, _unit("other-project", "ocean", {"project": "else"}),
+        ])
+        store.insert_units(other_scope, [
+            _unit_scope("other-scope", "ocean", other_scope, {"project": "repo"}),
+        ])
+        assert store.vec_enabled, "sqlite-vec must be active to verify candidate truncation"
+        hits = store.search_vector(SCOPE, VectorQuery(
+            vector=embedder.embed(["ocean"])[0], top_k=1, filters=filters,
+        ))
+        assert [hit.id for hit in hits] == expected, "query must preserve its filtering and budget"
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("kind", ["long_term_memory", "user_profile", "team_memory"])
+def test_team_conclusions_do_not_suppress_ordinary_dedup(tmp_path, kind):
+    from jiuwen_memory.construction.dedup_impl.project_team_dedup import ProjectTeamDedup
+
+    store = _store(tmp_path)
+    ordinary = _unit("ordinary", "ocean")
+    ordinary.system_metadata.update(project="repo", memory_class="long_term_memory")
+    profile = _unit("profile", "ocean")
+    profile.system_metadata.update(project="", memory_class="user_profile")
+    team = _unit("team", "ocean")
+    team.system_metadata.update(project="repo", memory_class="team_memory", team="ours")
+    other = _unit("other", "ocean")
+    other.system_metadata.update(project="repo", memory_class="team_memory", team="other")
+    candidate = {"long_term_memory": ordinary, "user_profile": profile, "team_memory": team}[kind]
+    try:
+        store.insert_units(SCOPE, [ordinary, profile, team, other])
+        hits = store.search_fulltext(SCOPE, TextQuery(
+            text="ocean", top_k=10, filters=ProjectTeamDedup.recall_filter(candidate)))
+        expected = {"long_term_memory": {"ordinary", "profile"},
+                    "user_profile": {"profile"}, "team_memory": {"team"}}[kind]
+        assert {hit.id for hit in hits} == expected
     finally:
         store.close()

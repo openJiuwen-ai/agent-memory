@@ -41,6 +41,7 @@ class MetadataPipeline(MemoryPipeline):
         routes: dict[str, str],
         fallback: str,
         route_key: str = "memory_type",
+        strict_routes: bool = False,
     ) -> None:
         if fallback not in profiles:
             raise ValidationError(
@@ -51,6 +52,7 @@ class MetadataPipeline(MemoryPipeline):
         self._routes = dict(routes)
         self._fallback = fallback
         self._route_key = route_key
+        self._strict_routes = strict_routes
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.PIPELINE
@@ -70,7 +72,7 @@ class MetadataPipeline(MemoryPipeline):
         return self._profiles.get(self._routes.get(value, value)) if value else None
 
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:
-        value = _route_value_from_units(units, self._route_key)
+        value = _route_value_from_units(units, self._route_key, strict=self._strict_routes)
         return self._select(value, "write")
 
     def select_for_recall(self, query: RetrievalQuery) -> PipelineBinding:
@@ -80,6 +82,8 @@ class MetadataPipeline(MemoryPipeline):
     def _select(self, value: str, surface: str) -> PipelineBinding:
         profile_name = self._routes.get(value, value) if value else self._fallback
         if profile_name not in self._profiles:
+            if self._strict_routes:
+                raise ValidationError(f"Unknown pipeline profile: {profile_name!r}")
             fallback_metadata = {
                 "route_key": self._route_key,
                 "route_value": value,
@@ -106,12 +110,13 @@ class MetadataPipeline(MemoryPipeline):
         return binding
 
 
-def _route_value_from_units(units: list[MemoryUnit], route_key: str) -> str:
-    for unit in units:
-        value = str(unit.system_metadata.get(route_key, "")).strip()
-        if value:
-            return value
-    return ""
+def _route_value_from_units(
+    units: list[MemoryUnit], route_key: str, *, strict: bool = False,
+) -> str:
+    values = [str(unit.system_metadata.get(route_key, "")).strip() for unit in units]
+    if strict and len(set(values)) > 1:
+        raise ValidationError("Mixed pipeline sources must be submitted separately")
+    return next((value for value in values if value), "")
 
 
 def _route_value_from_query(query: RetrievalQuery, route_key: str) -> str:
@@ -180,4 +185,5 @@ def _build(config):
         routes=routes,
         fallback=config.get("fallback", "default"),
         route_key=config.get("route_key", "memory_type"),
+        strict_routes=config.get("strict_routes", False),
     )

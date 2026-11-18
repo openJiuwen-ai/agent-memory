@@ -44,6 +44,7 @@ from jiuwen_memory.common.type_def import (
     T_EVENT_UNKNOWN,
     T_INVALID_OPEN,
     FilterClause,
+    FilterExpr,
     FilterLogic,
     FilterOp,
     MemoryUnit,
@@ -63,7 +64,8 @@ _DEFAULT_CLASS = (
 )
 # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
 _DEFAULT_LIFECYCLE = "active"
-_DEFAULT_OVERSAMPLE = 4  # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，文档记忆根设计 §4.4.3）
+# vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，文档记忆根设计 §4.4.3）
+_DEFAULT_OVERSAMPLE = 4
 
 # project 作为配置声明的收窄维，coords 折算后以 ``system_metadata.project`` 谓词
 # 下推（``IN ["", <value>]``，空串兜底：该维不适用/判否的条目一并命中，见
@@ -122,7 +124,8 @@ def _build_schema(vec_dim: int | None) -> str:
     降级场景下向量召回缺一路，倒排与全量存储照常。
 
     ``memory_unit.category`` 列名保留（不改表结构），但 文档记忆根设计 复用 memory_class 后落的
-    是 memory_class 值（如 ``daily_memory``），默认值取 文档记忆根设计 §2 兜底 ``long_term_memory``——
+    是 memory_class 值（如 ``daily_memory``），默认值取文档记忆根设计 §2
+    兜底 ``long_term_memory``——
     非 F07 原设计的 ``diary``。
 
     FTS5 ``tokenize``： ``'simple'``（"不二次分词，分词归 jieba 预处理"），
@@ -221,6 +224,10 @@ _SYSTEM_PREDICATE_COLUMNS = {
     "t_invalid": "t_invalid",
     "t_event": "t_event",
     "system_metadata.project": "project",
+    "system_metadata.memory_class": "category",
+    # team 读取单元 JSON，保留既有表结构；缺失值按空串参与过滤，无需新增物理列。
+    "system_metadata.team": "COALESCE(json_extract(CAST(unit_json AS TEXT), "
+    "'$.system_metadata.team'), '')",
 }
 
 
@@ -301,6 +308,24 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
         return " OR ".join(parts), params
     # NOT：build_system_filters 不产生系统 NOT 谓词，放弃下推（点读后复核兜底）。
     return None, []
+
+
+def _requires_vector_prefilter(expr: FilterExpr | None) -> bool:
+    """Keep selective constraints ahead of truncation; team exclusion alone uses KNN."""
+    if expr is None:
+        return False
+    scoped_fields = {"unit_id", "id", "system_metadata.memory_class", "system_metadata.team"}
+    if isinstance(expr, FilterClause):
+        excludes_team = (
+            expr.field == "system_metadata.memory_class"
+            and expr.op is FilterOp.NE
+            and expr.value == "team_memory"
+        )
+        return expr.field in scoped_fields and not excludes_team
+    if expr.logic is FilterLogic.AND:
+        return any(_requires_vector_prefilter(child) for child in expr.children)
+    # OR/NOT can change the meaning of an exclusion; preserve their existing path.
+    return any(clause.field in scoped_fields for clause in iter_clauses(expr))
 
 
 def _ensure_system_columns(conn: sqlite3.Connection) -> None:
@@ -497,7 +522,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 vec_dim = None
         # _build_schema(vec_dim=None) 时跳过 memory_vec DDL；executescript 一次跑完
         conn.executescript(_build_schema(vec_dim))
-        # 迁移：旧表缺 lifecycle/t_valid/t_invalid/t_event 投影列时幂等补齐（文档记忆根设计 实现期演进）
+        # 迁移：旧表缺 lifecycle/t_valid/t_invalid/t_event 投影列时幂等补齐
+        # （文档记忆根设计实现期演进）。
         _ensure_system_columns(conn)
         return conn
 
@@ -767,7 +793,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         return [uid for (uid,) in rows]
 
     def update_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
-        """覆写全量 ``unit_json``，按 ``content_hash`` 变化判定投影是否重建（文档记忆根设计 §11.3）。
+        """覆写全量 ``unit_json``，按 ``content_hash`` 变化判定投影是否重建
+        （文档记忆根设计 §11.3）。
 
         id 不存在报 :class:`NotFoundError`（对齐 :meth:`KVStore.update`）。``scope`` 不参与
         过滤（与 insert/get/list 同口径，靠 project+category 隔离）。
@@ -1152,8 +1179,12 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         按 distance 排序截断到目标 k）。无 project 谓词兜底 ``project = ''``（只召回
         跨项目可见空串行，与 search_fulltext 同口径）。
 
-        显式 ID 候选约束存在时，先筛选满足 ID、系统条件及 Scope 的候选，再计算
-        L2 距离排序截断；不走全库 KNN 后过滤，避免高分无关记录挤占候选。
+        显式 ID、memory_class 或 team 约束通常先筛选满足系统条件及 Scope
+        的候选，再计算 L2 距离排序截断；避免高分无关记录挤占候选。
+        单独或 AND 中的 memory_class != team_memory 不触发此路径；若无其他
+        ID/类别/团队约束，则复用 KNN 过采样后 SQL 过滤，不足时不补取。
+        OR/NOT 中的类别或团队约束保留原路径。先筛选路径的距离计算量取决于
+        过滤后的候选数，top_k 只限制返回数量。
 
         **降级模式**（``vec_enabled=False``）：返回空列表，不抛错——让上层检索编排照常运行，
         只是向量召回缺一路（倒排召回仍可用）。
@@ -1179,7 +1210,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             k = query.top_k
             qblob = _vec_to_blob(query.vector)
 
-            if any(clause.field in {"unit_id", "id"} for clause in iter_clauses(query.filters)):
+            if _requires_vector_prefilter(query.filters):
                 # Score exact distances after filtering memory_unit. CROSS JOIN keeps
                 # memory_unit as the outer scan and does not require SQLite 3.35's CTE hint.
                 params = (qblob, *sys_params, *scope_params, k)

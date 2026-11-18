@@ -133,6 +133,8 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 - 查询侧：`select_for_recall(query)` 返回 `PipelineBinding`，默认 `metadata` 实现优先
   读取 `RetrievalQuery.extensions[route_key]`，其次从规范化 FilterExpr 提取逻辑上
   强制成立的 `system_metadata.<route_key>` 唯一等值（`memory_type` 裸字段仅作兼容别名）。
+- metadata 的 strict_routes 默认关闭；开启后拒绝未知显式流程和不同路由值的混合写入批次，空路由仍走 fallback。
+- 引擎不根据 Team 标签或应用来源分流；业务校验由 Provider 执行，分类由选定的 Classifier 执行。
 - `PipelineBinding` 只绑定组件引用：`index_builder`、`evolver`、`retriever`、可选 `classifier`。
 - `InMemoryEngine` 仅接受 `space=""` 的本地兼容域，使用绑定后的 `index_builder/evolver/classifier` 处理 write；profile 选择 `OrchestratingEvolver` 或 `DynamicEvolver` 决定 EXTRACT 路径。recall 使用绑定后的 `retriever`；`list` 把分页、类型、过滤和 extensions 透传 `KVStore.list`（经 `list_units` helper），不经 pipeline。未注入 pipeline 时走原单 profile 字段。
 - `CloudEngine` 使用 `message_type`（默认 metadata key）选择构建/查询 profile，写入后固化 `system_metadata["message_type"]` 与 `system_metadata["pipeline"]`，并校验真源 unit.scope 与 target scope 一致。
@@ -238,3 +240,5 @@ Command/Engine.write 显式透传 event_time，batch_write 逐项转发 BatchWri
 Scheduler 的实际 job.run 与摄入控制器 task 执行入口使用 common.trace.runtime 的
 background_trace。任务策略在装配时绑定，不读取提交请求覆盖；Job.trace_type 显式声明
 类型（默认 default，内置 evolve/middle_to_long/dreaming），取消路径也成对结束作用域。
+
+文档团队直写的标签/坐标校验由 engine_impl/doc_mode_support.py 统一完成；Agent/Cloud 两引擎共用，API 保留键校验不放宽。

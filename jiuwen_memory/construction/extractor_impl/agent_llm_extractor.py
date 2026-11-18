@@ -504,8 +504,6 @@ class AgentLlmExtractor(ExtractorImpl):
             source = sources.get(source_id)
             metadata = source.system_metadata if source else {}
             project_fact = item.get("project_fact")
-            if metadata.get("source_app") == "jiuwenswarm" and not isinstance(project_fact, bool):
-                continue
             if project_fact is True:
                 project = metadata.get("project")
                 if not isinstance(project, str) or not project.strip():
@@ -556,8 +554,13 @@ class AgentLlmExtractor(ExtractorImpl):
 
 @ExtractorProducer.register("agent_llm")
 def _build(config):
+    return build_agent_extractor(config, AgentLlmExtractor)
+
+
+def build_agent_extractor(config, extractor_type: type[AgentLlmExtractor]) -> AgentLlmExtractor:
+    """Build a fact extractor with the shared model and retry configuration."""
     reject_deprecated_llm_attempt_keys(config, "extractor")
-    return AgentLlmExtractor(
+    return extractor_type(
         llm=LlmProducer.dep(config, default="echo"),
         min_confidence=config.get("extractor_min_confidence", 0.5),
         max_attempts=config.get("extractor_max_attempts", 3),

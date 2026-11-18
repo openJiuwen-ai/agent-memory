@@ -66,7 +66,7 @@ def _active_lifecycle_filter() -> FilterExpr | None:
     )
 
 
-def _candidate_project(candidate: MemoryUnit) -> str:
+def candidate_project(candidate: MemoryUnit) -> str:
     """读候选 project，与写入侧 ``SQLiteShadowIndex._project_of`` 同口径。
 
     agent 场景 project 是 ``system_metadata.project`` 标量直传；``coords.project``
@@ -81,28 +81,12 @@ def _candidate_project(candidate: MemoryUnit) -> str:
 
 
 def _dedup_recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
-    """去重召回谓词：``lifecycle='active'`` AND（候选 project 非空时）``project IN ['', project]``。
-
-    去重须跨 memory_class 对照：候选 project 非空时，既召回同 project 的
-    long_term/daily 记忆，也召回 project='' 的 user_profile 记忆（跨项目可见），
-    取并集。若只给 lifecycle 谓词，``search_fulltext``/``search_vector`` 会在无
-    project 谓词时兜底 ``project=''``（``_has_project_predicate`` 返回 False），
-    只召回 user_profile，漏掉同 project 记忆 → 同项目内相似记忆不去重，重复写入
-    MEMORY.md / daily_memory。
-
-    候选 project 为空（user_profile）时保持 lifecycle-only：兜底 ``project=''``
-    恰好召回全部可对照的跨项目记忆，语义正确。
-    """
-    project = _candidate_project(candidate)
-    if not project:
-        return _active_lifecycle_filter()
-    return and_merge(
-        None,
-        [
-            FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value]),
-            FilterClause("system_metadata.project", FilterOp.IN, ["", project]),
-        ],
-    )
+    """Compare active document facts in the project and the shared profile."""
+    project = candidate_project(candidate)
+    clauses = [FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value])]
+    if project:
+        clauses.append(FilterClause("system_metadata.project", FilterOp.IN, ["", project]))
+    return and_merge(None, clauses)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -161,6 +145,11 @@ class ShadowDedup(Dedup):
     def health(self) -> None:
         return None
 
+    @staticmethod
+    def recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
+        """Return the comparison range; concrete document policies can override it."""
+        return _dedup_recall_filter(candidate)
+
     def recall(self, candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]:
         # Step A: 向量化候选（精排用）
         try:
@@ -177,7 +166,7 @@ class ShadowDedup(Dedup):
         # lifecycle='active' + project 谓词下推进 SQL WHERE：SUPERSEDED/FORGOTTEN
         # 旧版本在倒排/向量召回阶段即排除，不占 top_k 名额；project 谓词让去重跨
         # memory_class 召回同 project 记忆（否则兜底 project='' 只召回 user_profile）。
-        recall_filter = _dedup_recall_filter(candidate)
+        recall_filter = self.recall_filter(candidate)
 
         # Step B: 两路并跑取并集（与 ShadowRecaller 同设计）。
         # fulltext 必跑（FTS5 BM25，捕捉近乎逐字重叠如"喜欢/不喜欢"只差一字）；
@@ -304,6 +293,11 @@ class ShadowDedup(Dedup):
 
 @DedupProducer.register("shadow")
 def _build(config):
+    return build_shadow_dedup(config, ShadowDedup)
+
+
+def build_shadow_dedup(config, dedup_type: type[ShadowDedup]) -> ShadowDedup:
+    """Share backend assembly across comparison-scope plugins."""
     # embedder 解析与影子索引同源：dedup 配置 params.embedder="default"（与
     # shadow_index 配置 params.embedder="default" 指向同一具名实例）时，dep 走
     # build_named 拿到与影子索引写入时完全相同的 embedder 实例——保证 search_vector
@@ -314,7 +308,7 @@ def _build(config):
         embedder = EmbedderProducer.dep(config)
     else:
         embedder = EmbedderProducer.dep(config, default="hashing")
-    return ShadowDedup(
+    return dedup_type(
         storage=StoreManagerProducer.resolve(config),
         embedder=embedder,
         shadow_name="default",

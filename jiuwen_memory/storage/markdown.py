@@ -123,6 +123,7 @@ class MarkdownStore(BaseStore):
         *,
         project: str = "",
         line_range: tuple[int, int] | None = None,
+        team: str = "",
     ) -> str:
         """读 md 文件原文（按 basename + project 解析路径），返回可选行切片后的全文。
 
@@ -150,6 +151,7 @@ class MarkdownStore(BaseStore):
         new_text: str,
         *,
         project: str = "",
+        team: str = "",
     ) -> None:
         """在 md 文件内对 ``old_text`` 做唯一替换为 ``new_text``（F08 §D5 / R5）。
 
@@ -180,6 +182,7 @@ class MarkdownStore(BaseStore):
         text: str,
         *,
         project: str = "",
+        team: str = "",
     ) -> None:
         """把 md 文件内容**精确回写**为给定全文（补偿用，不做存在性/唯一性/子串校验）。
 
@@ -196,7 +199,7 @@ class MarkdownStore(BaseStore):
         """
 
     @staticmethod
-    def resolve_md_path(md_basename: str, project: str) -> str:
+    def resolve_md_path(md_basename: str, project: str, *, team: str = "") -> str:
         """basename + project → md 文件相对根路径（F08 §3 标准映射）。
 
         ``read_content`` / ``edit_content`` 内部用本方法把 basename + project 映射为
@@ -215,6 +218,13 @@ class MarkdownStore(BaseStore):
         不做路径安全校验——逃逸 ``..`` / 绝对路径由调用方 ``_safe_abs_path`` 收口
         抛 ``ValidationError``。
         """
+        if team:
+            from jiuwen_memory.common.errors import ValidationError
+            from jiuwen_memory.storage.markdown_impl._md_path import team_project
+
+            if md_basename != "MEMORY.md" or team_project(team) != project:
+                raise ValidationError("Team document requires its bound project and MEMORY.md")
+            return f"memory/teams/{team}/MEMORY.md"
         if md_basename == "USER.md":
             return "USER.md"
         if md_basename == "MEMORY.md":

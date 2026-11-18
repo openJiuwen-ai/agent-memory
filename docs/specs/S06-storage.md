@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -1047,3 +1047,11 @@ KV 是分片归属的唯一事实来源：只有分片 KV 在 `insert` 新的 `/
 
 **不保证**：改字段后到新分片可见的延迟；派生写入若在打标记前已定位到源分片、却在复制之后才落地，目标分片的派生记录可能是复制时的版本（只影响召回与排序，返回内容回读真源）；遗留 `moving` 在维护窗口恢复前该记忆保持只读；遗留 `claim` 在维护窗口恢复前该记忆不能 delete、不能开始新搬迁。
 
+
+## 团队文档坐标
+
+文档 read/edit/restore 的存储窄端口追加 keyword-only `team=""`；省略保持原路径。
+非空 team 只用于 MEMORY.md，须为 `{project}--{24位小写十六进制摘要}`，项目须与显式 project 一致，禁止路径分隔符和点目录。对应 `memory/teams/{team}/MEMORY.md`。
+团队单元使用 memory_class=team_memory。Shadow 将 memory_class/team 编译为 SQL 过滤；全文在截断前执行。
+向量中，单独或 AND 中的 `memory_class != team_memory` 不要求候选截断前过滤；没有其他 ID、类别、团队约束时，允许复用过采样候选后过滤，结果可能不足 top_k，不保证补取。类别等值、团队和 ID 等约束仍先筛选再计算距离；OR/NOT 组合沿用原路径。
+读文档通过内容 hash 找到单元后还须核对 md_filename；不同文件的相同内容不能扩展读取集合。看门狗、补偿和版本替换从同一规范路径恢复坐标。

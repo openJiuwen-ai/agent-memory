@@ -81,6 +81,7 @@ from jiuwen_memory.api import (
     ValidationError,
     _config_overlay_candidates,
     _prepare_shared_document_portal,
+    _should_write_document,  # noqa: PLC2701 -- 内置适配器通过 API 复用私有装配辅助函数
     assemble_managed_runtime,
     assemble_runtime,
     document_llm_instances,
@@ -94,7 +95,12 @@ from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
 from jiuwen_memory_adapter.jiuwenswarm.memory_scenes import create_memory_scene
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import MAX_TOP_K as _MAX_TOP_K
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import parse_line_range
+from jiuwen_memory_adapter.jiuwenswarm.pipeline_profiles import configure_document_pipelines
 from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import OperationWaitTimeout
+from jiuwen_memory_adapter.jiuwenswarm.team_policy import (
+    partition_team_conclusions,
+    validate_team_binding,
+)
 from jiuwen_memory_adapter.jiuwenswarm.work_memory import (
     _merge_prefetch_lines as _merge_prefetch_lines,
 )
@@ -513,6 +519,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         portal: dict[str, Any] | None = None,
         scene: str = "agent",
         project: str = "default",
+        team: str = "",
+        sidebar: str = "",
+        member: str = "",
+        document_runtime_holder: Any = None,
         **_kwargs: Any,
     ) -> None:
         self._continuity_enabled = continuity_enabled
@@ -570,8 +580,12 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._portal_error = None
         self._initialize_lock = asyncio.Lock()
         self._scene = create_memory_scene(scene, project)
+        self._team = team
+        self._sidebar = sidebar
+        self._member = member
         self._base_url = base_url or ""
         self._config_path = config_path
+        self._document_runtime_holder = document_runtime_holder
         self._config_dict = config_dict
         self._user_id = user_id
         self._agent_id = agent_id
@@ -798,7 +812,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
             return SharedPortalHandle(
                 self.runtime, self._security_provider, location,
-                client.portal_instance_id, **options,
+                client.portal_instance_id,
+                runtime_key=getattr(client, "portal_runtime_key", None), **options,
             )
 
         from jiuwen_memory_entry.portal.hosting import start_portal
@@ -823,7 +838,13 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             self._space = kwargs.get("space") or ""
 
         if not self._initialized:
-            await self._ensure_client().initialize()
+            try:
+                await self._ensure_client().initialize()
+            except BaseException:
+                if (self._document_runtime_holder is not None and not self._base_url
+                        and not self._continuity_enabled):
+                    self._client = None  # The failed lease has already released its resources.
+                raise
         self._initialized = True
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, config=%s, scope=%s)",
@@ -851,6 +872,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 continuity_enabled=self._continuity_enabled,
                 portal_instance_id=self._portal_settings.get("instance_id"),
                 config_overrides=self._scene.sdk_config_overrides(),
+                document_runtime_holder=self._document_runtime_holder,
             )
         return self._client
 
@@ -875,6 +897,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             client=self._client, scope=self.bound_scope(), prepare=self._prepare,
             video_enabled=self._video_tools_enabled,
             continuity_enabled=self._continuity_enabled, continuity_mode=self._continuity_mode,
+            team=self._team, sidebar=self._sidebar, member=self._member,
         )
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
@@ -1080,9 +1103,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             return
         content = f"user: {user_msg}\nassistant: {assistant_msg}"
         system_metadata: dict[str, str] = {
-            "infer": "true",
+            **self._scene.write_route().metadata(),
             "source_app": "jiuwenswarm",
             "agent_label": self._agent_id,
+            **self._scene.sync_metadata(self._scene_context()),
         }
         # rail 经 _resolve_project 传入 project；与 conclude 分支同口径直传标量
         # system_metadata["project"]，让 md 落盘按 memory/{project}/... 分流。
@@ -1118,6 +1142,42 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 "[AgentMemoryMemoryProvider] sync_turn add failed: error_type=%s",
                 type(exc).__name__,
             )
+
+    async def add_team_memories(self, items: list[dict[str, str]]) -> int:
+        """Persist validated extraction results; this is a host API, not a model tool."""
+        from jiuwen_memory_adapter.jiuwenswarm.team_memory import TeamMemoryScene
+
+        if not isinstance(self._scene, TeamMemoryScene) or not self._team:
+            raise ValueError("Team conclusions require a Team scene and a bound team key")
+        if not self._initialized or self._client is None:
+            raise RuntimeError("Team memory is not initialized")
+        project = self._scene.resolve_project({})
+        validate_team_binding(project, self._team)
+        conclusions, skipped = partition_team_conclusions(items)
+        if skipped:
+            logger.warning(
+                "[AgentMemoryMemoryProvider] Invalid Team conclusions: "
+                "skipped=%d total=%d reasons=%s",
+                sum(skipped.values()), len(items), skipped,
+            )
+        if items and not conclusions:
+            raise ValueError(
+                "No valid Team conclusions: expected a supported label and non-empty content"
+            )
+        stored = 0
+        for label, content in conclusions:
+            prefix = f"[{label}]"
+            labeled_content = content if content.startswith(prefix) else f"{prefix} {content}"
+            result = await self._client.add(labeled_content, self.bound_scope(), tags=[label],
+                system_metadata={
+                    **self._scene.write_route("conclusion").metadata(), "memory_scene": "team",
+                    "project": project, "team": self._team,
+                    "sidebar": self._sidebar, "member": self._member, "team_label": label,
+                })
+            if result is None:
+                raise RuntimeError("Team conclusion write failed")
+            stored += bool(result.item_id)
+        return stored
 
     # -- MemoryProvider: 静态提示词 + 生命周期（非抽象，有默认） -------------- #
 
@@ -1300,6 +1360,7 @@ class _AgentMemoryClient:
         *,
         project: str = "",
         line_range: tuple[int, int] | None = None,
+        team: str = "",
     ) -> list[dict[str, Any]] | None:
         """读 md 文件，返回命中块对应的 unit 列表（md文件接口 F08）。
 
@@ -1316,6 +1377,7 @@ class _AgentMemoryClient:
         new_text: str,
         *,
         project: str = "",
+        team: str = "",
     ) -> list[dict[str, Any]] | None:
         """md 文件内唯一替换，返回受影响的**新** unit 列表（md文件接口 F08）。
 
@@ -1347,6 +1409,7 @@ def _build_client(
     continuity_enabled: bool = False,
     portal_instance_id: str | None = None,
     config_overrides: dict[str, Any] | None = None,
+    document_runtime_holder: Any = None,
 ) -> _AgentMemoryClient:
     """按优先级构建客户端：HTTP > 直传 config_dict > 外部配置文件 > 内置 agent 默认装配。
 
@@ -1381,6 +1444,17 @@ def _build_client(
             config_paths=config_paths,
             manage_configuration=manage_configuration, portal_instance_id=portal_instance_id,
         )
+    if document_runtime_holder is not None:
+        config = (
+            _merge_config_over_default(config_dict or {})
+            if config_dict or not config_path else None
+        )
+        config, _ = _resolve_sdk_config(config_path, config, config_overrides)
+        return document_runtime_holder.acquire(config, security_provider, lambda: _InProcessClient(
+            None, config_dict=config, security_provider=security_provider,
+            manage_configuration=manage_configuration, portal_instance_id=portal_instance_id,
+            strict_close=True,
+        ))
     if config_dict or not config_path:
         # [本地修改 2026-10-20] 上层 config_dict 深合并到内置 agent 默认装配之上，
         # 而非整体替换——宿主只传要覆盖的片段（globals 凭证/端点、embedder_dim、
@@ -1753,7 +1827,7 @@ class _HttpClient(_AgentMemoryClient):
             if isinstance(it, dict)
         ]
 
-    def _context_payload(self, scope, project: str = "") -> dict[str, Any]:
+    def _context_payload(self, scope, project: str = "", *, team: str = "") -> dict[str, Any]:
         """语义 _Scope + project → ``Context`` dataclass 的 JSON 形态（F08）。
 
         api_contract ``_decode_dataclass`` 按字段镜像解码：``scope`` 嵌套对象 +
@@ -1764,6 +1838,8 @@ class _HttpClient(_AgentMemoryClient):
         context: dict[str, Any] = {"scope": self._scope_payload(scope)}
         if project:
             context["extensions"] = {"coords": {"project": project}}
+        if team:
+            context.setdefault("extensions", {}).setdefault("coords", {})["team"] = team
         return context
 
     @classmethod
@@ -1776,7 +1852,7 @@ class _HttpClient(_AgentMemoryClient):
         }
 
     async def read_md_file(
-        self, md_filename, scope, *, project="", line_range=None
+        self, md_filename, scope, *, project="", line_range=None, team=""
     ) -> list[dict[str, Any]] | None:
         """读 md 文件（md文件接口 F08）。响应是 ``list[MemoryUnit]`` 序列化顶层数组（与 add 同构）。
 
@@ -1784,7 +1860,7 @@ class _HttpClient(_AgentMemoryClient):
         抛:class:`AgentMemoryClientError` 透出；传输失败 None。
         """
         payload: dict[str, Any] = {
-            "context": self._context_payload(scope, project),
+            "context": self._context_payload(scope, project, team=team),
             "md_filename": md_filename,
         }
         if line_range is not None:
@@ -1804,7 +1880,7 @@ class _HttpClient(_AgentMemoryClient):
         return [self._unit_view(u) for u in units if isinstance(u, dict)]
 
     async def edit_md_file(
-        self, md_filename, scope, old_text, new_text, *, project=""
+        self, md_filename, scope, old_text, new_text, *, project="", team=""
     ) -> list[dict[str, Any]] | None:
         """md 文件内唯一替换（md文件接口 F08）。响应是受影响**新** unit 的顶层数组。
 
@@ -1812,7 +1888,7 @@ class _HttpClient(_AgentMemoryClient):
         透出；传输失败 None。写路径超时（edit 同步 supersede shadow）。
         """
         payload: dict[str, Any] = {
-            "context": self._context_payload(scope, project),
+            "context": self._context_payload(scope, project, team=team),
             "md_filename": md_filename,
             "old_text": old_text,
             "new_text": new_text,
@@ -2180,6 +2256,12 @@ def _resolve_sdk_config(
         config_paths = (str(path),)
     if overrides:
         config = _merge_config(deepcopy(config or {}), deepcopy(overrides))
+    if overrides is not None:
+        document_mode = _should_write_document(
+            (config or {}).get("globals", {}).get("write_document"),
+        )
+        if document_mode:
+            config = configure_document_pipelines(config or {})
     return config, config_paths
 
 
@@ -2210,6 +2292,7 @@ class _InProcessClient(_AgentMemoryClient):
         manage_configuration: bool = True,
         portal_instance_id: str | None = None,
         config_overrides: dict[str, Any] | None = None,
+        strict_close: bool = False,
     ) -> None:
         if security_provider is None:
             # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
@@ -2219,6 +2302,7 @@ class _InProcessClient(_AgentMemoryClient):
                 "AgentMemory in-process mode requires an injected trusted security "
                 "provider (composition root); production should use HTTP + API key"
             )
+        self._strict_close = strict_close
         self._security_provider = security_provider
         config, config_paths = _resolve_sdk_config(config_path, config_dict, config_overrides)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
@@ -2250,6 +2334,15 @@ class _InProcessClient(_AgentMemoryClient):
     def runtime(self) -> Any:
         """返回插件与本地 Portal 共用的 Runtime。"""
         return self._runtime
+
+    def bind_security(self, security_provider: Any) -> _InProcessClient:
+        """Borrow this Runtime with a caller-owned security source; holder owns close."""
+        from copy import copy
+
+        client = copy(self)
+        # 同类浅拷贝仅替换借用者身份，原实例和共享 Runtime 的身份绑定保持不变。
+        client._security_provider = security_provider  # pylint: disable=protected-access
+        return client
 
     def _security(self) -> RequestSecurityContext:
         """本次调用的可信上下文：由注入的 provider 产出，业务 scope 只作 target。"""
@@ -2412,7 +2505,7 @@ class _InProcessClient(_AgentMemoryClient):
         return [{"content": unit.content, "item_id": unit.id, "score": 0} for unit in result.items]
 
     @staticmethod
-    def _md_context(api_scope, project: str = ""):
+    def _md_context(api_scope, project: str = "", *, team: str = ""):
         """语义 scope + project → api.Context（F08）。
 
         project 经 ``extensions["coords"]["project"]`` 下传（``COORDS_KEY`` 常量
@@ -2423,13 +2516,15 @@ class _InProcessClient(_AgentMemoryClient):
         # 内核 common.type_def。该常量是稳定字面量 "coords"，与内核一致地写死，
         # 由 Context.extensions 透传给 Engine 层 _project_from_context 解析。
         extensions = {"coords": {"project": project}} if project else {}
+        if team:
+            extensions.setdefault("coords", {})["team"] = team
         return Context(scope=api_scope, extensions=extensions)
 
     async def read_md_file(
-        self, md_filename, scope, *, project="", line_range=None
+        self, md_filename, scope, *, project="", line_range=None, team=""
     ) -> list[dict[str, Any]] | None:
         api_scope = self._to_api_scope(scope)
-        context = self._md_context(api_scope, project)
+        context = self._md_context(api_scope, project, team=team)
         # read_md_file 是同步方法（内部 asyncio.run），必须 to_thread（§4.6）。
         # 业务异常（非文档模式 ValidationError 等）不吞——显式工具调用须让
         # handle_tool_call 把错误透出给 LLM。
@@ -2450,10 +2545,10 @@ class _InProcessClient(_AgentMemoryClient):
         ]
 
     async def edit_md_file(
-        self, md_filename, scope, old_text, new_text, *, project=""
+        self, md_filename, scope, old_text, new_text, *, project="", team=""
     ) -> list[dict[str, Any]] | None:
         api_scope = self._to_api_scope(scope)
-        context = self._md_context(api_scope, project)
+        context = self._md_context(api_scope, project, team=team)
         # edit_md_file 同步方法（to_thread）；old_text 不存在/不唯一抛
         # NotFoundError/ValidationError，向上透出（见 read_md_file 注释）。
         units = await asyncio.to_thread(
@@ -2498,7 +2593,7 @@ class _InProcessClient(_AgentMemoryClient):
             try:
                 await asyncio.to_thread(runtime.close)
             except Exception as exc:
-                if self.portal_location is not None:
+                if self.portal_location is not None or self._strict_close:
                     self.portal_error = "Runtime shutdown failed. Keeping the Portal instance ID."
                     raise
                 logger.warning(

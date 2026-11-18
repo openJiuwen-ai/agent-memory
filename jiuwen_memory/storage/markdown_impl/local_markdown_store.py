@@ -355,6 +355,7 @@ class LocalMarkdownStore(MarkdownStore):
         *,
         project: str = "",
         line_range: tuple[int, int] | None = None,
+        team: str = "",
     ) -> str:
         """读 md 文件原文，按 ``line_range`` 行切片（越界 clamp，1-based 闭区间）。
 
@@ -366,7 +367,7 @@ class LocalMarkdownStore(MarkdownStore):
         """
         with self._lock:
             root = self._resolved_root()
-            rel_path = self.resolve_md_path(md_basename, project)
+            rel_path = self.resolve_md_path(md_basename, project, team=team)
             abs_path = self._safe_abs_path(root, rel_path)
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, read_content returns empty", rel_path)
@@ -392,6 +393,7 @@ class LocalMarkdownStore(MarkdownStore):
         new_text: str,
         *,
         project: str = "",
+        team: str = "",
     ) -> None:
         """文件级唯一子串替换 + 整文件原子写（F08 §D5 / R5）。
 
@@ -410,7 +412,7 @@ class LocalMarkdownStore(MarkdownStore):
         """
         with self._lock:
             root = self._resolved_root()
-            rel_path = self.resolve_md_path(md_basename, project)
+            rel_path = self.resolve_md_path(md_basename, project, team=team)
             abs_path = self._safe_abs_path(root, rel_path)
             if not os.path.isfile(abs_path):
                 raise NotFoundError(
@@ -514,6 +516,7 @@ class LocalMarkdownStore(MarkdownStore):
         text: str,
         *,
         project: str = "",
+        team: str = "",
     ) -> None:
         """把 md 文件内容精确回写为 ``text``（edit_md_file 的 md 侧失败补偿，见契约）。
 
@@ -524,7 +527,7 @@ class LocalMarkdownStore(MarkdownStore):
         """
         with self._lock:
             root = self._resolved_root()
-            rel_path = self.resolve_md_path(md_basename, project)
+            rel_path = self.resolve_md_path(md_basename, project, team=team)
             abs_path = self._safe_abs_path(root, rel_path)
             _safe_restore(abs_path, text)
 
@@ -543,6 +546,11 @@ class LocalMarkdownStore(MarkdownStore):
         metadata = unit.system_metadata or {}
         memory_class = self._resolved_memory_class(metadata)
         project = self._project_of(unit)
+        if memory_class == "team_memory":
+            team = str(metadata.get("team") or "")
+            if not team:
+                raise ValidationError("Team memory requires a team key")
+            return self.resolve_md_path("MEMORY.md", project, team=team)
 
         # 未知 memory_class 走 long_term_memory 兜底（MEMORY.md）
         sub, into_project = _PATH_MAP.get(memory_class, _PATH_MAP[_DEFAULT_CLASS])

@@ -11,6 +11,7 @@
 """
 
 import json
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -27,6 +28,7 @@ from jiuwen_memory.construction.extractor_impl.agent_llm_extractor import (
     _EXTRACTION_FIDELITY_SUFFIX_EN,
     AgentLlmExtractor,
 )
+from jiuwen_memory.construction.extractor_impl.document_fact_extractor import DocumentFactExtractor
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     _CONTEXT_SECTION_TEMPLATES,
     _EXTRACT_SYSTEM_PROMPT,
@@ -36,6 +38,7 @@ from jiuwen_memory.construction.extractor_impl.llm_extractor import (
     ExtractorImpl,
     _format_context_block,
 )
+from jiuwen_memory.construction.extractor_impl.team_llm_extractor import TeamLlmExtractor
 from tests.unit.construction.fixtures import MockLLM, create_test_unit
 
 
@@ -60,10 +63,11 @@ class FailingLLM(RecordingLLM):
 
 
 def _make(
-    responses: list[str] | None = None, language: str = "cn"
+    responses: list[str] | None = None, language: str = "cn",
+    extractor_type: type[AgentLlmExtractor] = AgentLlmExtractor,
 ) -> tuple[AgentLlmExtractor, RecordingLLM]:
     llm = RecordingLLM(responses=responses)
-    extractor = AgentLlmExtractor(
+    extractor = extractor_type(
         llm=llm, language=language, importance_category_prompt_enabled=True
     )
     return extractor, llm
@@ -220,7 +224,8 @@ def test_reusable_identifier_rule_in_prompts():
 
 
 @pytest.mark.parametrize("project", ["", "   ", "KVCache"])
-def test_project_fact_uses_only_source_project(project):
+@pytest.mark.parametrize("app", ["jiuwenswarm", "another_agent", ""])
+def test_project_fact_uses_only_source_project(project, app):
     """同一轮里，项目终稿路径受项目约束，个人邮箱仍按画像处理。"""
     project_item = json.loads(_candidate_json(memory_class=" user_profile "))[0]
     project_item.update(
@@ -232,9 +237,12 @@ def test_project_fact_uses_only_source_project(project):
     profile_item.update(content="用户常用邮箱是 user@example.org", project_fact=False)
     unclassified_item = {**project_item, "content": "另一个项目的部署地址"}
     del unclassified_item["project_fact"]
-    ext, _ = _make(responses=[json.dumps([project_item, unclassified_item, profile_item])])
+    ext, _ = _make(
+        responses=[json.dumps([project_item, unclassified_item, profile_item])],
+        extractor_type=DocumentFactExtractor,
+    )
     source = create_test_unit("u1", "终稿放在 /work/paper/final，我的邮箱是 user@example.org")
-    source.system_metadata.update(source_app="jiuwenswarm", project=project)
+    source.system_metadata.update(source_app=app, project=project)
 
     result = ext.extract([source])
 
@@ -427,3 +435,107 @@ def test_agent_llm_factory_reads_new_attempt_keys():
         extractor.extract([create_test_unit("u1", "周五晚上聚餐，4个人")])
 
     assert len(llm.calls) == 2, "extractor_max_attempts=2 应只调用 LLM 两次"
+
+
+@pytest.mark.parametrize("team_internal,expected", [(True, 0), (None, 0), (False, 1)])
+def test_team_turn_requires_explicit_non_internal_fact(team_internal, expected):
+    item = json.loads(_candidate_json(memory_class="long_term_memory"))[0]
+    item.update(project_fact=True, team_internal=team_internal)
+    extractor, llm = _make(responses=[json.dumps([item])], extractor_type=TeamLlmExtractor)
+    source = create_test_unit("u1", "confirmed project fact or team draft")
+    source.system_metadata.update(source_app="jiuwenswarm", project="repo", memory_scene="team")
+    assert "team_internal" in extractor.extraction_system_prompt([source])
+    assert len(extractor.extract([source])) == expected
+    assert len(llm.calls) == (2 if team_internal is None else 1)
+    source.system_metadata.pop("memory_scene")
+    assert "team_internal" in extractor.extraction_system_prompt([source])
+
+
+def test_generic_extractor_does_not_select_policy_from_app_metadata():
+    extractor, _ = _make(responses=[_candidate_json()])
+    source = create_test_unit("u1", "durable fact")
+    source.system_metadata.update(source_app="jiuwenswarm", memory_scene="team")
+    assert "team_internal" not in extractor.extraction_system_prompt([source])
+    assert len(extractor.extract([source])) == 1
+
+
+@pytest.mark.parametrize("fields", [{}, {"team_internal": None}, {"team_internal": "false"},
+                                    {"team_internal": 0}])
+def test_team_repairs_missing_or_invalid_flag_once(fields):
+    item = json.loads(_candidate_json(memory_class="user_profile"))[0]
+    item.update(project_fact=False, **fields)
+    correction = json.dumps([{"candidate_index": 0, "team_internal": False}])
+    extractor, llm = _make([json.dumps([item]), correction], extractor_type=TeamLlmExtractor)
+    source = create_test_unit("u1", "confirmed user preference")
+    result = extractor.extract([source])
+    assert len(result) == 1 and result[0].content == item["content"]
+    assert len(llm.calls) == 2
+    request = json.loads(llm.calls[1][1].content)
+    assert request["candidates"] == [{"candidate_index": 0, "candidate": item}]
+    assert request["sources"] == [{"source_id": "u1", "content": source.content}]
+
+
+@pytest.mark.parametrize("correction,expected", [
+    ([{"candidate_index": 2, "team_internal": False}], 2),
+    ([{"candidate_index": 2, "team_internal": True}], 1),
+    ([{"candidate_index": 2, "team_internal": "false"}], 1),
+    ([{"candidate_index": 2, "team_internal": False}] * 2, 1),
+    ([{"candidate_index": 99, "team_internal": False}], 1),
+    ([], 1),
+])
+def test_team_correction_preserves_valid_facts_and_original_fields(correction, expected):
+    base = json.loads(_candidate_json(memory_class="long_term_memory"))[0]
+    items = [dict(base, content="confirmed fact", project_fact=True, team_internal=False),
+             dict(base, content="internal draft", project_fact=True, team_internal=True),
+             dict(base, content="another fact", project_fact=True)]
+    # Attempts to change already-valid decisions or rewrite a repaired fact are ignored.
+    response = [{**item, "content": "rewritten", "source_id": "foreign"} for item in correction]
+    response.extend([{"candidate_index": 0, "team_internal": True},
+                     {"candidate_index": 1, "team_internal": False}])
+    extractor, llm = _make(
+        [json.dumps(items), json.dumps(response)], extractor_type=TeamLlmExtractor,
+    )
+    source = create_test_unit("u1", "confirmed facts and internal draft")
+    source.system_metadata["project"] = "repo"
+    result = extractor.extract([source])
+    assert [unit.content for unit in result] == ["confirmed fact", "another fact"][:expected]
+    assert len(llm.calls) == 2
+    request = json.loads(llm.calls[1][1].content)
+    assert [item["candidate_index"] for item in request["candidates"]] == [2]
+
+
+@pytest.mark.parametrize("failure", [
+    RuntimeError("private failure"), TimeoutError("private timeout"), "not JSON",
+])
+def test_team_correction_failure_keeps_valid_facts_without_another_attempt(failure):
+    base = json.loads(_candidate_json(memory_class="user_profile"))[0]
+    items = [dict(base, content="confirmed preference", project_fact=False, team_internal=False),
+             dict(base, content="private candidate", project_fact=False)]
+    extractor, llm = _make(extractor_type=TeamLlmExtractor)
+    llm.chat = Mock(side_effect=[json.dumps(items), failure, "[]"])
+    with patch("jiuwen_memory.construction.extractor_impl.team_llm_extractor.logger") as log:
+        result = extractor.extract([create_test_unit("u1", "user preferences")])
+    assert [unit.content for unit in result] == ["confirmed preference"]
+    assert llm.chat.call_count == 2
+    warning = log.warning.call_args.args
+    assert "correction failed" in warning[0] and warning[1] == 1
+    assert "private" not in str(log.warning.call_args_list)
+
+
+@pytest.mark.parametrize("language,source_hint,repair_hint", [
+    ("cn", "团队协作回合", "仅纠正缺失或类型错误"),
+    ("en", "team collaboration turns", "Repair only missing or invalid"),
+    ("unknown", "团队协作回合", "仅纠正缺失或类型错误"),
+])
+def test_team_initial_and_correction_prompts_follow_language(language, source_hint, repair_hint):
+    item = json.loads(_candidate_json(memory_class="user_profile"))[0]
+    item["project_fact"] = False
+    correction = json.dumps([{"candidate_index": 0, "team_internal": False}])
+    extractor, llm = _make(
+        [json.dumps([item]), correction], language=language, extractor_type=TeamLlmExtractor,
+    )
+    assert len(extractor.extract([create_test_unit("u1", "confirmed user preference")])) == 1
+    assert len(llm.calls) == 2
+    assert source_hint in llm.calls[0][0].content
+    assert repair_hint in llm.calls[1][0].content
+    assert all("team_internal=false" in call[0].content for call in llm.calls)

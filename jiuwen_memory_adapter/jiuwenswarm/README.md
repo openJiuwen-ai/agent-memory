@@ -7,7 +7,7 @@
 
 SDK 必须注入可信 `security_provider`，文档目录由 `markdown_store.default.params.root` 指定。HTTP 必须使用已启用文档记忆、可正常认证的服务。两种方式都复用原 MemoryAPI，不新增 search/evolve 平行接口。
 
-Work/Code 的记忆 Agent 身份都优先采用运行名称，再回落配置 agent_id。SDK 中，相同 org/user/space 和 Agent 名称可跨模式共享 USER.md；不同 Agent 名称仍按 Scope 查询隔离，项目记忆按 project 筛选。session 沿用配置（默认空字符串），不强制覆盖；共用文档根不会合并身份。
+Swarm 宿主的 Jiuwen 路线中，Work/Code/Team 统一使用配置 memory.builtin.jiuwen.agent_id，缺省 main_agent，运行名称不覆盖它。SDK 中，相同 org/user/space 和配置身份可跨模式共享 USER.md，自定义助手名称不同也共享；不同配置身份仍按 Scope 查询隔离，项目记忆按 project 筛选。session 沿用配置（默认空字符串），不强制覆盖；共用文档根不会合并身份。独立使用 Provider 时，agent_id 仍由调用方传入，内核不固定其值。默认 main_agent 兼容原默认身份；已有显式 agent_id 仍优先，不自动覆盖或合并旧身份数据。
 
 
 ## Coding 参数与使用行为
@@ -16,7 +16,7 @@ Provider 构造参数：
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
-| `scene` | `agent` | 内置 `agent` / `code`；未注册值抛出 `ValueError` |
+| `scene` | `agent` | 内置 `agent` / `code` / `team`；未注册值抛出 `ValueError` |
 | `project` | `default` | Code 项目目录键；禁止空值、点目录、路径分隔符及 NUL；Work 忽略此构造参数 |
 
 身份通过 `initialize(user_id, scope_id, agent_id, session_id)` 绑定。session 显式值原样保留，
@@ -102,16 +102,16 @@ memory:
       identity_org: local
       identity_user: developer
       user_id: my-user
-      agent_id: jiuwenswarm        # 无运行 Agent 名称时的兜底
+      agent_id: main_agent        # Work/Code/Team 共用的记忆身份
 ```
 
 `memory.mode=local` 是 Swarm 内置记忆门禁；`jiuwen.mode=http` 是连接方式，两者不冲突。
 Work 和 Code 共用这组服务配置。四个 Coding 工具分别调用 `/v1/read_md_file`、
 `/v1/add`、`/v1/edit_md_file`、`/v1/search`；回合后同步同样调用 `/v1/add`。
 
-HTTP 沿用现有身份映射：org/user 取 identity_org/identity_user，agent 取运行名称，
+HTTP 沿用现有身份映射：org/user 取 identity_org/identity_user，agent 取配置 agent_id（默认 main_agent），
 session 取 user_id，space 为空；scope_id 和原 session_id 不原样传输。
-同一认证身份、user_id 和 Agent 名称下画像跨 Work/Code 共享，项目事实仍按 project 隔离。
+同一认证身份、user_id 和配置 agent_id 下画像跨 Work/Code/Team 共享，项目事实仍按 project 隔离。
 不能把更换 user_id 当作完整的多用户查询隔离：影子搜索跨 session，用户边界应由认证身份区分。
 切换 SDK/HTTP 不自动迁移数据或上传本地 Markdown。
 
@@ -125,26 +125,67 @@ session 取 user_id，space 为空；scope_id 和原 session_id 不原样传输�
 
 ## 场景扩展与装配
 
-Provider 的公开入参保持不变。Work/Coding 的工具、预取、项目归属、提示词和 SDK 配置要求由场景策略实现；Provider 保留身份、客户端、初始化与关闭，以及既有接续记忆路由。
+Provider 保留原有参数，并追加 Team 坐标及可选宿主 Runtime 持有者。Work/Coding 的工具、预取、项目归属、提示词和 SDK 配置要求由场景策略实现；Provider 保留身份、客户端、初始化与关闭，以及既有接续记忆路由。
 
 | 模块 | 职责 |
 |---|---|
-| `memory_scene.py` | `MemoryScene` 协议与请求级 `MemorySceneContext`，不依赖具体场景 |
+| `memory_scene.py` | `MemoryScene` 协议、`MemoryWriteRoute` 与请求级 `MemorySceneContext` |
 | `memory_scenes.py` | `SCENE_FACTORIES` 注册表，每次创建新的场景实例 |
-| `work_memory.py` / `coding_memory.py` | Work/Coding 的场景行为 |
+| `work_memory.py` / `coding_memory.py` / `team_memory.py` | Work/Coding/Team 的场景行为 |
+| `pipeline_profiles.py` / `team_policy.py` | 具名文档写入配置与宿主结论校验 |
 | `memory_tools.py` | 共用工具定义、文档读取与编辑 |
 | `agent_memory_provider.py` | 场景委托、身份、SDK/HTTP 客户端及生命周期 |
 
 新增场景时实现 `MemoryScene`，在 `SCENE_FACTORIES` 注册接收项目键的工厂；复用现有行为时可注册已有策略的工厂。实例状态不得存入注册表。若接入 Swarm，还需在其 `jiuwen_rail_builder.py` 注册 Rail 装配工厂；Core 继续决定调用时机。
 
-普通 SDK 顺序为“选择并加载配置 → 按原规则合并 → 应用场景配置要求 → 创建 Runtime”。Work 不追加覆盖，Coding 仅覆盖 `globals.write_document=true`；覆盖在配置副本上完成，保留独立文件配置及 Portal 配置来源。HTTP 不应用本地 SDK 配置。
+普通 SDK 顺序为“选择并加载配置 → 按原规则合并 → 应用场景配置要求 → 装配具名文档流程 → 创建 Runtime”。场景配置方面，Work 不追加 globals 覆盖，Coding/Team 仅覆盖 `globals.write_document=true`；覆盖在配置副本上完成，保留独立文件配置及 Portal 配置来源。HTTP 不应用本地 SDK 配置。
 
 内联 `config_dict` 按原规则合并 Provider 默认配置；独立 `config_path` 按文件内容交给内核补默认值，不额外补入 Provider 的模型或端点。空内联配置仍可回退配置文件。
 
-未开启接续时，Work/Code 可以同时创建独立 Provider、场景与客户端，并各自关闭。共享文档根仍遵循既有身份、项目过滤和资源锁；不引入全局 Provider 或 Runtime 单例。工具 schema 每次返回独立副本。
+未开启接续时，Work/Code 可以同时创建独立 Provider、场景与客户端，并各自关闭。共享文档根仍遵循既有身份、项目过滤和资源锁；Provider 和场景始终独立；注入 document_runtime_holder 时按根目录共享 Runtime，未注入时各自持有。工具 schema 每次返回独立副本。
 
 普通 Coding 使用默认 `continuity_enabled=false`。显式启用接续后，预取和回写优先走任务接续，
 需要调用方传入项目 scope、task_id、binding_id 和 event_id；当前 Coding Rail 不提供这些任务参数。
 SDK 接续使用独立配置和共享 Runtime，只注册任务/恢复工具，不应用 Coding 文档配置覆盖。
 共享 Runtime 与 Portal 由接续池管理，单个 Provider 退出只释放自身使用权和授权来源；
 普通文档模式的资源锁和独立关闭行为保持不变。
+
+## Team 使用
+
+宿主构造 `scene="team", project=项目键, team=团队键, sidebar="work"或"code", member=成员名`，与 Core 的 `JiuwenTeamMemoryRail` 配套。身份按现有 initialize 参数绑定，Swarm 的 Leader、成员与单人模式使用配置中的同一 agent_id；运行名称不构成额外隔离，不合并不同配置身份。
+
+| 工具 | 参数 | 行为 |
+|---|---|---|
+| team_memory_search | query；target=project/team 可省略；top_k=5 | 省略 target 分别查询两段，每段最多 5 条 |
+| team_memory_read | target=profile/project/team、name；offset/limit | profile 仅 USER.md；project 为 MEMORY.md 或日期文件；team 仅 MEMORY.md |
+| team_memory_write | content | 普通抽取到画像或项目事实，不写草稿或团队分工 |
+| team_memory_edit | target、name、old_text、new_text | 唯一文本替换；空 new_text 删除 |
+
+`add_team_memories(items)` 是宿主接口，items 为 label/content 条目，不暴露给对话模型。空提取不报告写入成功。团队结论不进入单人项目召回；同项目换专家团仍共享画像和项目事实，但团队结论隔离。
+
+SDK 宿主可传 document_runtime_holder：按根目录领取/归还 Runtime，首份配置生效，调用身份独立，最后释放前等待已接受操作结束。HTTP 不使用持有者。详细决策及验证入口见 [Team 文档记忆](../../docs/features/F09-team-document-memory.md)。
+
+Work 的自动召回与 `agent_memory_search` 在传入项目时仅查询该项目，画像通过 `USER.md` 单独读取，不混入旧空项目记忆。未迁移的旧空项目内容不会自动归并到 `default`。
+
+Team 预取并行读取画像、项目及团队兜底文档，并分别检索项目和团队，每项最多等待 5 秒。各段有命中时只使用命中，未命中或失败时使用对应已读取的文档；某段失败不影响其他段。
+
+
+## 写入流程配置
+
+普通自动同步和显式工具写入都由场景的 `write_route()` 选择流程：
+
+| 场景/操作 | `system_metadata.pipeline` | `infer` |
+|---|---|---|
+| Work/Code 普通事实 | document_fact | true |
+| Team 普通事实 | team_turn | true |
+| 宿主 add_team_memories | team_conclusion | false |
+
+模型工具不能修改 pipeline、infer 或团队坐标。Provider 校验团队结论的标签、正文与项目绑定，
+普通事实经相应抽取、去重后落盘；已确认结论仅分类后直写。共享 Runtime 初始化时同时装配
+所有流程，不随当前模式切换全局状态。查询、读取、编辑使用原接口与过滤规则。
+
+SDK 自动调用 `pipeline_profiles.configure_document_pipelines(config)` 补齐配置，保留既有
+default/video 及显式具名覆盖。规则相同的应用可以复用算子；不同规则可注册独立组件和 profile。
+HTTP 需先在**服务端**加载 `deploy/local/document-memory-http.yaml`，或装配前调用同一个配置
+函数；仅在客户端指定流程名不能安装服务端组件。该配置启用 `strict_routes=true`，未知流程
+和混合路由写入批次报错；无路由请求仍走 fallback。后台 evolve/EXTRACT 不在本次分流范围内。

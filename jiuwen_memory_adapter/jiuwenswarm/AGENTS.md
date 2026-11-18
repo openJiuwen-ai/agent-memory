@@ -6,16 +6,19 @@
 |---|---|
 | agent_memory_provider.py | Provider、HTTP/普通 SDK 客户端、共享 SDK continuity 客户端；continuity_request 校验 DTO 并注入可信上下文 |
 | memory_scene.py / memory_scenes.py | 场景协议、请求级上下文与独立实例工厂注册表 |
-| work_memory.py / coding_memory.py | Work/Coding 工具、预取、项目归属、提示词及普通 SDK 配置要求 |
+| base_document_scene.py | Code/Team 共用的项目绑定、文档写入配置及预取超时保护 |
+| work_memory.py / coding_memory.py / team_memory.py | Work/Coding/Team 工具、预取、项目归属、提示词及普通 SDK 配置要求 |
+| pipeline_profiles.py / team_policy.py | 文档写入具名配置、宿主结论的标签/内容/项目绑定校验 |
 | memory_tools.py | 共用工具定义与文档读取、编辑操作 |
 | sdk_runtime.py | 同进程共享 runtime、lease、统一有界执行池和真实在途操作计数、关闭状态机 |
 
 ## 行为铁律
 
 - 普通 Work/Coding 按场景策略执行；接续预取与回写保持优先，SDK 接续只注册任务/恢复工具，不将文档工具交给接续客户端。
-- 普通 Coding 在配置来源解析后覆盖 write_document=true；SDK 接续保留独立配置基准，不应用场景覆盖，HTTP 不应用本地 SDK 配置。
-- 注册表仅保存工厂，每个 Provider 创建独立场景；普通文档 Runtime 仍各自持有，通过根目录与影子索引资源锁协调，并非接续共享池的租约。
-- 共享池只适用于 mode=continuity、持久 fixed_path SQLite Registry；HTTP 和普通 SDK 不进入共享池。
+- Code/Team 分别继承 BaseDocumentScene，仅复用项目绑定、文档配置与超时保护；工具、Pipeline 和召回策略各自定义，Team 不继承 Code。
+- 普通 Coding/Team 在配置来源解析后覆盖 write_document=true；SDK 接续保留独立配置基准，不应用场景覆盖，HTTP 不应用本地 SDK 配置。
+- 注册表仅保存工厂，每个 Provider 创建独立场景；普通文档可注入宿主持有者共享 Runtime；未注入时各自持有。资源锁与接续共享池保持独立。
+- sdk_runtime.py 中的共享池只适用于 mode=continuity、持久 fixed_path SQLite Registry；HTTP 和普通 SDK 不进入共享池。
 - Pool 按规范 Registry 路径排他，同路径不同配置/主体返回冲突；Provider 不共享请求安全上下文。
 - Registry 路径与配置摘要通过 `jiuwen_memory.api.sdk_continuity_runtime_identity` 取得；Adapter 不直接导入内核配置或安全类型包。
 - Provider 在调用线程取得可信安全上下文，客户端只执行已经转换的参数；业务 payload 不能注入 security。
@@ -33,3 +36,15 @@
 
 MemoryAPI 执行授权和任务操作；Adapter 不维护任务目录或业务任务映射，也不为单个 Session 关闭共享内核。
 JiuwenSwarm 的 ContinuityRail、用户候选确认和 metadata.json 激活指针属于上游宿主。
+
+Team 结论在 Provider 内完成批次校验和可见标签前缀规范化；无效项仅记录原因计数，非空批次全无效时写前报错，空提取返回 0。
+Team Provider 的项目和团队坐标由宿主绑定，模型工具不能覆盖。Provider 选择 team_conclusion，团队类别由其 Classifier 生成，不能绕过保留键校验。项目/团队过滤由 Shadow 索引执行；全文和团队精确召回在截断前过滤，单独排除团队类别的向量路径沿用 KNN 候选后 SQL 过滤。反向路径解析、编辑补偿和看门狗使用同一团队键规则。
+
+Work 给定项目时，自动召回与搜索工具使用 project 等值过滤；画像独立读取 USER.md。
+Team 预取的三份文档和两段搜索并行且分别限时，命中优先，否则用对应兜底文档；单段异常不清空其他段。
+
+普通文档自动同步和显式写入工具统一调用场景 write_route；pipeline/infer 不暴露为工具参数。
+SDK 加载配置并应用场景覆盖后，仅当 write_document 归一为 true 时，通过
+configure_document_pipelines 装配文档场景流程，保留具名覆盖及 default/video；
+非文档 Work 保留原 Pipeline，不注入 Shadow 去重依赖。共享 Runtime 不保存当前场景。
+HTTP 服务端需装配同名流程，客户端不创建本地 Runtime。查询、读改文档和后台 evolve 保持既有入口。

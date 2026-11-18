@@ -560,3 +560,25 @@ def test_stop_skips_sync_waiting_for_shared_resource(tmp_path, monkeypatch):
         stop.result(timeout=2)
     assert not called.is_set(), "closed watchdog accessed its dependencies"
     assert watcher._active_syncs == 0
+
+
+def test_team_manual_edit_preserves_partition(tmp_path):
+    key = "repo--" + "a" * 24
+    filename = f"memory/teams/{key}/MEMORY.md"
+    path = tmp_path / filename
+    path.parent.mkdir(parents=True)
+    path.write_text("# confirmed\n\nfirst decision\n", encoding="utf-8")
+    watcher = _watchdog(tmp_path)
+    try:
+        watcher._sync_one(filename, False)
+        path.write_text("# confirmed\n\nupdated decision\n", encoding="utf-8")
+        watcher._sync_one(filename, False)
+        entries = watcher._shadow.list_units(SCOPE)
+        units = watcher._shadow.get_units(SCOPE, [key for key, _ in entries])
+        assert len(units) == 1
+        assert units[0].content == "updated decision"
+        assert units[0].system_metadata["project"] == "repo"
+        assert units[0].system_metadata["team"] == key
+        assert units[0].system_metadata[MEMORY_CLASS_KEY] == "team_memory"
+    finally:
+        watcher._shadow.close()

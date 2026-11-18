@@ -52,12 +52,25 @@ def restore_coords_from_md_filename(new: MemoryUnit, old: MemoryUnit) -> None:
     md_filename = str(old_meta.get(MD_FILENAME_KEY) or "")
     if not md_filename:
         return
-    # memory/{project}/MEMORY.md | memory/{project}/daily_memory/... | USER.md (root 顶层)
-    parts = md_filename.split("/")
-    if len(parts) >= 3 and parts[0] == "memory" and parts[1] not in ("USER.md",):
-        project = parts[1]
+    from jiuwen_memory.storage.markdown_impl._md_path import project_from_md_path
+
+    project = project_from_md_path(md_filename)
+    if project:
         old_coords = old_meta.get(COORDS_KEY)
         coords = dict(old_coords) if isinstance(old_coords, dict) else {}
         coords["project"] = project
         meta[COORDS_KEY] = coords
         new.system_metadata = meta
+
+
+def document_options(context: Context) -> dict[str, str]:
+    """Pass explicit document coordinates without changing public API signatures."""
+    options = {"project": project_from_context(context)}
+    coords = context.extensions.get(COORDS_KEY)
+    if isinstance(coords, dict) and coords.get("team"):
+        from jiuwen_memory.common.errors import ValidationError
+
+        if not isinstance(coords["team"], str):
+            raise ValidationError("Team coordinate must be a string")
+        options["team"] = coords["team"]
+    return options
