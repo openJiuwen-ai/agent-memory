@@ -6,5 +6,13 @@ from .ir_metrics import ir_metrics
 from .llm_judge import LLMJudge, openai_chat
 from .perf_metrics import perf_metrics
 from .qa_metrics import qa_accuracy
+from .suite import build_metric_suite
 
-__all__ = ["ir_metrics", "perf_metrics", "qa_accuracy", "LLMJudge", "openai_chat"]
+__all__ = [
+    "ir_metrics",
+    "perf_metrics",
+    "qa_accuracy",
+    "build_metric_suite",
+    "LLMJudge",
+    "openai_chat",
+]

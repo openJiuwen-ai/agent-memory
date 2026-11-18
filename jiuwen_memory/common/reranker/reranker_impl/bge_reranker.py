@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from jiuwen_memory.common._support import resolve_model_source
@@ -35,6 +36,8 @@ class BGEReranker(Reranker):
         self._max_batch_size = max(1, max_batch_size)
         self._normalize = normalize
         self._model = None  # lazy load
+        # 底层 FlagReranker 非线程安全（与 BGEM3Embedder 同源问题）。
+        self._model_lock = threading.RLock()
 
     def plugin_type(self) -> PluginType:
         return PluginType.RERANKER
@@ -71,7 +74,15 @@ class BGEReranker(Reranker):
         return scores
 
     def _load_model(self) -> None:
-        """延迟加载本地模型，避免默认轻量环境在 import 阶段触发重依赖。"""
+        """延迟加载本地模型，避免默认轻量环境在 import 阶段触发重依赖。
+
+        并发安全由 ``self._model_lock`` 保证。
+        """
+        with self._model_lock:
+            self._load_model_locked()
+
+    def _load_model_locked(self) -> None:
+        """调用方必须已持有 ``self._model_lock``。"""
         if self._model is not None:
             return
         model_source = resolve_model_source(
@@ -99,10 +110,14 @@ class BGEReranker(Reranker):
         logger.info("BGEReranker: model loaded successfully")
 
     def _compute_score(self, pairs: list[list[str]]) -> list[float]:
-        try:
-            raw_scores = self._model.compute_score(pairs, normalize=self._normalize)
-        except TypeError:
-            raw_scores = self._model.compute_score(pairs)
+        # 推理串行：底层模型在多线程下会破坏自身设备状态。
+        with self._model_lock:
+            try:
+                raw_scores = self._model.compute_score(
+                    pairs, normalize=self._normalize
+                )
+            except TypeError:
+                raw_scores = self._model.compute_score(pairs)
         return _coerce_scores(raw_scores)
 
     def _split_batches(self, pairs: list[list[str]]) -> list[list[list[str]]]:

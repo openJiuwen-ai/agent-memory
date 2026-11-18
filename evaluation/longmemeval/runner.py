@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from jiuwen_memory.config.defaults import default_context
 
 from .harness import EvalHarness
 from .types import CaseOutcome, Dataset, MetricResult, RunResult
+
+logger = logging.getLogger(__name__)
 
 # 指标 = 「全体观测 → 一组聚合指标」。无状态、可组合。
 Metric = Callable[[list[CaseOutcome]], list[MetricResult]]
@@ -45,8 +48,15 @@ class Runner:
         config: Config | None = None,
         concurrency: int = 1,
         artifact_dir: str | Path | None = None,
+        checkpoint_dir: str | Path | None = None,
+        checkpoint_fingerprint: str = "",
     ) -> RunResult:
-        harness = EvalHarness(config=config, artifact_dir=artifact_dir)
+        harness = EvalHarness(
+            config=config,
+            artifact_dir=artifact_dir,
+            checkpoint_dir=checkpoint_dir,
+            checkpoint_fingerprint=checkpoint_fingerprint,
+        )
         try:
             outcomes = harness.evaluate(dataset, concurrency=concurrency)
         finally:
@@ -54,12 +64,23 @@ class Runner:
         results: list[MetricResult] = []
         for metric in self._metrics:
             results.extend(metric(outcomes))
+        failed = getattr(harness, "_failed_scopes", [])
+        if failed:
+            logger.error(
+                "Runner: %d scope(s) skipped (%d queries); report marks them explicitly",
+                len(failed),
+                sum(len(s.get("query_ids", [])) for s in failed),
+            )
         return RunResult(
             dataset=getattr(dataset, "name", "dataset"),
             n_queries=len(outcomes),
             metrics=results,
             per_case=outcomes,
             config_summary=_summarize(config),
+            n_expected=len(outcomes) + sum(
+                len(s.get("query_ids", [])) for s in failed
+            ),
+            failed_scopes=list(failed),
         )
 
 
