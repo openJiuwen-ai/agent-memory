@@ -202,7 +202,7 @@ EDIT_MD_SCHEMA: dict[str, Any] = {
 
 
 def parse_line_range(args: dict) -> tuple[int, int] | None:
-    """read 工具 ``offset``/``limit`` → 内核 ``line_range``（1-based 闭区间，F08）。
+    """read 工具 ``offset``/``limit`` → 内核 ``line_range``（1-based 闭区间，md文件接口 F08）。
 
     offset 缺省 1；limit 缺省 → 无上界（end 传 ``_UNBOUNDED_END``，内核 clamp
     到文件实际行数）；两者都缺省 → None（整文件）。``limit <= 0`` 得
@@ -226,7 +226,7 @@ async def read_document(context: MemorySceneContext, args: dict[str, Any]) -> st
         return json.dumps({"error": "Missing required parameter: md_filename"})
     project = str(args.get("project") or "")
     line_range = parse_line_range(args)
-    # F08：按 md_filename + 行范围读 md 文件，返回命中的 MemoryUnit 块。
+    # md文件接口 F08：按 md_filename + 行范围读 md 文件，返回命中的 MemoryUnit 块。
     # 文件不存在/行范围无完整块 → 空列表（内核 read_content 容错空串）；
     # 非文档模式服务端抛 ValidationError（经 client 透出）。
     units = await context.client.read_md_file(
@@ -279,7 +279,7 @@ async def edit_document(context: MemorySceneContext, args: dict[str, Any]) -> st
         return json.dumps({"error": "Missing required parameter: old_text"})
     # new_text 允许空串（old_text → "" 即删除该片段）。
     project = str(args.get("project") or "")
-    # F08：按 md_filename + old_text 文件内唯一替换，继承式 SUPERSEDE——
+    # md文件接口 F08：按 md_filename + old_text 文件内唯一替换，继承式 SUPERSEDE——
     # 返回受影响的**新** unit（旧版已失效）。old_text 不存在/不唯一由
     # 内核抛 NotFoundError/ValidationError（经 client 透出给 LLM）。
     units = await context.client.edit_md_file(

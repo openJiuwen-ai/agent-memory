@@ -1,12 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""标准 Authorizer：按 F05 §Authorization 决策顺序判定。
+"""标准 Authorizer：按 安全能力 F04 §Authorization 决策顺序判定。
 
 这是**唯一的生产授权实现**。取代 ``control.permission_impl.sqlite_permission_manager``
 里那段与 SQLite 存储混在一起的判定逻辑：策略在这里，记录的存取在
 :mod:`common.security.authorization.store` 后面。分开之后换存储后端不碰策略，
 改策略不碰 SQL。
 
-决策顺序即代码顺序（F05 §决策顺序）：
+决策顺序即代码顺序（安全能力 F04 §决策顺序）：
 
 1. AuthContext 未过期；
 2. actor 与请求上下文一致（由 PEP 保证，这里复核）；
@@ -75,7 +75,7 @@ def _principal_path(resource: ResourceDescriptor) -> PrincipalPath:
     """本次判定用哪种主体路径。
 
     取自 ``ResourceDescriptor.attributes``——而 descriptor 由 PEP 从 space policy
-    这个真源构造（F05 §ResourceDescriptor）。值不合法时回落默认而不是抛：一个写错的
+    这个真源构造（安全能力 F04 §ResourceDescriptor）。值不合法时回落默认而不是抛：一个写错的
     space policy 不该让请求变成 500，回落到 ``user_agent`` 是两者中更严格的那个
     （agent 维在内层，覆盖面更小）。
     """
@@ -87,9 +87,9 @@ def _principal_path(resource: ResourceDescriptor) -> PrincipalPath:
 
 
 def _delegate_is_machine_principal(delegation: Delegation) -> bool:
-    """被委托方是否是 agent/service 这类**非人主体**（F05 §Delegation）。
+    """被委托方是否是 agent/service 这类**非人主体**（安全能力 F04 §Delegation）。
 
-    F05 把 Delegation 定义为「user 对 agent 或 service 的有限期代操作授权」。不校验
+    安全能力 F04 把 Delegation 定义为「user 对 agent 或 service 的有限期代操作授权」。不校验
     主体种类的话，user -> user 的委托能通过判定，Delegation 就成了第二套 Grant：
     绕过 SHARE 动作的授权路径、绕过 grant/revoke 的管理面记录，而两者的撤销与治理
     接口完全不同。``Scope`` 目前只建模了 user 与 agent（service identity 待补），故
@@ -182,7 +182,7 @@ def delegation_binds(
 
 
 class StandardAuthorizer(Authorizer):
-    """F05 决策顺序的实现。
+    """安全能力 F04 决策顺序的实现。
 
     ``grant_store`` 与 ``delegation_store`` 是**必填**依赖，没有 ``None`` 形态。给它们
     可选形态就等于允许一个「跨主体访问一律拒绝」的降级模式静默存在，而那个模式与
@@ -225,7 +225,7 @@ class StandardAuthorizer(Authorizer):
             return AuthorizationDecision.deny(DenyReason.EXPIRED_CONTEXT, "context_expiry")
 
         # -- 2. actor 一致性 ------------------------------------------------ #
-        # actor 为空 Scope 意味着「没填内容的身份」，不是特权形态（F05 §授权不变量 1）。
+        # actor 为空 Scope 意味着「没填内容的身份」，不是特权形态（安全能力 F04 §授权不变量 1）。
         # 旧实现把它当 platform admin，那条线在这里彻底断掉。
         if actor == Scope():
             return AuthorizationDecision.deny(DenyReason.CONTEXT_MISMATCH, "empty_actor")
@@ -239,7 +239,7 @@ class StandardAuthorizer(Authorizer):
         if auth.role is Role.ROOT:
             return AuthorizationDecision.allow("root_role")
 
-        # org 是硬边界，非 ROOT 一律不跨（F05 §Grant：Grant 不跨 org 生效）。放在
+        # org 是硬边界，非 ROOT 一律不跨（安全能力 F04 §Grant：Grant 不跨 org 生效）。放在
         # owner 判定之前：跨 org 的请求没有任何后续规则能救，早拒早给出准确 reason。
         if actor.org != resource.scope.org:
             return AuthorizationDecision.deny(DenyReason.CROSS_ORG, "org_boundary")
@@ -302,7 +302,7 @@ class StandardAuthorizer(Authorizer):
                 return AuthorizationDecision.deny(DenyReason.ROLE_REQUIRED, "role_gate_system")
             return AuthorizationDecision.allow("role_gate")
         if auth.role is not Role.ROOT and auth.actor.org != resource.scope.org:
-            # ADMIN 的管辖范围止于本 org（F05 §Role：ADMIN 不可跨 org）。
+            # ADMIN 的管辖范围止于本 org（安全能力 F04 §Role：ADMIN 不可跨 org）。
             return AuthorizationDecision.deny(DenyReason.CROSS_ORG, "role_gate_org")
         return AuthorizationDecision.allow("role_gate")
 
@@ -319,7 +319,7 @@ class StandardAuthorizer(Authorizer):
         now: datetime,
         path: PrincipalPath,
     ) -> AuthorizationDecision:
-        """按 ``delegation_id`` 回真源复核（F05 §Delegation）。
+        """按 ``delegation_id`` 回真源复核（安全能力 F04 §Delegation）。
 
         ``auth`` 里只有一个 id，委托的**内容**一律从 Store 读——认证层产出的
         ``delegation_id`` 证明的是「这个 id 出现在一次已认证的请求里」，不是「这条委托
@@ -375,7 +375,7 @@ def _build(config) -> StandardAuthorizer:
     """装配标准 Authorizer。
 
     两个 Store 都**无默认实现**：给它们默认会让「忘了配授权存储」静默变成某种可用
-    配置（F05 §装配不变量 6）。要什么后端就在 YAML 里写出来。
+    配置（安全能力 F04 §装配不变量 6）。要什么后端就在 YAML 里写出来。
     """
     grant_store = GrantStoreProducer.dep(config, "grant_store")
     delegation_store = DelegationStoreProducer.dep(config, "delegation_store")

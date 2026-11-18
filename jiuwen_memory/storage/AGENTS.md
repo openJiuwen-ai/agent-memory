@@ -306,7 +306,7 @@ ES 实体未配置 hosts/endpoint 时先返回 None。
    读取后由各 builder 自行翻译为客户端参数：redis `ssl_ca_certs`、elasticsearch `ca_certs`、
    postgres/pgvector `SSLContext`（`CERT_REQUIRED` + `check_hostname`）、milvus `server_pem_path`（配
    `secure=True`）、neo4j `encrypted=True` + `TrustCustomCAs`。不做跨后端的 TLS 参数抽象层——各客户端语义切分不同，详见
-   [F04-storage-ssl.md](../../docs/features/storage/F04-storage-ssl.md)。
+   [F03-storage-ssl.md](../../docs/features/storage/F03-storage-ssl.md)。
    `SslConfig`、归一（`build_ssl_config`）与 scheme 校验（`require_tls_scheme`）住在
    `common._support`，与出站客户端共用；storage 侧只保留缺证书即报错这条自有策略。
 10. `CompositeDomainStore` 的默认首选检索路径是 `RECALL_GET_RANK`；首选路径是实例级稳定值，

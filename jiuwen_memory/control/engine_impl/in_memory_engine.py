@@ -977,7 +977,7 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         *,
         line_range: tuple[int, int] | None = None,
     ) -> list[MemoryUnit]:
-        """InMemoryEngine 不支持 md 文件接口（F08 已知遗留 5）。
+        """InMemoryEngine 不支持 md 文件接口（文档记忆 F08 已知遗留 5）。
 
         read_md_file / edit_md_file 仅文档模式可用（真源是 md + 影子索引）。
         InMemoryEngine 真源是 KV，无 md 文件——非文档模式无 md 文件语义。
@@ -994,7 +994,7 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         old_text: str,
         new_text: str,
     ) -> list[MemoryUnit]:
-        """InMemoryEngine 不支持 md 文件接口（F08 已知遗留 5），抛 ``ValidationError``。"""
+        """InMemoryEngine 不支持 md 文件接口（文档记忆 F08 已知遗留 5），抛 ``ValidationError``。"""
         raise ValidationError(
             "edit_md_file requires document mode; InMemoryEngine has no md files"
         )

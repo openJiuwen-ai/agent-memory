@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""逻辑分片（F09）运维工具：首次分区、重新分区、对账、索引重建与分片退役。
+"""逻辑分片（逻辑分片 F09）运维工具：首次分区、重新分区、对账、索引重建与分片退役。
 
 **在线运维（不需要维护窗口）**：
 
@@ -347,7 +347,7 @@ def _run(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--relocate-pending",
         action="store_true",
-        help="执行改路由字段后的待搬迁记录（在线；F09 D16）",
+        help="执行改路由字段后的待搬迁记录（在线；逻辑分片 F09 D16）",
     )
     parser.add_argument(
         "--recover-stale",

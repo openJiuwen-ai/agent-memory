@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""TRUSTED 认证：信任上游网关已完成认证（F05 §Authentication）。
+"""TRUSTED 认证：信任上游网关已完成认证（安全能力 F04 §Authentication）。
 
 网关注入身份声明 header，框架据此构造 actor。**关键设计：role 不从 header 读**
 ——header 说「你是谁」，框架自己查注册表得「你能干什么」。这样即使网关被攻破
@@ -42,14 +42,14 @@ _H_TYPE = "x-principal-type"
 _H_ID = "x-principal-id"
 _PRINCIPAL_TYPES = frozenset({"user", "agent"})
 
-_METHOD = "trusted"  # 开放字符串而非封闭枚举（F05 拒绝以模式名驱动核心分支）
+_METHOD = "trusted"  # 开放字符串而非封闭枚举（安全能力 F04 拒绝以模式名驱动核心分支）
 _CREDENTIAL = "gateway"
 
 
 def _credential_id(gateway_key: str, org: str, principal_type: str, principal_id: str) -> str:
     """TRUSTED 凭据的不可逆标识：网关凭据指纹 + 主体三元组的 sha256。
 
-    F05 §认证不变量 5 要求每条凭据有 credential id，供撤销、审计关联与 Delegation
+    安全能力 F04 §认证不变量 5 要求每条凭据有 credential id，供撤销、审计关联与 Delegation
     的 ``bound_credential_id`` 绑定。TRUSTED 的「凭据」是「网关以 ``gateway_key``
     担保的主体身份」--故标识必须含 ``gateway_key`` 指纹：网关凭据轮换后，同一主体
     得到不同 credential_id，旧凭据绑定的委托不能迁移到新凭据。单算主体三元组的

@@ -110,7 +110,7 @@ class SpaceOpsMixin:
             spaces = self._readable_spaces(security, org, candidates)[:limit]
             detail["candidate_spaces"] = str(len(candidates))
             if cursor is not None:
-                # F07「``cursor`` 标记废弃」：``limit`` 在鉴权之后生效，偏移量按候选序解释
+                # 群体记忆 F07「``cursor`` 标记废弃」：``limit`` 在鉴权之后生效，偏移量按候选序解释
                 # 会与返回序错位。忽略但记一笔——静默忽略会让期望翻页的调用方拿到重复页
                 # 而无从察觉。
                 detail["cursor_ignored"] = str(cursor)
@@ -130,7 +130,7 @@ class SpaceOpsMixin:
 
         **不取主体反查索引。** 索引的超集契约针对成员关系——写入方只有归属登记与成员记录
         两类，靠显式授权（``grant``）取得读权的主体不在索引里。以索引作候选，这类调用方
-        直接 ``search`` 读得到、``list_spaces`` 却列不出来，且不报错。与 F07 决策 23
+        直接 ``search`` 读得到、``list_spaces`` 却列不出来，且不报错。与 群体记忆 F07 决策 23
         「不以反查索引粗筛写入候选」是同一条理由，读侧同样成立。
 
         授权记录接入索引不在本批处置：索引项不带来源标记，``remove_member`` 已需靠
@@ -139,7 +139,7 @@ class SpaceOpsMixin:
         是否仍凭另一来源持有该空间」，而授权记录在 Authorizer 的
         :class:`~common.security.authorization.store.GrantStore` 里，
         :class:`SpaceManager` 查不到。判断不全的失效方向是索引遗漏，恰是契约唯一禁止的
-        方向。前置条件与遗留事项见 F07「``list_spaces`` 的候选来源」。
+        方向。前置条件与遗留事项见 群体记忆 F07「``list_spaces`` 的候选来源」。
 
         代价是判权次数等于 org 下的空间数。这是既有形态而非本次引入；取值上界由
         :data:`_SPACE_SCAN_CAP` 封住，达到上界记 WARNING，不静默截断。
@@ -156,7 +156,7 @@ class SpaceOpsMixin:
     def _readable_spaces(
         self, security: RequestSecurityContext, org: str, spaces: list[SpaceInfo]
     ) -> list[SpaceInfo]:
-        """逐空间求值，无权的直接剔除（F07「跨空间检索」末段）。
+        """逐空间求值，无权的直接剔除（群体记忆 F07「跨空间检索」末段）。
 
         整段在返回之前一次性完成，走与单空间入口同一个鉴权方法——分叉即出现「列得出
         但打不开」或其反向。

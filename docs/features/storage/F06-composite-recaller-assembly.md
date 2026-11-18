@@ -10,7 +10,7 @@
 
 ## 背景
 
-统一 Storage 落地后（F05-unified-storage-design），`PipelineRetriever` 的生产装配仍按
+统一 Storage 落地后（F04-unified-storage-design），`PipelineRetriever` 的生产装配仍按
 旧世界做事：retriever 工厂自己组装 keyword/vector/graph/L0/L1 各路 Recaller，再
 `isinstance(storage, CompositeStorage)` 判断后 `bind_recallers` 塞回 storage。问题：
 

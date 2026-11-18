@@ -17,7 +17,7 @@
 
 `entity_enabled` 默认 **False**。关闭时：写入侧不建索引、召回侧 `KeywordRecaller` 不取 ENTITY 端口（`_expand_by_entities` 自动跳过）——两端一致降级。
 
-> **F07 起装配收敛**：EntityStore 是 `StorageCapability` 第七席（ENTITY 端口），两侧统一经 `manager.entity(name)` 取，不再各自 `EntityStoreProducer.dep`。读写共享同一实例由 manager 保证，不再依赖「两端 params 各引用同一具名实例」的配置纪律；`entity_enabled=true` 但端口未装配时降级关闭并留日志（此前是完全静默）。
+> **storage/F07 起装配收敛**：EntityStore 是 `StorageCapability` 第七席（ENTITY 端口），两侧统一经 `manager.entity(name)` 取，不再各自 `EntityStoreProducer.dep`。读写共享同一实例由 manager 保证，不再依赖「两端 params 各引用同一具名实例」的配置纪律；`entity_enabled=true` 但端口未装配时降级关闭并留日志（此前是完全静默）。
 
 > **默认 False 的理由**：实体反向索引是重依赖特性——需 ES entity 索引，且依赖上游在写入前把 `unit.entities` 明文抽好填充。默认关、显式开是更稳的工程姿态。开启时召回侧不对 query 做实体抽取、不拉模型；写入侧只消费 `unit.entities` 明文，为空的 unit 直接跳过不入实体索引。
 

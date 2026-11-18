@@ -1,4 +1,4 @@
-# F03 — PostgreSQL KV 与 pgvector 存储后端
+# F02 — PostgreSQL KV 与 pgvector 存储后端
 
 ## 元信息
 
@@ -22,7 +22,7 @@
 
 1. 新增 `target: postgres` 的 `PostgresKVStore` 与 `target: pgvector` 的
    `PgVectorStore`，保持 `KVStore` / `VectorStore` 公共接口不变。
-2. 使用 asyncpg（经专职事件循环线程桥接，见 F06）和每个 Store 实例自有的惰性
+2. 使用 asyncpg（经专职事件循环线程桥接，见 F05）和每个 Store 实例自有的惰性
    Pool。未安装依赖时，import 和工厂注册仍成功，首次访问后端才抛 `BackendError`。
 3. PostgreSQL 版本基线为 16；pgvector 最低 0.8.0。自动初始化在统一 advisory lock
    内按“创建扩展 → 校验版本 → 建表/索引”执行；独立 Compose profile 固定使用

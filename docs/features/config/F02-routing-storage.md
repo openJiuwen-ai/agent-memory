@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-08-13 |
-| 影响范围 | `jiuwen_memory/config/routing.py`（新增 `RoutingStorage`）、`jiuwen_memory/storage/storage.py` / `StorageProducer`、`jiuwen_memory/api/memory_api_impl/assembly.py`、Engine/Retriever/IndexBuilder 对 `Storage` 的握法；`docs/specs/S08-config.md`、`docs/features/config/F01-config-source.md` §2.1.5、`docs/features/storage/F05-unified-storage-design.md` |
+| 影响范围 | `jiuwen_memory/config/routing.py`（新增 `RoutingStorage`）、`jiuwen_memory/storage/storage.py` / `StorageProducer`、`jiuwen_memory/api/memory_api_impl/assembly.py`、Engine/Retriever/IndexBuilder 对 `Storage` 的握法；`docs/specs/S08-config.md`、`docs/features/config/F01-config-source.md` §2.1.5、`docs/features/storage/F04-unified-storage-design.md` |
 | 测试基线 | `tests/unit/config/test_storage_routing.py`；`examples/config_source_embedder_routing_demo.py` 场景 P·F02 |
 | Refs | 承接 F01「按 identity 选用不同存储」；作用对象上移到完整 `Storage` 实例 |
 | 状态 | **已落地**（`RoutingStorage` + 惰性端口；单测与 demo 见上） |
@@ -14,7 +14,7 @@
 
 ## 背景
 
-F05 将上层统一到 `Storage` 契约：默认实现是 `CompositeStorage`，产品也可自研一体化 `Storage`（例如对接外部记忆平台）。F01 则在**底层六类 Store** 上提供了：
+storage/F04 将上层统一到 `Storage` 契约：默认实现是 `CompositeStorage`，产品也可自研一体化 `Storage`（例如对接外部记忆平台）。F01 则在**底层六类 Store** 上提供了：
 
 - 同实现换连接：`kv_store.url` 等晚绑定（主路径）；
 - 异质 Store：`Routing*Store` + `*_store.active`（方案 A，可按 identity）。
@@ -118,7 +118,7 @@ RoutingStorage(Storage)
        ))
 3. YAML: storage.default.target = demo_routing_storage
 4. build_kernel：ConfigSource → 各 Storage 实例 → `storage.default=RoutingStorage`
-   （Encrypted 为 F04 opt-in：启用时各实例内 RoutingKV 仍须在加密层内；
+   （Encrypted 为 common/F04 opt-in：启用时各实例内 RoutingKV 仍须在加密层内；
     不要在 RoutingStorage 外包一层 Encrypted）
 5. Engine / Retriever → StorageProducer.resolve → 得到 RoutingStorage
 ```
@@ -146,7 +146,7 @@ F01 真值表写明 Recaller / IndexBuilder 常在构造期取 `vector_port` 等
 
 ### 决策 5：EncryptedKV 与装配顺序
 
-- EncryptedKV 为 **F04 opt-in**（`258f398` 起 `build_kernel` 不强制外包）。
+- EncryptedKV 为 **common/F04 opt-in**（`258f398` 起 `build_kernel` 不强制外包）。
 - **每个** Storage 实例若启用加密：其 `kv` 仍遵守 F01——`RoutingKVStore`（若有）在 Encrypted **之内**。
 - `RoutingStorage` **从不**外包一层 Encrypted（加密属于各实例内部的 KV，不属于 Routing 这一层）。
 - 建议装配顺序：
@@ -191,7 +191,7 @@ Store 级 `Routing*Store`、同实现晚绑定、方案 A、不迁移数据等 F
 | 文档 | 关系 |
 |---|---|
 | F01-config-source | 本特性是其 **Storage 实例层**延伸；底层 Store Routing / 晚绑定仍归 F01。落地时修订 §2.1.5 措辞（见决策 6） |
-| F05-unified-storage | 仍成立：`Storage` 是契约，`CompositeStorage` 是默认实现；本特性增加常见形态：`RoutingStorage`（按 `storage.active` 选用已预装实例，不是第三种后端算法） |
+| F04-unified-storage | 仍成立：`Storage` 是契约，`CompositeStorage` 是默认实现；本特性增加常见形态：`RoutingStorage`（按 `storage.active` 选用已预装实例，不是第三种后端算法） |
 | S08-config | 增加 `storage.active` 契约与 RoutingStorage 方案 A；收窄原「不做 storage.active」边界 |
 | S06/S07（若存在 Storage 规约） | 不改变 `Storage` ABC 方法集；仅增加可选的 `RoutingStorage` 与上层握法约束 |
 

@@ -234,7 +234,7 @@ Store / Storage 切换后旧库数据不自动迁移。`memory` 等无连接串�
 3. Engine / Retriever / … → 共享同一 Storage；Kernel.kv = KvProducer.dep(kv_store.default)
 ```
 
-**EncryptedKV（F04）**：默认 **不**强制外包。产品以 `encrypted` target（或等价）opt-in；
+**EncryptedKV（common/F04）**：默认 **不**强制外包。产品以 `encrypted` target（或等价）opt-in；
 启用时 `RoutingKVStore` 必须作为 raw 在加密层之内。未启用时 raw `RedisKVStore` /
 `RoutingKVStore` 可直接作为 `kv_store.default`（demo 场景 P/2 即此路径）。
 
@@ -246,7 +246,7 @@ Store / Storage 切换后旧库数据不自动迁移。`memory` 等无连接串�
 | `InMemoryEngine` / `CloudEngine` | `StorageProducer` | 握 `Storage`；CRUD 走端口 |
 | `PipelineRetriever` 与各 Recaller | `storage` 参数 / `Storage.recall*` | Recaller 常在构造时取 `vector_port` 等引用；若 `storage.default` 为 `RoutingStorage`，须靠惰性端口或按次解析，才能跟随 `storage.active` |
 | `VectorIndexBuilder` / `FulltextIndexBuilder` / `HybridIndexBuilder` | `Storage` | 同上 |
-| `EncryptedKVStore` | 可选；包在 `kv_store` raw 外（F04 opt-in） | 与 Routing 组合见下 |
+| `EncryptedKVStore` | 可选；包在 `kv_store` raw 外（common/F04 opt-in） | 与 Routing 组合见下 |
 
 **`Routing*` 挂哪一层（方案 A）**
 

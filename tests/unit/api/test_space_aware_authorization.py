@@ -1,4 +1,4 @@
-"""空间感知判定在真实装配下的端到端行为（F07 决策 4「过渡期形态」）。
+"""空间感知判定在真实装配下的端到端行为（群体记忆 F07 决策 4「过渡期形态」）。
 
 判据主体的单测在 ``tests/unit/common/security/test_space_decision.py``；本文件测的是
 接线：鉴权点取空间事实、折算投影、编排属性，判定宿主取出判定输入并折算结论。覆盖面是
@@ -380,7 +380,7 @@ def test_member_scope_normalisation_matches_the_space_manager(api) -> None:
     assert guarded in stored
 
 
-# -- 检索谓词第一族（F07「检索两族谓词」） --------------------------------- #
+# -- 检索谓词第一族（群体记忆 F07「检索两族谓词」） --------------------------------- #
 
 
 def _ctx(owners, members=()):
@@ -452,7 +452,7 @@ def test_first_family_is_empty_without_space_facts() -> None:
     assert _first_family_predicate(ALICE, PermissionContext(scope=SPACE_SCOPE)) == []
 
 
-# -- 空间状态校验（F07「空间状态校验」） ----------------------------------- #
+# -- 空间状态校验（群体记忆 F07「空间状态校验」） ----------------------------------- #
 
 
 def test_archived_space_allows_reads_and_rejects_writes(api) -> None:
@@ -510,7 +510,7 @@ def test_list_spaces_does_not_truncate_candidates_before_authorization(api) -> N
 
 
 def test_list_spaces_applies_limit_after_authorization(api) -> None:
-    """``limit`` 是返回条数上限，不是候选条数上限（F07「翻页语义变更」）。"""
+    """``limit`` 是返回条数上限，不是候选条数上限（群体记忆 F07「翻页语义变更」）。"""
     for index in range(4):
         space = f"p-shared-{index}"
         api.create_space(SpaceSpec(org=ORG, space=space, owner=ALICE), security=SEC_OPS)
@@ -531,7 +531,7 @@ def test_list_spaces_lists_a_space_reachable_only_through_an_explicit_grant(api)
 
     候选若取主体反查索引，这一条必然失败：索引的写入方只有归属登记与成员记录两类，
     ``grant`` 不写索引。失效形态是「直接 ``search`` 读得到、``list_spaces`` 列不出来」，
-    且不报错。与 F07 决策 23「不以反查索引粗筛写入候选」是同一条理由，读侧同样成立。
+    且不报错。与 群体记忆 F07 决策 23「不以反查索引粗筛写入候选」是同一条理由，读侧同样成立。
     """
     api.create_space(SpaceSpec(org=ORG, space="p-x", owner=ALICE), security=SEC_OPS)
     api.add_space_member(
@@ -561,7 +561,7 @@ def test_list_spaces_rejects_a_non_positive_limit(api) -> None:
 
 
 def test_list_second_stage_strips_the_author_mark(api) -> None:
-    """``list`` 第二段不携带作者标记（F07）。
+    """``list`` 第二段不携带作者标记（群体记忆 F07）。
 
     条目权限上下文由引擎按条目 metadata 整体构造，作者标记因此自动在内，必须显式剥掉：
     逐条鉴权的失败形态是抛异常而非过滤，携带后个体空间内只要有一条作者不是调用方的条目，
@@ -605,7 +605,7 @@ def test_contributor_may_change_its_own_entry_but_not_others(api) -> None:
         )
 
 
-# -- 演进模式与任务入口的动作取值（F07「入口到轴与动作的映射」） ------------- #
+# -- 演进模式与任务入口的动作取值（群体记忆 F07「入口到轴与动作的映射」） ------------- #
 
 
 def test_forget_and_consolidate_are_denied_to_a_contributor(api) -> None:
@@ -687,7 +687,7 @@ def test_a_frozen_space_rejects_changes_other_than_status(api) -> None:
     assert info.status is SpaceStatus.ACTIVE
 
 
-# -- 空间策略裁剪（F07「空间策略必须从元数据返回值中裁剪」） ------------------ #
+# -- 空间策略裁剪（群体记忆 F07「空间策略必须从元数据返回值中裁剪」） ------------------ #
 
 
 def _with_quota(api, identity):
@@ -1146,7 +1146,7 @@ def test_a_content_delegation_does_not_reach_governance_or_whole_space_export(ap
 def test_a_delegation_opens_the_space_gate_but_not_the_row_boundary(api) -> None:
     """委托放开的是空间级闸门，不放开行级可见范围。
 
-    第一族谓词按调用形态收窄：自主运行的 agent 只看得见自己写的条目（F07「检索两族
+    第一族谓词按调用形态收窄：自主运行的 agent 只看得见自己写的条目（群体记忆 F07「检索两族
     谓词」）。两层因此是独立的——委托让 agent 进得了这个空间，进来之后能看见哪些条目
     仍由谓词决定，委托内容再宽也不放宽这一层。
 

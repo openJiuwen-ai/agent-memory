@@ -75,7 +75,7 @@ def test_abstract_mixed_group_induces_across_units():
 
 
 def test_abstract_output_writes_origin_inferred_and_table_importance():
-    """F10：抽象产物是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖继承值）。"""
+    """重要度 F12：抽象产物是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖继承值）。"""
     source = create_test_unit("s1", "周五团队例会固定在上午十点。")
     source.system_metadata = {"origin": "original", "importance": "0.95"}
     llm = RecordingLLM([

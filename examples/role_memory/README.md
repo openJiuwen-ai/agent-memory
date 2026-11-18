@@ -2,7 +2,7 @@
 
 本示例在一个服务内保存任务映射、事件和关系真源；前任离线后，其他已授权产品可直接查询任务背景。`duty` 选择关系遍历策略，不改变权限。
 
-> **接口状态**：本文接口为 2026-11-05 设计修订后的形态（`add` / `batch_add` 的 `continuity` 参数、`search` 的 `duty` / `task_id` / `anchor`、`continuity_task` / `continuity_relation` / `continuity_recover`、治理 `quarantine_source` / `release_source`），代码已实现；剩余差距见 [F10 12.2](../../docs/features/construction/F10-role-memory.md#122-实现差距)。
+> **接口状态**：本文接口为 2026-11-05 设计修订后的形态（`add` / `batch_add` 的 `continuity` 参数、`search` 的 `duty` / `task_id` / `anchor`、`continuity_task` / `continuity_relation` / `continuity_recover`、治理 `quarantine_source` / `release_source`），代码已实现；剩余差距见 [F11 12.2](../../docs/features/construction/F11-role-memory.md#122-实现差距)。
 
 ## 服务配置
 
@@ -16,7 +16,7 @@
 
 ## 产品工具接入
 
-WorkBuddy、Hermes 可通过 MCP stdio 桥接入；OpenClaw、DeepSeek Harness 的接入方式待 G0 验证（见 F10 7.2）；所有产品使用同一个服务地址；各自使用独立凭据。启动命令：
+WorkBuddy、Hermes 可通过 MCP stdio 桥接入；OpenClaw、DeepSeek Harness 的接入方式待 G0 验证（见 F11 7.2）；所有产品使用同一个服务地址；各自使用独立凭据。启动命令：
 
 ```sh
 # 环境变量由产品的受控凭据配置提供，不写进提示词或事件。

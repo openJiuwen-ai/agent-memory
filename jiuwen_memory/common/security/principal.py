@@ -1,4 +1,4 @@
-"""调用方身份的推导、形态校验与三种粒度的比较（F07）。
+"""调用方身份的推导、形态校验与三种粒度的比较（群体记忆 F07）。
 
 调用方身份是一个五维 ``Scope``，与它相关的计算散落各处必然随时间发散。本模块把
 四件事收进一处：从身份推导条目的作者标记、以身份折算内核归属坐标、拒绝主体维全空的
@@ -42,7 +42,7 @@ def derive_author(identity: Scope) -> tuple[str, str]:
 
 
 def kernel_coords(coords: Mapping[str, str] | None, identity: Scope) -> dict[str, str]:
-    """装配判定上下文之前先以身份覆盖内核三项，全链路只有一份坐标（F07）。
+    """装配判定上下文之前先以身份覆盖内核三项，全链路只有一份坐标（群体记忆 F07）。
 
     不这样做时同一批取值有两个来源：检索侧折算时用身份覆盖同名键，而写入侧的落点计算读的
     是上下文里的坐标，两处口径不同，后者的强度随调用方传入的坐标变化——坐标里的 user 与
@@ -52,7 +52,7 @@ def kernel_coords(coords: Mapping[str, str] | None, identity: Scope) -> dict[str
     :data:`~common.type_def.KERNEL_COORD_KEYS` 逐项从身份取，该元组的每一项都必须是
     :class:`Scope` 的字段名（约束记在常量定义处）。
 
-    **落本模块而非构建层**：本函数收 ``identity``，而 F07 不变量 5 禁止身份传入引擎层与
+    **落本模块而非构建层**：本函数收 ``identity``，而 群体记忆 F07 不变量 5 禁止身份传入引擎层与
     构建层；落控制层同样被 S02 不变量 2 排除。身份派生是本模块的既有职责（见
     :func:`derive_author`），归此处无新增依赖边。
     """

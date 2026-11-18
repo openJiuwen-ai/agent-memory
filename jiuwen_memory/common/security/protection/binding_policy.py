@@ -1,7 +1,7 @@
-"""绑定地址策略契约（F05 §Protection §BindingPolicy）。
+"""绑定地址策略契约（安全能力 F04 §Protection §BindingPolicy）。
 
 无认证开发模式恒返回 ROOT 身份，绑到非 loopback 就是把全权限暴露给整个网络。
-F05 要求这条约束由**统一 Server lifecycle 在实际 socket 绑定前执行**，不能只
+安全能力 F04 要求这条约束由**统一 Server lifecycle 在实际 socket 绑定前执行**，不能只
 存在于某个 CLI ``main()``——故本模块给出能力接口与 Producer，由 Server 在真正
 ``bind()`` 之前调用，而不是让每个 surface 的入口各自记得调。
 

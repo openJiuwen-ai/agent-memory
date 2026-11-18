@@ -835,7 +835,7 @@ class ConversationProcessor:
         # 正常运行使用唯一 Scope；SKIP_WRITE 只有显式指定旧 SCOPE_TAG 才允许复用。
         self.scope = _conversation_scope(conv_id)
         self.identity = self.scope  # 本人操作本人 scope
-        # F05 重构后 add/search/inspect 用 security 上下文，从 auth.actor 取 identity
+        # 安全能力 F04 重构后 add/search/inspect 用 security 上下文，从 auth.actor 取 identity
         self.security = _scope_security(self.identity)
         self._write_seq = 0  # conv 内 write 递增序号（对齐 staged ingest 的 write_id）
 

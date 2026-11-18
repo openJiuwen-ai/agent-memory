@@ -342,7 +342,7 @@ def test_audit_backend_failure_does_not_mask_401(key_store) -> None:
     assert get_current() is None
 
 
-# -- 昂贵操作的并发预算（审计 P1-3；F05 §Protection §WorkloadGuard）---------- #
+# -- 昂贵操作的并发预算（审计 P1-3；安全能力 F04 §Protection §WorkloadGuard）---------- #
 
 
 def test_workload_guard_release_on_success() -> None:

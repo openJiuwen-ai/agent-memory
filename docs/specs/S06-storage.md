@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-16 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
 
 `MarkdownStore.replace_content(scope, md_filename, old_content, new_content, *,
@@ -159,7 +159,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     实现分居两层，靠这对共享契约对齐。
 29. **命名数据面使用受管 Store 集**：`manager.domain_store(name)` 的多套命名数据面可分别选择
     受管真源 KV 端口与检索 profile（`preferred_retrieval_pipeline` + recallers 组合）；同名多次调用返回同一实例。
-    跨 Store 集的整栈切换走 F02 Routing（`store_manager.active`），不属命名数据面语义。
+    跨 Store 集的整栈切换走 config/F02 Routing（`store_manager.active`），不属命名数据面语义。
 30. **所有 XXXStore 获取经 StoreManager**：消费者不直接调 Store Producer 解析具名后端
     （F07 起 `EntityStore` 一并纳入——写入侧 `HybridIndexBuilder` 与召回侧 `KeywordRecaller`
     改经 `manager.entity(name)`，`EntityStoreProducer.dep` 旁路移除，读写共享同一实例由
@@ -268,7 +268,7 @@ globals，inline dict 拒绝），缺省 `"default"`。注意与跨切面开关�
 
 **原文**（对话消息）不属于存储层的领域范围：它既非 MemoryUnit 真源也非索引，不建索引、
 不参与检索，仅供构建层做指代消解与语境补全，条数上限由写入方维护。故不占存储层接口——
-构建层注入一个独立的 `KVStore` 直接读写（见 [F07](../features/construction/F07-memory-write-entry.md)）。
+构建层注入一个独立的 `KVStore` 直接读写（见 [construction/F07](../features/construction/F07-memory-write-entry.md)）。
 
 ### Recaller（数据面检索适配器，`domain_store_impl/recaller.py`）
 
@@ -732,7 +732,7 @@ Store 抽象、跨后端不变量与注册机制。
 
 ### 角色记忆的条件更新
 
-派生 `updated` 推迟到后续版本（见 [F10 第 12 节](../features/construction/F10-role-memory.md#12-已知遗留与外部依赖)）。Registry 并发依赖单写者声明与 `expected_revision`；隐私 KV 包装保留后端的资源绑定和单写者声明。
+派生 `updated` 推迟到后续版本（见 [construction/F11 第 12 节](../features/construction/F11-role-memory.md#12-已知遗留与外部依赖)）。Registry 并发依赖单写者声明与 `expected_revision`；隐私 KV 包装保留后端的资源绑定和单写者声明。
 
 Neo4j 的 ssl_verify=true 要求 bolt+s:// 或 neo4j+s:// 及 ssl_ca_cert，动态 URI 重绑定不得绕过校验。自定义 CA 通过驱动显式 encrypted=True 与 trusted_certificates 传递（驱动侧 URI 转为对应无后缀 scheme，仅作为加密参数表达方式，连接仍强制 TLS）。健康检查不得执行建约束 DDL，首次写入前须完成所需唯一约束。
 

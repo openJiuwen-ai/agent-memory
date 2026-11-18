@@ -257,7 +257,7 @@ PostgreSQL/pgvector 直接通过 JSONB 值、`jsonb_typeof(...)= 'array'` 与
 
 ### 8.1. event-time 未知时间使用索引哨兵
 
-F07 净化 `t_event` 语义后，派生 unit 的 `t_event` 常为 `None`（仅内容提取不到
+common/F07 净化 `t_event` 语义后，派生 unit 的 `t_event` 常为 `None`（仅内容提取不到
 事件时间）。真源 `None` 让事件窗下推 `t_event GTE/LT` 在索引里按缺失字段排他——
 含时间词 query（「今年」「昨天」「上周」…）对这批派生系统性空召回。
 

@@ -78,7 +78,7 @@ def _dev_config() -> dict:
     }
 
 
-# -- 歧义配置拒绝启动（F05 §装配不变量 3）------------------------------------ #
+# -- 歧义配置拒绝启动（安全能力 F04 §装配不变量 3）------------------------------------ #
 
 
 def test_multiple_security_instances_without_default_are_rejected() -> None:
@@ -155,7 +155,7 @@ def test_explicit_dev_still_enforces_loopback_binding() -> None:
         )
 
 
-# -- 分岔由 capability 决定，不看 target 名（F05 §依据 capability 做安全决策）- #
+# -- 分岔由 capability 决定，不看 target 名（安全能力 F04 §依据 capability 做安全决策）- #
 
 
 def test_custom_authenticator_does_not_require_a_target_name_branch() -> None:

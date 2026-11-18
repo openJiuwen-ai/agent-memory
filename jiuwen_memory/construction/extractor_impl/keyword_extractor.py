@@ -8,7 +8,7 @@
 
 只处理原始 active 单元，避免对派生单元 / 被取代单元反复再抽取。
 
-F10：派生单元写 ``origin=inferred``，重要度无 LLM 判类别，取 ``default`` 类别查表值
+重要度 F12：派生单元写 ``origin=inferred``，重要度无 LLM 判类别，取 ``default`` 类别查表值
 （覆盖从源继承来的值）。
 """
 

@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""SecurityRuntime — 一次装配得到的安全能力集合（F05 §SecurityRuntime）。
+"""SecurityRuntime — 一次装配得到的安全能力集合（安全能力 F04 §SecurityRuntime）。
 
 Runtime **只做三件事**：持有能力引用、执行启动期健康检查、暴露统一生命周期。
 它不实现认证、限流、密码学或授权算法——所有判断都在各能力自己的实现里。图示::
@@ -14,7 +14,7 @@ Runtime **只做三件事**：持有能力引用、执行启动期健康检查�
     └── binding_policy
 
 ``cryptography_provider`` 与 ``audit_integrity_provider`` 都可以是 ``None``：是否启用
-由部署选型表达（F05 §明文策略 / 审计完整性期未启用即普通审计）。不预留恒为
+由部署选型表达（安全能力 F04 §明文策略 / 审计完整性期未启用即普通审计）。不预留恒为
 ``None`` 的占位字段——一个永远为空的字段会诱导消费方写 ``if runtime.x:`` 这类
 fail-open 分支；要么装配真实实现，要么干脆没有这个字段，``None`` 只在「配置了但
 当前部署不启用」时出现。
@@ -118,7 +118,7 @@ class SecurityRuntime:
     """已装配的安全能力集合。
 
     ``cryptography_provider`` 可以是 ``None``：是否加密持久化数据由存储适配器的选型
-    表达（F05 §明文策略），未启用存储加密的部署本就不需要这项能力。其余五项**必须
+    表达（安全能力 F04 §明文策略），未启用存储加密的部署本就不需要这项能力。其余五项**必须
     非 None**——它们是每个请求都要经过的路径，缺一项就意味着某条边界没人把守。
 
     ``audit_integrity_provider`` 同样可以是 ``None``：未启用审计完整性时，审计子系统
@@ -150,10 +150,10 @@ class SecurityRuntime:
         """启动期健康检查：任一能力不健康即抛出，不返回 bool。
 
         返回 ``bool`` 会诱导调用方写 ``if not runtime.health(): log.warning(...)``
-        然后继续启动。健康检查失败必须拒绝启动（F05 §默认拒绝）。
+        然后继续启动。健康检查失败必须拒绝启动（安全能力 F04 §默认拒绝）。
 
         异常消息只带**能力名**——能力名来自配置、不是秘密；具体原因由各实现自己
-        决定暴露多少（F05 §装配不变量 8：不得泄露 key、token 或主体是否存在）。
+        决定暴露多少（安全能力 F04 §装配不变量 8：不得泄露 key、token 或主体是否存在）。
         """
         if self._resources.is_closed():
             raise ValidationError("security Runtime has already been closed")
@@ -224,7 +224,7 @@ def _build(config) -> SecurityRuntime:
     """组合具名安全能力。
 
     ``authenticator`` **必填且无默认**：没有默认值，缺失就抛 ValidationError。给它
-    一个默认会让「忘了配认证」静默变成某种可用配置——F05 §装配不变量 6 拒绝的正是
+    一个默认会让「忘了配认证」静默变成某种可用配置——安全能力 F04 §装配不变量 6 拒绝的正是
     这种隐式选择。开发部署要 dev 认证，就在配置里写出来。
 
     其余四项的默认取**保守侧**：``token_bucket`` 而非 ``unlimited``、有限并发预算而非
@@ -233,7 +233,7 @@ def _build(config) -> SecurityRuntime:
 
     唯一的例外是 ``rate_limiter``：只监听 loopback 的部署没有远端攻击面，默认限流只会
     卡住本地压测与调试脚本。这个分岔由 ``Authenticator.requires_loopback_binding()``
-    这个 **capability** 决定，不看 target 名（F05 §依据 capability 做安全决策）。
+    这个 **capability** 决定，不看 target 名（安全能力 F04 §依据 capability 做安全决策）。
 
     ``authorizer`` 未显式配置时解析同一装配上下文中的具名 ``default``；没有该命名空间时
     使用内置 ``StandardAuthorizer``。内核 PEP 与 Runtime 必须持有同一实例；test-only
@@ -291,7 +291,7 @@ def _optional_audit_integrity(config) -> AuditIntegrityProvider | None:
     不配就是普通审计（record/query，无链式 proof）；要启用审计完整性就得把 provider
     和它依赖的具名 audit 后端（同时实现 ChainedAuditStore）、具名 audit key provider
     一起配出来。capability 不足、key 不可用、后端不支持 CAS 等装配期失败由 provider
-    自己的 builder 抛出（F05 §装配不变量 5）。
+    自己的 builder 抛出（安全能力 F04 §装配不变量 5）。
 
     仅测试实现（如非持久进程内链）声明 ``is_test_only()``，生产装配拒绝——判据是
     capability 而非 target 名（与 kernel 装配的 test-only authorizer 拒绝一致，

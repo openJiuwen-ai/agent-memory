@@ -1,4 +1,4 @@
-# F10 — 记忆重要度与来源标识
+# F12 — 记忆重要度与来源标识
 
 ## 元信息
 
@@ -7,10 +7,10 @@
 | 日期 | 2026-10-29 |
 | 影响范围 | jiuwen_memory/common/type_def/memory.py，jiuwen_memory/construction/{common.py,classifier_impl,extractor_impl,abstractor_impl,evolver_impl/{orchestrating,dynamic}_evolver.py}，jiuwen_memory/ingest/ingestor_impl/simple_ingestor.py，jiuwen_memory/config/defaults.py，docs/specs/S01-ingest-access.md，docs/specs/S05-construction.md，docs/specs/S07-common.md |
 | 测试基线 | 全量 7518 passed / 93 skipped / 0 failed（Python 3.11，本地开发机（aarch64），基线 mem2.0@fed1031，已装 `watchdog`），无新增失败。skip 是环境差异：本机缺 elasticsearch、pymilvus、torch、redis、asyncpg 等可选库，真实 LLM / Redis 容器用例默认跳过，Windows 专属用例在 Linux 跳过。ruff 0.16.8 告警 12 条与基线完全相同，无新增 |
-| 关联特性 | docs/features/retrieval/F09-recency-importance-secondary-rank.md（重要度的消费方） |
+| 关联特性 | docs/features/retrieval/F11-recency-importance-secondary-rank.md（重要度的消费方） |
 
-> 编号说明：评审稿把本特性称作 construction/F09，但 `F09` 已被
-> `F09-agent-llm-extractor.md` 占用；按「序号不复用」取下一个空号 F10。
+> 编号说明：评审稿把本特性称作 construction/F09，但该编号已由
+> `F09-agent-llm-extractor.md` 占用。2026-11-17 目录内编号重排后本页定为 F12。
 
 ## 背景
 
@@ -125,12 +125,12 @@
 
 1. **`architecture.md §17.7` 未根治**：重要度仍是字符串，跨长度字典序比较失真（`"0.5"` >
    `"0.95"`）；索引侧数值范围过滤需后端隐式转换。根治需升级为独立数值字段。检索侧次级
-   排序已在读取侧按数值解析（retrieval F09）。
+   排序已在读取侧按数值解析（retrieval F11）。
 2. **默认 infer 路径没有类别信号**。出厂 extractor 是 `dynamic_llm`，未配置 prompt 策略时
    回落 `keyword` 抽取器，派生记忆一律取 `default`（0.50）；`dynamic_llm` 使用业务自定义
    策略 prompt 时，prompt 里也没有类别段。要让派生重要度有区分度，须使用 llm / agent_llm
    抽取器，或在自定义策略 prompt 中要求输出 `importance_category`。
-3. **类别段会改变抽取产物，所以默认关**。F09 系统测试 M5 不通过：打开后 Extractor 产出
+3. **类别段会改变抽取产物，所以默认关**。F11 系统测试 M5 不通过：打开后 Extractor 产出
    与无类别段时明显不同（content 一致度 0.68 → 0.24），而 importance 仍有 93.6% 是
    `default`。只测了偏离，没有参考答案，好坏未定。质量评估之后再决定是否打开。
    后续方向：类别判断拆成独立 LLM 调用，Extractor 提示词不动，代价是多一次调用。

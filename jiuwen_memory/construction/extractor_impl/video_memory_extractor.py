@@ -75,7 +75,7 @@ class VideoMemoryExtractor(Extractor):
                 continue
             clips = _build_clips(source, video_data)
             events = _build_events(source, video_data, clips)
-            # F10: CLM/ELM are derived memories -> origin=inferred, default-category
+            # 重要度 F12: CLM/ELM are derived memories -> origin=inferred, default-category
             # importance (overrides the value copied from the source video unit).
             attribution = inferred_attribution(None, self._importance_category_map)
             for unit in (*clips.values(), *events):

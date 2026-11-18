@@ -231,7 +231,7 @@ class ContinuityOpsMixin:
             # 接续写入固定 infer/middle=false（原文直接落盘、不经分类器改写），
             # 调用方的其余系统键原样保留。
             # 只有**原始事件**继承事件时间；派生输出（metadata 带 continuity_output）是
-            # 按构建时刻生成的新记忆，不能继承来源的发生时间（F10 4.2）。
+            # 按构建时刻生成的新记忆，不能继承来源的发生时间（角色记忆 F11 4.2）。
             merged = {**(system_metadata or {}), "infer": "false", "middle": "false"}
             return asyncio.run(
                 self._add_impl(
@@ -247,7 +247,7 @@ class ContinuityOpsMixin:
                     continuity_metadata=metadata,
                     source_ref=source_ref,
                     # Source events carry their own time; derived outputs do not inherit it
-                    # (F10 4.2).
+                    # (角色记忆 F11 4.2).
                     event_time=(None if metadata.get("continuity_output") else event_time),
                 )
             )

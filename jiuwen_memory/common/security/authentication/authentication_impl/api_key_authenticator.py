@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""API_KEY 认证：框架自校验 API Key（F05 §Authentication）。
+"""API_KEY 认证：框架自校验 API Key（安全能力 F04 §Authentication）。
 
 两步：先常时间比对配置声明的 Root API Key，未命中再查主体注册表。
 Root Key **不入注册表**——它是部署级凭据，不属于任何 org。
@@ -24,13 +24,13 @@ from jiuwen_memory.common.type_def.scope import Scope
 
 _LOG = logging.getLogger(__name__)
 
-_METHOD = "api_key"  # 开放字符串而非封闭枚举（F05 拒绝以模式名驱动核心分支）
+_METHOD = "api_key"  # 开放字符串而非封闭枚举（安全能力 F04 拒绝以模式名驱动核心分支）
 _ROOT_CREDENTIAL = "root_api_key"
 
 _FAILED = "authentication failed"
 
 # Root Key 对应的主体。**不是空 ``Scope()``**：ROOT 由 ``role`` 表达，actor 只表达
-# 「是谁」（F05 §授权不变量 1）。它是部署级凭据、不属于任何 org，主体落在保留的
+# 「是谁」（安全能力 F04 §授权不变量 1）。它是部署级凭据、不属于任何 org，主体落在保留的
 # ``system`` org 下；该 ``role`` 由 PR2 ``Authorizer`` 消费，不依赖 actor 形状表达特权。
 _ROOT_ACTOR = Scope(org="system", user="root")
 
@@ -83,7 +83,7 @@ class ApiKeyAuthenticator(Authenticator):
         # Step 2: 主体注册表（内部已做常时间比对与 dummy pad）。
         # 先校验 key_store 实现了 is_revoked：第三方 PrincipalKeyStore 漏实现时，在
         # 认证期就失败，而非让 PEP 在首个授权请求才发现 NotImplementedError（500）--
-        # F05 §装配不变量「不健康能力启动期拒绝」在认证边界这一侧的落地。
+        # 安全能力 F04 §装配不变量「不健康能力启动期拒绝」在认证边界这一侧的落地。
         if type(self._key_store).is_revoked is PrincipalKeyStore.is_revoked:
             raise ValidationError(
                 "api_key 认证要求 key_store 实现 is_revoked 以支持凭据在线撤销复核"

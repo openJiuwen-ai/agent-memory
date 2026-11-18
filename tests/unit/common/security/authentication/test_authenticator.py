@@ -99,12 +99,12 @@ def test_credentials_defaults_are_empty() -> None:
 
 
 def test_credentials_repr_hides_secrets() -> None:
-    """凭据会进日志与异常回溯：明文 key 不能出现在 repr 里（F05 §Credentials）。"""
+    """凭据会进日志与异常回溯：明文 key 不能出现在 repr 里（安全能力 F04 §Credentials）。"""
     assert "super-secret" not in repr(Credentials(api_key="super-secret"))
 
 
 def test_mode_is_an_open_string_not_a_closed_enum() -> None:
-    """F05 拒绝以封闭枚举驱动核心分支：第三方实现不改核心即可声明自己的模式名。"""
+    """安全能力 F04 拒绝以封闭枚举驱动核心分支：第三方实现不改核心即可声明自己的模式名。"""
     register_plugins()
     mode = AuthProducer.build("dev", {}, AssemblyContext()).mode()
     assert isinstance(mode, str)

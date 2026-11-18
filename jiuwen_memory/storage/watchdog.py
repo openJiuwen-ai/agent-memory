@@ -19,7 +19,7 @@
 同处本接口模块；实现在 ``watchdog_impl`` 下用 ``@WatchdogProducer.register("<后端>")``
 自注册；由 :func:`storage.bootstrap.register_backends` 统一 import 实现模块触发。
 
-**异步任务机制**（F07 §12.8）：看门狗不复用 ``Job``/``Scheduler``（它是事件驱动
+**异步任务机制**（文档记忆根设计 §12.8）：看门狗不复用 ``Job``/``Scheduler``（它是事件驱动
 非周期触发）。Observer 线程的 ``on_modified`` 回调经 ``loop.call_soon_threadsafe``
 投递到主事件循环，``asyncio.create_task`` 起异步同步任务，sqlite 操作经
 ``asyncio.to_thread`` 推到独立线程避免阻塞事件循环（桥接模式抄

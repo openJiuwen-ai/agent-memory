@@ -796,7 +796,7 @@ def test_each_property_becomes_one_unit_and_named_speaker_owns_it() -> None:
 
 
 def test_property_units_write_origin_inferred_and_table_importance() -> None:
-    """F10：属性记忆是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖源继承值）。"""
+    """重要度 F12：属性记忆是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖源继承值）。"""
     response = json.dumps(
         {
             "entities": [

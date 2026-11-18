@@ -40,7 +40,7 @@ def test_top_name_enters_config_validation() -> None:
 
 
 def test_authenticator_is_required_without_default() -> None:
-    """给认证一个默认会让「忘了配认证」静默变成某种可用配置（F05 §装配不变量 6）。"""
+    """给认证一个默认会让「忘了配认证」静默变成某种可用配置（安全能力 F04 §装配不变量 6）。"""
     with pytest.raises(ValidationError):
         SecurityRuntimeProducer.build("standard", {}, AssemblyContext())
 
@@ -67,7 +67,7 @@ def test_authorizer_defaults_to_a_real_deciding_implementation() -> None:
 
     PR1 时默认是 ``allow_all``，理由是「没有代码消费这个 Authorizer」；该前提随
     PR2 接通 PDP 而失效，恒放行占位当默认即等于生产装配默认放行。断言取
-    ``is_test_only()`` 这个 capability 而不是 target 名（F05 §授权不变量 8）：
+    ``is_test_only()`` 这个 capability 而不是 target 名（安全能力 F04 §授权不变量 8）：
     第三方换个实现名照样要被这条线拦住。
     """
     assert _build().authorizer.is_test_only() is False
@@ -129,7 +129,7 @@ def test_audit_integrity_health_covers_real_provider() -> None:
 
 
 def test_loopback_only_deployment_defaults_to_unlimited() -> None:
-    """分岔由 capability 决定，不看 target 名（F05 §依据 capability 做安全决策）。
+    """分岔由 capability 决定，不看 target 名（安全能力 F04 §依据 capability 做安全决策）。
 
     dev 认证声明 ``requires_loopback_binding()``：没有远端攻击面，默认限流只会卡住
     本地压测与调试脚本。
@@ -228,7 +228,7 @@ def test_health_rejects_when_any_capability_is_unhealthy() -> None:
 
 
 def test_health_error_names_the_capability_not_the_secret() -> None:
-    """异常消息只带能力名——具体原因由各实现决定暴露多少（F05 §装配不变量 8）。"""
+    """异常消息只带能力名——具体原因由各实现决定暴露多少（安全能力 F04 §装配不变量 8）。"""
     runtime = _build()
     broken = SecurityRuntime(
         authenticator=runtime.authenticator,
@@ -317,7 +317,7 @@ def test_close_continues_past_a_failing_capability() -> None:
 
 
 def test_named_capabilities_are_shared_across_surfaces() -> None:
-    """运行期共享状态通过具名实例显式共享，不靠模块级单例（F05 §SecurityRuntime）。"""
+    """运行期共享状态通过具名实例显式共享，不靠模块级单例（安全能力 F04 §SecurityRuntime）。"""
     ctx = AssemblyContext.from_dict(
         {
             "security": {

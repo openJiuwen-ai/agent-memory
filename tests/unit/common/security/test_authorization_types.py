@@ -1,4 +1,4 @@
-"""授权类型的安全约束（F05 §Action / §ResourceDescriptor / §Grant / §Delegation）。
+"""授权类型的安全约束（安全能力 F04 §Action / §ResourceDescriptor / §Grant / §Delegation）。
 
 这些断言钉住的是**默认拒绝**与**不可伪造**两件事：动作集合封闭、管理动作不可委托、
 时效与撤销真的生效、请求写不进只读的安全属性。
@@ -35,7 +35,7 @@ NOW = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 
 
 def test_management_actions_are_never_delegatable() -> None:
-    """管理动作默认不可委托（F05 §授权不变量 4）。"""
+    """管理动作默认不可委托（安全能力 F04 §授权不变量 4）。"""
     assert not (MANAGEMENT_ACTIONS & DELEGATABLE_ACTIONS)
 
 

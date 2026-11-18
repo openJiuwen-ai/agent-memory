@@ -7,13 +7,13 @@
 | 日期 | 2026-09-03 |
 | 影响范围 | `jiuwen_memory/control/jobs_impl/middle_to_long_job.py`（Spec 删自解析 + 缺注入校验）、`jiuwen_memory/control/jobs_impl/evolve_job.py`（同）、`jiuwen_memory/control/engine_impl/in_memory_engine.py`（`evolve` 注入 evolver）、`jiuwen_memory/control/engine_impl/cloud_engine.py`（同）、`tests/unit/control/test_job_builder_alignment.py`（新增）、`tests/unit/control/test_middle_two_instances_e2e.py`（补注入） |
 | 测试基线 | `pytest tests/unit/control` 全绿（4 个既有环境依赖 skip：real-LLM e2e ×4、双实例 Redis e2e ×1）；`pytest -m unit` 全量仅 `tests/unit/construction/test_entity_linker.py` 2 例顺序性日志捕获闪烁（隔离运行通过，与本特性无关） |
-| Refs | [E-06（issues 清单）](../../pluginized-assembly-current-issues.md)、[`F06-middle-term-memory`](F06-middle-term-memory.md)、[`S03-control`](../../specs/S03-control.md) |
+| Refs | E-06（issues 清单）、[`F06-middle-term-memory`](F06-middle-term-memory.md)、[`S03-control`](../../specs/S03-control.md) |
 
 ---
 
 ## 背景
 
-[issues 清单 E-06](../../pluginized-assembly-current-issues.md)：Engine 写入用一套
+issues 清单 E-06：Engine 写入用一套
 `IndexBuilder`，而后台 Job 在装配期自行解析另一套：
 
 - `MiddleToLongJobSpec._build_middle_to_long_job_spec` 按 `vector_enabled` 推导默认

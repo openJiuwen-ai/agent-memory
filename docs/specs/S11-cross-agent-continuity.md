@@ -4,10 +4,10 @@
 
 | 项 | 值 |
 | --- | --- |
-| 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；剩余实现差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
+| 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；剩余实现差距见 [F11 12.2](../features/construction/F11-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
 | 关联模块 | jiuwen_memory_adapter/、jiuwen_memory_entry/、jiuwen_memory/api/、jiuwen_memory/control/、jiuwen_memory/common/、jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-16 |
-| 关联特性文档 | [F10-role-memory](../features/construction/F10-role-memory.md) |
+| 最近一次修订日期 | 2026-11-18 |
+| 关联特性文档 | [F11-role-memory](../features/construction/F11-role-memory.md) |
 | 关联规约 | [S02](S02-memory-api.md)、[S03](S03-control.md)、[S04](S04-retrieval.md)、[S06](S06-storage.md)、[S07](S07-common.md)、[S09](S09-plugin-development.md) |
 
 ## 范围 / 边界
@@ -54,7 +54,7 @@
 
 ## 数据结构
 
-本节给出字段级定义，含义、用法和示例见 [F10 第 5 节](../features/construction/F10-role-memory.md#5-数据结构)，两处小标题同名。公开 DTO 定义在 `jiuwen_memory/common/type_def/continuity.py`，经 `jiuwen_memory.api` 重导出；标为"内部"的结构是持久控制记录，不是公开 DTO，KV 路径为 `/continuity/{tasks,events,relations}/<key>` 与 `/continuity/coverage/relations`。
+本节给出字段级定义，含义、用法和示例见 [F11 第 5 节](../features/construction/F11-role-memory.md#5-数据结构)，两处小标题同名。公开 DTO 定义在 `jiuwen_memory/common/type_def/continuity.py`，经 `jiuwen_memory.api` 重导出；标为"内部"的结构是持久控制记录，不是公开 DTO，KV 路径为 `/continuity/{tasks,events,relations}/<key>` 与 `/continuity/coverage/relations`。
 
 ### `MemoryRef`
 
@@ -152,7 +152,7 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 | `occurred_at` | string 或 null | `null` | RFC 3339，必须带时区；不用于决定全局顺序 |
 | `schema_version` | string | `"continuity-event/1"` | 其他值拒绝 |
 
-首版不提供来源内位置（`source_position` / `previous_position`）与增量同步游标，见 F10 12.3。
+首版不提供来源内位置（`source_position` / `previous_position`）与增量同步游标，见 construction/F11 §12.3。
 
 ### 事件回执（内部）
 
@@ -173,7 +173,7 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 提交顺序：先保存 unknown 回执 → 写正文 → 保存引用并转 partial → 把引用加入任务背景并递增修订 → 转 committed。这不是跨记录事务：背景已保存而最终回执未保存时，同键重试复用引用，按值去重补齐背景，不重写正文；任务修订号可能多递增一次。未保存可靠引用时保持 unknown，必须通过恢复接口核对。关系发现失败不撤销已提交事件，只把 `association_status` 置为 partial 并记录不含原文和异常消息的错误类别。
 
-派生构建：原始事件持久化之后，抽取、去重、巩固和关系发现作为第二阶段。回执另记 `build_id`（事件幂等键 ＋ 构建器与模型版本摘要）、`derivation_status`（pending / committed / partial / failed）、冻结的构建计划，以及 `derived` 列表（每项 `{output_key, ref, action}`，`action` 为 created / reused）。计划持久化前禁止任何派生写入；已有计划则复用、不重新调用模型，没有计划时允许重新生成；同一 `build_id` 只能以"尚无计划"为条件写入一份计划（由单写者 Registry 串行保证）；新构建器或模型版本发起的重建产生新的 `build_id`。created 新建输出在系统元数据带 `continuity_build`、`continuity_output`；reused 保留目标既有标识。核对入口对 created 校验批次、输出标识与计划摘要，对 reused 校验冻结目标引用及其摘要，不接受其他内容版本。恢复规则：created 以 `system_metadata.continuity_output` 在真源上做精确等值查询（不依赖向量或全文索引），查到已存在且摘要一致则采用，否则新建，摘要不一致标冲突；reused 的来源关联以"事件 ＋ 被复用记忆"为键，集合语义。前置能力：写入链须保证系统元数据等值查询写后可读，缺失时不得启用派生构建。首版不提供 updated（原地更新已有记忆），也不依赖 KV CAS 或带期望摘要的条件更新，见 F10 12.3。`continuity_recover` 另支持 `kind=derivation`（只核对、不写新内容）。零条派生视为 committed；派生记忆来源指向原始事件引用；派生失败不影响原始事件已提交的结论。
+派生构建：原始事件持久化之后，抽取、去重、巩固和关系发现作为第二阶段。回执另记 `build_id`（事件幂等键 ＋ 构建器与模型版本摘要）、`derivation_status`（pending / committed / partial / failed）、冻结的构建计划，以及 `derived` 列表（每项 `{output_key, ref, action}`，`action` 为 created / reused）。计划持久化前禁止任何派生写入；已有计划则复用、不重新调用模型，没有计划时允许重新生成；同一 `build_id` 只能以"尚无计划"为条件写入一份计划（由单写者 Registry 串行保证）；新构建器或模型版本发起的重建产生新的 `build_id`。created 新建输出在系统元数据带 `continuity_build`、`continuity_output`；reused 保留目标既有标识。核对入口对 created 校验批次、输出标识与计划摘要，对 reused 校验冻结目标引用及其摘要，不接受其他内容版本。恢复规则：created 以 `system_metadata.continuity_output` 在真源上做精确等值查询（不依赖向量或全文索引），查到已存在且摘要一致则采用，否则新建，摘要不一致标冲突；reused 的来源关联以"事件 ＋ 被复用记忆"为键，集合语义。前置能力：写入链须保证系统元数据等值查询写后可读，缺失时不得启用派生构建。首版不提供 updated（原地更新已有记忆），也不依赖 KV CAS 或带期望摘要的条件更新，见 construction/F11 §12.3。`continuity_recover` 另支持 `kind=derivation`（只核对、不写新内容）。零条派生视为 committed；派生记忆来源指向原始事件引用；派生失败不影响原始事件已提交的结论。
 
 ### `RelationRecord` 与 `RelationStatus`
 
@@ -199,7 +199,7 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 ### 关系头与修订历史（内部）
 
-关系真源存于 Registry KV，**不是** MemoryUnit（F10 4.1 的例外，理由见 F10 4.1 与第 10 节）。项目 Scope 隔离：
+关系真源存于 Registry KV，**不是** MemoryUnit（construction/F11 §4.1 的例外，理由见 §4.1 与第 10 节）。项目 Scope 隔离：
 
 | KV 路径 | 内容 |
 | --- | --- |
@@ -219,7 +219,7 @@ Binding：`binding_id`（由任务与 bind 的 `request_id` 计算）、`connect
 
 读取判权：调用方对项目 Scope 有 READ，关系两端及证据均可读，提交连接未停用、未隔离。关系不进入普通 `search` / `list` / `get` 的候选集，也不进入 Evolve。
 
-图投影：节点 ID 为 `continuity:memory:` 加 Scope 与 unit ID 的摘要，边 ID 为 `continuity:relation:<relation_id>`，边属性保存 `relation_id` 与 `revision`（不再保存关系 MemoryRef），视图回查 KV 关系头核验当前状态。投影由 `evidence_graph` IndexBuilder 以 RETRIEVAL_ONLY 模式完成；撤回时删除对应边。旧的无前缀投影不再作为角色关系使用，需要重建；存量关系 MemoryUnit 由一次性迁移搬入 KV 并重建投影（F10 12.2）。
+图投影：节点 ID 为 `continuity:memory:` 加 Scope 与 unit ID 的摘要，边 ID 为 `continuity:relation:<relation_id>`，边属性保存 `relation_id` 与 `revision`（不再保存关系 MemoryRef），视图回查 KV 关系头核验当前状态。投影由 `evidence_graph` IndexBuilder 以 RETRIEVAL_ONLY 模式完成；撤回时删除对应边。旧的无前缀投影不再作为角色关系使用，需要重建；存量关系 MemoryUnit 由一次性迁移搬入 KV 并重建投影（F11 12.2）。
 
 ### `EvidenceRelation`
 
@@ -322,7 +322,7 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 | `continuation_ready` | boolean | 必需证据及已声明环境条件是否满足；首版不提供环境核验，固定 false。仅为信息就绪提示，不授权执行 |
 | `unchecked_scope` | string[] | 语义范围，例如 additional_history / relation_coverage / environment；不是未授权空间 ID 列表 |
 
-首版不提供 `ViewMeta.review` 复核聚合与影响传播（见 F10 12.3）。
+首版不提供 `ViewMeta.review` 复核聚合与影响传播（见 F11 12.3）。
 
 ### `Resolution` 与 `ConflictResolution`
 
@@ -417,13 +417,13 @@ Adapter 交付 UTF-8 JSONL：每行一个 [`ContinuityEvent`](#continuityevent�
 
 ### 外部记忆导入契约
 
-外部 Agent（OpenClaw、Hermes、WorkBuddy、DeepSeek Harness 等）自有记忆读入 agent-memory 时遵守本契约，流程与取舍见 [F10 第 8 节](../features/construction/F10-role-memory.md#8-外部-agent-记忆迁移)。
+外部 Agent（OpenClaw、Hermes、WorkBuddy、DeepSeek Harness 等）自有记忆读入 agent-memory 时遵守本契约，流程与取舍见 [F11 第 8 节](../features/construction/F11-role-memory.md#8-外部-agent-记忆迁移)。
 
 - **适配器输出**：一份[导入清单](#导入清单manifest) ＋ 一份 `ContinuityEvent` JSONL（UTF-8，每行一个事件），由导入工具分批调用 `batch_add` 写入。
 - **字段映射**：原始位置写入 `source_locator`（产品、批次、文件摘要、行号或事件序号）；原文作者写入 `claimed_author`；原始时间写入 `occurred_at` 并带时区，未知则为 null 并列入清单的 `missing_fields`；能判断的类型写入 `kind`，判断依据不足时为 unclassified 或 `classification_confidence=low`。
 - **事件键**：产品有稳定事件 ID 时使用之；没有时用批次 ID、源文件摘要、行号或事件序号计算，不能用文本相同推断同一事件。
 - **服务端要求**：原文作为来源保存；派生内容进入统一的抽取、去重、巩固、关系发现与冲突消解；独立来源计数在去重后保留，同一来源的多次导出或转述不计为多个来源；导入者为认证主体，`claimed_author` 不升级为认证身份；每批可按批次 ID 追溯与回滚，回滚不删除批次之后他人新增或修订的数据。
-- **实现状态**：配置派生构建后，导入事件进入统一抽取与精确去重；未配置时只保存原文，语义巩固未接通，产品原生格式转换器尚未提供。实现细节与差距见 F10 8.3、12.2。
+- **实现状态**：配置派生构建后，导入事件进入统一抽取与精确去重；未配置时只保存原文，语义巩固未接通，产品原生格式转换器尚未提供。实现细节与差距见 construction/F11 §8.3、§12.2。
 
 ## TaskRegistry：任务登记与上下文绑定
 

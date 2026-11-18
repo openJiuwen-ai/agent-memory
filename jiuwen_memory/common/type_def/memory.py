@@ -18,13 +18,13 @@ from .scope import Scope
 MetadataValueType = str | int | float | bool | None | list[str]
 _NON_PROPAGATED_SYSTEM_METADATA_KEYS = frozenset({"infer", "procedural", "middle"})
 
-# 来源标识（construction F10）：``system_metadata[ORIGIN_KEY]`` 二态。原文由接入层默认写 original，
+# 来源标识（重要度 F12）：``system_metadata[ORIGIN_KEY]`` 二态。原文由接入层默认写 original，
 # 派生记忆由产出算子自己写 inferred——不靠继承，故不进上面的不传播键清单。
 ORIGIN_KEY = "origin"
 ORIGIN_ORIGINAL = "original"
 ORIGIN_INFER = "inferred"
 
-# 重要度（construction F10）：``system_metadata[IMPORTANCE_KEY]`` 存 0~1 浮点字符串
+# 重要度（重要度 F12）：``system_metadata[IMPORTANCE_KEY]`` 存 0~1 浮点字符串
 # （如 ``"0.85"``）。
 IMPORTANCE_KEY = "importance"
 
@@ -84,7 +84,7 @@ class MemoryTier(str, Enum):
 
 
 class ImportanceCategory(str, Enum):
-    """重要度类别（construction F10，与 tier 正交）：LLM 只判类别，数值由配置查表。
+    """重要度类别（重要度 F12，与 tier 正交）：LLM 只判类别，数值由配置查表。
 
     业务可在 ``importance_category_map`` 中追加自定义类别字符串，查表不强制本枚举校验。
     """
@@ -225,7 +225,7 @@ class MemoryUnit:
     # Storage.add/update 下传；一体化 Storage 消费它自建向量索引，CompositeStorage
     # 仅随本体持久化。空列表表示未向量化。
     vectors: list[ChunkVector] = field(default_factory=list)
-    # 跨 unit 树结构引用（F08），与披露层/多模态粒度/tier 正交。
+    # 跨 unit 树结构引用（记忆树 F08），与披露层/多模态粒度/tier 正交。
     # 追加字段以保留既有 MemoryUnit 的位置参数顺序；空结构表示未挂树。
     hierarchy: HierarchyRef = field(default_factory=HierarchyRef)
     # None 表示未保存完整事实（含旧数据），不能把旧父摘要当成完整事实补入。

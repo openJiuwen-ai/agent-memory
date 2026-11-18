@@ -1,4 +1,4 @@
-"""授权能力：契约、真源与内置实现（F05 §Authorization）。"""
+"""授权能力：契约、真源与内置实现（安全能力 F04 §Authorization）。"""
 
 from .base import (
     AuthorizationDecision,

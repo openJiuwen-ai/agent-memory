@@ -789,7 +789,7 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         # domain_store.add 内 _md_path._project_of 读 coords 落空 → md_filename 重算成
         # memory/MEMORY.md（丢失 project 维）。从 old 的 md_filename（落盘键，
         # 不剥除）反推 project 回写 new 的 coords，让新版落进与旧版同一文件（版本链
-        # 同文件追加，F08 §5.2.1）。非文档模式无此问题（KV 不走 md 分流）。
+        # 同文件追加，文档记忆 F08 §5.2.1）。非文档模式无此问题（KV 不走 md 分流）。
         if self._domain_store.should_write_document():
             restore_coords_from_md_filename(new, old)
         # 新版先落地再废旧版：任何时刻都有一个可读版本（同 InMemoryEngine）。
@@ -797,7 +797,7 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         # 文档模式（write_document=true）走与 dedup 同构的路径标记旧版 SUPERSEDED：
         # 直接改 old 的 lifecycle 字段，经 index_builder.update 落 shadow
         # （content_hash 不变→shadow.update_units 只覆写 unit_json+lifecycle 投影列，
-        # F08 决策三）。绕开 ``self._lifecycle.supersede``——它是 KV LifecycleManager
+        # 文档记忆 F08 决策三）。绕开 ``self._lifecycle.supersede``——它是 KV LifecycleManager
         # （LifecycleProducer 默认 target=kv），supersede/transition/sweep 都从 KVStore
         # 取 unit，而文档模式真源已切 md+shadow、KV 不再持有 MemoryUnit，走它必
         # NotFoundError（doc-mode-supersede-kv-lifecycle-break）。dedup 的 SUPERSEDE
@@ -943,7 +943,7 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         buckets: list[Scope] | None = None,
         denied_scopes: list[str] | None = None,
     ) -> str | None:
-        """提交 EvolveJob——一次性演进执行共用件（F04 D3，纯执行）。"""
+        """提交 EvolveJob——一次性演进执行共用件（dreaming F13 D3，纯执行）。"""
         if self._job_factory is None:
             raise RuntimeError(
                 "evolve requires job_factory, please configure "
@@ -1002,7 +1002,7 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         *,
         line_range: tuple[int, int] | None = None,
     ) -> list[MemoryUnit]:
-        """异步协程：委托 DomainStore.read_md_file（``asyncio.to_thread``），F08。
+        """异步协程：委托 DomainStore.read_md_file（``asyncio.to_thread``），文档记忆 F08。
 
         Engine 层拆 project（:func:`project_from_context` 从 ``context.extensions``
         读 coords.project），显式传给 DomainStore（Context 不下沉存储层）。
@@ -1024,7 +1024,7 @@ class CloudEngine(HumanViewEngineMixin, MemoryEngine):
         old_text: str,
         new_text: str,
     ) -> list[MemoryUnit]:
-        """异步协程：委托 DomainStore.edit_md_file（``asyncio.to_thread``），F08。
+        """异步协程：委托 DomainStore.edit_md_file（``asyncio.to_thread``），文档记忆 F08。
 
         project 从 ``context.extensions["coords"]["project"]`` 拆出（见
         :func:`project_from_context`），scope 从 ``context.scope`` 取。DomainStore

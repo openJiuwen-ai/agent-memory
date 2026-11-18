@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""EvolveJob——通用演进入口（候选→演进→回显三段，F04 A 形态）。
+"""EvolveJob——通用演进入口（候选→演进→回显三段，dreaming F13 A 形态）。
 
 链条 owner 在本 Job 的 :meth:`EvolveJob.run` 内：resolver 统一候选（四源
 唯一汇合点）→ 逐桶排除 middle 后调 ``evolver.evolve(units, mode)`` → 从
@@ -8,7 +8,7 @@ kv/evolver。装配期依赖（真源 KV 端口）固化到 :class:`EvolveJobSpe
 evolver 由 Engine 经 :class:`JobFactory.get_job` 运行时注入（E-06：Job 与
 Engine 共用同一实例，Spec 不自行解析）。
 
-红线（F04 D3）：立即跑与定时跑共用同一个 ``run()``——Engine 不得另写
+红线（dreaming F13 D3）：立即跑与定时跑共用同一个 ``run()``——Engine 不得另写
 第二份链条。
 """
 
@@ -163,11 +163,11 @@ class EvolveJob(Job):
                 (created, updated, superseded, forgotten)
             ) else "false"
             detail["retry_requires_reconciliation"] = "true"
-        if outcome.requested_ids is not None:  # ② 点名源差集回显（F04 D3）
+        if outcome.requested_ids is not None:  # ② 点名源差集回显（dreaming F13 D3）
             detail["requested_ids"] = ",".join(outcome.requested_ids)
             detail["loaded_ids"] = ",".join(outcome.loaded_ids or [])
             detail["skipped"] = ";".join(outcome.skipped or [])
-        if outcome.denied_scopes:  # ④ 枚举源逐桶授权拒绝回显（F04 D7）
+        if outcome.denied_scopes:  # ④ 枚举源逐桶授权拒绝回显（dreaming F13 D7）
             detail["denied_scopes"] = ";".join(outcome.denied_scopes)
         return detail
 

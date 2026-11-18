@@ -1,4 +1,4 @@
-"""StandardAuthorizer 的授权 truth table（F05 §Authorization 决策顺序 / §5.4 验收）。
+"""StandardAuthorizer 的授权 truth table（安全能力 F04 §Authorization 决策顺序 / §5.4 验收）。
 
 覆盖迁移计划 §5.4 点名的每一项：owner、Grant、Delegation、role、默认拒绝的完整
 truth table；跨 org、跨 space、跨主体、伪造 delegation、撤销/过期 delegation 全部拒绝；
@@ -147,7 +147,7 @@ def test_expired_root_context_is_still_denied() -> None:
 
 
 def test_empty_actor_is_denied_not_privileged() -> None:
-    """空 Scope 是「没填内容的身份」，不是 platform admin（F05 §授权不变量 1）。
+    """空 Scope 是「没填内容的身份」，不是 platform admin（安全能力 F04 §授权不变量 1）。
 
     这是与旧 PermissionManager 的关键行为反转：旧实现在无认证上下文时把空 actor
     当全局放行。
@@ -244,7 +244,7 @@ def test_root_crosses_org() -> None:
 
 
 def test_user_cannot_cross_org_even_with_grant() -> None:
-    """Grant 不跨 org 生效（F05 §Grant）。"""
+    """Grant 不跨 org 生效（安全能力 F04 §Grant）。"""
     grant = Grant(
         grant_id="g1",
         grantor=OTHER_ORG,
@@ -273,7 +273,7 @@ def test_owner_covers_own_agent_branch() -> None:
 
 
 def test_agent_does_not_cover_its_users_scope() -> None:
-    """反向不成立：agent 身份读不到 user 的完整分支（F05 §授权不变量 2）。"""
+    """反向不成立：agent 身份读不到 user 的完整分支（安全能力 F04 §授权不变量 2）。"""
     decision = _decide(_authorizer(), _auth(actor=ALICE_AGENT), _resource(scope=ALICE))
     assert not decision.allowed
     assert decision.reason is DenyReason.NOT_COVERED
@@ -344,7 +344,7 @@ def test_delegation_allows_agent_to_act_for_user() -> None:
 
 
 def test_user_to_user_delegation_is_denied() -> None:
-    """F05 只允许 user 委托 agent/service；user -> user 是第二套 Grant，必须拒（P1-5）。"""
+    """安全能力 F04 只允许 user 委托 agent/service；user -> user 是第二套 Grant，必须拒（P1-5）。"""
     delegation = _delegation(delegate=BOB)
     auth = _auth(actor=BOB, delegation_id="d1")
     decision = _decide(_authorizer(delegations=[delegation]), auth, _resource(scope=ALICE))
@@ -550,7 +550,7 @@ def test_authorize_arguments_are_keyword_only() -> None:
 
 
 def test_authorizer_does_not_read_contextvar() -> None:
-    """F05 §授权不变量 7：全部判定依据显式入参。
+    """安全能力 F04 §授权不变量 7：全部判定依据显式入参。
 
     ContextVar 里放一个 ROOT，判定仍按入参的 USER 走。
     """

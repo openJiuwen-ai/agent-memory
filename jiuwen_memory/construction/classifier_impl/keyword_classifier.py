@@ -7,7 +7,7 @@
 - 其余维持 EPISODIC（发生过什么）。
 真实实现会用 LLM / FeatureExtractor 做多维分类，这里仅作可复现的占位。
 
-重要度（F10）同款按词判类别（偏好词→preference、规则词→rule、其余 default），按
+重要度（重要度 F12）同款按词判类别（偏好词→preference、规则词→rule、其余 default），按
 ``importance_category_map`` 查表补写；调用方已显式给值时不覆盖。
 """
 

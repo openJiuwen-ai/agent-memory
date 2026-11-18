@@ -151,7 +151,7 @@ False 时置位 `handle.lost` 并终止续期循环。持有者可在临界区�
 消费方能否在同一调用栈内安全嵌套。
 
 **Redis 不可用**：fail-closed，异常归一为 `BackendError` 向上抛，不提供静默降级为无锁的
-旁路。与 F04-storage-ssl 的处置一致。
+旁路。与 F03-storage-ssl 的处置一致。
 
 **客户端**：`redis.asyncio.Redis.from_url`。`redis>=5` 已在 `pyproject.toml` 的 `deploy`
 extra 中声明，无新增依赖。与 redis KV 后端各自持有连接池，互不复用。

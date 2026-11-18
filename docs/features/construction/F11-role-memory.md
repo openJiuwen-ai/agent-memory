@@ -322,7 +322,7 @@ add / batch_add（continuity=ContinuityWrite）──写入──▶ MemoryUnit�
 
 **Scope 隔离**：所有读写语句都以参数形式带 `scope_key` 过滤，不拼接字符串；边两端必须同一 `scope_key`，否则拒绝写入。部署方可另行按组织使用不同 database。
 
-**连接与生命周期**：配置 `uri`、`database`、`username`、`password`，经 ConfigSource 晚绑定；开启 `ssl_verify` 时必须提供 `ssl_ca_cert`，URI 必须是 `bolt+s://` 或 `neo4j+s://`，装配和 URI 晚绑定时都会校验，不能降级。驱动不允许 `+s` scheme 与自定义 CA 同时使用，所以连接时把 scheme 转为无后缀形式，并显式传 `encrypted=True` 和 `TrustCustomCAs`，连接仍强制 TLS（规则见 [F04 存储 SSL](../storage/F04-storage-ssl.md)）。驱动连接池由该 Store 持有；`health()` 只执行一次只读探测；`close()` 关闭驱动，由装配根统一调用。
+**连接与生命周期**：配置 `uri`、`database`、`username`、`password`，经 ConfigSource 晚绑定；开启 `ssl_verify` 时必须提供 `ssl_ca_cert`，URI 必须是 `bolt+s://` 或 `neo4j+s://`，装配和 URI 晚绑定时都会校验，不能降级。驱动不允许 `+s` scheme 与自定义 CA 同时使用，所以连接时把 scheme 转为无后缀形式，并显式传 `encrypted=True` 和 `TrustCustomCAs`，连接仍强制 TLS（规则见 [F03 存储 SSL](../storage/F03-storage-ssl.md)）。驱动连接池由该 Store 持有；`health()` 只执行一次只读探测；`close()` 关闭驱动，由装配根统一调用。
 
 **与 Registry 的关系**：Neo4j 只存关系的图投影，不是事实来源，可从 Registry KV 中的关系真源重建；Registry 仍在具名 KV，单写约束不因更换图后端而解除。
 
@@ -643,7 +643,7 @@ agent-memory 是统一记忆底座。外部内容如果只存原文、不进入�
 | middle-term（[F06](../control/F06-middle-term-memory.md)） | 缓冲原始对话，供后续抽取 | 交接依赖已持久化来源和结果，不等待后台抽取；抽取后归档原文不能让必需引用失效 |
 | memory tree（[F08](../common/F08-memory-tree.md)） | 后续可用于任务历史的结构化浏览 | 包含树不等于证据支持图，也不表示角色继承；首版不依赖它 |
 | temporal（[F07](../common/F07-temporal-t-message.md)） | 区分事件、消息、摄入和有效时间 | 时间新不代表可信，消息时间不等于验证时间 |
-| dreaming（[F04](../F04-dreaming.md)） | 需要后台巩固时复用现有演进调度及持续授权 | dreaming 是调度方式，不能自动把候选经验变为已验证经验 |
+| dreaming（[F13](F13-dreaming.md)） | 需要后台巩固时复用现有演进调度及持续授权 | dreaming 是调度方式，不能自动把候选经验变为已验证经验 |
 
 任务关闭后，交接和任务判断转为历史，按保留策略归档；仍被活动任务或经验引用的证据不能被自动清理提前移除。被推翻的假设退出当前建议但保留原因。长期未用的经验可降为低优先级或归档，不能仅凭引用次数推断真假。首版采用已有生命周期机制加引用检查，不新增独立遗忘引擎；关系真源无法读取或解析时不能据此判定“无引用”，引用检查应保守保留并记录异常类型，未预期的编程异常向上传播；管理方主动删除或强制遗忘优先于引用保留，之后引用显示证据缺失。归档不是授权隔离，不能用 ARCHIVED 代替撤权。自动压缩和巩固复用 Evolver/Abstractor，保持来源、条件、反例和验证范围，不能把多个局部成功合并成全面成功。
 
@@ -1987,8 +1987,8 @@ Provider 复现。补充 SDK 生命周期定向测试 8 passed，覆盖初始化
 
 以下基线均针对 2026-11-05 设计修订之前的代码形态（九个 `role_*` 入口）。修订后，覆盖已删除能力的测试（`test_sync.py` 的切换用例、`test_review_changes.py`、`test_review_impact.py`、`test_derivation_updated.py`、`role_publish` / `role_mark_source_cutover` 用例）随实现一起删除，基线按开发计划重新建立。
 
-- 2026-11-03 本实现轮次落地：验证裁决改用 supports、多职责查询、条件投影（kv/memory/neo4j）、Neo4j 后端（驱动替身）、经验状态演进、role_rebuild 工具暴露、关系覆盖清单、生命周期重装、同一图对象校验与 IndexBuilder 写入模式声明、冲突消解候选转换流水线、派生构建核对恢复核心、证据保留引用守卫、影响传播与三档聚合复核、RETRIEVAL_ONLY 主写入链拒绝、按来源范围隔离；新增 `test_multi_duty.py`、`test_experience_states.py`、`test_conditional_projection.py`、`test_neo4j_graph_store.py`、`test_relation_coverage.py`、`test_assembly.py`、`test_continuity_lifecycle.py`、`test_conflict_pipeline.py`、`test_derivation.py`、`test_evidence_retention.py`、`test_review_impact.py`、`test_source_governance.py`、`test_continuity_governance.py` 及对既有 `test_latest_design.py`/`test_continuity.py` 的修正。F10 范围单测（control/continuity_impl、retrieval/role_view_impl、construction/conflict_resolver_impl、construction/index_builder_impl、construction/test_conflict_pipeline、storage 图契约与 neo4j、adapter/api 接续）139 passed。真实 Neo4j、产品 G0、存量迁移与收益评测仍未执行。
-- 2026-11-04 完成剩余实现：来源治理公开入口 `MemoryAPI.role_quarantine_source`/`role_release_source`（`MANAGE_SPACE` 判权 + 入口审计），消解集成（`_associate_event` 分流目录/旧类型并经 `resolve_discovered_conflicts` 映射 `caused_by`/`contradicts`、跳过相似/共指），双写切换水位（`sync.mark_cutover`/`cutover` + `role_mark_source_cutover`，切换后拒绝新源事件），全图变更日志增量失效传播（`/continuity/changes` + `review_changes`/`propagate_review`），派生显式新版本重建（`updated` CAS 就地更新 + 缺 CAS fail-closed），显式发布（`role_publish` 原文本复制 + 出处/发布依据）；新增 `test_continuity_governance.py` 越权/切换/发布用例、`test_legacy_association.py`、`test_sync.py` 切换用例、`test_review_changes.py`、`test_derivation_updated.py`。F10 范围单测 198 passed。其余剩余项（construction Evolver 跨层回传、跨空间逐 item 来源隔离）仍在推进。
+- 2026-11-03 本实现轮次落地：验证裁决改用 supports、多职责查询、条件投影（kv/memory/neo4j）、Neo4j 后端（驱动替身）、经验状态演进、role_rebuild 工具暴露、关系覆盖清单、生命周期重装、同一图对象校验与 IndexBuilder 写入模式声明、冲突消解候选转换流水线、派生构建核对恢复核心、证据保留引用守卫、影响传播与三档聚合复核、RETRIEVAL_ONLY 主写入链拒绝、按来源范围隔离；新增 `test_multi_duty.py`、`test_experience_states.py`、`test_conditional_projection.py`、`test_neo4j_graph_store.py`、`test_relation_coverage.py`、`test_assembly.py`、`test_continuity_lifecycle.py`、`test_conflict_pipeline.py`、`test_derivation.py`、`test_evidence_retention.py`、`test_review_impact.py`、`test_source_governance.py`、`test_continuity_governance.py` 及对既有 `test_latest_design.py`/`test_continuity.py` 的修正。F11 范围单测（control/continuity_impl、retrieval/role_view_impl、construction/conflict_resolver_impl、construction/index_builder_impl、construction/test_conflict_pipeline、storage 图契约与 neo4j、adapter/api 接续）139 passed。真实 Neo4j、产品 G0、存量迁移与收益评测仍未执行。
+- 2026-11-04 完成剩余实现：来源治理公开入口 `MemoryAPI.role_quarantine_source`/`role_release_source`（`MANAGE_SPACE` 判权 + 入口审计），消解集成（`_associate_event` 分流目录/旧类型并经 `resolve_discovered_conflicts` 映射 `caused_by`/`contradicts`、跳过相似/共指），双写切换水位（`sync.mark_cutover`/`cutover` + `role_mark_source_cutover`，切换后拒绝新源事件），全图变更日志增量失效传播（`/continuity/changes` + `review_changes`/`propagate_review`），派生显式新版本重建（`updated` CAS 就地更新 + 缺 CAS fail-closed），显式发布（`role_publish` 原文本复制 + 出处/发布依据）；新增 `test_continuity_governance.py` 越权/切换/发布用例、`test_legacy_association.py`、`test_sync.py` 切换用例、`test_review_changes.py`、`test_derivation_updated.py`。F11 范围单测 198 passed。其余剩余项（construction Evolver 跨层回传、跨空间逐 item 来源隔离）仍在推进。
 
 
 - 全量单元测试（`tests/unit`，2026-11-04）：6070 passed、4 failed、15 skipped。4 个失败都因环境未安装 `watchdog`（deploy extra），与本特性无关；真实 Neo4j 的 2 个集成测试因未配置环境被跳过，不算通过。

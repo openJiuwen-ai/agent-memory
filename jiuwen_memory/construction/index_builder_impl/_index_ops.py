@@ -142,7 +142,7 @@ def index_metadata(
     if seq is not None:
         metadata["seq"] = seq
     temporal = unit.temporal
-    # t_event 恒写：空（未知事件时间，F07 派生常为此值）落哨兵，否则该字段缺失会被
+    # t_event 恒写：空（未知事件时间，t_message F07 派生常为此值）落哨兵，否则该字段缺失会被
     # 事件窗下推按缺失字段排他——含时间词 query 对这批 unit 系统性空召回。
     # 哨兵与谓词、memory_filter 三处同改（见 common.type_def.T_EVENT_UNKNOWN）。
     metadata["t_event"] = (
@@ -163,7 +163,7 @@ def index_metadata(
         if temporal.t_invalid is not None
         else T_INVALID_OPEN
     )
-    # t_ingest 恒写：内核接入路径强制盖章（F04 D5），dreaming 时间窗按
+    # t_ingest 恒写：内核接入路径强制盖章（dreaming F13 D5），dreaming 时间窗按
     # `t_ingest GTE cutoff` 下推依赖该字段；防御未盖章旧数据落 0（与 t_event
     # 未知哨兵同值，语义为"史前"，不落入任何新近窗口）。
     metadata["t_ingest"] = (

@@ -24,7 +24,7 @@ FastMCP 工具函数需要面向模型的 docstring 与显式运行时类型注�
 1. **工具集与 `MemoryAPI` 全量对齐（38/38）**，命名 `memory_<method>`：与 HTTP/CLI
    共享同一套 `api_contract` 参数校验（`parse_request`）与调用桥（`invoke_api`），
    MCP 面只做协议翻译、零业务编排。工具参数模型另收紧为 `extra=forbid`，使契约外字段
-   与前两条路径同口径报错（见 F07 决策 1）——FastMCP 的 `ArgModelBase` 默认
+   与前两条路径同口径报错（见 api/F07 决策 1）——FastMCP 的 `ArgModelBase` 默认
    `extra=ignore`，否则字段会在到达 `parse_request` 之前被丢弃。
 2. **async 工具 + `asyncio.to_thread` 隔离**：FastMCP 在事件循环线程裸调工具函数，
    而同步 `MemoryAPI` 方法在 api 层内部用 `asyncio.run` 桥接协程——两者相遇必抛
@@ -246,5 +246,5 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
    不再对 space scope 设守卫——本引擎写路径本就拒绝 space scope，不存在空间记忆可清，
    purge 属天然 no-op；而 `delete_space` 是「先置 DELETING 再 purge」的两步事务，旧守卫
    会让删除必败、空间永久卡在 `deleting`。OFFLINE 装配下 create → delete → get(404)
-   自此闭环（见 F07 决策 2）。授权仍经 Authorizer；是否允许管理操作取决于显式角色
+   自此闭环（见 api/F07 决策 2）。授权仍经 Authorizer；是否允许管理操作取决于显式角色
    与目标空间权限，默认 USER 不获得管理旁路。

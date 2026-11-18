@@ -10,7 +10,7 @@ delete/evolve/admin）委托 :class:`~control.engine.MemoryEngine`，管理面�
 :class:`~control.governance.Governor`）——只做参数装配与鉴权，
 编排逻辑全部在 ``jiuwen_memory/control``。授权判定统一经
 :class:`~common.security.authorization.Authorizer`（唯一 PDP，含跨 scope 授权的
-GrantStore 真源；F05 §Authorization）。
+GrantStore 真源；安全能力 F04 §Authorization）。
 调用层（SDK/CLI/MCP 等）只依赖本包即可触达全部对外能力，无需 import 内核其他包。
 """
 
@@ -94,7 +94,7 @@ class MemoryAPI(ABC):
     普通业务方法以 ``security`` 为**唯一显式安全输入**：除 ``check_write`` 为兼容旧第二位置
     参数外均为必填 keyword-only。调用方身份只来自 ``security.auth.actor``，业务
     payload 中不存在 ``identity`` /
-    ``actor_*`` / ``role`` / ``acting_user`` 之类的身份声明（F05
+    ``actor_*`` / ``role`` / ``acting_user`` 之类的身份声明（安全能力 F04
     §RequestSecurityContext）。target 仍由业务参数表达，不与 actor 合并——二者
     同为 Scope 时若合并，「读自己的」和「读别人的」在签名上就分不出来了。
 
@@ -165,7 +165,7 @@ class MemoryAPI(ABC):
     ) -> list[MemoryUnit]:
         """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。
 
-        条目的可读范围由所在空间的权限决定，写入侧不另设条目级的可见性声明（F07）。
+        条目的可读范围由所在空间的权限决定，写入侧不另设条目级的可见性声明（群体记忆 F07）。
 
         ``scope`` 必填，它就是落点。落点也可以交给归属判定选择：在参数袋里放
         ``system_metadata["coords"]`` 即请求判定，此时 ``scope.space`` 不参与落点计算，
@@ -179,7 +179,7 @@ class MemoryAPI(ABC):
         | 是 | 无 | 非空 | 就是 ``scope`` |
         | 是 | 无 | 空 | 拒绝：既未指定落点，也未请求判定 |
 
-        判据取 ``coords`` 键的有无，不取 ``scope`` 的取值形态，理由见 F07「接口契约」；
+        判据取 ``coords`` 键的有无，不取 ``scope`` 的取值形态，理由见 群体记忆 F07「接口契约」；
         取值为 ``{}`` 是合法的判定请求，表示「请判定，但本次没有业务坐标」。
 
         两条路径都校验入参 ``scope`` 的主体维——归属不由调用方声明，与身份不符即拒绝，判定
@@ -286,7 +286,7 @@ class MemoryAPI(ABC):
         ``context.extensions["personal"]`` 为对象时启用个人检索，只接受可选来源，
         根据认证身份确定范围，返回带真实 Scope 的命中。个人检索与职责视图参数互斥。
 
-        ``context.extensions`` 带 ``spaces`` 键时转为跨空间检索（F07「多空间读写」），
+        ``context.extensions`` 带 ``spaces`` 键时转为跨空间检索（群体记忆 F07「多空间读写」），
         取值为 ``list[str]``：**判据取键的有无，不取取值形态**——键不在即单空间检索，
         行为与本特性之前一字不差；键在即跨空间，空列表表示「调用方可读的全部空间」（由
         主体反查索引给出），非空即显式候选集。该键在本层即被取出，不随 options 透传给
@@ -295,7 +295,7 @@ class MemoryAPI(ABC):
 
         跨空间不是新的检索算法，是在单空间召回之上套的一层编排：候选空间 → 逐空间判权
         → 按上界分配取数 → 逐空间召回 → 跨空间按内容去重、截到 ``top_k``。两族谓词与
-        召回复用同一份实现。不另设入口的理由见 F07「多空间读写」。
+        召回复用同一份实现。不另设入口的理由见 群体记忆 F07「多空间读写」。
 
         跨空间形态下的三处差异：
 
@@ -411,7 +411,7 @@ class MemoryAPI(ABC):
         candidate/dreaming/interval。树开关关闭时忽略树选项并返回成功跳过任务；基础请求
         校验、WRITE/UPDATE 授权和空间可写检查仍执行。
 
-        F04 dreaming 三态：``dreaming=None`` 立即跑（一次性任务，``candidate``
+        dreaming F13 dreaming 三态：``dreaming=None`` 立即跑（一次性任务，``candidate``
         可选四类候选源，缺省谓词全量源）；``dreaming=True`` 注册定时
         （``interval>0``，KV 持久化，重启恢复）；``dreaming=False`` 注销
         （命中 (scope, mode) 注册则取消并删除，返回 None）。

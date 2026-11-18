@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""安全域公共值对象（F05「公共安全类型」）。
+"""安全域公共值对象（安全能力 F04「公共安全类型」）。
 
 本模块只放**协议无关、跨能力共享**的值对象与身份传播原语：认证输入
 （:class:`Credentials`）、认证产出（:class:`AuthContext`）、请求安全上下文
@@ -8,14 +8,14 @@
 :class:`Delegation`）、密码学调用上下文（:class:`CryptoContext`），以及认证边界共用的
 actor 形态校验（:func:`validate_actor_form`）与 secret 持有者（:class:`SecretValue`）。
 
-不放什么（F05 §公共安全类型）：
+不放什么（安全能力 F04 §公共安全类型）：
 
 - 协议 payload 类型（HTTP/MCP 各自的请求体留在各 surface）；
 - 存储业务对象（MemoryUnit / KV entry 等留在 ``common.type_def``）；
 - 授权**策略**与存储实现——类型在这里，判定归 ``security/authorization/``。
 
 与 :class:`~common.type_def.scope.Scope` 的职责分工没变：Scope 表达**资源归属**，
-本模块表达**谁在操作、以什么凭据、在哪次请求里**。核心不变量（F05 §显式上下文
+本模块表达**谁在操作、以什么凭据、在哪次请求里**。核心不变量（安全能力 F04 §显式上下文
 优于环境权限）：身份来自本模块的值对象，不来自 URI、请求体参数或未经校验的
 HTTP header。
 """
@@ -41,7 +41,7 @@ from jiuwen_memory.common.type_def.scope import Scope
 
 
 class Role(str, Enum):
-    """三级角色（F05 §认证不变量 2：role 只能来自服务端注册表或已验证 claim）。
+    """三级角色（安全能力 F04 §认证不变量 2：role 只能来自服务端注册表或已验证 claim）。
 
     继承 ``str`` 使其可直接进 ``AuditEvent.detail``（``dict[str, str]``）
     与 JSON 序列化，无需额外转换。
@@ -78,12 +78,12 @@ class Surface(str, Enum):
 
 @dataclass(frozen=True)
 class Credentials:
-    """一次认证所需的**原始凭据材料**（F05 §Credentials）。
+    """一次认证所需的**原始凭据材料**（安全能力 F04 §Credentials）。
 
     只保存协议无关且已规范化的数据。HTTP/MCP/CLI 的协议解析留在各自 surface，
     交到认证能力手上的必须已经是本结构。
 
-    必须满足的约束（F05）：
+    必须满足的约束（安全能力 F04）：
 
     - 不包含目标资源 Scope——那是授权的输入，不是认证的；
     - 不接受 role / acting_user 等授权结果——认证只回答「你是谁」；
@@ -103,7 +103,7 @@ class Credentials:
 
 @dataclass(frozen=True)
 class AuthContext:
-    """认证完成后得到的**可信身份**（F05 §AuthContext）。
+    """认证完成后得到的**可信身份**（安全能力 F04 §AuthContext）。
 
     不是客户端提交的数据结构：API Key、受信网关、OAuth 等不同认证路径最终都归一
     为本结构。任何 handler、业务参数或 LLM tool_call 都不得覆盖其中字段——故
@@ -112,13 +112,13 @@ class AuthContext:
     ``actor`` **无默认值**，必须显式传入。给它默认值会让「忘了传 actor」静默产出
     空 ``Scope()``。
 
-    **ROOT 由 ``role`` 表达，不由 actor 的形状表达**（F05 §授权不变量 1）。旧实现的
+    **ROOT 由 ``role`` 表达，不由 actor 的形状表达**（安全能力 F04 §授权不变量 1）。旧实现的
     ``actor == Scope()`` 隐式 platform-admin 兼容线已删除：空 actor 在
     ``StandardAuthorizer`` 是 **deny**，各认证实现的 ROOT 身份都带具名 actor。
 
     ``delegation_id`` 只携带**已经服务端验证过的**委托标识；Authorizer 拿它回
     ``DelegationStore`` 复核。这里刻意**没有** ``acting_user`` 之类的字段：一个 user 名
-    只能表达「调用方声称在代谁操作」，表达不了「那个 user 真的授权过」（F05
+    只能表达「调用方声称在代谁操作」，表达不了「那个 user 真的授权过」（安全能力 F04
     §从 header 直接产生 Delegation）。
 
     ``credential_issuer`` 是签发凭据的具名 Authenticator 实例标识，供撤销注册表区分
@@ -270,7 +270,7 @@ def _bind_origin(auth: AuthContext, context: RequestSecurityContext | None = Non
 
 @dataclass(frozen=True)
 class RequestSecurityContext:
-    """一次请求内供 API 安全边界使用的完整上下文（F05 §RequestSecurityContext）。
+    """一次请求内供 API 安全边界使用的完整上下文（安全能力 F04 §RequestSecurityContext）。
 
     ``MemoryAPI`` 公开方法的**唯一显式安全输入**——业务 payload 中不存在
     ``identity`` / ``actor_*`` / ``role`` / ``acting_user`` 身份声明。由
@@ -314,10 +314,10 @@ class RequestSecurityContext:
 
 
 class Action(str, Enum):
-    """封闭的安全动作集合（F05 §Action）。
+    """封闭的安全动作集合（安全能力 F04 §Action）。
 
     **封闭**是这个类型的全部意义：授权策略按成员穷举，新增成员默认不属于任何角色、
-    Grant 或 Delegation，必须显式配置后才能放行（F05 §授权不变量 5）。用开放字符串
+    Grant 或 Delegation，必须显式配置后才能放行（安全能力 F04 §授权不变量 5）。用开放字符串
     表达动作会让「拼错的动作名」和「未配置的新动作」在策略里长得一样，而前者应该
     是错误、后者应该是拒绝。
 
@@ -360,7 +360,7 @@ MANAGEMENT_ACTIONS: frozenset[Action] = frozenset(
         Action.ADMINISTER_SYSTEM,
     }
 )
-"""管理面动作：需要角色闸门，且默认不可委托（F05 §授权不变量 4）。"""
+"""管理面动作：需要角色闸门，且默认不可委托（安全能力 F04 §授权不变量 4）。"""
 
 DELEGATABLE_ACTIONS: frozenset[Action] = frozenset(
     {Action.READ, Action.WRITE, Action.UPDATE, Action.DELETE}
@@ -368,7 +368,7 @@ DELEGATABLE_ACTIONS: frozenset[Action] = frozenset(
 """允许出现在 Delegation allowlist 中的动作。
 
 刻意用**白名单**而非「管理动作取反」：取反写法下，新增的动作会自动变得可委托，
-而 F05 §授权不变量 5 要求新 Action 默认拒绝。``SHARE`` / ``REVOKE_SHARE`` 不在列内
+而 安全能力 F04 §授权不变量 5 要求新 Action 默认拒绝。``SHARE`` / ``REVOKE_SHARE`` 不在列内
 ——让被委托方能再授权，等于让委托关系自我复制，撤销就追不上了。
 """
 
@@ -379,7 +379,7 @@ DELEGATABLE_ACTIONS: frozenset[Action] = frozenset(
 
 
 class DenyReason(str, Enum):
-    """稳定的拒绝原因码（F05 §可观测性：授权决策记录稳定 reason code）。
+    """稳定的拒绝原因码（安全能力 F04 §可观测性：授权决策记录稳定 reason code）。
 
     稳定指：值是审计与告警的匹配依据，改名等于破坏下游。文案可以变，值不可以。
 
@@ -406,7 +406,7 @@ class DenyReason(str, Enum):
 
 @dataclass(frozen=True)
 class ResourceDescriptor:
-    """一次授权判定的**目标资源**（F05 §ResourceDescriptor）。
+    """一次授权判定的**目标资源**（安全能力 F04 §ResourceDescriptor）。
 
     由 ``MemoryAPI``（唯一业务 PEP）构造。核心约束：**已有资源的安全 metadata 必须
     来自真源**——请求只能提交筛选意图，不能声明决定授权结果的资源属性。若允许请求
@@ -438,7 +438,7 @@ class ResourceDescriptor:
 
 @dataclass(frozen=True)
 class AuthorizationEnvironment:
-    """授权判定的**环境输入**（F05 §Authorization）。
+    """授权判定的**环境输入**（安全能力 F04 §Authorization）。
 
     只包含服务端产生的时间、部署策略和请求安全属性。**不包含**调用方声明的 role
     或资源安全 metadata——那两样一旦可由请求提供，授权就成了自证。
@@ -488,7 +488,7 @@ class AuthorizationEnvironment:
 
 @dataclass(frozen=True)
 class Grant:
-    """主体之间的**显式长期授权**（F05 §Grant）。
+    """主体之间的**显式长期授权**（安全能力 F04 §Grant）。
 
     与 :class:`Delegation` 的分工：Grant 是「A 把自己资源的某些动作开放给 B」，
     是资源侧的长期开放；Delegation 是「user 授权 agent 代表自己行事」，是身份侧的
@@ -539,9 +539,9 @@ class Grant:
 
 @dataclass(frozen=True)
 class Delegation:
-    """user 对 agent/service 的**可撤销、有限期代操作授权**（F05 §Delegation）。
+    """user 对 agent/service 的**可撤销、有限期代操作授权**（安全能力 F04 §Delegation）。
 
-    存在的理由是 F05 §从 header 直接产生 Delegation 那条拒绝：网关 header 最多证明
+    存在的理由是 安全能力 F04 §从 header 直接产生 Delegation 那条拒绝：网关 header 最多证明
     「网关声称这是某个 user」，不能证明「该 user 真的授权了这个 agent」。委托必须是
     服务端事实，由 ``delegation_id`` 回真源复核。
 
@@ -587,7 +587,7 @@ class Delegation:
 
 @dataclass(frozen=True)
 class CryptoContext:
-    """一次加解密调用的安全上下文（F05 §CryptoContext）。
+    """一次加解密调用的安全上下文（安全能力 F04 §CryptoContext）。
 
     由**存储适配器**构造：只有它同时掌握真实对象 id 与存储用途。业务请求不能直接
     控制 AAD——否则攻击者可以让两个不同对象共用同一 AAD，密文就能跨对象复制。
@@ -602,7 +602,7 @@ class CryptoContext:
     metadata: Mapping[str, str] = field(default_factory=dict)
 
 
-# 带 secret 语义的配置参数名（F05 装配不变量 7）：配置解析期按此包裹 SecretValue /
+# 带 secret 语义的配置参数名（安全能力 F04 装配不变量 7）：配置解析期按此包裹 SecretValue /
 # 脱敏 repr。新增 secret 配置项须同步登记在这里（kernel 路径与 bootstrap 路径共用）。
 SECRET_PARAM_KEYS = frozenset(
     {"root_api_key", "gateway_key", "key_hex", "key_b64", "shared_secret"}
@@ -610,7 +610,7 @@ SECRET_PARAM_KEYS = frozenset(
 
 
 class SecretValue:
-    """明文 secret 的持有者（F05 装配不变量 7：secret 不进可打印配置对象）。
+    """明文 secret 的持有者（安全能力 F04 装配不变量 7：secret 不进可打印配置对象）。
 
     配置解析期把已知 secret 参数包成本类型再进 :class:`~config.context.RawSpec`：
     ``repr`` / ``str`` 只给 sha256 短指纹，异常诊断与 debug 输出因此看不到明文。
@@ -655,7 +655,7 @@ _CURRENT: ContextVar[AuthContext | None] = ContextVar("auth_context", default=No
 def set_current(ctx: AuthContext) -> Token[AuthContext | None]:
     """在请求入口设置当前认证上下文；返回的 token 必须在请求结束时交给 reset。
 
-    **定位（F05 §显式上下文优于环境权限）**：ContextVar 已降级为日志/trace 的辅助
+    **定位（安全能力 F04 §显式上下文优于环境权限）**：ContextVar 已降级为日志/trace 的辅助
     传播通道（迁移计划 §5.2 第 10 项）。安全语义全部走显式参数——
     ``auth_middleware.authenticated`` 产出 :class:`RequestSecurityContext`，surface
     显式传给 ``dispatch``、``dispatch`` 传给 ``MemoryAPI``、``MemoryAPI`` 传给

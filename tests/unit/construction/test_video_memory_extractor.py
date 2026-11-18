@@ -266,7 +266,7 @@ def test_oversized_video_envelope_survives_ingest_and_extracts_all_memories() ->
 
 
 def test_derived_clm_and_elm_write_origin_inferred_and_table_importance() -> None:
-    """F10：CLM/ELM 是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖源值）。"""
+    """重要度 F12：CLM/ELM 是派生记忆——origin=inferred、重要度按 default 类别查表（覆盖源值）。"""
     source = MemoryUnit(
         id="source-1",
         scope=Scope(user="user-1"),

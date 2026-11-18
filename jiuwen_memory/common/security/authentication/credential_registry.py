@@ -1,4 +1,4 @@
-"""凭据撤销状态注册表（F05 §认证不变量 6、§决策顺序 1）。
+"""凭据撤销状态注册表（安全能力 F04 §认证不变量 6、§决策顺序 1）。
 
 PEP（PR2 起的 :class:`~api.memory_api_impl.local_memory_api.LocalMemoryAPI`）持有本
 注册表，在每次授权前按 ``AuthContext.credential_type`` 查注册的

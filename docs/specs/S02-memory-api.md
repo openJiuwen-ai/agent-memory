@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-17 |
-| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F08-personal-memory-portal.md |
-| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F11-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F08-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/F04-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
+| 最近一次修订日期 | 2026-11-18 |
+| 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
+| 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
 ## SDK 接续共享配置检查
 
@@ -38,7 +38,7 @@ MemoryAPI 方法及 HTTP/CLI/MCP 请求契约不变。
 | [architecture.md §6](../design/architecture.md) | **已实现**接口的清单（方法 / 语义 / 入参 / 出参） |
 | `jiuwen_memory/api/` | **已实现**接口的代码（`memory_api.py` 契约，`memory_api_impl/` 实现） |
 | 本文（S02） | 对外接口的详细介绍与用法：含已实现，以及已设计但尚未实现的增量；尚未实现处用 **状态：已设计、尚未实现** 标明。方法总览同时指向对应特性文档 |
-| `docs/features/api/`（F01–F07） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
+| `docs/features/api/`（F01–F10） | 特性决策（为什么这样改）；不重复罗列全部方法签名。各 F 覆盖哪些方法见下文方法总览与特性文档对照 |
 
 已设计但尚未实现的接口完成代码开发上库时：去掉本文（及受影响 F 文档）中的尚未实现标注，并把该方法（或增量入参）补进 architecture.md §6。
 ## 个人记忆公开接口
@@ -527,6 +527,8 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 
 ### MemoryAPI 方法总览
 
+下表「特性文档」列的裸编号均指 `docs/features/api/`；跨目录文档以目录名标注。
+
 | 分面 | 方法 | 状态 | 详细介绍 | 特性文档 |
 |---|---|---|---|---|
 | 数据面（委托 MemoryEngine） | `add` | 已实现 | [add / add_async](#add--add_async) | F01、F02、F04 |
@@ -536,11 +538,11 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 数据面 | `check_write` | 已实现 | [check_write](#check_write) | 无独立 F；实现见 F01 PEP |
 | SDK 数据面 | `supports_video_ingest` / `prepare_video_ingest` | 已实现 | [本地视频准入](#本地视频准入) | F09 文档模式 |
 | 数据面 | `submit_ingest` | 已实现 | [submit_ingest](#submit_ingest) | 无独立 F；实现见 F01 PEP / F05；`occurred_at` 见 F06 |
-| 数据面 | `search` | 已实现；平铺参数包含可选层级查询与 query rewrite | [search](#search) | F01、F04、retrieval/F08；层级见 common/F08 |
+| 数据面 | `search` | 已实现；平铺参数包含可选层级查询与 query rewrite | [search](#search) | F01、F04、retrieval/F09；层级见 common/F08 |
 | 数据面 | `list` | 已实现 | [list](#list) | F01、F04 |
 | 数据面 | `get` | 已实现 | [get](#get) | 无独立 F；实现见 F01 |
 | 数据面 | `update` | 已实现；`MemoryPatch.hierarchy` 尚未实现 | [update](#update) | F01、F04；层级见 F08 |
-| 数据面 | `batch_update` | 已实现 | [batch_update](#batch_update) | F11 |
+| 数据面 | `batch_update` | 已实现 | [batch_update](#batch_update) | F10 |
 | 数据面 | `delete` | 已实现 | [delete](#delete) | 无独立 F；实现见 F01 |
 | 数据面 | `evolve` | 原有四种演进与 dreaming | [evolve](#evolve) | F01、F02 |
 | 数据面（文档模式，经 Engine 窄端口） | `read_md_file` | 已实现；仅文档模式可用 | [read_md_file](#read_md_file) | F08 |
@@ -568,11 +570,11 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | 运行时策略面（直达 PolicyManager） | `admin_get` | 已实现 | [admin_get](#admin_get) | F01 |
 | 运行时策略面 | `admin_set` | 已实现 | [admin_set](#admin_set) | F01 |
 | 运行时策略面 | `admin_all` | 已实现 | [admin_all](#admin_all) | F01 |
-| 接续面（委托 ContinuityService） | `continuity_task` | 已实现 | [continuity_task](#continuity_task登记查询和关联任务) | construction/F10 |
-| 接续面 | `continuity_relation` | 已实现；角色模式 | [continuity_relation](#continuity_relation登记复核或撤回关系) | construction/F10 |
-| 接续面 | `continuity_recover` | 已实现 | [continuity_recover](#continuity_recover核对未知写入与修复投影) | construction/F10 |
-| 治理面（接续来源） | `quarantine_source` | 已实现 | [quarantine_source / release_source](#quarantine_source--release_source来源隔离与解除) | construction/F10 |
-| 治理面（接续来源） | `release_source` | 已实现 | [quarantine_source / release_source](#quarantine_source--release_source来源隔离与解除) | construction/F10 |
+| 接续面（委托 ContinuityService） | `continuity_task` | 已实现 | [continuity_task](#continuity_task登记查询和关联任务) | construction/F11 |
+| 接续面 | `continuity_relation` | 已实现；角色模式 | [continuity_relation](#continuity_relation登记复核或撤回关系) | construction/F11 |
+| 接续面 | `continuity_recover` | 已实现 | [continuity_recover](#continuity_recover核对未知写入与修复投影) | construction/F11 |
+| 治理面（接续来源） | `quarantine_source` | 已实现 | [quarantine_source / release_source](#quarantine_source--release_source来源隔离与解除) | construction/F11 |
+| 治理面（接续来源） | `release_source` | 已实现 | [quarantine_source / release_source](#quarantine_source--release_source来源隔离与解除) | construction/F11 |
 
 ---
 
@@ -1016,7 +1018,7 @@ schema prepare→逐项鉴权→commit 链路，引擎不提供整批入口）�
 UPDATE 鉴权；无候选时对 selector scope 做 selector 级 fallback 鉴权。每个 `MemoryPatch`
 的 `system_metadata` / `user_metadata` 复用单条 `update` 的内核保留 key 与非标量校验。
 
-设计取舍见 [`F11-batch-update-api.md`](../features/api/F11-batch-update-api.md)。
+设计取舍见 [`F10-batch-update-api.md`](../features/api/F10-batch-update-api.md)。
 
 #### delete
 
@@ -1049,7 +1051,7 @@ def evolve(
 
 触发演进：鉴权 WRITE→（三态分发）→委托 Engine 纯执行链→返回 job_id。普通模式 EXTRACT/ASSOCIATE/CONSOLIDATE/FORGET 继续使用原演进链路；HIERARCHY 使用显式建树链路。调用成功返回 job id，不表示任务已经完成。索引维护不在此（随数据面自动跟进）。
 
-**dreaming 三态**（F04，PEP 边界——三态编排、持续授权、fan-out 逐桶裁决都在 API 层 `DreamingCoordinator`，`api/memory_api_impl/dreaming.py`；Control 层纯执行见 S03 `evolve` 行）：`dreaming=None` 立即跑（入口鉴权 + fan-out 逐桶裁决后提交一次性 EvolveJob，返回 job_id；拒绝桶仅以 `count:N` 脱敏摘要回显）；`dreaming=True` 注册定时（`interval>0` 必填，scheduler 须 `supports_recurring`；candidate 注册前 canonical 校验；注册表记录 `created_by`，驱动 Job 每 tick 复验授权与 leader 租约，被拒或失锁即停摆）；`dreaming=False` 幂等注销（未命中返回 `None`，不退化立即跑）。注销先把注册状态持久化为 `CANCEL_REQUESTED`，再在协调器状态锁外等待 Scheduler，成功后删除；取消失败保留该状态，Driver 在 tick 开头和提交演进前按 `state + generation + job_id` 自停，重启恢复只收口而不复活。注册/注销/恢复由本实例生命周期锁串行，并只允许 leader 修改共享声明；请求落到非 leader 时抛 `RuntimeError`，不会删掉另一实例正在执行的声明。周期实例启动即竞选 leader，空注册表也持锁；恢复结果只在当前 leader 任期内幂等缓存，失锁或主动放锁后必须重扫；恢复每条记录在提交和换绑后均复验租约，中途失锁立即取消本地驱动并中止恢复。空间进入持久不可写状态时，周期任务以 `space_not_writable` 停摆并移除声明。
+**dreaming 三态**（dreaming，PEP 边界——三态编排、持续授权、fan-out 逐桶裁决都在 API 层 `DreamingCoordinator`，`api/memory_api_impl/dreaming.py`；Control 层纯执行见 S03 `evolve` 行）：`dreaming=None` 立即跑（入口鉴权 + fan-out 逐桶裁决后提交一次性 EvolveJob，返回 job_id；拒绝桶仅以 `count:N` 脱敏摘要回显）；`dreaming=True` 注册定时（`interval>0` 必填，scheduler 须 `supports_recurring`；candidate 注册前 canonical 校验；注册表记录 `created_by`，驱动 Job 每 tick 复验授权与 leader 租约，被拒或失锁即停摆）；`dreaming=False` 幂等注销（未命中返回 `None`，不退化立即跑）。注销先把注册状态持久化为 `CANCEL_REQUESTED`，再在协调器状态锁外等待 Scheduler，成功后删除；取消失败保留该状态，Driver 在 tick 开头和提交演进前按 `state + generation + job_id` 自停，重启恢复只收口而不复活。注册/注销/恢复由本实例生命周期锁串行，并只允许 leader 修改共享声明；请求落到非 leader 时抛 `RuntimeError`，不会删掉另一实例正在执行的声明。周期实例启动即竞选 leader，空注册表也持锁；恢复结果只在当前 leader 任期内幂等缓存，失锁或主动放锁后必须重扫；恢复每条记录在提交和换绑后均复验租约，中途失锁立即取消本地驱动并中止恢复。空间进入持久不可写状态时，周期任务以 `space_not_writable` 停摆并移除声明。
 
 持续授权使用注册时的可信上下文，不以 `created_by` 中的 actor 五元组代替认证。
 服务端私有注册表保留原角色、认证期限、凭据复核能力、委托与可信环境快照；恢复与
@@ -1829,9 +1831,9 @@ SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 searc
 
 ## 角色关系记忆入口
 
-> **状态：已实现（2026-11-05 设计修订）**。`role_*` 已并入 `add`/`batch_add`/`search` 并改名为 `continuity_*`、`quarantine_source`、`release_source`；`role_record`、`role_view`、`role_publish`、`role_mark_source_cutover` 已删除。剩余差距见 [F10 12.2](../features/construction/F10-role-memory.md#122-实现差距)。
+> **状态：已实现（2026-11-05 设计修订）**。`role_*` 已并入 `add`/`batch_add`/`search` 并改名为 `continuity_*`、`quarantine_source`、`release_source`；`role_record`、`role_view`、`role_publish`、`role_mark_source_cutover` 已删除。剩余差距见 [F11 12.2](../features/construction/F11-role-memory.md#122-实现差距)。
 
-本节各 DTO 的字段级定义、内部回执与关系头结构见 [S11 数据结构](S11-cross-agent-continuity.md#数据结构)，含义与用法见 [F10 第 5 节](../features/construction/F10-role-memory.md#5-数据结构)。
+本节各 DTO 的字段级定义、内部回执与关系头结构见 [S11 数据结构](S11-cross-agent-continuity.md#数据结构)，含义与用法见 [F11 第 5 节](../features/construction/F11-role-memory.md#5-数据结构)。
 
 接续能力不再设独立的写入与视图方法：
 
@@ -1970,7 +1972,7 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 
 ### 显式事件时间与接续字段保留
 
-`add` / `add_async` 新增可选 `event_time: datetime | None`，必须含有效时区，否则抛 ValidationError；映射 temporal.t_event，独立于 occurred_at（t_message）。显式时间是调用方提供的业务声明，不证明来源或事件真实性。`batch_add` / `batch_add_async` 接收批级 `event_time`，`BatchWriteItem.event_time` 逐项覆盖；`submit_ingest` 接收 `event_time` 并在入队前校验。三者的 `occurred_at` 仍只写消息时间，不能替代事件时间。派生输出不继承来源事件时间（见 F10 4.2）。MCP 的 add、add_async、batch_add、batch_add_async、submit_ingest 都透传该字段；legacy 文本 add、视频异步提交和 batch_add（`defaults.event_time` 与单项 `event_time`）同样支持。
+`add` / `add_async` 新增可选 `event_time: datetime | None`，必须含有效时区，否则抛 ValidationError；映射 temporal.t_event，独立于 occurred_at（t_message）。显式时间是调用方提供的业务声明，不证明来源或事件真实性。`batch_add` / `batch_add_async` 接收批级 `event_time`，`BatchWriteItem.event_time` 逐项覆盖；`submit_ingest` 接收 `event_time` 并在入队前校验。三者的 `occurred_at` 仍只写消息时间，不能替代事件时间。派生输出不继承来源事件时间（见 construction/F11 §4.2）。MCP 的 add、add_async、batch_add、batch_add_async、submit_ingest 都透传该字段；legacy 文本 add、视频异步提交和 batch_add（`defaults.event_time` 与单项 `event_time`）同样支持。
 
 公开 add/add_async、batch_add/batch_add_async（公共参数与每项合并后）、update 的 system_metadata 拒绝整个 continuity_* 前缀（含未来扩展键），统一返回 ValidationError；批量逐项失败沿用 BatchWriteOutcome.error_type。user_metadata 同名键只是用户数据，不具有接续语义。仅通过 `continuity` 参数经已鉴权的内部写路径生成系统接续字段，内部路径仍执行信任上下文校验、WRITE、空间可写、作者归属与审计，不向外暴露绕过标志。
 

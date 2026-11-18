@@ -813,7 +813,7 @@ class OrchestratingEvolver(Evolver):
             existing_unit.provenance = list(
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
-            # 合并 metadata；F10 重要度只增不减、origin 随被合并的 existing——先备份，
+            # 合并 metadata；重要度 F12 重要度只增不减、origin 随被合并的 existing——先备份，
             # 交集继承后写回（两侧 origin 不同时交集会丢掉该键）
             had_md_title = MD_TITLE_KEY in existing_unit.system_metadata
             importance = merge_importance_max(
@@ -1665,7 +1665,7 @@ class OrchestratingEvolver(Evolver):
         mark_ids -= retired_ids
         mark_targets: list[MemoryUnit] = []
         if mark_ids:
-            scope = seeds[0].scope  # F04 逐桶，同批 seeds 同 scope
+            scope = seeds[0].scope  # dreaming F13 逐桶，同批 seeds 同 scope
             # 重载留在规划器内（它本来就持有真源读端口），编排器不重复持有 KV。
             reloaded = self._conflict_consolidator.load_fresh(scope, sorted(mark_ids))
             mark_targets = [

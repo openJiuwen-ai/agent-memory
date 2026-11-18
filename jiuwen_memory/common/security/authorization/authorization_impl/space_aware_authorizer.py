@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""空间感知 Authorizer：F07 两轴判定在唯一 PDP 上的宿主（F04 §3.1）。
+"""空间感知 Authorizer：群体记忆 F07 两轴判定在唯一 PDP 上的宿主（F04 §3.1）。
 
 取代 ``control.permission_impl.space_aware_permission_manager`` 在生产路径上的位置：
 PEP 不再调 ``PermissionManager.decide``，空间级入口的判定改由本实现承担。判据主体
@@ -11,11 +11,11 @@ PEP 不再调 ``PermissionManager.decide``，空间级入口的判定改由本�
 与组织级入口）整体回落 delegate——组织级入口由 delegate 的管理面角色闸门终局裁决，
 未登记入口按标准链判定，行为与空间判定实装前一致。
 
-空间级入口的链序是标准链前缀 + F07 判据：时效、空身份、管理面闸门、ROOT、org 硬
+空间级入口的链序是标准链前缀 + 群体记忆 F07 判据：时效、空身份、管理面闸门、ROOT、org 硬
 边界之后，接归属对比、主体覆盖、代操作委托、归属主体档、两轴求值。委托按
 ``delegation_id`` 经 delegate 的 DelegationStore 回真源复核；具名用户委托另验证
 PEP 的委托人事实投影及其当前内容权（F04 §3.3），纯空间委托复用标准链 by_delegation。
-结论折算成 DecisionOutcome 后传入 decide_projected 的第 9 步终局裁决（F07 十步）。
+结论折算成 DecisionOutcome 后传入 decide_projected 的第 9 步终局裁决（群体记忆 F07 十步）。
 
 显式授权经 delegate 的 :meth:`Authorizer.management_grant_stores` 查询：管理面
 grant/revoke 写入的 Store 与空间链判定读取的 Store 是同一批实例，撤销在两者同时
@@ -199,7 +199,7 @@ class SpaceAwareAuthorizer(Authorizer):
         if actor.org != resource.scope.org:
             return AuthorizationDecision.deny(DenyReason.CROSS_ORG, "org_boundary")
 
-        # -- F07 判据：投影还原 + 委托复核 + 两轴求值 --------------------------- #
+        # -- 群体记忆 F07 判据：投影还原 + 委托复核 + 两轴求值 --------------------------- #
         projection = projection_from_attributes(resource.attributes)
         space_action = resolve_space_action(rule.action, resource.attributes)
         author_principal = resource.attributes.get(AUTHOR_PRINCIPAL, "") or None

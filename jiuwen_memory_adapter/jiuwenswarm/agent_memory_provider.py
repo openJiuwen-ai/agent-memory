@@ -276,7 +276,7 @@ def _agent_default_config() -> dict[str, Any]:
         "shadow_index": {"default": {"target": "sqlite", "params": {"embedder": "default"}}},
         # 文档看门狗：md 保存后 debounce 毫秒再同步影子索引
         "watchdog": {"default": {"target": "watchdog", "params": {"debounce_ms": 2000}}},
-        # 全局唯一 StoreManager（F07）：文档模式召回统一走 shadow_recaller
+        # 全局唯一 StoreManager（文档记忆 F08）：文档模式召回统一走 shadow_recaller
         "store_manager": {
             "default": {
                 "target": "composite",
@@ -355,7 +355,7 @@ def _agent_default_config() -> dict[str, Any]:
         "classifier": {"default": "llm"},
         # 文档模式（write_document=true）：IndexBuilder 全委托 domain_store.add 文档分流
         "constructor": {"default": {"target": "document", "params": {"domain_store": "default"}}},
-        # 文档模式去重（F08）：两路并跑（shadow FTS5 + vec）+ embedder cosine 精排。
+        # 文档模式去重（文档记忆 F08）：两路并跑（shadow FTS5 + vec）+ embedder cosine 精排。
         # dedup_tier_filter：只与同 tier 的记忆比较——抽取会为可复用标识另出一条
         # semantic 稳定事实，不隔离时它会被同批的 episodic 事件判重丢弃。
         "dedup": {
@@ -435,7 +435,7 @@ def _merge_config_over_default(
     """[本地修改 2026-10-20] 把上层 ``config_dict`` 深合并到内置 agent 默认装配之上。
 
     进程内 ``config_dict`` 的语义从「整体替换」改为「以 ``_agent_default_config()``
-    （F09 文档真源：md + shadow + agent engine + agent_llm 抽取）为基准深合并」：
+    （文档记忆 F08 文档真源：md + shadow + agent engine + agent_llm 抽取）为基准深合并」：
     dict 对 dict 递归合并，标量/列表由上层值覆盖。这样宿主只传要覆盖的片段——
     凭证注入面（globals 的 ``llm_*`` / ``embedder_*`` 共 9 键）、
     ``globals.embedder_dim``、``markdown_store.default.params.root`` 等——未提及的
@@ -471,7 +471,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
       非空 → HTTP 模式（推荐生产）；空 → 进程内模式。
     - ``config_path``：进程内模式的 AgentMemory 配置文件路径（YAML/JSON），
       **可选**——[本地修改 2026-10-17] 缺省时用内置 agent 场景默认装配
-      ``_agent_default_config()``（F09 文档真源：md + shadow 索引 + agent_llm
+      ``_agent_default_config()``（文档记忆 F08 文档真源：md + shadow 索引 + agent_llm
       抽取，即 serve-doc 的代码化副本）。启用内置视频能力时，外部文件作为
       agent 默认配置的覆盖层。其余情况下外部文件直接交给内核装配。
     - ``config_dict``：进程内模式的两级命名空间配置 dict，**优先于
@@ -1252,7 +1252,7 @@ class _AgentMemoryClient:
     search → []）并记入熔断器（HTTP 模式），不向调用方抛异常——prefetch/
     sync_turn 的既有 try/except 兜底不变，但主要失败路径在此处已收敛。
 
-    md 文件操作（F08 read_md_file / edit_md_file）例外：**业务错误向上抛**——
+    md 文件操作（md文件接口 F08 read_md_file / edit_md_file）例外：**业务错误向上抛**——
     old_text 不唯一 / 文件模式未开等 4xx 对显式工具调用有信号价值，
     ``handle_tool_call`` 外层兜底转 ``{"error": ...}`` 透出给 LLM；只有传输
     失败（HTTP 模式）降级返回 None，与 add 同口径。
@@ -1301,7 +1301,7 @@ class _AgentMemoryClient:
         project: str = "",
         line_range: tuple[int, int] | None = None,
     ) -> list[dict[str, Any]] | None:
-        """读 md 文件，返回命中块对应的 unit 列表（F08）。
+        """读 md 文件，返回命中块对应的 unit 列表（md文件接口 F08）。
 
         文件不存在/行范围无完整块 → ``[]``（合法空结果）；传输失败 → None；
         业务错误（非文档模式等）向上抛。
@@ -1317,7 +1317,7 @@ class _AgentMemoryClient:
         *,
         project: str = "",
     ) -> list[dict[str, Any]] | None:
-        """md 文件内唯一替换，返回受影响的**新** unit 列表（F08）。
+        """md 文件内唯一替换，返回受影响的**新** unit 列表（md文件接口 F08）。
 
         传输失败 → None；业务错误（old_text 不存在/不唯一、非文档模式）向上抛。
         """
@@ -1778,7 +1778,7 @@ class _HttpClient(_AgentMemoryClient):
     async def read_md_file(
         self, md_filename, scope, *, project="", line_range=None
     ) -> list[dict[str, Any]] | None:
-        """读 md 文件（F08）。响应是 ``list[MemoryUnit]`` 序列化顶层数组（与 add 同构）。
+        """读 md 文件（md文件接口 F08）。响应是 ``list[MemoryUnit]`` 序列化顶层数组（与 add 同构）。
 
         空数组是合法结果（文件不存在/行范围无完整块）；4xx（非文档模式等）
         抛:class:`AgentMemoryClientError` 透出；传输失败 None。
@@ -1806,7 +1806,7 @@ class _HttpClient(_AgentMemoryClient):
     async def edit_md_file(
         self, md_filename, scope, old_text, new_text, *, project=""
     ) -> list[dict[str, Any]] | None:
-        """md 文件内唯一替换（F08）。响应是受影响**新** unit 的顶层数组。
+        """md 文件内唯一替换（md文件接口 F08）。响应是受影响**新** unit 的顶层数组。
 
         4xx（old_text 不存在/不唯一、非文档模式）抛:class:`AgentMemoryClientError`
         透出；传输失败 None。写路径超时（edit 同步 supersede shadow）。

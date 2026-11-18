@@ -7,7 +7,7 @@
 | 日期 | 2026-08-06 |
 | 影响范围 | 规划中的 `jiuwen_memory/retrieval` pipeline、共享检索类型，以及统一 Storage 的检索入口 |
 | 测试基线 | `tests/unit/retrieval/test_storage_pipelines.py`；retrieval 单测与集成测试通过 |
-| Refs | [F05-unified-storage-design.md](../storage/F05-unified-storage-design.md) |
+| Refs | [F04-unified-storage-design.md](../storage/F04-unified-storage-design.md) |
 
 > 本文档记录 Retrieval pipeline 设计及首版实现。当前实现已经把 Storage 能力差异
 > 收敛为三条 `recall/get/rank` pipeline，并保持 Reranker 在三步内核之外。

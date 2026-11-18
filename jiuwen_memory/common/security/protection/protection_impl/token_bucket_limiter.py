@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""进程内令牌桶限流，按调用方地址分桶（F05 §Protection §入口限流）。
+"""进程内令牌桶限流，按调用方地址分桶（安全能力 F04 §Protection §入口限流）。
 
 两个参数分别管两件事：``capacity`` 是**突发**额度（桶满时能一口气放多少个），
 ``refill_per_sec`` 是**持续**速率（长期平均每秒放多少个）。交互式客户端天然

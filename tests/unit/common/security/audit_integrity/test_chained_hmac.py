@@ -425,7 +425,7 @@ def test_verify_gap_is_incomplete() -> None:
 def test_verify_tail_deletion_is_incomplete() -> None:
     """
     尾删（head 记录的中间前缀在、链头之前缺记录）：页扫描未达快照链头，
-    归 incomplete，拒绝把截断前缀报告为 clean（F05 §6.1）。
+    归 incomplete，拒绝把截断前缀报告为 clean（安全能力 F04 §6.1）。
     """
     # 白盒故障/篡改注入或内部状态断言需要私有接缝，不扩展生产接口。
     # pylint: disable=protected-access
@@ -456,7 +456,7 @@ def test_verify_reorder_is_tampered() -> None:
 def test_verify_incremental_uses_checkpoint() -> None:
     """
     after_sequence>0：先验证第 N 条 checkpoint（计入 checked_count），再从其
-    digest 续链验证后续记录（F05 §6.1 增量语义）。
+    digest 续链验证后续记录（安全能力 F04 §6.1 增量语义）。
     """
     store = _FakeChainStore()
     provider = _provider(store=store)

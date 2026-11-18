@@ -4,7 +4,7 @@
 ``loop.call_soon_threadsafe`` 从 Observer 线程投递到主事件循环，
 ``asyncio.create_task`` 起异步同步任务，sqlite 操作经 ``asyncio.to_thread``
 推到独立线程避免阻塞事件循环（桥接模式抄 ``agent-core/lite/manager.py``，
-F07 §12.8 方案 B 变体）。
+文档记忆根设计 §12.8 方案 B 变体）。
 
 **与 lite 的关键差异**：lite 的 ``sync`` 是文件级全量重建（整文件 chunks 删重建）；
 本实现是 **unit 粒度增量**——``shadow.list_units_by_md`` 拿旧 (unit_id, content_hash)
@@ -16,10 +16,10 @@ list，读 md 按块算新 content_hash list，diff 出「新增/删除」集合
 unit.id——标题内容对 diff 无影响，本实现只认 ``#`` 开头的标题行）。按块结构解析
 （与 ``collect_blocks_from_text`` 同口径）：块间空行切块、块首标题行跳过、正文行算
 sha256——正文行不判 ``#`` 前缀（``#1 里程碑`` 等合法正文与标题行不可区分，靠块结构
-区分）（F07 §12.4 单段 unit 约束——一行正文 = 一个 content = 一个 hash 候选）。
+区分）（文档记忆根设计 §12.4 单段 unit 约束——一行正文 = 一个 content = 一个 hash 候选）。
 
 **unit_id 策略**：用户改某行 content → 旧 hash 消失 + 新 hash 出现 → 删旧 unit
-+ 建新 unit（新 id），不保留旧 id（F07 §12.9 风险5 当前版本策略）。删旧后用旧 id
++ 建新 unit（新 id），不保留旧 id（文档记忆根设计 §12.9 风险5 当前版本策略）。删旧后用旧 id
 查询返回空不报错（``shadow.get_units`` 缺失 id 静默省略）。
 """
 
@@ -317,7 +317,7 @@ class LocalWatchdog(Watchdog):
         ``_sync_one`` 是同步函数（调 shadow 的同步 sqlite 方法），靠 ``to_thread``
         推出事件循环；资源锁覆盖完整对账，串行化共目录/共索引的 Runtime。
 
-        **写窗口推迟（F07 §12.9 风险 6，见 storage.sync_gate）**：正常写入路径
+        **写窗口推迟（文档记忆根设计 §12.9 风险 6，见 storage.sync_gate）**：正常写入路径
         （CompositeStorage 文档路径两步写：md 视图 + 影子索引）进行中时，md 与
         索引短暂不一致，此刻对账会误判漂移（add 窗口 → 幽灵 unit 双写；update/
         delete 反序窗口 → 删真 unit / 复活已删 unit）。窗口开着时**推迟**而非丢弃：
@@ -402,7 +402,7 @@ class LocalWatchdog(Watchdog):
         return rel.replace("\\", "/")
 
     def _sync_one(self, md_filename: str, deleted: bool) -> None:
-        """单文件 unit 粒度增量同步（F07 §12.3 流程）。
+        """单文件 unit 粒度增量同步（文档记忆根设计 §12.3 流程）。
 
         ① old_all = shadow.list_units_by_md(scope, md_filename)
            # 全集 [(unit_id, content_hash)]，供 insert 侧「已知块」扣除（known_hash_set）
@@ -500,7 +500,7 @@ class LocalWatchdog(Watchdog):
             )
 
     def _build_unit(self, md_filename: str, content: str, scope: Scope) -> MemoryUnit:
-        """建新 MemoryUnit（F07 §12.6 缺省元数据）。
+        """建新 MemoryUnit（文档记忆根设计 §12.6 缺省元数据）。
 
         缺省值：
         - scope：由调用方传入（继承自 ``latest_scope_by_md`` 或默认空 Scope，见 _sync_one）

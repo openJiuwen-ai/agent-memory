@@ -349,7 +349,7 @@ def _space_member(request: DispatchRequest) -> SpaceMember:
     if member is None:
         raise ValidationError("missing required field: 'member'")
     payload = request.payload
-    # F07 两轴角色才是判定的实际依据（``SpaceMember.role`` 仅为存量兼容），
+    # 群体记忆 F07 两轴角色才是判定的实际依据（``SpaceMember.role`` 仅为存量兼容），
     # 漏传会把成员永远建成最低档，成员时间同样决定记录是否参与判定。
     return SpaceMember(
         scope=member,
@@ -907,7 +907,7 @@ def _delete(srv, request: DispatchRequest) -> Body:
 
 
 def _parse_dreaming(value: Any) -> bool | None:
-    """dreaming 三态开关（F04 D2）：JSON true/false，缺省 None（立即执行）。"""
+    """dreaming 三态开关（dreaming F13 D2）：JSON true/false，缺省 None（立即执行）。"""
     if value is None:
         return None
     if not isinstance(value, bool):

@@ -9,7 +9,7 @@
 写入入口是全量 ``MemoryUnit``（非 Document/VectorRecord 投影），投影中的 ``content``
 正文、``embedding`` 向量在算子内部派生；唯 ``md_filename`` 例外——它是 ``md.write``
 落盘后的产物，由 ``md.write`` 回填进 ``unit.system_metadata[MD_FILENAME_KEY]`` 后传入，
-算子从 system_metadata 读取落库，不在算子内部派生（F07 §11.3）。
+算子从 system_metadata 读取落库，不在算子内部派生（文档记忆根设计 §11.3）。
 """
 
 from __future__ import annotations

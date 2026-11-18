@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""显式关闭限流的实现：恒放行（F05 §Protection §入口限流）。
+"""显式关闭限流的实现：恒放行（安全能力 F04 §Protection §入口限流）。
 
 存在的理由是 TRUSTED 模式的真实部署形态——网关已在边缘做了限流，框架再做
 一层只会把「网关的单个出口 IP」当成一个 peer，从而把全部正常流量误伤成 429。

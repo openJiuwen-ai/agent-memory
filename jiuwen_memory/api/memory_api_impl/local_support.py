@@ -162,7 +162,7 @@ def _reject_invalid_content(content: object) -> None:
 
 
 def _resolve_space_owner(spec: SpaceSpec, identity: Scope) -> SpaceSpec:
-    """定妥建空间时的归属登记项，三种形态各走一条分支（F07「空间开通契约」）。
+    """定妥建空间时的归属登记项，三种形态各走一条分支（群体记忆 F07「空间开通契约」）。
 
     - ``owner is None``：调用方没表态，按「谁建的空间归谁」填入调用方身份。少这一步，
       调用方给自己建的空间没有归属主体，而个体空间靠归属登记裁决——他自己也访问不了，
@@ -192,7 +192,7 @@ def _reject_invalid_event_time(value: Any, *, name: str = "event_time") -> None:
 
 
 def _reject_kernel_system_metadata(metadata: dict[str, Any] | None) -> None:
-    """写入/更新边界拒绝调用方占用内核系统元数据 key（F07）。
+    """写入/更新边界拒绝调用方占用内核系统元数据 key（群体记忆 F07）。
 
     ``system_metadata`` 是内核可解释的命名空间，同时也是对外入参。调用方能自行赋值这些
     key 即可伪造归属：作者主体写成他人的，或改写判定命中的类别名。用户元数据落在另一个
@@ -218,7 +218,7 @@ def _truthy_metadata(metadata: dict[str, Any] | None, key: str) -> bool:
 
 
 def _reject_route_tag_keys(metadata: dict[str, Any] | None, tag_keys: frozenset[str]) -> None:
-    """写入边界拒绝调用方占用判定标签键（F07「写入边界校验」）。
+    """写入边界拒绝调用方占用判定标签键（群体记忆 F07「写入边界校验」）。
 
     收窄维与记录维生成的键参与检索过滤，调用方能自行赋值即可绕过收窄——把一条内容的会话
     标签写成别人的会话 id，即让它出现在别人的上下文里。这些键不是静态保留键，而是装配期
@@ -475,7 +475,7 @@ def _reject_non_scalar_metadata(
 
 
 def _with_author_marks(metadata: dict[str, Any] | None, identity: Scope) -> dict[str, Any]:
-    """按调用方身份写入作者标记（F07）。
+    """按调用方身份写入作者标记（群体记忆 F07）。
 
     落 API 层而非引擎层：``identity`` 不下沉，下游只信任已鉴权的 target scope。
     两个键恒写入、取值为空也不省略——检索侧要用「取值为空串」作过滤条件，键缺失会使该
@@ -788,7 +788,7 @@ def _space_permission_context(resource_type: str, scope: Scope) -> PermissionCon
 
 
 def _first_family_predicate(actor: Scope, context: PermissionContext | None) -> list[FilterClause]:
-    """检索谓词第一族：个体空间的系统谓词（F07「检索两族谓词」）。
+    """检索谓词第一族：个体空间的系统谓词（群体记忆 F07「检索两族谓词」）。
 
     实现在 :func:`~common.security.space_predicates.individual_space_predicates`，本函数
     只从权限上下文里取出空间事实。两族谓词的生成规则集中在安全层的一个模块，因为跨空间
@@ -810,7 +810,7 @@ def _is_space_level_entry(entry: str) -> bool:
 
 
 def _trim_space_policy(info: SpaceInfo, axis: str) -> SpaceInfo:
-    """按通过的轴裁剪空间策略（F07「空间策略必须从元数据返回值中裁剪」）。
+    """按通过的轴裁剪空间策略（群体记忆 F07「空间策略必须从元数据返回值中裁剪」）。
 
     经治理轴通过可读策略，只经内容轴通过则策略置空。裁剪不另发起一次判定，轴取自本次
     鉴权已经带出的结论。
@@ -831,7 +831,7 @@ def _trim_space_policy(info: SpaceInfo, axis: str) -> SpaceInfo:
 
 
 def _evolve_space_action(mode: EvolveMode | str) -> SpaceAction:
-    """演进模式对应的判定动作（F07「入口到轴与动作的映射」）。
+    """演进模式对应的判定动作（群体记忆 F07「入口到轴与动作的映射」）。
 
     去重、冲突巩固与遗忘改写既有条目，取 ``UPDATE``；其余模式产出新条目，取 ``WRITE``。
     两者都不放宽到「本人所写」——输入是一批条目，逐条判会使一次调用部分生效部分被拒。
@@ -867,7 +867,7 @@ def _is_status_only(patch: SpacePatch | None) -> bool:
 
 
 def _project_space_facts(facts: SpaceFacts) -> SpaceAuthorizationFacts:
-    """控制层的空间事实折算为判定用的最小投影（F07「空间事实的两层投影」）。
+    """控制层的空间事实折算为判定用的最小投影（群体记忆 F07「空间事实的两层投影」）。
 
     一次纯计算、不访问存储。空间策略、生命周期状态与成员记录的时间戳不进投影——
     判定不看它们，状态校验由鉴权点在授权通过之后另行执行。

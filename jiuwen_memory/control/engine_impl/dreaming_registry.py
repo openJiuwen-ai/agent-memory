@@ -1,12 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """DreamingRegistry——注册态演进任务（dreaming）的注册表 + KV 持久化。
 
-F04 D2 调度层设计：注册表 ``(scope五元组, mode) → Job``；interval 定时 /
+dreaming F13 D2 调度层设计：注册表 ``(scope五元组, mode) → Job``；interval 定时 /
 KV 持久化 / 重启恢复。本类只管**数据**（存取/删除/全量加载），不做调度、
 不做鉴权——submit/cancel 归 :class:`~control.scheduler.Scheduler`，授权与
 编排归 API 层的 ``DreamingCoordinator``（``api/memory_api_impl/dreaming.py``，
 PEP 边界：持续授权与 fan-out 逐桶裁决都在 API 层），candidate → resolver
-翻译归 Engine（装配与分发，F04 D3）。
+翻译归 Engine（装配与分发，dreaming F13 D3）。
 
 持久化形态：保留 scope（``org=__kernel__, space=dreaming``，不装
 MemoryUnit——``loads`` 对非 MemoryUnit 记录返回 None，list_units/scopes()
@@ -18,21 +18,21 @@ MemoryUnit——``loads`` 对非 MemoryUnit 记录返回 None，list_units/scope
   generation 九字段；旧记录缺后两项按 ACTIVE/1 兼容读取）。
 
 候选源存 **数据**（dict DSL，:func:`candidate_to_dict` 产物）不存 resolver
-对象——重启恢复后装配期重建 resolver、重绑 Job（F04 D3：候选源
+对象——重启恢复后装配期重建 resolver、重绑 Job（dreaming F13 D3：候选源
 必须是数据不是代码）。
 
-持续授权（F04 D7）：``created_by`` 记录**谁以什么身份注册**（actor scope
+持续授权（dreaming F13 D7）：``created_by`` 记录**谁以什么身份注册**（actor scope
 五元组）——重启恢复与每次 tick 都以它重新走授权判定，不因"注册时曾获准"
 而永久豁免。旧版本 entry 无该字段 → 恢复期 fail-closed 跳过。
 
-leader 部署模型（F04 D8）：周期实例启动和注册前须持实例锁，每个 tick 复核；
+leader 部署模型（dreaming F13 D8）：周期实例启动和注册前须持实例锁，每个 tick 复核；
 注册表与内存态 Scheduler 无跨实例事务，失锁实例必须立即停止本地 Timer。
 
 锁有两条互斥路径，按构造注入选择：
 
 - **LockProvider 注入（生产推荐）**：复用 common 层锁原语（Redis 实现跨
   实例互斥），租约 + **自动续租**——健康实例持锁超过初始 TTL 不会被
-  第二实例抢占（F04 D8，"TTL 过期双跑"遗留的修复）。acquire / renew /
+  第二实例抢占（dreaming F13 D8，"TTL 过期双跑"遗留的修复）。acquire / renew /
   release 全部在 registry 自有的"锁看守线程"专属事件循环内执行：Redis
   客户端惰性建连且绑定首次使用的事件循环，而 restore 的调用循环是
   ``asyncio.run`` 临时循环——锁操作必须落在一个长命循环上。续租失败
@@ -293,12 +293,12 @@ class DreamingRegistry:
                 )
         return [entry for _, entry in entries.values()]
 
-    # ---- 单实例锁（F04 D8 部署模型） ------------------------------------- #
+    # ---- 单实例锁（dreaming F13 D8 部署模型） ------------------------------------- #
 
     def acquire_instance_lock(self, ttl_seconds: float | None = None) -> bool:
         """取恢复实例锁（租约）：他实例持有且未过期 → False。
 
-        写序约定（F04 D8）：**持锁 → restore → 持锁期间进程存活**。同一份注册表
+        写序约定（dreaming F13 D8）：**持锁 → restore → 持锁期间进程存活**。同一份注册表
         不允许两个实例并发恢复——内存态 Scheduler 与 KV 注册表之间没有跨实例
         一致性协议，双恢复 = 双跑。锁原语按构造注入选择（见模块 docstring）：
         LockProvider 与 KV TTL 兜底都自动续租；崩溃实例的锁靠 TTL 自然过期。

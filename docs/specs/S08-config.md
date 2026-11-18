@@ -5,8 +5,8 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-16 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F08-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 最近一次修订日期 | 2026-11-18 |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F08-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F05-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
 
@@ -25,7 +25,7 @@
 - 不做 Store 数据迁移、向量索引重建
 - 不规定产品配置中心的推送/TTL/缓存失效运维接口（实现方可自管缓存，首版契约不要求 invalidate）
 - **不**在未使用 `RoutingStoreManager` 时原地拆换同一 `CompositeStoreManager` 内部端口拓扑；Store 级异质切换落在各 `*_store.active` + `Routing*Store`（方案 A，F01 §2.1.5）
-- **允许**装配期预装多套完整 `StoreManager`，经 `RoutingStoreManager` + `store_manager.active` 动态选用（F02/F07，已落地）；**禁止**把「同实现换连接 / 只换某一 Store」误做成多套 manager + `store_manager.active`
+- **允许**装配期预装多套完整 `StoreManager`，经 `RoutingStoreManager` + `store_manager.active` 动态选用（config/F02 与 storage/F07，已落地）；**禁止**把「同实现换连接 / 只换某一 Store」误做成多套 manager + `store_manager.active`
 
 ## Portal 配置保存与恢复
 
@@ -370,7 +370,7 @@ ConfigSource
 | Graph | `graph_store.working_dir` | `graph_store.active` |
 | Fusion | `fusion_store.uri`、`fusion_store.working_dir` | `fusion_store.active` |
 | FS | `fs_store.root` | `fs_store.active` |
-| StoreManager 实例选用（F02/F07） | — | `store_manager.active`（仅当 `store_manager.default` 为 `RoutingStoreManager`） |
+| StoreManager 实例选用（config/F02 与 storage/F07） | — | `store_manager.active`（仅当 `store_manager.default` 为 `RoutingStoreManager`） |
 
 说明：
 
@@ -415,11 +415,11 @@ ConfigSource
 - **Store 级**：ConfigSource 的连接改值 / `*_store.active` 作用于**端口背后的 Store**（含
   `Routing*Store`，F01）。
 - **StoreManager 级**：`store_manager.active` 仅当全局 manager 为 `RoutingStoreManager` 时，
-  在已预装的完整 manager 实例间选用（F02/F07）；二者诉求不同，勿混用。
-- **EncryptedKV 为 F04 opt-in**（`258f398` 起）：`build_kernel` **不再**默认外包加密层；
+  在已预装的完整 manager 实例间选用（config/F02 与 storage/F07）；二者诉求不同，勿混用。
+- **EncryptedKV 为 common/F04 opt-in**（`258f398` 起）：`build_kernel` **不再**默认外包加密层；
   产品以 `kv_store.*.target=encrypted`（或等价）显式启用。启用时 `RoutingKVStore` 必须作为
   **raw** 包在 `EncryptedKVStore` 之内，禁止 Routing 包在加密层外。
-- Store 级接线真值表见 F01 §2.1.5；StoreManager 实例动态配置见 F02/F07。
+- Store 级接线真值表见 F01 §2.1.5；StoreManager 实例动态配置见 config/F02 与 storage/F07。
 
 ### 与业务 API 的关系
 

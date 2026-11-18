@@ -1,19 +1,19 @@
-"""空间感知判定的判据主体（F07「判定规则」）。
+"""空间感知判定的判据主体（群体记忆 F07「判定规则」）。
 
 本模块是判定链中不访问存储的全部判据：组织边界、归属对比、归属主体档两级与两轴
 求值。写成纯函数而不绑定任何宿主契约，是为了让判定宿主可替换——当前由安全层
 ``SpaceAwareAuthorizer`` 与控制层 ``space_aware`` 实现共用，换宿主时只改宿主、
-判据不动（F07 决策 4）。
+判据不动（群体记忆 F07 决策 4）。
 
 **结论带 rule 而非只返回布尔值**：带判据的结论对象要求放行与拒绝两侧都填 ``rule``。
 主体直接返回布尔值则换宿主时每个分支都要补 ``rule``，因此这里一次把 ``rule`` 与拒绝
-原因带出，由宿主折算成它自己的结论类型（F07 决策 4 的编码约束一）。
+原因带出，由宿主折算成它自己的结论类型（群体记忆 F07 决策 4 的编码约束一）。
 
 **步骤按目标次序编排**，不照抄控制层现有实现的次序：后者是「主体覆盖 → 组织边界」，
-而正确次序要求组织边界在前，以使跨组织请求得到准确的拒绝原因（F07 决策 4 的编码约束
+而正确次序要求组织边界在前，以使跨组织请求得到准确的拒绝原因（群体记忆 F07 决策 4 的编码约束
 二）。本模块覆盖十步中的第 6、7、9、10 步；第 8 步主体覆盖与第 9 步委托复核的
 结果均由宿主算出后传入（宿主回真源查询，本模块保持无存储判据的定位）；第 1、3、4、5
-步在本特性内无判据来源，见 F07 决策 4「四步无判据来源」。
+步在本特性内无判据来源，见 群体记忆 F07 决策 4「四步无判据来源」。
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from .space_roles import (
     most_specific,
 )
 
-# 判定输入中经属性通道传递的四个键名（F07「空间事实的两层投影与传入通道」）。
+# 判定输入中经属性通道传递的四个键名（群体记忆 F07「空间事实的两层投影与传入通道」）。
 # 它们落 PermissionContext.metadata，宿主换成别的资源描述对象时改传入通道即可；
 # 定义落安全层是因为写入方（鉴权点，API 层）与读取方（判定宿主）分处两侧，
 # 键名在任一侧定义都会形成跨层依赖。条目作者主体复用 principal.AUTHOR_PRINCIPAL——
@@ -50,7 +50,7 @@ ATTR_SPACE_ENTRY = "space_entry"
 ATTR_SPACE_ACTION = "space_action"
 ATTR_PRINCIPAL_PATH = "principal_path"
 
-# 空间事实经属性通道传递的投影键（F07「空间事实的两层投影」第二层）。判定宿主换成
+# 空间事实经属性通道传递的投影键（群体记忆 F07「空间事实的两层投影」第二层）。判定宿主换成
 # Authorizer 后，事实不再以 ``PermissionContext.space_facts`` 的形态进宿主，而是由
 # 鉴权点折算成字符串属性随资源描述传入；键名与四个通道键同为稳定契约。
 #
@@ -97,12 +97,12 @@ _DEFAULT_PATH = "user_agent"
 class DenyReason(str, Enum):
     """拒绝原因枚举。
 
-    拒绝原因的取值是审计与告警的匹配依据，属封闭集合。F07 原生指派两项；第 9 步
+    拒绝原因的取值是审计与告警的匹配依据，属封闭集合。群体记忆 F07 原生指派两项；第 9 步
     代操作委托实装（P1-3）后补入两项委托取值——字符串值与授权层
     :class:`~common.security.types.DenyReason` 对齐，宿主按值折算，两侧审计按同一
     个 reason code 匹配。
 
-    跨组织拒绝复用 ``NOT_COVERED``，由 ``rule`` 取 ``cross_org`` 在审计侧区分：F07 要求
+    跨组织拒绝复用 ``NOT_COVERED``，由 ``rule`` 取 ``cross_org`` 在审计侧区分：群体记忆 F07 要求
     第 6 步排在第 8 步之前以得到准确的拒绝原因，但未指派专门的取值。这是一处已知的未定项，
     不臆造取值。
     """
@@ -387,7 +387,7 @@ def decide_projected(
     # 不适用时本步整体不参与（等同请求未声明委托），继续走第 10 步。
     #
     # 适用且已声明时**终局**：命中即放行、失效即拒绝，均不落第 10 步——与标准链一致
-    # （F05 §Delegation），失效委托不静默改判成员记录/Grant，审计里才看得出委托失效过。
+    # （安全能力 F04 §Delegation），失效委托不静默改判成员记录/Grant，审计里才看得出委托失效过。
     if delegation is not None and on_behalf_paths_apply(entry, axis):
         return _allow(delegation.rule, axis) if delegation.allowed else delegation
 
@@ -411,7 +411,7 @@ def decide_projected(
 
 
 def on_behalf_paths_apply(entry: str, axis: SpaceAxis) -> bool:
-    """「代人操作」类判据是否适用于本入口与本轴（F07「第 7 步的两条排除」）。
+    """「代人操作」类判据是否适用于本入口与本轴（群体记忆 F07「第 7 步的两条排除」）。
 
     第 7 步归属对比与第 9 步代操作委托共用本判据。两步放行的是同一类情形——**不是
     主体本人、而是替他操作的代理**：第 7 步的代理身份来自 scope 覆盖（用户名下的
@@ -552,7 +552,7 @@ def _axis_evaluation(
 
 
 def governance_grade(actor: Scope, facts: SpaceAuthorizationFacts) -> SpaceGovernanceRole:
-    """调用方在该空间的治理档，即成员记录授予上界的基数（F07「改写防护与三处上界」）。
+    """调用方在该空间的治理档，即成员记录授予上界的基数（群体记忆 F07「改写防护与三处上界」）。
 
     两维各取最具体记录后取较低档，划分规则复用判定链的同一实现，不另写一份。
 
@@ -562,7 +562,7 @@ def governance_grade(actor: Scope, facts: SpaceAuthorizationFacts) -> SpaceGover
     为共享空间。
 
     组织级与平台级角色不属本特性范围，基数表的前两行（``ROOT`` 全档、组织 ``ADMIN``
-    治理轴最高档）无判据来源，见 F07 决策 4「四步无判据来源」。
+    治理轴最高档）无判据来源，见 群体记忆 F07 决策 4「四步无判据来源」。
     """
     if facts.is_individual and any(same_dims(owner, actor) for owner in facts.owners):
         return SpaceGovernanceRole.OWNER

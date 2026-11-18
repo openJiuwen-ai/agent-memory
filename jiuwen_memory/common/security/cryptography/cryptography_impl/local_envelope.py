@@ -5,7 +5,7 @@
 独立 Producer 注册（``key_provider.local`` 与 ``cryptography.local``），可各自被具名
 引用与替换。
 
-信封结构（F05 §信封格式）::
+信封结构（安全能力 F04 §信封格式）::
 
     root key --HKDF(purpose, org)--> org key --AES-GCM--> 包裹 per-value data key
                                                 data key --AES-GCM--> 内容密文
@@ -15,7 +15,7 @@
 
 **版本迁移**：写入一律用 v2（带 key id/epoch）；读取兼容 v1（无 key id/epoch，
 用旧的派生与 AAD 布局）。v1 不再写出，也不会因为解不开而回退明文——不合法信封
-一律拒绝（F05 §明文策略）。
+一律拒绝（安全能力 F04 §明文策略）。
 """
 
 from __future__ import annotations
@@ -199,7 +199,7 @@ class LocalKeyProvider(KeyProvider):
     def health(self) -> None:
         self._load_root_key()
 
-    # -- MAC capability（审计完整性用，F05 §Audit Integrity）--------------- #
+    # -- MAC capability（审计完整性用，安全能力 F04 §Audit Integrity）--------------- #
 
     def supports_mac(self) -> bool:
         return True
@@ -265,7 +265,7 @@ class LocalKeyProvider(KeyProvider):
     def _derive_wrapping_key(
         self, *, purpose: str, org: str, root_key: bytes | None = None
     ) -> bytes:
-        """按 (purpose, org) 派生包裹密钥——用途隔离 + 租户隔离（F05 §密钥隔离）。
+        """按 (purpose, org) 派生包裹密钥——用途隔离 + 租户隔离（安全能力 F04 §密钥隔离）。
 
         长度前缀防歧义：``purpose="a" org="b:c"`` 与 ``purpose="a:b" org="c"``
         直接拼接会得到同一个 info，从而共用同一把包裹密钥。
@@ -290,7 +290,7 @@ class LocalKeyProvider(KeyProvider):
 
     def _derive_mac_key(self, *, purpose: str, root_key: bytes) -> bytes:
         """按 purpose 派生 MAC 密钥——与包裹密钥（kek:v2）出自不同 info 标签，
-        用途隔离（F05 §密钥隔离）：审计完整性的派生材料不参与任何加解密路径。
+        用途隔离（安全能力 F04 §密钥隔离）：审计完整性的派生材料不参与任何加解密路径。
         长度前缀防歧义，与 ``_derive_wrapping_key`` 同构。
         """
         purpose_bytes = purpose.encode("utf-8")
@@ -386,7 +386,7 @@ class LocalKeyProvider(KeyProvider):
 class LocalEnvelopeCryptographyProvider(CryptographyProvider):
     """ENC1 AES-256-GCM 信封，密钥经 KeyProvider 取得。
 
-    **无明文回退**（F05 §明文策略）：入参不是合法信封即拒绝读取，解密失败不返回
+    **无明文回退**（安全能力 F04 §明文策略）：入参不是合法信封即拒绝读取，解密失败不返回
     原始 bytes。是否允许未加密存储由上层选用不同的存储适配器表达，不在本类里开关。
     """
 
@@ -640,7 +640,7 @@ def _hmac_sha256(key: bytes, message: bytes) -> bytes:
 
 
 def _content_aad(context: CryptoContext, aad: bytes, *, ref: KeyRef) -> bytes:
-    """v2 内容 AAD：绑定 Scope、用途、对象 id、格式版本与 key ref（F05 §信封格式）。
+    """v2 内容 AAD：绑定 Scope、用途、对象 id、格式版本与 key ref（安全能力 F04 §信封格式）。
 
     key ref 一并进 AAD，使信封头里的 key id/epoch 不能被替换成另一代——只写进头部
     而不参与认证的字段是可篡改的。

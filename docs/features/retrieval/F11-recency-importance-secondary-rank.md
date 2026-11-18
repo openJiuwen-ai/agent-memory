@@ -1,4 +1,4 @@
-# F09 — 检索次级排序：带内按重要度与时效性 tie-break
+# F11 — 检索次级排序：带内按重要度与时效性 tie-break
 
 ## 元信息
 
@@ -7,7 +7,7 @@
 | 日期 | 2026-10-29 |
 | 影响范围 | jiuwen_memory/retrieval/{base.py,bootstrap.py,retriever_impl/pipeline_retriever.py,fuser_impl/secondary_scorer/}，jiuwen_memory/config/defaults.py，docs/specs/S04-retrieval.md |
 | 测试基线 | 全量 7518 passed / 93 skipped / 0 failed（Python 3.11，本地开发机（aarch64），基线 mem2.0@fed1031，已装 `watchdog`），无新增失败。skip 是环境差异：本机缺 elasticsearch、pymilvus、torch、redis、asyncpg 等可选库，真实 LLM / Redis 容器用例默认跳过，Windows 专属用例在 Linux 跳过。ruff 0.16.8 告警 12 条与基线完全相同，无新增 |
-| 关联特性 | docs/features/construction/F10-importance-and-source-attribution.md（重要度的产出方） |
+| 关联特性 | docs/features/construction/F12-importance-and-source-attribution.md（重要度的产出方） |
 
 ## 背景
 
@@ -124,14 +124,14 @@
 4. **`recency_tau_days` 未经真实语料调优**。30 天是经验值，对话记忆与知识库场景可能差一个
    数量级。
 5. **重要度存储仍是字符串**。读取侧已绕开字典序，索引侧的数值范围过滤仍受影响（见
-   construction F10 遗留）。
+   construction F12 遗留）。
 6. **只看 `t_ingest`**。去重合并后的记忆用合并版本的写入时间，不回溯来源；「事件越近越
    优先」需另加 `event_recency` 维度并先解决 `t_event` 缺失率。
 7. **`min_results` 回填的候选可能被带内重排到前面**。它们通过了正分门且与带首相关性相近，
    属合法行为；依赖「回填总在最后」的调用方需注意。
 8. **Schema TemporalEntity 分支在 top_k 之后另行组装结果**，不经过次级排序。
 9. **固定绝对带宽与 BGE 分数分布不匹配（系统测试实测）**。BGE 分数经 sigmoid 后在 top-1 之后
-   呈数量级下降：F09 系统测试 LoCoMo 上第 1/2/3/10 名中位分为 0.71/0.20/0.077/0.006，81% 的查询
+   呈数量级下降：F11 系统测试 LoCoMo 上第 1/2/3/10 名中位分为 0.71/0.20/0.077/0.006，81% 的查询
    在 top-10 内跌破 0.05；部署档 `min_score` 为 0，60 条候选全部放行。任何固定 `score_band` 都会把
    第 2 名之后与近零分尾部连成一带，次级排序会把排在 30 名以后的条目拉进 top-10。M1 定档在原口径与
    「只计与 top-10 有交集的带」口径下都判过度并带。治本是相对带宽（按带首分比例）或限定参与重排的

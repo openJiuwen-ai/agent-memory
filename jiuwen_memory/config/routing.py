@@ -9,7 +9,7 @@
 
 分层：
 - **Store 级**（F01）：``RoutingKVStore`` / ``RoutingVectorStore`` 等 + ``*_store.active``
-- **StoreManager 级**（F02/F07）：``RoutingStoreManager`` + ``RoutingDomainStore``
+- **StoreManager 级**（F02/Store拆分 F07）：``RoutingStoreManager`` + ``RoutingDomainStore``
   + ``store_manager.active``（已预装完整 ``StoreManager`` 实例动态配置）
 
 均为方案 A：不注册 YAML ``target: routing``；产品手工注入。默认拓扑不预装多后端。
@@ -665,7 +665,7 @@ class RoutingDomainStore(DomainStore):
         return self._active_domain().get(scope, unit_ids, access=access, **kwargs)
 
     def requested_shards(self, extensions: dict[str, Any] | None) -> frozenset[str] | None:
-        """委托 active 数据面解析分片选择（F09 D11）。"""
+        """委托 active 数据面解析分片选择（逻辑分片 F09 D11）。"""
         return self._active_domain().requested_shards(extensions)
 
     def get_in_shards(
@@ -677,7 +677,7 @@ class RoutingDomainStore(DomainStore):
         access: StorageAccessContext | None = None,
         **kwargs: Any,
     ):
-        """委托 active 数据面的分片点读（F09 D3）；未支持时由实现抛不支持错误。"""
+        """委托 active 数据面的分片点读（逻辑分片 F09 D3）；未支持时由实现抛不支持错误。"""
         return self._active_domain().get_in_shards(
             scope, unit_ids, shards, access=access, **kwargs
         )

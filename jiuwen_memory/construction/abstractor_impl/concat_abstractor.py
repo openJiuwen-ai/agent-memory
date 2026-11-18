@@ -5,7 +5,7 @@
 拼接摘要，``provenance`` 记全部来源 id、打 ``profile`` 标签。真实实现会用 LLM
 做真正的概括/升华，这里用拼接作可复现占位；少于 2 条不产出。
 
-F10：产出单元写 ``origin=inferred``，重要度取 ``default`` 类别查表值（覆盖继承值）。
+重要度 F12：产出单元写 ``origin=inferred``，重要度取 ``default`` 类别查表值（覆盖继承值）。
 """
 
 from __future__ import annotations

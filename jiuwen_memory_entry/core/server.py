@@ -177,7 +177,7 @@ class Server:
                 self.security_runtime.close()
 
     def restore_dreaming(self) -> None:
-        """重启恢复注册态 dreaming 任务（F04 D8）——**长命 surface** 启动时调用。
+        """重启恢复注册态 dreaming 任务（dreaming F13 D8）——**长命 surface** 启动时调用。
 
         短命进程（CLI 命令、一次性脚本）不得调用：恢复会取实例锁并把注册表
         全部任务装配进本进程调度器，短命进程退出等于全部定时任务停摆（锁靠

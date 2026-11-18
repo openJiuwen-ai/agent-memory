@@ -1,4 +1,4 @@
-"""profiles.Config：secret 参数的 repr 脱敏（AUTH-ENC-03，F05 装配不变量 7）。"""
+"""profiles.Config：secret 参数的 repr 脱敏（AUTH-ENC-03，安全能力 F04 装配不变量 7）。"""
 
 # ruff: noqa: E402
 

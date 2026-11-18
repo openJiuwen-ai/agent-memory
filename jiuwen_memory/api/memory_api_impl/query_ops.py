@@ -460,7 +460,7 @@ class QueryOpsMixin:
         self, context: Context, retrieval_query: RetrievalQuery, access: _SearchAccess,
         *, security: RequestSecurityContext,
     ) -> RetrievalResult:
-        """跨空间检索：本层做前两步半，后三步下沉控制层（F07「多空间读写」）。
+        """跨空间检索：本层做前两步半，后三步下沉控制层（群体记忆 F07「多空间读写」）。
 
         由 :meth:`search` 在 ``extensions`` 带 ``spaces`` 键时分流进来，不是独立入口。
         参数袋的拆包与坐标折算都在 :meth:`search` 内完成，结果经形参传入：同一个参数袋
@@ -524,7 +524,7 @@ class QueryOpsMixin:
                     now=datetime.now(UTC),
                 )
                 if outcome.allowed and self._needs_space_facts():
-                    # 状态校验与单空间路径同一口径（F07「空间状态校验」）：不补则
+                    # 状态校验与单空间路径同一口径（群体记忆 F07「空间状态校验」）：不补则
                     # 调用方在 extensions["spaces"] 里点名一个正在清理的空间即可照常
                     # 拿到内容，同一个 search 的两条路径对该空间给出两种结果。
                     # 排在判权通过之后、复用同一份事实快照，与 _authorize_with_context
@@ -867,7 +867,7 @@ class QueryOpsMixin:
             context=_unit_lookup_permission_context(unit_id, scope),
         )
         permission_context = asyncio.run(self._queries.permission_context_for_unit(unit_id, scope))
-        # 第二段的目标取条目真源 scope，不沿用入参（F07「条目级入口分两段鉴权」）：
+        # 第二段的目标取条目真源 scope，不沿用入参（群体记忆 F07「条目级入口分两段鉴权」）：
         # 它是「判定第 8 步不会命中」的两个前置条件之一，与「回填后条目 scope 只有两维」
         # 各兜一重，两条的失效方向相反。沿用入参即把两重约束落在同一个取值上。
         # 与 list / delete 同一口径。
@@ -1414,7 +1414,7 @@ class QueryOpsMixin:
         ):
             raise ValidationError("仅 HIERARCHY 接受 hierarchy_options/reuse_existing")
         self._ensure_audit_integrity_healthy()
-        # 三态分发（F04 D2）：False=幂等注销（不命中不退化）；True=注册；
+        # 三态分发（dreaming F13 D2）：False=幂等注销（不命中不退化）；True=注册；
         # None=立即执行。持续授权（每 tick 复验）与 fan-out 逐桶裁决都在 API 层
         # 的 DreamingCoordinator（PEP 边界，S03）——Engine / EvolveJob 纯执行。
         if dreaming is False:
@@ -1479,7 +1479,7 @@ class QueryOpsMixin:
         return job_id
 
     def restore_dreaming(self) -> list[str]:
-        """重启恢复注册态 dreaming 任务（F04 D8 装配期钩子，非 HTTP verb）。
+        """重启恢复注册态 dreaming 任务（dreaming F13 D8 装配期钩子，非 HTTP verb）。
 
         启动路径专用（server 启动 / SDK 宿主拉起），不出现在 MemoryAPI 公共
         契约——恢复会持实例锁，任意请求主体可触发会把部署模型的决定权让渡

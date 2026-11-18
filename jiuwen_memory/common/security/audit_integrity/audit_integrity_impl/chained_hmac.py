@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""版本化规范化 + 链式 HMAC 审计完整性实现（F05 §Audit Integrity、计划 §4.4、§4.5）。
+"""版本化规范化 + 链式 HMAC 审计完整性实现（安全能力 F04 §Audit Integrity、计划 §4.4、§4.5）。
 
 设计要点：
 
@@ -15,7 +15,7 @@
 - **CAS 冲突有界重试**，超限抛
   :class:`~jiuwen_memory.common.security.audit_integrity.base.ChainConflictError`
   （计划 §4.3）。
-- **增量验证走 checkpoint**（F05 §6.1）：``after_sequence > 0`` 时从稳定快照取第
+- **增量验证走 checkpoint**（安全能力 F04 §6.1）：``after_sequence > 0`` 时从稳定快照取第
   ``after_sequence`` 条记录，先验证其 proof（计入 ``checked_count``，通过即把
   ``high_water_mark`` 推进到 ``after_sequence``），再以它的 digest 为续链基线分页扫描。
   checkpoint 不存在返回 incomplete，不回落 genesis、不跳到下一条。分页扫描固定传快照的
@@ -65,7 +65,7 @@ CANONICAL_FORMAT_VERSION = 1
 """规范化与证明格式版本（计划 §4.5）。未知版本返回 incomplete，拒绝当 clean。"""
 
 AUDIT_MAC_PURPOSE = "audit-integrity:hmac:v1"
-"""审计 MAC 的固定用途标签（计划 §5.1）。与加密包裹密钥派生互不复用（F05 §密钥隔离）。"""
+"""审计 MAC 的固定用途标签（计划 §5.1）。与加密包裹密钥派生互不复用（安全能力 F04 §密钥隔离）。"""
 
 DEFAULT_MAX_CAS_RETRIES = 10
 DEFAULT_MAX_KEY_RETRIES = 5
@@ -180,7 +180,7 @@ class ChainedHmacAuditIntegrityProvider(AuditIntegrityProvider):
         if not isinstance(key_provider, KeyProvider):
             raise ValidationError("audit_integrity key_provider 必须是 KeyProvider 实现")
         if not key_provider.supports_mac():
-            # capability 不足即拒绝，不靠 target 名判断（F05 §依据 capability 做安全决策）。
+            # capability 不足即拒绝，不靠 target 名判断（安全能力 F04 §依据 capability 做安全决策）。
             raise KeyCapabilityError(
                 "audit_integrity 的 key_provider 不提供 MAC capability；"
                 "需要支持 MAC 的 KeyProvider（如 local）"
@@ -341,7 +341,7 @@ class ChainedHmacAuditIntegrityProvider(AuditIntegrityProvider):
         max_samples: int = DEFAULT_AUDIT_VERIFY_MAX_SAMPLES,
         anchor_policy: str = "if_configured",
     ) -> AuditVerificationResult:
-        """流式验证稳定快照（计划 §9.1、§9.2、§12.1；F05 §6.1 增量语义）。
+        """流式验证稳定快照（计划 §9.1、§9.2、§12.1；安全能力 F04 §6.1 增量语义）。
 
         keyset 分页扫描固定在快照 ``head.sequence``，内存随 page size / 样本上限有界，
         不随总日志量线性增长（计划 §12.5）。验证按 proof 自带 KeyRef 选历史材料；key
@@ -390,7 +390,7 @@ class ChainedHmacAuditIntegrityProvider(AuditIntegrityProvider):
         prev_key_epoch = 0
         # 从非零 after_sequence 起验时，前序摘要无法从链首重建：checkpoint proof 只做
         # 自洽校验（不验链式链接），其 digest 作为后续记录的续链基线（范围验证的诚实
-        # 边界）。checkpoint 校验通过即推进 high_water_mark（F05 §6.1）。
+        # 边界）。checkpoint 校验通过即推进 high_water_mark（安全能力 F04 §6.1）。
         if after_sequence > 0:
             checkpoint = snapshot.checkpoint
             if checkpoint is None:
@@ -428,7 +428,7 @@ class ChainedHmacAuditIntegrityProvider(AuditIntegrityProvider):
         while cursor < through:
             page_records = self._store.scan(cursor, page, through_sequence=through)
             if not page_records:
-                # 页空且尚未到达链头：缺记录或截断，拒绝当 clean（F05 §6.1）。
+                # 页空且尚未到达链头：缺记录或截断，拒绝当 clean（安全能力 F04 §6.1）。
                 saw_incomplete = True
                 break
             for record in page_records:

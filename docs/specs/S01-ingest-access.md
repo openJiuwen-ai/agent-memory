@@ -5,11 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-11-12 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F10-importance-and-source-attribution.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F12-importance-and-source-attribution.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 ## Metadata 转换契约
 
 `RawPayload` 与 `MemoryUnit` 都以 `system_metadata` / `user_metadata` 承载双命名空。

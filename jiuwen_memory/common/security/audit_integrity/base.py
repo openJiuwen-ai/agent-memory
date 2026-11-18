@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""AuditIntegrityProvider - 审计事件密码学完整性契约（F05 §Audit Integrity）。
+"""AuditIntegrityProvider - 审计事件密码学完整性契约（安全能力 F04 §Audit Integrity）。
 
 Provider 负责：
 
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 
 # ====================================================================== #
-# 错误（F05 §错误语义：AuditIntegrityError 族）
+# 错误（安全能力 F04 §错误语义：AuditIntegrityError 族）
 # ====================================================================== #
 
 

@@ -5,10 +5,10 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-16 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F09-sdk-runtime-logging.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F10-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md，docs/features/common/F11-new-trace.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F12-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md，docs/features/common/F11-new-trace.md，docs/features/common/F12-absolute-date-recall.md |
 
 ## 摄入协作取消
 
@@ -453,7 +453,7 @@ F04 安全能力总纲对应的契约层（认证 / 密码学 / 保护 / 授权 
 | `Chunk` | id / unit_id / seq / text / start / end / token_count / metadata | 切分块 |
 | `ChatMessage` | role / content | LLM 对话消息；content 为文本或多模态 parts |
 | `RawPayload` | id / scope / modality / data / uri / system_metadata / user_metadata / occurred_at / assets | 原始负载；`assets` 只承载待 Ingestor 映射的资产引用，不规定产出数量或 Segment 位置 |
-| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反。内置字段白名单（`filter.py` `_BUILTIN_FIELDS`）含 `t_ingest`（摄入时间，epoch 毫秒，恒非空；2026-09-15 入册，dreaming 时间窗下推依赖，见 F04-dreaming.md D5） |
+| `FilterClause` | field / op / value | 原子过滤谓词；`EQ` / `IN` 正向匹配标量，`CONTAINS` 匹配数组成员，`NE` / `NOT_IN` 分别取反。内置字段白名单（`filter.py` `_BUILTIN_FIELDS`）含 `t_ingest`（摄入时间，epoch 毫秒，恒非空；2026-09-15 入册，dreaming 时间窗下推依赖，见 F13-dreaming.md D5） |
 | `FilterGroup` | logic / children | AND / OR / NOT 逻辑节点 |
 | `FilterExpr` | FilterClause \| FilterGroup | 跨 API、检索和存储层的过滤树 |
 | `matches_filter_value` | `(object, FilterClause) -> bool` | 真源与内存索引共用的标量/数组/缺值比较 |
@@ -586,7 +586,7 @@ tree_memory: TreeMemoryData | None = None
 两键都不在不传播清单内，也不是内核保留键——调用方可显式传入，派生 unit 由产出算子
 自行重写。
 
-> F07 起：前者增六键——内核按调用方身份写入的两个作者标记键、判定算子写入的命中类别名（`memory_class`），以及三个后续阶段才写入、提前占位以防存量数据占用的溯源键；后者增判定上下文的透传键。两份清单均为扩充，条目结构与序列化版本不变。
+> control/F07 起：前者增六键——内核按调用方身份写入的两个作者标记键、判定算子写入的命中类别名（`memory_class`），以及三个后续阶段才写入、提前占位以防存量数据占用的溯源键；后者增判定上下文的透传键。两份清单均为扩充，条目结构与序列化版本不变。
 >
 > 其中作者主体是判定与检索谓词的判据，作者代理只是记录项。两者与全部收窄维标签键一律恒写入、取值为空也不省略键：过滤算子在字段缺失时的行为按算子而异，集合谓词判为不匹配即静默收窄，因此语义可预期的前提是键恒存在。判定标签键不是静态保留键，而是装配期由判定表配置解析得出的运行时集合。
 

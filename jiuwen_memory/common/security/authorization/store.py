@@ -1,4 +1,4 @@
-"""Grant 与 Delegation 的真源契约（F05 §Grant / §Delegation）。
+"""Grant 与 Delegation 的真源契约（安全能力 F04 §Grant / §Delegation）。
 
 两个 Store 刻意**分开**，不合成一个 "PermissionStore"：
 
@@ -84,7 +84,7 @@ class GrantStore(ABC):
 class DelegationStore(ABC):
     """代操作授权的真源。
 
-    存在的理由是 F05 §从 header 直接产生 Delegation 那条拒绝：网关 header 最多证明
+    存在的理由是 安全能力 F04 §从 header 直接产生 Delegation 那条拒绝：网关 header 最多证明
     「网关声称这是某个 user」，证明不了「该 user 真的授权了这个 agent」。委托必须是
     服务端事实，由 ``delegation_id`` 回这里复核。
     """
