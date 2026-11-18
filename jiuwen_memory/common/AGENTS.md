@@ -14,12 +14,14 @@
 | 文件/目录 | 职责 |
 |---|---|
 | `relations/legacy.py` | 旧关系到候选证据关系的显式纯函数映射；相似/共指不升级为证据 |
-| `relations/catalog.py` / `type_def/continuity.py` | 关系与职责启动目录、接续 DTO；职责与权限角色分离 |
+| `relations/catalog.py` / `type_def/continuity.py` | 关系与职责启动目录、接续 DTO；职责与权限角色分离。`RelationCatalog.snapshot()` 导出职责展示名/说明/最终 traversal/budget 与全部关系元数据，返回脱离内部对象的纯数据副本 |
 
 TaskRequest 的 title/description/parent_task_id/query/top_k 追加在旧位置字段之后；
 find 上下文参数成对校验，语义候选不代表选定任务或拥有来源读取权限。
 创建带 parent_task_id 的任务时，continuity_task_parent 必须登记到 ENTRY_RULES 的内容 READ 轴，
 与任务查询使用同一项目读取权限；不能落回条目级授权路径。
+`continuity_catalog` 同样必须登记到内容 READ 轴：Portal 读取 Runtime 目录前先判项目读取权，
+目录只做展示，不授予职责、关系或任何记忆访问权限。
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |

@@ -28,6 +28,7 @@ from jiuwen_memory.api import (
 )
 from jiuwen_memory_entry.core.api_contract import CONFIG_VERBS
 from jiuwen_memory_entry.portal.hosting import _PortalServer, request_error, runtime_request
+from jiuwen_memory_entry.portal.multi_agent import VIEW_VALUE
 from jiuwen_memory_entry.portal.sessions import frame_origins
 
 if os.name == "nt":
@@ -288,12 +289,13 @@ def _server(path, *, threaded):
 class SharedPortalHandle:
     def __init__(
         self, runtime, provider, location, instance_id, *,
-        port, allowed_frame_origins, runtime_key=None,
+        port, allowed_frame_origins, runtime_key=None, multi_agent=None,
     ):
         self._location = location
         self._instance_id = instance_id
         self._provider = provider
         self._registration = uuid4().hex
+        self._multi_agent = multi_agent
         self._endpoint = location.directory / self._registration
         self._lock = Lock()
         self.closed = False
@@ -329,6 +331,9 @@ class SharedPortalHandle:
                 return 200, runtime_request(
                     runtime, auth, message["verb"], message["payload"],
                     Scope(**scope) if scope else None,
+                    multi_agent=(
+                        self._multi_agent if message.get("view") == VIEW_VALUE else None
+                    ),
                 )
             except Exception as error:
                 return request_error(error)
@@ -422,7 +427,7 @@ class _Registry:
         for endpoint, info in live:
             self.register(info, info["instance_id"], endpoint)
 
-    def dispatch(self, verb, payload, access: _BrowserAccess, _peer):
+    def dispatch(self, verb, payload, access: _BrowserAccess, _peer, view=None):
         with self.lock:
             opening_instance = self.registrations.get(access.registration)
             candidates = [
@@ -449,7 +454,7 @@ class _Registry:
             candidates = candidates[:1]
         for instance in candidates:
             try:
-                status, result = self.forward(instance, verb, payload, access)
+                status, result = self.forward(instance, verb, payload, access, view)
             except _InstanceDisconnected:
                 continue
             except OSError:
@@ -520,10 +525,11 @@ class _Registry:
             return rejected if status == 401 else (status, result)
         return failure
 
-    def forward(self, instance, verb, payload, access):
+    def forward(self, instance, verb, payload, access, view=None):
         return self._call_source(instance, access.identity, {
             "verb": verb, "payload": payload,
             "write_scope": access.write_scope,
+            "view": view,
         }, timeout=300)
 
     def _accepts_identity(self, source, identity, checked_endpoint):

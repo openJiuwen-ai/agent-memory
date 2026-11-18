@@ -540,11 +540,17 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._portal_settings = dict(portal or {})
         unknown = set(self._portal_settings) - {
             "enabled", "port", "allowed_frame_origins", "instance_id", "language",
+            "multi_agent",
         }
         if unknown:
             raise ValueError("unknown Portal option")
         if not isinstance(self._portal_settings.get("enabled", True), bool):
             raise ValueError("Portal enabled must be a boolean")
+        from jiuwen_memory_entry.portal.multi_agent import build_multi_agent_portal
+
+        self._multi_agent = build_multi_agent_portal(
+            self._portal_settings.get("multi_agent"),
+        )
         instance_id = self._portal_settings.get("instance_id")
         if instance_id is not None:
             if base_url:
@@ -782,6 +788,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         options = dict(
             port=self._portal_settings.get("port", 0),
             allowed_frame_origins=self._portal_settings.get("allowed_frame_origins", ()),
+            multi_agent=self._multi_agent,
         )
         client = self._client
         location = getattr(client, "portal_location", None)

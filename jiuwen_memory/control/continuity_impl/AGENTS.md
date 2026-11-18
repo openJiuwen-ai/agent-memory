@@ -12,7 +12,7 @@
 | task_search.py | TaskRecord 标题/说明的可重建向量缓存与无 Embedder 时的 BM25；复用分词器，查询前从 Registry 扫描当前项目记录，返回候选不建立 binding |
 | projection.py | 关系→图投影端口：`RelationProjector.project(scope, relation, revision)`；`IndexBuilderRelationProjector` 是唯一把关系包装成 MemoryUnit 的适配器，service 不再伪造条目 |
 | derivation.py | 派生构建恢复核对（计划由 service 持久化）：输出标识、按 created / reused 逐项核对；写入前置能力（写后可读精确查询）以注入式回调承契约 |
-| service.py | 任务、事件、关系真源、视图委派与失败恢复；local 注册实现 |
+| service.py | 任务、事件、关系真源、视图委派与失败恢复；local 注册实现。`catalog_snapshot()` 直接导出同次装配的 `RelationCatalog` 快照，continuity 模式返回 `role_mode_required`，不重读 YAML |
 
 ## 行为铁律
 

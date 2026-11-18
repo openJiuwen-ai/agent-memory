@@ -78,6 +78,55 @@ curl -fsS "${portal_base_url}/portal/api/launch" \
 
 点击顶栏的「English」或「中文」即可切换界面语言，当前筛选和检索结果会保留。
 
+## 查看多 Agent 角色记忆
+
+宿主配置共享范围后，可在侧栏打开「多 Agent 角色记忆」。这个入口只提供读取操作，
+仍使用当前用户的身份和权限；个人记忆的新增、纠正和遗忘操作不适用于该视图。
+
+1. 在「共享搜索」输入关键词或选择来源平台，打开结果可查看记忆正文和来源。
+2. 在「任务接续」按目标查找开放任务，或按已知任务 ID 打开，查看本次返回的接续背景和来源。
+3. 在「职责视角」选择「当前共享空间」或已打开的任务，再选择职责进行检索。也可选择
+   2～3 个职责对照结果。共享空间由宿主绑定的 Scope 决定，可能包含不同项目的任务。
+
+页面的检索结果不代表完整历史。「当前共享空间」的名称是共享范围，不表示任务必然属于
+同一个项目。职责视角需要 Runtime 启用角色模式并提供职责目录；仅启用接续模式时仍可
+使用任务接续。
+
+### 配置入口
+
+SDK Provider 通过 `portal.multi_agent` 设置，例如：
+
+```python
+portal = {
+    "multi_agent": {
+        "scope": {"org": "demo", "space": "role-project"},
+        "project_name": "共享记忆空间",
+        "connectors": {"codex": "Codex", "work-swarm": "WorkSwarm"},
+    },
+}
+# 将 portal 传给已有的 AgentMemoryMemoryProvider 构造参数。
+```
+
+HTTP 服务在启动配置的 `http.multi_agent` 下使用相同字段：
+
+```yaml
+http:
+  multi_agent:
+    scope: {org: demo, space: role-project}
+    project_name: 共享记忆空间
+    connectors: {codex: Codex, work-swarm: WorkSwarm}
+```
+
+`scope` 的 `org` 和 `space` 必填：前者为组织，后者为租户逻辑隔离空间，并非业务项目 ID。
+`project_name` 是页面上的共享范围显示名称，不作为业务项目过滤条件。也可通过
+`user`、`agent`、`session` 收窄记忆记录范围；但当前内置接续视图要求这些维度为空，
+设置收窄维度后，Portal 会禁用任务背景和职责视角检索并显示原因；
+共享搜索、任务查找和任务标题仍可用。
+`connectors` 配置来源显示名称，不创建连接或授予权限；当前身份仍须具有相应空间、任务和记录
+读取权限。Portal 不配置 `mode`，运行模式从已装配的 Runtime 获取。未配置该入口或职责目录
+不可用时，请联系宿主检查配置与权限。修改职责或关系配置后需要重启对应 Runtime。
+更多范围和接口约束见 [Portal 接口规约](../../specs/S02-memory-api.md#多-agent-角色记忆只读视图)。
+
 ## 修改模型设置
 
 1. 打开「模型设置」。如果页面提供「配置实例」下拉框，先选中需要修改的实例。

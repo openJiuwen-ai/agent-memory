@@ -217,6 +217,18 @@ class ContinuityService(Continuity):
             self.derivation_dedup.health()
         return {"continuity_mode": self.mode}
 
+    def catalog_snapshot(self) -> dict:
+        if self.mode != "role":
+            return {
+                "available": False,
+                "reason": "role_mode_required",
+                "policy_version": None,
+                "default_duty": None,
+                "duties": [],
+                "relation_types": [],
+            }
+        return self.catalog.snapshot()
+
     def _require_role_mode(self) -> None:
         if self.mode != "role":
             raise UnsupportedCapabilityError(

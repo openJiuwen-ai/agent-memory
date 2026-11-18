@@ -37,6 +37,18 @@ class Continuity(ABC):
     def health(self) -> dict:
         ...
 
+    def catalog_snapshot(self) -> dict:
+        """Return the effective duty and relation catalog without reading configuration again."""
+        reason = "role_mode_required" if self.mode != "role" else "catalog_unavailable"
+        return {
+            "available": False,
+            "reason": reason,
+            "policy_version": None,
+            "default_duty": None,
+            "duties": [],
+            "relation_types": [],
+        }
+
     def close(self) -> None:
         """Release owned storage resources (graph store, registry KV and its single-writer lock).
 

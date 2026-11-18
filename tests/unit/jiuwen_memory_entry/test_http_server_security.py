@@ -1993,6 +1993,20 @@ def test_portal_add_uses_authenticated_scope_and_rejects_other_users_write_targe
     assert api.add.call_count == 1
 
 
+@pytest.mark.parametrize(
+    ("verb", "payload"),
+    [
+        ("list", {}),
+        ("delete", {}),
+        ("update", {"scope": {}, "unit_id": "one"}),
+    ],
+)
+def test_portal_rejects_missing_container_fields_as_validation_errors(verb, payload):
+    security = SimpleNamespace(auth=SimpleNamespace(actor=Scope(org="local", user="alice")))
+    with pytest.raises(ValidationError):
+        invoke_browser_api(Mock(), verb, payload, security=security)
+
+
 @pytest.mark.parametrize("operation", ["get", "update", "delete"])
 def test_portal_record_operations_recheck_binding_and_read_permission(operation):
     api = Mock()

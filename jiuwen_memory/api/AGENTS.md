@@ -36,6 +36,9 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 
 `runtime_configuration.py` 提供公开的 `sdk_continuity_runtime_identity` 配置检查辅助，
 只返回规范 Registry 路径与有效配置摘要；不构造 runtime、Store 或锁，不暴露 Config/SecretValue。
+`continuity_catalog.py` 提供 `read_continuity_catalog`：只调用当前 API 实例的可选检查能力，
+先执行可信上下文与项目 READ 判权，再返回 Runtime 已装配的职责/关系目录；不重读配置、
+不新增 MemoryAPI 抽象方法、普通 HTTP verb 或 MCP 工具。
 
 | 文件 | 职责 |
 |---|---|
@@ -44,6 +47,7 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 | `access_security.py` | 公开安全装配辅助。提供 dev Authenticator 与 `register_trusted_principal`，Trusted 初始化委派实际认证器。私有 `_build_security_runtime` 从同一装配上下文选择并检查 Runtime，公开 mapping helper 复用它。`fixed_personal_owner` 沿用 Runtime 选择规则并读取插件声明 |
 | `managed_configuration.py` | `ManagedConfiguration`：通过可信宿主授权回调访问配置管理，不向页面暴露内核或存储 |
 | `personal_memory.py` | 按认证身份判定个人范围和历史记录归属，复用 MemoryAPI 做单条读取和检索候选限制 |
+| `continuity_catalog.py` | 公开只读目录检查辅助；入口 `read_continuity_catalog(api, scope, *, security)`，返回 `{mode, role_catalog}`，无检查能力时明确返回 `catalog_unavailable` |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/supports_video_ingest/prepare_video_ingest/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` / `managed_assembly.py` | 公开装配及托管配置注入：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄，并在创建 SDK 时设置进程共用的日志输出；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |

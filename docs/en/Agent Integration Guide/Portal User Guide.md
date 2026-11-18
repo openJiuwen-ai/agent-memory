@@ -119,6 +119,63 @@ mount the iframe.
 Select **English** or **中文** in the top bar to switch the interface language. Current filters
 and search results stay in place.
 
+## View Multi-Agent Role Memory
+
+After the host configures a shared scope, open **Multi-Agent Role Memory** in the sidebar.
+This view is read-only and uses the current user's identity and permissions. Personal memory
+add, correction, and forget actions are not available here.
+
+1. In **Shared Search**, enter keywords or select a source platform. Open a result to see its
+   contents and source.
+2. In **Task Continuation**, find an open task by goal or open a known task ID to view the
+   returned continuation background and sources.
+3. In **Duty View**, select **Current shared space** or an open task, then choose a duty and
+   search. You can also compare 2–3 duties. The shared space is the scope bound by the host
+   and can contain tasks from different projects.
+
+Search results are not a complete history. A shared space does not imply that all its tasks belong
+to one project. Duty View requires role mode and a duty catalog in the Runtime. A Runtime in
+continuity mode can still provide task continuation.
+
+### Configure the entry
+
+For an SDK Provider, set `portal.multi_agent`, for example:
+
+```python
+portal = {
+    "multi_agent": {
+        "scope": {"org": "demo", "space": "role-project"},
+        "project_name": "Shared memory space",
+        "connectors": {"codex": "Codex", "work-swarm": "WorkSwarm"},
+    },
+}
+# Pass portal to the existing AgentMemoryMemoryProvider constructor.
+```
+
+For the HTTP service, use the same fields under `http.multi_agent` in the startup configuration:
+
+```yaml
+http:
+  multi_agent:
+    scope: {org: demo, space: role-project}
+    project_name: Shared memory space
+    connectors: {codex: Codex, work-swarm: WorkSwarm}
+```
+
+`scope` requires `org` (organization) and `space` (the tenant's logical isolation space, not a
+business project ID). `project_name` is a display label for the shared scope; it does not filter
+by business project. `user`, `agent`, and `session` can further restrict memory records; however,
+the built-in continuity view currently requires these dimensions to be empty. Setting them can
+make the Portal disable task background and duty searches and show the reason. Shared search,
+task lookup, and task details remain available.
+`connectors` provides source display names; it does not create connections or grant
+permissions. The current identity still needs permission to read the relevant space, tasks, and
+records. Do not set `mode` in the Portal configuration: the assembled Runtime supplies its mode.
+If the entry is unconfigured or the duty catalog is unavailable, have the host check its
+configuration and permissions. Restart the Runtime after changing duty or relation configuration.
+See the [Portal API specification](../../specs/S02-memory-api.md#多-agent-角色记忆只读视图)
+for the scope and interface constraints.
+
 ## Change model settings
 
 1. Open **Model Settings**. If you see a **Configuration Instance** dropdown, select the
