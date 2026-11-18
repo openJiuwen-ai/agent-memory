@@ -1586,3 +1586,107 @@ def test_persist_graph_skips_only_bad_edge() -> None:
     )
 
     assert graph.edges == [("e-good", "e-other")]
+
+
+class TestDedupBatchPromptBudget:
+    """批量判重必须按预算分批，避免单次 prompt 顶爆服务端上下文窗口。
+
+    背景：把所有候选拼成单个 prompt 时，长对话场景实测 30 条候选 = 14997 token，
+    超过 llama-server 单槽位容量 12288 后服务端直接 400，整批判定退化成逐条单判。
+    """
+
+    @staticmethod
+    def _long_unit(uid: str, chars: int) -> MemoryUnit:
+        return _make_unit(uid, "长" * chars)
+
+    @staticmethod
+    def test_batches_respect_total_char_budget():
+        from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+            _DEDUP_BATCH_TOTAL_CHARS,
+            _DEDUP_BATCH_UNIT_CHARS,
+        )
+
+        stores = _create_stores()
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], _HashEmbedder(), _MockLLM(responses=[])
+        )
+        # 每条候选 3000 字符 + 3 条各 3000 字符命中 ≈ 12000 字符成本
+        items = []
+        for i in range(10):
+            cand = TestDedupBatchPromptBudget._long_unit(f"c{i}", 3000)
+            hits = [
+                (TestDedupBatchPromptBudget._long_unit(f"e{i}_{j}", 3000), 0.8)
+                for j in range(3)
+            ]
+            items.append((cand, hits))
+
+        batches = private(evolver, "_split_dedup_batches")(items)
+
+        assert sum(len(b) for b in batches) == len(items), "分批不得丢候选"
+        assert len(batches) > 1, "长内容应被切成多批，而不是全部塞进一次调用"
+        for batch in batches:
+            cost = 0
+            for cand, hits in batch:
+                cost += min(len(cand.content), _DEDUP_BATCH_UNIT_CHARS)
+                for unit, _ in hits[:3]:
+                    cost += min(len(unit.content), _DEDUP_BATCH_UNIT_CHARS)
+            # 单批成本允许超过预算一次（一条就超预算时必须能单独成批），
+            # 但不允许把多条超预算的内容堆在一起。
+            if len(batch) > 1:
+                assert cost <= _DEDUP_BATCH_TOTAL_CHARS, (
+                    f"多候选批次的字符成本 {cost} 超出预算 {_DEDUP_BATCH_TOTAL_CHARS}"
+                )
+
+    @staticmethod
+    def test_batches_respect_max_items():
+        from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+            _DEDUP_BATCH_MAX_ITEMS,
+        )
+
+        stores = _create_stores()
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], _HashEmbedder(), _MockLLM(responses=[])
+        )
+        items = [
+            (TestDedupBatchPromptBudget._long_unit(f"c{i}", 10), []) for i in range(50)
+        ]
+
+        batches = private(evolver, "_split_dedup_batches")(items)
+
+        assert sum(len(b) for b in batches) == 50, "分批不得丢候选"
+        for batch in batches:
+            assert len(batch) <= _DEDUP_BATCH_MAX_ITEMS, "单批条数不得超上限"
+
+    @staticmethod
+    def test_every_candidate_still_gets_a_decision():
+        """分批后所有候选都必须拿到裁决——分批不能变成"只判第一批"。"""
+        stores = _create_stores()
+        # 每批返回它收到的候选的 add 决定
+        llm = _MockLLM(responses=[])
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], _HashEmbedder(), llm
+        )
+        items = [
+            (TestDedupBatchPromptBudget._long_unit(f"c{i}", 3000),
+             [(TestDedupBatchPromptBudget._long_unit(f"e{i}", 3000), 0.8)])
+            for i in range(6)
+        ]
+        # 拦截 LLM：按 prompt 里出现的候选 id 返回对应决定
+        seen: list[str] = []
+
+        def fake_chat(messages, **_kwargs):
+            import re as _re
+
+            body = messages[-1].content
+            ids = _re.findall(r"\[(c\d+)\]", body)
+            seen.extend(ids)
+            return json.dumps([{"candidate_id": i, "decision": "add"} for i in ids])
+
+        setattr(llm, "chat", fake_chat)
+
+        decisions = private(evolver, "_llm_dedup_decide_batch")(items)
+
+        assert set(decisions) == {f"c{i}" for i in range(6)}, (
+            f"所有候选都应有裁决，实际 {sorted(decisions)}"
+        )
+        assert set(seen) == {f"c{i}" for i in range(6)}, "所有候选都应被送进某一批"
