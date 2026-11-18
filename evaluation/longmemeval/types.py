@@ -95,6 +95,10 @@ class RunResult:
     metrics: list[MetricResult] = field(default_factory=list)
     per_case: list[CaseOutcome] = field(default_factory=list)
     config_summary: dict[str, str] = field(default_factory=dict)
+    # 应跑的题目总数（含被跳过的）。与 n_queries 的差就是丢失的题。
+    n_expected: int = 0
+    # 被跳过的 scope：查询 id + 失败原因。空表示全部成功。
+    failed_scopes: list[dict[str, object]] = field(default_factory=list)
 
 
 class Dataset(ABC):

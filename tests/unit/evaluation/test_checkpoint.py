@@ -369,8 +369,6 @@ def test_load_rejects_payload_without_query_ids_field(tmp_path: Path) -> None:
 
 def _make_harness(tmp_path: Path, fingerprint: str = "fp"):
     """构造一个不装配真实内核的 harness 骨架，只测 evaluate() 的调度逻辑。"""
-    from unittest.mock import MagicMock, patch
-
     from evaluation.longmemeval.harness import EvalHarness
 
     harness = object.__new__(EvalHarness)
@@ -440,14 +438,18 @@ def test_concurrent_evaluate_reuses_checkpoint(tmp_path: Path) -> None:
     assert len(outcomes) == 4, "应返回全部 4 题（2 断点 + 2 新跑）"
 
 
-def test_concurrent_crash_then_resume_does_not_redo_finished(tmp_path: Path) -> None:
-    """端到端场景：并发跑到一半崩溃，重启后只跑未完成的题。
+def test_concurrent_interrupt_then_resume_does_not_redo_finished(tmp_path: Path) -> None:
+    """进程级中断后重启，已落盘的题不重做。
 
-    这是线上真实故障的复现（45 题跑 8 小时，崩溃后断点 0 个、全部重做）。
-    之前从未构造过这个场景，导致并发分支缺断点被漏掉。
+    与「scope 失败被跳过」的区别：scope 失败会被 _evaluate_scope_or_fail 吞掉、
+    走 continue（不落盘、不中断）；进程中断（SIGINT/SIGKILL）会穿透整个 evaluate()。
+    这里用 KeyboardInterrupt 模拟后者——它不被 except Exception 捕获。
+
+    中断瞬间正在执行的题没有断点，续跑时重跑是正确行为。
     """
     from unittest.mock import MagicMock, patch
 
+    from evaluation.longmemeval.checkpoint import load_checkpoint
     from evaluation.longmemeval.harness import EvalHarness
 
     dataset = MagicMock()
@@ -456,25 +458,29 @@ def test_concurrent_crash_then_resume_does_not_redo_finished(tmp_path: Path) -> 
         MagicMock(query_id=f"q{i}", scope=(f"scope{i}",)) for i in range(6)
     ]
 
-    # ---- 第一次运行：跑到第 3 个 scope 时崩溃 ----
     harness1 = _make_harness(tmp_path)
-    executed_1: list[str] = []
+    completed: list[str] = []
 
-    def crash_on_q2(seeds, indexed_cases):
+    def scope_then_interrupt(seeds, indexed_cases):
         qid = indexed_cases[0][1].query_id
-        executed_1.append(qid)
-        if qid == "q2":
-            raise RuntimeError("simulated crash")
+        if len(completed) >= 3:
+            raise KeyboardInterrupt("simulated SIGINT")
+        completed.append(qid)
         return [(index, _outcome(qid)) for index, _ in indexed_cases]
 
-    with patch.object(EvalHarness, "_evaluate_scope", side_effect=crash_on_q2):
-        harness1.evaluate(dataset, concurrency=2)
+    with patch.object(EvalHarness, "_evaluate_scope", side_effect=scope_then_interrupt):
+        try:
+            harness1.evaluate(dataset, concurrency=2)
+        except KeyboardInterrupt:
+            pass
 
-    # 崩溃前完成的题必须已落盘
-    saved = {p.name for p in tmp_path.glob("ckpt_*.json")}
-    assert len(saved) >= 2, f"崩溃前应已落盘部分题目，实际 {saved}"
+    # 中断前完成的题必须已落盘且可读回
+    persisted = {
+        f"q{i}" for i in range(6) if load_checkpoint(tmp_path, "fp", [f"q{i}"]) is not None
+    }
+    assert len(persisted) >= 2, f"中断前应已落盘部分题目，实际 {persisted}"
 
-    # ---- 第二次运行：续跑，已完成的题不得重做 ----
+    # 续跑
     harness2 = _make_harness(tmp_path)
     executed_2: list[str] = []
 
@@ -487,5 +493,138 @@ def test_concurrent_crash_then_resume_does_not_redo_finished(tmp_path: Path) -> 
         outcomes = harness2.evaluate(dataset, concurrency=2)
 
     assert len(outcomes) == 6, f"最终应有全部 6 题，实际 {len(outcomes)}"
-    overlap = set(executed_1) & set(executed_2) - {"q2"}
-    assert not overlap, f"已完成的题不应重做，重复执行了 {overlap}"
+    redone = persisted & set(executed_2)
+    assert not redone, f"已落盘的题不应重做，重复执行了 {redone}"
+
+
+
+def test_scope_failure_does_not_write_checkpoint(tmp_path: Path) -> None:
+    """scope 失败不写断点 —— 否则下次会被误判为「已完成」。
+
+    这是与上一条互补的语义：中断保已完成，失败不落盘（留给下次重试）。
+    """
+    from unittest.mock import MagicMock, patch
+
+    from evaluation.longmemeval.harness import EvalHarness
+
+    harness = _make_harness(tmp_path)
+    dataset = MagicMock()
+    dataset.seeds.return_value = []
+    dataset.queries.return_value = [
+        MagicMock(query_id=f"q{i}", scope=(f"scope{i}",)) for i in range(3)
+    ]
+
+    def fail_q1(seeds, indexed_cases):
+        qid = indexed_cases[0][1].query_id
+        if qid == "q1":
+            raise RuntimeError("scope failed")
+        return [(index, _outcome(qid)) for index, _ in indexed_cases]
+
+    with patch.object(EvalHarness, "_evaluate_scope", side_effect=fail_q1):
+        outcomes = harness.evaluate(dataset, concurrency=1)
+
+    assert len(outcomes) == 2, "失败的 scope 不应产出结果"
+    saved = len(list(tmp_path.glob("ckpt_*.json")))
+    assert saved == 2, f"失败题不应写断点，实际写了 {saved} 个"
+    assert len(harness._failed_scopes) == 1, "失败必须被记录"
+
+
+
+# ------------------------- 变异漏检点：串行路径与文件命名必须各自被锁住
+
+
+def test_serial_evaluate_writes_checkpoint(tmp_path: Path) -> None:
+    """串行路径也必须落盘（此前测试只在 concurrency=2 下跑，漏检）。"""
+    from unittest.mock import MagicMock, patch
+
+    from evaluation.longmemeval.harness import EvalHarness
+
+    harness = _make_harness(tmp_path)
+
+    def fake_scope(seeds, indexed_cases):
+        return [
+            (index, _outcome(case.query_id)) for index, case in indexed_cases
+        ]
+
+    dataset = MagicMock()
+    dataset.seeds.return_value = []
+    dataset.queries.return_value = [
+        MagicMock(query_id=f"q{i}", scope=(f"scope{i}",)) for i in range(3)
+    ]
+
+    with patch.object(EvalHarness, "_evaluate_scope", side_effect=fake_scope):
+        harness.evaluate(dataset, concurrency=1)
+
+    saved = list(tmp_path.glob("ckpt_*.json"))
+    assert len(saved) == 3, f"串行应落盘 3 个断点，实际 {len(saved)}"
+
+
+def test_checkpoint_file_is_per_query_id(tmp_path: Path) -> None:
+    """断点文件按单个 query_id 命名。
+
+    若改回「按题目集合哈希」，存 {q0,q1} 后请求 {q0,q1,q2,q3} 会落到不同文件，
+    续跑永远命不中（历史缺陷）。
+    """
+    from evaluation.longmemeval.checkpoint import _path_for
+
+    p0 = _path_for(tmp_path, "q0")
+    p1 = _path_for(tmp_path, "q1")
+    assert p0 != p1, "不同题目必须对应不同断点文件"
+
+
+def test_partial_checkpoint_hit_reruns_whole_scope(tmp_path: Path) -> None:
+    """单 scope 多 query、只有部分命中时，整 scope 重跑（当前语义）。
+
+    这条锁住「逐题文件、按 scope 批量读」的半粒度行为，避免后续误改。
+    """
+    from evaluation.longmemeval.checkpoint import load_checkpoint, save_checkpoint
+
+    # 只存 q0，请求 q0+q1
+    save_checkpoint(tmp_path, "fp", [_outcome("q0")])
+    assert load_checkpoint(tmp_path, "fp", ["q0"]) is not None, "单题应命中"
+    assert load_checkpoint(tmp_path, "fp", ["q0", "q1"]) is None, "缺一题应整批未命中"
+
+
+# ------------------------- 跳过题必须在报告中显式可见（防「假成功」）
+
+
+def test_report_exposes_skipped_queries() -> None:
+    """被跳过的题必须在报告里显式标出，不能让 n_queries 冒充全部成功。"""
+    from evaluation.longmemeval.report import to_json, to_markdown
+    from evaluation.longmemeval.types import RunResult
+
+    run = RunResult(
+        dataset="longmemeval",
+        n_queries=2,
+        per_case=[_outcome("q0"), _outcome("q1")],
+        n_expected=5,
+        failed_scopes=[
+            {"query_ids": ["q2", "q3"], "error_type": "LLMTimeoutError", "error": "300s"},
+            {"query_ids": ["q4"], "error_type": "LLMTimeoutError", "error": "300s"},
+        ],
+    )
+
+    payload = to_json(run)
+    assert payload["n_expected"] == 5
+    assert payload["complete"] is False, "缺题时 complete 必须为 False"
+    assert set(payload["skipped_queries"]) == {"q2", "q3", "q4"}
+
+    md = to_markdown(run)
+    assert "5" in md and "2" in md, "Markdown 必须同时显示应跑与实跑"
+    assert "q2" in md, "Markdown 必须列出被跳过的题"
+
+
+def test_report_marks_complete_when_nothing_skipped() -> None:
+    """全部成功时 complete=True，不产生噪声。"""
+    from evaluation.longmemeval.report import to_json
+    from evaluation.longmemeval.types import RunResult
+
+    run = RunResult(
+        dataset="longmemeval",
+        n_queries=2,
+        per_case=[_outcome("q0"), _outcome("q1")],
+        n_expected=2,
+    )
+    payload = to_json(run)
+    assert payload["complete"] is True
+    assert payload["skipped_queries"] == []
