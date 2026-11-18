@@ -163,6 +163,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", default=None, help="机器可读结果路径")
     parser.add_argument("--artifact-dir", default=None, help="单题无损审计产物目录")
     parser.add_argument(
+        "--resume-from",
+        default=None,
+        help="断点目录：已完成的题目自动跳过，用于长任务续跑",
+    )
+    parser.add_argument(
         "--judge-model",
         default=os.getenv("JUDGE_MODEL") or os.getenv("MODEL_NAME"),
     )
