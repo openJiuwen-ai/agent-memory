@@ -201,6 +201,7 @@ vector_store:
 | [Feature Design](docs/features/) | Design decisions per module (storage / construction / retrieval / control / common) |
 | [Technical Specs](docs/specs/) | Module design specifications |
 | [Developer Guides](docs/en/) | Agent integration guides, API docs, FAQ, installation guides |
+| [Portal User Guide](<docs/en/Agent Integration Guide/Portal User Guide.md>) | Open the Portal, manage memories, and change model settings after integration |
 
 
 ## Contributing
