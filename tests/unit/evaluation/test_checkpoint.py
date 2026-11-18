@@ -360,3 +360,132 @@ def test_load_rejects_payload_without_query_ids_field(tmp_path: Path) -> None:
 
 
 
+
+
+# ------------------------------------------------ 并发场景（用户真实用法）
+# 用户场景：45 题跑 8 小时，必须支持「并发 + 断点」。
+# 以下测试从 Harness 的角度验证：并发执行时断点是否生效。
+
+
+def _make_harness(tmp_path: Path, fingerprint: str = "fp"):
+    """构造一个不装配真实内核的 harness 骨架，只测 evaluate() 的调度逻辑。"""
+    from unittest.mock import MagicMock, patch
+
+    from evaluation.longmemeval.harness import EvalHarness
+
+    harness = object.__new__(EvalHarness)
+    harness._checkpoint_dir = tmp_path
+    harness._checkpoint_fingerprint = fingerprint
+    harness._artifact_dir = None
+    harness._enable_timing = True
+    harness._failed_scopes = []
+    harness._scope_key = lambda scope: tuple(scope)
+    return harness
+
+
+def test_concurrent_evaluate_writes_checkpoint(tmp_path: Path) -> None:
+    """并发执行必须落盘断点 —— 否则中途崩溃会丢失所有已完成工作。"""
+    from unittest.mock import MagicMock, patch
+
+    from evaluation.longmemeval.harness import EvalHarness
+
+    harness = _make_harness(tmp_path)
+    calls: list[str] = []
+
+    def fake_scope(seeds, indexed_cases):
+        qid = indexed_cases[0][1].query_id
+        calls.append(qid)
+        return [(index, _outcome(qid)) for index, _ in indexed_cases]
+
+    dataset = MagicMock()
+    dataset.seeds.return_value = []
+    dataset.queries.return_value = [
+        MagicMock(query_id=f"q{i}", scope=(f"scope{i}",)) for i in range(4)
+    ]
+
+    with patch.object(EvalHarness, "_evaluate_scope", side_effect=fake_scope):
+        harness.evaluate(dataset, concurrency=2)
+
+    saved = list(tmp_path.glob("ckpt_*.json"))
+    assert saved, "并发执行后必须有断点文件，否则崩溃即全丢"
+
+
+def test_concurrent_evaluate_reuses_checkpoint(tmp_path: Path) -> None:
+    """并发续跑必须跳过已完成的题 —— 否则前一次跑的工作全部重做。"""
+    from unittest.mock import MagicMock, patch
+
+    from evaluation.longmemeval.harness import EvalHarness
+
+    # 预先写好 q0/q1 的断点
+    save_checkpoint(tmp_path, "fp", [_outcome("q0"), _outcome("q1")])
+
+    harness = _make_harness(tmp_path)
+    executed: list[str] = []
+
+    def fake_scope(seeds, indexed_cases):
+        qid = indexed_cases[0][1].query_id
+        executed.append(qid)
+        return [(index, _outcome(qid)) for index, _ in indexed_cases]
+
+    dataset = MagicMock()
+    dataset.seeds.return_value = []
+    dataset.queries.return_value = [
+        MagicMock(query_id=f"q{i}", scope=(f"scope{i}",)) for i in range(4)
+    ]
+
+    with patch.object(EvalHarness, "_evaluate_scope", side_effect=fake_scope):
+        outcomes = harness.evaluate(dataset, concurrency=2)
+
+    assert set(executed) == {"q2", "q3"}, f"应只执行未完成的题，实际执行了 {executed}"
+    assert len(outcomes) == 4, "应返回全部 4 题（2 断点 + 2 新跑）"
+
+
+def test_concurrent_crash_then_resume_does_not_redo_finished(tmp_path: Path) -> None:
+    """端到端场景：并发跑到一半崩溃，重启后只跑未完成的题。
+
+    这是线上真实故障的复现（45 题跑 8 小时，崩溃后断点 0 个、全部重做）。
+    之前从未构造过这个场景，导致并发分支缺断点被漏掉。
+    """
+    from unittest.mock import MagicMock, patch
+
+    from evaluation.longmemeval.harness import EvalHarness
+
+    dataset = MagicMock()
+    dataset.seeds.return_value = []
+    dataset.queries.return_value = [
+        MagicMock(query_id=f"q{i}", scope=(f"scope{i}",)) for i in range(6)
+    ]
+
+    # ---- 第一次运行：跑到第 3 个 scope 时崩溃 ----
+    harness1 = _make_harness(tmp_path)
+    executed_1: list[str] = []
+
+    def crash_on_q2(seeds, indexed_cases):
+        qid = indexed_cases[0][1].query_id
+        executed_1.append(qid)
+        if qid == "q2":
+            raise RuntimeError("simulated crash")
+        return [(index, _outcome(qid)) for index, _ in indexed_cases]
+
+    with patch.object(EvalHarness, "_evaluate_scope", side_effect=crash_on_q2):
+        harness1.evaluate(dataset, concurrency=2)
+
+    # 崩溃前完成的题必须已落盘
+    saved = {p.name for p in tmp_path.glob("ckpt_*.json")}
+    assert len(saved) >= 2, f"崩溃前应已落盘部分题目，实际 {saved}"
+
+    # ---- 第二次运行：续跑，已完成的题不得重做 ----
+    harness2 = _make_harness(tmp_path)
+    executed_2: list[str] = []
+
+    def normal(seeds, indexed_cases):
+        qid = indexed_cases[0][1].query_id
+        executed_2.append(qid)
+        return [(index, _outcome(qid)) for index, _ in indexed_cases]
+
+    with patch.object(EvalHarness, "_evaluate_scope", side_effect=normal):
+        outcomes = harness2.evaluate(dataset, concurrency=2)
+
+    assert len(outcomes) == 6, f"最终应有全部 6 题，实际 {len(outcomes)}"
+    overlap = set(executed_1) & set(executed_2) - {"q2"}
+    assert not overlap, f"已完成的题不应重做，重复执行了 {overlap}"
