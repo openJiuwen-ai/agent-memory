@@ -32,7 +32,7 @@
 | `type_def/audit.py` | AuditEvent：记录 actor scope、target scope、action、decision、target_id 与 detail |
 | `factory/factory.py` | Factory 基类：`TOP_NAME` 注册 + 三接口 `build`/`build_named`/`dep`；注册表属 Producer，InstanceCache 属 AssemblyContext；builder 内继承缓存上下文，根注入/查询显式传 ctx（配置数据结构在 `config/context.py`） |
 | `loop_runner.py` | 实例持有的后台事件循环线程；惰性启动，`close` 停止循环并回收异步生成器、默认线程池和线程，关闭后不可重启 |
-| `embedder/` | Embedder 插件目录（接口 + 实现） |
+| `embedder/` | Embedder 插件目录（接口 + 实现）；查询经 embed_query 保留模型专用指令，文档经 embed |
 | `chunker/` | Chunker 插件目录 |
 | `tokenizer/` | Tokenizer 插件目录 |
 | `normalizer/` | Normalizer 插件目录（passthrough / routing / video）；passthrough 只接已是 UTF-8 文本的 TEXT/CODE，DOCUMENT 需专用解析器；`ensure_normalizer_supports` 是共用模态能力门禁；`structured_modalities()` 声明哪些模态的规约结果是结构化中间产物（video 声明 VIDEO，routing 按分派汇总，其余缺省空集），接入层据此跳过预切分；视频 ASR 支持 OpenAI transcription 与 DashScope filetrans；内置视频文件读取统一经过 LocalMediaImports 准入及私有副本 |
@@ -240,3 +240,23 @@ DeferredEmbedder 在首次调用时解析并共享实际插件，失败不缓存
 common.time_utils.as_utc，naive 按 UTC 解释，不改变原输入对象。
 `is_retrieval_candidate(unit, query, *, filters)` 接受 ParsedQuery，在三条存储路径
 共用 lifecycle、valid/event-time、结构字段及用户过滤的真源复核。
+
+### 关系投影版本
+
+`graph_memory.py` 定义可选 GraphMem 关系类型与端点指纹纯函数；不依赖构建/检索/存储。
+指纹绑定候选正文、结构、Scope、有效期与原文引用，不读取继承的 TreeFact 文本，
+不包含可在索引阶段回填的 system_metadata。算法和权限复核不由指纹替代。
+
+`graphmem_structure.py` 定义可选递归结构版本、物理高度和父子角色检查；调用方仍须验证
+Scope、双向链接、生命周期和区间。结构元信息进入 graph_memory 的关联真源指纹。
+该模块的 encode_child_details/read_child_details 将已有逐子摘要映射为正文字符区间，
+绑定摘要正文、完整 Scope 和有序子引用。映射不复制正文、不表示事件时间；旧节点、
+失效绑定或非法区间返回不可用，不能替代检索侧的索引、可见性和父子链校验。
+
+`graphmem_semantics.py` 是有界实体/事件/时间区间的纯数据与校验模块。真源和索引属性复用同一解码器。存储标注包含
+来源序号和版本；相对日期只接受来源时钟，继承特征不重新定时。graphmem_semantics
+进入关系真源指纹；模型视图的短事件编号仅在当前输入节点内有效，不作为全局身份。
+常见 ago/earlier/later 日、周偏移以来源日期复核；调用方改变时间校验策略时必须同步
+更新摘要复用版本，不能从缺少来源时钟的相对表达式接受绝对日期。
+
+`bm25.py` 共享内存倒排检索和 BM25 融合器的单词评分公式。`ContentMatch` 描述按正文哈希绑定的 L2 分片位置。

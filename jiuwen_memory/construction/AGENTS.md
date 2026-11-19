@@ -31,7 +31,7 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `extractor_impl/` | Extractor 实现目录（keyword / llm / agent_llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；entity_schema 为 Property 产出稳定实体分组 key、Source 时间上下文与事件精度/区间；video_memory 将视频规约结果转换为 CLM/ELM；`agent_llm` 是 `llm` 的 agent 方向版——继承管线与输出契约，prompt 指令面 user↔agent 场景重定向 + `extractor_language` cn/en 切换（输出契约恒英文），并抽取时同步判定 `memory_class` 三类（`user_profile`/`long_term_memory`/`daily_memory`，基类 `build_candidates` 纯透传、子类 `extract` 收口值域，非法/缺失兜底 `long_term_memory`；该键是文档模式 md 落盘分流键）；                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `associator_impl/` | Associator 实现目录（keyword / llm）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `associator_impl/` | Associator 实现目录（keyword / llm / graphmem）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `classifier_impl/` | Classifier 实现目录（keyword / llm）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `index_builder_impl/` | IndexBuilder 实现目录（forward / fulltext / hybrid / unified / vector / entity + 共享 `_index_ops.py`）。**IndexBuilder 是记忆写入的唯一入口**：`hybrid`（默认 target）纯编排，组合 forward / fulltext / vector / entity 四个子 builder；`unified` 全部写委托 DomainStore 领域接口（`add`/`update`/`delete`，`mode` 原样透传，不触碰任何底层端口），构建侧完成两件事——(a) `vector_enabled` 时按 VectorIndexBuilder 同管线（Chunker 切片 → 共享 Embedder 逐 chunk embed，经 `_index_ops.vectorize_unit` 与 vector builder 共用实现）回填 `MemoryUnit.vectors`（`list[ChunkVector]`）随本体下传（一体化数据面实现消费该字段自建 chunk 级向量索引，CompositeDomainStore 仅随本体落盘）；(b) 把 `index_metadata` 的过滤投影字段（`content_layer`/`t_valid`/`t_event`/`t_invalid` 哨兵与 epoch 毫秒）直接补进 `unit.system_metadata`，一体化后端从 `system_metadata`/`user_metadata` 直接读取建索引、无需 `index_metadata` 投影下传；`forward` 只交付记忆本体（正排 KV），`fulltext`/`vector`/`entity` 只建各自的检索索引，**不交付记忆本体**，作为独立 target 使用时写路径无人写本体。`_index_ops.py` 承载 fulltext / vector 共享的投影与流水线（metadata 投影、scope 分组、端口解析、全文文档构造、向量切片-embed-写库、L0/L1 分层建删），unified 复用其 scope 分组与 `vectorize_unit` 切片-embed 单元管线。写接口用 `IndexWriteMode`（`ALL`/`FORWARD_ONLY`/`RETRIEVAL_ONLY`）表达写入范围，`remove` 用 `IndexRemoveMode`（`SOFT`/`HARD`）表达删除语义：`SOFT` 只移出检索索引、本体保留且 get/list 可读；`HARD` 物理删除。vector/fulltext 各扩展 L0/L1 分层索引（独立 store 分表，store None 跳过），详见 F01-memory-layer |
 | `layer_annotator_impl/` | LayerAnnotator 实现目录（keyword / llm）；evolver 抽取后调用，对超阈 content 标注 L0/L1 |
@@ -276,7 +276,6 @@ Evolver.evolve(units, mode):
 事实并生成父摘要/L0/L1，`profile_config` 严格解析配置。纯流水线不读取或写入存储。
 时间比较经 common/time_utils 统一，复制叶后仅变更 hierarchy，事实不从摘要反推。
 
-
 `hierarchy_composer_impl/default_composer.py` 注册 default Composer；所有本体、
 父边、归档和索引维护经 IndexBuilder。候选完整性由调用方取数后和 Composer
 写入前分别验证；索引失败与本体失败必须保留可观察的部分结果。
@@ -310,3 +309,45 @@ Evolver.evolve(units, mode):
 
 自定义 yml `prompts.extract` 兼容提醒：observation_date 已从批级单条头部改为逐来源前缀。
 模板应使用对应来源旁的日期，不应将第一条日期应用于整批；来源 ID 与日期配对保持。
+
+### GraphMem 关系增量
+
+`associator_impl/graphmem_topdown.py` 注册可选 graphmem_topdown。规划只消费一个完整
+Scope 的有界窗口，复用现有特征与向量。`graphmem_features.py` 按 Scope、已知 ID 和文本
+哈希校验已有索引。关联缓存区分端点版本与特征输入版本。多种关系存为同一条边的属性。
+`index_builder_impl/graph_relation_index_builder.py` 在边更新成功后发布版本及覆盖窗口。
+建树后刷新失败保留 incomplete 和 repair_required，已写入的树可供重试。
+关系维护经现有调度按 Scope 串行执行。
+
+### 可选递归会话树
+
+`hierarchy_composer_impl/recursive_composer.py` 注册 graphmem_recursive，通过同一显式
+HIERARCHY 请求递归生成 time_span 节点；角色不表示物理层数。递归每组同时受子数和
+输入/输出 Token 约束，未变分组复用 ID/摘要。它不使用固定相邻层的后台 profile。
+原文仅存于 Snapshot，父只存直接子引用；上文的完整 TreeFact 继承只适用于旧 Composer。
+可选 fact_first_records 在同一次结构化原文摘要中区分参与者事实与讨论内容，仍写入
+既有摘要/直接来源接口；不能复制原文、追加抽取模型或绕过每层输入输出预算。
+空记录描述仍须覆盖来源编号；校验后的单次修复不得虚构事实或静默丢弃该来源。
+
+`hierarchy_composer_impl/semantic_summary.py` 为可选递归摘要联合提取并校验实体、场景
+与事件时间；上层继承有界特征集合，不能重新解析下层时间。不合法的可选标注须计入
+诊断，正文覆盖/预算仍严格校验。`associator_impl/graphmem_topdown.py` 注册独立目标，
+按已验证的根/子链接细化关系，统计实际配对与向量比较次数，不把共同说话人当作
+稠密连边理由；稀有实体可提供有界下层补充。总边数不得超过关联维护协议上限。
+递归比较候选与持久化关系须分开；较宽的候选阈值不等于关系证据，且不能挤掉已获
+实体/时间/场景支持的配对。路由数与实际存边数分别报告并受预算限制。
+可选 `balance_attributes` 在根/子配对和全局边选择中优先补足不同关系属性，
+然后按原强度顺序填充；不能把未获证据的候选变成边，也不能突破度数或边数上限。
+默认关闭以保持已有关系与策略指纹；显式开启会使关联缓存失效并重新发布关系。
+`graphmem_topdown` 的 vector_view 只接受 scene/detail：默认优先读取已有 L1 场景
+向量，detail 优先读取已有 L2 详细摘要分片并归一化汇总。所选投影无效时只能回退
+到通过相同 Scope/正文哈希校验的现有索引，不能现场生成向量。选择进入关系策略
+指纹，切换后旧关系缓存必须失效；记忆正文、摘要和原文索引不因选择而改写。
+详细视图的分片元数据按同一精确 Scope 批量点读。分片键缺失时沿用逐节点读取，
+对每个向量仍执行归属和内容指纹复核。
+
+可选孤立摘要补边按普通边和活跃摘要的数量判定是否启用，只使用关联过程已比较的
+向量对。边预算与增量指纹由同一关联维护流程处理，普通边和摘要正文不因此重写。
+
+
+L2 向量索引在分片为原文精确切片时记录半开字符区间，位置与该次建索引的正文哈希配对。

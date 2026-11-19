@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F07-schema-temporal-entity.md` |
 
 ## 范围 / 边界
@@ -372,3 +372,31 @@ normalizer:
 `temp_root` 仅控制处理临时目录，不是源文件白名单。旧视频部署须先创建导入目录并新增
 绑定；API 参数与正常视频处理流程保持原样。配置不能由业务 metadata 或请求体覆盖。
 该准入能力不依赖隐私分级模块或其开关。
+
+## GraphMem 可选装配
+
+[会话索引](../features/construction/F10-graphmem-recursive-relations.md) 和
+[关系检索](../features/retrieval/F09-graphmem-relational-evidence.md) 复用既有插件装配。
+[示例 overlay](../../examples/graphmem_fact_records_overlay.yaml) 启用一套完整配置，
+使用部署已绑定的 LLM、Embedder、IndexBuilder 和本地 tokenizer 文件。
+
+- `hierarchy_composer.target=graphmem_recursive` 配置递归分组、提示词和摘要视图预算。
+  通过显式 HIERARCHY 请求构建或追加完整子树。
+- `associator.target=graphmem_topdown` 配置关系候选上限，并可复用已有索引向量。
+  `evolver.params.associate_after_hierarchy` 可在建树后刷新有界窗口。
+- `query_parser.target=graphmem_query` 可调用一次现有模型分析查询需求。
+  `retriever.params.graph_navigation.strategy=relational` 选择有界关系导航，
+  并要求 `evidence_packing`。问题分析和回答模型的实际用量由调用方统计。
+- `globals.graph_enabled=false` 或领域数据面的显式覆盖关闭通用图召回。
+  专用关系导航仍通过当前 DomainStore 访问图端口。
+- `globals.memory_fulltext_scoring` 接受 overlap 或 bm25，默认 overlap。
+  具名全文存储配置优先。示例为内存全文后端选择 bm25。
+- 动态领域数据面将可选候选计数、关系边读取及访问上下文转发给当前具名实例。
+  动态全文存储转发过滤条件和后代范围选择。能力缺失时由活动实例明确报告。
+
+原文和摘要比例限制以调用方可见且已索引的对象数为基数。
+原文上限取 `source_candidate_limit` 和规模乘 `source_candidate_ratio` 的较小值，
+摘要同理。非空索引允许最少一个离散候选，空索引额度为零。设置比例为零
+关闭该比例限制。所有探测共享相应的请求级额度，纯摘要查询跳过原文计数。
+`initial_summary_fraction` 在摘要额度内分配初选和导航额度。
+示例原文上限为 10% 和 128 条，摘要上限为 25% 和 32 条，初选上限为 8 条。

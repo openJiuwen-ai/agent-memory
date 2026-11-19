@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 
@@ -280,6 +281,16 @@ def vectorize_unit(
     return list(zip(chunks, vectors))
 
 
+def chunk_location_metadata(unit: MemoryUnit, chunk: Chunk) -> dict[str, int]:
+    """Publish character offsets only when the chunk is an exact content slice."""
+    if (type(chunk.seq) is not int or chunk.seq < 0
+            or type(chunk.start) is not int or type(chunk.end) is not int
+            or not 0 <= chunk.start < chunk.end <= len(unit.content)
+            or unit.content[chunk.start:chunk.end] != chunk.text):
+        return {}
+    return {"content_start": chunk.start, "content_end": chunk.end}
+
+
 def vectorize_units(
     chunker: Chunker, embedder: Embedder, units: list[MemoryUnit]
 ) -> tuple[dict[ScopeKey, list[VectorRecord]], list[tuple[Scope, str, list[str]]]]:
@@ -303,7 +314,10 @@ def vectorize_units(
                 VectorRecord(
                     id=record_id,
                     vector=vector,
-                    metadata=index_metadata(unit, layer="l2", seq=chunk.seq),
+                    metadata={**index_metadata(unit, layer="l2", seq=chunk.seq),
+                              **chunk_location_metadata(unit, chunk),
+                              "indexed_text_sha256": hashlib.sha256(
+                                  unit.content.encode()).hexdigest()},
                 )
             )
             chunk_ids.append(record_id)
@@ -426,11 +440,12 @@ def _build_one_vector_layer(
         return
 
     groups: dict[ScopeKey, list[VectorRecord]] = {}
-    for (unit, _), vector in zip(pending, vectors):
+    for (unit, text), vector in zip(pending, vectors):
         record = VectorRecord(
             id=layer_record_id(unit.id, layer),
             vector=vector,
-            metadata=index_metadata(unit, layer=layer),
+            metadata={**index_metadata(unit, layer=layer),
+                      "indexed_text_sha256": hashlib.sha256(text.encode()).hexdigest()},
         )
         groups.setdefault(scope_key(unit.scope), []).append(record)
 

@@ -22,11 +22,11 @@ IDF 与 avgdl 取自候选池而非全库——``Fuser`` 接口能拿到的最�
 
 from __future__ import annotations
 
-import math
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import replace
 
+from jiuwen_memory.common.bm25 import inverse_document_frequency, term_score
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.tokenizer import Tokenizer
 from jiuwen_memory.common.tokenizer.base import TokenizerProducer
@@ -63,7 +63,7 @@ def _bm25_scores(
     # 空批 / 全空文档：avgdl 退化为 1.0，长度归一项恒为 1，不触发除零。
     avgdl = (total / n) if total else 1.0
     idf = {
-        term: math.log(1.0 + (n - df.get(term, 0) + 0.5) / (df.get(term, 0) + 0.5))
+        term: inverse_document_frequency(n, df.get(term, 0))
         for term in set(query_tokens)
     }
     scores: list[float] = []
@@ -74,7 +74,7 @@ def _bm25_scores(
         for term in query_tokens:
             tf = freq.get(term, 0)
             if tf:
-                score += idf[term] * tf * (k1 + 1.0) / (tf + norm)
+                score += term_score(idf[term], tf, norm, k1)
         scores.append(score)
     return scores
 

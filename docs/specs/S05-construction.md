@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md |
@@ -728,7 +728,6 @@ Event 不设时间跨度窗口。会话、上下文、结束信号、语义判�
 结构摘录数量/长度上限仅约束回退正文。摘要失败保留结构摘录，父 L0/L1 标注失败
 保留空层；模型缺依赖属于配置错误。时间比较统一使用 common 的 UTC 解释规则。
 
-
 ### 显式构建持久化契约
 
 `HierarchyComposer.build(request)` 拒绝已有父边；`replace_in_span(request)` 要求
@@ -767,3 +766,161 @@ Evolver 的可选能力 `hierarchy_profile(kind) -> HierarchyComposeProfile | No
 `EvolveRequest.hierarchy_incremental` 仅供内部周期任务使用：非空时以相邻单层请求
 委托 Composer.build；为空时沿用显式 replace_in_span。Dynamic/Schema Evolver 继承该
 委托路径，原 `evolve(units, mode)`、显式分组和重建行为保持。
+
+## 可选的增量关联规划
+
+Associator 保留 associate(units)；incremental=True 的实现还提供
+associate_delta(units, previous) -> AssociationDelta。输入为单一完整 Scope 的有界
+候选窗口。结果包含关系、受影响节点、端点版本、策略版本和诊断统计；规划不得写存储。
+可选 input_fingerprints 记录派生特征输入版本；未提供时沿用端点版本。关系缓存使用
+输入版本，边的 fingerprints 始终绑定持久化 MemoryUnit，不能把临时加载的向量写入
+端点副本后伪造端点版本。索引向量变化也应使关联规划缓存失效。
+仅比较节点哈希不足以声明缓存命中，还必须知道哪些配对候选已经检查。缩小/切换窗口
+不能让未检查的新旧配对永久跳过。旧关联插件不要求实现此可选方法。
+
+关系写入经 IndexBuilder 承担；GraphMem 投影一对端点一条稳定 ID 边，entity/semantic/temporal
+为边属性。变化节点的失效边清理不能影响其他关系生产者。边写成功之后才发布版本与
+覆盖窗口；该顺序不构成跨后端事务。不能从输入省略推断节点已被删除，必须核对真源。
+
+可选 associate_after_hierarchy 在成功建树后刷新 tree_home_scope 的有界关系窗口。
+关系阶段失败必须把 HierarchyComposeResult.complete 置 false 并写 repair_required；
+已完成的树写入仍保留。普通 ASSOCIATE 接口可单独重试；MemoryAPI 签名不变。
+
+关系实现可通过已注入且与索引配置一致的 Store 端口按 Scope 和已知 ID 读取现有向量，
+不得隐式扫描或重新调用 embedding。必须校验索引文本哈希；旧记录需经原 IndexBuilder
+刷新派生索引后才启用该能力。多个合法 chunk 向量可先归一再汇总，非法维度/非有限值
+不参与构图。可选强语义直连允许下层证据不被过粗的上层摘要阻断。
+
+### 可选递归 TIME 聚合契约
+
+配置及调用示例见 [F10 递归会话索引](../features/construction/F10-graphmem-recursive-relations.md)。
+递归 Composer 接受原有 Snapshot 叶与 `parent_roles=[TIME_SPAN]`，此角色表示摘要
+类型，不限制实际层数。中间节点 `system_metadata` 保存 graphmem_recursive_version、
+graphmem_height、graphmem_session_scope 和 graphmem_child_roles；高度为直接子最高
+高度加一，源叶为零，单棵树不跨源会话。原有 default Composer 的固定角色前缀不变。
+
+新建父节点可以保存 `graphmem_child_detail_spans`：版本、绑定摘要和每个直接子节点
+对应的正文字符区间。映射来自同次模型响应的 details，不增加生成调用、不改变父
+正文、L0/L1、语义特征或后续模型输入。绑定覆盖正文、完整 Scope、有序子 ID/Scope
+及角色；任一变化后旧映射失效。单源临时细分的最终结果只对应原始一个子节点。
+旧父缺失映射不触发强制重建，所有新增元数据仍经 IndexBuilder 写入。
+
+源叶排序不依赖存储列表或请求的枚举顺序：先按源区间起点与摄入时间，再按来源标识、
+原生分片序号和 ID 排列。同一来源的 `_part/_parts` 仅在二者均为整数且
+`1 <= _part <= _parts` 时参与排序；缺失/非法值不从用户 metadata 推断。摄入时间
+缺失以最早值处理，来源标识缺失以节点 ID 消歧；原文、来源和时间字段不变。
+
+递归每次合并（包括根）受 max_children 和模型提示词 Token 上限限制；父输出视图
+有独立上限。字段有效但输出超限经一次有界修复仍失败，可二分当前组合递归建子节点；
+两个摘要仍无法压缩则拒绝，不能无限套用单子父。全摘要输入的有界反馈修复须强调
+多个子节点共用输出预算，并给出每个子摘要的篇幅目标；修复指令仍计入输入上限，
+不能因此增加重试或放宽输出上限。分拆根可保存原输入指纹；复用时必须核对整个
+子树与原输入集合，并一并保留所有中间节点。超长单源不截断，先无损分片
+再递归摘要。父保存直接引用，不复制后代
+原文；事实仍以 Snapshot 为准。编号覆盖校验不等价于语义事实完整。
+
+有界修复后仍未闭合的 JSON 输出也可触发当前组合分拆，不靠抬高全局输出额度完成。
+普通语法错误不能触发该恢复。单源过密时允许保留原 Snapshot，临时无损分片、带
+原来源时间与说话人分别摘要后递归归并；额外细分深度受 max_source_refinements
+约束，小于 128 字符时不再为输出失败细分。耗尽该额度仍拒绝，不发布不完整摘要。
+此额度限制异常恢复，不限制整棵会话树的递归高度。
+所有失败、修复与较小分组合并的实际调用均属于构建开支。
+
+可选 `compact_json_output` 仅改变结构化响应的序列化提示：要求单行 JSON、去掉
+字符串之外的空白，保留字段和值的完整性及字符串内部空白。默认关闭须维持旧请求
+与策略身份；启用时新增提示计入输入上限和复用身份，近上限分组可能随之变化。
+它不改变 JSON Schema、解析接受条件、输出额度或有界修复次数，不拒绝合法的带
+缩进响应。生成成本仍采用原生 usage，不能用事后重新序列化替代实际费用。
+
+可选 `structured_output_headroom` 依赖 structured_features，默认关闭。启用时，
+联合提取实体/事件的原文或混合输入在首轮即可使用配置的 max_output_tokens；
+不再额外收紧为视图额度加固定语法余量。全摘要输入可继承特征时仍用原有派生上限。
+提示词、输入分组、JSON Schema、解析后视图总预算和修复次数不变；开启时必须改变
+复用身份，关闭保持原有身份。实际开支包含所有失败和修复，不能预先视为节省。
+
+显式区间重建须提供完整旧子树。实现可以复用策略和直接子输入未变的父 ID/摘要，
+只更新发生变化的父边；不因复用跳过结构校验。新父、边切换、旧父归档和索引仍通过
+IndexBuilder 的部分失败协议。旧周期单层增量 profile 不适用于此递归实现。
+
+来源的 `user_metadata.speaker` 可提供原生正文没有的说话人归属：仅接受非空、
+不含控制字符、最多 100 字符的字符串，不从 Scope 推断身份，不将一个子节点的
+说话人扩散到父摘要。归属变化属于摘要输入变化，必须影响复用；它可以支持实体
+来源校验，但不能充当正文中的事件日期表达。原始正文和 metadata 均保持不变。
+
+### 递归语义特征与自顶向下关系
+
+可选 structured_features 在原文摘要的同一模型调用中产出有界实体与场景事件。
+`system_metadata.graphmem_semantics` 是版本化 JSON：实体含名称、类型、别名、消歧短语
+与直接输入序号；事件含场景、实体引用、状态、直接输入序号和独立时间区间。
+此字段进入端点真源指纹，不向 MemoryUnit 的单一 t_event 填入整个摘要的最小/最大时间。
+
+可选 `repair_source_day` 依赖 structured_features，默认关闭。已生成但未通过校验的
+单日发生区间，在事件表达确实出现在其原文来源、且消息时间足以确定该日时，可以用
+同一规则重新生成半开区间后再次校验。先按既有上限保留该次合并的事件和实体，
+然后只接受不超视图预算的时间替换。必要时该视图以及读取它的下一层请求用等价的
+紧凑 JSON 序列化，实际输入仍走原有计量、上限及重试预算。成功修复与因视图预算
+跳过的修复分别计量，启用状态纳入摘要策略身份。
+
+可选 `validate_explicit_time_precision` 依赖 structured_features，默认关闭。对有来源
+时钟的已知事件区间，已完成事件的发生起点晚于来源时钟、模糊日期生成了具体日或
+时刻、上个周末短于两天，或相对月份使用了非月精度时，将该事件的时间降级为未知。
+保留原有场景、事件状态、实体和来源引用，记录降级原因，不为此发送模型请求。启用状态
+进入摘要复用身份。该校验不推断原文中多个不同动作的时间归属。
+
+可选 `fact_first_records` 依赖 structured_features，默认关闭且不改变旧请求和策略身份。
+非全摘要输入在同次调用的每条 details 中分别生成 personal 与 content 字符串：前者
+保存有归属的明确个人事实，后者压缩其余讨论；不可同时为空，也不能遗漏输入编号。
+遇到空描述时，只能使用已配置的一次修复；空消息可以描述为无实质内容，不得补造
+个人事实、删除来源或无限重试。修复请求和全部失败开支保留，修复提示参与复用身份。
+解析后合为原有逐子摘要正文与字符区间，不添加 MemoryUnit 公共字段或原文副本。
+存在 personal 内容时，L1 使用同次生成的简短事实导航概览，不再用通用讨论事件投影
+覆盖；仍计入整份视图预算，格式有效不代表语义事实完整。全摘要输入沿用原提示与
+有界特征继承。新提示词和开关进入复用身份，不允许用旧摘要冒充新策略产物。
+
+事件区间采用半开语义并保留日/月/年/范围精度、持续/不确定/重复活动区别及原文时间
+表达。相对日期只根据其来源消息时间解析，未知日期不参与最近事件匹配。上层以有界
+去重与轮流选择继承下层实体/事件，绝不换用父覆盖区间重新推算日期；被省略的导航
+特征仍留在下层。中间节点不因此保存无界后代特征目录。
+原文输入不允许使用尚未存在的子事件引用；混合输入若引用继承时间，引用须同时绑定
+实际输入来源和其已有事件编号。摘要复用指纹须包含有效提示词与构建策略，不能跨提示词复用。
+时间校验策略改变时也须更新复用版本。普通数量不构成日期证据；later/earlier 与
+无年份数字日期须有来源时钟，不能在缺少锚点时接受为模型推断的绝对日期。
+可选来源压缩仅改变提示词中的来源字段表示，须能精确还原逐条文本、类型和时间；存储
+与语义验证仍消费原始来源，不能用共享时钟覆盖跨日或缺失的真实时间。
+全摘要输入可单独省去已经由程序继承的模型输入特征，保留完整子摘要正文；语义
+继承和验证仍读取原记录，不能因模型输入省略而删除或重新推断子级已解析时间。
+
+正文编号覆盖、格式和总输出预算仍须通过；无法核实的可选实体/时间标注可以弃用，
+但须保存 dropped/unknown 统计，不把降级标注宣称为已验证事实。不为单个可选标注
+反复生成整份摘要；所有实际模型尝试均须计量。
+
+关系规划可从已验证的会话根对开始，递归细化子对；双向父子引用、源 Scope 和高度
+必须一致。相同人物遍布多个会话时，其名字不能独自制造全连接图。时间候选按事件
+区间距离取邻近项，并用实体或场景上下文约束；粗粒度/不确定区间不能伪装为精确同时。
+场景相似复用已建向量；可选择优先 L1 场景或 L2 详细摘要分片的归一化汇总，默认 L1。
+L1 优先时可回退合法 L2，再检查 L1；L2 优先时可回退合法 L1。文本哈希与 Scope 校验
+失败时不能信任旧投影，不能为关系现场调用 Embedder。投影选择参与关系策略身份，
+切换后重算受影响的关系；不因此重新生成摘要、改写正文或重建原文向量。
+
+`isolated_semantic_floor` 默认为 0。开启后，普通关系的平均节点度低于 1 时，
+可以重用本次已计算的向量配对，为尚无关系的摘要补充少量语义边。平均度按
+普通边数的两倍除以活跃摘要数计算。补边沿用 Scope、度与总边上限，累计数量
+最多为 `root_neighbors`，不替换已有关系或增加向量比较。新增边标记为
+`isolated_semantic_backstop`。普通关系跨过密度阈值后，关系差量撤回不再保留的
+补边，摘要和原文不因此重算。稳定重复调用仍复用既有关联指纹。
+
+继续向下比较的候选可使用较低的 refinement_threshold，但不能据此直接存边；
+最终边仍须通过实体/时间/场景条件。已有关系依据的配对优先于粗相似候选，二者均
+受根/子近邻数及总比较预算约束。诊断分别报告路由候选数与实际关系数。
+可选关系属性覆盖在同一预算内优先保留具有不同实体、场景、时间依据的配对，
+再按强度填充。所有被保留配对仍必须满足原建边条件，不能因属性缺失而生成无
+依据的关系；全局选边同样保持双方度数与总边数限制。该选择参与关联缓存身份。
+
+节点数、实际向量比较/配对数、各属性候选数、双方节点度和总边数都须限界。达到比较
+上限时报告 limited，所得图是有界近邻近似，不宣称穷举所有配对。少量下层罕见实体
+候选可以补回上层未保留的主题；关联过程不调用 LLM/Embedder。受影响集合包含邻接
+选择改变的旧端点，不能仅按新节点判定增量。实际写入仍遵守既有 IndexBuilder 协议。
+
+### L2 向量分片位置
+
+向量 IndexBuilder 仅在分片文本逐字符等于当前正文切片时，给对应向量记录写入半开区间 `content_start`、`content_end`。正文哈希沿用原索引元数据。缺少精确偏移的分片继续提供原有的向量召回。

@@ -198,6 +198,25 @@ def test_routing_embedder_switches_by_active() -> None:
     assert emb.embed(["x"])[0][0] == float(len("openai_a"))
 
 
+def test_routing_embedder_preserves_active_query_protocol() -> None:
+    from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+
+    class QueryEmbedder(_StubEmbedder):
+        def embed_query(self, text: str) -> list[float]:
+            return [float(len(self.name)), float(len(text))]
+
+    cfg = DictConfigSource({"embedder.active": "first"})
+    router = ActiveRouter(
+        namespace="embedder",
+        instances={"first": QueryEmbedder("first"), "second": QueryEmbedder("second")},
+        config_source=cfg, default_name="first")
+    embedder = RoutingEmbedder(router)
+    assert embedder.embed_query("question") == [5.0, 8.0]
+    cfg.put("embedder.active", "second")
+    assert embedder.embed_query("question") == [6.0, 8.0]
+    assert embedder.embed(["question"]) == [[6.0] * 8]
+
+
 def test_prompt_registry_prefers_config_source() -> None:
     from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 

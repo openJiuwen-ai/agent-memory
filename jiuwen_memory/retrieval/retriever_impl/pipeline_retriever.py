@@ -46,6 +46,11 @@ from jiuwen_memory.common.type_def.hierarchy_query import (
 from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
+from jiuwen_memory.retrieval.evidence_packing import (
+    EvidencePacker,
+    EvidenceRetrievalResult,
+    build_evidence_packer,
+)
 from jiuwen_memory.retrieval.expander import Expander, ExpanderProducer
 from jiuwen_memory.retrieval.expansion import (
     ExpansionSource,
@@ -54,6 +59,10 @@ from jiuwen_memory.retrieval.expansion import (
     uses_recalled_children,
 )
 from jiuwen_memory.retrieval.fuser import Fuser, FuserProducer
+from jiuwen_memory.retrieval.graph_navigation import (
+    GraphEvidenceNavigator,
+    build_graph_navigator,
+)
 from jiuwen_memory.retrieval.query_parser import QueryParser, QueryParserProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.schema_temporal.pipeline import (
@@ -126,6 +135,8 @@ class PipelineRetriever(Retriever):
         # 精排输入限长：与 reranker_timeout 同走 retriever params 通道。
         rerank_max_query_chars: int = _MAX_RERANK_QUERY_CHARS,
         rerank_max_doc_chars: int = _MAX_RERANK_DOC_CHARS,
+        evidence_packer: EvidencePacker | None = None,
+        graph_navigator: GraphEvidenceNavigator | None = None,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
@@ -133,6 +144,14 @@ class PipelineRetriever(Retriever):
         self._reader = unit_reader
         self._domain = domain_store
         self._schema_temporal_extension = schema_temporal_extension
+        self._evidence_packer = evidence_packer
+        self._graph_navigator = graph_navigator
+        if graph_navigator is not None and (
+            evidence_packer is None or evidence_packer.mode not in ("ranked", "sources_first")
+        ):
+            raise ValidationError("graph_navigation requires ranked or sources_first packing")
+        if evidence_packer is not None and schema_temporal_extension is not None:
+            raise ValidationError("evidence packing does not yet support Schema Temporal")
         self._expander: Expander | None = None
         # 文档模式标志：ShadowRecaller.channel()=DOCUMENT，但 parser 产出的
         # parsed.channels 默认含 [KEYWORD, GRAPH]（+VECTOR）不含 DOCUMENT。
@@ -185,7 +204,23 @@ class PipelineRetriever(Retriever):
     def health(self) -> None:
         return None
 
+    def _empty_result(
+        self, trajectory: list[TrajectoryStep], query: RetrievalQuery,
+    ) -> RetrievalResult:
+        if self._evidence_packer is None:
+            return RetrievalResult(items=[], trajectory=trajectory)
+        _, bundle = self._evidence_packer.pack([], max_tokens=query.max_tokens, top_k=query.top_k)
+        return EvidenceRetrievalResult(trajectory=trajectory, evidence_bundle=bundle)
+
     def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+        if self._evidence_packer is not None:
+            if query.expand_depth or query.defer_expansion or query.rollup or query.schema_temporal:
+                raise ValidationError("evidence packing requires expansion/rollup/Schema off")
+            if query.disclosure not in (DisclosureLevel.L2, DisclosureLevel.ADAPTIVE):
+                raise ValidationError("evidence packing requires L2 or ADAPTIVE disclosure")
+            if (isinstance(query.max_tokens, bool) or not isinstance(query.max_tokens, int)
+                    or query.max_tokens < 1):
+                raise ValidationError("evidence packing requires positive max_tokens")
         hierarchy = HierarchyQuery.from_query(query)
         validate_expand_depth(query.expand_depth, hierarchy.hierarchy_kind)
         validate_rollup(query.rollup, hierarchy.hierarchy_kind)
@@ -261,7 +296,7 @@ class PipelineRetriever(Retriever):
                 0,
                 (perf_counter() - started_at) * 1000.0,
             )
-            return RetrievalResult(items=[], trajectory=traj)
+            return self._empty_result(traj, query)
 
         # [2] 查询理解
         t0 = perf_counter()
@@ -273,7 +308,7 @@ class PipelineRetriever(Retriever):
         parsed.span_end = hierarchy.span_end
         if not parsed.raw.strip():
             step("parse", t0, detail={"skipped": "empty_after_parse"})
-            return RetrievalResult(items=[], trajectory=traj)
+            return self._empty_result(traj, query)
         # 调用方自定义透传配置随 parsed 下达各召回路（自定义 Recaller 按约定读取）；
         # 在此统一接力，无需各 parser 实现感知。
         parsed.extensions = dict(query.extensions)
@@ -292,7 +327,7 @@ class PipelineRetriever(Retriever):
                 trace_id,
                 scope_dims,
             )
-            return RetrievalResult(items=[], trajectory=traj)
+            return self._empty_result(traj, query)
 
         # [3a] 前置谓词：系统谓词（lifecycle×as_of / 时间窗）与用户表达式 AND 外包一同下推。
         #      用户表达式作整体 child——绝不摊平，防其 OR 稀释 lifecycle 等安全谓词。
@@ -333,15 +368,103 @@ class PipelineRetriever(Retriever):
         if self._recall_max > 0:
             recall_k = min(recall_k, self._recall_max)  # 硬上限：封顶后端召回压力
         budget_n = max(self._rerank_max, query.top_k)
+        relational = self._graph_navigator is not None
+        relation_limits = None
+        entry_pool = None
+        if relational:
+            # Bound physical recall entries and the fused candidate pool at entry.
+            # The ID-first storage path also caps distinct IDs before body reads.
+            relation_limits = self._graph_navigator.candidate_limits(scope, parsed)
+            initial_limit = relation_limits["initial_limit"]
+            recall_k = max(1, min(recall_k, initial_limit))
+            budget_n = max(1, min(budget_n, initial_limit))
+            if (self._graph_navigator.policy.conversation_day_lookup and not query.rollup
+                    and parsed.span_start is None and parsed.span_end is None
+                    and not parsed.time_from and not parsed.time_to):
+                from jiuwen_memory.retrieval.graphmem_query import conversation_day_span
+
+                span = conversation_day_span(parsed)
+                if span is not None:
+                    # The query asks what was said on a day. Narrow structural
+                    # message coverage without interpreting it as event time.
+                    parsed.span_start, parsed.span_end = span
+                    parsed.scalar_filters = and_merge(
+                        parsed.scalar_filters,
+                        build_hierarchy_filters(HierarchyQuery.from_query(parsed)),
+                    )
 
         # [3b-6] DomainStore 的全局首选值选择三条 recall/get/rank 路径。
         pipeline = self._domain.preferred_retrieval_pipeline()
+        refill_entries = relational and self._graph_navigator.policy.refill_entry_probes
+        chunk_hints = relational and self._graph_navigator.policy.chunk_source_hints
+        detail_keyword = relational and self._graph_navigator.policy.detail_keyword_entry
+        event_entry = relational and self._graph_navigator.policy.event_guided_entry
+        if refill_entries and pipeline != RetrievalPipeline.RECALL_GET_RANK:
+            raise ValidationError("refill_entry_probes requires the ID-first recall pipeline")
+        if chunk_hints and pipeline != RetrievalPipeline.RECALL_GET_RANK:
+            raise ValidationError("chunk_source_hints requires the ID-first recall pipeline")
+        if detail_keyword and pipeline != RetrievalPipeline.RECALL_GET_RANK:
+            raise ValidationError("detail_keyword_entry requires the ID-first recall pipeline")
+        if event_entry and pipeline != RetrievalPipeline.RECALL_GET_RANK:
+            raise ValidationError("event_guided_entry requires the ID-first recall pipeline")
+        entry_query = parsed
+        if relational and self._graph_navigator.policy.semantic_entry_terms:
+            from jiuwen_memory.retrieval.graphmem_query import entry_keyword_query
+
+            entry_query = entry_keyword_query(parsed)
+        if event_entry:
+            entry_query = replace(entry_query, recall_entry_semantics=True)
         t0 = perf_counter()
         errors: list[ChannelError]
         if pipeline == RetrievalPipeline.RECALL_GET_RANK:
             recalled = self._domain.recall(
-                scope, parsed, channels=enabled, recall_limit=recall_k
+                scope, entry_query, channels=enabled, recall_limit=recall_k
             )
+            if relational:
+                from jiuwen_memory.retrieval.graphmem_relation_plan import (
+                    EntryProbePool,
+                    limit_recalled,
+                    ranked_entry_ids,
+                    retain_attributed_entry,
+                    retain_single_slot_consensus,
+                    with_missing_clause_keyword_entry,
+                )
+
+                ordered_ids, attributed_entry, needs = None, None, None
+                if event_entry:
+                    from jiuwen_memory.retrieval.graphmem_query import needs_for
+
+                    needs = needs_for(parsed)
+                    ordering = ranked_entry_ids(recalled, detail_keyword=detail_keyword)
+                    if (self._graph_navigator.policy.single_slot_entry_consensus
+                            and initial_limit == relation_limits["summary_limit"] == 1):
+                        ordering = retain_single_slot_consensus(recalled, ordering, needs)
+                    ordered_ids, attributed_entry = retain_attributed_entry(
+                        recalled, ordering, initial_limit, needs,
+                        diversify=self._graph_navigator.policy.diversify_attributed_entry)
+                    if (attributed_entry is None
+                            and self._graph_navigator.policy.missing_clause_keyword_entry
+                            and (enabled is None or RecallChannel.KEYWORD in enabled)):
+                        recalled, ordered_ids, attributed_entry = with_missing_clause_keyword_entry(
+                            self._domain, scope, entry_query, recalled, ordered_ids,
+                            initial_limit, needs,
+                        )
+                if refill_entries:
+                    entry_pool = EntryProbePool.from_recalled(
+                        scope, recalled, initial_limit, relation_limits["summary_limit"],
+                        detail_keyword=detail_keyword,
+                        corroborate=self._graph_navigator.policy.reserve_corroborated_entry,
+                        prefer_deferred_keyword=self._graph_navigator.policy.prefer_deferred_detail_keyword,
+                        prefer_coarse_keyword=self._graph_navigator.policy.prefer_coarse_keyword_entry,
+                        prefer_temporal_keyword=self._graph_navigator.policy.prefer_temporal_keyword_entry,
+                        ordered_ids=ordered_ids, attributed_entry=attributed_entry,
+                        anchor_query=(
+                            parsed if self._graph_navigator.policy.reserve_temporal_anchor_entry
+                            else None
+                        ),
+                    )
+                recalled = limit_recalled(recalled, initial_limit, detail_keyword=detail_keyword,
+                                          ordered_ids=ordered_ids)
             materialized = _materialize_recalled(self._domain, scope, recalled, parsed)
             fused = self._fuser.fuse(
                 parsed, [batch.candidates for batch in materialized.batches]
@@ -349,7 +472,7 @@ class PipelineRetriever(Retriever):
             errors = materialized.errors
         elif pipeline == RetrievalPipeline.RECALL_AND_GET_RANK:
             materialized = self._domain.recall_and_get(
-                scope, parsed, channels=enabled, recall_limit=recall_k
+                scope, entry_query, channels=enabled, recall_limit=recall_k
             )
             materialized = _filter_materialized(materialized, parsed)
             fused = self._fuser.fuse(
@@ -359,7 +482,7 @@ class PipelineRetriever(Retriever):
         else:
             ranked = self._domain.retrieve(
                 scope,
-                parsed,
+                entry_query,
                 self._fuser,
                 channels=enabled,
                 recall_limit=recall_k,
@@ -370,6 +493,14 @@ class PipelineRetriever(Retriever):
             ]
             errors = ranked.errors
 
+        if chunk_hints:
+            from jiuwen_memory.retrieval.graphmem_chunk_hints import (
+                attach_content_matches,
+            )
+
+            fused = attach_content_matches(fused, materialized.batches)
+        if relational:
+            fused = fused[:initial_limit]
         for error in errors:
             logger.warning(
                 "Retriever.recall degraded: trace_id=%s scope_dims=%s channel=%s "
@@ -507,6 +638,32 @@ class PipelineRetriever(Retriever):
 
         # [9] 截断 top_k
         final = survivors[: query.top_k]
+        evidence_bundle = None
+        if self._evidence_packer is not None:
+            t0 = perf_counter()
+            if self._graph_navigator is not None:
+                final, evidence_bundle = self._graph_navigator.pack_closure(
+                    scope, parsed, survivors, self._evidence_packer,
+                    max_tokens=query.max_tokens, top_k=query.top_k, limits=relation_limits,
+                    entry_pool=entry_pool, recall_channels=query.channels,
+                )
+                step("graph_navigate", t0, n=len(final), detail={
+                    "strategy": self._graph_navigator.policy.strategy,
+                    "stages": str(len(evidence_bundle.navigation["stages"])),
+                    "analysis_model_calls": str(evidence_bundle.navigation["analysis_model_calls"]),
+                    "stopping_reason": evidence_bundle.navigation["stopping_reason"],
+                })
+                t0 = perf_counter()
+            else:
+                final, evidence_bundle = self._evidence_packer.pack(
+                    survivors, max_tokens=query.max_tokens, top_k=query.top_k,
+                )
+            step("evidence_pack", t0, n=len(final), detail={
+                "mode": evidence_bundle.mode, "tokens": str(evidence_bundle.token_count),
+                "budget": str(evidence_bundle.token_budget),
+                "omitted": str(evidence_bundle.omitted_count),
+                "tokenizer": evidence_bundle.tokenizer_id,
+            })
         units = {candidate.unit_id: candidate.unit for candidate in final}
         if query.expand_depth:
             record_step("parent_recall", 0.0, n=len(final), detail={"top_k": str(query.top_k)})
@@ -515,12 +672,18 @@ class PipelineRetriever(Retriever):
         t0 = perf_counter()
         items = self._discloser.disclose(
             parsed, final, units,
-            DisclosureLevel.L0 if query.expand_depth else query.disclosure,
+            (DisclosureLevel.L2 if evidence_bundle is not None else
+             DisclosureLevel.L0 if query.expand_depth else query.disclosure),
             max_tokens=None if query.expand_depth else query.max_tokens,
         )
         disclose_detail = {}
         if query.expand_depth:
             disclose_detail = {"mode": "prepare_expansion", "budget": "after_root_selection"}
+        elif evidence_bundle is not None:
+            disclose_detail = {
+                "mode": "evidence_bundle", "max_tokens": str(evidence_bundle.token_budget),
+                "tokens": str(evidence_bundle.token_count),
+            }
         elif query.disclosure == DisclosureLevel.ADAPTIVE:
             disclose_detail = {
                 "mode": "adaptive",
@@ -541,6 +704,10 @@ class PipelineRetriever(Retriever):
             (perf_counter() - started_at) * 1000.0,
         )
         result = RetrievalResult(items=items, trajectory=traj, errors=errors)
+        if evidence_bundle is not None:
+            return EvidenceRetrievalResult(
+                items=items, trajectory=traj, errors=errors, evidence_bundle=evidence_bundle,
+            )
         if query.expand_depth:
             parsed_filters = [] if parsed.recheck_filters is None else [parsed.recheck_filters]
             child_filters = and_merge(query.filters, parsed_filters)
@@ -619,6 +786,8 @@ def _build(config):
             discloser,
         ),
         doc_mode=doc_mode,
+        evidence_packer=build_evidence_packer(config.get("evidence_packing")),
+        graph_navigator=build_graph_navigator(config.get("graph_navigation"), domain),
         rerank_max_query_chars=int(
             Factory.cfg_get(config, "rerank_max_query_chars", _MAX_RERANK_QUERY_CHARS)
         ),
@@ -761,7 +930,8 @@ def _materialize_recalled(
                 )
                 continue
             scored = ScoredMemoryUnit(
-                unit, candidate.score, candidate.channel, candidate.evidence
+                unit, candidate.score, candidate.channel, candidate.evidence,
+                candidate.content_match,
             )
             if _passes_recheck(scored, query):
                 materialized.append(scored)

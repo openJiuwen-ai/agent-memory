@@ -379,4 +379,5 @@ def _build(config):
         prompt_registry=registry,
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
+        associate_after_hierarchy=config.get("associate_after_hierarchy", False),
     )

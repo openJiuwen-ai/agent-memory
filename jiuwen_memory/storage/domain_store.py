@@ -36,7 +36,7 @@ from jiuwen_memory.common.type_def import (
 )
 
 from .security import StorageAccessContext, StorageSecurity
-from .types import IndexRemoveMode, IndexWriteMode, MemoryListResult
+from .types import Edge, IndexRemoveMode, IndexWriteMode, MemoryListResult
 
 
 class DomainStoreProducer(Factory):
@@ -66,6 +66,22 @@ class DomainStore(ABC):
     实现内部需要 KV 真源时应通过注入的 manager 引用获取，不另持 KV 连接
     （遵循「所有存储类从 StoreManager 获取」原则）。
     """
+
+    def related_edges(
+        self, scope: Scope, node_ids: list[str], *, relation: str | None = None,
+        limit: int = 1000, access: StorageAccessContext | None = None,
+    ) -> list[Edge]:
+        """Optional graph projection read; callers must re-read endpoint truth."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("related_edges", "graph", type(self).__name__)
+
+    def indexed_population(self, scope: Scope, query: ParsedQuery, *,
+                           access: StorageAccessContext | None = None) -> int:
+        """Optional metadata-only population under authorized scope and hard filters."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("indexed_population", "domain", type(self).__name__)
 
     @property
     @abstractmethod

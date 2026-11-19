@@ -43,6 +43,18 @@ class ChannelEvidence:
     contribution: float = 0.0
 
 
+@dataclass(frozen=True)
+class ContentMatch:
+    """One winning content-index span; a navigation hint, never read authority."""
+
+    record_id: str
+    seq: int
+    start: int
+    end: int
+    content_sha256: str
+    score: float
+
+
 @dataclass
 class ParsedQuery:
     """QueryParser 产出的跨层结构化查询。"""
@@ -68,6 +80,7 @@ class ParsedQuery:
     span_end: datetime | None = None
     rewrite_status: str = "off"  # off / used / fallback / no_intent
     rewrite_fallback_reason: str = ""  # 仅 fallback 状态有值
+    recall_entry_semantics: bool = False
 
 
 @dataclass
@@ -78,6 +91,9 @@ class ScoredUnit:
     score: float = 0.0
     channel: RecallChannel = RecallChannel.VECTOR
     evidence: list[ChannelEvidence] = field(default_factory=list)
+    content_match: ContentMatch | None = None
+    entry_semantics: str | None = None
+    entry_keyword_text: str = ""
 
 
 @dataclass
@@ -88,6 +104,7 @@ class ScoredMemoryUnit:
     score: float = 0.0
     channel: RecallChannel = RecallChannel.VECTOR
     evidence: list[ChannelEvidence] = field(default_factory=list)
+    content_match: ContentMatch | None = None
 
     @property
     def unit_id(self) -> str:

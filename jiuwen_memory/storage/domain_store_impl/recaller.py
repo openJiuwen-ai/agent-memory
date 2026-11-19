@@ -36,6 +36,12 @@ class RecallerProducer(Factory):
 
 
 class Recaller(ABC):
+    def indexed_population(self, scope: Scope, query: ParsedQuery) -> int:
+        """Optional count of distinct units, independent of query text or top-k."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("indexed_population", "recaller", type(self).__name__)
+
     @abstractmethod
     def channel(self) -> RecallChannel:
         """返回本召回路对应的通道。"""

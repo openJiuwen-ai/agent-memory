@@ -129,7 +129,7 @@ class ActiveRouter(Generic[T]):
 
 
 class RoutingEmbedder(Embedder):
-    """Embedder 门面：每次 ``embed`` / ``dimension`` / ``health`` 委托当前 active 实例。"""
+    """Embedder 门面：文档/查询向量、维度及探活委托当前 active 实例。"""
 
     def __init__(self, router: ActiveRouter[Embedder]) -> None:
         self._router = router
@@ -145,6 +145,10 @@ class RoutingEmbedder(Embedder):
     def embed(self, texts: list[str]) -> list[list[float]]:
         """委托当前 active Embedder 向量化。"""
         return self._router.get().embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        """Keep the selected embedder's query-specific formatting contract."""
+        return self._router.get().embed_query(text)
 
     def dimension(self) -> int:
         """委托当前 active Embedder 的维度（切换实例后可能变化，调用方需自洽）。"""
@@ -329,6 +333,11 @@ class RoutingFulltextStore(FulltextStore):
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
         return self._router.get().search(scope, query)
 
+    def count_units(
+        self, scope: Scope, filters: FilterExpr | None = None, *, descendants: bool = False,
+    ) -> int:
+        return self._router.get().count_units(scope, filters, descendants=descendants)
+
 
 class RoutingGraphStore(GraphStore):
     """GraphStore 门面：委托当前 ``graph_store.active`` 实例。"""
@@ -344,6 +353,12 @@ class RoutingGraphStore(GraphStore):
 
     def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
         return self._router.get().seed_ids(scope, tokens)
+
+    def get_edges(
+        self, scope: Scope, node_ids: list[str], *, relation: str | None = None,
+        limit: int = 1000,
+    ) -> list[Edge]:
+        return self._router.get().get_edges(scope, node_ids, relation=relation, limit=limit)
 
     def insert(
         self,
@@ -598,6 +613,19 @@ class RoutingDomainStore(DomainStore):
 
     def preferred_retrieval_pipeline(self) -> RetrievalPipeline:
         return self._active_domain().preferred_retrieval_pipeline()
+
+    def related_edges(
+        self, scope: Scope, node_ids: list[str], *, relation: str | None = None,
+        limit: int = 1000, access: StorageAccessContext | None = None,
+    ) -> list[Edge]:
+        return self._active_domain().related_edges(
+            scope, node_ids, relation=relation, limit=limit, access=access,
+        )
+
+    def indexed_population(
+        self, scope: Scope, query: ParsedQuery, *, access: StorageAccessContext | None = None,
+    ) -> int:
+        return self._active_domain().indexed_population(scope, query, access=access)
 
     def scopes(self, **kwargs: Any) -> list[Scope]:
         return self._active_domain().scopes(**kwargs)

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.graphmem_structure import is_recursive, valid_child_role
 from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import (
     HierarchyKind,
@@ -22,7 +23,6 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.hierarchy import is_incomplete_snapshot, validate_ref
 from jiuwen_memory.common.type_def.memory_codec import loads
 from jiuwen_memory.construction.hierarchy_composer import (
-    TIME_CHILD_ROLES,
     TIME_PARENT_ROLES,
     HierarchyComposeOptions,
 )
@@ -207,11 +207,15 @@ def _complete_children(
     kv: KVStore | DomainStore, candidates: HierarchyCandidates, options: HierarchyComposeOptions,
     limits: HierarchyJobLimits,
 ) -> None:
-    # 先校验已列出的全部边，再按 event→scene→time_span→snapshot 补齐；不越权点读。
+    # Complete each direct frontier until closed, including repeated recursive
+    # TIME roles. Every point read remains inside the authorized tree home.
     _child_requests(candidates.parents, options.tree_home_scope)
-    for role in reversed(TIME_PARENT_ROLES):
-        level = {key: parent for key, parent in candidates.parents.items()
-                 if parent.hierarchy.role is role}
+    visited = set()
+    while True:
+        level = {key: parent for key, parent in candidates.parents.items() if key not in visited}
+        if not level:
+            break
+        visited.update(level)
         requests = _child_requests(level, options.tree_home_scope)
         _read_children(kv, candidates, requests, limits)
     _validate_complete(candidates)
@@ -222,7 +226,9 @@ def _read_children(
     requests: dict[ScopeKey, tuple[Scope, dict[str, MemoryUnit]]], limits: HierarchyJobLimits,
 ) -> None:
     required_count = sum(len(requested_children) for _, requested_children in requests.values())
-    if required_count + len(candidates.leaves) > limits.max_leaves:
+    recursive = any(is_recursive(p) for _, refs in requests.values() for p in refs.values())
+    request_limit = 4 * limits.max_leaves if recursive else limits.max_leaves
+    if required_count + len(candidates.leaves) > request_limit:
         raise ValidationError(f"hierarchy candidate leaves exceed max_leaves={limits.max_leaves}")
     for child_scope, references in requests.values():
         child_ids = list(references)
@@ -267,7 +273,7 @@ def _validate_complete(candidates: HierarchyCandidates) -> None:
             continue
         parent_scope = parent.hierarchy.resolved_parent_scope(parent.scope)
         root = candidates.parents.get((scope_key(parent_scope), parent.hierarchy.parent_id))
-        if root is None or TIME_CHILD_ROLES.get(root.hierarchy.role) is not parent.hierarchy.role:
+        if root is None or not valid_child_role(root, parent):
             raise ValidationError("TIME node references an unknown or unsupported parent")
         declared = {(scope_key(root.hierarchy.child_scope_at(position, root.scope)), uid)
                     for position, uid in enumerate(root.hierarchy.child_ids)}
@@ -276,11 +282,10 @@ def _validate_complete(candidates: HierarchyCandidates) -> None:
 
 
 def _validate_child(child: MemoryUnit, parent: MemoryUnit) -> None:
-    expected_role = TIME_CHILD_ROLES[parent.hierarchy.role]
-    if not _active_time(child) or child.hierarchy.role is not expected_role:
+    if not _active_time(child) or not valid_child_role(parent, child):
         raise ValidationError("hierarchy old parent child has an inactive or invalid TIME role")
     validate_ref(child.hierarchy, unit_id=child.id)
-    if expected_role is HierarchyRole.SNAPSHOT:
+    if child.hierarchy.role is HierarchyRole.SNAPSHOT:
         if child.hierarchy.child_ids or child.hierarchy.child_scopes:
             raise ValidationError("snapshot child must not contain child references")
     elif not child.hierarchy.child_ids:

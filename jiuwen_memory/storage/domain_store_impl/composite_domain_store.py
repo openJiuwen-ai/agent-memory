@@ -25,6 +25,7 @@ from typing import Any, cast
 from jiuwen_memory.common.errors import (
     NotFoundError,
     StorageRetrievalError,
+    UnsupportedCapabilityError,
     ValidationError,
     safe_error_message,
 )
@@ -82,7 +83,12 @@ from jiuwen_memory.storage.sync_gate import (
     close_write_window,
     open_write_window,
 )
-from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode, MemoryListResult
+from jiuwen_memory.storage.types import (
+    Edge,
+    IndexRemoveMode,
+    IndexWriteMode,
+    MemoryListResult,
+)
 
 from .recaller import RecallerProducer
 
@@ -118,12 +124,14 @@ class CompositeDomainStore(DomainStore):
         preferred_pipeline: RetrievalPipeline,
         kv_name: str = "default",
         write_document: bool = False,
+        graph_name: str = "default",
     ) -> None:
         self._manager = manager
         self._preferred_pipeline = preferred_pipeline
         # 真源 KV 端口名：与其余消费方一致由装配期 resolve_name(config, "kv_store")
         # 指名（见 for_manager / builder），不在运行期硬编码 "default"。
         self._kv_name = kv_name
+        self._graph_name = graph_name
         # recallers 由 manager 装配期通过 bind_recallers 注入；默认空列表。
         self._recallers: list[Any] = []
         # write_document 装配期固化（与 _preferred_pipeline 同范式，F07 §2）：
@@ -153,6 +161,7 @@ class CompositeDomainStore(DomainStore):
             manager=manager,
             preferred_pipeline=_parse_pipeline(config.get("preferred_retrieval_pipeline")),
             kv_name=resolve_name(config, "kv_store"),
+            graph_name=resolve_name(config, "graph_store"),
             write_document=should_write_document(config.get(WRITE_DOCUMENT_KEY, False)),
         )
         domain_store.bind_recallers(_assemble_recallers(config, storage=manager))
@@ -161,6 +170,30 @@ class CompositeDomainStore(DomainStore):
     @property
     def security(self) -> StorageSecurity:
         return self._manager.security
+
+    def related_edges(
+        self, scope: Scope, node_ids: list[str], *, relation: str | None = None,
+        limit: int = 1000, access: StorageAccessContext | None = None,
+    ) -> list[Edge]:
+        self.security.authorize(access, scope, StorageAction.SEARCH, "memory_unit")
+        return self._manager.graph(self._graph_name).get_edges(
+            scope, node_ids, relation=relation, limit=limit, access=access,
+        )
+
+    def indexed_population(self, scope: Scope, query: ParsedQuery, *,
+                           access: StorageAccessContext | None = None) -> int:
+        self.security.authorize(access, scope, StorageAction.SEARCH, "memory_unit")
+        for recaller in self._recallers:
+            if not hasattr(recaller, "indexed_population"):
+                continue
+            try:
+                count = recaller.indexed_population(scope, query)
+            except UnsupportedCapabilityError:
+                continue
+            if type(count) is not int or count < 0:
+                raise ValidationError("indexed_population must return a nonnegative integer")
+            return count
+        raise UnsupportedCapabilityError("indexed_population", "domain", type(self).__name__)
 
     @staticmethod
     def _sanitize_document_content(units: list[MemoryUnit]) -> None:
@@ -1033,7 +1066,8 @@ class CompositeDomainStore(DomainStore):
                     )
                     continue
                 candidates.append(
-                    ScoredMemoryUnit(unit, candidate.score, candidate.channel, candidate.evidence)
+                    ScoredMemoryUnit(unit, candidate.score, candidate.channel, candidate.evidence,
+                                     candidate.content_match)
                 )
             batches.append(RecallBatch(batch.channel, batch.source, candidates))
         return RecallResult(batches=batches, errors=errors)

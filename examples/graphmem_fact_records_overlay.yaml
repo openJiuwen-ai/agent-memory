@@ -1,0 +1,140 @@
+# Opt-in recursive session build and bounded relational retrieval.
+# Bind the existing Qwen30B LLM and Qwen3-Embedding-0.6B in deployment config.
+# For 12,000 total query LLM tokens, search with Context.extensions.max_tokens=10976.
+# This includes the analysis reserve. Use fit_answer_budget for each reader request
+# with the real analysis usage, chat prompt token count and 12,000 total limit.
+# Use top_k=256, hierarchy_kind=time, hierarchy_role=time_span, disclosure=L2,
+# expand_depth=0 and rollup=false. Pass result.evidence_bundle to answer_body()
+# for source-attributed conversation passages with inline index links.
+# Raw pool <= 10% of eligible indexed sources and <= 128; no full-source fallback.
+globals:
+  memory_fulltext_scoring: bm25
+  policies:
+    hierarchy.enabled: 'true'
+  graph_enabled: false
+  embedder_query_prefix: 'Instruct: Retrieve conversation turns that provide all evidence
+    needed to answer the memory question.
+
+    Query: '
+  embedder_dim: 1024
+associator:
+  default:
+    target: graphmem_topdown
+    params:
+      feature_extractor: default
+      use_indexed_vectors: true
+      vector_view: detail
+      policy:
+        max_units: 2000
+        max_pairs: 100000
+        entity_neighbors: 4
+        time_neighbors: 3
+        scene_neighbors: 4
+        root_neighbors: 4
+        child_neighbors: 2
+        max_degree: 12
+        semantic_threshold: 0.78
+        isolated_semantic_floor: 0.72
+        temporal_seconds: 2678400
+        common_entity_sessions: 4
+        max_edges: 8192
+        balance_attributes: false
+layer_annotator:
+  graphmem_layers:
+    target: llm
+    params:
+      llm: default
+hierarchy_composer:
+  graphmem:
+    target: graphmem_recursive
+    params:
+      index_builder: default
+      llm: default
+      tokenizer_file: ${GRAPHMEM_TOKENIZER_FILE}
+      recursive_policy:
+        max_children: 32
+        max_input_tokens: 6000
+        max_view_tokens: 1400
+        max_output_tokens: 3072
+        repair_attempts: 1
+        structured_features: true
+        fact_first_records: true
+        compact_source_records: false
+        compact_parent_records: false
+evolver:
+  default:
+    target: orchestrating
+    params:
+      extractor: default
+      abstractor: default
+      associator: default
+      index_builder: default
+      message_store: default
+      dedup: default
+      llm: default
+      hierarchy_composer: graphmem
+      associate_after_hierarchy: true
+retriever:
+  default:
+    target: pipeline
+    params:
+      query_parser: default
+      evidence_packing:
+        mode: sources_first
+        header_style: compact
+        max_summaries: 1
+        tokenizer_file: ${GRAPHMEM_TOKENIZER_FILE}
+      graph_navigation:
+        strategy: relational
+        seed_count: 4
+        ancestor_hops: 64
+        context_radius: 1
+        max_hops: 2
+        max_neighbors: 6
+        max_edges: 512
+        max_reads: 192
+        source_limit: 16
+        include_original: true
+        semantic_source_terms: true
+        chunk_source_hints: true
+        analysis_token_reserve: 768
+        initial_summary_fraction: 0.5
+        detail_keyword_entry: true
+        event_guided_entry: true
+        diversify_attributed_entry: true
+        missing_clause_keyword_entry: true
+        single_slot_entry_consensus: true
+        relation_source_consensus: true
+        probe_uncovered_clauses: true
+        semantic_endpoint_probe: named
+        refill_entry_probes: true
+        reserve_corroborated_entry: true
+        prefer_coarse_keyword_entry: true
+        prefer_temporal_keyword_entry: true
+        reserve_temporal_anchor_entry: true
+        conversation_day_lookup: true
+        prefer_indexed_operands: true
+        initial_candidate_limit: 8
+        summary_candidate_limit: 32
+        source_candidate_limit: 128
+        branch_width: 2
+        summary_token_budget: 640
+        source_vector_scopes: 32
+        detail_source_hints: false
+        source_role_balance: true
+        adaptive_budget: true
+        adaptive_target_tokens: 6144
+        initial_tokens: 2048
+        source_candidate_ratio: 0.1
+        summary_candidate_ratio: 0.25
+      rerank_enabled: false
+query_parser:
+  default:
+    target: graphmem_query
+    params:
+      tokenizer: default
+      embedder: default
+      feature_extractor: default
+      llm: default
+      analysis_mode: all
+      resolve_relative_dates: true

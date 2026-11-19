@@ -12,11 +12,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
 
 from jiuwen_memory.common.errors import ConflictError, NotFoundError
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.storage.base import StoreType
-from jiuwen_memory.storage.graph import GraphProducer, GraphStore
+from jiuwen_memory.storage.graph import GraphProducer, GraphStore, validate_edge_read
 from jiuwen_memory.storage.types import Edge, GraphQuery, Node
 
 _ScopeKey = tuple[str, str, str, str, str]
@@ -114,6 +115,17 @@ class InMemoryGraphStore(GraphStore):
             frontier = nxt
         nodes = [self._nodes[sk][i] for i in reached if i in self._nodes[sk]]
         return nodes[: query.limit]
+
+    def get_edges(
+        self, scope: Scope, node_ids: list[str], *, relation: str | None = None,
+        limit: int = 1000,
+    ) -> list[Edge]:
+        validate_edge_read(node_ids, limit)
+        wanted = set(node_ids)
+        edges = [edge for edge in self._edges[_skey(scope)].values()
+                 if (edge.source in wanted or edge.target in wanted)
+                 and (relation is None or edge.relation == relation)]
+        return deepcopy(sorted(edges, key=lambda edge: edge.id)[:limit])
 
     # -- GraphStore 契约：按关键词找种子节点（属性子串命中） ------------------ #
     def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:

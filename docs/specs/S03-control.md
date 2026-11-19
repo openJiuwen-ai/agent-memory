@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-11-05 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/F04-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md |
@@ -704,3 +704,10 @@ detail 标记 retryable="true"，不保留故障保护，下一周期重新读�
 - 到期清扫同样按该规则比较 `t_invalid` 与当前时刻；仅 `t_invalid < now` 的 ACTIVE
   单元视为到期，等于当前时刻时不提前清扫。
 
+### 可选递归树的完整性取数
+
+显式 HIERARCHY 候选按未访问父前沿递归补齐，而不是按 TIME 角色数结束。默认树仍
+要求相邻角色；带递归结构版本的树允许重复 time_span 角色，但必须满足严格下降的
+高度、相同源会话、完整双向引用和授权 Scope。循环引用和缺失后代均失败。
+固定相邻层的后台任务仅消费提供兼容 profile 的 Composer；递归 Composer 不声明
+该能力，当前通过显式 HIERARCHY 在追加后复用未变摘要。

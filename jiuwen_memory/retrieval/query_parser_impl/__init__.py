@@ -9,5 +9,6 @@ from jiuwen_memory.common._import_support import import_optional
 from jiuwen_memory.retrieval.query_parser import QueryParserProducer
 
 import_optional(".simple_query_parser", __name__)
+import_optional(".graphmem_query_parser", __name__)
 
 __all__ = ["QueryParserProducer"]

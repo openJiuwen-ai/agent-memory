@@ -672,3 +672,10 @@ DEV 不允许 0.0.0.0、:: 或其他非回环绑定；容器转发、代理和 T
   先评审契约，设计/取舍仍维护本页，不再新建安全 feature。
 - 外部审计锚点尚未实装；KMS/Vault/HSM、跨重启轮换、OAuth
   资源服务器和分布式限流/公平配额都不能作为本分支已完成能力。
+
+### 派生关系读取的授权边界
+
+可选图关系读取沿用 StorageSecurity：DomainStore.related_edges 先以 memory_unit
+资源执行 SEARCH，受管 GraphStore.get_edges 以 graph 资源执行 SEARCH。完整 Scope
+继续下推到物理后端。关系边不产生新的授权，端点与原文仍须经领域真源读取、受已授权
+Scope 与过滤条件约束；权限或明文保护拒绝不能被解释为成功且证据完整。

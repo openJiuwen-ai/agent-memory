@@ -30,7 +30,7 @@ from jiuwen_memory.common._support import (
 )
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import EmbedderProducer
-from jiuwen_memory.common.errors import HealthCheckError
+from jiuwen_memory.common.errors import HealthCheckError, ValidationError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.config.binding import resolve_endpoint
 from jiuwen_memory.config.keys import NS_EMBEDDER
@@ -58,6 +58,7 @@ class OpenAIEmbedder(Embedder):
         ssl_verify / ssl_ca_cert: 出站 TLS 校验（见 ``common._support``）
         config_source: 可选；每次调用 ``fetch("embedder.model|api_key|base_url")``
         config_namespace: ConfigSource key 命名空间，默认 ``embedder``
+        query_prefix: 仅查询向量使用的模型指令；文档向量不添加，默认空串
     """
 
     def __init__(
@@ -73,7 +74,11 @@ class OpenAIEmbedder(Embedder):
         ssl_ca_cert: str | None = None,
         config_source: ConfigSource | None = None,
         config_namespace: str = NS_EMBEDDER,
+        query_prefix: str = "",
     ) -> None:
+        if not isinstance(query_prefix, str):
+            raise ValidationError("embedder_query_prefix must be a string")
+        self._query_prefix = query_prefix
         # 构造期值仅作 ConfigSource 缺失时的回落；运行时以 fetch 为准
         self._fallback_model = model_name
         self._fallback_base_url = base_url or None
@@ -126,6 +131,10 @@ class OpenAIEmbedder(Embedder):
         for batch in self._split_batches(texts):
             all_vectors.extend(self._embed_batch(batch))
         return all_vectors
+
+    def embed_query(self, text: str) -> list[float]:
+        """Apply an explicitly configured query instruction exactly at this boundary."""
+        return self.embed([self._query_prefix + text])[0]
 
     def _endpoint(self):
         """解析当前应生效的 model / api_key / base_url（ConfigSource 优先）。"""
@@ -260,4 +269,5 @@ def _build(config):
         ssl_verify=ssl.verify,
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
+        query_prefix=config.get("embedder_query_prefix", ""),
     )
