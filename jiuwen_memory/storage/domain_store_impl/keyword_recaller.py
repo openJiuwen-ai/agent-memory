@@ -104,6 +104,11 @@ class KeywordRecaller(Recaller):
     def channel(self) -> RecallChannel:
         return RecallChannel.KEYWORD
 
+    def indexed_population(self, scope: Scope, query: ParsedQuery) -> int:
+        if self._fulltext is None or self._layer != "l2":
+            return super().indexed_population(scope, query)
+        return self._fulltext.count_units(scope, query.scalar_filters, descendants=True)
+
     def recall(self, scope: Scope, query: ParsedQuery, top_k: int) -> list[ScoredUnit]:
         if self._fulltext is None:
             return []  # store 未注入（该层未配）→ 跳过
@@ -115,7 +120,8 @@ class KeywordRecaller(Recaller):
         )
         hits = self._fulltext.search(scope, tq)
         records = self._fulltext.get(scope, [h.id for h in hits])
-        batch1 = aggregate_to_units(hits, records, RecallChannel.KEYWORD)
+        batch1 = aggregate_to_units(hits, records, RecallChannel.KEYWORD,
+                                    recall_entry_semantics=query.recall_entry_semantics)
 
         # L2 实体关联扩展：从 batch 1 候选 metadata['entities'] 反查关联 unit。
         # batch1 已满足 top_k 时短路：实体扩展打分（anchor×decay ≤ batch1 中位数）

@@ -1,4 +1,4 @@
-"""OpenAIEmbedder 单元测试（10 个测试）。
+"""OpenAIEmbedder 单元测试。
 
 使用 Mock 替换 openai client，隔离外部 API 依赖。
 """
@@ -51,13 +51,15 @@ def _hash_vector(text: str, dim: int) -> list[float]:
     return vec
 
 
-def _make_mock_embedder(dim: int = 8, max_batch_size: int = 2048) -> OpenAIEmbedder:
+def _make_mock_embedder(dim: int = 8, max_batch_size: int = 2048,
+                        query_prefix: str = "") -> OpenAIEmbedder:
     """创建使用 Mock client 的 OpenAIEmbedder。"""
     embedder = OpenAIEmbedder(
         model_name="text-embedding-3-small",
         api_key="mock-key",
         dimension=dim,
         max_batch_size=max_batch_size,
+        query_prefix=query_prefix,
     )
     mock_create = MagicMock(
         side_effect=lambda **kwargs: MockEmbeddingResponse(kwargs["input"], dim=dim)
@@ -130,6 +132,24 @@ def test_embed_query():
     vector = embedder.embed_query("test query")
     assert len(vector) == 8
     assert isinstance(vector, list)
+
+
+def test_query_instruction_does_not_change_document_embeddings():
+    prefix = "Instruct: Retrieve relevant conversation evidence.\nQuery: "
+    embedder = _make_mock_embedder(query_prefix=prefix)
+    embedder.embed(["source text"])
+    query_vector = embedder.embed_query("question")
+    calls = getattr(embedder, "_client").embeddings.create.call_args_list
+    assert [c.kwargs["input"] for c in calls] == [["source text"], [prefix + "question"]]
+    assert query_vector == _hash_vector(prefix + "question", 8)
+
+
+@pytest.mark.parametrize("prefix", [None, 123, ["instruction"]])
+def test_query_prefix_requires_a_string(prefix):
+    from jiuwen_memory.common.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="embedder_query_prefix"):
+        OpenAIEmbedder(query_prefix=prefix)
 
 
 def test_health():

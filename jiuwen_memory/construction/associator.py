@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from dataclasses import dataclass, field
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit, Relation
@@ -28,6 +29,28 @@ class AssociatorProducer(Factory):
 
 
 class Associator(ConstructionOperator):
+    incremental: bool = False
+
+    def associate_delta(
+        self, units: list[MemoryUnit], previous: dict[str, str],
+    ) -> AssociationDelta:
+        """Optional pure incremental planner, on one complete scoped candidate window."""
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("associate_delta", "incremental", type(self).__name__)
+
     @abstractmethod
     def associate(self, units: list[MemoryUnit]) -> list[Relation]:
         """在一批记忆单元间做关联分析，返回发现的关联关系。"""
+
+
+@dataclass
+class AssociationDelta:
+    relations: list[Relation] = field(default_factory=list)
+    affected_ids: list[str] = field(default_factory=list)
+    fingerprints: dict[str, str] = field(default_factory=dict)
+    policy_id: str = ""
+    stats: dict[str, int] = field(default_factory=dict)
+    # Optional cache identities including derived feature inputs. Edge endpoint
+    # fingerprints above remain bound only to persisted MemoryUnit truth.
+    input_fingerprints: dict[str, str] = field(default_factory=dict)

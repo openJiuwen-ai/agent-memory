@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.common.type_def import FilterExpr, Scope
 
 from .base import BaseStore
 from .types import Document, ScoredID, TextQuery
@@ -28,6 +28,17 @@ class FulltextProducer(Factory):
 
 
 class FulltextStore(BaseStore):
+    def count_units(self, scope: Scope, filters: FilterExpr | None = None,
+                    *, descendants: bool = False) -> int:
+        """Count distinct scoped unit IDs from index metadata, without reading text.
+
+        Descendant counts keep org/space exact; nonempty user/agent/session
+        dimensions further restrict the authorized boundary. No scan/get fallback.
+        """
+        from jiuwen_memory.common.errors import UnsupportedCapabilityError
+
+        raise UnsupportedCapabilityError("count_units", "fulltext", type(self).__name__)
+
     @abstractmethod
     def insert(self, scope: Scope, docs: list[Document]) -> None:
         """在 ``scope`` 下索引新文档；id 已存在时报冲突。"""

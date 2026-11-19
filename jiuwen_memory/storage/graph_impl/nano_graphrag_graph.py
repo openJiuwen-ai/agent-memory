@@ -45,7 +45,7 @@ from jiuwen_memory.storage.graph import GraphProducer
 
 from .._support import scope_segments, wrap_backend
 from ..base import StoreType
-from ..graph import GraphStore
+from ..graph import GraphStore, validate_edge_read
 from ..types import Edge, GraphQuery, Node
 
 _NX_STORAGE_CLS: Any = None
@@ -290,6 +290,32 @@ class NanoGraphRAGGraphStore(GraphStore):
                     break
             found = found[: query.limit]
             return [self._to_node(nid, graph.nodes[nid]) for nid in found]
+
+    def get_edges(
+        self, scope: Scope, node_ids: list[str], *, relation: str | None = None,
+        limit: int = 1000,
+    ) -> list[Edge]:
+        validate_edge_read(node_ids, limit)
+        if not node_ids:
+            return []
+        graph = networkx_graph(self._store(scope))
+        found: dict[str, Edge] = {}
+        with wrap_backend("nano-graphrag get_edges"):
+            for node_id in dict.fromkeys(node_ids):
+                if not graph.has_node(node_id):
+                    continue
+                for source, target, data in graph.edges(node_id, data=True):
+                    if relation is not None and data.get("relation") != relation:
+                        continue
+                    edge_id = data.get("id", "")
+                    # Old nano graph edges may be unoriented; GraphMem fingerprints
+                    # are keyed by endpoint id, not by backend iteration direction.
+                    found[edge_id] = Edge(
+                        id=edge_id, source=source, target=target,
+                        relation=data.get("relation", ""),
+                        properties=json.loads(data.get("properties") or "{}"),
+                    )
+        return sorted(found.values(), key=lambda edge: edge.id)[:limit]
 
     def _resolved_working_dir(self) -> str:
         from jiuwen_memory.config.binding import resolve_connection_url

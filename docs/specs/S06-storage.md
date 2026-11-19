@@ -5,9 +5,16 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F03-postgres-backend.md，docs/features/storage/F04-storage-ssl.md，docs/features/storage/F05-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
+## 向量投影版本
+
+向量投影可携带 `indexed_text_sha256`：L2 为该记忆正文的哈希，L0/L1 为对应层文本
+哈希。关系特征读取必须以当前 MemoryUnit 复核该值及 unit_id；缺失/不一致的投影
+不能当作当前构图输入。字段是可重建索引 metadata，不覆盖本体、Scope 或端点指纹。
+旧索引仍可按既有召回路径使用；启用构图向量复用前由绑定的 IndexBuilder 刷新。
+
 ## Markdown 块更新契约
 
 `MarkdownStore.replace_content(scope, md_filename, old_content, new_content, *,
@@ -375,6 +382,16 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 
 全文倒排索引存储，统一 CRUD + 关键词检索。
 
+内存后端支持 `overlap` 和 `bm25` 两种评分。BM25 在每个具名端口的精确 Scope 内维护词频、文档频率和总词数，增删改只更新受影响文档的倒排项。查询先从匹配的倒排项计算分数，对元数据应用过滤后返回 top-k。相同分数默认按文档 ID 排序。内存 BM25 和向量端口可用布尔参数
+`stable_hierarchy_ties` 选择递归摘要同分时按原文位置和内容摘要排序。具名端口参数
+优先于 `globals.memory_stable_hierarchy_ties`，两处均未提供时关闭。只有具备
+递归会话和原文跨度元数据的摘要使用此规则，向量端口同时要求已存内容指纹。
+排序发生在 top-k 截断前，相关性分数、过滤和索引持久化格式沿用原契约。
+
+`event_guided_entry` 的初选请求复用当前批次已获取的摘要索引记录。
+关键词通道可带回限长的索引文本，向量和关键词通道可带回已存的事件属性。
+合并多条索引记录继续采用 MaxP，真源点读仍由选定候选的正常路径执行。
+
 | 方法 | 签名 | 语义 |
 |------|------|------|
 | `insert` | `(scope, docs: list[Document]) -> None` | 在 scope 下索引新文档；id 已存在时报冲突 |
@@ -690,3 +707,32 @@ Store 抽象、跨后端不变量与注册机制。
 | S07-common | 定义 `MemoryUnit.hierarchy`、`HierarchyKind`、`HierarchyRole` 与 `FilterClause` |
 | S08-config | Store 连接参数与 `*.active` 可由 ConfigSource 晚绑定；切换后端不包含数据迁移 |
 | architecture.md §5 | 可配置真源形态（文档/结构化）与多后端 |
+
+## 可选关系投影读取
+
+`GraphStore.get_edges(scope, node_ids, *, relation=None, limit=1000) -> list[Edge]`
+返回至少有一个端点属于 node_ids 的边，按 edge.id 稳定排序并限制数量。空节点列表
+返回空，不能代表全图。完整 Scope 五维必须由后端原生隔离；relation 为精确匹配。
+接口接受最多 2,000 个非空节点 ID，limit 为 1–10,001 的整数，不接受 bool。
+属性返回独立快照，读取者不得通过修改结果改变存储。缺少该可选能力明确抛不支持错误。
+
+`DomainStore.related_edges(scope, node_ids, *, relation=None, limit=1000, access=None)`
+为领域面的可选入口，不暴露后端私有状态。图端口由数据面 graph_store 配置指定；
+领域面及图端口都按 SEARCH 授权，缺失端口不能静默换后端。返回边为派生投影，
+消费方须另取端点 MemoryUnit 并复核版本、Scope 和可见性。
+
+
+### 可选索引规模计数
+
+`DomainStore.indexed_population(scope, query, *, access=None) -> int` 是只返回数量的可选
+SEARCH 操作。它按授权 Scope 与完整硬过滤统计主内容索引的 distinct 完整 Scope+unit_id，
+与查询文本、top-k、分块数量和摘要分表无关；不能通过 get/list/scan 读取全量正文来实现。
+未支持该能力时明确抛 UnsupportedCapabilityError，不返回猜测值或放宽候选比例限制。
+这里的数量是当前可见索引视图，不是额外加载的候选，也不声称包含尚未入索引的数据。
+
+`FulltextStore.count_units(scope, filters=None, *, descendants=False) -> int` 提供元数据计数。
+默认保持五维 Scope 精确隔离；显式 descendants=true 时 org/space 必须精确相等，
+非空 user/agent/session 继续收窄。返回前按完整 Scope+unit_id 去重，缺失合法 unit_id
+的索引记录不计入。领域面和端口面均执行 SEARCH 授权。不得用近似 cardinality 作为
+严格比例上限的分母；分页计数未完成或后端失败须明确报错。计数反映查询开始时的索引
+视图，不承诺和并发写入构成跨后端事务；候选自身仍逐项复核。

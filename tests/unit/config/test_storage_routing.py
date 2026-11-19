@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from jiuwen_memory.common.errors import ValidationError
-from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
+from jiuwen_memory.common.type_def import MemoryUnit, ParsedQuery, Scope, Segment
 from jiuwen_memory.common.type_def.entity import EntityStoreFilters
 from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
 from jiuwen_memory.config.routing import ActiveRouter, RoutingStoreManager
@@ -196,3 +196,24 @@ def test_routing_store_manager_document_ports_follow_active() -> None:
     b.markdown.assert_called_once_with("default")
     cached_shadow.health()
     b.shadow_index.assert_called_once_with("default")
+
+
+def test_indexed_population_follows_active_domain_and_forwards_access() -> None:
+    left, right = MagicMock(), MagicMock()
+    left_domain, right_domain = left.domain_store.return_value, right.domain_store.return_value
+    left_domain.indexed_population.return_value = 12
+    right_domain.indexed_population.return_value = 31
+    cfg = DictConfigSource({"store_manager.active": "left"})
+    storage = RoutingStoreManager(ActiveRouter(
+        namespace="store_manager", instances={"left": left, "right": right},
+        config_source=cfg, default_name="left",
+    ))
+    domain = storage.domain_store()
+    query = ParsedQuery(raw="test population")
+    access = MagicMock()
+
+    assert domain.indexed_population(_SCOPE, query, access=access) == 12
+    cfg.put("store_manager.active", "right")
+    assert domain.indexed_population(_SCOPE, query, access=access) == 31
+    left_domain.indexed_population.assert_called_once_with(_SCOPE, query, access=access)
+    right_domain.indexed_population.assert_called_once_with(_SCOPE, query, access=access)

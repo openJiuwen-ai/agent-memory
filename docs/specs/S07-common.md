@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md |
@@ -141,7 +141,13 @@ class Plugin(ABC):
 |------|------|------|
 | `embed` | `(texts: list[str]) -> list[list[float]]` | 批量向量化：每条输入产出一个向量 |
 | `dimension` | `() -> int` | 返回输出向量维度（须与目标向量索引一致） |
-| `embed_query` | `(text: str) -> list[float]` | 单条便捷方法 |
+| `embed_query` | `(text: str) -> list[float]` | 查询向量；默认包装 embed，实现可添加同模型专用查询指令 |
+
+OpenAI 兼容 Embedder 可配置 `embedder_query_prefix`（构造参数 `query_prefix`），默认空串。
+该指令只在 `embed_query` 边界添加一次，`embed` 的文档输入不变，不改变问题文本或关键词。
+RoutingEmbedder/DeferredEmbedder 必须委托 active 实例的 `embed_query`，不能退回文档
+向量路径而丢失专用查询协议。缓存方应按实际模型和带指令的完整输入区分查询向量。
+指令与模型兼容性由部署配置负责；模型切换时应选择对应实例配置。
 
 ### Chunker（`chunker/base.py`）
 
@@ -643,3 +649,21 @@ CryptographyProvider 与 `local` KeyProvider。
 任务私有副本；副本随成功/失败清理。原资产引用、文件名与规约输出结构保持稳定。
 可信注入的替代 backend 负责自身源访问，不由此获得内置文件读取能力。
 配置契约见 S08，安全边界见 F04。不向 Normalizer 传递请求身份或新增公共 API 参数。
+
+## 递归摘要的逐子来源区间
+
+`graphmem_child_detail_spans` 是可选的版本化 JSON 元数据，只保存正文字符区间及
+绑定摘要；Unicode 以 Python 字符位置计数，不以字节或 Token 计数。重复的逐子摘要
+可以引用同一区间。版本、区间整数类型/范围、子引用数量或绑定不符时整体不可用。
+绑定检测正文、完整 Scope 和有序子引用的变化，不是授权凭证；索引与父子链的权限
+及生命周期验证仍由调用方完成。映射不得携带独立事实文本或把消息时间视为事件时间。
+
+### 召回记录的可选分片位置
+
+`ParsedQuery.recall_entry_semantics` 缺省关闭，由检索编排只为初选设置。
+`ScoredUnit.entry_semantics` 与 `ScoredUnit.entry_keyword_text` 仅在启用时
+从当前已召回的摘要索引记录带回，用于读取 ID 前的提示。文本限制为 8,192 字符，
+属性沿用构建保存的有界事件格式。两个字段均不进入 `ScoredMemoryUnit`，
+也不充当内容可见性证明或对外证据。
+
+`ScoredUnit` 和 `ScoredMemoryUnit` 可携带 `ContentMatch`，字段为记录 ID、分片序号、起止字符位置、正文 SHA-256 和索引分数。缺省值为 `None`。该值供检索定位已授权摘要的下钻路径，访问来源时继续使用正常的 Scope 和可见性检查。

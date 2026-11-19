@@ -32,6 +32,7 @@
 | `encryption.py` | PR1-1 的 StoreManager 装配保护：全部具名 KV/FS 包装、公开依赖契约去重、可配置 Producer 包装与缓存回填；公共 manager 保护清单准入检查 |
 | `entity_store.py` | EntityStore 端口契约（**StorageCapability 第七席位 ENTITY**）：以 `space_id` routing + `EntityStoreFilters` 中非空的 `actor_id` / `assistant_id` / `session_id` 隔离的实体反向索引；`space_id: str` 作显式第一入参——BaseStore「scope 第一入参」的**唯一例外**，授权由 `_AuthorizedEntityStoreProxy` 专门适配 |
 | `_support.py` | 后端实现共用：异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）、已选后端依赖预加载（`preload_backend`）；`SslConfig` 与 scheme 校验复用 `common._support` |
+| `_hierarchy_ties.py` | 内存 BM25 和向量端口的递归摘要同分规则，从索引元数据读原文位置，不访问真源正文 |
 | `_pg.py` | PostgreSQL 后端共享基础：asyncpg 惰性连接池（专职事件循环线程桥接同步调用）、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定 |
 | `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector）；`uri`/`dsn` 晚绑定 |
@@ -41,7 +42,7 @@
 | `fs_impl/` | FSStore 实现目录（memory / local / encrypted）；local 的 `root` 晚绑定；encrypted_fs_store.py 用稳定 object_id 绑定 AAD、有界读写并声明 StoreSecurity |
 | `entity_impl/` | EntityStore 实现目录（elasticsearch）；命名空间中已声明实例经 manager 全量聚合为 ENTITY 端口，消费方按端口名选择；`hosts` / 兼容 `endpoint` 未配时 builder 返 None → 无 ENTITY 能力（增强层装配期降级，不报错）；地址在构造期固定 |
 | `store_manager_impl/` | 管理面实现目录；`CompositeStoreManager` 以 `composite` target 自注册。双入口：`__init__` 收已构造的 Store 实例（手工/测试），`from_config` 从配置内部构造九类 Store 与全部命名数据面（装配路径，`_build` 即其一行封装）。含 `_AuthorizedStoreProxy` + ENTITY 专用的 `_AuthorizedEntityStoreProxy` 授权代理、九类端口全量聚合、`_build_domain_stores`（`domain_stores` 段逐套装配，`default` 必建且是命名实例的 overlay base）。**manager 段 params 不承载数据面配置**：端口来自命名空间聚合，数据面参数全在 `domain_stores.<name>` |
-| `domain_store_impl/` | 数据面实现目录；`CompositeDomainStore`（`recallers` property + `bind_recallers` 手工接线口 + `for_manager(manager, config)` 供 manager 装配期直接构造——profile 派生、召回路组装与绑定一次完成；真源 KV 端口名由装配期指名，非硬编码 default）、`_assemble_recallers`（F06 内收设计）与**召回路全家**：契约 `recaller.py`（`Recaller` + `RecallerProducer`，`TOP_NAME=recaller`）+ 实现 `keyword_recaller.py` / `vector_recaller.py` / `graph_recaller.py` + 共用的 `unit_aggregation.py`（chunk→unit MaxP 归并）。Recaller 是数据面内部件而非检索层算子，不继承 `RetrievalOperator`（F07） |
+| `domain_store_impl/` | 数据面实现目录；`CompositeDomainStore`（`recallers` property + `bind_recallers` 手工接线口 + `for_manager(manager, config)` 供 manager 装配期直接构造——profile 派生、召回路组装与绑定一次完成；真源 KV 端口名由装配期指名，非硬编码 default）、`_assemble_recallers`（F06 内收设计）与**召回路全家**：契约 `recaller.py`（`Recaller` + `RecallerProducer`，`TOP_NAME=recaller`）+ 实现 `keyword_recaller.py` / `vector_recaller.py` / `graph_recaller.py` + 共用的 `unit_aggregation.py`（chunk→unit MaxP 归并，仅按请求带回已获取的摘要初选提示或原文全文索引片段）。Recaller 是数据面内部件而非检索层算子，不继承 `RetrievalOperator`（F07） |
 | `markdown.py` / `shadow.py` | 文档视图与机器真源接口及 Producer；local Markdown 与 SQLite shadow 可选装配 |
 | `watchdog.py` / `watchdog_impl/` | 文件监听公共生命周期；LocalWatchdog 停止准入后通过线程条件等待已进入 shadow 的工作，排队旧代不再访问依赖；不等待调用方 loop 恢复协程 |
 | `bootstrap.py` | 统一触发九类 Store 后端、watchdog 与 Storage 实现注册 |
@@ -306,3 +307,23 @@ StoreManager.domain_store_for_kv(name) 定义可选领域读契约，默认抛�
 CompositeStoreManager 实现该方法，返回显式绑定受管 KV 的领域门面，用于正排写入前复核。
 该门面仍执行 memory_unit 授权并通过受管 KV 代理读数，不借用默认数据面的真源端口、
 文档模式或召回配置，不注册或替换 manager 的具名数据面。
+
+### 关系边的可选读取
+
+GraphStore.get_edges 为可选能力，memory/nano_graphrag 实现按完整 Scope、节点集合和
+关系类型返回有界、稳定排序的 incident edges；空节点集合不代表全图。
+CompositeDomainStore.related_edges 从配置指定的 graph_store 端口读取，领域面与图端口
+均执行 SEARCH 授权。调用方仍须经 get 读取端点真源并复核，边属性不能授权访问。
+未实现能力的插件显式抛 UnsupportedCapabilityError，不能伪造空结果。
+
+
+### 候选比例限制的索引计数
+
+CompositeDomainStore.indexed_population 委托已装配且支持计数的主内容 Recaller，
+KeywordRecaller 只在 L2 委托其具名 FulltextStore。不能读取完整 KV 列表来补数量。
+count_units 在受管端口映射到 SEARCH；授权范围与调用方过滤必须保留。
+内存全文只访问文档元数据，按完整 Scope+unit_id 去重；Elasticsearch 使用 size=0、
+关闭 source 的 composite 聚合分页得到精确 distinct 数量，不能用近似 cardinality。
+L0/L1、缺失端口或未支持后端明确拒绝，不能用零或全量扫描掩盖不支持。
+
+内存全文的 BM25 统计按物理端口和完整 Scope 隔离，更新文档同步更新倒排项。Top-k 在可见性及标量过滤之后截取。向量 MaxP 归并只传播获胜 L2 记录的可选位置。

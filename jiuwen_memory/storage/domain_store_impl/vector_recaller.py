@@ -98,7 +98,8 @@ class VectorRecaller(Recaller):
             # 命中 id 为 chunk 复合 id（L2）或 {unit_id}-l0/l1（L0/L1）；点读记录拿回
             # metadata['unit_id']，归并到 unit 粒度（同 unit 多 record 取 MaxP）。
             records = self._vector.get(scope, [s.id for s in scored])
-            result = aggregate_to_units(scored, records, RecallChannel.VECTOR)
+            result = aggregate_to_units(scored, records, RecallChannel.VECTOR,
+                                        recall_entry_semantics=query.recall_entry_semantics)
             logger.info(
                 "VectorRecaller(fallback search+get): layer=%s scope=%s "
                 "top_k=%d hits=%d units=%d",
@@ -112,7 +113,8 @@ class VectorRecaller(Recaller):
         # recall 路径下 metadata 已在 hits 内，records 即 hits 自身。
         if self._min_similarity > 0.0:
             hits = [h for h in hits if h.score >= self._min_similarity]
-        result = aggregate_to_units(hits, hits, RecallChannel.VECTOR)
+        result = aggregate_to_units(hits, hits, RecallChannel.VECTOR,
+                                    recall_entry_semantics=query.recall_entry_semantics)
         logger.info(
             "VectorRecaller: layer=%s scope=%s top_k=%d hits=%d units=%d",
             self._layer,

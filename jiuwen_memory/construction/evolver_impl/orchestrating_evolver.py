@@ -25,12 +25,16 @@ from __future__ import annotations
 
 import json
 import re
-import uuid
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import NamedTuple
 
-from jiuwen_memory.common.errors import ConflictError, ValidationError
+from jiuwen_memory.common.errors import (
+    BackendError,
+    ConflictError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
     get_logger,
@@ -38,11 +42,14 @@ from jiuwen_memory.common.log import (
     redact_for_log,
     scope_for_log,
 )
+from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_TITLE_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
+    FilterClause,
+    FilterOp,
     HierarchyKind,
     HierarchyRef,
     LifecycleState,
@@ -82,9 +89,13 @@ from jiuwen_memory.construction.hierarchy_composer import (
     HierarchyComposeProfile,
     HierarchyComposer,
     HierarchyComposeRequest,
+    HierarchyRepair,
     hierarchy_preparation,
 )
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.index_builder_impl.graph_relation_index_builder import (
+    GraphRelationIndexBuilder,
+)
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
 from jiuwen_memory.construction.router import (
@@ -106,7 +117,7 @@ from jiuwen_memory.storage.store_manager import (
     StoreManagerProducer,
     resolve_name,
 )
-from jiuwen_memory.storage.types import Edge, IndexRemoveMode, IndexWriteMode, Node
+from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 logger = get_logger(__name__)
 
@@ -263,6 +274,7 @@ class OrchestratingEvolver(Evolver):
         dedup_medium_similarity: float = 0.7,
         dedup_high_similarity: float = 1.0,
         dedup_extract: bool = True,
+        associate_after_hierarchy: bool = False,
     ) -> None:
         self._extractor = extractor
         self._abstractor = abstractor
@@ -271,6 +283,8 @@ class OrchestratingEvolver(Evolver):
         # 写入一律经 IndexBuilder；manager 仅用于图端口及提交前的领域点读。
         self._graph = storage.graph(graph_name) if storage.has_graph(graph_name) else None
         self._read_domain = _bind_read_domain(index_builder, domain_store)
+        self._relation_index = (GraphRelationIndexBuilder(self._graph, self._read_domain)
+                                if self._graph else None)
         # 原文（/messages/）专用：不是索引形式，不经 IndexBuilder。缺省与正排 KV 同实例。
         self._message_store = message_store
         self._dedup = dedup
@@ -281,6 +295,15 @@ class OrchestratingEvolver(Evolver):
         # 归属判定算子：None 表示不判定，派生单元沿用源单元的 scope（向后兼容）。
         self._router = router
         self._hierarchy_composer = hierarchy_composer
+        if not isinstance(associate_after_hierarchy, bool):
+            raise ValidationError("associate_after_hierarchy must be bool")
+        if associate_after_hierarchy and (
+            self._associator.incremental is not True or self._relation_index is None
+            or self._read_domain is None
+        ):
+            raise ValidationError("automatic hierarchy relations require incremental associator, "
+                                  "graph store and the writer-bound truth reader")
+        self._associate_after_hierarchy = associate_after_hierarchy
         self.relations: list[Relation] = []  # ASSOCIATE 产物（同时已落图）
 
         # 去重阈值配置（min/top_k/tier_filter/scope_filter 已下沉到 recaller；
@@ -398,6 +421,32 @@ class OrchestratingEvolver(Evolver):
             result = self._hierarchy_composer.build(compose_request)
         else:
             result = self._hierarchy_composer.replace_in_span(compose_request)
+        if (self._associate_after_hierarchy and result.complete
+                and (result.created_parent_ids or result.replaced_parent_ids)):
+            # The existing hierarchy request already authorizes its tree home.
+            # Read a bounded home-scope window, including archived parents so their
+            # incident edges are removed. Sources keep their own session Scopes.
+            try:
+                window = self._read_domain.list(
+                    options.tree_home_scope, limit=1001,
+                    filters=FilterClause("hierarchy_kind", FilterOp.EQ, options.kind.value),
+                )
+                if window.count > 1000:
+                    raise ValidationError("automatic relation window exceeds 1000 units")
+                admission = (request.hierarchy_incremental.write_admission
+                             if request.hierarchy_incremental is not None else None)
+                if admission is not None:
+                    admission(options.tree_home_scope)
+                self._evolve_associate(window.items)
+            except PlaintextDataError:
+                raise
+            except (ValidationError, UnsupportedCapabilityError, BackendError) as exc:
+                # Hierarchy truth has been committed. Never report all stages as
+                # complete; the ordinary ASSOCIATE interface can retry this stage.
+                result.complete = False
+                result.repair_required.append(HierarchyRepair(
+                    unit_id="", issue=f"graph_relation_refresh_failed:{type(exc).__name__}",
+                ))
         return EvolveResult(hierarchy_result=result)
 
     def _persist(self, units: list[MemoryUnit]) -> list[str]:
@@ -407,28 +456,8 @@ class OrchestratingEvolver(Evolver):
 
     def _persist_graph(self, units: list[MemoryUnit], relations: list[Relation]) -> None:
         """为涉及关联的单元建节点（幂等）、为每条关联建一条边。"""
-        if not units or self._graph is None:
-            return
-        scope = units[0].scope
-        for u in units:
-            node = Node(id=u.id, label=u.tier.value, properties={"content": u.content})
-            try:
-                self._graph.insert(scope, nodes=[node])
-            except ConflictError:
-                pass  # 节点已存在
-        edges = []
-        for relation in relations:
-            edges.append(
-                Edge(
-                    id=str(uuid.uuid4()),
-                    source=relation.source_id,
-                    target=relation.target_id,
-                    relation=relation.relation,
-                    properties=dict(relation.metadata),
-                )
-            )
-        if edges:
-            self._graph.insert(scope, edges=edges)
+        if self._relation_index is not None:
+            self._relation_index.write_legacy(units, relations)
 
     # ------------------------------------------------------------------
     # 去重核心方法
@@ -1467,6 +1496,23 @@ class OrchestratingEvolver(Evolver):
         return self._dedup_batch(abstracted)
 
     def _evolve_associate(self, units: list[MemoryUnit]) -> EvolveResult:
+        if self._associator.incremental is True:
+            if self._relation_index is None:
+                raise ValidationError("incremental association requires a graph store")
+            grouped: dict[tuple, list[MemoryUnit]] = {}
+            for unit in units:
+                grouped.setdefault(tuple(_unit_key(unit)[:5]), []).append(unit)
+            relations = []
+            for group in grouped.values():
+                previous = self._relation_index.fingerprints(
+                    group[0].scope, [unit.id for unit in group],
+                )
+                delta = self._associator.associate_delta(group, previous)
+                self._relation_index.apply_delta(group, delta)
+                relations.extend(delta.relations)
+                logger.info("Evolver: incremental association stats=%s", delta.stats)
+            self.relations.extend(relations)
+            return EvolveResult(updated_ids=sorted({rel.target_id for rel in relations}))
         relations = self._associator.associate(units)
         self.relations.extend(relations)
         self._persist_graph(units, relations)
@@ -1613,4 +1659,5 @@ def _build(config):
         dedup_medium_similarity=config.get("dedup_medium_similarity", 0.7),
         dedup_high_similarity=config.get("dedup_high_similarity", 1.0),
         dedup_extract=config.get("dedup_extract", True),
+        associate_after_hierarchy=config.get("associate_after_hierarchy", False),
     )

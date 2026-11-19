@@ -10,5 +10,6 @@ from jiuwen_memory.construction.associator import AssociatorProducer
 
 import_optional(".keyword_associator", __name__)
 import_optional(".llm_associator", __name__)
+import_optional(".graphmem_topdown", __name__)
 
 __all__ = ["AssociatorProducer"]

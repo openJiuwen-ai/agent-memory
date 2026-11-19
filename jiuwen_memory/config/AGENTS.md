@@ -29,6 +29,7 @@
 
 2. **同实现凭证优先晚绑定**  
    model/api_key/base_url/url 在 Embedder/LLM/Reranker/Store 调用或取连接路径 `fetch`；`*.active` 仅用于异质实现互切。
+   RoutingEmbedder 的文档和查询路径分别委托 embed/embed_query，不能丢失 active 实例的查询指令。
    具名实例的晚绑定 key 必须包含实例身份：`default` 用 `<namespace>.<field>`，其他实例用
    `<namespace>.<instance>.<field>`。该实例作用域投影当前只对已迁移的 `llm` 启用；其他
    命名空间在消费 builder 接入 `instance_namespace` 前保留旧投影，不得提前生成无人读取的
@@ -114,3 +115,11 @@
 层级总开关仍由 policy 控制，自定义 policies 完整替换默认表。
 ConfigSourceProducer.get_cached 必须走 Factory 绑定缓存上下文，确保旧运行实例
 在延迟解析树模型时仍读取原配置源。装配期不强制解析未用的可选 Embedder。
+
+### 可选图边读取的路由
+
+RoutingGraphStore.get_edges 与 RoutingDomainStore.related_edges 逐次解析 active 目标，
+完整透传 Scope、关系和上限；不在构造时固定底层裸图对象。GraphMem 策略通过既有
+associator/evolver/retriever params 装配，未声明时不改变原路径。
+
+内存全文后端读取 `globals.memory_fulltext_scoring`，由局部 `fulltext_store.<name>.params.scoring` 覆盖。后端目标继续由原具名实例决定。

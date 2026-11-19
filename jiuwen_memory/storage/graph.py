@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from jiuwen_memory.common.errors import UnsupportedCapabilityError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
@@ -30,6 +31,17 @@ class GraphProducer(Factory):
 
 
 class GraphStore(BaseStore):
+    def get_edges(
+        self, scope: Scope, node_ids: list[str], *, relation: str | None = None,
+        limit: int = 1000,
+    ) -> list[Edge]:
+        """Read incident edges in stable id order, within the exact Scope.
+
+        Optional capability: unsupported backends must fail explicitly. An edge
+        touches at least one supplied node. No implicit wildcard/full-graph read.
+        """
+        raise UnsupportedCapabilityError("get_edges", "graph", type(self).__name__)
+
     @abstractmethod
     def seed_ids(self, scope: Scope, tokens: set[str]) -> list[str]:
         """
@@ -74,3 +86,11 @@ class GraphStore(BaseStore):
     @abstractmethod
     def search(self, scope: Scope, query: GraphQuery) -> list[Node]:
         """在 ``scope`` 内从 ``query.start_id`` 出发扩展邻域/子图（多跳遍历）。"""
+
+
+def validate_edge_read(node_ids: list[str], limit: int) -> None:
+    if (not isinstance(node_ids, list) or len(node_ids) > 2000
+            or any(not isinstance(uid, str) or not uid for uid in node_ids)):
+        raise ValidationError("get_edges requires at most 2000 nonempty node ids")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10001:
+        raise ValidationError("get_edges limit must be between 1 and 10001")

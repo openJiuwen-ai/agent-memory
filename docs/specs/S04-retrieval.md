@@ -5,13 +5,56 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F07-schema-temporal-entity.md、docs/features/retrieval/F08-query-rewrite.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/storage/F06-composite-recaller-assembly.md |
 
 ## 明文拒绝的传播边界
 
 明文拒绝属于不得降级的失败：可选扩展、rollup、多模态及时间视图继续传播 PlaintextDataError，沿已有 BackendError 异常契约向调用方报错。索引未命中而未实际读取明文时不额外扫描真源；不在检索中迁移或回退明文。
+
+## 可选的预算证据包
+
+Snapshot 原文消息的展示头只声明 `message_time`，不把整条消息的单一 `t_event`
+显示为已核实的事件日期：一条消息可能回顾多个事件，旧摄入器也可能把来源头的
+首个日期填入该字段。正文、来源身份及存储时间字段不因此改写；非 Snapshot
+事件单元仍可显示自身事件时间。关系图中的事件时间来自已归属的事件区间，
+不能由消息头补造。
+
+`PipelineRetriever` 可装配 `EvidencePacker`。工厂参数 `evidence_packing` 缺省关闭；
+启用时包含 `mode=ranked|grouped|sources_first`、本地 `tokenizer_file`，以及 `max_group_size`（默认 2，
+允许 1–4）。需要 evidence 安装依赖；不会在查询时联网下载模型。Tokenizer 文件
+关闭自动截断和 padding，以其 SHA256 标识计量版本。
+
+该阶段在候选真源复核、排序与统一阈值之后运行，复用三条 Storage 管线共同的候选池。
+`ranked` 按既有顺序选择能完整放入的单元；`grouped` 可将同一完整 Scope、同一父的
+已召回 Snapshot 兄弟与锚点一起选择，优先时间接近者。组无法放入则尝试单独锚点；
+过长单元不切断事实，继续检查后续候选。总数不超过 top_k，来源以完整 Scope+ID 去重。
+这是一项证据组织策略，不代表新增关系导航、原文溯源或语义闭包。
+
+`sources_first` 先选择已复核的 Snapshot，再尝试最多 `max_summaries` 个摘要（默认 2）；
+没有 Snapshot 的严格摘要查询仍按完整摘要候选选择。该模式不为导航摘要预留名额。
+`header_style=compact` 用按 sources 顺序对应的 E1、E2 等引用代替重复 Scope/UUID；
+完整 Scope、ID、哈希仍保留在 sources 中。消息/事件时间保留，摘要的覆盖区间明确
+标为 coverage_start/end，不作为事件日期。默认 full 头部保持原格式，两个格式都按
+实际 rendered_context 精确计量。
+
+查询必须给出正整数 `max_tokens`，disclosure 为 L2 或 ADAPTIVE。显式启用后返回
+`EvidenceRetrievalResult`，继承普通 items/trajectory/errors，并增加 `evidence_bundle`：
+
+| 字段 | 含义 |
+|---|---|
+| `rendered_context` | 已计量的完整证据上下文；回答端应使用它，而不是再拼接所有三层字段 |
+| `sources` | 所选单元完整 Scope、unit_id、content SHA256；引用本体内容，不宣称一定是原始对话 |
+| `token_count` / `token_budget` | 上下文 Token 实际计数与预算，含来源头、说话者、两类时间和分隔符 |
+| `tokenizer_id` / `mode` | 计量器指纹及选择策略 |
+| `omitted_count` | 唯一非空候选中未选择的数量 |
+
+这是上下文预算，不包含应用的系统指令、问题、回答输出或额外模型调用。旧配置继续
+返回无新增字段的 RetrievalResult。空查询或无匹配时，启用模式也返回空证据包。
+首版不支持同时展开、rollup、Schema Temporal 或合并多空间证据包，显式拒绝这些组合；
+单空间结果的机械 JSON 序列化保留新增字段。策略详见
+[F09 关系检索与证据包](../features/retrieval/F09-graphmem-relational-evidence.md)。
 
 ## Metadata 检索契约
 
@@ -66,6 +109,8 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
     独立阶段，不下沉到 DomainStore 的 retrieve 入口。
 13. **部分失败显式返回**：部分召回入口失败时继续处理成功候选并返回 `ChannelError`；全部选中
     入口失败抛 `StorageRetrievalError`。显式空 channels 是无效输入。
+    显式 channels 也约束闭包与关系导航的二次索引召回。调用方未选 GRAPH 时，
+    这两种模式跳过关系边查询，仍可沿已有层级引用读取证据。
 14. **结构轴正交**：`ContentLayers`/`DisclosureLevel` 是 unit 内披露，`HierarchyRef` 是跨 unit 结构；CLM/ELM、`MemoryUnit.temporal` 与 `RecallChannel.TEMPORAL` 均不替代 `HierarchyKind.TIME`。
 15. **单 kind 层级请求**：一次层级请求只处理一个 `HierarchyKind.TIME|TOPIC|DIRECTORY|CLUSTER|CUSTOM`，不隐式跨 kind。
 16. **类型默认与接口预设分离**：内部 SearchOptions/RetrievalQuery 默认 expand_depth=0、rollup=False；
@@ -475,11 +520,11 @@ metadata 比较保留 JSON 原生类型。查询侧不做 string / number / bool
 
 | 类型 | 关键字段 |
 |------|----------|
-| `ScoredUnit` | unit_id / score / channel / evidence: list[ChannelEvidence] |
+| `ScoredUnit` | unit_id / score / channel / evidence: list[ChannelEvidence] / content_match（可选） |
 | `ChannelEvidence` | channel / rank / score / weight / contribution |
 | `RetrievedItem` | unit_id / score / content / user_metadata / system_metadata / parent_id / level: DisclosureLevel |
 | `TrajectoryStep` | stage / channel / candidate_count / cost_ms / detail |
-| `ScoredMemoryUnit` | unit: MemoryUnit / score / channel / evidence |
+| `ScoredMemoryUnit` | unit: MemoryUnit / score / channel / evidence / content_match（可选） |
 | `ChannelError` | channel / source / error_type / message |
 | `RetrievalResult` | items / trajectory / errors: list[ChannelError] |
 
@@ -545,7 +590,7 @@ NodeKey 为 `(org, space, user, agent, session, id)`。issues 不包含被排除
 
 | 类型 | 精确字段 |
 |---|---|
-| `ScoredUnit` | `unit_id` / `score` / `channel` / `evidence` |
+| `ScoredUnit` | `unit_id` / `score` / `channel` / `evidence` / 可选 `content_match` |
 | `ChannelEvidence` | `channel` / `rank` / `score` / `weight` / `contribution` |
 | `RetrievedItem` | `unit_id` / `score` / `abstract` / `overview` / `content` / `user_metadata` / `system_metadata` / `level` / `parent_id` |
 | `TrajectoryStep` | `stage` / `channel` / `candidate_count` / `cost_ms` / `detail` |
@@ -642,3 +687,246 @@ FilterExpr 复核仍按统一时间投影判定；不改变未知时间哨兵和
 
 结构查询的真源复核保留微秒精度，索引毫秒投影只负责前置筛选。
 valid-time 起点为空表示无下界：前置使用 NOT(t_valid > as_of)，真源按半开区间复核。
+
+## 可选关系导航与打包后证据核对
+
+图导航位于候选真源复核、融合、重排、阈值之后，以及证据打包之前。只通过同源
+DomainStore.related_edges/get 访问派生关系和真源；关系不能替代源节点的 Scope、
+生命周期、时间与用户过滤。两个端点的当前版本必须与关系投影一致。
+
+来源补全使用完整 Scope + source_id。返回的原文必须从源 Snapshot 读取，与记录
+匹配并能沿有效双向父子引用回到摘要。任何缺失、过滤、版本漂移或预算限制都不得
+变成“证据完整”。正文引用头、时间和分隔符共同计入最终上下文 Token。
+
+可选 evidence_bundle.navigation 记录本次计划中的来源、关系理由和打包后实际保留情况。
+关系、祖先、索引探测和正文读取都有各自的上限。use_relations=false 关闭关系边扩展。
+
+include_original=false 必须配合摘要 hierarchy_role，不读取原文节点或 TreeFact 文本。
+单空间、正 max_tokens、L2/ADAPTIVE 与 ranked/sources_first evidence_packing 是前提；
+与 rollup、expand_depth、Schema Temporal 的未支持组合显式拒绝。
+
+### 递归结构导航
+
+可选递归 TIME 结构的 role 不等于高度；同为 time_span 的节点可为合法父子。
+导航按结构版本、物理高度、源会话身份、双向 Scope 引用和覆盖区间验证，不能以
+固定三/四层上限判定附件不可达。读取总量、祖先跳数和 visited 集合仍严格限界。
+不缓存全量后代原文的递归节点，通过直接子树定位源 Snapshot；纯摘要模式仅允许
+声明为摘要的子引用，不触发原文读取。
+
+### 可选问题需求与渐进预算
+
+查询实现可以返回 ParsedQuery 的 typed 子类，以内部 navigation_needs 承载实体、
+场景子问题、问题类型和软事件时间范围。该对象不是调用方 extensions 的授权/路由
+字段，也不生成硬过滤、Scope 或 as_of。针对多事件摘要的可选解析器不把自然语言
+日期下推为单一 t_event 谓词；调用方明确传入的过滤、版本时点和结构区间仍须保持。
+缺少参考时点时不得用机器当前日期猜测问题中的相对日期。
+
+问题分析最多调用既有模型一次，格式或服务失败保留原检索入口、回退规则，并暴露
+调用尝试与回退状态；不暗中追加模型或重试。该调用计入全部查询模型 Token。
+
+GraphMem 的软时间需求须区分“在某月发生”和“截至某月的累计状态”。当原问题末尾
+仅含一个可无歧义解析的 `as of` 绝对日期/月份/年份时，软需求只设置该日历单位结束
+后的排他上界，不用该单位起点排除更早证据。多日期、相对日期和非法日期保留原分析，
+不借当前机器时间补全；此规则不增加模型调用，也不改 API `as_of` 的 valid-time
+语义、调用方硬过滤或结构区间。它只是检索偏好，不证明累计事实已经完整。
+
+可选 `resolve_relative_dates` 以调用方提供的 `graphmem_reference_time` 校验模型已有的
+单个相对日窗口。只处理明确的相邻星期、today/yesterday/tomorrow 和整数天 ago；
+before/after/since 等显式边界按同一日历日处理。没有时间窗口或有效参考日期时不
+自行生成；多日期、近似表达、时刻、引号和宽泛状态保留原分析，周/月范围不据此猜测。
+结果仍是软事件偏好；不改变请求向量、模型调用、硬过滤、API as_of 或读取预算。
+等价日期的原字符串保持，避免只因格式变化改动下游请求。默认关闭。
+
+启用渐进预算时，各阶段共享一次有界计划、完整 Scope+ID 读缓存与总读取上限。
+analysis_token_reserve 在有分析尝试时从请求上限扣除，包含失败调用。
+上下文 Token 和实际模型用量分别计量。已规划证据与 query_coverage 分开报告，
+后者只代表当前有界证据池中的启发式匹配。
+
+### 问题驱动的关系选择与文本图
+
+可选 relational 策略将既有查询需求组织为 select、expand、union/compare/join/project、
+order。该计划是候选选择依据，不是语义充分性证明或可执行的数据库联结语义。
+场景匹配把集合问题的计数操作词与待检索内容分开，不要求证据重复 number/total/
+count/quantity；其余词面匹配、否定与区分性内容保持。需求原文、问题向量及初选
+索引查询保持，实体/时间绑定和匹配比例阈值不放宽；空内容词集合不产生覆盖信号。
+入口在 ID-first 路径先限制 ID，再物化并保留各通道证据供原 Fuser 使用；组合存储路径
+仍服从其原接口。关系端点与直接子节点的派生索引查询只允许已到达的 ID 范围，硬过滤
+须按角色重新构造并保留调用方过滤。索引分数只参与软选择，不能替代真源复核。
+摘要初选在同一名额内先保留详细内容向量入口首位和原融合排序的首个其他候选，
+再以概览向量入口首位补充剩余位置；去重后其余位置保持原融合，不增加同通道分层票数。
+初选额度不足时只截取前缀，不能为概览命中扩大额度或挤掉这两个既有入口。
+关系端点探测仍只保留详细内容向量首位。缺少可识别的详细内容入口时沿用原融合，
+缺少概览入口时不补造候选；不增加探测或读取上限。优先名额不绕过随后任何真源/关系
+条件检查，也不表示已找到正确事实。详细/概览首位的同分选择不依赖 batch 返回顺序，
+融合余位保持原有稳定次序。代词和通用角色不作为
+人物身份，也不能通过这类存储别名将第一人称问题绑定到某个具名人物。
+
+正文准入继续复核 Scope、生命周期、过滤、端点内容指纹、父子双向引用和合法角色。
+时间扩展理由只能引用已匹配事件的已知区间，不能用消息时间补造事件时间。
+源候选、摘要探测、关系、分支和追加正文读取分别有界，纯摘要模式不读原文索引与正文。
+多跳导航可将剩余新增摘要探测额度分配给后续各轮；本轮没有合法的新分支时，保留
+额度可用于本轮剩余候选，但不能增加总候选/读取上限或跳数。分轮分配不改变广度
+优先顺序，也不改变端点准入条件；已有端点不会重复占用新增探测额度。诊断可返回
+`relation_probe_stages`，逐轮记录跳数、额度、实际新增探测和无新分支时是否回补。
+可选 `reserve_descendant_probes` 在同一摘要探测上限内，为已选递归父节点的未探测直接
+子摘要保留分支额度，关系探索及其回补只能使用剩余额度。预留依据已读父节点的范围
+内合法子引用，按完整 Scope/ID 去重，不读取额外正文或索引，也不对原文预留摘要名额。
+子摘要最终仍须索引命中、可见性和父子引用复核；预留不表示子节点相关或证据已覆盖。
+每轮诊断增加 `descendant_probe_reserve` 与扣除预留前的 `remaining_total_before`；
+`remaining_before` 表示本轮可用于关系探测的额度。关闭时保持原诊断与选择行为。
+
+可选 `refill_entry_probes` 在 ID-first 召回路径中暂存当前请求已经返回的摘要 ID，
+不新增全库索引查询、不提高每路初选名额，元数据池不超过本次摘要总限额。首次物化
+和保留 ID 共用同一既有融合排序。原有关系/树导航结束且没有新增通过需求匹配的关系邻居时，允许
+用剩余额度补查一次，至多本次 initial_limit 项；已读合法端点可复用，失败与过滤
+尝试继续占摘要探测额度。其他存储路径明确拒绝此选项，不隐式物化整个候选池。
+仅因正向量分获得准入的语义或实体试探不表示需求已匹配，不能单独停止该补查。
+保留池绑定完整 Scope，正文仍复核生命周期、调用方过滤和请求摘要角色；原文仍只
+来自已验证的父子链，纯摘要不查询或读取原文。补入节点理由为
+`deferred_vector_keyword_match`，作为独立索引根展示，不能冒充 related 命中。
+可返回 `entry_alternatives`、`entry_refill_probes`、`entry_refill_added` 诊断；它们
+表示索引元数据数量、新摘要探测和新增入口，不能作为关系召回或事实覆盖指标。
+可选 `event_guided_entry` 由原生 relational 与 ID-first 路径启用，产品默认关闭。
+可选 `diversify_attributed_entry` 依赖 `event_guided_entry`，默认关闭。
+它只使用原生召回返回的派生属性评估单个末位，保留入口、中间摘要和原文读取上限。
+显式日期条件要求来源可追溯且时间相容的原生事件。候选仍经常规物化与复核。
+
+对于已解析出单一具名实体、单一主题且无显式事件时间区间的查询，利用当前索引
+结果中的事件来源和原生关键词索引句子提示。在已返回的索引 ID 中最多调整一个
+初选末位。已保留的其他初选、物化上限和检索通道沿用原约束。候补只改变验证顺序，
+读取与披露仍走同一真源、许可 Scope、角色、过滤和关系复核。
+
+可选 `reserve_corroborated_entry` 默认关闭，要求启用 `refill_entry_probes`。初选之后
+的总摘要额度为 2 至 4 时，允许为一个在两个原生视图前两位共同命中的候补暂留额度，
+其中至少一项为详细视图。候补和图扩展共用同一探测上限，失败读取也计入。不增加
+初选请求、索引查询或正文上限。经 Scope 和角色核验选入后，仍按普通索引补查的原文规则处理。
+诊断可用 `corroborated_entry_reserved`、`corroborated_entry_added` 跟踪预留和实际加入。
+可选 `prefer_coarse_keyword_entry` 依赖该预留机制。在初选后只剩 2 至 4 个摘要额度时，
+只有编译后的查询计划含一个实体和一个需求时，才允许以粗粒度词项首位命中作为候补。
+此命中须同时在另一个原生词项层级位列前三；仍只预留一个摘要名额，
+不扩大候补池。诊断可区分候补的预留与最终加入。
+可选 `prefer_temporal_keyword_entry` 也依赖该预留机制，默认关闭。单实体、单需求的
+时间问题没有可用的跨层词项候补时，允许用原生中层词项视图首位命中占用同一预留名额。
+初选已含该节点时无需额外预留。该路径沿用原有的 Scope、角色核验及全部候选上限。
+`temporal_keyword_entry_reserved` 与 `temporal_keyword_entry_added` 区分预留和加入。
+可选 `reserve_temporal_anchor_entry` 默认关闭，依赖已有候补预留和事件入口元数据。
+对单分项、显式询问两个事件的相对顺序或间隔、且未给绝对日期窗口的问题，若详细词项
+前四个命中有一句同时包含至少两个请求中的具名锚点（其中至少一个为多词名称），可在
+既有额度中预留一个不同分支。已有两个满足条件的初选分支或原候补已满足时，沿用原顺序。
+候补保持同一 Scope、摘要、读取和原文限额。它只是补查索引入口，句子匹配不建立事件日期
+或关系成立。使用 `temporal_anchor_entry_reserved` 和 `temporal_anchor_entry_added`
+区分预留和加入。
+可选 `conversation_day_lookup` 默认关闭，只支持关系检索中的时间树。一个明确询问
+「某天谈了什么」的请求，可使用与问题日历字面严格一致的单日消息区间限制树索引；
+保留已有原文和摘要候选上限。原有作用域、生命周期、用户谓词和调用方时间窗继续有效。
+此路径的区间用于消息覆盖与分支核验，未转换为事件发生时间。事件日期题继续使用
+事件时间语义。实际使用时记录 `conversation_day_lookup`。
+原路径的原文索引名额与选择不得因补查子树而重新均摊。新增子树只使用原路径索引
+命中与相邻补全后未占用的原文 ID 名额，总源候选上限保持；两部分继续共享最终
+排序与 Token 打包。`source_primary_ids`、`source_refill_ids` 分别记录两个阶段
+选定的原文 ID 数，不代表已通过真源核验或最终披露的数量。
+可选 `prefer_indexed_operands` 默认关闭，只支持关系导航。在第一人称集合查询中，
+已到达的原文分支可将一个相邻上下文名额换为已有索引命中的原文名额，同时
+保留至少一个相邻上下文名额。原始分支、摘要和原文总限额保持同一计量口径。
+`operand_index_slots` 记录改分配的名额，实际原文仍需通过索引、可见性和父子校验。
+
+返回 `evidence_bundle.mode=relational`，`navigation.query_plan` 包含编译计划；
+`navigation.evidence_graph` 包含 nodes、edges、paths、clause_bindings、unmatched_clauses。
+query_plan.selections 保留各需求的场景和绑定实体；事件先后条件包含关系算子和事件
+锚点，不能把遍历方向直接解释为发生顺序。选边理由可包含逐事件时间区间、实体、
+需求转移和本次新增需求；这些是有界导航信号，不是事实正确性证明。
+某分项显式提到的名字不能作为其他未解析分项的默认实体。所有分项均省略的公共
+主体仍可继承；缺实体不代表分项证据齐全。所属对象的所有者解析须有已读索引中的
+唯一明确身份依据，并保留所属对象的场景限制；不得仅保留所有者扩大问题范围。
+已披露的内容以 E1… 标识，逐项对应 `evidence_bundle.sources`，包含完整 Scope/ID/内容哈希。
+省略摘要正文后保留的必要祖先以 N1… 标识、kind=navigation_only；其来源独立放在
+`evidence_graph.navigation_sources`，不计入已披露事实证据。节点附选择理由，边附关系属性
+及实体、场景或事件时间依据。contains 仅表示已验证的包含关系，related 表示关联而非因果。
+paths 保留到证据节点的已验证路径和各步的遍历方向；省略正文的关系中继同样使用 N。
+clause_bindings 只计入披露的 E 节点，N 的匹配线索单独放在 navigation_clause_bindings；
+两者不可混作已披露证据覆盖。semantic_probe 是受限的探索选择，不声明匹配了任何需求。
+基础单次探索沿用本轮有界索引端点顺序。union 集合操作选择其中首个尚未进入计划的
+端点，其他操作仍只给原首位端点资格。准入仍需正查询向量分、真实关系及全部
+实体/时间/版本核验；失败不转给后续端点，不增大候选或读取额度。
+
+可选 `probe_uncovered_clauses` 允许一个已获索引分数的备选端点进入当前阶段末位。
+至少留两个新端点探测位置时才竞争末位，保留原首位和请求的全部限额。
+`semantic_endpoint_probe` 默认 `off`，开启 `compound` 或 `named` 需同时开启该选项。
+`compound` 对待覆盖分项使用现有原生向量的详细或中层前三名，`named` 也覆盖有
+单一查询实体的单分项问题。向量备选须有存储的语义边和带来源的事件，并符合所需
+人物归属或明确时间窗口。备选与原首位共用单次探索额度。真源版本、作用域、事件和
+关系条件仍在读取后核验。`ranked_vector_endpoint` 只记录探索依据。向量命中不增加
+`clause_bindings`，也不代表已满足事件或关系闭包。
+
+关系选择通过核验后，来自 `isolated_semantic_backstop` 的边附
+`navigation_only_backstop` 标记。结构化图保留该边与来源，示例回答入口不会
+让这类边参与证据段落排序或主题说明。选中的摘要与原文仍参与回答。
+
+
+
+可选 query_guided_entity_probe 在 relational 路径复用既有唯一探索额度，允许沿
+真实 entity 关系探索符合上述资格且有正查询向量分的未访问端点。两端实体特征与边的
+shared_entities 必须相交；有明确查询实体时还须匹配该实体。无显式主体只表示共享
+上下文，不能推断是谁的事件。返回 probe_relation=entity 和 shared_relation_entities，
+文本图标为 query_probe(entity)，不产生 scene_clauses、entities 或 event_time 覆盖。
+摘要/原文/正文读取上限、边版本及可见性复核、明确时间冲突、每请求一次探索均保持。
+
+文本图与原文、完整摘要共同计入精确上下文预算；按图路径组织，时间问题按事件时间
+优先遍历，未知事件时间不由会话时间代替。同一分支先展示其包含的证据，再沿关联边
+转到其他分支；无已知事件时间可排序时，使用经验证的原生子节点顺序，使原文分片和
+会话消息保持连续。检索排名决定准入，不直接充当对话展示顺序。
+预算不能容纳某个完整节点时不截断事实正文；
+保留的导航标识不能被解释为已提供其全文。相同问题的所有分析、回答等实际调用 Token
+另行合计，不能用证据包长度代表全部开支。
+
+
+比例候选约束通过元数据计数在入口物化前计算。summary_limit/source_limit 是本次请求
+的有效上限；source_population/summary_population 是其计数分母。返回实际
+source_candidate_fraction/summary_candidate_fraction，不能把完整 posting ID 集合、
+已评分返回 ID 池、已点读原文和最终证据混作一个候选指标。source_index_ids_returned
+记录各分支索引返回 ID 去重后的数量合计；source_branch_quotas 记录在查索引前分配的名额。各通道
+和相邻原文共用原文上限；耗尽时停止，不按答案、gold 或模型置信度补成全库扫描。
+原文索引各通道在调用前分摊整数名额，不能因奇数取整或重复命中而以未命中的原文
+填满余量。候选不足允许少取；空索引分支不读取任意前缀节点。相邻补全仍只从真实
+索引命中的原文出发，并占用同一分支额度。关系端点也必须进入本次受限索引命中集。
+
+递归摘要的事件 `sources` 是直接输入子节点的局部编号。relational 下钻可按匹配问题的
+事件优先查询该子集；名额从原分支预算分出，不增加候选上限。只接受范围内的整数编号，
+并校验子节点完整 Scope、角色与索引返回状态；正文仍须通过父子链和可见性复核。
+`parent_event_references` 与 contains 边的 `event_references` 记录事件标识、局部编号和
+需求标识，不传递父摘要的证据覆盖结论。`event_reference_index_hits` 计入命中的提示 ID，
+`event_source_candidates` 仅计入复核通过的原文节点；纯摘要模式不得沿提示查询原文索引。
+
+可选 `detail_source_hints` 在该父没有匹配事件引用时，使用已经读取且绑定有效的逐子
+摘要区间作为来源定位提示。实体和场景必须在同一句匹配；明确日历区间不能仅凭摘要
+文字视为已符合。提示仍分用原分支预算，ID 必须由范围内索引返回并通过真源/父子链
+复核。节点 `parent_detail_references`、contains 边 `detail_references` 只含局部位置
+及需求标识，不传递原文覆盖结论；独立统计 detail_reference_index_hits 和
+detail_source_candidates，不冒充有日期的事件或影响事件代表计数。缺失旧映射保持
+原流程；纯摘要模式不能通过这一分支访问原文索引或正文。
+
+`semantic_probe` 只表示向未访问节点的新增探索，在产生理由与最终准入时均核对。
+已有节点之间明确匹配的实体/场景/时间关系仍可返回；不能把这些关系算成新增探索。
+原索引排序和探索额度保持，不因发现已知节点而另查候选或绕过端点核验。
+
+证据预算打包后，若有匹配事件尚无来源代表，可在同一候选池内尝试事件来源优先的顺序。
+事件引用身份包括完整父节点键和事件 ID；只读取 verified contains 上的来源引用。
+只有新集合完整保留原有事件代表、并额外代表至少一个事件时才采用替代打包，否则保留
+原结果。已被其他来源代表的重复引用不会触发替换，不增加 Token 上限，也不追加取数。
+`event_reference_coverage` 记录 available、represented、before、missing、refined；
+它描述有界池中匹配来源引用的代表数量，不是原文 recall 或事实正确率。
+
+relational 的可选 adaptive_budget 在同一有界计划内分阶段调整证据 Token，默认关闭。
+返回 stages、query_coverage、coverage_scope 和 stopping_reason；提前停止只表示已物化
+候选池内的原文信号饱和，不是答案正确性证明。摘要或 N 节点的匹配不代替原文覆盖。
+信号按单句实体归属核对，不把提问句当作已陈述事实；显式说话者只可解析句首第一人称，
+不能将其叙述的第三人称事件转嫁给说话者。第一人称记忆题不能仅凭 assistant 内容提前停止。
+每个需求的最高单句词项匹配比例至少为 0.75，阈值以 minimum_source_support 返回。
+已选分片不完整、仍有高匹配来源未提供或请求读取受限时不得提前停止。各阶段复用同一计划，
+不会重新查索引或读取新候选；候选比例和读取上限保持不变，完整图文本仍共同计量。
+
+启用 `adaptive_target_tokens` 后，原文检索按问题的关系计划选择证据额度。简单事实从小额度开始检查原文闭包，单条件问题使用常规额度，集合或多个条件可获得更大额度。比较、多步推理与至少三个条件可用完整额度。返回的 `tier_token_limit` 表示当题可打包的证据上限，实际消耗见模型 usage。
+
+### 从详细摘要命中的分片定位直接子节点
+
+`chunk_source_hints` 用于先取 ID 的 relational 检索。只有 L2 向量命中带有有效分片位置，且当前摘要正文哈希、分片范围、直接子节点的顺序与 Scope 均可核实时，才使用位置提示。先执行原分支的索引选择和相邻原文补全，剩余名额才可用于位置提示。取正文时仍须检查可见性和双向父子引用。

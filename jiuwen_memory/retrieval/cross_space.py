@@ -17,7 +17,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from ..common.errors import ValidationError
 from ..common.type_def import ChannelError, RecallChannel
+from .evidence_packing import EvidenceRetrievalResult
 from .types import RetrievalResult
 
 # 跨空间检索一次调用的取数总量上界。各空间的取数上界为 ``min(top_k, CAP // 空间数)``，
@@ -105,6 +107,10 @@ def merge(
 
     ``errors`` 与 ``trajectory`` 逐空间合并保留：某个空间的通道失败不应在跨空间调用里消失。
     """
+    if any(isinstance(result, EvidenceRetrievalResult) for _, result in results):
+        if len(results) == 1 and len(results[0][1].items) <= top_k:
+            return results[0][1]
+        raise ValidationError("evidence packing does not yet support cross-space merging")
     order = {space: index for index, space in enumerate(priority)}
     ranked = sorted(results, key=lambda item: order.get(item[0], len(order)))
 

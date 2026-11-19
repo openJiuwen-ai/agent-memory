@@ -271,6 +271,37 @@ class ElasticsearchFulltextStore(FulltextStore):
                 out.append(self._to_document(d["_id"], src))
         return out
 
+    def count_units(self, scope: Scope, filters: FilterExpr | None = None,
+                    *, descendants: bool = False) -> int:
+        dimensions = self._scope_dict(scope)
+        clauses = [{"term": {f"scope.{key}": value}} for key, value in dimensions.items()
+                   if not descendants or key in {"org", "space"} or value]
+        compiled = self._compile_filter(filters)
+        if compiled is not None:
+            clauses.append(compiled)
+        # Composite aggregation gives an exact distinct count; cardinality is
+        # approximate and could silently expand a ratio-limited candidate pool.
+        sources = [{key: {"terms": {"field": f"scope.{key}"}}} for key in dimensions]
+        sources.append({"unit": {"terms": {"field": "metadata.unit_id"}}})
+        after, total, seen = None, 0, set()
+        while True:
+            composite = {"size": 1000, "sources": sources}
+            if after is not None:
+                composite["after"] = after
+            with wrap_backend("elasticsearch indexed population"):
+                result = self.client.search(index=self._index, size=0, source=False,
+                    query={"bool": {"filter": clauses}},
+                    aggregations={"units": {"composite": composite}})
+            page = result["aggregations"]["units"]
+            total += len(page["buckets"])
+            after = page.get("after_key")
+            if not after or not page["buckets"]:
+                return total
+            identity = tuple(sorted(after.items()))
+            if identity in seen:
+                raise BackendError("indexed population pagination did not advance")
+            seen.add(identity)
+
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
         tokens = self._analyze_query(query.text)
         if not tokens:

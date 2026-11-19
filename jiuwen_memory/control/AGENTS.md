@@ -202,3 +202,7 @@ AsyncTimerScheduler 只新增通用 last_run_id/last_run_detail 最近结果摘�
 周期副本响应当前协作取消协议；同步写入收尾后才释放锁，故障保护不声称事务回滚。
 只接受构建层明确的 HierarchyPreparationError 作为本层未写入证据，失败后允许下轮重试；
 部分写入、未分类插件异常和强制取消的未知结果保持暂停，不按空变更 ID 推断无写入。
+
+显式树候选 `hierarchy_candidates` 按未处理父前沿补齐全部后代，不再以三个角色循环
+充当遍历深度。默认树保留严格相邻角色校验，递归树由版本、高度、会话标记和双向引用
+核验。递归 Composer 不提供旧单层周期任务 profile，追加仍走显式 HIERARCHY。

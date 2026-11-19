@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 
-from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     Scope,
@@ -18,6 +18,7 @@ from jiuwen_memory.common.type_def import (
     filter_field_metadata_key,
     matches_filter_value,
 )
+from jiuwen_memory.storage._hierarchy_ties import summary_position
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.types import ScoredHit, ScoredID, VectorQuery, VectorRecord
 from jiuwen_memory.storage.vector import VectorProducer, VectorStore
@@ -43,7 +44,10 @@ def _cosine(a: list[float], b: list[float]) -> float:
 class InMemoryVectorStore(VectorStore):
     """纯内存向量存储：按 scope 隔离，暴力余弦近邻。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, stable_hierarchy_ties: bool = False) -> None:
+        if type(stable_hierarchy_ties) is not bool:
+            raise ValidationError("stable_hierarchy_ties must be bool")
+        self._stable_hierarchy_ties = stable_hierarchy_ties
         self._data: dict[_ScopeKey, dict[str, VectorRecord]] = defaultdict(dict)
 
     def store_type(self) -> StoreType:
@@ -75,6 +79,21 @@ class InMemoryVectorStore(VectorStore):
         bucket = self._data[_skey(scope)]
         return [bucket[i] for i in ids if i in bucket]
 
+    def _sort(self, hits, bucket):
+        if not self._stable_hierarchy_ties:
+            hits.sort(key=lambda hit: hit.score, reverse=True)
+            return
+
+        def position(hit):
+            metadata = bucket[hit.id].metadata
+            source = summary_position(metadata)
+            text_hash = metadata.get("indexed_text_sha256")
+            if source is None or not isinstance(text_hash, str):
+                return -hit.score, (1,), ""
+            return -hit.score, (0, *source), text_hash
+
+        hits.sort(key=position)
+
     def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
         bucket = self._data[_skey(scope)]
         scored: list[ScoredID] = []
@@ -90,7 +109,7 @@ class InMemoryVectorStore(VectorStore):
                     score=score,
                     metadata=dict(rec.metadata) if query.return_metadata else None,
                 ))
-        scored.sort(key=lambda s: s.score, reverse=True)
+        self._sort(scored, bucket)
         return scored[: query.top_k]
 
     def recall(
@@ -124,7 +143,7 @@ class InMemoryVectorStore(VectorStore):
                     metadata=dict(rec.metadata) if fetch_meta else {},
                 )
             )
-        scored.sort(key=lambda s: s.score, reverse=True)
+        self._sort(scored, bucket)
         return scored[: query.top_k]
 
 
@@ -135,4 +154,6 @@ class InMemoryVectorStore(VectorStore):
     "memory", config_inspectors={"at_rest_locations": lambda config: {}}
 )
 def _build(config):
-    return InMemoryVectorStore()
+    stable_ties = config.params.get("stable_hierarchy_ties",
+                                   config.get("memory_stable_hierarchy_ties", False))
+    return InMemoryVectorStore(stable_hierarchy_ties=stable_ties)

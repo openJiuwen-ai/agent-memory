@@ -115,6 +115,9 @@ def test_routing_fulltext_graph_fusion_fs_switch() -> None:
 
     ft.search(_SCOPE, TextQuery(text="q"))
     ft_a.search.assert_called_once()
+    ft_a.count_units.return_value = 3
+    assert ft.count_units(_SCOPE, descendants=True) == 3
+    ft_a.count_units.assert_called_once_with(_SCOPE, None, descendants=True)
     gr.seed_ids(_SCOPE, {"t"})
     g_a.seed_ids.assert_called_once()
     fu.search(_SCOPE, FusionQuery(vector=[0.1]))
@@ -128,6 +131,9 @@ def test_routing_fulltext_graph_fusion_fs_switch() -> None:
     cfg.put("fs_store.active", "mem")
     ft.insert(_SCOPE, [Document(id="1", text="t")])
     ft_b.insert.assert_called_once()
+    ft_b.count_units.return_value = 5
+    assert ft.count_units(_SCOPE) == 5
+    ft_b.count_units.assert_called_once_with(_SCOPE, None, descendants=False)
     gr.insert(_SCOPE, nodes=[Node(id="n", label="l")])
     g_b.insert.assert_called_once()
     fu.insert(_SCOPE, [FusionRecord(id="1", vector=[0.1])])

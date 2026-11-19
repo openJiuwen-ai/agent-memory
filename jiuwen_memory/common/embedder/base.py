@@ -35,5 +35,5 @@ class Embedder(Plugin):
         """返回输出向量维度（须与目标向量索引一致）。"""
 
     def embed_query(self, text: str) -> list[float]:
-        """单条便捷方法；默认包装 :meth:`embed`。"""
+        """查询向量；默认包装 embed，实现可增加同模型的专用查询指令。"""
         return self.embed([text])[0]
