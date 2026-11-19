@@ -74,6 +74,7 @@ from jiuwen_memory.api import (
     COLLECTIVE_MANAGER_ID,
     AuthenticationError,
     BackendError,
+    BatchWriteItem,
     Channel,
     ConflictError,
     Context,
@@ -1605,13 +1606,14 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
 
     async def sync_turn(self, user_msg: str, assistant_msg: str, **kwargs: Any) -> dict | None:
-        """存本轮对话并**同步抽取事实**（对齐常见记忆层 ``add(infer=True)``）。
+        """存本轮对话并**同步抽取事实**（普通路径经 ``batch_add(infer=True)`` 分条写入）。
 
-        传 ``system_metadata={"infer": "true"}`` 给 AgentMemory ``add``：hot path 同步调
-        Extractor 从 ``user: ...\\nassistant: ...`` 抽取派生事实并建索引，**原文
-        落 KV 真源但不建索引**，且不再提交 background EXTRACT（避免每轮全量重扫的
-        EXTRACT 风暴）。需配 ``extractor:llm``+``llm:openai`` 才真抽取；默认
-        ``keyword`` extractor 走切分占位。
+        普通分支对 ``user_msg`` 剥壳并校验双方非空白后，按 ``message_role="user"`` 与
+        ``"assistant"`` 拆成 2 条经 ``batch_add``（配 ``system_metadata={"infer": "true"}``）
+        写入：配合默认合并抽取仍单次送模提取派生事实并建索引，**原文落 KV 真源但不建索引**，
+        且不再提交 background EXTRACT（避免每轮全量重扫的 EXTRACT 风暴）。需配
+        ``extractor:llm``+``llm:openai`` 才真抽取；默认 ``keyword`` extractor 走切分占位。
+        Team ``sources`` 与 ``continuity`` 分支沿用各自专用路径。
 
         §6.2-E：user_msg 先经 ``_prepare`` 剥 TUI 信封——与 prefetch 共用同一入口，
         保证检索 query 与落盘内容形态一致（此前 prefetch 剥壳、sync_turn 存壳，
@@ -1655,9 +1657,12 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if not self._initialized or self._client is None:
             return
         user_msg = self._prepare(user_msg)
-        if not user_msg:
+        if not user_msg.strip() or not assistant_msg.strip():
             return
-        content = f"user: {user_msg}\nassistant: {assistant_msg}"
+        items: list[dict[str, Any]] = [
+            {"content": user_msg, "system_metadata": {"message_role": "user"}},
+            {"content": assistant_msg, "system_metadata": {"message_role": "assistant"}},
+        ]
         system_metadata: dict[str, str] = {
             **self._scene.write_route().metadata(),
             "source_app": "jiuwenswarm",
@@ -1670,32 +1675,33 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if project:
             system_metadata["project"] = project
         logger.info(
-            "[AgentMemoryMemoryProvider] sync_turn add system_metadata=%s scope=%s content_len=%d",
+            "[AgentMemoryMemoryProvider] sync_turn batch_add system_metadata=%s scope=%s items=%d",
             metadata_for_log(system_metadata),
             scope_for_log(self.bound_scope()),
-            len(content),
+            len(items),
         )
         try:
-            data = await self._client.add(
-                content,
+            data = await self._client.batch_add(
+                items,
                 self.bound_scope(),
                 tags=["conversation"],
                 system_metadata=system_metadata,
             )
             if data is None:
                 logger.warning(
-                    "[AgentMemoryMemoryProvider] sync_turn add failed "
-                    "(client degraded, breaker recorded)"
+                    "[AgentMemoryMemoryProvider] sync_turn batch_add failed "
+                    "(all items failed or client degraded)"
                 )
                 return
             logger.info(
-                "[AgentMemoryMemoryProvider] sync_turn add system_metadata=%s done item_id=%s",
+                "[AgentMemoryMemoryProvider] sync_turn batch_add "
+                "system_metadata=%s done item_id=%s",
                 metadata_for_log(system_metadata),
                 data.item_id,
             )
         except Exception as exc:
             logger.warning(
-                "[AgentMemoryMemoryProvider] sync_turn add failed: error_type=%s",
+                "[AgentMemoryMemoryProvider] sync_turn batch_add failed: error_type=%s",
                 type(exc).__name__,
             )
 
@@ -2119,6 +2125,17 @@ class _AgentMemoryClient:
     ) -> _AddResult | None:
         raise NotImplementedError
 
+    async def batch_add(
+        self,
+        items: Sequence[Mapping[str, Any]],
+        scope: _Scope,
+        *,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, Any] | None = None,
+        user_metadata: dict[str, Any] | None = None,
+    ) -> _AddResult | None:
+        raise NotImplementedError
+
     async def continuity_call(self, verb: str, payload: dict) -> dict:
         raise NotImplementedError("client does not implement continuity")
 
@@ -2430,7 +2447,9 @@ class _HttpClient(_AgentMemoryClient):
             resp = await self._http.get("/healthz")
             if resp.status_code == 200:
                 health = resp.json()
-                self.collective_document = isinstance(health, dict) and health.get("collective_document") is True
+                self.collective_document = (
+                    isinstance(health, dict) and health.get("collective_document") is True
+                )
                 logger.info("[AgentMemoryMemoryProvider/http] connected to %s", self._base_url)
             else:
                 logger.warning(
@@ -2569,7 +2588,9 @@ class _HttpClient(_AgentMemoryClient):
 
     async def _collective_admin_request(self, verb, dimension, fields, admin_identity, *, org=None):
         if admin_identity != COLLECTIVE_MANAGER_ID:
-            raise AgentMemoryClientError("Collective management requires the registered Swarm principal")
+            raise AgentMemoryClientError(
+                "Collective management requires the registered Swarm principal"
+            )
         result = await self._post_verb(
             verb, {"dimension": asdict(dimension) if dimension is not None else None, **fields},
             write=True, raise_on_client_error=True,
@@ -2644,6 +2665,81 @@ class _HttpClient(_AgentMemoryClient):
             item_id=unit.get("id"),
             content=self._content_view(unit),
             tier=unit.get("tier", ""),
+        )
+
+    async def batch_add(
+        self,
+        items: Sequence[Mapping[str, Any]],
+        scope: _Scope,
+        *,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, Any] | None = None,
+        user_metadata: dict[str, Any] | None = None,
+    ) -> _AddResult | None:
+        """批量写多条记忆（F16）。响应为 ``BatchWriteResult`` JSON：``{"outcomes": [...]}``。"""
+        payload: dict[str, Any] = {
+            "items": [dict(item) for item in items],
+            "scope": self._request_scope(scope),
+            "tags": tags or [],
+        }
+        if system_metadata:
+            payload["system_metadata"] = system_metadata
+        if user_metadata:
+            payload["user_metadata"] = user_metadata
+        logger.info(
+            "[AgentMemoryMemoryProvider/http] POST /v1/batch_add tags=%s system_metadata=%s "
+            "items=%d",
+            metadata_for_log(tags or []),
+            metadata_for_log({
+                key: value for key, value in (system_metadata or {}).items() if key != "sources"
+            }),
+            len(payload["items"]),
+        )
+        raw = await self._post_verb(
+            "batch_add", payload, write=True,
+            request_headers=self._request_headers(),
+        )
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("outcomes"), list):
+            logger.warning(
+                "[AgentMemoryMemoryProvider/http] /v1/batch_add invalid response shape: %s",
+                type(raw).__name__,
+            )
+            return None
+        outcomes = raw["outcomes"]
+        if not outcomes:
+            return None
+        succeeded = 0
+        first_unit: dict[str, Any] | None = None
+        for idx, outcome in enumerate(outcomes):
+            if not isinstance(outcome, Mapping):
+                logger.warning(
+                    "[AgentMemoryMemoryProvider/http] /v1/batch_add malformed outcome at index=%d",
+                    idx,
+                )
+                continue
+            if outcome.get("error"):
+                logger.warning(
+                    "[AgentMemoryMemoryProvider/http] /v1/batch_add item failed "
+                    "index=%s error_type=%s",
+                    outcome.get("index", idx),
+                    outcome.get("error_type", ""),
+                )
+                continue
+            succeeded += 1
+            if first_unit is None and isinstance(outcome.get("units"), list):
+                first_unit = next(
+                    (c for c in outcome["units"] if isinstance(c, dict)), None
+                )
+        if succeeded == 0:
+            return None
+        if first_unit is None:
+            return _AddResult(item_id=None)
+        return _AddResult(
+            item_id=first_unit.get("id"),
+            content=self._content_view(first_unit),
+            tier=first_unit.get("tier", ""),
         )
 
     async def continuity_call(self, verb: str, payload: dict) -> dict:
@@ -3493,6 +3589,76 @@ class _InProcessClient(_AgentMemoryClient):
             tier=getattr(getattr(unit, "tier", None), "value", ""),
         )
 
+    async def batch_add(
+        self,
+        items: Sequence[Mapping[str, Any]],
+        scope: _Scope,
+        *,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, Any] | None = None,
+        user_metadata: dict[str, Any] | None = None,
+    ) -> _AddResult | None:
+        api_scope = self._to_api_scope(scope)
+        batch_items = [
+            BatchWriteItem(
+                content=str(item.get("content", "")),
+                system_metadata=(
+                    dict(item["system_metadata"])
+                    if item.get("system_metadata") is not None
+                    else None
+                ),
+                user_metadata=(
+                    dict(item["user_metadata"])
+                    if item.get("user_metadata") is not None
+                    else None
+                ),
+                tags=list(item["tags"]) if item.get("tags") is not None else None,
+            )
+            for item in items
+        ]
+        try:
+            result = await self._api.batch_add_async(
+                batch_items,
+                api_scope,
+                source=Modality.TEXT,
+                security=self._request_security(),
+                tags=tags,
+                system_metadata=system_metadata,
+                user_metadata=user_metadata,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[AgentMemoryMemoryProvider/in-process] batch_add failed: error_type=%s",
+                type(exc).__name__,
+            )
+            return None
+        outcomes = getattr(result, "outcomes", None)
+        if not outcomes:
+            return None
+        succeeded = 0
+        first_unit = None
+        for idx, outcome in enumerate(outcomes):
+            if getattr(outcome, "error", ""):
+                logger.warning(
+                    "[AgentMemoryMemoryProvider/in-process] batch_add item failed "
+                    "index=%s error_type=%s",
+                    getattr(outcome, "index", idx),
+                    getattr(outcome, "error_type", ""),
+                )
+                continue
+            succeeded += 1
+            if first_unit is None and getattr(outcome, "units", None):
+                first_unit = outcome.units[0]
+        if succeeded == 0:
+            return None
+        if first_unit is None:
+            return _AddResult(item_id=None)
+        return _AddResult(
+            item_id=first_unit.id,
+            content=first_unit.content,
+            tier=getattr(getattr(first_unit, "tier", None), "value", ""),
+        )
+
     async def search(self, query, scope, *, top_k=10, filters=None) -> list[dict[str, Any]]:
         api_scope = self._to_api_scope(scope)
         try:
@@ -3565,7 +3731,8 @@ class _InProcessClient(_AgentMemoryClient):
         api_scope = self._to_api_scope(scope)
         context = (
             Context(scope=api_scope, extensions={"collective_target": target})
-            if self._request_coordinates() is not None else self._md_context(api_scope, project, team=team)
+            if self._request_coordinates() is not None
+            else self._md_context(api_scope, project, team=team)
         )
         # read_md_file 是同步方法（内部 asyncio.run），必须 to_thread（§4.6）。
         # 业务异常（非文档模式 ValidationError 等）不吞——显式工具调用须让
@@ -3592,7 +3759,8 @@ class _InProcessClient(_AgentMemoryClient):
         api_scope = self._to_api_scope(scope)
         context = (
             Context(scope=api_scope, extensions={"collective_target": target})
-            if self._request_coordinates() is not None else self._md_context(api_scope, project, team=team)
+            if self._request_coordinates() is not None
+            else self._md_context(api_scope, project, team=team)
         )
         # edit_md_file 同步方法（to_thread）；old_text 不存在/不唯一抛
         # NotFoundError/ValidationError，向上透出（见 read_md_file 注释）。

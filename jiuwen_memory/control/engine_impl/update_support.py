@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -20,7 +21,14 @@ from typing import Any
 from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.time_utils import as_utc
-from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Scope
+from jiuwen_memory.common.type_def import (
+    MESSAGE_ROLE_KEY,
+    LifecycleState,
+    MemoryUnit,
+    Scope,
+    Segment,
+)
+from jiuwen_memory.control.types import MemoryPatch
 
 logger = get_logger(__name__)
 
@@ -51,6 +59,33 @@ def doc_supersede_lock(owner: object, scope: Scope, unit_id: str) -> Iterator[No
             entry[1] -= 1
             if entry[1] == 0:
                 _DOC_FINALIZE_LOCKS.pop(key, None)
+
+
+def apply_memory_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
+    """把非 None 的 patch 字段叠加到旧单元的深拷贝上；实质改写正文时清除 message_role（F16）。"""
+    new = copy.deepcopy(old)
+    content_changed = False
+    if patch.content is not None:
+        content_changed = patch.content != old.content
+        # 文本修正：归一到单段，保留原资产（扁平合并）与主模态。
+        new.segments = [Segment(content=patch.content, assets=list(old.assets), source=old.source)]
+    if patch.tier is not None:
+        new.tier = patch.tier
+    if patch.tags is not None:
+        new.tags = list(patch.tags)
+    if patch.system_metadata is not None:
+        new.system_metadata.update(patch.system_metadata)
+    if content_changed:
+        # 置于 system_metadata.update 之后，防止内部绕过 API 校验直调时把旧/新角色键写回。
+        new.system_metadata.pop(MESSAGE_ROLE_KEY, None)
+        new.system_metadata.pop("role", None)
+    if patch.user_metadata is not None:
+        new.user_metadata.update(patch.user_metadata)
+    if patch.t_valid is not None:
+        new.temporal.t_valid = patch.t_valid
+    if patch.t_invalid is not None:
+        new.temporal.t_invalid = patch.t_invalid
+    return new
 
 
 def ensure_unit_active_for_update(unit: MemoryUnit) -> None:

@@ -26,6 +26,7 @@ from jiuwen_memory.construction.hierarchy_composer import (
     TIME_PARENT_ROLES,
     HierarchyComposeOptions,
 )
+from jiuwen_memory.construction.message_role import filter_effective_units
 from jiuwen_memory.control.evolution.validation import scope_contains
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.kv import KVStore
@@ -163,7 +164,7 @@ def _select(
         validate_snapshot_links(unit)
         if unit.hierarchy.parent_id:
             candidates.attached[node_key(unit)] = unit
-        else:
+        elif filter_effective_units([unit], procedural=False):
             candidates.leaves[node_key(unit)] = unit
     elif unit.hierarchy.role in TIME_PARENT_ROLES and (
         unit.scope == options.tree_home_scope
@@ -336,10 +337,17 @@ def collect_candidates(
     for selected_key in sorted(scoped):
         for candidate in read_scope_units(kv, scoped[selected_key], limits.page_size):
             if has_incomplete_leaf_time(candidate):
-                if _unstructured_intersects(candidate, options):
+                if (
+                    _unstructured_intersects(candidate, options)
+                    and filter_effective_units([candidate], procedural=False)
+                ):
                     collected.skipped_incomplete_time_count += 1
                 continue
-            if require_snapshots and candidate.lifecycle is LifecycleState.ACTIVE:
+            if (
+                require_snapshots
+                and candidate.lifecycle is LifecycleState.ACTIVE
+                and filter_effective_units([candidate], procedural=False)
+            ):
                 if not _active_time(candidate) and _unstructured_intersects(candidate, options):
                     raise ValidationError("树复用要求范围内 ACTIVE 事实携带有效 TIME 结构")
             _select(candidate, collected, options)

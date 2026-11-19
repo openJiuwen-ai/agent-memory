@@ -26,6 +26,8 @@ from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.conflict_consolidator import ConflictConsolidator
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     OrchestratingEvolver,
+    _mark_persist_started,
+    _record_source,
     _resolve_message_store,
     _resolve_read_domain,
 )
@@ -41,6 +43,7 @@ from jiuwen_memory.construction.hierarchy_assembly import optional_hierarchy_com
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposer
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
 from jiuwen_memory.construction.layer_annotator import LayerAnnotator, LayerAnnotatorProducer
+from jiuwen_memory.construction.message_role import filter_effective_units
 from jiuwen_memory.construction.prompt_strategy import copy_consolidation_prompts
 from jiuwen_memory.construction.source_update import (
     SourceExtraction,
@@ -111,6 +114,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             else None
         )
         self._updates = SchemaUpdateCoordinator(self._source_kv, self._extract_source_update)
+        self.last_schema_error = ""
 
     def _extract_source_update(self, source: MemoryUnit) -> SourceExtraction:
         extract = getattr(self._extractor, "extract_for_update", None)
@@ -141,8 +145,11 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
     ) -> MemoryUnit:
         return self._updates.commit(plan, index_for=index_for)
 
-    def _persist_source_evidence(self, units: list[MemoryUnit]) -> list[str]:
-        created: list[str] = []
+    def _persist_source_evidence(
+        self, units: list[MemoryUnit]
+    ) -> tuple[list[str], list[MemoryUnit]]:
+        created_ids: list[str] = []
+        created_units: list[MemoryUnit] = []
         for unit in units:
             if load_units(self._source_kv, unit.scope, [unit.id]):
                 continue
@@ -158,13 +165,18 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
                 name, version = self.source_schema_identity()
                 source.system_metadata.update(schema_name=name, schema_version=version)
             source.tags = merge_unit_tags(source.tags, ["source_evidence"])
-            created.extend(self._persist([source]))
-        return created
+            persisted = self._persist([source])
+            _record_source(source.id, [source.id])
+            created_ids.extend(persisted)
+            created_units.append(source)
+        return created_ids, created_units
 
     def _write_schema_entities_to_sources(
         self,
         source_units: list[MemoryUnit],
         property_units: list[MemoryUnit],
+        *,
+        created_sources: list[MemoryUnit] | None = None,
     ) -> list[str]:
         """Write extracted entity names back to their persisted sources.
 
@@ -178,6 +190,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         ``schema_property_name`` metadata, so nothing is lost.
         """
         source_by_id = {unit.id: unit for unit in source_units}
+        created_by_id = {unit.id: unit for unit in (created_sources or [])}
         terms_by_source: dict[str, list[str]] = {unit.id: [] for unit in source_units}
         for property_unit in property_units:
             entity_name = str(
@@ -207,6 +220,8 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             source = copy.deepcopy(stored[0])
             source.entities = list(dict.fromkeys([*source.entities, *terms]))
             self._index.update([source], mode=IndexWriteMode.ALL)
+            if source.id in created_by_id:
+                created_by_id[source.id].entities = list(source.entities)
             updated_ids.append(source.id)
         return updated_ids
 
@@ -215,8 +230,8 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         return frozenset()
 
     def supports_grouped_extract(self) -> bool:
-        """Schema 路径先落 Source 证据、再写 Property，来源归属口径不同，暂不参与合并抽取。"""
-        return False
+        """Schema 路径支持 batch_add 同批跨角色联合实体抽取与精准来源归属回传（F16）。"""
+        return True
 
     def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         if self._is_procedural(units):
@@ -225,29 +240,34 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             return EvolveResult()
 
         # Source persistence is the durability boundary and intentionally fails loudly.
-        source_ids = self._persist_source_evidence(units)
-        recent = self._persist_and_maintain_messages(units)
-        context = self._maybe_collect_extract_context(units, recent)
+        source_ids, created_sources = self._persist_source_evidence(units)
+        effective = filter_effective_units(units, procedural=False)
+        if not effective:
+            self.last_schema_error = ""
+            return EvolveResult(created_ids=source_ids, created_units=list(created_sources))
+
+        recent = self._persist_and_maintain_messages(effective)
+        context = self._maybe_collect_extract_context(effective, recent)
         try:
-            extracted = self._extractor.extract(units, context=context)
+            extracted = self._extractor.extract(effective, context=context)
         except Exception as exc:
             logger.warning(
                 "SchemaOrchestratingEvolver.schema_extract_degraded: source_units=%d error=%s: %s",
-                len(units),
+                len(effective),
                 type(exc).__name__,
                 exc,
             )
             self.last_schema_error = f"{type(exc).__name__}: {exc}"
-            return EvolveResult(created_ids=source_ids)
+            return EvolveResult(created_ids=source_ids, created_units=list(created_sources))
 
         self.last_schema_error = ""
         if not extracted:
-            return EvolveResult(created_ids=source_ids)
+            return EvolveResult(created_ids=source_ids, created_units=list(created_sources))
 
-        copy_consolidation_prompts(units, extracted)
+        copy_consolidation_prompts(effective, extracted)
         if self._privacy is not None:
             for unit in extracted:
-                self._privacy.inherit_classification(unit, units)
+                self._privacy.inherit_classification(unit, effective)
         self._annotate_layers(extracted)
         if self._schema_entity_resolver is not None:
             self._schema_entity_resolver.resolve(extracted)
@@ -255,14 +275,23 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         planner = self._schema_property_merge_planner
         executor = self._schema_property_merge_executor
         if planner is not None and executor is not None:
-            execution = executor.apply(planner.plan(extracted))
+            plan = planner.plan(extracted)
+            _mark_persist_started()
+            execution = executor.apply(plan)
             property_ids = execution.created_ids
+            created_properties = list(execution.created_units)
             superseded_ids = execution.superseded_ids
             archived_ids = execution.archived_ids
         else:
             property_ids = self._persist(extracted)
+            created_properties = list(extracted)
             superseded_ids = []
             archived_ids = []
+        for unit in created_properties:
+            _record_source(
+                unit.id,
+                unit.provenance or ([unit.source_ref] if unit.source_ref else []),
+            )
         persisted_observations: list[MemoryUnit] = []
         for unit in extracted:
             operation = str(unit.system_metadata.get("schema_property_operation") or "set")
@@ -278,8 +307,9 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
                     exc,
                 )
         source_writeback_ids = self._write_schema_entities_to_sources(
-            units,
+            effective,
             persisted_observations,
+            created_sources=created_sources,
         )
         existing_source_updates = [
             source_id for source_id in source_writeback_ids if source_id not in source_ids
@@ -294,6 +324,7 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
             created_ids=[*source_ids, *property_ids],
             updated_ids=[*existing_source_updates, *archived_ids],
             superseded_ids=superseded_ids,
+            created_units=[*created_sources, *created_properties],
         )
 
 

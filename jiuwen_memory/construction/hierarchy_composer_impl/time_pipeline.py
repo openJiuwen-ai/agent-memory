@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.time_utils import as_utc as normalize_time
 from jiuwen_memory.common.type_def import (
+    NON_PROPAGATED_SYSTEM_METADATA_KEYS,
     HierarchyKind,
     HierarchyRef,
     HierarchyRole,
@@ -30,6 +31,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
     validate_ref,
 )
+from jiuwen_memory.construction.message_role import format_role_line
 
 DEFAULT_GAP_SECONDS = 7200
 _SUPPORTED_OPTIONS = frozenset(
@@ -44,7 +46,7 @@ _SUPPORTED_OPTIONS = frozenset(
         "end_signal_metadata_keys",
     }
 )
-_NON_PROPAGATED_KEYS = frozenset({"infer", "procedural", "middle"})
+_NON_PROPAGATED_KEYS = NON_PROPAGATED_SYSTEM_METADATA_KEYS
 
 
 def as_utc(value: datetime) -> datetime:
@@ -255,7 +257,8 @@ def excerpt(text: str, limit: int) -> str:
 def _structural_body(children: list[MemoryUnit], options: TimeSpanMergerOptions) -> str:
     lines = []
     for child in children[: options.summary_max_leaves]:
-        lines.append(f"- {excerpt(child.content, options.summary_max_chars_per_leaf)}")
+        body = excerpt(child.content, options.summary_max_chars_per_leaf)
+        lines.append(f"- {format_role_line(child, body)}")
     omitted = len(children) - options.summary_max_leaves
     if omitted > 0:
         lines.append(f"- …另有 {omitted} 条")

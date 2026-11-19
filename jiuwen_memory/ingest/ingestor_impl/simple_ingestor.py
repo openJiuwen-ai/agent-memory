@@ -20,8 +20,9 @@ JSON 包络，由 VideoMemoryExtractor ``json.loads`` 后拆成 CLM/ELM），切
 
 from __future__ import annotations
 
+import threading
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.ingest_cancellation import check_ingest_cancelled
@@ -55,8 +56,29 @@ from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 logger = get_logger(__name__)
 
 
+_CLOCK_LOCK = threading.Lock()
+_CLOCK_STATE: list[datetime | None] = [None]
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _reset_monotonic_clock() -> None:
+    """重置进程内单调时钟状态（供单测隔离使用）。"""
+    with _CLOCK_LOCK:
+        _CLOCK_STATE[0] = None
+
+
+def _next_monotonic_utc() -> datetime:
+    """模块级跨实例单调 UTC 时钟（F16）：同微秒或时钟回拨时推进 1μs。"""
+    now = _now()
+    with _CLOCK_LOCK:
+        last = _CLOCK_STATE[0]
+        if last is not None and now <= last:
+            now = last + timedelta(microseconds=1)
+        _CLOCK_STATE[0] = now
+        return now
 
 
 class SimpleIngestor(Ingestor):
@@ -125,6 +147,7 @@ class SimpleIngestor(Ingestor):
             # 一律剔除——多片时强制覆盖为真实序号（setdefault 会让注入值污染全部
             # 分片），单片时不残留。
             for part, piece in enumerate(pieces, start=1):
+                unit_now = _next_monotonic_utc()
                 system_metadata = dict(base_system_metadata)
                 system_metadata.pop("_part", None)
                 system_metadata.pop("_parts", None)
@@ -147,8 +170,8 @@ class SimpleIngestor(Ingestor):
                         source_ref=payload.source_ref or payload.id,
                         temporal=Temporal(
                             t_event=t_event,
-                            t_ingest=now,
-                            t_valid=now,
+                            t_ingest=unit_now,
+                            t_valid=unit_now,
                             t_message=payload.occurred_at,
                         ),
                         system_metadata=system_metadata,

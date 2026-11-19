@@ -70,7 +70,7 @@
 | （示例）contains | ✅ jsonb OR | ✅ term+array_marker | ✅ json_contains | ✅ 成员判断 |
 | `<新算子>` | PR 时填 | PR 时填 | PR 时填 | PR 时填 |
 
-- **显式报错是合法表态**（正面案例：Milvus 对 eq/ne 抛 ValidationError）——
+- **显式报错是合法表态**（Milvus 已支持 `eq` / `ne`，未支持的算子由编译器显式拒绝）——
   报错优于静默漏翻。
 - 四个编译入口都是**纯函数**（`compile_pg_filter` / `_filter_clause` /
   `_filter_clause` / `matches_memory_unit`），不需要起任何真后端即可单测——
@@ -93,8 +93,7 @@ spec 文档里"最近一次修订日期"填当天。
 
 ## 6. 冻结令：`_BUILTIN_FIELDS` 只减不增（对应 F12 §4 审计 #1）
 
-**当前基线（含已批准的 `t_ingest`）之后，禁止再往 13 个内置字段白名单加
-新成员**。裸名吞噬链路：
+**当前白名单共 19 个内置字段，其中 6 个是 F08 的树结构键。禁止向白名单追加裸名。** 裸名吞噬链路：
 
 ```
 新标量字段需求 → 有人往 _BUILTIN_FIELDS 加 "priority"

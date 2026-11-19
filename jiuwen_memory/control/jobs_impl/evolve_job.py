@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import CandidateOutcome, MemoryUnit, Scope
 from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.message_role import has_message_role, ingest_sort_key
 from jiuwen_memory.control.jobs import Job, JobCancelledError
 from jiuwen_memory.control.types import JobInfo, JobStatus
 from jiuwen_memory.storage.kv import KVStore
@@ -106,6 +107,10 @@ class EvolveJob(Job):
                 ):
                     continue
                 units.append(unit)
+            if self._mode is EvolveMode.EXTRACT and has_message_role(units):
+                # 抵消 PredicateResolver / list_memory_entries 默认按 t_ingest 降序返回，
+                # 保证离线抽取带角色对话时按旧→新顺序送模；无 role 桶保持原序。
+                units.sort(key=ingest_sort_key)
             if self.cancellation_signal.is_set():
                 raise JobCancelledError(
                     "job cancelled before next evolve group",

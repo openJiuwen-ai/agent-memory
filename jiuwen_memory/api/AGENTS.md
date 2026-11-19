@@ -52,7 +52,7 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` / `managed_assembly.py` | 公开装配及托管配置注入（含写入编排：执行器、per-user 锁、`WriteOrchestrator`，并在 `deployment.multi_instance=true` 配进程内锁时装配失败）：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄，并在创建 SDK 时设置进程共用的日志输出；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
-| `memory_api_impl/local_support.py` | 入口校验、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
+| `memory_api_impl/local_support.py` | 入口校验（含 F16 `message_role`/`role` 格式、与 `continuity` 互斥及更新 patch 拒绝）、过滤/谓词、空间投影等无状态辅助函数，以及私有可信预检目标值对象；不扩充公共接口 |
 | `memory_api_impl/pep_ops.py` | PepOpsMixin：空间事实、`_authorize`、审计、`check_write`、`check_configuration_access` |
 | `memory_api_impl/human_view_ops.py` | HumanViewOpsMixin：可选 begin_human_view/finish_human_view 安全入口；Runtime 适配器转发到 API，API 内执行认证并经 Engine 返回用户访问正文 |
 | `memory_api_impl/write_ops.py` | WriteOpsMixin：add/batch 与落点解析，鉴权后走 CommandService；`system_metadata.merge_extract` 在此剥离并校验，调用级开关与部署级开关取逻辑与，不进入 MemoryUnit；`add_async` 的 `@privacy_operation` / `@traced` 覆盖路由、鉴权与写入整段操作，三者经注入执行器分别走 llm / io 泳道 |

@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from jiuwen_memory.common.embedder import Embedder
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import (
+    NON_PROPAGATED_SYSTEM_METADATA_KEYS,
     HierarchyKind,
     HierarchyRef,
     HierarchyRole,
@@ -28,6 +29,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
     validate_ref,
 )
+from jiuwen_memory.construction.message_role import format_role_line
 
 from .grouping_support import adjacent_similarities, semantic_text
 from .time_pipeline import (
@@ -165,14 +167,16 @@ def build_event_parent(
     end = max(as_utc(child.hierarchy.span_end) for child in children)
     count = sum(len(child.hierarchy.child_ids) for child in children)
     header = f"{start.isoformat()} ~ {end.isoformat()}（{len(children)} 个场景，{count} 个片段）"
-    lines = [f"- {excerpt(semantic_text(item), options.summary_max_chars_per_child)}"
-             for item in children[:options.summary_max_children]]
+    lines = []
+    for item in children[: options.summary_max_children]:
+        body = excerpt(semantic_text(item), options.summary_max_chars_per_child)
+        lines.append(f"- {format_role_line(item, body)}")
     if len(children) > options.summary_max_children:
         lines.append(f"- …另有 {len(children) - options.summary_max_children} 个场景")
     metadata = deepcopy(extra_metadata or {})
     metadata.update(shared_metadata(children, options.boundary_metadata_keys
                                     + options.carry_metadata_keys))
-    for transient in ("infer", "procedural", "middle"):
+    for transient in NON_PROPAGATED_SYSTEM_METADATA_KEYS:
         metadata.pop(transient, None)
     return MemoryUnit(
         id=str(uuid.uuid4()), scope=deepcopy(tree_home_scope), tier=MemoryTier.PROCEDURAL,

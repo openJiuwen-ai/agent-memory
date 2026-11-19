@@ -75,6 +75,7 @@
 | `F13` | [F13-dreaming](construction/F13-dreaming.md) | dreaming：evolve 定时演进（三态分发 / 候选源 / 持续授权） |
 | `F14` | [F14-experience-memory-and-skill](construction/F14-experience-memory-and-skill.md) | 经验记忆构建、周期整理与技能沉淀 |
 | `F15` | [F15-staged-evolver](construction/F15-staged-evolver.md) | Evolver 阶段编排与扩展 |
+| `F16` | [F16-dialogue-message-roles](construction/F16-dialogue-message-roles.md) | 对话消息角色的写入、按角色检索原话与抽取归因 |
 
 ## control 控制层（`docs/features/control/`）
 

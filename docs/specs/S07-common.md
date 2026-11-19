@@ -5,10 +5,10 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F09-sdk-runtime-logging.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F12-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md，docs/features/common/F11-new-trace.md，docs/features/common/F12-absolute-date-recall.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F16-dialogue-message-roles.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F12-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md，docs/features/common/F11-new-trace.md，docs/features/common/F12-absolute-date-recall.md |
 
 ## 摄入协作取消
 
@@ -34,6 +34,12 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
 `MetadataValueType = str | int | float | bool | None | list[str]`。`MemoryUnit` 和
 `RawPayload` 只提供 `system_metadata` / `user_metadata`，不提供混合 `metadata`。codec `_v=4`
 分别序列化两者；`_v<4` 的 MemoryUnit 数据必须先离线迁移，运行时不猜测归属。
+
+## 对话消息角色元数据
+
+不修改 `Segment` 结构、不升级 `memory_codec` 版本号（沿用 `_v=4`；`TreeFact` 增可选 `message_role: str = ""` 仅在非空时序列化，无角色树事实序列化字节级不变）、不向 `_BUILTIN_FIELDS` 新增裸名。在 `common.type_def` 定义统一常量 `MESSAGE_ROLE_KEY = "message_role"`，对话消息发言人标识作为标量字符串落于 `MemoryUnit.system_metadata[MESSAGE_ROLE_KEY]`：不限制为封闭枚举，开放为任意非空单行字符串（长度 `1..64`、无首尾空白、不含换行及控制字符，内置推荐标准值与校验规则见 [S02](S02-memory-api.md#对话消息角色)）；无角色时**不写该键**（绝不写 `""` 或 `None`），普通非对话记忆与派生事实缺省不含该键。`message_role` 表示发言角色，与实体抽取使用的发言人姓名字段（`speaker`）互补，与 `hierarchy_role` / `memory_role` / `entity_vector_role` 正交。
+
+`message_role` 与历史兼容键 `"role"` 统一纳入公开导出的 `NON_PROPAGATED_SYSTEM_METADATA_KEYS`（`inherited_system_metadata`、建树流水线及 `VideoMemoryExtractor` 统一复用并自动剥离，防止派生事实、建树父节点与去重合并结果继承发言人角色）；写入（`add` / `batch_add`）由 API 边界校验格式与 `continuity` 互斥，更新（`update` / `batch_update`）及 `evolve(HIERARCHY)` 的 `hierarchy_options.metadata` 禁止写入或篡改该键，且实质改写正文（`patch.content is not None and patch.content != old.content`）时由 `apply_memory_patch`（在 `system_metadata.update` 之后）自动清除。设计取舍见 [F16](../features/construction/F16-dialogue-message-roles.md)。
 
 ## 范围 / 边界
 
@@ -605,7 +611,7 @@ tree_memory: TreeMemoryData | None = None
 - **容错演进**：未知字段忽略、缺失字段取默认。加字段是兼容演进（老数据缺省读出，不升 `_v`）；改字段含义/结构才升 `_v` 并在 `loads` 按 `_v` 分支。当前 `_v=4`（`_v=2` 为 segments 列表化；`_v=3` 把 scope 从 `org/user/agent/session` 扩展为 `org/space/user/agent/session`；`_v=4` 将混合 metadata 拆分为 `system_metadata` / `user_metadata`，`_v<4` 数据须离线迁移）。
 - `layers` 字段缺失时 `loads` 取空串 `ContentLayers()`——老数据无迁移读出。
 - 空 `hierarchy` 不写出，缺失读为空；未知枚举、坏时间和坏 Scope 引用使整段结构降级为空并记诊断，正文保留。未知字段忽略；可解析但不自洽的结构交消费边界校验，codec 不调用 `validate_ref`。
-- `TreeFact(source_id, source_scope, text)` 保存完整 Scope 的来源事实；`TreeMemoryData(facts)` 是独立构建材料，不进入正文、全文/向量投影或披露。`tree_memory=None` 表示未保存材料，空列表表示已保存但无事实；坏材料整组降级为 None，不能保留部分列表冒充完整事实。两字段保持 `_v=4`。
+- `TreeFact(source_id, source_scope, text, message_role="")` 保存完整 Scope 的来源事实（可选权威 `message_role` 为空时不写序列化键；非空时随 `RegexPrivacy` 脱敏与清单追踪，反序列化与渲染统一做单行可打印清洗）；`TreeMemoryData(facts)` 是独立构建材料，不进入正文、全文/向量投影或披露。`tree_memory=None` 表示未保存材料，空列表表示已保存但无事实；坏材料整组降级为 None，不能保留部分列表冒充完整事实。两字段保持 `_v=4`。
 - 只有字段语义或结构发生破坏性变化时才提升 `_v`；增加可选枚举成员或可缺省字段不单独升版。
 
 ### 工厂注册机制（`factory/factory.py`）

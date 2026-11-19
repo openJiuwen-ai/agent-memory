@@ -38,6 +38,7 @@ from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
     MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
+    MESSAGE_ROLE_KEY,
     CandidateFuser,
     ChannelError,
     FilterExpr,
@@ -756,15 +757,22 @@ class CompositeDomainStore(DomainStore):
                 old_hash, old_body, old_index = matching[0]
                 prospective = old_body.replace(old_text, new_text, 1).strip()
                 if not prospective or "\n\n" in prospective or prospective.startswith("# "):
-                    raise ValidationError("Collective edit must preserve one non-empty memory block")
+                    raise ValidationError(
+                        "Collective edit must preserve one non-empty memory block"
+                    )
                 rows = shadow.list_units_by_md(scope, rel_path)
                 units = shadow.get_units(scope, [uid for uid, _ in rows])
-                owners = [
-                    unit for unit in units
-                    if unit.lifecycle == LifecycleState.ACTIVE and content_hash(unit.content) == old_hash
-                ]
+                owners = []
+                for unit in units:
+                    if (
+                        unit.lifecycle == LifecycleState.ACTIVE
+                        and content_hash(unit.content) == old_hash
+                    ):
+                        owners.append(unit)
                 if len(owners) != 1:
-                    raise ValidationError("Collective edit could not identify the original active unit")
+                    raise ValidationError(
+                        "Collective edit could not identify the original active unit"
+                    )
                 if any(body == prospective and idx != old_index for _, body, idx in old_full):
                     raise ValidationError("Collective edit cannot duplicate another block")
             try:
@@ -776,7 +784,9 @@ class CompositeDomainStore(DomainStore):
                     before = {h for h, _, _ in old_full}
                     after = {h for h, _, _ in new_full}
                     if before - after != {old_hash} or len(after - before) != 1:
-                        raise ValidationError("Collective edit must supersede exactly one memory block")
+                        raise ValidationError(
+                            "Collective edit must supersede exactly one memory block"
+                        )
                 new_titles = {}
                 old_titles = {}
                 if class_from_md_path(rel_path) != "daily_memory":
@@ -873,6 +883,8 @@ class CompositeDomainStore(DomainStore):
             inserted_sorted = sorted(inserted_blocks, key=lambda b: b[2])
             for old, (_, new_c, _) in zip(superseded_sorted, inserted_sorted):
                 new = copy.deepcopy(old)  # old 此时 ACTIVE（未标 SUPERSEDED），继承全部元数据
+                new.system_metadata.pop(MESSAGE_ROLE_KEY, None)
+                new.system_metadata.pop("role", None)
                 new.id = str(uuid.uuid4())
                 new.supersedes = old.id
                 new.segments = [Segment(content=new_c)]

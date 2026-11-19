@@ -11,6 +11,7 @@ import re
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.type_def import MemoryUnit
+from jiuwen_memory.construction.message_role import message_role_of
 
 _CORRECTION_RE = re.compile(
     r"改为|改成|变更为|更新为|调整为|推迟|提前|延后|取消|不再"
@@ -73,6 +74,8 @@ def _has_negation_delta(candidate: MemoryUnit, existing: MemoryUnit) -> bool:
 
 def has_meaningful_delta(candidate: MemoryUnit, existing: MemoryUnit) -> bool:
     """候选相对已有记忆是否存在禁止 direct_noop 的实质差异。"""
+    if message_role_of(candidate).casefold() != message_role_of(existing).casefold():
+        return True
     if _temporal_conflicts(candidate, existing):
         return True
     if _CORRECTION_RE.search(candidate.content or ""):

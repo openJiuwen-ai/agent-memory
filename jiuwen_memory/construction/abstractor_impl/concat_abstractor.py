@@ -28,6 +28,7 @@ from jiuwen_memory.construction.common import (
     importance_category_map_from_config,
     inferred_attribution,
 )
+from jiuwen_memory.construction.message_role import filter_effective_units, format_role_line
 
 logger = get_logger(__name__)
 
@@ -45,7 +46,8 @@ class ConcatAbstractor(Abstractor):
         return None
 
     def abstract(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
-        sources = [u for u in units if u.lifecycle.value == "active"]
+        effective = filter_effective_units(units, procedural=False)
+        sources = [u for u in effective if u.lifecycle.value == "active"]
         logger.info(
             "ConcatAbstractor: received %d units, %d active sources", len(units), len(sources)
         )
@@ -62,7 +64,7 @@ class ConcatAbstractor(Abstractor):
             logger.info("ConcatAbstractor: fewer than 2 active sources, no output")
             return []
         now = datetime.now(UTC)
-        summary = "；".join(u.content for u in sources)
+        summary = "；".join(format_role_line(u) for u in sources)
         result = [
             MemoryUnit(
                 id=str(uuid.uuid4()),

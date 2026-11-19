@@ -23,6 +23,7 @@ from jiuwen_memory.construction.common import (
     reject_deprecated_llm_attempt_keys,
 )
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.message_role import filter_effective_units, is_procedural_units
 from jiuwen_memory.construction.prompt_guard import (
     CONTENT_MAX_UNIT_CHARS,
     chunk_unit,
@@ -99,6 +100,9 @@ class DynamicLLMExtractor(Extractor):
         context: ExtractContext | None = None,
     ) -> list[MemoryUnit]:
         """按 metadata 中的 prompt 策略抽取；无策略时委托 fallback。"""
+        units = filter_effective_units(units, procedural=is_procedural_units(units))
+        if not units:
+            return []
         prompts: list[tuple[str, str]] = []
         for unit in units:
             prompts.extend(

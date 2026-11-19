@@ -11,6 +11,7 @@ from typing import Any
 from jiuwen_memory.common.errors import BackendError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
+    NON_PROPAGATED_SYSTEM_METADATA_KEYS,
     LifecycleState,
     MemoryTier,
     MemoryUnit,
@@ -25,10 +26,11 @@ from jiuwen_memory.construction.common import (
     inferred_attribution,
 )
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.message_role import filter_effective_units, is_procedural_units
 
 logger = get_logger(__name__)
 
-_CALL_LEVEL_METADATA_KEYS = frozenset({"infer", "pipeline"})
+_CALL_LEVEL_METADATA_KEYS = frozenset({"pipeline"}) | NON_PROPAGATED_SYSTEM_METADATA_KEYS
 
 
 class VideoMemoryExtractor(Extractor):
@@ -53,8 +55,9 @@ class VideoMemoryExtractor(Extractor):
         context: ExtractContext | None = None,
     ) -> list[MemoryUnit]:
         del context
+        effective = filter_effective_units(units, procedural=is_procedural_units(units))
         derived: list[MemoryUnit] = []
-        for source in units:
+        for source in effective:
             if source.source != Modality.VIDEO:
                 continue
             if source.provenance:

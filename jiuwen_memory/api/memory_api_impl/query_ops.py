@@ -110,6 +110,7 @@ from .local_support import (
     _recall_permission_context,
     _reject_kernel_system_metadata,
     _reject_memory_type_transition,
+    _reject_message_role_in_patch,
     _reject_non_scalar_metadata,
     _reject_route_tag_keys,
     _routing_clauses_of,
@@ -1064,6 +1065,7 @@ class QueryOpsMixin:
     ) -> MemoryUnit:
         identity = security.auth.actor
         _reject_kernel_system_metadata(patch.system_metadata)
+        _reject_message_role_in_patch(patch.system_metadata)
         # 判定标签键在改写入口同样不可由调用方赋值：只挂写入入口时，改写即绕过通道——
         # 内容 EDITOR 可把他人条目的会话标签改成自己的会话 id，使其出现在他人的上下文里，
         # 或改写项目标签使条目脱离按 `system_metadata.<tag_key>` 谓词执行的批量删除范围。
@@ -1185,6 +1187,7 @@ class QueryOpsMixin:
             raise ValidationError("limit must be a positive integer")
         for patch in patches:
             _reject_kernel_system_metadata(patch.system_metadata)
+            _reject_message_role_in_patch(patch.system_metadata)
             _reject_route_tag_keys(patch.system_metadata, self._route_table.tag_keys)
             _reject_non_scalar_metadata(patch.system_metadata, field_name="system_metadata")
             _reject_non_scalar_metadata(patch.user_metadata, field_name="user_metadata")
@@ -1457,6 +1460,7 @@ class QueryOpsMixin:
             if self._authorizer.routing_fields():
                 raise ValidationError("HIERARCHY 暂不支持权限路由或逐候选鉴权")
             _reject_kernel_system_metadata(options.hierarchy_options.metadata)
+            _reject_message_role_in_patch(options.hierarchy_options.metadata)
             _reject_route_tag_keys(options.hierarchy_options.metadata, self._route_table.tag_keys)
         else:
             options = replace(options, hierarchy_options=None, reuse_existing=False)
