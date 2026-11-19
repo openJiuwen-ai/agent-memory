@@ -209,6 +209,11 @@ If unsure, prefer "add" (to avoid losing information)."""
 _DEDUP_BATCH_MAX_ITEMS = 12
 _DEDUP_BATCH_UNIT_CHARS = 4000
 _DEDUP_BATCH_TOTAL_CHARS = 24000
+# 输出预算按条数线性增长。固定上限会让多候选批次的 JSON 被截断，解析失败后
+# 整批退化成逐条单判——既慢又改变判定口径。每条 entry 实测约 54 token，
+# 取 96 留足 reason 字段变长的余量；BASE 覆盖 JSON 数组的外层结构。
+_DEDUP_BATCH_OUTPUT_TOKENS_PER_ITEM = 96
+_DEDUP_BATCH_OUTPUT_TOKENS_BASE = 128
 
 _DEDUP_BATCH_SYSTEM_PROMPT = """You are a memory deduplication assistant. For EACH candidate \
 memory, determine whether
@@ -667,8 +672,9 @@ class OrchestratingEvolver(Evolver):
         # ---- 第二段：批量 LLM 判定 ----
         decisions: dict[str, DedupDecision] = {}
         targets: dict[str, MemoryUnit] = {}
+        batch_items = [(c, hits) for c, _, _, hits in need_llm]
+        llm_batches = len(self._split_dedup_batches(batch_items)) if batch_items else 0
         if need_llm:
-            batch_items = [(c, hits) for c, _, _, hits in need_llm]
             decisions = self._llm_dedup_decide_batch(batch_items, targets=targets)
 
         # ---- 第三段：逐条执行 ----
@@ -707,7 +713,7 @@ class OrchestratingEvolver(Evolver):
             noop_count,
             len(direct_noop),
             len(need_llm),
-            1 if need_llm else 0,
+            llm_batches,
         )
         trace_event(
             type(self).__name__,
@@ -1316,7 +1322,16 @@ class OrchestratingEvolver(Evolver):
         )
 
         try:
-            response = self._llm.chat(messages, temperature=0, max_tokens=1024)
+            # 输出预算必须随单批候选数增长：每条 entry 至少要有 candidate_id /
+            # decision / existing_id / reason 四个字段，实测约 163 字符 ≈ 54 token。
+            # 固定 1024 只能容纳约 18 条，超过就截断 JSON，解析失败后退化成逐条单判
+            # （实测 45 题评测里发生 109 次）。
+            response = self._llm.chat(
+                messages,
+                temperature=0,
+                max_tokens=_DEDUP_BATCH_OUTPUT_TOKENS_PER_ITEM * len(items)
+                + _DEDUP_BATCH_OUTPUT_TOKENS_BASE,
+            )
             logger.debug(
                 "[trace/consolidate] llm_raw_response | resp_len=%d | raw_response=%s",
                 len(response) if response else 0,

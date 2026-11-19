@@ -1690,3 +1690,65 @@ class TestDedupBatchPromptBudget:
             f"所有候选都应有裁决，实际 {sorted(decisions)}"
         )
         assert set(seen) == {f"c{i}" for i in range(6)}, "所有候选都应被送进某一批"
+
+class TestDedupBatchOutputBudget:
+    """批量判重的输出预算必须随候选数增长，否则 JSON 被截断后整批退化。
+
+    背景：max_tokens 固定 1024 时每条 entry 约 54 token，只能容纳约 18 条；
+    实测 LongMemEval 45 题里有 109 次「cannot parse LLM response as JSON array」，
+    每次都退化成逐条单判。
+    """
+
+    @staticmethod
+    def test_output_budget_scales_with_item_count():
+        from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+            _DEDUP_BATCH_OUTPUT_TOKENS_PER_ITEM,
+        )
+
+        stores = _create_stores()
+        llm = _MockLLM(responses=[])
+        evolver = _make_evolver(stores["kv"], stores["vector"], _HashEmbedder(), llm)
+
+        seen_max_tokens: list[int] = []
+
+        def fake_chat(messages, **kwargs):
+            seen_max_tokens.append(kwargs.get("max_tokens", 0))
+            import re as _re
+
+            ids = _re.findall(r"\[(c\d+)\]", messages[-1].content)
+            return json.dumps([{"candidate_id": i, "decision": "add"} for i in ids])
+
+        setattr(llm, "chat", fake_chat)
+
+        def run(n: int) -> int:
+            seen_max_tokens.clear()
+            items = [
+                (TestDedupBatchPromptBudget._long_unit(f"c{i}", 50), []) for i in range(n)
+            ]
+            private(evolver, "_llm_dedup_decide_batch")(items)
+            return max(seen_max_tokens) if seen_max_tokens else 0
+
+        few = run(1)
+        many = run(12)
+        assert many > few, "候选多时输出预算必须更大，固定上限会截断 JSON"
+        # 至少要为每条候选留出实测所需的 token
+        assert few >= _DEDUP_BATCH_OUTPUT_TOKENS_PER_ITEM, "预算不得低于单条实测需求"
+
+    @staticmethod
+    def test_large_batch_output_is_not_truncated():
+        """12 条候选时输出预算必须能装下 12 条完整 entry。"""
+        from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+            _DEDUP_BATCH_MAX_ITEMS,
+            _DEDUP_BATCH_OUTPUT_TOKENS_BASE,
+            _DEDUP_BATCH_OUTPUT_TOKENS_PER_ITEM,
+        )
+
+        budget = (
+            _DEDUP_BATCH_OUTPUT_TOKENS_PER_ITEM * _DEDUP_BATCH_MAX_ITEMS
+            + _DEDUP_BATCH_OUTPUT_TOKENS_BASE
+        )
+        # 每条 entry 实测约 54 token，预算必须留有余量
+        assert budget >= 54 * _DEDUP_BATCH_MAX_ITEMS, (
+            f"单批满员 {_DEDUP_BATCH_MAX_ITEMS} 条需要至少 "
+            f"{54 * _DEDUP_BATCH_MAX_ITEMS} token，实际预算 {budget}"
+        )
