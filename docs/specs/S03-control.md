@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-11-17 |
+| 最近一次修订日期 | 2026-11-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F10-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
-| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/construction/F13-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/construction/F13-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
 ## 明文拒绝的传播边界
 
@@ -798,3 +798,75 @@ PEP 后由 MemoryAPI.finish_human_view 传入的服务端操作句柄与当前�
 MemoryAPI 返回用户终端；不把原文附加到 MemoryUnit、普通 get/recall 或处理流水线。
 该路径不等待浏览器认证，也不执行授权裁决；不支持此能力的 Engine 在启用用户访问控制时
 拒绝装配，不修改 MemoryEngine ABC。详见 S10、S05、S06。
+
+## 批量写入编排（F10）
+
+写编排端口位于 `MemoryCommandService` 与 `MemoryEngine` 之间，只做调度：不鉴权、不审计、
+不调用模型。配置项 `write.orchestrator` 选择实现（`grouped` 缺省 / `sequential`），
+注册式工厂名为 `write`。
+
+### 引擎原语
+
+| 契约 | 抽象性 | 语义 |
+| --- | --- | --- |
+| `MemoryEngine.supports_grouped_write(items) -> bool` | 非抽象，默认 `False` | 声明本批能否走分组编排；只表示「能否分组」，不要求组件具备批量能力。未声明时编排器走逐条路径 |
+| `MemoryEngine.grouped_write_blocker(items) -> str \| None` | 非抽象，默认按 `supports_grouped_write` 推导（不支持即 `"engine_degraded"`） | 说明本批不能走分组编排的原因；可走时为 `None`。内置引擎只在本批组件解析不出时返回 `"engine_degraded"` |
+| `MemoryEngine.write_group(items, *, merge_extract) -> list[BatchWriteOutcome]` | 非抽象，默认逐条 `write` | 返回与 `items` 逐条对齐的结果；内置引擎覆盖为「prepare 全部 → 分组执行」 |
+
+内置三引擎一律声明支持分组；只有本批组件解析不出（带 pipeline 且取不到 profile）时
+`supports_grouped_write` 才返回假，编排器据此退化为逐条并记 `engine_degraded`。
+
+组件级能力缺失不阻塞分组，只在段内降级并各记一次信号（段内条目数大于 1 时）：
+`IndexBuilder` 未声明 `grouped_build` 时直写段逐条 build（`build_unsupported`）；
+`Evolver` 未声明 `grouped_extract` 时 infer 段逐条抽取（`extract_unsupported`）。
+单条写入与 `continue_on_error=false` 本就逐条执行，不算降级。
+
+### 真值表
+
+| # | 引擎支持 | 编排器 | `continue_on_error` | `merge_extract` 生效 | 分组并发 | 执行粒度 | 抽取粒度 | 加锁 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 是 | grouped | true | 是 | 是 | 分段批量 | 合并 | 是 |
+| 2 | 是 | grouped | true | 否 | 是 | 分段批量 | 逐条 | 是 |
+| 3 | 否 / 任意 | grouped | false | 忽略 | 否 | 逐条（按输入顺序） | 逐条 | 是 |
+| 4 | 任意 | sequential | 任意（忽略） | 忽略 | 否 | 逐条（按输入顺序） | 逐条 | 是 |
+
+四行都加锁：不存在「关掉并发就不加锁」的旁路。`merge_extract` 是调用级
+`system_metadata` 键，写入边界剥离、不落盘；与部署级 `deployment.merge_extract`
+（缺省 `true`）取逻辑与。
+
+### 锁与失败语义
+
+- 锁 key 为 `(org, space, user)`，与去重粒度一致；agent / session 不参与。
+- 段 = 输入中相邻、锁 key 相同的 infer 条目；任何时刻只持有一把锁，混合用户的批次
+  不会死锁。`sequential` 与 `continue_on_error=false` 的段覆盖整段连续 infer 条目，
+  `grouped` 的段是一批（受 `max_items` / `max_tokens` 约束）。
+- `LockTimeoutError` 按条归集为该批条目的失败（`error_type="LockTimeoutError"`），
+  不跳过锁；锁后端不可用按后端错误失败，不降级为无锁。
+- 锁释放时机：获取失败、fail-fast、取消均在 `finally` 释放；取消时先等已提交的写入
+  线程跑完再抛 `CancelledError`，避免「锁已释放但写入仍在进行」。
+- **顺序路径（第 3、4 行）一律逐项提交**：`continue_on_error=false` 时每提交一项前检查
+  上一项结果，失败后其余条目为 `Skipped`；取锁失败（含超时）按条归集，不冒出批量 API。
+- **LLM 工作线程不得取写锁**：`executor.current_lane()` 为 `llm` 时拒绝需要锁的写入，
+  且不进入临界区——该线程可能正被某个持锁写入等待，取了会互相堵死。
+- **多实例校验针对实际使用的锁**：校验在编排器装配处进行（`write.default.params.lock`
+  解析出的实例），不在装配根另建实例上判断；两者可以因具名/内联配置而不同。
+- `IndexBuilder.build_grouped` 的 `UNKNOWN`/缺失回执映射为领域异常 `WriteIncompleteError`
+  （`status="unknown"`、`retry_action="recover_then_retry"`）：批量结果的 `error_type` 与
+  单条入口重新抛出的异常类型一致，`units` 只含已确认提交的条目。
+- 失败隔离按条目而非按段：prepare、逐项 `build`、middle 子路径都各自捕获单条异常，
+  同段其他条目的回执与副作用不受影响。
+- 降级计数是**装配实例状态**（`WriteSignals`），不是进程单例：一个 Runtime 内引擎与
+  编排器共写同一份，经编排器 `degrade_counters()` 可查；两个 Runtime 互不可见。
+- 锁健康只看锁路径：`health()` 在最近一次**取锁或释放锁**失败且尚未成功取锁时报告
+  `BackendError`；成功取锁即清除故障（后端恢复后健康状态随之恢复）。引擎或存储抛出的
+  `BackendError` 不写入锁健康状态。
+- **释放锁失败不改写回执**：写入已提交后释放失败只记账并记 ERROR 日志，锁靠租约到期
+  回收；把已提交条目标成失败会让调用方重试并写出重复记忆。
+- **取消等待在飞分组**：分组并发用 `gather(..., return_exceptions=True)`，一组取消时
+  其余组先完成再抛第一个 `IngestCancelled`，避免「已报告 cancelled 之后仍有写入落库」。
+- 逐条失败必须留下日志现场：回执对调用方屏蔽非领域异常原文，因此 `_set_failure` 对
+  非领域异常写 ERROR + traceback；单条入口以 `raise ... from original` 保留异常链。
+- 失败日志只记条目下标与异常类型，**不得记录记忆正文或任何未脱敏内容**（隐私能力
+  保护的数据不能进运行日志）；确需定位时用 `redact_for_log` / `scope_for_log` 标记。
+- 回执错误口径统一：领域异常保留类型与消息；非领域异常一律 `InternalError` +
+  「unexpected write failure」，不把内部异常原文带回调用方。

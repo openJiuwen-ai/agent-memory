@@ -162,10 +162,18 @@ extra 中声明，无新增依赖。与 redis KV 后端各自持有连接池，�
 ### 六、`memory` 实现
 
 进程内字典加租约，供单测与无 Redis 的本地开发使用。**不提供跨实例互斥**，这一点在类
-docstring 与配置注释中显式标注。
+docstring、配置注释与 `mutex_scope` 声明里显式标注。
+
+`LockProvider.mutex_scope` 声明实现的互斥范围：`memory` 返回 `MutexScope.PROCESS`，
+`redis` 返回 `MutexScope.CROSS_INSTANCE`。装配层据此做**能力校验**而不是靠文档约定：
+`deployment.multi_instance=true` 且锁不是 `CROSS_INSTANCE` 时直接装配失败（F10 决策 7）。
 
 `LockProducer` 不设默认实现：消费方 `dep(config)` 时必须显式配置，缺配置报错。让
-「忘了配 Redis」在装配期失败，而不是静默退化成单机锁。
+「忘了配 Redis」在装配期失败，而不是静默退化成单机锁。内核基线 `config/defaults.py`
+显式给出 `lock.default: memory`（单进程基线），多实例部署必须覆盖为 `redis`。
+
+进程内实现的全部读改写（`insert` / `update` / 续租 / 释放）用 `threading.Lock` 保护：
+真异步后同一实例会被不同线程、不同事件循环调用，原「单事件循环假设」不再成立。
 
 ### 七、从 storage 下沉的公共件
 

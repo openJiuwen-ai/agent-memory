@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 import types
 
@@ -633,3 +634,51 @@ def test_redis_builder_passes_ca_cert_when_verify_on(monkeypatch, tmp_path) -> N
         "decode_responses": True,
         "ssl_ca_certs": str(ca),
     }
+
+
+# ---- F10：互斥范围声明与内存锁的跨线程/跨事件循环原子性 -------------------- #
+
+
+def test_mutex_scope_defaults_process_redis_cross_instance() -> None:
+    from jiuwen_memory.common.lock import MutexScope
+
+    assert InMemoryLockProvider().mutex_scope is MutexScope.PROCESS, (
+        "进程内锁必须如实声明为 PROCESS，不能冒充跨实例"
+    )
+    redis_provider = RedisLockProvider(url="redis://localhost:6379/0")
+    assert redis_provider.mutex_scope is MutexScope.CROSS_INSTANCE, (
+        "Redis 锁跨实例生效，multi_instance 部署依赖这条声明"
+    )
+
+
+def test_in_memory_lock_atomic_across_event_loops() -> None:
+    """同步 add 每次 asyncio.run 新建事件循环，HTTP 又是多线程：CAS 必须真正互斥。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    provider = InMemoryLockProvider(lease_ms=30_000, wait_timeout_ms=0)
+    barrier = threading.Barrier(8)
+
+    def attempt() -> bool:
+        async def run() -> bool:
+            barrier.wait(timeout=5)
+            try:
+                await provider.acquire(_SCOPE, "infer_write", wait_timeout_ms=0)
+            except LockTimeoutError:
+                return False
+            return True
+
+        return asyncio.run(run())
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(lambda _: attempt(), range(8)))
+
+    assert sum(outcomes) == 1, "同键并发获取必须恰好一个成功"
+
+
+def test_defaults_declare_memory_lock() -> None:
+    from jiuwen_memory.config.defaults import default_config_dict
+
+    config = default_config_dict()
+    assert config["lock"]["default"]["target"] == "memory", (
+        "基线必须显式声明 memory 锁；写入链路不在代码里兜底"
+    )

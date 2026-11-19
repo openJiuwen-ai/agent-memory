@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import (
@@ -45,7 +45,6 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.log import (
     get_logger,
-    metadata_for_log,
     scope_for_log,
 )
 from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
@@ -79,6 +78,13 @@ from jiuwen_memory.control.engine_impl.doc_mode_support import (
     restore_coords_from_md_filename,
 )
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.grouped_write import (
+    GroupedWriteMixin,
+    PreparedWrite,
+    WritePath,
+    executor_from_config,
+    legacy_path_name,
+)
 from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.retrieval_pipelines import (
     RetrievalPipelines,
@@ -99,10 +105,7 @@ from jiuwen_memory.control.engine_impl.temporal_support import (
     valid_sort_key as _valid_sort_key,
 )
 from jiuwen_memory.control.ingest_job import (
-    begin_ingest_write,
     check_ingest_cancelled,
-    record_ingest_ids,
-    record_ingest_units,
 )
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer
 from jiuwen_memory.control.lifecycle import LifecycleManager, LifecycleProducer
@@ -122,6 +125,7 @@ from jiuwen_memory.control.types import (
     UpdateMode,
     UpdateSelector,
 )
+from jiuwen_memory.control.write_orchestrator_impl.signals import WriteSignals
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -227,7 +231,7 @@ def _expand_provenance_descendants(
     return purge_ids
 
 
-class AgentEngine(HumanViewEngineMixin, MemoryEngine):
+class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
     """ToC（个人 agent）编排中枢：驱动接入/构建/检索算子与真源 KVStore 完成。"""
 
     def configure_retention(self, guard) -> None:
@@ -250,6 +254,7 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         pipeline: MemoryPipeline | None = None,
         job_factory: JobFactory | None = None,
         retrieval_pipelines: dict[str, Retriever] | None = None,
+        executor=None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -265,6 +270,8 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         # None 时跳过（原文 tier 保持 EPISODIC 默认，向后兼容）。
         self._classifier = classifier
         self._job_factory = job_factory
+        self._executor = executor
+        self._signals = WriteSignals()
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -316,23 +323,48 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         event_time: datetime | None = None,
         source_ref: str = "",
     ) -> list[MemoryUnit]:
+        item = BatchWriteItem(
+            content=content,
+            scope=scope,
+            source=source,
+            assets=assets,
+            tags=tags,
+            system_metadata=system_metadata,
+            user_metadata=user_metadata,
+            occurred_at=occurred_at,
+            event_time=event_time,
+            source_ref=source_ref,
+        )
+        prepared = await self._prepare_async(item)
+        outcomes = await self._execute_group([prepared], merge_extract=False)
+        outcome = outcomes[0]
+        if outcome.error:
+            raise outcome.error_obj or AgentMemoryError(outcome.error)
+        return outcome.units
+
+    def supports_grouped_write(self, items: list[BatchWriteItem]) -> bool:
+        return self._supports_grouped_write(items)
+
+    def grouped_write_blocker(self, items: list[BatchWriteItem]) -> str | None:
+        return self._grouped_write_blocker(items)
+
+    def _prepare(self, item: BatchWriteItem) -> PreparedWrite:
+        """构造 RawPayload → ingest → 选组件（F10 决策 5 的 prepare 阶段）。"""
+        if item.source is None:
+            item = replace(item, source=Modality.TEXT)
         # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
         # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
         #   （指代消解/语境）+ 召回10条相关记忆（去重提示），调 extractor 抽派生落 /memory/。
         # - 缺省：原始落 /memory/ + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
         # agent 场景无 procedural（过程记忆汇总）与 middle（中期缓冲）路径。
-        # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
-        # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
-        # agent 场景无 middle 路径：middle / middle_interval 不识别、不剥除，随 meta
-        # 原样透传（middle 语义不生效——文档模式默认不支持中期记忆，见类 docstring）。
-        meta = dict(system_metadata or {})
+        meta = dict(item.system_metadata or {})
 
         def _is_true(key: str) -> bool:
             return str(meta.get(key, "")).strip().lower() == "true"
 
         infer = _is_true("infer")
 
-        is_video = source == Modality.VIDEO
+        is_video = item.source == Modality.VIDEO
         video_binding = None
         if is_video and str(meta.get("pipeline", "")).strip() == "video":
             video_binding = self._video_write_binding()
@@ -341,81 +373,51 @@ class AgentEngine(HumanViewEngineMixin, MemoryEngine):
         payload_id = str(meta.get("payload_id", "")).strip() if is_video else ""
         payload = RawPayload(
             id=payload_id or str(uuid.uuid4()),
-            scope=scope,
-            modality=source,
-            data=b"" if is_video else content.encode("utf-8"),
-            uri=content if is_video else "",
-            assets=list(assets or []),
+            scope=item.scope,
+            modality=item.source,
+            data=b"" if is_video else item.content.encode("utf-8"),
+            uri=item.content if is_video else "",
+            assets=list(item.assets or []),
             system_metadata=meta,
-            user_metadata=dict(user_metadata or {}),
-            occurred_at=occurred_at,
-            event_time=event_time,
-            source_ref=source_ref,
+            user_metadata=dict(item.user_metadata or {}),
+            occurred_at=item.occurred_at,
+            event_time=item.event_time,
+            source_ref=item.source_ref,
         )
         # 两条路径共用：Ingestor 规约。
         check_ingest_cancelled()
         trace_event(type(self).__name__, "write_input", lambda: {
-            "content": content, "modality": source.value,
+            "content": item.content, "modality": item.source.value,
         }, level=TraceLevel.DEBUG)
         units = self._ingestor.ingest([payload])
         check_ingest_cancelled()
         # Explicit input time is a write contract, independent of Ingestor choice.
-        if event_time is not None:
+        if item.event_time is not None:
             for unit in units:
-                unit.temporal.t_event = event_time
+                unit.temporal.t_event = item.event_time
         for unit in units:
-            unit.tags = list(tags or [])
+            unit.tags = list(item.tags or [])
             if "session_id" in meta:
                 unit.system_metadata["session_id"] = meta["session_id"]
 
+        path = WritePath.INFER if infer else WritePath.DIRECT
         trace_event(type(self).__name__, "ingest", {
-            "units": len(units), "modality": source.value, "infer": infer,
+            "units": len(units), "modality": item.source.value, "path": legacy_path_name(path),
         })
         binding = video_binding or self._write_binding(units)
-        evolver = binding.evolver if binding is not None else self._evolver
-        index_builder = binding.index_builder if binding is not None else self._index
-        classifier = binding.classifier if binding is not None else self._classifier
+        return PreparedWrite(
+            item=item,
+            units=units,
+            path=path,
+            evolver=binding.evolver if binding is not None else self._evolver,
+            index_builder=binding.index_builder if binding is not None else self._index,
+            classifier=binding.classifier if binding is not None else self._classifier,
+            binding=binding,
+            extra={"meta": meta, "infer": infer},
+        )
 
-        if infer:
-            if evolver is None:
-                raise RuntimeError(
-                    "AgentEngine.write infer=True requires an Evolver (装配未注入 evolver)"
-                )
-            begin_ingest_write()
-            result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
-            )
-            # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
-            # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
-            record_ingest_ids(result.created_ids)
-            derived = list(result.created_units) or [
-                self._load(scope, uid) for uid in result.created_ids
-            ]
-            infer_metadata = {"infer": meta.get("infer")}
-            logger.info(
-                "AgentEngine.write system_metadata=%s: %d originals, %d derived added, scope=%s",
-                metadata_for_log(infer_metadata),
-                len(units),
-                len(derived),
-                scope_for_log(scope),
-            )
-            trace_event(type(self).__name__, "result", {
-                "originals": len(units), "returned": len(derived),
-            }, level=TraceLevel.SIMPLE)
-            return derived
-
-        # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引。
-        # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
-        check_ingest_cancelled()
-        if classifier is not None:
-            classifier.classify(units)
-        # 记忆写入只经 IndexBuilder：交付 Storage + 建 hot 轻量索引由其统一编排。
-        begin_ingest_write()
-        await asyncio.to_thread(index_builder.build, units)
-        record_ingest_units(units)
-        trace_event(type(self).__name__, "result", {"returned": len(units)},
-                    level=TraceLevel.SIMPLE)
-        return units
+    async def _execute_middle_item(self, prepared: PreparedWrite) -> list[MemoryUnit]:
+        raise UnsupportedCapabilityError("write_path", "middle", type(self).__name__)
 
     async def batch_write(
         self,
@@ -1023,4 +1025,5 @@ def _build(config):
         classifier=_opt_classifier(),
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),
+        executor=executor_from_config(config),
     )

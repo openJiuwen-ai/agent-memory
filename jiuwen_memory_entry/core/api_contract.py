@@ -246,11 +246,16 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: to_jsonable(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-            if not field.name.startswith("_")
-        }
+        serialized = {}
+        for field in dataclasses.fields(value):
+            if field.name.startswith("_"):
+                continue
+            item = getattr(value, field.name)
+            if isinstance(item, BaseException):
+                # 内部诊断字段（如 error_obj）不是 API 对外返回的数据。
+                continue
+            serialized[field.name] = to_jsonable(item)
+        return serialized
     if isinstance(value, Mapping):
         return {str(key): to_jsonable(item) for key, item in value.items()}
     if isinstance(value, (set, frozenset)):

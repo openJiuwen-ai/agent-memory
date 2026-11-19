@@ -91,6 +91,7 @@ from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.construction.router import optional_router
 from jiuwen_memory.control.bootstrap import register_controllers
 from jiuwen_memory.control.engine import EngineProducer
+from jiuwen_memory.control.executor import BlockingExecutorProducer
 from jiuwen_memory.control.governance import GovernorProducer
 from jiuwen_memory.control.ingest_job import IngestJobController, IngestJobProducer
 from jiuwen_memory.control.membership import MembershipProducer
@@ -99,6 +100,7 @@ from jiuwen_memory.control.policy import PolicyProducer
 from jiuwen_memory.control.scheduler import Scheduler, SchedulerProducer
 from jiuwen_memory.control.space import SpaceManager, SpaceProducer
 from jiuwen_memory.control.types import BackgroundJobStartResult
+from jiuwen_memory.control.write_orchestrator import WriteOrchestratorProducer
 from jiuwen_memory.ingest.bootstrap import register_ingestors
 from jiuwen_memory.retrieval.bootstrap import register_operators
 from jiuwen_memory.storage.bootstrap import register_backends
@@ -171,6 +173,7 @@ class _Kernel:
     continuity: Any | None = None
     human_view: Any = None
     trace_runtime: TraceRuntime | None = None
+    executor: Any = None
 
     async def start_background(self) -> None:
         """启动需事件循环就绪的后台组件。
@@ -187,6 +190,14 @@ class _Kernel:
 
     def close(self) -> None:
         """后台屏障成功后，统一释放自有 shadow、接续与安全资源。"""
+        try:
+            if self.executor is not None:
+                # 执行器最后关闭：等所有已提交的写入线程跑完再回收线程池。
+                self.executor.close(wait=True)
+        finally:
+            self._close_owned()
+
+    def _close_owned(self) -> None:
         try:
             if self.continuity is not None:
                 self.continuity.close()
@@ -834,6 +845,14 @@ def _assemble_kernel(
     credential_registry = CredentialStatusRegistry()
     engine = EngineProducer.dep(root, default="in_memory")
     permission = PermissionProducer.dep(root, default="sqlite")
+    executor = BlockingExecutorProducer.dep(root)
+    # 多实例/锁范围的校验落在编排器装配处：那里解析的是写入实际使用的那把锁
+    # （Factory 允许具名引用与内联实例，装配根另建的实例可能不是同一个）。
+    write_orchestrator = WriteOrchestratorProducer.dep(root, default="grouped")
+    # 引擎与编排器共写同一份降级计数：同一个 Runtime 内可从一个入口查全链路。
+    _bind = getattr(write_orchestrator, "bind_signals", None)
+    if callable(_bind):
+        _bind(engine.write_signals)
 
     continuity = None
     connectors = {}
@@ -881,6 +900,9 @@ def _assemble_kernel(
         continuity=continuity,
         continuity_connectors=connectors,
         privacy=privacy,
+        orchestrator=write_orchestrator,
+        executor=executor,
+        merge_extract_default=_merge_extract_default(ctx),
     )
     _reject_routing_without_space_authorization(api)
     watchdog: Watchdog | None = None
@@ -975,12 +997,29 @@ def _assemble_kernel(
         continuity=getattr(api, "_continuity", None),
         human_view=human_view,
         trace_runtime=trace_runtime,
+        executor=executor,
     )
 
     bind_trace(kernel.api, trace_runtime)
     bind_trace(kernel.scheduler, trace_runtime)
     bind_trace(kernel.ingest_jobs, trace_runtime)
     return kernel
+
+
+def _deployment_flags(ctx) -> dict:
+    """``deployment`` 段（部署形态声明），缺失时为空。"""
+    deployment = (ctx.globals or {}).get("deployment") or {}
+    if not isinstance(deployment, dict):
+        raise ValidationError("deployment must be a mapping")
+    return deployment
+
+
+def _merge_extract_default(ctx) -> bool:
+    """部署级 ``merge_extract`` 开关，缺省开启。"""
+    raw = _deployment_flags(ctx).get("merge_extract", True)
+    if not isinstance(raw, bool):
+        raise ValidationError("deployment.merge_extract must be bool")
+    return raw
 
 
 def _validate_privacy_namespace(storage, root, privacy) -> None:

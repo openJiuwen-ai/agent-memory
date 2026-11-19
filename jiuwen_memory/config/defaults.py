@@ -358,6 +358,7 @@ def default_config_dict() -> dict[str, Any]:
                     "evolver": _D,
                     "lifecycle": _D,
                     "job_factory": _D,
+                    "executor": _D,
                 },
             }
         },
@@ -380,6 +381,24 @@ def default_config_dict() -> dict[str, Any]:
         # scheduler 只接收 Job（Job 自带数据源），无 params。
         "scheduler": {_D: {"target": "in_process", "params": {}}},
         "ingest_job": {_D: {"target": "in_process", "params": {}}},
+        # F10：阻塞执行器（llm / io 两个线程池），三个引擎与 API 层共享同一实例。
+        "executor": {_D: {"target": "thread_pool", "params": {}}},
+        # F10：写入链路的 per-user 锁。基线是离线进程内栈，故显式声明 memory 锁
+        # （不是代码兜底）；多实例部署必须覆盖为 redis，见部署文档。
+        "lock": {_D: {"target": "memory", "params": {}}},
+        # F10：写入编排。grouped 缺省；lock 指向 lock.default（多实例部署改 redis）。
+        "write": {
+            _D: {
+                "target": "grouped",
+                "params": {
+                    "lock": _D,
+                    "executor": _D,
+                    "concurrency": 4,
+                    "max_items": 50,
+                    "max_tokens": 6000,
+                },
+            }
+        },
         "lifecycle": {_D: {"target": "kv", "params": {"policy": _D}}},
         "policy": {_D: "dict"},
         "governor": {_D: {"target": "in_memory", "params": {"audit": _D}}},
@@ -419,6 +438,8 @@ ROOT_PARAMS: dict[str, str] = {
     "config_source": _D,
     "key_store": _D,
     "trace": _D,
+    "executor": _D,
+    "write": _D,
 }
 
 KV_DEFAULT_NAME = _D  # 注入的真源 kv 预置进缓存时用的具名键（与各处引用一致）
