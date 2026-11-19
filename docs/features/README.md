@@ -109,6 +109,7 @@
 | `F11` | [F11-recency-importance-secondary-rank](retrieval/F11-recency-importance-secondary-rank.md) | 检索次级排序：带内按重要度与时效性 tie-break |
 | `F12` | [F12-filter-contract-governance](retrieval/F12-filter-contract-governance.md) | filters 契约治理：把公共过滤语言当产品治理 |
 | `F13` | [F13-filter-governance-playbook](retrieval/F13-filter-governance-playbook.md) | filters 契约治理落地规范（团队执行版） |
+| `F14` | [F14-context-pack](retrieval/F14-context-pack.md) | Top-K 后置上下文打包算子（ContextPacker） |
 
 ## storage 存储层（`docs/features/storage/`）
 

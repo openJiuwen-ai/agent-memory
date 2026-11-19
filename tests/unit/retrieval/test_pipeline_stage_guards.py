@@ -17,6 +17,7 @@ pytestmark = pytest.mark.unit
         "rerank",
         "rollup",
         "secondary_rank",
+        "pack_context",
         "disclose",
         "expand",
         "finalize",

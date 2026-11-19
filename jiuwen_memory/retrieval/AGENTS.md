@@ -21,6 +21,7 @@
 | `cross_space.py` | 跨空间检索的取数上界（`allocate_quota`）与结果合并（`merge`）；不访问存储、不调模型的纯函数，与算子并列而非算子，不进工厂 |
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
+| `context_packer.py` / `context_packer_impl/` | ContextPacker 接口/Producer 与三档无模型自适应实现（`AdaptiveContextPacker`，F14）：在 `cut_to_top_k` 之后、`Discloser` 之前按预算对 Top-K 候选做筛选与单条正文压缩，逐条输出 `ScoredMemoryUnit` |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
 | `retriever.py` | Retriever 接口与 Producer；完整链路入口及可选 query_parsers 依赖声明 |
 | `trace_projection.py` | 统一阶段记录到 TrajectoryStep 的有界投影、截断步骤与延迟展开记录；保留 detail 和原精度 cost_ms |
@@ -54,6 +55,7 @@
      ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
      ↓ + 可选次级排序（secondary_rank_enabled，globals 或 retriever params，默认关）：SecondaryScorer 带内按重要度/时效 tie-break
 8. 截断 top_k
+     ↓ + 可选上下文打包（context_pack_enabled，globals 或 retriever params，默认关；RetrievalQuery.context_pack 可单次覆盖）：ContextPacker 对 K 条候选筛选与压缩（expand_depth>0 时跳过）
      ↓
 9. Discloser.disclose(...) → list[RetrievedItem]
      ↓ 按层级加载内容（L0/L1/L2）
