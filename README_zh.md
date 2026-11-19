@@ -192,6 +192,7 @@ vector_store:
 | [特性设计](docs/features/) | 各模块设计取舍（storage / construction / retrieval / control / common） |
 | [技术规约](docs/specs/) | 各模块设计规约文档 |
 | [开发者指导文档](docs/zh/) | 主要包含Agent接入指导， API 文档，FAQ, 安装指导等|
+| [Portal 使用指南](docs/zh/Agent接入指导/Portal使用指南.md) | 接入记忆后打开 Portal、管理记忆与模型设置 |
 
 
 ## 参与贡献
