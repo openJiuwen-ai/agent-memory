@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -864,8 +864,8 @@ Redis Cluster**（需要 `redis.RedisCluster` 客户端与真实集群集成测�
 | ShardResolver | 创建时 MemoryUnit → 合法 shard；公开只读 shards/default_shard；纯函数，不访问存储 |
 | ShardLocator | Scope + unit_ids → active 的 id→shard 映射及未定位 id；批量部分结果，故障不得冒充未定位 |
 | ConditionalKV | Scope + key/value → 原子 create、按完整期望值 replace/delete；多 key 部分读取返回已存在映射；存储侧当前时间；比较失败与后端故障区分 |
-| ResourceDescriptor | 无凭据的规范化持久资源身份、端口类型、索引兼容描述；代理不改变身份；内存资源身份限定装配上下文。当前 PG / pgvector / Redis / ES / SQLite / Milvus（`uri/collection`）/ nano-graphrag（工作目录）/ Neo4j（`uri/database`）/ KV 图声明；split 包装层要求各分片的非空描述互不相同 |
-| ShardPrefilter | Scope + 查询 + shard 集合 → 截断前过滤的候选；系统/授权/用户谓词均 AND；标签由存储写入，不信任用户输入。当前由 pgvector / Milvus / Elasticsearch，以及图后端内存 / nano-graphrag / Neo4j 声明（图：遍历可经过任意节点，只在收集结果时按标签过滤） |
+| ResourceDescriptor | 无凭据的规范化持久资源身份、端口类型、索引兼容描述；代理不改变身份；内存资源身份限定装配上下文。当前 PG / pgvector / openGauss 向量与全文（`dsn/schema/table`）/ Redis / ES / SQLite / Milvus（`uri/collection`）/ nano-graphrag（工作目录）/ Neo4j（`uri/database`）/ KV 图声明；split 包装层要求各分片的非空描述互不相同 |
+| ShardPrefilter | Scope + 查询 + shard 集合 → 截断前过滤的候选；系统/授权/用户谓词均 AND；标签由存储写入，不信任用户输入。当前由 pgvector / openGauss 向量与全文 / Milvus / Elasticsearch，以及图后端内存 / nano-graphrag / Neo4j 声明（图：遍历可经过任意节点，只在收集结果时按标签过滤） |
 | GroupedMemoryLinks | Scope + 记录身份 + 按 shard 分组引用 + 增量操作 → 逐项结果；原子 UNLINK、DELETE_IF_EMPTY；查询仅投影选中引用 |
 
 

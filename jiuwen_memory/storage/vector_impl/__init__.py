@@ -11,6 +11,7 @@ from jiuwen_memory.storage.vector import VectorProducer
 import_optional(".in_memory_vector_store", __name__)
 import_optional(".milvus_vector", __name__)
 import_optional(".pgvector_vector", __name__)
+import_optional(".opengauss_vector", __name__)
 
 import_optional(".shard_routed_vector", __name__)
 
