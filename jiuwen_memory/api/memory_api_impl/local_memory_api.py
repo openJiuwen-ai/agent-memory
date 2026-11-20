@@ -7,6 +7,7 @@ Optional user access-control entries remain separate from ordinary machine queri
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 
 from jiuwen_memory.api.memory_api import MemoryAPI
@@ -103,6 +104,9 @@ class LocalMemoryAPI(
         continuity: Continuity | None = None,
         continuity_connectors: dict | None = None,
         privacy=None,
+        orchestrator=None,
+        executor=None,
+        merge_extract_default: bool = True,
     ) -> None:
         if audit_integrity_provider is not None and audit_verify_guard is None:
             raise ValidationError(
@@ -150,7 +154,14 @@ class LocalMemoryAPI(
         # 文档模式检索可独立使用 project 坐标。
         self._router = router
         self._document_mode = document_mode
-        self._commands = commands if commands is not None else MemoryCommandService(engine)
+        self._orchestrator = orchestrator
+        self._executor = executor
+        self._merge_extract_default = bool(merge_extract_default)
+        self._commands = (
+            commands
+            if commands is not None
+            else MemoryCommandService(engine, orchestrator)
+        )
         self._queries = queries if queries is not None else MemoryQueryService(engine)
         self._space_lifecycle = (
             space_lifecycle if space_lifecycle is not None else SpaceLifecycleService(engine, space)
@@ -167,6 +178,19 @@ class LocalMemoryAPI(
             ensure_space_writable=self._ensure_space_writable,
             scope_supplier=engine.candidate_scopes,
         )
+
+    def _flush_audit_logs(self, logs) -> None:
+        """按入队顺序写审计；与主流程同线程执行，避免慢后端卡住事件循环。"""
+        for identity, action, target_scope, decision, detail in logs:
+            self._log(
+                identity, action, target_scope=target_scope, decision=decision, detail=detail
+            )
+
+    async def _run_blocking(self, lane, fn, *args, **kwargs):
+        """把同步阻塞步骤（路由/鉴权/审计预检）搬离宿主事件循环。"""
+        if self._executor is None:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        return await self._executor.run(lane, fn, *args, **kwargs)
 
     def _bind_credential_sources(self, authenticator: object) -> None:
         """用已装配 Authenticator 的签发真源填充本 PEP 的 CredentialStatusRegistry。

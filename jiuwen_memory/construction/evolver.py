@@ -13,6 +13,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
+from jiuwen_memory.common.errors import AgentMemoryError, UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import HierarchyKind, MemoryUnit, Modality
 
@@ -69,6 +70,29 @@ class EvolveResult:
     hierarchy_result: HierarchyComposeResult | None = None
 
 
+class ExtractNotCommittedError(AgentMemoryError):
+    """本批没有任何派生记忆被提交，可以安全重放（F10 决策 8）。
+
+    只在「抽取阶段」抛出：此时还没有任何派生记忆落盘，调用方可以退回逐条重跑。
+    去重或落盘过程中出现的错误**不得**包装成这个类型——那些情况下可能已有部分
+    写入，重放会产生重复记忆。
+    """
+
+
+@dataclass
+class GroupedExtractResult:
+    """合并抽取的产出与来源归属（F10 决策 6）。
+
+    ``sources`` 的 key 是派生记忆最终落盘的 id（UPDATE 沿用目标 id，SUPERSEDE 用新
+    版本 id），value 是去重前对应的原始 unit id 列表。归属按**去重前候选**的
+    ``provenance`` 计算：UPDATE / SUPERSEDE 回传的对象是已有记忆，其 provenance 不一定
+    包含本批来源。
+    """
+
+    result: EvolveResult
+    sources: dict[str, list[str]] = field(default_factory=dict)
+
+
 class EvolverProducer(Factory):
     """Evolver 的注册式工厂（与契约同处接口层，消费方只依赖接口即可取实例）。
 
@@ -102,3 +126,24 @@ class Evolver(ConstructionOperator):
         self, units: list[MemoryUnit] | EvolveRequest, mode: EvolveMode | None = None,
     ) -> EvolveResult:
         """对一批记忆单元执行指定阶段的演进，返回变更结果。"""
+
+    def supports_grouped_extract(self) -> bool:
+        """是否支持一次抽取整批、并把派生记忆按来源分回各条（F10 决策 5）。
+
+        默认 ``False``：不声明时上层退回逐条抽取，不假定任何实现都能给出逐条来源。
+        """
+        return False
+
+    def evolve_grouped(self, units: list[MemoryUnit]) -> GroupedExtractResult:
+        """一次 EXTRACT 抽取整批，并返回派生记忆的来源归属。
+
+        默认实现明确不支持——调用方必须先查 :meth:`supports_grouped_extract`。
+        抽取阶段失败时抛 :class:`ExtractNotCommittedError`（本批没有任何派生记忆落盘，
+        可安全重放）；落盘阶段的失败保留原异常。
+        """
+        raise UnsupportedCapabilityError(
+            "grouped_extract",
+            type(self).__name__,
+            "Evolver",
+            f"{type(self).__name__} does not support grouped extract",
+        )

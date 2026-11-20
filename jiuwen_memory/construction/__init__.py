@@ -5,9 +5,15 @@ from .abstractor import Abstractor
 from .associator import Associator
 from .base import ConstructionOperator, OperatorType
 from .classifier import Classifier
-from .evolver import EvolveMode, Evolver, EvolveResult
+from .evolver import (
+    EvolveMode,
+    Evolver,
+    EvolveResult,
+    ExtractNotCommittedError,
+    GroupedExtractResult,
+)
 from .extractor import Extractor
-from .index_builder import IndexBuilder
+from .index_builder import IndexBuilder, UnitCommitState, UnitCommitStatus
 from .router import (
     EMPTY_ROUTE_TABLE,
     MemoryClass,
@@ -30,6 +36,10 @@ __all__ = [
     "Evolver",
     "EvolveMode",
     "EvolveResult",
+    "ExtractNotCommittedError",
+    "GroupedExtractResult",
+    "UnitCommitState",
+    "UnitCommitStatus",
     "Router",
     "RouteContext",
     "RouteDecision",

@@ -31,6 +31,7 @@ from jiuwen_memory.common.lock.lock import (
     LockProducer,
     LockProvider,
     LockTimeoutError,
+    MutexScope,
     wait_ticks,
 )
 
@@ -72,6 +73,11 @@ class RedisLockProvider(LockProvider):
         self._client: Any = None
         self._release_script: Any = None
         self._renew_script: Any = None
+
+    @property
+    def mutex_scope(self) -> MutexScope:
+        """Redis 锁跨实例生效，可满足 ``deployment.multi_instance`` 的声明。"""
+        return MutexScope.CROSS_INSTANCE
 
     @property
     def client(self) -> Any:

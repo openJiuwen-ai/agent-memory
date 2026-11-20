@@ -18,6 +18,8 @@ def register_controllers() -> None:
     if _REGISTERED:
         return
     import_optional("jiuwen_memory.control.continuity_impl")
+    import_optional("jiuwen_memory.control.executor_impl")
+    import_optional("jiuwen_memory.control.write_orchestrator_impl")
     import_optional("jiuwen_memory.control.pipeline_impl")
     import_optional("jiuwen_memory.control.engine_impl")
     import_optional("jiuwen_memory.control.governance_impl")

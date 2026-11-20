@@ -11,6 +11,7 @@ from .lock import (
     LockProducer,
     LockProvider,
     LockTimeoutError,
+    MutexScope,
 )
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "LockProducer",
     "LockProvider",
     "LockTimeoutError",
+    "MutexScope",
 ]

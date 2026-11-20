@@ -6,7 +6,7 @@
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
 | 最近一次修订日期 | 2026-11-18 |
-| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F08-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F05-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F08-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F05-personal-memory-portal.md`；写入真异步与批量编排见 `docs/features/control/F10-async-write-orchestration.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
 
@@ -699,3 +699,28 @@ injection.prompt 默认只产生分类依据，不改变等级或正文；显式
 **自动搬迁（F09 D16）**：`kv_store.<name>.params.relocate_on_update`（布尔，默认 `false`）开启后，`update` 只写 `relocate_to` 标记，由运维 / 定时任务调用 `relocate_pending()` 执行。`relocate_stale_after`（秒，默认 900）是判定遗留 `moving` 的阈值；`relocate_min_age`（秒，默认 30）是 `relocate_pending()` 缺省的最小标记时长，须大于派生后端的可见延迟；`relocate_max_failures`（正整数，默认 5）是同一记忆连续搬迁失败后放弃标记的上限；`recover_stale=True` 只允许在维护窗口使用。装配期校验：开关打开时必须能经 `SHARD_PLACEMENT` 端口取到搬迁控制面，且所有 `shard_routed` 的向量 / 全文 / 实体 / 关联图端口都声明 `SHARD_RELOCATABLE`（向量 / 全文 / 实体读取完整枚举的内层还必须声明 `UNIT_RECORD_LOOKUP`），否则拒绝启动；未开启时这些校验和归属记录扩展都不出现。
 
 向量、全文三层与实体默认 split，关联图默认 shared，各端口可显式覆盖；split 各分片必须声明互不相同的物理资源标识（Milvus 以 uri/collection 为身份），图不再需要额外的控制存储。Document Mode/Fusion 与本分片方案组合首版拒绝启动（依据能力声明判定，不按 target），Markdown 不拆分。未启用路由保持原装配行为。首版认证至 10 shard，更大部署显式放宽上限且重新评测。
+
+## 写入编排与部署形态（F10）
+
+新增顶层配置段（缺省值见 `config/defaults.py`）：
+
+| 段 | 缺省 | 语义 |
+| --- | --- | --- |
+| `executor` | `default: thread_pool` | 阻塞执行器；`llm` / `io` 两条泳道。装配根经 `ROOT_PARAMS` 引用同一具名实例并注入三个引擎与 API 层（`LocalMemoryAPI`），不是各自新建 |
+| `lock` | `default: memory` | per-user 写入锁；多实例部署必须为 `redis` |
+| `write` | `default: grouped` | 写入编排器；参数 `lock`（引用 `lock.*`）、`concurrency`、`max_items`、`max_tokens`、`lock_name`、`lock_wait_ms` |
+| `deployment` | 空 | 部署形态声明，进 `globals.deployment`，不注册为插件命名空间 |
+
+`deployment` 字段：
+
+- `multi_instance`（bool，缺省 `false`）：为真且锁实现的 `mutex_scope` 不是
+  `CROSS_INSTANCE` 时**装配失败**（不是告警）。进程内锁只保证单进程互斥，声明多实例
+  却用它等于放弃写入串行化。
+- `merge_extract`（bool，缺省 `true`）：合并抽取的部署级开关；与调用级
+  `system_metadata.merge_extract` 取逻辑与。
+
+调用级开关在写入边界剥离，不进入 `MemoryUnit`；非法值（非 bool 且非
+`"true"`/`"false"` 字符串）抛 `ValidationError`。
+
+配置合并只能覆盖、不能删除实例：把某个具名实例写成 `null`（如
+`lock: {default: null}`）表示从基线中删除它，用于「显式去掉锁」的部署校验路径。

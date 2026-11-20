@@ -56,6 +56,13 @@ class MemoryPipeline(ControlOperator):
         """Resolve an explicit write route without a fallback profile."""
         return None
 
+    def default_write_binding(self) -> PipelineBinding | None:
+        """未命中显式 route 时的兜底 profile；无法枚举时返回 ``None``。
+
+        写入原语用它执行前的能力判断：拿不到实际 profile 就不声称支持批量写。
+        """
+        return None
+
     @abstractmethod
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:
         """根据本次写入产生的 MemoryUnit 选择构建侧 profile。"""

@@ -321,9 +321,12 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 | `renew` | `(handle, *, lease_ms=None) -> bool` | 按 token 做 CAS 续期；`False` 表示已失去持有权 |
 | `guard` | `(scope, name, **kwargs) -> AsyncContextManager[LockHandle]` | 获取 / 自动续期 / 释放的组合，推荐入口 |
 | `health` | `() -> None` | 存活探测；异步，与其余组件的同步 `health()` 不一致 |
+| `mutex_scope` | property -> `MutexScope` | 声明的互斥范围：`PROCESS`（进程内）/ `CROSS_INSTANCE`（跨实例）。装配层据此拒绝「声明多实例却用进程内锁」；实现不得谎报 |
 
 `LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
-静默退化成不跨实例的单机锁。
+静默退化成不跨实例的单机锁。内核基线 `config/defaults.py` 显式声明 `lock.default: memory`
+（单进程基线）；多实例部署必须覆盖为 `redis`。进程内实现的全部读改写须跨线程/跨事件循环
+原子：真异步后同一实例不再只被一个事件循环使用。
 
 ### TraceCollector（横切 Factory 插件）
 

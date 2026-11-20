@@ -69,6 +69,9 @@ class MetadataPipeline(MemoryPipeline):
         value = str(metadata.get(self._route_key, "")).strip()
         return self._profiles.get(self._routes.get(value, value)) if value else None
 
+    def default_write_binding(self) -> PipelineBinding | None:
+        return self._profiles[self._fallback]
+
     def select_for_write(self, units: list[MemoryUnit]) -> PipelineBinding:
         value = _route_value_from_units(units, self._route_key)
         return self._select(value, "write")
