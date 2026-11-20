@@ -10,6 +10,7 @@ from jiuwen_memory.storage.fulltext import FulltextProducer
 
 import_optional(".elasticsearch_fulltext", __name__)
 import_optional(".in_memory_fulltext_store", __name__)
+import_optional(".opengauss_fulltext", __name__)
 
 import_optional(".shard_routed_fulltext", __name__)
 

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-schema-temporal-entity.md、docs/features/retrieval/F09-query-rewrite.md、docs/features/retrieval/F11-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
@@ -56,7 +56,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 7. **scalar_filters 与软召回信号分离**：ParsedQuery 中 `scalar_filters`（硬前置过滤）与 `tokens/keywords/entities/vector`（软召回信号）不能互相折叠。
 8. **双时间轴独立**：`as_of`（valid-time 回溯点）与 `time_from/time_to`（event-time 范围）是两条独立时间轴。
 9. **召回分数高分优先**：chunk→unit MaxP、分层归并与融合排序统一按「分越大越相关」处理；向量 Recaller（存储层数据面）不接受 L2 等 lower-is-better 度量。
-10. **生产过滤先于 top-k**：Milvus / Elasticsearch / pgvector 必须在
+10. **生产过滤先于 top-k**：Milvus / Elasticsearch / pgvector / openGauss 必须在
     `limit/top_k` 前完整下推 `FilterExpr`；UnitReader 的真源复核只做纵深防御，
     不能补回已被截断的候选。
 11. **系统谓词不可被用户逻辑稀释**：lifecycle / valid-time / event-time 谓词与用户

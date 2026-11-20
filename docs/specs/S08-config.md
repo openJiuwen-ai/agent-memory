@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-20 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F08-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F05-personal-memory-portal.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -441,7 +441,7 @@ ConfigSource
 | globals.storage_encryption_max_plaintext_bytes / storage_encryption_max_ciphertext_bytes | 自动 FS 包装的大小上限；默认 64 MiB / 0（明文上限+4 KiB），与显式 FS 参数同语义 |
 | 索引/文件型 SQLite 的 params.at_rest | method=volume/backend、非空 reference、bindings 映射；绑定受保护实际位置 |
 
-bindings 覆盖 ES hosts（ENTITY 兼容 endpoint）、Milvus uri、pgvector dsn、
+bindings 覆盖 ES hosts（ENTITY 兼容 endpoint）、Milvus uri、pgvector dsn、openGauss 向量/全文 dsn、
 nano_graphrag working_dir、milvus_graph uri+working_dir、audit/permission/shadow_index/grant_store/delegation_store SQLite db_path、markdown_store root。
 统一加密开启时 Markdown 必须显式配置 root，影子 SQLite 必须显式配置 db_path
 （`:memory:` 仅豁免部署证明）；默认当前目录或跨命名空间派生路径不满足位置绑定契约。
