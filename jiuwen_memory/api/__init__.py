@@ -153,6 +153,7 @@ from .access_security import (
     fixed_personal_owner,
     register_trusted_principal,
 )
+from .continuity_catalog import read_continuity_catalog
 from .managed_configuration import ManagedConfiguration
 from .memory_api import MemoryAPI
 from .memory_api_impl import (
@@ -174,6 +175,7 @@ from .runtime_configuration import sdk_continuity_runtime_identity
 from .search_options import SearchOptions
 
 __all__ = [
+    "read_continuity_catalog",
     "sdk_continuity_runtime_identity",
     "read_personal_record",
     "open_config_overlay",

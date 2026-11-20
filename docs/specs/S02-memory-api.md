@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
@@ -163,6 +163,81 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 | 模型设置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口。跨进程共享页面为指定实例的请求附加 `instance_id` | 同上。跨进程共享页面用空请求体调用 `read_config` 时返回 `instances`、`default_instance_id` |
 | HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`） | `portal_url` |
 | 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 普通独立页面建立 HttpOnly Cookie。iframe 和跨进程共享页面返回 `session_token`。跨进程共享页面另返回 `shared: true` |
+
+### 多 Agent 角色记忆只读视图
+
+Portal 增加独立一级入口时，浏览器必须同时携带原有 Browser 标记和
+`X-Memory-Portal-View: multi-agent`。该请求头只选择 Portal 的只读视图，不授予权限；
+底层认证、Space 成员关系、任务和记录读取权仍由原 `MemoryAPI` 判定。浏览器会话有效时可调用
+`POST /v1/portal_context` 读取部署能力，请求体必须为 `{}`：
+
+```json
+{
+  "available": true,
+  "reason": "",
+  "scope": {"org": "demo", "space": "project", "user": "", "agent": "", "session": ""},
+  "project_name": "共享空间名称",
+  "mode": "role",
+  "connectors": [{"id": "codex", "label": "Codex"}],
+  "role_catalog": {
+    "available": true,
+    "reason": "",
+    "policy_version": "<Runtime Catalog 摘要>",
+    "default_duty": "general",
+    "duties": [{
+      "id": "security",
+      "display_name": "安全审查",
+      "description": "检查风险缓解与验证依据",
+      "traversal": [{"edge_type": "contradicts", "direction": "both", "priority": 0, "max_depth": 4}],
+      "budget": {"max_depth": 2, "max_nodes": 30, "max_edges": 60, "max_paths": 60, "timeout_ms": 1000}
+    }],
+    "relation_types": [{
+      "id": "mitigates",
+      "display_name": "缓解",
+      "description": "A 是对 B 风险的缓解措施，不表示已执行或已验证。",
+      "direction": "forward", "symmetric": false, "transitive": false,
+      "valid_source_kinds": ["statement", "experience", "judgment"],
+      "valid_target_kinds": ["statement", "observation", "judgment"]
+    }]
+  }
+}
+```
+
+能力来自部署配置 `http.multi_agent`（SDK 为 `portal.multi_agent`），而不是浏览器自动发现；
+配置包含 `enabled`、共享范围 `scope`、显示名称 `project_name` 以及 connector ID 到显示名的映射，
+不声明运行模式。`org` 表示组织，`space` 是租户逻辑隔离空间，不代表业务项目；一个空间内可以有
+多个业务项目或任务。`project_name` 是页面显示名称，不参与项目过滤或授权。
+`scope` 可带 `user`/`agent`/`session` 来收窄可访问记录，但目录读取和任务查找按现有接续接口
+只使用其中的 `org`/`space` 作为组织与空间范围；记录 `list`/`search`/`get` 继续执行收窄限制。
+任务背景引用和职责视图中的条目、路径、锚点与证据引用还会按配置的
+`user`/`agent`/`session` 再过滤；越界引用在返回前剔除并产生非阻断 gap。
+当前内置接续视图检索要求 `user`/`agent`/`session` 为空，因此配置这些收窄维度时，
+带 `task_id`、`anchor` 或 `duty` 的检索会被内核拒绝；Portal 在检测到收窄维度后禁用
+任务背景与职责检索并展示原因，不能将目录读取成功视为这些操作可用。
+`/v1/portal_context` 返回的实际 `mode` 只来自 Runtime 的公开目录检查能力，不读取或推断配置
+结构，因此标准 SDK 配置和替换的 Continuity 插件均以装配后的真实能力为准。该接口不新增
+MemoryAPI 方法，也不返回记忆、任务或密钥。
+`role_catalog` 不重新解析启动 YAML，而是通过公开只读检查辅助读取当前 Runtime 已装配的
+`RelationCatalog`，先执行可信上下文与空间 READ 判权。职责和关系 ID、展示名、说明、最终遍历规则、
+职责预算及真实 `catalog.version` 均来自同一快照，并按 ID 稳定排序。`mode=continuity` 时返回
+`available=false`、`reason=role_mode_required`，空职责/关系列表与 null 版本；没有检查能力或目录异常时
+不得回退到内置四职责，必须明确报告不可用。
+`continuity_catalog` 使用内容轴 READ，`ENTRY_RULES` 与 search/list/get 同口径；能力不新增
+`MemoryAPI` 抽象方法、HTTP 业务 verb 或 MCP 工具。
+
+多 Agent 视图的浏览器请求只允许以下只读操作：任务查找/读取使用绑定的组织与空间；
+记录及 anchor 还须满足配置的 user/agent/session 限制：
+
+| 页面操作 | HTTP 路径 | 请求约束 |
+|---|---|---|
+| 共享搜索 | `/v1/search` | 允许普通共享空间搜索、task_id、anchor 和 duty；拒绝 `personal`、`spaces`；拒绝跨空间或超出配置范围的 anchor |
+| 来源浏览 | `/v1/list` | 使用 scoped list、offset/limit 和 filters；拒绝 personal/spaces |
+| 详情与路径端点 | `/v1/get` | 精确 `scope` + `unit_id`，不接受 `as_of`；每次打开重新判权读取 |
+| 任务查找/读取 | `/v1/continuity_task` | 只允许 `find` 和 `get`；find 只接受非空 query 与 top_k；写操作拒绝 |
+
+多 Agent 视图不通过 Portal 创建任务、绑定、写记忆、编辑关系或恢复历史。`shared=true`、
+connector ID、duty 和当前 UI 筛选条件都不是共享授权；来源平台只能显示记录
+`system_metadata.continuity_connector`，缺失时通过真实 `get` 补全或明确标记失败。
 
 页面从 `MemoryUnit.segments` 拼接正文，时间取 `temporal.t_ingest`。HTTP
 `write_target` 由宿主提供，与认证身份合成完整写入范围，随会话绑定。独立访问可以
@@ -462,6 +537,8 @@ HTTP edge 将成功或失败响应统一写入 JSON；错误响应固定包含�
 每个 HTTP 请求由服务端在入口生成唯一 `request_id`，并在所有响应的 `X-Request-ID`
 header 返回；客户端提交的同名 header 会被忽略。错误响应同时在 JSON body 写入同一个
 `request_id`，成功响应体仍保持 `MemoryAPI` 原返回值，不插入额外字段。该 ID 只用于响应、
+下表「特性文档」列的裸编号均指 `docs/features/api/`；跨目录文档以目录名标注。
+
 日志和审计关联，不参与 actor、target 或权限判定。429 响应额外返回 `Retry-After: 1`，表示
 客户端可按整数秒退避；其他状态不返回该 header。CLI 本地调用与 HTTP 共用
 `core/error_response.py` 的领域错误状态及脱敏规则，本地错误也带独立 request ID；
@@ -526,8 +603,6 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 `MemoryAPI` 定义在 `jiuwen_memory/api/memory_api.py`。下列各节按委托面划分；方法总览标明状态与详细介绍所在小节。文档明确**不对外暴露**的能力（`link`、独立 `MemoryAPI.expand`）不列入本契约。
 
 ### MemoryAPI 方法总览
-
-下表「特性文档」列的裸编号均指 `docs/features/api/`；跨目录文档以目录名标注。
 
 | 分面 | 方法 | 状态 | 详细介绍 | 特性文档 |
 |---|---|---|---|---|

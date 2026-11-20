@@ -22,6 +22,7 @@ from jiuwen_memory.api import (
     SpaceSpec,
     TaskRequest,
     assemble_runtime,
+    read_continuity_catalog,
 )
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security import internal_context
@@ -108,6 +109,53 @@ def test_task_hierarchy_uses_project_read_permission_for_parent(tmp_path):
 
 def _gov(ops):
     return _security(ops, Role.ADMIN)
+
+
+def test_task_background_rejects_and_hides_cross_space_references(tmp_path):
+    runtime, api, project, owner, ops, _config = _runtime(tmp_path)
+    other = Scope(org=project.org, space="other-project")
+    try:
+        api.create_space(
+            SpaceSpec(org=other.org, space=other.space, owner=owner),
+            security=_gov(ops),
+        )
+        foreign = api.add("foreign project fact", other, security=_security(owner))[0]
+        reference = MemoryRef.of(foreign)
+
+        with pytest.raises(PermissionDeniedError, match="cross-space"):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "create", "cross-space-background", background=[reference],
+                ),
+                security=_security(owner),
+            )
+
+        task = api.continuity_task(
+            project, TaskRequest("create", "existing-task"), security=_security(owner),
+        )
+        service = api._role_service(project)
+        stored = service.repository.get(project, "tasks", task["task_id"])
+        stored["background"] = [{
+            "ref": {
+                "scope": {
+                    "org": reference.scope.org, "space": reference.scope.space,
+                    "user": "", "agent": "", "session": "",
+                },
+                "unit_id": reference.unit_id,
+                "content_digest": reference.content_digest,
+            },
+            "required": True,
+        }]
+        service.repository.save(project, "tasks", task["task_id"], stored)
+
+        details = api.continuity_task(
+            project, TaskRequest("get", task_id=task["task_id"]), security=_security(owner),
+        )
+        assert details["background"] == []
+        assert details["background_partial"] is True
+    finally:
+        runtime.close()
 
 
 def test_quarantined_source_is_blocked_without_leaking_to_other_sources(tmp_path):
@@ -1713,5 +1761,68 @@ def test_batch_continuity_runs_derivation_when_extractor_configured(tmp_path):
         assert any(
             event.action == "add" and event.target_id == output_key for event in audited
         ), "派生写入缺少 add 审计"
+    finally:
+        runtime.close()
+
+
+def test_catalog_inspection_uses_effective_runtime_and_project_read(tmp_path):
+    runtime, api, project, owner, _ops, _config = _runtime(tmp_path)
+    try:
+        first = read_continuity_catalog(
+            api, project, security=_security(owner),
+        )
+        assert first["mode"] == "role"
+        catalog = first["role_catalog"]
+        assert catalog["available"] is True
+        assert catalog["default_duty"] == "general"
+        assert catalog["policy_version"]
+        duties = {item["id"]: item for item in catalog["duties"]}
+        assert {"general", "diagnosis", "testing", "execution", "security"} <= set(duties)
+        assert duties["security"]["display_name"] == "安全审查"
+        assert {
+            rule["edge_type"] for rule in duties["security"]["traversal"]
+        } >= {"mitigates", "verifies", "contradicts", "requires"}
+        relations = {item["id"]: item for item in catalog["relation_types"]}
+        assert relations["mitigates"]["display_name"] == "缓解"
+
+        duties["security"]["display_name"] = "mutated"
+        second = read_continuity_catalog(
+            api, project, security=_security(owner),
+        )
+        assert next(
+            item for item in second["role_catalog"]["duties"] if item["id"] == "security"
+        )["display_name"] == "安全审查"
+
+        with pytest.raises(PermissionDeniedError):
+            read_continuity_catalog(
+                api, project,
+                security=_security(Scope(org="demo", user="outsider")),
+            )
+    finally:
+        runtime.close()
+
+
+def test_catalog_inspection_is_explicitly_unavailable_in_continuity_mode(tmp_path):
+    runtime = _continuity_only_runtime(tmp_path)
+    api = runtime.api
+    project = Scope(org="demo", space="role-project")
+    owner = Scope(org="demo", user="owner")
+    try:
+        api.create_space(
+            SpaceSpec(org="demo", space="role-project", owner=owner),
+            security=_security(owner, Role.ADMIN),
+        )
+        snapshot = read_continuity_catalog(
+            api, project, security=_security(owner),
+        )
+        assert snapshot["mode"] == "continuity"
+        assert snapshot["role_catalog"] == {
+            "available": False,
+            "reason": "role_mode_required",
+            "policy_version": None,
+            "default_duty": None,
+            "duties": [],
+            "relation_types": [],
+        }
     finally:
         runtime.close()

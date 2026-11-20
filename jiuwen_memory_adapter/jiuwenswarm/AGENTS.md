@@ -27,6 +27,7 @@
 - 其他 SDK 接续实例的 Portal 由 pool entry 持有。Provider 只借用 handle，退出时注销自己的来源。最后 runtime lease 释放并排空在途操作后，先关闭 Portal、等待浏览器请求结束，再关闭内核；Portal 关闭失败时不关闭仍可能被使用的内核，并禁止复用。
 - HTTP 工具与角色模式沿用既有入口；SDK continuity 暴露任务/恢复工具，日常读写由 prefetch/sync_turn 或 continuity_request 执行。
 - 进程内 Portal 启动授权在签发时固定 Provider key；省略时只允许唯一已注册来源，多来源必须显式选择。请求拒绝空 key，来源注销后不能转用其他 Provider；未知或已注销 key 不得签发新链接。
+- `portal.multi_agent` 只显式绑定共享只读范围、项目显示名及来源显示名，不声明 Runtime mode；普通与共享 Portal 均随 Provider 注册保存该配置，请求视图透传到当前 Runtime，实际模式与职责目录通过公开 API 检查，不读取配置结构、不另建 Runtime 或读取内部目录对象。
 - continuity 调试日志使用 `[continuity.*]` 标记，记录操作、Session/task/binding/event 身份、条数、缺口和耗时；不记录正文、查询描述或凭证。Provider 沿用宿主 logger 名，sdk_runtime 使用本模块 logger，由宿主按需转发。
 
 ## 与其他子目录的边界

@@ -180,10 +180,27 @@ class ContinuityOpsMixin:
             raise UnsupportedCapabilityError("continuity is not configured")
         return self._continuity
 
+    def continuity_catalog_snapshot(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> dict:
+        """Inspect the effective runtime catalog after project READ authorization."""
+        auth = self._authorize(security, scope, Action.READ, "continuity_catalog")
+        service = self._role_service(scope)
+        snapshot = {
+            "mode": service.mode,
+            "role_catalog": service.catalog_snapshot(),
+        }
+        self._log(
+            security.auth.actor, "continuity_catalog", target_scope=scope, detail=auth,
+        )
+        return snapshot
+
     def _role_reader(self, security, project):
         def read(ref):
             if ref.scope.org != project.org:
                 raise PermissionDeniedError("cross-organization reference")
+            if ref.scope.space != project.space:
+                raise PermissionDeniedError("cross-space reference")
             unit = self.get(ref.unit_id, ref.scope, security=security)
             connector = unit.system_metadata.get("continuity_connector")
             if connector and not self._source_available(ref.scope, connector):

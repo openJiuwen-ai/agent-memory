@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 日期 | 2026-10-27 |
+| 日期 | 2026-11-18 |
 | 状态 | 2026-11-05 设计修订已落地：两档模式（接续 / 角色）、接口并入 add / batch_add / search、关系真源改存 Registry KV、范围收敛；剩余实现差距见 12.2。真实产品 G0 联调、外部 Agent 记忆迁移未完成 |
 | 影响范围 | 外部 Agent 接入适配；api、control、construction、retrieval、storage、common |
 | 关联规约 | [S02](../../specs/S02-memory-api.md)、[S03](../../specs/S03-control.md)、[S04](../../specs/S04-retrieval.md)、[S05](../../specs/S05-construction.md)、[S06](../../specs/S06-storage.md)、[S07](../../specs/S07-common.md)、[S09](../../specs/S09-plugin-development.md)、[S11 接续契约](../../specs/S11-cross-agent-continuity.md) |
@@ -819,13 +819,16 @@ candidate ──（新修订，须有 evidence_refs）──▶ confirmed
 
 #### `RelationCatalog`、`RelationTypeSpec`、`TraversalRule`
 
-- **含义**：`RelationCatalog` 是启动时校验的不可变配置，包含关系类型表和职责策略表。`RelationTypeSpec` 描述一种关系，键为 `name, display_name, description, direction, symmetric, transitive, valid_source_kinds, valid_target_kinds`；端点类别取 observation / statement / judgment / result / experience / correction / unclassified / method / plan / action。`TraversalRule` 描述一条遍历规则，键为 `edge_type, direction, priority, max_depth`（`max_depth` 取 1–4）。
+- **含义**：`RelationCatalog` 是启动时校验的不可变配置，包含关系类型表、职责策略表和职责展示元数据。`RelationTypeSpec` 描述一种关系，键为 `name, display_name, description, direction, symmetric, transitive, valid_source_kinds, valid_target_kinds`；职责策略可带 `display_name` 与 `description`，未提供展示名时使用职责 ID。`TraversalRule` 描述一条遍历规则，键为 `edge_type, direction, priority, max_depth`（`max_depth` 取 1–4）。
 - **创建者与读取者**：装配 `continuity.local` 时从 `relation_types`、`duty_policies`（内联字典）或 `relation_types_path`、`duty_policies_path`（YAML 文件）读取，二者不能同时指定；构建侧（关系校验、关系发现）和查询侧共用同一份。
 - **生命周期**：进程内只读，运行时不能增删类型。内置类型只能覆盖 `display_name`、`description`；每个职责策略都会被追加 `contradicts`（双向）和 `requires`（出向）两条强制规则，`priority=0`、`max_depth=4`。`policy_version` 是配置内容的摘要，出现在视图元信息中。
+- **运行时检查**：`RelationCatalog.snapshot()` 返回脱离内部对象的纯数据副本，包含全部职责 ID、展示名、说明、最终 traversal、职责预算，以及全部关系类型及其固有方向/端点类别。`ContinuityService.catalog_snapshot()` 不重读配置文件；`read_continuity_catalog(api, scope, *, security)` 先做项目 READ 判权再返回 `{mode, role_catalog}`。continuity 模式明确返回 `role_mode_required`，外部实现没有检查能力时返回 `catalog_unavailable`。
 - **示例**：见 [relation_types.yaml](../../../examples/role_memory/relation_types.yaml) 与 [duty_policies.yaml](../../../examples/role_memory/duty_policies.yaml)：
 
 ```yaml
 security:
+  display_name: 安全审查
+  description: 检查风险缓解与验证依据
   traversal:
     - {edge_type: mitigates, direction: backward, priority: 1, max_depth: 2}
   budget: {max_depth: 2, max_nodes: 30, max_edges: 60, timeout_ms: 1000}
@@ -843,7 +846,7 @@ security:
 | execution | requires 出向；verifies 入向 |
 
 - **创建者与读取者**：调用方在 `search` 的 `duty` 参数中传入一个或多个；JiuwenSwarm provider 可配置 `default_duty`。未传时为 general，未知名称报错。接续模式下仍校验名称并回显在 `view_meta`，但不展开关系，非 general 时返回非阻断缺口 `relation_expansion_disabled`。
-- **生命周期**：内置四个随代码提供默认规则；职责策略配置可新增策略，也可用同名配置覆盖内置策略的展开规则（强制检查仍会追加）。一次查询可传一至四个职责，合并规则见 4.3"多职责查询"。
+- **生命周期**：内置四个随代码提供默认规则；职责策略配置可新增策略，也可用同名配置覆盖内置策略的展开规则（强制检查仍会追加），并通过 `display_name` / `description` 提供展示元数据。一次 query 可传一至四个职责；Portal 单职责从当前 Runtime 目录选择，对照模式由用户选择 2～3 项并分别请求，合并规则仍见 4.3"多职责查询"。
 
 #### 职责查询参数与 `ViewBudget`
 
@@ -1458,7 +1461,7 @@ scripts/run-server.sh --auth-mode required examples/role_memory/server.yaml <部
 | `params.relation_index_builder` | 关系图投影使用的具名 `constructor`（`target: evidence_graph`）；不配时按 `graph_store` 自动构建 | 角色模式 | — |
 | `params.role_view` ＋ `role_view.<名>.target: bounded` | 视图构建器，默认名 `default` | 角色模式必填 | 未配置对应 `role_view` 时启动失败 |
 | `params.relation_types` / `relation_types_path` | 新增关系类型；内联字典或 YAML 文件二选一，文件路径相对启动目录 | 角色模式 | 只用内置六类关系 |
-| `params.duty_policies` / `duty_policies_path` | 新增或覆盖职责策略（含 `budget`）；二选一 | 角色模式 | 只用内置四种职责，预算为默认值 |
+| `params.duty_policies` / `duty_policies_path` | 新增或覆盖职责策略（含 `display_name`、`description`、`budget`）；二选一 | 角色模式 | 只用内置四种职责，展示名默认为 ID，预算为默认值 |
 | `params.relation_associator` | 可选，指向一个具名 `associator`（`target: evidence_llm`，需配置 `llm`），开启写入后的候选关系发现 | 角色模式 | 不发现候选，只能手工登记关系 |
 | `params.conflict_resolver` | 可选，指向一个具名 `conflict_resolver` | 角色模式 | 默认策略链 verification → recency |
 | `globals.continuity_connectors` | 可信连接：连接名 → `actor`、`projects`、`enabled`（见 5.2） | 两档 | 无法 bind 连接，也无法提交事件 |

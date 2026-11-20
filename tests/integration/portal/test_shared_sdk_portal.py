@@ -10,7 +10,13 @@ import httpx
 import pytest
 import yaml
 
-from jiuwen_memory.api import PermissionDeniedError, Scope, ValidationError, internal_context
+from jiuwen_memory.api import (
+    PermissionDeniedError,
+    Scope,
+    SpaceSpec,
+    ValidationError,
+    internal_context,
+)
 from jiuwen_memory.common.security.types import Role
 from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import AgentMemoryMemoryProvider
 from jiuwen_memory_entry.portal import hosting
@@ -35,10 +41,91 @@ def sdk_config(tmp_path):
     return config
 
 
+def role_config(tmp_path):
+    config = yaml.safe_load(
+        Path("examples/role_memory/server.yaml").read_text(encoding="utf-8")
+    )
+    for name, spec in config["kv_store"].items():
+        spec["params"]["db_path"] = str(tmp_path / f"{name}.db")
+    config["permission"]["default"]["params"]["db_path"] = str(tmp_path / "permissions.db")
+    config["globals"]["watch_document"] = False
+    return config
+
+
+@pytest.mark.parametrize("config_source", ["dict", "path"])
+def test_standard_role_config_exposes_runtime_mode_and_narrow_scope(
+    tmp_path, config_source,
+):
+    async def run():
+        actor = Scope(org="demo", user="owner")
+
+        def security():
+            return internal_context(ScopedAuthenticator(actor))
+
+        config = role_config(tmp_path)
+        if config_source == "path":
+            config_path = tmp_path / "server.yaml"
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            config_options = {"config_path": str(config_path)}
+        else:
+            config_options = {"config_dict": config}
+
+        provider = AgentMemoryMemoryProvider(
+            **config_options,
+            user_id="owner",
+            security_provider=security,
+            portal={"multi_agent": {
+                "scope": {
+                    "org": "demo", "space": "role-project", "agent": "worker",
+                },
+                "project_name": "Role Project",
+                "connectors": {"host": "Host"},
+            }},
+        )
+        try:
+            await provider.initialize(scope_id="demo")
+            provider.runtime.api.create_space(
+                SpaceSpec(org="demo", space="role-project", owner=actor),
+                security=internal_context(ScopedAuthenticator(actor, role=Role.ADMIN)),
+            )
+            launch = urlsplit(await provider.open_portal())
+            origin = f"{launch.scheme}://{launch.netloc}"
+            headers = {"Origin": origin, "X-Memory-Portal-Browser": "1"}
+            async with httpx.AsyncClient(
+                base_url=origin, headers=headers, trust_env=False, timeout=5,
+            ) as browser:
+                response = await browser.post(
+                    "/portal/api/bootstrap",
+                    json={"token": parse_qs(launch.fragment)["access"][0]},
+                )
+                assert response.status_code == 200
+                response = await browser.post(
+                    "/v1/portal_context", json={},
+                    headers={"X-Memory-Portal-View": "multi-agent"},
+                )
+                assert response.status_code == 200, response.text
+                context = response.json()
+                assert context["mode"] == "role"
+                assert context["scope"]["agent"] == "worker"
+                assert context["role_catalog"]["available"] is True
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("first_to_close", [0, 1])
 def test_closing_one_provider_preserves_browser_session_and_portal(tmp_path, first_to_close):
     async def run():
         config = sdk_config(tmp_path)
+        portal_options = {
+            "multi_agent": {
+                "enabled": True,
+                "project_name": "Role Project",
+                "scope": {"org": "demo", "space": "role-project"},
+                "connectors": {"host": "Host"},
+            },
+        }
 
         def security():
             return internal_context(ScopedAuthenticator(Scope(org="demo", user="owner")))
@@ -46,9 +133,15 @@ def test_closing_one_provider_preserves_browser_session_and_portal(tmp_path, fir
         providers = [AgentMemoryMemoryProvider(
             config_dict=config, continuity_enabled=True, continuity_mode="continuity",
             user_id="owner", security_provider=security,
+            portal=portal_options,
         ) for _ in range(2)]
         try:
             await asyncio.gather(*(p.initialize(scope_id="demo") for p in providers))
+            actor = Scope(org="demo", user="owner")
+            providers[0].runtime.api.create_space(
+                SpaceSpec(org="demo", space="role-project", owner=actor),
+                security=internal_context(ScopedAuthenticator(actor, role=Role.ADMIN)),
+            )
             first, remaining = providers[first_to_close], providers[1 - first_to_close]
             assert first.runtime is remaining.runtime
             assert first.portal_status["address"] == remaining.portal_status["address"]
@@ -73,6 +166,21 @@ def test_closing_one_provider_preserves_browser_session_and_portal(tmp_path, fir
                     "/v1/list", json={"extensions": {"personal": {}}},
                 )
                 assert response.status_code == 200, response.text
+                context = await browser.post(
+                    "/v1/portal_context", json={},
+                    headers={"X-Memory-Portal-View": "multi-agent"},
+                )
+                assert context.status_code == 200, context.text
+                assert context.json()["mode"] == "continuity"
+                assert context.json()["role_catalog"] == {
+                    "available": False,
+                    "reason": "role_mode_required",
+                    "policy_version": None,
+                    "default_duty": None,
+                    "duties": [],
+                    "relation_types": [],
+                }
+                await first.shutdown()
             await remaining.shutdown()
             assert portal.closed
             assert not remaining.portal_status["available"]

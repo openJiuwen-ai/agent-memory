@@ -172,6 +172,25 @@ async function languageSwitchKeepsFiltersAndResults() {
   assert.equal(page.get('notice').textContent, 'Search failed: 原始服务错误');
 }
 
+async function duplicateAppAndAgentLabelsAreCollapsed() {
+  const page = setup(async () => response({}));
+  await page.run("switchTab('memories')");
+  page.run(`cards('memory-list', [{
+    ref:'one', content:'记忆内容', source:'WorkSwarm', agent_label:'workswarm', agent:'planner',
+    lifecycle:'active', tags:[],
+  }])`);
+  let meta = page.get('memory-list').children[0].children[1].children[2];
+  assert.equal((meta.textContent.toLowerCase().match(/workswarm/g) || []).length, 1);
+  page.run(`cards('memory-list', [{
+    ref:'two', content:'记忆内容', source:'WorkSwarm', agent_label:'支付规划员', agent:'planner',
+    lifecycle:'active', tags:[],
+  }])`);
+  meta = page.get('memory-list').children[0].children[1].children[2];
+  assert.ok(meta.textContent.includes('WorkSwarm'));
+  assert.ok(meta.textContent.includes('支付规划员'));
+  assert.ok(!meta.textContent.includes('Agent:'));
+}
+
 async function languageSwitchKeepsDraftAndPreference() {
   let requests = 0;
   const saves = [];
@@ -557,6 +576,7 @@ async function sharedPageManagesBothInstances(){
   assert.ok(tokens.length&&tokens.every(token=>token==='tab-token'));
 }
 (async () => {
+  await duplicateAppAndAgentLabelsAreCollapsed();
   await languageSwitchKeepsFiltersAndResults();
   await languageSwitchKeepsDraftAndPreference();
   await portalLaunchUsesConfiguredLanguage();
