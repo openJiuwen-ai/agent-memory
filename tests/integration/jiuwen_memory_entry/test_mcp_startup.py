@@ -76,6 +76,7 @@ def test_streamable_http_initializes_and_lists_tools(
         assert response.status_code == 200, response.text
         names = {tool["name"] for tool in response.json()["result"]["tools"]}
         assert "memory_add" in names
+        assert {"memory_quarantine_source", "memory_release_source"} <= names
         response = client.post(
             "/mcp",
             headers=session_headers,

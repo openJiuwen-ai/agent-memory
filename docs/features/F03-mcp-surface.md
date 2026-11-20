@@ -92,18 +92,18 @@ _invoke_blocking：credentials_for_transport → authenticated(Surface.MCP) → 
 
 ### 工具与参数
 
-工具集与 `MemoryAPI` 公开方法**全量对齐（39/39）**，命名规则
+工具集与 `MemoryAPI` 公开方法**全量对齐（48/48）**，命名规则
 `memory_<method>`：数据面 12 个（add/add_async/batch_add/batch_add_async/
 search/list/get/update/batch_update/delete/read_md_file/edit_md_file）、任务与摄入 5 个（evolve/check_write/
 submit_ingest/job_status/job_cancel）、管理面 3 个（admin_get/set/all）、
 治理面 4 个（inspect/trace/audit/verify_audit）、授权 2 个（grant/revoke）、
-Space 管理 13 个（create/get/list/update/archive/delete_space、export_space、
-space_usage、get/set_space_policy、list/add/remove_space_member）。
+接续与来源治理 5 个（continuity_task/continuity_relation/continuity_recover/quarantine_source/release_source）、Space 管理 13 个（create/get/list/update/archive/delete_space、export_space、
+space_usage、get/set_space_policy、list/add/remove_space_member）、群体记忆成员治理 4 个（初始化名册、添加、移除和查询成员）。成员治理沿用 MemoryAPI 的鉴权与审计。
 
 - 参数名与 `MemoryAPI` 签名严格一致（`unit_id`/`top_k`/`with_trajectory`…），
   请求形状全部为扁平 `{"参数名": 值}`；`scope` 为对象
   `{"org","user","agent","session","space"}`，五维可给空串。
-- **参数与契约全量对齐（2026-09-15 起；2026-11-05 扩至 39 个工具）**：39 个工具的签名参数集合与
+- **参数与契约全量对齐**：48 个工具的签名参数集合与
   `MemoryAPI` 契约完全相等——此前按「模型对话场景」精选缓发的可选参数
   （add/batch_add/submit_ingest/check_write 的 metadata 族与 source/occurred_at/
   assets/stream_id、search 的 filters/disclosure、list 的 memory_types/extensions/
@@ -248,3 +248,9 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
    会让删除必败、空间永久卡在 `deleting`。OFFLINE 装配下 create → delete → get(404)
    自此闭环（见 api/F07 决策 2）。授权仍经 Authorizer；是否允许管理操作取决于显式角色
    与目标空间权限，默认 USER 不获得管理旁路。
+
+## JiuwenSwarm 连接器接入（2026-11-20）
+
+按全量工具接入要求，新增 memory_quarantine_source 和 memory_release_source 包装，复用 _invoke 的认证、工作线程、参数解码和 MemoryAPI 治理实现；原本只在管理面提供的限制被本次明确需求替代，权限仍为 MANAGE_SPACE。Windows 新增 scripts/run-mcp.ps1，默认 required，仅显式 -AuthMode dev 进入回环测试模式，无配置时提示内存默认值不保证持久化。
+
+本轮使用 JiuwenSwarm 的 Python 环境执行 MCP 单测、传输认证单测和启动集成测试：201 项通过。通过实际 Streamable HTTP 服务发现 44 个工具，并完成 add/get/delete；未验证外部模型、正式认证部署和 Hub 发布。

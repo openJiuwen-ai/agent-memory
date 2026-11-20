@@ -235,6 +235,28 @@ async def memory_continuity_recover(
 
 
 @mcp.tool()
+async def memory_quarantine_source(
+    scope: dict, source_key: str, reason: str, ctx: Context = None
+) -> dict:
+    """隔离目标范围内的来源，须提供来源标识与原因；需要空间管理权限。"""
+    return await _invoke(
+        "quarantine_source",
+        {"scope": scope, "source_key": source_key, "reason": reason},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_release_source(
+    scope: dict, source_key: str, ctx: Context = None
+) -> bool:
+    """解除目标范围内的来源隔离，返回此前是否处于隔离状态；需要空间管理权限。"""
+    return await _invoke(
+        "release_source", {"scope": scope, "source_key": source_key}, context=ctx
+    )
+
+
+@mcp.tool()
 async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     content: str,
     scope: dict,
@@ -988,6 +1010,65 @@ async def memory_remove_space_member(
     return await _invoke(
         "remove_space_member",
         {"org": org, "space": space, "member": member},
+        context=ctx,
+    )
+
+
+# --- 工具：群体记忆成员治理 --- #
+
+
+@mcp.tool()
+async def memory_init_collective_dimension(
+    dimension: dict, members: list[dict], operator_scope: dict | None = None, ctx: Context = None,
+) -> list[dict]:
+    """
+    初始化群体记忆成员名册。dimension 含 org、space、kind（project/team/group）、id；
+    members 每项含 scope，可选 role。需要对该维度的初始化权限。
+    """
+    return await _invoke(
+        "init_collective_dimension",
+        {"dimension": dimension, "members": members, "operator_scope": operator_scope},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_add_collective_members(
+    dimension: dict, members: list[dict], operator_scope: dict | None = None, ctx: Context = None,
+) -> list[dict]:
+    """向已存在的群体记忆维度添加成员或恢复成员资格，需要成员治理权限。"""
+    return await _invoke(
+        "add_collective_members",
+        {"dimension": dimension, "members": members, "operator_scope": operator_scope},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_remove_collective_members(
+    dimension: dict | None, targets: list[dict], operator_scope: dict | None = None,
+    ctx: Context = None,
+) -> int:
+    """
+    撤销 targets 中主体的成员资格，保留历史贡献。组织管理员可传 dimension=null，
+    从团队及群组中移除已退出组织的专家。
+    """
+    return await _invoke(
+        "remove_collective_members",
+        {"dimension": dimension, "targets": targets, "operator_scope": operator_scope},
+        context=ctx,
+    )
+
+
+@mcp.tool()
+async def memory_list_collective_members(
+    dimension: dict, status: str | None = None, operator_scope: dict | None = None,
+    ctx: Context = None,
+) -> list[dict]:
+    """列出当前身份可见的群体成员；status 可筛选 active 或 departed。"""
+    return await _invoke(
+        "list_collective_members",
+        {"dimension": dimension, "status": status, "operator_scope": operator_scope},
         context=ctx,
     )
 
