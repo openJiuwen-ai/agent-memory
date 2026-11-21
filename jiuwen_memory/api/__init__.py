@@ -109,6 +109,11 @@ from jiuwen_memory.config.auto_overlay import (
     open_document_overlay,
     open_file_overlay,
 )
+
+# Private config normalization for the bundled adapter; not a public API export.
+from jiuwen_memory.config.document_flag import (
+    should_write_document as _should_write_document,  # noqa: F401
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (

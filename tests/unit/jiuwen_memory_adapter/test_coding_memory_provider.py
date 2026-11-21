@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+import yaml
 
 from jiuwen_memory_adapter.jiuwenswarm.coding_memory import TOOL_PREFIX
 
@@ -53,7 +54,8 @@ def test_code_tools_bind_project_and_report_actual_write_result(code_provider, m
             TOOL_PREFIX + "search", {"query": "fact", "project": "other"},
         )
         assert client.search.call_args.kwargs["filters"] == {
-            "system_metadata.project": {"eq": "repo-a"}}
+            "system_metadata.project": {"eq": "repo-a"},
+            "system_metadata.memory_class": {"in": ["long_term_memory", "daily_memory"]}}
         for outcome, expected in [(None, "error"), (SimpleNamespace(item_id=None), "stored"),
                                   (SimpleNamespace(item_id="new"), "stored")]:
             client.add.return_value = outcome
@@ -63,7 +65,7 @@ def test_code_tools_bind_project_and_report_actual_write_result(code_provider, m
             if outcome is not None:
                 assert result["stored"] is bool(outcome.item_id)
             assert client.add.call_args.kwargs["system_metadata"] == {
-                "infer": "true", "project": "repo-a"}
+                "infer": "true", "project": "repo-a", "pipeline": "document_fact"}
         for name in (
             "agent_memory_conclude", "agent_memory_video_submit", "agent_memory_video_status",
         ):
@@ -218,11 +220,13 @@ def test_sdk_watchdog_tracks_manual_project_document_edit(tmp_path):
 
 
 @pytest.mark.parametrize("source", ["json", "yaml", "inline", "empty-inline", "default"])
-def test_code_document_override_preserves_configuration_baseline(tmp_path, monkeypatch, source):
-    config = {"globals": {"write_document": False, "custom_option": "kept"}}
+@pytest.mark.parametrize("document_mode", [False, "false", True, "true"])
+def test_document_profiles_follow_effective_scene_configuration(
+    tmp_path, monkeypatch, source, document_mode,
+):
+    config = {"globals": {"write_document": document_mode, "custom_option": "kept"}}
     path = tmp_path / f"config.{source}"
-    path.write_text(json.dumps(config) if source != "yaml" else
-                    "globals:\n  write_document: false\n  custom_option: kept\n")
+    path.write_text(json.dumps(config) if source != "yaml" else yaml.safe_dump(config))
     options = {"config_path": str(path)} if source != "default" else {}
     if source == "inline":
         options["config_dict"] = config
@@ -233,15 +237,24 @@ def test_code_document_override_preserves_configuration_baseline(tmp_path, monke
         expected["custom_option"] = "kept"
     module = AgentMemoryMemoryProvider.__module__
     monkeypatch.setattr(f"{module}._agent_default_config",
-                        lambda: {"globals": {"builtin": True, "write_document": False}})
+                        lambda: {"globals": {"builtin": True, "write_document": document_mode}})
     assemble = Mock(return_value=SimpleNamespace(api=object(), start_background=AsyncMock()))
     monkeypatch.setattr(f"{module}.assemble_runtime", assemble)
-    for scene in ("agent", "code"):
+    for scene in ("agent", "code", "team"):
         # This unit test isolates configuration assembly from the optional Portal.
         provider = AgentMemoryMemoryProvider(
-            scene=scene, security_provider=lambda: None, portal={"enabled": False}, **options,
+            scene=scene, project="repo", security_provider=lambda: None,
+            portal={"enabled": False}, **options,
         )
         asyncio.run(provider.initialize())
-        assert assemble.call_args.kwargs["config"] == {
-            "globals": {**expected, "write_document": scene == "code"}}
-    assert config["globals"]["write_document"] is False
+        assembled = assemble.call_args.kwargs["config"]
+        effective_mode = document_mode if scene == "agent" else True
+        assert assembled["globals"] == {**expected, "write_document": effective_mode}
+        if effective_mode in {False, "false"}:
+            assert "pipeline" not in assembled
+            assert "dedup" not in assembled
+        else:
+            assert {"document_fact", "team_turn", "team_conclusion"} <= (
+                assembled["pipeline"]["default"]["params"]["profiles"].keys()
+            )
+    assert config["globals"]["write_document"] == document_mode

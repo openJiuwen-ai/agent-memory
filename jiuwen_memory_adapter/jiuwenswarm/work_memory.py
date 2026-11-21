@@ -9,7 +9,7 @@ from copy import deepcopy
 from typing import Any
 
 from jiuwen_memory.api import install_privacy_filter, redact_for_log, scope_for_log
-from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext, MemoryWriteRoute
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import (
     CONCLUDE_SCHEMA,
     EDIT_MD_SCHEMA,
@@ -21,6 +21,7 @@ from jiuwen_memory_adapter.jiuwenswarm.memory_tools import (
     edit_document,
     read_document,
 )
+from jiuwen_memory_adapter.jiuwenswarm.pipeline_profiles import DOCUMENT_FACT
 
 logger = logging.getLogger(
     "jiuwenswarm.agents.harness.common.memory.external.agent_memory_provider"
@@ -47,14 +48,17 @@ def _recall_filters(project: str = "") -> dict[str, Any]:
     episodic 原文被正确排除。进程内路径经 ``RetrievalQuery`` 边界的 ``normalize``
     接收同一份 dict DSL。
 
-    ``project`` 非空时追加 ``system_metadata.project IN ['', project]``（顶层多键
-    默认 AND），与 ``agent_memory_search`` 同口径：召回本项目记忆与跨项目可见记忆。
+    ``project`` 非空时追加 ``system_metadata.project = project``（顶层多键
+    默认 AND），与 ``agent_memory_search`` 同口径：仅召回本项目，画像单独读取 USER.md。
     不带该谓词时影子索引兜底 ``project = ''``，项目内写入的记忆在同项目会话的
     prefetch 里取不到（F08 D2）。
     """
-    filters: dict[str, Any] = {"tier": {"in": list(_RECALL_TIERS)}}
+    filters: dict[str, Any] = {
+        "tier": {"in": list(_RECALL_TIERS)},
+        "system_metadata.memory_class": {"ne": "team_memory"},
+    }
     if project:
-        filters["system_metadata.project"] = {"in": ["", project]}
+        filters["system_metadata.project"] = {"eq": project}
     return filters
 
 
@@ -99,6 +103,13 @@ def _merge_prefetch_lines(
 
 class WorkMemoryScene:
     """Preserve Work defaults while allowing independent scene instances."""
+
+    @staticmethod
+    def write_route(operation: str = "fact") -> MemoryWriteRoute:
+        """Ordinary tools and automatic turns share the same write profile."""
+        if operation != "fact":
+            raise ValueError("Unsupported document write operation")
+        return MemoryWriteRoute(DOCUMENT_FACT, True)
 
     @staticmethod
     def sdk_config_overrides() -> dict[str, Any]:
@@ -207,12 +218,11 @@ class WorkMemoryScene:
         # dict.get 的缺省值不生效，int(None) 直接 TypeError。用 or 同时覆盖
         # 「key 缺省」与「显式 null」（top_k=0 无意义，同样回落缺省）。
         top_k = min(int(args.get("top_k") or _DEFAULT_SEARCH_TOP_K), _MAX_TOP_K)
-        # [本地修改 2026-10-19] 对齐 mem2_search：project 走 filters 下推为
-        # system_metadata.project 谓词，与写入侧 add（project 作标量
-        # system_metadata["project"]）同口径；IN ['', project] 同时召回跨项目
-        # 可见记忆与同 project 记忆。
+        # 项目过滤下推到检索端；跨项目画像通过 USER.md 单独读取。
         project = str(args.get("project") or "").strip()
-        filters = {"system_metadata.project": {"in": ["", project]}} if project else None
+        filters = {"system_metadata.memory_class": {"ne": "team_memory"}}
+        if project:
+            filters["system_metadata.project"] = {"eq": project}
         # 显式检索不过滤 tier（§6.2-F）：LLM 主动检索允许命中 EPISODIC 原文。
         items = await context.client.search(query, scope, top_k=top_k, filters=filters)
         if not items:
@@ -238,8 +248,7 @@ class WorkMemoryScene:
             )
         return json.dumps({"results": payload, "count": len(payload)})
 
-    @staticmethod
-    async def _conclude(context: MemorySceneContext, args: dict[str, Any]) -> str:
+    async def _conclude(self, context: MemorySceneContext, args: dict[str, Any]) -> str:
         """Handle the existing Work conclude tool."""
         scope = context.scope
         conclusion = args.get("conclusion", "")
@@ -252,7 +261,7 @@ class WorkMemoryScene:
         tags = args.get("tags") or ["conclude"]
         project = str(args.get("project") or "").strip()
         system_metadata: dict[str, str] = {
-            "infer": "true",
+            **self.write_route().metadata(),
             "source_app": "jiuwenswarm",
             "agent_label": context.scope.agent,
         }
@@ -407,6 +416,10 @@ class WorkMemoryScene:
             max_items=_PROFILE_INJECT_MAX_ITEMS,
             max_chars=_PROFILE_INJECT_MAX_CHARS,
         )
+
+    @staticmethod
+    def sync_metadata(_context: MemorySceneContext) -> dict[str, str]:
+        return {}
 
     @staticmethod
     def system_prompt(context: MemorySceneContext) -> str:

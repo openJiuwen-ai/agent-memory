@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F12-importance-and-source-attribution.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
@@ -828,3 +828,25 @@ ALL/FORWARD_ONLY/RETRIEVAL_ONLY 与 HARD/SOFT 原有语义保留。
 内容型 prompt 的完整分批保留原子占位符及长度上限；判定型 prompt 的头尾截断把跨界引用
 完整移入省略区，不把半个引用送入后续模型。小于单个引用的分批上限明确拒绝。
 受控路由只重绑定已授权目标的密文引用；同组织范围及关联校验见 S10。
+
+
+## 文档事实与团队结论算子
+
+| 注册名 | 契约 |
+|---|---|
+| extractor.document_fact | 复用 AgentLlmExtractor，要求候选 project_fact 为布尔值；项目事实只取来源项目，缺少项目则丢弃 |
+| extractor.team_llm | 继承文档事实规则，对全部输入应用团队提示；team_internal 缺失或非布尔值时每批最多纠正一次，最终仅保留布尔 false 候选 |
+| dedup.project_team | 复用 ShadowDedup 相似度算法；普通记忆排除 team_memory，团队候选限定同项目、同团队 |
+| classifier.team_document | 给原文设 memory_class=team_memory；可通过 base_classifier 委托既有分类器保留 tier/tags/importance 行为 |
+
+以上是 Producer 的 target 注册名；具体实例名由配置决定。算子不根据 source_app 或
+memory_scene 选择业务策略，调用方通过 profile 选择实例。通用 agent_llm、shadow
+不包含 Team 策略。团队结论的 infer=false 路径保持分类后直接落盘，不增加抽取和去重。
+应用标签校验在 Provider；数据格式、路径与 Scope 约束仍由内核和存储保证。
+
+Team 字段纠正只针对首次响应中 team_internal 不合格的候选，按候选序号补充布尔值；
+不能改写正文、来源或首次已合法的判断。纠正请求至多调用一次 LLM，不叠加请求重试；
+失败、仍缺字段、重复或未知序号均不再重试，未修复候选按原过滤规则排除，并记录原因和数量。
+已合法候选继续处理；显式 true 不触发纠正。首次抽取请求的既有异常重试策略不变。
+Team 首次抽取及字段纠正的指令均按既有 extractor_language 选择 cn/en，非法值回退 cn；
+JSON 字段名及布尔值契约不随提示语言改变。

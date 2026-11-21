@@ -70,6 +70,7 @@ from jiuwen_memory.storage.markdown_impl._md_blocks import (
 from jiuwen_memory.storage.markdown_impl._md_path import (
     class_from_md_path,
     project_from_md_path,
+    team_from_md_path,
 )
 from jiuwen_memory.storage.security import (
     StorageAccessContext,
@@ -638,6 +639,7 @@ class CompositeDomainStore(DomainStore):
         project: str = "",
         line_range: tuple[int, int] | None = None,
         access: StorageAccessContext | None = None,
+        team: str = "",
     ) -> list[MemoryUnit]:
         """读 md 文件原文，按块算 content_hash 反查 shadow 取 MemoryUnit（F08 §D1）。
 
@@ -656,12 +658,17 @@ class CompositeDomainStore(DomainStore):
             )
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
-        text = md.read_content(scope, md_basename, project=project, line_range=line_range)
+        text = md.read_content(
+            scope, md_basename, project=project, line_range=line_range,
+            **({"team": team} if team else {}),
+        )
         blocks = collect_blocks_from_text(text, first_line_is_title=False)
         unit_ids: list[str] = []
         for ch, _, _ in blocks:
             unit_ids.extend(shadow.find_unit_ids_by_content_hash(scope, ch))
-        return shadow.get_units(scope, unit_ids)
+        rel_path = MarkdownStore.resolve_md_path(md_basename, project, team=team)
+        return [unit for unit in shadow.get_units(scope, unit_ids)
+                if unit.system_metadata.get(MD_FILENAME_KEY) == rel_path]
 
     def edit_md_file(
         self,
@@ -672,6 +679,7 @@ class CompositeDomainStore(DomainStore):
         *,
         project: str = "",
         access: StorageAccessContext | None = None,
+        team: str = "",
     ) -> list[MemoryUnit]:
         """md 文件级唯一替换 + 继承式 SUPERSEDE 同步 shadow，返回新 unit（F08 §D4/§D5）。
 
@@ -686,19 +694,20 @@ class CompositeDomainStore(DomainStore):
             )
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
-        rel_path = MarkdownStore.resolve_md_path(md_basename, project)
+        rel_path = MarkdownStore.resolve_md_path(md_basename, project, team=team)
+        document_options = {"project": project, **({"team": team} if team else {})}
         with document_operation(md.root, shadow.write_lock_key, writing=True):
             # edit 前旧全文快照（md 侧失败补偿用：shadow 同步失败时回写整个文件到编辑前
             # 字节态）。同一次读既算块 diff 又留快照，避免二次读文件。
-            raw_old = md.read_content(scope, md_basename, project=project)
+            raw_old = md.read_content(scope, md_basename, **document_options)
             # edit 前后全文块（含跨 scope），用于精确 diff：truly_inserted = new - old
             # 只含 edit 真正新增的块（不含跨 scope 已有块——其 hash 在 old_full 里），
             # 避免 list_units_by_md 跨 scope 导致当前 scope edit 误标/误插他 scope unit。
             old_full = collect_blocks_from_text(raw_old)
             try:
                 # md 原子替换（唯一性校验 + 原子写；失败抛 NotFoundError/ValidationError）
-                md.edit_content(scope, md_basename, old_text, new_text, project=project)
-                raw_new = md.read_content(scope, md_basename, project=project)
+                md.edit_content(scope, md_basename, old_text, new_text, **document_options)
+                raw_new = md.read_content(scope, md_basename, **document_options)
                 new_full = collect_blocks_from_text(raw_new)
                 new_titles = {}
                 old_titles = {}
@@ -718,7 +727,7 @@ class CompositeDomainStore(DomainStore):
                 # 是无条件整文件覆盖——edit_content 抛 NotFoundError/ValidationError 时
                 # md 本就未变，回写相同内容幂等无害。补偿失败只记 warning 不掩盖原异常。
                 try:
-                    md.restore_content(scope, md_basename, raw_old, project=project)
+                    md.restore_content(scope, md_basename, raw_old, **document_options)
                 except Exception as restore_exc:
                     logger.warning(
                         "edit_md_file md 回滚失败 %s: %s", md_basename, restore_exc
@@ -820,6 +829,8 @@ class CompositeDomainStore(DomainStore):
                     temporal=Temporal(t_valid=now),
                     system_metadata={
                         "project": fb_project,
+                        **({"team": team_from_md_path(rel_path)}
+                           if fb_class == "team_memory" else {}),
                         MEMORY_CLASS_KEY: fb_class,
                         MD_FILENAME_KEY: rel_path,
                     },

@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-from collections.abc import Mapping
 from copy import deepcopy
 from datetime import date
 from typing import Any
 
-from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+from jiuwen_memory_adapter.jiuwenswarm.base_document_scene import BaseDocumentScene
+from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext, MemoryWriteRoute
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import (
     CONCLUDE_SCHEMA,
     EDIT_MD_SCHEMA,
@@ -20,10 +19,9 @@ from jiuwen_memory_adapter.jiuwenswarm.memory_tools import (
     edit_document,
     read_document,
 )
+from jiuwen_memory_adapter.jiuwenswarm.pipeline_profiles import DOCUMENT_FACT
 
-logger = logging.getLogger(__name__)
 TOOL_PREFIX = "agent_memory_coding_memory_"
-RECALL_TIMEOUT = 5.0
 
 
 def tool_schemas(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -56,22 +54,15 @@ def tool_schemas(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-class CodingMemoryScene:
+class CodingMemoryScene(BaseDocumentScene):
     """Bind all Code operations to a host-selected project, including direct tools."""
 
-    def __init__(self, project: str) -> None:
-        if not project or project in {".", ".."} or any(c in project for c in "/\\\x00"):
-            raise ValueError("Code memory requires a project basename")
-        self.project = project
-
     @staticmethod
-    def sdk_config_overrides() -> dict[str, Any]:
-        """Coding always writes document memories after loading the SDK baseline."""
-        return {"globals": {"write_document": True}}
-
-    def resolve_project(self, _options: Mapping[str, Any]) -> str:
-        """Use the host-bound project for every turn."""
-        return self.project
+    def write_route(operation: str = "fact") -> MemoryWriteRoute:
+        """Ordinary tools and automatic turns share the same write profile."""
+        if operation != "fact":
+            raise ValueError("Unsupported document write operation")
+        return MemoryWriteRoute(DOCUMENT_FACT, True)
 
     @staticmethod
     def get_tool_schemas(_context: MemorySceneContext) -> list[dict[str, Any]]:
@@ -126,7 +117,7 @@ class CodingMemoryScene:
             return json.dumps({"error": "Missing required parameter: content"})
         result = await client.add(
             content, scope, tags=["coding"],
-            system_metadata={"infer": "true", "project": self.project},
+            system_metadata={**self.write_route().metadata(), "project": self.project},
         )
         if result is None:
             return json.dumps({"error": "Memory write failed; no successful write confirmed."})
@@ -142,7 +133,10 @@ class CodingMemoryScene:
         limit = self.top_k(top_k)
         return (await client.search(
             query, scope, top_k=limit,
-            filters={"system_metadata.project": {"eq": self.project}},
+            filters={
+                "system_metadata.project": {"eq": self.project},
+                "system_metadata.memory_class": {"in": ["long_term_memory", "daily_memory"]},
+            },
         ))[:limit]
 
     async def search_tool(self, client: Any, scope: Any, args: dict[str, Any]) -> str:
@@ -154,14 +148,6 @@ class CodingMemoryScene:
             {"memory": item.get("content", ""), "score": item.get("score", 0)}
             for item in items
         ], "count": len(items)})
-
-    @staticmethod
-    async def _bounded(awaitable: Any) -> list:
-        try:
-            return await asyncio.wait_for(awaitable, timeout=RECALL_TIMEOUT) or []
-        except Exception as exc:
-            logger.warning("Code memory prefetch failed: %s", type(exc).__name__)
-            return []
 
     async def _prefetch(
         self, client: Any, scope: Any, query: str, *, top_k: Any = None,
@@ -183,6 +169,10 @@ class CodingMemoryScene:
             if contents:
                 sections.append("## " + title + "\n" + "\n".join(contents))
         return "\n\n".join(sections)
+
+    @staticmethod
+    def sync_metadata(_context: MemorySceneContext) -> dict[str, str]:
+        return {}
 
     @staticmethod
     def system_prompt(_context: MemorySceneContext) -> str:

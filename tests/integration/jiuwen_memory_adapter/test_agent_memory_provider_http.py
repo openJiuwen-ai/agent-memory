@@ -78,10 +78,14 @@ def memory_http_url_fixture(request, tmp_path_factory):
     http_server_module.ThreadingHTTPServer = _ReadyHttpd
     layers = [OFFLINE]
     if getattr(request, "param", None) == "document":
+        from jiuwen_memory_adapter.jiuwenswarm.pipeline_profiles import (
+            configure_document_pipelines,
+        )
         from tests.unit.api.test_document_security_lifecycle import _doc_config
 
-        layers.append({"memory_api": _doc_config(
-            tmp_path_factory.mktemp("code-http-memory"), watch=False)})
+        document = _doc_config(tmp_path_factory.mktemp("code-http-memory"), watch=False)
+        document["extractor"] = {"document_fact": "keyword", "team_turn": "keyword"}
+        layers.append({"memory_api": configure_document_pipelines(document)})
     config = load_config(layers)
     server = HttpServer.build(with_local_dev_security(config))
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -478,3 +482,40 @@ def test_http_unreachable_never_constructs_sdk_or_claims_success(monkeypatch):
     with socket.socket() as reserved:
         reserved.bind(("127.0.0.1", 0))
         asyncio.run(run(reserved.getsockname()[1]))
+
+
+@pytest.mark.parametrize("memory_http_url", ["document"], indirect=True)
+def test_team_http_write_search_read_edit_isolation(memory_http_url):
+    async def run():
+        shared = {"base_url": memory_http_url, "project": "repo", "portal": {"enabled": False}}
+        leader = AgentMemoryMemoryProvider(**shared, scene="team", team="repo--" + "a" * 24)
+        member = AgentMemoryMemoryProvider(**shared, scene="team", team="repo--" + "a" * 24)
+        other = AgentMemoryMemoryProvider(**shared, scene="team", team="repo--" + "b" * 24)
+        code = AgentMemoryMemoryProvider(**shared, scene="code")
+        providers = (leader, member, other, code)
+        try:
+            for provider in providers:
+                await provider.initialize(user_id="team-http", agent_id="team-http", session_id="")
+            written = await leader.add_team_memories(
+                [{"label": "decision", "content": "ocean architecture"}]
+            )
+            assert written == 1
+            result = json.loads(await member.handle_tool_call(
+                "team_memory_search", {"query": "ocean"},
+            ))
+            assert "[decision] ocean architecture" in result["team"][0]["content"]
+            assert "[decision] ocean architecture" in await member.prefetch("ocean")
+            assert "ocean architecture" not in await other.prefetch("ocean")
+            assert "ocean architecture" not in await code.prefetch("ocean")
+            result = json.loads(await member.handle_tool_call("team_memory_edit", {
+                "target": "team", "name": "MEMORY.md", "old_text": "ocean", "new_text": "river",
+            }))
+            assert result["count"] == 1
+            read = json.loads(await leader.handle_tool_call("team_memory_read", {
+                "target": "team", "name": "MEMORY.md",
+            }))
+            assert "[decision] river architecture" in read["units"][0]["content"]
+            assert leader.runtime is None
+        finally:
+            await asyncio.gather(*(provider.shutdown() for provider in providers))
+    asyncio.run(run())

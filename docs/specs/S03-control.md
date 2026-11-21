@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-11-17 |
+| 最近一次修订日期 | 2026-11-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F10-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/construction/F13-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
@@ -280,7 +280,8 @@ pipeline:
 - 查询侧优先读取 `RetrievalQuery.extensions[route_key]`，其次从规范化
   `FilterExpr` 提取逻辑上强制成立的 `system_metadata.<route_key>` 唯一等值；
   `memory_type` 裸字段仅作为 `system_metadata.memory_type` 的输入别名。
-- `routes` 把路由值映射到 profile 名；未命中时若路由值本身是 profile 名则直接使用，否则退回 `fallback`。
+- `routes` 把路由值映射到 profile 名；未命中时若路由值本身是 profile 名则直接使用。
+- `strict_routes=false`（默认）保留未知值退回 `fallback`；设为 true 时，未知显式流程抛 ValidationError，且写入批次的路由值必须一致（含空值）。未指定流程仍使用 `fallback`。
 - 未配置 `pipeline.default` 时不启用 pipeline，行为等价旧单 pipeline；用户通过 YAML 显式声明后启用。
 
 > `infer` 开关详见 [`S02-memory-api.md`](S02-memory-api.md)「infer 开关」与 [`docs/features/api/F02-write-infer-extract.md`](../features/api/F02-write-infer-extract.md)。默认路径不再自动提交 background EXTRACT——`InProcessScheduler` 同步执行下"自动提交"实为同步阻塞，与双通道时延初衷相悖；真异步 Scheduler 落地后是否恢复可选自动提交另行决策。
@@ -798,3 +799,12 @@ PEP 后由 MemoryAPI.finish_human_view 传入的服务端操作句柄与当前�
 MemoryAPI 返回用户终端；不把原文附加到 MemoryUnit、普通 get/recall 或处理流水线。
 该路径不等待浏览器认证，也不执行授权裁决；不支持此能力的 Engine 在启用用户访问控制时
 拒绝装配，不修改 MemoryEngine ABC。详见 S10、S05、S06。
+
+## 团队结论直写
+
+Agent/Cloud 引擎只执行选定 profile 的标准 infer 分支，不识别 Team 标签或应用来源。
+Adapter 校验宿主结论并选择 team_conclusion（infer=false），其 TeamDocumentClassifier
+写入受保护的 memory_class=team_memory；普通事实/Team 回合分别选择 document_fact/team_turn
+（infer=true）。标签与业务操作校验属于 Provider，路径/坐标合法性和身份授权仍由内核保证。
+裸 memory_scene/team_label 不再触发引擎分类；公共 API 仍拒绝直接覆盖 memory_class。
+此路由仅覆盖普通写入，后台 evolve 的组件注入契约不变，见 F09-team-document-memory。

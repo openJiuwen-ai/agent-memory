@@ -13,6 +13,7 @@
 | `F03` | [F03-mcp-surface](F03-mcp-surface.md) | MCP surface：MemoryAPI 的 Model Context Protocol 接入面 |
 | `F05` | [F05-personal-memory-portal](F05-personal-memory-portal.md) | 个人记忆管理 Portal 设计方案 |
 | `F06` | [F06-coding-document-memory](F06-coding-document-memory.md) | Coding 场景接入文档记忆 |
+| `F09` | [F09-team-document-memory](F09-team-document-memory.md) | Team 文档记忆、共享隔离与 Pipeline 分流 |
 
 ## API / 接入面（`docs/features/api/`）
 
@@ -126,4 +127,4 @@
 
 ---
 
-共 75 篇。`docs/features/common/F04` 是安全能力唯一维护页（见 [docs/AGENTS.md](../AGENTS.md#安全文档例外单一维护)）。
+共 76 篇。`docs/features/common/F04` 是安全能力唯一维护页（见 [docs/AGENTS.md](../AGENTS.md#安全文档例外单一维护)）。

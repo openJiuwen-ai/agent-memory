@@ -82,17 +82,21 @@ memory_api:
         min_score_ratio_uncalibrated: 0.0
         min_results: 0
   extractor:
-    default: {target: agent_llm, params: {llm: default, extractor_language: cn}}
+    default: {target: agent_llm, params: &fact_params {llm: default, extractor_language: cn}}
+    document_fact: {target: document_fact, params: *fact_params}
+    team_turn: {target: team_llm, params: *fact_params}
   classifier:
     default: llm
+    team_conclusion: {target: team_document, params: {base_classifier: default}}
   constructor:
     default: {target: document, params: {domain_store: default}}
   dedup:
     default: {target: shadow, params: {embedder: default}}
+    project_team: {target: project_team, params: {embedder: default}}
   evolver:
     default:
       target: orchestrating
-      params:
+      params: &evolve_params
         extractor: default
         abstractor: default
         associator: default
@@ -100,6 +104,28 @@ memory_api:
         message_store: default
         dedup: default
         llm: default
+    document_fact:
+      target: orchestrating
+      params: {<<: *evolve_params, extractor: document_fact, dedup: project_team}
+    team_turn:
+      target: orchestrating
+      params: {<<: *evolve_params, extractor: team_turn, dedup: project_team}
+  pipeline:
+    default:
+      target: metadata
+      params:
+        route_key: pipeline
+        strict_routes: true
+        fallback: default
+        profiles:
+          default: &default_profile
+            index_builder: default
+            retriever: default
+            evolver: default
+            classifier: default
+          document_fact: {<<: *default_profile, evolver: document_fact}
+          team_turn: {<<: *default_profile, evolver: team_turn}
+          team_conclusion: {<<: *default_profile, classifier: team_conclusion}
   engine:
     default:
       target: agent

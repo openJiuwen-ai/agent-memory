@@ -50,6 +50,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks
 from jiuwen_memory.storage.markdown_impl._md_path import (
     _FILE_NAME_TO_CLASS,
+    team_from_md_path,
 )
 from jiuwen_memory.storage.markdown_impl._md_path import (
     class_from_md_path as _class_from_md_path,
@@ -531,6 +532,9 @@ class LocalWatchdog(Watchdog):
             provenance=["watchdog_sync"],
             system_metadata={
                 COORDS_KEY: {"project": project},
+                "project": project,
+                **({"team": team_from_md_path(md_filename)}
+                   if memory_class == "team_memory" else {}),
                 MEMORY_CLASS_KEY: memory_class,
                 MD_FILENAME_KEY: md_filename,
             },

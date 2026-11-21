@@ -89,8 +89,9 @@ security = [
 # openjiuwen 是宿主侧 agent swarm 框架，仅在生产挂载到 jiuwenswarm 时需要——
 # provider.py 对其做 try/except 软依赖降级，未安装时基类退化为 object，本仓库自身的
 # 单元/集成测试（不依赖宿主）照常 import 与运行；装上后才真正继承 ABC。
+# Core 的 Agent/Rail 导入链需要 OTLP 编码依赖，随宿主可选依赖一起安装。
 agent = [
-    "openjiuwen",
+    "openjiuwen[observability]",
 ]
 
 [dependency-groups]

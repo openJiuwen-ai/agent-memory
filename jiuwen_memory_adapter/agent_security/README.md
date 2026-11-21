@@ -38,8 +38,12 @@ python -m pip install -e ./jiuwen_memory_adapter/agent_security
 安装经核对的 agent-core checkout，并固定其源码 revision：
 
 ```bash
-python -m pip install -e /path/to/agent-core
+python -m pip install -e "/path/to/agent-core[observability]"
 ```
+
+Core 的 Agent/Rail 导入链需要 OTLP 编码依赖，因此安装时须启用 `observability`。
+使用发布包时安装 `openjiuwen[observability]==<已验证版本>`，保留原有版本约束；
+仓库根的 `agent` extra 已包含该扩展，平台全量测试也应使用这一安装入口。
 
 下层须具有公开的 `RequestSecurityContext`、`Scope`、`MemoryAPI.get/list/search`，且普通
 读取提供 `privacy_level`、`privacy_revision` 和脱敏视图。上游 `mem2.0` 已包含这些能力，

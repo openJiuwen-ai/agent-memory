@@ -8,6 +8,17 @@ from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
+class MemoryWriteRoute:
+    """Trusted selection of preassembled operators and the existing write mode."""
+
+    pipeline: str
+    infer: bool
+
+    def metadata(self) -> dict[str, str]:
+        return {"pipeline": self.pipeline, "infer": str(self.infer).lower()}
+
+
+@dataclass(frozen=True)
 class MemorySceneContext:
     """Request-local services; scenes never own the provider or its lifecycle."""
 
@@ -17,10 +28,17 @@ class MemorySceneContext:
     video_enabled: Callable[[], bool]
     continuity_enabled: bool
     continuity_mode: str
+    team: str = ""
+    sidebar: str = ""
+    member: str = ""
 
 
 class MemoryScene(Protocol):
     """Scene-specific behavior behind the existing MemoryProvider API."""
+
+    def write_route(self, operation: str = "fact") -> MemoryWriteRoute:
+        """Choose a write profile for a host operation."""
+        ...
 
     def sdk_config_overrides(self) -> dict[str, Any]:
         """Return requirements applied after loading the SDK configuration."""
@@ -42,6 +60,10 @@ class MemoryScene(Protocol):
 
     async def prefetch(self, context: MemorySceneContext, query: str, **kwargs: Any) -> str:
         """Build recall text using this scene's query and fallback rules."""
+        ...
+
+    def sync_metadata(self, context: MemorySceneContext) -> dict[str, str]:
+        """Return trusted scene metadata for ordinary extraction."""
         ...
 
     def system_prompt(self, context: MemorySceneContext) -> str:

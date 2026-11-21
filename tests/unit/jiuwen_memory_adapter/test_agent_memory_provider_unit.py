@@ -184,7 +184,7 @@ def _offline_in_process_config(tmp_path, monkeypatch):
         cfg["globals"]["embedder_dim"] = 64
         cfg["globals"]["watch_document"] = False
         cfg["llm"]["default"] = "echo"
-        cfg["extractor"]["default"] = "keyword"
+        cfg["extractor"].update(default="keyword", document_fact="keyword", team_turn="keyword")
         cfg["embedder"] = {"default": {"target": "hashing", "params": {"tokenizer": "default"}}}
         cfg["fulltext_store"] = {"default": {"target": "memory"}}
         cfg["markdown_store"] = {"default": {"target": "local", "params": {"root": str(tmp_path)}}}
@@ -233,7 +233,10 @@ class TestPrepareEnvelope:
 
 class TestRecallFilters:
     def test_filters_include_distilled_tiers_only(self):
-        assert _recall_filters() == {"tier": {"in": ["semantic", "core", "procedural"]}}
+        assert _recall_filters() == {
+            "tier": {"in": ["semantic", "core", "procedural"]},
+            "system_metadata.memory_class": {"ne": "team_memory"},
+        }
 
     def test_filters_exclude_episodic_and_working(self):
         flattened = _recall_filters()["tier"]["in"]
@@ -241,22 +244,23 @@ class TestRecallFilters:
         assert "working" not in flattened
         assert "archival" not in flattened
 
-    def test_filters_with_project_add_cross_project_in_predicate(self):
+    def test_filters_with_project_add_equal_predicate(self):
         filters = _recall_filters("proj-a")
-        assert filters["system_metadata.project"] == {"in": ["", "proj-a"]}, filters
+        assert filters["system_metadata.project"] == {"eq": "proj-a"}, filters
         assert filters["tier"] == {"in": ["semantic", "core", "procedural"]}, filters
 
     def test_filters_without_project_carry_no_project_predicate(self):
         assert "system_metadata.project" not in _recall_filters(""), "空 project 不应带项目谓词"
 
-    def test_filters_with_project_normalize_to_and_of_two_clauses(self):
-        # 顶层双键由 API 边界的 normalize 解析为 AND；HTTP 服务端与进程内共用同一解析。
+    def test_filters_with_project_normalize_to_and_clauses(self):
+        # 层级、项目和排除团队类别由 API 边界统一解析为 AND。
         expr = normalize_filters(_recall_filters("proj-a"))
         assert expr.logic is FilterLogic.AND, expr
         clauses = {(c.field, c.op.value): c.value for c in expr.children}
         assert clauses == {
             ("tier", "in"): ["semantic", "core", "procedural"],
-            ("system_metadata.project", "in"): ["", "proj-a"],
+            ("system_metadata.project", "eq"): "proj-a",
+            ("system_metadata.memory_class", "ne"): "team_memory",
         }, clauses
 
 
@@ -884,7 +888,7 @@ class TestSdkMode:
                 await provider.prefetch("部署区域", project="proj-a")
                 await provider.prefetch("部署区域", project="  ")
                 await provider.prefetch("部署区域")
-                assert seen[0]["system_metadata.project"] == {"in": ["", "proj-a"]}, seen[0]
+                assert seen[0]["system_metadata.project"] == {"eq": "proj-a"}, seen[0]
                 assert "system_metadata.project" not in seen[1], seen[1]
                 assert "system_metadata.project" not in seen[2], seen[2]
             finally:
@@ -915,11 +919,18 @@ class TestSdkMode:
 
                 same = await provider.prefetch("部署区域", project="proj-a")
                 assert "杭州" in same, f"同项目会话应召回项目内记忆: {same!r}"
-                assert "上海" in same, f"同项目会话应召回跨项目记忆: {same!r}"
+                assert "上海" not in same, f"项目会话不应混入旧空项目记忆: {same!r}"
 
                 other = await provider.prefetch("部署区域", project="proj-b")
                 assert "杭州" not in other, f"其他项目不应看到 proj-a 的记忆: {other!r}"
-                assert "上海" in other, f"其他项目应召回跨项目记忆: {other!r}"
+                assert "上海" not in other, f"其他项目不应混入旧空项目记忆: {other!r}"
+
+                explicit = await provider.handle_tool_call(
+                    "agent_memory_search", {"query": "部署区域", "project": "proj-a"}
+                )
+                memories = [item["memory"] for item in json.loads(explicit)["results"]]
+                assert any("杭州" in item for item in memories), memories
+                assert all("上海" not in item for item in memories), memories
 
                 # 不带 project 时过滤条件里没有项目谓词，由影子索引兜底 project=''：
                 # 只召回跨项目可见的记忆，不会放宽成全库召回。
@@ -941,7 +952,7 @@ class TestSdkMode:
 
         def config():
             result = offline_config()
-            result["extractor"]["default"] = {"target": "agent_llm"}
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
             return result
 
         path_fact = "这个项目的论文终稿放在 /work/paper/final"

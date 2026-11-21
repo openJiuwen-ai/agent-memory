@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-21 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
@@ -2019,3 +2019,19 @@ API 返回终端。普通 HTTP `/v1`、CLI 与 MCP 机器工具不注册这些�
 分片归属在创建时确定，可由部署配置从调用方允许写入的 metadata 字段取值。`update` 默认 `SUPERSEDE` 生成新版本，新版本按修改后的内容落位；`mode=OVERWRITE` 原地覆盖不搬迁，部署开启 `relocate_on_update` 时由存储层在后台搬迁，搬迁期间该记忆的 update / delete 返回可重试的 409。单源派生继承显式输入，多源合并和摘要按自身创建内容路由。shards 约束返回记录的归属，不保证内容来源隔离，也不替代授权；过滤始终与真实 Scope/权限取 AND。层级及 Schema 属性扩展同样受约束。按 id 普通 get/update/delete 不依赖 shards。
 
 共享与拆分索引不改变该外部语义；图拆分会丢失跨分片多跳，全文跨索引排序可能近似。派生状态陈旧可导致欠召回或排序偏差，返回内容须来自当前真源。归属/必需后端故障明确失败，图 Scope 变更未完成返回可重试错误。请求前置校验不代表业务逻辑已在当前版本实现。
+
+## Team 文档扩展
+
+原 add/search/read_md_file/edit_md_file 签名不变。文档读改在 `context.extensions.coords` 中追加可选 team，与 project 一同定位团队 MEMORY.md，空值保持原行为。search 通过既有 filters 传 project、memory_class、team。
+团队结论由 Provider 校验非空正文、decision/lesson/member/context 标签及宿主 project/team 对应关系，
+再经 add 传入 pipeline=team_conclusion、infer=false、memory_scene=team、project、team、team_label。
+Provider 将正文补齐为 `[team_label] 正文`，已有相同标签前缀时不重复添加；元数据标签仍保留，
+使 SDK/HTTP 的读、搜和预取均可展示类别。此规则适用于新写入，不回填已有无前缀记录。
+`add_team_memories` 接收空列表时返回 0；混合批次保存有效项并告警跳过数量及原因，
+非空批次全部无效时在写入前抛出 ValueError。日志不包含条目正文。
+引擎按 Pipeline 选择分类器，由 TeamDocumentClassifier 设置受保护的 memory_class=team_memory；
+裸 memory_scene/team_label 不再触发引擎分类，外部直接填写 memory_class 仍被拒绝。
+路径格式和坐标合法性仍在存储边界校验，Scope 授权及普通抽取的三类输出不变。
+Team 读改工具按 target 区分文档：profile 仅 USER.md，team 仅 MEMORY.md，
+project 支持 MEMORY.md 或合法日历日期 YYYY-MM-DD.md。错误提示分别指出 target 非法、
+文件名/日期不合法或宿主未绑定团队，不要求模型自行设置团队坐标。

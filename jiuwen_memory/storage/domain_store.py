@@ -250,6 +250,7 @@ class DomainStore(ABC):
         project: str = "",
         line_range: tuple[int, int] | None = None,
         access: StorageAccessContext | None = None,
+        team: str = "",
     ) -> list[MemoryUnit]:
         """按 md 文件 basename + project + 行范围读 md 原文，返回命中的 MemoryUnit 列表（F08）。
 
@@ -270,6 +271,7 @@ class DomainStore(ABC):
         *,
         project: str = "",
         access: StorageAccessContext | None = None,
+        team: str = "",
     ) -> list[MemoryUnit]:
         """按 md 文件 basename + old_text 做唯一替换，返回受影响的新 MemoryUnit 列表（F08）。
 

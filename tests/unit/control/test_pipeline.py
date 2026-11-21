@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import pytest
+
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Context, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.control.pipeline_impl.metadata_pipeline import MetadataPipeline
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 from tests.support.scoped_authenticator import ScopedAuthenticator
+from tests.unit.construction.fixtures import create_test_unit
 
 _INDEX_BUILDERS: dict[str, RecordingIndexBuilder] = {}
 
@@ -66,7 +71,7 @@ def _build_named_retriever(config):
     return NamedRetriever(config.get("name", config.name))
 
 
-def _kernel_config() -> Config:
+def _kernel_config(*, strict_routes: bool = False) -> Config:
     return Config.from_dict(
         {
             "constructor": {
@@ -87,6 +92,7 @@ def _kernel_config() -> Config:
                     "target": "metadata",
                     "params": {
                         "route_key": "memory_type",
+                        "strict_routes": strict_routes,
                         "fallback": "default",
                         "routes": {"coding": "coding"},
                         "profiles": {
@@ -165,3 +171,45 @@ def test_engine_recall_canonicalizes_legacy_memory_type_filter_name() -> None:
     )
 
     assert [item.unit_id for item in result.items] == ["coding"]
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_unknown_pipeline_is_rejected_only_in_strict_mode(strict):
+    _INDEX_BUILDERS.clear()
+    kernel = build_kernel(config=_kernel_config(strict_routes=strict))
+    scope = Scope(org="acme", user="u1")
+    try:
+        kwargs = {"security": internal_context(ScopedAuthenticator(scope)),
+                  "system_metadata": {"memory_type": "missing"}}
+        if strict:
+            with pytest.raises(ValidationError, match="Unknown pipeline profile"):
+                kernel.api.add("fact", scope, **kwargs)
+            assert not _INDEX_BUILDERS["default"].built
+        else:
+            kernel.api.add("fact", scope, **kwargs)
+            assert _INDEX_BUILDERS["default"].built == ["fact"]
+    finally:
+        kernel.close()
+
+
+def test_strict_pipeline_rejects_mixed_sources():
+    kernel = build_kernel(config=_kernel_config())
+    try:
+        # Reuse real assembled bindings; only routing policy differs.
+        # pylint: disable=protected-access
+        original = kernel.api._engine._pipeline
+        default = original.select_for_write([])
+        coding = original.explicit_write_binding({"memory_type": "coding"})
+        pipeline = MetadataPipeline(
+            {"default": default, "coding": coding}, {}, "default", strict_routes=True,
+        )
+        first = create_test_unit("a", "first")
+        second = create_test_unit("b", "second")
+        first.system_metadata["memory_type"] = "coding"
+        assert pipeline.select_for_write([first]) is coding
+        with pytest.raises(ValidationError, match="Mixed pipeline"):
+            pipeline.select_for_write([first, second])
+        second.system_metadata["memory_type"] = "coding"
+        assert pipeline.select_for_write([first, second]) is coding
+    finally:
+        kernel.close()

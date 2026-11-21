@@ -1012,7 +1012,7 @@ class ExtractorImpl(Extractor):
             in {"true", "1", "yes", "on"}
             for unit in units
         )
-        system_prompt = self.EXTRACT_SYSTEM_PROMPT
+        system_prompt = self.extraction_system_prompt(units)
         if self._importance_category_prompt_enabled:
             system_prompt += "\n" + importance_category_prompt(
                 self._importance_category_map, language=self.IMPORTANCE_PROMPT_LANGUAGE
@@ -1061,6 +1061,10 @@ class ExtractorImpl(Extractor):
             },
         )
         return candidates
+
+    def extraction_system_prompt(self, _units: list[MemoryUnit]) -> str:
+        """Build request-local instructions without mutating a shared extractor."""
+        return self.EXTRACT_SYSTEM_PROMPT
 
     def _call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         """调用 LLM.chat()——统一走构建层重试入口（超时确定性失败不重试）。"""

@@ -13,5 +13,7 @@ import_optional(".llm_extractor", __name__)
 import_optional(".agent_llm_extractor", __name__)
 import_optional(".dynamic_llm_extractor", __name__)
 import_optional(".video_memory_extractor", __name__)
+import_optional(".document_fact_extractor", __name__)
+import_optional(".team_llm_extractor", __name__)
 
 __all__ = ["ExtractorProducer"]

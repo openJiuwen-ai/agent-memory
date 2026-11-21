@@ -349,3 +349,14 @@ forward、hybrid、unified 不再提供条件更新（原仅服务角色记忆�
 抽取与演进 trace：关键区间与结果计数标 simple，预处理与路径标 info，
 输入/抽取条目/派生结果与逐条去重决策标 debug。正文只保留于受限内存快照，
 内置日志 sink 使用隐私标记；明细构造使用惰性 callable。
+
+文档场景通过具名 profile 选择 DocumentFactExtractor / TeamLlmExtractor、ProjectTeamDedup
+及 TeamDocumentClassifier。算子一旦选定即执行对应规则，不根据 source_app/memory_scene
+再次分流；通用 AgentLlmExtractor/ShadowDedup 不含 Team 策略。TeamDocumentClassifier
+仅标记类别并委托原分类器，不校验应用标签，不引入抽取或去重；详见 S05 与 F09-team-document-memory。
+
+TeamLlmExtractor 在 build_candidates 内对缺失/类型错误的 team_internal 做一次批量纠正，
+复用注入的 LLM 和公共调用入口，max_attempts 固定为 1；不修改共享实例的重试参数。
+纠正只回填请求中唯一候选序号对应的布尔标记，保留原文、来源、顺序及首次合法判断。
+未修复项继续过滤，日志仅记录计数和异常类型；不在通用抽取器增加场景分支。
+Team 的来源说明、排除规则和一次纠正提示在初始化时选定 cn/en；实例运行期间不切换语言，字段契约不变。
