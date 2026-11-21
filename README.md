@@ -160,17 +160,19 @@ curl -X POST http://127.0.0.1:8080/v1/add \
 
 ## Running Evaluations
 
+From the repository root, follow the [evaluation setup guide](evaluation/README.md) to configure model access and the storage services. To run the default LongMemEval mini evaluation on Linux:
+
 ```bash
-# Smoke Test (required for CI)
-python -m pytest evaluation/smoke_test -v
-
-# Component-level IR evaluation (built-in smoke benchmark by default)
-python evaluation/scripts/run_ir_eval.py --json results.json
-
-# End-to-end QA evaluation (requires JUDGE_* env vars; built-in LoCoMo / LongMemEval adapters)
-export JUDGE_BASE_URL=...  JUDGE_MODEL=...  JUDGE_API_KEY=...
-python evaluation/scripts/run_e2e_eval.py --dataset locomo
+sh evaluation/run.sh
 ```
+
+On Windows, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File evaluation/run.ps1
+```
+
+To evaluate LoCoMo, set `benchmark: locomo` in `evaluation/config.yml` and run the same command.
 
 ## Storage Backend Configuration
 
