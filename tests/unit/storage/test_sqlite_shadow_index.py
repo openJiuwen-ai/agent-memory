@@ -1076,3 +1076,292 @@ def test_team_conclusions_do_not_suppress_ordinary_dedup(tmp_path, kind):
         assert {hit.id for hit in hits} == expected
     finally:
         store.close()
+
+
+def test_shadow_dedup_prefilter_prevents_global_credentials_crowding_out_project_top_k(
+    tmp_path,
+) -> None:
+    """25 条同文全局凭据超过 top_k=5 与 4x 过采样时，全文与向量预过滤均须稳定召回项目 A 记录。"""
+    from jiuwen_memory.construction.dedup_impl.shadow_dedup import (
+        ShadowDedup,
+        _dedup_recall_filter,
+    )
+
+    tokenizer = WhitespaceTokenizer()
+    embedder = HashingEmbedder(tokenizer, dim=8)
+    store = SqliteDocumentShadowIndex(
+        str(tmp_path / "dedup_prefilter.db"), tokenizer=tokenizer, embedder=embedder
+    )
+    same_text = "service account svc_api token tok-crowded-01"
+    try:
+        # 1) 写入 25 条全局凭据（> top_k=5 且 > 4*5=20）、1 条全局普通记忆、1 条项目 A 凭据
+        global_creds = [
+            MemoryUnit(
+                id=f"g-cred-{i}",
+                scope=SCOPE,
+                segments=[Segment(content=same_text)],
+                system_metadata={
+                    "memory_class": "long_term_memory",
+                    "project": "",
+                    "is_credential": "true",
+                },
+            )
+            for i in range(25)
+        ]
+        global_plain = MemoryUnit(
+            id="g-plain",
+            scope=SCOPE,
+            segments=[Segment(content=same_text)],
+            system_metadata={"memory_class": "user_profile", "project": ""},
+        )
+        proj_a_cred = MemoryUnit(
+            id="a-cred",
+            scope=SCOPE,
+            segments=[Segment(content=same_text)],
+            system_metadata={
+                "memory_class": "long_term_memory",
+                "project": "proj-a",
+                "is_credential": "true",
+            },
+        )
+        proj_a_plain = MemoryUnit(
+            id="a-plain",
+            scope=SCOPE,
+            segments=[Segment(content=same_text)],
+            system_metadata={"memory_class": "long_term_memory", "project": "proj-a"},
+        )
+        store.insert_units(SCOPE, [*global_creds, global_plain, proj_a_cred, proj_a_plain])
+
+        # 验证 SQLite prefilter 向量路径（无 sqlite_vec 扩展时用内存 vec_distance_l2 覆盖）
+        conn = store._ensure_conn()
+        if not store.vec_enabled:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS memory_vec "
+                "(rowid INTEGER PRIMARY KEY, embedding BLOB)"
+            )
+
+            def _l2(a: bytes, b: bytes) -> float:
+                va = struct.unpack(f"<{len(a) // 4}f", a)
+                vb = struct.unpack(f"<{len(b) // 4}f", b)
+                return sum((x - y) ** 2 for x, y in zip(va, vb, strict=True)) ** 0.5
+
+            conn.create_function("vec_distance_l2", 2, _l2)
+            vec_blob = struct.pack("<8f", *embedder.embed([same_text])[0])
+            for (rid,) in conn.execute("SELECT rowid FROM memory_unit").fetchall():
+                conn.execute(
+                    "INSERT OR REPLACE INTO memory_vec (rowid, embedding) VALUES (?, ?)",
+                    (rid, vec_blob),
+                )
+            store._sqlite_vec = object()
+            store._vec_loaded = True
+
+        # 候选 1：项目 A 凭据 → 全文与向量两路在 top_k=5 前仅保留 project='proj-a'
+        cand_a_cred = MemoryUnit(
+            id="cand-a-cred",
+            scope=SCOPE,
+            segments=[Segment(content=same_text)],
+            system_metadata={
+                "memory_class": "long_term_memory",
+                "project": "proj-a",
+                "is_credential": "true",
+            },
+        )
+        f_a_cred = _dedup_recall_filter(cand_a_cred)
+        ft_a_cred_hits = store.search_fulltext(
+            SCOPE, TextQuery(text=same_text, top_k=5, filters=f_a_cred)
+        )
+        ft_a_cred = {h.id for h in ft_a_cred_hits}
+        vec_a_cred_hits = store.search_vector(
+            SCOPE,
+            VectorQuery(
+                vector=embedder.embed([same_text])[0],
+                top_k=5,
+                filters=f_a_cred,
+                extensions={"prefilter": True},
+            ),
+        )
+        vec_a_cred = {h.id for h in vec_a_cred_hits}
+        assert ft_a_cred == {"a-cred", "a-plain"}
+        assert vec_a_cred == {"a-cred", "a-plain"}
+
+        # 候选 2：项目 A 普通记忆 → 在 top_k=5 前排除 25 条全局凭据，保留同项目与全局普通记忆
+        cand_a_plain = MemoryUnit(
+            id="cand-a-plain",
+            scope=SCOPE,
+            segments=[Segment(content=same_text)],
+            system_metadata={"memory_class": "long_term_memory", "project": "proj-a"},
+        )
+        f_a_plain = _dedup_recall_filter(cand_a_plain)
+        ft_a_plain_hits = store.search_fulltext(
+            SCOPE, TextQuery(text=same_text, top_k=5, filters=f_a_plain)
+        )
+        ft_a_plain = {h.id for h in ft_a_plain_hits}
+        vec_a_plain_hits = store.search_vector(
+            SCOPE,
+            VectorQuery(
+                vector=embedder.embed([same_text])[0],
+                top_k=5,
+                filters=f_a_plain,
+                extensions={"prefilter": True},
+            ),
+        )
+        vec_a_plain = {h.id for h in vec_a_plain_hits}
+        assert ft_a_plain == {"a-cred", "a-plain", "g-plain"}
+        assert vec_a_plain == {"a-cred", "a-plain", "g-plain"}
+
+        # 候选 3：全局凭据 → 仅与全局记录比较，不召回项目 A 记录
+        cand_g_cred = MemoryUnit(
+            id="cand-g-cred",
+            scope=SCOPE,
+            segments=[Segment(content=same_text)],
+            system_metadata={
+                "memory_class": "long_term_memory",
+                "project": "",
+                "is_credential": "true",
+            },
+        )
+        sm = SimpleNamespace(
+            has_shadow_index=lambda: True,
+            shadow_index=lambda _name="default": store,
+        )
+        dedup = ShadowDedup(sm, embedder, top_k=5, min_similarity=0.5)
+        hits_a_cred = {u.id for u, _ in dedup.recall(cand_a_cred)}
+        hits_a_plain = {u.id for u, _ in dedup.recall(cand_a_plain)}
+        hits_g_cred = {u.id for u, _ in dedup.recall(cand_g_cred)}
+        assert hits_a_cred == {"a-cred", "a-plain"}
+        assert hits_a_plain == {"a-cred", "a-plain", "g-plain"}
+        assert hits_g_cred and "a-cred" not in hits_g_cred and "a-plain" not in hits_g_cred
+
+        # update_units 同步刷新 is_credential 投影列：标为凭据后立即被项目 A 普通记忆排除
+        g_plain_tagged = MemoryUnit(
+            id="g-plain",
+            scope=SCOPE,
+            segments=[Segment(content=same_text)],
+            system_metadata={
+                "memory_class": "user_profile",
+                "project": "",
+                "is_credential": "true",
+            },
+        )
+        store.update_units(SCOPE, [g_plain_tagged])
+        assert {u.id for u, _ in dedup.recall(cand_a_plain)} == {"a-cred", "a-plain"}
+    finally:
+        store.close()
+
+
+def test_is_credential_filter_preserves_explicit_false_and_excludes_true(tmp_path) -> None:
+    """is_credential BLOB 列保留原始标量类型（bool→0/1、str→TEXT、缺→NULL），过滤语义与真源一致。"""
+    store = _store(tmp_path)
+    text = "sender email account config"
+    u_true = MemoryUnit(
+        id="u-true",
+        scope=SCOPE,
+        segments=[Segment(content=text)],
+        system_metadata={"is_credential": "true"},
+    )
+    u_upper = MemoryUnit(
+        id="u-upper",
+        scope=SCOPE,
+        segments=[Segment(content=text)],
+        system_metadata={"is_credential": "TRUE"},
+    )
+    u_false = MemoryUnit(
+        id="u-false",
+        scope=SCOPE,
+        segments=[Segment(content=text)],
+        system_metadata={"is_credential": "false"},
+    )
+    u_bool_true = MemoryUnit(
+        id="u-bool-true",
+        scope=SCOPE,
+        segments=[Segment(content=text)],
+        system_metadata={"is_credential": True},
+    )
+    u_bool_false = MemoryUnit(
+        id="u-bool-false",
+        scope=SCOPE,
+        segments=[Segment(content=text)],
+        system_metadata={"is_credential": False},
+    )
+    u_empty = MemoryUnit(
+        id="u-empty",
+        scope=SCOPE,
+        segments=[Segment(content=text)],
+        system_metadata={"is_credential": ""},
+    )
+    u_missing = MemoryUnit(
+        id="u-missing",
+        scope=SCOPE,
+        segments=[Segment(content=text)],
+        system_metadata={},
+    )
+    try:
+        store.insert_units(
+            SCOPE, [u_true, u_upper, u_false, u_bool_true, u_bool_false, u_empty, u_missing]
+        )
+
+        def _query(op: FilterOp, value) -> set[str]:
+            hits = store.search_fulltext(
+                SCOPE,
+                TextQuery(
+                    text=text,
+                    top_k=10,
+                    filters=FilterClause("system_metadata.is_credential", op, value),
+                ),
+            )
+            return {h.id for h in hits}
+
+        assert _query(FilterOp.EQ, "false") == {"u-false"}
+        assert _query(FilterOp.EQ, False) == {"u-bool-false"}, (
+            "布尔 false 不得与字符串 'false' 混淆"
+        )
+        assert _query(FilterOp.EQ, "true") == {"u-true"}
+        assert _query(FilterOp.EQ, True) == {"u-bool-true"}
+        assert _query(FilterOp.IN, ["false"]) == {"u-false"}
+        assert _query(FilterOp.IN, [False]) == {"u-bool-false"}
+        assert _query(FilterOp.NE, False) == {
+            "u-true",
+            "u-upper",
+            "u-false",
+            "u-bool-true",
+            "u-empty",
+            "u-missing",
+        }
+        # NE 与 NOT_IN 对同一值保持完全一致的精确比较（均包含缺字段 NULL）
+        expected_not_str_true = {
+            "u-upper",
+            "u-false",
+            "u-bool-true",
+            "u-bool-false",
+            "u-empty",
+            "u-missing",
+        }
+        assert _query(FilterOp.NE, "true") == expected_not_str_true
+        assert _query(FilterOp.NOT_IN, ["true"]) == expected_not_str_true
+        assert _query(FilterOp.NOT_IN, [True]) == {
+            "u-true",
+            "u-upper",
+            "u-false",
+            "u-bool-false",
+            "u-empty",
+            "u-missing",
+        }
+        assert _query(FilterOp.NE, "") == {
+            "u-true",
+            "u-upper",
+            "u-false",
+            "u-bool-true",
+            "u-bool-false",
+            "u-missing",
+        }, "缺 is_credential 字段的记录满足 != ''，不得被误当空串排除"
+        assert _query(FilterOp.EQ, "") == {"u-empty"}
+        assert _query(FilterOp.NOT_IN, [""]) == {
+            "u-true",
+            "u-upper",
+            "u-false",
+            "u-bool-true",
+            "u-bool-false",
+            "u-missing",
+        }
+    finally:
+        store.close()

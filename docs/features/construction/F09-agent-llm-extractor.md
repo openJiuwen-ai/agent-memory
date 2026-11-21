@@ -196,7 +196,7 @@ flowchart TB
 
 两版均为新写（场景重定向），与 `_EXTRACT_SYSTEM_PROMPT` 的关系：**抽取纪律逐条继承**（不臆测、保持具体、粒度、否定撤回拆三条、言语行为、自包含、时间四款、语言跟源、省略句补全、社交外壳），**场景面重定向**（见 §1 重定向表）。写法参考 memory.py 风格：分节短句、例子内联、输出契约字段与枚举值保持英文。
 
-2026-10-14 精简为**十条规则**（忠实+具体+自包含合并为第一条、社交外壳与不记录合并为最后一条），并新增 **memory_class 字段**（字段描述 + 判定顺序 + 兜底值 + schema 行，见 §4.3）。2026-11-11 新增第十一条**可复用标识**规则：用户给出的邮箱、账号、授权码等另出一条不带日期的稳定事实，归 `user_profile`（#313：这类信息此前只被记成事件，新会话开场带不出）。2026-11-12 在该条内补一句排除项：过后即失效的取值（短信验证码、一次性订单号、临时文件名）不算——未加时短信验证码 8 次中有 7 次被写进 `USER.md`，加后 0/8，邮箱与授权码的抽取未受影响。以下为双语提示词，项目归属规则见 §4.4。
+2026-10-14 精简为**十条规则**（忠实+具体+自包含合并为第一条、社交外壳与不记录合并为最后一条），并新增 **memory_class 字段**（字段描述 + 判定顺序 + 兜底值 + schema 行，见 §4.3）。2026-11-11 新增第十一条**可复用标识**规则：用户给出的邮箱、账号、授权码等另出一条不带日期的稳定事实，归 `user_profile`（#313：这类信息此前只被记成事件，新会话开场带不出）。2026-11-12 在该条内补一句排除项：过后即失效的取值（短信验证码、一次性订单号、临时文件名）不算——未加时短信验证码 8 次中有 7 次被写进 `USER.md`，加后 0/8，邮箱与授权码的抽取未受影响。2026-11-21 修订该条措辞，消除「常用收件人 / 属于用户本人」主观门槛与「临时文件名」排除项对同句收件邮箱的连带抑制，要求保留原值、角色与原始用途且不把发送请求写成已发送；同时在抽取 schema 新增布尔字段 `is_credential` 做源头凭据分流——抽取入口统一将布尔 `true` 与大小写不敏感字符串 `"true"` 归一为持久化字符串 `"true"`，非凭据标识进 `USER.md`（`user_profile`、`is_credential: false`），项目专用标识按 `project_fact: true` 保留来源项目归属（Work `agent_memory_conclude` 与 `sync_turn` 对普通 `user_profile` + `project_fact: false` 共用上游规则落全局 `USER.md`；Work `agent_memory_conclude` 显式传 `project` 以及 Coding/Team 固定项目场景写入均设置 `project_scope="fixed"`，保证凭据不因 `project_fact: false` 逃逸出当前项目），授权码/口令/密码/密钥/令牌/带密码数据库连接串/预签名链接关联对应账号或服务并归 `long_term_memory`（`is_credential: true`，跨项目时 `project_fact: false` 且非 `project_scope="fixed"` 清空来源项目，不写进 `USER.md`）；去重阶段对涉及凭据、明确归属项目的事实与全局画像的候选执行三项确定性规则：（1）文档模式 `ShadowDedup` / `ProjectTeamDedup`（全文与 SQLite 向量预过滤）与非文档模式 `VectorDedup`/`KeywordDedup` 共用 `dedup_project_filter` 判定，按最终归属在取 top-5 之前下推项目条件——`user_profile` 抽取后即落 `project=""` 只与全局记录比较，明确归属项目的事实（`project_fact="true"` 或非画像的 `project_scope="fixed"`）及新旧记录任一方为凭据时要求两者 `project` 完全一致（先全局后项目、先项目后全局两种顺序下全局与项目记录均互不吞并，也不被其他项目挤出 top-5），其余普通记忆沿用现有项目+全局非凭据去重规则；演进器内保留同口径兜底守卫，使项目归属不同时 `UPDATE`/`SUPERSEDE`/`NOOP` 均降级为独立 `ADD` 分别保存，既防止项目 A 凭据并入全局泄露给其他项目，也避免全局记录占满 top-5 导致同项目重复写入不断新增；（2）双向禁止凭据与 `user_profile`/`daily_memory` 经 `UPDATE`/`SUPERSEDE` 合并或互相覆盖（降级独立 `ADD`，避免明文凭据写进 `USER.md` 或吞掉普通邮箱画像）；（3）同项目同类别 `UPDATE` 交集合并时保留 `is_credential="true"` 不丢失。**边界说明**：本改动仅作用于新写入记录，旧版 `USER.md` 中未打标的既有条目允许原样保留，不做隐式扫描或补标；Work/Coding/Team 通用预取均通过 `system_metadata.is_credential != "true"` 与读取视图元数据过滤自动跳过凭据，同时在 Work 提示词引导助手对缺失的邮箱/账号/手机号/接口地址/凭据按用途、角色或服务名调用 `agent_memory_search` 按需检索（跨项目标识与凭据省略 `project` 参数；唯一匹配且符合用途直接使用，多候选或用途不符时请用户确认）。以下为双语提示词，项目归属规则见 §4.4。
 
 ### 4.1 英文版（`_EXTRACT_SYSTEM_PROMPT_EN`，重定向版）
 
@@ -285,25 +285,47 @@ does not make the rest of the line disappear - judge what the line adds once it 
 aside; return [] only when nothing is left. When in doubt, record only what would still
 matter in a future conversation with this user.
 
-- Reusable identifiers: identifiers that belong to the user and apply across projects,
-including email addresses, account names, server or endpoint addresses, usual recipients,
-and authorization codes, passwords or keys the user supplies. Besides recording what
-the line did under the rules above, also output one undated stable fact for it, keeping
-the identifier verbatim and stating what it is for or whom it belongs to: "tier" is
-"semantic", "memory_class" is "user_profile", "target" is "fact".
-  Example "[user]: send the weekly report to lead@example.org from ops@example.com"
+- Reusable identifiers: non-credential identifiers the user explicitly supplies that apply
+across projects and may be needed again in future conversations - including sender and
+recipient email addresses, account names, phone numbers, server or endpoint addresses, and
+contacts/recipients. Regardless of whether an identifier appears for the first time or
+inside a one-off or test task, besides recording what the line did under the rules above,
+also output one undated stable fact for it, keeping every identifier verbatim along with
+its role and original purpose (such as sending a weekly report or a test file) without
+generalizing a one-off test into a default recipient: "tier" is "semantic",
+"memory_class" is always "user_profile", "target" is "fact", "project_fact" is false;
+identifiers that belong to one matter, such as sender and recipient addresses, go into
+the same item.
+  Example 1: "[user]: send the weekly report to lead@example.org from ops@example.com"
 yields two items: the event "On 2026-03-14 the user asked the assistant to send the
 weekly report to lead@example.org from ops@example.com." (episodic) and the fact "The
-user sends the weekly report from ops@example.com to lead@example.org." (semantic,
-user_profile). Identifiers the user gives when answering the assistant's question count
-the same: when the assistant asks for an authorization code and the user states it,
-output a stable fact of that code for the account, whether or not the assistant said it
-would be used only once. Such stable facts are attributes of the user: "memory_class" is
-always "user_profile", never "long_term_memory"; identifiers that belong to one matter,
-such as the sender and recipient addresses, go into the same item. Values that expire
-after use do not count: SMS verification codes, an order or transaction number looked up
-only this once, temporary file names. Only identifiers the user gave count; those the
-assistant mentioned or guessed do not.
+user sends the weekly report from sender email ops@example.com to recipient email
+lead@example.org." (semantic, user_profile).
+  Example 2: "[user]: send /tmp/test.txt from sender@example.com to recipient@example.org"
+likewise yields both the event (episodic) and the fact "The user specified sender email
+sender@example.com and recipient email recipient@example.org for sending a test file."
+(semantic, user_profile) - omit the temporary filename /tmp/test.txt from the stable fact,
+while keeping both sender and recipient emails and the original test-file purpose in the
+same item without turning a send request into an already-sent event.
+  Identifiers the user gives when answering the assistant's question count the same: when
+the assistant asks for an account or recipient and the user states it, output a
+"user_profile" stable fact ("is_credential": false); when the user supplies a credential -
+an authorization code, password, key, token, connection string with a password, or
+presigned URL with embedded signature/credentials (whether or not the assistant said it
+would be used only once) - also output an undated "semantic" / "fact" stable fact naming
+the account or service it belongs to, but set "memory_class" to "long_term_memory",
+"is_credential" to true, and "project_fact" to false when cross-project (never
+"user_profile") so it is excluded from general prefetch while remaining findable via
+explicit search.
+If an account, server, or address belongs only to a specific project (such as "this
+project's deployment server"), follow the Project facts rule below instead
+("long_term_memory", "project_fact": true) rather than writing it to "user_profile".
+Values that expire after use do not themselves count as reusable identifiers or
+long-term credentials: SMS verification codes, one-time passcodes, an order or
+transaction number looked up only this once, temporary file names - do not emit stable
+facts for them (neither "user_profile" nor "long_term_memory"), and never let them
+suppress valid identifiers (such as emails or accounts) in the same line. Only
+identifiers the user gave count; those the assistant mentioned or guessed do not.
 
 - Project facts: set "project_fact" to true when an item applies to a specific project,
 including deliverable folders, project accounts, deployment addresses, events and to-dos.
@@ -345,6 +367,7 @@ Output schema:
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "memory_class": "user_profile" | "long_term_memory" | "daily_memory",
   "project_fact": true | false,
+  "is_credential": true | false,
   "tier": "episodic" | "semantic" | "procedural",
   "content": "one self-contained statement, every specific kept",
   "title": "short heading naming the matter",
@@ -392,8 +415,10 @@ Output schema:
 
 - 不记录只有本次交流才需要的东西：社交外壳（问候、致谢、赞美、道别）、纯本地指称（"那段代码""如上所述"）、助手未经用户确认的建议、无长期价值的过程细节。社交外壳也不会让该行的其余部分消失——剥去外壳后判断该行增添了什么；仅当什么都不剩时才返回 []。拿不准时，只记录在将来与该用户的对话中仍然要紧的东西。
 
-- 可复用标识：属于用户本人且跨项目适用、以后还会用到的标识——邮箱地址、账号名、服务器或接口地址、常用收件人，以及用户给出的授权码、口令或密钥——除按上述规则记录该行所做的事之外，另为它输出一条不带日期的稳定事实，逐字保留标识本身并写明它的用途或归属："tier" 用 "semantic"，"memory_class" 用 "user_profile"，"target" 用 "fact"。
-  例 "[user]: 用 ops@example.com 把周报发给 lead@example.org" 产出两条：事件"2026-03-14，用户要求助手用 ops@example.com 把周报发给 lead@example.org。"（episodic）与事实 "用户发送周报使用的发件邮箱是 ops@example.com，收件人是 lead@example.org。"（semantic，user_profile）。用户在回答助手提问时给出的标识同样适用：助手问授权码、用户答出取值，即为该账号输出一条授权码的稳定事实，不论助手是否说过只用一次。这类稳定事实是用户本人的属性，"memory_class" 一律为 "user_profile"，不归入 "long_term_memory"；发件与收件地址等同属一件事的标识写在同一条里。过后即失效的取值不算：短信验证码、只查这一次的订单号或流水号、临时文件名。只针对用户自己给出的标识；助手提到或猜测的不算。
+- 可复用标识：用户明确给出的、跨项目适用且后续会话可能再次用到的非凭据标识——包括发件邮箱、收件邮箱、账号名、手机号、服务器或接口地址、收件人/联系人标识——无论是不是首次出现、无论当前是不是测试或单次任务，除按上述规则记录该行所做的事之外，另为它输出一条不带日期的稳定事实，逐字保留标识本身并写明它的角色与原始用途（如发送周报、发送测试文件），不要把单次测试泛化成通用默认收件人："tier" 用 "semantic"，"memory_class" 一律为 "user_profile"，"target" 用 "fact"，"project_fact" 用 false；发件与收件地址等同属一件事的标识写在同一条里。
+  例 1："[user]: 用 ops@example.com 把周报发给 lead@example.org" 产出两条：事件"2026-03-14，用户要求助手用 ops@example.com 把周报发给 lead@example.org。"（episodic）与事实 "用户发送周报使用的发件邮箱是 ops@example.com，收件邮箱是 lead@example.org。"（semantic，user_profile）。
+  例 2："[user]: 把 /tmp/test.txt 用 sender@example.com 发到 recipient@example.org" 同样产出两条：事件（episodic）与事实 "用户为这次测试文件发送指定了发件邮箱 sender@example.com 和收件邮箱 recipient@example.org。"（semantic，user_profile）——临时文件名 /tmp/test.txt 不写进稳定事实，但同句里的发件邮箱、收件邮箱及「测试文件发送」的原始用途必须保留在同一条稳定事实里，且不把发送请求写成已发送。
+  用户在回答助手提问时给出的标识同样适用：助手问账号或收件邮箱，用户答出取值，即为该用途输出一条 "user_profile" 稳定事实（"is_credential" 用 false）；若用户给出的是授权码、口令、密码、密钥、令牌、带密码的数据库连接串或带签名凭据的预签名链接（不论助手是否说过只用一次），同样输出一条不带日期的 "semantic" / "fact" 稳定事实，写明它对应的账号或服务，但 "memory_class" 用 "long_term_memory"、"is_credential" 用 true、跨项目时 "project_fact" 用 false（不写进 "user_profile"），避免无关会话开场自动注入、同时保留显式按需检索能力。若该账号、服务器或地址仅属于某个特定项目（如「这个项目的部署服务器」），则按下方「项目事实」规则归 "long_term_memory" 且 "project_fact" 为 true，不写进 "user_profile"。过后即失效的取值本身不算可复用标识，也不算长期凭据：短信验证码、一次性动态码、只查这一次的订单号或流水号、临时文件名——既不要写进 "user_profile"，也不要写进 "long_term_memory"（不要为它们单独输出稳定事实），但绝不要因此跳过同一句话里同时给出的邮箱、账号、地址等有效标识。只针对用户自己给出的标识；助手提到或猜测的不算。
 
 - 项目事实：取值只对某个项目成立时，"project_fact" 为 true。终稿目录、项目专用账号、部署地址以及针对项目的事件或待办都属于项目事实，即使用户只说「这个项目」。例如「这个项目的论文终稿放在 /work/paper/final」归 "long_term_memory"，"project_fact" 为 true。短期项目事项可以归 "daily_memory"。同一行还有个人信息时，分成独立条目，个人信息的 "project_fact" 为 false。
 
@@ -415,6 +440,7 @@ Output schema:
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "memory_class": "user_profile" | "long_term_memory" | "daily_memory",
   "project_fact": true | false,
+  "is_credential": true | false,
   "tier": "episodic" | "semantic" | "procedural",
   "content": "一条自包含的陈述，一切具体细节保留",
   "title": "命名这件事的短标题",
@@ -469,7 +495,7 @@ WorkSwarm 实测中，同一轮显式写入 KVCache 项目终稿目录后，未�
 
 跨项目去重会让同文项目事实跨项目相互覆盖。修复沿用现有检索过滤，按候选约束写入范围。
 事实是否属于项目仍由抽取模型判断。现存错误画像需用记忆删除接口定点清理。
-回归覆盖有项目、无项目和同轮混合个人邮箱的落盘及预取。
+回归覆盖有项目、无项目和同轮混合个人邮箱的落盘及预取。抽取校验错误保留候选序号和固定原因，SDK 的写入失败日志只记录异常类型。
 
 ## 5. 测试与归档
 

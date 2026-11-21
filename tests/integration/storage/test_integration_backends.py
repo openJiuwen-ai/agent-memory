@@ -344,6 +344,42 @@ def test_vec_metadata_filters(vec):
     assert query_ids(tree) == {"r1"}
 
 
+def test_vec_ne_includes_missing_metadata_key(vec):
+    """NE 必须包含缺失该 JSON 键的历史旧记录（兼容 Milvus 2.6+ 三值逻辑）。"""
+    store, scope = vec
+    store.insert(
+        scope,
+        [
+            VectorRecord(
+                id="legacy",
+                vector=_vec((0, 1.0)),
+                metadata={"tier": "semantic"},  # 无 system_metadata.is_credential 键
+            ),
+            VectorRecord(
+                id="normal",
+                vector=_vec((0, 0.95)),
+                metadata={"tier": "semantic", "system_metadata.is_credential": "false"},
+            ),
+            VectorRecord(
+                id="cred",
+                vector=_vec((0, 0.9)),
+                metadata={"tier": "semantic", "system_metadata.is_credential": "true"},
+            ),
+        ],
+    )
+
+    def query_ids(filters):
+        query = VectorQuery(vector=_vec((0, 1.0)), top_k=10, filters=filters)
+        return {h.id for h in store.search(scope, query)}
+
+    assert query_ids(
+        [
+            FilterClause("tier", FilterOp.IN, ["semantic"]),
+            FilterClause("system_metadata.is_credential", FilterOp.NE, "true"),
+        ]
+    ) == {"legacy", "normal"}
+
+
 def test_vec_mixed_scalar_types_on_same_key(vec):
     """JSON 字段上同一 key 混存 int/float/str：数值比较按数值，类型不符者跳过。
 

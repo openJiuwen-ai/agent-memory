@@ -1452,6 +1452,471 @@ class TestDedupOriginPreserved:
         replacement = self._run("supersede", "original", "inferred")
         assert replacement.system_metadata["origin"] == "inferred"
 
+    @pytest.mark.parametrize(
+        "existing_cred, candidate_cred",
+        [(True, False), (False, True)],
+    )
+    def test_update_preserves_is_credential_when_either_side_is_marked(
+        self, existing_cred, candidate_cred
+    ):
+        """UPDATE 合并两侧 metadata 取交集时，任一侧带 is_credential='true' 均不得丢失。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+        existing = _make_unit("e1", "用户的 QQ 邮箱 SMTP 授权码是 auth-merge-01")
+        existing.system_metadata["memory_class"] = "long_term_memory"
+        if existing_cred:
+            existing.system_metadata["is_credential"] = "true"
+        _index_unit(existing, stores["kv"], stores["vector"], embedder)
+
+        llm = _MockLLM(
+            responses=[
+                json.dumps([{"candidate_id": "c1", "decision": "update", "existing_id": "e1"}]),
+                "用户的 QQ 邮箱 SMTP 授权码是 auth-merge-01，用于发信",
+            ]
+        )
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            llm,
+            dedup_high_similarity=1.01,
+            dedup_medium_similarity=0.5,
+        )
+        cand = _make_unit("c1", "用户的 QQ 邮箱 SMTP 授权码是 auth-merge-01")
+        cand.system_metadata["memory_class"] = "long_term_memory"
+        if candidate_cred:
+            cand.system_metadata["is_credential"] = "true"
+
+        result = private(evolver, "_dedup_batch")([cand])
+
+        assert result.updated_ids == ["e1"]
+        merged = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1")))
+        assert merged.system_metadata.get("is_credential") == "true"
+
+    @pytest.mark.parametrize("decision", ["update", "supersede"])
+    @pytest.mark.parametrize("other_class", ["user_profile", "daily_memory"])
+    @pytest.mark.parametrize("cred_is_candidate", [True, False])
+    def test_update_and_supersede_isolate_credential_from_profile_and_daily(
+        self, decision, other_class, cred_is_candidate
+    ):
+        """凭据与 user_profile/daily_memory 双向不得经 UPDATE/SUPERSEDE 合并或互替，降级 ADD。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+        existing = _make_unit("e1", "用户的发件邮箱 sender@example.com 配置")
+        cand = _make_unit("c1", "用户的发件邮箱 sender@example.com 配置")
+        if cred_is_candidate:
+            existing.system_metadata["memory_class"] = other_class
+            cand.system_metadata.update(
+                {"memory_class": "long_term_memory", "is_credential": "true"}
+            )
+        else:
+            existing.system_metadata.update(
+                {"memory_class": "long_term_memory", "is_credential": "true"}
+            )
+            cand.system_metadata["memory_class"] = other_class
+        _index_unit(existing, stores["kv"], stores["vector"], embedder)
+
+        llm = _MockLLM(
+            responses=[
+                json.dumps([{"candidate_id": "c1", "decision": decision, "existing_id": "e1"}]),
+                "不应被调用的合并内容",
+            ]
+        )
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            llm,
+            dedup_high_similarity=1.01,
+            dedup_medium_similarity=0.5,
+        )
+
+        result = private(evolver, "_dedup_batch")([cand])
+
+        assert result.updated_ids == [] and result.superseded_ids == [], (
+            f"凭据与 {other_class} 之间不得经 {decision} 合并或覆盖"
+        )
+        assert result.created_ids == ["c1"]
+        stored_existing = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1")))
+        stored_cand = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("c1")))
+        assert stored_existing.lifecycle == LifecycleState.ACTIVE
+        if cred_is_candidate:
+            assert stored_existing.system_metadata["memory_class"] == other_class
+            assert stored_existing.system_metadata.get("is_credential") != "true"
+            assert stored_cand.system_metadata["memory_class"] == "long_term_memory"
+            assert stored_cand.system_metadata.get("is_credential") == "true"
+        else:
+            assert stored_existing.system_metadata.get("is_credential") == "true"
+            assert stored_cand.system_metadata["memory_class"] == other_class
+            assert stored_cand.system_metadata.get("is_credential") != "true"
+
+    @pytest.mark.parametrize("decision", ["update", "supersede", "noop"])
+    @pytest.mark.parametrize(
+        "cand_project, existing_project",
+        [("proj-a", ""), ("", "proj-a"), ("proj-a", "proj-b")],
+    )
+    def test_credential_project_mismatch_downgrades_to_add(
+        self, decision, cand_project, existing_project
+    ):
+        """凭据在项目归属不同（含项目专用与全局）时不得合并、互替或吞并，须分别保存。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+        existing = _make_unit("e1", "服务账号 svc_api 的 Token 是 tok-global-01")
+        existing.system_metadata.update(
+            {
+                "memory_class": "long_term_memory",
+                "is_credential": "true",
+                "project": existing_project,
+            }
+        )
+        _index_unit(existing, stores["kv"], stores["vector"], embedder)
+
+        cand = _make_unit("c1", "服务账号 svc_api 的 Token 是 tok-proj-a-01")
+        cand.system_metadata.update(
+            {
+                "memory_class": "long_term_memory",
+                "is_credential": "true",
+                "project": cand_project,
+            }
+        )
+        llm = _MockLLM(
+            responses=[
+                json.dumps([{"candidate_id": "c1", "decision": decision, "existing_id": "e1"}]),
+                "不应被调用的合并内容",
+            ]
+        )
+        evolver = _make_evolver(
+            stores["kv"],
+            stores["vector"],
+            embedder,
+            llm,
+            dedup_high_similarity=1.01,
+            dedup_medium_similarity=0.0,
+        )
+        setattr(private(evolver, "_dedup"), "recall", lambda _cand: [(existing, 0.92)])
+
+        result = private(evolver, "_dedup_batch")([cand])
+
+        assert result.created_ids == ["c1"], f"项目归属不同时 {decision} 须降级为独立 ADD"
+        assert result.updated_ids == []
+        assert result.superseded_ids == []
+        stored_existing = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1")))
+        stored_cand = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("c1")))
+        assert stored_existing.lifecycle == LifecycleState.ACTIVE
+        assert stored_existing.system_metadata.get("project", "") == existing_project
+        assert "tok-global-01" in stored_existing.content
+        assert stored_cand.system_metadata.get("project", "") == cand_project
+        assert stored_cand.system_metadata.get("is_credential") == "true"
+        assert "tok-proj-a-01" in stored_cand.content
+
+        # 同时直接校验 _apply_decision 兜底守卫（绕过 recall 预过滤）
+        cand2 = _make_unit("c2", "服务账号 svc_api 的 Token 是 tok-proj-a-02")
+        cand2.system_metadata.update(
+            {
+                "memory_class": "long_term_memory",
+                "is_credential": "true",
+                "project": cand_project,
+            }
+        )
+        direct_res = EvolveResult()
+        private(evolver, "_apply_decision")(
+            cand2, DedupDecision(decision), existing, 0.92, direct_res
+        )
+        assert direct_res.created_ids == ["c2"]
+        assert direct_res.updated_ids == []
+        assert direct_res.superseded_ids == []
+
+    @staticmethod
+    def test_same_text_credential_in_global_and_project_dedups_project_writes():
+        """全局与项目 A 存在同文凭据时，项目 A 连续写入三次只保留一条，不被高分全局命中遮挡。"""
+        stores = _create_stores()
+        embedder = _HashEmbedder()
+        same_text = "服务账号 svc_api 的 API Token 是 tok-same-01"
+        global_cred = _make_unit("e-global", same_text)
+        global_cred.system_metadata.update(
+            {
+                "memory_class": "long_term_memory",
+                "is_credential": "true",
+                "project": "",
+            }
+        )
+        _index_unit(global_cred, stores["kv"], stores["vector"], embedder)
+
+        evolver = _make_evolver(stores["kv"], stores["vector"], embedder, _MockLLM())
+        created_in_proj_a: list[MemoryUnit] = []
+
+        for idx in range(1, 4):
+            cand = _make_unit(f"c-a-{idx}", same_text)
+            cand.system_metadata.update(
+                {
+                    "memory_class": "long_term_memory",
+                    "is_credential": "true",
+                    "project": "proj-a",
+                }
+            )
+            # 模拟全局记录排在项目 A 记录之前且相似度同为 1.0
+            hits = [(global_cred, 1.0), *[(u, 1.0) for u in created_in_proj_a]]
+            setattr(private(evolver, "_dedup"), "recall", lambda _c, h=hits: list(h))
+            res = private(evolver, "_dedup_batch")([cand])
+            created_in_proj_a.extend(res.created_units)
+
+        assert len(created_in_proj_a) == 1, (
+            f"项目 A 连写三次同文凭据应去重保留 1 条，实际 {len(created_in_proj_a)} 条"
+        )
+        assert created_in_proj_a[0].system_metadata.get("project") == "proj-a"
+        assert loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key("e-global"))).system_metadata.get(
+            "project", ""
+        ) == ""
+
+    @pytest.mark.parametrize(
+        "target_project, extra_meta",
+        [
+            ("proj-a", {"project_fact": "true"}),
+            ("", {"memory_class": "user_profile"}),
+            ("proj-a", {"is_credential": "true"}),
+            ("", {"is_credential": "true"}),
+        ],
+    )
+    def test_vector_dedup_filters_project_before_top_k_on_explicit_or_credential_writes(
+        self, target_project, extra_meta,
+    ):
+        """VectorDedup：5 个其他项目占满 top_k=5 且全局有同文时，目标连写三次只留一条。"""
+        from jiuwen_memory.construction.index_builder_impl._index_ops import index_metadata
+        from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
+
+        kv = _MemoryKVStore()
+        vector = InMemoryVectorStore()
+        embedder = _HashEmbedder()
+        same_text = "测试收件邮箱是 ops@example.com"
+
+        def _persist(unit: MemoryUnit) -> None:
+            kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
+            vector.insert(
+                unit.scope,
+                [
+                    VectorRecord(
+                        id=f"{unit.id}-0",
+                        vector=embedder.embed([unit.content])[0],
+                        metadata=index_metadata(unit, layer="l2"),
+                    )
+                ],
+            )
+
+        # 若目标为项目写入，先写入一条同文全局画像，验证不被全局同名记录判重跳过
+        if target_project:
+            global_existing = _make_unit("global-existing", same_text)
+            global_existing.system_metadata.update({"memory_class": "user_profile", "project": ""})
+            _persist(global_existing)
+        # 再让其他 5 个项目（数量 == top_k=5）各存一次相同内容
+        for idx in range(1, 6):
+            other = _make_unit(f"other-{idx}", same_text)
+            other.system_metadata.update(
+                {"memory_class": "long_term_memory", "project": f"proj-other-{idx}", **extra_meta}
+            )
+            _persist(other)
+
+        evolver = _make_evolver(kv, vector, embedder, _MockLLM(), dedup_top_k=5)
+        created: list[str] = []
+        for idx in range(1, 4):
+            cand = _make_unit(f"cand-{idx}", same_text)
+            cand.system_metadata.update(
+                {"memory_class": "long_term_memory", "project": target_project, **extra_meta}
+            )
+            res = private(evolver, "_dedup_batch")([cand])
+            for unit in res.created_units:
+                created.append(unit.id)
+                vector.insert(
+                    unit.scope,
+                    [
+                        VectorRecord(
+                            id=f"{unit.id}-0",
+                            vector=embedder.embed([unit.content])[0],
+                            metadata=index_metadata(unit, layer="l2"),
+                        )
+                    ],
+                )
+
+        assert created == ["cand-1"], (
+            f"目标 project={target_project!r} 连写三次应首次新增、后两次判重，实际 {created}"
+        )
+
+    @pytest.mark.parametrize(
+        "target_project, extra_meta",
+        [
+            ("proj-a", {"project_fact": "true"}),
+            ("", {"memory_class": "user_profile"}),
+            ("proj-a", {"is_credential": "true"}),
+            ("", {"is_credential": "true"}),
+        ],
+    )
+    def test_keyword_dedup_filters_project_before_top_k_on_explicit_or_credential_writes(
+        self, target_project, extra_meta,
+    ):
+        """KeywordDedup：5 个其他项目占满 top_k=5 且全局有同文时，目标连写三次只留一条。"""
+        from types import SimpleNamespace
+
+        from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+            WhitespaceTokenizer,
+        )
+        from jiuwen_memory.construction.dedup_impl.keyword_dedup import KeywordDedup
+        from jiuwen_memory.construction.index_builder_impl._index_ops import index_metadata
+        from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import (
+            InMemoryFulltextStore,
+        )
+        from jiuwen_memory.storage.types import Document
+
+        kv = _MemoryKVStore()
+        fulltext = InMemoryFulltextStore(WhitespaceTokenizer())
+        same_text = "recipient email ops@example.com for weekly report"
+
+        def _persist(unit: MemoryUnit) -> None:
+            kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
+            fulltext.insert(
+                unit.scope,
+                [
+                    Document(
+                        id=unit.id,
+                        text=unit.content,
+                        metadata=index_metadata(unit, layer="l2"),
+                    )
+                ],
+            )
+
+        if target_project:
+            global_existing = _make_unit("kw-global-existing", same_text)
+            global_existing.system_metadata.update({"memory_class": "user_profile", "project": ""})
+            _persist(global_existing)
+        for idx in range(1, 6):
+            other = _make_unit(f"kw-other-{idx}", same_text)
+            other.system_metadata.update(
+                {"memory_class": "long_term_memory", "project": f"proj-other-{idx}", **extra_meta}
+            )
+            _persist(other)
+
+        storage = SimpleNamespace(
+            kv=lambda _name="default": kv,
+            fulltext=lambda _name="default": fulltext,
+        )
+        dedup = KeywordDedup(storage, min_similarity=0.5, top_k=5, tier_filter=False)
+        evolver = _make_evolver(kv, _MemoryVectorStore(), _HashEmbedder(), _MockLLM())
+        set_private(evolver, "_dedup", dedup)
+
+        created: list[str] = []
+        for idx in range(1, 4):
+            cand = _make_unit(f"kw-cand-{idx}", same_text)
+            cand.system_metadata.update(
+                {"memory_class": "long_term_memory", "project": target_project, **extra_meta}
+            )
+            res = private(evolver, "_dedup_batch")([cand])
+            for unit in res.created_units:
+                created.append(unit.id)
+                fulltext.insert(
+                    unit.scope,
+                    [
+                        Document(
+                            id=unit.id,
+                            text=unit.content,
+                            metadata=index_metadata(unit, layer="l2"),
+                        )
+                    ],
+                )
+
+        assert created == ["kw-cand-1"], (
+            f"KeywordDedup project={target_project!r} 连写三次应只留 1 条，实际 {created}"
+        )
+
+    @pytest.mark.parametrize(
+        "existing_meta, cand_meta",
+        [
+            (
+                {"memory_class": "user_profile"},
+                {"memory_class": "user_profile", "project": ""},
+            ),
+            (
+                {"memory_class": "long_term_memory", "is_credential": "true"},
+                {"memory_class": "long_term_memory", "is_credential": "true", "project": ""},
+            ),
+        ],
+    )
+    def test_non_doc_dedup_still_recalls_legacy_global_units_without_project_key(
+        self, existing_meta, cand_meta,
+    ):
+        """非文档模式下，无 project 键的存量全局记录仍可被 Vector/Keyword 去重召回。"""
+        from types import SimpleNamespace
+
+        from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+            WhitespaceTokenizer,
+        )
+        from jiuwen_memory.construction.dedup_impl.keyword_dedup import KeywordDedup
+        from jiuwen_memory.construction.index_builder_impl._index_ops import index_metadata
+        from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import (
+            InMemoryFulltextStore,
+        )
+        from jiuwen_memory.storage.types import Document
+        from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
+
+        same_text = "global email sender@example.com for alerts"
+        partial_text = "global email sender@example.com for billing weekly"
+        legacy = _make_unit("legacy-global", same_text)
+        legacy.system_metadata.update(existing_meta)
+        meta = index_metadata(legacy, layer="l2")
+        assert "system_metadata.project" not in meta
+
+        # 同库并存一条带 project="" 的较低相似新全局记录，验证不会短路漏掉高分旧全局记录
+        newer_partial = _make_unit("new-global-partial", partial_text)
+        newer_partial.system_metadata.update({**existing_meta, "project": ""})
+        partial_meta = index_metadata(newer_partial, layer="l2")
+
+        # 1) VectorDedup + 真实 InMemoryVectorStore
+        kv_vec = _MemoryKVStore()
+        vector = InMemoryVectorStore()
+        embedder = _HashEmbedder()
+        kv_vec.insert(legacy.scope, memory_key(legacy.id), dumps(legacy))
+        kv_vec.insert(newer_partial.scope, memory_key(newer_partial.id), dumps(newer_partial))
+        same_vec = embedder.embed([same_text])[0]
+        partial_vec = [0.75 * x + (0.25 if i == 0 else 0.0) for i, x in enumerate(same_vec)]
+        vector.insert(
+            legacy.scope,
+            [
+                VectorRecord(id=f"{legacy.id}-0", vector=same_vec, metadata=meta),
+                VectorRecord(
+                    id=f"{newer_partial.id}-0", vector=partial_vec, metadata=partial_meta
+                ),
+            ],
+        )
+        cand_vec = _make_unit("cand-vec", same_text)
+        cand_vec.system_metadata.update(cand_meta)
+        evolver_vec = _make_evolver(kv_vec, vector, embedder, _MockLLM(), dedup_top_k=5)
+        res_vec = private(evolver_vec, "_dedup_batch")([cand_vec])
+        assert res_vec.created_ids == [], "VectorDedup 应合并两路命中高分无 project 键存量全局记录"
+
+        # 2) KeywordDedup + 真实 InMemoryFulltextStore
+        kv_kw = _MemoryKVStore()
+        fulltext = InMemoryFulltextStore(WhitespaceTokenizer())
+        kv_kw.insert(legacy.scope, memory_key(legacy.id), dumps(legacy))
+        kv_kw.insert(newer_partial.scope, memory_key(newer_partial.id), dumps(newer_partial))
+        fulltext.insert(
+            legacy.scope,
+            [
+                Document(id=legacy.id, text=same_text, metadata=meta),
+                Document(id=newer_partial.id, text=partial_text, metadata=partial_meta),
+            ],
+        )
+        storage_kw = SimpleNamespace(
+            kv=lambda _name="default": kv_kw,
+            fulltext=lambda _name="default": fulltext,
+        )
+        evolver_kw = _make_evolver(kv_kw, _MemoryVectorStore(), embedder, _MockLLM())
+        set_private(
+            evolver_kw,
+            "_dedup",
+            KeywordDedup(storage_kw, min_similarity=0.5, top_k=5, tier_filter=False),
+        )
+        cand_kw = _make_unit("cand-kw", same_text)
+        cand_kw.system_metadata.update(cand_meta)
+        res_kw = private(evolver_kw, "_dedup_batch")([cand_kw])
+        assert res_kw.created_ids == [], "KeywordDedup 应合并两路命中高分无 project 键存量全局记录"
+
 
 class _EdgeCollectingGraph(NoopGraphStore):
     def __init__(self) -> None:

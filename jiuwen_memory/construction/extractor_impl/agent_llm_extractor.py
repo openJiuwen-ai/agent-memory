@@ -115,19 +115,34 @@ macOS 的说法（episodic）、用户不使用 macOS（semantic）、用户使�
 外壳也不会让该行的其余部分消失——剥去外壳后判断该行增添了什么；仅当什么都不剩时\
 才返回 []。拿不准时，只记录在将来与该用户的对话中仍然要紧的东西。
 
-- 可复用标识：属于用户本人且跨项目适用、以后还会用到的标识——邮箱地址、账号名、\
-服务器或接口地址、常用收件人，以及用户给出的授权码、口令或密钥——除按上述规则\
-记录该行所做的事之外，另为它输出一条不带日期的稳定事实，逐字保留标识本身并写明\
-它的用途或归属："tier" 用 "semantic"，"memory_class" 用 "user_profile"，"target" 用 "fact"。
-  例 "[user]: 用 ops@example.com 把周报发给 lead@example.org" 产出两条：事件\
+- 可复用标识：用户明确给出的、跨项目适用且后续会话可能再次用到的非凭据标识——包括发件\
+邮箱、收件邮箱、账号名、手机号、服务器或接口地址、收件人/联系人标识——无论是不是首次\
+出现、无论当前是不是测试或单次任务，除按上述规则记录该行所做的事之外，另为它输出一条\
+不带日期的稳定事实，逐字保留标识本身并写明它的角色与原始用途（如发送周报、发送测试文件），\
+不要把单次测试泛化成通用默认收件人："tier" 用 "semantic"，"memory_class" 一律为 \
+"user_profile"，"target" 用 "fact"，"project_fact" 用 false；发件与收件地址等同属\
+一件事的标识写在同一条里。
+  例 1："[user]: 用 ops@example.com 把周报发给 lead@example.org" 产出两条：事件\
 "2026-03-14，用户要求助手用 ops@example.com 把周报发给 lead@example.org。"（episodic）\
-与事实 "用户发送周报使用的发件邮箱是 ops@example.com，收件人是 lead@example.org。"\
-（semantic，user_profile）。用户在回答助手提问时给出的标识同样适用：助手问授权码、\
-用户答出取值，即为该账号输出一条授权码的稳定事实，不论助手是否说过只用一次。这类\
-稳定事实是用户本人的属性，"memory_class" 一律为 "user_profile"，不归入 \
-"long_term_memory"；发件与收件地址等同属一件事的标识写在同一条里。过后即失效的\
-取值不算：短信验证码、只查这一次的订单号或流水号、临时文件名。只针对用户自己给出的\
-标识；助手提到或猜测的不算。
+与事实 "用户发送周报使用的发件邮箱是 ops@example.com，收件邮箱是 lead@example.org。"\
+（semantic，user_profile）。
+  例 2："[user]: 把 /tmp/test.txt 用 sender@example.com 发到 recipient@example.org" 同样产出\
+两条：事件（episodic）与事实 "用户为这次测试文件发送指定了发件邮箱 sender@example.com \
+和收件邮箱 recipient@example.org。"（semantic，user_profile）——临时文件名 /tmp/test.txt \
+不写进稳定事实，但同句里的发件邮箱、收件邮箱及「测试文件发送」的原始用途必须保留在同一条\
+稳定事实里，且不把发送请求写成已发送。
+  用户在回答助手提问时给出的标识同样适用：助手问账号或收件邮箱，用户答出取值，即为该\
+用途输出一条 "user_profile" 稳定事实（"is_credential" 用 false）；若用户给出的是授权码、\
+口令、密码、密钥、令牌、带密码的数据库连接串或带签名凭据的预签名链接（不论助手是否说过\
+只用一次），同样输出一条不带日期的 "semantic" / "fact" 稳定事实，写明它对应的账号或服务，\
+但 "memory_class" 用 "long_term_memory"、"is_credential" 用 true、跨项目时 "project_fact" \
+用 false（不写进 "user_profile"），避免无关会话开场自动注入、同时保留显式按需检索能力。\
+若该账号、服务器或地址仅属于某个特定项目（如「这个项目的部署服务器」），\
+则按下方「项目事实」规则归 "long_term_memory" 且 "project_fact" 为 true，不写进 \
+"user_profile"。过后即失效的取值本身不算可复用标识，也不算长期凭据：短信验证码、一次性动态码、\
+只查这一次的订单号或流水号、临时文件名——既不要写进 "user_profile"，也不要写进 \
+"long_term_memory"（不要为它们单独输出稳定事实），但绝不要因此跳过同一句话里同时给出的\
+邮箱、账号、地址等有效标识。只针对用户自己给出的标识；助手提到或猜测的不算。
 
 - 项目事实：取值只对某个项目成立时，"project_fact" 为 true。终稿目录、项目专用账号、\
 部署地址以及针对项目的事件或待办都属于项目事实，即使用户只说「这个项目」。\
@@ -164,6 +179,7 @@ macOS 的说法（episodic）、用户不使用 macOS（semantic）、用户使�
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "memory_class": "user_profile" | "long_term_memory" | "daily_memory",
   "project_fact": true | false,
+  "is_credential": true | false,
   "tier": "episodic" | "semantic" | "procedural",
   "content": "一条自包含的陈述，一切具体细节保留",
   "title": "命名这件事的短标题",
@@ -258,25 +274,47 @@ does not make the rest of the line disappear - judge what the line adds once it 
 aside; return [] only when nothing is left. When in doubt, record only what would still
 matter in a future conversation with this user.
 
-- Reusable identifiers: identifiers that belong to the user and apply across projects,
-including email addresses, account names, server or endpoint addresses, usual recipients,
-and authorization codes, passwords or keys the user supplies. Besides recording what
-the line did under the rules above, also output one undated stable fact for it, keeping
-the identifier verbatim and stating what it is for or whom it belongs to: "tier" is
-"semantic", "memory_class" is "user_profile", "target" is "fact".
-  Example "[user]: send the weekly report to lead@example.org from ops@example.com"
+- Reusable identifiers: non-credential identifiers the user explicitly supplies that apply
+across projects and may be needed again in future conversations - including sender and
+recipient email addresses, account names, phone numbers, server or endpoint addresses, and
+contacts/recipients. Regardless of whether an identifier appears for the first time or
+inside a one-off or test task, besides recording what the line did under the rules above,
+also output one undated stable fact for it, keeping every identifier verbatim along with
+its role and original purpose (such as sending a weekly report or a test file) without
+generalizing a one-off test into a default recipient: "tier" is "semantic",
+"memory_class" is always "user_profile", "target" is "fact", "project_fact" is false;
+identifiers that belong to one matter, such as sender and recipient addresses, go into
+the same item.
+  Example 1: "[user]: send the weekly report to lead@example.org from ops@example.com"
 yields two items: the event "On 2026-03-14 the user asked the assistant to send the
 weekly report to lead@example.org from ops@example.com." (episodic) and the fact "The
-user sends the weekly report from ops@example.com to lead@example.org." (semantic,
-user_profile). Identifiers the user gives when answering the assistant's question count
-the same: when the assistant asks for an authorization code and the user states it,
-output a stable fact of that code for the account, whether or not the assistant said it
-would be used only once. Such stable facts are attributes of the user: "memory_class" is
-always "user_profile", never "long_term_memory"; identifiers that belong to one matter,
-such as the sender and recipient addresses, go into the same item. Values that expire
-after use do not count: SMS verification codes, an order or transaction number looked up
-only this once, temporary file names. Only identifiers the user gave count; those the
-assistant mentioned or guessed do not.
+user sends the weekly report from sender email ops@example.com to recipient email
+lead@example.org." (semantic, user_profile).
+  Example 2: "[user]: send /tmp/test.txt from sender@example.com to recipient@example.org"
+likewise yields both the event (episodic) and the fact "The user specified sender email
+sender@example.com and recipient email recipient@example.org for sending a test file."
+(semantic, user_profile) - omit the temporary filename /tmp/test.txt from the stable fact,
+while keeping both sender and recipient emails and the original test-file purpose in the
+same item without turning a send request into an already-sent event.
+  Identifiers the user gives when answering the assistant's question count the same: when
+the assistant asks for an account or recipient and the user states it, output a
+"user_profile" stable fact ("is_credential": false); when the user supplies a credential -
+an authorization code, password, key, token, connection string with a password, or
+presigned URL with embedded signature/credentials (whether or not the assistant said it
+would be used only once) - also output an undated "semantic" / "fact" stable fact naming
+the account or service it belongs to, but set "memory_class" to "long_term_memory",
+"is_credential" to true, and "project_fact" to false when cross-project (never
+"user_profile") so it is excluded from general prefetch while remaining findable via
+explicit search.
+If an account, server, or address belongs only to a specific project (such as "this
+project's deployment server"), follow the Project facts rule below instead
+("long_term_memory", "project_fact": true) rather than writing it to "user_profile".
+Values that expire after use do not themselves count as reusable identifiers or
+long-term credentials: SMS verification codes, one-time passcodes, an order or
+transaction number looked up only this once, temporary file names - do not emit stable
+facts for them (neither "user_profile" nor "long_term_memory"), and never let them
+suppress valid identifiers (such as emails or accounts) in the same line. Only
+identifiers the user gave count; those the assistant mentioned or guessed do not.
 
 - Project facts: set "project_fact" to true when an item applies to a specific project,
 including deliverable folders, project accounts, deployment addresses, events and to-dos.
@@ -318,6 +356,7 @@ Output schema:
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "memory_class": "user_profile" | "long_term_memory" | "daily_memory",
   "project_fact": true | false,
+  "is_credential": true | false,
   "tier": "episodic" | "semantic" | "procedural",
   "content": "one self-contained statement, every specific kept",
   "title": "short heading naming the matter",
@@ -462,6 +501,12 @@ _MEMORY_CLASSES = frozenset({"user_profile", "long_term_memory", "daily_memory"}
 _DEFAULT_MEMORY_CLASS = "long_term_memory"
 # user_profile 是用户的稳定属性：模型把这类条目标成 episodic 时收口为 semantic。
 _USER_PROFILE_CLASS = "user_profile"
+_IS_CREDENTIAL_KEY = "is_credential"
+
+
+def _is_credential_flag(value: object) -> bool:
+    """只认布尔 True 与大小写不敏感字符串 ``"true"``，防止模型字符串输出漏检凭据。"""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
 
 
 class AgentLlmExtractor(ExtractorImpl):
@@ -490,10 +535,36 @@ class AgentLlmExtractor(ExtractorImpl):
             self.OBSERVATION_DATE_PREFIX = _OBSERVATION_DATE_PREFIX_EN
             self.CONTEXT_SECTION_TEMPLATES = _CONTEXT_SECTION_TEMPLATES_EN
 
+    def _candidate_metadata(
+        self,
+        item: dict,
+        source: MemoryUnit,
+        memory_class: str,
+    ) -> dict[str, str]:
+        """仅为通过基类校验与置信度阈值的候选补充凭据标记与最终归属项目坐标。"""
+        meta = super()._candidate_metadata(item, source, memory_class)
+        source_meta = source.system_metadata or {}
+        if item.get("project_fact") is True and str(source_meta.get("project") or "").strip():
+            # 明确归属项目的事实标记 project_fact="true"，供去重层只与同项目记录比较。
+            meta["project_fact"] = "true"
+        if memory_class == _USER_PROFILE_CLASS:
+            # user_profile 最终落全局 USER.md（project=""），去重前清空来源 project，
+            # 避免同项目会话中产出全局画像时被已有项目记录判重跳过。
+            meta["project"] = ""
+        if _is_credential_flag(item.get(_IS_CREDENTIAL_KEY)):
+            meta[_IS_CREDENTIAL_KEY] = "true"
+            # 跨项目可见场景（无来源项目，或非固定项目绑定且 project_fact=false）落 project=""
+            if not str(source_meta.get("project") or "").strip() or (
+                item.get("project_fact") is False
+                and source_meta.get("project_scope") != "fixed"
+            ):
+                meta["project"] = ""
+        return meta
+
     def build_candidates(
         self, items: list[dict], units: list[MemoryUnit],
     ) -> list[ExtractionCandidate]:
-        """约束项目候选的写入范围，项目坐标只取自来源元数据。"""
+        """约束项目候选的写入范围与凭据归属分类，项目坐标只取自来源元数据。"""
         sources = {unit.id: unit for unit in units}
         scoped_items = []
         for item in items:
@@ -504,12 +575,19 @@ class AgentLlmExtractor(ExtractorImpl):
             source = sources.get(source_id)
             metadata = source.system_metadata if source else {}
             project_fact = item.get("project_fact")
+            memory_class = str(item.get("memory_class", "") or "").strip()
+            is_credential = _is_credential_flag(item.get(_IS_CREDENTIAL_KEY))
+            if is_credential and memory_class != _DEFAULT_MEMORY_CLASS:
+                # 凭据统一收口到 long_term_memory，避免误落 user_profile/daily_memory/非法类
+                memory_class = _DEFAULT_MEMORY_CLASS
+                item = {**item, "memory_class": memory_class}
             if project_fact is True:
                 project = metadata.get("project")
                 if not isinstance(project, str) or not project.strip():
                     continue
-                if str(item.get("memory_class", "")).strip() == _USER_PROFILE_CLASS:
-                    item = {**item, "memory_class": _DEFAULT_MEMORY_CLASS}
+                if memory_class == _USER_PROFILE_CLASS:
+                    memory_class = _DEFAULT_MEMORY_CLASS
+                    item = {**item, "memory_class": memory_class}
             scoped_items.append(item)
         return super().build_candidates(scoped_items, units)
 

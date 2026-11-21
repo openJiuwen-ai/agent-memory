@@ -207,7 +207,11 @@ def test_elasticsearch_compiles_complete_boolean_tree() -> None:
     "op,value,fragment",
     [
         (FilterOp.EQ, "x", 'metadata["user_metadata.f"] == "x"'),
-        (FilterOp.NE, "x", 'metadata["user_metadata.f"] != "x"'),
+        (
+            FilterOp.NE,
+            "x",
+            '((not exists metadata["user_metadata.f"]) || (metadata["user_metadata.f"] != "x"))',
+        ),
         (FilterOp.IN, ["x", "y"], 'metadata["user_metadata.f"] in ["x", "y"]'),
         (FilterOp.NOT_IN, ["x"], 'metadata["user_metadata.f"] not in ["x"]'),
         (FilterOp.GT, 1, 'metadata["user_metadata.f"] > 1'),

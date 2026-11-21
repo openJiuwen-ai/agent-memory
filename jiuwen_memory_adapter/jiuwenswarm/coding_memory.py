@@ -117,7 +117,11 @@ class CodingMemoryScene(BaseDocumentScene):
             return json.dumps({"error": "Missing required parameter: content"})
         result = await client.add(
             content, scope, tags=["coding"],
-            system_metadata={**self.write_route().metadata(), "project": self.project},
+            system_metadata={
+                **self.write_route().metadata(),
+                "project": self.project,
+                "project_scope": "fixed",
+            },
         )
         if result is None:
             return json.dumps({"error": "Memory write failed; no successful write confirmed."})
@@ -127,17 +131,25 @@ class CodingMemoryScene(BaseDocumentScene):
         return json.dumps({"result": "Memory stored.", "stored": True,
                            "item_id": result.item_id})
 
-    async def search(self, client: Any, scope: Any, query: str, top_k: Any = None) -> list:
+    async def search(
+        self,
+        client: Any,
+        scope: Any,
+        query: str,
+        top_k: Any = None,
+        *,
+        exclude_credentials: bool = False,
+    ) -> list:
         if not query:
             return []
         limit = self.top_k(top_k)
-        return (await client.search(
-            query, scope, top_k=limit,
-            filters={
-                "system_metadata.project": {"eq": self.project},
-                "system_metadata.memory_class": {"in": ["long_term_memory", "daily_memory"]},
-            },
-        ))[:limit]
+        filters: dict[str, Any] = {
+            "system_metadata.project": {"eq": self.project},
+            "system_metadata.memory_class": {"in": ["long_term_memory", "daily_memory"]},
+        }
+        if exclude_credentials:
+            filters["system_metadata.is_credential"] = {"ne": "true"}
+        return (await client.search(query, scope, top_k=limit, filters=filters))[:limit]
 
     async def search_tool(self, client: Any, scope: Any, args: dict[str, Any]) -> str:
         query = args.get("query")
@@ -159,13 +171,27 @@ class CodingMemoryScene(BaseDocumentScene):
             self._bounded(client.read_md_file("MEMORY.md", scope, project=self.project)),
         ]
         if query and not background:
-            operations.append(self._bounded(self.search(client, scope, query, top_k)))
+            operations.append(
+                self._bounded(
+                    self.search(client, scope, query, top_k, exclude_credentials=True)
+                )
+            )
         results = await asyncio.gather(*operations)
         profiles, document = results[:2]
         hits = results[2] if len(results) > 2 else []
+
+        def _safe_contents(items: list) -> list[str]:
+            return [
+                item["content"]
+                for item in items
+                if item.get("content") and not item.get("is_credential")
+            ]
+
         sections = []
-        for title, items in (("User profile", profiles), ("Project memory", hits or document)):
-            contents = [item["content"] for item in items if item.get("content")]
+        for title, contents in (
+            ("User profile", _safe_contents(profiles)),
+            ("Project memory", _safe_contents(hits) or _safe_contents(document)),
+        ):
             if contents:
                 sections.append("## " + title + "\n" + "\n".join(contents))
         return "\n\n".join(sections)

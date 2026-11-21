@@ -49,6 +49,7 @@ from jiuwen_memory.common.trace import TraceLevel, trace_annotate, trace_event, 
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     MD_TITLE_KEY,
+    MEMORY_CLASS_KEY,
     MESSAGES_KEY_PREFIX,
     DedupDecision,
     HierarchyKind,
@@ -74,7 +75,13 @@ from jiuwen_memory.construction.common import (
     ORIGIN_KEY,
     merge_importance_max,
 )
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
+from jiuwen_memory.construction.dedup import (
+    Dedup,
+    DedupProducer,
+    is_credential_unit,
+    is_project_isolated_dedup,
+    same_scope,
+)
 from jiuwen_memory.construction.evolver import (
     EvolveMode,
     Evolver,
@@ -202,6 +209,17 @@ statement. Output ONLY that statement as plain text. No explanation, no labels, 
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
+
+
+def _is_credential_class_mismatch(candidate: MemoryUnit, existing_unit: MemoryUnit) -> bool:
+    """凭据不得与 user_profile/daily_memory 双向合并或互替，避免密文写进 USER.md 或吞掉画像。"""
+    cand_meta = candidate.system_metadata or {}
+    existing_meta = existing_unit.system_metadata or {}
+    cand_class = str(cand_meta.get(MEMORY_CLASS_KEY, "")).strip()
+    existing_class = str(existing_meta.get(MEMORY_CLASS_KEY, "")).strip()
+    return (
+        is_credential_unit(candidate) and existing_class in {"user_profile", "daily_memory"}
+    ) or (is_credential_unit(existing_unit) and cand_class in {"user_profile", "daily_memory"})
 
 
 def _now() -> datetime:
@@ -559,6 +577,17 @@ class OrchestratingEvolver(Evolver):
                 direct_add.append((candidate, None, 0.0))
                 continue
 
+            # 涉及凭据且项目归属不同（含项目专用与全局）的命中不参与目标选择，
+            # 避免高分全局记录遮挡同项目已有记录导致同项目重复写入不断新增。
+            hit_units = [
+                (unit, score)
+                for unit, score in hit_units
+                if not is_project_isolated_dedup(candidate, unit)
+            ]
+            if not hit_units:
+                direct_add.append((candidate, None, 0.0))
+                continue
+
             best_unit, best_score = max(hit_units, key=lambda x: x[1])
             if best_score < self._dedup_medium_similarity:
                 # 低相似 → 直接 ADD（不调 LLM）
@@ -669,12 +698,19 @@ class OrchestratingEvolver(Evolver):
         successors: dict[tuple[str, str, str, str, str, str], MemoryUnit] | None = None,
     ) -> int:
         """执行单条候选的去重决策，更新 result；返回 noop 计数（0 或 1）。"""
-        # Builders may mutate candidates; NOOP never reaches a write path.
-        if decision != DedupDecision.NOOP:
-            candidate = deepcopy(candidate)
         if decision == DedupDecision.ADD and result.created_units:
             # Initial batch recall ran before writes. A new indexed peer may now exist.
             decision, existing_unit, similarity = self._recheck_candidate(candidate)
+        if (
+            decision == DedupDecision.NOOP
+            and existing_unit is not None
+            and is_project_isolated_dedup(candidate, existing_unit)
+        ):
+            decision = DedupDecision.ADD
+            existing_unit = None
+        # Builders may mutate candidates; NOOP never reaches a write path for candidate.
+        if decision != DedupDecision.NOOP:
+            candidate = deepcopy(candidate)
         boundary = _now()
         if decision in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE):
             if existing_unit is not None:
@@ -714,6 +750,12 @@ class OrchestratingEvolver(Evolver):
             ):
                 decision = DedupDecision.ADD
                 candidate.system_metadata["dedup_temporal_reason"] = "target_unavailable"
+            elif is_project_isolated_dedup(candidate, existing_unit):
+                decision = DedupDecision.ADD
+                candidate.system_metadata["dedup_temporal_reason"] = "credential_project_isolated"
+            elif _is_credential_class_mismatch(candidate, existing_unit):
+                decision = DedupDecision.ADD
+                candidate.system_metadata["dedup_temporal_reason"] = "credential_class_isolated"
             else:
                 verdict = compare_validity(candidate, existing_unit, now=boundary)
                 candidate.system_metadata["dedup_temporal_reason"] = verdict.reason
@@ -813,14 +855,15 @@ class OrchestratingEvolver(Evolver):
             existing_unit.provenance = list(
                 set(existing_unit.provenance) | set(candidate.provenance) | {candidate.id}
             )
-            # 合并 metadata；重要度 F12 重要度只增不减、origin 随被合并的 existing——先备份，
-            # 交集继承后写回（两侧 origin 不同时交集会丢掉该键）
+            # 合并 metadata；重要度 F12 重要度只增不减、origin 随被合并的 existing、
+            # 凭据标记任一侧为 true 即保留——先备份，交集继承后写回（两侧不同时交集会丢掉该键）
             had_md_title = MD_TITLE_KEY in existing_unit.system_metadata
             importance = merge_importance_max(
                 existing_unit.system_metadata.get(IMPORTANCE_KEY),
                 candidate.system_metadata.get(IMPORTANCE_KEY),
             )
             origin = existing_unit.system_metadata.get(ORIGIN_KEY)
+            is_credential = is_credential_unit(existing_unit) or is_credential_unit(candidate)
             existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
             # 标题描述本次更新后的事实，不是新旧记忆共有的属性。
             # 新候选无标题时清空旧标题，避免继续展示已经过时的事实。
@@ -833,6 +876,8 @@ class OrchestratingEvolver(Evolver):
                 existing_unit.system_metadata[IMPORTANCE_KEY] = importance
             if origin not in (None, ""):
                 existing_unit.system_metadata[ORIGIN_KEY] = origin
+            if is_credential:
+                existing_unit.system_metadata["is_credential"] = "true"
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
@@ -945,7 +990,11 @@ class OrchestratingEvolver(Evolver):
         其他目标时，返回该目标自身在本次召回中的分数。
         """
         # Step A+B: 召回已有相似记忆（已滤自身、已按 min_similarity 过滤、已聚合取 max）
-        hit_units: list[tuple[MemoryUnit, float]] = self._dedup.recall(candidate)
+        hit_units: list[tuple[MemoryUnit, float]] = [
+            (unit, score)
+            for unit, score in self._dedup.recall(candidate)
+            if not is_project_isolated_dedup(candidate, unit)
+        ]
         if not hit_units:
             logger.debug("Evolver._dedup_single: no hits for candidate %s → ADD", candidate.id[:8])
             return (DedupDecision.ADD, None, 0.0)

@@ -32,7 +32,7 @@ _MAX_TOP_K = MAX_TOP_K
 _DEFAULT_PREFETCH_TOP_K = 5
 # prefetch 直接注入用户画像：USER.md 不分项目、条目少、与多数任务相关，
 # 不经相关度筛选——overlap 重排按共同词打分，换一种问法画像条目就可能得 0 分被丢。
-# 文件为追加写入，超出上限时保留末尾（最新）的条目。
+# 通用预取先过滤明文凭据与预签名链接；超出上限时保留末尾（最新）的条目。
 _PROFILE_MD_FILENAME = "USER.md"
 _PROFILE_INJECT_MAX_ITEMS = 20
 _PROFILE_INJECT_MAX_CHARS = 2000
@@ -56,6 +56,7 @@ def _recall_filters(project: str = "") -> dict[str, Any]:
     filters: dict[str, Any] = {
         "tier": {"in": list(_RECALL_TIERS)},
         "system_metadata.memory_class": {"ne": "team_memory"},
+        "system_metadata.is_credential": {"ne": "true"},
     }
     if project:
         filters["system_metadata.project"] = {"eq": project}
@@ -89,6 +90,8 @@ def _merge_prefetch_lines(
     seen_ids: set[str] = set()
     seen_text: set[str] = set()
     for item in [*profile, *items]:
+        if item.get("is_credential"):
+            continue
         content = item.get("content", "")
         item_id = item.get("item_id") or ""
         # 空 item_id 从不进 seen_ids，无需单独判空
@@ -267,6 +270,9 @@ class WorkMemoryScene:
         }
         if project:
             system_metadata["project"] = project
+            # 显式指定项目时防止凭据在 project_fact=false 下逃逸到全局 MEMORY.md；
+            # 普通 user_profile + project_fact=false 仍按上游契约写入全局 USER.md。
+            system_metadata["project_scope"] = "fixed"
         data = await context.client.add(
             conclusion,
             scope,
@@ -400,8 +406,8 @@ class WorkMemoryScene:
     async def profile_items(context: MemorySceneContext) -> list[dict[str, Any]]:
         """读 USER.md 的条目供 prefetch 直接注入；任何失败都降级为空，不影响检索结果。
 
-        文件不存在、非文档模式、传输失败都返回空列表。超出条数或字数上限时保留文件
-        末尾的条目（USER.md 追加写入，末尾即最新）。
+        文件不存在、非文档模式、传输失败都返回空列表。通用预取先过滤明文凭据与预签名
+        链接条目；超出条数或字数上限时保留文件末尾的最新条目。
         """
         try:
             items = await context.client.read_md_file(_PROFILE_MD_FILENAME, context.scope)
@@ -411,8 +417,13 @@ class WorkMemoryScene:
                 type(exc).__name__,
             )
             return []
+        safe_items = [
+            it
+            for it in items or []
+            if it.get("content") and not it.get("is_credential")
+        ]
         return _tail_within_budget(
-            [it for it in items or [] if it.get("content")],
+            safe_items,
             max_items=_PROFILE_INJECT_MAX_ITEMS,
             max_chars=_PROFILE_INJECT_MAX_CHARS,
         )
@@ -435,7 +446,18 @@ class WorkMemoryScene:
             "existing memories. To CHANGE or CORRECT a stored memory, first locate it "
             "with agent_memory_read_md_file (USER.md / MEMORY.md / daily YYYY-MM-DD.md — "
             "personal info may be in a daily file), then agent_memory_edit_md_file to "
-            "replace it in place."
+            "replace it in place.\n"
+            "Reusable identifiers: When a task needs an email address, account, phone number, "
+            "server/endpoint address, or service credential missing from the current message "
+            "and injected memory, call agent_memory_search first using the task purpose, role, "
+            "or service/account name (omit project to search cross-project identifiers or "
+            "credentials) before asking the user to re-enter it. Use a unique match "
+            "directly when it fits the task; when multiple reasonable candidates exist or the "
+            "stored purpose does not match, ask the user to confirm before acting. Credentials "
+            "(passwords, authorization codes, keys, tokens) are excluded from general prefetch "
+            "and should be looked up only when needed for authentication; when asking the user "
+            "to choose among credentials, show only the service or account name, never raw "
+            "secrets."
         )
         if context.video_enabled():
             prompt += (

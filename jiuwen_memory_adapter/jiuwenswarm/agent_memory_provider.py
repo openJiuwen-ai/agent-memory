@@ -1113,6 +1113,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         project = self._scene.resolve_project(kwargs)
         if project:
             system_metadata["project"] = project
+        if getattr(self._scene, "project", ""):
+            # 固定项目场景（如 Coding）检索与文档读取限定在当前项目，禁止抽取器清空 project。
+            system_metadata["project_scope"] = "fixed"
         logger.info(
             "[AgentMemoryMemoryProvider] sync_turn add system_metadata=%s scope=%s content_len=%d",
             metadata_for_log(system_metadata),
@@ -1799,6 +1802,11 @@ class _HttpClient(_AgentMemoryClient):
                 "item_id": it.get("unit_id", ""),
                 "content": it.get("content", ""),
                 "score": it.get("score", 0),
+                "is_credential": (
+                    isinstance(it.get("system_metadata"), dict)
+                    and str(it["system_metadata"].get("is_credential", "")).strip().lower()
+                    == "true"
+                ),
             }
             for it in items
             if isinstance(it, dict)
@@ -1843,13 +1851,20 @@ class _HttpClient(_AgentMemoryClient):
         return context
 
     @classmethod
-    def _unit_view(cls, unit: dict) -> dict[str, Any]:
+    def _unit_view(cls, unit: dict, *, include_credential: bool = False) -> dict[str, Any]:
         """序列化 MemoryUnit → provider 统一视图（content 从 segments 重建）。"""
-        return {
+        view: dict[str, Any] = {
             "item_id": unit.get("id", ""),
             "content": cls._content_view(unit),
             "tier": unit.get("tier", ""),
         }
+        if include_credential:
+            sys_meta = unit.get("system_metadata")
+            view["is_credential"] = (
+                isinstance(sys_meta, dict)
+                and str(sys_meta.get("is_credential", "")).strip().lower() == "true"
+            )
+        return view
 
     async def read_md_file(
         self, md_filename, scope, *, project="", line_range=None, team=""
@@ -1877,7 +1892,7 @@ class _HttpClient(_AgentMemoryClient):
             return None
         if not isinstance(units, list):
             return []
-        return [self._unit_view(u) for u in units if isinstance(u, dict)]
+        return [self._unit_view(u, include_credential=True) for u in units if isinstance(u, dict)]
 
     async def edit_md_file(
         self, md_filename, scope, old_text, new_text, *, project="", team=""
@@ -2481,7 +2496,18 @@ class _InProcessClient(_AgentMemoryClient):
             )
             return []
         return [
-            {"content": it.content, "score": it.score, "item_id": it.unit_id} for it in result.items
+            {
+                "content": it.content,
+                "score": it.score,
+                "item_id": it.unit_id,
+                "is_credential": (
+                    str((getattr(it, "system_metadata", None) or {}).get("is_credential", ""))
+                    .strip()
+                    .lower()
+                    == "true"
+                ),
+            }
+            for it in result.items
         ]
 
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
@@ -2540,6 +2566,10 @@ class _InProcessClient(_AgentMemoryClient):
                 "item_id": unit.id,
                 "content": unit.content,
                 "tier": getattr(getattr(unit, "tier", None), "value", ""),
+                "is_credential": (
+                    str((unit.system_metadata or {}).get("is_credential", "")).strip().lower()
+                    == "true"
+                ),
             }
             for unit in units
         ]

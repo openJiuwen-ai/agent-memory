@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS memory_unit (
     t_valid      INTEGER,
     t_invalid    INTEGER,
     t_event      INTEGER,
+    is_credential BLOB,
     unit_json    BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_content_hash ON memory_unit(content_hash);
@@ -204,6 +205,17 @@ def _t_event_of(unit: MemoryUnit) -> int:
     return T_EVENT_UNKNOWN if v is None else v
 
 
+def _is_credential_of(unit: MemoryUnit) -> bool | int | float | str | None:
+    """投影 ``system_metadata.is_credential``：保留原标量（bool→0/1、str→TEXT、缺→NULL）。"""
+    meta = unit.system_metadata or {}
+    if "is_credential" not in meta:
+        return None
+    raw = meta["is_credential"]
+    if isinstance(raw, (bool, int, float, str)):
+        return raw
+    return None
+
+
 # 系统前置谓词（build_system_filters 产出）→ memory_unit 投影列映射。
 # unit_id/id、lifecycle/t_valid/t_invalid/t_event 与 project 统一经 ``_compile_system_filters``
 # 编译成保留 AND/OR 逻辑的 SQL WHERE 片段下推——对齐非文档流程「先排除什么在
@@ -228,6 +240,7 @@ _SYSTEM_PREDICATE_COLUMNS = {
     # team 读取单元 JSON，保留既有表结构；缺失值按空串参与过滤，无需新增物理列。
     "system_metadata.team": "COALESCE(json_extract(CAST(unit_json AS TEXT), "
     "'$.system_metadata.team'), '')",
+    "system_metadata.is_credential": "is_credential",
 }
 
 
@@ -280,6 +293,33 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
     if isinstance(expr, FilterClause):
         col = _SYSTEM_PREDICATE_COLUMNS.get(expr.field)
         if col is None:
+            return None, []
+        if col == "is_credential":
+            scalar_types = (bool, int, float, str)
+            if expr.op is FilterOp.NE:
+                if not isinstance(expr.value, scalar_types):
+                    return None, []
+                return "(is_credential IS NULL OR is_credential != ?)", [expr.value]
+            if expr.op is FilterOp.EQ:
+                if not isinstance(expr.value, scalar_types):
+                    return None, []
+                return "is_credential = ?", [expr.value]
+            if expr.op is FilterOp.IN:
+                items = list(expr.value or [])
+                if not items:
+                    return "1 = 0", []
+                if not all(isinstance(item, scalar_types) for item in items):
+                    return None, []
+                ph = ",".join("?" for _ in items)
+                return f"is_credential IN ({ph})", items
+            if expr.op is FilterOp.NOT_IN:
+                items = list(expr.value or [])
+                if not items:
+                    return "1", []
+                if not all(isinstance(item, scalar_types) for item in items):
+                    return None, []
+                ph = ",".join("?" for _ in items)
+                return f"(is_credential IS NULL OR is_credential NOT IN ({ph}))", items
             return None, []
         return _compile_clause(col, expr.op, expr.value)
     if expr.logic is FilterLogic.AND:
@@ -362,6 +402,8 @@ def _ensure_system_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN agent TEXT NOT NULL DEFAULT ''")
     if "session" not in cols:
         conn.execute("ALTER TABLE memory_unit ADD COLUMN session TEXT NOT NULL DEFAULT ''")
+    if "is_credential" not in cols:
+        conn.execute("ALTER TABLE memory_unit ADD COLUMN is_credential BLOB")
 
 
 class SqliteDocumentShadowIndex(DocumentShadowIndex):
@@ -655,6 +697,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         t_valid = _t_valid_of(unit)
         t_invalid = _t_invalid_of(unit)
         t_event = _t_event_of(unit)
+        is_credential = _is_credential_of(unit)
         unit_json = dumps(unit)
 
         # ① memory_unit（拿隐式 rowid，FTS5/vec0 靠它关联，文档记忆根设计 §11.2 注 A）。
@@ -666,8 +709,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             "INSERT INTO memory_unit "
             "(unit_id, content_hash, md_filename, project, "
             'org, space, "user", agent, session, '
-            "category, lifecycle, t_valid, t_invalid, t_event, unit_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "category, lifecycle, t_valid, t_invalid, t_event, is_credential, unit_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 unit.id,
                 content_hash,
@@ -679,6 +722,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 t_valid,
                 t_invalid,
                 t_event,
+                is_credential,
                 unit_json,
             ),
         )
@@ -888,11 +932,12 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         t_valid = _t_valid_of(unit)
         t_invalid = _t_invalid_of(unit)
         t_event = _t_event_of(unit)
+        is_credential = _is_credential_of(unit)
         unit_json = dumps(unit)
 
         # ① memory_unit 全字段覆写（unit_json + content_hash + md_filename + project
-        # + scope 五列 + category + lifecycle/t_valid/t_invalid/t_event 投影列，rowid 不变
-        # ——FTS5/vec0 靠 rowid 关联，换 rowid 会断链）。投影列无论 content_hash 是否变都
+        # + scope 五列 + category + lifecycle/t_valid/t_invalid/t_event/is_credential 投影列，
+        # rowid 不变——FTS5/vec0 靠 rowid 关联，换 rowid 会断链）。投影列无论 content_hash 是否变都
         # 覆写：SUPERSEDE 旧版只改 lifecycle/t_invalid（content_hash 不变），投影列仍须同步
         # （谓词下推依赖它们）。scope 五列由 _scope_of 取值——update 时 scope 不变
         # （_validate_units 保证 unit.scope == 方法入参 scope），无守卫。
@@ -900,7 +945,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             "UPDATE memory_unit "
             "SET content_hash=?, md_filename=?, project=?, "
             'org=?, space=?, "user"=?, agent=?, session=?, '
-            "category=?, lifecycle=?, t_valid=?, t_invalid=?, t_event=?, unit_json=? "
+            "category=?, lifecycle=?, t_valid=?, t_invalid=?, t_event=?, "
+            "is_credential=?, unit_json=? "
             "WHERE unit_id=?",
             (
                 new_hash,
@@ -912,6 +958,7 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 t_valid,
                 t_invalid,
                 t_event,
+                is_credential,
                 unit_json,
                 unit.id,
             ),
@@ -1210,7 +1257,10 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             k = query.top_k
             qblob = _vec_to_blob(query.vector)
 
-            if _requires_vector_prefilter(query.filters):
+            use_prefilter = bool((query.extensions or {}).get("prefilter")) or (
+                _requires_vector_prefilter(query.filters)
+            )
+            if use_prefilter:
                 # Score exact distances after filtering memory_unit. CROSS JOIN keeps
                 # memory_unit as the outer scan and does not require SQLite 3.35's CTE hint.
                 params = (qblob, *sys_params, *scope_params, k)

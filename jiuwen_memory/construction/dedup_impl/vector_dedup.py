@@ -12,7 +12,14 @@ from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import FilterClause, FilterOp, LifecycleState, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
+from jiuwen_memory.construction.dedup import (
+    Dedup,
+    DedupProducer,
+    dedup_project_filter,
+    is_project_isolated_dedup,
+    merge_dedup_hits,
+    same_scope,
+)
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -76,10 +83,29 @@ class VectorDedup(Dedup):
             return []
 
         # Step B: 召回已有相似记忆
-        filters: list[FilterClause] = []
+        base_filters: list[FilterClause] = []
         if self._tier_filter:
-            filters.append(FilterClause(field="tier", op=FilterOp.EQ, value=candidate.tier.value))
+            base_filters.append(
+                FilterClause(field="tier", op=FilterOp.EQ, value=candidate.tier.value)
+            )
+        project_filter = dedup_project_filter(candidate)
+        filters = [*base_filters, project_filter] if project_filter is not None else base_filters
 
+        hit_units = self._search_and_aggregate(candidate, candidate_vector, filters)
+        # 非文档向量索引不会给缺 project 键的历史全局记录补 project=""；
+        # project == "" 时合并无 project 过滤查询结果（按 unit.id 取 max 并截断 top_k），
+        # 避免新旧全局记录混存时漏掉高分旧记录（仍经 is_project_isolated_dedup 过滤）。
+        if project_filter is not None and project_filter.value == "":
+            fallback_hits = self._search_and_aggregate(candidate, candidate_vector, base_filters)
+            hit_units = merge_dedup_hits(hit_units, fallback_hits, top_k=self._top_k)
+        return hit_units
+
+    def _search_and_aggregate(
+        self,
+        candidate: MemoryUnit,
+        candidate_vector: list[float],
+        filters: list[FilterClause],
+    ) -> list[tuple[MemoryUnit, float]]:
         query = VectorQuery(vector=candidate_vector, top_k=self._top_k, filters=filters)
 
         scope = candidate.scope
@@ -118,6 +144,8 @@ class VectorDedup(Dedup):
             # scope_filter：只保留与候选同 scope 的 unit
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):
                 continue
+            if is_project_isolated_dedup(candidate, unit):
+                continue
             # 跳过候选自身
             if unit.id == candidate.id:
                 continue
@@ -130,8 +158,7 @@ class VectorDedup(Dedup):
             if unit.id not in aggregated or scored_id.score > aggregated[unit.id][1]:
                 aggregated[unit.id] = (unit, scored_id.score)
 
-        hit_units = sorted(aggregated.values(), key=lambda x: x[1], reverse=True)
-        return hit_units
+        return sorted(aggregated.values(), key=lambda x: x[1], reverse=True)
 
 
 # -- 注册到 DedupProducer（实现自注册，新增无需改 producer/build_kernel） -------- #

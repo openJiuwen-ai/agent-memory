@@ -629,6 +629,16 @@ class ExtractorImpl(Extractor):
     def preprocess(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         return self._preprocess(units)
 
+    def _candidate_metadata(
+        self,
+        item: dict,
+        source: MemoryUnit,
+        memory_class: str,
+    ) -> dict[str, str]:
+        """构建单个已校验候选的扩展元数据；子类可按需追加字段（仅对通过校验的候选生效）。"""
+        del item, source
+        return {MEMORY_CLASS_KEY: memory_class} if memory_class else {}
+
     def build_candidates(
         self,
         items: list[dict],
@@ -661,9 +671,7 @@ class ExtractorImpl(Extractor):
             source_id = _strip_source_id_shell(str(item.get("source_id", "")))
             if source_id not in unit_map:
                 unmatched += 1
-                invalid_reasons.append(
-                    f"item {item_index} source_id {source_id!r} is not in the batch"
-                )
+                invalid_reasons.append(f"item {item_index} source_id is not in the batch")
                 continue
 
             content = item.get("content")
@@ -722,7 +730,7 @@ class ExtractorImpl(Extractor):
                 title=title,
                 tags=tags,
                 importance_category=importance_category,
-                metadata={MEMORY_CLASS_KEY: memory_class} if memory_class else {},
+                metadata=self._candidate_metadata(item, unit_map[source_id], memory_class),
             ))
             logger.info(
                 "Extractor: candidate — source_unit_id=%s tier=%s metadata=%s",

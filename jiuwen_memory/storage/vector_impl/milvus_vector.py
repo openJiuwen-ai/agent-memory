@@ -56,7 +56,6 @@ _SCOPE_FIELDS = (
 logger = get_logger(__name__)
 _CMP_OPS = {
     FilterOp.EQ: "==",
-    FilterOp.NE: "!=",
     FilterOp.GT: ">",
     FilterOp.GTE: ">=",
     FilterOp.LT: "<",
@@ -253,6 +252,10 @@ class MilvusVectorStore(VectorStore):
     def _filter_clause(fc: FilterClause) -> str:
         key = filter_field_metadata_key(fc.field)
         field = f"metadata[{_lit(key)}]"
+        if fc.op == FilterOp.NE:
+            # Milvus 2.6+ 对缺失 JSON 键采用三值逻辑（not (UNKNOWN) 仍为 UNKNOWN）；
+            # 显式并入 not exists 使缺键记录与 memory_filter.py 语义一致。
+            return f"((not exists {field}) || ({field} != {_lit(fc.value)}))"
         if fc.op in _CMP_OPS:
             return f"{field} {_CMP_OPS[fc.op]} {_lit(fc.value)}"
         if fc.op == FilterOp.IN:

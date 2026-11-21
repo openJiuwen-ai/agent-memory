@@ -18,20 +18,22 @@ class ProjectTeamDedup(ShadowDedup):
 
     @staticmethod
     def recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
-        project = candidate_project(candidate)
-        clauses = [FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value])]
         metadata = candidate.system_metadata or {}
         if metadata.get("memory_class") == "team_memory":
-            clauses.extend([
-                FilterClause("system_metadata.project", FilterOp.EQ, project),
-                FilterClause("system_metadata.team", FilterOp.EQ, metadata.get("team", "")),
-                FilterClause("system_metadata.memory_class", FilterOp.EQ, "team_memory"),
-            ])
-        else:
-            clauses.append(FilterClause("system_metadata.memory_class", FilterOp.NE, "team_memory"))
-            if project:
-                clauses.append(FilterClause("system_metadata.project", FilterOp.IN, ["", project]))
-        return and_merge(None, clauses)
+            project = candidate_project(candidate)
+            return and_merge(
+                None,
+                [
+                    FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value]),
+                    FilterClause("system_metadata.project", FilterOp.EQ, project),
+                    FilterClause("system_metadata.team", FilterOp.EQ, metadata.get("team", "")),
+                    FilterClause("system_metadata.memory_class", FilterOp.EQ, "team_memory"),
+                ],
+            )
+        return and_merge(
+            ShadowDedup.recall_filter(candidate),
+            [FilterClause("system_metadata.memory_class", FilterOp.NE, "team_memory")],
+        )
 
 
 @DedupProducer.register("project_team")

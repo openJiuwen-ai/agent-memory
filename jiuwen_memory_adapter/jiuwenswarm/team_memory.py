@@ -129,11 +129,13 @@ class TeamMemoryScene(BaseDocumentScene):
         target: str,
         query: str,
         top_k: Any = None,
+        *,
+        exclude_credentials: bool = False,
     ) -> list:
         if target not in {"project", "team"}:
             raise ValueError("Search target must be project or team")
         limit = max(1, min(int(top_k or 5), 5))
-        filters = {"system_metadata.project": {"eq": self.project}}
+        filters: dict[str, Any] = {"system_metadata.project": {"eq": self.project}}
         if target == "team":
             if not context.team:
                 raise ValueError("Team memory requires a host-bound team")
@@ -145,6 +147,8 @@ class TeamMemoryScene(BaseDocumentScene):
             )
         else:
             filters["system_metadata.memory_class"] = {"in": ["long_term_memory", "daily_memory"]}
+        if exclude_credentials:
+            filters["system_metadata.is_credential"] = {"ne": "true"}
         return (await context.client.search(query, context.scope, top_k=limit, filters=filters))[
             :limit
         ]
@@ -178,6 +182,7 @@ class TeamMemoryScene(BaseDocumentScene):
                 system_metadata={
                     **self.write_route().metadata(),
                     "project": self.project,
+                    "project_scope": "fixed",
                     "source_app": "jiuwenswarm",
                     **self.sync_metadata(context),
                 },
@@ -230,21 +235,33 @@ class TeamMemoryScene(BaseDocumentScene):
         ]
         if query and not kwargs.get("background"):
             operations.extend(
-                self._bounded(self._search_target(context, target, query, 5))
+                self._bounded(
+                    self._search_target(
+                        context, target, query, 5, exclude_credentials=True
+                    )
+                )
                 for target in targets[1:]
             )
         results = await asyncio.gather(*operations)
-        if len(results) > len(targets):
-            results[1] = results[3] or results[1]
-            results[2] = results[4] or results[2]
-        return "\n\n".join(
-            "## "
-            + target
-            + " memory\n"
-            + "\n".join(item["content"] for item in units if item.get("content"))
-            for target, units in zip(targets, results)
-            if units
-        )
+
+        def _safe_contents(items: list) -> list[str]:
+            return [
+                item["content"]
+                for item in items
+                if item.get("content") and not item.get("is_credential")
+            ]
+
+        sections = []
+        for idx, target in enumerate(targets):
+            if idx == 0:
+                contents = _safe_contents(results[0])
+            elif len(results) > len(targets):
+                contents = _safe_contents(results[idx + 2]) or _safe_contents(results[idx])
+            else:
+                contents = _safe_contents(results[idx])
+            if contents:
+                sections.append(f"## {target} memory\n" + "\n".join(contents))
+        return "\n\n".join(sections)
 
     @staticmethod
     def system_prompt(_context: MemorySceneContext) -> str:

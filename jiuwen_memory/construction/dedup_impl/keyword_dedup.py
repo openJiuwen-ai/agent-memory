@@ -14,7 +14,14 @@ from __future__ import annotations
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
+from jiuwen_memory.construction.dedup import (
+    Dedup,
+    DedupProducer,
+    dedup_project_filter,
+    is_project_isolated_dedup,
+    merge_dedup_hits,
+    same_scope,
+)
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
     StoreManagerProducer,
@@ -55,8 +62,24 @@ class KeywordDedup(Dedup):
         return None
 
     def recall(self, candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]:
-        # 召回已有相似记忆：用候选 content 做关键词检索
-        query = TextQuery(text=candidate.content, top_k=self._top_k)
+        # 召回已有相似记忆：用候选 content 做关键词检索，top-k 前下推项目隔离条件
+        project_filter = dedup_project_filter(candidate)
+        filters = [project_filter] if project_filter is not None else None
+        hit_units = self._search_and_aggregate(candidate, filters)
+        # 非文档全文索引不会给缺 project 键的历史全局记录补 project=""；
+        # project == "" 时合并无 project 过滤查询结果（按 unit.id 取 max 并截断 top_k），
+        # 避免新旧全局记录混存时漏掉高分旧记录（仍经 is_project_isolated_dedup 过滤）。
+        if project_filter is not None and project_filter.value == "":
+            fallback_hits = self._search_and_aggregate(candidate, None)
+            hit_units = merge_dedup_hits(hit_units, fallback_hits, top_k=self._top_k)
+        return hit_units
+
+    def _search_and_aggregate(
+        self,
+        candidate: MemoryUnit,
+        filters,
+    ) -> list[tuple[MemoryUnit, float]]:
+        query = TextQuery(text=candidate.content, top_k=self._top_k, filters=filters)
         scope = candidate.scope
         try:
             hits = self._fulltext.search(scope, query)
@@ -86,6 +109,8 @@ class KeywordDedup(Dedup):
             # scope_filter: 只保留与候选同 scope 的 unit
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):
                 continue
+            if is_project_isolated_dedup(candidate, unit):
+                continue
             # 跳过中期记忆原文——派生必然与源原文语义接近，让原文参与对照会
             # 触发 NOOP 丢派生。dedup 只查"派生是否与已沉淀长期记忆重复"。
             if unit.system_metadata.get("middle") == "true":
@@ -94,12 +119,10 @@ class KeywordDedup(Dedup):
             if unit.id not in aggregated or scored_id.score > aggregated[unit.id][1]:
                 aggregated[unit.id] = (unit, scored_id.score)
 
-        hit_units = sorted(aggregated.values(), key=lambda x: x[1], reverse=True)
-        return hit_units
+        return sorted(aggregated.values(), key=lambda x: x[1], reverse=True)
 
 
 # -- 注册到 DedupProducer（实现自注册，新增无需改 producer/build_kernel） -------- #
-
 
 
 @DedupProducer.register("keyword")

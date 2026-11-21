@@ -32,6 +32,8 @@ from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     FilterClause,
+    FilterGroup,
+    FilterLogic,
     FilterOp,
     LifecycleState,
     MemoryUnit,
@@ -39,7 +41,14 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.filter import and_merge
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
+from jiuwen_memory.construction.dedup import (
+    Dedup,
+    DedupProducer,
+    dedup_project_filter,
+    is_project_isolated_dedup,
+    same_scope,
+    unit_project,
+)
 from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.store_manager import StoreManager, StoreManagerProducer
 from jiuwen_memory.storage.types import FilterExpr, TextQuery, VectorQuery
@@ -67,26 +76,46 @@ def _active_lifecycle_filter() -> FilterExpr | None:
 
 
 def candidate_project(candidate: MemoryUnit) -> str:
-    """读候选 project，与写入侧 ``SQLiteShadowIndex._project_of`` 同口径。
-
-    agent 场景 project 是 ``system_metadata.project`` 标量直传；``coords.project``
-    兜底覆盖 router 场景（``_route`` 回写）。空落空串 = 跨项目可见。
-    """
-    metadata = candidate.system_metadata or {}
-    project = metadata.get("project")
-    if isinstance(project, str) and project.strip():
-        return project.strip()
-    coords = metadata.get("coords") or {}
-    return coords.get("project") or ""
+    """读候选 project，与写入侧 ``SQLiteShadowIndex._project_of`` 同口径。"""
+    return unit_project(candidate)
 
 
 def _dedup_recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
-    """Compare active document facts in the project and the shared profile."""
-    project = candidate_project(candidate)
-    clauses = [FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value])]
-    if project:
-        clauses.append(FilterClause("system_metadata.project", FilterOp.IN, ["", project]))
-    return and_merge(None, clauses)
+    """去重召回谓词：在 top-k 截断前筛选允许参与合并的候选集合。
+
+    - 新旧记录任一方是凭据、候选明确归属项目（``project_fact="true"`` 或非画像的
+      ``project_scope="fixed"``）或候选为全局 ``user_profile``（``project=""``）：
+      要求两者 project 完全相同（全局仅与 project='' 比较，项目事实/凭据仅与同 project 比较）。
+    - 其余普通记忆：沿用既有规则（项目内候选比较 project='' 非凭据记录与同 project，
+      全局候选比较 project=''）。
+    """
+    project = unit_project(candidate)
+    active = FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value])
+    project_filter = dedup_project_filter(candidate)
+    if project_filter is not None:
+        return and_merge(None, [active, project_filter])
+    if not project:
+        return _active_lifecycle_filter()
+    return and_merge(
+        None,
+        [
+            active,
+            FilterGroup(
+                FilterLogic.OR,
+                [
+                    FilterClause("system_metadata.project", FilterOp.EQ, project),
+                    FilterGroup(
+                        FilterLogic.AND,
+                        [
+                            FilterClause("system_metadata.project", FilterOp.EQ, ""),
+                            FilterClause("system_metadata.is_credential", FilterOp.NE, "true"),
+                            FilterClause("system_metadata.is_credential", FilterOp.NE, True),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -196,6 +225,7 @@ class ShadowDedup(Dedup):
                         vector=candidate_vector,
                         top_k=self._top_k,
                         filters=recall_filter,
+                        extensions={"prefilter": True},
                     ),
                 )
             except Exception as exc:
@@ -265,6 +295,8 @@ class ShadowDedup(Dedup):
             if self._tier_filter and unit.tier != candidate.tier:
                 continue
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):
+                continue
+            if is_project_isolated_dedup(candidate, unit):
                 continue
             if unit.id == candidate.id:
                 continue

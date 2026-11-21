@@ -236,6 +236,7 @@ class TestRecallFilters:
         assert _recall_filters() == {
             "tier": {"in": ["semantic", "core", "procedural"]},
             "system_metadata.memory_class": {"ne": "team_memory"},
+            "system_metadata.is_credential": {"ne": "true"},
         }
 
     def test_filters_exclude_episodic_and_working(self):
@@ -248,12 +249,14 @@ class TestRecallFilters:
         filters = _recall_filters("proj-a")
         assert filters["system_metadata.project"] == {"eq": "proj-a"}, filters
         assert filters["tier"] == {"in": ["semantic", "core", "procedural"]}, filters
+        assert filters["system_metadata.memory_class"] == {"ne": "team_memory"}, filters
+        assert filters["system_metadata.is_credential"] == {"ne": "true"}, filters
 
     def test_filters_without_project_carry_no_project_predicate(self):
         assert "system_metadata.project" not in _recall_filters(""), "空 project 不应带项目谓词"
 
     def test_filters_with_project_normalize_to_and_clauses(self):
-        # 层级、项目和排除团队类别由 API 边界统一解析为 AND。
+        # 层级、项目、凭据与排除团队类别由 API 边界统一解析为 AND。
         expr = normalize_filters(_recall_filters("proj-a"))
         assert expr.logic is FilterLogic.AND, expr
         clauses = {(c.field, c.op.value): c.value for c in expr.children}
@@ -261,6 +264,7 @@ class TestRecallFilters:
             ("tier", "in"): ["semantic", "core", "procedural"],
             ("system_metadata.project", "eq"): "proj-a",
             ("system_metadata.memory_class", "ne"): "team_memory",
+            ("system_metadata.is_credential", "ne"): "true",
         }, clauses
 
 
@@ -289,6 +293,101 @@ class TestProfileInjection:
         kept = _tail_within_budget(items, max_items=5, max_chars=10)
 
         assert [it["content"] for it in kept] == ["旧事实"], "最新一条超长时跳过它，仍注入其余条目"
+
+    def test_prefetch_excludes_credentials_from_both_profile_and_search(self):
+        pg_conn = "数据库 postgresql://alice:s3cr3t@db.example.com:5432/app"
+        redis_conn = "缓存 redis://:r3d1s-pass@cache.example.com:6379/0"
+        openai_key = "OpenAI Key sk-proj1234567890abcdef1234"
+        author_url = "团队文章索引 https://docs.example.com/articles?author=alice"
+        s3_presigned = (
+            "下载链接 https://bucket.s3.amazonaws.com/report.pdf"
+            "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE"
+            "&X-Amz-Signature=0123456789abcdef"
+        )
+
+        async def _run() -> None:
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-cred-user"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-cred-user", scope_id="tenant-sdk")
+            try:
+                old_secret = "用户的邮箱口令是 super-secret-pass-9981。"
+                secret_url = "同步地址 https://alice:s3cr3t@api.example.com/v1?token=xyz999"
+                reset_mail = "密码重置通知发往 password-reset@example.org。"
+                auth_pref = "The user prefers password authentication."
+                prefs = [{"item_id": f"p{i}", "content": f"偏好条目{i}"} for i in range(5)]
+
+                async def _read(md_filename, scope, *, project="", line_range=None):
+                    return [
+                        {"item_id": "cred1", "content": old_secret, "is_credential": True},
+                        {"item_id": "cred2", "content": secret_url, "is_credential": True},
+                        {"item_id": "cred3", "content": s3_presigned, "is_credential": True},
+                        {"item_id": "cred4", "content": pg_conn, "is_credential": True},
+                        {"item_id": "cred5", "content": redis_conn, "is_credential": True},
+                        {"item_id": "cred6", "content": openai_key, "is_credential": True},
+                        {"item_id": "mail1", "content": reset_mail, "is_credential": False},
+                        {"item_id": "pref_auth", "content": auth_pref, "is_credential": False},
+                        {"item_id": "doc1", "content": author_url, "is_credential": False},
+                        *prefs,
+                    ]
+
+                seen_filters: list[dict | None] = []
+
+                async def _search(query, scope, *, top_k=5, filters=None):
+                    seen_filters.append(filters)
+                    # 模拟两路同时命中带 is_credential 标记的凭据与正常条目
+                    return [
+                        {"item_id": "cred1", "content": old_secret, "is_credential": True},
+                        {"item_id": "cred2", "content": secret_url, "is_credential": True},
+                        {"item_id": "cred3", "content": s3_presigned, "is_credential": True},
+                        {"item_id": "cred4", "content": pg_conn, "is_credential": True},
+                        {"item_id": "cred5", "content": redis_conn, "is_credential": True},
+                        {"item_id": "cred6", "content": openai_key, "is_credential": True},
+                        {"item_id": "pref_auth", "content": auth_pref, "is_credential": False},
+                        {"item_id": "doc1", "content": author_url, "is_credential": False},
+                        {"item_id": "hit1", "content": "Calendar Demo 的通知时间是每天 09:00。"},
+                    ]
+
+                provider._client.read_md_file = _read
+                provider._client.search = _search
+                text = await provider.prefetch("Calendar Demo 的通知时间是什么？")
+                assert seen_filters and seen_filters[0]["system_metadata.is_credential"] == {
+                    "ne": "true"
+                }, f"Work 预取检索应携带凭据排除过滤: {seen_filters}"
+                assert "super-secret-pass-9981" not in text, (
+                    "USER.md 与 search 两路命中同一凭据时均不得进入通用预取"
+                )
+                assert "s3cr3t" not in text and "token=xyz999" not in text, (
+                    "标记为凭据的 URL 不得进入通用预取"
+                )
+                assert "r3d1s-pass" not in text, "标记为凭据的 Redis 连接串不得进入通用预取"
+                assert "sk-proj1234567890abcdef1234" not in text, "标记为凭据的 Key 不得进入预取"
+                assert "X-Amz-Signature" not in text, "标记为凭据的预签名链接不得进入通用预取"
+                assert reset_mail in text, "含 password 子串的合法邮箱不应被误删"
+                assert auth_pref in text, "普通英文登录偏好不应被误删"
+                assert author_url in text, "带 ?author=alice 的普通链接不应被误删"
+                assert "Calendar Demo 的通知时间是每天 09:00。" in text
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(_run())
+
+    def test_work_system_prompt_guides_reusable_identifier_search_and_confirmation(self):
+        normal = AgentMemoryMemoryProvider(
+            security_provider=_security_provider(
+                ApiScope(org="tenant-sdk", user="sdk-prompt-user"), role=Role.ROOT
+            ),
+        )
+        prompt = normal.system_prompt_block()
+
+        assert "Reusable identifiers:" in prompt
+        assert "agent_memory_search" in prompt
+        assert "server/endpoint address" in prompt
+        assert "Use a unique match directly when it fits the task" in prompt
+        assert "ask the user to confirm before acting" in prompt
+        assert "never raw secrets" in prompt
 
     def test_merge_puts_profile_first_and_dedups_by_id_and_text(self):
         profile = [
@@ -1005,6 +1104,852 @@ class TestSdkMode:
                 await provider.shutdown()
 
         asyncio.run(run())
+
+    def test_cross_project_credential_searchable_across_projects_not_prefetched(
+        self, monkeypatch, tmp_path,
+    ):
+        import agent_memory_provider as adapter
+
+        offline_config = adapter._agent_default_config
+
+        def config():
+            result = offline_config()
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
+            return result
+
+        cred_fact = "用户的邮箱 SMTP 授权码是 smtp-code-7788。"
+
+        def extract(_self, messages):
+            source_id = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "content": cred_fact,
+                    "memory_class": "long_term_memory",
+                    "project_fact": False,
+                    "is_credential": True,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                }
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-sdk", user="sdk-cred-xproj"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="sdk-cred-xproj", scope_id="tenant-sdk")
+            try:
+                await provider.sync_turn("授权码是 smtp-code-7788", "记下了。", project="repo-a")
+                assert (tmp_path / "memory" / "MEMORY.md").is_file(), (
+                    "跨项目凭据应落入跨项目 memory/MEMORY.md"
+                )
+                assert not (tmp_path / "memory" / "repo-a" / "MEMORY.md").exists(), (
+                    "跨项目凭据不得绑定到首次写入的项目目录"
+                )
+                # 省略 project 可检索跨项目凭据；传具体 project 时按等值隔离不混入空项目条目
+                res = json.loads(
+                    await provider.handle_tool_call(
+                        "agent_memory_search", {"query": "SMTP 授权码"},
+                    )
+                )
+                joined = "\n".join(it["memory"] for it in res.get("results", []))
+                assert cred_fact in joined, "省略 project 的显式搜索应能查到跨项目凭据"
+                for proj in ("repo-a", "repo-b"):
+                    scoped = json.loads(
+                        await provider.handle_tool_call(
+                            "agent_memory_search", {"query": "SMTP 授权码", "project": proj},
+                        )
+                    )
+                    assert all(
+                        cred_fact not in it["memory"] for it in scoped.get("results", [])
+                    ), f"传 project={proj!r} 时按等值过滤不应混入空项目跨项目凭据"
+                assert "smtp-code-7788" not in await provider.prefetch(
+                    "SMTP 授权码", project="repo-b"
+                )
+                # 真实进程内 search() 也必须透传 system_metadata.is_credential
+                raw_hits = await provider._client.search(
+                    "SMTP 授权码", provider.bound_scope(), top_k=5,
+                )
+                assert any(
+                    cred_fact in hit["content"] and hit["is_credential"] is True
+                    for hit in raw_hits
+                ), f"真实 _InProcessClient.search 应透传 is_credential=True: {raw_hits}"
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(run())
+
+    def test_two_session_first_time_identifier_recall_and_purpose_boundary(
+        self, monkeypatch, tmp_path,
+    ):
+        """#313 双会话验收：首轮测试邮箱落画像，次轮同用途找回、换用途不作默认收件人。"""
+        import agent_memory_provider as adapter
+
+        offline_config = adapter._agent_default_config
+
+        def config():
+            result = offline_config()
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
+            return result
+
+        profile_fact = (
+            "用户为这次测试文件发送指定了发件邮箱 sender@example.com "
+            "和收件邮箱 recipient@example.org。"
+        )
+        event_fact = (
+            "2026-11-21，用户要求助手用 sender@example.com 把 /tmp/test.txt "
+            "发到 recipient@example.org。"
+        )
+
+        def extract(_self, messages):
+            source_id = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "target": "event",
+                    "content": event_fact,
+                    "memory_class": "daily_memory",
+                    "project_fact": False,
+                    "is_credential": False,
+                    "tier": "episodic",
+                    "confidence": 1.0,
+                },
+                {
+                    "source_id": source_id,
+                    "target": "fact",
+                    "content": profile_fact,
+                    "memory_class": "user_profile",
+                    "project_fact": False,
+                    "is_credential": False,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                },
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            sec = _security_provider(
+                ApiScope(org="tenant-sdk", user="sdk-two-session"), role=Role.ROOT
+            )
+            # 会话 1：首次给出测试文件发送的发件与收件邮箱
+            session1 = AgentMemoryMemoryProvider(security_provider=sec)
+            await session1.initialize(user_id="sdk-two-session", scope_id="tenant-sdk")
+            try:
+                await session1.sync_turn(
+                    "我生成了/tmp/test.txt这个文档，"
+                    "用sender@example.com 发到 recipient@example.org",
+                    "好的，我来准备发送。",
+                )
+            finally:
+                await session1.shutdown()
+
+            user_md = (tmp_path / "USER.md").read_text(encoding="utf-8")
+            assert "sender@example.com" in user_md and "recipient@example.org" in user_md
+            assert "/tmp/test.txt" not in user_md, "临时文件名不应写进 USER.md 稳定事实"
+            assert "测试文件" in user_md and "默认收件人" not in user_md
+
+            # 会话 2：全新会话实例，同一用户
+            session2 = AgentMemoryMemoryProvider(security_provider=sec)
+            await session2.initialize(user_id="sdk-two-session", scope_id="tenant-sdk")
+            try:
+                # 继续同一用途：开场预取与显式搜索均可直接找回发件与收件邮箱
+                same_purpose = await session2.prefetch("再帮我发一次测试文件")
+                assert "sender@example.com" in same_purpose
+                assert "recipient@example.org" in same_purpose
+                assert "测试文件" in same_purpose
+
+                search_res = json.loads(
+                    await session2.handle_tool_call(
+                        "agent_memory_search", {"query": "发件邮箱 收件邮箱"},
+                    )
+                )
+                joined = "\n".join(it["memory"] for it in search_res.get("results", []))
+                assert "sender@example.com" in joined and "recipient@example.org" in joined
+
+                # 换用途（如发送周报）：画像保留“测试文件”用途，提示词约束用途不符时须先确认
+                other_purpose = await session2.prefetch("把本周周报发出去")
+                assert "测试文件" in other_purpose and "默认收件人" not in other_purpose
+                prompt = session2.system_prompt_block()
+                assert "stored purpose does not match" in prompt
+                assert "ask the user to confirm before acting" in prompt
+            finally:
+                await session2.shutdown()
+
+        asyncio.run(run())
+
+    def test_dual_session_email_and_credential_written_twice_and_unrelated_prefetch(
+        self, tmp_path, monkeypatch,
+    ):
+        """#313 双会话验收：邮箱与授权码写两次，换文件准备发送可找回，无关会话不预取。"""
+        import agent_memory_provider as adapter
+
+        offline_config = adapter._agent_default_config
+
+        def config():
+            result = offline_config()
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
+            return result
+
+        email_fact = (
+            "用户为发送测试文件指定了发件邮箱 sender@example.com "
+            "和收件邮箱 recipient@example.org。"
+        )
+        cred_fact = (
+            "用户发件邮箱 sender@example.com 的 QQ 邮箱 SMTP 授权码是 smtp-auth-e2e-9876。"
+        )
+
+        def extract(_self, messages):
+            source_id = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "target": "fact",
+                    "content": email_fact,
+                    "memory_class": "user_profile",
+                    "project_fact": False,
+                    "is_credential": False,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                },
+                {
+                    # 字符串 "true" 且误归 user_profile，验证抽取入口统一收口为凭据长期记忆
+                    "source_id": source_id,
+                    "target": "fact",
+                    "content": cred_fact,
+                    "memory_class": "user_profile",
+                    "project_fact": False,
+                    "is_credential": "true",
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                },
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            sec = _security_provider(
+                ApiScope(org="tenant-sdk", user="sdk-e2e-email"), role=Role.ROOT
+            )
+            # 会话 A：#313 原话 + 测试凭据，同一授权码写两次验证不丢标记、不重复
+            s1 = AgentMemoryMemoryProvider(security_provider=sec)
+            await s1.initialize(user_id="sdk-e2e-email", scope_id="tenant-sdk")
+            try:
+                for _ in range(2):
+                    await s1.sync_turn(
+                        "我生成了/tmp/test.txt这个文档，用sender@example.com 发到 "
+                        "recipient@example.org，QQ 邮箱授权码是 smtp-auth-e2e-9876",
+                        "好的，已准备好。",
+                    )
+            finally:
+                await s1.shutdown()
+
+            user_md = (tmp_path / "USER.md").read_text(encoding="utf-8")
+            memory_md = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+            assert "sender@example.com" in user_md and "recipient@example.org" in user_md
+            assert "smtp-auth-e2e-9876" not in user_md, "授权码不得写入 USER.md"
+            assert memory_md.count("smtp-auth-e2e-9876") == 1, "同一授权码写两次应只保留一条"
+
+            # 会话 B：换一份文件、只准备发送
+            s2 = AgentMemoryMemoryProvider(security_provider=sec)
+            await s2.initialize(user_id="sdk-e2e-email", scope_id="tenant-sdk")
+            try:
+                prefetched = await s2.prefetch("帮我准备把 /tmp/report.pdf 发出去")
+                assert "sender@example.com" in prefetched and "recipient@example.org" in prefetched
+                assert "发送测试文件" in prefetched
+                assert "smtp-auth-e2e-9876" not in prefetched, "开场预取不得注入授权码"
+
+                found = json.loads(
+                    await s2.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "sender@example.com QQ 邮箱 SMTP 授权码"},
+                    )
+                )
+                cred_hits = [
+                    it for it in found.get("results", []) if "smtp-auth-e2e-9876" in it["memory"]
+                ]
+                assert len(cred_hits) == 1, "授权码应可按对应账号/服务名显式找回且仅一条"
+
+                # 无关会话：预取不得包含授权码
+                unrelated = await s2.prefetch("今天北京天气怎么样")
+                assert "smtp-auth-e2e-9876" not in unrelated
+            finally:
+                await s2.shutdown()
+
+        asyncio.run(run())
+
+    def test_dual_session_service_account_endpoint_and_credential_recall(
+        self, tmp_path, monkeypatch,
+    ):
+        """通用标识双会话验收：服务账号 + 接口地址 + 关联凭据共用同一写入与按需检索规则。"""
+        import agent_memory_provider as adapter
+
+        offline_config = adapter._agent_default_config
+
+        def config():
+            result = offline_config()
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
+            return result
+
+        svc_fact = (
+            "用户推送容器镜像使用服务账号 svc_deploy "
+            "和镜像仓库接口地址 https://registry.internal.example.com。"
+        )
+        token_fact = (
+            "用户服务账号 svc_deploy 访问 https://registry.internal.example.com "
+            "的仓库令牌是 tok-reg-5566。"
+        )
+
+        def extract(_self, messages):
+            source_id = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "target": "fact",
+                    "content": svc_fact,
+                    "memory_class": "user_profile",
+                    "project_fact": False,
+                    "is_credential": False,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                },
+                {
+                    "source_id": source_id,
+                    "target": "fact",
+                    "content": token_fact,
+                    "memory_class": "long_term_memory",
+                    "project_fact": False,
+                    "is_credential": True,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                },
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            sec = _security_provider(
+                ApiScope(org="tenant-sdk", user="sdk-e2e-svc"), role=Role.ROOT
+            )
+            s1 = AgentMemoryMemoryProvider(security_provider=sec)
+            await s1.initialize(user_id="sdk-e2e-svc", scope_id="tenant-sdk")
+            try:
+                await s1.sync_turn(
+                    "发布镜像时用账号 svc_deploy 推送到 https://registry.internal.example.com，"
+                    "仓库令牌是 tok-reg-5566",
+                    "好的，准备推送。",
+                )
+            finally:
+                await s1.shutdown()
+
+            user_md = (tmp_path / "USER.md").read_text(encoding="utf-8")
+            assert "svc_deploy" in user_md
+            assert "https://registry.internal.example.com" in user_md
+            assert "tok-reg-5566" not in user_md
+
+            s2 = AgentMemoryMemoryProvider(security_provider=sec)
+            await s2.initialize(user_id="sdk-e2e-svc", scope_id="tenant-sdk")
+            try:
+                prefetched = await s2.prefetch("帮我把新镜像推到仓库")
+                assert "svc_deploy" in prefetched
+                assert "https://registry.internal.example.com" in prefetched
+                assert "tok-reg-5566" not in prefetched
+
+                search_svc = json.loads(
+                    await s2.handle_tool_call(
+                        "agent_memory_search", {"query": "镜像仓库 服务账号 接口地址"},
+                    )
+                )
+                joined_svc = "\n".join(it["memory"] for it in search_svc.get("results", []))
+                assert "svc_deploy" in joined_svc
+                assert "https://registry.internal.example.com" in joined_svc
+
+                search_tok = json.loads(
+                    await s2.handle_tool_call(
+                        "agent_memory_search", {"query": "svc_deploy 仓库令牌"},
+                    )
+                )
+                assert any("tok-reg-5566" in it["memory"] for it in search_tok.get("results", []))
+            finally:
+                await s2.shutdown()
+
+        asyncio.run(run())
+
+    def test_conclude_project_credential_stays_isolated_from_other_projects(
+        self, tmp_path, monkeypatch,
+    ):
+        """agent_memory_conclude 显式传 project 写凭据时，即使 project_fact=false 也留在该项目。"""
+        import agent_memory_provider as adapter
+
+        offline_config = adapter._agent_default_config
+
+        def config():
+            result = offline_config()
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
+            return result
+
+        cred_fact = "项目 A 的部署令牌是 tok-proj-a-only。"
+
+        def extract(_self, messages):
+            source_id = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "target": "fact",
+                    "content": cred_fact,
+                    "memory_class": "long_term_memory",
+                    "project_fact": False,
+                    "is_credential": True,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                }
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            sec = _security_provider(
+                ApiScope(org="tenant-sdk", user="sdk-conclude-proj"), role=Role.ROOT
+            )
+            p = AgentMemoryMemoryProvider(security_provider=sec)
+            await p.initialize(user_id="sdk-conclude-proj", scope_id="tenant-sdk")
+            try:
+                await p.handle_tool_call(
+                    "agent_memory_conclude",
+                    {"conclusion": cred_fact, "project": "proj-a"},
+                )
+                assert cred_fact in (tmp_path / "memory" / "proj-a" / "MEMORY.md").read_text(
+                    encoding="utf-8"
+                )
+                assert not (tmp_path / "memory" / "MEMORY.md").exists()
+
+                in_b = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "tok-proj-a-only", "project": "proj-b"},
+                    )
+                )
+                assert all(
+                    "tok-proj-a-only" not in it["memory"] for it in in_b.get("results", [])
+                ), "写入 proj-a 的凭据不得在 proj-b 被搜到"
+                in_a = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "tok-proj-a-only", "project": "proj-a"},
+                    )
+                )
+                assert any("tok-proj-a-only" in it["memory"] for it in in_a.get("results", []))
+                pref = await p.prefetch("tok-proj-a-only", project="proj-a")
+                assert "tok-proj-a-only" not in pref
+            finally:
+                await p.shutdown()
+
+        asyncio.run(run())
+
+    def test_project_email_and_subsequent_global_profile_coexist(
+        self, tmp_path, monkeypatch,
+    ):
+        """项目邮箱仅落该项目，且已有项目邮箱时后续同项目对话写全局 user_profile 不被判重跳过。"""
+        import agent_memory_provider as adapter
+
+        offline_config = adapter._agent_default_config
+
+        def config():
+            result = offline_config()
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
+            return result
+
+        email_fact = "项目 A 的测试收件邮箱是 receiver-a@example.com。"
+        shared_email = "通用收件邮箱是 shared-ops@example.com。"
+        weekly_email = "周报收件邮箱是 weekly-report@example.com。"
+
+        def extract(_self, messages):
+            match = re.search(r"\[ID: ([^\]]+)\]\s*(.*)", messages[1].content)
+            assert match is not None
+            source_id, line = match.group(1), match.group(2)
+            if "全局默认" in line or "各项目都用这个邮箱" in line:
+                fact = shared_email if "shared-ops@example.com" in line else weekly_email
+                return json.dumps([
+                    {
+                        "source_id": source_id,
+                        "target": "fact",
+                        "content": fact,
+                        "memory_class": "user_profile",
+                        "project_fact": False,
+                        "is_credential": False,
+                        "tier": "semantic",
+                        "confidence": 1.0,
+                    }
+                ])
+            if "shared-ops@example.com" in line:
+                fact = shared_email
+            elif "weekly-report@example.com" in line:
+                fact = weekly_email
+            else:
+                fact = email_fact
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "target": "fact",
+                    "content": fact,
+                    "memory_class": "long_term_memory",
+                    "project_fact": True,
+                    "is_credential": False,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                }
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            sec = _security_provider(
+                ApiScope(org="tenant-sdk", user="sdk-conclude-email-proj"), role=Role.ROOT
+            )
+            p = AgentMemoryMemoryProvider(security_provider=sec)
+            await p.initialize(user_id="sdk-conclude-email-proj", scope_id="tenant-sdk")
+            try:
+                await p.handle_tool_call(
+                    "agent_memory_conclude",
+                    {"conclusion": email_fact, "project": "proj-a"},
+                )
+                assert email_fact in (tmp_path / "memory" / "proj-a" / "MEMORY.md").read_text(
+                    encoding="utf-8"
+                )
+                assert not (tmp_path / "USER.md").exists(), (
+                    "项目专用邮箱（project_fact=true）不得落进全局 USER.md"
+                )
+
+                in_b = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "receiver-a@example.com", "project": "proj-b"},
+                    )
+                )
+                assert all(
+                    "receiver-a@example.com" not in it["memory"] for it in in_b.get("results", [])
+                ), "项目 B 搜索不得读到项目 A 的邮箱"
+                pref_b = await p.prefetch("receiver-a@example.com", project="proj-b")
+                assert "receiver-a@example.com" not in pref_b, (
+                    "项目 B 预取不得带出项目 A 的邮箱"
+                )
+
+                in_a = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "receiver-a@example.com", "project": "proj-a"},
+                    )
+                )
+                assert any(
+                    "receiver-a@example.com" in it["memory"] for it in in_a.get("results", [])
+                )
+                pref_a = await p.prefetch("receiver-a@example.com", project="proj-a")
+                assert "receiver-a@example.com" in pref_a
+
+                # 先全局后项目：全局已有同文邮箱时，明确归属项目 A（project_fact=true）
+                # 不被全局同名记录判重跳过，且项目内连写两次去重保留 1 条、按项目可搜回
+                await p.handle_tool_call(
+                    "agent_memory_conclude", {"conclusion": f"全局默认：{shared_email}"}
+                )
+                assert shared_email in (tmp_path / "USER.md").read_text(encoding="utf-8")
+                for _ in range(2):
+                    await p.handle_tool_call(
+                        "agent_memory_conclude",
+                        {"conclusion": shared_email, "project": "proj-a"},
+                    )
+                proj_a_md = (tmp_path / "memory" / "proj-a" / "MEMORY.md").read_text(
+                    encoding="utf-8"
+                )
+                assert proj_a_md.count("shared-ops@example.com") == 1, (
+                    "全局已有同文邮箱时，明确写入项目 A 不得被全局判重跳过，同项目连写应去重留 1 条"
+                )
+                assert shared_email in (tmp_path / "USER.md").read_text(encoding="utf-8")
+                in_a_shared = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "shared-ops@example.com", "project": "proj-a"},
+                    )
+                )
+                assert any(
+                    "shared-ops@example.com" in it["memory"]
+                    for it in in_a_shared.get("results", [])
+                ), "指定项目 A 搜索应能找回后写入项目 A 的同文邮箱"
+
+                # 先项目后全局：先存项目 A 邮箱，再在项目 A 普通对话中声明跨项目复用（user_profile）
+                await p.handle_tool_call(
+                    "agent_memory_conclude",
+                    {"conclusion": weekly_email, "project": "proj-a"},
+                )
+                assert weekly_email in (tmp_path / "memory" / "proj-a" / "MEMORY.md").read_text(
+                    encoding="utf-8"
+                )
+                await p.sync_turn(
+                    f"各项目都用这个邮箱：{weekly_email}", "好的，已记住", project="proj-a"
+                )
+                # 再说一次验证全局 USER.md 内部正常去重只留 1 条
+                await p.sync_turn(
+                    f"各项目都用这个邮箱：{weekly_email}", "好的", project="proj-a"
+                )
+                user_md = (tmp_path / "USER.md").read_text(encoding="utf-8")
+                assert user_md.count("weekly-report@example.com") == 1, (
+                    "已有项目邮箱不得让后续全局 user_profile 漏存，全局 USER.md 应保留 1 条"
+                )
+                global_weekly = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "weekly-report@example.com"},
+                    )
+                )
+                assert any(
+                    "weekly-report@example.com" in it["memory"]
+                    for it in global_weekly.get("results", [])
+                ), "省略 project 的全局搜索应能找回后续写入 USER.md 的邮箱"
+                pref_b_weekly = await p.prefetch("发周报", project="proj-b")
+                assert "weekly-report@example.com" in pref_b_weekly, (
+                    "项目 B 预取应能带出后续写入全局 USER.md 的邮箱"
+                )
+            finally:
+                await p.shutdown()
+
+        asyncio.run(run())
+
+    def test_project_credential_dedup_does_not_merge_into_global_record(
+        self, tmp_path, monkeypatch,
+    ):
+        """项目 A 凭据不并入全局泄露到项目 B，且全局已有同文凭据时项目 A 连写三次只保留 1 条。"""
+        import agent_memory_provider as adapter
+
+        offline_config = adapter._agent_default_config
+
+        def config():
+            result = offline_config()
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
+            return result
+
+        global_fact = "通用服务账号 svc_api 的默认 API Token 是 tok-shared-text。"
+        proj_a_only_fact = "项目 A 服务账号 svc_api 的专用 API Token 是 tok-proj-a-secret。"
+        phase = {"step": 0}
+
+        def extract(_self, messages):
+            source_id = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+            phase["step"] += 1
+            if phase["step"] <= 6:
+                return json.dumps([
+                    {
+                        "source_id": source_id,
+                        "target": "fact",
+                        "content": f"{global_fact}（全局条目 {phase['step']}）",
+                        "memory_class": "long_term_memory",
+                        "project_fact": False,
+                        "is_credential": True,
+                        "tier": "semantic",
+                        "confidence": 1.0,
+                    }
+                ])
+            if phase["step"] == 7:
+                return json.dumps([
+                    {
+                        "source_id": source_id,
+                        "target": "fact",
+                        "content": proj_a_only_fact,
+                        "memory_class": "long_term_memory",
+                        "project_fact": True,
+                        "is_credential": True,
+                        "tier": "semantic",
+                        "confidence": 1.0,
+                    }
+                ])
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "target": "fact",
+                    "content": global_fact,
+                    "memory_class": "long_term_memory",
+                    "project_fact": True,
+                    "is_credential": True,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                }
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            sec = _security_provider(
+                ApiScope(org="tenant-sdk", user="sdk-proj-cred-dedup"), role=Role.ROOT
+            )
+            p = AgentMemoryMemoryProvider(security_provider=sec)
+            await p.initialize(user_id="sdk-proj-cred-dedup", scope_id="tenant-sdk")
+            try:
+                # 先写入 6 条全局高相似凭据（超过 dedup top_k=5），验证真实 ShadowDedup 召回不被占满
+                for idx in range(1, 7):
+                    await p.handle_tool_call(
+                        "agent_memory_conclude",
+                        {"conclusion": f"{global_fact}（全局条目 {idx}）"},
+                    )
+
+                # 写入项目 A 专用凭据：不得并入全局记录泄露到项目 B
+                await p.handle_tool_call(
+                    "agent_memory_conclude",
+                    {"conclusion": proj_a_only_fact, "project": "proj-a"},
+                )
+                # 全局已有 6 条高相似凭据时，向项目 A 连续写入同文凭据三次：项目 A 只保留 1 条
+                for _ in range(3):
+                    await p.handle_tool_call(
+                        "agent_memory_conclude",
+                        {"conclusion": global_fact, "project": "proj-a"},
+                    )
+
+                proj_a_md = (tmp_path / "memory" / "proj-a" / "MEMORY.md").read_text(
+                    encoding="utf-8"
+                )
+                global_md = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+                assert proj_a_md.count("tok-shared-text") == 1, (
+                    "全局有 6 条高相似凭据占满 top_k=5 时，项目 A 连写三次仍须去重只保留 1 条"
+                )
+                assert global_md.count("tok-shared-text") == 6
+                assert "tok-proj-a-secret" in proj_a_md
+                assert "tok-proj-a-secret" not in global_md
+
+                in_b = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "tok-proj-a-secret", "project": "proj-b"},
+                    )
+                )
+                assert all(
+                    "tok-proj-a-secret" not in it["memory"] for it in in_b.get("results", [])
+                ), "项目 A 凭据不得因去重并入全局记录而泄露到项目 B"
+
+                in_a = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "tok-proj-a-secret", "project": "proj-a"},
+                    )
+                )
+                assert any(
+                    "tok-proj-a-secret" in it["memory"] for it in in_a.get("results", [])
+                ), "项目 A 内应能正常检索到项目 A 专用凭据"
+                in_a_global = json.loads(
+                    await p.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "tok-shared-text", "project": "proj-a"},
+                    )
+                )
+                assert any(
+                    "tok-shared-text" in it["memory"] for it in in_a_global.get("results", [])
+                ), "全局与项目 A 凭据应均保持可检索"
+            finally:
+                await p.shutdown()
+
+        asyncio.run(run())
+
+    def test_http_client_search_propagates_is_credential(self):
+        from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import (
+            _HttpClient,
+            _Scope,
+        )
+
+        client = _HttpClient(base_url="http://127.0.0.1:9999", api_key="test")
+
+        async def _fake_post(verb, payload):
+            assert verb == "search"
+            return {
+                "items": [
+                    {
+                        "unit_id": "u-cred",
+                        "content": "SMTP 授权码是 xxx",
+                        "score": 0.9,
+                        "system_metadata": {"is_credential": "true"},
+                    },
+                    {
+                        "unit_id": "u-ok",
+                        "content": "发件邮箱是 a@example.com",
+                        "score": 0.8,
+                        "system_metadata": {},
+                    },
+                ]
+            }
+
+        client._post_verb = _fake_post
+        hits = asyncio.run(client.search("SMTP", _Scope(org="o", user="u")))
+        assert hits == [
+            {
+                "item_id": "u-cred",
+                "content": "SMTP 授权码是 xxx",
+                "score": 0.9,
+                "is_credential": True,
+            },
+            {
+                "item_id": "u-ok",
+                "content": "发件邮箱是 a@example.com",
+                "score": 0.8,
+                "is_credential": False,
+            },
+        ]
+
+    def test_in_process_add_logs_only_exception_type(self, caplog):
+        from jiuwen_memory.construction.extractor_impl.llm_extractor import (
+            InvalidExtractionCandidateError,
+        )
+        from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import (
+            _InProcessClient,
+            _Scope,
+        )
+        from tests.unit.construction.fixtures import MockLLM, create_test_unit
+
+        class _BoomApi:
+            def __init__(self, exc: Exception) -> None:
+                self._exc = exc
+
+            async def add_async(self, *_args, **_kwargs):
+                raise self._exc
+
+        def _no_security():
+            return None
+
+        scope = _Scope(org="o", user="u")
+        client = object.__new__(_InProcessClient)
+        client._security = _no_security
+
+        extractor = AgentLlmExtractor(llm=MockLLM())
+        with pytest.raises(InvalidExtractionCandidateError) as invalid:
+            extractor.build_candidates(
+                [{"source_id": "sender@example.org", "confidence": 1}],
+                [create_test_unit("u1", "测试邮件")],
+            )
+        assert str(invalid.value) == "item 0 source_id is not in the batch"
+        client._api = _BoomApi(invalid.value)
+        with caplog.at_level("WARNING"):
+            assert asyncio.run(client.add("msg", scope)) is None
+        assert "error_type=InvalidExtractionCandidateError" in caplog.text
+        assert "source_id" not in caplog.text
+        assert "sender@example.org" not in caplog.text
+
+        caplog.clear()
+        client._api = _BoomApi(RuntimeError("secret-plaintext-never-log"))
+        with caplog.at_level("WARNING"):
+            assert asyncio.run(client.add("msg", scope)) is None
+        assert "error_type=RuntimeError" in caplog.text
+        assert "secret-plaintext-never-log" not in caplog.text
+
+        caplog.clear()
+        client._api = _BoomApi(InvalidExtractionCandidateError("sender@example.org"))
+        with caplog.at_level("WARNING"):
+            assert asyncio.run(client.add("msg", scope)) is None
+        assert "error_type=InvalidExtractionCandidateError" in caplog.text
+        assert "sender@example.org" not in caplog.text
 
 
 # --------------------------------------------------------------------------- #

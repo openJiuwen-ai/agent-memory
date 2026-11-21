@@ -397,3 +397,75 @@ def test_team_document_errors_identify_invalid_argument(target, name, team, erro
         client.read_md_file.assert_not_awaited()
 
     asyncio.run(run())
+
+
+def test_team_write_keeps_credential_bound_and_prefetch_excludes_credentials(
+    tmp_path, monkeypatch,
+):
+    """Team 写入的凭据即使判 project_fact=false 也留在本项目，且 Team 预取不注入凭据。"""
+    import re
+
+    from jiuwen_memory.construction.extractor_impl.agent_llm_extractor import AgentLlmExtractor
+
+    cred_fact = "团队项目发布令牌是 tok-team-proj-7788。"
+
+    def extract_response(_extractor, messages):
+        source = re.search(r"\[ID: ([^\]]+)\]", messages[-1].content).group(1)
+        return json.dumps([
+            {
+                "source_id": source,
+                "target": "fact",
+                "confidence": 1.0,
+                "tier": "semantic",
+                "content": cred_fact,
+                "memory_class": "long_term_memory",
+                "project_fact": False,
+                "is_credential": True,
+                "team_internal": False,
+            }
+        ])
+
+    monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract_response)
+
+    async def run():
+        security = _security_provider(ApiScope(org="org", user="user"))
+        provider = AgentMemoryMemoryProvider(
+            scene="team",
+            project="repo",
+            team="repo--" + "a" * 24,
+            config_dict={"extractor": {"team_turn": "team_llm"}},
+            security_provider=security,
+            portal={"enabled": False},
+        )
+        await provider.initialize(scope_id="org", user_id="user", agent_id="main", session_id="")
+        try:
+            write_res = json.loads(
+                await provider.handle_tool_call("team_memory_write", {"content": cred_fact})
+            )
+            assert write_res["stored"] is True
+            assert cred_fact in (tmp_path / "memory" / "repo" / "MEMORY.md").read_text(
+                encoding="utf-8"
+            )
+            assert not (tmp_path / "memory" / "MEMORY.md").exists(), (
+                "Team 固定项目写入凭据不得逃逸到全局 MEMORY.md"
+            )
+
+            search_res = json.loads(
+                await provider.handle_tool_call(
+                    "team_memory_search", {"query": "发布令牌", "target": "project"}
+                )
+            )
+            assert any("tok-team-proj-7788" in it["content"] for it in search_res["project"]), (
+                "Team 显式搜索应能按需找回本项目凭据"
+            )
+
+            pref_query = await provider.prefetch("发布令牌")
+            pref_bg = await provider.prefetch("发布令牌", background=True)
+            assert "tok-team-proj-7788" not in pref_query, "Team 检索预取不得注入凭据"
+            assert "tok-team-proj-7788" not in pref_bg, "Team 文档兜底预取不得注入凭据"
+            assert "## project memory" not in pref_query, "仅含凭据的分区不得输出空标题"
+            assert "## project memory" not in pref_bg, "仅含凭据的兜底分区不得输出空标题"
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
