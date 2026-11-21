@@ -1,6 +1,6 @@
 # Security 安全功能使用指南
 
-最近一次修订日期：2026-11-12
+最近一次修订日期：2026-11-17
 
 适用版本：面向 0.2.2 的安全能力，当前以包含 PR #406 的 `mem2.0` 代码为准。
 
@@ -1306,6 +1306,14 @@ privacy_revision、privacy_rule_ids 和 privacy_categories 由服务生成，不
 上述页面是最小真实查看终端。另一个 [静态交互示例](../../../examples/privacy-human-view/README.md)
 使用虚构记忆和模拟验证，不连接服务，不能代替 Passkey。正式产品通常从已授权结果
 自动携带 Scope、ID 和 revision，页面显示组织名和用户名；展示名称不生成认证身份。
+
+也可以从独立 HTTP Portal 查看。在非文档模式下启用隐私和 Passkey，
+通过已有的 Portal 启动链接打开 `http://localhost:<port>/portal/`，确保
+该地址的 origin 与人机认证器的 `origin` 一致。首次使用时从侧栏打开
+「登记 Passkey」，输入管理员发给当前账号的一次性登记码。打开有效的脱敏记忆，
+在详情选择「查看原文」，按浏览器提示完成验证。选择「隐藏原文」或关闭详情
+即可恢复脱敏显示。复制、导出和纠正使用脱敏正文。SDK 或 iframe 内嵌的 Portal
+不提供这个入口。
 
 ### 13.5 API Key 完整配置与用户隔离验收
 

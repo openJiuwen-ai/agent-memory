@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/`、`jiuwen_memory_adapter/agent_security/` |
-| 最近一次修订日期 | 2026-11-17 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 显式明文记忆维护
@@ -688,11 +688,13 @@ WebAuthn 实现验证 RP ID、精确 origin、签名、user verification 及计�
 
 `HumanViewRuntime.human_view` 是可选增量 capability。其 `HumanView` 提供 `origin`、
 `admission(peer)`、`begin(payload, browser, *, security=None, primary_auth=None)` 和
-`finish(payload, browser, *, peer="")`。begin/finish 必须分别转发到 MemoryAPI 的
+`finish(payload, browser, *, peer="", primary_auth=None)`。begin/finish 必须分别转发到 MemoryAPI 的
 `begin_human_view` / `finish_human_view`，不得在接入层直接调用披露协调器或 Engine。
 访问 begin 传入延迟执行的可信 `primary_auth` 上下文工厂，由 API 内部执行常规认证；
 进程内调用可改传可信 security，两者互斥。认证工厂不是可序列化的请求字段；
-登记仍由独立邀请与人的证明建立身份，不要求机器凭据。
+独立查看页的登记由邀请与人的证明建立身份。通过独立 HTTP Portal 登记或查看时，
+API 在 begin 和 finish 都重新认证 Portal 会话持有的凭据。邀请账号和通过 Passkey 验证
+的账号须与会话的组织及用户一致，查看还要通过正常的资源判权。
 传输先进入独立预算，再读请求体；`browser` 是服务端产生的浏览器绑定标识，`peer` 来自
 真实传输对端。MemoryAPI 的两个用户访问控制入口为可选非抽象方法，未装配时默认拒绝；
 普通业务方法与原安全 ABC 签名不变，普通 SDK/MCP 不接收人机证明。
@@ -702,7 +704,8 @@ WebAuthn 实现验证 RP ID、精确 origin、签名、user verification 及计�
 | 路径 | 用途 |
 |---|---|
 | `GET /security/privacy` | 最小查看页，设置浏览器绑定 cookie |
-| `GET /security/privacy/viewer.js` | 同源脚本 |
+| `GET /security/privacy/viewer.js` | 独立查看页脚本 |
+| `GET /security/privacy/passkey.js` | 查看页与 Portal 共用的同源 WebAuthn 模块 |
 | `POST /security/privacy/begin` | 查看时先常规认证和 get PEP 查询，暂存脱敏快照并创建挑战；登记使用邀请 |
 | `POST /security/privacy/finish` | 提交登记证明或查看断言 |
 
@@ -710,6 +713,10 @@ POST 使用 JSON 对象，正文为 1～65536 字节。Host 须与固定 origin 
 POST Origin 须与完整 origin 一致；浏览器 cookie 为 HttpOnly/SameSite=Strict，HTTPS 下
 带 Secure。响应设置 CSP、no-store、Referrer-Policy 和 nosniff，不允许嵌入第三方页面。
 localhost 之外使用固定 HTTPS origin，服务端不依赖交互桌面或 Windows Hello。
+独立 HTTP Portal 使用现有浏览器请求标记及路径限于 `/security/privacy` 的会话 cookie。
+挑战绑定有效 Portal 会话，共享或嵌入式 Portal 的票据会话不接受此路径。
+此路径不接受 `X-Memory-Portal-Session`，前端使用同源 cookie；普通 `/v1/` 的票据
+承载方式不扩展用户访问控制的支持范围。
 
 | 字段 | `begin` | `finish` |
 |---|---|---|

@@ -222,13 +222,13 @@
     @media(max-width:760px) { .app-shell { display:block; } .module-sidebar { position:static; height:auto; padding:14px 16px 10px; border-right:0; border-bottom:1px solid var(--line); } .brand { padding:0 0 12px; } .brand strong { font-size:15px; } .brand small { display:none; } .brand-icon { width:28px; height:28px; } .nav-label,.sidebar-note { display:none; } nav { display:flex; gap:4px; overflow-x:auto; } nav button { width:auto; flex:0 0 auto; justify-content:center; padding:8px 4px; font-size:12px; min-height:34px; } nav button svg { display:none; } .sidebar-footer { position:absolute; top:14px; right:12px; padding:0; } .sidebar-footer button { min-height:28px; padding:0 6px; } .topbar { height:40px; padding:0 16px; } .connection-pill { font-size:10px; } .connection-pill #connection-state { max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } main { padding:22px 16px 44px; } h1 { font-size:22px; } .page-heading { gap:12px; margin-bottom:20px; } .page-heading p { max-width:230px; font-size:12px; } .memory-surface { padding:14px; } .filters { grid-template-columns:1fr 1fr; gap:10px; } .filters>button { grid-column:1/-1; justify-self:start; padding:2px 0; min-height:24px; } .filter-grid { grid-template-columns:1fr 1fr; } .status-tabs { gap:2px; } .status-tabs button { padding:4px 7px; font-size:11px; } .memory-list.grid-view { grid-template-columns:1fr; } .memory-row { padding:14px; } .memory-title { font-size:13px; } .memory-preview { font-size:12px; } .list-tools { gap:6px; flex-wrap:wrap; } .pager { flex-wrap:wrap; gap:10px; } .pager .page-size-group { order:3; width:100%; } .batch-bar { gap:6px; } .batch-bar strong { flex-basis:100%; } .metric-grid { grid-template-columns:1fr 1fr; gap:10px; } .metric { padding:15px; } .metric-value { font-size:25px; } .overview-card { padding:18px; } .search-form { padding:16px; } .search-query { flex-wrap:wrap; } .search-query input { flex-basis:100%; } .search-query button { width:100%; } .fields-grid { grid-template-columns:1fr; } .field.wide { grid-column:auto; } .settings-side { display:block; } .settings-group,.info-card { padding:18px; } .settings-bar { padding:14px; bottom:8px; } .settings-bar>.row { width:100%; } .settings-bar .primary { margin-left:auto; } .dialog-header,.dialog-body { padding:20px; } .dialog-footer { padding:16px 20px; } .detail-pane { padding:20px; } .mapping th,.mapping td { padding:9px 4px; } kbd { display:none; } }
     @media(prefers-reduced-motion:reduce) { * { transition:none!important; scroll-behavior:auto!important; } }
 </style></head>
-<body><main id="session-expired" class="notice error" role="alert" hidden data-i18n="sessionExpired">访问会话已失效，请从应用重新打开记忆管理。</main><div id="portal-shell" class="app-shell"><aside class="module-sidebar"><div class="brand"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><strong data-i18n="brand">记忆管理</strong><small>agent_memory</small></div></div><div class="nav-label" data-i18n="personalMemories">个人记忆</div><nav role="tablist" aria-label="页面导航" aria-orientation="vertical" data-i18n-label="pageNavigation"><button id="tab-overview" class="active" data-tab="overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span data-i18n="overview">记忆概览</span></button>
+<body data-privacy="off"><main id="session-expired" class="notice error" role="alert" hidden data-i18n="sessionExpired">访问会话已失效，请从应用重新打开记忆管理。</main><div id="portal-shell" class="app-shell"><aside class="module-sidebar"><div class="brand"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><strong data-i18n="brand">记忆管理</strong><small>agent_memory</small></div></div><div class="nav-label" data-i18n="personalMemories">个人记忆</div><nav role="tablist" aria-label="页面导航" aria-orientation="vertical" data-i18n-label="pageNavigation"><button id="tab-overview" class="active" data-tab="overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span data-i18n="overview">记忆概览</span></button>
 <button id="tab-memories" class="" data-tab="memories" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M3 7h4M3 12h4M3 17h4M10 8h5M10 12h5"/></svg><span data-i18n="myMemories">我的记忆</span></button>
 <button id="tab-profile" data-tab="profile" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg><span data-i18n="userProfile">用户画像</span></button>
 <button id="tab-knowledge" data-tab="knowledge" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a20 20 0 0 1 0 18 20 20 0 0 1 0-18Z"/></svg><span data-i18n="projectKnowledge">项目知识</span></button>
 <button id="tab-procedure" data-tab="procedure" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 12-12 4 4L8 24M14 3v4M12 5h4M4 5v4M2 7h4M19 18v4M17 20h4"/></svg><span data-i18n="procedures">过程与做法</span></button>
 <button id="tab-settings" class="" data-tab="settings" role="tab" aria-selected="false" aria-controls="settings" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h6M14 6h6M4 12h10M18 12h2M4 18h2M10 18h10M10 3v6M14 9v6M6 15v6"/></svg><span data-i18n="modelSettings">模型设置</span></button>
-</nav><div class="sidebar-footer"><button id="data-sources" type="button" class="quiet" data-i18n="dataSources">ⓘ 数据来源说明</button><p class="sidebar-note" data-i18n="sidebarIdentity">使用当前实例与已有身份</p></div></aside><div class="app-main"><header class="topbar"><span class="breadcrumb" data-i18n="brand">记忆管理</span><span class="breadcrumb">/</span><span id="breadcrumb-current" class="small" data-i18n="overview">记忆概览</span><div class="connection-pill"><span class="connected" id="connection-dot" hidden></span><span id="connection-state" data-i18n="connecting">正在连接…</span></div><button id="language-toggle" type="button" class="language-toggle" lang="en" aria-label="Switch to English">English</button></header><main><div id="notice" class="notice" role="status" aria-live="polite"></div><section id="overview" role="tabpanel" aria-labelledby="tab-overview">
+</nav><div class="sidebar-footer"><button id="data-sources" type="button" class="quiet" data-i18n="dataSources">ⓘ 数据来源说明</button><button id="open-passkey" type="button" class="quiet" hidden data-i18n="enrollPasskey">登记 Passkey</button><p class="sidebar-note" data-i18n="sidebarIdentity">使用当前实例与已有身份</p></div></aside><div class="app-main"><header class="topbar"><span class="breadcrumb" data-i18n="brand">记忆管理</span><span class="breadcrumb">/</span><span id="breadcrumb-current" class="small" data-i18n="overview">记忆概览</span><div class="connection-pill"><span class="connected" id="connection-dot" hidden></span><span id="connection-state" data-i18n="connecting">正在连接…</span></div><button id="language-toggle" type="button" class="language-toggle" lang="en" aria-label="Switch to English">English</button></header><main><div id="notice" class="notice" role="status" aria-live="polite"></div><section id="overview" role="tabpanel" aria-labelledby="tab-overview">
 <div class="page-heading"><div><h1 data-i18n="overview">记忆概览</h1><p class="muted" data-i18n="overviewIntro">了解当前实例的记忆情况，让每一条记忆都有迹可循</p></div><button id="refresh-overview" class="quiet" type="button" data-i18n="refreshOverview">刷新概览</button></div>
 <div id="overview-error" class="notice error" role="status"></div>
 <div class="metric-grid"><button class="metric" id="metric-all"><span class="metric-label" data-i18n="allRecords">全部记录</span><span class="metric-value" id="stat-all">—</span><span class="metric-hint" data-i18n="allRecordsHint">包括有效、历史、遗忘与归档</span></button><button class="metric" id="metric-active"><span class="metric-label" data-i18n="activeMemories">有效记忆</span><span class="metric-value" id="stat-active">—</span><span class="metric-hint" data-i18n="activeMemoriesHint">参与默认记忆查询</span></button><button class="metric" id="metric-superseded"><span class="metric-label" data-i18n="correctionHistory">纠正历史</span><span class="metric-value" id="stat-superseded">—</span><span class="metric-hint" data-i18n="correctionHistoryHint">被新版本取代的旧记录</span></button><button class="metric" id="metric-forgotten"><span class="metric-label" data-i18n="forgotten">已遗忘</span><span class="metric-value" id="stat-forgotten">—</span><span class="metric-hint" data-i18n="forgottenHint">已退出默认检索</span></button><button class="metric" id="metric-archived"><span class="metric-label" data-i18n="archived">已归档</span><span class="metric-value" id="stat-archived">—</span><span class="metric-hint" data-i18n="archivedHint">保留的归档记录</span></button><div class="metric"><span class="metric-label" data-i18n="sourceApps">来源应用</span><span class="metric-value" id="stat-sources">—</span><span class="metric-hint" data-i18n="sourceAppsHint">有来源标记的应用数量</span></div></div>
@@ -269,7 +269,18 @@
     <tr><td data-i18n="sourcesModelConfiguration">模型配置与应用</td><td><code>/v1/read_config, /v1/save_config</code></td><td><code>fields / version / applied_version / apply_state / instance</code><span data-i18n="sourcesCredentialStatus">；API Key 不回填，只显示已配置状态。</span></td></tr>
   </tbody></table><p class="muted" data-i18n="sourcesLabelsAndPermissions">来源标签用于展示和筛选，不承担授权。未标注来源不会被猜成当前应用。</p></div>
 </dialog>
-<dialog id="detail-dialog" class="detail-drawer" aria-labelledby="detail-dialog-title"><div class="dialog-header"><div><h2 id="detail-dialog-title" data-i18n="memoryDetail">记忆详情</h2><p class="muted" data-i18n="memoryDetailDescription">完整内容、来源与版本关联</p></div><button id="close-detail" type="button" class="quiet" aria-label="关闭记忆详情" data-i18n-label="closeMemoryDetail">×</button></div><div id="memory-detail" class="detail-pane" aria-live="polite"></div><div id="search-detail" class="detail-pane" aria-live="polite" hidden></div></dialog><script>
+<dialog id="detail-dialog" class="detail-drawer" aria-labelledby="detail-dialog-title"><div class="dialog-header"><div><h2 id="detail-dialog-title" data-i18n="memoryDetail">记忆详情</h2><p class="muted" data-i18n="memoryDetailDescription">完整内容、来源与版本关联</p></div><button id="close-detail" type="button" class="quiet" aria-label="关闭记忆详情" data-i18n-label="closeMemoryDetail">×</button></div><div id="memory-detail" class="detail-pane" aria-live="polite"></div><div id="search-detail" class="detail-pane" aria-live="polite" hidden></div></dialog><dialog id="passkey-dialog" aria-labelledby="passkey-title">
+  <div class="dialog-header"><h2 id="passkey-title" data-i18n="enrollPasskey">登记 Passkey</h2><button id="close-passkey" class="quiet" type="button" aria-label="关闭登记窗口" data-i18n-label="closePasskeyDialog">×</button></div>
+  <form id="passkey-form">
+    <div class="dialog-body">
+      <p class="muted" data-i18n="enrollPasskeyHelp">使用管理员发给你的一次性登记码。登记后可以通过设备验证查看记忆原文。</p>
+      <label for="passkey-invite" data-i18n="passkeyInvite">一次性登记码</label>
+      <input id="passkey-invite" type="password" autocomplete="off" required>
+      <p id="passkey-status" class="muted small" role="status"></p>
+    </div>
+    <div class="dialog-footer"><button id="cancel-passkey" type="button" data-i18n="cancel">取消</button><button id="submit-passkey" class="primary" type="submit" data-i18n="enroll">登记</button></div>
+  </form>
+</dialog><script>
 'use strict';
 
 const messages = {
@@ -286,6 +297,20 @@ const messages = {
   procedures: ["过程与做法", "Procedures"],
   modelSettings: ["模型设置", "Model Settings"],
   dataSources: ["ⓘ 数据来源说明", "ⓘ Data Sources"],
+  enrollPasskey: ["登记 Passkey", "Register a Passkey"],
+  closePasskeyDialog: ["关闭登记窗口", "Close registration"],
+  enrollPasskeyHelp: ["使用管理员发给你的一次性登记码。登记后可以通过设备验证查看记忆原文。", "Enter the one-time code from your administrator to register a passkey and view original memories."],
+  passkeyInvite: ["一次性登记码", "One-time registration code"],
+  enroll: ["登记", "Register"],
+  passkeyWaiting: ["请在设备上完成验证…", "Complete verification on your device…"],
+  passkeyEnrolled: ["Passkey 已登记，可以在记忆详情里验证并查看原文。", "Passkey registered. You can now verify and view the original from the memory details."],
+  passkeyCancelled: ["验证已取消或超时，请重试。", "Verification was canceled or timed out. Try again."],
+  passkeyEnrollFailed: ["登记未完成，请确认登记码属于当前账号且仍有效。", "Registration failed. Check that the code is valid and belongs to your account."],
+  viewOriginal: ["查看原文", "View Original"],
+  hideOriginal: ["隐藏原文", "Hide Original"],
+  originalVisible: ["原文仅在当前详情中显示。", "The original is visible only in this detail panel."],
+  viewOriginalFailed: ["无法查看原文，请确认 Passkey、访问权限或刷新记忆。", "Unable to view the original. Check your passkey and access, or refresh the memory."],
+  redactedContent: ["【已脱敏】", "[Redacted]"],
   sidebarIdentity: ["使用当前实例与已有身份", "Uses the current instance and your existing identity"],
   connecting: ["正在连接…", "Connecting…"],
   overviewIntro: ["了解当前实例的记忆情况，让每一条记忆都有迹可循", "Review the memories and sources in this instance."],
@@ -776,9 +801,13 @@ const classLabels=new Map([
   ['daily_memory',msg('dailyMemory')],
 ]);
 let portalSession, addContext, sessionExpired=false, addContextReady=false, addAgentLocked=false, addContextRequest=0;
+const privacyAvailable=document.body?.dataset.privacy==='on' && window.self===window.top;
+let clearPrivateDetail=()=>{}, enrollment=null;
 const sessionExpiredMessage=msg('sessionExpired');
 function expireSession(){
   sessionExpired=true;
+  clearPrivateDetail();
+  cancelEnrollment();
   portalSession=undefined;
   if(history.state?.sharedPortalToken)history.replaceState(null,'');
   $('portal-shell').hidden=true;
@@ -829,6 +858,62 @@ async function request(action,payload={}) {
   return data;
 }
 // The record address is stable across list, search and detail. Authorization stays on the server.
+async function requestPrivacy(action,payload,signal){
+  await browserReady;
+  if(sessionExpired)throw portalError(sessionExpiredMessage);
+  const response=await fetch('/security/privacy/'+action,{
+    method:'POST',credentials:'same-origin',cache:'no-store',signal,
+    headers:{'Content-Type':'application/json','X-Memory-Portal-Browser':'1'},
+    body:JSON.stringify(payload),
+  });
+  if(response.status===401)expireSession();
+  if(!response.ok){
+    throw portalError(msg('viewOriginalFailed'),response.status);
+  }
+  return response.json();
+}
+async function portalPasskey(target,invite,signal){
+  const {verifyPasskey}=await import('/security/privacy/passkey.js');
+  return verifyPasskey((action,payload)=>requestPrivacy(action,payload,signal),target,invite,signal);
+}
+function cancelEnrollment(){
+  enrollment?.abort();
+  enrollment=null;
+  $('passkey-invite').value='';
+  $('submit-passkey').disabled=false;
+}
+if(privacyAvailable && window.isSecureContext && window.PublicKeyCredential){
+  $('open-passkey').hidden=false;
+  $('open-passkey').onclick=()=>{
+    setText($('passkey-status'),'');
+    showDialog('passkey-dialog');
+  };
+  for(const id of ['close-passkey','cancel-passkey'])$(id).onclick=()=>$('passkey-dialog').close();
+  $('passkey-dialog').addEventListener('close',cancelEnrollment);
+  $('passkey-form').onsubmit=async event=>{
+    event.preventDefault();
+    if(enrollment)return;
+    const invite=$('passkey-invite').value.trim();
+    if(!invite)return;
+    const controller=new AbortController();
+    enrollment=controller;
+    $('passkey-invite').value='';
+    $('submit-passkey').disabled=true;
+    setText($('passkey-status'),msg('passkeyWaiting'));
+    try{
+      await portalPasskey({},invite,controller.signal);
+      if(enrollment!==controller)return;
+      $('passkey-dialog').close();
+      notice(msg('passkeyEnrolled'));
+    }catch(error){
+      if(enrollment!==controller || controller.signal.aborted)return;
+      setText($('passkey-status'),msg(error.name==='NotAllowedError'?'passkeyCancelled':'passkeyEnrollFailed'));
+    }finally{
+      if(enrollment===controller)cancelEnrollment();
+    }
+  };
+  window.addEventListener('pagehide',()=>{clearPrivateDetail();cancelEnrollment();});
+}
 function recordKey(scope,unit_id){return JSON.stringify({scope,unit_id});}
 function memoryViewOf(unit){
   const metadata=unit.system_metadata||{},scope=unit.scope;
@@ -846,15 +931,22 @@ async function listMemories({offset=0,limit=50,...personal}={}){
   const data=await request('list',{offset,limit,extensions:{personal}});
   return {...data,items:data.items.map(memoryViewOf)};
 }
-async function fetchRecord(ref){return memoryViewOf(await request('get',JSON.parse(ref)));}
+async function fetchRecord(ref,{forDetail=false}={}){
+  const unit=await request('get',JSON.parse(ref));
+  const record=memoryViewOf(unit);
+  if(forDetail)record.privacyRevision=unit.system_metadata?.privacy_revision;
+  return record;
+}
 function forgetRecord(ref){
   const {scope,unit_id}=JSON.parse(ref);
   return request('delete',{selector:{scope,unit_ids:[unit_id],mode:'forget'}});
 }
 function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)setText(el,text);if(cls)el.className=cls;return el;}
 function button(text,handler,cls=''){const el=node('button',text,cls);el.type='button';el.onclick=handler;return el;}
-function titleOf(item){let first=(item.content||'').trim().split(/\n/).find(line=>line.trim());if(!first)return msg('emptyMemoryTitle');const space=first.indexOf(' ');if(space>3&&space<32&&/[\u3400-\u9fff]/.test(first.slice(0,space)))first=first.slice(0,space);return first.length>32?first.slice(0,32)+'…':first;}
-function summaryOf(item){const text=(item.content||'').trim();if(!text)return '';const title=titleOf(item);return text.startsWith(title+' ')||text.startsWith(title+'\n')?text.slice(title.length).trim():text;}
+const privatePlaceholder=/\[JW-PRIVATE:[a-f0-9]{48}\]/;
+function displayContent(item){return (item.content||'').replace(/\[JW-PRIVATE:[a-f0-9]{48}\]/g,()=>textOf(msg('redactedContent')));}
+function titleOf(item){let first=displayContent(item).trim().split(/\n/).find(line=>line.trim());if(!first)return msg('emptyMemoryTitle');const space=first.indexOf(' ');if(space>3&&space<32&&/[\u3400-\u9fff]/.test(first.slice(0,space)))first=first.slice(0,space);return first.length>32?first.slice(0,32)+'…':first;}
+function summaryOf(item){const text=displayContent(item).trim();if(!text)return '';const title=titleOf(item);return text.startsWith(title+' ')||text.startsWith(title+'\n')?text.slice(title.length).trim():text;}
 const dateFormats=Object.fromEntries(['zh-CN','en'].map(locale=>[
   locale,new Intl.DateTimeFormat(locale,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}),
 ]));
@@ -922,6 +1014,49 @@ function cards(target,items){
     open.append(meta);row.append(open);root.append(row);
   }
 }
+function appendPrivateView(item,body,actions,root){
+  if(!privacyAvailable || !window.isSecureContext || !window.PublicKeyCredential
+    || item.lifecycle!=='active' || !item.privacyRevision
+    || !privatePlaceholder.test(item.content))return;
+  const status=node('p','','muted small');
+  status.setAttribute('role','status');
+  let pending=null, revealed=false;
+  const toggle=button(msg('viewOriginal'),async()=>{
+    if(revealed){reset();return;}
+    if(pending)return;
+    const controller=new AbortController();
+    pending=controller;
+    toggle.disabled=true;
+    setText(status,msg('passkeyWaiting'));
+    try{
+      const result=await portalPasskey(
+        {...JSON.parse(item.ref),revision:item.privacyRevision},'',controller.signal,
+      );
+      if(pending!==controller || !body.isConnected || !$('detail-dialog').open)return;
+      setText(body,result.content);
+      revealed=true;
+      setText(toggle,msg('hideOriginal'));
+      setText(status,msg('originalVisible'));
+    }catch(error){
+      if(pending!==controller || controller.signal.aborted)return;
+      setText(status,msg(error.name==='NotAllowedError'?'passkeyCancelled':'viewOriginalFailed'));
+    }finally{
+      if(pending===controller){pending=null;toggle.disabled=false;}
+    }
+  });
+  function reset(){
+    pending?.abort();
+    pending=null;
+    revealed=false;
+    setText(body,()=>displayContent(item));
+    setText(status,'');
+    toggle.disabled=false;
+    setText(toggle,msg('viewOriginal'));
+  }
+  clearPrivateDetail=reset;
+  actions.append(toggle);
+  root.append(status);
+}
 function renderDetail(item,kind){
   const root=$(kind==='search'?'search-detail':'memory-detail');root.replaceChildren();
   const badges=node('div',undefined,'row');
@@ -930,11 +1065,14 @@ function renderDetail(item,kind){
     node('span',msg('classBadge',classLabels.get(item.memory_class)||item.memory_class||msg('uncategorized')),'badge'),
     node('span',lifecycleLabels.get(item.lifecycle)||msg('statusUnknown'),'badge '+(item.lifecycle==='active'?'green':'')),
   );
-  root.append(badges,node('h2',titleOf(item),'detail-heading'),node('p',item.content||'','detail-body'));
+  const body=node('p',()=>displayContent(item),'detail-body');
+  root.append(badges,node('h2',titleOf(item),'detail-heading'),body);
   const actions=node('div',undefined,'detail-actions');
   if(item.lifecycle==='active'){actions.append(button(msg('correctRecord'),()=>openCorrection(item),'primary'),button(msg('forgetRecord'),()=>openForget(item),'danger'));}
+  root.append(actions);
+  appendPrivateView(item,body,actions,root);
   actions.append(button(msg('copyContent'),async()=>{try{await navigator.clipboard.writeText(item.content||'');notice(msg('copiedMemory'));}catch(e){notice(msg('copyMemoryFailed'),true);}},'quiet small'));
-  root.append(actions,node('hr',undefined,'detail-divider'),node('h3',msg('sourceAndRecord')));
+  root.append(node('hr',undefined,'detail-divider'),node('h3',msg('sourceAndRecord')));
   const meta=node('dl');addPair(meta,msg('app'),item.source||msg('sourceUnknown'));addPair(meta,'Agent',item.agent_label||item.agent||msg('noAgent'));
   if(item.agent_label&&item.agent)addPair(meta,'Agent ID',item.agent);
   addPair(meta,msg('project'),item.project||msg('projectUnspecified'));
@@ -952,7 +1090,7 @@ async function selectMemory(item,kind){
   const list=$(kind==='search'?'search-list':'memory-list');
   for(const row of list.children){row.classList.toggle('selected',row.dataset.ref===item.ref);row.setAttribute('aria-pressed',String(row.dataset.ref===item.ref));}
   const root=$(kind==='search'?'search-detail':'memory-detail');root.replaceChildren(node('p',msg('readingDetail'),'detail-empty'));
-  try{const record=await fetchRecord(item.ref);if(sequence!==detailRequest[kind])return;renderDetail(record,kind);}
+  try{const record=await fetchRecord(item.ref,{forDetail:true});if(sequence!==detailRequest[kind])return;renderDetail(record,kind);}
   catch(e){
     if(sequence!==detailRequest[kind])return;
     const retry=e.status===404?button(msg('refreshList'),()=>{
@@ -1027,10 +1165,11 @@ function prepareEditor(){
   updateMemoryCounter();
 }
 async function openCorrection(item){
+  clearPrivateDetail();
   try{const fresh=await fetchRecord(item.ref);editorMode='correct';editorItem=fresh;editorPreview=false;$('new-memory').value=fresh.content;prepareEditor();showDialog('memory-dialog');$('new-memory').focus();}
   catch(e){notice(msg('correctionLoadError',errorText(e)),true);}
 }
-function openForget(item){setText($('forget-title'),msg('forgetMemoryQuestion'));forgetItems=[item];setText($('forget-content'),item.content);$('forget-error').textContent='';showDialog('forget-dialog');$('cancel-forget').focus();}
+function openForget(item){clearPrivateDetail();setText($('forget-title'),msg('forgetMemoryQuestion'));forgetItems=[item];setText($('forget-content'),item.content);$('forget-error').textContent='';showDialog('forget-dialog');$('cancel-forget').focus();}
 async function refreshAfterMutation(){
   await loadMemories(true);
   ++searchRequest;++detailRequest.search;$('search-submit').disabled=false;
@@ -1207,6 +1346,7 @@ async function loadSettings(message,{refreshInstances=true}={}){
 }
 function changes(){const result={};for(const [key,value]of drafts){if(key.endsWith('.llm_api_key')&&!value)continue;if(key.endsWith('.llm_base_url')&&!value.trim())continue;if(key.endsWith('.enable_thinking'))result[key]=value==='true';else if(/\.(llm_temperature|llm_max_tokens|llm_timeout|llm_max_retries)$/.test(key)){if(!String(value).trim()||!Number.isFinite(Number(value)))throw portalError(msg('invalidNumber',fieldLabel(key)));result[key]=Number(value);}else result[key]=value;}return result;}
 async function switchTab(name,load=true){
+  if(activeTab!==name)closeDetail();
   if(name==='search'){await switchTab('memories');setSearchMode('semantic');$('memory-filter').focus();return;}
   notice('');closeDetail();clearTimeout(filterTimer);renderNavigation(name);
   if(isMemoryView(name)&&load){const preset=topicPresets[name==='memories'?'all':name];setFilterValue('memory-class',preset.memoryClass,classLabels.get(preset.memoryClass)||msg('allClasses'));setFilterValue('tier',preset.tier,tierLabels.get(preset.tier)||msg('allTiers'));return loadMemories(true);}
@@ -1231,7 +1371,7 @@ $('open-add').onclick=openAdd;$('data-sources').onclick=sourceHelp;$('close-sour
 for(const id of ['close-memory-dialog','cancel-memory-dialog'])$(id).onclick=()=>{if(!mutationBusy)$('memory-dialog').close();};
 for(const id of ['close-forget-dialog','cancel-forget'])$(id).onclick=()=>{if(!mutationBusy)$('forget-dialog').close();};
 for(const id of ['memory-dialog','forget-dialog'])$(id).addEventListener('cancel',event=>{if(mutationBusy)event.preventDefault();});
-for(const id of ['memory-dialog','forget-dialog','sources-dialog','detail-dialog'])$(id).addEventListener('keydown',event=>{if(event.key!=='Tab')return;const controls=[...$(id).querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),summary,a[href]')].filter(el=>el.getClientRects().length);const first=controls[0],last=controls.at(-1);if(!first){event.preventDefault();return;}if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}});
+for(const id of ['memory-dialog','forget-dialog','sources-dialog','detail-dialog','passkey-dialog'])$(id).addEventListener('keydown',event=>{if(event.key!=='Tab')return;const controls=[...$(id).querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),summary,a[href]')].filter(el=>el.getClientRects().length);const first=controls[0],last=controls.at(-1);if(!first){event.preventDefault();return;}if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}});
 function updateMemoryCounter(){setText($('memory-counter'),msg('characterCount',$('new-memory').value.length));}
 $('new-memory').oninput=updateMemoryCounter;
 $('memory-back').onclick=()=>{editorPreview=false;prepareEditor();$('new-memory').focus();};
@@ -1362,7 +1502,7 @@ $('apply-settings').onclick=async()=>{
     notice(errorText(e),true);
   }finally{setSettingsBusy(false);}
 };
-function closeDetail(){++detailRequest.memories;++detailRequest.search;if($('detail-dialog').open)$('detail-dialog').close();}
+function closeDetail(){clearPrivateDetail();clearPrivateDetail=()=>{};++detailRequest.memories;++detailRequest.search;if($('detail-dialog').open)$('detail-dialog').close();}
 $('close-detail').onclick=closeDetail;
 $('detail-dialog').addEventListener('cancel',closeDetail);
 $('page-size').onchange=()=>{pageSize=Number($('page-size').value);loadMemories(true);};

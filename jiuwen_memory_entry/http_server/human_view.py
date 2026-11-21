@@ -24,11 +24,32 @@ _HTML = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <button id="enroll">登记</button></details>
 <p id="status" role="status"></p><pre id="content"></pre>
 <script src="/security/privacy/viewer.js" defer></script></html>"""
-_JS = """'use strict';
-const el = id => document.getElementById(id);
-const decode = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+_PASSKEY_JS = """const decode = s =>
+  Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
 const encode = b => btoa(String.fromCharCode(...new Uint8Array(b)))
   .replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+export async function verifyPasskey(post, target, invite, signal) {
+  const begin=await post('begin',{...target,invite});
+  const enroll=begin.operation==='enroll';
+  if(begin.target) target=begin.target;
+  const p=begin.publicKey; p.challenge=decode(p.challenge);
+  if(enroll) p.user.id=decode(p.user.id);
+  for(const key of ['allowCredentials','excludeCredentials']) if(p[key])
+    p[key]=p[key].map(x=>({...x,id:decode(x.id)}));
+  const credential=enroll?await navigator.credentials.create({publicKey:p,signal})
+    :await navigator.credentials.get({publicKey:p,signal});
+  const response={clientDataJSON:encode(credential.response.clientDataJSON)};
+  if(enroll) response.attestationObject=encode(credential.response.attestationObject);
+  else { response.authenticatorData=encode(credential.response.authenticatorData);
+    response.signature=encode(credential.response.signature);
+    response.userHandle=credential.response.userHandle
+      ?encode(credential.response.userHandle):null; }
+  return post('finish',{...target,challenge_id:begin.challenge_id,
+    credential:{id:credential.id,rawId:encode(credential.rawId),type:credential.type,response,
+    clientExtensionResults:credential.getClientExtensionResults()}});
+}"""
+_JS = """'use strict';
+const el = id => document.getElementById(id);
 async function post(action, payload) {
   const r = await fetch('/security/privacy/'+action, {method:'POST',credentials:'same-origin',
     headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
@@ -39,26 +60,11 @@ async function run(enroll) {
   el('content').textContent=''; el('status').textContent='等待本人验证…';
   el('view').disabled=el('enroll').disabled=true;
   try {
-    let target={scope:JSON.parse(el('scope').value),unit_id:el('unit').value,
+    const target={scope:JSON.parse(el('scope').value),unit_id:el('unit').value,
       revision:el('revision').value};
     const invite=enroll?el('invite').value:''; el('invite').value='';
-    const begin=await post('begin',{...target,invite});
-    if(begin.target) target=begin.target;
-    const p=begin.publicKey; p.challenge=decode(p.challenge);
-    if(enroll) p.user.id=decode(p.user.id);
-    for(const key of ['allowCredentials','excludeCredentials']) if(p[key])
-      p[key]=p[key].map(x=>({...x,id:decode(x.id)}));
-    const credential=enroll?await navigator.credentials.create({publicKey:p})
-      :await navigator.credentials.get({publicKey:p});
-    const response={clientDataJSON:encode(credential.response.clientDataJSON)};
-    if(enroll) response.attestationObject=encode(credential.response.attestationObject);
-    else { response.authenticatorData=encode(credential.response.authenticatorData);
-      response.signature=encode(credential.response.signature);
-      response.userHandle=credential.response.userHandle
-        ?encode(credential.response.userHandle):null; }
-    const result=await post('finish',{...target,challenge_id:begin.challenge_id,
-      credential:{id:credential.id,rawId:encode(credential.rawId),type:credential.type,response,
-      clientExtensionResults:credential.getClientExtensionResults()}});
+    const {verifyPasskey}=await import('/security/privacy/passkey.js');
+    const result=await verifyPasskey(post,target,invite);
     el('content').textContent=result.content||'';
     el('status').textContent=result.enrolled?'登记成功，请再点击验证并查看。':'已通过验证。';
   } catch(e) { el('status').textContent='操作未完成，请重新验证并检查权限或记忆版本。'; }
@@ -73,7 +79,9 @@ try {const t=JSON.parse(decodeURIComponent(location.hash.slice(1))); location.ha
 } catch(e) {}"""
 
 
-def handle_human_request(handler, capability, *, post: bool, primary_auth=None) -> bool:
+def handle_human_request(
+    handler, capability, *, post: bool, primary_auth=None, portal_session=None
+) -> bool:
     """Return False for other routes; no access to kernel private state."""
     if not handler.path.startswith(_BASE):
         return False
@@ -113,6 +121,8 @@ def handle_human_request(handler, capability, *, post: bool, primary_auth=None) 
             send(200, _HTML, "text/html; charset=utf-8", cookie)
         elif handler.path == urljoin(f"{_BASE}/", "viewer.js"):
             send(200, _JS, "text/javascript; charset=utf-8")
+        elif handler.path == f"{_BASE}/passkey.js":
+            send(200, _PASSKEY_JS, "text/javascript; charset=utf-8")
         else:
             send(404, {"error": "not found"})
         return True
@@ -132,17 +142,23 @@ def handle_human_request(handler, capability, *, post: bool, primary_auth=None) 
             send(413, {"error": "invalid body length"})
             return True
         with capability.admission(handler.client_address[0]):
-            cookies = SimpleCookie()
-            cookies.load(handler.headers.get("Cookie", ""))
-            browser = cookies[_COOKIE].value if _COOKIE in cookies else ""
             payload = json.loads(handler.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError
+            if portal_session is not None:
+                browser, primary_auth = portal_session()
+            else:
+                cookies = SimpleCookie()
+                cookies.load(handler.headers.get("Cookie", ""))
+                browser = cookies[_COOKIE].value if _COOKIE in cookies else ""
             if operation == "finish":
-                result = capability.finish(payload, browser, peer=handler.client_address[0])
+                kwargs = {"primary_auth": primary_auth} if portal_session is not None else {}
+                result = capability.finish(
+                    payload, browser, peer=handler.client_address[0], **kwargs
+                )
             elif not isinstance(payload.get("invite", ""), str):
                 raise ValueError("invite must be a string")
-            elif payload.get("invite"):
+            elif payload.get("invite") and portal_session is None:
                 result = capability.begin(payload, browser)
             elif primary_auth is not None:
                 result = capability.begin(payload, browser, primary_auth=primary_auth)

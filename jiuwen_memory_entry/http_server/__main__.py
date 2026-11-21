@@ -288,20 +288,49 @@ class HttpServer(Server):
             timeout = _READ_TIMEOUT
 
             @contextmanager
-            def human_primary_auth(self):
+            def human_primary_auth(self, *, portal_access=None):
                 runtime = srv.security_runtime
                 if runtime is None:
                     raise AuthenticationError("primary authentication unavailable")
                 peer = self.client_address[0] if self.client_address else ""
+                credentials = credentials_from_headers(self.headers, peer_address=peer)
+                owner = None
+                if portal_access is not None:
+                    credentials, owner, _ = portal_access
                 with authenticated(
                     runtime.authenticator,
-                    credentials_from_headers(self.headers, peer_address=peer),
+                    credentials,
                     audit=getattr(runtime, "audit", None) or srv.audit,
                     limiter=getattr(runtime, "rate_limiter", None),
                     workload_guard=getattr(runtime, "workload_guard", None),
                     surface=Surface.HTTP,
                 ) as security:
+                    if owner is not None and security.auth.actor != owner:
+                        raise AuthenticationError("Portal session identity changed")
                     yield security
+
+            def portal_privacy_available(self) -> bool:
+                return (
+                    srv.portal_enabled
+                    and srv.human_view is not None
+                    and srv.human_view.origin == "http://" + self.headers.get("Host", "")
+                )
+
+            def portal_privacy_session(self):
+                if (
+                    not self.portal_privacy_available()
+                    or not self._portal_origin_allowed(require_origin=True)
+                    or self.headers.get(SESSION_HEADER) is not None
+                ):
+                    raise AuthenticationError("Portal privacy session unavailable")
+                session = srv.portal_sessions.privacy_session(self.headers.get("Cookie"))
+                if session is None:
+                    raise AuthenticationError("Portal privacy session unavailable")
+                browser, access = session
+                _, owner, _ = access
+                if not owner.user or owner.agent:
+                    raise AuthenticationError("Portal privacy requires a user session")
+                return browser, lambda: self.human_primary_auth(portal_access=access)
 
             def handle_get(self) -> None:
                 if self.path.startswith("/security/privacy") and handle_human_request(
@@ -314,6 +343,8 @@ class HttpServer(Server):
                         self._send_error("NotFound", request_id=request_id)
                         return
                     data = files("jiuwen_memory_entry.portal").joinpath("index.html").read_bytes()
+                    if self.portal_privacy_available():
+                        data = data.replace(b'data-privacy="off"', b'data-privacy="on"', 1)
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(data)))
@@ -333,8 +364,12 @@ class HttpServer(Server):
                     self._send_error("NotFound", self.path, request_id=request_id)
 
             def handle_post(self) -> None:
+                portal_session = None
+                if BROWSER_HEADER in self.headers or SESSION_HEADER in self.headers:
+                    portal_session = self.portal_privacy_session
                 if self.path.startswith("/security/privacy") and handle_human_request(
-                    self, srv.human_view, post=True, primary_auth=self.human_primary_auth
+                    self, srv.human_view, post=True, primary_auth=self.human_primary_auth,
+                    portal_session=portal_session,
                 ):
                     return
                 request_id = uuid.uuid4().hex
@@ -395,7 +430,13 @@ class HttpServer(Server):
                     if body is None:
                         self._send_error("AuthenticationError", request_id=request_id)
                     else:
-                        self._send(200, body, request_id=request_id, cookie=cookie)
+                        privacy_cookie = None
+                        if cookie and self.portal_privacy_available():
+                            privacy_cookie = cookie.replace("Path=/v1/;", "Path=/security/privacy;")
+                        self._send(
+                            200, body, request_id=request_id, cookie=cookie,
+                            privacy_cookie=privacy_cookie,
+                        )
                     return
                 credentials = credentials_from_headers(self.headers, peer_address=peer)
                 write_scope = None
@@ -547,6 +588,7 @@ class HttpServer(Server):
                 request_id: str,
                 retry_after: int | None = None,
                 cookie: str | None = None,
+                privacy_cookie: str | None = None,
             ) -> None:
                 data = json.dumps(body, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
@@ -560,6 +602,8 @@ class HttpServer(Server):
                     self.send_header("Cache-Control", "no-store")
                 if cookie is not None:
                     self.send_header("Set-Cookie", cookie)
+                if privacy_cookie is not None:
+                    self.send_header("Set-Cookie", privacy_cookie)
                 if retry_after is not None:
                     self.send_header("Retry-After", str(retry_after))
                 self.end_headers()

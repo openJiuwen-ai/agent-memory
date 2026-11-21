@@ -3,8 +3,10 @@
 import copy
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
+import regex
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security.cryptography.cryptography_impl.local_envelope import (
@@ -402,33 +404,38 @@ def test_credential_rule_cannot_hide_a_malformed_placeholder(privacy):
         privacy.persist(unit)
 
 
-def test_custom_regex_timeout_releases_already_staged_ciphertext(tmp_path):
-    privacy = RegexPrivacy(
-        LocalEnvelopeCryptographyProvider(LocalKeyProvider(key_hex="11" * 32)),
-        str(tmp_path / "bounded.sqlite"),
-        regex_timeout=0.01,
-        staging_limit=1,
-        rules=[
-            {"level": "S2", "pattern": r"1[3-9]\d{9}"},
-            {"level": "S3", "pattern": "(a+)+$"},
-        ],
+def test_custom_regex_timeout_releases_already_staged_ciphertext(privacy_factory, monkeypatch):
+    phone_pattern = r"1[3-9]\d{9}"
+    compile_pattern = regex.compile
+    matcher = compile_pattern(phone_pattern)
+    interrupted = MemoryUnit(
+        id="timeout", scope=SCOPE, segments=[Segment("13800138000")],
+        user_metadata={"note": "timeout-case"},
     )
-    try:
-        with pytest.raises(ValidationError, match="regex timeout"):
-            privacy.prepare(
-                MemoryUnit(
-                    id="timeout", scope=SCOPE,
-                    user_metadata={
-                        "phone": "13800138000",
-                        "attack": "a" * 20000 + "!",
-                    },
-                )
-            )
-        recovered = MemoryUnit(id="recovered", scope=SCOPE, segments=[Segment("13800138001")])
-        privacy.prepare(recovered)
-        assert "13800138001" not in recovered.content
-    finally:
-        privacy.close()
+
+    def finditer(text: str, *, timeout: float):
+        if text == "note=timeout-case":
+            assert interrupted.content.startswith("[JW-PRIVATE:")
+            raise TimeoutError
+        return matcher.finditer(text, timeout=timeout)
+
+    def compile_with_timeout(pattern: str, flags: int = 0):
+        if pattern != phone_pattern:
+            return compile_pattern(pattern, flags)
+        return SimpleNamespace(
+            groups=matcher.groups, groupindex=matcher.groupindex, finditer=finditer,
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(regex, "compile", compile_with_timeout)
+        privacy = privacy_factory(
+            staging_limit=1, rules=[{"level": "S2", "pattern": phone_pattern}],
+        )
+    with pytest.raises(ValidationError, match="regex timeout"):
+        privacy.prepare(interrupted)
+    recovered = MemoryUnit(id="recovered", scope=SCOPE, segments=[Segment("13800138001")])
+    privacy.prepare(recovered)
+    assert recovered.content.startswith("[JW-PRIVATE:")
 
 
 def test_staging_scope_preserves_fanout_until_all_units_commit(privacy):

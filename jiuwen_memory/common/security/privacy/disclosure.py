@@ -109,7 +109,8 @@ class HumanDisclosure:
         challenge_id = ""
         try:
             if payload.get("invite"):
-                result = self._human.begin(binding, invite=payload["invite"])
+                enrollment = {"expected_owner": security.auth.actor} if security is not None else {}
+                result = self._human.begin(binding, invite=payload["invite"], **enrollment)
             else:
                 if security is None:
                     raise AuthenticationError("primary authentication required")
@@ -164,7 +165,9 @@ class HumanDisclosure:
                 self._pending.pop(key)
                 self._privacy.cancel_disclosure(pending.operation)
 
-    def finish(self, payload: dict, browser: str, *, peer: str = "") -> dict[str, Any]:
+    def finish(
+        self, payload: dict, browser: str, *, peer: str = "", expected_owner: Scope | None = None
+    ) -> dict[str, Any]:
         # Pop even malformed/failed attempts; neither proof nor snapshot is reusable.
         with self._lock:
             self._expire()
@@ -181,6 +184,10 @@ class HumanDisclosure:
                 payload["challenge_id"], proof_binding, payload["credential"]
             )
             if not auth.actor.user or auth.actor.agent or operation not in {"view", "enroll"}:
+                raise AuthenticationError("human authentication failed")
+            if expected_owner is not None and (auth.actor.org, auth.actor.user) != (
+                expected_owner.org, expected_owner.user,
+            ):
                 raise AuthenticationError("human authentication failed")
             if operation == "enroll":
                 if pending:

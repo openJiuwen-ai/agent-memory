@@ -64,16 +64,24 @@ class HumanViewOpsMixin:
         service = self._require_human_view()
         if security is not None and primary_auth is not None:
             raise ValidationError("provide only one primary authentication source")
-        if payload.get("invite") or primary_auth is None:
+        if primary_auth is None:
             return service.begin(payload, browser, security=security)
         with primary_auth() as authenticated:
             return service.begin(payload, browser, security=authenticated)
 
-    def finish_human_view(self, payload: dict, browser: str, *, peer: str = "") -> dict[str, Any]:
+    def finish_human_view(
+        self, payload: dict, browser: str, *, peer: str = "",
+        primary_auth: PrimaryAuthentication | None = None,
+    ) -> dict[str, Any]:
         service = self._require_human_view()
         token = self._human_finish_active.set(True)
         try:
-            return service.finish(payload, browser, peer=peer)
+            if primary_auth is None:
+                return service.finish(payload, browser, peer=peer)
+            with primary_auth() as authenticated:
+                return service.finish(
+                    payload, browser, peer=peer, expected_owner=authenticated.auth.actor,
+                )
         finally:
             self._human_finish_active.reset(token)
 
@@ -111,5 +119,10 @@ class _APIHumanView:
             payload, browser, security=security, primary_auth=primary_auth
         )
 
-    def finish(self, payload: dict, browser: str, *, peer: str = "") -> dict[str, Any]:
-        return self._api.finish_human_view(payload, browser, peer=peer)
+    def finish(
+        self, payload: dict, browser: str, *, peer: str = "",
+        primary_auth: PrimaryAuthentication | None = None,
+    ) -> dict[str, Any]:
+        if primary_auth is None:
+            return self._api.finish_human_view(payload, browser, peer=peer)
+        return self._api.finish_human_view(payload, browser, peer=peer, primary_auth=primary_auth)

@@ -16,6 +16,7 @@ assert.match(html, /id="breadcrumb-current"[^>]*>记忆概览/);
 class Element {
   constructor(tag = 'div') {
     this.tag = tag; this.children = []; this.value = ''; this.hidden = false;
+    this.isConnected = true;
     this.disabled = false; this.events = {}; this.dataset = {};
     this.classList = {toggle() {}, add() {}, remove() {}}; this._text = ''; this.className = '';
   }
@@ -52,7 +53,7 @@ function memoryStorage() {
 function setup(handler, listHandler, {
   bootstrap, hash=bootstrap?'#access=grant':'', onHeaders,
   history={state:null,replaceState(state){this.state=state;}},
-  storage=memoryStorage(),
+  storage=memoryStorage(), privacy=false, privacyHandler,
 } = {}) {
   const copied=[];
   const nodes = new Map();
@@ -65,6 +66,7 @@ function setup(handler, listHandler, {
     }
   }
   const document = {
+    body:{dataset:{privacy:privacy?'on':'off'}},
     documentElement: new Element('html'),
     getElementById: get, createElement: tag => new Element(tag),
     querySelector: () => null, addEventListener() {},
@@ -80,16 +82,21 @@ function setup(handler, listHandler, {
       return matches;
     },
   };
+  const window = {isSecureContext:true, PublicKeyCredential:class {}, addEventListener(){}};
+  window.self=window.top=window;
   const context = vm.createContext({
     location: {hash,pathname:"/portal/",search:""},
     URLSearchParams,history,
-    document, localStorage: storage,
+    window, AbortController, document, localStorage: storage,
     setTimeout, clearTimeout, navigator: {clipboard: {writeText: async text => {copied.push(text);}}},
     Option: function (text, value) { const el = new Element('option'); el.textContent = text; el.value = value; return el; },
     fetch: async (url, args) => {
       if (url === '/portal/api/bootstrap' && bootstrap) {
         assert.deepEqual(JSON.parse(args.body), {token:'grant', embedded:false});
         return response(bootstrap);
+      }
+      if (url.startsWith('/security/privacy/') && privacyHandler) {
+        return privacyHandler(url, args);
       }
       assert.match(url, /^\/v1\//);
       onHeaders?.(args.headers);
@@ -556,6 +563,71 @@ async function sharedPageManagesBothInstances(){
   assert.equal(reloaded.run('fields[0].base'),0.7);
   assert.ok(tokens.length&&tokens.every(token=>token==='tab-token'));
 }
+
+async function privacyRequestsUseBrowserCookiesAndAbortSignal(){
+  const calls=[];
+  const page=setup(async()=>response({}),null,{
+    privacy:true,
+    privacyHandler:async(url,args)=>{
+      calls.push({url,args});
+      return response({operation:'enroll'});
+    },
+  });
+  page.run('globalThis.controller=new AbortController()');
+  await page.run("requestPrivacy('begin',{invite:'one-use-invitation'},controller.signal)");
+  await page.run("requestPrivacy('finish',{challenge_id:'challenge'},controller.signal)");
+  assert.deepEqual(calls.map(call=>call.url),[
+    '/security/privacy/begin','/security/privacy/finish',
+  ]);
+  for(const {args} of calls){
+    assert.equal(args.method,'POST');
+    assert.equal(args.credentials,'same-origin');
+    assert.equal(args.cache,'no-store');
+    assert.equal(args.headers['Content-Type'],'application/json');
+    assert.equal(args.headers['X-Memory-Portal-Browser'],'1');
+    assert.equal(args.headers['X-Memory-Portal-Session'],undefined);
+    assert.equal(args.signal,page.run('controller.signal'));
+  }
+  assert.deepEqual(JSON.parse(calls[0].args.body),{invite:'one-use-invitation'});
+  assert.deepEqual(JSON.parse(calls[1].args.body),{challenge_id:'challenge'});
+  page.run('controller.abort()');
+  assert.equal(calls[0].args.signal.aborted,true);
+}
+
+async function privateDetailKeepsPlaintextOutOfCopyAndDropsLateReply(){
+  const masked = '联系 [JW-PRIVATE:' + 'a'.repeat(48) + ']';
+  const record = {...unit(masked), lifecycle:'active', tags:[]};
+  record.system_metadata.privacy_revision='current-revision';
+  const page=setup(async action=>{
+    if(action==='get')return response(record);
+    throw Error(action);
+  },null,{privacy:true});
+  const open=()=>page.run("selectMemory({ref:recordKey({agent:'agent'},'r')},'memories')");
+  const detail=page.get('memory-detail');
+  const action=text=>detail.children[3].children.find(el=>el.textContent===text);
+  page.run("portalPasskey=(target)=>{globalThis.target=target;return Promise.resolve({content:'合成的完整正文'});}");
+  await open();
+  assert.match(detail.children[2].textContent,/已脱敏/);
+  const actions=detail.children[3].children.map(el=>el.textContent);
+  assert.equal(actions[actions.indexOf('复制内容')-1],'查看原文');
+  page.get('language-toggle').onclick();
+  assert.ok(action('View Original'));
+  page.get('language-toggle').onclick();
+  await action('查看原文').onclick();
+  assert.equal(page.run('target.revision'),'current-revision');
+  assert.equal(detail.children[2].textContent,'合成的完整正文');
+  await action('复制内容').onclick();
+  assert.deepEqual(page.copied,[masked]);
+  await action('隐藏原文').onclick();
+  assert.match(detail.children[2].textContent,/已脱敏/);
+  page.run("portalPasskey=(_target,_invite,signal)=>new Promise(resolve=>{globalThis.complete=resolve;globalThis.signal=signal;});");
+  const pending=action('查看原文').onclick();
+  page.run('closeDetail()');
+  assert.equal(page.run('signal.aborted'),true);
+  page.run("complete({content:'过期的原文响应'})");
+  await pending;
+  assert.doesNotMatch(detail.textContent,/过期的原文响应|合成的完整正文/);
+}
 (async () => {
   await languageSwitchKeepsFiltersAndResults();
   await languageSwitchKeepsDraftAndPreference();
@@ -575,5 +647,7 @@ async function sharedPageManagesBothInstances(){
   await expiredSessionStopsPortalActions();
   await sharedPageManagesBothInstances();
   await modalDuplicateSubmission();
+  await privacyRequestsUseBrowserCookiesAndAbortSignal();
+  await privateDetailKeepsPlaintextOutOfCopyAndDropsLateReply();
   console.log('portal frontend fixed-behavior checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

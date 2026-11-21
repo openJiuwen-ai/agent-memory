@@ -1990,11 +1990,13 @@ MemoryAPI 提供两个可选用户访问控制入口，不加入普通机器方�
 | 方法 | 契约 |
 |---|---|
 | `begin_human_view(payload, browser, *, security=None, primary_auth=None)` | 认证、READ 判权并暂存脱敏快照，返回人机挑战；登记使用受控邀请 |
-| `finish_human_view(payload, browser, *, peer="")` | 验证一次性人机证明、复核资源，经 Engine 还原并返回专用终端响应 |
+| `finish_human_view(payload, browser, *, peer="", primary_auth=None)` | 验证一次性人机证明、复核资源，经 Engine 还原并返回专用终端响应 |
 
 `primary_auth` 是可信宿主注入的延迟认证上下文工厂，不是 JSON 字段；API 内部进入它，
 保留宿主常规认证的限流、审计和生命周期。进程内调用也可提供既有可信 `security`，
 二者不可同时传入。未装配能力默认拒绝；采用非抽象可选方法保持已有实现兼容。
+独立 HTTP Portal 在 begin 与 finish 都由宿主注入会话对应的 `primary_auth`。API 每次认证，
+并要求登记邀请和完成证明均属于 Portal 账号的组织与用户。
 增量 `HumanViewRuntime.human_view` 只作转发适配，begin/finish 均调用上述 API 方法。
 HTTP 提供
 `GET /security/privacy`、同源静态脚本及 `POST /security/privacy/begin|finish`；
