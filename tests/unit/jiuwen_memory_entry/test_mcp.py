@@ -1084,3 +1084,13 @@ def test_search_forwards_tree_defaults_and_explicit_zero_false(
     assert captured["hierarchy_kind"] is HierarchyKind.TIME
     assert captured["hierarchy_role"] is HierarchyRole.TIME_SPAN
     assert captured["expand_depth"] == depth and captured["rollup"] is rollup
+
+
+def test_lifespan_is_an_async_context_manager() -> None:
+    """FastMCP 用 ``async with lifespan(app)`` 包裹会话；裸 async generator 会 TypeError。
+
+    SDK 的 ``FastMCP.run()` 在启动时执行 ``async with lifespan(app)``，
+    ``@asynccontextmanager`` 装饰后返回的对象才实现 ``__aenter__/__aexit__``。
+    """
+    lifespan = mcp_main.lifespan(None)
+    assert isinstance(lifespan, contextlib.AbstractAsyncContextManager)
