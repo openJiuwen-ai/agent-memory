@@ -81,6 +81,7 @@ class ShortTermMemory:
             "embedding": list(self.embedding),
             "ASR": self.asr,
             "environment": self.environment,
+            "inferred_intent": self.inferred_intent,
         }
 
     @staticmethod
@@ -94,6 +95,7 @@ class ShortTermMemory:
             embedding=_ensure_float_list(list(d["embedding"])),
             asr=d.get("ASR", ""),
             environment=d.get("environment", ""),
+            inferred_intent=d.get("inferred_intent", ""),
         )
 
 
