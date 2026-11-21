@@ -20,6 +20,7 @@ def register_operators() -> None:
     if _REGISTERED:
         return
     import_optional("jiuwen_memory.retrieval.role_view_impl")
+    import_optional("jiuwen_memory.retrieval.context_packer_impl")
     import_optional("jiuwen_memory.retrieval.discloser_impl")
     import_optional("jiuwen_memory.retrieval.expander_impl")
     import_optional("jiuwen_memory.retrieval.fuser_impl")

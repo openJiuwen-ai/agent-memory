@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-19 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-schema-temporal-entity.md、docs/features/retrieval/F09-query-rewrite.md、docs/features/retrieval/F11-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-schema-temporal-entity.md、docs/features/retrieval/F09-query-rewrite.md、docs/features/retrieval/F11-recency-importance-secondary-rank.md、docs/features/retrieval/F14-context-pack.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
 ## 明文拒绝的传播边界
 
@@ -226,6 +226,17 @@ class SecondaryScorer(RetrievalOperator):
 `PipelineRetriever` 恒记 `secondary_rank` 轨迹 step：关闭时 `skipped=disabled`；算子
 返回非排列、`explain` 或打分抛异常时记 `error` 并保持原顺序，不阻断检索。
 
+### ContextPacker（`context_packer.py` / `context_packer_impl/adaptive_context_packer.py`）
+
+```python
+class ContextPacker(RetrievalOperator):
+    def pack(
+        self, query: ParsedQuery, candidates: list[ScoredCandidate]
+    ) -> list[ScoredCandidate]: ...
+```
+
+在 `cut_to_top_k` 之后、`Discloser` 之前对最终胜出的 K 条候选在 `budget_ratio`（默认 0.8）预算内做价值筛选与单条正文无模型压缩，输出仍为逐条候选子序列（保持原相关性相对顺序，正文改写时生成非破坏性 `MemoryUnit` 副本并清空旧 `layers`，不修改存储真源）。默认实现 `AdaptiveContextPacker` 按 Mixed-Score 排序并根据实际候选数自动路由：`≤10` 条 `role_compact`（`U/A` 角色缩写 + 去同日日期前缀）、`11–20` 条 `telegraph`（前 `h` 条保原文 + 尾部去重及脱英文虚词）、`>20` 条 `drop`（贪心保留高价值条目）。总开关 `context_pack_enabled` 出厂在 `globals` 默认 `false`（`retriever.<name>.params` 可覆盖，`RetrievalQuery.context_pack` 可单次覆盖）；`expand_depth > 0` 时自动跳过；算子抛异常或返回非多重集子集（含空结果、增条、伪造 id、输入已有重复 id 时输出再膨胀）时记录 `error` 并降级保留原 `top_k` 候选。
+
 ### Expander（`expander.py` / `expander_impl/default_expander.py`）
 
 ```python
@@ -268,6 +279,7 @@ QueryParser.parse(query) → ParsedQuery
 → 可选 Reranker 以 ParsedQuery.rewritten 精排 → [rollup=True] 祖先准入及 MaxP
 → 相关性阈值过滤（结果数可 < top_k）
 → [secondary_rank_enabled] SecondaryScorer 带内重排（仅精排路径生效）→ 截断 top_k
+→ [context_pack_enabled] ContextPacker 预算内筛选与压缩（expand_depth>0 跳过）
 → Discloser 塑形；若 expand_depth>0，内部准备阶段暂不分配预算、不读后代
 → [expand_depth>0] 共享预算准入根；TIME 父角色上卷时复用命中后代，否则 Expander BFS
 → 统一截断父子返回总数到 top_k
@@ -689,7 +701,8 @@ jiuwen_memory/retrieval/<算子>_impl/
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-各 Producer：`QueryParserProducer` / `FuserProducer` / `DiscloserProducer` / `RetrieverProducer`。
+各 Producer：`QueryParserProducer` / `FuserProducer` / `SecondaryScorerProducer` /
+`ContextPackerProducer` / `DiscloserProducer` / `RetrieverProducer`。
 注册由 `retrieval.bootstrap.register_operators` 统一触发。`RecallerProducer` 归存储层
 （`storage/domain_store_impl/recaller.py`，注册随 `storage.bootstrap.register_backends`
 触发）；YAML 命名空间仍是 `recaller`，配置写法不变。
@@ -753,8 +766,9 @@ valid-time 起点为空表示无下界：前置使用 NOT(t_valid > as_of)，真
 
 `PipelineRetriever` 在 threshold 与 cut_to_top_k 之间另有可选步骤 `secondary_rank`（次级排序，
 见上文 SecondaryScorer）：前置条件为 parse=True 且阈值已应用，写集仅 candidates（只重排、
-不增删）。它不是 `StagedRetriever` 的抽象阶段，其他分阶段实现无须提供；变体可覆写该方法，
-总开关关闭时仍记 `secondary_rank` 轨迹 step（`skipped=disabled`）。
+不增删）。在 cut_to_top_k 与 disclose 之间另有可选步骤 `pack_context`（见上文 ContextPacker）：
+前置条件为 parse=True 且 final 已截断，写集仅 final（子集筛选与非破坏性正文压缩）。两者均不是
+`StagedRetriever` 的抽象阶段，其他分阶段实现无须提供；变体可覆写对应方法。
 
 所有阶段可向 run 追加轨迹；输入 scope/query/run 引用只读使用。
 状态创建不输出 start 日志；validate 成功后才调用 log_start，disclosure 使用枚举 value，

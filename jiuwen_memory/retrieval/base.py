@@ -34,6 +34,7 @@ class RetrievalOperatorType(str, Enum):
     EXPANDER = "expander"
     RETRIEVER = "retriever"
     SECONDARY_SCORER = "secondary_scorer"
+    CONTEXT_PACKER = "context_packer"
 
 
 class RetrievalOperator(ABC):
