@@ -37,7 +37,7 @@ from jiuwen_memory.common.security.types import SECRET_PARAM_KEYS, SecretValue
 
 # 保留的顶层段名：不作为命名空间解析。globals=跨切面参数；prompts=动态 prompt 文本，
 # 进 globals["prompts"] 供 PromptRegistry 加载。
-_RESERVED_TOP_NAMES = {"globals", "prompts"}
+_RESERVED_TOP_NAMES = {"globals", "prompts", "deployment"}
 _LEGACY_SECURITY_TARGET = "local"
 _LEGACY_KEY_PARAMS = frozenset(
     {"key_file", "key_hex", "key_b64", "key_env", "create_key_file", "key_epoch"}
@@ -165,6 +165,9 @@ class AssemblyContext:
 
     globals: dict[str, Any] = field(default_factory=dict)
     namespaces: dict[str, dict[str, RawSpec]] = field(default_factory=dict)
+    #: 显式删除的实例：``<namespace>.<name>: null``。合并时从基线里摘掉，
+    #: 让「删掉锁配置」这类操作可表达（merge 本身只能覆盖、不能删除）。
+    removals: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     instance_cache: InstanceCache = field(
         default_factory=InstanceCache, init=False, repr=False, compare=False
     )
@@ -188,7 +191,14 @@ class AssemblyContext:
         prompts = data.get("prompts")
         if prompts is not None:
             globals_["prompts"] = prompts
+        # F10：部署形态声明（``deployment.multi_instance``）不是插件拓扑，归 globals。
+        deployment = data.get("deployment")
+        if deployment is not None:
+            if not isinstance(deployment, Mapping):
+                raise ValidationError("配置段 'deployment' 应是映射")
+            globals_["deployment"] = dict(deployment)
         namespaces: dict[str, dict[str, RawSpec]] = {}
+        removals: set[tuple[str, str]] = set()
         for top_name, section in data.items():
             if top_name in _RESERVED_TOP_NAMES:
                 continue
@@ -201,11 +211,16 @@ class AssemblyContext:
                 raise ValidationError(
                     f"配置段 {top_name!r} 应是 名称->实例配置 的映射，得到 {type(section).__name__}"
                 )
-            namespaces[top_name] = {
-                inst_name: _parse_instance(top_name, inst_name, raw)
-                for inst_name, raw in section.items()
-            }
-        return cls(globals=globals_, namespaces=namespaces)
+            parsed: dict[str, RawSpec] = {}
+            for inst_name, raw in section.items():
+                if raw is None:
+                    removals.add((top_name, inst_name))
+                    continue
+                parsed[inst_name] = _parse_instance(top_name, inst_name, raw)
+            namespaces[top_name] = parsed
+        return cls(
+            globals=globals_, namespaces=namespaces, removals=frozenset(removals)
+        )
 
     def lookup(self, top_name: str, name: str) -> RawSpec:
         """取 ``top_name`` 命名空间下名为 ``name`` 的具名实例配置；不存在即报错。"""
@@ -224,9 +239,14 @@ class AssemblyContext:
         }
         for top, insts in other.namespaces.items():
             namespaces.setdefault(top, {}).update(insts)
+        removals = self.removals | other.removals
+        for top, name in removals:
+            namespaces.get(top, {}).pop(name, None)
         merged_globals = dict(self.globals)
         merged_globals.update(other.globals)
-        return AssemblyContext(globals=merged_globals, namespaces=namespaces)
+        return AssemblyContext(
+            globals=merged_globals, namespaces=namespaces, removals=removals
+        )
 
 
 def _parse_instance(top_name: str, inst_name: str, raw: Any) -> RawSpec:

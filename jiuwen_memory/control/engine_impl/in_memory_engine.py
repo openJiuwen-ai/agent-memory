@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import AgentMemoryError, NotFoundError, ValidationError
@@ -21,7 +21,7 @@ from jiuwen_memory.common.log import (
     metadata_for_log,
     scope_for_log,
 )
-from jiuwen_memory.common.security.privacy.base import PrivacyProtection, optional_privacy
+from jiuwen_memory.common.security.privacy.base import PrivacyProtection
 from jiuwen_memory.common.trace import TraceLevel, trace_event, traced
 from jiuwen_memory.common.type_def import (
     CandidateSource,
@@ -49,6 +49,13 @@ from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine import EngineProducer, MemoryEngine
 from jiuwen_memory.control.engine_impl.evolve_dispatch import submit_evolve
+from jiuwen_memory.control.engine_impl.grouped_write import (
+    GroupedWriteMixin,
+    PreparedWrite,
+    WritePath,
+    executor_from_config,
+    legacy_path_name,
+)
 from jiuwen_memory.control.engine_impl.human_view import HumanViewEngineMixin
 from jiuwen_memory.control.engine_impl.list_support import list_page
 from jiuwen_memory.control.engine_impl.middle_support import parse_middle_interval
@@ -81,7 +88,6 @@ from jiuwen_memory.control.evolution.hierarchy_submission import (
 from jiuwen_memory.control.ingest_job import (
     begin_ingest_write,
     check_ingest_cancelled,
-    record_ingest_ids,
     record_ingest_units,
 )
 from jiuwen_memory.control.jobs import JobFactory, JobFactoryProducer, JobType
@@ -106,6 +112,7 @@ from jiuwen_memory.control.types import (
     UpdateMode,
     UpdateSelector,
 )
+from jiuwen_memory.control.write_orchestrator_impl.signals import WriteSignals
 from jiuwen_memory.ingest.hierarchy_hints import enrich_snapshot_hints
 from jiuwen_memory.ingest.ingestor import Ingestor, IngestorProducer
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
@@ -216,7 +223,7 @@ def _expand_provenance_descendants(
     return purge_ids
 
 
-class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
+class InMemoryEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
     """编排接口层各语义；驱动接入/构建/检索算子与真源 Store 完成。"""
 
     @property
@@ -245,6 +252,7 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         policy: PolicyManager | None = None,
         retrieval_pipelines: dict[str, Retriever] | None = None,
         privacy: PrivacyProtection | None = None,
+        executor=None,
     ) -> None:
         self._ingestor = ingestor
         self._index = index_builder
@@ -261,6 +269,8 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         self._job_factory = job_factory
         self._policy = policy
         self._privacy = privacy
+        self._executor = executor
+        self._signals = WriteSignals()
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.ENGINE
@@ -288,20 +298,38 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
         event_time: datetime | None = None,
         source_ref: str = "",
     ) -> list[MemoryUnit]:
-        _ensure_local_scope(scope)
-        # 调用级开关（经 metadata 下推，对齐常见记忆层 add(infer=True)）：
-        # - procedural=true：过程记忆抽取——原文不落 KV，evolver 让 extractor 把本轮汇总成
-        #   1 条 PROCEDURAL 执行历史，落 /memory/ 建索引；不走去重、不收集 context。
-        # - infer=true：同步抽取——原文落 /messages/（不建索引），evolver 收集最近10条原文
-        #   （指代消解/语境）+ 召回10条相关记忆（去重提示），调 extractor 抽派生落 /memory/。
-        # - infer=true + middle=true：中期缓冲子路径——原文落 /memory/ + tier=WORKING +
-        #   建索引 + 提交 MiddleToLongJob 定时转长期。
-        # - 缺省：原始落 /memory/ + 建索引，不自动提交演进（由调用方显式 evolve() 触发）。
-        # 开关按字符串判定（兼容 "true" 与 Python True），业务值保持原生类型落库——
-        # 整体 str 化会让数值/布尔在索引里变成 keyword，range 退化为字典序。
-        # middle / middle_interval 是调用级开关，不是 unit 持久属性——下面从 meta 剥除。
+        item = BatchWriteItem(
+            content=content,
+            scope=scope,
+            source=source,
+            assets=assets,
+            tags=tags,
+            system_metadata=system_metadata,
+            user_metadata=user_metadata,
+            occurred_at=occurred_at,
+            event_time=event_time,
+            source_ref=source_ref,
+        )
+        prepared = await self._prepare_async(item)
+        outcomes = await self._execute_group([prepared], merge_extract=False)
+        outcome = outcomes[0]
+        if outcome.error:
+            raise outcome.error_obj or AgentMemoryError(outcome.error)
+        return outcome.units
+
+    def supports_grouped_write(self, items: list[BatchWriteItem]) -> bool:
+        return self._supports_grouped_write(items)
+
+    def grouped_write_blocker(self, items: list[BatchWriteItem]) -> str | None:
+        return self._grouped_write_blocker(items)
+
+    def _prepare(self, item: BatchWriteItem) -> PreparedWrite:
+        """构造 RawPayload → ingest → 打标记 → 选组件（F10 决策 5 的 prepare 阶段）。"""
+        if item.source is None:
+            item = replace(item, source=Modality.TEXT)
+        _ensure_local_scope(item.scope)
         raw_meta = enrich_snapshot_hints(
-            system_metadata, occurred_at,
+            item.system_metadata, item.occurred_at,
             enabled=(
                 self._policy is not None
                 and str(self._policy.all().get("hierarchy.enabled", "false")).strip().lower()
@@ -321,152 +349,80 @@ class InMemoryEngine(HumanViewEngineMixin, MemoryEngine):
             )
         middle_interval = raw_meta.pop("middle_interval", None)
         raw_meta.pop("middle", None)
-
         # meta 保留原生类型落库（与 CloudEngine 不同——后者走 _normalized_metadata str 化）。
         meta = raw_meta
 
-        is_video = source == Modality.VIDEO
+        is_video = item.source == Modality.VIDEO
         payload_id = str(meta.get("payload_id", "")).strip() if is_video else ""
         payload = RawPayload(
             id=payload_id or str(uuid.uuid4()),
-            scope=scope,
-            modality=source,
-            data=b"" if is_video else content.encode("utf-8"),
-            uri=content if is_video else "",
-            assets=list(assets or []),
+            scope=item.scope,
+            modality=item.source,
+            data=b"" if is_video else item.content.encode("utf-8"),
+            uri=item.content if is_video else "",
+            assets=list(item.assets or []),
             system_metadata=meta,
-            user_metadata=dict(user_metadata or {}),
-            occurred_at=occurred_at,
-            event_time=event_time,
-            source_ref=source_ref,
+            user_metadata=dict(item.user_metadata or {}),
+            occurred_at=item.occurred_at,
+            event_time=item.event_time,
+            source_ref=item.source_ref,
         )
         # 三条路径共用：Ingestor 规约。
         check_ingest_cancelled()
         trace_event(type(self).__name__, "write_input", lambda: {
-            "content": content, "modality": source.value,
+            "content": item.content, "modality": item.source.value,
         }, level=TraceLevel.DEBUG)
         units = self._ingestor.ingest([payload])
         check_ingest_cancelled()
         # Explicit input time is a write contract, independent of Ingestor choice.
-        if event_time is not None:
+        if item.event_time is not None:
             for unit in units:
-                unit.temporal.t_event = event_time
+                unit.temporal.t_event = item.event_time
         for unit in units:
-            unit.tags = list(tags or [])
+            unit.tags = list(item.tags or [])
             if middle:  # 中期缓冲标记——MiddleToLongJob 据此过滤候选
                 unit.system_metadata["middle"] = "true"
             if "session_id" in meta:
                 unit.system_metadata["session_id"] = meta["session_id"]
-        write_path = (
-            "procedural" if procedural else ("middle" if middle else "infer") if infer else "raw"
+
+        path = (
+            WritePath.PROCEDURAL
+            if procedural
+            else WritePath.MIDDLE
+            if middle
+            else WritePath.INFER
+            if infer
+            else WritePath.DIRECT
         )
         trace_event(
             type(self).__name__,
             "ingest",
-            {"units": len(units), "modality": source.value, "path": write_path},
+            {"units": len(units), "modality": item.source.value, "path": legacy_path_name(path)},
         )
 
         binding = self._write_binding(units)
-        evolver = binding.evolver if binding is not None else self._evolver
-        index_builder = binding.index_builder if binding is not None else self._index
-        classifier = binding.classifier if binding is not None else self._classifier
-
-        # procedural 优先（与现 procedural > infer 互斥逻辑一致）
-        if procedural:
-            if evolver is None:
-                raise RuntimeError(
-                    "Engine.write procedural=True requires an Evolver (装配未注入 evolver)"
-                )
-            begin_ingest_write()
-            result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
-            )
-            # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
-            # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
-            record_ingest_ids(result.created_ids)
-            derived = list(result.created_units) or [
-                self._load(scope, uid) for uid in result.created_ids
-            ]
-            procedural_metadata = {"procedural": raw_meta.get("procedural")}
-            logger.info(
-                "Engine.write system_metadata=%s: %d originals, %d derived added, scope=%s",
-                metadata_for_log(procedural_metadata),
-                len(units),
-                len(derived),
-                scope_for_log(scope),
-            )
-            trace_event(
-                type(self).__name__,
-                "result",
-                {"path": write_path, "originals": len(units), "returned": len(derived)},
-                level=TraceLevel.SIMPLE,
-            )
-            return derived
-
-        # infer=true 下按 middle 二级分流
-        if infer:
-            if middle:
-                buffered = await self._write_middle_path(
-                    units,
-                    scope,
-                    index_builder,
-                    evolver,
-                    parse_middle_interval(middle_interval),
-                )
-                trace_event(
-                    type(self).__name__,
-                    "result",
-                    {"path": write_path, "originals": len(units), "returned": len(buffered)},
-                    level=TraceLevel.SIMPLE,
-                )
-                return buffered
-            # 既有 infer=true 同步抽取路径，不动
-            if evolver is None:
-                raise RuntimeError(
-                    "Engine.write infer=True requires an Evolver (装配未注入 evolver)"
-                )
-            begin_ingest_write()
-            result = await asyncio.to_thread(
-                evolver.evolve, units, EvolveMode.EXTRACT
-            )
-            # 落盘产物优先取回传对象：归属判定改写派生单元的 scope 之后，按入参 scope
-            # 回读真源会落空。回传为空时回落按 id 回读，兼容不回填该字段的 Evolver 实现。
-            record_ingest_ids(result.created_ids)
-            derived = list(result.created_units) or [
-                self._load(scope, uid) for uid in result.created_ids
-            ]
-            infer_metadata = {"infer": raw_meta.get("infer")}
-            logger.info(
-                "Engine.write system_metadata=%s: %d originals, %d derived added, scope=%s",
-                metadata_for_log(infer_metadata),
-                len(units),
-                len(derived),
-                scope_for_log(scope),
-            )
-            trace_event(
-                type(self).__name__,
-                "result",
-                {"path": write_path, "originals": len(units), "returned": len(derived)},
-                level=TraceLevel.SIMPLE,
-            )
-            return derived
-
-        # 默认路径（infer=false）：classifier 给原文打 tier+tags → 落 /memory/{id} + 建索引。
-        # classifier 为 None 时跳过（tier 保持 EPISODIC 默认，向后兼容）。
-        check_ingest_cancelled()
-        if classifier is not None:
-            classifier.classify(units)
-        # 记忆写入只经 IndexBuilder：交付 Storage + 建 hot 轻量索引由其统一编排。
-        begin_ingest_write()
-        await asyncio.to_thread(index_builder.build, units)
-        record_ingest_units(units)
-        trace_event(
-            type(self).__name__,
-            "result",
-            {"path": write_path, "originals": len(units), "returned": len(units)},
-            level=TraceLevel.SIMPLE,
+        return PreparedWrite(
+            item=item,
+            units=units,
+            path=path,
+            evolver=binding.evolver if binding is not None else self._evolver,
+            index_builder=binding.index_builder if binding is not None else self._index,
+            classifier=binding.classifier if binding is not None else self._classifier,
+            binding=binding,
+            middle_interval=parse_middle_interval(middle_interval),
+            extra={"meta": meta, "infer": infer, "procedural": procedural},
         )
-        return units
+
+    async def _execute_middle_item(self, prepared: PreparedWrite) -> list[MemoryUnit]:
+        if not prepared.units:
+            return []
+        return await self._write_middle_path(
+            prepared.units,
+            prepared.units[0].scope,
+            prepared.index_builder,
+            prepared.evolver,
+            prepared.middle_interval,
+        )
 
     # ---- 中期缓冲子路径 ----
 
@@ -1107,5 +1063,5 @@ def _build(config):
         pipeline=_opt_pipeline(),
         job_factory=_opt_job_factory(),
         policy=PolicyProducer.build_named("default", config.ctx),
-        privacy=optional_privacy(config),
+        executor=executor_from_config(config),
     )

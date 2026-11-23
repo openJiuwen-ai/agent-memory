@@ -22,7 +22,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from datetime import datetime
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import AgentMemoryError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.normalizer.base import LocalMediaPreflight
 from jiuwen_memory.common.type_def import (
@@ -37,7 +37,11 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.policy import PolicyManager
-from jiuwen_memory.control.types import BackgroundJobAdmission, BackgroundJobStartResult
+from jiuwen_memory.control.types import (
+    BackgroundJobAdmission,
+    BackgroundJobStartResult,
+    BatchWriteOutcome,
+)
 from jiuwen_memory.retrieval import RetrievalQuery, RetrievalResult
 from jiuwen_memory.storage.kv import KVStore
 
@@ -166,6 +170,66 @@ class MemoryEngine(ControlOperator):
         continue_on_error: bool = True,
     ) -> BatchWriteResult:
         """按输入顺序执行已通过 API 前置校验的批量写入。"""
+
+    def supports_grouped_write(self, items: list[BatchWriteItem]) -> bool:
+        """是否能对本批执行分组编排（F10 决策 5）。
+
+        只表示「能否分组」，不要求 IndexBuilder / Evolver 具备批量能力：构建器未声明
+        ``grouped_build`` 时直写段内逐条 build，Evolver 未声明 ``grouped_extract`` 时
+        infer 段内逐条抽取，组间并发不受影响。默认 ``False``：不假定仓库外的引擎实现
+        具备分组能力（S09 不变量 1、6、14）。内置三个引擎按本次实际生效的组件覆盖本方法
+        ——只有组件解析不出（带 pipeline 且拿不到 profile）时才返回 ``False``。
+        """
+        return False
+
+    def grouped_write_blocker(self, items: list[BatchWriteItem]) -> str | None:
+        """说明本批为什么不能走分组编排；能走时返回 ``None``（F10 决策 8）。
+
+        返回值是降级事件名。组件级能力缺失（``extract_unsupported`` / ``build_unsupported``）
+        只在对应段内降级并记录，不再把整批推到逐条；内置引擎只在本批组件解析不出时返回
+        ``"engine_degraded"``。默认按 :meth:`supports_grouped_write` 推导，未覆盖本方法的
+        实现只会报 ``"engine_degraded"``，不谎报具体组件。
+        """
+        return None if self.supports_grouped_write(items) else "engine_degraded"
+
+    async def write_group(
+        self,
+        items: list[BatchWriteItem],
+        *,
+        merge_extract: bool,
+    ) -> list[BatchWriteOutcome]:
+        """批量写入原语：返回与 ``items`` 逐条对齐的结果。
+
+        默认实现退化为逐条 ``write``——语义与 ``batch_write`` 一致，供未声明
+        ``supports_grouped_write`` 的实现使用。内置引擎覆盖为合并抽取版本。
+        """
+        outcomes: list[BatchWriteOutcome] = []
+        for index, item in enumerate(items):
+            try:
+                units = await self.write(
+                    item.content,
+                    item.scope,
+                    item.source or Modality.TEXT,
+                    assets=item.assets,
+                    tags=item.tags,
+                    system_metadata=item.system_metadata,
+                    user_metadata=item.user_metadata,
+                    occurred_at=item.occurred_at,
+                    event_time=item.event_time,
+                    source_ref=item.source_ref,
+                )
+                outcomes.append(BatchWriteOutcome(index=index, item=item, units=units))
+            except Exception as exc:  # noqa: BLE001 —— 逐条归集，与 batch_write 同语义
+                domain_error = isinstance(exc, AgentMemoryError)
+                outcomes.append(
+                    BatchWriteOutcome(
+                        index=index,
+                        item=item,
+                        error=str(exc) if domain_error else "unexpected write failure",
+                        error_type=type(exc).__name__ if domain_error else "InternalError",
+                    )
+                )
+        return outcomes
 
     @abstractmethod
     async def permission_context_for_unit(

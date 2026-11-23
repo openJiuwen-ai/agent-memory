@@ -1140,6 +1140,7 @@ def test_continuity_batch_writes_bodies_and_index_in_one_call(tmp_path):
         original_write = api._commands.batch_write
         builder = api._queries._engine._index
         original_build = builder.build
+        original_grouped = builder.build_grouped
 
         async def counting_write(items, **kwargs):
             body_calls.append(len(items))
@@ -1149,10 +1150,15 @@ def test_continuity_batch_writes_bodies_and_index_in_one_call(tmp_path):
             index_calls.append(len(units))
             return original_build(units, **kwargs)
 
+        def counting_build_grouped(units, **kwargs):
+            index_calls.append(len(units))
+            return original_grouped(units, **kwargs)
+
         # White-box fixture/fault injection; do not expose a production test API.
         # pylint: disable-next=protected-access
         api._commands.batch_write = counting_write
         builder.build = counting_build
+        builder.build_grouped = counting_build_grouped
         try:
             result = api.batch_add(
                 [
@@ -1167,6 +1173,7 @@ def test_continuity_batch_writes_bodies_and_index_in_one_call(tmp_path):
         finally:
             api._commands.batch_write = original_write
             builder.build = original_build
+            builder.build_grouped = original_grouped
         assert all(outcome.continuity_status == "committed" for outcome in result.outcomes)
         # 正文只经命令端口调用一次，且这一次携带全部条目（不退回逐条 write）。
         assert body_calls == [4], f"expected one batched body write, got {body_calls}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from jiuwen_memory.common.errors import AgentMemoryError
 from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import (
     CandidateSource,
@@ -39,8 +40,10 @@ class MemoryCommandService:
     已通过 PEP 的命令，供 API 与单测在不构造 ``LocalMemoryAPI`` 时复用同一入口。
     """
 
-    def __init__(self, engine: MemoryEngine) -> None:
+    def __init__(self, engine: MemoryEngine, orchestrator=None) -> None:
         self._engine = engine
+        # 未装配编排器时退回旧路径（单测与最小装配）；生产装配始终注入。
+        self._orchestrator = orchestrator
 
     async def write(
         self,
@@ -55,7 +58,39 @@ class MemoryCommandService:
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
         source_ref: str = "",
+        merge_extract: bool = True,
     ) -> list[MemoryUnit]:
+        if self._orchestrator is not None:
+            from jiuwen_memory.control.write_orchestrator import WriteTask
+
+            task = WriteTask(
+                items=[
+                    BatchWriteItem(
+                        content=content,
+                        scope=scope,
+                        source=source,
+                        assets=assets,
+                        tags=tags,
+                        system_metadata=system_metadata,
+                        user_metadata=user_metadata,
+                        occurred_at=occurred_at,
+                        event_time=event_time,
+                        source_ref=source_ref,
+                    )
+                ],
+                merge_extract=merge_extract,
+            )
+            result = await self._orchestrator.write(self._engine, task)
+            outcome = result.outcomes[0]
+            if outcome.error:
+                # 原始异常只用于内部诊断：领域异常按原类型重抛，其余统一为通用错误，
+                # 不回显内部异常原文。
+                original = outcome.error_obj
+                if isinstance(original, AgentMemoryError):
+                    raise original
+                # 异常链只出现在日志/traceback 里，不回显给调用方。
+                raise AgentMemoryError(outcome.error) from original
+            return outcome.units
         return await self._engine.write(
             content,
             scope,
@@ -74,8 +109,20 @@ class MemoryCommandService:
         items: list[BatchWriteItem],
         *,
         continue_on_error: bool = True,
+        merge_extract: bool = True,
     ) -> BatchWriteResult:
-        return await self._engine.batch_write(items, continue_on_error=continue_on_error)
+        if self._orchestrator is None:
+            return await self._engine.batch_write(items, continue_on_error=continue_on_error)
+        from jiuwen_memory.control.write_orchestrator import WriteTask
+
+        return await self._orchestrator.write(
+            self._engine,
+            WriteTask(
+                items=list(items),
+                merge_extract=merge_extract,
+                continue_on_error=continue_on_error,
+            ),
+        )
 
     async def batch_write_aligned(
         self,
@@ -83,12 +130,21 @@ class MemoryCommandService:
         origins: list[tuple[int, BatchWriteItem]],
         *,
         continue_on_error: bool = True,
+        merge_extract: bool = True,
     ) -> list[BatchWriteOutcome]:
         """Write already-authorized items, then restore caller indexes and items.
 
         Engine items may carry author marks; ``origins`` keep the caller-visible
         item so kernel marks are not echoed as if the caller sent them.
         """
+        if self._orchestrator is not None:
+            return await self._orchestrator.batch_write_aligned(
+                self._engine,
+                engine_items,
+                origins,
+                merge_extract=merge_extract,
+                continue_on_error=continue_on_error,
+            )
         result = await self._engine.batch_write(engine_items, continue_on_error=continue_on_error)
         aligned: list[BatchWriteOutcome] = []
         for outcome, (index, item) in zip(result.outcomes, origins):

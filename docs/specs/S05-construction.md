@@ -829,7 +829,6 @@ ALL/FORWARD_ONLY/RETRIEVAL_ONLY 与 HARD/SOFT 原有语义保留。
 完整移入省略区，不把半个引用送入后续模型。小于单个引用的分批上限明确拒绝。
 受控路由只重绑定已授权目标的密文引用；同组织范围及关联校验见 S10。
 
-
 ## 文档事实与团队结论算子
 
 | 注册名 | 契约 |
@@ -850,3 +849,21 @@ Team 字段纠正只针对首次响应中 team_internal 不合格的候选，按
 已合法候选继续处理；显式 true 不触发纠正。首次抽取请求的既有异常重试策略不变。
 Team 首次抽取及字段纠正的指令均按既有 extractor_language 选择 cn/en，非法值回退 cn；
 JSON 字段名及布尔值契约不随提示语言改变。
+
+## 批量抽取与批量建索引（F10）
+
+两个能力均为**非抽象、默认不支持**的契约，避免要求仓库外实现重写：
+
+| 组件 | 声明 | 原语 | 默认行为 |
+| --- | --- | --- | --- |
+| `Evolver` | `supports_grouped_extract() -> bool` | `evolve_grouped(units) -> GroupedExtractResult` | 声明 `False`；原语抛 `UnsupportedCapabilityError("grouped_extract", ...)` |
+| `IndexBuilder` | `supports_grouped_build() -> bool` | `build_grouped(units) -> list[UnitCommitStatus]` | 声明 `False`；原语抛 `UnsupportedCapabilityError("grouped_build", ...)` |
+
+`GroupedExtractResult` 携带 `EvolveResult` 与 `sources: dict[str, list[str]]`
+（派生 unit id → 来源 unit id）。来源缺失的派生 unit 由编排层整批共享并记
+`shared_attribution` 降级信号；抽取在落盘前失败抛 `ExtractNotCommittedError`
+（可安全重放），落盘后失败不包装（重放可能重复，按未知处理）。
+
+`UnitCommitState` 三态：`COMMITTED` / `FAILED` / `UNKNOWN`。`UNKNOWN` 表示
+「写入已发出但结果未知」，调用方不得假定未提交；后续条目在首个失败后为 `FAILED`。
+隐私索引构建器只为 `COMMITTED` 条目刷新修订号，薄编排层原样委托状态。

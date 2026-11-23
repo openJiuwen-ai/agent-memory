@@ -191,6 +191,31 @@ def _reject_invalid_event_time(value: Any, *, name: str = "event_time") -> None:
         raise ValidationError(f"{name} must be a timezone-aware datetime")
 
 
+MERGE_EXTRACT_KEY = "merge_extract"
+
+
+def _take_merge_extract(
+    metadata: dict[str, Any] | None, default: bool
+) -> tuple[bool, dict[str, Any] | None]:
+    """取出调用级 ``merge_extract`` 开关并从参数袋剥离（F10 决策 3）。
+
+    它与 ``infer`` / ``middle`` / ``procedural`` 同类：调用方能设、内核解释、不落盘。
+    非法值在写入边界拒绝，不能静默当成 ``on``。
+    """
+    if not metadata or MERGE_EXTRACT_KEY not in metadata:
+        return default, metadata
+    raw = metadata[MERGE_EXTRACT_KEY]
+    rest = {key: value for key, value in metadata.items() if key != MERGE_EXTRACT_KEY}
+    if isinstance(raw, bool):
+        return default and raw, rest or None
+    text = str(raw).strip().lower()
+    if text in ("true", "false"):
+        return default and (text == "true"), rest or None
+    raise ValidationError(
+        f"system_metadata.{MERGE_EXTRACT_KEY} must be bool or 'true'/'false'"
+    )
+
+
 def _reject_kernel_system_metadata(metadata: dict[str, Any] | None) -> None:
     """写入/更新边界拒绝调用方占用内核系统元数据 key（群体记忆 F07）。
 

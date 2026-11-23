@@ -38,6 +38,7 @@ from jiuwen_memory.construction.router import (
     reject_kernel_coords,
 )
 from jiuwen_memory.control import collective
+from jiuwen_memory.control.executor import ExecutorLane
 from jiuwen_memory.control.types import (
     BatchWriteItem,
     BatchWriteOutcome,
@@ -45,6 +46,7 @@ from jiuwen_memory.control.types import (
 )
 
 from .local_support import (
+    MERGE_EXTRACT_KEY,
     _reject_foreign_routed_scope,
     _reject_foreign_write_scope,
     _reject_invalid_content,
@@ -55,6 +57,7 @@ from .local_support import (
     _space_level_scope,
     _strip_transient_metadata,
     _take_coords,
+    _take_merge_extract,
     _TrustedRequestTarget,
     _truthy_metadata,
     _with_author_marks,
@@ -62,6 +65,14 @@ from .local_support import (
 )
 
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
+
+
+def _llm_lane() -> ExecutorLane:
+    return ExecutorLane.LLM
+
+
+def _io_lane() -> ExecutorLane:
+    return ExecutorLane.IO
 
 
 class WriteOpsMixin:
@@ -97,6 +108,14 @@ class WriteOpsMixin:
                 continuity=continuity,
             )
         )
+
+    def _authorize_and_check(self, security, target, permission_context):
+        """鉴权 + 空间可写性检查：都是同步 I/O，放在同一工作线程里执行。"""
+        auth = self._authorize(
+            security, target, Action.WRITE, "add", context=permission_context
+        )
+        self._ensure_space_writable(target)
+        return auth
 
     @privacy_operation
     @traced("add_async", component="MemoryAPI", level=TraceLevel.DEBUG)
@@ -161,6 +180,9 @@ class WriteOpsMixin:
         # route_ctx（非标量），先校验才是校调用方给的那份。
         # 坐标先取出：它是嵌套字典，留在参数袋里会被下面的标量校验拒绝。
         coords, system_metadata = _take_coords(system_metadata, enabled=self._routing_enabled())
+        merge_extract, system_metadata = _take_merge_extract(
+            system_metadata, self._merge_extract_default
+        )
         _reject_kernel_system_metadata(system_metadata)
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
@@ -176,22 +198,21 @@ class WriteOpsMixin:
         # mutation 前审计完整性预检与故障隔离（PR3-08/R3，计划 §9.3）：路由解析前执行，
         # 防止 _write_target → _ensure_fallback_space 在 degraded/损坏状态下创建
         # fallback 空间（T1：隐式建空间发生在审计预检之前）。
-        self._ensure_audit_integrity_healthy()
-        target, system_metadata = self._write_target(
-            scope, security, coords, content, system_metadata
+        await self._run_blocking(_io_lane(), self._ensure_audit_integrity_healthy)
+        target, system_metadata = await self._run_blocking(
+            _llm_lane(), self._write_target, scope, security, coords, content, system_metadata
         )
         permission_tags = tags
         if self._privacy is not None and tags is not None:
             permission_tags = [self._privacy.preview(tag) for tag in tags]
         permission_context = _write_permission_context(target, permission_tags, system_metadata)
-        auth = self._authorize(
+        auth = await self._run_blocking(
+            _io_lane(),
+            self._authorize_and_check,
             security,
             target,
-            Action.WRITE,
-            "add",
-            context=permission_context,
+            permission_context,
         )
-        self._ensure_space_writable(target)
         units = await self._commands.write(
             content,
             target,
@@ -203,10 +224,13 @@ class WriteOpsMixin:
             ),
             user_metadata=user_metadata,
             occurred_at=occurred_at,
+            merge_extract=merge_extract,
             **({"event_time": event_time} if event_time is not None else {}),
             **({"source_ref": source_ref} if source_ref else {}),
         )
-        self._log(identity, "add", target_scope=target, detail=auth)
+        await self._run_blocking(
+            _io_lane(), self._log, identity, "add", target_scope=target, detail=auth
+        )
         return [_strip_transient_metadata(unit) for unit in units]
 
     def _routes_by_decision(
@@ -559,9 +583,12 @@ class WriteOpsMixin:
             raise ValidationError(
                 f"batch item 不得携带 {COORDS_KEY}：判定上下文每批只算一次，坐标取自批级参数袋"
             )
+        item_system_metadata = dict(item.system_metadata or {})
+        # merge_extract 是批级开关，单项上的同名键没有语义：剥离，既不参与合并判定，也不落盘。
+        item_system_metadata.pop(MERGE_EXTRACT_KEY, None)
         merged_system_metadata = {
             **(system_metadata or {}),
-            **(item.system_metadata or {}),
+            **item_system_metadata,
         }
         merged_user_metadata = {**(user_metadata or {}), **(item.user_metadata or {})}
         # 逐项校验而不是只校批级默认值：逐项的 system_metadata 同样是调用方入参。
@@ -661,6 +688,9 @@ class WriteOpsMixin:
         # 坐标取自批级参数袋：判定上下文每批只算一次，逐项无处安放（逐项携带即拒绝，
         # 见 _normalize_batch_item）。同样须先于标量校验取出。
         coords, system_metadata = _take_coords(system_metadata, enabled=self._routing_enabled())
+        merge_extract, system_metadata = _take_merge_extract(
+            system_metadata, self._merge_extract_default
+        )
         _reject_kernel_system_metadata(system_metadata)
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
@@ -672,12 +702,14 @@ class WriteOpsMixin:
         # T1：审计完整性预检必须早于 _batch_write_targets——后者通过
         # _route_context → _ensure_fallback_space 隐式创建空间（副作用），
         # 预检应在任何副作用之前拒绝。
-        self._ensure_audit_integrity_healthy()
+        await self._run_blocking(_io_lane(), self._ensure_audit_integrity_healthy)
 
         outcomes: dict[int, BatchWriteOutcome] = {}
         ready: list[tuple[int, BatchWriteItem]] = []
         seen_sequences: set[tuple[str, str, str, str, str, str, int]] = set()
         stopped_index: int | None = None
+
+        pending_logs: list[tuple] = []
 
         def _record_failure(index: int, raw_item: object, exc: Exception) -> None:
             if not isinstance(exc, (ValidationError, PermissionDeniedError, PolicyError)):
@@ -688,287 +720,301 @@ class WriteOpsMixin:
                 if isinstance(raw_item, BatchWriteItem) and isinstance(raw_item.scope, Scope)
                 else scope
             )
-            self._log(
-                identity,
-                "add",
-                target_scope=error_scope,
-                decision="error",
-                detail={"error": str(exc), "error_type": type(exc).__name__},
-            )
-
-        # 第 1 遍：规范化。落点解析不在这一遍——space 为空的项要整批一次送判，逐项各判
-        # 一次会使 Router「每批一次模型调用」的契约在批量入口整段失效（N 条即 N 次串行
-        # 调用），候选空间集合的逐空间判权也跟着乘以批大小。
-        normalized: list[tuple[int, BatchWriteItem]] = []
-        for index, raw_item in enumerate(items):
-            try:
-                normalized.append(
-                    (
-                        index,
-                        self._normalize_batch_item(
-                            raw_item,
-                            scope=scope,
-                            source=source,
-                            tags=tags,
-                            system_metadata=system_metadata,
-                            user_metadata=user_metadata,
-                            occurred_at=occurred_at,
-                            event_time=event_time,
-                            stream_id=stream_id,
-                        ),
-                    )
-                )
-            except Exception as exc:
-                _record_failure(index, raw_item, exc)
-                if not continue_on_error:
-                    stopped_index = index
-                    break
-
-        # 第 2 遍：落点解析（整批一次）与 sequence 去重。两者的次序不可换：去重键含 scope
-        # 五维，落点未定时算不出。判定按写入路径生效、不按单条与批量入口区分。
-        targets = self._batch_write_targets(normalized, security, coords)
-        for index, item in normalized:
-            try:
-                outcome = targets.get(index)
-                if isinstance(outcome, Exception):
-                    raise outcome
-                target, item_metadata = outcome
-                item = replace(item, scope=target, system_metadata=item_metadata or None)
-                if item.sequence is not None:
-                    sequence_key = (
-                        item.scope.org,
-                        item.scope.space,
-                        item.scope.user,
-                        item.scope.agent,
-                        item.scope.session,
-                        item.stream_id,
-                        item.sequence,
-                    )
-                    if sequence_key in seen_sequences:
-                        raise ValidationError("duplicate sequence within the same scope and stream")
-                    seen_sequences.add(sequence_key)
-                ready.append((index, item))
-            except Exception as exc:
-                _record_failure(index, items[index], exc)
-                if not continue_on_error:
-                    stopped_index = index
-                    break
-
-        if stopped_index is not None:
-            ready = [entry for entry in ready if entry[0] < stopped_index]
-            for index in range(stopped_index + 1, len(items)):
-                outcomes[index] = BatchWriteOutcome(
-                    index=index,
-                    item=self._batch_error_item(items[index]),
-                    error="skipped after previous item failed",
-                    error_type="Skipped",
-                )
-
-        authorized: list[tuple[int, BatchWriteItem, dict[str, str]]] = []
-        for index, item in ready:
-            permission_tags = item.tags
-            if self._privacy is not None and permission_tags is not None:
-                permission_tags = [self._privacy.preview(tag) for tag in permission_tags]
-            permission_context = _write_permission_context(
-                item.scope, permission_tags, item.system_metadata
-            )
-            try:
-                auth = self._authorize(
-                    security,
-                    item.scope,
-                    Action.WRITE,
+            pending_logs.append(
+                (
+                    identity,
                     "add",
-                    context=permission_context,
+                    error_scope,
+                    "error",
+                    {"error": str(exc), "error_type": type(exc).__name__},
                 )
-                self._ensure_space_writable(item.scope)
-                authorized.append((index, item, auth))
-            except (PermissionDeniedError, ValidationError, PolicyError) as exc:
-                outcomes[index] = self._batch_outcome(index, item, exc)
-                if not isinstance(exc, PermissionDeniedError):
-                    self._log(
-                        identity,
-                        "add",
-                        target_scope=item.scope,
-                        decision="error",
-                        detail={"error": str(exc), "error_type": type(exc).__name__},
-                    )
-                if not continue_on_error:
-                    stopped_index = index
-                    break
+            )
 
-        if stopped_index is not None:
-            for index in range(stopped_index + 1, len(items)):
-                outcomes.setdefault(
-                    index,
-                    BatchWriteOutcome(
+        try:
+            # 第 1 遍：规范化。落点解析不在这一遍——space 为空的项要整批一次送判，逐项各判
+            # 一次会使 Router「每批一次模型调用」的契约在批量入口整段失效（N 条即 N 次串行
+            # 调用），候选空间集合的逐空间判权也跟着乘以批大小。
+            normalized: list[tuple[int, BatchWriteItem]] = []
+            for index, raw_item in enumerate(items):
+                try:
+                    normalized.append(
+                        (
+                            index,
+                            self._normalize_batch_item(
+                                raw_item,
+                                scope=scope,
+                                source=source,
+                                tags=tags,
+                                system_metadata=system_metadata,
+                                user_metadata=user_metadata,
+                                occurred_at=occurred_at,
+                                event_time=event_time,
+                                stream_id=stream_id,
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    _record_failure(index, raw_item, exc)
+                    if not continue_on_error:
+                        stopped_index = index
+                        break
+
+            # 第 2 遍：落点解析（整批一次）与 sequence 去重。两者的次序不可换：去重键含 scope
+            # 五维，落点未定时算不出。判定按写入路径生效、不按单条与批量入口区分。
+            targets = await self._run_blocking(
+                _llm_lane(), self._batch_write_targets, normalized, security, coords
+            )
+            for index, item in normalized:
+                try:
+                    outcome = targets.get(index)
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    target, item_metadata = outcome
+                    item = replace(item, scope=target, system_metadata=item_metadata or None)
+                    if item.sequence is not None:
+                        sequence_key = (
+                            item.scope.org,
+                            item.scope.space,
+                            item.scope.user,
+                            item.scope.agent,
+                            item.scope.session,
+                            item.stream_id,
+                            item.sequence,
+                        )
+                        if sequence_key in seen_sequences:
+                            raise ValidationError(
+                                "duplicate sequence within the same scope and stream"
+                            )
+                        seen_sequences.add(sequence_key)
+                    ready.append((index, item))
+                except Exception as exc:
+                    _record_failure(index, items[index], exc)
+                    if not continue_on_error:
+                        stopped_index = index
+                        break
+
+            if stopped_index is not None:
+                ready = [entry for entry in ready if entry[0] < stopped_index]
+                for index in range(stopped_index + 1, len(items)):
+                    outcomes[index] = BatchWriteOutcome(
                         index=index,
                         item=self._batch_error_item(items[index]),
                         error="skipped after previous item failed",
                         error_type="Skipped",
-                    ),
-                )
-            authorized = [entry for entry in authorized if entry[0] < stopped_index]
-
-        # 按**输入顺序**推进：相邻普通项合成一批交给引擎，遇到接续项则先冲刷这批再
-        # 执行它。两类项各自走不同路径（普通项进引擎批写、接续项走幂等事件回执），
-        # 但副作用顺序必须与入参一致，否则前面的普通项失败时后面的接续项可能已提交。
-        async def flush(run: list[tuple[int, BatchWriteItem, dict]]) -> None:
-            nonlocal stopped_index
-            if not run:
-                return
-            remapped = await self._commands.batch_write_aligned(
-                [
-                    replace(
-                        item,
-                        system_metadata=_with_author_marks(
-                            item.system_metadata,
-                            self._resource_principal(security, Action.WRITE, item.scope),
-                        ),
                     )
-                    for _, item, _ in run
-                ],
-                [(index, item) for index, item, _ in run],
-                continue_on_error=continue_on_error,
-            )
-            for engine_outcome, (index, item, auth) in zip(remapped, run):
-                outcomes[index] = engine_outcome
-                if engine_outcome.units:
-                    # 批路径与 add 同处置：units 是回显给调用方的形态，瞬态键不越界。
-                    engine_outcome.units = [
-                        _strip_transient_metadata(unit) for unit in engine_outcome.units
-                    ]
-                self._log(
-                    identity,
-                    "add",
-                    target_scope=item.scope,
-                    decision="allow" if not engine_outcome.error else "error",
-                    detail={
-                        **auth,
-                        "error": engine_outcome.error,
-                        "error_type": engine_outcome.error_type,
-                    },
+
+            authorized: list[tuple[int, BatchWriteItem, dict[str, str]]] = []
+            for index, item in ready:
+                permission_tags = item.tags
+                if self._privacy is not None and permission_tags is not None:
+                    permission_tags = [self._privacy.preview(tag) for tag in permission_tags]
+                permission_context = _write_permission_context(
+                    item.scope, permission_tags, item.system_metadata
                 )
-                if engine_outcome.error and stopped_index is None and not continue_on_error:
-                    stopped_index = index
+                try:
+                    auth = await self._run_blocking(
+                        _io_lane(),
+                        self._authorize_and_check,
+                        security,
+                        item.scope,
+                        permission_context,
+                    )
+                    authorized.append((index, item, auth))
+                except (PermissionDeniedError, ValidationError, PolicyError) as exc:
+                    outcomes[index] = self._batch_outcome(index, item, exc)
+                    if not isinstance(exc, PermissionDeniedError):
+                        pending_logs.append(
+                            (
+                                identity,
+                                "add",
+                                item.scope,
+                                "error",
+                                {"error": str(exc), "error_type": type(exc).__name__},
+                            )
+                        )
+                    if not continue_on_error:
+                        stopped_index = index
+                        break
 
-        run: list[tuple[int, BatchWriteItem, dict]] = []
-        continuity_run: list[tuple[int, BatchWriteItem]] = []
-
-        async def flush_ordinary() -> None:
-            nonlocal run
-            pending_run, run = run, []
-            await flush(pending_run)
-
-        async def flush_continuity() -> None:
-            """One five-phase reliable write for a contiguous continuity run."""
-            nonlocal stopped_index, continuity_run
-            if not continuity_run:
-                return
-            batch = continuity_run
-            continuity_run = []
-            resolved = {entry_index: entry for entry_index, entry in batch}
-            results = await asyncio.to_thread(
-                self._continuity_batch,
-                batch,
-                security=security,
-                stop_on_error=not continue_on_error,
-            )
-            for index, result in results:
-                # 用**已解析落点**的那份条目：调用方只传批次 Scope 时 items[index].scope
-                # 是 None，拿它算幂等键会在写入已经发生之后抛 AttributeError。
-                item = resolved.get(index, items[index])
-                if isinstance(result, _Skipped):
+            if stopped_index is not None:
+                for index in range(stopped_index + 1, len(items)):
                     outcomes.setdefault(
                         index,
                         BatchWriteOutcome(
                             index=index,
-                            item=self._batch_error_item(item),
+                            item=self._batch_error_item(items[index]),
                             error="skipped after previous item failed",
                             error_type="Skipped",
                         ),
                     )
-                    if stopped_index is None:
-                        stopped_index = index
-                    continue
-                if isinstance(result, WriteIncompleteError):
-                    outcomes[index] = BatchWriteOutcome(
-                        index=index,
-                        item=item,
-                        operation_id=result.operation_id,
-                        continuity_status=result.status,
-                        error=str(result),
-                        error_type="WriteIncompleteError",
-                    )
-                    if not continue_on_error:
-                        stopped_index = index
-                elif isinstance(result, Exception):
-                    _record_failure(index, item, result)
-                    # 与普通项一致：continue_on_error=False 时任何领域错误都停批。
-                    if not continue_on_error and isinstance(result, AgentMemoryError):
-                        stopped_index = index
-                else:
-                    outcomes[index] = BatchWriteOutcome(
-                        index=index,
-                        item=item,
-                        units=[_strip_transient_metadata(unit) for unit in result],
-                        operation_id=self._continuity_operation_id(item.scope, item.continuity),
-                        continuity_status="committed",
-                    )
-                # 不要在这里提前 return：同一批里排在失败项**之前**的合法项，
-                # 其结果可能排在本条之后，提前退出会让它们的下标永远拿不到结果。
+                authorized = [entry for entry in authorized if entry[0] < stopped_index]
 
-        for index, item, auth in sorted(authorized, key=lambda entry: entry[0]):
-            # 失败点之前的项已由上面的裁剪保留；之后的项已在 outcomes 里标 skipped。
-            if stopped_index is not None and index >= stopped_index:
-                continue
-            if item.continuity is not None:
-                # 先冲刷排在它前面的普通项，再累积接续项：副作用顺序与输入一致；
-                # 相邻接续项仍合成一次批处理，历史导入因此只有一次正文写入。
-                await flush_ordinary()
+            # 按**输入顺序**推进：相邻普通项合成一批交给引擎，遇到接续项则先冲刷这批再
+            # 执行它。两类项各自走不同路径（普通项进引擎批写、接续项走幂等事件回执），
+            # 但副作用顺序必须与入参一致，否则前面的普通项失败时后面的接续项可能已提交。
+            async def flush(run: list[tuple[int, BatchWriteItem, dict]]) -> None:
+                nonlocal stopped_index
+                if not run:
+                    return
+                remapped = await self._commands.batch_write_aligned(
+                    [
+                        replace(
+                            item,
+                            system_metadata=_with_author_marks(
+                                item.system_metadata,
+                                self._resource_principal(security, Action.WRITE, item.scope),
+                            ),
+                        )
+                        for _, item, _ in run
+                    ],
+                    [(index, item) for index, item, _ in run],
+                    continue_on_error=continue_on_error,
+                    merge_extract=merge_extract,
+                )
+                for engine_outcome, (index, item, auth) in zip(remapped, run):
+                    outcomes[index] = engine_outcome
+                    if engine_outcome.units:
+                        # 批路径与 add 同处置：units 是回显给调用方的形态，瞬态键不越界。
+                        engine_outcome.units = [
+                            _strip_transient_metadata(unit) for unit in engine_outcome.units
+                        ]
+                    pending_logs.append(
+                        (
+                            identity,
+                            "add",
+                            item.scope,
+                            "allow" if not engine_outcome.error else "error",
+                            {
+                                **auth,
+                                "error": engine_outcome.error,
+                                "error_type": engine_outcome.error_type,
+                            },
+                        )
+                    )
+                    if engine_outcome.error and stopped_index is None and not continue_on_error:
+                        stopped_index = index
+
+            run: list[tuple[int, BatchWriteItem, dict]] = []
+            continuity_run: list[tuple[int, BatchWriteItem]] = []
+
+            async def flush_ordinary() -> None:
+                nonlocal run
+                pending_run, run = run, []
+                await flush(pending_run)
+
+            async def flush_continuity() -> None:
+                """One five-phase reliable write for a contiguous continuity run."""
+                nonlocal stopped_index, continuity_run
+                if not continuity_run:
+                    return
+                batch = continuity_run
+                continuity_run = []
+                resolved = {entry_index: entry for entry_index, entry in batch}
+                results = await asyncio.to_thread(
+                    self._continuity_batch,
+                    batch,
+                    security=security,
+                    stop_on_error=not continue_on_error,
+                )
+                for index, result in results:
+                    # 用**已解析落点**的那份条目：调用方只传批次 Scope 时 items[index].scope
+                    # 是 None，拿它算幂等键会在写入已经发生之后抛 AttributeError。
+                    item = resolved.get(index, items[index])
+                    if isinstance(result, _Skipped):
+                        outcomes.setdefault(
+                            index,
+                            BatchWriteOutcome(
+                                index=index,
+                                item=self._batch_error_item(item),
+                                error="skipped after previous item failed",
+                                error_type="Skipped",
+                            ),
+                        )
+                        if stopped_index is None:
+                            stopped_index = index
+                        continue
+                    if isinstance(result, WriteIncompleteError):
+                        outcomes[index] = BatchWriteOutcome(
+                            index=index,
+                            item=item,
+                            operation_id=result.operation_id,
+                            continuity_status=result.status,
+                            error=str(result),
+                            error_type="WriteIncompleteError",
+                        )
+                        if not continue_on_error:
+                            stopped_index = index
+                    elif isinstance(result, Exception):
+                        _record_failure(index, item, result)
+                        # 与普通项一致：continue_on_error=False 时任何领域错误都停批。
+                        if not continue_on_error and isinstance(result, AgentMemoryError):
+                            stopped_index = index
+                    else:
+                        outcomes[index] = BatchWriteOutcome(
+                            index=index,
+                            item=item,
+                            units=[_strip_transient_metadata(unit) for unit in result],
+                            operation_id=self._continuity_operation_id(item.scope, item.continuity),
+                            continuity_status="committed",
+                        )
+                    # 不要在这里提前 return：同一批里排在失败项**之前**的合法项，
+                    # 其结果可能排在本条之后，提前退出会让它们的下标永远拿不到结果。
+
+            for index, item, auth in sorted(authorized, key=lambda entry: entry[0]):
+                # 失败点之前的项已由上面的裁剪保留；之后的项已在 outcomes 里标 skipped。
                 if stopped_index is not None and index >= stopped_index:
                     continue
-                continuity_run.append((index, item))
-                continue
+                if item.continuity is not None:
+                    # 先冲刷排在它前面的普通项，再累积接续项：副作用顺序与输入一致；
+                    # 相邻接续项仍合成一次批处理，历史导入因此只有一次正文写入。
+                    await flush_ordinary()
+                    if stopped_index is not None and index >= stopped_index:
+                        continue
+                    continuity_run.append((index, item))
+                    continue
+                await flush_continuity()
+                if stopped_index is not None and index >= stopped_index:
+                    continue
+                run.append((index, item, auth))
             await flush_continuity()
-            if stopped_index is not None and index >= stopped_index:
-                continue
-            run.append((index, item, auth))
-        await flush_continuity()
-        await flush(run)
+            await flush(run)
 
-        if stopped_index is not None:
-            for index in range(stopped_index + 1, len(items)):
-                outcomes.setdefault(
-                    index,
-                    BatchWriteOutcome(
-                        index=index,
-                        item=self._batch_error_item(items[index]),
-                        error="skipped after previous item failed",
-                        error_type="Skipped",
-                    ),
-                )
-            authorized = [entry for entry in authorized if entry[0] < stopped_index]
+            if stopped_index is not None:
+                for index in range(stopped_index + 1, len(items)):
+                    outcomes.setdefault(
+                        index,
+                        BatchWriteOutcome(
+                            index=index,
+                            item=self._batch_error_item(items[index]),
+                            error="skipped after previous item failed",
+                            error_type="Skipped",
+                        ),
+                    )
+                authorized = [entry for entry in authorized if entry[0] < stopped_index]
 
-        if stopped_index is not None:
-            for index in range(stopped_index + 1, len(items)):
-                outcomes.setdefault(
-                    index,
-                    BatchWriteOutcome(
-                        index=index,
-                        item=self._batch_error_item(items[index]),
-                        error="skipped after previous item failed",
-                        error_type="Skipped",
-                    ),
-                )
+            if stopped_index is not None:
+                for index in range(stopped_index + 1, len(items)):
+                    outcomes.setdefault(
+                        index,
+                        BatchWriteOutcome(
+                            index=index,
+                            item=self._batch_error_item(items[index]),
+                            error="skipped after previous item failed",
+                            error_type="Skipped",
+                        ),
+                    )
 
-        if self._privacy is not None:
-            for outcome in outcomes.values():
-                item = outcome.item
-                outcome.item = replace(
-                    item, content=self._privacy.preview_echo(item.content),
-                    tags=self._privacy.preview_echo(item.tags),
-                    system_metadata=self._privacy.preview_echo(item.system_metadata),
-                    user_metadata=self._privacy.preview_echo(item.user_metadata),
-                )
-                outcome.error = self._privacy.preview_echo(outcome.error)
+            if self._privacy is not None:
+                for outcome in outcomes.values():
+                    item = outcome.item
+                    outcome.item = replace(
+                        item, content=self._privacy.preview_echo(item.content),
+                        tags=self._privacy.preview_echo(item.tags),
+                        system_metadata=self._privacy.preview_echo(item.system_metadata),
+                        user_metadata=self._privacy.preview_echo(item.user_metadata),
+                    )
+                    outcome.error = self._privacy.preview_echo(outcome.error)
+        finally:
+            await self._run_blocking(_io_lane(), self._flush_audit_logs, pending_logs)
+
         return self._commands.collect_batch_result(outcomes, len(items))

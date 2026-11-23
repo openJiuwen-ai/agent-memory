@@ -27,10 +27,10 @@ Dedup、LayerAnnotator 与 Evolver（默认 `OrchestratingEvolver`、动态四�
 | `prompt_strategy.py` | 动态抽取/巩固/反思 prompt metadata 的解析与传递（key 透传） |
 | `prompt_registry.py` | PromptRegistry：从 yml `prompts` 段加载命名 prompt，按 phase+key 查询 |
 | `prompt_guard.py` | LLM prompt 输入护栏：`unit.content` 拼 prompt 的调用点统一经 `truncate_unit_content` 限长——判定类任务（分类/路由/关联）默认 4000；内容型任务（抽取/动态抽取/抽象/分层标注）用 `CONTENT_MAX_UNIT_CHARS=8000` 与 ingest 预切分上限对齐，超限**不截断**（中段截断=静默漏事实）而是分批完整消费：抽取/动态抽取分片逐批调用候选按 source 叠加，抽象两段式（分片提炼→原分组归纳），分层标注分片生成且全部有效才合并写回；只截判定输入，不动存储与索引（embed/全文索引仍用全文） |
-| `index_builder.py` | IndexBuilder 接口：多形式索引构建（文档/关键词/向量/图）；`supported_write_modes()` 公开写入模式能力，`require_full_write_chain()` 主写入链装配守卫（拒绝只声明 RETRIEVAL_ONLY 的构建器） |
+| `index_builder.py` | IndexBuilder 接口：多形式索引构建（文档/关键词/向量/图）；`supported_write_modes()` 公开写入模式能力，`require_full_write_chain()` 主写入链装配守卫（拒绝只声明 RETRIEVAL_ONLY 的构建器）；`supports_grouped_build()` / `build_grouped()` 批量建索引原语（默认不支持），返回 `UnitCommitStatus` 三态（`COMMITTED`/`FAILED`/`UNKNOWN`） |
 | `router.py` | Router 接口与判定表：按归属坐标判定条目落哪个空间，产出候选空间集合与收窄维标签；另含归属坐标的入口校验 `reject_kernel_coords` 与折算 `narrow_dims_of`（后者入参须为已以身份覆盖过内核三项的坐标，本层不接收 `identity`）。内核三项坐标名 `KERNEL_COORD_KEYS` 在 `common/type_def/scope.py`，本模块引用 |
 | `dedup.py` | Dedup 接口：去重召回（向量/倒排两路）+ DedupProducer 工厂 |
-| `evolver.py` | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘/显式建树）+ EvolveMode/EvolveRequest/EvolveResult |
+| `evolver.py` | 演进契约：`supports_grouped_extract()` / `evolve_grouped()`（默认不支持）与 `GroupedExtractResult`（结果 + 来源）；`ExtractNotCommittedError` 表示落盘前失败、可安全重放 | Evolver 接口：记忆自演进（抽取/关联/巩固/遗忘/显式建树）+ EvolveMode/EvolveRequest/EvolveResult |
 | `source_update.py` | 可选 Schema source 更新能力、完整抽取结果、请求内变更计划与严格实体写入上下文；不依赖 control |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
 | `extractor_impl/` | Extractor 实现目录（keyword / llm / agent_llm / dynamic_llm / video_memory，以及显式启用的 entity_schema）；entity_schema 为 Property 产出稳定实体分组 key、Source 时间上下文与事件精度/区间；video_memory 将视频规约结果转换为 CLM/ELM；`agent_llm` 是 `llm` 的 agent 方向版——继承管线与输出契约，prompt 指令面 user↔agent 场景重定向 + `extractor_language` cn/en 切换（输出契约恒英文），并抽取时同步判定 `memory_class` 三类（`user_profile`/`long_term_memory`/`daily_memory`，基类 `build_candidates` 纯透传、子类 `extract` 收口值域，非法/缺失兜底 `long_term_memory`；该键是文档模式 md 落盘分流键）； |

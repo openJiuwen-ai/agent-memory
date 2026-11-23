@@ -309,6 +309,8 @@ MD_TITLE_KEY = "md_title"
 # 按标签的批量删除范围。故在写入边界拒绝。
 KERNEL_SYSTEM_METADATA_KEYS = frozenset(
     {
+        # 调用级写入开关（F10）：由写入边界解释后剥离，绝不允许作为普通系统元数据落盘。
+        "merge_extract",
         "privacy_level",
         "privacy_rule_ids",
         "privacy_categories",

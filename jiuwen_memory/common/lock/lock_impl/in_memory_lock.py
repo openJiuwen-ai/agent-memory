@@ -5,11 +5,14 @@
 ``redis`` 实现。之所以仍保留租约与 token CAS 语义，是为了让单测覆盖到与 Redis 实现
 一致的行为（过期后可被他人获得、token 不符不释放、续期失败返回 False）。
 
-check-and-set 之间不 await，故在单个事件循环内是原子的。
+**跨线程、跨事件循环的原子性**（F10 决策 7）：同步 ``add`` 每次经 ``asyncio.run`` 建一个
+新的事件循环，HTTP 又是多线程的，仅靠「检查与写入之间不 await」只在单个循环内成立。
+因此字典的每一次读-改-写都在一把 ``threading.Lock`` 内完成；线程锁内不做任何 ``await``。
 """
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from typing import Any
@@ -38,17 +41,23 @@ class InMemoryLockProvider(LockProvider):
         super().__init__(lease_ms=lease_ms, wait_timeout_ms=wait_timeout_ms)
         # key -> (token, 过期时刻)；用 monotonic 计时，不受系统时钟调整影响
         self._entries: dict[str, tuple[str, float]] = {}
+        # 保护 _entries 的每一次读-改-写，使 CAS 跨线程、跨事件循环原子
+        self._cas = threading.Lock()
 
     async def renew(self, handle: LockHandle, *, lease_ms: int | None = None) -> bool:
-        now = time.monotonic()
-        if self._held_token(handle.key, now) != handle.token:
-            return False
-        lease = handle.lease_ms if lease_ms is None else int(lease_ms)
-        self._entries[handle.key] = (handle.token, now + lease / 1000.0)
-        return True
+        with self._cas:
+            now = time.monotonic()
+            if self._held_token(handle.key, now) != handle.token:
+                return False
+            lease = handle.lease_ms if lease_ms is None else int(lease_ms)
+            self._entries[handle.key] = (handle.token, now + lease / 1000.0)
+            return True
 
     def _held_token(self, key: str, now: float) -> str | None:
-        """返回当前有效持有者的 token；无人持有或已过期则 None（顺带清理）。"""
+        """返回当前有效持有者的 token；无人持有或已过期则 None（顺带清理）。
+
+        调用方必须持有 ``self._cas``：本方法会顺带删除过期项，属于读-改-写。
+        """
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -60,17 +69,19 @@ class InMemoryLockProvider(LockProvider):
     async def _acquire(self, key: str, *, lease_ms: int, wait_timeout_ms: int) -> LockHandle:
         token = uuid.uuid4().hex
         async for _ in wait_ticks(wait_timeout_ms):
-            now = time.monotonic()
-            if self._held_token(key, now) is None:
-                self._entries[key] = (token, now + lease_ms / 1000.0)
-                return LockHandle(key=key, token=token, lease_ms=lease_ms)
+            with self._cas:
+                now = time.monotonic()
+                if self._held_token(key, now) is None:
+                    self._entries[key] = (token, now + lease_ms / 1000.0)
+                    return LockHandle(key=key, token=token, lease_ms=lease_ms)
         raise LockTimeoutError(
             f"等待 {wait_timeout_ms}ms 仍未获得锁 {key}（持有者未释放或租约未到期）"
         )
 
     async def _release(self, handle: LockHandle) -> None:
-        if self._held_token(handle.key, time.monotonic()) == handle.token:
-            self._entries.pop(handle.key, None)
+        with self._cas:
+            if self._held_token(handle.key, time.monotonic()) == handle.token:
+                self._entries.pop(handle.key, None)
 
 
 @LockProducer.register("memory")

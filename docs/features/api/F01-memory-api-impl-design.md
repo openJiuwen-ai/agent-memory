@@ -78,7 +78,15 @@ from jiuwen_memory.api import (
 
 ### 4. 异步内核 + 同步桥接
 
-引擎是异步的。`add_async` 是**直通引擎的真协程**，供事件循环/高并发接入形态（HTTP/MCP）非阻塞调用；同步 `add`（及 search/list/get/update/delete/evolve）是它的**同步桥接**——内部 `asyncio.run(...)` 包一层，供 CLI/脚本直接调用。一套语义两个入口，避免同步/异步双实现漂移。
+引擎是异步的。`add_async` 是**不阻塞事件循环的真协程**，供 asyncio 宿主内的进程内 SDK 等需要在事件循环上调用的场景使用；同步 `add`（及 search/list/get/update/delete/evolve）是它的**同步桥接**——内部 `asyncio.run(...)` 包一层，供 CLI/脚本直接调用。一套语义两个入口，避免同步/异步双实现漂移。HTTP（每请求一线程）与 MCP（`asyncio.to_thread` 包住整次调用）已在入口隔离事件循环。
+
+`add_async` 不再直通引擎（control/F10 起）：API 前置步骤按 io → llm → io 的固定顺序经
+`BlockingExecutor` 移出事件循环——io 通道执行入参校验、审计完整性预检与判定上下文，llm 通道
+执行 `route_many`（仅需判定时），再回到 io 通道执行鉴权与空间状态检查。写入委托
+`WriteOrchestrator`（按 `(org, space, user)` 加锁、按 `(scope, stream_id)` 分组并发、组内保序、
+失败归集），由编排器调用 `Engine.write_group`；ingest 属于引擎的 prepare 阶段，不在 API 前置
+步骤内。`merge_extract` 由部署级 `deployment.merge_extract`（默认开启）与调用级
+`system_metadata.merge_extract` 取逻辑与：任一为 false 即逐条抽取。
 
 ### 5. 数据面委托引擎，管理面直达控制算子
 

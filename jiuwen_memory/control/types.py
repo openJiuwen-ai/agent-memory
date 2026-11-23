@@ -231,6 +231,9 @@ class BatchWriteOutcome:
     error_type: str = ""
     operation_id: str = ""  # 接续项的事件幂等键
     continuity_status: str = ""  # committed / partial / unknown / rejected
+    # 内部使用：原始异常对象，供单条入口按原类型重新抛出。不参与序列化与相等比较。
+    # 内部诊断用：原始异常对象。回执对调用方屏蔽原文，只有领域异常会据此重抛。
+    error_obj: BaseException | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

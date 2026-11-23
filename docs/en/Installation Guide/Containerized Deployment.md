@@ -263,7 +263,15 @@ Before deployment on a shared network or in production, at least:
 - restrict exposure of PostgreSQL, Elasticsearch, Milvus, and other backend ports;
 - configure TLS for PostgreSQL, Redis, Elasticsearch, Milvus, and model endpoints;
 - add rate limiting, timeouts, retries, log collection, monitoring, backup, and recovery policies;
-- add process orchestration and replication appropriate for the availability target.
+- add process orchestration and replication appropriate for the availability target;
+- **multi-instance / replicated deployment**: override `lock.default` to `redis` and set
+  `deployment.multi_instance=true`. The in-process `memory` lock only protects a single
+  instance, and assembly rejects "multi-instance declared with the memory lock"; if the lock
+  backend is unavailable, infer writes fail closed instead of silently skipping the lock;
+- **merged extraction** is enabled by default (`deployment.merge_extract`, default `true`):
+  infer writes in the same `(scope, stream_id)` batch are extracted in one call. To match
+  per-item extraction exactly, set it to `false` in the deployment config, or pass
+  `system_metadata={"merge_extract": "false"}` on a single call.
 
 ## 11. Troubleshooting
 

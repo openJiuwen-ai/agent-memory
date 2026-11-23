@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
+from enum import Enum
 
 from .._support import scope_segments
 from ..errors import AgentMemoryError, ValidationError
@@ -44,6 +45,18 @@ DEFAULT_WAIT_TIMEOUT_MS = 10_000
 BACKOFF_INITIAL_MS = 20.0
 BACKOFF_FACTOR = 1.6
 BACKOFF_CAP_MS = 200.0
+
+
+class MutexScope(str, Enum):
+    """锁的互斥范围（F10 决策 7）。
+
+    部署声明 ``deployment.multi_instance=true`` 时，实际生效的锁必须是
+    ``CROSS_INSTANCE``：进程内锁保护不到落在其他实例上的同一用户并发写入，装配期
+    直接失败比运行期偶发重复记忆更容易发现。
+    """
+
+    PROCESS = "process"
+    CROSS_INSTANCE = "cross_instance"
 
 
 class LockProducer(Factory):
@@ -141,6 +154,15 @@ class LockProvider(ABC):
         self._lease_ms = int(lease_ms)
         self._wait_timeout_ms = int(wait_timeout_ms)
         self._held: dict[str, _Holding] = {}
+
+    @property
+    def mutex_scope(self) -> MutexScope:
+        """本实现的互斥范围；跨实例实现覆盖此属性。
+
+        装配期用它校验 ``deployment.multi_instance`` 的声明（F10 决策 7）。默认按
+        保守值 ``PROCESS`` 处理——不声明就是进程内，避免漏配被当成跨实例。
+        """
+        return MutexScope.PROCESS
 
     # -- 键 ------------------------------------------------------------------ #
 

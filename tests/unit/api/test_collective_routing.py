@@ -12,7 +12,12 @@ from __future__ import annotations
 import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError, ValidationError
+from jiuwen_memory.common.errors import (
+    AgentMemoryError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
 from jiuwen_memory.common.security.types import Role
@@ -669,15 +674,19 @@ def test_stored_unit_carries_coords_for_md_routing_while_echo_stays_clean(api) -
         raise RuntimeError("stop before persistence")
 
     original = api._engine._index.build
+    original_grouped = api._engine._index.build_grouped
     api._engine._index.build = _capture
+    api._engine._index.build_grouped = _capture
     try:
         api.add(
             "项目部署在集群 A", scope=Scope(org=ORG), security=SEC_ALICE, system_metadata=COORDS_P1
         )
-    except RuntimeError:
+    except AgentMemoryError:
+        # 非领域异常在写入边界统一收敛为 AgentMemoryError，不再回显原始类型。
         pass
     finally:
         api._engine._index.build = original
+        api._engine._index.build_grouped = original_grouped
 
     assert stored, "index_builder 未被调用，用例前提不成立"
     assert all(unit.system_metadata.get("coords") == {"project": "p1"} for unit in stored)
