@@ -7,6 +7,8 @@ from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import (
     FilterClause,
+    FilterGroup,
+    FilterLogic,
     FilterOp,
     MemoryUnit,
     Scope,
@@ -191,7 +193,16 @@ def test_memory_api_list_copies_extensions_and_forwards_normalized_filters() -> 
     assert kv.calls[0][0] == scope
     assert kv.calls[0][1]["extensions"] == {"vendor_mode": 7}
     assert kv.calls[0][1]["extensions"] is not extensions
-    assert kv.calls[0][1]["filters"] == filters
+    # 类型隔离（mem2.0 §2.3）：未点名 memory_types 的 list 在接口层追加
+    # NOT_IN 系统谓词，与用户表达式 AND 合成后一次下推——转发的不再是裸的
+    # 用户谓词，但用户谓词原样在内。
+    forwarded = kv.calls[0][1]["filters"]
+    assert isinstance(forwarded, FilterGroup) and forwarded.logic is FilterLogic.AND
+    assert filters in forwarded.children
+    assert any(
+        clause.field == "system_metadata.memory_type" and clause.op is FilterOp.NOT_IN
+        for clause in forwarded.children
+    )
 
 
 def test_memory_api_list_extensions_pass_through_object_identity() -> None:

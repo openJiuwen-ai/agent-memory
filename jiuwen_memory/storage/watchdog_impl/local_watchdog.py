@@ -31,6 +31,7 @@ import re
 import threading
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from jiuwen_memory.common.factory.factory import Factory
@@ -47,6 +48,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
     Temporal,
 )
+from jiuwen_memory.storage.markdown_impl import experience_blocks
 from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks
 from jiuwen_memory.storage.markdown_impl._md_path import (
     _FILE_NAME_TO_CLASS,
@@ -94,7 +96,7 @@ def _is_watched_md(path: str) -> bool:
     非 ``.md``（如 shadow.db）也在此自然排除。
     """
     base = os.path.basename(path.replace("\\", "/"))
-    if base in _FILE_NAME_TO_CLASS:
+    if base == experience_blocks.FILE_NAME or base in _FILE_NAME_TO_CLASS:
         return True
     return _DAILY_NAME_RE.match(base) is not None
 
@@ -204,6 +206,14 @@ class LocalWatchdog(Watchdog):
                     return
                 self._owner.schedule_sync(event.src_path, deleted=True)
 
+            def on_moved(self, event: Any) -> None:
+                if event.is_directory or not self._owner.watcher_initialized:
+                    return
+                if _is_watched_md(event.src_path):
+                    self._owner.schedule_sync(event.src_path, deleted=True)
+                if _is_watched_md(event.dest_path):
+                    self._owner.schedule_sync(event.dest_path)
+
         # 监听整个 markdown_root（recursive=True）：USER.md 落 root 顶层（不在 memory/ 下），
         # memory/ 下的其余 md 由 recursive 监听自然捕获。memory/ 子目录由写入侧
         # _ensure_dir 自动创建，创建后其下变更即被监听。不能 schedule 不存在的目录。
@@ -262,6 +272,9 @@ class LocalWatchdog(Watchdog):
         """延迟置 initialized（避开初始扫描风暴，抄 lite）。"""
         if not self._closed:
             self._watcher_initialized = True
+            path = os.path.join(self._markdown_root, experience_blocks.DOCUMENT_PATH)
+            if os.path.isfile(path):
+                self._schedule_sync(path)
         logger.debug("LocalWatchdog: watcher initialized (post grace period)")
 
     def _schedule_sync(self, abs_path: str, *, deleted: bool = False) -> None:
@@ -277,6 +290,11 @@ class LocalWatchdog(Watchdog):
         md_filename = self._to_rel_path(abs_path)
         if md_filename is None:
             return  # 不在 memory 目录下，忽略
+        if (
+            md_filename != experience_blocks.DOCUMENT_PATH
+            and md_filename.rsplit("/", 1)[-1] == experience_blocks.FILE_NAME
+        ):
+            return
         # 携带 deleted 标记：把 (md_filename, deleted) 投递
         try:
             self._loop.call_soon_threadsafe(self._arm_timer, md_filename, deleted)
@@ -402,8 +420,24 @@ class LocalWatchdog(Watchdog):
             return None
         return rel.replace("\\", "/")
 
-    def _sync_one(self, md_filename: str, deleted: bool) -> None:
-        """单文件 unit 粒度增量同步（文档记忆根设计 §12.3 流程）。
+    def _sync_experience(self, path: str, deleted: bool) -> bool:
+        source = ""
+        absolute = os.path.realpath(os.path.join(self._markdown_root, path))
+        root = os.path.realpath(self._markdown_root)
+        if os.path.commonpath([root, absolute]) != root:
+            raise ValueError("Experience document is outside the Markdown root")
+        if not deleted:
+            with open(absolute, encoding="utf-8") as handle:
+                source = handle.read()
+        units = {} if deleted else experience_blocks.read_document(path, Path(absolute), source)
+        scope = next((unit.scope for unit in units.values()), self._scope)
+        self._shadow.sync_experience_document(scope, path, units)
+        if not deleted:
+            experience_blocks.refresh_metadata(Path(absolute), source, units.values())
+        return True
+
+    def _sync_one(self, md_filename: str, deleted: bool) -> bool:
+        """单文件 unit 粒度增量同步（F07 §12.3 流程）。
 
         ① old_all = shadow.list_units_by_md(scope, md_filename)
            # 全集 [(unit_id, content_hash)]，供 insert 侧「已知块」扣除（known_hash_set）
@@ -421,6 +455,8 @@ class LocalWatchdog(Watchdog):
         ARCHIVE 只改 lifecycle + remove(SOFT)，md 不删块），若只用 active 集合扣会把这
         残留块重插为 active 重复行（遗忘语义失效 + 内容重复）；全集扣除命中历史行、跳过 insert。
         """
+        if md_filename == experience_blocks.DOCUMENT_PATH:
+            return self._sync_experience(md_filename, deleted)
         scope = self._scope
         # ① 旧 unit 全集（含 content_hash）——insert 侧「已知块」扣除基准。用全集而非
         #    active：archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改
@@ -459,7 +495,7 @@ class LocalWatchdog(Watchdog):
 
         if not to_delete and not to_insert_pairs:
             logger.debug("LocalWatchdog: no drift, skip sync %s", md_filename)
-            return  # md 与索引一致，无需同步
+            return False  # md 与索引一致，无需同步
 
         logger.debug(
             "LocalWatchdog: diff %s to_delete=%d to_insert=%d",
@@ -499,6 +535,7 @@ class LocalWatchdog(Watchdog):
                 len(units),
                 md_filename,
             )
+        return True
 
     def _build_unit(self, md_filename: str, content: str, scope: Scope) -> MemoryUnit:
         """建新 MemoryUnit（文档记忆根设计 §12.6 缺省元数据）。

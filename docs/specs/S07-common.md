@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F09-sdk-runtime-logging.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F12-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md，docs/features/common/F11-new-trace.md，docs/features/common/F12-absolute-date-recall.md |
@@ -322,6 +322,9 @@ opt-in 的 `audit_integrity` 能力（见上文安全域契约表），经 `Prot
 | `guard` | `(scope, name, **kwargs) -> AsyncContextManager[LockHandle]` | 获取 / 自动续期 / 释放的组合，推荐入口 |
 | `health` | `() -> None` | 存活探测；异步，与其余组件的同步 `health()` 不一致 |
 | `mutex_scope` | property -> `MutexScope` | 声明的互斥范围：`PROCESS`（进程内）/ `CROSS_INSTANCE`（跨实例）。装配层据此拒绝「声明多实例却用进程内锁」；实现不得谎报 |
+| `close_connection` | `() -> None` | 由专用 provider 的所有者在操作事件循环上异步关闭连接 |
+
+`is_distributed` 声明锁是否由共享后端提供。Redis 为 True，进程内实现为 False。
 
 `LockProducer.TOP_NAME` 为 `lock`，**不设默认实现**——消费方必须显式配置，避免漏配时
 静默退化成不跨实例的单机锁。内核基线 `config/defaults.py` 显式声明 `lock.default: memory`

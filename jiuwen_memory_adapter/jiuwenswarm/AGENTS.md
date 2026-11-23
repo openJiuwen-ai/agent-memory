@@ -5,6 +5,7 @@
 | 文件 | 职责 |
 |---|---|
 | agent_memory_provider.py | Provider、HTTP/普通 SDK 客户端、共享 SDK continuity 客户端；continuity_request 校验 DTO 并注入可信上下文 |
+| experience_author_key.py | 内置 SDK 装配经验评价器之前，获取或原子保存部署作者密钥 |
 | memory_scene.py / memory_scenes.py | 场景协议、请求级上下文与独立实例工厂注册表 |
 | base_document_scene.py | Code/Team 共用的项目绑定、文档写入配置及预取超时保护 |
 | work_memory.py / coding_memory.py / team_memory.py | Work/Coding/Team 工具、预取、项目归属、提示词及普通 SDK 配置要求 |
@@ -14,6 +15,10 @@
 
 ## 行为铁律
 
+- 内置 SDK 的经验文档模式直接输出 `skills_dir/distilled/<skill_name>/SKILL.md`，保留现有同名技能，不启动发布清单同步。HTTP 与其余仍使用技能清单的模式同步时，仅更新或清理带当前空间来源标记且正文摘要未变的文件。
+
+- 经验检索不按 experience_capabilities 或 tier 排除条件动作；该清单只用于非空时的技能同步筛选。空间授权及经验类型、类别过滤保持生效。
+
 - 普通 Work/Coding 按场景策略执行；接续预取与回写保持优先，SDK 接续只注册任务/恢复工具，不将文档工具交给接续客户端。
 - Code/Team 分别继承 BaseDocumentScene，仅复用项目绑定、文档配置与超时保护；工具、Pipeline 和召回策略各自定义，Team 不继承 Code。
 - 普通 Coding/Team 在配置来源解析后覆盖 write_document=true；SDK 接续保留独立配置基准，不应用场景覆盖，HTTP 不应用本地 SDK 配置。
@@ -21,6 +26,8 @@
 - sdk_runtime.py 中的共享池只适用于 mode=continuity、持久 fixed_path SQLite Registry；HTTP 和普通 SDK 不进入共享池。
 - Pool 按规范 Registry 路径排他，同路径不同配置/主体返回冲突；Provider 不共享请求安全上下文。
 - Registry 路径与配置摘要通过 `jiuwen_memory.api.sdk_continuity_runtime_identity` 取得；Adapter 不直接导入内核配置或安全类型包。
+- 经验文档开关通过 `jiuwen_memory.api.should_write_document` 归一。
+- 经验作者密钥由内置 SDK 装配注入，部署配置和环境变量优先；本地生成的密钥存放于部署配置目录。
 - Provider 在调用线程取得可信安全上下文，客户端只执行已经转换的参数；业务 payload 不能注入 security。
 - submit 接受的任务追踪到 concurrent future 实际结束，超时/取消不得传播成底层任务取消。
 - SDK continuity 的读写操作共用执行池；globals.sdk_max_workers 默认 16（正整数），globals.sdk_max_queue_size 默认 256（非负整数，0 表示不预留等待容量）。执行及等待槽位合计限制为两者之和，满载时在提交前抛 RateLimitedError，不执行请求。Registry 修改仍由内部实例锁保护；不承诺读写提交顺序，需要读到本次写入时先等待写入完成。

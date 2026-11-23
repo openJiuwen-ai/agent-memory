@@ -158,6 +158,19 @@ def test_simple_ingestor_short_content_single_unit() -> None:
     assert "_parts" not in units[0].system_metadata
 
 
+@pytest.mark.parametrize("infer", [True, "true"])
+def test_simple_ingestor_keeps_long_experience_trajectory_whole(infer: bool | str) -> None:
+    trajectory = {"messages": [{"role": "tool", "content": "结果" * 6000}]}
+    payload = _text_payload(json.dumps(trajectory, ensure_ascii=False))
+    payload.system_metadata = {"memory_type": "experience", "infer": infer}
+
+    units = SimpleIngestor(PassthroughNormalizer()).ingest([payload])
+
+    assert len(units) == 1
+    assert json.loads(units[0].content) == trajectory
+    assert "_parts" not in units[0].system_metadata
+
+
 def test_simple_ingestor_splits_long_content_by_paragraph() -> None:
     """多段落超限文本按段落聚合切分：每片 ≤ 上限，可逆拼接，_part/_parts 正确。"""
     paras = [f"para{i} " + "x" * 40 for i in range(10)]  # 每段 46 chars

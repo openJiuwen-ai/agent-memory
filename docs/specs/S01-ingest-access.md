@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/ingest/ |
-| 最近一次修订日期 | 2026-11-17 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联资产流程特性 | docs/features/ingest/F02-assets-ingestor-boundary.md |
 
@@ -39,6 +39,7 @@ Ingestor 必须分别复制两个 dict，不得合并或在两者之间 fallback
 6. **资产映射归 Ingestor**：调用方通过 `RawPayload.assets` 传入资产引用，Ingestor 决定如何将其映射到产出的 `MemoryUnit.segments`；Engine 不得在 ingest 返回后改写 `Segment.assets`。
 7. **不固定数量关系**：契约不规定一个 `RawPayload` 必须产生几个 `MemoryUnit` 或 `Segment`，也不规定资产引用必须分配给某个固定 Segment；具体策略由 Ingestor 实现定义。但有一条跨层不变量：**Normalizer 经 `structured_modalities()` 声明为结构化中间产物的模态，其规约结果是给构建层整体解析的包络，Ingestor 不得将其物理切分**（如 `VideoNormalizer` 声明的 VIDEO：JSON 包络必须以单个 `MemoryUnit` 完整交付 `VideoMemoryExtractor`）；未声明的模态视为整块纯文本投影，Ingestor 可按长度预切分。声明归生产该格式的 Normalizer，Ingestor 不维护模态白名单。
 8. **模态声明是能力边界**：Ingestor 调用 `normalize` 前必须确认 `RawPayload.modality` 在 `Normalizer.modalities()` 中；不支持时抛 `UnsupportedCapabilityError`，不得读取 data/uri、产生 MemoryUnit 或触发后续写入。RoutingNormalizer 中显式 route 与 delegate 的能力矛盾属于装配错误，在构造时抛 `ValidationError`。
+9. **经验轨迹整体交付**。带有 `memory_type=experience` 和 `infer=true` 的文本 payload 是经验评价器需要整体解析的 JSON。Ingestor 将其完整交付为一个 `MemoryUnit`。
 
 ## 接口契约
 
@@ -173,7 +174,7 @@ Ingestor 本身不访问 PolicyManager。Engine 在 hierarchy.enabled 关闭或�
 原文、不创建片段密文。Normalizer 及后续可信处理可以使用本次原文；源等级仍保留。
 实际脱敏与片段关联交由 MemoryUnit 的构建/存储写边界，在持久化索引生成前完成。
 默认 SimpleIngestor 对非结构化规约结果通过 PrivacyProtection.split_input 切分原文，
-结构化中间产物按规约器声明完整交付下游解析。切分保留已识别敏感跨度及
+结构化中间产物和同步提炼的文本经验轨迹完整交付下游解析。切分保留已识别敏感跨度及
 已有合法占位符，不扩大正数长度上限、不丢字；单个跨度超过上限时明确拒绝。替代 Ingestor
 应遵守同一切分约束，避免跨 unit 拆开后使落盘识别失去完整线索。
 本轮只支持 inline TEXT/CODE；URI、原模态资产在规约前拒绝。配置及隔离契约见 S10。

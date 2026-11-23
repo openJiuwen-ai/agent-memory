@@ -728,3 +728,10 @@ injection.prompt 默认只产生分类依据，不改变等级或正文；显式
 
 配置合并只能覆盖、不能删除实例：把某个具名实例写成 `null`（如
 `lock: {default: null}`）表示从基线中删除它，用于「显式去掉锁」的部署校验路径。
+
+## 文档模式开关
+
+SDK 接入层可通过 `jiuwen_memory.api.should_write_document(raw)` 归一文档模式开关。
+布尔值原样返回，空值为假，数字按是否为零转换。
+字符串支持 `true/false`、`1/0`、`yes/no`、`on/off`，忽略首尾空白和大小写。
+无法识别的值抛出 `ValidationError`。

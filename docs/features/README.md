@@ -14,6 +14,7 @@
 | `F05` | [F05-personal-memory-portal](F05-personal-memory-portal.md) | 个人记忆管理 Portal 设计方案 |
 | `F06` | [F06-coding-document-memory](F06-coding-document-memory.md) | Coding 场景接入文档记忆 |
 | `F09` | [F09-team-document-memory](F09-team-document-memory.md) | Team 文档记忆、共享隔离与 Pipeline 分流 |
+| `F13` | [F13-swarmflow-experience-integration](F13-swarmflow-experience-integration.md) | SwarmFlow 经验记忆接入 |
 
 ## API / 接入面（`docs/features/api/`）
 
@@ -71,6 +72,8 @@
 | `F11` | [F11-role-memory](construction/F11-role-memory.md) | 角色记忆：职责驱动的关系扩展与跨 Agent 接续设计 |
 | `F12` | [F12-importance-and-source-attribution](construction/F12-importance-and-source-attribution.md) | 记忆重要度与来源标识 |
 | `F13` | [F13-dreaming](construction/F13-dreaming.md) | dreaming：evolve 定时演进（三态分发 / 候选源 / 持续授权） |
+| `F14` | [F14-experience-memory-and-skill](construction/F14-experience-memory-and-skill.md) | 经验记忆构建、周期整理与技能沉淀 |
+| `F15` | [F15-staged-evolver](construction/F15-staged-evolver.md) | Evolver 阶段编排与扩展 |
 
 ## control 控制层（`docs/features/control/`）
 
@@ -110,6 +113,7 @@
 | `F11` | [F11-recency-importance-secondary-rank](retrieval/F11-recency-importance-secondary-rank.md) | 检索次级排序：带内按重要度与时效性 tie-break |
 | `F12` | [F12-filter-contract-governance](retrieval/F12-filter-contract-governance.md) | filters 契约治理：把公共过滤语言当产品治理 |
 | `F13` | [F13-filter-governance-playbook](retrieval/F13-filter-governance-playbook.md) | filters 契约治理落地规范（团队执行版） |
+| `F14` | [F14-experience-retrieval](retrieval/F14-experience-retrieval.md) | 经验记忆检索与效用排序 |
 
 ## storage 存储层（`docs/features/storage/`）
 

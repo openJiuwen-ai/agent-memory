@@ -925,7 +925,7 @@ def _parse_candidate(value: Any) -> dict | None:
 
 
 def _evolve(srv, request: DispatchRequest) -> Body:
-    """触发演进（extract/associate/consolidate/forget）→ Evolver 全链路 + Scheduler。
+    """触发内容演进（含 experience_consolidate 经验整理）→ Evolver + Scheduler。
 
     dreaming 三态（与 MemoryAPI.evolve 契约一致，HTTP/CLI 经 api_contract 已同构）：
     缺省 = 立即跑一次；true = 注册定时（interval 秒，每 tick 复验授权）；

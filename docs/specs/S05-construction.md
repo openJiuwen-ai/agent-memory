@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-11-21 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F12-importance-and-source-attribution.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
@@ -76,6 +76,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 
 **管什么**：
 - 真源落盘（统一经 IndexBuilder 写入记忆单元及派生索引）
+- 写入准入与评价（Appraiser，mem2.0 经验记忆；含轨迹/判定/效用记录等专用记录的读写，不建索引、不参与检索）
 - 信息提取（低抽象粒度：事实/事件/偏好）
 - 抽象与精炼/升华（高抽象粒度：画像/长期偏好/可复用技能）
 - 关联分析（实体共指/因果链/引用关系）
@@ -178,6 +179,7 @@ IndexBuilder 以带命名空的逻辑路径投影两类字段。
 ```python
 class OperatorType(str, Enum):
     EXTRACTOR / ABSTRACTOR / ASSOCIATOR / CLASSIFIER / INDEX_BUILDER / EVOLVER / LAYER_ANNOTATOR
+    ROUTER / APPRAISER / CURATOR
     HIERARCHY_COMPOSER = "hierarchy_composer"
 
 class ConstructionOperator(ABC):
@@ -185,7 +187,23 @@ class ConstructionOperator(ABC):
     def health(self) -> None                 # 存活探测
 ```
 
-> `OperatorType` 枚举无独立 DEDUP 值——`Dedup` 实现复用 `OperatorType.EVOLVER`（去重召回服务于 evolver）。`DynamicEvolver` 是 `OrchestratingEvolver` 的子类，同样返回 `OperatorType.EVOLVER`——它是 evolver 的动态 prompt 变体，通过覆盖 `_evolve_extract` 切换 EXTRACT 路径。
+> `OperatorType` 枚举无独立 DEDUP 值——`Dedup` 实现复用 `OperatorType.EVOLVER`（去重召回服务于 evolver）。`DynamicEvolver` 返回 `OperatorType.EVOLVER`，通过覆盖 `_evolve_extract` 切换 EXTRACT 路径。Appraiser 与 Curator 分别返回独立的 `APPRAISER` / `CURATOR`。
+
+### Appraiser（`appraiser.py`，mem2.0）
+
+写入准入与评价算子，可选装配（profile 不配置即不接线，evolver 行为与未引入时一致）。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `appraise` | `(units: list[MemoryUnit]) -> Appraisal` | 抽取**之前**调用：对本次写入做准入与评价，允许副作用（读写专用记录）。抛异常之前，实现自己写入的状态须已置为失败 |
+| `finalize` | `(units, appraisal: Appraisal, result: Any) -> None` | 准入的写入在流程结束时调用一次；`result` 是 `EvolveResult`，流程抛异常时以 `None` 调用（实现据此置失败） |
+
+`Appraisal(proceed, data)`：`proceed` 为假时本次写入到此结束——不抽取、也不调
+`finalize`；`data` 类型由实现定义，经 `ExtractContext.appraisal` 传给抽取算子。
+
+Evolver 接线不变量：`appraise` 异常冒泡（不进抽取、不收尾）；抽取异常先
+`finalize(units, appraisal, None)` 再 raise；`finalize` 自身异常不抛（只记
+warning）。关联决策见 [经验记忆与技能沉淀](../features/construction/F14-experience-memory-and-skill.md)。
 
 ### Extractor（`extractor.py`）
 
@@ -279,7 +297,9 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 
 **四步语义**：
 
-1. **extract**：委托父类持有的 `Extractor.extract`，产出派生候选；把源 unit 的 consolidation/reflect prompt key 透传给候选；调 `_annotate_layers` 标注 L0/L1。
+1. **extract**：`_extract_step` 只调用 `Extractor.extract` 产出派生候选；来源约束与
+   consolidation/reflect prompt key 由候选准备阶段补全。主方法随后显式调用归属路由与
+   分层标注，二者不再隐藏在抽取阶段内。
 2. **consolidate（只判定不落盘）**：对每个候选调 `Dedup.recall` 召回已有记忆，按相似度阈值 + LLM 判定产出 `ConsolidateDecision`（候选 + `DedupDecision` + 已有记忆 + 相似度）。无命中 → ADD；高相似度且 `should_direct_noop` 为真（`score ≥ dedup_high_similarity` 且候选相对已有记忆无 `has_meaningful_delta`）→ NOOP；高相似但有实质差异 → 走 LLM；中段（`dedup_medium_similarity` ~ high）→ 查 `PromptRegistry` 取 consolidate prompt 调 LLM 判定；无 prompt 或 LLM 失败 → 回退规则（高相似且无实质差异才 NOOP，否则 ADD）。
 3. **reflect（默认 no-op）**：基类 `_reflect_step` 直接返回候选；子类可覆盖
    `_reflect_step` 在落盘前原地修正候选。当前持久化仍读取
@@ -301,6 +321,13 @@ Schema Evolver 对非 procedural 写入采用 Source-first，并将属性候选�
 | `abstract` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | 对一批记忆单元做抽象与精炼，产出高抽象粒度的新记忆单元 |
 
 超过 `CONTENT_MAX_UNIT_CHARS` 的 unit 采用**两段式**消费：先按段落边界分片逐片提炼（分片级候选 `source_unit_ids` 回指原 unit，原文事实不丢），再把每个超限 unit 替换为其提炼视图（各片候选拼接、显式截到 2000 字符的压缩视图）与未超限 unit 合并进**同一次**归纳调用——PATTERN/PORTRAIT 的跨记忆共同归纳不因分片调用拆散。多组消费时单组失败隔离跳过，不影响其它组。
+
+类属性 `dedup_products: bool = True`（F10）：产物是否在落盘前与落点空间已有条目
+做语义去重。缺省 True（事实/画像类产物语义相同即重复，向后兼容）；技能归纳
+（`skill` 实现）置 False——同一技能的新旧版本内容天然相近，语义去重会把新版
+误判成重复，版本演进由条目 id 幂等与版本号承载。`OrchestratingEvolver.
+_evolve_consolidate` 在 `_annotate_layers` 之后读本属性，False 时跳过
+`_dedup_batch` 直接落盘。
 
 ### Associator（`associator.py`）
 
@@ -545,10 +572,45 @@ repair_required，调用方须报告 FAILED。当前没有自动修复或事务�
 |------|------|------|
 | `evolve` | `(units: list[MemoryUnit] | EvolveRequest, mode: EvolveMode | None = None) -> EvolveResult` | 对一批记忆单元执行指定阶段的演进，返回变更结果 |
 
+#### 阶段编排契约
+
+EXTRACT 的每次调用持有独立 `ExtractState`（sources / procedural / appraisal /
+context / candidates），不得在共享 Evolver 实例上保存请求状态。阶段函数在实例内可覆盖，
+调用方仍选择预先配置的完整 Evolver，不通过请求参数任意拼接阶段。
+
+| 阶段 | 输入与输出 | 约束 |
+|---|---|---|
+| 准入评价 | sources → 可选 Appraisal | 异常与 proceed=False 不进入后续阶段、不收尾 |
+| 上下文准备 | 本次 ExtractState → context | procedural 跳过；评价存在而 context 为空时创建空壳 |
+| 抽取 | sources + context → candidates | 只产候选，不隐藏路由、标注或写入 |
+| 候选准备 | sources + candidates → 补全后的候选 | 非 procedural 的 Snapshot 继承校验先于路由与写入；dynamic 另传反思 prompt |
+| 路由、分层 | candidates → 目标空间候选及 L0/L1 | 路由在目标空间去重之前执行 |
+| legacy 判定与写入 | candidates → EvolveResult | 保留原批量判定与有序应用的耦合，不改变写入顺序 |
+| dynamic 判定、反思、写入 | candidates → decisions → 原地反思 → EvolveResult | 判定不写入，反思后执行决策；沿用原候选对象契约 |
+| 收尾 | sources + appraisal + result/None | 正常空结果亦收尾；阶段 Exception 先以 None 收尾再抛出原异常；收尾自身错误只记录 |
+
+procedural 仅沿用评价、抽取、候选准备、路由、分层与直接写入；不维护原文、不收集上下文、
+不继承 Snapshot、不去重，也不传播 dynamic 反思 prompt。未配置 Appraiser 时评价和收尾均跳过；
+不增加抽取器必须配置评价算子的强制装配规则。
+
+CONSOLIDATE 按“可选整理 → 归纳 → 产物准备 → 分层 → 按产物契约直写/去重写入”执行。
+Curator 已装配且返回空时，本轮不调用 Abstractor；未配置 Curator 时保持原直接归纳行为。
+EXPERIENCE_CONSOLIDATE 在任何整理副作用前验证输入全部为 `memory_type=experience`、
+且已装配 Curator；按完整 Scope 分组，存在未成功处理的有效经验 ID 或最新修订为有害的新归因事件时执行同一组阶段。
+默认任务候选包含该空间全部有效经验，因此新增触发时旧经验也参与整理；显式候选约束仍被尊重，
+不在构建层扩大候选或选择其他 profile。首次无进度记录时执行一轮。
+进度仅在整理、归纳及落盘正常完成后写入同一 message_store 的
+`/experience/consolidation/progress`，保存版本、已处理输入/本轮产物 ID、有害归因事件键与成功时间。
+整理开始后并发写入的条目和归因事件不在本轮快照，不会被误确认；合并产物不会再次触发新增门控。
+失败/部分失败不推进进度；待处理作者清除标记豁免新增门控，不能等待新经验才执行。
+普通 CONSOLIDATE 及其他 mode 保持原行为，周期注册间隔不在本次变更范围。
+相关决策见 [Evolver 阶段编排](../features/construction/F15-staged-evolver.md)。
+
 **EvolveMode**：
 - `EXTRACT` — 信息提取
 - `ASSOCIATE` — 关联分析
 - `CONSOLIDATE` — 冲突消解（近重复融合/矛盾标记失效）
+- `EXPERIENCE_CONSOLIDATE` — 专用经验整理与技能归纳，仅接受经验条目且要求 Curator
 - `CONFLICT_CONSOLIDATE` — Schema 属性记忆的簇内冲突巩固（需注入 `ConflictConsolidator`，未注入空跑）
 - `FORGET` — 遗忘/降权（过期/低价值记忆归档）
 - `HIERARCHY` — 显式创建或重建父节点及双向包含边
@@ -595,7 +657,8 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 - 适用配置键分别为 `extractor_max_attempts`、`abstractor_max_attempts`、
   `associator_max_attempts`、`classifier_max_attempts`、`layer_annotator_max_attempts`
   和 `router_max_attempts`；对应退避键为各自的 `*_retry_backoff`，Router 使用
-  `router_retry_backoff`。
+  `router_retry_backoff`。技能归纳（`skill` Abstractor）用独立的
+  `skill_max_attempts`（F10）。
 - `max_attempts` 非法时在算子构造期抛出 `ValidationError`，不得等到第一次 LLM
   调用时才失败；最后一次调用失败时原始异常向上抛出。
 - 重试循环统一收敛在 `construction/llm_retry.py::call_llm_with_retry`，各算子一律委托
@@ -617,6 +680,7 @@ Construction 层的 LLM 实现统一使用 `max_attempts` 与 `retry_backoff_ms`
 | `EXTRACT` | 既有节点不变；新派生节点默认空，`provenance` 来源不自动成为父 |
 | `ASSOCIATE` | hierarchy 不变；关系只写 GraphStore，不写 `parent_id` |
 | `CONSOLIDATE` | 既有节点不变；新合成节点默认空，需单独建树 |
+| `EXPERIENCE_CONSOLIDATE` | 复用整理归纳的 hierarchy 契约，不隐式建树 |
 | `CONFLICT_CONSOLIDATE` | 既有节点不变；新产物由簇内代表单元复制，不新建父节点 |
 | `FORGET` | 不改其他节点 kind/role/span；断开直接父边和全部直接子边，不级联删除父或任何子孙 |
 | `HIERARCHY` | 委托 HierarchyComposer 创建/替换父节点并一致回写直接子边 |
@@ -639,11 +703,40 @@ LLM 的修改型判定（UPDATE/SUPERSEDE）必须绑定具体已有单元：判
 
 **score 量纲 0~1**：向量路=cosine，倒排路=词重叠率，阈值统一复用。
 
-**两个实现**（装配按 `vector_enabled` 选）：
+**内置实现**（缺省装配按 `vector_enabled` 选 vector / keyword）：
 - `VectorDedup`（`vector`）— Embedder → VectorStore.search，cosine；record_id 为 `{unit_id}-{chunk_id}` 需解析
 - `KeywordDedup`（`keyword`）— FulltextStore.search，词重叠率；Document.id = unit.id 恒等无需解析
+- `ShadowDedup`（`shadow`）— 显式配置使用文档 shadow 召回，保持相同候选召回契约
 
 **降级契约**：实现内部任何异常（Embedder/Store 失败）都吞掉并返回空列表——去重是尽力而为，不可阻断演进。
+
+### Curator（`curator.py`，mem2.0）
+
+周期整理算子，可选装配（orchestrating/dynamic 实例参数 `curator` 声明引用名，或使用
+`curator` 命名空间的 `default` 实例；两者皆无即不接线，普通 CONSOLIDATE 直接升华，
+现有行为不变）。经验专用 EXPERIENCE_CONSOLIDATE 明确要求装配 Curator。
+
+| 方法 | 签名 | 语义 |
+|------|------|------|
+| `curate` | `(units: list[MemoryUnit]) -> list[MemoryUnit]` | CONSOLIDATE 升华**之前**调用：整理本轮读入的条目，返回参与后续归纳的条目；失败轮返回空列表（本轮不归纳） |
+| `curate_with_status` | `(units: list[MemoryUnit]) -> CurateOutcome` | 经验专用 mode 使用显式 succeeded；区分成功后全部退休与失败。旧插件默认包装 curate，空结果保守视为未成功；内置经验算子明确报告部分失败 |
+
+接线不变量：`curate` 异常冒泡（不进升华）；返回集是「参与归纳」的条目，非
+经验类型的条目不得混入。整理器筛选有效经验并按实际 `org + space` 分组，
+不要求预先列举空间；范围仍受任务候选、空间授权及逐桶检查约束。
+技能生成由 `globals.experience.skill` 控制（默认 false），`skill_release` 为
+manual / auto，`repro_unit` 为 auto / user / trajectory；auto 逐实际空间运行时解析。
+旧版 `curated_spaces` 仅兼容逐空间技能与计数策略覆盖，不再限制整理范围。运行摘要条目
+`memory_type=experience` + `EPISODIC` + 标签 `run-summary`，只写本体不建索引，
+编辑者用 `list` 按 `memory_type` 与标签列出。
+
+整理流程与失败隔离的分层语义（第 0/1 步失败本轮中止；第 2-6、8 步失败记
+运行摘要跳过；簇级失败只跳过该簇）、按作者清除协议（space 删除回调写
+`/experience/erased-authors/{摘要}` 标记 → 下一轮聚合之前删该作者事件、退休「只剩
+该作者复现」的条目、删标记；统计随聚合全量重算）的决策与取舍见
+[经验记忆与技能沉淀](../features/construction/F14-experience-memory-and-skill.md)。按作者清除的
+登记回调由装配注入 `SpaceLifecycleService`（S03），密钥与评价算子的
+`author_key` 同值。
 
 ## 数据结构
 
@@ -697,7 +790,7 @@ jiuwen_memory/construction/<算子>_impl/
     <impl_class_snake>.py   # 具体实现 + 尾部 @XxxProducer.register("name")
 ```
 
-各 Producer：`ExtractorProducer` / `AbstractorProducer` / `AssociatorProducer` / `ClassifierProducer` / `IndexBuilderProducer` / `DedupProducer` / `EvolverProducer`；`RouterProducer`（可选装配，首版只有模型实现）。
+各 Producer：`ExtractorProducer` / `AbstractorProducer` / `AssociatorProducer` / `ClassifierProducer` / `IndexBuilderProducer` / `DedupProducer` / `EvolverProducer`；`RouterProducer`（可选装配，首版只有模型实现）；`AppraiserProducer` / `CuratorProducer`（mem2.0，可选装配）。
 注册由 `construction.bootstrap.register_constructors` 统一触发。
 
 > 当前有哪些实现、文件职责、行为铁律归 [`jiuwen_memory/construction/AGENTS.md`](../../jiuwen_memory/construction/AGENTS.md)，本 spec 只列契约。
@@ -797,7 +890,13 @@ Evolver 的可选能力 `hierarchy_profile(kind) -> HierarchyComposeProfile | No
 
 关系真源仍是通过既有写入链落盘的 MemoryUnit。证据图 IndexBuilder 只接已提交记录的 RETRIEVAL_ONLY 投影，拒绝代写正文；按命名空间内确定 ID 幂等重建。修订/撤回先作用于真源，再更新图，查询必须回查，详见 [S11](S11-cross-agent-continuity.md)。
 
-### IndexBuilder 写入模式声明（尚未实现）
+### 文档模式的技能文件输出
+
+配置 `skill_files` 的文档构建器将通过自动试用检查的技能交给宿主技能库，
+只创建新的 `SKILL.md`；后续记忆条目更新、删除和索引重建不管理该文件。
+该装配下，技能归纳丢弃未通过自动试用检查的产物。
+
+### IndexBuilder 写入模式声明
 
 IndexBuilder 须以公开能力 `supported_write_modes() -> frozenset[IndexWriteMode]` 声明其支持的写入模式；默认实现返回全部模式。只声明 `RETRIEVAL_ONLY` 的构建器（如证据图投影）是部分能力，装配器在把构建器放到主写入链（需要写入本体与索引）的位置时检查该声明，不满足即启动失败。判断只依据能力声明，不按 target 名、模块路径或具体类型识别（S09 §9）。依赖外部图存储的构建器须由装配方注入已解析的 GraphStore 对象，不在构建器内部另行解析同名依赖。
 

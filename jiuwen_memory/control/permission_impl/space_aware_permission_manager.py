@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from jiuwen_memory.common.security.principal import AUTHOR_PRINCIPAL
 from jiuwen_memory.common.security.space_decision import (
+    ATTR_OWN_ACTIONS,
     ATTR_PRINCIPAL_PATH,
     ATTR_SPACE_AXIS,
     ATTR_SPACE_ENTRY,
@@ -29,6 +30,7 @@ from jiuwen_memory.common.security.space_decision import (
 )
 from jiuwen_memory.common.security.space_roles import (
     ENTRY_RULES,
+    EntryRule,
     SpaceAction,
     SpaceAxis,
 )
@@ -118,7 +120,7 @@ class SpaceAwarePermissionManager(SQLitePermissionManager):
                 principal_path=principal_path,
                 granted_actions=granted,
                 scope_covered=covered,
-                own_actions_apply=rule.own_actions_apply,
+                own_actions_apply=self._own_actions_apply(rule, context),
             )
             if outcome.allowed:
                 return outcome
@@ -135,6 +137,23 @@ class SpaceAwarePermissionManager(SQLitePermissionManager):
         if context is None:
             return default
         return resolve_space_action(default, context.metadata)
+
+    @staticmethod
+    def _own_actions_apply(rule: EntryRule, context: PermissionContext | None) -> bool:
+        """「本人所写」附加集合是否适用：入口表默认值，可经属性通道覆盖。
+
+        覆盖通道由经验条目的 ``get`` / ``list`` 使用（mem2.0 §2.3，判定上下文
+        ``memory_type=experience``）：附加集合按读动作放行贡献者，而经验条目的
+        读取只对编辑者放行，鉴权点因此在装配上下文时把它关掉。
+        """
+        if context is None:
+            return rule.own_actions_apply
+        override = context.metadata.get(ATTR_OWN_ACTIONS, "")
+        if override == "true":
+            return True
+        if override == "false":
+            return False
+        return rule.own_actions_apply
 
     @staticmethod
     def _attr(context: PermissionContext | None, key: str) -> str:

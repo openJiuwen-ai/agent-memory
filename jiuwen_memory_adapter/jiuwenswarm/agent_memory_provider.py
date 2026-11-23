@@ -49,8 +49,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import Future
 from contextlib import ExitStack
 from copy import deepcopy
@@ -91,6 +92,7 @@ from jiuwen_memory.api import (
     scope_for_log,
 )
 from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory_adapter.jiuwenswarm.experience_author_key import configure_experience_author_key
 from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
 from jiuwen_memory_adapter.jiuwenswarm.memory_scenes import create_memory_scene
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import MAX_TOP_K as _MAX_TOP_K
@@ -128,6 +130,29 @@ _WRITE_TIMEOUT = 120.0
 # prefetch/sync_turn 都等满超时拖慢宿主（§6.2-C）。
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN = 120.0
+
+# 经验类别目录（mem2.0 §2.3 分类表，沿用 agent-core TTSE 的 categories.py，
+# 首版固定不演进）：工具 schema 的 category 枚举与检索过滤共用一份。
+_EXPERIENCE_CATEGORIES = (
+    "external-service-automation",
+    "documents-office-and-records",
+    "data-analytics-and-visualization",
+    "software-engineering-devops",
+    "security-privacy-and-risk",
+    "media-multimodal-and-creative",
+    "science-engineering-modeling",
+    "search-research-and-knowledge",
+    "embodied-simulation-and-interactive-tasks",
+    "skill-agent-meta-workflows",
+    "other",
+)
+
+# 查经验工具的固定返回条数（mem2.0 §2.4：两类合起来 5 条，模型不可改）。
+_EXPERIENCE_TOP_K = 5
+
+# 经验周期整理注册间隔（秒，默认三天）。
+_CONSOLIDATE_INTERVAL = 259_200
+
 
 _VIDEO_ROOTS_ENV = "JIUWEN_MEMORY_VIDEO_ROOTS"
 _VIDEO_MODEL_ENV = {
@@ -209,9 +234,11 @@ def _configure_default_video(config: dict[str, Any], settings: dict[str, Any]) -
         "extractor": "video", "message_store": "video_messages",
         "layer_annotator": None, "dedup_extract": False,
     }}
+    existing_pipeline = config.get("pipeline", {}).get("default", {}).get("params", {})
     config["pipeline"] = {"default": {"target": "metadata", "params": {
         "route_key": "pipeline", "fallback": "default", "routes": {"video": "video"},
         "profiles": {
+            **existing_pipeline.get("profiles", {}),
             "default": {"index_builder": "default", "retriever": "default",
                         "evolver": "default", "classifier": "default"},
             "video": {"index_builder": "default", "retriever": "default", "evolver": "video"},
@@ -225,7 +252,112 @@ def _configure_default_video(config: dict[str, Any], settings: dict[str, Any]) -
         }}}
 
 
-def _agent_default_config() -> dict[str, Any]:
+def _experience_filters() -> dict[str, Any]:
+    return {"system_metadata.memory_type": "experience"}
+
+
+EXPERIENCE_SCHEMA: dict[str, Any] = {
+    "name": "agent_memory_experience",
+    "description": (
+        "Look up verified-in-context lessons from previous tasks when they could change "
+        "your next step. Search before retrying a failed operation, diagnosing a concrete "
+        "error, or choosing a procedure with several plausible options. Use the task "
+        "goal, relevant tool or environment, and the key symptom or constraint in query. "
+        "Results may contain environment facts and conditional actions. Treat them as "
+        "unverified for this task: check conditions, tool availability and permissions "
+        "before applying a result."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "A short query with the goal and the most useful clue, such as a tool, file, "
+                    "error, or constraint. Omit secrets and unrelated chat. Example: Fix Docker "
+                    "build COPY failed when using a subdirectory as build context."
+                ),
+            },
+            "category": {
+                "type": "string",
+                "enum": list(_EXPERIENCE_CATEGORIES),
+                "description": (
+                    "Optional ranking preference. Omit it when unsure. Related results from "
+                    "other categories can still be returned."
+                ),
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
+def _experience_consolidation_candidate() -> dict[str, Any]:
+    return {
+            "type": "predicate",
+            "filters": {
+                "lifecycle": "active",
+                "system_metadata.memory_type": "experience",
+                "tier": {"in": ["semantic", "procedural"]},
+            },
+    }
+
+
+_SKILL_PAGE_SIZE = 1000
+_PUBLISHED_SKILL_FILTER = {
+    "AND": [
+        {"OR": [{"tags": {"contains": "approved"}}, {"tags": {"contains": "trial"}}]},
+        {"lifecycle": "active"},
+    ],
+}
+
+
+async def _collect_published_skills(
+    fetch: Callable[[int], Awaitable[tuple[int, list[dict[str, Any]]] | None]],
+) -> list[dict[str, Any]] | None:
+    """Only return a complete listing, since callers prune against this result."""
+    skills: list[dict[str, Any]] = []
+    ids: set[str] = set()
+    total = None
+    while total is None or len(skills) < total:
+        result = await fetch(len(skills))
+        if result is None:
+            return None
+        count, page = result
+        if total is None:
+            total = count
+        if count != total or len(page) != min(_SKILL_PAGE_SIZE, total - len(skills)):
+            return None
+        for skill in page:
+            item_id = skill.get("item_id")
+            if not isinstance(item_id, str) or not item_id or item_id in ids:
+                return None
+            ids.add(item_id)
+        skills.extend(page)
+    return skills
+
+
+def _published_skill(item_id, content, metadata) -> dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+    return {
+        "item_id": item_id,
+        "content": content,
+        "system_metadata": meta,
+        "skill_name": meta.get("skill_name", ""),
+        "skill_version": meta.get("skill_version", 0),
+        "capabilities": meta.get("capabilities", []),
+    }
+
+
+def _skill_version_of(skill: dict[str, Any]) -> int:
+    """技能条目的版本号（mem2.0 §2.5.3：system_metadata.skill_version，int）。"""
+    try:
+        return int((skill.get("system_metadata") or {}).get("skill_version", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
     """进程内默认装配——agent 场景（F09）内核配置。
     - 真源 = document（md 文件 + sqlite3/sqlite-vec 影子索引，watchdog 监听手改）；
       md 按 memory_class × coords.project 分流（user_profile→USER.md；
@@ -233,6 +365,12 @@ def _agent_default_config() -> dict[str, Any]:
     - memory_class 由 agent_llm 抽取器（deepseek）同步判定；search 走
       recall_and_get_rank pipeline（文档模式必须），召回统一走 shadow recaller
     - fulltext = elasticsearch（文档模式召回走 shadow FTS5，此端口闲置备用）
+    - 经验记忆（mem2.0 §2.3 开关约定「配置了才启用，缺省关闭」）：
+      ``experience_space`` 非空才装配经验段（``globals.experience`` 落点、
+      metadata pipeline 双 profile、experience 数据面与六个具名算子——集中在
+      函数尾部的 if 块）；空串输出与无经验段的对话装配完全一致：AgentEngine
+      检测不到 pipeline 具名实例不注入、store_manager 只建 default 数据面，
+      行为与 mem2.0 之前一致。
     - 每次调用返回**全新字面量**——无共享可变状态，调用方（装配/改写）互不影响
     """
     config: dict[str, Any] = {
@@ -424,7 +562,185 @@ def _agent_default_config() -> dict[str, Any]:
         "space": {"default": {"target": "kv", "params": {}}},
         "config_source": {"default": "yaml_defaults"},
     }
+    if not experience_space:
+        return config
+    # ---- 经验段（mem2.0 §2.3「配置了才启用，缺省关闭」）----------------------- #
+    # globals 落点：经验固定 experience_space 空间（写入者空间之外的结构化沉淀），
+    # 开启该空间的技能沉淀与周期整理。
+    config["globals"]["experience"] = {
+        "memory_class": "experience",
+        "default_space": experience_space,
+        "skill": False,
+    }
+    # 先声明 KV 回退所需的组件，Provider 合并配置时按有效开关装配文档组件。
+    # 盖过 globals（ComponentConfig.get params 优先），KV 真源 + keyword/vector
+    # 召回（fulltext/vector 端口走内核 defaults 内存版，与对话的 shadow 索引
+    # 互不占用）。
+    config["store_manager"]["default"]["params"]["domain_stores"]["experience"] = {
+        "write_document": False,
+        "kv_store": "default",
+        "keyword_recaller": "keyword",
+        "vector_recaller": "vector",
+        "preferred_retrieval_pipeline": "recall_and_get_rank",
+    }
+    # 经验检索（§2.4）：经验数据面 + 选取算子。parser/reranker 与对话检索共用
+    # 具名实例（查询向量同源）。装配时将开关与经验数据面统一。
+    config["retriever"]["experience"] = {"target": "pipeline", "params": {
+        "reranker": "default",
+        "query_parser": "default",
+        "fuser": "default",
+        "discloser": "default",
+        "embedder": "default",
+        "over_fetch_factor": 4,
+        "over_fetch_floor": 60,
+        "recall_max": 100,
+        "rerank_max": 60,
+        "min_score": 0.0,
+        "min_score_ratio": 0.0,
+        "min_score_ratio_uncalibrated": 0.0,
+        "min_results": 0,
+        "domain_store": "experience",
+        "write_document": False,
+        "selector_enabled": True,
+    }}
+    # 经验抽取（§2.2 三段：提炼/修正/分类）。
+    config["extractor"]["experience"] = {"target": "experience", "params": {
+        "llm": "default",
+    }}
+    # 经验 IndexBuilder：hybrid 落 experience 数据面（KV 正排 + fulltext/vector
+    # 索引）。embedder 必须显式指名——dep 缺省匿名新建 hashing，与查询侧
+    # parser 的 openai embedder 不同源会让向量召回失真。
+    config["constructor"]["experience"] = {"target": "hybrid", "params": {
+        "embedder": "default",
+        "kv_store": "default",
+        "fulltext_store": "default",
+        "vector_store": "default",
+    }}
+    # 经验去重：vector dedup 查经验条目所在的 vector 端口，embedder 同上必须
+    # 显式（匿名缺省 hashing 与索引向量不同源）。
+    config["dedup"]["experience"] = {"target": "vector", "params": {
+        "embedder": "default",
+        "vector_store": "default",
+        "kv_store": "default",
+    }}
+    # 经验 evolver（§2.2）：DynamicEvolver + 经验 extractor/appraiser（评价包住
+    # 抽取）。index_builder/dedup 显式绑定经验组件，随经验文档开关一并切换。
+    config["evolver"]["experience"] = {"target": "dynamic", "params": {
+        "extractor": "experience",
+        "appraiser": "experience",
+        "index_builder": "experience",
+        "dedup": "experience",
+        "message_store": "default",
+        "llm": "default",
+        "curator": "experience",
+        "abstractor": "experience_skill",
+    }}
+    config["curator"] = {"experience": {"target": "experience", "params": {
+        "index_builder": "experience",
+        "message_store": "default",
+        "llm": "default",
+        "embedder": "default",
+    }}}
+    config["abstractor"]["experience_skill"] = {"target": "skill", "params": {
+        "message_store": "default", "llm": "default", "embedder": "default",
+    }}
+    config["engine"]["default"]["params"]["mode_evolvers"] = {
+        "experience_consolidate": {
+            "evolver": "experience", "domain_store": "experience", "retriever": "experience",
+        },
+    }
+    config["scheduler"]["default"] = {"target": "async_timer", "params": {}}
+    # SDK client resolves the deployment's author key immediately before runtime assembly.
+    config["appraiser"] = {"experience": {"target": "experience", "params": {
+        "llm": "default",
+    }}}
+    # metadata 双 profile 路由——AgentEngine 装配期检测到 pipeline 命名空间有
+    # default 具名实例即注入（_opt_pipeline）。对话单元无 memory_type 路由值 →
+    # fallback default（行为与无 pipeline 时一致：同一批具名算子）；
+    # memory_type=experience → 经验算子组（§2.1 不回落语义）。
+    config["pipeline"] = {"default": {"target": "metadata", "params": {
+        "profiles": {
+            "default": {
+                "index_builder": "default",
+                "retriever": "default",
+                "evolver": "default",
+            },
+            "experience": {
+                "index_builder": "experience",
+                "retriever": "experience",
+                "evolver": "experience",
+            },
+        },
+        "fallback": "default",
+    }}}
     return config
+
+
+def _configure_experience_document(
+    config: dict[str, Any],
+    overrides: dict[str, Any],
+    *,
+    skills_dir: str,
+    skill_capabilities: list[str] | None,
+) -> None:
+    stores = config["store_manager"]["default"]["params"]["domain_stores"]
+    store = stores["experience"]
+    retriever = config["retriever"]["experience"]
+    if not isinstance(retriever, dict) or retriever.get("target") != "pipeline":
+        raise ValidationError("Experience retriever must use the pipeline target")
+    search = retriever["params"]
+    explicit_store = (
+        overrides.get("store_manager", {}).get("default", {}).get("params", {})
+        .get("domain_stores", {}).get("experience", {})
+    )
+    explicit_search = overrides.get("retriever", {}).get("experience", {}).get("params", {})
+    flags = [
+        _should_write_document(params["write_document"])
+        for params in (explicit_store, explicit_search) if "write_document" in params
+    ]
+    global_document = _should_write_document(config["globals"].get("write_document", False))
+    enabled = flags[0] if flags else global_document
+    if any(flag != enabled for flag in flags) or (enabled and not global_document):
+        raise ValidationError("Conflicting experience write_document configuration")
+    for params in (store, search):
+        params["write_document"] = enabled
+    stores["default"]["experience_partition"] = "ordinary"
+    if search.get("domain_store") != "experience":
+        raise ValidationError("Experience retriever must use the experience domain")
+    if enabled:
+        if explicit_store.get("shadow_recaller", "shadow") != "shadow":
+            raise ValidationError("Experience document storage must use the shadow recaller")
+        store["shadow_recaller"] = "shadow"
+        store["experience_partition"] = "experience"
+        for namespace in ("extractor", "appraiser"):
+            config[namespace]["experience"]["params"]["entry_store"] = "experience"
+        abstractor = config["abstractor"]["experience_skill"]
+        if abstractor == "skill":
+            abstractor = config["abstractor"]["experience_skill"] = {"target": "skill"}
+        if isinstance(abstractor, dict) and abstractor.get("target") == "skill":
+            abstractor.setdefault("params", {})["publish_files_only"] = True
+    for namespace, target, params in (
+        ("constructor", "document", {"domain_store": "experience"}),
+        ("dedup", "shadow", {"embedder": "default"}),
+    ):
+        expected = target if enabled else {"constructor": "hybrid", "dedup": "vector"}[namespace]
+        override = overrides.get(namespace, {}).get("experience")
+        if override is not None:
+            selected = override if isinstance(override, str) else override.get("target", expected)
+            if selected != expected:
+                raise ValidationError(f"Incompatible experience {namespace}: {selected}")
+        if enabled:
+            explicit_params = override.get("params", {}) if isinstance(override, dict) else {}
+            config[namespace]["experience"] = {
+                "target": target,
+                "params": {**params, **explicit_params},
+            }
+    constructor = config["constructor"]["experience"]
+    if enabled:
+        params = constructor["params"]
+        if params.get("domain_store") != "experience":
+            raise ValidationError("Experience document components must use the experience domain")
+        params["skill_files"] = {"root": skills_dir, "capabilities": skill_capabilities}
 
 
 def _merge_config(base: Any, override: Any) -> Any:
@@ -436,7 +752,12 @@ def _merge_config(base: Any, override: Any) -> Any:
 
 
 def _merge_config_over_default(
-    config_dict: dict[str, Any], *, standalone: bool = False,
+    config_dict: dict[str, Any],
+    experience_space: str = "",
+    *,
+    standalone: bool = False,
+    skills_dir: str = "",
+    skill_capabilities: list[str] | None = None,
 ) -> dict[str, Any]:
     """[本地修改 2026-10-20] 把上层 ``config_dict`` 深合并到内置 agent 默认装配之上。
 
@@ -453,18 +774,33 @@ def _merge_config_over_default(
     内核 ``AssemblyContext.merged`` 的补全基准是 ``defaults.py``（不是 agent 默认），
     缺失的 F09 命名空间会被通用缺省补齐。返回值是 ``_agent_default_config()`` 的
     全新字面量被就地改写后的结果，默认配置本身每次调用都重建、无跨调用共享状态。
+
+    [本地修改 2026-10-27] 经验段按 ``experience_space`` 条件装配（对齐方案 §2.3
+    开关约定）：空串 → 合并基准不带经验段（上层显式配 ``globals.experience`` /
+    ``pipeline`` 等仍经深合并尊重）；非空 → 基准带经验段且落点为该空间，上层
+    显式配置同样覆盖。检索落点、周期整理与内核写入落点同空间，错位即查不到。
     """
 
     settings = _sdk_globals(config_dict)
     requested = _default_video_requested(settings)
     if standalone and not requested:
         return config_dict
-    config = _agent_default_config()
+    config = (
+        _agent_default_config(experience_space=experience_space)
+        if experience_space else _agent_default_config()
+    )
     if requested:
         try:
             _configure_default_video(config, settings)
         except ValidationError as exc:
             logger.warning("Built-in SDK video profile skipped: %s", str(exc))
+    if experience_space:
+        # Merge first to honor user settings, while retaining the caller's explicit flags.
+        config = _merge_config(config, deepcopy(config_dict))
+        _configure_experience_document(
+            config, config_dict, skills_dir=skills_dir, skill_capabilities=skill_capabilities,
+        )
+        return config
     return _merge_config(config, config_dict)
 
 
@@ -497,6 +833,23 @@ class AgentMemoryMemoryProvider(MemoryProvider):
       ``local``/``developer``；生产配真实认证身份。
     - ``portal``：符合条件的 SDK 文档实例自动共用本机 Portal。
       ``instance_id`` 默认是 ``default``，同一文档目录下的其他实例使用稳定的不同 ID。
+    - ``experience_space``：经验记忆的空间名（mem2.0 §2.4「查经验的空间」，与
+      写入时经验落点一致）。非空 → 经验能力开启：注册查经验工具
+      ``agent_memory_experience``、initialize 恢复 dreaming 并注册周期整理、
+      进程内默认装配带上经验段（globals 落点 + 双 profile + 经验算子组）；
+      **空串（缺省）→ 全部关闭**——对齐方案 §2.3 开关约定「配置了才启用，
+      缺省关闭」：工具/周期任务/技能同步不启用，进程内默认装配不带经验段
+      （与无经验段的对话装配完全一致，AgentEngine 不注入 pipeline），现有
+      部署行为不受影响。进程内默认装配/config_dict 分支按本参数条件装配
+      经验段；外部 config_path 全权，不覆盖。
+    - ``experience_capabilities``：技能同步使用的可选工具能力清单。
+      非空时跳过需要清单外工具的技能；空清单时不按能力筛选技能。
+      经验检索不使用此清单过滤，环境事实和条件动作均可参与检索。
+    - ``skills_dir``：技能同步目录（mem2.0 §2.5.6）。非空 → initialize 同步
+      一次、prefetch 距上次超过 ``skill_sync_interval`` 秒时后台同步，已发布
+      技能（trial/approved）写到 ``skills_dir/distilled/<skill_name>/SKILL.md``；
+      空串 → 不同步。
+    - ``skill_sync_interval``：技能同步间隔秒，缺省 3600（1 小时）。
       ``language`` 设为 ``en`` 时以英文打开页面，缺省以简体中文打开。
     """
 
@@ -513,6 +866,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         api_key: str = "",
         identity_org: str = "local",
         identity_user: str = "developer",
+        experience_space: str = "",
+        experience_capabilities: Sequence[str] | None = None,
+        register_experience_jobs: bool = True,
+        skills_dir: str = "",
+        skill_sync_interval: float = 3600.0,
         continuity_enabled: bool = False,
         continuity_mode: str = "role",
         default_duty: str | list[str] = "general",
@@ -597,13 +955,31 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._api_key = api_key
         self._identity_org = identity_org or "local"
         self._identity_user = identity_user or "developer"
+        # 经验记忆（mem2.0）：空间名非空即开启（缺省空串关闭，对齐方案 §2.3
+        # 「配置了才启用，缺省关闭」）——查经验工具 / 周期任务 / 技能同步；
+        # add_trajectory 是轨迹发送方的主动接口，不受此开关控制。
+        self._experience_space = experience_space or ""
+        self._experience_capabilities = list(experience_capabilities or ())
+        self._register_experience_jobs = register_experience_jobs
+        self._skills_dir = skills_dir or ""
+        self._skill_sync_interval = max(float(skill_sync_interval), 60.0)
 
         # Rail 在 before_invoke 首次调 initialize 时传入，覆盖构造默认
         self._scope_id: str = "__default__"
         self._session_id: str = "__default__"
 
+        # 查经验工具的使用记录（mem2.0 §2.4 record_retrieved）：每次条目 id 与
+        # 引用值，take_retrieved_refs 取走后由轨迹组装方并入 retrieved 字段
+        # （§2.1）。asyncio 单线程内 append/take 无锁。
+        self._retrieved_refs: list[dict[str, Any]] = []
+        self._last_skill_sync: float = 0.0
+
         self._client: _AgentMemoryClient | None = None
         self._initialized = False
+
+    @property
+    def _experience_enabled(self) -> bool:
+        return bool(self._experience_space)
 
     # -- MemoryProvider: 元信息 ---------------------------------------------- #
 
@@ -855,6 +1231,73 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             or "builtin-agent-default",
             scope_for_log(self.bound_scope()),
         )
+        # mem2.0 §2.5.1：经验能力开启时恢复 dreaming 注册并在经验空间注册周期
+        # 整理（每三天一次 experience_consolidate，谓词限定 active 经验）。失败只记日志——
+        # 多进程共用存储时只有一个能完成恢复，其余按设计继续。
+        register_jobs = self._register_experience_jobs and kwargs.get(
+            "register_experience_jobs", True,
+        )
+        if self._experience_enabled and self._client is not None and register_jobs:
+            await self._setup_experience_jobs()
+        # mem2.0 §2.5.6：initialize 同步一次技能（skills_dir 未配置则跳过）。
+        if self._skills_dir and self._experience_enabled:
+            await self.sync_skills()
+
+    async def _setup_experience_jobs(self) -> None:
+        """恢复 dreaming 注册 + 注册经验空间的周期整理（mem2.0 §2.5.1）。"""
+        client = self._client
+        if client is None:
+            # initialize 已按 _client 非空守卫；此处显式抛错防御误用（G.TES.01：
+            # assert 在 -O 下会被剥离，不能承担运行期契约）。
+            raise RuntimeError("experience jobs require an HTTP client")
+        try:
+            restored = await client.restore_dreaming()
+            logger.info(
+                "[AgentMemoryMemoryProvider] restore_dreaming restored=%s", restored
+            )
+        except Exception as exc:
+            # 他人持锁（多进程共用内核）或恢复失败：记日志继续，不阻塞记忆主链路。
+            logger.warning(
+                "[AgentMemoryMemoryProvider] restore_dreaming failed: error_type=%s",
+                type(exc).__name__,
+            )
+        try:
+            await client.register_consolidation(
+                self._experience_scope(), _CONSOLIDATE_INTERVAL
+            )
+            logger.info(
+                "[AgentMemoryMemoryProvider] consolidation registered space=%s "
+                "interval=%ss",
+                self._experience_space,
+                _CONSOLIDATE_INTERVAL,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[AgentMemoryMemoryProvider] consolidation registration failed: "
+                "error_type=%s",
+                type(exc).__name__,
+            )
+
+    async def ensure_experience_dreaming(
+        self,
+        *,
+        interval: int = _CONSOLIDATE_INTERVAL,
+        ready: Callable[[], Awaitable[bool]] | None = None,
+    ) -> str:
+        """Restore and ensure the SDK schedule from the deployment owner."""
+        client = self._client
+        if not self._experience_enabled or not isinstance(client, _InProcessClient):
+            raise RuntimeError("experience dreaming requires an initialized SDK provider")
+        if ready is None:
+            await client.restore_dreaming()
+        return await client.ensure_experience_dreaming(
+            self._experience_scope(), interval, ready=ready,
+        )
+
+    def _experience_scope(self) -> _Scope:
+        """查经验/技能/周期整理的空间 scope（mem2.0 §2.4：不带 user——经验
+        条目不属于任何用户；space 维为构造参数 experience_space）。"""
+        return _Scope(org=self._scope_id, space=self._experience_space)
 
     # -- MemoryProvider: 工具声明 + 调度 -------------------------------------- #
 
@@ -868,6 +1311,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 api_key=self._api_key,
                 identity_org=self._identity_org,
                 identity_user=self._identity_user,
+                experience_space=self._experience_space,
+                skills_dir=self._skills_dir,
+                skill_capabilities=self._experience_capabilities,
                 manage_configuration=self._portal_settings.get("enabled", True),
                 continuity_enabled=self._continuity_enabled,
                 portal_instance_id=self._portal_settings.get("instance_id"),
@@ -905,7 +1351,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             from jiuwen_memory_adapter.continuity import tool_schemas
 
             return tool_schemas(mode="continuity")
-        return self._scene.get_tool_schemas(self._scene_context())
+        schemas = self._scene.get_tool_schemas(self._scene_context())
+        if self._experience_enabled:
+            schemas.append(EXPERIENCE_SCHEMA)
+        return schemas
 
     async def handle_tool_call(self, tool_name: str, args: dict) -> str:
         """LLM 调工具时触发；返 JSON 字符串（Rail 会 ``json.loads``）。"""
@@ -934,6 +1383,62 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 {"error": "AgentMemory temporarily unavailable (repeated failures); will retry."}
             )
         try:
+            if tool_name == "agent_memory_experience":
+                # mem2.0 §2.4 查经验工具：模型填 query + category；space/capabilities/
+                # top_k 由接入适配补（构造参数 + 固定值），模型看不到也不能改。
+                query = args.get("query", "")
+                category = str(args.get("category") or "").strip()
+                if not query:
+                    return json.dumps({"error": "Missing required parameter: query"})
+                items = await self._client.search_experience(
+                    query,
+                    self._experience_scope(),
+                    category=category,
+                    capabilities=self._experience_capabilities,
+                    top_k=_EXPERIENCE_TOP_K,
+                )
+                # record_retrieved（§2.4）：记下每条 id 与引用值，随轨迹发回（§2.1）。
+                self._retrieved_refs.extend(
+                    {
+                        "id": it.get("item_id", ""),
+                        "usage_ref": (it.get("system_metadata") or {}).get("usage_ref", ""),
+                    }
+                    for it in items
+                    if it.get("item_id")
+                )
+                if not items:
+                    logger.info(
+                        "[AgentMemoryMemoryProvider] agent_memory_experience "
+                        "query=%s category=%s -> no relevant",
+                        redact_for_log(query),
+                        category,
+                    )
+                    return json.dumps({"result": "No relevant experience found."})
+                # render_as_reference（§2.4）：标明来自共享经验库的不可信参考资料。
+                payload = [
+                    {
+                        "memory": it.get("content", ""),
+                        "score": it.get("score", 0),
+                        **(it.get("system_metadata") or {}),
+                        "item_id": it.get("item_id", ""),
+                    }
+                    for it in items
+                ]
+                logger.info(
+                    "[AgentMemoryMemoryProvider] agent_memory_experience query=%s "
+                    "category=%s -> count=%d",
+                    redact_for_log(query),
+                    category,
+                    len(payload),
+                )
+                return json.dumps(
+                    {
+                        "results": payload,
+                        "count": len(payload),
+                        "source": "shared experience library (unverified references)",
+                    }
+                )
+
             return await self._scene.handle_tool_call(self._scene_context(), tool_name, args)
         except Exception as exc:
             logger.warning(
@@ -1054,6 +1559,15 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         )
         if not self._initialized or self._client is None:
             return ""
+        # mem2.0 §2.5.6：距上次同步超过间隔时后台同步技能（不占任务时延——
+        # create_task 即返，失败只记日志）。skills_dir 未配置 / 经验能力关闭时跳过。
+        if (
+            self._skills_dir
+            and self._experience_enabled
+            and time.monotonic() - self._last_skill_sync >= self._skill_sync_interval
+        ):
+            self._last_skill_sync = time.monotonic()
+            asyncio.create_task(self._sync_skills_background())
         return await self._scene.prefetch(self._scene_context(), query, **kwargs)
 
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
@@ -1179,10 +1693,243 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             stored += bool(result.item_id)
         return stored
 
+# -- 轨迹转交（mem2.0 §2.1：Mem2TrajectoryStore 的发送出口） ----------------- #
+
+    async def sync_experience(
+        self,
+        trajectory_id: str,
+        query: str,
+        output: str,
+        activities: list[dict[str, Any]],
+        session_id: str,
+    ) -> None:
+        """Convert Core's completed execution into an experience ingestion request."""
+        from jiuwen_memory_adapter.jiuwenswarm.workflow_experience import build_agent_experience
+
+        request = build_agent_experience(trajectory_id, query, output, activities)
+        if request is not None:
+            content, metadata = request
+            await self.add_trajectory(content, metadata, session_id)
+
+    async def add_trajectory(
+        self,
+        content: str,
+        system_metadata: dict[str, str] | None,
+        session_id: str,
+    ) -> None:
+        """轨迹转交（mem2.0 §2.1）：``memory_type=experience`` + ``infer=true``
+        经 ``add`` 交给经验 profile。
+
+        与对话写入（sync_turn）的三点差异，都由轨迹链路的重发要求决定：
+
+        - **归属主体**：取 provider 的租户/用户/agent 与本参数的 ``session_id``
+          （轨迹载体按会话隔离，不混入 provider 当前的会话维）。
+        - **出错抛回**：sync_turn 的 add 失败只记日志（丢一轮对话可接受），本方法
+          把错误抛回给调用方（Mem2TrajectoryStore 按可重试错误退避重发）——不吞。
+        - ``system_metadata`` 由调用方组好概要字段（trajectory_id /
+          previous_trajectory_id / tool_call_count / retrieved_count / coords /
+          external_score），本方法只并入 memory_type 与 infer 两个路由键。
+
+        """
+        if self._client is None:
+            raise RuntimeError("provider not initialized")
+        metadata: dict[str, str] = {"memory_type": "experience", "infer": "true"}
+        if system_metadata:
+            metadata.update(
+                {str(k): str(v) for k, v in system_metadata.items() if v is not None}
+            )
+        scope = _Scope(
+            org=self._scope_id,
+            space=self._space,
+            user=self._user_id,
+            agent=self._agent_id,
+            session=session_id,
+        )
+        logger.info(
+            "[AgentMemoryMemoryProvider] add_trajectory session=%s "
+            "system_metadata=%s content_len=%d",
+            metadata_for_log({"session_id": session_id}),
+            metadata_for_log(metadata),
+            len(content),
+        )
+        # client.add_trajectory 不降级——异常原样抛回。
+        await self._client.add_trajectory(content, scope, system_metadata=metadata)
+
+    def take_retrieved_refs(self) -> list[dict[str, str]]:
+        """取走查经验工具累计的使用记录（§2.4 record_retrieved 的读出口）。
+
+        每项 ``{"id", "usage_ref"}``；取走即清空。轨迹组装方在组 retrieved 字段
+        （§2.1）时调用；不组轨迹的部署不调用、记录滞留至下次取走（量级为每
+        次工具调用至多 top_k 条，不构成泄漏）。
+        """
+        refs, self._retrieved_refs = self._retrieved_refs, []
+        return [
+            {
+                "id": str(ref.get("id", "")),
+                "usage_ref": str(ref.get("usage_ref", "")),
+            }
+            for ref in refs
+        ]
+
+    # -- 技能同步（mem2.0 §2.5.6） --------------------------------------------- #
+
+    # 技能名只接受小写字母/数字/连字符，不以连字符开头结尾，长度 1-64（模型生成、
+    # 编辑者可改，同步时不信任——§2.5.6 技能名校验）。
+    _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")
+
+    async def _sync_skills_background(self) -> None:
+        """prefetch 触发的后台同步入口：吞异常（不影响本轮检索）。"""
+        try:
+            await self.sync_skills()
+        except Exception as exc:
+            logger.warning(
+                "[AgentMemoryMemoryProvider] background skill sync failed: "
+                "error_type=%s",
+                type(exc).__name__,
+            )
+
+    async def sync_skills(self) -> None:
+        """同步已发布技能到 ``skills_dir/distilled/<skill_name>/SKILL.md``。
+
+        来源标记和正文摘要限定更新/清理范围；本地同名或用户修改过的技能优先。
+        获取完整列表失败时保留文件。下线只删除未被修改的受管文件，不递归删目录。
+        """
+        if not self._skills_dir or not self._experience_enabled:
+            return
+        if self._client is None:
+            raise RuntimeError("provider not initialized")
+        if isinstance(self._client, _InProcessClient) and self._client.writes_skill_files:
+            return
+        # 1 取技能：失败即返回（不动现有文件，下次再试）。
+        skills = await self._client.list_published_skills(self._experience_scope())
+        if skills is None:
+            logger.warning("[AgentMemoryMemoryProvider] skill sync skipped incomplete listing")
+            return
+        self._last_skill_sync = time.monotonic()
+        # 2 筛选：同名取 skill_version 最大的一版。
+        by_name: dict[str, dict[str, Any]] = {}
+        for skill in skills:
+            name = str(skill.get("skill_name", "")).strip()
+            if not name:
+                continue
+            current = by_name.get(name)
+            if current is None or _skill_version_of(skill) > _skill_version_of(current):
+                by_name[name] = skill
+        library_root = Path(self._skills_dir).resolve()
+        skills_root = library_root / "distilled"
+        if skills_root.is_symlink() or skills_root.resolve().parent != library_root:
+            raise ValueError("Distilled skills directory must remain inside the skill library")
+        skills_root.mkdir(parents=True, exist_ok=True)
+        marker_name = ".agent-memory-skill.json"
+        source = [self._experience_scope().org, self._experience_scope().space]
+
+        def managed(directory: Path) -> bool:
+            if directory.is_symlink() or directory.resolve().parent != skills_root:
+                return False
+            target = directory / "SKILL.md"
+            marker = directory / marker_name
+            if target.is_symlink() or marker.is_symlink():
+                return False
+            try:
+                state = json.loads(marker.read_text(encoding="utf-8"))
+                return (
+                    isinstance(state, dict)
+                    and state.get("source") == source
+                    and state.get("sha256") == hashlib.sha256(target.read_bytes()).hexdigest()
+                )
+            except (OSError, ValueError):
+                return False
+
+        selected: dict[str, dict[str, Any]] = {}
+        for name, skill in by_name.items():
+            # 技能名不合规：跳过（不信任模型/编辑者给的目录名）。
+            if not self._SKILL_NAME_RE.match(name):
+                logger.warning(
+                    "[AgentMemoryMemoryProvider] skill sync skipped invalid "
+                    "skill_name=%s",
+                    redact_for_log(name),
+                )
+                continue
+            # Only update unchanged files previously written by this experience space.
+            directory = skills_root / name
+            has_local_skill = (library_root / name).exists() or directory.is_symlink()
+            if has_local_skill or (directory.exists() and not managed(directory)):
+                logger.info(
+                    "[AgentMemoryMemoryProvider] skill sync skipped local-existing "
+                    "skill_name=%s",
+                    name,
+                )
+                continue
+            # 能力清单非空时，技能用到的工具须全部在清单内（§2.5.6 跳过执行
+            # 不了的）；清单为空视同取不到，本次不按能力筛选（与 §2.5.6 的
+            # 「启动时还取不到这份清单的，本次不按能力筛选」同义）。
+            required = skill.get("capabilities") or []
+            if self._experience_capabilities and not set(
+                str(item) for item in required
+            ).issubset(self._experience_capabilities):
+                logger.info(
+                    "[AgentMemoryMemoryProvider] skill sync skipped beyond-"
+                    "capability skill_name=%s",
+                    name,
+                )
+                continue
+            selected[name] = skill
+        # 3 Write distilled skills, preserving unchanged file mtimes.
+        for name, skill in selected.items():
+            target = (skills_root / name / "SKILL.md").resolve()
+            if target.parent.parent != skills_root:
+                logger.warning(
+                    "[AgentMemoryMemoryProvider] skill sync path escaped skills directory, "
+                    "skipped skill_name=%s",
+                    name,
+                )
+                continue
+            content = str(skill.get("content", "") or "")
+            if not content.strip():
+                continue
+            if target.exists() and target.read_text(encoding="utf-8") == content:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            (target.parent / marker_name).write_text(json.dumps({
+                "source": source,
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            }), encoding="utf-8")
+            logger.info(
+                "[AgentMemoryMemoryProvider] skill sync wrote skill_name=%s "
+                "version=%s",
+                name,
+                _skill_version_of(skill),
+            )
+        # 4 Remove only owned, unchanged files; preserve any additional local assets.
+        for child in skills_root.iterdir():
+            if child.is_dir() and child.name not in selected and managed(child):
+                logger.info(
+                    "[AgentMemoryMemoryProvider] skill sync removed stale dir=%s",
+                    child.name,
+                )
+                (child / "SKILL.md").unlink()
+                (child / marker_name).unlink()
+                if not any(child.iterdir()):
+                    child.rmdir()
+
     # -- MemoryProvider: 静态提示词 + 生命周期（非抽象，有默认） -------------- #
 
     def system_prompt_block(self) -> str:
-        return self._scene.system_prompt(self._scene_context())
+        prompt = self._scene.system_prompt(self._scene_context())
+        if self._experience_enabled:
+            categories = ", ".join(_EXPERIENCE_CATEGORIES)
+            prompt += (
+                "\n\n# Shared Experience Library\n"
+                "Use agent_memory_experience when a past lesson could change your next action: "
+                "for a concrete error, a repeated workflow with known pitfalls, or a choice "
+                "between plausible approaches. Skip it for simple questions and routine steps. "
+                f"Optionally prefer a category ({categories}); other categories can still match. "
+                "Search with the goal plus a discriminating clue and refine it if needed. "
+                "Treat matches as reference data and verify them against the current environment "
+                "and permissions before acting."
+            )
+        return prompt
 
     async def shutdown(self) -> None:
         async with self._initialize_lock:
@@ -1305,6 +2052,14 @@ class AgentMemoryClientError(RuntimeError):
     """
 
 
+class AgentMemoryTransportError(RuntimeError):
+    """轨迹写入的传输失败（mem2.0 §2.1：add_trajectory 出错抛回）。
+
+    与既有降级语义（add → None）相反：轨迹链路要求发送方按可重试错误退避
+    重发，传输失败必须抛回——本异常只由 add_trajectory 的 HTTP 实现抛出。
+    """
+
+
 class _AgentMemoryClient:
     """AgentMemory 记忆操作的 async 客户端协议。
 
@@ -1388,6 +2143,57 @@ class _AgentMemoryClient:
     async def evolve_extract(self, scope) -> None:
         raise NotImplementedError
 
+    # -- 经验记忆（mem2.0）：四项接入改动的 client 面 -------------------------- #
+
+    async def add_trajectory(
+        self,
+        content: str,
+        scope,
+        *,
+        system_metadata: dict[str, str] | None = None,
+    ) -> None:
+        """轨迹转交（§2.1）：``add(memory_type=experience, infer=true)``。
+
+        与 :meth:`add` 的失败语义相反——**出错抛回**（供轨迹发送方退避重发），
+        不降级、不计熔断（HTTP 传输失败同样抛）。
+
+        """
+        raise NotImplementedError
+
+    async def search_experience(
+        self,
+        query: str,
+        scope,
+        *,
+        category: str,
+        capabilities: list[str],
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """查经验（§2.4）：经验空间的 search，filters 仅含类型/类别，不按能力清单过滤。
+
+        返回每条 ``{item_id, content, score, system_metadata}``——
+        system_metadata 只含类别、三段（condition/capability/action）与引用值
+        usage_ref（由内核选取算子裁剪）。
+        """
+        raise NotImplementedError
+
+    async def list_published_skills(self, scope) -> list[dict[str, Any]] | None:
+        """列已发布技能（§2.5.6）：memory_type=skill、标签 trial/approved、生效。
+
+        返回每条 ``{item_id, content, skill_name, skill_version, capabilities}``。
+        """
+        raise NotImplementedError
+
+    async def restore_dreaming(self) -> bool:
+        """恢复 dreaming 注册（§2.5.1）。返回是否执行了恢复（HTTP surface 未
+        暴露该 verb 时返回 False——由服务端侧自行恢复）。
+        """
+        return False
+
+    async def register_consolidation(self, scope, interval: int) -> None:
+        """在 scope 空间注册经验专用周期整理（experience_consolidate）。"""
+        raise NotImplementedError
+
     async def close(self) -> None:
         pass
 
@@ -1408,6 +2214,9 @@ def _build_client(
     manage_configuration: bool = True,
     continuity_enabled: bool = False,
     portal_instance_id: str | None = None,
+    experience_space: str = "",
+    skills_dir: str = "",
+    skill_capabilities: list[str] | None = None,
     config_overrides: dict[str, Any] | None = None,
     document_runtime_holder: Any = None,
 ) -> _AgentMemoryClient:
@@ -1418,6 +2227,11 @@ def _build_client(
     文档真源装配，serve-doc 的代码化副本）。
     [本地修改 2026-10-20] ``config_dict`` 分支经 ``_merge_config_over_default()``
     深合并到内置默认之上（而非整体替换）：上层传部分片段时保留 agent 栈缺省。
+    [本地修改 2026-10-27] 经验记忆（mem2.0 §2.3 开关约定「配置了才启用，缺省
+    关闭」）：``experience_space`` 空串 → 进程内装配不带经验段（config_dict 分支
+    的合并基准同样不带；上层显式配 ``globals.experience`` 等仍经深合并尊重）；
+    非空 → 装配经验段且落点为该空间，与 provider 的检索/工具/周期任务一致。
+    外部 ``config_path`` 全权，不注入（部署方自配）。
 
     进程内分支统一携带 ``security_provider``——身份由可信 composition root 注入
     而非从业务 scope 自述（P1-2）；HTTP 分支的身份由 API Key 认证决定，与本参数
@@ -1459,13 +2273,18 @@ def _build_client(
         # [本地修改 2026-10-20] 上层 config_dict 深合并到内置 agent 默认装配之上，
         # 而非整体替换——宿主只传要覆盖的片段（globals 凭证/端点、embedder_dim、
         # markdown_store.default.params.root），未提及的 F09 栈缺省原样保留。
+        # 经验段按 experience_space 条件进合并基准（2026-10-27，见上）。
         return _InProcessClient(
             None,
-            config_dict=_merge_config_over_default(config_dict or {}),
+            config_dict=_merge_config_over_default(
+                config_dict or {}, experience_space,
+                skills_dir=skills_dir, skill_capabilities=skill_capabilities,
+            ),
             security_provider=security_provider,
             manage_configuration=manage_configuration,
             portal_instance_id=portal_instance_id,
             config_overrides=config_overrides,
+            provision_author_key=bool(experience_space),
         )
     return _InProcessClient(
         config_path,
@@ -1608,10 +2427,14 @@ class _HttpClient(_AgentMemoryClient):
 
         身份覆盖式是唯一在 plain dev（allow_all）/ dev+identities / required
         三种部署形态下都成立的 payload 形态（design doc §6.2-D 部署形态表）。
+
+        [本地修改 2026-10-26] space 维透传语义 scope（此前硬编码空串）——经验
+        记忆（mem2.0）的检索/技能列举/周期整理都发生在显式空间（构造参数
+        experience_space），对话路径 space 仍为空串，行为不变。
         """
         return {
             "org": self._identity_org,
-            "space": "",
+            "space": getattr(scope, "space", "") or "",
             "user": self._identity_user,
             "agent": getattr(scope, "agent", ""),
             "session": getattr(scope, "user", ""),
@@ -1934,6 +2757,59 @@ class _HttpClient(_AgentMemoryClient):
         link = response.json()["portal_url"]
         self.portal_available = True
         return link
+
+    async def list_published_skills(self, scope) -> list[dict[str, Any]] | None:
+        """List all published skills, or report an incomplete request."""
+
+        async def fetch(offset: int) -> tuple[int, list[dict[str, Any]]] | None:
+            data = await self._post_verb("list", {
+                "scope": self._scope_payload(scope),
+                "memory_types": ["skill"],
+                "filters": _PUBLISHED_SKILL_FILTER,
+                "offset": offset,
+                "limit": _SKILL_PAGE_SIZE,
+            })
+            if not isinstance(data, dict) or type(data.get("count")) is not int:
+                return None
+            items = data.get("items")
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                return None
+            return data["count"], [
+                _published_skill(
+                    item.get("id"), self._content_view(item), item.get("system_metadata"),
+                )
+                for item in items
+            ]
+
+        return await _collect_published_skills(fetch)
+
+    async def restore_dreaming(self) -> bool:
+        """HTTP surface 未暴露 restore_dreaming verb（非 MemoryAPI 公共契约）——
+        由服务端侧自行恢复，本方法如实返回 False。
+        """
+        logger.info(
+            "[AgentMemoryMemoryProvider/http] restore_dreaming not exposed over "
+            "HTTP; server-side responsibility"
+        )
+        return False
+
+    async def register_consolidation(self, scope, interval: int) -> None:
+        """注册经验专用周期整理：experience_consolidate + dreaming=True。"""
+        payload: dict[str, Any] = {
+            "scope": self._scope_payload(scope),
+            "mode": "experience_consolidate",
+            "dreaming": True,
+            "interval": int(interval),
+            "candidate": _experience_consolidation_candidate(),
+        }
+        logger.info(
+            "[AgentMemoryMemoryProvider/http] POST /v1/evolve experience_consolidate "
+            "dreaming=True interval=%s",
+            interval,
+        )
+        job_id = await self._post_verb("evolve", payload, write=True, raise_on_client_error=True)
+        if not isinstance(job_id, str) or not job_id.strip():
+            raise AgentMemoryClientError("experience consolidation registration failed: no job ID")
 
     async def close(self) -> None:
         if self._http is not None:
@@ -2293,6 +3169,7 @@ class _InProcessClient(_AgentMemoryClient):
         portal_instance_id: str | None = None,
         config_overrides: dict[str, Any] | None = None,
         strict_close: bool = False,
+        provision_author_key: bool = False,
     ) -> None:
         if security_provider is None:
             # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
@@ -2305,6 +3182,13 @@ class _InProcessClient(_AgentMemoryClient):
         self._strict_close = strict_close
         self._security_provider = security_provider
         config, config_paths = _resolve_sdk_config(config_path, config_dict, config_overrides)
+        if provision_author_key and config is not None:
+            configure_experience_author_key(config)
+        experience_builder = (config or {}).get("constructor", {}).get("experience")
+        self.writes_skill_files = (
+            isinstance(experience_builder, dict)
+            and "skill_files" in experience_builder.get("params", {})
+        )
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
@@ -2585,6 +3469,112 @@ class _InProcessClient(_AgentMemoryClient):
                 "[AgentMemoryMemoryProvider/in-process] evolve failed: error_type=%s",
                 type(exc).__name__,
             )
+
+    # -- 经验记忆（mem2.0） ---------------------------------------------------- #
+
+    async def add_trajectory(
+        self, content, scope, *, system_metadata=None
+    ) -> None:
+        """轨迹转交（§2.1）：add_async 原生协程，异常原样抛回（不降级）。"""
+        api_scope = self._to_api_scope(scope)
+        entries = await self._api.add_async(
+            content,
+            api_scope,
+            source=Modality.TEXT,
+            security=self._security(),
+            tags=[],
+            system_metadata=system_metadata,
+        )
+        logger.info("[AgentMemoryMemoryProvider] trajectory processed, entries=%d", len(entries))
+
+    async def search_experience(
+        self, query, scope, *, category, capabilities, top_k=5
+    ) -> list[dict[str, Any]]:
+        """按经验类型检索，在选取阶段应用可选的类别偏好。"""
+        api_scope = self._to_api_scope(scope)
+        result = await asyncio.to_thread(
+            self._api.search,
+            query,
+            Context(
+                scope=api_scope,
+                extensions={"memory_type": "experience", "preferred_experience_category": category},
+            ),
+            security=self._security(),
+            filters=_experience_filters(),
+            top_k=top_k,
+            disclosure=DisclosureLevel.L2,
+        )
+        return [
+            {
+                "item_id": it.unit_id,
+                "content": it.content,
+                "score": it.score,
+                # system_metadata 由内核选取算子裁剪（类别/三段/usage_ref）
+                "system_metadata": dict(getattr(it, "system_metadata", None) or {}),
+            }
+            for it in result.items
+        ]
+
+    async def list_published_skills(self, scope) -> list[dict[str, Any]] | None:
+        """List all published skills off the caller's event loop."""
+        api_scope = self._to_api_scope(scope)
+
+        async def fetch(offset: int) -> tuple[int, list[dict[str, Any]]]:
+            result = await asyncio.to_thread(
+                self._api.list,
+                api_scope,
+                security=self._security(),
+                memory_types=["skill"],
+                filters=_PUBLISHED_SKILL_FILTER,
+                offset=offset,
+                limit=_SKILL_PAGE_SIZE,
+            )
+            return result.count, [
+                _published_skill(unit.id, unit.content, unit.system_metadata)
+                for unit in result.items
+            ]
+
+        return await _collect_published_skills(fetch)
+
+    async def restore_dreaming(self) -> bool:
+        """恢复 dreaming 注册（§2.5.1）。非 MemoryAPI 公共契约——按属性探测，
+        会持实例锁（他人持有抛 RuntimeError，由上层记日志继续）。
+        """
+        restore = getattr(self._api, "restore_dreaming", None)
+        if restore is None:
+            logger.info(
+                "[AgentMemoryMemoryProvider/in-process] api has no "
+                "restore_dreaming attribute"
+            )
+            return False
+        await asyncio.to_thread(restore)
+        return True
+
+    async def register_consolidation(self, scope, interval: int) -> None:
+        """注册经验专用周期整理：experience_consolidate + dreaming=True。"""
+        api_scope = self._to_api_scope(scope)
+        await asyncio.to_thread(
+            self._api.evolve,
+            api_scope,
+            EvolveMode.EXPERIENCE_CONSOLIDATE,
+            Channel.BACKGROUND,
+            security=self._security(),
+            candidate=_experience_consolidation_candidate(),
+            dreaming=True,
+            interval=int(interval),
+        )
+
+    async def ensure_experience_dreaming(
+        self, scope, interval: int, *, ready: Callable[[], Awaitable[bool]] | None = None,
+    ) -> str:
+        return await asyncio.to_thread(
+            self._api.ensure_experience_dreaming,
+            self._to_api_scope(scope),
+            security=self._security(),
+            candidate=_experience_consolidation_candidate(),
+            interval=interval,
+            ready=ready,
+        )
 
     async def close(self) -> None:
         # 停看门狗/释放 shadow sqlite（文档模式），幂等；runtime.close 是同步方法。

@@ -43,6 +43,7 @@ from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.index_builder_impl.skill_file_output import SkillFileOutput
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
@@ -59,7 +60,13 @@ class DocumentIndexBuilder(IndexBuilder):
     :class:`CompositeDomainStore` 内部经注入的 ``StoreManager`` 保证，非本算子职责。
     """
 
-    def __init__(self, domain_store: DomainStore) -> None:
+    def __init__(
+        self,
+        domain_store: DomainStore,
+        *,
+        skill_index_builder: IndexBuilder | None = None,
+        skill_files: SkillFileOutput | None = None,
+    ) -> None:
         should_write = getattr(domain_store, "should_write_document", None)
         if should_write is None or not should_write():
             raise UnsupportedStorageCapabilityError(
@@ -67,6 +74,8 @@ class DocumentIndexBuilder(IndexBuilder):
                 "但注入的 DomainStore 非文档模式"
             )
         self._domain = domain_store
+        self._skill_index_builder = skill_index_builder
+        self._skill_files = skill_files
 
     def read_domain_store(self) -> DomainStore:
         """Expose the same domain used by build/update for pre-write rechecks."""
@@ -83,7 +92,13 @@ class DocumentIndexBuilder(IndexBuilder):
             return
         logger.info("DocumentIndexBuilder: building document memory for %d units", len(units))
         for unit in units:
-            self._domain.add(unit.scope, [unit], mode=mode)
+            is_skill = unit.system_metadata.get("memory_type") == "skill"
+            if is_skill and self._skill_files is not None:
+                self._skill_files.write(unit)
+            elif is_skill and self._skill_index_builder:
+                self._skill_index_builder.build([unit], mode=mode)
+            else:
+                self._domain.add(unit.scope, [unit], mode=mode)
 
     def update(
         self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
@@ -92,14 +107,26 @@ class DocumentIndexBuilder(IndexBuilder):
             return
         logger.info("DocumentIndexBuilder: updating document memory for %d units", len(units))
         for unit in units:
-            self._domain.update(unit.scope, [unit], mode=mode)
+            is_skill = unit.system_metadata.get("memory_type") == "skill"
+            if is_skill and self._skill_files is not None:
+                continue
+            if is_skill and self._skill_index_builder:
+                self._skill_index_builder.update([unit], mode=mode)
+            else:
+                self._domain.update(unit.scope, [unit], mode=mode)
 
     def remove(
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
     ) -> None:
         logger.info("DocumentIndexBuilder: removing %d units (mode=%s)", len(units), mode)
         for unit in units:
-            self._domain.delete(unit.scope, [unit.id], mode=mode)
+            is_skill = unit.system_metadata.get("memory_type") == "skill"
+            if is_skill and self._skill_files is not None:
+                continue
+            if is_skill and self._skill_index_builder:
+                self._skill_index_builder.remove([unit], mode=mode)
+            else:
+                self._domain.delete(unit.scope, [unit.id], mode=mode)
 
     def rebuild(self) -> None:
         # 文档真源（md 文件）与影子索引同生命周期，无独立重建路径——与 HybridIndexBuilder 一致。
@@ -111,8 +138,14 @@ class DocumentIndexBuilder(IndexBuilder):
 
 @IndexBuilderProducer.register("document")
 def _build(config):
+    skill_files = config.params.get("skill_files")
     return DocumentIndexBuilder(
         StoreManagerProducer.resolve(config).domain_store(
             resolve_name(config, "domain_store")
-        )
+        ),
+        skill_index_builder=(
+            IndexBuilderProducer.dep(config, "skill_index_builder", default="hybrid")
+            if skill_files is None and "skill_index_builder" in config.params else None
+        ),
+        skill_files=SkillFileOutput(**skill_files) if skill_files is not None else None,
     )

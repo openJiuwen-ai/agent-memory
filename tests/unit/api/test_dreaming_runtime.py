@@ -176,7 +176,9 @@ def test_stop_during_first_fan_out_bucket_prevents_second_bucket(runtime, reason
 
     runtime.api._engine._evolver = SimpleNamespace(evolve=evolve)
     buckets = [Scope(org=SCOPE.org, user=SCOPE.user, session=str(i)) for i in range(2)]
-    monkeypatch.setattr(runtime.api._dreaming, "_scope_supplier", lambda: buckets)
+    # 普通 mode 由 mode 感知枚举端口回退到 Engine 的原候选源；替换公开窄口，
+    # 不依赖协调器内部保存的是旧回调还是新 mode 回调。
+    monkeypatch.setattr(runtime.api._engine, "candidate_scopes", lambda: buckets)
     parent_id = _register(runtime, FanOutCandidate())
     try:
         assert entered.wait(5)

@@ -7,13 +7,14 @@ LLM 分类/抽取 prompt（同步写路径分钟级阻塞：add 500KB → 全文
 超时 ≈900s 无响应）。按段落聚合基本无信息丢失，单段超长时硬切兜底；
 ``max_unit_chars <= 0`` 关闭切分，保持旧行为。
 
-预切分默认对所有模态生效；唯一例外是规约器经 ``Normalizer.structured_modalities()``
+预切分默认对普通文本投影生效。规约器经 ``Normalizer.structured_modalities()``
 声明为**结构化中间产物**的模态——其 content 是给下游程序整体解析的包络（如视频规约的
 JSON 包络，由 VideoMemoryExtractor ``json.loads`` 后拆成 CLM/ELM），切分已在规约阶段按
 模态自身的边界完成，这里按字符数再切只会把包络切成非法片段、导致抽取零产出
 （issue #294）。谁生产该格式谁声明，接入层不维护模态白名单。
+同步提炼的文本经验轨迹也按单个结构化包络交付，由经验评价器解析完整 JSON。
 
-来源标识（construction 重要度 F12）：调用方未显式给 ``system_metadata["origin"]`` 时默认写 ``original``；
+来源标识（construction 重要度 F12）：未显式设置 ``system_metadata["origin"]`` 时写入 ``original``；
 派生记忆的 ``inferred`` 由构建层产出算子自己写。
 """
 
@@ -97,7 +98,12 @@ class SimpleIngestor(Ingestor):
             hierarchy, base_system_metadata = extract_hierarchy_hints(payload.system_metadata)
             content = self._normalizer.normalize(payload)
             check_ingest_cancelled()
-            if payload.modality in self._structured_modalities:
+            experience_trajectory = (
+                payload.modality == Modality.TEXT
+                and str(base_system_metadata.get("memory_type", "")).strip() == "experience"
+                and str(base_system_metadata.get("infer", "")).strip().lower() == "true"
+            )
+            if payload.modality in self._structured_modalities or experience_trajectory:
                 # 结构化中间产物：整体交付下游解析，不切分（Normalizer.structured_modalities）
                 logger.debug(
                     "SimpleIngestor: %s 规约结果为结构化产物，跳过预切分", payload.modality
