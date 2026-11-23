@@ -151,17 +151,19 @@ curl -X POST http://127.0.0.1:8080/v1/add \
 
 ## 运行评测
 
+请先按[评测环境配置指南](evaluation/README.md)配置模型和存储服务。在仓库根目录执行以下 Linux 命令，运行默认的 LongMemEval mini 评测：
+
 ```bash
-# Smoke Test（CI 必过）
-python -m pytest evaluation/smoke_test -v
-
-# 组件级 IR 评测（默认跑内置冒烟评测基准）
-python evaluation/scripts/run_ir_eval.py --json results.json
-
-# 端到端 QA 评测（需配置 JUDGE_* 环境变量，内置 LoCoMo / LongMemEval 适配器）
-export JUDGE_BASE_URL=...  JUDGE_MODEL=...  JUDGE_API_KEY=...
-python evaluation/scripts/run_e2e_eval.py --dataset locomo
+sh evaluation/run.sh
 ```
+
+在 Windows 上运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File evaluation/run.ps1
+```
+
+如需评测 LoCoMo，将 `evaluation/config.yml` 中的 `benchmark` 改成 `locomo`，再运行同一条命令。
 
 ## 存储后端配置
 
