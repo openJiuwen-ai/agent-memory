@@ -6,8 +6,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from jiuwen_memory.common.errors import (
     BackendError,
@@ -15,8 +18,10 @@ from jiuwen_memory.common.errors import (
     UnsupportedCapabilityError,
     ValidationError,
 )
+from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import (
     FilterClause,
+    LifecycleState,
     MemoryTier,
     MemoryUnit,
     Scope,
@@ -35,6 +40,15 @@ class LocatedHit:
 
 
 @dataclass(frozen=True)
+class PersonalOverview:
+    """同一批可见记录的逐日写入量，以及有效记忆的来源分布。"""
+
+    start_date: str
+    daily_counts: list[int]
+    source_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
 class PersonalPage:
     items: list[MemoryUnit]
     count: int
@@ -44,6 +58,7 @@ class PersonalPage:
     projects: tuple[str, ...] = ()
     memory_classes: tuple[str, ...] = ()
     lifecycle_counts: dict[str, int] | None = None
+    overview: PersonalOverview | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +96,21 @@ def scope_key(scope: Scope) -> tuple[str, str, str, str, str]:
     return scope.org, scope.space, scope.user, scope.agent, scope.session
 
 
+def _summarize_overview(units: Sequence[MemoryUnit], zone: ZoneInfo) -> PersonalOverview:
+    daily_counts = [0] * 365
+    start = datetime.now(zone).date() - timedelta(days=len(daily_counts) - 1)
+    sources: Counter[str] = Counter()
+    for unit in units:
+        if unit.temporal.t_ingest is not None:
+            day = as_utc(unit.temporal.t_ingest).astimezone(zone).date()
+            index = (day - start).days
+            if 0 <= index < len(daily_counts):
+                daily_counts[index] += 1
+        if unit.lifecycle == LifecycleState.ACTIVE:
+            sources[memory_source(unit)] += 1
+    return PersonalOverview(start.isoformat(), daily_counts, dict(sources))
+
+
 def list_personal(
     scopes: Sequence[Scope],
     read_page: Callable[[Scope, int, int], MemoryListResult],
@@ -97,6 +127,7 @@ def list_personal(
     tier: str | None = None,
     memory_class: str | None = None,
     include_lifecycle_counts: bool = False,
+    overview_timezone: str | None = None,
 ) -> PersonalPage:
     """聚合授权回调返回的条目；条目数超过上限或分页期间计数改变时拒绝。"""
     valid_offset = type(offset) is int and offset >= 0
@@ -122,6 +153,14 @@ def list_personal(
         raise ValidationError("invalid lifecycle filter")
     if not isinstance(include_lifecycle_counts, bool):
         raise ValidationError("include_lifecycle_counts must be a boolean")
+    zone = None
+    if overview_timezone is not None:
+        if not isinstance(overview_timezone, str) or len(overview_timezone) > 255:
+            raise ValidationError("overview_timezone must be an IANA time zone name")
+        try:
+            zone = ZoneInfo(overview_timezone)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise ValidationError("unknown overview_timezone") from exc
     ordered_scopes = {scope_key(scope): scope for scope in scopes}
     units: list[MemoryUnit] = []
     for key in sorted(ordered_scopes):
@@ -170,6 +209,7 @@ def list_personal(
         lifecycle_counts = dict.fromkeys(states, 0)
         for unit in units:
             lifecycle_counts[unit.lifecycle.value] += 1
+    overview = _summarize_overview(units, zone) if zone is not None else None
     if lifecycle is not None:
         state_filter = FilterClause("lifecycle", value=lifecycle)
         units = [unit for unit in units if matches_memory_unit(unit, state_filter)]
@@ -181,7 +221,7 @@ def list_personal(
         raise ConflictError(message="personal list changed; restart pagination")
     return PersonalPage(
         units[offset:offset + limit], len(units), token, sources, agents, projects, memory_classes,
-        lifecycle_counts,
+        lifecycle_counts, overview,
     )
 
 

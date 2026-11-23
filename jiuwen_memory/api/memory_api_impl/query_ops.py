@@ -702,7 +702,7 @@ class QueryOpsMixin:
             has_scoped_filters = memory_types is not None or filters is not None
             valid_selection = isinstance(selection, dict) and selection.keys() <= {
                 "source", "agent", "project", "query", "tier", "memory_class", "lifecycle",
-                "snapshot", "include_lifecycle_counts",
+                "snapshot", "include_lifecycle_counts", "overview_timezone",
             }
             if not personal_only or has_scoped_filters or not valid_selection:
                 raise ValidationError("invalid personal list options; omit scope")

@@ -97,8 +97,11 @@ mount the iframe.
 
 ## View and manage memories
 
-1. Open **Memory Overview** to see record counts and source apps. Select a status card to open
-   the corresponding list.
+1. **Memory Overview** shows all records, active memories, correction history, forgotten and archived
+   records, and the number of distinct source apps. **Daily additions** covers the last 365 days in
+   your browser’s time zone and includes records in every status. **Source distribution** shows
+   each source’s share of active memories, including records with an unknown source. Select a
+   record count or a source in the chart to open its list.
 2. **My Memories** shows active memories by default. Use **Search by Text** to match content or
    tags and **Filters** to narrow the list by source app, Agent, project, or memory class. To ask
    a question, switch to **Search by Meaning**, enter the question, set a source or result limit

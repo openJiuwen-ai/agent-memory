@@ -1,6 +1,8 @@
 """个人查询绑定不会跳过 MemoryAPI 授权。"""
 
+from datetime import UTC, date, datetime, time, timedelta
 from unittest.mock import Mock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -20,6 +22,8 @@ from jiuwen_memory.common.errors import (
     UnsupportedCapabilityError,
     ValidationError,
 )
+from jiuwen_memory.common.type_def import LifecycleState, Temporal
+from jiuwen_memory.control.application import personal_memory
 from jiuwen_memory.control.application.query import MemoryQueryService
 from jiuwen_memory.control.types import DeleteMode, DeleteSelector, MemoryListResult
 from jiuwen_memory.retrieval.types import ChannelError, RetrievalResult
@@ -108,6 +112,50 @@ def test_partial_retrieval_failure_is_not_treated_as_complete():
         )
 
 
+def test_overview_counts_full_window_and_active_sources_before_pagination(monkeypatch):
+    """日期统计覆盖所有状态，来源计数和日期窗口均独立于分页。"""
+    zone = ZoneInfo("Asia/Shanghai")
+    today = date(2024, 3, 2)
+    start = today - timedelta(days=364)
+    start_time = datetime.combine(start, time.min, zone)
+    midnight = datetime.combine(today, time.min, zone)
+    legacy_start = start_time.astimezone(UTC).replace(tzinfo=None)
+    clock = Mock()
+    clock.now.return_value = midnight
+    monkeypatch.setattr(personal_memory, "datetime", clock)
+    scope = Scope(org="local", user="owner")
+    records = [
+        # A legacy naive UTC timestamp lands on the first local day.
+        MemoryUnit(id="first", scope=scope, temporal=Temporal(t_ingest=legacy_start),
+                   system_metadata={"source_app": "app"}),
+        MemoryUnit(id="unlabelled", scope=scope),
+        MemoryUnit(id="older", scope=scope,
+                   temporal=Temporal(t_ingest=start_time - timedelta(microseconds=1)),
+                   system_metadata={"source_app": "app"}),
+        MemoryUnit(id="archived", scope=scope, lifecycle=LifecycleState.ARCHIVED,
+                   temporal=Temporal(t_ingest=midnight.astimezone(UTC))),
+        MemoryUnit(id="forgotten", scope=scope, lifecycle=LifecycleState.FORGOTTEN,
+                   temporal=Temporal(t_ingest=midnight - timedelta(days=2))),
+        MemoryUnit(id="future", scope=scope, lifecycle=LifecycleState.SUPERSEDED,
+                   temporal=Temporal(t_ingest=midnight + timedelta(days=1))),
+    ]
+    read_scope = Mock(return_value=MemoryListResult(records, len(records)))
+    page = personal_memory.list_personal(
+        [scope], read_scope, limit=1, overview_timezone=zone.key, include_lifecycle_counts=True,
+    )
+    stats = page.overview
+    assert stats is not None, "requesting an overview must return the aggregates"
+    assert len(page.items) == 1 and page.count == page.lifecycle_counts["active"] == 3
+    assert stats.source_counts == {"app": 2, "": 1}
+    assert stats.start_date == start.isoformat() and len(stats.daily_counts) == 365
+    assert stats.daily_counts[0] == stats.daily_counts[-3] == stats.daily_counts[-1] == 1
+    assert sum(stats.daily_counts) == 3
+    clock.now.assert_called_once_with(zone)
+    read_scope.assert_called_once()
+    with pytest.raises(ValidationError, match="overview_timezone"):
+        personal_memory.list_personal([scope], read_scope, overview_timezone="../bad")
+
+
 def test_agent_personal_view_checks_author_in_a_scope_without_user():
     from jiuwen_memory.api import assemble_runtime, internal_context
     from jiuwen_memory.common.security.types import Role
@@ -122,8 +170,11 @@ def test_agent_personal_view_checks_author_in_a_scope_without_user():
     try:
         other = runtime.api.add("user note", scope, security=user)[0]
         own = runtime.api.add("agent note", scope, security=agent)[0]
-        page = runtime.api.list(security=agent, extensions={"personal": {}})
+        page = runtime.api.list(
+            security=agent, extensions={"personal": {"overview_timezone": "UTC"}},
+        )
         assert [unit.id for unit in page.items] == [own.id]
+        assert sum(page.overview.daily_counts) == sum(page.overview.source_counts.values()) == 1
         with pytest.raises(PermissionDeniedError):
             read_personal_record(runtime.api, scope, other.id, security=agent)
     finally:

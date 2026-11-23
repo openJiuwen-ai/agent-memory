@@ -16,7 +16,7 @@ assert.match(html, /id="breadcrumb-current"[^>]*>记忆概览/);
 class Element {
   constructor(tag = 'div') {
     this.tag = tag; this.children = []; this.value = ''; this.hidden = false;
-    this.disabled = false; this.events = {}; this.dataset = {};
+    this.disabled = false; this.events = {}; this.dataset = {}; this.style = {};
     this.classList = {toggle() {}, add() {}, remove() {}}; this._text = ''; this.className = '';
   }
   set textContent(value) { this._text = String(value); this.children = []; }
@@ -393,23 +393,57 @@ async function freshCopy(){
   await page.run("exportSelected('copy')");assert.deepEqual(page.copied,['fresh authorized text']);
 }
 async function overviewCountsAndFailure(){
-  let fail=false, overviewCalls=0, listCalls=0;
+  let fail=false, empty=false, overviewCalls=0, listCalls=0;
+  const selections=[];
+  const days=Array(365).fill(0);days[0]=3;days[364]=10;
   const page=setup(async action=>{throw Error(action);},async body=>{
     listCalls++;
-    if(body.limit===20)return response({items:[],count:0,snapshot:'s',sources:[]});
+    if(body.limit===20){
+      selections.push(body);
+      return response({items:[],count:0,snapshot:'s',sources:['','app-a','*']});
+    }
     overviewCalls++;
     assert.equal(body.include_lifecycle_counts,true);
+    assert.equal(body.overview_timezone,Intl.DateTimeFormat().resolvedOptions().timeZone);
     if(fail)return response({message:'unavailable'},false,503);
-    return response({items:[],count:180,lifecycle_counts:{active:180,superseded:12,forgotten:5,archived:3},sources:['','app-a','app-b']});
+    return response({items:[],lifecycle_counts:{active:empty?0:180,superseded:12,forgotten:5,archived:3},
+      sources:empty?['archive-only']:['','app-a','*','archive-only'],
+      overview:{start_date:'2023-03-04',daily_counts:empty?Array(365).fill(0):days,
+        source_counts:empty?{}:{'':35,'*':1,'app-a':144}}});
   });
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(listCalls,1,'opening the overview should only fetch the visible view');
   await page.run('loadOverview()');
   assert.equal(overviewCalls,2,'startup and explicit refresh each use one list request');
   assert.equal(page.get('stat-all').textContent,'200','overview uses server count rather than sample length');
-  assert.equal(page.get('stat-active').textContent,'180');assert.equal(page.get('stat-forgotten').textContent,'5');assert.equal(page.get('stat-superseded').textContent,'12');assert.equal(page.get('stat-archived').textContent,'3');assert.equal(page.get('stat-sources').textContent,'2');
-  for(const [id,state]of [['metric-superseded','superseded'],['metric-archived','archived']]){await page.run(`$('${id}').onclick()`);assert.equal(page.get('lifecycle').value,state);assert.equal(page.run('activeTab'),'memories');}
+  assert.equal(page.get('stat-active').textContent,'180');assert.equal(page.get('stat-sources').textContent,'3');
+  assert.equal(page.get('stat-forgotten').textContent,'5');assert.equal(page.get('stat-superseded').textContent,'12');assert.equal(page.get('stat-archived').textContent,'3');
+  assert.equal(page.get('activity-total').textContent,'近一年新增 13 条');
+  const cells=page.get('activity-days').children.flatMap(week=>week.children.filter(el=>el.tag==='button'));
+  assert.equal(cells.length,365);assert.equal(cells[0].style.gridRow,'7'); // Saturday
+  assert.ok(cells[0].className.includes('heat-2'));assert.ok(cells.at(-1).className.includes('heat-4'));
+  cells.at(-1).onclick();assert.match(page.get('day-detail').textContent,/2024年3月2日 · 10 条/);
+  const sources=page.get('overview-sources').children;
+  assert.match(sources[0].textContent,/app-a144 条 · 80%/);
+  assert.match(sources[1].textContent,/未标注来源35 条/);
+  page.get('language-toggle').onclick();
+  assert.match(page.get('activity-total').textContent,/13 added/);
+  assert.match(page.get('day-detail').textContent,/March 2, 2024 · 10 records/);
+  assert.match(sources[1].textContent,/Source Unknown/);
+  for(const [source,row] of [['app-a',sources[0]],['',sources[1]],['*',sources[2]]]){
+    await row.onclick();assert.equal(selections.at(-1).source,source);assert.equal(selections.at(-1).lifecycle,'active');
+  }
+  for(const [id,state] of [['all',null],['active','active'],['superseded','superseded'],['forgotten','forgotten'],['archived','archived']]){
+    page.run("setFilterValue('project','prior');$('memory-filter').value='old query'");
+    await page.get('metric-'+id).onclick();const body=selections.at(-1);
+    assert.equal(page.run('activeTab'),'memories');assert.equal(body.lifecycle,state);
+    assert.equal(body.source,null);assert.equal(body.project,null);assert.equal(body.query,'');
+  }
+  empty=true;await page.run('loadOverview()');assert.equal(page.get('stat-active').textContent,'0');
+  assert.match(page.get('overview-sources').textContent,/No active memories/);
+  assert.equal(page.get('stat-sources').textContent,'1','retired sources still count on the source apps card');
   fail=true;await page.run('loadOverview()');assert.equal(page.get('stat-all').textContent,'—');assert.match(page.get('overview-error').textContent,/unavailable/);
+  assert.equal(page.get('activity-chart').hidden,true);assert.equal(page.get('overview-sources').children.length,0);
 }
 async function topicShortcutsUseExistingFilters(){
   const requests=[];
