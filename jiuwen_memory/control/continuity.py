@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
-from jiuwen_memory.common.errors import UnsupportedCapabilityError
+from jiuwen_memory.common.errors import ITEM_LEVEL_ERRORS, UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.common.type_def.continuity import (
@@ -147,28 +147,49 @@ class Continuity(ABC):
         read: ReadMemory,
         write_batch,
         *, request_fingerprints: list[str] | None = None, query_output=None,
+        continue_on_error: bool = False,
     ) -> list[dict]:
         """Reliable batch write: one dict per event, in input order.
 
         The default implementation keeps plug-ins working by falling back to per-event
         ``record``; implementations that support it batch body writes, append task
         background once per task and bump each task revision once (D5).
+
+        ``continue_on_error`` 是契约的一部分：单条事件被拒时返回
+        ``{"status": "rejected", "operation_id": ..., "error": exc}`` 而不是抛错。
+        回退实现本就逐条执行，因此只需把可归因失败降级，不必改变写入顺序。
         """
-        results = []
+        results: list[dict] = []
         for index, event in enumerate(events):
             fingerprint_value = (request_fingerprints or [""] * len(events))[index]
             key = self.event_key(connectors[index], event.binding_id, event.event_id)
-            results.append(
-                self.record(
-                    scope,
-                    event,
-                    connectors[index],
-                    read,
-                    self._legacy_writer(write_batch, key),
-                    query_output=query_output,
-                    request_fingerprint=fingerprint_value,
+            try:
+                results.append(
+                    self.record(
+                        scope,
+                        event,
+                        connectors[index],
+                        read,
+                        self._legacy_writer(write_batch, key),
+                        query_output=query_output,
+                        request_fingerprint=fingerprint_value,
+                    )
                 )
-            )
+            except ITEM_LEVEL_ERRORS as exc:
+                # 与内置实现同一语义：失败项 rejected；严格模式下后续项 skipped，
+                # 而不是抛错让调用方把整段（含已写入的前缀）都记成同一个错误。
+                results.append(
+                    {"status": "rejected", "operation_id": key, "error": exc}
+                )
+                if not continue_on_error:
+                    for later in range(index + 1, len(events)):
+                        later_key = self.event_key(
+                            connectors[later],
+                            events[later].binding_id,
+                            events[later].event_id,
+                        )
+                        results.append({"status": "skipped", "operation_id": later_key})
+                    break
         return results
 
     @staticmethod

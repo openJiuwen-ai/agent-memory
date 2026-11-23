@@ -1195,7 +1195,7 @@ sequenceDiagram
 6. 写成功的项批量转 partial 并记下引用；`write_batch` 整体失败时这些项保持 unknown，等待恢复核对，不会被当成没写过。
 7. 按任务分组，每个任务只追加一次背景、修订号只加 1，然后把这些项批量转 committed。导入 1000 条事件到同一个任务，任务修订号只涨一次。
 8. 派生构建和关系发现按项排在提交之后执行，不阻塞批量写入返回。
-9. 返回与输入顺序对齐的 `BatchWriteResult`：每项给出 `operation_id` 和 `continuity_status`（committed / partial / unknown / rejected），批量写入不抛 `WriteIncompleteError`。`continue_on_error=False` 时，第一处失败之后的项标 skipped、不再写入。导入脚本据此决定整批重放（已提交的项会直接读回，重放安全）或先恢复再重放；适配器的 `import_history` 按 50 条一块提交，遇到非 committed 的项即停止。
+9. 返回与输入顺序对齐的 `BatchWriteResult`：每项给出 `operation_id` 和 `continuity_status`（committed / partial / unknown / rejected），批量写入不抛 `WriteIncompleteError`。`continue_on_error=False` 时，第一处失败之后的项标 skipped、不再写入。导入脚本据此决定整批重放（已提交的项会直接读回，重放安全）或先恢复再重放；被跳过的项 `continuity_status` 为空、`error_type="Skipped"`，可原样重放；`rejected` 的项需要先修正再提交（鉴权拒绝及连接校验之前的失败不带 `operation_id`：事件键要先查绑定，回填与否会泄露绑定是否存在；连接校验通过后的失败带回事件键）；适配器的 `import_history` 按 50 条一块提交，遇到非 committed 的项即停止。
 
 #### 6.2.5 continuity_relation（角色模式）
 

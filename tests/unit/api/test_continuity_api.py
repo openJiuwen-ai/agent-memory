@@ -47,7 +47,12 @@ def test_public_role_view_and_task_registration():
             "continuity": {
                 "default": {
                     "target": "local",
-                    "params": {"single_writer": True, "allow_ephemeral": True, "mode": "role"},
+                    "params": {
+                        "single_writer": True,
+                        "allow_ephemeral": True,
+                        "allow_ephemeral_graph": True,
+                        "mode": "role",
+                    },
                 }
             },
             "role_view": {"default": {"target": "bounded"}},

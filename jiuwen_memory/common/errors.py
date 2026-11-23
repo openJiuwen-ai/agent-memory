@@ -258,3 +258,14 @@ class WriteIncompleteError(PartialFailureError):
             message=message
             or f"continuity write {status} for {operation_id}; retry {retry_action}",
         )
+
+
+# 可归因到具体条目的失败：批量入口把这几类记为逐项结果，而不是中断整批。
+# 语义是"这一条不成立"，不是"整批/整个后端不可用"——BackendError、RateLimitedError
+# 等仍要向上抛，否则会把系统性故障误报成单条数据问题。
+ITEM_LEVEL_ERRORS: tuple[type[AgentMemoryError], ...] = (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)

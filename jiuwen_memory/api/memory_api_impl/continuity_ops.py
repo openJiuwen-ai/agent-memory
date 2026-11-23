@@ -177,7 +177,10 @@ class ContinuityOpsMixin:
         if not has_project or has_personal_context:
             raise ValidationError("continuity scope must be an org/project space")
         if self._continuity is None:
-            raise UnsupportedCapabilityError("continuity is not configured")
+            # value 是「实际状态」而非模式名：未装配 Continuity 时两档都不成立。
+            raise UnsupportedCapabilityError(
+                "continuity", "unconfigured", type(self).__name__, "continuity is not configured"
+            )
         return self._continuity
 
     def _role_reader(self, security, project):
@@ -317,17 +320,20 @@ class ContinuityOpsMixin:
         *,
         security: RequestSecurityContext,
         stop_on_error: bool = False,
-    ) -> list[tuple[int, list[MemoryUnit] | Exception]]:
+    ) -> list[tuple[int, list[MemoryUnit] | Exception, str]]:
         """One five-phase reliable write for every continuity item in a batch.
 
         ``entries`` are ``(index, BatchWriteItem)``. Every item is authorized and counted
         before the batch starts, so a rejected item never half-writes the batch.
         """
         prepared = []
-        rejected: list[tuple[int, Exception]] = []
+        rejected: list[tuple[int, Exception, str]] = []
         position = 0
         for position, (index, item) in enumerate(entries):
             continuity = item.continuity
+            # 连接校验通过后即可安全携带事件键：调用方已证明该绑定属于自己，
+            # 回填不再泄露「绑定是否存在」。之前的失败（含校验本身）保持空串。
+            expected_key = ""
             try:
                 # 逐项校验：任何一项不合格只拒绝它自己，不影响同批其他项。
                 self._authorize(security, item.scope, Action.WRITE, "add")
@@ -343,6 +349,12 @@ class ContinuityOpsMixin:
                     or item.scope.space not in configured.get("projects", [])
                 ):
                     raise PermissionDeniedError("add")
+                # 连接与属主均已确认：此后失败可以带回正确的事件键（幂等键不一致时
+                # 调用方正需要它，否则只看到「必须等于事件键」却不知道键是什么）。
+                # connector 已在手：直接算键，不再经 _continuity_operation_id 二次读绑定。
+                expected_key = service.event_key(
+                    connector, continuity.binding_id, continuity.event_id
+                )
                 conflicting = {"infer", "procedural", "middle"} & set(
                     item.system_metadata or {}
                 )
@@ -351,19 +363,18 @@ class ContinuityOpsMixin:
                         "continuity write does not accept system_metadata keys: "
                         + ", ".join(sorted(conflicting))
                     )
-                expected_key = self._continuity_operation_id(item.scope, continuity)
                 if item.idempotency_key and item.idempotency_key != expected_key:
                     # 幂等键不一致只是这一项的问题，整批继续。
                     raise ValidationError(
                         "idempotency_key must equal the continuity event key"
                     )
             except AgentMemoryError as exc:
-                rejected.append((index, exc))
+                rejected.append((index, exc, expected_key))
                 if stop_on_error:
                     # 只跳过失败项**之后**的项：失败项之前的合法项已经通过校验，必须
                     # 继续写入，否则它们的下标拿不到结果（collect_batch_result 会 KeyError）。
                     rejected.extend(
-                        (later, _Skipped()) for later, _ in entries[position + 1:]
+                        (later, _Skipped(), "") for later, _ in entries[position + 1:]
                     )
                     break
                 continue
@@ -409,15 +420,15 @@ class ContinuityOpsMixin:
                     ),
                 }
             )
-        results: list[tuple[int, list[MemoryUnit] | Exception]] = list(rejected)
-        handled = {index for index, _result in results}
+        results: list[tuple[int, list[MemoryUnit] | Exception, str]] = list(rejected)
+        handled = {index for index, _result, _op in results}
 
         def skip_unhandled() -> None:
             """为尚未有结果的项补 Skipped：绝不能留空洞，否则上层按 range 取会 KeyError。"""
             for index, _item in entries:
                 if index in handled:
                     continue
-                results.append((index, _Skipped()))
+                results.append((index, _Skipped(), ""))
                 handled.add(index)
 
         if not prepared:
@@ -450,6 +461,10 @@ class ContinuityOpsMixin:
                     self._role_reader(security, scope),
                     write_batch,
                     request_fingerprints=[entry["request_fingerprint"] for entry in run],
+                    # 逐项语义由契约保证：record_batch 自己返回 rejected / skipped，
+                    # 不再用「抛错」表达单项失败（冲突、校验、权限、引用缺失都属单项）。
+                    # 只有批次级故障（后端不可用等）才会向上抛，由调用方按整段失败处理。
+                    continue_on_error=not stop_on_error,
                     # 派生构建需要「写后可读的精确元数据查询」，与单条路径同一口径。
                     query_output=(
                         lambda output_key: (
@@ -469,18 +484,34 @@ class ContinuityOpsMixin:
             except AgentMemoryError as exc:
                 # 批次级失败（例如任务在预检后被关闭）无法按条归属，统一记为该项错误。
                 for entry in run:
-                    results.append((entry["index"], exc))
+                    results.append((entry["index"], exc, ""))
                     handled.add(entry["index"])
                 failed = True
             else:
                 for entry, receipt in zip(run, receipts):
                     status = receipt.get("status")
-                    if status == "committed":
+                    if status == "skipped":
+                        # 严格模式下，失败项之后的项既没写入也没冲突：标记为跳过。
+                        failed = True
+                        results.append((entry["index"], _Skipped(), ""))
+                    elif status == "rejected":
+                        # 被拒绝的项：原样返回底层异常（ConflictError / ValidationError / 权限），
+                        # 让调用方看到真实原因，而不是笼统的 WriteIncompleteError。
+                        failed = True
+                        # 回执里的事件键直接带下去：调用方不必再读 Registry 重算。
+                        results.append(
+                            (
+                                entry["index"],
+                                receipt.get("error") or ValidationError("rejected"),
+                                receipt.get("operation_id", ""),
+                            )
+                        )
+                    elif status == "committed":
                         units = []
                         for ref in receipt.get("refs") or []:
                             link = MemoryRef.parse(ref)
                             units.append(self.get(link.unit_id, link.scope, security=security))
-                        results.append((entry["index"], units))
+                        results.append((entry["index"], units, ""))
                     else:
                         failed = True
                         results.append(
@@ -499,6 +530,7 @@ class ContinuityOpsMixin:
                                         else "recover_then_retry"
                                     ),
                                 ),
+                                receipt.get("operation_id", ""),
                             )
                         )
                     handled.add(entry["index"])

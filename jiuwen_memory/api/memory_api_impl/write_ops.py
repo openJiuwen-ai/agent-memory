@@ -11,6 +11,7 @@ from typing import Any
 
 from jiuwen_memory.api.memory_api_impl.continuity_ops import _Skipped
 from jiuwen_memory.common.errors import (
+    ITEM_LEVEL_ERRORS,
     AgentMemoryError,
     PermissionDeniedError,
     PolicyError,
@@ -587,13 +588,23 @@ class WriteOpsMixin:
 
     @staticmethod
     def _batch_outcome(
-        index: int, item: object, error: Exception, *, error_type: str | None = None
+        index: int,
+        item: object,
+        error: Exception,
+        *,
+        error_type: str | None = None,
+        operation_id: str = "",
     ) -> BatchWriteOutcome:
+        # 失败项按 S11 落四态里的 rejected；跳过项仍留空串（没执行，可原样重放）。
         return BatchWriteOutcome(
             index=index,
             item=WriteOpsMixin._batch_error_item(item),
             error=str(error),
             error_type=error_type or type(error).__name__,
+            operation_id=operation_id,
+            continuity_status=(
+                "rejected" if getattr(item, "continuity", None) is not None else ""
+            ),
         )
 
     def _normalize_batch_item(
@@ -777,10 +788,20 @@ class WriteOpsMixin:
 
         pending_logs: list[tuple] = []
 
-        def _record_failure(index: int, raw_item: object, exc: Exception) -> None:
-            if not isinstance(exc, (ValidationError, PermissionDeniedError, PolicyError)):
+        def _record_failure(
+            index: int, raw_item: object, exc: Exception, *, operation_id: str = ""
+        ) -> None:
+            # 单条失败可归因（含证据引用缺失的 NotFoundError）才记为逐项结果；
+            # 后端/限流类异常仍向上抛，不能被当成数据问题吞掉。
+            if not isinstance(exc, (*ITEM_LEVEL_ERRORS, PolicyError)):
                 raise exc
-            outcomes[index] = self._batch_outcome(index, raw_item, exc)
+            outcomes[index] = self._batch_outcome(
+                index,
+                raw_item,
+                exc,
+                # 只认回执带下来的权威事件键；预检/鉴权阶段不重算，避免泄露绑定存在性。
+                operation_id=operation_id,
+            )
             error_scope = (
                 raw_item.scope
                 if isinstance(raw_item, BatchWriteItem) and isinstance(raw_item.scope, Scope)
@@ -889,6 +910,8 @@ class WriteOpsMixin:
                     )
                     authorized.append((index, item, auth))
                 except (PermissionDeniedError, ValidationError, PolicyError) as exc:
+                    # 不在这里补事件键：事件键要先查绑定，而「有绑定返回非空、没绑定返回空」
+                    # 会让无权写入的调用方据此探测绑定是否存在。键只在写入路径（回执）里给。
                     outcomes[index] = self._batch_outcome(index, item, exc)
                     if not isinstance(exc, PermissionDeniedError):
                         pending_logs.append(
@@ -904,22 +927,6 @@ class WriteOpsMixin:
                         stopped_index = index
                         break
 
-            if stopped_index is not None:
-                for index in range(stopped_index + 1, len(items)):
-                    outcomes.setdefault(
-                        index,
-                        BatchWriteOutcome(
-                            index=index,
-                            item=self._batch_error_item(items[index]),
-                            error="skipped after previous item failed",
-                            error_type="Skipped",
-                        ),
-                    )
-                authorized = [entry for entry in authorized if entry[0] < stopped_index]
-
-            # 按**输入顺序**推进：相邻普通项合成一批交给引擎，遇到接续项则先冲刷这批再
-            # 执行它。两类项各自走不同路径（普通项进引擎批写、接续项走幂等事件回执），
-            # 但副作用顺序必须与入参一致，否则前面的普通项失败时后面的接续项可能已提交。
             async def flush(run: list[tuple[int, BatchWriteItem, dict]]) -> None:
                 nonlocal stopped_index
                 if not run:
@@ -984,7 +991,7 @@ class WriteOpsMixin:
                     security=security,
                     stop_on_error=not continue_on_error,
                 )
-                for index, result in results:
+                for index, result, operation_id in results:
                     # 用**已解析落点**的那份条目：调用方只传批次 Scope 时 items[index].scope
                     # 是 None，拿它算幂等键会在写入已经发生之后抛 AttributeError。
                     item = resolved.get(index, items[index])
@@ -1013,7 +1020,7 @@ class WriteOpsMixin:
                         if not continue_on_error:
                             stopped_index = index
                     elif isinstance(result, Exception):
-                        _record_failure(index, item, result)
+                        _record_failure(index, item, result, operation_id=operation_id)
                         # 与普通项一致：continue_on_error=False 时任何领域错误都停批。
                         if not continue_on_error and isinstance(result, AgentMemoryError):
                             stopped_index = index
@@ -1059,18 +1066,6 @@ class WriteOpsMixin:
                         ),
                     )
                 authorized = [entry for entry in authorized if entry[0] < stopped_index]
-
-            if stopped_index is not None:
-                for index in range(stopped_index + 1, len(items)):
-                    outcomes.setdefault(
-                        index,
-                        BatchWriteOutcome(
-                            index=index,
-                            item=self._batch_error_item(items[index]),
-                            error="skipped after previous item failed",
-                            error_type="Skipped",
-                        ),
-                    )
 
             if self._privacy is not None:
                 for outcome in outcomes.values():

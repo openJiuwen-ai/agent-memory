@@ -38,7 +38,10 @@ class FSStore(BaseStore):
         加密装饰器使用此标识绑定 AAD。支持此能力的后端必须保证 update 返回的
         引用仍指向同一对象；未知后端默认拒绝，而不猜测 key 等于 ref。
         """
-        raise UnsupportedCapabilityError("FS backend does not provide stable object identifiers")
+        raise UnsupportedCapabilityError(
+            "stable_object_id", "", type(self).__name__,
+            "FS backend does not provide stable object identifiers",
+        )
 
     @abstractmethod
     def insert(self, scope: Scope, key: str, data: BinaryIO) -> str:

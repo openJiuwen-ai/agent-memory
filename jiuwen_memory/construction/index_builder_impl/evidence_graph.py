@@ -33,7 +33,12 @@ class EvidenceGraphBuilder(IndexBuilder):
 
     def build(self, units, *, mode=IndexWriteMode.ALL):
         if mode != IndexWriteMode.RETRIEVAL_ONLY:
-            raise UnsupportedCapabilityError("evidence_graph only projects committed records")
+            raise UnsupportedCapabilityError(
+                "committed_only_projection",
+                getattr(mode, "name", str(mode)),
+                "evidence_graph",
+                "evidence_graph only projects committed records",
+            )
         for unit in units:
             relation = RelationRecord.parse(json.loads(unit.content))
             edge_id = "continuity:relation:" + relation.relation_id
@@ -68,7 +73,10 @@ class EvidenceGraphBuilder(IndexBuilder):
             self.graph.delete(unit.scope, edge_ids=["continuity:relation:" + relation.relation_id])
 
     def rebuild(self):
-        raise UnsupportedCapabilityError("rebuild requires authorized relation head enumeration")
+        raise UnsupportedCapabilityError(
+            "rebuild", "relation_head_enumeration", "evidence_graph",
+            "rebuild requires authorized relation head enumeration",
+        )
 
 
 @IndexBuilderProducer.register("evidence_graph")

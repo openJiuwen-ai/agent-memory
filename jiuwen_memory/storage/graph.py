@@ -40,7 +40,10 @@ class GraphStore(BaseStore):
         self, scope: Scope, node_id: str, *, limit: int = 100,
     ) -> list[Edge]:
         """Return at most limit edges, preserving direction and properties; no traversal."""
-        raise UnsupportedCapabilityError("incident graph edges are not supported")
+        raise UnsupportedCapabilityError(
+            "incident_edges", "", type(self).__name__,
+            "incident graph edges are not supported",
+        )
 
     @property
     def supports_conditional_projection(self) -> bool:
@@ -70,7 +73,10 @@ class GraphStore(BaseStore):
         - present with a higher ``revision`` → raise ``ConflictError`` so an old
           revision never overwrites a newer one.
         """
-        raise UnsupportedCapabilityError("conditional edge projection is not supported")
+        raise UnsupportedCapabilityError(
+            "conditional_projection", "project", type(self).__name__,
+            "conditional edge projection is not supported",
+        )
 
     def unproject_edge(self, scope: Scope, edge_id: str, *, revision: int) -> None:
         """Conditionally remove ``edge_id`` if its projected revision <= ``revision``.
@@ -79,7 +85,10 @@ class GraphStore(BaseStore):
         no-op, so revokes replay idempotently without resurrecting or erasing newer
         projections.
         """
-        raise UnsupportedCapabilityError("conditional edge projection is not supported")
+        raise UnsupportedCapabilityError(
+            "conditional_projection", "unproject", type(self).__name__,
+            "conditional edge projection is not supported",
+        )
 
     @abstractmethod
     def seed_ids(

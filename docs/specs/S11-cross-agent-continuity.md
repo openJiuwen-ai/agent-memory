@@ -6,7 +6,7 @@
 | --- | --- |
 | 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；剩余实现差距见 [F11 12.2](../features/construction/F11-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
 | 关联模块 | jiuwen_memory_adapter/、jiuwen_memory_entry/、jiuwen_memory/api/、jiuwen_memory/control/、jiuwen_memory/common/、jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联特性文档 | [F11-role-memory](../features/construction/F11-role-memory.md) |
 | 关联规约 | [S02](S02-memory-api.md)、[S03](S03-control.md)、[S04](S04-retrieval.md)、[S06](S06-storage.md)、[S07](S07-common.md)、[S09](S09-plugin-development.md) |
 
@@ -37,7 +37,7 @@
 配置键 `continuity.default.params.mode` 取 `continuity` 或 `role`，**必填**；出现 `continuity` 命名空间而缺 `mode` 时启动失败。
 
 - **接续模式（continuity）**：任务登记、可靠写入（含历史导入）、任务背景检索、来源治理、可选派生构建。不需要图存储。若同时配置了 `graph_store`、`relation_index_builder`、`role_view`、`relation_associator`、`conflict_resolver`、`relation_types*`、`duty_policies*`，启动时忽略并输出一次 warning，列出被忽略的键。
-- **角色模式（role）**：接续模式全部能力 ＋ 关系登记、职责扩展、证据图投影、关系覆盖清单、可选候选关系发现与冲突消解。缺 `graph_store`、后端不支持有向邻接查询或条件投影、或缺 `role_view` 时启动失败。
+- **角色模式（role）**：接续模式全部能力 ＋ 关系登记、职责扩展、证据图投影、关系覆盖清单、可选候选关系发现与冲突消解。缺 `graph_store`、后端不支持有向邻接查询或条件投影、或缺 `role_view` 时启动失败；`graph_store` 必须是显式配置——默认 `graph_store` 是易失内存图，装配期不校验就等于让关系投影在重启后静默消失。仅在显式声明 `allow_ephemeral_graph=true`（明确接受易失图）时允许省略；该开关只影响图，Registry 的持久性与单写者约束不受影响（`allow_ephemeral` 仍是 Registry 侧开关，语义不变：允许易失 Registry 并放弃单写锁，仅用于测试）。
 
 | 能力 | continuity × 普通写入 | continuity × 文档模式 | role × 普通写入 | role × 文档模式 |
 | --- | --- | --- | --- | --- |
@@ -404,7 +404,8 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 - 批级 `scope` 与逐项 scope 必须是同一项目空间；同一批可包含不同任务。
 - 已有 `BatchWriteItem.idempotency_key` 与 `continuity` 同时出现时，两者须一致，否则该项拒绝；以 `continuity` 幂等键为准。
 - 分阶段处理：① 批量写入全部项的 unknown 回执 → ② 正文走现有批量写入链（批量向量化与索引）→ ③ 批量转 partial 并保存引用 → ④ 按任务分组，每个任务**只追加一次**背景并递增一次修订 → ⑤ 批量转 committed。派生构建与关系发现按项排入后续阶段，不阻塞批写返回。
-- `BatchWriteOutcome` 新增 `operation_id` 与 `continuity_status`（committed / partial / unknown / rejected）；单项失败按 `continue_on_error` 处理，不中断其他项。
+- `BatchWriteOutcome` 新增 `operation_id` 与 `continuity_status`（committed / partial / unknown / rejected）。被拒绝的接续项给 `continuity_status="rejected"`；`operation_id` 按回执回填；鉴权拒绝及连接校验之前的失败不回填（事件键需先查绑定，有键/无键会泄露绑定是否存在），连接校验通过后的失败带回事件键；单项失败按 `continue_on_error` 处理，不中断其他项；`continue_on_error=false` 时其后未执行的项 `continuity_status` 为空、`error_type="Skipped"`（没执行，可原样重放，不冒充 rejected）。
+- `Continuity.record_batch` 的逐项语义对两档实现一致（含契约默认回退）：可归因失败返回 `{status: rejected, operation_id, error}`；`continue_on_error=false` 时其后的项返回 `{status: skipped}` 且不再写入，**已写入的前缀仍如实报告成功**——不得用抛错把整段记成同一个错误。`continue_on_error` 是该契约的一部分：覆盖 `record_batch` 的插件必须接受它（本参数与方法同时引入，未发布前不保留旧签名兼容层；内核不靠方法签名自省判断插件能力）；未覆盖该方法的插件走默认回退，不受影响。
 - 整批重放安全：已 committed 的项返回已保存单元，partial 的项补齐背景，unknown 的项须先核对。不同项的提交不构成事务，任务修订号可能比项数少（按任务合并），也可能因重试多递增一次。
 
 ### 历史导入交换格式

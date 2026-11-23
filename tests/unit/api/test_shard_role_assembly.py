@@ -51,7 +51,12 @@ def test_role_memory_runtime_assembles_with_sharded_kv() -> None:
             "continuity": {
                 "default": {
                     "target": "local",
-                    "params": {"single_writer": True, "allow_ephemeral": True, "mode": "role"},
+                    "params": {
+                        "single_writer": True,
+                        "allow_ephemeral": True,
+                        "allow_ephemeral_graph": True,
+                        "mode": "role",
+                    },
                 }
             },
             "role_view": {"default": {"target": "bounded"}},
