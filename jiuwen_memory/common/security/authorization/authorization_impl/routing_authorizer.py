@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security.authorization.base import (
     AuthorizationDecision,
@@ -151,6 +153,15 @@ class RoutingAuthorizer(Authorizer):
     ) -> AuthorizationDecision:
         policy = self._select(resource)
         return policy.authorize(auth=auth, resource=resource, environment=environment)
+
+    def authorize_collective_search(
+        self, *, auth, resource, environment, memberships, current, limit,
+    ):
+        policy = self._select(replace(resource, resource_type="query"))
+        return policy.authorize_collective_search(
+            auth=auth, resource=resource, environment=environment,
+            memberships=memberships, current=current, limit=limit,
+        )
 
     def _select(self, resource: ResourceDescriptor) -> Authorizer:
         value = _route_value(resource, self._route_key)

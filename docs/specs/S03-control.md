@@ -810,14 +810,11 @@ MemoryAPI 返回用户终端；不把原文附加到 MemoryUnit、普通 get/rec
 该路径不等待浏览器认证，也不执行授权裁决；不支持此能力的 Engine 在启用用户访问控制时
 拒绝装配，不修改 MemoryEngine ABC。详见 S10、S05、S06。
 
-## 团队结论直写
+## 群体文档写入与召回
 
-Agent/Cloud 引擎只执行选定 profile 的标准 infer 分支，不识别 Team 标签或应用来源。
-Adapter 校验宿主结论并选择 team_conclusion（infer=false），其 TeamDocumentClassifier
-写入受保护的 memory_class=team_memory；普通事实/Team 回合分别选择 document_fact/team_turn
-（infer=true）。标签与业务操作校验属于 Provider，路径/坐标合法性和身份授权仍由内核保证。
-裸 memory_scene/team_label 不再触发引擎分类；公共 API 仍拒绝直接覆盖 memory_class。
-此路由仅覆盖普通写入，后台 evolve 的组件注入契约不变，见 F09-team-document-memory。
+已鉴权的 Team 来源以瞬态单元通过 `Extractor` 进入 Team 抽取，产出受约束的候选落点。候选逐条确认落点后进入既有写入编排和文档落库流程。普通文档使用各自已配置的抽取策略。
+
+空间和群体分支各自计算可读 scope 及过滤条件，再调用公共扇出召回和合并。公共执行器接收已授权候选，原有检索和审计边界继续生效。
 
 ## 批量写入编排（F10）
 

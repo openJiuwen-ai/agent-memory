@@ -189,7 +189,7 @@ def _offline_in_process_config(tmp_path, monkeypatch):
         cfg["globals"]["embedder_dim"] = 64
         cfg["globals"]["watch_document"] = False
         cfg["llm"]["default"] = "echo"
-        cfg["extractor"].update(default="keyword", document_fact="keyword", team_turn="keyword")
+        cfg["extractor"].update(default="keyword", document_fact="keyword")
         cfg["tokenizer"] = {"default": {"target": "whitespace"}}
         cfg["shadow_index"]["default"]["params"]["tokenizer"] = "default"
         cfg["embedder"] = {"default": {"target": "hashing", "params": {"tokenizer": "default"}}}

@@ -13,11 +13,19 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 
+from jiuwen_memory.api.collective import dimensions_of
+from jiuwen_memory.common.errors import NotFoundError, PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security import principal
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import COORDS_KEY, Context, MemoryUnit, Scope
+from jiuwen_memory.storage.markdown import MarkdownStore
+from jiuwen_memory.storage.markdown_impl._md_path import collective_document_path, is_diary_filename
 
 from .local_support import _strip_transient_metadata, space_scope_for_md_read
+
+
+def _unique_scopes(scopes):
+    return list({(s.org, s.space, s.user, s.agent, s.session): s for s in scopes}.values())
 
 
 class MdOpsMixin:
@@ -41,14 +49,26 @@ class MdOpsMixin:
         解析在 Engine 层，本层不拆 Context。返回前剥瞬态键（coords 等是判定输入 /
         路径解析依据，不是条目属性），与 ``add`` 出口同处置。
         """
+        if "collective_target" in context.extensions:
+            paths, scopes = self._collective_document_scope(context, md_filename, security, Action.READ)
+            units = []
+            for path in paths:
+                units.extend(self._collective_document_units(path, scopes, md_filename, line_range))
+            return [_strip_transient_metadata(unit) for unit in units]
+        self._reject_internal_document_options(context)
         identity = security.auth.actor
         read_scope = self._md_read_scope(context, md_filename, security)
         auth = self._authorize(security, read_scope, Action.READ, "read_md_file")
-        units = asyncio.run(
-            self._queries.read_md_file(
-                replace(context, scope=read_scope), md_filename, line_range=line_range
+        if self._shared_profile(read_scope, md_filename) and read_scope == context.scope:
+            units = self._collective_document_units(
+                "USER.md", self._profile_scopes(read_scope), md_filename, line_range,
             )
-        )
+        else:
+            units = asyncio.run(
+                self._queries.read_md_file(
+                    replace(context, scope=read_scope), md_filename, line_range=line_range
+                )
+            )
         self._log(identity, "read_md_file", target_scope=read_scope, detail=auth)
         return [_strip_transient_metadata(unit) for unit in units]
 
@@ -96,12 +116,107 @@ class MdOpsMixin:
         ``ENTRY_RULES`` 登记 ``edit_md_file`` 触发 ``_ensure_space_state_allows``）。返回
         新 unit（旧版已标 SUPERSEDED）并剥瞬态键。
         """
+        if "collective_target" in context.extensions:
+            if not isinstance(old_text, str) or not old_text or not isinstance(new_text, str):
+                raise ValidationError("Collective edit requires a non-empty old_text and a string new_text")
+            paths, scopes = self._collective_document_scope(context, md_filename, security, Action.WRITE)
+            self._ensure_space_writable(context.scope)
+            self._ensure_audit_integrity_healthy()
+            return self._edit_shared_document(
+                paths, scopes, md_filename, old_text, new_text, security,
+            )
+        self._reject_internal_document_options(context)
         identity = security.auth.actor
         auth = self._authorize(security, context.scope, Action.WRITE, "edit_md_file")
         self._ensure_space_writable(context.scope)
         self._ensure_audit_integrity_healthy()
+        if self._shared_profile(context.scope, md_filename):
+            return self._edit_shared_document(
+                ("USER.md",), self._profile_scopes(context.scope), md_filename, old_text, new_text, security,
+            )
         units = asyncio.run(
             self._commands.edit_md_file(context, md_filename, old_text, new_text)
         )
         self._log(identity, "edit_md_file", target_scope=context.scope, detail=auth)
         return [_strip_transient_metadata(unit) for unit in units]
+
+    def _shared_profile(self, scope: Scope, filename: str) -> bool:
+        return self._document_mode and not self._routing_enabled() and filename == "USER.md" and bool(scope.user)
+
+    def _profile_scopes(self, scope: Scope) -> list[Scope]:
+        home = (scope.org, scope.space, scope.user, scope.session)
+        scopes = [
+            item for item in self._queries.candidate_scopes()
+            if (item.org, item.space, item.user, item.session) == home
+        ]
+        return _unique_scopes([scope, replace(scope, agent=""), *scopes])
+
+    def _edit_shared_document(self, paths, scopes, filename, old_text, new_text, security):
+        if not isinstance(old_text, str) or not old_text or not isinstance(new_text, str):
+            raise ValidationError("Shared document edit requires a non-empty old_text and a string new_text")
+        matches = []
+        for path in paths:
+            units = self._collective_document_units(path, scopes, filename, None)
+            matches.extend((path, unit) for unit in units if old_text in unit.content)
+        if not matches:
+            raise NotFoundError(message="No matching visible document memory")
+        if len(matches) != 1:
+            raise ValidationError("Shared document edit requires one visible original memory")
+        path, original = matches[0]
+        target = Context(scope=original.scope, extensions={"_authorized_collective_document": path})
+        units = asyncio.run(self._commands.edit_md_file(target, filename, old_text, new_text))
+        self._log(security.auth.actor, "edit_md_file", target_scope=target.scope,
+                  detail={"previous_unit": original.id, "document": path})
+        return [_strip_transient_metadata(unit) for unit in units]
+
+    @staticmethod
+    def _reject_internal_document_options(context):
+        if "_authorized_collective_document" in context.extensions:
+            raise ValidationError("Invalid document options")
+
+    def _collective_document_scope(self, context, filename, security, action):
+        self._reject_internal_document_options(context)
+        scope = context.scope
+        operation = "read_md_file" if action == Action.READ else "edit_md_file"
+        coordinates = self._require_collective_subject(scope, security, action, operation)
+        auth = self._authorize(security, scope, action, operation)
+        target = context.extensions["collective_target"]
+        ordinary_diary = ""
+        personal_agent = scope.agent not in ("", "main_agent")
+        if target == "profile" and filename == "USER.md" and scope.user:
+            scopes = self._profile_scopes(scope)
+            path = "USER.md"
+        elif target == "personal" and filename == "MEMORY.md" and personal_agent:
+            scopes = [scope]
+            path = collective_document_path(target, scope.agent)
+        elif target in ("project", "team", "group"):
+            if filename != "MEMORY.md" and (target != "project" or not is_diary_filename(filename)):
+                raise ValidationError("Invalid collective document target or filename")
+            dimension = next((d for d in dimensions_of(scope, coordinates) if d.kind == target), None)
+            if dimension is None or dimension not in self._member_store().active_dimensions(scope):
+                raise PermissionDeniedError("Collective document requires active membership")
+            scopes = [
+                member.scope for member in self._member_store().members(dimension)
+                if member.scope.user == scope.user
+            ]
+            path = collective_document_path(target, dimension.id, filename)
+            if filename != "MEMORY.md":
+                ordinary_diary = MarkdownStore.resolve_md_path(filename, dimension.id)
+        else:
+            raise ValidationError("Invalid collective document target or filename")
+        self._log(security.auth.actor, operation, target_scope=scope, detail=auth)
+        paths = (path, ordinary_diary) if ordinary_diary else (path,)
+        return paths, _unique_scopes(scopes)
+
+    def _collective_document_units(self, path, scopes, filename, line_range):
+        async def read():
+            results = await asyncio.gather(*(
+                self._queries.read_md_file(
+                    Context(scope=scope, extensions={"_authorized_collective_document": path}),
+                    filename, line_range=line_range,
+                )
+                for scope in scopes
+            ))
+            return list({unit.id: unit for units in results for unit in units}.values())
+
+        return asyncio.run(read())

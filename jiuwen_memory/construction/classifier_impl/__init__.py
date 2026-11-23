@@ -10,6 +10,5 @@ from jiuwen_memory.construction.classifier import ClassifierProducer
 
 import_optional(".keyword_classifier", __name__)
 import_optional(".llm_classifier", __name__)
-import_optional(".team_document_classifier", __name__)
 
 __all__ = ["ClassifierProducer"]

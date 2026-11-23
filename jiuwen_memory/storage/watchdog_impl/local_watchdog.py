@@ -52,6 +52,8 @@ from jiuwen_memory.storage.markdown_impl import experience_blocks
 from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks
 from jiuwen_memory.storage.markdown_impl._md_path import (
     _FILE_NAME_TO_CLASS,
+    collective_document_target,
+    collective_landing_metadata,
     team_from_md_path,
 )
 from jiuwen_memory.storage.markdown_impl._md_path import (
@@ -551,6 +553,11 @@ class LocalWatchdog(Watchdog):
         """
         project = _project_from_md_path(md_filename)
         memory_class = _class_from_md_path(md_filename)
+        collective = collective_document_target(md_filename)
+        collective_metadata = {}
+        if collective is not None:
+            destination, key = collective
+            collective_metadata = collective_landing_metadata(destination, key)
         now = datetime.now(UTC)
         unit_id = str(uuid.uuid4())
         return MemoryUnit(
@@ -571,7 +578,8 @@ class LocalWatchdog(Watchdog):
                 COORDS_KEY: {"project": project},
                 "project": project,
                 **({"team": team_from_md_path(md_filename)}
-                   if memory_class == "team_memory" else {}),
+                   if memory_class == "team_memory" and collective is None else {}),
+                **collective_metadata,
                 MEMORY_CLASS_KEY: memory_class,
                 MD_FILENAME_KEY: md_filename,
             },

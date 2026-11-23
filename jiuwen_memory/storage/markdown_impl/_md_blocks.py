@@ -27,6 +27,11 @@ import os
 from typing import Any
 
 
+def document_line(content: str) -> str:
+    """Fold multiline text into the single line stored by document memory."""
+    return " ".join(content.split()) if "\n" in content else content
+
+
 def content_hash(content: str) -> str:
     """content 整段 sha256，不归一化。
 

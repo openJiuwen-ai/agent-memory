@@ -31,6 +31,7 @@ class MemorySceneContext:
     team: str = ""
     sidebar: str = ""
     member: str = ""
+    collective: Mapping[str, str] | None = None
 
 
 class MemoryScene(Protocol):

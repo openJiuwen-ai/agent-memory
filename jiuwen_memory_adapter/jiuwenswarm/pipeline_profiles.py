@@ -6,8 +6,6 @@ from copy import deepcopy
 from typing import Any
 
 DOCUMENT_FACT = "document_fact"
-TEAM_TURN = "team_turn"
-TEAM_CONCLUSION = "team_conclusion"
 
 
 def _component(config: dict, section: str, reference: str | dict, target: str) -> dict:
@@ -41,9 +39,7 @@ def configure_document_pipelines(config: dict[str, Any]) -> dict[str, Any]:
         "classifier": "default",
     })
     _configure_components(result, baseline)
-    for name in (DOCUMENT_FACT, TEAM_TURN):
-        profiles.setdefault(name, {**baseline, "evolver": name})
-    profiles.setdefault(TEAM_CONCLUSION, {**baseline, "classifier": TEAM_CONCLUSION})
+    profiles.setdefault(DOCUMENT_FACT, {**baseline, "evolver": DOCUMENT_FACT})
     return result
 
 
@@ -58,15 +54,10 @@ def _configure_components(config: dict, baseline: dict) -> None:
     dedup_name = params.get("dedup", "default")
     dedup = _component(config, "dedup", dedup_name, "project_team")
     config.setdefault("dedup", {}).setdefault("project_team", dedup)
-    for name, target in ((DOCUMENT_FACT, "document_fact"), (TEAM_TURN, "team_llm")):
-        extractor = _component(config, "extractor", extractor_name, target)
-        config.setdefault("extractor", {}).setdefault(name, extractor)
-        variant = deepcopy(evolver)
-        variant["params"].update(extractor=name, dedup="project_team")
-        config.setdefault("evolver", {}).setdefault(name, variant)
-    classifier_params = {}
-    if baseline.get("classifier"):
-        classifier_params["base_classifier"] = baseline["classifier"]
-    config.setdefault("classifier", {}).setdefault(TEAM_CONCLUSION, {
-        "target": "team_document", "params": classifier_params,
-    })
+    collective = _component(config, "extractor", extractor_name, "team_llm")
+    collective["params"].setdefault("llm", "default")
+    config.setdefault("extractor", {}).setdefault("collective_turn", collective)
+    extractor = _component(config, "extractor", extractor_name, DOCUMENT_FACT)
+    config.setdefault("extractor", {}).setdefault(DOCUMENT_FACT, extractor)
+    params.update(extractor=DOCUMENT_FACT, dedup="project_team")
+    config.setdefault("evolver", {}).setdefault(DOCUMENT_FACT, evolver)

@@ -55,6 +55,7 @@ from jiuwen_memory.common.type_def import (
     Context,
     FilterExpr,
     LifecycleState,
+    MemoryTier,
     MemoryUnit,
     MetadataValueType,
     Modality,
@@ -418,6 +419,9 @@ class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
             "content": item.content, "modality": item.source.value,
         }, level=TraceLevel.DEBUG)
         units = self._ingestor.ingest([payload])
+        if meta.get("collective_destination"):
+            for unit in units:
+                unit.tier = MemoryTier.SEMANTIC
         check_ingest_cancelled()
         # Explicit input time is a write contract, independent of Ingestor choice.
         if item.event_time is not None:
@@ -439,7 +443,10 @@ class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
             path=path,
             evolver=binding.evolver if binding is not None else self._evolver,
             index_builder=binding.index_builder if binding is not None else self._index,
-            classifier=binding.classifier if binding is not None else self._classifier,
+            classifier=(
+                None if meta.get("collective_destination")
+                else (binding.classifier if binding is not None else self._classifier)
+            ),
             binding=binding,
             extra={"meta": meta, "infer": infer},
         )

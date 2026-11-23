@@ -13,7 +13,8 @@
 | `F03` | [F03-mcp-surface](F03-mcp-surface.md) | MCP surface：MemoryAPI 的 Model Context Protocol 接入面 |
 | `F05` | [F05-personal-memory-portal](F05-personal-memory-portal.md) | 个人记忆管理 Portal 设计方案 |
 | `F06` | [F06-coding-document-memory](F06-coding-document-memory.md) | Coding 场景接入文档记忆 |
-| `F09` | [F09-team-document-memory](F09-team-document-memory.md) | Team 文档记忆、共享隔离与 Pipeline 分流 |
+| `F09` | [F09-team-document-memory](F09-team-document-memory.md) | Team 文档读写、日记、预取兜底与 Swarm 接线 |
+| `F10` | [F10-collective-memory](F10-collective-memory.md) | 群体记忆抽取、成员治理、落点与授权召回 |
 | `F13` | [F13-swarmflow-experience-integration](F13-swarmflow-experience-integration.md) | SwarmFlow 经验记忆接入 |
 
 ## API / 接入面（`docs/features/api/`）

@@ -1073,7 +1073,48 @@ def test_vector_team_exclusion_query_path(tmp_path, team_count, extra_filter, ex
         store.close()
 
 
-@pytest.mark.parametrize("kind", ["long_term_memory", "user_profile", "team_memory"])
+@pytest.mark.parametrize("private", [False, True])
+def test_vector_visibility_keeps_knn_for_unrestricted_scope(tmp_path, private):
+    pytest.importorskip("sqlite_vec")
+    from jiuwen_memory.common.security.authorization.collective_read import ORDINARY_VISIBILITY
+
+    tokenizer = WhitespaceTokenizer()
+    embedder = HashingEmbedder(tokenizer, dim=64)
+    store = SqliteDocumentShadowIndex(str(tmp_path / "visibility.db"), tokenizer=tokenizer, embedder=embedder)
+    try:
+        shareable = "true" if private else True
+        rows = [_unit("visible", "ocean " + "filler " * 20, {
+            "md_filename": "memory/team_memory/daily_memory/2026-11-24.md",
+        })]
+        for index in range(3):
+            rows.extend([
+                _unit(f"metadata-{index}", "ocean", {
+                    "collective_destination": "project", "shareable": shareable,
+                }),
+                _unit(f"path-{index}", "ocean", {
+                    "md_filename": "memory/team_memory/projects/repo/daily_memory/2026-11-24.md",
+                    "shareable": shareable,
+                }),
+            ])
+        store.insert_units(SCOPE, rows)
+        queries: list[str] = []
+        store._ensure_conn().set_trace_callback(queries.append)
+        hits = store.search_vector(SCOPE, VectorQuery(
+            vector=embedder.embed(["ocean"])[0], top_k=1, filters=ORDINARY_VISIBILITY,
+        ))
+        assert any("v.embedding MATCH" in sql for sql in queries) is not private
+        if private:
+            from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
+
+            assert [hit.id for hit in hits] == ["visible"]
+            assert not matches_memory_unit(_unit("invalid", "ocean", {
+                "collective_destination": "project", "shareable": "true",
+            }), ORDINARY_VISIBILITY)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("kind", ["long_term_memory", "user_profile", "team_memory", "collective_diary"])
 def test_team_conclusions_do_not_suppress_ordinary_dedup(tmp_path, kind):
     from jiuwen_memory.construction.dedup_impl.project_team_dedup import ProjectTeamDedup
 
@@ -1086,13 +1127,33 @@ def test_team_conclusions_do_not_suppress_ordinary_dedup(tmp_path, kind):
     team.system_metadata.update(project="repo", memory_class="team_memory", team="ours")
     other = _unit("other", "ocean")
     other.system_metadata.update(project="repo", memory_class="team_memory", team="other")
-    candidate = {"long_term_memory": ordinary, "user_profile": profile, "team_memory": team}[kind]
+    diary = _unit("diary", "ocean")
+    diary.system_metadata.update(project="repo", memory_class="daily_memory")
+    collective_diary = _unit("collective-diary", "ocean")
+    collective_diary.system_metadata.update(
+        project="repo", memory_class="daily_memory", collective_destination="project", shareable=True,
+    )
+    candidate = {
+        "long_term_memory": ordinary, "user_profile": profile,
+        "team_memory": team, "collective_diary": collective_diary,
+    }[kind]
     try:
-        store.insert_units(SCOPE, [ordinary, profile, team, other])
+        store.insert_units(SCOPE, [ordinary, profile, team, other, diary, collective_diary])
         hits = store.search_fulltext(SCOPE, TextQuery(
             text="ocean", top_k=10, filters=ProjectTeamDedup.recall_filter(candidate)))
-        expected = {"long_term_memory": {"ordinary", "profile"},
-                    "user_profile": {"profile"}, "team_memory": {"team"}}[kind]
+        assert ProjectTeamDedup.contains_exact(store, candidate)
+        if kind == "team_memory":
+            multiline = _unit("new", "oc\nean")
+            multiline.system_metadata.update(team.system_metadata)
+            stored = _unit("multiline", "oc ean")
+            stored.system_metadata.update(team.system_metadata)
+            store.insert_units(SCOPE, [stored])
+            assert ProjectTeamDedup.contains_exact(store, multiline)
+        expected = {
+            "long_term_memory": {"ordinary", "profile", "diary"},
+            "user_profile": {"profile"}, "team_memory": {"team"},
+            "collective_diary": {"collective-diary"},
+        }[kind]
         assert {hit.id for hit in hits} == expected
     finally:
         store.close()

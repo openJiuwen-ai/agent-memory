@@ -18,6 +18,7 @@ Authorizer 是 **PDP**（决策点）：根据可信身份、动作和真实资�
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,9 +29,12 @@ from jiuwen_memory.common.security.types import (
     DenyReason,
     ResourceDescriptor,
 )
+from jiuwen_memory.common.type_def.scope import Scope
 
 if TYPE_CHECKING:
+    from jiuwen_memory.common.security.authorization.collective_read import CollectiveReadPlan
     from jiuwen_memory.common.security.authorization.store import GrantStore
+    from jiuwen_memory.storage.collective_members import Dimension
 
 
 class AuthorizationProducer(Factory):
@@ -125,6 +129,15 @@ class Authorizer(RoutingFieldsProvider, ABC):
         的要求：第三方注册的恒放行实现同样要能被拦住，而它的 target 名核心不认识。
         """
         return False
+
+    def authorize_collective_search(
+        self, *, auth: AuthContext, resource: ResourceDescriptor,
+        environment: AuthorizationEnvironment,
+        memberships: tuple[tuple[Dimension, Scope], ...],
+        current: Collection[Dimension], limit: int,
+    ) -> CollectiveReadPlan | None:
+        """Decide the authorized scopes and filters for a collective read."""
+        return None
 
     def management_grant_store(self) -> GrantStore | None:
         """本 Authorizer 判定时实际查询的 GrantStore（供 PEP 的 grant/revoke 共享真源）。

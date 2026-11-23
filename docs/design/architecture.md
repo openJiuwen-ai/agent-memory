@@ -245,6 +245,10 @@ Portal 页面复用现有 `/v1` 记忆操作，模型配置使用同一实例的
 | `evolve` | 原四种演进模式及 HIERARCHY 显式建树，返回任务 id；关闭树开关时 HIERARCHY 成功跳过 | `scope`；`mode`；`channel=BACKGROUND`；`*`；`candidate=None`；`dreaming=None`；`interval=0`；`security`；`hierarchy_options=None`；`reuse_existing=False` | `str \| None`（job id 或注销结果） |
 | `read_md_file` | 文档模式按 md 文件读记忆单元：`md_filename` 为 basename（`USER.md` / `MEMORY.md` / `YYYY-MM-DD.md`），`line_range` 为 1-based 闭区间（省略读整文件、越界 clamp）；按块 content_hash 反查影子索引后组装 `MemoryUnit`。非文档模式抛 `ValidationError` | `context: Context`；`md_filename: str`；`*`；`security: RequestSecurityContext`；`line_range: tuple[int, int] \| None = None` | `list[MemoryUnit]` |
 | `edit_md_file` | 文档模式按文件内唯一 `old_text` 精确替换一处并原子写回；新 unit 继承式 SUPERSEDE（元数据继承、旧版标记失效）。`old_text` 不存在抛 `NotFoundError`、不唯一抛 `ValidationError`；非文档模式抛 `ValidationError` | `context: Context`；`md_filename: str`；`old_text: str`；`new_text: str`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |
+| `init_collective_dimension` | 初始化合作维度及名册 | dimension、members、security、可选 operator_scope | `tuple[Member, ...]` |
+| `add_collective_members` | 显式授予维度成员权 | dimension、members、security、可选 operator_scope | `tuple[Member, ...]` |
+| `remove_collective_members` | 收回维度成员权并保留贡献记录 | dimension、targets、security、可选 operator_scope | `int` |
+| `list_collective_members` | 查询已授权的维度名册 | dimension、security、可选 status 和 operator_scope | `tuple[Member, ...]` |
 | `job_status` | 查询演进任务或长耗时 Ingest 任务（委托 Scheduler / Ingest 任务表）。Ingest 任务要求传入 target `scope`；API 对任务真实 Scope 执行 READ 鉴权与审计 | `job_id: str`；`*`；`security: RequestSecurityContext`；`scope: Scope \| None = None` | `JobInfo` |
 | `job_cancel` | 取消演进或 Ingest 任务（终态幂等）。Ingest 须提供 scope，运行中协作取消，当前同步步骤收尾后停止后续阶段，不回滚写入；结果与重试语义见 S02 | `job_id: str`；`*`；`security: RequestSecurityContext`；`scope: Scope \| None = None` | `None` |
 | `inspect` | 治理·检视：读取完整内容与治理字段（含已失效版本，委托 Governor） | `unit_ids: list[str]`；`scope: Scope`；`*`；`security: RequestSecurityContext` | `list[MemoryUnit]` |

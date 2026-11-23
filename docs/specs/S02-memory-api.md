@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -366,7 +366,7 @@ dict 分别做 merge-update。用户过滤的规范路径为 `user_metadata.<key
 ## HTTP / CLI 与协议适配契约
 
 HTTP 是 `MemoryAPI` 的远程传输封装，不定义第二套业务接口。当前
-`MemoryAPI.__abstractmethods__` 的 43 个公开方法全部按以下规则暴露：
+`MemoryAPI.__abstractmethods__` 的 48 个公开方法全部按以下规则暴露：
 
 ```text
 POST /v1/<MemoryAPI 方法名>
@@ -419,7 +419,7 @@ dev 只能绑定 loopback，没有环境变量旁路，不得成为默认值或�
 此规则修复已有运行时契约的传输误拦截，不代表任意未声明的扩展都被允许。
 
 HTTP 与 CLI 共用 `jiuwen_memory_entry/core/api_contract.py` 的 JSON 契约和同名调用逻辑，
-不再经过 legacy `DispatchRequest` / shared handler。CLI 的 43 个命令与参数直接从
+不再经过 legacy `DispatchRequest` / shared handler。CLI 的 48 个命令与参数直接从
 `MemoryAPI` 签名生成：方法名原样作为命令，参数原样作为 `--<parameter_name>`，
 对象使用同字段 JSON；不保留 `--tenant`、`--item-id`、`--k` 等历史转换。
 本地模式直接调用 API，远程模式原样发送 HTTP 请求并读取原 JSON 返回值；`text` /
@@ -2056,18 +2056,14 @@ API 返回终端。普通 HTTP `/v1`、CLI 与 MCP 机器工具不注册这些�
 
 共享与拆分索引不改变该外部语义；图拆分会丢失跨分片多跳，全文跨索引排序可能近似。派生状态陈旧可导致欠召回或排序偏差，返回内容须来自当前真源。归属/必需后端故障明确失败，图 Scope 变更未完成返回可重试错误。请求前置校验不代表业务逻辑已在当前版本实现。
 
-## Team 文档扩展
+## 群体文档入口
 
-原 add/search/read_md_file/edit_md_file 签名不变。文档读改在 `context.extensions.coords` 中追加可选 team，与 project 一同定位团队 MEMORY.md，空值保持原行为。search 通过既有 filters 传 project、memory_class、team。
-团队结论由 Provider 校验非空正文、decision/lesson/member/context 标签及宿主 project/team 对应关系，
-再经 add 传入 pipeline=team_conclusion、infer=false、memory_scene=team、project、team、team_label。
-Provider 将正文补齐为 `[team_label] 正文`，已有相同标签前缀时不重复添加；元数据标签仍保留，
-使 SDK/HTTP 的读、搜和预取均可展示类别。此规则适用于新写入，不回填已有无前缀记录。
-`add_team_memories` 接收空列表时返回 0；混合批次保存有效项并告警跳过数量及原因，
-非空批次全部无效时在写入前抛出 ValueError。日志不包含条目正文。
-引擎按 Pipeline 选择分类器，由 TeamDocumentClassifier 设置受保护的 memory_class=team_memory；
-裸 memory_scene/team_label 不再触发引擎分类，外部直接填写 memory_class 仍被拒绝。
-路径格式和坐标合法性仍在存储边界校验，Scope 授权及普通抽取的三类输出不变。
-Team 读改工具按 target 区分文档：profile 仅 USER.md，team 仅 MEMORY.md，
-project 支持 MEMORY.md 或合法日历日期 YYYY-MM-DD.md。错误提示分别指出 target 非法、
-文件名/日期不合法或宿主未绑定团队，不要求模型自行设置团队坐标。
+`add` 与 `add_async` 通过 `system_metadata["sources"]` 接收瞬态来源对象数组。每段含 `id`、`role`（`user`、`agent` 或 `assistant`）和 `text`。带来源的调用使用空 `content`。来源与 `coords` 在入口校验，来源正文不存入条目。签名及 HTTP 顶层字段沿用原接口。
+
+可信宿主为群体调用绑定项目、团队和 Group。写入可在 `system_metadata["coords"]` 请求子集，检索可用 `Context.extensions["coords"]` 收窄。显式跨空间检索继续使用 `extensions.spaces`，该键与群体调用互斥。
+
+`read_md_file` 和 `edit_md_file` 可在可信群体请求中使用 `extensions.collective_target`。项目、团队和 Group 共享文档要求当前维度的有效成员权，个人文档按当前专家身份，画像按用户归属。项目可指定 `MEMORY.md` 或合法日历日期 `YYYY-MM-DD.md`，画像使用 `USER.md`，其余目标使用 `MEMORY.md`。Team 的项目日期读取分别应用各文件的行范围，返回普通和群体项目日记条目。修订须在两个文件的可见正文中唯一定位。编辑修订唯一可识别的正文块，保留原条目身份与权限相关元数据，审计记录实际编辑者。
+
+`init_collective_dimension`、`add_collective_members`、`remove_collective_members`、`list_collective_members` 提供成员治理。Swarm 专用管理身份可初始化全员为普通成员的名册。初始化幂等，显式添加可恢复成员权。移除保留贡献历史，同时撤销该维度的成员权限。
+
+管理员显式传入 `dimension=None` 时可在当前组织内按稳定专家身份撤回团队与 Group 成员权，用于专家模板退役。该入口仍要求组织管理身份。

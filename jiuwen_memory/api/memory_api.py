@@ -74,6 +74,7 @@ from jiuwen_memory.control import (
 )
 from jiuwen_memory.control.application.personal_memory import PersonalPage, PersonalSearchResult
 from jiuwen_memory.retrieval import DisclosureLevel, RetrievalResult
+from jiuwen_memory.storage.collective_members import Dimension, Member, MemberStatus
 
 
 class MemoryAPI(ABC):
@@ -214,6 +215,34 @@ class MemoryAPI(ABC):
         continuity: ContinuityWrite | None = None,
     ) -> list[MemoryUnit]:
         """异步写入记忆；语义与 :meth:`add` 一致并直通引擎协程。"""
+
+    @abstractmethod
+    def init_collective_dimension(
+        self, dimension: Dimension, members: list[Member], *, security: RequestSecurityContext,
+        operator_scope: Scope | None = None,
+    ) -> tuple[Member, ...]:
+        """Register a collaboration dimension and its initial members."""
+
+    @abstractmethod
+    def add_collective_members(
+        self, dimension: Dimension, members: list[Member], *, security: RequestSecurityContext,
+        operator_scope: Scope | None = None,
+    ) -> tuple[Member, ...]:
+        """Enroll members in an existing collaboration dimension."""
+
+    @abstractmethod
+    def remove_collective_members(
+        self, dimension: Dimension | None, targets: list[Scope], *, security: RequestSecurityContext,
+        operator_scope: Scope | None = None,
+    ) -> int:
+        """Revoke memberships; an admin may pass None to retire a removed expert from teams and groups."""
+
+    @abstractmethod
+    def list_collective_members(
+        self, dimension: Dimension, *, security: RequestSecurityContext,
+        status: MemberStatus | None = None, operator_scope: Scope | None = None,
+    ) -> tuple[Member, ...]:
+        """Return the visible roster for a collaboration dimension."""
 
     @abstractmethod
     def batch_add(

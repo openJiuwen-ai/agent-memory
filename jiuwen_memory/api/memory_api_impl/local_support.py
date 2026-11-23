@@ -228,7 +228,7 @@ def _reject_kernel_system_metadata(metadata: dict[str, Any] | None) -> None:
     if not metadata:
         return
     clash = sorted(
-        (set(metadata) & KERNEL_SYSTEM_METADATA_KEYS)
+        (set(metadata) & (KERNEL_SYSTEM_METADATA_KEYS | {"collective_destination", "shareable", "group", "sources"}))
         | {key for key in metadata if isinstance(key, str) and key.startswith("continuity_")}
     )
     if clash:

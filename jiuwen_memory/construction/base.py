@@ -82,3 +82,5 @@ class ExtractContext:
     # 结论经本字段传给抽取算子。类型由实现定义（经验的实现是
     # ExperienceAppraisal）；未配置评价算子的 profile 不读取、恒为 None。
     appraisal: Appraisal | None = None
+    # Authorized destinations for transient Team source units.
+    collective_destinations: dict[str, str] | None = None

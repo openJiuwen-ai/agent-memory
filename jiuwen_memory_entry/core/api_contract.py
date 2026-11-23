@@ -122,13 +122,18 @@ def parse_request(verb: str, raw: Any) -> dict[str, Any]:
 def _decode_argument(verb: str, name: str, value: Any, annotation: Any) -> Any:
     # coords 是 API 已有的瞬态输入，不属于落盘 MetadataValueType；只对四个
     # 写入方法的批级参数袋应用例外，不扩到 user_metadata、patch 或 batch item。
-    if verb in _COORDS_WRITE_METHODS and name == "system_metadata":
-        if isinstance(value, dict) and "coords" in value:
-            metadata = dict(value)
-            coords = metadata.pop("coords")
-            decoded = _decode(metadata, annotation, path=name)
-            decoded["coords"] = _decode(coords, dict[str, str], path="system_metadata.coords")
-            return decoded
+    if verb in _COORDS_WRITE_METHODS and name == "system_metadata" and isinstance(value, dict):
+        metadata = dict(value)
+        transient = {}
+        if "coords" in metadata:
+            transient["coords"] = _decode(
+                metadata.pop("coords"), dict[str, str], path="system_metadata.coords",
+            )
+        if verb in {"add", "add_async"} and "sources" in metadata:
+            transient["sources"] = _decode(
+                metadata.pop("sources"), list[dict[str, str]], path="system_metadata.sources",
+            )
+        return {**_decode(metadata, annotation, path=name), **transient}
     return _decode(value, annotation, path=name)
 
 
@@ -272,6 +277,11 @@ def _decode(value: Any, annotation: Any, *, path: str) -> Any:
 
     origin = get_origin(annotation)
     args = get_args(annotation)
+
+    if origin is typing.Literal:
+        if not any(type(value) is type(choice) and value == choice for choice in args):
+            raise ValidationError(f"{path} must be one of {args!r}")
+        return value
 
     if origin in {types.UnionType, typing.Union}:
         if value is None and type(None) in args:

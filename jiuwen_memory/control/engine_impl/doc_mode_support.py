@@ -65,6 +65,9 @@ def restore_coords_from_md_filename(new: MemoryUnit, old: MemoryUnit) -> None:
 
 def document_options(context: Context) -> dict[str, str]:
     """Pass explicit document coordinates without changing public API signatures."""
+    path = context.extensions.get("_authorized_collective_document")
+    if path:
+        return {"collective_path": path}
     options = {"project": project_from_context(context)}
     coords = context.extensions.get(COORDS_KEY)
     if isinstance(coords, dict) and coords.get("team"):

@@ -20,8 +20,12 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date
+from urllib.parse import quote, unquote
 
 from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.type_def import MetadataValueType
+from jiuwen_memory.common.type_def.memory_filter import COLLECTIVE_DOCUMENT_ROOT
 
 # 无 project 兜底值：空串 = 跨项目可见（对齐 SqliteDocumentShadowIndex._DEFAULT_PROJECT
 # 与 LocalMarkdownStore._DEFAULT_PROJECT 语义）。
@@ -47,6 +51,9 @@ def project_from_md_path(md_filename: str) -> str:
     - ``memory/daily_memory/日期.md``（无 project daily，第二段是目录名 daily_memory）；
     - ``USER.md``（root 顶层用户画像）与未知形态。
     """
+    target = collective_document_target(md_filename)
+    if target is not None:
+        return target[1] if target[0] == "project" else ""
     team = team_from_md_path(md_filename)
     if team:
         return team_project(team)
@@ -58,6 +65,11 @@ def project_from_md_path(md_filename: str) -> str:
 
 def class_from_md_path(md_filename: str) -> str:
     """从 md 相对路径反推 memory_class（F08 §3 映射，对称 LocalMarkdownStore._PATH_MAP）。"""
+    target = collective_document_target(md_filename)
+    if target is not None:
+        if is_diary_filename(os.path.basename(md_filename.replace("\\", "/"))):
+            return "daily_memory"
+        return f"{target[0]}_memory"
     if team_from_md_path(md_filename):
         return "team_memory"
     normalized = md_filename.replace("\\", "/")
@@ -87,3 +99,76 @@ def team_project(team: str) -> str:
     if project in {".", "..", "teams"} or any(char in project for char in "/\\\x00"):
         raise ValidationError("Invalid team memory key")
     return project
+
+
+_COLLECTIVE_DIRS = {"project": "projects", "team": "teams", "group": "groups", "personal": "agents"}
+_COLLECTIVE_KINDS = {directory: kind for kind, directory in _COLLECTIVE_DIRS.items()}
+_WINDOWS_DEVICES = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\.|$)", re.I)
+
+
+def collective_landing_metadata(
+    destination: str, key: str = "", *, shareable: bool | None = None,
+) -> dict[str, MetadataValueType]:
+    """Use the same destination defaults for routed writes and document recovery."""
+    metadata: dict[str, MetadataValueType] = {
+        "collective_destination": destination,
+        "memory_class": "user_profile" if destination == "user_profile" else f"{destination}_memory",
+        "project": "", "team": "", "group": "",
+        "shareable": destination in {"personal", "user_profile"} or shareable is True,
+    }
+    if destination in {"project", "team", "group"}:
+        metadata[destination] = key
+    return metadata
+
+
+def is_diary_filename(filename: str) -> bool:
+    if not filename.endswith(".md"):
+        return False
+    try:
+        return f"{date.fromisoformat(filename[:-3]).isoformat()}.md" == filename
+    except ValueError:
+        return False
+
+
+def collective_document_path(kind: str, key: str, filename: str = "MEMORY.md") -> str:
+    """Map a trusted logical key to a single Windows-safe path segment."""
+    if kind not in _COLLECTIVE_DIRS or not key or key in {".", ".."}:
+        raise ValidationError("Invalid collective document coordinate")
+    if any(char in "/\\" or ord(char) < 32 for char in key):
+        raise ValidationError("Invalid collective document coordinate")
+    if filename != "MEMORY.md":
+        if kind != "project" or not is_diary_filename(filename):
+            raise ValidationError("Invalid collective diary filename")
+        filename = f"daily_memory/{filename}"
+    segment = quote(key, safe="._-")
+    if kind == "personal":
+        # Reserve raw underscores for colons so the path reverses without aliasing agent IDs.
+        segment = segment.replace("_", "%5F").replace("%3A", "_")
+    if _WINDOWS_DEVICES.match(segment):
+        segment = f"%{ord(segment[0]):02X}" + segment[1:]
+    if segment.endswith("."):
+        segment = segment[:-1] + "%2E"
+    return f"{COLLECTIVE_DOCUMENT_ROOT}/{_COLLECTIVE_DIRS[kind]}/{segment}/{filename}"
+
+
+def collective_document_target(md_filename: str) -> tuple[str, str] | None:
+    """Return the dimension encoded by a canonical collective document."""
+    path = md_filename.replace("\\", "/")
+    prefix = f"{COLLECTIVE_DOCUMENT_ROOT}/"
+    if not path.startswith(prefix):
+        return None
+    parts = path[len(prefix):].split("/")
+    if len(parts) == 3:
+        directory, segment, filename = parts
+    elif len(parts) == 4 and parts[2] == "daily_memory":
+        directory, segment, _, filename = parts
+    else:
+        return None
+    kind = _COLLECTIVE_KINDS.get(directory)
+    if kind is None:
+        return None
+    key = unquote(segment.replace("_", ":") if kind == "personal" else segment)
+    try:
+        return (kind, key) if collective_document_path(kind, key, filename) == path else None
+    except ValidationError:
+        return None

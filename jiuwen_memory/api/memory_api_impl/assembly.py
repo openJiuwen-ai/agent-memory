@@ -830,6 +830,27 @@ def _build_kernel(
         return kernel
 
 
+def _bind_collective_extractor(ctx: AssemblyContext):
+    """Assemble a lazy extractor behind the collective write operation."""
+    from functools import lru_cache
+
+    from jiuwen_memory.construction.base import ExtractContext
+    from jiuwen_memory.construction.extractor import ExtractorProducer
+
+    if "collective_turn" in ctx.namespaces.get("extractor", {}):
+        producer = ExtractorProducer.bind_named("collective_turn", ctx)
+    else:
+        @lru_cache(maxsize=1)
+        def producer():
+            return ExtractorProducer.build("team_llm", {"llm": "default"}, ctx)
+
+    def extract(segments, destinations):
+        context = ExtractContext(collective_destinations=destinations)
+        return producer().extract(segments, context=context)
+
+    return extract
+
+
 def _assemble_kernel(
     policies: dict[str, str] | None,
     kv: KVStore | None,
@@ -983,6 +1004,24 @@ def _assemble_kernel(
         connectors = ctx.globals.get("continuity_connectors", {})
         if not isinstance(connectors, dict):
             raise ValidationError("continuity_connectors must be a trusted connection mapping")
+    document_mode = should_write_document(root.get(WRITE_DOCUMENT_KEY))
+    collective_members = None
+    collective_dedup = None
+    collective_extractor = None
+    if document_mode:
+        from functools import partial
+        from pathlib import Path
+
+        from jiuwen_memory.construction.dedup_impl.project_team_dedup import ProjectTeamDedup
+        from jiuwen_memory.storage.collective_members import KVBackedMemberStore
+        from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+
+        member_path = Path(storage.markdown().root) / "memory" / ".shadow" / "members.db"
+        collective_members = KVBackedMemberStore(SQLiteKVStore(str(member_path)))
+        collective_extractor = _bind_collective_extractor(ctx)
+        if storage.has_shadow_index():
+            shadow_for_collective = storage.shadow_index()
+            collective_dedup = partial(ProjectTeamDedup.contains_exact, shadow_for_collective)
     api = LocalMemoryAPI(
         engine=engine,
         permission=permission,
@@ -1013,7 +1052,10 @@ def _assemble_kernel(
         # 表算，两者错位。判定表不另设解析路径的理由见 群体记忆 F07「归属判定算子」，那一条约束的
         # 是同一实例内不出现两份表，跨实例的一致由本处的配置写法决定。
         router=optional_router(root),
-        document_mode=should_write_document(root.get(WRITE_DOCUMENT_KEY)),
+        document_mode=document_mode,
+        collective_members=collective_members,
+        collective_dedup=collective_dedup,
+        collective_extractor=collective_extractor,
         # 部署配置的经验缺省落点（v3 §2）：不带 coords 且 default_space 填了
         # 空间名的 experience 写入按它鉴权（own 时落点就是写入落点，已由现有
         # 逻辑校验）。未配置经验的部署传缺省 own，鉴权逻辑空过。
@@ -1070,6 +1112,8 @@ def _assemble_kernel(
     privacy_resources = tuple(item for item in (privacy, human, human_limiter, human_guard)
                               if item is not None)
     resources = SecurityResourceOwner((authorizer, *shadows, audit_logger, *privacy_resources))
+    if collective_members is not None:
+        resources.add_close_callback(collective_members.close)
     if security_runtime is not None:
         resources.share_with(security_runtime.security_resource_owner())
 

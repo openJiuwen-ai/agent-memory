@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from jiuwen_memory.common.time_utils import epoch_ms
@@ -12,11 +13,41 @@ from .hierarchy import HIERARCHY_INDEX_KEYS, hierarchy_index_metadata
 from .memory import T_EVENT_UNKNOWN, T_INVALID_OPEN, MemoryUnit
 
 
+COLLECTIVE_DOCUMENT_ROOT = "memory/team_memory"
+COLLECTIVE_DOCUMENT_PREFIXES = tuple(
+    f"{COLLECTIVE_DOCUMENT_ROOT}/{directory}/"
+    for directory in ("projects", "teams", "groups", "agents")
+)
+
+
+def is_collective_metadata(metadata: Mapping[str, object]) -> bool:
+    destination = metadata.get("collective_destination")
+    if isinstance(destination, str) and destination:
+        return True
+    path = str(metadata.get("md_filename", "")).replace("\\", "/")
+    return path.startswith(COLLECTIVE_DOCUMENT_PREFIXES)
+
+
 def _epoch_ms(value: datetime | None) -> int | None:
     return None if value is None else epoch_ms(value)
 
 
 def _field_value(unit: MemoryUnit, field: str):
+    if field == "system_metadata.collective_destination":
+        value = unit.system_metadata.get("collective_destination")
+        return "" if value is None else value
+    if field in {
+        "system_metadata.collective.project", "system_metadata.collective.team",
+        "system_metadata.collective.group", "system_metadata.collective.shareable",
+    }:
+        name = field.rsplit(".", 1)[1]
+        metadata = unit.system_metadata
+        if name == "shareable":
+            value = metadata.get(name)
+            if isinstance(value, bool):
+                return value
+            return not is_collective_metadata(metadata)
+        return metadata.get(name) or ""
     if field in HIERARCHY_INDEX_KEYS:
         # 裸结构字段读真源；显式 metadata 路径仍保持独立命名空间。
         try:

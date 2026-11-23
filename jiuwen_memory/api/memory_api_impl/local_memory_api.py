@@ -48,6 +48,7 @@ from jiuwen_memory.control.scheduler import Scheduler
 from jiuwen_memory.control.space import SpaceManager
 
 from .admin_ops import AdminOpsMixin
+from .collective_ops import CollectiveOpsMixin
 from .continuity_ops import ContinuityOpsMixin
 from .dreaming import DreamingCoordinator
 from .human_view_ops import HumanViewOpsMixin
@@ -66,6 +67,7 @@ __all__ = ["LocalMemoryAPI", "_first_family_predicate", "_resolve_space_owner"]
 
 
 class LocalMemoryAPI(
+    CollectiveOpsMixin,
     ContinuityOpsMixin,
     HumanViewOpsMixin,
     WriteOpsMixin,
@@ -109,6 +111,9 @@ class LocalMemoryAPI(
         orchestrator=None,
         executor=None,
         merge_extract_default: bool = True,
+        collective_members=None,
+        collective_dedup=None,
+        collective_extractor=None,
     ) -> None:
         if audit_integrity_provider is not None and audit_verify_guard is None:
             raise ValidationError(
@@ -156,6 +161,9 @@ class LocalMemoryAPI(
         # 文档模式检索可独立使用 project 坐标。
         self._router = router
         self._document_mode = document_mode
+        self._collective_members = collective_members
+        self._collective_dedup = collective_dedup
+        self._collective_extractor = collective_extractor
         self._orchestrator = orchestrator
         self._executor = executor
         self._merge_extract_default = bool(merge_extract_default)
