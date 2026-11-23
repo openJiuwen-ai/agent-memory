@@ -90,7 +90,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 2. **记录 id 在 scope 内唯一**：`insert` 冲突 / `update` 缺失按 `(scope, id)` 判定；后端可用 `scope + id` 生成物理主键，保证同一逻辑 id 在不同 space 下互不冲突。
 3. **统一 CRUD 动词**：insert（增）/ delete（删）/ update（改）/ get（查），各存储接口保持同一命名。
 4. **检索型存储额外提供 search**：fulltext / vector / graph / fusion 在 CRUD 之上再提供 `search` 查询。
-5. **vector 的 recall 为可选能力**：`VectorStore.recall` 在 `search` 之上按需回带命中行 payload（`metadata`），基类默认抛 `NotImplementedError`，**不强制**每个后端实现；未实现者由调用方（`VectorRecaller`）捕获后回退 `search + get` 两段式，功能不退化。`search`/`get` 返回 `ScoredID`/`VectorRecord` 的契约不变。
+5. **vector/fulltext 的 recall 为可选能力**：`VectorStore.recall` / `FulltextStore.recall` 在 `search` 之上按需回带命中行 payload（`metadata`），基类默认抛 `NotImplementedError`，**不强制**每个后端实现；调用方（`VectorRecaller` / `KeywordRecaller`）仅捕获此异常回退 `search + get` 两段式，真实后端及授权错误原样传播。请求 metadata 时必须完整回带，不得仅投影 `unit_id` 等部分键。原 `search`/`get` 的输出与语义不变。
 6. **kv 区分 list 与 scan**：`list` 是 `/memory/` MemoryUnit 的过滤、计数、排序和分页查询；`scan` 是无业务语义的 scope 内原始 key-value 扫描；`scopes` 枚举已有 scope。`mget` 是 `get` 的批量互补：一次召回多条、省逐条 `get` 的接口往返。返回与 `keys` 下标一一对应的 `list[bytes]`，**不去重、按位置返回**（调用方可传重复 key、各下标独立返回，语义同 Redis `MGET`）；缺失语义与 `get` 一致——任一 key 不存在即抛 `NotFoundError`，不静默省略（「索引↔真源短暂不一致」的兜底由调用方负责）。重复 key 的去重亦由调用方（如 `UnitReader.load`）负责，不下沉到本接口。
 7. **fs 提供 stat**：stat（文件元信息查询）。
 8. **scope 对 key/路径做命名空间隔离**：kv / fs 是通用原语，`scope` 入参用于对 key / 路径做命名空间隔离（同一逻辑 key 在不同 scope 下是相互隔离的不同物理键）。
@@ -386,6 +386,13 @@ AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key
 | `delete` | `(scope, ids: list[str]) -> None` | 在 scope 内按 id 删除文档（幂等） |
 | `get` | `(scope, ids: list[str]) -> list[Document]` | 在 scope 内按 id 点查文档；缺失的 id 从结果中省略 |
 | `search` | `(scope, query: TextQuery) -> list[ScoredID]` | 在 scope 内做关键词检索（BM25 等），按相关性返回 top-k |
+| `recall` | `(scope, query: TextQuery, output_fields: list[str]\|None=None) -> list[ScoredHit]` | 可选：同次请求按需回带完整 metadata；基类默认抛 `NotImplementedError`，调用方仅对此回退 search + get |
+
+`recall` 与 `search` 使用相同的 Scope、FilterExpr、extensions、top-k 与高分优先语义。
+`output_fields` 当前仅认 `"metadata"`；请求时回带记录的完整字典（含 `unit_id`、`entities`
+及自定义键），不得只投影部分键；`None`/`[]` 不回带，metadata 为 `{}`。未知字段忽略并
+记日志。原 `search` 返回 ScoredID、`get` 返回完整 Document 的契约不变。
+通过 manager 暴露端口调用 `recall` 必须先按 `StorageAction.SEARCH` 授权，不绕过代理。
 
 ### VectorStore（`vector.py`）
 
@@ -864,8 +871,8 @@ Redis Cluster**（需要 `redis.RedisCluster` 客户端与真实集群集成测�
 | ShardResolver | 创建时 MemoryUnit → 合法 shard；公开只读 shards/default_shard；纯函数，不访问存储 |
 | ShardLocator | Scope + unit_ids → active 的 id→shard 映射及未定位 id；批量部分结果，故障不得冒充未定位 |
 | ConditionalKV | Scope + key/value → 原子 create、按完整期望值 replace/delete；多 key 部分读取返回已存在映射；存储侧当前时间；比较失败与后端故障区分 |
-| ResourceDescriptor | 无凭据的规范化持久资源身份、端口类型、索引兼容描述；代理不改变身份；内存资源身份限定装配上下文。当前 PG / pgvector / Redis / ES / SQLite / Milvus（`uri/collection`）/ nano-graphrag（工作目录）/ Neo4j（`uri/database`）/ KV 图声明；split 包装层要求各分片的非空描述互不相同 |
-| ShardPrefilter | Scope + 查询 + shard 集合 → 截断前过滤的候选；系统/授权/用户谓词均 AND；标签由存储写入，不信任用户输入。当前由 pgvector / Milvus / Elasticsearch，以及图后端内存 / nano-graphrag / Neo4j 声明（图：遍历可经过任意节点，只在收集结果时按标签过滤） |
+| ResourceDescriptor | 无凭据的规范化持久资源身份、端口类型、索引兼容描述；代理不改变身份；内存资源身份限定装配上下文。当前 PG / pgvector / openGauss 向量与全文（`dsn/schema/table`）/ Redis / ES / SQLite / Milvus（`uri/collection`）/ nano-graphrag（工作目录）/ Neo4j（`uri/database`）/ KV 图声明；split 包装层要求各分片的非空描述互不相同 |
+| ShardPrefilter | Scope + 查询 + shard 集合 → 截断前过滤的候选；系统/授权/用户谓词均 AND；标签由存储写入，不信任用户输入。当前由 pgvector / openGauss 向量与全文 / Milvus / Elasticsearch，以及图后端内存 / nano-graphrag / Neo4j 声明（图：遍历可经过任意节点，只在收集结果时按标签过滤） |
 | GroupedMemoryLinks | Scope + 记录身份 + 按 shard 分组引用 + 增量操作 → 逐项结果；原子 UNLINK、DELETE_IF_EMPTY；查询仅投影选中引用 |
 
 

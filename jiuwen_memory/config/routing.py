@@ -339,6 +339,14 @@ class RoutingFulltextStore(FulltextStore):
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
         return self._router.get().search(scope, query)
 
+    def recall(
+        self,
+        scope: Scope,
+        query: TextQuery,
+        output_fields: list[str] | None = None,
+    ) -> list[ScoredHit]:
+        return self._router.get().recall(scope, query, output_fields=output_fields)
+
 
 class RoutingGraphStore(GraphStore):
     """GraphStore 门面：委托当前 ``graph_store.active`` 实例。"""

@@ -80,9 +80,11 @@ from jiuwen_memory.api import (  # noqa: E402
     MemoryAPI,
     assemble_runtime,
 )
+from jiuwen_memory.common.security.request_context import new_request_context  # noqa: E402
 from jiuwen_memory.common.security.types import (  # noqa: E402
     AuthContext,
     RequestSecurityContext,
+    Surface,
 )
 from jiuwen_memory.common.type_def import ChatMessage, Context, Scope  # noqa: E402
 from jiuwen_memory.config import Config  # noqa: E402
@@ -125,7 +127,8 @@ RAW_ALWAYS = os.getenv("RAW_ALWAYS", "0").strip().lower() in ("1", "true", "yes"
 # 置 1 会让正文里也出现日期，与 prompt 的描述矛盾，只应在复现旧轮次时使用。
 DATE_PREFIX = os.getenv("DATE_PREFIX", "0").strip().lower() not in ("", "0", "false", "no", "off")
 # 关闭思维链。注入点在 _patched_openai_chat（类级 patch，覆盖引擎内算子与脚本 generate/judge），
-# 注入 extra_body.chat_template_kwargs.enable_thinking=false。
+# 注入 extra_body.chat_template_kwargs.enable_thinking=false（vLLM/自建部署识别）与顶层
+# enable_thinking=false（SiliconFlow 等托管端点只认顶层）。
 # ⚠️ 默认关闭（=0）：该参数是 vLLM/自建 GLM-5.2 部署用的（GLM 默认输出思维链，需此关）。
 # 华为云 MaaS 等 OpenAI 兼容托管端点不识别它，传了会触发慢路径——实测单次调用 53s vs 不传 5.9s，
 # 慢 9 倍。仅当用自建 vLLM GLM 时设 1。DeepSeek-V3.2 无思维链问题，不要开。
@@ -417,7 +420,7 @@ def _patched_openai_chat(self, messages, **options):
     # 已显式传入 extra_body 的调用方优先（合并而非覆盖），与 _merge_request_options 一致。
     if DISABLE_THINKING:
         _eb = create_kwargs.get("extra_body")
-        _tpl = {"chat_template_kwargs": {"enable_thinking": False}}
+        _tpl = {"chat_template_kwargs": {"enable_thinking": False}, "enable_thinking": False}
         create_kwargs["extra_body"] = ({**_tpl, **_eb} if isinstance(_eb, dict) else _tpl)
     # 华为云 MaaS 限流（429 RateLimitError）+ 连接/超时/5xx 等瞬态错误退避重试。
     # 覆盖全部 OpenAILLM.chat 调用：引擎内 extractor/classifier + v5 generate/judge。
@@ -776,7 +779,8 @@ def _conversation_scope(conv_id: int) -> Scope:
 
 
 def _scope_security(scope: Scope) -> RequestSecurityContext:
-    return RequestSecurityContext(auth=AuthContext(actor=scope))
+    # 直接构造的 RequestSecurityContext 未签名，has_valid_origin 会拒绝全部读写。
+    return new_request_context(AuthContext(actor=scope), surface=Surface.INTERNAL)
 
 
 def _list_scope_units(api: MemoryAPI, scope: Scope) -> list:

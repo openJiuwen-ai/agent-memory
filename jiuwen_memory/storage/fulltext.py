@@ -13,7 +13,7 @@ from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import Scope
 
 from .base import BaseStore
-from .types import Document, ScoredID, TextQuery
+from .types import Document, ScoredHit, ScoredID, TextQuery
 
 
 class FulltextProducer(Factory):
@@ -47,3 +47,23 @@ class FulltextStore(BaseStore):
     @abstractmethod
     def search(self, scope: Scope, query: TextQuery) -> list[ScoredID]:
         """在 ``scope`` 内做关键词检索（BM25 等），按相关性返回 top-k。"""
+
+    def recall(
+        self,
+        scope: Scope,
+        query: TextQuery,
+        output_fields: list[str] | None = None,
+    ) -> list[ScoredHit]:
+        """按 ``search`` 的 scope、过滤、扩展和排序语义召回，并在同次请求回带 payload。
+
+        :param output_fields: 当前仅认 ``"metadata"``，请求时必须返回命中记录的
+            完整 metadata（含自定义键、``unit_id`` 与 ``entities``），不得仅投影部分键。
+            其余字段忽略并记日志；``None`` 或空列表不回带，metadata 为空 dict。
+        :return: 按相关性降序排列的命中，id/score 与 ``search`` 同口径。
+        :raises NotImplementedError: 可选能力，基类默认抛出；调用方仅捕获此异常，
+            回退到 ``search`` + ``get``。真实后端错误不得触发回退。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement recall (search with payload); "
+            "falling back to search + get"
+        )

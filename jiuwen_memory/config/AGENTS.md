@@ -26,7 +26,7 @@
 | `project.py` | `AssemblyContext` → 扁平 key→str 投影 |
 | `active.py` | `resolve_active_name` / `resolve_bound_value` |
 | `binding.py` | 调用路径晚绑定：`resolve_endpoint` / `resolve_connection_url` |
-| `routing.py` | `ActiveRouter` + `RoutingEmbedder`/`RoutingLLM`/`RoutingReranker` + `RoutingKVStore`/`RoutingVectorStore`/`RoutingFulltextStore`/`RoutingGraphStore`/`RoutingFusionStore`/`RoutingFSStore`（F01 Store 级）+ `RoutingStoreManager`/`RoutingDomainStore`（F02/F07：StoreManager 实例动态配置，`store_manager.active`；方案 A 手工注入） |
+| `routing.py` | `ActiveRouter` + `RoutingEmbedder`/`RoutingLLM`/`RoutingReranker` + `RoutingKVStore`/`RoutingVectorStore`/`RoutingFulltextStore`/`RoutingGraphStore`/`RoutingFusionStore`/`RoutingFSStore`（F01 Store 级，向量/全文可选 `recall` 原样委托，不支持时透传 `NotImplementedError`）+ `RoutingStoreManager`/`RoutingDomainStore`（F02/F07：StoreManager 实例动态配置，`store_manager.active`；方案 A 手工注入） |
 
 ## 行为铁律
 

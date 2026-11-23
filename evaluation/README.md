@@ -151,7 +151,11 @@ benchmark: locomo
 - Redis、Milvus、Elasticsearch 和 weighted RRF 参数与 SSH 配置一致，关闭 rerank；
 - 召回 Top-200，再按 `10 → 20 → 50 → 200` cutoff 生成答案并判分；
 - `DISABLE_THINKING` 默认保持 `0`；仅自建 vLLM GLM 部署需要时设为 `1`，
-  华为云 MaaS DeepSeek 等托管端点保持默认 `0`；
+  华为云 MaaS DeepSeek 等托管端点保持默认 `0`；设为 `1` 时同时注入
+  `chat_template_kwargs.enable_thinking=false`（vLLM）与顶层 `enable_thinking=false`
+  （SiliconFlow 等托管端点只认顶层），用于关闭默认思考的模型；
+- 每个 conversation 的写入与检索使用 `new_request_context(..., surface=INTERNAL)`
+  签发的进程内安全上下文；直接构造的未签名上下文会被拒绝，导致 0 记忆、0 分；
 - mini 默认只跑 1 个 conversation、2 个 turn、1 道 QA（数据中只有这些内容）。
 
 两套 runner、prompt、配置和输出格式分别位于 `longmemeval/` 与 `locomo/`，没有使用
