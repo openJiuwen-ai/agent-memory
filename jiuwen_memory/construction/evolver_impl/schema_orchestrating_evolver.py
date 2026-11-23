@@ -214,6 +214,10 @@ class SchemaOrchestratingEvolver(OrchestratingEvolver, SourceUpdateSupport):
         # Schema extraction can report source evidence alone after extractor failure.
         return frozenset()
 
+    def supports_grouped_extract(self) -> bool:
+        """Schema 路径先落 Source 证据、再写 Property，来源归属口径不同，暂不参与合并抽取。"""
+        return False
+
     def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         if self._is_procedural(units):
             return super()._evolve_extract(units)

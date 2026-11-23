@@ -13,9 +13,12 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from jiuwen_memory.common._support import as_bool
+from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
@@ -25,6 +28,29 @@ from .base import ConstructionOperator, OperatorType
 if TYPE_CHECKING:
     from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
     from jiuwen_memory.storage.domain_store import DomainStore
+
+
+class UnitCommitState(str, Enum):
+    """批量建索引时单条记忆的落盘结论（F10 决策 4）。
+
+    - ``COMMITTED``：正排已确认写入；检索索引失败时该条仍为 COMMITTED，但带 ``error``
+      （部分提交——本体在、索引可重建）；
+    - ``FAILED``：本批更早的条目失败后被跳过，**未尝试写入**，可安全重试；
+    - ``UNKNOWN``：写入过程中抛错，无法确认是否落盘，重试前须先核对。
+    """
+
+    COMMITTED = "committed"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class UnitCommitStatus:
+    """``build_grouped`` 的逐条结果；与输入 ``units`` 按下标对齐。"""
+
+    unit_id: str
+    state: UnitCommitState
+    error: Exception | None = None
 
 
 class IndexBuilderProducer(Factory):
@@ -113,6 +139,27 @@ class IndexBuilder(ConstructionOperator):
         DomainStore. Evolvers never infer the truth reader from a default data plane.
         """
         return None
+
+    def supports_grouped_build(self) -> bool:
+        """是否支持批量建索引并逐条报告落盘结论（F10 决策 4）。
+
+        默认 ``False``：不声明支持时上层退回逐条 ``build``，不会因为配置了合并路径
+        而假定所有构建器都能给出逐条结果（S09 不变量 6、14）。
+        """
+        return False
+
+    def build_grouped(self, units: list[MemoryUnit]) -> list[UnitCommitStatus]:
+        """批量建索引，逐条返回落盘结论；**不抛异常**，部分失败经返回值体现。
+
+        默认实现明确不支持——调用方必须先查 :meth:`supports_grouped_build`，
+        不能把「不支持」当成空结果（S09 不变量 12）。
+        """
+        raise UnsupportedCapabilityError(
+            "grouped_build",
+            type(self).__name__,
+            "IndexBuilder",
+            f"{type(self).__name__} does not support grouped build",
+        )
 
     @abstractmethod
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
@@ -211,6 +258,27 @@ class SchemaPropertyIndexingBuilder(IndexBuilder):
 
     def health(self) -> None:
         self._delegate.health()
+
+    def supports_grouped_build(self) -> bool:
+        return self._delegate.supports_grouped_build()
+
+    def build_grouped(self, units: list[MemoryUnit]) -> list[UnitCommitStatus]:
+        if not self._delegate.supports_grouped_build():
+            # 保持「不支持」原始异常语义，不把能力缺失当成写入失败去失效反向索引。
+            return self._delegate.build_grouped(units)
+        try:
+            statuses = self._delegate.build_grouped(units)
+        except Exception as exc:
+            self._invalidate_after_failure(units, exc)
+            raise
+        committed = [
+            unit
+            for unit, status in zip(units, statuses)
+            if status.state is UnitCommitState.COMMITTED
+        ]
+        if committed:
+            self._property_index.mark_forward_only(committed)
+        return statuses
 
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         try:

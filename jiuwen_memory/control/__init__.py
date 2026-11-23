@@ -3,6 +3,7 @@
 
 from .base import ControlOperator, ControlOperatorType
 from .engine import MemoryEngine
+from .executor import BlockingExecutor, BlockingExecutorProducer, ExecutorLane
 from .governance import Governor
 from .ingest_job import IngestJob, IngestJobController, IngestSubmission
 from .lifecycle import LifecycleManager
@@ -42,12 +43,20 @@ from .types import (
     UpdateSelector,
     WriteTargets,
 )
+from .write_orchestrator import (
+    WriteOrchestrator,
+    WriteOrchestratorProducer,
+    WriteTask,
+)
 
 __all__ = [
     "EvolveTaskOptions",
     "ControlOperator",
     "ControlOperatorType",
     "MemoryEngine",
+    "BlockingExecutor",
+    "BlockingExecutorProducer",
+    "ExecutorLane",
     "LifecycleManager",
     "Governor",
     "IngestJobController",
@@ -59,6 +68,9 @@ __all__ = [
     "Scheduler",
     "PolicyManager",
     "SpaceManager",
+    "WriteOrchestrator",
+    "WriteOrchestratorProducer",
+    "WriteTask",
     "Action",
     "Grant",
     "PrincipalPath",

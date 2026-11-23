@@ -19,10 +19,16 @@ from __future__ import annotations
 
 from jiuwen_memory.common.chunker.base import Chunker, ChunkerProducer
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
+from jiuwen_memory.common.errors import ConflictError, ValidationError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
+from jiuwen_memory.construction.index_builder import (
+    IndexBuilder,
+    IndexBuilderProducer,
+    UnitCommitState,
+    UnitCommitStatus,
+)
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
@@ -87,6 +93,70 @@ class HybridIndexBuilder(IndexBuilder):
 
     def health(self) -> None:
         return None
+
+    def supports_grouped_build(self) -> bool:
+        return True
+
+    def build_grouped(self, units: list[MemoryUnit]) -> list[UnitCommitStatus]:
+        """先逐条写正排（真源），再为已提交的条目建检索索引（F10 决策 4）。
+
+        正排逐条写是为了拿到「哪一条失败」：批量写只会在第一个异常处中断，无法把
+        结论分回输入条目。检索索引仍按批构建——失败不改变「本体已提交」的事实，
+        因此把异常挂到已提交条目上返回（``COMMITTED`` + ``error``），由上层表达
+        部分提交；本体在、索引可从真源重建。
+        """
+        logger.info("HybridIndexBuilder: grouped build for %d units", len(units))
+        statuses: list[UnitCommitStatus] = []
+        committed: list[MemoryUnit] = []
+        forward_failed: str | None = None
+        for unit in units:
+            if forward_failed is not None:
+                # 更早的条目已失败：本条未尝试写入，可安全重试。错误必须写明原因，
+                # 否则上层只能看到「failed 且无原因」。
+                statuses.append(
+                    UnitCommitStatus(
+                        unit_id=unit.id,
+                        state=UnitCommitState.FAILED,
+                        error=RuntimeError(
+                            f"forward write not attempted after {forward_failed} failed"
+                        ),
+                    )
+                )
+                continue
+            try:
+                self._forward_builder.build([unit])
+            except (ConflictError, ValidationError) as exc:
+                # 写入前置条件失败（主键已存在 / 入参非法）：本体**没有**写进去，
+                # 是确定失败而不是提交状态未知，按 FAILED 报告。
+                statuses.append(
+                    UnitCommitStatus(unit_id=unit.id, state=UnitCommitState.FAILED, error=exc)
+                )
+                forward_failed = unit.id
+                continue
+            except Exception as exc:  # noqa: BLE001 —— 逐条归集是契约，不中断整批
+                statuses.append(
+                    UnitCommitStatus(unit_id=unit.id, state=UnitCommitState.UNKNOWN, error=exc)
+                )
+                forward_failed = unit.id
+                continue
+            statuses.append(UnitCommitStatus(unit_id=unit.id, state=UnitCommitState.COMMITTED))
+            committed.append(unit)
+        if committed:
+            try:
+                self._fulltext_builder.build(committed)
+                self._vector_builder.build(committed)
+                if self._entity_builder is not None:
+                    self._entity_builder.build(committed)
+            except Exception as exc:  # noqa: BLE001 —— 本体已提交，索引失败按部分提交报告
+                statuses = [
+                    UnitCommitStatus(
+                        unit_id=status.unit_id,
+                        state=status.state,
+                        error=exc if status.state is UnitCommitState.COMMITTED else status.error,
+                    )
+                    for status in statuses
+                ]
+        return statuses
 
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         logger.info(

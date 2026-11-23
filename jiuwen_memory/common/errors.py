@@ -225,10 +225,15 @@ class PartialFailureError(AgentMemoryError):
 
 
 class WriteIncompleteError(PartialFailureError):
-    """接续写入未完成（unknown / partial）：调用方不得当作成功，按 retry_action 处理。
+    """写入未完成（unknown / partial）：调用方不得当作成功，按 retry_action 处理。
 
-    HTTP 映射 409；字段 ``operation_id`` 是事件幂等键，``status`` 为 unknown 或 partial，
-    ``refs`` 是已确认保存的 MemoryRef（可能为空），``retry_action`` 为
+    覆盖两类来源，单条与批量入口抛同一个类型：
+
+    - 接续写入：``operation_id`` 是事件幂等键，``refs`` 是已确认保存的 MemoryRef；
+    - 索引批量提交结果未知/部分提交：``operation_id`` 为空，``refs`` 为空，携带受影响的
+      unit 说明。
+
+    HTTP 映射 409；``status`` 为 unknown 或 partial，``retry_action`` 为
     ``retry_original_write``（partial）或 ``recover_then_retry``（unknown）。
     """
 

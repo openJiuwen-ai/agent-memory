@@ -162,3 +162,22 @@ TLS, access control, and traffic protection at a gateway.
 - [Storage API documentation](<../API Docs/storage.md>)
 - [Retrieval API documentation](<../API Docs/retrieval.md>)
 - [Original Docker Compose instructions](../../../deploy/docker/README.md)
+
+## Write orchestration and multi-instance deployments
+
+The write path now uses a per-user lock plus batch orchestration; the lock backend follows the
+deployment shape:
+
+- **Single process (default)**: `lock.default` uses the built-in `memory` lock; no extra service.
+- **Multiple instances (replicas or processes sharing one source of truth)**: configure
+  `lock.default` as `redis` and declare `deployment.multi_instance: true`. Declaring multiple
+  instances while keeping an in-process lock **fails assembly**: an in-process lock cannot
+  serialize writes across processes, and silently degrading would let the same user's dedup and
+  updates overwrite each other.
+- **Lock backend outage**: infer writes fail with the backend error instead of falling back to a
+  lock-free path. This is deliberate.
+- **Merged extraction** is on by default (one extract call per batch). To fall back to per-item
+  extraction, set `deployment.merge_extract: false` or pass `merge_extract: "false"` in
+  `system_metadata` for a single call.
+- **Blocking executor**: LLM and IO calls use separate lanes (`executor.default=thread_pool` by
+  default); the write pool is released by the runtime `close()`.

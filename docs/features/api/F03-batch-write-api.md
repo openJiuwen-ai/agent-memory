@@ -208,6 +208,11 @@ override 同时存在，鉴权必须以归一化后的最终 `item.scope` 为准
 
 ### 4. 第一版默认串行保序，不默认 asyncio.gather
 
+> **已由 control/F10 取代（2026-11-18）**：串行保序现在只用于 `continue_on_error=false`
+> 与 `sequential` 编排；默认路径改为 `WriteOrchestrator` 按 `(scope, stream_id)` 分组并发、
+> 组内保序，并统一加 `(org, space, user)` 锁。本节保留作第一版契约的历史说明，当前行为见
+> [F10-async-write-orchestration.md](../control/F10-async-write-orchestration.md)。
+
 `batch_add_async` 虽然是协程入口，但第一版内部默认按输入顺序逐条 `await engine.write(...)`。
 
 原因：
@@ -361,11 +366,11 @@ HTTP adapter 将 `items` 递归构造为 `list[BatchWriteItem]`，将 `scope` �
 
 ## 已知遗留
 
-1. **真正并发调度暂不做**：第一版默认串行保序。后续可按 `(scope, stream_id)` 分组并发，
-   但同组内必须保序。
+1. ~~**真正并发调度暂不做**~~（已由 control/F10 解决）：现在按 `(scope, stream_id)` 分组并发，
+   同组内仍保序；`continue_on_error=false` 与 `sequential` 编排保持逐条执行。
 2. **幂等存储暂不做**：`idempotency_key` 先进入数据结构；后续需要在 KV 或单独 manifest
    中记录 `(scope, stream_id, idempotency_key) -> outcome`。
-3. **批量 KV/IndexBuilder 优化暂不做**：第一版 engine batch 可以循环调用单条 `write`。
+3. **批量 KV/IndexBuilder 优化暂不做**（已由 control/F10 部分解决：IndexBuilder 声明 `grouped_build` 时直写段一次批量 build，并按 unit 回传提交状态；未声明的实现仍逐条 build）：第一版 engine batch 可以循环调用单条 `write`。
    后续再评估 `insert_many`、`build_many` 或 extractor 批量 prompt。
 4. **跨 item 事务暂不做**：批量写入不是 all-or-nothing 事务。需要事务语义的导入任务应在
    更高层维护 staging 和补偿。

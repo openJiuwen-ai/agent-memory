@@ -5,7 +5,11 @@ from contextvars import ContextVar
 
 from jiuwen_memory.common.security.privacy.base import PrivacyProtection, privacy_operation
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
-from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.construction.index_builder import (
+    IndexBuilder,
+    UnitCommitState,
+    UnitCommitStatus,
+)
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
@@ -31,6 +35,29 @@ class PrivacyIndexBuilder(IndexBuilder):
 
     def read_domain_store(self) -> DomainStore | None:
         return self._delegate.read_domain_store()
+
+    def supports_grouped_build(self) -> bool:
+        return self._delegate.supports_grouped_build()
+
+    @privacy_operation
+    def build_grouped(self, units: list[MemoryUnit]) -> list[UnitCommitStatus]:
+        """透传批量建索引能力；只为已提交的条目刷新隐私修订号（F10 决策 4）。"""
+        active = _ACTIVE.get()
+        owned = [unit for unit in units if (id(self._privacy), id(unit)) not in active]
+        if not owned:
+            return self._delegate.build_grouped(units)
+        owned_ids = {id(unit) for unit in owned}
+        token = _ACTIVE.set(active | {(id(self._privacy), uid) for uid in owned_ids})
+        try:
+            for unit in owned:
+                self._privacy.prepare(unit)
+            statuses = self._delegate.build_grouped(units)
+            for unit, status in zip(units, statuses):
+                if status.state is UnitCommitState.COMMITTED and id(unit) in owned_ids:
+                    self._privacy.refresh_revision(unit)
+            return statuses
+        finally:
+            _ACTIVE.reset(token)
 
     @contextmanager
     def _operation(self, units: list[MemoryUnit]):

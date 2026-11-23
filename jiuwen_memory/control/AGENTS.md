@@ -24,7 +24,9 @@ Agent、文档项目、生命周期、认知层级、记忆分类及正文／标
 | `continuity_impl/` | 单写持久 Registry、事件与关系回执、构建/视图编排；内部 repository 辅助 |
 | `base.py` | `ControlOperator` 抽象基类 + `ControlOperatorType` 枚举；所有算子的自描述契约 |
 | `types.py` | 控制层数据类型（Channel/JobInfo/MemoryPatch/DeleteSelector/BatchWrite*/WriteTargets 等）+ 安全域 Action/Grant 兼容再导出，被本层所有文件及上游 `api/` 依赖 |
-| `engine.py` | `MemoryEngine` 抽象接口——跨层编排中枢，异步协程 |
+| `engine.py` | `MemoryEngine` 抽象接口——跨层编排中枢，异步协程；`supports_grouped_write` / `write_group` 为非抽象原语（默认逐条回退），内置三引擎覆盖 |
+| `executor.py` | `BlockingExecutor` 契约 + `ExecutorLane`（`llm`/`io`）+ `ExecutorProducer`；把阻塞 SDK 调用搬离事件循环，泳道分离防止 LLM 慢调用占满 IO 线程 |
+| `write_orchestrator.py` | `WriteOrchestrator` 编排契约 + `WriteTask` + `WriteOrchestratorProducer`（配置段 `write`）：位于命令服务与引擎之间，只做分组/切批/并发/加锁，不鉴权、不审计、不调模型 |
 | `pipeline.py` | `MemoryPipeline` 抽象接口——按记忆类型选择构建/查询 profile |
 | `lifecycle.py` | `LifecycleManager` 接口——状态流转（transition）与到期清扫（sweep） |
 | `governance.py` | `Governor` 接口——检视/血缘回溯/审计查询 |
@@ -37,7 +39,9 @@ Agent、文档项目、生命周期、认知层级、记忆分类及正文／标
 | `application/` | 按用例划分的 typed application ports，四个服务及个人聚合辅助模块均非算子（无 Producer、不执行 PEP、不接收 `identity`）。`command.py`：`MemoryCommandService` 包装 Engine 的 write/batch_write/update/delete/evolve/evolve_v2/start_background_jobs，并提供 `batch_write_aligned` / `collect_batch_result` 做鉴权后的下标回填。`query.py`：`MemoryQueryService` 包装 recall/list/get、候选范围枚举与鉴权元数据读取；调用方须先做可信上下文预检。`space_lifecycle.py`：`SpaceLifecycleService` 先 `begin_delete` 标 `DELETING`，再 purge + `SpaceManager.delete` + `deleted_counts` 汇总；第二步失败抛 `PartialFailureError`，重试入口仍是 `delete_space`。`governance_service.py`：`GovernanceService` 包装 Governor 的 inspect/trace/audit。`personal_memory.py`：使用上游授权回调聚合绑定范围列表和检索结果，限制聚合规模并检测分页变更。由已注入的算子组成，不引入 Service Locator；SDK/HTTP/MCP 经 `LocalMemoryAPI` 共用。带实现的模块收在子包而不放顶层，见「文件关系」第一条 |
 | `membership.py` | `MembershipResolver` 接口——读空间授权事实（成员表与归属登记）供鉴权点判定，带短 TTL 缓存；正查与反查都只依赖 `SpaceManager` 一个契约 |
 | `__init__.py` | 公开导出全部接口类与数据类型 |
-| `engine_impl/` | MemoryEngine 实现目录：`in_memory_engine.py`（本地最小实现）/ `cloud_engine.py`（云侧 message_type/profile 编排）/ `evolve_dispatch.py`（evolve 纯执行共用件：candidate→resolver 装配 + 一次性 EvolveJob 提交；三态分发 / 持续授权在 API 层 DreamingCoordinator）/ `dreaming_registry.py`（定时任务 KV 注册表：`created_by` 持续授权档案、`state + generation` 注销/旧代隔离状态、单实例锁 acquire/release；由 API 层 DreamingCoordinator 持有驱动） |
+| `engine_impl/` | MemoryEngine 实现目录（三引擎均混入 `GroupedWriteMixin`，构造时接受可选 `executor`）：`in_memory_engine.py`（本地最小实现）/ `cloud_engine.py`（云侧 message_type/profile 编排）/ `evolve_dispatch.py`（evolve 纯执行共用件：candidate→resolver 装配 + 一次性 EvolveJob 提交；三态分发 / 持续授权在 API 层 DreamingCoordinator）/ `dreaming_registry.py`（定时任务 KV 注册表：`created_by` 持续授权档案、`state + generation` 注销/旧代隔离状态、单实例锁 acquire/release；由 API 层 DreamingCoordinator 持有驱动） |
+| `engine_impl/grouped_write.py` | 三 Engine 共用的写入编排 mixin：`write` 拆成 `_prepare`（构造 payload/ingest/选组件）+ `_execute_group`（分组执行），并提供 `write_group` 原语与 `supports_grouped_*` 查询助手。分组键 `(载体 scope, stream_id)`；infer 段合并抽取、直写段批量建索引；prepare、逐项 build、middle 子路径各自按条隔离失败；`UNKNOWN`/缺失回执映射为领域异常 `WriteIncompleteError`（单条与批量入口同类型） |
+| `write_orchestrator_impl/` | 编排实现目录：`signals.py`（降级事件枚举 + `WriteSignals` 装配实例级线程安全计数 + trace；引擎与编排器经装配共享同一实例）、`segments.py`（分组/锁段/切批纯函数）、`grouped.py`（缺省实现：组间有界并发、段内合并）、`sequential.py`（兼容实现：逐条保序、fail-fast 时逐项提交，仍加锁）。注册名即配置 `write.orchestrator` 的取值；`segments.py` 还负责装配期锁范围校验（按实际使用的锁）。`grouped.py` 的 `health()` 只反映锁路径的最近故障：取锁成功即清除，引擎/存储异常不污染；非领域异常写 ERROR 日志并在回执里屏蔽原文 |
 | `engine_impl/schema_update_support.py` | 两 Engine 共用的无 I/O 候选判断、Schema 能力/路由校验及更新委托；通过 Engine 注入的 Evolver/IndexBuilder 解析回调取得组件，不直接访问 Engine 受保护成员；普通更新跳过准备阶段，算法在构建层，计划授权在 API，异步入口将同步构建工作放入工作线程 |
 | `engine_impl/temporal_support.py` | 三 Engine 共用的时间比较真源：`valid_at`（as_of 与 t_valid/t_invalid 的有效期判定，含「非正有效期窗口」引擎特例）、`valid_sort_key`（历史版本按 UTC 生效时间排序，缺值为最早时间哨兵）、`matches_delete_selector`（delete 选择器逐条命中判定）与 `matches_update_selector`（batch_update 候选逐条命中判定，与 delete 同构；三引擎共用唯一实现）。跨「入参时间」与「记忆时间」的比较一律双侧过 `common/time_utils.as_utc` 后再比——契约层与 SDK 直调都接受带/不带时区后缀两种合法 ISO 形态，落盘也原样保留形态，naive 与 aware 裸比较恒抛 `TypeError`；naive 按 UTC 解释，与 `common/type_def/retrieval_filter.valid_at` 同约定，且不改写落盘值 |
 | `*_impl/` | 每个算子对应一个实现子目录，含具体实现类；Producer 定义在顶层接口文件，具体实现用 `@XProducer.register(...)` 自注册 |

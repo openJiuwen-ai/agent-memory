@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import NamedTuple
@@ -81,6 +82,8 @@ from jiuwen_memory.construction.evolver import (
     EvolveRequest,
     EvolveResult,
     EvolverProducer,
+    ExtractNotCommittedError,
+    GroupedExtractResult,
 )
 from jiuwen_memory.construction.evolver_impl.conflict_consolidator import ConflictConsolidator
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
@@ -123,6 +126,40 @@ from jiuwen_memory.storage.store_manager import (
 from jiuwen_memory.storage.types import Edge, IndexRemoveMode, IndexWriteMode, Node
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# 合并抽取的来源归属（F10 决策 6）
+#
+# ``evolve_grouped`` 运行期间绑定两个上下文变量：一个记录「本批是否有派生记忆开始
+# 落盘」（决定失败能否包装成 ``ExtractNotCommittedError``），一个收集「派生 id →
+# 去重前来源 unit id」。只在当前调用栈可见，不引入实例状态，多线程并发安全。
+# ---------------------------------------------------------------------------
+
+_PERSIST_STARTED: ContextVar[list[bool] | None] = ContextVar(
+    "grouped_extract_persist_started", default=None
+)
+_GROUPED_SOURCES: ContextVar[dict[str, list[str]] | None] = ContextVar(
+    "grouped_extract_sources", default=None
+)
+
+
+def _mark_persist_started() -> None:
+    """标记本批已有派生记忆进入落盘阶段；此前失败才可安全重放。"""
+    flag = _PERSIST_STARTED.get()
+    if flag is not None:
+        flag[0] = True
+
+
+def _record_source(unit_id: str, provenance: list[str]) -> None:
+    """把派生记忆的来源 unit 记到它最终落盘的 id 上（仅在合并抽取期间生效）。"""
+    sources = _GROUPED_SOURCES.get()
+    if sources is None:
+        return
+    recorded = sources.setdefault(unit_id, [])
+    for source_id in provenance:
+        if source_id not in recorded:
+            recorded.append(source_id)
+
 
 # ---------------------------------------------------------------------------
 # 去重判定 Prompt
@@ -460,7 +497,10 @@ class OrchestratingEvolver(Evolver):
 
     def _persist(self, units: list[MemoryUnit]) -> list[str]:
         # 记忆写入只经 IndexBuilder：正排与派生索引由其统一编排。
+        _mark_persist_started()
         self._index.build(units)
+        for unit in units:
+            _record_source(unit.id, unit.provenance)
         return [u.id for u in units]
 
     def _persist_graph(self, units: list[MemoryUnit], relations: list[Relation]) -> None:
@@ -842,7 +882,9 @@ class OrchestratingEvolver(Evolver):
             # existing_unit 是已建索引的记忆，经 IndexBuilder 统一回写。
             if snapshot is not None:
                 existing_unit.hierarchy = snapshot
+            _mark_persist_started()
             self._index.update([existing_unit])
+            _record_source(existing_unit.id, candidate.provenance)
             result.created_units[:] = [
                 existing_unit if unit.scope == existing_unit.scope and unit.id == existing_unit.id
                 else unit for unit in result.created_units
@@ -929,9 +971,13 @@ class OrchestratingEvolver(Evolver):
             ):
                 raise ConflictError("memory", candidate.id, "candidate id reused for another fact")
             # Repair derived indexes after a partial build, keeping the persisted decision.
+            _mark_persist_started()
             self._index.update([stored])
+            _record_source(stored.id, candidate.provenance)
             return stored
+        _mark_persist_started()
         self._index.build([candidate])
+        _record_source(candidate.id, candidate.provenance)
         return candidate
 
     def _dedup_single(
@@ -1543,6 +1589,47 @@ class OrchestratingEvolver(Evolver):
                 "Evolver._route: derived=%d kept=%d spaces=%s", len(derived), len(kept), spaces
             )
         return kept
+
+    def supports_grouped_extract(self) -> bool:
+        """默认引擎支持整批抽取并回传逐条来源（F10 决策 5）。
+
+        子类若改写了 EXTRACT 落盘路径且不能保证「派生 id → 去重前来源」可追踪，
+        必须覆盖本方法返回 ``False``。
+        """
+        return True
+
+    def evolve_grouped(self, units: list[MemoryUnit]) -> GroupedExtractResult:
+        """一次 EXTRACT 抽取整批，并回传派生记忆的来源归属（F10 决策 6）。
+
+        抽取阶段（``_persist`` 之前）失败时抛 :class:`ExtractNotCommittedError`，
+        调用方可将本批退回逐条重跑；一旦有任何派生记忆开始落盘，原异常原样抛出——
+        此时重放可能产生重复。
+        """
+        sources: dict[str, list[str]] = {}
+        started = [False]
+        started_token = _PERSIST_STARTED.set(started)
+        sources_token = _GROUPED_SOURCES.set(sources)
+        try:
+            try:
+                result = self._evolve_extract(units)
+            except Exception as exc:
+                if not started[0]:
+                    raise ExtractNotCommittedError(
+                        f"grouped extract committed nothing before failing: {exc}"
+                    ) from exc
+                raise
+        finally:
+            _GROUPED_SOURCES.reset(sources_token)
+            _PERSIST_STARTED.reset(started_token)
+        source_ids = {unit.id for unit in units}
+        attribution = {
+            unit_id: [source_id for source_id in ids if source_id in source_ids]
+            for unit_id, ids in sources.items()
+        }
+        return GroupedExtractResult(
+            result=result,
+            sources={unit_id: ids for unit_id, ids in attribution.items() if ids},
+        )
 
     def _evolve_extract(self, units: list[MemoryUnit]) -> EvolveResult:
         """EXTRACT：抽取派生候选 → 分层标注 → 去重判定+落盘（_dedup_batch）。

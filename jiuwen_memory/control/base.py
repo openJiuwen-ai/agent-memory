@@ -28,6 +28,8 @@ from enum import Enum
 class ControlOperatorType(str, Enum):
     ENGINE = "engine"
     PIPELINE = "pipeline"
+    EXECUTOR = "executor"
+    WRITE_ORCHESTRATOR = "write_orchestrator"
     LIFECYCLE = "lifecycle"
     GOVERNOR = "governor"
     PERMISSION = "permission"
