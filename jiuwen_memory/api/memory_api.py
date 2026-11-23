@@ -402,10 +402,13 @@ class MemoryAPI(ABC):
         hierarchy_options: HierarchyComposeOptions | None = None,
         reuse_existing: bool = False,
     ) -> str | None:
-        """触发演进（extract/associate/consolidate/forget）：``scope`` 为演进
+        """触发内容演进：``scope`` 为演进
         目标范围、``security`` 为本次请求的安全上下文（本层据二者鉴权）；返回任务
         id，状态用 :meth:`job_status` 查询。索引维护不在此——它随 add/update/delete
         自动跟进。
+
+        EXPERIENCE_CONSOLIDATE 专用于经验整理与技能沉淀，候选限定为 experience，
+        使用 engine.params.mode_evolvers 显式绑定的处理实例；不逐条选择写入 profile。
 
         HIERARCHY 使用 hierarchy_options 和 reuse_existing 显式建树，不接受普通模式的
         candidate/dreaming/interval。树开关关闭时忽略树选项并返回成功跳过任务；基础请求

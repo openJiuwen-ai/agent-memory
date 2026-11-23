@@ -70,6 +70,10 @@ class MemoryClass:
 
     ``members`` 与 ``sanitized`` 首版无运行时使用点但保留：两者是加载期第 2 条校验的输入，
     删掉即等于删掉「``cross_user`` 类别不得对全组织敞开」这条防护。
+
+    ``no_fallback`` 声明该类别不参与回落（mem2.0 §2.3）：落点解析不出的候选判为丢弃而非
+    改落 fallback——经验条目落进写入者的个人空间等于跨作者串味，落错不如不落。声明它的
+    类别空间名模板可为无占位符常量（经验空间不按 owner 分空间）。
     """
 
     name: str
@@ -81,6 +85,7 @@ class MemoryClass:
     members: str = ""
     sanitized: bool = False
     fallback: bool = False
+    no_fallback: bool = False
     tag_key: str = ""
 
 
@@ -139,6 +144,24 @@ class SpaceNaming:
 
     def fallback_space(self, coords: Mapping[str, str]) -> str:
         return self.render(self.fallback_class, coords)
+
+    def is_fallback_space(self, space: str) -> bool:
+        """空间名是否由 fallback 类别的模板渲染（写入者自己的空间的形态）。
+
+        模板 ``u_{user}`` 渲出的 ``u_alice`` 命中、共享空间名不命中。占位符段
+        按「非空且不含路径分隔符」匹配（与 :meth:`render` 的取值域一致——空值
+        渲染不出空间）。无占位符的常量模板退化为全等比较。``fallback_class``
+        未声明时恒不命中（没有可回落的空间形态）。
+        """
+        template = self.template_for(self.fallback_class)
+        if not template or not space:
+            return False
+        # _PLACEHOLDER 带捕获组，split 的奇数下标是占位符名、偶数下标是字面量段。
+        literals = _PLACEHOLDER.split(template)[0::2]
+        if len(literals) == 1:
+            return space == template
+        pattern = "[^/]+".join(re.escape(part) for part in literals)
+        return re.fullmatch(pattern, space) is not None
 
 
 @dataclass(frozen=True)
@@ -398,6 +421,7 @@ def _parse_classes(raw: Any) -> tuple[MemoryClass, ...]:
                 members=_as_str(item.get("members")),
                 sanitized=_as_bool(item.get("sanitized")),
                 fallback=_as_bool(item.get("fallback")),
+                no_fallback=_as_bool(item.get("no_fallback")),
                 tag_key=_as_str(item.get("tag_key")),
             )
         )
@@ -526,8 +550,10 @@ def parse_route_table(raw: Mapping[str, Any] | None) -> RouteTable:
             raise ValidationError(
                 f"router: 类别 {item.name!r} 的 space_template 引用了未声明的坐标键 {unknown}"
             )
-        # 10 空间名模板必须引用该类别的 owner
-        if not item.owner or item.owner not in placeholders:
+        # 10 空间名模板必须引用该类别的 owner。no_fallback 类别豁免：经验空间不按
+        # owner 分空间（全部作者共用一个经验空间，条目作者的区分靠 author_principal），
+        # 模板是无占位符常量。
+        if not item.no_fallback and (not item.owner or item.owner not in placeholders):
             raise ValidationError(
                 f"router: 类别 {item.name!r} 的 space_template 必须引用其 owner "
                 f"{item.owner!r}——否则同一归属维的多个实体落进同一个空间"
@@ -562,6 +588,12 @@ def parse_route_table(raw: Mapping[str, Any] | None) -> RouteTable:
     if fallback.record_only:
         raise ValidationError(
             f"router: fallback 类别 {fallback.name!r} 不得 record_only——它须有自己的空间"
+        )
+    # 15 fallback 类别不得声明 no_fallback：它本身就是回落落点，再声明"不回落"
+    # 是自相矛盾——两种取值都生效时该类别既无处可落又声明为兜底。
+    if fallback.no_fallback:
+        raise ValidationError(
+            f"router: fallback 类别 {fallback.name!r} 不得声明 no_fallback——它就是回落落点"
         )
 
     for dim in narrow_dims:
@@ -714,6 +746,18 @@ def build_decision(
         candidate = ctx.candidate_of(space) if space else None
         if candidate is not None:
             target = candidate
+        elif item.no_fallback:
+            # no_fallback 类别（§2.3）：渲染不出或不在候选集时丢弃，不改落 fallback——
+            # 经验条目落写入者的个人空间等于跨作者串味，落错不如不落。
+            return _discard_decision(
+                unit,
+                item,
+                reason or (
+                    "no_fallback class space not renderable from coords"
+                    if not space
+                    else "no_fallback class space outside the authorized candidate set"
+                ),
+            )
         else:
             resolved_class = _fallback_class_name(ctx, resolved_class)
             reason = reason or "class space not in the authorized candidate set"
@@ -765,6 +809,11 @@ def enforce_sanitized(decision: RouteDecision, ctx: RouteContext) -> RouteDecisi
     for key in KERNEL_COORD_KEYS:
         value = str(ctx.coords.get(key, "") or "").strip()
         if value and value in content:
+            if target.no_fallback:
+                # no_fallback 类别（§2.3）：脱敏命中同样丢弃，不改落 fallback。
+                return _discard_decision(
+                    decision.unit, target, "sanitized check hit a principal identifier"
+                )
             logger.warning(
                 "Router.enforce_sanitized: class=%s 命中主体标识 coord=%s，改落 fallback",
                 decision.memory_class,
@@ -788,14 +837,40 @@ def _fallback_decision(unit: MemoryUnit, ctx: RouteContext, reason: str) -> Rout
     )
 
 
+def _discard_decision(unit: MemoryUnit, item: MemoryClass, reason: str) -> RouteDecision:
+    """no_fallback 类别的丢弃判定：候选不落盘，``reason`` 进降级计数（§2.3）。
+
+    ``memory_class`` 记命中的类别名而非 fallback 类别名——落点追溯要的是「判成了哪一类
+    所以被丢弃」，丢弃形态下 scope 不参与落盘，仅保持 :class:`RouteDecision` 的结构完整。
+    """
+    logger.warning(
+        "Router: no_fallback 类别 %s 的候选判为丢弃：unit=%s reason=%s",
+        item.name,
+        unit.id[:8] if unit is not None else "-",
+        reason,
+    )
+    return RouteDecision(
+        unit=unit,
+        memory_class=item.name,
+        discarded=True,
+        reason=reason,
+    )
+
+
 def route_batch(
     router: Router | None, units: Sequence[MemoryUnit], ctx: RouteContext
 ) -> list[RouteDecision]:
     """判定一批单元并套用两个落盘不变量，返回与输入等长的结果。
 
+    ``system_metadata.memory_class`` 已有值的候选（抽取算子写好的类别断言，如经验条目）
+    直接按判定表取落点，不交判定器（§2.3）：类别的落点由配置决定，再调模型判一遍同一个
+    问题是拿随机结论覆盖确定性断言；收窄维判为空——抽取算子不判定收窄维。其余候选仍交
+    判定器。
+
     四种情形一律落 fallback，不阻断写入：未装配判定器、判定抛异常、判定返回的条数与输入
     不符、判定给出的落点不在候选集内。最后一种是落点约束的兜底——「判定不得扩权」这条不
-    靠实现自觉。
+    靠实现自觉。命中类别的 ``no_fallback`` 声明把后三种情形从「落 fallback」改为「丢弃」
+    （§2.3）：经验条目落写入者的个人空间等于跨作者串味，落错不如不落。
 
     四种情形的 ``reason`` 各不相同。合成同一句之后，「本部署没配判定器」与「判定器故障」
     在结论上不可区分，而两者的处置不同：前者是部署形态、fallback 就是预期落点，后者要查
@@ -803,45 +878,71 @@ def route_batch(
     """
     if not units:
         return []
-    decisions: list[RouteDecision] | None = None
-    reason = "router not configured"
-    if router is not None:
-        try:
-            raw = router.route(list(units), ctx)
-            if len(raw) == len(units):
-                decisions = list(raw)
-            else:
-                reason = f"router returned {len(raw)} decisions for {len(units)} units"
+    by_index: dict[int, RouteDecision] = {}
+    pending: list[tuple[int, MemoryUnit]] = []
+    for index, unit in enumerate(units):
+        declared = str((unit.system_metadata or {}).get(MEMORY_CLASS_KEY, "") or "")
+        if declared:
+            by_index[index] = build_decision(unit, declared, (), ctx)
+        else:
+            pending.append((index, unit))
+
+    routed: dict[int, RouteDecision] = {}
+    if pending:
+        routed_all: dict[int, RouteDecision] | None = None
+        reason = "router not configured"
+        if router is not None:
+            try:
+                raw = router.route([unit for _, unit in pending], ctx)
+                if len(raw) == len(pending):
+                    routed_all = {index: item for (index, _), item in zip(pending, raw)}
+                else:
+                    reason = f"router returned {len(raw)} decisions for {len(pending)} units"
+                    logger.warning(
+                        "Router.route 返回 %d 条、输入 %d 条，未判定候选落 fallback",
+                        len(raw),
+                        len(pending),
+                    )
+            except Exception as exc:  # noqa: BLE001 —— 判定失败不阻断写入
+                reason = f"router raised {type(exc).__name__}: {exc}"
                 logger.warning(
-                    "Router.route 返回 %d 条、输入 %d 条，全批落 fallback",
-                    len(raw),
-                    len(units),
+                    "Router.route 失败，未判定候选落 fallback：error_type=%s",
+                    type(exc).__name__,
                 )
-        except Exception as exc:  # noqa: BLE001 —— 判定失败不阻断写入
-            reason = f"router raised {type(exc).__name__}: {exc}"
-            logger.warning(
-                "Router.route 失败，全批落 fallback：error_type=%s",
-                type(exc).__name__,
-            )
-    if decisions is None:
-        decisions = [_fallback_decision(unit, ctx, reason) for unit in units]
+        if routed_all is None:
+            routed_all = {
+                index: _fallback_decision(unit, ctx, reason) for index, unit in pending
+            }
+        routed = routed_all
+
+    combined = dict(by_index)
+    combined.update(routed)
 
     applied: list[RouteDecision] = []
-    for unit, decision in zip(units, decisions):
+    for index, unit in enumerate(units):
+        decision = combined.get(index)
         if decision is None:
             decision = _fallback_decision(unit, ctx, "router returned no decision")
         decision = replace(decision, unit=unit)
         if not decision.discarded and ctx.candidate_of(decision.scope.space) is None:
-            logger.warning(
-                "Router.route: 落点 scope=%s 不在候选集内，改落 fallback",
-                scope_for_log(decision.scope),
-            )
-            decision = replace(
-                decision,
-                scope=ctx.fallback,
-                memory_class=_fallback_class_name(ctx, decision.memory_class),
-                reason="target space outside the authorized candidate set",
-            )
+            item = ctx.class_of(decision.memory_class)
+            if item is not None and item.no_fallback:
+                # 复判是对绕过 build_decision 自行给落点的实现的兜底；no_fallback 类别
+                # 越界即丢弃，不落 fallback（§2.3）。
+                decision = _discard_decision(
+                    unit, item, "target space outside the authorized candidate set"
+                )
+            else:
+                logger.warning(
+                    "Router.route: 落点 scope=%s 不在候选集内，改落 fallback",
+                    scope_for_log(decision.scope),
+                )
+                decision = replace(
+                    decision,
+                    scope=ctx.fallback,
+                    memory_class=_fallback_class_name(ctx, decision.memory_class),
+                    reason="target space outside the authorized candidate set",
+                )
         decision = enforce_sanitized(decision, ctx)
         decision = replace(decision, tags=with_all_tag_keys(decision.tags, ctx))
         applied.append(decision)

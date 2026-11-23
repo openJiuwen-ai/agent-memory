@@ -51,7 +51,8 @@ Abstractor、Classifier、Associator、IndexBuilder、Router、Dedup、LayerAnno
 
 ### retrieval/ — 检索层
 
-Retriever 编排 QueryParser → DomainStore 召回/真源物化与复核 → Fuser → Reranker → Discloser。
+Retriever 编排 QueryParser → DomainStore 召回/真源物化与复核 → Fuser → Reranker →
+可选 Selector → Discloser；具名检索流程可配置固定记忆类型范围。
 Recaller 属于 storage 数据面内部，不是 retrieval 的公共算子。
 
 ### control/ — 编排层

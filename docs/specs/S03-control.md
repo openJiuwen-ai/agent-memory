@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-11-21 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F10-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/construction/F13-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
@@ -106,7 +106,7 @@ class ControlOperator(ABC):
 
 ### MemoryEngine（`engine.py`）
 
-编排接口层各语义的中枢。共同依赖 Ingestor、Classifier、IndexBuilder、Evolver、Retriever、Scheduler、LifecycleManager，可选注入 MemoryPipeline 做按记忆类型或 message_type 的 profile 选择。存储面按实现区分：`InMemoryEngine` 注入 KVStore 并沿用 `load_units`/`list_units` helper；`CloudEngine` 注入 DomainStore 作为 MemoryUnit 领域真源读入口。Evolver 有两个平级注册实现：`OrchestratingEvolver`（注册名 `orchestrating`）与其子类 `DynamicEvolver`（注册名 `dynamic`，EXTRACT 走 extract→consolidate→reflect→落盘）；装配或 profile 选择决定实际路径。
+编排接口层各语义的中枢。共同依赖 Ingestor、Classifier、IndexBuilder、Evolver、Retriever、Scheduler、LifecycleManager，可选注入 MemoryPipeline 做按记忆类型或 message_type 的 profile 选择。存储面按实现区分：`InMemoryEngine` 注入 KVStore 并沿用 `load_units`/`list_units` helper；`CloudEngine` 注入 DomainStore 作为 MemoryUnit 领域真源读入口。Evolver 有两个平级注册实现：`OrchestratingEvolver`（注册名 `orchestrating`）与其子类 `DynamicEvolver`（注册名 `dynamic`，EXTRACT 走 extract→consolidate→reflect→落盘）；装配或 profile 选择决定实际路径。`MemoryEngine` 另暴露抽象 property `pipeline -> MemoryPipeline | None`（未注入为 None）——供 API 层读取路由键名并校验空间绑定 profile 的可达性（F08），不新增行为。
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
@@ -248,6 +248,9 @@ class PipelineBinding:
 class MemoryPipeline(ControlOperator):
     def select_for_write(units: list[MemoryUnit]) -> PipelineBinding
     def select_for_recall(query: RetrievalQuery) -> PipelineBinding
+    @property
+    def route_key(self) -> str                 # 路由键名（F09 新增）
+    def has_profile_for(memory_type: str) -> bool
 ```
 
 默认 `metadata` 实现的配置形态：
@@ -276,6 +279,8 @@ pipeline:
 
 路由规则：
 
+- `route_key`（缺省 `memory_type`）：查询侧从 `RetrievalQuery.extensions[route_key]` 读路由值；经验与技能显式类型优先于配置的通用路由键。
+- `has_profile_for(value)`：该路由值是否有对应 profile。引擎在选 profile 前用它核对 `NO_FALLBACK_MEMORY_TYPES`（`pipeline.py` 上的 `frozenset({"experience"})`，不回落类别）——不回落的取值没有 profile 即返回参数错误而非静默落默认。
 - 写入侧读取 `MemoryUnit.system_metadata[route_key]`。
 - 查询侧优先读取 `RetrievalQuery.extensions[route_key]`，其次从规范化
   `FilterExpr` 提取逻辑上强制成立的 `system_metadata.<route_key>` 唯一等值；
@@ -388,6 +393,8 @@ delegate，避免调用方理解授权记录应落在哪个后端。路由值只
 | `validate_shutdown` | `(*, wait: bool = True) -> None` | 关闭前检查调用上下文，不改变生命周期状态；异步实现拒绝在所属循环内同步等待自身关闭，供 Runtime 在启动后台收尾前 fail fast。默认无约束 |
 | `shutdown` | `(*, wait: bool = True) -> None` | 幂等关闭：异步调度器立即拒绝新提交并停止新一轮触发，取消排队任务，通知在飞任务协作式收尾。`wait=True` 等待任务、默认线程池及私有循环线程退出；`wait=False` 安排后台收尾，之后可再次用 True 等待。任务历史保留，持久化注册表不受影响。同步实现默认无后台资源可关 |
 
+启用 Dreaming 主备时，实例共享持久化任务注册表与分布式租约。协调器完成恢复后才能受理周期注册与注销，失锁时取消本机驱动并重新参与竞选。Runtime 关闭时先等待竞选退出，再收尾调度任务，最后释放租约。
+
 **关闭与任务终态**：排队而未执行的任务取消；在飞任务正常返回则保持 SUCCEEDED，响应
 协作式取消提前结束则为 CANCELLED，真实执行错误仍为 FAILED。进入关闭状态本身不覆盖
 任务的实际执行结果，已有结果 ID 保留。
@@ -399,6 +406,9 @@ delegate，避免调用方理解授权记录应落在哪个后端。路由值只
 需要不等待收尾时使用 `wait=False`，其返回不代表在飞调用已停止，不得提前释放依赖资源。
 
 **定时去重键**：`Job.schedule_key`（`jobs.py`，默认任务类名）——Scheduler 判定同 scope 内"是不是同一个任务"**只依赖该通用键**，不识别具体 Job 类的业务字段；需要区分业务身份的实现覆写（EvolveJob 含 mode：同 scope 下 EXTRACT 与 FORGET 定时器互不覆盖）。
+
+**周期触发条件**：异步定时调度器在入队前调用已到期任务的 `Job.ready_for_tick()`，默认允许。
+返回 false 或检查异常时保留原到期时间，下次轮询重新检查。检查在生命周期锁外执行，返回后重新校验任务仍有效。
 
 **周期取消边界**：父定时器取消或永久停摆后，其既有排队实例和已关联派生任务在执行边界检查共享取消信号，转为 CANCELLED；不得继续开始新的演进桶。EvolveJob 在候选解析前、每桶派发前以及工作线程实际调用 Evolver 前检查，运行中同步调用可以结束。同步调用返回后必须先合并 `EvolveResult` 再响应取消；此时 CANCELLED 的 `JobInfo.detail` 保留变更 ID，并以 `partial_write`、`completed_groups`、`retry_requires_reconciliation` 明示部分写入与人工/上层核对要求。取消不会终止同 scope 的消费循环或影响无关任务。注销后重新注册以持久化 `generation` 隔离旧代驱动；注册状态为 `CANCEL_REQUESTED` 时不得产生新演进，恢复只收口、不重提。协调器不得在短状态锁内调用阻塞式 `Scheduler.cancel/status/submit`。该机制不是存储写入 fencing，检查与同步调用之间不提供跨实例原子性。
 
@@ -550,7 +560,7 @@ MaxP、展开上限及预算由 S04 定义，不从尚未实现的策略键推�
 | `DeleteSelector` | dataclass | unit_ids / scope / tags / before / mode(DeleteMode) |
 | `PrincipalPath` | 枚举 | USER_AGENT / AGENT_USER |
 | `SpaceStatus` | 枚举 | ACTIVE / FROZEN / ARCHIVED / DELETING / DELETED |
-| `SpacePolicy` | dataclass | require_space / principal_path / storage_isolation_strategy / retention / quotas / index_profiles / pipeline_profiles |
+| `SpacePolicy` | dataclass | require_space / principal_path / storage_isolation_strategy / retention / quotas / index_profiles / pipeline_profiles（兼容配置字段）/ write_mode（`any` 缺省 / `derived_only` 只接受派生写入——derived_only 下 `get`/`list` 在 API 层改判为 UPDATE 并关闭「本人所写」附加集合，只对 editor 放行，见 S02 不变量 24） |
 | `SpaceSpec` | dataclass | org / space / display_name / principal_path / policy / metadata |
 | `SpaceInfo` | dataclass | org / space / display_name / status / principal_path / policy / metadata / created_at / archived_at |
 | `SpacePatch` | dataclass | display_name / status / principal_path / policy / metadata |

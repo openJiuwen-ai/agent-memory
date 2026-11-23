@@ -339,6 +339,35 @@ class RecordingLLM(LLM):
         return response
 
 
+class ScriptedLLM(LLM):
+    """ScriptedLLM：按调用序返回预排响应，记录每次调用供断言。
+
+    响应用完后再调用抛 ``AssertionError``（测试编排少了响应，比静默循环更快暴露）；
+    响应可以是字符串，也可以是 ``Exception`` 实例——抛出以测重试与失败路径。
+    """
+
+    def __init__(self, responses: list[str | Exception] | None = None) -> None:
+        self._responses = list(responses or [])
+        self.calls: list[list[ChatMessage]] = []
+
+    def plugin_type(self):
+        from jiuwen_memory.common.base import PluginType
+
+        return PluginType.LLM
+
+    def health(self) -> None:
+        return None
+
+    def chat(self, messages: list[ChatMessage], **options: object) -> str:
+        self.calls.append(list(messages))
+        if not self._responses:
+            raise AssertionError("ScriptedLLM: no scripted response left")
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
 class SimpleTokenizer(Tokenizer):
     """SimpleTokenizer：按空格和标点分词。"""
 

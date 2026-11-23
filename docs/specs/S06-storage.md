@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-21 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -31,6 +31,7 @@ KVStore 增量提供非抽象 `compare_exchange(scope, key, expected, replacemen
 缺失、过期、变化返回 false，不创建记录。无法提供原子性时明确报不支持，禁止读后
 普通 update/delete 兜底。`migration_identity()` 返回仅供维护去重的物理位置身份，
 不能输出连接秘密。既有 ABC 抽象方法集合不变。
+加密 KV 对调用方比较明文，再对底层原始密文执行原子条件更新或删除。
 SQLite 的 insert 在数据库写事务中判断缺失并以唯一主键插入，不能用 REPLACE 覆盖竞争
 写入；CAS 的有效期时钟在实例锁与 SQLite 写锁取得后采样，保留原绝对到期时间。
 
@@ -373,7 +374,7 @@ TTL。未声明能力的后端拒绝调用，禁止用无锁 get/update 模拟�
 | `raw_kv_store` | 必填，指向被装饰的 raw KVStore 具名实例或内联配置；不得指向当前 encrypted 实例自身 |
 | `cryptography` | 必填，指向 `common.security.cryptography.CryptographyProvider` 具名实例或内联配置 |
 
-AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key` 与 `purpose`。`purpose` 由 key 前缀推导：`/memory/` 为 `memory_unit`，`/messages/` 为 `raw_message`，其他为 `kv_value`。
+AAD 版本当前为 `1`，绑定 `scope(org/space/user/agent/session)`、KV `key` 与 `purpose`。`purpose` 由 key 前缀推导：`/memory/` 为 `memory_unit`，`/messages/` 与 `/trajectories/` 为 `raw_message`（轨迹记录与对话原文同为「对话原文」性质，含用户消息明文），其他为 `kv_value`。
 
 ### FulltextStore（`fulltext.py`）
 
@@ -554,8 +555,12 @@ ID 限制的向量召回路径保持不变。
 ### MarkdownStore / DocumentShadowIndex（文档记忆真源，F08）
 
 文档模式（`globals.write_document=true`）的真源形态：`MarkdownStore` 是人类可读 markdown
-视图（`USER.md` / `MEMORY.md` / `daily_memory/日期.md`，按 `memory_class` + `project` 分流落盘），
-`DocumentShadowIndex` 是机器真源（单 sqlite 文件承载 `memory_unit` 全量 + `memory_fts` 倒排
+视图，`DocumentShadowIndex` 保存机器可读条目。领域 `list` 只从 shadow 读取，再执行
+过滤、计数、排序和分页；同时装配的 KV 端口不会扩大文档列表的数据源。该语义与文档
+`get/update/delete` 保持一致，不隐式承诺 Markdown/shadow 与 KV 的混合记忆读写。
+
+Markdown 文件包括 `USER.md` / `MEMORY.md` / `daily_memory/日期.md`，按
+`memory_class` + `project` 分流落盘。`DocumentShadowIndex` 是机器真源（单 sqlite 文件承载 `memory_unit` 全量 + `memory_fts` 倒排
 + `memory_vec` 向量三表同库，靠隐式 rowid 关联）。二者为 F08 新增的第八、第九 capability
 （MARKDOWN / DOCUMENT_SHADOW），仅文档模式装配，经 `manager.markdown(name)` / `manager.shadow_index(name)`
 取用，与其余七类同构暴露。`StorageCapability.namespace` / `port_method` 公开能力对应的
@@ -1062,3 +1067,13 @@ KV 是分片归属的唯一事实来源：只有分片 KV 在 `insert` 新的 `/
 团队单元使用 memory_class=team_memory。Shadow 将 memory_class/team 编译为 SQL 过滤；全文在截断前执行。
 向量中，单独或 AND 中的 `memory_class != team_memory` 不要求候选截断前过滤；没有其他 ID、类别、团队约束时，允许复用过采样候选后过滤，结果可能不足 top_k，不保证补取。类别等值、团队和 ID 等约束仍先筛选再计算距离；OR/NOT 组合沿用原路径。
 读文档通过内容 hash 找到单元后还须核对 md_filename；不同文件的相同内容不能扩展读取集合。看门狗、补偿和版本替换从同一规范路径恢复坐标。
+
+### 文档数据面的经验条目
+
+经验文档必须保留条目 ID、正文和重建影子索引所需的完整作用域。经验文档读写和索引重建
+使用 Markdown 根下的 `memory/experience/EXPERIENCE.md`，同一文件内所有条目必须属于同一组织和空间。
+文档数据面枚举作用域时由影子索引按记忆类型筛选；同时含经验和普通条目的作用域可出现在两个数据面。
+Swarm 内置 SDK 的经验文档模式将可用技能直接写入宿主技能库的 `SKILL.md`，由宿主发现并加载。
+经验文档数据面按完整作用域读写，普通文档列表不合并经验条目。
+经验 Markdown 写正文列表；同目录隐藏元数据文件记录条目顺序、ID、作用域和重建索引所需字段。
+读取和重建时配对校验；可唯一匹配剩余条目的 Markdown 删除会同步移除索引。

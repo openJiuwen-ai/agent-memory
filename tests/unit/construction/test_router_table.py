@@ -587,3 +587,191 @@ def test_a_record_only_class_without_a_tag_key_or_owner_is_rejected() -> None:
             }
         )
     assert "tag_key" in str(excinfo.value)
+
+
+# ====================================================================== #
+# no_fallback 类别与已带类别直取（mem2.0 §2.3）
+# ====================================================================== #
+
+from jiuwen_memory.common.type_def.memory import MEMORY_CLASS_KEY  # noqa: E402
+
+_EXPERIENCE_SPACE = "shared-experience"
+
+
+def _experience_config(**class_overrides) -> dict:
+    """标准三类之上追加经验类别：空间名模板为无占位符常量（不按 owner 分空间）。"""
+    experience = {
+        "name": "experience",
+        "owner": "user",
+        "space_template": _EXPERIENCE_SPACE,
+        "no_fallback": True,
+    }
+    experience.update(class_overrides)
+    config = _table_config()
+    classes = list(config["memory_classes"])
+    classes.append(experience)
+    config["memory_classes"] = classes
+    return config
+
+
+def _ctx_without_experience(table: RouteTable) -> RouteContext:
+    """候选集不含经验空间的上下文（鉴权未放行经验空间时的形态）。"""
+    resolved = {"user": "alice", "agent": "a1", "session": "s1"}
+    spaces = {
+        name: space
+        for name, space in table.naming.spaces(resolved).items()
+        if name != "experience"
+    }
+    return RouteContext(
+        coords=resolved,
+        candidates=tuple(Scope(org=ORG, space=s) for s in spaces.values()),
+        fallback=Scope(org=ORG, space=table.naming.fallback_space(resolved)),
+        classes=table.classes,
+        narrow_dims=table.narrow_dims,
+    )
+
+
+def test_no_fallback_class_parses_with_constant_space_template() -> None:
+    """第 10 条校验对 no_fallback 豁免：经验类别的模板可为无占位符常量。"""
+    table = parse_route_table(_experience_config())
+    item = table.class_of("experience")
+    assert item is not None and item.no_fallback is True, "no_fallback 声明解析"
+    assert item.space_template == _EXPERIENCE_SPACE, "常量模板保留"
+
+
+def test_constant_space_template_without_no_fallback_still_rejected() -> None:
+    """对照：普通类别声明无占位符常量模板仍触发第 10 条（否则同归属维实体挤进一个空间）。"""
+    config = _experience_config(no_fallback=False)
+    with pytest.raises(ValidationError, match="space_template 必须引用其 owner"):
+        parse_route_table(config)
+
+
+def test_fallback_class_cannot_declare_no_fallback() -> None:
+    """第 15 条校验：fallback 类别本身就是回落落点，再声明不回落自相矛盾。"""
+    config = _experience_config()
+    config["memory_classes"] = [
+        {
+            "name": "user_memory",
+            "owner": "user",
+            "space_template": "u_{user}",
+            "fallback": True,
+            "no_fallback": True,
+        },
+    ]
+    with pytest.raises(ValidationError, match="不得声明 no_fallback"):
+        parse_route_table(config)
+
+
+def test_no_fallback_class_lands_when_space_in_candidates() -> None:
+    table = parse_route_table(_experience_config())
+    ctx = _ctx(table)
+    unit = _unit("cp config/app.example.yaml config/app.yaml")
+    decision = build_decision(unit, "experience", (), ctx)
+    assert decision.scope == Scope(org=ORG, space=_EXPERIENCE_SPACE), (
+        "经验空间在候选集内时正常落点"
+    )
+    assert decision.memory_class == "experience", "类别名保留"
+    assert not decision.discarded, "未丢弃"
+
+
+def test_no_fallback_class_discarded_when_space_outside_candidates() -> None:
+    """经验空间不在候选集：判为丢弃而非落 fallback——落写入者个人空间等于跨作者串味。"""
+    table = parse_route_table(_experience_config())
+    ctx = _ctx_without_experience(table)
+    unit = _unit("cp config/app.example.yaml config/app.yaml")
+    decision = build_decision(unit, "experience", (), ctx)
+    assert decision.discarded is True, "no_fallback 类别越界即丢弃"
+    assert decision.memory_class == "experience", "丢弃时仍记命中类别名"
+    assert decision.reason, "丢弃原因进降级计数"
+
+
+def test_regular_class_still_falls_back_when_space_outside_candidates() -> None:
+    """对照：普通类别同样情形改落 fallback，不丢弃。"""
+    table = parse_route_table(_experience_config())
+    ctx = _ctx_without_experience(table)
+    ctx = RouteContext(
+        coords=ctx.coords,
+        candidates=(),  # 无任何候选
+        fallback=Scope(org=ORG, space="u_alice"),
+        classes=ctx.classes,
+        narrow_dims=ctx.narrow_dims,
+    )
+    unit = _unit("some project note")
+    decision = build_decision(unit, "user_memory", (), ctx)
+    assert not decision.discarded, "普通类别不丢弃"
+    assert decision.scope == Scope(org=ORG, space="u_alice"), "普通类别落 fallback"
+
+
+def test_route_batch_takes_declared_class_without_consulting_router() -> None:
+    """已带类别断言的候选直接按判定表取落点，不交判定器（§2.3）。"""
+    table = parse_route_table(_experience_config())
+    ctx = _ctx(table)
+    unit = _unit("cp config/app.example.yaml config/app.yaml")
+    unit.system_metadata[MEMORY_CLASS_KEY] = "experience"
+    router = _FixedRouter(RuntimeError("must not be called for declared units"))
+    decisions = route_batch(router, [unit], ctx)
+    assert len(decisions) == 1, "返回与输入等长"
+    assert decisions[0].scope == Scope(org=ORG, space=_EXPERIENCE_SPACE), (
+        "按判定表落点而非判定器"
+    )
+    assert not decisions[0].discarded, "正常落点不丢弃"
+    assert decisions[0].tags.get("project_id", "") == "", "收窄维判为空（抽取算子不判收窄维）"
+
+
+def test_route_batch_mixed_declared_and_pending_units() -> None:
+    """混合批次：带类别的直取，不带类别的仍交判定器。"""
+    table = parse_route_table(_experience_config())
+    ctx = _ctx(table, project="p1")
+    declared = _unit("cp config/app.example.yaml config/app.yaml")
+    declared.system_metadata[MEMORY_CLASS_KEY] = "experience"
+    pending = _unit("project note")
+    pending_answer = build_decision(pending, "long_term_memory", ("project_id",), ctx)
+    router = _FixedRouter([pending_answer], table)
+    decisions = route_batch(router, [declared, pending], ctx)
+    assert decisions[0].scope == Scope(org=ORG, space=_EXPERIENCE_SPACE), (
+        "带类别断言的候选按表落点"
+    )
+    assert decisions[1].memory_class == "long_term_memory", "未带类别的候选照常判定"
+    assert decisions[1].tags.get("project_id") == "p1", "判定器的收窄维仍生效"
+
+
+def test_route_batch_discards_no_fallback_class_on_bad_router_target() -> None:
+    """判定器自行给出越界落点且类别声明 no_fallback：复判丢弃，不落 fallback。"""
+    table = parse_route_table(_experience_config())
+    ctx = _ctx_without_experience(table)
+    unit = _unit("cp config/app.example.yaml config/app.yaml")
+    # 判定实现绕过 build_decision 自行给落点（越界空间）。
+    rogue = RouteDecision(
+        unit=unit,
+        scope=Scope(org=ORG, space="rogue-space"),
+        memory_class="experience",
+    )
+    decisions = route_batch(_FixedRouter([rogue], table), [unit], ctx)
+    assert decisions[0].discarded is True, "no_fallback 类别越界复判丢弃"
+    assert decisions[0].reason == "target space outside the authorized candidate set", (
+        "丢弃原因可区分"
+    )
+
+
+def test_enforce_sanitized_discards_no_fallback_class_on_identifier_hit() -> None:
+    """脱敏声明 + no_fallback：命中主体标识判丢弃，不改写不落 fallback（§2.3）。"""
+    table = parse_route_table(_experience_config(sanitized=True))
+    ctx = _ctx(table)
+    unit = _unit("deploy as alice to prod")
+    decision = build_decision(unit, "experience", (), ctx)
+    sanitized = enforce_sanitized(decision, ctx)
+    assert sanitized.discarded is True, "脱敏命中的 no_fallback 类别整条丢弃"
+    assert sanitized.reason == "sanitized check hit a principal identifier", (
+        "丢弃原因可区分"
+    )
+
+
+def test_enforce_sanitized_regular_class_falls_back_on_identifier_hit() -> None:
+    """对照：普通 sanitized 类别命中主体标识改落 fallback，不丢弃。"""
+    table = parse_route_table(_experience_config(sanitized=True))
+    ctx = _ctx(table)
+    unit = _unit("deploy as alice to prod")
+    decision = build_decision(unit, "user_memory", (), ctx)
+    sanitized = enforce_sanitized(decision, ctx)
+    assert not sanitized.discarded, "普通类别不丢弃"
+    assert sanitized.scope == ctx.fallback, "改落 fallback"

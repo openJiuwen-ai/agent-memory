@@ -21,6 +21,7 @@ import uuid
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -56,6 +57,7 @@ from jiuwen_memory.common.type_def import (
     is_retrieval_candidate,
     memory_key,
 )
+from jiuwen_memory.common.type_def.filter import FilterClause, FilterOp, and_merge
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
@@ -131,6 +133,7 @@ class CompositeDomainStore(DomainStore):
         preferred_pipeline: RetrievalPipeline,
         kv_name: str = "default",
         write_document: bool = False,
+        experience_partition: str = "",
     ) -> None:
         self._manager = manager
         self._preferred_pipeline = preferred_pipeline
@@ -143,6 +146,7 @@ class CompositeDomainStore(DomainStore):
         # true → 真源写影子索引 + md 人类视图，不写 KV；false → 仅写 KV。
         # markdown/shadow 端口是否装配与它绑定（manager 扫命名空间决定）。
         self._write_document = write_document
+        self._experience_partition = experience_partition
 
     @classmethod
     def for_manager(cls, manager: StoreManager, config: Any = None) -> CompositeDomainStore:
@@ -167,6 +171,7 @@ class CompositeDomainStore(DomainStore):
             preferred_pipeline=_parse_pipeline(config.get("preferred_retrieval_pipeline")),
             kv_name=resolve_name(config, "kv_store"),
             write_document=should_write_document(config.get(WRITE_DOCUMENT_KEY, False)),
+            experience_partition=config.get("experience_partition", ""),
         )
         domain_store.bind_recallers(_assemble_recallers(config, storage=manager))
         return domain_store
@@ -192,7 +197,7 @@ class CompositeDomainStore(DomainStore):
         约束；KV 路径（结构化记忆）不受影响。
         """
         for unit in units:
-            if not unit.segments:
+            if not unit.segments or unit.system_metadata.get("memory_type") == "experience":
                 continue
             content = unit.segments[0].content
             if content and "\n" in content:
@@ -230,7 +235,13 @@ class CompositeDomainStore(DomainStore):
 
     def scopes(self, **kwargs: Any) -> list[Scope]:
         if self.should_write_document():
-            return self._raw_shadow_index().scopes()
+            shadow = self._raw_shadow_index()
+            if self._experience_partition:
+                return shadow.scopes(
+                    memory_type="experience",
+                    exclude_memory_type=self._experience_partition != "experience",
+                )
+            return shadow.scopes()
         return self._kv().scopes()
 
     def add(
@@ -263,22 +274,29 @@ class CompositeDomainStore(DomainStore):
             md = self._raw_markdown()
             shadow = self._raw_shadow_index()
             with document_operation(md.root, shadow.write_lock_key, writing=True):
+                written = False
                 try:
                     md.write(scope, units)
+                    written = True
                     shadow.insert_units(scope, units)
                 except Exception as exc:
                     logger.error("doc add failed: %s", exc)
                     for u in units:
                         fn = (u.system_metadata or {}).get(MD_FILENAME_KEY, "")
                         c = u.segments[0].content if u.segments else ""
-                        if fn and c:
+                        is_experience = u.system_metadata.get("memory_type") == "experience"
+                        if fn and (written if is_experience else bool(c)):
                             try:
-                                md.remove_content(scope, fn, c)
+                                if is_experience:
+                                    md.change_experience(scope, u, None)
+                                else:
+                                    md.remove_content(scope, fn, c)
                             except Exception as comp_exc:
                                 logger.warning(
                                     "add 补偿失败 unit=%s: %s", u.id[:8], comp_exc
                                 )
                     raise
+
         else:
             # 非文档路径：KV 真源（原样）。
             kv = self._kv()
@@ -318,6 +336,8 @@ class CompositeDomainStore(DomainStore):
                     # 先取旧 unit 拿 old content + md_filename（replace_content 的定位锚与路径）。
                     olds = shadow.get_units(scope, [unit.id])
                     old = olds[0] if olds else None
+                    if old is None and unit.system_metadata.get("memory_type") == "experience":
+                        raise NotFoundError("memory_unit", unit.id)
                     if MD_TITLE_KEY in unit.system_metadata:
                         # 与文件标题使用同一单行值，后续更新才能用旧标题准确定位。
                         unit.system_metadata[MD_TITLE_KEY] = " ".join(
@@ -332,6 +352,13 @@ class CompositeDomainStore(DomainStore):
                     # lifecycle 投影列更新同口径（下方 line 见 remove_content 分支）。
                     # 对比使用 segments[0].content，与 md/影子索引 _content_of 同源。
                     if old is None:
+                        continue
+                    if old.system_metadata.get("memory_type") == "experience":
+                        try:
+                            md.change_experience(scope, old, unit)
+                        except Exception:
+                            shadow.update_units(scope, [old])
+                            raise
                         continue
                     old_content = old.segments[0].content if old.segments else ""
                     new_content = unit.segments[0].content if unit.segments else ""
@@ -488,6 +515,10 @@ class CompositeDomainStore(DomainStore):
                         if md_filename:
                             # 未命中（md 与索引漂移，如手改 md / 看门狗先删）返 False——不抛错，
                             # 索引侧已删，漂移交看门狗对账，避免 delete 因 md 异常而整体失败。
+                            if old.system_metadata.get("memory_type") == "experience":
+                                md.change_experience(scope, old, None)
+                                removed.append(old)
+                                continue
                             ok = md.remove_content(scope, md_filename, content)
                             if not ok:
                                 logger.warning(
@@ -550,6 +581,16 @@ class CompositeDomainStore(DomainStore):
         # （unit_id 当 key、unit_json 当 raw_bytes），无需区分来源。非文档维持原 KV.list 路径。
         if self.should_write_document():
             entries = self._raw_shadow_index().list_units(scope)
+            if self._experience_partition:
+                partition_entries = []
+                for key, raw in entries:
+                    unit = load_memory_unit(raw, scope=scope, key=key)
+                    if unit is not None and self._in_document_partition(unit):
+                        partition_entries.append((key, raw))
+                entries = partition_entries
+            if self._experience_partition == "experience" and "skill" in (memory_types or ()):
+                skills = self._kv().list(scope, memory_types=["skill"], limit=1_000_000)
+                entries.extend(skills.entries)
             result = list_memory_entries(
                 entries,
                 scope,
@@ -1013,6 +1054,24 @@ class CompositeDomainStore(DomainStore):
             found=found, missing_ids=missing, excluded_ids=excluded
         )
 
+    def _in_document_partition(self, unit: MemoryUnit) -> bool:
+        if not self._experience_partition:
+            return True
+        is_experience = unit.system_metadata.get("memory_type") == "experience"
+        return is_experience == (self._experience_partition == "experience")
+
+    def _get_kv_skills(self, scope: Scope, ids: list[str], existing: dict) -> list[MemoryUnit]:
+        skills = []
+        for uid in set(ids) - existing.keys():
+            try:
+                raw = self._kv().get(scope, memory_key(uid))
+            except NotFoundError:
+                continue
+            unit = load_memory_unit(raw, scope=scope, key=uid)
+            if unit is not None and unit.system_metadata.get("memory_type") == "skill":
+                skills.append(unit)
+        return skills
+
     def _get_units(
         self, scope: Scope, unit_ids: list[str], *, relax_session: bool = False
     ) -> list[MemoryUnit]:
@@ -1036,7 +1095,12 @@ class CompositeDomainStore(DomainStore):
             by_id = {
                 unit.id: unit
                 for unit in shadow.get_units(scope, unit_ids, relax_session=relax_session)
+                if self._in_document_partition(unit)
             }
+            if self._experience_partition == "experience":
+                by_id.update({
+                    unit.id: unit for unit in self._get_kv_skills(scope, unit_ids, by_id)
+                })
             # shadow.get_units 按 IN 查询返回唯一行，对重复 id 复用同一份 unit 对象，
             # 与 KV 路径「重复 id 各自返回」行为一致（召回物化侧已 seen 去重，实际无重复）。
             return [by_id[uid] for uid in unit_ids if uid in by_id]
@@ -1068,6 +1132,14 @@ class CompositeDomainStore(DomainStore):
     ) -> RecallResult[ScoredUnit]:
         if channels == []:
             raise ValidationError("channels must be omitted or contain at least one channel")
+        if self._experience_partition:
+            op = FilterOp.EQ if self._experience_partition == "experience" else FilterOp.NE
+            query = replace(
+                query,
+                scalar_filters=and_merge(query.scalar_filters, [
+                    FilterClause("system_metadata.memory_type", op, "experience"),
+                ]),
+            )
         selected = [
             recaller
             for recaller in self._recallers

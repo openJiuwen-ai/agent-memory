@@ -199,3 +199,137 @@ def test_job_accepts_explicit_interval_for_timer_declaration() -> None:
         interval=50,
     )
     assert job.interval == 50
+
+
+# ====================================================================== #
+# evolver_for_unit 分组分派（mem2.0 §2.5.1 改动 1）
+# ====================================================================== #
+
+
+class TaggedEvolver(Evolver):
+    """按自身 tag 产出结果标识的 Evolver 替身——验证结果合并的来源可辨。"""
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+        self.calls: list[list[str]] = []
+
+    def operator_type(self) -> OperatorType:
+        return OperatorType.EVOLVER
+
+    def health(self) -> None:
+        return None
+
+    def evolve(self, units: list[MemoryUnit], mode: EvolveMode) -> EvolveResult:
+        self.calls.append([unit.id for unit in units])
+        return EvolveResult(
+            created_ids=[f"created-{self.tag}"],
+            updated_ids=[f"updated-{self.tag}"],
+            superseded_ids=[f"superseded-{self.tag}"],
+            forgotten_ids=[f"forgotten-{self.tag}"],
+            created_units=(
+                [_make_unit(f"new-{self.tag}", units[0].scope, "")]
+                if units
+                else []
+            ),
+            duplicate_ids=[f"dup-{self.tag}"],
+        )
+
+
+def _make_typed_unit(uid: str, scope: Scope, memory_type: str) -> MemoryUnit:
+    return MemoryUnit(
+        id=uid,
+        scope=scope,
+        segments=[Segment(content=f"content of {uid}")],
+        system_metadata={"memory_type": memory_type},
+    )
+
+
+def test_evolver_for_unit_dispatches_groups_and_merges_results() -> None:
+    """逐条选取 evolver 按实例分组分别演进，六字段结果合并回显。
+
+    Dreaming 读入的条目按 memory_type 分发（mem2.0 §2.5.1 改动 1）：经验
+    条目交经验 profile 的 evolver，其余交全局 evolver。
+    """
+    scope = Scope(org="acme", user="u1")
+    kv = InMemoryKVStore()
+    for uid, memory_type in (
+        ("exp-1", "experience"),
+        ("plain-1", "semantic"),
+        ("exp-2", "experience"),
+        ("plain-2", "semantic"),
+    ):
+        kv.insert(scope, memory_key(uid), dumps(_make_typed_unit(uid, scope, memory_type)))
+    global_evolver = TaggedEvolver("global")
+    experience_evolver = TaggedEvolver("experience")
+
+    def evolver_for_unit(unit: MemoryUnit) -> Evolver | None:
+        if unit.system_metadata.get("memory_type") == "experience":
+            return experience_evolver
+        return None  # 回落全局
+
+    job = EvolveJob(
+        scope=scope,
+        kv=kv,
+        evolver=global_evolver,
+        evolver_for_unit=evolver_for_unit,
+    )
+    info = asyncio.run(job.run())
+
+    assert sorted(experience_evolver.calls[0]) == ["exp-1", "exp-2"], (
+        "经验条目整组交经验 evolver（组内顺序随 KV 枚举）"
+    )
+    assert sorted(global_evolver.calls[0]) == ["plain-1", "plain-2"], (
+        "其余条目整组交全局 evolver"
+    )
+    assert info.status == JobStatus.SUCCEEDED
+    # 两组结果合并回显（组间顺序随首条枚举序，用集合比较；created_units
+    # 是对象列表，进 detail 的是其余 id 字段）
+    assert set(info.detail["created_ids"].split(",")) == {
+        "created-experience", "created-global"
+    }
+    assert set(info.detail["updated_ids"].split(",")) == {
+        "updated-experience", "updated-global"
+    }
+    assert set(info.detail["superseded_ids"].split(",")) == {
+        "superseded-experience", "superseded-global"
+    }
+    assert set(info.detail["forgotten_ids"].split(",")) == {
+        "forgotten-experience", "forgotten-global"
+    }
+
+
+def test_evolver_for_unit_none_keeps_whole_batch_on_global_evolver() -> None:
+    """未配 evolver_for_unit 时整批交全局 evolver——旧调用路径行为不变。"""
+    scope = Scope(org="acme", user="u1")
+    kv = InMemoryKVStore()
+    kv.insert(scope, memory_key("u1"), dumps(_make_unit("u1", scope, "one")))
+    kv.insert(scope, memory_key("u2"), dumps(_make_unit("u2", scope, "two")))
+    evolver = TaggedEvolver("global")
+
+    job = EvolveJob(scope=scope, kv=kv, evolver=evolver)
+    asyncio.run(job.run())
+
+    assert len(evolver.calls) == 1 and sorted(evolver.calls[0]) == ["u1", "u2"], (
+        "无选择器时整批一次交全局（现行为，组内顺序随 KV 枚举）"
+    )
+
+
+def test_evolver_for_unit_with_empty_bucket_still_calls_global_evolver() -> None:
+    """空桶仍调全局 evolver（既有契约）——分组路径不破坏单桶空跑语义。"""
+    scope = Scope(org="acme", user="u1")
+    kv = InMemoryKVStore()  # 空 scope
+    evolver = TaggedEvolver("global")
+    selector_calls: list[str] = []
+
+    def evolver_for_unit(unit: MemoryUnit) -> Evolver | None:
+        selector_calls.append(unit.id)
+        return None
+
+    job = EvolveJob(
+        scope=scope, kv=kv, evolver=evolver, evolver_for_unit=evolver_for_unit
+    )
+    info = asyncio.run(job.run())
+
+    assert selector_calls == [], "空桶不触发逐条选取"
+    assert evolver.calls == [[]], "空桶仍调全局 evolver 一次（空列表）"
+    assert info.status == JobStatus.SUCCEEDED

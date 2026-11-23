@@ -98,6 +98,8 @@ class LocalMemoryAPI(
         space_lifecycle: SpaceLifecycleService | None = None,
         governance: GovernanceService | None = None,
         dreaming_lock: LockProvider | None = None,
+        dreaming_standby: bool = False,
+        experience_default_space: str = "own",
         authorizer: Authorizer | None = None,
         credential_registry: CredentialStatusRegistry | None = None,
         document_mode: bool = False,
@@ -177,7 +179,15 @@ class LocalMemoryAPI(
             authorize=self._authorize,
             ensure_space_writable=self._ensure_space_writable,
             scope_supplier=engine.candidate_scopes,
+            mode_scope_supplier=engine.candidate_scopes_for_mode,
+            mode_validator=engine.validate_evolve_mode,
+            standby=dreaming_standby,
         )
+        # 部署配置的经验缺省落点（globals.experience 的 default_space，v3 §2）。
+        # 不带 coords 且 default_space 填了空间名的 experience 写入按它鉴权
+        # （见 WriteOpsMixin._authorize_experience_space）；own 时落点就是写入
+        # 落点，已由现有逻辑校验，鉴权逻辑空过。
+        self._experience_default_space = str(experience_default_space or "own").strip()
 
     def _flush_audit_logs(self, logs) -> None:
         """按入队顺序写审计；与主流程同线程执行，避免慢后端卡住事件循环。"""

@@ -19,8 +19,10 @@ def register_constructors() -> None:
         return
     import_optional("jiuwen_memory.construction.conflict_resolver_impl")
     import_optional("jiuwen_memory.construction.abstractor_impl")
+    import_optional("jiuwen_memory.construction.appraiser_impl")
     import_optional("jiuwen_memory.construction.associator_impl")
     import_optional("jiuwen_memory.construction.classifier_impl")
+    import_optional("jiuwen_memory.construction.curator_impl")
     import_optional("jiuwen_memory.construction.dedup_impl")
     import_optional("jiuwen_memory.construction.evolver_impl")
     import_optional("jiuwen_memory.construction.extractor_impl")

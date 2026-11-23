@@ -104,6 +104,8 @@
 5. **KV list 先过滤再分页**
    `KVStore.list` 只查询 `/memory/` MemoryUnit；在完整 Scope 内依次执行
    `memory_types AND filters`、精确计数、稳定排序和分页。`count` 不受 offset/limit 影响。
+   `CompositeDomainStore.list` 在文档模式下只读取 `shadow.list_units`，不合并 KV；
+   即使同时装配 KV 端口，记忆列表、点读与文档更新/删除仍使用同一文档真源。
 
 6. **检索型 Store 的 search 物理约束在 scope 内**
    `FulltextStore.search(scope, query)` / `VectorStore.search(scope, query)` / `GraphStore.search(scope, query)` 绝不跨 scope 返回。
@@ -440,3 +442,11 @@ DSL。只记录查询/过滤与向量维数，不记录凭证或完整向量；�
 内置 trace sink 处理。
 
 团队文档与普通项目文件共用存储事务和资源锁；_md_path.py 统一处理团队键验证及双向路径映射。读改必须保留团队坐标。Shadow 的类别、团队过滤复用 SQL 编译器；向量路径的选择和排除团队的过采样边界见上方 scope 原生隔离条目。
+
+### 共享经验文档
+
+经验正文存为 Markdown 根下 `memory/experience/EXPERIENCE.md` 的列表，同目录 `.EXPERIENCE.meta.json`
+记录索引重建所需的稳定 ID 和完整作用域。同一文件只接受一个组织和空间。
+存储和看门狗使用同一固定路径和配对格式，修改正文或删除条目时按 ID 同步。
+经验和普通文档数据面通过 `DocumentShadowIndex.scopes()` 的类型条件枚举作用域。
+Swarm 内置 SDK 文档模式的技能文件由文档构建器直接交给宿主技能库。

@@ -81,12 +81,19 @@ def candidate_project(candidate: MemoryUnit) -> str:
 
 
 def _dedup_recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
-    """Compare active document facts in the project and the shared profile."""
-    project = candidate_project(candidate)
-    clauses = [FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value])]
+    """Compare active experience with experience, and ordinary facts within their project."""
+    experience = candidate.system_metadata.get("memory_type") == "experience"
+    filters = and_merge(_active_lifecycle_filter(), [
+        FilterClause(
+            "system_metadata.memory_type", FilterOp.EQ if experience else FilterOp.NE, "experience",
+        ),
+    ])
+    project = "" if experience else candidate_project(candidate)
     if project:
-        clauses.append(FilterClause("system_metadata.project", FilterOp.IN, ["", project]))
-    return and_merge(None, clauses)
+        filters = and_merge(filters, [
+            FilterClause("system_metadata.project", FilterOp.IN, ["", project]),
+        ])
+    return filters
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -265,6 +272,10 @@ class ShadowDedup(Dedup):
             if self._tier_filter and unit.tier != candidate.tier:
                 continue
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):
+                continue
+            if (candidate.system_metadata.get("memory_type") == "experience") != (
+                unit.system_metadata.get("memory_type") == "experience"
+            ):
                 continue
             if unit.id == candidate.id:
                 continue

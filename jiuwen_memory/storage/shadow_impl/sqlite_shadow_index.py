@@ -64,6 +64,9 @@ _DEFAULT_CLASS = (
 )
 # memory_unit.lifecycle 默认值（= LifecycleState.ACTIVE.value，绝大多数 unit 是 ACTIVE）
 _DEFAULT_LIFECYCLE = "active"
+_MEMORY_TYPE_SQL = (
+    "COALESCE(json_extract(CAST(unit_json AS TEXT), '$.system_metadata.memory_type'), '')"
+)
 # vec0 向量召回批 1 过采样倍数（post-filter 召回不足兜底，文档记忆根设计 §4.4.3）
 _DEFAULT_OVERSAMPLE = 4
 
@@ -164,6 +167,8 @@ CREATE INDEX IF NOT EXISTS idx_content_hash ON memory_unit(content_hash);
 CREATE INDEX IF NOT EXISTS idx_md_filename ON memory_unit(md_filename);
 CREATE INDEX IF NOT EXISTS idx_project_category ON memory_unit(project, category);
 CREATE INDEX IF NOT EXISTS idx_scope ON memory_unit(org, space, "user", agent, session);
+CREATE INDEX IF NOT EXISTS idx_memory_type_scope
+    ON memory_unit({_MEMORY_TYPE_SQL}, org, space, "user", agent, session);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     content,
@@ -228,6 +233,7 @@ _SYSTEM_PREDICATE_COLUMNS = {
     # team 读取单元 JSON，保留既有表结构；缺失值按空串参与过滤，无需新增物理列。
     "system_metadata.team": "COALESCE(json_extract(CAST(unit_json AS TEXT), "
     "'$.system_metadata.team'), '')",
+    "system_metadata.memory_type": _MEMORY_TYPE_SQL,
 }
 
 
@@ -555,6 +561,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         召回按 ``system_metadata.project`` 谓词下推，写入侧同此 key 取值。
         """
         metadata = unit.system_metadata or {}
+        if metadata.get("memory_type") == "experience":
+            return _DEFAULT_PROJECT
         project = metadata.get("project")
         if isinstance(project, str) and project.strip():
             return project.strip()
@@ -964,32 +972,65 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 return
             try:
                 conn.execute("BEGIN")
-                placeholders = ",".join("?" for _ in unit_ids)
-                # 先查存在的 rowid（幂等：只删存在的 id，缺失静默跳过）。
-                rows = conn.execute(
-                    f"SELECT rowid FROM memory_unit WHERE unit_id IN ({placeholders})",
-                    tuple(unit_ids),
-                ).fetchall()
-                rowids = [r[0] for r in rows]
-                if rowids:
-                    rowid_ph = ",".join("?" for _ in rowids)
-                    conn.execute(
-                        f"DELETE FROM memory_fts WHERE rowid IN ({rowid_ph})",
-                        tuple(rowids),
-                    )
-                    if self.vec_enabled:
-                        conn.execute(
-                            f"DELETE FROM memory_vec WHERE rowid IN ({rowid_ph})",
-                            tuple(rowids),
-                        )
-                    conn.execute(
-                        f"DELETE FROM memory_unit WHERE unit_id IN ({placeholders})",
-                        tuple(unit_ids),
-                    )
+                self._delete_rows(conn, unit_ids)
                 conn.execute("COMMIT")
             except Exception as exc:
                 conn.execute("ROLLBACK")
                 logger.error("shadow delete failed, rolled back: %s", exc)
+                raise
+
+    def _delete_rows(self, conn: sqlite3.Connection, unit_ids: list[str]) -> None:
+        if not unit_ids:
+            return
+        placeholders = ",".join("?" for _ in unit_ids)
+        # 先查存在的 rowid（幂等：只删存在的 id，缺失静默跳过）。
+        rows = conn.execute(
+            f"SELECT rowid FROM memory_unit WHERE unit_id IN ({placeholders})",
+            tuple(unit_ids),
+        ).fetchall()
+        rowids = [r[0] for r in rows]
+        if rowids:
+            rowid_ph = ",".join("?" for _ in rowids)
+            conn.execute(
+                f"DELETE FROM memory_fts WHERE rowid IN ({rowid_ph})",
+                tuple(rowids),
+            )
+            if self.vec_enabled:
+                conn.execute(
+                    f"DELETE FROM memory_vec WHERE rowid IN ({rowid_ph})",
+                    tuple(rowids),
+                )
+            conn.execute(
+                f"DELETE FROM memory_unit WHERE unit_id IN ({placeholders})",
+                tuple(unit_ids),
+            )
+
+    def sync_experience_document(
+        self, scope: Scope, path: str, units: dict[str, MemoryUnit],
+    ) -> None:
+        """Reconcile one document without committing a partial index update."""
+        with self._lock:
+            conn = self._ensure_conn()
+            try:
+                conn.execute("BEGIN")
+                rows = conn.execute(
+                    "SELECT unit_id, unit_json FROM memory_unit WHERE md_filename=?",
+                    (path,),
+                ).fetchall()
+                previous = {uid: loads(raw) for uid, raw in rows}
+                if units and any(
+                    unit is not None and unit.scope != scope for unit in previous.values()
+                ):
+                    raise ValidationError("Experience document belongs to a different scope")
+                for uid, unit in units.items():
+                    if uid not in previous:
+                        self._insert_one(conn, unit)
+                    elif unit != previous[uid]:
+                        self._update_one(conn, unit)
+                self._delete_rows(conn, list(previous.keys() - units.keys()))
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
                 raise
 
     def list_units(self, scope: Scope) -> list[tuple[str, bytes]]:
@@ -1078,17 +1119,23 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         org, space, user, agent, session = row
         return Scope(org=org, space=space, user=user, agent=agent, session=session)
 
-    def scopes(self) -> list[Scope]:
+    def scopes(
+        self, *, memory_type: str | None = None, exclude_memory_type: bool = False,
+    ) -> list[Scope]:
         """枚举 memory_unit 表已有 Scope（对齐 ``sqlite_kv_store.scopes`` 范式）。
 
         供文档模式 lifecycle/space sweep（如 ``cloud_engine.purge_space``）枚举 scope。
         ``SELECT DISTINCT org, space, "user", agent, session`` 返回 list[Scope]。
         """
+        sql = 'SELECT DISTINCT org, space, "user", agent, session FROM memory_unit'
+        args = ()
+        if memory_type is not None:
+            op = "!=" if exclude_memory_type else "="
+            sql += f" WHERE {_MEMORY_TYPE_SQL} {op} ?"
+            args = (memory_type,)
         with self._lock:
             conn = self._ensure_conn()
-            rows = conn.execute(
-                'SELECT DISTINCT org, space, "user", agent, session FROM memory_unit'
-            ).fetchall()
+            rows = conn.execute(sql, args).fetchall()
         return [
             Scope(
                 org=org_name,

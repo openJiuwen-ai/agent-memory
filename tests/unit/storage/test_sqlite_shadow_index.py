@@ -834,6 +834,26 @@ def test_scopes_enumerates_distinct(tmp_path) -> None:
     assert scope_b in result
 
 
+def test_scopes_filters_by_memory_type_and_keeps_mixed_scopes(tmp_path) -> None:
+    store = _store(tmp_path)
+    only_experience = Scope(org="o", space="experience")
+    only_ordinary = Scope(org="o", space="ordinary")
+    mixed = Scope(org="o", space="mixed")
+    try:
+        for idx, scope in enumerate((only_experience, mixed)):
+            unit = _unit_scope(f"experience-{idx}", "lesson", scope)
+            unit.system_metadata["memory_type"] = "experience"
+            store.insert_units(scope, [unit])
+        for idx, scope in enumerate((only_ordinary, mixed)):
+            store.insert_units(scope, [_unit_scope(f"ordinary-{idx}", "note", scope)])
+
+        assert {s.space for s in store.scopes(memory_type="experience")} == {"experience", "mixed"}
+        ordinary = store.scopes(memory_type="experience", exclude_memory_type=True)
+        assert {s.space for s in ordinary} == {"ordinary", "mixed"}
+    finally:
+        store.close()
+
+
 def test_latest_scope_by_md_returns_latest_scope(tmp_path) -> None:
     """同 md_filename 插两条不同 scope（rowid 后插为新）→ 返回后插的 scope。"""
     store = _store(tmp_path)

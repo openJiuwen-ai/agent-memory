@@ -11,6 +11,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -541,6 +542,34 @@ def test_timer_loop_triggers_instance_at_next_run_at() -> None:
     asyncio.run(_run())
     scheduler.shutdown()
     # 事件循环关闭后不验证（Task 被取消）
+
+
+def test_due_timer_waits_for_readiness_without_resetting_the_interval() -> None:
+    checked_busy = Event()
+    idle = Event()
+    ran = Event()
+
+    class GatedJob(Job):
+        async def ready_for_tick(self) -> bool:
+            if idle.is_set():
+                return True
+            checked_busy.set()
+            return False
+
+        async def run(self) -> JobInfo:
+            ran.set()
+            return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED)
+
+    scheduler = AsyncTimerScheduler(tick_interval=1)
+    try:
+        job = GatedJob(scope=Scope(user="u1"), interval=60, first_delay=0)
+        asyncio.run(scheduler.submit(job, Channel.BACKGROUND))
+        assert checked_busy.wait(5)
+        assert not ran.is_set()
+        idle.set()
+        assert ran.wait(5)
+    finally:
+        scheduler.shutdown()
 
 
 def test_timer_survives_requester_loop_close() -> None:
