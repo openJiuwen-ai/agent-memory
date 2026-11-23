@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-21 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
@@ -47,7 +47,7 @@ MemoryAPI 方法及 HTTP/CLI/MCP 请求契约不变。
 默认个人视图复用这两个公开方法，个人模式需显式启用：
 
 - `list` 通过 `extensions={"personal": {...}}` 传列表筛选条件及可选的
-  `snapshot`、`include_lifecycle_counts`，省略 `scope`。个人模式使用
+  `snapshot`、`include_lifecycle_counts`、`overview_timezone`，省略 `scope`。个人模式使用
   `personal` 中的筛选条件，不与普通 `filters`、`memory_types` 或其他扩展混用。
   MCP 的 `memory_list` 遵循同一规则。按指定范围查询时仍需提供 `scope`。
 - `search` 在 `context.extensions` 传 `{"personal": {"source": "应用标识"}}`，
@@ -99,6 +99,15 @@ PersonalPage 返回 items、count、snapshot、sources、agents、projects、mem
 应用状态条件之前的各状态计数。
 agents 在 Python 接口中是一组 `(id, label)` 元组，HTTP 返回对应的二元素数组。
 其他选项集合使用字符串。
+
+传入 IANA 时区名 `overview_timezone`（如 `Asia/Shanghai`）时，`PersonalPage.overview`
+汇总与状态计数同一范围的记录，适用其他筛选条件，在状态筛选和分页之前计算。
+省略或传 `None` 时该字段为 `None`，无效时区返回 `ValidationError`。
+
+| 概览字段 | 统计口径 |
+|---|---|
+| `start_date`、`daily_counts` | 从起始本地日期（YYYY-MM-DD）至今天，按日期升序固定返回 365 个计数，空日为 0。所有状态按 `temporal.t_ingest` 归日，无时区时间按 UTC 解释，缺失写入时间的记录跳过。 |
+| `source_counts` | 仅有效记录，键为来源应用，空串代表未标注来源。各来源计数之和等于同一范围内的有效记录数。 |
 
 ### 个人检索
 

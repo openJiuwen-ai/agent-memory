@@ -137,16 +137,37 @@
     .metric-label { display:block; color:#777; font-size:12px; }
     .metric-value { display:block; font-size:30px; font-weight:600; color:#191919; letter-spacing:-.04em; margin:10px 0 6px; }
     .metric-hint { display:block; color:#999; font-size:11px; }
-    .overview-columns { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(250px,1fr); gap:20px; }
     .overview-card { padding:22px; min-width:0; margin-bottom:20px; }
-    .overview-card .card-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; }
-    .quick-entry { display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:14px 0; border:0; border-top:1px solid #f0f0f0; border-radius:0; }
-    .quick-entry span { display:block; font-size:12px; color:#888; margin-top:3px; }
-    .source-chips { display:flex; gap:8px; flex-wrap:wrap; }
-    .source-chips button { font-size:12px; }
-    .overview-sample { display:block; text-align:left; width:100%; border:0; border-bottom:1px solid #f0f0f0; border-radius:0; padding:14px 0; }
-    .overview-sample strong { display:block; font-size:13px; font-weight:500; }
-    .overview-sample small { display:block; margin-top:5px; color:#888; font-size:11px; }
+    #overview { --day-height:clamp(12px,1.16vw,17px); }
+    .chart-icon { display:inline-grid; place-items:center; color:var(--accent); }
+    .chart-header { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:4px 14px; margin-bottom:16px; }
+    .chart-header h2 { display:flex; align-items:center; gap:8px; font-size:16px; }
+    .chart-hint { margin-top:3px; color:var(--muted); font-size:12px; }
+    .chart-total { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+    .calendar-frame { display:grid; grid-template-columns:auto minmax(0,1fr); gap:9px; }
+    .calendar-axis,.calendar-week { display:grid; grid-template-rows:18px repeat(7,var(--day-height)); row-gap:4px; }
+    .calendar-axis { padding-top:2px; align-items:center; font-size:10px; color:var(--muted); }
+    .calendar-scroll { overflow-x:auto; padding:2px 0; scrollbar-width:thin; }
+    .calendar-plot { display:flex; gap:4px; min-width:690px; }
+    .calendar-week { flex:1; min-width:0; grid-template-columns:minmax(0,1fr); }
+    .calendar-month { align-self:center; white-space:nowrap; font-size:10px; color:var(--muted); }
+    .calendar-week:nth-last-child(-n+2) .calendar-month { justify-self:end; }
+    .heat-day,.heat-key { background:var(--heat-color,var(--raised)); border-radius:3px; }
+    .heat-day { min-height:0; padding:0; border:0; width:100%; }
+    .heat-day:hover,.heat-day:focus-visible { background:var(--heat-color,var(--raised)); outline:2px solid var(--color-text-primary); outline-offset:-2px; }
+    .heat-1 { --heat-color:color-mix(in srgb,var(--accent) 18%,var(--surface)); } .heat-2 { --heat-color:color-mix(in srgb,var(--accent) 40%,var(--surface)); }
+    .heat-3 { --heat-color:color-mix(in srgb,var(--accent) 68%,var(--surface)); } .heat-4 { --heat-color:var(--accent); }
+    .calendar-footer,.heat-legend { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:11px; }
+    .calendar-footer { min-height:22px; margin-top:10px; flex-wrap:wrap; justify-content:space-between; }
+    .heat-legend { margin-left:auto; }
+    .heat-key { width:12px; height:12px; }
+    .source-row { display:grid; grid-template-columns:minmax(88px,16%) minmax(0,1fr) 8.5em; width:100%; min-height:30px; gap:12px; padding:4px; border:1px solid transparent; text-align:left; font-size:12px; }
+    .source-name { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--color-text-primary); }
+    .source-row progress { appearance:none; border:0; width:100%; height:9px; overflow:hidden; border-radius:5px; background:var(--raised); color:var(--accent); }
+    .source-row progress::-webkit-progress-bar { background:var(--raised); }
+    .source-row progress::-webkit-progress-value { background:var(--accent); border-radius:5px; }
+    .source-row progress::-moz-progress-bar { background:var(--accent); border-radius:5px; }
+    .source-count { text-align:right; white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums; }
     .search-form { padding:22px; margin-bottom:20px; }
     .search-query { display:flex; gap:10px; margin-bottom:16px; }
     .search-query input { flex:1; }
@@ -218,9 +239,16 @@
     .reading-switch button { font-size:11px; min-height:26px; padding:3px 9px; }
     .reading-switch button[aria-pressed=true] { background:#f0f0f0; }
     @media(min-width:1600px) { main { padding:36px 44px 70px; } }
-    @media(max-width:1100px) { .metric-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .app-shell { grid-template-columns:176px minmax(0,1fr); } main { padding:26px 22px 50px; } .settings-layout { grid-template-columns:minmax(0,1fr); } .settings-side { display:grid; grid-template-columns:1fr 1fr; gap:18px; } .filter-grid { grid-template-columns:1fr 1fr; } .overview-columns { grid-template-columns:minmax(0,1fr); } }
+    @media(max-width:1100px) { .metric-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .app-shell { grid-template-columns:176px minmax(0,1fr); } main { padding:26px 22px 50px; } .settings-layout { grid-template-columns:minmax(0,1fr); } .settings-side { display:grid; grid-template-columns:1fr 1fr; gap:18px; } .filter-grid { grid-template-columns:1fr 1fr; } }
     @media(max-width:760px) { .app-shell { display:block; } .module-sidebar { position:static; height:auto; padding:14px 16px 10px; border-right:0; border-bottom:1px solid var(--line); } .brand { padding:0 0 12px; } .brand strong { font-size:15px; } .brand small { display:none; } .brand-icon { width:28px; height:28px; } .nav-label,.sidebar-note { display:none; } nav { display:flex; gap:4px; overflow-x:auto; } nav button { width:auto; flex:0 0 auto; justify-content:center; padding:8px 4px; font-size:12px; min-height:34px; } nav button svg { display:none; } .sidebar-footer { position:absolute; top:14px; right:12px; padding:0; } .sidebar-footer button { min-height:28px; padding:0 6px; } .topbar { height:40px; padding:0 16px; } .connection-pill { font-size:10px; } .connection-pill #connection-state { max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } main { padding:22px 16px 44px; } h1 { font-size:22px; } .page-heading { gap:12px; margin-bottom:20px; } .page-heading p { max-width:230px; font-size:12px; } .memory-surface { padding:14px; } .filters { grid-template-columns:1fr 1fr; gap:10px; } .filters>button { grid-column:1/-1; justify-self:start; padding:2px 0; min-height:24px; } .filter-grid { grid-template-columns:1fr 1fr; } .status-tabs { gap:2px; } .status-tabs button { padding:4px 7px; font-size:11px; } .memory-list.grid-view { grid-template-columns:1fr; } .memory-row { padding:14px; } .memory-title { font-size:13px; } .memory-preview { font-size:12px; } .list-tools { gap:6px; flex-wrap:wrap; } .pager { flex-wrap:wrap; gap:10px; } .pager .page-size-group { order:3; width:100%; } .batch-bar { gap:6px; } .batch-bar strong { flex-basis:100%; } .metric-grid { grid-template-columns:1fr 1fr; gap:10px; } .metric { padding:15px; } .metric-value { font-size:25px; } .overview-card { padding:18px; } .search-form { padding:16px; } .search-query { flex-wrap:wrap; } .search-query input { flex-basis:100%; } .search-query button { width:100%; } .fields-grid { grid-template-columns:1fr; } .field.wide { grid-column:auto; } .settings-side { display:block; } .settings-group,.info-card { padding:18px; } .settings-bar { padding:14px; bottom:8px; } .settings-bar>.row { width:100%; } .settings-bar .primary { margin-left:auto; } .dialog-header,.dialog-body { padding:20px; } .dialog-footer { padding:16px 20px; } .detail-pane { padding:20px; } .mapping th,.mapping td { padding:9px 4px; } kbd { display:none; } }
     @media(prefers-reduced-motion:reduce) { * { transition:none!important; scroll-behavior:auto!important; } }
+    @media(max-width:760px) {
+      .app-main:has(#overview:not([hidden])) .topbar>span { white-space:nowrap; }
+      .source-row { grid-template-columns:minmax(0,1fr) auto; gap:4px 8px; padding:6px 3px; }
+      .source-row progress { grid-column:1/-1; grid-row:2; height:6px; }
+      .source-count { grid-column:2; grid-row:1; }
+      .source-name { white-space:normal; overflow-wrap:anywhere; }
+    }
 </style></head>
 <body><main id="session-expired" class="notice error" role="alert" hidden data-i18n="sessionExpired">访问会话已失效，请从应用重新打开记忆管理。</main><div id="portal-shell" class="app-shell"><aside class="module-sidebar"><div class="brand"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg></span><div><strong data-i18n="brand">记忆管理</strong><small>agent_memory</small></div></div><div class="nav-label" data-i18n="personalMemories">个人记忆</div><nav role="tablist" aria-label="页面导航" aria-orientation="vertical" data-i18n-label="pageNavigation"><button id="tab-overview" class="active" data-tab="overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span data-i18n="overview">记忆概览</span></button>
 <button id="tab-memories" class="" data-tab="memories" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M3 7h4M3 12h4M3 17h4M10 8h5M10 12h5"/></svg><span data-i18n="myMemories">我的记忆</span></button>
@@ -232,7 +260,22 @@
 <div class="page-heading"><div><h1 data-i18n="overview">记忆概览</h1><p class="muted" data-i18n="overviewIntro">了解当前实例的记忆情况，让每一条记忆都有迹可循</p></div><button id="refresh-overview" class="quiet" type="button" data-i18n="refreshOverview">刷新概览</button></div>
 <div id="overview-error" class="notice error" role="status"></div>
 <div class="metric-grid"><button class="metric" id="metric-all"><span class="metric-label" data-i18n="allRecords">全部记录</span><span class="metric-value" id="stat-all">—</span><span class="metric-hint" data-i18n="allRecordsHint">包括有效、历史、遗忘与归档</span></button><button class="metric" id="metric-active"><span class="metric-label" data-i18n="activeMemories">有效记忆</span><span class="metric-value" id="stat-active">—</span><span class="metric-hint" data-i18n="activeMemoriesHint">参与默认记忆查询</span></button><button class="metric" id="metric-superseded"><span class="metric-label" data-i18n="correctionHistory">纠正历史</span><span class="metric-value" id="stat-superseded">—</span><span class="metric-hint" data-i18n="correctionHistoryHint">被新版本取代的旧记录</span></button><button class="metric" id="metric-forgotten"><span class="metric-label" data-i18n="forgotten">已遗忘</span><span class="metric-value" id="stat-forgotten">—</span><span class="metric-hint" data-i18n="forgottenHint">已退出默认检索</span></button><button class="metric" id="metric-archived"><span class="metric-label" data-i18n="archived">已归档</span><span class="metric-value" id="stat-archived">—</span><span class="metric-hint" data-i18n="archivedHint">保留的归档记录</span></button><div class="metric"><span class="metric-label" data-i18n="sourceApps">来源应用</span><span class="metric-value" id="stat-sources">—</span><span class="metric-hint" data-i18n="sourceAppsHint">有来源标记的应用数量</span></div></div>
-<p class="muted small" style="margin:-10px 0 24px" data-i18n="overviewTotals">全部记录 = 有效记忆 + 纠正历史 + 已遗忘 + 已归档；来源应用单独计数。</p><div class="overview-columns"><div class="overview-card"><div class="card-header"><h2 data-i18n="activeMemorySamples">有效记忆速览</h2><button id="overview-all" type="button" class="link" data-i18n="viewAll">查看全部 →</button></div><div id="overview-samples" class="muted"><span data-i18n="loadingOverview">正在读取记忆…</span></div></div><div><div class="overview-card"><div class="card-header"><h3 data-i18n="memorySources">记忆来源</h3><span class="badge" data-i18n="currentInstance">当前实例</span></div><div id="overview-sources" class="source-chips"></div><p class="muted small" style="margin-top:16px" data-i18n="memorySourcesHint">应用接入同一记忆实例后，带来源标记的记录会出现在这里。</p></div><div class="overview-card"><h3 style="margin-bottom:12px" data-i18n="manageMemories">管理你的记忆</h3><button id="overview-add" type="button" class="quick-entry"><div><strong data-i18n="addOneMemory">新增一条记忆</strong><span data-i18n="addOneMemoryHint">记录偏好、事实或以后会用到的经验</span></div><span class="spacer"></span>＋</button><button id="overview-search" type="button" class="quick-entry"><div><strong data-i18n="searchByQuestion">用问题搜索记忆</strong><span data-i18n="searchByQuestionHint">输入问题，看看能找回哪些内容</span></div><span class="spacer"></span>→</button><button id="overview-settings" type="button" class="quick-entry"><div><strong data-i18n="adjustSettings">调整模型设置</strong><span data-i18n="adjustSettingsHint">查看已保存和已应用的配置</span></div><span class="spacer"></span>→</button></div></div></div>
+<p class="muted small" style="margin:-10px 0 24px" data-i18n="overviewTotals">全部记录 = 有效记忆 + 纠正历史 + 已遗忘 + 已归档；来源应用单独计数。</p>
+<section class="overview-card" aria-labelledby="activity-title">
+  <div class="chart-header"><div><h2 id="activity-title"><span class="chart-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 11h18m-13 5h2m4 0h2"/></svg></span><span data-i18n="dailyActivity">每日新增</span></h2>
+    <p class="chart-hint" data-i18n="activityHint">近 365 天各状态记忆的写入记录</p></div><span id="activity-total" class="chart-total">—</span></div>
+  <div class="calendar-frame" id="activity-chart" hidden>
+    <div class="calendar-axis" aria-hidden="true"><span style="grid-row:2" data-i18n="monday">周一</span><span style="grid-row:4" data-i18n="wednesday">周三</span><span style="grid-row:6" data-i18n="friday">周五</span></div>
+    <div class="calendar-scroll" id="calendar-scroll"><div class="calendar-plot" id="activity-days"></div></div>
+  </div>
+  <div id="calendar-footer" class="calendar-footer" hidden><span id="day-detail"></span>
+    <span class="heat-legend"><span data-i18n="heatLess">少</span><i aria-hidden="true" class="heat-key heat-0"></i><i aria-hidden="true" class="heat-key heat-1"></i><i aria-hidden="true" class="heat-key heat-2"></i><i aria-hidden="true" class="heat-key heat-3"></i><i aria-hidden="true" class="heat-key heat-4"></i><span data-i18n="heatMore">多</span></span></div>
+</section>
+<section class="overview-card" aria-labelledby="distribution-title">
+  <div class="chart-header"><div><h2 id="distribution-title"><span class="chart-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h17M8 8h11M8 12h8M8 16h5"/></svg></span><span data-i18n="sourceDistribution">来源分布</span></h2>
+    <p class="chart-hint" data-i18n="distributionHint">各来源占当前有效记忆的比例</p></div></div>
+  <div id="overview-sources"></div>
+</section>
 </section><section id="memories" role="tabpanel" aria-labelledby="tab-memories" hidden>
       <div class="page-heading"><div><h1 id="memory-page-title" data-i18n="allMyMemories">我的全部记忆</h1><p id="memory-page-description" class="muted" data-i18n="allMyMemoriesHint">汇总所有来源，按需筛选与管理</p></div><button id="open-add" class="primary" type="button"><span aria-hidden="true">＋</span><span data-i18n="addMemory">新增记忆</span></button></div>
       <div class="memory-surface"><div id="search-modes" class="status-tabs" role="group" aria-label="查找方式" style="margin-bottom:12px" data-i18n-label="searchMethod"><button id="mode-text" type="button" aria-pressed="true" data-i18n="textSearch">按文字查找</button><button id="mode-semantic" type="button" aria-pressed="false" data-i18n="semanticSearch">按含义查找</button></div><form id="search-form"><div class="row" style="flex-wrap:nowrap"><div class="filter-search" style="flex:1;margin:0"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" id="memory-filter" aria-label="查找记忆" placeholder="输入正文或标签中的文字" data-i18n-label="searchMemories" data-i18n-placeholder="textSearchPlaceholder"><kbd>/</kbd></div><button id="search-submit" class="primary" type="submit" hidden data-i18n="search">查找</button><button id="refresh" class="quiet small" type="button" data-i18n="refresh">↻ 刷新</button></div><div id="semantic-options" hidden><p class="muted small" style="margin-top:12px" data-i18n="semanticSearchHint">按意思查找当前用户有权访问的有效记忆，仅支持来源应用筛选；不使用文字模式中的分类、层级、项目、Agent 和状态条件。</p><div class="search-options"><div><label for="search-source" data-i18n="searchSource">检索来源</label><select id="search-source"><option value="*" data-i18n="allApps">全部应用</option></select></div><div><label for="top-k" data-i18n="maxResults">最多返回</label><input id="top-k" type="number" min="1" max="100" value="10"></div></div></div></form><details class="filter-more" id="more-filters"><summary><span data-i18n="filters">筛选 </span><span id="filter-count"></span></summary><div class="filter-grid"><div><label for="source" data-i18n="sourceApps">来源应用</label><select id="source"><option value="*" data-i18n="allApps">全部应用</option></select></div><div><label for="agent">Agent</label><select id="agent"><option value="*" data-i18n="allAgents">全部 Agent</option></select></div><div><label for="project" data-i18n="project">项目</label><select id="project"><option value="*" data-i18n="allProjects">全部项目</option></select></div><div><label for="lifecycle" data-i18n="memoryStatus">记忆状态</label><select id="lifecycle"><option value="active" data-i18n="activeMemories">有效记忆</option><option value="superseded" data-i18n="superseded">已纠正旧版本</option><option value="forgotten" data-i18n="forgotten">已遗忘</option><option value="archived" data-i18n="archived">已归档</option><option value="*" data-i18n="allStatuses">全部状态</option></select></div><div id="tier-filter"><label for="tier" data-i18n="memoryTierField">认知层级（MemoryTier）</label><select id="tier"><option value="*" data-i18n="allTiers">全部层级</option></select></div><div id="class-filter"><label for="memory-class" data-i18n="memoryClassField">记忆分类（memory_class）</label><select id="memory-class"><option value="*" data-i18n="allClasses">全部分类</option></select></div><button id="reset-filters" class="link" type="button" data-i18n="resetFilters">重置筛选</button></div></details></div><div id="semantic-results" style="margin-top:20px" hidden><p id="search-explanation" class="search-explanation" data-i18n="searchExplanation">输入问题后检索。来源筛选在结果数量限制之前生效。</p>
@@ -258,7 +301,7 @@
 <dialog id="sources-dialog" class="mapping" aria-labelledby="sources-title">
   <div class="dialog-header"><div><h2 id="sources-title" data-i18n="sourcesTitle">页面数据从哪里来</h2><p class="muted" data-i18n="sourcesDescription">当前页面使用真实接口数据，不含示例记忆</p></div><button id="close-sources" class="quiet" type="button" aria-label="关闭数据来源说明" data-i18n-label="closeSources">×</button></div>
   <div class="dialog-body"><p class="muted"><span data-i18n="sourcesApiIntro">页面使用同源 </span><code>/v1/</code><span data-i18n="sourcesSessionIdentity"> 接口。服务端从浏览器会话识别用户；详情、纠正和遗忘携带记录的 Scope 和 ID，用于定位并重新检查权限。</span></p><table><thead><tr><th data-i18n="sourcesPageArea">页面区域</th><th data-i18n="sourcesEndpoint">接口</th><th data-i18n="sourcesFields">字段与原始含义</th></tr></thead><tbody>
-    <tr><td data-i18n="overview">记忆概览</td><td><code>POST /v1/list</code></td><td><span data-i18n="sourcesCountIntro">一次读取 </span><code>lifecycle_counts</code><span data-i18n="sourcesCountAndApps">，汇总全部、有效、纠正历史、已遗忘和已归档数量；应用数来自非空 </span><code>sources</code><span data-i18n="sourcesOverviewSamples">；速览来自有效记忆的前 5 条，不代表访问热度。</span></td></tr><tr><td data-i18n="sourcesBatchActions">复制 / 导出 / 批量遗忘</td><td><code>/v1/get, /v1/delete</code></td><td data-i18n="sourcesBatchActionsHint">只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。</td></tr><tr><td data-i18n="sourcesListAndFilters">记忆列表与筛选</td><td><code>POST /v1/list</code></td><td><code>items / count / snapshot</code><span data-i18n="sourcesListPagination">；筛选后计数、再分页；</span><code>sources / agents / projects / memory_classes</code><span data-i18n="sourcesListFacets"> 来自完整授权集合。</span></td></tr>
+    <tr><td data-i18n="overview">记忆概览</td><td><code>POST /v1/list</code></td><td><code>overview</code> · <code>lifecycle_counts</code><br><span data-i18n="sourcesOverview">来源应用数统计所有可见记录中已标注的应用。来源分布统计有效记忆，日期按浏览器时区统计全部状态的写入。</span></td></tr><tr><td data-i18n="sourcesBatchActions">复制 / 导出 / 批量遗忘</td><td><code>/v1/get, /v1/delete</code></td><td data-i18n="sourcesBatchActionsHint">只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。</td></tr><tr><td data-i18n="sourcesListAndFilters">记忆列表与筛选</td><td><code>POST /v1/list</code></td><td><code>items / count / snapshot</code><span data-i18n="sourcesListPagination">；筛选后计数、再分页；</span><code>sources / agents / projects / memory_classes</code><span data-i18n="sourcesListFacets"> 来自完整授权集合。</span></td></tr>
     <tr><td data-i18n="sourceApps">来源应用</td><td><code>/v1/list, /v1/get</code></td><td><code>source</code> ← <code>system_metadata.source_app</code><span data-i18n="sourcesMissingSource">；缺失显示“未标注来源”。</span></td></tr>
     <tr><td data-i18n="sourcesAgentAndProject">Agent / 项目</td><td><code>/v1/list, /v1/get</code></td><td><code>agent</code> ← <code>scope.agent</code><span data-i18n="sourcesNextField">；</span><code>agent_label</code><span data-i18n="sourcesAgentLabel"> 是显示名称。</span><code>project</code><span data-i18n="sourcesProjectFrom"> ← 文档记忆的 </span><code>system_metadata.project</code><span data-i18n="sourcesProjectDirect">（直传）或 </span><code>coords.project</code><span data-i18n="sourcesProjectFromRouter">（router 回写），空值显示“跨项目 / 未标注”。</span></td></tr>
     <tr><td data-i18n="sourcesQuickFilters">内容快捷筛选</td><td><code>POST /v1/list</code></td><td><span data-i18n="sourcesProfileFilter">用户画像：</span><code>memory_class=user_profile</code><span data-i18n="sourcesKnowledgeFilter">；项目知识：</span><code>memory_class=long_term_memory + tier=semantic</code><span data-i18n="sourcesProcedureFilter">；过程与做法：</span><code>tier=procedural</code><span data-i18n="sourcesShortcutScope">。保留其他筛选，不新增分类或自动识别。</span></td></tr><tr><td data-i18n="sourcesTierAndClass">层级 / 记忆分类</td><td><code>/v1/list, /v1/get</code></td><td><code>tier</code> ← <code>MemoryTier.value</code><span data-i18n="sourcesTierCount">；筛选项对应六个认知层级。</span><code>memory_class</code> ← <code>system_metadata.memory_class</code><span data-i18n="sourcesNextField">；</span><code>memory_classes</code><span data-i18n="sourcesCustomClasses"> 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。</span></td></tr>
@@ -303,19 +346,21 @@ const messages = {
   sourceApps: ["来源应用", "Source Apps"],
   sourceAppsHint: ["有来源标记的应用数量", "Number of apps with a recorded source"],
   overviewTotals: ["全部记录 = 有效记忆 + 纠正历史 + 已遗忘 + 已归档；来源应用单独计数。", "All records = active + corrected + forgotten + archived. Source apps are counted separately."],
-  activeMemorySamples: ["有效记忆速览", "Active Memory Preview"],
-  viewAll: ["查看全部 →", "View All →"],
   loadingOverview: ["正在读取记忆…", "Reading memories…"],
-  memorySources: ["记忆来源", "Memory Sources"],
-  currentInstance: ["当前实例", "Current Instance"],
-  memorySourcesHint: ["应用接入同一记忆实例后，带来源标记的记录会出现在这里。", "Memories with a source appear here when apps connect to the same instance."],
-  manageMemories: ["管理你的记忆", "Manage Your Memories"],
-  addOneMemory: ["新增一条记忆", "Add a Memory"],
-  addOneMemoryHint: ["记录偏好、事实或以后会用到的经验", "Record preferences, facts, or experiences you want to reuse."],
-  searchByQuestion: ["用问题搜索记忆", "Ask a Question"],
-  searchByQuestionHint: ["输入问题，看看能找回哪些内容", "Enter a question to see which memories it retrieves."],
-  adjustSettings: ["调整模型设置", "Adjust Model Settings"],
-  adjustSettingsHint: ["查看已保存和已应用的配置", "Review saved and applied settings."],
+  dailyActivity: ["每日新增","Daily additions"],
+  activityHint: ["近 365 天各状态记忆的写入记录","Records written in the last 365 days, across all statuses"],
+  monday: ["周一","Mon"],
+  wednesday: ["周三","Wed"],
+  friday: ["周五","Fri"],
+  heatLess: ["少","Less"],
+  heatMore: ["多","More"],
+  sourceDistribution: ["来源分布","Source distribution"],
+  distributionHint: ["各来源占当前有效记忆的比例","Share of active memories by source"],
+  emptyDistribution: ["暂无有效记忆","No active memories yet"],
+  sourcesOverview: ["来源应用数统计所有可见记录中已标注的应用。来源分布统计有效记忆，日期按浏览器时区统计全部状态的写入。","Source Apps counts distinct named apps across all visible records. Source distribution counts active memories. Daily additions use the browser time zone and include all statuses."],
+  activityTotal: [n => `近一年新增 ${n} 条`, n => `${n} added in the last year`],
+  activityDay: [(date,n) => `${date} · ${n} 条写入`, (date,n) => `${date} · ${n} ${n === 1 ? 'record' : 'records'} added`],
+  sourceShare: [(n,percent) => `${n} 条 · ${percent}`, (n,percent) => `${n} · ${percent}`],
   // Memory browsing and search
   allMyMemories: ["我的全部记忆", "All My Memories"],
   allMyMemoriesHint: ["汇总所有来源，按需筛选与管理", "Browse, filter, and manage memories from all sources."],
@@ -411,9 +456,6 @@ const messages = {
   sourcesPageArea: ["页面区域", "Page Area"],
   sourcesEndpoint: ["接口", "Endpoint"],
   sourcesFields: ["字段与原始含义", "Fields and Meaning"],
-  sourcesCountIntro: ["一次读取 ", "One request reads "],
-  sourcesCountAndApps: ["，汇总全部、有效、纠正历史、已遗忘和已归档数量；应用数来自非空 ", " for the total, active, corrected, forgotten, and archived counts. The app count comes from nonempty "],
-  sourcesOverviewSamples: ["；速览来自有效记忆的前 5 条，不代表访问热度。", ". The preview shows the first five active records in the default order."],
   sourcesBatchActions: ["复制 / 导出 / 批量遗忘", "Copy, Export, and Batch Forget"],
   sourcesBatchActionsHint: ["只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。", "These actions use the records selected on this page. Copy and export reread their details. JSON exports omit internal record identifiers. Forget requests run one at a time and report partial failures."],
   sourcesListAndFilters: ["记忆列表与筛选", "Memory List and Filters"],
@@ -527,8 +569,6 @@ const messages = {
   listLoadError: [error => `无法加载记忆：${error}`, error => `Could not load memories: ${error}`],
   overviewLoadError: [error => `无法读取概览：${error}`, error => `Could not load the overview: ${error}`],
   overviewLoadFailed: ["数据读取失败，请刷新重试。", "Could not load the data. Refresh and try again."],
-  noActiveMemories: ["还没有有效记忆，可以先新增一条。", "No active memories yet. Add a memory to get started."],
-  noSources: ["暂无来源记录", "No recorded sources yet"],
 
   // Memory editor, mutations, and semantic search
   lockedAgentScope: ["将写入宿主指定的 Agent 范围。", "This memory will use the Agent scope set by the host."],
@@ -888,7 +928,14 @@ function syncTopicShortcut(){
   const filtered=$('memory-class').value!=='*'||$('tier').value!=='*';
   setText($('memory-page-description'),fixed?preset.description:msg(filtered?'filteredMemoryHint':'allMyMemoriesHint'));
 }
-function selectionValue(id){return $(id).value==='*'?null:$(id).value;}
+// The wildcard is reserved for the All Apps option. Escape literal leading stars in source names.
+function sourceOptionValue(source) { return source.startsWith('*') ? '*' + source : source; }
+function selectionValue(id) {
+  const value = $(id).value;
+  if (value === '*') return null;
+  if ((id === 'source' || id === 'search-source') && value.startsWith('**')) return value.slice(1);
+  return value;
+}
 function showDialog(id){if(!$(id).open)$(id).showModal();}
 function sourceHelp(){showDialog('sources-dialog');}
 function updateSelection(){
@@ -970,7 +1017,7 @@ async function loadMemories(reset=false){
     const data=await listMemories({offset,limit:pageSize,lifecycle:selectionValue('lifecycle'),source:selectionValue('source'),agent:selectionValue('agent'),project:selectionValue('project'),tier:selectionValue('tier'),memory_class:selectionValue('memory-class'),query:$('memory-filter').value.trim(),snapshot});
     if(sequence!==memoryRequest)return;
     total=data.count;snapshot=data.snapshot;checked.clear();cards('memory-list',data.items);
-    const sourceOptions=(data.sources||[]).map(v=>[v,v||msg('sourceUnknown')]);
+    const sourceOptions=(data.sources||[]).map(v=>[sourceOptionValue(v),v||msg('sourceUnknown')]);
     fillOptions('source',sourceOptions,msg('allApps'));
     fillOptions('search-source',sourceOptions,msg('allApps'));
     fillOptions('agent',(data.agents||[]).map(([value,label])=>[value,label||value||msg('noAgent')]),msg('allAgents'));
@@ -986,7 +1033,9 @@ async function loadMemories(reset=false){
     $('previous').disabled=offset===0;$('next').disabled=offset+pageSize>=total;
     const activeFilters=(memoryView==='memories'?['source','agent','project','tier','memory-class']:['source','agent','project']).filter(id=>selectionValue(id)!==null).length+($('lifecycle').value!=='*'?1:0);
     setText($('filter-count'),activeFilters?msg('filterCount',activeFilters):'');
-    setText($('filter-description'),joinText([selectionValue('source')??msg('allApps'),lifecycleLabels.get(selectionValue('lifecycle'))||msg('allStatuses')],' · '));
+    const source = selectionValue('source');
+    const sourceLabel = source === null ? msg('allApps') : source || msg('sourceUnknown');
+    setText($('filter-description'),joinText([sourceLabel,lifecycleLabels.get(selectionValue('lifecycle'))||msg('allStatuses')],' · '));
     syncTopicShortcut();updateSelection();
     return true;
   }catch(e){
@@ -1389,33 +1438,126 @@ async function exportSelected(format){
   finally{batchBusy=false;cards('memory-list',rows.memories);updateSelection();}
 }
 $('copy-selected').onclick=()=>exportSelected('copy');$('export-selected').onclick=()=>exportSelected('markdown');$('export-json').onclick=()=>exportSelected('json');
-async function loadOverview(){
-  const sequence=++overviewRequest;setText($('overview-error'),'');for(const id of ['stat-all','stat-active','stat-superseded','stat-forgotten','stat-archived','stat-sources'])$(id).textContent='—';
-  $('overview-samples').replaceChildren(node('p',msg('loadingOverview'),'muted'));$('overview-sources').replaceChildren();
-  try{
-    const data=await listMemories({lifecycle:'active',limit:5,include_lifecycle_counts:true});if(sequence!==overviewRequest)return;
-    const counts=data.lifecycle_counts;
-    $('stat-all').textContent=counts.active+counts.forgotten+counts.superseded+counts.archived;$('stat-active').textContent=counts.active;$('stat-forgotten').textContent=counts.forgotten;$('stat-superseded').textContent=counts.superseded;$('stat-archived').textContent=counts.archived;$('stat-sources').textContent=(data.sources||[]).filter(Boolean).length;
-    $('overview-samples').replaceChildren();
-    for(const item of data.items){
-      const row=button('',()=>selectMemory(item,'memories'),'overview-sample');
-      row.append(node('strong',titleOf(item)),node('small',joinText([item.source||msg('sourceUnknown'),timeLabel(item.created_at)],' · ')));
-      $('overview-samples').append(row);
+const overviewFormats = Object.fromEntries(['zh-CN', 'en'].map(locale => [
+  locale, {
+    share: new Intl.NumberFormat(locale, {style:'percent', maximumFractionDigits:1}),
+    month: new Intl.DateTimeFormat(locale, {month:'short', timeZone:'UTC'}),
+    day: new Intl.DateTimeFormat(locale, {dateStyle:'long', timeZone:'UTC'}),
+  },
+]));
+
+function renderActivity({start_date, daily_counts}) {
+  const plot = $('activity-days');
+  const firstDay = new Date(start_date + 'T00:00:00Z');
+  const cells = [];
+  let week, currentCell;
+  function setTabStop(cell) {
+    if (currentCell) currentCell.tabIndex = -1;
+    currentCell = cell;
+    cell.tabIndex = 0;
+  }
+  for (const [index, count] of daily_counts.entries()) {
+    // The server already resolved local calendar dates. Use UTC arithmetic to step over DST.
+    const date = new Date(firstDay);
+    date.setUTCDate(firstDay.getUTCDate() + index);
+    const weekday = (date.getUTCDay() + 6) % 7;
+    if (!week || weekday === 0) {
+      week = node('div', undefined, 'calendar-week');
+      plot.append(week);
     }
-    if(!data.items.length)$('overview-samples').append(node('p',msg('noActiveMemories'),'muted'));
-    for(const source of data.sources||[])$('overview-sources').append(button(source||msg('sourceUnknown'),()=>openMemoryFilter('*',source),'source-chip'));
-    if(!(data.sources||[]).length)$('overview-sources').append(node('p',msg('noSources'),'muted'));
-  }catch(e){if(sequence!==overviewRequest)return;setText($('overview-error'),msg('overviewLoadError',errorText(e)));$('overview-samples').replaceChildren(node('p',msg('overviewLoadFailed'),'muted'));}
+    if (date.getUTCDate() === 1 || (index === 0 && date.getUTCDate() <= 14)) {
+      const month = node('span', () => overviewFormats[language].month.format(date), 'calendar-month');
+      month.style.gridRow = '1';
+      week.append(month);
+    }
+    const level = count >= 10 ? 4 : count >= 5 ? 3 : count >= 2 ? 2 : count > 0 ? 1 : 0;
+    const label = msg('activityDay', () => overviewFormats[language].day.format(date), count);
+    const cell = button('', () => {
+      setTabStop(cell);
+      setText($('day-detail'), label);
+    }, 'heat-day heat-' + level);
+    cell.style.gridRow = String(weekday + 2);
+    cell.tabIndex = -1;
+    setText(cell, label, 'aria-label');
+    cell.onmouseenter = () => setText($('day-detail'), label);
+    cell.onfocus = cell.onclick;
+    cell.onkeydown = event => {
+      // Columns are weeks. Move vertically by day and horizontally by week.
+      const moves = {ArrowUp:-1, ArrowDown:1, ArrowLeft:-7, ArrowRight:7, Home:-index, End:daily_counts.length-1-index};
+      if (!Object.hasOwn(moves, event.key)) return;
+      event.preventDefault();
+      cells[Math.max(0, Math.min(cells.length - 1, index + moves[event.key]))].focus();
+    };
+    cells.push(cell);
+    week.append(cell);
+  }
+  setTabStop(cells.at(-1));
+  setText($('activity-total'), msg('activityTotal', daily_counts.reduce((sum, count) => sum + count, 0)));
+  $('activity-chart').hidden = false;
+  $('calendar-footer').hidden = false;
+  const scroll = $('calendar-scroll');
+  scroll.scrollLeft = scroll.scrollWidth;
 }
-async function openMemoryFilter(status,source=null){
-  for(const id of ['source','agent','project','tier','memory-class'])$(id).value='*';$('memory-filter').value='';$('lifecycle').value=status;
-  if(source!==null){const select=$('source');if(![...select.options].some(o=>o.value===source))select.add(option(source||msg('sourceUnknown'),source));select.value=source;}
-  switchTab('memories',false);await loadMemories(true);
+
+function renderSourceDistribution(counts, active) {
+  const root = $('overview-sources');
+  const sources = Object.entries(counts).sort(([a, n], [b, m]) => m - n || a.localeCompare(b));
+  if (!sources.length) root.append(node('p', msg('emptyDistribution'), 'muted'));
+  for (const [source, count] of sources) {
+    const label = source || msg('sourceUnknown');
+    const row = button('', () => openMemoryFilter('active', source), 'source-row');
+    const name = node('span', label, 'source-name');
+    setText(name, label, 'title');
+    const bar = node('progress');
+    bar.max = active;
+    bar.value = count;
+    bar.setAttribute('aria-hidden', 'true');
+    const percent = () => overviewFormats[language].share.format(count / active);
+    row.append(name, bar, node('span', msg('sourceShare', count, percent), 'source-count'));
+    root.append(row);
+  }
 }
-$('refresh-overview').onclick=loadOverview;$('overview-all').onclick=()=>openMemoryFilter('active');
-$('metric-superseded').onclick=()=>openMemoryFilter('superseded');$('metric-archived').onclick=()=>openMemoryFilter('archived');
-$('metric-all').onclick=()=>openMemoryFilter('*');$('metric-active').onclick=()=>openMemoryFilter('active');$('metric-forgotten').onclick=()=>openMemoryFilter('forgotten');
-$('overview-add').onclick=openAdd;$('overview-search').onclick=()=>switchTab('search');$('overview-settings').onclick=()=>switchTab('settings');
+
+const overviewStates = ['active', 'superseded', 'forgotten', 'archived'];
+async function loadOverview() {
+  const sequence = ++overviewRequest;
+  setText($('overview-error'), '');
+  for (const id of ['all', ...overviewStates, 'sources']) setText($('stat-' + id), '—');
+  $('activity-chart').hidden = true;
+  $('calendar-footer').hidden = true;
+  $('activity-days').replaceChildren();
+  setText($('day-detail'), '');
+  setText($('activity-total'), msg('loadingOverview'));
+  $('overview-sources').replaceChildren();
+  try {
+    const {overview, sources, lifecycle_counts:counts} = await listMemories({
+      limit:1, include_lifecycle_counts:true, overview_timezone:Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    });
+    if (sequence !== overviewRequest) return;
+    if (!overview || !counts) throw portalError(msg('overviewLoadFailed'));
+    for (const id of overviewStates) setText($('stat-' + id), counts[id]);
+    setText($('stat-sources'), sources.filter(Boolean).length);
+    setText($('stat-all'), overviewStates.reduce((sum, id) => sum + counts[id], 0));
+    renderActivity(overview);
+    renderSourceDistribution(overview.source_counts, counts.active);
+  } catch (error) {
+    if (sequence !== overviewRequest) return;
+    setText($('overview-error'), msg('overviewLoadError', errorText(error)));
+    setText($('activity-total'), '—');
+  }
+}
+
+async function openMemoryFilter(status, source = null) {
+  for (const id of ['source','agent','project','tier','memory-class']) $(id).value = '*';
+  $('memory-filter').value = '';
+  $('lifecycle').value = status;
+  if (source !== null) setFilterValue('source', sourceOptionValue(source), source || msg('sourceUnknown'));
+  await switchTab('memories', false);
+  return loadMemories(true);
+}
+$('refresh-overview').onclick = loadOverview;
+$('metric-all').onclick = () => openMemoryFilter('*');
+for (const state of overviewStates) $('metric-' + state).onclick = () => openMemoryFilter(state);
 document.addEventListener('keydown',event=>{if(event.key==='/'&&isMemoryView(activeTab)&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)&&!document.querySelector('dialog[open]')){event.preventDefault();$('memory-filter').focus();}});
 bindStaticText();
 applyLanguage();
