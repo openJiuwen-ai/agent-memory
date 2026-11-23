@@ -2017,3 +2017,170 @@ def test_validated_continuity_item_rejection_carries_event_key(tmp_path):
             assert by_index[index].operation_id, by_index[index]
     finally:
         runtime.close()
+
+
+def test_failed_continuity_items_report_rejected_status(tmp_path):
+    """带 continuity 的失败项必须落四态之一；空串只留给没有接续的项（S02/S11）。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        result = api.batch_add(
+            [
+                BatchWriteItem(
+                    "bad binding", project,
+                    continuity=ContinuityWrite(task["task_id"], "no-such-binding", "x-1"),
+                ),
+                BatchWriteItem(
+                    "bad idempotency", project,
+                    continuity=ContinuityWrite(task["task_id"], binding, "x-2"),
+                    idempotency_key="wrong-key",
+                ),
+                BatchWriteItem("plain failure", project,
+                               system_metadata={"infer": "yes"}),
+            ],
+            project, security=wb, continue_on_error=True,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert by_index[0].continuity_status == "rejected", by_index[0]
+        assert by_index[1].continuity_status == "rejected", by_index[1]
+        # 未带 continuity 的项仍为空串：空串的语义没有被放宽。
+        assert by_index[2].continuity_status == ""
+    finally:
+        runtime.close()
+
+
+def test_skipped_continuity_items_report_empty_status(tmp_path):
+    """跳过项没有执行：continuity_status 为空，用 error_type=Skipped 表示，不冒充 rejected。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        result = api.batch_add(
+            [
+                BatchWriteItem("good", project,
+                               continuity=ContinuityWrite(task["task_id"], binding, "a-1")),
+                BatchWriteItem("bad", project,
+                               continuity=ContinuityWrite(
+                                   task["task_id"], "no-such-binding", "a-2")),
+                BatchWriteItem("never", project,
+                               continuity=ContinuityWrite(task["task_id"], binding, "a-3")),
+            ],
+            project, security=wb, continue_on_error=False,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert by_index[0].continuity_status == "committed"
+        assert by_index[1].continuity_status == "rejected"
+        assert by_index[2].continuity_status == "", by_index[2]
+        assert by_index[2].error_type == "Skipped", by_index[2]
+    finally:
+        runtime.close()
+
+
+def test_continuity_skipped_after_ordinary_precheck_failure_reports_empty_status(tmp_path):
+    """普通项在预检阶段失败，后面被跳过的接续项同样是空串 + Skipped。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        result = api.batch_add(
+            [
+                # source_ref 是接续内部写路径专用字段，公开入口传入即被预检拒绝。
+                BatchWriteItem("plain reserved field", project, source_ref="loc:1"),
+                BatchWriteItem("continuity after failure", project,
+                               continuity=ContinuityWrite(task["task_id"], binding, "b-2")),
+                BatchWriteItem("plain after failure", project),
+            ],
+            project, security=wb, continue_on_error=False,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert by_index[0].error_type == "ValidationError"
+        assert by_index[1].continuity_status == "", by_index[1]
+        assert by_index[1].error_type == "Skipped", by_index[1]
+    finally:
+        runtime.close()
+
+
+def test_continuity_skipped_across_ordinary_item_reports_empty_status(tmp_path):
+    """失败项与后续接续项之间隔着普通项时，跳过项同样是空串 + Skipped。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        result = api.batch_add(
+            [
+                BatchWriteItem("bad binding", project,
+                               continuity=ContinuityWrite(
+                                   task["task_id"], "no-such-binding", "c-1")),
+                BatchWriteItem("plain between", project),
+                BatchWriteItem("continuity never", project,
+                               continuity=ContinuityWrite(task["task_id"], binding, "c-3")),
+            ],
+            project, security=wb, continue_on_error=False,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert by_index[0].continuity_status == "rejected"
+        assert by_index[2].continuity_status == "", by_index[2]
+        assert by_index[2].error_type == "Skipped", by_index[2]
+    finally:
+        runtime.close()

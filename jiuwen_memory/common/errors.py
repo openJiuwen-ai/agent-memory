@@ -260,12 +260,20 @@ class WriteIncompleteError(PartialFailureError):
         )
 
 
-# 可归因到具体条目的失败：批量入口把这几类记为逐项结果，而不是中断整批。
-# 语义是"这一条不成立"，不是"整批/整个后端不可用"——BackendError、RateLimitedError
-# 等仍要向上抛，否则会把系统性故障误报成单条数据问题。
+# 可归因到单条、「需要先修正内容再提交」的失败：批量入口把它们记为逐项 rejected，
+# 而不是中断整批。状态可原样重试的异常（RelocationInProgressError、BackendError、
+# RateLimitedError 等）不在此列——它们不是数据问题，必须继续向上抛，否则会把系统性
+# 故障误报成单条数据问题。
 ITEM_LEVEL_ERRORS: tuple[type[AgentMemoryError], ...] = (
     ConflictError,
     NotFoundError,
     PermissionDeniedError,
     ValidationError,
 )
+
+
+def is_item_level_error(exc: BaseException) -> bool:
+    """该异常能否归因到单条并降级为逐项 rejected。"""
+    if isinstance(exc, RelocationInProgressError):
+        return False
+    return isinstance(exc, ITEM_LEVEL_ERRORS)

@@ -13,6 +13,7 @@ from jiuwen_memory.common.errors import (
     PermissionDeniedError,
     UnsupportedCapabilityError,
     ValidationError,
+    is_item_level_error,
 )
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.relations.catalog import RelationCatalog
@@ -452,7 +453,7 @@ class ContinuityService(Continuity):
             }
 
     def _classify_event(self, scope, event, connector, key, request_fingerprint, read, repo):
-        """校验单条事件并解析其回执；冲突/权限失败由调用方决定是否降级为单项失败。"""
+        """校验单条事件并解析回执；明确拒绝由调用方决定是否降级为单项失败。"""
         envelope = asdict(event)
         if request_fingerprint:
             envelope["request_fingerprint"] = request_fingerprint
@@ -514,13 +515,15 @@ class ContinuityService(Continuity):
                         scope, event, connector, key, fingerprints[index], read, repo
                     )
                     if receipt is not None:
-                        # 已有回执的正文可能已被遗忘或替换：回查失败同属这一项，
-                        # 不能跳出单项处理、把整批其他事件记成同一个错误。
+                        # 已有回执的正文可能已被遗忘或被替换：回查失败同属这一项，
+                        # 不能跳出逐项处理、把整批其他事件记成同一个错误。
                         for ref in receipt["refs"]:
                             read(MemoryRef.parse(ref))
                 except ITEM_LEVEL_ERRORS as exc:
-                    # 单项失败：拒绝这一项。事件内容变更导致的 ConflictError 属于这一类，
-                    # 不能把整批（含历史导入的整块）拖垮（S11「单项失败不中断其他项」）。
+                    if not is_item_level_error(exc):
+                        raise
+                    # 明确拒绝只作用于这一项（事件 ID 复用却改了内容、引用缺失等），
+                    # 同批其他项照常写入，不能整组失败（S11「单项失败不中断其他项」）。
                     results.append(
                         (index, {"status": "rejected", "operation_id": key, "error": exc})
                     )
@@ -528,18 +531,13 @@ class ContinuityService(Continuity):
                         # 严格模式：本项之后不再校验也不再写入，剩余项按 skipped 返回，
                         # 而不是把同一个错误复制给它们——它们既没执行也没冲突。
                         for later in range(index + 1, len(events)):
+                            later_key = self.event_key(
+                                connectors[later],
+                                events[later].binding_id,
+                                events[later].event_id,
+                            )
                             results.append(
-                                (
-                                    later,
-                                    {
-                                        "status": "skipped",
-                                        "operation_id": self.event_key(
-                                            connectors[later],
-                                            events[later].binding_id,
-                                            events[later].event_id,
-                                        ),
-                                    },
-                                )
+                                (later, {"status": "skipped", "operation_id": later_key})
                             )
                         break
                     continue

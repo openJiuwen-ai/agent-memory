@@ -405,7 +405,8 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 - 已有 `BatchWriteItem.idempotency_key` 与 `continuity` 同时出现时，两者须一致，否则该项拒绝；以 `continuity` 幂等键为准。
 - 分阶段处理：① 批量写入全部项的 unknown 回执 → ② 正文走现有批量写入链（批量向量化与索引）→ ③ 批量转 partial 并保存引用 → ④ 按任务分组，每个任务**只追加一次**背景并递增一次修订 → ⑤ 批量转 committed。派生构建与关系发现按项排入后续阶段，不阻塞批写返回。
 - `BatchWriteOutcome` 新增 `operation_id` 与 `continuity_status`（committed / partial / unknown / rejected）。被拒绝的接续项给 `continuity_status="rejected"`；`operation_id` 按回执回填；鉴权拒绝及连接校验之前的失败不回填（事件键需先查绑定，有键/无键会泄露绑定是否存在），连接校验通过后的失败带回事件键；单项失败按 `continue_on_error` 处理，不中断其他项；`continue_on_error=false` 时其后未执行的项 `continuity_status` 为空、`error_type="Skipped"`（没执行，可原样重放，不冒充 rejected）。
-- `Continuity.record_batch` 的逐项语义对两档实现一致（含契约默认回退）：可归因失败返回 `{status: rejected, operation_id, error}`；`continue_on_error=false` 时其后的项返回 `{status: skipped}` 且不再写入，**已写入的前缀仍如实报告成功**——不得用抛错把整段记成同一个错误。`continue_on_error` 是该契约的一部分：覆盖 `record_batch` 的插件必须接受它（本参数与方法同时引入，未发布前不保留旧签名兼容层；内核不靠方法签名自省判断插件能力）；未覆盖该方法的插件走默认回退，不受影响。
+- `Continuity.record_batch` 的逐项语义对两档实现一致（含契约默认回退）：可归因到单条、需先修正再提交的失败（事件摘要冲突、引用缺失、校验或权限拒绝）返回 `{status: rejected, operation_id, error}`；状态可原样重试的故障（后端不可用、搬迁中、限流）仍向上抛，由批次级失败处理，不得降级成 rejected。`continue_on_error` 是该契约的一部分：覆盖 `record_batch` 的插件必须接受它；`continue_on_error=false` 时其后的项返回 `{status: skipped}` 且不再写入，已写入的前缀仍如实报告成功——不得用抛错把整段记成同一个错误。
+- **插件接口升级（S09 §14）**：`Continuity.record_batch` 新增 `continue_on_error` 关键字参数。继承默认实现、没有覆写该方法的插件不受影响；覆写者必须在签名中接受该参数。调用方在**调用前**按插件方法签名判定一次：能以关键字接受该参数（或声明 `**kwargs`）就带参数调用；同名但仅限位置的参数不算接受，否则退回不带该关键字的调用并输出一条 warning；该路径不提供逐项 rejected/skipped 语义。判定只在调用前发生，**不得在失败后重试**——整批可能已写入一部分，重试会重复执行。无法自省签名时按新契约调用、让插件如实报错。插件升级完成后删除兼容入口，不长期保留两套事实来源。
 - 整批重放安全：已 committed 的项返回已保存单元，partial 的项补齐背景，unknown 的项须先核对。不同项的提交不构成事务，任务修订号可能比项数少（按任务合并），也可能因重试多递增一次。
 
 ### 历史导入交换格式

@@ -1195,7 +1195,7 @@ sequenceDiagram
 6. 写成功的项批量转 partial 并记下引用；`write_batch` 整体失败时这些项保持 unknown，等待恢复核对，不会被当成没写过。
 7. 按任务分组，每个任务只追加一次背景、修订号只加 1，然后把这些项批量转 committed。导入 1000 条事件到同一个任务，任务修订号只涨一次。
 8. 派生构建和关系发现按项排在提交之后执行，不阻塞批量写入返回。
-9. 返回与输入顺序对齐的 `BatchWriteResult`：每项给出 `operation_id` 和 `continuity_status`（committed / partial / unknown / rejected），批量写入不抛 `WriteIncompleteError`。`continue_on_error=False` 时，第一处失败之后的项标 skipped、不再写入。导入脚本据此决定整批重放（已提交的项会直接读回，重放安全）或先恢复再重放；被跳过的项 `continuity_status` 为空、`error_type="Skipped"`，可原样重放；`rejected` 的项需要先修正再提交（鉴权拒绝及连接校验之前的失败不带 `operation_id`：事件键要先查绑定，回填与否会泄露绑定是否存在；连接校验通过后的失败带回事件键）；适配器的 `import_history` 按 50 条一块提交，遇到非 committed 的项即停止。
+9. 返回与输入顺序对齐的 `BatchWriteResult`：每项给出 `operation_id` 和 `continuity_status`（committed / partial / unknown / rejected），批量写入不抛 `WriteIncompleteError`。`continue_on_error=False` 时，第一处失败之后的项标 skipped、不再写入。导入脚本据此决定整批重放（已提交的项会直接读回，重放安全）或先恢复再重放；被跳过的项 `continuity_status` 为空、`error_type="Skipped"`，可原样重放；`rejected` 的项需要先修正再提交（鉴权拒绝及连接校验之前的失败不带 `operation_id`：事件键要先查绑定，回填与否会泄露绑定是否存在；连接校验通过后的失败带回事件键）；适配器的 `import_history` 按 50 条一块提交，遇到非 committed 的项即停止推进下一块，但当前块的全部回执（含被跳过的项）都记入报告。
 
 #### 6.2.5 continuity_relation（角色模式）
 
@@ -2014,6 +2014,9 @@ Provider 复现。补充 SDK 生命周期定向测试 8 passed，覆盖初始化
 ### 12.2 实现差距
 
 本节只列尚未完成的实现或验收；已完成能力归入附录 C。括号中的“原条目”保留历史对照编号，不作为当前待办数量。
+
+- **`record_batch` 插件接口升级的兼容窗口**：为 `continue_on_error` 保留了「旧签名退回调用 + warning」兼容入口。新特性尚未对外发布，插件升级完成后应删除该入口及其测试，避免长期维护两套调用约定。
+- **「未执行」是否需要独立状态**：当前跳过项用 `continuity_status=""` + `error_type="Skipped"` 表达（空串同时也表示「没带 continuity」）。若后续出现按状态分流的下游，再评估是否引入第五种状态，避免继续依赖 `error_type` 区分。
 
 **2026-11-05 设计修订的落地情况**：以下 11 项已按目标设计实现（`MemoryAPI` 公开方法 47 → 43）。
 

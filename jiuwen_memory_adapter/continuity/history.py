@@ -144,18 +144,23 @@ def import_history(
         stopped = False
         for event, item_outcome in zip(chunk, chunk_outcomes, strict=True):
             status = item_outcome.get("continuity_status") or ""
+            # 空状态有两种含义：没带接续，或「失败之后没执行」。后者由 error_type
+            # 标出，报告里要写成 skipped——它可原样重放，不需要先修正内容。
+            skipped = status == "" and item_outcome.get("error_type") == "Skipped"
             results.append(
                 {
                     "event_id": event["event_id"],
-                    "status": status or "rejected",
+                    "status": status or ("skipped" if skipped else "rejected"),
                     "operation_id": item_outcome.get("operation_id", ""),
                     "refs": item_outcome.get("units") or [],
                 }
             )
-            if status != "committed":
+            if status == "committed" and not stopped:
+                imported += 1
+            else:
+                # 服务端在第一个未提交项处停批：之后的行都没写。整块回执仍然全部
+                # 记入报告（含 skipped），否则调用方看不到它们被跳过。
                 stopped = True
-                break
-            imported += 1
         if stopped:
             # 服务端在第一个未提交项处停批，本块剩余行与后续块都还没写，不能算已导入。
             break

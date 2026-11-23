@@ -4,7 +4,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
-from jiuwen_memory.common.errors import ITEM_LEVEL_ERRORS, UnsupportedCapabilityError
+from jiuwen_memory.common.errors import (
+    ITEM_LEVEL_ERRORS,
+    UnsupportedCapabilityError,
+    is_item_level_error,
+)
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.common.type_def.continuity import (
@@ -155,9 +159,11 @@ class Continuity(ABC):
         ``record``; implementations that support it batch body writes, append task
         background once per task and bump each task revision once (D5).
 
-        ``continue_on_error`` 是契约的一部分：单条事件被拒时返回
-        ``{"status": "rejected", "operation_id": ..., "error": exc}`` 而不是抛错。
-        回退实现本就逐条执行，因此只需把可归因失败降级，不必改变写入顺序。
+        ``continue_on_error`` 是契约的一部分：可归因到单条且需先修正再提交的失败返回
+        ``{"status": "rejected", "operation_id": ..., "error": exc}`` 而不是抛错；
+        ``continue_on_error=False`` 时其后未执行的项返回 ``{status: skipped}``。
+        状态可原样重试的故障（后端不可用、搬迁中等）仍向上抛。回退实现本就逐条执行，
+        因此只需把可归因失败降级，不必改变写入顺序。
         """
         results: list[dict] = []
         for index, event in enumerate(events):
@@ -178,9 +184,9 @@ class Continuity(ABC):
             except ITEM_LEVEL_ERRORS as exc:
                 # 与内置实现同一语义：失败项 rejected；严格模式下后续项 skipped，
                 # 而不是抛错让调用方把整段（含已写入的前缀）都记成同一个错误。
-                results.append(
-                    {"status": "rejected", "operation_id": key, "error": exc}
-                )
+                if not is_item_level_error(exc):
+                    raise
+                results.append({"status": "rejected", "operation_id": key, "error": exc})
                 if not continue_on_error:
                     for later in range(index + 1, len(events)):
                         later_key = self.event_key(
