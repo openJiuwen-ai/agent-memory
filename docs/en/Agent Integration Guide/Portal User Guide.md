@@ -149,4 +149,4 @@ vector dimension, and storage location are read-only.
 | An existing memory is missing from the list | Open **My Memories**, clear the search text and filters, and select the **All** status. Confirm that the record was written to the current memory instance and that the signed-in user has permission to view it. |
 | Memories are visible and model settings are read-only | Have the host check that configuration management is enabled, the configuration store is writable, and the identity has permission to edit settings. HTTP enables configuration management automatically only for a declared fixed personal identity. A host can also configure its own storage and authorization. |
 
-For more integration options, see the [Portal design](../../features/F08-personal-memory-portal.md#6-启动与打开页面).
+For more integration options, see the [Portal design](../../features/F05-personal-memory-portal.md#6-启动与打开页面).
