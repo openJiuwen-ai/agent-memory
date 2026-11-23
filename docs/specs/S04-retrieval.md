@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-20 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-schema-temporal-entity.md、docs/features/retrieval/F09-query-rewrite.md、docs/features/retrieval/F11-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
@@ -56,7 +56,7 @@ FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<
 7. **scalar_filters 与软召回信号分离**：ParsedQuery 中 `scalar_filters`（硬前置过滤）与 `tokens/keywords/entities/vector`（软召回信号）不能互相折叠。
 8. **双时间轴独立**：`as_of`（valid-time 回溯点）与 `time_from/time_to`（event-time 范围）是两条独立时间轴。
 9. **召回分数高分优先**：chunk→unit MaxP、分层归并与融合排序统一按「分越大越相关」处理；向量 Recaller（存储层数据面）不接受 L2 等 lower-is-better 度量。
-10. **生产过滤先于 top-k**：Milvus / Elasticsearch / pgvector 必须在
+10. **生产过滤先于 top-k**：Milvus / Elasticsearch / pgvector / openGauss 必须在
     `limit/top_k` 前完整下推 `FilterExpr`；UnitReader 的真源复核只做纵深防御，
     不能补回已被截断的候选。
 11. **系统谓词不可被用户逻辑稀释**：lifecycle / valid-time / event-time 谓词与用户
@@ -176,6 +176,11 @@ Property 直达召回可在 parse 阶段后立即并行提交，并在普通 pip
 单路召回（`Recaller`）不是本层算子：它是 `CompositeDomainStore` 的内部件，契约与实现
 在 `storage/domain_store_impl/`，签名见 S06-storage。本层只经数据面的
 `recall` / `recall_and_get` / `retrieve` 消费其结果。
+
+关键词通道优先调用 `FulltextStore.recall(..., output_fields=["metadata"])`，只有
+`NotImplementedError` 才回退 `search + get`，后端或授权失败不得被降级吞掉。两条路径均保留
+Scope、scalar_filters、extensions 及 `unit_id` MaxP 归并；完整 metadata 中的 `entities`
+仍作为 L2 实体关联扩展的种子，扩展候选继续经 KV 真源生产过滤，再截断至 top_k。
 
 `RecallChannel.TEMPORAL` 仅应用 event-time/valid-time 条件，不创建、过滤或展开 `HierarchyKind.TIME` 树。TIME 层级过滤必须来自明确的 hierarchy 字段。
 

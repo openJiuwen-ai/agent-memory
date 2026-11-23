@@ -6,7 +6,7 @@
 |---|---|
 | 日期 | 2026-06-24 |
 | 影响范围 | jiuwen_memory/storage/{kv,vector,fulltext,fusion,graph,fs}_impl/，docs/specs/S06-storage.md（如有） |
-| 测试基线 | `pytest tests/unit/storage tests/integration/storage` 全绿（真实后端 redis/milvus/es/nano-graphrag/postgres 未配置或不可达时按约定 skip；PostgreSQL 真库由 `AGENT_MEMORY_TEST_PG_DSN` 启用） |
+| 测试基线 | `pytest tests/unit/storage tests/integration/storage` 全绿（真实后端 redis/milvus/es/nano-graphrag/postgres 未配置或不可达时按约定 skip；PostgreSQL 真库由 `AGENT_MEMORY_TEST_PG_DSN` 启用，openGauss 真库由 `AGENT_MEMORY_TEST_OPENGAUSS_DSN` 启用） |
 | Refs | #269 |
 
 > 本文档归档**存储层各后端实现的规约**：每个 `*_impl/` 实现对应哪个接口契约、注册名（`target`）、必填/可选参数、scope 隔离方式、CRUD/search 语义与各自取舍。接口契约本身（方法签名、错误语义、不变量）归 `docs/specs/S06-storage.md`；本文聚焦「当前有哪几种后端、各自怎么落地、为什么这样选」。
@@ -65,14 +65,49 @@
 
 > `dim` 必须 >0，构造期即校验（缺失或回退后仍为 0 → `ValidationError`）。
 
+#### openGauss DataVec 向量后端（2026-11-19）
+
+- `vector_store.<name>.target: opengauss` 注册 `OpenGaussVectorStore`；必填 `dsn`、`dim`，默认 `schema: public`、`table: agent_memory_vectors`、`metric_type: COSINE`、`index_type: hnsw`。同一实现可分别装配 default、layers_l0、layers_l1，不改变上层 VectorRecaller、chunk→unit MaxP 或 RRF。
+- 使用原生 `vector(n)` 和 `USING hnsw`，不检查/安装 PostgreSQL pgvector 扩展。首版只开放 HNSW 与 `none` 精确模式；不把未验证的 DiskANN 跨轮顺序作为默认行为。HNSW float32 维度保守限制 2000，精确模式允许 16000；目标版本的实际限制仍须真库验证。
+- HNSW 查询在事务内用一条 `set_config(..., true)` 设置 `hnsw_ef_search`（默认40，按TopK扩到至少4K、封顶1000）、`hnsw_iterative_scan=strict_order`、`hnsw_max_scan_tuples`（默认20000）。strict_order 保证返回顺序，不承诺精确最近邻或强过滤下必然补足K。SELECT 只计算一次距离（`embedding <op> q AS distance`），`ORDER BY distance` 仍命中 ANN 有序路径，分数在 Python 侧由距离换算；原写法在 SELECT 与 ORDER BY 各算一次距离，top-200 时服务端 6.2ms→3.7ms。精确模式用 `ORDER BY distance + 0.0` 阻止 ANN 有序路径，即使表上已有HNSW索引。
+- 调参实测（LoCoMo conv-26 两批各约560条记忆、152个查询、top-200）：单用户量级下优化器按代价走 scope B-tree 或顺序扫描后排序，结果即精确，`ef_search`（40–800）、`iterative_scan`（strict/relaxed/off）均不改变延迟与召回，HNSW 仅在某个 scope 占全表比例较大时才会被选中。多租户压测（同一批记忆复制为 N 个 user scope）：N=100 时强制走 HNSW 每查询只返回约1条（过滤后补不足）、N=30 时 recall@200 降到0.59（strict）/0.85（relaxed），因此不默认改为 relaxed、不强制索引扫描，保持由优化器选择 scope 过滤路径。BM25 的 `max_score_ratio`（0.5–1.3）与 TAAT 在该规模上命中条数与延迟无差别，保持官方默认 1.05 / DAAT。
+- COSINE 返回 `1-distance`，L2 返回 `1/(1+distance)`，IP 对负内积取反，全部高分优先；向量值须有限且可用float32表示，COSINE拒绝零向量。`recall` 在同条查询回带metadata，`search`仅返回ID和分数。
+- 外部运行环境安装与目标库匹配的官方openGauss psycopg2及libpq；本包不新增/捆绑PyPI psycopg依赖，避免改变F05既有分发合规约束。驱动仅首次使用时导入，未安装仍可注册/装配，访问时明确报BackendError。开发机测试使用的psycopg2-binary不作为生产兼容证据。
+- 每实例惰性、有界连接池（min=1/max=8，connect_timeout=10秒）；`min`仅控制首次预建数量，健康空闲连接均保留，物理连接（含正在建立的连接）不超过max。`pool_timeout`默认30秒，容量耗尽时限时等待，0表示立即失败；它只限制容量排队，不包含独立的建连/查询耗时。超时归一为BackendError。连接建立/事务重置在借还锁外进行，归还会回滚未结束事务、丢弃已关闭/未知状态或重置失败的连接，不在每次借用前额外SELECT 1或自动重放失败SQL。DSN支持ConfigSource晚绑定，独立初始化锁串行建池，旧请求归还不等待慢建连/DDL；旧池待已取得lease的请求（含排队者）排空后关闭。`close`幂等、排空而非强断活跃事务，后续显式调用仍可惰性重建。`ssl_verify=true`要求CA并以libpq关键字强制verify-full，连接串不能覆盖降级。每次调用独立事务，不共享跨Store事务。拒绝仅把psycopg2池min提高到max（首次全预建、掩盖min与保留数量语义）；拒绝无期限等待或为降时延减少TopK/一致性。
+- CRUD以完整五维Scope+ID为主键；search使用公共scope_dims层级过滤。完整FilterExpr编译为参数化JSONB SQL，使用JSON字面量而非新版本PG的jsonb_build_object/to_jsonb；保留标量/数组/缺失键语义。支持unit_id反查与分片包装层的过滤/资源标识契约。
+- 不依赖库的SQL兼容模式：openGauss默认A兼容会把`''`存成NULL，空Scope维度因此违反NOT NULL。五维Scope列统一以`#`前缀落库（空维度存`#`），读写与检索经同一`scope_value`转换，对上层不可见；列定义不带`DEFAULT ''`。代价是物理值不再等于原Scope字符串，直接读表的外部工具需去掉前缀。拒绝的方案：要求部署建PG兼容库（多一个隐式部署前提，默认库直接写入失败）；允许NULL并用空值安全比较（主键不能含NULL，且需改动全部谓词）。
+- metadata GIN索引使用默认`jsonb_ops`：openGauss的GIN只提供`jsonb_ops`/`jsonb_hash_ops`，没有`jsonb_path_ops`；`@>`包含过滤仍走Bitmap Index Scan，代价是索引略大。
+- 写入在表级逻辑advisory lock内预检整批冲突/缺失，再写入；新增冲突报ConflictError、更新缺失报NotFoundError，批次整体回滚。此锁序列化本适配器同表写入，优先正确性，不把初版当高写并发优化。
+- 离线验证覆盖工厂、SQL/过滤/Scope、分数方向、事务回滚/池释放/换池、DDL及非法输入。真库入口 `tests/integration/storage/test_integration_opengauss.py`，由 `AGENT_MEMORY_TEST_OPENGAUSS_DSN` 启用；未配时skip，已配置但后端故障则失败。
+- 真库验证（openGauss-lite 7.0.0-RC3 master 2026-08-19 构建，aarch64；psycopg2-binary 2.9.13）：默认A兼容库与PG兼容库上最新集成测试各13项过12项（含池突发复用/SET LOCAL隔离与全文payload一致性），唯一失败为下文BM25显式ROLLBACK门禁。Linux storage/retrieval/config 单测2097通过、2跳过；此次优化不解除生产前置门禁。另验证：3万条64维向量HNSW recall@10与精确扫描一致（10/10）；目标Scope仅30条弱匹配、其余3万条强匹配属其他Scope时，top_k 5/10/30/200均返回正确条数（BM25同）。
+
+
 ### FulltextStore（`storage/fulltext.py` · `FulltextProducer` · TOP_NAME=`fulltext_store`）
 
-全文倒排。`search` 走关键词相关性，`filters` 承载 scope 之外的谓词。
+全文倒排。`search` 走关键词相关性，`filters` 承载 scope 之外的谓词。可选 `recall`
+与向量端口采用相同 payload 契约；KeywordRecaller 优先请求完整 metadata，仅在
+`NotImplementedError` 时回退 search + get，旧后端无需改写，真实错误不降级。完整 payload
+保留 `unit_id` MaxP、`entities` 实体扩展及任意自定义键；不为此改变原 search/get 输出。
 
 | target | 类 | 后端 | 必填参数 | 可选参数（默认） | 隔离 | 关键语义 |
 |---|---|---|---|---|---|---|
 | `memory` | `InMemoryFulltextStore` | 进程内词重叠计分 | — | 依赖 `tokenizer`（`dep`，缺省 `whitespace`） | scope 折五段命名空间键 | 分词复用注入的 `Tokenizer`（与构建侧同实例=同词表）；`score`=命中词数/文档词数模拟 BM25；降序 top-k |
-| `elasticsearch` | `ElasticsearchFulltextStore` | Elasticsearch（`elasticsearch-py` 8.x，配置工厂装配期预加载依赖，客户端惰性连接） | `hosts` | `index`(`agent_memory_fulltext`)/`username`+`password` 或 `api_key`/`text_field`(`text`)/`refresh`(`false`) | scope 落文档 `scope.{dim}` 嵌套 keyword，`term` 过滤非空维 | 首次连接 `_ensure_index`：`metadata.*` 字符串**动态映射为 keyword**（精确等值/集合/包含；text 分析器会拆词小写化导致匹配不上），数值/布尔动态推断支持 range；`insert`=bulk `create`（409→`ConflictError`），`update` 先 mget 查缺→`NotFoundError` 再 bulk `index`，`delete`=bulk `delete` 按物理 `_id` 精确删（实时可见，scope 隔离由 `_doc_id` 五段编码保证）；`refresh: wait_for` 让写入对随后 search 立即可见；`search`=`match` + scope/filters，`score`=BM25 `_score` |
+| `elasticsearch` | `ElasticsearchFulltextStore` | Elasticsearch（`elasticsearch-py` 8.x，配置工厂装配期预加载依赖，客户端惰性连接） | `hosts` | `index`(`agent_memory_fulltext`)/`username`+`password` 或 `api_key`/`text_field`(`text`)/`refresh`(`false`) | scope 落文档 `scope.{dim}` 嵌套 keyword，`term` 过滤非空维 | 首次连接 `_ensure_index`：`metadata.*` 字符串**动态映射为 keyword**（精确等值/集合/包含；text 分析器会拆词小写化导致匹配不上），数值/布尔动态推断支持 range；`insert`=bulk `create`（409→`ConflictError`），`update` 先 mget 查缺→`NotFoundError` 再 bulk `index`，`delete`=bulk `delete` 按物理 `_id` 精确删（实时可见，scope 隔离由 `_doc_id` 五段编码保证）；`refresh: wait_for` 让写入对随后 search 立即可见；`search` 使用索引实际 analyzer 分词并过滤停用词，再以 OR term 子句 + scope/filters 召回，`score`=BM25 `_score` |
+
+#### openGauss BM25 全文后端（2026-11-19）
+
+- `fulltext_store.<name>.target: opengauss` 注册 `OpenGaussFulltextStore`；必填`dsn`，默认`schema: public`、`table: agent_memory_fulltext`。分别给default、layers_l0、layers_l1指定不同表即可复用现有分层召回；与openGauss VectorStore共存时继续使用现有RRF，不改上层检索编排。
+- `search` 与 `recall` 共用同一安全 SQL 路径；请求 metadata 时只在已校验的 SELECT 增加完整 `metadata::text`，一次取回 id/score/metadata，KeywordRecaller 不再额外 get。未请求时不读取 payload，search/get 输出不变；保留每次 EXPLAIN、索引名缓存及未知索引名重查校验。`RoutingFulltextStore` 透明转发；`shard_routed` 保持基类默认不支持，由 recaller 回退既有 search/get，不扩大分片变更。授权仍走 manager 的 SEARCH 代理。
+- 使用单字段`USING bm25(content)`和`content <&> query DESC`，保留数据库Jieba分词与正向原生BM25分数。此后端不提供ES DSL、短语/模糊/前缀匹配等价性；不能用它替代`write_document=true`的DocumentShadowIndex。
+- 建池时按 `表::regclass` 查目录，确认存在有效、非partial、单列content的BM25索引并缓存索引名（预建表的索引可任意命名，因此按目录发现而非按名字推算）；之后检索不再查目录。每次检索在一个事务内用一条 `set_config(..., true)` 设置全部本地参数，再执行 `EXPLAIN (FORMAT JSON)`：仅接受Limit/Result包裹、使用缓存中BM25索引的有序Index Scan；计划用到不在缓存中的索引名时（索引被重建或改名）重查一次目录再判，仍不符合则报BackendError，不退回无索引评分。EXPLAIN 取得的表与索引 AccessShareLock 持续到事务结束，校验过的计划不会被并发DDL作废。热路径包含3条显式SQL（参数、EXPLAIN、查询）及事务提交；驱动还可能为隐式BEGIN单独往返，不把协议往返总数保证为4。
+- 拒绝的方案：每次检索前查目录（6表JOIN约2ms，占单次检索近一半，且索引被删除时EXPLAIN本身已能发现）；去掉EXPLAIN（openGauss BM25分数依赖索引扫描上下文，计划走错会返回错误分数，与pgvector距离算子走不走索引都正确不同）。
+- Scope和完整FilterExpr直接放入同条检索SQL的WHERE、早于最终LIMIT；不先截断全库TopK再在Python过滤。`bm25_topk`只作为首轮候选设置，按数据库当前5..200范围收敛；最终SQL LIMIT仍取请求K。过滤后补足依赖目标BM25扫描的扩候选行为，必须以真实数据验收。
+- `bm25_k1`默认1.2（0..3）、`bm25_b`默认0.75（0..1）、`max_score_ratio`默认1.05（0.5..1.3），全部经事务级`set_config(..., true)`（等价SET LOCAL）设置，避免污染连接池；不照搬压测使用的ratio=0.5剪枝配置。全文和向量共享外部psycopg2连接基础，但默认各持独立池和事务，不因此获得跨Store原子写入。
+- 整批冲突/缺失在逻辑写锁下先查再写，避免适配器自身的正常重复插入在已知有回滚缺陷的旧BM25版本中触发无意义索引写入。真实索引内部失败仍返回BackendError，不自动REINDEX、不吞错、不承诺修复数据库缺陷。
+- **生产前置门禁**：目标openGauss版本须支持普通ROLLBACK/SAVEPOINT后索引仍可用。真库测试显式覆盖写入后ROLLBACK/SAVEPOINT和后续BM25查询，失败必须阻止验收，不把它转成skip。上述7.0.0-RC3 master构建实测：SAVEPOINT回滚通过；**显式ROLLBACK后索引被标记需REINDEX**，此后所有会话（含新连接、其他事务成功提交之后）的BM25查询均报错，直至REINDEX。适配器的预检已避免冲突与非法批次触发该路径，但写入中途断连、超时、取消或提交失败仍会触发；该构建不满足生产门禁，修复位于openGauss开发分支，需随目标发行版验证。
+- 离线测试覆盖注册、CRUD/Scope、批量预检、文本/JSON验证、BM25参数、索引目录识别、无索引/错误执行计划拒绝，以及两个适配器通过既有Recaller与RRF的接线。
+- 端到端：LoCoMo conv-26（419轮、152题，DeepSeek-V4-Flash非思考，单次运行）以本后端替换Milvus+ES，写入、计分与REINDEX报错均为0，各cutoff准确率不低于原链路。两次独立抽取的记忆集不同，后续同快照对照未发现稳定后端准确率优势，不能把该端到端分差归因于数据库；本轮池/payload优化只验证时延和召回结果不变。
+- 池/payload优化回放：同一558条记忆和152份冻结查询向量，Top200，改前（含已有SQL优化）/仅池/池+全文/Milvus默认Strong+ES四组轮换3轮；每组每指标456次，含授权与unit归并，双路并行，不含embedding、Redis真源复核和融合。openGauss改前→全优化：关键词p50 10.11→6.35ms；并发8双路p50/p95 81.07/258.08→49.61/82.40ms，74.81→117.91QPS；并发16为173.49/297.06→91.14/149.29ms，76.90→107.96QPS。仅池并发8为57.80/91.90ms、105.35QPS，支持连接复用和少一次get分别贡献收益。单请求双路13.34/13.86→13.61/15.29ms，未改善，仍受向量路约13ms约束。并发8测量新建连接763→0，另6轮8并发同步突发84→0；所有10944份OG通道结果ID/分数/顺序完全一致，四组9120次请求零错误、模型调用0。共享主机未隔离、每组456次并发样本较短，仅是当前部署的探索结果，不外推数据库算法性能或新问答准确率。
 
 ### FusionStore（`storage/fusion.py` · `FusionProducer` · TOP_NAME=`fusion_store`）
 
@@ -130,5 +165,6 @@
 
 - **`milvus_graph` 融合不支持 text/BM25 通道**：`FusionQuery.text` / `vector_weight` 仅 `InMemoryFusionStore` 实现，Milvus 融合形态聚焦「向量→图」，文本只随记录存储供 get 回读。
 - **`milvus_graph` update 不移除旧链边**：`update` 走 upsert 追加新边，移除旧链需 `delete + insert`。
-- **`InMemoryFulltextStore` 计分非真 BM25**：词重叠比值近似，仅用于离线/测试；生产全文走 ES。
+- **`InMemoryFulltextStore` 计分非真 BM25**：词重叠比值近似，仅用于离线/测试；持久全文可选 ES 或满足上述门禁的 openGauss BM25。
+- **openGauss BM25 显式回滚**：主线构建在写入事务显式ROLLBACK后索引需REINDEX；适配器不自动REINDEX、不吞错，恢复需人工重建索引，生产须使用含修复的数据库版本。
 - **`nano_graphrag` 单边模型**：同一对端点至多一条边，多重关系无法并存（再插按冲突处理）。

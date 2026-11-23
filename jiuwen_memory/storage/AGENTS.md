@@ -32,17 +32,18 @@
 | `kv.py` | KVStore 接口：键值存储，统一 CRUD + MemoryUnit 列表查询 + 范围枚举；共享读 helper 三件——`load_memory_unit(raw, scope, key)` 解码隔离（坏字节记 warning 后返 `None`），`load_units(kv, scope, unit_ids)` 点读（缺失省略/保序/不去重/零过滤），`list_units(kv, scope, **list kwargs) -> (items, count)` 列表读（`kv.list` + 反序列化，过滤/计数/分页语义由 `KVStore.list` 契约承担）；另定义 `ConditionalKV` 能力契约（原子创建 / 整值条件替换与删除 / 批量部分读 / 存储侧时间 / 范围枚举） |
 | `vector.py` | VectorStore 接口：向量存储，统一 CRUD + ANN 检索 |
 | `graph.py` | GraphStore 接口：属性图存储，节点与边统一 CRUD + 邻域遍历 |
-| `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25） |
+| `fulltext.py` | FulltextStore 接口：全文倒排索引存储，统一 CRUD + 关键词检索（BM25）+ 可选 recall payload；未实现默认抛 NotImplementedError |
 | `fusion.py` | FusionStore 接口：融合存储（向量+倒排+正排一体） |
 | `fs.py` | FSStore 接口：文件系统存储（原始负载/二进制资产）；可选 object_id 能力为加密提供稳定对象标识 |
 | `encryption.py` | PR1-1 的 StoreManager 装配保护：全部具名 KV/FS 包装、公开依赖契约去重、可配置 Producer 包装与缓存回填；公共 manager 保护清单准入检查 |
 | `entity_store.py` | EntityStore 端口契约（**StorageCapability 第七席位 ENTITY**）：`scope: Scope` 首参（F09 起与其它 Store 对齐，后端内部派生 `space_id` routing）+ `EntityStoreFilters` 隔离 + 可选 `shards` + 增量 `UNLINK` / `DELETE_IF_EMPTY` + `CONTRACT_VERSION`（v2；旧签名适配器据此识别新契约实现，不猜方法签名）+ `supports_complete_linked_enumeration`（搬迁完整枚举显式能力，默认 false）；授权由 `_AuthorizedEntityStoreProxy` 按 batch 逐条动作推导 |
 | `_support.py` | 后端实现共用：物理资源标识脱敏（`sanitize_resource_id`）、异常归一（`wrap_backend`）、scope 派生（`scope_dims`/`scope_segments`）、SSL 配置读取（`read_ssl_config`）、已选后端依赖预加载（`preload_backend`）；`SslConfig` 与 scheme 校验复用 `common._support` |
 | `_pg.py` | PostgreSQL 后端共享基础：asyncpg 惰性连接池（专职事件循环线程桥接同步调用）、schema 工具与 FilterExpr SQL 编译；`dsn` 支持 ConfigSource 晚绑定 |
+| `_opengauss.py` | openGauss 原生 SQL 连接基础：外部安装的 psycopg2/libpq、每实例有界保留空闲连接的线程安全池（pool_timeout 默认30秒/0立即失败；建连不持借还锁）、事务与五维 Scope/JSONB 过滤；Scope 列经 `scope_value` 加 `#` 前缀落库，不依赖库的 SQL 兼容模式（A 兼容把 `''` 存为 NULL）；连接串晚绑定换池不关闭仍在使用的连接，批量写入先加锁预检再整体提交 |
 | `kv_impl/` | KVStore 实现目录（memory / sqlite / redis / encrypted / postgres / shard_routed）及共用的 `memory_list.py` 兼容逻辑；连接型后端支持 `kv_store.*` 晚绑定。`shard_routed_kv.py` 是分片 KV 数据面（归属协议读写路径、scan/list、模板展开、`ShardLocator` 实现、`moving` 语义与 `update` 打搬迁标记），`shard_admin.py` 是控制面（拓扑登记与退役、对账、维护窗口内的重新分区），`shard_placement.py` 定义归属记录 / 拓扑登记的数据形态与 key 约定（`moving` + 可选 `relocate_to` / `step` / `cleanup_from` / `failures` / `mark_digest` / `claim` / `claimed_at`，空值不序列化），`shard_relocation.py` 是搬迁状态机（`ShardRelocator`：复制 KV 与派生记录、切换归属、清理、回滚、遗留 `moving` 恢复）。`ShardRoutedKVStore` 把公开的控制面方法薄转发给 `ShardAdmin`，删除协议直接调用 `ShardAdmin` 的分步实现 |
-| `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector / shard_routed）；`uri`/`dsn` 晚绑定；`shard_routed_vector.py` 支持 shared / split 两种模式；Milvus 搬迁复制使用强一致冲突预检，避免弱一致重试产生重复行 |
+| `vector_impl/` | VectorStore 实现目录（memory / milvus / pgvector / opengauss / shard_routed）；`uri`/`dsn` 晚绑定；openGauss 使用原生 DataVec HNSW（strict_order）或精确距离排序，不依赖 pgvector 扩展；`shard_routed_vector.py` 支持 shared / split 两种模式；Milvus 搬迁复制使用强一致冲突预检，避免弱一致重试产生重复行 |
 | `graph_impl/` | GraphStore 实现目录（memory / nano_graphrag / kv / neo4j / shard_routed）；`shard_routed_graph.py` 支持 shared（节点 `storage_shard` 标签、后端截断前过滤）与 split（每分片独立图、跨分片边丢弃）；`memory` / `nano_graphrag` / `neo4j` 声明 `SHARD_PREFILTER`，`kv`/`memory`/`neo4j` 声明条件投影能力（`project_edge`/`unproject_edge`），`neo4j` 驱动惰性导入、连接参数 `graph_store.<field>` 晚绑定；nano / Neo4j / KV 图声明 `resource_descriptor()`，split 同名物理资源装配期拒绝。两种模式写入缺归属抛 `MissingShardPlacementError`、命中 `moving` 的写入与删除抛 `RelocationInProgressError`；遍历可经过任意节点，只在收集结果时按标签过滤（三后端同一语义）。`seed_ids` 的 `extensions` 只在带 `shards` 时传入，兼容旧签名插件。证据图只能用普通后端，`shard_routed` 不声明有向邻接/条件投影，构建期拒绝 |
-| `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch / shard_routed）；`hosts` 晚绑定；`shard_routed_fulltext.py` 支持 shared / split 两种模式 |
+| `fulltext_impl/` | FulltextStore 实现目录（memory / elasticsearch / opengauss / shard_routed）；`hosts`/`dsn` 晚绑定；openGauss 用单字段原生 BM25(content)，search/recall 共用安全 SQL 路径，recall 在同条 SELECT 按需回带完整 metadata；建池时发现并缓存 BM25 索引名，每次检索以 EXPLAIN 校验有序 BM25 索引计划（索引名不在缓存时重查一次目录），拒绝普通扫描独立评分；`shard_routed_fulltext.py` 支持 shared / split 两种模式，recall 沿用基类默认回退 |
 | `fusion_impl/` | FusionStore 实现目录（memory / milvus_graph）；`uri`/`working_dir` 晚绑定 |
 | `fs_impl/` | FSStore 实现目录（memory / local / encrypted）；local 的 `root` 晚绑定；encrypted_fs_store.py 用稳定 object_id 绑定 AAD、有界读写并声明 StoreSecurity |
 | `entity_impl/` | EntityStore 实现目录（elasticsearch / memory / shard_routed / legacy）；命名空间中已声明实例经 manager 全量聚合为 ENTITY 端口，消费方按端口名选择；`hosts` / 兼容 `endpoint` 未配时 builder 返 None → 无 ENTITY 能力（增强层装配期降级，不报错）；地址在构造期固定。`in_memory_entity_store.py` 提供契约测试与无外部服务部署用的内存实现；`shard_routed_entity.py` 是 F09 shared / split 包装层（逻辑 id + `{id}@{shard}` 物理文档），仅在内层声明完整枚举能力时声明 `SHARD_RELOCATABLE`；`legacy_entity_store_adapter.py` 过渡旧 `space_id` 签名（声明非原子，分片包装层拒绝） |
@@ -162,6 +163,9 @@
    Storage 顶层操作与 `storage.vector.get()` 等端口调用先经 `StorageSecurity`；默认
    `AllowAllStorageSecurity` 允许省略 access。各 Store 同时暴露自身 `security`，未启用数据
    保护时返回 passthrough，`EncryptedKVStore` 明确声明已启用。
+   KeywordRecaller 优先经受管全文端口 recall 取完整 metadata，只有 NotImplementedError
+   才回退 search/get；两条路径保持 unit_id MaxP 与 entities 实体扩展，真实后端/授权错误
+   不触发回退。recall 沿用通用代理的 SEARCH 映射，不获取 raw Store 绕过授权。
 
    **ENTITY 端口的 action 映射**（`_AuthorizedEntityStoreProxy`，与通用 proxy 分开实现）：
    `find_by_entity_text_hash` / `find_by_linked_memory_id` → `SEARCH`（不归 GET——既有

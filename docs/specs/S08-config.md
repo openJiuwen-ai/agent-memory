@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-18 |
+| 最近一次修订日期 | 2026-11-23 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F08-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F05-personal-memory-portal.md`；写入真异步与批量编排见 `docs/features/control/F10-async-write-orchestration.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -366,7 +366,7 @@ ConfigSource
 | Reranker | `reranker.model`、`reranker.api_key`、`reranker.base_url` | `reranker.active` |
 | KV | `kv_store.url`（及 `dsn`/`db_path`/`host`/`port`/`db`/`password`，按后端） | `kv_store.active` |
 | Vector | `vector_store.uri`、`vector_store.dsn` | `vector_store.active` |
-| Fulltext | `fulltext_store.hosts` | `fulltext_store.active` |
+| Fulltext | `fulltext_store.hosts`、`fulltext_store.dsn` | `fulltext_store.active` |
 | Graph | `graph_store.working_dir` | `graph_store.active` |
 | Fusion | `fusion_store.uri`、`fusion_store.working_dir` | `fusion_store.active` |
 | FS | `fs_store.root` | `fs_store.active` |
@@ -413,7 +413,9 @@ ConfigSource
   `composite`，也可以是产品注入的 `RoutingStoreManager`（F02）；下层端口仍引用各预装实例内
   的 `kv_store` / `vector_store` / …。
 - **Store 级**：ConfigSource 的连接改值 / `*_store.active` 作用于**端口背后的 Store**（含
-  `Routing*Store`，F01）。
+  `Routing*Store`，F01）。`RoutingFulltextStore.recall` 每次按 `fulltext_store.active`
+  选实例，原样转发 Scope、TextQuery（含 filters/extensions）及 output_fields，并原样传播
+  `NotImplementedError` 与后端错误，由 KeywordRecaller 决定兼容回退，不在路由层自行 search/get。
 - **StoreManager 级**：`store_manager.active` 仅当全局 manager 为 `RoutingStoreManager` 时，
   在已预装的完整 manager 实例间选用（config/F02 与 storage/F07）；二者诉求不同，勿混用。
 - **EncryptedKV 为 common/F04 opt-in**（`258f398` 起）：`build_kernel` **不再**默认外包加密层；
@@ -441,7 +443,7 @@ ConfigSource
 | globals.storage_encryption_max_plaintext_bytes / storage_encryption_max_ciphertext_bytes | 自动 FS 包装的大小上限；默认 64 MiB / 0（明文上限+4 KiB），与显式 FS 参数同语义 |
 | 索引/文件型 SQLite 的 params.at_rest | method=volume/backend、非空 reference、bindings 映射；绑定受保护实际位置 |
 
-bindings 覆盖 ES hosts（ENTITY 兼容 endpoint）、Milvus uri、pgvector dsn、
+bindings 覆盖 ES hosts（ENTITY 兼容 endpoint）、Milvus uri、pgvector dsn、openGauss 向量/全文 dsn、
 nano_graphrag working_dir、milvus_graph uri+working_dir、audit/permission/shadow_index/grant_store/delegation_store SQLite db_path、markdown_store root。
 统一加密开启时 Markdown 必须显式配置 root，影子 SQLite 必须显式配置 db_path
 （`:memory:` 仅豁免部署证明）；默认当前目录或跨命名空间派生路径不满足位置绑定契约。
@@ -693,6 +695,8 @@ injection.prompt 默认只产生分类依据，不改变等级或正文；显式
 拷贝与登记更新；关联图 shared / split 已落地，证据图不分片。分片集合由解析器具名实例唯一声明，规则冻结于装配期。派生端口独立选择 shared/split：shared 只接受 inner，split 只接受模板及覆盖，两组互斥。模板由标准装配阶段展开成上下文内稳定内部实例，注册/安全校验/生命周期与具名实例一致，但不发布业务端口；不得由包装层另建配置系统。
 
 定位能力经具名 KV 注入并共享对象身份，**由装配器在端口构建完成后绑定**（未绑定即运行期报不支持，不在运行期重新解析拓扑）。根统一登记自有和借用资源、按身份去重，先关闭使用者，启动失败仅清理本次资源。能力/版本、分片覆盖、物理身份冲突、前置过滤、向量评分兼容及连接预算均启动校验；不按具体 target 判断。split 各 shard 物理身份必须不同（KV / 向量 / 全文 / 实体 / 图统一校验），shared 明确共享。持久资源身份登记不含凭据，改变数据集必须经迁移，不得以晚绑定绕过。
+
+**openGauss 连接池参数**：向量/全文的 `params.pool_min_size`（1）控制首次预建连接，`pool_max_size`（8）限制单池连接总数并保留健康空闲连接；`pool_timeout`（30秒，可为0）只限制容量排队，0为立即失败，超时抛BackendError。`connect_timeout`（10秒）独立限制建连，查询超时不由pool_timeout承诺。池参数在构造期固定，仅dsn晚绑定；换池等待旧lease排空，不强断在途事务。
 
 **连接预算**：`globals.storage_connection_budget`（正整数，可选）是部署级总连接上限。装配期从端口表出发、按对象身份去重并沿 `BaseStore.connection_dependencies()` 递归（分片表 / 归属存储多为包装层内联实例，端口表看不到），累加各实例 `connection_budget()` 自报的上限；分片表各持一个池，这是分片数放大连接数的直接来源。超过预算即拒绝启动，未配置时只汇总并记日志。不暴露上限的后端（ES / Milvus / Redis 客户端池）不参与累加，不能按 0 估算成"安全"。
 

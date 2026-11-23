@@ -144,8 +144,13 @@ class KeywordRecaller(Recaller):
             "text": tq.text, "filters": asdict(tq.filters) if tq.filters else None,
             "top_k": top_k, "layer": self._layer,
         }, level=TraceLevel.DEBUG)
-        hits = self._fulltext.search(scope, tq)
-        records = self._fulltext.get(scope, [h.id for h in hits])
+        try:
+            hits = self._fulltext.recall(scope, tq, output_fields=["metadata"])
+        except NotImplementedError:
+            hits = self._fulltext.search(scope, tq)
+            records = self._fulltext.get(scope, [h.id for h in hits])
+        else:
+            records = hits
         batch1 = aggregate_to_units(hits, records, RecallChannel.KEYWORD)
 
         # L2 实体关联扩展：从 batch 1 候选 metadata['entities'] 反查关联 unit。

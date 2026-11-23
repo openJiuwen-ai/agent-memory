@@ -136,6 +136,29 @@ def test_routing_fulltext_graph_fusion_fs_switch() -> None:
     fs_b.insert.assert_called_once()
 
 
+def test_routing_fulltext_recall_follows_active_and_preserves_arguments() -> None:
+    a, b = MagicMock(), MagicMock()
+    a.recall.return_value = [object()]
+    b.recall.return_value = []
+    cfg = DictConfigSource({"fulltext_store.active": "a"})
+    store = RoutingFulltextStore(_router("fulltext_store", {"a": a, "b": b}, cfg, "a"))
+    marker = object()
+    query = TextQuery(text="q", extensions={"runtime": marker})
+    fields = ["metadata"]
+    assert store.recall(_SCOPE, query, output_fields=fields) is a.recall.return_value
+    a.recall.assert_called_once_with(_SCOPE, query, output_fields=fields)
+    assert a.recall.call_args.kwargs["output_fields"] is fields
+    assert a.recall.call_args.args[1] is query
+    cfg.put("fulltext_store.active", "b")
+    assert store.recall(_SCOPE, query) == []
+    b.recall.assert_called_once_with(_SCOPE, query, output_fields=None)
+    b.recall.side_effect = NotImplementedError("legacy backend")
+    with pytest.raises(NotImplementedError, match="legacy backend"):
+        store.recall(_SCOPE, query, output_fields=fields)
+    a.search.assert_not_called()
+    b.search.assert_not_called()
+
+
 def test_routing_vector_delegates_recall_and_score_direction() -> None:
     a = MagicMock()
     a.recall.return_value = []
