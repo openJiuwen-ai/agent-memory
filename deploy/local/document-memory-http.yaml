@@ -84,10 +84,9 @@ memory_api:
   extractor:
     default: {target: agent_llm, params: &fact_params {llm: default, extractor_language: cn}}
     document_fact: {target: document_fact, params: *fact_params}
-    team_turn: {target: team_llm, params: *fact_params}
+    collective_turn: {target: team_llm, params: *fact_params}
   classifier:
     default: llm
-    team_conclusion: {target: team_document, params: {base_classifier: default}}
   constructor:
     default: {target: document, params: {domain_store: default}}
   dedup:
@@ -107,9 +106,6 @@ memory_api:
     document_fact:
       target: orchestrating
       params: {<<: *evolve_params, extractor: document_fact, dedup: project_team}
-    team_turn:
-      target: orchestrating
-      params: {<<: *evolve_params, extractor: team_turn, dedup: project_team}
   pipeline:
     default:
       target: metadata
@@ -124,8 +120,6 @@ memory_api:
             evolver: default
             classifier: default
           document_fact: {<<: *default_profile, evolver: document_fact}
-          team_turn: {<<: *default_profile, evolver: team_turn}
-          team_conclusion: {<<: *default_profile, classifier: team_conclusion}
   engine:
     default:
       target: agent

@@ -201,4 +201,4 @@ def test_the_module_takes_no_identity() -> None:
     """
     params = set(inspect.signature(collective.recall_spaces).parameters)
     assert "identity" not in params
-    assert params == {"targets", "query", "top_k", "recall"}
+    assert params == {"targets", "query", "top_k", "recall", "bucket"}

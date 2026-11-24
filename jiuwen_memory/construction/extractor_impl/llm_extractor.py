@@ -51,6 +51,7 @@ from datetime import UTC, datetime
 from enum import Enum
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
+from jiuwen_memory.common.llm.json_response import strip_json_fence
 from jiuwen_memory.common.log import (
     get_logger,
     metadata_for_log,
@@ -491,17 +492,7 @@ class ExtractorImpl(Extractor):
     @staticmethod
     def _strip_non_json(text: str) -> str:
         """去除 markdown fences 等噪声，提取 JSON 核心。"""
-        # 剔除 ```json ... ``` 包裹
-        s = text.strip()
-        if s.startswith("```"):
-            lines = s.split("\n")
-            # 去首行 ```json 和末行 ```
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            s = "\n".join(lines)
-        return s.strip()
+        return strip_json_fence(text)
 
     def operator_type(self) -> OperatorType:
         return OperatorType.EXTRACTOR

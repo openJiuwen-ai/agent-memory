@@ -29,11 +29,11 @@ def test_profiles_preserve_existing_routes_and_component_parameters():
     profiles = result["pipeline"]["default"]["params"]["profiles"]
     assert profiles["video"] == original["pipeline"]["default"]["params"]["profiles"]["video"]
     assert profiles["document_fact"]["retriever"] == "search"
-    assert result["extractor"]["team_turn"]["params"]["llm"] == "host_model"
+    assert result["extractor"]["collective_turn"]["params"]["llm"] == "host_model"
     assert result["dedup"]["project_team"]["params"]["embedder"] == "host_embedder"
-    assert result["classifier"]["team_conclusion"]["params"]["base_classifier"] == "labels"
-    result["extractor"]["team_turn"] = {"target": "another_extractor"}
-    assert configure_document_pipelines(result)["extractor"]["team_turn"] == {
+    assert profiles["document_fact"]["classifier"] == "labels"
+    result["extractor"]["collective_turn"] = {"target": "another_extractor"}
+    assert configure_document_pipelines(result)["extractor"]["collective_turn"] == {
         "target": "another_extractor",
     }
 
@@ -44,9 +44,8 @@ def test_http_sample_matches_sdk_document_profiles():
     baseline = deepcopy(expected)
     baseline.pop("pipeline")
     for section, names in {
-        "extractor": ("document_fact", "team_turn"),
-        "evolver": ("document_fact", "team_turn"),
-        "classifier": ("team_conclusion",),
+        "extractor": ("document_fact", "collective_turn"),
+        "evolver": ("document_fact",),
         "dedup": ("project_team",),
     }.items():
         for name in names:

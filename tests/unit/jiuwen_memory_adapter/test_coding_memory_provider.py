@@ -180,12 +180,12 @@ def test_sdk_project_isolation_profile_sharing_edit_and_restart(tmp_path, monkey
                 provider = await open_provider(scene, user=user, agent=agent)
                 try:
                     recalled = await provider.prefetch("User prefers dark theme repository Rust")
-                    assert ("dark theme" in recalled) == shared
+                    assert ("dark theme" in recalled) == (user == "user")
                     assert ("Rust" in recalled) == (shared and scene == "code")
                     if scene == "code":
                         profile = await provider.handle_tool_call(
                             TOOL_PREFIX + "read", {"md_filename": "USER.md"})
-                        assert ("dark theme" in profile) == shared
+                        assert ("dark theme" in profile) == (user == "user")
                 finally:
                     await provider.shutdown()
 
@@ -242,11 +242,12 @@ def test_document_profiles_follow_effective_scene_configuration(
     monkeypatch.setattr(f"{module}.assemble_runtime", assemble)
     for scene in ("agent", "code", "team"):
         # This unit test isolates configuration assembly from the optional Portal.
+        coordinates = {"project": "repo", "team": "test-team"} if scene == "team" else None
         provider = AgentMemoryMemoryProvider(
             scene=scene, project="repo", security_provider=lambda: None,
-            portal={"enabled": False}, **options,
+            collective_coordinates=coordinates, portal={"enabled": False}, **options,
         )
-        asyncio.run(provider.initialize())
+        asyncio.run(provider.initialize(session_id=""))
         assembled = assemble.call_args.kwargs["config"]
         effective_mode = document_mode if scene == "agent" else True
         assert assembled["globals"] == {**expected, "write_document": effective_mode}
@@ -254,7 +255,6 @@ def test_document_profiles_follow_effective_scene_configuration(
             assert "pipeline" not in assembled
             assert "dedup" not in assembled
         else:
-            assert {"document_fact", "team_turn", "team_conclusion"} <= (
-                assembled["pipeline"]["default"]["params"]["profiles"].keys()
-            )
+            assert "document_fact" in assembled["pipeline"]["default"]["params"]["profiles"]
+            assert assembled["extractor"]["collective_turn"]["target"] == "team_llm"
     assert config["globals"]["write_document"] == document_mode

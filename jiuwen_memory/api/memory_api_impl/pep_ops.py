@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import NamedTuple, NoReturn
 
+from jiuwen_memory.api.collective import COLLECTIVE_MANAGEMENT_OPERATIONS, COLLECTIVE_MANAGER_ID
 from jiuwen_memory.common.errors import (
     ConflictError,
     NotFoundError,
@@ -818,6 +819,14 @@ class PepOpsMixin:
         """Validate the complete context before routing or any other side effect."""
         self._require_trusted_request(security, request)
         action, audit_action, target, target_id, context = request
+        if security.auth.actor.user == COLLECTIVE_MANAGER_ID and (
+            action is not Action.MANAGE_SPACE or audit_action not in COLLECTIVE_MANAGEMENT_OPERATIONS
+        ):
+            self._deny_authorization(
+                security.auth.actor, action, audit_action, target=target, target_id=target_id,
+                rule="collective_management_scope", reason_code=DenyReason.ROLE_REQUIRED.value,
+                context=context,
+            )
         if security.auth.is_expired():
             self._deny_authorization(
                 security.auth.actor,

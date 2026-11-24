@@ -9,6 +9,7 @@ from copy import deepcopy
 from typing import Any
 
 from jiuwen_memory.api import install_privacy_filter, redact_for_log, scope_for_log
+from jiuwen_memory_adapter.jiuwenswarm.base_document_scene import BaseDocumentScene
 from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext, MemoryWriteRoute
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import (
     CONCLUDE_SCHEMA,
@@ -210,7 +211,6 @@ class WorkMemoryScene:
     @staticmethod
     async def _search(context: MemorySceneContext, args: dict[str, Any]) -> str:
         """Handle the existing Work search tool."""
-        scope = context.scope
         query = args.get("query", "")
         if not query:
             return json.dumps({"error": "Missing required parameter: query"})
@@ -224,7 +224,9 @@ class WorkMemoryScene:
         if project:
             filters["system_metadata.project"] = {"eq": project}
         # 显式检索不过滤 tier（§6.2-F）：LLM 主动检索允许命中 EPISODIC 原文。
-        items = await context.client.search(query, scope, top_k=top_k, filters=filters)
+        items = await BaseDocumentScene.search_project_memory(
+            context, query, top_k=top_k, filters=filters, project=project,
+        )
         if not items:
             logger.info(
                 "[AgentMemoryMemoryProvider] agent_memory_search query=%s -> no relevant",

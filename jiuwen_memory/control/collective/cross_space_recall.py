@@ -44,7 +44,7 @@ from dataclasses import dataclass, replace
 from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.log import get_logger, metadata_for_log, scope_for_log
 from jiuwen_memory.common.plaintext import PlaintextDataError
-from jiuwen_memory.common.type_def import ChannelError, FilterClause, Scope, and_merge
+from jiuwen_memory.common.type_def import ChannelError, FilterExpr, Scope, and_merge, iter_clauses
 from jiuwen_memory.retrieval.cross_space import allocate_quota, merge, space_error
 from jiuwen_memory.retrieval.expansion import PreparedRetrievalResult, complete_expansion
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -66,7 +66,7 @@ class SpaceRecallTarget:
     """
 
     scope: Scope
-    clauses: tuple[FilterClause, ...] = ()
+    clauses: tuple[FilterExpr, ...] = ()
 
 
 async def recall_spaces(
@@ -75,6 +75,7 @@ async def recall_spaces(
     *,
     top_k: int,
     recall: RecallCallback,
+    bucket: Callable[[Scope], str] | None = None,
 ) -> tuple[RetrievalResult, list[ChannelError]]:
     """第 3—5 步：摊配取数上界、扇出召回、轮转合并。
 
@@ -100,23 +101,28 @@ async def recall_spaces(
     if not targets:
         return RetrievalResult(), []
 
-    priority = [target.scope.space for target in targets]
+    priority = [
+        bucket(target.scope) if bucket is not None else target.scope.space for target in targets
+    ]
     quota = allocate_quota(priority, top_k)
     gathered = await asyncio.gather(
-        *(_recall_one(target, query, quota, recall) for target in targets),
+        *(
+            _recall_one(target, query, quota.get(key, 1), recall)
+            for target, key in zip(targets, priority, strict=True)
+        ),
         return_exceptions=True,
     )
 
     results: list[tuple[str, RetrievalResult]] = []
     failures: list[ChannelError] = []
-    for target, outcome in zip(targets, gathered):
+    for target, key, outcome in zip(targets, priority, gathered):
         space = target.scope.space
         if isinstance(outcome, PlaintextDataError):
             raise outcome
         if isinstance(outcome, BaseException):
             failures.append(space_error(space, type(outcome).__name__, str(outcome)))
             continue
-        results.append((space, outcome))
+        results.append((key, outcome))
 
     merged = merge(results, top_k=top_k, priority=priority)
     if query.expand_depth:
@@ -144,7 +150,7 @@ async def recall_spaces(
 async def _recall_one(
     target: SpaceRecallTarget,
     query: RetrievalQuery,
-    quota: dict[str, int],
+    quota: int,
     recall: RecallCallback,
 ) -> RetrievalResult:
     """一个空间的召回：补齐取数上界与本空间谓词后调回调。
@@ -154,7 +160,7 @@ async def _recall_one(
     """
     rq = replace(
         query,
-        top_k=quota.get(target.scope.space, 1),
+        top_k=quota,
         extensions=dict(query.extensions or {}),
         defer_expansion=bool(query.expand_depth),
     )
@@ -176,7 +182,8 @@ async def _recall_one(
                     "op": getattr(clause.op, "value", clause.op),
                     "value": clause.value,
                 }
-                for clause in target.clauses
+                for expr in target.clauses
+                for clause in iter_clauses(expr)
             ]
         ),
     )

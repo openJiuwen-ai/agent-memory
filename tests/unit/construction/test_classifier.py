@@ -26,9 +26,6 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier_impl.keyword_classifier import KeywordClassifier
 from jiuwen_memory.construction.classifier_impl.llm_classifier import LLMClassifier
-from jiuwen_memory.construction.classifier_impl.team_document_classifier import (
-    TeamDocumentClassifier,
-)
 from tests.unit.construction.fixtures import MockLLM
 
 _CLASSIFY_PROMPT_48BE7B3_SHA256 = "277d2205784c7a140c18ea63a322e2bc50ea5c82de20af08eaa292a4048f0b02"
@@ -499,13 +496,3 @@ def test_category_prompt_switch_reads_globals_via_assembly(enabled, expected):
     extractor = ExtractorProducer.build_named("default", ctx)
     assert ('"importance_category"' in classifier._system_prompt) is expected
     assert extractor._importance_category_prompt_enabled is expected
-
-
-def test_team_document_classifier_preserves_base_classification():
-    unit = _make_unit(content="团队必须先评审然后发布", tags_override=["decision"])
-    result = TeamDocumentClassifier(KeywordClassifier()).classify([unit])
-    assert result == [unit]
-    assert unit.system_metadata["memory_class"] == "team_memory"
-    assert "importance" in unit.system_metadata
-    assert "decision" in unit.tags and "meeting" in unit.tags
-    assert unit.tier is MemoryTier.PROCEDURAL

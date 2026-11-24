@@ -20,7 +20,15 @@ from inspect import Parameter, isawaitable, signature
 
 import pytest
 
-from jiuwen_memory.api import ContinuityEvent, MemoryRef, RelationRecord, RoleViewQuery, TaskRequest
+from jiuwen_memory.api import (
+    ContinuityEvent,
+    Dimension,
+    Member,
+    MemoryRef,
+    RelationRecord,
+    RoleViewQuery,
+    TaskRequest,
+)
 from jiuwen_memory.api.memory_api import MemoryAPI
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.errors import PermissionDeniedError
@@ -387,6 +395,7 @@ def test_every_public_entry_rejects_before_business_access(
         "_governance",
         "_space_lifecycle",
         "_membership",
+        "_collective_members",
         "_policy",
     ):
         component = getattr(api, name, None)
@@ -443,6 +452,9 @@ def test_every_public_entry_rejects_before_business_access(
         "org": ORG,
         "space": VICTIM,
         "policy": SpacePolicy(),
+        "dimension": Dimension(ORG, VICTIM, "team", "reviewers"),
+        "members": [Member(ALICE)],
+        "targets": [ALICE],
         "member": MALLORY if entry == "remove_space_member" else SpaceMember(scope=MALLORY),
     }
     method = getattr(api, entry)

@@ -52,6 +52,7 @@ from jiuwen_memory.common.type_def import (
     iter_clauses,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
+from jiuwen_memory.common.type_def.memory_filter import COLLECTIVE_DOCUMENT_PREFIXES
 from jiuwen_memory.config.encryption import AtRestLocation
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
@@ -119,6 +120,22 @@ def _try_import_sqlite_vec():
         return None
 
 
+_COLLECTIVE_DESTINATION_SQL = (
+    "json_extract(CAST(unit_json AS TEXT), '$.system_metadata.collective_destination')"
+)
+_COLLECTIVE_PATH_SQL = " OR ".join(
+    f"substr(replace(md_filename, char(92), '/'), 1, {len(prefix)}) = '{prefix}'"
+    for prefix in COLLECTIVE_DOCUMENT_PREFIXES
+)
+_COLLECTIVE_SHAREABLE_SQL = (
+    "CASE json_type(CAST(unit_json AS TEXT), '$.system_metadata.shareable') "
+    "WHEN 'true' THEN 1 WHEN 'false' THEN 0 "
+    "ELSE CASE WHEN (json_type(CAST(unit_json AS TEXT), '$.system_metadata.collective_destination') = 'text' "
+    f"AND {_COLLECTIVE_DESTINATION_SQL} != '') OR ({_COLLECTIVE_PATH_SQL}) "
+    "THEN 0 ELSE 1 END END"
+)
+
+
 def _build_schema(vec_dim: int | None) -> str:
     """生成建表 DDL。
 
@@ -169,6 +186,9 @@ CREATE INDEX IF NOT EXISTS idx_project_category ON memory_unit(project, category
 CREATE INDEX IF NOT EXISTS idx_scope ON memory_unit(org, space, "user", agent, session);
 CREATE INDEX IF NOT EXISTS idx_memory_type_scope
     ON memory_unit({_MEMORY_TYPE_SQL}, org, space, "user", agent, session);
+
+CREATE INDEX IF NOT EXISTS idx_private_scope ON memory_unit(org, space, "user", agent)
+    WHERE {_COLLECTIVE_SHAREABLE_SQL} = 0;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     content,
@@ -230,6 +250,15 @@ _SYSTEM_PREDICATE_COLUMNS = {
     "t_event": "t_event",
     "system_metadata.project": "project",
     "system_metadata.memory_class": "category",
+    "system_metadata.collective.project": "COALESCE(project, '')",
+    "system_metadata.collective_destination": f"COALESCE({_COLLECTIVE_DESTINATION_SQL}, '')",
+    "system_metadata.collective.team": (
+        "COALESCE(json_extract(CAST(unit_json AS TEXT), '$.system_metadata.team'), '')"
+    ),
+    "system_metadata.collective.group": (
+        "COALESCE(json_extract(CAST(unit_json AS TEXT), '$.system_metadata.group'), '')"
+    ),
+    "system_metadata.collective.shareable": _COLLECTIVE_SHAREABLE_SQL,
     # team 读取单元 JSON，保留既有表结构；缺失值按空串参与过滤，无需新增物理列。
     "system_metadata.team": "COALESCE(json_extract(CAST(unit_json AS TEXT), "
     "'$.system_metadata.team'), '')",
@@ -316,20 +345,34 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
     return None, []
 
 
-def _requires_vector_prefilter(expr: FilterExpr | None) -> bool:
+def _requires_vector_prefilter(
+    expr: FilterExpr | None, *, ignore_default_visibility: bool = False,
+) -> bool:
     """Keep selective constraints ahead of truncation; team exclusion alone uses KNN."""
     if expr is None:
         return False
-    scoped_fields = {"unit_id", "id", "system_metadata.memory_class", "system_metadata.team"}
+    scoped_fields = {
+        "unit_id", "id", "system_metadata.memory_class", "system_metadata.team",
+        "system_metadata.collective.project", "system_metadata.collective.team",
+        "system_metadata.collective.group", "system_metadata.collective.shareable",
+    }
     if isinstance(expr, FilterClause):
         excludes_team = (
             expr.field == "system_metadata.memory_class"
             and expr.op is FilterOp.NE
             and expr.value == "team_memory"
         )
-        return expr.field in scoped_fields and not excludes_team
+        default_visibility = (
+            ignore_default_visibility
+            and expr.field == "system_metadata.collective.shareable"
+            and expr.op is FilterOp.EQ and expr.value is True
+        )
+        return expr.field in scoped_fields and not (excludes_team or default_visibility)
     if expr.logic is FilterLogic.AND:
-        return any(_requires_vector_prefilter(child) for child in expr.children)
+        return any(
+            _requires_vector_prefilter(child, ignore_default_visibility=ignore_default_visibility)
+            for child in expr.children
+        )
     # OR/NOT can change the meaning of an exclusion; preserve their existing path.
     return any(clause.field in scoped_fields for clause in iter_clauses(expr))
 
@@ -609,7 +652,8 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         不能因走编译路径径而无谓词即放宽成全库召回。存在性判断用 ``iter_clauses``
         平铺（仅判存在、不合并值），逻辑安全。
         """
-        return any(c.field == _PROJECT_FILTER_FIELD for c in iter_clauses(filters))
+        fields = {_PROJECT_FILTER_FIELD, "system_metadata.collective.project"}
+        return any(clause.field in fields for clause in iter_clauses(filters))
 
     @staticmethod
     def _category_of(unit: MemoryUnit) -> str:
@@ -1257,7 +1301,16 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             k = query.top_k
             qblob = _vec_to_blob(query.vector)
 
-            if _requires_vector_prefilter(query.filters):
+            prefilter = _requires_vector_prefilter(query.filters)
+            if prefilter and not _requires_vector_prefilter(query.filters, ignore_default_visibility=True):
+                # Leave the visibility predicate in both SQL plans. The partial index
+                # makes the scope probe cheap when no restricted document can crowd out KNN.
+                prefilter = conn.execute(
+                    f"SELECT 1 FROM memory_unit WHERE {_COLLECTIVE_SHAREABLE_SQL} = 0"
+                    f"{scope_where} LIMIT 1",
+                    scope_params,
+                ).fetchone() is not None
+            if prefilter:
                 # Score exact distances after filtering memory_unit. CROSS JOIN keeps
                 # memory_unit as the outer scan and does not require SQLite 3.35's CTE hint.
                 params = (qblob, *sys_params, *scope_params, k)

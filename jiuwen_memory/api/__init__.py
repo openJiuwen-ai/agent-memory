@@ -158,6 +158,15 @@ from .access_security import (
     fixed_personal_owner,
     register_trusted_principal,
 )
+from .collective import (
+    COLLECTIVE_CONTEXT_HEADER,
+    COLLECTIVE_MANAGEMENT_OPERATIONS,
+    COLLECTIVE_MANAGER_ID,
+    Dimension,
+    Member,
+    bind_collective_context,
+    dimensions_of,
+)
 from .managed_configuration import ManagedConfiguration
 from .memory_api import MemoryAPI
 from .memory_api_impl import (
@@ -179,6 +188,13 @@ from .runtime_configuration import sdk_continuity_runtime_identity
 from .search_options import SearchOptions
 
 __all__ = [
+    "COLLECTIVE_CONTEXT_HEADER",
+    "COLLECTIVE_MANAGEMENT_OPERATIONS",
+    "COLLECTIVE_MANAGER_ID",
+    "Dimension",
+    "Member",
+    "bind_collective_context",
+    "dimensions_of",
     "sdk_continuity_runtime_identity",
     "read_personal_record",
     "open_config_overlay",

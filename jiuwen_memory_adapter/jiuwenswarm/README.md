@@ -132,7 +132,7 @@ Provider 保留原有参数，并追加 Team 坐标及可选宿主 Runtime 持�
 | `memory_scene.py` | `MemoryScene` 协议、`MemoryWriteRoute` 与请求级 `MemorySceneContext` |
 | `memory_scenes.py` | `SCENE_FACTORIES` 注册表，每次创建新的场景实例 |
 | `work_memory.py` / `coding_memory.py` / `team_memory.py` | Work/Coding/Team 的场景行为 |
-| `pipeline_profiles.py` / `team_policy.py` | 具名文档写入配置与宿主结论校验 |
+| `pipeline_profiles.py` | 普通文档的具名写入配置 |
 | `memory_tools.py` | 共用工具定义、文档读取与编辑 |
 | `agent_memory_provider.py` | 场景委托、身份、SDK/HTTP 客户端及生命周期 |
 
@@ -152,37 +152,27 @@ SDK 接续使用独立配置和共享 Runtime，只注册任务/恢复工具，�
 
 ## Team 使用
 
-宿主构造 `scene="team", project=项目键, team=团队键, sidebar="work"或"code", member=成员名`，与 Core 的 `JiuwenTeamMemoryRail` 配套。身份按现有 initialize 参数绑定，Swarm 的 Leader、成员与单人模式使用配置中的同一 agent_id；运行名称不构成额外隔离，不合并不同配置身份。
+宿主构造 `scene="team"`，通过 `collective_coordinates` 绑定项目、团队和可选 Group，并在初始化时传空 `session_id`。Core 的 `JiuwenTeamMemoryRail` 提交真人回合和任务验收来源。常规集群使用稳定主团队及 `main_agent`，专家使用稳定模板身份。
 
-| 工具 | 参数 | 行为 |
-|---|---|---|
-| team_memory_search | query；target=project/team 可省略；top_k=5 | 省略 target 分别查询两段，每段最多 5 条 |
-| team_memory_read | target=profile/project/team、name；offset/limit | profile 仅 USER.md；project 为 MEMORY.md 或日期文件；team 仅 MEMORY.md |
-| team_memory_write | content | 普通抽取到画像或项目事实，不写草稿或团队分工 |
-| team_memory_edit | target、name、old_text、new_text | 唯一文本替换；空 new_text 删除 |
+| 工具 | 行为 |
+|---|---|
+| `team_memory_search` | 按绑定与成员权限统一召回，可按可用落点缩小范围 |
+| `team_memory_read` | 按目标读取 `USER.md`、`MEMORY.md` 或项目日记 `YYYY-MM-DD.md` |
+| `team_memory_write` | 将选定素材交给内核抽取 |
+| `team_memory_edit` | 唯一定位原块并修订正文，保留归属和版本链 |
 
-`add_team_memories(items)` 是宿主接口，items 为 label/content 条目，不暴露给对话模型。空提取不报告写入成功。团队结论不进入单人项目召回；同项目换专家团仍共享画像和项目事实，但团队结论隔离。
-
-SDK 宿主可传 document_runtime_holder：按根目录领取/归还 Runtime，首份配置生效，调用身份独立，最后释放前等待已接受操作结束。HTTP 不使用持有者。详细决策及验证入口见 [Team 文档记忆](../../docs/features/F09-team-document-memory.md)。
-
-Work 的自动召回与 `agent_memory_search` 在传入项目时仅查询该项目，画像通过 `USER.md` 单独读取，不混入旧空项目记忆。未迁移的旧空项目内容不会自动归并到 `default`。
-
-Team 预取并行读取画像、项目及团队兜底文档，并分别检索项目和团队，每项最多等待 5 秒。各段有命中时只使用命中，未命中或失败时使用对应已读取的文档；某段失败不影响其他段。
-
+Team 并行预取共享画像、授权召回与项目、团队兜底文档。对应维度语义召回为空或失败时采用已授权文档。SDK 共享宿主提供的 `document_runtime_holder`，按文档根领取和释放 Runtime。HTTP 复用原有网关凭据，服务端注册专用成员管理身份。配置和验证见 [Team 文档记忆](../../docs/features/F09-team-document-memory.md)。
 
 ## 写入流程配置
 
-普通自动同步和显式工具写入都由场景的 `write_route()` 选择流程：
+普通自动同步和显式工具写入由场景的 `write_route()` 选择流程。Team 来源写入由服务端装配的具名抽取器执行。
 
-| 场景/操作 | `system_metadata.pipeline` | `infer` |
+| 场景/操作 | 流程或抽取器 | `infer` |
 |---|---|---|
 | Work/Code 普通事实 | document_fact | true |
-| Team 普通事实 | team_turn | true |
-| 宿主 add_team_memories | team_conclusion | false |
+| Team 带来源写入 | collective_turn（具名 Extractor） | true |
 
-模型工具不能修改 pipeline、infer 或团队坐标。Provider 校验团队结论的标签、正文与项目绑定，
-普通事实经相应抽取、去重后落盘；已确认结论仅分类后直写。共享 Runtime 初始化时同时装配
-所有流程，不随当前模式切换全局状态。查询、读取、编辑使用原接口与过滤规则。
+模型工具不能设置可信坐标或成员身份。Team 使用 `add` 的 `system_metadata["sources"]` 校验来源、一次抽取和落点选择后持久化派生条目。
 
 SDK 自动调用 `pipeline_profiles.configure_document_pipelines(config)` 补齐配置，保留既有
 default/video 及显式具名覆盖。规则相同的应用可以复用算子；不同规则可注册独立组件和 profile。

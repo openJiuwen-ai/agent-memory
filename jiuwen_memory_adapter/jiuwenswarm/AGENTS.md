@@ -9,7 +9,7 @@
 | memory_scene.py / memory_scenes.py | 场景协议、请求级上下文与独立实例工厂注册表 |
 | base_document_scene.py | Code/Team 共用的项目绑定、文档写入配置及预取超时保护 |
 | work_memory.py / coding_memory.py / team_memory.py | Work/Coding/Team 工具、预取、项目归属、提示词及普通 SDK 配置要求 |
-| pipeline_profiles.py / team_policy.py | 文档写入具名配置、宿主结论的标签/内容/项目绑定校验 |
+| pipeline_profiles.py | 普通文档的具名写入配置与 Team 抽取器装配 |
 | memory_tools.py | 共用工具定义与文档读取、编辑操作 |
 | sdk_runtime.py | 同进程共享 runtime、lease、统一有界执行池和真实在途操作计数、关闭状态机 |
 
@@ -18,6 +18,9 @@
 - 内置 SDK 的经验文档模式直接输出 `skills_dir/distilled/<skill_name>/SKILL.md`，保留现有同名技能，不启动发布清单同步。HTTP 与其余仍使用技能清单的模式同步时，仅更新或清理带当前空间来源标记且正文摘要未变的文件。
 
 - 经验检索不按 experience_capabilities 或 tier 排除条件动作；该清单只用于非空时的技能同步筛选。空间授权及经验类型、类别过滤保持生效。
+
+- Team 自动回写和主动提炼通过 add 的 `system_metadata["sources"]` 提交材料。用户原文、派单和交付均由宿主标记来源。
+- 群体请求用可信宿主绑定坐标。HTTP 成员管理使用 Memory 预登记的专用身份，数据请求使用普通身份。
 
 - 普通 Work/Coding 按场景策略执行；接续预取与回写保持优先，SDK 接续只注册任务/恢复工具，不将文档工具交给接续客户端。
 - Code/Team 分别继承 BaseDocumentScene，仅复用项目绑定、文档配置与超时保护；工具、Pipeline 和召回策略各自定义，Team 不继承 Code。
@@ -44,11 +47,10 @@
 MemoryAPI 执行授权和任务操作；Adapter 不维护任务目录或业务任务映射，也不为单个 Session 关闭共享内核。
 JiuwenSwarm 的 ContinuityRail、用户候选确认和 metadata.json 激活指针属于上游宿主。
 
-Team 结论在 Provider 内完成批次校验和可见标签前缀规范化；无效项仅记录原因计数，非空批次全无效时写前报错，空提取返回 0。
-Team Provider 的项目和团队坐标由宿主绑定，模型工具不能覆盖。Provider 选择 team_conclusion，团队类别由其 Classifier 生成，不能绕过保留键校验。项目/团队过滤由 Shadow 索引执行；全文和团队精确召回在截断前过滤，单独排除团队类别的向量路径沿用 KNN 候选后 SQL 过滤。反向路径解析、编辑补偿和看门狗使用同一团队键规则。
+Team 的项目、团队和 Group 坐标由宿主绑定。工具使用同一绑定的读写客户端。项目日记及记忆文件的文档边界由 Memory 校验，项目或团队的预取兜底使用已授权文档。
 
 Work 给定项目时，自动召回与搜索工具使用 project 等值过滤；画像独立读取 USER.md。
-Team 预取的三份文档和两段搜索并行且分别限时，命中优先，否则用对应兜底文档；单段异常不清空其他段。
+Team 预取画像、项目和团队文档及语义召回并行且分别限时。项目和团队独立采用召回或文档兜底，单段异常保留其他结果。
 
 普通文档自动同步和显式写入工具统一调用场景 write_route；pipeline/infer 不暴露为工具参数。
 SDK 加载配置并应用场景覆盖后，仅当 write_document 归一为 true 时，通过

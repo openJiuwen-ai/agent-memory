@@ -51,11 +51,12 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,8 @@ except ImportError:
     MemoryProvider = object
 
 from jiuwen_memory.api import (
+    COLLECTIVE_CONTEXT_HEADER,
+    COLLECTIVE_MANAGER_ID,
     AuthenticationError,
     BackendError,
     Channel,
@@ -78,13 +81,16 @@ from jiuwen_memory.api import (
     EvolveMode,
     LocalMediaImports,
     Modality,
+    PermissionDeniedError,
     RequestSecurityContext,
+    UnsupportedCapabilityError,
     ValidationError,
     _config_overlay_candidates,
     _prepare_shared_document_portal,
     _should_write_document,  # noqa: PLC2701 -- 内置适配器通过 API 复用私有装配辅助函数
     assemble_managed_runtime,
     assemble_runtime,
+    bind_collective_context,
     document_llm_instances,
     install_privacy_filter,
     metadata_for_log,
@@ -92,6 +98,7 @@ from jiuwen_memory.api import (
     scope_for_log,
 )
 from jiuwen_memory.api import Scope as ApiScope
+from jiuwen_memory_adapter.jiuwenswarm.base_document_scene import BaseDocumentScene
 from jiuwen_memory_adapter.jiuwenswarm.experience_author_key import configure_experience_author_key
 from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
 from jiuwen_memory_adapter.jiuwenswarm.memory_scenes import create_memory_scene
@@ -99,10 +106,6 @@ from jiuwen_memory_adapter.jiuwenswarm.memory_tools import MAX_TOP_K as _MAX_TOP
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import parse_line_range
 from jiuwen_memory_adapter.jiuwenswarm.pipeline_profiles import configure_document_pipelines
 from jiuwen_memory_adapter.jiuwenswarm.sdk_runtime import OperationWaitTimeout
-from jiuwen_memory_adapter.jiuwenswarm.team_policy import (
-    partition_team_conclusions,
-    validate_team_binding,
-)
 from jiuwen_memory_adapter.jiuwenswarm.work_memory import (
     _merge_prefetch_lines as _merge_prefetch_lines,
 )
@@ -880,6 +883,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         team: str = "",
         sidebar: str = "",
         member: str = "",
+        collective_coordinates: Mapping[str, str] | None = None,
         document_runtime_holder: Any = None,
         **_kwargs: Any,
     ) -> None:
@@ -939,6 +943,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._initialize_lock = asyncio.Lock()
         self._scene = create_memory_scene(scene, project)
         self._team = team
+        self._collective_coordinates = dict(collective_coordinates or {})
+        if scene == "team" and not self._collective_coordinates.get("team"):
+            raise ValueError("Team memory requires host-bound team coordinates")
         self._sidebar = sidebar
         self._member = member
         self._base_url = base_url or ""
@@ -1320,6 +1327,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 config_overrides=self._scene.sdk_config_overrides(),
                 document_runtime_holder=self._document_runtime_holder,
             )
+            # Project-only bindings are sent only for the supplemental search.
+            if self._collective_coordinates.get("team"):
+                self._client.bind_collective_coordinates(self._collective_coordinates)
         return self._client
 
     def _video_tools_enabled(self) -> bool:
@@ -1339,11 +1349,18 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         return isinstance(client, _InProcessClient) and client.supports_video_ingest()
 
     def _scene_context(self) -> MemorySceneContext:
+        coordinates = self._collective_coordinates
+        if (
+            self._base_url and not coordinates.get("team")
+            and not getattr(self._client, "collective_document", False)
+        ):
+            coordinates = {}
         return MemorySceneContext(
             client=self._client, scope=self.bound_scope(), prepare=self._prepare,
             video_enabled=self._video_tools_enabled,
             continuity_enabled=self._continuity_enabled, continuity_mode=self._continuity_mode,
             team=self._team, sidebar=self._sidebar, member=self._member,
+            collective=coordinates,
         )
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
@@ -1568,7 +1585,22 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         ):
             self._last_skill_sync = time.monotonic()
             asyncio.create_task(self._sync_skills_background())
-        return await self._scene.prefetch(self._scene_context(), query, **kwargs)
+        context = self._scene_context()
+        ordinary_recall = self._scene.prefetch(context, query, **kwargs)
+        if kwargs.get("background") or not isinstance(query, str) or not query.strip():
+            return await ordinary_recall
+        supplement = BaseDocumentScene.project_recall(
+            context, query, self._scene.resolve_project(kwargs), top_k=5,
+        )
+        if supplement is None:
+            return await ordinary_recall
+        ordinary, hits = await asyncio.gather(ordinary_recall, supplement)
+        shared = dict.fromkeys(
+            item["content"]
+            for item in hits
+            if item.get("content") and item["content"] not in ordinary
+        )
+        return "\n\n".join(text for text in (ordinary, "\n".join(shared)) if text)
 
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
 
@@ -1585,6 +1617,16 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         保证检索 query 与落盘内容形态一致（此前 prefetch 剥壳、sync_turn 存壳，
         记忆里会存进带壳信封文本）。
         """
+        if self._collective_coordinates.get("team"):
+            sources = kwargs.get("sources")
+            if not sources or not self._initialized or self._client is None:
+                return None
+            result = await self._client.add(
+                "", self.bound_scope(), system_metadata={"infer": True, "sources": sources},
+            )
+            if result is not None:
+                return {"item_id": result.item_id, "stored": bool(result.item_id)}
+            return None
         if self._continuity_enabled:
             if self._client is None:
                 raise RuntimeError("continuity provider not initialized")
@@ -1656,42 +1698,6 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 "[AgentMemoryMemoryProvider] sync_turn add failed: error_type=%s",
                 type(exc).__name__,
             )
-
-    async def add_team_memories(self, items: list[dict[str, str]]) -> int:
-        """Persist validated extraction results; this is a host API, not a model tool."""
-        from jiuwen_memory_adapter.jiuwenswarm.team_memory import TeamMemoryScene
-
-        if not isinstance(self._scene, TeamMemoryScene) or not self._team:
-            raise ValueError("Team conclusions require a Team scene and a bound team key")
-        if not self._initialized or self._client is None:
-            raise RuntimeError("Team memory is not initialized")
-        project = self._scene.resolve_project({})
-        validate_team_binding(project, self._team)
-        conclusions, skipped = partition_team_conclusions(items)
-        if skipped:
-            logger.warning(
-                "[AgentMemoryMemoryProvider] Invalid Team conclusions: "
-                "skipped=%d total=%d reasons=%s",
-                sum(skipped.values()), len(items), skipped,
-            )
-        if items and not conclusions:
-            raise ValueError(
-                "No valid Team conclusions: expected a supported label and non-empty content"
-            )
-        stored = 0
-        for label, content in conclusions:
-            prefix = f"[{label}]"
-            labeled_content = content if content.startswith(prefix) else f"{prefix} {content}"
-            result = await self._client.add(labeled_content, self.bound_scope(), tags=[label],
-                system_metadata={
-                    **self._scene.write_route("conclusion").metadata(), "memory_scene": "team",
-                    "project": project, "team": self._team,
-                    "sidebar": self._sidebar, "member": self._member, "team_label": label,
-                })
-            if result is None:
-                raise RuntimeError("Team conclusion write failed")
-            stored += bool(result.item_id)
-        return stored
 
 # -- 轨迹转交（mem2.0 §2.1：Mem2TrajectoryStore 的发送出口） ----------------- #
 
@@ -2060,6 +2066,11 @@ class AgentMemoryTransportError(RuntimeError):
     """
 
 
+_COLLECTIVE_REQUEST: ContextVar[tuple[object, dict[str, str]] | None] = ContextVar(
+    "memory_collective_request", default=None,
+)
+
+
 class _AgentMemoryClient:
     """AgentMemory 记忆操作的 async 客户端协议。
 
@@ -2072,6 +2083,27 @@ class _AgentMemoryClient:
     ``handle_tool_call`` 外层兜底转 ``{"error": ...}`` 透出给 LLM；只有传输
     失败（HTTP 模式）降级返回 None，与 add 同口径。
     """
+
+    _bound_collective_coordinates: dict[str, str] | None = None
+    request_identity: object | None = None
+
+    def bind_collective_coordinates(self, coordinates: dict[str, str]) -> None:
+        self._bound_collective_coordinates = dict(coordinates)
+
+    @contextmanager
+    def collective_request(self, coordinates: dict[str, str]):
+        """Use a temporary binding on this client, including on its SDK worker loop."""
+        token = _COLLECTIVE_REQUEST.set((self.request_identity or self, dict(coordinates)))
+        try:
+            yield
+        finally:
+            _COLLECTIVE_REQUEST.reset(token)
+
+    def _request_coordinates(self) -> dict[str, str] | None:
+        request = _COLLECTIVE_REQUEST.get()
+        if request is not None and request[0] is (self.request_identity or self):
+            return request[1]
+        return self._bound_collective_coordinates
 
     async def initialize(self) -> None:
         raise NotImplementedError
@@ -2332,6 +2364,7 @@ class _HttpClient(_AgentMemoryClient):
         # 的身份一致。缺省对齐 dev 认证器固定身份；生产指向真实认证身份（§6.2-D）。
         self._identity_org = identity_org or "local"
         self._identity_user = identity_user or "developer"
+        self.collective_document = False
         self._read_timeout = read_timeout
         self._write_timeout = max(write_timeout, _WRITE_TIMEOUT)
         self._http: Any | None = None
@@ -2396,6 +2429,8 @@ class _HttpClient(_AgentMemoryClient):
         try:
             resp = await self._http.get("/healthz")
             if resp.status_code == 200:
+                health = resp.json()
+                self.collective_document = isinstance(health, dict) and health.get("collective_document") is True
                 logger.info("[AgentMemoryMemoryProvider/http] connected to %s", self._base_url)
             else:
                 logger.warning(
@@ -2449,6 +2484,7 @@ class _HttpClient(_AgentMemoryClient):
         *,
         write: bool = False,
         raise_on_client_error: bool = False,
+        request_headers: dict[str, str] | None = None,
     ) -> Any:
         """POST ``/v1/<verb>``；返回解析后的 JSON body，传输失败返回 None。
 
@@ -2466,6 +2502,7 @@ class _HttpClient(_AgentMemoryClient):
             resp = await self._http.post(
                 f"/v1/{verb}",
                 json=payload,
+                **({"headers": request_headers} if request_headers else {}),
                 timeout=self._write_timeout if write else self._read_timeout,
             )
             if resp.is_error:
@@ -2505,10 +2542,70 @@ class _HttpClient(_AgentMemoryClient):
             seg.get("content", "") for seg in unit.get("segments", []) if isinstance(seg, dict)
         )
 
+    async def active_collective_members(self, dimension, admin_identity):
+        result = await self._collective_admin_request(
+            "list_collective_members", dimension, {"status": "active"}, admin_identity,
+        )
+        return [ApiScope(**member["scope"]) for member in result]
+
+    async def attach_collective(self, dimension, members, admin_identity):
+        return await self._collective_admin_request(
+            "add_collective_members", dimension,
+            {"members": [asdict(member) for member in members]}, admin_identity,
+        )
+
+    async def enroll_collective(self, dimension, members, admin_identity):
+        return await self._collective_admin_request(
+            "init_collective_dimension", dimension,
+            {"members": [asdict(member) for member in members]}, admin_identity,
+        )
+
+    async def _remove_collective(self, dimension, targets, admin_identity):
+        return await self._collective_admin_request(
+            "remove_collective_members", dimension,
+            {"targets": [asdict(target) for target in targets]}, admin_identity,
+            org=targets[0].org if dimension is None else dimension.org,
+        )
+
+    async def _collective_admin_request(self, verb, dimension, fields, admin_identity, *, org=None):
+        if admin_identity != COLLECTIVE_MANAGER_ID:
+            raise AgentMemoryClientError("Collective management requires the registered Swarm principal")
+        result = await self._post_verb(
+            verb, {"dimension": asdict(dimension) if dimension is not None else None, **fields},
+            write=True, raise_on_client_error=True,
+            request_headers={
+                "X-Org-Id": org or dimension.org,
+                "X-Principal-Type": "user",
+                "X-Principal-Id": admin_identity,
+            },
+        )
+        if result is None:
+            raise AgentMemoryClientError("Collective membership operation failed")
+        return result
+
+    def _request_headers(self) -> dict[str, str]:
+        coordinates = self._request_coordinates()
+        if coordinates is None:
+            return {}
+        return {
+            "X-Org-Id": self._identity_org,
+            "X-Principal-Type": "user",
+            "X-Principal-Id": self._identity_user,
+            COLLECTIVE_CONTEXT_HEADER: json.dumps(coordinates),
+        }
+
+    def _request_scope(self, scope):
+        if self._request_coordinates() is None:
+            return self._scope_payload(scope)
+        return {
+            "org": self._identity_org, "space": scope.space, "user": self._identity_user,
+            "agent": scope.agent, "session": scope.session,
+        }
+
     # -- verb 实现 ------------------------------------------------------------ #
 
     async def add(
-        self, content, scope, *, tags=None, system_metadata=None, user_metadata=None
+        self, content, scope, *, tags=None, system_metadata=None, user_metadata=None,
     ) -> _AddResult | None:
         """写一条记忆。``system_metadata={"infer": "true"}`` 触发同步 LLM 抽取。
 
@@ -2518,7 +2615,7 @@ class _HttpClient(_AgentMemoryClient):
         """
         payload: dict[str, Any] = {
             "content": content,
-            "scope": self._scope_payload(scope),
+            "scope": self._request_scope(scope),
             "tags": tags or [],
         }
         if system_metadata:
@@ -2529,10 +2626,15 @@ class _HttpClient(_AgentMemoryClient):
             "[AgentMemoryMemoryProvider/http] POST /v1/add tags=%s system_metadata=%s "
             "content_len=%d",
             metadata_for_log(tags or []),
-            metadata_for_log(system_metadata or {}),
+            metadata_for_log({
+                key: value for key, value in (system_metadata or {}).items() if key != "sources"
+            }),
             len(content),
         )
-        units = await self._post_verb("add", payload, write=True)
+        units = await self._post_verb(
+            "add", payload, write=True,
+            request_headers=self._request_headers(),
+        )
         if units is None:
             return None
         if not isinstance(units, list) or not units:
@@ -2599,7 +2701,7 @@ class _HttpClient(_AgentMemoryClient):
         """混合检索。响应键是 ``items``（不是旧契约的 ``hits``）。"""
         payload: dict[str, Any] = {
             "query": query,
-            "context": {"scope": self._scope_payload(scope)},
+            "context": {"scope": self._request_scope(scope)},
             "top_k": min(int(top_k or 10), _MAX_TOP_K),
             "disclosure": "l2",  # 全文，与 SDK 模式 DisclosureLevel.L2 对齐
         }
@@ -2611,7 +2713,11 @@ class _HttpClient(_AgentMemoryClient):
             top_k,
             metadata_for_log(filters or {}),
         )
-        data = await self._post_verb("search", payload)
+        data = await self._post_verb(
+            "search", payload,
+            raise_on_client_error=self._request_coordinates() is not None,
+            request_headers=self._request_headers(),
+        )
         if not isinstance(data, dict):
             return []
         items = data.get("items", [])
@@ -2675,7 +2781,7 @@ class _HttpClient(_AgentMemoryClient):
         }
 
     async def read_md_file(
-        self, md_filename, scope, *, project="", line_range=None, team=""
+        self, md_filename, scope, *, project="", line_range=None, team="", target=None
     ) -> list[dict[str, Any]] | None:
         """读 md 文件（md文件接口 F08）。响应是 ``list[MemoryUnit]`` 序列化顶层数组（与 add 同构）。
 
@@ -2683,7 +2789,11 @@ class _HttpClient(_AgentMemoryClient):
         抛:class:`AgentMemoryClientError` 透出；传输失败 None。
         """
         payload: dict[str, Any] = {
-            "context": self._context_payload(scope, project, team=team),
+            "context": (
+                {"scope": self._request_scope(scope), "extensions": {"collective_target": target}}
+                if self._request_coordinates() is not None
+                else self._context_payload(scope, project, team=team)
+            ),
             "md_filename": md_filename,
         }
         if line_range is not None:
@@ -2695,7 +2805,10 @@ class _HttpClient(_AgentMemoryClient):
             metadata_for_log(project or ""),
             line_range,
         )
-        units = await self._post_verb("read_md_file", payload, raise_on_client_error=True)
+        units = await self._post_verb(
+            "read_md_file", payload, raise_on_client_error=True,
+            request_headers=self._request_headers(),
+        )
         if units is None:
             return None
         if not isinstance(units, list):
@@ -2703,7 +2816,7 @@ class _HttpClient(_AgentMemoryClient):
         return [self._unit_view(u) for u in units if isinstance(u, dict)]
 
     async def edit_md_file(
-        self, md_filename, scope, old_text, new_text, *, project="", team=""
+        self, md_filename, scope, old_text, new_text, *, project="", team="", target=None
     ) -> list[dict[str, Any]] | None:
         """md 文件内唯一替换（md文件接口 F08）。响应是受影响**新** unit 的顶层数组。
 
@@ -2711,7 +2824,11 @@ class _HttpClient(_AgentMemoryClient):
         透出；传输失败 None。写路径超时（edit 同步 supersede shadow）。
         """
         payload: dict[str, Any] = {
-            "context": self._context_payload(scope, project, team=team),
+            "context": (
+                {"scope": self._request_scope(scope), "extensions": {"collective_target": target}}
+                if self._request_coordinates() is not None
+                else self._context_payload(scope, project, team=team)
+            ),
             "md_filename": md_filename,
             "old_text": old_text,
             "new_text": new_text,
@@ -2725,7 +2842,8 @@ class _HttpClient(_AgentMemoryClient):
             len(new_text),
         )
         units = await self._post_verb(
-            "edit_md_file", payload, write=True, raise_on_client_error=True
+            "edit_md_file", payload, write=True, raise_on_client_error=True,
+            request_headers=self._request_headers(),
         )
         if units is None:
             return None
@@ -3226,7 +3344,36 @@ class _InProcessClient(_AgentMemoryClient):
         client = copy(self)
         # 同类浅拷贝仅替换借用者身份，原实例和共享 Runtime 的身份绑定保持不变。
         client._security_provider = security_provider  # pylint: disable=protected-access
+        client.request_identity = self.request_identity or object()
         return client
+
+    def _request_security(self):
+        security = self._security()
+        coordinates = self._request_coordinates()
+        if coordinates is not None:
+            security = bind_collective_context(security, coordinates)
+        return security
+
+    async def active_collective_members(self, dimension, admin_security):
+        members = await asyncio.to_thread(
+            self._api.list_collective_members, dimension, status="active", security=admin_security,
+        )
+        return [member.scope for member in members]
+
+    async def attach_collective(self, dimension, members, admin_security):
+        return await asyncio.to_thread(
+            self._api.add_collective_members, dimension, members, security=admin_security,
+        )
+
+    async def enroll_collective(self, dimension, members, admin_security):
+        return await asyncio.to_thread(
+            self._api.init_collective_dimension, dimension, members, security=admin_security,
+        )
+
+    async def _remove_collective(self, dimension, targets, admin_security):
+        return await asyncio.to_thread(
+            self._api.remove_collective_members, dimension, targets, security=admin_security,
+        )
 
     def _security(self) -> RequestSecurityContext:
         """本次调用的可信上下文：由注入的 provider 产出，业务 scope 只作 target。"""
@@ -3318,7 +3465,7 @@ class _InProcessClient(_AgentMemoryClient):
         )
 
     async def add(
-        self, content, scope, *, tags=None, system_metadata=None, user_metadata=None
+        self, content, scope, *, tags=None, system_metadata=None, user_metadata=None,
     ) -> _AddResult | None:
         api_scope = self._to_api_scope(scope)
         try:
@@ -3326,7 +3473,7 @@ class _InProcessClient(_AgentMemoryClient):
                 content,
                 api_scope,
                 source=Modality.TEXT,
-                security=self._security(),
+                security=self._request_security(),
                 tags=tags,
                 system_metadata=system_metadata,
                 user_metadata=user_metadata,
@@ -3353,12 +3500,20 @@ class _InProcessClient(_AgentMemoryClient):
                 self._api.search,
                 query,
                 Context(scope=api_scope),
-                security=self._security(),
+                security=self._request_security(),
                 filters=filters,
                 top_k=top_k,
                 disclosure=DisclosureLevel.L2,
             )
         except Exception as exc:
+            if self._request_coordinates() is not None and isinstance(
+                exc,
+                (
+                    AuthenticationError, PermissionDeniedError,
+                    UnsupportedCapabilityError, ValidationError,
+                ),
+            ):
+                raise
             logger.warning(
                 "[AgentMemoryMemoryProvider/in-process] search failed: error_type=%s",
                 type(exc).__name__,
@@ -3405,10 +3560,13 @@ class _InProcessClient(_AgentMemoryClient):
         return Context(scope=api_scope, extensions=extensions)
 
     async def read_md_file(
-        self, md_filename, scope, *, project="", line_range=None, team=""
+        self, md_filename, scope, *, project="", line_range=None, team="", target=None
     ) -> list[dict[str, Any]] | None:
         api_scope = self._to_api_scope(scope)
-        context = self._md_context(api_scope, project, team=team)
+        context = (
+            Context(scope=api_scope, extensions={"collective_target": target})
+            if self._request_coordinates() is not None else self._md_context(api_scope, project, team=team)
+        )
         # read_md_file 是同步方法（内部 asyncio.run），必须 to_thread（§4.6）。
         # 业务异常（非文档模式 ValidationError 等）不吞——显式工具调用须让
         # handle_tool_call 把错误透出给 LLM。
@@ -3417,7 +3575,7 @@ class _InProcessClient(_AgentMemoryClient):
             context,
             md_filename,
             line_range=line_range,
-            security=self._security(),
+            security=self._request_security(),
         )
         return [
             {
@@ -3429,10 +3587,13 @@ class _InProcessClient(_AgentMemoryClient):
         ]
 
     async def edit_md_file(
-        self, md_filename, scope, old_text, new_text, *, project="", team=""
+        self, md_filename, scope, old_text, new_text, *, project="", team="", target=None
     ) -> list[dict[str, Any]] | None:
         api_scope = self._to_api_scope(scope)
-        context = self._md_context(api_scope, project, team=team)
+        context = (
+            Context(scope=api_scope, extensions={"collective_target": target})
+            if self._request_coordinates() is not None else self._md_context(api_scope, project, team=team)
+        )
         # edit_md_file 同步方法（to_thread）；old_text 不存在/不唯一抛
         # NotFoundError/ValidationError，向上透出（见 read_md_file 注释）。
         units = await asyncio.to_thread(
@@ -3441,7 +3602,7 @@ class _InProcessClient(_AgentMemoryClient):
             md_filename,
             old_text,
             new_text,
-            security=self._security(),
+            security=self._request_security(),
         )
         return [
             {

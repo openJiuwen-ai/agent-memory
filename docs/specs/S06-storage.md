@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -1060,7 +1060,13 @@ KV 是分片归属的唯一事实来源：只有分片 KV 在 `insert` 新的 `/
 **不保证**：改字段后到新分片可见的延迟；派生写入若在打标记前已定位到源分片、却在复制之后才落地，目标分片的派生记录可能是复制时的版本（只影响召回与排序，返回内容回读真源）；遗留 `moving` 在维护窗口恢复前该记忆保持只读；遗留 `claim` 在维护窗口恢复前该记忆不能 delete、不能开始新搬迁。
 
 
-## 团队文档坐标
+## 群体文档坐标
+
+群体长期文档使用 `memory/team_memory/{projects,teams,groups,agents}/{encoded_key}/MEMORY.md`。群体项目日记使用 `memory/team_memory/projects/{encoded_key}/daily_memory/YYYY-MM-DD.md`，普通项目日记使用 `memory/{project}/daily_memory/YYYY-MM-DD.md`。团队和 Group 目录键独立于项目。专家键中的冒号显示为下划线，字面下划线以百分号编码区分，原始专家身份可从规范路径反推。结构化落点标记和群体文档路径均可识别群体条目。已识别的群体条目若缺少布尔分享状态，按未分享处理。按已授权作者 scope 做内容哈希反查后精确核对文件名。通过 API 更新共享正文时，原条目所在 scope 是版本链的写入范围。
+
+Shadow 使用项目投影及 JSON 元数据判定团队、Group 和分享状态。归属字段缺省为空串；普通文档缺分享信息时视为可分享，群体目录缺显式分享信息时视为不可分享。前置 SQLite 筛选与回读使用同样的缺省规则。成员名册及主体反查通过同一个 CAS 更新保存在文档根下的持久 SQLite KV 中。
+
+### #472 上游基线文档坐标
 
 文档 read/edit/restore 的存储窄端口追加 keyword-only `team=""`；省略保持原路径。
 非空 team 只用于 MEMORY.md，须为 `{project}--{24位小写十六进制摘要}`，项目须与显式 project 一致，禁止路径分隔符和点目录。对应 `memory/teams/{team}/MEMORY.md`。

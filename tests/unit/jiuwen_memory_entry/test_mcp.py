@@ -51,7 +51,13 @@ finally:
 
 from pydantic import ValidationError as PydanticValidationError  # noqa: E402
 
-from jiuwen_memory.api import Credentials, Scope, Surface, ValidationError  # noqa: E402
+from jiuwen_memory.api import (  # noqa: E402
+    COLLECTIVE_MANAGEMENT_OPERATIONS,
+    Credentials,
+    Scope,
+    Surface,
+    ValidationError,
+)
 from jiuwen_memory_entry.core.api_contract import (  # noqa: E402
     api_method_names,
     is_known_verb,
@@ -338,7 +344,7 @@ def _wait_job_terminal(job_id: str, scope: dict[str, Any]) -> dict[str, Any]:
 
 
 # 治理面只在 HTTP / CLI 暴露，不进 Agent 工具清单（角色记忆 F11 D4）。
-_MCP_HIDDEN_VERBS = {"quarantine_source", "release_source"}
+_MCP_HIDDEN_VERBS = {"quarantine_source", "release_source", *COLLECTIVE_MANAGEMENT_OPERATIONS}
 
 
 def test_mcp_tool_registry_covers_expected_verbs() -> None:

@@ -77,17 +77,43 @@ def memory_http_url_fixture(request, tmp_path_factory):
     original_cls = http_server_module.ThreadingHTTPServer
     http_server_module.ThreadingHTTPServer = _ReadyHttpd
     layers = [OFFLINE]
-    if getattr(request, "param", None) == "document":
+    profile = getattr(request, "param", None)
+    if profile in {"document", "collective"}:
         from jiuwen_memory_adapter.jiuwenswarm.pipeline_profiles import (
             configure_document_pipelines,
         )
         from tests.unit.api.test_document_security_lifecycle import _doc_config
 
         document = _doc_config(tmp_path_factory.mktemp("code-http-memory"), watch=False)
-        document["extractor"] = {"document_fact": "keyword", "team_turn": "keyword"}
+        document["extractor"] = {"document_fact": "keyword"}
         layers.append({"memory_api": configure_document_pipelines(document)})
+    if profile == "collective":
+        layers[-1]["memory_api"].update({
+            "security": {"default": {"target": "standard", "params": {
+                "authenticator": "gateway", "authorizer": "default",
+                "rate_limiter": {"target": "token_bucket", "params": {"capacity": 100}},
+            }}},
+            "authenticator": {"gateway": {"target": "trusted", "params": {
+                "key_store": "principal_store", "gateway_key": "test-collective-gateway",
+            }}},
+            "key_store": {"principal_store": {"target": "memory"}},
+            "authorizer": {"default": {"target": "standard", "params": {
+                "grant_store": "default", "delegation_store": "default",
+            }}},
+            "grant_store": {"default": {"target": "memory"}},
+            "delegation_store": {"default": {"target": "memory"}},
+        })
     config = load_config(layers)
-    server = HttpServer.build(with_local_dev_security(config))
+    server = HttpServer.build(config if profile == "collective" else with_local_dev_security(config))
+    if profile == "collective":
+        from jiuwen_memory.api import Scope, register_trusted_principal
+        from jiuwen_memory.api.collective import COLLECTIVE_MANAGER_ID
+        from jiuwen_memory.common.security.types import Role
+
+        register_trusted_principal(server.authenticator, Scope(org="local", user="developer"))
+        register_trusted_principal(
+            server.authenticator, Scope(org="local", user=COLLECTIVE_MANAGER_ID), role=Role.ADMIN,
+        )
     with ThreadPoolExecutor(max_workers=1) as executor:
         serving = executor.submit(server.serve, "127.0.0.1", 0)
         httpd = None
@@ -418,7 +444,9 @@ def test_http_work_code_profile_scope_sync_and_restart(memory_http_url, monkeypa
                 assert "dark theme" in recalled and "concise" in recalled
                 assert ("Cedar7319" in recalled) == expected
             isolated = await open_provider(agent="another-profile-agent")
-            assert not await isolated.prefetch("Cedar7319 concise dark theme")
+            isolated_recall = await isolated.prefetch("Cedar7319 concise dark theme")
+            assert "concise" in isolated_recall and "dark theme" in isolated_recall
+            assert "Cedar7319" not in isolated_recall
             await code.shutdown()
             reopened = await open_provider()
             assert "Cedar7319" in await reopened.prefetch("Cedar7319")
@@ -484,29 +512,78 @@ def test_http_unreachable_never_constructs_sdk_or_claims_success(monkeypatch):
         asyncio.run(run(reserved.getsockname()[1]))
 
 
-@pytest.mark.parametrize("memory_http_url", ["document"], indirect=True)
-def test_team_http_write_search_read_edit_isolation(memory_http_url):
+@pytest.mark.parametrize("memory_http_url", ["collective"], indirect=True)
+def test_team_http_write_search_read_edit_isolation(memory_http_url, monkeypatch):
+    from jiuwen_memory.api import Scope
+    from jiuwen_memory.api.collective import COLLECTIVE_MANAGER_ID, Dimension, Member
+    from jiuwen_memory.common.llm.llm_impl.echo_llm import EchoLLM
+
+    def chat(_self, messages, **_kwargs):
+        if len(messages) != 2 or "source_segments" not in messages[1].content:
+            return messages[-1].content
+        return json.dumps([
+            {
+                "source_id": segment["id"], "kind": "experience", "destination": segment["id"],
+                "evidence": segment["text"], "content": segment["text"],
+            }
+            for segment in json.loads(messages[1].content)["source_segments"]
+        ])
+
+    monkeypatch.setattr(EchoLLM, "chat", chat)
+
     async def run():
-        shared = {"base_url": memory_http_url, "project": "repo", "portal": {"enabled": False}}
-        leader = AgentMemoryMemoryProvider(**shared, scene="team", team="repo--" + "a" * 24)
-        member = AgentMemoryMemoryProvider(**shared, scene="team", team="repo--" + "a" * 24)
-        other = AgentMemoryMemoryProvider(**shared, scene="team", team="repo--" + "b" * 24)
-        code = AgentMemoryMemoryProvider(**shared, scene="code")
-        providers = (leader, member, other, code)
-        try:
-            for provider in providers:
-                await provider.initialize(user_id="team-http", agent_id="team-http", session_id="")
-            written = await leader.add_team_memories(
-                [{"label": "decision", "content": "ocean architecture"}]
+        shared = {
+            "base_url": memory_http_url, "project": "repo",
+            "api_key": "test-collective-gateway", "portal": {"enabled": False},
+        }
+        leader, member, other = [
+            AgentMemoryMemoryProvider(
+                **shared, scene="team",
+                collective_coordinates={"project": "repo", "team": "repo--" + suffix * 24},
             )
-            assert written == 1
+            for suffix in ("a", "a", "b")
+        ]
+        code = AgentMemoryMemoryProvider(
+            **shared, scene="code", collective_coordinates={"project": "repo"},
+        )
+        providers = (leader, member, other, code)
+        agents = ("leader", "member", "other", "member")
+        try:
+            for provider, agent in zip(providers, agents, strict=True):
+                await provider.initialize(user_id="developer", agent_id=agent, session_id="")
+            dimension = Dimension("local", "", "team", "repo--" + "a" * 24)
+            roster = [
+                Member(Scope(org="local", user="developer", agent="leader")),
+                Member(Scope(org="local", user="developer", agent="member")),
+            ]
+            await leader._client.enroll_collective(dimension, roster, COLLECTIVE_MANAGER_ID)
+            unauthorized = await leader._client._http.post(
+                "/v1/search", json={"query": "ocean", "context": {"scope": {"org": "local", "user": "developer"}}},
+                headers={"X-Org-Id": "local", "X-Principal-Type": "user", "X-Principal-Id": COLLECTIVE_MANAGER_ID},
+            )
+            assert unauthorized.status_code == 403
+            await leader._client.enroll_collective(
+                Dimension("local", "", "project", "repo"), roster, COLLECTIVE_MANAGER_ID,
+            )
+            diary = {"target": "project", "name": "2026-11-20.md"}
+            assert json.loads(await member.handle_tool_call("team_memory_read", diary))["count"] == 0
+            assert "error" in json.loads(await other.handle_tool_call("team_memory_read", diary))
+            written = await leader.sync_turn("", "", sources=[
+                {"id": "team", "role": "assistant", "text": "ocean architecture"},
+                {"id": "project", "role": "assistant", "text": "ocean project uses sqlite"},
+            ])
+            assert written and written["stored"]
             result = json.loads(await member.handle_tool_call(
-                "team_memory_search", {"query": "ocean"},
+                "team_memory_search", {"query": "ocean", "target": "team"},
             ))
-            assert "[decision] ocean architecture" in result["team"][0]["content"]
-            assert "[decision] ocean architecture" in await member.prefetch("ocean")
+            assert any("ocean architecture" in hit["content"] for hit in result["hits"])
+            assert "ocean architecture" in await member.prefetch("ocean")
             assert "ocean architecture" not in await other.prefetch("ocean")
-            assert "ocean architecture" not in await code.prefetch("ocean")
+            recalled = await code.prefetch("ocean")
+            assert "ocean architecture" not in recalled
+            assert "ocean project uses sqlite" in recalled
+            monkeypatch.setattr(code._client, "collective_document", False)
+            assert "ocean project uses sqlite" not in await code.prefetch("ocean")
             result = json.loads(await member.handle_tool_call("team_memory_edit", {
                 "target": "team", "name": "MEMORY.md", "old_text": "ocean", "new_text": "river",
             }))
@@ -514,7 +591,17 @@ def test_team_http_write_search_read_edit_isolation(memory_http_url):
             read = json.loads(await leader.handle_tool_call("team_memory_read", {
                 "target": "team", "name": "MEMORY.md",
             }))
-            assert "[decision] river architecture" in read["units"][0]["content"]
+            assert "river architecture" in read["units"][0]["content"]
+            await leader._client._remove_collective(dimension, [roster[1].scope], COLLECTIVE_MANAGER_ID)
+            denied = json.loads(await member.handle_tool_call("team_memory_read", {
+                "target": "team", "name": "MEMORY.md",
+            }))
+            assert "error" in denied
+            await other.initialize(user_id="developer", agent_id="other", session_id="isolated")
+            rejected = json.loads(
+                await other.handle_tool_call("team_memory_search", {"query": "ocean"})
+            )
+            assert "HTTP 403" in rejected["error"]
             assert leader.runtime is None
         finally:
             await asyncio.gather(*(provider.shutdown() for provider in providers))

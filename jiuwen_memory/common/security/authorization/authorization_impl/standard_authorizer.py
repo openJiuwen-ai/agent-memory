@@ -25,13 +25,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security.authorization.base import (
     AuthorizationDecision,
     AuthorizationProducer,
     Authorizer,
+)
+from jiuwen_memory.common.security.authorization.collective_read import (
+    CollectiveReadPlan,
+    read_targets,
 )
 from jiuwen_memory.common.security.authorization.scope_rules import (
     PrincipalPath,
@@ -57,6 +63,9 @@ from jiuwen_memory.common.security.types import (
     Role,
 )
 from jiuwen_memory.common.type_def.scope import Scope
+
+if TYPE_CHECKING:
+    from jiuwen_memory.storage.collective_members import Dimension
 
 # 管理面动作要求的**最低**角色。ADMIN 能管本 org 内的主体与 space；跨 org 的系统级
 # 操作与审计校验要 ROOT。
@@ -209,6 +218,22 @@ class StandardAuthorizer(Authorizer):
 
     def security_dependencies(self) -> tuple[object, ...]:
         return (self._grants, self._delegations)
+
+    def authorize_collective_search(
+        self, *, auth: AuthContext, resource: ResourceDescriptor,
+        environment: AuthorizationEnvironment,
+        memberships: tuple[tuple[Dimension, Scope], ...],
+        current: Collection[Dimension], limit: int,
+    ) -> CollectiveReadPlan | None:
+        if resource.resource_type != "collective_search" or resource.action is not Action.READ:
+            return None
+        subject = resource.scope
+        if auth.actor.org != subject.org or not (subject.user or subject.agent):
+            return None
+        if not self.authorize(auth=auth, resource=resource, environment=environment).allowed:
+            return None
+        # The authorized target can include an agent supplied by the trusted host.
+        return read_targets(memberships, subject, current, limit=limit)
 
     def authorize(
         self,

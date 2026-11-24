@@ -39,14 +39,19 @@ pytestmark = pytest.mark.unit
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
-    assert len(api_contract.api_method_names()) == 44
     assert {
         "continuity_task",
         "continuity_relation",
         "continuity_recover",
         "quarantine_source",
         "release_source",
+        "init_collective_dimension",
+        "add_collective_members",
+        "remove_collective_members",
+        "list_collective_members",
     } <= api_contract.api_method_names()
+    assert "sources" not in api_contract.method_contract("add").request_parameters
+    assert "collective" not in api_contract.method_contract("search").request_parameters
     assert api_contract.is_known_verb("add_async") is True
     assert api_contract.is_known_verb("does_not_exist") is False
 

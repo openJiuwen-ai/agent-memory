@@ -39,6 +39,7 @@ from jiuwen_memory.config.binding import resolve_connection_url
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
 from jiuwen_memory.storage.markdown_impl import experience_blocks
+from jiuwen_memory.storage.markdown_impl._md_path import collective_document_path
 
 # memory_class → (子路径模板, 是否进 project 子目录)
 # user_profile 不进 project 子目录（跨项目用户画像，落 root 顶层）；
@@ -407,6 +408,7 @@ class LocalMarkdownStore(MarkdownStore):
         project: str = "",
         line_range: tuple[int, int] | None = None,
         team: str = "",
+        collective_path: str = "",
     ) -> str:
         """读 md 文件原文，按 ``line_range`` 行切片（越界 clamp，1-based 闭区间）。
 
@@ -418,7 +420,7 @@ class LocalMarkdownStore(MarkdownStore):
         """
         with self._lock:
             root = self._resolved_root()
-            rel_path = self.resolve_md_path(md_basename, project, team=team)
+            rel_path = collective_path or self.resolve_md_path(md_basename, project, team=team)
             abs_path = self._safe_abs_path(root, rel_path)
             if not os.path.isfile(abs_path):
                 logger.debug("md %s not found, read_content returns empty", rel_path)
@@ -445,6 +447,7 @@ class LocalMarkdownStore(MarkdownStore):
         *,
         project: str = "",
         team: str = "",
+        collective_path: str = "",
     ) -> None:
         """文件级唯一子串替换 + 整文件原子写（F08 §D5 / R5）。
 
@@ -463,7 +466,7 @@ class LocalMarkdownStore(MarkdownStore):
         """
         with self._lock:
             root = self._resolved_root()
-            rel_path = self.resolve_md_path(md_basename, project, team=team)
+            rel_path = collective_path or self.resolve_md_path(md_basename, project, team=team)
             abs_path = self._safe_abs_path(root, rel_path)
             if not os.path.isfile(abs_path):
                 raise NotFoundError(
@@ -568,6 +571,7 @@ class LocalMarkdownStore(MarkdownStore):
         *,
         project: str = "",
         team: str = "",
+        collective_path: str = "",
     ) -> None:
         """把 md 文件内容精确回写为 ``text``（edit_md_file 的 md 侧失败补偿，见契约）。
 
@@ -578,7 +582,7 @@ class LocalMarkdownStore(MarkdownStore):
         """
         with self._lock:
             root = self._resolved_root()
-            rel_path = self.resolve_md_path(md_basename, project, team=team)
+            rel_path = collective_path or self.resolve_md_path(md_basename, project, team=team)
             abs_path = self._safe_abs_path(root, rel_path)
             _safe_restore(abs_path, text)
 
@@ -597,6 +601,15 @@ class LocalMarkdownStore(MarkdownStore):
         if unit.system_metadata.get("memory_type") == "experience":
             return experience_blocks.DOCUMENT_PATH
         metadata = unit.system_metadata or {}
+        destination = metadata.get("collective_destination")
+        if destination in ("project", "team", "group", "personal"):
+            key = unit.scope.agent if destination == "personal" else metadata.get(destination)
+            if not isinstance(key, str) or not key:
+                raise ValidationError("collective document requires a destination key")
+            filename = "MEMORY.md"
+            if metadata.get("memory_class") == "daily_memory":
+                filename = f"{datetime.date.today().isoformat()}.md"
+            return collective_document_path(destination, key, filename)
         memory_class = self._resolved_memory_class(metadata)
         project = self._project_of(unit)
         if memory_class == "team_memory":
@@ -694,6 +707,8 @@ class LocalMarkdownStore(MarkdownStore):
             if isinstance(coords, dict):
                 team = str(coords.get("team") or "").strip()
             title = team
+            if metadata.get("collective_destination") == "project":
+                title = str(metadata.get(MD_TITLE_KEY) or "").strip()
         else:
             title = str((unit.system_metadata or {}).get(MD_TITLE_KEY) or "").strip()
         logger.info(

@@ -68,6 +68,7 @@ from jiuwen_memory.storage.markdown import MarkdownStore
 from jiuwen_memory.storage.markdown_impl._md_blocks import (
     collect_blocks_from_text,
     content_hash,
+    document_line,
 )
 from jiuwen_memory.storage.markdown_impl._md_path import (
     class_from_md_path,
@@ -199,9 +200,7 @@ class CompositeDomainStore(DomainStore):
         for unit in units:
             if not unit.segments or unit.system_metadata.get("memory_type") == "experience":
                 continue
-            content = unit.segments[0].content
-            if content and "\n" in content:
-                unit.segments[0].content = " ".join(content.split())
+            unit.segments[0].content = document_line(unit.segments[0].content)
 
     @property
     def recallers(self) -> list[Any]:
@@ -681,6 +680,7 @@ class CompositeDomainStore(DomainStore):
         line_range: tuple[int, int] | None = None,
         access: StorageAccessContext | None = None,
         team: str = "",
+        collective_path: str = "",
     ) -> list[MemoryUnit]:
         """读 md 文件原文，按块算 content_hash 反查 shadow 取 MemoryUnit（F08 §D1）。
 
@@ -702,12 +702,13 @@ class CompositeDomainStore(DomainStore):
         text = md.read_content(
             scope, md_basename, project=project, line_range=line_range,
             **({"team": team} if team else {}),
+            **({"collective_path": collective_path} if collective_path else {}),
         )
         blocks = collect_blocks_from_text(text, first_line_is_title=False)
         unit_ids: list[str] = []
         for ch, _, _ in blocks:
             unit_ids.extend(shadow.find_unit_ids_by_content_hash(scope, ch))
-        rel_path = MarkdownStore.resolve_md_path(md_basename, project, team=team)
+        rel_path = collective_path or MarkdownStore.resolve_md_path(md_basename, project, team=team)
         return [unit for unit in shadow.get_units(scope, unit_ids)
                 if unit.system_metadata.get(MD_FILENAME_KEY) == rel_path]
 
@@ -721,6 +722,7 @@ class CompositeDomainStore(DomainStore):
         project: str = "",
         access: StorageAccessContext | None = None,
         team: str = "",
+        collective_path: str = "",
     ) -> list[MemoryUnit]:
         """md 文件级唯一替换 + 继承式 SUPERSEDE 同步 shadow，返回新 unit（F08 §D4/§D5）。
 
@@ -735,8 +737,10 @@ class CompositeDomainStore(DomainStore):
             )
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
-        rel_path = MarkdownStore.resolve_md_path(md_basename, project, team=team)
+        rel_path = collective_path or MarkdownStore.resolve_md_path(md_basename, project, team=team)
         document_options = {"project": project, **({"team": team} if team else {})}
+        if collective_path:
+            document_options["collective_path"] = collective_path
         with document_operation(md.root, shadow.write_lock_key, writing=True):
             # edit 前旧全文快照（md 侧失败补偿用：shadow 同步失败时回写整个文件到编辑前
             # 字节态）。同一次读既算块 diff 又留快照，避免二次读文件。
@@ -745,11 +749,34 @@ class CompositeDomainStore(DomainStore):
             # 只含 edit 真正新增的块（不含跨 scope 已有块——其 hash 在 old_full 里），
             # 避免 list_units_by_md 跨 scope 导致当前 scope edit 误标/误插他 scope unit。
             old_full = collect_blocks_from_text(raw_old)
+            if collective_path:
+                matching = [(h, body, idx) for h, body, idx in old_full if old_text in body]
+                if len(matching) != 1 or matching[0][1].count(old_text) != 1:
+                    raise ValidationError("Collective edit must select one unique body passage")
+                old_hash, old_body, old_index = matching[0]
+                prospective = old_body.replace(old_text, new_text, 1).strip()
+                if not prospective or "\n\n" in prospective or prospective.startswith("# "):
+                    raise ValidationError("Collective edit must preserve one non-empty memory block")
+                rows = shadow.list_units_by_md(scope, rel_path)
+                units = shadow.get_units(scope, [uid for uid, _ in rows])
+                owners = [
+                    unit for unit in units
+                    if unit.lifecycle == LifecycleState.ACTIVE and content_hash(unit.content) == old_hash
+                ]
+                if len(owners) != 1:
+                    raise ValidationError("Collective edit could not identify the original active unit")
+                if any(body == prospective and idx != old_index for _, body, idx in old_full):
+                    raise ValidationError("Collective edit cannot duplicate another block")
             try:
                 # md 原子替换（唯一性校验 + 原子写；失败抛 NotFoundError/ValidationError）
                 md.edit_content(scope, md_basename, old_text, new_text, **document_options)
                 raw_new = md.read_content(scope, md_basename, **document_options)
                 new_full = collect_blocks_from_text(raw_new)
+                if collective_path:
+                    before = {h for h, _, _ in old_full}
+                    after = {h for h, _, _ in new_full}
+                    if before - after != {old_hash} or len(after - before) != 1:
+                        raise ValidationError("Collective edit must supersede exactly one memory block")
                 new_titles = {}
                 old_titles = {}
                 if class_from_md_path(rel_path) != "daily_memory":

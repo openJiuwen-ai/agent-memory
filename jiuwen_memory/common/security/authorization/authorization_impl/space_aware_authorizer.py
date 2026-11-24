@@ -131,6 +131,14 @@ class SpaceAwareAuthorizer(Authorizer):
     def is_test_only(self) -> bool:
         return self._delegate.is_test_only()
 
+    def authorize_collective_search(
+        self, *, auth, resource, environment, memberships, current, limit,
+    ):
+        return self._delegate.authorize_collective_search(
+            auth=auth, resource=resource, environment=environment,
+            memberships=memberships, current=current, limit=limit,
+        )
+
     def health(self) -> None:
         self._delegate.health()
 

@@ -77,15 +77,15 @@ class CodingMemoryScene(BaseDocumentScene):
         if action == "write":
             return await self.write(context.client, context.scope, bound)
         if action == "search":
-            return await self.search_tool(context.client, context.scope, bound)
+            return await self.search_tool(context, bound)
         operation = {"read": read_document, "edit": edit_document}[action]
         return await operation(context, bound)
 
     async def prefetch(self, context: MemorySceneContext, query: str, **kwargs: Any) -> str:
         """Prepare the host query before project recall and document fallback."""
         return await self._prefetch(
-            context.client, context.scope, context.prepare(query),
-            top_k=kwargs.get("top_k"), background=bool(kwargs.get("background")),
+            context, context.prepare(query), top_k=kwargs.get("top_k"),
+            background=bool(kwargs.get("background")),
         )
 
     @staticmethod
@@ -127,39 +127,48 @@ class CodingMemoryScene(BaseDocumentScene):
         return json.dumps({"result": "Memory stored.", "stored": True,
                            "item_id": result.item_id})
 
-    async def search(self, client: Any, scope: Any, query: str, top_k: Any = None) -> list:
+    async def search(
+        self, context: MemorySceneContext, query: str, top_k: Any = None, *,
+        supplement: bool = False,
+    ) -> list:
         if not query:
             return []
         limit = self.top_k(top_k)
-        return (await client.search(
-            query, scope, top_k=limit,
-            filters={
-                "system_metadata.project": {"eq": self.project},
-                "system_metadata.memory_class": {"in": ["long_term_memory", "daily_memory"]},
-            },
-        ))[:limit]
+        filters = {
+            "system_metadata.project": {"eq": self.project},
+            "system_metadata.memory_class": {"in": ["long_term_memory", "daily_memory"]},
+        }
+        if supplement:
+            return await self.search_project_memory(
+                context, query, top_k=limit, project=self.project, filters=filters,
+            )
+        items = await context.client.search(query, context.scope, top_k=limit, filters=filters)
+        return items[:limit]
 
-    async def search_tool(self, client: Any, scope: Any, args: dict[str, Any]) -> str:
+    async def search_tool(
+        self, context: MemorySceneContext, args: dict[str, Any],
+    ) -> str:
         query = args.get("query")
         if not isinstance(query, str) or not query.strip():
             return json.dumps({"error": "Missing required parameter: query"})
-        items = await self.search(client, scope, query, args.get("top_k"))
+        items = await self.search(context, query, args.get("top_k"), supplement=True)
         return json.dumps({"results": [
             {"memory": item.get("content", ""), "score": item.get("score", 0)}
             for item in items
         ], "count": len(items)})
 
     async def _prefetch(
-        self, client: Any, scope: Any, query: str, *, top_k: Any = None,
+        self, context: MemorySceneContext, query: str, *, top_k: Any = None,
         background: bool = False,
     ) -> str:
+        client, scope = context.client, context.scope
         # Reading both documents concurrently preserves a usable fallback when search times out.
         operations = [
             self._bounded(client.read_md_file("USER.md", scope, project="")),
             self._bounded(client.read_md_file("MEMORY.md", scope, project=self.project)),
         ]
         if query and not background:
-            operations.append(self._bounded(self.search(client, scope, query, top_k)))
+            operations.append(self._bounded(self.search(context, query, top_k)))
         results = await asyncio.gather(*operations)
         profiles, document = results[:2]
         hits = results[2] if len(results) > 2 else []

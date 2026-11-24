@@ -324,11 +324,12 @@ class HttpServer(Server):
                     self.end_headers()
                     self.wfile.write(data)
                 elif self.path.rstrip("/") == "/healthz":
-                    self._send(
-                        200,
-                        {"status": "ok", "profile": srv.config.profile},
-                        request_id=request_id,
-                    )
+                    body = {"status": "ok", "profile": srv.config.profile}
+                    authenticator = srv.authenticator
+                    if (authenticator is not None and authenticator.mode() == "trusted"
+                            and getattr(srv.api, "_document_mode", False)):
+                        body["collective_document"] = True
+                    self._send(200, body, request_id=request_id)
                 else:
                     self._send_error("NotFound", self.path, request_id=request_id)
 
@@ -419,8 +420,21 @@ class HttpServer(Server):
                         request_id=request_id,
                     ) as security:
                         context_request_id = security.request_id
+                        from jiuwen_memory.api import (
+                            COLLECTIVE_CONTEXT_HEADER,
+                            COLLECTIVE_MANAGEMENT_OPERATIONS,
+                            COLLECTIVE_MANAGER_ID,
+                            PermissionDeniedError,
+                            bind_collective_context,
+                        )
+
                         if browser_request and security.auth.actor != owner:
                             raise AuthenticationError("Portal session identity changed")
+                        if security.auth.actor.user == COLLECTIVE_MANAGER_ID:
+                            if browser_request or is_portal or verb not in COLLECTIVE_MANAGEMENT_OPERATIONS:
+                                raise PermissionDeniedError(
+                                    "principal is restricted to collective membership management"
+                                )
                         # 凭据和入口保护通过后才读取请求体，慢上传不能绕过认证占用内存。
                         raw = _read_body(self.rfile, length)
                         try:
@@ -454,6 +468,15 @@ class HttpServer(Server):
                                 srv.configuration, verb, payload, security,
                             )
                         else:
+                            raw_collective = self.headers.get(COLLECTIVE_CONTEXT_HEADER)
+                            if raw_collective is not None:
+                                if not credentials.api_key:
+                                    raise AuthenticationError("Collective gateway credentials required")
+                                try:
+                                    coordinates = json.loads(raw_collective)
+                                except ValueError as exc:
+                                    raise ValidationError("invalid collective context") from exc
+                                security = bind_collective_context(security, coordinates)
                             body = invoke_api(srv.api, verb, payload, security)
                         self._send(200, body, request_id=security.request_id)
                 except AuthenticationError:

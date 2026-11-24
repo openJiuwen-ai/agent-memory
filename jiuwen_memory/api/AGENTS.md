@@ -46,6 +46,8 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 | `access_security.py` | 公开安全装配辅助。提供 dev Authenticator 与 `register_trusted_principal`，Trusted 初始化委派实际认证器。私有 `_build_security_runtime` 从同一装配上下文选择并检查 Runtime，公开 mapping helper 复用它。`fixed_personal_owner` 沿用 Runtime 选择规则并读取插件声明 |
 | `managed_configuration.py` | `ManagedConfiguration`：通过可信宿主授权回调访问配置管理，不向页面暴露内核或存储 |
 | `personal_memory.py` | 按认证身份判定个人范围和历史记录归属，复用 MemoryAPI 做单条读取和检索候选限制 |
+| `collective.py` | SDK 和受信 HTTP 宿主的群体坐标绑定与子集验证 |
+| `memory_api_impl/collective_ops.py` | 结构化来源写入和成员治理的 PEP，读取成员事实后由 PDP 生成群体召回计划 |
 | `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/supports_video_ingest/prepare_video_ingest/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` / `managed_assembly.py` | 公开装配及托管配置注入（含写入编排：执行器、per-user 锁、`WriteOrchestrator`，并在 `deployment.multi_instance=true` 配进程内锁时装配失败）：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄，并在创建 SDK 时设置进程共用的日志输出；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |

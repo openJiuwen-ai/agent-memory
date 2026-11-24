@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from functools import partial
 from typing import Any
 
+from jiuwen_memory.api.collective import collective_coordinates, dimensions_of
 from jiuwen_memory.api.personal_memory import (
     PersonalScopeBinding,
     personal_scope_binding,
@@ -29,6 +30,10 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.security import principal, space_predicates
+from jiuwen_memory.common.security.authorization.collective_read import (
+    ORDINARY_VISIBILITY,
+    own_visibility,
+)
 from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.time_utils import as_utc
@@ -52,7 +57,11 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.continuity import MemoryRef, ViewBudget
 from jiuwen_memory.common.type_def.filter import evaluate
 from jiuwen_memory.common.type_def.hierarchy_query import HierarchyQuery
-from jiuwen_memory.common.type_def.memory_filter import matches_filter_value, matches_memory_unit
+from jiuwen_memory.common.type_def.memory_filter import (
+    is_collective_metadata,
+    matches_filter_value,
+    matches_memory_unit,
+)
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.construction.router import (
@@ -251,9 +260,14 @@ class QueryOpsMixin:
             query = self._privacy.preview(query)
             if query_context is not None:
                 query_context = tuple(self._privacy.preview(turn) for turn in query_context)
+        collective_request = collective_coordinates(security) is not None
+        if collective_request and "spaces" in extensions:
+            raise ValidationError("collective recall cannot be combined with spaces")
         spaces = _pop_spaces(extensions)
         routing_enabled = self._routing_enabled()
-        coords = _pop_coords(extensions, enabled=routing_enabled)
+        coords = _pop_coords(extensions, enabled=routing_enabled and not collective_request)
+        if collective_request:
+            extensions.pop(COORDS_KEY, None)
         reject_kernel_coords(coords)
         resource_principal = self._resource_principal(security, Action.READ)
         # 坐标折算成第二族收窄谓词的取值，在此算一次、两条路径共用。放进各自分支即
@@ -281,6 +295,12 @@ class QueryOpsMixin:
         # 配置中的类型范围在鉴权及视图组装前与调用方过滤一起生效。
         rq = self._queries.prepare_retrieval_query(rq)
         view_requested = bool(options.task_id or options.anchor is not None or options.duty)
+        if collective_request:
+            if view_requested:
+                raise ValidationError("collective recall cannot be combined with continuity views")
+            return self._search_collective(context, rq, security=security)
+        if self._document_mode:
+            rq.filters = and_merge(rq.filters, [ORDINARY_VISIBILITY])
         if view_requested:
             if spaces is not None:
                 raise ValidationError(
@@ -623,26 +643,7 @@ class QueryOpsMixin:
             detail = repr(candidates) if spaces else f"{len(candidates)} space(s)"
             raise PermissionDeniedError(f"read denied on every candidate space: {detail}")
 
-        # 查询骨架装配一次，逐空间只差取数上界与本空间谓词，两项都由控制层补齐。
-        # 逐空间构造 RetrievalQuery 的循环本身就是取数编排，不留本层。
-        # 同步桥接留本层（S02「同步/异步桥接」）：控制层给协程，本层 asyncio.run。
-        item_scopes = {}
-
-        async def guarded_recall(target_scope, query):
-            result = await self._queries.recall(target_scope, query)
-            # Trusted fan-out origin, never a Scope supplied in memory metadata.
-            for item in result.items:
-                item_scopes[id(item)] = target_scope
-            return self._guard_continuity_search(result, scope=target_scope)
-
-        merged, space_failures = asyncio.run(
-            collective.recall_spaces(
-                targets,
-                retrieval_query,
-                top_k=retrieval_query.top_k,
-                recall=guarded_recall,
-            )
-        )
+        merged, space_failures = self._recall_authorized_targets(targets, retrieval_query)
         for failure in space_failures:
             # 扇出失败逐空间落一条审计。判据取分离返回的那份列表，不从 merged.errors 里
             # 按 channel 过滤——后者会把审计范围绑在控制层的 channel 编码上。
@@ -675,7 +676,21 @@ class QueryOpsMixin:
                 "count": str(len(merged.items)),
             },
         )
-        return self._guard_continuity_search(merged, item_scopes=item_scopes)
+        return merged
+
+    def _recall_authorized_targets(self, targets, query, *, bucket=None):
+        item_scopes = {}
+
+        async def guarded_recall(target_scope, request):
+            result = await self._queries.recall(target_scope, request)
+            for item in result.items:
+                item_scopes[id(item)] = target_scope
+            return self._guard_continuity_search(result, scope=target_scope)
+
+        merged, failures = asyncio.run(collective.recall_spaces(
+            targets, query, top_k=query.top_k, recall=guarded_recall, bucket=bucket,
+        ))
+        return self._guard_continuity_search(merged, item_scopes=item_scopes), failures
 
     def _hierarchy_enabled(self) -> bool:
         """仅在可信请求通过校验后读取运行时树总开关。"""
@@ -838,6 +853,14 @@ class QueryOpsMixin:
                     )
                 ],
             )
+        if self._document_mode:
+            coordinates = collective_coordinates(security)
+            visibility = ORDINARY_VISIBILITY
+            if coordinates is not None:
+                self._require_collective_subject(scope, security, Action.READ, "list")
+                active = set(self._member_store().active_dimensions(scope))
+                visibility = own_visibility(active.intersection(dimensions_of(scope, coordinates)))
+            effective_filters = and_merge(effective_filters, [visibility])
         # list 必须注入第一族，否则个体空间的隔离只在 search 上成立：它是同样按空间返回
         # 条目的批量入口，不注入的后果与 search 同因同向。第二段逐条鉴权不能替代谓词——
         # 逐条鉴权的失败形态是抛异常而非过滤，整次调用失败而不是少返回几条。
@@ -958,6 +981,7 @@ class QueryOpsMixin:
             unit.id,
             context=_unit_snapshot_permission_context(unit),
         )
+        self._guard_collective_unit(unit, security)
         self._guard_continuity_snapshot(unit, security)
         self._log(
             identity,
@@ -1040,6 +1064,7 @@ class QueryOpsMixin:
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()
         before = asyncio.run(self._queries.get(unit_id, scope, None))
+        self._guard_collective_unit(before, security)
         _reject_memory_type_transition(before, patch.system_metadata)
         if self._privacy is not None:
             from dataclasses import replace as copy_patch
@@ -1181,6 +1206,12 @@ class QueryOpsMixin:
                     permission_context.unit_id,
                     context=permission_context,
                 )
+                if is_collective_metadata(permission_context.metadata):
+                    # The permission snapshot stringifies metadata. Use the original boolean.
+                    unit = asyncio.run(self._queries.get(
+                        permission_context.unit_id, permission_context.scope, None,
+                    ))
+                    self._guard_collective_unit(unit, security)
                 auth.update(unit_auth)
         # mutation 前审计完整性预检（对齐 update/delete 的 R3 约束）
         self._ensure_audit_integrity_healthy()
@@ -1352,6 +1383,12 @@ class QueryOpsMixin:
                     permission_context.unit_id,
                     context=permission_context,
                 )
+                if is_collective_metadata(permission_context.metadata):
+                    # The permission snapshot stringifies metadata. Use the original boolean.
+                    unit = asyncio.run(self._queries.get(
+                        permission_context.unit_id, permission_context.scope, None,
+                    ))
+                    self._guard_collective_unit(unit, security)
                 auth.update(unit_auth)
         # mutation 前审计完整性预检与故障隔离（R3，计划 §9.3）。
         self._ensure_audit_integrity_healthy()

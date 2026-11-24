@@ -169,6 +169,21 @@ class WriteOpsMixin:
         event_time: datetime | None = None,
         continuity: ContinuityWrite | None = None,
     ) -> list[MemoryUnit]:
+        if system_metadata is not None and "sources" in system_metadata:
+            metadata = dict(system_metadata)
+            sources = metadata.pop("sources")
+            _reject_invalid_event_time(event_time)
+            _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
+            has_input = bool(content or assets)
+            if has_input or source is not Modality.TEXT or continuity is not None:
+                raise ValidationError(
+                    "collective sources cannot be combined with raw content, assets or continuity"
+                )
+            return await self._add_collective(
+                sources, scope, security=security, system_metadata=metadata,
+                user_metadata=user_metadata, tags=tags, occurred_at=occurred_at,
+                event_time=event_time,
+            )
         if continuity is not None:
             # The continuity path is synchronous and its writer bridges to the async
             # engine with its own loop; run it off the caller's event loop.
