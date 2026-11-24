@@ -220,6 +220,8 @@ class QueryOpsMixin:
         ``query_context`` 经 ``Context.extensions`` 进入 API 边界，校验并转换为
         ``RetrievalQuery.query_context``，供支持上下文感知改写的 parser 消费。
         """
+        if not isinstance(query, str) or not query.strip():
+            raise ValidationError("query must be a non-empty string")
         context = Context(
             scope=deepcopy(context.scope),
             extensions=_copy_search_extensions(dict(context.extensions)),

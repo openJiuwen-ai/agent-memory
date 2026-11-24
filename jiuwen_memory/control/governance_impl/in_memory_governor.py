@@ -51,8 +51,12 @@ class InMemoryGovernor(Governor):
                 return
             seen.add(current_id)
             chain.append(cursor)
+            # 沿 provenance（合成血缘）回溯
             for parent_id in cursor.provenance:
                 visit(parent_id)
+            # 沿 supersedes（版本链）回溯到被取代的旧版本
+            if cursor.supersedes:
+                visit(cursor.supersedes)
 
         visit(unit_id)
         return chain
