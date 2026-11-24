@@ -89,11 +89,10 @@ an existing memory rail, pass its `space`, `agent`, and `session` in `write_targ
 
 ### Embed the Portal in the host's settings page
 
-To use an iframe, add the host page's exact origin (scheme, hostname, and port if specified) to
-the allowed list. Use `portal.allowed_frame_origins` for an SDK Provider or
-`http.portal_frame_origins` in the HTTP service's startup configuration. Get a fresh link for
-the current user and set the full URL as the iframe's `src`. Request a new link each time you
-mount the iframe.
+Get a fresh link for the current user and set the full URL as the iframe's `src`. The browser must
+be able to reach the Portal at its loopback address. Hosting pages can embed the Portal without
+configuring an origin allowlist. Remove any previous iframe origin settings when upgrading.
+Request a new link each time you mount the iframe.
 
 ## View and manage memories
 

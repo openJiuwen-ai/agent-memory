@@ -27,8 +27,6 @@ from jiuwen_memory_entry.portal.sessions import (
     SESSION_HEADER,
     BrowserSessions,
     bootstrap,
-    frame_headers,
-    frame_origins,
 )
 
 
@@ -96,10 +94,9 @@ def request_error(error):
 
 
 class _PortalServer:
-    def __init__(self, dispatch, *, port, allowed_frame_origins, shared=False):
+    def __init__(self, dispatch, *, port, shared=False):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValidationError("Portal port must be an integer from 0 to 65535")
-        self.frame_origins = frame_origins(allowed_frame_origins)
         self.sessions = BrowserSessions()
         self.close_lock = Lock()
         self.closed = False
@@ -132,8 +129,6 @@ class _PortalServer:
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
-                for name, value in frame_headers(handle.frame_origins if html else ()).items():
-                    self.send_header(name, value)
                 if cookie:
                     self.send_header("Set-Cookie", cookie)
                 self.end_headers()
@@ -170,9 +165,7 @@ class _PortalServer:
                     if not isinstance(payload, dict):
                         raise ValidationError("payload must be an object")
                     if is_bootstrap:
-                        body, cookie = bootstrap(
-                            handle.sessions, payload, handle.frame_origins, shared=shared,
-                        )
+                        body, cookie = bootstrap(handle.sessions, payload, shared=shared)
                         if body is None:
                             self.respond(401, {"error": "AuthenticationError"})
                         else:
@@ -225,7 +218,7 @@ class PortalHandle(_PortalServer):
     """Owns only web resources. Closing never closes the borrowed memory Runtime."""
 
     def __init__(
-        self, runtime, security_provider, *, identity=None, port=0, allowed_frame_origins=(),
+        self, runtime, security_provider, *, identity=None, port=0,
         configuration_conflict=False,
     ):
         self.runtime = runtime
@@ -237,7 +230,7 @@ class PortalHandle(_PortalServer):
                 "configuration_conflict": configuration_conflict,
             },
         }
-        super().__init__(self.dispatch, port=port, allowed_frame_origins=allowed_frame_origins)
+        super().__init__(self.dispatch, port=port)
 
     def register_provider(self, identity, security_provider, *, configuration_conflict=False):
         """Register one credential source; identical sources share an entry."""
@@ -314,25 +307,22 @@ _handles = {}
 
 
 def start_portal(
-    runtime, *, security_provider, identity=None, port=0, allowed_frame_origins=(),
+    runtime, *, security_provider, identity=None, port=0,
     configuration_conflict=False,
 ):
     """Attach to an existing instance; the host must call once and own the handle."""
-    origins = frame_origins(allowed_frame_origins)
     identity = identity or new_provider_key()
     with _registry_lock:
         existing = _handles.get(id(runtime), lambda: None)()
         if existing is not None and not existing.closed:
             if port and port != existing.server.server_port:
                 raise ValidationError("Runtime already has a Portal on another port")
-            if origins != existing.frame_origins:
-                raise ValidationError("Runtime already has a different Portal framing policy")
             existing.register_provider(
                 identity, security_provider, configuration_conflict=configuration_conflict,
             )
             return existing
         handle = PortalHandle(
-            runtime, security_provider, identity=identity, port=port, allowed_frame_origins=origins,
+            runtime, security_provider, identity=identity, port=port,
             configuration_conflict=configuration_conflict,
         )
         _handles[id(runtime)] = ref(handle)

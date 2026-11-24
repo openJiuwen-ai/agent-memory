@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import urllib.error
 import urllib.request
@@ -766,15 +767,24 @@ def test_third_party_loopback_requirement_uses_binding_policy(host, binding_http
     assert binding_httpd == []
 
 
-def test_remote_capable_authenticator_binds_without_dev_override(binding_httpd) -> None:
+@pytest.mark.parametrize(
+    "host_args,expected_host", [([], "127.0.0.1"), (["--host", "0.0.0.0"], "0.0.0.0")]
+)
+def test_remote_capable_authenticator_respects_cli_bind_address(
+    host_args, expected_host, binding_httpd, monkeypatch,
+) -> None:
     runtime = replace(
         build_dev_security_runtime(),
         authenticator=_RemoteAuthenticator(),
     )
-    server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
+    build_server = HttpServer.build
+    monkeypatch.setattr(
+        HttpServer, "build", lambda config: build_server(config, security_runtime=runtime),
+    )
 
-    server.serve("0.0.0.0", 8137)
+    assert http_server_module.main(["--auth-mode", "required", *host_args]) == 0
 
+    assert binding_httpd[0].address == (expected_host, 8137)
     assert binding_httpd[0].served is True
     assert binding_httpd[0].closed is True
 
@@ -1498,6 +1508,22 @@ def test_http_audit_detail_contains_response_request_id(
     assert event.detail["request_id"] == headers["x-request-id"]
 
 
+@pytest.mark.parametrize("origins", [[], ["http://host.example"]], ids=["empty", "nonempty"])
+def test_http_portal_warns_on_legacy_frame_origins(origins, caplog) -> None:
+    config = load_config([OFFLINE, {"http": {"portal_frame_origins": origins}}])
+    with caplog.at_level("WARNING", logger="agent-memory.server"):
+        server = HttpServer.build(config)
+    try:
+        assert server.portal_enabled
+        warning = (
+            "agent-memory.server", logging.WARNING,
+            "HTTP option http.portal_frame_origins is obsolete and ignored",
+        )
+        assert caplog.record_tuples.count(warning) == 1
+    finally:
+        server.close(wait=True)
+
+
 def test_portal_uses_existing_authentication_and_requires_same_origin(http_endpoint):
     from tests.integration.portal.test_document_portal import Browser, personal_list
 
@@ -2148,9 +2174,7 @@ def test_http_portal_browser_requires_session_even_with_fixed_dev_identity(dev_h
 def test_embedded_http_portal_binds_authenticated_rail_target(http_endpoint):
     from urllib.parse import parse_qs, urlsplit
 
-    base_url, server = http_endpoint
-    parent = "http://localhost:8080"
-    server.portal_frame_origins = (parent,)
+    base_url, _ = http_endpoint
     headers = {"Origin": base_url, "Content-Type": "application/json"}
 
     from tests.integration.portal.test_document_portal import personal_list
@@ -2183,5 +2207,5 @@ def test_embedded_http_portal_binds_authenticated_rail_target(http_endpoint):
     assert result[0]["scope"]["session"] == "turn"
     assert result[0]["system_metadata"]["project"] == "demo"
     with _NO_PROXY_OPENER.open(f"{base_url}/portal/", timeout=3) as page:
-        assert page.headers["Content-Security-Policy"] == f"frame-ancestors {parent}"
+        assert page.headers.get("Content-Security-Policy") is None
         assert page.headers.get("X-Frame-Options") is None
