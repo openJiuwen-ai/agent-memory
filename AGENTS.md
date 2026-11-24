@@ -22,8 +22,9 @@
 独立 Python 分发元数据（根 wheel 排除该子包）；本地约束见该目录 `AGENTS.md`。
 显式安全装配沿用 framework 选型，覆盖 SDK 文本交付、来源账本、LLM/工具执行及
 结果、流释放、用户响应和 agent 消息；实际覆盖由装配实例报告，配置解析不安装门禁。原会话审批使用认证控制入口及固定三选择控件，不调用 LLM。
-首个插件 PR 仅提供 openJiuwen 适配，覆盖合作执行路径、实际 URL/model、动态选模/重试
-及来源继承；完整三框架版本保存在独立开发分支，后续追加。具体边界见本地约束。
+openJiuwen 适配覆盖实际 URL/model、动态选模/重试和来源继承。WorkSwarm 0.2.9
+个人版 Work／Code 文本会话复用同一驱动，Swarm 专用的自动召回、动态文本 MCP
+和原会话审批装配归 `jiuwen_memory_adapter/jiuwenswarm/`。
 检测器及规则快照由插件独立维护，不扩展 jiuwen memory API。可选 memory_backend 与
 framework 独立选型；后端声明自己的接口目录，当前只实现 jiuwen memory。
 实际装配通过 RuntimeRegistry 选择框架驱动；独立静态描述留待后续 PR，

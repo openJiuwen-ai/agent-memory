@@ -1,0 +1,6 @@
+id: mindvault
+name: MindVault
+version: 0.1.0
+description: 管理个人版 Swarm 的敏感记忆保护和外发审批。
+package_type: application
+min_jiuwenswarm_version: "0.2.5"

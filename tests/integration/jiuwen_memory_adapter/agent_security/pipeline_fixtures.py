@@ -94,6 +94,8 @@ def bundle(
     interactive=False,
     runtime_registry=None,
     redact_only=False,
+    notify_callback=None,
+    register_memory_tools=True,
 ):
     from jiuwen_memory_adapter.agent_security import (
         ApprovalChoice,
@@ -110,6 +112,8 @@ def bundle(
     plugin = None
 
     def notify(owner, event):
+        if notify_callback is not None:
+            notify_callback(owner, event)
         for request in plugin.pending(owner):
             if any(r["approval_id"] == request["approval_id"] for r in shown):
                 continue
@@ -144,16 +148,18 @@ def bundle(
         notify=notify,
         runtime_registry=runtime_registry,
     )
-    reader = plugin.connect_memory_backend(
-        api=runtime.api,
-        provider="sdk",
-        security_for=lambda _: sdk_security(scope),
-        scope_for=lambda _: scope,
-        authorize_use=lambda *args: True,
-        detector_version_for=lambda _: inspector.version,
-        protected_source_levels_for=lambda _: frozenset({"S2", "S3"}),
-    )
-    memory_tool = plugin.memory_tools(reader)[1]
+    memory_tool = None
+    if register_memory_tools:
+        reader = plugin.connect_memory_backend(
+            api=runtime.api,
+            provider="sdk",
+            security_for=lambda _: sdk_security(scope),
+            scope_for=lambda _: scope,
+            authorize_use=lambda *args: True,
+            detector_version_for=lambda _: inspector.version,
+            protected_source_levels_for=lambda _: frozenset({"S2", "S3"}),
+        )
+        memory_tool = plugin.memory_tools(reader)[1]
     model = plugin.model("model", api_key="fixture-auth", max_retries=0)
 
     def send(payload, context):

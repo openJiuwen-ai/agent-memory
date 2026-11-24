@@ -179,3 +179,129 @@ default/video 及显式具名覆盖。规则相同的应用可以复用算子；
 HTTP 需先在**服务端**加载 `deploy/local/document-memory-http.yaml`，或装配前调用同一个配置
 函数；仅在客户端指定流程名不能安装服务端组件。该配置启用 `strict_routes=true`，未知流程
 和混合路由写入批次报错；无路由请求仍走 fallback。后台 evolve/EXTRACT 不在本次分流范围内。
+
+## Swarm Work／Code 敏感记忆管控
+
+在 AgentServer 启动时、创建 Work／Code adapter 前安装宿主接线。
+
+```python
+from jiuwen_memory_adapter.jiuwenswarm.security_host import (
+    SwarmSessionPorts,
+    install_swarm_work_code,
+)
+
+install_swarm_work_code(authenticate=authenticate, open_session=open_session, mcp_for=mcp_for)
+```
+
+- `authenticate(request, mode)` 返回绑定原生会话 ID 的可信 `Actor`。每次对话和审批答复
+  都调用此端口，`mode` 使用 Swarm 的 `"agent"`（Work）或 `"code"`。身份来自服务端认证。
+- `open_session(actor, mode, notify)` 返回 `SwarmSessionPorts(plugin, model, reader, workspace,
+  system_prompt)`。每个会话创建独立插件，模型和公开 SDK 安全读取器均由该实例创建。
+  `reader` 可取自 `plugin.connect_memory_backend(...).reader`。创建插件时将 `notify`
+  传入，使待审批请求能唤醒原会话。
+- `mcp_for(actor, mode, names)` 按宿主授权将本轮选中的名字解析为已连接的
+  `(server_name, policy_target, ClientSession)`。插件复核发现结果和最终参数，连接由宿主管理。
+
+使用 Swarm 的 harness 驱动和本地记忆模式，自动召回来自插件的安全读取器。
+原生 Work／Code 文本入口使用 `chat.send` 和 `chat.ask_user_question`，审批仍走原会话。
+Worker 在 Swarm 为 Work／Code 会话创建的原生 DeepAgent 上挂载 Rail，并复用该 Agent
+的工具、子 Agent 声明及后台调度。普通工具和原生子 Agent 沿用各模式的配置。出现
+九问记忆来源时，只有已装配的文本 MCP 和子 Agent 路径可接收记忆衍生内容。
+Swarm 的覆盖范围以本节为准，`plugin.coverage()` 描述 `plugin.agent(...)` 的托管路径。
+自动写回、多模态载荷和旧会话来源重建需要单独接线和验收。
+
+| MindVault 钩子 | Swarm 接入点 |
+|---|---|
+| `BEFORE_LLM_CALL` / `AFTER_LLM_CALL` | `JiuwenSecurityRail` 的 `before_model_call` / `after_model_call` 与模型 transport |
+| `BEFORE_TOOL_CALL` / `AFTER_TOOL_CALL` | `JiuwenSecurityRail` 的 `before_tool_call` / `after_tool_call` 与工具执行包装 |
+| `BEFORE_MEMORY_EXPORT` | SDK 安全读取器交付 |
+| `ON_LLM_STREAM_CHUNK` | 模型 transport 的流释放 |
+| `BEFORE_AGENT_RESPONSE` | Worker 向原会话交付最终回复 |
+| `BEFORE_AGENT_MESSAGE` | 持久子 Agent 派发、追发、回传，以及文本 `TaskTool` 派发和回传 |
+
+已有的 `react.subagent_runtime.enabled` 继续选择 Swarm 的子 Agent 运行方式。
+背景队列只接收批准后的文本，子 Agent 的输出在进入父 Agent 或 transcript 之前受控。
+派发和回传分别按记忆来源与实际内容判定。命中敏感策略时，审批卡在原会话显示。
+运行时发生重建后，需要新建会话登记可信来源。
+
+要复验，在同一个 Python 环境安装记忆 SDK、插件和 Swarm 运行依赖。发行版基线为
+WorkSwarm `0.2.9`、openJiuwen `0.1.21` 和 Agent Gateway `0.1.0`。
+从仓库根目录执行：
+
+```bash
+python -m pytest -rs tests/integration/jiuwen_memory_adapter/jiuwenswarm/test_jiuwenswarm_binding.py
+```
+
+检查 Work 和 Code 的用例均执行且通过。它们走 Swarm 原生会话 API，使用真实 SDK、
+本地 stdio MCP 与回环 HTTP 模型协议端。测试先写入合成 S3 密码，再核对模型实收请求
+包含脱敏占位符且没有原文。接收端记录验证继续发送本次候选、中止不发送、脱敏发送
+替换值三种效果。测试无需真实账号、密码或模型 API Key。
+
+### 安装到个人版 Swarm
+
+使用个人单机版 WorkSwarm **0.2.9** 的官方 Python wheel。Gateway 和常驻 AgentServer
+Worker 从同一实例的数据目录加载 Application Plugin，并能从各自 Python 环境导入本插件和
+jiuwen memory。当前 PyPI 的 `JiuwenMemory 0.2.1` 不包含 #406 脱敏接口；本地验收可在独立
+环境中临时换用含 #406 的上游 `mem2.0` 构建包。后续发行包具备该能力时，直接使用官方依赖，
+无需额外装配记忆 SDK 或修改 Swarm 源码。
+使用本地记忆模式及 harness 驱动。默认对话模型须配置为 API Key 鉴权的 OpenAI
+Chat Completions；仅支持该默认模型，登录模型和自定义模型请求头不在当前范围内。
+远程模型地址必须使用 HTTPS，本地联调可对 `localhost`、`127.0.0.1` 或 `::1` 使用 HTTP。
+
+1. 正常初始化 Swarm 实例并登录所有者账号。从其已登录状态接口
+   `GET /api/v1/auth/status` 取得该账号的 `userId`。记下该实例数据目录，以及打开
+   Swarm 的实际网页来源（协议、主机和端口）。`localhost` 和 `127.0.0.1` 是不同来源。
+2. 准备已启用 `globals.privacy_enabled: true`、默认使用 `regex` 的 jiuwen memory
+   配置文件，保留配置中的存储和密钥设置。该配置用于此实例所有者的 SDK 读取。
+   如果要验收工具外发，在 Swarm 的 `mcp.servers` 中登记启用的 Streamable HTTP 服务。
+   勾选此工具之前，还需在安装命令中用 `--mcp` 明确授权其服务名。
+3. 退出这个 Swarm 实例及其常驻 Worker。在本仓库根目录使用 Swarm 的 Python 环境安装
+   九问记忆与已有的 MindVault SDK，然后运行扩展安装命令。
+
+   ```bash
+   python -m pip install ".[security]" ./jiuwen_memory_adapter/agent_security
+   ```
+
+   扩展由同一个 Swarm 实例加载。命令会把管理页和 Worker
+   扩展放入已初始化实例的 `application_plugins/mindvault`，并把安装配置和保护状态保存在
+   实例的 `infra/mindvault`。旧开发版 Gateway 如使用 `domain/application_plugins`，则沿用其目录。
+
+```powershell
+python -m jiuwen_memory_adapter.jiuwenswarm.security_install `
+  --data-dir 'C:/path/to/.jiuwenswarm' `
+  --owner '从 Swarm 登录状态取得的 userId' `
+  --origin 'http://127.0.0.1:5173' `
+  --memory-config 'C:/path/to/jiuwen-memory.yaml'
+```
+
+4. 用 Swarm 原有方式启动。Python 环境的标准命令为
+   `python -m jiuwenswarm.start_services all`。打开启动提示中的 Web 地址，然后用
+   同一个所有者账号进入工作区左侧栏的 **MindVault** 应用入口。若首次启动有
+   模型配置引导，完成或跳过引导后再点击。Gateway 和 Worker
+   会自行加载扩展，无需单独运行 Worker 启动脚本。若实例启用了扩展允许名单，
+   将清单名称 `MindVault` 加入名单后重启。
+5. 「敏感记忆使用保护」默认关闭。打开页面，确认配置摘要出现，状态为「新会话保护已关闭」。
+   「记忆写入脱敏」是只读状态，读取九问记忆的配置并结合 Worker 回执显示是否生效。
+   「记忆使用与扫描策略」可配置九问记忆是否用于模型、工具外发和子 Agent 通信，并按类别
+   选择扫描和分级。保存后在新建会话生效，敏感记忆外发仍在当前对话中审批。
+   已选中的动态 MCP 工具由插件包装后直接出现在 Swarm 的工具列表中，发送前会检查记忆策略。
+   打开使用保护开关后等到「新会话保护已生效」再新建会话。若始终显示
+   「AgentServer 未回报保护状态」，查看隔离实例的 Worker 日志是否出现
+   `MindVault protection mounted in resident Swarm Worker`，并核对默认模型、
+   记忆配置、允许名单和 Worker 是否已随重启替换。若 Worker 加载了扩展但装配失败，
+   已开启保护的实例会拒绝继续处理 Work／Code 请求，修复配置后重启。
+6. 通过九问记忆保存一条合成敏感记忆，再在 **Work** 和 **Code** 分别新建文本会话，
+   请求召回该记忆。检查原会话审批、模拟模型收到的实际文本，以及原始值是否被遮盖。
+   用包含子任务的请求验收两张消息审批卡，分别检查中止时对应接收端无消息入站。
+7. 在管理页关闭保护，再新建 Work／Code 会话确认返回原生路径。已有会话保留绑定，
+   正在等待审批的外发仍须按原来的规则处理。可重新打开管理页恢复保护。
+
+保护状态以 Worker 回执为准，扩展清单的 `enabled` 仅表示页面可打开。状态库暂时无法
+读写，或上一个 Worker 的回执仍有效时，当前 Worker 暂停准入并定期重试。设置页使用
+Swarm 登录 Cookie，复用实例所有者身份，不回显模型密钥或 SDK 私有配置。
+首版允许列表只支持无自定义认证头的 Streamable HTTP MCP，远程地址使用 HTTPS，
+回环验收可用 HTTP。记忆只读，自动写回仍关闭。
+
+本地验收使用官方 Python wheel、标准启动命令及原生 Web 工作区，登录使用隔离的测试会话。
+冻结桌面安装包须单独验证内置 Python 环境是否能加载独立插件 wheel、读取用户扩展目录并
+导入所需依赖。

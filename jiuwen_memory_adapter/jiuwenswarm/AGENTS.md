@@ -13,6 +13,12 @@
 | memory_tools.py | 共用工具定义与文档读取、编辑操作 |
 | sdk_runtime.py | 同进程共享 runtime、lease、统一有界执行池和真实在途操作计数、关闭状态机 |
 
+| `security_*.py` | Work／Code 文本会话装配、回执、原会话审批及安全交付 |
+| `security_rail.py` | `JiuwenSecurityRail`，将模型与工具的前后置边界映射到 Swarm 原生回调 |
+| `security_policy.py` | 记忆使用权限、检测类别和分级的校验及检测器装配 |
+| `security_messages.py` | 通过原生工具、子 Agent 工厂与文本流绑定父子身份，守护派发和回传 |
+| `extension.py`、`extension.yaml`、`frontend/` | Swarm 发现的扩展入口及设置页 |
+
 ## 行为铁律
 
 - 内置 SDK 的经验文档模式直接输出 `skills_dir/distilled/<skill_name>/SKILL.md`，保留现有同名技能，不启动发布清单同步。HTTP 与其余仍使用技能清单的模式同步时，仅更新或清理带当前空间来源标记且正文摘要未变的文件。
@@ -42,8 +48,14 @@
 - HTTP 工具与角色模式沿用既有入口；SDK continuity 暴露任务/恢复工具，日常读写由 prefetch/sync_turn 或 continuity_request 执行。
 - 进程内 Portal 启动授权在签发时固定 Provider key；省略时只允许唯一已注册来源，多来源必须显式选择。请求拒绝空 key，来源注销后不能转用其他 Provider；未知或已注销 key 不得签发新链接。
 - continuity 调试日志使用 `[continuity.*]` 标记，记录操作、Session/task/binding/event 身份、条数、缺口和耗时；不记录正文、查询描述或凭证。Provider 沿用宿主 logger 名，sdk_runtime 使用本模块 logger，由宿主按需转发。
+- MindVault 设置页通过已安装的记忆配置和 Worker 回执只读展示写入脱敏。会话使用保护开关只更新本地期望状态。
+- 策略和使用保护开关共用修订号。新会话取 Worker 已应用的策略快照，已有会话继续使用原快照。
 
 ## 与其他子目录的边界
+
+Work／Code 安全接线复用已安装的 MindVault SDK，身份和轮次绑定、MCP 连接及扩展生命周期由 Swarm 宿主负责。
+扩展保留 Swarm 管理的 DeepAgent 与原生子 Agent 配置。受保护子消息在入队或原生执行前
+确认最终候选，结果批准后才交给原生聚合器。装配时拒绝无法复核来源的旧会话。
 
 MemoryAPI 执行授权和任务操作；Adapter 不维护任务目录或业务任务映射，也不为单个 Session 关闭共享内核。
 JiuwenSwarm 的 ContinuityRail、用户候选确认和 metadata.json 激活指针属于上游宿主。
