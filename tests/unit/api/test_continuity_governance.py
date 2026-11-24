@@ -1722,3 +1722,298 @@ def test_batch_continuity_runs_derivation_when_extractor_configured(tmp_path):
         ), "派生写入缺少 add 审计"
     finally:
         runtime.close()
+
+
+def test_batch_continuity_conflict_is_per_item_when_continue_on_error(tmp_path):
+    """同批里有一条事件 ID 复用但内容变了：只拒绝它，同批好项照常写入。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        when = datetime.fromisoformat("2020-01-01T00:00:00+08:00")
+
+        def item(content, event_id):
+            return BatchWriteItem(
+                content, project,
+                continuity=ContinuityWrite(task["task_id"], binding, event_id),
+                event_time=when,
+            )
+
+        api.batch_add([item("c-1 original", "c-1")], project, security=wb)
+        result = api.batch_add(
+            [item("c-1 changed", "c-1"), item("c-2 fresh", "c-2")],
+            project, security=wb, continue_on_error=True,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert by_index[0].error_type == "ConflictError", by_index[0]
+        assert by_index[0].continuity_status == "rejected", by_index[0]
+        assert by_index[0].operation_id, "拒绝项必须带事件键"
+        assert by_index[1].continuity_status == "committed"
+        contents = [unit.content for unit in api.list(project, security=wb, limit=20).items]
+        assert "c-2 fresh" in contents, contents
+    finally:
+        runtime.close()
+
+
+def test_batch_continuity_strict_conflict_keeps_prefix_and_skips_rest(tmp_path):
+    """continue_on_error=False：失败项之前的项已写入，之后的项标 Skipped 而不是复制冲突。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        when = datetime.fromisoformat("2020-01-01T00:00:00+08:00")
+
+        def item(content, event_id):
+            return BatchWriteItem(
+                content, project,
+                continuity=ContinuityWrite(task["task_id"], binding, event_id),
+                event_time=when,
+            )
+
+        api.batch_add([item("c-1 original", "c-1")], project, security=wb)
+        result = api.batch_add(
+            [item("c-4 good", "c-4"), item("c-1 changed", "c-1"), item("c-5 good", "c-5")],
+            project, security=wb, continue_on_error=False,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert sorted(by_index) == [0, 1, 2]
+        assert not by_index[0].error, by_index[0].error
+        assert by_index[1].error_type == "ConflictError"
+        assert by_index[1].continuity_status == "rejected", by_index[1]
+        assert by_index[1].operation_id, "拒绝项必须带事件键"
+        assert by_index[2].error_type == "Skipped"
+        # 跳过项没执行：留空串，不冒充 rejected。
+        assert by_index[2].continuity_status == "", by_index[2]
+        contents = [unit.content for unit in api.list(project, security=wb, limit=20).items]
+        assert "c-4 good" in contents
+        assert "c-5 good" not in contents
+    finally:
+        runtime.close()
+
+
+def test_batch_continuity_missing_evidence_ref_is_per_item(tmp_path):
+    """证据引用指向不存在的记忆时只拒绝该项，同批好项照常写入。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        when = datetime.fromisoformat("2020-01-01T00:00:00+08:00")
+        missing = MemoryRef(project, "no-such-unit", "0" * 64)
+        result = api.batch_add(
+            [
+                BatchWriteItem(
+                    "bad ref", project,
+                    continuity=ContinuityWrite(
+                        task["task_id"], binding, "b-1", evidence_refs=[missing]
+                    ),
+                    event_time=when,
+                ),
+                BatchWriteItem(
+                    "good neighbour", project,
+                    continuity=ContinuityWrite(task["task_id"], binding, "g-1"),
+                    event_time=when,
+                ),
+            ],
+            project, security=wb, continue_on_error=True,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert by_index[0].error_type == "NotFoundError", by_index[0]
+        assert by_index[0].continuity_status == "rejected", by_index[0]
+        assert by_index[0].operation_id, "拒绝项必须带事件键"
+        assert by_index[1].continuity_status == "committed"
+        contents = [unit.content for unit in api.list(project, security=wb, limit=20).items]
+        assert "good neighbour" in contents, contents
+    finally:
+        runtime.close()
+
+
+def test_replay_after_body_forgotten_rejects_only_that_item(tmp_path):
+    """回执还在、正文已遗忘：该项 rejected，同批新事件照常提交（continue_on_error=True）。"""
+    from jiuwen_memory.api import BatchWriteItem, MemoryPatch
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        when = datetime.fromisoformat("2020-01-01T00:00:00+08:00")
+
+        def item(content, event_id):
+            return BatchWriteItem(
+                content, project,
+                continuity=ContinuityWrite(task["task_id"], binding, event_id),
+                event_time=when,
+            )
+
+        first = api.batch_add([item("c-1 body", "c-1")], project, security=wb)
+        unit = first.outcomes[0].units[0]
+        # SUPERSEDE 让旧版本失活：回执里的引用仍在，但正文已不是 active。
+        api.update(unit.id, project, MemoryPatch(content="c-1 revised"), security=wb)
+
+        result = api.batch_add(
+            [item("c-1 body", "c-1"), item("c-3 body", "c-3")],
+            project, security=wb, continue_on_error=True,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert by_index[0].continuity_status == "rejected", by_index[0]
+        assert by_index[0].error_type == "ConflictError", by_index[0]
+        assert by_index[0].operation_id, "拒绝项必须带事件键"
+        assert by_index[1].continuity_status == "committed", by_index[1]
+        contents = [unit.content for unit in api.list(project, security=wb, limit=20).items]
+        assert "c-3 body" in contents, contents
+    finally:
+        runtime.close()
+
+
+def test_unauthorized_continuity_item_is_rejected_without_key(tmp_path):
+    """无写权限的接续项：rejected 但不回填事件键（避免泄露绑定是否存在），下一项 Skipped。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        when = datetime.fromisoformat("2020-01-01T00:00:00+08:00")
+        # 撤掉写权限：任务与绑定仍在同一项目，事件键算得出来，鉴权在写入前拒绝。
+        api.remove_space_member(
+            "demo", "role-project", actors["workbuddy"],
+            security=_security(owner, Role.ADMIN),
+        )
+
+        def item(content, event_id):
+            return BatchWriteItem(
+                content, project,
+                continuity=ContinuityWrite(task["task_id"], binding, event_id),
+                event_time=when,
+            )
+
+        result = api.batch_add(
+            [item("no permission", "p-1"), item("after failure", "p-2")],
+            project, security=wb, continue_on_error=False,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        assert by_index[0].continuity_status == "rejected", by_index[0]
+        assert by_index[0].error_type == "PermissionDeniedError", by_index[0]
+        # 无权写入时不回填事件键：有键/无键的差异会暴露绑定是否存在。
+        assert by_index[0].operation_id == "", by_index[0]
+        assert by_index[1].continuity_status == "", by_index[1]
+        assert by_index[1].error_type == "Skipped", by_index[1]
+    finally:
+        runtime.close()
+
+
+def test_validated_continuity_item_rejection_carries_event_key(tmp_path):
+    """连接校验通过的项：幂等键不一致时拒绝结果要带回正确的事件键。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+        when = datetime.fromisoformat("2020-01-01T00:00:00+08:00")
+        result = api.batch_add(
+            [
+                BatchWriteItem(
+                    "bad idempotency", project,
+                    continuity=ContinuityWrite(task["task_id"], binding, "k-1"),
+                    idempotency_key="not-the-event-key",
+                    event_time=when,
+                ),
+                BatchWriteItem(
+                    "conflicting metadata", project,
+                    continuity=ContinuityWrite(task["task_id"], binding, "k-2"),
+                    system_metadata={"infer": "yes"},
+                    event_time=when,
+                ),
+            ],
+            project, security=wb, continue_on_error=True,
+        )
+        by_index = {outcome.index: outcome for outcome in result.outcomes}
+        for index in (0, 1):
+            assert by_index[index].continuity_status == "rejected", by_index[index]
+            assert by_index[index].operation_id, by_index[index]
+    finally:
+        runtime.close()

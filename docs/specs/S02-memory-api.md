@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -1632,7 +1632,7 @@ scope 不走 filters。metadata 比较严格保留类型：number、string、boo
 - `BatchWriteOutcome` 包含输入索引、归一化 item、该项产生的 `units` 与可归集的 `error` / `error_type`；成功且 units 为空仍是成功。Engine 的非领域异常也必须归集为 `InternalError`，不能使整批 HTTP 请求退化为 500。
 - `BatchWriteResult.outcomes` 与输入严格一一对应。相同 `(Scope, stream_id)` 的非空 `sequence` 不得重复；接口不自动重排。
 - 内部字段：`BatchWriteItem.source_ref` 只由接续批量写入在内部设置（`source_locator` → `MemoryUnit.source_ref`）；公开调用方传非空值即 `ValidationError`。
-- 接续：`BatchWriteItem.continuity: ContinuityWrite | None`；`BatchWriteOutcome` 新增 `operation_id: str = ""` 与 `continuity_status: str = ""`（committed / partial / unknown / rejected，未带 continuity 的项为空）。
+- 接续：`BatchWriteItem.continuity: ContinuityWrite | None`；`BatchWriteOutcome` 新增 `operation_id: str = ""` 与 `continuity_status: str = ""`（committed / partial / unknown / rejected；未带 continuity 的项为空；`continue_on_error=False` 时失败项之后未执行的项也为空，以 `error_type="Skipped"` 标识，可原样重放）。
 
 ### DisclosureLevel / RetrievalResult（search 返回，`retrieval/types.py`）
 
@@ -1917,7 +1917,7 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 
 返回：committed 时返回正文单元；同键同内容重放返回已保存单元，不重复写正文；同键异内容 `ConflictError`；回执停在 unknown / partial 时抛 `WriteIncompleteError`，携带 `operation_id`、`status`、`refs`、`retry_action`（partial → `retry_original_write`；unknown → `recover_then_retry`，先调 `continuity_recover` 再重试）。服务端核对绑定连接与当前认证主体相同；`claimed_author` 不能替代此检查。
 
-`batch_add`：批级与逐项 scope 须为同一项目空间，不同任务可同批；`idempotency_key` 与 `continuity` 同时给出时须一致。处理分五阶段（批量 unknown 回执 → 批量写正文 → 批量转 partial → 每任务一次背景追加 → 批量转 committed），派生与关系发现排入后续阶段。逐项结果在 `BatchWriteOutcome.operation_id` / `continuity_status` 上表达，不抛 `WriteIncompleteError`；单项失败按 `continue_on_error` 归集。
+`batch_add`：批级与逐项 scope 须为同一项目空间，不同任务可同批；`idempotency_key` 与 `continuity` 同时给出时须一致。处理分五阶段（批量 unknown 回执 → 批量写正文 → 批量转 partial → 每任务一次背景追加 → 批量转 committed），派生与关系发现排入后续阶段。逐项结果在 `BatchWriteOutcome.operation_id` / `continuity_status` 上表达，不抛 `WriteIncompleteError`；单项失败按 `continue_on_error` 归集，被拒绝的接续项给 `continuity_status="rejected"`；`operation_id` 在写入路径回填（回执带下来的事件键）；鉴权拒绝及连接校验之前的失败不回填——事件键要先查绑定，有键/无键的差异会泄露绑定是否存在；连接校验通过后的失败（幂等键不一致、冲突系统键等）带回事件键；`continue_on_error=False` 时其后未执行的项留空串，以 `error_type="Skipped"` 标识。
 
 ### search 的接续参数（职责检索）
 

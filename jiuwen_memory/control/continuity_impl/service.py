@@ -6,6 +6,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.errors import (
+    ITEM_LEVEL_ERRORS,
     AgentMemoryError,
     ConflictError,
     NotFoundError,
@@ -450,6 +451,26 @@ class ContinuityService(Continuity):
                 "operation_id": key,
             }
 
+    def _classify_event(self, scope, event, connector, key, request_fingerprint, read, repo):
+        """校验单条事件并解析其回执；冲突/权限失败由调用方决定是否降级为单项失败。"""
+        envelope = asdict(event)
+        if request_fingerprint:
+            envelope["request_fingerprint"] = request_fingerprint
+        digest = fingerprint(envelope)
+        task = repo.get(scope, "tasks", event.task_id)
+        binding = self.binding(task, event.binding_id)
+        if task["state"] != "open" or binding["connector_id"] != connector:
+            raise ConflictError("binding", message="inactive task or mismatched connection")
+        for ref in event.evidence_refs:
+            read(ref)
+        try:
+            receipt = repo.get(scope, "events", key)
+        except NotFoundError:
+            receipt = None
+        if receipt is not None and receipt["digest"] != digest:
+            raise ConflictError("event", message="event ID reused with different content")
+        return envelope, digest, task, receipt
+
     def record_batch(
         self,
         scope,
@@ -460,6 +481,7 @@ class ContinuityService(Continuity):
         *,
         request_fingerprints=None,
         query_output=None,
+        continue_on_error: bool = False,
     ) -> list[dict]:
         """Five-phase reliable batch write (D5).
 
@@ -487,24 +509,40 @@ class ContinuityService(Continuity):
             for index, event in enumerate(events):
                 connector = connectors[index]
                 key = self.event_key(connector, event.binding_id, event.event_id)
-                envelope = asdict(event)
-                if fingerprints[index]:
-                    envelope["request_fingerprint"] = fingerprints[index]
-                digest = fingerprint(envelope)
-                task = repo.get(scope, "tasks", event.task_id)
-                binding = self.binding(task, event.binding_id)
-                if task["state"] != "open" or binding["connector_id"] != connector:
-                    raise ConflictError(
-                        "binding", message="inactive task or mismatched connection"
-                    )
-                for ref in event.evidence_refs:
-                    read(ref)
                 try:
-                    receipt = repo.get(scope, "events", key)
-                except NotFoundError:
-                    receipt = None
-                if receipt is not None and receipt["digest"] != digest:
-                    raise ConflictError("event", message="event ID reused with different content")
+                    envelope, digest, task, receipt = self._classify_event(
+                        scope, event, connector, key, fingerprints[index], read, repo
+                    )
+                    if receipt is not None:
+                        # 已有回执的正文可能已被遗忘或替换：回查失败同属这一项，
+                        # 不能跳出单项处理、把整批其他事件记成同一个错误。
+                        for ref in receipt["refs"]:
+                            read(MemoryRef.parse(ref))
+                except ITEM_LEVEL_ERRORS as exc:
+                    # 单项失败：拒绝这一项。事件内容变更导致的 ConflictError 属于这一类，
+                    # 不能把整批（含历史导入的整块）拖垮（S11「单项失败不中断其他项」）。
+                    results.append(
+                        (index, {"status": "rejected", "operation_id": key, "error": exc})
+                    )
+                    if not continue_on_error:
+                        # 严格模式：本项之后不再校验也不再写入，剩余项按 skipped 返回，
+                        # 而不是把同一个错误复制给它们——它们既没执行也没冲突。
+                        for later in range(index + 1, len(events)):
+                            results.append(
+                                (
+                                    later,
+                                    {
+                                        "status": "skipped",
+                                        "operation_id": self.event_key(
+                                            connectors[later],
+                                            events[later].binding_id,
+                                            events[later].event_id,
+                                        ),
+                                    },
+                                )
+                            )
+                        break
+                    continue
                 entry = {
                     "index": index,
                     "event": event,
@@ -520,8 +558,6 @@ class ContinuityService(Continuity):
                     # Re-writing it would duplicate content: a receipt without refs stays
                     # ``unknown`` and is reconciled through ``recover(kind=event)``; one
                     # with refs only needs the promotion (background/revision/committed).
-                    for ref in receipt["refs"]:
-                        read(MemoryRef.parse(ref))
                     if receipt["refs"]:
                         resumable.append(entry)
                     else:
@@ -1645,6 +1681,21 @@ def build(config):
             catalog = associator = conflict_resolver = None
         else:
             from jiuwen_memory.retrieval.role_view import RoleViewProducer
+
+            # 角色档必须显式指定图存储：默认 graph_store 是易失内存图，装配能通过但关系
+            # 投影重启即失，角色视图会静默丢掉全部关系路径（S11「缺 graph_store 启动失败」）。
+            # 先判这一条再解析，避免漏配一个键却报出「投影器与视图不是同一张图」的歧义文案。
+            explicit = config.params or {}
+            ephemeral_graph = bool(config.get("allow_ephemeral_graph", False))
+            if not ephemeral_graph and "graph_store" not in explicit and "graph_store" not in (
+                getattr(config.ctx, "globals", {}) or {}
+            ):
+                raise ValidationError(
+                    "continuity role mode requires an explicit graph_store; the default "
+                    "graph_store is an in-memory graph, so relation projections would be "
+                    "silently lost on restart (declare allow_ephemeral_graph to opt into a"
+                    " volatile graph)"
+                )
 
             view = RoleViewProducer.build_named(config.get("role_view", "default"), config.ctx)
 

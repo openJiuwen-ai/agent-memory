@@ -77,7 +77,10 @@ class MemoryEngine(ControlOperator):
     def configure_retention(self, guard) -> None:
         from jiuwen_memory.common.errors import UnsupportedCapabilityError
 
-        raise UnsupportedCapabilityError("engine does not expose retention coordination")
+        raise UnsupportedCapabilityError(
+            "retention", "configure_retention", type(self).__name__,
+            "engine does not expose retention coordination",
+        )
 
     @property
     def supports_exact_metadata_lookup(self) -> bool:
