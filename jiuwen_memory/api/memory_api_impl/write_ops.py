@@ -11,12 +11,12 @@ from typing import Any
 
 from jiuwen_memory.api.memory_api_impl.continuity_ops import _Skipped
 from jiuwen_memory.common.errors import (
-    ITEM_LEVEL_ERRORS,
     AgentMemoryError,
     PermissionDeniedError,
     PolicyError,
     ValidationError,
     WriteIncompleteError,
+    is_item_level_error,
 )
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security import principal
@@ -617,6 +617,7 @@ class WriteOpsMixin:
             error=str(error),
             error_type=error_type or type(error).__name__,
             operation_id=operation_id,
+            # 空串只表示「这一项没有带 continuity」；带接续的失败项落 rejected（S02/S11）。
             continuity_status=(
                 "rejected" if getattr(item, "continuity", None) is not None else ""
             ),
@@ -806,9 +807,10 @@ class WriteOpsMixin:
         def _record_failure(
             index: int, raw_item: object, exc: Exception, *, operation_id: str = ""
         ) -> None:
-            # 单条失败可归因（含证据引用缺失的 NotFoundError）才记为逐项结果；
-            # 后端/限流类异常仍向上抛，不能被当成数据问题吞掉。
-            if not isinstance(exc, (*ITEM_LEVEL_ERRORS, PolicyError)):
+            # 明确拒绝（含事件摘要冲突、引用缺失、鉴权失败）记为逐项 rejected；
+            # 状态可原样重试的异常（后端不可用、搬迁中、限流）继续上抛，
+            # 走 unknown / partial 恢复语义，不能被当成单条数据问题吞掉。
+            if not (is_item_level_error(exc) or isinstance(exc, PolicyError)):
                 raise exc
             outcomes[index] = self._batch_outcome(
                 index,

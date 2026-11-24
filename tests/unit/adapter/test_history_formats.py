@@ -115,3 +115,33 @@ def test_import_stops_when_outcomes_are_missing_or_short():
     assert result["remaining"] == 2
     assert result["results"][0]["status"] == "unknown"
     assert "error" in result["results"][0]
+
+
+def test_import_report_records_the_whole_stopped_chunk():
+    """真实停批顺序 [committed, rejected, Skipped]：三条回执都要进报告，且不再提交下一块。"""
+    calls = []
+
+    class Client:
+        @staticmethod
+        def call(verb, payload):
+            calls.append(len(payload["items"]))
+            return {
+                "outcomes": [
+                    {"continuity_status": "committed", "operation_id": "op-1", "units": []},
+                    {"continuity_status": "rejected", "operation_id": "op-2",
+                     "error_type": "ConflictError", "error": "event ID reused"},
+                    {"continuity_status": "", "operation_id": "op-3",
+                     "error_type": "Skipped", "error": "skipped after previous item failed"},
+                ]
+            }
+
+    events = [
+        {"event_id": str(index), "content": f"c{index}", "task_id": "t", "binding_id": "b"}
+        for index in range(4)
+    ]
+    result = import_history(Client(), {}, {}, events, chunk_size=3)
+    assert [row["status"] for row in result["results"]] == ["committed", "rejected", "skipped"]
+    assert result["imported"] == 1
+    assert result["remaining"] == 3
+    # 第二块不应被提交：第一块已停批，后续块还没写。
+    assert calls == [3]

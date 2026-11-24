@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import UTC, datetime
+from functools import cache
 
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
@@ -16,6 +18,7 @@ from jiuwen_memory.common.errors import (
     ValidationError,
     WriteIncompleteError,
 )
+from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import MemoryUnit, Modality, Scope
 from jiuwen_memory.common.type_def.continuity import (
@@ -35,6 +38,58 @@ from .local_support import (
     _unit_snapshot_permission_context,
     _with_author_marks,
 )
+
+logger = get_logger(__name__)
+
+
+@cache
+def _accepts_continue_on_error(plugin_type: type) -> bool:
+    """插件是否接受 ``continue_on_error``；调用前判定，避免失败后重试整批。
+
+    无法自省（C 扩展、装饰器遮蔽签名）时按新契约调用：宁可让插件如实抛错，
+    也不要在整批可能已写入后再次调用。
+    """
+    try:
+        parameters = inspect.signature(plugin_type.record_batch).parameters
+    except (TypeError, ValueError):
+        return True
+    declared = parameters.get("continue_on_error")
+    if declared is not None:
+        # 只有能按关键字传入才算接受：同名但仅限位置的参数传关键字会 TypeError。
+        return declared.kind is not inspect.Parameter.POSITIONAL_ONLY
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+_WARNED_LEGACY_PLUGINS: set[type] = set()
+
+
+def _call_record_batch(
+    service,
+    batch_args: tuple,
+    batch_kwargs: dict,
+    *,
+    stop_on_error: bool,
+):
+    """按插件签名选定**一次**调用方式，不做失败后重试。
+
+    旧签名插件（未接受该关键字）退回不带参数的调用并留一条可观测提示；重试会让
+    已经写入一部分的整批再执行一次，风险高于收益。
+    """
+    kwargs = dict(batch_kwargs)
+    if _accepts_continue_on_error(type(service)):
+        kwargs["continue_on_error"] = not stop_on_error
+    elif type(service) not in _WARNED_LEGACY_PLUGINS:
+        _WARNED_LEGACY_PLUGINS.add(type(service))
+        logger.warning(
+            "continuity plugin %s implements record_batch with the pre-continuity contract; "
+            "calling it without continue_on_error (per-item rejected/skipped unavailable "
+            "until it accepts the keyword)",
+            type(service).__name__,
+        )
+    return service.record_batch(*batch_args, **kwargs)
 
 
 def _same_scope(left: Scope, right: Scope) -> bool:
@@ -434,8 +489,8 @@ class ContinuityOpsMixin:
         if not prepared:
             skip_unhandled()
             return results
-        # 同一 record_batch 只能服务一个项目空间；按**输入顺序**切成连续段，逐段写入。
-        # 不能按全局分组：交错的 scope 会打乱副作用顺序，也可能在停批时留下空洞。
+        # 同一 record_batch 只能服务一个项目空间：按**输入顺序**切成连续段逐段写入，
+        # 既不打乱副作用顺序，也不会在停批时留下没有结果的下标。
         runs: list[list[dict]] = []
         for entry in prepared:
             if runs and _same_scope(runs[-1][0]["item"].scope, entry["item"].scope):
@@ -453,36 +508,37 @@ class ContinuityOpsMixin:
                     self._add_many_impl(writes, _scope, _run, security=security)
                 )
 
-            try:
-                receipts = service.record_batch(
-                    scope,
-                    [entry["event"] for entry in run],
-                    [entry["connector"] for entry in run],
-                    self._role_reader(security, scope),
-                    write_batch,
-                    request_fingerprints=[entry["request_fingerprint"] for entry in run],
-                    # 逐项语义由契约保证：record_batch 自己返回 rejected / skipped，
-                    # 不再用「抛错」表达单项失败（冲突、校验、权限、引用缺失都属单项）。
-                    # 只有批次级故障（后端不可用等）才会向上抛，由调用方按整段失败处理。
-                    continue_on_error=not stop_on_error,
-                    # 派生构建需要「写后可读的精确元数据查询」，与单条路径同一口径。
-                    query_output=(
-                        lambda output_key: (
-                            self.list(
-                                scope,
-                                security=security,
-                                limit=2,
-                                filters={
-                                    "system_metadata.continuity_output": {"eq": output_key}
-                                },
-                            ).items
-                        )
+            batch_args = (
+                scope,
+                [entry["event"] for entry in run],
+                [entry["connector"] for entry in run],
+                self._role_reader(security, scope),
+                write_batch,
+            )
+            batch_kwargs = {
+                # 派生构建需要「写后可读的精确元数据查询」，与单条路径同一口径。
+                "query_output": (
+                    lambda output_key: (
+                        self.list(
+                            scope,
+                            security=security,
+                            limit=2,
+                            filters={"system_metadata.continuity_output": {"eq": output_key}},
+                        ).items
                     )
-                    if self._queries.supports_exact_metadata_lookup
-                    else None,
+                )
+                if self._queries.supports_exact_metadata_lookup
+                else None,
+                "request_fingerprints": [entry["request_fingerprint"] for entry in run],
+            }
+            try:
+                # 明确拒绝（事件 ID 复用但内容变了等）由 record_batch 逐项返回
+                # rejected / skipped；严格模式下它自行停在失败处。
+                receipts = _call_record_batch(
+                    service, batch_args, batch_kwargs, stop_on_error=stop_on_error
                 )
             except AgentMemoryError as exc:
-                # 批次级失败（例如任务在预检后被关闭）无法按条归属，统一记为该项错误。
+                # 批次级失败（后端不可用、任务在预检后被关闭等）无法按条归属。
                 for entry in run:
                     results.append((entry["index"], exc, ""))
                     handled.add(entry["index"])
