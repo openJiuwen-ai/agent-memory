@@ -111,11 +111,11 @@ def test_milvus_late_binds_uri(monkeypatch: pytest.MonkeyPatch) -> None:
             created.append(uri)
 
         @staticmethod
-        def has_collection(name: str) -> bool:
+        def has_collection(name: str, timeout: float | None = None) -> bool:
             return True
 
         @staticmethod
-        def load_collection(name: str) -> None:
+        def load_collection(name: str, timeout: float | None = None, _async: bool = False) -> None:
             return None
 
     fake_pymilvus = types.ModuleType("pymilvus")
@@ -254,11 +254,11 @@ def test_fusion_late_binds_uri_and_working_dir(
             created.append(uri)
 
         @staticmethod
-        def has_collection(name: str) -> bool:
+        def has_collection(name: str, timeout: float | None = None) -> bool:
             return True
 
         @staticmethod
-        def load_collection(name: str) -> None:
+        def load_collection(name: str, timeout: float | None = None, _async: bool = False) -> None:
             return None
 
     fake_pymilvus = types.ModuleType("pymilvus")
