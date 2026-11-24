@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""A local browser surface borrowing a host-owned SDK Runtime and trusted identity."""
+"""A browser surface borrowing a host-owned SDK Runtime and trusted identity."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from threading import BoundedSemaphore, Lock, RLock, Thread
-from urllib.parse import urlsplit
 from weakref import ref
 
 from jiuwen_memory.api import (
@@ -27,8 +26,6 @@ from jiuwen_memory_entry.portal.sessions import (
     SESSION_HEADER,
     BrowserSessions,
     bootstrap,
-    frame_headers,
-    frame_origins,
 )
 
 
@@ -68,7 +65,7 @@ class _BoundedServer(ThreadingHTTPServer):
             self.slots.release()
 
 
-def runtime_request(runtime, auth, verb, payload, write_scope, *, peer="127.0.0.1"):
+def runtime_request(runtime, auth, verb, payload, write_scope, *, peer):
     security = new_request_context(auth, surface=Surface.HTTP, peer=peer)
     return invoke_browser_api(
         runtime.api, verb, payload, security=security, write_scope=write_scope,
@@ -96,10 +93,9 @@ def request_error(error):
 
 
 class _PortalServer:
-    def __init__(self, dispatch, *, port, allowed_frame_origins, shared=False):
+    def __init__(self, dispatch, *, port, shared=False):
         if type(port) is not int or not 0 <= port <= 65535:
             raise ValidationError("Portal port must be an integer from 0 to 65535")
-        self.frame_origins = frame_origins(allowed_frame_origins)
         self.sessions = BrowserSessions()
         self.close_lock = Lock()
         self.closed = False
@@ -107,21 +103,6 @@ class _PortalServer:
 
         class Handler(BaseHTTPRequestHandler):
             timeout = 10
-
-            def allowed(self, *, origin=False):
-                try:
-                    host = urlsplit("http://" + self.headers.get("Host", ""))
-                    if host.hostname not in {"127.0.0.1", "localhost"}:
-                        return False
-                    if any((host.username, host.password, host.path, host.query, host.fragment)):
-                        return False
-                    if host.port != self.server.server_port:
-                        return False
-                except ValueError:
-                    return False
-                if origin and self.headers.get("Origin") != "http://" + self.headers["Host"]:
-                    return False
-                return True
 
             def respond(self, status, payload, *, cookie=None, html=False):
                 data = payload if html else json.dumps(payload, ensure_ascii=False).encode()
@@ -132,8 +113,6 @@ class _PortalServer:
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
-                for name, value in frame_headers(handle.frame_origins if html else ()).items():
-                    self.send_header(name, value)
                 if cookie:
                     self.send_header("Set-Cookie", cookie)
                 self.end_headers()
@@ -141,7 +120,7 @@ class _PortalServer:
 
             def handle_get(self):
                 path = self.path.partition("?")[0] if shared else self.path
-                if not self.allowed() or path.rstrip("/") != "/portal":
+                if path.rstrip("/") != "/portal":
                     self.respond(404, {"error": "NotFound"})
                     return
                 self.respond(
@@ -154,7 +133,7 @@ class _PortalServer:
                 try:
                     is_bootstrap = self.path.rstrip("/") == "/portal/api/bootstrap"
                     verb = self.path.removeprefix("/v1/").strip("/")
-                    if not self.allowed(origin=True) or not (
+                    if not (
                         is_bootstrap or (self.path.startswith("/v1/") and verb in BROWSER_VERBS)
                     ):
                         self.respond(404, {"error": "NotFound"})
@@ -170,9 +149,7 @@ class _PortalServer:
                     if not isinstance(payload, dict):
                         raise ValidationError("payload must be an object")
                     if is_bootstrap:
-                        body, cookie = bootstrap(
-                            handle.sessions, payload, handle.frame_origins, shared=shared,
-                        )
+                        body, cookie = bootstrap(handle.sessions, payload, shared=shared)
                         if body is None:
                             self.respond(401, {"error": "AuthenticationError"})
                         else:
@@ -196,7 +173,7 @@ class _PortalServer:
 
         setattr(Handler, "do_GET", Handler.handle_get)
         setattr(Handler, "do_POST", Handler.handle_post)
-        self.server = _BoundedServer(("127.0.0.1", port), Handler)
+        self.server = _BoundedServer(("0.0.0.0", port), Handler)
         self.address = f"http://127.0.0.1:{self.server.server_port}/portal/"
         self.thread = Thread(target=self.server.serve_forever, daemon=True, name="memory-portal")
         try:
@@ -225,7 +202,7 @@ class PortalHandle(_PortalServer):
     """Owns only web resources. Closing never closes the borrowed memory Runtime."""
 
     def __init__(
-        self, runtime, security_provider, *, identity=None, port=0, allowed_frame_origins=(),
+        self, runtime, security_provider, *, identity=None, port=0,
         configuration_conflict=False,
     ):
         self.runtime = runtime
@@ -237,7 +214,7 @@ class PortalHandle(_PortalServer):
                 "configuration_conflict": configuration_conflict,
             },
         }
-        super().__init__(self.dispatch, port=port, allowed_frame_origins=allowed_frame_origins)
+        super().__init__(self.dispatch, port=port)
 
     def register_provider(self, identity, security_provider, *, configuration_conflict=False):
         """Register one credential source; identical sources share an entry."""
@@ -314,25 +291,22 @@ _handles = {}
 
 
 def start_portal(
-    runtime, *, security_provider, identity=None, port=0, allowed_frame_origins=(),
+    runtime, *, security_provider, identity=None, port=0,
     configuration_conflict=False,
 ):
     """Attach to an existing instance; the host must call once and own the handle."""
-    origins = frame_origins(allowed_frame_origins)
     identity = identity or new_provider_key()
     with _registry_lock:
         existing = _handles.get(id(runtime), lambda: None)()
         if existing is not None and not existing.closed:
             if port and port != existing.server.server_port:
                 raise ValidationError("Runtime already has a Portal on another port")
-            if origins != existing.frame_origins:
-                raise ValidationError("Runtime already has a different Portal framing policy")
             existing.register_provider(
                 identity, security_provider, configuration_conflict=configuration_conflict,
             )
             return existing
         handle = PortalHandle(
-            runtime, security_provider, identity=identity, port=port, allowed_frame_origins=origins,
+            runtime, security_provider, identity=identity, port=port,
             configuration_conflict=configuration_conflict,
         )
         _handles[id(runtime)] = ref(handle)

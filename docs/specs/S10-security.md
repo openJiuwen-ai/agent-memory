@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/`、`jiuwen_memory_adapter/agent_security/` |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 显式明文记忆维护
@@ -53,8 +53,8 @@ HTTP 启动先检查上述身份声明，再决定是否打开或创建配置库
 宿主为当前实例生成随机的一次性访问授权，5分钟有效。授权放在 URL 的 # 片段中，
 页面交换前清除片段；bootstrap 只接受有效授权，不接受浏览器声明的身份。
 授权只兑换一次，随后使用 1 小时有效的浏览器会话。使用 Cookie 时必须为 HttpOnly、
-SameSite=Strict，路径限定为 `/v1/`。配置了精确的嵌入来源后，页面响应通过 CSP
-`frame-ancestors` 限定宿主，未配置时拒绝 iframe。iframe 和跨进程共享页面兑换会话票据，
+SameSite=Strict，路径限定为 `/v1/`。任意来源的宿主网页均可嵌入 Portal。
+iframe 和跨进程共享页面兑换会话票据，
 经 `X-Memory-Portal-Session` 发送同源请求。普通 iframe 的票据保存在页面内存中。
 跨进程共享页面的票据保存在当前浏览器历史条目的状态中，供刷新后继续使用，收到 401 后清除。
 共享会话绑定记忆库和签发时的可信身份。该身份可操作具有相同认证主体、角色、凭据标识
@@ -67,8 +67,9 @@ SameSite=Strict，路径限定为 `/v1/`。配置了精确的嵌入来源后，�
 确认签发实例的凭据标识改变后，服务端撤销该实例用旧凭据签发的会话和未兑换的链接。
 撤销的会话在签发实例退出后仍然失效。认证主体、角色、签发方和委托等身份属性相同的
 实例可以用当前有效凭据重新登记，签发新链接。
-配置操作仍由目标实例验证当前身份和权限。会话存于页面服务的有界注册表，关闭时清空。SDK 和
-HTTP 的本机 Host 与 Origin 校验继续生效。
+配置操作仍由目标实例验证当前身份和权限。会话存于页面服务的有界注册表，关闭时清空。
+SDK 和 HTTP Portal 的页面及浏览器 API 可通过服务可达的地址访问，接受任意 `Host` 和 `Origin`。
+HTTP 服务的监听地址仍由认证器的绑定策略约束。
 Portal 页面、浏览器会话请求和托管配置接口的响应使用 `Cache-Control: no-store`。
 Portal 页面通过 `X-Memory-Portal-Browser: 1` 标记业务请求。此类请求必须有有效的浏览器
 会话，只能调用个人记忆管理和模型配置所需的接口。会话失效返回 401，页面提示重新打开。

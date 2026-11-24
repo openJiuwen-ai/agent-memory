@@ -713,6 +713,11 @@ def test_dev_authentication_cli_rejects_non_loopback_binding(monkeypatch, bindin
     assert binding_httpd == []
 
 
+def test_dev_authentication_cli_defaults_to_loopback(binding_httpd) -> None:
+    assert http_server_module.main(["--auth-mode", "dev"]) == 0
+    assert binding_httpd[0].address == ("127.0.0.1", 8137)
+
+
 @pytest.mark.parametrize("host,allowed", [("127.0.0.1", True), ("0.0.0.0", False)])
 def test_dev_binding_is_checked_before_dreaming_restore(
     host, allowed, binding_httpd, monkeypatch
@@ -766,15 +771,17 @@ def test_third_party_loopback_requirement_uses_binding_policy(host, binding_http
     assert binding_httpd == []
 
 
-def test_remote_capable_authenticator_binds_without_dev_override(binding_httpd) -> None:
+@pytest.mark.parametrize("host", [None, "0.0.0.0"])
+def test_remote_capable_authenticator_binds_without_dev_override(host, binding_httpd) -> None:
     runtime = replace(
         build_dev_security_runtime(),
         authenticator=_RemoteAuthenticator(),
     )
     server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
 
-    server.serve("0.0.0.0", 8137)
+    server.serve(host, 8137)
 
+    assert binding_httpd[0].address == ("0.0.0.0", 8137)
     assert binding_httpd[0].served is True
     assert binding_httpd[0].closed is True
 
@@ -1498,11 +1505,11 @@ def test_http_audit_detail_contains_response_request_id(
     assert event.detail["request_id"] == headers["x-request-id"]
 
 
-def test_portal_uses_existing_authentication_and_requires_same_origin(http_endpoint):
+def test_portal_uses_existing_authentication_without_requiring_origin(http_endpoint):
     from tests.integration.portal.test_document_portal import Browser, personal_list
 
     base_url, _ = http_endpoint
-    headers = {"Origin": base_url, "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
     status, _, _ = _request(base_url, "/portal/api/launch", b"{}", key=None, headers=headers)
     assert status == 401
     status, launch, response_headers = _request_with_headers(
@@ -1512,7 +1519,7 @@ def test_portal_uses_existing_authentication_and_requires_same_origin(http_endpo
     assert response_headers["cache-control"] == "no-store"
     browser = Browser(launch["portal_url"])
     assert browser.call("list", personal_list())[0] == 200
-    assert browser.call("list", personal_list(), origin="http://evil.test")[0] == 404
+    assert browser.call("list", personal_list(), origin="http://host.example")[0] == 200
     assert browser.call("admin_get", {})[0] == 404
     status, _, _ = _request(base_url, "/portal/api/list", b"{}", key="test-key", headers=headers)
     assert status == 404
@@ -1521,14 +1528,19 @@ def test_portal_uses_existing_authentication_and_requires_same_origin(http_endpo
         assert "cache-control" not in response_headers
 
 
-def test_portal_rejects_dns_rebinding_host(http_endpoint):
+def test_portal_accepts_external_host_and_port(http_endpoint):
     base_url, _ = http_endpoint
-    status, _, _ = _request(
+    headers = {"Host": "portal.example:8080", "Origin": "http://host.example"}
+    request = urllib.request.Request(f"{base_url}/portal/", headers=headers)
+    with _NO_PROXY_OPENER.open(request, timeout=3) as page:
+        assert page.status == 200
+    status, result, _ = _request(
         base_url, "/portal/api/launch", b"{}",
-        headers={"Host": "evil.test", "Origin": "http://evil.test"},
+        headers={**headers, "Content-Type": "application/json"},
         key="test-key",
     )
-    assert status == 404
+    assert status == 200
+    assert result["portal_url"].startswith("http://portal.example:8080/portal/#access=")
 
 
 def test_portal_session_rejects_changed_authenticated_identity(http_endpoint):
@@ -2099,8 +2111,8 @@ def test_http_portal_browser_launch_reuses_authentication_and_service_port(http_
                 0
             ] == 401
             assert (
-                await asyncio.to_thread(browser.call, "list", personal_list(), origin="http://evil.invalid")
-            )[0] == 404
+                await asyncio.to_thread(browser.call, "list", personal_list(), origin="http://host.example")
+            )[0] == 200
         finally:
             await provider.shutdown()
         assert server.api is not None
@@ -2148,9 +2160,7 @@ def test_http_portal_browser_requires_session_even_with_fixed_dev_identity(dev_h
 def test_embedded_http_portal_binds_authenticated_rail_target(http_endpoint):
     from urllib.parse import parse_qs, urlsplit
 
-    base_url, server = http_endpoint
-    parent = "http://localhost:8080"
-    server.portal_frame_origins = (parent,)
+    base_url, _ = http_endpoint
     headers = {"Origin": base_url, "Content-Type": "application/json"}
 
     from tests.integration.portal.test_document_portal import personal_list
@@ -2183,5 +2193,5 @@ def test_embedded_http_portal_binds_authenticated_rail_target(http_endpoint):
     assert result[0]["scope"]["session"] == "turn"
     assert result[0]["system_metadata"]["project"] == "demo"
     with _NO_PROXY_OPENER.open(f"{base_url}/portal/", timeout=3) as page:
-        assert page.headers["Content-Security-Policy"] == f"frame-ancestors {parent}"
+        assert page.headers.get("Content-Security-Policy") is None
         assert page.headers.get("X-Frame-Options") is None

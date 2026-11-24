@@ -76,24 +76,19 @@ with a fixed `dev` identity, you can omit the `Authorization` header.
 ```bash
 portal_base_url=http://127.0.0.1:8137
 curl -fsS "${portal_base_url}/portal/api/launch" \
-  -H "Origin: ${portal_base_url}" \
   -H "Authorization: Bearer ${MEMORY_ACCESS_TOKEN}" \
   -H 'Content-Type: application/json' \
   --data '{}'
 ```
 
-Open the returned `portal_url` in a local browser. The HTTP Portal requires a loopback address and
-the port the service listens on. Set `Origin` to the address used in the request. To bind writes to
-an existing memory rail, pass its `space`, `agent`, and `session` in `write_target`. See the
+Open the returned `portal_url` in a browser. To bind writes to an existing memory rail, pass its
+`space`, `agent`, and `session` in `write_target`. See the
 [Portal API specification](../../specs/S02-memory-api.md#portal-页面操作与接口对应).
 
 ### Embed the Portal in the host's settings page
 
-To use an iframe, add the host page's exact origin (scheme, hostname, and port if specified) to
-the allowed list. Use `portal.allowed_frame_origins` for an SDK Provider or
-`http.portal_frame_origins` in the HTTP service's startup configuration. Get a fresh link for
-the current user and set the full URL as the iframe's `src`. Request a new link each time you
-mount the iframe.
+Get a fresh link for the current user and set the full URL as the iframe's `src`. Embedding requires
+no configuration for the host page's origin. Request a new link each time you mount the iframe.
 
 ## View and manage memories
 

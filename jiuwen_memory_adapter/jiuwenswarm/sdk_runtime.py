@@ -165,7 +165,7 @@ class _SharedSDKRuntimePool:
             entry = lease.entry
             if not lease.active or entry.state != "open":
                 raise RuntimeError("SDK runtime lease is closed")
-            # The Portal factory also checks identity, port and framing compatibility.
+            # The Portal factory also checks identity and port compatibility.
             entry.portal = factory(entry.runtime)
             return entry.portal
 

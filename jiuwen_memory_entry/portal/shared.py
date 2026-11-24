@@ -28,7 +28,6 @@ from jiuwen_memory.api import (
 )
 from jiuwen_memory_entry.core.api_contract import CONFIG_VERBS
 from jiuwen_memory_entry.portal.hosting import _PortalServer, request_error, runtime_request
-from jiuwen_memory_entry.portal.sessions import frame_origins
 
 if os.name == "nt":
     from jiuwen_memory_entry.portal import _windows_ipc as _ipc
@@ -207,7 +206,7 @@ class SharedPortalLocation:
                         stderr.discard()
                         return
                 elif process is None:
-                    process = self._start(info["port"], info["origins"], start_lock)
+                    process = self._start(info["port"], start_lock)
                     reader = Thread(target=stderr.drain, args=(process.stderr,), daemon=True)
                     reader.start()
                 if process is not None and process.poll() is not None:
@@ -236,7 +235,7 @@ class SharedPortalLocation:
             if process is not None and process.poll() is None:
                 Thread(target=process.wait, daemon=True).start()
 
-    def _start(self, port, origins, start_lock):
+    def _start(self, port, start_lock):
         self.endpoint.unlink(missing_ok=True)
         # The host may have added the SDK to sys.path after Python started.
         env = os.environ | {
@@ -245,7 +244,7 @@ class SharedPortalLocation:
         lock_args, startup = _ipc.child_start_options(start_lock)
         return subprocess.Popen(
             [
-                sys.executable, "-m", _MODULE, str(self.directory), str(port), json.dumps(origins),
+                sys.executable, "-m", _MODULE, str(self.directory), str(port),
                 *lock_args,
             ],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
@@ -288,7 +287,7 @@ def _server(path, *, threaded):
 class SharedPortalHandle:
     def __init__(
         self, runtime, provider, location, instance_id, *,
-        port, allowed_frame_origins, runtime_key=None,
+        port, runtime_key=None,
     ):
         self._location = location
         self._instance_id = instance_id
@@ -302,7 +301,7 @@ class SharedPortalHandle:
         self._owner = _identity(auth, bind_credential=False)
         self._info = {
             "instance_id": instance_id, "identity": _identity(auth), "port": port,
-            "origins": frame_origins(allowed_frame_origins), "runtime_key": runtime_key,
+            "runtime_key": runtime_key,
         }
         self._server = _server(self._endpoint, threaded=True)
 
@@ -328,7 +327,7 @@ class SharedPortalHandle:
                 scope = message["write_scope"]
                 return 200, runtime_request(
                     runtime, auth, message["verb"], message["payload"],
-                    Scope(**scope) if scope else None,
+                    Scope(**scope) if scope else None, peer=message["peer"],
                 )
             except Exception as error:
                 return request_error(error)
@@ -412,17 +411,15 @@ class SharedPortalHandle:
 
 
 class _Registry:
-    def __init__(self, directory, port, origins, live):
+    def __init__(self, directory, port, live):
         self.directory = directory
         self.registrations: dict[str, _Registration] = {}
         self.lock = Lock()
-        self.portal = _PortalServer(
-            self.dispatch, port=port, allowed_frame_origins=origins, shared=True,
-        )
+        self.portal = _PortalServer(self.dispatch, port=port, shared=True)
         for endpoint, info in live:
             self.register(info, info["instance_id"], endpoint)
 
-    def dispatch(self, verb, payload, access: _BrowserAccess, _peer):
+    def dispatch(self, verb, payload, access: _BrowserAccess, peer):
         with self.lock:
             opening_instance = self.registrations.get(access.registration)
             candidates = [
@@ -443,13 +440,13 @@ class _Registry:
             eligible = {}
             for source in candidates:
                 eligible.setdefault(source.instance_id, []).append(source)
-            return self.configuration(verb, payload, access, eligible, opening_instance)
+            return self.configuration(verb, payload, access, eligible, opening_instance, peer)
         if access.provider_bound:
             # An SDK continuity session must never switch to another Provider.
             candidates = candidates[:1]
         for instance in candidates:
             try:
-                status, result = self.forward(instance, verb, payload, access)
+                status, result = self.forward(instance, verb, payload, access, peer)
             except _InstanceDisconnected:
                 continue
             except OSError:
@@ -463,7 +460,7 @@ class _Registry:
             return status, result
         return _OFFLINE
 
-    def configuration(self, verb, payload, access, eligible, opening_instance):
+    def configuration(self, verb, payload, access, eligible, opening_instance, peer):
         instance_id = payload.get("instance_id")
         checked_endpoint = None
         if opening_instance is not None:
@@ -506,7 +503,7 @@ class _Registry:
         failure = _INSTANCE_UNAVAILABLE
         for instance in eligible.get(instance_id, ()):
             try:
-                status, result = self.forward(instance, verb, fields, access)
+                status, result = self.forward(instance, verb, fields, access, peer)
             except _InstanceDisconnected:
                 continue
             except OSError:
@@ -520,10 +517,11 @@ class _Registry:
             return rejected if status == 401 else (status, result)
         return failure
 
-    def forward(self, instance, verb, payload, access):
+    def forward(self, instance, verb, payload, access, peer):
         return self._call_source(instance, access.identity, {
             "verb": verb, "payload": payload,
             "write_scope": access.write_scope,
+            "peer": peer,
         }, timeout=300)
 
     def _accepts_identity(self, source, identity, checked_endpoint):
@@ -586,8 +584,6 @@ class _Registry:
             return 404, None
         if message["port"] and message["port"] != self.portal.server.server_port:
             return 409, {"message": "shared Portal is already running on another port"}
-        if set(message["origins"]) != set(self.portal.frame_origins):
-            return 409, {"message": "shared Portal already has a different framing policy"}
         runtime_key = message.get("runtime_key")
         identity = message["identity"]
         with self.lock:
@@ -618,7 +614,7 @@ class _Registry:
                 endpoint.unlink(missing_ok=True)
 
 
-def _live_registrations(directory, origins):
+def _live_registrations(directory):
     for path in _ipc.source_endpoints(directory):
         if not _REGISTRATION.fullmatch(path.name):
             continue
@@ -629,7 +625,7 @@ def _live_registrations(directory, origins):
         except OSError:
             continue
         else:
-            if status == 200 and set(info["origins"]) == set(origins):
+            if status == 200:
                 yield path.name, info
 
 
@@ -640,15 +636,15 @@ def _control_server(endpoint, resources):
     return server
 
 
-def _serve(directory, port, origins, start_lock):
+def _serve(directory, port, start_lock):
     endpoint = _ipc.private_directory(directory) / "portal.sock"
     with ExitStack() as resources:
         # Windows cannot inherit the launcher's lock. Reserve the pipe name
         # first so a second child cannot bind a Portal while this one starts.
         server = _control_server(endpoint, resources) if os.name == "nt" else None
-        live = list(_live_registrations(directory, origins))
+        live = list(_live_registrations(directory))
         port = next((info["port"] for _, info in live if info["port"]), port)
-        registry = _Registry(directory, port, origins, live)
+        registry = _Registry(directory, port, live)
         resources.callback(registry.portal.close)
         if server is None:
             server = _control_server(endpoint, resources)
@@ -682,7 +678,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("directory", type=Path)
     parser.add_argument("port", type=int)
-    parser.add_argument("origins", type=json.loads)
     parser.add_argument("start_lock", type=int, nargs="?")
     args = parser.parse_args()
-    _serve(args.directory, args.port, args.origins, args.start_lock)
+    _serve(args.directory, args.port, args.start_lock)

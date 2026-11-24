@@ -29,7 +29,7 @@ from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlunsplit
 
 from openai import RateLimitError
 
@@ -50,8 +50,6 @@ from jiuwen_memory_entry.portal.sessions import (
     SESSION_HEADER,
     BrowserSessions,
     bootstrap,
-    frame_headers,
-    frame_origins,
 )
 
 # 共享应用核（server / profiles / handler / config_loader）住在 jiuwen_memory_entry/core；
@@ -185,7 +183,6 @@ class HttpServer(Server):
         http_settings = config.settings.get("http", {})
         if not isinstance(http_settings, dict):
             raise ValidationError("http configuration must be an object")
-        self.portal_frame_origins = frame_origins(http_settings.get("portal_frame_origins", ()))
         self.portal_sessions = BrowserSessions()
 
     @property
@@ -310,16 +307,11 @@ class HttpServer(Server):
                     return
                 request_id = uuid.uuid4().hex
                 if self.path.rstrip("/") == "/portal" and srv.portal_enabled:
-                    if not self._portal_origin_allowed(require_origin=False):
-                        self._send_error("NotFound", request_id=request_id)
-                        return
                     data = files("jiuwen_memory_entry.portal").joinpath("index.html").read_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(data)))
                     self.send_header("Cache-Control", "no-store")
-                    for name, value in frame_headers(srv.portal_frame_origins).items():
-                        self.send_header(name, value)
                     self.send_header("X-Content-Type-Options", "nosniff")
                     self.end_headers()
                     self.wfile.write(data)
@@ -357,9 +349,7 @@ class HttpServer(Server):
                     self._send_error("NotFound", self.path, request_id=request_id)
                     return
                 portal_request = is_portal or browser_request
-                if portal_request and (
-                    not srv.portal_enabled or not self._portal_origin_allowed(require_origin=True)
-                ):
+                if portal_request and not srv.portal_enabled:
                     self._send_error("NotFound", request_id=request_id)
                     return
                 if portal_request or verb in CONFIG_VERBS:
@@ -388,7 +378,6 @@ class HttpServer(Server):
                     try:
                         body, cookie = bootstrap(
                             srv.portal_sessions, json.loads(_read_body(self.rfile, length)),
-                            srv.portal_frame_origins,
                         )
                     except (ValueError, TypeError):
                         body, cookie = None, None
@@ -485,31 +474,6 @@ class HttpServer(Server):
                     )
                 )
 
-            def _portal_origin_allowed(self, *, require_origin: bool) -> bool:
-                # 仅通过本机访问；限制 Host 可抵御浏览器 DNS 重绑定。
-                raw_host = self.headers.get("Host", "")
-                try:
-                    host = urlsplit("http://" + raw_host)
-                    if (
-                        host.username
-                        or host.password
-                        or host.hostname
-                        not in {
-                            "localhost",
-                            "127.0.0.1",
-                            "::1",
-                        }
-                    ):
-                        return False
-                    if host.port != self.server.server_address[1]:
-                        return False
-                    origin = self.headers.get("Origin")
-                    if not origin:
-                        return not require_origin
-                    return origin == "http://" + raw_host
-                except ValueError:
-                    return False
-
             def handle_unsupported(self) -> None:
                 request_id = uuid.uuid4().hex
                 self._send_error("MethodNotAllowed", self.command, request_id=request_id)
@@ -575,24 +539,27 @@ class HttpServer(Server):
     def _handler_cls(self):
         return self.handler_cls()
 
-    def _check_binding(self, host: str) -> None:
+    def _resolve_binding(self, host: str | None) -> str:
         runtime = self.security_runtime
         if runtime is None:
-            return
+            return "127.0.0.1" if host is None else host
         authenticator = runtime.authenticator
         requirement = getattr(authenticator, "requires_loopback_binding", None)
         requires_loopback = bool(requirement()) if callable(requirement) else False
+        if host is None:
+            host = "127.0.0.1" if requires_loopback else "0.0.0.0"
         policy = getattr(runtime, "binding_policy", None)
         if policy is None:
             raise ValidationError("security runtime is missing a binding policy")
         policy.check(host, requires_loopback=requires_loopback)
+        return host
 
-    def serve(self, host: str, port: int) -> None:
+    def serve(self, host: str | None, port: int) -> None:
         # 同步宿主无事件循环：起 daemon 线程自持 loop 跑看门狗
         self._runtime.start()
         httpd = None
         try:
-            self._check_binding(host)
+            host = self._resolve_binding(host)
             self.restore_dreaming()
             # 上游嵌入测试会替换标准 server factory；正常运行始终使用有界实现。
             server_cls = (
@@ -623,7 +590,9 @@ def main(argv: list[str] | None = None) -> int:
         format="[%(asctime)s] %(name)s %(levelname)s %(message)s",
     )
     parser = argparse.ArgumentParser(prog="agent-memory-server")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--host", help="HTTP listener address (default follows the authentication binding policy)",
+    )
     parser.add_argument("--port", type=_server_port, default=8137)
     parser.add_argument(
         "--auth-mode",

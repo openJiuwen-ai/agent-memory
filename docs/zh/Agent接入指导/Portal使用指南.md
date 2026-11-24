@@ -56,17 +56,16 @@ portal = start_portal(runtime, security_provider=get_current_user_context)
 ```bash
 portal_base_url=http://127.0.0.1:8137
 curl -fsS "${portal_base_url}/portal/api/launch" \
-  -H "Origin: ${portal_base_url}" \
   -H "Authorization: Bearer ${MEMORY_ACCESS_TOKEN}" \
   -H 'Content-Type: application/json' \
   --data '{}'
 ```
 
-用本机浏览器打开返回的 `portal_url`。HTTP Portal 要求使用回环地址和服务实际监听的端口，`Origin` 须与请求所用的服务地址一致。若入口需绑定已有记忆轨的写入范围，通过 `write_target` 传入对应的 `space`、`agent` 和 `session`。字段说明见 [Portal 接口规约](../../specs/S02-memory-api.md#portal-页面操作与接口对应)。
+用浏览器打开返回的 `portal_url`。若入口需绑定已有记忆轨的写入范围，通过 `write_target` 传入对应的 `space`、`agent` 和 `session`。字段说明见 [Portal 接口规约](../../specs/S02-memory-api.md#portal-页面操作与接口对应)。
 
 ### 嵌入宿主设置页
 
-使用 iframe 时，将宿主页面的精确 origin（协议、主机及使用的端口）加入允许列表。SDK Provider 使用 `portal.allowed_frame_origins`，HTTP 服务使用启动配置中的 `http.portal_frame_origins`。宿主为当前用户取得新链接后，将完整链接设为 iframe 的 `src`。重新挂载 iframe 时重新发链。
+宿主为当前用户取得新链接后，将完整链接设为 iframe 的 `src`。页面可以直接嵌入，无需配置宿主网页来源。重新挂载 iframe 时重新发链。
 
 ## 查看和管理记忆
 

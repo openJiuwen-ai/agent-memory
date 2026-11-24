@@ -906,9 +906,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             if security_provider is None:
                 raise ValueError("SDK continuity requires a trusted security_provider")
         self._portal_settings = dict(portal or {})
-        unknown = set(self._portal_settings) - {
-            "enabled", "port", "allowed_frame_origins", "instance_id", "language",
-        }
+        # Keep accepting the retired option in existing host configurations.
+        self._portal_settings.pop("allowed_frame_origins", None)
+        unknown = set(self._portal_settings) - {"enabled", "port", "instance_id", "language"}
         if unknown:
             raise ValueError("unknown Portal option")
         if not isinstance(self._portal_settings.get("enabled", True), bool):
@@ -1169,10 +1169,7 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             raise asyncio.CancelledError
 
     def _start_local_portal(self):
-        options = dict(
-            port=self._portal_settings.get("port", 0),
-            allowed_frame_origins=self._portal_settings.get("allowed_frame_origins", ()),
-        )
+        options = {"port": self._portal_settings.get("port", 0)}
         client = self._client
         location = getattr(client, "portal_location", None)
         self._portal_identity = None

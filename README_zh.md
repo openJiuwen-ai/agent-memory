@@ -142,8 +142,8 @@ for item in res.items:
 ### HTTP Server
 
 ```bash
-scripts/run-server.sh                       # 默认在 http://127.0.0.1:8080 启动
-scripts/run-cli.sh --server http://127.0.0.1:8080 search "coffee" -u alice
+scripts/run-server.sh                       # 默认使用 8137 端口
+scripts/run-cli.sh --server http://127.0.0.1:8137 search "coffee" -u alice
 curl -X POST http://127.0.0.1:8080/v1/add \
   -H "Content-Type: application/json" \
   -d '{"tenant_id": "default", "scope": "alice", "content": "Alice is a Python developer."}'

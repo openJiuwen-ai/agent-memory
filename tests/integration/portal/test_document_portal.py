@@ -776,8 +776,8 @@ def test_sdk_document_roundtrip_correct_forget_restart_and_identity(tmp_path):
         try:
             assert (await call("bootstrap", {"token": browser.token}))[0] == 401
             assert (
-                await asyncio.to_thread(browser.call, "list", personal_list(), origin="http://evil.invalid")
-            )[0] == 404
+                await asyncio.to_thread(browser.call, "list", personal_list(), origin="http://host.example")
+            )[0] == 200
             first_scope = Scope(org="local", user="developer", agent="design", session="one")
             second_scope = Scope(org="local", user="developer", agent="coding", session="two")
             await runtime.api.add_async(
@@ -1348,7 +1348,6 @@ def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path, scene, source):
         return internal_context(auth)
 
     async def run():
-        parent = "http://localhost:8080"
         config = document_config(tmp_path)
         if scene == "code":
             config["globals"]["write_document"] = False
@@ -1357,11 +1356,10 @@ def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path, scene, source):
             path = tmp_path / "memory.json"
             path.write_text(json.dumps(config), encoding="utf-8")
             options = {"config_path": str(path)}
-        portal = {"allowed_frame_origins": [parent]}
         target = {"instance_id": f"{scene}-{source}"} if os.name in ("posix", "nt") else {}
         provider = AgentMemoryMemoryProvider(
             **options, security_provider=security, scene=scene, project="demo",
-            portal={**portal, **target},
+            portal=target,
         )
         await provider.initialize(
             scope_id="local", user_id="developer", agent_id="rail", session_id="session",
@@ -1374,17 +1372,19 @@ def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path, scene, source):
 
             def use_portal():
                 opener = build_opener(ProxyHandler({}))
-                with opener.open(f"{origin}/portal/", timeout=5) as page:
-                    assert page.headers["Content-Security-Policy"] == f"frame-ancestors {parent}"
+                headers = {"Host": "portal.example:8080", "Origin": "http://host.example"}
+                request = Request(f"{origin}/portal/", headers=headers)
+                with opener.open(request, timeout=5) as page:
+                    assert page.headers.get("Content-Security-Policy") is None
                     assert page.headers.get("X-Frame-Options") is None
 
                 def post(action, body, session=None):
-                    headers = {"Origin": origin, "Content-Type": "application/json"}
+                    request_headers = {**headers, "Content-Type": "application/json"}
                     if session:
-                        headers["X-Memory-Portal-Session"] = session
+                        request_headers["X-Memory-Portal-Session"] = session
                     request = Request(
                         origin + ("/portal/api/" if action == "bootstrap" else "/v1/") + action,
-                        json.dumps(body).encode(), headers=headers,
+                        json.dumps(body).encode(), headers=request_headers,
                     )
                     with opener.open(request, timeout=5) as result:
                         return json.load(result)

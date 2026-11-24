@@ -171,6 +171,7 @@ def test_default_launch_binds_source_before_registration_changes(monkeypatch):
     runtime = SimpleNamespace(api=object())
     portal = start_portal(runtime, security_provider=user_security, identity="user")
     try:
+        assert portal.server.server_address[0] == "0.0.0.0"
         launch = urlsplit(portal.launch_url())
         origin = f"{launch.scheme}://{launch.netloc}"
         headers = {"Origin": origin, "X-Memory-Portal-Browser": "1"}
