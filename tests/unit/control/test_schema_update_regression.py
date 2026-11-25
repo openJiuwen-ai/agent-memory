@@ -278,3 +278,27 @@ def test_schema_disabled_keeps_original_update_path(engine_kind, mode, monkeypat
         assert route.call_count == (2 if engine_kind == "cloud" else 0)
     finally:
         kernel.ingest_jobs.close(wait=True)
+
+
+def test_schema_source_update_clears_property_consolidation_marks(world):
+    """外部 update 修正源记忆后，重建的派生属性不保留已失效的巩固标记。"""
+    source, props = world.add("陈静负责推荐算法迭代")
+    assert props
+    for unit in [source, *props]:
+        unit.system_metadata["consolidation_done_at"] = "2026-01-01T00:00:00+00:00"
+        unit.system_metadata["consolidation_run_id"] = "run-1"
+    world.index.update([source, *props])
+
+    world.llm.facts = [("陈静", "occupation", "陈静负责检索算法迭代", "")]
+    world.update(source, MemoryPatch(content="陈静负责检索算法迭代"))
+
+    active_properties = []
+    for unit in world.units():
+        if unit.lifecycle is not LifecycleState.ACTIVE:
+            continue
+        if unit.system_metadata.get("extraction_mode") != "schema":
+            continue
+        active_properties.append(unit)
+    assert active_properties
+    for unit in active_properties:
+        assert not unit.system_metadata.get("consolidation_done_at")

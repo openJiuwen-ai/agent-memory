@@ -130,6 +130,12 @@ prompt 明确要求按时间做 latest-wins：`t_event` 优先，其次 `t_messa
   只回写本体，不刷新检索索引。
 - 产物构造时清空从代表单元继承的 `consolidation_run_id` / `consolidation_done_at`：
   避免「产物落盘后、本轮打标前」中断时产物带旧标记落盘。
+- 外部 `update` / `batch_update` 改写 `content`、`t_valid`/`t_invalid` 或
+  `schema_entity_id` / `schema_property_name` / `schema_property_operation` 时，把
+  `consolidation_done_at` 置为空串、保留 `consolidation_run_id`：簇因此重新
+  unsettled，下一次巩固会重审被修正的记忆；`run_id` 的残留用于区分「从未巩固」
+  与「巩固后被人工修正」。只改 `tags` / `tier` 等非事实字段不清标记，避免无谓的
+  簇级 LLM。Schema 属性 Merge Planner 的替换产物同样不继承源单元的标记。
 
 ### 8. 配套变更：Schema 抽取输出上限可配置
 
@@ -203,7 +209,8 @@ runner 为 evaluation/locomo，指标沿用其 top_k 10/20/50/200 多档切片�
    增长，未做批处理或并发。
 4. 没有 Scope 内互斥：并发两次巩固可能各自产出新版本。幂等标记只解决顺序重跑，不解决
    并发。
-5. 外部 `update` 不清巩固标记：内部改写成新版本不受影响，调用方手动改写已巩固记忆时，
-   该簇可能不再巩固它。
+5. 标记清理挂在具体事件入口：API `update` / `batch_update` 与 Schema 属性 Merge Planner。
+   以后新增会改写事实字段的内部写路径时，必须同步清空 `consolidation_done_at`，
+   否则该路径改出的记忆会被误判 settled。
 6. 跨 Scope 不合并；同一实体分布在不同 Scope 时各自巩固，且非 Schema 数据（无
    `schema_property_name`）不支持、直接空跑。

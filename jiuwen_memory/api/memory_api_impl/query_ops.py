@@ -123,6 +123,25 @@ from .local_support import (
 
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
+_CONSOLIDATION_FACT_KEYS = frozenset(
+    {"schema_entity_id", "schema_property_name", "schema_property_operation"}
+)
+
+
+def _clear_consolidation_marks(patch: MemoryPatch) -> MemoryPatch:
+    """事实字段变更时清掉「已巩固」标记，保留 run_id 供区分是否巩固过。"""
+    if not (
+        patch.content is not None
+        or patch.t_valid is not None
+        or patch.t_invalid is not None
+        or any(key in (patch.system_metadata or {}) for key in _CONSOLIDATION_FACT_KEYS)
+    ):
+        return patch
+    return replace(
+        patch,
+        system_metadata={**(patch.system_metadata or {}), "consolidation_done_at": ""},
+    )
+
 
 @dataclass(frozen=True)
 class _SearchAccess:
@@ -1003,6 +1022,7 @@ class QueryOpsMixin:
 
         走完整的 schema prepare→逐项鉴权→commit 流程；普通记忆直接 commands.update。
         """
+        patch = _clear_consolidation_marks(patch)
         self._ensure_space_writable(scope)
         before = asyncio.run(self._queries.get(unit_id, scope, None))
         plan = None
@@ -1086,6 +1106,8 @@ class QueryOpsMixin:
                 user_metadata=protected.user_metadata if patch.user_metadata is not None else None,
                 tags=protected_tags,
             )
+        # 隐私层会重建 patch，清标记须在其后。
+        patch = _clear_consolidation_marks(patch)
         plan = None
         if self._commands.requires_update_preparation(before, patch):
             plan = asyncio.run(self._commands.prepare_update(unit_id, scope, patch))

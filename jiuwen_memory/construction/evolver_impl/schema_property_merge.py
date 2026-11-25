@@ -330,6 +330,9 @@ def _apply_decision(
 
 def _replacement(operation: SchemaPropertyMergeUpdate) -> MemoryUnit:
     replacement = copy.deepcopy(operation.sources[0])
+    # 内容整体重写：不继承源单元的巩固标记。
+    replacement.system_metadata.pop("consolidation_run_id", None)
+    replacement.system_metadata.pop("consolidation_done_at", None)
     replacement.supersedes = operation.target.id
     replacement.lifecycle = LifecycleState.ACTIVE
     replacement.segments = [
