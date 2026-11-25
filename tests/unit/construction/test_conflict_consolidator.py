@@ -20,6 +20,10 @@ from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.construction.evolver_impl.conflict_consolidator import (
     ConflictConsolidator,
 )
+from jiuwen_memory.construction.evolver_impl.schema_property_merge import (
+    SchemaPropertyMergeUpdate,
+    _replacement,
+)
 from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
 from tests.unit.construction.fixtures import MemoryKVStore
 
@@ -459,6 +463,46 @@ def test_cluster_with_unmarked_memory_is_processed() -> None:
     _consolidator(kv, llm).plan([marked, fresh])
 
     assert llm.calls >= 1  # 关系检测被调用
+
+
+def test_empty_done_marker_is_not_settled() -> None:
+    """done 被 update 清成空串后，簇重新 unsettled，正常处理。"""
+    kv = MemoryKVStore()
+    units = [
+        _property("m1", "E-jon", "occupation", "Jon is a banker"),
+        _property("m2", "E-jon", "occupation", "Jon left banking"),
+    ]
+    for unit in units:
+        unit.system_metadata["consolidation_done_at"] = ""
+        unit.system_metadata["consolidation_run_id"] = "run-1"
+    _seed(kv, units)
+    llm = _FakeLLM(relation={"issue_groups": []})
+
+    _consolidator(kv, llm).plan(units)
+
+    assert llm.calls >= 1
+
+
+def test_property_merge_replacement_drops_consolidation_marks() -> None:
+    """属性合并产物重写了内容：不得继承源单元的 settled 标记。"""
+    target = _property("t1", "E-jon", "occupation", "Jon is a banker")
+    source = _property("s1", "E-jon", "occupation", "Jon is a banker")
+    for unit in (target, source):
+        unit.system_metadata["consolidation_done_at"] = "2026-01-01T00:00:00+00:00"
+        unit.system_metadata["consolidation_run_id"] = "run-1"
+
+    replacement = _replacement(
+        SchemaPropertyMergeUpdate(
+            target=target,
+            value="Jon has been a banker since 2020",
+            sources=[source],
+        )
+    )
+
+    assert "consolidation_done_at" not in replacement.system_metadata
+    assert "consolidation_run_id" not in replacement.system_metadata
+    assert replacement.content == "Jon has been a banker since 2020"
+    assert replacement.supersedes == target.id
 
 
 # ---------------------------------------------------------------------------
