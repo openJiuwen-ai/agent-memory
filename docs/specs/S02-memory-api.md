@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-25 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -1886,7 +1886,7 @@ SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 searc
 
 HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `memory_search` 携带接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover` 与（角色模式）`memory_continuity_relation`（沿用 `memory_<方法名>`；JiuwenSwarm 适配器为 `agent_memory_*`）；`quarantine_source` / `release_source` 通过 SDK、HTTP 和 CLI 提供，继续由 MemoryAPI 校验 `MANAGE_SPACE` 权限；内核 MCP 不注册这两个工具。不再提供跨空间发布（以现有 `grant` ＋ `continuity_task(attach)` 挂引用代替）与双写切换。
 
-仅显式配置 `continuity`（且 `mode` 为 `continuity` 或 `role`）才启用；未启用时带接续参数的 `add`/`batch_add`/`search` 与上述专用入口返回 `UnsupportedCapabilityError`。接续模式下 `continuity_relation`、`continuity_recover(kind=relation)` 返回 `UnsupportedCapabilityError`，`search` 带非 general duty 时降级（见下）。scope 必须是 org+space 的项目空间。API 执行项目权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。关系真源存于 Registry KV，不出现在普通 get/list/search 结果中。
+仅显式配置 `continuity`（且 `mode` 为 `continuity` 或 `role`）才启用；未启用时带接续参数的 `add`/`batch_add`/`search` 与上述专用入口返回 `UnsupportedCapabilityError`。接续模式下 `continuity_relation`、`continuity_recover(kind=relation)` 返回 `UnsupportedCapabilityError`，`search` 带非 general duty 时降级（见下）。scope 必须是 org+space 的项目空间。API 执行项目权限、参与者元数据守卫及关系修订 UPDATE 权校验；任务 owner、绑定归属、回执归属与绑定状态由 Continuity 在提交时按同一任务记录判定，connector 配置校验经 `connector_policy` 策略回调注入。引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。关系真源存于 Registry KV，不出现在普通 get/list/search 结果中。
 
 ### 共同参数、返回状态与传输
 
@@ -1946,16 +1946,16 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 | `expected_revision` | `0` | create 使用 0；其他变更使用最近读取的任务 revision。查询忽略此值 |
 | `connector_id` / `context_id` | `""` | bind/find 使用：可信连接配置标识和该产品的本地上下文标识；不根据标题自动关联 |
 | `context_source` | `"native"` | native 表示原生上下文 ID；adapter 表示桥接层生成的稳定标识 |
-| `binding_id` | `""` | unbind 指定此前返回的绑定 ID |
-| `background` | `[]` | 需要登记的 MemoryRef 列表；通常用于 attach，也可随其他变更提交；登记不复制正文、不授予读权限 |
+| `binding_id` | `""` | unbind 指定此前返回的绑定 ID；非创建者 close 必须携带自己在该任务上的有效绑定 ID |
+| `background` | `[]` | 需要登记的 MemoryRef 列表；通常用于 attach，也可由 owner 随其他变更提交；非创建者 bind/unbind/close 不得携带；登记不复制正文、不授予读权限 |
 | `required` | `true` | 本次 background 是否属于必需证据；不可读必需证据会影响接续就绪判断 |
 | `reason` | `""` | 解绑原因，随撤销主体保存 |
-| `title` / `description` | `""` | create 的任务检索文本；bind 仅补录历史记录空字段；兼容旧 create 省略标题 |
+| `title` / `description` | `""` | create 的任务检索文本；创建者 bind 仅补录历史记录空字段；非创建者 bind/unbind/close 不得携带 |
 | `parent_task_id` | `null` | create 的直接父任务；Registry 计算 root_task_id，不由调用方传入 |
 | `query` | `null` | find 先精确匹配 connector_id/context_id，无结果时再查询任务描述；只传 query 直接查询描述 |
 | `top_k` | `5` | find 描述候选上限，1–100；精确结果不截断 |
 
-变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定、title/description、parent_task_id/root_task_id 及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [...]}`，各项有 task_id/revision/title/description/state/match_type，语义项另含 score。connector_id/context_id 必须成对提供或省略；有精确结果时不回退语义检索，语义候选须用户确认后 bind。find 不证明调用者拥有任务中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE，修改既有任务还限创建负责人。创建子任务还需父任务所在项目 READ。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
+变更返回 `{task_id, revision, replayed, task}`；`task` 含任务状态、绑定、title/description、parent_task_id/root_task_id 及可见 background。get 直接返回任务快照，包含 `background_partial`，不返回私有回执；find 返回 `{tasks: [...]}`，各项有 task_id/revision/title/description/state/match_type，语义项另含 score。connector_id/context_id 必须成对提供或省略；有精确结果时不回退语义检索，语义候选须用户确认后 bind。find 不证明调用者拥有任务中所有来源内容。控制记录独立保存在 Registry，不是 MemoryUnit。读取需要项目 READ，变更需要 WRITE；owner 管理任务元数据、背景和绑定。非创建者只能使用认证主体自己的启用 connector 自绑定，只能解绑自己的绑定，并须凭自己在任务上的有效 `binding_id` 关闭任务；非创建者 bind/unbind/close 不得夹带元数据或 background 修改。绑定归属、回执归属与绑定状态在提交时按同一任务记录判定；非创建者的新 close 还要求 connector 当前启用并覆盖项目，对未知、他人或已失效绑定的新请求先于修订检查统一返回 `PermissionDeniedError`。同请求已成功提交后，即使 connector 停用、任务关闭或绑定撤销，相同 `request_id` 和相同内容仍返回 `replayed=true`；同一 `request_id` 携带不同内容返回 `ConflictError`，回执状态在建立 connector/绑定归属后才向参与者披露。参与者回执在同一原子提交内记录服务端提交主体与确认的 connector 标识，不进入响应；缺少归属信息的存量回执不能作为参与者重放依据。创建子任务还需父任务所在项目 READ。失活绑定/关闭任务不能继续写入事件；修订冲突后先 get，再决定是否以新请求提交。
 
 描述候选默认使用 Embedder，返回 `match_type=description_semantic` 和余弦 score。
 `continuity.default.params.embedder: null` 时改用 BM25，返回

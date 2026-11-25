@@ -37,6 +37,7 @@ from jiuwen_memory.control.continuity import (
     Continuity,
     ContinuityProducer,
     ReadMemory,
+    TaskConnectorPolicy,
     WriteMemory,
 )
 from jiuwen_memory.storage.graph import GraphStore
@@ -232,7 +233,15 @@ class ContinuityService(Continuity):
         """Stop the Registry writer; injected stores remain owned by their assembly root."""
         self.repository.close()
 
-    def task(self, scope: Scope, request: TaskRequest, owner: str, read: ReadMemory) -> dict:
+    def task(
+        self,
+        scope: Scope,
+        request: TaskRequest,
+        owner: str,
+        read: ReadMemory,
+        *,
+        connector_policy: TaskConnectorPolicy,
+    ) -> dict:
         repo = self.repository
         if request.operation == "find":
             matches = []
@@ -307,27 +316,71 @@ class ContinuityService(Continuity):
                 if item not in task["background"]:
                     task["background"].append(item)
 
-        payload = asdict(request)
-        # Keep pre-extension mutation receipts replayable when all new fields are omitted.
-        for field, default in (("title", ""), ("description", ""), ("parent_task_id", None),
-                               ("query", None), ("top_k", 5)):
-            if payload[field] == default:
-                payload.pop(field)
-        receipt = repo.mutate(
-            scope,
-            "tasks",
-            task_id,
-            request.expected_revision,
-            request.request_id,
-            payload,
-            change,
-            initial=initial,
-        )
+        payload = self._task_payload(request)
+        confirmed_connector = ""
+        with repo.lock:
+            if request.operation in {"bind", "unbind", "close"}:
+                record = repo.get(scope, "tasks", task_id)
+                confirmed_connector = self._authorize_task_change(
+                    record, request, owner, payload, connector_policy,
+                )
+            receipt = repo.mutate(
+                scope,
+                "tasks",
+                task_id,
+                request.expected_revision,
+                request.request_id,
+                payload,
+                change,
+                initial=initial,
+                receipt_meta={"actor": owner, "connector_id": confirmed_connector},
+            )
         return {
             "task_id": task_id,
             **receipt,
             "task": self.task_view(repo.get(scope, "tasks", task_id), read),
         }
+
+    def _authorize_task_change(
+        self,
+        record: dict,
+        request: TaskRequest,
+        owner: str,
+        payload: dict,
+        connector_policy: TaskConnectorPolicy,
+    ) -> str:
+        """Judge one mutation on this record snapshot; return the confirmed connector."""
+        if record["owner"] == owner:
+            if request.operation == "bind" and not record.get("receipts", {}).get(
+                request.request_id
+            ):
+                connector_policy.owner_connector(request.connector_id)
+            return request.connector_id if request.operation == "bind" else ""
+        receipt = record.get("receipts", {}).get(request.request_id)
+        binding = None
+        if request.operation == "bind":
+            claimed = request.connector_id
+        else:
+            if not request.binding_id:
+                raise PermissionDeniedError("continuity_task_write")
+            try:
+                binding = self.binding(record, request.binding_id, active_only=False)
+            except ValidationError as exc:
+                raise PermissionDeniedError("continuity_task_write") from exc
+            claimed = binding["connector_id"]
+        connector_policy.owned_connector(claimed)
+        if receipt and receipt.get("actor") != owner:
+            raise PermissionDeniedError("continuity_task_write")
+        if receipt:
+            return claimed
+        if request.operation == "bind":
+            connector_policy.actor_connector(request.connector_id)
+        else:
+            if not binding["active"]:
+                raise PermissionDeniedError("continuity_task_write")
+            if request.operation == "close":
+                connector_policy.available_connector(claimed)
+        return claimed
 
     @staticmethod
     def task_view(task: dict, read: ReadMemory) -> dict:
@@ -348,9 +401,9 @@ class ContinuityService(Continuity):
         return visible
 
     @staticmethod
-    def binding(task: dict, binding_id: str) -> dict:
+    def binding(task: dict, binding_id: str, *, active_only: bool = True) -> dict:
         for b in task["bindings"]:
-            if b["binding_id"] == binding_id and b["active"]:
+            if b["binding_id"] == binding_id and (b["active"] or not active_only):
                 return b
         raise ValidationError("binding is unavailable")
 
@@ -1344,6 +1397,16 @@ class ContinuityService(Continuity):
         return self.binding(self.repository.get(scope, "tasks", task_id), binding_id)[
             "connector_id"
         ]
+
+    @staticmethod
+    def _task_payload(request: TaskRequest) -> dict:
+        payload = asdict(request)
+        # Keep pre-extension mutation receipts replayable when all new fields are omitted.
+        for field, default in (("title", ""), ("description", ""), ("parent_task_id", None),
+                               ("query", None), ("top_k", 5)):
+            if payload[field] == default:
+                payload.pop(field)
+        return payload
 
     def continuity_view_result(self, scope, request, read, *, extra_items, top_k: int) -> dict:
         items = []

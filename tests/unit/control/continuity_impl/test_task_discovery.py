@@ -5,9 +5,10 @@ from math import log1p
 
 import pytest
 
-from jiuwen_memory.api import MemoryRef, Scope, TaskRequest, ValidationError
+from jiuwen_memory.api import ConflictError, MemoryRef, Scope, TaskRequest, ValidationError
 from jiuwen_memory.common.type_def.continuity import RoleViewQuery, fingerprint
 from jiuwen_memory.control.continuity_impl.task_search import TaskSearchIndex
+from tests.support.connector_policies import AllowAllConnectorPolicy
 
 pytestmark = pytest.mark.unit
 
@@ -171,6 +172,30 @@ def test_pre_extension_receipt_remains_replayable(setup):
     result = service.task(scope, request, "o", read)
     assert result["replayed"]
     assert result["task"]["root_task_id"] == task_id
+
+
+def test_evicted_task_receipt_replay_is_rejected_not_reexecuted(setup):
+    service, scope, _, read, _, _ = setup
+    request = TaskRequest("create", "create")
+    task = service.task(scope, request, "o", read)
+    record = service.repository.get(scope, "tasks", task["task_id"])
+    for index in range(256):
+        record["receipts"][f"filler-{index}"] = {"digest": "0" * 64, "revision": 2}
+    service.repository.save(scope, "tasks", task["task_id"], record)
+    assert service.task(scope, request, "o", read)["replayed"] is True
+    newer = service.task(
+        scope,
+        TaskRequest("attach", "newer", task["task_id"], task["revision"]),
+        "o",
+        read,
+        connector_policy=AllowAllConnectorPolicy(),
+    )
+    assert newer["replayed"] is False
+    with pytest.raises(ConflictError):
+        service.task(scope, request, "o", read, connector_policy=AllowAllConnectorPolicy())
+    assert service.task(
+        scope, TaskRequest("get", task_id=task["task_id"]), "o", read
+    )["revision"] == newer["revision"]
 
 
 def test_continuity_required_then_latest_with_original_budget_gap(setup):

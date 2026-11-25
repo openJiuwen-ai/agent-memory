@@ -161,6 +161,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
   → 落审计事件（含 identity + action + target_id + 时间）
 ```
 
+角色任务在项目 WRITE 之上还要执行任务级判权：owner 管理元数据、背景和绑定；非 owner 只能自绑定认证主体自己的启用 connector、解绑自身绑定，并凭自身 active `binding_id` 关闭任务。非 owner 的 bind/unbind/close 不得夹带任务元数据或背景修改，close 不得借用其他主体的绑定。owner、绑定归属、回执归属与绑定状态由 Continuity 在 Registry 单写锁内按同一任务记录判定，connector 配置校验通过 `connector_policy` 策略回调注入：owner bind 保留细分 ValidationError，参与者统一 PermissionDeniedError，已撤销或他人绑定的新请求先于修订检查拒绝。已提交 `request_id` 的重放先于 connector 启用状态与 binding active 检查；同 request_id 内容不同返回冲突，参与者回执在同一原子提交内记录服务端提交主体与确认 connector。旧 Continuity 插件必须迁移到带 `connector_policy` 的 `task` 签名，装配期校验缺失即失败。
+
 ## 与其他子目录的边界
 
 **本模块管**：

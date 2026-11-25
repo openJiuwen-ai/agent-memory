@@ -196,7 +196,11 @@ async def memory_continuity_task(
     scope: dict, request: _api.TaskRequest, ctx: Context = None
 ) -> dict:
     """登记跨产品任务。operation: create/get/find/bind/unbind/attach/close。
-    变更须带稳定 request_id、expected_revision；绑定不授予源记忆权限，不需要交接确认。
+    变更须带稳定 request_id、expected_revision。非创建者只能自绑定自己的 connector；
+    非创建者 bind/unbind/close 不能夹带 background 或标题修改；close 还须携带本人有效 binding_id。
+    绑定归属、回执与绑定状态在提交时按同一任务记录判定；新 close 要求 connector
+    当前启用且覆盖项目。同 request_id 相同内容可重放，不同内容返回冲突。
+    绑定不授予源记忆权限，不需要交接确认。
     """
     return await _invoke(
         "continuity_task", {"scope": scope, "request": asdict(request)}, context=ctx
