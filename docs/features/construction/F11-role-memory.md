@@ -1370,9 +1370,9 @@ sequenceDiagram
     participant Reg
     participant Mem
     Note over Adm,Mem: 步骤 1
-    Adm->>API: quarantine_source(scope, connector, reason)
+    Adm->>API: quarantine_source(scope, source_key, reason)
     API->>API: 项目 MANAGE_SPACE 判权
-    API->>Svc: quarantine_source(connector, reason, operator)
+    API->>Svc: quarantine_source(scope, source_key, reason, operator=主体指纹)
     Note over Adm,Mem: 步骤 2
     Svc->>Reg: 写隔离记录（原因、操作者、时间）
     API->>API: 审计（含 reason）
@@ -1387,8 +1387,8 @@ sequenceDiagram
     API->>API: 逐条复核依赖证据，不合格的条目剔除并从 count 扣除
     API-->>Adm: MemoryListResult
     Note over Adm,Mem: 步骤 5
-    Adm->>API: release_source(scope, connector)
-    API->>Svc: release_source → 删除隔离记录
+    Adm->>API: release_source(scope, source_key)
+    API->>Svc: release_source(scope, source_key) → 删除隔离记录
     API-->>Adm: 是否之前处于隔离
 ```
 

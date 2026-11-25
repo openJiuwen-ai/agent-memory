@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-09-11 |
+| 日期 | 2026-11-25（最近更新） |
 | 影响范围 | `jiuwen_memory_entry/mcp_server/`（`__main__.py`、`transport_security.py`；原 `DESIGN.md` 已并入本文档），`tests/unit/jiuwen_memory_entry/test_mcp.py`、`test_mcp_transport_security.py`、`tests/integration/jiuwen_memory_entry/test_mcp_startup.py` |
-| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py tests/integration/jiuwen_memory_entry/test_mcp_startup.py`（2026-11-04：174 项通过）；变更 Python 文件 `ruff check` 通过 |
+| 测试基线 | `pytest tests/unit/jiuwen_memory_entry/test_mcp.py tests/unit/jiuwen_memory_entry/test_mcp_transport_security.py tests/integration/jiuwen_memory_entry/test_mcp_startup.py`（2026-11-25：215 项通过，使用 JiuwenSwarm 的 Python 环境） |
 | 备注 | 本文档吸收原 `jiuwen_memory_entry/mcp_server/DESIGN.md`（已删除），模块级设计、方案取舍与已知遗留统一在此维护 |
 
 ## 背景
@@ -249,8 +249,11 @@ config（启动时位置参数传 config.yml，叠加规则同 CLI）。
    自此闭环（见 api/F07 决策 2）。授权仍经 Authorizer；是否允许管理操作取决于显式角色
    与目标空间权限，默认 USER 不获得管理旁路。
 
-## JiuwenSwarm 连接器接入（2026-11-20）
+## JiuwenSwarm 连接器接入（2026-11-25 更新）
 
-按全量工具接入要求，新增 memory_quarantine_source 和 memory_release_source 包装，复用 _invoke 的认证、工作线程、参数解码和 MemoryAPI 治理实现；原本只在管理面提供的限制被本次明确需求替代，权限仍为 MANAGE_SPACE。Windows 新增 scripts/run-mcp.ps1，默认 required，仅显式 -AuthMode dev 进入回环测试模式，无配置时提示内存默认值不保证持久化。
+连接器通过内核 MCP 的 Streamable HTTP 接入，启动方式见上文「启动方式」。当前 `tools/list` 返回 48 个工具，其中包括以下 6 个治理工具：
 
-本轮使用 JiuwenSwarm 的 Python 环境执行 MCP 单测、传输认证单测和启动集成测试：201 项通过。通过实际 Streamable HTTP 服务发现 44 个工具，并完成 add/get/delete；未验证外部模型、正式认证部署和 Hub 发布。
+- 来源治理：`memory_quarantine_source`、`memory_release_source`。
+- 群体成员治理：`memory_init_collective_dimension`、`memory_add_collective_members`、`memory_remove_collective_members`、`memory_list_collective_members`。
+
+这些工具复用 `MemoryAPI` 的参数校验与鉴权，来源治理仍要求 `MANAGE_SPACE` 权限。已验证 Streamable HTTP 握手及工具列表包含上述 6 个工具，来源治理和群体成员治理的 MCP 往返测试也通过。未验证外部模型、正式认证部署或 Hub 发布。
