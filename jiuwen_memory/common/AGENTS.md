@@ -14,12 +14,14 @@
 | 文件/目录 | 职责 |
 |---|---|
 | `relations/legacy.py` | 旧关系到候选证据关系的显式纯函数映射；相似/共指不升级为证据 |
-| `relations/catalog.py` / `type_def/continuity.py` | 关系与职责启动目录、接续 DTO；职责与权限角色分离 |
+| `relations/catalog.py` / `type_def/continuity.py` | 关系与职责启动目录、接续 DTO；职责与权限角色分离。`RelationCatalog.snapshot()` 导出职责展示名/说明/最终 traversal/budget 与全部关系元数据，返回脱离内部对象的纯数据副本 |
 
 TaskRequest 的 title/description/parent_task_id/query/top_k 追加在旧位置字段之后；
 find 上下文参数成对校验，语义候选不代表选定任务或拥有来源读取权限。
 创建带 parent_task_id 的任务时，continuity_task_parent 必须登记到 ENTRY_RULES 的内容 READ 轴，
 与任务查询使用同一项目读取权限；不能落回条目级授权路径。
+`continuity_catalog` 同样必须登记到内容 READ 轴：Portal 读取 Runtime 目录前先判项目读取权，
+目录只做展示，不授予职责、关系或任何记忆访问权限。
 | `base.py` | Plugin 基类：所有共享插件的自描述契约 |
 | `bootstrap.py` | 统一触发各插件注册（per-layer bootstrap） |
 | `errors.py` | 自定义异常（含组件能力不匹配的 `UnsupportedCapabilityError`） |
@@ -58,6 +60,7 @@ find 上下文参数成对校验，语义候选不代表选定任务或拥有来
 | `security/capabilities.py` | 增量公开协议：原子 Grant 管理、委托/凭据真源、空间事实、入口路由和安全依赖/关闭；具名根按对象身份去重拥有资源，旧 ABC 抽象方法集合不变。 |
 | `security/_assembly_lifecycle.py` | 私有装配作用域：经 Factory 公开创建观察记录本次新建对象，启动失败回滚；成功将所有者显式绑定缓存纪元，保护借用依赖与较新装配。 |
 | `trace/runtime.py` | 具名 Factory 插件、API/执行器策略绑定、后台独立作用域；资源由 runtime 收尾，详情见 trace/AGENTS.md |
+| `continuity_scope.py` | Portal 服务端绑定的请求级接续交付 Scope，用 `ContextVar` 管理并在请求退出时恢复；仅收窄交付范围，不授予读权限 |
 | `trace/` | TraceCollector 横切接口目录：请求级处理过程追踪（`trace/trace.py` 接口 + ContextVar 作用域 + 调用树；模块级 `trace_event(component, stage, data)` / `trace_span` / `@traced` 零参数埋点，`simple < info < debug` 三级详细程度，debug data 支持惰性 callable；`trace_impl/` 四种内置实现 noop/memory/log/memory_log）。config `trace.default.target` 选默认实现，请求级 `extensions["trace"] = "<target>[:<level>]"` 覆盖（入口层在参数校验前剥离）；使用方法与边界见 [F11-new-trace.md](../../docs/features/common/F11-new-trace.md) |
 
 ### 隐私与用户访问控制能力

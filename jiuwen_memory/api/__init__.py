@@ -6,6 +6,7 @@
 """
 
 from jiuwen_memory.api.human_view import HumanView, HumanViewRuntime
+from jiuwen_memory.common.continuity_scope import restrict_continuity_delivery
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
     AuthenticationError,
@@ -167,6 +168,7 @@ from .collective import (
     bind_collective_context,
     dimensions_of,
 )
+from .continuity_catalog import read_continuity_catalog
 from .managed_configuration import ManagedConfiguration
 from .memory_api import MemoryAPI
 from .memory_api_impl import (
@@ -195,6 +197,8 @@ __all__ = [
     "Member",
     "bind_collective_context",
     "dimensions_of",
+    "read_continuity_catalog",
+    "restrict_continuity_delivery",
     "sdk_continuity_runtime_identity",
     "read_personal_record",
     "open_config_overlay",

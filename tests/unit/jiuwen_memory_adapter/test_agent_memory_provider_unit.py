@@ -83,6 +83,25 @@ def test_provider_rejects_unsupported_portal_language(language):
         AgentMemoryMemoryProvider(portal={"language": language})
 
 
+def test_multi_agent_portal_does_not_infer_runtime_mode_from_config_dict() -> None:
+    config = yaml.safe_load(
+        (_REPO_ROOT / "examples/role_memory/server.yaml").read_text(encoding="utf-8")
+    )
+    provider = AgentMemoryMemoryProvider(
+        config_dict=config,
+        continuity_enabled=True,
+        continuity_mode="continuity",
+        security_provider=_security_provider(ApiScope(org="demo", user="owner")),
+        portal={"multi_agent": {
+            "scope": {"org": "demo", "space": "role-project"},
+            "project_name": "Role Project",
+            "connectors": {"codex": "Codex"},
+        }},
+    )
+    assert provider._multi_agent.available is True
+    assert provider._multi_agent.capability()["mode"] is None
+
+
 @pytest.mark.parametrize("extension", ["json", "yaml"])
 def test_sdk_config_path_preserves_literal_prompt(tmp_path, monkeypatch, extension):
     monkeypatch.delenv("PORTAL_TEST_PLACEHOLDER", raising=False)

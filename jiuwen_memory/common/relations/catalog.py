@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from types import MappingProxyType
 
 from jiuwen_memory.common.errors import ValidationError
@@ -37,8 +37,14 @@ class RelationTypeSpec:
     valid_target_kinds: tuple[str, ...] = tuple(sorted(KINDS))
 
     def __post_init__(self):
-        if not self.name or self.direction not in {"forward", "backward", "both"}:
+        if (
+            not isinstance(self.name, str)
+            or not self.name
+            or self.direction not in {"forward", "backward", "both"}
+        ):
             raise ValidationError("invalid relation name or direction")
+        if not isinstance(self.display_name, str) or not isinstance(self.description, str):
+            raise ValidationError("relation display name and description must be strings")
         if self.symmetric != (self.direction == "both"):
             raise ValidationError("symmetric relation must use both direction")
         for attr in ("valid_source_kinds", "valid_target_kinds"):
@@ -98,12 +104,12 @@ class RelationCatalog:
             for name, desc in descriptions.items()
         }
         for name, raw in (relation_types or {}).items():
+            if not isinstance(raw, dict):
+                raise ValidationError("relation type must be an object")
             data = deepcopy(raw)
             if name in types:
                 if set(data) - {"display_name", "description"}:
                     raise ValidationError("built-in relation semantics cannot be overridden")
-                from dataclasses import asdict
-
                 data = {**asdict(types[name]), **data}
             else:
                 data["name"] = name
@@ -121,10 +127,25 @@ class RelationCatalog:
         }
         policies.update(deepcopy(duty_policies or {}))
         rules, budgets = {}, {}
+        duty_metadata = {}
         for name, policy in policies.items():
             if not name:
                 raise ValidationError("empty duty name")
-            entries = [TraversalRule(**r) for r in policy["traversal"]]
+            if not isinstance(policy, dict):
+                raise ValidationError("duty policy must be an object")
+            unknown = set(policy) - {"traversal", "budget", "display_name", "description"}
+            if unknown:
+                raise ValidationError(
+                    "unknown duty policy field(s): " + ", ".join(sorted(unknown))
+                )
+            display_name = policy.get("display_name", name)
+            description = policy.get("description", "")
+            if not isinstance(display_name, str) or not isinstance(description, str):
+                raise ValidationError("duty display name and description must be strings")
+            traversal = policy.get("traversal", [])
+            if not isinstance(traversal, list):
+                raise ValidationError("duty traversal must be a list")
+            entries = [TraversalRule(**r) for r in traversal]
             if any(r.edge_type not in types for r in entries):
                 raise ValidationError("duty references unknown relation type")
             # Mandatory checks cannot be removed or weakened by user policy.
@@ -134,8 +155,13 @@ class RelationCatalog:
             ]
             rules[name] = tuple(sorted(entries, key=lambda r: r.priority))
             budgets[name] = MappingProxyType(vars(ViewBudget(**policy.get("budget", {}))))
+            duty_metadata[name] = MappingProxyType({
+                "display_name": display_name,
+                "description": description,
+            })
         self.rules = MappingProxyType(rules)
         self.budgets = MappingProxyType(budgets)
+        self.duty_metadata = MappingProxyType(duty_metadata)
         self.version = fingerprint({"relations": relation_types or {}, "duties": policies})
 
     def policy(self, duty: str):
@@ -143,6 +169,40 @@ class RelationCatalog:
             return self.rules[duty]
         except KeyError:
             raise ValidationError("unknown duty") from None
+
+    def snapshot(self) -> dict:
+        """Return a detached read-only catalog projection for trusted inspectors."""
+        duties = []
+        for duty_id in sorted(self.rules):
+            metadata = self.duty_metadata[duty_id]
+            duties.append({
+                "id": duty_id,
+                "display_name": metadata["display_name"],
+                "description": metadata["description"],
+                "traversal": [asdict(rule) for rule in self.rules[duty_id]],
+                "budget": dict(self.budgets[duty_id]),
+            })
+        relation_types = []
+        for relation_id in sorted(self.types):
+            spec = self.types[relation_id]
+            relation_types.append({
+                "id": relation_id,
+                "display_name": spec.display_name,
+                "description": spec.description,
+                "direction": spec.direction,
+                "symmetric": spec.symmetric,
+                "transitive": spec.transitive,
+                "valid_source_kinds": list(spec.valid_source_kinds),
+                "valid_target_kinds": list(spec.valid_target_kinds),
+            })
+        return {
+            "available": True,
+            "reason": "",
+            "policy_version": self.version,
+            "default_duty": "general" if "general" in self.rules else duties[0]["id"],
+            "duties": duties,
+            "relation_types": relation_types,
+        }
 
     def validate(self, relation, source, target):
         try:

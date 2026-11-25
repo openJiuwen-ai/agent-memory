@@ -1,6 +1,7 @@
 # 内置 general / diagnosis / testing / execution 保留，可增补项目职责。
 security:
   display_name: 安全审查
+  description: 检查风险缓解与验证依据
   traversal:
     - {edge_type: mitigates, direction: backward, priority: 1, max_depth: 2}
     - {edge_type: verifies, direction: backward, priority: 2, max_depth: 2}

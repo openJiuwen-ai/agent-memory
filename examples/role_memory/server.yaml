@@ -4,6 +4,7 @@ globals:
   # sdk_max_workers: 16     # 同时执行的读写调用数（正整数）
   # sdk_max_queue_size: 256 # 等待槽位数（非负整数，0 表示不预留等待容量）
   continuity_connectors:
+    # projects 仅保留历史字段名，值是允许访问的租户 space ID，不是业务项目 metadata。
     workbuddy:
       actor: {org: demo, space: '', user: wb, agent: '', session: ''}
       projects: [role-project]

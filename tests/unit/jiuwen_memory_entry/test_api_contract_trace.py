@@ -11,8 +11,11 @@ from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.security.request_context import internal_context
 from jiuwen_memory.common.trace import TraceLevel, configure_default, resolve_target, trace_event
+from jiuwen_memory.common.trace.trace_impl.memory_trace import MemoryTraceCollector
 from jiuwen_memory.common.type_def import MemoryUnit, Modality, Scope
 from jiuwen_memory_entry.core import api_contract
+from jiuwen_memory_entry.portal.multi_agent import build_multi_agent_portal
+from jiuwen_memory_entry.portal.requests import invoke_browser_api
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
 register_plugins()
@@ -55,6 +58,39 @@ def _contract():
     ):
         mc.return_value.is_async = False
         yield
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fail", [False, True])
+def test_multi_agent_portal_keeps_debug_trace_and_trajectory_out_of_responses(fail) -> None:
+    class SearchApi:
+        @staticmethod
+        def search(query, context, *, with_trajectory=False, security):
+            trace_event("SearchApi", "detail", {"query": query}, level=TraceLevel.DEBUG)
+            if fail:
+                raise ValidationError("search failed")
+            return {"items": [], "trajectory": ["debug"] if with_trajectory else []}
+
+    api = SearchApi()
+    scope = {"org": "demo", "space": "project"}
+    portal = build_multi_agent_portal({"scope": scope, "project_name": "Shared"})
+    payload = {"query": "test", "context": {"scope": scope}, "with_trajectory": True}
+    configure_default(MemoryTraceCollector(level=TraceLevel.DEBUG))
+    if fail:
+        with pytest.raises(ValidationError) as browser_error:
+            invoke_browser_api(api, "search", payload, security=None, multi_agent=portal)
+        assert api_contract.error_trace(browser_error.value) is None
+        with pytest.raises(ValidationError) as api_error:
+            api_contract.invoke_api(api, "search", payload, None)
+        assert api_contract.error_trace(api_error.value) is not None
+    else:
+        with patch.object(api, "search", wraps=api.search) as search:
+            result = invoke_browser_api(api, "search", payload, security=None, multi_agent=portal)
+            assert search.call_args.kwargs["with_trajectory"] is False
+        assert result == {"items": []}
+        result = api_contract.invoke_api(api, "search", payload, None)
+        assert result["trajectory"] == ["debug"]
+        assert any(span["component"] == "SearchApi" for span in result["trace"]["spans"])
 
 
 @pytest.mark.unit

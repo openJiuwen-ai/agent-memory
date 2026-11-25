@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
+from typing import NamedTuple
 
+from jiuwen_memory.common.continuity_scope import continuity_delivery_scope
 from jiuwen_memory.common.errors import (
     ITEM_LEVEL_ERRORS,
     AgentMemoryError,
@@ -47,6 +49,50 @@ from .repository import ContinuityRepository
 from .task_search import TaskSearchIndex
 
 logger = get_logger(__name__)
+
+
+def _background_for_delivery(background):
+    """Filter registered refs before they can enter the retrieval budget."""
+    scope = continuity_delivery_scope()
+    if scope is None:
+        return background, None
+    visible = []
+    blocking = None
+    for item in background:
+        required = item.get("required", True) if isinstance(item, dict) else True
+        try:
+            allowed = Scope(**item["ref"]["scope"]) == scope
+        except (KeyError, TypeError, ValidationError):
+            allowed = False
+        if allowed:
+            visible.append(item)
+        else:
+            blocking = bool(blocking or required)
+    return visible, blocking
+
+
+def _background_delivery_gap(blocking):
+    return {
+        "code": "portal_scope_filtered",
+        "message": "some task background is outside the Portal scope",
+        "blocking": blocking,
+        "affected_item_ids": [],
+    }
+
+
+class _RecordKey(NamedTuple):
+    org: str
+    space: str
+    user: str
+    agent: str
+    session: str
+    unit_id: str
+
+
+def _record_key(scope: Scope, unit_id: str) -> _RecordKey:
+    return _RecordKey(
+        scope.org, scope.space, scope.user, scope.agent, scope.session, unit_id,
+    )
 
 
 def _is_relation_head(record) -> bool:
@@ -219,6 +265,18 @@ class ContinuityService(Continuity):
             self.derivation_dedup.health()
         return {"continuity_mode": self.mode}
 
+    def catalog_snapshot(self) -> dict:
+        if self.mode != "role":
+            return {
+                "available": False,
+                "reason": "role_mode_required",
+                "policy_version": None,
+                "default_duty": None,
+                "duties": [],
+                "relation_types": [],
+            }
+        return self.catalog.snapshot()
+
     def _require_role_mode(self) -> None:
         if self.mode != "role":
             raise UnsupportedCapabilityError(
@@ -337,8 +395,9 @@ class ContinuityService(Continuity):
         visible.setdefault("parent_task_id", None)
         visible.setdefault("root_task_id", task["task_id"])
         visible["background"] = []
-        visible["background_partial"] = False
-        for item in task["background"]:
+        background, excluded = _background_for_delivery(task["background"])
+        visible["background_partial"] = excluded is not None
+        for item in background:
             try:
                 read(MemoryRef.parse(item["ref"]))
             except (NotFoundError, PermissionDeniedError, ConflictError):
@@ -1120,6 +1179,7 @@ class ContinuityService(Continuity):
     def view(self, scope, request, read, discover):
         self._require_role_mode()
         task = self.repository.get(scope, "tasks", request.task_id) if request.task_id else None
+        background, excluded = _background_for_delivery(task["background"] if task else [])
         result = self.view_builder.build(
             scope,
             request,
@@ -1127,9 +1187,13 @@ class ContinuityService(Continuity):
             read=read,
             discover=discover,
             resolve_edge=lambda rid: self.resolve_edge(scope, rid, read),
-            background=task["background"] if task else [],
+            background=background,
             registry_revision=task["revision"] if task else None,
         )
+        if excluded is not None:
+            result["gaps"].append(_background_delivery_gap(excluded))
+            if excluded:
+                result["meta"]["continuation_ready"] = False
         result["meta"]["relation_coverage"] = self.relation_coverage(scope)
         return result
 
@@ -1194,6 +1258,9 @@ class ContinuityService(Continuity):
         relation = RelationRecord.parse(head["current"])
         if relation.relation_id != relation_id or relation.revision != head.get("revision"):
             raise ConflictError("relation", message="relation head changed")
+        refs = (relation.source, relation.target, *relation.evidence_refs)
+        if any(ref.scope != scope for ref in refs):
+            raise PermissionDeniedError("cross-scope relation reference")
         self.validate_resolution(scope, relation, read)
         return relation
 
@@ -1205,6 +1272,7 @@ class ContinuityService(Continuity):
             return {
                 "units": [],
                 "required_ids": [],
+                "required_keys": [],
                 "gaps": [
                     {
                         "code": "task_not_found",
@@ -1214,8 +1282,11 @@ class ContinuityService(Continuity):
                     }
                 ],
             }
-        units, required_ids = [], []
-        for item in task.get("background", []):
+        units, required_ids, required_keys = [], [], []
+        background, excluded = _background_for_delivery(task.get("background", []))
+        if excluded is not None:
+            gaps.append(_background_delivery_gap(excluded))
+        for item in background:
             required = bool(item.get("required", True))
             try:
                 ref = MemoryRef.parse(item["ref"])
@@ -1246,7 +1317,11 @@ class ContinuityService(Continuity):
             units.append(unit)
             if required:
                 required_ids.append(unit.id)
-        return {"units": units, "required_ids": required_ids, "gaps": gaps}
+                required_keys.append(_record_key(unit.scope, unit.id))
+        return {
+            "units": units, "required_ids": required_ids, "required_keys": required_keys,
+            "gaps": gaps,
+        }
 
     def task_owner(self, scope, task_id):
         return self.repository.get(scope, "tasks", task_id)["owner"]
@@ -1348,8 +1423,8 @@ class ContinuityService(Continuity):
     def continuity_view_result(self, scope, request, read, *, extra_items, top_k: int) -> dict:
         items = []
         gaps = []
-        required_ids: set[str] = set()
-        seen: set[str] = set()
+        anchors = []
+        seen = set()
         if request.anchor is not None:
             try:
                 anchor = read(request.anchor)
@@ -1365,26 +1440,34 @@ class ContinuityService(Continuity):
                 )
                 anchor = None
             if anchor is not None:
-                seen.add(anchor.id)
+                anchors.append(asdict(request.anchor))
+                seen.add(_record_key(anchor.scope, anchor.id))
                 items.append(_unit_entry(anchor, "anchor", required=True))
         if request.task_id:
             background = self.task_background(scope, request.task_id, read)
-            required_ids = set(background.get("required_ids") or [])
+            required_keys = set(background["required_keys"])
             gaps.extend(background.get("gaps") or [])
             registered = background.get("units") or []
-            ordered = [unit for unit in registered if unit.id in required_ids]
-            ordered.extend(unit for unit in reversed(registered) if unit.id not in required_ids)
-            for unit in ordered:
-                if unit.id in seen:
+            required = [
+                unit for unit in registered if _record_key(unit.scope, unit.id) in required_keys
+            ]
+            optional = [
+                unit for unit in reversed(registered)
+                if _record_key(unit.scope, unit.id) not in required_keys
+            ]
+            for unit in [*required, *optional]:
+                key = _record_key(unit.scope, unit.id)
+                if key in seen:
                     continue
-                seen.add(unit.id)
+                seen.add(key)
                 items.append(
-                    _unit_entry(unit, "background", required=unit.id in required_ids)
+                    _unit_entry(unit, "background", required=key in required_keys)
                 )
         for entry in extra_items:
-            if entry["unit_id"] in seen:
+            key = _record_key(scope, entry["unit_id"])
+            if key in seen:
                 continue
-            seen.add(entry["unit_id"])
+            seen.add(key)
             # 语义召回只给出 unit_id/正文/系统元数据；kind 与 status 按同一映射推导，
             # 它不是已读取的引用，evidence_refs 留空而不是伪造摘要。
             event_kind = str(
@@ -1419,7 +1502,7 @@ class ContinuityService(Continuity):
             "meta": {
                 "mode": "continuity",
                 "duty": request.duty,
-                "anchors": [asdict(request.anchor)] if request.anchor is not None else [],
+                "anchors": anchors,
             },
         }
 

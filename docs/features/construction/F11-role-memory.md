@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 日期 | 2026-10-27 |
+| 日期 | 2026-11-23 |
 | 状态 | 2026-11-05 设计修订已落地：两档模式（接续 / 角色）、接口并入 add / batch_add / search、关系真源改存 Registry KV、范围收敛；剩余实现差距见 12.2。真实产品 G0 联调、外部 Agent 记忆迁移未完成 |
 | 影响范围 | 外部 Agent 接入适配；api、control、construction、retrieval、storage、common |
 | 关联规约 | [S02](../../specs/S02-memory-api.md)、[S03](../../specs/S03-control.md)、[S04](../../specs/S04-retrieval.md)、[S05](../../specs/S05-construction.md)、[S06](../../specs/S06-storage.md)、[S07](../../specs/S07-common.md)、[S09](../../specs/S09-plugin-development.md)、[S11 接续契约](../../specs/S11-cross-agent-continuity.md) |
@@ -75,7 +75,7 @@ agent-memory 面向框架无关的记忆摄入、构建、检索和生命周期�
 | 术语 | 定义 | 对应代码 |
 | --- | --- | --- |
 | 参与者 | 经接入认证识别的人或 Agent，决定以谁的身份请求访问；不能从文本自称推断 | `RequestSecurityContext.auth.actor` |
-| 连接 | 某个产品的一份可信接入配置，映射到一个参与者身份和允许的项目 | `globals.continuity_connectors` |
+| 连接 | 某个产品的一份可信接入配置，映射到一个参与者身份和允许的租户 space | `globals.continuity_connectors` |
 | 任务 | 可跨产品、会话持续的工作，有 agent-memory 生成的稳定 `task_id`；不能靠标题相似自动合并 | TaskRecord（Registry 内部） |
 | 绑定 | 某连接的某个本地上下文（会话、产品内任务）参与某任务；一个任务可有多个绑定 | Binding（TaskRecord 内） |
 | 事件 | 一次带接续信息提交的观察、陈述、判断、结果、经验或纠正；正文走 `add` / `batch_add`，接续信息放在 `continuity` 参数 | `ContinuityWrite`（原 `ContinuityEvent`） |
@@ -148,7 +148,7 @@ add / batch_add（continuity=ContinuityWrite）──写入──▶ MemoryUnit�
 写入（`add` / `batch_add` 带 `continuity`）：
 
 1. Agent 以自己的连接凭据调用 `add`（或 `batch_add`），正文照常传 `content`，另带 `continuity`（`task_id`、`binding_id`、稳定 `event_id` 等）。
-2. API 核对认证主体与绑定所属连接一致，校验项目 WRITE 权限。
+2. API 核对认证主体与绑定所属连接一致，校验目标完整 Scope 的 WRITE 权限。
 3. Registry 以连接、绑定、事件 ID 生成幂等键，先保存 unknown 回执。
 4. 正文经现有写入链落成 MemoryUnit；回执记录引用，状态转为 partial。
 5. 引用加入任务背景，任务修订号递增，回执转为 committed 后返回已保存的 MemoryUnit 列表；未完成时抛 `WriteIncompleteError`。`batch_add` 把同一任务的背景追加合并为一次修订（5.2 `ContinuityWrite`、6.2.4）。
@@ -217,7 +217,7 @@ add / batch_add（continuity=ContinuityWrite）──写入──▶ MemoryUnit�
 
 **并发与持久化**：所有变更在 Repository 的进程内锁下执行"读记录 → 校验修订 → 应用变更 → 修订号加一 → 写回执 → 整条记录写回"。整条记录一次写入具名持久 KV，依赖 KV 的单记录原子替换；跨进程由 `claim_single_writer` 保证只有一个写服务。回执窗口 256 条，超出按修订号淘汰最旧的；淘汰后旧请求重放会因修订号不符被拒绝，不会被当成新操作执行。
 
-**权限**：读操作需项目 READ，变更需 WRITE；修改既有任务限创建负责人（首版无委托表）。绑定和背景登记都不授予来源读取权，读取时仍按原 Scope 判权。
+**权限**：读操作需目标完整 Scope 的 READ，变更需 WRITE；修改既有任务限创建负责人（首版无委托表）。绑定和背景登记都不授予来源读取权，读取时仍按同一个五维 Scope 判权。
 
 **失败处理**：修订冲突、`request_id` 被不同内容复用返回 `ConflictError`；任务已关闭返回 `ConflictError`；绑定不存在或已解绑返回 `ValidationError`；背景引用不可读或摘要不符在提交前即拒绝，不写入半条记录。
 
@@ -231,7 +231,7 @@ add / batch_add（continuity=ContinuityWrite）──写入──▶ MemoryUnit�
 
 **批量流程（`batch_add`，供外部 Agent 历史快速导入）**：
 
-1. 校验：批级 `scope` 必须是同一个项目空间；每项可带自己的 `BatchWriteItem.continuity`，不同任务可同批；同时带 `idempotency_key` 时必须与接续幂等键一致，否则该项拒绝。
+1. 校验：批级 `scope` 必须是同一个完整五维 Scope；每项可带自己的 `BatchWriteItem.continuity`，不同任务可同批；同时带 `idempotency_key` 时必须与接续幂等键一致，否则该项拒绝。
 2. 一次批量写入全部 unknown 回执。
 3. 正文走现有批量写入链（批量 embedding、批量建索引），这是相对逐条 `add` 的主要提速来源。
 4. 批量把已保存引用写入回执并转 partial。
@@ -243,7 +243,7 @@ add / batch_add（continuity=ContinuityWrite）──写入──▶ MemoryUnit�
 
 **引入统一抽取后的契约**见 4.2"原始事件与派生构建"：回执分成"原始事件已持久化"和"派生构建状态"两段，分别记录与恢复。
 
-**当前实现**：已实现。`add(..., continuity=)` 经 `ContinuityService.record` 单条提交，`batch_add` 中相邻且同项目的接续项合并为一次 `ContinuityService.record_batch`（先登记 unknown 回执，再一次 `write_batch` 写全部正文，每任务只追加一次背景、只递增一次修订号）；正文写入复用 `add` 的作者标记、`source_ref` 与审计；回执停在 unknown / partial 时单条抛 `WriteIncompleteError`，批量逐项返回 `continuity_status`。`record_batch` 的派生构建仍按事件逐条执行（12.2）。
+**当前实现**：已实现。`add(..., continuity=)` 经 `ContinuityService.record` 单条提交，`batch_add` 中相邻且完整五维 Scope 相同的接续项合并为一次 `ContinuityService.record_batch`（先登记 unknown 回执，再一次 `write_batch` 写全部正文，每任务只追加一次背景、只递增一次修订号）；正文写入复用 `add` 的作者标记、`source_ref` 与审计；回执停在 unknown / partial 时单条抛 `WriteIncompleteError`，批量逐项返回 `continuity_status`。`record_batch` 的派生构建仍按事件逐条执行（12.2）。
 
 #### 关系登记（`continuity_relation`，角色模式）
 
@@ -609,7 +609,7 @@ agent-memory 是统一记忆底座。外部内容如果只存原文、不进入�
 
 **决策**
 
-首版**新建项目共享空间 P**，归属同一组织 O，用于新协作记录、共享经验及任务登记；不把现有 JiuwenSwarm 私有空间直接改成共享。各产品分别认证并获得 P 内所需权限，提交者保留在可信来源及审计中，不靠伪装同一 Agent 身份共享。现有 provider 的映射是 `scope_id→org`、`space→space`、`user_id→user`、`agent_id→agent`、`session_id→session`；`scope_id` 不是项目 space。旧单元保留原五维 Scope，新模式的项目落点与历史 `bound_scope` 分开配置，不能清空旧 user、agent、session 或修改原 org 来"打通"。
+首版**新建租户共享空间 P**，归属同一组织 O，用于新协作记录、共享经验及任务登记；业务项目信息继续放 metadata，不把 `space` 当作业务项目 ID。不把现有 JiuwenSwarm 私有空间直接改成共享。各产品分别认证并获得 P 内所需权限，提交者保留在可信来源及审计中，不靠伪装同一 Agent 身份共享。现有 provider 的映射是 `scope_id→org`、`space→space`、`user_id→user`、`agent_id→agent`、`session_id→session`；`scope_id` 不是租户 space。旧单元保留原五维 Scope，新模式的共享落点与历史 `bound_scope` 分开配置，不能清空旧 user、agent、session 或修改原 org 来"打通"。
 
 旧记忆进入任务背景只有一条路径——**授权引用**：Registry 保存原 Scope、ID 和摘要，接任者另有该来源读取权时按原 Scope 点读。P 的读取权和任务绑定都不替代来源权限；不同空间的引用逐来源授权。需要让接任者看到私有记忆时，由来源空间的管理者用现有 `grant` 授予读取权，再用 `continuity_task(attach)` 把引用挂到任务背景；首版不提供把私有内容复制到共享空间的"发布"接口（见第 10 节）。
 
@@ -698,7 +698,7 @@ search（task_id / anchor / duty）＋ Duty ─▶ TraversalRule ─▶ Retrieva
 - **示例**：
 
 ```json
-{"scope": {"org": "demo", "space": "role-project", "user": "", "agent": "", "session": ""},
+{"scope": {"org": "demo", "space": "tenant-demo", "user": "", "agent": "", "session": ""},
  "unit_id": "u-42", "content_digest": "9f2c…（64 位十六进制）"}
 ```
 
@@ -733,7 +733,7 @@ search（task_id / anchor / duty）＋ Duty ─▶ TraversalRule ─▶ Retrieva
 - **含义**：`add` 的 `continuity` 参数、`BatchWriteItem.continuity` 字段，描述"这次写入属于哪个任务、哪个绑定、哪个事件"。字段：`task_id`、`binding_id`、`event_id`（三者必填）、`kind`（observation / statement / judgment / result / experience / correction / unclassified，缺省 unclassified）、`classification_confidence`（low / high / unknown，low 时强制把 `kind` 改为 unclassified，high 也不等于事实确认）、`evidence_refs`、`claimed_author`、`context_id`、`source_locator`、`schema_version`（`continuity-write/1`）。
 - **与现有写入参数的分工**：正文仍是 `add` 的 `content`；原始发生时间用现有 `event_time`（写 `t_event`），`occurred_at` 保持 t_message 语义；经验适用职责放在 `tags`（`duty:<id>`）。不再有 `ContinuityEvent` 那样包含正文和时间的独立信封。
 - **落盘映射**：`source_locator` → `MemoryUnit.source_ref`；`kind` → 原始事件统一 `tier=episodic`（不经 classifier 改写），类别写 `continuity_kind`；其余字段写入 `continuity_task`、`continuity_binding`、`continuity_event`、`continuity_connector`、`continuity_confidence`、`continuity_evidence_refs`、`continuity_claimed_author`、`continuity_envelope_digest` 系统元数据。`continuity_*` 是保留前缀，公开调用方不能经 `system_metadata` 直接设置，只能经 `continuity` 参数由内部写路径注入。
-- **幂等与身份**：幂等键（即 `operation_id`）= 摘要（可信连接, `binding_id`, `event_id`）；只有带 `continuity` 的写入需要它，普通 `add` 不变。连接由认证链解析，仅当请求带 `continuity` 时核对认证主体等于绑定所属连接的身份。`scope` 必须是项目空间。`batch_add` 中某项同时带 `idempotency_key` 时须与该幂等键一致，否则该项拒绝。
+- **幂等与身份**：幂等键（即 `operation_id`）= 摘要（可信连接, `binding_id`, `event_id`）；只有带 `continuity` 的写入需要它，普通 `add` 不变。连接由认证链解析，仅当请求带 `continuity` 时核对认证主体等于绑定所属连接的身份。`scope` 为完整五维目标命名空间，`org`、`space` 必填，主体维可空但精确匹配。`batch_add` 中某项同时带 `idempotency_key` 时须与该幂等键一致，否则该项拒绝。
 - **生命周期**：不单独持久化；信封摘要 `continuity_envelope_digest` 供恢复核对。
 - **示例**（`add` 调用的接续部分）：
 
@@ -790,7 +790,7 @@ candidate ──（新修订，须有 evidence_refs）──▶ confirmed
 - **含义**：一条关系在 Registry KV 中的真源，键 `/continuity/relations/<relation_id>`，字段为 `revision, digest, payload_digest, status, connector, current`。`current` 是当前修订的完整 RelationRecord（含服务端补充的裁决字段），`payload_digest` 是其摘要，供投影核对；`connector` 是提交连接，用于来源隔离。旧修订以不可变记录保存在 `/continuity/relations/<relation_id>/rev/<n>`。
 - **创建者与读取者**：`continuity_relation` 写入；修订冲突检查、视图回查边、`continuity_recover(kind=relation)` 投影修复读取。
 - **生命周期**：先写不可变修订记录，再原子替换关系头（`status=projecting`），替换成功即真源提交；图投影完成后转 `committed`。没有 unknown 状态——单记录原子替换就是提交点，失败即未提交，可直接重试。并发由单写者 Registry 与 `expected_revision` 保证。图边 ID 为 `continuity:relation:<relation_id>`，边属性带 `relation_id` 与 `revision`；节点 ID 为 `continuity:memory:<Scope 与 ID 的摘要>`；业务 `relation_id` 不能以 `continuity:` 开头。
-- **读取判权**：项目 Scope READ ＋ 两端与证据均可读 ＋ 提交连接未停用、未隔离。
+- **读取判权**：目标完整 Scope READ ＋ 两端与证据均与目标五维一致且可读 ＋ 提交连接未停用、未隔离。
 - **示例**：
 
 ```json
@@ -819,13 +819,16 @@ candidate ──（新修订，须有 evidence_refs）──▶ confirmed
 
 #### `RelationCatalog`、`RelationTypeSpec`、`TraversalRule`
 
-- **含义**：`RelationCatalog` 是启动时校验的不可变配置，包含关系类型表和职责策略表。`RelationTypeSpec` 描述一种关系，键为 `name, display_name, description, direction, symmetric, transitive, valid_source_kinds, valid_target_kinds`；端点类别取 observation / statement / judgment / result / experience / correction / unclassified / method / plan / action。`TraversalRule` 描述一条遍历规则，键为 `edge_type, direction, priority, max_depth`（`max_depth` 取 1–4）。
+- **含义**：`RelationCatalog` 是启动时校验的不可变配置，包含关系类型表、职责策略表和职责展示元数据。`RelationTypeSpec` 描述一种关系，键为 `name, display_name, description, direction, symmetric, transitive, valid_source_kinds, valid_target_kinds`；职责策略可带 `display_name` 与 `description`，未提供展示名时使用职责 ID。`TraversalRule` 描述一条遍历规则，键为 `edge_type, direction, priority, max_depth`（`max_depth` 取 1–4）。
 - **创建者与读取者**：装配 `continuity.local` 时从 `relation_types`、`duty_policies`（内联字典）或 `relation_types_path`、`duty_policies_path`（YAML 文件）读取，二者不能同时指定；构建侧（关系校验、关系发现）和查询侧共用同一份。
 - **生命周期**：进程内只读，运行时不能增删类型。内置类型只能覆盖 `display_name`、`description`；每个职责策略都会被追加 `contradicts`（双向）和 `requires`（出向）两条强制规则，`priority=0`、`max_depth=4`。`policy_version` 是配置内容的摘要，出现在视图元信息中。
+- **运行时检查**：`RelationCatalog.snapshot()` 返回脱离内部对象的纯数据副本，包含全部职责 ID、展示名、说明、最终 traversal、职责预算，以及全部关系类型及其固有方向/端点类别。`ContinuityService.catalog_snapshot()` 不重读配置文件；`read_continuity_catalog(api, scope, *, security)` 先做目标完整 Scope READ 判权再返回 `{mode, role_catalog}`。continuity 模式明确返回 `role_mode_required`，外部实现没有检查能力时返回 `catalog_unavailable`。
 - **示例**：见 [relation_types.yaml](../../../examples/role_memory/relation_types.yaml) 与 [duty_policies.yaml](../../../examples/role_memory/duty_policies.yaml)：
 
 ```yaml
 security:
+  display_name: 安全审查
+  description: 检查风险缓解与验证依据
   traversal:
     - {edge_type: mitigates, direction: backward, priority: 1, max_depth: 2}
   budget: {max_depth: 2, max_nodes: 30, max_edges: 60, timeout_ms: 1000}
@@ -843,11 +846,11 @@ security:
 | execution | requires 出向；verifies 入向 |
 
 - **创建者与读取者**：调用方在 `search` 的 `duty` 参数中传入一个或多个；JiuwenSwarm provider 可配置 `default_duty`。未传时为 general，未知名称报错。接续模式下仍校验名称并回显在 `view_meta`，但不展开关系，非 general 时返回非阻断缺口 `relation_expansion_disabled`。
-- **生命周期**：内置四个随代码提供默认规则；职责策略配置可新增策略，也可用同名配置覆盖内置策略的展开规则（强制检查仍会追加）。一次查询可传一至四个职责，合并规则见 4.3"多职责查询"。
+- **生命周期**：内置四个随代码提供默认规则；职责策略配置可新增策略，也可用同名配置覆盖内置策略的展开规则（强制检查仍会追加），并通过 `display_name` / `description` 提供展示元数据。一次 query 可传一至四个职责；Portal 单职责从当前 Runtime 目录选择，对照模式由用户选择 2～3 项并分别请求，合并规则仍见 4.3"多职责查询"。
 
 #### 职责查询参数与 `ViewBudget`
 
-- **含义**：`search` 新增的可选参数 `task_id`、`anchor`（MemoryRef）、`duty`（策略名或 1–4 个策略名的列表）与 `view_budget`（`ViewBudget`）。三者（`task_id`、`anchor`、`duty`）都不传时 `search` 行为与改动前完全一致；传了任意一个即进入任务 / 职责视图路径，此时 `query`、`anchor`、`task_id` 至少一项非空，仅给 `task_id` 或 `anchor` 时 `query` 可为空串。首版职责视图只在单个项目空间内生成：`context.extensions.spaces`（跨空间检索）与这些参数同传返回 `ValidationError`。
+- **含义**：`search` 新增的可选参数 `task_id`、`anchor`（MemoryRef）、`duty`（策略名或 1–4 个策略名的列表）与 `view_budget`（`ViewBudget`）。三者（`task_id`、`anchor`、`duty`）都不传时 `search` 行为与改动前完全一致；传了任意一个即进入任务 / 职责视图路径，此时 `query`、`anchor`、`task_id` 至少一项非空，仅给 `task_id` 或 `anchor` 时 `query` 可为空串。首版职责视图只在单个完整五维 Scope 内生成：`context.extensions.spaces`（跨空间检索）与这些参数同传返回 `ValidationError`。
 - **`ViewBudget`**：字段 `max_depth`、`max_nodes`、`max_edges`、`max_paths`、`timeout_ms`，默认 2 / 30 / 60 / 60 / 1000，单字段上限 4 / 200 / 500 / 500 / 10000；生效预算再与职责策略预算取较小值。内置四个职责策略没有单独配置预算，取的就是默认值，所以对内置职责而言请求超过默认值也不会生效；要放宽，须在职责策略配置中为该职责设置更大的 `budget`。`top_k` 仍限制返回的 `items` 数量，截断时追加非阻断 `budget_exhausted`。
 - **创建者与读取者**：调用方构造，`search` 消费。
 - **生命周期**：不持久化；实际生效的预算回显在 `view_meta.effective_budget`。`timeout_ms` 只限制继续展开，不强行中断已进入的存储调用。
@@ -937,7 +940,7 @@ globals:
   continuity_connectors:
     hermes:
       actor: {org: demo, space: '', user: hermes, agent: '', session: ''}
-      projects: [role-project]
+      projects: [tenant-demo]
       enabled: true
 ```
 
@@ -960,23 +963,23 @@ globals:
 
 接续能力不再是一组独立的 `role_*` 方法，而是"现有写入 / 检索方法的可选参数 ＋ 三个接续方法 ＋ 两个治理方法"。MemoryAPI 公开方法总数从 47 变为 43：删除九个 `role_*`，新增 `continuity_task`、`continuity_relation`、`continuity_recover`、`quarantine_source`、`release_source`。签名与逐字段参数表见 [S02](../../specs/S02-memory-api.md)，跨模块契约见 [S11](../../specs/S11-cross-agent-continuity.md)。
 
-共同规则：带接续参数的调用与三个接续方法要求 scope 是 org + space 的项目空间（user、agent、session 为空），`security` 必填；未配置 `continuity` 时，带接续参数的 `add` / `batch_add` / `search` 与接续方法返回 `UnsupportedCapabilityError`，不带接续参数的调用不受影响。
+共同规则：带接续参数的调用与三个接续方法使用完整五维 Scope，`org`、`space` 必填，`user`、`agent`、`session` 可空但五维精确匹配；空值只表示精确空命名空间，不是通配。`security` 必填；未配置 `continuity` 时，带接续参数的 `add` / `batch_add` / `search` 与接续方法返回 `UnsupportedCapabilityError`，不带接续参数的调用不受影响。
 
 | 接口 | 用途 | 接续相关入参 | 返回 | 所需权限 | 档位 |
 | --- | --- | --- | --- | --- | --- |
-| `add` | 写入一条记忆；带 `continuity` 时幂等记录一个事件并关联到任务 | `continuity: ContinuityWrite \| None`；原始时间用既有 `event_time` | `list[MemoryUnit]`（重放返回已保存单元）；未完成抛 `WriteIncompleteError`（409） | 项目 WRITE；带 `continuity` 时认证主体须等于绑定所属连接的身份，且连接已启用 | 两档 |
+| `add` | 写入一条记忆；带 `continuity` 时幂等记录一个事件并关联到任务 | `continuity: ContinuityWrite \| None`；原始时间用既有 `event_time` | `list[MemoryUnit]`（重放返回已保存单元）；未完成抛 `WriteIncompleteError`（409） | 目标 Scope WRITE；带 `continuity` 时认证主体须等于绑定所属连接的身份，且连接已启用 | 两档 |
 | `batch_add` | 批量写入；每项可带 `continuity`，用于外部 Agent 历史快速导入 | `BatchWriteItem.continuity` | `BatchWriteResult`，`BatchWriteOutcome` 新增 `operation_id`、`continuity_status` | 同上，逐项核对 | 两档 |
-| `search` | 检索；带 `task_id` / `anchor` / `duty` 时返回任务背景与职责视图 | `task_id`、`anchor`、`duty`、`view_budget` | `RetrievalResult`，可选字段 `paths`、`gaps`、`view_meta`，条目 `view` 标注 | 项目 READ；每个起点、节点、证据逐一判权 | 两档（接续模式不展开关系） |
-| `continuity_task` | 创建、查询、绑定、解绑、挂背景、关闭任务 | `TaskRequest` | 任务快照、修订号、是否重放 | get/find 需项目 READ；其他需 WRITE，修改既有任务限创建负责人；bind 还校验连接属于本组织和项目 | 两档 |
-| `continuity_relation` | 登记、复核或撤回一条证据关系 | `RelationRecord`、`expected_revision` | `status`（projecting / committed）、`relation_id`、`revision` | 项目 WRITE；修订既有关系另需按关系头快照做 UPDATE 判权 | 角色模式，否则 `UnsupportedCapabilityError` |
-| `continuity_recover` | 核对写入确认丢失的事件、核对派生构建、修复关系投影 | `ContinuityRecovery` | 核对结果、`next_action` | 项目 WRITE；事件恢复逐个引用 UPDATE 判权并校验原连接身份 | 两档（`kind=relation` 角色模式） |
-| `quarantine_source` | 治理：按来源连接隔离，记录原因 | `connector`、`reason` | 隔离记录 | 项目 `MANAGE_SPACE` | 两档 |
-| `release_source` | 治理：解除来源隔离 | `connector` | 布尔，表示之前是否处于隔离 | 项目 `MANAGE_SPACE` | 两档 |
+| `search` | 检索；带 `task_id` / `anchor` / `duty` 时返回任务背景与职责视图 | `task_id`、`anchor`、`duty`、`view_budget` | `RetrievalResult`，可选字段 `paths`、`gaps`、`view_meta`，条目 `view` 标注 | 目标 Scope READ；每个起点、节点、证据按同一五维 Scope 逐一判权 | 两档（接续模式不展开关系） |
+| `continuity_task` | 创建、查询、绑定、解绑、挂背景、关闭任务 | `TaskRequest` | 任务快照、修订号、是否重放 | get/find 需目标 Scope READ；其他需 WRITE，修改既有任务限创建负责人；bind 还校验连接属于本组织且允许该租户 space | 两档 |
+| `continuity_relation` | 登记、复核或撤回一条证据关系 | `RelationRecord`、`expected_revision` | `status`（projecting / committed）、`relation_id`、`revision` | 目标 Scope WRITE；修订既有关系另需按关系头快照做 UPDATE 判权 | 角色模式，否则 `UnsupportedCapabilityError` |
+| `continuity_recover` | 核对写入确认丢失的事件、核对派生构建、修复关系投影 | `ContinuityRecovery` | 核对结果、`next_action` | 目标 Scope WRITE；事件恢复逐个引用按同一五维 Scope 做 UPDATE 判权并校验原连接身份 | 两档（`kind=relation` 角色模式） |
+| `quarantine_source` | 治理：按来源连接隔离，记录原因 | `connector`、`reason` | 隔离记录 | 目标 Scope `MANAGE_SPACE` | 两档 |
+| `release_source` | 治理：解除来源隔离 | `connector` | 布尔，表示之前是否处于隔离 | 目标 Scope `MANAGE_SPACE` | 两档 |
 
 `search` 的附加约束：
 
 - `task_id`、`anchor`、`duty` 都不传时行为与改动前完全一致；传了任意一个即进入视图路径，`query`、`anchor`、`task_id` 至少一项非空。
-- **首版不支持跨空间职责视图**：`context.extensions.spaces`（跨空间检索）与 `task_id` / `anchor` / `duty` 同传返回 `ValidationError`。职责视图依赖单个项目空间内的任务登记与关系图，逐空间合并路径和预算的语义尚未设计。
+- **首版不支持跨空间职责视图**：`context.extensions.spaces`（跨空间检索）与 `task_id` / `anchor` / `duty` 同传返回 `ValidationError`。职责视图依赖单个完整五维 Scope 内的任务登记与关系图，逐空间合并路径和预算的语义尚未设计。
 - 接续模式下 `duty` 非 general 不报错，返回正常检索结果并追加非阻断缺口 `relation_expansion_disabled`，`view_meta.mode="continuity"`。
 
 被移除的旧入口：`role_record`（并入 `add` / `batch_add`）、`role_view`（并入 `search`）、`role_task` / `role_relation` / `role_rebuild`（改名为 `continuity_task` / `continuity_relation` / `continuity_recover`）、`role_quarantine_source` / `role_release_source`（改名并归入治理组）、`role_publish` 与 `role_mark_source_cutover`（删除，见第 10 节）。
@@ -989,7 +992,7 @@ globals:
 
 ### 6.2 时序图
 
-参与方说明：**Agent** 为外部产品（经 MCP 桥或 provider）；**API** 为 `MemoryAPI` 的鉴权层（`continuity_ops.py`）；**Svc** 为 `ContinuityService`；**Reg** 为 Registry 具名 KV（`/continuity/...`）；**Mem** 为现有写入与读取链路（`add` / `batch_add` / `get` / `list` / `search` 的内部写读，最终落 MemoryUnit）；**Graph** 为证据图（`evidence_graph` 投影 + GraphStore，角色模式）。所有接口第一步都先执行可信上下文校验和项目 Scope 检查（`org + space`，不带 user / agent / session），图中不再重复。以下时序图描述目标设计。
+参与方说明：**Agent** 为外部产品（经 MCP 桥或 provider）；**API** 为 `MemoryAPI` 的鉴权层（`continuity_ops.py`）；**Svc** 为 `ContinuityService`；**Reg** 为 Registry 具名 KV（`/continuity/...`）；**Mem** 为现有写入与读取链路（`add` / `batch_add` / `get` / `list` / `search` 的内部写读，最终落 MemoryUnit）；**Graph** 为证据图（`evidence_graph` 投影 + GraphStore，角色模式）。所有接口第一步都先执行可信上下文校验和目标完整五维 Scope 检查；图中不再重复。以下时序图描述目标设计。
 
 #### 6.2.1 端到端：跨产品无交接接续
 
@@ -1071,7 +1074,7 @@ sequenceDiagram
 
 步骤说明（编号对应图中的「步骤 N」标注）：
 
-1. 调用方传入项目 Scope 和 `TaskRequest`。`get` / `find` 只需项目 READ，`create` / `bind` / `unbind` / `attach` / `close` 需要项目 WRITE。
+1. 调用方传入完整五维 Scope 和 `TaskRequest`。`get` / `find` 只需目标 Scope READ，`create` / `bind` / `unbind` / `attach` / `close` 需要目标 Scope WRITE。
 2. 修改既有任务（`create` 以外的写操作）时，API 先通过 `task_owner` 取回任务创建负责人，只有负责人本人可以改；首版没有委托。
 3. `bind` 额外校验 `connector_id` 在 `globals.continuity_connectors` 中、属于本组织，且其 `projects` 包含当前空间。绑定只说明"这个产品的这个会话参与该任务"，不授予任何读取权。
 4. 请求带 `background`（挂背景引用）时，服务逐个点读这些 `MemoryRef`：调用者必须有读取权、内容摘要必须一致、记忆未被删除，否则整个请求失败，不会挂上读不到的引用。
@@ -1091,7 +1094,7 @@ sequenceDiagram
     Note over A,Mem: 步骤 1
     A->>API: add(content, scope, event_time, tags, continuity=ContinuityWrite)
     Note over A,Mem: 步骤 2
-    API->>API: 项目 WRITE 判权；拒绝公开传入的 continuity_* 元数据
+    API->>API: 目标 Scope WRITE 判权；拒绝公开传入的 continuity_* 元数据
     Note over A,Mem: 步骤 3
     API->>Svc: binding_connector(task_id, binding_id)
     API->>API: 认证主体 == 连接 actor、连接已启用、允许该项目
@@ -1134,8 +1137,8 @@ sequenceDiagram
 步骤说明（编号对应图中的「步骤 N」标注）：
 
 1. Agent 照常调用 `add`，正文放 `content`，原始发生时间放 `event_time`，经验适用职责放 `tags`（`duty:<id>`），接续信息放 `continuity`（任务、绑定、事件 ID、类别、来源定位等）。不带 `continuity` 的 `add` 完全走原有路径。
-2. API 做项目 WRITE 判权，并拒绝调用方在 `system_metadata` 里自带 `continuity_*` 保留键或 `infer` / `middle` / `procedural` 这类与"原文直落"冲突的开关。
-3. API 通过 `binding_connector` 查出该绑定属于哪个连接，核对：当前认证主体就是该连接配置的 `actor`、连接已启用、连接允许当前项目。`claimed_author` 只是来源声明，不能替代这一步。
+2. API 做目标完整 Scope 的 WRITE 判权，并拒绝调用方在 `system_metadata` 里自带 `continuity_*` 保留键或 `infer` / `middle` / `procedural` 这类与"原文直落"冲突的开关。
+3. API 通过 `binding_connector` 查出该绑定属于哪个连接，核对：当前认证主体就是该连接配置的 `actor`、连接已启用、连接允许当前租户 space。`claimed_author` 只是来源声明，不能替代这一步。
 4. 服务在单写锁内读任务与绑定：任务必须是 open，绑定必须有效且属于该连接。随后用"连接 ＋ 绑定 ＋ event_id"计算幂等键，读事件回执，分三种情况：
    - 回执已存在但请求摘要不同：同一个 `event_id` 被拿来写不同内容，返回 `ConflictError`。请求摘要覆盖正文、来源、资产、标签、元数据和时间，改任何一项再重试都算不同请求。
    - 回执已是 committed：直接读回已保存的单元返回，不重复写正文，也不重复挂背景。
@@ -1155,12 +1158,12 @@ sequenceDiagram
     participant Reg
     participant Mem
     Note over I,Mem: 步骤 1
-    I->>API: batch_add(items[每项带 continuity], scope=项目空间)
+    I->>API: batch_add(items[每项带 continuity], scope=完整五维 Scope)
     Note over I,Mem: 步骤 2
-    API->>API: 逐项：拒绝公开 source_ref；项目 WRITE 判权；绑定所属连接 == 认证主体
+    API->>API: 逐项：拒绝公开 source_ref；目标 Scope WRITE 判权；绑定所属连接 == 认证主体
     API->>API: 逐项校验 idempotency_key 与接续幂等键一致（不一致只拒绝该项）
     Note over I,Mem: 步骤 3
-    API->>API: 相邻接续项按项目空间分组
+    API->>API: 相邻接续项按完整五维 Scope 分组
     API->>Svc: record_batch(组内事件, connectors, read, write_batch)
     Note over I,Mem: 步骤 4
     Svc->>Reg: 批量读回执，按幂等键分流
@@ -1188,8 +1191,8 @@ sequenceDiagram
 步骤说明（编号对应图中的「步骤 N」标注）：
 
 1. 导入脚本（或 Agent）把一批事件放进 `batch_add`，每项都是普通的 `BatchWriteItem`，额外带 `continuity`。同一批可以混合普通项和接续项，系统按输入顺序推进：相邻的普通项合成一批走原有路径，相邻的接续项合成一批走下面的流程。
-2. API 逐项做入口校验：公开调用方不能自带 `source_ref`（它只由 `source_locator` 映射而来）；项目 WRITE 判权；绑定所属连接必须等于当前认证主体；若同时给了 `idempotency_key`，必须等于接续幂等键。任何一项不合格只拒绝这一项，同批其他项照常处理。
-3. 接续项按项目空间分组，每组调用一次 `record_batch`；不同项目的条目不会被塞进同一组。
+2. API 逐项做入口校验：公开调用方不能自带 `source_ref`（它只由 `source_locator` 映射而来）；目标完整 Scope WRITE 判权；绑定所属连接必须等于当前认证主体；若同时给了 `idempotency_key`，必须等于接续幂等键。任何一项不合格只拒绝这一项，同批其他项照常处理。
+3. 接续项按完整五维 Scope 分组，每组调用一次 `record_batch`；只要任一 Scope 维度不同就不会被塞进同一组。
 4. 服务批量读回执，按幂等键分流：已 committed 的项直接读回原单元；请求摘要不同的项标 rejected（`ConflictError`）；其余为待写项。
 5. 待写项先全部登记为 `status=unknown` 并落盘，再调用一次 `write_batch` 写全部正文。正文写入复用 `add` 的处理：作者标记、`source_ref`、`t_event`、审计都与单条写入一致，embedding 与建索引按批进行。这一步是导入变快的关键。`write_batch` 的入参是 `ContinuityBatchWrite` 列表，每项显式携带 `operation_id`（所属事件的幂等键）和 `derived`；重试时只有未写过的事件会进入这次调用，实现必须按 `operation_id` 找回对应条目，不能按位置配对。提交后的派生写入同样走 `write_batch`（`derived=True`，`operation_id` 指向源事件）：保留来源位置 `source_ref`，不继承发生时间，并各自记一条 `add` 审计，与单条路径一致。
 6. 写成功的项批量转 partial 并记下引用；`write_batch` 整体失败时这些项保持 unknown，等待恢复核对，不会被当成没写过。
@@ -1211,10 +1214,10 @@ sequenceDiagram
     A->>API: continuity_relation(scope, RelationRecord, expected_revision)
     API->>API: 接续模式直接返回 UnsupportedCapabilityError
     Note over A,G: 步骤 3
-    API->>API: 项目 WRITE 判权
+    API->>API: 目标 Scope WRITE 判权
     opt 修订既有关系
         API->>Svc: relation_head(relation_id)
-        API->>API: 登记侧：调用者是关系头记录的提交连接，或有项目 MANAGE_SPACE
+        API->>API: 登记侧：调用者是关系头记录的提交连接，或有目标 Scope MANAGE_SPACE
         API->>API: 内容侧：对两端记忆都有 UPDATE
     end
     API->>Svc: relation(record, expected_revision, read)
@@ -1248,7 +1251,7 @@ sequenceDiagram
 
 1. 只有角色模式提供关系登记；接续模式调用直接返回 `UnsupportedCapabilityError`。
 2. 关系的两端和证据都必须是已经保存过的记忆（先用 `add` 取得 `MemoryRef`），首版不接受客户端临时端点。新登记传 `expected_revision=0`，修订传当前修订号。
-3. API 做项目 WRITE 判权。修订既有关系时再加两道检查：登记侧要求调用者就是关系头里记录的提交连接，或者在项目上有治理权限（`MANAGE_SPACE`），关系头没有记录连接的旧关系只允许治理角色修改；内容侧要求对两端记忆都有 UPDATE 权。撤回（revoked）也走同样的检查。新登记时，服务端把当前认证主体对应的连接记入关系头。
+3. API 做目标完整 Scope 的 WRITE 判权。修订既有关系时再加两道检查：登记侧要求调用者就是关系头里记录的提交连接，或者在该 Scope 上有治理权限（`MANAGE_SPACE`），关系头没有记录连接的旧关系只允许治理角色修改；内容侧要求对两端记忆都有 UPDATE 权。撤回（revoked）也走同样的检查。新登记时，服务端把当前认证主体对应的连接记入关系头。
 4. 服务点读两端与全部证据，读不到或摘要不符即拒绝；再按关系目录校验关系类型、方向和端点类别，未知类型或端点类别不符直接拒绝。
 5. 读关系头：与当前修订内容完全相同的重试只补图投影；`expected_revision` 与当前修订号不符返回 `ConflictError`。
 6. 修订时核对端点与关系类型没有变化（要换端点须撤回后新建），并保留已有的人工裁决。类型为 `contradicts` 时由 `ConflictResolver` 给出裁决建议，模型结果只作候选。
@@ -1269,7 +1272,7 @@ sequenceDiagram
     Note over A,Mem: 步骤 1
     A->>API: search(query, context, task_id?, anchor?, duty?, view_budget?)
     Note over A,Mem: 步骤 2
-    API->>API: 项目 READ 判权；extensions.spaces 与视图参数同传则 ValidationError
+    API->>API: 目标 Scope READ 判权；extensions.spaces 与视图参数同传则 ValidationError
     API->>API: 读回调叠加调用方的 filters / as_of
     alt 接续模式
         Note over A,Mem: 步骤 3
@@ -1305,7 +1308,7 @@ sequenceDiagram
 步骤说明（编号对应图中的「步骤 N」标注）：
 
 1. 不传 `task_id`、`anchor`、`duty` 时，`search` 与改动前完全一样，不进入本流程。传了任意一个才进入视图路径，此时 `query`、`anchor`、`task_id` 至少一项非空；只给任务时 `query` 可以为空串。
-2. API 做项目 READ 判权。首版不支持跨空间职责视图，`context.extensions.spaces` 与视图参数同传返回 `ValidationError`。调用方的 `filters` 与 `as_of` 叠加到读回调上，anchor、背景和关系端点逐条按同样条件过滤，不会经 anchor 把明确不匹配的条目带出来。
+2. API 做目标完整 Scope 的 READ 判权。首版不支持跨空间职责视图，`context.extensions.spaces` 与视图参数同传返回 `ValidationError`。调用方的 `filters` 与 `as_of` 叠加到读回调上，anchor、背景和关系端点逐条按同一五维 Scope 过滤，不会经 anchor 把明确不匹配的条目带出来。
 3. 接续模式不展开关系：先用去掉视图参数的普通检索取得语义召回结果，再由接续服务点读 anchor 和任务背景，合并去重后生成条目。anchor 读不到记 `reference_unavailable`；任务不存在或背景不可读按存储的 `required` 标记记为阻塞或非阻塞缺口，缺口里不带受限记录的 ID。请求了非 general 职责时追加非阻断缺口 `relation_expansion_disabled`，同一个 Agent 工具在两档部署间可以通用。
 4. 角色模式由视图构建器从起点出发：先播种任务背景和 anchor，再用 query 发现语义候选（经 `discover` 内部检索，同样带调用方的过滤条件）。然后在深度、节点、边、路径和耗时预算内按广度优先展开：每条边都回查关系头，核对当前修订、裁决依据，以及提交连接是否被停用或隔离；再点读两端与证据并逐一判权。读不到的节点或关系记为 `reference_unavailable`，并且不再从它继续往外走，无权节点不能当作中间桥梁。
 5. 多职责查询只展开一次：每条边按各职责的规则判定是否匹配，路径记录匹配的职责与仍然成立的职责（`valid_duties`），共同背景和强制检查的风险以 `common` 标记保留。展开结束后计算证据状态：已确认的 `supports` 关系把结论提升为条件内成立，待复核反证降级为 `needs_review`，明确裁决失败的一方标为 `refuted`。
@@ -1325,7 +1328,7 @@ sequenceDiagram
     Note over A,G: 步骤 1
     A->>API: continuity_recover(scope, ContinuityRecovery?)
     Note over A,G: 步骤 2
-    API->>API: 项目 WRITE 判权
+    API->>API: 目标 Scope WRITE 判权
     API->>Svc: recovery_owner(recovery)
     alt 未传 recovery（角色模式）
         Note over A,G: 步骤 3
@@ -1354,7 +1357,7 @@ sequenceDiagram
 步骤说明（编号对应图中的「步骤 N」标注）：
 
 1. `continuity_recover` 用来对账和补救，不用来"重新写一遍"：写入或投影停在中间状态、调用方不确定已经保存了什么时调用。它不会认定写入失败，不删数据，不写第二份正文，也不重新调用模型。
-2. API 做项目 WRITE 判权。事件和派生恢复还要求调用者就是当初提交该事件的连接（从回执里取 `connector` 核对认证主体），并对每个传入的引用做 UPDATE 判权。
+2. API 做目标完整 Scope 的 WRITE 判权。事件和派生恢复还要求调用者就是当初提交该事件的连接（从回执里取 `connector` 核对认证主体），并对每个传入的引用按同一五维 Scope 做 UPDATE 判权。
 3. 不传 `recovery`（角色模式）：把项目内全部关系头按当前修订重新投影到图上，历史修订行不参与。读不到端点的关系记入缺口，最后返回投影结果与关系覆盖状态。
 4. `kind=event`：调用方传回执的 `operation_id` 和自己认为已保存的引用。服务逐条核对：引用属于这次事件（`continuity_operation_id` 一致，改造前的旧数据回退读 `continuity_event`）、信封摘要等于回执摘要、拼接后的正文等于原请求正文。全部一致时回执置 partial，返回 `next_action=retry_original_write`，调用方再用原 `event_id` 重试 `add`，补完挂背景与提交；不一致返回 `ConflictError`。
 5. `kind=derivation`：按回执里冻结的构建计划，用精确元数据查询核对每个派生输出是否已经存在、摘要是否一致；只核对，不写新内容，`refs` 可以为空。
@@ -1371,7 +1374,7 @@ sequenceDiagram
     participant Mem
     Note over Adm,Mem: 步骤 1
     Adm->>API: quarantine_source(scope, connector, reason)
-    API->>API: 项目 MANAGE_SPACE 判权
+    API->>API: 目标 Scope MANAGE_SPACE 判权
     API->>Svc: quarantine_source(connector, reason, operator)
     Note over Adm,Mem: 步骤 2
     Svc->>Reg: 写隔离记录（原因、操作者、时间）
@@ -1394,7 +1397,7 @@ sequenceDiagram
 
 步骤说明（编号对应图中的「步骤 N」标注）：
 
-1. 治理人员发现某个来源连接有问题（例如产品被入侵或导入了错误历史）时，调用 `quarantine_source`，指定连接名和原因。需要项目 `MANAGE_SPACE` 权限；这两个接口只在 HTTP / CLI 管理面暴露，不进入 Agent 工具清单，避免被注入内容诱导的 Agent 隔离或解除来源。
+1. 治理人员发现某个来源连接有问题（例如产品被入侵或导入了错误历史）时，调用 `quarantine_source`，指定连接名和原因。需要目标完整 Scope 的 `MANAGE_SPACE` 权限；这两个接口只在 HTTP / CLI 管理面暴露，不进入 Agent 工具清单，避免被注入内容诱导的 Agent 隔离或解除来源。
 2. 服务在 Registry 中写入隔离记录（原因、操作者、时间），API 写带原因的审计。隔离按连接生效，不影响其他来源。
 3. 隔离立即生效，采用"先阻断后整理"：数据不删除，读侧在每次返回内容前检查。单条读取（`get`、`inspect`、`trace`、视图回查）遇到该来源的内容即拒绝；依赖该来源的派生结果因依赖复核失败同样不可读；由该连接登记的关系在视图展开时按不可用处理。
 4. 列表类入口不整页报错：`list` 把"停用 ∪ 隔离"的连接集合作为系统过滤条件，在分页和计数之前下推到存储层，结果里直接不含这些条目，`count` 与页面一致；之后再逐条复核依赖证据，不合格的条目剔除并同步从 `count` 扣除。普通 `search` 在返回前逐条跳过来自不可用连接的结果，带依赖的派生结果不经普通检索返回，只能通过会复核依赖的点读获取。
@@ -1458,11 +1461,11 @@ scripts/run-server.sh --auth-mode required examples/role_memory/server.yaml <部
 | `params.relation_index_builder` | 关系图投影使用的具名 `constructor`（`target: evidence_graph`）；不配时按 `graph_store` 自动构建 | 角色模式 | — |
 | `params.role_view` ＋ `role_view.<名>.target: bounded` | 视图构建器，默认名 `default` | 角色模式必填 | 未配置对应 `role_view` 时启动失败 |
 | `params.relation_types` / `relation_types_path` | 新增关系类型；内联字典或 YAML 文件二选一，文件路径相对启动目录 | 角色模式 | 只用内置六类关系 |
-| `params.duty_policies` / `duty_policies_path` | 新增或覆盖职责策略（含 `budget`）；二选一 | 角色模式 | 只用内置四种职责，预算为默认值 |
+| `params.duty_policies` / `duty_policies_path` | 新增或覆盖职责策略（含 `display_name`、`description`、`budget`）；二选一 | 角色模式 | 只用内置四种职责，展示名默认为 ID，预算为默认值 |
 | `params.relation_associator` | 可选，指向一个具名 `associator`（`target: evidence_llm`，需配置 `llm`），开启写入后的候选关系发现 | 角色模式 | 不发现候选，只能手工登记关系 |
 | `params.conflict_resolver` | 可选，指向一个具名 `conflict_resolver` | 角色模式 | 默认策略链 verification → recency |
 | `globals.continuity_connectors` | 可信连接：连接名 → `actor`、`projects`、`enabled`（见 5.2） | 两档 | 无法 bind 连接，也无法提交事件 |
-| `authorizer.default.target: space_aware` | 按项目空间成员判权 | 两档 | 项目空间权限不生效 |
+| `authorizer.default.target: space_aware` | 按目标五维 Scope 的空间事实、成员与覆盖关系判权 | 两档 | 目标 Scope 权限不生效 |
 | 认证配置（API Key 或可信网关） | 每个连接一份服务端签发的凭据 | 两档 | `--auth-mode required` 下拒绝业务调用；不能用 dev 身份做生产验证 |
 
 接续模式下若同时出现表中"角色模式"各键，启动时忽略它们并在日志中 warning 一次，列出被忽略的键；不会因此启动失败，也不会偷偷装配图。服务端在 health / capabilities 中返回 `continuity_mode`，供适配器决定注册哪些工具（7.3）。
@@ -1499,7 +1502,7 @@ continuity:
       graph_store: evidence
 ```
 
-**使用前的准备**：用管理员身份创建项目空间（如 `demo/role-project`），把各连接的 `actor` 加为空间成员；再由负责人按 6.2 的顺序 create → bind → add → search。
+**使用前的准备**：用管理员身份创建租户空间（如 `demo/tenant-demo`），把各连接的 `actor` 加为空间成员；需要按 Agent 或会话隔离时，把同一个完整五维 Scope 同时配置给任务、写入和 Portal。再由负责人按 6.2 的顺序 create → bind → add → search。
 
 **当前实现**：已实现。`mode` 必填；接续模式不要求图存储；文档模式配置派生构建时启动失败；`health()` 返回 `{"continuity_mode": …}`。
 
@@ -1507,7 +1510,7 @@ continuity:
 
 | 接入方 | 开关与参数 |
 | --- | --- |
-| JiuwenSwarm | `AgentMemoryMemoryProvider(base_url=..., api_key=..., continuity_enabled=True, continuity_mode="role", default_duty="diagnosis")`；`continuity_mode` 须与服务端 `mode` 一致（缺省 `role`，暂不自动从服务端读取，见 12.2），据此注册接续工具（7.3）；`sync_turn` 要求显式项目 Scope、任务、绑定和稳定 event_id，经 `add` 带 `continuity` 写入并解析 `WriteIncompleteError`，`prefetch` 经 `search(task_id, duty)` 返回结构化结果的 JSON 文本，会话结束不再触发独立抽取 |
+| JiuwenSwarm | `AgentMemoryMemoryProvider(base_url=..., api_key=..., continuity_enabled=True, continuity_mode="role", default_duty="diagnosis")`；`continuity_mode` 须与服务端 `mode` 一致（缺省 `role`，暂不自动从服务端读取，见 12.2），据此注册接续工具（7.3）；`sync_turn` 要求显式完整五维 Scope、任务、绑定和稳定 event_id，经 `add` 带 `continuity` 写入并解析 `WriteIncompleteError`，`prefetch` 经 `search(task_id, duty)` 返回结构化结果的 JSON 文本，会话结束不再触发独立抽取 |
 | 走 MCP 的产品（WorkBuddy、Hermes 等） | 在产品的 MCP 配置里启动 `python -m jiuwen_memory_adapter.continuity.mcp`，环境变量 `AGENT_MEMORY_URL`（远程须 HTTPS，仅 loopback 允许 HTTP）和 `AGENT_MEMORY_API_KEY`（该连接的凭据）由产品的受控凭据配置提供，不写进提示词 |
 | 历史导入脚本 | `python -m jiuwen_memory_adapter.continuity.history <文件.jsonl> --batch-id … --task-id … --binding-id … --product … --version … --context-id … --org … --space … --report …`；默认只校验，加 `--apply` 才写入（按批调用 `batch_add`），写入时同样读取上述两个环境变量 |
 
@@ -1590,7 +1593,7 @@ Windows 持久 Registry 使用非阻塞 msvcrt 字节锁，POSIX 沿用 flock，
 
 | 现有路径 | 可复用部分 | 必须改造的边界 |
 | --- | --- | --- |
-| sync_turn | 普通模式每轮 `infer=true` 保存原始来源并抽取 | 接续模式：要求显式项目 Scope、任务、绑定和稳定 event_id，调用 `add` 带 `continuity`，把 `WriteIncompleteError` 解析为持久回执，失败不吞；普通模式行为不变 |
+| sync_turn | 普通模式每轮 `infer=true` 保存原始来源并抽取 | 接续模式：要求显式完整五维 Scope、任务、绑定和稳定 event_id，调用 `add` 带 `continuity`，把 `WriteIncompleteError` 解析为持久回执，失败不吞；普通模式行为不变 |
 | prefetch | 执行前召回并注入上下文 | 接续模式：调用 `search(task_id, duty)`，把结构化结果（`items` 的 `view` 标注、`paths`、`gaps`、`view_meta`）编码为 JSON 文本注入，保留路径和缺口，不吞错；普通模式仍拼 Markdown |
 | on_session_end | 普通模式可触发额外抽取 | 接续模式不再触发独立抽取；它不是关系查询或复核的触发点，也不是"原文已入库"的回执 |
 | 客户端 add/search/list/evolve | 连接、异步调用和公开 API 桥接 | 带 `continuity` 的 add 才是可靠接续写入，未完成以 409 `WriteIncompleteError` 返回；`continuity_call` 转发接续方法 |
@@ -1744,7 +1747,7 @@ JiuwenSwarm 存量验收固定使用一批实际经 provider 写入、且无任�
 2. 用既有 search、list 或已知 ID 找出授权样本；显式 search 不限定 tier，prefetch 只筛选 semantic、core、procedural，样本不能只通过 prefetch 选择。
 3. 把样本引用绑定到全局任务，旧正文、Scope 和职责字段保持不变；新产品读取视图，应在共同背景中得到这些记录，职责和验证状态保持未知。
 4. 前任离线且不生成交接；暂停语义索引更新或令召回无命中，新产品仍能经 get 读取已登记背景；重启服务后关联仍在。
-5. 撤销一条源授权，确认不会因项目空间成员权继续泄露；重放关联操作不增加证据计数；原记录摘要不因登记而变化。
+5. 撤销一条源授权，确认不会因空间成员权继续泄露；重放关联操作不增加证据计数；原记录摘要不因登记而变化。
 
 未完成该批验证，不宣称存量接续通过。
 
@@ -2025,7 +2028,7 @@ Provider 复现。补充 SDK 生命周期定向测试 8 passed，覆盖初始化
 | 两档模式与显式开关 | `continuity.default.params.mode` 必填；接续模式不装配图/视图/关系组件并对多余键 warning；角色模式缺图或 `role_view` 启动失败；文档模式配派生启动失败；`health()` 返回 `{"continuity_mode": …}`（6.4）。 |
 | 接口合并与改名（47 → 43） | `role_record`、`role_view`、`role_publish`、`role_mark_source_cutover` 已删除；`role_task`/`role_relation`/`role_rebuild` 改名 `continuity_task`/`continuity_relation`/`continuity_recover`；`role_quarantine_source`/`role_release_source` 改名 `quarantine_source`/`release_source`（6.1）。 |
 | `add` 的 `continuity` 参数与 `WriteIncompleteError` | 新增 `ContinuityWrite`、`add(..., continuity=)`、`WriteIncompleteError(PartialFailureError)` 与 HTTP 409 映射；`event_time` 承载原始时间，`source_locator` 经 Command/Engine 写入 `MemoryUnit.source_ref`（空则沿用 payload id），`duty:<id>` 进 `tags`（5.2、6.2.3）。 |
-| `batch_add` 的 `continuity` 支持 | `BatchWriteItem.continuity`、逐项回执推进、`BatchWriteOutcome.operation_id` / `continuity_status`、与 `idempotency_key` 的一致性校验；相邻、同项目的接续项合并为一次 `record_batch`（先登记 unknown 回执，再一次写全部正文，每任务一次背景与修订）；混合批次按输入顺序推进并把失败后的剩余项标 skipped；三种 Engine 的 `batch_write` 均下传 `source_ref`；历史导入按 50 条分块调用 `batch_add`（3.4、6.2.4、8.3）。 |
+| `batch_add` 的 `continuity` 支持 | `BatchWriteItem.continuity`、逐项回执推进、`BatchWriteOutcome.operation_id` / `continuity_status`、与 `idempotency_key` 的一致性校验；相邻且完整五维 Scope 相同的接续项合并为一次 `record_batch`（先登记 unknown 回执，再一次写全部正文，每任务一次背景与修订）；混合批次按输入顺序推进并把失败后的剩余项标 skipped；三种 Engine 的 `batch_write` 均下传 `source_ref`；历史导入按 50 条分块调用 `batch_add`（3.4、6.2.4、8.3）。 |
 | `search` 的职责参数与 `RetrievalResult` 可选字段 | `search` 新增 `task_id` / `anchor` / `duty` / `view_budget`；`RetrievalResult` 新增 `paths` / `gaps` / `view_meta`，`RetrievedItem` 新增 `view`；`top_k` 截断缺口、跨空间同传拒绝；视图路径沿用调用方 `filters`/`as_of`；接续模式保留任务背景与 anchor（背景在前、按存储顺序去重、保留真实 `required` 标记）并追加非阻断缺口 `relation_expansion_disabled`（5.2、6.2.6）。 |
 | 关系真源迁到 Registry KV | 关系头为 `{revision, digest, payload_digest, status, connector, current}` 与 `/rev/<n>` 历史；关系 MemoryUnit、`RelationPath.steps[].relation_ref`、关系头 unknown 状态已去掉；投影边属性存 `relation_id` + `revision`；`is_referenced` 扫关系头；`continuity_recover(kind=relation)` 不再要求 `refs`；提供一次性迁移脚本 `scripts/migrate_relations_to_kv.py`（4.1、5.2）。 |
 | `list` 来源过滤下推 | 不可用连接集合（停用 ∪ 隔离）作为系统过滤谓词在分页与 `count` 之前下推，一条被隔离不再使整页 `PermissionDeniedError`（4.6、6.2.8）。 |
@@ -2062,7 +2065,7 @@ Provider 复现。补充 SDK 生命周期定向测试 8 passed，覆盖初始化
 | 语义巩固（原 1、20） | 首版只做 created / reused；不自动覆盖相似记忆。通用语义巩固与派生 updated 推迟（12.3）。 |
 | 自定义演进与层级构建验收（原 2） | 默认路径已保护原始事件；自定义 Evolver、显式层级构建须单独证明不改写这些记录。 |
 | Evolver 主链接入（原 3） | 候选消解已接入接续事件关系发现；尚未完成 construction Evolver 的 CONSOLIDATE/ASSOCIATE 候选回传闭环（4.4）。 |
-| JiuwenSwarm 真实联调（原 4） | provider 接续模式已实现（`add` / `search` 接口形态）；真实 Rail 调用方仍须传入稳定事件标识、任务绑定与项目 Scope，并通过 G0。 |
+| JiuwenSwarm 真实联调（原 4） | provider 接续模式已实现（`add` / `search` 接口形态）；真实 Rail 调用方仍须传入稳定事件标识、任务绑定与完整五维 Scope，并通过 G0。 |
 | 产品专用适配与历史转换（原 5） | Hermes、WorkBuddy、OpenClaw、DeepSeek Harness 专用适配/原生历史转换器未完成；后两者接入方式仍需验证（7.2、8.2）。 |
 | 生产认证及 G0（原 7） | 生产认证尚未装配，尚无产品完成 G0（7.4）。 |
 | 真实存量验收（原 9） | 尚未执行 JiuwenSwarm 存量与真实外部历史导入验收（8.8）。 |

@@ -141,7 +141,14 @@ async def _await_api_result(result: Awaitable[Any]) -> Any:
     return await result
 
 
-def invoke_api(api: Any, verb: str, payload: Any, security: Any) -> Any:
+def invoke_api(
+    api: Any,
+    verb: str,
+    payload: Any,
+    security: Any,
+    *,
+    include_trace: bool = True,
+) -> Any:
     """Call the same-named MemoryAPI method and serialize its original result.
 
     横切 trace：一次调用即一个 trace 作用域（begin/end）。请求级覆盖
@@ -150,6 +157,7 @@ def invoke_api(api: Any, verb: str, payload: Any, security: Any) -> Any:
     收集到的调用树填进响应 ``trace`` 键：dict 结果直接加键，其余结果（如 ``add``
     的列表）包成 ``{"result": ..., "trace": ...}``——仅在有 trace 时变形。
     异常时调用树挂在异常上，由各 surface 经 :func:`error_trace` 取出放进错误体。
+    ``include_trace=False`` 保留服务端收集，但不附加到结果或异常。
     ``trace`` verb 是血缘回溯接口，语义不同，不叠加。
     """
     payload, target, level = pop_trace_target(payload)
@@ -169,11 +177,11 @@ def invoke_api(api: Any, verb: str, payload: Any, security: Any) -> Any:
                     level=TraceLevel.DEBUG)
     except BaseException as exc:
         snapshot = end_trace(token)
-        if snapshot and verb != "trace":
+        if include_trace and snapshot and verb != "trace":
             setattr(exc, _ERROR_TRACE_ATTR, snapshot)
         raise
     snapshot = end_trace(token)
-    if not snapshot or verb == "trace":
+    if not include_trace or not snapshot or verb == "trace":
         return result
     if isinstance(result, dict):
         return {**result, "trace": snapshot}
