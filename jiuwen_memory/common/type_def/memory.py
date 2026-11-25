@@ -308,6 +308,10 @@ MD_TITLE_KEY = "md_title"
 PRODUCER_PRINCIPAL_KEY = "_producer_principal"  # 生产者主体（user:<id> / agent:<id>）
 PRODUCER_CREDENTIAL_KEY = "_producer_credential"  # 认证凭据指纹（AuthContext.credential_id）
 
+# 冲突巩固（F10）的幂等标记：done_at 非空表示内容已过两段 LLM，run_id 记录处理批次。
+CONSOLIDATION_RUN_ID_KEY = "consolidation_run_id"
+CONSOLIDATION_DONE_AT_KEY = "consolidation_done_at"
+
 # ``system_metadata`` 里由内核写入并参与判定的键，调用方不得经该入参赋值。
 #
 # 上游把 metadata 拆成两个命名空间后，用户元数据物理上已占用不了系统键名；但
@@ -353,9 +357,9 @@ KERNEL_SYSTEM_METADATA_KEYS = frozenset(
         # 未启用判定的写入路径不写该键。它是落点断言的唯一稳定判据——派生记忆的
         # content 是模型产物、措辞不保证逐次一致，按内容等值匹配不成立
         "memory_class",
-        # settled 判据与巩固轮次对账依据，由巩固落盘写入 ------
-        "consolidation_run_id",
-        "consolidation_done_at",
+        # -- 冲突巩固（F10）：settled 判据与巩固轮次对账依据，由内核写入 ---------
+        CONSOLIDATION_RUN_ID_KEY,
+        CONSOLIDATION_DONE_AT_KEY,
         # -- 经验记忆（mem2.0 §2.1）：接口层从认证结果写入的生产者标记 ----------
         # 调用方写了即伪造接入方身份（补报核对与外部阈值都按生产者取值），先拒后写。
         PRODUCER_PRINCIPAL_KEY,

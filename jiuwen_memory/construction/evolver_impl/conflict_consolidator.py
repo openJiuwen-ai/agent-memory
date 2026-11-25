@@ -21,7 +21,13 @@ from jiuwen_memory.common.schema_property import (
     is_schema_property_unit,
     schema_property_entity_id,
 )
-from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, Scope
+from jiuwen_memory.common.type_def import (
+    CONSOLIDATION_DONE_AT_KEY,
+    CONSOLIDATION_RUN_ID_KEY,
+    LifecycleState,
+    MemoryUnit,
+    Scope,
+)
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.common.type_def.memory import MEMORY_KEY_PREFIX, Segment
 from jiuwen_memory.common.type_def.memory_codec import loads
@@ -271,7 +277,7 @@ class ConflictConsolidator:
     def _is_settled(cluster: Cluster) -> bool:
         """簇内每条记忆都带 ``consolidation_done_at``（上一轮巩固过）→ 可跳过。"""
         return bool(cluster.memories) and all(
-            bool(unit.system_metadata.get("consolidation_done_at"))
+            bool(unit.system_metadata.get(CONSOLIDATION_DONE_AT_KEY))
             for unit in cluster.memories
         )
 
@@ -473,8 +479,8 @@ def _make_property_unit(
     unit.layers.l0 = ""
     unit.layers.l1 = ""
     unit.vectors = []
-    unit.system_metadata.pop("consolidation_run_id", None)
-    unit.system_metadata.pop("consolidation_done_at", None)
+    unit.system_metadata.pop(CONSOLIDATION_RUN_ID_KEY, None)
+    unit.system_metadata.pop(CONSOLIDATION_DONE_AT_KEY, None)
     unit.segments = [
         Segment(
             content=content,

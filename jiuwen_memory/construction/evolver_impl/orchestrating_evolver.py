@@ -50,6 +50,8 @@ from jiuwen_memory.common.schema_property import is_schema_property_unit
 from jiuwen_memory.common.security.privacy.base import privacy_operation
 from jiuwen_memory.common.trace import TraceLevel, trace_annotate, trace_event, traced
 from jiuwen_memory.common.type_def import (
+    CONSOLIDATION_DONE_AT_KEY,
+    CONSOLIDATION_RUN_ID_KEY,
     COORDS_KEY,
     MD_TITLE_KEY,
     MESSAGES_KEY_PREFIX,
@@ -1954,8 +1956,8 @@ class OrchestratingEvolver(Evolver):
                 unit for unit in reloaded if unit.lifecycle is LifecycleState.ACTIVE
             ]
         for unit in mark_targets:
-            unit.system_metadata["consolidation_run_id"] = plan.run_id
-            unit.system_metadata["consolidation_done_at"] = done_at
+            unit.system_metadata[CONSOLIDATION_RUN_ID_KEY] = plan.run_id
+            unit.system_metadata[CONSOLIDATION_DONE_AT_KEY] = done_at
         if mark_targets:
             self._index.update(mark_targets, mode=IndexWriteMode.FORWARD_ONLY)
 
