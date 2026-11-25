@@ -65,10 +65,18 @@ logger = get_logger(__name__)
 class _AuthorizedStoreProxy:
     """给现有 Store 方法增加可选 access，同时避免暴露原始实例。"""
 
-    def __init__(self, store: Any, security: StorageSecurity, resource: str) -> None:
+    def __init__(self, store: Any, security: StorageSecurity, resource: str,
+                 *, default_policy: bool = False) -> None:
         self._store = store
         self._security = security
         self._resource = resource
+        self._default_policy = default_policy
+
+    def space_queries(self):
+        # A custom policy can authorize individual underlying keys differently.
+        if self._default_policy:
+            return self._store.space_queries()
+        return None
 
     def __getattr__(self, name: str) -> Any:
         from jiuwen_memory.common.type_def import Scope
@@ -186,11 +194,12 @@ class _AuthorizedEntityStoreProxy:
         return authorized
 
 
-def _proxy_for(capability: StorageCapability, store: Any, security: StorageSecurity) -> Any:
+def _proxy_for(capability: StorageCapability, store: Any, security: StorageSecurity,
+               *, default_policy: bool) -> Any:
     """ENTITY 端口用专用代理（space_id 首参 + entity 方法名映射）；其他能力走通用代理。"""
     if capability is StorageCapability.ENTITY:
         return _AuthorizedEntityStoreProxy(store, security, capability.value)
-    return _AuthorizedStoreProxy(store, security, capability.value)
+    return _AuthorizedStoreProxy(store, security, capability.value, default_policy=default_policy)
 
 
 def _as_ports(value: Any) -> dict[str, Any]:
@@ -254,7 +263,7 @@ class CompositeStoreManager(StoreManager):
         self._security = security or AllowAllStorageSecurity()
         self._proxies = {
             capability: {
-                name: _proxy_for(capability, store, self._security)
+                name: _proxy_for(capability, store, self._security, default_policy=security is None)
                 for name, store in ports.items()
             }
             for capability, ports in self._named_stores.items()

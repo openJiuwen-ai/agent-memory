@@ -34,6 +34,7 @@ from jiuwen_memory.common.type_def.memory_codec import loads
 
 from .base import BaseStore
 from .migration import MigrationRecord
+from .space_queries import SpaceQueries
 from .types import KVMemoryListResult
 
 logger = get_logger(__name__)
@@ -104,6 +105,10 @@ class MigrationVerificationError(BackendError):
 
 
 class KVStore(BaseStore):
+    def space_queries(self) -> SpaceQueries | None:
+        """Index service for this logical KV view, when supported by the backend."""
+        return None
+
     def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
         """Optional bounded exact read; None is oversized, missing still raises NotFoundError."""
         raise UnsupportedCapabilityError("bounded_migration_read", "kv", "storage")

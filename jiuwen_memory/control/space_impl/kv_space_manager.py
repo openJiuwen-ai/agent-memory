@@ -301,6 +301,14 @@ class KVSpaceManager(SpaceManager):
 
     def __init__(self, storage: StoreManager, *, kv_name: str = "default") -> None:
         self._kv = storage.kv(kv_name)
+        self._queries = self._kv.space_queries()
+        if self._queries is not None:
+            self._queries.start()
+
+    def release_space_queries(self) -> None:
+        if self._queries is not None:
+            self._queries.release()
+            self._queries = None
 
     def operator_type(self) -> ControlOperatorType:
         return ControlOperatorType.SPACE
@@ -389,16 +397,24 @@ class KVSpaceManager(SpaceManager):
             raise ValidationError("cursor must be >= 0")
 
         spaces: dict[tuple[str, str], SpaceInfo] = {}
-        for scope in self._kv.scopes():
-            if scope.org != org or not scope.space:
-                continue
-            try:
-                info = self.get(scope.org, scope.space)
-            except NotFoundError:
-                continue
-            if status is not None and info.status != status:
-                continue
-            spaces[(info.org, info.space)] = info
+        if self._queries is not None:
+            for raw in self._queries.metadata(org):
+                info = _info_from_bytes(raw)
+                if info.org != org or not info.space:
+                    continue
+                if status is None or info.status == status:
+                    spaces[(org, info.space)] = info
+        else:
+            for scope in self._kv.scopes():
+                if scope.org != org or not scope.space:
+                    continue
+                try:
+                    info = self.get(scope.org, scope.space)
+                except NotFoundError:
+                    continue
+                if status is not None and info.status != status:
+                    continue
+                spaces[(info.org, info.space)] = info
         ordered = [spaces[key] for key in sorted(spaces)]
         return ordered[offset:offset + limit]
 
@@ -490,6 +506,10 @@ class KVSpaceManager(SpaceManager):
 
     def usage(self, org: str, space: str) -> SpaceUsage:
         _validate_space(org, space)
+        if self._queries is not None:
+            memories, messages, size = self._queries.usage(org, space)
+            return SpaceUsage(org=org, space=space, memory_count=memories,
+                              message_count=messages, storage_bytes=size)
         usage = SpaceUsage(org=org, space=space)
         for scope in self._kv.scopes():
             if scope.org != org or scope.space != space:
