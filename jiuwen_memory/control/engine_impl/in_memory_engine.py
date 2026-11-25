@@ -84,6 +84,11 @@ from jiuwen_memory.control.engine_impl.temporal_support import (
 from jiuwen_memory.control.engine_impl.temporal_support import (
     valid_sort_key as _valid_sort_key,
 )
+from jiuwen_memory.control.engine_impl.update_support import (
+    build_new_or_rollback,
+    ensure_unit_active_for_update,
+    finalize_supersede_or_rollback,
+)
 from jiuwen_memory.control.evolution.background import (
     BackgroundDependencies,
     start_hierarchy_derivation,
@@ -715,6 +720,7 @@ class InMemoryEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
     ) -> SourceUpdatePlan | None:
         _ensure_local_scope(scope)
         old = self._load(scope, unit_id)
+        ensure_unit_active_for_update(old)
         return await self._prepare_update_from_old(old, patch)
 
     async def _prepare_update_from_old(
@@ -737,6 +743,7 @@ class InMemoryEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
     ) -> MemoryUnit:
         _ensure_local_scope(scope)
         old = self._load(scope, unit_id)
+        ensure_unit_active_for_update(old)
         if self.requires_update_preparation(old, patch):
             plan = await self._prepare_update_from_old(old, patch)
             if plan is not None:
@@ -756,10 +763,21 @@ class InMemoryEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
             new.lifecycle = LifecycleState.ACTIVE
             if patch.t_valid is None:
                 new.temporal.t_valid = _now()
-            # 新版先落地再废旧版：任何时刻都有一个可读版本。反过来的话，若 build 失败，
-            # 旧版已 SUPERSEDED 而新版尚未存在，这条记忆既退出活跃召回又无新版可读。
-            self._index.build([new])
-            old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
+            # 新版先落地再废旧版：构建中途失败回滚新版；废旧真源失败回滚新版；
+            # 二级索引刷新放在真源废旧成功之后，不误删唯一现行新版。
+            build_new_or_rollback(
+                new_id=new.id,
+                build_new=lambda: self._index.build([new]),
+                rollback_new=lambda: self._index.remove([new]),
+            )
+            old = finalize_supersede_or_rollback(
+                new_unit=new,
+                finalize_old=lambda: self._lifecycle.supersede(
+                    scope, old.id, new.temporal.t_valid
+                ),
+                rollback_new=lambda: self._index.remove([new]),
+                map_validation_error=True,
+            )
             self._index.update([old])
             logger.info(
                 "Engine.update supersede: old_id=%s new_id=%s scope=%s t_valid=%s",

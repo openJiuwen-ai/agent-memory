@@ -85,16 +85,23 @@ class _AuthorizedStoreProxy:
         def authorized(*args: Any, **kwargs: Any) -> Any:
             access = kwargs.pop("access", None)
             scope = args[0] if args and isinstance(args[0], Scope) else Scope()
-            action = _action_for_store_method(name)
+            action = _action_for_store_method(name, args, kwargs)
             self._security.authorize(access, scope, action, self._resource)
             return member(*args, **kwargs)
 
         return authorized
 
 
-def _action_for_store_method(name: str) -> Any:
+def _action_for_store_method(
+    name: str,
+    args: tuple[Any, ...] = (),
+    kwargs: dict[str, Any] | None = None,
+) -> Any:
     if name == "insert":
         return StorageAction.ADD
+    if name == "compare_exchange":
+        replacement = args[3] if len(args) > 3 else (kwargs or {}).get("replacement")
+        return StorageAction.DELETE if replacement is None else StorageAction.UPDATE
     if name in {"update", "change_experience", "sync_experience_document"}:
         return StorageAction.UPDATE
     if name == "delete":

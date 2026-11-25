@@ -7,7 +7,13 @@ import pytest
 
 from jiuwen_memory.api import Scope
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
+from jiuwen_memory.common.errors import (
+    ConflictError,
+    NotFoundError,
+    PolicyError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.types import Role
 from jiuwen_memory.common.type_def import LifecycleState, MemoryUnit, memory_key
@@ -129,6 +135,69 @@ def test_supersede_rejects_invalid_lifecycle_state(unit_factory) -> None:
     stored = _load(kv, unit)
     assert stored.lifecycle == LifecycleState.ARCHIVED
     assert stored.temporal.t_invalid is None
+
+
+def test_supersede_rejects_already_superseded_unit(unit_factory) -> None:
+    """已 SUPERSEDED 记录不可再次 supersede（禁止自环并保持原 t_invalid）。"""
+    original_invalid = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
+    later_invalid = datetime(2026, 6, 18, 12, 0, tzinfo=UTC)
+    unit = unit_factory(
+        "u1",
+        "old version",
+        lifecycle=LifecycleState.SUPERSEDED,
+        t_invalid=original_invalid,
+    )
+    kv, lifecycle = _store(unit)
+
+    with pytest.raises(ValidationError):
+        lifecycle.supersede(unit.scope, unit.id, later_invalid)
+
+    stored = _load(kv, unit)
+    assert stored.lifecycle == LifecycleState.SUPERSEDED
+    assert stored.temporal.t_invalid == original_invalid
+
+    doc_store = _FakeDocStore([unit])
+    doc_lifecycle = KVLifecycleManager(InMemoryKVStore(), domain_store=doc_store)
+    with pytest.raises(ValidationError):
+        doc_lifecycle.supersede(unit.scope, unit.id, later_invalid)
+    assert doc_store.written == []
+    assert doc_store.units["u1"].temporal.t_invalid == original_invalid
+
+
+def test_supersede_raises_conflict_when_cas_detects_concurrent_change(
+    unit_factory, monkeypatch
+) -> None:
+    """KV compare_exchange 返回 False（并发漂移）时 supersede 必须抛 ConflictError。"""
+    unit = unit_factory("u1", "active version", lifecycle=LifecycleState.ACTIVE)
+    kv, lifecycle = _store(unit)
+    monkeypatch.setattr(kv, "compare_exchange", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(ConflictError):
+        lifecycle.supersede(unit.scope, unit.id, datetime(2026, 6, 17, 11, 0, tzinfo=UTC))
+
+    stored = _load(kv, unit)
+    assert stored.lifecycle == LifecycleState.ACTIVE
+    assert stored.temporal.t_invalid is None
+
+
+def test_supersede_logs_warning_when_compare_exchange_unsupported(
+    unit_factory, monkeypatch, caplog
+) -> None:
+    """KV 不支持 compare_exchange 时应记录 warning 并退化回 update。"""
+    unit = unit_factory("u1", "active version", lifecycle=LifecycleState.ACTIVE)
+    kv, lifecycle = _store(unit)
+
+    def _unsupported(*_args, **_kwargs) -> bool:
+        raise UnsupportedCapabilityError("compare_exchange", "kv", "storage")
+
+    monkeypatch.setattr(kv, "compare_exchange", _unsupported)
+    invalid_at = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
+    with caplog.at_level("WARNING"):
+        updated = lifecycle.supersede(unit.scope, unit.id, invalid_at)
+
+    assert updated.lifecycle == LifecycleState.SUPERSEDED
+    assert _load(kv, unit).lifecycle == LifecycleState.SUPERSEDED
+    assert any("falling back to update" in rec.message for rec in caplog.records)
 
 
 def test_supersede_raises_not_found_for_missing_unit() -> None:

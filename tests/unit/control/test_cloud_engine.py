@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import pytest
 
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import ConflictError, ValidationError
 from jiuwen_memory.common.type_def import (
     FilterClause,
     FilterOp,
+    LifecycleState,
     MemoryTier,
     MemoryUnit,
     Modality,
@@ -29,6 +32,7 @@ from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJobSpec
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
 from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
+from jiuwen_memory.control.lifecycle_impl.kv_lifecycle_manager import KVLifecycleManager
 from jiuwen_memory.control.pipeline import MemoryPipeline, PipelineBinding
 from jiuwen_memory.control.scheduler_impl.in_process_scheduler import InProcessScheduler
 from jiuwen_memory.control.types import (
@@ -256,6 +260,9 @@ class _RecordingDomainStore:
     def scopes(self):
         self.scopes_calls += 1
         return self._delegate.scopes()
+
+    def should_write_document(self) -> bool:
+        return self._delegate.should_write_document()
 
 
 class _NoopLifecycle(LifecycleManager):
@@ -657,6 +664,101 @@ def test_cloud_engine_delete_rejects_empty_selector() -> None:
         return
     else:
         raise AssertionError("empty selector should raise ValidationError")
+
+
+def test_cloud_engine_update_rejects_non_active_unit_without_writing() -> None:
+    engine, records = _engine()
+    engine._lifecycle = KVLifecycleManager(records["kv"])  # pylint: disable=protected-access
+    scope = Scope(org="acme", user="alice")
+    first = asyncio.run(engine.write("v1 note", scope))[0]
+    second = asyncio.run(engine.update(first.id, scope, MemoryPatch(content="v2 note")))
+    built_before = list(records["chat_index"].built)
+    updated_before = list(records["chat_index"].updated)
+
+    for mode in (UpdateMode.SUPERSEDE, UpdateMode.OVERWRITE):
+        with pytest.raises(ConflictError):
+            asyncio.run(
+                engine.update(first.id, scope, MemoryPatch(content="v3 fork", mode=mode))
+            )
+
+    assert records["chat_index"].built == built_before, "拒绝非 active update 时不得写入索引"
+    assert records["chat_index"].updated == updated_before, "拒绝非 active OVERWRITE 时不得更新索引"
+    listed = asyncio.run(engine.list(scope)).items
+    active = [item for item in listed if item.lifecycle == LifecycleState.ACTIVE]
+    assert [item.id for item in active] == [second.id]
+
+
+def test_cloud_engine_doc_mode_concurrent_supersede_same_t_valid_rolls_back(tmp_path) -> None:
+    """CloudEngine 文档模式下并发 SUPERSEDE（同 t_valid）须串行化并回滚失败方新版。"""
+    from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+        WhitespaceTokenizer,
+    )
+    from jiuwen_memory.common.type_def import RetrievalPipeline
+    from jiuwen_memory.construction.index_builder_impl.document_index_builder import (
+        DocumentIndexBuilder,
+    )
+    from jiuwen_memory.storage.domain_store_impl import CompositeDomainStore
+    from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
+    from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import (
+        SqliteDocumentShadowIndex,
+    )
+    from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
+
+    kv = InMemoryKVStore()
+    shadow = SqliteDocumentShadowIndex(
+        db_path=str(tmp_path / "cloud_shadow.db"),
+        tokenizer=WhitespaceTokenizer(),
+    )
+    markdown = LocalMarkdownStore(root=str(tmp_path / "cloud_md"))
+    manager = CompositeStoreManager(kv=kv, markdown=markdown, shadow_index=shadow)
+    domain_store = CompositeDomainStore(
+        manager=manager,
+        preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK,
+        write_document=True,
+    )
+    manager.bind_domain_store(domain_store)
+    doc_index = DocumentIndexBuilder(domain_store)
+    engine = CloudEngine(
+        ingestor=_RecordingIngestor(),
+        index_builder=doc_index,
+        retriever=_RecordingRetriever("doc"),
+        domain_store=domain_store,
+        scheduler=_RecordingScheduler(),
+        evolver=_RecordingEvolver("doc", kv),
+        lifecycle=_NoopLifecycle(),
+        kv=kv,
+    )
+    scope = Scope(org="acme", user="alice")
+    first = asyncio.run(engine.write("v1 doc note", scope))[0]
+    shared_t_valid = datetime(2026, 6, 17, 13, 0, tzinfo=UTC)
+    barrier = threading.Barrier(2)
+
+    def _run(content: str) -> str:
+        barrier.wait(timeout=5)
+        try:
+            updated = asyncio.run(
+                engine.update(
+                    first.id,
+                    scope,
+                    MemoryPatch(content=content, t_valid=shared_t_valid),
+                )
+            )
+            return f"ok:{updated.id}"
+        except ConflictError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(_run, ["cloud-B", "cloud-C"]))
+
+    assert sorted(outcome.split(":", 1)[0] for outcome in outcomes) == ["conflict", "ok"], outcomes
+    listed = asyncio.run(engine.list(scope)).items
+    active = [item for item in listed if item.lifecycle == LifecycleState.ACTIVE]
+    assert len(active) == 1, (
+        f"CloudEngine 文档模式并发不应产生双 active: {[item.id for item in active]}"
+    )
+    assert len(listed) == 2, (
+        f"CloudEngine 文档模式失败方新版必须回滚: {[item.id for item in listed]}"
+    )
 
 
 # ---- mem2.0：middle 路径 + evolve 走 JobFactory ----

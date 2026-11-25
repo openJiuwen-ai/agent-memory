@@ -23,10 +23,13 @@ NotFoundError / 静默失效。修复后读取经 DomainStore 分流到影子索
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import pytest
 
+from jiuwen_memory.common.errors import ConflictError, ValidationError
 from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
     WhitespaceTokenizer,
 )
@@ -359,6 +362,209 @@ def test_doc_update_overwrite_keeps_id(tmp_path) -> None:
     assert updated.id == unit_id
     got = asyncio.run(engine.get(unit_id, SCOPE))
     assert got.segments[0].content == "patched"
+
+
+def test_doc_update_rejects_superseded_and_forgotten_without_forking(tmp_path) -> None:
+    """文档模式对 SUPERSEDED/FORGOTTEN 调用 update 须前置抛 ConflictError，不产生分叉。"""
+    engine, _ = _doc_engine(tmp_path)
+    first = asyncio.run(engine.write("v1 fact", SCOPE))[0]
+    second = asyncio.run(engine.update(first.id, SCOPE, MemoryPatch(content="v2 fact")))
+    first_after_supersede = asyncio.run(engine.get(first.id, SCOPE))
+
+    for mode in (UpdateMode.SUPERSEDE, UpdateMode.OVERWRITE):
+        with pytest.raises(ConflictError):
+            asyncio.run(
+                engine.update(first.id, SCOPE, MemoryPatch(content="v3 fork", mode=mode))
+            )
+
+    listed = asyncio.run(engine.list(SCOPE)).items
+    active = [item for item in listed if item.lifecycle == LifecycleState.ACTIVE]
+    assert [item.id for item in active] == [second.id], (
+        f"文档模式对 superseded update 不应产生双 active: {[item.id for item in active]}"
+    )
+    reloaded_first = asyncio.run(engine.get(first.id, SCOPE))
+    assert reloaded_first.lifecycle == LifecycleState.SUPERSEDED
+    assert reloaded_first.temporal.t_invalid == first_after_supersede.temporal.t_invalid
+
+    asyncio.run(
+        engine.delete(DeleteSelector(unit_ids=[second.id], scope=SCOPE, mode=DeleteMode.FORGET))
+    )
+    with pytest.raises(ConflictError):
+        asyncio.run(engine.update(second.id, SCOPE, MemoryPatch(content="resurrect")))
+    reloaded_second = asyncio.run(engine.get(second.id, SCOPE))
+    assert reloaded_second.lifecycle == LifecycleState.FORGOTTEN
+
+
+def test_doc_update_validation_error_not_mistranslated_and_rolls_back(tmp_path) -> None:
+    """文档模式 index.update([old]) 抛普通 ValidationError 时保持原异常类型并回滚新版。"""
+    engine, _ = _doc_engine(tmp_path)
+    first = asyncio.run(engine.write("v1 fact", SCOPE))[0]
+    real_index = engine._index  # pylint: disable=protected-access
+
+    class _FailOldUpdateWithValidation:
+        def __init__(self, delegate) -> None:
+            self._delegate = delegate
+
+        def build(self, units, **kwargs) -> None:
+            self._delegate.build(units, **kwargs)
+
+        @staticmethod
+        def update(units, **kwargs) -> None:
+            raise ValidationError("doc index validation failure")
+
+        def remove(self, units, **kwargs) -> None:
+            self._delegate.remove(units, **kwargs)
+
+    engine._index = _FailOldUpdateWithValidation(real_index)  # pylint: disable=protected-access
+
+    with pytest.raises(ValidationError, match="doc index validation failure"):
+        asyncio.run(engine.update(first.id, SCOPE, MemoryPatch(content="v2 fact")))
+
+    listed = asyncio.run(engine.list(SCOPE)).items
+    active = [item for item in listed if item.lifecycle == LifecycleState.ACTIVE]
+    assert [item.id for item in active] == [first.id]
+
+
+def test_doc_update_detects_concurrent_supersede_before_finalize_and_rolls_back(
+    tmp_path,
+) -> None:
+    """文档模式 build 新版期间旧版已被他人废止时，写前复核抛 ConflictError 并回滚新版。"""
+    engine, _ = _doc_engine(tmp_path)
+    first = asyncio.run(engine.write("v1 fact", SCOPE))[0]
+    real_index = engine._index  # pylint: disable=protected-access
+    winner: list[str] = []
+
+    class _InterleaveConcurrentSupersede:
+        def __init__(self, delegate, target_engine, target_id: str, winner_out: list[str]) -> None:
+            self._delegate = delegate
+            self._engine = target_engine
+            self._target_id = target_id
+            self._winner = winner_out
+
+        def build(self, units, **kwargs) -> None:
+            self._delegate.build(units, **kwargs)
+            if not self._winner:
+                self._winner.append("in-progress")
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    other = pool.submit(
+                        asyncio.run,
+                        self._engine.update(
+                            self._target_id, SCOPE, MemoryPatch(content="winner B")
+                        ),
+                    ).result()
+                self._winner[0] = other.id
+
+        def update(self, units, **kwargs) -> None:
+            self._delegate.update(units, **kwargs)
+
+        def remove(self, units, **kwargs) -> None:
+            self._delegate.remove(units, **kwargs)
+
+    engine._index = _InterleaveConcurrentSupersede(  # pylint: disable=protected-access
+        real_index, engine, first.id, winner
+    )
+
+    with pytest.raises(ConflictError):
+        asyncio.run(engine.update(first.id, SCOPE, MemoryPatch(content="loser C")))
+
+    listed = asyncio.run(engine.list(SCOPE)).items
+    active = [item for item in listed if item.lifecycle == LifecycleState.ACTIVE]
+    assert [item.id for item in active] == [winner[0]], (
+        f"并发废旧后失败方新版 C 必须被回滚，仅保留胜出方 B: {[item.id for item in active]}"
+    )
+    assert len(listed) == 2, f"不应残留孤儿新版 C: {[item.id for item in listed]}"
+
+
+def test_doc_update_same_t_valid_concurrent_supersede_rolls_back(tmp_path) -> None:
+    """文档模式并发 SUPERSEDE 携带相同 t_valid 时，写前 ConflictError 必须回滚失败方新版。"""
+    engine, _ = _doc_engine(tmp_path)
+    first = asyncio.run(engine.write("v1 fact", SCOPE))[0]
+    real_index = engine._index  # pylint: disable=protected-access
+    shared_t_valid = datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
+    winner: list[str] = []
+
+    class _InterleaveSameTimestamp:
+        def __init__(self, delegate, target_engine, target_id: str, winner_out: list[str]) -> None:
+            self._delegate = delegate
+            self._engine = target_engine
+            self._target_id = target_id
+            self._winner = winner_out
+
+        def build(self, units, **kwargs) -> None:
+            self._delegate.build(units, **kwargs)
+            if not self._winner:
+                self._winner.append("in-progress")
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    other = pool.submit(
+                        asyncio.run,
+                        self._engine.update(
+                            self._target_id,
+                            SCOPE,
+                            MemoryPatch(content="winner B", t_valid=shared_t_valid),
+                        ),
+                    ).result()
+                self._winner[0] = other.id
+
+        def update(self, units, **kwargs) -> None:
+            self._delegate.update(units, **kwargs)
+
+        def remove(self, units, **kwargs) -> None:
+            self._delegate.remove(units, **kwargs)
+
+    engine._index = _InterleaveSameTimestamp(  # pylint: disable=protected-access
+        real_index, engine, first.id, winner
+    )
+
+    with pytest.raises(ConflictError):
+        asyncio.run(
+            engine.update(
+                first.id,
+                SCOPE,
+                MemoryPatch(content="loser C", t_valid=shared_t_valid),
+            )
+        )
+
+    listed = asyncio.run(engine.list(SCOPE)).items
+    active = [item for item in listed if item.lifecycle == LifecycleState.ACTIVE]
+    assert [item.id for item in active] == [winner[0]], (
+        f"相同 t_valid 并发废旧不得跳过回滚残留双 active: {[item.id for item in active]}"
+    )
+    assert len(listed) == 2, f"不应残留孤儿新版 C: {[item.id for item in listed]}"
+
+
+def test_doc_update_concurrent_threads_same_t_valid_serialize_without_fork(tmp_path) -> None:
+    """文档模式双线程同时进入废旧阶段且携带相同 t_valid，串行锁须保证严格 [ok, conflict]。"""
+    engine, _ = _doc_engine(tmp_path)
+    first = asyncio.run(engine.write("v1 fact", SCOPE))[0]
+    shared_t_valid = datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
+    barrier = threading.Barrier(2)
+
+    def _run(content: str) -> str:
+        barrier.wait(timeout=5)
+        try:
+            updated = asyncio.run(
+                engine.update(
+                    first.id,
+                    SCOPE,
+                    MemoryPatch(content=content, t_valid=shared_t_valid),
+                )
+            )
+            return f"ok:{updated.id}"
+        except ConflictError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(_run, ["branch-B", "branch-C"]))
+
+    assert sorted(outcome.split(":", 1)[0] for outcome in outcomes) == ["conflict", "ok"], outcomes
+    listed = asyncio.run(engine.list(SCOPE)).items
+    active = [item for item in listed if item.lifecycle == LifecycleState.ACTIVE]
+    assert len(active) == 1, (
+        f"文档模式并发 update 不应产生双 active: {[item.id for item in active]}"
+    )
+    assert len(listed) == 2, (
+        f"文档模式并发 update 失败方新版须被回滚: {[item.id for item in listed]}"
+    )
 
 
 # -- 文档模式：delete FORGET/ARCHIVE 绕过 lifecycle --------------------------- #
