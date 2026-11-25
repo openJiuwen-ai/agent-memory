@@ -4,7 +4,7 @@
 单次 :meth:`retrieve` 驱动完整链路：
 查询理解 → 前置谓词构造 → 多路召回与真源复核 → 融合 → 截断候选预算 →
 （可选）重排 → （可选）去重/冲突消解 → 阈值过滤 → （可选）次级排序 →
-截断 top_k → 渐进式披露 → 返回结果与轨迹。
+截断 top_k → （可选）内容打包 → 渐进式披露 → 返回结果与轨迹。
 scope 作显式首参贯穿下推；召回/取数/排序全部委托统一 Storage 的三条首选路径，
 本类不含召回/打分逻辑，也不持有召回路（CompositeStorage 的兼容 Recaller 由
 storage 层工厂按配置装配）。
@@ -12,6 +12,7 @@ storage 层工厂按配置装配）。
 
 from __future__ import annotations
 
+from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import nullcontext
@@ -56,6 +57,7 @@ from jiuwen_memory.common.type_def.hierarchy_query import (
 )
 from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
+from jiuwen_memory.retrieval.content_packer import ContentPacker, ContentPackerProducer
 from jiuwen_memory.retrieval.discloser import Discloser, DiscloserProducer
 from jiuwen_memory.retrieval.expander import Expander, ExpanderProducer
 from jiuwen_memory.retrieval.expansion import (
@@ -172,6 +174,9 @@ class PipelineRetriever(StagedRetriever):
         selector: Selector | None = None,
         secondary_rank_enabled: bool = False,
         secondary_scorer: SecondaryScorer | None = None,
+        # Top-K 后置内容打包（retrieval F15）：总开关默认关；开启时须注入 ContentPacker。
+        content_pack_enabled: bool = False,
+        content_packer: ContentPacker | None = None,
     ) -> None:
         self._parser = parser
         self._fuser = fuser
@@ -228,6 +233,29 @@ class PipelineRetriever(StagedRetriever):
             raise ValidationError("secondary_rank_enabled=true 但未注入 secondary_scorer")
         self._secondary_rank_enabled = bool(secondary_rank_enabled)
         self._secondary_scorer = secondary_scorer
+        if content_pack_enabled and content_packer is None:
+            raise ValidationError("content_pack_enabled=true 但未注入 content_packer")
+        self._content_pack_enabled = bool(content_pack_enabled)
+        self._content_packer = content_packer
+
+    @property
+    def content_pack_enabled(self) -> bool:
+        """当前 Retriever 默认是否启用 Top-K 后置内容打包。"""
+        return self._content_pack_enabled
+
+    @property
+    def content_packer(self) -> ContentPacker | None:
+        """当前 Retriever 绑定的 ContentPacker 算子实例。"""
+        return self._content_packer
+
+    def bind_content_packer(
+        self, content_packer: ContentPacker | None, *, enabled: bool = True
+    ) -> None:
+        """绑定或替换 Top-K 后置内容打包算子及默认开关。"""
+        if enabled and content_packer is None:
+            raise ValidationError("content_pack_enabled=true 但未注入 content_packer")
+        self._content_packer = content_packer
+        self._content_pack_enabled = bool(enabled)
 
     @property
     def storage(self) -> DomainStore:
@@ -291,6 +319,7 @@ class PipelineRetriever(StagedRetriever):
         self.secondary_rank(state)
         self.select(state)
         state.cut_to_top_k()
+        self.pack_content(state)
         self.disclose(state)
         state.build_result()
         if query.expand_depth:
@@ -735,6 +764,21 @@ class PipelineRetriever(StagedRetriever):
             parsed, state.candidates, state.calibrated, state.run.trace_id, state.run.record
         )
 
+    def pack_content(self, state: RetrieveState) -> None:
+        """可选 Top-K 后置内容打包：cut_to_top_k 之后、Discloser 之前筛选与压缩候选。"""
+        query = state.query
+        parsed = state.parsed
+        if parsed is None:
+            raise RuntimeError("parse must complete first")
+        do_pack = (
+            query.content_pack if query.content_pack is not None else self._content_pack_enabled
+        )
+        if not do_pack:
+            return
+        state.final = self._pack_content(
+            query, parsed, state.final, state.run.trace_id, state.run.record
+        )
+
     def disclose(self, state: RetrieveState) -> None:
         query = state.query
         parsed = state.parsed
@@ -925,6 +969,85 @@ class PipelineRetriever(StagedRetriever):
         record_step("secondary_rank", (perf_counter() - t0) * 1000.0, len(ranked), detail=detail)
         return ranked
 
+    def _pack_content(
+        self,
+        query: RetrievalQuery,
+        parsed: ParsedQuery,
+        final: list[ScoredMemoryUnit],
+        trace_id: str,
+        record_step,
+    ) -> list[ScoredMemoryUnit]:
+        """调用 ContentPacker 对 Top-K 候选筛选与压缩；异常时降级保留原候选并记轨迹。"""
+        if self._content_packer is None:
+            record_step(
+                "content_pack",
+                0.0,
+                n=len(final),
+                detail={"skipped": "no_content_packer_configured"},
+            )
+            return final
+        if query.expand_depth:
+            record_step(
+                "content_pack",
+                0.0,
+                n=len(final),
+                detail={"skipped": "expand_depth"},
+            )
+            return final
+        if not final:
+            record_step(
+                "content_pack",
+                0.0,
+                n=0,
+                detail={"skipped": "empty_candidates"},
+            )
+            return final
+
+        packer = self._content_packer
+        keep_count = bool(query.content_pack_keep_count)
+        detail: dict[str, str] = {
+            "enabled": "true",
+            "keep_count": "true" if keep_count else "false",
+        }
+        t0 = perf_counter()
+        try:
+            detail.update(packer.explain())
+            packed, pack_detail = (
+                packer.pack_with_detail(parsed, list(final), keep_count=True)
+                if keep_count
+                else packer.pack_with_detail(parsed, list(final))
+            )
+            packed_ids = [cand.unit_id for cand in packed]
+            # 多重集子集：每个 unit_id 的输出次数不得超过输入次数；覆盖空结果、增条、
+            # 伪造 id，以及「输入已有重复 id 时输出再膨胀」的漏检。
+            # 必须用 ``<=``（不能用 ``>``）：Counter 的 ``>`` 要求对方每个键都更小，
+            # 伪造新 id 或只膨胀部分 id 时 ``>`` 会得到 False 而漏检。
+            if not packed or not (
+                Counter(packed_ids) <= Counter(cand.unit_id for cand in final)
+            ):
+                raise ValidationError("ContentPacker 返回结果必须是输入候选的非空多重集子集")
+            # 请求级 keep_count：业务要求返回条数不得少于输入 Top-K。
+            if keep_count and len(packed) != len(final):
+                raise ValidationError(
+                    "content_pack_keep_count=true 时 ContentPacker 不得改变候选条数"
+                )
+        except Exception as exc:  # noqa: BLE001 - 业务算子失败降级为原候选，不阻断检索
+            err_msg = safe_error_message(exc)
+            detail["error"] = err_msg
+            logger.warning(
+                "Retriever.content_pack failed, keep original top_k: trace_id=%s error=%s",
+                trace_id,
+                redact_for_log(err_msg),
+            )
+            record_step(
+                "content_pack", (perf_counter() - t0) * 1000.0, len(final), detail=detail
+            )
+            return final
+
+        detail.update(pack_detail)
+        record_step("content_pack", (perf_counter() - t0) * 1000.0, len(packed), detail=detail)
+        return list(packed)
+
 
 # -- 注册到 RetrieverProducer（实现自注册，新增无需改 producer/装配入口） -------- #
 
@@ -945,6 +1068,16 @@ def _build(config):
     discloser = DiscloserProducer.dep(config, default="truncating")
     secondary_rank_enabled = as_bool(
         Factory.cfg_get(config, "secondary_rank_enabled", None), default=False
+    )
+    content_pack_enabled = as_bool(
+        Factory.cfg_get(config, "content_pack_enabled", None), default=False
+    )
+    raw_params = getattr(config, "params", {}) or {}
+    packer_ref = raw_params.get("content_packer")
+    ctx_namespaces = getattr(getattr(config, "ctx", None), "namespaces", {}) or {}
+    has_packer_cfg = packer_ref is not None and (
+        not isinstance(packer_ref, str)
+        or packer_ref in ctx_namespaces.get(ContentPackerProducer.TOP_NAME, {})
     )
     doc_mode = should_write_document(config.get(WRITE_DOCUMENT_KEY, False))
     # 选取算子默认关（对话记忆检索不配置；经验 profile 显式打开，mem2.0 §2.4）。
@@ -1006,6 +1139,12 @@ def _build(config):
         secondary_scorer=(
             SecondaryScorerProducer.dep(config, default="default")
             if secondary_rank_enabled
+            else None
+        ),
+        content_pack_enabled=content_pack_enabled,
+        content_packer=(
+            ContentPackerProducer.dep(config, default="default")
+            if (content_pack_enabled or has_packer_cfg)
             else None
         ),
     )

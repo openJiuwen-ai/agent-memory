@@ -96,6 +96,10 @@ def default_config_dict() -> dict[str, Any]:
             # 生效；默认关闭，算子参数在 secondary_scorer 段。与 rerank_enabled 同放 globals：
             # 检索器经 config.get 读取（本实例 params 优先、回退 globals），写在任一处都生效。
             "secondary_rank_enabled": False,
+            # Top-K 后置内容打包（retrieval F15）总开关：cut_to_top_k 之后、Discloser 之前，
+            # 在预算内对 K 条候选筛选与压缩并逐条输出；默认关闭，算子参数在 content_packer 段。
+            # 禁止删条仅请求级：Context.extensions["content_pack_keep_count"]，不进 globals。
+            "content_pack_enabled": False,
             "embedder_dim": 64,
             "chunk_size": 120,
             # 全局唯一 StoreManager 指名（Store拆分 F07）：值为 store_manager 命名空间下的实例名。
@@ -225,6 +229,24 @@ def default_config_dict() -> dict[str, Any]:
                 },
             }
         },
+        "content_packer": {
+            _D: {
+                "target": _D,
+                "params": {
+                    "budget_ratio": 0.8,
+                    "strategy": "auto",
+                    "role_compact_max_items": 10,
+                    "telegraph_max_items": 20,
+                    "w_rel": 0.45,
+                    "w_question": 0.50,
+                    "w_recency": 0.0,
+                    "w_entity": 0.0,
+                    "w_cost": 0.05,
+                    "recency_tau_days": 30.0,
+                    "dup_coverage": 0.8,
+                },
+            }
+        },
         "discloser": {_D: "truncating"},
         "retriever": {
             _D: {
@@ -235,6 +257,7 @@ def default_config_dict() -> dict[str, Any]:
                     "fuser": _D,
                     "discloser": _D,
                     "secondary_scorer": _D,
+                    "content_packer": _D,
                     # 召回超采样 + 精排预算 + 相关性阈值（本算子私有调参，非跨切面）
                     "over_fetch_factor": 4,
                     "over_fetch_floor": 60,

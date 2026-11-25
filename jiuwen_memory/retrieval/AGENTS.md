@@ -23,6 +23,7 @@
 | `cross_space.py` | 跨空间检索的取数上界（`allocate_quota`）与结果合并（`merge`）；不访问存储、不调模型的纯函数，与算子并列而非算子，不进工厂 |
 | `query_parser.py` | QueryParser 接口：查询理解（去噪/改写/分词/实体/向量化/时间解析） |
 | `fuser.py` | Fuser 接口：多路融合排序（重排由 common `Reranker` 独立阶段承担） |
+| `content_packer.py` / `content_packer_impl/` | ContentPacker 接口/Producer 与三档无模型自适应实现（`AdaptiveContentPacker`，F15）：`pack_content` 在 `StagedRetriever` 声明；Top-K 后按预算筛选与正文压缩；请求级 `content_pack_keep_count` 可禁止删条 |
 | `discloser.py` | Discloser 接口：渐进式披露（L0 摘要/L1 片段/L2 全文） |
 | `selector.py` | Selector 接口：选取——相关性过滤后、top_k 截断前的名额分配（F10 经验记忆；对话记忆不配置）|
 | `retriever.py` | Retriever 接口与 Producer；完整链路入口及可选 query_parsers 依赖声明 |
@@ -58,6 +59,7 @@
      ↓ + min_results 从正分候选兜底回填（结果数可 < top_k）
      ↓ + 可选次级排序（secondary_rank_enabled，globals 或 retriever params，默认关）：SecondaryScorer 带内按重要度/时效 tie-break
 8. 截断 top_k
+     ↓ + 可选内容打包（content_pack_enabled，globals 或 retriever params，默认关；RetrievalQuery.content_pack 可单次覆盖；请求级 extensions content_pack_keep_count 禁止删条）：ContentPacker 对 K 条候选筛选与压缩（expand_depth>0 时跳过）
      ↓
 10. Discloser.disclose(...) → list[RetrievedItem]
      ↓ 按层级加载内容（L0/L1/L2）

@@ -25,6 +25,7 @@ from jiuwen_memory.common.security.space_roles import (
 from jiuwen_memory.common.security.types import Action
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
+    EXT_CONTENT_PACK_KEEP_COUNT,
     EXT_QUERY_CONTEXT,
     EXT_SPACES,
     ISOLATED_MEMORY_TYPES,
@@ -443,6 +444,29 @@ def _pop_query_context(options: dict[str, Any]) -> tuple[str, ...] | None:
     return tuple(raw)
 
 
+def _pop_content_pack_keep_count(options: dict[str, Any]) -> bool:
+    """取出内容打包「禁止删条」开关；key 不存在时返回 ``False``（允许 Mixed-Score 删条）。
+
+    仅请求级生效，不进 globals。key 已存在时非法取值 fail-fast，避免业务以为「条数
+    已锁定」却仍被 drop。接受 ``bool`` 或大小写无关的 ``true``/``false``/``1``/``0`` 字符串。
+    """
+    if EXT_CONTENT_PACK_KEEP_COUNT not in options:
+        return False
+    raw = options.pop(EXT_CONTENT_PACK_KEEP_COUNT)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    raise ValidationError(
+        "content_pack_keep_count must be a boolean "
+        "(or string true/false); omit the key to allow dropping"
+    )
+
+
 def _space_denied(space: str, error_type: str, message: str) -> ChannelError:
     """把一个被判权剔除的候选空间记成结果对象上的结构化错误。
 
@@ -656,7 +680,7 @@ def _recall_permission_context(
     for key in routing_fields:
         # 归属坐标、候选空间列表与检索上下文不是策略路由值：前两者是判定/编排开关，
         # query_context 只服务 parser 的软召回增强。
-        if key in (COORDS_KEY, EXT_SPACES, EXT_QUERY_CONTEXT):
+        if key in (COORDS_KEY, EXT_SPACES, EXT_QUERY_CONTEXT, EXT_CONTENT_PACK_KEEP_COUNT):
             continue
         override = context.extensions.get(key)
         if override is None:
@@ -963,6 +987,7 @@ __all__ = [
     "_SPACE_SCAN_CAP",
     "_GRANT_ACTION_BACK",
     "_parse_max_tokens",
+    "_pop_content_pack_keep_count",
     "_context_detail",
     "_required_filter_metadata",
     "_reject_invalid_content",

@@ -207,6 +207,10 @@ class StagedRetriever(Retriever):
         """在最终 top_k 之前应用阈值。"""
 
     @abstractmethod
+    def pack_content(self, state: RetrieveState) -> None:
+        """可选 Top-K 后置内容打包：对 final 筛选与压缩正文；未启用时可空操作。"""
+
+    @abstractmethod
     def disclose(self, state: RetrieveState) -> None:
         """对 final 纯内容塑形，写入 items。"""
 

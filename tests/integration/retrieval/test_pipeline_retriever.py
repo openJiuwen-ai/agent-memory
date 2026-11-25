@@ -39,7 +39,12 @@ from jiuwen_memory.config.context import AssemblyContext
 from jiuwen_memory.config.defaults import default_config_dict
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.bootstrap import register_operators
+from jiuwen_memory.retrieval.content_packer import ContentPacker, PackStrategy
+from jiuwen_memory.retrieval.content_packer_impl.adaptive_content_packer import (
+    AdaptiveContentPacker,
+)
 from jiuwen_memory.retrieval.discloser_impl.structured_discloser import StructuredDiscloser
+from jiuwen_memory.retrieval.fuser import Fuser
 from jiuwen_memory.retrieval.fuser_impl.rrf_fuser import RRFFuser
 from jiuwen_memory.retrieval.fuser_impl.secondary_scorer import SecondaryScorer
 from jiuwen_memory.retrieval.fuser_impl.secondary_scorer.default_secondary_scorer import (
@@ -1757,3 +1762,357 @@ def test_resolve_failure_degrades_to_original_candidates() -> None:
     assert resolve_steps, "resolve 失败也应记录轨迹步"
     assert resolve_steps[0].detail["skipped"] == "degraded"
     assert sorted(item.unit_id for item in result.items) == ["u1", "u2"]
+
+
+# =========================================================================== #
+# ContentPacker（retrieval F14：Top-K 后置筛选与压缩算子）
+# =========================================================================== #
+
+
+class _MinimalKeepFirstPacker(ContentPacker):
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.CONTENT_PACKER
+
+    def health(self) -> None:
+        return None
+
+    def pack(self, query: ParsedQuery, candidates: list):
+        return candidates[:1]
+
+
+class _ExplodingPacker(ContentPacker):
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.CONTENT_PACKER
+
+    def health(self) -> None:
+        return None
+
+    def pack(self, query: ParsedQuery, candidates: list):
+        raise RuntimeError("pack boom")
+
+
+class _ForgedUnitPacker(ContentPacker):
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.CONTENT_PACKER
+
+    def health(self) -> None:
+        return None
+
+    def pack(self, query: ParsedQuery, candidates: list):
+        forged = make_unit("forged-id", "forged content")
+        return [replace(candidates[0], unit=forged)]
+
+
+class _InflatingDuplicatePacker(ContentPacker):
+    """把末条候选膨胀为 3 份，用于验证输入已有重复 id 时的多重集子集守卫。"""
+
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.CONTENT_PACKER
+
+    def health(self) -> None:
+        return None
+
+    def pack(self, query: ParsedQuery, candidates: list):
+        last = candidates[-1]
+        return [last, last, last]
+
+
+class _DuplicateEmittingFuser(Fuser):
+    """模拟自定义 Fuser 产出含重复 unit_id 的候选，走公开 retrieve 验证守卫。"""
+
+    def operator_type(self) -> RetrievalOperatorType:
+        return RetrievalOperatorType.FUSER
+
+    def health(self) -> None:
+        return None
+
+    def fuse(self, query: ParsedQuery, candidates: list):
+        flat = [cand for batch in candidates for cand in batch]
+        return [flat[0], flat[0], flat[1]]
+
+
+def _content_pack_world(texts: dict[str, str]):
+    world = make_world()
+    event_day = datetime(2023, 5, 7, 10, 0, tzinfo=UTC)
+    for uid, text in texts.items():
+        unit = make_unit(uid, text)
+        unit.temporal.t_event = event_day
+        index_unit(world, unit)
+    recaller = StaticRecaller(
+        [
+            ScoredUnit(uid, 1.0 - idx / (len(texts) + 1), RecallChannel.KEYWORD)
+            for idx, uid in enumerate(texts)
+        ]
+    )
+    return world, _storage_for(world, [recaller])
+
+
+def test_content_pack_after_topk_shapes_per_unit_items_and_records_trajectory() -> None:
+    texts = {
+        "u1": "On 2023-05-07, The user adopted a golden retriever named Max.",
+        "u2": "The assistant suggested a Saturday puppy training class.",
+        "u3": "The user's sister works as an assistant manager in Denver.",
+    }
+    world, domain = _content_pack_world(texts)
+    retriever = PipelineRetriever(
+        world.parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=domain,
+        content_pack_enabled=True,
+        content_packer=AdaptiveContentPacker(budget_ratio=1.0),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(
+            text="golden retriever Max",
+            top_k=2,
+            disclosure=DisclosureLevel.L2,
+            with_trajectory=True,
+        ),
+    )
+
+    stages = [step.stage for step in result.trajectory]
+    assert stages.index("secondary_rank") < stages.index("content_pack") < stages.index("disclose")
+    pack_step = next(step for step in result.trajectory if step.stage == "content_pack")
+    assert pack_step.detail.get("strategy") == PackStrategy.ROLE_COMPACT.value
+    assert pack_step.detail.get("in") == "2"
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+    assert result.items[0].content == "U adopted a golden retriever named Max."
+    assert result.items[1].content == "A suggested a Saturday puppy training class."
+    # KV 真源中的原始 MemoryUnit 不得被原地修改。
+    stored = domain.get(DEFAULT_SCOPE, ["u1"])[0]
+    assert stored.content == texts.get("u1")
+
+
+def test_content_pack_keep_count_preserves_topk_cardinality() -> None:
+    """请求级 keep_count：大 top_k 下也不删条，轨迹标记 keep_count / suppressed_drops。"""
+    texts = {
+        f"u{i}": (
+            f"On 2023-05-07, The user talked about unrelated hobby topic number {i} "
+            "during a casual weekend conversation with friends."
+        )
+        for i in range(25)
+    }
+    texts["u20"] = "On 2023-05-07, The user adopted a golden retriever named Max in Boston."
+    world, domain = _content_pack_world(texts)
+    retriever = PipelineRetriever(
+        world.parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=domain,
+        content_pack_enabled=True,
+        content_packer=AdaptiveContentPacker(budget_ratio=0.5),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(
+            text="golden retriever Max Boston",
+            top_k=25,
+            disclosure=DisclosureLevel.L2,
+            with_trajectory=True,
+            content_pack_keep_count=True,
+        ),
+    )
+
+    pack_step = next(step for step in result.trajectory if step.stage == "content_pack")
+    assert pack_step.detail.get("keep_count") == "true"
+    assert pack_step.detail.get("dropped") == "0"
+    assert int(pack_step.detail.get("suppressed_drops", "0")) > 0
+    assert len(result.items) == 25
+
+
+def test_content_pack_drop_filters_low_value_units_for_large_topk() -> None:
+    texts = {
+        f"u{i}": (
+            f"On 2023-05-07, The user talked about unrelated hobby topic number {i} "
+            "during a casual weekend conversation with friends."
+        )
+        for i in range(25)
+    }
+    texts["u20"] = "On 2023-05-07, The user adopted a golden retriever named Max in Boston."
+    world, domain = _content_pack_world(texts)
+    retriever = PipelineRetriever(
+        world.parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=domain,
+        content_pack_enabled=True,
+        content_packer=AdaptiveContentPacker(budget_ratio=0.8),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(
+            text="golden retriever Max Boston",
+            top_k=25,
+            disclosure=DisclosureLevel.L2,
+            with_trajectory=True,
+        ),
+    )
+
+    pack_step = next(step for step in result.trajectory if step.stage == "content_pack")
+    assert pack_step.detail.get("strategy") == PackStrategy.DROP.value
+    assert len(result.items) < 25
+    assert "u20" in {item.unit_id for item in result.items}
+    kept_u20 = next(item for item in result.items if item.unit_id == "u20")
+    assert kept_u20.content == texts.get("u20")
+
+
+def test_content_pack_query_override_toggles_assembled_retriever() -> None:
+    register_plugins()
+    register_backends()
+    register_operators()
+    Factory.reset_all()
+    try:
+        ctx = AssemblyContext.from_dict(default_config_dict())
+        retriever = RetrieverProducer.build_named("default", ctx)
+        unit = make_unit("u1", "The user adopted a golden retriever named Max.")
+        retriever.storage.add(DEFAULT_SCOPE, [unit])
+        # 默认关闭：不产出 content_pack 轨迹步，保留原文。
+        off_res = retriever.retrieve(
+            DEFAULT_SCOPE,
+            RetrievalQuery(
+                text="Max",
+                top_k=5,
+                rerank=False,
+                channels=[RecallChannel.KEYWORD],
+                disclosure=DisclosureLevel.L2,
+                with_trajectory=True,
+            ),
+        )
+        assert "content_pack" not in {s.stage for s in off_res.trajectory}
+
+        # 单次查询显式开启 content_pack=True。
+        on_res = retriever.retrieve(
+            DEFAULT_SCOPE,
+            RetrievalQuery(
+                text="Max",
+                top_k=5,
+                rerank=False,
+                content_pack=True,
+                channels=[RecallChannel.KEYWORD],
+                disclosure=DisclosureLevel.L2,
+                with_trajectory=True,
+            ),
+        )
+        assert "content_pack" in {s.stage for s in on_res.trajectory}
+    finally:
+        Factory.reset_all()
+
+
+@pytest.mark.parametrize("bad_packer", [_ExplodingPacker(), _ForgedUnitPacker()])
+def test_content_pack_faulty_packer_degrades_to_original_topk(bad_packer: ContentPacker) -> None:
+    world, domain = _content_pack_world({"u1": "alpha fact", "u2": "beta fact"})
+    retriever = PipelineRetriever(
+        world.parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=domain,
+        content_pack_enabled=True,
+        content_packer=bad_packer,
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="fact", top_k=5, with_trajectory=True),
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u2"]
+    pack_step = next(step for step in result.trajectory if step.stage == "content_pack")
+    assert "error" in pack_step.detail
+
+
+def test_content_pack_rejects_inflated_duplicates_when_input_has_dup_ids() -> None:
+    """输入已有重复 unit_id 时，输出不得再膨胀同一 id（多重集子集守卫）。"""
+    world, domain = _content_pack_world({"u1": "alpha fact", "u2": "beta fact"})
+    retriever = PipelineRetriever(
+        world.parser,
+        _DuplicateEmittingFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=domain,
+        content_pack_enabled=True,
+        content_packer=_InflatingDuplicatePacker(),
+    )
+
+    result = retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(text="fact", top_k=5, rerank=False, with_trajectory=True),
+    )
+
+    assert [item.unit_id for item in result.items] == ["u1", "u1", "u2"]
+    pack_step = next(step for step in result.trajectory if step.stage == "content_pack")
+    assert "error" in pack_step.detail
+
+
+def test_content_pack_minimal_subclass_and_missing_packer_validation() -> None:
+    world, domain = _content_pack_world({"u1": "alpha fact", "u2": "beta fact"})
+    with pytest.raises(ValidationError):
+        PipelineRetriever(
+            world.parser,
+            RRFFuser(),
+            world.discloser,
+            world.unit_reader,
+            domain_store=domain,
+            content_pack_enabled=True,
+        )
+
+    retriever = PipelineRetriever(
+        world.parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=domain,
+        content_pack_enabled=True,
+        content_packer=_MinimalKeepFirstPacker(),
+    )
+    result = retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="fact", top_k=5, with_trajectory=True)
+    )
+    assert [item.unit_id for item in result.items] == ["u1"]
+
+    # 自定义打包器实现双参 pack_with_detail（未声明 keep_count/**kwargs）：
+    # 默认 keep_count=False 时正常生效；显式 keep_count=True 时因不支持保条数而安全降级回原 Top-K。
+    class _TwoArgDetailPacker:
+        def __init__(self) -> None:
+            self._tag = "yes"
+
+        def explain(self) -> dict[str, str]:
+            return {"custom_packer": self._tag}
+
+        def pack_with_detail(self, query: ParsedQuery, candidates: list):
+            _ = query
+            return candidates[:1], {"custom": self._tag}
+
+    custom_retriever = PipelineRetriever(
+        world.parser,
+        RRFFuser(),
+        world.discloser,
+        world.unit_reader,
+        domain_store=domain,
+        content_pack_enabled=True,
+        content_packer=_TwoArgDetailPacker(),  # type: ignore[arg-type]
+    )
+    normal_res = custom_retriever.retrieve(
+        DEFAULT_SCOPE, RetrievalQuery(text="fact", top_k=5, with_trajectory=True)
+    )
+    assert [item.unit_id for item in normal_res.items] == ["u1"]
+    normal_step = next(s for s in normal_res.trajectory if s.stage == "content_pack")
+    assert normal_step.detail.get("custom") == "yes"
+
+    kept_res = custom_retriever.retrieve(
+        DEFAULT_SCOPE,
+        RetrievalQuery(
+            text="fact", top_k=5, with_trajectory=True, content_pack_keep_count=True
+        ),
+    )
+    assert [item.unit_id for item in kept_res.items] == ["u1", "u2"]
+    kept_step = next(s for s in kept_res.trajectory if s.stage == "content_pack")
+    assert "error" in kept_step.detail

@@ -37,6 +37,37 @@ def test_secondary_scorer_is_known_top_name() -> None:
     assert "secondary_scorer" in Factory.known_top_names()
 
 
+def test_default_content_packer_present() -> None:
+    spec = default_config_dict().get("content_packer", {}).get("default", {})
+    assert spec.get("target") == "default"
+    assert spec.get("params") == {
+        "budget_ratio": 0.8,
+        "strategy": "auto",
+        "role_compact_max_items": 10,
+        "telegraph_max_items": 20,
+        "w_rel": 0.45,
+        "w_question": 0.50,
+        "w_recency": 0.0,
+        "w_entity": 0.0,
+        "w_cost": 0.05,
+        "recency_tau_days": 30.0,
+        "dup_coverage": 0.8,
+    }
+
+
+def test_content_pack_enabled_default_false() -> None:
+    raw = default_config_dict()
+    assert raw.get("globals", {}).get("content_pack_enabled") is False
+    params = raw.get("retriever", {}).get("default", {}).get("params", {})
+    assert "content_pack_enabled" not in params
+    assert params.get("content_packer") == "default"
+
+
+def test_content_packer_is_known_top_name() -> None:
+    register_operators()
+    assert "content_packer" in Factory.known_top_names()
+
+
 def test_default_importance_category_map_present() -> None:
     from jiuwen_memory.construction.common import DEFAULT_IMPORTANCE_CATEGORY_MAP
 

@@ -17,6 +17,11 @@ int 后写入 ``RetrievalQuery`` 对应槽位；无此 key（或空串）时披�
 承载：API 边界校验字符串序列、转为 tuple 后写入 ``RetrievalQuery.query_context``，
 并从插件透传 options 中移除。
 
+Top-K 内容打包「禁止删条」经 ``extensions[EXT_CONTENT_PACK_KEEP_COUNT]``
+（即 ``"content_pack_keep_count"``）承载：API 边界解析为 bool 后写入
+``RetrievalQuery.content_pack_keep_count``，并从透传 options 中移除。
+本开关仅请求级生效，不进入 globals / config 出厂默认。
+
 鉴权身份 ``identity`` 不在此：它是与「目标范围 + 配置」正交的鉴权关注点，
 仍由各 API 方法以独立 keyword-only 参数承载。
 """
@@ -47,10 +52,18 @@ EXT_SPACES = "spaces"
 # 给自定义检索模块——它是内核解释的检索输入增强，不是自定义模块的入参。
 EXT_QUERY_CONTEXT = "query_context"
 
+# extensions 中禁止 ContentPacker 删条的约定 key，取值 ``bool``（或 true/false 字符串）。
+#
+# 由 API 边界取出并写入 ``RetrievalQuery.content_pack_keep_count``；移除后不随 parser
+# 透传。仅请求级生效：业务要求返回条数不得少于 Top-K 时置 true，轨迹可据此识别
+# 「本应 Mixed-Score 删条、但业务要求保留条数」的请求。
+EXT_CONTENT_PACK_KEEP_COUNT = "content_pack_keep_count"
+
 
 @dataclass
 class Context:
     scope: Scope = field(default_factory=Scope)  # 操作/检索的目标范围（多租户隔离）
     # 调用级透传配置；内核核心不解释。
-    # 约定 key 由 API 边界解释并移除：EXT_MAX_TOKENS、EXT_SPACES、EXT_QUERY_CONTEXT、"coords"。
+    # 约定 key 由 API 边界解释并移除：EXT_MAX_TOKENS、EXT_SPACES、EXT_QUERY_CONTEXT、
+    # EXT_CONTENT_PACK_KEEP_COUNT、"coords"。
     extensions: dict[str, Any] = field(default_factory=dict)
