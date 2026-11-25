@@ -5,6 +5,8 @@ from contextlib import closing
 
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment, memory_key
 from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
+from jiuwen_memory.storage.kv_impl.redis_space_cache import RedisSpaceCache
 from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
 
 
@@ -28,3 +30,33 @@ def seed_plaintext_memories(
         )
         connection.commit()
     return len(rows[0][-1])
+
+
+class ControlledRedisStore(RedisKVStore):
+    """Expose this test instance's background cache to the fixture."""
+
+    @property
+    def cache(self):
+        return self._space_cache
+
+
+class ControlledSpaceCache(RedisSpaceCache):
+    """Deterministic lifecycle, deadline and scan controls for Redis integration tests."""
+
+    def expire_sample(self):
+        self._next_daily = 0
+
+    @property
+    def scan_pages(self):
+        return self._pages
+
+    @property
+    def stopped(self):
+        return self._worker is None and self._users == 0
+
+    @property
+    def users(self):
+        return self._users
+
+    def wait_for_shutdown(self):
+        self._stop.wait()
