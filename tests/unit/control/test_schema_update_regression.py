@@ -292,12 +292,13 @@ def test_schema_source_update_clears_property_consolidation_marks(world):
     world.llm.facts = [("陈静", "occupation", "陈静负责检索算法迭代", "")]
     world.update(source, MemoryPatch(content="陈静负责检索算法迭代"))
 
-    active_properties = [
-        unit
-        for unit in world.units()
-        if unit.lifecycle is LifecycleState.ACTIVE
-        and unit.system_metadata.get("extraction_mode") == "schema"
-    ]
+    active_properties = []
+    for unit in world.units():
+        if unit.lifecycle is not LifecycleState.ACTIVE:
+            continue
+        if unit.system_metadata.get("extraction_mode") != "schema":
+            continue
+        active_properties.append(unit)
     assert active_properties
     for unit in active_properties:
         assert not unit.system_metadata.get("consolidation_done_at")

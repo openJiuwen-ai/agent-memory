@@ -26,10 +26,12 @@ class _RebuildPatchPrivacy:
     update 的清标记若发生在 ingress 之前，注入键会被这里丢掉——用于锁定顺序契约。
     """
 
-    def staging_scope(self):
+    @staticmethod
+    def staging_scope():
         return nullcontext()
 
-    def ingress(self, payload: RawPayload) -> RawPayload:
+    @staticmethod
+    def ingress(payload: RawPayload) -> RawPayload:
         return RawPayload(
             id=payload.id,
             scope=payload.scope,
@@ -38,7 +40,8 @@ class _RebuildPatchPrivacy:
             user_metadata=dict(payload.user_metadata),
         )
 
-    def inherit_classification(self, protected, units) -> None:
+    @staticmethod
+    def inherit_classification(protected, units) -> None:
         return None
 
 
