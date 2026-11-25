@@ -457,9 +457,9 @@ Rules:
 - Use only memory ids that appear in the cluster; never invent ids.
 - Do not use real-world knowledge to decide which value is correct.
 - When uncertain: if the values are alternative answers to the same question (mutually
-  exclusive), use "conflict" — the downstream planner refuses to archive when times are equal or
-  unknown, so this is safe. Use "complementary" only when the values can coexist as fragments of
-  one fact or as successive events.
+  exclusive), use "conflict"; the action planner is instructed not to archive when times are
+  equal or unknown. Use "complementary" only when the values can coexist as fragments of one
+  fact or as successive events.
 - Output only JSON, no Markdown, no commentary.
 
 Cluster (entity: {entity_name}; property: {property_name}):
