@@ -24,6 +24,8 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -67,6 +69,16 @@ from agent_memory_provider import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _DelegatingClient:
+    """Forward client operations without inheriting its concrete type."""
+
+    def __init__(self, client: _InProcessClient) -> None:
+        self._client = client
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
 
 
 class _EnglishLikeValue:
@@ -496,6 +508,24 @@ async def _assert_text_only_memory_works(provider: AgentMemoryMemoryProvider) ->
         await provider.shutdown()
 
 
+@pytest.mark.parametrize("capabilities, base_url", [
+    ({}, ""),
+    ({"supports_video_ingest": True}, ""),
+    ({"supports_video_ingest": lambda: False}, ""),
+    ({"supports_video_ingest": lambda: True}, "http://127.0.0.1:8137"),
+])
+def test_video_tools_require_sdk_callable_capability(monkeypatch, capabilities, base_url):
+    provider = AgentMemoryMemoryProvider(
+        base_url=base_url,
+        security_provider=_security_provider(ApiScope(org="tenant", user="user")),
+    )
+    monkeypatch.setattr(provider, "_client", SimpleNamespace(**capabilities))
+    assert {schema["name"] for schema in provider.get_tool_schemas()} == {
+        "agent_memory_search", "agent_memory_conclude", "agent_memory_read_md_file",
+        "agent_memory_edit_md_file",
+    }
+
+
 class TestSdkMode:
     @pytest.mark.parametrize("settings, warning", [
         ({"local_media_roots": [], "asr_model": None, "video_model": " "}, None),
@@ -586,7 +616,7 @@ class TestSdkMode:
     @pytest.mark.parametrize(
         "configuration",
         ["default", "file-json", "file-yaml", "inline", "globals", "no-pipeline", "wrong-evolver",
-         "compact", "compact-json", "compact-yaml"],
+         "compact", "compact-json", "compact-yaml", "wrapped", "wrapped-no-pipeline"],
     )
     def test_video_tool_writes_document_units(self, tmp_path, monkeypatch, configuration):
         media = tmp_path / "imports"
@@ -684,18 +714,24 @@ class TestSdkMode:
         elif configuration == "globals":
             route = config["normalizer"]["default"]["params"]["routes"]["video"]
             config["globals"] = {"local_media_roots": route["params"].pop("local_media_roots")}
-        elif configuration == "no-pipeline":
+        elif configuration in {"no-pipeline", "wrapped-no-pipeline"}:
             del config["pipeline"]
         elif configuration == "wrong-evolver":
             config["pipeline"]["default"]["params"]["profiles"]["video"]["evolver"] = "default"
 
         async def run():
+            holder = None
+            if configuration.startswith("wrapped"):
+                holder = SimpleNamespace(
+                    acquire=lambda _config, _security, factory: _DelegatingClient(factory()),
+                )
             provider = AgentMemoryMemoryProvider(
                 config_dict=config,
                 config_path=config_path,
                 security_provider=_security_provider(ApiScope(org="tenant", user="user")),
+                document_runtime_holder=holder,
             )
-            enabled = configuration not in {"no-pipeline", "wrong-evolver"}
+            enabled = configuration not in {"no-pipeline", "wrong-evolver", "wrapped-no-pipeline"}
             schemas = {s["name"]: s for s in provider.get_tool_schemas()}
             runtime = provider.runtime
             assert runtime is not None
@@ -1176,7 +1212,6 @@ class TestMergeConfigOverDefault:
 
 
 def test_source_metadata_added_to_each_provider_write_path(monkeypatch):
-    from types import SimpleNamespace
     from unittest.mock import Mock
 
     import agent_memory_provider as provider_module
@@ -1908,8 +1943,6 @@ class TestExperienceDefaultConfig:
 
     @pytest.mark.parametrize("capabilities", [[], ["bash"], ["unrelated-tool"]])
     def test_search_experience_does_not_filter_by_capabilities(self, capabilities):
-        from types import SimpleNamespace
-
         from jiuwen_memory.common.type_def.memory import MemoryTier, MemoryUnit
         from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
 

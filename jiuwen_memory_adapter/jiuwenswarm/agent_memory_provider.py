@@ -1344,7 +1344,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.warning("Video tool capability discovery failed: %s", type(exc).__name__)
             return False
-        return isinstance(client, _InProcessClient) and client.supports_video_ingest()
+        # SDK leases forward capabilities without inheriting the concrete client type.
+        supports_video = getattr(client, "supports_video_ingest", None)
+        return callable(supports_video) and bool(supports_video())
 
     def _scene_context(self) -> MemorySceneContext:
         coordinates = self._collective_coordinates
