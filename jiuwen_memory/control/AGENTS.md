@@ -45,6 +45,7 @@ Agent、文档项目、生命周期、认知层级、记忆分类及正文／标
 | `write_orchestrator_impl/` | 编排实现目录：`signals.py`（降级事件枚举 + `WriteSignals` 装配实例级线程安全计数 + trace；引擎与编排器经装配共享同一实例）、`segments.py`（分组/锁段/切批纯函数）、`grouped.py`（缺省实现：组间有界并发、段内合并）、`sequential.py`（兼容实现：逐条保序、fail-fast 时逐项提交，仍加锁）。注册名即配置 `write.orchestrator` 的取值；`segments.py` 还负责装配期锁范围校验（按实际使用的锁）。`grouped.py` 的 `health()` 只反映锁路径的最近故障：取锁成功即清除，引擎/存储异常不污染；非领域异常写 ERROR 日志并在回执里屏蔽原文 |
 | `engine_impl/schema_update_support.py` | 两 Engine 共用的无 I/O 候选判断、Schema 能力/路由校验及更新委托；通过 Engine 注入的 Evolver/IndexBuilder 解析回调取得组件，不直接访问 Engine 受保护成员；普通更新跳过准备阶段，算法在构建层，计划授权在 API，异步入口将同步构建工作放入工作线程 |
 | `engine_impl/temporal_support.py` | 三 Engine 共用的时间比较真源：`valid_at`（as_of 与 t_valid/t_invalid 的有效期判定，含「非正有效期窗口」引擎特例）、`valid_sort_key`（历史版本按 UTC 生效时间排序，缺值为最早时间哨兵）、`matches_delete_selector`（delete 选择器逐条命中判定）与 `matches_update_selector`（batch_update 候选逐条命中判定，与 delete 同构；三引擎共用唯一实现）。跨「入参时间」与「记忆时间」的比较一律双侧过 `common/time_utils.as_utc` 后再比——契约层与 SDK 直调都接受带/不带时区后缀两种合法 ISO 形态，落盘也原样保留形态，naive 与 aware 裸比较恒抛 `TypeError`；naive 按 UTC 解释，与 `common/type_def/retrieval_filter.valid_at` 同约定，且不改写落盘值 |
+| `engine_impl/update_support.py` | 三 Engine 共用的单条 `update` 活跃态前置校验（`ensure_unit_active_for_update`，非 `ACTIVE` 抛 `ConflictError`）、文档模式同进程废旧串行锁（`doc_supersede_lock`）与 `SUPERSEDE` 按真源提交进度分步回滚补偿（`build_new_or_rollback` / `finalize_supersede_or_rollback` / `should_rollback_after_supersede_error`） |
 | `*_impl/` | 每个算子对应一个实现子目录，含具体实现类；Producer 定义在顶层接口文件，具体实现用 `@XProducer.register(...)` 自注册 |
 | `bootstrap.py` | `register_controllers()` 统一 import 各 `*_impl/` 包，触发实现自注册（幂等） |
 | `pipeline_impl/` | MemoryPipeline 实现目录（metadata） |
@@ -185,7 +186,7 @@ metadata 用 `_extract_prompt_<strategy>` / `_consolidation_prompt_<strategy>` /
 
 - `AsyncTimerScheduler` 同循环提交也须 await 实际提交体；周期实例浅拷贝与 `link_child` 派生任务通过 `Job.inherit_cancellation_from` 读取父任务的只读 `cancellation_signal` 并共享取消信号，调度器只经 `Job.request_cancel` 发出取消，不直接访问事件对象。取消/永久停摆后不开始新的执行步骤，`EvolveJob` 每桶在线程内复核，已进入的同步调用不强制中断。活跃 Job 引用随完成清理，一次性与终态周期父任务的历史共用 10000 条有界上限。
 - `types.py` 中 `DeleteSelector` 各条件取「与」关系，至少给出一项；Engine 收到空 selector 必须抛 `ValidationError`
-- `UpdateMode.SUPERSEDE`（默认）生成新 id，旧 id 标记 superseded——`update` 返回的记忆 id 可能与传入的 `unit_id` 不同
+- `UpdateMode.SUPERSEDE`（默认）生成新 id，旧 id 标记 superseded——`update` 返回的记忆 id 可能与传入的 `unit_id` 不同；无论 `SUPERSEDE` 还是 `OVERWRITE`，`update` / `prepare_update` 必须在任何写入之前要求目标处于 `LifecycleState.ACTIVE`，否则抛 `ConflictError`（HTTP 409），且 `KVLifecycleManager.supersede` 严格禁止非 `ACTIVE`（含 `SUPERSEDED -> SUPERSEDED` 自环）流转
 - `DeleteMode.PURGE` 是唯一物理删除路径；会删除真源、移除索引，并递归删除 provenance 后代
 - `DeleteMode.DOWNWEIGHT` 不改变 lifecycle，只降低 `system_metadata.importance`
 - 运行时策略的读写职责归 `PolicyManager`；Engine 不承载具体策略存储或策略键校验逻辑

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F10-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/construction/F13-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
@@ -42,7 +42,7 @@ evolver。同步模型/存储工作在工作线程调用；Engine 不实现抽�
 **管什么**：
 - 记忆引擎编排（接口层各语义的跨层委托中枢）
 - 按记忆类型选择构建/查询 pipeline profile
-- 记忆单元生命周期状态流转（active → superseded → archived → forgotten）
+- 记忆单元生命周期状态流转（active → superseded / archived → forgotten）
 - 治理「看」侧（检视 / 血缘回溯 / 审计查询）
 - 跨 scope 权限授权与校验
 - 演进任务的 hot/background 双通道调度
@@ -120,7 +120,7 @@ class ControlOperator(ABC):
 | `permission_contexts_for_delete` | `async (selector: DeleteSelector) -> list[PermissionContext]` | 解析 delete selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权 |
 | `permission_contexts_for_update` | `async (selector: UpdateSelector) -> list[PermissionContext]` | 解析 batch_update selector 命中的候选 unit 权限上下文，供 API 层逐条鉴权；与 `permission_contexts_for_delete` 对称 |
 | `get` | `async (unit_id, scope, as_of=None) -> MemoryUnit` | 真源点读；`as_of` 非空沿 supersedes 链返回当时有效版本 |
-| `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写；目标层级 patch 走结构事务 |
+| `update` | `async (unit_id, scope, patch: MemoryPatch) -> MemoryUnit` | 仅允许 `ACTIVE` 记录（非 `ACTIVE` 前置抛 `ConflictError`，不写入、不分叉；`SUPERSEDE` 按真源提交进度分步补偿，构建或废旧失败回滚新版，真源已废旧后二级索引失败不删新版）；SUPERSEDE 新 id 记版本链 / OVERWRITE 原地覆写；目标层级 patch 走结构事务 |
 | `delete` | `async (selector: DeleteSelector) -> list[str]` | PURGE 物理删（覆盖 `SUPERSEDED` 历史版本，合规硬删不残留明文）/ 其他委托 LifecycleManager 非破坏式流转（排除 `SUPERSEDED`：`SUPERSEDED→ARCHIVED` 流转非法）；目标需维护受影响层级边 |
 | `purge_space` | `async (org: str, space: str) -> list[str]` | 物理删除该 Space 全部 user/agent/session 子 Scope 的 MemoryUnit 真源与索引，供 offboarding 调用 |
 | `sweep_expired` | `async () -> SweepResult` | 编排到期清扫：`LifecycleManager.sweep()` 纯计算 transition，按 (scope, 目标态) 分组执行——FORGOTTEN 组先 `IndexBuilder.remove(SOFT)` 移出检索索引、成功后 `LifecycleManager.transition` 回写真源；ARCHIVED 组只回写（`include_archived` 召回与 `as_of` 回溯仍需索引，不删）。顺序不变量（先删索引、后回写真源）保证 remove 失败时单元保持 ACTIVE、下轮 sweep 重新发现自愈；任一步失败的组计入 `SweepResult.failed`，不静默当成功。共享编排在 `engine_impl/sweep_support.py`，InMemoryEngine 直调 IndexBuilder，CloudEngine 按各 pipeline 的 builder 分组删除 |
@@ -312,13 +312,13 @@ LifecycleManager 不修改 `HierarchyStatus`。结构 status 的 ACTIVE 不会�
 
 **状态机**：
 ```
-active → superseded → archived → forgotten
+active → superseded → forgotten
 active → archived → forgotten
 ```
 
-非法流转：forgotten → *；superseded → active；archived → active。
+非法流转：forgotten → *；superseded → active；superseded → archived；archived → active。
 
-`supersede` 是 `update` SUPERSEDE 路径的专用入口，必须同步写入旧版本的 `t_invalid`。
+`supersede` 是 `update` SUPERSEDE 路径的专用入口，必须同步写入旧版本的 `t_invalid`；且严格要求源记录当前处于 `ACTIVE` 状态（禁止 `SUPERSEDED → SUPERSEDED` 自环，防止覆写历史失效边界与产生版本分叉）。KV 实现支持 `compare_exchange` 时以原子 CAS 提交旧版状态，并发漂移抛 `ConflictError`。
 
 ### Governor（`governance.py`）
 

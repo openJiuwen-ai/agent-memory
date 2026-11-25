@@ -1061,3 +1061,33 @@ def test_delete_compensation_restores_removed_md_blocks(tmp_path, monkeypatch) -
     # md 文件含回写的 u1 块（block one 回来）。
     restored = md_path.read_text(encoding="utf-8")
     assert "block one" in restored  # 第 1 块被补偿回写
+
+
+def test_authorized_kv_proxy_maps_compare_exchange_to_update_and_delete() -> None:
+    """compare_exchange 替换走 UPDATE 授权、删值走 DELETE 授权，不误要求 ADMIN。"""
+    scope = Scope(org="org", space="space", user="user")
+
+    class _DenyAdminSecurity(StorageSecurity):
+        def __init__(self) -> None:
+            self.recorded: list[StorageAction] = []
+
+        def authorize(
+            self,
+            access: StorageAccessContext | None,
+            scope_arg: Scope,
+            action: StorageAction,
+            resource: str,
+        ) -> None:
+            self.recorded.append(action)
+            if action is StorageAction.ADMIN:
+                raise PermissionDeniedError(action.value)
+
+    kv = InMemoryKVStore()
+    kv.insert(scope, "/memory/u1", b"v1")
+    security = _DenyAdminSecurity()
+    proxy_kv = make_storage(kv=kv, security=security).kv()
+
+    assert proxy_kv.compare_exchange(scope, "/memory/u1", b"v1", b"v2") is True
+    assert proxy_kv.compare_exchange(scope, "/memory/u1", b"v2", None) is True
+    assert security.recorded == [StorageAction.UPDATE, StorageAction.DELETE]
+    assert kv.exists(scope, "/memory/u1") is False

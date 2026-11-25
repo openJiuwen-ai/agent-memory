@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -982,6 +982,8 @@ def update(
 ```
 
 修正记忆：鉴权 UPDATE→委托 Engine。`MemoryPatch` 仅非 None 字段生效：`content` / `tier` / `tags`（整体替换）/ `system_metadata`（合并）/ `user_metadata`（合并）/ `t_valid` / `t_invalid` / `mode`。
+
+目标记录必须处于 `LifecycleState.ACTIVE`：对已 `SUPERSEDED`、`ARCHIVED` 或 `FORGOTTEN` 的记录调用 `update`（无论 `SUPERSEDE` 还是 `OVERWRITE`）在任何写入之前拒绝并抛 `ConflictError`（HTTP 409），避免从历史版本分叉出多个并存的 `ACTIVE` 现行版本或篡改已退役记录。调用方收到冲突后，可通过 `get(unit_id, scope, as_of=now)` 或刷新 `list`/`search` 取得当前有效的最新版本并重新发起修改。
 
 Schema source 的正文更新还会同步协调同 scope 的 Schema property 与实体关联，保留
 OVERWRITE/SUPERSEDE 的 ID、版本和有效期语义。接口签名与返回类型不变，`content=""`

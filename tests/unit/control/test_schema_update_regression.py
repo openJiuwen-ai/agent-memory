@@ -302,3 +302,36 @@ def test_schema_source_update_clears_property_consolidation_marks(world):
     assert active_properties
     for unit in active_properties:
         assert not unit.system_metadata.get("consolidation_done_at")
+
+
+def test_schema_update_rejects_non_active_source_with_conflict(world):
+    source, _ = world.add("陈静负责推荐算法迭代")
+    world.llm.facts = [("李红", "occupation", "李红负责推荐算法迭代", "")]
+    second = world.update(
+        source, MemoryPatch(content="李红负责推荐算法迭代", mode=UpdateMode.SUPERSEDE, t_valid=T1)
+    )
+
+    with pytest.raises(ConflictError):
+        asyncio.run(
+            world.engine.prepare_update(
+                source.id,
+                world.scope,
+                MemoryPatch(content="王五负责推荐算法迭代", mode=UpdateMode.SUPERSEDE),
+            )
+        )
+    with pytest.raises(ConflictError):
+        world.update(
+            source,
+            MemoryPatch(content="王五负责推荐算法迭代", mode=UpdateMode.SUPERSEDE),
+        )
+
+    active_sources = []
+    for unit in world.units():
+        if unit.lifecycle is not LifecycleState.ACTIVE:
+            continue
+        if unit.system_metadata.get("schema_source_evidence") is not True:
+            continue
+        if unit.system_metadata.get("extraction_mode") == "schema":
+            continue
+        active_sources.append(unit)
+    assert [unit.id for unit in active_sources] == [second.id]

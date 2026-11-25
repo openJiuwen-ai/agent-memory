@@ -88,6 +88,13 @@ from jiuwen_memory.control.engine_impl.temporal_support import (
 from jiuwen_memory.control.engine_impl.temporal_support import (
     valid_sort_key as _valid_sort_key,
 )
+from jiuwen_memory.control.engine_impl.update_support import (
+    build_new_or_rollback,
+    doc_supersede_lock,
+    ensure_unit_active_for_update,
+    finalize_supersede_or_rollback,
+    should_rollback_after_supersede_error,
+)
 from jiuwen_memory.control.evolution.background import (
     BackgroundDependencies,
     start_hierarchy_derivation,
@@ -727,6 +734,7 @@ class CloudEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> SourceUpdatePlan | None:
         old = self._load(scope, unit_id)
+        ensure_unit_active_for_update(old)
         return await self._prepare_update_from_old(old, patch)
 
     async def _prepare_update_from_old(
@@ -752,6 +760,7 @@ class CloudEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
         old = self._load(scope, unit_id)
+        ensure_unit_active_for_update(old)
         if self.requires_update_preparation(old, patch):
             plan = await self._prepare_update_from_old(old, patch)
             if plan is not None:
@@ -786,35 +795,73 @@ class CloudEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
             )
             return new
 
+        if patch.t_valid is None:
+            new.temporal.t_valid = _now()
+        self._supersede_unit(scope, old, new, new_index, new_pipeline)
+        return new
+
+    def _supersede_unit(
+        self,
+        scope: Scope,
+        old: MemoryUnit,
+        new: MemoryUnit,
+        new_index: IndexBuilder,
+        new_pipeline: str,
+    ) -> None:
         new.id = str(uuid.uuid4())
         new.supersedes = old.id
         new.lifecycle = LifecycleState.ACTIVE
-        if patch.t_valid is None:
-            new.temporal.t_valid = _now()
         # 文档模式 supersede：old 经 shadow.get_units 读回，coords 是 TRANSIENT 键
         # （dumps 剥除），读回的 old.system_metadata 无 coords → deepcopy 的 new 也无 →
         # domain_store.add 内 _md_path._project_of 读 coords 落空 → md_filename 重算成
         # memory/MEMORY.md（丢失 project 维）。从 old 的 md_filename（落盘键，
         # 不剥除）反推 project 回写 new 的 coords，让新版落进与旧版同一文件（版本链
         # 同文件追加，文档记忆 F08 §5.2.1）。非文档模式无此问题（KV 不走 md 分流）。
-        if self._domain_store.should_write_document():
+        document_mode = self._domain_store.should_write_document()
+        if document_mode:
             restore_coords_from_md_filename(new, old)
-        # 新版先落地再废旧版：任何时刻都有一个可读版本（同 InMemoryEngine）。
-        new_index.build([new])
-        # 文档模式（write_document=true）走与 dedup 同构的路径标记旧版 SUPERSEDED：
-        # 直接改 old 的 lifecycle 字段，经 index_builder.update 落 shadow
-        # （content_hash 不变→shadow.update_units 只覆写 unit_json+lifecycle 投影列，
-        # 文档记忆 F08 决策三）。绕开 ``self._lifecycle.supersede``——它是 KV LifecycleManager
-        # （LifecycleProducer 默认 target=kv），supersede/transition/sweep 都从 KVStore
-        # 取 unit，而文档模式真源已切 md+shadow、KV 不再持有 MemoryUnit，走它必
-        # NotFoundError（doc-mode-supersede-kv-lifecycle-break）。dedup 的 SUPERSEDE
-        # 决策（orchestrating_evolver._apply_decision）正是用这条路径，已有测试覆盖。
-        if self._domain_store.should_write_document():
-            old.lifecycle = LifecycleState.SUPERSEDED
-            old.temporal.t_invalid = new.temporal.t_valid or _now()
-            new_index.update([old])
+        # 新版先落地再废旧版：构建中途失败回滚新版；废旧真源失败仅在旧版未由本次
+        # 更新废止时回滚新版；非文档模式二级索引刷新放在真源废旧成功之后，不误删新版。
+        build_new_or_rollback(
+            new_id=new.id,
+            build_new=lambda: new_index.build([new]),
+            rollback_new=lambda: new_index.remove([new]),
+        )
+        invalid_at = new.temporal.t_valid or _now()
+        if document_mode:
+            write_attempted = False
+
+            def _finalize_doc_old() -> MemoryUnit:
+                nonlocal write_attempted
+                with doc_supersede_lock(self._domain_store, scope, old.id):
+                    latest = self._load(scope, old.id)
+                    ensure_unit_active_for_update(latest)
+                    latest.lifecycle = LifecycleState.SUPERSEDED
+                    latest.temporal.t_invalid = invalid_at
+                    write_attempted = True
+                    new_index.update([latest])
+                    return latest
+
+            old = finalize_supersede_or_rollback(
+                new_unit=new,
+                finalize_old=_finalize_doc_old,
+                rollback_new=lambda: new_index.remove([new]),
+                map_validation_error=False,
+                should_rollback=lambda: (
+                    True
+                    if not write_attempted
+                    else should_rollback_after_supersede_error(
+                        self._load, scope, old.id, invalid_at
+                    )
+                ),
+            )
         else:
-            old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
+            old = finalize_supersede_or_rollback(
+                new_unit=new,
+                finalize_old=lambda: self._lifecycle.supersede(scope, old.id, invalid_at),
+                rollback_new=lambda: new_index.remove([new]),
+                map_validation_error=True,
+            )
             self._update_indexes([old])
         update_metadata = {"pipeline": new_pipeline}
         logger.info(
@@ -825,7 +872,6 @@ class CloudEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
             scope_for_log(scope),
             metadata_for_log(update_metadata),
         )
-        return new
 
 
     async def delete(self, selector: DeleteSelector) -> list[str]:

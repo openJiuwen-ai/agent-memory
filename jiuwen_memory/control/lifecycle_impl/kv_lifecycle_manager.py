@@ -23,7 +23,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from jiuwen_memory.common.errors import NotFoundError, PolicyError, ValidationError
+from jiuwen_memory.common.errors import (
+    ConflictError,
+    NotFoundError,
+    PolicyError,
+    UnsupportedCapabilityError,
+    ValidationError,
+)
 from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.type_def import (
@@ -41,7 +47,7 @@ from jiuwen_memory.control.lifecycle import (
 )
 from jiuwen_memory.control.policy import PolicyManager, PolicyProducer
 from jiuwen_memory.storage.domain_store import DomainStore
-from jiuwen_memory.storage.kv import KVStore, list_units, load_units
+from jiuwen_memory.storage.kv import KVStore, list_units, load_memory_unit, load_units
 from jiuwen_memory.storage.store_manager import StoreManagerProducer, resolve_name
 
 logger = get_logger(__name__)
@@ -172,25 +178,63 @@ class KVLifecycleManager(LifecycleManager):
         )
 
     def supersede(self, scope: Scope, unit_id: str, invalid_at: datetime) -> MemoryUnit:
-        units = self._load_units(scope, [unit_id])
-        for unit in units:
-            _ensure_transition_allowed(unit.lifecycle, LifecycleState.SUPERSEDED, unit.id)
-            unit.lifecycle = LifecycleState.SUPERSEDED
-            unit.temporal.t_invalid = invalid_at
-            self._write_units(scope, [unit])
-            logger.info(
-                "Lifecycle.supersede: unit_id=%s scope=%s invalid_at=%s",
+        doc_mode = self._domain_store is not None and self._domain_store.should_write_document()
+        key = memory_key(unit_id)
+        raw: bytes | None = None
+        if doc_mode:
+            units = self._domain_store.get(scope, [unit_id])
+            unit = units[0] if units else None
+        else:
+            try:
+                raw = self._kv.get(scope, key)
+            except NotFoundError:
+                unit = None
+            else:
+                unit = load_memory_unit(raw, scope=scope, key=key)
+        if unit is None:
+            logger.warning(
+                "Lifecycle.supersede missing unit: unit_id=%s scope=%s",
                 unit_id,
                 scope_for_log(scope),
-                invalid_at,
             )
-            return unit
-        logger.warning(
-            "Lifecycle.supersede missing unit: unit_id=%s scope=%s",
+            raise NotFoundError("memory_unit", unit_id)
+        # supersede 只能废止当前 ACTIVE 版本，禁止 SUPERSEDED -> SUPERSEDED 自环
+        # （否则会覆写历史失效边界并放行从旧版分叉）；transition 仍保留同态幂等。
+        if unit.lifecycle is not LifecycleState.ACTIVE:
+            raise ValidationError(
+                f"invalid lifecycle transition for {unit.id!r}: "
+                f"{unit.lifecycle.value} -> {LifecycleState.SUPERSEDED.value}"
+            )
+        unit.lifecycle = LifecycleState.SUPERSEDED
+        unit.temporal.t_invalid = invalid_at
+        if doc_mode:
+            self._domain_store.update(scope, [unit])
+        else:
+            new_raw = dumps(unit)
+            try:
+                exchanged = self._kv.compare_exchange(scope, key, raw, new_raw)
+            except UnsupportedCapabilityError:
+                logger.warning(
+                    "Lifecycle.supersede compare_exchange unsupported, falling back to update: "
+                    "unit_id=%s scope=%s",
+                    unit_id,
+                    scope_for_log(scope),
+                )
+                self._kv.update(scope, key, new_raw)
+            else:
+                if not exchanged:
+                    raise ConflictError(
+                        "memory_unit",
+                        unit_id,
+                        message=f"memory unit {unit_id!r} changed concurrently during supersede",
+                    )
+        logger.info(
+            "Lifecycle.supersede: unit_id=%s scope=%s invalid_at=%s",
             unit_id,
             scope_for_log(scope),
+            invalid_at,
         )
-        raise NotFoundError("memory_unit", unit_id)
+        return unit
 
     def _iter_scope_units(self) -> Iterator[tuple[Scope, MemoryUnit]]:
         """per-scope 流式枚举真源 unit：逐 scope 读完即释放，不物化全库。

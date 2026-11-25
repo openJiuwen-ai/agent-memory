@@ -113,6 +113,13 @@ from jiuwen_memory.control.engine_impl.temporal_support import (
 from jiuwen_memory.control.engine_impl.temporal_support import (
     valid_sort_key as _valid_sort_key,
 )
+from jiuwen_memory.control.engine_impl.update_support import (
+    build_new_or_rollback,
+    doc_supersede_lock,
+    ensure_unit_active_for_update,
+    finalize_supersede_or_rollback,
+    should_rollback_after_supersede_error,
+)
 from jiuwen_memory.control.ingest_job import (
     check_ingest_cancelled,
 )
@@ -647,6 +654,7 @@ class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> SourceUpdatePlan | None:
         old = self._load(scope, unit_id)
+        ensure_unit_active_for_update(old)
         return await self._prepare_update_from_old(old, patch)
 
     async def _prepare_update_from_old(
@@ -668,6 +676,7 @@ class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
         self, unit_id: str, scope: Scope, patch: MemoryPatch
     ) -> MemoryUnit:
         old, store = self._load_with_domain(scope, unit_id)
+        ensure_unit_active_for_update(old)
         if self.requires_update_preparation(old, patch):
             plan = await self._prepare_update_from_old(old, patch)
             if plan is not None:
@@ -695,40 +704,92 @@ class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
                 scope_for_log(scope),
             )
         else:  # SUPERSEDE：新 id、记版本链，旧版标记 superseded
-            new.id = str(uuid.uuid4())
-            new.supersedes = old.id
-            new.lifecycle = LifecycleState.ACTIVE
             if patch.t_valid is None:
                 new.temporal.t_valid = _now()
-            if document_mode:
-                # 文档模式 supersede：old 经 shadow 读回 coords 是 TRANSIENT 键（dumps
-                # 剥除），deepcopy 的 new 无 coords → domain_store.add 内 _project_of
-                # 读 coords 落空 → 新版落错 md 文件。从 old 的 md_filename（落盘键，不
-                # 剥除）反推 project 回写 new 的 coords（对齐 CloudEngine，文档记忆 F08 §5.2.1）。
-                restore_coords_from_md_filename(new, old)
-            # 新版先落地再废旧版：任何时刻都有一个可读版本。反过来的话，若 build 失败，
-            # 旧版已 SUPERSEDED 而新版尚未存在，这条记忆既退出活跃召回又无新版可读。
-            index.build([new])
-            if document_mode or isolated:
-                # 文档模式绕过 KV lifecycle（doc-mode-supersede-kv-lifecycle-break）：
-                # KVLifecycleManager.supersede 从 KVStore 取 unit，文档模式真源在
-                # shadow、KV 不持有 MemoryUnit，走它必 NotFoundError。直接改 old 落
-                # shadow（content_hash 不变→shadow.update_units 只覆写 unit_json +
-                # lifecycle 投影列，文档记忆 F08 决策三）。对齐 CloudEngine。
-                old.lifecycle = LifecycleState.SUPERSEDED
-                old.temporal.t_invalid = new.temporal.t_valid or _now()
-                index.update([old])
-            else:
-                old = self._lifecycle.supersede(scope, old.id, new.temporal.t_valid)
-                index.update([old])
-            logger.info(
-                "AgentEngine.update supersede: old_id=%s new_id=%s scope=%s t_valid=%s",
-                old.id,
-                new.id,
-                scope_for_log(scope),
-                new.temporal.t_valid,
+            self._supersede_unit(
+                scope,
+                old,
+                new,
+                index,
+                store=store,
+                document_mode=document_mode,
+                isolated=isolated,
             )
         return new
+
+    def _supersede_unit(
+        self,
+        scope: Scope,
+        old: MemoryUnit,
+        new: MemoryUnit,
+        index: IndexBuilder,
+        *,
+        store: DomainStore,
+        document_mode: bool,
+        isolated: bool,
+    ) -> None:
+        new.id = str(uuid.uuid4())
+        new.supersedes = old.id
+        new.lifecycle = LifecycleState.ACTIVE
+        if document_mode:
+            # 文档模式 supersede：old 经 shadow 读回 coords 是 TRANSIENT 键（dumps
+            # 剥除），deepcopy 的 new 无 coords → domain_store.add 内 _project_of
+            # 读 coords 落空 → 新版落错 md 文件。从 old 的 md_filename（落盘键，不
+            # 剥除）反推 project 回写 new 的 coords（对齐 CloudEngine，文档记忆 F08 §5.2.1）。
+            restore_coords_from_md_filename(new, old)
+        # 新版先落地再废旧版：构建中途失败回滚新版；废旧真源失败仅在旧版未由本次
+        # 更新废止时回滚新版；非文档模式二级索引刷新放在真源废旧成功之后，不误删新版。
+        build_new_or_rollback(
+            new_id=new.id,
+            build_new=lambda: index.build([new]),
+            rollback_new=lambda: index.remove([new]),
+        )
+        invalid_at = new.temporal.t_valid or _now()
+        if document_mode or isolated:
+            write_attempted = False
+
+            def _finalize_doc_old() -> MemoryUnit:
+                nonlocal write_attempted
+                with doc_supersede_lock(store, scope, old.id):
+                    latest, _ = self._load_with_domain(scope, old.id)
+                    ensure_unit_active_for_update(latest)
+                    latest.lifecycle = LifecycleState.SUPERSEDED
+                    latest.temporal.t_invalid = invalid_at
+                    write_attempted = True
+                    index.update([latest])
+                    return latest
+
+            old = finalize_supersede_or_rollback(
+                new_unit=new,
+                finalize_old=_finalize_doc_old,
+                rollback_new=lambda: index.remove([new]),
+                map_validation_error=False,
+                should_rollback=lambda: (
+                    True
+                    if not write_attempted
+                    else should_rollback_after_supersede_error(
+                        lambda s, u: self._load_with_domain(s, u)[0],
+                        scope,
+                        old.id,
+                        invalid_at,
+                    )
+                ),
+            )
+        else:
+            old = finalize_supersede_or_rollback(
+                new_unit=new,
+                finalize_old=lambda: self._lifecycle.supersede(scope, old.id, invalid_at),
+                rollback_new=lambda: index.remove([new]),
+                map_validation_error=True,
+            )
+            index.update([old])
+        logger.info(
+            "AgentEngine.update supersede: old_id=%s new_id=%s scope=%s t_valid=%s",
+            old.id,
+            new.id,
+            scope_for_log(scope),
+            new.temporal.t_valid,
+        )
 
 
     def _scan_delete_units(
