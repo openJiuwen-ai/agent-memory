@@ -439,20 +439,27 @@ Return exactly one JSON object:
 }}
 
 Issue categories:
-- conflict: memories assert different, mutually exclusive current values for the property
-  (e.g. "works at A" vs "works at B" for the same present tense).
+- conflict: memories assert different, mutually exclusive values for a single-value slot — values
+  that cannot all be true at the same time. Different timestamps do NOT make them complementary:
+  the later record supersedes the earlier one, because the slot still holds one value at a time
+  (one name, one owner, one current position).
 - duplicate: exactly the same fact.
 - near_duplicate: the same fact with minor wording or detail differences.
-- complementary: non-conflicting fragments about the same fact/event that may be merged, OR values
-  at clearly different times that together form a timeline. A later value is NOT a conflict when
-  the earlier one is simply a historical state.
+- complementary: non-conflicting fragments about the same fact that may be merged, OR distinct
+  events or periods recorded at clearly different times that coexist as a timeline. Timeline
+  reasoning applies only when several values can be true at the same time or describe successive
+  events (e.g. "moved to Berlin in 2020" and "left Berlin in 2023"). It must NOT be used to keep
+  mutually exclusive alternatives of a single-value slot alive.
 
 Rules:
 - Emit one group per problem type. Memories with the same problem share one group.
 - A group may contain more than two memories.
 - Use only memory ids that appear in the cluster; never invent ids.
 - Do not use real-world knowledge to decide which value is correct.
-- When uncertain whether two values conflict, use "complementary" rather than "conflict".
+- When uncertain: if the values are alternative answers to the same question (mutually
+  exclusive), use "conflict"; the action planner is instructed not to archive when times are
+  equal or unknown. Use "complementary" only when the values can coexist as fragments of one
+  fact or as successive events.
 - Output only JSON, no Markdown, no commentary.
 
 Cluster (entity: {entity_name}; property: {property_name}):
