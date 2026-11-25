@@ -239,6 +239,24 @@ registry 未配置或 key 缺失时回退把值本身当文本用（兼容内联
 向上抛出最后一个错误，以区别于策略成功返回合法空结果。没有动态 prompt 时委托配置的旧
 Extractor。
 
+#### source_id 绑定容错
+
+LLM 抽取返回的 `source_id` 需绑定到本批次的真实 `MemoryUnit.id`。绑定规则按
+`resolve_source_id()` 三级解析：
+
+1. **精确匹配** —— 剥掉 `[ID: ...]` 外壳后与批次内 unit id 相等；
+2. **UUID 第一段匹配** —— 模型常把短 id 补成完整 UUID，取 `split("-")[0]` 比较；
+3. **编辑距离 ≤1 且批次内唯一** —— 容错单字符抄写错误。
+
+第 3 级刻意要求唯一：两个候选距离相同时无法判定归属，返回 `None`（丢弃该候选），
+宁可重试也不能绑错——绑错会污染记忆真源。
+
+`source_id` 校验的职责是「防止候选绑到错误的 unit」，**不是「拒绝近似写法」**。
+LLM 抄写短 id 时的单字符错误属于同类失败，不应升级为整轮流程的致命错误。
+
+实测依据：Qwen3.5-9B 把 `ccbf1798` 抄成 `ccb1798-018c-432c-8f0c-2b73131b0f2f`，
+导致该 unit 全部 7 个候选失效、`candidates` 为空、整个抽取抛错。
+
 `VideoMemoryExtractor` 是 Extractor 的视频实现：只消费 ACTIVE 的源视频单元，跳过已有
 `system_metadata.modal_type=multimodal` 的派生单元，将 Normalizer 输出的 clips/events
 转换为 CLM/ELM `MemoryUnit`。两类单元使用 `system_metadata.memory_level` 标识层级，

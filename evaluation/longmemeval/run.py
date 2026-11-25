@@ -23,6 +23,7 @@ from evaluation.shared.env import load_evaluation_env
 load_evaluation_env()
 
 from evaluation.longmemeval.adapter import LongMemEvalDataset  # noqa: E402
+from evaluation.longmemeval.checkpoint import fingerprint_of  # noqa: E402
 from evaluation.longmemeval.harness import purge_run_data  # noqa: E402
 from evaluation.longmemeval.metrics import mem0_longmemeval_prompt as _prompts  # noqa: E402
 from evaluation.longmemeval.metrics.ir_metrics import ir_metrics  # noqa: E402
@@ -162,6 +163,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", default=None, help="机器可读结果路径")
     parser.add_argument("--artifact-dir", default=None, help="单题无损审计产物目录")
     parser.add_argument(
+        "--resume-from",
+        default=None,
+        help="断点目录：已完成的题目自动跳过，用于长任务续跑",
+    )
+    parser.add_argument(
         "--judge-model",
         default=os.getenv("JUDGE_MODEL") or os.getenv("MODEL_NAME"),
     )
@@ -188,6 +194,30 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-timeout", type=float, default=900.0)
     parser.add_argument("--judge-strict", action="store_true")
     return parser
+
+
+def build_checkpoint_fingerprint(args) -> str:
+    """把全部影响评测结果的参数压成指纹。
+
+    遗漏任何一项，不同配置的断点就会互相命中，静默复用错误结果
+    （已实测：--samples 变化曾复用上一批题）。
+    """
+    return fingerprint_of(
+        data=args.data,
+        config=args.config,
+        scope_org=args.scope_org,
+        samples=args.samples,
+        max_questions=args.max_questions,
+        question_ids=getattr(args, "question_ids", None),
+        oracle_sessions=args.oracle_sessions,
+        infer=getattr(args, "infer", None),
+        granularity=args.granularity,
+        dialogue_turn_max_chars=args.dialogue_turn_max_chars,
+        recall_top_k=args.recall_top_k,
+        answer_cutoff=args.answer_cutoff,
+        answer_cutoffs=getattr(args, "answer_cutoffs", None),
+        concurrency=getattr(args, "concurrency", None),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -293,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
         concurrency=args.concurrency,
         artifact_dir=artifact_dir,
+        checkpoint_dir=getattr(args, "resume_from", None),
+        checkpoint_fingerprint=build_checkpoint_fingerprint(args),
     )
     logger.info(to_markdown(result))
 

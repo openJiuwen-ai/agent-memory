@@ -201,6 +201,20 @@ exactly from one of the supplied [Memory ID] values.
 
 If unsure, prefer "add" (to avoid losing information)."""
 
+# 批量判重的分批护栏。一次调用把所有候选拼成单个 prompt 会顶爆服务端上下文窗口：
+# 每条候选还带最多 3 条召回的既有记忆，长对话场景下 30 条候选实测 14997 token，
+# 超过 llama-server 的单槽位容量 12288 后直接 400，整批判定退化成逐条单判。
+# 条数上限与总字符预算并用——只按条数挡不住少量超长内容，只按预算可能切出过多小批。
+# 取值与 llm_reranker 的 resolve 护栏同量级（24000 总字符 / 4000 单条）。
+_DEDUP_BATCH_MAX_ITEMS = 12
+_DEDUP_BATCH_UNIT_CHARS = 4000
+_DEDUP_BATCH_TOTAL_CHARS = 24000
+# 输出预算按条数线性增长。固定上限会让多候选批次的 JSON 被截断，解析失败后
+# 整批退化成逐条单判——既慢又改变判定口径。每条 entry 实测约 54 token，
+# 取 96 留足 reason 字段变长的余量；BASE 覆盖 JSON 数组的外层结构。
+_DEDUP_BATCH_OUTPUT_TOKENS_PER_ITEM = 96
+_DEDUP_BATCH_OUTPUT_TOKENS_BASE = 128
+
 _DEDUP_BATCH_SYSTEM_PROMPT = """You are a memory deduplication assistant. For EACH candidate \
 memory, determine whether
 it is a new fact, an update to an existing memory, a replacement of an existing memory, or a \
@@ -658,8 +672,9 @@ class OrchestratingEvolver(Evolver):
         # ---- 第二段：批量 LLM 判定 ----
         decisions: dict[str, DedupDecision] = {}
         targets: dict[str, MemoryUnit] = {}
+        batch_items = [(c, hits) for c, _, _, hits in need_llm]
+        llm_batches = len(self._split_dedup_batches(batch_items)) if batch_items else 0
         if need_llm:
-            batch_items = [(c, hits) for c, _, _, hits in need_llm]
             decisions = self._llm_dedup_decide_batch(batch_items, targets=targets)
 
         # ---- 第三段：逐条执行 ----
@@ -698,7 +713,7 @@ class OrchestratingEvolver(Evolver):
             noop_count,
             len(direct_noop),
             len(need_llm),
-            1 if need_llm else 0,
+            llm_batches,
         )
         trace_event(
             type(self).__name__,
@@ -1214,16 +1229,58 @@ class OrchestratingEvolver(Evolver):
         *,
         targets: dict[str, MemoryUnit] | None = None,
     ) -> dict[str, DedupDecision]:
-        """批量 LLM 判定：一次调用判多条候选，返回 {candidate_id: decision}。
+        """批量 LLM 判定：分若干次调用判完所有候选，返回 {candidate_id: decision}。
 
         ``items`` 为 (candidate, hit_units) 列表。prompt 格式（紧凑）：
         [cid]: <candidate content>
           e|<existing_id>|<score>: <existing content>
         候选之间用 ``---`` 分隔。解析失败或缺项的候选回退为单条判定。
+
+        候选按总字符预算分批：把所有候选无上限地拼成单个 prompt 会让长对话场景
+        顶爆服务端上下文窗口（实测 30 条候选 = 14997 token > n_ctx_slot=12288，
+        服务端直接 400，整批判定退化为逐条单判）。分批保持单次调用有界。
         """
         if not items:
             return {}
 
+        decisions: dict[str, DedupDecision] = {}
+        for batch in self._split_dedup_batches(items):
+            decisions.update(self._llm_dedup_decide_batch_once(batch, targets=targets))
+        return decisions
+
+    def _split_dedup_batches(
+        self, items: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]]
+    ) -> list[list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]]]:
+        """按总字符预算把候选切成若干批，每批至少一条。
+
+        预算与单条上限沿用 ``llm_reranker`` 的同一组护栏常量：只按条数截断挡不住
+        「少量超长内容」把上下文顶爆，只按字符预算又可能切出过多小批。两者并用。
+        """
+        batches: list[list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]]] = []
+        current: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]] = []
+        budget = _DEDUP_BATCH_TOTAL_CHARS
+        for item in items:
+            cand, hits = item
+            cost = min(len(cand.content), _DEDUP_BATCH_UNIT_CHARS)
+            for unit, _ in hits[:3]:
+                cost += min(len(unit.content), _DEDUP_BATCH_UNIT_CHARS)
+            if current and (budget - cost < 0 or len(current) >= _DEDUP_BATCH_MAX_ITEMS):
+                batches.append(current)
+                current = []
+                budget = _DEDUP_BATCH_TOTAL_CHARS
+            current.append(item)
+            budget -= cost
+        if current:
+            batches.append(current)
+        return batches
+
+    def _llm_dedup_decide_batch_once(
+        self,
+        items: list[tuple[MemoryUnit, list[tuple[MemoryUnit, float]]]],
+        *,
+        targets: dict[str, MemoryUnit] | None = None,
+    ) -> dict[str, DedupDecision]:
+        """对一批（已受预算约束）候选执行一次批量 LLM 判定。"""
         # 构建紧凑批量 prompt
         blocks: list[str] = []
         for cand, hits in items:
@@ -1265,7 +1322,16 @@ class OrchestratingEvolver(Evolver):
         )
 
         try:
-            response = self._llm.chat(messages, temperature=0, max_tokens=1024)
+            # 输出预算必须随单批候选数增长：每条 entry 至少要有 candidate_id /
+            # decision / existing_id / reason 四个字段，实测约 163 字符 ≈ 54 token。
+            # 固定 1024 只能容纳约 18 条，超过就截断 JSON，解析失败后退化成逐条单判
+            # （实测 45 题评测里发生 109 次）。
+            response = self._llm.chat(
+                messages,
+                temperature=0,
+                max_tokens=_DEDUP_BATCH_OUTPUT_TOKENS_PER_ITEM * len(items)
+                + _DEDUP_BATCH_OUTPUT_TOKENS_BASE,
+            )
             logger.debug(
                 "[trace/consolidate] llm_raw_response | resp_len=%d | raw_response=%s",
                 len(response) if response else 0,
