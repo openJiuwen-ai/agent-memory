@@ -235,28 +235,6 @@ async def memory_continuity_recover(
 
 
 @mcp.tool()
-async def memory_quarantine_source(
-    scope: dict, source_key: str, reason: str, ctx: Context = None
-) -> dict:
-    """隔离目标范围内的来源，须提供来源标识与原因；需要空间管理权限。"""
-    return await _invoke(
-        "quarantine_source",
-        {"scope": scope, "source_key": source_key, "reason": reason},
-        context=ctx,
-    )
-
-
-@mcp.tool()
-async def memory_release_source(
-    scope: dict, source_key: str, ctx: Context = None
-) -> bool:
-    """解除目标范围内的来源隔离，返回此前是否处于隔离状态；需要空间管理权限。"""
-    return await _invoke(
-        "release_source", {"scope": scope, "source_key": source_key}, context=ctx
-    )
-
-
-@mcp.tool()
 async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     content: str,
     scope: dict,

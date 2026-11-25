@@ -22,7 +22,6 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -78,15 +77,8 @@ except ImportError:  # pragma: no cover
 pytestmark = pytest.mark.unit
 
 SCOPE = {"org": "local", "user": "developer"}
+MCP_EXCLUDED_VERBS = {"quarantine_source", "release_source"}
 COLLECTIVE_DIMENSION = {"org": "local", "space": "team-a", "kind": "team", "id": "alpha"}
-
-
-@pytest.mark.parametrize("name", ["memory_quarantine_source", "memory_release_source"])
-def test_source_governance_tools_are_registered(name) -> None:
-    """Full MCP exposure includes governance; MemoryAPI still authorizes calls."""
-    tools = {tool.name: tool for tool in asyncio.run(mcp_main.mcp.list_tools())}
-    assert name in tools
-    assert "ctx" not in tools[name].inputSchema["properties"]
 
 
 @pytest.mark.parametrize("fail_in_session", [False, True])
@@ -115,12 +107,6 @@ def test_stdio_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -
 # 工具名 → (MemoryAPI 方法名, 代表性最小合法 payload)。payload 同时锁「形状可过
 # parse_request」——工具转发给 _invoke 的键名集合必须与这里给出的契约一致。
 TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
-    "memory_quarantine_source": (
-        "quarantine_source", {"scope": SCOPE, "source_key": "source-a", "reason": "review"},
-    ),
-    "memory_release_source": (
-        "release_source", {"scope": SCOPE, "source_key": "source-a"},
-    ),
     "memory_read_md_file": (
         "read_md_file",
         {"context": {"scope": SCOPE}, "md_filename": "USER.md", "line_range": [1, 2]},
@@ -371,9 +357,19 @@ def _wait_job_terminal(job_id: str, scope: dict[str, Any]) -> dict[str, Any]:
 def test_mcp_tool_registry_covers_expected_verbs() -> None:
     registered = {name for name in dir(mcp_main) if name.startswith("memory_")}
     assert registered == set(TOOL_CASES), registered ^ set(TOOL_CASES)
-    assert registered == {f"memory_{verb}" for verb in api_method_names()}
+    assert MCP_EXCLUDED_VERBS <= api_method_names()
+    assert registered == {f"memory_{verb}" for verb in api_method_names() - MCP_EXCLUDED_VERBS}
     for _tool_name, (verb, _payload) in TOOL_CASES.items():
         assert is_known_verb(verb), verb
+
+
+@pytest.mark.parametrize("verb", sorted(MCP_EXCLUDED_VERBS))
+def test_source_governance_tools_cannot_be_called(verb: str) -> None:
+    payload = {"scope": SCOPE, "source_key": "source-a"}
+    if verb == "quarantine_source":
+        payload["reason"] = "review"
+    with pytest.raises(ToolError, match=f"Unknown tool: memory_{verb}"):
+        asyncio.run(mcp_main.mcp.call_tool(f"memory_{verb}", payload))
 
 
 def test_collective_membership_roundtrip_through_mcp(tmp_path, monkeypatch) -> None:
@@ -399,14 +395,20 @@ def test_collective_membership_roundtrip_through_mcp(tmp_path, monkeypatch) -> N
             return structured["result"]
 
         await mcp_main.memory_create_space(spec={"org": manager["org"], "space": manager["space"]})
-        roster = await call("init_collective_dimension", members=[{"scope": manager, "role": "manager"}])
-        assert [(row["scope"]["user"], row["role"]) for row in roster] == [(manager["user"], "manager")]
+        roster = await call(
+            "init_collective_dimension", members=[{"scope": manager, "role": "manager"}],
+        )
+        assert [(row["scope"]["user"], row["role"]) for row in roster] == [
+            (manager["user"], "manager"),
+        ]
         await call("add_collective_members", members=[{"scope": member}])
         active = await call("list_collective_members", status="active")
         assert {row["scope"]["user"] for row in active} == {manager["user"], member["user"]}
         assert await call("remove_collective_members", targets=[member]) == 1
         departed = await call("list_collective_members", status="departed")
-        assert [(row["scope"]["user"], row["status"]) for row in departed] == [(member["user"], "departed")]
+        assert [(row["scope"]["user"], row["status"]) for row in departed] == [
+            (member["user"], "departed"),
+        ]
 
     try:
         asyncio.run(roundtrip())
@@ -416,47 +418,9 @@ def test_collective_membership_roundtrip_through_mcp(tmp_path, monkeypatch) -> N
 
 def test_collective_initialization_requires_authority(kernel) -> None:
     with pytest.raises(RuntimeError, match="permission denied"):
-        asyncio.run(mcp_main.memory_init_collective_dimension(COLLECTIVE_DIMENSION, [{"scope": SCOPE}]))
-
-
-def test_source_governance_roundtrip_through_mcp(tmp_path, monkeypatch) -> None:
-    """Exercise authentication, API authorization and persistent governance together."""
-    import yaml
-
-    settings = yaml.safe_load(Path("examples/role_memory/server.yaml").read_text(encoding="utf-8"))
-    settings.update(fixed_dev_management_config("root")["memory_api"])
-    for name, spec in settings["kv_store"].items():
-        spec["params"]["db_path"] = str(tmp_path / f"{name}.db")
-    settings["permission"]["default"]["params"]["db_path"] = str(tmp_path / "permissions.db")
-    config = mcp_main.with_local_dev_security(
-        mcp_main.load_config([mcp_main.OFFLINE, {"memory_api": settings}])
-    )
-    server = mcp_main.Server.build(config)
-    monkeypatch.setattr(mcp_main, "_SRV", server)
-    target = {"org": "local", "space": "role-project"}
-    try:
-        asyncio.run(mcp_main.memory_create_space(spec=target))
-        record = asyncio.run(mcp_main.memory_quarantine_source(
-            scope=target, source_key="workbuddy", reason="review source",
-        ))
-        assert record["reason"] == "review source"
-        assert asyncio.run(mcp_main.memory_release_source(
-            scope=target, source_key="workbuddy",
-        )) is True
-        assert asyncio.run(mcp_main.memory_release_source(
-            scope=target, source_key="workbuddy",
-        )) is False
-    finally:
-        server.close(wait=True)
-
-
-@pytest.mark.parametrize("verb", ["quarantine_source", "release_source"])
-def test_source_governance_rejects_unauthorized_target(kernel, verb) -> None:
-    kwargs = {"scope": {"org": "other", "space": "managed"}, "source_key": "workbuddy"}
-    if verb == "quarantine_source":
-        kwargs["reason"] = "review"
-    with pytest.raises(RuntimeError, match="permission denied"):
-        asyncio.run(getattr(mcp_main, f"memory_{verb}")(**kwargs))
+        asyncio.run(
+            mcp_main.memory_init_collective_dimension(COLLECTIVE_DIMENSION, [{"scope": SCOPE}]),
+        )
 
 
 def test_mcp_ingest_cancel_forwards_target_scope(monkeypatch) -> None:

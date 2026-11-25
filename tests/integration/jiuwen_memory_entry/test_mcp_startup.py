@@ -77,14 +77,13 @@ def test_streamable_http_initializes_and_lists_tools(
         names = {tool["name"] for tool in response.json()["result"]["tools"]}
         assert "memory_add" in names
         assert {
-            "memory_quarantine_source",
-            "memory_release_source",
             "memory_init_collective_dimension",
             "memory_add_collective_members",
             "memory_remove_collective_members",
             "memory_list_collective_members",
         } <= names
-        assert len(names) == 48
+        assert names.isdisjoint({"memory_quarantine_source", "memory_release_source"})
+        assert len(names) == 46
         response = client.post(
             "/mcp",
             headers=session_headers,

@@ -1882,7 +1882,7 @@ SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 searc
 | 未知写入核对与投影修复 | `continuity_recover(scope, recovery: ContinuityRecovery, *, security) -> dict` |
 | 来源隔离与解除（治理面） | `quarantine_source(scope, source_key, reason, *, security) -> dict`；`release_source(scope, source_key, *, security) -> bool` |
 
-HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `memory_search` 携带接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover` 与（角色模式）`memory_continuity_relation`（沿用 `memory_<方法名>`；JiuwenSwarm 适配器为 `agent_memory_*`）；`quarantine_source` / `release_source` 同时通过内核 MCP 的 `memory_quarantine_source` / `memory_release_source` 暴露，继续由 MemoryAPI 校验 `MANAGE_SPACE` 权限。不再提供跨空间发布（以现有 `grant` ＋ `continuity_task(attach)` 挂引用代替）与双写切换。
+HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `memory_search` 携带接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover` 与（角色模式）`memory_continuity_relation`（沿用 `memory_<方法名>`；JiuwenSwarm 适配器为 `agent_memory_*`）；`quarantine_source` / `release_source` 通过 SDK、HTTP 和 CLI 提供，继续由 MemoryAPI 校验 `MANAGE_SPACE` 权限；内核 MCP 不注册这两个工具。不再提供跨空间发布（以现有 `grant` ＋ `continuity_task(attach)` 挂引用代替）与双写切换。
 
 仅显式配置 `continuity`（且 `mode` 为 `continuity` 或 `role`）才启用；未启用时带接续参数的 `add`/`batch_add`/`search` 与上述专用入口返回 `UnsupportedCapabilityError`。接续模式下 `continuity_relation`、`continuity_recover(kind=relation)` 返回 `UnsupportedCapabilityError`，`search` 带非 general duty 时降级（见下）。scope 必须是 org+space 的项目空间。API 执行项目权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。关系真源存于 Registry KV，不出现在普通 get/list/search 结果中。
 

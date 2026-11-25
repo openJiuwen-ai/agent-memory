@@ -574,7 +574,7 @@ Provider/MCP Adapter 只负责注册、可信上下文、参数转换及结构�
 
 ## 来源治理与列表过滤
 
-来源治理入口为 `quarantine_source(scope, source_key, reason)` 与 `release_source(scope, source_key)`，归入治理组（HTTP、CLI 与内核 MCP 暴露；MCP 使用 memory_ 前缀，继续执行 MANAGE_SPACE 判权）。不可用来源集合 = 配置 `enabled=false` 的连接 ∪ 当前项目被隔离的连接。
+来源治理入口为 `quarantine_source(scope, source_key, reason)` 与 `release_source(scope, source_key)`，归入治理组（SDK、HTTP 和 CLI 提供，继续执行 `MANAGE_SPACE` 判权；内核 MCP 不暴露）。不可用来源集合 = 配置 `enabled=false` 的连接 ∪ 当前项目被隔离的连接。
 
 - `search`（含视图路径）：不可用来源的条目在候选阶段过滤，关系的提交连接不可用时该关系不参与展开。
 - `list`：不可用来源集合作为系统过滤谓词 `NOT system_metadata.continuity_connector IN {不可用连接}` 下推到 Engine，在分页与 `count` 之前生效，保证 `count`、`offset` / `limit` 一致；不得在取页后逐条抛 `PermissionDeniedError` 导致整页失败。
