@@ -52,7 +52,6 @@ finally:
 from pydantic import ValidationError as PydanticValidationError  # noqa: E402
 
 from jiuwen_memory.api import (  # noqa: E402
-    COLLECTIVE_MANAGEMENT_OPERATIONS,
     Credentials,
     Scope,
     Surface,
@@ -78,12 +77,8 @@ except ImportError:  # pragma: no cover
 pytestmark = pytest.mark.unit
 
 SCOPE = {"org": "local", "user": "developer"}
-
-
-@pytest.mark.parametrize("name", ["memory_quarantine_source", "memory_release_source"])
-def test_source_governance_tools_are_not_agent_facing(name) -> None:
-    """来源治理只在管理面暴露（角色记忆 F11 D4）：MCP 是 Agent 入口，不应注册这两个工具。"""
-    assert name not in {tool.name for tool in asyncio.run(mcp_main.mcp.list_tools())}
+MCP_EXCLUDED_VERBS = {"quarantine_source", "release_source"}
+COLLECTIVE_DIMENSION = {"org": "local", "space": "team-a", "kind": "team", "id": "alpha"}
 
 
 @pytest.mark.parametrize("fail_in_session", [False, True])
@@ -314,6 +309,22 @@ TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {
         "remove_space_member",
         {"org": "local", "space": "team-a", "member": SCOPE},
     ),
+    "memory_init_collective_dimension": (
+        "init_collective_dimension",
+        {"dimension": COLLECTIVE_DIMENSION, "members": [{"scope": SCOPE}]},
+    ),
+    "memory_add_collective_members": (
+        "add_collective_members",
+        {"dimension": COLLECTIVE_DIMENSION, "members": [{"scope": SCOPE}]},
+    ),
+    "memory_remove_collective_members": (
+        "remove_collective_members",
+        {"dimension": COLLECTIVE_DIMENSION, "targets": [SCOPE]},
+    ),
+    "memory_list_collective_members": (
+        "list_collective_members",
+        {"dimension": COLLECTIVE_DIMENSION, "status": "active"},
+    ),
 }
 
 
@@ -343,21 +354,73 @@ def _wait_job_terminal(job_id: str, scope: dict[str, Any]) -> dict[str, Any]:
 # --- A. 契约锁：工具签名与 MemoryAPI 契约零漂移 -------------------------------- #
 
 
-# 治理面只在 HTTP / CLI 暴露，不进 Agent 工具清单（角色记忆 F11 D4）。
-_MCP_HIDDEN_VERBS = {"quarantine_source", "release_source", *COLLECTIVE_MANAGEMENT_OPERATIONS}
-
-
 def test_mcp_tool_registry_covers_expected_verbs() -> None:
     registered = {name for name in dir(mcp_main) if name.startswith("memory_")}
     assert registered == set(TOOL_CASES), registered ^ set(TOOL_CASES)
-    # Agent 入口覆盖除治理面之外的每个公开方法，且治理面确实不暴露。
-    assert registered == {
-        f"memory_{verb}" for verb in api_method_names() if verb not in _MCP_HIDDEN_VERBS
-    }
-    assert not registered & {f"memory_{verb}" for verb in _MCP_HIDDEN_VERBS}
+    assert MCP_EXCLUDED_VERBS <= api_method_names()
+    assert registered == {f"memory_{verb}" for verb in api_method_names() - MCP_EXCLUDED_VERBS}
     for _tool_name, (verb, _payload) in TOOL_CASES.items():
         assert is_known_verb(verb), verb
-        assert verb not in _MCP_HIDDEN_VERBS, verb
+
+
+@pytest.mark.parametrize("verb", sorted(MCP_EXCLUDED_VERBS))
+def test_source_governance_tools_cannot_be_called(verb: str) -> None:
+    payload = {"scope": SCOPE, "source_key": "source-a"}
+    if verb == "quarantine_source":
+        payload["reason"] = "review"
+    with pytest.raises(ToolError, match=f"Unknown tool: memory_{verb}"):
+        asyncio.run(mcp_main.mcp.call_tool(f"memory_{verb}", payload))
+
+
+def test_collective_membership_roundtrip_through_mcp(tmp_path, monkeypatch) -> None:
+    settings = {
+        "globals": {"write_document": True, "watch_document": False},
+        "markdown_store": {"default": {"target": "local", "params": {"root": str(tmp_path)}}},
+        "shadow_index": {"default": {"target": "sqlite"}},
+    }
+    settings.update(fixed_dev_management_config("root")["memory_api"])
+    config = mcp_main.with_local_dev_security(
+        mcp_main.load_config([mcp_main.OFFLINE, {"memory_api": settings}])
+    )
+    server = mcp_main.Server.build(config)
+    monkeypatch.setattr(mcp_main, "_SRV", server)
+    manager = {**SCOPE, "space": COLLECTIVE_DIMENSION["space"]}
+    member = {**manager, "user": "reviewer"}
+
+    async def roundtrip() -> None:
+        async def call(verb, **fields):
+            _, structured = await mcp_main.mcp.call_tool(
+                f"memory_{verb}", {"dimension": COLLECTIVE_DIMENSION, **fields},
+            )
+            return structured["result"]
+
+        await mcp_main.memory_create_space(spec={"org": manager["org"], "space": manager["space"]})
+        roster = await call(
+            "init_collective_dimension", members=[{"scope": manager, "role": "manager"}],
+        )
+        assert [(row["scope"]["user"], row["role"]) for row in roster] == [
+            (manager["user"], "manager"),
+        ]
+        await call("add_collective_members", members=[{"scope": member}])
+        active = await call("list_collective_members", status="active")
+        assert {row["scope"]["user"] for row in active} == {manager["user"], member["user"]}
+        assert await call("remove_collective_members", targets=[member]) == 1
+        departed = await call("list_collective_members", status="departed")
+        assert [(row["scope"]["user"], row["status"]) for row in departed] == [
+            (member["user"], "departed"),
+        ]
+
+    try:
+        asyncio.run(roundtrip())
+    finally:
+        server.close(wait=True)
+
+
+def test_collective_initialization_requires_authority(kernel) -> None:
+    with pytest.raises(RuntimeError, match="permission denied"):
+        asyncio.run(
+            mcp_main.memory_init_collective_dimension(COLLECTIVE_DIMENSION, [{"scope": SCOPE}]),
+        )
 
 
 def test_mcp_ingest_cancel_forwards_target_scope(monkeypatch) -> None:

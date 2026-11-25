@@ -619,7 +619,7 @@ agent-memory 是统一记忆底座。外部内容如果只存原文、不进入�
 | 写入或修正判断 | 有目标空间及对应资源的操作权，记录真实提交者；作者职责仅作业务背景 |
 | 让接任者读取私有经验 | 来源空间管理者经 `grant` 显式授权后挂到任务背景；不能把私有原文自动摘要成公开事实 |
 | 撤销共享 | 后续读取立即重新判权；已交付给外部产品的内容无法由记忆服务保证远程擦除 |
-| 隔离异常来源 | 有治理权限者经治理接口 `quarantine_source` 指定来源连接与原因（`release_source` 解除），后续查询和经验引用停止把该来源用于可执行建议，并可审计；治理接口只在管理面暴露，不进入 Agent 工具清单 |
+| 隔离异常来源 | 有治理权限者经治理接口 `quarantine_source` 指定来源连接与原因（`release_source` 解除），后续查询和经验引用停止把该来源用于可执行建议，并可审计；治理接口通过 SDK、HTTP 或 CLI 使用，继续执行 MANAGE_SPACE 权限检查 |
 
 来源隔离采用**先阻断后整理**：保存受治理的来源状态，读侧检查命中记录及其依赖，先阻止继续使用，再整理关联记忆。不把"删除了源记录但派生摘要仍可读"视为完成。门禁覆盖普通 get、list、search（含职责视图）、inspect、trace 和交接等所有返回内容的入口，不能只在角色视图中过滤。列表类入口（search、list）把不可用连接集合（停用 ∪ 隔离）作为系统过滤谓词 `NOT system_metadata.continuity_connector IN {...}` 下推到 Engine，在分页与 `count` 之前生效，保证计数与分页一致，不因某一条被隔离而整页失败；单条读取（get）仍返回 `PermissionDeniedError`，不区分不存在。上述来源门禁和派生可见性检查是本特性必须新增的控制，不能假定现有授权接口已自动完成。
 
@@ -970,8 +970,8 @@ globals:
 | `continuity_task` | 创建、查询、绑定、解绑、挂背景、关闭任务 | `TaskRequest` | 任务快照、修订号、是否重放 | get/find 需项目 READ；其他需 WRITE，修改既有任务限创建负责人；bind 还校验连接属于本组织和项目 | 两档 |
 | `continuity_relation` | 登记、复核或撤回一条证据关系 | `RelationRecord`、`expected_revision` | `status`（projecting / committed）、`relation_id`、`revision` | 项目 WRITE；修订既有关系另需按关系头快照做 UPDATE 判权 | 角色模式，否则 `UnsupportedCapabilityError` |
 | `continuity_recover` | 核对写入确认丢失的事件、核对派生构建、修复关系投影 | `ContinuityRecovery` | 核对结果、`next_action` | 项目 WRITE；事件恢复逐个引用 UPDATE 判权并校验原连接身份 | 两档（`kind=relation` 角色模式） |
-| `quarantine_source` | 治理：按来源连接隔离，记录原因 | `connector`、`reason` | 隔离记录 | 项目 `MANAGE_SPACE` | 两档 |
-| `release_source` | 治理：解除来源隔离 | `connector` | 布尔，表示之前是否处于隔离 | 项目 `MANAGE_SPACE` | 两档 |
+| `quarantine_source` | 治理：按来源连接隔离，记录原因 | `source_key`、`reason` | 隔离记录 | 项目 `MANAGE_SPACE` | 两档 |
+| `release_source` | 治理：解除来源隔离 | `source_key` | 布尔，表示之前是否处于隔离 | 项目 `MANAGE_SPACE` | 两档 |
 
 `search` 的附加约束：
 
@@ -983,9 +983,9 @@ globals:
 
 本是首批对外发布前的直接调整：九个 `role_*` 均属本特性首版新增、尚未发布到外部调用方，因此直接删除 / 改名、不设废弃周期（S09 §14 的兼容义务适用于已发布的冻结接口）。移除后调用旧签名得到「方法不存在」——HTTP 404、CLI / SDK `AttributeError`、MCP 工具注册列表里不再出现——改名项的新名见上表，`role_record` / `role_view` 迁移到 `add` / `batch_add` / `search` 的接续参数，不对旧 `role_*` 保留别名或双实现。
 
-**暴露方式**：HTTP 通过 `POST /v1/<方法名>` 暴露，CLI 由 `MemoryAPI` 签名反射生成，两者包含全部 43 个方法。内核 MCP server（`jiuwen_memory_entry/mcp_server`）沿用 `memory_<方法名>`：`memory_add` / `memory_search` 增加接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover`，角色模式再注册 `memory_continuity_relation`；治理方法不注册为 MCP 工具。面向外部 Agent 的通用 MCP 桥与 JiuwenSwarm provider 的工具清单见 7.3。
+**暴露方式**：HTTP 通过 `POST /v1/<方法名>` 暴露，CLI 由 `MemoryAPI` 签名反射生成，两者均由同一份公开接口契约生成，方法总览见 [S02](../../specs/S02-memory-api.md)。内核 MCP server（`jiuwen_memory_entry/mcp_server`）沿用 `memory_<方法名>`：`memory_add` / `memory_search` 增加接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover`，角色模式再注册 `memory_continuity_relation`；来源治理通过 SDK、HTTP 或 CLI 使用，内核 MCP 不注册这两个工具；产品适配器工具集另按其配置决定。面向外部 Agent 的通用 MCP 桥与 JiuwenSwarm provider 的工具清单见 7.3。
 
-**当前实现**：已落地为目标形态——43 个公开方法，`role_*` 并入 `add` / `batch_add` / `search` 并改名为 `continuity_task` / `continuity_relation` / `continuity_recover` 与治理面的 `quarantine_source` / `release_source`；MCP 注册 `memory_continuity_*`（治理方法不注册），适配器注册 `agent_memory_continuity_*`。
+**当前实现**：已落地为目标形态：`role_*` 并入 `add` / `batch_add` / `search` 并改名为 `continuity_task` / `continuity_relation` / `continuity_recover` 与治理面的 `quarantine_source` / `release_source`；内核 MCP 注册 `memory_continuity_*`，来源治理保留在 SDK、HTTP 和 CLI，适配器注册 `agent_memory_continuity_*`。
 
 ### 6.2 时序图
 
@@ -1370,9 +1370,9 @@ sequenceDiagram
     participant Reg
     participant Mem
     Note over Adm,Mem: 步骤 1
-    Adm->>API: quarantine_source(scope, connector, reason)
+    Adm->>API: quarantine_source(scope, source_key, reason)
     API->>API: 项目 MANAGE_SPACE 判权
-    API->>Svc: quarantine_source(connector, reason, operator)
+    API->>Svc: quarantine_source(scope, source_key, reason, operator=主体指纹)
     Note over Adm,Mem: 步骤 2
     Svc->>Reg: 写隔离记录（原因、操作者、时间）
     API->>API: 审计（含 reason）
@@ -1387,14 +1387,14 @@ sequenceDiagram
     API->>API: 逐条复核依赖证据，不合格的条目剔除并从 count 扣除
     API-->>Adm: MemoryListResult
     Note over Adm,Mem: 步骤 5
-    Adm->>API: release_source(scope, connector)
-    API->>Svc: release_source → 删除隔离记录
+    Adm->>API: release_source(scope, source_key)
+    API->>Svc: release_source(scope, source_key) → 删除隔离记录
     API-->>Adm: 是否之前处于隔离
 ```
 
 步骤说明（编号对应图中的「步骤 N」标注）：
 
-1. 治理人员发现某个来源连接有问题（例如产品被入侵或导入了错误历史）时，调用 `quarantine_source`，指定连接名和原因。需要项目 `MANAGE_SPACE` 权限；这两个接口只在 HTTP / CLI 管理面暴露，不进入 Agent 工具清单，避免被注入内容诱导的 Agent 隔离或解除来源。
+1. 治理人员发现某个来源连接有问题（例如产品被入侵或导入了错误历史）时，调用 `quarantine_source`，指定连接名和原因。需要项目 `MANAGE_SPACE` 权限；这两个接口通过 SDK、HTTP 或 CLI 使用，内核 MCP 不暴露；来源内容不构成管理授权。
 2. 服务在 Registry 中写入隔离记录（原因、操作者、时间），API 写带原因的审计。隔离按连接生效，不影响其他来源。
 3. 隔离立即生效，采用"先阻断后整理"：数据不删除，读侧在每次返回内容前检查。单条读取（`get`、`inspect`、`trace`、视图回查）遇到该来源的内容即拒绝；依赖该来源的派生结果因依赖复核失败同样不可读；由该连接登记的关系在视图展开时按不可用处理。
 4. 列表类入口不整页报错：`list` 把"停用 ∪ 隔离"的连接集合作为系统过滤条件，在分页和计数之前下推到存储层，结果里直接不含这些条目，`count` 与页面一致；之后再逐条复核依赖证据，不合格的条目剔除并同步从 `count` 扣除。普通 `search` 在返回前逐条跳过来自不可用连接的结果，带依赖的派生结果不经普通检索返回，只能通过会复核依赖的点读获取。
@@ -1642,11 +1642,11 @@ Windows 持久 Registry 使用非阻塞 msvcrt 字节锁，POSIX 沿用 flock，
 | `agent_memory_continuity_recover` | `continuity_recover` | ✓（`kind` 仅 event / derivation） | ✓ |
 | `agent_memory_continuity_relation` | `continuity_relation` | 不注册 | ✓ |
 
-治理方法 `quarantine_source` / `release_source` 只在 HTTP / CLI 管理面暴露，不进入 Agent 工具清单，避免被注入内容诱导的 Agent 隔离或解除来源。批量导入走导入脚本调用 `batch_add`，也不作为 Agent 工具。适配器启动时从服务端 health / capabilities 读取 `continuity_mode` 决定注册哪些工具；读取失败时按接续模式注册（少注册比误注册安全）。
+来源隔离与解除隔离不对内核 MCP 开放，外部产品适配器默认也不提供这两个治理工具。批量导入走导入脚本调用 `batch_add`，也不作为 Agent 工具。适配器启动时从服务端 health / capabilities 读取 `continuity_mode` 决定注册哪些工具；读取失败时按接续模式注册（少注册比误注册安全）。
 
 工具 schema 由公开 DTO 反射生成（`jiuwen_memory_adapter/continuity/__init__.py` 的 `tool_schemas`），嵌套字段完整保留；duty 不做枚举限制，以便使用配置新增的策略。宿主无法表达所需 schema 时由适配器显式转换并测试，不静默丢弃职责或路径。Agent 不需要掌握全部边类型，关系策略由服务端维护。
 
-**当前实现**：适配器工具按档位生成：两档都有 `agent_memory_continuity_task`、`agent_memory_continuity_recover`，角色档另有 `agent_memory_continuity_relation`，治理工具默认不暴露；写入与检索沿用 `agent_memory_add` / `agent_memory_search`。内核 MCP 已删除治理工具，但仍静态注册 `memory_continuity_relation`（12.2）。
+**当前实现**：适配器工具按档位生成：两档都有 `agent_memory_continuity_task`、`agent_memory_continuity_recover`，角色档另有 `agent_memory_continuity_relation`，治理工具默认不暴露；写入与检索沿用 `agent_memory_add` / `agent_memory_search`。内核 MCP 不注册来源治理工具，仍静态注册 `memory_continuity_relation`（12.2）。
 
 ### 7.4 G0 接入验收清单
 

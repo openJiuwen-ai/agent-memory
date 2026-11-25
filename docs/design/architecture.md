@@ -273,8 +273,8 @@ Portal 页面复用现有 `/v1` 记忆操作，模型配置使用同一实例的
 | `continuity_task` | 登记、绑定和读取跨产品任务 | `scope: Scope`；`request: TaskRequest`；`*`；`security: RequestSecurityContext` | `dict` |
 | `continuity_relation` | 角色模式，登记、复核或撤回证据关系；真源存 Registry KV | `scope: Scope`；`relation: RelationRecord`；`expected_revision: int`；`*`；`security: RequestSecurityContext` | `dict` |
 | `continuity_recover` | 核对未知写入、修复关系投影、核对派生 | `scope: Scope`；`recovery: ContinuityRecovery`；`*`；`security: RequestSecurityContext` | `dict` |
-| `quarantine_source` | 治理面，隔离来源连接并记录原因 | `scope: Scope`；`connector: str`；`reason: str`；`*`；`security: RequestSecurityContext` | `dict` |
-| `release_source` | 治理面，解除来源隔离 | `scope: Scope`；`connector: str`；`*`；`security: RequestSecurityContext` | `bool` |
+| `quarantine_source` | 治理面，隔离来源连接并记录原因 | `scope: Scope`；`source_key: str`；`reason: str`；`*`；`security: RequestSecurityContext` | `dict` |
+| `release_source` | 治理面，解除来源隔离 | `scope: Scope`；`source_key: str`；`*`；`security: RequestSecurityContext` | `bool` |
 | `admin_get` | admin：读取一项运行时可变策略的当前值（直达 PolicyManager）。管理面以根 `Scope()` 鉴权 | `key: str`；`*`；`security: RequestSecurityContext` | `str` |
 | `admin_set` | admin：调整一项运行时策略（启停索引、检索/演进开关等；键未知或不可变配置抛 `PolicyError`） | `key: str`；`value: str`；`*`；`security: RequestSecurityContext` | `None` |
 | `admin_all` | admin：列出全部运行时策略及当前值 | `*`；`security: RequestSecurityContext` | `dict[str, str]` |

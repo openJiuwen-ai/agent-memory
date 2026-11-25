@@ -1880,9 +1880,9 @@ SDK、HTTP、MCP、CLI 通过已有 extensions 通道传入，无需新增 searc
 | 任务登记与绑定 | `continuity_task(scope, request: TaskRequest, *, security) -> dict` |
 | 关系登记、复核、撤回（角色模式） | `continuity_relation(scope, relation: RelationRecord, expected_revision: int, *, security) -> dict` |
 | 未知写入核对与投影修复 | `continuity_recover(scope, recovery: ContinuityRecovery, *, security) -> dict` |
-| 来源隔离与解除（治理面） | `quarantine_source(scope, connector, reason, *, security) -> dict`；`release_source(scope, connector, *, security) -> bool` |
+| 来源隔离与解除（治理面） | `quarantine_source(scope, source_key, reason, *, security) -> dict`；`release_source(scope, source_key, *, security) -> bool` |
 
-HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `memory_search` 携带接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover` 与（角色模式）`memory_continuity_relation`（沿用 `memory_<方法名>`；JiuwenSwarm 适配器为 `agent_memory_*`）；`quarantine_source` / `release_source` 只在管理面暴露，不进入 Agent 工具清单。不再提供跨空间发布（以现有 `grant` ＋ `continuity_task(attach)` 挂引用代替）与双写切换。
+HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `memory_search` 携带接续参数，另注册 `memory_continuity_task`、`memory_continuity_recover` 与（角色模式）`memory_continuity_relation`（沿用 `memory_<方法名>`；JiuwenSwarm 适配器为 `agent_memory_*`）；`quarantine_source` / `release_source` 通过 SDK、HTTP 和 CLI 提供，继续由 MemoryAPI 校验 `MANAGE_SPACE` 权限；内核 MCP 不注册这两个工具。不再提供跨空间发布（以现有 `grant` ＋ `continuity_task(attach)` 挂引用代替）与双写切换。
 
 仅显式配置 `continuity`（且 `mode` 为 `continuity` 或 `role`）才启用；未启用时带接续参数的 `add`/`batch_add`/`search` 与上述专用入口返回 `UnsupportedCapabilityError`。接续模式下 `continuity_relation`、`continuity_recover(kind=relation)` 返回 `UnsupportedCapabilityError`，`search` 带非 general duty 时降级（见下）。scope 必须是 org+space 的项目空间。API 执行项目权限、任务负责人、可信连接身份及关系修订 UPDATE 权校验；引用按真实 Scope 点读，不因 duty、任务绑定或图路径扩权。关系真源存于 Registry KV，不出现在普通 get/list/search 结果中。
 
@@ -1997,14 +1997,14 @@ HTTP `/v1/<verb>` 与 CLI 由 MemoryAPI 契约反射；MCP 由 `memory_add` / `m
 
 ### quarantine_source / release_source：来源隔离与解除
 
-签名：`quarantine_source(scope, connector, reason, *, security) -> dict`；`release_source(scope, connector, *, security) -> bool`。
+签名：`quarantine_source(scope, source_key, reason, *, security) -> dict`；`release_source(scope, source_key, *, security) -> bool`。
 
 | 参数/字段 | 默认值 | 含义 |
 |---|---|---|
-| `connector` | 必填 | 隔离的来源连接名 |
+| `source_key` | 必填 | 隔离的来源连接标识，使用既有连接名 |
 | `reason` | 必填非空 | 隔离原因，随记录持久化并写入入口审计 detail |
 
-两方法归入治理面，按项目空间 `MANAGE_SPACE` 判权并落入口审计；隔离记录持久化于 Registry `/continuity/sources/{connector}`，含 `reason`、`operator`（主体指纹）与 `quarantined_at`，释放即删除。隔离后：search（含视图）过滤该来源条目与其提交的关系；list 以系统过滤谓词下推、分页与 count 一致；get 单条返回 `PermissionDeniedError`。隔离只影响该来源，不改写正文、不删除关系；`release_source` 对未隔离来源返回 `False`。
+两方法归入治理面，按项目空间 `MANAGE_SPACE` 判权并落入口审计；隔离记录持久化于 Registry `/continuity/sources/{source_key}`，含 `reason`、`operator`（主体指纹）与 `quarantined_at`，释放即删除。隔离后：search（含视图）过滤该来源条目与其提交的关系；list 以系统过滤谓词下推、分页与 count 一致；get 单条返回 `PermissionDeniedError`。隔离只影响该来源，不改写正文、不删除关系；`release_source` 对未隔离来源返回 `False`。
 
 ### 显式事件时间与接续字段保留
 
@@ -2064,6 +2064,6 @@ API 返回终端。普通 HTTP `/v1`、CLI 与 MCP 机器工具不注册这些�
 
 `read_md_file` 和 `edit_md_file` 可在可信群体请求中使用 `extensions.collective_target`。项目、团队和 Group 共享文档要求当前维度的有效成员权，个人文档按当前专家身份，画像按用户归属。项目可指定 `MEMORY.md` 或合法日历日期 `YYYY-MM-DD.md`，画像使用 `USER.md`，其余目标使用 `MEMORY.md`。Team 的项目日期读取分别应用各文件的行范围，返回普通和群体项目日记条目。修订须在两个文件的可见正文中唯一定位。编辑修订唯一可识别的正文块，保留原条目身份与权限相关元数据，审计记录实际编辑者。
 
-`init_collective_dimension`、`add_collective_members`、`remove_collective_members`、`list_collective_members` 提供成员治理。Swarm 专用管理身份可初始化全员为普通成员的名册。初始化幂等，显式添加可恢复成员权。移除保留贡献历史，同时撤销该维度的成员权限。
+`init_collective_dimension`、`add_collective_members`、`remove_collective_members`、`list_collective_members` 提供成员治理。MCP 以 `memory_<方法名>` 注册这四个工具，沿用 MemoryAPI 的授权规则，不接受调用方自行提交的 `security`。Swarm 专用管理身份可初始化全员为普通成员的名册。初始化幂等，显式添加可恢复成员权。移除保留贡献历史，同时撤销该维度的成员权限。
 
 管理员显式传入 `dimension=None` 时可在当前组织内按稳定专家身份撤回团队与 Group 成员权，用于专家模板退役。该入口仍要求组织管理身份。
