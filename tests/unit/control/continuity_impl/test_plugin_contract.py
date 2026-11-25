@@ -1,11 +1,12 @@
-"""record_batch 插件契约与旧签名兼容入口（S09 §14）。"""
+"""record_batch 与任务变更的插件契约（S09 §14）。"""
 
 import inspect
 
 import pytest
 
 from jiuwen_memory.api.memory_api_impl.continuity_ops import _call_record_batch
-from jiuwen_memory.control.continuity import Continuity
+from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.control.continuity import Continuity, require_task_connector_policy
 
 pytestmark = pytest.mark.unit
 
@@ -76,6 +77,64 @@ def test_var_keyword_plugin_is_treated_as_new_contract():
     _call_record_batch(plugin, _ARGS, {}, stop_on_error=False)
     assert len(plugin.calls) == 1
     assert plugin.calls[0]["continue_on_error"] is True
+
+
+class _TaskContractPlugin(Continuity):
+    """Modern task contract; the remaining abstract methods are irrelevant stubs."""
+
+    def health(self):
+        return {}
+
+    def task(self, scope, request, owner, read, *, connector_policy):
+        return {}
+
+    def task_owner(self, scope, task_id):
+        return ""
+
+    def binding_connector(self, scope, task_id, binding_id):
+        return ""
+
+    def record(self, scope, event, connector, read, write, *,
+               query_output=None, request_fingerprint=""):
+        return {}
+
+    def relation(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def relation_current(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def validate_resolution(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def view(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def repair(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def recovery_owner(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def recover(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+def test_continuity_task_contract_requires_connector_policy():
+    require_task_connector_policy(_TaskContractPlugin(), "modern")
+
+    class _LegacyTaskPlugin(_TaskContractPlugin):
+        def task(self, scope, request, owner, read):
+            return {}
+
+    with pytest.raises(ValidationError, match="connector_policy"):
+        require_task_connector_policy(_LegacyTaskPlugin(), "legacy")
+
+    class _VarKwargsTaskPlugin(_TaskContractPlugin):
+        def task(self, *args, **kwargs):
+            return {}
+
+    require_task_connector_policy(_VarKwargsTaskPlugin(), "kwargs")
 
 
 def test_matching_error_from_a_modern_plugin_is_not_retried():

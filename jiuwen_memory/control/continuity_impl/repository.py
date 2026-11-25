@@ -63,6 +63,7 @@ class ContinuityRepository:
         change: Callable[[dict], None],
         *,
         initial: dict | None = None,
+        receipt_meta: dict | None = None,
     ) -> dict:
         digest = fingerprint(payload)
         with self.lock:
@@ -84,7 +85,11 @@ class ContinuityRepository:
                 raise ConflictError("revision", message="stale control revision")
             change(record)
             record["revision"] = expected + 1
-            receipts[request_id] = {"digest": digest, "revision": record["revision"]}
+            receipts[request_id] = {
+                "digest": digest,
+                "revision": record["revision"],
+                **(receipt_meta or {}),
+            }
             # Fixed receipt window. Old revisions still cannot be replayed.
             while len(receipts) > 256:
                 oldest_request = min(receipts, key=lambda request: receipts[request]["revision"])

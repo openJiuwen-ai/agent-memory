@@ -5,11 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-<<<<<<< HEAD
-| 最近一次修订日期 | 2026-11-25 |
-=======
 | 最近一次修订日期 | 2026-11-26 |
->>>>>>> ffe1055d (fix(memory): 拒绝更新非 active 记忆防止版本链分叉)
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F10-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/construction/F13-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
@@ -778,7 +774,7 @@ API 经 MemoryQueryService 的校验端口在单/跨空间分流前调用；Engi
 交到扇出后吞并。健康检查聚合默认与白名单 retriever，按身份去重，依赖失败不隐藏。
 ## 职责关系接续应用端口
 
-`Continuity` 编排任务控制记录、事件幂等、关系真源登记、视图和修复；按配置 `mode` 分两档（continuity 不装配图与视图，role 装配）；关系真源存 Registry KV 的关系头与不可变修订记录，不再是 MemoryUnit；Producer 命名空间为 continuity。端口接受已授权 Scope、管理主体摘要及读写回调，不接收 identity/security 或执行认证。API 通过 task_owner/binding_connector/relation_head/event_key 取得最小鉴权事实，不访问控制存储。Registry 状态和请求回执单记录原子提交，要求具名持久 KV 的单写声明与排他写者能力，不依赖 KV CAS；`batch_add` 的接续项按任务分组、经 `record_batch` 先登记 unknown 回执、一次写全部正文、每任务一次背景追加与一次修订（契约默认实现逐条回退到 `record`）；不承诺跨正文、索引、控制记录的事务。图投影交构建层 IndexBuilder，视图交检索层 RoleView，详见 [S11](S11-cross-agent-continuity.md)。
+`Continuity` 编排任务控制记录、事件幂等、关系真源登记、视图和修复；按配置 `mode` 分两档（continuity 不装配图与视图，role 装配）；关系真源存 Registry KV 的关系头与不可变修订记录，不再是 MemoryUnit；Producer 命名空间为 continuity。端口接受已授权 Scope、管理主体摘要及读写回调，不接收 identity/security 或执行认证。API 通过 task_owner/binding_connector/relation_head/event_key 取得最小鉴权事实，不访问控制存储。任务变更经 `task(..., connector_policy=...)` 在 Registry 单写锁内按同一任务记录完成 owner、绑定归属、回执归属与绑定状态判定；connector 配置校验由 API 以策略回调注入（owner bind 保留细分 ValidationError，参与者统一 PermissionDeniedError），参与者回执在同一原子提交内记录服务端提交主体与确认的 connector 标识。装配期校验 `task` 签名接受 `connector_policy`，未迁移的实现装配失败。Registry 状态和请求回执单记录原子提交，要求具名持久 KV 的单写声明与排他写者能力，不依赖 KV CAS；`batch_add` 的接续项按任务分组、经 `record_batch` 先登记 unknown 回执、一次写全部正文、每任务一次背景追加与一次修订（契约默认实现逐条回退到 `record`）；不承诺跨正文、索引、控制记录的事务。图投影交构建层 IndexBuilder，视图交检索层 RoleView，详见 [S11](S11-cross-agent-continuity.md)。
 
 ### 接续证据保留与资源所有权
 

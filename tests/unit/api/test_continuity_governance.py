@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from jiuwen_memory.api import (
+    ConflictError,
     Context,
     ContinuityWrite,
     MemoryRef,
@@ -26,6 +27,7 @@ from jiuwen_memory.api import (
 from jiuwen_memory.common.errors import RelocationInProgressError, ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.types import Role
+from tests.support.connector_policies import AllowAllConnectorPolicy
 from tests.support.scoped_authenticator import ScopedAuthenticator
 
 pytestmark = pytest.mark.unit
@@ -108,6 +110,607 @@ def test_task_hierarchy_uses_project_read_permission_for_parent(tmp_path):
 
 def _gov(ops):
     return _security(ops, Role.ADMIN)
+
+
+def test_bound_agent_can_self_bind_and_close_but_cannot_manage_task_metadata(tmp_path):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    workers = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "permission-task", title="Scoped work"),
+            security=_security(owner),
+        )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "bind",
+                    "foreign-bind",
+                    task["task_id"],
+                    task["revision"],
+                    connector_id="workbuddy",
+                    context_id="foreign-session",
+                ),
+                security=_security(workers["hermes"]),
+            )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "bind",
+                    "metadata-bind",
+                    task["task_id"],
+                    task["revision"],
+                    connector_id="workbuddy",
+                    context_id="worker-session",
+                    title="Changed by worker",
+                ),
+                security=_security(workers["workbuddy"]),
+            )
+
+        bound = api.continuity_task(
+            project,
+            TaskRequest(
+                "bind",
+                "self-bind",
+                task["task_id"],
+                task["revision"],
+                connector_id="workbuddy",
+                context_id="worker-session",
+            ),
+            security=_security(workers["workbuddy"]),
+        )
+        binding_id = bound["task"]["bindings"][-1]["binding_id"]
+        bind_request = TaskRequest(
+            "bind",
+            "self-bind",
+            task["task_id"],
+            task["revision"],
+            connector_id="workbuddy",
+            context_id="worker-session",
+        )
+        api._continuity_connectors["workbuddy"] = {
+            **config["globals"]["continuity_connectors"]["workbuddy"],
+            "enabled": False,
+        }
+        replayed_bind = api.continuity_task(
+            project, bind_request, security=_security(workers["workbuddy"])
+        )
+        assert replayed_bind["replayed"] is True
+        assert replayed_bind["revision"] == bound["revision"]
+
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "close",
+                    "foreign-close",
+                    task["task_id"],
+                    bound["revision"],
+                    binding_id=binding_id,
+                ),
+                security=_security(workers["hermes"]),
+            )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "close", "unbound-close", task["task_id"], bound["revision"],
+                ),
+                security=_security(workers["workbuddy"]),
+            )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "close",
+                    "metadata-close",
+                    task["task_id"],
+                    bound["revision"],
+                    binding_id=binding_id,
+                    title="Changed while closing",
+                ),
+                security=_security(workers["workbuddy"]),
+            )
+
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "close",
+                    "disabled-close",
+                    task["task_id"],
+                    bound["revision"],
+                    binding_id=binding_id,
+                ),
+                security=_security(workers["workbuddy"]),
+            )
+        api._continuity_connectors["workbuddy"] = {
+            **config["globals"]["continuity_connectors"]["workbuddy"],
+            "projects": ["other-project"],
+        }
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "close",
+                    "uncovered-project-close",
+                    task["task_id"],
+                    bound["revision"],
+                    binding_id=binding_id,
+                ),
+                security=_security(workers["workbuddy"]),
+            )
+        api._continuity_connectors["workbuddy"] = {
+            **config["globals"]["continuity_connectors"]["workbuddy"],
+        }
+
+        close_request = TaskRequest(
+            "close",
+            "worker-close",
+            task["task_id"],
+            bound["revision"],
+            binding_id=binding_id,
+        )
+        closed = api.continuity_task(
+            project,
+            close_request,
+            security=_security(workers["workbuddy"]),
+        )
+        assert closed["task"]["state"] == "closed"
+        assert closed["revision"] == bound["revision"] + 1
+        api._continuity_connectors["workbuddy"] = {
+            **config["globals"]["continuity_connectors"]["workbuddy"],
+            "enabled": False,
+        }
+        replayed_close = api.continuity_task(
+            project, close_request, security=_security(workers["workbuddy"])
+        )
+        assert replayed_close["replayed"] is True
+        assert replayed_close["revision"] == closed["revision"]
+    finally:
+        runtime.close()
+
+
+def test_bind_connector_validation_distinguishes_failure_reason(tmp_path):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    original = config["globals"]["continuity_connectors"]["workbuddy"]
+    connectors = api._continuity_connectors
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "connector-validation"), security=_security(owner)
+        )
+        checks = (
+            ("missing", None, "not configured"),
+            ("workbuddy", {**original, "enabled": False}, "disabled"),
+            (
+                "workbuddy",
+                {
+                    **original,
+                    "actor": {**original["actor"], "org": "other"},
+                },
+                "organization",
+            ),
+            ("workbuddy", {**original, "projects": ["other-project"]}, "project"),
+        )
+        for index, (connector_id, settings, message) in enumerate(checks):
+            if settings is not None:
+                connectors["workbuddy"] = settings
+            with pytest.raises(ValidationError, match=message):
+                api.continuity_task(
+                    project,
+                    TaskRequest(
+                        "bind",
+                        f"connector-validation-{index}",
+                        task["task_id"],
+                        task["revision"],
+                        connector_id=connector_id,
+                        context_id="session",
+                    ),
+                    security=_security(owner),
+                )
+    finally:
+        runtime.close()
+
+
+def test_non_owner_connector_and_binding_failures_are_permission_denied(tmp_path):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    worker = Scope(**config["globals"]["continuity_connectors"]["workbuddy"]["actor"])
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "non-owner-errors"), security=_security(owner)
+        )
+        api._continuity_connectors["hermes"] = {
+            **config["globals"]["continuity_connectors"]["hermes"],
+            "enabled": False,
+        }
+        for request in (
+            TaskRequest(
+                "bind",
+                "missing-connector",
+                task["task_id"],
+                task["revision"],
+                connector_id="missing",
+                context_id="session",
+            ),
+            TaskRequest(
+                "bind",
+                "foreign-disabled-connector",
+                task["task_id"],
+                task["revision"],
+                connector_id="hermes",
+                context_id="session",
+            ),
+            TaskRequest(
+                "unbind",
+                "missing-binding-unbind",
+                task["task_id"],
+                task["revision"],
+                binding_id="missing",
+            ),
+            TaskRequest(
+                "close",
+                "missing-binding-close",
+                task["task_id"],
+                task["revision"],
+                binding_id="missing",
+            ),
+        ):
+            with pytest.raises(PermissionDeniedError):
+                api.continuity_task(project, request, security=_security(worker))
+    finally:
+        runtime.close()
+
+
+def test_bound_agent_can_unbind_only_its_own_binding(tmp_path):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    workers = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "unbind-task"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest(
+                "bind",
+                "worker-bind",
+                task["task_id"],
+                task["revision"],
+                connector_id="workbuddy",
+                context_id="worker-session",
+            ),
+            security=_security(workers["workbuddy"]),
+        )
+        binding_id = bound["task"]["bindings"][-1]["binding_id"]
+        background = MemoryRef.of(
+            api.add("owner background", project, security=_security(owner))[0]
+        )
+
+        for index, metadata in enumerate(
+            (
+                {"title": "Changed by worker"},
+                {"description": "Changed by worker"},
+                {"background": [background]},
+            )
+        ):
+            with pytest.raises(PermissionDeniedError):
+                api.continuity_task(
+                    project,
+                    TaskRequest(
+                        "unbind",
+                        f"metadata-unbind-{index}",
+                        task["task_id"],
+                        bound["revision"],
+                        binding_id=binding_id,
+                        **metadata,
+                    ),
+                    security=_security(workers["workbuddy"]),
+                )
+
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "unbind",
+                    "foreign-unbind",
+                    task["task_id"],
+                    bound["revision"],
+                    binding_id=binding_id,
+                    reason="not mine",
+                ),
+                security=_security(workers["hermes"]),
+            )
+
+        unbind_request = TaskRequest(
+            "unbind",
+            "worker-unbind",
+            task["task_id"],
+            bound["revision"],
+            binding_id=binding_id,
+            reason="finished",
+        )
+        unbound = api.continuity_task(
+            project, unbind_request, security=_security(workers["workbuddy"])
+        )
+        assert unbound["task"]["bindings"][-1]["active"] is False
+        api._continuity_connectors["workbuddy"] = {
+            **config["globals"]["continuity_connectors"]["workbuddy"],
+            "enabled": False,
+        }
+        replayed_unbind = api.continuity_task(
+            project, unbind_request, security=_security(workers["workbuddy"])
+        )
+        assert replayed_unbind["replayed"] is True
+        assert replayed_unbind["revision"] == unbound["revision"]
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "unbind",
+                    "new-request-after-unbind",
+                    task["task_id"],
+                    unbound["revision"],
+                    binding_id=binding_id,
+                    reason="again",
+                ),
+                security=_security(workers["workbuddy"]),
+            )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "close",
+                    "revoked-binding-close",
+                    task["task_id"],
+                    unbound["revision"],
+                    binding_id=binding_id,
+                ),
+                security=_security(workers["workbuddy"]),
+            )
+    finally:
+        runtime.close()
+
+
+def test_participant_close_revalidates_binding_at_commit(tmp_path, monkeypatch):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    worker = Scope(**config["globals"]["continuity_connectors"]["workbuddy"]["actor"])
+    try:
+        task = api.continuity_task(
+            project,
+            TaskRequest("create", "commit-task", title="Scoped work"),
+            security=_security(owner),
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest(
+                "bind", "commit-bind", task["task_id"], task["revision"],
+                connector_id="workbuddy", context_id="worker-session",
+            ),
+            security=_security(worker),
+        )
+        binding_id = bound["task"]["bindings"][-1]["binding_id"]
+        service = api._continuity
+        repo = service.repository
+        state = {"armed": False, "revoked": False}
+        real_task = service.task
+        real_get = repo.get
+
+        def armed_task(scope, request, owner_actor, read, *, connector_policy):
+            if request.request_id == "commit-close":
+                state["armed"] = True
+            try:
+                return real_task(
+                    scope, request, owner_actor, read, connector_policy=connector_policy
+                )
+            finally:
+                state["armed"] = False
+
+        def revoke_during_record_load(scope, kind, key):
+            if not state["armed"] or kind != "tasks" or key != task["task_id"]:
+                return real_get(scope, kind, key)
+            if state["revoked"]:
+                return real_get(scope, kind, key)
+            state["revoked"] = True
+            real_task(
+                scope,
+                TaskRequest(
+                    "unbind", "revoke-first", task["task_id"], bound["revision"],
+                    binding_id=binding_id,
+                ),
+                task["task"]["owner"],
+                lambda ref: None,
+                connector_policy=AllowAllConnectorPolicy(),
+            )
+            return real_get(scope, kind, key)
+
+        monkeypatch.setattr(service, "task", armed_task)
+        monkeypatch.setattr(repo, "get", revoke_during_record_load)
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "close", "commit-close", task["task_id"], bound["revision"] + 1,
+                    binding_id=binding_id,
+                ),
+                security=_security(worker),
+            )
+        monkeypatch.undo()
+        record = real_get(project, "tasks", task["task_id"])
+        assert record["state"] == "open"
+        assert record["revision"] == bound["revision"] + 1
+        assert record["bindings"][-1]["active"] is False
+        assert set(record["receipts"]) == {"commit-task", "commit-bind", "revoke-first"}
+    finally:
+        runtime.close()
+
+
+def test_participant_request_id_reuse_reports_conflict(tmp_path):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    connector_specs = config["globals"]["continuity_connectors"]
+    worker = Scope(**connector_specs["workbuddy"]["actor"])
+    hermes = Scope(**connector_specs["hermes"]["actor"])
+    try:
+        task = api.continuity_task(
+            project,
+            TaskRequest("create", "receipt-conflict", title="Scoped work"),
+            security=_security(owner),
+        )
+        api.continuity_task(
+            project,
+            TaskRequest(
+                "bind", "worker-bind", task["task_id"], task["revision"],
+                connector_id="workbuddy", context_id="worker-session",
+            ),
+            security=_security(worker),
+        )
+        api._continuity_connectors["workbuddy"] = {
+            **connector_specs["workbuddy"],
+            "enabled": False,
+        }
+        with pytest.raises(ConflictError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "bind", "worker-bind", task["task_id"], task["revision"],
+                    connector_id="workbuddy", context_id="other-session",
+                ),
+                security=_security(worker),
+            )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "bind", "worker-bind", task["task_id"], task["revision"],
+                    connector_id="hermes", context_id="session",
+                ),
+                security=_security(hermes),
+            )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "bind", "worker-bind", task["task_id"], task["revision"],
+                    connector_id="workbuddy", context_id="worker-session",
+                ),
+                security=_security(hermes),
+            )
+        api._continuity_connectors["workbuddy"] = {
+            **connector_specs["workbuddy"],
+            "actor": connector_specs["hermes"]["actor"],
+        }
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "bind", "worker-bind", task["task_id"], task["revision"],
+                    connector_id="workbuddy", context_id="worker-session",
+                ),
+                security=_security(worker),
+            )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "bind", "worker-bind", task["task_id"], task["revision"],
+                    connector_id="workbuddy", context_id="worker-session",
+                ),
+                security=_security(hermes),
+            )
+        api._continuity_connectors["workbuddy"] = {**connector_specs["workbuddy"]}
+    finally:
+        runtime.close()
+
+
+def test_participant_unbind_new_request_after_revocation_is_denied(tmp_path):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    worker = Scope(**config["globals"]["continuity_connectors"]["workbuddy"]["actor"])
+    try:
+        task = api.continuity_task(
+            project,
+            TaskRequest("create", "late-task", title="Scoped work"),
+            security=_security(owner),
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest(
+                "bind", "late-bind", task["task_id"], task["revision"],
+                connector_id="workbuddy", context_id="worker-session",
+            ),
+            security=_security(worker),
+        )
+        binding_id = bound["task"]["bindings"][-1]["binding_id"]
+        unbound = api.continuity_task(
+            project,
+            TaskRequest(
+                "unbind", "late-unbind", task["task_id"], bound["revision"],
+                binding_id=binding_id,
+            ),
+            security=_security(worker),
+        )
+        assert unbound["revision"] == bound["revision"] + 1
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "unbind", "late-again", task["task_id"], bound["revision"],
+                    binding_id=binding_id, reason="retry",
+                ),
+                security=_security(worker),
+            )
+    finally:
+        runtime.close()
+
+
+def test_participant_bind_without_connector_is_permission_denied(tmp_path):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    worker = Scope(**config["globals"]["continuity_connectors"]["workbuddy"]["actor"])
+    try:
+        task = api.continuity_task(
+            project,
+            TaskRequest("create", "empty-connector-task", title="Scoped work"),
+            security=_security(owner),
+        )
+        with pytest.raises(PermissionDeniedError):
+            api.continuity_task(
+                project,
+                TaskRequest(
+                    "bind", "empty-connector", task["task_id"], task["revision"],
+                    connector_id="", context_id="session",
+                ),
+                security=_security(worker),
+            )
+    finally:
+        runtime.close()
+
+
+def test_owner_bind_replay_survives_connector_disable(tmp_path):
+    runtime, api, project, owner, _ops, config = _runtime(tmp_path)
+    try:
+        task = api.continuity_task(
+            project,
+            TaskRequest("create", "owner-replay", title="Scoped work"),
+            security=_security(owner),
+        )
+        bind_request = TaskRequest(
+            "bind", "owner-bind", task["task_id"], task["revision"],
+            connector_id="workbuddy", context_id="owner-session",
+        )
+        bound = api.continuity_task(project, bind_request, security=_security(owner))
+        api._continuity_connectors["workbuddy"] = {
+            **config["globals"]["continuity_connectors"]["workbuddy"],
+            "enabled": False,
+        }
+        replayed = api.continuity_task(project, bind_request, security=_security(owner))
+        assert replayed["replayed"] is True
+        assert replayed["revision"] == bound["revision"]
+    finally:
+        runtime.close()
 
 
 def test_quarantined_source_is_blocked_without_leaking_to_other_sources(tmp_path):
