@@ -50,8 +50,6 @@ from jiuwen_memory_entry.portal.sessions import (
     SESSION_HEADER,
     BrowserSessions,
     bootstrap,
-    frame_headers,
-    frame_origins,
 )
 
 # 共享应用核（server / profiles / handler / config_loader）住在 jiuwen_memory_entry/core；
@@ -185,7 +183,8 @@ class HttpServer(Server):
         http_settings = config.settings.get("http", {})
         if not isinstance(http_settings, dict):
             raise ValidationError("http configuration must be an object")
-        self.portal_frame_origins = frame_origins(http_settings.get("portal_frame_origins", ()))
+        if "portal_frame_origins" in http_settings:
+            logger.warning("HTTP option http.portal_frame_origins is obsolete and ignored")
         self.portal_sessions = BrowserSessions()
 
     @property
@@ -318,8 +317,6 @@ class HttpServer(Server):
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(data)))
                     self.send_header("Cache-Control", "no-store")
-                    for name, value in frame_headers(srv.portal_frame_origins).items():
-                        self.send_header(name, value)
                     self.send_header("X-Content-Type-Options", "nosniff")
                     self.end_headers()
                     self.wfile.write(data)
@@ -389,7 +386,6 @@ class HttpServer(Server):
                     try:
                         body, cookie = bootstrap(
                             srv.portal_sessions, json.loads(_read_body(self.rfile, length)),
-                            srv.portal_frame_origins,
                         )
                     except (ValueError, TypeError):
                         body, cookie = None, None

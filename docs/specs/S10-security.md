@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/`、`jiuwen_memory_adapter/agent_security/` |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 显式明文记忆维护
@@ -53,9 +53,9 @@ HTTP 启动先检查上述身份声明，再决定是否打开或创建配置库
 宿主为当前实例生成随机的一次性访问授权，5分钟有效。授权放在 URL 的 # 片段中，
 页面交换前清除片段；bootstrap 只接受有效授权，不接受浏览器声明的身份。
 授权只兑换一次，随后使用 1 小时有效的浏览器会话。使用 Cookie 时必须为 HttpOnly、
-SameSite=Strict，路径限定为 `/v1/`。配置了精确的嵌入来源后，页面响应通过 CSP
-`frame-ancestors` 限定宿主，未配置时拒绝 iframe。iframe 和跨进程共享页面兑换会话票据，
-经 `X-Memory-Portal-Session` 发送同源请求。普通 iframe 的票据保存在页面内存中。
+SameSite=Strict，路径限定为 `/v1/`。任意来源的宿主网页均可嵌入 Portal。
+iframe 和跨进程共享页面兑换会话票据，经 `X-Memory-Portal-Session` 发送同源请求。
+普通 iframe 的票据保存在页面内存中。
 跨进程共享页面的票据保存在当前浏览器历史条目的状态中，供刷新后继续使用，收到 401 后清除。
 共享会话绑定记忆库和签发时的可信身份。该身份可操作具有相同认证主体、角色、凭据标识
 和委托的在线实例。

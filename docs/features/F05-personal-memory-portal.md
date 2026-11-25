@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-11-06 |
+| 日期 | 2026-11-24 |
 | 影响范围 | Portal 页面、个人记忆查询与管理、模型配置、SDK 与 HTTP 接入 |
 | 测试基线 | 2,055 项相关回归通过，覆盖 API、配置、检索、存储、HTTP、SDK 和前端。此前使用 Chromium 验证了主要操作和 375px 窄屏布局 |
 | 接口规约 | [S02 记忆接口](../specs/S02-memory-api.md)、[S08 配置](../specs/S08-config.md) |
@@ -344,7 +344,6 @@ memory_provider = AgentMemoryMemoryProvider(
 | enabled | 是否启动 Portal 页面服务 | True |
 | port | 页面端口；0 自动选择空闲端口，1–65535 指定固定端口 | 0 |
 | language | 新链接的首屏语言，`en` 为英文，`zh-CN` 或 `zh` 为简体中文。SDK 和 HTTP 模式均适用 | zh-CN |
-| allowed_frame_origins | 允许嵌入的宿主来源列表，含协议、域名和端口 | 空列表 |
 | instance_id | 共享 Portal 中用于读写本实例配置的稳定标识 | default |
 
 指定 8138 时，页面服务使用本机 8138 端口。设为 0 时，打开插件返回的链接即可。
@@ -400,8 +399,7 @@ portal = {"instance_id": "engineering", "port": 8138}
 普通 SDK 和接续 SDK 的 KV 实例都可以使用启动文件旁的配置库。
 同一文档目录内，同一个 ID 同时只能供一个共享实例使用。两个独立实例都省略 ID 时，第二个
 仍能启动并读写记忆，Portal 会报告 ID 冲突。给第二个实例指定不同 ID 并重启后，即可加入。
-各实例使用相同的嵌入来源设置。指定固定端口时使用同一个端口，
-使用默认端口值 0 时，加入的实例使用已启动服务分配的端口。
+指定固定端口时使用同一个端口。使用默认端口值 0 时，加入的实例使用已启动服务分配的端口。
 
 多个进程同时监听同一文档库时，手动修改一次 Markdown 文件可能触发两次同步，让 Portal
 显示两条内容相同的有效记忆。只开一个监听器可以减少这种重复处理。另一个 SDK 进程写入
@@ -452,19 +450,9 @@ HTTP 启动时先看安全配置是否声明了固定个人身份。声明了，
 
 #### 在宿主设置页嵌入
 
-SDK 在 `portal.allowed_frame_origins` 设置宿主页面的实际来源。HTTP 由记忆服务配置
-`http.portal_frame_origins`。例如宿主页面在 `http://localhost:8080`，两个入口各自
-配置允许的来源：
-
-```python
-portal = {"allowed_frame_origins": ["http://localhost:8080"]}
-```
-
-```yaml
-http:
-  portal_frame_origins:
-    - http://localhost:8080
-```
+浏览器能通过回环地址访问 Portal 时，SDK 和 HTTP 模式均可直接嵌入 iframe，无需配置宿主网页来源。
+iframe 内发往 Portal 的请求仍使用 Portal 自身的来源。升级时应重启 Portal 和使用同一个共享
+Portal 的 SDK 实例，并从启动配置中移除旧的 iframe 来源设置。HTTP 服务检测到旧字段时会记录弃用警告。
 
 宿主完成用户授权后，使用已经按记忆轨范围初始化的 Provider 调用 `open_portal()`，
 将完整链接设为 iframe 的地址。SDK 链接绑定原轨的 Scope。HTTP 客户端使用与工具调用

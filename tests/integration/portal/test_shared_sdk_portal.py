@@ -171,10 +171,13 @@ def test_default_launch_binds_source_before_registration_changes(monkeypatch):
     runtime = SimpleNamespace(api=object())
     portal = start_portal(runtime, security_provider=user_security, identity="user")
     try:
+        assert portal.server.server_address[0] == "127.0.0.1"
         launch = urlsplit(portal.launch_url())
         origin = f"{launch.scheme}://{launch.netloc}"
         headers = {"Origin": origin, "X-Memory-Portal-Browser": "1"}
         with httpx.Client(base_url=origin, headers=headers, trust_env=False, timeout=5) as browser:
+            page = browser.get("/portal/", headers={"Host": f"example.test:{launch.port}"})
+            assert page.status_code == 404
             response = browser.post(
                 "/portal/api/bootstrap", json={"token": parse_qs(launch.fragment)["access"][0]},
             )

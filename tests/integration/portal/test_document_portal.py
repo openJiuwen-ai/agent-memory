@@ -1348,7 +1348,6 @@ def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path, scene, source):
         return internal_context(auth)
 
     async def run():
-        parent = "http://localhost:8080"
         config = document_config(tmp_path)
         if scene == "code":
             config["globals"]["write_document"] = False
@@ -1357,11 +1356,10 @@ def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path, scene, source):
             path = tmp_path / "memory.json"
             path.write_text(json.dumps(config), encoding="utf-8")
             options = {"config_path": str(path)}
-        portal = {"allowed_frame_origins": [parent]}
         target = {"instance_id": f"{scene}-{source}"} if os.name in ("posix", "nt") else {}
         provider = AgentMemoryMemoryProvider(
             **options, security_provider=security, scene=scene, project="demo",
-            portal={**portal, **target},
+            portal=target,
         )
         await provider.initialize(
             scope_id="local", user_id="developer", agent_id="rail", session_id="session",
@@ -1375,7 +1373,7 @@ def test_sdk_embedded_portal_writes_into_rail_scope(tmp_path, scene, source):
             def use_portal():
                 opener = build_opener(ProxyHandler({}))
                 with opener.open(f"{origin}/portal/", timeout=5) as page:
-                    assert page.headers["Content-Security-Policy"] == f"frame-ancestors {parent}"
+                    assert page.headers.get("Content-Security-Policy") is None
                     assert page.headers.get("X-Frame-Options") is None
 
                 def post(action, body, session=None):

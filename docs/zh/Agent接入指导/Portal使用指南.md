@@ -66,7 +66,7 @@ curl -fsS "${portal_base_url}/portal/api/launch" \
 
 ### 嵌入宿主设置页
 
-使用 iframe 时，将宿主页面的精确 origin（协议、主机及使用的端口）加入允许列表。SDK Provider 使用 `portal.allowed_frame_origins`，HTTP 服务使用启动配置中的 `http.portal_frame_origins`。宿主为当前用户取得新链接后，将完整链接设为 iframe 的 `src`。重新挂载 iframe 时重新发链。
+宿主为当前用户取得新链接后，将完整链接设为 iframe 的 `src`。浏览器需要能通过回环地址访问 Portal，宿主网页无需配置来源白名单。升级时可删除原有的 iframe 来源配置。重新挂载 iframe 时申请新链接。
 
 ## 查看和管理记忆
 

@@ -1,50 +1,24 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Browser launch grants, sessions and opt-in iframe policy shared by HTTP and SDK."""
+"""Browser launch grants and sessions shared by HTTP and SDK."""
 
 from __future__ import annotations
 
-import re
 import secrets
 import time
 from http.cookies import SimpleCookie
 from threading import Lock
-from urllib.parse import urlsplit
-
-from jiuwen_memory.api import ValidationError
 
 SESSION_HEADER = "X-Memory-Portal-Session"
 BROWSER_HEADER = "X-Memory-Portal-Browser"
 _MAX_ENTRIES = 32
-_ORIGIN = re.compile(r"https?://(?:[a-zA-Z0-9.-]+|\[[a-fA-F0-9:]+\])(?::[0-9]+)?")
 
 
-def frame_origins(values) -> tuple[str, ...]:
-    if not isinstance(values, list | tuple):
-        raise ValidationError("Portal frame origins must be a list of HTTP(S) origins")
-    for value in values:
-        if not isinstance(value, str) or not _ORIGIN.fullmatch(value):
-            raise ValidationError("Portal frame origins must be exact HTTP(S) origins")
-        try:
-            origin = urlsplit(value)
-            if origin.port == 0:
-                raise ValueError
-        except ValueError as error:
-            raise ValidationError("invalid Portal frame origin") from error
-    return tuple(dict.fromkeys(values))
-
-
-def frame_headers(origins: tuple[str, ...]) -> dict[str, str]:
-    if not origins:
-        return {"X-Frame-Options": "DENY"}
-    return {"Content-Security-Policy": "frame-ancestors " + " ".join(origins)}
-
-
-def bootstrap(sessions, body, origins, *, shared=False):
+def bootstrap(sessions, body, *, shared=False):
     """Use page-local tokens for iframes and for portals shared by several runtimes."""
     if not isinstance(body, dict):
         return None, None
     embedded = body.get("embedded", False)
-    if not isinstance(embedded, bool) or (embedded and not origins):
+    if not isinstance(embedded, bool):
         return None, None
     tab_session = embedded or shared
     session = sessions.redeem(body.get("token"), embedded=tab_session)
